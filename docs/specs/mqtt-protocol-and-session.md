@@ -1,0 +1,137 @@
+# MQTT protocol과 session 스펙
+
+이 문서는 MQTT client가 NaruMQ listener에 연결해 인증하고 publish·subscribe하며 session을 재개할 때 관찰하는 동작을 정의한다. Cluster 내부 복제 방식은 [cluster spec](cluster-session-and-delivery.md), tenant 권한 판정은 [security spec](tenancy-and-security.md)을 기준으로 한다.
+
+| 항목 | 값 |
+| --- | --- |
+| 상태 | Draft |
+| 관련 요구사항 | MQTT-01~MQTT-13, CLIENT-01~CLIENT-08 |
+| 근거 | [PRD 8장과 9.1절](../requirements/PRD.md), [OASIS MQTT 3.1.1](https://docs.oasis-open.org/mqtt/mqtt/v3.1.1/mqtt-v3.1.1.html), [OASIS MQTT 5.0](https://docs.oasis-open.org/mqtt/mqtt/v5.0/mqtt-v5.0.html) |
+| 관련 Architecture | [System overview](../architectures/system-overview.md), [Broker core](../architectures/broker-core.md) |
+| 관련 Contract | [MQTT client compatibility v1](../contracts/mqtt-client-compatibility-v1.md) |
+| 해설 | [MQTT 전달 보장과 세션](../explainers/mqtt-delivery-guarantees.md) |
+
+## 1. Listener 계약
+
+1. TCP와 TLS listener는 MQTT 3.1.1 protocol level 4와 MQTT 5.0 protocol level 5를 수용해야 한다.
+2. listener마다 bind address, TLS 정책, 인증 방식, 최대 연결 수, connection rate와 packet 제한을 독립 적용해야 한다.
+3. 평문 TCP listener는 기본 설정에서 비활성화해야 한다.
+4. WebSocket과 WSS는 P1 선택 기능이다. 활성화하면 MQTT packet과 session 의미가 TCP listener와 같아야 한다.
+5. connection은 설정된 CONNECT timeout 안에 유효한 CONNECT를 보내야 한다. timeout 또는 malformed packet이면 session을 만들지 않고 연결을 닫아야 한다.
+
+## 2. CONNECT 처리 순서
+
+서버는 CONNECT를 다음 순서로 처리해야 한다.
+
+```mermaid
+flowchart TD
+    A["Network connection"] --> B["Fixed header와 packet 경계 검증"]
+    B --> C["Protocol name과 level 판정"]
+    C --> D["CONNECT flags·property·UTF-8 검증"]
+    D --> E["Listener 보안 정책과 인증"]
+    E --> F["tenant와 clientId binding·차단 확인"]
+    F --> G["quota와 session ownership 획득"]
+    G --> H["session 생성 또는 복구"]
+    H --> I["CONNACK 반환"]
+```
+
+각 단계가 실패하면 이후 단계의 durable state를 만들어서는 안 된다. ownership을 얻은 뒤 응답 전 실패하면 재시도 시 같은 session 상태로 수렴해야 한다.
+
+### 2.1 Protocol version
+
+| 입력 | 외부 동작 |
+| --- | --- |
+| Protocol Name `MQTT`, level 4 | MQTT 3.1.1로 처리한다. |
+| Protocol Name `MQTT`, level 5 | MQTT 5.0으로 처리한다. |
+| Protocol Name `MQIsdp` 또는 level 3 | MQTT 3.1.0 비지원으로 거절한다. session을 만들지 않는다. |
+| 지원하지 않는 level | MQTT 3.1.1 형식으로 판정 가능한 경우 CONNACK `0x01`을 반환하고 연결을 닫는다. MQTT 5 형식으로 판정 가능한 경우 CONNACK `0x84`를 반환하고 연결을 닫는다. |
+| packet 구조상 version을 안전하게 판정할 수 없음 | 응답 없이 연결을 닫을 수 있다. malformed packet으로 기록한다. |
+
+MQTT 3.1.0 거절은 `reason="unsupported_protocol_version"`, `protocol="3.1.0"`으로 집계해야 한다. 원문 credential은 로그에 남기지 않는다.
+
+### 2.2 Session 선택
+
+session key는 `(tenantId, clientId)`다. tenant와 clientId가 하나라도 달라지면 기존 session을 재개해서는 안 된다.
+
+| Protocol 입력 | Session 동작 | CONNACK |
+| --- | --- | --- |
+| MQTT 3.1.1 `Clean Session=1` | 기존 session을 폐기하고 새 session으로 시작한다. 연결 종료 뒤 session을 보존하지 않는다. | `Session Present=0` |
+| MQTT 3.1.1 `Clean Session=0` | 만료되지 않은 기존 session을 복구한다. 없으면 새 persistent session을 만든다. | 복구했을 때만 `Session Present=1` |
+| MQTT 5 `Clean Start=1` | 기존 session을 폐기하고 새 session으로 시작한다. | `Session Present=0` |
+| MQTT 5 `Clean Start=0` | 만료되지 않은 기존 session을 복구한다. | 복구했을 때만 `Session Present=1` |
+| MQTT 5 `Session Expiry Interval=0` | network connection 종료 뒤 session을 제거한다. | 위 규칙에 따름 |
+
+동일 session key로 새 connection이 인증과 ownership 획득에 성공하면 새 connection이 owner가 된다. 이전 connection은 MQTT 5이면 `DISCONNECT 0x8E`(`Session taken over`)를 받은 뒤 종료되어야 한다. MQTT 3.1.1은 연결을 닫는다.
+
+## 3. Publish와 내구성 ACK
+
+### 3.1 수신 QoS 상태
+
+| QoS | 성공 경계 | 재전송·중복 처리 |
+| --- | --- | --- |
+| 0 | packet을 수용해 routing queue로 넘긴 시점 | ACK가 없다. 장애 시 유실될 수 있다. |
+| 1 | 메시지와 필요한 전달 상태가 configured durability barrier를 통과한 뒤 성공 PUBACK | 같은 Packet Identifier와 DUP 재전송을 최소 한 번 의미로 처리한다. 이미 성공 처리한 packet은 중복 durable message를 만들지 않고 일관된 PUBACK을 반환해야 한다. |
+| 2 | 수신 PUBLISH와 handshake 상태가 durability barrier를 통과한 뒤 성공 PUBREC | PUBREL과 PUBCOMP까지 상태를 복구한다. 중복 PUBLISH·PUBREL은 같은 handshake 결과로 수렴해야 한다. |
+
+quorum, 저장 quota 또는 replication 조건을 충족하지 못하면 성공 PUBACK/PUBREC을 반환해서는 안 된다. MQTT 5에서는 상황에 맞는 `0x89`(`Server busy`), `0x97`(`Quota exceeded`) 또는 `0x83`(`Implementation specific error`)를 사용할 수 있다. MQTT 3.1.1에서 packet 단위 실패를 표현할 수 없으면 연결을 닫을 수 있다. 어느 경우든 성공 ACK로 위장해서는 안 된다.
+
+### 3.2 송신 QoS와 offline queue
+
+1. 전달 QoS는 publish QoS와 subscription granted QoS 중 낮은 값이어야 한다.
+2. persistent session의 offline queue는 message expiry와 tenant quota를 적용해야 한다.
+3. QoS 1 송신 상태는 PUBACK까지, QoS 2 송신 상태는 PUBCOMP까지 복구할 수 있어야 한다.
+4. 재접속 뒤 미완료 packet을 재전송할 때 MQTT 표준의 DUP 규칙을 적용해야 한다.
+5. expiry가 지난 message는 전달하지 않고 expired 사유로 집계해야 한다.
+
+## 4. Subscribe와 routing 입력
+
+1. Topic Filter의 `+`, `#` 위치와 UTF-8을 표준대로 검증해야 한다.
+2. 겹치는 subscription이 같은 client session에 여러 번 match하면 MQTT version의 표준 전달 규칙과 granted QoS를 적용해야 한다.
+3. `$share/{group}/{filter}`는 tenant 안의 같은 group에서 한 활성 subscriber를 선택해야 한다. 선택된 subscriber가 전달을 완료하지 못하면 session·QoS 규칙에 따라 다른 member가 이어받을 수 있어야 한다.
+4. MQTT 5의 No Local, Retain As Published와 Retain Handling을 subscription별로 보존하고 적용해야 한다.
+5. 권한이 없는 filter는 subscribe 결과에서 거절해야 하며 route index에 추가해서는 안 된다.
+6. unsubscribe는 존재하지 않는 subscription에도 안전하게 재시도할 수 있어야 한다.
+
+## 5. Retained Message
+
+- Retain flag가 설정된 유효한 PUBLISH는 tenant의 canonical topic에 최신 retained message 하나를 저장해야 한다.
+- zero-byte payload로 retained message를 삭제하는 MQTT 표준 동작을 지원해야 한다.
+- 새 subscription에 retained message를 보낼 때 ACL, subscription options, granted QoS와 message expiry를 적용해야 한다.
+- 다른 tenant의 retained message는 조회하거나 전달해서는 안 된다.
+- retained write가 durable 대상으로 설정된 경우 durability barrier 전에 성공 ACK을 반환해서는 안 된다.
+
+## 6. Will Message
+
+Will은 CONNECT의 인증·ACL·quota 검증을 통과한 뒤 session state에 등록해야 한다.
+
+| 종료 원인 | Will 동작 |
+| --- | --- |
+| client의 정상 DISCONNECT | 발행하지 않는다. MQTT 5 `0x04`(`Disconnect with Will Message`)는 표준대로 발행한다. |
+| network 단절, keepalive timeout, protocol 오류 | Will Delay가 없으면 표준 시점에 발행한다. |
+| MQTT 5 Will Delay 안에 같은 session key로 재접속 | 발행하지 않는다. |
+| Session Expiry가 Will Delay보다 먼저 끝남 | MQTT 5 표준이 정한 더 이른 시점에 처리한다. |
+| MQTT 3.1.1 server 주도 연결 종료 | Will이 설정돼 있으면 발행될 수 있다. no-Will 보장 대상이 아니다. |
+
+Will publish에도 tenant 격리, ACL, payload·rate quota, retained와 delivery 규칙을 적용해야 한다. Drain 중 규칙은 [drain spec](drain-and-rolling-update.md)을 따른다.
+
+## 7. Resource limit과 protocol 오류
+
+| 조건 | MQTT 5 동작 | MQTT 3.1.1 동작 |
+| --- | --- | --- |
+| packet size 초과 | 가능한 경우 `0x95` 후 종료 | packet을 처리하지 않고 종료 |
+| Receive Maximum 초과 | `DISCONNECT 0x93` | 연결별 inflight 한도를 넘기지 않도록 read backpressure 또는 종료 |
+| message rate 초과 | `0x96` 또는 `0x97`이 허용되는 packet에서 반환 | backpressure 후 필요하면 종료 |
+| connection rate 초과 | CONNACK `0x9F` 또는 handshake 전 종료 | CONNACK `0x03` 또는 handshake 전 종료 |
+| malformed packet·invalid UTF-8 | 표준 reason code가 허용되면 반환한 뒤 종료 | 즉시 종료 |
+| slow client·write queue 포화 | bounded queue와 timeout 적용 후 종료 | 동일 |
+
+모든 connection queue와 inflight collection에는 설정된 상한이 있어야 한다. 제한에 도달했을 때 무제한 할당으로 진행해서는 안 된다.
+
+## 8. 수용 시험
+
+- MQTT 3.1.1/5.0 compliance matrix가 지원한다고 선언한 모든 normative statement를 자동 test와 연결한다.
+- QoS별 정상, DUP, reconnect, owner crash와 expiry 시나리오를 검증한다.
+- `MQIsdp`, level 3과 비정상 version 조합이 session을 만들지 않는지 검증한다.
+- wildcard 경계, shared subscription failover와 MQTT 5 subscription option 조합을 검증한다.
+- parser fuzzing, slowloris, packet·queue 상한 시험에서 memory와 goroutine leak이 없어야 한다.
+- 두 protocol version client가 같은 외부 topic에서 ACL 범위 안의 메시지를 상호 전달해야 한다.

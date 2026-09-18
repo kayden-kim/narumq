@@ -1,0 +1,79 @@
+# NaruMQ 시스템 스펙
+
+이 디렉터리는 NaruMQ가 외부에서 보여야 할 동작을 정의한다. 제품의 필요성과 우선순위는 [PRD](../requirements/PRD.md), 구조 view는 [Architecture](../architectures/README.md), 기술 선택의 근거는 [ADR](../decisions/), 작동 원리의 해설은 [기술 해설](../explainers/README.md)을 기준으로 한다.
+
+| 항목 | 값 |
+| --- | --- |
+| 상태 | Draft |
+| 기준 요구사항 | PRD 0.5 |
+| 관련 Architecture | [Architecture catalog](../architectures/README.md) |
+| 관련 결정 | [ADR catalog](../decisions/README.md) |
+| 관련 Contract | [Contract catalog](../contracts/README.md) |
+| 대상 독자 | 구현자, 검토자, 시험 작성자, 운영 자동화 작성자 |
+
+## 문서 목록
+
+| 문서 | 외부 동작 계약 | 관련 요구사항 |
+| --- | --- | --- |
+| [MQTT protocol과 session](mqtt-protocol-and-session.md) | listener, CONNECT, QoS, session, retained, Will, subscription, 제한과 protocol 오류 | MQTT-01~MQTT-13, CLIENT-01~CLIENT-08 |
+| [Cluster session과 durable delivery](cluster-session-and-delivery.md) | membership, session ownership, fencing, routing, 복제, partition, 복구 | CLU-01~CLU-14, NFR-07~NFR-10, NFR-15 |
+| [Tenant와 security](tenancy-and-security.md) | tenant 결정, topic 격리, ACL, quota, 인증, RBAC, 감사 | TEN-01~TEN-10, SEC-01~SEC-12, NFR-16~NFR-19 |
+| [Management API와 observability](management-api-and-observability.md) | REST resource, 공통 JSON 계약, probe, Metric, Dashboard 조회 | API-01~API-09, UI-01~UI-10 |
+| [Drain과 rolling update](drain-and-rolling-update.md) | node lifecycle, drain API, safe-to-stop barrier, client redirect, rollout gate, AWS deployment profile | DEP-01~DEP-24, CLIENT-01~CLIENT-09 |
+| [Performance와 verification](performance-and-verification.md) | 성능 측정, 시험 계층, coverage, release gate와 증거물 | NFR-01~NFR-06, NFR-11~NFR-15, PERF-01~PERF-12, TEST-01~TEST-17 |
+
+하나의 요구사항이 여러 문서에 나타나면 각 문서는 자기 경계의 관찰 가능한 동작만 정의한다. 예를 들어 session takeover의 소유권 규칙은 cluster spec이, 배포 중 실행 순서는 drain spec이 기준이다.
+
+## 규범 문장
+
+- **해야 한다**: 준수하지 않으면 해당 spec을 충족하지 못한다.
+- **해서는 안 된다**: 금지된 동작이다.
+- **권장한다**: 명시한 사유가 있을 때만 다르게 구현할 수 있다.
+- **할 수 있다**: 선택 동작이다.
+
+MQTT packet 이름, property와 reason code는 OASIS 명칭을 사용한다. 충돌이 있으면 MQTT wire 동작은 OASIS MQTT 표준을 우선한다.
+
+## 공통 식별자와 시간
+
+| 이름 | 계약 |
+| --- | --- |
+| `tenantId` | 인증 결과에서 얻는 불투명 식별자다. client가 제출한 값을 그대로 신뢰해서는 안 된다. |
+| `clientId` | tenant 안에서 session을 식별한다. session key는 `(tenantId, clientId)`다. |
+| `nodeId` | cluster membership 세대에서 node를 식별하는 불투명 문자열이다. |
+| `requestId` | 관리 요청과 감사 이벤트를 연결한다. 응답과 구조화 로그에 같은 값을 기록한다. |
+| timestamp | JSON에서는 UTC RFC 3339 문자열을 사용한다. Metric 시간은 수집 시스템의 timestamp 규칙을 따른다. |
+| duration | JSON에서는 음수가 아닌 millisecond 정수를 사용한다. 설정 파일의 표기 형식은 별도 configuration spec에서 확정한다. |
+
+## 오류 원칙
+
+1. 내구성 또는 권한 조건을 충족하지 못하면 성공으로 응답해서는 안 된다.
+2. 재시도 가능한 오류와 영구 오류를 protocol 또는 API가 허용하는 범위에서 구분한다.
+3. 오류 응답에 secret, token, password, private key, 원문 credential을 포함해서는 안 된다.
+4. 거절과 상태 전이 실패는 `requestId` 또는 connection correlation ID로 Metric·로그·감사 이벤트를 연결할 수 있어야 한다.
+5. 알 수 없는 구현 오류는 내부 세부 정보를 숨기고 안정된 외부 오류 코드로 변환한다.
+
+## 미결정 계약
+
+아래 값은 PRD의 Phase 0 또는 후속 ADR에서 확정해야 한다. 확정 전에는 배포 설정이 값을 명시해야 하며, 구현의 암묵적 기본값을 제품 보장으로 간주하지 않는다.
+
+| ID | 미결정 항목 | 확정 위치 | 제약 |
+| --- | --- | --- | --- |
+| SPEC-TBD-01 | WAL 영속화 기준, replication factor, write quorum | [ADR-0002](../decisions/ADR-0002-cluster-consensus-library.md), [ADR-0003](../decisions/ADR-0003-durable-ack-barrier.md) | 두 ADR은 Proposed다. 승인 전에는 제품 기본값으로 확정하지 않는다. |
+| SPEC-TBD-02 | listener, packet, inflight, queue와 tenant quota 수치 | configuration spec | 무제한 값은 허용하지 않는다. |
+| SPEC-TBD-03 | session·message expiry 상한과 offline queue 초과 정책 | configuration spec | 적용 결과가 protocol 응답과 Metric에 드러나야 한다. |
+| SPEC-TBD-04 | drain rate, LB 전파 대기, timeout, grace period | [ADR-0006](../decisions/ADR-0006-external-rollout-controller.md), deployment spec | Controller 전략은 Proposed이며 수치는 N-1 용량과 최악 종료 시간으로 확정해야 한다. |
+| SPEC-TBD-05 | topic 내부 prefix encoding과 canonicalization 세부 규칙 | tenancy ADR/spec 개정 | 외부 topic과 tenant 격리를 보존해야 한다. |
+| SPEC-TBD-06 | API error code 전체 목록, pagination 기본·최대값 | [Management API v1](../contracts/management-api-v1.md) | OpenAPI 초안은 작성됐다. Pagination 수치와 contract test가 남아 있다. |
+| SPEC-TBD-07 | Metric 이름 전체와 histogram bucket | metrics catalog | label cardinality 제한을 지켜야 한다. |
+| SPEC-TBD-08 | 성능 SLO와 고정 EMQX version·edition | Phase 0 benchmark record | 동일 조건에서 반복 측정해야 한다. |
+| SPEC-TBD-09 | backup RPO/RTO와 보존 기간 | disaster recovery spec | snapshot 원자성과 checksum 검증을 포함해야 한다. |
+| SPEC-TBD-10 | 지원 client SDK와 최소 version | [MQTT client compatibility v1](../contracts/mqtt-client-compatibility-v1.md) | Profile은 작성됐다. SDK inventory와 자동 호환 시험이 남아 있다. |
+
+미결정 항목 때문에 규범 동작을 시험할 수 없으면 해당 release gate는 열린 상태로 남는다.
+
+## 추적 규칙
+
+- 구현 이슈, test case와 관측성 항목은 관련 PRD ID를 metadata에 포함해야 한다.
+- MQTT compliance test는 PRD ID와 OASIS normative statement ID를 함께 가져야 한다.
+- 각 spec의 수용 시험은 자동화된 test case 이름 또는 compliance matrix 행으로 연결해야 한다.
+- spec의 동작을 바꾸는 결정은 관련 ADR과 PRD를 같은 변경에서 갱신해야 한다.

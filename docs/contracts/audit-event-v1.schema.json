@@ -1,0 +1,138 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:narumq:contract:audit-event:v1",
+  "title": "NaruMQ Audit Event v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "eventId",
+    "occurredAt",
+    "requestId",
+    "producer",
+    "actor",
+    "action",
+    "target",
+    "result",
+    "reason"
+  ],
+  "properties": {
+    "schemaVersion": {
+      "const": "1.0"
+    },
+    "eventId": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128
+    },
+    "occurredAt": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "requestId": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128
+    },
+    "producer": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["component", "instanceId", "version"],
+      "properties": {
+        "component": {
+          "enum": ["BROKER", "ROLLOUT_CONTROLLER"]
+        },
+        "instanceId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        },
+        "version": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        }
+      }
+    },
+    "actor": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["subject"],
+      "properties": {
+        "subject": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        },
+        "tenantId": {
+          "type": ["string", "null"],
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "credentialId": {
+          "type": ["string", "null"],
+          "minLength": 1,
+          "maxLength": 256
+        },
+        "roles": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 64
+          }
+        }
+      }
+    },
+    "action": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9]*(\\.[a-z][a-z0-9_]*)+$",
+      "maxLength": 128
+    },
+    "target": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "id"],
+      "properties": {
+        "type": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9_]*$",
+          "maxLength": 64
+        },
+        "id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 512
+        },
+        "tenantId": {
+          "type": ["string", "null"],
+          "minLength": 1,
+          "maxLength": 128
+        }
+      }
+    },
+    "result": {
+      "enum": ["ALLOWED", "DENIED", "FAILED"]
+    },
+    "reason": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9_]*$",
+      "maxLength": 128
+    },
+    "policyVersion": {
+      "type": ["string", "null"],
+      "maxLength": 128
+    },
+    "sourceIp": {
+      "type": ["string", "null"],
+      "maxLength": 128,
+      "description": "Policy에 따라 masked 또는 pseudonymized value일 수 있다."
+    },
+    "details": {
+      "type": "object",
+      "description": "Secret과 message payload를 포함하지 않는 추가 정보다.",
+      "additionalProperties": true
+    }
+  }
+}

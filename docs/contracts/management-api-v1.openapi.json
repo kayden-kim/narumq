@@ -1,0 +1,970 @@
+{
+  "openapi": "3.1.2",
+  "jsonSchemaDialect": "https://json-schema.org/draft/2020-12/schema",
+  "info": {
+    "title": "NaruMQ Management API",
+    "version": "1.0.0",
+    "description": "NaruMQ cluster, tenant, client와 drain을 관리하는 v1 contract다."
+  },
+  "servers": [
+    {
+      "url": "https://narumq.example.invalid",
+      "description": "배포별 management endpoint로 대체한다."
+    }
+  ],
+  "security": [
+    { "BearerAuth": [] },
+    { "ApiKeyAuth": [] }
+  ],
+  "tags": [
+    { "name": "Health" },
+    { "name": "Cluster" },
+    { "name": "Nodes" },
+    { "name": "Tenants" },
+    { "name": "Clients" },
+    { "name": "Subscriptions" },
+    { "name": "Retained" },
+    { "name": "Metrics" }
+  ],
+  "paths": {
+    "/health/live": {
+      "get": {
+        "tags": ["Health"],
+        "operationId": "getLiveness",
+        "security": [],
+        "responses": {
+          "200": { "$ref": "#/components/responses/HealthResponse" },
+          "503": { "$ref": "#/components/responses/Unavailable" }
+        }
+      }
+    },
+    "/health/ready": {
+      "get": {
+        "tags": ["Health"],
+        "operationId": "getReadiness",
+        "security": [],
+        "responses": {
+          "200": { "$ref": "#/components/responses/HealthResponse" },
+          "503": { "$ref": "#/components/responses/Unavailable" }
+        }
+      }
+    },
+    "/health/startup": {
+      "get": {
+        "tags": ["Health"],
+        "operationId": "getStartup",
+        "security": [],
+        "responses": {
+          "200": { "$ref": "#/components/responses/HealthResponse" },
+          "503": { "$ref": "#/components/responses/Unavailable" }
+        }
+      }
+    },
+    "/health/drain": {
+      "get": {
+        "tags": ["Health"],
+        "operationId": "getDrainCompletion",
+        "security": [],
+        "responses": {
+          "200": { "$ref": "#/components/responses/HealthResponse" },
+          "503": { "$ref": "#/components/responses/Unavailable" }
+        }
+      }
+    },
+    "/api/v1/cluster": {
+      "get": {
+        "tags": ["Cluster"],
+        "operationId": "getCluster",
+        "responses": {
+          "200": {
+            "description": "Cluster summary",
+            "headers": { "X-Request-Id": { "$ref": "#/components/headers/XRequestId" } },
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ClusterEnvelope" } } }
+          },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "403": { "$ref": "#/components/responses/Forbidden" },
+          "503": { "$ref": "#/components/responses/Unavailable" }
+        }
+      }
+    },
+    "/api/v1/nodes": {
+      "get": {
+        "tags": ["Nodes"],
+        "operationId": "listNodes",
+        "parameters": [
+          { "$ref": "#/components/parameters/Cursor" },
+          { "$ref": "#/components/parameters/Limit" },
+          {
+            "name": "state",
+            "in": "query",
+            "required": false,
+            "schema": { "$ref": "#/components/schemas/NodeState" }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Node list",
+            "headers": { "X-Request-Id": { "$ref": "#/components/headers/XRequestId" } },
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/NodeListEnvelope" } } }
+          },
+          "400": { "$ref": "#/components/responses/BadRequest" },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "403": { "$ref": "#/components/responses/Forbidden" }
+        }
+      }
+    },
+    "/api/v1/nodes/{nodeId}": {
+      "parameters": [{ "$ref": "#/components/parameters/NodeId" }],
+      "get": {
+        "tags": ["Nodes"],
+        "operationId": "getNode",
+        "responses": {
+          "200": {
+            "description": "Node detail",
+            "headers": { "X-Request-Id": { "$ref": "#/components/headers/XRequestId" } },
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/NodeEnvelope" } } }
+          },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "403": { "$ref": "#/components/responses/Forbidden" },
+          "404": { "$ref": "#/components/responses/NotFound" }
+        }
+      }
+    },
+    "/api/v1/nodes/{nodeId}/drain": {
+      "parameters": [{ "$ref": "#/components/parameters/NodeId" }],
+      "post": {
+        "tags": ["Nodes"],
+        "operationId": "startNodeDrain",
+        "parameters": [{ "$ref": "#/components/parameters/RequiredIdempotencyKey" }],
+        "requestBody": {
+          "required": true,
+          "content": { "application/json": { "schema": { "$ref": "#/components/schemas/DrainStartRequest" } } }
+        },
+        "responses": {
+          "202": {
+            "description": "Drain accepted or existing operation returned",
+            "headers": { "X-Request-Id": { "$ref": "#/components/headers/XRequestId" } },
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/DrainEnvelope" } } }
+          },
+          "400": { "$ref": "#/components/responses/BadRequest" },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "403": { "$ref": "#/components/responses/Forbidden" },
+          "404": { "$ref": "#/components/responses/NotFound" },
+          "409": { "$ref": "#/components/responses/Conflict" },
+          "503": { "$ref": "#/components/responses/Unavailable" }
+        }
+      },
+      "get": {
+        "tags": ["Nodes"],
+        "operationId": "getNodeDrain",
+        "responses": {
+          "200": {
+            "description": "Drain operation",
+            "headers": { "X-Request-Id": { "$ref": "#/components/headers/XRequestId" } },
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/DrainEnvelope" } } }
+          },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "403": { "$ref": "#/components/responses/Forbidden" },
+          "404": { "$ref": "#/components/responses/NotFound" }
+        }
+      },
+      "delete": {
+        "tags": ["Nodes"],
+        "operationId": "cancelNodeDrain",
+        "parameters": [{ "$ref": "#/components/parameters/OptionalIdempotencyKey" }],
+        "responses": {
+          "200": {
+            "description": "Drain cancelled",
+            "headers": { "X-Request-Id": { "$ref": "#/components/headers/XRequestId" } },
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/DrainEnvelope" } } }
+          },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "403": { "$ref": "#/components/responses/Forbidden" },
+          "404": { "$ref": "#/components/responses/NotFound" },
+          "409": { "$ref": "#/components/responses/Conflict" }
+        }
+      }
+    },
+    "/api/v1/tenants": {
+      "get": {
+        "tags": ["Tenants"],
+        "operationId": "listTenants",
+        "parameters": [
+          { "$ref": "#/components/parameters/Cursor" },
+          { "$ref": "#/components/parameters/Limit" }
+        ],
+        "responses": {
+          "200": {
+            "description": "Tenant list",
+            "headers": { "X-Request-Id": { "$ref": "#/components/headers/XRequestId" } },
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/TenantListEnvelope" } } }
+          },
+          "400": { "$ref": "#/components/responses/BadRequest" },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "403": { "$ref": "#/components/responses/Forbidden" }
+        }
+      },
+      "post": {
+        "tags": ["Tenants"],
+        "operationId": "createTenant",
+        "parameters": [{ "$ref": "#/components/parameters/OptionalIdempotencyKey" }],
+        "requestBody": {
+          "required": true,
+          "content": { "application/json": { "schema": { "$ref": "#/components/schemas/TenantCreateRequest" } } }
+        },
+        "responses": {
+          "201": {
+            "description": "Tenant created",
+            "headers": { "X-Request-Id": { "$ref": "#/components/headers/XRequestId" } },
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/TenantEnvelope" } } }
+          },
+          "400": { "$ref": "#/components/responses/BadRequest" },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "403": { "$ref": "#/components/responses/Forbidden" },
+          "409": { "$ref": "#/components/responses/Conflict" },
+          "422": { "$ref": "#/components/responses/Unprocessable" }
+        }
+      }
+    },
+    "/api/v1/tenants/{tenantId}/quotas": {
+      "parameters": [{ "$ref": "#/components/parameters/TenantId" }],
+      "get": {
+        "tags": ["Tenants"],
+        "operationId": "getTenantQuotas",
+        "responses": {
+          "200": {
+            "description": "Tenant quotas",
+            "headers": { "X-Request-Id": { "$ref": "#/components/headers/XRequestId" } },
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/QuotaEnvelope" } } }
+          },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "403": { "$ref": "#/components/responses/Forbidden" },
+          "404": { "$ref": "#/components/responses/NotFound" }
+        }
+      },
+      "put": {
+        "tags": ["Tenants"],
+        "operationId": "replaceTenantQuotas",
+        "parameters": [{ "$ref": "#/components/parameters/OptionalIdempotencyKey" }],
+        "requestBody": {
+          "required": true,
+          "content": { "application/json": { "schema": { "$ref": "#/components/schemas/QuotaConfig" } } }
+        },
+        "responses": {
+          "200": {
+            "description": "Tenant quotas replaced",
+            "headers": { "X-Request-Id": { "$ref": "#/components/headers/XRequestId" } },
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/QuotaEnvelope" } } }
+          },
+          "400": { "$ref": "#/components/responses/BadRequest" },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "403": { "$ref": "#/components/responses/Forbidden" },
+          "404": { "$ref": "#/components/responses/NotFound" },
+          "409": { "$ref": "#/components/responses/Conflict" },
+          "422": { "$ref": "#/components/responses/Unprocessable" }
+        }
+      }
+    },
+    "/api/v1/tenants/{tenantId}/policies": {
+      "parameters": [{ "$ref": "#/components/parameters/TenantId" }],
+      "get": {
+        "tags": ["Tenants"],
+        "operationId": "getTenantPolicies",
+        "responses": {
+          "200": {
+            "description": "Tenant policies",
+            "headers": { "X-Request-Id": { "$ref": "#/components/headers/XRequestId" } },
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/PolicyEnvelope" } } }
+          },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "403": { "$ref": "#/components/responses/Forbidden" },
+          "404": { "$ref": "#/components/responses/NotFound" }
+        }
+      },
+      "put": {
+        "tags": ["Tenants"],
+        "operationId": "replaceTenantPolicies",
+        "parameters": [{ "$ref": "#/components/parameters/OptionalIdempotencyKey" }],
+        "requestBody": {
+          "required": true,
+          "content": { "application/json": { "schema": { "$ref": "#/components/schemas/PolicySet" } } }
+        },
+        "responses": {
+          "200": {
+            "description": "Tenant policies replaced",
+            "headers": { "X-Request-Id": { "$ref": "#/components/headers/XRequestId" } },
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/PolicyEnvelope" } } }
+          },
+          "400": { "$ref": "#/components/responses/BadRequest" },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "403": { "$ref": "#/components/responses/Forbidden" },
+          "404": { "$ref": "#/components/responses/NotFound" },
+          "409": { "$ref": "#/components/responses/Conflict" },
+          "422": { "$ref": "#/components/responses/Unprocessable" }
+        }
+      }
+    },
+    "/api/v1/clients": {
+      "get": {
+        "tags": ["Clients"],
+        "operationId": "listClients",
+        "parameters": [
+          { "$ref": "#/components/parameters/Cursor" },
+          { "$ref": "#/components/parameters/Limit" },
+          { "name": "tenantId", "in": "query", "required": false, "schema": { "$ref": "#/components/schemas/OpaqueId" } },
+          { "name": "clientIdPrefix", "in": "query", "required": false, "schema": { "type": "string", "minLength": 1, "maxLength": 256 } },
+          { "name": "nodeId", "in": "query", "required": false, "schema": { "$ref": "#/components/schemas/OpaqueId" } },
+          { "name": "protocol", "in": "query", "required": false, "schema": { "$ref": "#/components/schemas/MqttProtocol" } }
+        ],
+        "responses": {
+          "200": {
+            "description": "Client session list",
+            "headers": { "X-Request-Id": { "$ref": "#/components/headers/XRequestId" } },
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ClientListEnvelope" } } }
+          },
+          "400": { "$ref": "#/components/responses/BadRequest" },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "403": { "$ref": "#/components/responses/Forbidden" }
+        }
+      }
+    },
+    "/api/v1/clients/{tenantId}/{clientId}": {
+      "parameters": [
+        { "$ref": "#/components/parameters/TenantId" },
+        { "$ref": "#/components/parameters/ClientId" }
+      ],
+      "get": {
+        "tags": ["Clients"],
+        "operationId": "getClientSession",
+        "responses": {
+          "200": {
+            "description": "Client session detail",
+            "headers": { "X-Request-Id": { "$ref": "#/components/headers/XRequestId" } },
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ClientEnvelope" } } }
+          },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "403": { "$ref": "#/components/responses/Forbidden" },
+          "404": { "$ref": "#/components/responses/NotFound" }
+        }
+      },
+      "delete": {
+        "tags": ["Clients"],
+        "operationId": "disconnectClient",
+        "parameters": [{ "$ref": "#/components/parameters/OptionalIdempotencyKey" }],
+        "responses": {
+          "204": {
+            "description": "Disconnect accepted",
+            "headers": { "X-Request-Id": { "$ref": "#/components/headers/XRequestId" } }
+          },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "403": { "$ref": "#/components/responses/Forbidden" },
+          "404": { "$ref": "#/components/responses/NotFound" },
+          "409": { "$ref": "#/components/responses/Conflict" }
+        }
+      }
+    },
+    "/api/v1/clients/{tenantId}/{clientId}/redirect": {
+      "parameters": [
+        { "$ref": "#/components/parameters/TenantId" },
+        { "$ref": "#/components/parameters/ClientId" }
+      ],
+      "post": {
+        "tags": ["Clients"],
+        "operationId": "redirectClient",
+        "parameters": [{ "$ref": "#/components/parameters/OptionalIdempotencyKey" }],
+        "requestBody": {
+          "required": true,
+          "content": { "application/json": { "schema": { "$ref": "#/components/schemas/RedirectRequest" } } }
+        },
+        "responses": {
+          "202": {
+            "description": "Redirect accepted",
+            "headers": { "X-Request-Id": { "$ref": "#/components/headers/XRequestId" } },
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ClientEnvelope" } } }
+          },
+          "400": { "$ref": "#/components/responses/BadRequest" },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "403": { "$ref": "#/components/responses/Forbidden" },
+          "404": { "$ref": "#/components/responses/NotFound" },
+          "409": { "$ref": "#/components/responses/Conflict" }
+        }
+      }
+    },
+    "/api/v1/subscriptions": {
+      "get": {
+        "tags": ["Subscriptions"],
+        "operationId": "listSubscriptions",
+        "parameters": [
+          { "$ref": "#/components/parameters/Cursor" },
+          { "$ref": "#/components/parameters/Limit" },
+          { "name": "tenantId", "in": "query", "required": true, "schema": { "$ref": "#/components/schemas/OpaqueId" } },
+          { "name": "clientId", "in": "query", "required": false, "schema": { "type": "string", "minLength": 1, "maxLength": 256 } }
+        ],
+        "responses": {
+          "200": {
+            "description": "Subscription list",
+            "headers": { "X-Request-Id": { "$ref": "#/components/headers/XRequestId" } },
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/SubscriptionListEnvelope" } } }
+          },
+          "400": { "$ref": "#/components/responses/BadRequest" },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "403": { "$ref": "#/components/responses/Forbidden" }
+        }
+      }
+    },
+    "/api/v1/retained": {
+      "get": {
+        "tags": ["Retained"],
+        "operationId": "listRetainedMessages",
+        "parameters": [
+          { "$ref": "#/components/parameters/Cursor" },
+          { "$ref": "#/components/parameters/Limit" },
+          { "name": "tenantId", "in": "query", "required": true, "schema": { "$ref": "#/components/schemas/OpaqueId" } },
+          { "name": "topicPrefix", "in": "query", "required": false, "schema": { "type": "string", "minLength": 1, "maxLength": 65535 } }
+        ],
+        "responses": {
+          "200": {
+            "description": "Retained metadata list",
+            "headers": { "X-Request-Id": { "$ref": "#/components/headers/XRequestId" } },
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/RetainedListEnvelope" } } }
+          },
+          "400": { "$ref": "#/components/responses/BadRequest" },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "403": { "$ref": "#/components/responses/Forbidden" }
+        }
+      }
+    },
+    "/api/v1/retained/{topic}": {
+      "parameters": [
+        {
+          "name": "topic",
+          "in": "path",
+          "required": true,
+          "description": "삭제할 exact external topic의 percent-encoded UTF-8 값",
+          "schema": { "type": "string", "minLength": 1, "maxLength": 65535 }
+        },
+        {
+          "name": "tenantId",
+          "in": "query",
+          "required": true,
+          "schema": { "$ref": "#/components/schemas/OpaqueId" }
+        }
+      ],
+      "delete": {
+        "tags": ["Retained"],
+        "operationId": "deleteRetainedMessage",
+        "parameters": [{ "$ref": "#/components/parameters/OptionalIdempotencyKey" }],
+        "responses": {
+          "204": {
+            "description": "Retained message deleted",
+            "headers": { "X-Request-Id": { "$ref": "#/components/headers/XRequestId" } }
+          },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "403": { "$ref": "#/components/responses/Forbidden" },
+          "404": { "$ref": "#/components/responses/NotFound" },
+          "409": { "$ref": "#/components/responses/Conflict" }
+        }
+      }
+    },
+    "/metrics": {
+      "get": {
+        "tags": ["Metrics"],
+        "operationId": "getMetrics",
+        "responses": {
+          "200": {
+            "description": "OpenMetrics text exposition",
+            "content": {
+              "application/openmetrics-text; version=1.0.0; charset=utf-8": {
+                "schema": { "type": "string" }
+              }
+            }
+          },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "403": { "$ref": "#/components/responses/Forbidden" },
+          "503": { "$ref": "#/components/responses/Unavailable" }
+        }
+      }
+    }
+  },
+  "components": {
+    "securitySchemes": {
+      "BearerAuth": {
+        "type": "http",
+        "scheme": "bearer",
+        "bearerFormat": "JWT"
+      },
+      "ApiKeyAuth": {
+        "type": "apiKey",
+        "in": "header",
+        "name": "X-API-Key"
+      }
+    },
+    "headers": {
+      "XRequestId": {
+        "description": "요청, 로그와 audit event를 연결하는 불투명 ID",
+        "schema": { "type": "string", "minLength": 1, "maxLength": 128 }
+      }
+    },
+    "parameters": {
+      "Cursor": {
+        "name": "cursor",
+        "in": "query",
+        "required": false,
+        "schema": { "type": "string", "minLength": 1, "maxLength": 4096 }
+      },
+      "Limit": {
+        "name": "limit",
+        "in": "query",
+        "required": false,
+        "schema": { "type": "integer", "minimum": 1 }
+      },
+      "NodeId": {
+        "name": "nodeId",
+        "in": "path",
+        "required": true,
+        "schema": { "$ref": "#/components/schemas/OpaqueId" }
+      },
+      "TenantId": {
+        "name": "tenantId",
+        "in": "path",
+        "required": true,
+        "schema": { "$ref": "#/components/schemas/OpaqueId" }
+      },
+      "ClientId": {
+        "name": "clientId",
+        "in": "path",
+        "required": true,
+        "schema": { "type": "string", "minLength": 1, "maxLength": 256 }
+      },
+      "RequiredIdempotencyKey": {
+        "name": "Idempotency-Key",
+        "in": "header",
+        "required": true,
+        "schema": { "type": "string", "minLength": 1, "maxLength": 128 }
+      },
+      "OptionalIdempotencyKey": {
+        "name": "Idempotency-Key",
+        "in": "header",
+        "required": false,
+        "schema": { "type": "string", "minLength": 1, "maxLength": 128 }
+      }
+    },
+    "responses": {
+      "HealthResponse": {
+        "description": "Probe succeeded",
+        "headers": { "X-Request-Id": { "$ref": "#/components/headers/XRequestId" } },
+        "content": { "application/json": { "schema": { "$ref": "#/components/schemas/HealthEnvelope" } } }
+      },
+      "BadRequest": {
+        "description": "Invalid request",
+        "headers": { "X-Request-Id": { "$ref": "#/components/headers/XRequestId" } },
+        "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorResponse" } } }
+      },
+      "Unauthorized": {
+        "description": "Authentication required or failed",
+        "headers": { "X-Request-Id": { "$ref": "#/components/headers/XRequestId" } },
+        "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorResponse" } } }
+      },
+      "Forbidden": {
+        "description": "Authenticated principal lacks permission",
+        "headers": { "X-Request-Id": { "$ref": "#/components/headers/XRequestId" } },
+        "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorResponse" } } }
+      },
+      "NotFound": {
+        "description": "Resource not found or hidden by scope",
+        "headers": { "X-Request-Id": { "$ref": "#/components/headers/XRequestId" } },
+        "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorResponse" } } }
+      },
+      "Conflict": {
+        "description": "Version, state or idempotency conflict",
+        "headers": { "X-Request-Id": { "$ref": "#/components/headers/XRequestId" } },
+        "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorResponse" } } }
+      },
+      "Unprocessable": {
+        "description": "Request violates quota or policy constraints",
+        "headers": { "X-Request-Id": { "$ref": "#/components/headers/XRequestId" } },
+        "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorResponse" } } }
+      },
+      "Unavailable": {
+        "description": "Quorum, dependency or readiness unavailable",
+        "headers": { "X-Request-Id": { "$ref": "#/components/headers/XRequestId" } },
+        "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorResponse" } } }
+      }
+    },
+    "schemas": {
+      "OpaqueId": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 128
+      },
+      "Timestamp": {
+        "type": "string",
+        "format": "date-time"
+      },
+      "NodeState": {
+        "enum": ["JOINING", "READY", "DRAINING", "SAFE_TO_STOP"]
+      },
+      "MqttProtocol": {
+        "enum": ["MQTT_3_1_1", "MQTT_5_0"]
+      },
+      "Page": {
+        "type": "object",
+        "additionalProperties": true,
+        "required": ["nextCursor", "hasMore"],
+        "properties": {
+          "nextCursor": { "type": ["string", "null"], "maxLength": 4096 },
+          "hasMore": { "type": "boolean" }
+        }
+      },
+      "ErrorBody": {
+        "type": "object",
+        "additionalProperties": true,
+        "required": ["code", "message", "retryable", "details"],
+        "properties": {
+          "code": { "type": "string", "pattern": "^[a-z][a-z0-9_]*$", "maxLength": 128 },
+          "message": { "type": "string", "minLength": 1, "maxLength": 1024 },
+          "retryable": { "type": "boolean" },
+          "details": { "type": "object", "additionalProperties": true }
+        }
+      },
+      "ErrorResponse": {
+        "type": "object",
+        "additionalProperties": true,
+        "required": ["error", "requestId"],
+        "properties": {
+          "error": { "$ref": "#/components/schemas/ErrorBody" },
+          "requestId": { "type": "string", "minLength": 1, "maxLength": 128 }
+        }
+      },
+      "HealthData": {
+        "type": "object",
+        "additionalProperties": true,
+        "required": ["status", "reason", "observedAt"],
+        "properties": {
+          "status": { "enum": ["UP", "STARTING", "NOT_READY", "SAFE_TO_STOP", "DOWN"] },
+          "reason": { "type": ["string", "null"], "maxLength": 256 },
+          "observedAt": { "$ref": "#/components/schemas/Timestamp" }
+        }
+      },
+      "HealthEnvelope": {
+        "type": "object",
+        "additionalProperties": true,
+        "required": ["data"],
+        "properties": { "data": { "$ref": "#/components/schemas/HealthData" } }
+      },
+      "ClusterData": {
+        "type": "object",
+        "additionalProperties": true,
+        "required": ["clusterId", "releaseVersion", "memberCount", "quorumSize", "quorumAvailable", "leaderNodeId", "nodesByState", "underReplicated", "connectionCount", "sessionCount", "subscriptionCount"],
+        "properties": {
+          "clusterId": { "$ref": "#/components/schemas/OpaqueId" },
+          "releaseVersion": { "type": "string", "minLength": 1, "maxLength": 64 },
+          "memberCount": { "type": "integer", "minimum": 0 },
+          "quorumSize": { "type": "integer", "minimum": 1 },
+          "quorumAvailable": { "type": "boolean" },
+          "leaderNodeId": { "oneOf": [{ "$ref": "#/components/schemas/OpaqueId" }, { "type": "null" }] },
+          "nodesByState": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["joining", "ready", "draining", "safeToStop"],
+            "properties": {
+              "joining": { "type": "integer", "minimum": 0 },
+              "ready": { "type": "integer", "minimum": 0 },
+              "draining": { "type": "integer", "minimum": 0 },
+              "safeToStop": { "type": "integer", "minimum": 0 }
+            }
+          },
+          "underReplicated": { "type": "integer", "minimum": 0 },
+          "connectionCount": { "type": "integer", "minimum": 0 },
+          "sessionCount": { "type": "integer", "minimum": 0 },
+          "subscriptionCount": { "type": "integer", "minimum": 0 }
+        }
+      },
+      "ClusterEnvelope": {
+        "type": "object",
+        "additionalProperties": true,
+        "required": ["data"],
+        "properties": { "data": { "$ref": "#/components/schemas/ClusterData" } }
+      },
+      "NodeData": {
+        "type": "object",
+        "additionalProperties": true,
+        "required": ["nodeId", "version", "uptimeMs", "state", "ready", "readinessReason", "role", "lastAppliedIndex", "connectionCount", "storagePressure"],
+        "properties": {
+          "nodeId": { "$ref": "#/components/schemas/OpaqueId" },
+          "version": { "type": "string", "minLength": 1, "maxLength": 64 },
+          "uptimeMs": { "type": "integer", "minimum": 0 },
+          "state": { "$ref": "#/components/schemas/NodeState" },
+          "ready": { "type": "boolean" },
+          "readinessReason": { "type": ["string", "null"], "maxLength": 256 },
+          "role": { "enum": ["LEADER", "FOLLOWER", "LEARNER"] },
+          "lastAppliedIndex": { "type": "integer", "minimum": 0 },
+          "connectionCount": { "type": "integer", "minimum": 0 },
+          "storagePressure": { "type": "boolean" }
+        }
+      },
+      "NodeEnvelope": {
+        "type": "object",
+        "additionalProperties": true,
+        "required": ["data"],
+        "properties": { "data": { "$ref": "#/components/schemas/NodeData" } }
+      },
+      "NodeListEnvelope": {
+        "type": "object",
+        "additionalProperties": true,
+        "required": ["data", "page"],
+        "properties": {
+          "data": { "type": "array", "items": { "$ref": "#/components/schemas/NodeData" } },
+          "page": { "$ref": "#/components/schemas/Page" }
+        }
+      },
+      "DrainStartRequest": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["serverReference", "connectionRatePerSecond", "loadBalancerPropagationDelayMs", "timeoutMs"],
+        "properties": {
+          "serverReference": { "type": "string", "pattern": "^[A-Za-z0-9.-]+:(?:[1-9][0-9]{0,3}|[1-5][0-9]{4}|6[0-4][0-9]{3}|65[0-4][0-9]{2}|655[0-2][0-9]|6553[0-5])$", "maxLength": 260 },
+          "connectionRatePerSecond": { "type": "integer", "minimum": 1 },
+          "loadBalancerPropagationDelayMs": { "type": "integer", "minimum": 0 },
+          "timeoutMs": { "type": "integer", "minimum": 1 }
+        }
+      },
+      "DrainFailure": {
+        "type": "object",
+        "additionalProperties": true,
+        "required": ["code", "message", "retryable"],
+        "properties": {
+          "code": { "type": "string", "pattern": "^[a-z][a-z0-9_]*$", "maxLength": 128 },
+          "message": { "type": "string", "minLength": 1, "maxLength": 1024 },
+          "retryable": { "type": "boolean" }
+        }
+      },
+      "DrainOperation": {
+        "type": "object",
+        "additionalProperties": true,
+        "required": ["operationId", "nodeId", "state", "phase", "startedAt", "deadlineAt", "connections", "sessions", "replication", "safeToStop", "failure"],
+        "properties": {
+          "operationId": { "$ref": "#/components/schemas/OpaqueId" },
+          "nodeId": { "$ref": "#/components/schemas/OpaqueId" },
+          "state": { "$ref": "#/components/schemas/NodeState" },
+          "phase": { "enum": ["EXCLUDING_TRAFFIC", "WAITING_FOR_LB", "CHECKPOINTING", "TRANSFERRING_SESSIONS", "VERIFYING_BARRIER", "COMPLETED", "FAILED", "CANCELLED"] },
+          "startedAt": { "$ref": "#/components/schemas/Timestamp" },
+          "deadlineAt": { "$ref": "#/components/schemas/Timestamp" },
+          "connections": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["initial", "remaining"],
+            "properties": {
+              "initial": { "type": "integer", "minimum": 0 },
+              "remaining": { "type": "integer", "minimum": 0 }
+            }
+          },
+          "sessions": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["checkpointed", "takenOver", "failed"],
+            "properties": {
+              "checkpointed": { "type": "integer", "minimum": 0 },
+              "takenOver": { "type": "integer", "minimum": 0 },
+              "failed": { "type": "integer", "minimum": 0 }
+            }
+          },
+          "replication": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["pendingWal", "underReplicated"],
+            "properties": {
+              "pendingWal": { "type": "integer", "minimum": 0 },
+              "underReplicated": { "type": "integer", "minimum": 0 }
+            }
+          },
+          "safeToStop": { "type": "boolean" },
+          "failure": { "oneOf": [{ "$ref": "#/components/schemas/DrainFailure" }, { "type": "null" }] }
+        }
+      },
+      "DrainEnvelope": {
+        "type": "object",
+        "additionalProperties": true,
+        "required": ["data"],
+        "properties": { "data": { "$ref": "#/components/schemas/DrainOperation" } }
+      },
+      "TenantData": {
+        "type": "object",
+        "additionalProperties": true,
+        "required": ["tenantId", "displayName", "status", "version", "createdAt"],
+        "properties": {
+          "tenantId": { "$ref": "#/components/schemas/OpaqueId" },
+          "displayName": { "type": ["string", "null"], "maxLength": 256 },
+          "status": { "enum": ["ACTIVE", "SUSPENDED"] },
+          "version": { "type": "integer", "minimum": 1 },
+          "createdAt": { "$ref": "#/components/schemas/Timestamp" }
+        }
+      },
+      "TenantCreateRequest": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["tenantId"],
+        "properties": {
+          "tenantId": { "$ref": "#/components/schemas/OpaqueId" },
+          "displayName": { "type": ["string", "null"], "maxLength": 256 }
+        }
+      },
+      "TenantEnvelope": {
+        "type": "object",
+        "additionalProperties": true,
+        "required": ["data"],
+        "properties": { "data": { "$ref": "#/components/schemas/TenantData" } }
+      },
+      "TenantListEnvelope": {
+        "type": "object",
+        "additionalProperties": true,
+        "required": ["data", "page"],
+        "properties": {
+          "data": { "type": "array", "items": { "$ref": "#/components/schemas/TenantData" } },
+          "page": { "$ref": "#/components/schemas/Page" }
+        }
+      },
+      "QuotaConfig": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["version", "maxConnections", "maxSessions", "maxSubscriptions", "messageRatePerSecond", "byteRatePerSecond", "maxPayloadBytes", "offlineQueueMessages", "offlineQueueBytes", "retainedBytes", "storageBytes"],
+        "properties": {
+          "version": { "type": "integer", "minimum": 1 },
+          "maxConnections": { "type": "integer", "minimum": 0 },
+          "maxSessions": { "type": "integer", "minimum": 0 },
+          "maxSubscriptions": { "type": "integer", "minimum": 0 },
+          "messageRatePerSecond": { "type": "integer", "minimum": 0 },
+          "byteRatePerSecond": { "type": "integer", "minimum": 0 },
+          "maxPayloadBytes": { "type": "integer", "minimum": 0 },
+          "offlineQueueMessages": { "type": "integer", "minimum": 0 },
+          "offlineQueueBytes": { "type": "integer", "minimum": 0 },
+          "retainedBytes": { "type": "integer", "minimum": 0 },
+          "storageBytes": { "type": "integer", "minimum": 0 }
+        }
+      },
+      "QuotaEnvelope": {
+        "type": "object",
+        "additionalProperties": true,
+        "required": ["data"],
+        "properties": { "data": { "$ref": "#/components/schemas/QuotaConfig" } }
+      },
+      "PolicyRule": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "effect", "actions", "topicFilter"],
+        "properties": {
+          "id": { "$ref": "#/components/schemas/OpaqueId" },
+          "effect": { "enum": ["ALLOW", "DENY"] },
+          "actions": {
+            "type": "array",
+            "minItems": 1,
+            "uniqueItems": true,
+            "items": { "enum": ["PUBLISH", "SUBSCRIBE", "UNSUBSCRIBE", "WILL"] }
+          },
+          "topicFilter": { "type": "string", "minLength": 1, "maxLength": 65535 },
+          "clientIdPattern": { "type": ["string", "null"], "maxLength": 256 },
+          "subjectPattern": { "type": ["string", "null"], "maxLength": 256 }
+        }
+      },
+      "PolicySet": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["version", "defaultEffect", "rules"],
+        "properties": {
+          "version": { "type": "integer", "minimum": 1 },
+          "defaultEffect": { "const": "DENY" },
+          "rules": { "type": "array", "items": { "$ref": "#/components/schemas/PolicyRule" } }
+        }
+      },
+      "PolicyEnvelope": {
+        "type": "object",
+        "additionalProperties": true,
+        "required": ["data"],
+        "properties": { "data": { "$ref": "#/components/schemas/PolicySet" } }
+      },
+      "ClientSession": {
+        "type": "object",
+        "additionalProperties": true,
+        "required": ["tenantId", "clientId", "nodeId", "protocol", "connected", "sessionPresent", "expiryAt", "inflightCount", "offlineQueueCount", "maskedIdentity"],
+        "properties": {
+          "tenantId": { "$ref": "#/components/schemas/OpaqueId" },
+          "clientId": { "type": "string", "minLength": 1, "maxLength": 256 },
+          "nodeId": { "oneOf": [{ "$ref": "#/components/schemas/OpaqueId" }, { "type": "null" }] },
+          "protocol": { "$ref": "#/components/schemas/MqttProtocol" },
+          "connected": { "type": "boolean" },
+          "sessionPresent": { "type": "boolean" },
+          "expiryAt": { "oneOf": [{ "$ref": "#/components/schemas/Timestamp" }, { "type": "null" }] },
+          "inflightCount": { "type": "integer", "minimum": 0 },
+          "offlineQueueCount": { "type": "integer", "minimum": 0 },
+          "maskedIdentity": { "type": ["string", "null"], "maxLength": 256 }
+        }
+      },
+      "ClientEnvelope": {
+        "type": "object",
+        "additionalProperties": true,
+        "required": ["data"],
+        "properties": { "data": { "$ref": "#/components/schemas/ClientSession" } }
+      },
+      "ClientListEnvelope": {
+        "type": "object",
+        "additionalProperties": true,
+        "required": ["data", "page"],
+        "properties": {
+          "data": { "type": "array", "items": { "$ref": "#/components/schemas/ClientSession" } },
+          "page": { "$ref": "#/components/schemas/Page" }
+        }
+      },
+      "RedirectRequest": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["serverReference"],
+        "properties": {
+          "serverReference": { "type": "string", "pattern": "^[A-Za-z0-9.-]+:(?:[1-9][0-9]{0,3}|[1-5][0-9]{4}|6[0-4][0-9]{3}|65[0-4][0-9]{2}|655[0-2][0-9]|6553[0-5])$", "maxLength": 260 }
+        }
+      },
+      "SubscriptionData": {
+        "type": "object",
+        "additionalProperties": true,
+        "required": ["tenantId", "clientId", "topicFilter", "qos", "sharedGroup"],
+        "properties": {
+          "tenantId": { "$ref": "#/components/schemas/OpaqueId" },
+          "clientId": { "type": "string", "minLength": 1, "maxLength": 256 },
+          "topicFilter": { "type": "string", "minLength": 1, "maxLength": 65535 },
+          "qos": { "type": "integer", "minimum": 0, "maximum": 2 },
+          "sharedGroup": { "type": ["string", "null"], "maxLength": 256 }
+        }
+      },
+      "SubscriptionListEnvelope": {
+        "type": "object",
+        "additionalProperties": true,
+        "required": ["data", "page"],
+        "properties": {
+          "data": { "type": "array", "items": { "$ref": "#/components/schemas/SubscriptionData" } },
+          "page": { "$ref": "#/components/schemas/Page" }
+        }
+      },
+      "RetainedData": {
+        "type": "object",
+        "additionalProperties": true,
+        "required": ["tenantId", "topic", "qos", "payloadBytes", "updatedAt", "expiresAt"],
+        "properties": {
+          "tenantId": { "$ref": "#/components/schemas/OpaqueId" },
+          "topic": { "type": "string", "minLength": 1, "maxLength": 65535 },
+          "qos": { "type": "integer", "minimum": 0, "maximum": 2 },
+          "payloadBytes": { "type": "integer", "minimum": 0 },
+          "updatedAt": { "$ref": "#/components/schemas/Timestamp" },
+          "expiresAt": { "oneOf": [{ "$ref": "#/components/schemas/Timestamp" }, { "type": "null" }] }
+        }
+      },
+      "RetainedListEnvelope": {
+        "type": "object",
+        "additionalProperties": true,
+        "required": ["data", "page"],
+        "properties": {
+          "data": { "type": "array", "items": { "$ref": "#/components/schemas/RetainedData" } },
+          "page": { "$ref": "#/components/schemas/Page" }
+        }
+      }
+    }
+  }
+}
