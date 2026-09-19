@@ -179,7 +179,7 @@ NaruMQ가 말하는 “메시지 유실 없음”은 MQTT hop별 조건으로 �
 
 보장 범위는 publisher와 broker, broker와 subscriber 사이의 MQTT protocol hop까지다. subscriber가 ACK한 메시지를 애플리케이션 DB에 반영하는 것은 NaruMQ의 책임이 아니다.
 
-기술 배경은 [MQTT 전달 보장과 세션](../explainers/mqtt-delivery-guarantees.md), 분산 복구 원리는 [세션 소유권과 fencing](../explainers/session-ownership-and-fencing.md)을 참고한다.
+기술 배경은 [MQTT 전달 보장과 QoS·Session·Will protocol 흐름](../explainers/mqtt-delivery-guarantees-and-protocol-flows.md), 분산 복구 원리는 [세션 소유권과 fencing](../explainers/session-ownership-and-fencing.md)을 참고한다.
 
 ## 9. 기능 요구사항
 

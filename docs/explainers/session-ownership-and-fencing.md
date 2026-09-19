@@ -7,7 +7,7 @@
 | 항목 | 값 |
 | --- | --- |
 | 기준 독자 | Go 기초와 HTTP/TCP 통신은 알지만, 분산 시스템의 Split-Brain 문제와 Fencing Token 개념이 생소한 주니어 개발자 |
-| 선수 문서 | [MQTT 전달 보장과 세션](mqtt-delivery-guarantees.md) |
+| 선수 문서 | [MQTT 전달 보장과 QoS·Session·Will protocol 흐름](mqtt-delivery-guarantees-and-protocol-flows.md) |
 | 관련 기준 문서 | [PRD](../requirements/PRD.md) (CLU-04~10, DEP-08~10), [Cluster session spec](../specs/cluster-session-and-delivery.md), [ADR-0002](../decisions/ADR-0002-cluster-consensus-library.md), [ADR-0004](../decisions/ADR-0004-session-ownership-and-fencing.md), [Cluster architecture](../architectures/cluster-architecture.md) |
 | 대상 version·확인일 | Draft 0.5 |
 

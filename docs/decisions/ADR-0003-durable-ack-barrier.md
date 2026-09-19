@@ -11,7 +11,7 @@
 | 관련 Architecture | [Cluster architecture](../architectures/cluster-architecture.md), [EKS on EC2 deployment](../architectures/eks-ec2-deployment.md) |
 | 관련 결정 | [ADR-0002](ADR-0002-cluster-consensus-library.md) |
 | 관련 Contract | Replicated state encoding v1 예정. Storage·RPC 결정 전에는 작성하지 않는다. |
-| 관련 해설 | [MQTT 전달 보장과 세션](../explainers/mqtt-delivery-guarantees.md), [EKS 고가용성과 장애 도메인](../explainers/eks-ha-failure-domains.md) |
+| 관련 해설 | [MQTT 전달 보장과 QoS·Session·Will protocol 흐름](../explainers/mqtt-delivery-guarantees-and-protocol-flows.md), [EKS 고가용성과 장애 도메인](../explainers/eks-ha-failure-domains.md) |
 
 ## 1. 결정
 

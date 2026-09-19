@@ -5,7 +5,7 @@ Topic Name은 publisher가 메시지를 보내는 정확한 주소이고 Topic F
 | 항목 | 값 |
 | --- | --- |
 | 기준 독자 | MQTT 토픽 발행/구독 기초는 알지만 와일드카드 매칭 트리, 보존 메시지(Retained) 및 공유 구독($share) 라우팅 원리가 생소한 주니어 개발자 |
-| 선수 문서 | [MQTT QoS 0·1·2와 Will protocol 흐름](mqtt-qos-and-will-protocol-flows.md) |
+| 선수 문서 | [MQTT 전달 보장과 QoS·Session·Will protocol 흐름](mqtt-delivery-guarantees-and-protocol-flows.md) |
 | 관련 기준 문서 | [PRD](../requirements/PRD.md) (MQTT-06~10), [MQTT protocol과 session 스펙](../specs/mqtt-protocol-and-session.md), [MQTT client compatibility v1](../contracts/mqtt-client-compatibility-v1.md) |
 | 대상 version·확인일 | MQTT 3.1.1 / MQTT 5.0 |
 

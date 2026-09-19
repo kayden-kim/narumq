@@ -139,7 +139,7 @@ MQTT 3.1.1에는 Will Delay와 server redirect가 없다. 따라서 Will을 사�
 
 ## NaruMQ에서 찾을 위치
 
-규범적 계약은 [PRD](../requirements/PRD.md)의 DEP-01~23과 CLIENT-03~09를 따른다. Logical-to-physical 배치는 [EKS on EC2 deployment architecture](../architectures/eks-ec2-deployment.md), Will의 등록·발행 상태 전이는 [MQTT QoS 0·1·2와 Will protocol 흐름](mqtt-qos-and-will-protocol-flows.md), takeover의 fencing 원리는 [세션 소유권과 fencing](session-ownership-and-fencing.md), 초기 AWS 배포 선택은 [ADR-0007: AWS production deployment platform](../decisions/ADR-0007-aws-production-deployment-platform.md) (Proposed)을 참고한다.
+규범적 계약은 [PRD](../requirements/PRD.md)의 DEP-01~23과 CLIENT-03~09를 따른다. Logical-to-physical 배치는 [EKS on EC2 deployment architecture](../architectures/eks-ec2-deployment.md), Will의 등록·발행 상태 전이는 [MQTT 전달 보장과 QoS·Session·Will protocol 흐름](mqtt-delivery-guarantees-and-protocol-flows.md), takeover의 fencing 원리는 [세션 소유권과 fencing](session-ownership-and-fencing.md), 초기 AWS 배포 선택은 [ADR-0007: AWS production deployment platform](../decisions/ADR-0007-aws-production-deployment-platform.md) (Proposed)을 참고한다.
 
 ## 확인 질문
 

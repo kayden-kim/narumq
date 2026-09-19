@@ -5,7 +5,7 @@ Raft의 커밋(Commit)은 클러스터 과반수가 로그의 순서를 영구�
 | 항목 | 값 |
 | --- | --- |
 | 기준 독자 | Raft 분산 합의 개념을 처음 접하거나, 5단계 로그 상태(Proposed~Applied)와 클라이언트 Durable ACK 반환 시점 구분이 어려운 주니어 개발자 |
-| 선수 문서 | [MQTT 전달 보장과 세션](mqtt-delivery-guarantees.md) |
+| 선수 문서 | [MQTT 전달 보장과 QoS·Session·Will protocol 흐름](mqtt-delivery-guarantees-and-protocol-flows.md) |
 | 관련 기준 문서 | [PRD](../requirements/PRD.md) (CLU-01~12), [Cluster session spec](../specs/cluster-session-and-delivery.md), [ADR-0002: Cluster consensus library](../decisions/ADR-0002-cluster-consensus-library.md) (Proposed), [ADR-0003: Durable ACK barrier](../decisions/ADR-0003-durable-ack-barrier.md) (Proposed) |
 | 대상 version·확인일 | Draft 0.5 |
 
@@ -167,7 +167,7 @@ NaruMQ가 채택을 검토 중인 `etcd/raft`([ADR-0002](../decisions/ADR-0002-c
 - **아키텍처 결정**:
   - [ADR-0002: Cluster consensus library](../decisions/ADR-0002-cluster-consensus-library.md) (Proposed)
   - [ADR-0003: Durable ACK barrier](../decisions/ADR-0003-durable-ack-barrier.md) (Proposed)
-- **관련 기술 해설**: [MQTT 전달 보장과 세션](mqtt-delivery-guarantees.md), [WAL, snapshot과 crash recovery](wal-snapshot-and-crash-recovery.md)
+- **관련 기술 해설**: [MQTT 전달 보장과 QoS·Session·Will protocol 흐름](mqtt-delivery-guarantees-and-protocol-flows.md), [WAL, snapshot과 crash recovery](wal-snapshot-and-crash-recovery.md)
 
 ---
 

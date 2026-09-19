@@ -641,6 +641,37 @@ dst = append(dst, body...)</code></pre>
         </article>
       </div>
     </section>
+    <section class="section" id="explainers">
+      <div class="section-label">12 · Explainers</div>
+      <h2>더 읽어볼 Explainer</h2>
+      <div class="grid two">
+        <article class="card accent">
+          <h3><a href="../explainers/mqtt-delivery-guarantees-and-protocol-flows.md">MQTT 전달 보장과 QoS·Session·Will protocol 흐름</a></h3>
+          <p>이 artifact의 QoS ACK state machine, Session Expiry와 현재 구현 범위가 실제 MQTT 전달 보장과 어떻게 연결되는지 설명합니다.</p>
+        </article>
+        <article class="card">
+          <h3><a href="../explainers/mqtt-history-and-version-evolution.md">MQTT 역사와 버전 진화</a></h3>
+          <p>MQIsdp, MQTT 3.1.1과 MQTT 5.0의 차이를 읽고 이 artifact의 version·property 지원 범위를 이해합니다.</p>
+        </article>
+        <article class="card">
+          <h3><a href="../explainers/broker-core-boundaries.md">Broker core의 계층 경계</a></h3>
+          <p>packet codec과 순수 domain policy가 application·adapter·storage와 분리되는 이유를 확인합니다.</p>
+        </article>
+        <article class="card">
+          <h3><a href="../explainers/session-ownership-and-fencing.md">세션 소유권과 fencing</a></h3>
+          <p>Session resume와 multi-node takeover에서 한 세션의 유효한 owner를 어떻게 판정하는지 설명합니다.</p>
+        </article>
+        <article class="card">
+          <h3><a href="../explainers/raft-quorum-and-durable-ack.md">Raft quorum과 durable ACK</a></h3>
+          <p>이 artifact가 아직 제공하지 않는 WAL·replica·quorum ACK 경계를 분산 저장 관점에서 이어서 읽습니다.</p>
+        </article>
+        <article class="card">
+          <h3><a href="../explainers/go-buffer-ownership-and-zero-copy.md">Go buffer ownership와 zero-copy</a></h3>
+          <p>Decoder input과 Encoder destination ownership 계약이 왜 payload lifetime과 allocation을 좌우하는지 설명합니다.</p>
+        </article>
+      </div>
+    </section>
+
   </main>
 
   <footer class="wrap">
@@ -659,6 +690,10 @@ dst = append(dst, body...)</code></pre>
       <a href="../architectures/broker-core.md">broker-core.md</a>
       <a href="../architectures/project-structure.md">project-structure.md</a>
       <a href="../specs/mqtt-protocol-and-session.md">mqtt-protocol-and-session.md</a>
+    </div>
+    <strong style="color: var(--text)">통합 Explainer</strong>
+    <div class="links">
+      <a href="../explainers/mqtt-delivery-guarantees-and-protocol-flows.md">전달 보장·QoS·Session·Will protocol 흐름</a>
     </div>
   </footer>
 </body>

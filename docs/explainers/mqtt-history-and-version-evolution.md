@@ -5,7 +5,7 @@ MQTT는 1999년 위성 기반 원격 송유관 감시(SCADA)를 위해 탄생한
 | 항목 | 값 |
 | --- | --- |
 | 기준 독자 | Go 기초와 네트워크 통신 기초를 알지만 MQTT 프로토콜의 역사적 배경과 패킷 헤더 구조에 익숙하지 않은 주니어 개발자 |
-| 선수 문서 | [MQTT 전달 보장과 세션](mqtt-delivery-guarantees.md) |
+| 선수 문서 | [MQTT 전달 보장과 QoS·Session·Will protocol 흐름](mqtt-delivery-guarantees-and-protocol-flows.md) |
 | 관련 기준 문서 | [PRD](../requirements/PRD.md) (MQTT-01, MQTT-13), [MQTT protocol과 session spec](../specs/mqtt-protocol-and-session.md) |
 | 대상 version·확인일 | MQTT 3.1 (2010), MQTT 3.1.1 (2014), MQTT 5.0 (2019), 2026-09-18 |
 
@@ -154,7 +154,7 @@ NaruMQ 제품 요구사항 정의서([PRD](../requirements/PRD.md) 제5절 비�
 - **요구사항 정의**: `docs/requirements/PRD.md` (섹션 9.1 `MQTT-01`, `MQTT-13`)
 - **프로토콜 스펙**: `docs/specs/mqtt-protocol-and-session.md` (섹션 2.1 `Protocol version`)
 - **호환성 계약**: `docs/contracts/mqtt-client-compatibility-v1.md`
-- **관련 기술 해설**: `docs/explainers/mqtt-delivery-guarantees.md`
+- **관련 기술 해설**: `docs/explainers/mqtt-delivery-guarantees-and-protocol-flows.md`
 
 ---
 
