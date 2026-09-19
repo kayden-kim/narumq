@@ -259,6 +259,11 @@ packet_fuzz_test.go
 ```
 
 - Test file은 `_test.go`, platform suffix는 Go build convention을 따른다.
+- Human-written unit·acceptance test의 기본 이름은 대상 production file의 snake case prefix를 따른다. 예를 들어 `framing.go`는 `framing_test.go`, `decoder.go`는 `decoder_test.go`를 사용한다.
+- Fuzz와 benchmark는 같은 prefix 뒤에 검증 종류를 붙인다: `decoder_fuzz_test.go`, `encoder_benchmark_test.go`.
+- 여러 production component를 함께 검증하는 경우에는 `packet`처럼 domain aggregate prefix를 사용한다: `packet_edge_test.go`, `packet_fuzz_test.go`. `coverage_test.go`, `misc_test.go`처럼 측정 방법이나 모호한 목적을 파일 이름으로 사용하지 않는다.
+- 공통 test helper도 가장 가까운 production component prefix와 `_helpers_test.go` suffix를 결합한다: `packet_helpers_test.go`. 여러 component에 걸쳐 재사용되는 경우에만 `test_helpers_test.go`를 사용한다. Helper 파일은 production behavior를 검증하는 파일과 분리한다.
+- 파일 prefix는 해당 파일의 주된 production 책임을 설명하면 충분하다. 모든 test function이 하나의 source file에 일대일로 대응할 필요는 없다.
 - Generated file은 generator가 정한 이름과 `// Code generated ... DO NOT EDIT.` header를 사용한다.
 - 한 file에 하나의 class를 강제하지 않는다. 함께 변경되는 작은 type과 function은 같은 file에 둘 수 있다.
 - File이 여러 독립 책임을 가지면 domain 의미를 기준으로 나눈다.
@@ -328,6 +333,7 @@ func TestDefaultDrainService_Start_RejectsUnknownBarrier(t *testing.T) {
 	// arrange, act, assert
 }
 ```
+- Coverage·conformance command가 `-run` 정규식을 사용하면 파일 이름이 아니라 test function 이름을 기준으로 선택한다. 파일을 rename하거나 분리해도 대상·동작을 드러내는 기존 test 이름과 requirement metadata를 유지하고, gate 정규식은 package 책임에 맞게 관리한다.
 
 - Failure message에는 입력, 기대값과 실제값을 포함한다.
 - 시간, random, network, storage와 consensus는 port와 fake로 제어한다.

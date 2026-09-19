@@ -1,0 +1,34 @@
+package mqtt
+
+// ProtocolVersion identifies the MQTT protocol level used by a packet.
+type ProtocolVersion byte
+
+const (
+	// ProtocolUnknown means that the protocol must be discovered from CONNECT.
+	ProtocolUnknown ProtocolVersion = 0
+	// ProtocolV311 identifies MQTT 3.1.1, protocol level 4.
+	ProtocolV311 ProtocolVersion = 4
+	// ProtocolV5 identifies MQTT 5.0, protocol level 5.
+	ProtocolV5 ProtocolVersion = 5
+)
+
+// PacketType identifies the MQTT control packet family.
+type PacketType byte
+
+const (
+	// PacketTypeConnect identifies a CONNECT packet.
+	PacketTypeConnect PacketType = 1
+	// PacketTypeConnAck identifies a CONNACK packet.
+	PacketTypeConnAck PacketType = 2
+	// PacketTypePublish identifies a PUBLISH packet.
+	PacketTypePublish PacketType = 3
+)
+
+// Packet is the sealed domain representation of an MQTT control packet.
+//
+// The unexported methods intentionally prevent adapters from implementing a
+// packet that the codec does not know how to validate and encode.
+type Packet interface {
+	packetType() PacketType
+	packetVersion() ProtocolVersion
+}

@@ -10,6 +10,7 @@
 | `architectures/` | 구성요소와 경계는 어떻게 연결되는가? | `architecture-view.template.md` |
 | `decisions/` | 왜 이 선택을 했는가? | `ADR-0000-template.md` |
 | `explainers/` | 핵심 기술과 원리는 어떻게 작동하는가? | `explainer.template.md` |
+| `artifacts/` | 구현과 스펙을 시각 자료로 어떻게 이해하는가? | 요청별 HTML artifact |
 | `conventions/` | 소스와 저장소 산출물을 어떤 규칙으로 작성하는가? | `convention.template.md` |
 | `how-to/` | 특정 작업을 안전하게 어떻게 수행하는가? | `how-to.template.md` |
 
