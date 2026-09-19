@@ -1,0 +1,16 @@
+{
+  "profileId": "bp01-smoke",
+  "purpose": "smoke",
+  "seed": 20260919,
+  "topic": "bp01/smoke",
+  "payloadBytes": 64,
+  "publishRatePerSecond": 20,
+  "warmupMillis": 100,
+  "measureMillis": 500,
+  "drainMillis": 1000,
+  "maxSamples": 32,
+  "brokerCPUs": 1,
+  "brokerMemoryBytes": 536870912,
+  "generatorCPUs": 1,
+  "generatorMemoryBytes": 268435456
+}

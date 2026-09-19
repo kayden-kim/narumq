@@ -4,9 +4,9 @@ NaruMQ source tree는 MQTT·session·routing·delivery·tenancy·security·clust
 
 | 항목 | 값 |
 | --- | --- |
-| 관점 상태 | Current Phase 0 gate 4 / single-node ingress와 deterministic 3-node consensus-local-recovery spike |
+| 관점 상태 | Current Phase 0 gate 4 / single-node ingress와 deterministic 3-node consensus-local-recovery spike; BP-01 공통 하네스 준비 |
 | 문서 상태 | Draft |
-| 구현 증거 | `cmd/narumq`, `internal/domain/mqtt`, `internal/domain/session`, `internal/domain/routing`, `internal/application/connect`, `internal/application/publish`, `internal/application/subscribe`, `internal/application/ports/deliveryqueue`, `internal/adapters/tcp`, `internal/adapters/memory/deliveryqueue`, `internal/adapters/memory/sessionstore`, `internal/adapters/clock`, `internal/adapters/raft`, `tests/integration/raft_consensus_test.go`와 각 package test |
+| 구현 증거 | `cmd/narumq`, `internal/domain/mqtt`, `internal/domain/session`, `internal/domain/routing`, `internal/application/connect`, `internal/application/publish`, `internal/application/subscribe`, `internal/application/ports/deliveryqueue`, `internal/adapters/tcp`, `internal/adapters/memory/deliveryqueue`, `internal/adapters/memory/sessionstore`, `internal/adapters/clock`, `internal/adapters/raft`, `tests/integration/raft_consensus_test.go`, `tests/benchmark/bp01`와 각 package test |
 | 범위 | Repository root와 Go package directory 배치 및 현재 source dependency |
 | 관련 요구사항 | [PRD](../requirements/PRD.md) NFR-11~NFR-15, TEST-01~TEST-17, DEP-19~DEP-23 |
 | 관련 결정 | [ADR-0001](../decisions/ADR-0001-core-implementation-language.md) Accepted |
@@ -75,6 +75,7 @@ NaruMQ source tree는 MQTT·session·routing·delivery·tenancy·security·clust
 │   ├── e2e/
 │   ├── chaos/
 │   └── benchmark/
+│       └── bp01/
 ├── tools/
 ├── docs/
 ├── go.mod
@@ -86,6 +87,8 @@ NaruMQ source tree는 MQTT·session·routing·delivery·tenancy·security·clust
 `application/publish`, `application/subscribe`, `application/ports/deliveryqueue`,
 `adapters/tcp`, `adapters/memory/deliveryqueue`, `adapters/memory/sessionstore`,
 `adapters/clock`, `adapters/raft`와 `tests/integration/raft_consensus_test.go`다.
+`tests/benchmark/bp01`은 product runtime이 import하지 않는 외부 workload·orchestration 도구다.
+Profile, MQTT runner, result artifact와 Docker 비교 실행을 소유하며 broker runtime의 listener·TLS·auth 제약을 바꾸지 않는다.
 `adapters/raft`의 WAL·snapshot은 이 spike 전용 experimental local format이며 production storage가
 아니다. TLS, production peer transport, membership와 management API directory는 실제 deliverable이 생길 때 확장한다.
 
@@ -242,6 +245,7 @@ internal/adapters/managementapi/generated/
 - Kubernetes·NLB·EBS가 필요한 시험은 `tests/e2e`, `tests/chaos` 또는 `tests/benchmark`에 목적별로 둔다.
 - Test fixture가 한 package에서만 쓰이면 package 안 `testdata/`에 둔다. Repository-wide fixture는 이를 소비하는 test suite 아래에 둔다.
 - Generated source는 이를 사용하는 adapter 아래 `generated/`에 격리하고 생성 원본과 command를 기록한다.
+`tests/benchmark/bp01`은 두 broker에 같은 MQTT workload를 순차 실행하는 독립 benchmark package다. 이 package는 `cmd/narumq` 또는 `internal` production package에서 import하지 않으며, 생성 결과는 `.artifacts/`에 둔다.
 
 ## 만들지 않는 포괄 directory
 

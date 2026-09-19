@@ -65,7 +65,7 @@ MQTT packet 이름, property와 reason code는 OASIS 명칭을 사용한다. 충
 | SPEC-TBD-05 | topic 내부 prefix encoding과 canonicalization 세부 규칙 | tenancy ADR/spec 개정 | 외부 topic과 tenant 격리를 보존해야 한다. |
 | SPEC-TBD-06 | API error code 전체 목록, pagination 기본·최대값 | [Management API v1](../contracts/management-api-v1.md) | OpenAPI 초안은 작성됐다. Pagination 수치와 contract test가 남아 있다. |
 | SPEC-TBD-07 | Metric 이름 전체와 histogram bucket | metrics catalog | label cardinality 제한을 지켜야 한다. |
-| SPEC-TBD-08 | 성능 SLO와 고정 EMQX version·edition | Phase 0 benchmark record | 동일 조건에서 반복 측정해야 한다. |
+| SPEC-TBD-08 | 성능 SLO와 release-gating EMQX version·edition | Phase 0 benchmark record | BP-01 historical OSS comparator는 `5.8.8`로 고정됐지만, release-gating EMQX와 합격 수치는 미확정이다. 동일 조건에서 반복 측정해야 한다. |
 | SPEC-TBD-09 | backup RPO/RTO와 보존 기간 | disaster recovery spec | snapshot 원자성과 checksum 검증을 포함해야 한다. |
 | SPEC-TBD-10 | 지원 client SDK와 최소 version | [MQTT client compatibility v1](../contracts/mqtt-client-compatibility-v1.md) | Profile은 작성됐다. SDK inventory와 자동 호환 시험이 남아 있다. |
 

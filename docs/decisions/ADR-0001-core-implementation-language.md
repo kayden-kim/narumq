@@ -173,7 +173,10 @@ Phase 0에서 다음 spike를 완료해야 본격적인 기능 구현으로 진�
 3. 여러 연결에서 publish, subscribe, wildcard routing과 backpressure를 시험한다.
 4. 3노드 consensus skeleton에서 leader failure, quorum loss, WAL replay와 snapshot 복구 가능성을 시험한다. 이는 BP-03 또는 BP-06 통과를 뜻하지 않는다.
    - Gate 4의 실제 증거는 [consensus adapter unit tests](../../internal/adapters/raft/node_test.go), [experimental storage tests](../../internal/adapters/raft/stable_store_test.go), [deterministic integration spike](../../tests/integration/raft_consensus_test.go)다. 이 증거는 etcd/raft skeleton과 local WAL·snapshot recovery 가능성만 다루며 BP-03/BP-06 완료를 의미하지 않는다.
-5. BP-01 Protocol Baseline의 최소 기능 집합을 실제 EMQX와 동일한 CPU, memory, network, TLS와 workload 조건으로 비교한다.
+5. BP-01 Protocol Baseline의 최소 기능 집합을 [공통 benchmark harness](../../tests/benchmark/bp01)로 실제 EMQX와 비교한다. 대상은 MQTT 5, QoS 0, 비영속 workload이며, broker CPU·memory·network·TLS와 고정 workload 조건을 동일하게 맞춘다.
+   - 현재 BP-01 smoke evidence는 plaintext loopback, MQTT 5 QoS 0 조건만 관찰한다. TLS·인증 workload와 수치형 release 기준은 별도 profile 및 `SPEC-TBD-08` 확정 뒤 gate 판정에 포함한다.
+   - smoke 실행 결과는 `.artifacts/benchmark/bp01/<run-id>/manifest.json`과 target별 `summary.json`, `samples.jsonl`, `broker-stats.jsonl`에 보존한다.
+   - 현재 harness의 EMQX는 `5.8.8` 역사적 OSS comparator이며 `releaseGating=false`다. 이 증거만으로 gate 5 또는 production 대체 가능성을 완료로 표시하지 않는다.
 6. BP-05 Connection Scale에서 connection ramp, idle connection당 memory와 reconnect subset을 우선 측정한다. 전체 BP-05 통과 판정은 Phase 1에서 수행한다.
 7. throughput, p99.9 latency, connection당 memory, allocation rate와 GC CPU를 기록한다.
 8. PRD Phase 0에서 확정한 수치형 성능·메모리 기준을 만족한다. 기준이 확정되지 않으면 이 gate를 닫을 수 없다.

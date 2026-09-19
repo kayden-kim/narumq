@@ -55,7 +55,22 @@ Latency는 p50, p95, p99와 p99.9를 함께 보고한다. 오류 sample을 laten
 6. 중앙값과 편차를 함께 보고한다. 실행 순서가 영향을 줄 수 있으면 순서를 교차하거나 무작위화하고 기록한다.
 7. broker 오류뿐 아니라 load generator saturation과 client 오류도 수집한다.
 
-고정 EMQX version·edition과 NaruMQ 대비 합격 비율은 `SPEC-TBD-08`이다.
+고정 EMQX version·edition과 NaruMQ 대비 합격 비율은 `SPEC-TBD-08`이다. BP-01의 역사적 OSS 비교 대상은 `emqx/emqx:5.8.8@sha256:4593b6e30196754779fa14483332cb0be56c233f1c8a387b1308bec4337c0144`로 고정하지만, 현재 지원 release 기준선과 합격 수치는 여전히 미확정이다.
+
+### 3.1 BP-01 관찰 경계
+
+BP-01 공통 하네스의 smoke 입력과 비교 경계는 다음으로 고정한다.
+
+- MQTT 5.0, QoS 0, 비영속 workload, `Clean Start=true`, `Session Expiry Interval=0`
+- exact topic 하나, publisher 1개와 subscriber 1개, profile에 지정한 고정 payload 크기
+- publisher가 subscriber의 SUBACK 성공 뒤 시작하며, publisher 송신 시각부터 subscriber 수신까지를 같은 runner의 monotonic clock으로 측정
+- plaintext loopback network namespace만 사용하며, runner는 broker container의 network namespace에서 `127.0.0.1:1883`에 연결
+- NaruMQ와 EMQX는 같은 CPU·memory limit와 read-only root filesystem 조건으로 순차 실행하고, EMQX는 Open Source Edition 5.8.8 역사적 비교 대상으로 기록
+- EMQX 5.8.8은 CONNACK에 `Receive Maximum` 같은 MQTT 5 property를 보낼 수 있지만, `internal/domain/mqtt`의 현재 property-free subset 디코더는 이를 의도적으로 거부한다. 따라서 BP-01 runner는 CONNECT 응답에 한해 `readWireFrame`·`readConnAck`로 property section의 길이 일관성만 검증하고, 나머지 workload packet은 기존 domain codec을 재사용한다.
+
+warm-up sample은 집계에서 제외한다. 측정 구간의 `sent == delivered`이고 duplicate·missing·protocol error·generator overload가 모두 0일 때만 target run을 성공으로 판정한다. 이 smoke 결과는 하네스와 실행 경로의 동작 증거이며 release-gating 또는 production 대체 가능성의 근거가 아니다.
+
+profile의 duration은 이 문서의 공통 규칙대로 millisecond 정수로 표현한다. 실제 Phase 0 수치형 workload와 SLO는 `SPEC-TBD-08`을 닫기 전까지 임의로 정하지 않는다.
 
 ## 4. 필수 benchmark profile
 
@@ -84,6 +99,17 @@ BP-03은 durable cluster가 있는 phase, BP-07은 drain이 있는 phase에 통�
 - warm-up·측정 구간, 반복 번호, 시작·종료 시각
 - raw latency·throughput sample, broker/client log와 Metric snapshot
 - 오류·drop·gap·duplicate 목록과 aggregate report
+
+BP-01 실행은 다음 파일을 target artifact로 남긴다.
+
+- `profile.json`과 원문 SHA-256, resolved profile
+- `samples.jsonl`의 sequence·phase·scheduled/send/receive UTC timestamp·schedule lag·latency nanoseconds
+- `summary.json`의 offered/sent/delivered, publish/delivery rate, p50/p95/p99/p999, schedule lag, duplicate/missing/error와 `releaseGating`
+- `broker-stats.jsonl`의 CPU·memory·network·block I/O·PID 표본(초기 표본과 runner 종료 직후 최종 표본 포함)
+- broker stdout/stderr, 실제 image ID/digest와 resource-limit inspect
+- Docker build base의 planned digest, 실제 immutable resolved digest와 substitution 사유
+
+EMQX `5.8.8`은 Open Source Edition의 EOL historical comparator로 기록하며, 결과에는 EOL `2026-02-28`과 `releaseGating=false`를 함께 남긴다. `.artifacts/benchmark/bp01/<run-id>/`는 로컬 evidence 경로이고 source commit에 raw 결과를 섞지 않는다.
 
 비밀정보는 artifact에 포함해서는 안 된다. 재실행에 필요한 secret reference만 기록한다.
 

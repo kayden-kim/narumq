@@ -65,3 +65,6 @@ $RECYCLE.BIN/
 
 # NFS temporary files
 .nfs*
+
+### Benchmark artifacts
+.artifacts/
