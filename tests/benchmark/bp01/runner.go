@@ -5,17 +5,16 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
-	"io"
-	"net"
 	"sync"
 	"time"
 
 	"narumq/internal/domain/mqtt"
+	"narumq/tests/benchmark/internal/mqttclient"
 )
 
 const (
-	benchmarkMaxPacketSize = 1 << 20
-	handshakeTimeout       = 30 * time.Second
+	benchmarkMaxPacketSize = mqttclient.MaxPacketSize
+	handshakeTimeout       = mqttclient.DefaultHandshakeTimeout
 	readPollTimeout        = 100 * time.Millisecond
 )
 
@@ -70,24 +69,17 @@ func Run(ctx context.Context, options RunOptions) (Summary, error) {
 
 func executeWorkload(ctx context.Context, options RunOptions, collector *Collector) error {
 	profile := options.Profile
-	decoder, err := mqtt.NewDecoder(benchmarkMaxPacketSize)
-	if err != nil {
-		return fmt.Errorf("create MQTT decoder: %w", err)
-	}
-	encoder, err := mqtt.NewEncoder(benchmarkMaxPacketSize)
-	if err != nil {
-		return fmt.Errorf("create MQTT encoder: %w", err)
-	}
-
-	subscriber, err := dialClient(ctx, options.Address, "bp01-subscriber")
+	subscriber, _, err := mqttclient.Connect(ctx, mqttclient.ConnectOptions{
+		Address:          options.Address,
+		ClientID:         "bp01-subscriber",
+		KeepAlive:        30,
+		HandshakeTimeout: handshakeTimeout,
+	})
 	if err != nil {
 		return fmt.Errorf("connect subscriber: %w", err)
 	}
 	defer subscriber.Close()
-	if err := completeConnect(subscriber, encoder, decoder, profile, "bp01-subscriber"); err != nil {
-		return fmt.Errorf("subscriber CONNECT: %w", err)
-	}
-	if err := completeSubscribe(subscriber, encoder, decoder, profile); err != nil {
+	if err := completeSubscribe(subscriber, profile); err != nil {
 		return fmt.Errorf("subscriber SUBSCRIBE: %w", err)
 	}
 
@@ -106,37 +98,37 @@ func executeWorkload(ctx context.Context, options RunOptions, collector *Collect
 	}
 	go func() {
 		defer close(receiverDone)
-		receiveDeliveries(subscriber, decoder, profile, collector, stopReceiver, signalFatal)
+		receiveDeliveries(subscriber, profile, collector, stopReceiver, signalFatal)
 	}()
 
-	publisher, err := dialClient(ctx, options.Address, "bp01-publisher")
+	publisher, _, err := mqttclient.Connect(ctx, mqttclient.ConnectOptions{
+		Address:          options.Address,
+		ClientID:         "bp01-publisher",
+		KeepAlive:        30,
+		HandshakeTimeout: handshakeTimeout,
+	})
 	if err != nil {
 		stopOnce.Do(func() { close(stopReceiver) })
 		<-receiverDone
 		return fmt.Errorf("connect publisher: %w", err)
 	}
 	defer publisher.Close()
-	if err := completeConnect(publisher, encoder, decoder, profile, "bp01-publisher"); err != nil {
-		stopOnce.Do(func() { close(stopReceiver) })
-		<-receiverDone
-		return fmt.Errorf("publisher CONNECT: %w", err)
-	}
 
 	collector.SetOffered(profile.OfferedMeasurementSamples())
 	runStart := time.Now()
 	nextSequence := uint64(1)
-	if err := runPhase(ctx, publisher, encoder, profile, collector, phaseWarmup, runStart, profile.WarmupMillis, &nextSequence, fatalErrors); err != nil {
+	if err := runPhase(ctx, publisher, profile, collector, phaseWarmup, runStart, profile.WarmupMillis, &nextSequence, fatalErrors); err != nil {
 		stopOnce.Do(func() { close(stopReceiver) })
 		<-receiverDone
 		return err
 	}
 	measurementStart := runStart.Add(time.Duration(profile.WarmupMillis) * time.Millisecond)
-	if err := runPhase(ctx, publisher, encoder, profile, collector, phaseMeasurement, measurementStart, profile.MeasureMillis, &nextSequence, fatalErrors); err != nil {
+	if err := runPhase(ctx, publisher, profile, collector, phaseMeasurement, measurementStart, profile.MeasureMillis, &nextSequence, fatalErrors); err != nil {
 		stopOnce.Do(func() { close(stopReceiver) })
 		<-receiverDone
 		return err
 	}
-	if err := writePacket(publisher, encoder, &mqtt.Disconnect{Version: mqtt.ProtocolV5}); err != nil {
+	if err := publisher.Disconnect(handshakeTimeout); err != nil {
 		stopOnce.Do(func() { close(stopReceiver) })
 		<-receiverDone
 		return fmt.Errorf("publisher DISCONNECT: %w", err)
@@ -147,7 +139,7 @@ func executeWorkload(ctx context.Context, options RunOptions, collector *Collect
 		<-receiverDone
 		return err
 	}
-	if err := writePacket(subscriber, encoder, &mqtt.Disconnect{Version: mqtt.ProtocolV5}); err != nil {
+	if err := subscriber.Disconnect(handshakeTimeout); err != nil {
 		stopOnce.Do(func() { close(stopReceiver) })
 		<-receiverDone
 		return fmt.Errorf("subscriber DISCONNECT: %w", err)
@@ -165,37 +157,7 @@ func executeWorkload(ctx context.Context, options RunOptions, collector *Collect
 	}
 }
 
-func dialClient(ctx context.Context, address, clientID string) (net.Conn, error) {
-	dialer := net.Dialer{Timeout: handshakeTimeout}
-	connection, err := dialer.DialContext(ctx, "tcp", address)
-	if err != nil {
-		return nil, err
-	}
-	return connection, nil
-}
-
-func completeConnect(connection net.Conn, encoder *mqtt.Encoder, decoder *mqtt.Decoder, profile Profile, clientID string) error {
-	packet := &mqtt.Connect{
-		Version:               mqtt.ProtocolV5,
-		CleanStart:            true,
-		SessionExpiryInterval: 0,
-		KeepAlive:             30,
-		ClientID:              clientID,
-	}
-	if err := writePacket(connection, encoder, packet); err != nil {
-		return err
-	}
-	connAck, err := readConnAck(connection, mqtt.ProtocolV5, handshakeTimeout)
-	if err != nil {
-		return err
-	}
-	if connAck.Version != profile.ProtocolVersion() || connAck.SessionPresent || connAck.ReasonCode != 0 {
-		return fmt.Errorf("unexpected CONNACK %#v", connAck)
-	}
-	return nil
-}
-
-func completeSubscribe(connection net.Conn, encoder *mqtt.Encoder, decoder *mqtt.Decoder, profile Profile) error {
+func completeSubscribe(connection *mqttclient.Client, profile Profile) error {
 	packet := &mqtt.Subscribe{
 		Version:  mqtt.ProtocolV5,
 		PacketID: 1,
@@ -207,10 +169,10 @@ func completeSubscribe(connection net.Conn, encoder *mqtt.Encoder, decoder *mqtt
 			RetainAsPublished: false,
 		}},
 	}
-	if err := writePacket(connection, encoder, packet); err != nil {
+	if err := connection.Write(packet, handshakeTimeout); err != nil {
 		return err
 	}
-	response, err := readPacket(connection, decoder, mqtt.ProtocolV5, handshakeTimeout)
+	response, err := connection.Read(handshakeTimeout)
 	if err != nil {
 		return err
 	}
@@ -221,7 +183,7 @@ func completeSubscribe(connection net.Conn, encoder *mqtt.Encoder, decoder *mqtt
 	return nil
 }
 
-func runPhase(ctx context.Context, connection net.Conn, encoder *mqtt.Encoder, profile Profile, collector *Collector, phase string, phaseStart time.Time, millis int64, nextSequence *uint64, fatalErrors <-chan error) error {
+func runPhase(ctx context.Context, connection *mqttclient.Client, profile Profile, collector *Collector, phase string, phaseStart time.Time, millis int64, nextSequence *uint64, fatalErrors <-chan error) error {
 	sampleCount := samplesForDuration(profile.PublishRatePerSecond, millis)
 	interval := time.Second / time.Duration(profile.PublishRatePerSecond)
 	for index := uint64(0); index < sampleCount; index++ {
@@ -236,12 +198,12 @@ func runPhase(ctx context.Context, connection net.Conn, encoder *mqtt.Encoder, p
 		}
 		payload := makePayload(profile.Seed, *nextSequence, profile.PayloadBytes)
 		sentAt := time.Now()
-		if err := writePacket(connection, encoder, &mqtt.Publish{
+		if err := connection.Write(&mqtt.Publish{
 			Version: mqtt.ProtocolV5,
 			QoS:     mqtt.QoSAtMostOnce,
 			Topic:   profile.Topic,
 			Payload: payload,
-		}); err != nil {
+		}, handshakeTimeout); err != nil {
 			return fmt.Errorf("publish sequence %d: %w", *nextSequence, err)
 		}
 		scheduleLag := sentAt.Sub(scheduledAt)
@@ -287,16 +249,16 @@ func waitForDrain(ctx context.Context, collector *Collector, drainMillis int64, 
 	}
 }
 
-func receiveDeliveries(connection net.Conn, decoder *mqtt.Decoder, profile Profile, collector *Collector, stop <-chan struct{}, signalFatal func(error)) {
+func receiveDeliveries(connection *mqttclient.Client, profile Profile, collector *Collector, stop <-chan struct{}, signalFatal func(error)) {
 	for {
 		select {
 		case <-stop:
 			return
 		default:
 		}
-		packet, err := readPacket(connection, decoder, profile.ProtocolVersion(), readPollTimeout)
+		packet, err := connection.Read(readPollTimeout)
 		if err != nil {
-			if isTimeout(err) {
+			if mqttclient.IsTimeout(err) {
 				continue
 			}
 			select {
@@ -322,166 +284,6 @@ func receiveDeliveries(connection net.Conn, decoder *mqtt.Decoder, profile Profi
 			return
 		}
 	}
-}
-
-func isTimeout(err error) bool {
-	var netErr net.Error
-	return errors.As(err, &netErr) && netErr.Timeout()
-}
-
-func writePacket(connection net.Conn, encoder *mqtt.Encoder, packet mqtt.Packet) error {
-	wire, err := encoder.Append(nil, packet)
-	if err != nil {
-		return err
-	}
-	if err := connection.SetWriteDeadline(time.Now().Add(handshakeTimeout)); err != nil {
-		return err
-	}
-	for len(wire) > 0 {
-		written, err := connection.Write(wire)
-		if written > 0 {
-			wire = wire[written:]
-		}
-		if err != nil {
-			return err
-		}
-		if written == 0 {
-			return io.ErrShortWrite
-		}
-	}
-	return nil
-}
-
-type wireFrame struct {
-	header byte
-	body   []byte
-	wire   []byte
-}
-
-func readPacket(connection net.Conn, decoder *mqtt.Decoder, version mqtt.ProtocolVersion, timeout time.Duration) (mqtt.Packet, error) {
-	frame, err := readWireFrame(connection, timeout, handshakeTimeout)
-	if err != nil {
-		return nil, err
-	}
-	packet, consumed, err := decoder.Decode(frame.wire, version)
-	if err != nil {
-		return nil, err
-	}
-	if consumed != len(frame.wire) {
-		return nil, mqtt.ErrMalformedPacket
-	}
-	return packet, nil
-}
-
-func readConnAck(connection net.Conn, version mqtt.ProtocolVersion, timeout time.Duration) (*mqtt.ConnAck, error) {
-	frame, err := readWireFrame(connection, timeout, handshakeTimeout)
-	if err != nil {
-		return nil, err
-	}
-	if frame.header != 0x20 || len(frame.body) < 2 {
-		return nil, mqtt.ErrMalformedPacket
-	}
-	if frame.body[0]&0xFE != 0 {
-		return nil, mqtt.ErrMalformedPacket
-	}
-	if version == mqtt.ProtocolV311 {
-		if len(frame.body) != 2 {
-			return nil, mqtt.ErrMalformedPacket
-		}
-		return &mqtt.ConnAck{
-			Version:        version,
-			SessionPresent: frame.body[0]&0x01 != 0,
-			ReasonCode:     frame.body[1],
-		}, nil
-	}
-	if version != mqtt.ProtocolV5 || len(frame.body) < 3 {
-		return nil, mqtt.ErrMalformedPacket
-	}
-	propertyLength, consumed, err := decodeWireVariableByteInteger(frame.body[2:])
-	if err != nil || 2+consumed+propertyLength != len(frame.body) {
-		return nil, mqtt.ErrMalformedPacket
-	}
-	return &mqtt.ConnAck{
-		Version:        version,
-		SessionPresent: frame.body[0]&0x01 != 0,
-		ReasonCode:     frame.body[1],
-	}, nil
-}
-
-func readWireFrame(connection net.Conn, firstByteTimeout, frameTimeout time.Duration) (wireFrame, error) {
-	if err := connection.SetReadDeadline(time.Now().Add(firstByteTimeout)); err != nil {
-		return wireFrame{}, err
-	}
-	var header [1]byte
-	if _, err := io.ReadFull(connection, header[:]); err != nil {
-		return wireFrame{}, err
-	}
-	if err := connection.SetReadDeadline(time.Now().Add(frameTimeout)); err != nil {
-		return wireFrame{}, err
-	}
-	wire := []byte{header[0]}
-	remainingLength := 0
-	multiplier := 1
-	for index := 0; index < 4; index++ {
-		var encoded [1]byte
-		if _, err := io.ReadFull(connection, encoded[:]); err != nil {
-			if isTimeout(err) {
-				return wireFrame{}, fmt.Errorf("MQTT frame read timed out after header: %v", err)
-			}
-			return wireFrame{}, err
-		}
-		wire = append(wire, encoded[0])
-		digit := int(encoded[0] & 0x7F)
-		if digit > 0 && remainingLength > 268435455-digit*multiplier {
-			return wireFrame{}, mqtt.ErrMalformedPacket
-		}
-		remainingLength += digit * multiplier
-		if encoded[0]&0x80 == 0 {
-			if index > 0 && digit == 0 {
-				return wireFrame{}, mqtt.ErrMalformedPacket
-			}
-			break
-		}
-		if index == 3 {
-			return wireFrame{}, mqtt.ErrMalformedPacket
-		}
-		multiplier *= 128
-	}
-	if remainingLength > benchmarkMaxPacketSize {
-		return wireFrame{}, mqtt.ErrPacketTooLarge
-	}
-	body := make([]byte, remainingLength)
-	if _, err := io.ReadFull(connection, body); err != nil {
-		if isTimeout(err) {
-			return wireFrame{}, fmt.Errorf("MQTT frame read timed out after header: %v", err)
-		}
-		return wireFrame{}, err
-	}
-	wire = append(wire, body...)
-	return wireFrame{header: header[0], body: body, wire: wire}, nil
-}
-
-func decodeWireVariableByteInteger(encoded []byte) (int, int, error) {
-	value := 0
-	multiplier := 1
-	for index := 0; index < 4; index++ {
-		if index >= len(encoded) {
-			return 0, 0, mqtt.ErrMalformedPacket
-		}
-		digit := int(encoded[index] & 0x7F)
-		if digit > 0 && value > 268435455-digit*multiplier {
-			return 0, 0, mqtt.ErrMalformedPacket
-		}
-		value += digit * multiplier
-		if encoded[index]&0x80 == 0 {
-			if index > 0 && digit == 0 {
-				return 0, 0, mqtt.ErrMalformedPacket
-			}
-			return value, index + 1, nil
-		}
-		multiplier *= 128
-	}
-	return 0, 0, mqtt.ErrMalformedPacket
 }
 
 func makePayload(seed, sequence uint64, size int) []byte {

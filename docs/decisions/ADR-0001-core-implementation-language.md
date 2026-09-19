@@ -178,6 +178,9 @@ Phase 0에서 다음 spike를 완료해야 본격적인 기능 구현으로 진�
    - smoke 실행 결과는 `.artifacts/benchmark/bp01/<run-id>/manifest.json`과 target별 `summary.json`, `samples.jsonl`, `broker-stats.jsonl`에 보존한다.
    - 현재 harness의 EMQX는 `5.8.8` 역사적 OSS comparator이며 `releaseGating=false`다. 이 증거만으로 gate 5 또는 production 대체 가능성을 완료로 표시하지 않는다.
 6. BP-05 Connection Scale에서 connection ramp, idle connection당 memory와 reconnect subset을 우선 측정한다. 전체 BP-05 통과 판정은 Phase 1에서 수행한다.
+   - 제한된 smoke 구현은 [`tests/benchmark/bp05`](../../tests/benchmark/bp05)에서 MQTT 5 연결 ramp, idle PINGREQ/PINGRESP, 동일 Client ID reconnect와 broker memory 표본을 관찰한다.
+   - 실행 결과는 `.artifacts/benchmark/bp05/<run-id>/manifest.json`, target별 `connections.jsonl`, `phases.jsonl`, `workload-summary.json`, `resource-summary.json`, 합성 `summary.json`과 `comparison.json`에 보존한다.
+   - 이 smoke는 64 연결·1 CPU/512 MiB broker·1 CPU/256 MiB generator라는 하네스 값만 증명하며 `B_conn`, production SLO 또는 release 합격 비율을 정하지 않는다. `releaseGating=false`이고 gate 6·7·8 완료를 의미하지 않는다.
 7. throughput, p99.9 latency, connection당 memory, allocation rate와 GC CPU를 기록한다.
 8. PRD Phase 0에서 확정한 수치형 성능·메모리 기준을 만족한다. 기준이 확정되지 않으면 이 gate를 닫을 수 없다.
 9. 모든 결과와 raw artifact를 version control 또는 artifact storage에 보관한다.

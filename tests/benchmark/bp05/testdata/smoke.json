@@ -1,0 +1,16 @@
+{
+  "profileId": "bp05-smoke",
+  "purpose": "smoke",
+  "connectionCount": 64,
+  "rampConnectionsPerSecond": 32,
+  "baselineMillis": 3000,
+  "idleMillis": 4000,
+  "reconnectCount": 16,
+  "reconnectRatePerSecond": 16,
+  "keepAliveSeconds": 2,
+  "pingIntervalMillis": 500,
+  "brokerCPUs": 1,
+  "brokerMemoryBytes": 536870912,
+  "generatorCPUs": 1,
+  "generatorMemoryBytes": 268435456
+}

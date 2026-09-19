@@ -72,6 +72,29 @@ warm-up sample은 집계에서 제외한다. 측정 구간의 `sent == delivered
 
 profile의 duration은 이 문서의 공통 규칙대로 millisecond 정수로 표현한다. 실제 Phase 0 수치형 workload와 SLO는 `SPEC-TBD-08`을 닫기 전까지 임의로 정하지 않는다.
 
+### 3.2 BP-05 제한된 Connection Scale smoke 관찰 경계
+
+BP-05 smoke는 전체 연결 규모나 운영 용량을 정하는 시험이 아니라, 같은 MQTT 5 연결 ramp를 두 target에 적용하는 실행 경로 증거다. 현재 고정 profile은 `tests/benchmark/bp05/testdata/smoke.json`의 다음 값만 사용한다.
+
+- `connectionCount=64`, `rampConnectionsPerSecond=32`, `baselineMillis=3000`, `idleMillis=4000`
+- `reconnectCount=16`, `reconnectRatePerSecond=16`, `keepAliveSeconds=2`, `pingIntervalMillis=500`
+- broker `1 CPU / 512 MiB`, generator `1 CPU / 256 MiB`
+- MQTT 5, `Clean Start=true`, `Session Expiry Interval=0`, plaintext loopback `127.0.0.1:1883`
+
+runner는 `bp05-000000`부터 고정 폭 Client ID를 사용한다. initial ramp 뒤 각 성공 연결에서 첫 `PINGREQ`를 ping interval 안에 분산하고, 이후 고정 간격으로 `PINGRESP`를 정확히 하나씩 확인한다. idle 종료 후 가장 낮은 Client ID 16개를 정상 `DISCONNECT`하고 같은 Client ID로 reconnect한다. 연결 시도와 phase 시작·종료는 각각 `connections.jsonl`과 `phases.jsonl`에 즉시 기록한다.
+
+broker memory는 runner 시작 전 표본의 중앙값을 `baselineMemoryBytes`, `idle` phase 표본의 중앙값을 `plateauMemoryBytes`로 계산한다. 표본이 짝수이면 정렬된 가운데 두 값에 대해 `lower + (upper-lower)/2`를 사용한다.
+
+```text
+incrementalMemoryBytes = plateauMemoryBytes - baselineMemoryBytes
+memoryBytesPerIdleConnection =
+    incrementalMemoryBytes / idleSurvivors
+```
+
+차이는 signed 값으로 보존하며 음수로 clamp하지 않는다. 각 구간 표본이 2개 미만이면 target resource 결과를 invalid로 표시한다. `workload-summary.json`과 `resource-summary.json`이 모두 valid이고 두 target의 final ping까지 성공한 경우에만 합성 `summary.json`을 valid로 표시한다.
+
+이 smoke는 전체 BP-05 통과, `B_conn`, connection당 production SLO, release 합격 비율 또는 gate 8을 확정하지 않는다. 반복 실행에 따른 편차와 실제 production profile은 별도 결정인 `SPEC-TBD-08`이 닫힌 뒤 정한다.
+
 ## 4. 필수 benchmark profile
 
 | ID | 고정 조건 | 필수 결과 |
@@ -108,6 +131,17 @@ BP-01 실행은 다음 파일을 target artifact로 남긴다.
 - `broker-stats.jsonl`의 CPU·memory·network·block I/O·PID 표본(초기 표본과 runner 종료 직후 최종 표본 포함)
 - broker stdout/stderr, 실제 image ID/digest와 resource-limit inspect
 - Docker build base의 planned digest, 실제 immutable resolved digest와 substitution 사유
+
+BP-05 제한된 smoke 실행은 `.artifacts/benchmark/bp05/<run-id>/`에 다음 target artifact를 남긴다.
+
+- `profile.json`과 원문 SHA-256, resolved profile
+- `connections.jsonl`의 client ID·phase·scheduled/started/CONNACK UTC timestamp·schedule lag·latency·success·error
+- `phases.jsonl`의 `ramp`·`idle`·`reconnect`·`final_check`·`cleanup` 시작/종료 시각과 active connection 수
+- `workload-summary.json`의 initial/reconnect requested·attempted·succeeded·failed, 실제 rate, latency percentiles, idle survivor, PING, protocol/transport error와 generator overload
+- `resource-summary.json`의 baseline/plateau 표본 수·중앙 memory, signed incremental memory와 idle connection당 계산값
+- 합성 `summary.json`, broker stats/log, runner log, container inspect, 실제 image ID/digest와 동일 resource/network/read-only 조건
+
+이 artifact는 하네스 동작과 제한된 Phase 0 gate 6 증거를 보존한다. 전체 BP-05 용량, `B_conn`, production SLO와 release gating 결과를 대신하지 않으며 `releaseGating=false`를 유지한다.
 
 EMQX `5.8.8`은 Open Source Edition의 EOL historical comparator로 기록하며, 결과에는 EOL `2026-02-28`과 `releaseGating=false`를 함께 남긴다. `.artifacts/benchmark/bp01/<run-id>/`는 로컬 evidence 경로이고 source commit에 raw 결과를 섞지 않는다.
 

@@ -4,9 +4,9 @@ NaruMQ source tree는 MQTT·session·routing·delivery·tenancy·security·clust
 
 | 항목 | 값 |
 | --- | --- |
-| 관점 상태 | Current Phase 0 gate 4 / single-node ingress와 deterministic 3-node consensus-local-recovery spike; BP-01 공통 하네스 준비 |
+| 관점 상태 | Current Phase 0 gate 4 / single-node ingress와 deterministic 3-node consensus-local-recovery spike; BP-01/BP-05 제한된 smoke harness 준비, 전체 gate 판정 대기 |
 | 문서 상태 | Draft |
-| 구현 증거 | `cmd/narumq`, `internal/domain/mqtt`, `internal/domain/session`, `internal/domain/routing`, `internal/application/connect`, `internal/application/publish`, `internal/application/subscribe`, `internal/application/ports/deliveryqueue`, `internal/adapters/tcp`, `internal/adapters/memory/deliveryqueue`, `internal/adapters/memory/sessionstore`, `internal/adapters/clock`, `internal/adapters/raft`, `tests/integration/raft_consensus_test.go`, `tests/benchmark/bp01`와 각 package test |
+| 구현 증거 | `cmd/narumq`, `internal/domain/mqtt`, `internal/domain/session`, `internal/domain/routing`, `internal/application/connect`, `internal/application/publish`, `internal/application/subscribe`, `internal/application/ports/deliveryqueue`, `internal/adapters/tcp`, `internal/adapters/memory/deliveryqueue`, `internal/adapters/memory/sessionstore`, `internal/adapters/clock`, `internal/adapters/raft`, `tests/integration/raft_consensus_test.go`, `tests/benchmark/internal/environment`, `tests/benchmark/internal/mqttclient`, `tests/benchmark/bp01`, `tests/benchmark/bp05`와 각 package test |
 | 범위 | Repository root와 Go package directory 배치 및 현재 source dependency |
 | 관련 요구사항 | [PRD](../requirements/PRD.md) NFR-11~NFR-15, TEST-01~TEST-17, DEP-19~DEP-23 |
 | 관련 결정 | [ADR-0001](../decisions/ADR-0001-core-implementation-language.md) Accepted |
@@ -75,7 +75,11 @@ NaruMQ source tree는 MQTT·session·routing·delivery·tenancy·security·clust
 │   ├── e2e/
 │   ├── chaos/
 │   └── benchmark/
-│       └── bp01/
+│       ├── internal/
+│       │   ├── environment/
+│       │   └── mqttclient/
+│       ├── bp01/
+│       └── bp05/
 ├── tools/
 ├── docs/
 ├── go.mod
@@ -87,10 +91,9 @@ NaruMQ source tree는 MQTT·session·routing·delivery·tenancy·security·clust
 `application/publish`, `application/subscribe`, `application/ports/deliveryqueue`,
 `adapters/tcp`, `adapters/memory/deliveryqueue`, `adapters/memory/sessionstore`,
 `adapters/clock`, `adapters/raft`와 `tests/integration/raft_consensus_test.go`다.
-`tests/benchmark/bp01`은 product runtime이 import하지 않는 외부 workload·orchestration 도구다.
-Profile, MQTT runner, result artifact와 Docker 비교 실행을 소유하며 broker runtime의 listener·TLS·auth 제약을 바꾸지 않는다.
-`adapters/raft`의 WAL·snapshot은 이 spike 전용 experimental local format이며 production storage가
-아니다. TLS, production peer transport, membership와 management API directory는 실제 deliverable이 생길 때 확장한다.
+`tests/benchmark/internal/environment`는 BP-01과 BP-05가 공유하는 immutable image, broker container, readiness, resource limit, runner container, Docker stats와 artifact 수집 경계를 소유한다.
+`tests/benchmark/internal/mqttclient`는 benchmark 전용 MQTT 5 Clean Start/zero Session Expiry CONNECT와 frame I/O를 소유한다. 두 package와 `bp01`, `bp05`는 product runtime이 import하지 않는 benchmark-only source다.
+각 BP package는 profile 해석, workload 상태와 comparison 판정을 소유하며 shared package는 profile·summary 의미를 결정하지 않는다.
 
 ## Directory naming
 
@@ -110,7 +113,7 @@ Profile, MQTT runner, result artifact와 Docker 비교 실행을 소유하며 br
 | `internal/application` | Use case orchestration, transaction·commit boundary, application-owned port와 use case DTO | Concrete adapter 생성, external object 전달 |
 | `internal/adapters` | TCP/TLS, storage, consensus, authentication, platform와 observability I/O | 새로운 business invariant 결정 |
 | `deploy/profiles` | 지원 deployment profile의 manifest와 resolved configuration 입력 | Application source, secret 원문 |
-| `tests` | 여러 package·process 또는 실제 dependency가 필요한 black-box 검증 | Package-local unit test 중복 |
+| `tests` | 여러 package·process 또는 실제 dependency가 필요한 black-box 검증; `benchmark`는 profile/workload/comparison을, `benchmark/internal/{environment,mqttclient}`는 두 BP가 공유하는 Docker·MQTT 경계를 소유 | Package-local unit test 중복, product runtime import |
 | `tools` | Repository 검증·생성 도구와 pinning | Runtime product dependency와 business logic |
 | `docs` | Requirement, architecture, decision, spec, contract와 guide | Generated binary와 runtime state |
 

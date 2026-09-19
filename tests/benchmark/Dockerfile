@@ -4,12 +4,17 @@ FROM golang:1.26.5-bookworm@sha256:53eeac89074db483fdf0ab3be1df32bf6e47562263d2d
 WORKDIR /src
 COPY . .
 RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags='-s -w' -o /out/narumq ./cmd/narumq \
-    && CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags='-s -w' -o /out/bp01 ./tests/benchmark/bp01
+    && CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags='-s -w' -o /out/bp01 ./tests/benchmark/bp01 \
+    && CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags='-s -w' -o /out/bp05 ./tests/benchmark/bp05
 
 FROM scratch AS narumq
 COPY --from=build /out/narumq /narumq
 ENTRYPOINT ["/narumq"]
 
-FROM scratch AS runner
+FROM scratch AS bp01-runner
 COPY --from=build /out/bp01 /bp01
 ENTRYPOINT ["/bp01"]
+
+FROM scratch AS bp05-runner
+COPY --from=build /out/bp05 /bp05
+ENTRYPOINT ["/bp05"]
