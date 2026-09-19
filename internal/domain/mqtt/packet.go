@@ -22,7 +22,30 @@ const (
 	PacketTypeConnAck PacketType = 2
 	// PacketTypePublish identifies a PUBLISH packet.
 	PacketTypePublish PacketType = 3
+	// PacketTypePubAck identifies a PUBACK packet.
+	PacketTypePubAck PacketType = 4
+	// PacketTypePubRec identifies a PUBREC packet.
+	PacketTypePubRec PacketType = 5
+	// PacketTypePubRel identifies a PUBREL packet.
+	PacketTypePubRel PacketType = 6
+	// PacketTypePubComp identifies a PUBCOMP packet.
+	PacketTypePubComp PacketType = 7
 )
+
+// QoS identifies the MQTT delivery guarantee requested by a PUBLISH.
+type QoS byte
+
+const (
+	// QoSAtMostOnce sends a PUBLISH without an acknowledgement exchange.
+	QoSAtMostOnce QoS = 0
+	// QoSAtLeastOnce completes a PUBLISH with PUBACK.
+	QoSAtLeastOnce QoS = 1
+	// QoSExactlyOnce completes a PUBLISH with PUBREC, PUBREL, and PUBCOMP.
+	QoSExactlyOnce QoS = 2
+)
+
+// PacketIdentifier identifies one in-flight QoS 1 or QoS 2 exchange.
+type PacketIdentifier uint16
 
 // Packet is the sealed domain representation of an MQTT control packet.
 //

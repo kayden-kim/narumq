@@ -110,6 +110,8 @@ MQTT QoS만으로 end-to-end exactly-once 처리를 만들 수 없다.
 
 규범적 제품 계약은 [PRD](../requirements/PRD.md)의 메시지 보장 모델과 MQTT-02~05, CLU-06~09, CLIENT-01~07, NFR-07을 따른다. Durable publish의 구조적 경로는 [Cluster architecture](../architectures/cluster-architecture.md), packet별 handshake와 Will 상태 전이는 [MQTT QoS 0·1·2와 Will protocol 흐름](mqtt-qos-and-will-protocol-flows.md), 세션 복구 원리는 [세션 소유권과 fencing](session-ownership-and-fencing.md)에서 설명한다.
 
+현재 순수 정책 구현은 [`internal/domain/delivery`](../../internal/domain/delivery/doc.go)의 QoS 1·2 inflight value-state machine과 [`internal/domain/session`](../../internal/domain/session/doc.go)의 caller-clock 기반 Session Expiry lifecycle이다. 두 package는 packet action과 deadline 판정만 반환하며 listener, storage, quorum durability, routing을 직접 수행하지 않는다.
+
 ## 확인 질문
 
 1. Publisher가 `PUBACK`을 받았는데 subscriber DB에 값이 없을 수 있는 경로를 두 hop으로 나눠 설명해 보라.

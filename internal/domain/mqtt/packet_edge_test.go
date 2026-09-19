@@ -23,6 +23,7 @@ func TestConnectEdgeValidationAndContracts_MQTT01_MQTT12_TEST03(t *testing.T) {
 		input Connect
 		want  error
 	}{
+		{name: "v311-session-expiry", input: func() Connect { value := base; value.SessionExpiryInterval = 1; return value }(), want: ErrMalformedPacket},
 		{name: "unsupported-version", input: Connect{Version: ProtocolUnknown}, want: ErrUnsupportedProtocolVersion},
 		{name: "invalid-client-utf8", input: func() Connect { value := base; value.ClientID = "bad\x00client"; return value }(), want: ErrMalformedPacket},
 		{name: "empty-client-without-clean-start", input: Connect{Version: ProtocolV311, ClientID: ""}, want: ErrMalformedPacket},
@@ -106,6 +107,24 @@ func TestConnectProtocolVersionAndPacketContracts_MQTT01_MQTT13_MQTT312_MQTT313(
 	if publish.packetType() != PacketTypePublish || publish.packetVersion() != ProtocolV311 {
 		t.Fatal("PUBLISH packet contract mismatch")
 	}
+	ackCases := []struct {
+		name       string
+		packet     Packet
+		packetType PacketType
+		version    ProtocolVersion
+	}{
+		{name: "PUBACK", packet: PubAck{Version: ProtocolV5}, packetType: PacketTypePubAck, version: ProtocolV5},
+		{name: "PUBREC", packet: PubRec{Version: ProtocolV5}, packetType: PacketTypePubRec, version: ProtocolV5},
+		{name: "PUBREL", packet: PubRel{Version: ProtocolV311}, packetType: PacketTypePubRel, version: ProtocolV311},
+		{name: "PUBCOMP", packet: PubComp{Version: ProtocolV5}, packetType: PacketTypePubComp, version: ProtocolV5},
+	}
+	for _, testCase := range ackCases {
+		t.Run(testCase.name+" packet contract", func(t *testing.T) {
+			if testCase.packet.packetType() != testCase.packetType || testCase.packet.packetVersion() != testCase.version {
+				t.Fatalf("%s packet contract mismatch", testCase.name)
+			}
+		})
+	}
 
 	typed := UnsupportedProtocolVersionError{ProtocolName: "MQIsdp", Level: 3}
 	if typed.Error() == "" || typed.Is(ErrMalformedPacket) || !typed.Is(ErrUnsupportedProtocolVersion) {
@@ -185,7 +204,11 @@ func TestConnectDecoderAndEncoderEdgeContracts_MQTT01_MQTT12_MQTT13(t *testing.T
 	var nilConnect *Connect
 	var nilConnAck *ConnAck
 	var nilPublish *Publish
-	for _, packet := range []Packet{nilConnect, nilConnAck, nilPublish, unsupportedTestPacket{}} {
+	var nilPubAck *PubAck
+	var nilPubRec *PubRec
+	var nilPubRel *PubRel
+	var nilPubComp *PubComp
+	for _, packet := range []Packet{nilConnect, nilConnAck, nilPublish, nilPubAck, nilPubRec, nilPubRel, nilPubComp, unsupportedTestPacket{}} {
 		if _, err := encoder.Append([]byte{1}, packet); !errors.Is(err, ErrMalformedPacket) {
 			t.Fatalf("Append(%T) error = %v, want malformed", packet, err)
 		}

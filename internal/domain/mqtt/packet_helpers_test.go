@@ -40,6 +40,14 @@ func packetValue(packet Packet) any {
 		return *value
 	case *Publish:
 		return *value
+	case *PubAck:
+		return *value
+	case *PubRec:
+		return *value
+	case *PubRel:
+		return *value
+	case *PubComp:
+		return *value
 	default:
 		return packet
 	}
@@ -50,7 +58,7 @@ func requireSemanticEqual(t *testing.T, want Packet, got Packet) {
 	switch wantValue := want.(type) {
 	case *Connect:
 		gotValue, ok := got.(*Connect)
-		if !ok || wantValue.Version != gotValue.Version || wantValue.CleanStart != gotValue.CleanStart || wantValue.KeepAlive != gotValue.KeepAlive || wantValue.ClientID != gotValue.ClientID || wantValue.HasUsername != gotValue.HasUsername || wantValue.Username != gotValue.Username || wantValue.HasPassword != gotValue.HasPassword || !bytes.Equal(wantValue.Password, gotValue.Password) || !willsEqual(wantValue.Will, gotValue.Will) {
+		if !ok || wantValue.Version != gotValue.Version || wantValue.CleanStart != gotValue.CleanStart || wantValue.SessionExpiryInterval != gotValue.SessionExpiryInterval || wantValue.KeepAlive != gotValue.KeepAlive || wantValue.ClientID != gotValue.ClientID || wantValue.HasUsername != gotValue.HasUsername || wantValue.Username != gotValue.Username || wantValue.HasPassword != gotValue.HasPassword || !bytes.Equal(wantValue.Password, gotValue.Password) || !willsEqual(wantValue.Will, gotValue.Will) {
 			t.Fatalf("CONNECT mismatch:\nwant %#v\ngot  %#v", wantValue, got)
 		}
 	case *ConnAck:
@@ -60,8 +68,28 @@ func requireSemanticEqual(t *testing.T, want Packet, got Packet) {
 		}
 	case *Publish:
 		gotValue, ok := got.(*Publish)
-		if !ok || wantValue.Version != gotValue.Version || wantValue.DUP != gotValue.DUP || wantValue.Retain != gotValue.Retain || wantValue.Topic != gotValue.Topic || !bytes.Equal(wantValue.Payload, gotValue.Payload) {
+		if !ok || wantValue.Version != gotValue.Version || wantValue.DUP != gotValue.DUP || wantValue.QoS != gotValue.QoS || wantValue.Retain != gotValue.Retain || wantValue.PacketID != gotValue.PacketID || wantValue.Topic != gotValue.Topic || !bytes.Equal(wantValue.Payload, gotValue.Payload) {
 			t.Fatalf("PUBLISH mismatch:\nwant %#v\ngot  %#v", wantValue, got)
+		}
+	case *PubAck:
+		gotValue, ok := got.(*PubAck)
+		if !ok || *wantValue != *gotValue {
+			t.Fatalf("PUBACK mismatch:\nwant %#v\ngot  %#v", wantValue, got)
+		}
+	case *PubRec:
+		gotValue, ok := got.(*PubRec)
+		if !ok || *wantValue != *gotValue {
+			t.Fatalf("PUBREC mismatch:\nwant %#v\ngot  %#v", wantValue, got)
+		}
+	case *PubRel:
+		gotValue, ok := got.(*PubRel)
+		if !ok || *wantValue != *gotValue {
+			t.Fatalf("PUBREL mismatch:\nwant %#v\ngot  %#v", wantValue, got)
+		}
+	case *PubComp:
+		gotValue, ok := got.(*PubComp)
+		if !ok || *wantValue != *gotValue {
+			t.Fatalf("PUBCOMP mismatch:\nwant %#v\ngot  %#v", wantValue, got)
 		}
 	default:
 		t.Fatalf("unsupported packet type %T", want)

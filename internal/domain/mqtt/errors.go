@@ -15,8 +15,6 @@ var (
 	ErrUnsupportedProtocolVersion = errors.New("unsupported MQTT protocol version")
 	// ErrUnsupportedProperty means that a valid property section is not supported.
 	ErrUnsupportedProperty = errors.New("unsupported MQTT property")
-	// ErrUnsupportedQoS means that the packet uses a valid but unsupported QoS.
-	ErrUnsupportedQoS = errors.New("unsupported MQTT QoS")
 )
 
 // UnsupportedProtocolVersionError reports the protocol identity rejected by

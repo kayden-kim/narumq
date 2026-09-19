@@ -13,6 +13,9 @@ func FuzzDecoder(f *testing.F) {
 	f.Add([]byte{0x20, 0x03, 0x00, 0x00, 0x00}, byte(2))
 	f.Add([]byte{0x30, 0x08, 0x00, 0x01, 'a', 'h', 'e', 'l', 'l', 'o'}, byte(1))
 	f.Add([]byte{0x30, 0x80}, byte(1))
+	f.Add([]byte{0x32, 0x05, 0x00, 0x01, 'a', 0x00, 0x07}, byte(1))
+	f.Add([]byte{0x50, 0x02, 0x00, 0x07}, byte(2))
+	f.Add([]byte{0x62, 0x04, 0x00, 0x07, 0x92, 0x00}, byte(2))
 
 	decoder, err := NewDecoder(maxRemainingLength)
 	if err != nil {
@@ -47,6 +50,7 @@ func FuzzCodecRoundTrip(f *testing.F) {
 	f.Add([]byte{0x10, 0x0D, 0x00, 0x04, 'M', 'Q', 'T', 'T', 0x04, 0x02, 0x00, 0x00, 0x00, 0x01, 'a'}, byte(0))
 	f.Add([]byte{0x20, 0x03, 0x00, 0x00, 0x00}, byte(2))
 	f.Add([]byte{0x30, 0x09, 0x00, 0x01, 'a', 0x00, 'h', 'e', 'l', 'l', 'o'}, byte(2))
+	f.Add([]byte{0x10, 0x13, 0x00, 0x04, 'M', 'Q', 'T', 'T', 0x05, 0x02, 0x00, 0x00, 0x05, 0x11, 0x00, 0x00, 0x00, 0x01, 0x00, 0x01, 'a'}, byte(0))
 
 	decoder, err := NewDecoder(maxRemainingLength)
 	if err != nil {
@@ -98,8 +102,7 @@ func isDefinedCodecError(err error) bool {
 		errors.Is(err, ErrPacketTooLarge) ||
 		errors.Is(err, ErrProtocolVersionRequired) ||
 		errors.Is(err, ErrUnsupportedProtocolVersion) ||
-		errors.Is(err, ErrUnsupportedProperty) ||
-		errors.Is(err, ErrUnsupportedQoS)
+		errors.Is(err, ErrUnsupportedProperty)
 }
 
 func fuzzPacketsEqual(left Packet, right Packet) bool {
@@ -109,13 +112,25 @@ func fuzzPacketsEqual(left Packet, right Packet) bool {
 		if !ok {
 			return false
 		}
-		return leftValue.Version == rightValue.Version && leftValue.CleanStart == rightValue.CleanStart && leftValue.KeepAlive == rightValue.KeepAlive && leftValue.ClientID == rightValue.ClientID && leftValue.HasUsername == rightValue.HasUsername && leftValue.Username == rightValue.Username && leftValue.HasPassword == rightValue.HasPassword && bytes.Equal(leftValue.Password, rightValue.Password) && fuzzWillsEqual(leftValue.Will, rightValue.Will)
+		return leftValue.Version == rightValue.Version && leftValue.CleanStart == rightValue.CleanStart && leftValue.SessionExpiryInterval == rightValue.SessionExpiryInterval && leftValue.KeepAlive == rightValue.KeepAlive && leftValue.ClientID == rightValue.ClientID && leftValue.HasUsername == rightValue.HasUsername && leftValue.Username == rightValue.Username && leftValue.HasPassword == rightValue.HasPassword && bytes.Equal(leftValue.Password, rightValue.Password) && fuzzWillsEqual(leftValue.Will, rightValue.Will)
 	case *ConnAck:
 		rightValue, ok := right.(*ConnAck)
 		return ok && *leftValue == *rightValue
 	case *Publish:
 		rightValue, ok := right.(*Publish)
-		return ok && leftValue.Version == rightValue.Version && leftValue.DUP == rightValue.DUP && leftValue.Retain == rightValue.Retain && leftValue.Topic == rightValue.Topic && bytes.Equal(leftValue.Payload, rightValue.Payload)
+		return ok && leftValue.Version == rightValue.Version && leftValue.DUP == rightValue.DUP && leftValue.QoS == rightValue.QoS && leftValue.Retain == rightValue.Retain && leftValue.PacketID == rightValue.PacketID && leftValue.Topic == rightValue.Topic && bytes.Equal(leftValue.Payload, rightValue.Payload)
+	case *PubAck:
+		rightValue, ok := right.(*PubAck)
+		return ok && *leftValue == *rightValue
+	case *PubRec:
+		rightValue, ok := right.(*PubRec)
+		return ok && *leftValue == *rightValue
+	case *PubRel:
+		rightValue, ok := right.(*PubRel)
+		return ok && *leftValue == *rightValue
+	case *PubComp:
+		rightValue, ok := right.(*PubComp)
+		return ok && *leftValue == *rightValue
 	default:
 		return reflect.DeepEqual(left, right)
 	}

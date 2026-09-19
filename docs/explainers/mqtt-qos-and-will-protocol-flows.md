@@ -289,12 +289,15 @@ Will이 `Will Retain=1`로 발행되면 Will 예약 상태는 끝나지만 topic
 
 - 제품 보장과 수용 기준: [PRD](../requirements/PRD.md)의 메시지 보장 모델, MQTT-02~05, CLU-06~09, CLIENT-01~09
 - Protocol 규범: [MQTT protocol과 session 스펙](../specs/mqtt-protocol-and-session.md)
+- MQTT wire codec: [`internal/domain/mqtt`](../../internal/domain/mqtt/doc.go)의 PUBLISH QoS 0·1·2와 PUBACK/PUBREC/PUBREL/PUBCOMP
+- 송신·수신 inflight 정책: [`internal/domain/delivery`](../../internal/domain/delivery/doc.go)의 `NewOutbound`·`NewInbound` value-state machine
+- Session Expiry lifecycle: [`internal/domain/session`](../../internal/domain/session/doc.go)의 `Open`·`Disconnect`·deadline 계산
 - Cluster runtime 구조: [Cluster architecture](../architectures/cluster-architecture.md)
 - Cluster 복구: [Cluster session과 durable delivery 스펙](../specs/cluster-session-and-delivery.md)
 - Client 설정 계약: [MQTT client compatibility v1](../contracts/mqtt-client-compatibility-v1.md)
 - 계획 drain과 Will 운영 맥락: [안전한 노드 drain과 Will](safe-node-drain-and-will.md)
 
-이 해설의 상태 이름과 diagram은 표준 packet 교환을 이해하기 위한 표현이다. 실제 persistence record, Go type과 package API는 구현 스펙이나 ADR에서 별도로 정한다.
+현재 Go 구현은 위의 packet codec과 순수 value-state policy까지다. TCP/TLS listener, application orchestration, routing, persistence, quorum durability와 Will timer는 아직 이 package들에 없다. 따라서 이 문서의 normative flow와 실제 API state transition은 같은 규칙을 설명하지만, network·storage 동작을 이미 제공한다는 뜻은 아니다.
 
 ## 확인 질문
 

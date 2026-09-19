@@ -33,6 +33,16 @@ func TestPublishRoundTripAndOwnership_MQTT311_MQTT5_MQTT331_MQTT332(t *testing.T
 			input: Publish{Version: ProtocolV5, Retain: true, Topic: "sensor/binary", Payload: []byte{0x00, 0xFF, 0x01}},
 			trace: "PRD MQTT-01/TEST-04; MQTT-3.3.1-2/4; MQTT-3.3.2-1/2",
 		},
+		{
+			name:  "v311-qos-one",
+			input: Publish{Version: ProtocolV311, QoS: QoSAtLeastOnce, PacketID: 7, Topic: "sensor/qos1", Payload: []byte("at-least-once")},
+			trace: "PRD MQTT-02/TEST-03; MQTT-3.3.1-2/4; MQTT-4.3.2-1",
+		},
+		{
+			name:  "v5-qos-two-duplicate",
+			input: Publish{Version: ProtocolV5, DUP: true, QoS: QoSExactlyOnce, Retain: true, PacketID: 9, Topic: "sensor/qos2", Payload: []byte{0x00, 0xFF}},
+			trace: "PRD MQTT-02/TEST-04; MQTT-3.3.1-2/4; MQTT-4.3.3-1/2",
+		},
 	}
 	decoder, err := NewDecoder(maxRemainingLength)
 	if err != nil {
@@ -72,6 +82,48 @@ func TestPublishCanonicalWire_MQTT311_MQTT5(t *testing.T) {
 		t.Fatalf("MQTT 5 PUBLISH = %v", v5)
 	}
 }
+func TestPublishQoSWireAndPacketIdentifierValidation_MQTT02_MQTT331_2_4_MQTT332_1(t *testing.T) {
+	encoder, err := NewEncoder(maxRemainingLength)
+	if err != nil {
+		t.Fatal(err)
+	}
+	qos1 := testEncode(t, encoder, Publish{Version: ProtocolV311, QoS: QoSAtLeastOnce, PacketID: 0x1234, Topic: "a", Payload: []byte("hello")})
+	if want := []byte{0x32, 0x0A, 0x00, 0x01, 'a', 0x12, 0x34, 'h', 'e', 'l', 'l', 'o'}; !bytes.Equal(qos1, want) {
+		t.Fatalf("QoS 1 PUBLISH = %v, want %v", qos1, want)
+	}
+	qos2 := testEncode(t, encoder, Publish{Version: ProtocolV5, QoS: QoSExactlyOnce, PacketID: 7, Topic: "a", Payload: []byte("hello")})
+	if want := []byte{0x34, 0x0B, 0x00, 0x01, 'a', 0x00, 0x07, 0x00, 'h', 'e', 'l', 'l', 'o'}; !bytes.Equal(qos2, want) {
+		t.Fatalf("QoS 2 PUBLISH = %v, want %v", qos2, want)
+	}
+
+	decoder, err := NewDecoder(maxRemainingLength)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, testCase := range []struct {
+		name  string
+		frame []byte
+	}{
+		{name: "qos-one-zero-packet-id", frame: testFrame(0x32, []byte{0, 1, 'a', 0, 0})},
+		{name: "qos-two-zero-packet-id", frame: testFrame(0x34, []byte{0, 1, 'a', 0, 0})},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			_, consumed, err := decoder.Decode(testCase.frame, ProtocolV311)
+			if !errors.Is(err, ErrMalformedPacket) || consumed != 0 {
+				t.Fatalf("Decode() = (consumed %d, error %v), want malformed with zero consumption", consumed, err)
+			}
+		})
+	}
+	for _, publish := range []Publish{
+		{Version: ProtocolV311, QoS: QoSAtMostOnce, PacketID: 1, Topic: "a"},
+		{Version: ProtocolV311, QoS: QoSAtLeastOnce, Topic: "a"},
+		{Version: ProtocolV311, QoS: QoS(3), PacketID: 1, Topic: "a"},
+	} {
+		if _, err := encoder.Append(nil, publish); !errors.Is(err, ErrMalformedPacket) {
+			t.Fatalf("Append(%#v) error = %v, want malformed", publish, err)
+		}
+	}
+}
 
 func TestPublishRejectsQoSAndMalformedTopics_MQTT331_1_2_MQTT333_1_2(t *testing.T) {
 	decoder, err := NewDecoder(maxRemainingLength)
@@ -86,8 +138,8 @@ func TestPublishRejectsQoSAndMalformedTopics_MQTT331_1_2_MQTT333_1_2(t *testing.
 		want    error
 		trace   string
 	}{
-		{name: "qos-one", frame: append([]byte{0x32}, validV311[1:]...), version: ProtocolV311, want: ErrUnsupportedQoS, trace: "PRD MQTT-12/TEST-03; MQTT-3.3.1-2"},
-		{name: "qos-two", frame: append([]byte{0x34}, validV311[1:]...), version: ProtocolV311, want: ErrUnsupportedQoS, trace: "PRD MQTT-12/TEST-03; MQTT-3.3.1-2"},
+		{name: "qos-one-missing-packet-id", frame: append([]byte{0x32}, validV311[1:]...), version: ProtocolV311, want: ErrMalformedPacket, trace: "PRD MQTT-02/TEST-03; MQTT-3.3.1-2"},
+		{name: "qos-two-missing-packet-id", frame: append([]byte{0x34}, validV311[1:]...), version: ProtocolV311, want: ErrMalformedPacket, trace: "PRD MQTT-02/TEST-03; MQTT-3.3.1-2"},
 		{name: "qos-three", frame: append([]byte{0x36}, validV311[1:]...), version: ProtocolV311, want: ErrMalformedPacket, trace: "PRD MQTT-12/TEST-03; MQTT-3.3.1-2"},
 		{name: "dup-on-qos-zero", frame: append([]byte{0x38}, validV311[1:]...), version: ProtocolV311, want: ErrMalformedPacket, trace: "PRD MQTT-12/TEST-03; MQTT-3.3.1-2"},
 		{name: "empty-topic", frame: testFrame(0x30, []byte{0, 0}), version: ProtocolV311, want: ErrMalformedPacket, trace: "PRD MQTT-12/TEST-03; MQTT-3.3.2-1"},

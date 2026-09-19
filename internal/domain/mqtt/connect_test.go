@@ -71,6 +71,26 @@ func TestConnectRoundTripAndOwnership_MQTT311_MQTT312_MQTT313_MQTT320(t *testing
 			},
 			trace: "PRD MQTT-01/TEST-04; MQTT-3.1.3-1/3/4/11/12",
 		},
+		{
+			name: "v5-finite-session-expiry",
+			input: Connect{
+				Version:               ProtocolV5,
+				CleanStart:            false,
+				SessionExpiryInterval: 1,
+				ClientID:              "client-finite",
+			},
+			trace: "PRD MQTT-03/TEST-03; MQTT-3.1.2-11; MQTT-3.1.3-1",
+		},
+		{
+			name: "v5-never-expire-session",
+			input: Connect{
+				Version:               ProtocolV5,
+				CleanStart:            false,
+				SessionExpiryInterval: ^uint32(0),
+				ClientID:              "client-never",
+			},
+			trace: "PRD MQTT-03/TEST-03; MQTT-3.1.2-11; MQTT-3.1.3-1",
+		},
 	}
 	decoder, err := NewDecoder(maxRemainingLength)
 	if err != nil {
@@ -112,11 +132,26 @@ func TestConnectCanonicalWire_MQTT311_MQTT5(t *testing.T) {
 	if !bytes.Equal(v5, wantV5) {
 		t.Fatalf("MQTT 5 wire = %v, want %v", v5, wantV5)
 	}
+	finite := testEncode(t, encoder, Connect{Version: ProtocolV5, CleanStart: true, SessionExpiryInterval: 1, ClientID: "a"})
+	wantFinite := []byte{0x10, 0x13, 0x00, 0x04, 'M', 'Q', 'T', 'T', 0x05, 0x02, 0x00, 0x00, 0x05, 0x11, 0x00, 0x00, 0x00, 0x01, 0x00, 0x01, 'a'}
+	if !bytes.Equal(finite, wantFinite) {
+		t.Fatalf("MQTT 5 finite Session Expiry wire = %v, want %v", finite, wantFinite)
+	}
+	never := testEncode(t, encoder, Connect{Version: ProtocolV5, CleanStart: true, SessionExpiryInterval: ^uint32(0), ClientID: "a"})
+	wantNever := []byte{0x10, 0x13, 0x00, 0x04, 'M', 'Q', 'T', 'T', 0x05, 0x02, 0x00, 0x00, 0x05, 0x11, 0xFF, 0xFF, 0xFF, 0xFF, 0x00, 0x01, 'a'}
+	if !bytes.Equal(never, wantNever) {
+		t.Fatalf("MQTT 5 never-expire Session Expiry wire = %v, want %v", never, wantNever)
+	}
 }
 
 func TestConnectRejectsMalformedFields_MQTT311_2_2_2_1_MQTT5_1_5_5_1(t *testing.T) {
 	validBody := func() []byte {
 		return []byte{0x00, 0x04, 'M', 'Q', 'T', 'T', 0x04, 0x02, 0x00, 0x00, 0x00, 0x01, 'a'}
+	}
+	v5Body := func(properties []byte) []byte {
+		body := []byte{0x00, 0x04, 'M', 'Q', 'T', 'T', 0x05, 0x02, 0x00, 0x00}
+		body = append(body, properties...)
+		return append(body, 0x00, 0x01, 'a')
 	}
 	cases := []struct {
 		name    string
@@ -209,6 +244,27 @@ func TestConnectRejectsMalformedFields_MQTT311_2_2_2_1_MQTT5_1_5_5_1(t *testing.
 			version: ProtocolV5,
 			want:    ErrMalformedPacket,
 			trace:   "PRD MQTT-01/TEST-03; PRD MQTT-12/TEST-03; MQTT-3.1.2-1",
+		},
+		{
+			name:    "v5-unknown-session-property",
+			frame:   testFrame(0x10, v5Body([]byte{1, 0x22})),
+			version: ProtocolUnknown,
+			want:    ErrUnsupportedProperty,
+			trace:   "PRD MQTT-03/TEST-03; MQTT-1.5.5-1",
+		},
+		{
+			name:    "v5-duplicate-session-expiry",
+			frame:   testFrame(0x10, v5Body([]byte{10, 0x11, 0, 0, 0, 1, 0x11, 0, 0, 0, 2})),
+			version: ProtocolUnknown,
+			want:    ErrMalformedPacket,
+			trace:   "PRD MQTT-03/TEST-03; MQTT-3.1.2-11",
+		},
+		{
+			name:    "v5-truncated-session-expiry",
+			frame:   testFrame(0x10, v5Body([]byte{4, 0x11, 0, 0, 0})),
+			version: ProtocolUnknown,
+			want:    ErrMalformedPacket,
+			trace:   "PRD MQTT-03/TEST-03; MQTT-3.1.2-11",
 		},
 	}
 	decoder, err := NewDecoder(maxRemainingLength)
