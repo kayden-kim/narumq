@@ -9,7 +9,7 @@
 | 관련 기준 문서 | [PRD](../requirements/PRD.md) (NFR-11~14), [Broker core architecture](../architectures/broker-core.md), [Project structure](../architectures/project-structure.md) |
 | 대상 version·확인일 | Target Draft |
 
-아래 package와 type 이름은 아직 production source가 없는 `Target` 예시다.
+아래에서 `Target example`로 표시한 package와 type은 아직 production source가 없는 예시다. 다만 현재 구현된 `internal/application/connect`, `internal/adapters/tcp`, `internal/adapters/memory/sessionstore`의 lifecycle·ingress·session 저장 경계는 해당 source와 test를 기준으로 읽는다.
 
 ## 읽고 나면 답할 수 있는 질문
 

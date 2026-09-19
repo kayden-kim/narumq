@@ -245,7 +245,7 @@
     <div class="wrap">
       <span class="eyebrow">NaruMQ · MQTT protocol, delivery, and session domain</span>
       <h1>MQTT protocol spec와<br><span style="color: var(--cyan)">domain 구현</span>이 만나는 지점</h1>
-      <p class="lede">이 artifact는 NaruMQ의 MQTT protocol baseline과, <code>internal/domain/mqtt</code> codec·<code>internal/domain/routing</code> wildcard 정책·<code>internal/application</code> orchestration·<code>internal/adapters/memory/deliveryqueue</code> bounded queue·<code>delivery</code> inflight 정책·<code>session</code> expiry lifecycle이 검증된 domain 값과 action으로 바뀌는 과정을 연결해 설명합니다.</p>
+      <p class="lede">이 artifact는 NaruMQ의 MQTT protocol baseline과, <code>internal/domain/mqtt</code> codec·<code>internal/domain/routing</code> wildcard 정책·<code>internal/application/connect</code> session lifecycle·<code>internal/application/subscribe</code>/<code>publish</code> orchestration·<code>internal/application/ports/deliveryqueue</code> bounded queue·<code>internal/adapters/tcp</code> loopback ingress가 검증된 domain 값과 wire action으로 바뀌는 과정을 연결해 설명합니다.</p>
       <div class="badges">
         <span class="badge">MQTT 3.1.1</span>
         <span class="badge">MQTT 5.0</span>
@@ -261,6 +261,7 @@
         <span class="badge">+ / # routing</span>
         <span class="badge">bounded delivery queue</span>
         <span class="badge">Session Expiry</span>
+        <span class="badge">single-node loopback TCP</span>
       </div>
     </div>
   </header>
@@ -271,8 +272,8 @@
       <h2>무엇을 해결하는가</h2>
       <div class="grid two">
         <article class="card accent">
-          <h3>입력: wire bytes</h3>
-          <p>TCP adapter가 나중에 전달할 MQTT byte frame입니다. 현재 package는 socket을 열지 않고, 전달받은 buffer만 검사합니다.</p>
+          <h3>입력: loopback TCP wire bytes</h3>
+          <p>개발 profile의 <code>internal/adapters/tcp.Server</code>가 받은 MQTT byte frame입니다. listener는 literal loopback 주소로만 열리고, decoder가 packet boundary와 version을 검증합니다.</p>
           <pre><code>10 0D 00 04 4D 51 54 54 04 02 00 00 00 01 61</code></pre>
         </article>
         <article class="card accent">
@@ -287,7 +288,7 @@
       </div>
       <div class="card soft" style="margin-top: 18px">
         <h3>이 설명이 연결하는 스펙 기준선</h3>
-        <p>아래 문서는 “어떤 외부 동작을 지켜야 하는가”를 정의하고, source와 test는 그중 현재 codec slice가 실제로 구현한 부분을 보여줍니다.</p>
+        <p>아래 문서는 “어떤 외부 동작을 지켜야 하는가”를 정의하고, source와 test는 그중 현재 single-node ingress slice가 실제로 구현한 부분을 보여줍니다.</p>
         <table>
           <thead><tr><th>기준</th><th>현재 artifact에서 보는 구현</th></tr></thead>
           <tbody>
@@ -303,7 +304,7 @@
             <tr><td><a href="../decisions/ADR-0001-core-implementation-language.md">ADR-0001</a></td><td>parser·encoder·domain policy를 I/O 경계 밖에 두는 결정</td></tr>
           </tbody>
         </table>
-        <div class="callout"><strong>범위 구분</strong><span>현재 source는 MQTT 3.1.1/5.0 CONNECT·CONNACK·PUBLISH·SUBSCRIBE·UNSUBSCRIBE와 관련 ACK codec, MQTT 5 Session Expiry, non-shared wildcard routing, ordered subscribe orchestration, session별 bounded delivery queue, 순수 delivery/session state machine까지 구현합니다. TCP/TLS listener, shared subscription 선택, retained message, ACL·tenant, persistence와 durable quorum ACK는 아직 바깥 경계입니다.</span></div>
+        <div class="callout"><strong>범위 구분</strong><span>현재 source는 MQTT 3.1.1/5.0 CONNECT·CONNACK·PUBLISH·SUBSCRIBE·UNSUBSCRIBE·PING·DISCONNECT와 관련 ACK codec, MQTT 5 Session Expiry, non-shared wildcard routing, connect/subscribe/publish orchestration, process-local session store, session별 bounded delivery queue, loopback TCP connection lifecycle을 구현합니다. TLS·인증·tenant/ACL, shared subscription 선택, retained message, Will, takeover, persistence와 durable quorum ACK는 아직 바깥 경계입니다.</span></div>
       </div>
       <div class="callout"><strong>핵심 계약</strong><span>Decode 실패는 항상 <code>consumed == 0</code>이고, 반환 packet의 문자열·byte slice는 입력 buffer와 독립적입니다.</span></div>
     </section>
@@ -311,30 +312,34 @@
     <section class="section" id="flow">
       <div class="section-label">02 · Boundary</div>
       <h2>전체 흐름에서 맡은 위치</h2>
-      <div class="flow" aria-label="MQTT codec data flow">
-        <div class="flow-step"><span class="number">01</span><strong>wire []byte</strong><small>미래의 TCP/TLS adapter 입력</small></div>
-        <div class="flow-step"><span class="number">02</span><strong>Decoder.Decode</strong><small>경계·version·내용 검증</small></div>
-        <div class="flow-step"><span class="number">03</span><strong>Packet</strong><small>domain이 소유하는 값</small></div>
-        <div class="flow-step"><span class="number">04</span><strong>Encoder.Append</strong><small>검증 후 canonical wire 생성</small></div>
-        <div class="flow-step"><span class="number">05</span><strong>wire []byte</strong><small>미래의 outbound adapter 출력</small></div>
+      <div class="flow" aria-label="MQTT single-node ingress data flow">
+        <div class="flow-step"><span class="number">01</span><strong>loopback TCP read</strong><small>bounded input buffer와 CONNECT timeout</small></div>
+        <div class="flow-step"><span class="number">02</span><strong>Decoder.Decode</strong><small>frame boundary·version·내용 검증</small></div>
+        <div class="flow-step"><span class="number">03</span><strong>use case + domain</strong><small>session·routing·queue policy</small></div>
+        <div class="flow-step"><span class="number">04</span><strong>Encoder.Append</strong><small>canonical CONNACK·ACK·PUBLISH 생성</small></div>
+        <div class="flow-step"><span class="number">05</span><strong>single writer</strong><small>control priority·delivery FIFO·write timeout</small></div>
+        <div class="flow-step"><span class="number">06</span><strong>loopback TCP write</strong><small>client가 읽는 wire frame</small></div>
       </div>
       <div class="card soft">
-        <p><strong style="color: var(--text)">현재 존재하는 연결:</strong> codec과 policy는 직접 호출 가능한 순수 domain package이고, subscribe/publish use case와 memory queue adapter가 gate 3 vertical slice로 연결되어 있습니다. 실제 TCP listener, shared routing, retained storage와 durable persistence는 아직 이 구현에 연결되어 있지 않습니다.</p>
-        <div class="tree"><span class="folder">internal/</span>
+        <p><strong style="color: var(--text)">현재 존재하는 연결:</strong> loopback TCP adapter가 packet boundary를 domain decoder에 넘기고, connect use case가 session/queue lifecycle을 조정합니다. subscribe와 QoS 0 publish가 같은 routing·delivery queue를 사용하며, writer goroutine이 CONNACK/ACK/PINGRESP와 delivery를 직렬화합니다. TLS, shared routing, retained storage와 durable persistence는 아직 이 구현에 연결되어 있지 않습니다.</p>
+        <div class="tree"><span class="folder">cmd/</span>
+├── <span class="folder">narumq/</span>        <span class="comment"># loopback-only composition root</span>
+│   └── <span class="file">main.go</span>       <span class="comment"># flags, wiring, signal lifecycle</span>
+<span class="folder">internal/</span>
 ├── <span class="folder">domain/</span>
 │   ├── <span class="folder">mqtt/</span>       <span class="comment"># wire packet codec</span>
-│   │   ├── <span class="file">packet.go</span>   <span class="comment"># Packet, QoS, packet types</span>
-│   │   ├── <span class="file">decoder.go</span>  <span class="comment"># frame boundary와 dispatch</span>
-│   │   ├── <span class="file">encoder.go</span>  <span class="comment"># validation과 canonical append</span>
-│   │   ├── <span class="file">subscription.go</span> <span class="comment"># SUBSCRIBE 계열</span>
-│   │   └── <span class="file">framing.go</span>  <span class="comment"># Remaining Length와 ownership helper</span>
-│   └── <span class="folder">routing/</span>   <span class="comment"># non-shared wildcard table</span>
-│       └── <span class="file">routing.go</span> <span class="comment"># validation, match, overlap QoS</span>
+│   ├── <span class="folder">session/</span>    <span class="comment"># clean/expiry lifecycle value</span>
+│   └── <span class="folder">routing/</span>    <span class="comment"># non-shared wildcard table</span>
 ├── <span class="folder">application/</span>
-│   ├── <span class="folder">subscribe/</span> <span class="comment"># ordered ACK orchestration</span>
-│   └── <span class="folder">publish/</span>   <span class="comment"># delivery port and results</span>
-└── <span class="folder">adapters/memory/deliveryqueue/</span>
-    └── <span class="file">queue.go</span>      <span class="comment"># fixed per-session FIFO</span></div>
+│   ├── <span class="folder">connect/</span>    <span class="comment"># session/queue lifecycle</span>
+│   ├── <span class="folder">subscribe/</span>  <span class="comment"># ordered ACK orchestration</span>
+│   ├── <span class="folder">publish/</span>    <span class="comment"># route and delivery result</span>
+│   └── <span class="folder">ports/deliveryqueue/</span> <span class="comment"># shared outbound port</span>
+└── <span class="folder">adapters/</span>
+    ├── <span class="folder">tcp/</span>        <span class="comment"># bounded ingress and writer</span>
+    ├── <span class="folder">memory/deliveryqueue/</span> <span class="comment"># fixed FIFO</span>
+    ├── <span class="folder">memory/sessionstore/</span> <span class="comment"># process-local sessions</span>
+    └── <span class="folder">clock/</span>       <span class="comment"># system time adapter</span></div>
       </div>
     </section>
 
@@ -353,6 +358,7 @@
               <tr><td><strong>PubAck · PubRec · PubRel · PubComp</strong></td><td>version, Packet Identifier, reason code</td></tr>
               <tr><td><strong>Subscribe</strong></td><td>Packet Identifier, ordered filters, requested QoS, MQTT 5 option bits</td></tr>
               <tr><td><strong>SubAck · Unsubscribe · UnsubAck</strong></td><td>ordered reason codes, property-free MQTT 5 profile, filter ownership</td></tr>
+              <tr><td><strong>PingReq · PingResp · Disconnect</strong></td><td>version, fixed flags, MQTT 5 DISCONNECT reason allowlist와 property-free body</td></tr>
             </tbody>
           </table>
         </article>
@@ -362,7 +368,7 @@
     packetType() PacketType
     packetVersion() ProtocolVersion
 }</code></pre>
-          <p class="code-caption"><a href="../../internal/domain/mqtt/packet.go#L58-L65">packet.go:58-65</a></p>
+          <p class="code-caption"><a href="../../internal/domain/mqtt/packet.go#L64-L71">packet.go:64-71</a></p>
           <p>method가 package 밖으로 export되지 않으므로 외부 adapter가 임의 packet을 codec에 끼워 넣을 수 없습니다. codec이 알고 검증할 수 있는 packet만 wire로 변환됩니다.</p>
         </article>
       </div>
@@ -377,7 +383,7 @@
           <div class="timeline-item"><div><h3>Fixed Header 확인</h3><p>상위 4비트에서 packet type을 얻고, 하위 flag가 해당 packet 규칙과 맞는지 확인합니다.</p></div></div>
           <div class="timeline-item"><div><h3>Version context 확인</h3><p>CONNECT만 <code>ProtocolUnknown</code>으로 시작할 수 있습니다. CONNACK, PUBLISH와 ACK packet은 caller가 version을 제공해야 합니다.</p></div></div>
           <div class="timeline-item"><div><h3>Remaining Length 확인</h3><p>canonical variable-byte encoding인지 확인하고, 설정된 limit를 body slice보다 먼저 검사합니다.</p></div></div>
-          <div class="timeline-item"><div><h3>Packet별 decoder 호출</h3><p>CONNECT, CONNACK, PUBLISH, PUBACK/PUBREC/PUBREL/PUBCOMP와 SUBSCRIBE/SUBACK/UNSUBSCRIBE/UNSUBACK로 dispatch합니다. 성공하면 첫 frame의 소비 byte 수를 반환합니다.</p></div></div>
+          <div class="timeline-item"><div><h3>Packet별 decoder 호출</h3><p>CONNECT, CONNACK, PUBLISH, PUBACK/PUBREC/PUBREL/PUBCOMP, SUBSCRIBE/SUBACK/UNSUBSCRIBE/UNSUBACK와 PINGREQ/PINGRESP/DISCONNECT로 dispatch합니다. 성공하면 첫 frame의 소비 byte 수를 반환합니다.</p></div></div>
         </div>
         <pre><code>remainingLength, lengthBytes, err := decodeVariableByteInteger(src[1:])
 if err != nil {
@@ -475,7 +481,7 @@ body := src[frameHeaderLength : frameHeaderLength+remainingLength]</code></pre>
 dst = append(dst, fixedHeader)
 dst = appendVariableByteInteger(dst, len(body))
 dst = append(dst, body...)</code></pre>
-        <p class="code-caption"><a href="../../internal/domain/mqtt/encoder.go#L144-L151">encoder.go:144-151</a></p>
+        <p class="code-caption"><a href="../../internal/domain/mqtt/encoder.go#L171-L178">encoder.go:171-178</a></p>
         <p>packet body validation이 끝난 뒤에만 <code>dst</code>를 변경하므로, malformed packet이나 크기 초과가 기존 destination을 훼손하지 않습니다.</p>
       </div>
     </section>
@@ -625,6 +631,10 @@ dst = append(dst, body...)</code></pre>
               <tr><td><a href="../../internal/adapters/memory/deliveryqueue/queue_test.go">queue_test.go</a></td><td>capacity, FIFO drain, re-registration, remove, payload ownership</td></tr>
               <tr><td><a href="../../internal/domain/delivery/state_test.go">delivery/state_test.go</a></td><td>handshake, duplicate convergence, Resume, wrong order</td></tr>
               <tr><td><a href="../../internal/domain/session/state_test.go">session/state_test.go</a></td><td>Clean Start, Session Present, deadline boundaries</td></tr>
+              <tr><td><a href="../../internal/domain/mqtt/control_test.go">control_test.go</a></td><td>PINGREQ/PINGRESP/DISCONNECT flags, version body, reason/property validation</td></tr>
+              <tr><td><a href="../../internal/application/connect/connect_test.go">connect_test.go</a></td><td>clean/resume/expiry lifecycle, duplicate and rollback behavior</td></tr>
+              <tr><td><a href="../../internal/adapters/tcp/server_test.go">server_test.go</a></td><td>fragmented/multiple frames, timeout, keepalive, single-writer ordering, bounded control/delivery queue saturation, cancellation and write-timeout closure</td></tr>
+              <tr><td><a href="../../tests/integration/mqtt_ingress_test.go">mqtt_ingress_test.go</a></td><td>real loopback MQTT 3.1.1/5.0 CONNECT, fan-out, Session Present, PING and negative QoS ACK/close flows</td></tr>
             </tbody>
           </table>
         </article>
@@ -652,24 +662,25 @@ dst = append(dst, body...)</code></pre>
             <li>CONNECT version discovery와 Session Expiry <code>0x11</code></li>
             <li>CONNACK reason/session invariant</li>
             <li>QoS 0/1/2 PUBLISH와 four acknowledgement packet</li>
-            <li>SUBSCRIBE/SUBACK/UNSUBSCRIBE/UNSUBACK와 property-free subscription profile</li>
+            <li>SUBSCRIBE/SUBACK/UNSUBSCRIBE/UNSUBACK, PINGREQ/PINGRESP/DISCONNECT와 property-free profile</li>
             <li>non-shared <code>+</code>·<code>#</code> wildcard routing과 system topic boundary</li>
-            <li>ordered subscribe ACK, overlap one-copy/max-QoS와 idempotent unsubscribe</li>
-            <li>session별 bounded FIFO delivery queue와 saturation/unavailable result</li>
+            <li>connect use case의 clean/resume/expiry lifecycle와 process-local session store</li>
             <li>delivery outbound/inbound value-state와 duplicate convergence</li>
             <li>session Clean Start, Session Present와 deterministic deadline</li>
+            <li>ordered subscribe ACK, QoS 0 publish fan-out, overlap one-copy/max-QoS와 idempotent unsubscribe</li>
+            <li>shared application delivery queue의 session별 bounded FIFO, saturation/unavailable result</li>
+            <li>loopback-only TCP ingress, CONNECT timeout, keepalive, negotiated dispatch와 single writer</li>
             <li>canonical framing, packet limit, input/destination ownership</li>
           </ul>
         </article>
         <article class="card limit">
           <h3>다음 경계에 있는 기능</h3>
           <ul class="scope-list out">
-            <li>TCP/TLS listener와 connection lifecycle</li>
-            <li>인증, tenant binding과 ACL authorization</li>
+            <li>TLS listener, external bind와 인증·tenant binding·ACL authorization</li>
             <li>shared subscription member 선택과 failover</li>
-            <li>retained message, expiry와 MQTT 5 subscription option runtime</li>
-            <li>persistence, replication, quorum durable ACK</li>
-            <li>Receive Maximum, quota와 Will timer</li>
+            <li>retained message, Will, Receive Maximum, quota와 full MQTT 5 option runtime</li>
+            <li>session takeover과 MQTT 5 <code>DISCONNECT 0x8E</code> handoff</li>
+            <li>persistence, replication, quorum durable ACK와 offline queue</li>
             <li>지원 범위를 넘는 MQTT 5 property 의미 해석</li>
           </ul>
         </article>
@@ -719,10 +730,17 @@ dst = append(dst, body...)</code></pre>
       <a href="../../internal/domain/mqtt/connack.go">connack.go</a>
       <a href="../../internal/domain/mqtt/errors.go">errors.go</a>
       <a href="../../internal/domain/mqtt/ack.go">ack.go</a>
+      <a href="../../internal/domain/mqtt/control.go">control.go</a>
       <a href="../../internal/domain/mqtt/subscription.go">subscription.go</a>
       <a href="../../internal/domain/routing/routing.go">routing.go</a>
       <a href="../../internal/application/subscribe/subscribe.go">subscribe.go</a>
       <a href="../../internal/application/publish/publish.go">publish.go</a>
+      <a href="../../internal/application/connect/connect.go">connect.go</a>
+      <a href="../../internal/application/ports/deliveryqueue/queue.go">deliveryqueue port</a>
+      <a href="../../internal/adapters/tcp/server.go">tcp/server.go</a>
+      <a href="../../internal/adapters/memory/sessionstore/store.go">sessionstore/store.go</a>
+      <a href="../../internal/adapters/clock/clock.go">clock/clock.go</a>
+      <a href="../../cmd/narumq/main.go">cmd/narumq/main.go</a>
       <a href="../../internal/adapters/memory/deliveryqueue/queue.go">queue.go</a>
       <a href="../../internal/domain/delivery/state.go">delivery/state.go</a>
       <a href="../../internal/domain/session/state.go">session/state.go</a>

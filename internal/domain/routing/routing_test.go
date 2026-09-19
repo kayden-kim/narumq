@@ -156,6 +156,31 @@ func TestSubscriptionReplacementUnsubscribeAndOverlapQoS(t *testing.T) {
 	}
 }
 
+// Traceability: PRD MQTT-03/TEST-03/04; stale subscriptions are removed when
+// a session is replaced or expires.
+func TestRemoveSessionIsAtomicAndIdempotent(t *testing.T) {
+	table := NewTable()
+	if err := table.Subscribe("client", "sensors/#", mqtt.QoSAtMostOnce); err != nil {
+		t.Fatal(err)
+	}
+	if err := table.Subscribe("client", "alerts/#", mqtt.QoSAtLeastOnce); err != nil {
+		t.Fatal(err)
+	}
+	if !table.RemoveSession("client") {
+		t.Fatal("first RemoveSession() = false, want true")
+	}
+	if table.RemoveSession("client") {
+		t.Fatal("second RemoveSession() = true, want false")
+	}
+	matches, err := table.Match("sensors/room", mqtt.QoSExactlyOnce)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(matches) != 0 {
+		t.Fatalf("matches after RemoveSession() = %#v, want empty", matches)
+	}
+}
+
 // Traceability: PRD MQTT-06/MQTT-12/TEST-04; MQTT-1.5.3-1/2 and MQTT-4.7.1-1/2.
 func TestRoutingValidationErrors(t *testing.T) {
 	table := NewTable()

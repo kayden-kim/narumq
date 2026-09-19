@@ -5,18 +5,19 @@ import (
 	"reflect"
 	"testing"
 
+	applicationdeliveryqueue "narumq/internal/application/ports/deliveryqueue"
 	"narumq/internal/domain/mqtt"
 	"narumq/internal/domain/routing"
 )
 
 type recordingQueue struct {
-	deliveries []DeliveryDTO
+	deliveries []applicationdeliveryqueue.DeliveryDTO
 	errors     map[routing.SessionID]error
 	calls      []routing.SessionID
 }
 
-// recordingQueue models the DeliveryQueue contract by copying retained payloads.
-func (queue *recordingQueue) TryEnqueue(delivery DeliveryDTO) error {
+// recordingQueue models the application delivery queue contract by copying retained payloads.
+func (queue *recordingQueue) TryEnqueue(delivery applicationdeliveryqueue.DeliveryDTO) error {
 	queue.calls = append(queue.calls, delivery.SessionID)
 	if err := queue.errors[delivery.SessionID]; err != nil {
 		return err
@@ -26,6 +27,16 @@ func (queue *recordingQueue) TryEnqueue(delivery DeliveryDTO) error {
 	}
 	queue.deliveries = append(queue.deliveries, delivery)
 	return nil
+}
+
+func (queue *recordingQueue) Register(sessionID routing.SessionID) error {
+	return nil
+}
+
+func (queue *recordingQueue) Remove(sessionID routing.SessionID) {}
+
+func (queue *recordingQueue) Drain(sessionID routing.SessionID) ([]applicationdeliveryqueue.DeliveryDTO, error) {
+	return nil, nil
 }
 
 // Traceability: PRD MQTT-02/MQTT-06/MQTT-11/TEST-04/05; docs/specs/mqtt-protocol-and-session.md §3.2 and §7.
@@ -92,8 +103,8 @@ func TestPublishContinuesAfterSaturationAndUnavailableSessions(t *testing.T) {
 		}
 	}
 	queue := &recordingQueue{errors: map[routing.SessionID]error{
-		"b": ErrQueueFull,
-		"c": ErrQueueUnavailable,
+		"b": applicationdeliveryqueue.ErrFull,
+		"c": applicationdeliveryqueue.ErrUnavailable,
 	}}
 	useCase, err := New(routes, queue)
 	if err != nil {

@@ -127,6 +127,9 @@ func TestConnectProtocolVersionAndPacketContracts_MQTT01_MQTT13_MQTT312_MQTT313(
 		{name: "PUBCOMP", packet: PubComp{Version: ProtocolV5}, packetType: PacketTypePubComp, version: ProtocolV5},
 		{name: "SUBACK", packet: SubAck{Version: ProtocolV5}, packetType: PacketTypeSubAck, version: ProtocolV5},
 		{name: "UNSUBACK", packet: UnsubAck{Version: ProtocolV311}, packetType: PacketTypeUnsubAck, version: ProtocolV311},
+		{name: "PINGREQ", packet: PingReq{Version: ProtocolV5}, packetType: PacketTypePingReq, version: ProtocolV5},
+		{name: "PINGRESP", packet: PingResp{Version: ProtocolV5}, packetType: PacketTypePingResp, version: ProtocolV5},
+		{name: "DISCONNECT", packet: Disconnect{Version: ProtocolV5}, packetType: PacketTypeDisconnect, version: ProtocolV5},
 	}
 	for _, testCase := range ackCases {
 		t.Run(testCase.name+" packet contract", func(t *testing.T) {

@@ -6,38 +6,17 @@ package publish
 import (
 	"errors"
 
+	"narumq/internal/application/ports/deliveryqueue"
 	"narumq/internal/domain/mqtt"
 	"narumq/internal/domain/routing"
 )
 
 var (
-	// ErrQueueFull means that a registered session reached its item capacity.
-	ErrQueueFull = errors.New("delivery queue full")
-	// ErrQueueUnavailable means that a session has no registered delivery queue.
-	ErrQueueUnavailable = errors.New("delivery queue unavailable")
 	// ErrNilRoutingTable means that publish has no route policy.
 	ErrNilRoutingTable = errors.New("publish routing table is nil")
 	// ErrNilDeliveryQueue means that publish has no delivery port.
 	ErrNilDeliveryQueue = errors.New("publish delivery queue is nil")
 )
-
-// DeliveryDTO is the application boundary value handed to one session queue.
-type DeliveryDTO struct {
-	SessionID routing.SessionID
-	Topic     string
-	Payload   []byte
-	QoS       mqtt.QoS
-	Retain    bool
-}
-
-// DeliveryQueue is the outbound capability required by the publish use case.
-//
-// TryEnqueue reads DeliveryDTO.Payload synchronously, treats it as read-only,
-// and copies it before retaining the delivery. Publish does not retain or
-// mutate the source packet payload.
-type DeliveryQueue interface {
-	TryEnqueue(delivery DeliveryDTO) error
-}
 
 // ResultDTO reports each session-level delivery outcome in routing order.
 type ResultDTO struct {
@@ -49,11 +28,11 @@ type ResultDTO struct {
 // UseCase routes one validated publication to all matching sessions.
 type UseCase struct {
 	routes *routing.Table
-	queue  DeliveryQueue
+	queue  deliveryqueue.Queue
 }
 
 // New creates a publish use case over the supplied route table and queue port.
-func New(routes *routing.Table, queue DeliveryQueue) (*UseCase, error) {
+func New(routes *routing.Table, queue deliveryqueue.Queue) (*UseCase, error) {
 	if routes == nil {
 		return nil, ErrNilRoutingTable
 	}
@@ -77,7 +56,7 @@ func (useCase *UseCase) Publish(packet mqtt.Publish) (ResultDTO, error) {
 		Unavailable: make([]routing.SessionID, 0),
 	}
 	for _, match := range matches {
-		delivery := DeliveryDTO{
+		delivery := deliveryqueue.DeliveryDTO{
 			SessionID: match.SessionID,
 			Topic:     packet.Topic,
 			Payload:   packet.Payload,
@@ -88,9 +67,9 @@ func (useCase *UseCase) Publish(packet mqtt.Publish) (ResultDTO, error) {
 		switch {
 		case err == nil:
 			result.Delivered = append(result.Delivered, match.SessionID)
-		case errors.Is(err, ErrQueueFull):
+		case errors.Is(err, deliveryqueue.ErrFull):
 			result.Saturated = append(result.Saturated, match.SessionID)
-		case errors.Is(err, ErrQueueUnavailable):
+		case errors.Is(err, deliveryqueue.ErrUnavailable):
 			result.Unavailable = append(result.Unavailable, match.SessionID)
 		default:
 			return result, err

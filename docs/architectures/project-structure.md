@@ -4,10 +4,10 @@ NaruMQ source tree는 MQTT·session·routing·delivery·tenancy·security·clust
 
 | 항목 | 값 |
 | --- | --- |
-| 관점 상태 | Current Phase 0 slice / Target |
+| 관점 상태 | Current Phase 0 gate 3 / single-node ingress vertical slice |
 | 문서 상태 | Draft |
-| 구현 증거 | `internal/domain/mqtt`, `internal/domain/routing`, `internal/application/publish`, `internal/application/subscribe`, `internal/adapters/memory/deliveryqueue`와 각 package test |
-| 범위 | Repository root와 Go package directory 배치 |
+| 구현 증거 | `cmd/narumq`, `internal/domain/mqtt`, `internal/domain/session`, `internal/domain/routing`, `internal/application/connect`, `internal/application/publish`, `internal/application/subscribe`, `internal/application/ports/deliveryqueue`, `internal/adapters/tcp`, `internal/adapters/memory/deliveryqueue`, `internal/adapters/memory/sessionstore`, `internal/adapters/clock`와 각 package/integration test |
+| 범위 | Repository root와 Go package directory 배치 및 현재 source dependency |
 | 관련 요구사항 | [PRD](../requirements/PRD.md) NFR-11~NFR-15, TEST-01~TEST-17, DEP-19~DEP-23 |
 | 관련 결정 | [ADR-0001](../decisions/ADR-0001-core-implementation-language.md) Accepted |
 | 관련 Architecture | [Broker core architecture](broker-core.md), [EKS on EC2 deployment](eks-ec2-deployment.md) |
@@ -43,6 +43,7 @@ NaruMQ source tree는 MQTT·session·routing·delivery·tenancy·security·clust
 │   │       ├── authentication/
 │   │       ├── clock/
 │   │       ├── consensus/
+│   │       ├── deliveryqueue/
 │   │       ├── logstore/
 │   │       ├── metrics/
 │   │       ├── nodediscovery/
@@ -56,7 +57,8 @@ NaruMQ source tree는 MQTT·session·routing·delivery·tenancy·security·clust
 │       ├── kubernetes/
 │       ├── managementapi/
 │       ├── memory/
-│       │   └── deliveryqueue/
+│       │   ├── deliveryqueue/
+│       │   └── sessionstore/
 │       ├── prometheus/
 │       ├── raft/
 │       ├── random/
@@ -79,7 +81,12 @@ NaruMQ source tree는 MQTT·session·routing·delivery·tenancy·security·clust
 └── go.sum
 ```
 
-Dashboard source directory는 framework와 배포 단위 ADR이 승인될 때 추가한다. Storage migration과 generated RPC directory도 storage·transport 결정 전에는 만들지 않는다. 현재 구현된 Phase 0 gate 3 deliverable은 목표 tree의 `domain/routing`, `application/publish`, `application/subscribe`, `adapters/memory/deliveryqueue`다.
+현재 구현된 Phase 0 gate 3 + single-node ingress deliverable은 목표 tree의
+`cmd/narumq`, `domain/mqtt`, `domain/session`, `domain/routing`, `application/connect`,
+`application/publish`, `application/subscribe`, `application/ports/deliveryqueue`,
+`adapters/tcp`, `adapters/memory/deliveryqueue`, `adapters/memory/sessionstore`,
+`adapters/clock`다. TLS, durable storage, cluster transport와 management API directory는
+실제 deliverable이 생길 때 확장한다.
 
 ## Directory naming
 
@@ -132,21 +139,22 @@ flowchart LR
 
 | 실제 package | 책임 | 허용된 inward dependency |
 | --- | --- | --- |
-| `internal/domain/mqtt` | SUBSCRIBE 계열 packet wire validation·ownership | 표준 library만 |
-| `internal/domain/routing` | non-shared filter validation, wildcard match, overlap QoS | `domain/mqtt`와 표준 library |
-| `internal/application/subscribe` | ordered SUBACK/UNSUBACK reason과 route mutation orchestration | `domain/mqtt`, `domain/routing` |
-| `internal/application/publish` | route match와 delivery queue port, saturation result | `domain/mqtt`, `domain/routing` |
-| `internal/adapters/memory/deliveryqueue` | session별 fixed item capacity와 FIFO ownership | `application/publish`, `domain/routing`, 표준 library |
+| `internal/domain/mqtt` | CONNECT/CONNACK, PUBLISH, ACK, SUBSCRIBE 계열과 PING/DISCONNECT wire validation·ownership | 표준 library만 |
+| `internal/domain/session` | Clean Start, Session Expiry와 lifecycle invariant | 표준 library만 |
+| `internal/domain/routing` | non-shared filter validation, wildcard match, overlap QoS와 session cleanup | `domain/mqtt`와 표준 library |
+| `internal/application/connect` | lifecycle repository, queue/routing cleanup과 CONNACK orchestration | `domain/mqtt`, `domain/session`, `domain/routing`, `ports/deliveryqueue` |
+| `internal/application/subscribe` | ordered SUBACK/UNSUBACK reason과 route mutation | `domain/mqtt`, `domain/routing` |
+| `internal/application/publish` | route match와 shared delivery queue port, saturation result | `domain/mqtt`, `domain/routing`, `ports/deliveryqueue` |
+| `internal/application/ports/deliveryqueue` | 여러 use case가 공유하는 queue capability와 error/DTO contract | application/domain value만 |
+| `internal/adapters/memory/deliveryqueue` | session별 fixed item capacity와 FIFO ownership | `application/ports/deliveryqueue`, `domain/routing`, 표준 library |
+| `internal/adapters/memory/sessionstore` | process-local lifecycle load/save/delete | `application/connect`, `domain/session`, 표준 library |
+| `internal/adapters/clock` | system clock를 application port에 제공 | `application/connect`, 표준 library |
+| `internal/adapters/tcp` | bounded MQTT ingress, single writer와 connection lifecycle | application use cases/ports와 `domain/mqtt` |
 
-Application은 concrete memory adapter를 import하지 않는다. Queue interface는 이를 사용하는
-`application/publish`가 소유하고, 이후 composition root가 concrete adapter를 조립한다.
-
-Phase 0 gate 3의 `DeliveryQueue`는 아직 여러 use case가 공유하는 capability가 아니므로
-일반적인 `application/ports/<capability>` 목표 tree 대신 이를 직접 사용하는
-`application/publish`에 interface를 두었다. `adapters/memory/deliveryqueue`는
-memory 구현과 queue 책임을 함께 드러내는 최소 구현 경로다. 이 예외는 port 소유권
-원칙을 바꾸지 않으며, 다른 use case가 같은 capability를 요구할 때만 공용 port로
-승격한다.
+Application은 concrete adapter를 import하지 않는다. Queue, clock과 session repository
+interface는 이를 사용하는 application package가 소유하고, composition root가 구현을
+생성해 주입한다. `adapters/tcp`는 inbound adapter이므로 network 자료형을 packet과
+application 결과로 변환하는 경계에만 둔다.
 
 정확한 package allowlist는 source tree가 생긴 뒤 architecture test로 고정한다.
 
@@ -172,7 +180,9 @@ Package 이름은 기술 계층보다 제품 책임을 드러낸다.
 
 | Capability | Application-owned port | Concrete adapter | Adapter 내부 client·library |
 | --- | --- | --- | --- |
-| Session aggregate 저장·복구 | `ports/sessionstore.SessionRepository` | `adapters/storage.WALSessionRepository` | Storage engine 또는 file I/O |
+| Session aggregate 저장·복구 (target) | `ports/sessionstore.SessionRepository` | `adapters/storage.WALSessionRepository` | Storage engine 또는 file I/O |
+| 현재 session lifecycle | `application/connect.SessionRepository` | `adapters/memory/sessionstore.MemorySessionRepository` | mutex-protected process-local map |
+| 현재 clock | `application/connect.Clock` | `adapters/clock.SystemClock` | Go system clock |
 | Replicated log 저장 | `ports/logstore.LogStore` | `adapters/storage.WALLogStore` | WAL·snapshot codec |
 | Consensus proposal·commit 관찰 | `ports/consensus.ReplicationService` | `adapters/raft.RaftReplicationService` 후보 | `etcd/raft` 후보 |
 | Cluster peer message 송수신 | `ports/transport.PeerTransport` | `adapters/tcp.TCPPeerTransport` 후보 | TCP/TLS 또는 후속 RPC client |
@@ -180,9 +190,8 @@ Package 이름은 기술 계층보다 제품 책임을 드러낸다.
 | Cluster node 발견 | `ports/nodediscovery.NodeDiscovery` | `adapters/kubernetes.KubernetesNodeDiscovery` | `KubernetesClient` |
 | Metric 기록·노출 | `ports/metrics.MetricRecorder` 후보 | `adapters/prometheus.PrometheusMetricRecorder` 후보 | Prometheus registry와 OpenMetrics exposition |
 | Audit event 발행 | `ports/audit.AuditPublisher` | `adapters/audit.ExternalAuditPublisher` 후보 | 외부 audit sink client 후보 |
-| 현재 시각 제공 | `ports/clock.Clock` | `adapters/clock.SystemClock` | Go system clock |
 | Jitter·identifier용 난수 제공 | `ports/random.RandomSource` | `adapters/random.CryptoRandomSource` 후보 | Go cryptographic random source |
-| Session delivery queue | `application/publish.DeliveryQueue` | `adapters/memory/deliveryqueue.Queue` | mutex-protected FIFO item slices |
+| Session delivery queue | `application/ports/deliveryqueue.Queue` (`Register`/`Remove`/`TryEnqueue`/`Drain`) | `adapters/memory/deliveryqueue.Queue` | mutex-protected FIFO item slices |
 
 화살표로 읽으면 `UseCase → Port ← Adapter → Client·SDK → External system`이다. Source dependency는 adapter에서 port를 향한다. `cmd/narumq`가 concrete adapter를 생성해 use case에 주입한다.
 

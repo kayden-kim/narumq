@@ -6,7 +6,7 @@ import (
 	"errors"
 	"sync"
 
-	"narumq/internal/application/publish"
+	"narumq/internal/application/ports/deliveryqueue"
 	"narumq/internal/domain/routing"
 )
 
@@ -19,7 +19,7 @@ var (
 type Queue struct {
 	mu       sync.Mutex
 	capacity int
-	sessions map[routing.SessionID][]publish.DeliveryDTO
+	sessions map[routing.SessionID][]deliveryqueue.DeliveryDTO
 }
 
 // New creates a queue with a fixed item capacity per session.
@@ -29,7 +29,7 @@ func New(capacity int) (*Queue, error) {
 	}
 	return &Queue{
 		capacity: capacity,
-		sessions: make(map[routing.SessionID][]publish.DeliveryDTO),
+		sessions: make(map[routing.SessionID][]deliveryqueue.DeliveryDTO),
 	}, nil
 }
 
@@ -59,21 +59,21 @@ func (queue *Queue) Remove(sessionID routing.SessionID) {
 
 // TryEnqueue appends one owned copy or returns immediately when unavailable or
 // full. It never waits for a consumer.
-func (queue *Queue) TryEnqueue(delivery publish.DeliveryDTO) error {
+func (queue *Queue) TryEnqueue(delivery deliveryqueue.DeliveryDTO) error {
 	if queue == nil {
-		return publish.ErrQueueUnavailable
+		return deliveryqueue.ErrUnavailable
 	}
 	if err := validateSessionID(delivery.SessionID); err != nil {
-		return publish.ErrQueueUnavailable
+		return deliveryqueue.ErrUnavailable
 	}
 	queue.mu.Lock()
 	defer queue.mu.Unlock()
 	items, exists := queue.sessions[delivery.SessionID]
 	if !exists {
-		return publish.ErrQueueUnavailable
+		return deliveryqueue.ErrUnavailable
 	}
 	if len(items) >= queue.capacity {
-		return publish.ErrQueueFull
+		return deliveryqueue.ErrFull
 	}
 	delivery.Payload = cloneBytes(delivery.Payload)
 	queue.sessions[delivery.SessionID] = append(items, delivery)
@@ -82,9 +82,9 @@ func (queue *Queue) TryEnqueue(delivery publish.DeliveryDTO) error {
 
 // Drain returns a FIFO snapshot and clears the registered session queue. The
 // returned payload bytes are independent from the adapter's stored values.
-func (queue *Queue) Drain(sessionID routing.SessionID) ([]publish.DeliveryDTO, error) {
+func (queue *Queue) Drain(sessionID routing.SessionID) ([]deliveryqueue.DeliveryDTO, error) {
 	if queue == nil {
-		return nil, publish.ErrQueueUnavailable
+		return nil, deliveryqueue.ErrUnavailable
 	}
 	if err := validateSessionID(sessionID); err != nil {
 		return nil, err
@@ -93,9 +93,9 @@ func (queue *Queue) Drain(sessionID routing.SessionID) ([]publish.DeliveryDTO, e
 	defer queue.mu.Unlock()
 	items, exists := queue.sessions[sessionID]
 	if !exists {
-		return nil, publish.ErrQueueUnavailable
+		return nil, deliveryqueue.ErrUnavailable
 	}
-	drained := make([]publish.DeliveryDTO, len(items))
+	drained := make([]deliveryqueue.DeliveryDTO, len(items))
 	for index, item := range items {
 		drained[index] = item
 		drained[index].Payload = cloneBytes(item.Payload)

@@ -138,6 +138,33 @@ func (e *Encoder) Append(dst []byte, packet Packet) ([]byte, error) {
 		}
 		packetType = PacketTypeUnsubAck
 		body, err = encodeUnsubAck(*value, e.maxPacketSize)
+	case PingReq:
+		packetType = PacketTypePingReq
+		body, err = encodePingReq(value, e.maxPacketSize)
+	case *PingReq:
+		if value == nil {
+			return dst, ErrMalformedPacket
+		}
+		packetType = PacketTypePingReq
+		body, err = encodePingReq(*value, e.maxPacketSize)
+	case PingResp:
+		packetType = PacketTypePingResp
+		body, err = encodePingResp(value, e.maxPacketSize)
+	case *PingResp:
+		if value == nil {
+			return dst, ErrMalformedPacket
+		}
+		packetType = PacketTypePingResp
+		body, err = encodePingResp(*value, e.maxPacketSize)
+	case Disconnect:
+		packetType = PacketTypeDisconnect
+		body, err = encodeDisconnect(value, e.maxPacketSize)
+	case *Disconnect:
+		if value == nil {
+			return dst, ErrMalformedPacket
+		}
+		packetType = PacketTypeDisconnect
+		body, err = encodeDisconnect(*value, e.maxPacketSize)
 	default:
 		return dst, ErrMalformedPacket
 	}

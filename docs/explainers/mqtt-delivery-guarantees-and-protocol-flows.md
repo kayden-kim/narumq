@@ -324,15 +324,23 @@ Volume 복제와 NaruMQ quorum 복제는 같은 보장이 아니다. Durable ACK
 - Protocol 규범: [MQTT protocol과 session spec](../specs/mqtt-protocol-and-session.md)
 - Cluster runtime 구조: [Cluster architecture](../architectures/cluster-architecture.md)
 - Client 설정 계약: [MQTT client compatibility v1](../contracts/mqtt-client-compatibility-v1.md)
-- MQTT wire codec: [`internal/domain/mqtt`](../../internal/domain/mqtt/doc.go)의 QoS 0·1·2 PUBLISH와 ACK packet
-- QoS inflight 정책: [`internal/domain/delivery`](../../internal/domain/delivery/doc.go)의 `NewOutbound`·`NewInbound` value-state machine
+- MQTT wire codec: [`internal/domain/mqtt`](../../internal/domain/mqtt/doc.go)의 CONNECT/CONNACK, QoS 0·1·2 PUBLISH, ACK와 PING/DISCONNECT packet
 - Session lifecycle: [`internal/domain/session`](../../internal/domain/session/doc.go)의 `Open`·`Disconnect`·deadline 판정
+- QoS inflight 정책: [`internal/domain/delivery`](../../internal/domain/delivery/doc.go)의 `NewOutbound`·`NewInbound` value-state machine
 - Domain 경계: [Broker core의 계층 경계](broker-core-boundaries.md)
+- Application lifecycle: [`internal/application/connect`](../../internal/application/connect/connect.go)의 session/queue 조정
+- Routing과 delivery orchestration: [`internal/domain/routing`](../../internal/domain/routing/routing.go), [`internal/application/subscribe`](../../internal/application/subscribe/subscribe.go), [`internal/application/publish`](../../internal/application/publish/publish.go)
+- Development ingress: [`internal/adapters/tcp`](../../internal/adapters/tcp/server.go)의 loopback-only bounded TCP runtime과 [`cmd/narumq`](../../cmd/narumq/main.go)의 composition root
 - Session fencing: [세션 소유권과 fencing](session-ownership-and-fencing.md)
 - Durable ACK: [Raft quorum과 durable ACK](raft-quorum-and-durable-ack.md), [ADR-0003](../decisions/ADR-0003-durable-ack-barrier.md)
 - 계획 drain과 Will: [안전한 노드 drain과 Will](safe-node-drain-and-will.md)
 
-현재 Go 구현은 packet codec과 순수 delivery/session value-state policy까지다. TCP/TLS listener, application orchestration, routing, persistence, quorum runtime, Receive Maximum/quota와 Will timer는 이 package들에 없다. 이 문서의 protocol flow와 실제 API state transition은 같은 규칙을 설명하지만 network·storage 동작을 이미 제공한다는 뜻은 아니다.
+현재 Go 구현은 packet codec, delivery/session value-state, routing, subscribe/publish orchestration,
+connect lifecycle, process-local session store와 loopback-only TCP ingress까지 제공한다. 실제
+ingress 성공 경계는 QoS 0·`Retain=false`이며, TLS/auth, tenant/ACL, shared/retained runtime,
+Will timer, session takeover, persistence, quorum runtime과 Receive Maximum/quota는 아직
+지원하지 않는다. 이 문서의 protocol flow는 production target의 normative 설명이고,
+현재 development slice가 durable network·storage 보장을 이미 제공한다는 뜻은 아니다.
 
 ## 9. 확인 질문
 

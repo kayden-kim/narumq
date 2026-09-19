@@ -11,26 +11,34 @@
 | 관련 Contract | [MQTT client compatibility v1](../contracts/mqtt-client-compatibility-v1.md) |
 | 해설 | [MQTT 전달 보장과 QoS·Session·Will protocol 흐름](../explainers/mqtt-delivery-guarantees-and-protocol-flows.md) |
 
-## 현재 구현 상태: Phase 0 gate 3
+## 현재 구현 상태: Phase 0 gate 3 + 단일 노드 ingress slice
 
-이 저장소의 현재 vertical slice는 TCP/TLS listener나 persistence 없이 여러 session의
-publish·subscribe 경로를 검증한다.
+현재 구현은 개발·검증 전용 loopback plaintext TCP ingress까지 연결되어 실제
+MQTT 3.1.1/5.0 client가 `CONNECT → SUBSCRIBE/PUBLISH → PING/DISCONNECT`를
+실행할 수 있다. 이 listener는 TLS, 인증과 tenant 경계가 없으므로 literal loopback
+주소로만 열 수 있다. ADR-0001 gate 4 consensus skeleton은 아직 다음 gate다.
 
-- `internal/domain/mqtt`는 MQTT 3.1.1/5.0 `SUBSCRIBE`, `SUBACK`, `UNSUBSCRIBE`,
-  `UNSUBACK` packet을 property-free profile로 decode·encode한다. MQTT 5
-  subscription option과 SUBACK/UNSUBACK reason code는 wire 값으로 보존한다.
+- `internal/domain/mqtt`는 CONNECT/CONNACK, QoS 0·1·2 PUBLISH, PUBACK/PUBREC/PUBREL/PUBCOMP,
+  SUBSCRIBE 계열과 PINGREQ/PINGRESP/DISCONNECT를 decode·encode한다. PING packet은
+  Remaining Length 0만 허용하고 MQTT 5 DISCONNECT는 property-free allowlist만 지원한다.
 - `internal/domain/routing`은 non-shared `+`·`#` filter, `$` system topic 경계,
-  session별 중복 제거와 overlap 최대 granted QoS를 결정한다.
+  session별 중복 제거와 overlap 최대 granted QoS를 결정하며 `RemoveSession`으로
+  stale subscription을 한 번에 제거한다.
+- `internal/application/connect`는 session lifecycle을 저장·복구하고 queue 등록,
+  route cleanup, `Session Present`와 duplicate/credential/Will 거절을 조정한다.
 - `internal/application/subscribe`는 요청 순서를 유지한 ACK를 만들고, shared
   subscription과 `No Local`·`Retain As Published`·`Retain Handling` runtime을
   명시적 실패 reason으로 deferred한다.
-- `internal/application/publish`는 publisher QoS와 subscription QoS의 최솟값으로
-  session별 delivery를 만들고, `internal/adapters/memory/deliveryqueue`는
-  session별 item capacity를 제한한다. 포화와 미등록 session은 silent drop 대신
-  `Saturated`·`Unavailable` 결과로 보고한다.
-- shared subscription member 선택, retained message, subscription option runtime,
-  ACL·tenant 정책, connection lifecycle, durable offline queue와 network
-  backpressure 정책은 후속 범위다.
+- `internal/application/publish`와 `application/ports/deliveryqueue`는 route 결과와
+  bounded FIFO delivery를 공유한다. `internal/adapters/tcp` writer는 control queue와
+  delivery wake를 직렬화하고 queue saturation·write timeout에서 target을 닫는다.
+- ingress에서 성공 처리하는 수신 publish는 QoS 0이고 `Retain=false`인 경우뿐이다.
+  MQTT 5 QoS 1/2 또는 retained PUBLISH는 `0x83` negative ACK/DISCONNECT를 사용하고,
+  MQTT 3.1.1 QoS 1/2·retained 입력은 연결을 닫는다.
+- `internal/adapters/memory/sessionstore`는 비내구성 lifecycle map이고,
+  `internal/adapters/clock`은 system clock이다. shared subscription, retained storage,
+  ACL·tenant, Will, takeover, durable offline queue, persistence·replication과 TLS/auth는
+  이 slice에서 지원하지 않는다.
 
 ## 1. Listener 계약
 
@@ -39,6 +47,13 @@ publish·subscribe 경로를 검증한다.
 3. 평문 TCP listener는 기본 설정에서 비활성화해야 한다.
 4. WebSocket과 WSS는 P1 선택 기능이다. 활성화하면 MQTT packet과 session 의미가 TCP listener와 같아야 한다.
 5. connection은 설정된 CONNECT timeout 안에 유효한 CONNECT를 보내야 한다. timeout 또는 malformed packet이면 session을 만들지 않고 연결을 닫아야 한다.
+6. 이번 Phase 0 development profile의 구현은 `internal/adapters/tcp.Server`이며,
+   `-tcp-listen`이 명시된 literal `127.0.0.0/8` 또는 `::1` loopback만 허용한다.
+   TLS·인증·tenant/ACL 없는 listener를 외부 interface에 노출하지 않기 위한 제한이다.
+7. CONNECT 뒤에는 negotiated version으로 packet을 decode하고, 모든 socket write는 한
+   writer goroutine의 bounded control queue 또는 delivery wake를 통과한다.
+8. binary smoke와 실제 loopback wire 검증은 `tests/integration/mqtt_ingress_test.go`와
+   `cmd/narumq`를 기준으로 한다.
 
 ## 2. CONNECT 처리 순서
 
@@ -82,7 +97,10 @@ session key는 `(tenantId, clientId)`다. tenant와 clientId가 하나라도 달
 | MQTT 5 `Clean Start=0` | 만료되지 않은 기존 session을 복구한다. | 복구했을 때만 `Session Present=1` |
 | MQTT 5 `Session Expiry Interval=0` | network connection 종료 뒤 session을 제거한다. | 위 규칙에 따름 |
 
-동일 session key로 새 connection이 인증과 ownership 획득에 성공하면 새 connection이 owner가 된다. 이전 connection은 MQTT 5이면 `DISCONNECT 0x8E`(`Session taken over`)를 받은 뒤 종료되어야 한다. MQTT 3.1.1은 연결을 닫는다.
+동일 session key로 새 connection이 인증과 ownership 획득에 성공하면 새 connection이 owner가 된다.
+production target에서는 MQTT 5이면 이전 connection에 `DISCONNECT 0x8E`(`Session taken over`)를
+보내고, MQTT 3.1.1은 연결을 닫아야 한다. 현재 development slice는 takeover를 구현하지 않고
+active duplicate를 negative CONNACK으로 거절한다.
 
 ## 3. Publish와 내구성 ACK
 
@@ -95,6 +113,11 @@ session key는 `(tenantId, clientId)`다. tenant와 clientId가 하나라도 달
 | 2 | 수신 PUBLISH와 handshake 상태가 durability barrier를 통과한 뒤 성공 PUBREC | PUBREL과 PUBCOMP까지 상태를 복구한다. 중복 PUBLISH·PUBREL은 같은 handshake 결과로 수렴해야 한다. |
 
 quorum, 저장 quota 또는 replication 조건을 충족하지 못하면 성공 PUBACK/PUBREC을 반환해서는 안 된다. MQTT 5에서는 상황에 맞는 `0x89`(`Server busy`), `0x97`(`Quota exceeded`) 또는 `0x83`(`Implementation specific error`)를 사용할 수 있다. MQTT 3.1.1에서 packet 단위 실패를 표현할 수 없으면 연결을 닫을 수 있다. 어느 경우든 성공 ACK로 위장해서는 안 된다.
+
+이 slice는 durability barrier가 없으므로 수신 QoS 1/2에 성공 PUBACK/PUBREC을 반환하지
+않는다. MQTT 5는 packet identifier를 보존한 reason `0x83` negative ACK를 반환하고,
+MQTT 3.1.1은 packet 단위 실패를 표현할 수 없어 연결을 닫는다. QoS 0만 기존 publish
+use case와 delivery queue로 route한다.
 
 ### 3.2 송신 QoS와 offline queue
 
@@ -148,6 +171,11 @@ Will publish에도 tenant 격리, ACL, payload·rate quota, retained와 delivery
 
 모든 connection queue와 inflight collection에는 설정된 상한이 있어야 한다. 제한에 도달했을 때 무제한 할당으로 진행해서는 안 된다.
 
+현재 TCP adapter는 위 표의 packet·queue 상한을 적용해 oversize/malformed 입력,
+keepalive timeout, bounded control queue 포화와 blocked write timeout에서 연결을 닫는다.
+단일 노드 memory queue는 offline persistent delivery를 보존하지 않으므로 disconnected
+persistent session으로의 delivery 결과는 `ErrUnavailable`이다.
+
 ## 8. 수용 시험
 
 - MQTT 3.1.1/5.0 compliance matrix가 지원한다고 선언한 모든 normative statement를 자동 test와 연결한다.
@@ -156,3 +184,6 @@ Will publish에도 tenant 격리, ACL, payload·rate quota, retained와 delivery
 - wildcard 경계, shared subscription failover와 MQTT 5 subscription option 조합을 검증한다.
 - parser fuzzing, slowloris, packet·queue 상한 시험에서 memory와 goroutine leak이 없어야 한다.
 - 두 protocol version client가 같은 외부 topic에서 ACL 범위 안의 메시지를 상호 전달해야 한다.
+- 이 slice의 acceptance mapping은 `tests/integration/mqtt_ingress_test.go`의 MQTT 3.1.1/5.0
+  CONNECT, QoS 0 fan-out, PINGRESP, normal DISCONNECT, persistent Session Present,
+  unsupported/malformed CONNECT와 QoS negative ACK/close 시나리오다.

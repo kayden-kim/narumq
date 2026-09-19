@@ -5,7 +5,7 @@ import (
 	"sync"
 	"testing"
 
-	"narumq/internal/application/publish"
+	applicationdeliveryqueue "narumq/internal/application/ports/deliveryqueue"
 	"narumq/internal/domain/mqtt"
 	"narumq/internal/domain/routing"
 )
@@ -22,8 +22,8 @@ func TestNewAndRegisterValidateBounds(t *testing.T) {
 	if err := queue.Register(""); !errors.Is(err, routing.ErrInvalidSessionID) {
 		t.Fatalf("Register(\"\") error = %v, want %v", err, routing.ErrInvalidSessionID)
 	}
-	if err := queue.TryEnqueue(publish.DeliveryDTO{SessionID: "missing"}); !errors.Is(err, publish.ErrQueueUnavailable) {
-		t.Fatalf("unregistered enqueue error = %v, want %v", err, publish.ErrQueueUnavailable)
+	if err := queue.TryEnqueue(applicationdeliveryqueue.DeliveryDTO{SessionID: "missing"}); !errors.Is(err, applicationdeliveryqueue.ErrUnavailable) {
+		t.Fatalf("unregistered enqueue error = %v, want %v", err, applicationdeliveryqueue.ErrUnavailable)
 	}
 }
 
@@ -37,15 +37,15 @@ func TestQueueCapacityFIFOAndPayloadOwnership(t *testing.T) {
 		t.Fatal(err)
 	}
 	firstPayload := []byte("first")
-	if err := queue.TryEnqueue(publish.DeliveryDTO{SessionID: "session-a", Topic: "events/1", Payload: firstPayload, QoS: mqtt.QoSAtMostOnce}); err != nil {
+	if err := queue.TryEnqueue(applicationdeliveryqueue.DeliveryDTO{SessionID: "session-a", Topic: "events/1", Payload: firstPayload, QoS: mqtt.QoSAtMostOnce}); err != nil {
 		t.Fatal(err)
 	}
 	firstPayload[0] = 'X'
-	if err := queue.TryEnqueue(publish.DeliveryDTO{SessionID: "session-a", Topic: "events/2", Payload: []byte("second"), QoS: mqtt.QoSAtLeastOnce}); err != nil {
+	if err := queue.TryEnqueue(applicationdeliveryqueue.DeliveryDTO{SessionID: "session-a", Topic: "events/2", Payload: []byte("second"), QoS: mqtt.QoSAtLeastOnce}); err != nil {
 		t.Fatal(err)
 	}
-	if err := queue.TryEnqueue(publish.DeliveryDTO{SessionID: "session-a", Topic: "events/3", Payload: []byte("third")}); !errors.Is(err, publish.ErrQueueFull) {
-		t.Fatalf("full enqueue error = %v, want %v", err, publish.ErrQueueFull)
+	if err := queue.TryEnqueue(applicationdeliveryqueue.DeliveryDTO{SessionID: "session-a", Topic: "events/3", Payload: []byte("third")}); !errors.Is(err, applicationdeliveryqueue.ErrFull) {
+		t.Fatalf("full enqueue error = %v, want %v", err, applicationdeliveryqueue.ErrFull)
 	}
 
 	drained, err := queue.Drain("session-a")
@@ -77,7 +77,7 @@ func TestQueueRegisterPreservesAndRemoveMakesUnavailable(t *testing.T) {
 	if err := queue.Register("session-a"); err != nil {
 		t.Fatal(err)
 	}
-	if err := queue.TryEnqueue(publish.DeliveryDTO{SessionID: "session-a", Topic: "events"}); err != nil {
+	if err := queue.TryEnqueue(applicationdeliveryqueue.DeliveryDTO{SessionID: "session-a", Topic: "events"}); err != nil {
 		t.Fatal(err)
 	}
 	if err := queue.Register("session-a"); err != nil {
@@ -87,12 +87,12 @@ func TestQueueRegisterPreservesAndRemoveMakesUnavailable(t *testing.T) {
 	if err != nil || len(items) != 1 {
 		t.Fatalf("re-register drain = %#v, %v; want one item", items, err)
 	}
-	if err := queue.TryEnqueue(publish.DeliveryDTO{SessionID: "session-a", Topic: "events"}); err != nil {
+	if err := queue.TryEnqueue(applicationdeliveryqueue.DeliveryDTO{SessionID: "session-a", Topic: "events"}); err != nil {
 		t.Fatal(err)
 	}
 	queue.Remove("session-a")
-	if _, err := queue.Drain("session-a"); !errors.Is(err, publish.ErrQueueUnavailable) {
-		t.Fatalf("removed drain error = %v, want %v", err, publish.ErrQueueUnavailable)
+	if _, err := queue.Drain("session-a"); !errors.Is(err, applicationdeliveryqueue.ErrUnavailable) {
+		t.Fatalf("removed drain error = %v, want %v", err, applicationdeliveryqueue.ErrUnavailable)
 	}
 }
 
@@ -120,7 +120,7 @@ func TestQueueConcurrentRegisterEnqueueAndDrain(t *testing.T) {
 				case 0:
 					_ = queue.Register(sessionID)
 				case 1:
-					_ = queue.TryEnqueue(publish.DeliveryDTO{
+					_ = queue.TryEnqueue(applicationdeliveryqueue.DeliveryDTO{
 						SessionID: sessionID,
 						Topic:     "events/concurrent",
 						Payload:   []byte{byte(iteration)},

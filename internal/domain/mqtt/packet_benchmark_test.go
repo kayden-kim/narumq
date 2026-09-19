@@ -117,6 +117,18 @@ func BenchmarkCodecPacketCorpus(b *testing.B) {
 			name:   "unsuback",
 			packet: &UnsubAck{Version: ProtocolV5, PacketID: 8, ReasonCodes: []byte{0x00}},
 		},
+		{
+			name:   "pingreq",
+			packet: &PingReq{Version: ProtocolV5},
+		},
+		{
+			name:   "pingresp",
+			packet: &PingResp{Version: ProtocolV5},
+		},
+		{
+			name:   "disconnect",
+			packet: &Disconnect{Version: ProtocolV5, ReasonCode: 0x83},
+		},
 	}
 
 	for _, testCase := range packets {

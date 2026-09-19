@@ -4,10 +4,10 @@ Broker core는 MQTT, session, routing, delivery, tenancy와 cluster lifecycle �
 
 | 항목 | 값 |
 | --- | --- |
-| 관점 상태 | Current Phase 0 slice / Target |
+| 관점 상태 | Current Phase 0 gate 3 / single-node ingress vertical slice |
 | 문서 상태 | Draft |
-| 구현 증거 | `domain/mqtt`, `domain/routing`, `application/subscribe`, `application/publish`, `adapters/memory/deliveryqueue`의 unit test와 package import graph |
-| 범위 | 단일 broker process의 component와 source dependency |
+| 구현 증거 | `cmd/narumq`, `internal/domain/mqtt`, `internal/domain/routing`, `internal/domain/session`, `internal/application/connect`, `internal/application/publish`, `internal/application/subscribe`, `internal/application/ports/deliveryqueue`, `internal/adapters/tcp`, `internal/adapters/memory/deliveryqueue`, `internal/adapters/memory/sessionstore`, `internal/adapters/clock`와 각 package/integration test |
+| 범위 | 단일 broker process의 component, loopback TCP runtime과 source dependency |
 | 관련 요구사항 | [PRD](../requirements/PRD.md) NFR-11~NFR-15, TEST-01~TEST-16 |
 | 관련 결정 | [ADR-0001](../decisions/ADR-0001-core-implementation-language.md) Accepted |
 | 관련 Architecture | [Project structure](project-structure.md) |
@@ -74,35 +74,38 @@ Domain component 사이의 세부 dependency는 구현 단계의 package graph�
 | Adapter | Wire, storage, platform 자료형 변환과 I/O | 새로운 domain rule 결정 |
 | Composition root | Concrete implementation 선택과 lifecycle wiring | Business invariant 구현 |
 
-## Current Phase 0 gate 3 slice
+## Current Phase 0 gate 3 + single-node ingress slice
 
-현재 source는 다음 inward dependency를 실제로 검증한다.
+현재 source는 다음 inward dependency와 실제 loopback runtime을 검증한다.
 
 ```text
-application/subscribe ───────┐
-application/publish ─────────┼──> domain/routing ──> domain/mqtt
-                             │
-adapters/memory/deliveryqueue ─┘
-        └──> application/publish (DeliveryQueue port)
+cmd/narumq
+    └── adapters/tcp ──> application/connect
+                              ├──> domain/session
+                              ├──> ports/deliveryqueue <── adapters/memory/deliveryqueue
+                              └──> domain/routing <── application/subscribe/publish
+                                      └──> domain/mqtt
 ```
 
-- `domain/mqtt`: subscription packet의 wire 구조, fixed flag, property-free profile,
-  option·reason allowlist와 입력 ownership을 결정한다.
-- `domain/routing`: non-shared `+`·`#` matching, `$` topic boundary, session별
-  overlap collapse와 effective QoS를 결정한다. TCP, queue, tenant 구현을 모른다.
-- `application/subscribe`: ordered ACK reason과 routing mutation을 조정한다.
-  shared subscription과 MQTT 5 subscription option runtime은 이 slice에서 deferred다.
-- `application/publish`: routing 결과를 `DeliveryDTO`로 변환하고 queue의 full·unavailable
-  결과를 session별로 보고한다. concrete adapter를 import하지 않는다.
-- `adapters/memory/deliveryqueue`: application port의 fixed per-session item capacity,
-  FIFO와 payload ownership을 구현한다. backpressure의 최종 disconnect 정책은 소유하지 않는다.
+- `domain/mqtt`: CONNECT/CONNACK, QoS 0·1·2 PUBLISH, acknowledgement,
+  SUBSCRIBE 계열, PINGREQ/PINGRESP/DISCONNECT의 wire 구조와 ownership을 결정한다.
+- `domain/session`: Clean Start, Session Expiry, connected duplicate와 disconnect
+  retention invariant를 value lifecycle로 결정한다.
+- `domain/routing`: non-shared `+`·`#` matching, `$` topic boundary, overlap collapse와
+  `RemoveSession` stale-subscription cleanup을 결정한다. TCP와 queue를 모른다.
+- `application/connect`: lifecycle repository, shared delivery queue, routing cleanup과
+  CONNACK/negative rejection을 직렬화한다.
+- `application/subscribe`와 `application/publish`: ordered ACK와 QoS 0 route delivery를
+  조정한다. `ports/deliveryqueue.Queue`는 여러 use case가 공유하는 capability다.
+- `adapters/tcp`: bounded input buffer, CONNECT timeout, negotiated-version dispatch,
+  single writer, control queue/delivery wake, keepalive와 connection cleanup을 소유한다.
+- `adapters/memory/deliveryqueue`, `adapters/memory/sessionstore`, `adapters/clock`은
+  각각 non-durable queue, process-local lifecycle repository와 wall-clock 구현이다.
 
-이 slice는 TCP/TLS, retained storage, ACL·tenant, persistence, replication과
-connection lifecycle을 구현했다는 뜻이 아니다.
-
-이번 gate 3의 publish·subscribe·wildcard routing·backpressure 검증은
-[ADR-0001 §7 검증 게이트](../decisions/ADR-0001-core-implementation-language.md#7-검증-게이트)의
-3번 항목에 해당한다. Durable cluster와 rolling drain을 이미 구현했다는 의미는 아니다.
+ingress 성공 경계는 QoS 0·`Retain=false` PUBLISH다. MQTT 5 QoS 1/2와 retained 입력은
+negative ACK/DISCONNECT를 사용하고 MQTT 3.1.1은 연결을 닫는다. TLS/auth, tenant/ACL,
+Will, shared/retained runtime, takeover, durable offline queue와 replication은 지원하지
+않는다. 이번 slice는 ADR-0001 gate 4 consensus skeleton을 완료한 것으로 표시하지 않는다.
 
 ## Application-owned port
 
@@ -111,6 +114,9 @@ Port는 구현 adapter 옆이 아니라 이를 사용하는 application 쪽이 �
 | Port 범주 | Application이 요구하는 능력 | Adapter 후보 |
 | --- | --- | --- |
 | Session·state store | Epoch 조건부 read·write, snapshot과 recovery | Durable state adapter |
+| Session lifecycle | client ID별 lifecycle load/save/delete와 expiry 복구 | `application/connect.SessionRepository` ← `adapters/memory/sessionstore.MemorySessionRepository` |
+| Delivery queue | session 등록·제거, bounded enqueue, FIFO drain | `application/ports/deliveryqueue.Queue` ← `adapters/memory/deliveryqueue.Queue` |
+| Clock | deterministic expiry 입력 | `application/connect.Clock` ← `adapters/clock.SystemClock` |
 | Replication | Command proposal, commit receipt와 membership 관찰 | `etcd/raft` adapter 후보 |
 | Peer transport | 인증된 node message 송수신과 backpressure | Cluster RPC adapter |
 | Authentication | Credential을 논리 principal과 tenant binding으로 검증 | JWT/JWKS, mTLS, password adapter |
@@ -120,7 +126,9 @@ Port는 구현 adapter 옆이 아니라 이를 사용하는 application 쪽이 �
 
 Capability별 port package, concrete adapter와 내부 client의 목표 대응은 [주요 port capability와 adapter map](project-structure.md#주요-port-capability와-adapter-map)을 따른다.
 
-Port signature와 정확한 자료형은 source 및 machine-readable contract가 생긴 뒤 검증한다. 이 문서는 interface code를 미리 확정하지 않는다.
+현재 source에 구현된 `connect.SessionRepository`, `connect.Clock`와
+`ports/deliveryqueue.Queue`의 method signature는 해당 package가 소유한다. durable
+state·replication·authentication 같은 미구현 capability는 target interface로만 기록한다.
 
 ## 경계를 넘는 값
 

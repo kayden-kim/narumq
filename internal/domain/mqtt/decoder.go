@@ -64,6 +64,12 @@ func (d *Decoder) Decode(src []byte, version ProtocolVersion) (Packet, int, erro
 		packet, err = decodeUnsubscribe(body, version)
 	case PacketTypeUnsubAck:
 		packet, err = decodeUnsubAck(body, version)
+	case PacketTypePingReq:
+		packet, err = decodePingReq(body, version)
+	case PacketTypePingResp:
+		packet, err = decodePingResp(body, version)
+	case PacketTypeDisconnect:
+		packet, err = decodeDisconnect(body, version)
 	default:
 		return nil, 0, ErrMalformedPacket
 	}
@@ -75,7 +81,7 @@ func (d *Decoder) Decode(src []byte, version ProtocolVersion) (Packet, int, erro
 
 func validateFixedHeader(packetType PacketType, flags byte) error {
 	switch packetType {
-	case PacketTypeConnect, PacketTypeConnAck, PacketTypePubAck, PacketTypePubRec, PacketTypePubComp, PacketTypeSubAck, PacketTypeUnsubAck:
+	case PacketTypeConnect, PacketTypeConnAck, PacketTypePubAck, PacketTypePubRec, PacketTypePubComp, PacketTypeSubAck, PacketTypeUnsubAck, PacketTypePingReq, PacketTypePingResp, PacketTypeDisconnect:
 		if flags != 0 {
 			return ErrMalformedPacket
 		}

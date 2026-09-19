@@ -17,6 +17,9 @@ func FuzzDecoder(f *testing.F) {
 	f.Add([]byte{0x50, 0x02, 0x00, 0x07}, byte(2))
 	f.Add([]byte{0x62, 0x04, 0x00, 0x07, 0x92, 0x00}, byte(2))
 	f.Add([]byte{0x82, 0x07, 0x00, 0x01, 0x00, 0x00, 0x01, 'a', 0x01}, byte(2))
+	f.Add([]byte{0xC0, 0x00}, byte(1))
+	f.Add([]byte{0xD0, 0x00}, byte(2))
+	f.Add([]byte{0xE0, 0x02, 0x83, 0x00}, byte(2))
 
 	decoder, err := NewDecoder(maxRemainingLength)
 	if err != nil {
@@ -53,6 +56,9 @@ func FuzzCodecRoundTrip(f *testing.F) {
 	f.Add([]byte{0x30, 0x09, 0x00, 0x01, 'a', 0x00, 'h', 'e', 'l', 'l', 'o'}, byte(2))
 	f.Add([]byte{0x10, 0x13, 0x00, 0x04, 'M', 'Q', 'T', 'T', 0x05, 0x02, 0x00, 0x00, 0x05, 0x11, 0x00, 0x00, 0x00, 0x01, 0x00, 0x01, 'a'}, byte(0))
 	f.Add([]byte{0x82, 0x07, 0x00, 0x01, 0x00, 0x00, 0x01, 'a', 0x01}, byte(2))
+	f.Add([]byte{0xC0, 0x00}, byte(1))
+	f.Add([]byte{0xD0, 0x00}, byte(2))
+	f.Add([]byte{0xE0, 0x02, 0x83, 0x00}, byte(2))
 
 	decoder, err := NewDecoder(maxRemainingLength)
 	if err != nil {
@@ -144,6 +150,15 @@ func fuzzPacketsEqual(left Packet, right Packet) bool {
 		return ok && *leftValue == *rightValue
 	case *PubComp:
 		rightValue, ok := right.(*PubComp)
+		return ok && *leftValue == *rightValue
+	case *PingReq:
+		rightValue, ok := right.(*PingReq)
+		return ok && *leftValue == *rightValue
+	case *PingResp:
+		rightValue, ok := right.(*PingResp)
+		return ok && *leftValue == *rightValue
+	case *Disconnect:
+		rightValue, ok := right.(*Disconnect)
 		return ok && *leftValue == *rightValue
 	default:
 		return reflect.DeepEqual(left, right)

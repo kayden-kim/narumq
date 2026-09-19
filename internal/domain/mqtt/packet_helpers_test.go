@@ -56,6 +56,12 @@ func packetValue(packet Packet) any {
 		return *value
 	case *PubComp:
 		return *value
+	case *PingReq:
+		return *value
+	case *PingResp:
+		return *value
+	case *Disconnect:
+		return *value
 	default:
 		return packet
 	}
@@ -118,6 +124,21 @@ func requireSemanticEqual(t *testing.T, want Packet, got Packet) {
 		gotValue, ok := got.(*PubComp)
 		if !ok || *wantValue != *gotValue {
 			t.Fatalf("PUBCOMP mismatch:\nwant %#v\ngot  %#v", wantValue, got)
+		}
+	case *PingReq:
+		gotValue, ok := got.(*PingReq)
+		if !ok || *wantValue != *gotValue {
+			t.Fatalf("PINGREQ mismatch:\nwant %#v\ngot  %#v", wantValue, got)
+		}
+	case *PingResp:
+		gotValue, ok := got.(*PingResp)
+		if !ok || *wantValue != *gotValue {
+			t.Fatalf("PINGRESP mismatch:\nwant %#v\ngot  %#v", wantValue, got)
+		}
+	case *Disconnect:
+		gotValue, ok := got.(*Disconnect)
+		if !ok || *wantValue != *gotValue {
+			t.Fatalf("DISCONNECT mismatch:\nwant %#v\ngot  %#v", wantValue, got)
 		}
 	default:
 		t.Fatalf("unsupported packet type %T", want)

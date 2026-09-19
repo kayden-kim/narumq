@@ -38,6 +38,12 @@ const (
 	PacketTypeUnsubscribe PacketType = 10
 	// PacketTypeUnsubAck identifies an UNSUBACK packet.
 	PacketTypeUnsubAck PacketType = 11
+	// PacketTypePingReq identifies a PINGREQ packet.
+	PacketTypePingReq PacketType = 12
+	// PacketTypePingResp identifies a PINGRESP packet.
+	PacketTypePingResp PacketType = 13
+	// PacketTypeDisconnect identifies a DISCONNECT packet.
+	PacketTypeDisconnect PacketType = 14
 )
 
 // QoS identifies the MQTT delivery guarantee requested by a PUBLISH.

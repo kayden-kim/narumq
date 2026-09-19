@@ -141,6 +141,22 @@ func (table *Table) Unsubscribe(sessionID SessionID, filter string) (removed boo
 	return true, nil
 }
 
+// RemoveSession removes every subscription owned by sessionID in one
+// synchronized operation. It is idempotent and reports whether anything was
+// removed.
+func (table *Table) RemoveSession(sessionID SessionID) bool {
+	if table == nil {
+		return false
+	}
+	table.mu.Lock()
+	defer table.mu.Unlock()
+	if _, exists := table.subscriptions[sessionID]; !exists {
+		return false
+	}
+	delete(table.subscriptions, sessionID)
+	return true
+}
+
 // Match returns one target per session, ordered by SessionID. Overlapping
 // filters in one session collapse to one target using the highest granted QoS.
 func (table *Table) Match(topic string, publishQoS mqtt.QoS) ([]Match, error) {
