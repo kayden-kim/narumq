@@ -30,6 +30,14 @@ const (
 	PacketTypePubRel PacketType = 6
 	// PacketTypePubComp identifies a PUBCOMP packet.
 	PacketTypePubComp PacketType = 7
+	// PacketTypeSubscribe identifies a SUBSCRIBE packet.
+	PacketTypeSubscribe PacketType = 8
+	// PacketTypeSubAck identifies a SUBACK packet.
+	PacketTypeSubAck PacketType = 9
+	// PacketTypeUnsubscribe identifies an UNSUBSCRIBE packet.
+	PacketTypeUnsubscribe PacketType = 10
+	// PacketTypeUnsubAck identifies an UNSUBACK packet.
+	PacketTypeUnsubAck PacketType = 11
 )
 
 // QoS identifies the MQTT delivery guarantee requested by a PUBLISH.

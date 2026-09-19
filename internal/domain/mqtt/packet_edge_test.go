@@ -107,6 +107,14 @@ func TestConnectProtocolVersionAndPacketContracts_MQTT01_MQTT13_MQTT312_MQTT313(
 	if publish.packetType() != PacketTypePublish || publish.packetVersion() != ProtocolV311 {
 		t.Fatal("PUBLISH packet contract mismatch")
 	}
+	subscribe := Subscribe{Version: ProtocolV5}
+	if subscribe.packetType() != PacketTypeSubscribe || subscribe.packetVersion() != ProtocolV5 {
+		t.Fatal("SUBSCRIBE packet contract mismatch")
+	}
+	unsubscribe := Unsubscribe{Version: ProtocolV311}
+	if unsubscribe.packetType() != PacketTypeUnsubscribe || unsubscribe.packetVersion() != ProtocolV311 {
+		t.Fatal("UNSUBSCRIBE packet contract mismatch")
+	}
 	ackCases := []struct {
 		name       string
 		packet     Packet
@@ -117,6 +125,8 @@ func TestConnectProtocolVersionAndPacketContracts_MQTT01_MQTT13_MQTT312_MQTT313(
 		{name: "PUBREC", packet: PubRec{Version: ProtocolV5}, packetType: PacketTypePubRec, version: ProtocolV5},
 		{name: "PUBREL", packet: PubRel{Version: ProtocolV311}, packetType: PacketTypePubRel, version: ProtocolV311},
 		{name: "PUBCOMP", packet: PubComp{Version: ProtocolV5}, packetType: PacketTypePubComp, version: ProtocolV5},
+		{name: "SUBACK", packet: SubAck{Version: ProtocolV5}, packetType: PacketTypeSubAck, version: ProtocolV5},
+		{name: "UNSUBACK", packet: UnsubAck{Version: ProtocolV311}, packetType: PacketTypeUnsubAck, version: ProtocolV311},
 	}
 	for _, testCase := range ackCases {
 		t.Run(testCase.name+" packet contract", func(t *testing.T) {
@@ -208,7 +218,11 @@ func TestConnectDecoderAndEncoderEdgeContracts_MQTT01_MQTT12_MQTT13(t *testing.T
 	var nilPubRec *PubRec
 	var nilPubRel *PubRel
 	var nilPubComp *PubComp
-	for _, packet := range []Packet{nilConnect, nilConnAck, nilPublish, nilPubAck, nilPubRec, nilPubRel, nilPubComp, unsupportedTestPacket{}} {
+	var nilSubscribe *Subscribe
+	var nilSubAck *SubAck
+	var nilUnsubscribe *Unsubscribe
+	var nilUnsubAck *UnsubAck
+	for _, packet := range []Packet{nilConnect, nilConnAck, nilPublish, nilPubAck, nilPubRec, nilPubRel, nilPubComp, nilSubscribe, nilSubAck, nilUnsubscribe, nilUnsubAck, unsupportedTestPacket{}} {
 		if _, err := encoder.Append([]byte{1}, packet); !errors.Is(err, ErrMalformedPacket) {
 			t.Fatalf("Append(%T) error = %v, want malformed", packet, err)
 		}

@@ -56,6 +56,14 @@ func (d *Decoder) Decode(src []byte, version ProtocolVersion) (Packet, int, erro
 		packet, err = decodePublish(body, version, flags)
 	case PacketTypePubAck, PacketTypePubRec, PacketTypePubRel, PacketTypePubComp:
 		packet, err = decodeAcknowledgement(packetType, body, version)
+	case PacketTypeSubscribe:
+		packet, err = decodeSubscribe(body, version)
+	case PacketTypeSubAck:
+		packet, err = decodeSubAck(body, version)
+	case PacketTypeUnsubscribe:
+		packet, err = decodeUnsubscribe(body, version)
+	case PacketTypeUnsubAck:
+		packet, err = decodeUnsubAck(body, version)
 	default:
 		return nil, 0, ErrMalformedPacket
 	}
@@ -67,11 +75,11 @@ func (d *Decoder) Decode(src []byte, version ProtocolVersion) (Packet, int, erro
 
 func validateFixedHeader(packetType PacketType, flags byte) error {
 	switch packetType {
-	case PacketTypeConnect, PacketTypeConnAck, PacketTypePubAck, PacketTypePubRec, PacketTypePubComp:
+	case PacketTypeConnect, PacketTypeConnAck, PacketTypePubAck, PacketTypePubRec, PacketTypePubComp, PacketTypeSubAck, PacketTypeUnsubAck:
 		if flags != 0 {
 			return ErrMalformedPacket
 		}
-	case PacketTypePubRel:
+	case PacketTypePubRel, PacketTypeSubscribe, PacketTypeUnsubscribe:
 		if flags != 0x02 {
 			return ErrMalformedPacket
 		}

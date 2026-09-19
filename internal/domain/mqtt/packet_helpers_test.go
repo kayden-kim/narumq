@@ -40,6 +40,14 @@ func packetValue(packet Packet) any {
 		return *value
 	case *Publish:
 		return *value
+	case *Subscribe:
+		return *value
+	case *SubAck:
+		return *value
+	case *Unsubscribe:
+		return *value
+	case *UnsubAck:
+		return *value
 	case *PubAck:
 		return *value
 	case *PubRec:
@@ -71,6 +79,26 @@ func requireSemanticEqual(t *testing.T, want Packet, got Packet) {
 		if !ok || wantValue.Version != gotValue.Version || wantValue.DUP != gotValue.DUP || wantValue.QoS != gotValue.QoS || wantValue.Retain != gotValue.Retain || wantValue.PacketID != gotValue.PacketID || wantValue.Topic != gotValue.Topic || !bytes.Equal(wantValue.Payload, gotValue.Payload) {
 			t.Fatalf("PUBLISH mismatch:\nwant %#v\ngot  %#v", wantValue, got)
 		}
+	case *Subscribe:
+		gotValue, ok := got.(*Subscribe)
+		if !ok || wantValue.Version != gotValue.Version || wantValue.PacketID != gotValue.PacketID || !subscriptionsEqual(wantValue.Subscriptions, gotValue.Subscriptions) {
+			t.Fatalf("SUBSCRIBE mismatch:\nwant %#v\ngot  %#v", wantValue, got)
+		}
+	case *SubAck:
+		gotValue, ok := got.(*SubAck)
+		if !ok || wantValue.Version != gotValue.Version || wantValue.PacketID != gotValue.PacketID || !bytes.Equal(wantValue.ReasonCodes, gotValue.ReasonCodes) {
+			t.Fatalf("SUBACK mismatch:\nwant %#v\ngot  %#v", wantValue, got)
+		}
+	case *Unsubscribe:
+		gotValue, ok := got.(*Unsubscribe)
+		if !ok || wantValue.Version != gotValue.Version || wantValue.PacketID != gotValue.PacketID || !stringSlicesEqual(wantValue.Filters, gotValue.Filters) {
+			t.Fatalf("UNSUBSCRIBE mismatch:\nwant %#v\ngot  %#v", wantValue, got)
+		}
+	case *UnsubAck:
+		gotValue, ok := got.(*UnsubAck)
+		if !ok || wantValue.Version != gotValue.Version || wantValue.PacketID != gotValue.PacketID || !bytes.Equal(wantValue.ReasonCodes, gotValue.ReasonCodes) {
+			t.Fatalf("UNSUBACK mismatch:\nwant %#v\ngot  %#v", wantValue, got)
+		}
 	case *PubAck:
 		gotValue, ok := got.(*PubAck)
 		if !ok || *wantValue != *gotValue {
@@ -101,4 +129,28 @@ func willsEqual(want *Will, got *Will) bool {
 		return want == got
 	}
 	return want.QoS == got.QoS && want.Retain == got.Retain && want.Topic == got.Topic && bytes.Equal(want.Payload, got.Payload)
+}
+
+func subscriptionsEqual(want []Subscription, got []Subscription) bool {
+	if len(want) != len(got) {
+		return false
+	}
+	for index := range want {
+		if want[index] != got[index] {
+			return false
+		}
+	}
+	return true
+}
+
+func stringSlicesEqual(want []string, got []string) bool {
+	if len(want) != len(got) {
+		return false
+	}
+	for index := range want {
+		if want[index] != got[index] {
+			return false
+		}
+	}
+	return true
 }

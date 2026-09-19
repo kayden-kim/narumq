@@ -98,6 +98,46 @@ func (e *Encoder) Append(dst []byte, packet Packet) ([]byte, error) {
 		}
 		packetType = PacketTypePubComp
 		body, err = encodeAcknowledgement(packetType, value.PacketID, value.Version, value.ReasonCode, e.maxPacketSize)
+	case Subscribe:
+		packetType = PacketTypeSubscribe
+		flags = 0x02
+		body, err = encodeSubscribe(value, e.maxPacketSize)
+	case *Subscribe:
+		if value == nil {
+			return dst, ErrMalformedPacket
+		}
+		packetType = PacketTypeSubscribe
+		flags = 0x02
+		body, err = encodeSubscribe(*value, e.maxPacketSize)
+	case SubAck:
+		packetType = PacketTypeSubAck
+		body, err = encodeSubAck(value, e.maxPacketSize)
+	case *SubAck:
+		if value == nil {
+			return dst, ErrMalformedPacket
+		}
+		packetType = PacketTypeSubAck
+		body, err = encodeSubAck(*value, e.maxPacketSize)
+	case Unsubscribe:
+		packetType = PacketTypeUnsubscribe
+		flags = 0x02
+		body, err = encodeUnsubscribe(value, e.maxPacketSize)
+	case *Unsubscribe:
+		if value == nil {
+			return dst, ErrMalformedPacket
+		}
+		packetType = PacketTypeUnsubscribe
+		flags = 0x02
+		body, err = encodeUnsubscribe(*value, e.maxPacketSize)
+	case UnsubAck:
+		packetType = PacketTypeUnsubAck
+		body, err = encodeUnsubAck(value, e.maxPacketSize)
+	case *UnsubAck:
+		if value == nil {
+			return dst, ErrMalformedPacket
+		}
+		packetType = PacketTypeUnsubAck
+		body, err = encodeUnsubAck(*value, e.maxPacketSize)
 	default:
 		return dst, ErrMalformedPacket
 	}

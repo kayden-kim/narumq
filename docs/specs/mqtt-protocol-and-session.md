@@ -11,6 +11,27 @@
 | 관련 Contract | [MQTT client compatibility v1](../contracts/mqtt-client-compatibility-v1.md) |
 | 해설 | [MQTT 전달 보장과 QoS·Session·Will protocol 흐름](../explainers/mqtt-delivery-guarantees-and-protocol-flows.md) |
 
+## 현재 구현 상태: Phase 0 gate 3
+
+이 저장소의 현재 vertical slice는 TCP/TLS listener나 persistence 없이 여러 session의
+publish·subscribe 경로를 검증한다.
+
+- `internal/domain/mqtt`는 MQTT 3.1.1/5.0 `SUBSCRIBE`, `SUBACK`, `UNSUBSCRIBE`,
+  `UNSUBACK` packet을 property-free profile로 decode·encode한다. MQTT 5
+  subscription option과 SUBACK/UNSUBACK reason code는 wire 값으로 보존한다.
+- `internal/domain/routing`은 non-shared `+`·`#` filter, `$` system topic 경계,
+  session별 중복 제거와 overlap 최대 granted QoS를 결정한다.
+- `internal/application/subscribe`는 요청 순서를 유지한 ACK를 만들고, shared
+  subscription과 `No Local`·`Retain As Published`·`Retain Handling` runtime을
+  명시적 실패 reason으로 deferred한다.
+- `internal/application/publish`는 publisher QoS와 subscription QoS의 최솟값으로
+  session별 delivery를 만들고, `internal/adapters/memory/deliveryqueue`는
+  session별 item capacity를 제한한다. 포화와 미등록 session은 silent drop 대신
+  `Saturated`·`Unavailable` 결과로 보고한다.
+- shared subscription member 선택, retained message, subscription option runtime,
+  ACL·tenant 정책, connection lifecycle, durable offline queue와 network
+  backpressure 정책은 후속 범위다.
+
 ## 1. Listener 계약
 
 1. TCP와 TLS listener는 MQTT 3.1.1 protocol level 4와 MQTT 5.0 protocol level 5를 수용해야 한다.

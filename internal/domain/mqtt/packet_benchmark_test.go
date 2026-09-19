@@ -95,6 +95,28 @@ func BenchmarkCodecPacketCorpus(b *testing.B) {
 			name:   "pubcomp",
 			packet: &PubComp{Version: ProtocolV5, PacketID: 6},
 		},
+		{
+			name: "subscribe",
+			packet: &Subscribe{
+				Version:  ProtocolV5,
+				PacketID: 7,
+				Subscriptions: []Subscription{
+					{Filter: "benchmark/#", QoS: QoSAtLeastOnce, RetainHandling: SendRetainedIfNew},
+				},
+			},
+		},
+		{
+			name:   "suback",
+			packet: &SubAck{Version: ProtocolV5, PacketID: 7, ReasonCodes: []byte{0x00}},
+		},
+		{
+			name:   "unsubscribe",
+			packet: &Unsubscribe{Version: ProtocolV5, PacketID: 8, Filters: []string{"benchmark/#"}},
+		},
+		{
+			name:   "unsuback",
+			packet: &UnsubAck{Version: ProtocolV5, PacketID: 8, ReasonCodes: []byte{0x00}},
+		},
 	}
 
 	for _, testCase := range packets {

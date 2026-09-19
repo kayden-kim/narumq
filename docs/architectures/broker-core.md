@@ -4,16 +4,16 @@ Broker core는 MQTT, session, routing, delivery, tenancy와 cluster lifecycle �
 
 | 항목 | 값 |
 | --- | --- |
-| 관점 상태 | Target |
+| 관점 상태 | Current Phase 0 slice / Target |
 | 문서 상태 | Draft |
-| 구현 증거 | 없음 |
+| 구현 증거 | `domain/mqtt`, `domain/routing`, `application/subscribe`, `application/publish`, `adapters/memory/deliveryqueue`의 unit test와 package import graph |
 | 범위 | 단일 broker process의 component와 source dependency |
 | 관련 요구사항 | [PRD](../requirements/PRD.md) NFR-11~NFR-15, TEST-01~TEST-16 |
 | 관련 결정 | [ADR-0001](../decisions/ADR-0001-core-implementation-language.md) Accepted |
 | 관련 Architecture | [Project structure](project-structure.md) |
 | 관련 Convention | [Go coding conventions](../conventions/go-coding-conventions.md) |
 | 관련 해설 | [Broker core의 계층 경계](../explainers/broker-core-boundaries.md), [Go 동시성과 backpressure](../explainers/go-concurrency-and-backpressure.md) |
-| 최종 확인일 | 2026-08-16 |
+| 최종 확인일 | 2026-09-19 |
 
 ## Source dependency view
 
@@ -66,13 +66,43 @@ Domain component 사이의 세부 dependency는 구현 단계의 package graph�
 | --- | --- | --- |
 | MQTT protocol | Packet validation, QoS handshake와 protocol reason | Socket, TLS library, HTTP, storage 자료형 |
 | Session ownership | Session key, owner epoch와 fencing invariant | Pod/IP, wall clock lease만으로 만든 권한 |
-| Subscription routing | Canonical topic/filter와 route selection 정책 | 외부 tenant prefix encoding, network client |
+| Subscription routing | Canonical topic/filter, wildcard match와 route selection 정책 | 외부 tenant prefix encoding, network client |
 | Message delivery | Inflight, offline delivery, expiry와 ACK 이후 상태 | 특정 WAL·database API |
 | Tenant policy | Tenant namespace, quota와 ACL 입력 의미 | JWKS response, certificate library object |
 | Cluster lifecycle | Member state, readiness와 drain barrier의 domain rule | Kubernetes Pod API |
 | Application use case | Domain policy orchestration와 transaction·commit 경계 | Concrete adapter와 framework object |
 | Adapter | Wire, storage, platform 자료형 변환과 I/O | 새로운 domain rule 결정 |
 | Composition root | Concrete implementation 선택과 lifecycle wiring | Business invariant 구현 |
+
+## Current Phase 0 gate 3 slice
+
+현재 source는 다음 inward dependency를 실제로 검증한다.
+
+```text
+application/subscribe ───────┐
+application/publish ─────────┼──> domain/routing ──> domain/mqtt
+                             │
+adapters/memory/deliveryqueue ─┘
+        └──> application/publish (DeliveryQueue port)
+```
+
+- `domain/mqtt`: subscription packet의 wire 구조, fixed flag, property-free profile,
+  option·reason allowlist와 입력 ownership을 결정한다.
+- `domain/routing`: non-shared `+`·`#` matching, `$` topic boundary, session별
+  overlap collapse와 effective QoS를 결정한다. TCP, queue, tenant 구현을 모른다.
+- `application/subscribe`: ordered ACK reason과 routing mutation을 조정한다.
+  shared subscription과 MQTT 5 subscription option runtime은 이 slice에서 deferred다.
+- `application/publish`: routing 결과를 `DeliveryDTO`로 변환하고 queue의 full·unavailable
+  결과를 session별로 보고한다. concrete adapter를 import하지 않는다.
+- `adapters/memory/deliveryqueue`: application port의 fixed per-session item capacity,
+  FIFO와 payload ownership을 구현한다. backpressure의 최종 disconnect 정책은 소유하지 않는다.
+
+이 slice는 TCP/TLS, retained storage, ACL·tenant, persistence, replication과
+connection lifecycle을 구현했다는 뜻이 아니다.
+
+이번 gate 3의 publish·subscribe·wildcard routing·backpressure 검증은
+[ADR-0001 §7 검증 게이트](../decisions/ADR-0001-core-implementation-language.md#7-검증-게이트)의
+3번 항목에 해당한다. Durable cluster와 rolling drain을 이미 구현했다는 의미는 아니다.
 
 ## Application-owned port
 
