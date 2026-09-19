@@ -55,28 +55,31 @@ type TargetOptions struct {
 	PreRunSamplingDuration time.Duration
 	Timeout                time.Duration
 	StartupTimeout         time.Duration
+	CollectRuntimeMetrics  bool
+	RuntimeMetricsInterval time.Duration
 }
 
 // TargetResult is the environment-owned part of one target artifact manifest.
 type TargetResult struct {
-	Target            string
-	Status            string
-	Success           bool
-	StartedAt         string
-	FinishedAt        string
-	ArtifactDirectory string
-	SummaryPath       string
-	SamplesPath       string
-	BrokerStatsPath   string
-	BrokerLogPath     string
-	RunnerLogPath     string
-	ContainerInspect  string
-	ImageReference    string
-	ImageID           string
-	ImageRepoDigests  []string
-	RunnerImageID     string
-	RunnerTarget      string
-	FailureReason     string
+	Target             string
+	Status             string
+	Success            bool
+	StartedAt          string
+	FinishedAt         string
+	ArtifactDirectory  string
+	SummaryPath        string
+	SamplesPath        string
+	RuntimeMetricsPath string
+	BrokerStatsPath    string
+	BrokerLogPath      string
+	RunnerLogPath      string
+	ContainerInspect   string
+	ImageReference     string
+	ImageID            string
+	ImageRepoDigests   []string
+	RunnerImageID      string
+	RunnerTarget       string
+	FailureReason      string
 }
 
 // StatsSample preserves the raw Docker stats object and adds parsed numbers.

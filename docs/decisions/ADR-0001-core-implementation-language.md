@@ -175,13 +175,14 @@ Phase 0에서 다음 spike를 완료해야 본격적인 기능 구현으로 진�
    - Gate 4의 실제 증거는 [consensus adapter unit tests](../../internal/adapters/raft/node_test.go), [experimental storage tests](../../internal/adapters/raft/stable_store_test.go), [deterministic integration spike](../../tests/integration/raft_consensus_test.go)다. 이 증거는 etcd/raft skeleton과 local WAL·snapshot recovery 가능성만 다루며 BP-03/BP-06 완료를 의미하지 않는다.
 5. BP-01 Protocol Baseline의 최소 기능 집합을 [공통 benchmark harness](../../tests/benchmark/bp01)로 실제 EMQX와 비교한다. 대상은 MQTT 5, QoS 0, 비영속 workload이며, broker CPU·memory·network·TLS와 고정 workload 조건을 동일하게 맞춘다.
    - 현재 BP-01 smoke evidence는 plaintext loopback, MQTT 5 QoS 0 조건만 관찰한다. TLS·인증 workload와 수치형 release 기준은 별도 profile 및 `SPEC-TBD-08` 확정 뒤 gate 판정에 포함한다.
-   - smoke 실행 결과는 `.artifacts/benchmark/bp01/<run-id>/manifest.json`과 target별 `summary.json`, `samples.jsonl`, `broker-stats.jsonl`에 보존한다.
+   - smoke 실행 결과는 `.artifacts/benchmark/bp01/<run-id>/manifest.json`과 target별 `summary.json`, `samples.jsonl`, `phases.jsonl`, NaruMQ `runtime-metrics.jsonl`/`runtime-summary.json`, EMQX `runtime-summary.json`, `broker-stats.jsonl`에 보존한다. EMQX 런타임 요약은 `not_applicable`로 기록하며 Go runtime 수치를 억지로 비교하지 않는다.
    - 현재 harness의 EMQX는 `5.8.8` 역사적 OSS comparator이며 `releaseGating=false`다. 이 증거만으로 gate 5 또는 production 대체 가능성을 완료로 표시하지 않는다.
 6. BP-05 Connection Scale에서 connection ramp, idle connection당 memory와 reconnect subset을 우선 측정한다. 전체 BP-05 통과 판정은 Phase 1에서 수행한다.
    - 제한된 smoke 구현은 [`tests/benchmark/bp05`](../../tests/benchmark/bp05)에서 MQTT 5 연결 ramp, idle PINGREQ/PINGRESP, 동일 Client ID reconnect와 broker memory 표본을 관찰한다.
-   - 실행 결과는 `.artifacts/benchmark/bp05/<run-id>/manifest.json`, target별 `connections.jsonl`, `phases.jsonl`, `workload-summary.json`, `resource-summary.json`, 합성 `summary.json`과 `comparison.json`에 보존한다.
+   - 실행 결과는 `.artifacts/benchmark/bp05/<run-id>/manifest.json`, target별 `connections.jsonl`, `phases.jsonl`, `workload-summary.json`, `resource-summary.json`, NaruMQ `runtime-metrics.jsonl`/`runtime-summary.json`, EMQX `runtime-summary.json`, 합성 `summary.json`과 `comparison.json`에 보존한다.
    - 이 smoke는 64 연결·1 CPU/512 MiB broker·1 CPU/256 MiB generator라는 하네스 값만 증명하며 `B_conn`, production SLO 또는 release 합격 비율을 정하지 않는다. `releaseGating=false`이고 gate 6·7·8 완료를 의미하지 않는다.
 7. throughput, p99.9 latency, connection당 memory, allocation rate와 GC CPU를 기록한다.
+   - Gate 7 구현은 `runtime/metrics`의 누적 표본을 NaruMQ 프로세스에서 수집하고, BP-01의 `measure`와 BP-05의 `idle` phase 경계 안에서 allocation rate·GC CPU·GC pause percentile·GOMAXPROCS를 요약한다. 측정 구간에 GC cycle이 한 번도 실행되지 않으면 현재 Go runtime에서 `/cpu/classes` 누적값이 증가하지 않을 수 있으므로 `cpuMetricsAvailable=false`와 이유를 기록하고 CPU 값을 추정하지 않는다. 이 값은 Go 내부 진단값이므로 Docker CPU 사용량이나 EMQX BEAM 런타임 수치와 같은 의미로 비교하지 않는다. raw/summary artifact의 구조와 applicability는 검증하지만, 수치형 기준이 확정되지 않았고 `releaseGating=false`이므로 이 구현만으로 Gate 7 또는 Gate 8을 닫지 않는다.
 8. PRD Phase 0에서 확정한 수치형 성능·메모리 기준을 만족한다. 기준이 확정되지 않으면 이 gate를 닫을 수 없다.
 9. 모든 결과와 raw artifact를 version control 또는 artifact storage에 보관한다.
 

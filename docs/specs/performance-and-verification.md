@@ -127,6 +127,8 @@ BP-01 실행은 다음 파일을 target artifact로 남긴다.
 
 - `profile.json`과 원문 SHA-256, resolved profile
 - `samples.jsonl`의 sequence·phase·scheduled/send/receive UTC timestamp·schedule lag·latency nanoseconds
+- `phases.jsonl`의 `warmup`·`measure`·`drain` 각 `start`/`end` UTC 시각
+- NaruMQ target의 `runtime-metrics.jsonl`과 `runtime-summary.json` (Go runtime/metrics 원시 표본과 측정 구간 요약)
 - `summary.json`의 offered/sent/delivered, publish/delivery rate, p50/p95/p99/p999, schedule lag, duplicate/missing/error와 `releaseGating`
 - `broker-stats.jsonl`의 CPU·memory·network·block I/O·PID 표본(초기 표본과 runner 종료 직후 최종 표본 포함)
 - broker stdout/stderr, 실제 image ID/digest와 resource-limit inspect
@@ -140,12 +142,35 @@ BP-05 제한된 smoke 실행은 `.artifacts/benchmark/bp05/<run-id>/`에 다음 
 - `workload-summary.json`의 initial/reconnect requested·attempted·succeeded·failed, 실제 rate, latency percentiles, idle survivor, PING, protocol/transport error와 generator overload
 - `resource-summary.json`의 baseline/plateau 표본 수·중앙 memory, signed incremental memory와 idle connection당 계산값
 - 합성 `summary.json`, broker stats/log, runner log, container inspect, 실제 image ID/digest와 동일 resource/network/read-only 조건
+- NaruMQ target의 `runtime-metrics.jsonl`과 `runtime-summary.json` (Go runtime/metrics 원시 표본과 `idle` 구간 요약)
+- EMQX target의 `runtime-summary.json` (`not_applicable` 상태와 Go 프로세스에만 적용된다는 이유)
 
 이 artifact는 하네스 동작과 제한된 Phase 0 gate 6 증거를 보존한다. 전체 BP-05 용량, `B_conn`, production SLO와 release gating 결과를 대신하지 않으며 `releaseGating=false`를 유지한다.
 
 EMQX `5.8.8`은 Open Source Edition의 EOL historical comparator로 기록하며, 결과에는 EOL `2026-02-28`과 `releaseGating=false`를 함께 남긴다. `.artifacts/benchmark/bp01/<run-id>/`는 로컬 evidence 경로이고 source commit에 raw 결과를 섞지 않는다.
 
 비밀정보는 artifact에 포함해서는 안 된다. 재실행에 필요한 secret reference만 기록한다.
+
+### 5.1 Gate 7 런타임 측정 artifact
+
+NaruMQ 프로세스는 `runtime/metrics`의 누적 표본을 `runtime-metrics.jsonl`에 기록한다. `phases.jsonl`의 요청 phase에 정확히 하나의 `start`와 `end`가 있어야 하며, 두 시각 안에 들어오는 표본만 요약에 사용한다. 표본은 최소 2개이고 첫 표본과 마지막 표본의 시각이 달라야 한다.
+
+요약은 첫 표본과 마지막 표본의 누적값 차이를 실제 표본 시각 차이로 나눈다.
+
+```text
+elapsedSeconds = lastCollectedAt - firstCollectedAt
+allocationBytesPerSecond =
+    (last.heapAllocBytesTotal - first.heapAllocBytesTotal) / elapsedSeconds
+allocationsPerSecond =
+    (last.heapAllocObjectsTotal - first.heapAllocObjectsTotal) / elapsedSeconds
+gcCPUFraction =
+    (last.gcCPUSecondsTotal - first.gcCPUSecondsTotal) /
+    (last.runtimeCPUSecondsTotal - first.runtimeCPUSecondsTotal)
+```
+
+GC pause 백분위수는 누적 histogram count의 차이에 nearest-rank를 적용하고, 선택된 bucket의 exclusive upper bound를 초 단위 값으로 기록한다. pause 표본이 없으면 count와 백분위수는 0이다. 무한대 bucket이 선택되거나 누적 counter·bucket 경계가 감소·변경되면 요약은 invalid다. 측정 구간에 GC cycle이 한 번도 실행되지 않으면 현재 Go runtime에서 `/cpu/classes` 누적값이 증가하지 않을 수 있다. 이때 `cpuMetricsAvailable=false`와 `cpuMetricsReason`을 기록하고 CPU 관련 값은 추정하지 않는다. GC CPU counter까지 증가했는데 runtime CPU delta가 0이면 artifact는 invalid로 처리한다.
+
+이 값은 NaruMQ Go 프로세스 내부의 진단값이다. `/cpu/classes`의 GC CPU는 Docker CPU 사용량과 같은 값이 아니며, EMQX의 Erlang/BEAM 런타임 값으로 변환하거나 직접 비교하지 않는다. 따라서 EMQX는 숫자 0이 아니라 `applicability=not_applicable`과 이유를 기록한다. `releaseGating=false`이며 smoke 표본은 production SLO가 아니다. 수치 기준과 반복 실행 편차가 확정되지 않았으므로 이 artifact만으로 Gate 7 또는 Gate 8을 닫지 않는다.
 
 ## 6. Regression gate
 

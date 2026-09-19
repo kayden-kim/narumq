@@ -7,22 +7,22 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
-	"net"
-	"os"
-	"os/signal"
-	"strings"
-	"syscall"
-	"time"
-
 	"narumq/internal/adapters/clock"
 	"narumq/internal/adapters/memory/deliveryqueue"
 	"narumq/internal/adapters/memory/sessionstore"
+	"narumq/internal/adapters/runtimemetrics"
 	tcpadapter "narumq/internal/adapters/tcp"
 	"narumq/internal/application/connect"
 	"narumq/internal/application/publish"
 	"narumq/internal/application/subscribe"
 	"narumq/internal/domain/mqtt"
 	"narumq/internal/domain/routing"
+	"net"
+	"os"
+	"os/signal"
+	"strings"
+	"syscall"
+	"time"
 )
 
 func main() {
@@ -34,6 +34,15 @@ func main() {
 }
 
 func run(args []string, logger *slog.Logger) error {
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	return runWithContext(ctx, args, logger)
+}
+
+func runWithContext(ctx context.Context, args []string, logger *slog.Logger) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	if logger == nil {
 		logger = slog.Default()
 	}
@@ -45,10 +54,22 @@ func run(args []string, logger *slog.Logger) error {
 	writeTimeout := flagSet.Duration("write-timeout", 5*time.Second, "socket write timeout")
 	deliveryQueueCapacity := flagSet.Int("delivery-queue-capacity", 64, "per-session delivery queue capacity")
 	controlQueueCapacity := flagSet.Int("control-queue-capacity", 16, "per-connection control queue capacity")
+	runtimeMetricsOutput := flagSet.String("runtime-metrics-output", "", "JSONL output for Go runtime metrics")
+	runtimeMetricsInterval := flagSet.Duration("runtime-metrics-interval", 0, "sampling interval for Go runtime metrics")
 	if err := flagSet.Parse(args); err != nil {
 		return err
 	}
+	metricsRequested := *runtimeMetricsOutput != "" || *runtimeMetricsInterval != 0
+	if (*runtimeMetricsOutput == "") != (*runtimeMetricsInterval == 0) {
+		return errors.New("-runtime-metrics-output and -runtime-metrics-interval must be provided together")
+	}
+	if metricsRequested && *runtimeMetricsInterval <= 0 {
+		return errors.New("-runtime-metrics-interval must be greater than zero")
+	}
 	if *tcpListen == "" {
+		if metricsRequested {
+			return errors.New("-tcp-listen is required when runtime metrics collection is enabled")
+		}
 		logger.Info("MQTT TCP listener disabled", "development_only", true)
 		return nil
 	}
@@ -110,13 +131,73 @@ func run(args []string, logger *slog.Logger) error {
 	}
 
 	logger.Info("MQTT TCP listener started", "address", listener.Addr().String(), "development_only", true, "qos0_only", true)
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	defer stop()
-	if err := server.Serve(ctx); err != nil {
-		return fmt.Errorf("serve MQTT TCP listener: %w", err)
+	if !metricsRequested {
+		if err := server.Serve(ctx); err != nil {
+			return fmt.Errorf("serve MQTT TCP listener: %w", err)
+		}
+		logger.Info("MQTT TCP listener stopped", "address", listener.Addr().String())
+		return nil
+	}
+	sampler, err := runtimemetrics.New(*runtimeMetricsOutput, *runtimeMetricsInterval)
+	if err != nil {
+		return err
+	}
+	if err := serveWithRuntimeMetrics(ctx, server, sampler); err != nil {
+		return err
 	}
 	logger.Info("MQTT TCP listener stopped", "address", listener.Addr().String())
 	return nil
+}
+
+func serveWithRuntimeMetrics(ctx context.Context, server *tcpadapter.Server, sampler *runtimemetrics.Sampler) error {
+	serverContext, cancelServer := context.WithCancel(ctx)
+	defer cancelServer()
+	samplerContext, cancelSampler := context.WithCancel(ctx)
+	defer cancelSampler()
+
+	serverDone := make(chan error, 1)
+	go func() {
+		serverDone <- server.Serve(serverContext)
+	}()
+	samplerDone := make(chan error, 1)
+	go func() {
+		samplerDone <- sampler.Run(samplerContext)
+	}()
+
+	select {
+	case samplerErr := <-samplerDone:
+		cancelServer()
+		serverErr := <-serverDone
+		if samplerErr != nil {
+			samplerErr = fmt.Errorf("runtime metrics sampler: %w", samplerErr)
+		}
+		if serverErr != nil {
+			serverErr = fmt.Errorf("serve MQTT TCP listener: %w", serverErr)
+		}
+		if samplerErr != nil && serverErr != nil {
+			return errors.Join(samplerErr, serverErr)
+		}
+		if samplerErr != nil {
+			return samplerErr
+		}
+		return serverErr
+	case serverErr := <-serverDone:
+		cancelSampler()
+		samplerErr := <-samplerDone
+		if serverErr != nil {
+			serverErr = fmt.Errorf("serve MQTT TCP listener: %w", serverErr)
+		}
+		if samplerErr != nil {
+			samplerErr = fmt.Errorf("runtime metrics sampler: %w", samplerErr)
+		}
+		if serverErr != nil && samplerErr != nil {
+			return errors.Join(serverErr, samplerErr)
+		}
+		if serverErr != nil {
+			return serverErr
+		}
+		return samplerErr
+	}
 }
 
 func validateLoopbackListenAddress(address string) error {

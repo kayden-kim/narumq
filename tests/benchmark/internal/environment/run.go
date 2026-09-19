@@ -35,17 +35,8 @@ func RunTarget(ctx context.Context, options TargetOptions) (TargetResult, error)
 	}
 	defer cleanup()
 
-	createArgs := []string{
-		"run", "--detach", "--name", containerName,
-		"--network", "none",
-		"--cpus", formatCPU(options.BrokerCPUs),
-		"--memory", strconv.FormatInt(options.BrokerMemoryBytes, 10) + "b",
-		"--read-only", "--tmpfs", "/tmp:size=64m",
-	}
 	if options.Target == "emqx" {
-		dataVolume := containerName + "-data"
-		logVolume := containerName + "-log"
-		volumeNames = []string{dataVolume, logVolume}
+		volumeNames = []string{containerName + "-data", containerName + "-log"}
 		for _, volumeName := range volumeNames {
 			output, err := commandOutput(ctx, "", "docker", "volume", "create", volumeName)
 			if err != nil {
@@ -55,17 +46,8 @@ func RunTarget(ctx context.Context, options TargetOptions) (TargetResult, error)
 				return finishTargetFailure(result, fmt.Errorf("create volume %s returned no name", volumeName)), nil
 			}
 		}
-		createArgs = append(createArgs,
-			"--mount", "type=volume,source="+dataVolume+",destination=/opt/emqx/data",
-			"--mount", "type=volume,source="+logVolume+",destination=/opt/emqx/log",
-			"--env", "EMQX_NODE__NAME=emqx@127.0.0.1",
-			"--env", "EMQX_NODE__COOKIE="+options.BenchmarkID+"-emqx-cookie",
-		)
 	}
-	createArgs = append(createArgs, options.ImageReference)
-	if options.Target == "narumq" {
-		createArgs = append(createArgs, "-tcp-listen", "127.0.0.1:1883")
-	}
+	createArgs := buildBrokerCreateArgs(options, containerName)
 	output, err := commandOutput(ctx, "", "docker", createArgs...)
 	if err != nil {
 		return finishTargetFailure(result, fmt.Errorf("start %s broker: %w", options.Target, err)), nil
@@ -98,7 +80,9 @@ func RunTarget(ctx context.Context, options TargetOptions) (TargetResult, error)
 	}
 	if options.PreRunSamplingDuration > 0 {
 		if err := waitContext(ctx, options.PreRunSamplingDuration); err != nil {
-			_ = stopStats()
+			if statsErr := stopStats(); statsErr != nil {
+				result = finishTargetFailure(result, fmt.Errorf("broker stats failed during pre-run shutdown: %w", statsErr))
+			}
 			return finishTargetFailure(result, fmt.Errorf("pre-run sampling: %w", err)), nil
 		}
 	}
@@ -117,30 +101,47 @@ func RunTarget(ctx context.Context, options TargetOptions) (TargetResult, error)
 	runnerArgs = append(runnerArgs, options.RunnerArgs...)
 	runnerOutput, runnerErr := commandOutput(runContext, "", "docker", runnerArgs...)
 	cancel()
-	statsErr := stopStats()
-	if statsErr != nil {
+	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer shutdownCancel()
+
+	if statsErr := stopStats(); statsErr != nil {
 		result = finishTargetFailure(result, fmt.Errorf("broker stats failed: %w", statsErr))
-	} else if sampleErr := appendBrokerStatsSample(ctx, containerName, result.BrokerStatsPath); sampleErr != nil && result.FailureReason == "" {
+	}
+	if sampleErr := appendBrokerStatsSample(shutdownCtx, containerName, result.BrokerStatsPath); sampleErr != nil {
 		result = finishTargetFailure(result, fmt.Errorf("final broker stats sample failed: %w", sampleErr))
 	}
-	if writeErr := os.WriteFile(result.RunnerLogPath, runnerOutput, 0o644); writeErr != nil && result.FailureReason == "" {
+	if writeErr := os.WriteFile(result.RunnerLogPath, runnerOutput, 0o644); writeErr != nil {
 		result = finishTargetFailure(result, fmt.Errorf("write runner log: %w", writeErr))
 	}
 	if runnerErr != nil {
 		result = finishTargetFailure(result, fmt.Errorf("runner failed: %w", runnerErr))
 	}
-	if inspect, inspectErr := commandOutput(ctx, "", "docker", "inspect", containerName); inspectErr == nil {
-		if writeErr := os.WriteFile(result.ContainerInspect, inspect, 0o644); writeErr != nil && result.FailureReason == "" {
+	if _, stopErr := commandOutput(shutdownCtx, "", "docker", "stop", "--time", "10", containerName); stopErr != nil {
+		result = finishTargetFailure(result, fmt.Errorf("stop %s broker: %w", options.Target, stopErr))
+	}
+	if options.CollectRuntimeMetrics {
+		info, statErr := os.Stat(result.RuntimeMetricsPath)
+		if statErr != nil {
+			result = finishTargetFailure(result, fmt.Errorf("read runtime metrics artifact: %w", statErr))
+		} else if info.Size() == 0 {
+			result = finishTargetFailure(result, errors.New("runtime metrics artifact is empty"))
+		}
+	}
+	if inspect, inspectErr := commandOutput(shutdownCtx, "", "docker", "inspect", containerName); inspectErr == nil {
+		if writeErr := os.WriteFile(result.ContainerInspect, inspect, 0o644); writeErr != nil {
 			result = finishTargetFailure(result, fmt.Errorf("write container inspect: %w", writeErr))
 		}
-	} else if result.FailureReason == "" {
+	} else {
 		result = finishTargetFailure(result, fmt.Errorf("inspect broker container: %w", inspectErr))
 	}
-	if logs, logErr := commandOutput(ctx, "", "docker", "logs", containerName); logErr == nil {
-		if writeErr := os.WriteFile(result.BrokerLogPath, logs, 0o644); writeErr != nil && result.FailureReason == "" {
+	if logs, logErr := commandOutput(shutdownCtx, "", "docker", "logs", containerName); logErr == nil {
+		if writeErr := os.WriteFile(result.BrokerLogPath, logs, 0o644); writeErr != nil {
 			result = finishTargetFailure(result, fmt.Errorf("write broker log: %w", writeErr))
 		}
-	} else if result.FailureReason == "" {
+		if options.CollectRuntimeMetrics && strings.Contains(string(logs), "runtime metrics sampler") {
+			result = finishTargetFailure(result, errors.New("runtime metrics sampler failed; see broker log"))
+		}
+	} else {
 		result = finishTargetFailure(result, fmt.Errorf("collect broker logs: %w", logErr))
 	}
 	if result.FailureReason == "" {
@@ -149,6 +150,38 @@ func RunTarget(ctx context.Context, options TargetOptions) (TargetResult, error)
 	}
 	result.FinishedAt = time.Now().UTC().Format(time.RFC3339Nano)
 	return result, nil
+}
+
+func buildBrokerCreateArgs(options TargetOptions, containerName string) []string {
+	args := []string{
+		"run", "--detach", "--name", containerName,
+		"--network", "none",
+		"--cpus", formatCPU(options.BrokerCPUs),
+		"--memory", strconv.FormatInt(options.BrokerMemoryBytes, 10) + "b",
+		"--read-only", "--tmpfs", "/tmp:size=64m",
+	}
+	if options.Target == "emqx" {
+		args = append(args,
+			"--mount", "type=volume,source="+containerName+"-data,destination=/opt/emqx/data",
+			"--mount", "type=volume,source="+containerName+"-log,destination=/opt/emqx/log",
+			"--env", "EMQX_NODE__NAME=emqx@127.0.0.1",
+			"--env", "EMQX_NODE__COOKIE="+options.BenchmarkID+"-emqx-cookie",
+		)
+	}
+	if options.Target == "narumq" && options.CollectRuntimeMetrics {
+		args = append(args, "--mount", "type=bind,source="+options.ArtifactDirectory+",destination=/benchmark-output")
+	}
+	args = append(args, options.ImageReference)
+	if options.Target == "narumq" {
+		args = append(args, "-tcp-listen", "127.0.0.1:1883")
+		if options.CollectRuntimeMetrics {
+			args = append(args,
+				"-runtime-metrics-output", "/benchmark-output/runtime-metrics.jsonl",
+				"-runtime-metrics-interval", options.RuntimeMetricsInterval.String(),
+			)
+		}
+	}
+	return args
 }
 
 func validateTargetOptions(options TargetOptions) error {
@@ -161,6 +194,17 @@ func validateTargetOptions(options TargetOptions) error {
 	if options.Target != "narumq" && options.Target != "emqx" {
 		return fmt.Errorf("unsupported benchmark target %q", options.Target)
 	}
+	if options.CollectRuntimeMetrics {
+		if options.Target != "narumq" {
+			return errors.New("runtime metrics collection is supported only for narumq")
+		}
+		if options.RuntimeMetricsInterval <= 0 {
+			return errors.New("runtime metrics interval must be greater than zero")
+		}
+	} else if options.RuntimeMetricsInterval != 0 {
+		return errors.New("runtime metrics interval requires runtime metrics collection")
+	}
+
 	if strings.TrimSpace(options.ArtifactDirectory) == "" {
 		return errors.New("artifact directory is required")
 	}
@@ -190,28 +234,35 @@ func validateTargetOptions(options TargetOptions) error {
 	}
 	return nil
 }
-
 func newTargetResult(options TargetOptions) TargetResult {
+	runtimeMetricsPath := ""
+	if options.Target == "narumq" {
+		runtimeMetricsPath = filepath.Join(options.ArtifactDirectory, "runtime-metrics.jsonl")
+	}
 	return TargetResult{
-		Target:            options.Target,
-		Status:            "failed",
-		StartedAt:         time.Now().UTC().Format(time.RFC3339Nano),
-		ArtifactDirectory: options.ArtifactDirectory,
-		SummaryPath:       filepath.Join(options.ArtifactDirectory, "summary.json"),
-		SamplesPath:       filepath.Join(options.ArtifactDirectory, "samples.jsonl"),
-		BrokerStatsPath:   filepath.Join(options.ArtifactDirectory, "broker-stats.jsonl"),
-		BrokerLogPath:     filepath.Join(options.ArtifactDirectory, "broker.log"),
-		RunnerLogPath:     filepath.Join(options.ArtifactDirectory, "runner.log"),
-		ContainerInspect:  filepath.Join(options.ArtifactDirectory, "container-inspect.json"),
-		ImageReference:    options.ImageReference,
-		RunnerImageID:     options.RunnerImageID,
-		RunnerTarget:      options.RunnerTarget,
+		Target:             options.Target,
+		Status:             "failed",
+		StartedAt:          time.Now().UTC().Format(time.RFC3339Nano),
+		ArtifactDirectory:  options.ArtifactDirectory,
+		SummaryPath:        filepath.Join(options.ArtifactDirectory, "summary.json"),
+		SamplesPath:        filepath.Join(options.ArtifactDirectory, "samples.jsonl"),
+		RuntimeMetricsPath: runtimeMetricsPath,
+		BrokerStatsPath:    filepath.Join(options.ArtifactDirectory, "broker-stats.jsonl"),
+		BrokerLogPath:      filepath.Join(options.ArtifactDirectory, "broker.log"),
+		RunnerLogPath:      filepath.Join(options.ArtifactDirectory, "runner.log"),
+		ContainerInspect:   filepath.Join(options.ArtifactDirectory, "container-inspect.json"),
+		ImageReference:     options.ImageReference,
+		RunnerImageID:      options.RunnerImageID,
+		RunnerTarget:       options.RunnerTarget,
 	}
 }
-
 func finishTargetFailure(result TargetResult, err error) TargetResult {
-	if err != nil && result.FailureReason == "" {
-		result.FailureReason = err.Error()
+	if err != nil {
+		if result.FailureReason == "" {
+			result.FailureReason = err.Error()
+		} else if result.FailureReason != err.Error() {
+			result.FailureReason = errors.Join(errors.New(result.FailureReason), err).Error()
+		}
 	}
 	result.Status = "failed"
 	result.Success = false

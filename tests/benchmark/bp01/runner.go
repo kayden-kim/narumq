@@ -5,10 +5,13 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
 	"sync"
 	"time"
 
 	"narumq/internal/domain/mqtt"
+	"narumq/tests/benchmark/internal/jsonl"
 	"narumq/tests/benchmark/internal/mqttclient"
 )
 
@@ -16,6 +19,7 @@ const (
 	benchmarkMaxPacketSize = mqttclient.MaxPacketSize
 	handshakeTimeout       = mqttclient.DefaultHandshakeTimeout
 	readPollTimeout        = 100 * time.Millisecond
+	phaseDrain             = "drain"
 )
 
 // RunOptions controls one in-container target execution.
@@ -42,21 +46,35 @@ func Run(ctx context.Context, options RunOptions) (Summary, error) {
 	if options.Address == "" {
 		return Summary{}, errors.New("MQTT address is required")
 	}
-	collector, err := NewCollector(options.Profile, options.Target, options.OutputDir)
+	if options.OutputDir == "" {
+		return Summary{}, errors.New("output directory is required")
+	}
+	if err := os.MkdirAll(options.OutputDir, 0o755); err != nil {
+		return Summary{}, fmt.Errorf("create output directory: %w", err)
+	}
+	phasesWriter, err := jsonl.Open(filepath.Join(options.OutputDir, "phases.jsonl"))
 	if err != nil {
 		return Summary{}, err
 	}
+	collector, err := NewCollector(options.Profile, options.Target, options.OutputDir)
+	if err != nil {
+		_ = phasesWriter.Close()
+		return Summary{}, err
+	}
 
-	runErr := executeWorkload(ctx, options, collector)
+	runErr := executeWorkload(ctx, options, collector, phasesWriter)
+	if closeErr := phasesWriter.Close(); closeErr != nil {
+		runErr = errors.Join(runErr, fmt.Errorf("close phases.jsonl: %w", closeErr))
+	}
 	if runErr != nil {
 		collector.RecordProtocolError()
 	}
 	summary, finalizeErr := collector.Finalize()
 	if finalizeErr != nil {
-		return summary, finalizeErr
+		return summary, errors.Join(runErr, finalizeErr)
 	}
 	if err := WriteSummary(options.OutputDir, summary); err != nil {
-		return summary, err
+		return summary, errors.Join(runErr, err)
 	}
 	if runErr != nil {
 		return summary, runErr
@@ -67,7 +85,7 @@ func Run(ctx context.Context, options RunOptions) (Summary, error) {
 	return summary, nil
 }
 
-func executeWorkload(ctx context.Context, options RunOptions, collector *Collector) error {
+func executeWorkload(ctx context.Context, options RunOptions, collector *Collector, phasesWriter *jsonl.Writer) error {
 	profile := options.Profile
 	subscriber, _, err := mqttclient.Connect(ctx, mqttclient.ConnectOptions{
 		Address:          options.Address,
@@ -115,15 +133,17 @@ func executeWorkload(ctx context.Context, options RunOptions, collector *Collect
 	defer publisher.Close()
 
 	collector.SetOffered(profile.OfferedMeasurementSamples())
-	runStart := time.Now()
 	nextSequence := uint64(1)
-	if err := runPhase(ctx, publisher, profile, collector, phaseWarmup, runStart, profile.WarmupMillis, &nextSequence, fatalErrors); err != nil {
+	if err := runRecordedPhase(phasesWriter, phaseWarmup, func(start time.Time) error {
+		return runPhase(ctx, publisher, profile, collector, phaseWarmup, start, profile.WarmupMillis, &nextSequence, fatalErrors)
+	}); err != nil {
 		stopOnce.Do(func() { close(stopReceiver) })
 		<-receiverDone
 		return err
 	}
-	measurementStart := runStart.Add(time.Duration(profile.WarmupMillis) * time.Millisecond)
-	if err := runPhase(ctx, publisher, profile, collector, phaseMeasurement, measurementStart, profile.MeasureMillis, &nextSequence, fatalErrors); err != nil {
+	if err := runRecordedPhase(phasesWriter, phaseMeasurement, func(start time.Time) error {
+		return runPhase(ctx, publisher, profile, collector, phaseMeasurement, start, profile.MeasureMillis, &nextSequence, fatalErrors)
+	}); err != nil {
 		stopOnce.Do(func() { close(stopReceiver) })
 		<-receiverDone
 		return err
@@ -134,7 +154,9 @@ func executeWorkload(ctx context.Context, options RunOptions, collector *Collect
 		return fmt.Errorf("publisher DISCONNECT: %w", err)
 	}
 
-	if err := waitForDrain(ctx, collector, profile.DrainMillis, fatalErrors); err != nil {
+	if err := runRecordedPhase(phasesWriter, phaseDrain, func(start time.Time) error {
+		return waitForDrain(ctx, start, profile.DrainMillis, fatalErrors)
+	}); err != nil {
 		stopOnce.Do(func() { close(stopReceiver) })
 		<-receiverDone
 		return err
@@ -155,6 +177,32 @@ func executeWorkload(ctx context.Context, options RunOptions, collector *Collect
 	default:
 		return nil
 	}
+}
+
+type phaseEvent struct {
+	Phase     string `json:"phase"`
+	Event     string `json:"event"`
+	Timestamp string `json:"timestamp"`
+}
+
+func runRecordedPhase(writer *jsonl.Writer, phase string, execute func(time.Time) error) error {
+	startedAt := time.Now()
+	if err := writer.Write(phaseEvent{Phase: phase, Event: "start", Timestamp: startedAt.UTC().Format(time.RFC3339Nano)}); err != nil {
+		return fmt.Errorf("write %s start: %w", phase, err)
+	}
+	runErr := execute(startedAt)
+	finishedAt := time.Now()
+	endErr := writer.Write(phaseEvent{Phase: phase, Event: "end", Timestamp: finishedAt.UTC().Format(time.RFC3339Nano)})
+	if runErr != nil && endErr != nil {
+		return errors.Join(runErr, fmt.Errorf("write %s end: %w", phase, endErr))
+	}
+	if runErr != nil {
+		return runErr
+	}
+	if endErr != nil {
+		return fmt.Errorf("write %s end: %w", phase, endErr)
+	}
+	return nil
 }
 
 func completeSubscribe(connection *mqttclient.Client, profile Profile) error {
@@ -231,8 +279,8 @@ func waitUntil(ctx context.Context, target time.Time) error {
 	}
 }
 
-func waitForDrain(ctx context.Context, collector *Collector, drainMillis int64, fatalErrors <-chan error) error {
-	deadline := time.Now().Add(time.Duration(drainMillis) * time.Millisecond)
+func waitForDrain(ctx context.Context, phaseStart time.Time, drainMillis int64, fatalErrors <-chan error) error {
+	deadline := phaseStart.Add(time.Duration(drainMillis) * time.Millisecond)
 	ticker := time.NewTicker(5 * time.Millisecond)
 	defer ticker.Stop()
 	for {

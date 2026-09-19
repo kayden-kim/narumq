@@ -2,6 +2,8 @@ package main
 
 import (
 	"context"
+	"encoding/json"
+
 	"io"
 	"log/slog"
 	"net"
@@ -143,5 +145,47 @@ func TestRunAgainstInProcessNaruMQ(t *testing.T) {
 	}
 	if len(strings.TrimSpace(string(samples))) == 0 {
 		t.Fatal("samples.jsonl is empty")
+	}
+	phasesData, err := os.ReadFile(outputDir + string(os.PathSeparator) + "phases.jsonl")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var phaseEvents []struct {
+		Phase     string `json:"phase"`
+		Event     string `json:"event"`
+		Timestamp string `json:"timestamp"`
+	}
+	for _, line := range strings.Split(strings.TrimSpace(string(phasesData)), "\n") {
+		var event struct {
+			Phase     string `json:"phase"`
+			Event     string `json:"event"`
+			Timestamp string `json:"timestamp"`
+		}
+		if err := json.Unmarshal([]byte(line), &event); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := time.Parse(time.RFC3339Nano, event.Timestamp); err != nil {
+			t.Fatalf("phase timestamp %q: %v", event.Timestamp, err)
+		}
+		phaseEvents = append(phaseEvents, event)
+	}
+	wantPhases := []struct {
+		phase string
+		event string
+	}{
+		{phaseWarmup, "start"},
+		{phaseWarmup, "end"},
+		{phaseMeasurement, "start"},
+		{phaseMeasurement, "end"},
+		{phaseDrain, "start"},
+		{phaseDrain, "end"},
+	}
+	if len(phaseEvents) != len(wantPhases) {
+		t.Fatalf("phase event count = %d, want %d", len(phaseEvents), len(wantPhases))
+	}
+	for index, want := range wantPhases {
+		if phaseEvents[index].Phase != want.phase || phaseEvents[index].Event != want.event {
+			t.Fatalf("phase event %d = %#v, want %#v", index, phaseEvents[index], want)
+		}
 	}
 }

@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"narumq/internal/domain/mqtt"
+	"narumq/tests/benchmark/internal/jsonl"
 	"narumq/tests/benchmark/internal/mqttclient"
 )
 
@@ -111,22 +112,24 @@ func Run(ctx context.Context, options RunOptions) (WorkloadSummary, error) {
 	if err := os.MkdirAll(options.OutputDir, 0o755); err != nil {
 		return WorkloadSummary{}, fmt.Errorf("create output directory: %w", err)
 	}
-	connectionsWriter, err := newJSONLWriter(filepath.Join(options.OutputDir, "connections.jsonl"))
+	connectionsWriter, err := jsonl.Open(filepath.Join(options.OutputDir, "connections.jsonl"))
+
 	if err != nil {
 		return WorkloadSummary{}, err
 	}
-	phasesWriter, err := newJSONLWriter(filepath.Join(options.OutputDir, "phases.jsonl"))
+	phasesWriter, err := jsonl.Open(filepath.Join(options.OutputDir, "phases.jsonl"))
+
 	if err != nil {
 		_ = connectionsWriter.Close()
 		return WorkloadSummary{}, err
 	}
 	counters := workloadCounters{}
 	runErr := executeWorkload(ctx, options, connectionsWriter, phasesWriter, &counters)
-	if err := connectionsWriter.Close(); err != nil && runErr == nil {
-		runErr = fmt.Errorf("close connections.jsonl: %w", err)
+	if err := connectionsWriter.Close(); err != nil {
+		runErr = errors.Join(runErr, fmt.Errorf("close connections.jsonl: %w", err))
 	}
-	if err := phasesWriter.Close(); err != nil && runErr == nil {
-		runErr = fmt.Errorf("close phases.jsonl: %w", err)
+	if err := phasesWriter.Close(); err != nil {
+		runErr = errors.Join(runErr, fmt.Errorf("close phases.jsonl: %w", err))
 	}
 	summary := buildWorkloadSummary(options.Profile, options.Target, counters)
 	if err := WriteWorkloadSummary(options.OutputDir, summary); err != nil {
@@ -141,7 +144,8 @@ func Run(ctx context.Context, options RunOptions) (WorkloadSummary, error) {
 	return summary, nil
 }
 
-func executeWorkload(ctx context.Context, options RunOptions, connectionsWriter, phasesWriter *jsonlWriter, counters *workloadCounters) (runErr error) {
+func executeWorkload(ctx context.Context, options RunOptions, connectionsWriter, phasesWriter *jsonl.Writer, counters *workloadCounters) (runErr error) {
+
 	profile := options.Profile
 	alive := make(map[string]*connectionRecord, profile.ConnectionCount)
 	defer func() {
@@ -257,7 +261,7 @@ func executeWorkload(ctx context.Context, options RunOptions, connectionsWriter,
 	return nil
 }
 
-func runConnectionRamp(ctx context.Context, profile Profile, address, phase string, clientIDs []string, indices []int, rate uint64, writer *jsonlWriter) ([]attemptResult, time.Duration, error) {
+func runConnectionRamp(ctx context.Context, profile Profile, address, phase string, clientIDs []string, indices []int, rate uint64, writer *jsonl.Writer) ([]attemptResult, time.Duration, error) {
 	if len(clientIDs) != len(indices) {
 		return nil, 0, errors.New("client ID and index counts differ")
 	}

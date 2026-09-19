@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"narumq/tests/benchmark/internal/environment"
+	"narumq/tests/benchmark/internal/runtimeartifact"
 )
 
 func TestBuildComparisonRequiresEquivalentValidTargets(t *testing.T) {
@@ -24,22 +25,49 @@ func TestBuildComparisonRequiresEquivalentValidTargets(t *testing.T) {
 	}
 	workload := &WorkloadSummary{Valid: true}
 	resource := &ResourceSummary{Valid: true}
+	naruMQRuntime := &runtimeartifact.Summary{Valid: true, Applicability: "required"}
+	emqxRuntime := runtimeartifact.NotApplicable("emqx", notApplicableRuntimeReason)
+
 	value := manifest{
 		RunID:   "bp05-test-run",
 		Profile: artifactProfile{RawSHA256: "sha", Resolved: profile},
 		Targets: map[string]targetManifest{
-			"narumq": {Success: true, ProfileSHA256: "sha", ResolvedProfile: profile, RunnerImageID: "runner", NetworkMode: "none", ResourceLimits: limits, WorkloadSummary: workload, ResourceSummary: resource},
-			"emqx":   {Success: true, ProfileSHA256: "sha", ResolvedProfile: profile, RunnerImageID: "runner", NetworkMode: "none", ResourceLimits: limits, WorkloadSummary: workload, ResourceSummary: resource},
+			"narumq": {Success: true, ProfileSHA256: "sha", ResolvedProfile: profile, RunnerImageID: "runner", NetworkMode: "none", ResourceLimits: limits, WorkloadSummary: workload, ResourceSummary: resource, RuntimeSummary: naruMQRuntime},
+			"emqx":   {Success: true, ProfileSHA256: "sha", ResolvedProfile: profile, RunnerImageID: "runner", NetworkMode: "none", ResourceLimits: limits, WorkloadSummary: workload, ResourceSummary: resource, RuntimeSummary: &emqxRuntime},
 		},
 	}
 	comparison := buildComparison(value)
 	if !comparison.Equivalent || comparison.ReleaseGating || comparison.ProfileSHA256 != "sha" {
 		t.Fatalf("buildComparison() = %#v", comparison)
 	}
-
-	value.Targets["emqx"] = targetManifest{Success: true, ProfileSHA256: "sha", ResolvedProfile: profile, RunnerImageID: "runner", NetworkMode: "none", ResourceLimits: limits, WorkloadSummary: workload, ResourceSummary: &ResourceSummary{Valid: false}}
+	narumqTarget := value.Targets["narumq"]
+	narumqTarget.RuntimeSummary = nil
+	value.Targets["narumq"] = narumqTarget
 	comparison = buildComparison(value)
-	if comparison.Equivalent || comparison.Reason != "both workload and resource summaries must be valid" {
+	if comparison.Equivalent || comparison.Reason != "workload, resource, and target runtime summaries must be valid" {
+		t.Fatalf("missing NaruMQ runtime comparison = %#v", comparison)
+	}
+	narumqTarget.RuntimeSummary = &runtimeartifact.Summary{Valid: true, Applicability: "not_applicable"}
+	value.Targets["narumq"] = narumqTarget
+	comparison = buildComparison(value)
+	if comparison.Equivalent {
+		t.Fatalf("NaruMQ not-applicable runtime comparison = %#v", comparison)
+	}
+	narumqTarget.RuntimeSummary = naruMQRuntime
+	value.Targets["narumq"] = narumqTarget
+	emqxTarget := value.Targets["emqx"]
+	emqxTarget.RuntimeSummary = &runtimeartifact.Summary{Valid: true, Applicability: "required"}
+	value.Targets["emqx"] = emqxTarget
+	comparison = buildComparison(value)
+	if comparison.Equivalent {
+		t.Fatalf("EMQX required runtime comparison = %#v", comparison)
+	}
+	emqxTarget.RuntimeSummary = &emqxRuntime
+	value.Targets["emqx"] = emqxTarget
+
+	value.Targets["emqx"] = targetManifest{Success: true, ProfileSHA256: "sha", ResolvedProfile: profile, RunnerImageID: "runner", NetworkMode: "none", ResourceLimits: limits, WorkloadSummary: workload, ResourceSummary: &ResourceSummary{Valid: false}, RuntimeSummary: &emqxRuntime}
+	comparison = buildComparison(value)
+	if comparison.Equivalent || comparison.Reason != "workload, resource, and target runtime summaries must be valid" {
 		t.Fatalf("invalid resource comparison = %#v", comparison)
 	}
 	value.Targets["emqx"] = targetManifest{Success: false, ProfileSHA256: "sha", RunnerImageID: "runner", NetworkMode: "none", ResourceLimits: limits}
@@ -70,6 +98,15 @@ func TestFinishTargetWritesResourceSummaryArtifact(t *testing.T) {
 	if err := os.WriteFile(phasesPath, []byte(phases), 0o644); err != nil {
 		t.Fatal(err)
 	}
+	runtimePath := filepath.Join(dir, "runtime-metrics.jsonl")
+	runtimeMetrics := strings.Join([]string{
+		`{"schemaVersion":1,"collectedAt":"2026-09-19T00:00:03.500Z","heapAllocBytesTotal":100,"heapAllocObjectsTotal":10,"gcCyclesTotal":1,"gcCPUSecondsTotal":1,"gcPauseCPUSecondsTotal":0.2,"runtimeCPUSecondsTotal":2,"gomaxprocsThreads":2,"gcPauseBucketBoundsSeconds":["-Inf","0.001","0.01","+Inf"],"gcPauseBucketCounts":[0,1,2]}`,
+		`{"schemaVersion":1,"collectedAt":"2026-09-19T00:00:04.500Z","heapAllocBytesTotal":300,"heapAllocObjectsTotal":12,"gcCyclesTotal":2,"gcCPUSecondsTotal":1.2,"gcPauseCPUSecondsTotal":0.3,"runtimeCPUSecondsTotal":2.5,"gomaxprocsThreads":2,"gcPauseBucketBoundsSeconds":["-Inf","0.001","0.01","+Inf"],"gcPauseBucketCounts":[0,2,2]}`,
+	}, "\n") + "\n"
+	if err := os.WriteFile(runtimePath, []byte(runtimeMetrics), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
 	workloadData, err := json.Marshal(WorkloadSummary{Valid: true, IdleSurvivors: 8})
 	if err != nil {
 		t.Fatal(err)
@@ -80,12 +117,13 @@ func TestFinishTargetWritesResourceSummaryArtifact(t *testing.T) {
 
 	profile := validBP05Profile()
 	target := finishTarget(environment.TargetResult{
-		Target:          "narumq",
-		Status:          "success",
-		Success:         true,
-		BrokerStatsPath: statsPath,
+		Target:             "narumq",
+		Status:             "success",
+		Success:            true,
+		BrokerStatsPath:    statsPath,
+		RuntimeMetricsPath: runtimePath,
 	}, profile, "sha", dir, "image", nil)
-	if !target.Success || target.ResourceSummary == nil || !target.ResourceSummary.Valid {
+	if !target.Success || target.ResourceSummary == nil || !target.ResourceSummary.Valid || target.RuntimeSummary == nil || !target.RuntimeSummary.Valid || target.RuntimeSummary.Applicability != "required" {
 		t.Fatalf("finishTarget() = %#v", target)
 	}
 

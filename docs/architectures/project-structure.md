@@ -6,7 +6,7 @@ NaruMQ source tree는 MQTT·session·routing·delivery·tenancy·security·clust
 | --- | --- |
 | 관점 상태 | Current Phase 0 gate 4 / single-node ingress와 deterministic 3-node consensus-local-recovery spike; BP-01/BP-05 제한된 smoke harness 준비, 전체 gate 판정 대기 |
 | 문서 상태 | Draft |
-| 구현 증거 | `cmd/narumq`, `internal/domain/mqtt`, `internal/domain/session`, `internal/domain/routing`, `internal/application/connect`, `internal/application/publish`, `internal/application/subscribe`, `internal/application/ports/deliveryqueue`, `internal/adapters/tcp`, `internal/adapters/memory/deliveryqueue`, `internal/adapters/memory/sessionstore`, `internal/adapters/clock`, `internal/adapters/raft`, `tests/integration/raft_consensus_test.go`, `tests/benchmark/internal/environment`, `tests/benchmark/internal/mqttclient`, `tests/benchmark/bp01`, `tests/benchmark/bp05`와 각 package test |
+| 구현 증거 | `cmd/narumq`, `internal/domain/mqtt`, `internal/domain/session`, `internal/domain/routing`, `internal/application/connect`, `internal/application/publish`, `internal/application/subscribe`, `internal/application/ports/deliveryqueue`, `internal/adapters/tcp`, `internal/adapters/memory/deliveryqueue`, `internal/adapters/memory/sessionstore`, `internal/adapters/clock`, `internal/adapters/raft`, `internal/adapters/runtimemetrics`, `tests/integration/raft_consensus_test.go`, `tests/benchmark/internal/environment`, `tests/benchmark/internal/jsonl`, `tests/benchmark/internal/runtimeartifact`, `tests/benchmark/internal/mqttclient`, `tests/benchmark/bp01`, `tests/benchmark/bp05`와 각 package test |
 | 범위 | Repository root와 Go package directory 배치 및 현재 source dependency |
 | 관련 요구사항 | [PRD](../requirements/PRD.md) NFR-11~NFR-15, TEST-01~TEST-17, DEP-19~DEP-23 |
 | 관련 결정 | [ADR-0001](../decisions/ADR-0001-core-implementation-language.md) Accepted |
@@ -62,6 +62,7 @@ NaruMQ source tree는 MQTT·session·routing·delivery·tenancy·security·clust
 │       ├── prometheus/
 │       ├── raft/
 │       ├── random/
+│       ├── runtimemetrics/
 │       ├── storage/
 │       ├── tcp/
 │       └── tls/
@@ -77,7 +78,9 @@ NaruMQ source tree는 MQTT·session·routing·delivery·tenancy·security·clust
 │   └── benchmark/
 │       ├── internal/
 │       │   ├── environment/
-│       │   └── mqttclient/
+│       │   ├── jsonl/
+│       │   ├── mqttclient/
+│       │   └── runtimeartifact/
 │       ├── bp01/
 │       └── bp05/
 ├── tools/
@@ -91,8 +94,9 @@ NaruMQ source tree는 MQTT·session·routing·delivery·tenancy·security·clust
 `application/publish`, `application/subscribe`, `application/ports/deliveryqueue`,
 `adapters/tcp`, `adapters/memory/deliveryqueue`, `adapters/memory/sessionstore`,
 `adapters/clock`, `adapters/raft`와 `tests/integration/raft_consensus_test.go`다.
+`internal/adapters/runtimemetrics`는 Go process 내부의 `runtime/metrics`를 고정 JSONL schema로 수집하는 outbound 진단 adapter다.
 `tests/benchmark/internal/environment`는 BP-01과 BP-05가 공유하는 immutable image, broker container, readiness, resource limit, runner container, Docker stats와 artifact 수집 경계를 소유한다.
-`tests/benchmark/internal/mqttclient`는 benchmark 전용 MQTT 5 Clean Start/zero Session Expiry CONNECT와 frame I/O를 소유한다. 두 package와 `bp01`, `bp05`는 product runtime이 import하지 않는 benchmark-only source다.
+`tests/benchmark/internal/mqttclient`는 benchmark 전용 MQTT 5 Clean Start/zero Session Expiry CONNECT와 frame I/O를 소유한다. `tests/benchmark/internal/jsonl`은 phase·event JSONL 파일의 공통 buffering/flush/close 동작을 소유하고, `tests/benchmark/internal/runtimeartifact`는 runtime 표본과 phase 경계를 검증해 target별 요약을 만든다. 세 package와 `bp01`, `bp05`는 product runtime이 import하지 않는 benchmark-only source다.
 각 BP package는 profile 해석, workload 상태와 comparison 판정을 소유하며 shared package는 profile·summary 의미를 결정하지 않는다.
 
 ## Directory naming
@@ -158,6 +162,7 @@ flowchart LR
 | `internal/adapters/clock` | system clock를 application port에 제공 | `application/connect`, 표준 library |
 | `internal/adapters/tcp` | bounded MQTT ingress, single writer와 connection lifecycle | application use cases/ports와 `domain/mqtt` |
 | `internal/adapters/raft` | etcd/raft 자료형, experimental WAL/snapshot format, deterministic node boundary를 adapter 안에 캡슐화 | `go.etcd.io/raft/v3`, `google.golang.org/protobuf`와 표준 library |
+| `internal/adapters/runtimemetrics` | NaruMQ 프로세스의 `runtime/metrics` 표본을 고정 schema JSONL로 수집하고 종료 시 flush | 표준 library만 |
 
 Application은 concrete adapter를 import하지 않는다. Queue, clock과 session repository
 interface는 이를 사용하는 application package가 소유하고, composition root가 구현을

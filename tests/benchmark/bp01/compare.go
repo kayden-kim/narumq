@@ -17,16 +17,18 @@ import (
 	"time"
 
 	"narumq/tests/benchmark/internal/environment"
+	"narumq/tests/benchmark/internal/runtimeartifact"
 )
 
 const (
-	emqxImageReference      = environment.EMQXImageReference
-	emqxVersion             = environment.EMQXVersion
-	emqxEdition             = environment.EMQXEdition
-	emqxLicense             = environment.EMQXLicense
-	emqxEOLEnd              = environment.EMQXEOLEnd
-	buildBaseImageReference = environment.BuildBaseImageReference
-	plannedBuildBaseImage   = environment.PlannedBuildBaseImage
+	emqxImageReference         = environment.EMQXImageReference
+	emqxVersion                = environment.EMQXVersion
+	emqxEdition                = environment.EMQXEdition
+	emqxLicense                = environment.EMQXLicense
+	emqxEOLEnd                 = environment.EMQXEOLEnd
+	buildBaseImageReference    = environment.BuildBaseImageReference
+	plannedBuildBaseImage      = environment.PlannedBuildBaseImage
+	notApplicableRuntimeReason = "Go runtime/metrics applies only to the NaruMQ Go process"
 )
 
 type artifactProfile struct {
@@ -55,28 +57,32 @@ type resourceLimits struct {
 }
 
 type targetManifest struct {
-	Target            string         `json:"target"`
-	Status            string         `json:"status"`
-	Success           bool           `json:"success"`
-	StartedAt         string         `json:"startedAt"`
-	FinishedAt        string         `json:"finishedAt"`
-	ArtifactDirectory string         `json:"artifactDirectory"`
-	SummaryPath       string         `json:"summaryPath"`
-	SamplesPath       string         `json:"samplesPath"`
-	BrokerStatsPath   string         `json:"brokerStatsPath"`
-	BrokerLogPath     string         `json:"brokerLogPath"`
-	RunnerLogPath     string         `json:"runnerLogPath"`
-	ContainerInspect  string         `json:"containerInspectPath"`
-	ImageReference    string         `json:"imageReference"`
-	ImageID           string         `json:"imageId"`
-	ImageRepoDigests  []string       `json:"imageRepoDigests"`
-	RunnerImageID     string         `json:"runnerImageId"`
-	ProfileSHA256     string         `json:"profileSha256"`
-	ResolvedProfile   Profile        `json:"resolvedProfile"`
-	ResourceLimits    resourceLimits `json:"resourceLimits"`
-	NetworkMode       string         `json:"networkMode"`
-	FailureReason     string         `json:"failureReason,omitempty"`
-	Summary           *Summary       `json:"summary,omitempty"`
+	Target             string                   `json:"target"`
+	Status             string                   `json:"status"`
+	Success            bool                     `json:"success"`
+	StartedAt          string                   `json:"startedAt"`
+	FinishedAt         string                   `json:"finishedAt"`
+	ArtifactDirectory  string                   `json:"artifactDirectory"`
+	SummaryPath        string                   `json:"summaryPath"`
+	SamplesPath        string                   `json:"samplesPath"`
+	PhasesPath         string                   `json:"phasesPath"`
+	RuntimeMetricsPath string                   `json:"runtimeMetricsPath"`
+	RuntimeSummaryPath string                   `json:"runtimeSummaryPath"`
+	BrokerStatsPath    string                   `json:"brokerStatsPath"`
+	BrokerLogPath      string                   `json:"brokerLogPath"`
+	RunnerLogPath      string                   `json:"runnerLogPath"`
+	ContainerInspect   string                   `json:"containerInspectPath"`
+	ImageReference     string                   `json:"imageReference"`
+	ImageID            string                   `json:"imageId"`
+	ImageRepoDigests   []string                 `json:"imageRepoDigests"`
+	RunnerImageID      string                   `json:"runnerImageId"`
+	ProfileSHA256      string                   `json:"profileSha256"`
+	ResolvedProfile    Profile                  `json:"resolvedProfile"`
+	ResourceLimits     resourceLimits           `json:"resourceLimits"`
+	NetworkMode        string                   `json:"networkMode"`
+	FailureReason      string                   `json:"failureReason,omitempty"`
+	Summary            *Summary                 `json:"summary,omitempty"`
+	RuntimeSummary     *runtimeartifact.Summary `json:"runtimeSummary,omitempty"`
 }
 
 type manifest struct {
@@ -123,9 +129,11 @@ type comparison struct {
 }
 
 type comparisonTarget struct {
-	Success       bool   `json:"success"`
-	SummaryPath   string `json:"summaryPath"`
-	FailureReason string `json:"failureReason,omitempty"`
+	Success              bool   `json:"success"`
+	SummaryPath          string `json:"summaryPath"`
+	RuntimeSummaryPath   string `json:"runtimeSummaryPath"`
+	RuntimeApplicability string `json:"runtimeApplicability"`
+	FailureReason        string `json:"failureReason,omitempty"`
 }
 
 func compareCommand(ctx context.Context, args []string, stdout, stderr io.Writer) error {
@@ -173,7 +181,7 @@ func compareCommand(ctx context.Context, args []string, stdout, stderr io.Writer
 	startedAt := time.Now().UTC()
 	metadata := collectHostMetadata(repoRoot)
 	currentManifest := manifest{
-		SchemaVersion:              1,
+		SchemaVersion:              2,
 		RunID:                      runID,
 		StartedAt:                  startedAt.Format(time.RFC3339Nano),
 		Purpose:                    profile.Purpose,
@@ -235,6 +243,12 @@ func compareCommand(ctx context.Context, args []string, stdout, stderr io.Writer
 		if target == "emqx" {
 			imageReference = emqxImageReference
 		}
+		collectRuntimeMetrics := target == "narumq"
+		runtimeMetricsInterval := time.Duration(0)
+		if collectRuntimeMetrics {
+			runtimeMetricsInterval = 500 * time.Millisecond
+		}
+
 		result, runErr := environment.RunTarget(ctx, environment.TargetOptions{
 			BenchmarkID:          "bp01",
 			RunID:                runID,
@@ -253,8 +267,10 @@ func compareCommand(ctx context.Context, args []string, stdout, stderr io.Writer
 				"run", "--profile", "/input/profile.json", "--target", target,
 				"--address", "127.0.0.1:1883", "--output", "/output",
 			},
-			Timeout:        time.Duration(profile.WarmupMillis+profile.MeasureMillis+profile.DrainMillis)*time.Millisecond + environment.DefaultStartupTimeout,
-			StartupTimeout: environment.DefaultStartupTimeout,
+			Timeout:                time.Duration(profile.WarmupMillis+profile.MeasureMillis+profile.DrainMillis)*time.Millisecond + environment.DefaultStartupTimeout,
+			StartupTimeout:         environment.DefaultStartupTimeout,
+			CollectRuntimeMetrics:  collectRuntimeMetrics,
+			RuntimeMetricsInterval: runtimeMetricsInterval,
 		})
 		targetValue := targetManifestFromEnvironment(result, profile, profileHash, targetDir, imageReference)
 		if runErr != nil {
@@ -262,6 +278,7 @@ func compareCommand(ctx context.Context, args []string, stdout, stderr io.Writer
 		} else {
 			targetValue = completeTargetManifest(targetValue)
 		}
+		targetValue = attachRuntimeSummary(targetValue, "measure")
 		currentManifest.Targets[target] = targetValue
 	}
 	currentManifest.FinishedAt = time.Now().UTC().Format(time.RFC3339Nano)
@@ -320,26 +337,30 @@ func newRunID() string {
 }
 func targetManifestFromEnvironment(result environment.TargetResult, profile Profile, profileHash, targetDir, imageReference string) targetManifest {
 	value := targetManifest{
-		Target:            result.Target,
-		Status:            result.Status,
-		Success:           result.Success,
-		StartedAt:         result.StartedAt,
-		FinishedAt:        result.FinishedAt,
-		ArtifactDirectory: result.ArtifactDirectory,
-		SummaryPath:       result.SummaryPath,
-		SamplesPath:       result.SamplesPath,
-		BrokerStatsPath:   result.BrokerStatsPath,
-		BrokerLogPath:     result.BrokerLogPath,
-		RunnerLogPath:     result.RunnerLogPath,
-		ContainerInspect:  result.ContainerInspect,
-		ImageReference:    result.ImageReference,
-		ImageID:           result.ImageID,
-		ImageRepoDigests:  append([]string(nil), result.ImageRepoDigests...),
-		RunnerImageID:     result.RunnerImageID,
-		ProfileSHA256:     profileHash,
-		ResolvedProfile:   profile,
-		NetworkMode:       "none",
-		FailureReason:     result.FailureReason,
+		Target:             result.Target,
+		Status:             result.Status,
+		Success:            result.Success,
+		StartedAt:          result.StartedAt,
+		FinishedAt:         result.FinishedAt,
+		ArtifactDirectory:  result.ArtifactDirectory,
+		SummaryPath:        result.SummaryPath,
+		SamplesPath:        result.SamplesPath,
+		PhasesPath:         filepath.Join(targetDir, "phases.jsonl"),
+		RuntimeMetricsPath: result.RuntimeMetricsPath,
+		RuntimeSummaryPath: filepath.Join(targetDir, "runtime-summary.json"),
+
+		BrokerStatsPath:  result.BrokerStatsPath,
+		BrokerLogPath:    result.BrokerLogPath,
+		RunnerLogPath:    result.RunnerLogPath,
+		ContainerInspect: result.ContainerInspect,
+		ImageReference:   result.ImageReference,
+		ImageID:          result.ImageID,
+		ImageRepoDigests: append([]string(nil), result.ImageRepoDigests...),
+		RunnerImageID:    result.RunnerImageID,
+		ProfileSHA256:    profileHash,
+		ResolvedProfile:  profile,
+		NetworkMode:      "none",
+		FailureReason:    result.FailureReason,
 		ResourceLimits: resourceLimits{
 			CPUs:              profile.BrokerCPUs,
 			MemoryBytes:       profile.BrokerMemoryBytes,
@@ -363,6 +384,16 @@ func targetManifestFromEnvironment(result environment.TargetResult, profile Prof
 	if value.SamplesPath == "" {
 		value.SamplesPath = filepath.Join(targetDir, "samples.jsonl")
 	}
+	if value.PhasesPath == "" {
+		value.PhasesPath = filepath.Join(targetDir, "phases.jsonl")
+	}
+	if value.RuntimeMetricsPath == "" && value.Target == "narumq" {
+		value.RuntimeMetricsPath = filepath.Join(targetDir, "runtime-metrics.jsonl")
+	}
+	if value.RuntimeSummaryPath == "" {
+		value.RuntimeSummaryPath = filepath.Join(targetDir, "runtime-summary.json")
+	}
+
 	if value.BrokerStatsPath == "" {
 		value.BrokerStatsPath = filepath.Join(targetDir, "broker-stats.jsonl")
 	}
@@ -405,11 +436,56 @@ func completeTargetManifest(value targetManifest) targetManifest {
 	value.FinishedAt = time.Now().UTC().Format(time.RFC3339Nano)
 	return value
 }
+func attachRuntimeSummary(value targetManifest, phase string) targetManifest {
+	var summary runtimeartifact.Summary
+	var computeErr error
+	if value.Target == "emqx" {
+		summary = runtimeartifact.NotApplicable(value.Target, notApplicableRuntimeReason)
+	} else {
+		summary, computeErr = runtimeartifact.Compute(value.RuntimeMetricsPath, value.PhasesPath, phase, value.Target)
+	}
+	value.RuntimeSummary = &summary
+	if writeErr := writeJSONFile(value.RuntimeSummaryPath, summary); writeErr != nil {
+		value.FailureReason = appendFailureReason(value.FailureReason, fmt.Errorf("write runtime summary: %w", writeErr))
+	}
+	if computeErr != nil {
+		value.FailureReason = appendFailureReason(value.FailureReason, computeErr)
+	}
+	expectedApplicability := "required"
+	if value.Target == "emqx" {
+		expectedApplicability = "not_applicable"
+	}
+	if !summary.Valid || summary.Applicability != expectedApplicability {
+		value.FailureReason = appendFailureReason(value.FailureReason, errors.New("runtime summary is invalid or has unexpected applicability"))
+	}
+	if value.FailureReason == "" && value.Summary != nil && value.Summary.Valid {
+		value.Status = "success"
+		value.Success = true
+	} else {
+		value.Status = "failed"
+		value.Success = false
+	}
+	if value.FinishedAt == "" {
+		value.FinishedAt = time.Now().UTC().Format(time.RFC3339Nano)
+	}
+	return value
+}
+
+func appendFailureReason(existing string, err error) string {
+	if err == nil {
+		return existing
+	}
+	if existing == "" {
+		return err.Error()
+	}
+	if existing == err.Error() {
+		return existing
+	}
+	return errors.Join(errors.New(existing), err).Error()
+}
 
 func finishTargetFailure(result targetManifest, err error) targetManifest {
-	if err != nil && result.FailureReason == "" {
-		result.FailureReason = err.Error()
-	}
+	result.FailureReason = appendFailureReason(result.FailureReason, err)
 	result.Status = "failed"
 	result.Success = false
 	result.FinishedAt = time.Now().UTC().Format(time.RFC3339Nano)
@@ -448,13 +524,23 @@ func writeJSONFile(path string, value any) error {
 
 func buildComparison(value manifest) comparison {
 	result := comparison{
-		SchemaVersion: 1,
+		SchemaVersion: 2,
 		RunID:         value.RunID,
 		ReleaseGating: false,
 		Targets:       make(map[string]comparisonTarget, len(value.Targets)),
 	}
 	for target, targetValue := range value.Targets {
-		result.Targets[target] = comparisonTarget{Success: targetValue.Success, SummaryPath: targetValue.SummaryPath, FailureReason: targetValue.FailureReason}
+		applicability := ""
+		if targetValue.RuntimeSummary != nil {
+			applicability = targetValue.RuntimeSummary.Applicability
+		}
+		result.Targets[target] = comparisonTarget{
+			Success:              targetValue.Success,
+			SummaryPath:          targetValue.SummaryPath,
+			RuntimeSummaryPath:   targetValue.RuntimeSummaryPath,
+			RuntimeApplicability: applicability,
+			FailureReason:        targetValue.FailureReason,
+		}
 	}
 	narumq, narumqOK := value.Targets["narumq"]
 	emqx, emqxOK := value.Targets["emqx"]
@@ -474,11 +560,21 @@ func buildComparison(value manifest) comparison {
 		result.Reason = "target resource, network, or runner image conditions differ"
 		return result
 	}
-	if narumq.Summary == nil || emqx.Summary == nil || !narumq.Summary.Valid || !emqx.Summary.Valid {
-		result.Reason = "both summaries must be valid"
+	if narumq.Summary == nil || emqx.Summary == nil || !narumq.Summary.Valid || !emqx.Summary.Valid || !validRuntimeSummary("narumq", narumq.RuntimeSummary) || !validRuntimeSummary("emqx", emqx.RuntimeSummary) {
+		result.Reason = "both workload summaries and target runtime applicability must be valid"
 		return result
 	}
 	result.Equivalent = true
-	result.Reason = "both target runs succeeded under the resolved BP-01 conditions"
+	result.Reason = "same profile, resource, and execution conditions have valid workload artifacts and target-specific runtime applicability"
 	return result
+}
+
+func validRuntimeSummary(target string, summary *runtimeartifact.Summary) bool {
+	if summary == nil || !summary.Valid || summary.ReleaseGating {
+		return false
+	}
+	if target == "emqx" {
+		return summary.Applicability == "not_applicable" && summary.NotApplicableReason != ""
+	}
+	return summary.Applicability == "required"
 }
