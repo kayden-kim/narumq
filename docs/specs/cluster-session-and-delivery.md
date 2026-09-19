@@ -146,3 +146,16 @@ P1 rebalance가 활성화되면 target 편차, 최대 동시 이동 수와 이�
 - 성공 durable ACK 직후 각 node를 kill해 message gap이 없는지 확인한다.
 - disk full, snapshot crash, restore와 resync 중 원자성·readiness를 확인한다.
 - N-1↔N rolling upgrade와 rollback을 양방향으로 시험한다.
+
+### 11.1 Phase 0 gate 4 deterministic spike mapping
+
+아래 네 시나리오는 `internal/adapters/raft`의 in-process deterministic harness가 검증하는 제한된 증거다. 각 시나리오는 독립 temporary directory와 FIFO `MessageDTO` delivery를 사용한다.
+
+| Spike scenario | 관찰할 결과 | Test mapping |
+| --- | --- | --- |
+| `leader failure preserves committed state` | node 1 장애 뒤 node 2가 증가한 term으로 선출되고 `[alpha,beta]`가 surviving node에 유지된다. | `TestRaftConsensusSpike/leader_failure_preserves_committed_state` |
+| `quorum loss cannot commit` | quorum 없는 old leader가 `gamma`를 apply하지 않으며 반복 proposal은 `ErrBackpressure`로 수렴한다. | `TestRaftConsensusSpike/quorum_loss_cannot_commit` |
+| `WAL replay restores commit` | bootstrap snapshot 뒤 reopen한 node가 `[alpha]`를 복구하고 재가입 뒤 `[alpha,beta]`로 수렴한다. | `TestRaftConsensusSpike/WAL_replay_restores_commit` |
+| `snapshot plus WAL tail restores state` | snapshot index 이후 WAL tail을 replay해 `[alpha,beta,gamma]`와 동일한 applied/commit 경계를 복구한다. | `TestRaftConsensusSpike/snapshot_plus_WAL_tail_restores_state` |
+
+이 mapping은 CLU-01/02/06/07/09/10과 ADR-0001 gate 4, ADR-0002 §7의 skeleton·local recovery 항목을 연결한다. Session ownership, durable MQTT ACK barrier, production peer transport, disk-full/slow-follower와 membership-change 수용 시험은 이 spike에서 구현하지 않으며 이 문서의 기존 수용 시험에서 여전히 미완료다.

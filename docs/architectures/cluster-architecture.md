@@ -6,13 +6,13 @@ NaruMQ cluster는 세 broker node가 같은 replicated state machine에 참여�
 | --- | --- |
 | 관점 상태 | Target |
 | 문서 상태 | Draft |
-| 구현 증거 | 없음 |
+| 구현 증거 | 제한된 Phase 0 evidence: `internal/adapters/raft`, `tests/integration/raft_consensus_test.go` |
 | 범위 | Broker cluster의 runtime component와 상태 소유권 |
 | 관련 요구사항 | [PRD](../requirements/PRD.md) CLU-01~CLU-14, MQTT-02~05, NFR-07~NFR-10 |
 | 관련 스펙 | [Cluster session과 durable delivery](../specs/cluster-session-and-delivery.md), [MQTT protocol과 session](../specs/mqtt-protocol-and-session.md) |
 | 관련 결정 | [ADR-0002](../decisions/ADR-0002-cluster-consensus-library.md), [ADR-0003](../decisions/ADR-0003-durable-ack-barrier.md), [ADR-0004](../decisions/ADR-0004-session-ownership-and-fencing.md). 모두 Proposed |
 | 관련 Contract | [Cluster release compatibility v1](../contracts/cluster-release-compatibility-v1.md), replicated state encoding은 예정 |
-| 최종 확인일 | 2026-08-16 |
+| 최종 확인일 | 2026-09-19 |
 
 ## Runtime component view
 
@@ -61,6 +61,12 @@ flowchart TB
 ```
 
 `etcd/raft`, WAL과 transport의 정확한 API는 Proposed [ADR-0002](../decisions/ADR-0002-cluster-consensus-library.md)와 후속 ADR의 대상이다. Diagram은 library 선택이 승인되었다는 뜻이 아니다.
+
+## Phase 0 gate 4 제한된 구현 증거
+
+현재 repository는 `internal/adapters/raft`에서 `go.etcd.io/raft/v3 v3.7.0`의 `RawNode`와 deterministic logical-tick harness, experimental local WAL·snapshot recovery를 검증한다. 이 evidence는 Raft algorithm과 node-local recovery의 경계만 보여준다. `cmd/narumq`의 composition root에는 조립하지 않으며 application replication port, production peer transport/TLS, session ownership, durable ACK와 membership workflow는 연결되지 않았다.
+
+따라서 위 runtime view의 `Raft core`·`WAL·snapshot`·authenticated transport 흐름은 Target 구조이고, 현재 구현된 실제 경로는 [adapter source](../../internal/adapters/raft/node.go), [stable store](../../internal/adapters/raft/stable_store.go), [integration evidence](../../tests/integration/raft_consensus_test.go)의 제한된 in-process spike다. ADR-0002가 Proposed인 동안 이 view를 production 또는 Verified 상태로 승격하지 않는다.
 
 ## 상태 소유권
 

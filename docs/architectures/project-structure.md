@@ -4,9 +4,9 @@ NaruMQ source tree는 MQTT·session·routing·delivery·tenancy·security·clust
 
 | 항목 | 값 |
 | --- | --- |
-| 관점 상태 | Current Phase 0 gate 3 / single-node ingress vertical slice |
+| 관점 상태 | Current Phase 0 gate 4 / single-node ingress와 deterministic 3-node consensus-local-recovery spike |
 | 문서 상태 | Draft |
-| 구현 증거 | `cmd/narumq`, `internal/domain/mqtt`, `internal/domain/session`, `internal/domain/routing`, `internal/application/connect`, `internal/application/publish`, `internal/application/subscribe`, `internal/application/ports/deliveryqueue`, `internal/adapters/tcp`, `internal/adapters/memory/deliveryqueue`, `internal/adapters/memory/sessionstore`, `internal/adapters/clock`와 각 package/integration test |
+| 구현 증거 | `cmd/narumq`, `internal/domain/mqtt`, `internal/domain/session`, `internal/domain/routing`, `internal/application/connect`, `internal/application/publish`, `internal/application/subscribe`, `internal/application/ports/deliveryqueue`, `internal/adapters/tcp`, `internal/adapters/memory/deliveryqueue`, `internal/adapters/memory/sessionstore`, `internal/adapters/clock`, `internal/adapters/raft`, `tests/integration/raft_consensus_test.go`와 각 package test |
 | 범위 | Repository root와 Go package directory 배치 및 현재 source dependency |
 | 관련 요구사항 | [PRD](../requirements/PRD.md) NFR-11~NFR-15, TEST-01~TEST-17, DEP-19~DEP-23 |
 | 관련 결정 | [ADR-0001](../decisions/ADR-0001-core-implementation-language.md) Accepted |
@@ -81,12 +81,13 @@ NaruMQ source tree는 MQTT·session·routing·delivery·tenancy·security·clust
 └── go.sum
 ```
 
-현재 구현된 Phase 0 gate 3 + single-node ingress deliverable은 목표 tree의
+현재 구현된 Phase 0 gate 3 + single-node ingress deliverable과 gate 4 consensus spike는 목표 tree의
 `cmd/narumq`, `domain/mqtt`, `domain/session`, `domain/routing`, `application/connect`,
 `application/publish`, `application/subscribe`, `application/ports/deliveryqueue`,
 `adapters/tcp`, `adapters/memory/deliveryqueue`, `adapters/memory/sessionstore`,
-`adapters/clock`다. TLS, durable storage, cluster transport와 management API directory는
-실제 deliverable이 생길 때 확장한다.
+`adapters/clock`, `adapters/raft`와 `tests/integration/raft_consensus_test.go`다.
+`adapters/raft`의 WAL·snapshot은 이 spike 전용 experimental local format이며 production storage가
+아니다. TLS, production peer transport, membership와 management API directory는 실제 deliverable이 생길 때 확장한다.
 
 ## Directory naming
 
@@ -135,7 +136,7 @@ flowchart LR
 - `tests`의 source dependency는 허용하지만 production package가 `tests`를 import하지 않는다.
 - Component graph에 cycle이 생기면 merge하지 않는다.
 
-### Phase 0 gate 3 현재 package
+### Phase 0 gate 4 현재 package
 
 | 실제 package | 책임 | 허용된 inward dependency |
 | --- | --- | --- |
@@ -150,11 +151,17 @@ flowchart LR
 | `internal/adapters/memory/sessionstore` | process-local lifecycle load/save/delete | `application/connect`, `domain/session`, 표준 library |
 | `internal/adapters/clock` | system clock를 application port에 제공 | `application/connect`, 표준 library |
 | `internal/adapters/tcp` | bounded MQTT ingress, single writer와 connection lifecycle | application use cases/ports와 `domain/mqtt` |
+| `internal/adapters/raft` | etcd/raft 자료형, experimental WAL/snapshot format, deterministic node boundary를 adapter 안에 캡슐화 | `go.etcd.io/raft/v3`, `google.golang.org/protobuf`와 표준 library |
 
 Application은 concrete adapter를 import하지 않는다. Queue, clock과 session repository
 interface는 이를 사용하는 application package가 소유하고, composition root가 구현을
 생성해 주입한다. `adapters/tcp`는 inbound adapter이므로 network 자료형을 packet과
 application 결과로 변환하는 경계에만 둔다.
+
+이번 spike는 application use case가 아직 소비하지 않는 algorithm·local recovery 증거다. 따라서
+`internal/application/ports/consensus`와 `internal/application/ports/logstore`는 미리 만들지 않으며,
+`cmd/narumq`에도 adapter를 조립하지 않는다. 실제 application replication port가 정의될 때 별도 변경으로
+adapter DTO와 port를 연결한다.
 
 정확한 package allowlist는 source tree가 생긴 뒤 architecture test로 고정한다.
 

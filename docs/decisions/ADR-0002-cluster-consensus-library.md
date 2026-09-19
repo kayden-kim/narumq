@@ -28,6 +28,16 @@ NaruMQ cluster의 consensus algorithm core로 Go module `go.etcd.io/raft/v3`를 
 
 Production version은 Phase 0 spike가 통과한 정확한 module version과 checksum으로 고정한다. 이 ADR은 아직 그 version을 확정하지 않는다.
 
+### 1.1 Phase 0 gate 4 spike profile
+
+Phase 0 gate 4의 검증용 구현은 `go.etcd.io/raft/v3 v3.7.0`을 사용한다. 이 버전은 Go 1.26을 선언하는 현재 stable module이며, 이번 기록은 production version 승인이나 persisted-state·wire contract 승인이 아니다. ADR 상태는 `Proposed`로 유지한다.
+
+Spike는 `raft.RawNode`의 synchronous `Ready`/`Advance` 경계와 `AsyncStorageWrites=false`를 사용한다. `PreVote=true`, `CheckQuorum=true`, `ElectionTick=10`, `HeartbeatTick=1`, `MaxSizePerMsg=64 KiB`, `MaxCommittedSizePerReady=1 MiB`, `MaxUncommittedEntriesSize=1 MiB`, `MaxInflightMsgs=16`, `MaxInflightBytes=1 MiB`를 고정하고, logical tick·in-process FIFO message delivery로 실행을 결정적으로 재생한다. Voter는 고정된 `{1,2,3}`이며 membership change, real peer RPC, authentication과 MQTT command encoding은 이 profile의 범위가 아니다.
+
+Failover 검증은 follower 전용 `RawNode.ForgetLeader` seam을 `Campaign` 앞에 사용한다. 이 호출은 membership를 변경하지 않는다. Leader 장애 직후 `CheckQuorum`과 `PreVote`가 campaign을 무시할 수 있는 비결정적 lease window를 피하기 위한 결정이다.
+
+`internal/adapters/raft`는 etcd/raft 자료형을 adapter 안에 캡슐화하고, experimental WAL·snapshot과 deterministic node boundary를 소유한다. 검증 결과는 [adapter unit tests](../../internal/adapters/raft/node_test.go), [stable-store tests](../../internal/adapters/raft/stable_store_test.go), [integration spike](../../tests/integration/raft_consensus_test.go)에 기록한다. 이 evidence는 algorithm과 local recovery 가능성을 증명할 뿐 BP-03/BP-06, durable MQTT ACK, production transport 또는 production durability 완료를 뜻하지 않는다.
+
 ## 2. 배경
 
 NaruMQ는 단일 node 장애에서 durable ACK message RPO 0, minority의 새 ownership 금지와 자동 복구를 요구한다. Consensus algorithm을 직접 구현하면 제품 고유의 MQTT·session 문제보다 algorithm 안전성 검증에 더 큰 비용이 든다.
