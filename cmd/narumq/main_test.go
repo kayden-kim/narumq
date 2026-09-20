@@ -178,6 +178,8 @@ func TestRunWithContextRejectsConstructionBounds(t *testing.T) {
 		want string
 	}{
 		{name: "delivery queue", args: []string{"-tcp-listen", "127.0.0.1:0", "-delivery-queue-capacity", "0"}, want: "create delivery queue"},
+		{name: "retained message capacity", args: []string{"-tcp-listen", "127.0.0.1:0", "-retained-message-capacity", "0"}, want: "retained-message-capacity"},
+		{name: "retained byte capacity", args: []string{"-tcp-listen", "127.0.0.1:0", "-retained-byte-capacity", "0"}, want: "retained-byte-capacity"},
 		{name: "decoder", args: []string{"-tcp-listen", "127.0.0.1:0", "-max-packet-size", "0"}, want: "create MQTT decoder"},
 		{name: "server config", args: []string{"-tcp-listen", "127.0.0.1:0", "-control-queue-capacity", "0"}, want: "create TCP server"},
 	}

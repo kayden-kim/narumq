@@ -11,34 +11,38 @@
 | 관련 Contract | [MQTT client compatibility v1](../contracts/mqtt-client-compatibility-v1.md) |
 | 해설 | [MQTT 전달 보장과 QoS·Session·Will protocol 흐름](../explainers/mqtt-delivery-guarantees-and-protocol-flows.md) |
 
-## 현재 구현 상태: Phase 0 gate 3 + 단일 노드 ingress slice
+## 현재 구현 상태: Phase 1 단일 노드 retained·subscription options slice
 
 현재 구현은 개발·검증 전용 loopback plaintext TCP ingress까지 연결되어 실제
 MQTT 3.1.1/5.0 client가 `CONNECT → SUBSCRIBE/PUBLISH → PING/DISCONNECT`를
 실행할 수 있다. 이 listener는 TLS, 인증과 tenant 경계가 없으므로 literal loopback
-주소로만 열 수 있다. ADR-0001 gate 4 consensus skeleton은 아직 다음 gate다.
+주소로만 열 수 있다. Retained runtime은 단일 process 안의 bounded development
+profile이며 cluster durability와는 별도 경계다.
 
 - `internal/domain/mqtt`는 CONNECT/CONNACK, QoS 0·1·2 PUBLISH, PUBACK/PUBREC/PUBREL/PUBCOMP,
   SUBSCRIBE 계열과 PINGREQ/PINGRESP/DISCONNECT를 decode·encode한다. PING packet은
   Remaining Length 0만 허용하고 MQTT 5 DISCONNECT는 property-free allowlist만 지원한다.
 - `internal/domain/routing`은 non-shared `+`·`#` filter, `$` system topic 경계,
-  session별 중복 제거와 overlap 최대 granted QoS를 결정하며 `RemoveSession`으로
-  stale subscription을 한 번에 제거한다.
-- `internal/application/connect`는 session lifecycle을 저장·복구하고 queue 등록,
-  route cleanup, `Session Present`와 duplicate/credential/Will 거절을 조정한다.
-- `internal/application/subscribe`는 요청 순서를 유지한 ACK를 만들고, shared
-  subscription과 `No Local`·`Retain As Published`·`Retain Handling` runtime을
-  명시적 실패 reason으로 deferred한다.
-- `internal/application/publish`와 `application/ports/deliveryqueue`는 route 결과와
-  bounded FIFO delivery를 공유한다. `internal/adapters/tcp` writer는 control queue와
-  delivery wake를 직렬화하고 queue saturation·write timeout에서 target을 닫는다.
-- ingress에서 성공 처리하는 수신 publish는 QoS 0이고 `Retain=false`인 경우뿐이다.
-  MQTT 5 QoS 1/2 또는 retained PUBLISH는 `0x83` negative ACK/DISCONNECT를 사용하고,
-  MQTT 3.1.1 QoS 1/2·retained 입력은 연결을 닫는다.
+  session별 중복 제거와 overlap 최대 granted QoS를 결정한다. `No Local`은 동일
+  publisher session을 제외하고, `Retain As Published`는 live delivery의 RETAIN을
+  결정하며, `Retain Handling`은 SUBSCRIBE replay 시점에만 적용한다.
+- `internal/application/subscribe`는 요청 순서를 유지한 SUBACK를 만들고, retained
+  replay batch를 route mutation 전에 queue에 원자적으로 예약한다. MQTT 3.1.1과
+  MQTT 5의 non-shared retained replay 및 MQTT 5 subscription options를 지원한다.
+- `internal/application/publish`는 QoS 0 retained PUBLISH를 exact topic별로
+  replace/delete한 뒤 option-aware live fan-out을 수행한다. zero-byte retained
+  PUBLISH도 established subscriber에게는 live delivery로 전달한다.
+- `internal/application/ports/retained`와 `internal/adapters/memory/retained`는
+  topic·payload·publisher identity byte 상한을 함께 적용하는 process-local,
+  non-durable retained repository를 제공한다. 저장 성공은 queue 전달 실패와
+  독립적이며 retained value를 되돌리지 않는다.
+- ingress에서 성공 처리하는 수신 publish는 QoS 0이며, `Retain=true`도 이제 개발
+  profile에서 허용한다. MQTT 5 QoS 1/2는 기존 `0x83` negative ACK/DISCONNECT를
+  사용하고, MQTT 3.1.1 QoS 1/2는 연결을 닫는다.
 - `internal/adapters/memory/sessionstore`는 비내구성 lifecycle map이고,
-  `internal/adapters/clock`은 system clock이다. shared subscription, retained storage,
-  ACL·tenant, Will, takeover, durable offline queue, persistence·replication과 TLS/auth는
-  이 slice에서 지원하지 않는다.
+  `internal/adapters/clock`은 system clock이다. Message Expiry, ACL·tenant,
+  shared subscription, Will, takeover, durable offline queue, persistence·replication과
+  TLS/auth는 이 slice에서 지원하지 않는다.
 
 ## 1. Listener 계약
 
@@ -132,17 +136,36 @@ use case와 delivery queue로 route한다.
 1. Topic Filter의 `+`, `#` 위치와 UTF-8을 표준대로 검증해야 한다.
 2. 겹치는 subscription이 같은 client session에 여러 번 match하면 MQTT version의 표준 전달 규칙과 granted QoS를 적용해야 한다.
 3. `$share/{group}/{filter}`는 tenant 안의 같은 group에서 한 활성 subscriber를 선택해야 한다. 선택된 subscriber가 전달을 완료하지 못하면 session·QoS 규칙에 따라 다른 member가 이어받을 수 있어야 한다.
-4. MQTT 5의 No Local, Retain As Published와 Retain Handling을 subscription별로 보존하고 적용해야 한다.
+4. MQTT 5 subscription option은 exact filter별로 보존하고 다음처럼 적용해야 한다.
+   - `No Local=true`면 publication publisher와 같은 `clientId`의 live delivery를 제외한다.
+   - `Retain As Published=false`면 established-subscription delivery의 RETAIN을 지우고, `true`면 incoming RETAIN을 보존한다.
+   - SUBSCRIBE가 발생시킨 retained replay는 `Retain As Published` 값과 무관하게 항상 RETAIN을 설정한다.
+   - `Retain Handling=0`은 항상 replay하고, `1`은 새 exact filter일 때만 replay하며, `2`는 replay하지 않는다.
 5. 권한이 없는 filter는 subscribe 결과에서 거절해야 하며 route index에 추가해서는 안 된다.
 6. unsubscribe는 존재하지 않는 subscription에도 안전하게 재시도할 수 있어야 한다.
 
 ## 5. Retained Message
 
-- Retain flag가 설정된 유효한 PUBLISH는 tenant의 canonical topic에 최신 retained message 하나를 저장해야 한다.
-- zero-byte payload로 retained message를 삭제하는 MQTT 표준 동작을 지원해야 한다.
-- 새 subscription에 retained message를 보낼 때 ACL, subscription options, granted QoS와 message expiry를 적용해야 한다.
-- 다른 tenant의 retained message는 조회하거나 전달해서는 안 된다.
-- retained write가 durable 대상으로 설정된 경우 durability barrier 전에 성공 ACK을 반환해서는 안 된다.
+이번 Phase 1 development profile의 retained state는 process-local bounded memory
+repository 하나에 보관하며 restart·replication·quorum durability를 제공하지 않는다.
+
+- 입력 `PUBLISH`가 QoS 0이고 `Retain=true`이며 payload가 비어 있지 않으면 exact
+  Topic Name의 retained value를 publisher session identity와 함께 replace한다.
+- QoS 0 retained PUBLISH의 zero-byte payload는 exact topic value를 삭제한다.
+  삭제 packet 자체는 established subscription에 live publication으로 전달된다.
+- `Retain=false`인 PUBLISH는 retained repository를 읽거나 변경하지 않는다.
+- 새 non-shared subscription은 matching retained value를 topic 정렬 순서로 replay한다.
+  MQTT 3.1.1과 MQTT 5 `Retain Handling=0`은 항상 replay하고, `=1`은 exact filter가
+  새로 생길 때만 replay하며, `=2`는 replay하지 않는다.
+- Replay delivery의 RETAIN은 항상 `true`다. Established-subscription delivery는
+  matching filter 중 RAP가 하나라도 켜져 있고 incoming RETAIN이 true일 때만 RETAIN을
+  유지한다. `No Local`은 stored publisher session과 subscriber session이 같으면
+  replay와 live delivery를 모두 제외한다.
+- retained replay의 QoS는 stored QoS와 granted QoS 중 작은 값이며, 현재 ingress와
+  writer profile은 QoS 0만 성공적으로 출력한다.
+- Message Expiry, tenant/ACL, shared subscription replay, Will, durable storage,
+  replication과 restart recovery는 이 slice의 범위가 아니다. retained repository
+  capacity failure는 기존 value와 live fan-out을 변경하지 않는다.
 
 ## 6. Will Message
 
@@ -179,7 +202,7 @@ persistent session으로의 delivery 결과는 `ErrUnavailable`이다.
 ## 8. 수용 시험
 
 - MQTT 3.1.1/5.0 compliance matrix가 지원한다고 선언한 모든 normative statement를 자동 test와 연결한다.
-- 현재 Phase 0 matrix는 [`tests/conformance/mqtt-compliance-v1.json`](../../tests/conformance/mqtt-compliance-v1.json)이며, 34개 statement와 MQTT/TEST requirement 및 test function을 함께 기록한다.
+- 현재 Phase 0 matrix는 [`tests/conformance/mqtt-compliance-v1.json`](../../tests/conformance/mqtt-compliance-v1.json)이며, 46개 statement와 MQTT/TEST requirement 및 test function을 함께 기록한다.
 - `go run ./tools/verify traceability`가 matrix → source와 source → matrix를 모두 검사한다. matrix에만 있거나 source에만 있는 statement, 또는 requirement union이 다른 연결은 합격으로 처리하지 않는다.
 - QoS별 정상, DUP, reconnect, owner crash와 expiry 시나리오를 검증한다.
 - `MQIsdp`, level 3과 비정상 version 조합이 session을 만들지 않는지 검증한다.
@@ -187,7 +210,12 @@ persistent session으로의 delivery 결과는 `ErrUnavailable`이다.
 - parser fuzzing, slowloris, packet·queue 상한 시험에서 memory와 goroutine leak이 없어야 한다.
 - 두 protocol version client가 같은 외부 topic에서 ACL 범위 안의 메시지를 상호 전달해야 한다.
 - 이 slice의 acceptance mapping은 `tests/integration/mqtt_ingress_test.go`의 MQTT 3.1.1/5.0
-  CONNECT, QoS 0 fan-out, PINGRESP, normal DISCONNECT, persistent Session Present,
-  unsupported/malformed CONNECT와 QoS negative ACK/close 시나리오다.
-- 이 matrix와 gate는 전체 MQTT 표준 적합성 선언이 아니다. retained message, Will,
+  CONNECT, QoS 0 fan-out, retained replace/delete, SUBACK-before-replay,
+  Retain Handling, No Local, Retain As Published, PINGRESP, normal DISCONNECT,
+  persistent Session Present, unsupported/malformed CONNECT와 QoS negative ACK/close
+  시나리오다.
+- `MQTT-3.3.1-5`~`MQTT-3.3.1-13`, `MQTT-3.8.3-3`, `MQTT-3.8.4-3/4`는
+  `tests/conformance/mqtt-compliance-v1.json`에서 양 protocol version test와
+  source traceability comment를 함께 가져야 한다.
+- 이 matrix와 gate는 전체 MQTT 표준 적합성 선언이 아니다. Message Expiry, Will,
   ACL·tenant, shared subscription runtime과 durable QoS 1/2는 후속 범위로 남아 있다.

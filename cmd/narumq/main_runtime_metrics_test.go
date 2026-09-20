@@ -12,6 +12,7 @@ import (
 
 	"narumq/internal/adapters/clock"
 	"narumq/internal/adapters/memory/deliveryqueue"
+	memoryretained "narumq/internal/adapters/memory/retained"
 	"narumq/internal/adapters/memory/sessionstore"
 	"narumq/internal/adapters/runtimemetrics"
 	tcpadapter "narumq/internal/adapters/tcp"
@@ -63,16 +64,20 @@ func newRuntimeMetricsTestServer(t *testing.T) (net.Listener, *tcpadapter.Server
 	if err != nil {
 		t.Fatalf("deliveryqueue.New() error = %v", err)
 	}
+	retainedRepository, err := memoryretained.New(8, 1024)
+	if err != nil {
+		t.Fatalf("memoryretained.New() error = %v", err)
+	}
 	sessions := sessionstore.New()
 	connections, err := connect.New(clock.SystemClock{}, sessions, deliveries, routes)
 	if err != nil {
 		t.Fatalf("connect.New() error = %v", err)
 	}
-	subscriptions, err := subscribe.New(routes)
+	subscriptions, err := subscribe.New(routes, deliveries, retainedRepository)
 	if err != nil {
 		t.Fatalf("subscribe.New() error = %v", err)
 	}
-	publications, err := publish.New(routes, deliveries)
+	publications, err := publish.New(routes, deliveries, retainedRepository)
 	if err != nil {
 		t.Fatalf("publish.New() error = %v", err)
 	}

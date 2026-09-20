@@ -85,17 +85,31 @@ Route metadata에는 session key, owner node, owner epoch와 subscription option
 
 ## Retained message 흐름
 
-Retain flag가 설정된 PUBLISH는 일반 publication 전달과 별개로 exact topic의 retained slot을 갱신한다.
+이 Phase 1 development profile은 `Retain=true` QoS 0 publication만 process-local
+bounded repository에 보관한다. Retained state는 exact Topic Name별 최신 값 하나이며
+restart·replication·tenant durability를 제공하지 않는다.
 
 ```text
-retained[tenant-a, sensors/room-1/status] = latest publication
+PUBLISH Retain=true, payload="new"
+    ├── retained.Replace(topic, publisher, payload, qos)
+    └── live route matching → established subscriber delivery
+
+PUBLISH Retain=true, payload=""
+    ├── retained.Delete(topic)
+    └── live delivery with payload="" → stored value 없음
 ```
 
-- 새 retained publication은 같은 key의 이전 값을 대체한다.
-- Zero-byte payload retained PUBLISH는 해당 retained value를 삭제한다.
-- 새 non-shared subscription은 version과 Retain Handling option에 따라 matching retained value를 받을 수 있다.
-- Retained message도 ACL, granted QoS, expiry와 tenant 경계를 통과한다.
-- MQTT 5 shared subscription에 session을 추가할 때 retained message를 보내지 않는다.
+- 새 retained publication은 같은 exact topic의 이전 값을 대체한다.
+- Zero-byte retained PUBLISH는 해당 retained value를 삭제하지만 established
+  subscription에는 일반 live publication으로 전달된다.
+- 새 non-shared subscription은 MQTT 3.1.1과 MQTT 5 `Retain Handling` 규칙에
+  따라 matching retained value를 topic 정렬 순서로 replay한다.
+- Replay delivery는 항상 RETAIN=1이고 stored QoS와 granted QoS 중 작은 QoS를 쓴다.
+- Live delivery는 `No Local`이면 같은 publisher session을 제외한다. `Retain As
+  Published=false`면 RETAIN을 지우고, `true`면 incoming RETAIN을 보존한다.
+- retained repository capacity failure는 기존 value와 live fan-out을 변경하지 않는다.
+- Message Expiry, ACL·tenant, shared subscription replay, Will, durable storage와
+  restart recovery는 아직 이 profile의 범위가 아니다.
 
 Retained message는 “마지막으로 알려진 값”이다. Offline queue처럼 특정 session이 접속하지 않은 동안의 모든 publication을 쌓는 구조가 아니다.
 
@@ -118,18 +132,22 @@ Member 선택 algorithm은 MQTT가 고정하지 않는다. NaruMQ는 tenant, ava
 | --- | --- |
 | Invalid wildcard 위치 | SUBACK에서 해당 filter를 거절하고 route를 만들지 않는다. |
 | Subscribe ACL 거절 | 다른 허용 filter와 분리해 거절하고 금지 route를 만들지 않는다. |
-| Selected shared owner 장애 | Committed delivery state와 QoS 규칙에 따라 eligible member로 이어받는다. |
+| Selected shared owner 장애 | Shared subscription runtime은 이 slice에서 지원하지 않는다. |
 | Stale owner epoch route | Routing과 delivery에서 거절하고 최신 route를 다시 구성한다. |
-| Retained write durability 실패 | Durable 설정이면 성공 ACK하지 않고 기존 retained value를 조용히 덮지 않는다. |
+| Retained replay queue full | batch 전체를 queue에 넣지 않고 이전 route를 유지한다. MQTT 5는 `0x97`, MQTT 3.1.1은 `0x80`을 반환한다. |
+| Retained repository capacity failure | 기존 retained value를 유지하고 live fan-out을 시작하지 않는다. |
 | Tenant canonicalization 실패 | Publish·subscribe를 거절하고 외부 문자열로 fallback하지 않는다. |
 
 ## 자주 생기는 오해와 trade-off
 
 - QoS는 routing fan-out 수를 정하지 않는다. 각 matching subscription의 전달 품질을 제한한다.
-- Retained message는 session에 속하지 않는다. Tenant와 exact topic에 속한다.
-- Shared subscription은 broadcast가 아니다. Group별 한 member에게 분배한다.
+- Retained message는 session에 속하지 않는다. 현재 profile에서는 exact topic과 publisher
+  session identity를 저장하지만, tenant binding은 후속 경계다.
+- Replay와 live delivery는 같은 queue ownership boundary를 쓰지만, replay route
+  commit은 batch enqueue 성공 뒤에만 일어난다.
+- Shared subscription은 broadcast가 아니지만 현재 runtime은 shared filter를 거절한다.
 - Wildcard filter를 매 publish마다 전체 scan하면 구현은 쉽지만 subscription 수가 늘 때 비용이 커진다. Index 최적화는 canonical matching 의미를 바꾸면 안 된다.
-- MQTT 3.1.1 표준에는 MQTT 5.0의 shared subscription 정의가 없다. NaruMQ가 확장으로 제공한다면 지원 client와 동작을 compatibility contract에 명시해야 한다.
+- MQTT 3.1.1 표준에는 MQTT 5.0의 shared subscription 정의가 없다. 후속 runtime이 추가되면 compatibility contract에 명시해야 한다.
 
 ## NaruMQ에서 찾을 위치
 

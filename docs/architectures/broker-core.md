@@ -83,6 +83,7 @@ cmd/narumq
     └── adapters/tcp ──> application/connect
                               ├──> domain/session
                               ├──> ports/deliveryqueue <── adapters/memory/deliveryqueue
+                              ├──> ports/retained <────── adapters/memory/retained
                               └──> domain/routing <── application/subscribe/publish
                                       └──> domain/mqtt
 ```
@@ -91,21 +92,28 @@ cmd/narumq
   SUBSCRIBE 계열, PINGREQ/PINGRESP/DISCONNECT의 wire 구조와 ownership을 결정한다.
 - `domain/session`: Clean Start, Session Expiry, connected duplicate와 disconnect
   retention invariant를 value lifecycle로 결정한다.
-- `domain/routing`: non-shared `+`·`#` matching, `$` topic boundary, overlap collapse와
-  `RemoveSession` stale-subscription cleanup을 결정한다. TCP와 queue를 모른다.
+- `domain/routing`: non-shared `+`·`#` matching, `$` topic boundary, overlap collapse,
+  No Local·Retain As Published와 `RemoveSession` stale-subscription cleanup을 결정한다.
+  TCP와 queue·retained storage를 모른다.
 - `application/connect`: lifecycle repository, shared delivery queue, routing cleanup과
   CONNACK/negative rejection을 직렬화한다.
-- `application/subscribe`와 `application/publish`: ordered ACK와 QoS 0 route delivery를
-  조정한다. `ports/deliveryqueue.Queue`는 여러 use case가 공유하는 capability다.
+- `application/subscribe`와 `application/publish`: ordered ACK, retained replay의
+  queue-before-route commit, retained replace/delete와 QoS 0 route delivery를 조정한다.
+  `ports/deliveryqueue.Queue`와 `ports/retained.Repository`는 여러 use case가
+  공유하는 capability다.
 - `adapters/tcp`: bounded input buffer, CONNECT timeout, negotiated-version dispatch,
-  single writer, control queue/delivery wake, keepalive와 connection cleanup을 소유한다.
-- `adapters/memory/deliveryqueue`, `adapters/memory/sessionstore`, `adapters/clock`은
-  각각 non-durable queue, process-local lifecycle repository와 wall-clock 구현이다.
+  single writer, SUBACK-before-replay ordering, control queue/delivery wake,
+  keepalive와 connection cleanup을 소유한다.
+- `adapters/memory/deliveryqueue`, `adapters/memory/retained`,
+  `adapters/memory/sessionstore`, `adapters/clock`은 각각 bounded queue,
+  bounded process-local retained state, lifecycle map과 wall-clock 구현이다.
 
-ingress 성공 경계는 QoS 0·`Retain=false` PUBLISH다. MQTT 5 QoS 1/2와 retained 입력은
-negative ACK/DISCONNECT를 사용하고 MQTT 3.1.1은 연결을 닫는다. TLS/auth, tenant/ACL,
-Will, shared/retained runtime, takeover, durable offline queue와 replication은 지원하지
-않는다. 이번 slice는 ADR-0001 gate 4 consensus skeleton을 완료한 것으로 표시하지 않는다.
+ingress 성공 경계는 QoS 0 PUBLISH이며 `Retain=true`도 exact-topic retained
+replace/delete와 established subscriber live delivery를 지원한다. MQTT 5 QoS 1/2와
+retained repository capacity failure는 negative ACK/DISCONNECT를 사용하고 MQTT 3.1.1은
+연결을 닫는다. TLS/auth, tenant/ACL, Will, shared subscription, takeover, durable
+offline queue와 replication은 지원하지 않는다. 이번 slice는 cluster durability를
+완료한 것으로 표시하지 않는다.
 
 ## Application-owned port
 
@@ -115,7 +123,8 @@ Port는 구현 adapter 옆이 아니라 이를 사용하는 application 쪽이 �
 | --- | --- | --- |
 | Session·state store | Epoch 조건부 read·write, snapshot과 recovery | Durable state adapter |
 | Session lifecycle | client ID별 lifecycle load/save/delete와 expiry 복구 | `application/connect.SessionRepository` ← `adapters/memory/sessionstore.MemorySessionRepository` |
-| Delivery queue | session 등록·제거, bounded enqueue, FIFO drain | `application/ports/deliveryqueue.Queue` ← `adapters/memory/deliveryqueue.Queue` |
+| Delivery queue | session 등록·제거, bounded enqueue, FIFO drain와 atomic batch enqueue | `application/ports/deliveryqueue.Queue` ← `adapters/memory/deliveryqueue.Queue` |
+| Retained message | exact-topic replace/delete, deterministic list와 count·byte bounded ownership | `application/ports/retained.Repository` ← `adapters/memory/retained.Repository` |
 | Clock | deterministic expiry 입력 | `application/connect.Clock` ← `adapters/clock.SystemClock` |
 | Replication | Command proposal, commit receipt와 membership 관찰 | `etcd/raft` adapter 후보 |
 | Peer transport | 인증된 node message 송수신과 backpressure | Cluster RPC adapter |
@@ -126,9 +135,10 @@ Port는 구현 adapter 옆이 아니라 이를 사용하는 application 쪽이 �
 
 Capability별 port package, concrete adapter와 내부 client의 목표 대응은 [주요 port capability와 adapter map](project-structure.md#주요-port-capability와-adapter-map)을 따른다.
 
-현재 source에 구현된 `connect.SessionRepository`, `connect.Clock`와
-`ports/deliveryqueue.Queue`의 method signature는 해당 package가 소유한다. durable
-state·replication·authentication 같은 미구현 capability는 target interface로만 기록한다.
+현재 source에 구현된 `connect.SessionRepository`, `connect.Clock`,
+`ports/deliveryqueue.Queue`와 `ports/retained.Repository`의 method signature는 해당
+package가 소유한다. durable state·replication·authentication 같은 미구현 capability는
+target interface로만 기록한다.
 
 ## 경계를 넘는 값
 

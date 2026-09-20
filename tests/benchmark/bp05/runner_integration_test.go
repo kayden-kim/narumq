@@ -13,6 +13,7 @@ import (
 
 	"narumq/internal/adapters/clock"
 	"narumq/internal/adapters/memory/deliveryqueue"
+	memoryretained "narumq/internal/adapters/memory/retained"
 	"narumq/internal/adapters/memory/sessionstore"
 	tcpadapter "narumq/internal/adapters/tcp"
 	"narumq/internal/application/connect"
@@ -40,18 +41,23 @@ func newBP05IngressFixture(t *testing.T) *bp05IngressFixture {
 		_ = listener.Close()
 		t.Fatal(err)
 	}
+	retainedRepository, err := memoryretained.New(1024, 1<<20)
+	if err != nil {
+		_ = listener.Close()
+		t.Fatal(err)
+	}
 	repository := sessionstore.New()
 	connections, err := connect.New(clock.SystemClock{}, repository, deliveries, routes)
 	if err != nil {
 		_ = listener.Close()
 		t.Fatal(err)
 	}
-	subscriptions, err := subscribe.New(routes)
+	subscriptions, err := subscribe.New(routes, deliveries, retainedRepository)
 	if err != nil {
 		_ = listener.Close()
 		t.Fatal(err)
 	}
-	publications, err := publish.New(routes, deliveries)
+	publications, err := publish.New(routes, deliveries, retainedRepository)
 	if err != nil {
 		_ = listener.Close()
 		t.Fatal(err)

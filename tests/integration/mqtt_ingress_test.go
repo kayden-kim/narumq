@@ -5,11 +5,13 @@ import (
 	"io"
 	"log/slog"
 	"net"
+	"reflect"
 	"testing"
 	"time"
 
 	"narumq/internal/adapters/clock"
 	"narumq/internal/adapters/memory/deliveryqueue"
+	memoryretained "narumq/internal/adapters/memory/retained"
 	"narumq/internal/adapters/memory/sessionstore"
 	tcpadapter "narumq/internal/adapters/tcp"
 	"narumq/internal/application/connect"
@@ -31,6 +33,11 @@ type ingressFixture struct {
 
 func newIngressFixture(t *testing.T) *ingressFixture {
 	t.Helper()
+	return newIngressFixtureWithRetainedCapacity(t, 1024, 1<<20)
+}
+
+func newIngressFixtureWithRetainedCapacity(t *testing.T, messageCapacity, byteCapacity int) *ingressFixture {
+	t.Helper()
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
@@ -41,18 +48,23 @@ func newIngressFixture(t *testing.T) *ingressFixture {
 		listener.Close()
 		t.Fatal(err)
 	}
+	retainedRepository, err := memoryretained.New(messageCapacity, byteCapacity)
+	if err != nil {
+		listener.Close()
+		t.Fatal(err)
+	}
 	repository := sessionstore.New()
 	connections, err := connect.New(clock.SystemClock{}, repository, deliveries, routes)
 	if err != nil {
 		listener.Close()
 		t.Fatal(err)
 	}
-	subscriptions, err := subscribe.New(routes)
+	subscriptions, err := subscribe.New(routes, deliveries, retainedRepository)
 	if err != nil {
 		listener.Close()
 		t.Fatal(err)
 	}
-	publications, err := publish.New(routes, deliveries)
+	publications, err := publish.New(routes, deliveries, retainedRepository)
 	if err != nil {
 		listener.Close()
 		t.Fatal(err)
@@ -170,6 +182,21 @@ func readPacket(t *testing.T, connection net.Conn, decoder *mqtt.Decoder, versio
 		t.Fatalf("server packet consumed %d of %d bytes", consumed, len(frame))
 	}
 	return packet
+}
+
+func expectNoPacket(t *testing.T, connection net.Conn) {
+	t.Helper()
+	if err := connection.SetReadDeadline(time.Now().Add(250 * time.Millisecond)); err != nil {
+		t.Fatal(err)
+	}
+	var header [1]byte
+	_, err := connection.Read(header[:])
+	if err == nil {
+		t.Fatalf("unexpected MQTT packet header 0x%02X", header[0])
+	}
+	if networkError, ok := err.(net.Error); !ok || !networkError.Timeout() {
+		t.Fatalf("reading unexpected packet: %v", err)
+	}
 }
 
 func expectClosed(t *testing.T, connection net.Conn) {
@@ -308,4 +335,132 @@ func TestMQTTIngress(t *testing.T) {
 		writePacket(t, mqtt311, fixture.encoder, &mqtt.Publish{Version: mqtt.ProtocolV311, QoS: mqtt.QoSAtLeastOnce, PacketID: 9, Topic: "qos/one", Payload: []byte("one")})
 		expectClosed(t, mqtt311)
 	})
+}
+
+// Traceability: PRD MQTT-04/MQTT-08/TEST-04/05; docs/specs/mqtt-protocol-and-session.md §4 and §5; MQTT-3.3.1-5/6/7/8/9/10/11/12/13, MQTT-3.8.3-3, MQTT-3.8.4-3/4.
+func TestMQTTIngressRetainedMessageAndSubscriptionOptions(t *testing.T) {
+	fixture := newIngressFixture(t)
+	defer fixture.close(t)
+
+	publisher := fixture.dial(t)
+	defer publisher.Close()
+	writePacket(t, publisher, fixture.encoder, &mqtt.Connect{Version: mqtt.ProtocolV5, CleanStart: true, ClientID: "publisher"})
+	if ack := readPacket(t, publisher, fixture.decoder, mqtt.ProtocolV5).(*mqtt.ConnAck); ack.ReasonCode != 0 {
+		t.Fatalf("publisher CONNACK = %#v", ack)
+	}
+	writePacket(t, publisher, fixture.encoder, &mqtt.Publish{Version: mqtt.ProtocolV5, Topic: "events/one", Payload: []byte("one"), Retain: true})
+	writePacket(t, publisher, fixture.encoder, &mqtt.Subscribe{
+		Version:  mqtt.ProtocolV5,
+		PacketID: 1,
+		Subscriptions: []mqtt.Subscription{{
+			Filter:            "events/#",
+			QoS:               mqtt.QoSAtLeastOnce,
+			NoLocal:           true,
+			RetainAsPublished: true,
+		}},
+	})
+	if ack := readPacket(t, publisher, fixture.decoder, mqtt.ProtocolV5).(*mqtt.SubAck); ack.PacketID != 1 || !reflect.DeepEqual(ack.ReasonCodes, []byte{0x01}) {
+		t.Fatalf("publisher SUBACK = %#v", ack)
+	}
+	expectNoPacket(t, publisher)
+
+	readerFalse := fixture.dial(t)
+	defer readerFalse.Close()
+	writePacket(t, readerFalse, fixture.encoder, &mqtt.Connect{Version: mqtt.ProtocolV5, CleanStart: true, ClientID: "reader-false"})
+	if ack := readPacket(t, readerFalse, fixture.decoder, mqtt.ProtocolV5).(*mqtt.ConnAck); ack.ReasonCode != 0 {
+		t.Fatalf("reader-false CONNACK = %#v", ack)
+	}
+	writePacket(t, readerFalse, fixture.encoder, &mqtt.Subscribe{
+		Version:  mqtt.ProtocolV5,
+		PacketID: 2,
+		Subscriptions: []mqtt.Subscription{{
+			Filter:            "events/#",
+			QoS:               mqtt.QoSAtLeastOnce,
+			RetainHandling:    mqtt.SendRetainedAtSubscribe,
+			RetainAsPublished: false,
+		}},
+	})
+	if ack := readPacket(t, readerFalse, fixture.decoder, mqtt.ProtocolV5).(*mqtt.SubAck); ack.PacketID != 2 || !reflect.DeepEqual(ack.ReasonCodes, []byte{0x01}) {
+		t.Fatalf("reader-false SUBACK = %#v", ack)
+	}
+	replayedFalse := readPacket(t, readerFalse, fixture.decoder, mqtt.ProtocolV5).(*mqtt.Publish)
+	if replayedFalse.Topic != "events/one" || string(replayedFalse.Payload) != "one" || !replayedFalse.Retain {
+		t.Fatalf("reader-false retained replay = %#v", replayedFalse)
+	}
+
+	readerTrue := fixture.dial(t)
+	defer readerTrue.Close()
+	writePacket(t, readerTrue, fixture.encoder, &mqtt.Connect{Version: mqtt.ProtocolV5, CleanStart: true, ClientID: "reader-true"})
+	if ack := readPacket(t, readerTrue, fixture.decoder, mqtt.ProtocolV5).(*mqtt.ConnAck); ack.ReasonCode != 0 {
+		t.Fatalf("reader-true CONNACK = %#v", ack)
+	}
+	writePacket(t, readerTrue, fixture.encoder, &mqtt.Subscribe{
+		Version:  mqtt.ProtocolV5,
+		PacketID: 3,
+		Subscriptions: []mqtt.Subscription{{
+			Filter:            "events/#",
+			QoS:               mqtt.QoSAtLeastOnce,
+			RetainAsPublished: true,
+		}},
+	})
+	if ack := readPacket(t, readerTrue, fixture.decoder, mqtt.ProtocolV5).(*mqtt.SubAck); ack.PacketID != 3 || !reflect.DeepEqual(ack.ReasonCodes, []byte{0x01}) {
+		t.Fatalf("reader-true SUBACK = %#v", ack)
+	}
+	replayedTrue := readPacket(t, readerTrue, fixture.decoder, mqtt.ProtocolV5).(*mqtt.Publish)
+	if replayedTrue.Topic != "events/one" || !replayedTrue.Retain {
+		t.Fatalf("reader-true retained replay = %#v", replayedTrue)
+	}
+
+	writePacket(t, publisher, fixture.encoder, &mqtt.Publish{Version: mqtt.ProtocolV5, Topic: "events/two", Payload: []byte("two"), Retain: true})
+	liveFalse := readPacket(t, readerFalse, fixture.decoder, mqtt.ProtocolV5).(*mqtt.Publish)
+	liveTrue := readPacket(t, readerTrue, fixture.decoder, mqtt.ProtocolV5).(*mqtt.Publish)
+	if liveFalse.Topic != "events/two" || liveFalse.Retain {
+		t.Fatalf("RAP=false live delivery = %#v", liveFalse)
+	}
+	if liveTrue.Topic != "events/two" || !liveTrue.Retain {
+		t.Fatalf("RAP=true live delivery = %#v", liveTrue)
+	}
+
+	writePacket(t, readerFalse, fixture.encoder, &mqtt.Subscribe{
+		Version:       mqtt.ProtocolV5,
+		PacketID:      4,
+		Subscriptions: []mqtt.Subscription{{Filter: "events/#", QoS: mqtt.QoSAtMostOnce, RetainHandling: mqtt.SendRetainedIfNew}},
+	})
+	if ack := readPacket(t, readerFalse, fixture.decoder, mqtt.ProtocolV5).(*mqtt.SubAck); ack.PacketID != 4 || !reflect.DeepEqual(ack.ReasonCodes, []byte{0x00}) {
+		t.Fatalf("reader-false RH=1 SUBACK = %#v", ack)
+	}
+	expectNoPacket(t, readerFalse)
+
+	for _, connection := range []net.Conn{publisher, readerFalse, readerTrue} {
+		writePacket(t, connection, fixture.encoder, &mqtt.Disconnect{Version: mqtt.ProtocolV5})
+		expectClosed(t, connection)
+	}
+}
+
+// Traceability: PRD MQTT-04/TEST-04/05; docs/specs/mqtt-protocol-and-session.md §5; MQTT-3.3.1-5/6.
+func TestMQTTIngressRetainedCapacityDisconnect(t *testing.T) {
+	fixture := newIngressFixtureWithRetainedCapacity(t, 1, 1)
+	defer fixture.close(t)
+
+	mqtt5 := fixture.dial(t)
+	defer mqtt5.Close()
+	writePacket(t, mqtt5, fixture.encoder, &mqtt.Connect{Version: mqtt.ProtocolV5, CleanStart: true, ClientID: "retained-v5"})
+	if ack := readPacket(t, mqtt5, fixture.decoder, mqtt.ProtocolV5).(*mqtt.ConnAck); ack.ReasonCode != 0 {
+		t.Fatalf("MQTT 5 CONNACK = %#v", ack)
+	}
+	writePacket(t, mqtt5, fixture.encoder, &mqtt.Publish{Version: mqtt.ProtocolV5, Topic: "capacity", Payload: []byte("too-large"), Retain: true})
+	disconnect := readPacket(t, mqtt5, fixture.decoder, mqtt.ProtocolV5).(*mqtt.Disconnect)
+	if disconnect.ReasonCode != 0x97 {
+		t.Fatalf("MQTT 5 retained capacity DISCONNECT = %#v, want reason 0x97", disconnect)
+	}
+	expectClosed(t, mqtt5)
+
+	mqtt311 := fixture.dial(t)
+	defer mqtt311.Close()
+	writePacket(t, mqtt311, fixture.encoder, &mqtt.Connect{Version: mqtt.ProtocolV311, ClientID: "retained-v311"})
+	if ack := readPacket(t, mqtt311, fixture.decoder, mqtt.ProtocolV311).(*mqtt.ConnAck); ack.ReasonCode != 0 {
+		t.Fatalf("MQTT 3.1.1 CONNACK = %#v", ack)
+	}
+	writePacket(t, mqtt311, fixture.encoder, &mqtt.Publish{Version: mqtt.ProtocolV311, Topic: "capacity", Payload: []byte("too-large"), Retain: true})
+	expectClosed(t, mqtt311)
 }

@@ -33,10 +33,10 @@ func FuzzTopicMatching(f *testing.F) {
 			}
 
 			table := NewTable()
-			if err := table.Subscribe(SessionID("filter-session"), rawFilter, mqtt.QoSAtMostOnce); !errors.Is(err, wantErr) {
+			if _, err := table.Subscribe(SessionID("filter-session"), mqtt.Subscription{Filter: rawFilter, QoS: mqtt.QoSAtMostOnce}); !errors.Is(err, wantErr) {
 				t.Fatalf("Subscribe(%q) error = %v, want %v", rawFilter, err, wantErr)
 			}
-			matches, err := table.Match("state/probe", mqtt.QoSAtMostOnce)
+			matches, err := table.Match("probe-publisher", "state/probe", mqtt.QoSAtMostOnce, false)
 			if err != nil || len(matches) != 0 {
 				t.Fatalf("invalid filter changed table: matches = %#v, error = %v", matches, err)
 			}
@@ -49,11 +49,11 @@ func FuzzTopicMatching(f *testing.F) {
 			}
 
 			table := NewTable()
-			matches, err := table.Match(rawTopic, mqtt.QoSAtMostOnce)
+			matches, err := table.Match("probe-publisher", rawTopic, mqtt.QoSAtMostOnce, false)
 			if !errors.Is(err, ErrInvalidTopicName) || matches != nil {
 				t.Fatalf("Match(%q) = (%#v, %v), want invalid topic and no matches", rawTopic, matches, err)
 			}
-			matches, err = table.Match("state/probe", mqtt.QoSAtMostOnce)
+			matches, err = table.Match("probe-publisher", "state/probe", mqtt.QoSAtMostOnce, false)
 			if err != nil || len(matches) != 0 {
 				t.Fatalf("invalid topic changed table: matches = %#v, error = %v", matches, err)
 			}
@@ -62,14 +62,14 @@ func FuzzTopicMatching(f *testing.F) {
 		if qosRaw >= 3 {
 			table := NewTable()
 			invalidQoS := mqtt.QoS(qosRaw)
-			if err := table.Subscribe(SessionID("qos-session"), "state/probe", invalidQoS); !errors.Is(err, ErrInvalidQoS) {
+			if _, err := table.Subscribe(SessionID("qos-session"), mqtt.Subscription{Filter: "state/probe", QoS: invalidQoS}); !errors.Is(err, ErrInvalidQoS) {
 				t.Fatalf("Subscribe() invalid QoS error = %v, want ErrInvalidQoS", err)
 			}
-			matches, err := table.Match("state/probe", mqtt.QoSAtMostOnce)
+			matches, err := table.Match("probe-publisher", "state/probe", mqtt.QoSAtMostOnce, false)
 			if err != nil || len(matches) != 0 {
 				t.Fatalf("invalid QoS changed table: matches = %#v, error = %v", matches, err)
 			}
-			matches, err = table.Match("state/probe", invalidQoS)
+			matches, err = table.Match("probe-publisher", "state/probe", invalidQoS, false)
 			if !errors.Is(err, ErrInvalidQoS) || matches != nil {
 				t.Fatalf("Match() invalid QoS = (%#v, %v), want invalid QoS and no matches", matches, err)
 			}
@@ -81,23 +81,39 @@ func FuzzTopicMatching(f *testing.F) {
 
 		grantedQoS := mqtt.QoS(grantedRaw % 3)
 		publishQoS := mqtt.QoS(publishRaw % 3)
-		const sessionID = SessionID("fuzz-session")
 		table := NewTable()
-		if err := table.Subscribe(sessionID, rawFilter, grantedQoS); err != nil {
+		const sessionID = SessionID("fuzz-session")
+		grantedSubscription := mqtt.Subscription{
+			Filter:            rawFilter,
+			QoS:               grantedQoS,
+			NoLocal:           qosRaw&0x01 != 0,
+			RetainAsPublished: qosRaw&0x02 != 0,
+		}
+		if _, err := table.Subscribe(sessionID, grantedSubscription); err != nil {
 			t.Fatalf("Subscribe(%q) error = %v", rawFilter, err)
 		}
-		matches, err := table.Match(rawTopic, publishQoS)
+		publisherSessionID := SessionID("fuzz-publisher")
+		if grantedSubscription.NoLocal {
+			publisherSessionID = sessionID
+		}
+		publishedRetain := qosRaw&0x04 != 0
+		matches, err := table.Match(publisherSessionID, rawTopic, publishQoS, publishedRetain)
 		if err != nil {
 			t.Fatalf("Match(%q) error = %v", rawTopic, err)
 		}
 
-		if referenceTopicMatchesFilter(rawTopic, rawFilter) {
+		oracleMatches := referenceTopicMatchesFilter(rawTopic, rawFilter)
+		if grantedSubscription.NoLocal && publisherSessionID == sessionID {
+			oracleMatches = false
+		}
+		if oracleMatches {
 			wantQoS := grantedQoS
 			if publishQoS < wantQoS {
 				wantQoS = publishQoS
 			}
-			if len(matches) != 1 || matches[0].SessionID != sessionID || matches[0].QoS != wantQoS {
-				t.Fatalf("matches = %#v, want one session %q at QoS %d", matches, sessionID, wantQoS)
+			wantRetain := publishedRetain && grantedSubscription.RetainAsPublished
+			if len(matches) != 1 || matches[0].SessionID != sessionID || matches[0].QoS != wantQoS || matches[0].Retain != wantRetain {
+				t.Fatalf("matches = %#v, want one session %q at QoS %d retain %t", matches, sessionID, wantQoS, wantRetain)
 			}
 			return
 		}

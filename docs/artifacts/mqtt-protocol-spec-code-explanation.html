@@ -129,7 +129,7 @@
       <h1>네트워크 바이트가 검증된 메시지와 세션 상태가 되기까지</h1>
       <p class="lead">
         이 문서는 MQTT 패킷을 읽고 쓰는 코드만 따로 설명하지 않습니다.
-        <strong>연결 요청이 들어와 세션이 열리고, 구독이 등록되고, 발행 메시지가 맞는 구독자의 제한된 큐에 들어간 뒤, 다시 MQTT 응답 바이트가 나가는 전체 흐름</strong>을 네 개의 작업 커밋과 실제 코드에 연결합니다.
+        <strong>연결 요청이 들어와 세션이 열리고, subscription option이 보존되고, retained publication이 bounded repository를 갱신하고, 발행 메시지가 맞는 구독자의 제한된 큐에 들어간 뒤, 다시 MQTT 응답 바이트가 나가는 전체 흐름</strong>을 실제 코드와 현재 loopback TCP 실행 범위에 연결합니다.
       </p>
       <div class="badges">
         <span class="commit">7117790 기준선</span>
@@ -148,7 +148,7 @@
       <a href="#commits">커밋 흐름</a>
       <a href="#structure">전체 구조</a>
       <a href="#codec">패킷 코드</a>
-      <a href="#routing">라우팅·큐</a>
+      <a href="#routing">라우팅·retained·큐</a>
       <a href="#qos">QoS</a>
       <a href="#session">세션</a>
       <a href="#runtime">TCP 실행</a>
@@ -369,54 +369,74 @@ func encodeConnect(connect Connect, maxPacketSize int) ([]byte, error) {
 
     <section id="routing">
       <div class="wrap">
-        <div class="section-kicker">06 · 구독 라우팅과 제한된 큐</div>
-        <h2>한 번 매칭하고, 세션마다 독립적으로 넣되, 가득 차면 성공으로 꾸미지 않는다</h2>
+        <div class="section-kicker">06 · 구독 라우팅, retained message와 제한된 큐</div>
+        <h2>옵션을 보존하고 한 번 매칭한 뒤, retained replay는 route commit 전에 원자적으로 예약한다</h2>
         <p>
-          구독 필터는 메시지를 받을 토픽의 모양입니다. <code>+</code>는 한 단계, <code>#</code>는 마지막에서 여러 단계를 뜻합니다. <a href="../../internal/domain/routing/routing.go#L54">ValidateTopicFilter</a>는 와일드카드 위치와 MQTT 문자열 규칙을 확인하고, 현재 단계에서는 <code>$share/...</code> 공유 구독을 명시적으로 지원하지 않습니다.
+          구독 필터는 메시지를 받을 토픽의 모양입니다. <code>+</code>는 한 단계, <code>#</code>는 마지막에서 여러 단계를 뜻합니다. <a href="../../internal/domain/routing/routing.go#L53">ValidateTopicFilter</a>는 와일드카드 위치와 MQTT 문자열 규칙을 확인하고, 현재 단계에서는 <code>$share/...</code> 공유 구독을 명시적으로 지원하지 않습니다. 각 exact filter의 <code>NoLocal</code>, <code>RetainAsPublished</code>와 <code>RetainHandling</code>은 routing·subscribe 경계에서 보존됩니다.
         </p>
-        <pre><code>// internal/domain/routing/routing.go:160-199
-// 설명을 위해 매칭 규칙만 보여주는 단순화한 예시다.
-func (table *Table) Match(topic string, publishQoS mqtt.QoS) ([]Match, error) {
-    // 세션마다 일치하는 필터를 모은다.
-    // 한 세션의 여러 필터는 하나의 대상이 되고, 가장 높은 granted QoS를 사용한다.
-    // 실제 전달 QoS = publish QoS와 granted QoS 중 작은 값
-    // 결과는 SessionID 순서로 정렬한다.
+        <pre><code>// internal/domain/routing/routing.go
+func (table *Table) Match(
+    publisherSessionID SessionID,
+    topic string,
+    publishQoS mqtt.QoS,
+    publishedRetain bool,
+) ([]Match, error) {
+    // No Local을 적용하고 한 session의 overlap은 하나로 합친다.
+    // effective QoS는 publish QoS와 최고 granted QoS 중 작은 값이다.
+    // RAP가 켜진 matching filter가 있고 incoming RETAIN이면 Match.Retain=true다.
 }</code></pre>
         <p>
-          이 규칙은 같은 세션이 <code>sensors/+</code>와 <code>sensors/room1</code>을 동시에 구독해도 한 번만 받게 합니다. 구독자가 허용한 QoS보다 발행자의 QoS가 높으면 낮춰서 전달합니다. 이것은 “누구에게 보낼지”와 “어떤 보장 수준으로 보낼지”를 한 곳에서 결정하는 규칙입니다.
+          같은 세션이 <code>sensors/+</code>와 <code>sensors/room1</code>을 동시에 구독해도
+          한 번만 받습니다. Established delivery의 RETAIN은 RAP에 따라 달라지지만,
+          SUBSCRIBE가 발생시킨 retained replay는 항상 RETAIN=1입니다.
+        </p>
+        <h3 id="retained">Retained replace/delete와 replay</h3>
+        <pre><code>// internal/application/publish/publish.go
+if packet.Retain {
+    if len(packet.Payload) == 0 {
+        retained.Delete(packet.Topic)
+    } else {
+        retained.Replace(retained.MessageDTO{
+            PublisherSessionID: publisherSessionID,
+            Topic:              packet.Topic,
+            Payload:            packet.Payload,
+            QoS:                packet.QoS,
+        })
+    }
+}
+// internal/application/subscribe/subscribe.go
+queue.TryEnqueueBatch(replay)
+routes.Subscribe(sessionID, subscription) // replay batch committed first</code></pre>
+        <p>
+          retained repository는 exact topic별 최신 QoS 0 값을 bounded memory에 보관합니다.
+          zero-byte retained PUBLISH는 저장 값을 삭제하면서 established subscriber에는
+          빈 payload live delivery를 남깁니다. replay queue가 가득 차면 route를 만들지
+          않고 MQTT version에 맞는 실패 reason을 반환합니다.
         </p>
         <div class="grid">
           <article class="card wide">
             <h3>발행 응용 기능의 결과</h3>
-            <pre><code>// internal/application/publish/publish.go:45-78
-// 설명을 위해 핵심 분기만 남긴 단순화한 발췌다.
-matches, err := useCase.routes.Match(packet.Topic, packet.QoS)
+            <pre><code>// internal/application/publish/publish.go
+matches, err := useCase.routes.Match(
+    publisherSessionID, packet.Topic, packet.QoS, packet.Retain,
+)
 for _, match := range matches {
     delivery := deliveryqueue.DeliveryDTO{
         SessionID: match.SessionID,
         Topic:     packet.Topic,
         Payload:   packet.Payload,
         QoS:       match.QoS,
-        Retain:    packet.Retain,
+        Retain:    match.Retain,
     }
     err := useCase.queue.TryEnqueue(delivery)
-    switch {
-    case err == nil:
-        result.Delivered = append(result.Delivered, match.SessionID)
-    case errors.Is(err, deliveryqueue.ErrFull):
-        result.Saturated = append(result.Saturated, match.SessionID)
-    case errors.Is(err, deliveryqueue.ErrUnavailable):
-        result.Unavailable = append(result.Unavailable, match.SessionID)
-    default:
-        return result, err
-    }
+    // ErrFull/ErrUnavailable은 다른 session fan-out을 막지 않는다.
 }</code></pre>
-            <p>한 세션의 큐가 가득 차도 다른 세션을 계속 시도합니다. 앞에서 성공한 전달을 숨기지 않고 부분 결과를 반환하는 이유입니다.</p>
+            <p>한 세션의 큐가 가득 차도 다른 세션을 계속 시도합니다. retained 저장 성공은 이후 queue 결과와 독립적이며 부분 결과를 반환합니다.</p>
           </article>
           <article class="card">
-            <h3>메모리 큐의 안전한 경계</h3>
-            <p><a href="../../internal/adapters/memory/deliveryqueue/queue.go#L26">Queue.New</a>는 세션마다 양의 용량을 요구합니다. <a href="../../internal/adapters/memory/deliveryqueue/queue.go#L62">TryEnqueue</a>는 기다리지 않고 즉시 성공·가득 참·사용 불가를 반환합니다.</p>
-            <p>넣을 때와 꺼낼 때 payload를 복사합니다. 발행자의 버퍼나 큐 내부 버퍼를 서로 바꾸어 쓰지 못하게 하는 소유권 경계입니다.</p>
+            <h3>메모리 경계</h3>
+            <p><a href="../../internal/adapters/memory/deliveryqueue/queue.go#L62">TryEnqueue</a>와 <a href="../../internal/adapters/memory/deliveryqueue/queue.go#L83">TryEnqueueBatch</a>는 payload를 복사하고 batch 전체를 수용할 수 없으면 아무것도 추가하지 않습니다.</p>
+            <p><a href="../../internal/adapters/memory/retained/repository.go#L26">retained.Repository</a>는 entry 수와 topic·payload·publisher identity bytes를 함께 제한합니다.</p>
           </article>
         </div>
         <blockquote>
@@ -533,10 +553,11 @@ writerLoop:
           <thead><tr><th>단계</th><th>현재 코드가 하는 일</th><th>실패 시</th></tr></thead>
           <tbody>
             <tr><td>첫 패킷</td><td>CONNECT만 허용하고 connect 응용 기능으로 세션을 활성화합니다.</td><td>다른 종류면 프로토콜 오류입니다.</td></tr>
-            <tr><td>SUBSCRIBE</td><td>필터마다 독립적으로 검증하고 요청 순서대로 SUBACK reason code를 만듭니다.</td><td>각 필터의 실패를 ACK에 보존합니다.</td></tr>
-            <tr><td>PUBLISH QoS 0</td><td>라우팅하고 성공한 세션을 깨웁니다.</td><td>큐 가득 참 세션은 현재 TCP에서 닫습니다.</td></tr>
+            <tr><td>SUBSCRIBE</td><td>필터마다 검증하고 retained replay batch를 queue에 먼저 예약한 뒤 route를 설치합니다.</td><td>queue가 부족하면 이전 route를 유지하고 version별 reason을 반환합니다.</td></tr>
+            <tr><td>PUBLISH QoS 0</td><td>retained replace/delete를 먼저 수행하고 option-aware routing 뒤 성공한 세션을 깨웁니다.</td><td>retained capacity 오류는 live fan-out 전에 실패합니다.</td></tr>
             <tr><td>제어 출력</td><td>CONNACK·SUBACK·PINGRESP·실패 ACK를 제한된 control queue에 넣습니다.</td><td>control queue가 가득 차면 연결을 닫습니다.</td></tr>
-            <tr><td>DISCONNECT</td><td>barrier가 앞선 제어 패킷의 출력을 기다린 뒤 세션을 정리합니다.</td><td>소켓과 고루틴을 종료합니다.</td></tr>
+            <tr><td>DISCONNECT</td><td>barrier가 앞선 제어 패킷의 출력을 기다린 뒤 세션을 정리합니다.</td><td>write barrier 실패 또는 control queue 포화면 연결을 닫습니다.</td></tr>
+<tr><td>SUBACK replay ordering</td><td>Subscribe 결과가 retained delivery를 큐에 넣어도 TCP dispatch는 SUBACK write 완료 뒤 dedicated wake를 보냅니다.</td><td>이미 pending인 delivery나 동시 publish의 wire 순서는 보장하지 않습니다.</td></tr>
           </tbody>
         </table>
         <p class="small">관련 구현: <a href="../../internal/adapters/tcp/server.go#L423">dispatch</a>, <a href="../../internal/adapters/tcp/server.go#L643">writeDeliveries</a>, <a href="../../internal/adapters/tcp/server.go#L668">writePacket</a>.</p>
@@ -555,14 +576,13 @@ writerLoop:
           <tbody>
             <tr><td>CONNECT·소유권</td><td>3.1.1/5.0 왕복, 선택 필드, 잘못된 플래그·버전·크기, 입력 버퍼와 반환 값의 독립성</td><td><a href="../../internal/domain/mqtt/connect_test.go">connect_test.go</a>, <a href="../../internal/domain/mqtt/packet_edge_test.go">packet_edge_test.go</a>, <a href="../../internal/domain/mqtt/packet_fuzz_test.go">packet_fuzz_test.go</a></td></tr>
             <tr><td>ACK 코덱</td><td>PubAck·PubRec·PubRel·PubComp 왕복, Packet ID·reason code·속성 길이 검증</td><td><a href="../../internal/domain/mqtt/ack_test.go">ack_test.go</a></td></tr>
-            <tr><td>라우팅</td><td>와일드카드 위치, 공유 구독 거절, 시스템 토픽, 겹친 필터의 1회 전달, 유효 QoS 계산</td><td><a href="../../internal/domain/routing/routing_test.go">routing_test.go</a></td></tr>
-            <tr><td>발행·큐</td><td>세션별 fan-out, Full/Unavailable 부분 결과, FIFO, 용량 경계, payload 복사</td><td><a href="../../internal/application/publish/publish_test.go">publish_test.go</a>, <a href="../../internal/adapters/memory/deliveryqueue/queue_test.go">queue_test.go</a></td></tr>
-            <tr><td>QoS 상태</td><td>QoS 1 재전송, QoS 2 단계 순서, 중복 패킷, 잘못된 ACK·Packet ID 거절</td><td><a href="../../internal/domain/delivery/state_test.go">state_test.go</a></td></tr>
-            <tr><td>세션</td><td>Clean Start, 3.1.1 영속 세션, MQTT 5 만료 경계, 재개와 중복 연결</td><td><a href="../../internal/domain/session/state_test.go">state_test.go</a>, <a href="../../internal/application/connect/connect_test.go">connect_test.go</a></td></tr>
-            <tr><td>소켓 통합</td><td>CONNECT부터 응답·구독·발행·정리까지 실제 ingress 흐름</td><td><a href="../../internal/adapters/tcp/server_test.go">server_test.go</a>, <a href="../../tests/integration/mqtt_ingress_test.go">mqtt_ingress_test.go</a></td></tr>
+            <tr><td>라우팅·options</td><td>와일드카드 위치, 공유 구독 거절, 시스템 토픽, overlap 1회 전달, NL/RAP RETAIN 정책과 유효 QoS 계산</td><td><a href="../../internal/domain/routing/routing_test.go">routing_test.go</a>, <a href="../../internal/application/subscribe/subscribe_test.go">subscribe_test.go</a></td></tr>
+            <tr><td>retained repository</td><td>exact-topic replace/delete, count·byte capacity, payload ownership와 deterministic list</td><td><a href="../../internal/adapters/memory/retained/repository_test.go">repository_test.go</a></td></tr>
+            <tr><td>발행·큐</td><td>세션별 fan-out, Full/Unavailable 부분 결과, FIFO, atomic batch, payload 복사와 RAP flag</td><td><a href="../../internal/application/publish/publish_test.go">publish_test.go</a>, <a href="../../internal/adapters/memory/deliveryqueue/queue_test.go">queue_test.go</a></td></tr>
+            <tr><td>retained ingress</td><td>replace, zero-byte delete, RH 0/1/2, SUBACK-before-replay, NL/RAP와 loopback wire 결과</td><td><a href="../../tests/integration/mqtt_ingress_test.go">mqtt_ingress_test.go</a></td></tr>
           </tbody>
         </table>
-        <pre><code>go test ./internal/domain/mqtt ./internal/domain/routing ./internal/domain/delivery ./internal/domain/session ./internal/application/connect ./internal/application/subscribe ./internal/application/publish ./internal/adapters/memory/deliveryqueue ./internal/adapters/tcp ./tests/integration -count=1</code></pre>
+        <pre><code>go test ./internal/domain/mqtt ./internal/domain/routing ./internal/domain/delivery ./internal/domain/session ./internal/application/connect ./internal/application/subscribe ./internal/application/publish ./internal/application/ports/deliveryqueue ./internal/application/ports/retained ./internal/adapters/memory/deliveryqueue ./internal/adapters/memory/retained ./internal/adapters/tcp ./tests/integration -count=1</code></pre>
       </div>
     </section>
 
@@ -572,25 +592,26 @@ writerLoop:
         <h2>구현된 것과 아직 연결되지 않은 것을 구분한다</h2>
         <div class="grid">
           <article class="card success">
-            <h3>이 네 커밋으로 확인되는 것</h3>
+            <h3>이 slice로 확인되는 것</h3>
             <ul>
               <li>MQTT 3.1.1·5.0 패킷의 제한된 코덱과 오류 분류</li>
               <li>CONNECT, CONNACK, PUBLISH, 구독·ACK·제어 패킷 값</li>
-              <li>와일드카드 기반 비공유 구독 매칭과 세션별 FIFO 큐</li>
+              <li>와일드카드 기반 비공유 구독 매칭과 session별 FIFO 큐</li>
+              <li>subscription option별 No Local·Retain As Published와 Retain Handling</li>
               <li>QoS 1·2 ACK 상태 머신과 중복·재개 규칙</li>
+              <li>exact-topic retained replace/delete와 atomic retained replay</li>
               <li>Clean Start, Session Expiry, Session Present 상태</li>
-              <li>개발용 TCP ingress와 단일 writer 출력 순서</li>
+              <li>개발용 TCP ingress와 SUBACK-before-replay single writer 출력 순서</li>
             </ul>
           </article>
           <article class="card warning">
             <h3>현재 문서와 코드가 명시하는 제한</h3>
             <ul>
-              <li>TCP runtime의 실제 전달 큐는 QoS 0만 출력</li>
+              <li>TCP runtime의 실제 전달 큐와 retained ingress는 QoS 0만 성공</li>
               <li>TCP ingress의 QoS 1·2 PUBLISH는 실패 ACK 경로</li>
               <li>Will 필드 코덱은 있으나 connect 응용 정책은 거절</li>
-              <li>공유 구독, retained message runtime, No Local 실행은 미지원</li>
-              <li>인증·권한·테넌트 격리·TLS는 이 흐름의 책임이 아님</li>
-              <li>영속 저장소·복제·합의·클러스터 durable ACK는 별도 경계</li>
+              <li>Message Expiry, shared subscription, ACL·tenant 격리와 TLS는 미지원</li>
+              <li>영속 저장소·복제·합의·클러스터 durable ACK와 restart recovery는 별도 경계</li>
             </ul>
           </article>
         </div>

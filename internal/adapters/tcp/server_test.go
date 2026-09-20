@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"narumq/internal/adapters/memory/deliveryqueue"
+	memoryretained "narumq/internal/adapters/memory/retained"
 	"narumq/internal/adapters/memory/sessionstore"
 	"narumq/internal/application/connect"
 	applicationdeliveryqueue "narumq/internal/application/ports/deliveryqueue"
@@ -80,16 +81,20 @@ func newAdapterTestRuntime(t *testing.T, queueCapacity int, config Config) *adap
 		t.Fatal(err)
 	}
 	repository := sessionstore.New()
+	retainedRepository, err := memoryretained.New(32, 4096)
+	if err != nil {
+		t.Fatal(err)
+	}
 	clock := &adapterTestClock{now: time.Date(2026, time.January, 1, 0, 0, 0, 0, time.UTC)}
 	connections, err := connect.New(clock, repository, queue, routes)
 	if err != nil {
 		t.Fatal(err)
 	}
-	subscriptions, err := subscribe.New(routes)
+	subscriptions, err := subscribe.New(routes, queue, retainedRepository)
 	if err != nil {
 		t.Fatal(err)
 	}
-	publications, err := publish.New(routes, queue)
+	publications, err := publish.New(routes, queue, retainedRepository)
 	if err != nil {
 		t.Fatal(err)
 	}

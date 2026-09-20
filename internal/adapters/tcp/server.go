@@ -12,6 +12,7 @@ import (
 
 	"narumq/internal/application/connect"
 	"narumq/internal/application/ports/deliveryqueue"
+	applicationretained "narumq/internal/application/ports/retained"
 	"narumq/internal/application/publish"
 	"narumq/internal/application/subscribe"
 	"narumq/internal/domain/mqtt"
@@ -423,8 +424,17 @@ func (connection *connection) activate(packet mqtt.Connect) error {
 func (connection *connection) dispatch(packet mqtt.Packet) error {
 	switch value := packet.(type) {
 	case *mqtt.Subscribe:
-		ack := connection.server.subscriptions.Subscribe(connection.sessionID, *value)
-		return connection.enqueueControl(&ack)
+		result, err := connection.server.subscriptions.Subscribe(connection.sessionID, *value)
+		if err != nil {
+			return err
+		}
+		if err := connection.enqueueAndWait(&result.Ack); err != nil {
+			return err
+		}
+		if result.RetainedQueued > 0 {
+			connection.wakeDelivery()
+		}
+		return nil
 	case *mqtt.Unsubscribe:
 		ack := connection.server.subscriptions.Unsubscribe(connection.sessionID, *value)
 		return connection.enqueueControl(&ack)
@@ -448,10 +458,14 @@ func (connection *connection) dispatch(packet mqtt.Packet) error {
 }
 
 func (connection *connection) dispatchPublish(packet mqtt.Publish) error {
-	if packet.Retain {
-		if packet.QoS == mqtt.QoSAtMostOnce {
+	if packet.QoS != mqtt.QoSAtMostOnce {
+		return connection.enqueueNegativePublishAck(packet)
+	}
+	result, err := connection.server.publications.Publish(connection.sessionID, packet)
+	if err != nil {
+		if errors.Is(err, applicationretained.ErrFull) {
 			if connection.version == mqtt.ProtocolV5 {
-				if err := connection.enqueueAndWait(&mqtt.Disconnect{Version: connection.version, ReasonCode: 0x83}); err != nil {
+				if err := connection.enqueueAndWait(&mqtt.Disconnect{Version: connection.version, ReasonCode: 0x97}); err != nil {
 					return err
 				}
 			}
@@ -459,13 +473,6 @@ func (connection *connection) dispatchPublish(packet mqtt.Publish) error {
 			connection.requestClose()
 			return nil
 		}
-		return connection.enqueueNegativePublishAck(packet)
-	}
-	if packet.QoS != mqtt.QoSAtMostOnce {
-		return connection.enqueueNegativePublishAck(packet)
-	}
-	result, err := connection.server.publications.Publish(packet)
-	if err != nil {
 		return err
 	}
 	for _, sessionID := range result.Delivered {

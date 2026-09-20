@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"narumq/internal/adapters/clock"
 	"narumq/internal/adapters/memory/deliveryqueue"
+	memoryretained "narumq/internal/adapters/memory/retained"
 	"narumq/internal/adapters/memory/sessionstore"
 	"narumq/internal/adapters/runtimemetrics"
 	tcpadapter "narumq/internal/adapters/tcp"
@@ -54,6 +55,8 @@ func runWithContext(ctx context.Context, args []string, logger *slog.Logger) err
 	writeTimeout := flagSet.Duration("write-timeout", 5*time.Second, "socket write timeout")
 	deliveryQueueCapacity := flagSet.Int("delivery-queue-capacity", 64, "per-session delivery queue capacity")
 	controlQueueCapacity := flagSet.Int("control-queue-capacity", 16, "per-connection control queue capacity")
+	retainedMessageCapacity := flagSet.Int("retained-message-capacity", 1024, "maximum retained message count")
+	retainedByteCapacity := flagSet.Int("retained-byte-capacity", 16777216, "maximum retained payload bytes")
 	runtimeMetricsOutput := flagSet.String("runtime-metrics-output", "", "JSONL output for Go runtime metrics")
 	runtimeMetricsInterval := flagSet.Duration("runtime-metrics-interval", 0, "sampling interval for Go runtime metrics")
 	if err := flagSet.Parse(args); err != nil {
@@ -73,10 +76,12 @@ func runWithContext(ctx context.Context, args []string, logger *slog.Logger) err
 		logger.Info("MQTT TCP listener disabled", "development_only", true)
 		return nil
 	}
+	if *retainedMessageCapacity <= 0 || *retainedByteCapacity <= 0 {
+		return errors.New("-retained-message-capacity and -retained-byte-capacity must be greater than zero")
+	}
 	if err := validateLoopbackListenAddress(*tcpListen); err != nil {
 		return err
 	}
-
 	listener, err := net.Listen("tcp", *tcpListen)
 	if err != nil {
 		return fmt.Errorf("listen on %q: %w", *tcpListen, err)
@@ -88,17 +93,21 @@ func runWithContext(ctx context.Context, args []string, logger *slog.Logger) err
 	if err != nil {
 		return fmt.Errorf("create delivery queue: %w", err)
 	}
+	retainedRepository, err := memoryretained.New(*retainedMessageCapacity, *retainedByteCapacity)
+	if err != nil {
+		return fmt.Errorf("create retained repository: %w", err)
+	}
 	sessions := sessionstore.New()
 	systemClock := clock.SystemClock{}
 	connections, err := connect.New(systemClock, sessions, deliveries, routes)
 	if err != nil {
 		return fmt.Errorf("create connect use case: %w", err)
 	}
-	subscriptions, err := subscribe.New(routes)
+	subscriptions, err := subscribe.New(routes, deliveries, retainedRepository)
 	if err != nil {
 		return fmt.Errorf("create subscribe use case: %w", err)
 	}
-	publications, err := publish.New(routes, deliveries)
+	publications, err := publish.New(routes, deliveries, retainedRepository)
 	if err != nil {
 		return fmt.Errorf("create publish use case: %w", err)
 	}
@@ -130,7 +139,7 @@ func runWithContext(ctx context.Context, args []string, logger *slog.Logger) err
 		return fmt.Errorf("create TCP server: %w", err)
 	}
 
-	logger.Info("MQTT TCP listener started", "address", listener.Addr().String(), "development_only", true, "qos0_only", true)
+	logger.Info("MQTT TCP listener started", "address", listener.Addr().String(), "development_only", true, "qos0_only", true, "retained_supported", true)
 	if !metricsRequested {
 		if err := server.Serve(ctx); err != nil {
 			return fmt.Errorf("serve MQTT TCP listener: %w", err)

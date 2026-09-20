@@ -302,6 +302,66 @@
       ]
     },
     {
+      "id": "MQTT-3.3.1-10",
+      "requirementIds": [
+        "MQTT-04",
+        "MQTT-08",
+        "TEST-04",
+        "TEST-05"
+      ],
+      "tests": [
+        {
+          "name": "TestMQTTIngressRetainedMessageAndSubscriptionOptions",
+          "package": "narumq/tests/integration"
+        }
+      ]
+    },
+    {
+      "id": "MQTT-3.3.1-11",
+      "requirementIds": [
+        "MQTT-04",
+        "MQTT-08",
+        "TEST-04",
+        "TEST-05"
+      ],
+      "tests": [
+        {
+          "name": "TestMQTTIngressRetainedMessageAndSubscriptionOptions",
+          "package": "narumq/tests/integration"
+        }
+      ]
+    },
+    {
+      "id": "MQTT-3.3.1-12",
+      "requirementIds": [
+        "MQTT-04",
+        "MQTT-08",
+        "TEST-04",
+        "TEST-05"
+      ],
+      "tests": [
+        {
+          "name": "TestMQTTIngressRetainedMessageAndSubscriptionOptions",
+          "package": "narumq/tests/integration"
+        }
+      ]
+    },
+    {
+      "id": "MQTT-3.3.1-13",
+      "requirementIds": [
+        "MQTT-04",
+        "MQTT-08",
+        "TEST-04",
+        "TEST-05"
+      ],
+      "tests": [
+        {
+          "name": "TestMQTTIngressRetainedMessageAndSubscriptionOptions",
+          "package": "narumq/tests/integration"
+        }
+      ]
+    },
+    {
       "id": "MQTT-3.3.1-2",
       "requirementIds": [
         "MQTT-02",
@@ -313,7 +373,7 @@
       ],
       "tests": [
         {
-          "name": "TestPublishFanoutUsesOverlapQoSAndRetain",
+          "name": "TestPublishFanoutUsesOverlapQoS",
           "package": "narumq/internal/application/publish"
         }
       ]
@@ -330,8 +390,103 @@
       ],
       "tests": [
         {
-          "name": "TestPublishFanoutUsesOverlapQoSAndRetain",
+          "name": "TestPublishFanoutUsesOverlapQoS",
           "package": "narumq/internal/application/publish"
+        }
+      ]
+    },
+    {
+      "id": "MQTT-3.3.1-5",
+      "requirementIds": [
+        "MQTT-04",
+        "MQTT-08",
+        "TEST-04",
+        "TEST-05"
+      ],
+      "tests": [
+        {
+          "name": "TestPublishRetainedReplaceDeleteAndNonRetainedNoop",
+          "package": "narumq/internal/application/publish"
+        },
+        {
+          "name": "TestMQTTIngressRetainedCapacityDisconnect",
+          "package": "narumq/tests/integration"
+        },
+        {
+          "name": "TestMQTTIngressRetainedMessageAndSubscriptionOptions",
+          "package": "narumq/tests/integration"
+        }
+      ]
+    },
+    {
+      "id": "MQTT-3.3.1-6",
+      "requirementIds": [
+        "MQTT-04",
+        "MQTT-08",
+        "TEST-04",
+        "TEST-05"
+      ],
+      "tests": [
+        {
+          "name": "TestPublishRetainedReplaceDeleteAndNonRetainedNoop",
+          "package": "narumq/internal/application/publish"
+        },
+        {
+          "name": "TestMQTTIngressRetainedCapacityDisconnect",
+          "package": "narumq/tests/integration"
+        },
+        {
+          "name": "TestMQTTIngressRetainedMessageAndSubscriptionOptions",
+          "package": "narumq/tests/integration"
+        }
+      ]
+    },
+    {
+      "id": "MQTT-3.3.1-7",
+      "requirementIds": [
+        "MQTT-04",
+        "MQTT-08",
+        "TEST-04",
+        "TEST-05"
+      ],
+      "tests": [
+        {
+          "name": "TestPublishRetainedReplaceDeleteAndNonRetainedNoop",
+          "package": "narumq/internal/application/publish"
+        },
+        {
+          "name": "TestMQTTIngressRetainedMessageAndSubscriptionOptions",
+          "package": "narumq/tests/integration"
+        }
+      ]
+    },
+    {
+      "id": "MQTT-3.3.1-8",
+      "requirementIds": [
+        "MQTT-04",
+        "MQTT-08",
+        "TEST-04",
+        "TEST-05"
+      ],
+      "tests": [
+        {
+          "name": "TestMQTTIngressRetainedMessageAndSubscriptionOptions",
+          "package": "narumq/tests/integration"
+        }
+      ]
+    },
+    {
+      "id": "MQTT-3.3.1-9",
+      "requirementIds": [
+        "MQTT-04",
+        "MQTT-08",
+        "TEST-04",
+        "TEST-05"
+      ],
+      "tests": [
+        {
+          "name": "TestMQTTIngressRetainedMessageAndSubscriptionOptions",
+          "package": "narumq/tests/integration"
         }
       ]
     },
@@ -409,7 +564,11 @@
           "package": "narumq/internal/application/subscribe"
         },
         {
-          "name": "TestSubscribeMQTT311RejectsUnsupportedRuntimeOptions",
+          "name": "TestSubscribeMQTT311RejectsRuntimeOptions",
+          "package": "narumq/internal/application/subscribe"
+        },
+        {
+          "name": "TestSubscribeMapsValidationReasonsByProtocol",
           "package": "narumq/internal/application/subscribe"
         },
         {
@@ -444,7 +603,11 @@
           "package": "narumq/internal/application/subscribe"
         },
         {
-          "name": "TestSubscribeMQTT311RejectsUnsupportedRuntimeOptions",
+          "name": "TestSubscribeMQTT311RejectsRuntimeOptions",
+          "package": "narumq/internal/application/subscribe"
+        },
+        {
+          "name": "TestSubscribeMapsValidationReasonsByProtocol",
           "package": "narumq/internal/application/subscribe"
         },
         {
@@ -458,6 +621,63 @@
         {
           "name": "TestSubscriptionPacketsRoundTrip_MQTT311_MQTT5",
           "package": "narumq/internal/domain/mqtt"
+        }
+      ]
+    },
+    {
+      "id": "MQTT-3.8.3-3",
+      "requirementIds": [
+        "MQTT-04",
+        "MQTT-08",
+        "TEST-04",
+        "TEST-05"
+      ],
+      "tests": [
+        {
+          "name": "TestSubscribeRetainHandlingAndReplayQoS",
+          "package": "narumq/internal/application/subscribe"
+        },
+        {
+          "name": "TestMQTTIngressRetainedMessageAndSubscriptionOptions",
+          "package": "narumq/tests/integration"
+        }
+      ]
+    },
+    {
+      "id": "MQTT-3.8.4-3",
+      "requirementIds": [
+        "MQTT-04",
+        "MQTT-08",
+        "TEST-04",
+        "TEST-05"
+      ],
+      "tests": [
+        {
+          "name": "TestSubscribeRetainHandlingAndReplayQoS",
+          "package": "narumq/internal/application/subscribe"
+        },
+        {
+          "name": "TestMQTTIngressRetainedMessageAndSubscriptionOptions",
+          "package": "narumq/tests/integration"
+        }
+      ]
+    },
+    {
+      "id": "MQTT-3.8.4-4",
+      "requirementIds": [
+        "MQTT-04",
+        "MQTT-08",
+        "TEST-04",
+        "TEST-05"
+      ],
+      "tests": [
+        {
+          "name": "TestSubscribeRetainHandlingAndReplayQoS",
+          "package": "narumq/internal/application/subscribe"
+        },
+        {
+          "name": "TestMQTTIngressRetainedMessageAndSubscriptionOptions",
+          "package": "narumq/tests/integration"
         }
       ]
     },

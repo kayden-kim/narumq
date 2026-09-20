@@ -25,15 +25,20 @@ var (
 	// ErrSharedSubscriptionUnsupported means that this table only supports
 	// non-shared subscriptions.
 	ErrSharedSubscriptionUnsupported = errors.New("shared subscription is unsupported")
+	// ErrInvalidRetainHandling means that a subscription option is outside the
+	// MQTT retain handling range.
+	ErrInvalidRetainHandling = errors.New("invalid MQTT retain handling")
 )
 
 // SessionID identifies one active subscriber session within a routing table.
 type SessionID string
 
 // Match is one session-level delivery target and its effective delivery QoS.
+// Retain is the RETAIN flag for established-subscription delivery.
 type Match struct {
 	SessionID SessionID
 	QoS       mqtt.QoS
+	Retain    bool
 }
 
 // Table stores subscriptions and matches publications against a consistent
@@ -42,12 +47,12 @@ type Match struct {
 // needed.
 type Table struct {
 	mu            sync.RWMutex
-	subscriptions map[SessionID]map[string]mqtt.QoS
+	subscriptions map[SessionID]map[string]mqtt.Subscription
 }
 
 // NewTable creates an empty synchronized routing table.
 func NewTable() *Table {
-	return &Table{subscriptions: make(map[SessionID]map[string]mqtt.QoS)}
+	return &Table{subscriptions: make(map[SessionID]map[string]mqtt.Subscription)}
 }
 
 // ValidateTopicFilter validates MQTT wildcard placement and UTF-8 rules.
@@ -90,35 +95,55 @@ func IsSharedFilter(filter string) bool {
 }
 
 // Subscribe adds or replaces one non-shared subscription for sessionID.
-func (table *Table) Subscribe(sessionID SessionID, filter string, qos mqtt.QoS) error {
-	if err := validateSessionID(sessionID); err != nil {
-		return err
+func (table *Table) Subscribe(sessionID SessionID, subscription mqtt.Subscription) (replaced bool, err error) {
+	if err := ValidateSessionID(sessionID); err != nil {
+		return false, err
 	}
-	if err := ValidateTopicFilter(filter); err != nil {
-		return err
+	if err := ValidateTopicFilter(subscription.Filter); err != nil {
+		return false, err
 	}
-	if qos > mqtt.QoSExactlyOnce {
-		return ErrInvalidQoS
+	if subscription.QoS > mqtt.QoSExactlyOnce {
+		return false, ErrInvalidQoS
+	}
+	if subscription.RetainHandling > mqtt.DoNotSendRetained {
+		return false, ErrInvalidRetainHandling
 	}
 
 	table.mu.Lock()
 	defer table.mu.Unlock()
 	if table.subscriptions == nil {
-		table.subscriptions = make(map[SessionID]map[string]mqtt.QoS)
+		table.subscriptions = make(map[SessionID]map[string]mqtt.Subscription)
 	}
 	byFilter := table.subscriptions[sessionID]
 	if byFilter == nil {
-		byFilter = make(map[string]mqtt.QoS)
+		byFilter = make(map[string]mqtt.Subscription)
 		table.subscriptions[sessionID] = byFilter
 	}
-	byFilter[filter] = qos
-	return nil
+	_, replaced = byFilter[subscription.Filter]
+	byFilter[subscription.Filter] = subscription
+	return replaced, nil
+}
+
+// Lookup returns the exact subscription for sessionID and filter without
+// changing the route table.
+func (table *Table) Lookup(sessionID SessionID, filter string) (mqtt.Subscription, bool) {
+	if table == nil || ValidateSessionID(sessionID) != nil || ValidateTopicFilter(filter) != nil {
+		return mqtt.Subscription{}, false
+	}
+	table.mu.RLock()
+	defer table.mu.RUnlock()
+	byFilter := table.subscriptions[sessionID]
+	if byFilter == nil {
+		return mqtt.Subscription{}, false
+	}
+	subscription, found := byFilter[filter]
+	return subscription, found
 }
 
 // Unsubscribe removes one filter. Removing an absent filter is an idempotent
 // success and reports removed=false.
 func (table *Table) Unsubscribe(sessionID SessionID, filter string) (removed bool, err error) {
-	if err := validateSessionID(sessionID); err != nil {
+	if err := ValidateSessionID(sessionID); err != nil {
 		return false, err
 	}
 	if err := ValidateTopicFilter(filter); err != nil {
@@ -159,7 +184,15 @@ func (table *Table) RemoveSession(sessionID SessionID) bool {
 
 // Match returns one target per session, ordered by SessionID. Overlapping
 // filters in one session collapse to one target using the highest granted QoS.
-func (table *Table) Match(topic string, publishQoS mqtt.QoS) ([]Match, error) {
+func (table *Table) Match(
+	publisherSessionID SessionID,
+	topic string,
+	publishQoS mqtt.QoS,
+	publishedRetain bool,
+) ([]Match, error) {
+	if err := ValidateSessionID(publisherSessionID); err != nil {
+		return nil, err
+	}
 	if err := ValidateTopicName(topic); err != nil {
 		return nil, err
 	}
@@ -173,13 +206,18 @@ func (table *Table) Match(topic string, publishQoS mqtt.QoS) ([]Match, error) {
 		var (
 			maxGranted mqtt.QoS
 			matched    bool
+			retain     bool
 		)
-		for filter, grantedQoS := range byFilter {
-			if !topicMatchesFilter(topic, filter) {
+		for filter, subscription := range byFilter {
+			matchesTopic := topicMatchesFilter(topic, filter)
+			if !matchesTopic || (subscription.NoLocal && sessionID == publisherSessionID) {
 				continue
 			}
-			if !matched || grantedQoS > maxGranted {
-				maxGranted = grantedQoS
+			if !matched || subscription.QoS > maxGranted {
+				maxGranted = subscription.QoS
+			}
+			if publishedRetain && subscription.RetainAsPublished {
+				retain = true
 			}
 			matched = true
 		}
@@ -188,7 +226,7 @@ func (table *Table) Match(topic string, publishQoS mqtt.QoS) ([]Match, error) {
 			if maxGranted < effectiveQoS {
 				effectiveQoS = maxGranted
 			}
-			matches = append(matches, Match{SessionID: sessionID, QoS: effectiveQoS})
+			matches = append(matches, Match{SessionID: sessionID, QoS: effectiveQoS, Retain: retain})
 		}
 	}
 	table.mu.RUnlock()
@@ -199,7 +237,8 @@ func (table *Table) Match(topic string, publishQoS mqtt.QoS) ([]Match, error) {
 	return matches, nil
 }
 
-func validateSessionID(sessionID SessionID) error {
+// ValidateSessionID validates the session key used by routing operations.
+func ValidateSessionID(sessionID SessionID) error {
 	if sessionID == "" || strings.ContainsRune(string(sessionID), '\x00') {
 		return ErrInvalidSessionID
 	}
@@ -224,6 +263,17 @@ func validMQTTString(value string) bool {
 	return true
 }
 
+// TopicMatchesFilter validates a concrete topic and filter, then applies the
+// production MQTT wildcard and system-topic matcher.
+func TopicMatchesFilter(topic, filter string) (bool, error) {
+	if err := ValidateTopicName(topic); err != nil {
+		return false, err
+	}
+	if err := ValidateTopicFilter(filter); err != nil {
+		return false, err
+	}
+	return topicMatchesFilter(topic, filter), nil
+}
 func topicMatchesFilter(topic, filter string) bool {
 	if strings.HasPrefix(topic, "$") {
 		firstLevelEnd := strings.IndexByte(filter, '/')

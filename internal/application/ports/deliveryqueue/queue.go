@@ -25,11 +25,12 @@ type DeliveryDTO struct {
 }
 
 // Queue is the bounded delivery capability shared by publish and connection
-// lifecycle use cases. TryEnqueue reads DeliveryDTO.Payload synchronously and
-// implementations must copy it before retaining the delivery.
+// lifecycle use cases. TryEnqueue and TryEnqueueBatch read DeliveryDTO.Payload
+// synchronously; implementations must copy it before retaining delivery.
 type Queue interface {
 	Register(sessionID routing.SessionID) error
 	Remove(sessionID routing.SessionID)
 	TryEnqueue(delivery DeliveryDTO) error
+	TryEnqueueBatch(deliveries []DeliveryDTO) error
 	Drain(sessionID routing.SessionID) ([]DeliveryDTO, error)
 }

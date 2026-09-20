@@ -7,6 +7,7 @@ import (
 	"errors"
 
 	"narumq/internal/application/ports/deliveryqueue"
+	"narumq/internal/application/ports/retained"
 	"narumq/internal/domain/mqtt"
 	"narumq/internal/domain/routing"
 )
@@ -16,6 +17,11 @@ var (
 	ErrNilRoutingTable = errors.New("publish routing table is nil")
 	// ErrNilDeliveryQueue means that publish has no delivery port.
 	ErrNilDeliveryQueue = errors.New("publish delivery queue is nil")
+	// ErrNilRetainedRepository means that publish has no retained state port.
+	ErrNilRetainedRepository = errors.New("publish retained repository is nil")
+	// ErrRetainedQoSUnsupported means that the development retained profile
+	// accepts only QoS 0 retained input.
+	ErrRetainedQoSUnsupported = errors.New("retained publish requires QoS 0")
 )
 
 // ResultDTO reports each session-level delivery outcome in routing order.
@@ -25,28 +31,64 @@ type ResultDTO struct {
 	Unavailable []routing.SessionID
 }
 
-// UseCase routes one validated publication to all matching sessions.
+// UseCase stores retained state before routing one publication to all matching
+// sessions through the bounded delivery queue.
 type UseCase struct {
-	routes *routing.Table
-	queue  deliveryqueue.Queue
+	routes   *routing.Table
+	queue    deliveryqueue.Queue
+	retained retained.Repository
 }
 
-// New creates a publish use case over the supplied route table and queue port.
-func New(routes *routing.Table, queue deliveryqueue.Queue) (*UseCase, error) {
+// New creates a publish use case over the supplied route, queue, and retained
+// repository ports.
+func New(routes *routing.Table, queue deliveryqueue.Queue, retainedRepository retained.Repository) (*UseCase, error) {
 	if routes == nil {
 		return nil, ErrNilRoutingTable
 	}
 	if queue == nil {
 		return nil, ErrNilDeliveryQueue
 	}
-	return &UseCase{routes: routes, queue: queue}, nil
+	if retainedRepository == nil {
+		return nil, ErrNilRetainedRepository
+	}
+	return &UseCase{routes: routes, queue: queue, retained: retainedRepository}, nil
 }
 
-// Publish matches the topic once and continues after per-session saturation or
+// Publish validates the publisher and publication, commits retained mutation
+// before route matching, and continues after per-session saturation or
 // unavailability. Unknown queue errors stop the fan-out and return partial
 // results so successful earlier deliveries are not hidden.
-func (useCase *UseCase) Publish(packet mqtt.Publish) (ResultDTO, error) {
-	matches, err := useCase.routes.Match(packet.Topic, packet.QoS)
+func (useCase *UseCase) Publish(publisherSessionID routing.SessionID, packet mqtt.Publish) (ResultDTO, error) {
+	if err := routing.ValidateSessionID(publisherSessionID); err != nil {
+		return ResultDTO{}, err
+	}
+	if err := routing.ValidateTopicName(packet.Topic); err != nil {
+		return ResultDTO{}, err
+	}
+	if packet.QoS > mqtt.QoSExactlyOnce {
+		return ResultDTO{}, routing.ErrInvalidQoS
+	}
+	if packet.Retain {
+		if packet.QoS != mqtt.QoSAtMostOnce {
+			return ResultDTO{}, ErrRetainedQoSUnsupported
+		}
+		var err error
+		if len(packet.Payload) == 0 {
+			err = useCase.retained.Delete(packet.Topic)
+		} else {
+			err = useCase.retained.Replace(retained.MessageDTO{
+				PublisherSessionID: publisherSessionID,
+				Topic:              packet.Topic,
+				Payload:            packet.Payload,
+				QoS:                packet.QoS,
+			})
+		}
+		if err != nil {
+			return ResultDTO{}, err
+		}
+	}
+
+	matches, err := useCase.routes.Match(publisherSessionID, packet.Topic, packet.QoS, packet.Retain)
 	if err != nil {
 		return ResultDTO{}, err
 	}
@@ -61,7 +103,7 @@ func (useCase *UseCase) Publish(packet mqtt.Publish) (ResultDTO, error) {
 			Topic:     packet.Topic,
 			Payload:   packet.Payload,
 			QoS:       match.QoS,
-			Retain:    packet.Retain,
+			Retain:    match.Retain,
 		}
 		err := useCase.queue.TryEnqueue(delivery)
 		switch {

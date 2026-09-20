@@ -165,3 +165,51 @@ func TestNilQueueAndInvalidSessionOperations(t *testing.T) {
 		t.Fatalf("empty Drain() error = %v", err)
 	}
 }
+
+// Traceability: PRD MQTT-11/TEST-04/05; docs/specs/mqtt-protocol-and-session.md §7.
+func TestQueueBatchEnqueueIsAtomicAndOwnsPayload(t *testing.T) {
+	queue, err := New(3)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := queue.Register("session-a"); err != nil {
+		t.Fatal(err)
+	}
+	firstPayload := []byte("first")
+	secondPayload := []byte("second")
+	batch := []applicationdeliveryqueue.DeliveryDTO{
+		{SessionID: "session-a", Topic: "events/1", Payload: firstPayload},
+		{SessionID: "session-a", Topic: "events/2", Payload: secondPayload},
+	}
+	if err := queue.TryEnqueueBatch(batch); err != nil {
+		t.Fatal(err)
+	}
+	firstPayload[0] = 'X'
+	secondPayload[0] = 'Y'
+	drained, err := queue.Drain("session-a")
+	if err != nil || len(drained) != 2 || string(drained[0].Payload) != "first" || string(drained[1].Payload) != "second" {
+		t.Fatalf("batch drain = %#v, %v", drained, err)
+	}
+
+	if err := queue.TryEnqueue(applicationdeliveryqueue.DeliveryDTO{SessionID: "session-a", Topic: "existing"}); err != nil {
+		t.Fatal(err)
+	}
+	overflow := []applicationdeliveryqueue.DeliveryDTO{
+		{SessionID: "session-a", Topic: "events/3"},
+		{SessionID: "session-a", Topic: "events/4"},
+		{SessionID: "session-a", Topic: "events/5"},
+	}
+	if err := queue.TryEnqueueBatch(overflow); !errors.Is(err, applicationdeliveryqueue.ErrFull) {
+		t.Fatalf("full batch error = %v, want %v", err, applicationdeliveryqueue.ErrFull)
+	}
+	drained, err = queue.Drain("session-a")
+	if err != nil || len(drained) != 1 || drained[0].Topic != "existing" {
+		t.Fatalf("full batch partially appended = %#v, %v", drained, err)
+	}
+	if err := queue.TryEnqueueBatch([]applicationdeliveryqueue.DeliveryDTO{
+		{SessionID: "session-a", Topic: "valid"},
+		{SessionID: "session-b", Topic: "mixed"},
+	}); !errors.Is(err, applicationdeliveryqueue.ErrUnavailable) {
+		t.Fatalf("mixed batch error = %v, want %v", err, applicationdeliveryqueue.ErrUnavailable)
+	}
+}

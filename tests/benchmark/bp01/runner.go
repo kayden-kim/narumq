@@ -231,7 +231,11 @@ func completeSubscribe(connection *mqttclient.Client, profile Profile) error {
 	return nil
 }
 
-func runPhase(ctx context.Context, connection *mqttclient.Client, profile Profile, collector *Collector, phase string, phaseStart time.Time, millis int64, nextSequence *uint64, fatalErrors <-chan error) error {
+type packetWriter interface {
+	Write(mqtt.Packet, time.Duration) error
+}
+
+func runPhase(ctx context.Context, connection packetWriter, profile Profile, collector *Collector, phase string, phaseStart time.Time, millis int64, nextSequence *uint64, fatalErrors <-chan error) error {
 	sampleCount := samplesForDuration(profile.PublishRatePerSecond, millis)
 	interval := time.Second / time.Duration(profile.PublishRatePerSecond)
 	for index := uint64(0); index < sampleCount; index++ {
@@ -246,16 +250,17 @@ func runPhase(ctx context.Context, connection *mqttclient.Client, profile Profil
 		}
 		payload := makePayload(profile.Seed, *nextSequence, profile.PayloadBytes)
 		sentAt := time.Now()
-		if err := connection.Write(&mqtt.Publish{
-			Version: mqtt.ProtocolV5,
-			QoS:     mqtt.QoSAtMostOnce,
-			Topic:   profile.Topic,
-			Payload: payload,
-		}, handshakeTimeout); err != nil {
+		scheduleLag := sentAt.Sub(scheduledAt)
+		if err := collector.WriteAndRecord(func() error {
+			return connection.Write(&mqtt.Publish{
+				Version: mqtt.ProtocolV5,
+				QoS:     mqtt.QoSAtMostOnce,
+				Topic:   profile.Topic,
+				Payload: payload,
+			}, handshakeTimeout)
+		}, *nextSequence, phase, scheduledAt, sentAt, scheduleLag, scheduleLag >= interval); err != nil {
 			return fmt.Errorf("publish sequence %d: %w", *nextSequence, err)
 		}
-		scheduleLag := sentAt.Sub(scheduledAt)
-		collector.RecordSent(*nextSequence, phase, scheduledAt, sentAt, scheduleLag, scheduleLag >= interval)
 		*nextSequence++
 	}
 	return nil

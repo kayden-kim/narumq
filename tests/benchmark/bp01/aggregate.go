@@ -64,6 +64,9 @@ type sentRecord struct {
 	scheduledAt time.Time
 	sentAt      time.Time
 	scheduleLag time.Duration
+	pending     bool
+	aborted     bool
+	overloaded  bool
 	delivered   bool
 }
 
@@ -138,20 +141,70 @@ func (c *Collector) SetOffered(offered uint64) {
 func (c *Collector) RecordSent(sequence uint64, phase string, scheduledAt, sentAt time.Time, scheduleLag time.Duration, overloaded bool) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	record := sentRecord{
+		phase:       phase,
+		scheduledAt: scheduledAt,
+		sentAt:      sentAt,
+		scheduleLag: scheduleLag,
+		overloaded:  overloaded,
+	}
+	c.sentBySequence[sequence] = record
+	c.commitSentLocked(record)
+}
+
+// WriteAndRecord registers a sequence before invoking write. A successful
+// write commits the send counters. A failed write retains an uncertain
+// sequence until finalization so a late delivery can still commit it.
+func (c *Collector) WriteAndRecord(write func() error, sequence uint64, phase string, scheduledAt, sentAt time.Time, scheduleLag time.Duration, overloaded bool) error {
+	c.mu.Lock()
 	c.sentBySequence[sequence] = sentRecord{
 		phase:       phase,
 		scheduledAt: scheduledAt,
 		sentAt:      sentAt,
 		scheduleLag: scheduleLag,
+		pending:     true,
+		overloaded:  overloaded,
 	}
-	if phase == phaseMeasurement {
-		c.sent++
-		if scheduleLag > c.maxScheduleLag {
-			c.maxScheduleLag = scheduleLag
+	c.mu.Unlock()
+
+	if err := write(); err != nil {
+		c.mu.Lock()
+		if record, ok := c.sentBySequence[sequence]; ok && record.pending {
+			record.pending = false
+			if record.delivered {
+				c.sentBySequence[sequence] = record
+				c.commitSentLocked(record)
+			} else {
+				record.aborted = true
+				c.sentBySequence[sequence] = record
+			}
 		}
-		if overloaded {
-			c.generatorOverload++
-		}
+		c.mu.Unlock()
+		return err
+	}
+
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	record, ok := c.sentBySequence[sequence]
+	if !ok || !record.pending {
+		return fmt.Errorf("sequence %d is not pending", sequence)
+	}
+	record.pending = false
+	c.sentBySequence[sequence] = record
+	c.commitSentLocked(record)
+	return nil
+}
+
+func (c *Collector) commitSentLocked(record sentRecord) {
+	if record.phase != phaseMeasurement {
+		return
+	}
+	c.sent++
+	if record.scheduleLag > c.maxScheduleLag {
+		c.maxScheduleLag = record.scheduleLag
+	}
+	if record.overloaded {
+		c.generatorOverload++
 	}
 }
 
@@ -173,6 +226,11 @@ func (c *Collector) RecordDelivery(sequence uint64, receivedAt time.Time) error 
 	if latency < 0 {
 		c.protocolErrors++
 		return errors.New("delivery timestamp precedes publish timestamp")
+	}
+	if record.aborted {
+		record.aborted = false
+		c.sentBySequence[sequence] = record
+		c.commitSentLocked(record)
 	}
 	if record.delivered {
 		c.duplicate++
@@ -208,7 +266,7 @@ func (c *Collector) Finalize() (Summary, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	for _, record := range c.sentBySequence {
-		if record.phase == phaseMeasurement && !record.delivered {
+		if record.phase == phaseMeasurement && !record.aborted && !record.delivered {
 			c.missing++
 		}
 	}

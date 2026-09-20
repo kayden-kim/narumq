@@ -63,20 +63,52 @@ func (queue *Queue) TryEnqueue(delivery deliveryqueue.DeliveryDTO) error {
 	if queue == nil {
 		return deliveryqueue.ErrUnavailable
 	}
-	if err := validateSessionID(delivery.SessionID); err != nil {
+	queue.mu.Lock()
+	defer queue.mu.Unlock()
+	return queue.tryEnqueueBatchLocked([]deliveryqueue.DeliveryDTO{delivery})
+}
+
+// TryEnqueueBatch appends a complete owned batch for one session or appends
+// nothing when the session is unavailable, the batch is invalid, or capacity
+// is insufficient.
+func (queue *Queue) TryEnqueueBatch(deliveries []deliveryqueue.DeliveryDTO) error {
+	if queue == nil {
 		return deliveryqueue.ErrUnavailable
 	}
 	queue.mu.Lock()
 	defer queue.mu.Unlock()
-	items, exists := queue.sessions[delivery.SessionID]
+	return queue.tryEnqueueBatchLocked(deliveries)
+}
+
+func (queue *Queue) tryEnqueueBatchLocked(deliveries []deliveryqueue.DeliveryDTO) error {
+	if len(deliveries) == 0 {
+		return nil
+	}
+	sessionID := deliveries[0].SessionID
+	if err := validateSessionID(sessionID); err != nil {
+		return deliveryqueue.ErrUnavailable
+	}
+	for _, delivery := range deliveries[1:] {
+		if delivery.SessionID != sessionID {
+			return deliveryqueue.ErrUnavailable
+		}
+		if err := validateSessionID(delivery.SessionID); err != nil {
+			return deliveryqueue.ErrUnavailable
+		}
+	}
+	items, exists := queue.sessions[sessionID]
 	if !exists {
 		return deliveryqueue.ErrUnavailable
 	}
-	if len(items) >= queue.capacity {
+	if len(deliveries) > queue.capacity-len(items) {
 		return deliveryqueue.ErrFull
 	}
-	delivery.Payload = cloneBytes(delivery.Payload)
-	queue.sessions[delivery.SessionID] = append(items, delivery)
+	copied := make([]deliveryqueue.DeliveryDTO, len(deliveries))
+	for index, delivery := range deliveries {
+		delivery.Payload = cloneBytes(delivery.Payload)
+		copied[index] = delivery
+	}
+	queue.sessions[sessionID] = append(items, copied...)
 	return nil
 }
 

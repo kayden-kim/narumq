@@ -14,6 +14,7 @@ import (
 
 	"narumq/internal/adapters/clock"
 	"narumq/internal/adapters/memory/deliveryqueue"
+	memoryretained "narumq/internal/adapters/memory/retained"
 	"narumq/internal/adapters/memory/sessionstore"
 	tcpadapter "narumq/internal/adapters/tcp"
 	"narumq/internal/application/connect"
@@ -41,18 +42,23 @@ func newRunnerIngressFixture(t *testing.T) *runnerIngressFixture {
 		listener.Close()
 		t.Fatal(err)
 	}
+	retainedRepository, err := memoryretained.New(1024, 1<<20)
+	if err != nil {
+		listener.Close()
+		t.Fatal(err)
+	}
 	repository := sessionstore.New()
 	connections, err := connect.New(clock.SystemClock{}, repository, deliveries, routes)
 	if err != nil {
 		listener.Close()
 		t.Fatal(err)
 	}
-	subscriptions, err := subscribe.New(routes)
+	subscriptions, err := subscribe.New(routes, deliveries, retainedRepository)
 	if err != nil {
 		listener.Close()
 		t.Fatal(err)
 	}
-	publications, err := publish.New(routes, deliveries)
+	publications, err := publish.New(routes, deliveries, retainedRepository)
 	if err != nil {
 		listener.Close()
 		t.Fatal(err)

@@ -3,8 +3,8 @@ package mqtt
 import "encoding/binary"
 
 // RetainHandling controls when a broker sends retained messages for a new
-// subscription. The current routing slice preserves this value but does not
-// apply retained-message runtime behavior.
+// subscription. The subscribe application applies this value only to the
+// SUBSCRIBE event; live routing uses NoLocal and RetainAsPublished.
 type RetainHandling byte
 
 const (

@@ -90,6 +90,10 @@ func (*fakeDeliveryQueue) TryEnqueue(deliveryqueue.DeliveryDTO) error {
 	return nil
 }
 
+func (*fakeDeliveryQueue) TryEnqueueBatch([]deliveryqueue.DeliveryDTO) error {
+	return nil
+}
+
 func (*fakeDeliveryQueue) Drain(routing.SessionID) ([]deliveryqueue.DeliveryDTO, error) {
 	return nil, nil
 }
@@ -180,7 +184,7 @@ func TestConnectCleanResumeAndExpiryResetRoutingAndQueue(t *testing.T) {
 	if err != nil || !first.Accepted || first.ConnAck.SessionPresent {
 		t.Fatalf("initial Connect() = %#v, %v", first, err)
 	}
-	if err := routes.Subscribe(first.SessionID, "sensors/#", mqtt.QoSAtMostOnce); err != nil {
+	if _, err := routes.Subscribe(first.SessionID, mqtt.Subscription{Filter: "sensors/#", QoS: mqtt.QoSAtMostOnce}); err != nil {
 		t.Fatal(err)
 	}
 	if err := useCase.Disconnect(first.SessionID); err != nil {
@@ -190,7 +194,7 @@ func TestConnectCleanResumeAndExpiryResetRoutingAndQueue(t *testing.T) {
 	if err != nil || !resumed.Accepted || !resumed.ConnAck.SessionPresent {
 		t.Fatalf("resumed Connect() = %#v, %v", resumed, err)
 	}
-	matches, err := routes.Match("sensors/room", mqtt.QoSAtMostOnce)
+	matches, err := routes.Match("publisher", "sensors/room", mqtt.QoSAtMostOnce, false)
 	if err != nil || !reflect.DeepEqual(matches, []routing.Match{{SessionID: "client", QoS: mqtt.QoSAtMostOnce}}) {
 		t.Fatalf("resumed routes = %#v, %v", matches, err)
 	}
@@ -213,7 +217,7 @@ func TestConnectCleanResumeAndExpiryResetRoutingAndQueue(t *testing.T) {
 	if err != nil || !fresh.Accepted || fresh.ConnAck.SessionPresent {
 		t.Fatalf("clean-start replacement = %#v, %v", fresh, err)
 	}
-	matches, err = routes.Match("sensors/room", mqtt.QoSAtMostOnce)
+	matches, err = routes.Match("publisher", "sensors/room", mqtt.QoSAtMostOnce, false)
 	if err != nil || len(matches) != 0 {
 		t.Fatalf("routes after clean-start replacement = %#v, %v", matches, err)
 	}
@@ -225,7 +229,7 @@ func TestConnectCleanResumeAndExpiryResetRoutingAndQueue(t *testing.T) {
 	if result, err := useCase.Connect(finite); err != nil || !result.Accepted {
 		t.Fatalf("finite initial Connect() = %#v, %v", result, err)
 	}
-	if err := routes.Subscribe("finite", "alerts/#", mqtt.QoSAtMostOnce); err != nil {
+	if _, err := routes.Subscribe("finite", mqtt.Subscription{Filter: "alerts/#", QoS: mqtt.QoSAtMostOnce}); err != nil {
 		t.Fatal(err)
 	}
 	if err := useCase.Disconnect("finite"); err != nil {
@@ -236,7 +240,7 @@ func TestConnectCleanResumeAndExpiryResetRoutingAndQueue(t *testing.T) {
 	if err != nil || !expired.Accepted || expired.ConnAck.SessionPresent {
 		t.Fatalf("expired Connect() = %#v, %v", expired, err)
 	}
-	matches, err = routes.Match("alerts/critical", mqtt.QoSAtMostOnce)
+	matches, err = routes.Match("publisher", "alerts/critical", mqtt.QoSAtMostOnce, false)
 	if err != nil || len(matches) != 0 {
 		t.Fatalf("routes after expiry reset = %#v, %v", matches, err)
 	}
@@ -330,7 +334,7 @@ func TestDisconnectRemovesImmediateSessionsAndPreservesPersistentRoutes(t *testi
 	if result, err := useCase.Connect(persistent); err != nil || !result.Accepted {
 		t.Fatalf("persistent Connect() = %#v, %v", result, err)
 	}
-	if err := routes.Subscribe("persistent", "events/#", mqtt.QoSAtMostOnce); err != nil {
+	if _, err := routes.Subscribe("persistent", mqtt.Subscription{Filter: "events/#", QoS: mqtt.QoSAtMostOnce}); err != nil {
 		t.Fatal(err)
 	}
 	if err := useCase.Disconnect("persistent"); err != nil {
@@ -340,7 +344,7 @@ func TestDisconnectRemovesImmediateSessionsAndPreservesPersistentRoutes(t *testi
 	if err != nil || !found || state.Connected() {
 		t.Fatalf("persistent stored state = (%#v, %v, %v)", state, found, err)
 	}
-	matches, err := routes.Match("events/created", mqtt.QoSAtMostOnce)
+	matches, err := routes.Match("publisher", "events/created", mqtt.QoSAtMostOnce, false)
 	if err != nil || len(matches) != 1 {
 		t.Fatalf("persistent routes after disconnect = %#v, %v", matches, err)
 	}
@@ -349,7 +353,7 @@ func TestDisconnectRemovesImmediateSessionsAndPreservesPersistentRoutes(t *testi
 	if result, err := useCase.Connect(immediate); err != nil || !result.Accepted {
 		t.Fatalf("immediate Connect() = %#v, %v", result, err)
 	}
-	if err := routes.Subscribe("immediate", "events/#", mqtt.QoSAtMostOnce); err != nil {
+	if _, err := routes.Subscribe("immediate", mqtt.Subscription{Filter: "events/#", QoS: mqtt.QoSAtMostOnce}); err != nil {
 		t.Fatal(err)
 	}
 	if err := useCase.Disconnect("immediate"); err != nil {
@@ -358,7 +362,7 @@ func TestDisconnectRemovesImmediateSessionsAndPreservesPersistentRoutes(t *testi
 	if _, found, err := repository.Load("immediate"); err != nil || found {
 		t.Fatalf("immediate repository entry = found %v, err %v", found, err)
 	}
-	matches, err = routes.Match("events/created", mqtt.QoSAtMostOnce)
+	matches, err = routes.Match("publisher", "events/created", mqtt.QoSAtMostOnce, false)
 	if err != nil || len(matches) != 1 || matches[0].SessionID != "persistent" {
 		t.Fatalf("routes after immediate disconnect = %#v, %v", matches, err)
 	}
