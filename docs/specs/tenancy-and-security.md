@@ -148,10 +148,17 @@ audit event에는 password, bearer token, session cookie, private key와 원문 
 
 ## 9. 수용 시험
 
+- SEC-01: TLS 1.2 이상, TLS 1.0/1.1 거절, AEAD cipher allowlist와 TLS/mTLS listener 왕복을
+  `tests/integration/mqtt_tls_test.go`의 `TestMQTTTLS_ConnectionAndDelivery`,
+  `TestMQTTTLS_RejectInsecureTLSVersion`으로 검증한다.
+- SEC-03: trusted CA 성공, untrusted CA 거절, 만료 인증서 거절을
+  `TestMQTTTLS_mTLS_Success`, `TestMQTTTLS_mTLS_UntrustedCA_Rejected`,
+  `TestMQTTTLS_mTLS_ExpiredCert_Rejected`로 검증한다.
+- SEC-04: 인증서 Common Name과 MQTT Client ID 일치·불일치 및 MQTT 버전별 CONNACK
+  reason을 `TestMQTTTLS_mTLS_ClientIDMismatch_Rejected`로 검증한다.
 - 같은 clientId와 외부 topic을 쓰는 두 tenant가 session, route, retained, Will과 shared group을 공유하지 않는지 시험한다.
 - 내부 prefix 주입, wildcard·system topic 우회와 이중 encoding을 거절하는지 시험한다.
 - JWT algorithm confusion, 잘못된 issuer/audience/subject, expiry, `kid` rotation과 JWKS 장애를 시험한다.
-- mTLS CA·expiry·identity와 node member allowlist 조합을 시험한다.
 - ACL backend와 auth backend 장애가 cache TTL 뒤 fail-closed인지 확인한다.
 - 모든 관리 API에 role·tenant별 positive/negative matrix와 IDOR 시험을 적용한다.
 - secret scanner와 log/Metric assertion으로 비밀정보가 노출되지 않는지 검증한다.

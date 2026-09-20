@@ -56,13 +56,18 @@ profile이며 cluster durability와는 별도 경계다.
 3. 평문 TCP listener는 기본 설정에서 비활성화해야 한다.
 4. WebSocket과 WSS는 P1 선택 기능이다. 활성화하면 MQTT packet과 session 의미가 TCP listener와 같아야 한다.
 5. connection은 설정된 CONNECT timeout 안에 유효한 CONNECT를 보내야 한다. timeout 또는 malformed packet이면 session을 만들지 않고 연결을 닫아야 한다.
-6. 이번 Phase 0 development profile의 구현은 `internal/adapters/tcp.Server`이며,
-   `-tcp-listen`이 명시된 literal `127.0.0.0/8` 또는 `::1` loopback만 허용한다.
-   TLS·인증·tenant/ACL 없는 listener를 외부 interface에 노출하지 않기 위한 제한이다.
-7. CONNECT 뒤에는 negotiated version으로 packet을 decode하고, 모든 socket write는 한
+6. development profile의 평문 `-tcp-listen`은 `127.0.0.0/8` 또는 `::1` literal
+   loopback만 허용한다. TLS listener는 `-tls-listen`으로 별도 활성화하며,
+   TLS 1.2 이상, 허용된 AEAD cipher suite와 설정된 서버 인증서를 적용한다.
+   TLS listener는 외부 interface에 bind할 수 있지만, mTLS가 설정되면 trust anchor와
+   클라이언트 인증서 유효성 및 identity binding을 검증해야 한다.
+7. `-tcp-listen`과 `-tls-listen`은 하나의 `tcp.Server`에 함께 등록할 수 있고,
+   listener별 transport 보안 정책을 유지하면서 동일한 session·route registry를 공유한다.
+8. CONNECT 뒤에는 negotiated version으로 packet을 decode하고, 모든 socket write는 한
    writer goroutine의 bounded control queue 또는 delivery wake를 통과한다.
-8. binary smoke와 실제 loopback wire 검증은 `tests/integration/mqtt_ingress_test.go`와
-   `cmd/narumq`를 기준으로 한다.
+9. binary smoke와 실제 loopback wire 검증은 `tests/integration/mqtt_ingress_test.go`와
+   TLS/mTLS transport 검증은 `tests/integration/mqtt_tls_test.go` 및 `cmd/narumq`를
+   기준으로 한다.
 
 ## 2. CONNECT 처리 순서
 
