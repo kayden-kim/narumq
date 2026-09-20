@@ -302,3 +302,35 @@ func TestPublishAppliesNoLocalAndRetainAsPublished(t *testing.T) {
 		}
 	}
 }
+
+// Traceability: PRD MQTT-04/TEST-04/05; docs/specs/mqtt-protocol-and-session.md §5.
+func TestPublishRetainedSupportsQoS1AndQoS2(t *testing.T) {
+	for _, qos := range []mqtt.QoS{mqtt.QoSAtLeastOnce, mqtt.QoSExactlyOnce} {
+		routes := routing.NewTable()
+		queue := &recordingQueue{errors: make(map[routing.SessionID]error)}
+		retainedRepository := &recordingRetainedRepository{}
+		useCase, err := New(routes, queue, retainedRepository)
+		if err != nil {
+			t.Fatal(err)
+		}
+		publishPacket := mqtt.Publish{
+			Version: mqtt.ProtocolV5,
+			QoS:     qos,
+			Retain:  true,
+			Topic:   "sensors/temperature",
+			Payload: []byte("23.5"),
+		}
+		if _, err := useCase.Publish("publisher", publishPacket); err != nil {
+			t.Fatalf("QoS %d retained publish failed: %v", qos, err)
+		}
+		if len(retainedRepository.replaces) != 1 {
+			t.Fatalf("expected 1 retained replacement, got %d", len(retainedRepository.replaces))
+		}
+		if retainedRepository.replaces[0].QoS != qos {
+			t.Fatalf("retained QoS = %v, want %v", retainedRepository.replaces[0].QoS, qos)
+		}
+		if string(retainedRepository.replaces[0].Payload) != "23.5" {
+			t.Fatalf("retained payload = %q, want '23.5'", string(retainedRepository.replaces[0].Payload))
+		}
+	}
+}

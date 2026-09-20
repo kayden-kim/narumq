@@ -19,9 +19,6 @@ var (
 	ErrNilDeliveryQueue = errors.New("publish delivery queue is nil")
 	// ErrNilRetainedRepository means that publish has no retained state port.
 	ErrNilRetainedRepository = errors.New("publish retained repository is nil")
-	// ErrRetainedQoSUnsupported means that the development retained profile
-	// accepts only QoS 0 retained input.
-	ErrRetainedQoSUnsupported = errors.New("retained publish requires QoS 0")
 )
 
 // ResultDTO reports each session-level delivery outcome in routing order.
@@ -69,9 +66,6 @@ func (useCase *UseCase) Publish(publisherSessionID routing.SessionID, packet mqt
 		return ResultDTO{}, routing.ErrInvalidQoS
 	}
 	if packet.Retain {
-		if packet.QoS != mqtt.QoSAtMostOnce {
-			return ResultDTO{}, ErrRetainedQoSUnsupported
-		}
 		var err error
 		if len(packet.Payload) == 0 {
 			err = useCase.retained.Delete(packet.Topic)

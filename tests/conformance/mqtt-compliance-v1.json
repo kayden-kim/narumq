@@ -861,6 +861,14 @@
         {
           "name": "TestOutboundQoS1HandshakeResumeAndErrors",
           "package": "narumq/internal/domain/delivery"
+        },
+        {
+          "name": "TestMQTTIngressQoS1Handshake",
+          "package": "narumq/tests/integration"
+        },
+        {
+          "name": "TestMQTTIngressQoSOutboundDelivery",
+          "package": "narumq/tests/integration"
         }
       ]
     },
@@ -880,6 +888,14 @@
         {
           "name": "TestOutboundQoS1HandshakeResumeAndErrors",
           "package": "narumq/internal/domain/delivery"
+        },
+        {
+          "name": "TestMQTTIngressQoS1Handshake",
+          "package": "narumq/tests/integration"
+        },
+        {
+          "name": "TestMQTTIngressQoSOutboundDelivery",
+          "package": "narumq/tests/integration"
         }
       ]
     },
@@ -887,6 +903,7 @@
       "id": "MQTT-4.3.3-1",
       "requirementIds": [
         "MQTT-02",
+        "TEST-03",
         "TEST-04",
         "TEST-05"
       ],
@@ -898,6 +915,14 @@
         {
           "name": "TestOutboundQoS2SuccessFailureAndResume",
           "package": "narumq/internal/domain/delivery"
+        },
+        {
+          "name": "TestMQTTIngressQoS2Handshake",
+          "package": "narumq/tests/integration"
+        },
+        {
+          "name": "TestMQTTIngressQoSOutboundDelivery",
+          "package": "narumq/tests/integration"
         }
       ]
     },
@@ -905,6 +930,7 @@
       "id": "MQTT-4.3.3-2",
       "requirementIds": [
         "MQTT-02",
+        "TEST-03",
         "TEST-04",
         "TEST-05"
       ],
@@ -916,6 +942,14 @@
         {
           "name": "TestOutboundQoS2SuccessFailureAndResume",
           "package": "narumq/internal/domain/delivery"
+        },
+        {
+          "name": "TestMQTTIngressQoS2Handshake",
+          "package": "narumq/tests/integration"
+        },
+        {
+          "name": "TestMQTTIngressQoSOutboundDelivery",
+          "package": "narumq/tests/integration"
         }
       ]
     },

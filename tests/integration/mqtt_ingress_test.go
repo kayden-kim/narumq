@@ -303,40 +303,375 @@ func TestMQTTIngress(t *testing.T) {
 			t.Fatalf("malformed session = found %v, err %v", found, err)
 		}
 	})
+}
 
-	t.Run("qos negative acknowledgements and MQTT311 close", func(t *testing.T) {
-		fixture := newIngressFixture(t)
-		defer fixture.close(t)
-		mqtt5 := fixture.dial(t)
-		defer mqtt5.Close()
-		writePacket(t, mqtt5, fixture.encoder, &mqtt.Connect{Version: mqtt.ProtocolV5, CleanStart: true, ClientID: "qos5"})
-		if ack := readPacket(t, mqtt5, fixture.decoder, mqtt.ProtocolV5).(*mqtt.ConnAck); ack.ReasonCode != 0 {
-			t.Fatalf("MQTT 5 CONNACK = %#v", ack)
-		}
-		writePacket(t, mqtt5, fixture.encoder, &mqtt.Publish{Version: mqtt.ProtocolV5, QoS: mqtt.QoSAtLeastOnce, PacketID: 7, Topic: "qos/one", Payload: []byte("one")})
-		pubAck := readPacket(t, mqtt5, fixture.decoder, mqtt.ProtocolV5).(*mqtt.PubAck)
-		if pubAck.PacketID != 7 || pubAck.ReasonCode != 0x83 {
-			t.Fatalf("negative PUBACK = %#v", pubAck)
-		}
-		writePacket(t, mqtt5, fixture.encoder, &mqtt.Publish{Version: mqtt.ProtocolV5, QoS: mqtt.QoSExactlyOnce, PacketID: 8, Topic: "qos/two", Payload: []byte("two")})
-		pubRec := readPacket(t, mqtt5, fixture.decoder, mqtt.ProtocolV5).(*mqtt.PubRec)
-		if pubRec.PacketID != 8 || pubRec.ReasonCode != 0x83 {
-			t.Fatalf("negative PUBREC = %#v", pubRec)
-		}
-		writePacket(t, mqtt5, fixture.encoder, &mqtt.PingReq{Version: mqtt.ProtocolV5})
-		if _, ok := readPacket(t, mqtt5, fixture.decoder, mqtt.ProtocolV5).(*mqtt.PingResp); !ok {
-			t.Fatal("MQTT 5 connection did not remain after negative ACKs")
-		}
+// Traceability: PRD MQTT-02/TEST-03/TEST-04/TEST-05; docs/specs/mqtt-protocol-and-session.md §3.1, §3.2, §7; MQTT-4.3.2-1, MQTT-4.3.2-2.
+func TestMQTTIngressQoS1Handshake(t *testing.T) {
+	fixture := newIngressFixture(t)
+	defer fixture.close(t)
 
-		mqtt311 := fixture.dial(t)
-		defer mqtt311.Close()
-		writePacket(t, mqtt311, fixture.encoder, &mqtt.Connect{Version: mqtt.ProtocolV311, ClientID: "qos311"})
-		if ack := readPacket(t, mqtt311, fixture.decoder, mqtt.ProtocolV311).(*mqtt.ConnAck); ack.ReasonCode != 0 {
-			t.Fatalf("MQTT 3.1.1 CONNACK = %#v", ack)
-		}
-		writePacket(t, mqtt311, fixture.encoder, &mqtt.Publish{Version: mqtt.ProtocolV311, QoS: mqtt.QoSAtLeastOnce, PacketID: 9, Topic: "qos/one", Payload: []byte("one")})
-		expectClosed(t, mqtt311)
+	for _, tc := range []struct {
+		name    string
+		version mqtt.ProtocolVersion
+	}{
+		{name: "MQTT 5.0", version: mqtt.ProtocolV5},
+		{name: "MQTT 3.1.1", version: mqtt.ProtocolV311},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			subConn := fixture.dial(t)
+			defer subConn.Close()
+			writePacket(t, subConn, fixture.encoder, &mqtt.Connect{
+				Version:    tc.version,
+				CleanStart: true,
+				ClientID:   "qos1-sub-" + tc.name,
+			})
+			connAck := readPacket(t, subConn, fixture.decoder, tc.version).(*mqtt.ConnAck)
+			if connAck.ReasonCode != 0 {
+				t.Fatalf("sub CONNACK failed: %#v", connAck)
+			}
+			writePacket(t, subConn, fixture.encoder, &mqtt.Subscribe{
+				Version:  tc.version,
+				PacketID: 1,
+				Subscriptions: []mqtt.Subscription{
+					{Filter: "qos1/handshake", QoS: mqtt.QoSAtLeastOnce},
+				},
+			})
+			subAck := readPacket(t, subConn, fixture.decoder, tc.version).(*mqtt.SubAck)
+			if subAck.PacketID != 1 {
+				t.Fatalf("sub SUBACK packet ID = %d, want 1", subAck.PacketID)
+			}
+
+			pubConn := fixture.dial(t)
+			defer pubConn.Close()
+			writePacket(t, pubConn, fixture.encoder, &mqtt.Connect{
+				Version:    tc.version,
+				CleanStart: true,
+				ClientID:   "qos1-pub-" + tc.name,
+			})
+			pubConnAck := readPacket(t, pubConn, fixture.decoder, tc.version).(*mqtt.ConnAck)
+			if pubConnAck.ReasonCode != 0 {
+				t.Fatalf("pub CONNACK failed: %#v", pubConnAck)
+			}
+
+			// Publish QoS 1 message
+			writePacket(t, pubConn, fixture.encoder, &mqtt.Publish{
+				Version:  tc.version,
+				Topic:    "qos1/handshake",
+				Payload:  []byte("hello-qos1"),
+				QoS:      mqtt.QoSAtLeastOnce,
+				PacketID: 101,
+			})
+
+			// Publisher receives PUBACK
+			pubAck := readPacket(t, pubConn, fixture.decoder, tc.version).(*mqtt.PubAck)
+			if pubAck.PacketID != 101 {
+				t.Fatalf("PUBACK packet ID = %d, want 101", pubAck.PacketID)
+			}
+			if tc.version == mqtt.ProtocolV5 && pubAck.ReasonCode != 0 {
+				t.Fatalf("PUBACK reason code = 0x%02X, want 0", pubAck.ReasonCode)
+			}
+
+			// Subscriber receives delivery
+			delivery := readPacket(t, subConn, fixture.decoder, tc.version).(*mqtt.Publish)
+			if delivery.Topic != "qos1/handshake" || string(delivery.Payload) != "hello-qos1" {
+				t.Fatalf("delivered publication = %#v", delivery)
+			}
+			if delivery.QoS != mqtt.QoSAtLeastOnce || delivery.PacketID == 0 {
+				t.Fatalf("delivery QoS/PacketID invalid: QoS=%v, PacketID=%v", delivery.QoS, delivery.PacketID)
+			}
+			// Subscriber acknowledges delivery
+			writePacket(t, subConn, fixture.encoder, &mqtt.PubAck{
+				Version:  tc.version,
+				PacketID: delivery.PacketID,
+			})
+
+			// Publisher re-sends duplicate QoS 1 PUBLISH (DUP=true)
+			writePacket(t, pubConn, fixture.encoder, &mqtt.Publish{
+				Version:  tc.version,
+				Topic:    "qos1/handshake",
+				Payload:  []byte("hello-qos1"),
+				QoS:      mqtt.QoSAtLeastOnce,
+				PacketID: 101,
+				DUP:      true,
+			})
+
+			// Publisher receives PUBACK again
+			dupAck := readPacket(t, pubConn, fixture.decoder, tc.version).(*mqtt.PubAck)
+			if dupAck.PacketID != 101 {
+				t.Fatalf("dup PUBACK packet ID = %d, want 101", dupAck.PacketID)
+			}
+
+			// Subscriber must NOT receive duplicate message
+			expectNoPacket(t, subConn)
+		})
+	}
+}
+
+// Traceability: PRD MQTT-02/TEST-04/TEST-05; docs/specs/mqtt-protocol-and-session.md §3.1, §3.2, §7; MQTT-4.3.3-1, MQTT-4.3.3-2.
+func TestMQTTIngressQoS2Handshake(t *testing.T) {
+	fixture := newIngressFixture(t)
+	defer fixture.close(t)
+
+	for _, tc := range []struct {
+		name    string
+		version mqtt.ProtocolVersion
+	}{
+		{name: "MQTT 5.0", version: mqtt.ProtocolV5},
+		{name: "MQTT 3.1.1", version: mqtt.ProtocolV311},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			subConn := fixture.dial(t)
+			defer subConn.Close()
+			writePacket(t, subConn, fixture.encoder, &mqtt.Connect{
+				Version:    tc.version,
+				CleanStart: true,
+				ClientID:   "qos2-sub-" + tc.name,
+			})
+			connAck := readPacket(t, subConn, fixture.decoder, tc.version).(*mqtt.ConnAck)
+			if connAck.ReasonCode != 0 {
+				t.Fatalf("sub CONNACK failed: %#v", connAck)
+			}
+			writePacket(t, subConn, fixture.encoder, &mqtt.Subscribe{
+				Version:  tc.version,
+				PacketID: 2,
+				Subscriptions: []mqtt.Subscription{
+					{Filter: "qos2/handshake", QoS: mqtt.QoSExactlyOnce},
+				},
+			})
+			subAck := readPacket(t, subConn, fixture.decoder, tc.version).(*mqtt.SubAck)
+			if subAck.PacketID != 2 {
+				t.Fatalf("sub SUBACK packet ID = %d, want 2", subAck.PacketID)
+			}
+
+			pubConn := fixture.dial(t)
+			defer pubConn.Close()
+			writePacket(t, pubConn, fixture.encoder, &mqtt.Connect{
+				Version:    tc.version,
+				CleanStart: true,
+				ClientID:   "qos2-pub-" + tc.name,
+			})
+			pubConnAck := readPacket(t, pubConn, fixture.decoder, tc.version).(*mqtt.ConnAck)
+			if pubConnAck.ReasonCode != 0 {
+				t.Fatalf("pub CONNACK failed: %#v", pubConnAck)
+			}
+
+			// Publisher sends QoS 2 PUBLISH
+			writePacket(t, pubConn, fixture.encoder, &mqtt.Publish{
+				Version:  tc.version,
+				Topic:    "qos2/handshake",
+				Payload:  []byte("hello-qos2"),
+				QoS:      mqtt.QoSExactlyOnce,
+				PacketID: 202,
+			})
+
+			// Publisher receives PUBREC
+			pubRec := readPacket(t, pubConn, fixture.decoder, tc.version).(*mqtt.PubRec)
+			if pubRec.PacketID != 202 {
+				t.Fatalf("PUBREC packet ID = %d, want 202", pubRec.PacketID)
+			}
+			if tc.version == mqtt.ProtocolV5 && pubRec.ReasonCode != 0 {
+				t.Fatalf("PUBREC reason code = 0x%02X, want 0", pubRec.ReasonCode)
+			}
+
+			// Message must NOT be delivered yet prior to PUBREL
+			expectNoPacket(t, subConn)
+
+			// Publisher resends duplicate QoS 2 PUBLISH (DUP=true)
+			writePacket(t, pubConn, fixture.encoder, &mqtt.Publish{
+				Version:  tc.version,
+				Topic:    "qos2/handshake",
+				Payload:  []byte("hello-qos2"),
+				QoS:      mqtt.QoSExactlyOnce,
+				PacketID: 202,
+				DUP:      true,
+			})
+			dupRec := readPacket(t, pubConn, fixture.decoder, tc.version).(*mqtt.PubRec)
+			if dupRec.PacketID != 202 {
+				t.Fatalf("dup PUBREC packet ID = %d, want 202", dupRec.PacketID)
+			}
+
+			// Publisher sends PUBREL
+			writePacket(t, pubConn, fixture.encoder, &mqtt.PubRel{
+				Version:  tc.version,
+				PacketID: 202,
+			})
+
+			// Publisher receives PUBCOMP
+			pubComp := readPacket(t, pubConn, fixture.decoder, tc.version).(*mqtt.PubComp)
+			if pubComp.PacketID != 202 {
+				t.Fatalf("PUBCOMP packet ID = %d, want 202", pubComp.PacketID)
+			}
+			if tc.version == mqtt.ProtocolV5 && pubComp.ReasonCode != 0 {
+				t.Fatalf("PUBCOMP reason code = 0x%02X, want 0", pubComp.ReasonCode)
+			}
+
+			// Subscriber now receives the delivery
+			delivery := readPacket(t, subConn, fixture.decoder, tc.version).(*mqtt.Publish)
+			if delivery.Topic != "qos2/handshake" || string(delivery.Payload) != "hello-qos2" {
+				t.Fatalf("delivered publication = %#v", delivery)
+			}
+			if delivery.QoS != mqtt.QoSExactlyOnce || delivery.PacketID == 0 {
+				t.Fatalf("delivery QoS/PacketID invalid: QoS=%v, PacketID=%v", delivery.QoS, delivery.PacketID)
+			}
+
+			// Subscriber completes QoS 2 outbound handshake with broker
+			writePacket(t, subConn, fixture.encoder, &mqtt.PubRec{
+				Version:  tc.version,
+				PacketID: delivery.PacketID,
+			})
+			brokerRel := readPacket(t, subConn, fixture.decoder, tc.version).(*mqtt.PubRel)
+			if brokerRel.PacketID != delivery.PacketID {
+				t.Fatalf("broker PUBREL packet ID = %d, want %d", brokerRel.PacketID, delivery.PacketID)
+			}
+			writePacket(t, subConn, fixture.encoder, &mqtt.PubComp{
+				Version:  tc.version,
+				PacketID: delivery.PacketID,
+			})
+
+			// Duplicate PUBREL from publisher returns duplicate PUBCOMP
+			writePacket(t, pubConn, fixture.encoder, &mqtt.PubRel{
+				Version:  tc.version,
+				PacketID: 202,
+			})
+			dupComp := readPacket(t, pubConn, fixture.decoder, tc.version).(*mqtt.PubComp)
+			if dupComp.PacketID != 202 {
+				t.Fatalf("dup PUBCOMP packet ID = %d, want 202", dupComp.PacketID)
+			}
+
+			// Subscriber must NOT receive duplicate
+			expectNoPacket(t, subConn)
+		})
+	}
+}
+
+// Traceability: PRD MQTT-02/TEST-03/TEST-04/TEST-05; docs/specs/mqtt-protocol-and-session.md §3.1, §3.2, §7; MQTT-4.3.2-1, MQTT-4.3.2-2, MQTT-4.3.3-1, MQTT-4.3.3-2.
+func TestMQTTIngressQoSOutboundDelivery(t *testing.T) {
+	fixture := newIngressFixture(t)
+	defer fixture.close(t)
+
+	// Subscriber 1: QoS 1 (MQTT 5)
+	sub1 := fixture.dial(t)
+	defer sub1.Close()
+	writePacket(t, sub1, fixture.encoder, &mqtt.Connect{
+		Version:    mqtt.ProtocolV5,
+		CleanStart: true,
+		ClientID:   "sub-qos1-client",
 	})
+	if ack := readPacket(t, sub1, fixture.decoder, mqtt.ProtocolV5).(*mqtt.ConnAck); ack.ReasonCode != 0 {
+		t.Fatalf("sub1 CONNACK failed: %#v", ack)
+	}
+	writePacket(t, sub1, fixture.encoder, &mqtt.Subscribe{
+		Version:  mqtt.ProtocolV5,
+		PacketID: 10,
+		Subscriptions: []mqtt.Subscription{
+			{Filter: "test/outbound/qos1", QoS: mqtt.QoSAtLeastOnce},
+		},
+	})
+	if ack := readPacket(t, sub1, fixture.decoder, mqtt.ProtocolV5).(*mqtt.SubAck); ack.PacketID != 10 {
+		t.Fatalf("sub1 SUBACK failed: %#v", ack)
+	}
+
+	// Subscriber 2: QoS 2 (MQTT 3.1.1)
+	sub2 := fixture.dial(t)
+	defer sub2.Close()
+	writePacket(t, sub2, fixture.encoder, &mqtt.Connect{
+		Version:  mqtt.ProtocolV311,
+		ClientID: "sub-qos2-client",
+	})
+	if ack := readPacket(t, sub2, fixture.decoder, mqtt.ProtocolV311).(*mqtt.ConnAck); ack.ReasonCode != 0 {
+		t.Fatalf("sub2 CONNACK failed: %#v", ack)
+	}
+	writePacket(t, sub2, fixture.encoder, &mqtt.Subscribe{
+		Version:  mqtt.ProtocolV311,
+		PacketID: 20,
+		Subscriptions: []mqtt.Subscription{
+			{Filter: "test/outbound/qos2", QoS: mqtt.QoSExactlyOnce},
+		},
+	})
+	if ack := readPacket(t, sub2, fixture.decoder, mqtt.ProtocolV311).(*mqtt.SubAck); ack.PacketID != 20 {
+		t.Fatalf("sub2 SUBACK failed: %#v", ack)
+	}
+
+	// Publisher sends to both
+	pub := fixture.dial(t)
+	defer pub.Close()
+	writePacket(t, pub, fixture.encoder, &mqtt.Connect{
+		Version:    mqtt.ProtocolV5,
+		CleanStart: true,
+		ClientID:   "pub-outbound-client",
+	})
+	if ack := readPacket(t, pub, fixture.decoder, mqtt.ProtocolV5).(*mqtt.ConnAck); ack.ReasonCode != 0 {
+		t.Fatalf("pub CONNACK failed: %#v", ack)
+	}
+
+	// 1. QoS 1 Outbound Delivery Flow
+	writePacket(t, pub, fixture.encoder, &mqtt.Publish{
+		Version:  mqtt.ProtocolV5,
+		Topic:    "test/outbound/qos1",
+		Payload:  []byte("outbound-1"),
+		QoS:      mqtt.QoSAtLeastOnce,
+		PacketID: 1,
+	})
+	pubAck := readPacket(t, pub, fixture.decoder, mqtt.ProtocolV5).(*mqtt.PubAck)
+	if pubAck.PacketID != 1 {
+		t.Fatalf("pub PUBACK packet ID = %d, want 1", pubAck.PacketID)
+	}
+
+	deliv1 := readPacket(t, sub1, fixture.decoder, mqtt.ProtocolV5).(*mqtt.Publish)
+	if deliv1.Topic != "test/outbound/qos1" || string(deliv1.Payload) != "outbound-1" || deliv1.QoS != mqtt.QoSAtLeastOnce {
+		t.Fatalf("deliv1 invalid: %#v", deliv1)
+	}
+	// Sub1 replies PUBACK
+	writePacket(t, sub1, fixture.encoder, &mqtt.PubAck{
+		Version:  mqtt.ProtocolV5,
+		PacketID: deliv1.PacketID,
+	})
+
+	// 2. QoS 2 Outbound Delivery Flow
+	writePacket(t, pub, fixture.encoder, &mqtt.Publish{
+		Version:  mqtt.ProtocolV5,
+		Topic:    "test/outbound/qos2",
+		Payload:  []byte("outbound-2"),
+		QoS:      mqtt.QoSExactlyOnce,
+		PacketID: 2,
+	})
+	pubRec := readPacket(t, pub, fixture.decoder, mqtt.ProtocolV5).(*mqtt.PubRec)
+	if pubRec.PacketID != 2 {
+		t.Fatalf("pub PUBREC packet ID = %d, want 2", pubRec.PacketID)
+	}
+	writePacket(t, pub, fixture.encoder, &mqtt.PubRel{
+		Version:  mqtt.ProtocolV5,
+		PacketID: 2,
+	})
+	pubComp := readPacket(t, pub, fixture.decoder, mqtt.ProtocolV5).(*mqtt.PubComp)
+	if pubComp.PacketID != 2 {
+		t.Fatalf("pub PUBCOMP packet ID = %d, want 2", pubComp.PacketID)
+	}
+
+	deliv2 := readPacket(t, sub2, fixture.decoder, mqtt.ProtocolV311).(*mqtt.Publish)
+	if deliv2.Topic != "test/outbound/qos2" || string(deliv2.Payload) != "outbound-2" || deliv2.QoS != mqtt.QoSExactlyOnce {
+		t.Fatalf("deliv2 invalid: %#v", deliv2)
+	}
+	// Sub2 sends PUBREC
+	writePacket(t, sub2, fixture.encoder, &mqtt.PubRec{
+		Version:  mqtt.ProtocolV311,
+		PacketID: deliv2.PacketID,
+	})
+	// Sub2 receives PUBREL from broker
+	brokerRel := readPacket(t, sub2, fixture.decoder, mqtt.ProtocolV311).(*mqtt.PubRel)
+	if brokerRel.PacketID != deliv2.PacketID {
+		t.Fatalf("broker PUBREL ID = %d, want %d", brokerRel.PacketID, deliv2.PacketID)
+	}
+	// Sub2 sends PUBCOMP to broker
+	writePacket(t, sub2, fixture.encoder, &mqtt.PubComp{
+		Version:  mqtt.ProtocolV311,
+		PacketID: deliv2.PacketID,
+	})
+
+	// Ensure no unexpected packets remaining on connections
+	expectNoPacket(t, sub1)
+	expectNoPacket(t, sub2)
+	expectNoPacket(t, pub)
 }
 
 // Traceability: PRD MQTT-04/MQTT-08/TEST-04/05; docs/specs/mqtt-protocol-and-session.md §4 and §5; MQTT-3.3.1-5/6/7/8/9/10/11/12/13, MQTT-3.8.3-3, MQTT-3.8.4-3/4.

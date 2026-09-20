@@ -11,7 +11,7 @@
 | 관련 Contract | [MQTT client compatibility v1](../contracts/mqtt-client-compatibility-v1.md) |
 | 해설 | [MQTT 전달 보장과 QoS·Session·Will protocol 흐름](../explainers/mqtt-delivery-guarantees-and-protocol-flows.md) |
 
-## 현재 구현 상태: Phase 1 단일 노드 retained·subscription options slice
+## 현재 구현 상태: Phase 1 단일 노드 QoS 1/2 delivery·retained·will slice
 
 현재 구현은 개발·검증 전용 loopback plaintext TCP ingress까지 연결되어 실제
 MQTT 3.1.1/5.0 client가 `CONNECT → SUBSCRIBE/PUBLISH → PING/DISCONNECT`를
@@ -29,19 +29,24 @@ profile이며 cluster durability와는 별도 경계다.
 - `internal/application/subscribe`는 요청 순서를 유지한 SUBACK를 만들고, retained
   replay batch를 route mutation 전에 queue에 원자적으로 예약한다. MQTT 3.1.1과
   MQTT 5의 non-shared retained replay 및 MQTT 5 subscription options를 지원한다.
-- `internal/application/publish`는 QoS 0 retained PUBLISH를 exact topic별로
+- `internal/application/publish`는 QoS 0·1·2 retained PUBLISH를 exact topic별로
   replace/delete한 뒤 option-aware live fan-out을 수행한다. zero-byte retained
   PUBLISH도 established subscriber에게는 live delivery로 전달한다.
 - `internal/application/ports/retained`와 `internal/adapters/memory/retained`는
   topic·payload·publisher identity byte 상한을 함께 적용하는 process-local,
   non-durable retained repository를 제공한다. 저장 성공은 queue 전달 실패와
   독립적이며 retained value를 되돌리지 않는다.
-- ingress에서 성공 처리하는 수신 publish는 QoS 0이며, `Retain=true`도 이제 개발
-  profile에서 허용한다. MQTT 5 QoS 1/2는 기존 `0x83` negative ACK/DISCONNECT를
-  사용하고, MQTT 3.1.1 QoS 1/2는 연결을 닫는다.
+- ingress에서 수신하는 publish는 QoS 0·1·2를 지원한다. QoS 1은 메시지 라우팅 후
+  PUBACK을 반환하며, QoS 2는 수신 시 PUBREC을 반환하고 PUBREL 수신 시 라우팅 후
+  PUBCOMP를 반환한다. 중복 패킷 식별자 재전송 시 중복 라우팅 없이 동일 ACK를
+  반환하여 수렴한다.
+- 송신 delivery는 구독자의 granted QoS와 메시지 QoS 중 낮은 QoS로 전송하며,
+  QoS 1 및 QoS 2의 경우 connection별 packet identifier allocator를 통해
+  식별자를 할당하고 구독자의 PUBACK 또는 PUBREC/PUBREL/PUBCOMP 핸드셰이크를
+  완료한다.
 - `internal/adapters/memory/sessionstore`는 비내구성 lifecycle map이고,
   `internal/adapters/clock`은 system clock이다. Message Expiry, ACL·tenant,
-  shared subscription, Will, takeover, durable offline queue, persistence·replication과
+  shared subscription, takeover, durable offline queue, persistence·replication과
   TLS/auth는 이 slice에서 지원하지 않는다.
 
 ## 1. Listener 계약
@@ -118,11 +123,14 @@ active duplicate를 negative CONNACK으로 거절한다.
 
 quorum, 저장 quota 또는 replication 조건을 충족하지 못하면 성공 PUBACK/PUBREC을 반환해서는 안 된다. MQTT 5에서는 상황에 맞는 `0x89`(`Server busy`), `0x97`(`Quota exceeded`) 또는 `0x83`(`Implementation specific error`)를 사용할 수 있다. MQTT 3.1.1에서 packet 단위 실패를 표현할 수 없으면 연결을 닫을 수 있다. 어느 경우든 성공 ACK로 위장해서는 안 된다.
 
-이 slice는 durability barrier가 없으므로 수신 QoS 1/2에 성공 PUBACK/PUBREC을 반환하지
-않는다. MQTT 5는 packet identifier를 보존한 reason `0x83` negative ACK를 반환하고,
-MQTT 3.1.1은 packet 단위 실패를 표현할 수 없어 연결을 닫는다. QoS 0만 기존 publish
-use case와 delivery queue로 route한다.
-
+이 slice는 단일 노드 인메모리 프로세스 로컬 환경에서 수신 QoS 1 및 QoS 2 핸드셰이크를 지원한다.
+수신 QoS 1은 fan-out 성공 후 성공 PUBACK(MQTT 5는 ReasonCode 0)을 반환하며, 중복 패킷
+재전송 시 중복 전달 없이 동일한 PUBACK을 반환한다.
+수신 QoS 2는 1단계에서 PUBREC을 반환하고, 클라이언트로부터 PUBREL이 수신되면 실제 fan-out을
+수행한 뒤 PUBCOMP를 반환하여 핸드셰이크를 완료한다. 중복 PUBLISH 또는 PUBREL 재전송 시
+동일한 PUBREC 또는 PUBCOMP로 수렴한다.
+용량 초과(`retained.ErrFull`) 등의 실패 시 MQTT 5는 `0x97` 등의 negative ACK/DISCONNECT를 반환하고,
+MQTT 3.1.1은 연결을 닫는다.
 ### 3.2 송신 QoS와 offline queue
 
 1. 전달 QoS는 publish QoS와 subscription granted QoS 중 낮은 값이어야 한다.
@@ -149,9 +157,9 @@ use case와 delivery queue로 route한다.
 이번 Phase 1 development profile의 retained state는 process-local bounded memory
 repository 하나에 보관하며 restart·replication·quorum durability를 제공하지 않는다.
 
-- 입력 `PUBLISH`가 QoS 0이고 `Retain=true`이며 payload가 비어 있지 않으면 exact
-  Topic Name의 retained value를 publisher session identity와 함께 replace한다.
-- QoS 0 retained PUBLISH의 zero-byte payload는 exact topic value를 삭제한다.
+- 입력 `PUBLISH`가 `Retain=true`이고 payload가 비어 있지 않으면 exact
+  Topic Name의 retained value를 publisher session identity 및 QoS와 함께 replace한다.
+- retained PUBLISH의 zero-byte payload는 exact topic value를 삭제한다.
   삭제 packet 자체는 established subscription에 live publication으로 전달된다.
 - `Retain=false`인 PUBLISH는 retained repository를 읽거나 변경하지 않는다.
 - 새 non-shared subscription은 matching retained value를 topic 정렬 순서로 replay한다.
@@ -217,5 +225,5 @@ persistent session으로의 delivery 결과는 `ErrUnavailable`이다.
 - `MQTT-3.3.1-5`~`MQTT-3.3.1-13`, `MQTT-3.8.3-3`, `MQTT-3.8.4-3/4`는
   `tests/conformance/mqtt-compliance-v1.json`에서 양 protocol version test와
   source traceability comment를 함께 가져야 한다.
-- 이 matrix와 gate는 전체 MQTT 표준 적합성 선언이 아니다. Message Expiry, Will,
-  ACL·tenant, shared subscription runtime과 durable QoS 1/2는 후속 범위로 남아 있다.
+- 이 matrix와 gate는 전체 MQTT 표준 적합성 선언이 아니다. Message Expiry,
+  ACL·tenant, shared subscription runtime과 durable cluster replication은 후속 범위로 남아 있다.

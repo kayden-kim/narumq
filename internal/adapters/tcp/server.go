@@ -15,6 +15,7 @@ import (
 	applicationretained "narumq/internal/application/ports/retained"
 	"narumq/internal/application/publish"
 	"narumq/internal/application/subscribe"
+	"narumq/internal/domain/delivery"
 	"narumq/internal/domain/mqtt"
 	"narumq/internal/domain/routing"
 	"narumq/internal/domain/session"
@@ -180,6 +181,9 @@ func newConnection(server *Server, socket net.Conn) *connection {
 		stop:             make(chan struct{}),
 		writerDone:       make(chan struct{}),
 		disconnectReason: session.DisconnectAbnormal,
+		inbound:          make(map[mqtt.PacketIdentifier]delivery.Inbound),
+		outbound:         make(map[mqtt.PacketIdentifier]delivery.Outbound),
+		packetIDs:        newPacketIDAllocator(),
 	}
 }
 
@@ -276,6 +280,11 @@ type connection struct {
 	keepAlive        uint16
 	accepted         bool
 	disconnectReason session.DisconnectReason
+
+	deliveryMu sync.Mutex
+	inbound    map[mqtt.PacketIdentifier]delivery.Inbound
+	outbound   map[mqtt.PacketIdentifier]delivery.Outbound
+	packetIDs  *packetIDAllocator
 }
 
 func (connection *connection) run() {
@@ -311,6 +320,10 @@ func (connection *connection) cleanup() {
 				connection.server.logger.Warn("MQTT session cleanup failed", "error", err.Error())
 			}
 		}
+		connection.deliveryMu.Lock()
+		clear(connection.inbound)
+		clear(connection.outbound)
+		connection.deliveryMu.Unlock()
 	})
 }
 
@@ -446,6 +459,14 @@ func (connection *connection) dispatch(packet mqtt.Packet) error {
 		return connection.enqueueControl(&ack)
 	case *mqtt.Publish:
 		return connection.dispatchPublish(*value)
+	case *mqtt.PubAck:
+		return connection.dispatchPubAck(value)
+	case *mqtt.PubRec:
+		return connection.dispatchPubRec(value)
+	case *mqtt.PubRel:
+		return connection.dispatchPubRel(value)
+	case *mqtt.PubComp:
+		return connection.dispatchPubComp(value)
 	case *mqtt.PingReq:
 		return connection.enqueueControl(&mqtt.PingResp{Version: connection.version})
 	case *mqtt.Disconnect:
@@ -471,29 +492,287 @@ func (connection *connection) dispatch(packet mqtt.Packet) error {
 }
 
 func (connection *connection) dispatchPublish(packet mqtt.Publish) error {
-	if packet.QoS != mqtt.QoSAtMostOnce {
-		return connection.enqueueNegativePublishAck(packet)
-	}
-	result, err := connection.server.publications.Publish(connection.sessionID, packet)
-	if err != nil {
-		if errors.Is(err, applicationretained.ErrFull) {
-			if connection.version == mqtt.ProtocolV5 {
-				if err := connection.enqueueAndWait(&mqtt.Disconnect{Version: connection.version, ReasonCode: 0x97}); err != nil {
-					return err
+	if packet.QoS == mqtt.QoSAtMostOnce {
+		result, err := connection.server.publications.Publish(connection.sessionID, packet)
+		if err != nil {
+			if errors.Is(err, applicationretained.ErrFull) {
+				if connection.version == mqtt.ProtocolV5 {
+					if err := connection.enqueueAndWait(&mqtt.Disconnect{Version: connection.version, ReasonCode: 0x97}); err != nil {
+						return err
+					}
 				}
+				connection.cleanup()
+				connection.requestClose()
+				return nil
 			}
-			connection.cleanup()
-			connection.requestClose()
+			return err
+		}
+		for _, sessionID := range result.Delivered {
+			connection.server.wakeSession(sessionID)
+		}
+		for _, sessionID := range result.Saturated {
+			connection.server.closeSession(sessionID)
+		}
+		return nil
+	}
+
+	if packet.QoS == mqtt.QoSAtLeastOnce {
+		if packet.PacketID == 0 {
+			return ErrProtocol
+		}
+		connection.deliveryMu.Lock()
+		if existing, exists := connection.inbound[packet.PacketID]; exists {
+			nextState, action, err := existing.Receive(&packet)
+			if err != nil {
+				connection.deliveryMu.Unlock()
+				return ErrProtocol
+			}
+			connection.inbound[packet.PacketID] = nextState
+			connection.deliveryMu.Unlock()
+			if action.Send != nil {
+				return connection.enqueueControl(action.Send)
+			}
 			return nil
 		}
-		return err
+
+		state, action, err := delivery.NewInbound(packet)
+		if err != nil {
+			connection.deliveryMu.Unlock()
+			return ErrProtocol
+		}
+
+		result, err := connection.server.publications.Publish(connection.sessionID, *action.Deliver)
+		if err != nil {
+			connection.deliveryMu.Unlock()
+			if errors.Is(err, applicationretained.ErrFull) {
+				if connection.version == mqtt.ProtocolV5 {
+					return connection.enqueueControl(&mqtt.PubAck{
+						Version:    connection.version,
+						PacketID:   packet.PacketID,
+						ReasonCode: 0x97,
+					})
+				}
+				connection.cleanup()
+				connection.requestClose()
+				return nil
+			}
+			return err
+		}
+
+		acceptedState, ackAction, err := state.Accept()
+		if err != nil {
+			connection.deliveryMu.Unlock()
+			return ErrProtocol
+		}
+		connection.inbound[packet.PacketID] = acceptedState
+		connection.deliveryMu.Unlock()
+
+		if ackAction.Send != nil {
+			if err := connection.enqueueControl(ackAction.Send); err != nil {
+				return err
+			}
+		}
+		for _, sessionID := range result.Delivered {
+			connection.server.wakeSession(sessionID)
+		}
+		for _, sessionID := range result.Saturated {
+			connection.server.closeSession(sessionID)
+		}
+		return nil
 	}
-	for _, sessionID := range result.Delivered {
-		connection.server.wakeSession(sessionID)
+
+	if packet.QoS == mqtt.QoSExactlyOnce {
+		if packet.PacketID == 0 {
+			return ErrProtocol
+		}
+		connection.deliveryMu.Lock()
+		if existing, exists := connection.inbound[packet.PacketID]; exists {
+			nextState, action, err := existing.Receive(&packet)
+			if err != nil {
+				connection.deliveryMu.Unlock()
+				return ErrProtocol
+			}
+			connection.inbound[packet.PacketID] = nextState
+			connection.deliveryMu.Unlock()
+			if action.Send != nil {
+				return connection.enqueueControl(action.Send)
+			}
+			return nil
+		}
+
+		state, _, err := delivery.NewInbound(packet)
+		if err != nil {
+			connection.deliveryMu.Unlock()
+			return ErrProtocol
+		}
+		acceptedState, recAction, err := state.Accept()
+		if err != nil {
+			connection.deliveryMu.Unlock()
+			return ErrProtocol
+		}
+		connection.inbound[packet.PacketID] = acceptedState
+		connection.deliveryMu.Unlock()
+
+		if recAction.Send != nil {
+			return connection.enqueueControl(recAction.Send)
+		}
+		return nil
 	}
-	for _, sessionID := range result.Saturated {
-		connection.server.closeSession(sessionID)
+
+	return ErrProtocol
+}
+
+func (connection *connection) dispatchPubRel(packet *mqtt.PubRel) error {
+	if packet.PacketID == 0 {
+		return ErrProtocol
 	}
+	connection.deliveryMu.Lock()
+	state, exists := connection.inbound[packet.PacketID]
+	if !exists {
+		connection.deliveryMu.Unlock()
+		if connection.version == mqtt.ProtocolV5 {
+			return connection.enqueueControl(&mqtt.PubComp{
+				Version:    connection.version,
+				PacketID:   packet.PacketID,
+				ReasonCode: 0x92,
+			})
+		}
+		return connection.enqueueControl(&mqtt.PubComp{
+			Version:  connection.version,
+			PacketID: packet.PacketID,
+		})
+	}
+
+	nextState, action, err := state.Receive(packet)
+	if err != nil {
+		connection.deliveryMu.Unlock()
+		return ErrProtocol
+	}
+
+	if action.Deliver != nil {
+		result, err := connection.server.publications.Publish(connection.sessionID, *action.Deliver)
+		if err != nil {
+			connection.deliveryMu.Unlock()
+			if errors.Is(err, applicationretained.ErrFull) {
+				if connection.version == mqtt.ProtocolV5 {
+					if err := connection.enqueueAndWait(&mqtt.Disconnect{Version: connection.version, ReasonCode: 0x97}); err != nil {
+						return err
+					}
+				}
+				connection.cleanup()
+				connection.requestClose()
+				return nil
+			}
+			return err
+		}
+		acceptedState, compAction, err := nextState.Accept()
+		if err != nil {
+			connection.deliveryMu.Unlock()
+			return ErrProtocol
+		}
+		connection.inbound[packet.PacketID] = acceptedState
+		connection.deliveryMu.Unlock()
+
+		if compAction.Send != nil {
+			if err := connection.enqueueControl(compAction.Send); err != nil {
+				return err
+			}
+		}
+		for _, sessionID := range result.Delivered {
+			connection.server.wakeSession(sessionID)
+		}
+		for _, sessionID := range result.Saturated {
+			connection.server.closeSession(sessionID)
+		}
+		return nil
+	}
+
+	connection.inbound[packet.PacketID] = nextState
+	connection.deliveryMu.Unlock()
+	if action.Send != nil {
+		return connection.enqueueControl(action.Send)
+	}
+	return nil
+}
+
+func (connection *connection) dispatchPubAck(packet *mqtt.PubAck) error {
+	if packet.PacketID == 0 {
+		return ErrProtocol
+	}
+	connection.deliveryMu.Lock()
+	outbound, exists := connection.outbound[packet.PacketID]
+	if !exists {
+		connection.deliveryMu.Unlock()
+		return nil
+	}
+	nextState, action, err := outbound.Receive(packet)
+	if err != nil {
+		connection.deliveryMu.Unlock()
+		return ErrProtocol
+	}
+	if action.Complete {
+		delete(connection.outbound, packet.PacketID)
+		connection.packetIDs.release(packet.PacketID)
+	} else {
+		connection.outbound[packet.PacketID] = nextState
+	}
+	connection.deliveryMu.Unlock()
+	return nil
+}
+
+func (connection *connection) dispatchPubRec(packet *mqtt.PubRec) error {
+	if packet.PacketID == 0 {
+		return ErrProtocol
+	}
+	connection.deliveryMu.Lock()
+	outbound, exists := connection.outbound[packet.PacketID]
+	if !exists {
+		connection.deliveryMu.Unlock()
+		return nil
+	}
+	nextState, action, err := outbound.Receive(packet)
+	if err != nil {
+		connection.deliveryMu.Unlock()
+		return ErrProtocol
+	}
+	if action.Complete {
+		delete(connection.outbound, packet.PacketID)
+		connection.packetIDs.release(packet.PacketID)
+		connection.deliveryMu.Unlock()
+		return nil
+	}
+	connection.outbound[packet.PacketID] = nextState
+	toSend := action.Send
+	connection.deliveryMu.Unlock()
+
+	if toSend != nil {
+		return connection.enqueueControl(toSend)
+	}
+	return nil
+}
+
+func (connection *connection) dispatchPubComp(packet *mqtt.PubComp) error {
+	if packet.PacketID == 0 {
+		return ErrProtocol
+	}
+	connection.deliveryMu.Lock()
+	outbound, exists := connection.outbound[packet.PacketID]
+	if !exists {
+		connection.deliveryMu.Unlock()
+		return nil
+	}
+	nextState, action, err := outbound.Receive(packet)
+	if err != nil {
+		connection.deliveryMu.Unlock()
+		return ErrProtocol
+	}
+	if action.Complete {
+		delete(connection.outbound, packet.PacketID)
+		connection.packetIDs.release(packet.PacketID)
+	} else {
+		connection.outbound[packet.PacketID] = nextState
+	}
+	connection.deliveryMu.Unlock()
 	return nil
 }
 
@@ -668,17 +947,53 @@ func (connection *connection) writeDeliveries() error {
 		}
 		return err
 	}
-	for _, item := range items {
-		if item.QoS != mqtt.QoSAtMostOnce {
+	for idx, item := range items {
+		if item.QoS == mqtt.QoSAtMostOnce {
+			packet := mqtt.Publish{
+				Version: connection.version,
+				Topic:   item.Topic,
+				Payload: item.Payload,
+				Retain:  item.Retain,
+				QoS:     mqtt.QoSAtMostOnce,
+			}
+			if err := connection.writePacket(&packet); err != nil {
+				return err
+			}
+			continue
+		}
+
+		if item.QoS > mqtt.QoSExactlyOnce {
 			return ErrProtocol
 		}
-		packet := mqtt.Publish{
-			Version: connection.version,
-			Topic:   item.Topic,
-			Payload: item.Payload,
-			Retain:  item.Retain,
+
+		connection.deliveryMu.Lock()
+		packetID, err := connection.packetIDs.acquire()
+		if err != nil {
+			connection.deliveryMu.Unlock()
+			for i := idx; i < len(items); i++ {
+				_ = connection.server.deliveries.TryEnqueue(items[i])
+			}
+			return nil
 		}
-		if err := connection.writePacket(&packet); err != nil {
+
+		publish := mqtt.Publish{
+			Version:  connection.version,
+			Topic:    item.Topic,
+			Payload:  item.Payload,
+			Retain:   item.Retain,
+			QoS:      item.QoS,
+			PacketID: packetID,
+		}
+		outbound, action, err := delivery.NewOutbound(publish)
+		if err != nil {
+			connection.packetIDs.release(packetID)
+			connection.deliveryMu.Unlock()
+			return err
+		}
+		connection.outbound[packetID] = outbound
+		connection.deliveryMu.Unlock()
+
+		if err := connection.writePacket(action.Send); err != nil {
 			return err
 		}
 	}

@@ -250,17 +250,29 @@ func TestConnectionLifecycleQueueAndDeliveryBranches(t *testing.T) {
 	qosSocket, qosPeer := net.Pipe()
 	qos := newConnection(runtime.server, qosSocket)
 	qos.sessionID = "qos-session"
+	qos.version = mqtt.ProtocolV5
 	runtime.server.deliveries.Register(qos.sessionID)
 	if err := runtime.server.deliveries.TryEnqueue(applicationDelivery(qos.sessionID, mqtt.QoSAtLeastOnce)); err != nil {
 		t.Fatal(err)
 	}
+	deliveryResult = make(chan error, 1)
+	go func() { deliveryResult <- qos.writeDeliveries() }()
+	frame := readTestFrame(t, qosPeer)
+	if len(frame) == 0 {
+		t.Fatal("expected delivery frame")
+	}
+	if err := <-deliveryResult; err != nil {
+		t.Fatalf("writeDeliveries() QoS 1 error = %v", err)
+	}
+	if err := runtime.server.deliveries.TryEnqueue(applicationDelivery(qos.sessionID, mqtt.QoS(3))); err != nil {
+		t.Fatal(err)
+	}
 	if err := qos.writeDeliveries(); !errors.Is(err, ErrProtocol) {
-		t.Fatalf("writeDeliveries() QoS error = %v", err)
+		t.Fatalf("writeDeliveries() invalid QoS error = %v", err)
 	}
 	qosPeer.Close()
 	qos.requestClose()
 }
-
 func applicationDelivery(session routing.SessionID, qos mqtt.QoS) applicationdeliveryqueue.DeliveryDTO {
 	return applicationdeliveryqueue.DeliveryDTO{SessionID: session, Topic: "topic", Payload: []byte("payload"), QoS: qos}
 }
