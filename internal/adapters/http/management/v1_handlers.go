@@ -3,6 +3,7 @@ package management
 import (
 	"errors"
 	"net/http"
+	"net/url"
 	"strconv"
 
 	appmgmt "narumq/internal/application/management"
@@ -19,8 +20,54 @@ func NewV1Handler(provider ports.StateProvider) *V1Handler {
 	return &V1Handler{provider: provider}
 }
 
-func parseLimit(r *http.Request) (int, error) {
-	raw := r.URL.Query().Get("limit")
+type queryParser struct {
+	values url.Values
+}
+
+func newQueryParser(r *http.Request, allowedNames ...string) (queryParser, error) {
+	allowed := make(map[string]struct{}, len(allowedNames))
+	for _, name := range allowedNames {
+		allowed[name] = struct{}{}
+	}
+	values := r.URL.Query()
+	for name, rawValues := range values {
+		if _, ok := allowed[name]; !ok {
+			return queryParser{}, errors.New("unknown query parameter")
+		}
+		if len(rawValues) != 1 {
+			return queryParser{}, errors.New("query parameter must appear once")
+		}
+	}
+	return queryParser{values: values}, nil
+}
+
+func (query queryParser) optional(name string) (string, error) {
+	rawValues, ok := query.values[name]
+	if !ok {
+		return "", nil
+	}
+	if rawValues[0] == "" {
+		return "", errors.New("query parameter must not be empty")
+	}
+	return rawValues[0], nil
+}
+
+func (query queryParser) required(name string) (string, error) {
+	value, err := query.optional(name)
+	if err != nil {
+		return "", err
+	}
+	if value == "" {
+		return "", errors.New("required query parameter is missing")
+	}
+	return value, nil
+}
+
+func parseLimit(query queryParser) (int, error) {
+	raw, err := query.optional("limit")
+	if err != nil {
+		return 0, err
+	}
 	if raw == "" {
 		return 0, nil
 	}
@@ -28,13 +75,24 @@ func parseLimit(r *http.Request) (int, error) {
 	if err != nil || limit < 1 {
 		return 0, errors.New("limit must be a positive integer")
 	}
+	if limit > appmgmt.MaxPageLimit {
+		return 0, errors.New("limit must be at most " + strconv.Itoa(appmgmt.MaxPageLimit))
+	}
 	return limit, nil
+}
+
+func writeInvalidRequest(w http.ResponseWriter, r *http.Request, err error) {
+	WriteError(w, r, http.StatusBadRequest, "invalid_request", err.Error(), false, nil)
 }
 
 // GetCluster handles GET /api/v1/cluster.
 func (h *V1Handler) GetCluster(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		WriteError(w, r, http.StatusMethodNotAllowed, "method_not_allowed", "method not allowed", false, nil)
+		return
+	}
+	if _, err := newQueryParser(r); err != nil {
+		writeInvalidRequest(w, r, err)
 		return
 	}
 
@@ -49,20 +107,33 @@ func (h *V1Handler) ListNodes(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	limit, err := parseLimit(r)
+	query, err := newQueryParser(r, "limit", "cursor", "state")
 	if err != nil {
-		WriteError(w, r, http.StatusBadRequest, "invalid_request", err.Error(), false, nil)
+		writeInvalidRequest(w, r, err)
 		return
 	}
-
-	stateStr := r.URL.Query().Get("state")
+	limit, err := parseLimit(query)
+	if err != nil {
+		writeInvalidRequest(w, r, err)
+		return
+	}
+	cursor, err := query.optional("cursor")
+	if err != nil {
+		writeInvalidRequest(w, r, err)
+		return
+	}
+	stateStr, err := query.optional("state")
+	if err != nil {
+		writeInvalidRequest(w, r, err)
+		return
+	}
 	var state ports.NodeState
 	if stateStr != "" {
 		switch ports.NodeState(stateStr) {
 		case ports.NodeStateJoining, ports.NodeStateReady, ports.NodeStateDraining, ports.NodeStateSafeToStop:
 			state = ports.NodeState(stateStr)
 		default:
-			WriteError(w, r, http.StatusBadRequest, "invalid_request", "invalid node state filter", false, nil)
+			writeInvalidRequest(w, r, errors.New("invalid node state filter"))
 			return
 		}
 	}
@@ -70,7 +141,7 @@ func (h *V1Handler) ListNodes(w http.ResponseWriter, r *http.Request) {
 	filter := ports.NodeFilter{
 		State:  state,
 		Limit:  limit,
-		Cursor: r.URL.Query().Get("cursor"),
+		Cursor: cursor,
 	}
 
 	nodes, page, err := h.provider.ListNodeSummaries(r.Context(), filter)
@@ -86,6 +157,10 @@ func (h *V1Handler) ListNodes(w http.ResponseWriter, r *http.Request) {
 func (h *V1Handler) GetNode(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		WriteError(w, r, http.StatusMethodNotAllowed, "method_not_allowed", "method not allowed", false, nil)
+		return
+	}
+	if _, err := newQueryParser(r); err != nil {
+		writeInvalidRequest(w, r, err)
 		return
 	}
 
@@ -111,25 +186,53 @@ func (h *V1Handler) ListClients(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	limit, err := parseLimit(r)
+	query, err := newQueryParser(r, "limit", "cursor", "tenantId", "clientIdPrefix", "nodeId", "protocol")
 	if err != nil {
-		WriteError(w, r, http.StatusBadRequest, "invalid_request", err.Error(), false, nil)
+		writeInvalidRequest(w, r, err)
 		return
 	}
-
-	proto := r.URL.Query().Get("protocol")
+	limit, err := parseLimit(query)
+	if err != nil {
+		writeInvalidRequest(w, r, err)
+		return
+	}
+	cursor, err := query.optional("cursor")
+	if err != nil {
+		writeInvalidRequest(w, r, err)
+		return
+	}
+	tenantID, err := query.optional("tenantId")
+	if err != nil {
+		writeInvalidRequest(w, r, err)
+		return
+	}
+	clientIDPrefix, err := query.optional("clientIdPrefix")
+	if err != nil {
+		writeInvalidRequest(w, r, err)
+		return
+	}
+	nodeID, err := query.optional("nodeId")
+	if err != nil {
+		writeInvalidRequest(w, r, err)
+		return
+	}
+	proto, err := query.optional("protocol")
+	if err != nil {
+		writeInvalidRequest(w, r, err)
+		return
+	}
 	if proto != "" && proto != "MQTT_3_1_1" && proto != "MQTT_5_0" {
-		WriteError(w, r, http.StatusBadRequest, "invalid_request", "invalid protocol filter", false, nil)
+		writeInvalidRequest(w, r, errors.New("invalid protocol filter"))
 		return
 	}
 
 	filter := ports.ClientFilter{
-		TenantID:       r.URL.Query().Get("tenantId"),
-		ClientIDPrefix: r.URL.Query().Get("clientIdPrefix"),
-		NodeID:         r.URL.Query().Get("nodeId"),
+		TenantID:       tenantID,
+		ClientIDPrefix: clientIDPrefix,
+		NodeID:         nodeID,
 		Protocol:       proto,
 		Limit:          limit,
-		Cursor:         r.URL.Query().Get("cursor"),
+		Cursor:         cursor,
 	}
 
 	clients, page, err := h.provider.ListClients(r.Context(), filter)
@@ -145,6 +248,10 @@ func (h *V1Handler) ListClients(w http.ResponseWriter, r *http.Request) {
 func (h *V1Handler) GetClient(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		WriteError(w, r, http.StatusMethodNotAllowed, "method_not_allowed", "method not allowed", false, nil)
+		return
+	}
+	if _, err := newQueryParser(r); err != nil {
+		writeInvalidRequest(w, r, err)
 		return
 	}
 
@@ -171,17 +278,37 @@ func (h *V1Handler) ListSubscriptions(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	limit, err := parseLimit(r)
+	query, err := newQueryParser(r, "limit", "cursor", "tenantId", "clientId")
 	if err != nil {
-		WriteError(w, r, http.StatusBadRequest, "invalid_request", err.Error(), false, nil)
+		writeInvalidRequest(w, r, err)
+		return
+	}
+	limit, err := parseLimit(query)
+	if err != nil {
+		writeInvalidRequest(w, r, err)
+		return
+	}
+	cursor, err := query.optional("cursor")
+	if err != nil {
+		writeInvalidRequest(w, r, err)
+		return
+	}
+	tenantID, err := query.required("tenantId")
+	if err != nil {
+		writeInvalidRequest(w, r, err)
+		return
+	}
+	clientID, err := query.optional("clientId")
+	if err != nil {
+		writeInvalidRequest(w, r, err)
 		return
 	}
 
 	filter := ports.SubscriptionFilter{
-		TenantID: r.URL.Query().Get("tenantId"),
-		ClientID: r.URL.Query().Get("clientId"),
+		TenantID: tenantID,
+		ClientID: clientID,
 		Limit:    limit,
-		Cursor:   r.URL.Query().Get("cursor"),
+		Cursor:   cursor,
 	}
 
 	subs, page, err := h.provider.ListSubscriptions(r.Context(), filter)
@@ -200,17 +327,37 @@ func (h *V1Handler) ListRetained(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	limit, err := parseLimit(r)
+	query, err := newQueryParser(r, "limit", "cursor", "tenantId", "topicPrefix")
 	if err != nil {
-		WriteError(w, r, http.StatusBadRequest, "invalid_request", err.Error(), false, nil)
+		writeInvalidRequest(w, r, err)
+		return
+	}
+	limit, err := parseLimit(query)
+	if err != nil {
+		writeInvalidRequest(w, r, err)
+		return
+	}
+	cursor, err := query.optional("cursor")
+	if err != nil {
+		writeInvalidRequest(w, r, err)
+		return
+	}
+	tenantID, err := query.required("tenantId")
+	if err != nil {
+		writeInvalidRequest(w, r, err)
+		return
+	}
+	topicPrefix, err := query.optional("topicPrefix")
+	if err != nil {
+		writeInvalidRequest(w, r, err)
 		return
 	}
 
 	filter := ports.RetainedFilter{
-		TenantID:    r.URL.Query().Get("tenantId"),
-		TopicPrefix: r.URL.Query().Get("topicPrefix"),
+		TenantID:    tenantID,
+		TopicPrefix: topicPrefix,
 		Limit:       limit,
-		Cursor:      r.URL.Query().Get("cursor"),
+		Cursor:      cursor,
 	}
 
 	retainedList, page, err := h.provider.ListRetained(r.Context(), filter)
@@ -229,15 +376,25 @@ func (h *V1Handler) ListTenants(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	limit, err := parseLimit(r)
+	query, err := newQueryParser(r, "limit", "cursor")
 	if err != nil {
-		WriteError(w, r, http.StatusBadRequest, "invalid_request", err.Error(), false, nil)
+		writeInvalidRequest(w, r, err)
+		return
+	}
+	limit, err := parseLimit(query)
+	if err != nil {
+		writeInvalidRequest(w, r, err)
+		return
+	}
+	cursor, err := query.optional("cursor")
+	if err != nil {
+		writeInvalidRequest(w, r, err)
 		return
 	}
 
 	filter := ports.TenantFilter{
 		Limit:  limit,
-		Cursor: r.URL.Query().Get("cursor"),
+		Cursor: cursor,
 	}
 
 	tenants, page, err := h.provider.ListTenants(r.Context(), filter)
@@ -258,7 +415,7 @@ func (h *V1Handler) handleError(w http.ResponseWriter, r *http.Request, err erro
 	case errors.Is(err, appmgmt.ErrInvalidCursor):
 		WriteError(w, r, http.StatusBadRequest, "invalid_request", "invalid pagination cursor", false, nil)
 	case errors.Is(err, appmgmt.ErrInvalidPageSize):
-		WriteError(w, r, http.StatusBadRequest, "invalid_page_size", "page size exceeds allowed bounds", false, nil)
+		writeInvalidRequest(w, r, err)
 	default:
 		WriteError(w, r, http.StatusInternalServerError, "internal_error", "an internal error occurred", false, nil)
 	}

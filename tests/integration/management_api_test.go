@@ -2,11 +2,13 @@ package integration
 
 import (
 	"context"
+	"encoding/binary"
 	"encoding/json"
 	"io"
 	"log/slog"
 	"net"
 	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
@@ -276,7 +278,7 @@ func TestManagementAPIObservesLiveMQTTState(t *testing.T) {
 			TopicFilter string `json:"topicFilter"`
 		} `json:"data"`
 	}
-	if err := json.Unmarshal(get("/api/v1/subscriptions"), &subscriptionsEnvelope); err != nil {
+	if err := json.Unmarshal(get("/api/v1/subscriptions?tenantId=default"), &subscriptionsEnvelope); err != nil {
 		t.Fatal(err)
 	}
 	if len(subscriptionsEnvelope.Data) != 1 || subscriptionsEnvelope.Data[0].TopicFilter != "management/topic" {
@@ -289,7 +291,7 @@ func TestManagementAPIObservesLiveMQTTState(t *testing.T) {
 			PayloadBytes int    `json:"payloadBytes"`
 		} `json:"data"`
 	}
-	if err := json.Unmarshal(get("/api/v1/retained"), &retainedEnvelope); err != nil {
+	if err := json.Unmarshal(get("/api/v1/retained?tenantId=default"), &retainedEnvelope); err != nil {
 
 		t.Fatal(err)
 	}
@@ -359,5 +361,206 @@ func TestManagementAPIObservesLiveMQTTState(t *testing.T) {
 		if response.StatusCode != http.StatusOK {
 			t.Fatalf("readiness status = %d", response.StatusCode)
 		}
+	}
+}
+
+func TestMQTT310RejectionIsObservable(t *testing.T) {
+	mqttListener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer mqttListener.Close()
+
+	metricsRegistry := adaptersmetrics.NewRegistry()
+	routes := routing.NewTable()
+	deliveries, err := deliveryqueue.New(64)
+	if err != nil {
+		t.Fatal(err)
+	}
+	retainedRepository, err := memoryretained.New(100, 1<<20, metricsRegistry)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sessions := sessionstore.New()
+	systemClock := clock.SystemClock{}
+	willBridge := tcpadapter.NewWillBridge()
+	connections, err := connect.New(
+		systemClock,
+		sessions,
+		deliveries,
+		routes,
+		clock.SystemScheduler{},
+		willBridge,
+		connect.WithMetrics(metricsRegistry),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	subscriptions, err := subscribe.New(
+		routes,
+		deliveries,
+		retainedRepository,
+		subscribe.WithMetrics(metricsRegistry),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	publications, err := publish.New(
+		systemClock,
+		routes,
+		deliveries,
+		retainedRepository,
+		publish.WithMetrics(metricsRegistry),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	decoder, err := mqtt.NewDecoder(1 << 20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	encoder, err := mqtt.NewEncoder(1 << 20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tcpServer, err := tcpadapter.NewServer(
+		mqttListener,
+		tcpadapter.Config{
+			Clock:                systemClock,
+			MaxPacketSize:        1 << 20,
+			ConnectTimeout:       time.Second,
+			WriteTimeout:         time.Second,
+			ControlQueueCapacity: 16,
+			Metrics:              metricsRegistry,
+		},
+		decoder,
+		encoder,
+		connections,
+		subscriptions,
+		publications,
+		deliveries,
+		slog.New(slog.NewTextHandler(io.Discard, nil)),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	willBridge.Bind(tcpServer)
+
+	managementState := appmanagement.NewService(
+		appmanagement.ServiceConfig{
+			ClusterID:      "integration-cluster",
+			NodeID:         "integration-node",
+			ReleaseVersion: "test",
+		},
+		sessions,
+		routes,
+		retainedRepository,
+		metricsRegistry,
+	)
+	managementState.SetNodeState("READY", nil)
+	managementServer := httptest.NewServer(managementhttp.NewRouter(
+		managementhttp.ServerConfig{
+			AllowAnonymousMetrics: true,
+		},
+		managementState,
+		managementState,
+		metricsRegistry,
+	))
+	defer managementServer.Close()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	tcpDone := make(chan error, 1)
+	go func() { tcpDone <- tcpServer.Serve(ctx) }()
+	defer func() {
+		cancel()
+		select {
+		case err := <-tcpDone:
+			if err != nil {
+				t.Errorf("TCP server shutdown: %v", err)
+			}
+		case <-time.After(2 * time.Second):
+			t.Error("TCP server did not stop")
+		}
+	}()
+
+	rawConnect := func(protocolName string, level byte, clientID string) []byte {
+		body := make([]byte, 0, 32+len(protocolName)+len(clientID))
+		var length [2]byte
+		binary.BigEndian.PutUint16(length[:], uint16(len(protocolName)))
+		body = append(body, length[:]...)
+		body = append(body, protocolName...)
+		body = append(body, level, 0x02, 0x00, 0x3c)
+		binary.BigEndian.PutUint16(length[:], uint16(len(clientID)))
+		body = append(body, length[:]...)
+		body = append(body, clientID...)
+		return append([]byte{0x10, byte(len(body))}, body...)
+	}
+
+	for _, testCase := range []struct {
+		name         string
+		protocolName string
+		level        byte
+		clientID     string
+	}{
+		{name: "MQIsdp level 3", protocolName: "MQIsdp", level: 3, clientID: "legacy-mqisdp"},
+		{name: "MQTT level 3", protocolName: "MQTT", level: 3, clientID: "legacy-mqtt"},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			connection, err := net.DialTimeout("tcp", mqttListener.Addr().String(), time.Second)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer connection.Close()
+			if _, err := connection.Write(rawConnect(testCase.protocolName, testCase.level, testCase.clientID)); err != nil {
+				t.Fatal(err)
+			}
+			if testCase.protocolName == "MQIsdp" {
+				expectClosed(t, connection)
+				return
+			}
+			packet := readPacket(t, connection, decoder, mqtt.ProtocolV311)
+			connAck, ok := packet.(*mqtt.ConnAck)
+			if !ok || connAck.ReasonCode != 0x01 {
+				t.Fatalf("MQTT level 3 response = %#v, want MQTT 3.1.1 CONNACK 0x01", packet)
+			}
+			expectClosed(t, connection)
+		})
+	}
+
+	client := &http.Client{Timeout: 2 * time.Second}
+	metricsResponse, err := client.Get(managementServer.URL + "/metrics")
+	if err != nil {
+		t.Fatal(err)
+	}
+	metricsBody, err := io.ReadAll(metricsResponse.Body)
+	metricsResponse.Body.Close()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if metricsResponse.StatusCode != http.StatusOK {
+		t.Fatalf("GET /metrics status = %d, body = %s", metricsResponse.StatusCode, metricsBody)
+	}
+	if want := `narumq_mqtt_connect_rejected_total{protocol="3.1.0",reason="unsupported_protocol_version"} 2`; !strings.Contains(string(metricsBody), want) {
+		t.Fatalf("metrics missing MQTT 3.1.0 rejection count: %s", metricsBody)
+	}
+
+	sessionsResponse, err := client.Get(managementServer.URL + "/api/v1/clients")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var sessionsEnvelope struct {
+		Data []json.RawMessage `json:"data"`
+	}
+	if err := json.NewDecoder(sessionsResponse.Body).Decode(&sessionsEnvelope); err != nil {
+		sessionsResponse.Body.Close()
+		t.Fatal(err)
+	}
+	sessionsResponse.Body.Close()
+	if sessionsResponse.StatusCode != http.StatusOK {
+		t.Fatalf("GET /api/v1/clients status = %d", sessionsResponse.StatusCode)
+	}
+	if len(sessionsEnvelope.Data) != 0 {
+		t.Fatalf("unsupported MQTT 3.1.0 CONNECT created sessions: %d", len(sessionsEnvelope.Data))
 	}
 }

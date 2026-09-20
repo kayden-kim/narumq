@@ -63,11 +63,12 @@ MQTT packet 이름, property와 reason code는 OASIS 명칭을 사용한다. 충
 | SPEC-TBD-03 | session·message expiry 상한과 offline queue 초과 정책 | configuration spec | 적용 결과가 protocol 응답과 Metric에 드러나야 한다. |
 | SPEC-TBD-04 | drain rate, LB 전파 대기, timeout, grace period | [ADR-0006](../decisions/ADR-0006-external-rollout-controller.md), deployment spec | Controller 전략은 Proposed이며 수치는 N-1 용량과 최악 종료 시간으로 확정해야 한다. |
 | SPEC-TBD-05 | topic 내부 prefix encoding과 canonicalization 세부 규칙 | tenancy ADR/spec 개정 | 외부 topic과 tenant 격리를 보존해야 한다. |
-| SPEC-TBD-06 | API error code 전체 목록, pagination 기본·최대값 | [Management API v1](../contracts/management-api-v1.md) | OpenAPI 초안은 작성됐다. Pagination 수치와 contract test가 남아 있다. |
 | SPEC-TBD-07 | Metric 이름 전체와 histogram bucket | metrics catalog | label cardinality 제한을 지켜야 한다. |
 | SPEC-TBD-08 | 성능 SLO와 release-gating EMQX version·edition | Phase 0 benchmark record | BP-01 historical OSS comparator는 `5.8.8`로 고정됐지만, release-gating EMQX와 합격 수치는 미확정이다. 동일 조건에서 반복 측정해야 한다. |
 | SPEC-TBD-09 | backup RPO/RTO와 보존 기간 | disaster recovery spec | snapshot 원자성과 checksum 검증을 포함해야 한다. |
 | SPEC-TBD-10 | 지원 client SDK와 최소 version | [MQTT client compatibility v1](../contracts/mqtt-client-compatibility-v1.md) | Profile은 작성됐다. SDK inventory와 자동 호환 시험이 남아 있다. |
+
+Management API v1 query profile은 미결정 항목이 아니다. 현재 active contract와 OpenAPI는 [`docs/contracts/management-api-v1.md`](../contracts/management-api-v1.md), [`docs/contracts/management-api-v1.openapi.json`](../contracts/management-api-v1.openapi.json)과 [`tests/contracts/management-api-v1`](../../tests/contracts/management-api-v1)에서 관리한다. Mutation·OIDC·rate limiting은 deferred scope다.
 
 미결정 항목 때문에 규범 동작을 시험할 수 없으면 해당 release gate는 열린 상태로 남는다.
 

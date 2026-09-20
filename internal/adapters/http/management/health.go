@@ -45,6 +45,10 @@ func (h *HealthHandler) Live(w http.ResponseWriter, r *http.Request) {
 		WriteError(w, r, http.StatusMethodNotAllowed, "method_not_allowed", "method not allowed", false, nil)
 		return
 	}
+	if _, err := newQueryParser(r); err != nil {
+		writeInvalidRequest(w, r, err)
+		return
+	}
 	status, reason := h.checker.CheckLiveness(r.Context())
 	h.respondHealth(w, r, status, reason)
 }
@@ -53,6 +57,10 @@ func (h *HealthHandler) Live(w http.ResponseWriter, r *http.Request) {
 func (h *HealthHandler) Ready(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		WriteError(w, r, http.StatusMethodNotAllowed, "method_not_allowed", "method not allowed", false, nil)
+		return
+	}
+	if _, err := newQueryParser(r); err != nil {
+		writeInvalidRequest(w, r, err)
 		return
 	}
 	status, reason := h.checker.CheckReadiness(r.Context())
@@ -65,6 +73,10 @@ func (h *HealthHandler) Startup(w http.ResponseWriter, r *http.Request) {
 		WriteError(w, r, http.StatusMethodNotAllowed, "method_not_allowed", "method not allowed", false, nil)
 		return
 	}
+	if _, err := newQueryParser(r); err != nil {
+		writeInvalidRequest(w, r, err)
+		return
+	}
 	status, reason := h.checker.CheckStartup(r.Context())
 	h.respondHealth(w, r, status, reason)
 }
@@ -73,6 +85,10 @@ func (h *HealthHandler) Startup(w http.ResponseWriter, r *http.Request) {
 func (h *HealthHandler) Drain(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		WriteError(w, r, http.StatusMethodNotAllowed, "method_not_allowed", "method not allowed", false, nil)
+		return
+	}
+	if _, err := newQueryParser(r); err != nil {
+		writeInvalidRequest(w, r, err)
 		return
 	}
 	status, reason := h.checker.CheckDrain(r.Context())

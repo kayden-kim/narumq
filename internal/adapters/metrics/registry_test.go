@@ -125,6 +125,19 @@ func TestRegistry_OperationsAndRendering(t *testing.T) {
 	}
 }
 
+func TestRegistryRendersMQTT310UnsupportedVersionRejection(t *testing.T) {
+	reg := NewRegistry()
+	reg.ConnectRejected(ports.ProtocolMQTT310, ports.ConnectRejectReasonUnsupportedProtocolVersion)
+	reg.ConnectRejected("other", ports.ConnectRejectReasonUnsupportedProtocolVersion)
+	reg.ConnectRejected(ports.ProtocolMQTT310, "other")
+
+	output := string(reg.Render(true))
+	line := `narumq_mqtt_connect_rejected_total{protocol="3.1.0",reason="unsupported_protocol_version"} 1`
+	if strings.Count(output, line) != 1 {
+		t.Fatalf("expected one MQTT 3.1.0 rejection counter, got %d:\n%s", strings.Count(output, line), output)
+	}
+}
+
 func TestRegistry_Concurrency(t *testing.T) {
 	reg := NewRegistry()
 	var wg sync.WaitGroup

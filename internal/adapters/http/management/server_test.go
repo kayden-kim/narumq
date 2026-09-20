@@ -307,6 +307,12 @@ func TestManagementV1Endpoints(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("expected 200 for tenants, got %d", rec.Code)
 	}
+	req = httptest.NewRequest(http.MethodGet, "/not-found", nil)
+	rec = httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("unknown management path status = %d, want 404", rec.Code)
+	}
 }
 
 func TestAuthAndRBAC(t *testing.T) {
@@ -432,11 +438,33 @@ func TestManagementCollectionEndpointsAndRoleContext(t *testing.T) {
 	for _, path := range []string{
 		"/api/v1/nodes?state=invalid",
 		"/api/v1/nodes?limit=not-a-number",
+		"/api/v1/nodes?unknown=value",
 		"/api/v1/clients?limit=0",
+		"/api/v1/clients?limit=1&limit=2",
 		"/api/v1/clients?protocol=invalid",
-		"/api/v1/subscriptions?limit=0",
-		"/api/v1/retained?limit=-1",
+		"/api/v1/subscriptions",
+		"/api/v1/subscriptions?limit=0&tenantId=tenant-a",
+		"/api/v1/retained",
+		"/api/v1/retained?limit=-1&tenantId=tenant-a",
 		"/api/v1/tenants?limit=0",
+		"/api/v1/cluster?unknown=value",
+		"/api/v1/nodes/node-1?unknown=value",
+		"/api/v1/clients/tenant-a/client-a?unknown=value",
+		"/api/v1/subscriptions?tenantId=",
+		"/api/v1/retained?tenantId=",
+		"/api/v1/nodes?limit=",
+		"/api/v1/nodes?cursor=",
+		"/api/v1/nodes?state=",
+		"/api/v1/clients?cursor=",
+		"/api/v1/clients?tenantId=",
+		"/api/v1/clients?clientIdPrefix=",
+		"/api/v1/clients?nodeId=",
+		"/api/v1/clients?protocol=",
+		"/api/v1/subscriptions?unknown=value",
+		"/api/v1/subscriptions?tenantId=tenant-a&clientId=",
+		"/api/v1/retained?unknown=value",
+		"/api/v1/retained?tenantId=tenant-a&topicPrefix=",
+		"/api/v1/tenants?unknown=value",
 	} {
 		req := httptest.NewRequest(http.MethodGet, path, nil)
 		rec := httptest.NewRecorder()
@@ -444,8 +472,28 @@ func TestManagementCollectionEndpointsAndRoleContext(t *testing.T) {
 		if rec.Code != http.StatusBadRequest {
 			t.Fatalf("GET %s returned %d, want 400", path, rec.Code)
 		}
+		var response ErrorResponse
+		if err := json.Unmarshal(rec.Body.Bytes(), &response); err != nil {
+			t.Fatalf("GET %s returned invalid error response: %v", path, err)
+		}
+		if response.Error.Code != "invalid_request" {
+			t.Fatalf("GET %s error code = %q, want invalid_request", path, response.Error.Code)
+		}
 	}
 
+	overLimitRequest := httptest.NewRequest(http.MethodGet, "/api/v1/clients?limit=1001", nil)
+	overLimitRecorder := httptest.NewRecorder()
+	handler.ServeHTTP(overLimitRecorder, overLimitRequest)
+	if overLimitRecorder.Code != http.StatusBadRequest {
+		t.Fatalf("over-limit status = %d, want 400", overLimitRecorder.Code)
+	}
+	var pageSizeResponse ErrorResponse
+	if err := json.Unmarshal(overLimitRecorder.Body.Bytes(), &pageSizeResponse); err != nil {
+		t.Fatalf("over-limit returned invalid error response: %v", err)
+	}
+	if pageSizeResponse.Error.Code != "invalid_request" {
+		t.Fatalf("over-limit error code = %q, want invalid_request", pageSizeResponse.Error.Code)
+	}
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/clients/tenant-a/missing", nil)
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
@@ -495,7 +543,7 @@ func TestManagementMethodAndEnvelopeContracts(t *testing.T) {
 		drainStatus: ports.HealthStatusUp,
 	}
 	health := NewHealthHandler(checker)
-	for _, testCase := range []struct {
+	healthHandlers := []struct {
 		name string
 		fn   http.HandlerFunc
 	}{
@@ -503,12 +551,21 @@ func TestManagementMethodAndEnvelopeContracts(t *testing.T) {
 		{name: "ready", fn: health.Ready},
 		{name: "startup", fn: health.Startup},
 		{name: "drain", fn: health.Drain},
-	} {
-		t.Run("health-"+testCase.name, func(t *testing.T) {
+	}
+	for _, testCase := range healthHandlers {
+		t.Run("health-"+testCase.name+"-method", func(t *testing.T) {
 			rec := httptest.NewRecorder()
 			testCase.fn(rec, request.Clone(request.Context()))
 			if rec.Code != http.StatusMethodNotAllowed {
 				t.Fatalf("status = %d, want 405", rec.Code)
+			}
+		})
+		t.Run("health-"+testCase.name+"-query", func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodGet, "/?unknown=value", nil)
+			rec := httptest.NewRecorder()
+			testCase.fn(rec, req)
+			if rec.Code != http.StatusBadRequest {
+				t.Fatalf("status = %d, want 400", rec.Code)
 			}
 		})
 	}
@@ -518,6 +575,13 @@ func TestManagementMethodAndEnvelopeContracts(t *testing.T) {
 	metrics.ServeHTTP(rec, request.Clone(request.Context()))
 	if rec.Code != http.StatusMethodNotAllowed {
 		t.Fatalf("metrics status = %d, want 405", rec.Code)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/?unknown=value", nil)
+	rec = httptest.NewRecorder()
+	metrics.ServeHTTP(rec, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("metrics unknown query status = %d, want 400", rec.Code)
 	}
 
 	getRequest := httptest.NewRequest(http.MethodGet, "/", nil)
@@ -649,8 +713,8 @@ func TestManagementProviderErrorsBecomeInternalErrors(t *testing.T) {
 	}{
 		{name: "nodes", path: "/api/v1/nodes", provider: &mockStateProvider{nodesErr: errors.New("nodes")}},
 		{name: "clients", path: "/api/v1/clients", provider: &mockStateProvider{clientsErr: errors.New("clients")}},
-		{name: "subscriptions", path: "/api/v1/subscriptions", provider: &mockStateProvider{subsErr: errors.New("subscriptions")}},
-		{name: "retained", path: "/api/v1/retained", provider: &mockStateProvider{retainedErr: errors.New("retained")}},
+		{name: "subscriptions", path: "/api/v1/subscriptions?tenantId=tenant-a", provider: &mockStateProvider{subsErr: errors.New("subscriptions")}},
+		{name: "retained", path: "/api/v1/retained?tenantId=tenant-a", provider: &mockStateProvider{retainedErr: errors.New("retained")}},
 		{name: "tenants", path: "/api/v1/tenants", provider: &mockStateProvider{tenantsErr: errors.New("tenants")}},
 	} {
 		t.Run(testCase.name, func(t *testing.T) {
@@ -668,5 +732,20 @@ func TestManagementProviderErrorsBecomeInternalErrors(t *testing.T) {
 	direct.ListClients(rec, httptest.NewRequest(http.MethodGet, "/", nil))
 	if rec.Code != http.StatusInternalServerError {
 		t.Fatalf("direct client error status = %d, want 500", rec.Code)
+	}
+}
+
+func TestNewServerAppliesDefaults(t *testing.T) {
+	server := NewServer(
+		ServerConfig{},
+		&mockStateProvider{},
+		&mockHealthChecker{liveStatus: ports.HealthStatusUp},
+		nil,
+	)
+	if server.Addr != ":8080" {
+		t.Fatalf("default management address = %q, want :8080", server.Addr)
+	}
+	if server.ReadTimeout != 10*time.Second || server.WriteTimeout != 10*time.Second {
+		t.Fatalf("default management timeouts = (%s, %s), want 10s/10s", server.ReadTimeout, server.WriteTimeout)
 	}
 }

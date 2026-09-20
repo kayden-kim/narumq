@@ -216,6 +216,12 @@ func TestService_ClientsAndPagination(t *testing.T) {
 	if clientA.ClientID != "client-a" || !clientA.Connected {
 		t.Errorf("unexpected client details: %+v", clientA)
 	}
+	if clientA.TenantID != "default" {
+		t.Errorf("expected default tenant for unbound session, got %q", clientA.TenantID)
+	}
+	if _, err := svc.GetClient(ctx, "tenant-a", "client-a"); err != ErrClientNotFound {
+		t.Fatalf("cross-tenant GetClient error = %v, want %v", err, ErrClientNotFound)
+	}
 
 	_, err = svc.GetClient(ctx, "default", "unknown-client")
 	if err != ErrClientNotFound {
@@ -245,6 +251,13 @@ func TestService_SubscriptionsAndRetained(t *testing.T) {
 	if len(subs) != 2 || page.HasMore {
 		t.Fatalf("expected 2 subscriptions, got %d", len(subs))
 	}
+	filteredSubs, _, err := svc.ListSubscriptions(ctx, ports.SubscriptionFilter{TenantID: "default"})
+	if err != nil {
+		t.Fatalf("ListSubscriptions default tenant filter failed: %v", err)
+	}
+	if len(filteredSubs) != 2 {
+		t.Fatalf("expected unbound subscriptions under default tenant, got %d", len(filteredSubs))
+	}
 
 	// Add retained message
 	now := time.Now().UTC()
@@ -267,6 +280,13 @@ func TestService_SubscriptionsAndRetained(t *testing.T) {
 	}
 	if retainedList[0].Topic != "sensors/temperature" || retainedList[0].PayloadBytes != 4 {
 		t.Errorf("unexpected retained item: %+v", retainedList[0])
+	}
+	filteredRetained, _, err := svc.ListRetained(ctx, ports.RetainedFilter{TenantID: "default"})
+	if err != nil {
+		t.Fatalf("ListRetained default tenant filter failed: %v", err)
+	}
+	if len(filteredRetained) != 1 {
+		t.Fatalf("expected retained message under default tenant, got %d", len(filteredRetained))
 	}
 
 	tenants, pageT, err := svc.ListTenants(ctx, ports.TenantFilter{Limit: 1})

@@ -2,9 +2,9 @@
 
 | 항목 | 내용 |
 | --- | --- |
-| 상태 | Proposed |
+| 상태 | Accepted |
 | 제안일 | 2026-08-16 |
-| 결정일 | 미정 |
+| 결정일 | 2026-09-20 |
 | 결정자 | 미정 |
 | 관련 요구사항 | API-02, API-05, API-08~API-09, SEC-10~SEC-11 |
 | 관련 스펙 | [Management API와 observability](../specs/management-api-and-observability.md) |
@@ -14,16 +14,26 @@
 
 ## 1. 결정
 
-Management HTTP API의 기준 artifact로 OpenAPI Specification 3.1.2 JSON 문서를 사용한다.
+Management HTTP API의 기준 artifact로 OpenAPI Specification 3.1.2 JSON 문서를
+사용한다. `docs/contracts/management-api-v1.openapi.json`은 현재 구현된 Phase 1
+query profile의 normative contract다.
 
 - Entry document는 `docs/contracts/management-api-v1.openapi.json`이다.
 - API major version은 path `/api/v1`에 포함한다.
 - OpenAPI `info.version`은 contract revision을 나타낸다.
 - Schema dialect는 JSON Schema Draft 2020-12를 사용한다.
-- Server handler, client, 문서와 contract test는 이 artifact에서 생성하거나 검증한다.
-- Markdown contract는 ownership, compatibility와 변경 정책만 설명하고 schema를 복제하지 않는다.
+- Phase 1은 health probe, metrics scrape와 cluster·node·client·subscription·retained·tenant
+  조회만 제공한다. Router가 제공하지 않는 mutation endpoint는 이 artifact에 광고하지 않는다.
+- Authentication scheme은 configured opaque Bearer token과 `X-API-Key` API key다.
+  OIDC issuer, JWT claim semantics와 token shape는 이 contract가 약속하지 않는다.
+- Handler, client, 문서와 contract test는 이 artifact에서 생성하거나 검증한다.
+- Markdown contract는 ownership, compatibility와 변경 정책을 설명하고 schema를 복제하지 않는다.
+- Tenant mutation, quota·policy mutation, drain·disconnect·redirect·retained delete,
+  API rate limiting, idempotency, audit sink과 dashboard는 후속 범위다. Future catalog에는
+  남길 수 있지만 Phase 1 지원으로 표시하지 않는다.
 
-HTTP API의 breaking change는 `/api/v2`와 새 contract로 제공한다. 같은 `/api/v1` 안에서는 승인된 backward-compatible 변경만 허용한다.
+HTTP API의 breaking change는 `/api/v2`와 새 contract로 제공한다. 같은 `/api/v1` 안에서는
+승인된 backward-compatible 변경만 허용한다.
 
 ## 2. 배경
 

@@ -102,11 +102,12 @@ flowchart TD
 | --- | --- |
 | Protocol Name `MQTT`, level 4 | MQTT 3.1.1로 처리한다. |
 | Protocol Name `MQTT`, level 5 | MQTT 5.0으로 처리한다. |
-| Protocol Name `MQIsdp` 또는 level 3 | MQTT 3.1.0 비지원으로 거절한다. session을 만들지 않는다. |
+| Protocol Name `MQIsdp`, level 3 | MQTT 3.1.0 wire variant로 인식하지만 비지원으로 거절한다. 응답 없이 연결을 닫고 session을 만들지 않는다. |
+| Protocol Name `MQTT`, level 3 | MQTT 3.1.0 wire variant로 인식하지만 MQTT 3.1.1 형식의 CONNACK `0x01`을 반환한 뒤 연결을 닫고 session을 만들지 않는다. |
 | 지원하지 않는 level | MQTT 3.1.1 형식으로 판정 가능한 경우 CONNACK `0x01`을 반환하고 연결을 닫는다. MQTT 5 형식으로 판정 가능한 경우 CONNACK `0x84`를 반환하고 연결을 닫는다. |
 | packet 구조상 version을 안전하게 판정할 수 없음 | 응답 없이 연결을 닫을 수 있다. malformed packet으로 기록한다. |
 
-MQTT 3.1.0 거절은 `reason="unsupported_protocol_version"`, `protocol="3.1.0"`으로 집계해야 한다. 원문 credential은 로그에 남기지 않는다.
+두 MQTT 3.1.0 wire variant의 거절은 `reason="unsupported_protocol_version"`, `protocol="3.1.0"`으로 같은 Metric에 집계해야 한다. 원문 credential은 로그에 남기지 않는다. `MQIsdp`와 `MQTT`의 Protocol Name 차이는 응답 정책만 바꾼다.
 
 ### 2.2 Session 선택
 
@@ -234,7 +235,8 @@ persistent session으로의 delivery 결과는 `ErrUnavailable`이다.
 - 현재 Phase 1 matrix는 [`tests/conformance/mqtt-compliance-v1.json`](../../tests/conformance/mqtt-compliance-v1.json)이며, 48개 statement와 MQTT/TEST requirement 및 test function을 함께 기록한다.
 - `go run ./tools/verify traceability`가 matrix → source와 source → matrix를 모두 검사한다. matrix에만 있거나 source에만 있는 statement, 또는 requirement union이 다른 연결은 합격으로 처리하지 않는다.
 - QoS별 정상, DUP, reconnect, owner crash와 Message Expiry 시나리오를 검증한다.
-- `MQIsdp`, level 3과 비정상 version 조합이 session을 만들지 않는지 검증한다.
+- `MQIsdp` level 3은 응답 없이 닫고, `MQTT` level 3은 MQTT 3.1.1 CONNACK `0x01` 뒤 닫으며, 두 경우 모두 session을 만들지 않아야 한다.
+  이 동작과 Metric 집계는 `tests/integration/management_api_test.go::TestMQTT310RejectionIsObservable`에서 두 wire variant를 함께 검증한다.
 - wildcard 경계, shared subscription failover와 MQTT 5 subscription option 조합을 검증한다.
 - parser fuzzing, slowloris, packet·queue 상한 시험에서 memory와 goroutine leak이 없어야 한다.
 - 두 protocol version client가 같은 외부 topic에서 ACL 범위 안의 메시지를 상호 전달해야 한다.

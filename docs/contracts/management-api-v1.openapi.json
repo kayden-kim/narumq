@@ -4,12 +4,12 @@
   "info": {
     "title": "NaruMQ Management API",
     "version": "1.0.0",
-    "description": "NaruMQ cluster, tenant, client와 drain을 관리하는 v1 contract다."
+    "description": "Phase 1 query-only management and observability contract. Mutation, OIDC/JWT claim semantics, rate limiting, idempotency, audit and dashboard APIs are deferred."
   },
   "servers": [
     {
       "url": "https://narumq.example.invalid",
-      "description": "배포별 management endpoint로 대체한다."
+      "description": "Deployment-specific management endpoint."
     }
   ],
   "security": [
@@ -31,9 +31,14 @@
       "get": {
         "tags": ["Health"],
         "operationId": "getLiveness",
+        "summary": "Read liveness status",
+        "description": "Anonymous access is controlled by the listener probe policy.",
         "security": [],
         "responses": {
           "200": { "$ref": "#/components/responses/HealthResponse" },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "403": { "$ref": "#/components/responses/Forbidden" },
+          "405": { "$ref": "#/components/responses/MethodNotAllowed" },
           "503": { "$ref": "#/components/responses/Unavailable" }
         }
       }
@@ -42,9 +47,14 @@
       "get": {
         "tags": ["Health"],
         "operationId": "getReadiness",
+        "summary": "Read readiness status",
+        "description": "Anonymous access is controlled by the listener probe policy.",
         "security": [],
         "responses": {
           "200": { "$ref": "#/components/responses/HealthResponse" },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "403": { "$ref": "#/components/responses/Forbidden" },
+          "405": { "$ref": "#/components/responses/MethodNotAllowed" },
           "503": { "$ref": "#/components/responses/Unavailable" }
         }
       }
@@ -53,9 +63,14 @@
       "get": {
         "tags": ["Health"],
         "operationId": "getStartup",
+        "summary": "Read startup status",
+        "description": "Anonymous access is controlled by the listener probe policy.",
         "security": [],
         "responses": {
           "200": { "$ref": "#/components/responses/HealthResponse" },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "403": { "$ref": "#/components/responses/Forbidden" },
+          "405": { "$ref": "#/components/responses/MethodNotAllowed" },
           "503": { "$ref": "#/components/responses/Unavailable" }
         }
       }
@@ -64,10 +79,29 @@
       "get": {
         "tags": ["Health"],
         "operationId": "getDrainCompletion",
+        "summary": "Read drain completion status",
+        "description": "Anonymous access is controlled by the listener probe policy.",
         "security": [],
         "responses": {
           "200": { "$ref": "#/components/responses/HealthResponse" },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "403": { "$ref": "#/components/responses/Forbidden" },
+          "405": { "$ref": "#/components/responses/MethodNotAllowed" },
           "503": { "$ref": "#/components/responses/Unavailable" }
+        }
+      }
+    },
+    "/metrics": {
+      "get": {
+        "tags": ["Metrics"],
+        "operationId": "getMetrics",
+        "summary": "Scrape broker metrics",
+        "description": "Returns Prometheus text by default and OpenMetrics text when requested. Anonymous access is controlled by listener policy.",
+        "responses": {
+          "200": { "$ref": "#/components/responses/MetricsResponse" },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "403": { "$ref": "#/components/responses/Forbidden" },
+          "405": { "$ref": "#/components/responses/MethodNotAllowed" }
         }
       }
     },
@@ -75,15 +109,12 @@
       "get": {
         "tags": ["Cluster"],
         "operationId": "getCluster",
+        "summary": "Read cluster summary",
         "responses": {
-          "200": {
-            "description": "Cluster summary",
-            "headers": { "X-Request-Id": { "$ref": "#/components/headers/XRequestId" } },
-            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ClusterEnvelope" } } }
-          },
+          "200": { "$ref": "#/components/responses/ClusterResponse" },
           "401": { "$ref": "#/components/responses/Unauthorized" },
           "403": { "$ref": "#/components/responses/Forbidden" },
-          "503": { "$ref": "#/components/responses/Unavailable" }
+          "405": { "$ref": "#/components/responses/MethodNotAllowed" }
         }
       }
     },
@@ -91,6 +122,7 @@
       "get": {
         "tags": ["Nodes"],
         "operationId": "listNodes",
+        "summary": "List cluster nodes",
         "parameters": [
           { "$ref": "#/components/parameters/Cursor" },
           { "$ref": "#/components/parameters/Limit" },
@@ -98,18 +130,16 @@
             "name": "state",
             "in": "query",
             "required": false,
+            "example": "READY",
             "schema": { "$ref": "#/components/schemas/NodeState" }
           }
         ],
         "responses": {
-          "200": {
-            "description": "Node list",
-            "headers": { "X-Request-Id": { "$ref": "#/components/headers/XRequestId" } },
-            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/NodeListEnvelope" } } }
-          },
+          "200": { "$ref": "#/components/responses/NodeListResponse" },
           "400": { "$ref": "#/components/responses/BadRequest" },
           "401": { "$ref": "#/components/responses/Unauthorized" },
-          "403": { "$ref": "#/components/responses/Forbidden" }
+          "403": { "$ref": "#/components/responses/Forbidden" },
+          "405": { "$ref": "#/components/responses/MethodNotAllowed" }
         }
       }
     },
@@ -118,189 +148,14 @@
       "get": {
         "tags": ["Nodes"],
         "operationId": "getNode",
+        "summary": "Read one node",
         "responses": {
-          "200": {
-            "description": "Node detail",
-            "headers": { "X-Request-Id": { "$ref": "#/components/headers/XRequestId" } },
-            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/NodeEnvelope" } } }
-          },
-          "401": { "$ref": "#/components/responses/Unauthorized" },
-          "403": { "$ref": "#/components/responses/Forbidden" },
-          "404": { "$ref": "#/components/responses/NotFound" }
-        }
-      }
-    },
-    "/api/v1/nodes/{nodeId}/drain": {
-      "parameters": [{ "$ref": "#/components/parameters/NodeId" }],
-      "post": {
-        "tags": ["Nodes"],
-        "operationId": "startNodeDrain",
-        "parameters": [{ "$ref": "#/components/parameters/RequiredIdempotencyKey" }],
-        "requestBody": {
-          "required": true,
-          "content": { "application/json": { "schema": { "$ref": "#/components/schemas/DrainStartRequest" } } }
-        },
-        "responses": {
-          "202": {
-            "description": "Drain accepted or existing operation returned",
-            "headers": { "X-Request-Id": { "$ref": "#/components/headers/XRequestId" } },
-            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/DrainEnvelope" } } }
-          },
+          "200": { "$ref": "#/components/responses/NodeResponse" },
           "400": { "$ref": "#/components/responses/BadRequest" },
           "401": { "$ref": "#/components/responses/Unauthorized" },
           "403": { "$ref": "#/components/responses/Forbidden" },
           "404": { "$ref": "#/components/responses/NotFound" },
-          "409": { "$ref": "#/components/responses/Conflict" },
-          "503": { "$ref": "#/components/responses/Unavailable" }
-        }
-      },
-      "get": {
-        "tags": ["Nodes"],
-        "operationId": "getNodeDrain",
-        "responses": {
-          "200": {
-            "description": "Drain operation",
-            "headers": { "X-Request-Id": { "$ref": "#/components/headers/XRequestId" } },
-            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/DrainEnvelope" } } }
-          },
-          "401": { "$ref": "#/components/responses/Unauthorized" },
-          "403": { "$ref": "#/components/responses/Forbidden" },
-          "404": { "$ref": "#/components/responses/NotFound" }
-        }
-      },
-      "delete": {
-        "tags": ["Nodes"],
-        "operationId": "cancelNodeDrain",
-        "parameters": [{ "$ref": "#/components/parameters/OptionalIdempotencyKey" }],
-        "responses": {
-          "200": {
-            "description": "Drain cancelled",
-            "headers": { "X-Request-Id": { "$ref": "#/components/headers/XRequestId" } },
-            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/DrainEnvelope" } } }
-          },
-          "401": { "$ref": "#/components/responses/Unauthorized" },
-          "403": { "$ref": "#/components/responses/Forbidden" },
-          "404": { "$ref": "#/components/responses/NotFound" },
-          "409": { "$ref": "#/components/responses/Conflict" }
-        }
-      }
-    },
-    "/api/v1/tenants": {
-      "get": {
-        "tags": ["Tenants"],
-        "operationId": "listTenants",
-        "parameters": [
-          { "$ref": "#/components/parameters/Cursor" },
-          { "$ref": "#/components/parameters/Limit" }
-        ],
-        "responses": {
-          "200": {
-            "description": "Tenant list",
-            "headers": { "X-Request-Id": { "$ref": "#/components/headers/XRequestId" } },
-            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/TenantListEnvelope" } } }
-          },
-          "400": { "$ref": "#/components/responses/BadRequest" },
-          "401": { "$ref": "#/components/responses/Unauthorized" },
-          "403": { "$ref": "#/components/responses/Forbidden" }
-        }
-      },
-      "post": {
-        "tags": ["Tenants"],
-        "operationId": "createTenant",
-        "parameters": [{ "$ref": "#/components/parameters/OptionalIdempotencyKey" }],
-        "requestBody": {
-          "required": true,
-          "content": { "application/json": { "schema": { "$ref": "#/components/schemas/TenantCreateRequest" } } }
-        },
-        "responses": {
-          "201": {
-            "description": "Tenant created",
-            "headers": { "X-Request-Id": { "$ref": "#/components/headers/XRequestId" } },
-            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/TenantEnvelope" } } }
-          },
-          "400": { "$ref": "#/components/responses/BadRequest" },
-          "401": { "$ref": "#/components/responses/Unauthorized" },
-          "403": { "$ref": "#/components/responses/Forbidden" },
-          "409": { "$ref": "#/components/responses/Conflict" },
-          "422": { "$ref": "#/components/responses/Unprocessable" }
-        }
-      }
-    },
-    "/api/v1/tenants/{tenantId}/quotas": {
-      "parameters": [{ "$ref": "#/components/parameters/TenantId" }],
-      "get": {
-        "tags": ["Tenants"],
-        "operationId": "getTenantQuotas",
-        "responses": {
-          "200": {
-            "description": "Tenant quotas",
-            "headers": { "X-Request-Id": { "$ref": "#/components/headers/XRequestId" } },
-            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/QuotaEnvelope" } } }
-          },
-          "401": { "$ref": "#/components/responses/Unauthorized" },
-          "403": { "$ref": "#/components/responses/Forbidden" },
-          "404": { "$ref": "#/components/responses/NotFound" }
-        }
-      },
-      "put": {
-        "tags": ["Tenants"],
-        "operationId": "replaceTenantQuotas",
-        "parameters": [{ "$ref": "#/components/parameters/OptionalIdempotencyKey" }],
-        "requestBody": {
-          "required": true,
-          "content": { "application/json": { "schema": { "$ref": "#/components/schemas/QuotaConfig" } } }
-        },
-        "responses": {
-          "200": {
-            "description": "Tenant quotas replaced",
-            "headers": { "X-Request-Id": { "$ref": "#/components/headers/XRequestId" } },
-            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/QuotaEnvelope" } } }
-          },
-          "400": { "$ref": "#/components/responses/BadRequest" },
-          "401": { "$ref": "#/components/responses/Unauthorized" },
-          "403": { "$ref": "#/components/responses/Forbidden" },
-          "404": { "$ref": "#/components/responses/NotFound" },
-          "409": { "$ref": "#/components/responses/Conflict" },
-          "422": { "$ref": "#/components/responses/Unprocessable" }
-        }
-      }
-    },
-    "/api/v1/tenants/{tenantId}/policies": {
-      "parameters": [{ "$ref": "#/components/parameters/TenantId" }],
-      "get": {
-        "tags": ["Tenants"],
-        "operationId": "getTenantPolicies",
-        "responses": {
-          "200": {
-            "description": "Tenant policies",
-            "headers": { "X-Request-Id": { "$ref": "#/components/headers/XRequestId" } },
-            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/PolicyEnvelope" } } }
-          },
-          "401": { "$ref": "#/components/responses/Unauthorized" },
-          "403": { "$ref": "#/components/responses/Forbidden" },
-          "404": { "$ref": "#/components/responses/NotFound" }
-        }
-      },
-      "put": {
-        "tags": ["Tenants"],
-        "operationId": "replaceTenantPolicies",
-        "parameters": [{ "$ref": "#/components/parameters/OptionalIdempotencyKey" }],
-        "requestBody": {
-          "required": true,
-          "content": { "application/json": { "schema": { "$ref": "#/components/schemas/PolicySet" } } }
-        },
-        "responses": {
-          "200": {
-            "description": "Tenant policies replaced",
-            "headers": { "X-Request-Id": { "$ref": "#/components/headers/XRequestId" } },
-            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/PolicyEnvelope" } } }
-          },
-          "400": { "$ref": "#/components/responses/BadRequest" },
-          "401": { "$ref": "#/components/responses/Unauthorized" },
-          "403": { "$ref": "#/components/responses/Forbidden" },
-          "404": { "$ref": "#/components/responses/NotFound" },
-          "409": { "$ref": "#/components/responses/Conflict" },
-          "422": { "$ref": "#/components/responses/Unprocessable" }
+          "405": { "$ref": "#/components/responses/MethodNotAllowed" }
         }
       }
     },
@@ -308,23 +163,45 @@
       "get": {
         "tags": ["Clients"],
         "operationId": "listClients",
+        "summary": "List client sessions",
         "parameters": [
           { "$ref": "#/components/parameters/Cursor" },
           { "$ref": "#/components/parameters/Limit" },
-          { "name": "tenantId", "in": "query", "required": false, "schema": { "$ref": "#/components/schemas/OpaqueId" } },
-          { "name": "clientIdPrefix", "in": "query", "required": false, "schema": { "type": "string", "minLength": 1, "maxLength": 256 } },
-          { "name": "nodeId", "in": "query", "required": false, "schema": { "$ref": "#/components/schemas/OpaqueId" } },
-          { "name": "protocol", "in": "query", "required": false, "schema": { "$ref": "#/components/schemas/MqttProtocol" } }
+          {
+            "name": "tenantId",
+            "in": "query",
+            "required": false,
+            "example": "default",
+            "schema": { "$ref": "#/components/schemas/OpaqueId" }
+          },
+          {
+            "name": "clientIdPrefix",
+            "in": "query",
+            "required": false,
+            "example": "device-",
+            "schema": { "type": "string", "minLength": 1, "maxLength": 256 }
+          },
+          {
+            "name": "nodeId",
+            "in": "query",
+            "required": false,
+            "example": "node-1",
+            "schema": { "$ref": "#/components/schemas/OpaqueId" }
+          },
+          {
+            "name": "protocol",
+            "in": "query",
+            "required": false,
+            "example": "MQTT_5_0",
+            "schema": { "$ref": "#/components/schemas/MqttProtocol" }
+          }
         ],
         "responses": {
-          "200": {
-            "description": "Client session list",
-            "headers": { "X-Request-Id": { "$ref": "#/components/headers/XRequestId" } },
-            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ClientListEnvelope" } } }
-          },
+          "200": { "$ref": "#/components/responses/ClientListResponse" },
           "400": { "$ref": "#/components/responses/BadRequest" },
           "401": { "$ref": "#/components/responses/Unauthorized" },
-          "403": { "$ref": "#/components/responses/Forbidden" }
+          "403": { "$ref": "#/components/responses/Forbidden" },
+          "405": { "$ref": "#/components/responses/MethodNotAllowed" }
         }
       }
     },
@@ -336,57 +213,14 @@
       "get": {
         "tags": ["Clients"],
         "operationId": "getClientSession",
+        "summary": "Read one client session",
         "responses": {
-          "200": {
-            "description": "Client session detail",
-            "headers": { "X-Request-Id": { "$ref": "#/components/headers/XRequestId" } },
-            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ClientEnvelope" } } }
-          },
-          "401": { "$ref": "#/components/responses/Unauthorized" },
-          "403": { "$ref": "#/components/responses/Forbidden" },
-          "404": { "$ref": "#/components/responses/NotFound" }
-        }
-      },
-      "delete": {
-        "tags": ["Clients"],
-        "operationId": "disconnectClient",
-        "parameters": [{ "$ref": "#/components/parameters/OptionalIdempotencyKey" }],
-        "responses": {
-          "204": {
-            "description": "Disconnect accepted",
-            "headers": { "X-Request-Id": { "$ref": "#/components/headers/XRequestId" } }
-          },
-          "401": { "$ref": "#/components/responses/Unauthorized" },
-          "403": { "$ref": "#/components/responses/Forbidden" },
-          "404": { "$ref": "#/components/responses/NotFound" },
-          "409": { "$ref": "#/components/responses/Conflict" }
-        }
-      }
-    },
-    "/api/v1/clients/{tenantId}/{clientId}/redirect": {
-      "parameters": [
-        { "$ref": "#/components/parameters/TenantId" },
-        { "$ref": "#/components/parameters/ClientId" }
-      ],
-      "post": {
-        "tags": ["Clients"],
-        "operationId": "redirectClient",
-        "parameters": [{ "$ref": "#/components/parameters/OptionalIdempotencyKey" }],
-        "requestBody": {
-          "required": true,
-          "content": { "application/json": { "schema": { "$ref": "#/components/schemas/RedirectRequest" } } }
-        },
-        "responses": {
-          "202": {
-            "description": "Redirect accepted",
-            "headers": { "X-Request-Id": { "$ref": "#/components/headers/XRequestId" } },
-            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ClientEnvelope" } } }
-          },
+          "200": { "$ref": "#/components/responses/ClientResponse" },
           "400": { "$ref": "#/components/responses/BadRequest" },
           "401": { "$ref": "#/components/responses/Unauthorized" },
           "403": { "$ref": "#/components/responses/Forbidden" },
           "404": { "$ref": "#/components/responses/NotFound" },
-          "409": { "$ref": "#/components/responses/Conflict" }
+          "405": { "$ref": "#/components/responses/MethodNotAllowed" }
         }
       }
     },
@@ -394,21 +228,31 @@
       "get": {
         "tags": ["Subscriptions"],
         "operationId": "listSubscriptions",
+        "summary": "List active subscriptions",
         "parameters": [
           { "$ref": "#/components/parameters/Cursor" },
           { "$ref": "#/components/parameters/Limit" },
-          { "name": "tenantId", "in": "query", "required": true, "schema": { "$ref": "#/components/schemas/OpaqueId" } },
-          { "name": "clientId", "in": "query", "required": false, "schema": { "type": "string", "minLength": 1, "maxLength": 256 } }
+          {
+            "name": "tenantId",
+            "in": "query",
+            "required": true,
+            "example": "default",
+            "schema": { "$ref": "#/components/schemas/OpaqueId" }
+          },
+          {
+            "name": "clientId",
+            "in": "query",
+            "required": false,
+            "example": "device-1",
+            "schema": { "type": "string", "minLength": 1, "maxLength": 256 }
+          }
         ],
         "responses": {
-          "200": {
-            "description": "Subscription list",
-            "headers": { "X-Request-Id": { "$ref": "#/components/headers/XRequestId" } },
-            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/SubscriptionListEnvelope" } } }
-          },
+          "200": { "$ref": "#/components/responses/SubscriptionListResponse" },
           "400": { "$ref": "#/components/responses/BadRequest" },
           "401": { "$ref": "#/components/responses/Unauthorized" },
-          "403": { "$ref": "#/components/responses/Forbidden" }
+          "403": { "$ref": "#/components/responses/Forbidden" },
+          "405": { "$ref": "#/components/responses/MethodNotAllowed" }
         }
       }
     },
@@ -416,73 +260,50 @@
       "get": {
         "tags": ["Retained"],
         "operationId": "listRetainedMessages",
+        "summary": "List retained message metadata",
         "parameters": [
           { "$ref": "#/components/parameters/Cursor" },
           { "$ref": "#/components/parameters/Limit" },
-          { "name": "tenantId", "in": "query", "required": true, "schema": { "$ref": "#/components/schemas/OpaqueId" } },
-          { "name": "topicPrefix", "in": "query", "required": false, "schema": { "type": "string", "minLength": 1, "maxLength": 65535 } }
+          {
+            "name": "tenantId",
+            "in": "query",
+            "required": true,
+            "example": "default",
+            "schema": { "$ref": "#/components/schemas/OpaqueId" }
+          },
+          {
+            "name": "topicPrefix",
+            "in": "query",
+            "required": false,
+            "example": "sensors/",
+            "schema": { "type": "string", "minLength": 1, "maxLength": 65535 }
+          }
         ],
         "responses": {
-          "200": {
-            "description": "Retained metadata list",
-            "headers": { "X-Request-Id": { "$ref": "#/components/headers/XRequestId" } },
-            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/RetainedListEnvelope" } } }
-          },
+          "200": { "$ref": "#/components/responses/RetainedListResponse" },
           "400": { "$ref": "#/components/responses/BadRequest" },
           "401": { "$ref": "#/components/responses/Unauthorized" },
-          "403": { "$ref": "#/components/responses/Forbidden" }
-        }
-      }
-    },
-    "/api/v1/retained/{topic}": {
-      "parameters": [
-        {
-          "name": "topic",
-          "in": "path",
-          "required": true,
-          "description": "삭제할 exact external topic의 percent-encoded UTF-8 값",
-          "schema": { "type": "string", "minLength": 1, "maxLength": 65535 }
-        },
-        {
-          "name": "tenantId",
-          "in": "query",
-          "required": true,
-          "schema": { "$ref": "#/components/schemas/OpaqueId" }
-        }
-      ],
-      "delete": {
-        "tags": ["Retained"],
-        "operationId": "deleteRetainedMessage",
-        "parameters": [{ "$ref": "#/components/parameters/OptionalIdempotencyKey" }],
-        "responses": {
-          "204": {
-            "description": "Retained message deleted",
-            "headers": { "X-Request-Id": { "$ref": "#/components/headers/XRequestId" } }
-          },
-          "401": { "$ref": "#/components/responses/Unauthorized" },
           "403": { "$ref": "#/components/responses/Forbidden" },
-          "404": { "$ref": "#/components/responses/NotFound" },
-          "409": { "$ref": "#/components/responses/Conflict" }
+          "405": { "$ref": "#/components/responses/MethodNotAllowed" }
         }
       }
     },
-    "/metrics": {
+    "/api/v1/tenants": {
       "get": {
-        "tags": ["Metrics"],
-        "operationId": "getMetrics",
+        "tags": ["Tenants"],
+        "operationId": "listTenants",
+        "summary": "List tenants",
         "responses": {
-          "200": {
-            "description": "OpenMetrics text exposition",
-            "content": {
-              "application/openmetrics-text; version=1.0.0; charset=utf-8": {
-                "schema": { "type": "string" }
-              }
-            }
-          },
+          "200": { "$ref": "#/components/responses/TenantListResponse" },
+          "400": { "$ref": "#/components/responses/BadRequest" },
           "401": { "$ref": "#/components/responses/Unauthorized" },
           "403": { "$ref": "#/components/responses/Forbidden" },
-          "503": { "$ref": "#/components/responses/Unavailable" }
-        }
+          "405": { "$ref": "#/components/responses/MethodNotAllowed" }
+        },
+        "parameters": [
+          { "$ref": "#/components/parameters/Cursor" },
+          { "$ref": "#/components/parameters/Limit" }
+        ]
       }
     }
   },
@@ -491,18 +312,20 @@
       "BearerAuth": {
         "type": "http",
         "scheme": "bearer",
-        "bearerFormat": "JWT"
+        "description": "Configured opaque Bearer token. OIDC and JWT claim semantics are not part of Phase 1."
       },
       "ApiKeyAuth": {
         "type": "apiKey",
         "in": "header",
-        "name": "X-API-Key"
+        "name": "X-API-Key",
+        "description": "Configured opaque API key."
       }
     },
     "headers": {
       "XRequestId": {
-        "description": "요청, 로그와 audit event를 연결하는 불투명 ID",
-        "schema": { "type": "string", "minLength": 1, "maxLength": 128 }
+        "description": "Opaque request correlation identifier.",
+        "schema": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "example": "req_example"
       }
     },
     "parameters": {
@@ -510,83 +333,339 @@
         "name": "cursor",
         "in": "query",
         "required": false,
+        "example": "Y3VyOjUw",
         "schema": { "type": "string", "minLength": 1, "maxLength": 4096 }
       },
       "Limit": {
         "name": "limit",
         "in": "query",
         "required": false,
-        "schema": { "type": "integer", "minimum": 1 }
+        "description": "Page size. Defaults to 50 and cannot exceed 1000.",
+        "example": 50,
+        "schema": { "type": "integer", "minimum": 1, "maximum": 1000, "default": 50 }
       },
       "NodeId": {
         "name": "nodeId",
         "in": "path",
         "required": true,
+        "example": "node-1",
         "schema": { "$ref": "#/components/schemas/OpaqueId" }
       },
       "TenantId": {
         "name": "tenantId",
         "in": "path",
         "required": true,
+        "example": "default",
         "schema": { "$ref": "#/components/schemas/OpaqueId" }
       },
       "ClientId": {
         "name": "clientId",
         "in": "path",
         "required": true,
+        "example": "device-1",
         "schema": { "type": "string", "minLength": 1, "maxLength": 256 }
-      },
-      "RequiredIdempotencyKey": {
-        "name": "Idempotency-Key",
-        "in": "header",
-        "required": true,
-        "schema": { "type": "string", "minLength": 1, "maxLength": 128 }
-      },
-      "OptionalIdempotencyKey": {
-        "name": "Idempotency-Key",
-        "in": "header",
-        "required": false,
-        "schema": { "type": "string", "minLength": 1, "maxLength": 128 }
       }
     },
     "responses": {
       "HealthResponse": {
-        "description": "Probe succeeded",
+        "description": "Health probe succeeded.",
         "headers": { "X-Request-Id": { "$ref": "#/components/headers/XRequestId" } },
-        "content": { "application/json": { "schema": { "$ref": "#/components/schemas/HealthEnvelope" } } }
+        "content": {
+          "application/json": {
+            "schema": { "$ref": "#/components/schemas/HealthEnvelope" },
+            "examples": {
+              "success": {
+                "value": {
+                  "data": {
+                    "status": "UP",
+                    "reason": null,
+                    "observedAt": "2026-09-20T00:00:00Z"
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "ClusterResponse": {
+        "description": "Cluster summary.",
+        "headers": { "X-Request-Id": { "$ref": "#/components/headers/XRequestId" } },
+        "content": {
+          "application/json": {
+            "schema": { "$ref": "#/components/schemas/ClusterEnvelope" },
+            "examples": {
+              "success": {
+                "value": {
+                  "data": {
+                    "clusterId": "cluster-1",
+                    "releaseVersion": "1.0.0",
+                    "memberCount": 1,
+                    "quorumSize": 1,
+                    "quorumAvailable": true,
+                    "leaderNodeId": "node-1",
+                    "nodesByState": { "joining": 0, "ready": 1, "draining": 0, "safeToStop": 0 },
+                    "underReplicated": 0,
+                    "connectionCount": 0,
+                    "sessionCount": 0,
+                    "subscriptionCount": 0
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "NodeListResponse": {
+        "description": "Node list.",
+        "headers": { "X-Request-Id": { "$ref": "#/components/headers/XRequestId" } },
+        "content": {
+          "application/json": {
+            "schema": { "$ref": "#/components/schemas/NodeListEnvelope" },
+            "examples": {
+              "success": {
+                "value": {
+                  "data": [
+                    {
+                      "nodeId": "node-1",
+                      "version": "1.0.0",
+                      "uptimeMs": 0,
+                      "state": "READY",
+                      "ready": true,
+                      "readinessReason": null,
+                      "role": "LEADER",
+                      "lastAppliedIndex": 0,
+                      "connectionCount": 0,
+                      "storagePressure": false
+                    }
+                  ],
+                  "page": { "nextCursor": null, "hasMore": false }
+                }
+              }
+            }
+          }
+        }
+      },
+      "NodeResponse": {
+        "description": "Node detail.",
+        "headers": { "X-Request-Id": { "$ref": "#/components/headers/XRequestId" } },
+        "content": {
+          "application/json": {
+            "schema": { "$ref": "#/components/schemas/NodeEnvelope" },
+            "examples": {
+              "success": {
+                "value": {
+                  "data": {
+                    "nodeId": "node-1",
+                    "version": "1.0.0",
+                    "uptimeMs": 0,
+                    "state": "READY",
+                    "ready": true,
+                    "readinessReason": null,
+                    "role": "LEADER",
+                    "lastAppliedIndex": 0,
+                    "connectionCount": 0,
+                    "storagePressure": false
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "ClientListResponse": {
+        "description": "Client session list.",
+        "headers": { "X-Request-Id": { "$ref": "#/components/headers/XRequestId" } },
+        "content": {
+          "application/json": {
+            "schema": { "$ref": "#/components/schemas/ClientListEnvelope" },
+            "examples": {
+              "success": {
+                "value": {
+                  "data": [
+                    {
+                      "tenantId": "default",
+                      "clientId": "device-1",
+                      "nodeId": "node-1",
+                      "protocol": "MQTT_5_0",
+                      "connected": true,
+                      "sessionPresent": true,
+                      "expiryAt": null,
+                      "inflightCount": 0,
+                      "offlineQueueCount": 0,
+                      "maskedIdentity": null
+                    }
+                  ],
+                  "page": { "nextCursor": null, "hasMore": false }
+                }
+              }
+            }
+          }
+        }
+      },
+      "ClientResponse": {
+        "description": "Client session detail.",
+        "headers": { "X-Request-Id": { "$ref": "#/components/headers/XRequestId" } },
+        "content": {
+          "application/json": {
+            "schema": { "$ref": "#/components/schemas/ClientEnvelope" },
+            "examples": {
+              "success": {
+                "value": {
+                  "data": {
+                    "tenantId": "default",
+                    "clientId": "device-1",
+                    "nodeId": "node-1",
+                    "protocol": "MQTT_5_0",
+                    "connected": true,
+                    "sessionPresent": true,
+                    "expiryAt": null,
+                    "inflightCount": 0,
+                    "offlineQueueCount": 0,
+                    "maskedIdentity": null
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "SubscriptionListResponse": {
+        "description": "Subscription list.",
+        "headers": { "X-Request-Id": { "$ref": "#/components/headers/XRequestId" } },
+        "content": {
+          "application/json": {
+            "schema": { "$ref": "#/components/schemas/SubscriptionListEnvelope" },
+            "examples": {
+              "success": {
+                "value": {
+                  "data": [
+                    {
+                      "tenantId": "default",
+                      "clientId": "device-1",
+                      "topicFilter": "sensors/#",
+                      "qos": 0,
+                      "sharedGroup": null
+                    }
+                  ],
+                  "page": { "nextCursor": null, "hasMore": false }
+                }
+              }
+            }
+          }
+        }
+      },
+      "RetainedListResponse": {
+        "description": "Retained message metadata list.",
+        "headers": { "X-Request-Id": { "$ref": "#/components/headers/XRequestId" } },
+        "content": {
+          "application/json": {
+            "schema": { "$ref": "#/components/schemas/RetainedListEnvelope" },
+            "examples": {
+              "success": {
+                "value": {
+                  "data": [
+                    {
+                      "tenantId": "default",
+                      "topic": "sensors/temp",
+                      "qos": 0,
+                      "payloadBytes": 4,
+                      "updatedAt": "2026-09-20T00:00:00Z",
+                      "expiresAt": null
+                    }
+                  ],
+                  "page": { "nextCursor": null, "hasMore": false }
+                }
+              }
+            }
+          }
+        }
+      },
+      "TenantListResponse": {
+        "description": "Tenant list.",
+        "headers": { "X-Request-Id": { "$ref": "#/components/headers/XRequestId" } },
+        "content": {
+          "application/json": {
+            "schema": { "$ref": "#/components/schemas/TenantListEnvelope" },
+            "examples": {
+              "success": {
+                "value": {
+                  "data": [
+                    {
+                      "tenantId": "default",
+                      "displayName": "Default Tenant",
+                      "status": "ACTIVE",
+                      "version": 1,
+                      "createdAt": "2026-09-20T00:00:00Z"
+                    }
+                  ],
+                  "page": { "nextCursor": null, "hasMore": false }
+                }
+              }
+            }
+          }
+        }
+      },
+      "MetricsResponse": {
+        "description": "Prometheus or OpenMetrics text exposition.",
+        "headers": { "X-Request-Id": { "$ref": "#/components/headers/XRequestId" } },
+        "content": {
+          "text/plain; version=0.0.4; charset=utf-8": {
+            "schema": { "type": "string" },
+            "examples": {
+              "prometheus": {
+                "value": "# HELP narumq_connections_active Current number of active client connections.\n# TYPE narumq_connections_active gauge\nnarumq_connections_active 0\n"
+              }
+            }
+          },
+          "application/openmetrics-text; version=1.0.0; charset=utf-8": {
+            "schema": { "type": "string" },
+            "examples": {
+              "openmetrics": {
+                "value": "# HELP narumq_connections_active Current number of active client connections.\n# TYPE narumq_connections_active gauge\nnarumq_connections_active 0\n# EOF\n"
+              }
+            }
+          }
+        }
       },
       "BadRequest": {
-        "description": "Invalid request",
+        "description": "The request is invalid.",
         "headers": { "X-Request-Id": { "$ref": "#/components/headers/XRequestId" } },
-        "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorResponse" } } }
+        "content": {
+          "application/json": {
+            "schema": { "$ref": "#/components/schemas/ErrorResponse" },
+            "examples": {
+              "invalidRequest": {
+                "value": {
+                  "error": { "code": "invalid_request", "message": "invalid request", "retryable": false, "details": null },
+                  "requestId": "req_example"
+                }
+              }
+            }
+          }
+        }
       },
       "Unauthorized": {
-        "description": "Authentication required or failed",
+        "description": "Authentication is required or credentials are invalid.",
         "headers": { "X-Request-Id": { "$ref": "#/components/headers/XRequestId" } },
         "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorResponse" } } }
       },
       "Forbidden": {
-        "description": "Authenticated principal lacks permission",
+        "description": "The authenticated principal lacks the required permission.",
         "headers": { "X-Request-Id": { "$ref": "#/components/headers/XRequestId" } },
         "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorResponse" } } }
       },
       "NotFound": {
-        "description": "Resource not found or hidden by scope",
+        "description": "The requested resource does not exist or is hidden by scope.",
         "headers": { "X-Request-Id": { "$ref": "#/components/headers/XRequestId" } },
         "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorResponse" } } }
       },
-      "Conflict": {
-        "description": "Version, state or idempotency conflict",
-        "headers": { "X-Request-Id": { "$ref": "#/components/headers/XRequestId" } },
-        "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorResponse" } } }
-      },
-      "Unprocessable": {
-        "description": "Request violates quota or policy constraints",
+      "MethodNotAllowed": {
+        "description": "The route does not support the requested method.",
         "headers": { "X-Request-Id": { "$ref": "#/components/headers/XRequestId" } },
         "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorResponse" } } }
       },
       "Unavailable": {
-        "description": "Quorum, dependency or readiness unavailable",
+        "description": "The probe is unavailable.",
         "headers": { "X-Request-Id": { "$ref": "#/components/headers/XRequestId" } },
         "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorResponse" } } }
       }
@@ -602,14 +681,16 @@
         "format": "date-time"
       },
       "NodeState": {
+        "type": "string",
         "enum": ["JOINING", "READY", "DRAINING", "SAFE_TO_STOP"]
       },
       "MqttProtocol": {
+        "type": "string",
         "enum": ["MQTT_3_1_1", "MQTT_5_0"]
       },
       "Page": {
         "type": "object",
-        "additionalProperties": true,
+        "additionalProperties": false,
         "required": ["nextCursor", "hasMore"],
         "properties": {
           "nextCursor": { "type": ["string", "null"], "maxLength": 4096 },
@@ -618,18 +699,18 @@
       },
       "ErrorBody": {
         "type": "object",
-        "additionalProperties": true,
+        "additionalProperties": false,
         "required": ["code", "message", "retryable", "details"],
         "properties": {
           "code": { "type": "string", "pattern": "^[a-z][a-z0-9_]*$", "maxLength": 128 },
           "message": { "type": "string", "minLength": 1, "maxLength": 1024 },
           "retryable": { "type": "boolean" },
-          "details": { "type": "object", "additionalProperties": true }
+          "details": { "type": ["object", "null"], "additionalProperties": true }
         }
       },
       "ErrorResponse": {
         "type": "object",
-        "additionalProperties": true,
+        "additionalProperties": false,
         "required": ["error", "requestId"],
         "properties": {
           "error": { "$ref": "#/components/schemas/ErrorBody" },
@@ -638,23 +719,23 @@
       },
       "HealthData": {
         "type": "object",
-        "additionalProperties": true,
+        "additionalProperties": false,
         "required": ["status", "reason", "observedAt"],
         "properties": {
-          "status": { "enum": ["UP", "STARTING", "NOT_READY", "SAFE_TO_STOP", "DOWN"] },
+          "status": { "type": "string", "enum": ["UP", "STARTING", "NOT_READY", "SAFE_TO_STOP", "DOWN"] },
           "reason": { "type": ["string", "null"], "maxLength": 256 },
           "observedAt": { "$ref": "#/components/schemas/Timestamp" }
         }
       },
       "HealthEnvelope": {
         "type": "object",
-        "additionalProperties": true,
+        "additionalProperties": false,
         "required": ["data"],
         "properties": { "data": { "$ref": "#/components/schemas/HealthData" } }
       },
       "ClusterData": {
         "type": "object",
-        "additionalProperties": true,
+        "additionalProperties": false,
         "required": ["clusterId", "releaseVersion", "memberCount", "quorumSize", "quorumAvailable", "leaderNodeId", "nodesByState", "underReplicated", "connectionCount", "sessionCount", "subscriptionCount"],
         "properties": {
           "clusterId": { "$ref": "#/components/schemas/OpaqueId" },
@@ -662,7 +743,7 @@
           "memberCount": { "type": "integer", "minimum": 0 },
           "quorumSize": { "type": "integer", "minimum": 1 },
           "quorumAvailable": { "type": "boolean" },
-          "leaderNodeId": { "oneOf": [{ "$ref": "#/components/schemas/OpaqueId" }, { "type": "null" }] },
+          "leaderNodeId": { "type": ["string", "null"], "minLength": 1, "maxLength": 128 },
           "nodesByState": {
             "type": "object",
             "additionalProperties": false,
@@ -682,13 +763,13 @@
       },
       "ClusterEnvelope": {
         "type": "object",
-        "additionalProperties": true,
+        "additionalProperties": false,
         "required": ["data"],
         "properties": { "data": { "$ref": "#/components/schemas/ClusterData" } }
       },
       "NodeData": {
         "type": "object",
-        "additionalProperties": true,
+        "additionalProperties": false,
         "required": ["nodeId", "version", "uptimeMs", "state", "ready", "readinessReason", "role", "lastAppliedIndex", "connectionCount", "storagePressure"],
         "properties": {
           "nodeId": { "$ref": "#/components/schemas/OpaqueId" },
@@ -697,7 +778,7 @@
           "state": { "$ref": "#/components/schemas/NodeState" },
           "ready": { "type": "boolean" },
           "readinessReason": { "type": ["string", "null"], "maxLength": 256 },
-          "role": { "enum": ["LEADER", "FOLLOWER", "LEARNER"] },
+          "role": { "type": "string", "enum": ["LEADER", "FOLLOWER", "LEARNER"] },
           "lastAppliedIndex": { "type": "integer", "minimum": 0 },
           "connectionCount": { "type": "integer", "minimum": 0 },
           "storagePressure": { "type": "boolean" }
@@ -705,195 +786,31 @@
       },
       "NodeEnvelope": {
         "type": "object",
-        "additionalProperties": true,
+        "additionalProperties": false,
         "required": ["data"],
         "properties": { "data": { "$ref": "#/components/schemas/NodeData" } }
       },
       "NodeListEnvelope": {
         "type": "object",
-        "additionalProperties": true,
+        "additionalProperties": false,
         "required": ["data", "page"],
         "properties": {
           "data": { "type": "array", "items": { "$ref": "#/components/schemas/NodeData" } },
           "page": { "$ref": "#/components/schemas/Page" }
         }
       },
-      "DrainStartRequest": {
-        "type": "object",
-        "additionalProperties": false,
-        "required": ["serverReference", "connectionRatePerSecond", "loadBalancerPropagationDelayMs", "timeoutMs"],
-        "properties": {
-          "serverReference": { "type": "string", "pattern": "^[A-Za-z0-9.-]+:(?:[1-9][0-9]{0,3}|[1-5][0-9]{4}|6[0-4][0-9]{3}|65[0-4][0-9]{2}|655[0-2][0-9]|6553[0-5])$", "maxLength": 260 },
-          "connectionRatePerSecond": { "type": "integer", "minimum": 1 },
-          "loadBalancerPropagationDelayMs": { "type": "integer", "minimum": 0 },
-          "timeoutMs": { "type": "integer", "minimum": 1 }
-        }
-      },
-      "DrainFailure": {
-        "type": "object",
-        "additionalProperties": true,
-        "required": ["code", "message", "retryable"],
-        "properties": {
-          "code": { "type": "string", "pattern": "^[a-z][a-z0-9_]*$", "maxLength": 128 },
-          "message": { "type": "string", "minLength": 1, "maxLength": 1024 },
-          "retryable": { "type": "boolean" }
-        }
-      },
-      "DrainOperation": {
-        "type": "object",
-        "additionalProperties": true,
-        "required": ["operationId", "nodeId", "state", "phase", "startedAt", "deadlineAt", "connections", "sessions", "replication", "safeToStop", "failure"],
-        "properties": {
-          "operationId": { "$ref": "#/components/schemas/OpaqueId" },
-          "nodeId": { "$ref": "#/components/schemas/OpaqueId" },
-          "state": { "$ref": "#/components/schemas/NodeState" },
-          "phase": { "enum": ["EXCLUDING_TRAFFIC", "WAITING_FOR_LB", "CHECKPOINTING", "TRANSFERRING_SESSIONS", "VERIFYING_BARRIER", "COMPLETED", "FAILED", "CANCELLED"] },
-          "startedAt": { "$ref": "#/components/schemas/Timestamp" },
-          "deadlineAt": { "$ref": "#/components/schemas/Timestamp" },
-          "connections": {
-            "type": "object",
-            "additionalProperties": false,
-            "required": ["initial", "remaining"],
-            "properties": {
-              "initial": { "type": "integer", "minimum": 0 },
-              "remaining": { "type": "integer", "minimum": 0 }
-            }
-          },
-          "sessions": {
-            "type": "object",
-            "additionalProperties": false,
-            "required": ["checkpointed", "takenOver", "failed"],
-            "properties": {
-              "checkpointed": { "type": "integer", "minimum": 0 },
-              "takenOver": { "type": "integer", "minimum": 0 },
-              "failed": { "type": "integer", "minimum": 0 }
-            }
-          },
-          "replication": {
-            "type": "object",
-            "additionalProperties": false,
-            "required": ["pendingWal", "underReplicated"],
-            "properties": {
-              "pendingWal": { "type": "integer", "minimum": 0 },
-              "underReplicated": { "type": "integer", "minimum": 0 }
-            }
-          },
-          "safeToStop": { "type": "boolean" },
-          "failure": { "oneOf": [{ "$ref": "#/components/schemas/DrainFailure" }, { "type": "null" }] }
-        }
-      },
-      "DrainEnvelope": {
-        "type": "object",
-        "additionalProperties": true,
-        "required": ["data"],
-        "properties": { "data": { "$ref": "#/components/schemas/DrainOperation" } }
-      },
-      "TenantData": {
-        "type": "object",
-        "additionalProperties": true,
-        "required": ["tenantId", "displayName", "status", "version", "createdAt"],
-        "properties": {
-          "tenantId": { "$ref": "#/components/schemas/OpaqueId" },
-          "displayName": { "type": ["string", "null"], "maxLength": 256 },
-          "status": { "enum": ["ACTIVE", "SUSPENDED"] },
-          "version": { "type": "integer", "minimum": 1 },
-          "createdAt": { "$ref": "#/components/schemas/Timestamp" }
-        }
-      },
-      "TenantCreateRequest": {
-        "type": "object",
-        "additionalProperties": false,
-        "required": ["tenantId"],
-        "properties": {
-          "tenantId": { "$ref": "#/components/schemas/OpaqueId" },
-          "displayName": { "type": ["string", "null"], "maxLength": 256 }
-        }
-      },
-      "TenantEnvelope": {
-        "type": "object",
-        "additionalProperties": true,
-        "required": ["data"],
-        "properties": { "data": { "$ref": "#/components/schemas/TenantData" } }
-      },
-      "TenantListEnvelope": {
-        "type": "object",
-        "additionalProperties": true,
-        "required": ["data", "page"],
-        "properties": {
-          "data": { "type": "array", "items": { "$ref": "#/components/schemas/TenantData" } },
-          "page": { "$ref": "#/components/schemas/Page" }
-        }
-      },
-      "QuotaConfig": {
-        "type": "object",
-        "additionalProperties": false,
-        "required": ["version", "maxConnections", "maxSessions", "maxSubscriptions", "messageRatePerSecond", "byteRatePerSecond", "maxPayloadBytes", "offlineQueueMessages", "offlineQueueBytes", "retainedBytes", "storageBytes"],
-        "properties": {
-          "version": { "type": "integer", "minimum": 1 },
-          "maxConnections": { "type": "integer", "minimum": 0 },
-          "maxSessions": { "type": "integer", "minimum": 0 },
-          "maxSubscriptions": { "type": "integer", "minimum": 0 },
-          "messageRatePerSecond": { "type": "integer", "minimum": 0 },
-          "byteRatePerSecond": { "type": "integer", "minimum": 0 },
-          "maxPayloadBytes": { "type": "integer", "minimum": 0 },
-          "offlineQueueMessages": { "type": "integer", "minimum": 0 },
-          "offlineQueueBytes": { "type": "integer", "minimum": 0 },
-          "retainedBytes": { "type": "integer", "minimum": 0 },
-          "storageBytes": { "type": "integer", "minimum": 0 }
-        }
-      },
-      "QuotaEnvelope": {
-        "type": "object",
-        "additionalProperties": true,
-        "required": ["data"],
-        "properties": { "data": { "$ref": "#/components/schemas/QuotaConfig" } }
-      },
-      "PolicyRule": {
-        "type": "object",
-        "additionalProperties": false,
-        "required": ["id", "effect", "actions", "topicFilter"],
-        "properties": {
-          "id": { "$ref": "#/components/schemas/OpaqueId" },
-          "effect": { "enum": ["ALLOW", "DENY"] },
-          "actions": {
-            "type": "array",
-            "minItems": 1,
-            "uniqueItems": true,
-            "items": { "enum": ["PUBLISH", "SUBSCRIBE", "UNSUBSCRIBE", "WILL"] }
-          },
-          "topicFilter": { "type": "string", "minLength": 1, "maxLength": 65535 },
-          "clientIdPattern": { "type": ["string", "null"], "maxLength": 256 },
-          "subjectPattern": { "type": ["string", "null"], "maxLength": 256 }
-        }
-      },
-      "PolicySet": {
-        "type": "object",
-        "additionalProperties": false,
-        "required": ["version", "defaultEffect", "rules"],
-        "properties": {
-          "version": { "type": "integer", "minimum": 1 },
-          "defaultEffect": { "const": "DENY" },
-          "rules": { "type": "array", "items": { "$ref": "#/components/schemas/PolicyRule" } }
-        }
-      },
-      "PolicyEnvelope": {
-        "type": "object",
-        "additionalProperties": true,
-        "required": ["data"],
-        "properties": { "data": { "$ref": "#/components/schemas/PolicySet" } }
-      },
       "ClientSession": {
         "type": "object",
-        "additionalProperties": true,
+        "additionalProperties": false,
         "required": ["tenantId", "clientId", "nodeId", "protocol", "connected", "sessionPresent", "expiryAt", "inflightCount", "offlineQueueCount", "maskedIdentity"],
         "properties": {
           "tenantId": { "$ref": "#/components/schemas/OpaqueId" },
           "clientId": { "type": "string", "minLength": 1, "maxLength": 256 },
-          "nodeId": { "oneOf": [{ "$ref": "#/components/schemas/OpaqueId" }, { "type": "null" }] },
+          "nodeId": { "type": ["string", "null"], "minLength": 1, "maxLength": 128 },
           "protocol": { "$ref": "#/components/schemas/MqttProtocol" },
           "connected": { "type": "boolean" },
           "sessionPresent": { "type": "boolean" },
-          "expiryAt": { "oneOf": [{ "$ref": "#/components/schemas/Timestamp" }, { "type": "null" }] },
+          "expiryAt": { "type": ["string", "null"], "format": "date-time" },
           "inflightCount": { "type": "integer", "minimum": 0 },
           "offlineQueueCount": { "type": "integer", "minimum": 0 },
           "maskedIdentity": { "type": ["string", "null"], "maxLength": 256 }
@@ -901,30 +818,22 @@
       },
       "ClientEnvelope": {
         "type": "object",
-        "additionalProperties": true,
+        "additionalProperties": false,
         "required": ["data"],
         "properties": { "data": { "$ref": "#/components/schemas/ClientSession" } }
       },
       "ClientListEnvelope": {
         "type": "object",
-        "additionalProperties": true,
+        "additionalProperties": false,
         "required": ["data", "page"],
         "properties": {
           "data": { "type": "array", "items": { "$ref": "#/components/schemas/ClientSession" } },
           "page": { "$ref": "#/components/schemas/Page" }
         }
       },
-      "RedirectRequest": {
-        "type": "object",
-        "additionalProperties": false,
-        "required": ["serverReference"],
-        "properties": {
-          "serverReference": { "type": "string", "pattern": "^[A-Za-z0-9.-]+:(?:[1-9][0-9]{0,3}|[1-5][0-9]{4}|6[0-4][0-9]{3}|65[0-4][0-9]{2}|655[0-2][0-9]|6553[0-5])$", "maxLength": 260 }
-        }
-      },
       "SubscriptionData": {
         "type": "object",
-        "additionalProperties": true,
+        "additionalProperties": false,
         "required": ["tenantId", "clientId", "topicFilter", "qos", "sharedGroup"],
         "properties": {
           "tenantId": { "$ref": "#/components/schemas/OpaqueId" },
@@ -936,7 +845,7 @@
       },
       "SubscriptionListEnvelope": {
         "type": "object",
-        "additionalProperties": true,
+        "additionalProperties": false,
         "required": ["data", "page"],
         "properties": {
           "data": { "type": "array", "items": { "$ref": "#/components/schemas/SubscriptionData" } },
@@ -945,7 +854,7 @@
       },
       "RetainedData": {
         "type": "object",
-        "additionalProperties": true,
+        "additionalProperties": false,
         "required": ["tenantId", "topic", "qos", "payloadBytes", "updatedAt", "expiresAt"],
         "properties": {
           "tenantId": { "$ref": "#/components/schemas/OpaqueId" },
@@ -953,15 +862,36 @@
           "qos": { "type": "integer", "minimum": 0, "maximum": 2 },
           "payloadBytes": { "type": "integer", "minimum": 0 },
           "updatedAt": { "$ref": "#/components/schemas/Timestamp" },
-          "expiresAt": { "oneOf": [{ "$ref": "#/components/schemas/Timestamp" }, { "type": "null" }] }
+          "expiresAt": { "type": ["string", "null"], "format": "date-time" }
         }
       },
       "RetainedListEnvelope": {
         "type": "object",
-        "additionalProperties": true,
+        "additionalProperties": false,
         "required": ["data", "page"],
         "properties": {
           "data": { "type": "array", "items": { "$ref": "#/components/schemas/RetainedData" } },
+          "page": { "$ref": "#/components/schemas/Page" }
+        }
+      },
+      "TenantData": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["tenantId", "displayName", "status", "version", "createdAt"],
+        "properties": {
+          "tenantId": { "$ref": "#/components/schemas/OpaqueId" },
+          "displayName": { "type": ["string", "null"], "maxLength": 256 },
+          "status": { "type": "string", "enum": ["ACTIVE", "SUSPENDED"] },
+          "version": { "type": "integer", "minimum": 1 },
+          "createdAt": { "$ref": "#/components/schemas/Timestamp" }
+        }
+      },
+      "TenantListEnvelope": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["data", "page"],
+        "properties": {
+          "data": { "type": "array", "items": { "$ref": "#/components/schemas/TenantData" } },
           "page": { "$ref": "#/components/schemas/Page" }
         }
       }

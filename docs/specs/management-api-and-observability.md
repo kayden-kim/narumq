@@ -1,16 +1,16 @@
 # Management API와 observability 스펙
 
-이 문서는 operator, GitOps controller, Dashboard와 monitoring system이 NaruMQ를 조회·변경하는 HTTP·Metric 계약을 정의한다. Resource별 전체 schema는 이 문서를 따르는 OpenAPI에서 확정한다.
+이 문서는 operator, GitOps controller, Dashboard와 monitoring system이 NaruMQ를 조회·변경하는 HTTP·Metric 계약의 전체 목표를 정의한다. 현재 normative query profile은 [Management API v1 contract](../contracts/management-api-v1.md)와 [OpenAPI 3.1 contract](../contracts/management-api-v1.openapi.json)으로 확정하고, 이 문서의 미래 catalog는 명시적으로 deferred scope로 표시한다.
 
 | 항목 | 값 |
 | --- | --- |
-| 상태 | Draft |
+| 상태 | Active (Phase 1 query profile); mutation·OIDC·운영 자동화 항목은 deferred |
 | 관련 요구사항 | API-01~API-09, UI-01~UI-10, SEC-10~SEC-11 |
 | 근거 | [PRD 9.5절, 9.6절과 14장](../requirements/PRD.md) |
 | 관련 spec | [Tenant와 security](tenancy-and-security.md), [Drain](drain-and-rolling-update.md) |
 | 관련 Architecture | [System overview](../architectures/system-overview.md), [Security boundaries](../architectures/security-boundaries.md) |
 | 관련 결정 | [ADR-0005](../decisions/ADR-0005-management-api-contract-format.md) |
-| 관련 Contract | [Management API v1](../contracts/management-api-v1.md), [Audit event v1](../contracts/audit-event-v1.md) |
+| 관련 Contract | [Management API v1](../contracts/management-api-v1.md), [Management API OpenAPI](../contracts/management-api-v1.openapi.json), [Audit event v1](../contracts/audit-event-v1.md) |
 
 ## 1. HTTP 공통 계약
 
@@ -18,15 +18,17 @@
 - request와 response body는 `application/json` UTF-8을 사용한다.
 - `/api/v1` 요청은 인증과 RBAC를 통과해야 한다. Health probe와 `/metrics`의 익명 노출 범위는 listener 정책으로 제한할 수 있다.
 - 서버는 수신한 유효 request ID를 사용하거나 새 값을 생성해 `X-Request-Id`에 반환해야 한다.
-- mutation API는 결과를 감사 로그에 기록해야 한다.
+- Phase 1은 조회 전용이다. mutation의 감사·idempotency 요구사항은 2.2의 deferred endpoint가 활성화될 때 적용한다.
 
 ### 1.1 Management listener와 인증 정책
 
 - `-http-listen`은 Management HTTP listener의 bind 주소다.
 - `-http-auth-token`이 설정되면 유효한 `Authorization: Bearer <token>`을 요구하고, `/api/v1`에는 endpoint별 RBAC를 적용한다. 인증 실패는 `401`, 인증은 됐지만 권한이 부족하면 `403`이다.
+- `X-API-Key`는 machine-to-machine 조회 주체를 위한 opaque credential로 사용할 수 있으며, bearer token과 같은 RBAC 경계를 적용한다.
+- bearer token과 API key는 opaque 값이다. Phase 1은 OIDC discovery, JWT claim 검증과 claim 기반 tenant scope를 약속하지 않는다.
 - `-http-auth-token`이 비어 있으면 local development용 익명 모드로 동작하지만, `-http-listen`은 literal loopback IP(`127.0.0.0/8` 또는 `::1`)만 허용한다. `0.0.0.0`, `:8080`, 외부 인터페이스 주소는 거부한다.
-- 따라서 원격 interface에 Management API를 노출하려면 반드시 `-http-auth-token`을 설정해야 한다.
-- CLI에서 health probe는 기본적으로 익명 노출되고, token이 설정된 경우 `/metrics`는 인증을 요구한다. 운영 환경에서는 probe listener와 firewall 범위를 별도로 제한해야 한다.
+- 따라서 원격 interface에 Management API를 노출하려면 반드시 `-http-auth-token` 또는 동등한 API key 정책을 설정해야 한다.
+- CLI에서 health probe와 `/metrics`는 listener 정책에 따라 익명 노출할 수 있다. 운영 환경에서는 probe listener와 firewall 범위를 별도로 제한해야 한다.
 
 예:
 
@@ -53,6 +55,7 @@ go run ./cmd/narumq -http-listen 0.0.0.0:8080 -http-auth-token "$NARUMQ_MANAGEME
 ```
 
 cursor는 불투명 값이다. client는 cursor 내용을 해석해서는 안 된다. 정렬 기준은 endpoint OpenAPI에 고정해야 하며 같은 snapshot에서 안정적이어야 한다.
+- Phase 1 목록 endpoint의 `limit` 기본값은 `50`, 최댓값은 `1000`이다. endpoint에 선언되지 않은 query name, 중복 query value, 빈 값 또는 범위를 벗어난 `limit`은 `400 invalid_request`로 거절한다.
 
 ### 1.3 오류 envelope
 
@@ -79,15 +82,19 @@ cursor는 불투명 값이다. client는 cursor 내용을 해석해서는 안 �
 | `429` | API rate limit 초과. 가능한 경우 `Retry-After` 포함 |
 | `503` | quorum, dependency 또는 readiness 문제로 일시 처리 불가 |
 
-오류 code 전체 목록은 OpenAPI에서 확정한다. 내부 stack, storage key와 secret을 오류에 포함해서는 안 된다.
+오류 code 전체 목록과 각 endpoint의 response status는 [Management API v1 OpenAPI](../contracts/management-api-v1.openapi.json)에서 확정한다. 내부 stack, storage key와 secret을 오류에 포함해서는 안 된다. Mutation 전용 상태(`409`, `422`, `429`)는 deferred scope다.
 
-### 1.4 Mutation과 idempotency
+### 1.4 Deferred mutation과 idempotency
 
-P1 mutation endpoint는 `Idempotency-Key`를 받아야 한다. 같은 principal, endpoint와 key에 같은 payload를 재시도하면 최초 결과와 의미가 같아야 한다. 같은 key에 다른 payload가 오면 `409 idempotency_conflict`를 반환해야 한다. 보존 시간은 OpenAPI/configuration에 명시한다.
+Phase 1에는 mutation endpoint가 없다. 아래 idempotency와 conditional-write 규칙은 2.2의 endpoint가 active contract에 추가될 때 적용한다.
 
-resource 변경은 가능한 경우 version/ETag 기반 조건부 요청을 지원해야 한다. stale version으로 상태를 덮어써서는 안 된다.
+mutation endpoint는 `Idempotency-Key`를 받아야 한다. 같은 principal, endpoint와 key에 같은 payload를 재시도하면 최초 결과와 의미가 같아야 한다. 같은 key에 다른 payload가 오면 `409 idempotency_conflict`를 반환해야 한다. resource 변경은 가능한 경우 version/ETag 기반 조건부 요청을 지원해야 한다.
 
 ## 2. Endpoint catalog
+
+### 2.1 Phase 1 active query profile
+
+아래 13개 GET operation이 현재 구현·계약 대상이다. 정확한 parameter allowlist, schema, response와 operation ID는 OpenAPI가 SSOT이며 `tests/contracts/management-api-v1`가 runtime handler와 일치하는지 검사한다.
 
 | Method | Path | 성공 동작 | 권한 |
 | --- | --- | --- | --- |
@@ -95,23 +102,29 @@ resource 변경은 가능한 경우 version/ETag 기반 조건부 요청을 지�
 | GET | `/health/ready` | 신규 MQTT·관리 traffic 수용 가능하면 `200` | probe policy |
 | GET | `/health/startup` | 초기 동기화가 완료되면 `200` | probe policy |
 | GET | `/health/drain` | node가 `SAFE_TO_STOP`이면 `200` | probe policy |
+| GET | `/metrics` | Prometheus 또는 OpenMetrics scrape | monitoring policy |
 | GET | `/api/v1/cluster` | quorum과 cluster 요약 조회 | ReadOnly |
-| GET | `/api/v1/nodes` | node 목록 조회 | ReadOnly |
+| GET | `/api/v1/nodes` | state filter와 pagination을 사용한 node 목록 조회 | ReadOnly |
 | GET | `/api/v1/nodes/{nodeId}` | node 상세 조회 | ReadOnly |
-| POST | `/api/v1/nodes/{nodeId}/drain` | drain 시작 또는 현재 operation 반환 | Operator |
-| GET | `/api/v1/nodes/{nodeId}/drain` | drain operation 조회 | ReadOnly |
-| DELETE | `/api/v1/nodes/{nodeId}/drain` | 취소 가능 단계의 drain 취소 | Operator |
-| GET/POST | `/api/v1/tenants` | tenant 목록·생성 | ClusterAdmin |
-| GET/PUT | `/api/v1/tenants/{tenantId}/quotas` | quota 조회·교체 | SecurityAdmin 또는 scoped admin |
-| GET/PUT | `/api/v1/tenants/{tenantId}/policies` | ACL 조회·교체 | SecurityAdmin 또는 scoped admin |
-| GET | `/api/v1/clients` | filter로 client 검색 | ReadOnly, tenant scope |
+| GET | `/api/v1/clients` | tenant·client prefix·node·protocol filter로 client 검색 | ReadOnly, tenant scope |
 | GET | `/api/v1/clients/{tenantId}/{clientId}` | session 상세 조회 | ReadOnly, tenant scope |
-| DELETE | `/api/v1/clients/{tenantId}/{clientId}` | client disconnect | Operator, tenant scope |
-| POST | `/api/v1/clients/{tenantId}/{clientId}/redirect` | MQTT 5 client에 임시 redirect 요청 | Operator, tenant scope |
-| GET | `/api/v1/subscriptions` | subscription 조회 | ReadOnly, tenant scope |
-| GET | `/api/v1/retained` | retained metadata 조회 | ReadOnly, tenant scope |
-| DELETE | `/api/v1/retained/{topic}` | exact retained topic 삭제 | Operator, tenant scope |
-| GET | `/metrics` | OpenMetrics scrape | monitoring principal |
+| GET | `/api/v1/subscriptions` | required `tenantId` 범위의 subscription 조회 | ReadOnly, tenant scope |
+| GET | `/api/v1/retained` | required `tenantId` 범위의 retained metadata 조회 | ReadOnly, tenant scope |
+| GET | `/api/v1/tenants` | tenant 목록 조회 | ClusterAdmin |
+
+### 2.2 Future/deferred catalog
+
+아래 endpoint는 목표 catalog에 남겨 두지만 Phase 1 contract에는 포함하지 않는다. 구현·OpenAPI path·acceptance test가 추가되기 전에는 제품 동작으로 간주하지 않는다.
+
+| Method | Path | Deferred 이유 |
+| --- | --- | --- |
+| POST/GET/DELETE | `/api/v1/nodes/{nodeId}/drain` | drain controller와 rollout 상태 계약 미확정 |
+| POST | `/api/v1/tenants` | tenant mutation, idempotency와 audit 계약 미확정 |
+| GET/PUT | `/api/v1/tenants/{tenantId}/quotas` | quota 저장·version 계약 미확정 |
+| GET/PUT | `/api/v1/tenants/{tenantId}/policies` | ACL 저장·version 계약 미확정 |
+| DELETE | `/api/v1/clients/{tenantId}/{clientId}` | disconnect mutation과 audit 계약 미확정 |
+| POST | `/api/v1/clients/{tenantId}/{clientId}/redirect` | MQTT 5 redirect controller 계약 미확정 |
+| DELETE | `/api/v1/retained/{topic}` | retained mutation과 tenant-safe topic encoding 미확정 |
 
 Drain endpoint의 body와 상태는 [drain spec](drain-and-rolling-update.md)을 기준으로 한다. MQTT redirect는 MQTT 5 `0x9C`와 Server Reference를 사용하며 MQTT 3.1.1 client에 같은 의미를 약속해서는 안 된다.
 
@@ -141,8 +154,8 @@ Node 상세는 `nodeId`, version, uptime, lifecycle state, readiness 원인, rol
 ## 5. Filtering과 masking
 
 - 목록 endpoint는 cursor pagination과 endpoint별 allowlist filter만 허용해야 한다.
-- client 검색은 tenant, exact/prefix clientId, node, IP와 protocol filter를 P1에서 제공한다.
-- arbitrary regular expression이나 wildcard topic Metric 등록을 허용해서는 안 된다.
+- client 검색 Phase 1 filter는 `tenantId`, `clientIdPrefix`, `nodeId`, `protocol`이다. arbitrary regular expression, IP filter와 wildcard topic Metric 등록을 허용해서는 안 된다.
+- `subscriptions`와 `retained` 목록은 `tenantId`를 required query로 받아 tenant 범위를 명시해야 한다.
 - client identity, IP, inflight payload와 offline payload는 role에 따라 마스킹하거나 제외해야 한다.
 - retained 목록은 payload를 기본 반환하지 않고 metadata만 반환해야 한다. Payload 조회가 필요하면 별도 권한과 size limit을 가져야 한다.
 
@@ -150,14 +163,14 @@ Node 상세는 `nodeId`, version, uptime, lifecycle state, readiness 원인, rol
 
 각 설정 필드는 source of truth를 `gitops`, `runtime` 또는 `derived`로 선언해야 한다.
 
-- `gitops` 필드는 runtime API로 영구 변경해서는 안 된다. 시도하면 `409 managed_by_gitops`를 반환해야 한다.
-- `runtime` 필드는 API mutation과 감사 로그를 통해 바꿀 수 있다.
+- `gitops` 필드는 runtime API로 영구 변경해서는 안 된다. 이 rule은 deferred mutation API가 활성화될 때 적용한다.
+- `runtime` 필드는 active mutation API와 감사 로그를 통해 바꿀 수 있다.
 - reconciliation은 desired version, observed version, last result와 conflict를 조회 가능하게 해야 한다.
 - controller가 값을 되돌렸을 때 silent success로 표시해서는 안 된다.
 
 ## 7. Metric 계약
 
-`/metrics`는 인증된 scrape 요청에 Prometheus/OpenMetrics 호환 text format을 반환해야 한다.
+`/metrics`는 listener 정책이 허용하는 경우 인증된 또는 익명 scrape 요청에 Prometheus/OpenMetrics 호환 text format을 반환해야 한다. 응답 header는 Prometheus 기본값 `text/plain; version=0.0.4; charset=utf-8`, OpenMetrics 요청값 `application/openmetrics-text; version=1.0.0; charset=utf-8`을 사용한다.
 
 | Metric 종류 | 집계 규칙 |
 | --- | --- |
@@ -173,16 +186,15 @@ Node 상세는 `nodeId`, version, uptime, lifecycle state, readiness 원인, rol
 
 Dashboard는 이 API와 외부 TSDB를 사용해야 한다. 장기 시계열 원본을 자체 저장해서는 안 된다.
 
-첫 화면은 cluster topology, quorum 위험, replica 부족, node version/readiness/drain과 핵심 traffic 추이를 보여야 한다. 운영 화면은 node 부하 편차, drain progress·ETA·실패 이유를 표시해야 한다. P1 화면은 권한 범위 안에서 client/session/subscription, redirect/disconnect와 retained·exact topic Metric을 제공한다.
+첫 화면은 cluster topology, quorum 위험, replica 부족, node version/readiness/drain과 핵심 traffic 추이를 보여야 한다. client/session/subscription 화면은 Phase 1 query로 제공하고, redirect/disconnect와 retained·exact topic Metric 화면은 해당 API가 active contract에 추가된 뒤 제공한다.
 
-UI mutation은 API와 같은 RBAC, 확인 절차, idempotency와 감사 계약을 따라야 한다.
+UI mutation은 해당 API가 active contract에 추가될 때 같은 RBAC, 확인 절차, idempotency와 감사 계약을 따라야 한다.
 
 ## 9. 수용 시험
 
-- OpenAPI request/response example과 실제 handler를 contract test로 비교한다.
-- 모든 목록 endpoint에 pagination 경계, filter allowlist와 tenant scope를 시험한다.
-- 각 role의 endpoint·resource matrix와 IDOR를 시험한다.
+- `tests/contracts/management-api-v1`가 OpenAPI 문서 자체, 13개 operation set, representative success response와 Prometheus/OpenMetrics media type을 검증한다.
+- 같은 contract suite가 pagination `1`/`1000` 경계, `1001` 초과, duplicate·unknown query와 subscriptions/retained의 required `tenantId`를 검증한다.
+- 같은 contract suite가 anonymous, 잘못된 credential, ReadOnly bearer/API key 성공과 ClusterAdmin 권한 부족 `403`을 검증한다.
 - startup, liveness, readiness와 drain-complete가 quorum·sync·drain 상태 조합을 정확히 반영하는지 시험한다.
 - Metric format, type, HELP/UNIT, histogram bucket과 금지 label을 자동 검사한다.
-- 같은 idempotency key 재시도와 payload 충돌을 시험한다.
-- Dashboard query가 node/cluster aggregation 규칙과 masking을 지키는지 검증한다.
+- deferred mutation endpoint의 idempotency, audit와 dashboard aggregation/masking 검증은 해당 endpoint가 contract에 추가될 때 이 목록에 연결한다.

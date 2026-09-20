@@ -6,12 +6,15 @@
 
 | Contract | 상태 | Producer → Consumer | 기준 artifact | 관련 요구사항 |
 | --- | --- | --- | --- | --- |
-| [Management API v1](management-api-v1.md) | Draft | Broker → Dashboard·operator·GitOps controller | [OpenAPI JSON](management-api-v1.openapi.json) | API-02, API-04~API-09, SEC-10~SEC-11, DEP-02 |
+| [Management API v1](management-api-v1.md) | Active | Broker → Dashboard·operator·monitoring query client | [OpenAPI JSON](management-api-v1.openapi.json) | API-02, API-04~API-09, SEC-10~SEC-11 |
 | [Audit event v1](audit-event-v1.md) | Draft | Broker·controller → audit store·security operator | [JSON Schema](audit-event-v1.schema.json) | SEC-11, NFR-16~NFR-17 |
 | [MQTT client compatibility v1](mqtt-client-compatibility-v1.md) | Draft | Broker ↔ MQTT client | 이 문서의 profile·matrix | MQTT-01~MQTT-13, CLIENT-01~CLIENT-09, DEP-06~DEP-12 |
 | [Cluster release compatibility v1](cluster-release-compatibility-v1.md) | Draft | Release N node ↔ N-1 node | 이 문서의 compatibility matrix | CLU-11, NFR-15, DEP-18 |
 
-`Draft` contract는 구현과 검증 전 계약 후보다. Producer·consumer contract test와 compatibility matrix를 통과한 뒤에만 `Active`로 전환한다.
+`Active` contract는 기준 artifact, producer runtime과 자동 contract test가 같은 현재
+동작을 확인한 계약이다. `Draft` contract는 구현과 검증 전 계약 후보다.
+Producer·consumer contract test와 compatibility matrix를 통과한 뒤에만 `Active`로
+전환한다.
 
 ## 아직 만들지 않는 Contract
 

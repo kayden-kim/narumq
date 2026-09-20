@@ -23,6 +23,10 @@ func (h *MetricsHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		WriteError(w, r, http.StatusMethodNotAllowed, "method_not_allowed", "method not allowed", false, nil)
 		return
 	}
+	if _, err := newQueryParser(r); err != nil {
+		writeInvalidRequest(w, r, err)
+		return
+	}
 
 	reqID := GetOrGenerateRequestID(r)
 	w.Header().Set(HeaderRequestID, reqID)

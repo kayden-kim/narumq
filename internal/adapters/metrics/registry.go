@@ -92,6 +92,7 @@ type Registry struct {
 	packetsReceivedTotal map[string]*atomic.Int64 // key: packetType
 	packetsSentTotal     map[string]*atomic.Int64 // key: packetType
 	authAttemptsTotal    map[string]*atomic.Int64 // key: method,result,reason
+	connectRejectedTotal atomic.Int64
 
 	publishLatency *Histogram
 }
@@ -241,6 +242,14 @@ func (r *Registry) AuthAttempt(method string, success bool, reason string) {
 	r.getCounter(r.authAttemptsTotal, key).Add(1)
 }
 
+// ConnectRejected increments the fixed-cardinality MQTT 3.1.0 rejection counter.
+func (r *Registry) ConnectRejected(protocol string, reason string) {
+	if protocol != ports.ProtocolMQTT310 || reason != ports.ConnectRejectReasonUnsupportedProtocolVersion {
+		return
+	}
+	r.connectRejectedTotal.Add(1)
+}
+
 // SetSessionsActive updates session gauges.
 func (r *Registry) SetSessionsActive(persistent bool, count int64) {
 	if count < 0 {
@@ -337,7 +346,12 @@ func (r *Registry) Render(isOpenMetrics bool) []byte {
 	fmt.Fprintf(&buf, "# TYPE narumq_auth_attempts_total counter\n")
 	r.renderCounterMap(&buf, "narumq_auth_attempts_total", r.authAttemptsTotal)
 
-	// 10. narumq_publish_latency_seconds
+	// 10. narumq_mqtt_connect_rejected_total
+	fmt.Fprintf(&buf, "# HELP narumq_mqtt_connect_rejected_total MQTT CONNECT attempts rejected by compatibility reason.\n")
+	fmt.Fprintf(&buf, "# TYPE narumq_mqtt_connect_rejected_total counter\n")
+	fmt.Fprintf(&buf, "narumq_mqtt_connect_rejected_total{protocol=\"3.1.0\",reason=\"unsupported_protocol_version\"} %d\n", r.connectRejectedTotal.Load())
+
+	// 11. narumq_publish_latency_seconds
 	fmt.Fprintf(&buf, "# HELP narumq_publish_latency_seconds Latency of publish processing in seconds.\n")
 	fmt.Fprintf(&buf, "# TYPE narumq_publish_latency_seconds histogram\n")
 	buckets, counts, count, sum := r.publishLatency.Snapshot()

@@ -45,23 +45,28 @@ func NewRouter(
 	mux := http.NewServeMux()
 
 	// Health probes
-	mux.HandleFunc("GET /health/live", auth.MaybeAllowProbe(healthH.Live))
-	mux.HandleFunc("GET /health/ready", auth.MaybeAllowProbe(healthH.Ready))
-	mux.HandleFunc("GET /health/startup", auth.MaybeAllowProbe(healthH.Startup))
-	mux.HandleFunc("GET /health/drain", auth.MaybeAllowProbe(healthH.Drain))
+	mux.HandleFunc("/health/live", auth.MaybeAllowProbe(healthH.Live))
+	mux.HandleFunc("/health/ready", auth.MaybeAllowProbe(healthH.Ready))
+	mux.HandleFunc("/health/startup", auth.MaybeAllowProbe(healthH.Startup))
+	mux.HandleFunc("/health/drain", auth.MaybeAllowProbe(healthH.Drain))
 
 	// Observability metrics
-	mux.HandleFunc("GET /metrics", auth.MaybeAllowMetrics(metricsH.ServeHTTP))
+	mux.HandleFunc("/metrics", auth.MaybeAllowMetrics(metricsH.ServeHTTP))
 
 	// Management API v1
-	mux.HandleFunc("GET /api/v1/cluster", auth.RequireRole(RoleReadOnly, v1H.GetCluster))
-	mux.HandleFunc("GET /api/v1/nodes", auth.RequireRole(RoleReadOnly, v1H.ListNodes))
-	mux.HandleFunc("GET /api/v1/nodes/{nodeId}", auth.RequireRole(RoleReadOnly, v1H.GetNode))
-	mux.HandleFunc("GET /api/v1/clients", auth.RequireRole(RoleReadOnly, v1H.ListClients))
-	mux.HandleFunc("GET /api/v1/clients/{tenantId}/{clientId}", auth.RequireRole(RoleReadOnly, v1H.GetClient))
-	mux.HandleFunc("GET /api/v1/subscriptions", auth.RequireRole(RoleReadOnly, v1H.ListSubscriptions))
-	mux.HandleFunc("GET /api/v1/retained", auth.RequireRole(RoleReadOnly, v1H.ListRetained))
-	mux.HandleFunc("GET /api/v1/tenants", auth.RequireRole(RoleClusterAdmin, v1H.ListTenants))
+	mux.HandleFunc("/api/v1/cluster", auth.RequireRole(RoleReadOnly, v1H.GetCluster))
+	mux.HandleFunc("/api/v1/nodes", auth.RequireRole(RoleReadOnly, v1H.ListNodes))
+	mux.HandleFunc("/api/v1/nodes/{nodeId}", auth.RequireRole(RoleReadOnly, v1H.GetNode))
+	mux.HandleFunc("/api/v1/clients", auth.RequireRole(RoleReadOnly, v1H.ListClients))
+	mux.HandleFunc("/api/v1/clients/{tenantId}/{clientId}", auth.RequireRole(RoleReadOnly, v1H.GetClient))
+	mux.HandleFunc("/api/v1/subscriptions", auth.RequireRole(RoleReadOnly, v1H.ListSubscriptions))
+	mux.HandleFunc("/api/v1/retained", auth.RequireRole(RoleReadOnly, v1H.ListRetained))
+	mux.HandleFunc("/api/v1/tenants", auth.RequireRole(RoleClusterAdmin, v1H.ListTenants))
+
+	// Unknown paths use the same error envelope as known routes.
+	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		WriteError(w, r, http.StatusNotFound, "resource_not_found", "resource not found", false, nil)
+	})
 
 	// Global Request-ID middleware
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

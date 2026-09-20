@@ -31,7 +31,9 @@ var (
 
 const (
 	defaultPageLimit = 50
-	maxPageLimit     = 1000
+
+	// MaxPageLimit is the maximum number of items returned by a paginated list.
+	MaxPageLimit = 1000
 )
 
 // ServiceConfig holds configuration parameters for the management service.
@@ -255,7 +257,7 @@ func (s *Service) ListNodeSummaries(ctx context.Context, filter ports.NodeFilter
 	limit := filter.Limit
 	if limit == 0 {
 		limit = defaultPageLimit
-	} else if limit < 0 || limit > maxPageLimit {
+	} else if limit < 0 || limit > MaxPageLimit {
 		return nil, nil, ErrInvalidPageSize
 	}
 
@@ -293,7 +295,7 @@ func (s *Service) ListClients(ctx context.Context, filter ports.ClientFilter) ([
 	limit := filter.Limit
 	if limit == 0 {
 		limit = defaultPageLimit
-	} else if limit < 0 || limit > maxPageLimit {
+	} else if limit < 0 || limit > MaxPageLimit {
 		return nil, nil, ErrInvalidPageSize
 	}
 
@@ -314,6 +316,9 @@ func (s *Service) ListClients(ctx context.Context, filter ports.ClientFilter) ([
 	clients := make([]ports.ClientSessionDTO, 0)
 	for _, sess := range rawSessions {
 		tenantStr := sess.TenantID().String()
+		if tenantStr == "" {
+			tenantStr = s.defaultTenantID.String()
+		}
 		if filter.TenantID != "" && tenantStr != filter.TenantID {
 			continue
 		}
@@ -387,7 +392,11 @@ func (s *Service) GetClient(ctx context.Context, tenantID string, clientID strin
 	if !found {
 		return nil, ErrClientNotFound
 	}
-	if tenantID != "" && sess.TenantID().String() != "" && sess.TenantID().String() != tenantID {
+	storedTenantID := sess.TenantID().String()
+	if storedTenantID == "" {
+		storedTenantID = s.defaultTenantID.String()
+	}
+	if tenantID != "" && storedTenantID != tenantID {
 		return nil, ErrClientNotFound
 	}
 	s.mu.RLock()
@@ -404,11 +413,7 @@ func (s *Service) GetClient(ctx context.Context, tenantID string, clientID strin
 	}
 
 	nodeIDCopy := currentNodeID
-	tenantStr := sess.TenantID().String()
-	if tenantStr == "" {
-		tenantStr = tenantID
-	}
-
+	tenantStr := storedTenantID
 	return &ports.ClientSessionDTO{
 		TenantID:          tenantStr,
 		ClientID:          sess.ClientID(),
@@ -428,7 +433,7 @@ func (s *Service) ListSubscriptions(ctx context.Context, filter ports.Subscripti
 	limit := filter.Limit
 	if limit == 0 {
 		limit = defaultPageLimit
-	} else if limit < 0 || limit > maxPageLimit {
+	} else if limit < 0 || limit > MaxPageLimit {
 		return nil, nil, ErrInvalidPageSize
 	}
 
@@ -445,6 +450,9 @@ func (s *Service) ListSubscriptions(ctx context.Context, filter ports.Subscripti
 	subs := make([]ports.SubscriptionDTO, 0)
 	for _, r := range rawSubs {
 		tenantStr := r.TenantID.String()
+		if tenantStr == "" {
+			tenantStr = s.defaultTenantID.String()
+		}
 		if filter.TenantID != "" && tenantStr != filter.TenantID {
 			continue
 		}
@@ -478,7 +486,7 @@ func (s *Service) ListRetained(ctx context.Context, filter ports.RetainedFilter)
 	limit := filter.Limit
 	if limit == 0 {
 		limit = defaultPageLimit
-	} else if limit < 0 || limit > maxPageLimit {
+	} else if limit < 0 || limit > MaxPageLimit {
 		return nil, nil, ErrInvalidPageSize
 	}
 
@@ -533,7 +541,7 @@ func (s *Service) ListTenants(ctx context.Context, filter ports.TenantFilter) ([
 	limit := filter.Limit
 	if limit == 0 {
 		limit = defaultPageLimit
-	} else if limit < 0 || limit > maxPageLimit {
+	} else if limit < 0 || limit > MaxPageLimit {
 		return nil, nil, ErrInvalidPageSize
 	}
 

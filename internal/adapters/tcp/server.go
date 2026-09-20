@@ -498,13 +498,29 @@ func (connection *connection) handleUnsupportedVersion(err error) bool {
 		return false
 	}
 	if unsupported.ProtocolName == "MQIsdp" && unsupported.Level == 3 {
-		connection.server.logger.Warn("unsupported MQTT protocol", "reason", "unsupported_protocol_version", "protocol", "3.1.0")
+		if metrics := connection.metrics(); metrics != nil {
+			metrics.ConnectRejected(portsmetrics.ProtocolMQTT310, portsmetrics.ConnectRejectReasonUnsupportedProtocolVersion)
+		}
+		connection.server.logger.Warn(
+			"unsupported MQTT protocol",
+			"reason", portsmetrics.ConnectRejectReasonUnsupportedProtocolVersion,
+			"protocol", portsmetrics.ProtocolMQTT310,
+		)
 		connection.requestClose()
 		return true
 	}
 	version := mqtt.ProtocolV311
 	reasonCode := byte(0x01)
-	if unsupported.ProtocolName == "MQTT" && unsupported.Level == byte(mqtt.ProtocolV5) {
+	if unsupported.ProtocolName == "MQTT" && unsupported.Level == 3 {
+		if metrics := connection.metrics(); metrics != nil {
+			metrics.ConnectRejected(portsmetrics.ProtocolMQTT310, portsmetrics.ConnectRejectReasonUnsupportedProtocolVersion)
+		}
+		connection.server.logger.Warn(
+			"unsupported MQTT protocol",
+			"reason", portsmetrics.ConnectRejectReasonUnsupportedProtocolVersion,
+			"protocol", portsmetrics.ProtocolMQTT310,
+		)
+	} else if unsupported.ProtocolName == "MQTT" && unsupported.Level == byte(mqtt.ProtocolV5) {
 		version = mqtt.ProtocolV5
 		reasonCode = 0x84
 	}

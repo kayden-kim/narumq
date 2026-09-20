@@ -4,8 +4,14 @@ import "time"
 
 // Protocol labels (fixed cardinality)
 const (
+	ProtocolMQTT310 = "3.1.0"
 	ProtocolMQTT311 = "MQTT_3_1_1"
 	ProtocolMQTT50  = "MQTT_5_0"
+)
+
+// Connect rejection reasons (fixed cardinality)
+const (
+	ConnectRejectReasonUnsupportedProtocolVersion = "unsupported_protocol_version"
 )
 
 // Transport labels (fixed cardinality)
@@ -46,6 +52,9 @@ type MetricsRecorder interface {
 
 	// AuthAttempt increments authentication counter with method, result and reason.
 	AuthAttempt(method string, success bool, reason string)
+
+	// ConnectRejected increments the fixed-cardinality unsupported CONNECT counter.
+	ConnectRejected(protocol string, reason string)
 
 	// SetSessionsActive updates the active session gauge for persistent or non-persistent sessions.
 	SetSessionsActive(persistent bool, count int64)
