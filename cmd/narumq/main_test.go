@@ -221,3 +221,32 @@ func TestRunReportsListenerConstructionFailure(t *testing.T) {
 		t.Fatalf("runWithContext() error = %v, want listener failure", err)
 	}
 }
+
+func TestRunWithContextTLSFlags(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	tempDir := t.TempDir()
+
+	t.Run("missing cert with tls-listen", func(t *testing.T) {
+		err := runWithContext(context.Background(), []string{
+			"-tls-listen", "127.0.0.1:0",
+		}, logger)
+		if err == nil || !strings.Contains(err.Error(), "configure TLS") {
+			t.Fatalf("expected configure TLS error, got %v", err)
+		}
+	})
+
+	t.Run("invalid tls address", func(t *testing.T) {
+		certPath := filepath.Join(tempDir, "dummy.crt")
+		keyPath := filepath.Join(tempDir, "dummy.key")
+		_ = os.WriteFile(certPath, []byte("dummy"), 0600)
+		_ = os.WriteFile(keyPath, []byte("dummy"), 0600)
+		err := runWithContext(context.Background(), []string{
+			"-tls-listen", "127.0.0.1:0",
+			"-tls-cert", certPath,
+			"-tls-key", keyPath,
+		}, logger)
+		if err == nil || !strings.Contains(err.Error(), "configure TLS") {
+			t.Fatalf("expected configure TLS error for dummy cert, got %v", err)
+		}
+	})
+}

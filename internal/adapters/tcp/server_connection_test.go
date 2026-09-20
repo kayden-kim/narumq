@@ -2,6 +2,8 @@ package tcp
 
 import (
 	"context"
+	"crypto/tls"
+	"crypto/x509"
 	"errors"
 	"net"
 	"testing"
@@ -24,25 +26,25 @@ func TestNewServerValidatesEveryDependencyAndBound(t *testing.T) {
 		want error
 	}{
 		{name: "decoder", make: func() (*Server, error) {
-			return NewServer(valid.listener, valid.config, nil, valid.encoder, valid.connections, valid.subscriptions, valid.publications, valid.deliveries, nil)
+			return NewServer(runtime.listener, valid.config, nil, valid.encoder, valid.connections, valid.subscriptions, valid.publications, valid.deliveries, nil)
 		}, want: ErrNilDecoder},
 		{name: "encoder", make: func() (*Server, error) {
-			return NewServer(valid.listener, valid.config, valid.decoder, nil, valid.connections, valid.subscriptions, valid.publications, valid.deliveries, nil)
+			return NewServer(runtime.listener, valid.config, valid.decoder, nil, valid.connections, valid.subscriptions, valid.publications, valid.deliveries, nil)
 		}, want: ErrNilEncoder},
 		{name: "connect", make: func() (*Server, error) {
-			return NewServer(valid.listener, valid.config, valid.decoder, valid.encoder, nil, valid.subscriptions, valid.publications, valid.deliveries, nil)
+			return NewServer(runtime.listener, valid.config, valid.decoder, valid.encoder, nil, valid.subscriptions, valid.publications, valid.deliveries, nil)
 		}, want: ErrNilConnectUseCase},
 		{name: "subscribe", make: func() (*Server, error) {
-			return NewServer(valid.listener, valid.config, valid.decoder, valid.encoder, valid.connections, nil, valid.publications, valid.deliveries, nil)
+			return NewServer(runtime.listener, valid.config, valid.decoder, valid.encoder, valid.connections, nil, valid.publications, valid.deliveries, nil)
 		}, want: ErrNilSubscribeUseCase},
 		{name: "publish", make: func() (*Server, error) {
-			return NewServer(valid.listener, valid.config, valid.decoder, valid.encoder, valid.connections, valid.subscriptions, nil, valid.deliveries, nil)
+			return NewServer(runtime.listener, valid.config, valid.decoder, valid.encoder, valid.connections, valid.subscriptions, nil, valid.deliveries, nil)
 		}, want: ErrNilPublishUseCase},
 		{name: "delivery queue", make: func() (*Server, error) {
-			return NewServer(valid.listener, valid.config, valid.decoder, valid.encoder, valid.connections, valid.subscriptions, valid.publications, nil, nil)
+			return NewServer(runtime.listener, valid.config, valid.decoder, valid.encoder, valid.connections, valid.subscriptions, valid.publications, nil, nil)
 		}, want: ErrNilDeliveryQueue},
 		{name: "config", make: func() (*Server, error) {
-			return NewServer(valid.listener, Config{}, valid.decoder, valid.encoder, valid.connections, valid.subscriptions, valid.publications, valid.deliveries, nil)
+			return NewServer(runtime.listener, Config{}, valid.decoder, valid.encoder, valid.connections, valid.subscriptions, valid.publications, valid.deliveries, nil)
 		}, want: ErrInvalidConfig},
 	}
 	for _, testCase := range cases {
@@ -53,7 +55,7 @@ func TestNewServerValidatesEveryDependencyAndBound(t *testing.T) {
 			}
 		})
 	}
-	created, err := NewServer(valid.listener, valid.config, valid.decoder, valid.encoder, valid.connections, valid.subscriptions, valid.publications, valid.deliveries, nil)
+	created, err := NewServer(runtime.listener, valid.config, valid.decoder, valid.encoder, valid.connections, valid.subscriptions, valid.publications, valid.deliveries, nil)
 	if err != nil || created == nil || created.logger == nil {
 		t.Fatalf("NewServer(nil logger) = (%#v, %v), want default logger", created, err)
 	}
@@ -384,5 +386,159 @@ func TestReadLoopReturnsReadDeadlineError(t *testing.T) {
 	connection := newConnection(runtime.server, deadlineErrorConnection{Conn: serverSocket, err: wantErr})
 	if err := connection.readLoop(); !errors.Is(err, wantErr) {
 		t.Fatalf("readLoop() error = %v, want %v", err, wantErr)
+	}
+}
+
+type mockTLSConn struct {
+	net.Conn
+	state tls.ConnectionState
+}
+
+func (m mockTLSConn) ConnectionState() tls.ConnectionState {
+	return m.state
+}
+
+func TestServerAddListenerAndMultiListenerServe(t *testing.T) {
+	var nilServer *Server
+	if err := nilServer.AddListener(nil); !errors.Is(err, ErrNilListener) {
+		t.Fatalf("nilServer.AddListener(nil) = %v, want %v", err, ErrNilListener)
+	}
+
+	runtime := newAdapterTestRuntime(t, 2, defaultAdapterConfig())
+
+	if err := runtime.server.AddListener(nil); !errors.Is(err, ErrNilListener) {
+		t.Fatalf("AddListener(nil) = %v, want %v", err, ErrNilListener)
+	}
+
+	secondListener := newPipeListener()
+	if err := runtime.server.AddListener(secondListener); err != nil {
+		t.Fatalf("AddListener(secondListener) = %v", err)
+	}
+
+	// Connect client to second listener
+	serverConn, clientConn := net.Pipe()
+	defer clientConn.Close()
+	secondListener.connections <- serverConn
+	select {
+	case <-secondListener.accepted:
+	case <-time.After(time.Second):
+		t.Fatal("secondListener connection not accepted")
+	}
+
+	connectPacket := &mqtt.Connect{Version: mqtt.ProtocolV5, CleanStart: true, ClientID: "multi-listener-client"}
+	writeTestPackets(t, clientConn, connectPacket)
+	frame := readTestFrame(t, clientConn)
+	if len(frame) < 2 || frame[0] != 0x20 {
+		t.Fatalf("expected CONNACK frame, got %v", frame)
+	}
+
+	// AddListener after stop returns ErrConnectionClosed
+	runtime.stop(t)
+	stoppedListener := newPipeListener()
+	if err := runtime.server.AddListener(stoppedListener); !errors.Is(err, ErrConnectionClosed) {
+		t.Fatalf("AddListener on stopped server = %v, want %v", err, ErrConnectionClosed)
+	}
+	select {
+	case <-stoppedListener.closed:
+	default:
+		t.Fatal("stoppedListener was not closed")
+	}
+}
+
+func TestServerVerifyClientID(t *testing.T) {
+	cfg := defaultAdapterConfig()
+	cfg.VerifyClientID = true
+	runtime := newAdapterTestRuntime(t, 2, cfg)
+	defer runtime.stop(t)
+
+	peerCert := &x509.Certificate{
+		DNSNames:       []string{"client-dns.example.com"},
+		EmailAddresses: []string{"client@example.com"},
+	}
+	peerCert.Subject.CommonName = "client-cn"
+	tlsState := tls.ConnectionState{
+		PeerCertificates: []*x509.Certificate{peerCert},
+	}
+
+	testCases := []struct {
+		name       string
+		version    mqtt.ProtocolVersion
+		clientID   string
+		wantAccept bool
+		wantReason byte
+	}{
+		{name: "v5-match-cn", version: mqtt.ProtocolV5, clientID: "client-cn", wantAccept: true},
+		{name: "v5-match-dns", version: mqtt.ProtocolV5, clientID: "client-dns.example.com", wantAccept: true},
+		{name: "v5-match-email", version: mqtt.ProtocolV5, clientID: "client@example.com", wantAccept: true},
+		{name: "v5-mismatch", version: mqtt.ProtocolV5, clientID: "wrong-client", wantAccept: false, wantReason: 0x87},
+		{name: "v311-match-cn", version: mqtt.ProtocolV311, clientID: "client-cn", wantAccept: true},
+		{name: "v311-mismatch", version: mqtt.ProtocolV311, clientID: "wrong-client", wantAccept: false, wantReason: 0x05},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			serverPipe, clientPipe := net.Pipe()
+			defer clientPipe.Close()
+			mockConn := mockTLSConn{Conn: serverPipe, state: tlsState}
+			runtime.listener.connections <- mockConn
+			select {
+			case <-runtime.listener.accepted:
+			case <-time.After(time.Second):
+				t.Fatal("connection not accepted")
+			}
+			connectPacket := &mqtt.Connect{
+				Version:    tc.version,
+				CleanStart: true,
+				ClientID:   tc.clientID,
+			}
+			writeTestPackets(t, clientPipe, connectPacket)
+			frame := readTestFrame(t, clientPipe)
+			if len(frame) < 3 || frame[0] != 0x20 {
+				t.Fatalf("expected CONNACK, got %v", frame)
+			}
+			reason := frame[3]
+			if tc.wantAccept {
+				if reason != 0 {
+					t.Fatalf("expected reason 0, got 0x%02X", reason)
+				}
+			} else {
+				if reason != tc.wantReason {
+					t.Fatalf("expected reason 0x%02X, got 0x%02X", tc.wantReason, reason)
+				}
+			}
+		})
+	}
+}
+
+func TestServerVerifyClientIDCustomVerifier(t *testing.T) {
+	customCalled := false
+	cfg := defaultAdapterConfig()
+	cfg.VerifyClientID = true
+	cfg.ClientIdentityVerifier = func(conn net.Conn, clientID string) bool {
+		customCalled = true
+		return clientID == "custom-allowed"
+	}
+	runtime := newAdapterTestRuntime(t, 2, cfg)
+	defer runtime.stop(t)
+
+	serverPipe, clientPipe := net.Pipe()
+	runtime.listener.connections <- serverPipe
+	select {
+	case <-runtime.listener.accepted:
+	case <-time.After(time.Second):
+		t.Fatal("connection not accepted")
+	}
+	connectPacket := &mqtt.Connect{
+		Version:    mqtt.ProtocolV5,
+		CleanStart: true,
+		ClientID:   "custom-allowed",
+	}
+	writeTestPackets(t, clientPipe, connectPacket)
+	frame := readTestFrame(t, clientPipe)
+	if len(frame) < 4 || frame[0] != 0x20 || frame[3] != 0 {
+		t.Fatalf("expected accepted CONNACK, got %v", frame)
+	}
+	if !customCalled {
+		t.Fatal("custom verifier was not called")
 	}
 }

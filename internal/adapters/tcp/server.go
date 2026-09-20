@@ -3,6 +3,7 @@ package tcp
 
 import (
 	"context"
+	"crypto/tls"
 	"errors"
 	"io"
 	"log/slog"
@@ -49,15 +50,17 @@ var (
 // Config bounds packet memory, handshake waiting, socket writes and per-connection
 // control output. Delivery queue capacity is owned by the injected queue.
 type Config struct {
-	MaxPacketSize        int
-	ConnectTimeout       time.Duration
-	WriteTimeout         time.Duration
-	ControlQueueCapacity int
+	MaxPacketSize          int
+	ConnectTimeout         time.Duration
+	WriteTimeout           time.Duration
+	ControlQueueCapacity   int
+	VerifyClientID         bool
+	ClientIdentityVerifier func(conn net.Conn, clientID string) bool
 }
 
 // Server owns one listener, all connection goroutines and the session registry.
 type Server struct {
-	listener      net.Listener
+	listeners     []net.Listener
 	config        Config
 	decoder       *mqtt.Decoder
 	encoder       *mqtt.Encoder
@@ -72,7 +75,10 @@ type Server struct {
 	bySession            map[routing.SessionID]*connection
 	stopped              bool
 	stopOnce             sync.Once
+	listenersWaitGroup   sync.WaitGroup
 	connectionsWaitGroup sync.WaitGroup
+	serveCtx             context.Context
+	recordAcceptErr      func(error)
 }
 
 // NewServer creates a TCP ingress over application use cases and packet codec.
@@ -116,7 +122,7 @@ func NewServer(
 		logger = slog.Default()
 	}
 	return &Server{
-		listener:      listener,
+		listeners:     []net.Listener{listener},
 		config:        config,
 		decoder:       decoder,
 		encoder:       encoder,
@@ -130,7 +136,51 @@ func NewServer(
 	}, nil
 }
 
-// Serve accepts connections until the listener is closed, the context is
+// AddListener registers an additional listener (such as a TLS listener) to accept connections.
+func (server *Server) AddListener(listener net.Listener) error {
+	if server == nil {
+		return ErrNilListener
+	}
+	if listener == nil {
+		return ErrNilListener
+	}
+	server.mu.Lock()
+	defer server.mu.Unlock()
+	if server.stopped {
+		_ = listener.Close()
+		return ErrConnectionClosed
+	}
+	server.listeners = append(server.listeners, listener)
+	if server.serveCtx != nil && server.recordAcceptErr != nil {
+		server.startListener(server.serveCtx, listener, server.recordAcceptErr)
+	}
+	return nil
+}
+
+func (server *Server) startListener(ctx context.Context, l net.Listener, recordErr func(error)) {
+	server.listenersWaitGroup.Add(1)
+	go func() {
+		defer server.listenersWaitGroup.Done()
+		for {
+			socket, err := l.Accept()
+			if err != nil {
+				if ctx.Err() == nil && !errors.Is(err, net.ErrClosed) {
+					recordErr(err)
+				}
+				break
+			}
+			connection := newConnection(server, socket)
+			server.addActive(connection)
+			server.connectionsWaitGroup.Add(1)
+			go func() {
+				defer server.connectionsWaitGroup.Done()
+				connection.run()
+			}()
+		}
+	}()
+}
+
+// Serve accepts connections until all listeners are closed, the context is
 // cancelled, or an unexpected accept error occurs. Cancellation and normal
 // listener closure return nil after all connection goroutines finish.
 func (server *Server) Serve(ctx context.Context) error {
@@ -149,23 +199,30 @@ func (server *Server) Serve(ctx context.Context) error {
 		}
 	}()
 
-	var acceptErr error
-	for {
-		socket, err := server.listener.Accept()
-		if err != nil {
-			if ctx.Err() == nil && !errors.Is(err, net.ErrClosed) {
-				acceptErr = err
-			}
-			break
+	var (
+		errMu     sync.Mutex
+		acceptErr error
+	)
+	recordErr := func(err error) {
+		errMu.Lock()
+		if acceptErr == nil {
+			acceptErr = err
 		}
-		connection := newConnection(server, socket)
-		server.addActive(connection)
-		server.connectionsWaitGroup.Add(1)
-		go func() {
-			defer server.connectionsWaitGroup.Done()
-			connection.run()
-		}()
+		errMu.Unlock()
+		server.stopAll()
 	}
+
+	server.mu.Lock()
+	server.serveCtx = ctx
+	server.recordAcceptErr = recordErr
+	listeners := append([]net.Listener(nil), server.listeners...)
+	server.mu.Unlock()
+
+	for _, listener := range listeners {
+		server.startListener(ctx, listener, recordErr)
+	}
+
+	server.listenersWaitGroup.Wait()
 	close(serveDone)
 	server.stopAll()
 	server.connectionsWaitGroup.Wait()
@@ -242,14 +299,17 @@ func (server *Server) closeSession(sessionID routing.SessionID) {
 
 func (server *Server) stopAll() {
 	server.stopOnce.Do(func() {
-		_ = server.listener.Close()
 		server.mu.Lock()
 		server.stopped = true
+		listeners := append([]net.Listener(nil), server.listeners...)
 		connections := make([]*connection, 0, len(server.active))
 		for connection := range server.active {
 			connections = append(connections, connection)
 		}
 		server.mu.Unlock()
+		for _, listener := range listeners {
+			_ = listener.Close()
+		}
 		for _, connection := range connections {
 			connection.requestClose()
 		}
@@ -417,6 +477,26 @@ func (connection *connection) handleUnsupportedVersion(err error) bool {
 }
 
 func (connection *connection) activate(packet mqtt.Connect) error {
+	if connection.server.config.VerifyClientID {
+		verifier := connection.server.config.ClientIdentityVerifier
+		if verifier == nil {
+			verifier = defaultClientIdentityVerifier
+		}
+		if !verifier(connection.socket, packet.ClientID) {
+			reasonCode := byte(0x05)
+			if packet.Version == mqtt.ProtocolV5 {
+				reasonCode = 0x87
+			}
+			if err := connection.enqueueAndWait(&mqtt.ConnAck{
+				Version:    packet.Version,
+				ReasonCode: reasonCode,
+			}); err != nil {
+				return err
+			}
+			connection.requestClose()
+			return nil
+		}
+	}
 	result, err := connection.server.connections.Connect(packet)
 	if err != nil {
 		return err
@@ -1073,4 +1153,34 @@ func (b *WillBridge) PublishWill(sessionID routing.SessionID, will mqtt.Will) er
 		return nil
 	}
 	return target.PublishWill(sessionID, will)
+}
+
+type tlsConnectionState interface {
+	ConnectionState() tls.ConnectionState
+}
+
+func defaultClientIdentityVerifier(conn net.Conn, clientID string) bool {
+	tlsConn, ok := conn.(tlsConnectionState)
+	if !ok {
+		return true
+	}
+	state := tlsConn.ConnectionState()
+	if len(state.PeerCertificates) == 0 {
+		return true
+	}
+	cert := state.PeerCertificates[0]
+	if cert.Subject.CommonName == clientID {
+		return true
+	}
+	for _, dns := range cert.DNSNames {
+		if dns == clientID {
+			return true
+		}
+	}
+	for _, email := range cert.EmailAddresses {
+		if email == clientID {
+			return true
+		}
+	}
+	return false
 }

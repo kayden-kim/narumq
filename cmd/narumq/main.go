@@ -13,6 +13,7 @@ import (
 	"narumq/internal/adapters/memory/sessionstore"
 	"narumq/internal/adapters/runtimemetrics"
 	tcpadapter "narumq/internal/adapters/tcp"
+	tlsadapter "narumq/internal/adapters/tls"
 	"narumq/internal/application/connect"
 	"narumq/internal/application/publish"
 	"narumq/internal/application/subscribe"
@@ -50,6 +51,13 @@ func runWithContext(ctx context.Context, args []string, logger *slog.Logger) err
 	flagSet := flag.NewFlagSet("narumq", flag.ContinueOnError)
 	flagSet.SetOutput(io.Discard)
 	tcpListen := flagSet.String("tcp-listen", "", "development-only loopback TCP listen address")
+	tlsListen := flagSet.String("tls-listen", "", "TLS listen address")
+	tlsCert := flagSet.String("tls-cert", "", "server certificate PEM file")
+	tlsKey := flagSet.String("tls-key", "", "server private key PEM file")
+	tlsCA := flagSet.String("tls-ca", "", "client CA certificate PEM file")
+	tlsClientAuth := flagSet.String("tls-client-auth", "none", "client authentication policy (none, request, require)")
+	tlsMinVersion := flagSet.String("tls-min-version", "1.2", "minimum TLS version (1.2, 1.3)")
+	tlsVerifyClientID := flagSet.Bool("tls-verify-client-id", false, "enforce Client ID matches client certificate identity")
 	maxPacketSize := flagSet.Int("max-packet-size", 1048576, "maximum MQTT Remaining Length")
 	connectTimeout := flagSet.Duration("connect-timeout", 10*time.Second, "CONNECT handshake timeout")
 	writeTimeout := flagSet.Duration("write-timeout", 5*time.Second, "socket write timeout")
@@ -69,9 +77,9 @@ func runWithContext(ctx context.Context, args []string, logger *slog.Logger) err
 	if metricsRequested && *runtimeMetricsInterval <= 0 {
 		return errors.New("-runtime-metrics-interval must be greater than zero")
 	}
-	if *tcpListen == "" {
+	if *tcpListen == "" && *tlsListen == "" {
 		if metricsRequested {
-			return errors.New("-tcp-listen is required when runtime metrics collection is enabled")
+			return errors.New("-tcp-listen or -tls-listen is required when runtime metrics collection is enabled")
 		}
 		logger.Info("MQTT TCP listener disabled", "development_only", true)
 		return nil
@@ -79,15 +87,49 @@ func runWithContext(ctx context.Context, args []string, logger *slog.Logger) err
 	if *retainedMessageCapacity <= 0 || *retainedByteCapacity <= 0 {
 		return errors.New("-retained-message-capacity and -retained-byte-capacity must be greater than zero")
 	}
-	if err := validateLoopbackListenAddress(*tcpListen); err != nil {
-		return err
-	}
-	listener, err := net.Listen("tcp", *tcpListen)
-	if err != nil {
-		return fmt.Errorf("listen on %q: %w", *tcpListen, err)
-	}
-	defer listener.Close()
 
+	var (
+		listeners   []net.Listener
+		tcpListener net.Listener
+		tlsListener net.Listener
+	)
+	defer func() {
+		for _, l := range listeners {
+			_ = l.Close()
+		}
+	}()
+
+	if *tcpListen != "" {
+		if err := validateLoopbackListenAddress(*tcpListen); err != nil {
+			return err
+		}
+		var err error
+		tcpListener, err = net.Listen("tcp", *tcpListen)
+		if err != nil {
+			return fmt.Errorf("listen on %q: %w", *tcpListen, err)
+		}
+		listeners = append(listeners, tcpListener)
+	}
+
+	if *tlsListen != "" {
+		tlsConfig, err := tlsadapter.BuildTLSConfig(tlsadapter.Config{
+			CertFile:       *tlsCert,
+			KeyFile:        *tlsKey,
+			CAFile:         *tlsCA,
+			ClientAuth:     tlsadapter.ClientAuthMode(*tlsClientAuth),
+			MinVersion:     *tlsMinVersion,
+			VerifyClientID: *tlsVerifyClientID,
+		})
+		if err != nil {
+			return fmt.Errorf("configure TLS: %w", err)
+		}
+		var errListen error
+		tlsListener, errListen = tlsadapter.Listen("tcp", *tlsListen, tlsConfig)
+		if errListen != nil {
+			return fmt.Errorf("listen TLS on %q: %w", *tlsListen, errListen)
+		}
+		listeners = append(listeners, tlsListener)
+	}
 	routes := routing.NewTable()
 	deliveries, err := deliveryqueue.New(*deliveryQueueCapacity)
 	if err != nil {
@@ -122,12 +164,14 @@ func runWithContext(ctx context.Context, args []string, logger *slog.Logger) err
 		return fmt.Errorf("create MQTT encoder: %w", err)
 	}
 	server, err := tcpadapter.NewServer(
-		listener,
+		listeners[0],
 		tcpadapter.Config{
-			MaxPacketSize:        *maxPacketSize,
-			ConnectTimeout:       *connectTimeout,
-			WriteTimeout:         *writeTimeout,
-			ControlQueueCapacity: *controlQueueCapacity,
+			MaxPacketSize:          *maxPacketSize,
+			ConnectTimeout:         *connectTimeout,
+			WriteTimeout:           *writeTimeout,
+			ControlQueueCapacity:   *controlQueueCapacity,
+			VerifyClientID:         *tlsVerifyClientID,
+			ClientIdentityVerifier: tlsadapter.VerifyConnClientIdentity,
 		},
 		decoder,
 		encoder,
@@ -140,13 +184,31 @@ func runWithContext(ctx context.Context, args []string, logger *slog.Logger) err
 	if err != nil {
 		return fmt.Errorf("create TCP server: %w", err)
 	}
+	for i := 1; i < len(listeners); i++ {
+		if err := server.AddListener(listeners[i]); err != nil {
+			return fmt.Errorf("add listener: %w", err)
+		}
+	}
 	willBridge.Bind(server)
-	logger.Info("MQTT TCP listener started", "address", listener.Addr().String(), "development_only", true, "qos0_only", true, "retained_supported", true)
+	if tcpListener != nil {
+		logger.Info("MQTT TCP listener started", "address", tcpListener.Addr().String(), "development_only", true, "qos0_only", true, "retained_supported", true)
+	}
+	if tlsListener != nil {
+		logger.Info("MQTT TLS listener started", "address", tlsListener.Addr().String(), "qos0_only", true, "retained_supported", true)
+	}
+	stopLogging := func() {
+		if tcpListener != nil {
+			logger.Info("MQTT TCP listener stopped", "address", tcpListener.Addr().String())
+		}
+		if tlsListener != nil {
+			logger.Info("MQTT TLS listener stopped", "address", tlsListener.Addr().String())
+		}
+	}
 	if !metricsRequested {
 		if err := server.Serve(ctx); err != nil {
 			return fmt.Errorf("serve MQTT TCP listener: %w", err)
 		}
-		logger.Info("MQTT TCP listener stopped", "address", listener.Addr().String())
+		stopLogging()
 		return nil
 	}
 	sampler, err := runtimemetrics.New(*runtimeMetricsOutput, *runtimeMetricsInterval)
@@ -156,7 +218,7 @@ func runWithContext(ctx context.Context, args []string, logger *slog.Logger) err
 	if err := serveWithRuntimeMetrics(ctx, server, sampler); err != nil {
 		return err
 	}
-	logger.Info("MQTT TCP listener stopped", "address", listener.Addr().String())
+	stopLogging()
 	return nil
 }
 
