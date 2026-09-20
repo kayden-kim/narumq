@@ -2,15 +2,25 @@ package integration
 
 import (
 	"context"
+	"crypto/rand"
+	"crypto/rsa"
+	"encoding/json"
 	"fmt"
 	"io"
 	"log/slog"
 	"net"
+	"net/http"
+	"net/http/httptest"
 	"reflect"
 	"sync"
 	"testing"
 	"time"
 
+	"github.com/lestrrat-go/jwx/v3/jwa"
+	"github.com/lestrrat-go/jwx/v3/jwk"
+	"github.com/lestrrat-go/jwx/v3/jwt"
+
+	authenticationadapter "narumq/internal/adapters/authentication"
 	"narumq/internal/adapters/clock"
 	"narumq/internal/adapters/memory/deliveryqueue"
 	memoryretained "narumq/internal/adapters/memory/retained"
@@ -22,6 +32,8 @@ import (
 	"narumq/internal/application/subscribe"
 	"narumq/internal/domain/mqtt"
 	"narumq/internal/domain/routing"
+	"narumq/internal/domain/security"
+	"narumq/internal/domain/tenancy"
 )
 
 type ingressClock struct {
@@ -1323,4 +1335,389 @@ func TestMQTTIngressSharedSubscription(t *testing.T) {
 	expectNoPacket(t, workerB)
 	expectNoPacket(t, auditor)
 	expectNoPacket(t, publisher)
+}
+
+// Requirements: TEN-01, TEN-02, TEN-03, TEN-04, TEN-05, SEC-04, SEC-06
+func TestMQTTSecurity(t *testing.T) {
+	// Generate test RSA key
+	privKey, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatal(err)
+	}
+	privJWK, err := jwk.Import(privKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = privJWK.Set("kid", "key-sec")
+	_ = privJWK.Set("alg", "RS256")
+	pubJWK, err := jwk.PublicKeyOf(privJWK)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = pubJWK.Set("kid", "key-sec")
+	_ = pubJWK.Set("alg", "RS256")
+
+	jwksSet := jwk.NewSet()
+	_ = jwksSet.AddKey(pubJWK)
+	jwksJSON, err := json.Marshal(jwksSet)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	jwksServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write(jwksJSON)
+	}))
+	t.Cleanup(jwksServer.Close)
+
+	tenantA, _ := tenancy.NewTenantID("tenant-a")
+	tenantB, _ := tenancy.NewTenantID("tenant-b")
+
+	makeToken := func(subject string, expiresAt time.Time, extraClaims map[string]any) []byte {
+		tok := jwt.New()
+		_ = tok.Set("iss", "https://issuer.example")
+		_ = tok.Set("aud", []string{"narumq"})
+		_ = tok.Set("sub", subject)
+		_ = tok.Set("exp", expiresAt)
+		for k, v := range extraClaims {
+			_ = tok.Set(k, v)
+		}
+		signed, err := jwt.Sign(tok, jwt.WithKey(jwa.RS256(), privJWK))
+		if err != nil {
+			t.Fatal(err)
+		}
+		return signed
+	}
+
+	now := time.Now()
+	tokenA := makeToken("device-a", now.Add(time.Hour), map[string]any{"tenantId": "malicious-claim"})
+	tokenB := makeToken("device-b", now.Add(time.Hour), nil)
+
+	bindings := []authenticationadapter.IdentityBinding{
+		{
+			Issuer:           "https://issuer.example",
+			Subject:          "device-a",
+			TenantID:         tenantA,
+			CredentialID:     "cred-a",
+			AllowedClientIDs: []string{"client-shared", "client-a-pub", "worker-a"},
+			Roles:            []security.Role{"publisher", "worker"},
+		},
+		{
+			Issuer:           "https://issuer.example",
+			Subject:          "device-b",
+			TenantID:         tenantB,
+			CredentialID:     "cred-b",
+			AllowedClientIDs: []string{"client-shared", "client-b-pub", "worker-b"},
+			Roles:            []security.Role{"publisher", "worker"},
+		},
+	}
+
+	authConfig := authenticationadapter.Config{
+		Issuer:          "https://issuer.example",
+		Audience:        "narumq",
+		Algorithms:      []string{"RS256"},
+		JWKSURL:         jwksServer.URL,
+		CacheTTL:        time.Minute,
+		RefreshCooldown: 10 * time.Second,
+		ClockSkew:       time.Second,
+		HTTPTimeout:     time.Second,
+		HTTPClient:      &http.Client{Timeout: time.Second},
+		Clock:           clock.SystemClock{},
+		Bindings:        bindings,
+	}
+	authProvider, err := authenticationadapter.NewJWKSAuthenticationProvider(authConfig)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	filterAAll, _ := tenancy.NewTopicFilter(tenantA, "telemetry/#")
+	filterAPriv, _ := tenancy.NewTopicFilter(tenantA, "telemetry/private/#")
+	filterBAll, _ := tenancy.NewTopicFilter(tenantB, "telemetry/#")
+	filterAJobs, _ := tenancy.NewTopicFilter(tenantA, "$share/workers/telemetry/jobs")
+	filterBJobs, _ := tenancy.NewTopicFilter(tenantB, "$share/workers/telemetry/jobs")
+
+	ruleA1, _ := security.NewRule(tenantA, "publisher", security.EffectAllow, security.ActionPublish, filterAAll)
+	ruleA2, _ := security.NewRule(tenantA, "publisher", security.EffectDeny, security.ActionPublish, filterAPriv)
+	ruleA3, _ := security.NewRule(tenantA, "publisher", security.EffectAllow, security.ActionSubscribe, filterAAll)
+	ruleA4, _ := security.NewRule(tenantA, "worker", security.EffectAllow, security.ActionSubscribe, filterAJobs)
+
+	ruleB1, _ := security.NewRule(tenantB, "publisher", security.EffectAllow, security.ActionPublish, filterBAll)
+	ruleB2, _ := security.NewRule(tenantB, "publisher", security.EffectAllow, security.ActionSubscribe, filterBAll)
+	ruleB3, _ := security.NewRule(tenantB, "worker", security.EffectAllow, security.ActionSubscribe, filterBJobs)
+
+	policy, err := security.NewPolicy([]security.Rule{ruleA1, ruleA2, ruleA3, ruleA4, ruleB1, ruleB2, ruleB3})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Start test TCP server with security
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	routes := routing.NewTable()
+	deliveries, _ := deliveryqueue.New(64)
+	retainedRepo, _ := memoryretained.New(64, 4096)
+	repository := sessionstore.New()
+	willBridge := tcpadapter.NewWillBridge()
+	connections, err := connect.New(clock.SystemClock{}, repository, deliveries, routes, clock.SystemScheduler{}, willBridge, connect.WithSecurity(authProvider, policy))
+	if err != nil {
+		t.Fatal(err)
+	}
+	subscriptions, err := subscribe.New(routes, deliveries, retainedRepo, subscribe.WithPolicy(policy))
+	if err != nil {
+		t.Fatal(err)
+	}
+	publications, err := publish.New(clock.SystemClock{}, routes, deliveries, retainedRepo, publish.WithPolicy(policy))
+	if err != nil {
+		t.Fatal(err)
+	}
+	decoder, _ := mqtt.NewDecoder(1048576)
+	encoder, _ := mqtt.NewEncoder(1048576)
+	server, err := tcpadapter.NewServer(
+		listener,
+		tcpadapter.Config{
+			MaxPacketSize:        1048576,
+			Clock:                clock.SystemClock{},
+			ConnectTimeout:       2 * time.Second,
+			WriteTimeout:         2 * time.Second,
+			ControlQueueCapacity: 16,
+			Policy:               policy,
+		},
+		decoder,
+		encoder,
+		connections,
+		subscriptions,
+		publications,
+		deliveries,
+		slog.New(slog.NewTextHandler(io.Discard, nil)),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	willBridge.Bind(server)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	serverDone := make(chan error, 1)
+	go func() { serverDone <- server.Serve(ctx) }()
+	t.Cleanup(func() {
+		cancel()
+		_ = listener.Close()
+		<-serverDone
+	})
+
+	dialClient := func() net.Conn {
+		conn, err := net.Dial("tcp", listener.Addr().String())
+		if err != nil {
+			t.Fatal(err)
+		}
+		return conn
+	}
+
+	t.Run("TEN-01_SEC-04_RejectUnauthenticatedAndMismatch", func(t *testing.T) {
+		// 1. Missing credentials
+		c1 := dialClient()
+		defer c1.Close()
+		writePacket(t, c1, encoder, &mqtt.Connect{Version: mqtt.ProtocolV5, CleanStart: true, ClientID: "client-shared"})
+		ack := readPacket(t, c1, decoder, mqtt.ProtocolV5).(*mqtt.ConnAck)
+		if ack.ReasonCode != 0x87 {
+			t.Fatalf("missing cred reason = %#x, want 0x87", ack.ReasonCode)
+		}
+
+		// 2. Client ID not in allowedClientIds
+		c2 := dialClient()
+		defer c2.Close()
+		writePacket(t, c2, encoder, &mqtt.Connect{
+			Version:     mqtt.ProtocolV5,
+			CleanStart:  true,
+			ClientID:    "unauthorized-id",
+			HasUsername: true,
+			HasPassword: true,
+			Password:    tokenA,
+		})
+		ack = readPacket(t, c2, decoder, mqtt.ProtocolV5).(*mqtt.ConnAck)
+		if ack.ReasonCode != 0x87 {
+			t.Fatalf("unauthorized Client ID reason = %#x, want 0x87", ack.ReasonCode)
+		}
+	})
+
+	t.Run("TEN-02_SameClientIDAcrossDifferentTenants", func(t *testing.T) {
+		// Tenant A client-shared connects
+		cA := dialClient()
+		defer cA.Close()
+		writePacket(t, cA, encoder, &mqtt.Connect{
+			Version:     mqtt.ProtocolV5,
+			CleanStart:  false,
+			ClientID:    "client-shared",
+			HasUsername: true,
+			HasPassword: true,
+			Password:    tokenA,
+		})
+		ackA := readPacket(t, cA, decoder, mqtt.ProtocolV5).(*mqtt.ConnAck)
+		if ackA.ReasonCode != 0 {
+			t.Fatalf("tenant A client-shared CONNACK = %#x", ackA.ReasonCode)
+		}
+
+		// Tenant B client-shared connects simultaneously
+		cB := dialClient()
+		defer cB.Close()
+		writePacket(t, cB, encoder, &mqtt.Connect{
+			Version:     mqtt.ProtocolV5,
+			CleanStart:  false,
+			ClientID:    "client-shared",
+			HasUsername: true,
+			HasPassword: true,
+			Password:    tokenB,
+		})
+		ackB := readPacket(t, cB, decoder, mqtt.ProtocolV5).(*mqtt.ConnAck)
+		if ackB.ReasonCode != 0 {
+			t.Fatalf("tenant B client-shared CONNACK = %#x", ackB.ReasonCode)
+		}
+
+		// Both are still alive and connected!
+		writePacket(t, cA, encoder, &mqtt.PingReq{Version: mqtt.ProtocolV5})
+		_ = readPacket(t, cA, decoder, mqtt.ProtocolV5).(*mqtt.PingResp)
+		writePacket(t, cB, encoder, &mqtt.PingReq{Version: mqtt.ProtocolV5})
+		_ = readPacket(t, cB, decoder, mqtt.ProtocolV5).(*mqtt.PingResp)
+	})
+
+	t.Run("TEN-03_TEN-05_TopicAndRetainedAndSharedIsolation", func(t *testing.T) {
+		// Connect subscriber in Tenant A
+		subA := dialClient()
+		defer subA.Close()
+		writePacket(t, subA, encoder, &mqtt.Connect{
+			Version:     mqtt.ProtocolV5,
+			CleanStart:  true,
+			ClientID:    "client-shared",
+			HasUsername: true,
+			HasPassword: true,
+			Password:    tokenA,
+		})
+		_ = readPacket(t, subA, decoder, mqtt.ProtocolV5).(*mqtt.ConnAck)
+		writePacket(t, subA, encoder, &mqtt.Subscribe{
+			Version:  mqtt.ProtocolV5,
+			PacketID: 1,
+			Subscriptions: []mqtt.Subscription{
+				{Filter: "telemetry/#", QoS: mqtt.QoSAtLeastOnce},
+			},
+		})
+		_ = readPacket(t, subA, decoder, mqtt.ProtocolV5).(*mqtt.SubAck)
+
+		// Connect subscriber in Tenant B
+		subB := dialClient()
+		defer subB.Close()
+		writePacket(t, subB, encoder, &mqtt.Connect{
+			Version:     mqtt.ProtocolV5,
+			CleanStart:  true,
+			ClientID:    "client-shared",
+			HasUsername: true,
+			HasPassword: true,
+			Password:    tokenB,
+		})
+		_ = readPacket(t, subB, decoder, mqtt.ProtocolV5).(*mqtt.ConnAck)
+		writePacket(t, subB, encoder, &mqtt.Subscribe{
+			Version:  mqtt.ProtocolV5,
+			PacketID: 1,
+			Subscriptions: []mqtt.Subscription{
+				{Filter: "telemetry/#", QoS: mqtt.QoSAtLeastOnce},
+			},
+		})
+		_ = readPacket(t, subB, decoder, mqtt.ProtocolV5).(*mqtt.SubAck)
+
+		// Publisher in Tenant A publishes QoS 1 with Retain
+		pubA := dialClient()
+		defer pubA.Close()
+		writePacket(t, pubA, encoder, &mqtt.Connect{
+			Version:     mqtt.ProtocolV5,
+			CleanStart:  true,
+			ClientID:    "client-a-pub",
+			HasUsername: true,
+			HasPassword: true,
+			Password:    tokenA,
+		})
+		_ = readPacket(t, pubA, decoder, mqtt.ProtocolV5).(*mqtt.ConnAck)
+
+		writePacket(t, pubA, encoder, &mqtt.Publish{
+			Version:  mqtt.ProtocolV5,
+			PacketID: 10,
+			Topic:    "telemetry/temp",
+			Payload:  []byte("22.5"),
+			QoS:      mqtt.QoSAtLeastOnce,
+			Retain:   true,
+		})
+		pubAck := readPacket(t, pubA, decoder, mqtt.ProtocolV5).(*mqtt.PubAck)
+		if pubAck.ReasonCode != 0 {
+			t.Fatalf("pubA PUBACK = %#v", pubAck)
+		}
+
+		// SubA MUST receive publication
+		deliveredA := readPacket(t, subA, decoder, mqtt.ProtocolV5).(*mqtt.Publish)
+		if string(deliveredA.Payload) != "22.5" {
+			t.Fatalf("subA received unexpected payload: %s", string(deliveredA.Payload))
+		}
+
+		// SubB MUST NOT receive publication
+		expectNoPacket(t, subB)
+
+		// Shared subscription isolation: Worker A and Worker B both subscribe to $share/workers/jobs
+		workA := dialClient()
+		defer workA.Close()
+		writePacket(t, workA, encoder, &mqtt.Connect{Version: mqtt.ProtocolV5, CleanStart: true, ClientID: "worker-a", HasUsername: true, HasPassword: true, Password: tokenA})
+		_ = readPacket(t, workA, decoder, mqtt.ProtocolV5).(*mqtt.ConnAck)
+		writePacket(t, workA, encoder, &mqtt.Subscribe{Version: mqtt.ProtocolV5, PacketID: 2, Subscriptions: []mqtt.Subscription{{Filter: "$share/workers/telemetry/jobs", QoS: mqtt.QoSAtLeastOnce}}})
+		_ = readPacket(t, workA, decoder, mqtt.ProtocolV5).(*mqtt.SubAck)
+
+		workB := dialClient()
+		defer workB.Close()
+		writePacket(t, workB, encoder, &mqtt.Connect{Version: mqtt.ProtocolV5, CleanStart: true, ClientID: "worker-b", HasUsername: true, HasPassword: true, Password: tokenB})
+		_ = readPacket(t, workB, decoder, mqtt.ProtocolV5).(*mqtt.ConnAck)
+		writePacket(t, workB, encoder, &mqtt.Subscribe{Version: mqtt.ProtocolV5, PacketID: 2, Subscriptions: []mqtt.Subscription{{Filter: "$share/workers/telemetry/jobs", QoS: mqtt.QoSAtLeastOnce}}})
+		_ = readPacket(t, workB, decoder, mqtt.ProtocolV5).(*mqtt.SubAck)
+
+		// Publish from pubA to telemetry/jobs (covered by ruleA1 telemetry/#)
+		writePacket(t, pubA, encoder, &mqtt.Publish{Version: mqtt.ProtocolV5, PacketID: 11, Topic: "telemetry/jobs", Payload: []byte("job-1"), QoS: mqtt.QoSAtLeastOnce})
+		pubAck = readPacket(t, pubA, decoder, mqtt.ProtocolV5).(*mqtt.PubAck)
+		if pubAck.ReasonCode != 0 {
+			t.Fatalf("pubA shared PUBACK = %#v", pubAck)
+		}
+
+		// Worker A receives job-1; Worker B receives nothing!
+		jobPktA := readPacket(t, workA, decoder, mqtt.ProtocolV5).(*mqtt.Publish)
+		if string(jobPktA.Payload) != "job-1" {
+			t.Fatalf("workA payload = %s", string(jobPktA.Payload))
+		}
+		expectNoPacket(t, workB)
+	})
+
+	t.Run("TEN-04_SEC-06_ACLDenyPrecedenceAndNoMutation", func(t *testing.T) {
+		c := dialClient()
+		defer c.Close()
+		writePacket(t, c, encoder, &mqtt.Connect{Version: mqtt.ProtocolV5, CleanStart: true, ClientID: "client-a-pub", HasUsername: true, HasPassword: true, Password: tokenA})
+		_ = readPacket(t, c, decoder, mqtt.ProtocolV5).(*mqtt.ConnAck)
+
+		// 1. Publish to private topic (denied by ruleA2)
+		writePacket(t, c, encoder, &mqtt.Publish{
+			Version:  mqtt.ProtocolV5,
+			PacketID: 100,
+			Topic:    "telemetry/private/secret",
+			Payload:  []byte("forbidden"),
+			QoS:      mqtt.QoSAtLeastOnce,
+		})
+		pubAck := readPacket(t, c, decoder, mqtt.ProtocolV5).(*mqtt.PubAck)
+		if pubAck.PacketID != 100 || pubAck.ReasonCode != 0x87 {
+			t.Fatalf("denied pubAck = %#v, want ReasonCode 0x87", pubAck)
+		}
+
+		// 2. Subscribe to forbidden filter
+		writePacket(t, c, encoder, &mqtt.Subscribe{
+			Version:       mqtt.ProtocolV5,
+			PacketID:      101,
+			Subscriptions: []mqtt.Subscription{{Filter: "other/#", QoS: mqtt.QoSAtLeastOnce}},
+		})
+		subAck := readPacket(t, c, decoder, mqtt.ProtocolV5).(*mqtt.SubAck)
+		if subAck.PacketID != 101 || len(subAck.ReasonCodes) != 1 || subAck.ReasonCodes[0] != 0x87 {
+			t.Fatalf("denied subAck = %#v, want ReasonCode 0x87", subAck)
+		}
+	})
 }

@@ -12,6 +12,8 @@ import (
 	"narumq/internal/application/ports/retained"
 	"narumq/internal/domain/mqtt"
 	"narumq/internal/domain/routing"
+	"narumq/internal/domain/security"
+	"narumq/internal/domain/tenancy"
 )
 
 var (
@@ -32,6 +34,16 @@ type ResultDTO struct {
 	Unavailable []routing.SessionID
 }
 
+// Option configures optional parameters for the publish use case.
+type Option func(*UseCase)
+
+// WithPolicy configures an authorization policy for publication.
+func WithPolicy(policy security.Policy) Option {
+	return func(u *UseCase) {
+		u.policy = policy
+	}
+}
+
 // UseCase stores retained state before routing one publication to all matching
 // sessions through the bounded delivery queue.
 type UseCase struct {
@@ -39,11 +51,12 @@ type UseCase struct {
 	routes   *routing.Table
 	queue    deliveryqueue.Queue
 	retained retained.Repository
+	policy   security.Policy
 }
 
 // New creates a publish use case over the supplied route, queue, and retained
 // repository ports.
-func New(clock applicationclock.Clock, routes *routing.Table, queue deliveryqueue.Queue, retainedRepository retained.Repository) (*UseCase, error) {
+func New(clock applicationclock.Clock, routes *routing.Table, queue deliveryqueue.Queue, retainedRepository retained.Repository, opts ...Option) (*UseCase, error) {
 	if clock == nil {
 		return nil, ErrNilClock
 	}
@@ -56,14 +69,20 @@ func New(clock applicationclock.Clock, routes *routing.Table, queue deliveryqueu
 	if retainedRepository == nil {
 		return nil, ErrNilRetainedRepository
 	}
-	return &UseCase{clock: clock, routes: routes, queue: queue, retained: retainedRepository}, nil
+	useCase := &UseCase{clock: clock, routes: routes, queue: queue, retained: retainedRepository}
+	for _, opt := range opts {
+		if opt != nil {
+			opt(useCase)
+		}
+	}
+	return useCase, nil
 }
 
 // Publish validates the publisher and publication, commits retained mutation
 // before route matching, and continues after per-session saturation or
 // unavailability. Unknown queue errors stop the fan-out and return partial
 // results so successful earlier deliveries are not hidden.
-func (useCase *UseCase) Publish(publisherSessionID routing.SessionID, packet mqtt.Publish, receivedAt time.Time) (ResultDTO, error) {
+func (useCase *UseCase) Publish(publisherSessionID routing.SessionID, packet mqtt.Publish, receivedAt time.Time, principal ...security.Principal) (ResultDTO, error) {
 	if err := routing.ValidateSessionID(publisherSessionID); err != nil {
 		return ResultDTO{}, err
 	}
@@ -72,6 +91,15 @@ func (useCase *UseCase) Publish(publisherSessionID routing.SessionID, packet mqt
 	}
 	if packet.QoS > mqtt.QoSExactlyOnce {
 		return ResultDTO{}, routing.ErrInvalidQoS
+	}
+	if len(principal) > 0 && principal[0].Subject() != "" {
+		topic, err := tenancy.NewTopic(principal[0].TenantID(), packet.Topic)
+		if err != nil {
+			return ResultDTO{}, security.ErrNotAuthorized
+		}
+		if err := useCase.policy.AuthorizeTopic(principal[0], security.ActionPublish, topic); err != nil {
+			return ResultDTO{}, security.ErrNotAuthorized
+		}
 	}
 	var expiresAt time.Time
 	if packet.HasMessageExpiryInterval {

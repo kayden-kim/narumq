@@ -10,6 +10,8 @@ import (
 	applicationretained "narumq/internal/application/ports/retained"
 	"narumq/internal/domain/mqtt"
 	"narumq/internal/domain/routing"
+	"narumq/internal/domain/security"
+	"narumq/internal/domain/tenancy"
 )
 
 type recordingQueue struct {
@@ -408,5 +410,86 @@ func TestPublishStoresOneAbsoluteExpiryDeadlineAndAcceptsExpiredPublication(t *t
 	}
 	if !reflect.DeepEqual(repository.deletes, []string{"events/state"}) {
 		t.Fatalf("expired retained deletes = %#v, want topic deletion", repository.deletes)
+	}
+}
+
+// Requirements: SEC-06, TEN-04
+func TestPublish_UnauthorizedRejection(t *testing.T) {
+	now := testNow()
+	clock := &fakeClock{now: now}
+	routes := routing.NewTable()
+	queue := &recordingQueue{errors: make(map[routing.SessionID]error)}
+	repository := &recordingRetainedRepository{}
+
+	tenant, err := tenancy.NewTenantID("tenant-a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	allowedFilter, err := tenancy.NewTopicFilter(tenant, "allowed/#")
+	if err != nil {
+		t.Fatal(err)
+	}
+	rule, err := security.NewRule(tenant, "publisher", security.EffectAllow, security.ActionPublish, allowedFilter)
+	if err != nil {
+		t.Fatal(err)
+	}
+	policy, err := security.NewPolicy([]security.Rule{rule})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	useCase, err := New(clock, routes, queue, repository, WithPolicy(policy))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	principal, err := security.NewPrincipal(
+		tenant,
+		"client-1",
+		"device-1",
+		"cred-1",
+		[]security.Role{"publisher"},
+		now.Add(time.Hour),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Publish to unauthorized topic with retain
+	packet := mqtt.Publish{
+		Version: mqtt.ProtocolV5,
+		Topic:   "forbidden/topic",
+		Payload: []byte("payload"),
+		Retain:  true,
+		QoS:     mqtt.QoSAtLeastOnce,
+	}
+	_, err = useCase.Publish("client-1", packet, now, principal)
+	if !errors.Is(err, security.ErrNotAuthorized) {
+		t.Fatalf("unauthorized publish error = %v, want ErrNotAuthorized", err)
+	}
+
+	// Mutation order check: no state modified on rejection!
+	if len(repository.replaces) != 0 || len(repository.deletes) != 0 {
+		t.Fatalf("retained state mutated on rejected publish: replaces=%v deletes=%v", repository.replaces, repository.deletes)
+	}
+	if len(queue.deliveries) != 0 {
+		t.Fatalf("delivery queue mutated on rejected publish: %v", queue.deliveries)
+	}
+
+	// Publish to authorized topic succeeds
+	allowedPacket := mqtt.Publish{
+		Version: mqtt.ProtocolV5,
+		Topic:   "allowed/status",
+		Payload: []byte("ok"),
+		Retain:  true,
+		QoS:     mqtt.QoSAtMostOnce,
+	}
+	res, err := useCase.Publish("client-1", allowedPacket, now, principal)
+	if err != nil {
+		t.Fatalf("authorized publish failed: %v", err)
+	}
+	_ = res
+	if len(repository.replaces) != 1 {
+		t.Fatalf("expected retained message saved for authorized publish, got %d", len(repository.replaces))
 	}
 }

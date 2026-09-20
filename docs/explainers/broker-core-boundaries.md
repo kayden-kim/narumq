@@ -57,11 +57,16 @@ flowchart TB
 
 | 계층 | NaruMQ의 예 | 책임 | 알면 안 되는 것 |
 | --- | --- | --- | --- |
-| Domain | MQTT, session, routing, delivery, tenancy | Protocol invariant와 제품 정책 | Kubernetes, HTTP, Raft library, DB row |
-| Application | connect, publish, subscribe, takeover, drain | Use case 순서, transaction과 port 호출 | Concrete storage와 framework API |
+| Domain | MQTT, session, routing, delivery, tenancy, security | Protocol invariant와 제품 정책 | Kubernetes, HTTP, Raft library, DB row, JWT/JWKS, configuration |
+| Application | connect, publish, subscribe, takeover, drain | Authentication→binding→authorization→mutation 순서, transaction과 port 호출 | Concrete storage와 framework API |
 | Ports | consensus, logstore, sessionstore, authentication, clock | Use case가 외부에 요구하는 최소 계약 | 구현 제품의 설정·자료형 |
-| Adapters | TCP/TLS, Raft, storage, Kubernetes, Prometheus, management API | 외부 protocol과 product API를 안쪽 계약으로 변환 | Domain 정책의 재구현 |
-| Composition root | `cmd/narumq` | Concrete adapter 생성과 wiring | MQTT business rule |
+| Adapters | TCP/TLS, authentication, Raft, storage, Kubernetes, Prometheus, management API | 외부 protocol과 product API를 안쪽 계약으로 변환 | Domain 정책의 재구현 |
+| Composition root | `cmd/narumq` | Strict configuration, concrete adapter 생성과 wiring | MQTT business rule |
+
+`domain/tenancy`는 문자열 prefix를 만들지 않고 private field의 comparable
+`TenantID`, `SessionKey`, `Topic`, `TopicFilter`를 제공한다. `domain/security`의
+immutable `Principal`은 tenant와 Client ID를 snapshot으로 보유하며, JWT/JWKS
+자료형은 `application/ports/authentication`의 logical Result에서 끊긴다.
 
 Domain은 port도 import하지 않는다. 외부 시간이 필요한 domain 계산은 application이 clock port에서 값을 얻어 domain value로 전달한다. 이렇게 해야 domain test에 실제 clock이나 network가 나타나지 않는다.
 
@@ -91,14 +96,17 @@ Port는 작게 유지한다. Publish use case가 session을 읽고 한 메시지
 
 ```mermaid
 flowchart LR
-    W["MQTT packet / HTTP request / DB row"] --> M["Adapter mapper"]
-    M --> X["Application DTO"]
-    X --> V["Domain value"]
+    W["MQTT packet / HTTP request / DB row / JWT"] --> M["Adapter mapper"]
+    M --> X["Application DTO / authentication Result"]
+    X --> V["Tenant value / Principal / domain entity"]
 ```
 
-- TCP adapter는 packet parser 결과를 application command로 변환한다.
-- Management API adapter는 HTTP request와 RBAC context를 DTO로 변환한다.
+- TCP adapter는 packet parser 결과를 application command로 변환하고 CONNECT Password bytes만 authentication port에 전달한다.
+- Authentication adapter는 JWT/JWKS 자료형과 HTTP 오류를 검증된 `Result`로 바꾼다. token, Username, claims와 raw JWKS는 application·domain에 노출하지 않는다.
+- Application은 CONNECT Client ID를 `Result.AllowedClientIDs`에 exact-match하고, `security.NewPrincipal`과 `tenancy.NewSessionKey`를 만든 뒤 session ownership을 요청한다.
+- Publish·subscribe·unsubscribe entry는 외부 raw topic/filter를 즉시 tenant value로 변환한다. Routing, retained와 delivery port는 raw string key를 받지 않는다.
 - Storage adapter는 DB row를 session snapshot value로 변환한다.
+- Management API adapter는 HTTP request와 RBAC context를 DTO로 변환한다.
 - Domain entity를 JSON encoder나 storage driver에 직접 노출하지 않는다.
 
 경계 변환은 비용이 든다. 성능이 중요한 payload는 불필요한 복사를 피해야 하지만, 최적화 전에는 allocation profile로 병목을 확인한다. 외부 buffer의 수명과 domain의 소유권을 문서화하지 않은 zero-copy는 경계를 흐릴 수 있다.

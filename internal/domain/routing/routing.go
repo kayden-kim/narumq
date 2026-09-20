@@ -8,18 +8,18 @@ import (
 	"sort"
 	"strings"
 	"sync"
-	"unicode/utf8"
 
 	"narumq/internal/domain/mqtt"
+	"narumq/internal/domain/tenancy"
 )
 
 var (
 	// ErrInvalidSessionID means that a route operation has no valid session key.
 	ErrInvalidSessionID = errors.New("invalid routing session id")
-	// ErrInvalidTopicFilter means that a subscription filter is not matchable.
-	ErrInvalidTopicFilter = errors.New("invalid MQTT topic filter")
-	// ErrInvalidTopicName means that a publication topic is not valid.
-	ErrInvalidTopicName = errors.New("invalid MQTT topic name")
+	// ErrInvalidTopicFilter aliases the tenancy filter validation contract.
+	ErrInvalidTopicFilter = tenancy.ErrInvalidTopicFilter
+	// ErrInvalidTopicName aliases the tenancy topic validation contract.
+	ErrInvalidTopicName = tenancy.ErrInvalidTopicName
 	// ErrInvalidQoS means that a route QoS is outside MQTT QoS 0..2.
 	ErrInvalidQoS = errors.New("invalid MQTT QoS")
 	// ErrSharedSubscriptionUnsupported is retained for backwards compatibility
@@ -46,91 +46,69 @@ type Match struct {
 // table instead of introducing an index whose invalidation rules are not yet
 // needed.
 type Table struct {
-	mu            sync.RWMutex
-	subscriptions map[SessionID]map[string]mqtt.Subscription
-	shared        map[string]map[SessionID]mqtt.Subscription // sharedFilter -> SessionID -> Subscription
-	sharedCursors map[string]uint64                          // sharedFilter -> round-robin cursor
+	mu             sync.RWMutex
+	subscriptions  map[SessionID]map[string]mqtt.Subscription
+	shared         map[string]map[SessionID]mqtt.Subscription // sharedFilter -> SessionID -> Subscription
+	sharedCursors  map[string]uint64                          // sharedFilter -> round-robin cursor
+	sessionTenants map[SessionID]tenancy.TenantID
 }
 
 // NewTable creates an empty synchronized routing table.
 func NewTable() *Table {
 	return &Table{
-		subscriptions: make(map[SessionID]map[string]mqtt.Subscription),
-		shared:        make(map[string]map[SessionID]mqtt.Subscription),
-		sharedCursors: make(map[string]uint64),
+		subscriptions:  make(map[SessionID]map[string]mqtt.Subscription),
+		shared:         make(map[string]map[SessionID]mqtt.Subscription),
+		sharedCursors:  make(map[string]uint64),
+		sessionTenants: make(map[SessionID]tenancy.TenantID),
 	}
 }
 
 // ValidateTopicFilter validates MQTT wildcard placement and UTF-8 rules.
 func ValidateTopicFilter(filter string) error {
-	if filter == "" || !validMQTTString(filter) {
-		return ErrInvalidTopicFilter
-	}
-	if IsSharedFilter(filter) {
-		_, _, _, err := ParseSharedFilter(filter)
-		return err
-	}
-	return validateFilterLevels(filter)
+	return tenancy.ValidateTopicFilter(filter)
 }
 
-func validateFilterLevels(filter string) error {
-	levels := strings.Split(filter, "/")
-	for index, level := range levels {
-		if level == "+" {
-			continue
-		}
-		if level == "#" {
-			if index != len(levels)-1 {
-				return ErrInvalidTopicFilter
-			}
-			continue
-		}
-		if strings.ContainsAny(level, "+#") {
-			return ErrInvalidTopicFilter
-		}
-	}
-	return nil
-}
-
-// ParseSharedFilter parses an MQTT 5.0 shared subscription filter ($share/{ShareName}/{TopicFilter}).
+// ParseSharedFilter parses an MQTT 5.0 shared subscription filter.
 // If filter does not start with "$share/", it returns isShared=false and the original filter.
 func ParseSharedFilter(filter string) (shareName string, topicFilter string, isShared bool, err error) {
-	if !strings.HasPrefix(filter, "$share/") {
-		return "", filter, false, nil
-	}
-	if !validMQTTString(filter) {
-		return "", "", true, ErrInvalidTopicFilter
-	}
-	rest := filter[len("$share/"):]
-	slashIdx := strings.IndexByte(rest, '/')
-	if slashIdx < 0 {
-		return "", "", true, ErrInvalidTopicFilter
-	}
-	shareName = rest[:slashIdx]
-	if len(shareName) == 0 || strings.ContainsAny(shareName, "/+#") {
-		return "", "", true, ErrInvalidTopicFilter
-	}
-	topicFilter = rest[slashIdx+1:]
-	if len(topicFilter) == 0 || strings.HasPrefix(topicFilter, "$share/") {
-		return "", "", true, ErrInvalidTopicFilter
-	}
-	if err := validateFilterLevels(topicFilter); err != nil {
-		return "", "", true, err
-	}
-	return shareName, topicFilter, true, nil
+	return tenancy.ParseSharedFilter(filter)
 }
 
 // ValidateTopicName validates a concrete publication topic without wildcards.
 func ValidateTopicName(topic string) error {
-	if topic == "" || !validMQTTString(topic) || strings.ContainsAny(topic, "+#") {
-		return ErrInvalidTopicName
-	}
-	return nil
+	return tenancy.ValidateTopicName(topic)
 }
 
 // IsSharedFilter reports whether filter uses MQTT 5 shared-subscription syntax.
 func IsSharedFilter(filter string) bool {
-	return strings.HasPrefix(filter, "$share/")
+	return tenancy.IsSharedFilter(filter)
+}
+
+// BindSessionTenant associates a session ID with a tenant namespace.
+func (table *Table) BindSessionTenant(sessionID SessionID, tenantID tenancy.TenantID) error {
+	if err := ValidateSessionID(sessionID); err != nil {
+		return err
+	}
+	table.mu.Lock()
+	defer table.mu.Unlock()
+	if table.sessionTenants == nil {
+		table.sessionTenants = make(map[SessionID]tenancy.TenantID)
+	}
+	table.sessionTenants[sessionID] = tenantID
+	return nil
+}
+
+// SessionTenant returns the tenant namespace bound to sessionID, or zero if unbound.
+func (table *Table) SessionTenant(sessionID SessionID) tenancy.TenantID {
+	if table == nil {
+		return tenancy.TenantID{}
+	}
+	table.mu.RLock()
+	defer table.mu.RUnlock()
+	if table.sessionTenants == nil {
+		return tenancy.TenantID{}
+	}
+	return table.sessionTenants[sessionID]
 }
 
 // Subscribe adds or replaces one non-shared subscription for sessionID.
@@ -277,6 +255,12 @@ func (table *Table) RemoveSession(sessionID SessionID) bool {
 			removed = true
 		}
 	}
+	if table.sessionTenants != nil {
+		if _, exists := table.sessionTenants[sessionID]; exists {
+			delete(table.sessionTenants, sessionID)
+			removed = true
+		}
+	}
 	if table.shared != nil {
 		for filter, bySession := range table.shared {
 			if _, exists := bySession[sessionID]; exists {
@@ -315,8 +299,14 @@ func (table *Table) Match(
 	table.mu.Lock()
 	defer table.mu.Unlock()
 
+	pubTenant := table.sessionTenants[publisherSessionID]
 	matches := make([]Match, 0, len(table.subscriptions)+len(table.shared))
 	for sessionID, byFilter := range table.subscriptions {
+		if pubTenant != (tenancy.TenantID{}) || table.sessionTenants[sessionID] != (tenancy.TenantID{}) {
+			if table.sessionTenants[sessionID] != pubTenant {
+				continue
+			}
+		}
 		var (
 			maxGranted mqtt.QoS
 			matched    bool
@@ -367,15 +357,27 @@ func (table *Table) Match(
 
 			candidates := make([]SessionID, 0, len(members))
 			for sID := range members {
+				if pubTenant != (tenancy.TenantID{}) || table.sessionTenants[sID] != (tenancy.TenantID{}) {
+					if table.sessionTenants[sID] != pubTenant {
+						continue
+					}
+				}
 				candidates = append(candidates, sID)
+			}
+			if len(candidates) == 0 {
+				continue
 			}
 			sort.Slice(candidates, func(i, j int) bool {
 				return candidates[i] < candidates[j]
 			})
 
-			cursor := table.sharedCursors[sharedFilter]
+			cursorKey := sharedFilter
+			if pubTenant != (tenancy.TenantID{}) {
+				cursorKey = pubTenant.String() + "/" + sharedFilter
+			}
+			cursor := table.sharedCursors[cursorKey]
 			chosenSession := candidates[cursor%uint64(len(candidates))]
-			table.sharedCursors[sharedFilter]++
+			table.sharedCursors[cursorKey]++
 
 			sub := members[chosenSession]
 			effectiveQoS := publishQoS
@@ -401,64 +403,13 @@ func ValidateSessionID(sessionID SessionID) error {
 	return nil
 }
 
-func validMQTTString(value string) bool {
-	if !utf8.ValidString(value) {
-		return false
-	}
-	for _, codePoint := range value {
-		if codePoint == 0 || (codePoint >= 0xD800 && codePoint <= 0xDFFF) {
-			return false
-		}
-		if codePoint >= 0xFDD0 && codePoint <= 0xFDEF {
-			return false
-		}
-		if codePoint&0xFFFF == 0xFFFE || codePoint&0xFFFF == 0xFFFF {
-			return false
-		}
-	}
-	return true
-}
-
 // TopicMatchesFilter validates a concrete topic and filter, then applies the
 // production MQTT wildcard and system-topic matcher.
 func TopicMatchesFilter(topic, filter string) (bool, error) {
-	if err := ValidateTopicName(topic); err != nil {
-		return false, err
-	}
-	if err := ValidateTopicFilter(filter); err != nil {
-		return false, err
-	}
-	targetFilter := filter
-	if IsSharedFilter(filter) {
-		_, subFilter, _, _ := ParseSharedFilter(filter)
-		targetFilter = subFilter
-	}
-	return topicMatchesFilter(topic, targetFilter), nil
+	return tenancy.TopicMatchesFilter(topic, filter)
 }
-func topicMatchesFilter(topic, filter string) bool {
-	if strings.HasPrefix(topic, "$") {
-		firstLevelEnd := strings.IndexByte(filter, '/')
-		firstLevel := filter
-		if firstLevelEnd >= 0 {
-			firstLevel = filter[:firstLevelEnd]
-		}
-		if firstLevel == "+" || firstLevel == "#" {
-			return false
-		}
-	}
 
-	topicLevels := strings.Split(topic, "/")
-	filterLevels := strings.Split(filter, "/")
-	for index, filterLevel := range filterLevels {
-		if filterLevel == "#" {
-			return true
-		}
-		if index >= len(topicLevels) {
-			return false
-		}
-		if filterLevel != "+" && filterLevel != topicLevels[index] {
-			return false
-		}
-	}
-	return len(filterLevels) == len(topicLevels)
+func topicMatchesFilter(topic, filter string) bool {
+	matched, err := tenancy.TopicMatchesFilter(topic, filter)
+	return err == nil && matched
 }

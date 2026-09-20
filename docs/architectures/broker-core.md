@@ -4,16 +4,16 @@ Broker core는 MQTT, session, routing, delivery, tenancy와 cluster lifecycle �
 
 | 항목 | 값 |
 | --- | --- |
-| 관점 상태 | Current Phase 0 gate 3 / single-node ingress vertical slice |
-| 문서 상태 | Draft |
-| 구현 증거 | `cmd/narumq`, `internal/domain/mqtt`, `internal/domain/routing`, `internal/domain/session`, `internal/application/connect`, `internal/application/publish`, `internal/application/subscribe`, `internal/application/ports/deliveryqueue`, `internal/adapters/tcp`, `internal/adapters/memory/deliveryqueue`, `internal/adapters/memory/sessionstore`, `internal/adapters/clock`와 각 package/integration test |
+| 관점 상태 | Active Phase 1 security and tenant isolation architecture |
+| 문서 상태 | Active |
+| 구현 증거 | Phase 0 단일 노드 ingress, TLS/mTLS 및 합의 스파이크 증거는 기존 패키지에 보존되어 있다. Phase 1 tenancy, security, authentication 패키지와 데이터 플레인 인가 파이프라인은 단위·통합 테스트(TestMQTTSecurity) 및 검증 게이트를 통해 구현 증거가 확보되었다. |
 | 범위 | 단일 broker process의 component, loopback TCP runtime과 source dependency |
 | 관련 요구사항 | [PRD](../requirements/PRD.md) NFR-11~NFR-15, TEST-01~TEST-16 |
 | 관련 결정 | [ADR-0001](../decisions/ADR-0001-core-implementation-language.md) Accepted |
 | 관련 Architecture | [Project structure](project-structure.md) |
 | 관련 Convention | [Go coding conventions](../conventions/go-coding-conventions.md) |
 | 관련 해설 | [Broker core의 계층 경계](../explainers/broker-core-boundaries.md), [Go 동시성과 backpressure](../explainers/go-concurrency-and-backpressure.md) |
-| 최종 확인일 | 2026-09-19 |
+| 최종 확인일 | 2026-09-20 |
 
 ## Source dependency view
 
@@ -65,55 +65,60 @@ Domain component 사이의 세부 dependency는 구현 단계의 package graph�
 | Component | 소유하는 정책 | 의존해서는 안 되는 대상 |
 | --- | --- | --- |
 | MQTT protocol | Packet validation, QoS handshake와 protocol reason | Socket, TLS library, HTTP, storage 자료형 |
-| Session ownership | Session key, owner epoch와 fencing invariant | Pod/IP, wall clock lease만으로 만든 권한 |
-| Subscription routing | Canonical topic/filter, wildcard match와 route selection 정책 | 외부 tenant prefix encoding, network client |
+| Session ownership | `tenancy.SessionKey`, owner epoch와 fencing invariant | Pod/IP, wall clock lease만으로 만든 권한 |
+| Subscription routing | tenant-aware `Topic`/`TopicFilter`, wildcard match와 route selection 정책 | 외부 tenant prefix encoding, network client |
 | Message delivery | Inflight, offline delivery, expiry와 ACK 이후 상태 | 특정 WAL·database API |
-| Tenant policy | Tenant namespace, quota와 ACL 입력 의미 | JWKS response, certificate library object |
+| Tenant policy | typed namespace value와 MQTT filter relation | JWKS response, certificate library object |
+| Security policy | immutable `Principal`, role/action ACL과 default-deny precedence | HTTP, JWT/JWKS, configuration parser |
 | Cluster lifecycle | Member state, readiness와 drain barrier의 domain rule | Kubernetes Pod API |
-| Application use case | Domain policy orchestration와 transaction·commit 경계 | Concrete adapter와 framework object |
-| Adapter | Wire, storage, platform 자료형 변환과 I/O | 새로운 domain rule 결정 |
-| Composition root | Concrete implementation 선택과 lifecycle wiring | Business invariant 구현 |
+| Application use case | authentication→binding→authorization→mutation 순서와 transaction 경계 | Concrete adapter와 framework object |
+| Adapter | Wire, storage, authentication과 platform 자료형 변환·I/O | 새로운 business invariant 결정 |
+| Composition root | Strict configuration, concrete implementation 선택과 lifecycle wiring | MQTT business invariant 구현 |
 
-## Current Phase 0 gate 3 + single-node ingress slice
+## Target Phase 1 security·tenant-aware single-node ingress slice
 
-현재 source는 다음 inward dependency와 실제 loopback runtime을 검증한다.
+이 절은 typed tenant namespace, JWT/JWKS authentication, default-deny ACL과 loopback
+MQTT runtime을 연결하는 승인된 구조 계약이다. Phase 1 구현과 실행 검증이 끝나기
+전까지 현재 source 증거로 해석하지 않는다.
 
 ```text
 cmd/narumq
+    ├── adapters/authentication ──> application/ports/authentication
     └── adapters/tcp ──> application/connect
+                              ├──> application/ports/authentication
+                              ├──> domain/security
                               ├──> domain/session
+                              ├──> domain/tenancy
                               ├──> ports/deliveryqueue <── adapters/memory/deliveryqueue
                               ├──> ports/retained <────── adapters/memory/retained
                               └──> domain/routing <── application/subscribe/publish
                                       └──> domain/mqtt
 ```
 
-- `domain/mqtt`: CONNECT/CONNACK, QoS 0·1·2 PUBLISH, acknowledgement,
-  SUBSCRIBE 계열, PINGREQ/PINGRESP/DISCONNECT의 wire 구조와 ownership을 결정한다.
-- `domain/session`: Clean Start, Session Expiry, connected duplicate와 disconnect
-  retention invariant를 value lifecycle로 결정한다.
-- `domain/routing`: non-shared `+`·`#` matching, `$` topic boundary, overlap collapse,
-  No Local·Retain As Published와 `RemoveSession` stale-subscription cleanup을 결정한다.
-  TCP와 queue·retained storage를 모른다.
-- `application/connect`: lifecycle repository, shared delivery queue, routing cleanup과
-  CONNACK/negative rejection을 직렬화한다.
-- `application/subscribe`와 `application/publish`: ordered ACK, retained replay의
-  queue-before-route commit, retained replace/delete, Message Expiry deadline 계산과
-  QoS 0·1·2 route delivery를 조정한다. `ports/deliveryqueue`, `ports/retained`와
-  `ports/clock`은 여러 use case가 공유하는 capability다.
-- `adapters/tcp`: bounded input buffer, CONNECT timeout, negotiated-version dispatch,
-  single writer, SUBACK-before-replay ordering, control queue/delivery wake,
-  keepalive와 connection cleanup을 소유한다.
-- `adapters/memory/deliveryqueue`, `adapters/memory/retained`,
-  `adapters/memory/sessionstore`, `adapters/clock`은 각각 bounded queue와
-  retained state의 lazy expiry purge, lifecycle map과 wall-clock 구현이다.
+- `domain/tenancy`: private comparable `TenantID`, `SessionKey`, `Topic`, `TopicFilter`와
+  기존 MQTT wildcard/$ matcher, filter containment/intersection을 소유한다.
+- `domain/security`: verified binding을 담은 immutable `Principal`과 role별
+  deny > allow > default-deny ACL policy를 소유한다. JWT/JWKS나 configuration을 모른다.
+- `domain/session`: SessionKey와 principal snapshot을 lifecycle과 Will snapshot에 함께
+  저장하고 Claim/Expire 결과로 전달한다.
+- `application/connect`: Username·Password flag, authentication, exact Client ID binding,
+  Will ACL을 session ownership보다 먼저 평가한다. 실패 시 timer·repository·route·queue를
+  변경하지 않는다.
+- `application/subscribe`와 `application/publish`: packet의 raw topic/filter를 entry에서
+  typed tenant value로 바꾸고 ACL을 retained·route·delivery mutation보다 먼저 적용한다.
+- `adapters/authentication`: allowlisted JWT algorithm, required `kid`, verified JWKS,
+  claim validation과 static `(issuer, subject)` binding을 application Result로 변환한다.
+  Cache refresh는 coalesced이고 TTL 이후 fetch 실패에 fail-closed한다.
+- `adapters/tcp`: accepted SessionKey와 principal snapshot을 connection에 보관하고 모든
+  data-plane dispatch에 함께 전달한다. Username은 identity로 사용하지 않으며 log에 남기지 않는다.
+- `adapters/memory/deliveryqueue`, `adapters/memory/retained`, `adapters/memory/sessionstore`는
+  각각 SessionKey, `(tenant, topic)`, SessionKey를 key로 사용한다.
 
-ingress 성공 경계는 QoS 0·1·2 PUBLISH handshake이며 `Retain=true`도 exact-topic
-replace/delete와 established subscriber live delivery를 지원한다. Message Expiry는
-ingress 수신 시각에서 absolute deadline을 만들고, queue·retained replay·outbound
-serialization 전체에서 `now >= deadline`을 적용한다. MQTT 5 outbound에는 올림한
-남은 초를 쓰고 MQTT 3.1.1에는 property를 생략한다. TLS/auth, tenant/ACL, takeover,
-durable offline queue와 replication은 지원하지 않는다.
+성공 경계는 인증된 CONNECT 뒤 QoS 0·1·2 PUBLISH handshake, ordered SUBACK/UNSUBACK와
+Will 등록·지연 publication이다. ACL 거절은 mutation 전에 반환하며 MQTT 5 PUBLISH는
+QoS에 따라 DISCONNECT/PUBACK/PUBREC `0x87`, MQTT 3.1.1은 연결 종료를 사용한다.
+Metrics, mTLS principal mapping, quota/blocklist, management API, audit sink과 기존 연결
+token reauthentication은 이 slice에서 지원하지 않는다.
 
 ## Application-owned port
 
@@ -122,24 +127,21 @@ Port는 구현 adapter 옆이 아니라 이를 사용하는 application 쪽이 �
 | Port 범주 | Application이 요구하는 능력 | Adapter 후보 |
 | --- | --- | --- |
 | Session·state store | Epoch 조건부 read·write, snapshot과 recovery | Durable state adapter |
-| Session lifecycle | client ID별 lifecycle load/save/delete와 expiry 복구 | `application/connect.SessionRepository` ← `adapters/memory/sessionstore.MemorySessionRepository` |
-| Delivery queue | session 등록·제거, bounded enqueue, FIFO drain와 atomic batch enqueue, expiry purge | `application/ports/deliveryqueue.Queue` ← `adapters/memory/deliveryqueue.Queue` |
-| Retained message | exact-topic replace/delete, deterministic expiry-aware list와 count·byte bounded ownership | `application/ports/retained.Repository` ← `adapters/memory/retained.Repository` |
+| Session lifecycle | tenant-aware `SessionKey`별 lifecycle load/save/delete와 expiry 복구 | `application/connect.SessionRepository` ← `adapters/memory/sessionstore.MemorySessionRepository` |
+| Delivery queue | SessionKey 등록·제거, bounded enqueue, FIFO drain와 atomic batch enqueue, expiry purge | `application/ports/deliveryqueue.Queue` ← `adapters/memory/deliveryqueue.Queue` |
+| Retained message | tenant-aware exact-topic replace/delete, deterministic expiry-aware list와 count·byte bounded ownership | `application/ports/retained.Repository` ← `adapters/memory/retained.Repository` |
+| Authentication | Credential을 verified binding Result로 변환하는 application port | `application/ports/authentication.AuthenticationProvider` ← `adapters/authentication.JWKSAuthenticationProvider` |
 | Clock | deterministic expiry 입력 | `application/ports/clock.Clock` ← `adapters/clock.SystemClock` |
 | Replication | Command proposal, commit receipt와 membership 관찰 | `etcd/raft` adapter 후보 |
 | Peer transport | 인증된 node message 송수신과 backpressure | Cluster RPC adapter |
-| Authentication | Credential을 논리 principal과 tenant binding으로 검증 | JWT/JWKS, mTLS, password adapter |
-| Metric·audit | Cardinality가 제한된 관측값과 비밀 없는 event 기록 | OpenMetrics·audit adapter |
+| Metric·audit | Cardinality가 제한된 관측값과 비밀 없는 event 기록 | 후속 observability adapter |
 | Node discovery·platform | Member 후보와 workload lifecycle 관찰 | Kubernetes adapter |
 | Clock·random | Expiry와 jitter를 결정적으로 제공 | Runtime·test adapter |
-
-Capability별 port package, concrete adapter와 내부 client의 목표 대응은 [주요 port capability와 adapter map](project-structure.md#주요-port-capability와-adapter-map)을 따른다.
-
-현재 source에 구현된 `connect.SessionRepository`, `ports/clock.Clock`,
-`ports/deliveryqueue.Queue`와 `ports/retained.Repository`의 method signature는 해당
-package가 소유한다. Queue와 retained port는 time-sensitive operation에 `now`를
-받고 DTO는 absolute `ExpiresAt`을 운반한다. durable state·replication·authentication
-같은 미구현 capability는 target interface로만 기록한다.
+현재 source에 구현된 `connect.SessionRepository`, `ports/authentication.AuthenticationProvider`,
+`ports/clock.Clock`, `ports/deliveryqueue.Queue`와 `ports/retained.Repository`의 method
+signature는 해당 package가 소유한다. Domain과 application boundary는 raw client/topic/filter
+key를 저장하지 않고 typed value와 principal snapshot을 운반한다. durable state·replication,
+metrics·audit 같은 후속 capability는 별도 범위로 유지한다.
 
 ## 경계를 넘는 값
 

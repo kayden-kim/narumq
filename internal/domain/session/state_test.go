@@ -2,10 +2,10 @@ package session
 
 import (
 	"errors"
+	"narumq/internal/domain/mqtt"
+	"narumq/internal/domain/tenancy"
 	"testing"
 	"time"
-
-	"narumq/internal/domain/mqtt"
 )
 
 // Traceability: PRD MQTT-03/TEST-03/04; MQTT-3.1.2-2/3.
@@ -391,5 +391,49 @@ func TestLifecycle_ExpireClaimsPendingWill(t *testing.T) {
 	_, _, ok = expiredState.Expire(now.Add(11 * time.Second))
 	if ok {
 		t.Fatal("subsequent Expire should return false")
+	}
+}
+
+// Requirements: TEN-02
+func TestLifecycle_SessionKeyIsolation(t *testing.T) {
+	now := time.Date(2026, time.January, 1, 0, 0, 0, 0, time.UTC)
+	tenantA, err := tenancy.NewTenantID("tenant-a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	tenantB, err := tenancy.NewTenantID("tenant-b")
+	if err != nil {
+		t.Fatal(err)
+	}
+	keyA, err := tenancy.NewSessionKey(tenantA, "device-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	keyB, err := tenancy.NewSessionKey(tenantB, "device-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	connect := mqtt.Connect{Version: mqtt.ProtocolV5, ClientID: "device-1", SessionExpiryInterval: 100}
+	stateA, present, err := Open(nil, connect, now, keyA)
+	if err != nil || present || stateA.SessionKey() != keyA || stateA.TenantID() != tenantA {
+		t.Fatalf("Open with keyA failed: %#v, %v", stateA, err)
+	}
+
+	disRes, err := stateA.Disconnect(now, DisconnectNormal)
+	if err != nil {
+		t.Fatal(err)
+	}
+	closedA := disRes.Lifecycle
+
+	// Cross-tenant resume with same ClientID must fail with ErrIdentityMismatch
+	if _, _, err := Open(&closedA, connect, now.Add(time.Second), keyB); !errors.Is(err, ErrIdentityMismatch) {
+		t.Fatalf("cross-tenant Open error = %v, want ErrIdentityMismatch", err)
+	}
+
+	// Same-tenant resume must succeed
+	resumedA, present, err := Open(&closedA, connect, now.Add(time.Second), keyA)
+	if err != nil || !present || resumedA.SessionKey() != keyA {
+		t.Fatalf("same-tenant resume failed: %#v, %v", resumedA, err)
 	}
 }

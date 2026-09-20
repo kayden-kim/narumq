@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	authenticationadapter "narumq/internal/adapters/authentication"
 	"narumq/internal/adapters/clock"
 	"narumq/internal/adapters/memory/deliveryqueue"
 	memoryretained "narumq/internal/adapters/memory/retained"
@@ -19,7 +20,9 @@ import (
 	"narumq/internal/application/subscribe"
 	"narumq/internal/domain/mqtt"
 	"narumq/internal/domain/routing"
+	"narumq/internal/domain/security"
 	"net"
+	"net/http"
 	"os"
 	"os/signal"
 	"strings"
@@ -67,6 +70,7 @@ func runWithContext(ctx context.Context, args []string, logger *slog.Logger) err
 	retainedByteCapacity := flagSet.Int("retained-byte-capacity", 16777216, "maximum retained payload bytes")
 	runtimeMetricsOutput := flagSet.String("runtime-metrics-output", "", "JSONL output for Go runtime metrics")
 	runtimeMetricsInterval := flagSet.Duration("runtime-metrics-interval", 0, "sampling interval for Go runtime metrics")
+	securityConfigFile := flagSet.String("security-config", "", "path to strict JSON security configuration file")
 	if err := flagSet.Parse(args); err != nil {
 		return err
 	}
@@ -143,15 +147,39 @@ func runWithContext(ctx context.Context, args []string, logger *slog.Logger) err
 	systemClock := clock.SystemClock{}
 	systemScheduler := clock.SystemScheduler{}
 	willBridge := tcpadapter.NewWillBridge()
-	connections, err := connect.New(systemClock, sessions, deliveries, routes, systemScheduler, willBridge)
+
+	var (
+		connectOpts     []connect.Option
+		subscribeOpts   []subscribe.Option
+		publishOpts     []publish.Option
+		tcpConfigPolicy security.Policy
+	)
+	if *securityConfigFile != "" {
+		bundle, err := loadSecurityConfigFile(*securityConfigFile)
+		if err != nil {
+			return fmt.Errorf("load security config: %w", err)
+		}
+		bundle.AuthConfig.HTTPClient = &http.Client{Timeout: bundle.AuthConfig.HTTPTimeout}
+		bundle.AuthConfig.Clock = systemClock
+		authProvider, err := authenticationadapter.NewJWKSAuthenticationProvider(bundle.AuthConfig)
+		if err != nil {
+			return fmt.Errorf("create JWKS authentication provider: %w", err)
+		}
+		connectOpts = append(connectOpts, connect.WithSecurity(authProvider, bundle.Policy))
+		subscribeOpts = append(subscribeOpts, subscribe.WithPolicy(bundle.Policy))
+		publishOpts = append(publishOpts, publish.WithPolicy(bundle.Policy))
+		tcpConfigPolicy = bundle.Policy
+	}
+
+	connections, err := connect.New(systemClock, sessions, deliveries, routes, systemScheduler, willBridge, connectOpts...)
 	if err != nil {
 		return fmt.Errorf("create connect use case: %w", err)
 	}
-	subscriptions, err := subscribe.New(routes, deliveries, retainedRepository)
+	subscriptions, err := subscribe.New(routes, deliveries, retainedRepository, subscribeOpts...)
 	if err != nil {
 		return fmt.Errorf("create subscribe use case: %w", err)
 	}
-	publications, err := publish.New(systemClock, routes, deliveries, retainedRepository)
+	publications, err := publish.New(systemClock, routes, deliveries, retainedRepository, publishOpts...)
 	if err != nil {
 		return fmt.Errorf("create publish use case: %w", err)
 	}
@@ -173,6 +201,7 @@ func runWithContext(ctx context.Context, args []string, logger *slog.Logger) err
 			ControlQueueCapacity:   *controlQueueCapacity,
 			VerifyClientID:         *tlsVerifyClientID,
 			ClientIdentityVerifier: tlsadapter.VerifyConnClientIdentity,
+			Policy:                 tcpConfigPolicy,
 		},
 		decoder,
 		encoder,

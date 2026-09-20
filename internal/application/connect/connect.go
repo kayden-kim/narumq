@@ -2,15 +2,19 @@
 package connect
 
 import (
+	"context"
 	"errors"
 	"sync"
 	"time"
 
+	applicationauthentication "narumq/internal/application/ports/authentication"
 	applicationclock "narumq/internal/application/ports/clock"
 	"narumq/internal/application/ports/deliveryqueue"
 	"narumq/internal/domain/mqtt"
 	"narumq/internal/domain/routing"
+	"narumq/internal/domain/security"
 	"narumq/internal/domain/session"
+	"narumq/internal/domain/tenancy"
 )
 
 var (
@@ -55,8 +59,20 @@ type SessionRepository interface {
 // ResultDTO reports the connection response and accepted session identity.
 type ResultDTO struct {
 	SessionID routing.SessionID
+	Principal security.Principal
 	ConnAck   mqtt.ConnAck
 	Accepted  bool
+}
+
+// Option configures optional parameters for the connection use case.
+type Option func(*UseCase)
+
+// WithSecurity configures an authentication provider and security policy.
+func WithSecurity(authenticator applicationauthentication.AuthenticationProvider, policy security.Policy) Option {
+	return func(useCase *UseCase) {
+		useCase.authenticator = authenticator
+		useCase.policy = policy
+	}
 }
 
 // UseCase serializes lifecycle persistence, routing cleanup and queue
@@ -70,7 +86,10 @@ type clientTimers struct {
 type UseCase struct {
 	mu            sync.Mutex
 	clock         applicationclock.Clock
+	authenticator applicationauthentication.AuthenticationProvider
+	policy        security.Policy
 	sessions      SessionRepository
+	principals    map[routing.SessionID]security.Principal
 	deliveries    deliveryqueue.Queue
 	routes        *routing.Table
 	scheduler     Scheduler
@@ -87,6 +106,7 @@ func New(
 	routes *routing.Table,
 	scheduler Scheduler,
 	willPublisher WillPublisher,
+	opts ...Option,
 ) (*UseCase, error) {
 	if clock == nil {
 		return nil, ErrNilClock
@@ -106,47 +126,122 @@ func New(
 	if willPublisher == nil {
 		return nil, ErrNilWillPublisher
 	}
-	return &UseCase{
+	useCase := &UseCase{
 		clock:         clock,
 		sessions:      sessions,
+		principals:    make(map[routing.SessionID]security.Principal),
 		deliveries:    deliveries,
 		routes:        routes,
 		scheduler:     scheduler,
 		willPublisher: willPublisher,
 		activeTimers:  make(map[string]*clientTimers),
-	}, nil
+	}
+	for _, opt := range opts {
+		if opt != nil {
+			opt(useCase)
+		}
+	}
+	return useCase, nil
 }
 
 // Connect validates the development listener's supported session policy and
 // opens a new or resumable lifecycle. Unsupported credentials and Will state
 // are returned as negative CONNACK results rather than silently ignored.
 func (useCase *UseCase) Connect(packet mqtt.Connect) (ResultDTO, error) {
+	return useCase.ConnectContext(context.Background(), packet)
+}
+
+// ConnectContext validates authentication, tenant binding, and Will authorization
+// before granting session ownership.
+func (useCase *UseCase) ConnectContext(ctx context.Context, packet mqtt.Connect) (ResultDTO, error) {
 	if useCase == nil {
 		return ResultDTO{}, ErrNilSessionRepository
 	}
-	useCase.mu.Lock()
-	defer useCase.mu.Unlock()
 
 	result := ResultDTO{ConnAck: mqtt.ConnAck{Version: packet.Version}}
 	if packet.Version != mqtt.ProtocolV311 && packet.Version != mqtt.ProtocolV5 {
 		return ResultDTO{}, mqtt.ErrUnsupportedProtocolVersion
 	}
-	if reasonCode, rejected := rejectedConnectReason(packet); rejected {
-		result.ConnAck.ReasonCode = reasonCode
+	if packet.ClientID == "" {
+		result.ConnAck.ReasonCode = clientIDRejectedReason(packet.Version)
 		return result, nil
 	}
-	if timers, ok := useCase.activeTimers[packet.ClientID]; ok {
+
+	var principal security.Principal
+	if useCase.authenticator == nil {
+		if packet.HasUsername || packet.HasPassword {
+			result.ConnAck.ReasonCode = unsupportedDevelopmentReason(packet.Version)
+			return result, nil
+		}
+	} else {
+		if !packet.HasUsername || !packet.HasPassword || len(packet.Password) == 0 {
+			result.ConnAck.ReasonCode = notAuthorizedReason(packet.Version)
+			return result, nil
+		}
+		authResult, err := useCase.authenticator.Authenticate(ctx, applicationauthentication.Credential{Token: packet.Password})
+		if err != nil {
+			result.ConnAck.ReasonCode = notAuthorizedReason(packet.Version)
+			return result, nil
+		}
+		allowed := false
+		for _, allowedID := range authResult.AllowedClientIDs {
+			if allowedID == packet.ClientID {
+				allowed = true
+				break
+			}
+		}
+		if !allowed {
+			result.ConnAck.ReasonCode = notAuthorizedReason(packet.Version)
+			return result, nil
+		}
+		p, err := security.NewPrincipal(
+			authResult.TenantID,
+			packet.ClientID,
+			authResult.Subject,
+			authResult.CredentialID,
+			authResult.Roles,
+			authResult.ExpiresAt,
+		)
+		if err != nil {
+			result.ConnAck.ReasonCode = notAuthorizedReason(packet.Version)
+			return result, nil
+		}
+		principal = p
+		if packet.Will != nil {
+			willTopic, err := tenancy.NewTopic(authResult.TenantID, packet.Will.Topic)
+			if err != nil {
+				result.ConnAck.ReasonCode = notAuthorizedReason(packet.Version)
+				return result, nil
+			}
+			if err := useCase.policy.AuthorizeTopic(principal, security.ActionWill, willTopic); err != nil {
+				result.ConnAck.ReasonCode = notAuthorizedReason(packet.Version)
+				return result, nil
+			}
+		}
+	}
+	sessionID := routing.SessionID(packet.ClientID)
+	var sessionKey tenancy.SessionKey
+	if principal.Subject() != "" {
+		sessionKey, _ = tenancy.NewSessionKey(principal.TenantID(), packet.ClientID)
+		sessionID = routing.SessionID(principal.TenantID().String() + "/" + packet.ClientID)
+	}
+
+	useCase.mu.Lock()
+	defer useCase.mu.Unlock()
+
+	timerKey := string(sessionID)
+	if timers, ok := useCase.activeTimers[timerKey]; ok {
 		if timers.willTimer != nil {
 			timers.willTimer.Stop()
 		}
 		if timers.expiryTimer != nil {
 			timers.expiryTimer.Stop()
 		}
-		delete(useCase.activeTimers, packet.ClientID)
+		delete(useCase.activeTimers, timerKey)
 	}
 
 	now := useCase.clock.Now()
-	existing, found, err := useCase.sessions.Load(packet.ClientID)
+	existing, found, err := useCase.loadSession(sessionKey, timerKey)
 	if err != nil {
 		return ResultDTO{}, err
 	}
@@ -154,7 +249,7 @@ func (useCase *UseCase) Connect(packet mqtt.Connect) (ResultDTO, error) {
 	if found {
 		existingState = &existing
 	}
-	opened, present, err := session.Open(existingState, packet, now)
+	opened, present, err := session.Open(existingState, packet, now, sessionKey)
 	if err != nil {
 		if errors.Is(err, session.ErrAlreadyConnected) {
 			result.ConnAck.ReasonCode = duplicateConnectReason(packet.Version)
@@ -162,22 +257,26 @@ func (useCase *UseCase) Connect(packet mqtt.Connect) (ResultDTO, error) {
 		}
 		return ResultDTO{}, err
 	}
-	if err := useCase.sessions.Save(opened); err != nil {
+	if err := useCase.saveSession(sessionKey, timerKey, opened); err != nil {
 		return ResultDTO{}, err
 	}
 
-	sessionID := routing.SessionID(packet.ClientID)
+	useCase.principals[sessionID] = principal
 	if !present {
 		useCase.deliveries.Remove(sessionID)
 		useCase.routes.RemoveSession(sessionID)
 	}
+	if principal.Subject() != "" {
+		_ = useCase.routes.BindSessionTenant(sessionID, principal.TenantID())
+	}
 	if err := useCase.deliveries.Register(sessionID); err != nil {
 		var rollbackErr error
 		if found {
-			rollbackErr = useCase.sessions.Save(existing)
+			rollbackErr = useCase.saveSession(sessionKey, timerKey, existing)
 		} else {
-			rollbackErr = useCase.sessions.Delete(packet.ClientID)
+			rollbackErr = useCase.deleteSession(sessionKey, timerKey)
 		}
+		delete(useCase.principals, sessionID)
 		if rollbackErr != nil {
 			return ResultDTO{}, errors.Join(err, rollbackErr)
 		}
@@ -185,6 +284,7 @@ func (useCase *UseCase) Connect(packet mqtt.Connect) (ResultDTO, error) {
 	}
 	return ResultDTO{
 		SessionID: sessionID,
+		Principal: principal,
 		ConnAck: mqtt.ConnAck{
 			Version:        packet.Version,
 			SessionPresent: present,
@@ -202,19 +302,23 @@ func (useCase *UseCase) Disconnect(sessionID routing.SessionID, reason session.D
 	}
 	useCase.mu.Lock()
 
-	clientID := string(sessionID)
-	if timers, ok := useCase.activeTimers[clientID]; ok {
+	timerKey := string(sessionID)
+	if timers, ok := useCase.activeTimers[timerKey]; ok {
 		if timers.willTimer != nil {
 			timers.willTimer.Stop()
 		}
 		if timers.expiryTimer != nil {
 			timers.expiryTimer.Stop()
 		}
-		delete(useCase.activeTimers, clientID)
+		delete(useCase.activeTimers, timerKey)
 	}
 
 	useCase.deliveries.Remove(sessionID)
-	state, found, err := useCase.sessions.Load(clientID)
+	var sessionKey tenancy.SessionKey
+	if principal, ok := useCase.principals[sessionID]; ok && principal.Subject() != "" {
+		sessionKey, _ = tenancy.NewSessionKey(principal.TenantID(), principal.ClientID())
+	}
+	state, found, err := useCase.loadSession(sessionKey, timerKey)
 	if err != nil {
 		useCase.mu.Unlock()
 		return err
@@ -229,13 +333,13 @@ func (useCase *UseCase) Disconnect(sessionID routing.SessionID, reason session.D
 		return err
 	}
 	if result.SessionRemoved {
-		if err := useCase.sessions.Delete(clientID); err != nil {
+		if err := useCase.deleteSession(sessionKey, timerKey); err != nil {
 			useCase.mu.Unlock()
 			return err
 		}
 		useCase.routes.RemoveSession(sessionID)
 	} else {
-		if err := useCase.sessions.Save(result.Lifecycle); err != nil {
+		if err := useCase.saveSession(sessionKey, timerKey, result.Lifecycle); err != nil {
 			useCase.mu.Unlock()
 			return err
 		}
@@ -253,11 +357,25 @@ func (useCase *UseCase) Disconnect(sessionID routing.SessionID, reason session.D
 				useCase.onExpiryTimer(sessionID)
 			})
 		}
-		useCase.activeTimers[clientID] = timers
+		useCase.activeTimers[timerKey] = timers
 	}
 
 	willToPublish := result.Will
 	shouldPublish := result.PublishWillNow && willToPublish != nil
+	if shouldPublish && useCase.authenticator != nil {
+		principal, ok := useCase.principals[sessionID]
+		if !ok {
+			shouldPublish = false
+		} else {
+			willTopic, err := tenancy.NewTopic(principal.TenantID(), willToPublish.Topic)
+			if err != nil || useCase.policy.AuthorizeTopic(principal, security.ActionWill, willTopic) != nil {
+				shouldPublish = false
+			}
+		}
+	}
+	if result.SessionRemoved {
+		delete(useCase.principals, sessionID)
+	}
 	useCase.mu.Unlock()
 
 	if shouldPublish {
@@ -270,14 +388,18 @@ func (useCase *UseCase) Disconnect(sessionID routing.SessionID, reason session.D
 
 func (useCase *UseCase) onWillTimer(sessionID routing.SessionID) {
 	useCase.mu.Lock()
-	clientID := string(sessionID)
-	if timers, ok := useCase.activeTimers[clientID]; ok {
+	timerKey := string(sessionID)
+	if timers, ok := useCase.activeTimers[timerKey]; ok {
 		timers.willTimer = nil
 		if timers.expiryTimer == nil {
-			delete(useCase.activeTimers, clientID)
+			delete(useCase.activeTimers, timerKey)
 		}
 	}
-	state, found, err := useCase.sessions.Load(clientID)
+	var sessionKey tenancy.SessionKey
+	if principal, ok := useCase.principals[sessionID]; ok && principal.Subject() != "" {
+		sessionKey, _ = tenancy.NewSessionKey(principal.TenantID(), principal.ClientID())
+	}
+	state, found, err := useCase.loadSession(sessionKey, timerKey)
 	if err != nil || !found {
 		useCase.mu.Unlock()
 		return
@@ -291,25 +413,43 @@ func (useCase *UseCase) onWillTimer(sessionID routing.SessionID) {
 		useCase.mu.Unlock()
 		return
 	}
-	if err := useCase.sessions.Save(updated); err != nil {
+	if err := useCase.saveSession(sessionKey, timerKey, updated); err != nil {
 		useCase.mu.Unlock()
 		return
 	}
+	shouldPublish := true
+	if useCase.authenticator != nil {
+		principal, ok := useCase.principals[sessionID]
+		if !ok {
+			shouldPublish = false
+		} else {
+			willTopic, err := tenancy.NewTopic(principal.TenantID(), will.Topic)
+			if err != nil || useCase.policy.AuthorizeTopic(principal, security.ActionWill, willTopic) != nil {
+				shouldPublish = false
+			}
+		}
+	}
 	useCase.mu.Unlock()
 
-	_ = useCase.willPublisher.PublishWill(sessionID, *will)
+	if shouldPublish {
+		_ = useCase.willPublisher.PublishWill(sessionID, *will)
+	}
 }
 
 func (useCase *UseCase) onExpiryTimer(sessionID routing.SessionID) {
 	useCase.mu.Lock()
-	clientID := string(sessionID)
-	if timers, ok := useCase.activeTimers[clientID]; ok {
+	timerKey := string(sessionID)
+	if timers, ok := useCase.activeTimers[timerKey]; ok {
 		if timers.willTimer != nil {
 			timers.willTimer.Stop()
 		}
-		delete(useCase.activeTimers, clientID)
+		delete(useCase.activeTimers, timerKey)
 	}
-	state, found, err := useCase.sessions.Load(clientID)
+	var sessionKey tenancy.SessionKey
+	if principal, ok := useCase.principals[sessionID]; ok && principal.Subject() != "" {
+		sessionKey, _ = tenancy.NewSessionKey(principal.TenantID(), principal.ClientID())
+	}
+	state, found, err := useCase.loadSession(sessionKey, timerKey)
 	if err != nil || !found {
 		useCase.mu.Unlock()
 		return
@@ -324,12 +464,25 @@ func (useCase *UseCase) onExpiryTimer(sessionID routing.SessionID) {
 		useCase.mu.Unlock()
 		return
 	}
-	_ = useCase.sessions.Delete(clientID)
+	_ = useCase.deleteSession(sessionKey, timerKey)
 	useCase.deliveries.Remove(sessionID)
 	useCase.routes.RemoveSession(sessionID)
+	shouldPublish := will != nil
+	if shouldPublish && useCase.authenticator != nil {
+		principal, ok := useCase.principals[sessionID]
+		if !ok {
+			shouldPublish = false
+		} else {
+			willTopic, err := tenancy.NewTopic(principal.TenantID(), will.Topic)
+			if err != nil || useCase.policy.AuthorizeTopic(principal, security.ActionWill, willTopic) != nil {
+				shouldPublish = false
+			}
+		}
+	}
+	delete(useCase.principals, sessionID)
 	useCase.mu.Unlock()
 
-	if will != nil {
+	if shouldPublish {
 		_ = useCase.willPublisher.PublishWill(sessionID, *will)
 	}
 }
@@ -354,16 +507,6 @@ func (useCase *UseCase) Close() error {
 	return nil
 }
 
-func rejectedConnectReason(packet mqtt.Connect) (byte, bool) {
-	if packet.ClientID == "" {
-		return clientIDRejectedReason(packet.Version), true
-	}
-	if packet.HasUsername || packet.HasPassword {
-		return unsupportedDevelopmentReason(packet.Version), true
-	}
-	return 0, false
-}
-
 func clientIDRejectedReason(version mqtt.ProtocolVersion) byte {
 	if version == mqtt.ProtocolV5 {
 		return 0x85
@@ -378,6 +521,47 @@ func unsupportedDevelopmentReason(version mqtt.ProtocolVersion) byte {
 	return 0x03
 }
 
+func notAuthorizedReason(version mqtt.ProtocolVersion) byte {
+	if version == mqtt.ProtocolV5 {
+		return 0x87
+	}
+	return 0x05
+}
 func duplicateConnectReason(version mqtt.ProtocolVersion) byte {
 	return clientIDRejectedReason(version)
+}
+
+func (useCase *UseCase) loadSession(sessionKey tenancy.SessionKey, clientID string) (session.Lifecycle, bool, error) {
+	if sessionKey != (tenancy.SessionKey{}) {
+		if keyed, ok := useCase.sessions.(interface {
+			LoadKey(tenancy.SessionKey) (session.Lifecycle, bool, error)
+		}); ok {
+			return keyed.LoadKey(sessionKey)
+		}
+		return useCase.sessions.Load(sessionKey.ClientID())
+	}
+	return useCase.sessions.Load(clientID)
+}
+
+func (useCase *UseCase) saveSession(sessionKey tenancy.SessionKey, clientID string, state session.Lifecycle) error {
+	if sessionKey != (tenancy.SessionKey{}) {
+		if keyed, ok := useCase.sessions.(interface {
+			SaveKey(tenancy.SessionKey, session.Lifecycle) error
+		}); ok {
+			return keyed.SaveKey(sessionKey, state)
+		}
+	}
+	return useCase.sessions.Save(state)
+}
+
+func (useCase *UseCase) deleteSession(sessionKey tenancy.SessionKey, clientID string) error {
+	if sessionKey != (tenancy.SessionKey{}) {
+		if keyed, ok := useCase.sessions.(interface {
+			DeleteKey(tenancy.SessionKey) error
+		}); ok {
+			return keyed.DeleteKey(sessionKey)
+		}
+		return useCase.sessions.Delete(sessionKey.ClientID())
+	}
+	return useCase.sessions.Delete(clientID)
 }

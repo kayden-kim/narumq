@@ -170,6 +170,13 @@ func TestRunWithContextDefaultsAndFlagErrors(t *testing.T) {
 	}
 }
 
+func TestRun_Defaults(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	if err := run(nil, logger); err != nil {
+		t.Fatalf("run(nil) error = %v", err)
+	}
+}
+
 func TestRunWithContextRejectsConstructionBounds(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	cases := []struct {
@@ -182,6 +189,12 @@ func TestRunWithContextRejectsConstructionBounds(t *testing.T) {
 		{name: "retained byte capacity", args: []string{"-tcp-listen", "127.0.0.1:0", "-retained-byte-capacity", "0"}, want: "retained-byte-capacity"},
 		{name: "decoder", args: []string{"-tcp-listen", "127.0.0.1:0", "-max-packet-size", "0"}, want: "create MQTT decoder"},
 		{name: "server config", args: []string{"-tcp-listen", "127.0.0.1:0", "-control-queue-capacity", "0"}, want: "create TCP server"},
+		{name: "metrics without listener", args: []string{"-runtime-metrics-output", "out.jsonl", "-runtime-metrics-interval", "1s"}, want: "required when runtime metrics collection is enabled"},
+		{name: "invalid loopback IP", args: []string{"-tcp-listen", "192.168.1.1:1883"}, want: "must use literal loopback IP"},
+		{name: "invalid tcp address", args: []string{"-tcp-listen", "invalid_no_port"}, want: "invalid -tcp-listen"},
+		{name: "negative interval", args: []string{"-runtime-metrics-output", "out.jsonl", "-runtime-metrics-interval", "-1s"}, want: "greater than zero"},
+		{name: "unmatched metrics flags output only", args: []string{"-runtime-metrics-output", "out.jsonl"}, want: "must be provided together"},
+		{name: "unmatched metrics flags interval only", args: []string{"-runtime-metrics-interval", "1s"}, want: "must be provided together"},
 	}
 	for _, testCase := range cases {
 		t.Run(testCase.name, func(t *testing.T) {
@@ -247,6 +260,48 @@ func TestRunWithContextTLSFlags(t *testing.T) {
 		}, logger)
 		if err == nil || !strings.Contains(err.Error(), "configure TLS") {
 			t.Fatalf("expected configure TLS error for dummy cert, got %v", err)
+		}
+	})
+}
+
+// Requirements: SEC-02, SEC-04, TEN-01
+func TestRunWithContextSecurityConfig(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	tempDir := t.TempDir()
+
+	t.Run("missing file", func(t *testing.T) {
+		err := runWithContext(context.Background(), []string{
+			"-tcp-listen", "127.0.0.1:0",
+			"-security-config", filepath.Join(tempDir, "nonexistent.json"),
+		}, logger)
+		if err == nil || !strings.Contains(err.Error(), "read security config file") {
+			t.Fatalf("expected read security config file error, got %v", err)
+		}
+	})
+
+	t.Run("invalid json", func(t *testing.T) {
+		badFile := filepath.Join(tempDir, "bad.json")
+		_ = os.WriteFile(badFile, []byte("{invalid"), 0600)
+		err := runWithContext(context.Background(), []string{
+			"-tcp-listen", "127.0.0.1:0",
+			"-security-config", badFile,
+		}, logger)
+		if err == nil || !strings.Contains(err.Error(), "load security config") {
+			t.Fatalf("expected load security config error, got %v", err)
+		}
+	})
+
+	t.Run("valid security config starts and cancels cleanly", func(t *testing.T) {
+		cfgFile := filepath.Join(tempDir, "valid-sec.json")
+		_ = os.WriteFile(cfgFile, []byte(validSecurityJSON), 0600)
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel()
+		err := runWithContext(ctx, []string{
+			"-tcp-listen", "127.0.0.1:0",
+			"-security-config", cfgFile,
+		}, logger)
+		if err != nil && !errors.Is(err, context.Canceled) {
+			t.Fatalf("canceled security run error = %v", err)
 		}
 	})
 }

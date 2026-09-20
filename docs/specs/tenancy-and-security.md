@@ -4,8 +4,8 @@
 
 | 항목 | 값 |
 | --- | --- |
-| 상태 | Draft |
-| 관련 요구사항 | TEN-01~TEN-10, SEC-01~SEC-12, NFR-16~NFR-19 |
+| 상태 | Active (Phase 1 security and tenant isolation slice) |
+| 적용 범위 | Phase 1에서 구현하는 TEN-01~TEN-05, SEC-02, SEC-04, SEC-06과 SEC-08의 JWKS fail-closed 동작. Metrics, mTLS principal mapping, quota·blocklist, management API, audit sink과 기존 연결 재인증은 후속 범위다. |
 | 근거 | [PRD 9.3절, 9.4절과 11.4절](../requirements/PRD.md), [RFC 8725](https://www.rfc-editor.org/rfc/rfc8725.html) |
 | 관련 spec | [MQTT protocol과 session](mqtt-protocol-and-session.md), [Management API](management-api-and-observability.md) |
 | 관련 Architecture | [Security boundaries](../architectures/security-boundaries.md), [System overview](../architectures/system-overview.md) |
@@ -53,29 +53,75 @@ flowchart TD
 
 JWT validator는 다음 순서를 지켜야 한다.
 
-1. configured issuer와 token type에 허용한 algorithm인지 확인한다. token의 `alg`만 보고 algorithm을 선택해서는 안 된다.
-2. `kid`로 후보 key를 찾고 서명을 검증한다.
-3. `iss`, `aud`, `sub`, `exp`, `nbf`와 configured clock skew를 검증한다.
-4. issuer·subject와 tenant·clientId binding을 확인한다.
-5. token purpose가 다른 validation rule과 혼동되지 않게 issuer·audience·type별 규칙을 분리한다.
+1. CONNECT Password의 UTF-8 compact JWT를 읽고, configured algorithm allowlist에 없는 `alg`이면 서명 검증 전에 거절한다.
+2. 필수 `kid`를 확인하고, cache의 JWKS key set에서 후보 key를 찾는다.
+3. 후보 key로 서명을 검증한다. `kid`와 서명 검증은 configured issuer의 key set 안에서만 수행한다.
+4. `iss`를 configured issuer와 정확히 비교하고, `aud`가 configured audience를 포함하는지 확인한다.
+5. 비어 있지 않은 `sub`와 `exp`를 확인하고, 선택적인 `nbf`를 configured clock skew와 함께 검증한다.
+6. 검증된 `(iss, sub)`를 정적 binding에 대조해 tenant, credential, 허용 Client ID와 roles를 결정한다. Token claim은 이 값을 덮어쓸 수 없다.
 
-JWKS cache는 TTL과 마지막 성공 시각을 가져야 한다. 알 수 없는 `kid`는 정책이 허용한 제한된 refresh를 유발할 수 있다. Refresh 실패 뒤 유효 cache TTL이 끝나면 fail-closed로 거절해야 한다. 폐기된 key를 cache TTL 이상 계속 허용해서는 안 된다.
+JWKS cache는 `fetchedAt`, TTL 만료 시각과 마지막 refresh 시각을 함께 소유한다. 비어 있거나 만료된 cache는 하나의 동시 fetch만 수행하는 mandatory refresh가 성공해야 인증을 진행한다. 유효 cache에서 알려지지 않은 `kid`는 `refreshCooldown`이 허용할 때 하나의 coalesced early refresh를 수행한다. early refresh가 실패하면 해당 `kid`는 거절하지만, 만료되지 않은 기존 key set으로 알려진 `kid`를 검증하는 동작은 유지한다. cooldown 안의 알려지지 않은 `kid`는 I/O 없이 거절한다. 성공한 fetch는 key set, `fetchedAt`, TTL과 refresh-attempt 시각을 원자적으로 교체하고, 실패한 fetch는 TTL을 연장하지 않는다. TTL이 끝난 뒤 refresh가 실패하면 fail-closed로 거절한다.
 
-### 2.3 Username/password
+### 2.3 CONNECT credential과 strict security configuration
+
+이 slice에서 MQTT CONNECT는 `HasUsername=true`와 `HasPassword=true`를 모두 요구한다. Username은 비어 있어도 되며 identity로 사용하지 않고, 로그·Metric·audit에 기록하지 않는다. Password에는 하나의 UTF-8 compact JWT만 넣는다. credential, Client ID binding 또는 Will ACL이 실패하면 MQTT 3.1.1 CONNACK `0x05`, MQTT 5 CONNACK `0x87`을 반환하고 연결을 닫는다. 실패 시 session, timer, route, queue, retained message와 Will을 변경하지 않는다.
+
+Broker 시작에는 `--security-config <path>`가 필수다. 파일은 알 수 없는 field와 두 번째 JSON value를 거절하는 strict decoder로 한 JSON value만 읽는다. duration은 양수인 Go duration string이어야 한다.
+
+```json
+{
+  "jwt": {
+    "issuer": "https://issuer.example",
+    "audience": "narumq",
+    "algorithms": ["RS256"],
+    "jwksUrl": "https://issuer.example/.well-known/jwks.json",
+    "cacheTtl": "15m",
+    "refreshCooldown": "30s",
+    "clockSkew": "30s",
+    "httpTimeout": "5s"
+  },
+  "identities": [
+    {
+      "issuer": "https://issuer.example",
+      "subject": "device-1",
+      "tenantId": "tenant-a",
+      "credentialId": "device-1-key",
+      "allowedClientIds": ["device-1"],
+      "roles": ["publisher"]
+    }
+  ],
+  "acl": [
+    {
+      "tenantId": "tenant-a",
+      "role": "publisher",
+      "effect": "allow",
+      "action": "publish",
+      "topicFilter": "sensors/#"
+    }
+  ]
+}
+```
+
+이 slice는 issuer와 audience를 각각 정확히 하나만 허용한다. algorithms, identities, credential IDs, tenant IDs, `(issuer, subject)` binding, allowed Client IDs와 roles는 비어 있지 않고 각각 중복되지 않아야 한다. ACL `effect`는 `allow|deny`, `action`은 `publish|subscribe|unsubscribe|will`만 허용한다. 중복 ACL rule과 malformed MQTT filter는 startup에서 거절한다. `jwksUrl`은 절대 `https` URL이어야 하며, deterministic test를 위해 IP-literal loopback host의 HTTP만 예외로 허용한다. `cacheTtl`, `refreshCooldown`, `clockSkew`, `httpTimeout`은 모두 양수여야 한다. Reload 동작은 이 slice에 포함하지 않는다.
+
+### 2.4 Username/password
 
 이 방식이 활성화되면 password 검증에 salt를 포함한 승인된 password hashing scheme을 사용해야 한다. 평문이나 복호화 가능한 password를 저장해서는 안 된다. 실패 응답은 계정 존재 여부를 구분하지 않아야 한다.
 
 ## 3. Tenant namespace
 
-외부 topic은 인증된 tenant와 결합해 내부 canonical topic으로 변환한다. 실제 prefix encoding은 `SPEC-TBD-05`지만 다음 속성은 고정이다.
+외부 MQTT topic과 filter 표기는 변경하지 않는다. Broker 내부에서는 tenant와 namespace를 문자열 prefix로 이어 붙이지 않고, 비교 가능한 typed value로 함께 표현한다.
 
-1. 서로 다른 tenant의 같은 외부 topic은 서로 다른 canonical topic이 되어야 한다.
-2. 변환은 publish, subscribe, unsubscribe, retained, Will, shared subscription과 관리 조회에 동일하게 적용해야 한다.
-3. 외부 입력이 내부 prefix를 직접 지정하거나 이중 encoding으로 다른 tenant에 도달해서는 안 된다.
-4. ACL은 외부 표기나 변환 전 문자열이 아니라 canonical topic/filter를 기준으로 평가해야 한다.
-5. system topic 규칙을 적용한 뒤에도 tenant namespace를 벗어나서는 안 된다.
+- `NewTenantID(raw string) (TenantID, error)`는 비어 있거나 유효하지 않은 tenant를 거절한다.
+- `NewSessionKey(tenantID TenantID, clientID string) (SessionKey, error)`는 tenant와 비어 있지 않은 Client ID를 결합하며 field를 외부에서 만들 수 없게 한다.
+- `NewTopic(tenantID TenantID, name string) (Topic, error)`는 concrete MQTT topic을 검증한다.
+- `NewTopicFilter(tenantID TenantID, filter string) (TopicFilter, error)`는 MQTT filter 또는 shared subscription을 검증한다.
 
-topic 정규화는 MQTT 문자열 의미를 임의로 바꾸면 안 된다. Unicode normalization, case folding 또는 slash 병합을 암묵적으로 수행해서는 안 된다.
+각 value는 private field와 read-only `TenantID()`, `ClientID()`, `Name()`, `Filter()` accessor만 제공한다. 서로 다른 tenant의 같은 외부 이름은 비교에서 절대 같은 값이 되지 않는다. Cross-tenant 비교는 거절한다. 향후 persistence·wire adapter만 unsigned-varint byte length 뒤에 UTF-8 tenant와 topic/filter bytes를 직렬화할 수 있으며, 이 slice에는 string compatibility key나 내부 prefix encoding을 두지 않는다.
+
+Topic/filter validation과 MQTT wildcard matcher는 하나만 유지한다. Shared subscription은 먼저 `$share/{ShareName}/{TopicFilter}`로 분해하고 ACL과 containment/intersection 비교에는 underlying filter만 사용한다. `$` system topic의 첫 level wildcard 제한을 포함한 기존 MQTT matching 의미를 그대로 적용한다. Unicode normalization, case folding, slash 병합은 하지 않는다.
+
+Namespace binding은 publish, subscribe, unsubscribe, retained, shared subscription, Will과 session key에 동일하게 적용한다. Client가 제출한 tenant claim, topic prefix 또는 이중 encoding으로 tenant를 선택하거나 변경할 수 없다.
 
 ## 4. ACL
 
@@ -93,6 +139,17 @@ ACL 입력은 `tenantId`, `subject`, `clientId`, action, canonical topic/filter,
 - policy backend 오류 또는 timeout은 deny로 처리해야 한다.
 - policy 변경의 적용 version을 연결과 감사 이벤트에서 확인할 수 있어야 한다.
 - 기존 연결 재평가·재인증 정책은 credential 종류별로 문서화해야 한다.
+
+### 4.1 Phase 1 ACL 판정과 Will
+
+ACL은 authenticated principal이 가진 모든 role의 tenant-local rule을 대상으로 평가한다. matching deny가 하나라도 있으면 거절하고, deny가 없으며 matching allow가 있으면 허용하고, 둘 다 없으면 default deny다.
+
+- `publish`와 `will`은 concrete `Topic`이 rule `TopicFilter`와 match하는지 평가한다.
+- `subscribe`와 `unsubscribe`는 요청한 모든 topic을 포함하는 rule filter가 있어야 allow가 된다. 요청 filter와 deny rule이 한 topic이라도 교차하면 거절한다.
+- Shared subscription syntax는 먼저 parse하고 underlying filter로 위 두 판정을 수행한다.
+- CONNECT Will은 등록 시점과 실제 publication 직전에 같은 principal snapshot으로 다시 authorize한다. delayed Will의 authorization 실패는 broker state를 변경하지 않고 Will을 버린다.
+
+`Principal`과 `SessionKey`의 tenant와 Client ID가 일치하지 않으면 모든 authorization은 거절한다. Principal은 CONNECT 시점에 session에 snapshot으로 저장하며 기존 연결은 live TCP connection이나 timer map에서 identity를 다시 읽지 않는다.
 
 ## 5. Quota와 rate limit
 
@@ -146,21 +203,21 @@ ACL 입력은 `tenantId`, `subject`, `clientId`, action, canonical topic/filter,
 
 audit event에는 password, bearer token, session cookie, private key와 원문 secret을 넣어서는 안 된다. Client ID, username, certificate identity와 IP는 권한과 보존 정책에 따라 마스킹할 수 있어야 한다. 보존 기간과 위변조 방지 방식은 보안 운영 spec에서 확정한다.
 
-## 9. 수용 시험
+## 9. 수용 시험과 범위
 
-- SEC-01: TLS 1.2 이상, TLS 1.0/1.1 거절, AEAD cipher allowlist와 TLS/mTLS listener 왕복을
-  `tests/integration/mqtt_tls_test.go`의 `TestMQTTTLS_ConnectionAndDelivery`,
-  `TestMQTTTLS_RejectInsecureTLSVersion`으로 검증한다.
-- SEC-03: trusted CA 성공, untrusted CA 거절, 만료 인증서 거절을
-  `TestMQTTTLS_mTLS_Success`, `TestMQTTTLS_mTLS_UntrustedCA_Rejected`,
-  `TestMQTTTLS_mTLS_ExpiredCert_Rejected`로 검증한다.
-- SEC-04: 인증서 Common Name과 MQTT Client ID 일치·불일치 및 MQTT 버전별 CONNACK
-  reason을 `TestMQTTTLS_mTLS_ClientIDMismatch_Rejected`로 검증한다.
-- SEC-09: node 간 mTLS trust domain과 member allowlist를 함께 적용해 비인가 node join과
-  cluster RPC를 거절하는 시험을 별도 cluster transport acceptance suite에 연결한다.
-- 같은 clientId와 외부 topic을 쓰는 두 tenant가 session, route, retained, Will과 shared group을 공유하지 않는지 시험한다.
-- 내부 prefix 주입, wildcard·system topic 우회와 이중 encoding을 거절하는지 시험한다.
-- JWT algorithm confusion, 잘못된 issuer/audience/subject, expiry, `kid` rotation과 JWKS 장애를 시험한다.
-- ACL backend와 auth backend 장애가 cache TTL 뒤 fail-closed인지 확인한다.
-- 모든 관리 API에 role·tenant별 positive/negative matrix와 IDOR 시험을 적용한다.
-- secret scanner와 log/Metric assertion으로 비밀정보가 노출되지 않는지 검증한다.
+| ID | 수용 기준 | 시험 |
+| --- | --- | --- |
+| SEC-01 | TLS 1.2 이상, TLS 1.0/1.1 거절, AEAD cipher allowlist와 TLS/mTLS listener 왕복을 검증한다. | `tests/integration/mqtt_tls_test.go`의 `TestMQTTTLS_ConnectionAndDelivery`, `TestMQTTTLS_RejectInsecureTLSVersion` |
+| SEC-02 | algorithm allowlist, required `kid`, cached JWKS signature, exact issuer, audience membership, subject, exp/nbf와 clock skew를 순서대로 검증하고 key rotation을 fail-closed로 처리한다. | `internal/adapters/authentication`의 JWT/JWKS cache 시험 |
+| SEC-03 | trusted CA 성공, untrusted CA 거절, 만료 인증서 거절을 검증한다. | `tests/integration/mqtt_tls_test.go`의 `TestMQTTTLS_mTLS_Success`, `TestMQTTTLS_mTLS_UntrustedCA_Rejected`, `TestMQTTTLS_mTLS_ExpiredCert_Rejected` |
+| SEC-04 | 인증서 CN/SAN 불일치를 거절하고, JWT 인증 결과의 exact allowed Client ID가 아니면 MQTT 3.1.1 `0x05` 또는 MQTT 5 `0x87`로 거절하고 state를 만들지 않는다. | `tests/integration/mqtt_tls_test.go`의 `TestMQTTTLS_mTLS_ClientIDMismatch_Rejected`, `internal/application/connect`, `tests/integration/mqtt_ingress_test.go`의 `TestMQTTSecurity` |
+| SEC-06 | publish, subscribe, unsubscribe와 Will은 deny > allow > default-deny를 적용하고 거절 전에는 mutation을 수행하지 않는다. | `internal/domain/security`, application mutation-order 시험, `tests/integration/mqtt_ingress_test.go`의 `TestMQTTSecurity` |
+| SEC-08 | JWKS가 비어 있거나 TTL 만료 후 refresh에 실패하면 fail-closed한다. Metrics와 audit sink은 이 slice의 범위가 아니다. | `internal/adapters/authentication`의 `TestJWKSBootstrapFailureCollapses` 등 시험 |
+| SEC-09 | node 간 복제와 internal transport mTLS를 분리 검증한다. | 별도 cluster transport acceptance suite |
+| TEN-01 | 유효한 JWT와 정적 `(issuer, subject)` binding 없이 CONNECT가 성공하지 않고, token claim이 tenant를 선택하지 못한다. | `internal/adapters/authentication`의 JWT 검증 시험, `tests/integration/mqtt_ingress_test.go`의 `TestMQTTSecurity` |
+| TEN-02 | Client ID uniqueness와 session ownership의 key가 `(tenant, clientId)`이며 같은 Client ID를 다른 tenant가 사용할 수 있다. | `internal/domain/session`, `internal/adapters/memory/sessionstore`, `tests/integration/mqtt_ingress_test.go`의 `TestMQTTSecurity` |
+| TEN-03 | 같은 외부 topic과 filter가 tenant별 typed value로 격리되며 retained·shared·Will에도 같은 binding이 적용된다. | `internal/domain/tenancy`, `internal/domain/routing`, `tests/integration/mqtt_ingress_test.go`의 `TestMQTTSecurity` |
+| TEN-04 | ACL은 tenant-local canonical typed value를 기준으로 평가하고 내부 prefix injection이나 이중 encoding으로 우회할 수 없다. | `internal/domain/security` policy 시험, `tests/integration/mqtt_ingress_test.go`의 `TestMQTTSecurity` |
+| TEN-05 | system topic, retained, shared subscription, Will과 session이 tenant 경계를 넘지 않는다. | tenancy/routing/session 시험, `tests/integration/mqtt_ingress_test.go`의 `TestMQTTSecurity` |
+
+이 변경은 security metrics, mTLS principal mapping, quotas, blocklists, management API, audit sink, reload와 기존 연결 token reauthentication을 완료로 표시하지 않는다. 위 표 밖의 SEC-05, SEC-07, SEC-10~SEC-12와 TEN-06~TEN-10은 후속 acceptance scope다.

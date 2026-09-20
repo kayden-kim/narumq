@@ -14,11 +14,14 @@ import (
 	memoryretained "narumq/internal/adapters/memory/retained"
 	"narumq/internal/adapters/memory/sessionstore"
 	"narumq/internal/application/connect"
+	applicationauthentication "narumq/internal/application/ports/authentication"
 	applicationdeliveryqueue "narumq/internal/application/ports/deliveryqueue"
 	"narumq/internal/application/publish"
 	"narumq/internal/application/subscribe"
 	"narumq/internal/domain/mqtt"
 	"narumq/internal/domain/routing"
+	"narumq/internal/domain/security"
+	"narumq/internal/domain/tenancy"
 )
 
 type adapterTestClock struct {
@@ -550,6 +553,208 @@ func TestWillBridge_Unbound(t *testing.T) {
 	if err := bridge.PublishWill("session", mqtt.Will{Topic: "test"}); err != nil {
 		t.Fatalf("unbound PublishWill error = %v", err)
 	}
+}
+
+type testServerAuthenticator struct {
+	result applicationauthentication.Result
+}
+
+func (a *testServerAuthenticator) Authenticate(ctx context.Context, credential applicationauthentication.Credential) (applicationauthentication.Result, error) {
+	return a.result, nil
+}
+
+// Requirements: SEC-06, TEN-04
+func TestTCPServer_UnauthorizedPublishAndSubscribe(t *testing.T) {
+	tenant, err := tenancy.NewTenantID("tenant-a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	allowedTopicFilter, err := tenancy.NewTopicFilter(tenant, "allowed/#")
+	if err != nil {
+		t.Fatal(err)
+	}
+	rulePub, err := security.NewRule(tenant, "device", security.EffectAllow, security.ActionPublish, allowedTopicFilter)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ruleSub, err := security.NewRule(tenant, "device", security.EffectAllow, security.ActionSubscribe, allowedTopicFilter)
+	if err != nil {
+		t.Fatal(err)
+	}
+	policy, err := security.NewPolicy([]security.Rule{rulePub, ruleSub})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	auth := &testServerAuthenticator{
+		result: applicationauthentication.Result{
+			TenantID:         tenant,
+			Subject:          "device-1",
+			CredentialID:     "cred-1",
+			AllowedClientIDs: []string{"client-1"},
+			Roles:            []security.Role{"device"},
+			ExpiresAt:        time.Now().Add(time.Hour),
+		},
+	}
+
+	listener := newPipeListener()
+	routes := routing.NewTable()
+	queue, err := deliveryqueue.New(16)
+	if err != nil {
+		t.Fatal(err)
+	}
+	repository := sessionstore.New()
+	retainedRepository, err := memoryretained.New(32, 4096)
+	if err != nil {
+		t.Fatal(err)
+	}
+	clock := &adapterTestClock{now: time.Date(2026, time.January, 1, 0, 0, 0, 0, time.UTC)}
+	willBridge := NewWillBridge()
+	connections, err := connect.New(clock, repository, queue, routes, adapterTestScheduler{}, willBridge, connect.WithSecurity(auth, policy))
+	if err != nil {
+		t.Fatal(err)
+	}
+	subscriptions, err := subscribe.New(routes, queue, retainedRepository, subscribe.WithPolicy(policy))
+	if err != nil {
+		t.Fatal(err)
+	}
+	publications, err := publish.New(clock, routes, queue, retainedRepository, publish.WithPolicy(policy))
+	if err != nil {
+		t.Fatal(err)
+	}
+	decoder, err := mqtt.NewDecoder(1024)
+	if err != nil {
+		t.Fatal(err)
+	}
+	encoder, err := mqtt.NewEncoder(1024)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg := defaultAdapterConfig()
+	cfg.Clock = clock
+	cfg.Policy = policy
+	server, err := NewServer(listener, cfg, decoder, encoder, connections, subscriptions, publications, queue, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan error, 1)
+	go func() {
+		done <- server.Serve(ctx)
+	}()
+	t.Cleanup(func() {
+		cancel()
+		_ = listener.Close()
+		<-done
+	})
+
+	client, serverConn := net.Pipe()
+	listener.connections <- serverConn
+	<-listener.accepted
+
+	// CONNECT with valid credentials
+	connectPkt := &mqtt.Connect{
+		Version:     mqtt.ProtocolV5,
+		ClientID:    "client-1",
+		HasUsername: true,
+		HasPassword: true,
+		Password:    []byte("dummy.jwt"),
+	}
+	if _, err := client.Write(encodeTestPacket(t, connectPkt)); err != nil {
+		t.Fatal(err)
+	}
+	connAckWire := readTestFrame(t, client)
+	decodedConnAck, _, err := decoder.Decode(connAckWire, mqtt.ProtocolV5)
+	if err != nil {
+		t.Fatal(err)
+	}
+	connAck, ok := decodedConnAck.(*mqtt.ConnAck)
+	if !ok || connAck.ReasonCode != 0 {
+		t.Fatalf("CONNACK = %#v, want ReasonCode 0", decodedConnAck)
+	}
+
+	// Publish QoS 1 to unauthorized topic -> must get PubAck 0x87
+	unauthPub := &mqtt.Publish{
+		Version:  mqtt.ProtocolV5,
+		PacketID: 10,
+		Topic:    "forbidden/topic",
+		Payload:  []byte("data"),
+		QoS:      mqtt.QoSAtLeastOnce,
+	}
+	if _, err := client.Write(encodeTestPacket(t, unauthPub)); err != nil {
+		t.Fatal(err)
+	}
+	pubAckWire := readTestFrame(t, client)
+	decodedPubAck, _, err := decoder.Decode(pubAckWire, mqtt.ProtocolV5)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pubAck, ok := decodedPubAck.(*mqtt.PubAck)
+	if !ok || pubAck.PacketID != 10 || pubAck.ReasonCode != 0x87 {
+		t.Fatalf("unauthorized PubAck = %#v, want PacketID 10 and ReasonCode 0x87", decodedPubAck)
+	}
+
+	// Subscribe to unauthorized filter -> must get SubAck 0x87
+	unauthSub := &mqtt.Subscribe{
+		Version:       mqtt.ProtocolV5,
+		PacketID:      20,
+		Subscriptions: []mqtt.Subscription{{Filter: "forbidden/#", QoS: mqtt.QoSAtLeastOnce}},
+	}
+	if _, err := client.Write(encodeTestPacket(t, unauthSub)); err != nil {
+		t.Fatal(err)
+	}
+	subAckWire := readTestFrame(t, client)
+	decodedSubAck, _, err := decoder.Decode(subAckWire, mqtt.ProtocolV5)
+	if err != nil {
+		t.Fatal(err)
+	}
+	subAck, ok := decodedSubAck.(*mqtt.SubAck)
+	if !ok || subAck.PacketID != 20 || len(subAck.ReasonCodes) != 1 || subAck.ReasonCodes[0] != 0x87 {
+		t.Fatalf("unauthorized SubAck = %#v, want ReasonCode 0x87", decodedSubAck)
+	}
+
+	// Publish QoS 1 to authorized topic -> must get PubAck 0x00
+	authPub := &mqtt.Publish{
+		Version:  mqtt.ProtocolV5,
+		PacketID: 30,
+		Topic:    "allowed/data",
+		Payload:  []byte("data"),
+		QoS:      mqtt.QoSAtLeastOnce,
+	}
+	if _, err := client.Write(encodeTestPacket(t, authPub)); err != nil {
+		t.Fatal(err)
+	}
+	authPubAckWire := readTestFrame(t, client)
+	decodedAuthPubAck, _, err := decoder.Decode(authPubAckWire, mqtt.ProtocolV5)
+	if err != nil {
+		t.Fatal(err)
+	}
+	authPubAck, ok := decodedAuthPubAck.(*mqtt.PubAck)
+	if !ok || authPubAck.PacketID != 30 || authPubAck.ReasonCode != 0x00 {
+		t.Fatalf("authorized PubAck = %#v, want ReasonCode 0x00", decodedAuthPubAck)
+	}
+
+	// Subscribe to authorized filter -> must get SubAck 0x01
+	authSub := &mqtt.Subscribe{
+		Version:       mqtt.ProtocolV5,
+		PacketID:      40,
+		Subscriptions: []mqtt.Subscription{{Filter: "allowed/data", QoS: mqtt.QoSAtLeastOnce}},
+	}
+	if _, err := client.Write(encodeTestPacket(t, authSub)); err != nil {
+		t.Fatal(err)
+	}
+	authSubAckWire := readTestFrame(t, client)
+	decodedAuthSubAck, _, err := decoder.Decode(authSubAckWire, mqtt.ProtocolV5)
+	if err != nil {
+		t.Fatal(err)
+	}
+	authSubAck, ok := decodedAuthSubAck.(*mqtt.SubAck)
+	if !ok || authSubAck.PacketID != 40 || len(authSubAck.ReasonCodes) != 1 || authSubAck.ReasonCodes[0] != 0x01 {
+		t.Fatalf("authorized SubAck = %#v, want ReasonCode 0x01", decodedAuthSubAck)
+	}
+
+	_ = client.Close()
 }
 
 var _ applicationdeliveryqueue.Queue = (*deliveryqueue.Queue)(nil)

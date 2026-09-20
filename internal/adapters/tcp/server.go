@@ -20,7 +20,9 @@ import (
 	"narumq/internal/domain/delivery"
 	"narumq/internal/domain/mqtt"
 	"narumq/internal/domain/routing"
+	"narumq/internal/domain/security"
 	"narumq/internal/domain/session"
+	"narumq/internal/domain/tenancy"
 )
 
 var (
@@ -60,6 +62,7 @@ type Config struct {
 	ControlQueueCapacity   int
 	VerifyClientID         bool
 	ClientIdentityVerifier func(conn net.Conn, clientID string) bool
+	Policy                 security.Policy
 }
 
 // Server owns one listener, all connection goroutines and the session registry.
@@ -347,15 +350,15 @@ type connection struct {
 	stopOnce         sync.Once
 	cleanupOnce      sync.Once
 	sessionID        routing.SessionID
+	principal        security.Principal
 	version          mqtt.ProtocolVersion
 	keepAlive        uint16
 	accepted         bool
 	disconnectReason session.DisconnectReason
-
-	deliveryMu sync.Mutex
-	inbound    map[mqtt.PacketIdentifier]inboundState
-	outbound   map[mqtt.PacketIdentifier]delivery.Outbound
-	packetIDs  *packetIDAllocator
+	deliveryMu       sync.Mutex
+	inbound          map[mqtt.PacketIdentifier]inboundState
+	outbound         map[mqtt.PacketIdentifier]delivery.Outbound
+	packetIDs        *packetIDAllocator
 }
 
 func (connection *connection) run() {
@@ -520,6 +523,7 @@ func (connection *connection) activate(packet mqtt.Connect) error {
 		return nil
 	}
 	connection.sessionID = result.SessionID
+	connection.principal = result.Principal
 	connection.version = packet.Version
 	connection.keepAlive = packet.KeepAlive
 	connection.accepted = true
@@ -534,7 +538,7 @@ func (connection *connection) activate(packet mqtt.Connect) error {
 func (connection *connection) dispatch(packet mqtt.Packet) error {
 	switch value := packet.(type) {
 	case *mqtt.Subscribe:
-		result, err := connection.server.subscriptions.Subscribe(connection.sessionID, *value, connection.server.config.Clock.Now())
+		result, err := connection.server.subscriptions.Subscribe(connection.sessionID, *value, connection.server.config.Clock.Now(), connection.principal)
 		if err != nil {
 			return err
 		}
@@ -546,7 +550,7 @@ func (connection *connection) dispatch(packet mqtt.Packet) error {
 		}
 		return nil
 	case *mqtt.Unsubscribe:
-		ack := connection.server.subscriptions.Unsubscribe(connection.sessionID, *value)
+		ack := connection.server.subscriptions.Unsubscribe(connection.sessionID, *value, connection.principal)
 		return connection.enqueueControl(&ack)
 	case *mqtt.Publish:
 		return connection.dispatchPublish(*value)
@@ -583,6 +587,12 @@ func (connection *connection) dispatch(packet mqtt.Packet) error {
 }
 
 func (connection *connection) dispatchPublish(packet mqtt.Publish) error {
+	if connection.principal.Subject() != "" {
+		topic, err := tenancy.NewTopic(connection.principal.TenantID(), packet.Topic)
+		if err != nil || connection.server.config.Policy.AuthorizeTopic(connection.principal, security.ActionPublish, topic) != nil {
+			return connection.rejectUnauthorizedPublish(packet)
+		}
+	}
 	if packet.QoS == mqtt.QoSAtMostOnce {
 		result, err := connection.server.publications.Publish(connection.sessionID, packet, connection.server.config.Clock.Now())
 		if err != nil {
@@ -882,6 +892,20 @@ func (connection *connection) enqueueNegativePublishAck(packet mqtt.Publish) err
 		return connection.enqueueControl(&mqtt.PubRec{Version: connection.version, PacketID: packet.PacketID, ReasonCode: 0x83})
 	}
 	return ErrProtocol
+}
+
+func (connection *connection) rejectUnauthorizedPublish(packet mqtt.Publish) error {
+	if connection.version == mqtt.ProtocolV5 {
+		if packet.QoS == mqtt.QoSAtLeastOnce {
+			return connection.enqueueControl(&mqtt.PubAck{Version: connection.version, PacketID: packet.PacketID, ReasonCode: 0x87})
+		}
+		if packet.QoS == mqtt.QoSExactlyOnce {
+			return connection.enqueueControl(&mqtt.PubRec{Version: connection.version, PacketID: packet.PacketID, ReasonCode: 0x87})
+		}
+		return nil
+	}
+	connection.requestClose()
+	return nil
 }
 
 func (connection *connection) enqueueControl(packet mqtt.Packet) error {

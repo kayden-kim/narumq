@@ -11,6 +11,8 @@ import (
 	"narumq/internal/application/ports/retained"
 	"narumq/internal/domain/mqtt"
 	"narumq/internal/domain/routing"
+	"narumq/internal/domain/security"
+	"narumq/internal/domain/tenancy"
 )
 
 var (
@@ -29,16 +31,27 @@ type ResultDTO struct {
 	RetainedQueued int
 }
 
+// Option configures optional parameters for the subscribe use case.
+type Option func(*UseCase)
+
+// WithPolicy configures an authorization policy for subscriptions.
+func WithPolicy(policy security.Policy) Option {
+	return func(u *UseCase) {
+		u.policy = policy
+	}
+}
+
 // UseCase applies subscription commands to one routing table and replays
 // retained values through the application-owned delivery queue.
 type UseCase struct {
 	routes   *routing.Table
 	queue    deliveryqueue.Queue
 	retained retained.Repository
+	policy   security.Policy
 }
 
 // New creates a subscription use case over routes, queue, and retained state.
-func New(routes *routing.Table, queue deliveryqueue.Queue, retainedRepository retained.Repository) (*UseCase, error) {
+func New(routes *routing.Table, queue deliveryqueue.Queue, retainedRepository retained.Repository, opts ...Option) (*UseCase, error) {
 	if routes == nil {
 		return nil, ErrNilRoutingTable
 	}
@@ -48,17 +61,23 @@ func New(routes *routing.Table, queue deliveryqueue.Queue, retainedRepository re
 	if retainedRepository == nil {
 		return nil, ErrNilRetainedRepository
 	}
-	return &UseCase{routes: routes, queue: queue, retained: retainedRepository}, nil
+	useCase := &UseCase{routes: routes, queue: queue, retained: retainedRepository}
+	for _, opt := range opts {
+		if opt != nil {
+			opt(useCase)
+		}
+	}
+	return useCase, nil
 }
 
 // Subscribe validates and applies every entry independently. Retained replay
 // is enqueued as a complete batch before the corresponding route is committed.
-func (useCase *UseCase) Subscribe(sessionID routing.SessionID, packet mqtt.Subscribe, now time.Time) (ResultDTO, error) {
+func (useCase *UseCase) Subscribe(sessionID routing.SessionID, packet mqtt.Subscribe, now time.Time, principal ...security.Principal) (ResultDTO, error) {
 	result := ResultDTO{
 		Ack: mqtt.SubAck{Version: packet.Version, PacketID: packet.PacketID, ReasonCodes: make([]byte, 0, len(packet.Subscriptions))},
 	}
 	for _, subscription := range packet.Subscriptions {
-		reasonCode, retainedQueued, err := useCase.subscribeOne(sessionID, packet.Version, subscription, now)
+		reasonCode, retainedQueued, err := useCase.subscribeOne(sessionID, packet.Version, subscription, now, principal...)
 		if err != nil {
 			return result, err
 		}
@@ -70,12 +89,22 @@ func (useCase *UseCase) Subscribe(sessionID routing.SessionID, packet mqtt.Subsc
 
 // Unsubscribe removes every valid filter independently. MQTT 5 receives one
 // reason per request; MQTT 3.1.1 keeps its packet-identifier-only contract.
-func (useCase *UseCase) Unsubscribe(sessionID routing.SessionID, packet mqtt.Unsubscribe) mqtt.UnsubAck {
+func (useCase *UseCase) Unsubscribe(sessionID routing.SessionID, packet mqtt.Unsubscribe, principal ...security.Principal) mqtt.UnsubAck {
 	ack := mqtt.UnsubAck{Version: packet.Version, PacketID: packet.PacketID}
+	var activePrincipal security.Principal
+	if len(principal) > 0 {
+		activePrincipal = principal[0]
+	}
 	if packet.Version == mqtt.ProtocolV311 {
 		for _, filter := range packet.Filters {
 			if !validUnsubscribeFilter(filter) {
 				continue
+			}
+			if activePrincipal.Subject() != "" {
+				topicFilter, err := tenancy.NewTopicFilter(activePrincipal.TenantID(), filter)
+				if err != nil || useCase.policy.AuthorizeFilter(activePrincipal, security.ActionUnsubscribe, topicFilter) != nil {
+					continue
+				}
 			}
 			_, _ = useCase.routes.Unsubscribe(sessionID, filter)
 		}
@@ -84,12 +113,19 @@ func (useCase *UseCase) Unsubscribe(sessionID routing.SessionID, packet mqtt.Uns
 
 	ack.ReasonCodes = make([]byte, 0, len(packet.Filters))
 	for _, filter := range packet.Filters {
+		if activePrincipal.Subject() != "" {
+			topicFilter, err := tenancy.NewTopicFilter(activePrincipal.TenantID(), filter)
+			if err != nil || useCase.policy.AuthorizeFilter(activePrincipal, security.ActionUnsubscribe, topicFilter) != nil {
+				ack.ReasonCodes = append(ack.ReasonCodes, 0x87)
+				continue
+			}
+		}
 		ack.ReasonCodes = append(ack.ReasonCodes, useCase.unsubscribeReason(sessionID, filter))
 	}
 	return ack
 }
 
-func (useCase *UseCase) subscribeOne(sessionID routing.SessionID, version mqtt.ProtocolVersion, subscription mqtt.Subscription, now time.Time) (byte, int, error) {
+func (useCase *UseCase) subscribeOne(sessionID routing.SessionID, version mqtt.ProtocolVersion, subscription mqtt.Subscription, now time.Time, principal ...security.Principal) (byte, int, error) {
 	if err := routing.ValidateSessionID(sessionID); err != nil {
 		return invalidSubscriptionReason(version), 0, nil
 	}
@@ -105,6 +141,12 @@ func (useCase *UseCase) subscribeOne(sessionID routing.SessionID, version mqtt.P
 	isShared := routing.IsSharedFilter(subscription.Filter)
 	if isShared && subscription.NoLocal {
 		return protocolErrorReason(version), 0, nil
+	}
+	if len(principal) > 0 && principal[0].Subject() != "" {
+		topicFilter, err := tenancy.NewTopicFilter(principal[0].TenantID(), subscription.Filter)
+		if err != nil || useCase.policy.AuthorizeFilter(principal[0], security.ActionSubscribe, topicFilter) != nil {
+			return notAuthorizedSubscriptionReason(version), 0, nil
+		}
 	}
 	_, existed := useCase.routes.Lookup(sessionID, subscription.Filter)
 	replay := version == mqtt.ProtocolV311
@@ -207,6 +249,13 @@ func replayFullReason(version mqtt.ProtocolVersion) byte {
 func protocolErrorReason(version mqtt.ProtocolVersion) byte {
 	if version == mqtt.ProtocolV5 {
 		return 0x82
+	}
+	return 0x80
+}
+
+func notAuthorizedSubscriptionReason(version mqtt.ProtocolVersion) byte {
+	if version == mqtt.ProtocolV5 {
+		return 0x87
 	}
 	return 0x80
 }

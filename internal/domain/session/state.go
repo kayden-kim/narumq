@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"narumq/internal/domain/mqtt"
+	"narumq/internal/domain/tenancy"
 )
 
 var (
@@ -26,6 +27,7 @@ const (
 
 // Lifecycle is a value-owned MQTT session connection and expiry state.
 type Lifecycle struct {
+	sessionKey     tenancy.SessionKey
 	clientID       string
 	version        mqtt.ProtocolVersion
 	connected      bool
@@ -77,13 +79,22 @@ type DisconnectResult struct {
 // Open opens a connection and reports whether an existing session was resumed.
 // The existing lifecycle is never mutated; a connected existing lifecycle is
 // rejected because takeover and fencing belong to a higher application layer.
-func Open(existing *Lifecycle, connect mqtt.Connect, now time.Time) (Lifecycle, bool, error) {
+func Open(existing *Lifecycle, connect mqtt.Connect, now time.Time, key ...tenancy.SessionKey) (Lifecycle, bool, error) {
 	unchanged := Lifecycle{}
+	var activeKey tenancy.SessionKey
+	if len(key) > 0 {
+		activeKey = key[0]
+	}
 	if existing != nil {
 		unchanged = *existing
 		unchanged.will = existing.will.Clone()
 		if existing.clientID != connect.ClientID {
 			return unchanged, false, ErrIdentityMismatch
+		}
+		if activeKey != (tenancy.SessionKey{}) && existing.sessionKey != (tenancy.SessionKey{}) {
+			if existing.sessionKey != activeKey {
+				return unchanged, false, ErrIdentityMismatch
+			}
 		}
 		if existing.connected {
 			return unchanged, false, ErrAlreadyConnected
@@ -91,10 +102,14 @@ func Open(existing *Lifecycle, connect mqtt.Connect, now time.Time) (Lifecycle, 
 	}
 
 	present := existing != nil && !connect.CleanStart && !existing.discarded && !existing.Expired(now)
-	return newLifecycle(connect), present, nil
+	opened := newLifecycle(connect)
+	if activeKey != (tenancy.SessionKey{}) {
+		opened.sessionKey = activeKey
+	} else if existing != nil {
+		opened.sessionKey = existing.sessionKey
+	}
+	return opened, present, nil
 }
-
-// Disconnect closes the connection and evaluates session retention and will actions.
 func (state Lifecycle) Disconnect(now time.Time, reason DisconnectReason) (DisconnectResult, error) {
 	if !state.connected {
 		return DisconnectResult{Lifecycle: state}, ErrNotConnected
@@ -200,9 +215,18 @@ func (state Lifecycle) ClientID() string {
 	return state.clientID
 }
 
-// Connected reports whether the lifecycle currently has an active connection.
 func (state Lifecycle) Connected() bool {
 	return state.connected
+}
+
+// SessionKey returns the tenant-scoped session key.
+func (state Lifecycle) SessionKey() tenancy.SessionKey {
+	return state.sessionKey
+}
+
+// TenantID returns the tenant ID of the session key.
+func (state Lifecycle) TenantID() tenancy.TenantID {
+	return state.sessionKey.TenantID()
 }
 
 // ExpiryInterval returns the MQTT 5 interval requested by the active session.

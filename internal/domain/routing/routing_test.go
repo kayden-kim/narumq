@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"narumq/internal/domain/mqtt"
+	"narumq/internal/domain/tenancy"
 )
 
 // Traceability: PRD MQTT-06/TEST-03/04; MQTT-4.7.1-1/2 and MQTT-4.7.2-1/2.
@@ -613,5 +614,97 @@ func TestSharedSubscriptionUnsubscribeAndSessionRemoval(t *testing.T) {
 	removed, err = table.Unsubscribe("worker-b", filter)
 	if err != nil || removed {
 		t.Fatalf("Unsubscribe after removal = (%t, %v), want (false, nil)", removed, err)
+	}
+}
+
+// Requirements: TEN-03, TEN-05
+func TestRoutingTable_TenantIsolation(t *testing.T) {
+	table := NewTable()
+	tenantA, err := tenancy.NewTenantID("tenant-a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	tenantB, err := tenancy.NewTenantID("tenant-b")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Bind sessions
+	if err := table.BindSessionTenant("sub-a", tenantA); err != nil {
+		t.Fatal(err)
+	}
+	if err := table.BindSessionTenant("pub-a", tenantA); err != nil {
+		t.Fatal(err)
+	}
+	if err := table.BindSessionTenant("sub-b", tenantB); err != nil {
+		t.Fatal(err)
+	}
+	if err := table.BindSessionTenant("pub-b", tenantB); err != nil {
+		t.Fatal(err)
+	}
+	if got := table.SessionTenant("sub-a"); got != tenantA {
+		t.Fatalf("SessionTenant(sub-a) = %v, want %v", got, tenantA)
+	}
+	var nilTable *Table
+	if got := nilTable.SessionTenant("sub-a"); got != (tenancy.TenantID{}) {
+		t.Fatalf("nilTable.SessionTenant() = %v, want zero", got)
+	}
+	if err := table.BindSessionTenant("", tenantA); err == nil {
+		t.Fatal("BindSessionTenant with empty sessionID should fail")
+	}
+	if got := table.SessionTenant("unknown"); got != (tenancy.TenantID{}) {
+		t.Fatalf("SessionTenant(unknown) = %v, want zero", got)
+	}
+
+	// Both subscribe to exact same filter
+	filter := "sensors/#"
+	if _, err := table.Subscribe("sub-a", mqtt.Subscription{Filter: filter, QoS: mqtt.QoSAtLeastOnce}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := table.Subscribe("sub-b", mqtt.Subscription{Filter: filter, QoS: mqtt.QoSAtLeastOnce}); err != nil {
+		t.Fatal(err)
+	}
+
+	// Publication from pub-a must ONLY match sub-a, never sub-b
+	matchesA, err := table.Match("pub-a", "sensors/temp", mqtt.QoSAtLeastOnce, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(matchesA) != 1 || matchesA[0].SessionID != "sub-a" {
+		t.Fatalf("pub-a matches = %#v, want only sub-a", matchesA)
+	}
+
+	// Publication from pub-b must ONLY match sub-b, never sub-a
+	matchesB, err := table.Match("pub-b", "sensors/temp", mqtt.QoSAtLeastOnce, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(matchesB) != 1 || matchesB[0].SessionID != "sub-b" {
+		t.Fatalf("pub-b matches = %#v, want only sub-b", matchesB)
+	}
+
+	// Shared subscription isolation
+	sharedFilter := "$share/workers/jobs"
+	if _, err := table.Subscribe("sub-a", mqtt.Subscription{Filter: sharedFilter, QoS: mqtt.QoSAtLeastOnce}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := table.Subscribe("sub-b", mqtt.Subscription{Filter: sharedFilter, QoS: mqtt.QoSAtLeastOnce}); err != nil {
+		t.Fatal(err)
+	}
+
+	sharedMatchesA, err := table.Match("pub-a", "jobs", mqtt.QoSAtLeastOnce, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(sharedMatchesA) != 1 || sharedMatchesA[0].SessionID != "sub-a" {
+		t.Fatalf("shared pub-a matches = %#v, want only sub-a", sharedMatchesA)
+	}
+
+	sharedMatchesB, err := table.Match("pub-b", "jobs", mqtt.QoSAtLeastOnce, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(sharedMatchesB) != 1 || sharedMatchesB[0].SessionID != "sub-b" {
+		t.Fatalf("shared pub-b matches = %#v, want only sub-b", sharedMatchesB)
 	}
 }

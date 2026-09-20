@@ -10,6 +10,8 @@ import (
 	"narumq/internal/application/ports/retained"
 	"narumq/internal/domain/mqtt"
 	"narumq/internal/domain/routing"
+	"narumq/internal/domain/security"
+	"narumq/internal/domain/tenancy"
 )
 
 type recordingQueue struct {
@@ -409,5 +411,118 @@ func TestSubscribeReplayPreservesRetainedExpiryDeadline(t *testing.T) {
 	}
 	if !queue.deliveries[0].ExpiresAt.Equal(now.Add(10 * time.Second)) {
 		t.Fatalf("replay deadline = %v, want %v", queue.deliveries[0].ExpiresAt, now.Add(10*time.Second))
+	}
+}
+
+// Requirements: SEC-06, TEN-04
+func TestSubscribe_UnauthorizedRejection(t *testing.T) {
+	now := time.Date(2026, time.January, 1, 0, 0, 0, 0, time.UTC)
+	tenant, err := tenancy.NewTenantID("tenant-a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	allowedFilter, err := tenancy.NewTopicFilter(tenant, "allowed/#")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ruleSub, err := security.NewRule(tenant, "client", security.EffectAllow, security.ActionSubscribe, allowedFilter)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ruleUnsub, err := security.NewRule(tenant, "client", security.EffectAllow, security.ActionUnsubscribe, allowedFilter)
+	if err != nil {
+		t.Fatal(err)
+	}
+	policy, err := security.NewPolicy([]security.Rule{ruleSub, ruleUnsub})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	routes := routing.NewTable()
+	queue := &recordingQueue{}
+	repository := &recordingRetained{messages: []retained.MessageDTO{{
+		PublisherSessionID: "pub",
+		Topic:              "forbidden/topic",
+		Payload:            []byte("data"),
+		QoS:                mqtt.QoSAtLeastOnce,
+	}}}
+	useCase, err := New(routes, queue, repository, WithPolicy(policy))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	principal, err := security.NewPrincipal(
+		tenant,
+		"client-1",
+		"device-1",
+		"cred-1",
+		[]security.Role{"client"},
+		now.Add(time.Hour),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Subscribe to unauthorized filter
+	subPacket := mqtt.Subscribe{
+		Version:       mqtt.ProtocolV5,
+		PacketID:      1,
+		Subscriptions: []mqtt.Subscription{{Filter: "forbidden/#", QoS: mqtt.QoSAtLeastOnce}},
+	}
+	res, err := useCase.Subscribe("client-1", subPacket, now, principal)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(res.Ack.ReasonCodes) != 1 || res.Ack.ReasonCodes[0] != 0x87 {
+		t.Fatalf("unauthorized subscribe reason = %v, want 0x87", res.Ack.ReasonCodes)
+	}
+	// Mutation check: route not added, retained not replayed
+	if _, found := routes.Lookup("client-1", "forbidden/#"); found {
+		t.Fatal("route was added despite authorization failure")
+	}
+	if len(queue.deliveries) != 0 {
+		t.Fatalf("retained replayed despite authorization failure: %v", queue.deliveries)
+	}
+
+	// Subscribe to authorized filter succeeds
+	subAllowed := mqtt.Subscribe{
+		Version:       mqtt.ProtocolV5,
+		PacketID:      2,
+		Subscriptions: []mqtt.Subscription{{Filter: "allowed/events", QoS: mqtt.QoSAtLeastOnce}},
+	}
+	res, err = useCase.Subscribe("client-1", subAllowed, now, principal)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(res.Ack.ReasonCodes) != 1 || res.Ack.ReasonCodes[0] != 0x01 {
+		t.Fatalf("authorized subscribe reason = %v, want 0x01", res.Ack.ReasonCodes)
+	}
+	if _, found := routes.Lookup("client-1", "allowed/events"); !found {
+		t.Fatal("route was not added for authorized subscription")
+	}
+
+	// Unsubscribe from unauthorized filter fails without mutating routes
+	unsubUnauthorized := mqtt.Unsubscribe{
+		Version:  mqtt.ProtocolV5,
+		PacketID: 3,
+		Filters:  []string{"forbidden/something"},
+	}
+	unsubAck := useCase.Unsubscribe("client-1", unsubUnauthorized, principal)
+	if len(unsubAck.ReasonCodes) != 1 || unsubAck.ReasonCodes[0] != 0x87 {
+		t.Fatalf("unauthorized unsubscribe reason = %v, want 0x87", unsubAck.ReasonCodes)
+	}
+
+	// Unsubscribe from authorized filter succeeds and removes route
+	unsubAuthorized := mqtt.Unsubscribe{
+		Version:  mqtt.ProtocolV5,
+		PacketID: 4,
+		Filters:  []string{"allowed/events"},
+	}
+	unsubAck = useCase.Unsubscribe("client-1", unsubAuthorized, principal)
+	if len(unsubAck.ReasonCodes) != 1 || unsubAck.ReasonCodes[0] != 0x00 {
+		t.Fatalf("authorized unsubscribe reason = %v, want 0x00", unsubAck.ReasonCodes)
+	}
+	if _, found := routes.Lookup("client-1", "allowed/events"); found {
+		t.Fatal("route was not removed for authorized unsubscription")
 	}
 }

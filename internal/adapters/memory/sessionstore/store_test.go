@@ -2,11 +2,11 @@ package sessionstore
 
 import (
 	"errors"
-	"testing"
-	"time"
-
 	"narumq/internal/domain/mqtt"
 	"narumq/internal/domain/session"
+	"narumq/internal/domain/tenancy"
+	"testing"
+	"time"
 )
 
 func TestMemorySessionRepositoryValidatesKeysAndCopiesValues(t *testing.T) {
@@ -55,5 +55,65 @@ func TestNilAndInvalidSessionRepositoryOperations(t *testing.T) {
 	}
 	if err := store.Delete(""); !errors.Is(err, ErrInvalidClientID) {
 		t.Fatalf("empty Delete() error = %v", err)
+	}
+}
+
+// Requirements: TEN-02
+func TestMemorySessionRepository_SessionKeyMultiTenant(t *testing.T) {
+	repository := New()
+	tenantA, err := tenancy.NewTenantID("tenant-a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	tenantB, err := tenancy.NewTenantID("tenant-b")
+	if err != nil {
+		t.Fatal(err)
+	}
+	keyA, err := tenancy.NewSessionKey(tenantA, "device-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	keyB, err := tenancy.NewSessionKey(tenantB, "device-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	now := time.Unix(100, 0)
+	stateA, _, err := session.Open(nil, mqtt.Connect{Version: mqtt.ProtocolV5, ClientID: "device-1", SessionExpiryInterval: 10}, now, keyA)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stateB, _, err := session.Open(nil, mqtt.Connect{Version: mqtt.ProtocolV5, ClientID: "device-1", SessionExpiryInterval: 20}, now, keyB)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if err := repository.SaveKey(keyA, stateA); err != nil {
+		t.Fatal(err)
+	}
+	if err := repository.SaveKey(keyB, stateB); err != nil {
+		t.Fatal(err)
+	}
+
+	loadedA, foundA, err := repository.LoadKey(keyA)
+	if err != nil || !foundA || loadedA.ExpiryInterval() != 10 {
+		t.Fatalf("LoadKey(keyA) = (%#v, %v, %v)", loadedA, foundA, err)
+	}
+	loadedB, foundB, err := repository.LoadKey(keyB)
+	if err != nil || !foundB || loadedB.ExpiryInterval() != 20 {
+		t.Fatalf("LoadKey(keyB) = (%#v, %v, %v)", loadedB, foundB, err)
+	}
+
+	if err := repository.DeleteKey(keyA); err != nil {
+		t.Fatal(err)
+	}
+	_, foundA, err = repository.LoadKey(keyA)
+	if err != nil || foundA {
+		t.Fatalf("LoadKey(keyA) after delete = found %v, err %v", foundA, err)
+	}
+	// Tenant B's session must still be intact!
+	loadedB, foundB, err = repository.LoadKey(keyB)
+	if err != nil || !foundB || loadedB.ExpiryInterval() != 20 {
+		t.Fatalf("LoadKey(keyB) unexpectedly affected: (%#v, %v, %v)", loadedB, foundB, err)
 	}
 }

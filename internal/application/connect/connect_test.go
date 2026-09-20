@@ -1,16 +1,20 @@
 package connect
 
 import (
+	"context"
 	"errors"
 	"reflect"
 	"testing"
 	"time"
 
+	applicationauthentication "narumq/internal/application/ports/authentication"
 	applicationclock "narumq/internal/application/ports/clock"
 	"narumq/internal/application/ports/deliveryqueue"
 	"narumq/internal/domain/mqtt"
 	"narumq/internal/domain/routing"
+	"narumq/internal/domain/security"
 	"narumq/internal/domain/session"
+	"narumq/internal/domain/tenancy"
 )
 
 type fakeClock struct {
@@ -829,4 +833,174 @@ func TestConnect_TimerCallbackEdgeCases(t *testing.T) {
 	if err := useCase.Disconnect("immediate-err", session.DisconnectAbnormal); !errors.Is(err, willPublisher.err) {
 		t.Fatalf("expected publisher error, got %v", err)
 	}
+}
+
+type fakeAuthenticator struct {
+	err    error
+	result applicationauthentication.Result
+}
+
+func (a *fakeAuthenticator) Authenticate(ctx context.Context, credential applicationauthentication.Credential) (applicationauthentication.Result, error) {
+	if a.err != nil {
+		return applicationauthentication.Result{}, a.err
+	}
+	return a.result, nil
+}
+
+// Requirements: SEC-04, TEN-01, TEN-02
+func TestConnectAuthenticatedPipeline(t *testing.T) {
+	now := time.Date(2026, time.January, 1, 0, 0, 0, 0, time.UTC)
+	tenant, err := tenancy.NewTenantID("tenant-a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	filter, err := tenancy.NewTopicFilter(tenant, "sensors/#")
+	if err != nil {
+		t.Fatal(err)
+	}
+	rule, err := security.NewRule(tenant, "publisher", security.EffectAllow, security.ActionWill, filter)
+	if err != nil {
+		t.Fatal(err)
+	}
+	policy, err := security.NewPolicy([]security.Rule{rule})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	auth := &fakeAuthenticator{
+		result: applicationauthentication.Result{
+			TenantID:         tenant,
+			Subject:          "device-1",
+			CredentialID:     "cred-1",
+			AllowedClientIDs: []string{"client-1"},
+			Roles:            []security.Role{"publisher"},
+			ExpiresAt:        now.Add(time.Hour),
+		},
+	}
+
+	makeUseCase := func() (*UseCase, *fakeSessionRepository, *fakeDeliveryQueue, *fakeWillPublisher) {
+		clock := &fakeClock{now: now}
+		repository := newFakeSessionRepository()
+		queue := newFakeDeliveryQueue()
+		routes := routing.NewTable()
+		scheduler := &fakeScheduler{}
+		publisher := &fakeWillPublisher{}
+		uc, err := New(clock, repository, queue, routes, scheduler, publisher, WithSecurity(auth, policy))
+		if err != nil {
+			t.Fatal(err)
+		}
+		return uc, repository, queue, publisher
+	}
+
+	validToken := []byte("valid.jwt.token")
+	cases := []struct {
+		name       string
+		packet     mqtt.Connect
+		authErr    error
+		wantReason byte
+	}{
+		{
+			name:       "missing-username-v311",
+			packet:     mqtt.Connect{Version: mqtt.ProtocolV311, ClientID: "client-1", HasPassword: true, Password: validToken},
+			wantReason: 0x05,
+		},
+		{
+			name:       "missing-username-v5",
+			packet:     mqtt.Connect{Version: mqtt.ProtocolV5, ClientID: "client-1", HasPassword: true, Password: validToken},
+			wantReason: 0x87,
+		},
+		{
+			name:       "missing-password-v311",
+			packet:     mqtt.Connect{Version: mqtt.ProtocolV311, ClientID: "client-1", HasUsername: true, Username: "u"},
+			wantReason: 0x05,
+		},
+		{
+			name:       "missing-password-v5",
+			packet:     mqtt.Connect{Version: mqtt.ProtocolV5, ClientID: "client-1", HasUsername: true, Username: "u"},
+			wantReason: 0x87,
+		},
+		{
+			name:       "empty-password-v5",
+			packet:     mqtt.Connect{Version: mqtt.ProtocolV5, ClientID: "client-1", HasUsername: true, HasPassword: true, Password: []byte("")},
+			wantReason: 0x87,
+		},
+		{
+			name:       "auth-failed-v5",
+			packet:     mqtt.Connect{Version: mqtt.ProtocolV5, ClientID: "client-1", HasUsername: true, HasPassword: true, Password: []byte("bad")},
+			authErr:    errors.New("invalid jwt signature"),
+			wantReason: 0x87,
+		},
+		{
+			name:       "client-id-mismatch-v5",
+			packet:     mqtt.Connect{Version: mqtt.ProtocolV5, ClientID: "unauthorized-client", HasUsername: true, HasPassword: true, Password: validToken},
+			wantReason: 0x87,
+		},
+		{
+			name: "will-acl-denied-v5",
+			packet: mqtt.Connect{
+				Version:     mqtt.ProtocolV5,
+				ClientID:    "client-1",
+				HasUsername: true,
+				HasPassword: true,
+				Password:    validToken,
+				Will: &mqtt.Will{
+					Topic:   "unauthorized/topic",
+					Payload: []byte("bye"),
+				},
+			},
+			wantReason: 0x87,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			useCase, repository, queue, _ := makeUseCase()
+			auth.err = tc.authErr
+			defer func() { auth.err = nil }()
+
+			res, err := useCase.Connect(tc.packet)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if res.Accepted || res.ConnAck.ReasonCode != tc.wantReason {
+				t.Fatalf("rejected connect = (%#v), want reason %#x", res, tc.wantReason)
+			}
+			if repository.loadCalls != 0 || repository.saveCalls != 0 || len(queue.registers) != 0 {
+				t.Fatalf("rejected connect modified state: loads=%d saves=%d registers=%v", repository.loadCalls, repository.saveCalls, queue.registers)
+			}
+		})
+	}
+
+	t.Run("successful-auth-creates-session-and-will-authorizes", func(t *testing.T) {
+		useCase, repository, queue, publisher := makeUseCase()
+		connect := mqtt.Connect{
+			Version:     mqtt.ProtocolV5,
+			ClientID:    "client-1",
+			HasUsername: true,
+			HasPassword: true,
+			Password:    validToken,
+			Will: &mqtt.Will{
+				Topic:   "sensors/status",
+				Payload: []byte("lost"),
+			},
+		}
+		res, err := useCase.Connect(connect)
+		if err != nil || !res.Accepted || res.ConnAck.ReasonCode != 0 {
+			t.Fatalf("Connect failed: %#v, %v", res, err)
+		}
+		if res.Principal.TenantID() != tenant || res.Principal.ClientID() != "client-1" {
+			t.Fatalf("Principal mismatch: %#v", res.Principal)
+		}
+		if repository.saveCalls != 1 || len(queue.registers) != 1 {
+			t.Fatalf("state not saved: saves=%d registers=%v", repository.saveCalls, queue.registers)
+		}
+
+		// Disconnect abnormal publishes will
+		if err := useCase.Disconnect(res.SessionID, session.DisconnectAbnormal); err != nil {
+			t.Fatal(err)
+		}
+		if len(publisher.published) != 1 || publisher.published[0].will.Topic != "sensors/status" {
+			t.Fatalf("will not published: %#v", publisher.published)
+		}
+	})
 }
