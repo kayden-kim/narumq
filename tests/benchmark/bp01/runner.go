@@ -161,13 +161,13 @@ func executeWorkload(ctx context.Context, options RunOptions, collector *Collect
 		<-receiverDone
 		return err
 	}
+	stopOnce.Do(func() { close(stopReceiver) })
 	if err := subscriber.Disconnect(handshakeTimeout); err != nil {
-		stopOnce.Do(func() { close(stopReceiver) })
 		<-receiverDone
 		return fmt.Errorf("subscriber DISCONNECT: %w", err)
 	}
-	stopOnce.Do(func() { close(stopReceiver) })
 	if err := subscriber.Close(); err != nil {
+		<-receiverDone
 		return fmt.Errorf("close subscriber: %w", err)
 	}
 	<-receiverDone

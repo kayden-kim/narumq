@@ -236,3 +236,28 @@ func TestNewCreatesTruncatedOutput(t *testing.T) {
 		t.Fatalf("truncated output has %d bytes", len(data))
 	}
 }
+func TestSamplerRejectsNilAndSecondRun(t *testing.T) {
+	var nilSampler *Sampler
+	if err := nilSampler.Run(context.Background()); err == nil {
+		t.Fatal("nil Sampler.Run() unexpectedly succeeded")
+	}
+	path := filepath.Join(t.TempDir(), "metrics.jsonl")
+	sampler, err := New(path, time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if err := sampler.Run(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if err := sampler.Run(context.Background()); err == nil {
+		t.Fatal("second Sampler.Run() unexpectedly succeeded")
+	}
+	if err := sampler.writeSample(time.Now().Add(time.Second)); err == nil {
+		t.Fatal("writeSample() after close unexpectedly succeeded")
+	}
+	if err := sampler.close(); err != nil {
+		t.Fatalf("second close() error = %v", err)
+	}
+}

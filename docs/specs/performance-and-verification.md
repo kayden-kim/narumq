@@ -235,6 +235,13 @@ Phase 0에서 profile별 최소 throughput, 최대 p99·p99.9, connection당 mem
 
 Feature와 bug fix는 실패를 재현하는 test를 포함해야 한다. Flaky test 격리는 임시 조치이며 owner와 해소 기한을 기록해야 한다.
 
+Phase 0의 MQTT normative statement 연결표는
+[`tests/conformance/mqtt-compliance-v1.json`](../../tests/conformance/mqtt-compliance-v1.json)이다.
+이 파일은 지원 범위라고 선언한 statement, requirement ID와 자동 test function을 함께
+기록한다. `go run ./tools/verify traceability`는 source comment와 matrix를 양방향으로
+비교한다. 따라서 matrix에만 있는 test, source에만 있는 statement, requirement union이
+다른 경우를 모두 실패로 처리한다.
+
 ## 8. Coverage와 test quality gate
 
 - 전체 production code는 line/function 90% 이상, branch 85% 이상이어야 한다.
@@ -244,6 +251,36 @@ Feature와 bug fix는 실패를 재현하는 test를 포함해야 한다. Flaky 
 - generated/vendor code와 단순 선언만 근거를 남겨 제외할 수 있다.
 - critical state machine mutation score는 80% 이상이어야 한다.
 - concurrency code는 race detector 또는 동등한 검사를 통과해야 한다.
+
+현재 Phase 0의 자동 검증은 다음 명령을 기준으로 한다.
+
+```text
+go run ./tools/verify local
+go run ./tools/verify ci --base <merge-base>
+```
+
+`local`은 `go vet`, 전체 test, race test, traceability, architecture와
+coverage profile 생성을 순서대로 실행한다. `ci`는 같은 검증에 더해 `base...HEAD`
+의 production 변경 line/function diff coverage를 확인한다. 두 명령은 첫 실패에서
+멈추고, coverage 원본과 요약을 `.artifacts/verification/`에 남긴다.
+
+Coverage 계산은 Go atomic coverprofile의 executable block을 합쳐 다음처럼 만든다.
+
+```text
+line coverage     = 실행된 source line 수 / 전체 실행 source line 수
+function coverage = 실행된 function 수 / 전체 function 수
+diff coverage     = base...HEAD에 추가된 실행 line/function 중 실행된 수 / 전체 수
+```
+
+변경된 실행 line이 없으면 diff coverage는 100%로 기록한다. Branch coverage는
+승인된 branch instrumentation 도구가 repository에 고정되기 전까지 `not_evaluated`
+와 이유를 artifact에 기록하며, line coverage를 branch coverage로 대신하지 않는다.
+현재 기준과 ratchet 값은 [`tests/verification/coverage-policy.json`](../../tests/verification/coverage-policy.json)에 둔다.
+
+Ratchet 값은 release evidence가 안정된 측정치를 확인한 뒤에만 올린다. 동일한
+runner를 여러 번 실행해 coverage count가 고정됐는지 확인하고, 확인한 요약 수치를
+정책에 반영한다. 측정치가 baseline보다 높다는 이유만으로 자동 변경하지 않으며,
+이후 측정치가 baseline 아래로 내려가면 gate가 실패한다.
 
 Coverage 수치만으로 합격할 수 없다. P0 요구사항 또는 지원 MQTT normative statement에 연결된 assertion이 없으면 CI가 merge를 차단해야 한다.
 - 시스템 스펙([시스템 스펙](README.md))에 명시된 모든 시나리오(정상, 예외, 경계 조건, 상태 전이)는 테스트 케이스로 100% 추적 및 커버되어야 한다. 단위 테스트가 가능한 도메인 규칙과 상태 머신 로직은 외부 의존성 없는 유닛 테스트로 100% 검증함을 기본으로 하고, 분산 합의·노드 드레인·인프라 장애 등 시스템 수준 시나리오는 통합·E2E·카오스 테스트 계층에 누락 없이 매핑하여 검증한다.
@@ -258,6 +295,12 @@ Coverage 수치만으로 합격할 수 없다. P0 요구사항 또는 지원 MQT
 - composition root 외부에서 concrete adapter를 직접 조립하지 않는다.
 - session, routing, delivery, tenancy, security와 cluster lifecycle package 간 금지 dependency를 명시한다.
 - N-1↔N wire·persisted state·snapshot compatibility test를 release matrix에 포함한다.
+
+`go run ./tools/verify architecture`는 `go list -json ./cmd/... ./internal/...`의 실제
+production import graph를 읽어 domain → application → adapter 경계를 검사한다.
+`tests`와 `tools`는 production package가 import하지 못하며, adapter끼리의 직접 의존과
+composition root 밖의 concrete adapter 조립도 실패시킨다. 이 검사는 source tree를
+복사한 예시가 아니라 현재 package graph를 대상으로 한다.
 
 ## 10. Release evidence와 P0 gate
 

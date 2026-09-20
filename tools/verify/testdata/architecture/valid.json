@@ -1,0 +1,6 @@
+[
+  {"ImportPath":"narumq/cmd/narumq","Imports":["narumq/internal/adapters/tcp","narumq/internal/application/connect","fmt"]},
+  {"ImportPath":"narumq/internal/adapters/tcp","Imports":["narumq/internal/application/connect","narumq/internal/domain/mqtt","net"]},
+  {"ImportPath":"narumq/internal/application/connect","Imports":["narumq/internal/domain/session","narumq/internal/application/ports/deliveryqueue","context"]},
+  {"ImportPath":"narumq/internal/domain/session","Imports":["time"]}
+]

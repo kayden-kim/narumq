@@ -1,0 +1,5 @@
+{
+  "trace": "PRD MQTT-03/TEST-03/04; OASIS MQTT-3.1.2-1/2/3.",
+  "requirements": ["MQTT-03", "TEST-03", "TEST-04"],
+  "statements": ["MQTT-3.1.2-1", "MQTT-3.1.2-2", "MQTT-3.1.2-3"]
+}

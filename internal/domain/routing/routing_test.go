@@ -243,3 +243,85 @@ func TestTableConcurrentSubscribeUnsubscribeAndMatch(t *testing.T) {
 	}
 	waitGroup.Wait()
 }
+func TestRoutingRejectsInvalidOperationsAtBoundaries(t *testing.T) {
+	table := NewTable()
+	for _, sessionID := range []SessionID{"", "bad\x00session"} {
+		if err := table.Subscribe(sessionID, "topic", mqtt.QoSAtMostOnce); !errors.Is(err, ErrInvalidSessionID) {
+			t.Fatalf("Subscribe(%q) error = %v, want ErrInvalidSessionID", sessionID, err)
+		}
+		if _, err := table.Unsubscribe(sessionID, "topic"); !errors.Is(err, ErrInvalidSessionID) {
+			t.Fatalf("Unsubscribe(%q) error = %v, want ErrInvalidSessionID", sessionID, err)
+		}
+	}
+	if err := table.Subscribe("session", "$share/group/topic", mqtt.QoSAtMostOnce); !errors.Is(err, ErrSharedSubscriptionUnsupported) {
+		t.Fatalf("shared Subscribe() error = %v, want ErrSharedSubscriptionUnsupported", err)
+	}
+	if err := table.Subscribe("session", "topic/#/tail", mqtt.QoSAtMostOnce); !errors.Is(err, ErrInvalidTopicFilter) {
+		t.Fatalf("invalid wildcard Subscribe() error = %v, want ErrInvalidTopicFilter", err)
+	}
+	if err := table.Subscribe("session", "topic", mqtt.QoS(3)); !errors.Is(err, ErrInvalidQoS) {
+		t.Fatalf("invalid QoS Subscribe() error = %v, want ErrInvalidQoS", err)
+	}
+	if _, err := table.Match("topic", mqtt.QoS(3)); !errors.Is(err, ErrInvalidQoS) {
+		t.Fatalf("invalid QoS Match() error = %v, want ErrInvalidQoS", err)
+	}
+	if _, err := table.Match("", mqtt.QoSAtMostOnce); !errors.Is(err, ErrInvalidTopicName) {
+		t.Fatalf("invalid topic Match() error = %v, want ErrInvalidTopicName", err)
+	}
+	if removed := table.RemoveSession("missing"); removed {
+		t.Fatal("RemoveSession() reported removal for missing session")
+	}
+}
+
+func TestRoutingSystemTopicWildcardBoundary(t *testing.T) {
+	table := NewTable()
+	if err := table.Subscribe("system", "#", mqtt.QoSExactlyOnce); err != nil {
+		t.Fatal(err)
+	}
+	if err := table.Subscribe("exact", "$SYS/#", mqtt.QoSExactlyOnce); err != nil {
+		t.Fatal(err)
+	}
+	matches, err := table.Match("$SYS/health", mqtt.QoSExactlyOnce)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(matches) != 1 || matches[0].SessionID != "exact" {
+		t.Fatalf("system topic matches = %#v, want exact subscription only", matches)
+	}
+}
+
+func TestRoutingInitializesNilSubscriptionMapAndHandlesNilTable(t *testing.T) {
+	var table Table
+	if err := table.Subscribe(SessionID("session"), "topic", mqtt.QoSAtMostOnce); err != nil {
+		t.Fatalf("Subscribe() on zero Table error = %v", err)
+	}
+	if removed, err := table.Unsubscribe(SessionID("session"), "topic"); err != nil || !removed {
+		t.Fatalf("Unsubscribe() = (%v, %v), want removed", removed, err)
+	}
+	var nilTable *Table
+	if nilTable.RemoveSession(SessionID("session")) {
+		t.Fatal("nil Table RemoveSession() reported removal")
+	}
+}
+
+func TestRoutingRejectsInvalidUTF8AndMatchesDollarTopics(t *testing.T) {
+	if !errors.Is(ValidateTopicFilter(string([]byte{0xff})), ErrInvalidTopicFilter) {
+		t.Fatal("invalid UTF-8 filter was accepted")
+	}
+	if !errors.Is(ValidateTopicName(string([]byte{0xff})), ErrInvalidTopicName) {
+		t.Fatal("invalid UTF-8 topic was accepted")
+	}
+	table := NewTable()
+	if err := table.Subscribe("plain", "+/status", mqtt.QoSAtMostOnce); err != nil {
+		t.Fatal(err)
+	}
+	if matches, err := table.Match("$sys/status", mqtt.QoSAtMostOnce); err != nil || len(matches) != 0 {
+		t.Fatalf("dollar topic wildcard match = %#v, error = %v", matches, err)
+	}
+	if err := table.Subscribe("literal", "$sys/status", mqtt.QoSAtMostOnce); err != nil {
+		t.Fatal(err)
+	}
+	if matches, err := table.Match("$sys/status", mqtt.QoSAtMostOnce); err != nil || len(matches) != 1 {
+		t.Fatalf("literal dollar topic match = %#v, error = %v", matches, err)
+	}
+}

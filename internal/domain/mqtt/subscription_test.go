@@ -254,3 +254,112 @@ func TestSubscriptionEncoderSizeAndVersionValidation(t *testing.T) {
 		}
 	}
 }
+func TestSubscriptionCodecRejectsMalformedOptionsAndBounds(t *testing.T) {
+	for _, version := range []ProtocolVersion{ProtocolUnknown, 3} {
+		if _, err := decodeSubscribe([]byte{0, 1}, version); !errors.Is(err, ErrUnsupportedProtocolVersion) {
+			t.Fatalf("decodeSubscribe(%d) error = %v", version, err)
+		}
+		if _, err := decodeSubAck([]byte{0, 1}, version); !errors.Is(err, ErrUnsupportedProtocolVersion) {
+			t.Fatalf("decodeSubAck(%d) error = %v", version, err)
+		}
+		if _, err := decodeUnsubscribe([]byte{0, 1}, version); !errors.Is(err, ErrUnsupportedProtocolVersion) {
+			t.Fatalf("decodeUnsubscribe(%d) error = %v", version, err)
+		}
+		if _, err := decodeUnsubAck([]byte{0, 1}, version); !errors.Is(err, ErrUnsupportedProtocolVersion) {
+			t.Fatalf("decodeUnsubAck(%d) error = %v", version, err)
+		}
+	}
+	badSubscribe := [][]byte{{}, {0, 0}, {0, 1, 0}, {0, 1, 0, 0, 0}, {0, 1, 0, 0, 0xC0}}
+	for _, body := range badSubscribe {
+		if _, err := decodeSubscribe(body, ProtocolV5); err == nil {
+			t.Fatalf("decodeSubscribe(% X) unexpectedly succeeded", body)
+		}
+	}
+	if _, err := encodeSubscribe(Subscribe{Version: ProtocolV5, PacketID: 1, Subscriptions: []Subscription{{Filter: "topic", QoS: QoSAtMostOnce}}}, 3); !errors.Is(err, ErrPacketTooLarge) {
+		t.Fatalf("encodeSubscribe size error = %v", err)
+	}
+	badAck := [][]byte{{}, {0, 0}, {0, 1}, {0, 1, 0xFF}}
+	for _, body := range badAck {
+		if _, err := decodeSubAck(body, ProtocolV5); err == nil {
+			t.Fatalf("decodeSubAck(% X) unexpectedly succeeded", body)
+		}
+	}
+	if _, err := encodeSubAck(SubAck{Version: ProtocolV5, PacketID: 1, ReasonCodes: []byte{0}}, 2); !errors.Is(err, ErrPacketTooLarge) {
+		t.Fatalf("encodeSubAck size error = %v", err)
+	}
+	if _, err := encodeUnsubscribe(Unsubscribe{Version: ProtocolV5, PacketID: 1, Filters: []string{"topic"}}, 2); !errors.Is(err, ErrPacketTooLarge) {
+		t.Fatalf("encodeUnsubscribe size error = %v", err)
+	}
+	if _, err := decodeUnsubscribe([]byte{0, 1, 0}, ProtocolV5); err == nil {
+		t.Fatal("decodeUnsubscribe with empty filter unexpectedly succeeded")
+	}
+	if _, err := encodeUnsubAck(UnsubAck{Version: ProtocolV5, PacketID: 1}, 64); !errors.Is(err, ErrMalformedPacket) {
+		t.Fatalf("encodeUnsubAck without reasons error = %v", err)
+	}
+	if _, err := decodeUnsubAck([]byte{0, 1, 0, 0xFF}, ProtocolV5); err == nil {
+		t.Fatal("decodeUnsubAck accepted invalid reason")
+	}
+	if _, err := encodeUnsubAck(UnsubAck{Version: ProtocolV5, PacketID: 1, ReasonCodes: []byte{0}}, 3); !errors.Is(err, ErrPacketTooLarge) {
+		t.Fatalf("encodeUnsubAck size error = %v", err)
+	}
+}
+
+func TestSubscriptionCodecValidAndInvalidOptions(t *testing.T) {
+	for _, version := range []ProtocolVersion{ProtocolV311, ProtocolV5} {
+		body, err := encodeSubscribe(Subscribe{Version: version, PacketID: 1, Subscriptions: []Subscription{{Filter: "a/+/b", QoS: QoSAtMostOnce, NoLocal: version == ProtocolV5, RetainAsPublished: version == ProtocolV5, RetainHandling: SendRetainedIfNew}}}, 128)
+		if version == ProtocolV311 {
+			body, err = encodeSubscribe(Subscribe{Version: version, PacketID: 1, Subscriptions: []Subscription{{Filter: "a/+/b", QoS: QoSAtMostOnce}}}, 128)
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := decodeSubscribe(body, version); err != nil {
+			t.Fatalf("decodeSubscribe(%d) error = %v", version, err)
+		}
+	}
+	if _, err := decodeSubscriptionOptions("topic", 0x04, ProtocolV311); err == nil {
+		t.Fatal("MQTT 3.1.1 accepted No Local option")
+	}
+	if _, err := decodeSubscriptionOptions("topic", 0, ProtocolUnknown); !errors.Is(err, ErrUnsupportedProtocolVersion) {
+		t.Fatalf("unsupported subscription option version = %v", err)
+	}
+	if _, err := decodeSubscriptionOptions("topic", 0x30, ProtocolV5); err == nil {
+		t.Fatal("invalid retain handling was accepted")
+	}
+	invalidSubscriptions := []Subscription{
+		{Filter: "topic", QoS: QoS(3)},
+		{Filter: "topic", RetainHandling: RetainHandling(3)},
+	}
+	for index, subscription := range invalidSubscriptions {
+		if _, err := subscriptionOptions(subscription, ProtocolV5); err == nil {
+			t.Fatalf("subscription option %d unexpectedly succeeded", index)
+		}
+	}
+	if _, err := subscriptionOptions(Subscription{Filter: "topic", NoLocal: true}, ProtocolV311); err == nil {
+		t.Fatal("MQTT 3.1.1 accepted unsupported subscription flags")
+	}
+	if _, err := subscriptionOptions(Subscription{Filter: "topic"}, ProtocolUnknown); !errors.Is(err, ErrUnsupportedProtocolVersion) {
+		t.Fatalf("unsupported subscription version = %v", err)
+	}
+	if _, err := decodeSubscribe([]byte{0, 1, 0, 0, 5, 'a'}, ProtocolV5); err == nil {
+		t.Fatal("decodeSubscribe accepted a missing option byte")
+	}
+	if _, err := encodeSubscribe(Subscribe{Version: ProtocolV5, PacketID: 1, Subscriptions: []Subscription{{Filter: ""}}}, 128); err == nil {
+		t.Fatal("encodeSubscribe accepted empty filter")
+	}
+	if _, err := decodeSubAck([]byte{0, 1, 0, 0}, ProtocolV311); err != nil {
+		t.Fatalf("MQTT 3.1.1 SUBACK decode error = %v", err)
+	}
+	if _, err := encodeSubAck(SubAck{Version: ProtocolV311, PacketID: 1, ReasonCodes: []byte{0}}, 16); err != nil {
+		t.Fatalf("MQTT 3.1.1 SUBACK encode error = %v", err)
+	}
+	if _, err := decodeUnsubscribe([]byte{0, 1, 0, 0, 5, 't', 'o', 'p', 'i', 'c'}, ProtocolV5); err != nil {
+		t.Fatalf("MQTT 5 UNSUBSCRIBE decode error = %v", err)
+	}
+	if _, err := decodeUnsubAck([]byte{0, 1}, ProtocolV311); err != nil {
+		t.Fatalf("MQTT 3.1.1 UNSUBACK decode error = %v", err)
+	}
+	if _, err := encodeUnsubAck(UnsubAck{Version: ProtocolV311, PacketID: 1}, 16); err != nil {
+		t.Fatalf("MQTT 3.1.1 UNSUBACK encode error = %v", err)
+	}
+}

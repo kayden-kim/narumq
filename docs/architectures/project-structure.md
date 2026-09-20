@@ -72,6 +72,9 @@ NaruMQ source tree는 MQTT·session·routing·delivery·tenancy·security·clust
 ├── tests/
 │   ├── integration/
 │   ├── conformance/
+│   │   └── mqtt-compliance-v1.json
+│   ├── verification/
+│   │   └── coverage-policy.json
 │   ├── compatibility/
 │   ├── e2e/
 │   ├── chaos/
@@ -85,6 +88,12 @@ NaruMQ source tree는 MQTT·session·routing·delivery·tenancy·security·clust
 │       ├── bp01/
 │       └── bp05/
 ├── tools/
+│   └── verify/
+│       ├── main.go
+│       ├── matrix.go
+│       ├── architecture.go
+│       ├── coverage.go
+│       └── runner.go
 ├── docs/
 ├── go.mod
 └── go.sum
@@ -99,6 +108,12 @@ NaruMQ source tree는 MQTT·session·routing·delivery·tenancy·security·clust
 `tests/benchmark/internal/environment`는 BP-01과 BP-05가 공유하는 immutable image, broker container, readiness, resource limit, runner container, Docker stats와 artifact 수집 경계를 소유한다.
 `tests/benchmark/internal/mqttclient`는 benchmark 전용 MQTT 5 Clean Start/zero Session Expiry CONNECT와 frame I/O를 소유한다. `tests/benchmark/internal/jsonl`은 phase·event JSONL 파일의 공통 buffering/flush/close 동작을 소유하고, `tests/benchmark/internal/runtimeartifact`는 runtime 표본과 phase 경계를 검증해 target별 요약을 만든다. `tests/benchmark/internal/suiteartifact`는 반복 순서와 중앙값·MAD 계산만 소유하며 profile 의미와 BP별 metric 선택은 소유하지 않는다. 네 package와 `bp01`, `bp05`는 product runtime이 import하지 않는 benchmark-only source다.
 각 BP package는 profile 해석, workload 상태와 comparison 판정, suite parent·child artifact schema와 Docker 실행을 소유하며 shared package는 profile·summary 의미를 결정하지 않는다.
+
+`tests/conformance/mqtt-compliance-v1.json`은 현재 구현이 지원한다고 선언한 MQTT
+3.1.1/5.0 normative statement와 source test function의 양방향 연결표다.
+`tests/verification/coverage-policy.json`은 production coverage floor와 ratchet을
+보유한다. `tools/verify`는 이 두 파일과 실제 Go package graph를 읽는 repository
+검증 command이며, runtime product package가 import하지 않는다.
 
 ## Directory naming
 

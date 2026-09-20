@@ -116,3 +116,21 @@ func TestSubscribeMQTT311RejectsUnsupportedRuntimeOptions(t *testing.T) {
 		t.Fatalf("reasons = % X, want 80 00", ack.ReasonCodes)
 	}
 }
+func TestSubscribeMapsRoutingOperationErrorsByProtocol(t *testing.T) {
+	useCase, err := New(routing.NewTable())
+	if err != nil {
+		t.Fatal(err)
+	}
+	v5 := useCase.Subscribe("", mqtt.Subscribe{Version: mqtt.ProtocolV5, Subscriptions: []mqtt.Subscription{{Filter: "topic"}, {Filter: "$share/group/topic"}}})
+	if len(v5.ReasonCodes) != 2 || v5.ReasonCodes[0] != 0x8F || v5.ReasonCodes[1] != 0x9E {
+		t.Fatalf("MQTT 5 routing errors = % X", v5.ReasonCodes)
+	}
+	v311 := useCase.Subscribe("", mqtt.Subscribe{Version: mqtt.ProtocolV311, Subscriptions: []mqtt.Subscription{{Filter: "topic"}, {Filter: "$share/group/topic"}}})
+	if len(v311.ReasonCodes) != 2 || v311.ReasonCodes[0] != 0x80 || v311.ReasonCodes[1] != 0x80 {
+		t.Fatalf("MQTT 3.1.1 routing errors = % X", v311.ReasonCodes)
+	}
+	ack := useCase.Unsubscribe("", mqtt.Unsubscribe{Version: mqtt.ProtocolV5, Filters: []string{"topic"}})
+	if len(ack.ReasonCodes) != 1 || ack.ReasonCodes[0] != 0x8F {
+		t.Fatalf("MQTT 5 unsubscribe routing error = % X", ack.ReasonCodes)
+	}
+}

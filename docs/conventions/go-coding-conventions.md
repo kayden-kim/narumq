@@ -342,16 +342,26 @@ func TestDefaultDrainService_Start_RejectsUnknownBarrier(t *testing.T) {
 
 ## 13. Formatting과 CI
 
-Source tree가 생기면 최소 다음 gate를 적용한다.
+Repository verification의 표준 진입점은 다음 command다.
 
 ```text
-gofmt -l .
-go vet ./...
-go test ./...
-go test -race ./...
+go run ./tools/verify local
+go run ./tools/verify ci --base <merge-base>
 ```
 
-- `gofmt -l` 출력이 있으면 CI를 실패시킨다.
+`local`은 다음 순서를 고정한다.
+
+```text
+gofmt 검사 → go vet ./... → go test ./... → go test -race ./...
+→ traceability → architecture → atomic coverage → coverage policy
+```
+
+`ci`는 같은 순서에 `base...HEAD` production diff coverage를 추가한다. 직접 실행하는
+`gofmt -l .`, `go vet ./...`, `go test ./...`, `go test -race ./...`도 유효한
+진단 명령이지만, CI는 runner가 생성하는 coverage profile·summary와 traceability
+artifact를 남겨야 하므로 `tools/verify`를 사용한다.
+
+- `gofmt` 검사 출력이 있으면 CI를 실패시킨다.
 - Import 정리는 version을 고정한 `goimports`를 사용할 수 있다.
 - Import는 standard library, third-party, project package group 순으로 나눈다. Dot import는 사용하지 않고 blank import는 `main` 또는 필요한 test registration으로 제한한다.
 - 고정된 line length 제한은 두지 않는다. 의미 단위로 나누고 긴 이름·parameter list가 책임 과다의 신호인지 먼저 확인한다.

@@ -89,8 +89,9 @@ func TestDisconnectReasonAllowlist(t *testing.T) {
 	}
 }
 
-// Traceability: MQTT-3.12.4-1/2 and MQTT-3.14.4-1/2; invalid control frames
-// must fail without reporting a partial frame.
+// Traceability: PRD MQTT-01/MQTT-11/TEST-03/04; MQTT-3.12.4-1/2
+// and MQTT-3.14.4-1/2; invalid control frames must fail without reporting
+// a partial frame.
 func TestControlPacketsRejectInvalidFramesAndFlags(t *testing.T) {
 	decoder, err := NewDecoder(maxRemainingLength)
 	if err != nil {
@@ -142,5 +143,36 @@ func TestControlPacketEncodingPreservesDestinationOnFailure(t *testing.T) {
 		if !bytes.Equal(encoded, before) {
 			t.Fatalf("Append(%T) changed destination to % X, want % X", packet, encoded, before)
 		}
+	}
+}
+func TestControlCodecRejectsVersionsAndSizeBounds(t *testing.T) {
+	for _, version := range []ProtocolVersion{ProtocolUnknown, 3} {
+		if _, err := decodePingReq(nil, version); !errors.Is(err, ErrUnsupportedProtocolVersion) {
+			t.Fatalf("decodePingReq(%d) error = %v", version, err)
+		}
+		if _, err := decodePingResp(nil, version); !errors.Is(err, ErrUnsupportedProtocolVersion) {
+			t.Fatalf("decodePingResp(%d) error = %v", version, err)
+		}
+		if _, err := decodeDisconnect(nil, version); !errors.Is(err, ErrUnsupportedProtocolVersion) {
+			t.Fatalf("decodeDisconnect(%d) error = %v", version, err)
+		}
+	}
+	if _, err := decodePingReq([]byte{0}, ProtocolV5); !errors.Is(err, ErrMalformedPacket) {
+		t.Fatalf("PINGREQ body error = %v", err)
+	}
+	if _, err := decodePingResp([]byte{0}, ProtocolV5); !errors.Is(err, ErrMalformedPacket) {
+		t.Fatalf("PINGRESP body error = %v", err)
+	}
+	if _, err := encodePingReq(PingReq{Version: ProtocolV5}, -1); !errors.Is(err, ErrPacketTooLarge) {
+		t.Fatalf("PINGREQ negative size error = %v", err)
+	}
+	if _, err := encodePingResp(PingResp{Version: ProtocolV5}, -1); !errors.Is(err, ErrPacketTooLarge) {
+		t.Fatalf("PINGRESP negative size error = %v", err)
+	}
+	if _, err := encodeDisconnect(Disconnect{Version: ProtocolV5, ReasonCode: 0x04}, 1); !errors.Is(err, ErrPacketTooLarge) {
+		t.Fatalf("DISCONNECT size error = %v", err)
+	}
+	if _, err := decodeDisconnect([]byte{0x00, 0x80, 0x00}, ProtocolV5); !errors.Is(err, ErrMalformedPacket) {
+		t.Fatalf("noncanonical DISCONNECT property length error = %v", err)
 	}
 }

@@ -366,3 +366,77 @@ func TestDisconnectRemovesImmediateSessionsAndPreservesPersistentRoutes(t *testi
 		t.Fatalf("queue removes = %v, want four lifecycle removals", queue.removes)
 	}
 }
+func TestConnectNilUnsupportedAndDisconnectErrors(t *testing.T) {
+	var nilUseCase *UseCase
+	if _, err := nilUseCase.Connect(mqtt.Connect{}); !errors.Is(err, ErrNilSessionRepository) {
+		t.Fatalf("nil Connect() error = %v", err)
+	}
+	if err := nilUseCase.Disconnect("session"); !errors.Is(err, ErrNilSessionRepository) {
+		t.Fatalf("nil Disconnect() error = %v", err)
+	}
+	useCase, _, repository, _, _ := newUseCase(t, time.Unix(0, 0))
+	if _, err := useCase.Connect(mqtt.Connect{Version: mqtt.ProtocolUnknown, ClientID: "client"}); !errors.Is(err, mqtt.ErrUnsupportedProtocolVersion) {
+		t.Fatalf("unsupported CONNECT error = %v", err)
+	}
+	if err := useCase.Disconnect("missing"); !errors.Is(err, ErrSessionNotFound) {
+		t.Fatalf("missing Disconnect() error = %v", err)
+	}
+	loadErr := errors.New("disconnect load failed")
+	repository.loadErr = loadErr
+	if err := useCase.Disconnect("client"); !errors.Is(err, loadErr) {
+		t.Fatalf("Disconnect load error = %v", err)
+	}
+}
+
+func TestConnectLifecycleRollbackAndSessionErrors(t *testing.T) {
+	now := time.Unix(0, 0)
+	useCase, _, repository, queue, _ := newUseCase(t, now)
+	repository.states["client"] = session.Lifecycle{}
+	if _, err := useCase.Connect(mqtt.Connect{Version: mqtt.ProtocolV5, ClientID: "client"}); err == nil {
+		t.Fatal("Connect unexpectedly accepted identity-mismatched lifecycle")
+	}
+	delete(repository.states, "client")
+	accepted, err := useCase.Connect(mqtt.Connect{Version: mqtt.ProtocolV5, ClientID: "persistent", SessionExpiryInterval: 10})
+	if err != nil || !accepted.Accepted {
+		t.Fatalf("initial persistent Connect() = %#v, %v", accepted, err)
+	}
+	queue.registerErr = errors.New("resume queue failure")
+	if err := useCase.Disconnect(accepted.SessionID); err != nil {
+		t.Fatal(err)
+	}
+	queue.registerErr = nil
+	if _, err := useCase.Connect(mqtt.Connect{Version: mqtt.ProtocolV5, ClientID: "persistent", SessionExpiryInterval: 10}); err != nil {
+		t.Fatal(err)
+	}
+	repository.saveErr = errors.New("disconnect save failure")
+	if err := useCase.Disconnect("persistent"); !errors.Is(err, repository.saveErr) {
+		t.Fatalf("persistent Disconnect() save error = %v", err)
+	}
+	repository.saveErr = nil
+}
+
+func TestDisconnectRejectsAlreadyDisconnectedSession(t *testing.T) {
+	useCase, _, _, _, _ := newUseCase(t, time.Unix(0, 0))
+	result, err := useCase.Connect(mqtt.Connect{Version: mqtt.ProtocolV311, ClientID: "disconnected"})
+	if err != nil || !result.Accepted {
+		t.Fatalf("Connect() = %#v, %v", result, err)
+	}
+	if err := useCase.Disconnect(result.SessionID); err != nil {
+		t.Fatal(err)
+	}
+	if err := useCase.Disconnect(result.SessionID); !errors.Is(err, session.ErrNotConnected) {
+		t.Fatalf("second Disconnect() error = %v", err)
+	}
+}
+
+func TestConnectDeleteErrorOnImmediateDisconnect(t *testing.T) {
+	useCase, _, repository, _, _ := newUseCase(t, time.Unix(0, 0))
+	result, err := useCase.Connect(mqtt.Connect{Version: mqtt.ProtocolV5, ClientID: "immediate", SessionExpiryInterval: 0})
+	if err != nil || !result.Accepted {
+		t.Fatal(err)
+	}
+	repository.deleteErr = errors.New("delete failed")
+	if err := useCase.Disconnect(result.SessionID); !errors.Is(err, repository.deleteErr) {
+		t.Fatalf("immediate Disconnect() delete error = %v", err)
+	}
+}

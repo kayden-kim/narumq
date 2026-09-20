@@ -91,3 +91,70 @@ func TestNodeMessageAndProposalValidation(t *testing.T) {
 		t.Fatalf("empty proposal on follower = %v, want ErrNotLeader", err)
 	}
 }
+func TestNodeMessageValidationAndFailureState(t *testing.T) {
+	node, err := Open(Config{NodeID: 1, PeerIDs: []NodeID{1, 2, 3}, Directory: t.TempDir()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := node.ProcessReady(); err != nil {
+		t.Fatal(err)
+	}
+	for _, message := range []MessageDTO{
+		{},
+		{From: 1, To: 1, Data: []byte{1}},
+		{From: 2, To: 2, Data: []byte{1}},
+		{From: 2, To: 1, Data: make([]byte, maxMessageSize+1)},
+	} {
+		if err := node.Step(message); !errors.Is(err, ErrInvalidMessage) {
+			t.Fatalf("Step(%#v) error = %v, want ErrInvalidMessage", message, err)
+		}
+	}
+	valid := &pb.Message{Type: pb.MsgApp.Enum(), From: uint64Ptr(2), To: uint64Ptr(1)}
+	data, err := proto.Marshal(valid)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := node.Step(MessageDTO{From: 2, To: 1, Data: data}); err != nil && !errors.Is(err, ErrInvalidMessage) {
+		t.Fatalf("valid peer Step() error = %v", err)
+	}
+	if err := node.ForgetLeader(); err != nil {
+		t.Fatalf("ForgetLeader() error = %v", err)
+	}
+	node.fail(errors.New("injected failure"))
+	if err := node.Tick(); !errors.Is(err, ErrFailed) {
+		t.Fatalf("Tick() after failure = %v, want ErrFailed", err)
+	}
+	if err := node.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := node.ForgetLeader(); !errors.Is(err, ErrClosed) {
+		t.Fatalf("ForgetLeader() after close = %v, want ErrClosed", err)
+	}
+}
+
+func TestNodeHelpersCloneAndFixedConfiguration(t *testing.T) {
+	if fixedConfState(nil, []NodeID{1, 2, 3}) {
+		t.Fatal("fixedConfState(nil) unexpectedly true")
+	}
+	if fixedConfState(&pb.ConfState{Voters: []uint64{1, 2, 3}, Learners: []uint64{4}}, []NodeID{1, 2, 3}) {
+		t.Fatal("fixedConfState with learner unexpectedly true")
+	}
+	state := &pb.ConfState{Voters: []uint64{3, 1, 2}}
+	if !fixedConfState(state, []NodeID{1, 2, 3}) {
+		t.Fatal("fixedConfState rejected sorted-equivalent voters")
+	}
+	commands := [][]byte{[]byte("one"), nil}
+	clone := cloneCommands(commands)
+	clone[0][0] = 'X'
+	if string(commands[0]) != "one" {
+		t.Fatal("cloneCommands shared payload")
+	}
+	entries := cloneEntries([]*pb.Entry{{Index: uint64Ptr(1), Data: []byte("entry")}})
+	entries[0].Data[0] = 'X'
+	if string(entries[0].Data) == "entry" {
+		t.Fatal("cloneEntries did not permit independent mutation")
+	}
+	if !errors.Is((&Node{}).fail(errors.New("failure")), ErrFailed) {
+		t.Fatal("fail() did not wrap ErrFailed")
+	}
+}

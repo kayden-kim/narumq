@@ -11,6 +11,7 @@
 
 # Output of the go coverage tool
 *.out
+!tools/verify/testdata/**
 
 # Go workspace file
 go.work.sum
@@ -26,7 +27,8 @@ go.work.sum
 ._*
 
 # Custom folder icons
-Icon
+Icon
+
 
 # Volume root files
 .DocumentRevisions-V100

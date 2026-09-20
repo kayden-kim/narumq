@@ -1,0 +1,3 @@
+[
+  {"ImportPath":"narumq/internal/adapters/clock","Imports":["narumq/internal/adapters/tcp"]}
+]

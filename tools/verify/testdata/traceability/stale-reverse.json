@@ -1,0 +1,12 @@
+{
+  "schemaVersion": 1,
+  "profile": "phase0-single-node-ingress",
+  "protocolVersions": ["3.1.1", "5.0"],
+  "statements": [
+    {
+      "id": "MQTT-1.2.7-1",
+      "requirementIds": ["MQTT-11"],
+      "tests": [{"package": "narumq/internal/domain/mqtt", "name": "TestStale"}]
+    }
+  ]
+}

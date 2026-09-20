@@ -1,0 +1,3 @@
+mode: atomic
+internal/sample.go:6.2,6.7 1 1
+internal/sample.go:10.2,10.7 1 0

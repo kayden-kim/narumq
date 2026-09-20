@@ -1,0 +1,3 @@
+[
+  {"ImportPath":"narumq/internal/application/connect","Imports":["narumq/internal/adapters/memory/sessionstore"]}
+]

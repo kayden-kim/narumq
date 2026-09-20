@@ -38,3 +38,22 @@ func TestMemorySessionRepositoryValidatesKeysAndCopiesValues(t *testing.T) {
 		t.Fatalf("idempotent Delete() error = %v", err)
 	}
 }
+func TestNilAndInvalidSessionRepositoryOperations(t *testing.T) {
+	var repository *MemorySessionRepository
+	if _, _, err := repository.Load("client"); !errors.Is(err, ErrInvalidClientID) {
+		t.Fatalf("nil Load() error = %v", err)
+	}
+	if err := repository.Save(session.Lifecycle{}); !errors.Is(err, ErrInvalidClientID) {
+		t.Fatalf("nil Save() error = %v", err)
+	}
+	if err := repository.Delete("client"); !errors.Is(err, ErrInvalidClientID) {
+		t.Fatalf("nil Delete() error = %v", err)
+	}
+	store := New()
+	if err := store.Save(session.Lifecycle{}); !errors.Is(err, ErrInvalidClientID) {
+		t.Fatalf("zero Save() error = %v", err)
+	}
+	if err := store.Delete(""); !errors.Is(err, ErrInvalidClientID) {
+		t.Fatalf("empty Delete() error = %v", err)
+	}
+}

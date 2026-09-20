@@ -292,7 +292,7 @@ func TestTCPControlQueueFullClosesConnection(t *testing.T) {
 	wire := append(append([]byte(nil), encodeTestPacket(t, &mqtt.PingReq{Version: mqtt.ProtocolV5})...), encodeTestPacket(t, &mqtt.PingReq{Version: mqtt.ProtocolV5})...)
 	wire = append(wire, encodeTestPacket(t, &mqtt.PingReq{Version: mqtt.ProtocolV5})...)
 	_, _ = runtime.client.Write(wire)
-	requireConnectionClosed(t, runtime.client)
+	requireConnectionClosedWithin(t, runtime.client, 3*time.Second)
 }
 
 // Traceability: PRD MQTT-11/TEST-04/05; docs/specs/mqtt-protocol-and-session.md §7.

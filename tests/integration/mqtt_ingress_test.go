@@ -184,7 +184,9 @@ func expectClosed(t *testing.T, connection net.Conn) {
 	}
 }
 
-// Traceability: PRD MQTT-01/MQTT-02/MQTT-06/TEST-03/04/05; docs/specs/mqtt-protocol-and-session.md §1, §2, §3.2, §7; OASIS MQTT-3.1.2, MQTT-3.8.4, MQTT-3.3.4, MQTT-3.12.4.
+// Traceability: PRD MQTT-01/MQTT-02/MQTT-06/TEST-03/04/05; docs/specs/mqtt-protocol-and-session.md §1, §2, §3.2, §7.
+// Wire-level acceptance scenarios cover CONNECT, SUBSCRIBE, QoS 0 PUBLISH,
+// PINGRESP, DISCONNECT, persistent Session Present, and rejected CONNECT.
 func TestMQTTIngress(t *testing.T) {
 	t.Run("qos0 fanout ping and disconnect", func(t *testing.T) {
 		fixture := newIngressFixture(t)

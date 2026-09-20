@@ -1,0 +1,22 @@
+{
+  "schemaVersion": 1,
+  "productionPatterns": ["./cmd/...", "./internal/..."],
+  "overallFloor": {"line": 90, "function": 90},
+  "coreFloor": {"line": 95, "function": 95},
+  "diffFloor": {"line": 95, "function": 95},
+  "corePackages": [
+    "narumq/internal/domain/delivery",
+    "narumq/internal/domain/mqtt",
+    "narumq/internal/domain/routing",
+    "narumq/internal/domain/session"
+  ],
+  "ratchet": {
+    "overall": {"line": 90.4, "function": 100},
+    "core": {
+      "narumq/internal/domain/delivery": {"line": 100, "function": 100},
+      "narumq/internal/domain/mqtt": {"line": 96.24, "function": 100},
+      "narumq/internal/domain/routing": {"line": 97.52, "function": 100},
+      "narumq/internal/domain/session": {"line": 97.4, "function": 100}
+    }
+  }
+}

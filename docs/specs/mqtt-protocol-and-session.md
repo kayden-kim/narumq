@@ -179,6 +179,8 @@ persistent session으로의 delivery 결과는 `ErrUnavailable`이다.
 ## 8. 수용 시험
 
 - MQTT 3.1.1/5.0 compliance matrix가 지원한다고 선언한 모든 normative statement를 자동 test와 연결한다.
+- 현재 Phase 0 matrix는 [`tests/conformance/mqtt-compliance-v1.json`](../../tests/conformance/mqtt-compliance-v1.json)이며, 34개 statement와 MQTT/TEST requirement 및 test function을 함께 기록한다.
+- `go run ./tools/verify traceability`가 matrix → source와 source → matrix를 모두 검사한다. matrix에만 있거나 source에만 있는 statement, 또는 requirement union이 다른 연결은 합격으로 처리하지 않는다.
 - QoS별 정상, DUP, reconnect, owner crash와 expiry 시나리오를 검증한다.
 - `MQIsdp`, level 3과 비정상 version 조합이 session을 만들지 않는지 검증한다.
 - wildcard 경계, shared subscription failover와 MQTT 5 subscription option 조합을 검증한다.
@@ -187,3 +189,5 @@ persistent session으로의 delivery 결과는 `ErrUnavailable`이다.
 - 이 slice의 acceptance mapping은 `tests/integration/mqtt_ingress_test.go`의 MQTT 3.1.1/5.0
   CONNECT, QoS 0 fan-out, PINGRESP, normal DISCONNECT, persistent Session Present,
   unsupported/malformed CONNECT와 QoS negative ACK/close 시나리오다.
+- 이 matrix와 gate는 전체 MQTT 표준 적합성 선언이 아니다. retained message, Will,
+  ACL·tenant, shared subscription runtime과 durable QoS 1/2는 후속 범위로 남아 있다.

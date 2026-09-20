@@ -164,3 +164,51 @@ func acknowledgementReason(packet Packet) byte {
 		return 0xFF
 	}
 }
+func TestAcknowledgementRejectsInvalidBodiesAndReasons(t *testing.T) {
+	invalidBodies := [][]byte{{}, {0, 0}, {0, 1, 0x01}, {0, 1, 0x00, 0x01}, {0, 1, 0x00, 0x01, 0x00}}
+	for _, body := range invalidBodies {
+		if _, _, err := decodeAcknowledgementBody(PacketTypePubAck, body, ProtocolV5); err == nil {
+			t.Fatalf("decodeAcknowledgementBody(% X) unexpectedly succeeded", body)
+		}
+	}
+	if _, _, err := decodeAcknowledgementBody(PacketTypePubAck, []byte{0, 1}, ProtocolUnknown); !errors.Is(err, ErrUnsupportedProtocolVersion) {
+		t.Fatalf("unknown acknowledgement version error = %v", err)
+	}
+	for _, packetType := range []PacketType{PacketTypePubAck, PacketTypePubRec, PacketTypePubRel, PacketTypePubComp, PacketTypeConnect} {
+		if _, err := encodeAcknowledgement(packetType, 1, ProtocolV5, 0xFF, 64); err == nil {
+			t.Fatalf("encodeAcknowledgement(%d) accepted invalid reason", packetType)
+		}
+	}
+	if _, err := encodeAcknowledgement(PacketTypePubAck, 1, ProtocolV5, 0x10, 2); !errors.Is(err, ErrPacketTooLarge) {
+		t.Fatalf("acknowledgement size error = %v, want ErrPacketTooLarge", err)
+	}
+	if _, err := decodeAcknowledgement(PacketTypeConnect, []byte{0, 1}, ProtocolV5); !errors.Is(err, ErrMalformedPacket) {
+		t.Fatalf("unknown acknowledgement packet error = %v, want ErrMalformedPacket", err)
+	}
+}
+
+func TestAcknowledgementAndConnectPropertyEdgeCases(t *testing.T) {
+	if _, _, err := decodeAcknowledgementBody(PacketTypePubAck, []byte{0, 1, 0}, ProtocolV311); err == nil {
+		t.Fatal("MQTT 3.1.1 acknowledgement accepted a reason byte")
+	}
+	if _, _, err := decodeAcknowledgementBody(PacketTypePubAck, []byte{0, 1, 0xFF, 0}, ProtocolV5); err == nil {
+		t.Fatal("acknowledgement accepted invalid reason code")
+	}
+	if _, _, err := decodeAcknowledgementBody(PacketTypePubAck, []byte{0, 1, 0, 0x80}, ProtocolV5); err == nil {
+		t.Fatal("acknowledgement accepted malformed property length")
+	}
+	if _, _, err := decodeAcknowledgementBody(PacketTypePubAck, []byte{0, 1, 0, 0, 1}, ProtocolV5); err == nil {
+		t.Fatal("acknowledgement accepted trailing property bytes")
+	}
+	if _, err := encodeAcknowledgement(PacketTypePubAck, 1, ProtocolUnknown, 0, 64); !errors.Is(err, ErrUnsupportedProtocolVersion) {
+		t.Fatalf("unsupported acknowledgement version = %v", err)
+	}
+	position := 0
+	if _, err := decodeConnectProperties([]byte{0x80}, &position); !errors.Is(err, ErrMalformedPacket) {
+		t.Fatalf("malformed CONNECT properties = %v", err)
+	}
+	position = 0
+	if _, err := decodeConnectProperties([]byte{4, 0, 0}, &position); !errors.Is(err, ErrMalformedPacket) {
+		t.Fatalf("truncated CONNECT properties = %v", err)
+	}
+}

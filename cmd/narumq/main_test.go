@@ -4,8 +4,10 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"log/slog"
+	"net"
 	"os"
 	"path/filepath"
 	"strings"
@@ -156,5 +158,64 @@ func TestRunFlushesRuntimeMetricsOnCancellation(t *testing.T) {
 	}
 	if _, ok := last["collectedAt"].(string); !ok {
 		t.Fatalf("last runtime metrics record = %#v, want collectedAt", last)
+	}
+}
+func TestRunWithContextDefaultsAndFlagErrors(t *testing.T) {
+	if err := runWithContext(nil, nil, nil); err != nil {
+		t.Fatalf("runWithContext(nil defaults) error = %v", err)
+	}
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	if err := runWithContext(context.Background(), []string{"-unknown"}, logger); err == nil {
+		t.Fatal("runWithContext accepted an unknown flag")
+	}
+}
+
+func TestRunWithContextRejectsConstructionBounds(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	cases := []struct {
+		name string
+		args []string
+		want string
+	}{
+		{name: "delivery queue", args: []string{"-tcp-listen", "127.0.0.1:0", "-delivery-queue-capacity", "0"}, want: "create delivery queue"},
+		{name: "decoder", args: []string{"-tcp-listen", "127.0.0.1:0", "-max-packet-size", "0"}, want: "create MQTT decoder"},
+		{name: "server config", args: []string{"-tcp-listen", "127.0.0.1:0", "-control-queue-capacity", "0"}, want: "create TCP server"},
+	}
+	for _, testCase := range cases {
+		t.Run(testCase.name, func(t *testing.T) {
+			err := runWithContext(context.Background(), testCase.args, logger)
+			if err == nil || !strings.Contains(err.Error(), testCase.want) {
+				t.Fatalf("runWithContext() error = %v, want %q", err, testCase.want)
+			}
+		})
+	}
+}
+
+func TestRunWithContextCanceledListenerStopsCleanly(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	if err := runWithContext(ctx, []string{"-tcp-listen", "127.0.0.1:0"}, logger); err != nil && !errors.Is(err, context.Canceled) {
+		t.Fatalf("canceled listener run error = %v", err)
+	}
+}
+
+func TestMainNoListenerPath(t *testing.T) {
+	originalArgs := os.Args
+	defer func() { os.Args = originalArgs }()
+	os.Args = []string{"narumq"}
+	main()
+}
+
+func TestRunReportsListenerConstructionFailure(t *testing.T) {
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer listener.Close()
+	address := listener.Addr().String()
+	err = runWithContext(context.Background(), []string{"-tcp-listen", address}, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	if err == nil || !strings.Contains(err.Error(), "listen on") {
+		t.Fatalf("runWithContext() error = %v, want listener failure", err)
 	}
 }

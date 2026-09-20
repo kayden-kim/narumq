@@ -1,0 +1,685 @@
+{
+  "schemaVersion": 1,
+  "profile": "phase0-single-node-ingress",
+  "protocolVersions": [
+    "3.1.1",
+    "5.0"
+  ],
+  "statements": [
+    {
+      "id": "MQTT-1.2.7-1",
+      "requirementIds": [
+        "MQTT-11"
+      ],
+      "tests": [
+        {
+          "name": "TestRemainingLengthPacketLimitIsCheckedBeforeIncompleteBodyAllocation_MQTT127_1",
+          "package": "narumq/internal/domain/mqtt"
+        }
+      ]
+    },
+    {
+      "id": "MQTT-1.5.3-1",
+      "requirementIds": [
+        "MQTT-06",
+        "MQTT-08",
+        "MQTT-12",
+        "TEST-03",
+        "TEST-04"
+      ],
+      "tests": [
+        {
+          "name": "TestSubscriptionDecodeValidationAndPropertyProfile",
+          "package": "narumq/internal/domain/mqtt"
+        },
+        {
+          "name": "TestRoutingValidationErrors",
+          "package": "narumq/internal/domain/routing"
+        }
+      ]
+    },
+    {
+      "id": "MQTT-1.5.3-2",
+      "requirementIds": [
+        "MQTT-06",
+        "MQTT-08",
+        "MQTT-12",
+        "TEST-03",
+        "TEST-04"
+      ],
+      "tests": [
+        {
+          "name": "TestSubscriptionDecodeValidationAndPropertyProfile",
+          "package": "narumq/internal/domain/mqtt"
+        },
+        {
+          "name": "TestRoutingValidationErrors",
+          "package": "narumq/internal/domain/routing"
+        }
+      ]
+    },
+    {
+      "id": "MQTT-1.5.5-1",
+      "requirementIds": [
+        "MQTT-08",
+        "MQTT-12",
+        "TEST-03",
+        "TEST-04"
+      ],
+      "tests": [
+        {
+          "name": "TestSubscriptionDecodeValidationAndPropertyProfile",
+          "package": "narumq/internal/domain/mqtt"
+        }
+      ]
+    },
+    {
+      "id": "MQTT-3.1.2-1",
+      "requirementIds": [
+        "MQTT-13",
+        "TEST-13"
+      ],
+      "tests": [
+        {
+          "name": "TestConnectRejectsUnsupportedProtocolVersions_MQTT312_MQTT313",
+          "package": "narumq/internal/domain/mqtt"
+        }
+      ]
+    },
+    {
+      "id": "MQTT-3.1.2-2",
+      "requirementIds": [
+        "MQTT-03",
+        "MQTT-13",
+        "TEST-03",
+        "TEST-04",
+        "TEST-07",
+        "TEST-13"
+      ],
+      "tests": [
+        {
+          "name": "TestConnectRejectsUnsupportedProtocolVersions_MQTT312_MQTT313",
+          "package": "narumq/internal/domain/mqtt"
+        },
+        {
+          "name": "TestMQTT5CleanStartFiniteExpiryPersistsAfterDisconnect",
+          "package": "narumq/internal/domain/session"
+        },
+        {
+          "name": "TestMQTT5SessionExpiryBoundariesAndReconnect",
+          "package": "narumq/internal/domain/session"
+        },
+        {
+          "name": "TestOpenAndDisconnectMQTT311CleanStartLifecycle",
+          "package": "narumq/internal/domain/session"
+        }
+      ]
+    },
+    {
+      "id": "MQTT-3.1.2-3",
+      "requirementIds": [
+        "MQTT-03",
+        "MQTT-13",
+        "TEST-03",
+        "TEST-04",
+        "TEST-07",
+        "TEST-13"
+      ],
+      "tests": [
+        {
+          "name": "TestConnectRejectsUnsupportedProtocolVersions_MQTT312_MQTT313",
+          "package": "narumq/internal/domain/mqtt"
+        },
+        {
+          "name": "TestMQTT5CleanStartFiniteExpiryPersistsAfterDisconnect",
+          "package": "narumq/internal/domain/session"
+        },
+        {
+          "name": "TestMQTT5SessionExpiryBoundariesAndReconnect",
+          "package": "narumq/internal/domain/session"
+        },
+        {
+          "name": "TestOpenAndDisconnectMQTT311CleanStartLifecycle",
+          "package": "narumq/internal/domain/session"
+        }
+      ]
+    },
+    {
+      "id": "MQTT-3.1.3-1",
+      "requirementIds": [
+        "MQTT-13",
+        "TEST-13"
+      ],
+      "tests": [
+        {
+          "name": "TestConnectRejectsUnsupportedProtocolVersions_MQTT312_MQTT313",
+          "package": "narumq/internal/domain/mqtt"
+        }
+      ]
+    },
+    {
+      "id": "MQTT-3.10.3-1",
+      "requirementIds": [
+        "MQTT-06",
+        "MQTT-07",
+        "MQTT-08",
+        "TEST-03",
+        "TEST-04",
+        "TEST-05"
+      ],
+      "tests": [
+        {
+          "name": "TestUnsubscribeReasonsAndIdempotence",
+          "package": "narumq/internal/application/subscribe"
+        },
+        {
+          "name": "TestSubscriptionPacketsRoundTrip_MQTT311_MQTT5",
+          "package": "narumq/internal/domain/mqtt"
+        }
+      ]
+    },
+    {
+      "id": "MQTT-3.10.3-2",
+      "requirementIds": [
+        "MQTT-06",
+        "MQTT-07",
+        "MQTT-08",
+        "TEST-03",
+        "TEST-04",
+        "TEST-05"
+      ],
+      "tests": [
+        {
+          "name": "TestUnsubscribeReasonsAndIdempotence",
+          "package": "narumq/internal/application/subscribe"
+        },
+        {
+          "name": "TestSubscriptionPacketsRoundTrip_MQTT311_MQTT5",
+          "package": "narumq/internal/domain/mqtt"
+        }
+      ]
+    },
+    {
+      "id": "MQTT-3.11.3-1",
+      "requirementIds": [
+        "MQTT-06",
+        "MQTT-07",
+        "MQTT-08",
+        "TEST-03",
+        "TEST-04",
+        "TEST-05"
+      ],
+      "tests": [
+        {
+          "name": "TestUnsubscribeReasonsAndIdempotence",
+          "package": "narumq/internal/application/subscribe"
+        },
+        {
+          "name": "TestSubscriptionPacketsRoundTrip_MQTT311_MQTT5",
+          "package": "narumq/internal/domain/mqtt"
+        }
+      ]
+    },
+    {
+      "id": "MQTT-3.11.3-2",
+      "requirementIds": [
+        "MQTT-06",
+        "MQTT-07",
+        "MQTT-08",
+        "TEST-03",
+        "TEST-04",
+        "TEST-05"
+      ],
+      "tests": [
+        {
+          "name": "TestUnsubscribeReasonsAndIdempotence",
+          "package": "narumq/internal/application/subscribe"
+        },
+        {
+          "name": "TestSubscriptionPacketsRoundTrip_MQTT311_MQTT5",
+          "package": "narumq/internal/domain/mqtt"
+        }
+      ]
+    },
+    {
+      "id": "MQTT-3.12.4-1",
+      "requirementIds": [
+        "MQTT-01",
+        "MQTT-11",
+        "TEST-03",
+        "TEST-04"
+      ],
+      "tests": [
+        {
+          "name": "TestControlPacketsRejectInvalidFramesAndFlags",
+          "package": "narumq/internal/domain/mqtt"
+        }
+      ]
+    },
+    {
+      "id": "MQTT-3.12.4-2",
+      "requirementIds": [
+        "MQTT-01",
+        "MQTT-11",
+        "TEST-03",
+        "TEST-04"
+      ],
+      "tests": [
+        {
+          "name": "TestControlPacketsRejectInvalidFramesAndFlags",
+          "package": "narumq/internal/domain/mqtt"
+        }
+      ]
+    },
+    {
+      "id": "MQTT-3.14.4-1",
+      "requirementIds": [
+        "MQTT-01",
+        "MQTT-11",
+        "TEST-03",
+        "TEST-04"
+      ],
+      "tests": [
+        {
+          "name": "TestControlPacketsRejectInvalidFramesAndFlags",
+          "package": "narumq/internal/domain/mqtt"
+        }
+      ]
+    },
+    {
+      "id": "MQTT-3.14.4-2",
+      "requirementIds": [
+        "MQTT-01",
+        "MQTT-11",
+        "TEST-03",
+        "TEST-04"
+      ],
+      "tests": [
+        {
+          "name": "TestControlPacketsRejectInvalidFramesAndFlags",
+          "package": "narumq/internal/domain/mqtt"
+        }
+      ]
+    },
+    {
+      "id": "MQTT-3.3.1-2",
+      "requirementIds": [
+        "MQTT-02",
+        "MQTT-06",
+        "MQTT-11",
+        "TEST-03",
+        "TEST-04",
+        "TEST-05"
+      ],
+      "tests": [
+        {
+          "name": "TestPublishFanoutUsesOverlapQoSAndRetain",
+          "package": "narumq/internal/application/publish"
+        }
+      ]
+    },
+    {
+      "id": "MQTT-3.3.1-4",
+      "requirementIds": [
+        "MQTT-02",
+        "MQTT-06",
+        "MQTT-11",
+        "TEST-03",
+        "TEST-04",
+        "TEST-05"
+      ],
+      "tests": [
+        {
+          "name": "TestPublishFanoutUsesOverlapQoSAndRetain",
+          "package": "narumq/internal/application/publish"
+        }
+      ]
+    },
+    {
+      "id": "MQTT-3.4.2-1",
+      "requirementIds": [
+        "MQTT-02",
+        "TEST-03",
+        "TEST-04"
+      ],
+      "tests": [
+        {
+          "name": "TestAcknowledgementRoundTrip_MQTT311_MQTT5",
+          "package": "narumq/internal/domain/mqtt"
+        }
+      ]
+    },
+    {
+      "id": "MQTT-3.5.2-1",
+      "requirementIds": [
+        "MQTT-02",
+        "TEST-03",
+        "TEST-04"
+      ],
+      "tests": [
+        {
+          "name": "TestAcknowledgementRoundTrip_MQTT311_MQTT5",
+          "package": "narumq/internal/domain/mqtt"
+        }
+      ]
+    },
+    {
+      "id": "MQTT-3.6.2-1",
+      "requirementIds": [
+        "MQTT-02",
+        "TEST-03",
+        "TEST-04"
+      ],
+      "tests": [
+        {
+          "name": "TestAcknowledgementRoundTrip_MQTT311_MQTT5",
+          "package": "narumq/internal/domain/mqtt"
+        }
+      ]
+    },
+    {
+      "id": "MQTT-3.7.2-1",
+      "requirementIds": [
+        "MQTT-02",
+        "TEST-03",
+        "TEST-04"
+      ],
+      "tests": [
+        {
+          "name": "TestAcknowledgementRoundTrip_MQTT311_MQTT5",
+          "package": "narumq/internal/domain/mqtt"
+        }
+      ]
+    },
+    {
+      "id": "MQTT-3.8.3-1",
+      "requirementIds": [
+        "MQTT-01",
+        "MQTT-06",
+        "MQTT-07",
+        "MQTT-08",
+        "MQTT-12",
+        "TEST-03",
+        "TEST-04",
+        "TEST-05"
+      ],
+      "tests": [
+        {
+          "name": "TestSubscribeKeepsOrderedReasonsAndIsolatesFailures",
+          "package": "narumq/internal/application/subscribe"
+        },
+        {
+          "name": "TestSubscribeMQTT311RejectsUnsupportedRuntimeOptions",
+          "package": "narumq/internal/application/subscribe"
+        },
+        {
+          "name": "TestSubscriptionDecodeValidationAndPropertyProfile",
+          "package": "narumq/internal/domain/mqtt"
+        },
+        {
+          "name": "TestSubscriptionPacketsCanonicalWireAndFlags",
+          "package": "narumq/internal/domain/mqtt"
+        },
+        {
+          "name": "TestSubscriptionPacketsRoundTrip_MQTT311_MQTT5",
+          "package": "narumq/internal/domain/mqtt"
+        }
+      ]
+    },
+    {
+      "id": "MQTT-3.8.3-2",
+      "requirementIds": [
+        "MQTT-01",
+        "MQTT-06",
+        "MQTT-07",
+        "MQTT-08",
+        "MQTT-12",
+        "TEST-03",
+        "TEST-04",
+        "TEST-05"
+      ],
+      "tests": [
+        {
+          "name": "TestSubscribeKeepsOrderedReasonsAndIsolatesFailures",
+          "package": "narumq/internal/application/subscribe"
+        },
+        {
+          "name": "TestSubscribeMQTT311RejectsUnsupportedRuntimeOptions",
+          "package": "narumq/internal/application/subscribe"
+        },
+        {
+          "name": "TestSubscriptionDecodeValidationAndPropertyProfile",
+          "package": "narumq/internal/domain/mqtt"
+        },
+        {
+          "name": "TestSubscriptionPacketsCanonicalWireAndFlags",
+          "package": "narumq/internal/domain/mqtt"
+        },
+        {
+          "name": "TestSubscriptionPacketsRoundTrip_MQTT311_MQTT5",
+          "package": "narumq/internal/domain/mqtt"
+        }
+      ]
+    },
+    {
+      "id": "MQTT-3.9.3-1",
+      "requirementIds": [
+        "MQTT-01",
+        "MQTT-06",
+        "MQTT-08",
+        "TEST-03",
+        "TEST-04"
+      ],
+      "tests": [
+        {
+          "name": "TestSubscriptionPacketsCanonicalWireAndFlags",
+          "package": "narumq/internal/domain/mqtt"
+        },
+        {
+          "name": "TestSubscriptionPacketsRoundTrip_MQTT311_MQTT5",
+          "package": "narumq/internal/domain/mqtt"
+        }
+      ]
+    },
+    {
+      "id": "MQTT-3.9.3-2",
+      "requirementIds": [
+        "MQTT-01",
+        "MQTT-06",
+        "MQTT-08",
+        "TEST-03",
+        "TEST-04"
+      ],
+      "tests": [
+        {
+          "name": "TestSubscriptionPacketsCanonicalWireAndFlags",
+          "package": "narumq/internal/domain/mqtt"
+        },
+        {
+          "name": "TestSubscriptionPacketsRoundTrip_MQTT311_MQTT5",
+          "package": "narumq/internal/domain/mqtt"
+        }
+      ]
+    },
+    {
+      "id": "MQTT-4.3.2-1",
+      "requirementIds": [
+        "MQTT-02",
+        "TEST-03",
+        "TEST-04",
+        "TEST-05"
+      ],
+      "tests": [
+        {
+          "name": "TestInboundQoS1AcceptanceAndDuplicateConvergence",
+          "package": "narumq/internal/domain/delivery"
+        },
+        {
+          "name": "TestOutboundQoS1HandshakeResumeAndErrors",
+          "package": "narumq/internal/domain/delivery"
+        }
+      ]
+    },
+    {
+      "id": "MQTT-4.3.2-2",
+      "requirementIds": [
+        "MQTT-02",
+        "TEST-03",
+        "TEST-04",
+        "TEST-05"
+      ],
+      "tests": [
+        {
+          "name": "TestInboundQoS1AcceptanceAndDuplicateConvergence",
+          "package": "narumq/internal/domain/delivery"
+        },
+        {
+          "name": "TestOutboundQoS1HandshakeResumeAndErrors",
+          "package": "narumq/internal/domain/delivery"
+        }
+      ]
+    },
+    {
+      "id": "MQTT-4.3.3-1",
+      "requirementIds": [
+        "MQTT-02",
+        "TEST-04",
+        "TEST-05"
+      ],
+      "tests": [
+        {
+          "name": "TestInboundQoS2DurableHandoffAndDuplicateConvergence",
+          "package": "narumq/internal/domain/delivery"
+        },
+        {
+          "name": "TestOutboundQoS2SuccessFailureAndResume",
+          "package": "narumq/internal/domain/delivery"
+        }
+      ]
+    },
+    {
+      "id": "MQTT-4.3.3-2",
+      "requirementIds": [
+        "MQTT-02",
+        "TEST-04",
+        "TEST-05"
+      ],
+      "tests": [
+        {
+          "name": "TestInboundQoS2DurableHandoffAndDuplicateConvergence",
+          "package": "narumq/internal/domain/delivery"
+        },
+        {
+          "name": "TestOutboundQoS2SuccessFailureAndResume",
+          "package": "narumq/internal/domain/delivery"
+        }
+      ]
+    },
+    {
+      "id": "MQTT-4.7.1-1",
+      "requirementIds": [
+        "MQTT-06",
+        "MQTT-11",
+        "MQTT-12",
+        "TEST-03",
+        "TEST-04",
+        "TEST-05"
+      ],
+      "tests": [
+        {
+          "name": "TestRoutingValidationErrors",
+          "package": "narumq/internal/domain/routing"
+        },
+        {
+          "name": "TestTableConcurrentSubscribeUnsubscribeAndMatch",
+          "package": "narumq/internal/domain/routing"
+        },
+        {
+          "name": "TestValidateTopicFiltersAndNames",
+          "package": "narumq/internal/domain/routing"
+        },
+        {
+          "name": "TestWildcardMatchBoundariesAndSystemTopics",
+          "package": "narumq/internal/domain/routing"
+        }
+      ]
+    },
+    {
+      "id": "MQTT-4.7.1-2",
+      "requirementIds": [
+        "MQTT-06",
+        "MQTT-11",
+        "MQTT-12",
+        "TEST-03",
+        "TEST-04",
+        "TEST-05"
+      ],
+      "tests": [
+        {
+          "name": "TestRoutingValidationErrors",
+          "package": "narumq/internal/domain/routing"
+        },
+        {
+          "name": "TestTableConcurrentSubscribeUnsubscribeAndMatch",
+          "package": "narumq/internal/domain/routing"
+        },
+        {
+          "name": "TestValidateTopicFiltersAndNames",
+          "package": "narumq/internal/domain/routing"
+        },
+        {
+          "name": "TestWildcardMatchBoundariesAndSystemTopics",
+          "package": "narumq/internal/domain/routing"
+        }
+      ]
+    },
+    {
+      "id": "MQTT-4.7.2-1",
+      "requirementIds": [
+        "MQTT-06",
+        "MQTT-11",
+        "TEST-03",
+        "TEST-04",
+        "TEST-05"
+      ],
+      "tests": [
+        {
+          "name": "TestTableConcurrentSubscribeUnsubscribeAndMatch",
+          "package": "narumq/internal/domain/routing"
+        },
+        {
+          "name": "TestValidateTopicFiltersAndNames",
+          "package": "narumq/internal/domain/routing"
+        },
+        {
+          "name": "TestWildcardMatchBoundariesAndSystemTopics",
+          "package": "narumq/internal/domain/routing"
+        }
+      ]
+    },
+    {
+      "id": "MQTT-4.7.2-2",
+      "requirementIds": [
+        "MQTT-06",
+        "MQTT-11",
+        "TEST-03",
+        "TEST-04",
+        "TEST-05"
+      ],
+      "tests": [
+        {
+          "name": "TestTableConcurrentSubscribeUnsubscribeAndMatch",
+          "package": "narumq/internal/domain/routing"
+        },
+        {
+          "name": "TestValidateTopicFiltersAndNames",
+          "package": "narumq/internal/domain/routing"
+        },
+        {
+          "name": "TestWildcardMatchBoundariesAndSystemTopics",
+          "package": "narumq/internal/domain/routing"
+        }
+      ]
+    }
+  ]
+}

@@ -145,3 +145,23 @@ func TestQueueConcurrentRegisterEnqueueAndDrain(t *testing.T) {
 		}
 	}
 }
+func TestNilQueueAndInvalidSessionOperations(t *testing.T) {
+	var queue *Queue
+	queue.Remove("session")
+	if err := queue.TryEnqueue(applicationdeliveryqueue.DeliveryDTO{SessionID: "session"}); !errors.Is(err, applicationdeliveryqueue.ErrUnavailable) {
+		t.Fatalf("nil TryEnqueue() error = %v", err)
+	}
+	if _, err := queue.Drain("session"); !errors.Is(err, applicationdeliveryqueue.ErrUnavailable) {
+		t.Fatalf("nil Drain() error = %v", err)
+	}
+	valid, err := New(1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := valid.TryEnqueue(applicationdeliveryqueue.DeliveryDTO{SessionID: ""}); !errors.Is(err, applicationdeliveryqueue.ErrUnavailable) {
+		t.Fatalf("empty TryEnqueue() error = %v", err)
+	}
+	if _, err := valid.Drain(routing.SessionID("")); !errors.Is(err, routing.ErrInvalidSessionID) {
+		t.Fatalf("empty Drain() error = %v", err)
+	}
+}
