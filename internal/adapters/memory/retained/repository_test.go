@@ -124,4 +124,10 @@ func TestRetainedRepositoryExpiryPurgesBytesBeforeReplace(t *testing.T) {
 	if err != nil || len(messages) != 1 || messages[0].Topic != "replacement" {
 		t.Fatalf("list after expiry = %#v, %v", messages, err)
 	}
+
+	repository.SetMetricsRecorder(nil)
+	count, totalBytes := repository.Stats(now.Add(time.Second))
+	if count != 1 || totalBytes != len("publisher-b")+len("replacement")+len("value") {
+		t.Fatalf("Stats() = (%d, %d), want one replacement and its byte size", count, totalBytes)
+	}
 }

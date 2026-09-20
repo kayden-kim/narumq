@@ -9,13 +9,17 @@ import (
 	"log/slog"
 	authenticationadapter "narumq/internal/adapters/authentication"
 	"narumq/internal/adapters/clock"
+	adaptershttp "narumq/internal/adapters/http/management"
 	"narumq/internal/adapters/memory/deliveryqueue"
 	memoryretained "narumq/internal/adapters/memory/retained"
 	"narumq/internal/adapters/memory/sessionstore"
+	adaptersmetrics "narumq/internal/adapters/metrics"
 	"narumq/internal/adapters/runtimemetrics"
 	tcpadapter "narumq/internal/adapters/tcp"
 	tlsadapter "narumq/internal/adapters/tls"
 	"narumq/internal/application/connect"
+	appmgmt "narumq/internal/application/management"
+	portsmgmt "narumq/internal/application/ports/management"
 	"narumq/internal/application/publish"
 	"narumq/internal/application/subscribe"
 	"narumq/internal/domain/mqtt"
@@ -55,6 +59,8 @@ func runWithContext(ctx context.Context, args []string, logger *slog.Logger) err
 	flagSet.SetOutput(io.Discard)
 	tcpListen := flagSet.String("tcp-listen", "", "development-only loopback TCP listen address")
 	tlsListen := flagSet.String("tls-listen", "", "TLS listen address")
+	httpListen := flagSet.String("http-listen", "", "management HTTP listen address")
+	httpAuthToken := flagSet.String("http-auth-token", "", "management API Bearer token")
 	tlsCert := flagSet.String("tls-cert", "", "server certificate PEM file")
 	tlsKey := flagSet.String("tls-key", "", "server private key PEM file")
 	tlsCA := flagSet.String("tls-ca", "", "client CA certificate PEM file")
@@ -81,11 +87,16 @@ func runWithContext(ctx context.Context, args []string, logger *slog.Logger) err
 	if metricsRequested && *runtimeMetricsInterval <= 0 {
 		return errors.New("-runtime-metrics-interval must be greater than zero")
 	}
-	if *tcpListen == "" && *tlsListen == "" {
-		if metricsRequested {
-			return errors.New("-tcp-listen or -tls-listen is required when runtime metrics collection is enabled")
+	if *httpListen != "" && *httpAuthToken == "" {
+		if err := validateManagementListenAddress(*httpListen); err != nil {
+			return fmt.Errorf("unauthenticated management listener: %w", err)
 		}
-		logger.Info("MQTT TCP listener disabled", "development_only", true)
+	}
+	if *tcpListen == "" && *tlsListen == "" && *httpListen == "" {
+		if metricsRequested {
+			return errors.New("-tcp-listen, -tls-listen, or -http-listen is required when runtime metrics collection is enabled")
+		}
+		logger.Info("MQTT TCP and management HTTP listeners disabled", "development_only", true)
 		return nil
 	}
 	if *retainedMessageCapacity <= 0 || *retainedByteCapacity <= 0 {
@@ -93,9 +104,10 @@ func runWithContext(ctx context.Context, args []string, logger *slog.Logger) err
 	}
 
 	var (
-		listeners   []net.Listener
-		tcpListener net.Listener
-		tlsListener net.Listener
+		listeners          []net.Listener
+		tcpListener        net.Listener
+		tlsListener        net.Listener
+		managementListener net.Listener
 	)
 	defer func() {
 		for _, l := range listeners {
@@ -134,12 +146,24 @@ func runWithContext(ctx context.Context, args []string, logger *slog.Logger) err
 		}
 		listeners = append(listeners, tlsListener)
 	}
+
+	if *httpListen != "" {
+		var errListen error
+		managementListener, errListen = net.Listen("tcp", *httpListen)
+		if errListen != nil {
+			return fmt.Errorf("listen management HTTP on %q: %w", *httpListen, errListen)
+		}
+	}
+	if managementListener != nil {
+		defer managementListener.Close()
+	}
 	routes := routing.NewTable()
+	metricsRegistry := adaptersmetrics.NewRegistry()
 	deliveries, err := deliveryqueue.New(*deliveryQueueCapacity)
 	if err != nil {
 		return fmt.Errorf("create delivery queue: %w", err)
 	}
-	retainedRepository, err := memoryretained.New(*retainedMessageCapacity, *retainedByteCapacity)
+	retainedRepository, err := memoryretained.New(*retainedMessageCapacity, *retainedByteCapacity, metricsRegistry)
 	if err != nil {
 		return fmt.Errorf("create retained repository: %w", err)
 	}
@@ -154,6 +178,9 @@ func runWithContext(ctx context.Context, args []string, logger *slog.Logger) err
 		publishOpts     []publish.Option
 		tcpConfigPolicy security.Policy
 	)
+	connectOpts = append(connectOpts, connect.WithMetrics(metricsRegistry))
+	subscribeOpts = append(subscribeOpts, subscribe.WithMetrics(metricsRegistry))
+	publishOpts = append(publishOpts, publish.WithMetrics(metricsRegistry))
 	if *securityConfigFile != "" {
 		bundle, err := loadSecurityConfigFile(*securityConfigFile)
 		if err != nil {
@@ -183,72 +210,199 @@ func runWithContext(ctx context.Context, args []string, logger *slog.Logger) err
 	if err != nil {
 		return fmt.Errorf("create publish use case: %w", err)
 	}
-	decoder, err := mqtt.NewDecoder(*maxPacketSize)
-	if err != nil {
-		return fmt.Errorf("create MQTT decoder: %w", err)
-	}
-	encoder, err := mqtt.NewEncoder(*maxPacketSize)
-	if err != nil {
-		return fmt.Errorf("create MQTT encoder: %w", err)
-	}
-	server, err := tcpadapter.NewServer(
-		listeners[0],
-		tcpadapter.Config{
-			Clock:                  systemClock,
-			MaxPacketSize:          *maxPacketSize,
-			ConnectTimeout:         *connectTimeout,
-			WriteTimeout:           *writeTimeout,
-			ControlQueueCapacity:   *controlQueueCapacity,
-			VerifyClientID:         *tlsVerifyClientID,
-			ClientIdentityVerifier: tlsadapter.VerifyConnClientIdentity,
-			Policy:                 tcpConfigPolicy,
-		},
-		decoder,
-		encoder,
-		connections,
-		subscriptions,
-		publications,
-		deliveries,
-		logger,
-	)
-	if err != nil {
-		return fmt.Errorf("create TCP server: %w", err)
-	}
-	for i := 1; i < len(listeners); i++ {
-		if err := server.AddListener(listeners[i]); err != nil {
-			return fmt.Errorf("add listener: %w", err)
+	var server *tcpadapter.Server
+	if len(listeners) > 0 {
+		decoder, err := mqtt.NewDecoder(*maxPacketSize)
+		if err != nil {
+			return fmt.Errorf("create MQTT decoder: %w", err)
 		}
+		encoder, err := mqtt.NewEncoder(*maxPacketSize)
+		if err != nil {
+			return fmt.Errorf("create MQTT encoder: %w", err)
+		}
+		server, err = tcpadapter.NewServer(
+			listeners[0],
+			tcpadapter.Config{
+				Clock:                  systemClock,
+				MaxPacketSize:          *maxPacketSize,
+				ConnectTimeout:         *connectTimeout,
+				WriteTimeout:           *writeTimeout,
+				ControlQueueCapacity:   *controlQueueCapacity,
+				VerifyClientID:         *tlsVerifyClientID,
+				ClientIdentityVerifier: tlsadapter.VerifyConnClientIdentity,
+				Policy:                 tcpConfigPolicy,
+				Metrics:                metricsRegistry,
+			},
+			decoder,
+			encoder,
+			connections,
+			subscriptions,
+			publications,
+			deliveries,
+			logger,
+		)
+		if err != nil {
+			return fmt.Errorf("create TCP server: %w", err)
+		}
+		for i := 1; i < len(listeners); i++ {
+			if err := server.AddListener(listeners[i]); err != nil {
+				return fmt.Errorf("add listener: %w", err)
+			}
+		}
+		willBridge.Bind(server)
 	}
-	willBridge.Bind(server)
+
+	managementState := appmgmt.NewService(
+		appmgmt.ServiceConfig{
+			ClusterID:      "narumq-cluster-1",
+			NodeID:         "narumq-node-1",
+			ReleaseVersion: "1.0.0",
+		},
+		sessions,
+		routes,
+		retainedRepository,
+		metricsRegistry,
+	)
+	var managementServer *http.Server
+	if managementListener != nil {
+		managementServer = adaptershttp.NewServer(
+			adaptershttp.ServerConfig{
+				ListenAddr:            managementListener.Addr().String(),
+				AuthToken:             *httpAuthToken,
+				AllowAnonymousProbes:  true,
+				AllowAnonymousMetrics: *httpAuthToken == "",
+			},
+			managementState,
+			managementState,
+			metricsRegistry,
+		)
+	}
 	if tcpListener != nil {
 		logger.Info("MQTT TCP listener started", "address", tcpListener.Addr().String(), "development_only", true, "qos0_only", true, "retained_supported", true)
 	}
 	if tlsListener != nil {
 		logger.Info("MQTT TLS listener started", "address", tlsListener.Addr().String(), "qos0_only", true, "retained_supported", true)
 	}
-	stopLogging := func() {
-		if tcpListener != nil {
-			logger.Info("MQTT TCP listener stopped", "address", tcpListener.Addr().String())
-		}
-		if tlsListener != nil {
-			logger.Info("MQTT TLS listener stopped", "address", tlsListener.Addr().String())
+	if managementListener != nil {
+		logger.Info("management HTTP listener started", "address", managementListener.Addr().String())
+	}
+	managementState.SetNodeState(portsmgmt.NodeStateReady, nil)
+
+	var sampler *runtimemetrics.Sampler
+	if metricsRequested {
+		sampler, err = runtimemetrics.New(*runtimeMetricsOutput, *runtimeMetricsInterval)
+		if err != nil {
+			return err
 		}
 	}
-	if !metricsRequested {
-		if err := server.Serve(ctx); err != nil {
-			return fmt.Errorf("serve MQTT TCP listener: %w", err)
-		}
-		stopLogging()
+	if err := serveServices(ctx, server, managementServer, managementListener, sampler, managementState); err != nil {
+		return err
+	}
+	if tcpListener != nil {
+		logger.Info("MQTT TCP listener stopped", "address", tcpListener.Addr().String())
+	}
+	if tlsListener != nil {
+		logger.Info("MQTT TLS listener stopped", "address", tlsListener.Addr().String())
+	}
+	if managementListener != nil {
+		logger.Info("management HTTP listener stopped", "address", managementListener.Addr().String())
+	}
+	return nil
+}
+
+type serviceResult struct {
+	name string
+	err  error
+}
+
+func serveServices(
+	ctx context.Context,
+	mqttServer *tcpadapter.Server,
+	httpServer *http.Server,
+	httpListener net.Listener,
+	sampler *runtimemetrics.Sampler,
+	state *appmgmt.Service,
+) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	serveCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+
+	done := make(chan serviceResult, 3)
+	running := 0
+	if mqttServer != nil {
+		running++
+		go func() {
+			done <- serviceResult{name: "MQTT TCP listener", err: mqttServer.Serve(serveCtx)}
+		}()
+	}
+	if httpServer != nil && httpListener != nil {
+		running++
+		go func() {
+			err := httpServer.Serve(httpListener)
+			if errors.Is(err, http.ErrServerClosed) {
+				err = nil
+			}
+			done <- serviceResult{name: "management HTTP listener", err: err}
+		}()
+	}
+	if sampler != nil {
+		running++
+		go func() {
+			done <- serviceResult{name: "runtime metrics sampler", err: sampler.Run(serveCtx)}
+		}()
+	}
+	if running == 0 {
 		return nil
 	}
-	sampler, err := runtimemetrics.New(*runtimeMetricsOutput, *runtimeMetricsInterval)
-	if err != nil {
-		return err
+
+	shutdownHTTP := func() {
+		if httpServer == nil {
+			return
+		}
+		shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer shutdownCancel()
+		_ = httpServer.Shutdown(shutdownCtx)
 	}
-	if err := serveWithRuntimeMetrics(ctx, server, sampler); err != nil {
-		return err
+
+	shutdownStarted := false
+	var serviceErrs []error
+	for remaining := running; remaining > 0; {
+		var contextDone <-chan struct{}
+		if !shutdownStarted {
+			contextDone = ctx.Done()
+		}
+		select {
+		case <-contextDone:
+			shutdownStarted = true
+			if state != nil {
+				state.SetNodeState(portsmgmt.NodeStateDraining, nil)
+			}
+			cancel()
+			shutdownHTTP()
+		case result := <-done:
+			remaining--
+			if result.err != nil {
+				serviceErrs = append(serviceErrs, fmt.Errorf("%s: %w", result.name, result.err))
+				if !shutdownStarted {
+					shutdownStarted = true
+					if state != nil {
+						state.SetNodeState(portsmgmt.NodeStateDraining, nil)
+					}
+					cancel()
+					shutdownHTTP()
+				}
+			}
+		}
 	}
-	stopLogging()
+
+	if state != nil {
+		state.SetNodeState(portsmgmt.NodeStateSafeToStop, nil)
+	}
+	if len(serviceErrs) > 0 {
+		return errors.Join(serviceErrs...)
+	}
 	return nil
 }
 
@@ -304,13 +458,21 @@ func serveWithRuntimeMetrics(ctx context.Context, server *tcpadapter.Server, sam
 }
 
 func validateLoopbackListenAddress(address string) error {
+	return validateLiteralLoopbackAddress("-tcp-listen", address)
+}
+
+func validateManagementListenAddress(address string) error {
+	return validateLiteralLoopbackAddress("-http-listen", address)
+}
+
+func validateLiteralLoopbackAddress(flagName, address string) error {
 	host, _, err := net.SplitHostPort(address)
 	if err != nil {
-		return fmt.Errorf("invalid -tcp-listen %q: %w", address, err)
+		return fmt.Errorf("invalid %s %q: %w", flagName, address, err)
 	}
 	ip := net.ParseIP(host)
 	if ip == nil || !isLiteralLoopback(host, ip) {
-		return errors.New("-tcp-listen must use literal loopback IP 127.0.0.0/8 or ::1")
+		return fmt.Errorf("%s must use literal loopback IP 127.0.0.0/8 or ::1", flagName)
 	}
 	return nil
 }

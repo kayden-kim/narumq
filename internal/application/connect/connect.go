@@ -10,6 +10,7 @@ import (
 	applicationauthentication "narumq/internal/application/ports/authentication"
 	applicationclock "narumq/internal/application/ports/clock"
 	"narumq/internal/application/ports/deliveryqueue"
+	portsmetrics "narumq/internal/application/ports/metrics"
 	"narumq/internal/domain/mqtt"
 	"narumq/internal/domain/routing"
 	"narumq/internal/domain/security"
@@ -75,6 +76,13 @@ func WithSecurity(authenticator applicationauthentication.AuthenticationProvider
 	}
 }
 
+// WithMetrics configures a metrics recorder for connection and authentication events.
+func WithMetrics(metrics portsmetrics.MetricsRecorder) Option {
+	return func(useCase *UseCase) {
+		useCase.metrics = metrics
+	}
+}
+
 // UseCase serializes lifecycle persistence, routing cleanup and queue
 // registration so one process cannot activate or disconnect the same session
 // through interleaved operations.
@@ -96,6 +104,33 @@ type UseCase struct {
 	willPublisher WillPublisher
 	activeTimers  map[string]*clientTimers
 	closed        bool
+	metrics       portsmetrics.MetricsRecorder
+}
+
+func (useCase *UseCase) recordAuth(method string, success bool, reason string) {
+	if useCase != nil && useCase.metrics != nil {
+		useCase.metrics.AuthAttempt(method, success, reason)
+	}
+}
+
+func (useCase *UseCase) recordSessionGauge() {
+	if useCase == nil || useCase.metrics == nil {
+		return
+	}
+	snapshotter, ok := useCase.sessions.(interface{ Snapshot() []session.Lifecycle })
+	if !ok {
+		return
+	}
+	var persistent, nonPersistent int64
+	for _, state := range snapshotter.Snapshot() {
+		if state.ExpiryInterval() > 0 {
+			persistent++
+		} else {
+			nonPersistent++
+		}
+	}
+	useCase.metrics.SetSessionsActive(true, persistent)
+	useCase.metrics.SetSessionsActive(false, nonPersistent)
 }
 
 // New creates a connection use case over the supplied lifecycle boundaries.
@@ -170,16 +205,20 @@ func (useCase *UseCase) ConnectContext(ctx context.Context, packet mqtt.Connect)
 	var principal security.Principal
 	if useCase.authenticator == nil {
 		if packet.HasUsername || packet.HasPassword {
+			useCase.recordAuth(portsmetrics.AuthMethodAnonymous, false, "unsupported_credentials")
 			result.ConnAck.ReasonCode = unsupportedDevelopmentReason(packet.Version)
 			return result, nil
 		}
+		useCase.recordAuth(portsmetrics.AuthMethodAnonymous, true, "none")
 	} else {
 		if !packet.HasUsername || !packet.HasPassword || len(packet.Password) == 0 {
+			useCase.recordAuth(portsmetrics.AuthMethodPassword, false, "missing_credentials")
 			result.ConnAck.ReasonCode = notAuthorizedReason(packet.Version)
 			return result, nil
 		}
 		authResult, err := useCase.authenticator.Authenticate(ctx, applicationauthentication.Credential{Token: packet.Password})
 		if err != nil {
+			useCase.recordAuth(portsmetrics.AuthMethodPassword, false, "invalid_credentials")
 			result.ConnAck.ReasonCode = notAuthorizedReason(packet.Version)
 			return result, nil
 		}
@@ -191,6 +230,7 @@ func (useCase *UseCase) ConnectContext(ctx context.Context, packet mqtt.Connect)
 			}
 		}
 		if !allowed {
+			useCase.recordAuth(portsmetrics.AuthMethodPassword, false, "client_id_not_allowed")
 			result.ConnAck.ReasonCode = notAuthorizedReason(packet.Version)
 			return result, nil
 		}
@@ -203,6 +243,7 @@ func (useCase *UseCase) ConnectContext(ctx context.Context, packet mqtt.Connect)
 			authResult.ExpiresAt,
 		)
 		if err != nil {
+			useCase.recordAuth(portsmetrics.AuthMethodPassword, false, "not_authorized")
 			result.ConnAck.ReasonCode = notAuthorizedReason(packet.Version)
 			return result, nil
 		}
@@ -210,14 +251,17 @@ func (useCase *UseCase) ConnectContext(ctx context.Context, packet mqtt.Connect)
 		if packet.Will != nil {
 			willTopic, err := tenancy.NewTopic(authResult.TenantID, packet.Will.Topic)
 			if err != nil {
+				useCase.recordAuth(portsmetrics.AuthMethodPassword, false, "invalid_will_topic")
 				result.ConnAck.ReasonCode = notAuthorizedReason(packet.Version)
 				return result, nil
 			}
 			if err := useCase.policy.AuthorizeTopic(principal, security.ActionWill, willTopic); err != nil {
+				useCase.recordAuth(portsmetrics.AuthMethodPassword, false, "will_unauthorized")
 				result.ConnAck.ReasonCode = notAuthorizedReason(packet.Version)
 				return result, nil
 			}
 		}
+		useCase.recordAuth(portsmetrics.AuthMethodPassword, true, "none")
 	}
 	sessionID := routing.SessionID(packet.ClientID)
 	var sessionKey tenancy.SessionKey
@@ -282,6 +326,7 @@ func (useCase *UseCase) ConnectContext(ctx context.Context, packet mqtt.Connect)
 		}
 		return ResultDTO{}, err
 	}
+	useCase.recordSessionGauge()
 	return ResultDTO{
 		SessionID: sessionID,
 		Principal: principal,
@@ -377,6 +422,7 @@ func (useCase *UseCase) Disconnect(sessionID routing.SessionID, reason session.D
 		delete(useCase.principals, sessionID)
 	}
 	useCase.mu.Unlock()
+	useCase.recordSessionGauge()
 
 	if shouldPublish {
 		if err := useCase.willPublisher.PublishWill(sessionID, *willToPublish); err != nil {

@@ -134,3 +134,17 @@ func (repository *MemorySessionRepository) DeleteKey(key tenancy.SessionKey) err
 	delete(repository.sessions, key.ClientID())
 	return nil
 }
+
+// Snapshot returns a copy of all stored lifecycles.
+func (repository *MemorySessionRepository) Snapshot() []session.Lifecycle {
+	if repository == nil {
+		return nil
+	}
+	repository.mu.Lock()
+	defer repository.mu.Unlock()
+	list := make([]session.Lifecycle, 0, len(repository.sessions))
+	for _, s := range repository.sessions {
+		list = append(list, s)
+	}
+	return list
+}

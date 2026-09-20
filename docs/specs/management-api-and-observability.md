@@ -16,11 +16,29 @@
 
 - 관리 API base path는 `/api/v1`이다. 호환되지 않는 변경은 새 major path에서 제공해야 한다.
 - request와 response body는 `application/json` UTF-8을 사용한다.
-- 모든 요청은 인증과 RBAC를 통과해야 한다. Health probe의 노출 범위는 listener 정책으로 제한할 수 있다.
+- `/api/v1` 요청은 인증과 RBAC를 통과해야 한다. Health probe와 `/metrics`의 익명 노출 범위는 listener 정책으로 제한할 수 있다.
 - 서버는 수신한 유효 request ID를 사용하거나 새 값을 생성해 `X-Request-Id`에 반환해야 한다.
 - mutation API는 결과를 감사 로그에 기록해야 한다.
 
-### 1.1 성공 envelope
+### 1.1 Management listener와 인증 정책
+
+- `-http-listen`은 Management HTTP listener의 bind 주소다.
+- `-http-auth-token`이 설정되면 유효한 `Authorization: Bearer <token>`을 요구하고, `/api/v1`에는 endpoint별 RBAC를 적용한다. 인증 실패는 `401`, 인증은 됐지만 권한이 부족하면 `403`이다.
+- `-http-auth-token`이 비어 있으면 local development용 익명 모드로 동작하지만, `-http-listen`은 literal loopback IP(`127.0.0.0/8` 또는 `::1`)만 허용한다. `0.0.0.0`, `:8080`, 외부 인터페이스 주소는 거부한다.
+- 따라서 원격 interface에 Management API를 노출하려면 반드시 `-http-auth-token`을 설정해야 한다.
+- CLI에서 health probe는 기본적으로 익명 노출되고, token이 설정된 경우 `/metrics`는 인증을 요구한다. 운영 환경에서는 probe listener와 firewall 범위를 별도로 제한해야 한다.
+
+예:
+
+```text
+# local development: loopback-only anonymous mode
+go run ./cmd/narumq -http-listen 127.0.0.1:8080
+
+# remote/private interface: authentication required
+go run ./cmd/narumq -http-listen 0.0.0.0:8080 -http-auth-token "$NARUMQ_MANAGEMENT_TOKEN"
+```
+
+### 1.2 성공 envelope
 
 단일 resource는 `data`, 목록은 `data`와 `page`를 반환한다.
 
@@ -36,7 +54,7 @@
 
 cursor는 불투명 값이다. client는 cursor 내용을 해석해서는 안 된다. 정렬 기준은 endpoint OpenAPI에 고정해야 하며 같은 snapshot에서 안정적이어야 한다.
 
-### 1.2 오류 envelope
+### 1.3 오류 envelope
 
 ```json
 {
@@ -63,7 +81,7 @@ cursor는 불투명 값이다. client는 cursor 내용을 해석해서는 안 �
 
 오류 code 전체 목록은 OpenAPI에서 확정한다. 내부 stack, storage key와 secret을 오류에 포함해서는 안 된다.
 
-### 1.3 Mutation과 idempotency
+### 1.4 Mutation과 idempotency
 
 P1 mutation endpoint는 `Idempotency-Key`를 받아야 한다. 같은 principal, endpoint와 key에 같은 payload를 재시도하면 최초 결과와 의미가 같아야 한다. 같은 key에 다른 payload가 오면 `409 idempotency_conflict`를 반환해야 한다. 보존 시간은 OpenAPI/configuration에 명시한다.
 

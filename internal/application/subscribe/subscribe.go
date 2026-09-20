@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"narumq/internal/application/ports/deliveryqueue"
+	portsmetrics "narumq/internal/application/ports/metrics"
 	"narumq/internal/application/ports/retained"
 	"narumq/internal/domain/mqtt"
 	"narumq/internal/domain/routing"
@@ -41,6 +42,13 @@ func WithPolicy(policy security.Policy) Option {
 	}
 }
 
+// WithMetrics configures a recorder for active subscription gauges.
+func WithMetrics(metrics portsmetrics.MetricsRecorder) Option {
+	return func(u *UseCase) {
+		u.metrics = metrics
+	}
+}
+
 // UseCase applies subscription commands to one routing table and replays
 // retained values through the application-owned delivery queue.
 type UseCase struct {
@@ -48,6 +56,7 @@ type UseCase struct {
 	queue    deliveryqueue.Queue
 	retained retained.Repository
 	policy   security.Policy
+	metrics  portsmetrics.MetricsRecorder
 }
 
 // New creates a subscription use case over routes, queue, and retained state.
@@ -108,6 +117,7 @@ func (useCase *UseCase) Unsubscribe(sessionID routing.SessionID, packet mqtt.Uns
 			}
 			_, _ = useCase.routes.Unsubscribe(sessionID, filter)
 		}
+		useCase.recordSubscriptionGauge()
 		return ack
 	}
 
@@ -122,6 +132,7 @@ func (useCase *UseCase) Unsubscribe(sessionID routing.SessionID, packet mqtt.Uns
 		}
 		ack.ReasonCodes = append(ack.ReasonCodes, useCase.unsubscribeReason(sessionID, filter))
 	}
+	useCase.recordSubscriptionGauge()
 	return ack
 }
 
@@ -178,6 +189,7 @@ func (useCase *UseCase) subscribeOne(sessionID routing.SessionID, version mqtt.P
 	if _, err := useCase.routes.Subscribe(sessionID, subscription); err != nil {
 		return invalidSubscriptionReason(version), 0, nil
 	}
+	useCase.recordSubscriptionGauge()
 	return byte(subscription.QoS), retainedQueued, nil
 }
 
@@ -251,6 +263,13 @@ func protocolErrorReason(version mqtt.ProtocolVersion) byte {
 		return 0x82
 	}
 	return 0x80
+}
+
+func (useCase *UseCase) recordSubscriptionGauge() {
+	if useCase == nil || useCase.metrics == nil || useCase.routes == nil {
+		return
+	}
+	useCase.metrics.SetSubscriptionsActive(int64(len(useCase.routes.Snapshot())))
 }
 
 func notAuthorizedSubscriptionReason(version mqtt.ProtocolVersion) byte {

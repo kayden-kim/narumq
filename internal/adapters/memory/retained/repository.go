@@ -7,6 +7,7 @@ import (
 	"sync"
 	"time"
 
+	portsmetrics "narumq/internal/application/ports/metrics"
 	applicationretained "narumq/internal/application/ports/retained"
 	"narumq/internal/domain/mqtt"
 	"narumq/internal/domain/routing"
@@ -27,19 +28,36 @@ type Repository struct {
 	maxBytes    int
 	bytes       int
 	messages    map[string]applicationretained.MessageDTO
+	metrics     portsmetrics.MetricsRecorder
 }
 
 // New creates a retained repository bounded by message count and aggregate
 // topic, payload, and publisher-session identity bytes.
-func New(maxMessages, maxBytes int) (*Repository, error) {
+func New(maxMessages, maxBytes int, recorder ...portsmetrics.MetricsRecorder) (*Repository, error) {
 	if maxMessages <= 0 || maxBytes <= 0 {
 		return nil, ErrInvalidCapacity
+	}
+	var metrics portsmetrics.MetricsRecorder
+	if len(recorder) > 0 {
+		metrics = recorder[0]
 	}
 	return &Repository{
 		maxMessages: maxMessages,
 		maxBytes:    maxBytes,
 		messages:    make(map[string]applicationretained.MessageDTO),
+		metrics:     metrics,
 	}, nil
+}
+
+// SetMetricsRecorder configures the recorder used for retained gauges.
+func (repository *Repository) SetMetricsRecorder(metrics portsmetrics.MetricsRecorder) {
+	if repository == nil {
+		return
+	}
+	repository.mu.Lock()
+	defer repository.mu.Unlock()
+	repository.metrics = metrics
+	repository.recordStatsLocked()
 }
 
 // Replace atomically replaces the exact-topic value or returns ErrFull without
@@ -70,6 +88,7 @@ func (repository *Repository) Replace(message applicationretained.MessageDTO, no
 	message.Payload = cloneBytes(message.Payload)
 	repository.messages[message.Topic] = message
 	repository.bytes = currentBytes + messageBytes
+	repository.recordStatsLocked()
 	return nil
 }
 
@@ -89,6 +108,7 @@ func (repository *Repository) Delete(topic string) error {
 	}
 	delete(repository.messages, topic)
 	repository.bytes -= retainedBytes(message)
+	repository.recordStatsLocked()
 	return nil
 }
 
@@ -101,6 +121,7 @@ func (repository *Repository) List(now time.Time) ([]applicationretained.Message
 	repository.mu.Lock()
 	defer repository.mu.Unlock()
 	repository.purgeExpiredLocked(now)
+	repository.recordStatsLocked()
 	messages := make([]applicationretained.MessageDTO, 0, len(repository.messages))
 	for _, message := range repository.messages {
 		message.Payload = cloneBytes(message.Payload)
@@ -111,6 +132,17 @@ func (repository *Repository) List(now time.Time) ([]applicationretained.Message
 	})
 	return messages, nil
 }
+
+// Stats returns the active message count and total bytes after purging expired messages.
+func (repository *Repository) Stats(now time.Time) (int, int) {
+	if repository == nil {
+		return 0, 0
+	}
+	repository.mu.Lock()
+	repository.purgeExpiredLocked(now)
+	repository.recordStatsLocked()
+	return len(repository.messages), repository.bytes
+}
 func (repository *Repository) purgeExpiredLocked(now time.Time) {
 	for topic, message := range repository.messages {
 		if message.ExpiresAt.IsZero() || now.Before(message.ExpiresAt) {
@@ -118,6 +150,12 @@ func (repository *Repository) purgeExpiredLocked(now time.Time) {
 		}
 		delete(repository.messages, topic)
 		repository.bytes -= retainedBytes(message)
+	}
+}
+
+func (repository *Repository) recordStatsLocked() {
+	if repository.metrics != nil {
+		repository.metrics.SetRetainedStats(int64(len(repository.messages)), int64(repository.bytes))
 	}
 }
 

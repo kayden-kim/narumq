@@ -14,6 +14,7 @@ import (
 	"narumq/internal/application/connect"
 	applicationclock "narumq/internal/application/ports/clock"
 	"narumq/internal/application/ports/deliveryqueue"
+	portsmetrics "narumq/internal/application/ports/metrics"
 	applicationretained "narumq/internal/application/ports/retained"
 	"narumq/internal/application/publish"
 	"narumq/internal/application/subscribe"
@@ -63,6 +64,7 @@ type Config struct {
 	VerifyClientID         bool
 	ClientIdentityVerifier func(conn net.Conn, clientID string) bool
 	Policy                 security.Policy
+	Metrics                portsmetrics.MetricsRecorder
 }
 
 // Server owns one listener, all connection goroutines and the session registry.
@@ -355,10 +357,18 @@ type connection struct {
 	keepAlive        uint16
 	accepted         bool
 	disconnectReason session.DisconnectReason
-	deliveryMu       sync.Mutex
-	inbound          map[mqtt.PacketIdentifier]inboundState
-	outbound         map[mqtt.PacketIdentifier]delivery.Outbound
-	packetIDs        *packetIDAllocator
+
+	deliveryMu sync.Mutex
+	inbound    map[mqtt.PacketIdentifier]inboundState
+	outbound   map[mqtt.PacketIdentifier]delivery.Outbound
+	packetIDs  *packetIDAllocator
+}
+
+func (connection *connection) metrics() portsmetrics.MetricsRecorder {
+	if connection != nil && connection.server != nil {
+		return connection.server.config.Metrics
+	}
+	return nil
 }
 
 func (connection *connection) run() {
@@ -389,6 +399,17 @@ func (connection *connection) isStopping() bool {
 func (connection *connection) cleanup() {
 	connection.cleanupOnce.Do(func() {
 		if connection.accepted {
+			proto := portsmetrics.ProtocolMQTT50
+			if connection.version == mqtt.ProtocolV311 {
+				proto = portsmetrics.ProtocolMQTT311
+			}
+			transport := portsmetrics.TransportTCP
+			if _, isTLS := connection.socket.(*tls.Conn); isTLS {
+				transport = portsmetrics.TransportTLS
+			}
+			if metrics := connection.metrics(); metrics != nil {
+				metrics.ConnectionClosed(proto, transport)
+			}
 			connection.server.unbindSession(connection.sessionID, connection)
 			if err := connection.server.connections.Disconnect(connection.sessionID, connection.disconnectReason); err != nil && !errors.Is(err, connect.ErrSessionNotFound) {
 				connection.server.logger.Warn("MQTT session cleanup failed", "error", err.Error())
@@ -433,6 +454,9 @@ func (connection *connection) readLoop() error {
 			}
 			if consumed <= 0 || consumed > buffered {
 				return mqtt.ErrMalformedPacket
+			}
+			if metrics := connection.metrics(); metrics != nil {
+				metrics.PacketReceived(packetTypeName(packet))
 			}
 			copy(input, input[consumed:buffered])
 			buffered -= consumed
@@ -531,6 +555,17 @@ func (connection *connection) activate(packet mqtt.Connect) error {
 		connection.accepted = false
 		_ = connection.server.connections.Disconnect(connection.sessionID, session.DisconnectAbnormal)
 		return ErrProtocol
+	}
+	proto := portsmetrics.ProtocolMQTT50
+	if packet.Version == mqtt.ProtocolV311 {
+		proto = portsmetrics.ProtocolMQTT311
+	}
+	transport := portsmetrics.TransportTCP
+	if _, isTLS := connection.socket.(*tls.Conn); isTLS {
+		transport = portsmetrics.TransportTLS
+	}
+	if metrics := connection.metrics(); metrics != nil {
+		metrics.ConnectionOpened(proto, transport)
 	}
 	return connection.enqueueAndWait(&result.ConnAck)
 }
@@ -1150,7 +1185,45 @@ func (connection *connection) writePacket(packet mqtt.Packet) error {
 			return io.ErrShortWrite
 		}
 	}
+	if metrics := connection.metrics(); metrics != nil {
+		metrics.PacketSent(packetTypeName(packet))
+	}
 	return nil
+}
+
+func packetTypeName(packet mqtt.Packet) string {
+	switch packet.(type) {
+	case *mqtt.Connect:
+		return "CONNECT"
+	case *mqtt.ConnAck:
+		return "CONNACK"
+	case *mqtt.Publish:
+		return "PUBLISH"
+	case *mqtt.PubAck:
+		return "PUBACK"
+	case *mqtt.PubRec:
+		return "PUBREC"
+	case *mqtt.PubRel:
+		return "PUBREL"
+	case *mqtt.PubComp:
+		return "PUBCOMP"
+	case *mqtt.Subscribe:
+		return "SUBSCRIBE"
+	case *mqtt.SubAck:
+		return "SUBACK"
+	case *mqtt.Unsubscribe:
+		return "UNSUBSCRIBE"
+	case *mqtt.UnsubAck:
+		return "UNSUBACK"
+	case *mqtt.PingReq:
+		return "PINGREQ"
+	case *mqtt.PingResp:
+		return "PINGRESP"
+	case *mqtt.Disconnect:
+		return "DISCONNECT"
+	default:
+		return "UNKNOWN"
+	}
 }
 
 // PublishWill implements connect.WillPublisher by routing a will message through publications

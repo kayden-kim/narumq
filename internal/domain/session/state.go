@@ -215,6 +215,11 @@ func (state Lifecycle) ClientID() string {
 	return state.clientID
 }
 
+// Version returns the MQTT protocol version bound to the lifecycle.
+func (state Lifecycle) Version() mqtt.ProtocolVersion {
+	return state.version
+}
+
 func (state Lifecycle) Connected() bool {
 	return state.connected
 }

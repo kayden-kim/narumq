@@ -8,6 +8,7 @@ import (
 	"io"
 	"log/slog"
 	"net"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
@@ -192,6 +193,7 @@ func TestRunWithContextRejectsConstructionBounds(t *testing.T) {
 		{name: "metrics without listener", args: []string{"-runtime-metrics-output", "out.jsonl", "-runtime-metrics-interval", "1s"}, want: "required when runtime metrics collection is enabled"},
 		{name: "invalid loopback IP", args: []string{"-tcp-listen", "192.168.1.1:1883"}, want: "must use literal loopback IP"},
 		{name: "invalid tcp address", args: []string{"-tcp-listen", "invalid_no_port"}, want: "invalid -tcp-listen"},
+		{name: "unauthenticated management listener", args: []string{"-http-listen", "0.0.0.0:8080"}, want: "unauthenticated management listener"},
 		{name: "negative interval", args: []string{"-runtime-metrics-output", "out.jsonl", "-runtime-metrics-interval", "-1s"}, want: "greater than zero"},
 		{name: "unmatched metrics flags output only", args: []string{"-runtime-metrics-output", "out.jsonl"}, want: "must be provided together"},
 		{name: "unmatched metrics flags interval only", args: []string{"-runtime-metrics-interval", "1s"}, want: "must be provided together"},
@@ -304,4 +306,71 @@ func TestRunWithContextSecurityConfig(t *testing.T) {
 			t.Fatalf("canceled security run error = %v", err)
 		}
 	})
+}
+
+func TestRunWithContextServesManagementHTTP(t *testing.T) {
+	reserveAddress := func() string {
+		t.Helper()
+		listener, err := net.Listen("tcp", "127.0.0.1:0")
+		if err != nil {
+			t.Fatal(err)
+		}
+		address := listener.Addr().String()
+		_ = listener.Close()
+		return address
+	}
+
+	mqttAddress := reserveAddress()
+	httpAddress := reserveAddress()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan error, 1)
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	go func() {
+		done <- runWithContext(ctx, []string{
+			"-tcp-listen", mqttAddress,
+			"-http-listen", httpAddress,
+		}, logger)
+	}()
+
+	client := &http.Client{Timeout: 200 * time.Millisecond}
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		response, err := client.Get("http://" + httpAddress + "/health/ready")
+		if err == nil {
+			response.Body.Close()
+			if response.StatusCode != http.StatusOK {
+				t.Fatalf("management readiness status = %d", response.StatusCode)
+			}
+			break
+		}
+
+		if time.Now().After(deadline) {
+			t.Fatalf("management HTTP server did not become ready: %v", err)
+		}
+		select {
+		case err := <-done:
+			t.Fatalf("runWithContext stopped before management readiness: %v", err)
+		default:
+			time.Sleep(10 * time.Millisecond)
+		}
+	}
+	response, err := client.Get("http://" + httpAddress + "/api/v1/cluster")
+	if err != nil {
+		t.Fatalf("local management API request failed: %v", err)
+	}
+	response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		t.Fatalf("local management API status = %d, want 200", response.StatusCode)
+	}
+
+	cancel()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("runWithContext shutdown error = %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("runWithContext did not stop after cancellation")
+	}
 }

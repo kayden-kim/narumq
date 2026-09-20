@@ -413,3 +413,55 @@ func topicMatchesFilter(topic, filter string) bool {
 	matched, err := tenancy.TopicMatchesFilter(topic, filter)
 	return err == nil && matched
 }
+
+// SubscriptionRecord represents a snapshot of one active subscription.
+type SubscriptionRecord struct {
+	TenantID    tenancy.TenantID
+	SessionID   SessionID
+	TopicFilter string
+	QoS         mqtt.QoS
+	SharedGroup *string
+}
+
+// Snapshot returns a consistent snapshot of all registered subscriptions.
+func (table *Table) Snapshot() []SubscriptionRecord {
+	if table == nil {
+		return nil
+	}
+	table.mu.RLock()
+	defer table.mu.RUnlock()
+
+	var records []SubscriptionRecord
+
+	// Non-shared subscriptions
+	for sessionID, byFilter := range table.subscriptions {
+		tenantID := table.sessionTenants[sessionID]
+		for _, sub := range byFilter {
+			records = append(records, SubscriptionRecord{
+				TenantID:    tenantID,
+				SessionID:   sessionID,
+				TopicFilter: sub.Filter,
+				QoS:         sub.QoS,
+				SharedGroup: nil,
+			})
+		}
+	}
+
+	// Shared subscriptions
+	for fullFilter, bySession := range table.shared {
+		shareName, topicFilter, _, _ := ParseSharedFilter(fullFilter)
+		group := shareName
+		for sessionID, sub := range bySession {
+			tenantID := table.sessionTenants[sessionID]
+			records = append(records, SubscriptionRecord{
+				TenantID:    tenantID,
+				SessionID:   sessionID,
+				TopicFilter: topicFilter,
+				QoS:         sub.QoS,
+				SharedGroup: &group,
+			})
+		}
+	}
+
+	return records
+}

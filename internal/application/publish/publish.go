@@ -9,6 +9,7 @@ import (
 
 	applicationclock "narumq/internal/application/ports/clock"
 	"narumq/internal/application/ports/deliveryqueue"
+	portsmetrics "narumq/internal/application/ports/metrics"
 	"narumq/internal/application/ports/retained"
 	"narumq/internal/domain/mqtt"
 	"narumq/internal/domain/routing"
@@ -44,6 +45,13 @@ func WithPolicy(policy security.Policy) Option {
 	}
 }
 
+// WithMetrics configures a metrics recorder for publication latency.
+func WithMetrics(metrics portsmetrics.MetricsRecorder) Option {
+	return func(u *UseCase) {
+		u.metrics = metrics
+	}
+}
+
 // UseCase stores retained state before routing one publication to all matching
 // sessions through the bounded delivery queue.
 type UseCase struct {
@@ -52,6 +60,7 @@ type UseCase struct {
 	queue    deliveryqueue.Queue
 	retained retained.Repository
 	policy   security.Policy
+	metrics  portsmetrics.MetricsRecorder
 }
 
 // New creates a publish use case over the supplied route, queue, and retained
@@ -83,6 +92,12 @@ func New(clock applicationclock.Clock, routes *routing.Table, queue deliveryqueu
 // unavailability. Unknown queue errors stop the fan-out and return partial
 // results so successful earlier deliveries are not hidden.
 func (useCase *UseCase) Publish(publisherSessionID routing.SessionID, packet mqtt.Publish, receivedAt time.Time, principal ...security.Principal) (ResultDTO, error) {
+	if useCase != nil && useCase.metrics != nil {
+		start := time.Now()
+		defer func() {
+			useCase.metrics.ObservePublishDuration(time.Since(start))
+		}()
+	}
 	if err := routing.ValidateSessionID(publisherSessionID); err != nil {
 		return ResultDTO{}, err
 	}
