@@ -156,6 +156,8 @@ audit event에는 password, bearer token, session cookie, private key와 원문 
   `TestMQTTTLS_mTLS_ExpiredCert_Rejected`로 검증한다.
 - SEC-04: 인증서 Common Name과 MQTT Client ID 일치·불일치 및 MQTT 버전별 CONNACK
   reason을 `TestMQTTTLS_mTLS_ClientIDMismatch_Rejected`로 검증한다.
+- SEC-09: node 간 mTLS trust domain과 member allowlist를 함께 적용해 비인가 node join과
+  cluster RPC를 거절하는 시험을 별도 cluster transport acceptance suite에 연결한다.
 - 같은 clientId와 외부 topic을 쓰는 두 tenant가 session, route, retained, Will과 shared group을 공유하지 않는지 시험한다.
 - 내부 prefix 주입, wildcard·system topic 우회와 이중 encoding을 거절하는지 시험한다.
 - JWT algorithm confusion, 잘못된 issuer/audience/subject, expiry, `kid` rotation과 JWKS 장애를 시험한다.

@@ -104,7 +104,7 @@ NaruMQ source tree는 MQTT·session·routing·delivery·tenancy·security·clust
 현재 구현된 Phase 0 gate 3 + single-node ingress deliverable, gate 4 consensus spike와 TLS/mTLS transport security deliverable은 목표 tree의
 `cmd/narumq`, `domain/mqtt`, `domain/session`, `domain/routing`, `application/connect`,
 `application/publish`, `application/subscribe`, `application/ports/deliveryqueue`,
-`adapters/tcp`, `adapters/tls`, `adapters/memory/deliveryqueue`,
+`application/ports/retained`, `adapters/tcp`, `adapters/tls`, `adapters/memory/deliveryqueue`,
 `adapters/memory/retained`, `adapters/memory/sessionstore`, `adapters/clock`,
 `adapters/raft`와 `tests/integration/raft_consensus_test.go`,
 `tests/integration/mqtt_tls_test.go`다.

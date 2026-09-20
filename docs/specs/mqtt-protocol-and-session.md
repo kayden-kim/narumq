@@ -47,7 +47,8 @@ profile이며 cluster durability와는 별도 경계다.
 - `internal/adapters/memory/sessionstore`는 비내구성 lifecycle map이고,
   `internal/adapters/clock`은 system clock이다. Message Expiry, ACL·tenant,
   shared subscription, takeover, durable offline queue, persistence·replication과
-  TLS/auth는 이 slice에서 지원하지 않는다.
+  auth는 이 slice에서 지원하지 않는다.
+  TLS transport는 listener 계약에 정의한 범위에서 지원한다.
 
 ## 1. Listener 계약
 
