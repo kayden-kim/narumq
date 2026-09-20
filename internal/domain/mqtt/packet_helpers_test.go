@@ -82,7 +82,7 @@ func requireSemanticEqual(t *testing.T, want Packet, got Packet) {
 		}
 	case *Publish:
 		gotValue, ok := got.(*Publish)
-		if !ok || wantValue.Version != gotValue.Version || wantValue.DUP != gotValue.DUP || wantValue.QoS != gotValue.QoS || wantValue.Retain != gotValue.Retain || wantValue.PacketID != gotValue.PacketID || wantValue.Topic != gotValue.Topic || !bytes.Equal(wantValue.Payload, gotValue.Payload) {
+		if !ok || wantValue.Version != gotValue.Version || wantValue.DUP != gotValue.DUP || wantValue.QoS != gotValue.QoS || wantValue.Retain != gotValue.Retain || wantValue.PacketID != gotValue.PacketID || wantValue.Topic != gotValue.Topic || !bytes.Equal(wantValue.Payload, gotValue.Payload) || wantValue.HasMessageExpiryInterval != gotValue.HasMessageExpiryInterval || wantValue.MessageExpiryInterval != gotValue.MessageExpiryInterval {
 			t.Fatalf("PUBLISH mismatch:\nwant %#v\ngot  %#v", wantValue, got)
 		}
 	case *Subscribe:

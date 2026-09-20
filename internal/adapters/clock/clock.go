@@ -5,10 +5,13 @@ import (
 	"time"
 
 	"narumq/internal/application/connect"
+	applicationclock "narumq/internal/application/ports/clock"
 )
 
 // SystemClock reads the host wall clock.
 type SystemClock struct{}
+
+var _ applicationclock.Clock = SystemClock{}
 
 // Now returns the current wall-clock instant.
 func (SystemClock) Now() time.Time {

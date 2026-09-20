@@ -173,15 +173,16 @@ flowchart LR
 | `internal/domain/mqtt` | CONNECT/CONNACK, PUBLISH, ACK, SUBSCRIBE 계열과 PING/DISCONNECT wire validation·ownership | 표준 library만 |
 | `internal/domain/session` | Clean Start, Session Expiry와 lifecycle invariant | 표준 library만 |
 | `internal/domain/routing` | non-shared filter validation, wildcard match, overlap QoS, NL/RAP option policy와 session cleanup | `domain/mqtt`와 표준 library |
-| `internal/application/connect` | lifecycle repository, queue/routing cleanup과 CONNACK orchestration | `domain/mqtt`, `domain/session`, `domain/routing`, `ports/deliveryqueue` |
+| `internal/application/connect` | lifecycle repository, queue/routing cleanup과 CONNACK orchestration | `domain/mqtt`, `domain/session`, `domain/routing`, `ports/clock`, `ports/deliveryqueue` |
 | `internal/application/subscribe` | ordered SUBACK/UNSUBACK reason, retained replay와 atomic route mutation | `domain/mqtt`, `domain/routing`, `ports/deliveryqueue`, `ports/retained` |
-| `internal/application/publish` | retained replace/delete, option-aware route match와 delivery queue saturation result | `domain/mqtt`, `domain/routing`, `ports/deliveryqueue`, `ports/retained` |
-| `internal/application/ports/deliveryqueue` | 여러 use case가 공유하는 queue capability와 error/DTO contract | application/domain value만 |
-| `internal/application/ports/retained` | retained ownership, exact-topic repository와 bounded list contract | `domain/mqtt`, `domain/routing` |
-| `internal/adapters/memory/deliveryqueue` | session별 fixed item capacity, FIFO ownership와 atomic batch enqueue | `application/ports/deliveryqueue`, `domain/routing`, 표준 library |
-| `internal/adapters/memory/retained` | exact-topic bounded process-local retained repository | `application/ports/retained`, `domain/mqtt`, `domain/routing`, 표준 library |
+| `internal/application/publish` | retained replace/delete, Message Expiry deadline calculation, option-aware route match와 delivery queue saturation result | `domain/mqtt`, `domain/routing`, `ports/clock`, `ports/deliveryqueue`, `ports/retained` |
+| `internal/application/ports/clock` | 시간 정책을 결정하는 application-owned deterministic `Now()` 경계 | 표준 library만 |
+| `internal/application/ports/deliveryqueue` | 여러 use case가 공유하는 queue capability, expiry 계산과 error/DTO contract | application/domain value만 |
+| `internal/application/ports/retained` | retained ownership, exact-topic repository, expiry-aware list contract | `domain/mqtt`, `domain/routing`, 표준 library |
+| `internal/adapters/memory/deliveryqueue` | session별 fixed item capacity, FIFO ownership와 expiry lazy purge | `application/ports/deliveryqueue`, `domain/routing`, 표준 library |
+| `internal/adapters/memory/retained` | exact-topic bounded process-local retained repository와 expiry byte purge | `application/ports/retained`, `domain/mqtt`, `domain/routing`, 표준 library |
 | `internal/adapters/memory/sessionstore` | process-local lifecycle load/save/delete | `application/connect`, `domain/session`, 표준 library |
-| `internal/adapters/clock` | system clock를 application port에 제공 | `application/connect`, 표준 library |
+| `internal/adapters/clock` | system clock를 공용 application clock port에 제공 | `application/ports/clock`, 표준 library |
 | `internal/adapters/tcp` | bounded MQTT ingress, multiple listener lifecycle, single writer와 connection lifecycle | application use cases/ports와 `domain/mqtt` |
 | `internal/adapters/tls` | TLS 1.2+ listener, AEAD cipher allowlist, mTLS trust anchor와 인증서 identity DTO | 표준 library만 |
 | `internal/adapters/raft` | etcd/raft 자료형, experimental WAL/snapshot format, deterministic node boundary를 adapter 안에 캡슐화 | `go.etcd.io/raft/v3`, `google.golang.org/protobuf`와 표준 library |
@@ -190,7 +191,8 @@ flowchart LR
 Application은 concrete adapter를 import하지 않는다. Queue, clock과 session repository
 interface는 이를 사용하는 application package가 소유하고, composition root가 구현을
 생성해 주입한다. `adapters/tcp`는 inbound adapter이므로 network 자료형을 packet과
-application 결과로 변환하는 경계에만 둔다.
+application 결과로 변환하는 경계에만 둔다. `ExpiresAt`은 application DTO 경계에서
+소유하며 domain packet property와 adapter wire encoding을 직접 섞지 않는다.
 
 이번 spike는 application use case가 아직 소비하지 않는 algorithm·local recovery 증거다. 따라서
 `internal/application/ports/consensus`와 `internal/application/ports/logstore`는 미리 만들지 않으며,
@@ -223,7 +225,7 @@ Package 이름은 기술 계층보다 제품 책임을 드러낸다.
 | --- | --- | --- | --- |
 | Session aggregate 저장·복구 (target) | `ports/sessionstore.SessionRepository` | `adapters/storage.WALSessionRepository` | Storage engine 또는 file I/O |
 | 현재 session lifecycle | `application/connect.SessionRepository` | `adapters/memory/sessionstore.MemorySessionRepository` | mutex-protected process-local map |
-| 현재 clock | `application/connect.Clock` | `adapters/clock.SystemClock` | Go system clock |
+| 현재 clock | `application/ports/clock.Clock` | `adapters/clock.SystemClock` | Go system clock |
 | Replicated log 저장 | `ports/logstore.LogStore` | `adapters/storage.WALLogStore` | WAL·snapshot codec |
 | Consensus proposal·commit 관찰 | `ports/consensus.ReplicationService` | `adapters/raft.RaftReplicationService` 후보 | `etcd/raft` 후보 |
 | Cluster peer message 송수신 | `ports/transport.PeerTransport` | `adapters/tcp.TCPPeerTransport` 후보 | TCP/TLS 또는 후속 RPC client |
@@ -232,8 +234,8 @@ Package 이름은 기술 계층보다 제품 책임을 드러낸다.
 | Metric 기록·노출 | `ports/metrics.MetricRecorder` 후보 | `adapters/prometheus.PrometheusMetricRecorder` 후보 | Prometheus registry와 OpenMetrics exposition |
 | Audit event 발행 | `ports/audit.AuditPublisher` | `adapters/audit.ExternalAuditPublisher` 후보 | 외부 audit sink client 후보 |
 | Jitter·identifier용 난수 제공 | `ports/random.RandomSource` | `adapters/random.CryptoRandomSource` 후보 | Go cryptographic random source |
-| Session delivery queue | `application/ports/deliveryqueue.Queue` (`Register`/`Remove`/`TryEnqueue`/`TryEnqueueBatch`/`Drain`) | `adapters/memory/deliveryqueue.Queue` | mutex-protected FIFO item slices |
-| Retained message | `application/ports/retained.Repository` (`Replace`/`Delete`/`List`) | `adapters/memory/retained.Repository` | mutex-protected exact-topic map with count/byte bounds |
+| Session delivery queue | `application/ports/deliveryqueue.Queue` (`Register`/`Remove`/`TryEnqueue`/`TryEnqueueBatch`/`Drain`, all with `now` where time-sensitive) | `adapters/memory/deliveryqueue.Queue` | mutex-protected FIFO item slices with lazy expiry purge |
+| Retained message | `application/ports/retained.Repository` (`Replace`/`Delete`/`List`, `Replace`/`List` receive `now`) | `adapters/memory/retained.Repository` | mutex-protected exact-topic map with expiry-aware count/byte bounds |
 
 화살표로 읽으면 `UseCase → Port ← Adapter → Client·SDK → External system`이다. Source dependency는 adapter에서 port를 향한다. `cmd/narumq`가 concrete adapter를 생성해 use case에 주입한다.
 

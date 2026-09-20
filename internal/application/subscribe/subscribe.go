@@ -5,6 +5,7 @@ package subscribe
 import (
 	"errors"
 	"sort"
+	"time"
 
 	"narumq/internal/application/ports/deliveryqueue"
 	"narumq/internal/application/ports/retained"
@@ -52,12 +53,12 @@ func New(routes *routing.Table, queue deliveryqueue.Queue, retainedRepository re
 
 // Subscribe validates and applies every entry independently. Retained replay
 // is enqueued as a complete batch before the corresponding route is committed.
-func (useCase *UseCase) Subscribe(sessionID routing.SessionID, packet mqtt.Subscribe) (ResultDTO, error) {
+func (useCase *UseCase) Subscribe(sessionID routing.SessionID, packet mqtt.Subscribe, now time.Time) (ResultDTO, error) {
 	result := ResultDTO{
 		Ack: mqtt.SubAck{Version: packet.Version, PacketID: packet.PacketID, ReasonCodes: make([]byte, 0, len(packet.Subscriptions))},
 	}
 	for _, subscription := range packet.Subscriptions {
-		reasonCode, retainedQueued, err := useCase.subscribeOne(sessionID, packet.Version, subscription)
+		reasonCode, retainedQueued, err := useCase.subscribeOne(sessionID, packet.Version, subscription, now)
 		if err != nil {
 			return result, err
 		}
@@ -88,14 +89,11 @@ func (useCase *UseCase) Unsubscribe(sessionID routing.SessionID, packet mqtt.Uns
 	return ack
 }
 
-func (useCase *UseCase) subscribeOne(sessionID routing.SessionID, version mqtt.ProtocolVersion, subscription mqtt.Subscription) (byte, int, error) {
+func (useCase *UseCase) subscribeOne(sessionID routing.SessionID, version mqtt.ProtocolVersion, subscription mqtt.Subscription, now time.Time) (byte, int, error) {
 	if err := routing.ValidateSessionID(sessionID); err != nil {
 		return invalidSubscriptionReason(version), 0, nil
 	}
 	if err := routing.ValidateTopicFilter(subscription.Filter); err != nil {
-		if errors.Is(err, routing.ErrSharedSubscriptionUnsupported) {
-			return sharedSubscriptionReason(version), 0, nil
-		}
 		return invalidSubscriptionReason(version), 0, nil
 	}
 	if subscription.QoS > mqtt.QoSExactlyOnce || subscription.RetainHandling > mqtt.DoNotSendRetained {
@@ -103,6 +101,10 @@ func (useCase *UseCase) subscribeOne(sessionID routing.SessionID, version mqtt.P
 	}
 	if version == mqtt.ProtocolV311 && (subscription.NoLocal || subscription.RetainAsPublished || subscription.RetainHandling != mqtt.SendRetainedAtSubscribe) {
 		return invalidSubscriptionReason(version), 0, nil
+	}
+	isShared := routing.IsSharedFilter(subscription.Filter)
+	if isShared && subscription.NoLocal {
+		return protocolErrorReason(version), 0, nil
 	}
 	_, existed := useCase.routes.Lookup(sessionID, subscription.Filter)
 	replay := version == mqtt.ProtocolV311
@@ -114,13 +116,16 @@ func (useCase *UseCase) subscribeOne(sessionID routing.SessionID, version mqtt.P
 	case mqtt.DoNotSendRetained:
 		replay = false
 	}
+	if isShared {
+		replay = false
+	}
 	retainedQueued := 0
 	if replay {
-		batch, err := useCase.retainedBatch(sessionID, subscription)
+		batch, err := useCase.retainedBatch(sessionID, subscription, now)
 		if err != nil {
 			return 0, 0, err
 		}
-		if err := useCase.queue.TryEnqueueBatch(batch); err != nil {
+		if err := useCase.queue.TryEnqueueBatch(batch, now); err != nil {
 			if errors.Is(err, deliveryqueue.ErrFull) {
 				return replayFullReason(version), 0, nil
 			}
@@ -129,16 +134,13 @@ func (useCase *UseCase) subscribeOne(sessionID routing.SessionID, version mqtt.P
 		retainedQueued = len(batch)
 	}
 	if _, err := useCase.routes.Subscribe(sessionID, subscription); err != nil {
-		if errors.Is(err, routing.ErrSharedSubscriptionUnsupported) {
-			return sharedSubscriptionReason(version), 0, nil
-		}
 		return invalidSubscriptionReason(version), 0, nil
 	}
 	return byte(subscription.QoS), retainedQueued, nil
 }
 
-func (useCase *UseCase) retainedBatch(sessionID routing.SessionID, subscription mqtt.Subscription) ([]deliveryqueue.DeliveryDTO, error) {
-	messages, err := useCase.retained.List()
+func (useCase *UseCase) retainedBatch(sessionID routing.SessionID, subscription mqtt.Subscription, now time.Time) ([]deliveryqueue.DeliveryDTO, error) {
+	messages, err := useCase.retained.List(now)
 	if err != nil {
 		return nil, err
 	}
@@ -161,6 +163,7 @@ func (useCase *UseCase) retainedBatch(sessionID routing.SessionID, subscription 
 			Payload:   message.Payload,
 			QoS:       qos,
 			Retain:    true,
+			ExpiresAt: message.ExpiresAt,
 		})
 	}
 	sort.Slice(batch, func(left, right int) bool {
@@ -194,16 +197,16 @@ func invalidSubscriptionReason(version mqtt.ProtocolVersion) byte {
 	return 0x80
 }
 
-func sharedSubscriptionReason(version mqtt.ProtocolVersion) byte {
+func replayFullReason(version mqtt.ProtocolVersion) byte {
 	if version == mqtt.ProtocolV5 {
-		return 0x9E
+		return 0x97
 	}
 	return 0x80
 }
 
-func replayFullReason(version mqtt.ProtocolVersion) byte {
+func protocolErrorReason(version mqtt.ProtocolVersion) byte {
 	if version == mqtt.ProtocolV5 {
-		return 0x97
+		return 0x82
 	}
 	return 0x80
 }

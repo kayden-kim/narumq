@@ -1,6 +1,6 @@
-// Package routing owns canonical MQTT topic/filter validation and non-shared
-// subscription matching. It does not know about sockets, queues, tenants, or
-// retained-message storage.
+// Package routing owns canonical MQTT topic/filter validation and subscription
+// matching (both non-shared and shared). It does not know about sockets, queues,
+// tenants, or retained-message storage.
 package routing
 
 import (
@@ -22,8 +22,8 @@ var (
 	ErrInvalidTopicName = errors.New("invalid MQTT topic name")
 	// ErrInvalidQoS means that a route QoS is outside MQTT QoS 0..2.
 	ErrInvalidQoS = errors.New("invalid MQTT QoS")
-	// ErrSharedSubscriptionUnsupported means that this table only supports
-	// non-shared subscriptions.
+	// ErrSharedSubscriptionUnsupported is retained for backwards compatibility
+	// but is no longer returned for valid shared subscriptions.
 	ErrSharedSubscriptionUnsupported = errors.New("shared subscription is unsupported")
 	// ErrInvalidRetainHandling means that a subscription option is outside the
 	// MQTT retain handling range.
@@ -48,11 +48,17 @@ type Match struct {
 type Table struct {
 	mu            sync.RWMutex
 	subscriptions map[SessionID]map[string]mqtt.Subscription
+	shared        map[string]map[SessionID]mqtt.Subscription // sharedFilter -> SessionID -> Subscription
+	sharedCursors map[string]uint64                          // sharedFilter -> round-robin cursor
 }
 
 // NewTable creates an empty synchronized routing table.
 func NewTable() *Table {
-	return &Table{subscriptions: make(map[SessionID]map[string]mqtt.Subscription)}
+	return &Table{
+		subscriptions: make(map[SessionID]map[string]mqtt.Subscription),
+		shared:        make(map[string]map[SessionID]mqtt.Subscription),
+		sharedCursors: make(map[string]uint64),
+	}
 }
 
 // ValidateTopicFilter validates MQTT wildcard placement and UTF-8 rules.
@@ -61,8 +67,13 @@ func ValidateTopicFilter(filter string) error {
 		return ErrInvalidTopicFilter
 	}
 	if IsSharedFilter(filter) {
-		return ErrSharedSubscriptionUnsupported
+		_, _, _, err := ParseSharedFilter(filter)
+		return err
 	}
+	return validateFilterLevels(filter)
+}
+
+func validateFilterLevels(filter string) error {
 	levels := strings.Split(filter, "/")
 	for index, level := range levels {
 		if level == "+" {
@@ -79,6 +90,34 @@ func ValidateTopicFilter(filter string) error {
 		}
 	}
 	return nil
+}
+
+// ParseSharedFilter parses an MQTT 5.0 shared subscription filter ($share/{ShareName}/{TopicFilter}).
+// If filter does not start with "$share/", it returns isShared=false and the original filter.
+func ParseSharedFilter(filter string) (shareName string, topicFilter string, isShared bool, err error) {
+	if !strings.HasPrefix(filter, "$share/") {
+		return "", filter, false, nil
+	}
+	if !validMQTTString(filter) {
+		return "", "", true, ErrInvalidTopicFilter
+	}
+	rest := filter[len("$share/"):]
+	slashIdx := strings.IndexByte(rest, '/')
+	if slashIdx < 0 {
+		return "", "", true, ErrInvalidTopicFilter
+	}
+	shareName = rest[:slashIdx]
+	if len(shareName) == 0 || strings.ContainsAny(shareName, "/+#") {
+		return "", "", true, ErrInvalidTopicFilter
+	}
+	topicFilter = rest[slashIdx+1:]
+	if len(topicFilter) == 0 || strings.HasPrefix(topicFilter, "$share/") {
+		return "", "", true, ErrInvalidTopicFilter
+	}
+	if err := validateFilterLevels(topicFilter); err != nil {
+		return "", "", true, err
+	}
+	return shareName, topicFilter, true, nil
 }
 
 // ValidateTopicName validates a concrete publication topic without wildcards.
@@ -114,6 +153,24 @@ func (table *Table) Subscribe(sessionID SessionID, subscription mqtt.Subscriptio
 	if table.subscriptions == nil {
 		table.subscriptions = make(map[SessionID]map[string]mqtt.Subscription)
 	}
+	if table.shared == nil {
+		table.shared = make(map[string]map[SessionID]mqtt.Subscription)
+	}
+	if table.sharedCursors == nil {
+		table.sharedCursors = make(map[string]uint64)
+	}
+
+	if IsSharedFilter(subscription.Filter) {
+		bySession := table.shared[subscription.Filter]
+		if bySession == nil {
+			bySession = make(map[SessionID]mqtt.Subscription)
+			table.shared[subscription.Filter] = bySession
+		}
+		_, replaced = bySession[sessionID]
+		bySession[sessionID] = subscription
+		return replaced, nil
+	}
+
 	byFilter := table.subscriptions[sessionID]
 	if byFilter == nil {
 		byFilter = make(map[string]mqtt.Subscription)
@@ -132,6 +189,20 @@ func (table *Table) Lookup(sessionID SessionID, filter string) (mqtt.Subscriptio
 	}
 	table.mu.RLock()
 	defer table.mu.RUnlock()
+	if IsSharedFilter(filter) {
+		if table.shared == nil {
+			return mqtt.Subscription{}, false
+		}
+		bySession := table.shared[filter]
+		if bySession == nil {
+			return mqtt.Subscription{}, false
+		}
+		subscription, found := bySession[sessionID]
+		return subscription, found
+	}
+	if table.subscriptions == nil {
+		return mqtt.Subscription{}, false
+	}
 	byFilter := table.subscriptions[sessionID]
 	if byFilter == nil {
 		return mqtt.Subscription{}, false
@@ -152,6 +223,30 @@ func (table *Table) Unsubscribe(sessionID SessionID, filter string) (removed boo
 
 	table.mu.Lock()
 	defer table.mu.Unlock()
+	if IsSharedFilter(filter) {
+		if table.shared == nil {
+			return false, nil
+		}
+		bySession := table.shared[filter]
+		if bySession == nil {
+			return false, nil
+		}
+		if _, ok := bySession[sessionID]; !ok {
+			return false, nil
+		}
+		delete(bySession, sessionID)
+		if len(bySession) == 0 {
+			delete(table.shared, filter)
+			if table.sharedCursors != nil {
+				delete(table.sharedCursors, filter)
+			}
+		}
+		return true, nil
+	}
+
+	if table.subscriptions == nil {
+		return false, nil
+	}
 	byFilter := table.subscriptions[sessionID]
 	if byFilter == nil {
 		return false, nil
@@ -175,11 +270,28 @@ func (table *Table) RemoveSession(sessionID SessionID) bool {
 	}
 	table.mu.Lock()
 	defer table.mu.Unlock()
-	if _, exists := table.subscriptions[sessionID]; !exists {
-		return false
+	var removed bool
+	if table.subscriptions != nil {
+		if _, exists := table.subscriptions[sessionID]; exists {
+			delete(table.subscriptions, sessionID)
+			removed = true
+		}
 	}
-	delete(table.subscriptions, sessionID)
-	return true
+	if table.shared != nil {
+		for filter, bySession := range table.shared {
+			if _, exists := bySession[sessionID]; exists {
+				delete(bySession, sessionID)
+				removed = true
+				if len(bySession) == 0 {
+					delete(table.shared, filter)
+					if table.sharedCursors != nil {
+						delete(table.sharedCursors, filter)
+					}
+				}
+			}
+		}
+	}
+	return removed
 }
 
 // Match returns one target per session, ordered by SessionID. Overlapping
@@ -200,8 +312,10 @@ func (table *Table) Match(
 		return nil, ErrInvalidQoS
 	}
 
-	table.mu.RLock()
-	matches := make([]Match, 0, len(table.subscriptions))
+	table.mu.Lock()
+	defer table.mu.Unlock()
+
+	matches := make([]Match, 0, len(table.subscriptions)+len(table.shared))
 	for sessionID, byFilter := range table.subscriptions {
 		var (
 			maxGranted mqtt.QoS
@@ -229,9 +343,51 @@ func (table *Table) Match(
 			matches = append(matches, Match{SessionID: sessionID, QoS: effectiveQoS, Retain: retain})
 		}
 	}
-	table.mu.RUnlock()
 
-	sort.Slice(matches, func(left, right int) bool {
+	if len(table.shared) > 0 {
+		sharedFilters := make([]string, 0, len(table.shared))
+		for f := range table.shared {
+			sharedFilters = append(sharedFilters, f)
+		}
+		sort.Strings(sharedFilters)
+
+		if table.sharedCursors == nil {
+			table.sharedCursors = make(map[string]uint64)
+		}
+
+		for _, sharedFilter := range sharedFilters {
+			members := table.shared[sharedFilter]
+			if len(members) == 0 {
+				continue
+			}
+			_, topicFilter, _, _ := ParseSharedFilter(sharedFilter)
+			if !topicMatchesFilter(topic, topicFilter) {
+				continue
+			}
+
+			candidates := make([]SessionID, 0, len(members))
+			for sID := range members {
+				candidates = append(candidates, sID)
+			}
+			sort.Slice(candidates, func(i, j int) bool {
+				return candidates[i] < candidates[j]
+			})
+
+			cursor := table.sharedCursors[sharedFilter]
+			chosenSession := candidates[cursor%uint64(len(candidates))]
+			table.sharedCursors[sharedFilter]++
+
+			sub := members[chosenSession]
+			effectiveQoS := publishQoS
+			if sub.QoS < effectiveQoS {
+				effectiveQoS = sub.QoS
+			}
+			retain := publishedRetain && sub.RetainAsPublished
+			matches = append(matches, Match{SessionID: chosenSession, QoS: effectiveQoS, Retain: retain})
+		}
+	}
+
+	sort.SliceStable(matches, func(left, right int) bool {
 		return matches[left].SessionID < matches[right].SessionID
 	})
 	return matches, nil
@@ -272,7 +428,12 @@ func TopicMatchesFilter(topic, filter string) (bool, error) {
 	if err := ValidateTopicFilter(filter); err != nil {
 		return false, err
 	}
-	return topicMatchesFilter(topic, filter), nil
+	targetFilter := filter
+	if IsSharedFilter(filter) {
+		_, subFilter, _, _ := ParseSharedFilter(filter)
+		targetFilter = subFilter
+	}
+	return topicMatchesFilter(topic, targetFilter), nil
 }
 func topicMatchesFilter(topic, filter string) bool {
 	if strings.HasPrefix(topic, "$") {

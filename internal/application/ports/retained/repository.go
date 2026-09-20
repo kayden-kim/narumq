@@ -3,6 +3,7 @@ package retained
 
 import (
 	"errors"
+	"time"
 
 	"narumq/internal/domain/mqtt"
 	"narumq/internal/domain/routing"
@@ -22,13 +23,14 @@ type MessageDTO struct {
 	Topic              string
 	Payload            []byte
 	QoS                mqtt.QoS
+	ExpiresAt          time.Time
 }
 
 // Repository stores one retained value per exact topic. List returns values
 // sorted by Topic; every returned payload is independent from repository
 // storage and from every other returned value.
 type Repository interface {
-	Replace(message MessageDTO) error
+	Replace(message MessageDTO, now time.Time) error
 	Delete(topic string) error
-	List() ([]MessageDTO, error)
+	List(now time.Time) ([]MessageDTO, error)
 }

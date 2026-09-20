@@ -53,7 +53,7 @@ func FuzzDecoder(f *testing.F) {
 func FuzzCodecRoundTrip(f *testing.F) {
 	f.Add([]byte{0x10, 0x0D, 0x00, 0x04, 'M', 'Q', 'T', 'T', 0x04, 0x02, 0x00, 0x00, 0x00, 0x01, 'a'}, byte(0))
 	f.Add([]byte{0x20, 0x03, 0x00, 0x00, 0x00}, byte(2))
-	f.Add([]byte{0x30, 0x09, 0x00, 0x01, 'a', 0x00, 'h', 'e', 'l', 'l', 'o'}, byte(2))
+	f.Add([]byte{0x30, 0x0B, 0x00, 0x01, 'a', 0x05, 0x02, 0x00, 0x00, 0x00, 0x0A, 'h', 'i'}, byte(2))
 	f.Add([]byte{0x10, 0x13, 0x00, 0x04, 'M', 'Q', 'T', 'T', 0x05, 0x02, 0x00, 0x00, 0x05, 0x11, 0x00, 0x00, 0x00, 0x01, 0x00, 0x01, 'a'}, byte(0))
 	f.Add([]byte{0x82, 0x07, 0x00, 0x01, 0x00, 0x00, 0x01, 'a', 0x01}, byte(2))
 	f.Add([]byte{0xC0, 0x00}, byte(1))
@@ -126,7 +126,7 @@ func fuzzPacketsEqual(left Packet, right Packet) bool {
 		return ok && *leftValue == *rightValue
 	case *Publish:
 		rightValue, ok := right.(*Publish)
-		return ok && leftValue.Version == rightValue.Version && leftValue.DUP == rightValue.DUP && leftValue.QoS == rightValue.QoS && leftValue.Retain == rightValue.Retain && leftValue.PacketID == rightValue.PacketID && leftValue.Topic == rightValue.Topic && bytes.Equal(leftValue.Payload, rightValue.Payload)
+		return ok && leftValue.Version == rightValue.Version && leftValue.DUP == rightValue.DUP && leftValue.QoS == rightValue.QoS && leftValue.Retain == rightValue.Retain && leftValue.PacketID == rightValue.PacketID && leftValue.Topic == rightValue.Topic && bytes.Equal(leftValue.Payload, rightValue.Payload) && leftValue.HasMessageExpiryInterval == rightValue.HasMessageExpiryInterval && leftValue.MessageExpiryInterval == rightValue.MessageExpiryInterval
 	case *Subscribe:
 		rightValue, ok := right.(*Subscribe)
 		return ok && leftValue.Version == rightValue.Version && leftValue.PacketID == rightValue.PacketID && subscriptionsEqual(leftValue.Subscriptions, rightValue.Subscriptions)

@@ -2,10 +2,12 @@ package integration
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"log/slog"
 	"net"
 	"reflect"
+	"sync"
 	"testing"
 	"time"
 
@@ -15,11 +17,29 @@ import (
 	"narumq/internal/adapters/memory/sessionstore"
 	tcpadapter "narumq/internal/adapters/tcp"
 	"narumq/internal/application/connect"
+	applicationclock "narumq/internal/application/ports/clock"
 	"narumq/internal/application/publish"
 	"narumq/internal/application/subscribe"
 	"narumq/internal/domain/mqtt"
 	"narumq/internal/domain/routing"
 )
+
+type ingressClock struct {
+	mu  sync.Mutex
+	now time.Time
+}
+
+func (clock *ingressClock) Now() time.Time {
+	clock.mu.Lock()
+	defer clock.mu.Unlock()
+	return clock.now
+}
+
+func (clock *ingressClock) Advance(delta time.Duration) {
+	clock.mu.Lock()
+	clock.now = clock.now.Add(delta)
+	clock.mu.Unlock()
+}
 
 type ingressFixture struct {
 	server   *tcpadapter.Server
@@ -38,6 +58,11 @@ func newIngressFixture(t *testing.T) *ingressFixture {
 
 func newIngressFixtureWithRetainedCapacity(t *testing.T, messageCapacity, byteCapacity int) *ingressFixture {
 	t.Helper()
+	return newIngressFixtureWithClock(t, messageCapacity, byteCapacity, clock.SystemClock{})
+}
+
+func newIngressFixtureWithClock(t *testing.T, messageCapacity, byteCapacity int, clockSource applicationclock.Clock) *ingressFixture {
+	t.Helper()
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
@@ -55,7 +80,7 @@ func newIngressFixtureWithRetainedCapacity(t *testing.T, messageCapacity, byteCa
 	}
 	repository := sessionstore.New()
 	willBridge := tcpadapter.NewWillBridge()
-	connections, err := connect.New(clock.SystemClock{}, repository, deliveries, routes, clock.SystemScheduler{}, willBridge)
+	connections, err := connect.New(clockSource, repository, deliveries, routes, clock.SystemScheduler{}, willBridge)
 	if err != nil {
 		listener.Close()
 		t.Fatal(err)
@@ -65,7 +90,7 @@ func newIngressFixtureWithRetainedCapacity(t *testing.T, messageCapacity, byteCa
 		listener.Close()
 		t.Fatal(err)
 	}
-	publications, err := publish.New(routes, deliveries, retainedRepository)
+	publications, err := publish.New(clockSource, routes, deliveries, retainedRepository)
 	if err != nil {
 		listener.Close()
 		t.Fatal(err)
@@ -84,6 +109,7 @@ func newIngressFixtureWithRetainedCapacity(t *testing.T, messageCapacity, byteCa
 		listener,
 		tcpadapter.Config{
 			MaxPacketSize:        1048576,
+			Clock:                clockSource,
 			ConnectTimeout:       time.Second,
 			WriteTimeout:         time.Second,
 			ControlQueueCapacity: 16,
@@ -303,6 +329,101 @@ func TestMQTTIngress(t *testing.T) {
 			t.Fatalf("malformed session = found %v, err %v", found, err)
 		}
 	})
+}
+
+// Traceability: PRD MQTT-04/MQTT-08/TEST-03/TEST-04/TEST-05; docs/specs/mqtt-protocol-and-session.md §4, §5; MQTT-3.3.2-5/6.
+func TestMQTTIngressMessageExpiry(t *testing.T) {
+	testClock := &ingressClock{now: time.Date(2026, time.January, 1, 0, 0, 0, 0, time.UTC)}
+	fixture := newIngressFixtureWithClock(t, 1024, 1<<20, testClock)
+	defer fixture.close(t)
+
+	publisher := fixture.dial(t)
+	defer publisher.Close()
+	writePacket(t, publisher, fixture.encoder, &mqtt.Connect{
+		Version:    mqtt.ProtocolV5,
+		CleanStart: true,
+		ClientID:   "expiry-publisher",
+	})
+	if ack := readPacket(t, publisher, fixture.decoder, mqtt.ProtocolV5).(*mqtt.ConnAck); ack.ReasonCode != 0 {
+		t.Fatalf("publisher CONNACK = %#v", ack)
+	}
+
+	subscriber := fixture.dial(t)
+	defer subscriber.Close()
+	writePacket(t, subscriber, fixture.encoder, &mqtt.Connect{
+		Version:    mqtt.ProtocolV5,
+		CleanStart: true,
+		ClientID:   "expiry-subscriber",
+	})
+	if ack := readPacket(t, subscriber, fixture.decoder, mqtt.ProtocolV5).(*mqtt.ConnAck); ack.ReasonCode != 0 {
+		t.Fatalf("subscriber CONNACK = %#v", ack)
+	}
+
+	writePacket(t, publisher, fixture.encoder, &mqtt.Publish{
+		Version:                  mqtt.ProtocolV5,
+		Topic:                    "expiry/remaining",
+		Payload:                  []byte("remaining"),
+		Retain:                   true,
+		QoS:                      mqtt.QoSAtLeastOnce,
+		PacketID:                 101,
+		HasMessageExpiryInterval: true,
+		MessageExpiryInterval:    10,
+	})
+	if ack := readPacket(t, publisher, fixture.decoder, mqtt.ProtocolV5).(*mqtt.PubAck); ack.PacketID != 101 {
+		t.Fatalf("remaining expiry PUBACK = %#v", ack)
+	}
+	testClock.Advance(3 * time.Second)
+
+	writePacket(t, subscriber, fixture.encoder, &mqtt.Subscribe{
+		Version:       mqtt.ProtocolV5,
+		PacketID:      1,
+		Subscriptions: []mqtt.Subscription{{Filter: "expiry/remaining", QoS: mqtt.QoSAtMostOnce, RetainHandling: mqtt.SendRetainedAtSubscribe}},
+	})
+	if ack := readPacket(t, subscriber, fixture.decoder, mqtt.ProtocolV5).(*mqtt.SubAck); ack.PacketID != 1 {
+		t.Fatalf("remaining expiry SUBACK = %#v", ack)
+	}
+	delivery := readPacket(t, subscriber, fixture.decoder, mqtt.ProtocolV5).(*mqtt.Publish)
+	if delivery.Topic != "expiry/remaining" || string(delivery.Payload) != "remaining" || !delivery.Retain {
+		t.Fatalf("remaining expiry delivery = %#v", delivery)
+	}
+	if !delivery.HasMessageExpiryInterval || delivery.MessageExpiryInterval != 7 {
+		t.Fatalf("remaining expiry interval = %d (present=%v), want 7", delivery.MessageExpiryInterval, delivery.HasMessageExpiryInterval)
+	}
+
+	writePacket(t, publisher, fixture.encoder, &mqtt.Publish{
+		Version:                  mqtt.ProtocolV5,
+		Topic:                    "expiry/deadline",
+		Payload:                  []byte("deadline"),
+		Retain:                   true,
+		QoS:                      mqtt.QoSAtLeastOnce,
+		PacketID:                 102,
+		HasMessageExpiryInterval: true,
+		MessageExpiryInterval:    10,
+	})
+	if ack := readPacket(t, publisher, fixture.decoder, mqtt.ProtocolV5).(*mqtt.PubAck); ack.PacketID != 102 {
+		t.Fatalf("deadline expiry PUBACK = %#v", ack)
+	}
+	testClock.Advance(10 * time.Second)
+
+	deadlineSubscriber := fixture.dial(t)
+	defer deadlineSubscriber.Close()
+	writePacket(t, deadlineSubscriber, fixture.encoder, &mqtt.Connect{
+		Version:    mqtt.ProtocolV5,
+		CleanStart: true,
+		ClientID:   "expiry-deadline-subscriber",
+	})
+	if ack := readPacket(t, deadlineSubscriber, fixture.decoder, mqtt.ProtocolV5).(*mqtt.ConnAck); ack.ReasonCode != 0 {
+		t.Fatalf("deadline subscriber CONNACK = %#v", ack)
+	}
+	writePacket(t, deadlineSubscriber, fixture.encoder, &mqtt.Subscribe{
+		Version:       mqtt.ProtocolV5,
+		PacketID:      2,
+		Subscriptions: []mqtt.Subscription{{Filter: "expiry/deadline", QoS: mqtt.QoSAtMostOnce, RetainHandling: mqtt.SendRetainedAtSubscribe}},
+	})
+	if ack := readPacket(t, deadlineSubscriber, fixture.decoder, mqtt.ProtocolV5).(*mqtt.SubAck); ack.PacketID != 2 {
+		t.Fatalf("deadline expiry SUBACK = %#v", ack)
+	}
+	expectNoPacket(t, deadlineSubscriber)
 }
 
 // Traceability: PRD MQTT-02/TEST-03/TEST-04/TEST-05; docs/specs/mqtt-protocol-and-session.md §3.1, §3.2, §7; MQTT-4.3.2-1, MQTT-4.3.2-2.
@@ -1024,4 +1145,182 @@ func TestMQTTIngressWillMessagesAndSessionExpiry(t *testing.T) {
 		writePacket(t, reconnect, fixture.encoder, &mqtt.Disconnect{Version: mqtt.ProtocolV5})
 		expectClosed(t, reconnect)
 	})
+}
+
+// Traceability: PRD MQTT-07/TEST-03; MQTT-3.8.3-4, MQTT-4.8.2-1, MQTT-4.8.2-2, MQTT-4.8.2-3.
+func TestMQTTIngressSharedSubscription(t *testing.T) {
+	fixture := newIngressFixture(t)
+	defer fixture.close(t)
+
+	// 1. Connect Worker A with $share/workers/tasks/+
+	workerA := fixture.dial(t)
+	defer workerA.Close()
+	writePacket(t, workerA, fixture.encoder, &mqtt.Connect{Version: mqtt.ProtocolV5, CleanStart: true, ClientID: "worker-a"})
+	if ack := readPacket(t, workerA, fixture.decoder, mqtt.ProtocolV5).(*mqtt.ConnAck); ack.ReasonCode != 0 {
+		t.Fatalf("worker-a CONNACK = %#v", ack)
+	}
+	writePacket(t, workerA, fixture.encoder, &mqtt.Subscribe{
+		Version:  mqtt.ProtocolV5,
+		PacketID: 1,
+		Subscriptions: []mqtt.Subscription{{
+			Filter: "$share/workers/tasks/+",
+			QoS:    mqtt.QoSAtLeastOnce,
+		}},
+	})
+	if ack := readPacket(t, workerA, fixture.decoder, mqtt.ProtocolV5).(*mqtt.SubAck); ack.PacketID != 1 || !reflect.DeepEqual(ack.ReasonCodes, []byte{0x01}) {
+		t.Fatalf("worker-a SUBACK = %#v", ack)
+	}
+
+	// 2. Connect Worker B with $share/workers/tasks/+
+	workerB := fixture.dial(t)
+	defer workerB.Close()
+	writePacket(t, workerB, fixture.encoder, &mqtt.Connect{Version: mqtt.ProtocolV5, CleanStart: true, ClientID: "worker-b"})
+	if ack := readPacket(t, workerB, fixture.decoder, mqtt.ProtocolV5).(*mqtt.ConnAck); ack.ReasonCode != 0 {
+		t.Fatalf("worker-b CONNACK = %#v", ack)
+	}
+	writePacket(t, workerB, fixture.encoder, &mqtt.Subscribe{
+		Version:  mqtt.ProtocolV5,
+		PacketID: 1,
+		Subscriptions: []mqtt.Subscription{{
+			Filter: "$share/workers/tasks/+",
+			QoS:    mqtt.QoSAtLeastOnce,
+		}},
+	})
+	if ack := readPacket(t, workerB, fixture.decoder, mqtt.ProtocolV5).(*mqtt.SubAck); ack.PacketID != 1 || !reflect.DeepEqual(ack.ReasonCodes, []byte{0x01}) {
+		t.Fatalf("worker-b SUBACK = %#v", ack)
+	}
+
+	// 3. Connect Auditor with non-shared tasks/+
+	auditor := fixture.dial(t)
+	defer auditor.Close()
+	writePacket(t, auditor, fixture.encoder, &mqtt.Connect{Version: mqtt.ProtocolV5, CleanStart: true, ClientID: "auditor"})
+	if ack := readPacket(t, auditor, fixture.decoder, mqtt.ProtocolV5).(*mqtt.ConnAck); ack.ReasonCode != 0 {
+		t.Fatalf("auditor CONNACK = %#v", ack)
+	}
+	writePacket(t, auditor, fixture.encoder, &mqtt.Subscribe{
+		Version:  mqtt.ProtocolV5,
+		PacketID: 1,
+		Subscriptions: []mqtt.Subscription{{
+			Filter: "tasks/+",
+			QoS:    mqtt.QoSAtLeastOnce,
+		}},
+	})
+	if ack := readPacket(t, auditor, fixture.decoder, mqtt.ProtocolV5).(*mqtt.SubAck); ack.PacketID != 1 || !reflect.DeepEqual(ack.ReasonCodes, []byte{0x01}) {
+		t.Fatalf("auditor SUBACK = %#v", ack)
+	}
+
+	// 4. Connect Publisher
+	publisher := fixture.dial(t)
+	defer publisher.Close()
+	writePacket(t, publisher, fixture.encoder, &mqtt.Connect{Version: mqtt.ProtocolV5, CleanStart: true, ClientID: "publisher"})
+	if ack := readPacket(t, publisher, fixture.decoder, mqtt.ProtocolV5).(*mqtt.ConnAck); ack.ReasonCode != 0 {
+		t.Fatalf("publisher CONNACK = %#v", ack)
+	}
+
+	// 5. Publisher publishes tasks/1, tasks/2, tasks/3, tasks/4 at QoS 1
+	// Auditor must receive all 4 messages.
+	// Worker A and Worker B must receive 2 messages each via round-robin.
+	tasks := []string{"tasks/1", "tasks/2", "tasks/3", "tasks/4"}
+	expectedWorker := []net.Conn{workerA, workerB, workerA, workerB}
+	workerNames := []string{"worker-a", "worker-b", "worker-a", "worker-b"}
+
+	for i, taskTopic := range tasks {
+		pktID := mqtt.PacketIdentifier(i + 1)
+		writePacket(t, publisher, fixture.encoder, &mqtt.Publish{
+			Version:  mqtt.ProtocolV5,
+			Topic:    taskTopic,
+			Payload:  []byte(fmt.Sprintf("payload-%d", pktID)),
+			QoS:      mqtt.QoSAtLeastOnce,
+			PacketID: pktID,
+		})
+
+		// Publisher gets PUBACK
+		if pubAck := readPacket(t, publisher, fixture.decoder, mqtt.ProtocolV5).(*mqtt.PubAck); pubAck.PacketID != pktID {
+			t.Fatalf("publisher PUBACK = %#v, want packet ID %d", pubAck, pktID)
+		}
+
+		// Auditor receives publication
+		auditorPub := readPacket(t, auditor, fixture.decoder, mqtt.ProtocolV5).(*mqtt.Publish)
+		if auditorPub.Topic != taskTopic || string(auditorPub.Payload) != fmt.Sprintf("payload-%d", pktID) {
+			t.Fatalf("auditor publish = %#v, want topic %s", auditorPub, taskTopic)
+		}
+		writePacket(t, auditor, fixture.encoder, &mqtt.PubAck{Version: mqtt.ProtocolV5, PacketID: auditorPub.PacketID})
+
+		// Expected worker receives publication
+		targetWorker := expectedWorker[i]
+		workerPub := readPacket(t, targetWorker, fixture.decoder, mqtt.ProtocolV5).(*mqtt.Publish)
+		if workerPub.Topic != taskTopic || string(workerPub.Payload) != fmt.Sprintf("payload-%d", pktID) {
+			t.Fatalf("%s publish = %#v, want topic %s", workerNames[i], workerPub, taskTopic)
+		}
+		writePacket(t, targetWorker, fixture.encoder, &mqtt.PubAck{Version: mqtt.ProtocolV5, PacketID: workerPub.PacketID})
+	}
+
+	// 6. Test NoLocal on shared subscription rejected with 0x82 Protocol Error (MQTT-3.8.3-4)
+	writePacket(t, publisher, fixture.encoder, &mqtt.Subscribe{
+		Version:  mqtt.ProtocolV5,
+		PacketID: 10,
+		Subscriptions: []mqtt.Subscription{{
+			Filter:  "$share/workers/tasks/+",
+			QoS:     mqtt.QoSAtLeastOnce,
+			NoLocal: true,
+		}},
+	})
+	if ack := readPacket(t, publisher, fixture.decoder, mqtt.ProtocolV5).(*mqtt.SubAck); ack.PacketID != 10 || !reflect.DeepEqual(ack.ReasonCodes, []byte{0x82}) {
+		t.Fatalf("NoLocal shared subscription SUBACK = %#v, want reason 0x82", ack)
+	}
+
+	// 7. Test Retained message suppression for shared subscription (MQTT-4.8.2-1)
+	// Publish retained message to tasks/retained
+	writePacket(t, publisher, fixture.encoder, &mqtt.Publish{
+		Version:  mqtt.ProtocolV5,
+		Topic:    "tasks/retained",
+		Payload:  []byte("retained-content"),
+		QoS:      mqtt.QoSAtLeastOnce,
+		PacketID: 20,
+		Retain:   true,
+	})
+	if pubAck := readPacket(t, publisher, fixture.decoder, mqtt.ProtocolV5).(*mqtt.PubAck); pubAck.PacketID != 20 {
+		t.Fatalf("retained publish PUBACK = %#v", pubAck)
+	}
+	// Auditor gets the live retained delivery
+	auditorRetained := readPacket(t, auditor, fixture.decoder, mqtt.ProtocolV5).(*mqtt.Publish)
+	if auditorRetained.Topic != "tasks/retained" {
+		t.Fatalf("auditor retained = %#v", auditorRetained)
+	}
+	writePacket(t, auditor, fixture.encoder, &mqtt.PubAck{Version: mqtt.ProtocolV5, PacketID: auditorRetained.PacketID})
+	// One of worker-a / worker-b gets the live retained delivery (cursor 4 -> chosen worker-a)
+	workerLive := readPacket(t, workerA, fixture.decoder, mqtt.ProtocolV5).(*mqtt.Publish)
+	if workerLive.Topic != "tasks/retained" {
+		t.Fatalf("worker-a live = %#v", workerLive)
+	}
+	writePacket(t, workerA, fixture.encoder, &mqtt.PubAck{Version: mqtt.ProtocolV5, PacketID: workerLive.PacketID})
+
+	// Now connect a new Worker C and subscribe to $share/workers/tasks/+ with SendRetainedAtSubscribe
+	workerC := fixture.dial(t)
+	defer workerC.Close()
+	writePacket(t, workerC, fixture.encoder, &mqtt.Connect{Version: mqtt.ProtocolV5, CleanStart: true, ClientID: "worker-c"})
+	if ack := readPacket(t, workerC, fixture.decoder, mqtt.ProtocolV5).(*mqtt.ConnAck); ack.ReasonCode != 0 {
+		t.Fatalf("worker-c CONNACK = %#v", ack)
+	}
+	writePacket(t, workerC, fixture.encoder, &mqtt.Subscribe{
+		Version:  mqtt.ProtocolV5,
+		PacketID: 1,
+		Subscriptions: []mqtt.Subscription{{
+			Filter:         "$share/workers/tasks/+",
+			QoS:            mqtt.QoSAtLeastOnce,
+			RetainHandling: mqtt.SendRetainedAtSubscribe,
+		}},
+	})
+	if ack := readPacket(t, workerC, fixture.decoder, mqtt.ProtocolV5).(*mqtt.SubAck); ack.PacketID != 1 || !reflect.DeepEqual(ack.ReasonCodes, []byte{0x01}) {
+		t.Fatalf("worker-c SUBACK = %#v", ack)
+	}
+
+	// Worker C must NOT receive any retained replay
+	expectNoPacket(t, workerC)
+
+	// Clean socket checks
+	expectNoPacket(t, workerA)
+	expectNoPacket(t, workerB)
+	expectNoPacket(t, auditor)
+	expectNoPacket(t, publisher)
 }

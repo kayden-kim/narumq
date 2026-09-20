@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"narumq/internal/application/connect"
+	applicationclock "narumq/internal/application/ports/clock"
 	"narumq/internal/application/ports/deliveryqueue"
 	applicationretained "narumq/internal/application/ports/retained"
 	"narumq/internal/application/publish"
@@ -37,6 +38,8 @@ var (
 	ErrNilPublishUseCase = errors.New("tcp publish use case is nil")
 	// ErrNilDeliveryQueue means that delivery wakeups have no queue source.
 	ErrNilDeliveryQueue = errors.New("tcp delivery queue is nil")
+	// ErrNilClock means that expiry and delivery timestamps have no time source.
+	ErrNilClock = errors.New("tcp clock is nil")
 	// ErrInvalidConfig means that a bounded runtime value is not positive.
 	ErrInvalidConfig = errors.New("tcp server configuration is invalid")
 	// ErrControlQueueFull means that a connection cannot accept another control packet.
@@ -50,6 +53,7 @@ var (
 // Config bounds packet memory, handshake waiting, socket writes and per-connection
 // control output. Delivery queue capacity is owned by the injected queue.
 type Config struct {
+	Clock                  applicationclock.Clock
 	MaxPacketSize          int
 	ConnectTimeout         time.Duration
 	WriteTimeout           time.Duration
@@ -114,6 +118,9 @@ func NewServer(
 	}
 	if deliveries == nil {
 		return nil, ErrNilDeliveryQueue
+	}
+	if config.Clock == nil {
+		return nil, ErrNilClock
 	}
 	if config.MaxPacketSize <= 0 || config.ConnectTimeout <= 0 || config.WriteTimeout <= 0 || config.ControlQueueCapacity <= 0 {
 		return nil, ErrInvalidConfig
@@ -238,7 +245,7 @@ func newConnection(server *Server, socket net.Conn) *connection {
 		stop:             make(chan struct{}),
 		writerDone:       make(chan struct{}),
 		disconnectReason: session.DisconnectAbnormal,
-		inbound:          make(map[mqtt.PacketIdentifier]delivery.Inbound),
+		inbound:          make(map[mqtt.PacketIdentifier]inboundState),
 		outbound:         make(map[mqtt.PacketIdentifier]delivery.Outbound),
 		packetIDs:        newPacketIDAllocator(),
 	}
@@ -324,6 +331,10 @@ type controlMessage struct {
 	done    chan error
 	barrier bool
 }
+type inboundState struct {
+	state      delivery.Inbound
+	receivedAt time.Time
+}
 
 type connection struct {
 	server       *Server
@@ -342,7 +353,7 @@ type connection struct {
 	disconnectReason session.DisconnectReason
 
 	deliveryMu sync.Mutex
-	inbound    map[mqtt.PacketIdentifier]delivery.Inbound
+	inbound    map[mqtt.PacketIdentifier]inboundState
 	outbound   map[mqtt.PacketIdentifier]delivery.Outbound
 	packetIDs  *packetIDAllocator
 }
@@ -523,7 +534,7 @@ func (connection *connection) activate(packet mqtt.Connect) error {
 func (connection *connection) dispatch(packet mqtt.Packet) error {
 	switch value := packet.(type) {
 	case *mqtt.Subscribe:
-		result, err := connection.server.subscriptions.Subscribe(connection.sessionID, *value)
+		result, err := connection.server.subscriptions.Subscribe(connection.sessionID, *value, connection.server.config.Clock.Now())
 		if err != nil {
 			return err
 		}
@@ -573,7 +584,7 @@ func (connection *connection) dispatch(packet mqtt.Packet) error {
 
 func (connection *connection) dispatchPublish(packet mqtt.Publish) error {
 	if packet.QoS == mqtt.QoSAtMostOnce {
-		result, err := connection.server.publications.Publish(connection.sessionID, packet)
+		result, err := connection.server.publications.Publish(connection.sessionID, packet, connection.server.config.Clock.Now())
 		if err != nil {
 			if errors.Is(err, applicationretained.ErrFull) {
 				if connection.version == mqtt.ProtocolV5 {
@@ -600,14 +611,16 @@ func (connection *connection) dispatchPublish(packet mqtt.Publish) error {
 		if packet.PacketID == 0 {
 			return ErrProtocol
 		}
+		receivedAt := connection.server.config.Clock.Now()
 		connection.deliveryMu.Lock()
 		if existing, exists := connection.inbound[packet.PacketID]; exists {
-			nextState, action, err := existing.Receive(&packet)
+			nextState, action, err := existing.state.Receive(&packet)
 			if err != nil {
 				connection.deliveryMu.Unlock()
 				return ErrProtocol
 			}
-			connection.inbound[packet.PacketID] = nextState
+			existing.state = nextState
+			connection.inbound[packet.PacketID] = existing
 			connection.deliveryMu.Unlock()
 			if action.Send != nil {
 				return connection.enqueueControl(action.Send)
@@ -621,7 +634,7 @@ func (connection *connection) dispatchPublish(packet mqtt.Publish) error {
 			return ErrProtocol
 		}
 
-		result, err := connection.server.publications.Publish(connection.sessionID, *action.Deliver)
+		result, err := connection.server.publications.Publish(connection.sessionID, *action.Deliver, receivedAt)
 		if err != nil {
 			connection.deliveryMu.Unlock()
 			if errors.Is(err, applicationretained.ErrFull) {
@@ -644,7 +657,7 @@ func (connection *connection) dispatchPublish(packet mqtt.Publish) error {
 			connection.deliveryMu.Unlock()
 			return ErrProtocol
 		}
-		connection.inbound[packet.PacketID] = acceptedState
+		connection.inbound[packet.PacketID] = inboundState{state: acceptedState, receivedAt: receivedAt}
 		connection.deliveryMu.Unlock()
 
 		if ackAction.Send != nil {
@@ -665,14 +678,16 @@ func (connection *connection) dispatchPublish(packet mqtt.Publish) error {
 		if packet.PacketID == 0 {
 			return ErrProtocol
 		}
+		receivedAt := connection.server.config.Clock.Now()
 		connection.deliveryMu.Lock()
 		if existing, exists := connection.inbound[packet.PacketID]; exists {
-			nextState, action, err := existing.Receive(&packet)
+			nextState, action, err := existing.state.Receive(&packet)
 			if err != nil {
 				connection.deliveryMu.Unlock()
 				return ErrProtocol
 			}
-			connection.inbound[packet.PacketID] = nextState
+			existing.state = nextState
+			connection.inbound[packet.PacketID] = existing
 			connection.deliveryMu.Unlock()
 			if action.Send != nil {
 				return connection.enqueueControl(action.Send)
@@ -690,7 +705,7 @@ func (connection *connection) dispatchPublish(packet mqtt.Publish) error {
 			connection.deliveryMu.Unlock()
 			return ErrProtocol
 		}
-		connection.inbound[packet.PacketID] = acceptedState
+		connection.inbound[packet.PacketID] = inboundState{state: acceptedState, receivedAt: receivedAt}
 		connection.deliveryMu.Unlock()
 
 		if recAction.Send != nil {
@@ -707,7 +722,7 @@ func (connection *connection) dispatchPubRel(packet *mqtt.PubRel) error {
 		return ErrProtocol
 	}
 	connection.deliveryMu.Lock()
-	state, exists := connection.inbound[packet.PacketID]
+	entry, exists := connection.inbound[packet.PacketID]
 	if !exists {
 		connection.deliveryMu.Unlock()
 		if connection.version == mqtt.ProtocolV5 {
@@ -723,14 +738,14 @@ func (connection *connection) dispatchPubRel(packet *mqtt.PubRel) error {
 		})
 	}
 
-	nextState, action, err := state.Receive(packet)
+	nextState, action, err := entry.state.Receive(packet)
 	if err != nil {
 		connection.deliveryMu.Unlock()
 		return ErrProtocol
 	}
 
 	if action.Deliver != nil {
-		result, err := connection.server.publications.Publish(connection.sessionID, *action.Deliver)
+		result, err := connection.server.publications.Publish(connection.sessionID, *action.Deliver, entry.receivedAt)
 		if err != nil {
 			connection.deliveryMu.Unlock()
 			if errors.Is(err, applicationretained.ErrFull) {
@@ -750,7 +765,7 @@ func (connection *connection) dispatchPubRel(packet *mqtt.PubRel) error {
 			connection.deliveryMu.Unlock()
 			return ErrProtocol
 		}
-		connection.inbound[packet.PacketID] = acceptedState
+		connection.inbound[packet.PacketID] = inboundState{state: acceptedState, receivedAt: entry.receivedAt}
 		connection.deliveryMu.Unlock()
 
 		if compAction.Send != nil {
@@ -767,7 +782,7 @@ func (connection *connection) dispatchPubRel(packet *mqtt.PubRel) error {
 		return nil
 	}
 
-	connection.inbound[packet.PacketID] = nextState
+	connection.inbound[packet.PacketID] = inboundState{state: nextState, receivedAt: entry.receivedAt}
 	connection.deliveryMu.Unlock()
 	if action.Send != nil {
 		return connection.enqueueControl(action.Send)
@@ -1020,7 +1035,8 @@ func (connection *connection) failQueuedControls() {
 }
 
 func (connection *connection) writeDeliveries() error {
-	items, err := connection.server.deliveries.Drain(connection.sessionID)
+	now := connection.server.config.Clock.Now()
+	items, err := connection.server.deliveries.Drain(connection.sessionID, now)
 	if err != nil {
 		if connection.isStopping() {
 			return nil
@@ -1028,13 +1044,20 @@ func (connection *connection) writeDeliveries() error {
 		return err
 	}
 	for idx, item := range items {
+		now = connection.server.config.Clock.Now()
+		if item.Expired(now) {
+			continue
+		}
+		remainingExpiryInterval, hasExpiry := item.RemainingExpiryInterval(now)
 		if item.QoS == mqtt.QoSAtMostOnce {
 			packet := mqtt.Publish{
-				Version: connection.version,
-				Topic:   item.Topic,
-				Payload: item.Payload,
-				Retain:  item.Retain,
-				QoS:     mqtt.QoSAtMostOnce,
+				Version:                  connection.version,
+				Topic:                    item.Topic,
+				Payload:                  item.Payload,
+				Retain:                   item.Retain,
+				QoS:                      mqtt.QoSAtMostOnce,
+				HasMessageExpiryInterval: connection.version == mqtt.ProtocolV5 && hasExpiry,
+				MessageExpiryInterval:    remainingExpiryInterval,
 			}
 			if err := connection.writePacket(&packet); err != nil {
 				return err
@@ -1050,19 +1073,22 @@ func (connection *connection) writeDeliveries() error {
 		packetID, err := connection.packetIDs.acquire()
 		if err != nil {
 			connection.deliveryMu.Unlock()
+			requeueNow := connection.server.config.Clock.Now()
 			for i := idx; i < len(items); i++ {
-				_ = connection.server.deliveries.TryEnqueue(items[i])
+				_ = connection.server.deliveries.TryEnqueue(items[i], requeueNow)
 			}
 			return nil
 		}
 
 		publish := mqtt.Publish{
-			Version:  connection.version,
-			Topic:    item.Topic,
-			Payload:  item.Payload,
-			Retain:   item.Retain,
-			QoS:      item.QoS,
-			PacketID: packetID,
+			Version:                  connection.version,
+			Topic:                    item.Topic,
+			Payload:                  item.Payload,
+			Retain:                   item.Retain,
+			QoS:                      item.QoS,
+			PacketID:                 packetID,
+			HasMessageExpiryInterval: connection.version == mqtt.ProtocolV5 && hasExpiry,
+			MessageExpiryInterval:    remainingExpiryInterval,
 		}
 		outbound, action, err := delivery.NewOutbound(publish)
 		if err != nil {
@@ -1113,7 +1139,7 @@ func (server *Server) PublishWill(sessionID routing.SessionID, will mqtt.Will) e
 		Topic:   will.Topic,
 		Payload: will.Payload,
 	}
-	result, err := server.publications.Publish(sessionID, publishPacket)
+	result, err := server.publications.Publish(sessionID, publishPacket, server.config.Clock.Now())
 	if err != nil {
 		return err
 	}

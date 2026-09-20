@@ -615,6 +615,96 @@
       ]
     },
     {
+      "id": "MQTT-3.3.2-5",
+      "requirementIds": [
+        "MQTT-01",
+        "MQTT-04",
+        "MQTT-08",
+        "MQTT-11",
+        "MQTT-12",
+        "TEST-03",
+        "TEST-04",
+        "TEST-05"
+      ],
+      "tests": [
+        {
+          "name": "TestQueueExpiryPurgesAtDeadlineAndRoundsRemainingInterval",
+          "package": "narumq/internal/adapters/memory/deliveryqueue"
+        },
+        {
+          "name": "TestRetainedRepositoryExpiryPurgesBytesBeforeReplace",
+          "package": "narumq/internal/adapters/memory/retained"
+        },
+        {
+          "name": "TestQoS2MessageExpiryUsesOriginalReceiveTimestamp",
+          "package": "narumq/internal/adapters/tcp"
+        },
+        {
+          "name": "TestPublishStoresOneAbsoluteExpiryDeadlineAndAcceptsExpiredPublication",
+          "package": "narumq/internal/application/publish"
+        },
+        {
+          "name": "TestSubscribeReplayPreservesRetainedExpiryDeadline",
+          "package": "narumq/internal/application/subscribe"
+        },
+        {
+          "name": "TestPublishMessageExpiryPropertyRejectsInvalidSections",
+          "package": "narumq/internal/domain/mqtt"
+        },
+        {
+          "name": "TestPublishMessageExpiryProperty_MQTT5",
+          "package": "narumq/internal/domain/mqtt"
+        },
+        {
+          "name": "TestMQTTIngressMessageExpiry",
+          "package": "narumq/tests/integration"
+        }
+      ]
+    },
+    {
+      "id": "MQTT-3.3.2-6",
+      "requirementIds": [
+        "MQTT-01",
+        "MQTT-04",
+        "MQTT-08",
+        "MQTT-11",
+        "MQTT-12",
+        "TEST-03",
+        "TEST-04",
+        "TEST-05"
+      ],
+      "tests": [
+        {
+          "name": "TestQueueExpiryPurgesAtDeadlineAndRoundsRemainingInterval",
+          "package": "narumq/internal/adapters/memory/deliveryqueue"
+        },
+        {
+          "name": "TestQoS2MessageExpiryUsesOriginalReceiveTimestamp",
+          "package": "narumq/internal/adapters/tcp"
+        },
+        {
+          "name": "TestDeliveryDTOExpiryContract",
+          "package": "narumq/internal/application/ports/deliveryqueue"
+        },
+        {
+          "name": "TestPublishStoresOneAbsoluteExpiryDeadlineAndAcceptsExpiredPublication",
+          "package": "narumq/internal/application/publish"
+        },
+        {
+          "name": "TestSubscribeReplayPreservesRetainedExpiryDeadline",
+          "package": "narumq/internal/application/subscribe"
+        },
+        {
+          "name": "TestPublishMessageExpiryProperty_MQTT5",
+          "package": "narumq/internal/domain/mqtt"
+        },
+        {
+          "name": "TestMQTTIngressMessageExpiry",
+          "package": "narumq/tests/integration"
+        }
+      ]
+    },
+    {
       "id": "MQTT-3.4.2-1",
       "requirementIds": [
         "MQTT-02",
@@ -763,6 +853,23 @@
         },
         {
           "name": "TestMQTTIngressRetainedMessageAndSubscriptionOptions",
+          "package": "narumq/tests/integration"
+        }
+      ]
+    },
+    {
+      "id": "MQTT-3.8.3-4",
+      "requirementIds": [
+        "MQTT-07",
+        "TEST-03"
+      ],
+      "tests": [
+        {
+          "name": "TestSubscribeSharedSubscriptionRejectsNoLocal",
+          "package": "narumq/internal/application/subscribe"
+        },
+        {
+          "name": "TestMQTTIngressSharedSubscription",
           "package": "narumq/tests/integration"
         }
       ]
@@ -1056,6 +1163,81 @@
         {
           "name": "TestWildcardMatchBoundariesAndSystemTopics",
           "package": "narumq/internal/domain/routing"
+        }
+      ]
+    },
+    {
+      "id": "MQTT-4.8.2-1",
+      "requirementIds": [
+        "MQTT-07",
+        "TEST-03"
+      ],
+      "tests": [
+        {
+          "name": "TestSubscribeMQTT311AcceptsSharedSubscription",
+          "package": "narumq/internal/application/subscribe"
+        },
+        {
+          "name": "TestSubscribeSharedSubscriptionSuppressesRetainedReplay",
+          "package": "narumq/internal/application/subscribe"
+        },
+        {
+          "name": "TestParseSharedFilter",
+          "package": "narumq/internal/domain/routing"
+        },
+        {
+          "name": "TestSharedSubscriptionUnsubscribeAndSessionRemoval",
+          "package": "narumq/internal/domain/routing"
+        },
+        {
+          "name": "TestMQTTIngressSharedSubscription",
+          "package": "narumq/tests/integration"
+        }
+      ]
+    },
+    {
+      "id": "MQTT-4.8.2-2",
+      "requirementIds": [
+        "MQTT-07",
+        "TEST-03"
+      ],
+      "tests": [
+        {
+          "name": "TestParseSharedFilter",
+          "package": "narumq/internal/domain/routing"
+        },
+        {
+          "name": "TestMQTTIngressSharedSubscription",
+          "package": "narumq/tests/integration"
+        }
+      ]
+    },
+    {
+      "id": "MQTT-4.8.2-3",
+      "requirementIds": [
+        "MQTT-07",
+        "TEST-03"
+      ],
+      "tests": [
+        {
+          "name": "TestSharedSubscriptionMultipleGroups",
+          "package": "narumq/internal/domain/routing"
+        },
+        {
+          "name": "TestSharedSubscriptionRoundRobin",
+          "package": "narumq/internal/domain/routing"
+        },
+        {
+          "name": "TestSharedSubscriptionUnsubscribeAndSessionRemoval",
+          "package": "narumq/internal/domain/routing"
+        },
+        {
+          "name": "TestSharedSubscriptionWithNonShared",
+          "package": "narumq/internal/domain/routing"
+        },
+        {
+          "name": "TestMQTTIngressSharedSubscription",
+          "package": "narumq/tests/integration"
         }
       ]
     }

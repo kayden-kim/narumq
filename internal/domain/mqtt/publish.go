@@ -18,6 +18,10 @@ type Publish struct {
 	Topic string
 	// Payload is the binary application payload.
 	Payload []byte
+	// HasMessageExpiryInterval distinguishes an absent property from zero.
+	HasMessageExpiryInterval bool
+	// MessageExpiryInterval is the MQTT 5 lifetime in seconds.
+	MessageExpiryInterval uint32
 }
 
 func (p Publish) packetType() PacketType {
@@ -46,19 +50,46 @@ func decodePublish(body []byte, version ProtocolVersion, flags byte) (Packet, er
 			return nil, ErrMalformedPacket
 		}
 	}
+	var (
+		hasMessageExpiryInterval bool
+		messageExpiryInterval    uint32
+	)
 	if version == ProtocolV5 {
-		if err := skipProperties(body, &position); err != nil {
-			return nil, err
+		propertyLength, consumed, err := decodeVariableByteInteger(body[position:])
+		if err != nil {
+			return nil, ErrMalformedPacket
+		}
+		position += consumed
+		if propertyLength > len(body)-position {
+			return nil, ErrMalformedPacket
+		}
+		propertyEnd := position + propertyLength
+		for position < propertyEnd {
+			propertyIdentifier := body[position]
+			position++
+			switch propertyIdentifier {
+			case 0x02:
+				if hasMessageExpiryInterval || propertyEnd-position < 4 {
+					return nil, ErrMalformedPacket
+				}
+				messageExpiryInterval = binary.BigEndian.Uint32(body[position : position+4])
+				position += 4
+				hasMessageExpiryInterval = true
+			default:
+				return nil, ErrUnsupportedProperty
+			}
 		}
 	}
 	return &Publish{
-		Version:  version,
-		DUP:      flags&0x08 != 0,
-		QoS:      qos,
-		Retain:   flags&0x01 != 0,
-		PacketID: packetID,
-		Topic:    topic,
-		Payload:  cloneBytes(body[position:]),
+		Version:                  version,
+		DUP:                      flags&0x08 != 0,
+		QoS:                      qos,
+		Retain:                   flags&0x01 != 0,
+		PacketID:                 packetID,
+		Topic:                    topic,
+		Payload:                  cloneBytes(body[position:]),
+		HasMessageExpiryInterval: hasMessageExpiryInterval,
+		MessageExpiryInterval:    messageExpiryInterval,
 	}, nil
 }
 
@@ -79,12 +110,18 @@ func encodePublish(publish Publish, maxPacketSize int) ([]byte, error) {
 	if !validMQTTTopicName(publish.Topic) || len(publish.Topic) > 65535 {
 		return nil, ErrMalformedPacket
 	}
+	if publish.Version == ProtocolV311 && publish.HasMessageExpiryInterval {
+		return nil, ErrMalformedPacket
+	}
 	bodySize := 2 + len(publish.Topic) + len(publish.Payload)
 	if publish.QoS != QoSAtMostOnce {
 		bodySize += 2
 	}
 	if publish.Version == ProtocolV5 {
 		bodySize++
+		if publish.HasMessageExpiryInterval {
+			bodySize += 5
+		}
 	}
 	if bodySize > maxPacketSize {
 		return nil, ErrPacketTooLarge
@@ -97,7 +134,14 @@ func encodePublish(publish Publish, maxPacketSize int) ([]byte, error) {
 		body = append(body, packetID[:]...)
 	}
 	if publish.Version == ProtocolV5 {
-		body = append(body, 0)
+		if !publish.HasMessageExpiryInterval {
+			body = append(body, 0)
+		} else {
+			body = append(body, 5, 0x02)
+			var interval [4]byte
+			binary.BigEndian.PutUint32(interval[:], publish.MessageExpiryInterval)
+			body = append(body, interval[:]...)
+		}
 	}
 	body = append(body, publish.Payload...)
 	return body, nil

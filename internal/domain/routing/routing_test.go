@@ -20,7 +20,12 @@ func TestValidateTopicFiltersAndNames(t *testing.T) {
 		{name: "embedded-plus", filter: "sensors/te+mp", wantErr: ErrInvalidTopicFilter},
 		{name: "embedded-hash", filter: "sensors/te#mp", wantErr: ErrInvalidTopicFilter},
 		{name: "hash-not-last", filter: "sensors/#/temp", wantErr: ErrInvalidTopicFilter},
-		{name: "shared", filter: "$share/group/sensors/#", wantErr: ErrSharedSubscriptionUnsupported},
+		{name: "shared-valid", filter: "$share/group/sensors/#", wantErr: nil},
+		{name: "shared-invalid-empty-sharename", filter: "$share//sensors/#", wantErr: ErrInvalidTopicFilter},
+		{name: "shared-invalid-sharename-plus", filter: "$share/gro+up/sensors/#", wantErr: ErrInvalidTopicFilter},
+		{name: "shared-invalid-sharename-hash", filter: "$share/gro#up/sensors/#", wantErr: ErrInvalidTopicFilter},
+		{name: "shared-invalid-nested", filter: "$share/group/$share/g2/sensors", wantErr: ErrInvalidTopicFilter},
+		{name: "shared-invalid-empty-filter", filter: "$share/group/", wantErr: ErrInvalidTopicFilter},
 		{name: "nul", filter: "sensors/\x00", wantErr: ErrInvalidTopicFilter},
 		{name: "valid-empty-level", filter: "sensors//temp", wantErr: nil},
 		{name: "valid-wildcards", filter: "sensors/+/temp/#", wantErr: nil},
@@ -198,7 +203,7 @@ func TestRoutingValidationErrors(t *testing.T) {
 			return err
 		}, want: ErrInvalidQoS},
 		{name: "invalid-publish-qos", call: func() error { _, err := table.Match("publisher", "a", mqtt.QoS(3), false); return err }, want: ErrInvalidQoS},
-		{name: "shared-unsubscribe", call: func() error { _, err := table.Unsubscribe("client", "$share/g/a"); return err }, want: ErrSharedSubscriptionUnsupported},
+		{name: "invalid-shared-unsubscribe", call: func() error { _, err := table.Unsubscribe("client", "$share//a"); return err }, want: ErrInvalidTopicFilter},
 		{name: "invalid-session-unsubscribe", call: func() error { _, err := table.Unsubscribe("", "a"); return err }, want: ErrInvalidSessionID},
 	}
 	for _, testCase := range cases {
@@ -259,8 +264,8 @@ func TestRoutingRejectsInvalidOperationsAtBoundaries(t *testing.T) {
 			t.Fatalf("Unsubscribe(%q) error = %v, want ErrInvalidSessionID", sessionID, err)
 		}
 	}
-	if _, err := table.Subscribe("session", mqtt.Subscription{Filter: "$share/group/topic", QoS: mqtt.QoSAtMostOnce}); !errors.Is(err, ErrSharedSubscriptionUnsupported) {
-		t.Fatalf("shared Subscribe() error = %v, want ErrSharedSubscriptionUnsupported", err)
+	if _, err := table.Subscribe("session", mqtt.Subscription{Filter: "$share//topic", QoS: mqtt.QoSAtMostOnce}); !errors.Is(err, ErrInvalidTopicFilter) {
+		t.Fatalf("shared Subscribe() error = %v, want ErrInvalidTopicFilter", err)
 	}
 	if _, err := table.Subscribe("session", mqtt.Subscription{Filter: "topic/#/tail", QoS: mqtt.QoSAtMostOnce}); !errors.Is(err, ErrInvalidTopicFilter) {
 		t.Fatalf("invalid wildcard Subscribe() error = %v, want ErrInvalidTopicFilter", err)
@@ -398,8 +403,30 @@ func TestRoutingCoversBoundaryValidationBranches(t *testing.T) {
 	if _, found := table.Lookup("session", "bad/#/filter"); found {
 		t.Fatal("Lookup() found invalid filter")
 	}
+	if _, found := table.Lookup("session", "$share/g/topic"); found {
+		t.Fatal("Lookup() found on nil shared map")
+	}
+	if _, found := table.Lookup("session", "topic"); found {
+		t.Fatal("Lookup() found on nil subscriptions map")
+	}
+	if removed, err := table.Unsubscribe("session", "$share/g/topic"); err != nil || removed {
+		t.Fatalf("Unsubscribe() on nil shared map = (%t, %v)", removed, err)
+	}
 	if _, err := table.Unsubscribe("session", "topic"); err != nil {
 		t.Fatalf("Unsubscribe() on nil map error = %v", err)
+	}
+	matched, err := TopicMatchesFilter("sensors/temp", "$share/group/sensors/temp")
+	if err != nil || !matched {
+		t.Fatalf("TopicMatchesFilter on shared filter = (%t, %v), want (true, nil)", matched, err)
+	}
+	tableWithNilGroup := &Table{
+		shared: map[string]map[SessionID]mqtt.Subscription{
+			"$share/g/empty": nil,
+		},
+	}
+	matches, err := tableWithNilGroup.Match("pub", "empty", mqtt.QoSAtMostOnce, false)
+	if err != nil || len(matches) != 0 {
+		t.Fatalf("Match() on nil shared members = (%#v, %v), want empty", matches, err)
 	}
 	if _, err := table.Subscribe("session", mqtt.Subscription{Filter: "topic", RetainHandling: mqtt.RetainHandling(3)}); !errors.Is(err, ErrInvalidRetainHandling) {
 		t.Fatalf("invalid Retain Handling error = %v, want %v", err, ErrInvalidRetainHandling)
@@ -420,5 +447,171 @@ func TestRoutingCoversBoundaryValidationBranches(t *testing.T) {
 		if !errors.Is(ValidateTopicFilter(value), ErrInvalidTopicFilter) {
 			t.Fatalf("noncharacter filter %U was accepted", []rune(value)[0])
 		}
+	}
+}
+
+// Traceability: PRD MQTT-07/TEST-03; MQTT-4.8.2-1 and MQTT-4.8.2-2.
+func TestParseSharedFilter(t *testing.T) {
+	cases := []struct {
+		name       string
+		filter     string
+		wantShare  string
+		wantTopic  string
+		wantShared bool
+		wantErr    error
+	}{
+		{name: "non-shared-simple", filter: "sensors/temperature", wantShare: "", wantTopic: "sensors/temperature", wantShared: false, wantErr: nil},
+		{name: "non-shared-wildcard", filter: "sensors/+/room/#", wantShare: "", wantTopic: "sensors/+/room/#", wantShared: false, wantErr: nil},
+		{name: "shared-simple", filter: "$share/group1/sensors/temperature", wantShare: "group1", wantTopic: "sensors/temperature", wantShared: true, wantErr: nil},
+		{name: "shared-wildcard", filter: "$share/g2/sensors/+/temp/#", wantShare: "g2", wantTopic: "sensors/+/temp/#", wantShared: true, wantErr: nil},
+		{name: "no-slash", filter: "$share/group", wantShare: "", wantTopic: "", wantShared: true, wantErr: ErrInvalidTopicFilter},
+		{name: "empty-share-name", filter: "$share//topic", wantShare: "", wantTopic: "", wantShared: true, wantErr: ErrInvalidTopicFilter},
+		{name: "share-name-plus", filter: "$share/g+/topic", wantShare: "", wantTopic: "", wantShared: true, wantErr: ErrInvalidTopicFilter},
+		{name: "share-name-hash", filter: "$share/g#/topic", wantShare: "", wantTopic: "", wantShared: true, wantErr: ErrInvalidTopicFilter},
+		{name: "empty-topic-filter", filter: "$share/group/", wantShare: "", wantTopic: "", wantShared: true, wantErr: ErrInvalidTopicFilter},
+		{name: "nested-shared", filter: "$share/g1/$share/g2/topic", wantShare: "", wantTopic: "", wantShared: true, wantErr: ErrInvalidTopicFilter},
+		{name: "topic-filter-bad-wildcard", filter: "$share/g1/sensors/#/room", wantShare: "", wantTopic: "", wantShared: true, wantErr: ErrInvalidTopicFilter},
+		{name: "topic-filter-embedded-plus", filter: "$share/g1/sensors/te+mp", wantShare: "", wantTopic: "", wantShared: true, wantErr: ErrInvalidTopicFilter},
+		{name: "invalid-utf8", filter: "$share/g1/sensors/\x00", wantShare: "", wantTopic: "", wantShared: true, wantErr: ErrInvalidTopicFilter},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			share, topic, isShared, err := ParseSharedFilter(tc.filter)
+			if !errors.Is(err, tc.wantErr) {
+				t.Fatalf("ParseSharedFilter(%q) error = %v, want %v", tc.filter, err, tc.wantErr)
+			}
+			if share != tc.wantShare || topic != tc.wantTopic || isShared != tc.wantShared {
+				t.Fatalf("ParseSharedFilter(%q) = (%q, %q, %t), want (%q, %q, %t)", tc.filter, share, topic, isShared, tc.wantShare, tc.wantTopic, tc.wantShared)
+			}
+		})
+	}
+}
+
+// Traceability: PRD MQTT-07/TEST-03; MQTT-4.8.2-3.
+func TestSharedSubscriptionRoundRobin(t *testing.T) {
+	table := NewTable()
+	sessions := []SessionID{"worker-1", "worker-2", "worker-3"}
+	filter := "$share/workers/tasks/+"
+	for _, sID := range sessions {
+		if _, err := table.Subscribe(sID, mqtt.Subscription{Filter: filter, QoS: mqtt.QoSAtLeastOnce}); err != nil {
+			t.Fatalf("Subscribe(%q) error = %v", sID, err)
+		}
+	}
+
+	// 5 publications to "tasks/item" should distribute 1-2-3-1-2 across worker-1, worker-2, worker-3
+	expectedOrder := []SessionID{"worker-1", "worker-2", "worker-3", "worker-1", "worker-2"}
+	for i, wantSession := range expectedOrder {
+		matches, err := table.Match("publisher", "tasks/item", mqtt.QoSAtLeastOnce, false)
+		if err != nil {
+			t.Fatalf("Match() iter %d error = %v", i, err)
+		}
+		if len(matches) != 1 {
+			t.Fatalf("Match() iter %d returned %d matches, want 1", i, len(matches))
+		}
+		if matches[0].SessionID != wantSession {
+			t.Fatalf("Match() iter %d session = %q, want %q", i, matches[0].SessionID, wantSession)
+		}
+		if matches[0].QoS != mqtt.QoSAtLeastOnce {
+			t.Fatalf("Match() iter %d QoS = %d, want %d", i, matches[0].QoS, mqtt.QoSAtLeastOnce)
+		}
+	}
+}
+
+// Traceability: PRD MQTT-07/TEST-03; MQTT-4.8.2-3.
+func TestSharedSubscriptionMultipleGroups(t *testing.T) {
+	table := NewTable()
+	if _, err := table.Subscribe("group1-worker", mqtt.Subscription{Filter: "$share/group1/events/#", QoS: mqtt.QoSExactlyOnce}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := table.Subscribe("group2-worker", mqtt.Subscription{Filter: "$share/group2/events/#", QoS: mqtt.QoSAtMostOnce}); err != nil {
+		t.Fatal(err)
+	}
+
+	matches, err := table.Match("publisher", "events/user/login", mqtt.QoSExactlyOnce, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(matches) != 2 {
+		t.Fatalf("len(matches) = %d, want 2 (one per group)", len(matches))
+	}
+	if matches[0].SessionID != "group1-worker" || matches[0].QoS != mqtt.QoSExactlyOnce {
+		t.Fatalf("group1 match = %#v", matches[0])
+	}
+	if matches[1].SessionID != "group2-worker" || matches[1].QoS != mqtt.QoSAtMostOnce {
+		t.Fatalf("group2 match = %#v", matches[1])
+	}
+}
+
+// Traceability: PRD MQTT-07/TEST-03; MQTT-4.8.2-3.
+func TestSharedSubscriptionWithNonShared(t *testing.T) {
+	table := NewTable()
+	const sessionID = SessionID("multi-client")
+	if _, err := table.Subscribe(sessionID, mqtt.Subscription{Filter: "sensors/+", QoS: mqtt.QoSAtMostOnce}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := table.Subscribe(sessionID, mqtt.Subscription{Filter: "$share/group/sensors/+", QoS: mqtt.QoSExactlyOnce}); err != nil {
+		t.Fatal(err)
+	}
+
+	matches, err := table.Match("publisher", "sensors/temperature", mqtt.QoSExactlyOnce, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(matches) != 2 {
+		t.Fatalf("len(matches) = %d, want 2 (one non-shared, one shared)", len(matches))
+	}
+	if matches[0].SessionID != sessionID || matches[1].SessionID != sessionID {
+		t.Fatalf("matches = %#v, want both for %q", matches, sessionID)
+	}
+	q0Found := matches[0].QoS == mqtt.QoSAtMostOnce || matches[1].QoS == mqtt.QoSAtMostOnce
+	q2Found := matches[0].QoS == mqtt.QoSExactlyOnce || matches[1].QoS == mqtt.QoSExactlyOnce
+	if !q0Found || !q2Found {
+		t.Fatalf("matches QoS = [%d, %d], want 0 and 2", matches[0].QoS, matches[1].QoS)
+	}
+}
+
+// Traceability: PRD MQTT-07/TEST-03; MQTT-4.8.2-1 and MQTT-4.8.2-3.
+func TestSharedSubscriptionUnsubscribeAndSessionRemoval(t *testing.T) {
+	table := NewTable()
+	filter := "$share/group/jobs"
+	if _, err := table.Subscribe("worker-a", mqtt.Subscription{Filter: filter, QoS: mqtt.QoSAtLeastOnce}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := table.Subscribe("worker-b", mqtt.Subscription{Filter: filter, QoS: mqtt.QoSAtLeastOnce}); err != nil {
+		t.Fatal(err)
+	}
+	// Unsubscribe an absent session from existing shared filter
+	removedAbsent, err := table.Unsubscribe("absent-worker", filter)
+	if err != nil || removedAbsent {
+		t.Fatalf("Unsubscribe(absent) = (%t, %v), want (false, nil)", removedAbsent, err)
+	}
+
+	removed, err := table.Unsubscribe("worker-a", filter)
+	if err != nil || !removed {
+		t.Fatalf("Unsubscribe(worker-a) = (%t, %v), want (true, nil)", removed, err)
+	}
+
+	// Unsubscribe the last member (worker-b) so group is deleted
+	removedLast, err := table.Unsubscribe("worker-b", filter)
+	if err != nil || !removedLast {
+		t.Fatalf("Unsubscribe(worker-b) = (%t, %v), want (true, nil)", removedLast, err)
+	}
+
+	// Subscribe worker-c and test RemoveSession cleanup
+	if _, err := table.Subscribe("worker-c", mqtt.Subscription{Filter: filter, QoS: mqtt.QoSAtLeastOnce}); err != nil {
+		t.Fatal(err)
+	}
+	if !table.RemoveSession("worker-c") {
+		t.Fatal("RemoveSession(worker-c) = false, want true")
+	}
+
+	matches, err := table.Match("pub", "jobs", mqtt.QoSAtLeastOnce, false)
+	if err != nil || len(matches) != 0 {
+		t.Fatalf("matches after all removed = %#v, want none", matches)
+	}
+
+	removed, err = table.Unsubscribe("worker-b", filter)
+	if err != nil || removed {
+		t.Fatalf("Unsubscribe after removal = (%t, %v), want (false, nil)", removed, err)
 	}
 }

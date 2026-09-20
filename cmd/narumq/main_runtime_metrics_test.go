@@ -68,9 +68,10 @@ func newRuntimeMetricsTestServer(t *testing.T) (net.Listener, *tcpadapter.Server
 	if err != nil {
 		t.Fatalf("memoryretained.New() error = %v", err)
 	}
+	systemClock := clock.SystemClock{}
 	sessions := sessionstore.New()
 	willBridge := tcpadapter.NewWillBridge()
-	connections, err := connect.New(clock.SystemClock{}, sessions, deliveries, routes, clock.SystemScheduler{}, willBridge)
+	connections, err := connect.New(systemClock, sessions, deliveries, routes, clock.SystemScheduler{}, willBridge)
 	if err != nil {
 		t.Fatalf("connect.New() error = %v", err)
 	}
@@ -78,7 +79,7 @@ func newRuntimeMetricsTestServer(t *testing.T) (net.Listener, *tcpadapter.Server
 	if err != nil {
 		t.Fatalf("subscribe.New() error = %v", err)
 	}
-	publications, err := publish.New(routes, deliveries, retainedRepository)
+	publications, err := publish.New(systemClock, routes, deliveries, retainedRepository)
 	if err != nil {
 		t.Fatalf("publish.New() error = %v", err)
 	}
@@ -93,6 +94,7 @@ func newRuntimeMetricsTestServer(t *testing.T) (net.Listener, *tcpadapter.Server
 	server, err := tcpadapter.NewServer(
 		listener,
 		tcpadapter.Config{
+			Clock:                systemClock,
 			MaxPacketSize:        1024,
 			ConnectTimeout:       time.Second,
 			WriteTimeout:         time.Second,

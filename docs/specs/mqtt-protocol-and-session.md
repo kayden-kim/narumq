@@ -22,16 +22,24 @@ profile이며 cluster durability와는 별도 경계다.
 - `internal/domain/mqtt`는 CONNECT/CONNACK, QoS 0·1·2 PUBLISH, PUBACK/PUBREC/PUBREL/PUBCOMP,
   SUBSCRIBE 계열과 PINGREQ/PINGRESP/DISCONNECT를 decode·encode한다. PING packet은
   Remaining Length 0만 허용하고 MQTT 5 DISCONNECT는 property-free allowlist만 지원한다.
-- `internal/domain/routing`은 non-shared `+`·`#` filter, `$` system topic 경계,
-  session별 중복 제거와 overlap 최대 granted QoS를 결정한다. `No Local`은 동일
-  publisher session을 제외하고, `Retain As Published`는 live delivery의 RETAIN을
-  결정하며, `Retain Handling`은 SUBSCRIBE replay 시점에만 적용한다.
+- `internal/domain/routing`은 non-shared 및 `$share/{ShareName}/{filter}` 공유 구독,
+  `+`·`#` filter, `$` system topic 경계, session별 중복 제거와 overlap 최대 granted QoS를
+  결정한다. 공유 구독은 그룹 내 가입자 간 Round-Robin 부하 분산 및 그룹별 독립 전달을 수행한다.
+  `No Local`은 비공유 구독에서 동일 publisher session을 제외하며(공유 구독에 NoLocal 설정 시
+  0x82 Protocol Error 거절), `Retain As Published`는 live delivery의 RETAIN을 결정하며,
+  `Retain Handling`은 SUBSCRIBE replay 시점에만 적용한다.
 - `internal/application/subscribe`는 요청 순서를 유지한 SUBACK를 만들고, retained
   replay batch를 route mutation 전에 queue에 원자적으로 예약한다. MQTT 3.1.1과
-  MQTT 5의 non-shared retained replay 및 MQTT 5 subscription options를 지원한다.
+  MQTT 5의 non-shared retained replay 및 MQTT 5 subscription options를 지원하며,
+  공유 구독 가입 시 retained message replay를 억제([MQTT-4.8.2-1])하고 NoLocal을 프로토콜 에러로 거절([MQTT-3.8.3-4])한다.
 - `internal/application/publish`는 QoS 0·1·2 retained PUBLISH를 exact topic별로
   replace/delete한 뒤 option-aware live fan-out을 수행한다. zero-byte retained
   PUBLISH도 established subscriber에게는 live delivery로 전달한다.
+- `internal/domain/mqtt`의 MQTT 5 PUBLISH는 Message Expiry Interval property를 검증하고,
+  application은 ingress 수신 시각과 interval을 한 번만 계산해 absolute deadline으로
+  변환한다. delivery queue와 retained repository는 `now >= deadline`에서 lazy purge하고,
+  MQTT 5 onward PUBLISH에는 올림한 남은 초를 다시 넣으며 MQTT 3.1.1 wire에는 property를
+  쓰지 않아도 같은 deadline을 적용한다.
 - `internal/application/ports/retained`와 `internal/adapters/memory/retained`는
   topic·payload·publisher identity byte 상한을 함께 적용하는 process-local,
   non-durable retained repository를 제공한다. 저장 성공은 queue 전달 실패와
@@ -45,10 +53,10 @@ profile이며 cluster durability와는 별도 경계다.
   식별자를 할당하고 구독자의 PUBACK 또는 PUBREC/PUBREL/PUBCOMP 핸드셰이크를
   완료한다.
 - `internal/adapters/memory/sessionstore`는 비내구성 lifecycle map이고,
-  `internal/adapters/clock`은 system clock이다. Message Expiry, ACL·tenant,
-  shared subscription, takeover, durable offline queue, persistence·replication과
-  auth는 이 slice에서 지원하지 않는다.
-  TLS transport는 listener 계약에 정의한 범위에서 지원한다.
+  `internal/adapters/clock`은 공용 application clock port의 system 구현이다.
+  Message Expiry는 process-local queue와 retained state에서 지원하지만, disconnected
+  persistent offline queue를 보존하지 않는다. takeover, persistence·replication과 auth는
+  이 slice에서 지원하지 않는다. TLS transport는 listener 계약에 정의한 범위에서 지원한다.
 
 ## 1. Listener 계약
 
@@ -140,7 +148,7 @@ MQTT 3.1.1은 연결을 닫는다.
 ### 3.2 송신 QoS와 offline queue
 
 1. 전달 QoS는 publish QoS와 subscription granted QoS 중 낮은 값이어야 한다.
-2. persistent session의 offline queue는 message expiry와 tenant quota를 적용해야 한다.
+2. process-local delivery queue entry는 Message Expiry deadline과 tenant quota를 적용해야 한다. 현재 slice는 connection 종료 시 queue를 제거하므로 disconnected persistent offline queue 자체를 보존하지 않는다.
 3. QoS 1 송신 상태는 PUBACK까지, QoS 2 송신 상태는 PUBCOMP까지 복구할 수 있어야 한다.
 4. 재접속 뒤 미완료 packet을 재전송할 때 MQTT 표준의 DUP 규칙을 적용해야 한다.
 5. expiry가 지난 message는 전달하지 않고 expired 사유로 집계해야 한다.
@@ -168,7 +176,13 @@ repository 하나에 보관하며 restart·replication·quorum durability를 제
 - retained PUBLISH의 zero-byte payload는 exact topic value를 삭제한다.
   삭제 packet 자체는 established subscription에 live publication으로 전달된다.
 - `Retain=false`인 PUBLISH는 retained repository를 읽거나 변경하지 않는다.
+- MQTT 5 Message Expiry Interval이 있으면 ingress 수신 시각에 interval 초를 더한
+  absolute deadline을 retained value에 저장한다. `interval=0`은 즉시 만료로 취급해
+  기존 retained value를 삭제하고, deadline에 도달한 value는 List 시점에 제거되어
+  replay되지 않는다. MQTT 3.1.1에는 이 property가 없지만 queue와 retained state의
+  deadline 판정 규칙은 동일하다.
 - 새 non-shared subscription은 matching retained value를 topic 정렬 순서로 replay한다.
+  공유 구독(`$share/...`)은 Retain Handling 옵션과 무관하게 retained value를 replay하지 않는다([MQTT-4.8.2-1]).
   MQTT 3.1.1과 MQTT 5 `Retain Handling=0`은 항상 replay하고, `=1`은 exact filter가
   새로 생길 때만 replay하며, `=2`는 replay하지 않는다.
 - Replay delivery의 RETAIN은 항상 `true`다. Established-subscription delivery는
@@ -177,10 +191,11 @@ repository 하나에 보관하며 restart·replication·quorum durability를 제
   replay와 live delivery를 모두 제외한다.
 - retained replay의 QoS는 stored QoS와 granted QoS 중 작은 값이며, 현재 ingress와
   writer profile은 QoS 0만 성공적으로 출력한다.
-- Message Expiry, tenant/ACL, shared subscription replay, Will, durable storage,
-  replication과 restart recovery는 이 slice의 범위가 아니다. retained repository
-  capacity failure는 기존 value와 live fan-out을 변경하지 않는다.
-
+- Message Expiry는 bounded queue와 retained repository에서 지원한다. MQTT 5 outbound
+  PUBLISH에는 현재 시각 기준 올림한 남은 초를 넣고, MQTT 3.1.1 outbound에는 expiry
+  property를 생략한다. tenant/ACL, durable storage, replication과 restart recovery는
+  이 slice의 범위가 아니다. retained repository capacity failure는 기존 value와 live
+  fan-out을 변경하지 않는다.
 ## 6. Will Message
 
 Will은 CONNECT의 인증·ACL·quota 검증을 통과한 뒤 session state에 등록해야 한다.
@@ -216,20 +231,22 @@ persistent session으로의 delivery 결과는 `ErrUnavailable`이다.
 ## 8. 수용 시험
 
 - MQTT 3.1.1/5.0 compliance matrix가 지원한다고 선언한 모든 normative statement를 자동 test와 연결한다.
-- 현재 Phase 0 matrix는 [`tests/conformance/mqtt-compliance-v1.json`](../../tests/conformance/mqtt-compliance-v1.json)이며, 46개 statement와 MQTT/TEST requirement 및 test function을 함께 기록한다.
+- 현재 Phase 1 matrix는 [`tests/conformance/mqtt-compliance-v1.json`](../../tests/conformance/mqtt-compliance-v1.json)이며, 48개 statement와 MQTT/TEST requirement 및 test function을 함께 기록한다.
 - `go run ./tools/verify traceability`가 matrix → source와 source → matrix를 모두 검사한다. matrix에만 있거나 source에만 있는 statement, 또는 requirement union이 다른 연결은 합격으로 처리하지 않는다.
-- QoS별 정상, DUP, reconnect, owner crash와 expiry 시나리오를 검증한다.
+- QoS별 정상, DUP, reconnect, owner crash와 Message Expiry 시나리오를 검증한다.
 - `MQIsdp`, level 3과 비정상 version 조합이 session을 만들지 않는지 검증한다.
 - wildcard 경계, shared subscription failover와 MQTT 5 subscription option 조합을 검증한다.
 - parser fuzzing, slowloris, packet·queue 상한 시험에서 memory와 goroutine leak이 없어야 한다.
 - 두 protocol version client가 같은 외부 topic에서 ACL 범위 안의 메시지를 상호 전달해야 한다.
 - 이 slice의 acceptance mapping은 `tests/integration/mqtt_ingress_test.go`의 MQTT 3.1.1/5.0
-  CONNECT, QoS 0 fan-out, retained replace/delete, SUBACK-before-replay,
-  Retain Handling, No Local, Retain As Published, PINGRESP, normal DISCONNECT,
-  persistent Session Present, unsupported/malformed CONNECT와 QoS negative ACK/close
-  시나리오다.
-- `MQTT-3.3.1-5`~`MQTT-3.3.1-13`, `MQTT-3.8.3-3`, `MQTT-3.8.4-3/4`는
-  `tests/conformance/mqtt-compliance-v1.json`에서 양 protocol version test와
-  source traceability comment를 함께 가져야 한다.
-- 이 matrix와 gate는 전체 MQTT 표준 적합성 선언이 아니다. Message Expiry,
-  ACL·tenant, shared subscription runtime과 durable cluster replication은 후속 범위로 남아 있다.
+  CONNECT, QoS 0 fan-out, retained replace/delete, retained Message Expiry,
+  SUBACK-before-replay, Retain Handling, No Local, Retain As Published, PINGRESP,
+  normal DISCONNECT, persistent Session Present, unsupported/malformed CONNECT와 QoS
+  negative ACK/close 시나리오다.
+- `MQTT-3.3.1-5`~`MQTT-3.3.1-13`, `MQTT-3.8.3-3`,
+  `MQTT-3.8.4-3/4`는 tests/conformance/mqtt-compliance-v1.json에서 양 protocol
+  version test와 source traceability comment를 함께 가져야 한다. `MQTT-3.3.2-5/6`는
+  MQTT 5.0 Message Expiry property와 만료 흐름을 검증하는 test 및 source traceability
+  comment를 가져야 하며 MQTT 3.1.1에는 이 property를 적용하지 않는다.
+- 이 matrix와 gate는 전체 MQTT 표준 적합성 선언이 아니다. ACL·tenant와 durable
+  cluster replication은 후속 범위로 남아 있다.

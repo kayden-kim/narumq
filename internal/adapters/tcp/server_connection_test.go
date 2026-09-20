@@ -43,8 +43,11 @@ func TestNewServerValidatesEveryDependencyAndBound(t *testing.T) {
 		{name: "delivery queue", make: func() (*Server, error) {
 			return NewServer(runtime.listener, valid.config, valid.decoder, valid.encoder, valid.connections, valid.subscriptions, valid.publications, nil, nil)
 		}, want: ErrNilDeliveryQueue},
-		{name: "config", make: func() (*Server, error) {
+		{name: "clock", make: func() (*Server, error) {
 			return NewServer(runtime.listener, Config{}, valid.decoder, valid.encoder, valid.connections, valid.subscriptions, valid.publications, valid.deliveries, nil)
+		}, want: ErrNilClock},
+		{name: "config", make: func() (*Server, error) {
+			return NewServer(runtime.listener, Config{Clock: valid.config.Clock}, valid.decoder, valid.encoder, valid.connections, valid.subscriptions, valid.publications, valid.deliveries, nil)
 		}, want: ErrInvalidConfig},
 	}
 	for _, testCase := range cases {
@@ -237,7 +240,7 @@ func TestConnectionLifecycleQueueAndDeliveryBranches(t *testing.T) {
 	delivery := newConnection(runtime.server, deliverySocket)
 	delivery.sessionID = "delivery-session"
 	delivery.version = mqtt.ProtocolV5
-	if err := runtime.server.deliveries.TryEnqueue(applicationDelivery("delivery-session", mqtt.QoSAtMostOnce)); err != nil {
+	if err := runtime.server.deliveries.TryEnqueue(applicationDelivery("delivery-session", mqtt.QoSAtMostOnce), time.Time{}); err != nil {
 		t.Fatal(err)
 	}
 	deliveryResult := make(chan error, 1)
@@ -254,7 +257,7 @@ func TestConnectionLifecycleQueueAndDeliveryBranches(t *testing.T) {
 	qos.sessionID = "qos-session"
 	qos.version = mqtt.ProtocolV5
 	runtime.server.deliveries.Register(qos.sessionID)
-	if err := runtime.server.deliveries.TryEnqueue(applicationDelivery(qos.sessionID, mqtt.QoSAtLeastOnce)); err != nil {
+	if err := runtime.server.deliveries.TryEnqueue(applicationDelivery(qos.sessionID, mqtt.QoSAtLeastOnce), time.Time{}); err != nil {
 		t.Fatal(err)
 	}
 	deliveryResult = make(chan error, 1)
@@ -266,7 +269,7 @@ func TestConnectionLifecycleQueueAndDeliveryBranches(t *testing.T) {
 	if err := <-deliveryResult; err != nil {
 		t.Fatalf("writeDeliveries() QoS 1 error = %v", err)
 	}
-	if err := runtime.server.deliveries.TryEnqueue(applicationDelivery(qos.sessionID, mqtt.QoS(3))); err != nil {
+	if err := runtime.server.deliveries.TryEnqueue(applicationDelivery(qos.sessionID, mqtt.QoS(3)), time.Time{}); err != nil {
 		t.Fatal(err)
 	}
 	if err := qos.writeDeliveries(); !errors.Is(err, ErrProtocol) {

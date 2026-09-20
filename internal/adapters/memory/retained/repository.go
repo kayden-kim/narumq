@@ -5,6 +5,7 @@ import (
 	"errors"
 	"sort"
 	"sync"
+	"time"
 
 	applicationretained "narumq/internal/application/ports/retained"
 	"narumq/internal/domain/mqtt"
@@ -43,7 +44,7 @@ func New(maxMessages, maxBytes int) (*Repository, error) {
 
 // Replace atomically replaces the exact-topic value or returns ErrFull without
 // changing the previous value. Payload is copied before it is retained.
-func (repository *Repository) Replace(message applicationretained.MessageDTO) error {
+func (repository *Repository) Replace(message applicationretained.MessageDTO, now time.Time) error {
 	if repository == nil {
 		return ErrInvalidCapacity
 	}
@@ -54,6 +55,7 @@ func (repository *Repository) Replace(message applicationretained.MessageDTO) er
 
 	repository.mu.Lock()
 	defer repository.mu.Unlock()
+	repository.purgeExpiredLocked(now)
 	previous, exists := repository.messages[message.Topic]
 	currentCount := len(repository.messages)
 	currentBytes := repository.bytes
@@ -92,12 +94,13 @@ func (repository *Repository) Delete(topic string) error {
 
 // List returns a topic-sorted snapshot with payloads independent from storage
 // and from one another.
-func (repository *Repository) List() ([]applicationretained.MessageDTO, error) {
+func (repository *Repository) List(now time.Time) ([]applicationretained.MessageDTO, error) {
 	if repository == nil {
 		return nil, ErrInvalidCapacity
 	}
 	repository.mu.Lock()
 	defer repository.mu.Unlock()
+	repository.purgeExpiredLocked(now)
 	messages := make([]applicationretained.MessageDTO, 0, len(repository.messages))
 	for _, message := range repository.messages {
 		message.Payload = cloneBytes(message.Payload)
@@ -107,6 +110,15 @@ func (repository *Repository) List() ([]applicationretained.MessageDTO, error) {
 		return messages[left].Topic < messages[right].Topic
 	})
 	return messages, nil
+}
+func (repository *Repository) purgeExpiredLocked(now time.Time) {
+	for topic, message := range repository.messages {
+		if message.ExpiresAt.IsZero() || now.Before(message.ExpiresAt) {
+			continue
+		}
+		delete(repository.messages, topic)
+		repository.bytes -= retainedBytes(message)
+	}
 }
 
 func validateMessage(message applicationretained.MessageDTO) error {

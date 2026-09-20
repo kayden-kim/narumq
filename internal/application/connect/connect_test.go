@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	applicationclock "narumq/internal/application/ports/clock"
 	"narumq/internal/application/ports/deliveryqueue"
 	"narumq/internal/domain/mqtt"
 	"narumq/internal/domain/routing"
@@ -86,15 +87,15 @@ func (queue *fakeDeliveryQueue) Remove(sessionID routing.SessionID) {
 	delete(queue.registered, sessionID)
 }
 
-func (*fakeDeliveryQueue) TryEnqueue(deliveryqueue.DeliveryDTO) error {
+func (*fakeDeliveryQueue) TryEnqueue(deliveryqueue.DeliveryDTO, time.Time) error {
 	return nil
 }
 
-func (*fakeDeliveryQueue) TryEnqueueBatch([]deliveryqueue.DeliveryDTO) error {
+func (*fakeDeliveryQueue) TryEnqueueBatch([]deliveryqueue.DeliveryDTO, time.Time) error {
 	return nil
 }
 
-func (*fakeDeliveryQueue) Drain(routing.SessionID) ([]deliveryqueue.DeliveryDTO, error) {
+func (*fakeDeliveryQueue) Drain(routing.SessionID, time.Time) ([]deliveryqueue.DeliveryDTO, error) {
 	return nil, nil
 }
 
@@ -162,24 +163,24 @@ func TestNewRejectsNilDependencies(t *testing.T) {
 	cases := []struct {
 		name string
 		want error
-		make func() (Clock, SessionRepository, deliveryqueue.Queue, *routing.Table, Scheduler, WillPublisher)
+		make func() (applicationclock.Clock, SessionRepository, deliveryqueue.Queue, *routing.Table, Scheduler, WillPublisher)
 	}{
-		{name: "clock", want: ErrNilClock, make: func() (Clock, SessionRepository, deliveryqueue.Queue, *routing.Table, Scheduler, WillPublisher) {
+		{name: "clock", want: ErrNilClock, make: func() (applicationclock.Clock, SessionRepository, deliveryqueue.Queue, *routing.Table, Scheduler, WillPublisher) {
 			return nil, repository, queue, routes, scheduler, willPublisher
 		}},
-		{name: "repository", want: ErrNilSessionRepository, make: func() (Clock, SessionRepository, deliveryqueue.Queue, *routing.Table, Scheduler, WillPublisher) {
+		{name: "repository", want: ErrNilSessionRepository, make: func() (applicationclock.Clock, SessionRepository, deliveryqueue.Queue, *routing.Table, Scheduler, WillPublisher) {
 			return clock, nil, queue, routes, scheduler, willPublisher
 		}},
-		{name: "queue", want: ErrNilDeliveryQueue, make: func() (Clock, SessionRepository, deliveryqueue.Queue, *routing.Table, Scheduler, WillPublisher) {
+		{name: "queue", want: ErrNilDeliveryQueue, make: func() (applicationclock.Clock, SessionRepository, deliveryqueue.Queue, *routing.Table, Scheduler, WillPublisher) {
 			return clock, repository, nil, routes, scheduler, willPublisher
 		}},
-		{name: "routes", want: ErrNilRoutingTable, make: func() (Clock, SessionRepository, deliveryqueue.Queue, *routing.Table, Scheduler, WillPublisher) {
+		{name: "routes", want: ErrNilRoutingTable, make: func() (applicationclock.Clock, SessionRepository, deliveryqueue.Queue, *routing.Table, Scheduler, WillPublisher) {
 			return clock, repository, queue, nil, scheduler, willPublisher
 		}},
-		{name: "scheduler", want: ErrNilScheduler, make: func() (Clock, SessionRepository, deliveryqueue.Queue, *routing.Table, Scheduler, WillPublisher) {
+		{name: "scheduler", want: ErrNilScheduler, make: func() (applicationclock.Clock, SessionRepository, deliveryqueue.Queue, *routing.Table, Scheduler, WillPublisher) {
 			return clock, repository, queue, routes, nil, willPublisher
 		}},
-		{name: "willPublisher", want: ErrNilWillPublisher, make: func() (Clock, SessionRepository, deliveryqueue.Queue, *routing.Table, Scheduler, WillPublisher) {
+		{name: "willPublisher", want: ErrNilWillPublisher, make: func() (applicationclock.Clock, SessionRepository, deliveryqueue.Queue, *routing.Table, Scheduler, WillPublisher) {
 			return clock, repository, queue, routes, scheduler, nil
 		}},
 	}

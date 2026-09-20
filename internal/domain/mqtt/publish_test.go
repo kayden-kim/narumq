@@ -3,6 +3,7 @@ package mqtt
 import (
 	"bytes"
 	"errors"
+	"fmt"
 	"reflect"
 	"testing"
 )
@@ -183,6 +184,70 @@ func TestPublishRejectsMQTT5Properties_MQTT5_1_5_5_1(t *testing.T) {
 				t.Fatalf("Decode() error = %v, want %v", err, testCase.want)
 			}
 		})
+	}
+}
+
+// Traceability: PRD MQTT-01/MQTT-12/TEST-04; docs/specs/mqtt-protocol-and-session.md §3.2, §5; MQTT-3.3.2-5/6.
+func TestPublishMessageExpiryProperty_MQTT5(t *testing.T) {
+	decoder, err := NewDecoder(maxRemainingLength)
+	if err != nil {
+		t.Fatal(err)
+	}
+	encoder, err := NewEncoder(maxRemainingLength)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, interval := range []uint32{0, 1, ^uint32(0)} {
+		t.Run(fmt.Sprintf("interval-%d", interval), func(t *testing.T) {
+			input := Publish{
+				Version:                  ProtocolV5,
+				Topic:                    "a",
+				Payload:                  []byte("hello"),
+				HasMessageExpiryInterval: true,
+				MessageExpiryInterval:    interval,
+			}
+			wire := testEncode(t, encoder, input)
+			decoded := testDecode(t, decoder, wire, ProtocolV5)
+			requireSemanticEqual(t, &input, decoded)
+			wantProperty := []byte{0x05, 0x02, byte(interval >> 24), byte(interval >> 16), byte(interval >> 8), byte(interval)}
+			if !bytes.Contains(wire, wantProperty) {
+				t.Fatalf("wire = %v, want property %v", wire, wantProperty)
+			}
+		})
+	}
+}
+
+// Traceability: PRD MQTT-01/MQTT-12/TEST-04; docs/specs/mqtt-protocol-and-session.md §3.2, §5; MQTT-3.3.2-5.
+func TestPublishMessageExpiryPropertyRejectsInvalidSections(t *testing.T) {
+	decoder, err := NewDecoder(maxRemainingLength)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cases := []struct {
+		name string
+		body []byte
+		want error
+	}{
+		{name: "duplicate", body: []byte{0, 1, 'a', 10, 0x02, 0, 0, 0, 1, 0x02, 0, 0, 0, 2}, want: ErrMalformedPacket},
+		{name: "truncated-value", body: []byte{0, 1, 'a', 4, 0x02, 0, 0, 0}, want: ErrMalformedPacket},
+		{name: "unknown-property", body: []byte{0, 1, 'a', 1, 0x01}, want: ErrUnsupportedProperty},
+		{name: "declared-section-too-long", body: []byte{0, 1, 'a', 5, 0x02, 0, 0}, want: ErrMalformedPacket},
+		{name: "noncanonical-length", body: []byte{0, 1, 'a', 0x80, 0}, want: ErrMalformedPacket},
+	}
+	for _, testCase := range cases {
+		t.Run(testCase.name, func(t *testing.T) {
+			_, _, err := decoder.Decode(testFrame(0x30, testCase.body), ProtocolV5)
+			if !errors.Is(err, testCase.want) {
+				t.Fatalf("Decode() error = %v, want %v", err, testCase.want)
+			}
+		})
+	}
+	encoder, err := NewEncoder(maxRemainingLength)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := encoder.Append(nil, Publish{Version: ProtocolV311, Topic: "a", HasMessageExpiryInterval: true}); !errors.Is(err, ErrMalformedPacket) {
+		t.Fatalf("MQTT 3.1.1 expiry property error = %v, want %v", err, ErrMalformedPacket)
 	}
 }
 

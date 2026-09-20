@@ -187,8 +187,8 @@
           </article>
           <article class="card warning">
             <h3>읽을 때 먼저 기억할 한계</h3>
-            <p>패킷 코덱과 QoS 1·2 상태 머신이 구현되어 있다는 사실과, 현재 개발용 TCP 경로가 모든 QoS를 실제 전달한다는 사실은 다릅니다.</p>
-            <p>현재 TCP 전달 큐는 QoS 0만 실제로 내보냅니다. 들어온 QoS 1·2 PUBLISH는 개발용 경계에서 MQTT 5 실패 ACK로 처리됩니다. 이 차이를 뒤에서 코드 위치와 함께 설명합니다.</p>
+            <p>패킷 코덱과 QoS 1·2 상태 머신은 <code>internal/domain/delivery</code>에서 단위 테스트 가능한 정책으로 구현되고, 현재 개발용 TCP 경로도 ingress·outbound QoS 0·1·2 handshake를 연결합니다.</p>
+            <p>Message Expiry는 수신 시각에서 absolute deadline을 만들고 queue·retained replay·writer 출력에 적용합니다. MQTT 3.1.1에는 expiry property를 쓰지 않지만 만료 판정은 유지합니다.</p>
           </article>
         </div>
       </div>
@@ -330,6 +330,7 @@ return dst, nil</code></pre>
               <li>QoS 0인데 DUP 또는 Packet ID 사용</li>
               <li>빈 토픽, 와일드카드가 들어간 Topic Name</li>
               <li>0인 Packet ID, 잘못된 UTF-8, 지원하지 않는 버전</li>
+              <li>MQTT 5 Message Expiry property, absolute deadline ownership와 remaining interval 계산</li>
             </ul>
           </article>
         </div>
@@ -372,7 +373,7 @@ func encodeConnect(connect Connect, maxPacketSize int) ([]byte, error) {
         <div class="section-kicker">06 · 구독 라우팅, retained message와 제한된 큐</div>
         <h2>옵션을 보존하고 한 번 매칭한 뒤, retained replay는 route commit 전에 원자적으로 예약한다</h2>
         <p>
-          구독 필터는 메시지를 받을 토픽의 모양입니다. <code>+</code>는 한 단계, <code>#</code>는 마지막에서 여러 단계를 뜻합니다. <a href="../../internal/domain/routing/routing.go#L53">ValidateTopicFilter</a>는 와일드카드 위치와 MQTT 문자열 규칙을 확인하고, 현재 단계에서는 <code>$share/...</code> 공유 구독을 명시적으로 지원하지 않습니다. 각 exact filter의 <code>NoLocal</code>, <code>RetainAsPublished</code>와 <code>RetainHandling</code>은 routing·subscribe 경계에서 보존됩니다.
+          구독 필터는 메시지를 받을 토픽의 모양입니다. <code>+</code>는 한 단계, <code>#</code>는 마지막에서 여러 단계를 뜻합니다. <a href="../../internal/domain/routing/routing.go#L53">ValidateTopicFilter</a>는 와일드카드 위치와 MQTT 문자열 규칙을 확인하고, 현재 단계에서는 <code>$share/...</code> 공유 구독도 group별로 지원합니다. 각 exact filter의 <code>NoLocal</code>, <code>RetainAsPublished</code>와 <code>RetainHandling</code>은 routing·subscribe 경계에서 보존됩니다.
         </p>
         <pre><code>// internal/domain/routing/routing.go
 func (table *Table) Match(
@@ -392,8 +393,14 @@ func (table *Table) Match(
         </p>
         <h3 id="retained">Retained replace/delete와 replay</h3>
         <pre><code>// internal/application/publish/publish.go
+expiresAt := time.Time{}
+if packet.HasMessageExpiryInterval {
+    expiresAt = receivedAt.Add(time.Duration(packet.MessageExpiryInterval) * time.Second)
+}
+now := useCase.clock.Now()
+expired := !expiresAt.IsZero() &amp;&amp; !now.Before(expiresAt)
 if packet.Retain {
-    if len(packet.Payload) == 0 {
+    if len(packet.Payload) == 0 || expired {
         retained.Delete(packet.Topic)
     } else {
         retained.Replace(retained.MessageDTO{
@@ -401,25 +408,25 @@ if packet.Retain {
             Topic:              packet.Topic,
             Payload:            packet.Payload,
             QoS:                packet.QoS,
-        })
+            ExpiresAt:          expiresAt,
+        }, now)
     }
 }
 // internal/application/subscribe/subscribe.go
-queue.TryEnqueueBatch(replay)
+queue.TryEnqueueBatch(replay, now)
 routes.Subscribe(sessionID, subscription) // replay batch committed first</code></pre>
         <p>
-          retained repository는 exact topic별 최신 QoS 0 값을 bounded memory에 보관합니다.
-          zero-byte retained PUBLISH는 저장 값을 삭제하면서 established subscriber에는
-          빈 payload live delivery를 남깁니다. replay queue가 가득 차면 route를 만들지
-          않고 MQTT version에 맞는 실패 reason을 반환합니다.
+          retained repository는 exact topic별 최신 QoS 값을 bounded memory에 보관합니다.
+          Message Expiry가 있으면 ingress 수신 시각 기준의 <code>ExpiresAt</code>도 함께
+          보관합니다. queue와 repository는 <code>now &gt;= ExpiresAt</code>에서 lazy purge하므로
+          만료 값은 replay되지 않습니다. replay queue가 가득 차면 route를 만들지 않고
+          MQTT version에 맞는 실패 reason을 반환합니다.
         </p>
         <div class="grid">
           <article class="card wide">
             <h3>발행 응용 기능의 결과</h3>
             <pre><code>// internal/application/publish/publish.go
-matches, err := useCase.routes.Match(
-    publisherSessionID, packet.Topic, packet.QoS, packet.Retain,
-)
+now := useCase.clock.Now()
 for _, match := range matches {
     delivery := deliveryqueue.DeliveryDTO{
         SessionID: match.SessionID,
@@ -427,8 +434,9 @@ for _, match := range matches {
         Payload:   packet.Payload,
         QoS:       match.QoS,
         Retain:    match.Retain,
+        ExpiresAt: expiresAt,
     }
-    err := useCase.queue.TryEnqueue(delivery)
+    err := useCase.queue.TryEnqueue(delivery, now)
     // ErrFull/ErrUnavailable은 다른 session fan-out을 막지 않는다.
 }</code></pre>
             <p>한 세션의 큐가 가득 차도 다른 세션을 계속 시도합니다. retained 저장 성공은 이후 queue 결과와 독립적이며 부분 결과를 반환합니다.</p>
@@ -440,8 +448,10 @@ for _, match := range matches {
           </article>
         </div>
         <blockquote>
-          현재 TCP writer는 큐에서 꺼낸 항목의 QoS가 0이 아니면 <code>ErrProtocol</code>을 반환합니다. 따라서 라우팅 결과에 QoS 1·2가 기록될 수 있어도, 개발용 TCP 전달 경로의 실제 출력은 QoS 0으로 제한됩니다.
-        </blockquote>
+          현재 TCP writer는 항목을 <code>Clock.Now()</code>으로 다시 확인하고,
+          만료되지 않은 항목만 QoS 0·1·2에 맞춰 출력합니다. MQTT 5에는 올림한
+          remaining interval을 쓰고 MQTT 3.1.1에는 expiry property를 생략합니다.
+</blockquote>
       </div>
     </section>
 
@@ -484,8 +494,8 @@ state, action, err = state.Accept()
           </article>
           <article class="card warning">
             <h3>현재 실행 경로와의 차이</h3>
-            <p>QoS 상태 머신은 <code>internal/domain/delivery</code>에서 단위 테스트 가능한 정책으로 구현됐습니다. 그러나 현재 <a href="../../internal/adapters/tcp/server.go#L450">dispatchPublish</a>는 들어온 QoS 1·2 PUBLISH를 실제 상태 머신에 연결하지 않고 MQTT 5 reason code <code>0x83</code>의 실패 ACK를 보냅니다.</p>
-            <p>따라서 이 문서에서 “구현됨”은 코덱·상태 규칙이 존재한다는 뜻이고, “TCP에서 동작함”은 현재 개발용 연결 경로에 연결됐다는 뜻으로 구분합니다.</p>
+            <p>QoS 상태 머신은 <code>internal/domain/delivery</code>에서 단위 테스트 가능한 정책으로 구현됐습니다. 현재 <a href="../../internal/adapters/tcp/server.go#L580">dispatchPublish</a>와 <a href="../../internal/adapters/tcp/server.go#L1037">writeDeliveries</a>가 ingress·outbound QoS 0·1·2 상태를 연결하며, QoS 2는 PUBREL까지 받은 뒤 실제 fan-out합니다.</p>
+            <p>Message Expiry는 상태 머신과 별도의 absolute deadline으로 관리되지만, QoS 2가 지연돼도 최초 ingress 수신 시각을 유지합니다.</p>
           </article>
         </div>
       </div>
@@ -548,13 +558,14 @@ readLoop:
 writerLoop:
   controlQueue가 있으면 먼저 출력
   없으면 stop / controlQueue / deliveryWake 중 하나를 기다림
-  deliveryWake -&gt; deliveryQueue.Drain -&gt; QoS 0 PUBLISH 출력</code></pre>
+  deliveryWake -&gt; Clock.Now -&gt; deliveryQueue.Drain(now)
+  만료 항목 제거 -&gt; remaining expiry 계산 -&gt; QoS 0·1·2 PUBLISH 출력</code></pre>
         <table>
           <thead><tr><th>단계</th><th>현재 코드가 하는 일</th><th>실패 시</th></tr></thead>
           <tbody>
             <tr><td>첫 패킷</td><td>CONNECT만 허용하고 connect 응용 기능으로 세션을 활성화합니다.</td><td>다른 종류면 프로토콜 오류입니다.</td></tr>
             <tr><td>SUBSCRIBE</td><td>필터마다 검증하고 retained replay batch를 queue에 먼저 예약한 뒤 route를 설치합니다.</td><td>queue가 부족하면 이전 route를 유지하고 version별 reason을 반환합니다.</td></tr>
-            <tr><td>PUBLISH QoS 0</td><td>retained replace/delete를 먼저 수행하고 option-aware routing 뒤 성공한 세션을 깨웁니다.</td><td>retained capacity 오류는 live fan-out 전에 실패합니다.</td></tr>
+            <tr><td>PUBLISH QoS 0·1·2</td><td>retained replace/delete와 option-aware routing 뒤 성공한 세션을 깨우고, QoS 1·2는 수신 handshake를 완료합니다.</td><td>retained capacity 오류나 protocol 상태 오류를 version별 ACK/close로 처리합니다.</td></tr>
             <tr><td>제어 출력</td><td>CONNACK·SUBACK·PINGRESP·실패 ACK를 제한된 control queue에 넣습니다.</td><td>control queue가 가득 차면 연결을 닫습니다.</td></tr>
             <tr><td>DISCONNECT</td><td>barrier가 앞선 제어 패킷의 출력을 기다린 뒤 세션을 정리합니다.</td><td>write barrier 실패 또는 control queue 포화면 연결을 닫습니다.</td></tr>
 <tr><td>SUBACK replay ordering</td><td>Subscribe 결과가 retained delivery를 큐에 넣어도 TCP dispatch는 SUBACK write 완료 뒤 dedicated wake를 보냅니다.</td><td>이미 pending인 delivery나 동시 publish의 wire 순서는 보장하지 않습니다.</td></tr>
@@ -577,9 +588,9 @@ writerLoop:
             <tr><td>CONNECT·소유권</td><td>3.1.1/5.0 왕복, 선택 필드, 잘못된 플래그·버전·크기, 입력 버퍼와 반환 값의 독립성</td><td><a href="../../internal/domain/mqtt/connect_test.go">connect_test.go</a>, <a href="../../internal/domain/mqtt/packet_edge_test.go">packet_edge_test.go</a>, <a href="../../internal/domain/mqtt/packet_fuzz_test.go">packet_fuzz_test.go</a></td></tr>
             <tr><td>ACK 코덱</td><td>PubAck·PubRec·PubRel·PubComp 왕복, Packet ID·reason code·속성 길이 검증</td><td><a href="../../internal/domain/mqtt/ack_test.go">ack_test.go</a></td></tr>
             <tr><td>라우팅·options</td><td>와일드카드 위치, 공유 구독 거절, 시스템 토픽, overlap 1회 전달, NL/RAP RETAIN 정책과 유효 QoS 계산</td><td><a href="../../internal/domain/routing/routing_test.go">routing_test.go</a>, <a href="../../internal/application/subscribe/subscribe_test.go">subscribe_test.go</a></td></tr>
-            <tr><td>retained repository</td><td>exact-topic replace/delete, count·byte capacity, payload ownership와 deterministic list</td><td><a href="../../internal/adapters/memory/retained/repository_test.go">repository_test.go</a></td></tr>
-            <tr><td>발행·큐</td><td>세션별 fan-out, Full/Unavailable 부분 결과, FIFO, atomic batch, payload 복사와 RAP flag</td><td><a href="../../internal/application/publish/publish_test.go">publish_test.go</a>, <a href="../../internal/adapters/memory/deliveryqueue/queue_test.go">queue_test.go</a></td></tr>
-            <tr><td>retained ingress</td><td>replace, zero-byte delete, RH 0/1/2, SUBACK-before-replay, NL/RAP와 loopback wire 결과</td><td><a href="../../tests/integration/mqtt_ingress_test.go">mqtt_ingress_test.go</a></td></tr>
+            <tr><td>retained repository</td><td>exact-topic replace/delete, count·byte capacity, payload ownership, absolute expiry lazy purge와 deterministic list</td><td><a href="../../internal/adapters/memory/retained/repository_test.go">repository_test.go</a></td></tr>
+            <tr><td>발행·큐</td><td>세션별 fan-out, Full/Unavailable 부분 결과, FIFO, atomic batch, payload 복사, RAP와 expiry deadline</td><td><a href="../../internal/application/publish/publish_test.go">publish_test.go</a>, <a href="../../internal/adapters/memory/deliveryqueue/queue_test.go">queue_test.go</a></td></tr>
+            <tr><td>Message Expiry wire</td><td>MQTT 5 property 검증, MQTT 3.1.1 property 거절, 10초 deadline·3초 경과 뒤 remaining 7초·deadline no-delivery</td><td><a href="../../internal/domain/mqtt/publish_test.go">publish_test.go</a>, <a href="../../tests/integration/mqtt_ingress_test.go">mqtt_ingress_test.go</a></td></tr>
           </tbody>
         </table>
         <pre><code>go test ./internal/domain/mqtt ./internal/domain/routing ./internal/domain/delivery ./internal/domain/session ./internal/application/connect ./internal/application/subscribe ./internal/application/publish ./internal/application/ports/deliveryqueue ./internal/application/ports/retained ./internal/adapters/memory/deliveryqueue ./internal/adapters/memory/retained ./internal/adapters/tcp ./tests/integration -count=1</code></pre>
@@ -598,8 +609,9 @@ writerLoop:
               <li>CONNECT, CONNACK, PUBLISH, 구독·ACK·제어 패킷 값</li>
               <li>와일드카드 기반 비공유 구독 매칭과 session별 FIFO 큐</li>
               <li>subscription option별 No Local·Retain As Published와 Retain Handling</li>
-              <li>QoS 1·2 ACK 상태 머신과 중복·재개 규칙</li>
-              <li>exact-topic retained replace/delete와 atomic retained replay</li>
+              <li>QoS 0·1·2 ingress/outbound ACK 상태 머신과 중복·재개 규칙</li>
+              <li>exact-topic retained replace/delete, atomic retained replay와 expiry lazy purge</li>
+              <li>Message Expiry absolute deadline, remaining interval serialization과 MQTT version별 property 규칙</li>
               <li>Clean Start, Session Expiry, Session Present 상태</li>
               <li>개발용 TCP ingress와 SUBACK-before-replay single writer 출력 순서</li>
             </ul>
@@ -607,16 +619,15 @@ writerLoop:
           <article class="card warning">
             <h3>현재 문서와 코드가 명시하는 제한</h3>
             <ul>
-              <li>TCP runtime의 실제 전달 큐와 retained ingress는 QoS 0만 성공</li>
-              <li>TCP ingress의 QoS 1·2 PUBLISH는 실패 ACK 경로</li>
-              <li>Will 필드 코덱은 있으나 connect 응용 정책은 거절</li>
-              <li>Message Expiry, shared subscription, ACL·tenant 격리와 TLS는 미지원</li>
-              <li>영속 저장소·복제·합의·클러스터 durable ACK와 restart recovery는 별도 경계</li>
+              <li>disconnected persistent offline queue는 connection 종료 시 제거되므로 보존하지 않음</li>
+              <li>ACL·tenant 격리, durable 저장소·복제·합의·cluster durable ACK는 별도 경계</li>
+              <li>Message Expiry metadata는 MQTT 3.1.1 outbound wire에서 생략되지만 deadline은 적용</li>
+              <li>영속 저장소·restart recovery는 별도 경계</li>
             </ul>
           </article>
         </div>
         <blockquote>
-          위 제한은 “빠진 코드를 숨기기 위한 변명”이 아니라 현재 호출 관계를 읽은 결과입니다. 예를 들어 <code>delivery.State</code>가 QoS 2를 설명해도, <code>tcp.writeDeliveries</code>가 QoS 0 이외를 거부하면 두 사실을 하나의 실행 기능처럼 쓰면 안 됩니다.
+          위 제한은 “빠진 코드를 숨기기 위한 변명”이 아니라 현재 호출 관계를 읽은 결과입니다. Message Expiry는 application DTO의 absolute deadline을 통해 transport version과 독립적으로 적용되며, MQTT 3.1.1에서는 표현할 property만 생략합니다.
         </blockquote>
         <h3>다음에 함께 읽을 문서</h3>
         <ul class="source-list">

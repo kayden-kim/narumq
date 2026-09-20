@@ -4,6 +4,7 @@ import (
 	"errors"
 	"reflect"
 	"testing"
+	"time"
 
 	applicationdeliveryqueue "narumq/internal/application/ports/deliveryqueue"
 	applicationretained "narumq/internal/application/ports/retained"
@@ -18,7 +19,7 @@ type recordingQueue struct {
 }
 
 // recordingQueue models the application delivery queue contract by copying retained payloads.
-func (queue *recordingQueue) TryEnqueue(delivery applicationdeliveryqueue.DeliveryDTO) error {
+func (queue *recordingQueue) TryEnqueue(delivery applicationdeliveryqueue.DeliveryDTO, now time.Time) error {
 	queue.calls = append(queue.calls, delivery.SessionID)
 	if err := queue.errors[delivery.SessionID]; err != nil {
 		return err
@@ -30,9 +31,9 @@ func (queue *recordingQueue) TryEnqueue(delivery applicationdeliveryqueue.Delive
 	return nil
 }
 
-func (queue *recordingQueue) TryEnqueueBatch(deliveries []applicationdeliveryqueue.DeliveryDTO) error {
+func (queue *recordingQueue) TryEnqueueBatch(deliveries []applicationdeliveryqueue.DeliveryDTO, now time.Time) error {
 	for _, delivery := range deliveries {
-		if err := queue.TryEnqueue(delivery); err != nil {
+		if err := queue.TryEnqueue(delivery, now); err != nil {
 			return err
 		}
 	}
@@ -45,7 +46,7 @@ func (queue *recordingQueue) Register(sessionID routing.SessionID) error {
 
 func (queue *recordingQueue) Remove(sessionID routing.SessionID) {}
 
-func (queue *recordingQueue) Drain(sessionID routing.SessionID) ([]applicationdeliveryqueue.DeliveryDTO, error) {
+func (queue *recordingQueue) Drain(sessionID routing.SessionID, _ time.Time) ([]applicationdeliveryqueue.DeliveryDTO, error) {
 	return nil, nil
 }
 
@@ -56,7 +57,7 @@ type recordingRetainedRepository struct {
 	deleteErr  error
 }
 
-func (repository *recordingRetainedRepository) Replace(message applicationretained.MessageDTO) error {
+func (repository *recordingRetainedRepository) Replace(message applicationretained.MessageDTO, _ time.Time) error {
 	if repository.replaceErr != nil {
 		return repository.replaceErr
 	}
@@ -73,8 +74,25 @@ func (repository *recordingRetainedRepository) Delete(topic string) error {
 	return nil
 }
 
-func (repository *recordingRetainedRepository) List() ([]applicationretained.MessageDTO, error) {
+func (repository *recordingRetainedRepository) List(time.Time) ([]applicationretained.MessageDTO, error) {
 	return nil, nil
+}
+
+type fakeClock struct {
+	now time.Time
+}
+
+func (clock *fakeClock) Now() time.Time {
+	return clock.now
+}
+
+func testNow() time.Time {
+	return time.Date(2026, time.January, 1, 0, 0, 0, 0, time.UTC)
+}
+
+func newPublishUseCase(t *testing.T, routes *routing.Table, queue *recordingQueue, repository *recordingRetainedRepository) (*UseCase, error) {
+	t.Helper()
+	return New(&fakeClock{now: testNow()}, routes, queue, repository)
 }
 
 // Traceability: PRD MQTT-02/MQTT-06/MQTT-11/TEST-04/05; docs/specs/mqtt-protocol-and-session.md §3.2 and §7.
@@ -82,13 +100,17 @@ func TestNewRejectsNilDependencies(t *testing.T) {
 	routes := routing.NewTable()
 	queue := &recordingQueue{}
 	retainedRepository := &recordingRetainedRepository{}
-	if _, err := New(nil, queue, retainedRepository); !errors.Is(err, ErrNilRoutingTable) {
+	if _, err := New(nil, routes, queue, retainedRepository); !errors.Is(err, ErrNilClock) {
+		t.Fatalf("nil clock error = %v, want %v", err, ErrNilClock)
+	}
+	clock := &fakeClock{}
+	if _, err := New(clock, nil, queue, retainedRepository); !errors.Is(err, ErrNilRoutingTable) {
 		t.Fatalf("nil routes error = %v, want %v", err, ErrNilRoutingTable)
 	}
-	if _, err := New(routes, nil, retainedRepository); !errors.Is(err, ErrNilDeliveryQueue) {
+	if _, err := New(clock, routes, nil, retainedRepository); !errors.Is(err, ErrNilDeliveryQueue) {
 		t.Fatalf("nil queue error = %v, want %v", err, ErrNilDeliveryQueue)
 	}
-	if _, err := New(routes, queue, nil); !errors.Is(err, ErrNilRetainedRepository) {
+	if _, err := New(clock, routes, queue, nil); !errors.Is(err, ErrNilRetainedRepository) {
 		t.Fatalf("nil retained repository error = %v, want %v", err, ErrNilRetainedRepository)
 	}
 }
@@ -104,7 +126,7 @@ func TestPublishFanoutUsesOverlapQoS(t *testing.T) {
 	}
 	queue := &recordingQueue{errors: make(map[routing.SessionID]error)}
 	retainedRepository := &recordingRetainedRepository{}
-	useCase, err := New(routes, queue, retainedRepository)
+	useCase, err := newPublishUseCase(t, routes, queue, retainedRepository)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -114,7 +136,7 @@ func TestPublishFanoutUsesOverlapQoS(t *testing.T) {
 		QoS:     mqtt.QoSExactlyOnce,
 		Topic:   "sensors/room1/temp",
 		Payload: payload,
-	})
+	}, testNow())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -149,11 +171,11 @@ func TestPublishContinuesAfterSaturationAndUnavailableSessions(t *testing.T) {
 		"c": applicationdeliveryqueue.ErrUnavailable,
 	}}
 	retainedRepository := &recordingRetainedRepository{}
-	useCase, err := New(routes, queue, retainedRepository)
+	useCase, err := newPublishUseCase(t, routes, queue, retainedRepository)
 	if err != nil {
 		t.Fatal(err)
 	}
-	result, err := useCase.Publish("publisher", mqtt.Publish{Version: mqtt.ProtocolV311, Topic: "events/created"})
+	result, err := useCase.Publish("publisher", mqtt.Publish{Version: mqtt.ProtocolV311, Topic: "events/created"}, testNow())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -177,11 +199,11 @@ func TestPublishReturnsPartialResultForUnknownQueueError(t *testing.T) {
 	unknown := errors.New("writer stopped")
 	queue := &recordingQueue{errors: map[routing.SessionID]error{"b": unknown}}
 	retainedRepository := &recordingRetainedRepository{}
-	useCase, err := New(routes, queue, retainedRepository)
+	useCase, err := newPublishUseCase(t, routes, queue, retainedRepository)
 	if err != nil {
 		t.Fatal(err)
 	}
-	result, err := useCase.Publish("publisher", mqtt.Publish{Version: mqtt.ProtocolV5, Topic: "events/created"})
+	result, err := useCase.Publish("publisher", mqtt.Publish{Version: mqtt.ProtocolV5, Topic: "events/created"}, testNow())
 	if !errors.Is(err, unknown) {
 		t.Fatalf("error = %v, want %v", err, unknown)
 	}
@@ -195,11 +217,11 @@ func TestPublishRejectsInvalidTopicBeforeQueue(t *testing.T) {
 	routes := routing.NewTable()
 	queue := &recordingQueue{errors: make(map[routing.SessionID]error)}
 	retainedRepository := &recordingRetainedRepository{}
-	useCase, err := New(routes, queue, retainedRepository)
+	useCase, err := newPublishUseCase(t, routes, queue, retainedRepository)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := useCase.Publish("publisher", mqtt.Publish{Version: mqtt.ProtocolV5, Topic: "events/+"}); !errors.Is(err, routing.ErrInvalidTopicName) {
+	if _, err := useCase.Publish("publisher", mqtt.Publish{Version: mqtt.ProtocolV5, Topic: "events/+"}, testNow()); !errors.Is(err, routing.ErrInvalidTopicName) {
 		t.Fatalf("error = %v, want invalid topic name", err)
 	}
 	if len(queue.calls) != 0 {
@@ -215,12 +237,12 @@ func TestPublishRetainedReplaceDeleteAndNonRetainedNoop(t *testing.T) {
 	}
 	queue := &recordingQueue{errors: make(map[routing.SessionID]error)}
 	retainedRepository := &recordingRetainedRepository{}
-	useCase, err := New(routes, queue, retainedRepository)
+	useCase, err := newPublishUseCase(t, routes, queue, retainedRepository)
 	if err != nil {
 		t.Fatal(err)
 	}
 	payload := []byte("old")
-	if _, err := useCase.Publish("publisher", mqtt.Publish{Version: mqtt.ProtocolV5, QoS: mqtt.QoSAtMostOnce, Retain: true, Topic: "sensors/state", Payload: payload}); err != nil {
+	if _, err := useCase.Publish("publisher", mqtt.Publish{Version: mqtt.ProtocolV5, QoS: mqtt.QoSAtMostOnce, Retain: true, Topic: "sensors/state", Payload: payload}, testNow()); err != nil {
 		t.Fatal(err)
 	}
 	payload[0] = 'X'
@@ -230,13 +252,13 @@ func TestPublishRetainedReplaceDeleteAndNonRetainedNoop(t *testing.T) {
 	if len(queue.deliveries) != 1 || !queue.deliveries[0].Retain {
 		t.Fatalf("live retained delivery = %#v, want RETAIN=true", queue.deliveries)
 	}
-	if _, err := useCase.Publish("publisher", mqtt.Publish{Version: mqtt.ProtocolV5, QoS: mqtt.QoSAtMostOnce, Topic: "sensors/state", Payload: []byte("live")}); err != nil {
+	if _, err := useCase.Publish("publisher", mqtt.Publish{Version: mqtt.ProtocolV5, QoS: mqtt.QoSAtMostOnce, Topic: "sensors/state", Payload: []byte("live")}, testNow()); err != nil {
 		t.Fatal(err)
 	}
 	if len(retainedRepository.replaces) != 1 {
 		t.Fatalf("non-retained publish changed repository = %#v", retainedRepository.replaces)
 	}
-	if _, err := useCase.Publish("publisher", mqtt.Publish{Version: mqtt.ProtocolV5, QoS: mqtt.QoSAtMostOnce, Retain: true, Topic: "sensors/state"}); err != nil {
+	if _, err := useCase.Publish("publisher", mqtt.Publish{Version: mqtt.ProtocolV5, QoS: mqtt.QoSAtMostOnce, Retain: true, Topic: "sensors/state"}, testNow()); err != nil {
 		t.Fatal(err)
 	}
 	if !reflect.DeepEqual(retainedRepository.deletes, []string{"sensors/state"}) {
@@ -255,11 +277,11 @@ func TestPublishRetainedFullStopsBeforeFanout(t *testing.T) {
 	}
 	queue := &recordingQueue{errors: make(map[routing.SessionID]error)}
 	retainedRepository := &recordingRetainedRepository{replaceErr: applicationretained.ErrFull}
-	useCase, err := New(routes, queue, retainedRepository)
+	useCase, err := newPublishUseCase(t, routes, queue, retainedRepository)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := useCase.Publish("publisher", mqtt.Publish{Version: mqtt.ProtocolV5, QoS: mqtt.QoSAtMostOnce, Retain: true, Topic: "events/state", Payload: []byte("value")}); !errors.Is(err, applicationretained.ErrFull) {
+	if _, err := useCase.Publish("publisher", mqtt.Publish{Version: mqtt.ProtocolV5, QoS: mqtt.QoSAtMostOnce, Retain: true, Topic: "events/state", Payload: []byte("value")}, testNow()); !errors.Is(err, applicationretained.ErrFull) {
 		t.Fatalf("retained capacity error = %v, want %v", err, applicationretained.ErrFull)
 	}
 	if len(queue.calls) != 0 || len(retainedRepository.replaces) != 0 {
@@ -280,11 +302,11 @@ func TestPublishAppliesNoLocalAndRetainAsPublished(t *testing.T) {
 		}
 	}
 	queue := &recordingQueue{errors: make(map[routing.SessionID]error)}
-	useCase, err := New(routes, queue, &recordingRetainedRepository{})
+	useCase, err := newPublishUseCase(t, routes, queue, &recordingRetainedRepository{})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := useCase.Publish("publisher", mqtt.Publish{Version: mqtt.ProtocolV5, QoS: mqtt.QoSAtMostOnce, Retain: true, Topic: "events/state", Payload: []byte("value")}); err != nil {
+	if _, err := useCase.Publish("publisher", mqtt.Publish{Version: mqtt.ProtocolV5, QoS: mqtt.QoSAtMostOnce, Retain: true, Topic: "events/state", Payload: []byte("value")}, testNow()); err != nil {
 		t.Fatal(err)
 	}
 	if len(queue.deliveries) != 2 {
@@ -309,7 +331,7 @@ func TestPublishRetainedSupportsQoS1AndQoS2(t *testing.T) {
 		routes := routing.NewTable()
 		queue := &recordingQueue{errors: make(map[routing.SessionID]error)}
 		retainedRepository := &recordingRetainedRepository{}
-		useCase, err := New(routes, queue, retainedRepository)
+		useCase, err := newPublishUseCase(t, routes, queue, retainedRepository)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -320,7 +342,7 @@ func TestPublishRetainedSupportsQoS1AndQoS2(t *testing.T) {
 			Topic:   "sensors/temperature",
 			Payload: []byte("23.5"),
 		}
-		if _, err := useCase.Publish("publisher", publishPacket); err != nil {
+		if _, err := useCase.Publish("publisher", publishPacket, testNow()); err != nil {
 			t.Fatalf("QoS %d retained publish failed: %v", qos, err)
 		}
 		if len(retainedRepository.replaces) != 1 {
@@ -332,5 +354,59 @@ func TestPublishRetainedSupportsQoS1AndQoS2(t *testing.T) {
 		if string(retainedRepository.replaces[0].Payload) != "23.5" {
 			t.Fatalf("retained payload = %q, want '23.5'", string(retainedRepository.replaces[0].Payload))
 		}
+	}
+}
+
+// Traceability: PRD MQTT-04/MQTT-08/TEST-04/05; docs/specs/mqtt-protocol-and-session.md §3.2, §5; MQTT-3.3.2-5/6.
+func TestPublishStoresOneAbsoluteExpiryDeadlineAndAcceptsExpiredPublication(t *testing.T) {
+	now := testNow()
+	clock := &fakeClock{now: now}
+	routes := routing.NewTable()
+	if _, err := routes.Subscribe("subscriber", mqtt.Subscription{Filter: "events/#", QoS: mqtt.QoSAtMostOnce}); err != nil {
+		t.Fatal(err)
+	}
+	queue := &recordingQueue{errors: make(map[routing.SessionID]error)}
+	repository := &recordingRetainedRepository{}
+	useCase, err := New(clock, routes, queue, repository)
+	if err != nil {
+		t.Fatal(err)
+	}
+	receivedAt := now
+	packet := mqtt.Publish{
+		Version:                  mqtt.ProtocolV5,
+		Retain:                   true,
+		Topic:                    "events/state",
+		Payload:                  []byte("value"),
+		HasMessageExpiryInterval: true,
+		MessageExpiryInterval:    10,
+	}
+	if _, err := useCase.Publish("publisher", packet, receivedAt); err != nil {
+		t.Fatal(err)
+	}
+	wantDeadline := receivedAt.Add(10 * time.Second)
+	if len(repository.replaces) != 1 || !repository.replaces[0].ExpiresAt.Equal(wantDeadline) {
+		t.Fatalf("retained deadline = %#v, want %v", repository.replaces, wantDeadline)
+	}
+	if len(queue.deliveries) != 1 || !queue.deliveries[0].ExpiresAt.Equal(wantDeadline) {
+		t.Fatalf("delivery deadline = %#v, want %v", queue.deliveries, wantDeadline)
+	}
+
+	clock.now = wantDeadline
+	result, err := useCase.Publish("publisher", mqtt.Publish{
+		Version:                  mqtt.ProtocolV5,
+		Retain:                   true,
+		Topic:                    "events/state",
+		Payload:                  []byte("expired"),
+		HasMessageExpiryInterval: true,
+		MessageExpiryInterval:    1,
+	}, wantDeadline.Add(-time.Second))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Delivered) != 0 || len(result.Saturated) != 0 || len(result.Unavailable) != 0 {
+		t.Fatalf("expired result = %#v, want accepted without delivery", result)
+	}
+	if !reflect.DeepEqual(repository.deletes, []string{"events/state"}) {
+		t.Fatalf("expired retained deletes = %#v, want topic deletion", repository.deletes)
 	}
 }

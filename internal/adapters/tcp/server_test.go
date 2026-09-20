@@ -92,6 +92,7 @@ func newAdapterTestRuntime(t *testing.T, queueCapacity int, config Config) *adap
 		t.Fatal(err)
 	}
 	clock := &adapterTestClock{now: time.Date(2026, time.January, 1, 0, 0, 0, 0, time.UTC)}
+	config.Clock = clock
 	willBridge := NewWillBridge()
 	connections, err := connect.New(clock, repository, queue, routes, adapterTestScheduler{}, willBridge)
 	if err != nil {
@@ -101,7 +102,7 @@ func newAdapterTestRuntime(t *testing.T, queueCapacity int, config Config) *adap
 	if err != nil {
 		t.Fatal(err)
 	}
-	publications, err := publish.New(routes, queue, retainedRepository)
+	publications, err := publish.New(clock, routes, queue, retainedRepository)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -380,7 +381,7 @@ func TestTCPBlockedWriteHonorsTimeout(t *testing.T) {
 		t.Fatal(err)
 	}
 	runtimeServer := &Server{
-		config:  Config{WriteTimeout: 20 * time.Millisecond},
+		config:  Config{Clock: &adapterTestClock{now: time.Now()}, WriteTimeout: 20 * time.Millisecond},
 		encoder: encoder,
 	}
 	connection := &connection{server: runtimeServer, socket: serverSocket}
@@ -421,7 +422,7 @@ func TestTCPSingleWriterPrioritizesControlOverDelivery(t *testing.T) {
 		Topic:     "ordered/topic",
 		Payload:   []byte("delivery"),
 		QoS:       mqtt.QoSAtMostOnce,
-	}); err != nil {
+	}, time.Time{}); err != nil {
 		t.Fatal(err)
 	}
 	encoder, err := mqtt.NewEncoder(1024)
@@ -429,7 +430,7 @@ func TestTCPSingleWriterPrioritizesControlOverDelivery(t *testing.T) {
 		t.Fatal(err)
 	}
 	runtimeServer := &Server{
-		config:     Config{WriteTimeout: time.Second},
+		config:     Config{Clock: &adapterTestClock{now: time.Now()}, WriteTimeout: time.Second},
 		encoder:    encoder,
 		deliveries: queue,
 	}
@@ -474,7 +475,7 @@ func TestTCPWriterClosesConnectionAfterWriteTimeout(t *testing.T) {
 		t.Fatal(err)
 	}
 	runtimeServer := &Server{
-		config:  Config{WriteTimeout: 20 * time.Millisecond},
+		config:  Config{Clock: &adapterTestClock{now: time.Now()}, WriteTimeout: 20 * time.Millisecond},
 		encoder: encoder,
 	}
 	connection := &connection{

@@ -98,22 +98,22 @@ cmd/narumq
 - `application/connect`: lifecycle repository, shared delivery queue, routing cleanup과
   CONNACK/negative rejection을 직렬화한다.
 - `application/subscribe`와 `application/publish`: ordered ACK, retained replay의
-  queue-before-route commit, retained replace/delete와 QoS 0 route delivery를 조정한다.
-  `ports/deliveryqueue.Queue`와 `ports/retained.Repository`는 여러 use case가
-  공유하는 capability다.
+  queue-before-route commit, retained replace/delete, Message Expiry deadline 계산과
+  QoS 0·1·2 route delivery를 조정한다. `ports/deliveryqueue`, `ports/retained`와
+  `ports/clock`은 여러 use case가 공유하는 capability다.
 - `adapters/tcp`: bounded input buffer, CONNECT timeout, negotiated-version dispatch,
   single writer, SUBACK-before-replay ordering, control queue/delivery wake,
   keepalive와 connection cleanup을 소유한다.
 - `adapters/memory/deliveryqueue`, `adapters/memory/retained`,
-  `adapters/memory/sessionstore`, `adapters/clock`은 각각 bounded queue,
-  bounded process-local retained state, lifecycle map과 wall-clock 구현이다.
+  `adapters/memory/sessionstore`, `adapters/clock`은 각각 bounded queue와
+  retained state의 lazy expiry purge, lifecycle map과 wall-clock 구현이다.
 
-ingress 성공 경계는 QoS 0 PUBLISH이며 `Retain=true`도 exact-topic retained
-replace/delete와 established subscriber live delivery를 지원한다. MQTT 5 QoS 1/2와
-retained repository capacity failure는 negative ACK/DISCONNECT를 사용하고 MQTT 3.1.1은
-연결을 닫는다. TLS/auth, tenant/ACL, Will, shared subscription, takeover, durable
-offline queue와 replication은 지원하지 않는다. 이번 slice는 cluster durability를
-완료한 것으로 표시하지 않는다.
+ingress 성공 경계는 QoS 0·1·2 PUBLISH handshake이며 `Retain=true`도 exact-topic
+replace/delete와 established subscriber live delivery를 지원한다. Message Expiry는
+ingress 수신 시각에서 absolute deadline을 만들고, queue·retained replay·outbound
+serialization 전체에서 `now >= deadline`을 적용한다. MQTT 5 outbound에는 올림한
+남은 초를 쓰고 MQTT 3.1.1에는 property를 생략한다. TLS/auth, tenant/ACL, takeover,
+durable offline queue와 replication은 지원하지 않는다.
 
 ## Application-owned port
 
@@ -123,9 +123,9 @@ Port는 구현 adapter 옆이 아니라 이를 사용하는 application 쪽이 �
 | --- | --- | --- |
 | Session·state store | Epoch 조건부 read·write, snapshot과 recovery | Durable state adapter |
 | Session lifecycle | client ID별 lifecycle load/save/delete와 expiry 복구 | `application/connect.SessionRepository` ← `adapters/memory/sessionstore.MemorySessionRepository` |
-| Delivery queue | session 등록·제거, bounded enqueue, FIFO drain와 atomic batch enqueue | `application/ports/deliveryqueue.Queue` ← `adapters/memory/deliveryqueue.Queue` |
-| Retained message | exact-topic replace/delete, deterministic list와 count·byte bounded ownership | `application/ports/retained.Repository` ← `adapters/memory/retained.Repository` |
-| Clock | deterministic expiry 입력 | `application/connect.Clock` ← `adapters/clock.SystemClock` |
+| Delivery queue | session 등록·제거, bounded enqueue, FIFO drain와 atomic batch enqueue, expiry purge | `application/ports/deliveryqueue.Queue` ← `adapters/memory/deliveryqueue.Queue` |
+| Retained message | exact-topic replace/delete, deterministic expiry-aware list와 count·byte bounded ownership | `application/ports/retained.Repository` ← `adapters/memory/retained.Repository` |
+| Clock | deterministic expiry 입력 | `application/ports/clock.Clock` ← `adapters/clock.SystemClock` |
 | Replication | Command proposal, commit receipt와 membership 관찰 | `etcd/raft` adapter 후보 |
 | Peer transport | 인증된 node message 송수신과 backpressure | Cluster RPC adapter |
 | Authentication | Credential을 논리 principal과 tenant binding으로 검증 | JWT/JWKS, mTLS, password adapter |
@@ -135,10 +135,11 @@ Port는 구현 adapter 옆이 아니라 이를 사용하는 application 쪽이 �
 
 Capability별 port package, concrete adapter와 내부 client의 목표 대응은 [주요 port capability와 adapter map](project-structure.md#주요-port-capability와-adapter-map)을 따른다.
 
-현재 source에 구현된 `connect.SessionRepository`, `connect.Clock`,
+현재 source에 구현된 `connect.SessionRepository`, `ports/clock.Clock`,
 `ports/deliveryqueue.Queue`와 `ports/retained.Repository`의 method signature는 해당
-package가 소유한다. durable state·replication·authentication 같은 미구현 capability는
-target interface로만 기록한다.
+package가 소유한다. Queue와 retained port는 time-sensitive operation에 `now`를
+받고 DTO는 absolute `ExpiresAt`을 운반한다. durable state·replication·authentication
+같은 미구현 capability는 target interface로만 기록한다.
 
 ## 경계를 넘는 값
 

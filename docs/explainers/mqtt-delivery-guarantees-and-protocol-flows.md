@@ -79,6 +79,30 @@ Packet Identifier는 전역 message ID가 아니다. 한 Session의 한 방향�
 
 Broker가 메시지를 subscriber에게 새로 보낼 때는 inbound Packet Identifier를 복사하지 않고 outbound exchange에 맞는 식별자를 별도로 배정한다. `DUP`도 broker가 outbound hop의 재전송 여부로 새로 결정한다.
 
+### 5.2.1 Message Expiry: wire interval을 absolute deadline으로 바꾸기
+
+MQTT 5 PUBLISH의 Message Expiry Interval은 “지금부터 몇 초”라는 입력이다.
+브로커는 packet을 받은 순간 `T0`를 한 번 잡고 `deadline = T0 + interval`을
+계산해야 한다. NaruMQ는 [`mqtt.Publish` codec](../../internal/domain/mqtt/publish.go)에서
+property를 검증하고, [`publish.UseCase.Publish`](../../internal/application/publish/publish.go)
+에서 이 deadline을 `deliveryqueue.DeliveryDTO.ExpiresAt`와 retained DTO에 복사한다.
+QoS 2는 PUBLISH와 PUBREL이 다른 시점에 도착해도 첫 PUBLISH의 `T0`를 유지한다.
+
+```text
+T0       수신: Message Expiry Interval = 10
+T0+3 sec  전달 준비: deadline = T0+10, 남은 시간 = 7 sec
+T0+10 sec 경계: now >= deadline 이므로 queue·retained에서 제거하고 전달하지 않음
+```
+
+남은 초는 버림이 아니라 올림으로 계산한다. 예를 들어 6.1초가 남으면 MQTT 5
+outbound PUBLISH에는 `7`을 넣는다. MQTT 3.1.1 wire에는 Message Expiry property가
+없으므로 property를 쓰지 않지만, MQTT 5에서 온 publication의 `ExpiresAt` 판정은
+그대로 적용한다. 즉 version 차이는 metadata 표현 차이이지 만료 정책의 우회가 아니다.
+관련 경계는 [`Queue`](../../internal/application/ports/deliveryqueue/queue.go),
+[`writeDeliveries`](../../internal/adapters/tcp/server.go), 그리고 실제 loopback의
+[`TestMQTTIngressMessageExpiry`](../../tests/integration/mqtt_ingress_test.go)에서 확인한다.
+
+
 
 ### 5.3 QoS 0: PUBLISH 한 번
 

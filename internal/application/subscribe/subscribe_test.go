@@ -4,6 +4,7 @@ import (
 	"errors"
 	"reflect"
 	"testing"
+	"time"
 
 	"narumq/internal/application/ports/deliveryqueue"
 	"narumq/internal/application/ports/retained"
@@ -19,10 +20,10 @@ type recordingQueue struct {
 
 func (queue *recordingQueue) Register(routing.SessionID) error { return nil }
 func (queue *recordingQueue) Remove(routing.SessionID)         {}
-func (queue *recordingQueue) TryEnqueue(delivery deliveryqueue.DeliveryDTO) error {
-	return queue.TryEnqueueBatch([]deliveryqueue.DeliveryDTO{delivery})
+func (queue *recordingQueue) TryEnqueue(delivery deliveryqueue.DeliveryDTO, now time.Time) error {
+	return queue.TryEnqueueBatch([]deliveryqueue.DeliveryDTO{delivery}, now)
 }
-func (queue *recordingQueue) TryEnqueueBatch(deliveries []deliveryqueue.DeliveryDTO) error {
+func (queue *recordingQueue) TryEnqueueBatch(deliveries []deliveryqueue.DeliveryDTO, now time.Time) error {
 	queue.batchSizes = append(queue.batchSizes, len(deliveries))
 	if queue.err != nil {
 		return queue.err
@@ -33,7 +34,7 @@ func (queue *recordingQueue) TryEnqueueBatch(deliveries []deliveryqueue.Delivery
 	}
 	return nil
 }
-func (queue *recordingQueue) Drain(routing.SessionID) ([]deliveryqueue.DeliveryDTO, error) {
+func (queue *recordingQueue) Drain(routing.SessionID, time.Time) ([]deliveryqueue.DeliveryDTO, error) {
 	return nil, nil
 }
 
@@ -42,9 +43,11 @@ type recordingRetained struct {
 	err      error
 }
 
-func (repository *recordingRetained) Replace(message retained.MessageDTO) error { return nil }
-func (repository *recordingRetained) Delete(string) error                       { return nil }
-func (repository *recordingRetained) List() ([]retained.MessageDTO, error) {
+func (repository *recordingRetained) Replace(message retained.MessageDTO, _ time.Time) error {
+	return nil
+}
+func (repository *recordingRetained) Delete(string) error { return nil }
+func (repository *recordingRetained) List(time.Time) ([]retained.MessageDTO, error) {
 	if repository.err != nil {
 		return nil, repository.err
 	}
@@ -97,14 +100,14 @@ func TestSubscribeKeepsOrderedReasonsAndIsolatesFailures(t *testing.T) {
 			{Filter: "alerts/+", QoS: mqtt.QoSAtLeastOnce},
 		},
 	}
-	result, err := useCase.Subscribe("client-a", packet)
+	result, err := useCase.Subscribe("client-a", packet, time.Time{})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if result.Ack.Version != packet.Version || result.Ack.PacketID != packet.PacketID {
 		t.Fatalf("ack identity = %#v, want version %d packet id %d", result.Ack, packet.Version, packet.PacketID)
 	}
-	wantReasons := []byte{0x02, 0x8F, 0x9E, 0x00, 0x01}
+	wantReasons := []byte{0x02, 0x8F, 0x01, 0x00, 0x01}
 	if !reflect.DeepEqual(result.Ack.ReasonCodes, wantReasons) {
 		t.Fatalf("reasons = % X, want % X", result.Ack.ReasonCodes, wantReasons)
 	}
@@ -118,7 +121,7 @@ func TestSubscribeKeepsOrderedReasonsAndIsolatesFailures(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(matches) != 1 || matches[0].SessionID != "client-a" || matches[0].QoS != mqtt.QoSExactlyOnce {
+	if len(matches) != 2 || matches[0].SessionID != "client-a" || matches[1].SessionID != "client-a" {
 		t.Fatalf("sensors route = %#v", matches)
 	}
 	matches, err = routes.Match("publisher", "alerts/critical", mqtt.QoSExactlyOnce, false)
@@ -141,20 +144,20 @@ func TestSubscribeRetainHandlingAndReplayQoS(t *testing.T) {
 	}}
 	useCase := newSubscribeUseCase(t, routes, queue, repository)
 	base := mqtt.Subscription{Filter: "a/#", QoS: mqtt.QoSAtLeastOnce, NoLocal: true, RetainAsPublished: true}
-	first, err := useCase.Subscribe("subscriber", mqtt.Subscribe{Version: mqtt.ProtocolV5, PacketID: 1, Subscriptions: []mqtt.Subscription{base}})
+	first, err := useCase.Subscribe("subscriber", mqtt.Subscribe{Version: mqtt.ProtocolV5, PacketID: 1, Subscriptions: []mqtt.Subscription{base}}, time.Time{})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if first.RetainedQueued != 1 || len(queue.deliveries) != 1 || queue.deliveries[0].Topic != "a/two" || queue.deliveries[0].QoS != mqtt.QoSAtLeastOnce || !queue.deliveries[0].Retain {
 		t.Fatalf("first replay = %#v, count %d; want remote min-QoS replay", queue.deliveries, first.RetainedQueued)
 	}
-	if _, err := useCase.Subscribe("subscriber", mqtt.Subscribe{Version: mqtt.ProtocolV5, PacketID: 2, Subscriptions: []mqtt.Subscription{{Filter: "a/#", QoS: mqtt.QoSAtMostOnce, RetainHandling: mqtt.SendRetainedIfNew}}}); err != nil {
+	if _, err := useCase.Subscribe("subscriber", mqtt.Subscribe{Version: mqtt.ProtocolV5, PacketID: 2, Subscriptions: []mqtt.Subscription{{Filter: "a/#", QoS: mqtt.QoSAtMostOnce, RetainHandling: mqtt.SendRetainedIfNew}}}, time.Time{}); err != nil {
 		t.Fatal(err)
 	}
 	if len(queue.deliveries) != 1 {
 		t.Fatalf("RH=1 replayed an existing filter: %#v", queue.deliveries)
 	}
-	third, err := useCase.Subscribe("subscriber", mqtt.Subscribe{Version: mqtt.ProtocolV5, PacketID: 3, Subscriptions: []mqtt.Subscription{{Filter: "a/#", QoS: mqtt.QoSAtMostOnce, RetainHandling: mqtt.DoNotSendRetained}}})
+	third, err := useCase.Subscribe("subscriber", mqtt.Subscribe{Version: mqtt.ProtocolV5, PacketID: 3, Subscriptions: []mqtt.Subscription{{Filter: "a/#", QoS: mqtt.QoSAtMostOnce, RetainHandling: mqtt.DoNotSendRetained}}}, time.Time{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -177,7 +180,7 @@ func TestSubscribeMQTT311RejectsRuntimeOptions(t *testing.T) {
 			{Filter: "b", QoS: mqtt.QoSAtMostOnce, NoLocal: true},
 			{Filter: "c", QoS: mqtt.QoSAtMostOnce, RetainHandling: mqtt.DoNotSendRetained},
 		},
-	})
+	}, time.Time{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -197,7 +200,7 @@ func TestSubscribeRetainedCapacityDoesNotCommitRoute(t *testing.T) {
 	queue := &recordingQueue{err: deliveryqueue.ErrFull}
 	repository := &recordingRetained{messages: []retained.MessageDTO{{Topic: "events/one", Payload: []byte("value"), QoS: mqtt.QoSAtMostOnce}}}
 	useCase := newSubscribeUseCase(t, routes, queue, repository)
-	result, err := useCase.Subscribe("subscriber", mqtt.Subscribe{Version: mqtt.ProtocolV5, PacketID: 4, Subscriptions: []mqtt.Subscription{{Filter: "events/#", QoS: mqtt.QoSAtMostOnce}}})
+	result, err := useCase.Subscribe("subscriber", mqtt.Subscribe{Version: mqtt.ProtocolV5, PacketID: 4, Subscriptions: []mqtt.Subscription{{Filter: "events/#", QoS: mqtt.QoSAtMostOnce}}}, time.Time{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -215,12 +218,12 @@ func TestSubscribePropagatesReplayDependencies(t *testing.T) {
 	queue := &recordingQueue{err: deliveryqueue.ErrUnavailable}
 	repository := &recordingRetained{messages: []retained.MessageDTO{{Topic: "events/one", Payload: []byte("value"), QoS: mqtt.QoSAtMostOnce}}}
 	useCase := newSubscribeUseCase(t, routes, queue, repository)
-	if _, err := useCase.Subscribe("subscriber", mqtt.Subscribe{Version: mqtt.ProtocolV5, Subscriptions: []mqtt.Subscription{{Filter: "events/#"}}}); !errors.Is(err, deliveryqueue.ErrUnavailable) {
+	if _, err := useCase.Subscribe("subscriber", mqtt.Subscribe{Version: mqtt.ProtocolV5, Subscriptions: []mqtt.Subscription{{Filter: "events/#"}}}, time.Time{}); !errors.Is(err, deliveryqueue.ErrUnavailable) {
 		t.Fatalf("queue unavailable error = %v, want %v", err, deliveryqueue.ErrUnavailable)
 	}
 	repository.err = errors.New("retained repository stopped")
 	queue.err = nil
-	if _, err := useCase.Subscribe("subscriber", mqtt.Subscribe{Version: mqtt.ProtocolV5, Subscriptions: []mqtt.Subscription{{Filter: "events/#", RetainHandling: mqtt.SendRetainedIfNew}}}); !errors.Is(err, repository.err) {
+	if _, err := useCase.Subscribe("subscriber", mqtt.Subscribe{Version: mqtt.ProtocolV5, Subscriptions: []mqtt.Subscription{{Filter: "events/#", RetainHandling: mqtt.SendRetainedIfNew}}}, time.Time{}); !errors.Is(err, repository.err) {
 		t.Fatalf("repository error = %v, want %v", err, repository.err)
 	}
 	if _, ok := routes.Lookup("subscriber", "events/#"); ok {
@@ -240,7 +243,7 @@ func TestUnsubscribeReasonsAndIdempotence(t *testing.T) {
 		PacketID: 10,
 		Filters:  []string{"sensors/#", "missing/#", "broken/#/filter", "$share/team/sensors/#"},
 	})
-	wantReasons := []byte{0x00, 0x11, 0x8F, 0x8F}
+	wantReasons := []byte{0x00, 0x11, 0x8F, 0x11}
 	if !reflect.DeepEqual(ack.ReasonCodes, wantReasons) {
 		t.Fatalf("reasons = % X, want % X", ack.ReasonCodes, wantReasons)
 	}
@@ -261,18 +264,150 @@ func TestUnsubscribeReasonsAndIdempotence(t *testing.T) {
 // Traceability: PRD MQTT-06/MQTT-07/TEST-03/04/05; docs/specs/mqtt-protocol-and-session.md §4; MQTT-3.8.3-1/2.
 func TestSubscribeMapsValidationReasonsByProtocol(t *testing.T) {
 	useCase := newSubscribeUseCase(t, routing.NewTable(), &recordingQueue{}, &recordingRetained{})
-	v5, err := useCase.Subscribe("", mqtt.Subscribe{Version: mqtt.ProtocolV5, Subscriptions: []mqtt.Subscription{{Filter: "topic"}, {Filter: "$share/group/topic"}}})
+	v5, err := useCase.Subscribe("", mqtt.Subscribe{Version: mqtt.ProtocolV5, Subscriptions: []mqtt.Subscription{{Filter: "topic"}, {Filter: "$share/group/topic"}}}, time.Time{})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if !reflect.DeepEqual(v5.Ack.ReasonCodes, []byte{0x8F, 0x8F}) {
 		t.Fatalf("MQTT 5 validation reasons = % X", v5.Ack.ReasonCodes)
 	}
-	v311, err := useCase.Subscribe("client", mqtt.Subscribe{Version: mqtt.ProtocolV311, Subscriptions: []mqtt.Subscription{{Filter: "topic", QoS: 3}, {Filter: "$share/group/topic"}}})
+	v311, err := useCase.Subscribe("client", mqtt.Subscribe{Version: mqtt.ProtocolV311, Subscriptions: []mqtt.Subscription{{Filter: "topic", QoS: 3}, {Filter: "$share//topic"}}}, time.Time{})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if !reflect.DeepEqual(v311.Ack.ReasonCodes, []byte{0x80, 0x80}) {
 		t.Fatalf("MQTT 3.1.1 validation reasons = % X", v311.Ack.ReasonCodes)
+	}
+}
+
+// Traceability: PRD MQTT-07/TEST-03; MQTT-3.8.3-4.
+func TestSubscribeSharedSubscriptionRejectsNoLocal(t *testing.T) {
+	routes := routing.NewTable()
+	useCase := newSubscribeUseCase(t, routes, &recordingQueue{}, &recordingRetained{})
+
+	// MQTT 5: Protocol Error (0x82)
+	v5Result, err := useCase.Subscribe("client-v5", mqtt.Subscribe{
+		Version:  mqtt.ProtocolV5,
+		PacketID: 1,
+		Subscriptions: []mqtt.Subscription{
+			{Filter: "$share/group/tasks", QoS: mqtt.QoSAtLeastOnce, NoLocal: true},
+		},
+	}, time.Time{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(v5Result.Ack.ReasonCodes, []byte{0x82}) {
+		t.Fatalf("v5 reasons = % X, want [0x82]", v5Result.Ack.ReasonCodes)
+	}
+	if _, ok := routes.Lookup("client-v5", "$share/group/tasks"); ok {
+		t.Fatal("route committed after NoLocal protocol error")
+	}
+
+	// MQTT 3.1.1: Failure (0x80)
+	v3Result, err := useCase.Subscribe("client-v3", mqtt.Subscribe{
+		Version:  mqtt.ProtocolV311,
+		PacketID: 2,
+		Subscriptions: []mqtt.Subscription{
+			{Filter: "$share/group/tasks", QoS: mqtt.QoSAtLeastOnce, NoLocal: true},
+		},
+	}, time.Time{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(v3Result.Ack.ReasonCodes, []byte{0x80}) {
+		t.Fatalf("v3 reasons = % X, want [0x80]", v3Result.Ack.ReasonCodes)
+	}
+	if _, ok := routes.Lookup("client-v3", "$share/group/tasks"); ok {
+		t.Fatal("v3 route committed after NoLocal error")
+	}
+}
+
+// Traceability: PRD MQTT-07/TEST-03; MQTT-4.8.2-1.
+func TestSubscribeSharedSubscriptionSuppressesRetainedReplay(t *testing.T) {
+	routes := routing.NewTable()
+	queue := &recordingQueue{}
+	repository := &recordingRetained{messages: []retained.MessageDTO{
+		{Topic: "tasks/urgent", Payload: []byte("retained-task"), QoS: mqtt.QoSAtLeastOnce},
+	}}
+	useCase := newSubscribeUseCase(t, routes, queue, repository)
+
+	result, err := useCase.Subscribe("worker", mqtt.Subscribe{
+		Version:  mqtt.ProtocolV5,
+		PacketID: 1,
+		Subscriptions: []mqtt.Subscription{
+			{Filter: "$share/workers/tasks/+", QoS: mqtt.QoSAtLeastOnce, RetainHandling: mqtt.SendRetainedAtSubscribe},
+		},
+	}, time.Time{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(result.Ack.ReasonCodes, []byte{0x01}) {
+		t.Fatalf("reasons = % X, want [0x01]", result.Ack.ReasonCodes)
+	}
+	if result.RetainedQueued != 0 || len(queue.deliveries) != 0 {
+		t.Fatalf("retained was replayed for shared subscription: queued = %d, deliveries = %#v", result.RetainedQueued, queue.deliveries)
+	}
+
+	// Live publication matches the worker
+	matches, err := routes.Match("publisher", "tasks/urgent", mqtt.QoSAtLeastOnce, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(matches) != 1 || matches[0].SessionID != "worker" {
+		t.Fatalf("live match = %#v, want worker", matches)
+	}
+}
+
+// Traceability: PRD MQTT-07/TEST-03; MQTT-4.8.2-1.
+func TestSubscribeMQTT311AcceptsSharedSubscription(t *testing.T) {
+	routes := routing.NewTable()
+	useCase := newSubscribeUseCase(t, routes, &recordingQueue{}, &recordingRetained{})
+
+	result, err := useCase.Subscribe("legacy-client", mqtt.Subscribe{
+		Version:  mqtt.ProtocolV311,
+		PacketID: 5,
+		Subscriptions: []mqtt.Subscription{
+			{Filter: "$share/pool/metrics", QoS: mqtt.QoSAtMostOnce},
+		},
+	}, time.Time{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(result.Ack.ReasonCodes, []byte{0x00}) {
+		t.Fatalf("MQTT 3.1.1 shared sub reason = % X, want [0x00]", result.Ack.ReasonCodes)
+	}
+	if _, ok := routes.Lookup("legacy-client", "$share/pool/metrics"); !ok {
+		t.Fatal("shared subscription not committed for MQTT 3.1.1")
+	}
+}
+
+// Traceability: PRD MQTT-08/TEST-04/05; docs/specs/mqtt-protocol-and-session.md §5; MQTT-3.3.2-5/6.
+func TestSubscribeReplayPreservesRetainedExpiryDeadline(t *testing.T) {
+	now := time.Date(2026, time.January, 1, 0, 0, 0, 0, time.UTC)
+	routes := routing.NewTable()
+	queue := &recordingQueue{}
+	repository := &recordingRetained{messages: []retained.MessageDTO{{
+		PublisherSessionID: "publisher",
+		Topic:              "events/state",
+		Payload:            []byte("value"),
+		QoS:                mqtt.QoSAtLeastOnce,
+		ExpiresAt:          now.Add(10 * time.Second),
+	}}}
+	useCase := newSubscribeUseCase(t, routes, queue, repository)
+	result, err := useCase.Subscribe("subscriber", mqtt.Subscribe{
+		Version: mqtt.ProtocolV5,
+		Subscriptions: []mqtt.Subscription{{
+			Filter: "events/#",
+			QoS:    mqtt.QoSAtMostOnce,
+		}},
+	}, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.RetainedQueued != 1 || len(queue.deliveries) != 1 {
+		t.Fatalf("replay result = %#v, deliveries = %#v", result, queue.deliveries)
+	}
+	if !queue.deliveries[0].ExpiresAt.Equal(now.Add(10 * time.Second)) {
+		t.Fatalf("replay deadline = %v, want %v", queue.deliveries[0].ExpiresAt, now.Add(10*time.Second))
 	}
 }

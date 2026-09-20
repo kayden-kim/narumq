@@ -39,7 +39,7 @@ func TestDispatchPublishQoS1AndDuplicate(t *testing.T) {
 		Subscriptions: []mqtt.Subscription{
 			{Filter: "sensors/temp", QoS: mqtt.QoSAtLeastOnce},
 		},
-	}); err != nil {
+	}, time.Time{}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -79,7 +79,7 @@ func TestDispatchPublishQoS1AndDuplicate(t *testing.T) {
 	}
 
 	// Verify delivery was enqueued for sub-session
-	items, err := runtime.server.deliveries.Drain("sub-session")
+	items, err := runtime.server.deliveries.Drain("sub-session", time.Time{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -105,7 +105,7 @@ func TestDispatchPublishQoS1AndDuplicate(t *testing.T) {
 	}
 
 	// Verify no new items in delivery queue
-	itemsAfterDup, err := runtime.server.deliveries.Drain("sub-session")
+	itemsAfterDup, err := runtime.server.deliveries.Drain("sub-session", time.Time{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -131,7 +131,7 @@ func TestDispatchPublishQoS2AndHandshake(t *testing.T) {
 		Subscriptions: []mqtt.Subscription{
 			{Filter: "events/state", QoS: mqtt.QoSExactlyOnce},
 		},
-	}); err != nil {
+	}, time.Time{}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -171,7 +171,7 @@ func TestDispatchPublishQoS2AndHandshake(t *testing.T) {
 	}
 
 	// Message should NOT be delivered yet prior to PUBREL
-	items, err := runtime.server.deliveries.Drain("sub2-session")
+	items, err := runtime.server.deliveries.Drain("sub2-session", time.Time{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -217,7 +217,7 @@ func TestDispatchPublishQoS2AndHandshake(t *testing.T) {
 	}
 
 	// Verify message was delivered upon PUBREL
-	itemsAfterRel, err := runtime.server.deliveries.Drain("sub2-session")
+	itemsAfterRel, err := runtime.server.deliveries.Drain("sub2-session", time.Time{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -254,6 +254,74 @@ func TestDispatchPublishQoS2AndHandshake(t *testing.T) {
 	}
 }
 
+// Traceability: PRD MQTT-08/TEST-03/TEST-04/TEST-05; docs/specs/mqtt-protocol-and-session.md §5; MQTT-3.3.2-5/6.
+func TestQoS2MessageExpiryUsesOriginalReceiveTimestamp(t *testing.T) {
+	runtime := newAdapterTestRuntime(t, 2, defaultAdapterConfig())
+	defer runtime.stop(t)
+
+	clock := runtime.server.config.Clock.(*adapterTestClock)
+	serverSocket, clientSocket := net.Pipe()
+	defer serverSocket.Close()
+	defer clientSocket.Close()
+
+	const subscriberSession = "expiry-subscriber"
+	runtime.server.deliveries.Register(subscriberSession)
+	if _, err := runtime.server.subscriptions.Subscribe(subscriberSession, mqtt.Subscribe{
+		Version: mqtt.ProtocolV5,
+		Subscriptions: []mqtt.Subscription{
+			{Filter: "expiry/qos2", QoS: mqtt.QoSExactlyOnce},
+		},
+	}, clock.now); err != nil {
+		t.Fatal(err)
+	}
+
+	conn := newConnection(runtime.server, serverSocket)
+	conn.sessionID = "expiry-publisher"
+	conn.version = mqtt.ProtocolV5
+	if err := conn.dispatchPublish(mqtt.Publish{
+		Version:                  mqtt.ProtocolV5,
+		Topic:                    "expiry/qos2",
+		Payload:                  []byte("expired"),
+		QoS:                      mqtt.QoSExactlyOnce,
+		PacketID:                 21,
+		HasMessageExpiryInterval: true,
+		MessageExpiryInterval:    1,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case message := <-conn.controlQueue:
+		pubrec, ok := message.packet.(*mqtt.PubRec)
+		if !ok || pubrec.PacketID != 21 {
+			t.Fatalf("expected PubRec for packet 21, got %#v", message.packet)
+		}
+	default:
+		t.Fatal("expected PubRec before PUBREL")
+	}
+
+	clock.now = clock.now.Add(2 * time.Second)
+	if err := conn.dispatchPubRel(&mqtt.PubRel{Version: mqtt.ProtocolV5, PacketID: 21}); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case message := <-conn.controlQueue:
+		pubcomp, ok := message.packet.(*mqtt.PubComp)
+		if !ok || pubcomp.PacketID != 21 {
+			t.Fatalf("expected PubComp for packet 21, got %#v", message.packet)
+		}
+	default:
+		t.Fatal("expected PubComp after PUBREL")
+	}
+
+	items, err := runtime.server.deliveries.Drain(subscriberSession, clock.now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(items) != 0 {
+		t.Fatalf("expired QoS 2 publication was delivered: %#v", items)
+	}
+}
+
 func TestOutboundQoS1AndQoS2Lifecycle(t *testing.T) {
 	runtime := newAdapterTestRuntime(t, 4, defaultAdapterConfig())
 	defer runtime.stop(t)
@@ -274,7 +342,7 @@ func TestOutboundQoS1AndQoS2Lifecycle(t *testing.T) {
 		Topic:     "test/qos1",
 		Payload:   []byte("qos1-data"),
 		QoS:       mqtt.QoSAtLeastOnce,
-	}); err != nil {
+	}, time.Time{}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -317,7 +385,7 @@ func TestOutboundQoS1AndQoS2Lifecycle(t *testing.T) {
 		Topic:     "test/qos2",
 		Payload:   []byte("qos2-data"),
 		QoS:       mqtt.QoSExactlyOnce,
-	}); err != nil {
+	}, time.Time{}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -411,7 +479,7 @@ func TestDispatchPubAckRecCompEdgeCases(t *testing.T) {
 		Topic:     "test/qos2-err",
 		Payload:   []byte("data"),
 		QoS:       mqtt.QoSExactlyOnce,
-	}); err != nil {
+	}, time.Time{}); err != nil {
 		t.Fatal(err)
 	}
 	go func() { _ = conn.writeDeliveries() }()
@@ -445,7 +513,7 @@ func TestDispatchPubAckRecCompEdgeCases(t *testing.T) {
 		Topic:     "test/qos1-err",
 		Payload:   []byte("data"),
 		QoS:       mqtt.QoSAtLeastOnce,
-	}); err != nil {
+	}, time.Time{}); err != nil {
 		t.Fatal(err)
 	}
 	go func() { _ = conn.writeDeliveries() }()
@@ -534,7 +602,7 @@ func TestWriteDeliveriesEdgeCases(t *testing.T) {
 		Topic:     "test/exhausted",
 		Payload:   []byte("exhausted"),
 		QoS:       mqtt.QoSAtLeastOnce,
-	}); err != nil {
+	}, time.Time{}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -544,7 +612,7 @@ func TestWriteDeliveriesEdgeCases(t *testing.T) {
 	}
 
 	// Verify item was re-enqueued
-	items, err := runtime.server.deliveries.Drain(conn.sessionID)
+	items, err := runtime.server.deliveries.Drain(conn.sessionID, time.Time{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -576,11 +644,12 @@ func newBoundedRetainedRuntime(t *testing.T, messageCap, byteCap, queueCap int) 
 	if err != nil {
 		t.Fatal(err)
 	}
-	publications, err := publish.New(routes, queue, retainedRepository)
+	publications, err := publish.New(clock, routes, queue, retainedRepository)
 	if err != nil {
 		t.Fatal(err)
 	}
 	config := defaultAdapterConfig()
+	config.Clock = clock
 	decoder, err := mqtt.NewDecoder(config.MaxPacketSize)
 	if err != nil {
 		t.Fatal(err)
@@ -733,7 +802,7 @@ func TestDispatchPublishAndPubRelSessionSaturation(t *testing.T) {
 		Subscriptions: []mqtt.Subscription{
 			{Filter: "sat/#", QoS: mqtt.QoSAtLeastOnce},
 		},
-	}); err != nil {
+	}, time.Time{}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -743,7 +812,7 @@ func TestDispatchPublishAndPubRelSessionSaturation(t *testing.T) {
 		Topic:     "sat/1",
 		Payload:   []byte("1"),
 		QoS:       mqtt.QoSAtMostOnce,
-	}); err != nil {
+	}, time.Time{}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -778,7 +847,7 @@ func TestDispatchPublishAndPubRelSessionSaturation(t *testing.T) {
 		Subscriptions: []mqtt.Subscription{
 			{Filter: "sat2/#", QoS: mqtt.QoSExactlyOnce},
 		},
-	}); err != nil {
+	}, time.Time{}); err != nil {
 		t.Fatal(err)
 	}
 	if err := runtime.server.deliveries.TryEnqueue(applicationdeliveryqueue.DeliveryDTO{
@@ -786,7 +855,7 @@ func TestDispatchPublishAndPubRelSessionSaturation(t *testing.T) {
 		Topic:     "sat2/1",
 		Payload:   []byte("1"),
 		QoS:       mqtt.QoSAtMostOnce,
-	}); err != nil {
+	}, time.Time{}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -825,7 +894,7 @@ func TestDispatchPublishAndPubRelInvalidTransitions(t *testing.T) {
 
 	// 1. QoS 1 invalid transition on duplicate
 	conn.deliveryMu.Lock()
-	conn.inbound[77] = delivery.Inbound{} // zero value has phase: inboundInvalid
+	conn.inbound[77] = inboundState{state: delivery.Inbound{}}
 	conn.deliveryMu.Unlock()
 
 	if err := conn.dispatchPublish(mqtt.Publish{
@@ -839,7 +908,7 @@ func TestDispatchPublishAndPubRelInvalidTransitions(t *testing.T) {
 
 	// 2. QoS 2 invalid transition on duplicate
 	conn.deliveryMu.Lock()
-	conn.inbound[78] = delivery.Inbound{}
+	conn.inbound[78] = inboundState{state: delivery.Inbound{}}
 	conn.deliveryMu.Unlock()
 
 	if err := conn.dispatchPublish(mqtt.Publish{

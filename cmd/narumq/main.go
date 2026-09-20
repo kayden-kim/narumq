@@ -151,7 +151,7 @@ func runWithContext(ctx context.Context, args []string, logger *slog.Logger) err
 	if err != nil {
 		return fmt.Errorf("create subscribe use case: %w", err)
 	}
-	publications, err := publish.New(routes, deliveries, retainedRepository)
+	publications, err := publish.New(systemClock, routes, deliveries, retainedRepository)
 	if err != nil {
 		return fmt.Errorf("create publish use case: %w", err)
 	}
@@ -166,6 +166,7 @@ func runWithContext(ctx context.Context, args []string, logger *slog.Logger) err
 	server, err := tcpadapter.NewServer(
 		listeners[0],
 		tcpadapter.Config{
+			Clock:                  systemClock,
 			MaxPacketSize:          *maxPacketSize,
 			ConnectTimeout:         *connectTimeout,
 			WriteTimeout:           *writeTimeout,

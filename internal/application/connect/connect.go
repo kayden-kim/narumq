@@ -6,6 +6,7 @@ import (
 	"sync"
 	"time"
 
+	applicationclock "narumq/internal/application/ports/clock"
 	"narumq/internal/application/ports/deliveryqueue"
 	"narumq/internal/domain/mqtt"
 	"narumq/internal/domain/routing"
@@ -44,11 +45,6 @@ type WillPublisher interface {
 	PublishWill(sessionID routing.SessionID, will mqtt.Will) error
 }
 
-// Clock supplies the instant used by session expiry policy.
-type Clock interface {
-	Now() time.Time
-}
-
 // SessionRepository stores the lifecycle value for one Client ID.
 type SessionRepository interface {
 	Load(clientID string) (session.Lifecycle, bool, error)
@@ -73,7 +69,7 @@ type clientTimers struct {
 
 type UseCase struct {
 	mu            sync.Mutex
-	clock         Clock
+	clock         applicationclock.Clock
 	sessions      SessionRepository
 	deliveries    deliveryqueue.Queue
 	routes        *routing.Table
@@ -85,7 +81,7 @@ type UseCase struct {
 
 // New creates a connection use case over the supplied lifecycle boundaries.
 func New(
-	clock Clock,
+	clock applicationclock.Clock,
 	sessions SessionRepository,
 	deliveries deliveryqueue.Queue,
 	routes *routing.Table,

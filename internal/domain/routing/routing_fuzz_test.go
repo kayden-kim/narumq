@@ -25,9 +25,6 @@ func FuzzTopicMatching(f *testing.F) {
 		filterErr := ValidateTopicFilter(rawFilter)
 		if filterErr != nil {
 			wantErr := ErrInvalidTopicFilter
-			if IsSharedFilter(rawFilter) {
-				wantErr = ErrSharedSubscriptionUnsupported
-			}
 			if !errors.Is(filterErr, wantErr) {
 				t.Fatalf("ValidateTopicFilter(%q) error = %v, want %v", rawFilter, filterErr, wantErr)
 			}
@@ -103,7 +100,7 @@ func FuzzTopicMatching(f *testing.F) {
 		}
 
 		oracleMatches := referenceTopicMatchesFilter(rawTopic, rawFilter)
-		if grantedSubscription.NoLocal && publisherSessionID == sessionID {
+		if !IsSharedFilter(rawFilter) && grantedSubscription.NoLocal && publisherSessionID == sessionID {
 			oracleMatches = false
 		}
 		if oracleMatches {
@@ -124,10 +121,16 @@ func FuzzTopicMatching(f *testing.F) {
 }
 
 func referenceTopicMatchesFilter(topic, filter string) bool {
+	if IsSharedFilter(filter) {
+		_, subFilter, _, err := ParseSharedFilter(filter)
+		if err == nil {
+			filter = subFilter
+		}
+	}
 	topicLevels := strings.Split(topic, "/")
 	filterLevels := strings.Split(filter, "/")
 	if strings.HasPrefix(topic, "$") && len(filterLevels) > 0 {
-		if firstLevel := filterLevels[0]; firstLevel == "+" || firstLevel == "#" {
+		if filterLevels[0] == "+" || filterLevels[0] == "#" {
 			return false
 		}
 	}

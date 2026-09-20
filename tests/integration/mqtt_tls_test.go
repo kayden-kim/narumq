@@ -266,7 +266,8 @@ func newTLSFixture(t *testing.T, opts tlsFixtureOptions) *tlsFixture {
 	}
 	repository := sessionstore.New()
 	willBridge := tcpadapter.NewWillBridge()
-	connections, err := connect.New(clock.SystemClock{}, repository, deliveries, routes, clock.SystemScheduler{}, willBridge)
+	systemClock := clock.SystemClock{}
+	connections, err := connect.New(systemClock, repository, deliveries, routes, clock.SystemScheduler{}, willBridge)
 	if err != nil {
 		tlsListener.Close()
 		if tcpListener != nil {
@@ -282,7 +283,7 @@ func newTLSFixture(t *testing.T, opts tlsFixtureOptions) *tlsFixture {
 		}
 		t.Fatal(err)
 	}
-	publications, err := publish.New(routes, deliveries, retainedRepo)
+	publications, err := publish.New(systemClock, routes, deliveries, retainedRepo)
 	if err != nil {
 		tlsListener.Close()
 		if tcpListener != nil {
@@ -316,6 +317,7 @@ func newTLSFixture(t *testing.T, opts tlsFixtureOptions) *tlsFixture {
 		primaryListener,
 		tcpadapter.Config{
 			MaxPacketSize:          1048576,
+			Clock:                  systemClock,
 			ConnectTimeout:         time.Second,
 			WriteTimeout:           time.Second,
 			ControlQueueCapacity:   16,
