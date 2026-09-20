@@ -233,6 +233,57 @@ Phase 0에서 profile별 최소 throughput, 최대 p99·p99.9, connection당 mem
 | chaos | process/host loss, packet loss·latency·partition, disk full·slow I/O | production-like cluster |
 | benchmark | 성능·용량·회귀와 EMQX 비교 | 격리된 benchmark environment |
 
+### 7.1 Phase 0 mutation·fuzz gate
+
+현재 Phase 0에서 mutation gate가 직접 다루는 critical state machine은
+`internal/domain/delivery/state.go`와 `internal/domain/session/state.go`다.
+두 package를 하나의 합산 점수로 평가하지 않고 package별로 독립 실행한다.
+mutation 도구는 repository의 Go tool dependency로 고정한 Gremlins `v0.6.0`이며,
+정책은 [`tests/verification/gremlins.yaml`](../../tests/verification/gremlins.yaml)에
+둔다. 이 정책은 `workers=1`, `test-cpu=1`, `efficacy=80`, `mutant-coverage=80`을
+고정하고 source·file·mutant exclusion을 사용하지 않는다. 각 package는 다음 command와
+JSON artifact를 별도로 만든다.
+
+```text
+go tool gremlins unleash --config=tests/verification/gremlins.yaml --output=.artifacts/verification/mutation-delivery.json internal/domain/delivery
+go tool gremlins unleash --config=tests/verification/gremlins.yaml --output=.artifacts/verification/mutation-session.json internal/domain/session
+```
+
+Package별 판정식은 다음과 같다. `KILLED`는 test가 mutant를 잡은 수,
+`LIVED`는 mutant가 살아남은 수, `NOT_COVERED`는 실행되지 않은 mutant 수다.
+
+```text
+test efficacy =
+    KILLED / (KILLED + LIVED) × 100
+
+mutant coverage =
+    (KILLED + LIVED) /
+    (KILLED + LIVED + NOT_COVERED) × 100
+```
+
+두 수치가 각 package에서 모두 80 이상이어야 한다. 한 package의 높은 점수로 다른
+package의 실패를 상쇄하지 않는다. equivalent mutant를 별도로 제외하지 않으며,
+관찰 가능한 계약이 누락되어 `LIVED`가 발생하면 해당 package의 기존 state test에
+정상·오류·경계 전이 assertion을 보강한다.
+
+TEST-13의 표준 fuzz campaign은 다음 네 target을 각각 별도 process로 실행한다.
+`-fuzztime=10000x`는 고정 작업량이고 `-parallel=1`은 한 process 안의 fuzz worker를
+하나로 제한한다.
+
+```text
+go test ./internal/domain/mqtt -run=^$ -fuzz=^FuzzDecoder$ -fuzztime=10000x -parallel=1
+go test ./internal/domain/mqtt -run=^$ -fuzz=^FuzzCodecRoundTrip$ -fuzztime=10000x -parallel=1
+go test ./internal/domain/routing -run=^$ -fuzz=^FuzzTopicMatching$ -fuzztime=10000x -parallel=1
+go test ./internal/domain/session -run=^$ -fuzz=^FuzzLifecycleTransitions$ -fuzztime=10000x -parallel=1
+```
+
+Go fuzz가 생성하는 입력의 발견 순서는 deterministic하지 않다. 따라서 gate의 반복
+계약은 입력 순서가 아니라 네 target의 고정 quota와 실패 입력의 보존이다. 실패가
+발견되면 해당 package의 `testdata/fuzz/<Target>/` corpus로 승격해 ordinary test와
+후속 fuzz 실행에서 재현되게 한다. 현재 Phase 0에는 production ownership, ACL,
+drain state machine이 없으므로 mutation target이 아니다. 해당 기능이 구현되는
+변경에서는 그 package의 80% 기준과 runner command를 같은 변경에 추가한다.
+
 Feature와 bug fix는 실패를 재현하는 test를 포함해야 한다. Flaky test 격리는 임시 조치이며 owner와 해소 기한을 기록해야 한다.
 
 Phase 0의 MQTT normative statement 연결표는
@@ -249,20 +300,39 @@ Phase 0의 MQTT normative statement 연결표는
 - PR 변경 code는 line/branch diff coverage 95% 이상이어야 한다.
 - coverage는 ratchet이다. 더 높은 기준에 도달한 release 뒤에는 낮출 수 없다.
 - generated/vendor code와 단순 선언만 근거를 남겨 제외할 수 있다.
-- critical state machine mutation score는 80% 이상이어야 한다.
+- `internal/domain/delivery`와 `internal/domain/session`은 각각 test efficacy와 mutant coverage 80% 이상이어야 한다. 두 package의 mutation 결과는 합산하지 않는다.
 - concurrency code는 race detector 또는 동등한 검사를 통과해야 한다.
 
-현재 Phase 0의 자동 검증은 다음 명령을 기준으로 한다.
+현재 Phase 0의 자동 검증 표준 진입점은 다음 명령이다.
 
 ```text
 go run ./tools/verify local
 go run ./tools/verify ci --base <merge-base>
 ```
 
-`local`은 `go vet`, 전체 test, race test, traceability, architecture와
-coverage profile 생성을 순서대로 실행한다. `ci`는 같은 검증에 더해 `base...HEAD`
-의 production 변경 line/function diff coverage를 확인한다. 두 명령은 첫 실패에서
-멈추고, coverage 원본과 요약을 `.artifacts/verification/`에 남긴다.
+두 runner는 gofmt 사전 검사 뒤 아래 13개 command를 이 순서로 실행하고 첫 실패에서
+멈춘다.
+
+```text
+go vet ./...
+go test ./... -count=1
+4 bounded fuzz campaigns
+go test -race ./... -count=1
+go run ./tools/verify traceability
+go run ./tools/verify architecture
+atomic coverage profile generation
+go run ./tools/verify coverage ...
+delivery mutation
+session mutation
+```
+
+`ci`는 coverage command에만 `--base <merge-base>`를 정확히 한 번 전달한다.
+mutation command에는 diff base를 전달하지 않는다. coverage 원본과 요약은
+`.artifacts/verification/coverage.out` 및
+`.artifacts/verification/coverage-summary.json`에, package별 mutation 결과는
+`.artifacts/verification/mutation-delivery.json`과
+`.artifacts/verification/mutation-session.json`에 남긴다. `ci`는 같은 검증에 더해
+`base...HEAD`의 production 변경 line/function diff coverage를 확인한다.
 
 Coverage 계산은 Go atomic coverprofile의 executable block을 합쳐 다음처럼 만든다.
 
@@ -308,7 +378,7 @@ P0 traffic 승인은 다음 증거가 모두 있을 때만 가능하다.
 
 1. 모든 P0 요구사항에 unit test와 자동 acceptance test가 연결돼 있다.
 2. MQTT compliance matrix에 지원 normative statement가 빠짐없이 연결돼 있다.
-3. coverage, mutation, fuzz와 race gate가 통과했다.
+3. coverage와 race gate, 네 bounded fuzz campaign, 그리고 `internal/domain/delivery`·`internal/domain/session`의 package별 mutation gate가 모두 통과했다. 각 mutation JSON은 `.artifacts/verification/`에 보존하고 두 점수 공식과 80% 기준을 적용한다.
 4. BP-01~BP-07을 각 기능이 완성된 phase에서 실행했고 raw artifact가 있다.
 5. 정상 3-node와 N-1에서 확정한 production profile SLO를 충족했다.
 6. 단일 node kill에서 durable ACK message gap이 0이다.
@@ -317,5 +387,13 @@ P0 traffic 승인은 다음 증거가 모두 있을 때만 가능하다.
 9. tenant isolation과 관리 API RBAC penetration test를 통과했다.
 10. backup/restore, rollback, Metric·alert·Dashboard를 production-like 환경에서 검증했다.
 11. MQTT 3.1.0 inventory와 migration/격리 증거가 있다.
+
+표준 runner가 생성한 `.artifacts/verification/coverage.out`,
+`.artifacts/verification/coverage-summary.json`,
+`.artifacts/verification/mutation-delivery.json`과
+`.artifacts/verification/mutation-session.json`이 release evidence의 검증 원본이다.
+Fuzz failure가 발생하면 해당 package의 `testdata/fuzz/<Target>/` corpus도 함께
+보존해야 하며, quota를 채웠다는 사실만으로 보존된 failure를 삭제하거나
+입력 순서를 deterministic하다고 간주해서는 안 된다.
 
 증거가 없으면 완료가 아니다.

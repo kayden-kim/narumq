@@ -349,17 +349,46 @@ go run ./tools/verify local
 go run ./tools/verify ci --base <merge-base>
 ```
 
-`local`은 다음 순서를 고정한다.
+`local`과 `ci`는 gofmt 사전 검사 뒤 다음 순서의 13개 command를 실행한다.
+gofmt 검사는 source를 수정하지 않고 불일치가 있으면 이후 command를 실행하지 않는다.
 
 ```text
-gofmt 검사 → go vet ./... → go test ./... → go test -race ./...
-→ traceability → architecture → atomic coverage → coverage policy
+gofmt 검사
+→ go vet ./...
+→ go test ./... -count=1
+→ 4 bounded fuzz campaigns
+→ go test -race ./... -count=1
+→ traceability
+→ architecture
+→ atomic coverage profile generation
+→ coverage policy
+→ delivery mutation
+→ session mutation
 ```
 
-`ci`는 같은 순서에 `base...HEAD` production diff coverage를 추가한다. 직접 실행하는
-`gofmt -l .`, `go vet ./...`, `go test ./...`, `go test -race ./...`도 유효한
-진단 명령이지만, CI는 runner가 생성하는 coverage profile·summary와 traceability
-artifact를 남겨야 하므로 `tools/verify`를 사용한다.
+네 fuzz campaign은 각각 별도 process와 single worker로 실행한다.
+개별 fuzz failure는 다음 exact command로 재현할 수 있다.
+
+```text
+go test ./internal/domain/mqtt -run=^$ -fuzz=^FuzzDecoder$ -fuzztime=10000x -parallel=1
+go test ./internal/domain/mqtt -run=^$ -fuzz=^FuzzCodecRoundTrip$ -fuzztime=10000x -parallel=1
+go test ./internal/domain/routing -run=^$ -fuzz=^FuzzTopicMatching$ -fuzztime=10000x -parallel=1
+go test ./internal/domain/session -run=^$ -fuzz=^FuzzLifecycleTransitions$ -fuzztime=10000x -parallel=1
+```
+
+Package별 mutation failure는 다음 exact command로 재현하며, 결과는 각 JSON path에
+보존한다.
+
+```text
+go tool gremlins unleash --config=tests/verification/gremlins.yaml --output=.artifacts/verification/mutation-delivery.json internal/domain/delivery
+go tool gremlins unleash --config=tests/verification/gremlins.yaml --output=.artifacts/verification/mutation-session.json internal/domain/session
+```
+
+Fuzz가 생성한 입력의 발견 순서는 deterministic하지 않다. 고정된 `10000x` quota와
+보존된 `testdata/fuzz/<Target>/` failure corpus가 반복 실행 계약이며, 입력 순서를
+재현 가능한 것으로 가정하지 않는다. Coverage 원본과 요약은
+`.artifacts/verification/coverage.out` 및
+`.artifacts/verification/coverage-summary.json`에 기록한다.
 
 - `gofmt` 검사 출력이 있으면 CI를 실패시킨다.
 - Import 정리는 version을 고정한 `goimports`를 사용할 수 있다.

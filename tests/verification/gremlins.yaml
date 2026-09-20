@@ -1,0 +1,6 @@
+unleash:
+  workers: 1
+  test-cpu: 1
+  threshold:
+    efficacy: 80
+    mutant-coverage: 80

@@ -61,6 +61,10 @@ func runVerification(ctx context.Context, root string, options verificationOptio
 	commands := []commandSpec{
 		{Name: "go", Args: []string{"vet", "./..."}},
 		{Name: "go", Args: []string{"test", "./...", "-count=1"}},
+		{Name: "go", Args: []string{"test", "./internal/domain/mqtt", "-run=^$", "-fuzz=^FuzzDecoder$", "-fuzztime=10000x", "-parallel=1"}},
+		{Name: "go", Args: []string{"test", "./internal/domain/mqtt", "-run=^$", "-fuzz=^FuzzCodecRoundTrip$", "-fuzztime=10000x", "-parallel=1"}},
+		{Name: "go", Args: []string{"test", "./internal/domain/routing", "-run=^$", "-fuzz=^FuzzTopicMatching$", "-fuzztime=10000x", "-parallel=1"}},
+		{Name: "go", Args: []string{"test", "./internal/domain/session", "-run=^$", "-fuzz=^FuzzLifecycleTransitions$", "-fuzztime=10000x", "-parallel=1"}},
 		{Name: "go", Args: []string{"test", "-race", "./...", "-count=1"}},
 		{Name: "go", Args: []string{"run", "./tools/verify", "traceability"}},
 		{Name: "go", Args: []string{"run", "./tools/verify", "architecture"}},
@@ -70,7 +74,11 @@ func runVerification(ctx context.Context, root string, options verificationOptio
 	if options.CI {
 		coverageArgs = append(coverageArgs, "--base", options.Base)
 	}
-	commands = append(commands, commandSpec{Name: "go", Args: coverageArgs})
+	commands = append(commands,
+		commandSpec{Name: "go", Args: coverageArgs},
+		commandSpec{Name: "go", Args: []string{"tool", "gremlins", "unleash", "--config=tests/verification/gremlins.yaml", "--output=.artifacts/verification/mutation-delivery.json", "internal/domain/delivery"}},
+		commandSpec{Name: "go", Args: []string{"tool", "gremlins", "unleash", "--config=tests/verification/gremlins.yaml", "--output=.artifacts/verification/mutation-session.json", "internal/domain/session"}},
+	)
 	for _, command := range commands {
 		if err := runner(ctx, root, command); err != nil {
 			return fmt.Errorf("verification stopped after %s: %w", formatCommand(command), err)
