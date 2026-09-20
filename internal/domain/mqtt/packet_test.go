@@ -3,6 +3,7 @@ package mqtt
 import (
 	"bytes"
 	"errors"
+	"reflect"
 	"testing"
 )
 
@@ -54,6 +55,11 @@ func TestConnectEdgeValidationAndContracts_MQTT01_MQTT12_TEST03(t *testing.T) {
 			value.Will = &Will{Topic: "will", Payload: make([]byte, 65536)}
 			return value
 		}(), want: ErrMalformedPacket},
+		{name: "v311-will-delay-interval", input: func() Connect {
+			value := base
+			value.Will = &Will{Topic: "will", DelayInterval: 5}
+			return value
+		}(), want: ErrMalformedPacket},
 	}
 	for _, testCase := range cases {
 		t.Run(testCase.name, func(t *testing.T) {
@@ -62,6 +68,30 @@ func TestConnectEdgeValidationAndContracts_MQTT01_MQTT12_TEST03(t *testing.T) {
 				t.Fatalf("validateConnect() error = %v, want %v", err, testCase.want)
 			}
 		})
+	}
+}
+func TestWill_Clone(t *testing.T) {
+	var nilWill *Will
+	if nilWill.Clone() != nil {
+		t.Fatal("nil Will.Clone() must return nil")
+	}
+	original := &Will{
+		QoS:           1,
+		Retain:        true,
+		Topic:         "test/will",
+		Payload:       []byte("initial-payload"),
+		DelayInterval: 15,
+	}
+	cloned := original.Clone()
+	if cloned == nil {
+		t.Fatal("cloned Will must not be nil")
+	}
+	if !reflect.DeepEqual(original, cloned) {
+		t.Fatalf("cloned Will mismatch: got %#v, want %#v", cloned, original)
+	}
+	original.Payload[0] = 'X'
+	if cloned.Payload[0] == 'X' {
+		t.Fatal("mutating original.Payload affected cloned.Payload")
 	}
 }
 

@@ -169,5 +169,5 @@ func fuzzWillsEqual(left *Will, right *Will) bool {
 	if left == nil || right == nil {
 		return left == right
 	}
-	return left.QoS == right.QoS && left.Retain == right.Retain && left.Topic == right.Topic && bytes.Equal(left.Payload, right.Payload)
+	return left.QoS == right.QoS && left.Retain == right.Retain && left.Topic == right.Topic && bytes.Equal(left.Payload, right.Payload) && left.DelayInterval == right.DelayInterval
 }

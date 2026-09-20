@@ -321,6 +321,8 @@ func TestReadLoopReturnsSessionActivationError(t *testing.T) {
 		failingConnectSessionRepository{err: wantErr},
 		runtime.server.deliveries,
 		routing.NewTable(),
+		adapterTestScheduler{},
+		runtime.server,
 	)
 	if err != nil {
 		t.Fatalf("connect.New() error = %v", err)

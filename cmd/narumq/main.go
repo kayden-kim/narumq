@@ -99,7 +99,9 @@ func runWithContext(ctx context.Context, args []string, logger *slog.Logger) err
 	}
 	sessions := sessionstore.New()
 	systemClock := clock.SystemClock{}
-	connections, err := connect.New(systemClock, sessions, deliveries, routes)
+	systemScheduler := clock.SystemScheduler{}
+	willBridge := tcpadapter.NewWillBridge()
+	connections, err := connect.New(systemClock, sessions, deliveries, routes, systemScheduler, willBridge)
 	if err != nil {
 		return fmt.Errorf("create connect use case: %w", err)
 	}
@@ -138,7 +140,7 @@ func runWithContext(ctx context.Context, args []string, logger *slog.Logger) err
 	if err != nil {
 		return fmt.Errorf("create TCP server: %w", err)
 	}
-
+	willBridge.Bind(server)
 	logger.Info("MQTT TCP listener started", "address", listener.Addr().String(), "development_only", true, "qos0_only", true, "retained_supported", true)
 	if !metricsRequested {
 		if err := server.Serve(ctx); err != nil {

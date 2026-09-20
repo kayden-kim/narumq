@@ -47,7 +47,8 @@ func newBP05IngressFixture(t *testing.T) *bp05IngressFixture {
 		t.Fatal(err)
 	}
 	repository := sessionstore.New()
-	connections, err := connect.New(clock.SystemClock{}, repository, deliveries, routes)
+	willBridge := tcpadapter.NewWillBridge()
+	connections, err := connect.New(clock.SystemClock{}, repository, deliveries, routes, clock.SystemScheduler{}, willBridge)
 	if err != nil {
 		_ = listener.Close()
 		t.Fatal(err)
@@ -92,6 +93,7 @@ func newBP05IngressFixture(t *testing.T) *bp05IngressFixture {
 		_ = listener.Close()
 		t.Fatal(err)
 	}
+	willBridge.Bind(server)
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
 	go func() { done <- server.Serve(ctx) }()

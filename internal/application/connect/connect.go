@@ -21,9 +21,28 @@ var (
 	ErrNilDeliveryQueue = errors.New("connect delivery queue is nil")
 	// ErrNilRoutingTable means that stale subscriptions cannot be removed.
 	ErrNilRoutingTable = errors.New("connect routing table is nil")
+	// ErrNilScheduler means that timers cannot be scheduled.
+	ErrNilScheduler = errors.New("connect scheduler is nil")
+	// ErrNilWillPublisher means that will messages cannot be published.
+	ErrNilWillPublisher = errors.New("connect will publisher is nil")
 	// ErrSessionNotFound means that a disconnect target has no stored session.
 	ErrSessionNotFound = errors.New("connect session not found")
 )
+
+// Timer allows cancelling a scheduled callback.
+type Timer interface {
+	Stop() bool
+}
+
+// Scheduler dispatches callbacks after a specified delay.
+type Scheduler interface {
+	AfterFunc(d time.Duration, f func()) Timer
+}
+
+// WillPublisher routes published will messages to subscribers.
+type WillPublisher interface {
+	PublishWill(sessionID routing.SessionID, will mqtt.Will) error
+}
 
 // Clock supplies the instant used by session expiry policy.
 type Clock interface {
@@ -47,16 +66,32 @@ type ResultDTO struct {
 // UseCase serializes lifecycle persistence, routing cleanup and queue
 // registration so one process cannot activate or disconnect the same session
 // through interleaved operations.
+type clientTimers struct {
+	willTimer   Timer
+	expiryTimer Timer
+}
+
 type UseCase struct {
-	mu         sync.Mutex
-	clock      Clock
-	sessions   SessionRepository
-	deliveries deliveryqueue.Queue
-	routes     *routing.Table
+	mu            sync.Mutex
+	clock         Clock
+	sessions      SessionRepository
+	deliveries    deliveryqueue.Queue
+	routes        *routing.Table
+	scheduler     Scheduler
+	willPublisher WillPublisher
+	activeTimers  map[string]*clientTimers
+	closed        bool
 }
 
 // New creates a connection use case over the supplied lifecycle boundaries.
-func New(clock Clock, sessions SessionRepository, deliveries deliveryqueue.Queue, routes *routing.Table) (*UseCase, error) {
+func New(
+	clock Clock,
+	sessions SessionRepository,
+	deliveries deliveryqueue.Queue,
+	routes *routing.Table,
+	scheduler Scheduler,
+	willPublisher WillPublisher,
+) (*UseCase, error) {
 	if clock == nil {
 		return nil, ErrNilClock
 	}
@@ -69,11 +104,20 @@ func New(clock Clock, sessions SessionRepository, deliveries deliveryqueue.Queue
 	if routes == nil {
 		return nil, ErrNilRoutingTable
 	}
+	if scheduler == nil {
+		return nil, ErrNilScheduler
+	}
+	if willPublisher == nil {
+		return nil, ErrNilWillPublisher
+	}
 	return &UseCase{
-		clock:      clock,
-		sessions:   sessions,
-		deliveries: deliveries,
-		routes:     routes,
+		clock:         clock,
+		sessions:      sessions,
+		deliveries:    deliveries,
+		routes:        routes,
+		scheduler:     scheduler,
+		willPublisher: willPublisher,
+		activeTimers:  make(map[string]*clientTimers),
 	}, nil
 }
 
@@ -94,6 +138,15 @@ func (useCase *UseCase) Connect(packet mqtt.Connect) (ResultDTO, error) {
 	if reasonCode, rejected := rejectedConnectReason(packet); rejected {
 		result.ConnAck.ReasonCode = reasonCode
 		return result, nil
+	}
+	if timers, ok := useCase.activeTimers[packet.ClientID]; ok {
+		if timers.willTimer != nil {
+			timers.willTimer.Stop()
+		}
+		if timers.expiryTimer != nil {
+			timers.expiryTimer.Stop()
+		}
+		delete(useCase.activeTimers, packet.ClientID)
 	}
 
 	now := useCase.clock.Now()
@@ -145,43 +198,171 @@ func (useCase *UseCase) Connect(packet mqtt.Connect) (ResultDTO, error) {
 	}, nil
 }
 
-// Disconnect closes one active lifecycle and always removes its active
-// delivery queue. Persistent session subscriptions remain available for a
-// later resume; immediate-expiry sessions remove both stored state and routes.
-func (useCase *UseCase) Disconnect(sessionID routing.SessionID) error {
+// Disconnect closes one active lifecycle and evaluates session retention,
+// timer scheduling, and will message publication.
+func (useCase *UseCase) Disconnect(sessionID routing.SessionID, reason session.DisconnectReason) error {
 	if useCase == nil {
 		return ErrNilSessionRepository
 	}
 	useCase.mu.Lock()
-	defer useCase.mu.Unlock()
+
+	clientID := string(sessionID)
+	if timers, ok := useCase.activeTimers[clientID]; ok {
+		if timers.willTimer != nil {
+			timers.willTimer.Stop()
+		}
+		if timers.expiryTimer != nil {
+			timers.expiryTimer.Stop()
+		}
+		delete(useCase.activeTimers, clientID)
+	}
 
 	useCase.deliveries.Remove(sessionID)
-	state, found, err := useCase.sessions.Load(string(sessionID))
+	state, found, err := useCase.sessions.Load(clientID)
 	if err != nil {
+		useCase.mu.Unlock()
 		return err
 	}
 	if !found {
+		useCase.mu.Unlock()
 		return ErrSessionNotFound
 	}
-	closed, removed, err := state.Disconnect(useCase.clock.Now())
+	result, err := state.Disconnect(useCase.clock.Now(), reason)
 	if err != nil {
+		useCase.mu.Unlock()
 		return err
 	}
-	if removed {
-		if err := useCase.sessions.Delete(string(sessionID)); err != nil {
+	if result.SessionRemoved {
+		if err := useCase.sessions.Delete(clientID); err != nil {
+			useCase.mu.Unlock()
 			return err
 		}
 		useCase.routes.RemoveSession(sessionID)
+	} else {
+		if err := useCase.sessions.Save(result.Lifecycle); err != nil {
+			useCase.mu.Unlock()
+			return err
+		}
+	}
+
+	if !result.SessionRemoved && (result.ScheduleWill || result.ScheduleExpiry) {
+		timers := &clientTimers{}
+		if result.ScheduleWill {
+			timers.willTimer = useCase.scheduler.AfterFunc(result.WillDelay, func() {
+				useCase.onWillTimer(sessionID)
+			})
+		}
+		if result.ScheduleExpiry {
+			timers.expiryTimer = useCase.scheduler.AfterFunc(result.ExpiryDuration, func() {
+				useCase.onExpiryTimer(sessionID)
+			})
+		}
+		useCase.activeTimers[clientID] = timers
+	}
+
+	willToPublish := result.Will
+	shouldPublish := result.PublishWillNow && willToPublish != nil
+	useCase.mu.Unlock()
+
+	if shouldPublish {
+		if err := useCase.willPublisher.PublishWill(sessionID, *willToPublish); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (useCase *UseCase) onWillTimer(sessionID routing.SessionID) {
+	useCase.mu.Lock()
+	clientID := string(sessionID)
+	if timers, ok := useCase.activeTimers[clientID]; ok {
+		timers.willTimer = nil
+		if timers.expiryTimer == nil {
+			delete(useCase.activeTimers, clientID)
+		}
+	}
+	state, found, err := useCase.sessions.Load(clientID)
+	if err != nil || !found {
+		useCase.mu.Unlock()
+		return
+	}
+	if state.Connected() {
+		useCase.mu.Unlock()
+		return
+	}
+	updated, will, claimed := state.ClaimWill()
+	if !claimed {
+		useCase.mu.Unlock()
+		return
+	}
+	if err := useCase.sessions.Save(updated); err != nil {
+		useCase.mu.Unlock()
+		return
+	}
+	useCase.mu.Unlock()
+
+	_ = useCase.willPublisher.PublishWill(sessionID, *will)
+}
+
+func (useCase *UseCase) onExpiryTimer(sessionID routing.SessionID) {
+	useCase.mu.Lock()
+	clientID := string(sessionID)
+	if timers, ok := useCase.activeTimers[clientID]; ok {
+		if timers.willTimer != nil {
+			timers.willTimer.Stop()
+		}
+		delete(useCase.activeTimers, clientID)
+	}
+	state, found, err := useCase.sessions.Load(clientID)
+	if err != nil || !found {
+		useCase.mu.Unlock()
+		return
+	}
+	if state.Connected() {
+		useCase.mu.Unlock()
+		return
+	}
+	now := useCase.clock.Now()
+	_, will, expired := state.Expire(now)
+	if !expired {
+		useCase.mu.Unlock()
+		return
+	}
+	_ = useCase.sessions.Delete(clientID)
+	useCase.deliveries.Remove(sessionID)
+	useCase.routes.RemoveSession(sessionID)
+	useCase.mu.Unlock()
+
+	if will != nil {
+		_ = useCase.willPublisher.PublishWill(sessionID, *will)
+	}
+}
+
+// Close stops and cancels all pending timers across all sessions.
+func (useCase *UseCase) Close() error {
+	if useCase == nil {
 		return nil
 	}
-	return useCase.sessions.Save(closed)
+	useCase.mu.Lock()
+	defer useCase.mu.Unlock()
+	useCase.closed = true
+	for _, timers := range useCase.activeTimers {
+		if timers.willTimer != nil {
+			timers.willTimer.Stop()
+		}
+		if timers.expiryTimer != nil {
+			timers.expiryTimer.Stop()
+		}
+	}
+	useCase.activeTimers = make(map[string]*clientTimers)
+	return nil
 }
 
 func rejectedConnectReason(packet mqtt.Connect) (byte, bool) {
 	if packet.ClientID == "" {
 		return clientIDRejectedReason(packet.Version), true
 	}
-	if packet.HasUsername || packet.HasPassword || packet.Will != nil {
+	if packet.HasUsername || packet.HasPassword {
 		return unsupportedDevelopmentReason(packet.Version), true
 	}
 	return 0, false

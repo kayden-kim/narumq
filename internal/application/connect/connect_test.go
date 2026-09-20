@@ -98,17 +98,58 @@ func (*fakeDeliveryQueue) Drain(routing.SessionID) ([]deliveryqueue.DeliveryDTO,
 	return nil, nil
 }
 
-func newUseCase(t *testing.T, now time.Time) (*UseCase, *fakeClock, *fakeSessionRepository, *fakeDeliveryQueue, *routing.Table) {
+type fakeTimer struct {
+	stopped  bool
+	callback func()
+	delay    time.Duration
+}
+
+func (t *fakeTimer) Stop() bool {
+	if t.stopped {
+		return false
+	}
+	t.stopped = true
+	return true
+}
+
+type fakeScheduler struct {
+	timers []*fakeTimer
+}
+
+func (s *fakeScheduler) AfterFunc(d time.Duration, f func()) Timer {
+	timer := &fakeTimer{callback: f, delay: d}
+	s.timers = append(s.timers, timer)
+	return timer
+}
+
+type publishedWill struct {
+	sessionID routing.SessionID
+	will      mqtt.Will
+}
+
+type fakeWillPublisher struct {
+	published []publishedWill
+	err       error
+}
+
+func (p *fakeWillPublisher) PublishWill(sessionID routing.SessionID, will mqtt.Will) error {
+	p.published = append(p.published, publishedWill{sessionID: sessionID, will: will})
+	return p.err
+}
+
+func newUseCase(t *testing.T, now time.Time) (*UseCase, *fakeClock, *fakeSessionRepository, *fakeDeliveryQueue, *routing.Table, *fakeScheduler, *fakeWillPublisher) {
 	t.Helper()
 	clock := &fakeClock{now: now}
 	repository := newFakeSessionRepository()
 	queue := newFakeDeliveryQueue()
 	routes := routing.NewTable()
-	useCase, err := New(clock, repository, queue, routes)
+	scheduler := &fakeScheduler{}
+	willPublisher := &fakeWillPublisher{}
+	useCase, err := New(clock, repository, queue, routes, scheduler, willPublisher)
 	if err != nil {
 		t.Fatal(err)
 	}
-	return useCase, clock, repository, queue, routes
+	return useCase, clock, repository, queue, routes, scheduler, willPublisher
 }
 
 func TestNewRejectsNilDependencies(t *testing.T) {
@@ -116,28 +157,36 @@ func TestNewRejectsNilDependencies(t *testing.T) {
 	repository := newFakeSessionRepository()
 	queue := newFakeDeliveryQueue()
 	routes := routing.NewTable()
+	scheduler := &fakeScheduler{}
+	willPublisher := &fakeWillPublisher{}
 	cases := []struct {
 		name string
 		want error
-		make func() (Clock, SessionRepository, deliveryqueue.Queue, *routing.Table)
+		make func() (Clock, SessionRepository, deliveryqueue.Queue, *routing.Table, Scheduler, WillPublisher)
 	}{
-		{name: "clock", want: ErrNilClock, make: func() (Clock, SessionRepository, deliveryqueue.Queue, *routing.Table) {
-			return nil, repository, queue, routes
+		{name: "clock", want: ErrNilClock, make: func() (Clock, SessionRepository, deliveryqueue.Queue, *routing.Table, Scheduler, WillPublisher) {
+			return nil, repository, queue, routes, scheduler, willPublisher
 		}},
-		{name: "repository", want: ErrNilSessionRepository, make: func() (Clock, SessionRepository, deliveryqueue.Queue, *routing.Table) {
-			return clock, nil, queue, routes
+		{name: "repository", want: ErrNilSessionRepository, make: func() (Clock, SessionRepository, deliveryqueue.Queue, *routing.Table, Scheduler, WillPublisher) {
+			return clock, nil, queue, routes, scheduler, willPublisher
 		}},
-		{name: "queue", want: ErrNilDeliveryQueue, make: func() (Clock, SessionRepository, deliveryqueue.Queue, *routing.Table) {
-			return clock, repository, nil, routes
+		{name: "queue", want: ErrNilDeliveryQueue, make: func() (Clock, SessionRepository, deliveryqueue.Queue, *routing.Table, Scheduler, WillPublisher) {
+			return clock, repository, nil, routes, scheduler, willPublisher
 		}},
-		{name: "routes", want: ErrNilRoutingTable, make: func() (Clock, SessionRepository, deliveryqueue.Queue, *routing.Table) {
-			return clock, repository, queue, nil
+		{name: "routes", want: ErrNilRoutingTable, make: func() (Clock, SessionRepository, deliveryqueue.Queue, *routing.Table, Scheduler, WillPublisher) {
+			return clock, repository, queue, nil, scheduler, willPublisher
+		}},
+		{name: "scheduler", want: ErrNilScheduler, make: func() (Clock, SessionRepository, deliveryqueue.Queue, *routing.Table, Scheduler, WillPublisher) {
+			return clock, repository, queue, routes, nil, willPublisher
+		}},
+		{name: "willPublisher", want: ErrNilWillPublisher, make: func() (Clock, SessionRepository, deliveryqueue.Queue, *routing.Table, Scheduler, WillPublisher) {
+			return clock, repository, queue, routes, scheduler, nil
 		}},
 	}
 	for _, testCase := range cases {
 		t.Run(testCase.name, func(t *testing.T) {
-			clock, repository, queue, routes := testCase.make()
-			if _, err := New(clock, repository, queue, routes); !errors.Is(err, testCase.want) {
+			c, rep, q, r, s, wp := testCase.make()
+			if _, err := New(c, rep, q, r, s, wp); !errors.Is(err, testCase.want) {
 				t.Fatalf("New() error = %v, want %v", err, testCase.want)
 			}
 		})
@@ -156,11 +205,10 @@ func TestConnectRejectsUnsupportedDevelopmentStateWithoutCreatingSession(t *test
 		{name: "empty-v5", packet: mqtt.Connect{Version: mqtt.ProtocolV5}, wantReason: 0x85},
 		{name: "username-v311", packet: mqtt.Connect{Version: mqtt.ProtocolV311, ClientID: "client", HasUsername: true, Username: "user"}, wantReason: 0x03},
 		{name: "password-v5", packet: mqtt.Connect{Version: mqtt.ProtocolV5, ClientID: "client", HasPassword: true, HasUsername: true, Password: []byte("secret")}, wantReason: 0x83},
-		{name: "will-v5", packet: mqtt.Connect{Version: mqtt.ProtocolV5, ClientID: "client", Will: &mqtt.Will{Topic: "last/will"}}, wantReason: 0x83},
 	}
 	for _, testCase := range cases {
 		t.Run(testCase.name, func(t *testing.T) {
-			useCase, _, repository, queue, _ := newUseCase(t, now)
+			useCase, _, repository, queue, _, _, _ := newUseCase(t, now)
 			result, err := useCase.Connect(testCase.packet)
 			if err != nil {
 				t.Fatal(err)
@@ -178,7 +226,7 @@ func TestConnectRejectsUnsupportedDevelopmentStateWithoutCreatingSession(t *test
 // Traceability: PRD MQTT-03/TEST-03/04; docs/specs/mqtt-protocol-and-session.md §2.2.
 func TestConnectCleanResumeAndExpiryResetRoutingAndQueue(t *testing.T) {
 	now := time.Date(2026, time.January, 1, 0, 0, 0, 0, time.UTC)
-	useCase, clock, _, queue, routes := newUseCase(t, now)
+	useCase, clock, _, queue, routes, _, _ := newUseCase(t, now)
 	connect := mqtt.Connect{Version: mqtt.ProtocolV5, ClientID: "client", SessionExpiryInterval: 10}
 	first, err := useCase.Connect(connect)
 	if err != nil || !first.Accepted || first.ConnAck.SessionPresent {
@@ -187,7 +235,7 @@ func TestConnectCleanResumeAndExpiryResetRoutingAndQueue(t *testing.T) {
 	if _, err := routes.Subscribe(first.SessionID, mqtt.Subscription{Filter: "sensors/#", QoS: mqtt.QoSAtMostOnce}); err != nil {
 		t.Fatal(err)
 	}
-	if err := useCase.Disconnect(first.SessionID); err != nil {
+	if err := useCase.Disconnect(first.SessionID, session.DisconnectNormal); err != nil {
 		t.Fatal(err)
 	}
 	resumed, err := useCase.Connect(connect)
@@ -210,7 +258,7 @@ func TestConnectCleanResumeAndExpiryResetRoutingAndQueue(t *testing.T) {
 		t.Fatalf("duplicate clean-start Connect() = %#v, %v, want negative CONNACK", fresh, err)
 	}
 
-	if err := useCase.Disconnect(resumed.SessionID); err != nil {
+	if err := useCase.Disconnect(resumed.SessionID, session.DisconnectNormal); err != nil {
 		t.Fatal(err)
 	}
 	fresh, err = useCase.Connect(cleanStart)
@@ -222,7 +270,7 @@ func TestConnectCleanResumeAndExpiryResetRoutingAndQueue(t *testing.T) {
 		t.Fatalf("routes after clean-start replacement = %#v, %v", matches, err)
 	}
 
-	if err := useCase.Disconnect(fresh.SessionID); err != nil {
+	if err := useCase.Disconnect(fresh.SessionID, session.DisconnectNormal); err != nil {
 		t.Fatal(err)
 	}
 	finite := mqtt.Connect{Version: mqtt.ProtocolV5, ClientID: "finite", SessionExpiryInterval: 2}
@@ -232,7 +280,7 @@ func TestConnectCleanResumeAndExpiryResetRoutingAndQueue(t *testing.T) {
 	if _, err := routes.Subscribe("finite", mqtt.Subscription{Filter: "alerts/#", QoS: mqtt.QoSAtMostOnce}); err != nil {
 		t.Fatal(err)
 	}
-	if err := useCase.Disconnect("finite"); err != nil {
+	if err := useCase.Disconnect("finite", session.DisconnectNormal); err != nil {
 		t.Fatal(err)
 	}
 	clock.now = clock.now.Add(3 * time.Second)
@@ -249,7 +297,7 @@ func TestConnectCleanResumeAndExpiryResetRoutingAndQueue(t *testing.T) {
 // Traceability: PRD MQTT-03/TEST-03; duplicate ownership is rejected without takeover.
 func TestConnectRejectsDuplicateAndRepositoryErrors(t *testing.T) {
 	now := time.Date(2026, time.January, 1, 0, 0, 0, 0, time.UTC)
-	useCase, _, repository, queue, _ := newUseCase(t, now)
+	useCase, _, repository, queue, _, _, _ := newUseCase(t, now)
 	packet := mqtt.Connect{Version: mqtt.ProtocolV311, ClientID: "client"}
 	accepted, err := useCase.Connect(packet)
 	if err != nil || !accepted.Accepted {
@@ -281,7 +329,7 @@ func TestConnectRollsBackRepositoryWhenQueueRegistrationFails(t *testing.T) {
 	repository := newFakeSessionRepository()
 	queue := newFakeDeliveryQueue()
 	queue.registerErr = errors.New("register failed")
-	useCase, err := New(clock, repository, queue, routing.NewTable())
+	useCase, err := New(clock, repository, queue, routing.NewTable(), &fakeScheduler{}, &fakeWillPublisher{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -299,7 +347,7 @@ func TestConnectRollsBackExistingSessionWhenQueueRegistrationFails(t *testing.T)
 	clock := &fakeClock{now: now}
 	repository := newFakeSessionRepository()
 	queue := newFakeDeliveryQueue()
-	useCase, err := New(clock, repository, queue, routing.NewTable())
+	useCase, err := New(clock, repository, queue, routing.NewTable(), &fakeScheduler{}, &fakeWillPublisher{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -308,7 +356,7 @@ func TestConnectRollsBackExistingSessionWhenQueueRegistrationFails(t *testing.T)
 	if err != nil || !initial.Accepted {
 		t.Fatalf("initial Connect() = %#v, %v", initial, err)
 	}
-	if err := useCase.Disconnect(initial.SessionID); err != nil {
+	if err := useCase.Disconnect(initial.SessionID, session.DisconnectNormal); err != nil {
 		t.Fatal(err)
 	}
 	before, found, err := repository.Load("persistent")
@@ -329,7 +377,7 @@ func TestConnectRollsBackExistingSessionWhenQueueRegistrationFails(t *testing.T)
 // Traceability: PRD MQTT-03/TEST-03/04; docs/specs/mqtt-protocol-and-session.md §2.2.
 func TestDisconnectRemovesImmediateSessionsAndPreservesPersistentRoutes(t *testing.T) {
 	now := time.Date(2026, time.January, 1, 0, 0, 0, 0, time.UTC)
-	useCase, _, repository, queue, routes := newUseCase(t, now)
+	useCase, _, repository, queue, routes, _, _ := newUseCase(t, now)
 	persistent := mqtt.Connect{Version: mqtt.ProtocolV311, ClientID: "persistent"}
 	if result, err := useCase.Connect(persistent); err != nil || !result.Accepted {
 		t.Fatalf("persistent Connect() = %#v, %v", result, err)
@@ -337,7 +385,7 @@ func TestDisconnectRemovesImmediateSessionsAndPreservesPersistentRoutes(t *testi
 	if _, err := routes.Subscribe("persistent", mqtt.Subscription{Filter: "events/#", QoS: mqtt.QoSAtMostOnce}); err != nil {
 		t.Fatal(err)
 	}
-	if err := useCase.Disconnect("persistent"); err != nil {
+	if err := useCase.Disconnect("persistent", session.DisconnectNormal); err != nil {
 		t.Fatal(err)
 	}
 	state, found, err := repository.Load("persistent")
@@ -356,7 +404,7 @@ func TestDisconnectRemovesImmediateSessionsAndPreservesPersistentRoutes(t *testi
 	if _, err := routes.Subscribe("immediate", mqtt.Subscription{Filter: "events/#", QoS: mqtt.QoSAtMostOnce}); err != nil {
 		t.Fatal(err)
 	}
-	if err := useCase.Disconnect("immediate"); err != nil {
+	if err := useCase.Disconnect("immediate", session.DisconnectNormal); err != nil {
 		t.Fatal(err)
 	}
 	if _, found, err := repository.Load("immediate"); err != nil || found {
@@ -375,26 +423,26 @@ func TestConnectNilUnsupportedAndDisconnectErrors(t *testing.T) {
 	if _, err := nilUseCase.Connect(mqtt.Connect{}); !errors.Is(err, ErrNilSessionRepository) {
 		t.Fatalf("nil Connect() error = %v", err)
 	}
-	if err := nilUseCase.Disconnect("session"); !errors.Is(err, ErrNilSessionRepository) {
+	if err := nilUseCase.Disconnect("session", session.DisconnectNormal); !errors.Is(err, ErrNilSessionRepository) {
 		t.Fatalf("nil Disconnect() error = %v", err)
 	}
-	useCase, _, repository, _, _ := newUseCase(t, time.Unix(0, 0))
+	useCase, _, repository, _, _, _, _ := newUseCase(t, time.Unix(0, 0))
 	if _, err := useCase.Connect(mqtt.Connect{Version: mqtt.ProtocolUnknown, ClientID: "client"}); !errors.Is(err, mqtt.ErrUnsupportedProtocolVersion) {
 		t.Fatalf("unsupported CONNECT error = %v", err)
 	}
-	if err := useCase.Disconnect("missing"); !errors.Is(err, ErrSessionNotFound) {
+	if err := useCase.Disconnect("missing", session.DisconnectNormal); !errors.Is(err, ErrSessionNotFound) {
 		t.Fatalf("missing Disconnect() error = %v", err)
 	}
 	loadErr := errors.New("disconnect load failed")
 	repository.loadErr = loadErr
-	if err := useCase.Disconnect("client"); !errors.Is(err, loadErr) {
+	if err := useCase.Disconnect("client", session.DisconnectNormal); !errors.Is(err, loadErr) {
 		t.Fatalf("Disconnect load error = %v", err)
 	}
 }
 
 func TestConnectLifecycleRollbackAndSessionErrors(t *testing.T) {
 	now := time.Unix(0, 0)
-	useCase, _, repository, queue, _ := newUseCase(t, now)
+	useCase, _, repository, queue, _, _, _ := newUseCase(t, now)
 	repository.states["client"] = session.Lifecycle{}
 	if _, err := useCase.Connect(mqtt.Connect{Version: mqtt.ProtocolV5, ClientID: "client"}); err == nil {
 		t.Fatal("Connect unexpectedly accepted identity-mismatched lifecycle")
@@ -405,7 +453,7 @@ func TestConnectLifecycleRollbackAndSessionErrors(t *testing.T) {
 		t.Fatalf("initial persistent Connect() = %#v, %v", accepted, err)
 	}
 	queue.registerErr = errors.New("resume queue failure")
-	if err := useCase.Disconnect(accepted.SessionID); err != nil {
+	if err := useCase.Disconnect(accepted.SessionID, session.DisconnectNormal); err != nil {
 		t.Fatal(err)
 	}
 	queue.registerErr = nil
@@ -413,34 +461,371 @@ func TestConnectLifecycleRollbackAndSessionErrors(t *testing.T) {
 		t.Fatal(err)
 	}
 	repository.saveErr = errors.New("disconnect save failure")
-	if err := useCase.Disconnect("persistent"); !errors.Is(err, repository.saveErr) {
+	if err := useCase.Disconnect("persistent", session.DisconnectNormal); !errors.Is(err, repository.saveErr) {
 		t.Fatalf("persistent Disconnect() save error = %v", err)
 	}
 	repository.saveErr = nil
 }
 
 func TestDisconnectRejectsAlreadyDisconnectedSession(t *testing.T) {
-	useCase, _, _, _, _ := newUseCase(t, time.Unix(0, 0))
+	useCase, _, _, _, _, _, _ := newUseCase(t, time.Unix(0, 0))
 	result, err := useCase.Connect(mqtt.Connect{Version: mqtt.ProtocolV311, ClientID: "disconnected"})
 	if err != nil || !result.Accepted {
 		t.Fatalf("Connect() = %#v, %v", result, err)
 	}
-	if err := useCase.Disconnect(result.SessionID); err != nil {
+	if err := useCase.Disconnect(result.SessionID, session.DisconnectNormal); err != nil {
 		t.Fatal(err)
 	}
-	if err := useCase.Disconnect(result.SessionID); !errors.Is(err, session.ErrNotConnected) {
+	if err := useCase.Disconnect(result.SessionID, session.DisconnectNormal); !errors.Is(err, session.ErrNotConnected) {
 		t.Fatalf("second Disconnect() error = %v", err)
 	}
 }
 
 func TestConnectDeleteErrorOnImmediateDisconnect(t *testing.T) {
-	useCase, _, repository, _, _ := newUseCase(t, time.Unix(0, 0))
+	useCase, _, repository, _, _, _, _ := newUseCase(t, time.Unix(0, 0))
 	result, err := useCase.Connect(mqtt.Connect{Version: mqtt.ProtocolV5, ClientID: "immediate", SessionExpiryInterval: 0})
 	if err != nil || !result.Accepted {
 		t.Fatal(err)
 	}
 	repository.deleteErr = errors.New("delete failed")
-	if err := useCase.Disconnect(result.SessionID); !errors.Is(err, repository.deleteErr) {
+	if err := useCase.Disconnect(result.SessionID, session.DisconnectNormal); !errors.Is(err, repository.deleteErr) {
 		t.Fatalf("immediate Disconnect() delete error = %v", err)
+	}
+}
+
+// Traceability: PRD MQTT-01/TEST-04; MQTT-3.1.2-8; MQTT-3.1.2-10; MQTT-3.1.3-9.
+func TestConnect_WillScheduledOnAbnormalDisconnect(t *testing.T) {
+	now := time.Date(2026, time.January, 1, 0, 0, 0, 0, time.UTC)
+	useCase, _, repository, _, _, scheduler, willPublisher := newUseCase(t, now)
+	connectPacket := mqtt.Connect{
+		Version:               mqtt.ProtocolV5,
+		ClientID:              "will-client",
+		SessionExpiryInterval: 30,
+		Will: &mqtt.Will{
+			QoS:           1,
+			Topic:         "status/will",
+			Payload:       []byte("lost"),
+			DelayInterval: 10,
+		},
+	}
+	accepted, err := useCase.Connect(connectPacket)
+	if err != nil || !accepted.Accepted {
+		t.Fatalf("Connect() = %#v, %v", accepted, err)
+	}
+
+	// Abnormal disconnect schedules will for 10s and expiry for 30s
+	if err := useCase.Disconnect("will-client", session.DisconnectAbnormal); err != nil {
+		t.Fatal(err)
+	}
+	if len(scheduler.timers) != 2 {
+		t.Fatalf("expected 2 scheduled timers, got %d", len(scheduler.timers))
+	}
+	willTimer := scheduler.timers[0]
+	if willTimer.delay != 10*time.Second {
+		t.Fatalf("expected will delay 10s, got %v", willTimer.delay)
+	}
+	expiryTimer := scheduler.timers[1]
+	if expiryTimer.delay != 30*time.Second {
+		t.Fatalf("expected expiry delay 30s, got %v", expiryTimer.delay)
+	}
+	if len(willPublisher.published) != 0 {
+		t.Fatal("will must not be published before timer fires")
+	}
+
+	// Fire will timer
+	willTimer.callback()
+	if len(willPublisher.published) != 1 {
+		t.Fatalf("expected 1 published will, got %d", len(willPublisher.published))
+	}
+	published := willPublisher.published[0]
+	if published.sessionID != "will-client" || published.will.Topic != "status/will" || string(published.will.Payload) != "lost" {
+		t.Fatalf("published will mismatch: %#v", published)
+	}
+
+	// Verify stored state has willPublished == true
+	state, found, err := repository.Load("will-client")
+	if err != nil || !found || !state.WillPublished() {
+		t.Fatalf("stored state = (%#v, %v, %v), want willPublished=true", state, found, err)
+	}
+
+	// Firing will timer again does not publish again (MQTT-3.1.2-10)
+	willTimer.callback()
+	if len(willPublisher.published) != 1 {
+		t.Fatalf("duplicate will timer fire published again: %d", len(willPublisher.published))
+	}
+}
+
+// Traceability: PRD MQTT-01/TEST-04; MQTT-3.1.3-9.
+func TestConnect_ReconnectCancelsWillTimer(t *testing.T) {
+	now := time.Date(2026, time.January, 1, 0, 0, 0, 0, time.UTC)
+	useCase, _, _, _, _, scheduler, willPublisher := newUseCase(t, now)
+	connectPacket := mqtt.Connect{
+		Version:               mqtt.ProtocolV5,
+		ClientID:              "reconnect-client",
+		SessionExpiryInterval: 60,
+		Will: &mqtt.Will{
+			Topic:         "status/will",
+			Payload:       []byte("lost"),
+			DelayInterval: 10,
+		},
+	}
+	if res, err := useCase.Connect(connectPacket); err != nil || !res.Accepted {
+		t.Fatalf("initial Connect failed: %#v, %v", res, err)
+	}
+	if err := useCase.Disconnect("reconnect-client", session.DisconnectAbnormal); err != nil {
+		t.Fatal(err)
+	}
+	if len(scheduler.timers) != 2 {
+		t.Fatalf("expected 2 timers, got %d", len(scheduler.timers))
+	}
+	willTimer := scheduler.timers[0]
+	if willTimer.stopped {
+		t.Fatal("will timer should not be stopped yet")
+	}
+
+	// Reconnect before timer fires
+	reconnectPacket := connectPacket
+	reconnectPacket.CleanStart = false
+	res, err := useCase.Connect(reconnectPacket)
+	if err != nil || !res.Accepted || !res.ConnAck.SessionPresent {
+		t.Fatalf("reconnect failed: %#v, %v", res, err)
+	}
+	if !willTimer.stopped {
+		t.Fatal("will timer must be stopped upon reconnect")
+	}
+
+	// If the callback somehow runs, it must not publish
+	willTimer.callback()
+	if len(willPublisher.published) != 0 {
+		t.Fatalf("reconnected session published will: %#v", willPublisher.published)
+	}
+}
+
+// Traceability: PRD MQTT-01/TEST-04; MQTT-3.1.2-10; MQTT-3.14.4-3.
+func TestConnect_NormalDisconnectDiscardsWill(t *testing.T) {
+	now := time.Date(2026, time.January, 1, 0, 0, 0, 0, time.UTC)
+	useCase, _, repository, _, _, scheduler, willPublisher := newUseCase(t, now)
+	connectPacket := mqtt.Connect{
+		Version:               mqtt.ProtocolV5,
+		ClientID:              "normal-client",
+		SessionExpiryInterval: 30,
+		Will: &mqtt.Will{
+			Topic:         "status/will",
+			Payload:       []byte("bye"),
+			DelayInterval: 10,
+		},
+	}
+	if res, err := useCase.Connect(connectPacket); err != nil || !res.Accepted {
+		t.Fatalf("Connect failed: %#v, %v", res, err)
+	}
+	if err := useCase.Disconnect("normal-client", session.DisconnectNormal); err != nil {
+		t.Fatal(err)
+	}
+
+	// Only expiry timer should be scheduled (1 timer), not will timer
+	if len(scheduler.timers) != 1 {
+		t.Fatalf("expected 1 timer (expiry only), got %d", len(scheduler.timers))
+	}
+	if scheduler.timers[0].delay != 30*time.Second {
+		t.Fatalf("expected expiry timer with 30s delay, got %v", scheduler.timers[0].delay)
+	}
+	if len(willPublisher.published) != 0 {
+		t.Fatal("normal disconnect must not publish will")
+	}
+
+	state, found, err := repository.Load("normal-client")
+	if err != nil || !found || !state.WillDiscarded() {
+		t.Fatalf("stored state = (%#v, %v, %v), want willDiscarded=true", state, found, err)
+	}
+}
+
+// Traceability: PRD MQTT-01/TEST-04; MQTT-3.1.2-8; MQTT-3.1.3-9.
+func TestConnect_SessionExpiryBeforeWillDelayPublishesWill(t *testing.T) {
+	now := time.Date(2026, time.January, 1, 0, 0, 0, 0, time.UTC)
+	useCase, clock, repository, queue, routes, scheduler, willPublisher := newUseCase(t, now)
+	connectPacket := mqtt.Connect{
+		Version:               mqtt.ProtocolV5,
+		ClientID:              "expiry-first",
+		SessionExpiryInterval: 10,
+		Will: &mqtt.Will{
+			Topic:         "status/expired-first",
+			Payload:       []byte("expired"),
+			DelayInterval: 60,
+		},
+	}
+	if res, err := useCase.Connect(connectPacket); err != nil || !res.Accepted {
+		t.Fatalf("Connect failed: %#v, %v", res, err)
+	}
+	if _, err := routes.Subscribe("expiry-first", mqtt.Subscription{Filter: "test/#"}); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := useCase.Disconnect("expiry-first", session.DisconnectAbnormal); err != nil {
+		t.Fatal(err)
+	}
+	// Will delay was clamped to expiry duration (10s), expiry timer is 10s
+	if len(scheduler.timers) != 2 {
+		t.Fatalf("expected 2 timers, got %d", len(scheduler.timers))
+	}
+	if scheduler.timers[0].delay != 10*time.Second || scheduler.timers[1].delay != 10*time.Second {
+		t.Fatalf("expected both delays to be 10s: %v, %v", scheduler.timers[0].delay, scheduler.timers[1].delay)
+	}
+
+	// Advance clock and fire expiry timer
+	clock.now = clock.now.Add(10 * time.Second)
+	expiryTimer := scheduler.timers[1]
+	expiryTimer.callback()
+
+	// Will must have been published on expiry!
+	if len(willPublisher.published) != 1 {
+		t.Fatalf("expected 1 published will on expiry, got %d", len(willPublisher.published))
+	}
+	if willPublisher.published[0].will.Topic != "status/expired-first" {
+		t.Fatalf("published topic mismatch: %s", willPublisher.published[0].will.Topic)
+	}
+
+	// Session must be purged from repository, queue, routes
+	if _, found, err := repository.Load("expiry-first"); err != nil || found {
+		t.Fatalf("session still in repository after expiry: found=%v, err=%v", found, err)
+	}
+	if len(queue.removes) < 2 {
+		t.Fatalf("queue removes: %v", queue.removes)
+	}
+	matches, err := routes.Match("pub", "test/topic", mqtt.QoSAtMostOnce, false)
+	if err != nil || len(matches) != 0 {
+		t.Fatalf("routes after expiry = %v", matches)
+	}
+}
+
+func TestConnect_CloseCancelsAllTimers(t *testing.T) {
+	now := time.Date(2026, time.January, 1, 0, 0, 0, 0, time.UTC)
+	useCase, _, _, _, _, scheduler, _ := newUseCase(t, now)
+
+	for _, id := range []string{"client-1", "client-2"} {
+		connectPacket := mqtt.Connect{
+			Version:               mqtt.ProtocolV5,
+			ClientID:              id,
+			SessionExpiryInterval: 60,
+			Will: &mqtt.Will{
+				Topic:         "status/" + id,
+				Payload:       []byte("lost"),
+				DelayInterval: 10,
+			},
+		}
+		if res, err := useCase.Connect(connectPacket); err != nil || !res.Accepted {
+			t.Fatal(err)
+		}
+		if err := useCase.Disconnect(routing.SessionID(id), session.DisconnectAbnormal); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	if len(scheduler.timers) != 4 {
+		t.Fatalf("expected 4 timers scheduled, got %d", len(scheduler.timers))
+	}
+	for _, timer := range scheduler.timers {
+		if timer.stopped {
+			t.Fatal("timer should not be stopped yet")
+		}
+	}
+
+	if err := useCase.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	for i, timer := range scheduler.timers {
+		if !timer.stopped {
+			t.Fatalf("timer %d must be stopped after Close()", i)
+		}
+	}
+}
+
+func TestConnect_TimerCallbackEdgeCases(t *testing.T) {
+	now := time.Date(2026, time.January, 1, 0, 0, 0, 0, time.UTC)
+	useCase, _, repository, _, _, _, willPublisher := newUseCase(t, now)
+
+	// onWillTimer on missing session
+	useCase.onWillTimer("missing")
+	if len(willPublisher.published) != 0 {
+		t.Fatal("unexpected will publication on missing session")
+	}
+
+	// onExpiryTimer on missing session
+	useCase.onExpiryTimer("missing")
+
+	// Connect client with will
+	connectPacket := mqtt.Connect{
+		Version:               mqtt.ProtocolV5,
+		ClientID:              "edge-client",
+		SessionExpiryInterval: 30,
+		Will: &mqtt.Will{
+			Topic:         "status/edge",
+			Payload:       []byte("lost"),
+			DelayInterval: 10,
+		},
+	}
+	if res, err := useCase.Connect(connectPacket); err != nil || !res.Accepted {
+		t.Fatal(err)
+	}
+
+	// onWillTimer while connected does nothing
+	useCase.onWillTimer("edge-client")
+	if len(willPublisher.published) != 0 {
+		t.Fatal("unexpected will publication while connected")
+	}
+
+	// onExpiryTimer while connected does nothing
+	useCase.onExpiryTimer("edge-client")
+
+	// Disconnect client
+	if err := useCase.Disconnect("edge-client", session.DisconnectAbnormal); err != nil {
+		t.Fatal(err)
+	}
+
+	// onExpiryTimer before expiry does nothing
+	useCase.onExpiryTimer("edge-client")
+
+	// onWillTimer when save fails
+	repository.saveErr = errors.New("save failed")
+	useCase.onWillTimer("edge-client")
+	if len(willPublisher.published) != 0 {
+		t.Fatal("published will when save failed")
+	}
+	repository.saveErr = nil
+
+	// Successful onWillTimer
+	useCase.onWillTimer("edge-client")
+	if len(willPublisher.published) != 1 {
+		t.Fatalf("expected 1 published will, got %d", len(willPublisher.published))
+	}
+
+	// Second onWillTimer when will is already claimed
+	useCase.onWillTimer("edge-client")
+	if len(willPublisher.published) != 1 {
+		t.Fatalf("duplicate will publication, got %d", len(willPublisher.published))
+	}
+
+	// Close on nil UseCase
+	var nilUseCase *UseCase
+	if err := nilUseCase.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	// Disconnect with immediate will and publisher error
+	connectImmediate := mqtt.Connect{
+		Version:               mqtt.ProtocolV5,
+		ClientID:              "immediate-err",
+		SessionExpiryInterval: 0,
+		Will: &mqtt.Will{
+			Topic:   "status/immediate",
+			Payload: []byte("lost"),
+		},
+	}
+	if res, err := useCase.Connect(connectImmediate); err != nil || !res.Accepted {
+		t.Fatal(err)
+	}
+	willPublisher.err = errors.New("will publisher error")
+	if err := useCase.Disconnect("immediate-err", session.DisconnectAbnormal); !errors.Is(err, willPublisher.err) {
+		t.Fatalf("expected publisher error, got %v", err)
 	}
 }

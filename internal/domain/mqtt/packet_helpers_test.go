@@ -149,7 +149,7 @@ func willsEqual(want *Will, got *Will) bool {
 	if want == nil || got == nil {
 		return want == got
 	}
-	return want.QoS == got.QoS && want.Retain == got.Retain && want.Topic == got.Topic && bytes.Equal(want.Payload, got.Payload)
+	return want.QoS == got.QoS && want.Retain == got.Retain && want.Topic == got.Topic && bytes.Equal(want.Payload, got.Payload) && want.DelayInterval == got.DelayInterval
 }
 
 func subscriptionsEqual(want []Subscription, got []Subscription) bool {

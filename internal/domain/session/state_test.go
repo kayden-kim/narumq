@@ -15,11 +15,12 @@ func TestOpenAndDisconnectMQTT311CleanStartLifecycle(t *testing.T) {
 	if err != nil || present || !clean.Connected() || clean.ClientID() != "client" || clean.ExpiryInterval() != 0 {
 		t.Fatalf("clean Open() = (%#v, %v, %v)", clean, present, err)
 	}
-	closed, removed, err := clean.Disconnect(now)
-	if err != nil || !removed || !closed.Expired(now) || closed.Connected() {
-		t.Fatalf("clean Disconnect() = (%#v, %v, %v)", closed, removed, err)
+	result, err := clean.Disconnect(now, DisconnectNormal)
+	closed := result.Lifecycle
+	if err != nil || !result.SessionRemoved || !closed.Expired(now) || closed.Connected() {
+		t.Fatalf("clean Disconnect() = (%#v, %v, %v)", closed, result.SessionRemoved, err)
 	}
-	if _, _, err := closed.Disconnect(now); !errors.Is(err, ErrNotConnected) {
+	if _, err := closed.Disconnect(now, DisconnectNormal); !errors.Is(err, ErrNotConnected) {
 		t.Fatalf("second Disconnect() error = %v, want ErrNotConnected", err)
 	}
 
@@ -27,9 +28,10 @@ func TestOpenAndDisconnectMQTT311CleanStartLifecycle(t *testing.T) {
 	if err != nil || present {
 		t.Fatalf("persistent initial Open() = (%#v, %v, %v)", persistent, present, err)
 	}
-	persistent, removed, err = persistent.Disconnect(now)
-	if err != nil || removed || persistent.Expired(now) {
-		t.Fatalf("persistent Disconnect() = (%#v, %v, %v)", persistent, removed, err)
+	res, err := persistent.Disconnect(now, DisconnectNormal)
+	persistent = res.Lifecycle
+	if err != nil || res.SessionRemoved || persistent.Expired(now) {
+		t.Fatalf("persistent Disconnect() = (%#v, %v, %v)", persistent, res.SessionRemoved, err)
 	}
 	resumed, present, err := Open(&persistent, mqtt.Connect{Version: mqtt.ProtocolV311, ClientID: "persistent"}, now.Add(24*time.Hour))
 	if err != nil || !present || !resumed.Connected() || resumed.ClientID() != "persistent" {
@@ -48,9 +50,10 @@ func TestMQTT5SessionExpiryBoundariesAndReconnect(t *testing.T) {
 	if err != nil || present || state.ExpiryInterval() != 7 || !state.Connected() {
 		t.Fatalf("finite Open() = (%#v, %v, %v)", state, present, err)
 	}
-	closed, removed, err := state.Disconnect(start)
-	if err != nil || removed {
-		t.Fatalf("finite Disconnect() = (%#v, %v, %v)", closed, removed, err)
+	res, err := state.Disconnect(start, DisconnectNormal)
+	closed := res.Lifecycle
+	if err != nil || res.SessionRemoved {
+		t.Fatalf("finite Disconnect() = (%#v, %v, %v)", closed, res.SessionRemoved, err)
 	}
 	deadline, ok := closed.ExpiresAt()
 	if !ok || !deadline.Equal(start.Add(7*time.Second)) {
@@ -84,9 +87,10 @@ func TestMQTT5SessionExpiryBoundariesAndReconnect(t *testing.T) {
 	if err != nil || present {
 		t.Fatalf("immediate Open() = (%#v, %v, %v)", immediate, present, err)
 	}
-	immediate, removed, err = immediate.Disconnect(start)
-	if err != nil || !removed || !immediate.Expired(start) {
-		t.Fatalf("immediate Disconnect() = (%#v, %v, %v)", immediate, removed, err)
+	res, err = immediate.Disconnect(start, DisconnectNormal)
+	immediate = res.Lifecycle
+	if err != nil || !res.SessionRemoved || !immediate.Expired(start) {
+		t.Fatalf("immediate Disconnect() = (%#v, %v, %v)", immediate, res.SessionRemoved, err)
 	}
 	if _, finite := immediate.ExpiresAt(); finite {
 		t.Fatal("immediate expiry unexpectedly exposed a finite deadline")
@@ -96,9 +100,10 @@ func TestMQTT5SessionExpiryBoundariesAndReconnect(t *testing.T) {
 	if err != nil || present {
 		t.Fatalf("never-expire Open() = (%#v, %v, %v)", never, present, err)
 	}
-	never, removed, err = never.Disconnect(start)
-	if err != nil || removed || never.Expired(start.Add(1000*time.Hour)) {
-		t.Fatalf("never-expire Disconnect() = (%#v, %v, %v)", never, removed, err)
+	res, err = never.Disconnect(start, DisconnectNormal)
+	never = res.Lifecycle
+	if err != nil || res.SessionRemoved || never.Expired(start.Add(1000*time.Hour)) {
+		t.Fatalf("never-expire Disconnect() = (%#v, %v, %v)", never, res.SessionRemoved, err)
 	}
 	if _, finite := never.ExpiresAt(); finite {
 		t.Fatal("never-expire session unexpectedly has finite deadline")
@@ -118,9 +123,10 @@ func TestMQTT5CleanStartFiniteExpiryPersistsAfterDisconnect(t *testing.T) {
 	if err != nil || present || !state.Connected() {
 		t.Fatalf("Clean Start finite Open() = (%#v, %v, %v)", state, present, err)
 	}
-	closed, removed, err := state.Disconnect(now)
-	if err != nil || removed {
-		t.Fatalf("Clean Start finite Disconnect() = (%#v, %v, %v)", closed, removed, err)
+	res, err := state.Disconnect(now, DisconnectNormal)
+	closed := res.Lifecycle
+	if err != nil || res.SessionRemoved {
+		t.Fatalf("Clean Start finite Disconnect() = (%#v, %v, %v)", closed, res.SessionRemoved, err)
 	}
 	deadline, ok := closed.ExpiresAt()
 	if !ok || !deadline.Equal(now.Add(7*time.Second)) {
@@ -148,7 +154,8 @@ func TestOpenCleanStartAndIllegalLifecycleTransitions(t *testing.T) {
 	if _, _, err := Open(&old, mqtt.Connect{Version: mqtt.ProtocolV5, ClientID: "client", CleanStart: true}, now); !errors.Is(err, ErrAlreadyConnected) {
 		t.Fatalf("connected Open() error = %v, want ErrAlreadyConnected", err)
 	}
-	old, _, err = old.Disconnect(now)
+	res, err := old.Disconnect(now, DisconnectNormal)
+	old = res.Lifecycle
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -156,11 +163,233 @@ func TestOpenCleanStartAndIllegalLifecycleTransitions(t *testing.T) {
 	if err != nil || present || !fresh.Connected() {
 		t.Fatalf("Clean Start replacement = (%#v, %v, %v)", fresh, present, err)
 	}
-	fresh, removed, err := fresh.Disconnect(now.Add(time.Second))
-	if err != nil || !removed || !fresh.Expired(now.Add(time.Second)) {
-		t.Fatalf("Clean Start disconnect = (%#v, %v, %v)", fresh, removed, err)
+	res, err = fresh.Disconnect(now.Add(time.Second), DisconnectNormal)
+	fresh = res.Lifecycle
+	if err != nil || !res.SessionRemoved || !fresh.Expired(now.Add(time.Second)) {
+		t.Fatalf("Clean Start disconnect = (%#v, %v, %v)", fresh, res.SessionRemoved, err)
 	}
-	if _, _, err := fresh.Disconnect(now); !errors.Is(err, ErrNotConnected) {
+	if _, err := fresh.Disconnect(now, DisconnectNormal); !errors.Is(err, ErrNotConnected) {
 		t.Fatalf("disconnected Disconnect() error = %v, want ErrNotConnected", err)
+	}
+}
+
+// Traceability: PRD MQTT-01/TEST-04; MQTT-3.1.2-10; MQTT-3.14.4-3.
+func TestLifecycle_WillTransitions_NormalDisconnect_SuppressesWill(t *testing.T) {
+	now := time.Date(2026, time.January, 1, 0, 0, 0, 0, time.UTC)
+	connect := mqtt.Connect{
+		Version:  mqtt.ProtocolV311,
+		ClientID: "will-client",
+		Will: &mqtt.Will{
+			Topic:   "status/will",
+			Payload: []byte("goodbye"),
+		},
+	}
+	state, _, err := Open(nil, connect, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if state.Will() == nil || state.Will().Topic != "status/will" {
+		t.Fatal("expected will message stored in session")
+	}
+
+	res, err := state.Disconnect(now, DisconnectNormal)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.PublishWillNow || res.ScheduleWill {
+		t.Fatalf("normal disconnect must not publish or schedule will: %#v", res)
+	}
+	if !res.Lifecycle.WillDiscarded() {
+		t.Fatal("expected willDiscarded to be true")
+	}
+	if _, claimed, ok := res.Lifecycle.ClaimWill(); ok || claimed != nil {
+		t.Fatalf("expected ClaimWill on discarded will to return false, got %v", ok)
+	}
+}
+
+// Traceability: PRD MQTT-01/TEST-04; MQTT-3.1.2-8; MQTT-3.1.2-10.
+func TestLifecycle_WillTransitions_AbnormalAndWithWill_MQTT311(t *testing.T) {
+	now := time.Date(2026, time.January, 1, 0, 0, 0, 0, time.UTC)
+	connect := mqtt.Connect{
+		Version:  mqtt.ProtocolV311,
+		ClientID: "will-311",
+		Will: &mqtt.Will{
+			Topic:   "status/abnormal",
+			Payload: []byte("lost"),
+		},
+	}
+	state, _, err := Open(nil, connect, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	res, err := state.Disconnect(now, DisconnectAbnormal)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !res.PublishWillNow || res.ScheduleWill || res.Will == nil || res.Will.Topic != "status/abnormal" {
+		t.Fatalf("expected immediate will publication on abnormal disconnect: %#v", res)
+	}
+	if !res.Lifecycle.WillPublished() {
+		t.Fatal("expected willPublished to be true")
+	}
+	if _, _, ok := res.Lifecycle.ClaimWill(); ok {
+		t.Fatal("second ClaimWill on published will must return false")
+	}
+}
+
+// Traceability: PRD MQTT-01/TEST-04; MQTT-3.1.2-8; MQTT-3.1.3-9.
+func TestLifecycle_WillTransitions_MQTT5_ImmediateSessionExpiry(t *testing.T) {
+	now := time.Date(2026, time.January, 1, 0, 0, 0, 0, time.UTC)
+	connect := mqtt.Connect{
+		Version:               mqtt.ProtocolV5,
+		ClientID:              "will-v5-immediate",
+		SessionExpiryInterval: 0,
+		Will: &mqtt.Will{
+			Topic:         "status/v5",
+			Payload:       []byte("offline"),
+			DelayInterval: 10,
+		},
+	}
+	state, _, err := Open(nil, connect, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	res, err := state.Disconnect(now, DisconnectWithWill)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !res.PublishWillNow || res.ScheduleWill || !res.SessionRemoved {
+		t.Fatalf("expected immediate will and session removal when expiry is 0: %#v", res)
+	}
+	if res.Will == nil || res.Will.Topic != "status/v5" {
+		t.Fatalf("expected will message in DisconnectResult: %#v", res.Will)
+	}
+}
+
+// Traceability: PRD MQTT-01/TEST-04; MQTT-3.1.2-8; MQTT-3.1.3-9.
+func TestLifecycle_WillTransitions_MQTT5_DelayAndClamping(t *testing.T) {
+	now := time.Date(2026, time.January, 1, 0, 0, 0, 0, time.UTC)
+
+	// Case A: Will Delay (5s) < Session Expiry (20s)
+	connectA := mqtt.Connect{
+		Version:               mqtt.ProtocolV5,
+		ClientID:              "delay-shorter",
+		SessionExpiryInterval: 20,
+		Will: &mqtt.Will{
+			Topic:         "status/delay",
+			Payload:       []byte("offline"),
+			DelayInterval: 5,
+		},
+	}
+	stateA, _, err := Open(nil, connectA, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resA, err := stateA.Disconnect(now, DisconnectAbnormal)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resA.PublishWillNow || !resA.ScheduleWill || resA.WillDelay != 5*time.Second {
+		t.Fatalf("expected scheduled will with 5s delay: %#v", resA)
+	}
+	if !resA.ScheduleExpiry || resA.ExpiryDuration != 20*time.Second {
+		t.Fatalf("expected scheduled expiry with 20s duration: %#v", resA)
+	}
+
+	// Claim will from disconnected state
+	updatedState, claimedWill, ok := resA.Lifecycle.ClaimWill()
+	if !ok || claimedWill == nil || claimedWill.Topic != "status/delay" {
+		t.Fatalf("ClaimWill failed: ok=%v, will=%#v", ok, claimedWill)
+	}
+	if !updatedState.WillPublished() {
+		t.Fatal("expected WillPublished to be true after ClaimWill")
+	}
+	if _, _, ok := updatedState.ClaimWill(); ok {
+		t.Fatal("second ClaimWill must return false")
+	}
+
+	// Case B: Will Delay (30s) > Session Expiry (10s) -> clamped to 10s
+	connectB := mqtt.Connect{
+		Version:               mqtt.ProtocolV5,
+		ClientID:              "delay-longer",
+		SessionExpiryInterval: 10,
+		Will: &mqtt.Will{
+			Topic:         "status/clamped",
+			Payload:       []byte("offline"),
+			DelayInterval: 30,
+		},
+	}
+	stateB, _, err := Open(nil, connectB, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resB, err := stateB.Disconnect(now, DisconnectWithWill)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resB.PublishWillNow || !resB.ScheduleWill || resB.WillDelay != 10*time.Second {
+		t.Fatalf("expected will delay clamped to session expiry (10s): %#v", resB)
+	}
+	if !resB.ScheduleExpiry || resB.ExpiryDuration != 10*time.Second {
+		t.Fatalf("expected expiry duration 10s: %#v", resB)
+	}
+
+	// Case C: Reconnect cancels old Will
+	connectReconnect := mqtt.Connect{
+		Version:               mqtt.ProtocolV5,
+		ClientID:              "delay-shorter",
+		CleanStart:            false,
+		SessionExpiryInterval: 20,
+	}
+	resumed, present, err := Open(&resA.Lifecycle, connectReconnect, now.Add(2*time.Second))
+	if err != nil || !present || !resumed.Connected() {
+		t.Fatalf("resumed Open failed: present=%v, err=%v", present, err)
+	}
+	if resumed.Will() != nil {
+		t.Fatal("reconnected session without will must have nil will")
+	}
+}
+
+// Traceability: PRD MQTT-01/TEST-04; MQTT-3.1.2-8; MQTT-3.1.3-9.
+func TestLifecycle_ExpireClaimsPendingWill(t *testing.T) {
+	now := time.Date(2026, time.January, 1, 0, 0, 0, 0, time.UTC)
+	connect := mqtt.Connect{
+		Version:               mqtt.ProtocolV5,
+		ClientID:              "will-expire",
+		SessionExpiryInterval: 10,
+		Will: &mqtt.Will{
+			Topic:         "status/expired",
+			Payload:       []byte("bye"),
+			DelayInterval: 15,
+		},
+	}
+	state, _, err := Open(nil, connect, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	res, err := state.Disconnect(now, DisconnectAbnormal)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Before expiry
+	_, _, ok := res.Lifecycle.Expire(now.Add(5 * time.Second))
+	if ok {
+		t.Fatal("Expire before deadline should return false")
+	}
+
+	// At expiry
+	expiredState, will, ok := res.Lifecycle.Expire(now.Add(10 * time.Second))
+	if !ok || will == nil || will.Topic != "status/expired" {
+		t.Fatalf("Expire at deadline should claim will: ok=%v, will=%#v", ok, will)
+	}
+	if !expiredState.Expired(now.Add(10 * time.Second)) {
+		t.Fatal("session should be marked expired")
+	}
+
+	// Subsequent expire
+	_, _, ok = expiredState.Expire(now.Add(11 * time.Second))
+	if ok {
+		t.Fatal("subsequent Expire should return false")
 	}
 }

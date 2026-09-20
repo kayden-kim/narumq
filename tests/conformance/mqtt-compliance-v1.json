@@ -87,6 +87,35 @@
       ]
     },
     {
+      "id": "MQTT-3.1.2-10",
+      "requirementIds": [
+        "MQTT-01",
+        "TEST-04"
+      ],
+      "tests": [
+        {
+          "name": "TestConnect_NormalDisconnectDiscardsWill",
+          "package": "narumq/internal/application/connect"
+        },
+        {
+          "name": "TestConnect_WillScheduledOnAbnormalDisconnect",
+          "package": "narumq/internal/application/connect"
+        },
+        {
+          "name": "TestLifecycle_WillTransitions_AbnormalAndWithWill_MQTT311",
+          "package": "narumq/internal/domain/session"
+        },
+        {
+          "name": "TestLifecycle_WillTransitions_NormalDisconnect_SuppressesWill",
+          "package": "narumq/internal/domain/session"
+        },
+        {
+          "name": "TestMQTTIngressWillMessagesAndSessionExpiry",
+          "package": "narumq/tests/integration"
+        }
+      ]
+    },
+    {
       "id": "MQTT-3.1.2-2",
       "requirementIds": [
         "MQTT-03",
@@ -145,6 +174,43 @@
       ]
     },
     {
+      "id": "MQTT-3.1.2-8",
+      "requirementIds": [
+        "MQTT-01",
+        "TEST-04"
+      ],
+      "tests": [
+        {
+          "name": "TestConnect_SessionExpiryBeforeWillDelayPublishesWill",
+          "package": "narumq/internal/application/connect"
+        },
+        {
+          "name": "TestConnect_WillScheduledOnAbnormalDisconnect",
+          "package": "narumq/internal/application/connect"
+        },
+        {
+          "name": "TestLifecycle_ExpireClaimsPendingWill",
+          "package": "narumq/internal/domain/session"
+        },
+        {
+          "name": "TestLifecycle_WillTransitions_AbnormalAndWithWill_MQTT311",
+          "package": "narumq/internal/domain/session"
+        },
+        {
+          "name": "TestLifecycle_WillTransitions_MQTT5_DelayAndClamping",
+          "package": "narumq/internal/domain/session"
+        },
+        {
+          "name": "TestLifecycle_WillTransitions_MQTT5_ImmediateSessionExpiry",
+          "package": "narumq/internal/domain/session"
+        },
+        {
+          "name": "TestMQTTIngressWillMessagesAndSessionExpiry",
+          "package": "narumq/tests/integration"
+        }
+      ]
+    },
+    {
       "id": "MQTT-3.1.3-1",
       "requirementIds": [
         "MQTT-13",
@@ -154,6 +220,43 @@
         {
           "name": "TestConnectRejectsUnsupportedProtocolVersions_MQTT312_MQTT313",
           "package": "narumq/internal/domain/mqtt"
+        }
+      ]
+    },
+    {
+      "id": "MQTT-3.1.3-9",
+      "requirementIds": [
+        "MQTT-01",
+        "TEST-04"
+      ],
+      "tests": [
+        {
+          "name": "TestConnect_ReconnectCancelsWillTimer",
+          "package": "narumq/internal/application/connect"
+        },
+        {
+          "name": "TestConnect_SessionExpiryBeforeWillDelayPublishesWill",
+          "package": "narumq/internal/application/connect"
+        },
+        {
+          "name": "TestConnect_WillScheduledOnAbnormalDisconnect",
+          "package": "narumq/internal/application/connect"
+        },
+        {
+          "name": "TestLifecycle_ExpireClaimsPendingWill",
+          "package": "narumq/internal/domain/session"
+        },
+        {
+          "name": "TestLifecycle_WillTransitions_MQTT5_DelayAndClamping",
+          "package": "narumq/internal/domain/session"
+        },
+        {
+          "name": "TestLifecycle_WillTransitions_MQTT5_ImmediateSessionExpiry",
+          "package": "narumq/internal/domain/session"
+        },
+        {
+          "name": "TestMQTTIngressWillMessagesAndSessionExpiry",
+          "package": "narumq/tests/integration"
         }
       ]
     },
@@ -298,6 +401,27 @@
         {
           "name": "TestControlPacketsRejectInvalidFramesAndFlags",
           "package": "narumq/internal/domain/mqtt"
+        }
+      ]
+    },
+    {
+      "id": "MQTT-3.14.4-3",
+      "requirementIds": [
+        "MQTT-01",
+        "TEST-04"
+      ],
+      "tests": [
+        {
+          "name": "TestConnect_NormalDisconnectDiscardsWill",
+          "package": "narumq/internal/application/connect"
+        },
+        {
+          "name": "TestLifecycle_WillTransitions_NormalDisconnect_SuppressesWill",
+          "package": "narumq/internal/domain/session"
+        },
+        {
+          "name": "TestMQTTIngressWillMessagesAndSessionExpiry",
+          "package": "narumq/tests/integration"
         }
       ]
     },

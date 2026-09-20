@@ -91,6 +91,40 @@ func TestConnectRoundTripAndOwnership_MQTT311_MQTT312_MQTT313_MQTT320(t *testing
 			},
 			trace: "PRD MQTT-03/TEST-03; MQTT-3.1.2-11; MQTT-3.1.3-1",
 		},
+		{
+			name: "v5-will-delay-interval",
+			input: Connect{
+				Version:    ProtocolV5,
+				CleanStart: true,
+				KeepAlive:  60,
+				ClientID:   "client-will-delay",
+				Will: &Will{
+					QoS:           1,
+					Retain:        false,
+					Topic:         "devices/status",
+					Payload:       []byte("offline"),
+					DelayInterval: 30,
+				},
+			},
+			trace: "PRD MQTT-01/TEST-04; MQTT-3.1.2-8/9/10; MQTT-3.1.3-9",
+		},
+		{
+			name: "v5-will-delay-interval-max",
+			input: Connect{
+				Version:    ProtocolV5,
+				CleanStart: false,
+				KeepAlive:  10,
+				ClientID:   "client-will-max",
+				Will: &Will{
+					QoS:           2,
+					Retain:        true,
+					Topic:         "status/will",
+					Payload:       []byte{0xDE, 0xAD, 0xBE, 0xEF},
+					DelayInterval: ^uint32(0),
+				},
+			},
+			trace: "PRD MQTT-01/TEST-04; MQTT-3.1.2-8/9/10; MQTT-3.1.3-9",
+		},
 	}
 	decoder, err := NewDecoder(maxRemainingLength)
 	if err != nil {
@@ -152,6 +186,12 @@ func TestConnectRejectsMalformedFields_MQTT311_2_2_2_1_MQTT5_1_5_5_1(t *testing.
 		body := []byte{0x00, 0x04, 'M', 'Q', 'T', 'T', 0x05, 0x02, 0x00, 0x00}
 		body = append(body, properties...)
 		return append(body, 0x00, 0x01, 'a')
+	}
+	v5WillBody := func(willProperties []byte) []byte {
+		body := []byte{0x00, 0x04, 'M', 'Q', 'T', 'T', 0x05, 0x06, 0x00, 0x00, 0x00, 0x00, 0x01, 'a'}
+		body = append(body, willProperties...)
+		body = append(body, 0x00, 0x04, 'w', 'i', 'l', 'l')
+		return append(body, 0x00, 0x02, 'o', 'k')
 	}
 	cases := []struct {
 		name    string
@@ -265,6 +305,41 @@ func TestConnectRejectsMalformedFields_MQTT311_2_2_2_1_MQTT5_1_5_5_1(t *testing.
 			version: ProtocolUnknown,
 			want:    ErrMalformedPacket,
 			trace:   "PRD MQTT-03/TEST-03; MQTT-3.1.2-11",
+		},
+		{
+			name:    "v5-duplicate-will-delay",
+			frame:   testFrame(0x10, v5WillBody([]byte{10, 0x18, 0, 0, 0, 1, 0x18, 0, 0, 0, 2})),
+			version: ProtocolUnknown,
+			want:    ErrMalformedPacket,
+			trace:   "PRD MQTT-01/TEST-04; MQTT-3.1.3.2.2",
+		},
+		{
+			name:    "v5-truncated-will-delay",
+			frame:   testFrame(0x10, v5WillBody([]byte{4, 0x18, 0, 0, 0})),
+			version: ProtocolUnknown,
+			want:    ErrMalformedPacket,
+			trace:   "PRD MQTT-01/TEST-04; MQTT-3.1.3.2.2",
+		},
+		{
+			name:    "v5-unknown-will-property",
+			frame:   testFrame(0x10, v5WillBody([]byte{1, 0x99})),
+			version: ProtocolUnknown,
+			want:    ErrUnsupportedProperty,
+			trace:   "PRD MQTT-01/TEST-04; MQTT-1.5.5-1",
+		},
+		{
+			name:    "v5-truncated-will-property-length",
+			frame:   testFrame(0x10, v5WillBody([]byte{5, 0x18})),
+			version: ProtocolUnknown,
+			want:    ErrMalformedPacket,
+			trace:   "PRD MQTT-01/TEST-04; MQTT-1.5.5-1",
+		},
+		{
+			name:    "v5-malformed-will-properties-vbi",
+			frame:   testFrame(0x10, v5WillBody([]byte{0x80, 0x80, 0x80, 0x80, 0x01})),
+			version: ProtocolUnknown,
+			want:    ErrMalformedPacket,
+			trace:   "PRD MQTT-01/TEST-04; MQTT-1.5.5-1",
 		},
 	}
 	decoder, err := NewDecoder(maxRemainingLength)

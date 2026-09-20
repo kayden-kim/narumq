@@ -17,6 +17,7 @@ import (
 	"narumq/internal/application/subscribe"
 	"narumq/internal/domain/mqtt"
 	"narumq/internal/domain/routing"
+	"narumq/internal/domain/session"
 )
 
 var (
@@ -172,12 +173,13 @@ func (server *Server) Serve(ctx context.Context) error {
 
 func newConnection(server *Server, socket net.Conn) *connection {
 	return &connection{
-		server:       server,
-		socket:       socket,
-		controlQueue: make(chan controlMessage, server.config.ControlQueueCapacity),
-		deliveryWake: make(chan struct{}, 1),
-		stop:         make(chan struct{}),
-		writerDone:   make(chan struct{}),
+		server:           server,
+		socket:           socket,
+		controlQueue:     make(chan controlMessage, server.config.ControlQueueCapacity),
+		deliveryWake:     make(chan struct{}, 1),
+		stop:             make(chan struct{}),
+		writerDone:       make(chan struct{}),
+		disconnectReason: session.DisconnectAbnormal,
 	}
 }
 
@@ -247,6 +249,9 @@ func (server *Server) stopAll() {
 		for _, connection := range connections {
 			connection.requestClose()
 		}
+		if server.connections != nil {
+			_ = server.connections.Close()
+		}
 	})
 }
 
@@ -264,12 +269,13 @@ type connection struct {
 	stop         chan struct{}
 	writerDone   chan struct{}
 
-	stopOnce    sync.Once
-	cleanupOnce sync.Once
-	sessionID   routing.SessionID
-	version     mqtt.ProtocolVersion
-	keepAlive   uint16
-	accepted    bool
+	stopOnce         sync.Once
+	cleanupOnce      sync.Once
+	sessionID        routing.SessionID
+	version          mqtt.ProtocolVersion
+	keepAlive        uint16
+	accepted         bool
+	disconnectReason session.DisconnectReason
 }
 
 func (connection *connection) run() {
@@ -301,7 +307,7 @@ func (connection *connection) cleanup() {
 	connection.cleanupOnce.Do(func() {
 		if connection.accepted {
 			connection.server.unbindSession(connection.sessionID, connection)
-			if err := connection.server.connections.Disconnect(connection.sessionID); err != nil && !errors.Is(err, connect.ErrSessionNotFound) {
+			if err := connection.server.connections.Disconnect(connection.sessionID, connection.disconnectReason); err != nil && !errors.Is(err, connect.ErrSessionNotFound) {
 				connection.server.logger.Warn("MQTT session cleanup failed", "error", err.Error())
 			}
 		}
@@ -415,7 +421,7 @@ func (connection *connection) activate(packet mqtt.Connect) error {
 	connection.accepted = true
 	if !connection.server.bindSession(connection.sessionID, connection) {
 		connection.accepted = false
-		_ = connection.server.connections.Disconnect(connection.sessionID)
+		_ = connection.server.connections.Disconnect(connection.sessionID, session.DisconnectAbnormal)
 		return ErrProtocol
 	}
 	return connection.enqueueAndWait(&result.ConnAck)
@@ -443,6 +449,13 @@ func (connection *connection) dispatch(packet mqtt.Packet) error {
 	case *mqtt.PingReq:
 		return connection.enqueueControl(&mqtt.PingResp{Version: connection.version})
 	case *mqtt.Disconnect:
+		if value.ReasonCode == 0x00 {
+			connection.disconnectReason = session.DisconnectNormal
+		} else if value.ReasonCode == 0x04 {
+			connection.disconnectReason = session.DisconnectWithWill
+		} else {
+			connection.disconnectReason = session.DisconnectAbnormal
+		}
 		if value.ReasonCode != 0 {
 			connection.server.logger.Info("MQTT client disconnected with reason", "reason_code", value.ReasonCode)
 		}
@@ -693,4 +706,56 @@ func (connection *connection) writePacket(packet mqtt.Packet) error {
 		}
 	}
 	return nil
+}
+
+// PublishWill implements connect.WillPublisher by routing a will message through publications
+// and waking or closing targeted subscriber sessions.
+func (server *Server) PublishWill(sessionID routing.SessionID, will mqtt.Will) error {
+	publishPacket := mqtt.Publish{
+		Version: mqtt.ProtocolV5,
+		QoS:     mqtt.QoS(will.QoS),
+		Retain:  will.Retain,
+		Topic:   will.Topic,
+		Payload: will.Payload,
+	}
+	result, err := server.publications.Publish(sessionID, publishPacket)
+	if err != nil {
+		return err
+	}
+	for _, targetSession := range result.Delivered {
+		server.wakeSession(targetSession)
+	}
+	for _, targetSession := range result.Saturated {
+		server.closeSession(targetSession)
+	}
+	return nil
+}
+
+// WillBridge routes will publications from connect.UseCase to the active Server.
+type WillBridge struct {
+	mu     sync.RWMutex
+	target connect.WillPublisher
+}
+
+// NewWillBridge creates an empty will publisher bridge.
+func NewWillBridge() *WillBridge {
+	return &WillBridge{}
+}
+
+// Bind connects the bridge to the concrete publisher (typically the TCP Server).
+func (b *WillBridge) Bind(target connect.WillPublisher) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.target = target
+}
+
+// PublishWill forwards the will message to the bound publisher.
+func (b *WillBridge) PublishWill(sessionID routing.SessionID, will mqtt.Will) error {
+	b.mu.RLock()
+	target := b.target
+	b.mu.RUnlock()
+	if target == nil {
+		return nil
+	}
+	return target.PublishWill(sessionID, will)
 }

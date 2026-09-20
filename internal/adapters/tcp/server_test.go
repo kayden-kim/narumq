@@ -29,6 +29,12 @@ func (clock *adapterTestClock) Now() time.Time {
 	return clock.now
 }
 
+type adapterTestScheduler struct{}
+
+func (adapterTestScheduler) AfterFunc(d time.Duration, f func()) connect.Timer {
+	return time.AfterFunc(d, f)
+}
+
 type pipeListener struct {
 	connections chan net.Conn
 	accepted    chan struct{}
@@ -86,7 +92,8 @@ func newAdapterTestRuntime(t *testing.T, queueCapacity int, config Config) *adap
 		t.Fatal(err)
 	}
 	clock := &adapterTestClock{now: time.Date(2026, time.January, 1, 0, 0, 0, 0, time.UTC)}
-	connections, err := connect.New(clock, repository, queue, routes)
+	willBridge := NewWillBridge()
+	connections, err := connect.New(clock, repository, queue, routes, adapterTestScheduler{}, willBridge)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -110,6 +117,7 @@ func newAdapterTestRuntime(t *testing.T, queueCapacity int, config Config) *adap
 	if err != nil {
 		t.Fatal(err)
 	}
+	willBridge.Bind(server)
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
 	go func() { done <- server.Serve(ctx) }()
@@ -533,6 +541,13 @@ func TestNewServerRejectsInvalidDependenciesAndBounds(t *testing.T) {
 		// Dependency checks are deliberately performed before configuration checks.
 		// A nil use case is the first missing required boundary after the listener and codec.
 		t.Fatalf("nil use case error = %v", err)
+	}
+}
+
+func TestWillBridge_Unbound(t *testing.T) {
+	bridge := NewWillBridge()
+	if err := bridge.PublishWill("session", mqtt.Will{Topic: "test"}); err != nil {
+		t.Fatalf("unbound PublishWill error = %v", err)
 	}
 }
 

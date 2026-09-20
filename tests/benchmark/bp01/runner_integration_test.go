@@ -48,7 +48,8 @@ func newRunnerIngressFixture(t *testing.T) *runnerIngressFixture {
 		t.Fatal(err)
 	}
 	repository := sessionstore.New()
-	connections, err := connect.New(clock.SystemClock{}, repository, deliveries, routes)
+	willBridge := tcpadapter.NewWillBridge()
+	connections, err := connect.New(clock.SystemClock{}, repository, deliveries, routes, clock.SystemScheduler{}, willBridge)
 	if err != nil {
 		listener.Close()
 		t.Fatal(err)
@@ -93,6 +94,7 @@ func newRunnerIngressFixture(t *testing.T) *runnerIngressFixture {
 		listener.Close()
 		t.Fatal(err)
 	}
+	willBridge.Bind(server)
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
 	go func() { done <- server.Serve(ctx) }()

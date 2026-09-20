@@ -34,6 +34,44 @@ type Lifecycle struct {
 	expiresAt      time.Time
 	hasExpiry      bool
 	discarded      bool
+	will           *mqtt.Will
+	willPublished  bool
+	willDiscarded  bool
+}
+
+// DisconnectReason represents the trigger that closed an MQTT network connection.
+type DisconnectReason byte
+
+const (
+	// DisconnectNormal indicates graceful DISCONNECT with Reason Code 0x00.
+	// Will message is discarded without being published (MQTT-3.14.4-3).
+	DisconnectNormal DisconnectReason = iota
+	// DisconnectWithWill indicates DISCONNECT with Reason Code 0x04.
+	// Will message must be published (MQTT-3.1.2-8).
+	DisconnectWithWill
+	// DisconnectAbnormal indicates unexpected connection loss, I/O error, or error code.
+	// Will message must be published (MQTT-3.1.2-8).
+	DisconnectAbnormal
+)
+
+// DisconnectResult describes the state changes and scheduled actions resulting from Disconnect.
+type DisconnectResult struct {
+	// Lifecycle is the updated disconnected session state.
+	Lifecycle Lifecycle
+	// SessionRemoved reports whether the session was removed immediately.
+	SessionRemoved bool
+	// PublishWillNow reports whether the will message must be published immediately.
+	PublishWillNow bool
+	// Will is the will message to publish immediately if PublishWillNow is true.
+	Will *mqtt.Will
+	// ScheduleWill reports whether the will message publication should be scheduled.
+	ScheduleWill bool
+	// WillDelay is the delay duration after which the will message should be published.
+	WillDelay time.Duration
+	// ScheduleExpiry reports whether session expiry should be scheduled.
+	ScheduleExpiry bool
+	// ExpiryDuration is the duration until session expiry.
+	ExpiryDuration time.Duration
 }
 
 // Open opens a connection and reports whether an existing session was resumed.
@@ -43,6 +81,7 @@ func Open(existing *Lifecycle, connect mqtt.Connect, now time.Time) (Lifecycle, 
 	unchanged := Lifecycle{}
 	if existing != nil {
 		unchanged = *existing
+		unchanged.will = existing.will.Clone()
 		if existing.clientID != connect.ClientID {
 			return unchanged, false, ErrIdentityMismatch
 		}
@@ -55,30 +94,94 @@ func Open(existing *Lifecycle, connect mqtt.Connect, now time.Time) (Lifecycle, 
 	return newLifecycle(connect), present, nil
 }
 
-// Disconnect closes the connection and reports whether the session is removed
-// immediately. Finite expiry begins at the caller-provided disconnect time.
-func (state Lifecycle) Disconnect(now time.Time) (Lifecycle, bool, error) {
+// Disconnect closes the connection and evaluates session retention and will actions.
+func (state Lifecycle) Disconnect(now time.Time, reason DisconnectReason) (DisconnectResult, error) {
 	if !state.connected {
-		return state, false, ErrNotConnected
+		return DisconnectResult{Lifecycle: state}, ErrNotConnected
 	}
 	state.connected = false
 	state.hasExpiry = false
 	state.expiresAt = time.Time{}
+
+	var result DisconnectResult
 	switch state.retention {
 	case retentionImmediate:
 		state.discarded = true
-		return state, true, nil
+		result.SessionRemoved = true
 	case retentionFinite:
 		state.discarded = false
+		result.ScheduleExpiry = true
+		result.ExpiryDuration = time.Duration(state.expiryInterval) * time.Second
 		state.hasExpiry = true
-		state.expiresAt = now.Add(time.Duration(state.expiryInterval) * time.Second)
-		return state, false, nil
+		state.expiresAt = now.Add(result.ExpiryDuration)
 	case retentionInfinite:
 		state.discarded = false
-		return state, false, nil
 	default:
-		return state, false, ErrNotConnected
+		return DisconnectResult{}, ErrNotConnected
 	}
+
+	hasWill := state.will != nil && !state.willPublished && !state.willDiscarded
+	if hasWill {
+		if reason == DisconnectNormal {
+			state.willDiscarded = true
+		} else {
+			if state.version == mqtt.ProtocolV311 || state.will.DelayInterval == 0 || state.retention == retentionImmediate {
+				state.willPublished = true
+				result.PublishWillNow = true
+				result.Will = state.will.Clone()
+			} else {
+				willDelay := time.Duration(state.will.DelayInterval) * time.Second
+				if state.retention == retentionFinite && result.ExpiryDuration < willDelay {
+					willDelay = result.ExpiryDuration
+				}
+				result.ScheduleWill = true
+				result.WillDelay = willDelay
+			}
+		}
+	}
+
+	result.Lifecycle = state
+	return result, nil
+}
+
+// ClaimWill extracts the will message if it has not yet been published or discarded,
+// marking it published to prevent duplicate delivery.
+func (state Lifecycle) ClaimWill() (Lifecycle, *mqtt.Will, bool) {
+	if state.will == nil || state.willPublished || state.willDiscarded {
+		return state, nil, false
+	}
+	state.willPublished = true
+	return state, state.will.Clone(), true
+}
+
+// Expire marks the session as expired if its deadline has passed, claiming any pending
+// will message before the session is purged.
+func (state Lifecycle) Expire(now time.Time) (Lifecycle, *mqtt.Will, bool) {
+	if state.discarded || !state.Expired(now) {
+		return state, nil, false
+	}
+	state.discarded = true
+	var will *mqtt.Will
+	if state.will != nil && !state.willPublished && !state.willDiscarded {
+		state.willPublished = true
+		will = state.will.Clone()
+	}
+	return state, will, true
+}
+
+// Will returns a copy of the will message stored in the session, or nil if none.
+func (state Lifecycle) Will() *mqtt.Will {
+	return state.will.Clone()
+}
+
+// WillPublished reports whether the will message was published.
+func (state Lifecycle) WillPublished() bool {
+	return state.willPublished
+}
+
+// WillDiscarded reports whether the will message was discarded without publishing.
+func (state Lifecycle) WillDiscarded() bool {
+	return state.willDiscarded
 }
 
 // Expired reports whether this disconnected lifecycle reached its expiry edge.
@@ -122,6 +225,7 @@ func newLifecycle(connect mqtt.Connect) Lifecycle {
 		clientID:  connect.ClientID,
 		version:   connect.Version,
 		connected: true,
+		will:      connect.Will.Clone(),
 	}
 	if connect.Version == mqtt.ProtocolV5 {
 		state.expiryInterval = connect.SessionExpiryInterval

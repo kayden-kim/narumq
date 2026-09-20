@@ -36,6 +36,18 @@ type Will struct {
 	Topic string
 	// Payload is the binary will payload.
 	Payload []byte
+	// DelayInterval is the MQTT 5 Will Delay Interval in seconds.
+	DelayInterval uint32
+}
+
+// Clone returns a deep copy of the Will message.
+func (w *Will) Clone() *Will {
+	if w == nil {
+		return nil
+	}
+	cloned := *w
+	cloned.Payload = cloneBytes(w.Payload)
+	return &cloned
 }
 
 func (c Connect) packetType() PacketType {
@@ -107,8 +119,10 @@ func decodeConnect(body []byte, requestedVersion ProtocolVersion) (Packet, error
 
 	var will *Will
 	if willFlag {
+		var willDelayInterval uint32
 		if version == ProtocolV5 {
-			if err := skipProperties(body, &position); err != nil {
+			willDelayInterval, err = decodeWillProperties(body, &position)
+			if err != nil {
 				return nil, err
 			}
 		}
@@ -121,10 +135,11 @@ func decodeConnect(body []byte, requestedVersion ProtocolVersion) (Packet, error
 			return nil, err
 		}
 		will = &Will{
-			QoS:     willQoS,
-			Retain:  willRetain,
-			Topic:   willTopic,
-			Payload: cloneBytes(willPayload),
+			QoS:           willQoS,
+			Retain:        willRetain,
+			Topic:         willTopic,
+			Payload:       cloneBytes(willPayload),
+			DelayInterval: willDelayInterval,
 		}
 	}
 
@@ -225,7 +240,14 @@ func encodeConnect(connect Connect, maxPacketSize int) ([]byte, error) {
 	body = appendUTF8Field(body, connect.ClientID)
 	if connect.Will != nil {
 		if connect.Version == ProtocolV5 {
-			body = append(body, 0)
+			if connect.Will.DelayInterval == 0 {
+				body = append(body, 0)
+			} else {
+				body = append(body, 5, 0x18)
+				var willDelay [4]byte
+				binary.BigEndian.PutUint32(willDelay[:], connect.Will.DelayInterval)
+				body = append(body, willDelay[:]...)
+			}
 		}
 		body = appendUTF8Field(body, connect.Will.Topic)
 		body = appendBinaryField(body, connect.Will.Payload)
@@ -273,6 +295,9 @@ func validateConnect(connect Connect) (int, error) {
 		if connect.Will.QoS > 2 || !validMQTTTopicName(connect.Will.Topic) || len(connect.Will.Topic) > 65535 || len(connect.Will.Payload) > 65535 {
 			return 0, ErrMalformedPacket
 		}
+		if connect.Version == ProtocolV311 && connect.Will.DelayInterval != 0 {
+			return 0, ErrMalformedPacket
+		}
 	}
 
 	bodySize := 10 + 2 + len(connect.ClientID)
@@ -285,7 +310,11 @@ func validateConnect(connect Connect) (int, error) {
 	if connect.Will != nil {
 		bodySize += 2 + len(connect.Will.Topic) + 2 + len(connect.Will.Payload)
 		if connect.Version == ProtocolV5 {
-			bodySize++
+			if connect.Will.DelayInterval == 0 {
+				bodySize++
+			} else {
+				bodySize += 6
+			}
 		}
 	}
 	if connect.HasUsername {
@@ -368,6 +397,38 @@ func decodeConnectProperties(body []byte, position *int) (uint32, error) {
 		}
 	}
 	return sessionExpiryInterval, nil
+}
+
+func decodeWillProperties(body []byte, position *int) (uint32, error) {
+	length, consumed, err := decodeVariableByteInteger(body[*position:])
+	if err != nil {
+		return 0, ErrMalformedPacket
+	}
+	*position += consumed
+	if length > len(body)-*position {
+		return 0, ErrMalformedPacket
+	}
+	end := *position + length
+	var (
+		willDelayInterval uint32
+		seenWillDelay     bool
+	)
+	for *position < end {
+		propertyIdentifier := body[*position]
+		*position++
+		switch propertyIdentifier {
+		case 0x18:
+			if seenWillDelay || end-*position < 4 {
+				return 0, ErrMalformedPacket
+			}
+			willDelayInterval = binary.BigEndian.Uint32(body[*position : *position+4])
+			*position += 4
+			seenWillDelay = true
+		default:
+			return 0, ErrUnsupportedProperty
+		}
+	}
+	return willDelayInterval, nil
 }
 
 func appendUTF8Field(dst []byte, value string) []byte {

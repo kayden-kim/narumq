@@ -48,10 +48,12 @@ func FuzzLifecycleTransitions(f *testing.F) {
 			t.Fatalf("identity mismatch Open() = (%#v, %v, %v), want unchanged ErrIdentityMismatch", identityMismatch, present, err)
 		}
 
-		disconnected, removed, err := connected.Disconnect(now)
+		res, err := connected.Disconnect(now, DisconnectNormal)
 		if err != nil {
 			t.Fatalf("Disconnect() error = %v", err)
 		}
+		disconnected := res.Lifecycle
+		removed := res.SessionRemoved
 		deadline, finite := disconnected.ExpiresAt()
 		switch version {
 		case mqtt.ProtocolV311:
@@ -83,9 +85,9 @@ func FuzzLifecycleTransitions(f *testing.F) {
 			}
 		}
 
-		secondDisconnect, secondRemoved, err := disconnected.Disconnect(now)
-		if !errors.Is(err, ErrNotConnected) || secondRemoved || secondDisconnect != disconnected {
-			t.Fatalf("second Disconnect() = (%#v, %v, %v), want unchanged ErrNotConnected", secondDisconnect, secondRemoved, err)
+		secondRes, err := disconnected.Disconnect(now, DisconnectNormal)
+		if !errors.Is(err, ErrNotConnected) || secondRes.SessionRemoved || secondRes.Lifecycle != disconnected {
+			t.Fatalf("second Disconnect() = (%#v, %v, %v), want unchanged ErrNotConnected", secondRes.Lifecycle, secondRes.SessionRemoved, err)
 		}
 
 		cleanReconnect := connect

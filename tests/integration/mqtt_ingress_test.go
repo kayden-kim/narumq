@@ -54,7 +54,8 @@ func newIngressFixtureWithRetainedCapacity(t *testing.T, messageCapacity, byteCa
 		t.Fatal(err)
 	}
 	repository := sessionstore.New()
-	connections, err := connect.New(clock.SystemClock{}, repository, deliveries, routes)
+	willBridge := tcpadapter.NewWillBridge()
+	connections, err := connect.New(clock.SystemClock{}, repository, deliveries, routes, clock.SystemScheduler{}, willBridge)
 	if err != nil {
 		listener.Close()
 		t.Fatal(err)
@@ -99,6 +100,7 @@ func newIngressFixtureWithRetainedCapacity(t *testing.T, messageCapacity, byteCa
 		listener.Close()
 		t.Fatal(err)
 	}
+	willBridge.Bind(server)
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
 	go func() { done <- server.Serve(ctx) }()
@@ -463,4 +465,228 @@ func TestMQTTIngressRetainedCapacityDisconnect(t *testing.T) {
 	}
 	writePacket(t, mqtt311, fixture.encoder, &mqtt.Publish{Version: mqtt.ProtocolV311, Topic: "capacity", Payload: []byte("too-large"), Retain: true})
 	expectClosed(t, mqtt311)
+}
+
+// Traceability: PRD MQTT-01/TEST-04; MQTT-3.1.2-8; MQTT-3.1.2-10; MQTT-3.1.3-9; MQTT-3.14.4-3.
+func TestMQTTIngressWillMessagesAndSessionExpiry(t *testing.T) {
+	fixture := newIngressFixture(t)
+	defer fixture.close(t)
+
+	t.Run("socket drop publishes will immediately", func(t *testing.T) {
+		subscriber := fixture.dial(t)
+		defer subscriber.Close()
+		writePacket(t, subscriber, fixture.encoder, &mqtt.Connect{Version: mqtt.ProtocolV5, CleanStart: true, ClientID: "sub-drop"})
+		if ack := readPacket(t, subscriber, fixture.decoder, mqtt.ProtocolV5).(*mqtt.ConnAck); ack.ReasonCode != 0 {
+			t.Fatalf("subscriber CONNACK = %#v", ack)
+		}
+		writePacket(t, subscriber, fixture.encoder, &mqtt.Subscribe{
+			Version:       mqtt.ProtocolV5,
+			PacketID:      1,
+			Subscriptions: []mqtt.Subscription{{Filter: "status/+", QoS: mqtt.QoSAtMostOnce}},
+		})
+		if ack := readPacket(t, subscriber, fixture.decoder, mqtt.ProtocolV5).(*mqtt.SubAck); ack.PacketID != 1 {
+			t.Fatalf("SUBACK = %#v", ack)
+		}
+
+		client311 := fixture.dial(t)
+		writePacket(t, client311, fixture.encoder, &mqtt.Connect{
+			Version:  mqtt.ProtocolV311,
+			ClientID: "client-311-drop",
+			Will: &mqtt.Will{
+				Topic:   "status/client-311",
+				Payload: []byte("lost-311"),
+			},
+		})
+		if ack := readPacket(t, client311, fixture.decoder, mqtt.ProtocolV311).(*mqtt.ConnAck); ack.ReasonCode != 0 {
+			t.Fatalf("client311 CONNACK = %#v", ack)
+		}
+		client311.Close()
+
+		will311 := readPacket(t, subscriber, fixture.decoder, mqtt.ProtocolV5).(*mqtt.Publish)
+		if will311.Topic != "status/client-311" || string(will311.Payload) != "lost-311" {
+			t.Fatalf("expected 311 will message, got: %#v", will311)
+		}
+
+		client5 := fixture.dial(t)
+		writePacket(t, client5, fixture.encoder, &mqtt.Connect{
+			Version:               mqtt.ProtocolV5,
+			ClientID:              "client-5-drop",
+			CleanStart:            true,
+			SessionExpiryInterval: 0,
+			Will: &mqtt.Will{
+				Topic:         "status/client-5",
+				Payload:       []byte("lost-5"),
+				DelayInterval: 0,
+			},
+		})
+		if ack := readPacket(t, client5, fixture.decoder, mqtt.ProtocolV5).(*mqtt.ConnAck); ack.ReasonCode != 0 {
+			t.Fatalf("client5 CONNACK = %#v", ack)
+		}
+		client5.Close()
+
+		will5 := readPacket(t, subscriber, fixture.decoder, mqtt.ProtocolV5).(*mqtt.Publish)
+		if will5.Topic != "status/client-5" || string(will5.Payload) != "lost-5" {
+			t.Fatalf("expected 5 will message, got: %#v", will5)
+		}
+		writePacket(t, subscriber, fixture.encoder, &mqtt.Disconnect{Version: mqtt.ProtocolV5})
+		expectClosed(t, subscriber)
+	})
+
+	t.Run("normal disconnect suppresses will", func(t *testing.T) {
+		subscriber := fixture.dial(t)
+		defer subscriber.Close()
+		writePacket(t, subscriber, fixture.encoder, &mqtt.Connect{Version: mqtt.ProtocolV5, CleanStart: true, ClientID: "sub-normal"})
+		if ack := readPacket(t, subscriber, fixture.decoder, mqtt.ProtocolV5).(*mqtt.ConnAck); ack.ReasonCode != 0 {
+			t.Fatalf("subscriber CONNACK = %#v", ack)
+		}
+		writePacket(t, subscriber, fixture.encoder, &mqtt.Subscribe{
+			Version:       mqtt.ProtocolV5,
+			PacketID:      1,
+			Subscriptions: []mqtt.Subscription{{Filter: "status/+", QoS: mqtt.QoSAtMostOnce}},
+		})
+		_ = readPacket(t, subscriber, fixture.decoder, mqtt.ProtocolV5)
+
+		client := fixture.dial(t)
+		defer client.Close()
+		writePacket(t, client, fixture.encoder, &mqtt.Connect{
+			Version:  mqtt.ProtocolV5,
+			ClientID: "client-normal-disc",
+			Will: &mqtt.Will{
+				Topic:   "status/normal",
+				Payload: []byte("should-not-publish"),
+			},
+		})
+		if ack := readPacket(t, client, fixture.decoder, mqtt.ProtocolV5).(*mqtt.ConnAck); ack.ReasonCode != 0 {
+			t.Fatalf("client CONNACK = %#v", ack)
+		}
+		writePacket(t, client, fixture.encoder, &mqtt.Disconnect{Version: mqtt.ProtocolV5, ReasonCode: 0x00})
+		expectClosed(t, client)
+		expectNoPacket(t, subscriber)
+		writePacket(t, subscriber, fixture.encoder, &mqtt.Disconnect{Version: mqtt.ProtocolV5})
+		expectClosed(t, subscriber)
+	})
+
+	t.Run("disconnect with will 0x04 publishes will", func(t *testing.T) {
+		subscriber := fixture.dial(t)
+		defer subscriber.Close()
+		writePacket(t, subscriber, fixture.encoder, &mqtt.Connect{Version: mqtt.ProtocolV5, CleanStart: true, ClientID: "sub-with-will"})
+		_ = readPacket(t, subscriber, fixture.decoder, mqtt.ProtocolV5)
+		writePacket(t, subscriber, fixture.encoder, &mqtt.Subscribe{
+			Version:       mqtt.ProtocolV5,
+			PacketID:      1,
+			Subscriptions: []mqtt.Subscription{{Filter: "status/+", QoS: mqtt.QoSAtMostOnce}},
+		})
+		_ = readPacket(t, subscriber, fixture.decoder, mqtt.ProtocolV5)
+
+		client := fixture.dial(t)
+		defer client.Close()
+		writePacket(t, client, fixture.encoder, &mqtt.Connect{
+			Version:  mqtt.ProtocolV5,
+			ClientID: "client-disc-with-will",
+			Will: &mqtt.Will{
+				Topic:   "status/with-will",
+				Payload: []byte("explicit-will"),
+			},
+		})
+		_ = readPacket(t, client, fixture.decoder, mqtt.ProtocolV5)
+		writePacket(t, client, fixture.encoder, &mqtt.Disconnect{Version: mqtt.ProtocolV5, ReasonCode: 0x04})
+		expectClosed(t, client)
+
+		willPacket := readPacket(t, subscriber, fixture.decoder, mqtt.ProtocolV5).(*mqtt.Publish)
+		if willPacket.Topic != "status/with-will" || string(willPacket.Payload) != "explicit-will" {
+			t.Fatalf("expected explicit will, got: %#v", willPacket)
+		}
+		writePacket(t, subscriber, fixture.encoder, &mqtt.Disconnect{Version: mqtt.ProtocolV5})
+		expectClosed(t, subscriber)
+	})
+
+	t.Run("will delay suppression on reconnect", func(t *testing.T) {
+		subscriber := fixture.dial(t)
+		defer subscriber.Close()
+		writePacket(t, subscriber, fixture.encoder, &mqtt.Connect{Version: mqtt.ProtocolV5, CleanStart: true, ClientID: "sub-delay-rec"})
+		_ = readPacket(t, subscriber, fixture.decoder, mqtt.ProtocolV5)
+		writePacket(t, subscriber, fixture.encoder, &mqtt.Subscribe{
+			Version:       mqtt.ProtocolV5,
+			PacketID:      1,
+			Subscriptions: []mqtt.Subscription{{Filter: "status/+", QoS: mqtt.QoSAtMostOnce}},
+		})
+		_ = readPacket(t, subscriber, fixture.decoder, mqtt.ProtocolV5)
+
+		client := fixture.dial(t)
+		writePacket(t, client, fixture.encoder, &mqtt.Connect{
+			Version:               mqtt.ProtocolV5,
+			ClientID:              "client-delay-rec",
+			CleanStart:            true,
+			SessionExpiryInterval: 30,
+			Will: &mqtt.Will{
+				Topic:         "status/delayed",
+				Payload:       []byte("suppressed-will"),
+				DelayInterval: 1,
+			},
+		})
+		_ = readPacket(t, client, fixture.decoder, mqtt.ProtocolV5)
+		client.Close()
+
+		time.Sleep(50 * time.Millisecond)
+		reconnect := fixture.dial(t)
+		defer reconnect.Close()
+		writePacket(t, reconnect, fixture.encoder, &mqtt.Connect{
+			Version:               mqtt.ProtocolV5,
+			ClientID:              "client-delay-rec",
+			CleanStart:            false,
+			SessionExpiryInterval: 30,
+		})
+		ack := readPacket(t, reconnect, fixture.decoder, mqtt.ProtocolV5).(*mqtt.ConnAck)
+		if ack.ReasonCode != 0 || !ack.SessionPresent {
+			t.Fatalf("reconnect failed: %#v", ack)
+		}
+
+		time.Sleep(1200 * time.Millisecond)
+		expectNoPacket(t, subscriber)
+		writePacket(t, reconnect, fixture.encoder, &mqtt.Disconnect{Version: mqtt.ProtocolV5})
+		expectClosed(t, reconnect)
+		writePacket(t, subscriber, fixture.encoder, &mqtt.Disconnect{Version: mqtt.ProtocolV5})
+		expectClosed(t, subscriber)
+	})
+
+	t.Run("session expiry timer clears persistent session", func(t *testing.T) {
+		client := fixture.dial(t)
+		writePacket(t, client, fixture.encoder, &mqtt.Connect{
+			Version:               mqtt.ProtocolV5,
+			ClientID:              "client-expiry-timer",
+			CleanStart:            true,
+			SessionExpiryInterval: 1,
+		})
+		if ack := readPacket(t, client, fixture.decoder, mqtt.ProtocolV5).(*mqtt.ConnAck); ack.ReasonCode != 0 {
+			t.Fatalf("client CONNACK = %#v", ack)
+		}
+		writePacket(t, client, fixture.encoder, &mqtt.Disconnect{Version: mqtt.ProtocolV5, ReasonCode: 0x00})
+		expectClosed(t, client)
+		client.Close()
+
+		if _, found, err := fixture.repo.Load("client-expiry-timer"); err != nil || !found {
+			t.Fatalf("session should still exist before expiry: found=%v, err=%v", found, err)
+		}
+
+		time.Sleep(1300 * time.Millisecond)
+
+		if _, found, err := fixture.repo.Load("client-expiry-timer"); err != nil || found {
+			t.Fatalf("session should be purged after expiry timer: found=%v", found)
+		}
+
+		reconnect := fixture.dial(t)
+		defer reconnect.Close()
+		writePacket(t, reconnect, fixture.encoder, &mqtt.Connect{
+			Version:               mqtt.ProtocolV5,
+			ClientID:              "client-expiry-timer",
+			CleanStart:            false,
+			SessionExpiryInterval: 30,
+		})
+		reconnectAck := readPacket(t, reconnect, fixture.decoder, mqtt.ProtocolV5).(*mqtt.ConnAck)
+		if reconnectAck.ReasonCode != 0 || reconnectAck.SessionPresent {
+			t.Fatalf("expected SessionPresent=false after expiry, got: %#v", reconnectAck)
+		}
+		writePacket(t, reconnect, fixture.encoder, &mqtt.Disconnect{Version: mqtt.ProtocolV5})
+		expectClosed(t, reconnect)
+	})
 }
