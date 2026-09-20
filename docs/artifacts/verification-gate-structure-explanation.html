@@ -1,0 +1,497 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="NaruMQ local·CI verification gate가 입력을 받아 fuzz, race, traceability, architecture, coverage, mutation 증거와 PASS/실패 결과를 만드는 과정을 설명하는 문서">
+  <title>NaruMQ Verification Gate 구조</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      --bg: #0b1020;
+      --panel: #121a2c;
+      --panel-soft: #172239;
+      --line: #2a3b5f;
+      --text: #e8eef9;
+      --muted: #a8b6cf;
+      --blue: #83b5ff;
+      --cyan: #6ee7df;
+      --yellow: #ffd479;
+      --orange: #ffad80;
+      --red: #ff8f9d;
+      --green: #9ee6a9;
+      --shadow: 0 18px 60px rgba(0, 0, .24);
+    }
+    * { box-sizing: border-box; }
+    html { scroll-behavior: smooth; }
+    body {
+      margin: 0;
+      background:
+        radial-gradient(circle at 10% 0%, rgba(95, 142, 255, .16), transparent 34rem),
+        radial-gradient(circle at 90% 18%, rgba(80, 216, 202, .10), transparent 30rem),
+        var(--bg);
+      color: var(--text);
+      font-family: Inter, "Noto Sans KR", "Apple SD Gothic Neo", sans-serif;
+      line-height: 1.72;
+    }
+    a { color: var(--blue); text-decoration: none; border-bottom: 1px solid rgba(131, 181, 255, .35); }
+    a:hover { color: #c5dcff; border-bottom-color: currentColor; }
+    code, pre, .mono { font-family: "Cascadia Code", "JetBrains Mono", Consolas, monospace; }
+    code { color: #d9e6ff; background: rgba(119, 153, 212, .14); border-radius: 5px; padding: .08em .32em; }
+    pre {
+      margin: 1rem 0 0;
+      padding: 1rem 1.1rem;
+      overflow-x: auto;
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      background: #0a0f1b;
+      color: #dbe7fb;
+      font-size: .86rem;
+      line-height: 1.62;
+      white-space: pre;
+    }
+    blockquote {
+      margin: 1rem 0;
+      padding: .75rem 1rem;
+      border-left: 3px solid var(--cyan);
+      background: rgba(110, 231, 223, .07);
+      color: var(--muted);
+    }
+    .wrap { width: min(1180px, calc(100% - 2rem)); margin: 0 auto; }
+    .hero { padding: 5.5rem 0 3rem; }
+    .eyebrow { color: var(--cyan); letter-spacing: .14em; text-transform: uppercase; font-size: .76rem; font-weight: 800; }
+    h1, h2, h3 { line-height: 1.24; letter-spacing: -.025em; }
+    h1 { max-width: 940px; margin: .8rem 0 1rem; font-size: clamp(2.2rem, 5vw, 4.6rem); }
+    h2 { margin: 0 0 1rem; font-size: clamp(1.55rem, 3vw, 2.3rem); }
+    h3 { margin: 1.5rem 0 .55rem; font-size: 1.15rem; color: #f5f8ff; }
+    p { margin: .7rem 0; }
+    .lead { max-width: 900px; color: var(--muted); font-size: 1.12rem; }
+    .badges { display: flex; flex-wrap: wrap; gap: .55rem; margin-top: 1.4rem; }
+    .badge, .commit { display: inline-flex; align-items: center; gap: .35rem; border: 1px solid var(--line); border-radius: 999px; padding: .25rem .68rem; background: rgba(18, 26, 44, .82); color: var(--muted); font-size: .82rem; }
+    .commit { color: var(--yellow); }
+    nav {
+      position: sticky; top: 0; z-index: 10;
+      border-block: 1px solid rgba(42, 59, 95, .85);
+      background: rgba(11, 16, 32, .87);
+      backdrop-filter: blur(16px);
+    }
+    nav .wrap { display: flex; gap: .8rem; overflow-x: auto; padding: .7rem 0; }
+    nav a { flex: 0 0 auto; border: 0; color: var(--muted); font-size: .87rem; }
+    nav a:hover { color: var(--text); }
+    section { padding: 2.9rem 0; border-bottom: 1px solid rgba(42, 59, 95, .7); }
+    .section-kicker { margin-bottom: .35rem; color: var(--cyan); font-size: .78rem; font-weight: 800; letter-spacing: .11em; text-transform: uppercase; }
+    .grid { display: grid; gap: 1rem; grid-template-columns: repeat(12, minmax(0, 1fr)); }
+    .card { min-width: 0; grid-column: span 4; padding: 1.15rem; border: 1px solid var(--line); border-radius: 14px; background: linear-gradient(160deg, rgba(23, 34, 57, .94), rgba(18, 26, 44, .88)); box-shadow: var(--shadow); }
+    .card.wide { grid-column: span 8; }
+    .card.full { grid-column: 1 / -1; }
+    .card p, .card li { color: var(--muted); }
+    .card strong { color: var(--text); }
+    .callout { border-left: 3px solid var(--yellow); background: rgba(255, 212, 121, .07); }
+    .warning { border-left: 3px solid var(--orange); background: rgba(255, 173, 128, .07); }
+    .success { border-left: 3px solid var(--green); background: rgba(158, 230, 169, .07); }
+    .flow { display: flex; flex-wrap: wrap; align-items: stretch; gap: .55rem; margin: 1.2rem 0; }
+    .flow .node { flex: 1 1 145px; min-width: 0; padding: .8rem; border: 1px solid var(--line); border-radius: 10px; background: var(--panel-soft); text-align: center; }
+    .flow .arrow { align-self: center; color: var(--cyan); font-size: 1.35rem; }
+    .label { display: inline-block; margin-bottom: .3rem; color: var(--cyan); font-size: .76rem; font-weight: 800; letter-spacing: .08em; text-transform: uppercase; }
+    table { width: 100%; border-collapse: collapse; margin-top: 1rem; font-size: .93rem; }
+    th, td { padding: .75rem .7rem; border-bottom: 1px solid var(--line); vertical-align: top; text-align: left; }
+    th { color: #f5f8ff; background: rgba(119, 153, 212, .10); }
+    td { color: var(--muted); }
+    td:first-child { color: var(--text); }
+    .timeline { display: grid; gap: 1rem; position: relative; }
+    .timeline-item { display: grid; grid-template-columns: 132px minmax(0, 1fr); gap: 1rem; }
+    .timeline-id { padding-top: .15rem; color: var(--yellow); font-weight: 800; }
+    .timeline-body { padding-left: 1rem; border-left: 2px solid var(--line); }
+    ul, ol { padding-left: 1.25rem; }
+    li + li { margin-top: .32rem; }
+    .small { color: var(--muted); font-size: .88rem; }
+    .muted { color: var(--muted); }
+    .source-list { columns: 2 300px; column-gap: 2rem; }
+    .source-list li { break-inside: avoid; margin-bottom: .5rem; }
+    footer { padding: 2rem 0 4rem; color: var(--muted); font-size: .88rem; }
+    @media (max-width: 760px) {
+      .wrap { width: min(100% - 1rem, 1180px); }
+      .hero { padding-top: 3.2rem; }
+      .card, .card.wide { grid-column: 1 / -1; }
+      .timeline-item { grid-template-columns: 1fr; gap: .25rem; }
+      .timeline-body { padding-left: .8rem; }
+      table { display: block; overflow-x: auto; white-space: normal; }
+      th, td { min-width: 145px; }
+      pre { font-size: .76rem; }
+    }
+  </style>
+</head>
+<body>
+  <header class="hero">
+    <div class="wrap">
+      <div class="eyebrow">NaruMQ / 코드로 읽는 검증 게이트</div>
+      <h1>코드 변경이 `PASS`가 되기까지</h1>
+      <p class="lead">
+        이 문서는 NaruMQ의 현재 local·CI verification gate를 명령 목록으로만 나열하지 않습니다.
+        <strong>개발자가 실행한 한 줄의 입력이 runner의 상태와 13개 command를 거쳐 fuzz·race·traceability·architecture·coverage·mutation 증거와 최종 종료 상태가 되는 과정</strong>을 실제 코드와 기준 문서에 연결해 설명합니다.
+      </p>
+      <div class="badges">
+        <span class="commit">TEST-12 · TEST-13</span>
+        <span class="badge">13개 command</span>
+        <span class="badge">첫 실패에서 중단</span>
+        <span class="badge">local · CI</span>
+        <span class="badge">Go 1.26.5</span>
+      </div>
+    </div>
+  </header>
+
+  <nav>
+    <div class="wrap">
+      <a href="#result">결과부터</a>
+      <a href="#concepts">검증 개념</a>
+      <a href="#runner">runner 흐름</a>
+      <a href="#sequence">13단계</a>
+      <a href="#fuzz">fuzz</a>
+      <a href="#mutation">mutation</a>
+      <a href="#coverage">coverage</a>
+      <a href="#contracts">계약·실패</a>
+      <a href="#evidence">증거·범위</a>
+    </div>
+  </nav>
+
+  <main>
+    <section id="result">
+      <div class="wrap">
+        <div class="section-kicker">01 · 결과부터</div>
+        <h2>게이트의 결과는 숫자 하나가 아니라, 재현 가능한 증거 묶음이다</h2>
+        <p>
+          개발자는 저장소 루트에서 <code>go run ./tools/verify local</code>을 실행합니다. CI에서는 여기에 diff coverage의 기준 ref를 더해 <code>go run ./tools/verify ci --base &lt;merge-base&gt;</code>를 실행합니다. 두 진입점은 같은 command graph를 사용하고, CI의 차이는 coverage command에만 <code>--base</code>를 전달하는 것입니다.
+        </p>
+        <div class="flow" aria-label="verification gate 전체 흐름">
+          <div class="node"><span class="label">입력</span><br><code>local</code> 또는 <code>ci --base</code><br><span class="small">repository root</span></div>
+          <div class="arrow">→</div>
+          <div class="node"><span class="label">사전 검사</span><br><code>go.mod</code>·gofmt<br><span class="small">실행 전 구조 확인</span></div>
+          <div class="arrow">→</div>
+          <div class="node"><span class="label">검증 graph</span><br>13개 command<br><span class="small">순서 고정·첫 실패 중단</span></div>
+          <div class="arrow">→</div>
+          <div class="node"><span class="label">증거</span><br><code>.artifacts/verification/</code><br><span class="small">coverage·mutation JSON</span></div>
+          <div class="arrow">→</div>
+          <div class="node"><span class="label">출력</span><br><code>local: PASS</code><br>또는 실패 command</div>
+        </div>
+        <div class="grid">
+          <article class="card success">
+            <h3>성공의 의미</h3>
+            <p>모든 command가 exit code 0으로 끝났고, 각 gate가 요구하는 artifact를 만들었다는 뜻입니다. 하나의 평균 점수가 모든 품질을 대신하지 않습니다.</p>
+          </article>
+          <article class="card callout">
+            <h3>실패의 의미</h3>
+            <p>runner는 실패한 command의 이름을 감싸 반환하고 그 뒤 단계는 실행하지 않습니다. 따라서 “어디까지 확인됐는가”가 로그 순서에 남습니다.</p>
+          </article>
+          <article class="card warning">
+            <h3>혼동하면 안 되는 것</h3>
+            <p>coverage 숫자가 높아도 traceability나 mutation이 실패하면 gate는 닫히지 않습니다. 각 검사는 서로 다른 종류의 누락을 찾습니다.</p>
+          </article>
+        </div>
+      </div>
+    </section>
+
+    <section id="concepts">
+      <div class="wrap">
+        <div class="section-kicker">02 · 배경 개념</div>
+        <h2>각 검사는 서로 다른 질문에 답한다</h2>
+        <p>
+          verification gate는 같은 코드를 여러 번 실행하는 과정이 아닙니다. 정상 입력, 비정상 입력, 동시성, 요구사항 연결, package 경계, 실행되지 않은 코드와 약한 assertion을 서로 다른 방법으로 확인합니다.
+        </p>
+        <table>
+          <thead><tr><th>검사</th><th>쉬운 질문</th><th>현재 gate가 확인하는 것</th></tr></thead>
+          <tbody>
+            <tr><td>unit</td><td>정상·오류·경계 입력에서 결과가 맞는가?</td><td>전체 package test를 한 번 실행합니다.</td></tr>
+            <tr><td>fuzz</td><td>사람이 고른 예시 밖의 입력에서도 invariant가 깨지지 않는가?</td><td>MQTT codec 2개, routing 1개, session 1개를 고정 quota로 실행합니다.</td></tr>
+            <tr><td>race</td><td>동시에 접근할 때 data race가 생기지 않는가?</td><td>전체 package를 race detector로 다시 실행합니다.</td></tr>
+            <tr><td>traceability</td><td>지원한다고 선언한 규격·요구사항에 실제 test가 연결됐는가?</td><td>source의 `Traceability` metadata와 conformance matrix를 양방향 비교합니다.</td></tr>
+            <tr><td>architecture</td><td>package가 허용되지 않은 방향으로 의존하지 않는가?</td><td>현재 `go list` import graph를 domain·application·adapter 경계와 비교합니다.</td></tr>
+            <tr><td>coverage</td><td>실행 가능한 production code가 실제로 실행됐는가?</td><td>atomic coverprofile과 policy floor·ratchet·CI diff를 평가합니다.</td></tr>
+            <tr><td>mutation</td><td>test assertion이 production 조건의 변화를 실제로 잡는가?</td><td>delivery/session state machine mutant를 package별로 변형해 실행합니다.</td></tr>
+          </tbody>
+        </table>
+        <blockquote>
+          이 구분이 필요한 이유는 “실행됐다”와 “검증됐다”가 다르기 때문입니다. 예를 들어 line coverage는 한 줄이 실행됐다는 사실을 보여주지만, 그 줄의 조건을 반대로 바꿨을 때 test가 실패하는지는 mutation이 확인합니다.
+        </blockquote>
+      </div>
+    </section>
+
+    <section id="runner">
+      <div class="wrap">
+        <div class="section-kicker">03 · runner 흐름</div>
+        <h2>입력은 `main.go`에서 시작하고, 실제 순서는 `runVerification`이 소유한다</h2>
+        <p>
+          <a href="../../tools/verify/main.go#L27">`tools/verify/main.go`</a>는 subcommand를 고릅니다. `local`은 <code>runLocal</code>, `ci`는 base ref를 먼저 확인한 뒤 <code>runCI</code>를 호출합니다. 두 함수는 공통 함수인 <a href="../../tools/verify/runner.go#L51">`runVerification`</a>으로 들어가므로 local과 CI 사이에서 command 순서가 갈라지지 않습니다.
+        </p>
+        <pre><code>// tools/verify/runner.go:40-56
+func runLocal(ctx context.Context, root string, runner commandRunner) error {
+    return runVerification(ctx, root, verificationOptions{}, runner)
+}
+
+func runCI(ctx context.Context, root, base string, runner commandRunner) error {
+    if strings.TrimSpace(base) == "" {
+        return fmt.Errorf("ci requires --base &lt;git-ref&gt;")
+    }
+    return runVerification(ctx, root, verificationOptions{CI: true, Base: base}, runner)
+}
+
+func runVerification(...) error {
+    ensureRepositoryRoot(root)
+    checkGoFormat(root)
+    os.MkdirAll(".artifacts/verification", 0o755)
+    // 아래 commandSpec 배열을 순서대로 실행한다.
+}</code></pre>
+        <p>
+          사전 단계는 아직 외부 command를 실행하지 않습니다. <a href="../../tools/verify/runner.go#L109">`ensureRepositoryRoot`</a>는 module path가 <code>narumq</code>인지 확인하고, <a href="../../tools/verify/runner.go#L124">`checkGoFormat`</a>은 Go source를 수정하지 않고 포맷 불일치만 보고합니다. 이 단계가 실패하면 13개 command는 시작되지 않습니다.
+        </p>
+        <div class="grid">
+          <article class="card wide">
+            <h3>실제 command 실행은 주입된 runner가 맡는다</h3>
+            <pre><code>// tools/verify/runner.go:82-102
+for _, command := range commands {
+    if err := runner(ctx, root, command); err != nil {
+        return fmt.Errorf("verification stopped after %s: %w",
+            formatCommand(command), err)
+    }
+}
+
+// 실제 실행에서는 executeCommand가 exec.CommandContext로
+// command.Name과 command.Args를 실행하고 exit code를 보존한다.</code></pre>
+            <p><code>commandRunner</code>를 함수 타입으로 분리했기 때문에 production에서는 실제 process를 실행하고, runner test에서는 command를 기록하는 가짜 함수를 넣을 수 있습니다. 이 seam은 검증 대상이 business logic이 아니라 “순서와 중단 계약”임을 드러냅니다.</p>
+          </article>
+          <article class="card">
+            <h3>첫 실패 중단</h3>
+            <p>예를 들어 unit command가 실패하면 fuzz·race·coverage·mutation은 실행되지 않습니다. 로그에 실패 command가 포함되므로 뒤 단계가 실행됐다고 추정하지 않아도 됩니다.</p>
+          </article>
+        </div>
+      </div>
+    </section>
+
+    <section id="sequence">
+      <div class="wrap">
+        <div class="section-kicker">04 · 고정된 순서</div>
+        <h2>13개 command는 빠른 피드백에서 비싼 gate로 진행한다</h2>
+        <p>
+          앞 단계는 컴파일·기본 동작·입력 안정성을 빠르게 확인하고, 뒤 단계는 race·coverage·mutation처럼 더 오래 걸리거나 artifact를 필요로 하는 검사를 수행합니다. 이 순서는 <a href="../../tools/verify/runner_test.go#L38">`TestRunCIRequiresBaseAndPropagatesBaseToCoverage`</a>에서 전체 `Name`·`Args` 목록으로 고정되어 있습니다.
+        </p>
+        <div class="timeline">
+          <div class="timeline-item"><div class="timeline-id">01 · vet</div><div class="timeline-body"><h3><code>go vet ./...</code></h3><p>컴파일 가능한 코드에서 정적 분석 경고를 찾습니다.</p></div></div>
+          <div class="timeline-item"><div class="timeline-id">02 · unit</div><div class="timeline-body"><h3><code>go test ./... -count=1</code></h3><p>test cache를 사용하지 않고 전체 package test를 실행합니다.</p></div></div>
+          <div class="timeline-item"><div class="timeline-id">03 · fuzz</div><div class="timeline-body"><h3>MQTT <code>FuzzDecoder</code></h3><p>malformed frame이 panic하거나 정의되지 않은 error를 만들지 않는지 확인합니다.</p></div></div>
+          <div class="timeline-item"><div class="timeline-id">04 · fuzz</div><div class="timeline-body"><h3>MQTT <code>FuzzCodecRoundTrip</code></h3><p>성공한 packet codec round-trip이 packet 의미를 바꾸지 않는지 확인합니다.</p></div></div>
+          <div class="timeline-item"><div class="timeline-id">05 · fuzz</div><div class="timeline-body"><h3>routing <code>FuzzTopicMatching</code></h3><p>filter·topic validation과 독립 oracle 기반 match·QoS invariant를 확인합니다.</p></div></div>
+          <div class="timeline-item"><div class="timeline-id">06 · fuzz</div><div class="timeline-body"><h3>session <code>FuzzLifecycleTransitions</code></h3><p>Clean Start, Session Expiry, reconnect와 expiry edge를 확인합니다.</p></div></div>
+          <div class="timeline-item"><div class="timeline-id">07 · race</div><div class="timeline-body"><h3><code>go test -race ./... -count=1</code></h3><p>동시 접근에서 data race가 없는지 전체 package를 다시 실행합니다.</p></div></div>
+          <div class="timeline-item"><div class="timeline-id">08 · trace</div><div class="timeline-body"><h3><code>go run ./tools/verify traceability</code></h3><p>source metadata, MQTT matrix, requirement union이 서로 일치하는지 확인합니다.</p></div></div>
+          <div class="timeline-item"><div class="timeline-id">09 · graph</div><div class="timeline-body"><h3><code>go run ./tools/verify architecture</code></h3><p>실제 production import graph가 Clean Architecture 경계를 지키는지 확인합니다.</p></div></div>
+          <div class="timeline-item"><div class="timeline-id">10 · profile</div><div class="timeline-body"><h3>atomic coverage profile 생성</h3><p>production package와 integration test를 <code>.artifacts/verification/coverage.out</code>에 기록합니다.</p></div></div>
+          <div class="timeline-item"><div class="timeline-id">11 · policy</div><div class="timeline-body"><h3><code>go run ./tools/verify coverage ...</code></h3><p>floor·ratchet·diff coverage를 평가하고 <code>coverage-summary.json</code>을 남깁니다.</p></div></div>
+          <div class="timeline-item"><div class="timeline-id">12 · mutation</div><div class="timeline-body"><h3>delivery mutation</h3><p><code>internal/domain/delivery</code> state machine을 변형하고 JSON 결과를 남깁니다.</p></div></div>
+          <div class="timeline-item"><div class="timeline-id">13 · mutation</div><div class="timeline-body"><h3>session mutation</h3><p><code>internal/domain/session</code> state machine을 변형하고 JSON 결과를 남깁니다.</p></div></div>
+        </div>
+      </div>
+    </section>
+
+    <section id="fuzz">
+      <div class="wrap">
+        <div class="section-kicker">05 · bounded fuzz</div>
+        <h2>fuzz gate는 무한 탐색이 아니라 고정 quota와 보존된 실패 입력이다</h2>
+        <p>
+          Go fuzz는 seed와 과거 corpus에서 시작해 입력을 변형합니다. 현재 gate는 각 target을 별도 process로 실행하고 <code>-fuzztime=10000x</code>, <code>-parallel=1</code>을 사용합니다. 실행 순서 자체는 deterministic하지 않으므로, 반복 계약은 “같은 입력 순서”가 아니라 “같은 quota와 failure corpus 보존”입니다.
+        </p>
+        <table>
+          <thead><tr><th>target</th><th>입력·경계</th><th>관찰 가능한 invariant</th></tr></thead>
+          <tbody>
+            <tr><td><code>FuzzDecoder</code></td><td>raw frame bytes, protocol selector</td><td>panic 금지, malformed input에서 partial consumption 금지, 정의된 codec error</td></tr>
+            <tr><td><code>FuzzCodecRoundTrip</code></td><td>decoder가 성공시킨 packet</td><td>encode→decode 뒤 packet semantics 보존</td></tr>
+            <tr><td><code>FuzzTopicMatching</code></td><td>raw filter/topic/QoS</td><td>wildcard·system topic·invalid sentinel·table state·effective QoS</td></tr>
+            <tr><td><code>FuzzLifecycleTransitions</code></td><td>protocol, Clean Start, expiry selector, 1..86400초 finite interval</td><td>connected state, duplicate/identity error, retention, exact expiry, Session Present</td></tr>
+          </tbody>
+        </table>
+        <pre><code>go test ./internal/domain/mqtt -run=^$ -fuzz=^FuzzDecoder$ -fuzztime=10000x -parallel=1
+go test ./internal/domain/mqtt -run=^$ -fuzz=^FuzzCodecRoundTrip$ -fuzztime=10000x -parallel=1
+go test ./internal/domain/routing -run=^$ -fuzz=^FuzzTopicMatching$ -fuzztime=10000x -parallel=1
+go test ./internal/domain/session -run=^$ -fuzz=^FuzzLifecycleTransitions$ -fuzztime=10000x -parallel=1</code></pre>
+        <div class="grid">
+          <article class="card callout">
+            <h3>실패 입력의 다음 위치</h3>
+            <p>Go가 발견한 재현 가능한 failure는 해당 package의 <code>testdata/fuzz/&lt;Target&gt;/</code> corpus로 승격합니다. 그러면 ordinary test에서도 같은 실패를 확인할 수 있습니다.</p>
+          </article>
+          <article class="card warning">
+            <h3>무엇을 보장하지 않는가</h3>
+            <p><code>10000x</code>는 모든 가능한 MQTT 입력을 탐색한다는 뜻이 아닙니다. 고정 작업량 안에서 invariant를 반복 확인하는 bounded campaign입니다.</p>
+          </article>
+        </div>
+      </div>
+    </section>
+
+    <section id="mutation">
+      <div class="wrap">
+        <div class="section-kicker">06 · mutation</div>
+        <h2>mutation은 test가 실제 규칙의 변화를 잡는지 확인한다</h2>
+        <p>
+          mutation testing은 production 조건을 일부러 바꿉니다. 예를 들어 조건의 부정을 뒤집거나 경계 비교를 바꾼 뒤 기존 test를 실행합니다. test가 실패하면 mutant는 <code>KILLED</code>, 계속 통과하면 <code>LIVED</code>, 해당 코드가 실행되지 않으면 <code>NOT_COVERED</code>입니다.
+        </p>
+        <div class="flow" aria-label="mutation 흐름">
+          <div class="node"><span class="label">원본</span><br><code>state.go</code><br><span class="small">delivery / session</span></div>
+          <div class="arrow">→</div>
+          <div class="node"><span class="label">변형</span><br>condition·boundary 변경<br><span class="small">Gremlins</span></div>
+          <div class="arrow">→</div>
+          <div class="node"><span class="label">실행</span><br>package test<br><span class="small">workers=1</span></div>
+          <div class="arrow">→</div>
+          <div class="node"><span class="label">판정</span><br>KILLED / LIVED<br><span class="small">JSON artifact</span></div>
+        </div>
+        <pre><code>unleash:
+  workers: 1
+  test-cpu: 1
+  threshold:
+    efficacy: 80
+    mutant-coverage: 80</code></pre>
+        <table>
+          <thead><tr><th>점수</th><th>공식</th><th>현재 gate</th></tr></thead>
+          <tbody>
+            <tr><td>test efficacy</td><td><code>KILLED / (KILLED + LIVED) × 100</code></td><td>package별 80 이상</td></tr>
+            <tr><td>mutant coverage</td><td><code>(KILLED + LIVED) / (KILLED + LIVED + NOT_COVERED) × 100</code></td><td>package별 80 이상</td></tr>
+          </tbody>
+        </table>
+        <p>
+          delivery와 session은 점수를 합산하지 않습니다. 한 package의 강한 test가 다른 package의 약한 state machine을 숨기지 않도록 command와 JSON을 분리합니다.
+        </p>
+        <pre><code>go tool gremlins unleash --config=tests/verification/gremlins.yaml --output=.artifacts/verification/mutation-delivery.json internal/domain/delivery
+go tool gremlins unleash --config=tests/verification/gremlins.yaml --output=.artifacts/verification/mutation-session.json internal/domain/session</code></pre>
+        <p class="small">정책과 대상: <a href="../../tests/verification/gremlins.yaml">gremlins.yaml</a>, <a href="../../internal/domain/delivery/state.go">delivery/state.go</a>, <a href="../../internal/domain/session/state.go">session/state.go</a>.</p>
+      </div>
+    </section>
+
+    <section id="coverage">
+      <div class="wrap">
+        <div class="section-kicker">07 · coverage와 CI</div>
+        <h2>coverage는 실행 profile과 정책 평가를 두 단계로 나눈다</h2>
+        <p>
+          runner의 10번째 command는 atomic coverprofile을 생성하고, 11번째 command는 그 profile을 읽어 정책을 평가합니다. profile 생성과 정책 판정을 나누면 “test process가 profile을 만들었는가”와 “그 profile이 기준을 넘었는가”를 서로 다른 실패로 볼 수 있습니다.
+        </p>
+        <pre><code>// tools/verify/runner.go:71-80
+// 10. profile 생성
+ go test ./cmd/... ./internal/... ./tests/integration/... \
+   -count=1 -covermode=atomic \
+   -coverpkg=./cmd/...,./internal/... \
+   -coverprofile=.artifacts/verification/coverage.out
+
+// 11. profile 정책 평가
+ go run ./tools/verify coverage \
+   --profile .artifacts/verification/coverage.out \
+   --policy tests/verification/coverage-policy.json \
+   --report .artifacts/verification/coverage-summary.json
+
+// CI일 때만 위 coverage command 뒤에 --base HEAD~1 추가</code></pre>
+        <table>
+          <thead><tr><th>정책 층</th><th>현재 기준</th><th>설정 위치</th></tr></thead>
+          <tbody>
+            <tr><td>전체 production</td><td>line/function 90%</td><td><a href="../../tests/verification/coverage-policy.json">overallFloor</a></td></tr>
+            <tr><td>core package</td><td>line/function 95%</td><td><a href="../../tests/verification/coverage-policy.json">coreFloor·corePackages</a></td></tr>
+            <tr><td>PR diff</td><td>line/function 95%</td><td><a href="../../tests/verification/coverage-policy.json">diffFloor</a></td></tr>
+            <tr><td>ratchet</td><td>이전에 확인한 수치보다 낮아지지 않음</td><td><a href="../../tests/verification/coverage-policy.json">ratchet</a></td></tr>
+          </tbody>
+        </table>
+        <div class="grid">
+          <article class="card wide">
+            <h3>CI base 전달의 의미</h3>
+            <p><code>runCI</code>는 빈 base를 거절합니다. 유효한 base를 받으면 runner test가 전체 command 목록을 비교해 <code>--base HEAD~1</code>이 coverage command에 정확히 한 번만 있는지 확인합니다. fuzz·race·mutation command에는 diff base를 넣지 않습니다.</p>
+          </article>
+          <article class="card">
+            <h3>현재 branch coverage</h3>
+            <p>승인된 branch instrumentation이 고정되기 전까지 branch coverage는 <code>not_evaluated</code>와 이유를 artifact에 기록합니다. line coverage로 대신하지 않습니다.</p>
+          </article>
+        </div>
+      </div>
+    </section>
+
+    <section id="contracts">
+      <div class="wrap">
+        <div class="section-kicker">08 · 계약과 실패</div>
+        <h2>runner test가 순서·중단·base 전달을 실행 계약으로 고정한다</h2>
+        <p>
+          <a href="../../tools/verify/runner_test.go#L13">`TestRunLocalExecutesOrderedCommandsAndStopsAtFirstFailure`</a>는 두 번째 command에서 가짜 실패를 반환합니다. 기대 결과는 첫 번째 <code>go vet</code>와 두 번째 unit test만 실행되고, fuzz 이후 단계는 실행되지 않는 것입니다.
+        </p>
+        <pre><code>// tools/verify/runner_test.go:18-35
+runner := func(_ context.Context, _ string, spec commandSpec) error {
+    commands = append(commands, formatCommand(spec))
+    if len(commands) == 2 {
+        return failure
+    }
+    return nil
+}
+
+// 결과: len(commands)==2
+// commands[0] = go vet ./...
+// commands[1] = go test ./... -count=1</code></pre>
+        <p>
+          성공 경로는 13개 <code>commandSpec</code>의 이름과 인자를 exact comparison합니다. 이 검사가 없으면 command를 하나 추가하거나 base를 잘못된 단계에 전달해도 package test 자체는 통과할 수 있습니다.
+        </p>
+        <table>
+          <thead><tr><th>실패 위치</th><th>runner의 반응</th><th>뒤 단계</th></tr></thead>
+          <tbody>
+            <tr><td>repository root</td><td>module path 오류 반환</td><td>실행하지 않음</td></tr>
+            <tr><td>gofmt precheck</td><td>source를 바꾸지 않고 파일 목록 반환</td><td>실행하지 않음</td></tr>
+            <tr><td>unit·fuzz·race</td><td>실패 command와 exit code를 wrapping</td><td>실행하지 않음</td></tr>
+            <tr><td>traceability·architecture</td><td>정책 위반을 command 실패로 전달</td><td>coverage·mutation 실행하지 않음</td></tr>
+            <tr><td>coverage·mutation</td><td>artifact와 함께 gate 실패</td><td>이미 끝난 앞 단계는 유지</td></tr>
+          </tbody>
+        </table>
+        <blockquote>
+          현재 runner는 mutation JSON을 다시 읽어 점수를 계산하지 않습니다. Gremlins가 config threshold를 적용하고 exit code를 반환하며, runner는 그 process 결과와 JSON artifact를 보존합니다. 따라서 score를 볼 때는 package별 JSON을 직접 확인해야 합니다.
+        </blockquote>
+      </div>
+    </section>
+
+    <section id="evidence">
+      <div class="wrap">
+        <div class="section-kicker">09 · 증거와 범위</div>
+        <h2>PASS를 설명할 때는 실행 명령과 artifact를 함께 남긴다</h2>
+        <div class="grid">
+          <article class="card wide success">
+            <h3>표준 artifact</h3>
+            <ul>
+              <li><code>.artifacts/verification/coverage.out</code> — atomic raw profile</li>
+              <li><code>.artifacts/verification/coverage-summary.json</code> — floor·ratchet·diff 평가</li>
+              <li><code>.artifacts/verification/mutation-delivery.json</code> — delivery mutation 결과</li>
+              <li><code>.artifacts/verification/mutation-session.json</code> — session mutation 결과</li>
+              <li><code>internal/domain/*/testdata/fuzz/&lt;Target&gt;/</code> — 발견된 failure corpus</li>
+            </ul>
+          </article>
+          <article class="card warning">
+            <h3>현재 Phase 0의 범위</h3>
+            <p>mutation 대상은 delivery/session state machine입니다. production ownership·ACL·drain state machine은 아직 현재 capability가 아니므로 gate 대상에 포함하지 않습니다. 해당 기능이 구현되면 package별 command와 80% 기준을 같은 변경에 추가해야 합니다.</p>
+          </article>
+        </div>
+        <h3>현재 작업 트리에서 다시 실행할 명령</h3>
+        <pre><code>go run ./tools/verify local
+go run ./tools/verify ci --base HEAD~1</code></pre>
+        <p>
+          이 두 명령이 성공하려면 코드, source traceability metadata, conformance matrix, coverage policy, Gremlins config와 test corpus가 서로 같은 계약을 가져야 합니다. HTML을 읽는 것 자체는 검증 실행이 아니므로, release evidence에는 실제 command output과 artifact를 별도로 보존해야 합니다.
+        </p>
+        <h3>관련 소스와 기준 문서</h3>
+        <ul class="source-list">
+          <li><a href="../../tools/verify/main.go">`tools/verify/main.go`</a> — local·CI 진입점</li>
+          <li><a href="../../tools/verify/runner.go">`tools/verify/runner.go`</a> — command graph·첫 실패 중단</li>
+          <li><a href="../../tools/verify/runner_test.go">`tools/verify/runner_test.go`</a> — 실행 계약 회귀 test</li>
+          <li><a href="../../internal/domain/mqtt/packet_fuzz_test.go">MQTT fuzz targets</a></li>
+          <li><a href="../../internal/domain/routing/routing_fuzz_test.go">routing fuzz target</a></li>
+          <li><a href="../../internal/domain/session/state_fuzz_test.go">session fuzz target</a></li>
+          <li><a href="../specs/performance-and-verification.md">성능 및 verification spec §7–§10</a></li>
+          <li><a href="../conventions/go-coding-conventions.md#13-formatting%EA%B3%BC-ci">Go coding conventions §13</a></li>
+          <li><a href="../../tests/conformance/mqtt-compliance-v1.json">MQTT compliance matrix</a></li>
+          <li><a href="../../tests/verification/gremlins.yaml">Gremlins policy</a></li>
+          <li><a href="../../tests/verification/coverage-policy.json">coverage policy</a></li>
+        </ul>
+      </div>
+    </section>
+  </main>
+
+  <footer>
+    <div class="wrap">
+      <p>기준 문서: `docs/specs/performance-and-verification.md`, `docs/conventions/go-coding-conventions.md` 및 현재 `tools/verify` 구현.</p>
+      <p>읽는 순서: 결과 → 검증 개념 → runner 흐름 → 13단계 → fuzz → mutation → coverage → 계약·실패 → 증거·범위.</p>
+    </div>
+  </footer>
+</body>
+</html>
