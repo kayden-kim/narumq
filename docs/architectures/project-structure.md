@@ -80,7 +80,8 @@ NaruMQ source tree는 MQTT·session·routing·delivery·tenancy·security·clust
 │       │   ├── environment/
 │       │   ├── jsonl/
 │       │   ├── mqttclient/
-│       │   └── runtimeartifact/
+│       │   ├── runtimeartifact/
+│       │   └── suiteartifact/
 │       ├── bp01/
 │       └── bp05/
 ├── tools/
@@ -96,8 +97,8 @@ NaruMQ source tree는 MQTT·session·routing·delivery·tenancy·security·clust
 `adapters/clock`, `adapters/raft`와 `tests/integration/raft_consensus_test.go`다.
 `internal/adapters/runtimemetrics`는 Go process 내부의 `runtime/metrics`를 고정 JSONL schema로 수집하는 outbound 진단 adapter다.
 `tests/benchmark/internal/environment`는 BP-01과 BP-05가 공유하는 immutable image, broker container, readiness, resource limit, runner container, Docker stats와 artifact 수집 경계를 소유한다.
-`tests/benchmark/internal/mqttclient`는 benchmark 전용 MQTT 5 Clean Start/zero Session Expiry CONNECT와 frame I/O를 소유한다. `tests/benchmark/internal/jsonl`은 phase·event JSONL 파일의 공통 buffering/flush/close 동작을 소유하고, `tests/benchmark/internal/runtimeartifact`는 runtime 표본과 phase 경계를 검증해 target별 요약을 만든다. 세 package와 `bp01`, `bp05`는 product runtime이 import하지 않는 benchmark-only source다.
-각 BP package는 profile 해석, workload 상태와 comparison 판정을 소유하며 shared package는 profile·summary 의미를 결정하지 않는다.
+`tests/benchmark/internal/mqttclient`는 benchmark 전용 MQTT 5 Clean Start/zero Session Expiry CONNECT와 frame I/O를 소유한다. `tests/benchmark/internal/jsonl`은 phase·event JSONL 파일의 공통 buffering/flush/close 동작을 소유하고, `tests/benchmark/internal/runtimeartifact`는 runtime 표본과 phase 경계를 검증해 target별 요약을 만든다. `tests/benchmark/internal/suiteartifact`는 반복 순서와 중앙값·MAD 계산만 소유하며 profile 의미와 BP별 metric 선택은 소유하지 않는다. 네 package와 `bp01`, `bp05`는 product runtime이 import하지 않는 benchmark-only source다.
+각 BP package는 profile 해석, workload 상태와 comparison 판정, suite parent·child artifact schema와 Docker 실행을 소유하며 shared package는 profile·summary 의미를 결정하지 않는다.
 
 ## Directory naming
 

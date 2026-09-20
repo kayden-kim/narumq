@@ -146,6 +146,21 @@ func TestBP05RunCLIRejectsUnknownSubcommand(t *testing.T) {
 	}
 }
 
+func TestRunComparisonRejectsInvalidOrderBeforeCreatingDirectory(t *testing.T) {
+	runDir := filepath.Join(t.TempDir(), "run")
+	_, _, err := runComparison(nil, comparisonRunOptions{
+		RunID:       "bp05-run",
+		RunDir:      runDir,
+		TargetOrder: []string{"emqx", "emqx"},
+	})
+	if err == nil {
+		t.Fatal("runComparison() accepted duplicate target order")
+	}
+	if _, statErr := os.Stat(runDir); !os.IsNotExist(statErr) {
+		t.Fatalf("runComparison() created directory for invalid order: stat error = %v", statErr)
+	}
+}
+
 type discardBP05Writer struct{}
 
 func (discardBP05Writer) Write(value []byte) (int, error) { return len(value), nil }

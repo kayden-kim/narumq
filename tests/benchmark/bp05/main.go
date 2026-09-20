@@ -19,15 +19,17 @@ func main() {
 
 func runCLI(args []string, stdout, stderr io.Writer) error {
 	if len(args) == 0 {
-		return errors.New("subcommand is required: compare or run")
+		return errors.New("subcommand is required: compare, suite, or run")
 	}
 	switch args[0] {
 	case "compare":
 		return compareCommand(context.Background(), args[1:], stdout, stderr)
+	case "suite":
+		return suiteCommand(context.Background(), args[1:], stdout, stderr)
 	case "run":
 		return runCommand(args[1:], stdout, stderr)
 	default:
-		return fmt.Errorf("unknown subcommand %q; only compare and run are supported", args[0])
+		return fmt.Errorf("unknown subcommand %q; only compare, suite, and run are supported", args[0])
 	}
 }
 

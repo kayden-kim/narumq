@@ -136,6 +136,70 @@ type comparisonTarget struct {
 	FailureReason        string `json:"failureReason,omitempty"`
 }
 
+type comparisonRunOptions struct {
+	Profile       Profile
+	ProfileBytes  []byte
+	ProfileSHA256 string
+	RepoRoot      string
+	RunID         string
+	RunDir        string
+	Images        environment.ImageSet
+	Metadata      hostMetadata
+	Command       []string
+	TargetOrder   []string
+}
+
+type comparisonExecutor func(context.Context, comparisonRunOptions) (manifest, comparison, error)
+
+func validateTargetOrder(order []string) error {
+	if len(order) != 2 {
+		return fmt.Errorf("target order must contain exactly two targets")
+	}
+	seen := make(map[string]struct{}, len(order))
+	for _, target := range order {
+		if target != "narumq" && target != "emqx" {
+			return fmt.Errorf("unsupported benchmark target %q", target)
+		}
+		if _, exists := seen[target]; exists {
+			return fmt.Errorf("target order contains duplicate target %q", target)
+		}
+		seen[target] = struct{}{}
+	}
+	return nil
+}
+
+func newComparisonManifest(options comparisonRunOptions, startedAt time.Time) manifest {
+	return manifest{
+		SchemaVersion:              2,
+		RunID:                      options.RunID,
+		StartedAt:                  startedAt.UTC().Format(time.RFC3339Nano),
+		Purpose:                    options.Profile.Purpose,
+		ReleaseGating:              false,
+		Profile:                    artifactProfile{RawSHA256: options.ProfileSHA256, Resolved: options.Profile},
+		Git:                        options.Metadata.git,
+		GoVersion:                  options.Metadata.goVersion,
+		OS:                         runtime.GOOS,
+		Architecture:               runtime.GOARCH,
+		Docker:                     dockerMetadata{ClientServerVersion: options.Metadata.dockerVersion},
+		Command:                    append([]string(nil), options.Command...),
+		BuildBaseImage:             buildBaseImageReference,
+		PlannedBuildBaseImage:      plannedBuildBaseImage,
+		BuildBaseImageSubstitution: "planned digest was unavailable in Docker Hub; immutable digest resolved from golang:1.26.5-bookworm on 2026-09-19",
+		RunnerImage:                options.Images.RunnerReference,
+		RunnerImageID:              options.Images.RunnerID,
+		Targets:                    make(map[string]targetManifest),
+		EMQX: emqxMetadata{
+			Version:        emqxVersion,
+			Edition:        emqxEdition,
+			License:        emqxLicense,
+			EOL:            emqxEOLEnd,
+			ImageReference: emqxImageReference,
+			ImageIndex:     "sha256:4593b6e30196754779fa14483332cb0be56c233f1c8a387b1308bec4337c0144",
+			Historical:     true,
+		},
+	}
+}
+
 func compareCommand(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 	flags := flag.NewFlagSet("compare", flag.ContinueOnError)
 	flags.SetOutput(stderr)
@@ -177,37 +241,20 @@ func compareCommand(ctx context.Context, args []string, stdout, stderr io.Writer
 	if err := os.WriteFile(filepath.Join(runDir, "profile.json"), profileBytes, 0o644); err != nil {
 		return fmt.Errorf("write resolved profile source: %w", err)
 	}
-
-	startedAt := time.Now().UTC()
+	command := []string{"compare", "--profile", *profilePath, "--output", *outputRoot}
 	metadata := collectHostMetadata(repoRoot)
-	currentManifest := manifest{
-		SchemaVersion:              2,
-		RunID:                      runID,
-		StartedAt:                  startedAt.Format(time.RFC3339Nano),
-		Purpose:                    profile.Purpose,
-		ReleaseGating:              false,
-		Profile:                    artifactProfile{RawSHA256: profileHash, Resolved: profile},
-		Git:                        metadata.git,
-		GoVersion:                  metadata.goVersion,
-		OS:                         runtime.GOOS,
-		Architecture:               runtime.GOARCH,
-		Docker:                     dockerMetadata{ClientServerVersion: metadata.dockerVersion},
-		Command:                    append([]string(nil), []string{"compare", "--profile", *profilePath, "--output", *outputRoot}...),
-		BuildBaseImage:             buildBaseImageReference,
-		PlannedBuildBaseImage:      plannedBuildBaseImage,
-		BuildBaseImageSubstitution: "planned digest was unavailable in Docker Hub; immutable digest resolved from golang:1.26.5-bookworm on 2026-09-19",
-		RunnerImage:                "",
-		Targets:                    make(map[string]targetManifest),
-		EMQX: emqxMetadata{
-			Version:        emqxVersion,
-			Edition:        emqxEdition,
-			License:        emqxLicense,
-			EOL:            emqxEOLEnd,
-			ImageReference: emqxImageReference,
-			ImageIndex:     "sha256:4593b6e30196754779fa14483332cb0be56c233f1c8a387b1308bec4337c0144",
-			Historical:     true,
-		},
+	options := comparisonRunOptions{
+		Profile:       profile,
+		ProfileBytes:  profileBytes,
+		ProfileSHA256: profileHash,
+		RepoRoot:      repoRoot,
+		RunID:         runID,
+		RunDir:        runDir,
+		Metadata:      metadata,
+		Command:       command,
+		TargetOrder:   []string{"narumq", "emqx"},
 	}
+	currentManifest := newComparisonManifest(options, time.Now().UTC())
 	writeFailure := func(reason string) error {
 		currentManifest.FailureReason = reason
 		currentManifest.FinishedAt = time.Now().UTC().Format(time.RFC3339Nano)
@@ -231,15 +278,53 @@ func compareCommand(ctx context.Context, args []string, stdout, stderr io.Writer
 	if err != nil {
 		return writeFailure(err.Error())
 	}
+	options.Images = images
 	currentManifest.RunnerImage = images.RunnerReference
 	currentManifest.RunnerImageID = images.RunnerID
 	if err := environment.EnsureEMQXImage(ctx, runDir); err != nil {
 		return writeFailure(err.Error())
 	}
 
-	for _, target := range []string{"narumq", "emqx"} {
-		targetDir := filepath.Join(runDir, target)
-		imageReference := images.NaruMQReference
+	_, _, runErr := runComparison(ctx, options)
+	if _, writeErr := fmt.Fprintf(stdout, "%s\n", filepath.Join(runDir, "manifest.json")); writeErr != nil {
+		if runErr != nil {
+			return errors.Join(runErr, fmt.Errorf("write compare result: %w", writeErr))
+		}
+		return fmt.Errorf("write compare result: %w", writeErr)
+	}
+	if runErr != nil {
+		return runErr
+	}
+	return nil
+}
+
+func runComparison(ctx context.Context, options comparisonRunOptions) (manifest, comparison, error) {
+	var emptyManifest manifest
+	var emptyComparison comparison
+	if err := validateTargetOrder(options.TargetOrder); err != nil {
+		return emptyManifest, emptyComparison, err
+	}
+	if strings.TrimSpace(options.RunDir) == "" {
+		return emptyManifest, emptyComparison, errors.New("run artifact directory is required")
+	}
+	if strings.TrimSpace(options.RunID) == "" {
+		return emptyManifest, emptyComparison, errors.New("run ID is required")
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if err := os.MkdirAll(options.RunDir, 0o755); err != nil {
+		return emptyManifest, emptyComparison, fmt.Errorf("create run artifact directory: %w", err)
+	}
+	if err := os.WriteFile(filepath.Join(options.RunDir, "profile.json"), options.ProfileBytes, 0o644); err != nil {
+		return emptyManifest, emptyComparison, fmt.Errorf("write resolved profile source: %w", err)
+	}
+
+	currentManifest := newComparisonManifest(options, time.Now().UTC())
+	var runErrors []error
+	for _, target := range options.TargetOrder {
+		targetDir := filepath.Join(options.RunDir, target)
+		imageReference := options.Images.NaruMQReference
 		if target == "emqx" {
 			imageReference = emqxImageReference
 		}
@@ -248,54 +333,54 @@ func compareCommand(ctx context.Context, args []string, stdout, stderr io.Writer
 		if collectRuntimeMetrics {
 			runtimeMetricsInterval = 500 * time.Millisecond
 		}
-
 		result, runErr := environment.RunTarget(ctx, environment.TargetOptions{
 			BenchmarkID:          "bp01",
-			RunID:                runID,
+			RunID:                options.RunID,
 			Target:               target,
 			ArtifactDirectory:    targetDir,
-			ProfilePath:          filepath.Join(runDir, "profile.json"),
+			ProfilePath:          filepath.Join(options.RunDir, "profile.json"),
 			ImageReference:       imageReference,
-			RunnerReference:      images.RunnerReference,
-			RunnerImageID:        images.RunnerID,
-			RunnerTarget:         images.RunnerTarget,
-			BrokerCPUs:           profile.BrokerCPUs,
-			BrokerMemoryBytes:    profile.BrokerMemoryBytes,
-			GeneratorCPUs:        profile.GeneratorCPUs,
-			GeneratorMemoryBytes: profile.GeneratorMemoryBytes,
+			RunnerReference:      options.Images.RunnerReference,
+			RunnerImageID:        options.Images.RunnerID,
+			RunnerTarget:         options.Images.RunnerTarget,
+			BrokerCPUs:           options.Profile.BrokerCPUs,
+			BrokerMemoryBytes:    options.Profile.BrokerMemoryBytes,
+			GeneratorCPUs:        options.Profile.GeneratorCPUs,
+			GeneratorMemoryBytes: options.Profile.GeneratorMemoryBytes,
 			RunnerArgs: []string{
 				"run", "--profile", "/input/profile.json", "--target", target,
 				"--address", "127.0.0.1:1883", "--output", "/output",
 			},
-			Timeout:                time.Duration(profile.WarmupMillis+profile.MeasureMillis+profile.DrainMillis)*time.Millisecond + environment.DefaultStartupTimeout,
+			Timeout:                time.Duration(options.Profile.WarmupMillis+options.Profile.MeasureMillis+options.Profile.DrainMillis)*time.Millisecond + environment.DefaultStartupTimeout,
 			StartupTimeout:         environment.DefaultStartupTimeout,
 			CollectRuntimeMetrics:  collectRuntimeMetrics,
 			RuntimeMetricsInterval: runtimeMetricsInterval,
 		})
-		targetValue := targetManifestFromEnvironment(result, profile, profileHash, targetDir, imageReference)
+		targetValue := targetManifestFromEnvironment(result, options.Profile, options.ProfileSHA256, targetDir, imageReference)
 		if runErr != nil {
 			targetValue = finishTargetFailure(targetValue, runErr)
+			runErrors = append(runErrors, fmt.Errorf("%s target: %w", target, runErr))
 		} else {
 			targetValue = completeTargetManifest(targetValue)
 		}
 		targetValue = attachRuntimeSummary(targetValue, "measure")
 		currentManifest.Targets[target] = targetValue
+		if !targetValue.Success && targetValue.FailureReason != "" && runErr == nil {
+			runErrors = append(runErrors, fmt.Errorf("%s target failed: %s", target, targetValue.FailureReason))
+		}
 	}
 	currentManifest.FinishedAt = time.Now().UTC().Format(time.RFC3339Nano)
-	if err := writeManifest(runDir, currentManifest); err != nil {
-		return err
-	}
 	comparisonResult := buildComparison(currentManifest)
-	if err := writeComparison(runDir, comparisonResult); err != nil {
-		return err
+	if err := writeManifest(options.RunDir, currentManifest); err != nil {
+		runErrors = append(runErrors, fmt.Errorf("write manifest: %w", err))
 	}
-	if _, err := fmt.Fprintf(stdout, "%s\n", filepath.Join(runDir, "manifest.json")); err != nil {
-		return fmt.Errorf("write compare result: %w", err)
+	if err := writeComparison(options.RunDir, comparisonResult); err != nil {
+		runErrors = append(runErrors, fmt.Errorf("write comparison: %w", err))
 	}
 	if !comparisonResult.Equivalent {
-		return fmt.Errorf("BP-01 comparison is not equivalent: %s", comparisonResult.Reason)
+		runErrors = append(runErrors, fmt.Errorf("BP-01 comparison is not equivalent: %s", comparisonResult.Reason))
 	}
-	return nil
+	return currentManifest, comparisonResult, errors.Join(runErrors...)
 }
 
 type hostMetadata struct {

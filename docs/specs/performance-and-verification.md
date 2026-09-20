@@ -95,6 +95,40 @@ memoryBytesPerIdleConnection =
 
 이 smoke는 전체 BP-05 통과, `B_conn`, connection당 production SLO, release 합격 비율 또는 gate 8을 확정하지 않는다. 반복 실행에 따른 편차와 실제 production profile은 별도 결정인 `SPEC-TBD-08`이 닫힌 뒤 정한다.
 
+### 3.3 PERF-07 반복 suite 측정 계약
+
+BP-01과 BP-05의 `compare`는 한 번의 독립 실행을 기록하고, 반복 측정은 각 benchmark package의 `suite` 명령이 소유한다. suite는 다음 명령 형식을 사용한다.
+
+```text
+go run ./tests/benchmark/bp01 suite --profile <path> [--output <root>] [--repetitions <n>]
+go run ./tests/benchmark/bp05 suite --profile <path> [--output <root>] [--repetitions <n>]
+```
+
+`--repetitions`의 기본값은 5이며 5보다 작으면 artifact를 만들지 않고 거부한다. 각 회차는 같은 profile과 한 번 준비한 immutable NaruMQ·runner image를 사용하지만, target별 새 container와 새 회차 directory를 사용하므로 이전 회차 상태를 공유하지 않는 독립 실행이다. suite는 회차 시작 전에 NaruMQ와 EMQX를 다음 순서로 교차한다.
+
+```text
+1: narumq, emqx
+2: emqx, narumq
+3: narumq, emqx
+...
+```
+
+이 순서와 실제 시작·종료 시각, `runId`, 성공 여부와 실패 이유는 parent `suite-manifest.json`에 기록한다. 무작위 순서를 사용하지 않으며, suite가 받은 원래 명령은 각 child manifest의 `command`에도 그대로 보존한다.
+
+suite metric의 중앙값과 편차는 다음처럼 계산한다. 입력 sample은 `repetition`, `runId`, `value`를 가지며, sample의 순서를 바꾸지 않고 중앙값 계산용 값만 오름차순으로 복사한다.
+
+```text
+median = sorted values의 가운데 값
+       = 짝수 개이면 가운데 두 값의 산술평균
+MAD    = median(|value - median|)
+```
+
+suite directory는 `.artifacts/benchmark/<benchmark>/<suite-id>/`이며 `profile.json`, `suite-manifest.json`, `suite-summary.json`과 `runs/001/`부터 고정 폭으로 증가하는 child artifact를 보존한다. child artifact는 기존 단일 `compare`의 `manifest.json`, `comparison.json`, target raw artifact와 동일한 schema를 사용한다. parent summary는 BP별 안정된 rate·latency·resource 필드와 NaruMQ runtime 필드만 선택해 `MetricSummary`로 집계하며 target 간 비율, 승자, 합격 threshold는 계산하지 않는다.
+
+image build/pull 또는 suite manifest 갱신처럼 실행 추적 자체가 불가능한 준비·기록 실패는 즉시 suite를 끝내고 빈 target `metrics`와 해당 이유를 기록한다. 회차의 target 실행, comparison, 필수 metric sample 또는 runtime applicability 실패는 추적 가능한 범위에서 후속 회차를 계속 보존하되 suite 전체를 invalid로 표시한다. 이 경우 parent summary의 모든 target `metrics`는 비우고 실패 이유와 child raw artifact만 남긴다. 단, NaruMQ runtime의 GC CPU metric이 한 회차라도 unavailable이면 이는 유효한 unavailable 상태로 기록하며 suite invalid 사유로 삼지 않고, 세 CPU metric만 생략한다. 모든 suite artifact와 smoke 반복 결과는 `releaseGating=false`를 유지하며 production profile, Gate 8 통과, NaruMQ 우위를 판정하지 않는다.
+
+반복 순서와 중앙값·MAD 계산은 `tests/benchmark/internal/suiteartifact`가 소유한다. BP-01과 BP-05 package는 metric 선택, parent·child artifact schema와 Docker 실행을 각각 소유한다.
+
 ## 4. 필수 benchmark profile
 
 | ID | 고정 조건 | 필수 결과 |
@@ -146,6 +180,14 @@ BP-05 제한된 smoke 실행은 `.artifacts/benchmark/bp05/<run-id>/`에 다음 
 - EMQX target의 `runtime-summary.json` (`not_applicable` 상태와 Go 프로세스에만 적용된다는 이유)
 
 이 artifact는 하네스 동작과 제한된 Phase 0 gate 6 증거를 보존한다. 전체 BP-05 용량, `B_conn`, production SLO와 release gating 결과를 대신하지 않으며 `releaseGating=false`를 유지한다.
+
+반복 suite는 위 target artifact를 다음 parent 파일로 함께 보존한다.
+
+- `suite-manifest.json`: `suiteId`, benchmark ID, profile SHA-256과 resolved profile, 요청·완료 회차 수, `orderStrategy=alternating`, host·Docker·image metadata, `runs[]`, `valid`, `failureReason`과 `releaseGating=false`
+- `suite-summary.json`: target별 `metrics`, `runtimeApplicability`, 성공 회차 수, 중앙값·MAD·최솟값·최댓값과 `releaseGating=false`
+- `runs/001/`부터 `runs/<n>/`: 회차별 `manifest.json`, `comparison.json`, raw sample·log·runtime artifact
+
+회차 하나가 실패하면 후속 회차를 실행할 수 있지만 parent `valid=false`이고 모든 target의 parent `metrics`를 비운다. parent의 중앙값·MAD는 모든 요청 회차가 성공하고 필수 metric sample과 applicability 검증을 통과한 경우에만 기록한다. 따라서 일부 성공 회차의 숫자로 전체 반복 suite를 합격으로 보이게 하지 않는다.
 
 EMQX `5.8.8`은 Open Source Edition의 EOL historical comparator로 기록하며, 결과에는 EOL `2026-02-28`과 `releaseGating=false`를 함께 남긴다. `.artifacts/benchmark/bp01/<run-id>/`는 로컬 evidence 경로이고 source commit에 raw 결과를 섞지 않는다.
 

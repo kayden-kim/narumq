@@ -1,6 +1,8 @@
 package main
 
 import (
+	"os"
+	"path/filepath"
 	"testing"
 
 	"narumq/tests/benchmark/internal/runtimeartifact"
@@ -77,6 +79,21 @@ func TestBuildComparisonRequiresEquivalentSuccessfulTargets(t *testing.T) {
 func TestRunCLIRejectsUnknownSubcommand(t *testing.T) {
 	if err := runCLI([]string{"unknown"}, discardWriter{}, discardWriter{}); err == nil {
 		t.Fatal("runCLI() accepted unknown subcommand")
+	}
+}
+
+func TestRunComparisonRejectsInvalidOrderBeforeCreatingDirectory(t *testing.T) {
+	runDir := filepath.Join(t.TempDir(), "run")
+	_, _, err := runComparison(nil, comparisonRunOptions{
+		RunID:       "bp01-run",
+		RunDir:      runDir,
+		TargetOrder: []string{"narumq", "narumq"},
+	})
+	if err == nil {
+		t.Fatal("runComparison() accepted duplicate target order")
+	}
+	if _, statErr := os.Stat(runDir); !os.IsNotExist(statErr) {
+		t.Fatalf("runComparison() created directory for invalid order: stat error = %v", statErr)
 	}
 }
 
