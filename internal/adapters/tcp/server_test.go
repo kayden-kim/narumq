@@ -288,9 +288,11 @@ func TestTCPControlQueueFullClosesConnection(t *testing.T) {
 	defer runtime.stop(t)
 	writeTestPackets(t, runtime.client, &mqtt.Connect{Version: mqtt.ProtocolV5, CleanStart: true, ClientID: "control-full"})
 	_ = readTestFrame(t, runtime.client)
-	_ = runtime.client.SetReadDeadline(time.Now().Add(time.Second))
-	wire := append(append([]byte(nil), encodeTestPacket(t, &mqtt.PingReq{Version: mqtt.ProtocolV5})...), encodeTestPacket(t, &mqtt.PingReq{Version: mqtt.ProtocolV5})...)
-	wire = append(wire, encodeTestPacket(t, &mqtt.PingReq{Version: mqtt.ProtocolV5})...)
+	ping := encodeTestPacket(t, &mqtt.PingReq{Version: mqtt.ProtocolV5})
+	var wire []byte
+	for i := 0; i < 16; i++ {
+		wire = append(wire, ping...)
+	}
 	_, _ = runtime.client.Write(wire)
 	requireConnectionClosedWithin(t, runtime.client, 3*time.Second)
 }
