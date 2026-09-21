@@ -358,7 +358,6 @@ func (useCase *UseCase) Disconnect(sessionID routing.SessionID, reason session.D
 		delete(useCase.activeTimers, timerKey)
 	}
 
-	useCase.deliveries.Remove(sessionID)
 	var sessionKey tenancy.SessionKey
 	if principal, ok := useCase.principals[sessionID]; ok && principal.Subject() != "" {
 		sessionKey, _ = tenancy.NewSessionKey(principal.TenantID(), principal.ClientID())
@@ -382,6 +381,7 @@ func (useCase *UseCase) Disconnect(sessionID routing.SessionID, reason session.D
 			useCase.mu.Unlock()
 			return err
 		}
+		useCase.deliveries.Remove(sessionID)
 		useCase.routes.RemoveSession(sessionID)
 	} else {
 		if err := useCase.saveSession(sessionKey, timerKey, result.Lifecycle); err != nil {
@@ -394,13 +394,11 @@ func (useCase *UseCase) Disconnect(sessionID routing.SessionID, reason session.D
 		timers := &clientTimers{}
 		if result.ScheduleWill {
 			timers.willTimer = useCase.scheduler.AfterFunc(result.WillDelay, func() {
-				useCase.onWillTimer(sessionID)
+				useCase.onWillTimerForTimer(sessionID, timers)
 			})
 		}
 		if result.ScheduleExpiry {
-			timers.expiryTimer = useCase.scheduler.AfterFunc(result.ExpiryDuration, func() {
-				useCase.onExpiryTimer(sessionID)
-			})
+			timers.expiryTimer = useCase.scheduleExpiryTimerLocked(sessionID, result.ExpiryDuration, timers)
 		}
 		useCase.activeTimers[timerKey] = timers
 	}
@@ -433,9 +431,18 @@ func (useCase *UseCase) Disconnect(sessionID routing.SessionID, reason session.D
 }
 
 func (useCase *UseCase) onWillTimer(sessionID routing.SessionID) {
+	useCase.onWillTimerForTimer(sessionID, nil)
+}
+
+func (useCase *UseCase) onWillTimerForTimer(sessionID routing.SessionID, expected *clientTimers) {
 	useCase.mu.Lock()
 	timerKey := string(sessionID)
-	if timers, ok := useCase.activeTimers[timerKey]; ok {
+	timers, ok := useCase.activeTimers[timerKey]
+	if expected != nil && (!ok || timers != expected) {
+		useCase.mu.Unlock()
+		return
+	}
+	if ok {
 		timers.willTimer = nil
 		if timers.expiryTimer == nil {
 			delete(useCase.activeTimers, timerKey)
@@ -482,10 +489,25 @@ func (useCase *UseCase) onWillTimer(sessionID routing.SessionID) {
 	}
 }
 
+func (useCase *UseCase) scheduleExpiryTimerLocked(sessionID routing.SessionID, delay time.Duration, timers *clientTimers) Timer {
+	return useCase.scheduler.AfterFunc(delay, func() {
+		useCase.onExpiryTimerForTimer(sessionID, timers)
+	})
+}
+
 func (useCase *UseCase) onExpiryTimer(sessionID routing.SessionID) {
+	useCase.onExpiryTimerForTimer(sessionID, nil)
+}
+
+func (useCase *UseCase) onExpiryTimerForTimer(sessionID routing.SessionID, expected *clientTimers) {
 	useCase.mu.Lock()
 	timerKey := string(sessionID)
-	if timers, ok := useCase.activeTimers[timerKey]; ok {
+	timers, ok := useCase.activeTimers[timerKey]
+	if expected != nil && (!ok || timers != expected) {
+		useCase.mu.Unlock()
+		return
+	}
+	if ok {
 		if timers.willTimer != nil {
 			timers.willTimer.Stop()
 		}
@@ -510,7 +532,15 @@ func (useCase *UseCase) onExpiryTimer(sessionID routing.SessionID) {
 		useCase.mu.Unlock()
 		return
 	}
-	_ = useCase.deleteSession(sessionKey, timerKey)
+	if err := useCase.deleteSession(sessionKey, timerKey); err != nil {
+		if !useCase.closed {
+			retryTimers := &clientTimers{}
+			retryTimers.expiryTimer = useCase.scheduleExpiryTimerLocked(sessionID, time.Second, retryTimers)
+			useCase.activeTimers[timerKey] = retryTimers
+		}
+		useCase.mu.Unlock()
+		return
+	}
 	useCase.deliveries.Remove(sessionID)
 	useCase.routes.RemoveSession(sessionID)
 	shouldPublish := will != nil

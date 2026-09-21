@@ -5,15 +5,20 @@ import (
 	"errors"
 	"time"
 
+	"narumq/internal/domain/delivery"
 	"narumq/internal/domain/mqtt"
 	"narumq/internal/domain/routing"
 )
 
 var (
-	// ErrFull means that a registered session reached its item capacity.
+	// ErrFull means that a registered session reached its queued-item or outbound-state capacity.
 	ErrFull = errors.New("delivery queue full")
-	// ErrUnavailable means that a session has no registered delivery queue.
+	// ErrUnavailable means that a session or requested delivery state is unavailable.
 	ErrUnavailable = errors.New("delivery queue unavailable")
+	// ErrExpired means that the delivery at the queue head passed its deadline.
+	ErrExpired = errors.New("delivery expired")
+	// ErrPacketIDConflict means that an outbound Packet Identifier is already stored.
+	ErrPacketIDConflict = errors.New("delivery packet identifier conflict")
 )
 
 // DeliveryDTO is the application boundary value handed to one session queue.
@@ -60,5 +65,19 @@ type Queue interface {
 	Remove(sessionID routing.SessionID)
 	TryEnqueue(delivery DeliveryDTO, now time.Time) error
 	TryEnqueueBatch(deliveries []DeliveryDTO, now time.Time) error
-	Drain(sessionID routing.SessionID, now time.Time) ([]DeliveryDTO, error)
+	Peek(sessionID routing.SessionID, now time.Time) (DeliveryDTO, bool, error)
+	CompleteHead(sessionID routing.SessionID) error
+	PromoteHead(outbound OutboundDTO, now time.Time) error
+	ListOutbound(sessionID routing.SessionID) ([]OutboundDTO, error)
+	ReplaceOutbound(outbound OutboundDTO) error
+	CompleteOutbound(sessionID routing.SessionID, packetID mqtt.PacketIdentifier) error
+}
+
+// OutboundDTO is the application boundary value for one incomplete sender-side
+// QoS 1 or QoS 2 exchange.
+type OutboundDTO struct {
+	SessionID routing.SessionID
+	PacketID  mqtt.PacketIdentifier
+	State     delivery.Outbound
+	ExpiresAt time.Time
 }

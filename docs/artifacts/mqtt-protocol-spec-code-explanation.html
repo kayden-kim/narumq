@@ -184,6 +184,7 @@
             <h3>예시: 발행 요청</h3>
             <p><code>sensor/room1</code>에 QoS 0 메시지가 오면 유효한 구독 필터와 비교합니다. 일치한 각 세션의 큐에 독립된 payload 복사본을 넣고, 연결의 쓰기 루프를 깨웁니다.</p>
             <p>큐가 가득 찬 세션은 성공으로 숨기지 않고 <code>Saturated</code> 결과로 분류한 뒤 현재 TCP 경계에서 연결을 닫습니다.</p>
+            <p>영속 세션은 연결이 닫혀도 큐의 offline FIFO와 완료되지 않은 QoS 1·2 outbound 상태를 process-local memory에 남깁니다. 재연결에서는 CONNACK를 먼저 보낸 뒤 저장된 Packet ID와 상태로 recovery packet을 출력합니다.</p>
           </article>
           <article class="card warning">
             <h3>읽을 때 먼저 기억할 한계</h3>
@@ -216,6 +217,7 @@
               <h3>라우팅과 제한된 전달 큐</h3>
               <p>구독 필터 <code>+</code>·<code>#</code>를 검사하고 발행 토픽을 매칭하는 <code>routing.Table</code>, 구독·발행 응용 기능, 세션마다 용량이 정해진 FIFO 큐가 추가됐습니다. 네트워크 연결이 라우팅 정책이나 메모리 자료구조를 직접 소유하지 않도록 응용 포트로 분리했습니다.</p>
               <p class="small">읽을 코드: <a href="../../internal/domain/routing/routing.go">routing.go</a>, <a href="../../internal/application/subscribe/subscribe.go">subscribe.go</a>, <a href="../../internal/application/publish/publish.go">publish.go</a>, <a href="../../internal/adapters/memory/deliveryqueue/queue.go">queue.go</a></p>
+            <p>이 큐는 연결이 살아 있을 때만 쓰는 임시 버퍼가 아니라, 영속 세션의 offline FIFO와 미완료 QoS 1·2 outbound 상태가 재연결까지 머무는 application 경계입니다.</p>
             </div>
           </div>
           <div class="timeline-item">
@@ -422,6 +424,7 @@ routes.Subscribe(sessionID, subscription) // replay batch committed first</code>
           만료 값은 replay되지 않습니다. replay queue가 가득 차면 route를 만들지 않고
           MQTT version에 맞는 실패 reason을 반환합니다.
         </p>
+        <p>영속 세션의 queued delivery와 outbound Packet ID 상태도 같은 application-owned queue에 보관됩니다. persistent disconnect에서는 삭제하지 않고, Clean Start 또는 Session Expiry가 실제 세션을 제거할 때만 함께 제거합니다.</p>
         <div class="grid">
           <article class="card wide">
             <h3>발행 응용 기능의 결과</h3>
@@ -445,12 +448,11 @@ for _, match := range matches {
             <h3>메모리 경계</h3>
             <p><a href="../../internal/adapters/memory/deliveryqueue/queue.go#L62">TryEnqueue</a>와 <a href="../../internal/adapters/memory/deliveryqueue/queue.go#L83">TryEnqueueBatch</a>는 payload를 복사하고 batch 전체를 수용할 수 없으면 아무것도 추가하지 않습니다.</p>
             <p><a href="../../internal/adapters/memory/retained/repository.go#L26">retained.Repository</a>는 entry 수와 topic·payload·publisher identity bytes를 함께 제한합니다.</p>
+            <p>같은 메모리 adapter가 Packet ID별 QoS 1·2 상태도 보관합니다. <code>PromoteHead</code>는 FIFO head를 outbound 상태로 원자적으로 옮기고, ACK dispatcher는 <code>ReplaceOutbound</code>·<code>CompleteOutbound</code>로 상태를 먼저 갱신한 뒤 다음 출력을 깨웁니다.</p>
           </article>
         </div>
         <blockquote>
-          현재 TCP writer는 항목을 <code>Clock.Now()</code>으로 다시 확인하고,
-          만료되지 않은 항목만 QoS 0·1·2에 맞춰 출력합니다. MQTT 5에는 올림한
-          remaining interval을 쓰고 MQTT 3.1.1에는 expiry property를 생략합니다.
+          현재 TCP writer는 연결 활성화 시 복구된 outbound를 먼저 출력하고, 이후 <code>Peek</code>·<code>PromoteHead</code>로 FIFO head를 하나씩 예약합니다. 만료된 queued/PUBLISH-stage 항목은 버리고, await-PUBCOMP 상태의 PUBREL은 원래 publication deadline과 무관하게 재개합니다. MQTT 5에는 올림한 remaining interval을 쓰고 MQTT 3.1.1에는 expiry property를 생략합니다.
 </blockquote>
       </div>
     </section>
@@ -494,8 +496,8 @@ state, action, err = state.Accept()
           </article>
           <article class="card warning">
             <h3>현재 실행 경로와의 차이</h3>
-            <p>QoS 상태 머신은 <code>internal/domain/delivery</code>에서 단위 테스트 가능한 정책으로 구현됐습니다. 현재 <a href="../../internal/adapters/tcp/server.go#L580">dispatchPublish</a>와 <a href="../../internal/adapters/tcp/server.go#L1037">writeDeliveries</a>가 ingress·outbound QoS 0·1·2 상태를 연결하며, QoS 2는 PUBREL까지 받은 뒤 실제 fan-out합니다.</p>
-            <p>Message Expiry는 상태 머신과 별도의 absolute deadline으로 관리되지만, QoS 2가 지연돼도 최초 ingress 수신 시각을 유지합니다.</p>
+            <p>QoS 상태 머신은 <code>internal/domain/delivery</code>에서 단위 테스트 가능한 정책으로 구현됐습니다. 현재 <a href="../../internal/adapters/tcp/server.go#L535">activate</a>가 저장된 outbound를 읽고 <a href="../../internal/adapters/tcp/server.go#L1262">writeRecoveredDeliveries</a>가 CONNACK 뒤에 복구하며, <a href="../../internal/adapters/tcp/server.go#L877">dispatchPubAck</a>·ACK dispatcher가 queue 상태를 write-through합니다.</p>
+            <p>Message Expiry는 상태 머신과 별도의 absolute deadline으로 관리됩니다. queued/PUBLISH-stage 상태는 deadline이 지나면 억제하지만, PUBREL 단계는 PUBCOMP까지 재개할 수 있습니다.</p>
           </article>
         </div>
       </div>
@@ -506,7 +508,7 @@ state, action, err = state.Accept()
         <div class="section-kicker">08 · 세션 수명</div>
         <h2>연결이 끊겼다고 세션이 언제나 사라지는 것은 아니다</h2>
         <p>
-          세션은 현재 연결 자체와, 끊긴 뒤 잠시 남을 수 있는 Client ID 기반 상태를 함께 말합니다. <a href="../../internal/domain/session/state.go#L28">session.Lifecycle</a>은 연결 여부, 만료 정책, 만료 시각, 폐기 여부를 소유합니다. <a href="../../internal/application/connect/connect.go#L151">Disconnect</a>는 연결을 닫으면서 큐를 먼저 제거하고, 세션 정책에 따라 저장 상태와 라우팅 구독을 유지하거나 삭제합니다.
+          세션은 현재 연결 자체와, 끊긴 뒤 잠시 남을 수 있는 Client ID 기반 상태를 함께 말합니다. <a href="../../internal/domain/session/state.go#L28">session.Lifecycle</a>은 연결 여부, 만료 정책, 만료 시각, 폐기 여부를 소유합니다. <a href="../../internal/application/connect/connect.go#L151">Disconnect</a>는 persistent disconnect에서 delivery queue를 보존하고, clean reset 또는 실제 session expiry에서만 queue와 라우팅 구독을 삭제합니다.
         </p>
         <div class="flow">
           <div class="node"><code>Open</code><br><span class="small">Client ID로 기존 상태 조회</span></div>
@@ -526,8 +528,9 @@ state, action, err = state.Accept()
             <ol>
               <li>저장소에서 같은 Client ID의 Lifecycle을 읽습니다.</li>
               <li><code>session.Open</code>이 Clean Start, 폐기, 만료, 연결 중 여부를 판단합니다.</li>
-              <li>재개가 아니면 기존 큐와 라우팅 구독을 제거합니다.</li>
-              <li>새 큐를 등록하고 <code>CONNACK.SessionPresent</code>를 결정합니다.</li>
+              <li>재개 세션이면 기존 queue와 outbound Packet ID 상태를 보존한 채 queue를 등록합니다.</li>
+              <li>CONNACK를 먼저 쓰고, 저장된 Packet ID·QoS 상태를 DUP PUBLISH 또는 PUBREL로 복구합니다.</li>
+              <li>복구가 끝난 뒤에만 새 FIFO delivery를 예약하고 출력합니다.</li>
             </ol>
             <p>큐 등록에 실패하면 저장소를 이전 값으로 되돌리거나 새 세션을 삭제하려고 합니다. 이 되돌림은 “세션은 열렸다고 저장됐는데 전달 큐는 없는” 중간 상태를 줄입니다.</p>
           </article>
@@ -547,8 +550,8 @@ state, action, err = state.Accept()
         <p>
           한 연결은 읽기 루프에서 입력을 해석하고, 별도의 쓰기 루프가 제어 응답과 전달 메시지를 소켓에 씁니다. 제어 응답을 별도 제한 큐에 넣고, 전달 큐가 준비됐다는 신호를 보내는 방식으로 읽기 정책과 출력 정책을 분리합니다.
         </p>
-        <pre><code>// internal/adapters/tcp/server.go:310-369, 582-607
-// 설명을 위해 읽기·쓰기 루프의 실행 순서만 보여주는 단순화한 의사코드다.
+        <pre><code>// internal/adapters/tcp/server.go: activate, writeDeliveries
+// 설명을 위해 읽기·쓰기 루프와 recovery 순서만 남긴 단순화한 의사코드다.
 readLoop:
   socket.Read -&gt; buffered bytes
   decoder.Decode(buffered)
@@ -557,9 +560,12 @@ readLoop:
 
 writerLoop:
   controlQueue가 있으면 먼저 출력
-  없으면 stop / controlQueue / deliveryWake 중 하나를 기다림
-  deliveryWake -&gt; Clock.Now -&gt; deliveryQueue.Drain(now)
-  만료 항목 제거 -&gt; remaining expiry 계산 -&gt; QoS 0·1·2 PUBLISH 출력</code></pre>
+  activate 성공 -&gt; CONNACK 출력 -&gt; recovered outbound 출력
+  이후 Peek(now)로 FIFO head 확인
+  QoS 0 -&gt; write -&gt; CompleteHead
+  QoS 1·2 -&gt; Packet ID acquire -&gt; PromoteHead -&gt; PUBLISH 출력
+  PUBACK/PUBREC/PUBCOMP -&gt; CompleteOutbound 또는 ReplaceOutbound
+  만료 head -&gt; 제거, Packet ID 고갈·queue full -&gt; head 보존</code></pre>
         <table>
           <thead><tr><th>단계</th><th>현재 코드가 하는 일</th><th>실패 시</th></tr></thead>
           <tbody>
@@ -571,7 +577,7 @@ writerLoop:
 <tr><td>SUBACK replay ordering</td><td>Subscribe 결과가 retained delivery를 큐에 넣어도 TCP dispatch는 SUBACK write 완료 뒤 dedicated wake를 보냅니다.</td><td>이미 pending인 delivery나 동시 publish의 wire 순서는 보장하지 않습니다.</td></tr>
           </tbody>
         </table>
-        <p class="small">관련 구현: <a href="../../internal/adapters/tcp/server.go#L423">dispatch</a>, <a href="../../internal/adapters/tcp/server.go#L643">writeDeliveries</a>, <a href="../../internal/adapters/tcp/server.go#L668">writePacket</a>.</p>
+        <p class="small">관련 구현: <a href="../../internal/adapters/tcp/server.go#L535">activate</a>, <a href="../../internal/adapters/tcp/server.go#L1167">writeDeliveries</a>, <a href="../../internal/adapters/tcp/server.go#L1262">writeRecoveredDeliveries</a>, <a href="../../internal/adapters/tcp/server.go#L877">ACK dispatcher</a>.</p>
       </div>
     </section>
 
@@ -589,7 +595,8 @@ writerLoop:
             <tr><td>ACK 코덱</td><td>PubAck·PubRec·PubRel·PubComp 왕복, Packet ID·reason code·속성 길이 검증</td><td><a href="../../internal/domain/mqtt/ack_test.go">ack_test.go</a></td></tr>
             <tr><td>라우팅·options</td><td>와일드카드 위치, 공유 구독 거절, 시스템 토픽, overlap 1회 전달, NL/RAP RETAIN 정책과 유효 QoS 계산</td><td><a href="../../internal/domain/routing/routing_test.go">routing_test.go</a>, <a href="../../internal/application/subscribe/subscribe_test.go">subscribe_test.go</a></td></tr>
             <tr><td>retained repository</td><td>exact-topic replace/delete, count·byte capacity, payload ownership, absolute expiry lazy purge와 deterministic list</td><td><a href="../../internal/adapters/memory/retained/repository_test.go">repository_test.go</a></td></tr>
-            <tr><td>발행·큐</td><td>세션별 fan-out, Full/Unavailable 부분 결과, FIFO, atomic batch, payload 복사, RAP와 expiry deadline</td><td><a href="../../internal/application/publish/publish_test.go">publish_test.go</a>, <a href="../../internal/adapters/memory/deliveryqueue/queue_test.go">queue_test.go</a></td></tr>
+            <tr><td>발행·큐</td><td>세션별 fan-out, Full/Unavailable 부분 결과, FIFO, atomic batch, payload 복사, RAP와 expiry deadline, process-local offline/outbound recovery 상태</td><td><a href="../../internal/application/publish/publish_test.go">publish_test.go</a>, <a href="../../internal/adapters/memory/deliveryqueue/queue_test.go">queue_test.go</a></td></tr>
+            <tr><td>Persistent recovery wire</td><td>persistent disconnect 후 FIFO offline delivery, CONNACK-before-recovery, QoS 1·2 DUP/Packet ID 재사용, PUBREL 재개, clean reset와 expiry suppression</td><td><a href="../../tests/integration/mqtt_ingress_test.go">TestMQTTIngressPersistentOfflineDelivery</a>, <a href="../../tests/integration/mqtt_ingress_test.go">TestMQTTIngressPersistentOutboundQoSRecovery</a></td></tr>
             <tr><td>Message Expiry wire</td><td>MQTT 5 property 검증, MQTT 3.1.1 property 거절, 10초 deadline·3초 경과 뒤 remaining 7초·deadline no-delivery</td><td><a href="../../internal/domain/mqtt/publish_test.go">publish_test.go</a>, <a href="../../tests/integration/mqtt_ingress_test.go">mqtt_ingress_test.go</a></td></tr>
           </tbody>
         </table>
@@ -614,20 +621,21 @@ writerLoop:
               <li>Message Expiry absolute deadline, remaining interval serialization과 MQTT version별 property 규칙</li>
               <li>Clean Start, Session Expiry, Session Present 상태</li>
               <li>개발용 TCP ingress와 SUBACK-before-replay single writer 출력 순서</li>
+              <li>persistent session의 process-local offline FIFO와 미완료 QoS 1·2 outbound 재연결 복구</li>
             </ul>
           </article>
           <article class="card warning">
             <h3>현재 문서와 코드가 명시하는 제한</h3>
             <ul>
-              <li>disconnected persistent offline queue는 connection 종료 시 제거되므로 보존하지 않음</li>
-              <li>ACL·tenant 격리, durable 저장소·복제·합의·cluster durable ACK는 별도 경계</li>
-              <li>Message Expiry metadata는 MQTT 3.1.1 outbound wire에서 생략되지만 deadline은 적용</li>
-              <li>영속 저장소·restart recovery는 별도 경계</li>
+              <li>persistent offline queue와 미완료 QoS 1·2 outbound는 process-local memory에서 재연결까지 보존하며 Clean Start 또는 Session Expiry에서 제거</li>
+              <li>process restart·replication·cluster durable ACK, ACL·tenant 격리, 전역 quota·metric catalog는 별도 경계</li>
+              <li>Message Expiry metadata는 MQTT 3.1.1 outbound wire에서 생략되지만 queued/PUBLISH-stage deadline은 적용</li>
+              <li>영속 저장소와 restart recovery는 별도 경계</li>
             </ul>
           </article>
         </div>
         <blockquote>
-          위 제한은 “빠진 코드를 숨기기 위한 변명”이 아니라 현재 호출 관계를 읽은 결과입니다. Message Expiry는 application DTO의 absolute deadline을 통해 transport version과 독립적으로 적용되며, MQTT 3.1.1에서는 표현할 property만 생략합니다.
+          위 제한은 “빠진 코드를 숨기기 위한 변명”이 아니라 현재 호출 관계를 읽은 결과입니다. delivery recovery는 process-local memory와 현재 프로세스의 session lifecycle에 한정되며, Message Expiry는 application DTO의 absolute deadline을 통해 transport version과 독립적으로 적용됩니다.
         </blockquote>
         <h3>다음에 함께 읽을 문서</h3>
         <ul class="source-list">

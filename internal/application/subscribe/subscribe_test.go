@@ -36,8 +36,17 @@ func (queue *recordingQueue) TryEnqueueBatch(deliveries []deliveryqueue.Delivery
 	}
 	return nil
 }
-func (queue *recordingQueue) Drain(routing.SessionID, time.Time) ([]deliveryqueue.DeliveryDTO, error) {
+func (*recordingQueue) Peek(routing.SessionID, time.Time) (deliveryqueue.DeliveryDTO, bool, error) {
+	return deliveryqueue.DeliveryDTO{}, false, nil
+}
+func (*recordingQueue) CompleteHead(routing.SessionID) error                   { return nil }
+func (*recordingQueue) PromoteHead(deliveryqueue.OutboundDTO, time.Time) error { return nil }
+func (*recordingQueue) ListOutbound(routing.SessionID) ([]deliveryqueue.OutboundDTO, error) {
 	return nil, nil
+}
+func (*recordingQueue) ReplaceOutbound(deliveryqueue.OutboundDTO) error { return nil }
+func (*recordingQueue) CompleteOutbound(routing.SessionID, mqtt.PacketIdentifier) error {
+	return nil
 }
 
 type recordingRetained struct {

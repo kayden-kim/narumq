@@ -251,6 +251,334 @@ func expectClosed(t *testing.T, connection net.Conn) {
 	}
 }
 
+func waitForSessionDisconnected(t *testing.T, repository *sessionstore.MemorySessionRepository, clientID string) {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		state, found, err := repository.Load(clientID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if found && !state.Connected() {
+			return
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	t.Fatalf("session %q did not reach disconnected state", clientID)
+}
+
+// Traceability: PRD MQTT-03/MQTT-08/TEST-03/TEST-04/TEST-05; docs/specs/mqtt-protocol-and-session.md §2.2, §3.2, §7.
+func TestMQTTIngressPersistentOfflineDelivery(t *testing.T) {
+	for _, testCase := range []struct {
+		name    string
+		version mqtt.ProtocolVersion
+	}{
+		{name: "mqtt311", version: mqtt.ProtocolV311},
+		{name: "mqtt5", version: mqtt.ProtocolV5},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			testClock := &ingressClock{now: time.Date(2026, time.January, 1, 0, 0, 0, 0, time.UTC)}
+			fixture := newIngressFixtureWithClock(t, 1024, 1<<20, testClock)
+			defer fixture.close(t)
+
+			clientID := "offline-" + testCase.name
+			subscriberConnect := mqtt.Connect{Version: testCase.version, ClientID: clientID}
+			if testCase.version == mqtt.ProtocolV5 {
+				subscriberConnect.SessionExpiryInterval = 60
+			}
+			subscriber := fixture.dial(t)
+			writePacket(t, subscriber, fixture.encoder, &subscriberConnect)
+			firstAck := readPacket(t, subscriber, fixture.decoder, testCase.version).(*mqtt.ConnAck)
+			if firstAck.ReasonCode != 0 || firstAck.SessionPresent {
+				t.Fatalf("initial persistent CONNACK = %#v", firstAck)
+			}
+			writePacket(t, subscriber, fixture.encoder, &mqtt.Subscribe{
+				Version:       testCase.version,
+				PacketID:      1,
+				Subscriptions: []mqtt.Subscription{{Filter: "offline/#", QoS: mqtt.QoSAtMostOnce}},
+			})
+			if ack := readPacket(t, subscriber, fixture.decoder, testCase.version).(*mqtt.SubAck); ack.PacketID != 1 {
+				t.Fatalf("initial SUBACK = %#v", ack)
+			}
+			writePacket(t, subscriber, fixture.encoder, &mqtt.Disconnect{Version: testCase.version})
+			expectClosed(t, subscriber)
+			subscriber.Close()
+			waitForSessionDisconnected(t, fixture.repo, clientID)
+
+			publisher := fixture.dial(t)
+			defer publisher.Close()
+			writePacket(t, publisher, fixture.encoder, &mqtt.Connect{
+				Version:    mqtt.ProtocolV5,
+				CleanStart: true,
+				ClientID:   "offline-publisher-" + testCase.name,
+			})
+			if ack := readPacket(t, publisher, fixture.decoder, mqtt.ProtocolV5).(*mqtt.ConnAck); ack.ReasonCode != 0 {
+				t.Fatalf("publisher CONNACK = %#v", ack)
+			}
+			for _, publication := range []struct {
+				packetID mqtt.PacketIdentifier
+				payload  string
+			}{
+				{packetID: 101, payload: "first"},
+				{packetID: 102, payload: "second"},
+			} {
+				packetID, payload := publication.packetID, publication.payload
+				writePacket(t, publisher, fixture.encoder, &mqtt.Publish{
+					Version:  mqtt.ProtocolV5,
+					Topic:    "offline/events",
+					Payload:  []byte(payload),
+					QoS:      mqtt.QoSAtLeastOnce,
+					PacketID: packetID,
+				})
+				if ack := readPacket(t, publisher, fixture.decoder, mqtt.ProtocolV5).(*mqtt.PubAck); ack.PacketID != packetID {
+					t.Fatalf("offline publication PUBACK = %#v, want %d", ack, packetID)
+				}
+			}
+			if testCase.version == mqtt.ProtocolV5 {
+				writePacket(t, publisher, fixture.encoder, &mqtt.Publish{
+					Version:                  mqtt.ProtocolV5,
+					Topic:                    "offline/events",
+					Payload:                  []byte("expired"),
+					QoS:                      mqtt.QoSAtLeastOnce,
+					PacketID:                 103,
+					HasMessageExpiryInterval: true,
+					MessageExpiryInterval:    1,
+				})
+				if ack := readPacket(t, publisher, fixture.decoder, mqtt.ProtocolV5).(*mqtt.PubAck); ack.PacketID != 103 {
+					t.Fatalf("expired offline publication PUBACK = %#v", ack)
+				}
+				testClock.Advance(2 * time.Second)
+			}
+
+			resumeConnect := mqtt.Connect{Version: testCase.version, ClientID: clientID}
+			if testCase.version == mqtt.ProtocolV5 {
+				resumeConnect.SessionExpiryInterval = 60
+			}
+			resumed := fixture.dial(t)
+			writePacket(t, resumed, fixture.encoder, &resumeConnect)
+			resumedAck := readPacket(t, resumed, fixture.decoder, testCase.version).(*mqtt.ConnAck)
+			if resumedAck.ReasonCode != 0 || !resumedAck.SessionPresent {
+				t.Fatalf("resumed CONNACK = %#v", resumedAck)
+			}
+			first := readPacket(t, resumed, fixture.decoder, testCase.version).(*mqtt.Publish)
+			second := readPacket(t, resumed, fixture.decoder, testCase.version).(*mqtt.Publish)
+			if first.Topic != "offline/events" || string(first.Payload) != "first" || second.Topic != "offline/events" || string(second.Payload) != "second" {
+				t.Fatalf("offline FIFO deliveries = %#v, %#v", first, second)
+			}
+			if testCase.version == mqtt.ProtocolV5 {
+				expectNoPacket(t, resumed)
+			}
+			writePacket(t, resumed, fixture.encoder, &mqtt.Disconnect{Version: testCase.version})
+			expectClosed(t, resumed)
+			resumed.Close()
+			waitForSessionDisconnected(t, fixture.repo, clientID)
+
+			writePacket(t, publisher, fixture.encoder, &mqtt.Publish{
+				Version:  mqtt.ProtocolV5,
+				Topic:    "offline/events",
+				Payload:  []byte("clean-reset"),
+				QoS:      mqtt.QoSAtLeastOnce,
+				PacketID: 104,
+			})
+			if ack := readPacket(t, publisher, fixture.decoder, mqtt.ProtocolV5).(*mqtt.PubAck); ack.PacketID != 104 {
+				t.Fatalf("clean reset publication PUBACK = %#v", ack)
+			}
+			clean := fixture.dial(t)
+			writePacket(t, clean, fixture.encoder, &mqtt.Connect{
+				Version:    testCase.version,
+				CleanStart: true,
+				ClientID:   clientID,
+			})
+			cleanAck := readPacket(t, clean, fixture.decoder, testCase.version).(*mqtt.ConnAck)
+			if cleanAck.ReasonCode != 0 || cleanAck.SessionPresent {
+				t.Fatalf("clean reset CONNACK = %#v", cleanAck)
+			}
+			writePacket(t, clean, fixture.encoder, &mqtt.Subscribe{
+				Version:       testCase.version,
+				PacketID:      2,
+				Subscriptions: []mqtt.Subscription{{Filter: "offline/#", QoS: mqtt.QoSAtMostOnce}},
+			})
+			if ack := readPacket(t, clean, fixture.decoder, testCase.version).(*mqtt.SubAck); ack.PacketID != 2 {
+				t.Fatalf("clean reset SUBACK = %#v", ack)
+			}
+			expectNoPacket(t, clean)
+			writePacket(t, clean, fixture.encoder, &mqtt.Disconnect{Version: testCase.version})
+			expectClosed(t, clean)
+			clean.Close()
+			writePacket(t, publisher, fixture.encoder, &mqtt.Disconnect{Version: mqtt.ProtocolV5})
+			expectClosed(t, publisher)
+		})
+	}
+}
+
+// Traceability: PRD MQTT-02/TEST-03/TEST-04/TEST-05; docs/specs/mqtt-protocol-and-session.md §3.2; MQTT-4.3.2-1, MQTT-4.3.2-2, MQTT-4.3.3-1, MQTT-4.3.3-2.
+func TestMQTTIngressPersistentOutboundQoSRecovery(t *testing.T) {
+	testClock := &ingressClock{now: time.Date(2026, time.January, 1, 0, 0, 0, 0, time.UTC)}
+	fixture := newIngressFixtureWithClock(t, 1024, 1<<20, testClock)
+	defer fixture.close(t)
+
+	publisher := fixture.dial(t)
+	defer publisher.Close()
+	writePacket(t, publisher, fixture.encoder, &mqtt.Connect{
+		Version:    mqtt.ProtocolV5,
+		CleanStart: true,
+		ClientID:   "recovery-publisher",
+	})
+	if ack := readPacket(t, publisher, fixture.decoder, mqtt.ProtocolV5).(*mqtt.ConnAck); ack.ReasonCode != 0 {
+		t.Fatalf("publisher CONNACK = %#v", ack)
+	}
+	publish := func(topic string, packetID mqtt.PacketIdentifier, expiry uint32, qos mqtt.QoS) {
+		packet := mqtt.Publish{
+			Version:  mqtt.ProtocolV5,
+			Topic:    topic,
+			Payload:  []byte(topic),
+			QoS:      qos,
+			PacketID: packetID,
+		}
+		if expiry > 0 {
+			packet.HasMessageExpiryInterval = true
+			packet.MessageExpiryInterval = expiry
+		}
+		writePacket(t, publisher, fixture.encoder, &packet)
+		if qos == mqtt.QoSExactlyOnce {
+			if ack := readPacket(t, publisher, fixture.decoder, mqtt.ProtocolV5).(*mqtt.PubRec); ack.PacketID != packetID {
+				t.Fatalf("publisher PUBREC = %#v, want %d", ack, packetID)
+			}
+			writePacket(t, publisher, fixture.encoder, &mqtt.PubRel{Version: mqtt.ProtocolV5, PacketID: packetID})
+			if ack := readPacket(t, publisher, fixture.decoder, mqtt.ProtocolV5).(*mqtt.PubComp); ack.PacketID != packetID {
+				t.Fatalf("publisher PUBCOMP = %#v, want %d", ack, packetID)
+			}
+			return
+		}
+		if ack := readPacket(t, publisher, fixture.decoder, mqtt.ProtocolV5).(*mqtt.PubAck); ack.PacketID != packetID {
+			t.Fatalf("publisher PUBACK = %#v, want %d", ack, packetID)
+		}
+	}
+	connectSubscriber := func(clientID string, version mqtt.ProtocolVersion) net.Conn {
+		t.Helper()
+		subscriber := fixture.dial(t)
+		subscriberConnect := mqtt.Connect{Version: version, ClientID: clientID}
+		if version == mqtt.ProtocolV5 {
+			subscriberConnect.SessionExpiryInterval = 60
+		}
+		writePacket(t, subscriber, fixture.encoder, &subscriberConnect)
+		ack := readPacket(t, subscriber, fixture.decoder, version).(*mqtt.ConnAck)
+		if ack.ReasonCode != 0 || ack.SessionPresent {
+			t.Fatalf("initial subscriber CONNACK = %#v", ack)
+		}
+		writePacket(t, subscriber, fixture.encoder, &mqtt.Subscribe{
+			Version:       version,
+			PacketID:      1,
+			Subscriptions: []mqtt.Subscription{{Filter: "recovery/#", QoS: mqtt.QoSExactlyOnce}},
+		})
+		if ack := readPacket(t, subscriber, fixture.decoder, version).(*mqtt.SubAck); ack.PacketID != 1 {
+			t.Fatalf("subscriber SUBACK = %#v", ack)
+		}
+		return subscriber
+	}
+	reconnectSubscriber := func(clientID string, version mqtt.ProtocolVersion) net.Conn {
+		t.Helper()
+		subscriber := fixture.dial(t)
+		reconnect := mqtt.Connect{Version: version, ClientID: clientID}
+		if version == mqtt.ProtocolV5 {
+			reconnect.SessionExpiryInterval = 60
+		}
+		writePacket(t, subscriber, fixture.encoder, &reconnect)
+		ack := readPacket(t, subscriber, fixture.decoder, version).(*mqtt.ConnAck)
+		if ack.ReasonCode != 0 || !ack.SessionPresent {
+			t.Fatalf("recovery CONNACK = %#v", ack)
+		}
+		return subscriber
+	}
+	closePersistent := func(subscriber net.Conn, clientID string, version mqtt.ProtocolVersion) {
+		t.Helper()
+		writePacket(t, subscriber, fixture.encoder, &mqtt.Disconnect{Version: version})
+		expectClosed(t, subscriber)
+		subscriber.Close()
+		waitForSessionDisconnected(t, fixture.repo, clientID)
+	}
+
+	// QoS 1: disconnect before PUBACK, then resume the same PUBLISH identifier with DUP.
+	qos1ID := "recover-qos1"
+	qos1 := connectSubscriber(qos1ID, mqtt.ProtocolV5)
+	publish("recovery/qos1", 201, 0, mqtt.QoSAtLeastOnce)
+	firstQoS1 := readPacket(t, qos1, fixture.decoder, mqtt.ProtocolV5).(*mqtt.Publish)
+	if firstQoS1.QoS != mqtt.QoSAtLeastOnce || firstQoS1.DUP {
+		t.Fatalf("initial QoS 1 delivery = %#v", firstQoS1)
+	}
+	packetID := firstQoS1.PacketID
+	qos1.Close()
+	waitForSessionDisconnected(t, fixture.repo, qos1ID)
+	qos1Resume := reconnectSubscriber(qos1ID, mqtt.ProtocolV311)
+	resumedQoS1 := readPacket(t, qos1Resume, fixture.decoder, mqtt.ProtocolV311).(*mqtt.Publish)
+	if resumedQoS1.PacketID != packetID || !resumedQoS1.DUP || resumedQoS1.Version != mqtt.ProtocolV311 {
+		t.Fatalf("resumed QoS 1 delivery = %#v, want ID %d DUP MQTT 3.1.1", resumedQoS1, packetID)
+	}
+	writePacket(t, qos1Resume, fixture.encoder, &mqtt.PubAck{Version: mqtt.ProtocolV311, PacketID: packetID})
+	closePersistent(qos1Resume, qos1ID, mqtt.ProtocolV311)
+
+	// QoS 2 before PUBREC: PUBLISH is retransmitted with the same identifier and DUP.
+	qos2PreID := "recover-qos2-pre"
+	qos2Pre := connectSubscriber(qos2PreID, mqtt.ProtocolV311)
+	publish("recovery/qos2-pre", 202, 0, mqtt.QoSExactlyOnce)
+	firstQoS2Pre := readPacket(t, qos2Pre, fixture.decoder, mqtt.ProtocolV311).(*mqtt.Publish)
+	if firstQoS2Pre.QoS != mqtt.QoSExactlyOnce || firstQoS2Pre.DUP {
+		t.Fatalf("initial QoS 2 delivery = %#v", firstQoS2Pre)
+	}
+	packetID = firstQoS2Pre.PacketID
+	qos2Pre.Close()
+	waitForSessionDisconnected(t, fixture.repo, qos2PreID)
+	qos2PreResume := reconnectSubscriber(qos2PreID, mqtt.ProtocolV5)
+	resumedQoS2Pre := readPacket(t, qos2PreResume, fixture.decoder, mqtt.ProtocolV5).(*mqtt.Publish)
+	if resumedQoS2Pre.PacketID != packetID || !resumedQoS2Pre.DUP || resumedQoS2Pre.Version != mqtt.ProtocolV5 {
+		t.Fatalf("resumed pre-PUBREC QoS 2 delivery = %#v, want ID %d DUP MQTT 5", resumedQoS2Pre, packetID)
+	}
+	writePacket(t, qos2PreResume, fixture.encoder, &mqtt.PubRec{Version: mqtt.ProtocolV5, PacketID: packetID})
+	if pubrel := readPacket(t, qos2PreResume, fixture.decoder, mqtt.ProtocolV5).(*mqtt.PubRel); pubrel.PacketID != packetID {
+		t.Fatalf("resumed pre-PUBREC PUBREL = %#v, want ID %d", pubrel, packetID)
+	}
+	writePacket(t, qos2PreResume, fixture.encoder, &mqtt.PubComp{Version: mqtt.ProtocolV5, PacketID: packetID})
+	closePersistent(qos2PreResume, qos2PreID, mqtt.ProtocolV5)
+
+	// QoS 2 after PUBREC: reconnect resumes directly with PUBREL.
+	qos2PostID := "recover-qos2-post"
+	qos2Post := connectSubscriber(qos2PostID, mqtt.ProtocolV5)
+	publish("recovery/qos2-post", 203, 0, mqtt.QoSExactlyOnce)
+	firstQoS2Post := readPacket(t, qos2Post, fixture.decoder, mqtt.ProtocolV5).(*mqtt.Publish)
+	packetID = firstQoS2Post.PacketID
+	writePacket(t, qos2Post, fixture.encoder, &mqtt.PubRec{Version: mqtt.ProtocolV5, PacketID: packetID})
+	if pubrel := readPacket(t, qos2Post, fixture.decoder, mqtt.ProtocolV5).(*mqtt.PubRel); pubrel.PacketID != packetID {
+		t.Fatalf("initial post-PUBREC PUBREL = %#v, want ID %d", pubrel, packetID)
+	}
+	qos2Post.Close()
+	waitForSessionDisconnected(t, fixture.repo, qos2PostID)
+	qos2PostResume := reconnectSubscriber(qos2PostID, mqtt.ProtocolV311)
+	resumedPubRel := readPacket(t, qos2PostResume, fixture.decoder, mqtt.ProtocolV311).(*mqtt.PubRel)
+	if resumedPubRel.PacketID != packetID || resumedPubRel.Version != mqtt.ProtocolV311 {
+		t.Fatalf("resumed post-PUBREC packet = %#v, want MQTT 3.1.1 PUBREL ID %d", resumedPubRel, packetID)
+	}
+	writePacket(t, qos2PostResume, fixture.encoder, &mqtt.PubComp{Version: mqtt.ProtocolV311, PacketID: packetID})
+	closePersistent(qos2PostResume, qos2PostID, mqtt.ProtocolV311)
+
+	// An expired PUBLISH-stage state is deleted on reconnect without retransmission.
+	expiredID := "recover-expired"
+	expired := connectSubscriber(expiredID, mqtt.ProtocolV5)
+	publish("recovery/expired", 204, 1, mqtt.QoSAtLeastOnce)
+	expiredPublish := readPacket(t, expired, fixture.decoder, mqtt.ProtocolV5).(*mqtt.Publish)
+	if expiredPublish.PacketID == 0 || expiredPublish.DUP {
+		t.Fatalf("initial expiring delivery = %#v", expiredPublish)
+	}
+	expired.Close()
+	testClock.Advance(2 * time.Second)
+	waitForSessionDisconnected(t, fixture.repo, expiredID)
+	expiredResume := reconnectSubscriber(expiredID, mqtt.ProtocolV5)
+	expectNoPacket(t, expiredResume)
+	closePersistent(expiredResume, expiredID, mqtt.ProtocolV5)
+
+	writePacket(t, publisher, fixture.encoder, &mqtt.Disconnect{Version: mqtt.ProtocolV5})
+	expectClosed(t, publisher)
+}
+
 // Traceability: PRD MQTT-01/MQTT-02/MQTT-06/TEST-03/04/05; docs/specs/mqtt-protocol-and-session.md §1, §2, §3.2, §7.
 // Wire-level acceptance scenarios cover CONNECT, SUBSCRIBE, QoS 0 PUBLISH,
 // PINGRESP, DISCONNECT, persistent Session Present, and rejected CONNECT.

@@ -99,8 +99,17 @@ func (*fakeDeliveryQueue) TryEnqueueBatch([]deliveryqueue.DeliveryDTO, time.Time
 	return nil
 }
 
-func (*fakeDeliveryQueue) Drain(routing.SessionID, time.Time) ([]deliveryqueue.DeliveryDTO, error) {
+func (*fakeDeliveryQueue) Peek(routing.SessionID, time.Time) (deliveryqueue.DeliveryDTO, bool, error) {
+	return deliveryqueue.DeliveryDTO{}, false, nil
+}
+func (*fakeDeliveryQueue) CompleteHead(routing.SessionID) error                   { return nil }
+func (*fakeDeliveryQueue) PromoteHead(deliveryqueue.OutboundDTO, time.Time) error { return nil }
+func (*fakeDeliveryQueue) ListOutbound(routing.SessionID) ([]deliveryqueue.OutboundDTO, error) {
 	return nil, nil
+}
+func (*fakeDeliveryQueue) ReplaceOutbound(deliveryqueue.OutboundDTO) error { return nil }
+func (*fakeDeliveryQueue) CompleteOutbound(routing.SessionID, mqtt.PacketIdentifier) error {
+	return nil
 }
 
 type fakeTimer struct {
@@ -251,8 +260,8 @@ func TestConnectCleanResumeAndExpiryResetRoutingAndQueue(t *testing.T) {
 	if err != nil || !reflect.DeepEqual(matches, []routing.Match{{SessionID: "client", QoS: mqtt.QoSAtMostOnce}}) {
 		t.Fatalf("resumed routes = %#v, %v", matches, err)
 	}
-	if len(queue.removes) != 2 || len(queue.registers) != 2 {
-		t.Fatalf("queue lifecycle = removes=%v registers=%v, want two removes and two registers", queue.removes, queue.registers)
+	if len(queue.removes) != 1 || len(queue.registers) != 2 {
+		t.Fatalf("persistent queue lifecycle = removes=%v registers=%v, want one reset and two registers", queue.removes, queue.registers)
 	}
 
 	clock.now = now.Add(1 * time.Second)
@@ -419,8 +428,8 @@ func TestDisconnectRemovesImmediateSessionsAndPreservesPersistentRoutes(t *testi
 	if err != nil || len(matches) != 1 || matches[0].SessionID != "persistent" {
 		t.Fatalf("routes after immediate disconnect = %#v, %v", matches, err)
 	}
-	if len(queue.removes) != 4 {
-		t.Fatalf("queue removes = %v, want four lifecycle removals", queue.removes)
+	if len(queue.removes) != 3 {
+		t.Fatalf("queue removes = %v, want initial registration reset plus immediate lifecycle removals", queue.removes)
 	}
 }
 func TestConnectNilUnsupportedAndDisconnectErrors(t *testing.T) {
@@ -487,14 +496,157 @@ func TestDisconnectRejectsAlreadyDisconnectedSession(t *testing.T) {
 }
 
 func TestConnectDeleteErrorOnImmediateDisconnect(t *testing.T) {
-	useCase, _, repository, _, _, _, _ := newUseCase(t, time.Unix(0, 0))
+	useCase, _, repository, queue, _, _, _ := newUseCase(t, time.Unix(0, 0))
 	result, err := useCase.Connect(mqtt.Connect{Version: mqtt.ProtocolV5, ClientID: "immediate", SessionExpiryInterval: 0})
 	if err != nil || !result.Accepted {
 		t.Fatal(err)
 	}
+	if len(queue.removes) != 1 {
+		t.Fatalf("initial clean session queue reset = %v, want one removal", queue.removes)
+	}
 	repository.deleteErr = errors.New("delete failed")
 	if err := useCase.Disconnect(result.SessionID, session.DisconnectNormal); !errors.Is(err, repository.deleteErr) {
 		t.Fatalf("immediate Disconnect() delete error = %v", err)
+	}
+	if len(queue.removes) != 1 {
+		t.Fatalf("delete failure discarded delivery state: removes=%v", queue.removes)
+	}
+}
+
+// Traceability: PRD MQTT-03/TEST-04/05; docs/specs/mqtt-protocol-and-session.md §2.2, §3.2.
+func TestConnect_ExpiryDeleteFailureRetriesCleanup(t *testing.T) {
+	now := time.Date(2026, time.January, 1, 0, 0, 0, 0, time.UTC)
+	useCase, clock, repository, queue, _, scheduler, _ := newUseCase(t, now)
+	result, err := useCase.Connect(mqtt.Connect{
+		Version:               mqtt.ProtocolV5,
+		ClientID:              "retry-expiry",
+		SessionExpiryInterval: 1,
+	})
+	if err != nil || !result.Accepted {
+		t.Fatalf("Connect() = %#v, %v", result, err)
+	}
+	if err := useCase.Disconnect(result.SessionID, session.DisconnectAbnormal); err != nil {
+		t.Fatal(err)
+	}
+	if len(scheduler.timers) != 1 {
+		t.Fatalf("scheduled timers = %d, want 1", len(scheduler.timers))
+	}
+	initialRemoves := len(queue.removes)
+	clock.now = clock.now.Add(time.Second)
+	repository.deleteErr = errors.New("temporary delete failure")
+	scheduler.timers[0].callback()
+	if len(scheduler.timers) != 2 {
+		t.Fatalf("scheduled timers after delete failure = %d, want retry", len(scheduler.timers))
+	}
+	if len(queue.removes) != initialRemoves {
+		t.Fatalf("queue removed state after delete failure: %v", queue.removes)
+	}
+	if _, found, err := repository.Load("retry-expiry"); err != nil || !found {
+		t.Fatalf("session after delete failure = found %v, err %v", found, err)
+	}
+
+	repository.deleteErr = nil
+	scheduler.timers[1].callback()
+	if len(queue.removes) != initialRemoves+1 {
+		t.Fatalf("queue removals after retry = %v, want one cleanup", queue.removes)
+	}
+	if _, found, err := repository.Load("retry-expiry"); err != nil || found {
+		t.Fatalf("session after successful retry = found %v, err %v", found, err)
+	}
+}
+
+// Traceability: PRD MQTT-03/TEST-04/05; docs/specs/mqtt-protocol-and-session.md §2.2, §3.2.
+func TestConnect_StaleExpiryCallbackDoesNotRemoveNewTimer(t *testing.T) {
+	now := time.Date(2026, time.January, 1, 0, 0, 0, 0, time.UTC)
+	useCase, _, _, _, _, scheduler, _ := newUseCase(t, now)
+	connectPacket := mqtt.Connect{
+		Version:               mqtt.ProtocolV5,
+		ClientID:              "stale-expiry",
+		SessionExpiryInterval: 30,
+	}
+	first, err := useCase.Connect(connectPacket)
+	if err != nil || !first.Accepted {
+		t.Fatalf("initial Connect() = %#v, %v", first, err)
+	}
+	if err := useCase.Disconnect(first.SessionID, session.DisconnectAbnormal); err != nil {
+		t.Fatal(err)
+	}
+	if len(scheduler.timers) != 1 {
+		t.Fatalf("initial timers = %d, want 1", len(scheduler.timers))
+	}
+	staleCallback := scheduler.timers[0].callback
+
+	resumed, err := useCase.Connect(connectPacket)
+	if err != nil || !resumed.Accepted || !resumed.ConnAck.SessionPresent {
+		t.Fatalf("resumed Connect() = %#v, %v", resumed, err)
+	}
+	if err := useCase.Disconnect(resumed.SessionID, session.DisconnectAbnormal); err != nil {
+		t.Fatal(err)
+	}
+	if len(scheduler.timers) != 2 {
+		t.Fatalf("timers after reconnect = %d, want 2", len(scheduler.timers))
+	}
+
+	staleCallback()
+	useCase.mu.Lock()
+	_, active := useCase.activeTimers[string(first.SessionID)]
+	useCase.mu.Unlock()
+	if !active {
+		t.Fatal("stale expiry callback removed the current timer")
+	}
+}
+
+// Traceability: PRD MQTT-01/TEST-04; docs/specs/mqtt-protocol-and-session.md §2.2, §3.2.
+func TestConnect_StaleWillCallbackDoesNotClaimNewWill(t *testing.T) {
+	now := time.Date(2026, time.January, 1, 0, 0, 0, 0, time.UTC)
+	useCase, _, _, _, _, scheduler, willPublisher := newUseCase(t, now)
+	connectPacket := mqtt.Connect{
+		Version:               mqtt.ProtocolV5,
+		ClientID:              "stale-will",
+		SessionExpiryInterval: 30,
+		Will: &mqtt.Will{
+			Topic:         "status/stale",
+			Payload:       []byte("lost"),
+			DelayInterval: 10,
+		},
+	}
+	first, err := useCase.Connect(connectPacket)
+	if err != nil || !first.Accepted {
+		t.Fatalf("initial Connect() = %#v, %v", first, err)
+	}
+	if err := useCase.Disconnect(first.SessionID, session.DisconnectAbnormal); err != nil {
+		t.Fatal(err)
+	}
+	if len(scheduler.timers) != 2 {
+		t.Fatalf("initial timers = %d, want 2", len(scheduler.timers))
+	}
+	staleCallback := scheduler.timers[0].callback
+
+	resumed, err := useCase.Connect(connectPacket)
+	if err != nil || !resumed.Accepted || !resumed.ConnAck.SessionPresent {
+		t.Fatalf("resumed Connect() = %#v, %v", resumed, err)
+	}
+	if err := useCase.Disconnect(resumed.SessionID, session.DisconnectAbnormal); err != nil {
+		t.Fatal(err)
+	}
+	if len(scheduler.timers) != 4 {
+		t.Fatalf("timers after reconnect = %d, want 4", len(scheduler.timers))
+	}
+
+	staleCallback()
+	useCase.mu.Lock()
+	current, active := useCase.activeTimers[string(first.SessionID)]
+	useCase.mu.Unlock()
+	if !active || current == nil {
+		t.Fatal("stale Will callback removed the current timer")
+	}
+	if len(willPublisher.published) != 0 {
+		t.Fatalf("stale Will callback published %d messages", len(willPublisher.published))
+	}
+
+	scheduler.timers[2].callback()
+	if len(willPublisher.published) != 1 {
+		t.Fatalf("current Will callback published %d messages, want 1", len(willPublisher.published))
 	}
 }
 

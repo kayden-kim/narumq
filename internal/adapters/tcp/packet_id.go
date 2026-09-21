@@ -48,6 +48,18 @@ func (allocator *packetIDAllocator) acquire() (mqtt.PacketIdentifier, error) {
 	}
 }
 
+// reserve marks a previously persisted Packet Identifier as active.
+func (allocator *packetIDAllocator) reserve(id mqtt.PacketIdentifier) bool {
+	if allocator == nil || id == 0 {
+		return false
+	}
+	if _, exists := allocator.used[id]; exists {
+		return false
+	}
+	allocator.used[id] = struct{}{}
+	return true
+}
+
 func (allocator *packetIDAllocator) release(id mqtt.PacketIdentifier) {
 	delete(allocator.used, id)
 }

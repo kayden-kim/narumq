@@ -48,8 +48,19 @@ func (queue *recordingQueue) Register(sessionID routing.SessionID) error {
 
 func (queue *recordingQueue) Remove(sessionID routing.SessionID) {}
 
-func (queue *recordingQueue) Drain(sessionID routing.SessionID, _ time.Time) ([]applicationdeliveryqueue.DeliveryDTO, error) {
+func (*recordingQueue) Peek(routing.SessionID, time.Time) (applicationdeliveryqueue.DeliveryDTO, bool, error) {
+	return applicationdeliveryqueue.DeliveryDTO{}, false, nil
+}
+func (*recordingQueue) CompleteHead(routing.SessionID) error { return nil }
+func (*recordingQueue) PromoteHead(applicationdeliveryqueue.OutboundDTO, time.Time) error {
+	return nil
+}
+func (*recordingQueue) ListOutbound(routing.SessionID) ([]applicationdeliveryqueue.OutboundDTO, error) {
 	return nil, nil
+}
+func (*recordingQueue) ReplaceOutbound(applicationdeliveryqueue.OutboundDTO) error { return nil }
+func (*recordingQueue) CompleteOutbound(routing.SessionID, mqtt.PacketIdentifier) error {
+	return nil
 }
 
 type recordingRetainedRepository struct {

@@ -21,6 +21,27 @@ import (
 	"narumq/internal/domain/routing"
 )
 
+func takeDeliveries(t *testing.T, queue applicationdeliveryqueue.Queue, sessionID routing.SessionID, now time.Time) []applicationdeliveryqueue.DeliveryDTO {
+	t.Helper()
+	var items []applicationdeliveryqueue.DeliveryDTO
+	for {
+		item, ok, err := queue.Peek(sessionID, now)
+		if errors.Is(err, applicationdeliveryqueue.ErrUnavailable) {
+			return items
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !ok {
+			return items
+		}
+		items = append(items, item)
+		if err := queue.CompleteHead(sessionID); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
 func TestDispatchPublishQoS1AndDuplicate(t *testing.T) {
 	runtime := newAdapterTestRuntime(t, 2, defaultAdapterConfig())
 	defer runtime.stop(t)
@@ -79,10 +100,7 @@ func TestDispatchPublishQoS1AndDuplicate(t *testing.T) {
 	}
 
 	// Verify delivery was enqueued for sub-session
-	items, err := runtime.server.deliveries.Drain("sub-session", time.Time{})
-	if err != nil {
-		t.Fatal(err)
-	}
+	items := takeDeliveries(t, runtime.server.deliveries, "sub-session", time.Time{})
 	if len(items) != 1 || string(items[0].Payload) != "20" {
 		t.Fatalf("expected 1 delivered item, got %#v", items)
 	}
@@ -105,10 +123,7 @@ func TestDispatchPublishQoS1AndDuplicate(t *testing.T) {
 	}
 
 	// Verify no new items in delivery queue
-	itemsAfterDup, err := runtime.server.deliveries.Drain("sub-session", time.Time{})
-	if err != nil {
-		t.Fatal(err)
-	}
+	itemsAfterDup := takeDeliveries(t, runtime.server.deliveries, "sub-session", time.Time{})
 	if len(itemsAfterDup) != 0 {
 		t.Fatalf("duplicate publish caused extra delivery: %#v", itemsAfterDup)
 	}
@@ -171,10 +186,7 @@ func TestDispatchPublishQoS2AndHandshake(t *testing.T) {
 	}
 
 	// Message should NOT be delivered yet prior to PUBREL
-	items, err := runtime.server.deliveries.Drain("sub2-session", time.Time{})
-	if err != nil {
-		t.Fatal(err)
-	}
+	items := takeDeliveries(t, runtime.server.deliveries, "sub2-session", time.Time{})
 	if len(items) != 0 {
 		t.Fatalf("QoS 2 delivered prematurely: %#v", items)
 	}
@@ -217,10 +229,7 @@ func TestDispatchPublishQoS2AndHandshake(t *testing.T) {
 	}
 
 	// Verify message was delivered upon PUBREL
-	itemsAfterRel, err := runtime.server.deliveries.Drain("sub2-session", time.Time{})
-	if err != nil {
-		t.Fatal(err)
-	}
+	itemsAfterRel := takeDeliveries(t, runtime.server.deliveries, "sub2-session", time.Time{})
 	if len(itemsAfterRel) != 1 || string(itemsAfterRel[0].Payload) != "on" {
 		t.Fatalf("expected 1 delivered item after PUBREL, got %#v", itemsAfterRel)
 	}
@@ -313,10 +322,7 @@ func TestQoS2MessageExpiryUsesOriginalReceiveTimestamp(t *testing.T) {
 		t.Fatal("expected PubComp after PUBREL")
 	}
 
-	items, err := runtime.server.deliveries.Drain(subscriberSession, clock.now)
-	if err != nil {
-		t.Fatal(err)
-	}
+	items := takeDeliveries(t, runtime.server.deliveries, subscriberSession, clock.now)
 	if len(items) != 0 {
 		t.Fatalf("expired QoS 2 publication was delivered: %#v", items)
 	}
@@ -436,6 +442,66 @@ func TestOutboundQoS1AndQoS2Lifecycle(t *testing.T) {
 		t.Fatalf("expected 0 outbound after PubComp, got %d", len(conn.outbound))
 	}
 	conn.deliveryMu.Unlock()
+}
+
+// Traceability: PRD MQTT-02/TEST-04/05; docs/specs/mqtt-protocol-and-session.md §3.2.
+func TestDispatchPubRecUsesCurrentProtocolVersion(t *testing.T) {
+	runtime := newAdapterTestRuntime(t, 2, defaultAdapterConfig())
+	defer runtime.stop(t)
+
+	serverSocket, clientSocket := net.Pipe()
+	defer serverSocket.Close()
+	defer clientSocket.Close()
+
+	connection := newConnection(runtime.server, serverSocket)
+	connection.sessionID = "cross-version"
+	connection.version = mqtt.ProtocolV5
+	if err := runtime.server.deliveries.Register(connection.sessionID); err != nil {
+		t.Fatal(err)
+	}
+	state, _, err := delivery.NewOutbound(mqtt.Publish{
+		Version:  mqtt.ProtocolV311,
+		Topic:    "cross-version/topic",
+		QoS:      mqtt.QoSExactlyOnce,
+		PacketID: 7,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	outbound := applicationdeliveryqueue.OutboundDTO{
+		SessionID: connection.sessionID,
+		PacketID:  7,
+		State:     state,
+	}
+	if err := runtime.server.deliveries.TryEnqueue(applicationdeliveryqueue.DeliveryDTO{
+		SessionID: connection.sessionID,
+		Topic:     "cross-version/topic",
+		QoS:       mqtt.QoSExactlyOnce,
+	}, time.Time{}); err != nil {
+		t.Fatal(err)
+	}
+	if err := runtime.server.deliveries.PromoteHead(outbound, time.Time{}); err != nil {
+		t.Fatal(err)
+	}
+	connection.deliveryMu.Lock()
+	connection.outbound[outbound.PacketID] = outbound
+	connection.deliveryMu.Unlock()
+
+	if err := connection.dispatchPubRec(&mqtt.PubRec{Version: mqtt.ProtocolV5, PacketID: 7}); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case message := <-connection.controlQueue:
+		pubrel, ok := message.packet.(*mqtt.PubRel)
+		if !ok {
+			t.Fatalf("queued packet = %#v, want PUBREL", message.packet)
+		}
+		if pubrel.Version != mqtt.ProtocolV5 || pubrel.PacketID != 7 {
+			t.Fatalf("queued PUBREL = %#v, want MQTT 5.0 packet 7", pubrel)
+		}
+	default:
+		t.Fatal("expected PUBREL after PUBREC")
+	}
 }
 
 func TestDispatchPubAckRecCompEdgeCases(t *testing.T) {
@@ -611,11 +677,11 @@ func TestWriteDeliveriesEdgeCases(t *testing.T) {
 		t.Fatalf("writeDeliveries when exhausted = %v, want nil", err)
 	}
 
-	// Verify item was re-enqueued
-	items, err := runtime.server.deliveries.Drain(conn.sessionID, time.Time{})
-	if err != nil {
-		t.Fatal(err)
+	item, ok, err := runtime.server.deliveries.Peek(conn.sessionID, time.Time{})
+	if err != nil || !ok {
+		t.Fatalf("item was not retained after allocator exhaustion: item=%#v err=%v ok=%v", item, err, ok)
 	}
+	items := []applicationdeliveryqueue.DeliveryDTO{item}
 	if len(items) != 1 || items[0].Topic != "test/exhausted" {
 		t.Fatalf("item was not re-enqueued properly: %#v", items)
 	}
@@ -927,4 +993,342 @@ func TestDispatchPublishAndPubRelInvalidTransitions(t *testing.T) {
 	}); !errors.Is(err, ErrProtocol) {
 		t.Fatalf("expected ErrProtocol on invalid transition PubRel, got %v", err)
 	}
+}
+
+// Traceability: PRD MQTT-02/TEST-03/04/05; docs/specs/mqtt-protocol-and-session.md §3.2.
+func TestWriteRecoveredDeliveriesStateAndWriteFailures(t *testing.T) {
+	runtime := newAdapterTestRuntime(t, 2, defaultAdapterConfig())
+	defer runtime.stop(t)
+
+	serverSocket, clientSocket := net.Pipe()
+	defer serverSocket.Close()
+	defer clientSocket.Close()
+
+	connection := newConnection(runtime.server, serverSocket)
+	connection.sessionID = "recovered-client"
+	connection.recovered = []applicationdeliveryqueue.OutboundDTO{{
+		SessionID: connection.sessionID,
+		PacketID:  1,
+	}}
+	if err := connection.writeDeliveries(); !errors.Is(err, delivery.ErrInvalidTransition) {
+		t.Fatalf("invalid recovered state error = %v, want invalid transition", err)
+	}
+
+	state, _, err := delivery.NewOutbound(mqtt.Publish{
+		Version:  mqtt.ProtocolV5,
+		Topic:    "recovered/topic",
+		Payload:  []byte("payload"),
+		QoS:      mqtt.QoSAtLeastOnce,
+		PacketID: 2,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	completeState, _, err := state.Receive(&mqtt.PubAck{Version: mqtt.ProtocolV5, PacketID: 2})
+	if err != nil {
+		t.Fatal(err)
+	}
+	connection.recovered = []applicationdeliveryqueue.OutboundDTO{{
+		SessionID: connection.sessionID,
+		PacketID:  2,
+		State:     completeState,
+	}}
+	if err := connection.writeRecoveredDeliveries(); !errors.Is(err, delivery.ErrStateComplete) {
+		t.Fatalf("completed recovered state error = %v, want state complete", err)
+	}
+
+	failingServer, failingClient := net.Pipe()
+	defer failingServer.Close()
+	connection = newConnection(runtime.server, failingServer)
+	connection.sessionID = "write-failure-client"
+	state, _, err = delivery.NewOutbound(mqtt.Publish{
+		Version:  mqtt.ProtocolV5,
+		Topic:    "recovered/failure",
+		Payload:  []byte("payload"),
+		QoS:      mqtt.QoSExactlyOnce,
+		PacketID: 3,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	connection.recovered = []applicationdeliveryqueue.OutboundDTO{{
+		SessionID: connection.sessionID,
+		PacketID:  3,
+		State:     state,
+	}}
+	if err := failingClient.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := connection.writeRecoveredDeliveries(); err == nil {
+		t.Fatal("writeRecoveredDeliveries() succeeded after peer close")
+	}
+}
+
+// Traceability: PRD MQTT-02/TEST-03/04/05; docs/specs/mqtt-protocol-and-session.md §3.2.
+func TestWriteDeliveriesRetainsHeadOnOutboundCapacityAndConflict(t *testing.T) {
+	t.Run("outbound capacity", func(t *testing.T) {
+		runtime := newAdapterTestRuntime(t, 1, defaultAdapterConfig())
+		defer runtime.stop(t)
+
+		serverSocket, clientSocket := net.Pipe()
+		defer serverSocket.Close()
+		defer clientSocket.Close()
+
+		connection := newConnection(runtime.server, serverSocket)
+		connection.sessionID = "capacity-client"
+		connection.version = mqtt.ProtocolV5
+		if err := runtime.server.deliveries.Register(connection.sessionID); err != nil {
+			t.Fatal(err)
+		}
+		for _, topic := range []string{"first", "second"} {
+			if err := runtime.server.deliveries.TryEnqueue(applicationdeliveryqueue.DeliveryDTO{
+				SessionID: connection.sessionID,
+				Topic:     topic,
+				Payload:   []byte(topic),
+				QoS:       mqtt.QoSAtLeastOnce,
+			}, time.Time{}); err != nil {
+				t.Fatal(err)
+			}
+			if topic == "first" {
+				result := make(chan error, 1)
+				go func() { result <- connection.writeDeliveries() }()
+				_ = readTestFrame(t, clientSocket)
+				if err := <-result; err != nil {
+					t.Fatal(err)
+				}
+			}
+		}
+		if err := connection.writeDeliveries(); err != nil {
+			t.Fatalf("capacity writeDeliveries() error = %v", err)
+		}
+		head, ok, err := runtime.server.deliveries.Peek(connection.sessionID, time.Time{})
+		if err != nil || !ok || head.Topic != "second" {
+			t.Fatalf("capacity head = %#v, %v, %v", head, ok, err)
+		}
+	})
+
+	t.Run("packet identifier conflict", func(t *testing.T) {
+		runtime := newAdapterTestRuntime(t, 2, defaultAdapterConfig())
+		defer runtime.stop(t)
+
+		serverSocket, clientSocket := net.Pipe()
+		defer serverSocket.Close()
+		defer clientSocket.Close()
+
+		connection := newConnection(runtime.server, serverSocket)
+		connection.sessionID = "conflict-client"
+		connection.version = mqtt.ProtocolV5
+		if err := runtime.server.deliveries.Register(connection.sessionID); err != nil {
+			t.Fatal(err)
+		}
+		state, _, err := delivery.NewOutbound(mqtt.Publish{
+			Version:  mqtt.ProtocolV5,
+			Topic:    "stored",
+			Payload:  []byte("stored"),
+			QoS:      mqtt.QoSAtLeastOnce,
+			PacketID: 1,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := runtime.server.deliveries.TryEnqueue(applicationdeliveryqueue.DeliveryDTO{
+			SessionID: connection.sessionID,
+			Topic:     "stored",
+			QoS:       mqtt.QoSAtLeastOnce,
+		}, time.Time{}); err != nil {
+			t.Fatal(err)
+		}
+		if err := runtime.server.deliveries.PromoteHead(applicationdeliveryqueue.OutboundDTO{
+			SessionID: connection.sessionID,
+			PacketID:  1,
+			State:     state,
+		}, time.Time{}); err != nil {
+			t.Fatal(err)
+		}
+		if err := runtime.server.deliveries.TryEnqueue(applicationdeliveryqueue.DeliveryDTO{
+			SessionID: connection.sessionID,
+			Topic:     "blocked",
+			QoS:       mqtt.QoSAtLeastOnce,
+		}, time.Time{}); err != nil {
+			t.Fatal(err)
+		}
+		if err := connection.writeDeliveries(); !errors.Is(err, ErrProtocol) {
+			t.Fatalf("conflict writeDeliveries() error = %v, want ErrProtocol", err)
+		}
+		head, ok, err := runtime.server.deliveries.Peek(connection.sessionID, time.Time{})
+		if err != nil || !ok || head.Topic != "blocked" {
+			t.Fatalf("conflict head = %#v, %v, %v", head, ok, err)
+		}
+	})
+}
+
+type scriptedDeliveryQueue struct {
+	applicationdeliveryqueue.Queue
+	items               []applicationdeliveryqueue.DeliveryDTO
+	peekIndex           int
+	peekErr             error
+	completeHeadErr     error
+	promoteErr          error
+	completeOutboundErr error
+}
+
+func (queue *scriptedDeliveryQueue) Peek(sessionID routing.SessionID, now time.Time) (applicationdeliveryqueue.DeliveryDTO, bool, error) {
+	if queue.peekIndex < len(queue.items) {
+		item := queue.items[queue.peekIndex]
+		queue.peekIndex++
+		return item, true, nil
+	}
+	if queue.peekErr != nil {
+		return applicationdeliveryqueue.DeliveryDTO{}, false, queue.peekErr
+	}
+	return applicationdeliveryqueue.DeliveryDTO{}, false, nil
+}
+
+func (queue *scriptedDeliveryQueue) CompleteHead(sessionID routing.SessionID) error {
+	return queue.completeHeadErr
+}
+
+func (queue *scriptedDeliveryQueue) PromoteHead(outbound applicationdeliveryqueue.OutboundDTO, now time.Time) error {
+	return queue.promoteErr
+}
+
+func (queue *scriptedDeliveryQueue) CompleteOutbound(sessionID routing.SessionID, packetID mqtt.PacketIdentifier) error {
+	return queue.completeOutboundErr
+}
+
+// Traceability: PRD MQTT-02/TEST-03/04/05; docs/specs/mqtt-protocol-and-session.md §3.2.
+func TestDeliveryWriterRetainsStateOnQueueAndWireErrors(t *testing.T) {
+	newRuntime := func(t *testing.T) *adapterTestRuntime {
+		t.Helper()
+		return newAdapterTestRuntime(t, 2, defaultAdapterConfig())
+	}
+
+	t.Run("complete head error", func(t *testing.T) {
+		runtime := newRuntime(t)
+		defer runtime.stop(t)
+		queueErr := errors.New("complete head failed")
+		runtime.server.deliveries = &scriptedDeliveryQueue{
+			items:           []applicationdeliveryqueue.DeliveryDTO{{SessionID: "qos0-error", Topic: "topic"}},
+			completeHeadErr: queueErr,
+			peekErr:         applicationdeliveryqueue.ErrUnavailable,
+		}
+		serverSocket, clientSocket := net.Pipe()
+		defer serverSocket.Close()
+		defer clientSocket.Close()
+		connection := newConnection(runtime.server, serverSocket)
+		connection.sessionID = "qos0-error"
+		connection.version = mqtt.ProtocolV5
+		result := make(chan error, 1)
+		go func() { result <- connection.writeDeliveries() }()
+		_ = readTestFrame(t, clientSocket)
+		if err := <-result; !errors.Is(err, queueErr) {
+			t.Fatalf("complete head error = %v, want %v", err, queueErr)
+		}
+	})
+
+	for _, queueErr := range []error{applicationdeliveryqueue.ErrExpired, applicationdeliveryqueue.ErrFull} {
+		queueErr := queueErr
+		t.Run(queueErr.Error(), func(t *testing.T) {
+			runtime := newRuntime(t)
+			defer runtime.stop(t)
+			runtime.server.deliveries = &scriptedDeliveryQueue{
+				items:      []applicationdeliveryqueue.DeliveryDTO{{SessionID: "promote-error", Topic: "topic", QoS: mqtt.QoSAtLeastOnce}},
+				peekErr:    applicationdeliveryqueue.ErrUnavailable,
+				promoteErr: queueErr,
+			}
+			serverSocket, clientSocket := net.Pipe()
+			defer serverSocket.Close()
+			defer clientSocket.Close()
+			connection := newConnection(runtime.server, serverSocket)
+			connection.sessionID = "promote-error"
+			connection.version = mqtt.ProtocolV5
+			if err := connection.writeDeliveries(); err != nil {
+				t.Fatalf("writeDeliveries() error = %v", err)
+			}
+		})
+	}
+
+	t.Run("promote unknown error", func(t *testing.T) {
+		runtime := newRuntime(t)
+		defer runtime.stop(t)
+		queueErr := errors.New("promote failed")
+		runtime.server.deliveries = &scriptedDeliveryQueue{
+			items:      []applicationdeliveryqueue.DeliveryDTO{{SessionID: "promote-error", Topic: "topic", QoS: mqtt.QoSAtLeastOnce}},
+			promoteErr: queueErr,
+		}
+		serverSocket, clientSocket := net.Pipe()
+		defer serverSocket.Close()
+		defer clientSocket.Close()
+		connection := newConnection(runtime.server, serverSocket)
+		connection.sessionID = "promote-error"
+		connection.version = mqtt.ProtocolV5
+		if err := connection.writeDeliveries(); !errors.Is(err, queueErr) {
+			t.Fatalf("promote unknown error = %v, want %v", err, queueErr)
+		}
+	})
+
+	t.Run("expired recovered publication delete error", func(t *testing.T) {
+		runtime := newRuntime(t)
+		defer runtime.stop(t)
+		queueErr := errors.New("complete outbound failed")
+		runtime.server.deliveries = &scriptedDeliveryQueue{completeOutboundErr: queueErr}
+		serverSocket, clientSocket := net.Pipe()
+		defer serverSocket.Close()
+		defer clientSocket.Close()
+		connection := newConnection(runtime.server, serverSocket)
+		connection.sessionID = "expired-recovered"
+		connection.version = mqtt.ProtocolV5
+		state, _, err := delivery.NewOutbound(mqtt.Publish{
+			Version:  mqtt.ProtocolV5,
+			Topic:    "expired",
+			QoS:      mqtt.QoSAtLeastOnce,
+			PacketID: 4,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		connection.recovered = []applicationdeliveryqueue.OutboundDTO{{
+			SessionID: connection.sessionID,
+			PacketID:  4,
+			State:     state,
+			ExpiresAt: time.Date(2025, time.December, 31, 23, 59, 59, 0, time.UTC),
+		}}
+		if err := connection.writeRecoveredDeliveries(); !errors.Is(err, queueErr) {
+			t.Fatalf("expired recovered error = %v, want %v", err, queueErr)
+		}
+	})
+
+	t.Run("recovered pubrel wire error", func(t *testing.T) {
+		runtime := newRuntime(t)
+		defer runtime.stop(t)
+		serverSocket, clientSocket := net.Pipe()
+		defer serverSocket.Close()
+		connection := newConnection(runtime.server, serverSocket)
+		connection.sessionID = "pubrel-wire-error"
+		connection.version = mqtt.ProtocolV5
+		state, _, err := delivery.NewOutbound(mqtt.Publish{
+			Version:  mqtt.ProtocolV5,
+			Topic:    "pubrel",
+			QoS:      mqtt.QoSExactlyOnce,
+			PacketID: 5,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		state, _, err = state.Receive(&mqtt.PubRec{Version: mqtt.ProtocolV5, PacketID: 5})
+		if err != nil {
+			t.Fatal(err)
+		}
+		connection.recovered = []applicationdeliveryqueue.OutboundDTO{{
+			SessionID: connection.sessionID,
+			PacketID:  5,
+			State:     state,
+		}}
+		if err := clientSocket.Close(); err != nil {
+			t.Fatal(err)
+		}
+		if err := connection.writeRecoveredDeliveries(); err == nil {
+			t.Fatal("writeRecoveredDeliveries() succeeded after PUBREL peer close")
+		}
+	})
 }

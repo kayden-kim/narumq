@@ -60,3 +60,51 @@ func TestPacketIDAllocatorExhaustion(t *testing.T) {
 		t.Fatalf("expected ErrPacketIDExhausted, got %v", err)
 	}
 }
+
+func TestPacketIDAllocatorReserveRejectsZeroAndDuplicates(t *testing.T) {
+	alloc := newPacketIDAllocator()
+	if alloc.reserve(0) {
+		t.Fatal("reserve(0) unexpectedly succeeded")
+	}
+	if !alloc.reserve(42) {
+		t.Fatal("first reserve(42) failed")
+	}
+	if alloc.reserve(42) {
+		t.Fatal("duplicate reserve(42) unexpectedly succeeded")
+	}
+	alloc.release(42)
+	if !alloc.reserve(42) {
+		t.Fatal("reserve(42) after release failed")
+	}
+}
+
+func TestPacketIDAllocatorReserveAllIDs(t *testing.T) {
+	alloc := newPacketIDAllocator()
+	for id := mqtt.PacketIdentifier(1); id != 0; id++ {
+		if !alloc.reserve(id) {
+			t.Fatalf("reserve(%d) failed", id)
+		}
+	}
+	if alloc.reserve(1) {
+		t.Fatal("reserve(1) unexpectedly succeeded after exhaustion")
+	}
+}
+
+func TestPacketIDAllocatorAcquireWrapsAndSkipsUsed(t *testing.T) {
+	alloc := newPacketIDAllocator()
+	alloc.next = 65535
+	if !alloc.reserve(1) {
+		t.Fatal("reserve(1) failed")
+	}
+	if !alloc.reserve(65534) {
+		t.Fatal("reserve(65534) failed")
+	}
+	id, err := alloc.acquire()
+	if err != nil || id != 65535 {
+		t.Fatalf("acquire at wrap boundary = %d, %v; want 65535, nil", id, err)
+	}
+	id, err = alloc.acquire()
+	if err != nil || id != 2 {
+		t.Fatalf("acquire after wrap and skip = %d, %v; want 2, nil", id, err)
+	}
+}

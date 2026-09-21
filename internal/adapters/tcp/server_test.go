@@ -467,6 +467,86 @@ func TestTCPSingleWriterPrioritizesControlOverDelivery(t *testing.T) {
 	}
 }
 
+// Traceability: PRD MQTT-03/TEST-03/04/05; docs/specs/mqtt-protocol-and-session.md §3.2.
+func TestTCPDeliveryBlockedUntilConnAckReady(t *testing.T) {
+	serverSocket, clientSocket := net.Pipe()
+	defer serverSocket.Close()
+	defer clientSocket.Close()
+	queue, err := deliveryqueue.New(2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	const sessionID = routing.SessionID("connack-gate")
+	if err := queue.Register(sessionID); err != nil {
+		t.Fatal(err)
+	}
+	if err := queue.TryEnqueue(applicationdeliveryqueue.DeliveryDTO{
+		SessionID: sessionID,
+		Topic:     "gate/topic",
+		Payload:   []byte("delivery"),
+		QoS:       mqtt.QoSAtMostOnce,
+	}, time.Time{}); err != nil {
+		t.Fatal(err)
+	}
+	encoder, err := mqtt.NewEncoder(1024)
+	if err != nil {
+		t.Fatal(err)
+	}
+	runtimeServer := &Server{
+		config:     Config{Clock: &adapterTestClock{now: time.Now()}, WriteTimeout: time.Second},
+		encoder:    encoder,
+		deliveries: queue,
+	}
+	connection := &connection{
+		server:       runtimeServer,
+		socket:       serverSocket,
+		controlQueue: make(chan controlMessage, 1),
+		deliveryWake: make(chan struct{}, 1),
+		stop:         make(chan struct{}),
+		writerDone:   make(chan struct{}),
+		sessionID:    sessionID,
+		version:      mqtt.ProtocolV5,
+	}
+	connection.deliveryBlocked.Store(true)
+	connection.deliveryWake <- struct{}{}
+	go connection.writerLoop()
+	deadline := time.Now().Add(time.Second)
+	for len(connection.deliveryWake) != 0 {
+		if time.Now().After(deadline) {
+			t.Fatal("writer did not consume blocked delivery wake")
+		}
+		time.Sleep(time.Millisecond)
+	}
+	if err := connection.enqueueBarrier(); err != nil {
+		t.Fatalf("writer barrier after blocked wake = %v", err)
+	}
+	if err := clientSocket.SetReadDeadline(time.Now().Add(50 * time.Millisecond)); err != nil {
+		t.Fatal(err)
+	}
+	var header [1]byte
+	if _, err := clientSocket.Read(header[:]); err == nil {
+		t.Fatal("delivery was written while CONNACK gate was blocked")
+	} else {
+		var networkError net.Error
+		if !errors.As(err, &networkError) || !networkError.Timeout() {
+			t.Fatalf("blocked delivery read error = %v, want timeout", err)
+		}
+	}
+
+	connection.deliveryBlocked.Store(false)
+	connection.wakeDelivery()
+	frame := readTestFrame(t, clientSocket)
+	if len(frame) < 2 || frame[0] != 0x30 {
+		t.Fatalf("unblocked delivery frame = % X, want QoS 0 PUBLISH", frame)
+	}
+	connection.requestClose()
+	select {
+	case <-connection.writerDone:
+	case <-time.After(time.Second):
+		t.Fatal("gated writer did not stop")
+	}
+}
+
 // Traceability: PRD MQTT-11/TEST-04/05; write timeout must close the target
 // connection, not merely return an error from the low-level write helper.
 func TestTCPWriterClosesConnectionAfterWriteTimeout(t *testing.T) {

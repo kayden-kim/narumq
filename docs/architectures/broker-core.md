@@ -67,7 +67,7 @@ Domain component 사이의 세부 dependency는 구현 단계의 package graph�
 | MQTT protocol | Packet validation, QoS handshake와 protocol reason | Socket, TLS library, HTTP, storage 자료형 |
 | Session ownership | `tenancy.SessionKey`, owner epoch와 fencing invariant | Pod/IP, wall clock lease만으로 만든 권한 |
 | Subscription routing | tenant-aware `Topic`/`TopicFilter`, wildcard match와 route selection 정책 | 외부 tenant prefix encoding, network client |
-| Message delivery | Inflight, offline delivery, expiry와 ACK 이후 상태 | 특정 WAL·database API |
+| Message delivery | queued·in-flight process-local state, expiry와 ACK 이후 상태 | 특정 WAL·database API |
 | Tenant policy | typed namespace value와 MQTT filter relation | JWKS response, certificate library object |
 | Security policy | immutable `Principal`, role/action ACL과 default-deny precedence | HTTP, JWT/JWKS, configuration parser |
 | Cluster lifecycle | Member state, readiness와 drain barrier의 domain rule | Kubernetes Pod API |
@@ -128,7 +128,7 @@ Port는 구현 adapter 옆이 아니라 이를 사용하는 application 쪽이 �
 | --- | --- | --- |
 | Session·state store | Epoch 조건부 read·write, snapshot과 recovery | Durable state adapter |
 | Session lifecycle | tenant-aware `SessionKey`별 lifecycle load/save/delete와 expiry 복구 | `application/connect.SessionRepository` ← `adapters/memory/sessionstore.MemorySessionRepository` |
-| Delivery queue | SessionKey 등록·제거, bounded enqueue, FIFO drain와 atomic batch enqueue, expiry purge | `application/ports/deliveryqueue.Queue` ← `adapters/memory/deliveryqueue.Queue` |
+| Delivery queue | SessionKey 등록·제거, bounded FIFO enqueue, queued·in-flight recovery, expiry purge | `application/ports/deliveryqueue.Queue` ← `adapters/memory/deliveryqueue.Queue` |
 | Retained message | tenant-aware exact-topic replace/delete, deterministic expiry-aware list와 count·byte bounded ownership | `application/ports/retained.Repository` ← `adapters/memory/retained.Repository` |
 | Authentication | Credential을 verified binding Result로 변환하는 application port | `application/ports/authentication.AuthenticationProvider` ← `adapters/authentication.JWKSAuthenticationProvider` |
 | Clock | deterministic expiry 입력 | `application/ports/clock.Clock` ← `adapters/clock.SystemClock` |
@@ -140,8 +140,18 @@ Port는 구현 adapter 옆이 아니라 이를 사용하는 application 쪽이 �
 현재 source에 구현된 `connect.SessionRepository`, `ports/authentication.AuthenticationProvider`,
 `ports/clock.Clock`, `ports/deliveryqueue.Queue`와 `ports/retained.Repository`의 method
 signature는 해당 package가 소유한다. Domain과 application boundary는 raw client/topic/filter
-key를 저장하지 않고 typed value와 principal snapshot을 운반한다. durable state·replication,
-metrics·audit 같은 후속 capability는 별도 범위로 유지한다.
+key를 저장하지 않고 typed value와 principal snapshot을 운반한다. delivery queue의
+queued·in-flight state는 persistent session이 살아 있는 동안 process-local boundary가
+소유하며, process restart·durable storage·replication·metrics·audit는 후속 capability 범위로 유지한다.
+
+## Delivery state boundary
+
+`application/ports/deliveryqueue.Queue`는 delivery를 만드는 publish·subscribe use case와
+전송을 수행하는 TCP adapter 사이의 복구 경계다. Queue adapter는 session별 FIFO queued
+entry와 Packet Identifier별 outbound QoS state를 함께 보관한다. Persistent disconnect는
+이 두 collection을 삭제하지 않으며, clean reset 또는 Session Expiry만 `Remove`를 통해
+전체 session state를 삭제한다. TCP connection은 active cache일 뿐이므로 reconnect 시
+queue boundary에서 outbound state를 다시 읽고, `CONNACK` 뒤에 복구 packet을 전송한다.
 
 ## 경계를 넘는 값
 

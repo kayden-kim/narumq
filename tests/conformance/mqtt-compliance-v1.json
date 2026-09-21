@@ -628,7 +628,7 @@
       ],
       "tests": [
         {
-          "name": "TestQueueExpiryPurgesAtDeadlineAndRoundsRemainingInterval",
+          "name": "TestQueueExpiryPurgeAndBatchAtomicity",
           "package": "narumq/internal/adapters/memory/deliveryqueue"
         },
         {
@@ -675,7 +675,7 @@
       ],
       "tests": [
         {
-          "name": "TestQueueExpiryPurgesAtDeadlineAndRoundsRemainingInterval",
+          "name": "TestQueueExpiryPurgeAndBatchAtomicity",
           "package": "narumq/internal/adapters/memory/deliveryqueue"
         },
         {
@@ -970,6 +970,10 @@
           "package": "narumq/internal/domain/delivery"
         },
         {
+          "name": "TestMQTTIngressPersistentOutboundQoSRecovery",
+          "package": "narumq/tests/integration"
+        },
+        {
           "name": "TestMQTTIngressQoS1Handshake",
           "package": "narumq/tests/integration"
         },
@@ -995,6 +999,10 @@
         {
           "name": "TestOutboundQoS1HandshakeResumeAndErrors",
           "package": "narumq/internal/domain/delivery"
+        },
+        {
+          "name": "TestMQTTIngressPersistentOutboundQoSRecovery",
+          "package": "narumq/tests/integration"
         },
         {
           "name": "TestMQTTIngressQoS1Handshake",
@@ -1024,6 +1032,10 @@
           "package": "narumq/internal/domain/delivery"
         },
         {
+          "name": "TestMQTTIngressPersistentOutboundQoSRecovery",
+          "package": "narumq/tests/integration"
+        },
+        {
           "name": "TestMQTTIngressQoS2Handshake",
           "package": "narumq/tests/integration"
         },
@@ -1049,6 +1061,10 @@
         {
           "name": "TestOutboundQoS2SuccessFailureAndResume",
           "package": "narumq/internal/domain/delivery"
+        },
+        {
+          "name": "TestMQTTIngressPersistentOutboundQoSRecovery",
+          "package": "narumq/tests/integration"
         },
         {
           "name": "TestMQTTIngressQoS2Handshake",

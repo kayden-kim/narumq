@@ -52,11 +52,23 @@ profile이며 cluster durability와는 별도 경계다.
   QoS 1 및 QoS 2의 경우 connection별 packet identifier allocator를 통해
   식별자를 할당하고 구독자의 PUBACK 또는 PUBREC/PUBREL/PUBCOMP 핸드셰이크를
   완료한다.
-- `internal/adapters/memory/sessionstore`는 비내구성 lifecycle map이고,
-  `internal/adapters/clock`은 공용 application clock port의 system 구현이다.
-  Message Expiry는 process-local queue와 retained state에서 지원하지만, disconnected
-  persistent offline queue를 보존하지 않는다. takeover, persistence·replication과 auth는
-  이 slice에서 지원하지 않는다. TLS transport는 listener 계약에 정의한 범위에서 지원한다.
+- 만료되지 않은 persistent session은 network connection이 종료되어도 process-local
+  delivery queue의 FIFO queued entry와 완료되지 않은 송신 QoS 1/2 상태를 보존한다.
+  새 connection은 `CONNACK`을 먼저 전송한 뒤 복구 packet을 전송해야 한다.
+- 복구된 QoS 1/2 `PUBLISH`는 저장된 Packet Identifier를 재사용하고 `DUP=1`로
+  전송한다. QoS 2가 PUBLISH 단계 뒤 `PUBREC`까지 완료된 상태는 같은 Identifier의
+  `PUBREL`로 재개한다. reconnect protocol version에 맞춰 packet을 다시 인코딩한다.
+- Message Expiry가 지난 queued entry와 PUBLISH-stage 송신 상태는 제거하고 전송하지
+  않는다. 이미 PUBLISH를 수신한 뒤 `PUBCOMP`를 기다리는 QoS 2 `PUBREL` 상태는
+  원래 publication deadline과 무관하게 복구한다.
+- `internal/adapters/memory/sessionstore`와 delivery queue의 상태는 process-local
+  memory에만 존재한다. process restart, replication, durable storage와 auth는
+  이 slice에서 지원하지 않는다. TLS transport는 listener 계약에 정의한 범위에서
+  지원한다.
+
+영속 session의 queued·in-flight delivery state는 clean reset 또는 Session Expiry가
+끝날 때만 제거한다. 정상적인 persistent disconnect에서는 session, route와 함께 delivery
+state를 유지한다.
 
 ## 1. Listener 계약
 
@@ -149,10 +161,21 @@ MQTT 3.1.1은 연결을 닫는다.
 ### 3.2 송신 QoS와 offline queue
 
 1. 전달 QoS는 publish QoS와 subscription granted QoS 중 낮은 값이어야 한다.
-2. process-local delivery queue entry는 Message Expiry deadline과 tenant quota를 적용해야 한다. 현재 slice는 connection 종료 시 queue를 제거하므로 disconnected persistent offline queue 자체를 보존하지 않는다.
+2. process-local delivery queue entry는 Message Expiry deadline과 현재 bounded
+   capacity를 적용해야 한다. 만료되지 않은 persistent session은 연결이 끊긴 동안에도
+   FIFO queued entry와 완료되지 않은 outbound QoS 1/2 state를 보존해야 한다.
 3. QoS 1 송신 상태는 PUBACK까지, QoS 2 송신 상태는 PUBCOMP까지 복구할 수 있어야 한다.
-4. 재접속 뒤 미완료 packet을 재전송할 때 MQTT 표준의 DUP 규칙을 적용해야 한다.
-5. expiry가 지난 message는 전달하지 않고 expired 사유로 집계해야 한다.
+   QoS 2에서 PUBLISH 뒤 PUBREC까지 성공한 상태는 PUBREL 전송 단계로 복구한다.
+4. 재접속 뒤 미완료 PUBLISH를 재전송할 때 저장된 Packet Identifier와 `DUP=1`을
+   사용한다. 복구된 PUBREL도 저장된 Packet Identifier를 사용하며, 새 connection의
+   MQTT protocol version으로 인코딩한다.
+5. queued entry 또는 PUBLISH-stage retransmission의 expiry가 지나면 상태에서 제거하고
+   전송하지 않는다. 만료로 제거된 상태는 `expired` 사유로 집계해야 하며, 구체적인
+   Metric 이름과 histogram bucket은 `SPEC-TBD-07`에서 확정한다. PUBREL 대기 상태는
+   PUBLISH가 이미 수신되었으므로 원래 publication deadline이 지나도 복구한다.
+6. `CONNACK`은 같은 reconnect에서 복구된 packet보다 먼저 wire에 기록되어야 한다.
+   복구된 outbound state는 Packet Identifier 오름차순으로 한 번만 재개한 뒤 새 queued
+   entry를 FIFO 순서로 처리한다.
 
 ## 4. Subscribe와 routing 입력
 
@@ -190,13 +213,14 @@ repository 하나에 보관하며 restart·replication·quorum durability를 제
   matching filter 중 RAP가 하나라도 켜져 있고 incoming RETAIN이 true일 때만 RETAIN을
   유지한다. `No Local`은 stored publisher session과 subscriber session이 같으면
   replay와 live delivery를 모두 제외한다.
-- retained replay의 QoS는 stored QoS와 granted QoS 중 작은 값이며, 현재 ingress와
-  writer profile은 QoS 0만 성공적으로 출력한다.
+- retained replay의 QoS는 stored QoS와 granted QoS 중 작은 값이며, ingress와 writer는
+  QoS 0·1·2의 outbound handshake를 적용한다.
 - Message Expiry는 bounded queue와 retained repository에서 지원한다. MQTT 5 outbound
   PUBLISH에는 현재 시각 기준 올림한 남은 초를 넣고, MQTT 3.1.1 outbound에는 expiry
-  property를 생략한다. tenant/ACL, durable storage, replication과 restart recovery는
-  이 slice의 범위가 아니다. retained repository capacity failure는 기존 value와 live
-  fan-out을 변경하지 않는다.
+  property를 생략한다. delivery queue의 queued·in-flight state는 process-local
+  persistent session 범위에서 reconnect까지 보존하지만 process restart, durable
+  storage와 replication은 이 slice의 범위가 아니다. retained repository capacity
+  failure는 기존 value와 live fan-out을 변경하지 않는다.
 ## 6. Will Message
 
 Will은 CONNECT의 인증·ACL·quota 검증을 통과한 뒤 session state에 등록해야 한다.
@@ -226,8 +250,9 @@ Will publish에도 tenant 격리, ACL, payload·rate quota, retained와 delivery
 
 현재 TCP adapter는 위 표의 packet·queue 상한을 적용해 oversize/malformed 입력,
 keepalive timeout, bounded control queue 포화와 blocked write timeout에서 연결을 닫는다.
-단일 노드 memory queue는 offline persistent delivery를 보존하지 않으므로 disconnected
-persistent session으로의 delivery 결과는 `ErrUnavailable`이다.
+memory delivery queue는 만료되지 않은 persistent session의 queued·in-flight delivery를
+reconnect까지 보존하며, clean start/session expiry와 expiry deadline에 도달한 state만
+제거한다. process restart와 replication 뒤 recovery는 이 slice의 범위가 아니다.
 
 ## 8. 수용 시험
 
@@ -243,8 +268,12 @@ persistent session으로의 delivery 결과는 `ErrUnavailable`이다.
 - 이 slice의 acceptance mapping은 `tests/integration/mqtt_ingress_test.go`의 MQTT 3.1.1/5.0
   CONNECT, QoS 0 fan-out, retained replace/delete, retained Message Expiry,
   SUBACK-before-replay, Retain Handling, No Local, Retain As Published, PINGRESP,
-  normal DISCONNECT, persistent Session Present, unsupported/malformed CONNECT와 QoS
-  negative ACK/close 시나리오다.
+  normal DISCONNECT, persistent Session Present, persistent offline delivery,
+  outbound QoS 1/2 recovery, unsupported/malformed CONNECT와 QoS negative ACK/close
+  시나리오다. `TestMQTTIngressPersistentOfflineDelivery`는 CONNACK-before-recovery,
+  FIFO, clean reset과 queued Message Expiry를 검증하고,
+  `TestMQTTIngressPersistentOutboundQoSRecovery`는 PUBLISH/PUBREL 단계 recovery와
+  Packet Identifier·DUP 규칙을 검증한다.
 - `MQTT-3.3.1-5`~`MQTT-3.3.1-13`, `MQTT-3.8.3-3`,
   `MQTT-3.8.4-3/4`는 tests/conformance/mqtt-compliance-v1.json에서 양 protocol
   version test와 source traceability comment를 함께 가져야 한다. `MQTT-3.3.2-5/6`는

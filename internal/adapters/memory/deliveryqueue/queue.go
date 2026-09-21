@@ -4,10 +4,12 @@ package deliveryqueue
 
 import (
 	"errors"
+	"sort"
 	"sync"
 	"time"
 
 	"narumq/internal/application/ports/deliveryqueue"
+	"narumq/internal/domain/mqtt"
 	"narumq/internal/domain/routing"
 )
 
@@ -16,39 +18,57 @@ var (
 	ErrInvalidCapacity = errors.New("delivery queue capacity must be positive")
 )
 
-// Queue stores independent FIFO item queues for registered sessions.
+// sessionState keeps queued FIFO deliveries and incomplete outbound exchanges
+// under one registered session boundary.
+type sessionState struct {
+	queued   []deliveryqueue.DeliveryDTO
+	outbound map[mqtt.PacketIdentifier]deliveryqueue.OutboundDTO
+}
+
+// Queue stores independent bounded delivery state for registered sessions.
 type Queue struct {
 	mu       sync.Mutex
 	capacity int
-	sessions map[routing.SessionID][]deliveryqueue.DeliveryDTO
+	sessions map[routing.SessionID]*sessionState
 }
 
-// New creates a queue with a fixed item capacity per session.
+// New creates a queue with an independent fixed capacity for each session's
+// queued entries and outbound exchanges.
 func New(capacity int) (*Queue, error) {
 	if capacity <= 0 {
 		return nil, ErrInvalidCapacity
 	}
 	return &Queue{
 		capacity: capacity,
-		sessions: make(map[routing.SessionID][]deliveryqueue.DeliveryDTO),
+		sessions: make(map[routing.SessionID]*sessionState),
 	}, nil
 }
 
-// Register makes sessionID available for nonblocking enqueue and drain.
-// Re-registering an existing session preserves its current FIFO contents.
+// Register makes sessionID available for nonblocking enqueue and recovery.
+// Re-registering an existing session preserves queued and outbound state.
 func (queue *Queue) Register(sessionID routing.SessionID) error {
 	if err := validateSessionID(sessionID); err != nil {
 		return err
 	}
+	if queue == nil {
+		return deliveryqueue.ErrUnavailable
+	}
 	queue.mu.Lock()
 	defer queue.mu.Unlock()
-	if _, exists := queue.sessions[sessionID]; !exists {
-		queue.sessions[sessionID] = nil
+	if state, exists := queue.sessions[sessionID]; exists {
+		if state.outbound == nil {
+			state.outbound = make(map[mqtt.PacketIdentifier]deliveryqueue.OutboundDTO)
+		}
+		return nil
+	}
+	queue.sessions[sessionID] = &sessionState{
+		outbound: make(map[mqtt.PacketIdentifier]deliveryqueue.OutboundDTO),
 	}
 	return nil
 }
 
-// Remove makes a session unavailable and discards its queued items.
+// Remove makes a session unavailable and discards all of its queued and
+// outbound delivery state.
 func (queue *Queue) Remove(sessionID routing.SessionID) {
 	if queue == nil {
 		return
@@ -89,44 +109,130 @@ func (queue *Queue) tryEnqueueBatchLocked(deliveries []deliveryqueue.DeliveryDTO
 	if err := validateSessionID(sessionID); err != nil {
 		return deliveryqueue.ErrUnavailable
 	}
-	for _, delivery := range deliveries[1:] {
-		if delivery.SessionID != sessionID {
+	for _, item := range deliveries[1:] {
+		if item.SessionID != sessionID {
 			return deliveryqueue.ErrUnavailable
 		}
-		if err := validateSessionID(delivery.SessionID); err != nil {
+		if err := validateSessionID(item.SessionID); err != nil {
 			return deliveryqueue.ErrUnavailable
 		}
 	}
-	items, exists := queue.sessions[sessionID]
+	state, exists := queue.sessions[sessionID]
 	if !exists {
 		return deliveryqueue.ErrUnavailable
 	}
-	items = purgeExpired(items, now)
-	queue.sessions[sessionID] = items
+	state.queued = purgeExpired(state.queued, now)
 	live := make([]deliveryqueue.DeliveryDTO, 0, len(deliveries))
-	for _, delivery := range deliveries {
-		if !delivery.Expired(now) {
-			live = append(live, delivery)
+	for _, item := range deliveries {
+		if !item.Expired(now) {
+			live = append(live, item)
 		}
 	}
 	if len(live) == 0 {
 		return nil
 	}
-	if len(live) > queue.capacity-len(items) {
+	if len(live) > queue.capacity-len(state.queued) {
 		return deliveryqueue.ErrFull
 	}
 	copied := make([]deliveryqueue.DeliveryDTO, len(live))
-	for index, delivery := range live {
-		delivery.Payload = cloneBytes(delivery.Payload)
-		copied[index] = delivery
+	for index, item := range live {
+		item.Payload = cloneBytes(item.Payload)
+		copied[index] = item
 	}
-	queue.sessions[sessionID] = append(items, copied...)
+	state.queued = append(state.queued, copied...)
 	return nil
 }
 
-// Drain returns a FIFO snapshot and clears the registered session queue. The
-// returned payload bytes are independent from the adapter's stored values.
-func (queue *Queue) Drain(sessionID routing.SessionID, now time.Time) ([]deliveryqueue.DeliveryDTO, error) {
+// Peek returns the live FIFO head without removing it. Expired entries before
+// the head are purged and the returned payload is independent of stored state.
+func (queue *Queue) Peek(sessionID routing.SessionID, now time.Time) (deliveryqueue.DeliveryDTO, bool, error) {
+	if queue == nil {
+		return deliveryqueue.DeliveryDTO{}, false, deliveryqueue.ErrUnavailable
+	}
+	if err := validateSessionID(sessionID); err != nil {
+		return deliveryqueue.DeliveryDTO{}, false, err
+	}
+	queue.mu.Lock()
+	defer queue.mu.Unlock()
+	state, exists := queue.sessions[sessionID]
+	if !exists {
+		return deliveryqueue.DeliveryDTO{}, false, deliveryqueue.ErrUnavailable
+	}
+	state.queued = purgeExpired(state.queued, now)
+	if len(state.queued) == 0 {
+		return deliveryqueue.DeliveryDTO{}, false, deliveryqueue.ErrUnavailable
+	}
+	head := state.queued[0]
+	head.Payload = cloneBytes(head.Payload)
+	return head, true, nil
+}
+
+// CompleteHead removes the current FIFO head after a successful QoS 0 write.
+func (queue *Queue) CompleteHead(sessionID routing.SessionID) error {
+	if queue == nil {
+		return deliveryqueue.ErrUnavailable
+	}
+	if err := validateSessionID(sessionID); err != nil {
+		return err
+	}
+	queue.mu.Lock()
+	defer queue.mu.Unlock()
+	state, exists := queue.sessions[sessionID]
+	if !exists || len(state.queued) == 0 {
+		return deliveryqueue.ErrUnavailable
+	}
+	clear(state.queued[:1])
+	state.queued = state.queued[1:]
+	return nil
+}
+
+// PromoteHead atomically removes the live FIFO head and stores its outbound
+// QoS state. The head remains available when promotion cannot proceed.
+func (queue *Queue) PromoteHead(outbound deliveryqueue.OutboundDTO, now time.Time) error {
+	if queue == nil {
+		return deliveryqueue.ErrUnavailable
+	}
+	sessionID := outbound.SessionID
+	if err := validateSessionID(sessionID); err != nil {
+		return err
+	}
+	if outbound.PacketID == 0 {
+		return deliveryqueue.ErrPacketIDConflict
+	}
+	queue.mu.Lock()
+	defer queue.mu.Unlock()
+	state, exists := queue.sessions[sessionID]
+	if !exists {
+		return deliveryqueue.ErrUnavailable
+	}
+	if len(state.queued) == 0 {
+		return deliveryqueue.ErrUnavailable
+	}
+	head := state.queued[0]
+	if head.Expired(now) {
+		clear(state.queued[:1])
+		state.queued = state.queued[1:]
+		return deliveryqueue.ErrExpired
+	}
+	if _, exists := state.outbound[outbound.PacketID]; exists {
+		return deliveryqueue.ErrPacketIDConflict
+	}
+	if len(state.outbound) >= queue.capacity {
+		return deliveryqueue.ErrFull
+	}
+	if head.SessionID != sessionID {
+		return deliveryqueue.ErrUnavailable
+	}
+	clear(state.queued[:1])
+	state.queued = state.queued[1:]
+	state.outbound[outbound.PacketID] = outbound
+	return nil
+}
+
+// ListOutbound returns incomplete outbound state sorted by Packet Identifier.
+// delivery.Outbound is immutable by value, so its private payload is not
+// cloned for each lookup.
+func (queue *Queue) ListOutbound(sessionID routing.SessionID) ([]deliveryqueue.OutboundDTO, error) {
 	if queue == nil {
 		return nil, deliveryqueue.ErrUnavailable
 	}
@@ -135,19 +241,68 @@ func (queue *Queue) Drain(sessionID routing.SessionID, now time.Time) ([]deliver
 	}
 	queue.mu.Lock()
 	defer queue.mu.Unlock()
-	items, exists := queue.sessions[sessionID]
+	state, exists := queue.sessions[sessionID]
 	if !exists {
 		return nil, deliveryqueue.ErrUnavailable
 	}
-	items = purgeExpired(items, now)
-	queue.sessions[sessionID] = nil
-	drained := make([]deliveryqueue.DeliveryDTO, len(items))
-	for index, item := range items {
-		drained[index] = item
-		drained[index].Payload = cloneBytes(item.Payload)
+	outbound := make([]deliveryqueue.OutboundDTO, 0, len(state.outbound))
+	for _, item := range state.outbound {
+		outbound = append(outbound, item)
 	}
-	return drained, nil
+	sort.Slice(outbound, func(left, right int) bool {
+		return outbound[left].PacketID < outbound[right].PacketID
+	})
+	return outbound, nil
 }
+
+// ReplaceOutbound applies an acknowledgement transition to an existing state.
+func (queue *Queue) ReplaceOutbound(outbound deliveryqueue.OutboundDTO) error {
+	if queue == nil {
+		return deliveryqueue.ErrUnavailable
+	}
+	if err := validateSessionID(outbound.SessionID); err != nil {
+		return err
+	}
+	if outbound.PacketID == 0 {
+		return deliveryqueue.ErrUnavailable
+	}
+	queue.mu.Lock()
+	defer queue.mu.Unlock()
+	state, exists := queue.sessions[outbound.SessionID]
+	if !exists {
+		return deliveryqueue.ErrUnavailable
+	}
+	if _, exists := state.outbound[outbound.PacketID]; !exists {
+		return deliveryqueue.ErrUnavailable
+	}
+	state.outbound[outbound.PacketID] = outbound
+	return nil
+}
+
+// CompleteOutbound removes one completed outbound exchange.
+func (queue *Queue) CompleteOutbound(sessionID routing.SessionID, packetID mqtt.PacketIdentifier) error {
+	if queue == nil {
+		return deliveryqueue.ErrUnavailable
+	}
+	if err := validateSessionID(sessionID); err != nil {
+		return err
+	}
+	if packetID == 0 {
+		return deliveryqueue.ErrUnavailable
+	}
+	queue.mu.Lock()
+	defer queue.mu.Unlock()
+	state, exists := queue.sessions[sessionID]
+	if !exists {
+		return deliveryqueue.ErrUnavailable
+	}
+	if _, exists := state.outbound[packetID]; !exists {
+		return deliveryqueue.ErrUnavailable
+	}
+	delete(state.outbound, packetID)
+	return nil
+}
+
 func purgeExpired(items []deliveryqueue.DeliveryDTO, now time.Time) []deliveryqueue.DeliveryDTO {
 	live := 0
 	for _, item := range items {
