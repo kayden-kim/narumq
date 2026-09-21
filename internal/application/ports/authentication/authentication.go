@@ -14,6 +14,19 @@ type Credential struct {
 	Token []byte
 }
 
+// ClientCertificateDTO carries verified leaf identity fields copied at the adapter boundary.
+type ClientCertificateDTO struct {
+	CommonName     string
+	DNSNames       []string
+	EmailAddresses []string
+	NotAfter       time.Time
+}
+
+// ClientCertificateAuthenticationProvider verifies a client certificate identity binding.
+type ClientCertificateAuthenticationProvider interface {
+	AuthenticateClientCertificate(ctx context.Context, certificate ClientCertificateDTO) (Result, error)
+}
+
 // Result carries verified identity binding data without exposing provider types.
 type Result struct {
 	TenantID         tenancy.TenantID

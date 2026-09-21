@@ -66,7 +66,6 @@ func runWithContext(ctx context.Context, args []string, logger *slog.Logger) err
 	tlsCA := flagSet.String("tls-ca", "", "client CA certificate PEM file")
 	tlsClientAuth := flagSet.String("tls-client-auth", "none", "client authentication policy (none, request, require)")
 	tlsMinVersion := flagSet.String("tls-min-version", "1.2", "minimum TLS version (1.2, 1.3)")
-	tlsVerifyClientID := flagSet.Bool("tls-verify-client-id", false, "enforce Client ID matches client certificate identity")
 	maxPacketSize := flagSet.Int("max-packet-size", 1048576, "maximum MQTT Remaining Length")
 	connectTimeout := flagSet.Duration("connect-timeout", 10*time.Second, "CONNECT handshake timeout")
 	writeTimeout := flagSet.Duration("write-timeout", 5*time.Second, "socket write timeout")
@@ -117,21 +116,37 @@ func runWithContext(ctx context.Context, args []string, logger *slog.Logger) err
 	systemClock := clock.SystemClock{}
 	var (
 		securityBundle *SecurityBundle
-		authProvider   *authenticationadapter.JWKSAuthenticationProvider
+		jwtProvider    *authenticationadapter.JWKSAuthenticationProvider
+		mtlsProvider   *authenticationadapter.MTLSAuthenticationProvider
 	)
 	if *securityConfigFile != "" {
 		bundle, err := loadSecurityConfigFile(*securityConfigFile)
 		if err != nil {
 			return fmt.Errorf("load security config: %w", err)
 		}
-		bundle.AuthConfig.HTTPClient = &http.Client{Timeout: bundle.AuthConfig.HTTPTimeout}
-		bundle.AuthConfig.Clock = systemClock
-		provider, err := authenticationadapter.NewJWKSAuthenticationProvider(bundle.AuthConfig)
-		if err != nil {
-			return fmt.Errorf("create JWKS authentication provider: %w", err)
-		}
 		securityBundle = bundle
-		authProvider = provider
+		if bundle.JWTConfig != nil {
+			jwtConfig := *bundle.JWTConfig
+			jwtConfig.HTTPClient = &http.Client{Timeout: jwtConfig.HTTPTimeout}
+			jwtConfig.Clock = systemClock
+			provider, err := authenticationadapter.NewJWKSAuthenticationProvider(jwtConfig)
+			if err != nil {
+				return fmt.Errorf("create JWKS authentication provider: %w", err)
+			}
+			jwtProvider = provider
+		}
+		if len(bundle.MTLSBindings) > 0 {
+			provider, err := authenticationadapter.NewMTLSAuthenticationProvider(systemClock, bundle.MTLSBindings)
+			if err != nil {
+				return fmt.Errorf("create mTLS authentication provider: %w", err)
+			}
+			mtlsProvider = provider
+		}
+	}
+	if *tlsListen != "" {
+		if err := validateTLSAuthenticationBindings(tlsadapter.ClientAuthMode(*tlsClientAuth), securityBundle); err != nil {
+			return err
+		}
 	}
 	var (
 		listeners          []net.Listener
@@ -159,12 +174,11 @@ func runWithContext(ctx context.Context, args []string, logger *slog.Logger) err
 
 	if *tlsListen != "" {
 		tlsConfig, err := tlsadapter.BuildTLSConfig(tlsadapter.Config{
-			CertFile:       *tlsCert,
-			KeyFile:        *tlsKey,
-			CAFile:         *tlsCA,
-			ClientAuth:     tlsadapter.ClientAuthMode(*tlsClientAuth),
-			MinVersion:     *tlsMinVersion,
-			VerifyClientID: *tlsVerifyClientID,
+			CertFile:   *tlsCert,
+			KeyFile:    *tlsKey,
+			CAFile:     *tlsCA,
+			ClientAuth: tlsadapter.ClientAuthMode(*tlsClientAuth),
+			MinVersion: *tlsMinVersion,
 		})
 		if err != nil {
 			return fmt.Errorf("configure TLS: %w", err)
@@ -211,7 +225,7 @@ func runWithContext(ctx context.Context, args []string, logger *slog.Logger) err
 	subscribeOpts = append(subscribeOpts, subscribe.WithMetrics(metricsRegistry))
 	publishOpts = append(publishOpts, publish.WithMetrics(metricsRegistry))
 	if securityBundle != nil {
-		connectOpts = append(connectOpts, connect.WithSecurity(authProvider, securityBundle.Policy))
+		connectOpts = append(connectOpts, connect.WithSecurity(jwtProvider, mtlsProvider, securityBundle.Policy))
 		subscribeOpts = append(subscribeOpts, subscribe.WithPolicy(securityBundle.Policy))
 		publishOpts = append(publishOpts, publish.WithPolicy(securityBundle.Policy))
 		tcpConfigPolicy = securityBundle.Policy
@@ -242,15 +256,14 @@ func runWithContext(ctx context.Context, args []string, logger *slog.Logger) err
 		server, err = tcpadapter.NewServer(
 			listeners[0],
 			tcpadapter.Config{
-				Clock:                  systemClock,
-				MaxPacketSize:          *maxPacketSize,
-				ConnectTimeout:         *connectTimeout,
-				WriteTimeout:           *writeTimeout,
-				ControlQueueCapacity:   *controlQueueCapacity,
-				VerifyClientID:         *tlsVerifyClientID,
-				ClientIdentityVerifier: tlsadapter.VerifyConnClientIdentity,
-				Policy:                 tcpConfigPolicy,
-				Metrics:                metricsRegistry,
+				Clock:                      systemClock,
+				MaxPacketSize:              *maxPacketSize,
+				ConnectTimeout:             *connectTimeout,
+				WriteTimeout:               *writeTimeout,
+				ControlQueueCapacity:       *controlQueueCapacity,
+				ClientCertificateExtractor: tlsadapter.ExtractVerifiedClientCertificateDTO,
+				Policy:                     tcpConfigPolicy,
+				Metrics:                    metricsRegistry,
 			},
 			decoder,
 			encoder,
@@ -482,6 +495,31 @@ func validateLoopbackListenAddress(address string) error {
 
 func validateManagementListenAddress(address string) error {
 	return validateLiteralLoopbackAddress("-http-listen", address)
+}
+
+func validateTLSAuthenticationBindings(clientAuth tlsadapter.ClientAuthMode, bundle *SecurityBundle) error {
+	bindingCount := 0
+	if bundle != nil {
+		bindingCount = len(bundle.MTLSBindings)
+	}
+	switch clientAuth {
+	case "", tlsadapter.ClientAuthNone:
+		if bindingCount > 0 {
+			return errors.New("-tls-client-auth none cannot be used with mTLS identity bindings")
+		}
+	case tlsadapter.ClientAuthRequest:
+		if bindingCount == 0 {
+			return fmt.Errorf("-tls-client-auth %s requires at least one mTLS identity binding", clientAuth)
+		}
+		if bundle == nil || bundle.JWTConfig == nil {
+			return errors.New("-tls-client-auth request requires JWT configuration when mTLS identities are enabled")
+		}
+	case tlsadapter.ClientAuthRequire:
+		if bindingCount == 0 {
+			return fmt.Errorf("-tls-client-auth %s requires at least one mTLS identity binding", clientAuth)
+		}
+	}
+	return nil
 }
 
 func validateLiteralLoopbackAddress(flagName, address string) error {

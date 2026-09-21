@@ -18,6 +18,7 @@ import (
 	"testing"
 	"time"
 
+	"narumq/internal/adapters/authentication"
 	"narumq/internal/adapters/clock"
 	"narumq/internal/adapters/memory/deliveryqueue"
 	memoryretained "narumq/internal/adapters/memory/retained"
@@ -29,6 +30,8 @@ import (
 	"narumq/internal/application/subscribe"
 	"narumq/internal/domain/mqtt"
 	"narumq/internal/domain/routing"
+	"narumq/internal/domain/security"
+	"narumq/internal/domain/tenancy"
 )
 
 type testCert struct {
@@ -167,12 +170,12 @@ func generateIntegrationClientCert(t *testing.T, ca testCert, commonName string,
 }
 
 type tlsFixtureOptions struct {
-	ClientAuth     tlsadapter.ClientAuthMode
-	CAFile         string
-	MinVersion     string
-	CipherSuites   []string
-	VerifyClientID bool
-	DualTCP        bool
+	ClientAuth   tlsadapter.ClientAuthMode
+	CAFile       string
+	MinVersion   string
+	CipherSuites []string
+	MTLSIdentity string
+	DualTCP      bool
 }
 
 type tlsFixture struct {
@@ -220,13 +223,12 @@ func newTLSFixture(t *testing.T, opts tlsFixtureOptions) *tlsFixture {
 	}
 
 	tlsCfg, err := tlsadapter.BuildTLSConfig(tlsadapter.Config{
-		CertFile:       certPath,
-		KeyFile:        keyPath,
-		CAFile:         caPath,
-		ClientAuth:     opts.ClientAuth,
-		MinVersion:     minVer,
-		CipherSuites:   opts.CipherSuites,
-		VerifyClientID: opts.VerifyClientID,
+		CertFile:     certPath,
+		KeyFile:      keyPath,
+		CAFile:       caPath,
+		ClientAuth:   opts.ClientAuth,
+		MinVersion:   minVer,
+		CipherSuites: opts.CipherSuites,
 	})
 	if err != nil {
 		t.Fatalf("build TLS config: %v", err)
@@ -267,7 +269,27 @@ func newTLSFixture(t *testing.T, opts tlsFixtureOptions) *tlsFixture {
 	repository := sessionstore.New()
 	willBridge := tcpadapter.NewWillBridge()
 	systemClock := clock.SystemClock{}
-	connections, err := connect.New(systemClock, repository, deliveries, routes, clock.SystemScheduler{}, willBridge)
+	var connectOpts []connect.Option
+	if opts.MTLSIdentity != "" {
+		tenantID, err := tenancy.NewTenantID("tenant-a")
+		if err != nil {
+			t.Fatalf("create mTLS tenant ID: %v", err)
+		}
+		mtlsProvider, err := authentication.NewMTLSAuthenticationProvider(systemClock, []authentication.ClientCertificateIdentityBinding{{
+			Kind:             authentication.ClientCertificateIdentityKindCommonName,
+			Value:            opts.MTLSIdentity,
+			TenantID:         tenantID,
+			Subject:          opts.MTLSIdentity,
+			CredentialID:     opts.MTLSIdentity + "-cert",
+			AllowedClientIDs: []string{opts.MTLSIdentity},
+			Roles:            []security.Role{security.Role(opts.MTLSIdentity)},
+		}})
+		if err != nil {
+			t.Fatalf("create mTLS provider: %v", err)
+		}
+		connectOpts = append(connectOpts, connect.WithSecurity(nil, mtlsProvider, security.Policy{}))
+	}
+	connections, err := connect.New(systemClock, repository, deliveries, routes, clock.SystemScheduler{}, willBridge, connectOpts...)
 	if err != nil {
 		tlsListener.Close()
 		if tcpListener != nil {
@@ -316,13 +338,12 @@ func newTLSFixture(t *testing.T, opts tlsFixtureOptions) *tlsFixture {
 	server, err := tcpadapter.NewServer(
 		primaryListener,
 		tcpadapter.Config{
-			MaxPacketSize:          1048576,
-			Clock:                  systemClock,
-			ConnectTimeout:         time.Second,
-			WriteTimeout:           time.Second,
-			ControlQueueCapacity:   16,
-			VerifyClientID:         opts.VerifyClientID,
-			ClientIdentityVerifier: tlsadapter.VerifyConnClientIdentity,
+			MaxPacketSize:              1048576,
+			Clock:                      systemClock,
+			ConnectTimeout:             time.Second,
+			WriteTimeout:               time.Second,
+			ControlQueueCapacity:       16,
+			ClientCertificateExtractor: tlsadapter.ExtractVerifiedClientCertificateDTO,
 		},
 		decoder,
 		encoder,
@@ -528,10 +549,12 @@ func TestMQTTTLS_RejectInsecureTLSVersion(t *testing.T) {
 }
 
 // TestMQTTTLS_mTLS_Success verifies that a client presenting a valid X.509 certificate
-// signed by the trusted CA successfully authenticates and exchanges MQTT messages ([SEC-03]).
+// signed by the trusted CA is mapped to its configured mTLS identity and authenticates
+// successfully ([SEC-03]).
 func TestMQTTTLS_mTLS_Success(t *testing.T) {
 	fixture := newTLSFixture(t, tlsFixtureOptions{
-		ClientAuth: tlsadapter.ClientAuthRequire,
+		ClientAuth:   tlsadapter.ClientAuthRequire,
+		MTLSIdentity: "sensor-client-01",
 	})
 	defer fixture.close(t)
 
@@ -627,19 +650,17 @@ func TestMQTTTLS_mTLS_ExpiredCert_Rejected(t *testing.T) {
 	}
 }
 
-// TestMQTTTLS_mTLS_ClientIDMismatch_Rejected verifies that when -tls-verify-client-id
-// is enabled, connecting with a Client ID different from the client certificate CN
-// is rejected with a version-specific CONNACK failure code ([SEC-04]).
-func TestMQTTTLS_mTLS_ClientIDMismatch_Rejected(t *testing.T) {
+// TestMQTTTLS_mTLS_ClientIDBinding_Rejected verifies that a trusted certificate
+// is authenticated only for its configured Client ID ([SEC-04]).
+func TestMQTTTLS_mTLS_ClientIDBinding_Rejected(t *testing.T) {
+	certCN := "legit-device-007"
 	fixture := newTLSFixture(t, tlsFixtureOptions{
-		ClientAuth:     tlsadapter.ClientAuthRequire,
-		VerifyClientID: true,
+		ClientAuth:   tlsadapter.ClientAuthRequire,
+		MTLSIdentity: certCN,
 	})
 	defer fixture.close(t)
 
-	certCN := "legit-device-007"
 	clientCert := generateIntegrationClientCert(t, fixture.ca, certCN, false)
-
 	t.Run("MQTT 5 mismatch rejected with 0x87", func(t *testing.T) {
 		conn := fixture.dialTLS(t, &clientCert, nil)
 		defer conn.Close()

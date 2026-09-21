@@ -11,15 +11,18 @@
 | 관련 Contract | [MQTT client compatibility v1](../contracts/mqtt-client-compatibility-v1.md) |
 | 해설 | [MQTT 전달 보장과 QoS·Session·Will protocol 흐름](../explainers/mqtt-delivery-guarantees-and-protocol-flows.md) |
 
-## 현재 구현 상태: Phase 1 단일 노드 QoS 1/2 delivery·retained·will slice
+## 현재 구현 상태: Phase 1 단일 노드 QoS 1/2 delivery·retained·will·authentication slice
 
 현재 구현은 MQTT 3.1.1/5.0 client가 `CONNECT → SUBSCRIBE/PUBLISH → PING/DISCONNECT`를
 실행할 수 있는 단일 노드 runtime이다. 기본 startup은 `-security-config` secure mode로
-JWT/JWKS authentication과 tenant-aware ACL을 적용한다. 인증과 tenant 경계가 없는
-plaintext ingress는 `-allow-insecure-anonymous-mqtt`를 명시한 literal loopback
-`-tcp-listen` development·benchmark 예외에서만 허용하며, TLS listener에는 이 예외를
-적용할 수 없다. Retained runtime은 단일 process 안의 bounded development profile이며
-cluster durability와는 별도 경계다.
+JWT/JWKS 또는 verified client certificate mTLS authentication과 tenant-aware ACL을
+적용한다. mTLS는 TLS handshake가 검증한 client certificate의 `commonName`, `dnsSan`,
+`emailSan` selector를 strict identity binding으로 변환하며, configured Client ID가
+binding의 허용 목록과 일치해야 한다. 인증과 tenant 경계가 없는 plaintext ingress는
+`-allow-insecure-anonymous-mqtt`를 명시한 literal loopback `-tcp-listen`
+development·benchmark 예외에서만 허용하며, TLS listener에는 이 예외를 적용할 수 없다.
+Retained runtime은 단일 process 안의 bounded development profile이며 cluster durability와는
+별도 경계다.
 
 - `internal/domain/mqtt`는 CONNECT/CONNACK, QoS 0·1·2 PUBLISH, PUBACK/PUBREC/PUBREL/PUBCOMP,
   SUBSCRIBE 계열과 PINGREQ/PINGRESP/DISCONNECT를 decode·encode한다. PING packet은
@@ -64,9 +67,9 @@ cluster durability와는 별도 경계다.
   않는다. 이미 PUBLISH를 수신한 뒤 `PUBCOMP`를 기다리는 QoS 2 `PUBREL` 상태는
   원래 publication deadline과 무관하게 복구한다.
 - `internal/adapters/memory/sessionstore`와 delivery queue의 상태는 process-local
-  memory에만 존재한다. process restart, replication, durable storage와 auth는
-  이 slice에서 지원하지 않는다. TLS transport는 listener 계약에 정의한 범위에서
-  지원한다.
+  memory에만 존재한다. process restart, replication, durable storage는 이 slice에서
+  지원하지 않는다. TLS transport와 mTLS client authentication은 listener 계약에 정의한
+  범위에서 지원한다.
 
 영속 session의 queued·in-flight delivery state는 clean reset 또는 Session Expiry가
 끝날 때만 제거한다. 정상적인 persistent disconnect에서는 session, route와 함께 delivery
@@ -83,8 +86,10 @@ state를 유지한다.
    loopback만 허용한다. 이 listener는 `-allow-insecure-anonymous-mqtt`를 명시한 경우에만
    anonymous MQTT를 허용한다. TLS listener는 `-tls-listen`으로 별도 활성화하며,
    TLS 1.2 이상, 허용된 AEAD cipher suite와 설정된 서버 인증서를 적용한다.
-   TLS listener는 외부 interface에 bind할 수 있지만, mTLS가 설정되면 trust anchor와
-   클라이언트 인증서 유효성 및 identity binding을 검증해야 한다.
+   `request` 또는 `require` client authentication을 선택하면 strict security config의
+   mTLS identity binding이 필요하다. TLS adapter는 verified chain의 leaf certificate에서
+   application `ClientCertificateDTO`를 만들고, authentication adapter가 exact
+   Common Name, DNS SAN 또는 email SAN match를 수행한다.
 7. `-tcp-listen`과 `-tls-listen`은 하나의 `tcp.Server`에 함께 등록할 수 있고,
    listener별 transport 보안 정책을 유지하면서 동일한 session·route registry를 공유한다.
 8. CONNECT 뒤에는 negotiated version으로 packet을 decode하고, 모든 socket write는 한
@@ -110,6 +115,12 @@ flowchart TD
 ```
 
 각 단계가 실패하면 이후 단계의 durable state를 만들어서는 안 된다. ownership을 얻은 뒤 응답 전 실패하면 재시도 시 같은 session 상태로 수렴해야 한다.
+
+인증 단계는 configured verified client certificate가 있으면 mTLS provider만 사용한다.
+그 CONNECT에 Username/Password가 함께 있으면 dual credential 오류로 거절하며 JWT로
+fallback하지 않는다. certificate가 없으면 JWT provider가 configured된 경우에만
+Username/Password 양쪽 flag와 token을 요구한다. 인증·Client ID binding·Will ACL이
+성공하기 전에는 session, route, queue를 변경하지 않는다.
 
 ### 2.1 Protocol version
 
@@ -277,6 +288,10 @@ reconnect까지 보존하며, clean start/session expiry와 expiry deadline에 �
   FIFO, clean reset과 queued Message Expiry를 검증하고,
   `TestMQTTIngressPersistentOutboundQoSRecovery`는 PUBLISH/PUBREL 단계 recovery와
   Packet Identifier·DUP 규칙을 검증한다.
+- `tests/integration/mqtt_tls_test.go`는 TLS 1.2/1.3, trusted/untrusted/expired client
+  certificate, mTLS identity의 exact Client ID binding과 MQTT 5 wire CONNACK 결과를
+  실제 socket에서 검증한다. `cmd/narumq` TLS flag test는 client-auth mode와 mTLS
+  identity binding의 strict configuration 조합을 검증한다.
 - `MQTT-3.3.1-5`~`MQTT-3.3.1-13`, `MQTT-3.8.3-3`,
   `MQTT-3.8.4-3/4`는 tests/conformance/mqtt-compliance-v1.json에서 양 protocol
   version test와 source traceability comment를 함께 가져야 한다. `MQTT-3.3.2-5/6`는

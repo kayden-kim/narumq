@@ -297,6 +297,42 @@ func TestRunWithContextTLSFlags(t *testing.T) {
 	if err := os.WriteFile(cfgFile, []byte(validSecurityJSON), 0600); err != nil {
 		t.Fatal(err)
 	}
+	mtlsCfgFile := filepath.Join(tempDir, "valid-mtls-sec.json")
+	if err := os.WriteFile(mtlsCfgFile, []byte(validMTLSSecurityJSON), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	t.Run("request requires mTLS identity bindings", func(t *testing.T) {
+		err := runWithContext(context.Background(), []string{
+			"-security-config", cfgFile,
+			"-tls-listen", "127.0.0.1:0",
+			"-tls-client-auth", "request",
+		}, logger)
+		if err == nil || !strings.Contains(err.Error(), "requires at least one mTLS identity binding") {
+			t.Fatalf("expected mTLS binding requirement error, got %v", err)
+		}
+	})
+
+	t.Run("none rejects mTLS identity bindings", func(t *testing.T) {
+		err := runWithContext(context.Background(), []string{
+			"-security-config", mtlsCfgFile,
+			"-tls-listen", "127.0.0.1:0",
+		}, logger)
+		if err == nil || !strings.Contains(err.Error(), "cannot be used with mTLS identity bindings") {
+			t.Fatalf("expected mTLS client-auth conflict, got %v", err)
+		}
+	})
+
+	t.Run("request requires JWT fallback for certificate-less clients", func(t *testing.T) {
+		err := runWithContext(context.Background(), []string{
+			"-security-config", mtlsCfgFile,
+			"-tls-listen", "127.0.0.1:0",
+			"-tls-client-auth", "request",
+		}, logger)
+		if err == nil || !strings.Contains(err.Error(), "requires JWT configuration") {
+			t.Fatalf("expected JWT fallback requirement error, got %v", err)
+		}
+	})
 
 	t.Run("missing cert with tls-listen", func(t *testing.T) {
 		err := runWithContext(context.Background(), []string{

@@ -5,7 +5,7 @@
 | 항목 | 값 |
 | --- | --- |
 | 상태 | Active (Phase 1 security and tenant isolation slice) |
-| 적용 범위 | Phase 1에서 구현하는 TEN-01~TEN-05, SEC-02, SEC-04, SEC-06과 SEC-08의 JWKS fail-closed 동작. Metrics, mTLS principal mapping, quota·blocklist, management API, audit sink과 기존 연결 재인증은 후속 범위다. |
+| 적용 범위 | Phase 1에서 구현하는 TEN-01~TEN-05, SEC-02~SEC-04, SEC-06과 SEC-08의 JWKS fail-closed 동작. quota·blocklist, management API, audit sink과 기존 연결 재인증은 후속 범위다. Metrics는 인증 성공·실패와 session gauge를 포함한 현재 구현 범위만 다루며, 상세 observability 정책은 후속 범위다. |
 | 근거 | [PRD 9.3절, 9.4절과 11.4절](../requirements/PRD.md), [RFC 8725](https://www.rfc-editor.org/rfc/rfc8725.html) |
 | 관련 spec | [MQTT protocol과 session](mqtt-protocol-and-session.md), [Management API](management-api-and-observability.md) |
 | 관련 Architecture | [Security boundaries](../architectures/security-boundaries.md), [System overview](../architectures/system-overview.md) |
@@ -32,7 +32,7 @@ client가 username, token claim, MQTT property 또는 topic으로 제출한 `ten
 flowchart TD
     A["TLS listener"] --> B["TLS version·cipher·server certificate"]
     B --> C["선택한 인증 방식"]
-    C --> D["JWT/JWKS, mTLS 또는 password 검증"]
+    C["선택한 인증 방식"] --> D["JWT/JWKS 또는 검증된 client certificate"]
     D --> E["tenant·subject·clientId binding"]
     E --> F["blocklist와 connection quota"]
     F --> G["default-deny ACL 준비"]
@@ -48,6 +48,12 @@ flowchart TD
 - mTLS는 configured trust anchor, 유효 기간, key usage와 identity mapping을 모두 검증해야 한다.
 - 신뢰하지 않는 CA, 만료·폐기 인증서 또는 identity 불일치는 거절해야 한다.
 - node 간 연결은 별도 trust domain의 mTLS와 member allowlist를 모두 통과해야 한다.
+- MQTT client mTLS의 verified certificate는 `commonName`, `dnsSan`, `emailSan` selector 중 설정된
+  하나와 case-sensitive exact match되어 하나의 static binding을 선택해야 한다. zero match는
+  unmapped, multiple match는 ambiguous로 fail-closed한다.
+- TLS handshake가 trust chain, validity와 client-auth EKU를 확인하고, application authentication
+  adapter가 certificate identity를 tenant·subject·credential·allowed Client ID·roles로 변환한다.
+  인증서 원문과 chain은 application/domain 경계로 넘기지 않는다.
 
 ### 2.2 JWT와 JWKS
 
@@ -64,11 +70,38 @@ JWKS cache는 `fetchedAt`, TTL 만료 시각과 마지막 refresh 시각을 함�
 
 ### 2.3 CONNECT credential과 strict security configuration
 
-이 slice에서 MQTT CONNECT는 `HasUsername=true`와 `HasPassword=true`를 모두 요구한다. Username은 비어 있어도 되며 identity로 사용하지 않고, 로그·Metric·audit에 기록하지 않는다. Password에는 하나의 UTF-8 compact JWT만 넣는다. credential, Client ID binding 또는 Will ACL이 실패하면 MQTT 3.1.1 CONNACK `0x05`, MQTT 5 CONNACK `0x87`을 반환하고 연결을 닫는다. 실패 시 session, timer, route, queue, retained message와 Will을 변경하지 않는다.
+MQTT CONNECT는 configured authentication method 중 정확히 하나를 선택한다.
 
-MQTT listener(`-tcp-listen` 또는 `-tls-listen`)를 여는 Broker 시작에는 `-security-config <path>`가 필수다. 파일은 알 수 없는 field와 두 번째 JSON value를 거절하는 strict decoder로 한 JSON value만 읽는다. duration은 양수인 Go duration string이어야 한다. 이 설정의 decode와 JWT/JWKS provider 생성은 listener socket을 열기 전에 끝나야 하며, 누락·충돌·오류가 있으면 시작을 실패시킨다.
+- verified client certificate가 있으면 mTLS를 선택하고 MQTT `Username`과 `Password` flag를 모두
+  보내지 않아야 한다. mTLS provider는 certificate selector를 static binding에 대조해 tenant,
+  subject, credential ID, allowed Client IDs와 roles를 결정한다. 인증서가 unmapped, ambiguous
+  또는 application-level `NotAfter` 만료이면 JWT로 fallback하지 않고 거절한다.
+- verified client certificate가 없고 JWT provider가 있으면 `HasUsername=true`와
+  `HasPassword=true`를 모두 보내야 한다. Username은 비어 있어도 되며 identity로 사용하지 않고,
+  Password에는 하나의 UTF-8 compact JWT만 넣는다.
+- mTLS와 JWT credential을 함께 제출하면 거절한다. 두 방식의 identity를 합치거나 우선순위를
+  추론하지 않는다.
+- provider가 하나도 없는 경우에만 개발용 anonymous CONNECT를 허용한다.
 
-유일한 개발·benchmark 예외는 `-tcp-listen`과 `-allow-insecure-anonymous-mqtt`를 함께 사용하고 `-tls-listen`을 비워 둔 경우다. `-tcp-listen`은 literal `127.0.0.0/8` 또는 `::1` loopback이어야 하며, `-security-config`와 예외 flag를 함께 사용할 수 없다. MQTT listener 없이 예외 flag만 주거나 TLS listener와 함께 주는 경우도 거절한다. 이 예외는 production security mode가 아니며 Phase 1 보안 완료 증거로 사용할 수 없다. MQTT listener가 없는 management-only 실행에는 `-security-config`를 요구하지 않는다.
+credential, certificate identity, Client ID binding 또는 Will ACL이 실패하면 MQTT 3.1.1 CONNACK
+`0x05`, MQTT 5 CONNACK `0x87`을 반환하고 연결을 닫는다. 실패 시 session, timer, route,
+queue, retained message와 Will을 변경하지 않는다.
+
+TLS listener(`-tcp-listen` 또는 `-tls-listen`)를 여는 Broker 시작에는 `-security-config <path>`가
+필수다. 파일은 알 수 없는 field와 두 번째 JSON value를 거절하는 strict decoder로 한 JSON value만
+읽는다. duration은 양수인 Go duration string이어야 한다. 이 설정의 decode와 JWT/JWKS·mTLS
+provider 생성은 listener socket을 열기 전에 끝나야 하며, 누락·충돌·오류가 있으면 시작을
+실패시킨다. TLS listener의 `request|require` client authentication은 최소 하나의
+`mtlsIdentities` binding을 요구하고, binding이 있으면 `client-auth none`을 사용할 수 없다.
+`request`는 JWT provider가 함께 configured된 경우에만 certificate 없는 client를 허용하며,
+`require`는 모든 TLS client에 verified certificate를 요구한다.
+
+유일한 개발·benchmark 예외는 `-tcp-listen`과 `-allow-insecure-anonymous-mqtt`를 함께 사용하고
+`-tls-listen`을 비워 둔 경우다. `-tcp-listen`은 literal `127.0.0.0/8` 또는 `::1` loopback이어야
+하며, `-security-config`와 예외 flag를 함께 사용할 수 없다. MQTT listener 없이 예외 flag만 주거나
+TLS listener와 함께 주는 경우도 거절한다. 이 예외는 production security mode가 아니며 Phase 1
+보안 완료 증거로 사용할 수 없다. MQTT listener가 없는 management-only 실행에는
+`-security-config`를 요구하지 않는다.
 
 ```json
 {
@@ -92,6 +125,17 @@ MQTT listener(`-tcp-listen` 또는 `-tls-listen`)를 여는 Broker 시작에는 
       "roles": ["publisher"]
     }
   ],
+  "mtlsIdentities": [
+    {
+      "identityKind": "commonName",
+      "identity": "device-1-cert",
+      "tenantId": "tenant-a",
+      "subject": "device-1-cert",
+      "credentialId": "device-1-cert-key",
+      "allowedClientIds": ["device-1-cert"],
+      "roles": ["publisher"]
+    }
+  ],
   "acl": [
     {
       "tenantId": "tenant-a",
@@ -104,7 +148,24 @@ MQTT listener(`-tcp-listen` 또는 `-tls-listen`)를 여는 Broker 시작에는 
 }
 ```
 
-이 slice는 issuer와 audience를 각각 정확히 하나만 허용한다. algorithms, identities, credential IDs, tenant IDs, `(issuer, subject)` binding, allowed Client IDs와 roles는 비어 있지 않고 각각 중복되지 않아야 한다. ACL `effect`는 `allow|deny`, `action`은 `publish|subscribe|unsubscribe|will`만 허용한다. 중복 ACL rule과 malformed MQTT filter는 startup에서 거절한다. `jwksUrl`은 절대 `https` URL이어야 하며, deterministic test를 위해 IP-literal loopback host의 HTTP만 예외로 허용한다. `cacheTtl`, `refreshCooldown`, `clockSkew`, `httpTimeout`은 모두 양수여야 한다. Reload 동작은 이 slice에 포함하지 않는다.
+`mtlsIdentities` entry는 `identityKind`, `identity`, `tenantId`, `subject`, `credentialId`,
+`allowedClientIds`, `roles` field만 사용한다. `identityKind`는 `commonName`, `dnsSan`,
+`emailSan` 중 하나이며 identity 비교는 case-sensitive exact match다. 하나의 certificate가
+zero entry와 match하면 unmapped, 둘 이상의 entry와 match하면 ambiguous다. `NotAfter`는
+새 principal의 만료 시각으로 사용하며 trust chain·certificate validity·client-auth EKU는
+TLS handshake에서 먼저 검증한다. URI SAN/SPIFFE·fingerprint selector, revocation·rotation,
+기존 연결 종료·reauthentication, quota·blocklist·audit과 cluster-peer mTLS는 이 slice에
+포함하지 않는다.
+
+이 slice는 issuer와 audience를 각각 정확히 하나만 허용한다. algorithms, JWT identities,
+mTLS identities, credential IDs, tenant IDs, `(issuer, subject)` binding, `(identityKind,
+identity)` selector, allowed Client IDs와 roles는 비어 있지 않고 각각 중복되지 않아야 한다.
+JWT credential ID와 mTLS credential ID도 서로 중복될 수 없다. ACL `effect`는 `allow|deny`,
+`action`은 `publish|subscribe|unsubscribe|will`만 허용한다. 중복 ACL rule과 malformed MQTT
+filter는 startup에서 거절한다. `jwksUrl`은 절대 `https` URL이어야 하며, deterministic test를
+위해 IP-literal loopback host의 HTTP만 예외로 허용한다. `cacheTtl`, `refreshCooldown`,
+`clockSkew`, `httpTimeout`은 모두 양수여야 한다. Reload 동작은 이 slice에 포함하지 않는다.
+
 
 ### 2.4 Username/password
 
@@ -211,8 +272,8 @@ audit event에는 password, bearer token, session cookie, private key와 원문 
 | --- | --- | --- |
 | SEC-01 | TLS 1.2 이상, TLS 1.0/1.1 거절, AEAD cipher allowlist와 TLS/mTLS listener 왕복을 검증한다. | `tests/integration/mqtt_tls_test.go`의 `TestMQTTTLS_ConnectionAndDelivery`, `TestMQTTTLS_RejectInsecureTLSVersion` |
 | SEC-02 | algorithm allowlist, required `kid`, cached JWKS signature, exact issuer, audience membership, subject, exp/nbf와 clock skew를 순서대로 검증하고 key rotation을 fail-closed로 처리한다. MQTT listener startup은 `-security-config`를 요구하며, 유일한 예외는 literal loopback `-tcp-listen`과 `-allow-insecure-anonymous-mqtt`의 development·benchmark 조합이다. | `internal/adapters/authentication`의 JWT/JWKS cache 시험, `cmd/narumq/main_test.go`의 `TestRunWithContextMQTTSecurityMode`와 `TestRunWithContextSecurityConfig` |
-| SEC-03 | trusted CA 성공, untrusted CA 거절, 만료 인증서 거절을 검증한다. | `tests/integration/mqtt_tls_test.go`의 `TestMQTTTLS_mTLS_Success`, `TestMQTTTLS_mTLS_UntrustedCA_Rejected`, `TestMQTTTLS_mTLS_ExpiredCert_Rejected` |
-| SEC-04 | 인증서 CN/SAN 불일치를 거절하고, JWT 인증 결과의 exact allowed Client ID가 아니면 MQTT 3.1.1 `0x05` 또는 MQTT 5 `0x87`로 거절하고 state를 만들지 않는다. | `tests/integration/mqtt_tls_test.go`의 `TestMQTTTLS_mTLS_ClientIDMismatch_Rejected`, `internal/application/connect`, `tests/integration/mqtt_ingress_test.go`의 `TestMQTTSecurity` |
+| SEC-03 | trusted CA와 mapped certificate 성공, untrusted CA·TLS 만료 certificate·application-level `NotAfter` 만료 certificate 거절을 검증한다. | `tests/integration/mqtt_tls_test.go`의 `TestMQTTTLS_mTLS_TrustedMappedCertificate`, `TestMQTTTLS_mTLS_UntrustedCA_Rejected`, `TestMQTTTLS_mTLS_ExpiredCert_Rejected`, `internal/adapters/authentication`의 certificate expiry 시험 |
+| SEC-04 | 인증서 CN/SAN exact mapping, unmapped·ambiguous identity, dual credential 거절을 검증하고, mTLS와 JWT 인증 결과의 exact allowed Client ID가 아니면 MQTT 3.1.1 `0x05` 또는 MQTT 5 `0x87`로 거절하고 state를 만들지 않는다. | `tests/integration/mqtt_tls_test.go`의 mTLS principal acceptance/rejection 시험, `internal/application/connect`, `tests/integration/mqtt_ingress_test.go`의 `TestMQTTSecurity` |
 | SEC-06 | publish, subscribe, unsubscribe와 Will은 deny > allow > default-deny를 적용하고 거절 전에는 mutation을 수행하지 않는다. | `internal/domain/security`, application mutation-order 시험, `tests/integration/mqtt_ingress_test.go`의 `TestMQTTSecurity` |
 | SEC-08 | JWKS가 비어 있거나 TTL 만료 후 refresh에 실패하면 fail-closed한다. Metrics와 audit sink은 이 slice의 범위가 아니다. | `internal/adapters/authentication`의 `TestJWKSBootstrapFailureCollapses` 등 시험 |
 | SEC-09 | node 간 복제와 internal transport mTLS를 분리 검증한다. | 별도 cluster transport acceptance suite |
@@ -222,4 +283,7 @@ audit event에는 password, bearer token, session cookie, private key와 원문 
 | TEN-04 | ACL은 tenant-local canonical typed value를 기준으로 평가하고 내부 prefix injection이나 이중 encoding으로 우회할 수 없다. | `internal/domain/security` policy 시험, `tests/integration/mqtt_ingress_test.go`의 `TestMQTTSecurity` |
 | TEN-05 | system topic, retained, shared subscription, Will과 session이 tenant 경계를 넘지 않는다. | tenancy/routing/session 시험, `tests/integration/mqtt_ingress_test.go`의 `TestMQTTSecurity` |
 
-이 변경은 security metrics, mTLS principal mapping, quotas, blocklists, management API, audit sink, reload와 기존 연결 token reauthentication을 완료로 표시하지 않는다. 위 표 밖의 SEC-05, SEC-07, SEC-10~SEC-12와 TEN-06~TEN-10은 후속 acceptance scope다.
+이 변경은 mTLS client principal mapping과 SEC-03/SEC-04의 certificate-to-tenant acceptance를
+완료로 표시한다. security metrics의 상세 정책, revocation·rotation, quota, blocklist,
+management API, audit sink, reload과 기존 연결 token reauthentication은 완료로 표시하지
+않는다. 위 표 밖의 SEC-05, SEC-07, SEC-10~SEC-12와 TEN-06~TEN-10은 후속 acceptance scope다.

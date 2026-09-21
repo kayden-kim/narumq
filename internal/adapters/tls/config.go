@@ -59,13 +59,12 @@ var defaultCipherSuites = []uint16{
 
 // Config describes the TLS listener configuration options.
 type Config struct {
-	CertFile       string
-	KeyFile        string
-	CAFile         string
-	ClientAuth     ClientAuthMode
-	MinVersion     string
-	CipherSuites   []string
-	VerifyClientID bool
+	CertFile     string
+	KeyFile      string
+	CAFile       string
+	ClientAuth   ClientAuthMode
+	MinVersion   string
+	CipherSuites []string
 }
 
 // BuildTLSConfig parses and validates the TLS configuration and returns a standard *tls.Config.

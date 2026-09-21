@@ -9,7 +9,7 @@ Authentication은 credential이 누구의 것인지 확인한다. Tenant binding
 | 기준 독자 | TLS, JWT 기초는 알지만 멀티테넌트 브로커의 테넌트 바인딩 및 ACL 평가 파이프라인이 생소한 주니어 개발자 |
 | 선수 문서 | 없음 |
 | 관련 기준 문서 | [PRD](../requirements/PRD.md) (SEC-01~12, TEN-01~10), [Tenant와 security spec](../specs/tenancy-and-security.md), [Security boundaries](../architectures/security-boundaries.md) |
-| 대상 version·확인일 | Draft 0.5 |
+| 대상 version·확인일 | Draft 0.6 · mTLS DTO/selector flow 반영 |
 
 ## 읽고 나면 답할 수 있는 질문
 
@@ -40,17 +40,22 @@ TLS 연결이 있다는 사실만으로 application identity가 생기지는 않
 
 ## 정상 CONNECT 흐름
 
-아래 화살표는 credential과 authorization의 runtime control flow다.
+아래 화살표는 transport 검증, credential 선택, tenant binding과 authorization의
+runtime control flow다.
 
 ```mermaid
 flowchart TD
-    A["TLS connection"] --> B["Credential parser"]
-    B --> C["JWT/JWKS or mTLS verification"]
-    C --> D["Logical principal"]
-    D --> E["Tenant + clientId binding"]
-    E --> F["Blocklist + connection quota"]
-    F --> G["Default-deny ACL context"]
-    G --> H["Session ownership request"]
+    A["TLS connection"] --> B["TLS handshake\ntrust·validity·client-auth EKU"]
+    B --> C{"Verified client certificate?"}
+    C -->|yes| D["ClientCertificateDTO"]
+    D --> E["MTLSAuthenticationProvider\nexact CN/DNS SAN/email SAN"]
+    C -->|no| F["JWT credential"]
+    F --> G["JWT/JWKS verification"]
+    E --> H["Logical principal"]
+    G --> H
+    H --> I["Tenant + clientId binding"]
+    I --> J["Default-deny ACL context"]
+    J --> K["Session ownership request"]
 ```
 
 JWT를 사용하는 경우의 최소 흐름은 다음과 같다.
@@ -60,22 +65,39 @@ JWT를 사용하는 경우의 최소 흐름은 다음과 같다.
 3. 서명을 검증한다. Token의 `alg` 값만 믿고 algorithm을 고르지 않는다.
 4. `iss`, `aud`, `sub`, `exp`, `nbf`와 clock skew를 검증한다.
 5. 신뢰된 configuration이 issuer·subject를 `tenantId`와 허용 `clientId`에 binding한다.
-6. Connection quota와 blocklist를 확인한다.
-7. 모든 검증이 끝난 principal로 session ownership을 요청한다.
+6. 현재 구현에서는 binding과 ACL을 통과한 뒤 session ownership을 요청한다.
 
-Target application 경계의 principal은 provider 자료형을 포함하지 않는다.
+검증된 client certificate를 사용하는 mTLS 흐름은 다음과 같다.
+
+1. TLS listener가 trust chain, certificate validity와 client-auth EKU를 handshake에서
+   검증한다. `VerifiedChains`가 없는 certificate는 인증 입력으로 사용하지 않는다.
+2. TLS adapter가 verified leaf에서 `CommonName`, DNS SAN, email SAN과 `NotAfter`만
+   복사해 `ClientCertificateDTO`로 만든다. raw certificate, chain과 private key는
+   application으로 넘기지 않는다.
+3. `MTLSAuthenticationProvider`가 configured `commonName`, `dnsSan`, `emailSan`
+   selector를 case-sensitive exact match한다. zero match는 unmapped, multiple match는
+   ambiguous로 fail-closed한다.
+4. 하나의 binding이 선택되면 binding의 tenant, subject, credential ID, roles와 허용
+   Client ID를 사용한다. `NotAfter`는 새 principal의 expiry가 된다.
+5. Verified certificate가 있는 CONNECT는 mTLS만 사용한다. MQTT Username/Password를
+   함께 보내면 dual credential로 거절하고, unmapped·expired·ambiguous certificate를
+   JWT로 fallback하지 않는다.
+
+현재 application 경계는 provider 자료형이나 raw certificate를 노출하지 않는다.
+TLS adapter와 authentication port 사이에는 다음 DTO만 전달된다.
 
 ```go
-type Principal struct {
-	TenantID        tenancy.ID
-	Subject         security.Subject
-	AllowedClientID []security.ClientIDPattern
-	Roles           []security.Role
-	ExpiresAt       time.Time
+type ClientCertificateDTO struct {
+	CommonName      string
+	DNSNames        []string
+	EmailAddresses  []string
+	NotAfter        time.Time
 }
 ```
 
-이 예시는 구조를 설명하기 위한 `Target` 형태다. 최종 type과 field는 source 구현에서 확정한다.
+인증 provider의 `Result`를 받은 `application/connect`가 exact Client ID binding,
+`security.NewPrincipal`, Will ACL 검사를 순서대로 수행한 뒤 session ownership을
+요청한다. 인증·binding·Will 검증 전에는 session, route와 queue를 변경하지 않는다.
 
 ## Publish·subscribe ACL 흐름
 
@@ -88,7 +110,9 @@ CONNECT 성공은 모든 topic 접근 허가가 아니다.
 5. 허용된 publish만 durable log와 routing으로 보낸다.
 6. 허용된 subscribe만 route index에 추가한다.
 
-Will은 CONNECT 때 등록할 때와 실제 발행 직전에 다시 판정한다. Policy가 바뀌거나 credential이 폐기될 수 있기 때문이다.
+Will은 CONNECT 전에 인증된 principal과 Will ACL을 판정한다. 현재 구현은 certificate
+revocation/rotation과 기존 connection re-authentication을 수행하지 않으며, 이 기능은
+후속 security scope다.
 
 ## 실패 흐름
 
@@ -99,9 +123,14 @@ Will은 CONNECT 때 등록할 때와 실제 발행 직전에 다시 판정한다
 | JWKS refresh 실패, cache TTL 유효 | 정책이 허용한 기존 key만 제한적으로 사용할 수 있다. |
 | JWKS cache TTL 만료 | 새 인증을 fail-closed로 거절한다. |
 | `iss`·`aud`·`sub` 불일치 | 서명이 맞아도 거절한다. |
+| `VerifiedChains`가 없는 client certificate | mTLS 인증 입력으로 사용하지 않는다. |
+| certificate 만료·zero selector match | mTLS 인증을 fail-closed로 거절한다. |
+| certificate가 여러 binding과 match | ambiguous 인증으로 fail-closed 처리한다. |
+| certificate와 MQTT Username/Password 동시 제출 | dual credential로 거절하며 JWT fallback하지 않는다. |
 | Tenant·client ID binding 실패 | Session ownership을 요청하지 않는다. |
 | ACL backend timeout | Allow로 추정하지 않고 deny한다. |
-| 인증 뒤 policy 폐기 | Credential 정책에 따라 재인증하거나 기존 connection을 종료한다. |
+| 인증 뒤 policy 폐기 | revocation/reauthentication은 현재 구현 범위 밖이며 후속 security scope다. |
+| mTLS principal의 `NotAfter` 도달 | 새 CONNECT를 거절한다. |
 
 실패 log와 Metric에는 token, password, private key와 원문 certificate를 넣지 않는다. Audit event에는 안정된 reason code와 masking된 identity만 기록한다.
 
@@ -117,14 +146,16 @@ Will은 CONNECT 때 등록할 때와 실제 발행 직전에 다시 판정한다
 
 - 규범 동작: [Tenant와 security](../specs/tenancy-and-security.md)
 - Trust boundary: [Security boundaries](../architectures/security-boundaries.md)
-- Port·adapter 목표: `AuthenticationProvider`와 `JWKSAuthenticationProvider` — [Project structure](../architectures/project-structure.md#주요-port-capability와-adapter-map)
+- Port·adapter: `AuthenticationProvider`, `ClientCertificateAuthenticationProvider`,
+  `MTLSAuthenticationProvider` — [Project structure](../architectures/project-structure.md#주요-port-capability와-adapter-map)
 - Audit payload: [Audit event v1](../contracts/audit-event-v1.md)
 
 ## 확인 질문
 
 1. JWT 서명이 유효해도 `aud`가 다르면 거절해야 하는 이유는 무엇인가?
 2. Client가 보낸 `tenantId`를 그대로 session key에 사용할 수 없는 이유는 무엇인가?
-3. CONNECT 인증과 publish ACL은 각각 언제 실행되는가?
+3. Verified certificate와 `ClientCertificateDTO`를 분리하는 이유는 무엇인가?
+4. CONNECT 인증과 publish ACL은 각각 언제 실행되는가?
 
 ## 참고 자료
 

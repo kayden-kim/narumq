@@ -6,7 +6,7 @@ NaruMQ source tree는 MQTT·session·routing·delivery·tenancy·security·clust
 | --- | --- |
 | 관점 상태 | Active Phase 1 security and tenant isolation structure; Phase 0 gate 4와 BP-01/BP-05 smoke harness 유지 |
 | 문서 상태 | Active |
-| 구현 증거 | Phase 0 구현 source와 test는 기존 package 표에 연결되어 있으며, Phase 1 tenancy, security, authentication 패키지와 검증 게이트(traceability, architecture, coverage 90.4%+)는 구현 및 테스트를 통해 현재 증거로 확보되었다. |
+| 구현 증거 | Phase 0 구현 source와 test는 기존 package 표에 연결되어 있으며, Phase 1 tenancy·security·authentication 패키지와 검증 게이트(traceability, architecture, coverage 90.4%+)는 구현 및 테스트를 통해 현재 증거로 확보되었다. mTLS certificate DTO 추출, selector mapping, strict composition과 실제 TLS socket binding 검증도 해당 source/test에 연결되어 있다. |
 | 범위 | Repository root와 Go package directory 배치 및 현재 source dependency |
 | 관련 요구사항 | [PRD](../requirements/PRD.md) NFR-11~NFR-15, TEST-01~TEST-17, DEP-19~DEP-23 |
 | 관련 결정 | [ADR-0001](../decisions/ADR-0001-core-implementation-language.md) Accepted |
@@ -177,18 +177,18 @@ flowchart LR
 | `internal/domain/tenancy` | tenant/session/topic/filter typed value, MQTT filter validation·matching·containment·intersection | `domain/mqtt`와 표준 library |
 | `internal/domain/security` | immutable principal, role/action/effect과 tenant-local default-deny ACL policy | `domain/tenancy`와 표준 library |
 | `internal/domain/routing` | tenant-aware non-shared/shared filter matching, overlap QoS, NL/RAP option policy와 session cleanup | `domain/mqtt`, `domain/tenancy`와 표준 library |
-| `internal/application/ports/authentication` | `Credential` 입력과 verified binding result를 정의하는 authentication port | `domain/tenancy`, `domain/security`, 표준 library |
+| `internal/application/ports/authentication` | `Credential`과 verified client certificate DTO 및 binding result를 정의하는 authentication port | `domain/tenancy`, `domain/security`, 표준 library |
 | `internal/application/connect` | authentication, Client ID binding, Will ACL, lifecycle repository, queue/routing cleanup과 CONNACK orchestration | `domain/mqtt`, `domain/session`, `domain/routing`, `domain/tenancy`, `domain/security`, application ports |
 | `internal/application/subscribe` | tenant-aware ordered SUBACK/UNSUBACK reason, ACL preflight, retained replay와 route mutation | `domain/mqtt`, `domain/routing`, `domain/tenancy`, `domain/security`, application ports |
 | `internal/application/publish` | tenant-aware publish/Will ACL, retained replace/delete, expiry deadline와 route delivery | `domain/mqtt`, `domain/routing`, `domain/tenancy`, `domain/security`, application ports |
 | `internal/application/ports/deliveryqueue` | `tenancy.SessionKey`와 `tenancy.Topic`을 운반하는 bounded queue capability | application/domain value만 |
 | `internal/application/ports/retained` | `(tenant, topic)` retained ownership과 expiry-aware list contract | `domain/mqtt`, `domain/tenancy`, 표준 library |
-| `internal/adapters/authentication` | JWKS fetch/cache, JWT signature·claim 검증과 static identity binding | `application/ports/authentication`, `domain/tenancy`, `domain/security`, jwx와 표준 library |
+| `internal/adapters/authentication` | JWKS fetch/cache, JWT signature·claim 검증, static identity binding과 mTLS certificate selector mapping | `application/ports/authentication`, `domain/tenancy`, `domain/security`, jwx와 표준 library |
 | `internal/adapters/memory/deliveryqueue` | SessionKey별 fixed item capacity, FIFO ownership와 expiry purge | `application/ports/deliveryqueue`, `domain/tenancy`, 표준 library |
 | `internal/adapters/memory/retained` | tenant/topic keyed bounded retained repository와 expiry byte purge | `application/ports/retained`, `domain/mqtt`, `domain/tenancy`, 표준 library |
 | `internal/adapters/memory/sessionstore` | SessionKey별 process-local lifecycle load/save/delete | `application/connect`, `domain/session`, `domain/tenancy`, 표준 library |
-| `internal/adapters/tcp` | bounded MQTT ingress, authentication-aware connection state, single writer와 lifecycle | application use cases/ports와 `domain/mqtt`, `domain/tenancy`, `domain/security` |
-| `internal/adapters/tls` | TLS 1.2+ listener, AEAD cipher allowlist, mTLS trust anchor와 certificate identity DTO | 표준 library만 |
+| `internal/adapters/tcp` | bounded MQTT ingress, verified certificate DTO 전달, authentication-aware connection state, single writer와 lifecycle | application use cases/ports와 `domain/mqtt`, `domain/tenancy`, `domain/security` |
+| `internal/adapters/tls` | TLS 1.2+ listener, AEAD cipher allowlist, mTLS trust anchor와 verified certificate DTO 추출 | `application/ports/authentication`과 표준 library |
 | `internal/adapters/clock` | system clock와 scheduler를 공용 application port에 제공 | `application/ports/clock`, 표준 library |
 | `internal/adapters/raft` | etcd/raft 자료형과 deterministic node boundary를 adapter 안에 캡슐화 | `go.etcd.io/raft/v3`, `google.golang.org/protobuf`와 표준 library |
 | `internal/adapters/runtimemetrics` | Go process runtime metrics 표본을 JSONL로 수집 | 표준 library만 |
@@ -238,7 +238,7 @@ Package 이름은 기술 계층보다 제품 책임을 드러낸다.
 | Replicated log 저장 | `ports/logstore.LogStore` | `adapters/storage.WALLogStore` | WAL·snapshot codec |
 | Consensus proposal·commit 관찰 | `ports/consensus.ReplicationService` | `adapters/raft.RaftReplicationService` 후보 | `etcd/raft` 후보 |
 | Cluster peer message 송수신 | `ports/transport.PeerTransport` | `adapters/tcp.TCPPeerTransport` 후보 | TCP/TLS 또는 후속 RPC client |
-| Credential 검증 | `application/ports/authentication.AuthenticationProvider` | `adapters/authentication.JWKSAuthenticationProvider` | `lestrrat-go/jwx/v3`와 bounded HTTP client |
+| Credential 검증 | `application/ports/authentication.AuthenticationProvider` 및 `ClientCertificateAuthenticationProvider` | `adapters/authentication.JWKSAuthenticationProvider`, `MTLSAuthenticationProvider` | `lestrrat-go/jwx/v3`와 Go TLS/X.509 |
 | Cluster node 발견 | `ports/nodediscovery.NodeDiscovery` | `adapters/kubernetes.KubernetesNodeDiscovery` | `KubernetesClient` |
 | Metric·audit | `ports/metrics.MetricRecorder`, `ports/audit.AuditPublisher` | 후속 observability adapters | 이번 slice에서는 조립하지 않음 |
 | Jitter·identifier용 난수 제공 | `ports/random.RandomSource` | `adapters/random.CryptoRandomSource` 후보 | Go cryptographic random source |

@@ -65,13 +65,24 @@ type ResultDTO struct {
 	Accepted  bool
 }
 
+// ConnectRequestDTO carries the MQTT CONNECT packet and optional verified certificate identity.
+type ConnectRequestDTO struct {
+	Packet            mqtt.Connect
+	ClientCertificate *applicationauthentication.ClientCertificateDTO
+}
+
 // Option configures optional parameters for the connection use case.
 type Option func(*UseCase)
 
-// WithSecurity configures an authentication provider and security policy.
-func WithSecurity(authenticator applicationauthentication.AuthenticationProvider, policy security.Policy) Option {
+// WithSecurity configures JWT and mTLS authentication providers and the security policy.
+func WithSecurity(
+	jwtProvider applicationauthentication.AuthenticationProvider,
+	mtlsProvider applicationauthentication.ClientCertificateAuthenticationProvider,
+	policy security.Policy,
+) Option {
 	return func(useCase *UseCase) {
-		useCase.authenticator = authenticator
+		useCase.authenticator = jwtProvider
+		useCase.certificateAuthenticator = mtlsProvider
 		useCase.policy = policy
 	}
 }
@@ -92,19 +103,20 @@ type clientTimers struct {
 }
 
 type UseCase struct {
-	mu            sync.Mutex
-	clock         applicationclock.Clock
-	authenticator applicationauthentication.AuthenticationProvider
-	policy        security.Policy
-	sessions      SessionRepository
-	principals    map[routing.SessionID]security.Principal
-	deliveries    deliveryqueue.Queue
-	routes        *routing.Table
-	scheduler     Scheduler
-	willPublisher WillPublisher
-	activeTimers  map[string]*clientTimers
-	closed        bool
-	metrics       portsmetrics.MetricsRecorder
+	mu                       sync.Mutex
+	clock                    applicationclock.Clock
+	authenticator            applicationauthentication.AuthenticationProvider
+	certificateAuthenticator applicationauthentication.ClientCertificateAuthenticationProvider
+	policy                   security.Policy
+	sessions                 SessionRepository
+	principals               map[routing.SessionID]security.Principal
+	deliveries               deliveryqueue.Queue
+	routes                   *routing.Table
+	scheduler                Scheduler
+	willPublisher            WillPublisher
+	activeTimers             map[string]*clientTimers
+	closed                   bool
+	metrics                  portsmetrics.MetricsRecorder
 }
 
 func (useCase *UseCase) recordAuth(method string, success bool, reason string) {
@@ -183,16 +195,17 @@ func New(
 // opens a new or resumable lifecycle. Unsupported credentials and Will state
 // are returned as negative CONNACK results rather than silently ignored.
 func (useCase *UseCase) Connect(packet mqtt.Connect) (ResultDTO, error) {
-	return useCase.ConnectContext(context.Background(), packet)
+	return useCase.ConnectContext(context.Background(), ConnectRequestDTO{Packet: packet})
 }
 
 // ConnectContext validates authentication, tenant binding, and Will authorization
 // before granting session ownership.
-func (useCase *UseCase) ConnectContext(ctx context.Context, packet mqtt.Connect) (ResultDTO, error) {
+func (useCase *UseCase) ConnectContext(ctx context.Context, request ConnectRequestDTO) (ResultDTO, error) {
 	if useCase == nil {
 		return ResultDTO{}, ErrNilSessionRepository
 	}
 
+	packet := request.Packet
 	result := ResultDTO{ConnAck: mqtt.ConnAck{Version: packet.Version}}
 	if packet.Version != mqtt.ProtocolV311 && packet.Version != mqtt.ProtocolV5 {
 		return ResultDTO{}, mqtt.ErrUnsupportedProtocolVersion
@@ -202,26 +215,63 @@ func (useCase *UseCase) ConnectContext(ctx context.Context, packet mqtt.Connect)
 		return result, nil
 	}
 
-	var principal security.Principal
-	if useCase.authenticator == nil {
+	var (
+		principal     security.Principal
+		authResult    applicationauthentication.Result
+		authMethod    = portsmetrics.AuthMethodAnonymous
+		authenticated bool
+	)
+	switch {
+	case request.ClientCertificate != nil:
+		authMethod = portsmetrics.AuthMethodTLS
+		if useCase.certificateAuthenticator == nil {
+			useCase.recordAuth(authMethod, false, "unsupported_credentials")
+			result.ConnAck.ReasonCode = notAuthorizedReason(packet.Version)
+			return result, nil
+		}
+		if packet.HasUsername || packet.HasPassword {
+			useCase.recordAuth(authMethod, false, "dual_credentials")
+			result.ConnAck.ReasonCode = notAuthorizedReason(packet.Version)
+			return result, nil
+		}
+		var err error
+		authResult, err = useCase.certificateAuthenticator.AuthenticateClientCertificate(ctx, *request.ClientCertificate)
+		if err != nil {
+			useCase.recordAuth(authMethod, false, "invalid_credentials")
+			result.ConnAck.ReasonCode = notAuthorizedReason(packet.Version)
+			return result, nil
+		}
+		authenticated = true
+	case useCase.authenticator != nil:
+		authMethod = portsmetrics.AuthMethodJWT
+		if !packet.HasUsername || !packet.HasPassword || len(packet.Password) == 0 {
+			useCase.recordAuth(authMethod, false, "missing_credentials")
+			result.ConnAck.ReasonCode = notAuthorizedReason(packet.Version)
+			return result, nil
+		}
+		var err error
+		authResult, err = useCase.authenticator.Authenticate(ctx, applicationauthentication.Credential{Token: packet.Password})
+		if err != nil {
+			useCase.recordAuth(authMethod, false, "invalid_credentials")
+			result.ConnAck.ReasonCode = notAuthorizedReason(packet.Version)
+			return result, nil
+		}
+		authenticated = true
+	case useCase.certificateAuthenticator != nil:
+		authMethod = portsmetrics.AuthMethodTLS
+		useCase.recordAuth(authMethod, false, "missing_certificate")
+		result.ConnAck.ReasonCode = notAuthorizedReason(packet.Version)
+		return result, nil
+	default:
 		if packet.HasUsername || packet.HasPassword {
 			useCase.recordAuth(portsmetrics.AuthMethodAnonymous, false, "unsupported_credentials")
 			result.ConnAck.ReasonCode = unsupportedDevelopmentReason(packet.Version)
 			return result, nil
 		}
 		useCase.recordAuth(portsmetrics.AuthMethodAnonymous, true, "none")
-	} else {
-		if !packet.HasUsername || !packet.HasPassword || len(packet.Password) == 0 {
-			useCase.recordAuth(portsmetrics.AuthMethodPassword, false, "missing_credentials")
-			result.ConnAck.ReasonCode = notAuthorizedReason(packet.Version)
-			return result, nil
-		}
-		authResult, err := useCase.authenticator.Authenticate(ctx, applicationauthentication.Credential{Token: packet.Password})
-		if err != nil {
-			useCase.recordAuth(portsmetrics.AuthMethodPassword, false, "invalid_credentials")
-			result.ConnAck.ReasonCode = notAuthorizedReason(packet.Version)
-			return result, nil
-		}
+	}
+
+	if authenticated {
 		allowed := false
 		for _, allowedID := range authResult.AllowedClientIDs {
 			if allowedID == packet.ClientID {
@@ -230,7 +280,7 @@ func (useCase *UseCase) ConnectContext(ctx context.Context, packet mqtt.Connect)
 			}
 		}
 		if !allowed {
-			useCase.recordAuth(portsmetrics.AuthMethodPassword, false, "client_id_not_allowed")
+			useCase.recordAuth(authMethod, false, "client_id_not_allowed")
 			result.ConnAck.ReasonCode = notAuthorizedReason(packet.Version)
 			return result, nil
 		}
@@ -243,7 +293,7 @@ func (useCase *UseCase) ConnectContext(ctx context.Context, packet mqtt.Connect)
 			authResult.ExpiresAt,
 		)
 		if err != nil {
-			useCase.recordAuth(portsmetrics.AuthMethodPassword, false, "not_authorized")
+			useCase.recordAuth(authMethod, false, "not_authorized")
 			result.ConnAck.ReasonCode = notAuthorizedReason(packet.Version)
 			return result, nil
 		}
@@ -251,18 +301,19 @@ func (useCase *UseCase) ConnectContext(ctx context.Context, packet mqtt.Connect)
 		if packet.Will != nil {
 			willTopic, err := tenancy.NewTopic(authResult.TenantID, packet.Will.Topic)
 			if err != nil {
-				useCase.recordAuth(portsmetrics.AuthMethodPassword, false, "invalid_will_topic")
+				useCase.recordAuth(authMethod, false, "invalid_will_topic")
 				result.ConnAck.ReasonCode = notAuthorizedReason(packet.Version)
 				return result, nil
 			}
 			if err := useCase.policy.AuthorizeTopic(principal, security.ActionWill, willTopic); err != nil {
-				useCase.recordAuth(portsmetrics.AuthMethodPassword, false, "will_unauthorized")
+				useCase.recordAuth(authMethod, false, "will_unauthorized")
 				result.ConnAck.ReasonCode = notAuthorizedReason(packet.Version)
 				return result, nil
 			}
 		}
-		useCase.recordAuth(portsmetrics.AuthMethodPassword, true, "none")
+		useCase.recordAuth(authMethod, true, "none")
 	}
+
 	sessionID := routing.SessionID(packet.ClientID)
 	var sessionKey tenancy.SessionKey
 	if principal.Subject() != "" {

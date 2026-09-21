@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"narumq/internal/application/connect"
+	applicationauthentication "narumq/internal/application/ports/authentication"
 	applicationclock "narumq/internal/application/ports/clock"
 	"narumq/internal/application/ports/deliveryqueue"
 	portsmetrics "narumq/internal/application/ports/metrics"
@@ -58,15 +59,14 @@ var (
 // Config bounds packet memory, handshake waiting, socket writes and per-connection
 // control output. Delivery queue capacity is owned by the injected queue.
 type Config struct {
-	Clock                  applicationclock.Clock
-	MaxPacketSize          int
-	ConnectTimeout         time.Duration
-	WriteTimeout           time.Duration
-	ControlQueueCapacity   int
-	VerifyClientID         bool
-	ClientIdentityVerifier func(conn net.Conn, clientID string) bool
-	Policy                 security.Policy
-	Metrics                portsmetrics.MetricsRecorder
+	Clock                      applicationclock.Clock
+	MaxPacketSize              int
+	ConnectTimeout             time.Duration
+	WriteTimeout               time.Duration
+	ControlQueueCapacity       int
+	ClientCertificateExtractor func(net.Conn) (applicationauthentication.ClientCertificateDTO, bool)
+	Policy                     security.Policy
+	Metrics                    portsmetrics.MetricsRecorder
 }
 
 // Server owns one listener, all connection goroutines and the session registry.
@@ -537,27 +537,16 @@ func (connection *connection) handleUnsupportedVersion(err error) bool {
 
 func (connection *connection) activate(packet mqtt.Connect) error {
 	connection.deliveryBlocked.Store(true)
-	if connection.server.config.VerifyClientID {
-		verifier := connection.server.config.ClientIdentityVerifier
-		if verifier == nil {
-			verifier = defaultClientIdentityVerifier
-		}
-		if !verifier(connection.socket, packet.ClientID) {
-			reasonCode := byte(0x05)
-			if packet.Version == mqtt.ProtocolV5 {
-				reasonCode = 0x87
-			}
-			if err := connection.enqueueAndWait(&mqtt.ConnAck{
-				Version:    packet.Version,
-				ReasonCode: reasonCode,
-			}); err != nil {
-				return err
-			}
-			connection.requestClose()
-			return nil
+	var clientCertificate *applicationauthentication.ClientCertificateDTO
+	if extractor := connection.server.config.ClientCertificateExtractor; extractor != nil {
+		if extracted, ok := extractor(connection.socket); ok {
+			clientCertificate = &extracted
 		}
 	}
-	result, err := connection.server.connections.Connect(packet)
+	result, err := connection.server.connections.ConnectContext(context.Background(), connect.ConnectRequestDTO{
+		Packet:            packet,
+		ClientCertificate: clientCertificate,
+	})
 	if err != nil {
 		return err
 	}
@@ -1424,34 +1413,4 @@ func (b *WillBridge) PublishWill(sessionID routing.SessionID, will mqtt.Will) er
 		return nil
 	}
 	return target.PublishWill(sessionID, will)
-}
-
-type tlsConnectionState interface {
-	ConnectionState() tls.ConnectionState
-}
-
-func defaultClientIdentityVerifier(conn net.Conn, clientID string) bool {
-	tlsConn, ok := conn.(tlsConnectionState)
-	if !ok {
-		return true
-	}
-	state := tlsConn.ConnectionState()
-	if len(state.PeerCertificates) == 0 {
-		return true
-	}
-	cert := state.PeerCertificates[0]
-	if cert.Subject.CommonName == clientID {
-		return true
-	}
-	for _, dns := range cert.DNSNames {
-		if dns == clientID {
-			return true
-		}
-	}
-	for _, email := range cert.EmailAddresses {
-		if email == clientID {
-			return true
-		}
-	}
-	return false
 }

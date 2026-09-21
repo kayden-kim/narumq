@@ -18,9 +18,10 @@ import (
 )
 
 type rawSecurityConfig struct {
-	JWT        rawJWTConfig        `json:"jwt"`
-	Identities []rawIdentityConfig `json:"identities"`
-	ACL        []rawACLRuleConfig  `json:"acl"`
+	JWT            *rawJWTConfig           `json:"jwt"`
+	Identities     []rawIdentityConfig     `json:"identities"`
+	MTLSIdentities []rawMTLSIdentityConfig `json:"mtlsIdentities"`
+	ACL            []rawACLRuleConfig      `json:"acl"`
 }
 
 type rawJWTConfig struct {
@@ -43,6 +44,16 @@ type rawIdentityConfig struct {
 	Roles            []string `json:"roles"`
 }
 
+type rawMTLSIdentityConfig struct {
+	IdentityKind     string   `json:"identityKind"`
+	Identity         string   `json:"identity"`
+	TenantID         string   `json:"tenantId"`
+	Subject          string   `json:"subject"`
+	CredentialID     string   `json:"credentialId"`
+	AllowedClientIDs []string `json:"allowedClientIds"`
+	Roles            []string `json:"roles"`
+}
+
 type rawACLRuleConfig struct {
 	TenantID    string `json:"tenantId"`
 	Role        string `json:"role"`
@@ -51,10 +62,11 @@ type rawACLRuleConfig struct {
 	TopicFilter string `json:"topicFilter"`
 }
 
-// SecurityBundle encapsulates the validated authentication and authorization policy.
+// SecurityBundle encapsulates validated authentication methods and authorization policy.
 type SecurityBundle struct {
-	AuthConfig authenticationadapter.Config
-	Policy     security.Policy
+	JWTConfig    *authenticationadapter.Config
+	MTLSBindings []authenticationadapter.ClientCertificateIdentityBinding
+	Policy       security.Policy
 }
 
 // loadSecurityConfigFile reads and strictly decodes a JSON security configuration file.
@@ -84,7 +96,7 @@ func parseSecurityConfig(reader io.Reader) (*SecurityBundle, error) {
 		return nil, errors.New("security config contains trailing JSON value")
 	}
 
-	authConfig, err := validateJWTAndIdentities(raw.JWT, raw.Identities)
+	jwtConfig, mtlsBindings, err := validateAuthenticationConfig(raw.JWT, raw.Identities, raw.MTLSIdentities)
 	if err != nil {
 		return nil, err
 	}
@@ -95,134 +107,145 @@ func parseSecurityConfig(reader io.Reader) (*SecurityBundle, error) {
 	}
 
 	return &SecurityBundle{
-		AuthConfig: authConfig,
-		Policy:     policy,
+		JWTConfig:    jwtConfig,
+		MTLSBindings: mtlsBindings,
+		Policy:       policy,
 	}, nil
 }
 
-func validateJWTAndIdentities(jwt rawJWTConfig, identities []rawIdentityConfig) (authenticationadapter.Config, error) {
+func validateAuthenticationConfig(
+	jwt *rawJWTConfig,
+	identities []rawIdentityConfig,
+	mtlsIdentities []rawMTLSIdentityConfig,
+) (*authenticationadapter.Config, []authenticationadapter.ClientCertificateIdentityBinding, error) {
+	seenCredentialIDs := make(map[string]struct{}, len(identities)+len(mtlsIdentities))
+	var jwtConfig *authenticationadapter.Config
+	if jwt == nil {
+		if len(identities) > 0 {
+			return nil, nil, errors.New("identities require jwt")
+		}
+	} else {
+		var err error
+		jwtConfig, err = validateJWTAndIdentities(jwt, identities, seenCredentialIDs)
+		if err != nil {
+			return nil, nil, err
+		}
+	}
+	mtlsBindings, err := validateMTLSIdentities(mtlsIdentities, seenCredentialIDs)
+	if err != nil {
+		return nil, nil, err
+	}
+	if jwtConfig == nil && len(mtlsBindings) == 0 {
+		return nil, nil, errors.New("at least one authentication method is required")
+	}
+	return jwtConfig, mtlsBindings, nil
+}
+
+func validateJWTAndIdentities(
+	jwt *rawJWTConfig,
+	identities []rawIdentityConfig,
+	seenCredentialIDs map[string]struct{},
+) (*authenticationadapter.Config, error) {
 	if jwt.Issuer == "" {
-		return authenticationadapter.Config{}, errors.New("jwt.issuer is required")
+		return nil, errors.New("jwt.issuer is required")
 	}
 	if jwt.Audience == "" {
-		return authenticationadapter.Config{}, errors.New("jwt.audience is required")
+		return nil, errors.New("jwt.audience is required")
 	}
 	if len(jwt.Algorithms) == 0 {
-		return authenticationadapter.Config{}, errors.New("jwt.algorithms is required")
+		return nil, errors.New("jwt.algorithms is required")
 	}
 	seenAlgs := make(map[string]struct{}, len(jwt.Algorithms))
 	for _, alg := range jwt.Algorithms {
 		if alg == "" {
-			return authenticationadapter.Config{}, errors.New("jwt algorithm must not be empty")
+			return nil, errors.New("jwt algorithm must not be empty")
 		}
 		if _, exists := seenAlgs[alg]; exists {
-			return authenticationadapter.Config{}, fmt.Errorf("duplicate jwt algorithm %q", alg)
+			return nil, fmt.Errorf("duplicate jwt algorithm %q", alg)
 		}
 		seenAlgs[alg] = struct{}{}
 	}
 
 	parsedURL, err := url.Parse(jwt.JWKSURL)
 	if err != nil || !parsedURL.IsAbs() || parsedURL.Host == "" {
-		return authenticationadapter.Config{}, errors.New("jwt.jwksUrl must be an absolute URL")
+		return nil, errors.New("jwt.jwksUrl must be an absolute URL")
 	}
 	if parsedURL.Scheme != "https" {
 		if parsedURL.Scheme != "http" || !isLoopbackHost(parsedURL.Hostname()) {
-			return authenticationadapter.Config{}, errors.New("jwt.jwksUrl must be HTTPS or loopback HTTP")
+			return nil, errors.New("jwt.jwksUrl must be HTTPS or loopback HTTP")
 		}
 	}
 
 	cacheTTL, err := parsePositiveDuration("jwt.cacheTtl", jwt.CacheTTL)
 	if err != nil {
-		return authenticationadapter.Config{}, err
+		return nil, err
 	}
 	refreshCooldown, err := parsePositiveDuration("jwt.refreshCooldown", jwt.RefreshCooldown)
 	if err != nil {
-		return authenticationadapter.Config{}, err
+		return nil, err
 	}
 	clockSkew, err := parsePositiveDuration("jwt.clockSkew", jwt.ClockSkew)
 	if err != nil {
-		return authenticationadapter.Config{}, err
+		return nil, err
 	}
 	httpTimeout, err := parsePositiveDuration("jwt.httpTimeout", jwt.HTTPTimeout)
 	if err != nil {
-		return authenticationadapter.Config{}, err
+		return nil, err
 	}
 
 	if len(identities) == 0 {
-		return authenticationadapter.Config{}, errors.New("identities must contain at least one binding")
+		return nil, errors.New("identities must contain at least one binding")
 	}
-
+	if seenCredentialIDs == nil {
+		seenCredentialIDs = make(map[string]struct{}, len(identities))
+	}
 	bindings := make([]authenticationadapter.IdentityBinding, len(identities))
 	seenSubjects := make(map[string]struct{}, len(identities))
-	seenCreds := make(map[string]struct{}, len(identities))
 
 	for i, id := range identities {
 		if id.Issuer != jwt.Issuer {
-			return authenticationadapter.Config{}, fmt.Errorf("identity issuer %q does not match jwt.issuer %q", id.Issuer, jwt.Issuer)
+			return nil, fmt.Errorf("identity issuer %q does not match jwt.issuer %q", id.Issuer, jwt.Issuer)
 		}
 		if id.Subject == "" {
-			return authenticationadapter.Config{}, errors.New("identity subject is required")
+			return nil, errors.New("identity subject is required")
 		}
 		if _, exists := seenSubjects[id.Subject]; exists {
-			return authenticationadapter.Config{}, fmt.Errorf("duplicate identity subject %q", id.Subject)
+			return nil, fmt.Errorf("duplicate identity subject %q", id.Subject)
 		}
 		seenSubjects[id.Subject] = struct{}{}
 
 		tenantID, err := tenancy.NewTenantID(id.TenantID)
 		if err != nil {
-			return authenticationadapter.Config{}, fmt.Errorf("invalid tenant ID %q: %w", id.TenantID, err)
+			return nil, fmt.Errorf("invalid tenant ID %q: %w", id.TenantID, err)
 		}
 
 		if id.CredentialID == "" {
-			return authenticationadapter.Config{}, errors.New("identity credentialId is required")
+			return nil, errors.New("identity credentialId is required")
 		}
-		if _, exists := seenCreds[id.CredentialID]; exists {
-			return authenticationadapter.Config{}, fmt.Errorf("duplicate credentialId %q", id.CredentialID)
+		if _, exists := seenCredentialIDs[id.CredentialID]; exists {
+			return nil, fmt.Errorf("duplicate credentialId %q", id.CredentialID)
 		}
-		seenCreds[id.CredentialID] = struct{}{}
+		seenCredentialIDs[id.CredentialID] = struct{}{}
 
-		if len(id.AllowedClientIDs) == 0 {
-			return authenticationadapter.Config{}, fmt.Errorf("identity %q must have at least one allowed Client ID", id.Subject)
+		allowedClientIDs, err := validateAllowedClientIDs("identity", id.Subject, id.AllowedClientIDs)
+		if err != nil {
+			return nil, err
 		}
-		seenClientIDs := make(map[string]struct{}, len(id.AllowedClientIDs))
-		for _, clientID := range id.AllowedClientIDs {
-			if clientID == "" {
-				return authenticationadapter.Config{}, fmt.Errorf("identity %q has empty allowed Client ID", id.Subject)
-			}
-			if _, exists := seenClientIDs[clientID]; exists {
-				return authenticationadapter.Config{}, fmt.Errorf("identity %q has duplicate allowed Client ID %q", id.Subject, clientID)
-			}
-			seenClientIDs[clientID] = struct{}{}
+		roles, err := validateRoles("identity", id.Subject, id.Roles)
+		if err != nil {
+			return nil, err
 		}
-
-		if len(id.Roles) == 0 {
-			return authenticationadapter.Config{}, fmt.Errorf("identity %q must have at least one role", id.Subject)
-		}
-		roles := make([]security.Role, len(id.Roles))
-		seenRoles := make(map[security.Role]struct{}, len(id.Roles))
-		for rIdx, roleStr := range id.Roles {
-			role := security.Role(roleStr)
-			if role == "" {
-				return authenticationadapter.Config{}, fmt.Errorf("identity %q has empty role", id.Subject)
-			}
-			if _, exists := seenRoles[role]; exists {
-				return authenticationadapter.Config{}, fmt.Errorf("identity %q has duplicate role %q", id.Subject, role)
-			}
-			seenRoles[role] = struct{}{}
-			roles[rIdx] = role
-		}
-
 		bindings[i] = authenticationadapter.IdentityBinding{
 			Issuer:           id.Issuer,
 			Subject:          id.Subject,
 			TenantID:         tenantID,
 			CredentialID:     id.CredentialID,
-			AllowedClientIDs: append([]string(nil), id.AllowedClientIDs...),
+			AllowedClientIDs: allowedClientIDs,
 			Roles:            roles,
 		}
 	}
 
-	return authenticationadapter.Config{
+	return &authenticationadapter.Config{
 		Issuer:          jwt.Issuer,
 		Audience:        jwt.Audience,
 		Algorithms:      append([]string(nil), jwt.Algorithms...),
@@ -233,6 +256,123 @@ func validateJWTAndIdentities(jwt rawJWTConfig, identities []rawIdentityConfig) 
 		HTTPTimeout:     httpTimeout,
 		Bindings:        bindings,
 	}, nil
+}
+
+func validateMTLSIdentities(
+	identities []rawMTLSIdentityConfig,
+	seenCredentialIDs map[string]struct{},
+) ([]authenticationadapter.ClientCertificateIdentityBinding, error) {
+	if len(identities) == 0 {
+		return nil, nil
+	}
+	if seenCredentialIDs == nil {
+		seenCredentialIDs = make(map[string]struct{}, len(identities))
+	}
+	type selector struct {
+		kind  authenticationadapter.ClientCertificateIdentityKind
+		value string
+	}
+	seenSelectors := make(map[selector]struct{}, len(identities))
+	bindings := make([]authenticationadapter.ClientCertificateIdentityBinding, len(identities))
+	for index, identity := range identities {
+		kind, ok := parseMTLSIdentityKind(identity.IdentityKind)
+		if !ok {
+			return nil, fmt.Errorf("invalid mTLS identityKind %q", identity.IdentityKind)
+		}
+		if identity.Identity == "" {
+			return nil, errors.New("mTLS identity is required")
+		}
+		key := selector{kind: kind, value: identity.Identity}
+		if _, exists := seenSelectors[key]; exists {
+			return nil, fmt.Errorf("duplicate mTLS identity selector %q", identity.Identity)
+		}
+		seenSelectors[key] = struct{}{}
+
+		tenantID, err := tenancy.NewTenantID(identity.TenantID)
+		if err != nil {
+			return nil, fmt.Errorf("invalid mTLS tenant ID %q: %w", identity.TenantID, err)
+		}
+		if identity.Subject == "" {
+			return nil, errors.New("mTLS identity subject is required")
+		}
+		if identity.CredentialID == "" {
+			return nil, errors.New("mTLS identity credentialId is required")
+		}
+		if _, exists := seenCredentialIDs[identity.CredentialID]; exists {
+			return nil, fmt.Errorf("duplicate credentialId %q", identity.CredentialID)
+		}
+		seenCredentialIDs[identity.CredentialID] = struct{}{}
+		allowedClientIDs, err := validateAllowedClientIDs("mTLS identity", identity.Identity, identity.AllowedClientIDs)
+		if err != nil {
+			return nil, err
+		}
+		roles, err := validateRoles("mTLS identity", identity.Identity, identity.Roles)
+		if err != nil {
+			return nil, err
+		}
+		bindings[index] = authenticationadapter.ClientCertificateIdentityBinding{
+			Kind:             kind,
+			Value:            identity.Identity,
+			TenantID:         tenantID,
+			Subject:          identity.Subject,
+			CredentialID:     identity.CredentialID,
+			AllowedClientIDs: allowedClientIDs,
+			Roles:            roles,
+		}
+	}
+	return bindings, nil
+}
+
+func parseMTLSIdentityKind(raw string) (authenticationadapter.ClientCertificateIdentityKind, bool) {
+	switch raw {
+	case string(authenticationadapter.ClientCertificateIdentityKindCommonName):
+		return authenticationadapter.ClientCertificateIdentityKindCommonName, true
+	case string(authenticationadapter.ClientCertificateIdentityKindDNSSAN):
+		return authenticationadapter.ClientCertificateIdentityKindDNSSAN, true
+	case string(authenticationadapter.ClientCertificateIdentityKindEmailSAN):
+		return authenticationadapter.ClientCertificateIdentityKindEmailSAN, true
+	default:
+		return "", false
+	}
+}
+
+func validateAllowedClientIDs(kind, identity string, clientIDs []string) ([]string, error) {
+	if len(clientIDs) == 0 {
+		return nil, fmt.Errorf("%s %q must have at least one allowed Client ID", kind, identity)
+	}
+	copied := make([]string, len(clientIDs))
+	seen := make(map[string]struct{}, len(clientIDs))
+	for index, clientID := range clientIDs {
+		if clientID == "" {
+			return nil, fmt.Errorf("%s %q has empty allowed Client ID", kind, identity)
+		}
+		if _, exists := seen[clientID]; exists {
+			return nil, fmt.Errorf("%s %q has duplicate allowed Client ID %q", kind, identity, clientID)
+		}
+		seen[clientID] = struct{}{}
+		copied[index] = clientID
+	}
+	return copied, nil
+}
+
+func validateRoles(kind, identity string, roleStrings []string) ([]security.Role, error) {
+	if len(roleStrings) == 0 {
+		return nil, fmt.Errorf("%s %q must have at least one role", kind, identity)
+	}
+	roles := make([]security.Role, len(roleStrings))
+	seen := make(map[security.Role]struct{}, len(roleStrings))
+	for index, roleString := range roleStrings {
+		role := security.Role(roleString)
+		if role == "" {
+			return nil, fmt.Errorf("%s %q has empty role", kind, identity)
+		}
+		if _, exists := seen[role]; exists {
+			return nil, fmt.Errorf("%s %q has duplicate role %q", kind, identity, role)
+		}
+		seen[role] = struct{}{}
+		roles[index] = role
+	}
+	return roles, nil
 }
 
 func validateACL(aclConfigs []rawACLRuleConfig) (security.Policy, error) {

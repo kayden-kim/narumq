@@ -2,8 +2,6 @@ package tcp
 
 import (
 	"context"
-	"crypto/tls"
-	"crypto/x509"
 	"errors"
 	"net"
 	"testing"
@@ -392,15 +390,6 @@ func TestReadLoopReturnsReadDeadlineError(t *testing.T) {
 	}
 }
 
-type mockTLSConn struct {
-	net.Conn
-	state tls.ConnectionState
-}
-
-func (m mockTLSConn) ConnectionState() tls.ConnectionState {
-	return m.state
-}
-
 func TestServerAddListenerAndMultiListenerServe(t *testing.T) {
 	var nilServer *Server
 	if err := nilServer.AddListener(nil); !errors.Is(err, ErrNilListener) {
@@ -445,103 +434,5 @@ func TestServerAddListenerAndMultiListenerServe(t *testing.T) {
 	case <-stoppedListener.closed:
 	default:
 		t.Fatal("stoppedListener was not closed")
-	}
-}
-
-func TestServerVerifyClientID(t *testing.T) {
-	cfg := defaultAdapterConfig()
-	cfg.VerifyClientID = true
-	runtime := newAdapterTestRuntime(t, 2, cfg)
-	defer runtime.stop(t)
-
-	peerCert := &x509.Certificate{
-		DNSNames:       []string{"client-dns.example.com"},
-		EmailAddresses: []string{"client@example.com"},
-	}
-	peerCert.Subject.CommonName = "client-cn"
-	tlsState := tls.ConnectionState{
-		PeerCertificates: []*x509.Certificate{peerCert},
-	}
-
-	testCases := []struct {
-		name       string
-		version    mqtt.ProtocolVersion
-		clientID   string
-		wantAccept bool
-		wantReason byte
-	}{
-		{name: "v5-match-cn", version: mqtt.ProtocolV5, clientID: "client-cn", wantAccept: true},
-		{name: "v5-match-dns", version: mqtt.ProtocolV5, clientID: "client-dns.example.com", wantAccept: true},
-		{name: "v5-match-email", version: mqtt.ProtocolV5, clientID: "client@example.com", wantAccept: true},
-		{name: "v5-mismatch", version: mqtt.ProtocolV5, clientID: "wrong-client", wantAccept: false, wantReason: 0x87},
-		{name: "v311-match-cn", version: mqtt.ProtocolV311, clientID: "client-cn", wantAccept: true},
-		{name: "v311-mismatch", version: mqtt.ProtocolV311, clientID: "wrong-client", wantAccept: false, wantReason: 0x05},
-	}
-
-	for _, tc := range testCases {
-		t.Run(tc.name, func(t *testing.T) {
-			serverPipe, clientPipe := net.Pipe()
-			defer clientPipe.Close()
-			mockConn := mockTLSConn{Conn: serverPipe, state: tlsState}
-			runtime.listener.connections <- mockConn
-			select {
-			case <-runtime.listener.accepted:
-			case <-time.After(time.Second):
-				t.Fatal("connection not accepted")
-			}
-			connectPacket := &mqtt.Connect{
-				Version:    tc.version,
-				CleanStart: true,
-				ClientID:   tc.clientID,
-			}
-			writeTestPackets(t, clientPipe, connectPacket)
-			frame := readTestFrame(t, clientPipe)
-			if len(frame) < 3 || frame[0] != 0x20 {
-				t.Fatalf("expected CONNACK, got %v", frame)
-			}
-			reason := frame[3]
-			if tc.wantAccept {
-				if reason != 0 {
-					t.Fatalf("expected reason 0, got 0x%02X", reason)
-				}
-			} else {
-				if reason != tc.wantReason {
-					t.Fatalf("expected reason 0x%02X, got 0x%02X", tc.wantReason, reason)
-				}
-			}
-		})
-	}
-}
-
-func TestServerVerifyClientIDCustomVerifier(t *testing.T) {
-	customCalled := false
-	cfg := defaultAdapterConfig()
-	cfg.VerifyClientID = true
-	cfg.ClientIdentityVerifier = func(conn net.Conn, clientID string) bool {
-		customCalled = true
-		return clientID == "custom-allowed"
-	}
-	runtime := newAdapterTestRuntime(t, 2, cfg)
-	defer runtime.stop(t)
-
-	serverPipe, clientPipe := net.Pipe()
-	runtime.listener.connections <- serverPipe
-	select {
-	case <-runtime.listener.accepted:
-	case <-time.After(time.Second):
-		t.Fatal("connection not accepted")
-	}
-	connectPacket := &mqtt.Connect{
-		Version:    mqtt.ProtocolV5,
-		CleanStart: true,
-		ClientID:   "custom-allowed",
-	}
-	writeTestPackets(t, clientPipe, connectPacket)
-	frame := readTestFrame(t, clientPipe)
-	if len(frame) < 4 || frame[0] != 0x20 || frame[3] != 0 {
-		t.Fatalf("expected accepted CONNACK, got %v", frame)
-	}
-	if !customCalled {
-		t.Fatal("custom verifier was not called")
 	}
 }

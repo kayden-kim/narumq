@@ -690,7 +690,7 @@ func TestTCPServer_UnauthorizedPublishAndSubscribe(t *testing.T) {
 	}
 	clock := &adapterTestClock{now: time.Date(2026, time.January, 1, 0, 0, 0, 0, time.UTC)}
 	willBridge := NewWillBridge()
-	connections, err := connect.New(clock, repository, queue, routes, adapterTestScheduler{}, willBridge, connect.WithSecurity(auth, policy))
+	connections, err := connect.New(clock, repository, queue, routes, adapterTestScheduler{}, willBridge, connect.WithSecurity(auth, nil, policy))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -835,6 +835,133 @@ func TestTCPServer_UnauthorizedPublishAndSubscribe(t *testing.T) {
 	}
 
 	_ = client.Close()
+}
+
+type testServerCertificateAuthenticator struct {
+	result      applicationauthentication.Result
+	certificate applicationauthentication.ClientCertificateDTO
+	calls       int
+}
+
+func (a *testServerCertificateAuthenticator) AuthenticateClientCertificate(ctx context.Context, certificate applicationauthentication.ClientCertificateDTO) (applicationauthentication.Result, error) {
+	a.calls++
+	a.certificate = certificate
+	return a.result, nil
+}
+
+func newCertificateAdapterTestRuntime(t *testing.T, config Config, authenticator applicationauthentication.ClientCertificateAuthenticationProvider) *adapterTestRuntime {
+	t.Helper()
+	listener := newPipeListener()
+	routes := routing.NewTable()
+	queue, err := deliveryqueue.New(2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	repository := sessionstore.New()
+	retainedRepository, err := memoryretained.New(32, 4096)
+	if err != nil {
+		t.Fatal(err)
+	}
+	clock := &adapterTestClock{now: time.Date(2026, time.January, 1, 0, 0, 0, 0, time.UTC)}
+	config.Clock = clock
+	willBridge := NewWillBridge()
+	connections, err := connect.New(clock, repository, queue, routes, adapterTestScheduler{}, willBridge, connect.WithSecurity(nil, authenticator, security.Policy{}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	subscriptions, err := subscribe.New(routes, queue, retainedRepository)
+	if err != nil {
+		t.Fatal(err)
+	}
+	publications, err := publish.New(clock, routes, queue, retainedRepository)
+	if err != nil {
+		t.Fatal(err)
+	}
+	decoder, err := mqtt.NewDecoder(config.MaxPacketSize)
+	if err != nil {
+		t.Fatal(err)
+	}
+	encoder, err := mqtt.NewEncoder(config.MaxPacketSize)
+	if err != nil {
+		t.Fatal(err)
+	}
+	server, err := NewServer(listener, config, decoder, encoder, connections, subscriptions, publications, queue, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	willBridge.Bind(server)
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- server.Serve(ctx) }()
+	client, serverConnection := net.Pipe()
+	listener.connections <- serverConnection
+	select {
+	case <-listener.accepted:
+	case <-time.After(time.Second):
+		t.Fatal("server did not accept net.Pipe connection")
+	}
+	return &adapterTestRuntime{server: server, listener: listener, client: client, cancel: cancel, done: done, repo: repository}
+}
+
+// Requirements: SEC-03, SEC-04; TCP carries only the application certificate DTO.
+func TestTCPServerPassesExtractedCertificateToConnect(t *testing.T) {
+	tenant, err := tenancy.NewTenantID("tenant-a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	authenticator := &testServerCertificateAuthenticator{result: applicationauthentication.Result{
+		TenantID:         tenant,
+		Subject:          "certificate-subject",
+		CredentialID:     "certificate-credential",
+		AllowedClientIDs: []string{"certificate-client"},
+		Roles:            []security.Role{"publisher"},
+		ExpiresAt:        time.Date(2026, time.January, 1, 1, 0, 0, 0, time.UTC),
+	}}
+	extractorCalls := 0
+	config := defaultAdapterConfig()
+	config.ClientCertificateExtractor = func(net.Conn) (applicationauthentication.ClientCertificateDTO, bool) {
+		extractorCalls++
+		return applicationauthentication.ClientCertificateDTO{
+			CommonName: "certificate-device",
+			NotAfter:   time.Date(2026, time.January, 1, 1, 0, 0, 0, time.UTC),
+		}, true
+	}
+	runtime := newCertificateAdapterTestRuntime(t, config, authenticator)
+	defer runtime.stop(t)
+
+	writeTestPackets(t, runtime.client, &mqtt.Connect{Version: mqtt.ProtocolV5, ClientID: "certificate-client"})
+	connAck := readTestFrame(t, runtime.client)
+	if len(connAck) < 4 || connAck[0] != 0x20 || connAck[3] != 0 {
+		t.Fatalf("mTLS CONNACK = % X", connAck)
+	}
+	if extractorCalls != 1 || authenticator.calls != 1 {
+		t.Fatalf("certificate propagation calls = extractor:%d authenticator:%d", extractorCalls, authenticator.calls)
+	}
+	wantNotAfter := time.Date(2026, time.January, 1, 1, 0, 0, 0, time.UTC)
+	if authenticator.certificate.CommonName != "certificate-device" || !authenticator.certificate.NotAfter.Equal(wantNotAfter) {
+		t.Fatalf("certificate DTO = %#v, want CommonName certificate-device and NotAfter %s", authenticator.certificate, wantNotAfter)
+	}
+}
+
+// Requirements: SEC-04; no verified certificate keeps the certificate-free path.
+func TestTCPServerCertificateExtractorAbsenceUsesAnonymousPath(t *testing.T) {
+	extractorCalls := 0
+	config := defaultAdapterConfig()
+	config.ClientCertificateExtractor = func(net.Conn) (applicationauthentication.ClientCertificateDTO, bool) {
+		extractorCalls++
+		return applicationauthentication.ClientCertificateDTO{}, false
+	}
+	runtime := newAdapterTestRuntime(t, 2, config)
+	defer runtime.stop(t)
+
+	writeTestPackets(t, runtime.client, &mqtt.Connect{Version: mqtt.ProtocolV5, ClientID: "anonymous-client"})
+	connAck := readTestFrame(t, runtime.client)
+	if len(connAck) < 4 || connAck[0] != 0x20 || connAck[3] != 0 {
+		t.Fatalf("certificate-free CONNACK = % X", connAck)
+	}
+	if extractorCalls != 1 {
+		t.Fatalf("certificate extractor calls = %d, want 1", extractorCalls)
+	}
 }
 
 var _ applicationdeliveryqueue.Queue = (*deliveryqueue.Queue)(nil)

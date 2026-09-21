@@ -6,7 +6,7 @@ Broker core는 MQTT, session, routing, delivery, tenancy와 cluster lifecycle �
 | --- | --- |
 | 관점 상태 | Active Phase 1 security and tenant isolation architecture |
 | 문서 상태 | Active |
-| 구현 증거 | Phase 0 단일 노드 ingress, TLS/mTLS 및 합의 스파이크 증거는 기존 패키지에 보존되어 있다. Phase 1 tenancy, security, authentication 패키지와 데이터 플레인 인가 파이프라인은 단위·통합 테스트(TestMQTTSecurity) 및 검증 게이트를 통해 구현 증거가 확보되었다. |
+| 구현 증거 | Phase 0 단일 노드 ingress, TLS/mTLS transport와 합의 스파이크 증거가 기존 패키지에 보존되어 있다. Phase 1 tenancy·security·authentication 패키지와 JWT/mTLS 데이터 플레인 인증·인가 파이프라인은 unit/integration test, 실제 TLS socket test와 command composition test를 통해 현재 source 증거가 확보되었다. |
 | 범위 | 단일 broker process의 component, loopback TCP runtime과 source dependency |
 | 관련 요구사항 | [PRD](../requirements/PRD.md) NFR-11~NFR-15, TEST-01~TEST-16 |
 | 관련 결정 | [ADR-0001](../decisions/ADR-0001-core-implementation-language.md) Accepted |
@@ -76,22 +76,26 @@ Domain component 사이의 세부 dependency는 구현 단계의 package graph�
 | Composition root | Strict configuration, concrete implementation 선택과 lifecycle wiring. MQTT listener 보안 mode를 socket 생성 전에 결정하고 secure mode의 authentication/policy를 반드시 조립한다. | MQTT business invariant 구현 |
 
 `cmd/narumq`는 MQTT listener를 열기 전에 하나의 보안 mode만 선택한다. Secure mode는
-`-security-config`를 strict decode하고 `JWKSAuthenticationProvider`와 ACL `Policy`를
-각각 application use case와 TCP adapter에 주입한다. Insecure mode는
+`-security-config`를 strict decode하고 configured JWT/JWKS provider와 선택적인 mTLS
+certificate provider를 생성한다. 두 provider와 ACL `Policy`는 application `connect`
+use case에 주입되고, TCP adapter에는 verified certificate를
+`ClientCertificateDTO`로 변환하는 extractor만 주입된다. Insecure mode는
 `-allow-insecure-anonymous-mqtt`와 literal loopback `-tcp-listen`의 명시적
 development·benchmark 예외에서만 선택하며, 이때 provider와 policy wiring을 생략한다.
 이 flag나 allow-all `Policy`를 domain/application 계약으로 전파하지 않는다.
 
-## Target Phase 1 security·tenant-aware single-node ingress slice
+## Implemented Phase 1 security·tenant-aware single-node ingress slice
 
-이 절은 typed tenant namespace, JWT/JWKS authentication, default-deny ACL과 loopback
-MQTT runtime을 연결하는 승인된 구조 계약이다. Phase 1 구현과 실행 검증이 끝나기
-전까지 현재 source 증거로 해석하지 않는다.
+typed tenant namespace, JWT/JWKS 또는 verified client certificate mTLS authentication,
+default-deny ACL과 loopback MQTT runtime이 현재 source와 test에 연결되어 있다.
+TLS adapter는 trust anchor와 client certificate validity/EKU를 TLS handshake에서
+검증한 뒤 application authentication port가 소비하는 certificate DTO만 전달한다.
 
 ```text
 cmd/narumq
     ├── adapters/authentication ──> application/ports/authentication
-    └── adapters/tcp ──> application/connect
+    ├── adapters/tls ─────────────> application/ports/authentication
+    └── adapters/tcp ─────────────> application/connect
                               ├──> application/ports/authentication
                               ├──> domain/security
                               ├──> domain/session
@@ -101,31 +105,35 @@ cmd/narumq
                               └──> domain/routing <── application/subscribe/publish
                                       └──> domain/mqtt
 ```
-
 - `domain/tenancy`: private comparable `TenantID`, `SessionKey`, `Topic`, `TopicFilter`와
   기존 MQTT wildcard/$ matcher, filter containment/intersection을 소유한다.
 - `domain/security`: verified binding을 담은 immutable `Principal`과 role별
-  deny > allow > default-deny ACL policy를 소유한다. JWT/JWKS나 configuration을 모른다.
+  deny > allow > default-deny ACL policy를 소유한다. JWT/JWKS, certificate library
+  object나 configuration을 모른다.
 - `domain/session`: SessionKey와 principal snapshot을 lifecycle과 Will snapshot에 함께
   저장하고 Claim/Expire 결과로 전달한다.
-- `application/connect`: Username·Password flag, authentication, exact Client ID binding,
-  Will ACL을 session ownership보다 먼저 평가한다. 실패 시 timer·repository·route·queue를
-  변경하지 않는다.
-- `application/subscribe`와 `application/publish`: packet의 raw topic/filter를 entry에서
-  typed tenant value로 바꾸고 ACL을 retained·route·delivery mutation보다 먼저 적용한다.
+- `application/connect`: certificate 또는 Username·Password authentication, exact
+  Client ID binding, Will ACL을 session ownership보다 먼저 평가한다. mTLS credential과
+  MQTT credential을 함께 제출하면 거절하며, 인증·binding·Will 검증 전에는 timer·
+  repository·route·queue를 변경하지 않는다.
 - `adapters/authentication`: allowlisted JWT algorithm, required `kid`, verified JWKS,
-  claim validation과 static `(issuer, subject)` binding을 application Result로 변환한다.
-  Cache refresh는 coalesced이고 TTL 이후 fetch 실패에 fail-closed한다.
+  claim validation과 static identity binding, 그리고 exact certificate selector
+  `(commonName|dnsSan|emailSan)` mapping을 application Result로 변환한다. Certificate
+  `NotAfter` 경계와 unmapped/ambiguous selector를 fail-closed로 처리한다.
+  JWT cache refresh는 coalesced이고 TTL 이후 fetch 실패에 fail-closed한다.
+- `adapters/tls`: TLS 1.2+ listener와 trust anchor를 구성하고 verified chain의 leaf에서
+  `ClientCertificateDTO`를 만들어 application boundary로 전달한다. Raw certificate는
+  TCP/application/domain 경계로 넘기지 않는다.
 - `adapters/tcp`: accepted SessionKey와 principal snapshot을 connection에 보관하고 모든
   data-plane dispatch에 함께 전달한다. Username은 identity로 사용하지 않으며 log에 남기지 않는다.
 - `adapters/memory/deliveryqueue`, `adapters/memory/retained`, `adapters/memory/sessionstore`는
   각각 SessionKey, `(tenant, topic)`, SessionKey를 key로 사용한다.
 
-성공 경계는 인증된 CONNECT 뒤 QoS 0·1·2 PUBLISH handshake, ordered SUBACK/UNSUBACK와
-Will 등록·지연 publication이다. ACL 거절은 mutation 전에 반환하며 MQTT 5 PUBLISH는
-QoS에 따라 DISCONNECT/PUBACK/PUBREC `0x87`, MQTT 3.1.1은 연결 종료를 사용한다.
-Metrics, mTLS principal mapping, quota/blocklist, management API, audit sink과 기존 연결
-token reauthentication은 이 slice에서 지원하지 않는다.
+성공 경계는 JWT 또는 mTLS로 인증된 CONNECT 뒤 QoS 0·1·2 PUBLISH handshake,
+ordered SUBACK/UNSUBACK와 Will 등록·지연 publication이다. ACL 거절은 mutation 전에
+반환하며 MQTT 5 PUBLISH는 QoS에 따라 DISCONNECT/PUBACK/PUBREC `0x87`,
+MQTT 3.1.1은 연결 종료를 사용한다. Metrics, quota/blocklist, management API,
+audit sink과 기존 연결 token reauthentication은 이 slice에서 지원하지 않는다.
 
 ## Application-owned port
 
@@ -137,7 +145,7 @@ Port는 구현 adapter 옆이 아니라 이를 사용하는 application 쪽이 �
 | Session lifecycle | tenant-aware `SessionKey`별 lifecycle load/save/delete와 expiry 복구 | `application/connect.SessionRepository` ← `adapters/memory/sessionstore.MemorySessionRepository` |
 | Delivery queue | SessionKey 등록·제거, bounded FIFO enqueue, queued·in-flight recovery, expiry purge | `application/ports/deliveryqueue.Queue` ← `adapters/memory/deliveryqueue.Queue` |
 | Retained message | tenant-aware exact-topic replace/delete, deterministic expiry-aware list와 count·byte bounded ownership | `application/ports/retained.Repository` ← `adapters/memory/retained.Repository` |
-| Authentication | Credential을 verified binding Result로 변환하는 application port | `application/ports/authentication.AuthenticationProvider` ← `adapters/authentication.JWKSAuthenticationProvider` |
+| Authentication | Credential 또는 verified client certificate를 binding Result로 변환하는 application port | `application/ports/authentication.AuthenticationProvider` 및 `ClientCertificateAuthenticationProvider` ← `adapters/authentication.JWKSAuthenticationProvider`, `MTLSAuthenticationProvider` |
 | Clock | deterministic expiry 입력 | `application/ports/clock.Clock` ← `adapters/clock.SystemClock` |
 | Replication | Command proposal, commit receipt와 membership 관찰 | `etcd/raft` adapter 후보 |
 | Peer transport | 인증된 node message 송수신과 backpressure | Cluster RPC adapter |
@@ -145,11 +153,13 @@ Port는 구현 adapter 옆이 아니라 이를 사용하는 application 쪽이 �
 | Node discovery·platform | Member 후보와 workload lifecycle 관찰 | Kubernetes adapter |
 | Clock·random | Expiry와 jitter를 결정적으로 제공 | Runtime·test adapter |
 현재 source에 구현된 `connect.SessionRepository`, `ports/authentication.AuthenticationProvider`,
-`ports/clock.Clock`, `ports/deliveryqueue.Queue`와 `ports/retained.Repository`의 method
-signature는 해당 package가 소유한다. Domain과 application boundary는 raw client/topic/filter
-key를 저장하지 않고 typed value와 principal snapshot을 운반한다. delivery queue의
-queued·in-flight state는 persistent session이 살아 있는 동안 process-local boundary가
-소유하며, process restart·durable storage·replication·metrics·audit는 후속 capability 범위로 유지한다.
+`ports/authentication.ClientCertificateAuthenticationProvider`, `ports/clock.Clock`,
+`ports/deliveryqueue.Queue`와 `ports/retained.Repository`의 method signature는 해당
+package가 소유한다. Domain과 application boundary는 raw client/topic/filter key와
+raw certificate를 저장하지 않고 typed value, certificate DTO와 principal snapshot을
+운반한다. delivery queue의 queued·in-flight state는 persistent session이 살아 있는 동안
+process-local boundary가 소유하며, process restart·durable storage·replication·metrics·audit는
+후속 capability 범위로 유지한다.
 
 ## Delivery state boundary
 

@@ -1788,7 +1788,7 @@ func TestMQTTSecurity(t *testing.T) {
 	retainedRepo, _ := memoryretained.New(64, 4096)
 	repository := sessionstore.New()
 	willBridge := tcpadapter.NewWillBridge()
-	connections, err := connect.New(clock.SystemClock{}, repository, deliveries, routes, clock.SystemScheduler{}, willBridge, connect.WithSecurity(authProvider, policy))
+	connections, err := connect.New(clock.SystemClock{}, repository, deliveries, routes, clock.SystemScheduler{}, willBridge, connect.WithSecurity(authProvider, nil, policy))
 	if err != nil {
 		t.Fatal(err)
 	}

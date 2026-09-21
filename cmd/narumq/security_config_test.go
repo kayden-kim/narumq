@@ -43,11 +43,14 @@ func TestParseSecurityConfig_Valid(t *testing.T) {
 	if err != nil {
 		t.Fatalf("parseSecurityConfig() unexpected error = %v", err)
 	}
-	if bundle.AuthConfig.Issuer != "https://issuer.example" {
-		t.Errorf("Issuer = %q, want 'https://issuer.example'", bundle.AuthConfig.Issuer)
+	if bundle.JWTConfig == nil {
+		t.Fatal("JWTConfig = nil, want JWT configuration")
 	}
-	if len(bundle.AuthConfig.Bindings) != 1 {
-		t.Errorf("Bindings length = %d, want 1", len(bundle.AuthConfig.Bindings))
+	if bundle.JWTConfig.Issuer != "https://issuer.example" {
+		t.Errorf("Issuer = %q, want 'https://issuer.example'", bundle.JWTConfig.Issuer)
+	}
+	if len(bundle.JWTConfig.Bindings) != 1 {
+		t.Errorf("Bindings length = %d, want 1", len(bundle.JWTConfig.Bindings))
 	}
 }
 
@@ -244,5 +247,133 @@ func TestParseSecurityConfig_Rejections(t *testing.T) {
 func TestParseSecurityConfig_NilReader(t *testing.T) {
 	if _, err := parseSecurityConfig(nil); err == nil {
 		t.Fatal("expected error for nil reader")
+	}
+}
+
+const validMTLSSecurityJSON = `{
+  "mtlsIdentities": [
+    {
+      "identityKind": "commonName",
+      "identity": "device-1.example",
+      "tenantId": "tenant-a",
+      "subject": "device-1",
+      "credentialId": "device-1-cert",
+      "allowedClientIds": ["device-1"],
+      "roles": ["publisher"]
+    }
+  ],
+  "acl": [
+    {
+      "tenantId": "tenant-a",
+      "role": "publisher",
+      "effect": "allow",
+      "action": "publish",
+      "topicFilter": "sensors/#"
+    }
+  ]
+}`
+
+func TestParseSecurityConfig_MTLSOnly(t *testing.T) {
+	bundle, err := parseSecurityConfig(strings.NewReader(validMTLSSecurityJSON))
+	if err != nil {
+		t.Fatalf("parseSecurityConfig() unexpected error = %v", err)
+	}
+	if bundle.JWTConfig != nil {
+		t.Fatal("JWTConfig is non-nil for mTLS-only configuration")
+	}
+	if len(bundle.MTLSBindings) != 1 {
+		t.Fatalf("MTLSBindings length = %d, want 1", len(bundle.MTLSBindings))
+	}
+	binding := bundle.MTLSBindings[0]
+	if binding.Kind != "commonName" || binding.Value != "device-1.example" {
+		t.Fatalf("mTLS selector = (%q, %q), want (commonName, device-1.example)", binding.Kind, binding.Value)
+	}
+}
+
+func TestParseSecurityConfig_CombinedAuthentication(t *testing.T) {
+	input := strings.Replace(
+		validSecurityJSON,
+		`  "acl": [`,
+		`  "mtlsIdentities": [{"identityKind": "dnsSan", "identity": "device-1.example", "tenantId": "tenant-a", "subject": "device-1-mtls", "credentialId": "device-1-cert", "allowedClientIds": ["device-1-mtls"], "roles": ["publisher"]}],
+  "acl": [`,
+		1,
+	)
+	bundle, err := parseSecurityConfig(strings.NewReader(input))
+	if err != nil {
+		t.Fatalf("parseSecurityConfig() unexpected error = %v", err)
+	}
+	if bundle.JWTConfig == nil || len(bundle.JWTConfig.Bindings) != 1 {
+		t.Fatalf("JWTConfig = %#v, want one JWT binding", bundle.JWTConfig)
+	}
+	if len(bundle.MTLSBindings) != 1 {
+		t.Fatalf("MTLSBindings length = %d, want 1", len(bundle.MTLSBindings))
+	}
+}
+
+func TestParseSecurityConfig_MTLSValidation(t *testing.T) {
+	cases := []struct {
+		name        string
+		input       string
+		errContains string
+	}{
+		{
+			name:        "unknown identity kind",
+			input:       strings.Replace(validMTLSSecurityJSON, `"commonName"`, `"subject"`, 1),
+			errContains: "invalid mTLS identityKind",
+		},
+		{
+			name: "duplicate selector",
+			input: strings.Replace(
+				validMTLSSecurityJSON,
+				`    }
+  ],
+  "acl":`,
+				`    },
+    {
+      "identityKind": "commonName",
+      "identity": "device-1.example",
+      "tenantId": "tenant-a",
+      "subject": "device-1-2",
+      "credentialId": "device-1-cert-2",
+      "allowedClientIds": ["device-1-2"],
+      "roles": ["publisher"]
+    }
+  ],
+  "acl":`,
+				1,
+			),
+			errContains: "duplicate mTLS identity selector",
+		},
+		{
+			name:        "duplicate credential across methods",
+			input:       strings.Replace(validMTLSSecurityJSON, `"device-1-cert"`, `"device-1-key"`, 1),
+			errContains: "duplicate credentialId",
+		},
+		{
+			name:        "no authentication method",
+			input:       `{"acl": []}`,
+			errContains: "at least one authentication method is required",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			input := tc.input
+			if tc.name == "duplicate credential across methods" {
+				input = strings.Replace(
+					validSecurityJSON,
+					`  "acl": [`,
+					`  "mtlsIdentities": [{"identityKind": "commonName", "identity": "device-1.example", "tenantId": "tenant-a", "subject": "device-1-mtls", "credentialId": "device-1-key", "allowedClientIds": ["device-1-mtls"], "roles": ["publisher"]}],
+  "acl": [`,
+					1,
+				)
+			}
+			_, err := parseSecurityConfig(strings.NewReader(input))
+			if err == nil {
+				t.Fatal("expected error, got nil")
+			}
+			if !strings.Contains(err.Error(), tc.errContains) {
+				t.Fatalf("error = %v, want substring %q", err, tc.errContains)
+			}
+		})
 	}
 }

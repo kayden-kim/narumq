@@ -5,9 +5,9 @@ import (
 	"crypto/x509"
 	"errors"
 	"io"
-	"math/big"
 	"net"
 	"testing"
+	"time"
 )
 
 type mockTLSConn struct {
@@ -126,135 +126,67 @@ func TestListen_SuccessAndHandshake(t *testing.T) {
 	}
 }
 
-func TestExtractClientIdentity(t *testing.T) {
+func TestExtractVerifiedClientCertificateDTO(t *testing.T) {
 	t.Run("non-tls socket", func(t *testing.T) {
 		s1, s2 := net.Pipe()
 		defer s1.Close()
 		defer s2.Close()
-		identity, ok := ExtractClientIdentity(s1)
-		if ok || identity != nil {
-			t.Fatalf("expected nil, false for plain socket, got %v, %v", identity, ok)
+		dto, ok := ExtractVerifiedClientCertificateDTO(s1)
+		if ok || dto.CommonName != "" || len(dto.DNSNames) != 0 || len(dto.EmailAddresses) != 0 {
+			t.Fatalf("expected empty DTO and false for plain socket, got %#v, %v", dto, ok)
 		}
 	})
 
-	t.Run("tls socket with no peer certs", func(t *testing.T) {
+	t.Run("peer certificate without verified chain", func(t *testing.T) {
+		cert := &x509.Certificate{DNSNames: []string{"unverified.example"}}
 		mock := mockTLSConn{
 			state: tls.ConnectionState{
-				PeerCertificates: nil,
+				PeerCertificates: []*x509.Certificate{cert},
 			},
 		}
-		identity, ok := ExtractClientIdentity(mock)
-		if ok || identity != nil {
-			t.Fatalf("expected nil, false when no peer certs, got %v, %v", identity, ok)
+		dto, ok := ExtractVerifiedClientCertificateDTO(mock)
+		if ok || dto.CommonName != "" || len(dto.DNSNames) != 0 || len(dto.EmailAddresses) != 0 {
+			t.Fatalf("expected empty DTO and false for unverified peer certificate, got %#v, %v", dto, ok)
 		}
 	})
 
-	t.Run("tls socket with peer cert", func(t *testing.T) {
+	t.Run("verified chain copies identity fields", func(t *testing.T) {
+		notAfter := time.Date(2026, time.January, 1, 0, 0, 0, 0, time.UTC)
 		cert := &x509.Certificate{
-			SerialNumber:   big.NewInt(123456789),
 			DNSNames:       []string{"device.narumq.internal"},
 			EmailAddresses: []string{"device@narumq.internal"},
+			NotAfter:       notAfter,
 		}
 		cert.Subject.CommonName = "device-01"
 		mock := mockTLSConn{
 			state: tls.ConnectionState{
 				PeerCertificates: []*x509.Certificate{cert},
+				VerifiedChains:   [][]*x509.Certificate{{cert}},
 			},
 		}
-		identity, ok := ExtractClientIdentity(mock)
-		if !ok || identity == nil {
-			t.Fatalf("expected valid identity, got %v, %v", identity, ok)
+		dto, ok := ExtractVerifiedClientCertificateDTO(mock)
+		if !ok {
+			t.Fatal("expected verified client certificate DTO")
 		}
-		if identity.CommonName != "device-01" {
-			t.Errorf("expected CommonName = device-01, got %q", identity.CommonName)
+		if dto.CommonName != "device-01" || dto.NotAfter != notAfter {
+			t.Fatalf("identity scalar fields = %#v", dto)
 		}
-		if len(identity.DNSNames) != 1 || identity.DNSNames[0] != "device.narumq.internal" {
-			t.Errorf("unexpected DNSNames: %v", identity.DNSNames)
+		if len(dto.DNSNames) != 1 || dto.DNSNames[0] != "device.narumq.internal" {
+			t.Fatalf("DNS SANs = %v", dto.DNSNames)
 		}
-		if len(identity.Emails) != 1 || identity.Emails[0] != "device@narumq.internal" {
-			t.Errorf("unexpected Emails: %v", identity.Emails)
+		if len(dto.EmailAddresses) != 1 || dto.EmailAddresses[0] != "device@narumq.internal" {
+			t.Fatalf("email SANs = %v", dto.EmailAddresses)
 		}
-		if identity.SerialNumber != "123456789" {
-			t.Errorf("expected SerialNumber = 123456789, got %q", identity.SerialNumber)
-		}
-	})
-}
 
-func TestVerifyClientIdentity(t *testing.T) {
-	identity := &ClientIdentity{
-		CommonName: "sensor-primary",
-		DNSNames:   []string{"sensor.example.com", "alt.example.com"},
-		Emails:     []string{"sensor@example.com"},
-	}
-
-	tests := []struct {
-		name     string
-		identity *ClientIdentity
-		clientID string
-		want     bool
-	}{
-		{name: "nil identity", identity: nil, clientID: "sensor-primary", want: false},
-		{name: "match CN", identity: identity, clientID: "sensor-primary", want: true},
-		{name: "match DNS 1", identity: identity, clientID: "sensor.example.com", want: true},
-		{name: "match DNS 2", identity: identity, clientID: "alt.example.com", want: true},
-		{name: "match Email", identity: identity, clientID: "sensor@example.com", want: true},
-		{name: "mismatch", identity: identity, clientID: "unknown-device", want: false},
-		{name: "empty clientID", identity: identity, clientID: "", want: false},
-	}
-
-	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
-			got := VerifyClientIdentity(tc.identity, tc.clientID)
-			if got != tc.want {
-				t.Fatalf("VerifyClientIdentity(%v, %q) = %v, want %v", tc.identity, tc.clientID, got, tc.want)
-			}
-		})
-	}
-}
-
-func TestVerifyConnClientIdentity(t *testing.T) {
-	t.Run("non-tls socket passes", func(t *testing.T) {
-		s1, s2 := net.Pipe()
-		defer s1.Close()
-		defer s2.Close()
-		if !VerifyConnClientIdentity(s1, "any-client-id") {
-			t.Fatal("expected true for plain socket")
+		dto.DNSNames[0] = "mutated-dto.example"
+		dto.EmailAddresses[0] = "mutated-dto@example"
+		if cert.DNSNames[0] != "device.narumq.internal" || cert.EmailAddresses[0] != "device@narumq.internal" {
+			t.Fatal("certificate slices alias returned DTO")
 		}
-	})
-
-	t.Run("tls socket without client cert passes", func(t *testing.T) {
-		mock := mockTLSConn{
-			state: tls.ConnectionState{
-				PeerCertificates: nil,
-			},
-		}
-		if !VerifyConnClientIdentity(mock, "any-client-id") {
-			t.Fatal("expected true when no peer certificates present")
-		}
-	})
-
-	t.Run("tls socket with client cert checks identity", func(t *testing.T) {
-		cert := &x509.Certificate{
-			DNSNames:       []string{"gateway.local"},
-			EmailAddresses: []string{"admin@gateway.local"},
-		}
-		cert.Subject.CommonName = "gateway-01"
-		mock := mockTLSConn{
-			state: tls.ConnectionState{
-				PeerCertificates: []*x509.Certificate{cert},
-			},
-		}
-		if !VerifyConnClientIdentity(mock, "gateway-01") {
-			t.Error("expected true for matching CN")
-		}
-		if !VerifyConnClientIdentity(mock, "gateway.local") {
-			t.Error("expected true for matching DNS")
-		}
-		if !VerifyConnClientIdentity(mock, "admin@gateway.local") {
-			t.Error("expected true for matching Email")
-		}
-		if VerifyConnClientIdentity(mock, "impostor") {
-			t.Error("expected false for mismatched client ID")
+		cert.DNSNames[0] = "mutated-source.example"
+		cert.EmailAddresses[0] = "mutated-source@example"
+		if dto.DNSNames[0] != "mutated-dto.example" || dto.EmailAddresses[0] != "mutated-dto@example" {
+			t.Fatal("returned DTO slices alias certificate source")
 		}
 	})
 }
