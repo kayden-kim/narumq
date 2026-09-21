@@ -62,6 +62,7 @@ func TestRunRejectsRuntimeMetricsFlagCombinations(t *testing.T) {
 			name: "non-positive interval",
 			args: []string{
 				"-tcp-listen", "127.0.0.1:0",
+				"-allow-insecure-anonymous-mqtt",
 				"-runtime-metrics-output", output,
 				"-runtime-metrics-interval", "-1s",
 			},
@@ -88,6 +89,7 @@ func TestRunRejectsUnwritableRuntimeMetricsOutput(t *testing.T) {
 	output := filepath.Join(t.TempDir(), "missing", "runtime-metrics.jsonl")
 	err := runWithContext(context.Background(), []string{
 		"-tcp-listen", "127.0.0.1:0",
+		"-allow-insecure-anonymous-mqtt",
 		"-runtime-metrics-output", output,
 		"-runtime-metrics-interval", "1ms",
 	}, logger)
@@ -105,6 +107,7 @@ func TestRunFlushesRuntimeMetricsOnCancellation(t *testing.T) {
 	go func() {
 		done <- runWithContext(ctx, []string{
 			"-tcp-listen", "127.0.0.1:0",
+			"-allow-insecure-anonymous-mqtt",
 			"-runtime-metrics-output", output,
 			"-runtime-metrics-interval", "5ms",
 		}, logger)
@@ -185,14 +188,14 @@ func TestRunWithContextRejectsConstructionBounds(t *testing.T) {
 		args []string
 		want string
 	}{
-		{name: "delivery queue", args: []string{"-tcp-listen", "127.0.0.1:0", "-delivery-queue-capacity", "0"}, want: "create delivery queue"},
-		{name: "retained message capacity", args: []string{"-tcp-listen", "127.0.0.1:0", "-retained-message-capacity", "0"}, want: "retained-message-capacity"},
-		{name: "retained byte capacity", args: []string{"-tcp-listen", "127.0.0.1:0", "-retained-byte-capacity", "0"}, want: "retained-byte-capacity"},
-		{name: "decoder", args: []string{"-tcp-listen", "127.0.0.1:0", "-max-packet-size", "0"}, want: "create MQTT decoder"},
-		{name: "server config", args: []string{"-tcp-listen", "127.0.0.1:0", "-control-queue-capacity", "0"}, want: "create TCP server"},
+		{name: "delivery queue", args: []string{"-tcp-listen", "127.0.0.1:0", "-allow-insecure-anonymous-mqtt", "-delivery-queue-capacity", "0"}, want: "create delivery queue"},
+		{name: "retained message capacity", args: []string{"-tcp-listen", "127.0.0.1:0", "-allow-insecure-anonymous-mqtt", "-retained-message-capacity", "0"}, want: "retained-message-capacity"},
+		{name: "retained byte capacity", args: []string{"-tcp-listen", "127.0.0.1:0", "-allow-insecure-anonymous-mqtt", "-retained-byte-capacity", "0"}, want: "retained-byte-capacity"},
+		{name: "decoder", args: []string{"-tcp-listen", "127.0.0.1:0", "-allow-insecure-anonymous-mqtt", "-max-packet-size", "0"}, want: "create MQTT decoder"},
+		{name: "server config", args: []string{"-tcp-listen", "127.0.0.1:0", "-allow-insecure-anonymous-mqtt", "-control-queue-capacity", "0"}, want: "create TCP server"},
 		{name: "metrics without listener", args: []string{"-runtime-metrics-output", "out.jsonl", "-runtime-metrics-interval", "1s"}, want: "required when runtime metrics collection is enabled"},
-		{name: "invalid loopback IP", args: []string{"-tcp-listen", "192.168.1.1:1883"}, want: "must use literal loopback IP"},
-		{name: "invalid tcp address", args: []string{"-tcp-listen", "invalid_no_port"}, want: "invalid -tcp-listen"},
+		{name: "invalid loopback IP", args: []string{"-tcp-listen", "192.168.1.1:1883", "-allow-insecure-anonymous-mqtt"}, want: "must use literal loopback IP"},
+		{name: "invalid tcp address", args: []string{"-tcp-listen", "invalid_no_port", "-allow-insecure-anonymous-mqtt"}, want: "invalid -tcp-listen"},
 		{name: "unauthenticated management listener", args: []string{"-http-listen", "0.0.0.0:8080"}, want: "unauthenticated management listener"},
 		{name: "negative interval", args: []string{"-runtime-metrics-output", "out.jsonl", "-runtime-metrics-interval", "-1s"}, want: "greater than zero"},
 		{name: "unmatched metrics flags output only", args: []string{"-runtime-metrics-output", "out.jsonl"}, want: "must be provided together"},
@@ -212,8 +215,55 @@ func TestRunWithContextCanceledListenerStopsCleanly(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	if err := runWithContext(ctx, []string{"-tcp-listen", "127.0.0.1:0"}, logger); err != nil && !errors.Is(err, context.Canceled) {
+	if err := runWithContext(ctx, []string{
+		"-tcp-listen", "127.0.0.1:0",
+		"-allow-insecure-anonymous-mqtt",
+	}, logger); err != nil && !errors.Is(err, context.Canceled) {
 		t.Fatalf("canceled listener run error = %v", err)
+	}
+}
+func TestRunWithContextMQTTSecurityMode(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	tests := []struct {
+		name string
+		args []string
+		want string
+	}{
+		{
+			name: "listener without security mode",
+			args: []string{"-tcp-listen", "127.0.0.1:0"},
+			want: "-security-config is required when an MQTT listener is enabled",
+		},
+		{
+			name: "security config and insecure exception",
+			args: []string{
+				"-tcp-listen", "127.0.0.1:0",
+				"-security-config", filepath.Join(t.TempDir(), "unused.json"),
+				"-allow-insecure-anonymous-mqtt",
+			},
+			want: "-security-config and -allow-insecure-anonymous-mqtt cannot be used together",
+		},
+		{
+			name: "TLS with insecure exception",
+			args: []string{
+				"-tls-listen", "127.0.0.1:0",
+				"-allow-insecure-anonymous-mqtt",
+			},
+			want: "-allow-insecure-anonymous-mqtt requires a loopback-only -tcp-listen and cannot be used with -tls-listen",
+		},
+		{
+			name: "insecure exception without MQTT listener",
+			args: []string{"-allow-insecure-anonymous-mqtt"},
+			want: "-allow-insecure-anonymous-mqtt requires a loopback-only -tcp-listen and cannot be used with -tls-listen",
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			err := runWithContext(context.Background(), test.args, logger)
+			if err == nil || err.Error() != test.want {
+				t.Fatalf("runWithContext() error = %v, want %q", err, test.want)
+			}
+		})
 	}
 }
 
@@ -231,7 +281,10 @@ func TestRunReportsListenerConstructionFailure(t *testing.T) {
 	}
 	defer listener.Close()
 	address := listener.Addr().String()
-	err = runWithContext(context.Background(), []string{"-tcp-listen", address}, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	err = runWithContext(context.Background(), []string{
+		"-tcp-listen", address,
+		"-allow-insecure-anonymous-mqtt",
+	}, slog.New(slog.NewTextHandler(io.Discard, nil)))
 	if err == nil || !strings.Contains(err.Error(), "listen on") {
 		t.Fatalf("runWithContext() error = %v, want listener failure", err)
 	}
@@ -240,9 +293,14 @@ func TestRunReportsListenerConstructionFailure(t *testing.T) {
 func TestRunWithContextTLSFlags(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	tempDir := t.TempDir()
+	cfgFile := filepath.Join(tempDir, "valid-sec.json")
+	if err := os.WriteFile(cfgFile, []byte(validSecurityJSON), 0600); err != nil {
+		t.Fatal(err)
+	}
 
 	t.Run("missing cert with tls-listen", func(t *testing.T) {
 		err := runWithContext(context.Background(), []string{
+			"-security-config", cfgFile,
 			"-tls-listen", "127.0.0.1:0",
 		}, logger)
 		if err == nil || !strings.Contains(err.Error(), "configure TLS") {
@@ -256,6 +314,7 @@ func TestRunWithContextTLSFlags(t *testing.T) {
 		_ = os.WriteFile(certPath, []byte("dummy"), 0600)
 		_ = os.WriteFile(keyPath, []byte("dummy"), 0600)
 		err := runWithContext(context.Background(), []string{
+			"-security-config", cfgFile,
 			"-tls-listen", "127.0.0.1:0",
 			"-tls-cert", certPath,
 			"-tls-key", keyPath,
@@ -329,6 +388,7 @@ func TestRunWithContextServesManagementHTTP(t *testing.T) {
 	go func() {
 		done <- runWithContext(ctx, []string{
 			"-tcp-listen", mqttAddress,
+			"-allow-insecure-anonymous-mqtt",
 			"-http-listen", httpAddress,
 		}, logger)
 	}()

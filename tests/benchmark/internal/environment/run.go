@@ -173,7 +173,7 @@ func buildBrokerCreateArgs(options TargetOptions, containerName string) []string
 	}
 	args = append(args, options.ImageReference)
 	if options.Target == "narumq" {
-		args = append(args, "-tcp-listen", "127.0.0.1:1883")
+		args = append(args, "-tcp-listen", "127.0.0.1:1883", "-allow-insecure-anonymous-mqtt")
 		if options.CollectRuntimeMetrics {
 			args = append(args,
 				"-runtime-metrics-output", "/benchmark-output/runtime-metrics.jsonl",

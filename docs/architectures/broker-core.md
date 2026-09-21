@@ -73,7 +73,14 @@ Domain component 사이의 세부 dependency는 구현 단계의 package graph�
 | Cluster lifecycle | Member state, readiness와 drain barrier의 domain rule | Kubernetes Pod API |
 | Application use case | authentication→binding→authorization→mutation 순서와 transaction 경계 | Concrete adapter와 framework object |
 | Adapter | Wire, storage, authentication과 platform 자료형 변환·I/O | 새로운 business invariant 결정 |
-| Composition root | Strict configuration, concrete implementation 선택과 lifecycle wiring | MQTT business invariant 구현 |
+| Composition root | Strict configuration, concrete implementation 선택과 lifecycle wiring. MQTT listener 보안 mode를 socket 생성 전에 결정하고 secure mode의 authentication/policy를 반드시 조립한다. | MQTT business invariant 구현 |
+
+`cmd/narumq`는 MQTT listener를 열기 전에 하나의 보안 mode만 선택한다. Secure mode는
+`-security-config`를 strict decode하고 `JWKSAuthenticationProvider`와 ACL `Policy`를
+각각 application use case와 TCP adapter에 주입한다. Insecure mode는
+`-allow-insecure-anonymous-mqtt`와 literal loopback `-tcp-listen`의 명시적
+development·benchmark 예외에서만 선택하며, 이때 provider와 policy wiring을 생략한다.
+이 flag나 allow-all `Policy`를 domain/application 계약으로 전파하지 않는다.
 
 ## Target Phase 1 security·tenant-aware single-node ingress slice
 

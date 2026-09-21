@@ -13,11 +13,13 @@
 
 ## 현재 구현 상태: Phase 1 단일 노드 QoS 1/2 delivery·retained·will slice
 
-현재 구현은 개발·검증 전용 loopback plaintext TCP ingress까지 연결되어 실제
-MQTT 3.1.1/5.0 client가 `CONNECT → SUBSCRIBE/PUBLISH → PING/DISCONNECT`를
-실행할 수 있다. 이 listener는 TLS, 인증과 tenant 경계가 없으므로 literal loopback
-주소로만 열 수 있다. Retained runtime은 단일 process 안의 bounded development
-profile이며 cluster durability와는 별도 경계다.
+현재 구현은 MQTT 3.1.1/5.0 client가 `CONNECT → SUBSCRIBE/PUBLISH → PING/DISCONNECT`를
+실행할 수 있는 단일 노드 runtime이다. 기본 startup은 `-security-config` secure mode로
+JWT/JWKS authentication과 tenant-aware ACL을 적용한다. 인증과 tenant 경계가 없는
+plaintext ingress는 `-allow-insecure-anonymous-mqtt`를 명시한 literal loopback
+`-tcp-listen` development·benchmark 예외에서만 허용하며, TLS listener에는 이 예외를
+적용할 수 없다. Retained runtime은 단일 process 안의 bounded development profile이며
+cluster durability와는 별도 경계다.
 
 - `internal/domain/mqtt`는 CONNECT/CONNACK, QoS 0·1·2 PUBLISH, PUBACK/PUBREC/PUBREL/PUBCOMP,
   SUBSCRIBE 계열과 PINGREQ/PINGRESP/DISCONNECT를 decode·encode한다. PING packet은
@@ -74,11 +76,12 @@ state를 유지한다.
 
 1. TCP와 TLS listener는 MQTT 3.1.1 protocol level 4와 MQTT 5.0 protocol level 5를 수용해야 한다.
 2. listener마다 bind address, TLS 정책, 인증 방식, 최대 연결 수, connection rate와 packet 제한을 독립 적용해야 한다.
-3. 평문 TCP listener는 기본 설정에서 비활성화해야 한다.
+3. 평문 TCP listener는 기본 설정에서 비활성화해야 한다. MQTT listener를 활성화할 때는 [security spec](tenancy-and-security.md)의 `-security-config` secure mode를 선택해야 하며, 유일한 예외는 `-tcp-listen`의 literal loopback bind와 `-allow-insecure-anonymous-mqtt`를 함께 지정하는 development·benchmark mode다. 두 mode를 함께 지정하거나 TLS listener에 예외 mode를 적용해서는 안 된다.
 4. WebSocket과 WSS는 P1 선택 기능이다. 활성화하면 MQTT packet과 session 의미가 TCP listener와 같아야 한다.
 5. connection은 설정된 CONNECT timeout 안에 유효한 CONNECT를 보내야 한다. timeout 또는 malformed packet이면 session을 만들지 않고 연결을 닫아야 한다.
 6. development profile의 평문 `-tcp-listen`은 `127.0.0.0/8` 또는 `::1` literal
-   loopback만 허용한다. TLS listener는 `-tls-listen`으로 별도 활성화하며,
+   loopback만 허용한다. 이 listener는 `-allow-insecure-anonymous-mqtt`를 명시한 경우에만
+   anonymous MQTT를 허용한다. TLS listener는 `-tls-listen`으로 별도 활성화하며,
    TLS 1.2 이상, 허용된 AEAD cipher suite와 설정된 서버 인증서를 적용한다.
    TLS listener는 외부 interface에 bind할 수 있지만, mTLS가 설정되면 trust anchor와
    클라이언트 인증서 유효성 및 identity binding을 검증해야 한다.

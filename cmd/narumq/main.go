@@ -77,6 +77,7 @@ func runWithContext(ctx context.Context, args []string, logger *slog.Logger) err
 	runtimeMetricsOutput := flagSet.String("runtime-metrics-output", "", "JSONL output for Go runtime metrics")
 	runtimeMetricsInterval := flagSet.Duration("runtime-metrics-interval", 0, "sampling interval for Go runtime metrics")
 	securityConfigFile := flagSet.String("security-config", "", "path to strict JSON security configuration file")
+	allowInsecureAnonymousMQTT := flagSet.Bool("allow-insecure-anonymous-mqtt", false, "development-only anonymous MQTT over loopback TCP")
 	if err := flagSet.Parse(args); err != nil {
 		return err
 	}
@@ -92,6 +93,16 @@ func runWithContext(ctx context.Context, args []string, logger *slog.Logger) err
 			return fmt.Errorf("unauthenticated management listener: %w", err)
 		}
 	}
+	mqttRequested := *tcpListen != "" || *tlsListen != ""
+	if *securityConfigFile != "" && *allowInsecureAnonymousMQTT {
+		return errors.New("-security-config and -allow-insecure-anonymous-mqtt cannot be used together")
+	}
+	if *allowInsecureAnonymousMQTT && (!mqttRequested || *tlsListen != "" || *tcpListen == "") {
+		return errors.New("-allow-insecure-anonymous-mqtt requires a loopback-only -tcp-listen and cannot be used with -tls-listen")
+	}
+	if mqttRequested && *securityConfigFile == "" && !*allowInsecureAnonymousMQTT {
+		return errors.New("-security-config is required when an MQTT listener is enabled")
+	}
 	if *tcpListen == "" && *tlsListen == "" && *httpListen == "" {
 		if metricsRequested {
 			return errors.New("-tcp-listen, -tls-listen, or -http-listen is required when runtime metrics collection is enabled")
@@ -103,6 +114,25 @@ func runWithContext(ctx context.Context, args []string, logger *slog.Logger) err
 		return errors.New("-retained-message-capacity and -retained-byte-capacity must be greater than zero")
 	}
 
+	systemClock := clock.SystemClock{}
+	var (
+		securityBundle *SecurityBundle
+		authProvider   *authenticationadapter.JWKSAuthenticationProvider
+	)
+	if *securityConfigFile != "" {
+		bundle, err := loadSecurityConfigFile(*securityConfigFile)
+		if err != nil {
+			return fmt.Errorf("load security config: %w", err)
+		}
+		bundle.AuthConfig.HTTPClient = &http.Client{Timeout: bundle.AuthConfig.HTTPTimeout}
+		bundle.AuthConfig.Clock = systemClock
+		provider, err := authenticationadapter.NewJWKSAuthenticationProvider(bundle.AuthConfig)
+		if err != nil {
+			return fmt.Errorf("create JWKS authentication provider: %w", err)
+		}
+		securityBundle = bundle
+		authProvider = provider
+	}
 	var (
 		listeners          []net.Listener
 		tcpListener        net.Listener
@@ -168,7 +198,6 @@ func runWithContext(ctx context.Context, args []string, logger *slog.Logger) err
 		return fmt.Errorf("create retained repository: %w", err)
 	}
 	sessions := sessionstore.New()
-	systemClock := clock.SystemClock{}
 	systemScheduler := clock.SystemScheduler{}
 	willBridge := tcpadapter.NewWillBridge()
 
@@ -181,21 +210,11 @@ func runWithContext(ctx context.Context, args []string, logger *slog.Logger) err
 	connectOpts = append(connectOpts, connect.WithMetrics(metricsRegistry))
 	subscribeOpts = append(subscribeOpts, subscribe.WithMetrics(metricsRegistry))
 	publishOpts = append(publishOpts, publish.WithMetrics(metricsRegistry))
-	if *securityConfigFile != "" {
-		bundle, err := loadSecurityConfigFile(*securityConfigFile)
-		if err != nil {
-			return fmt.Errorf("load security config: %w", err)
-		}
-		bundle.AuthConfig.HTTPClient = &http.Client{Timeout: bundle.AuthConfig.HTTPTimeout}
-		bundle.AuthConfig.Clock = systemClock
-		authProvider, err := authenticationadapter.NewJWKSAuthenticationProvider(bundle.AuthConfig)
-		if err != nil {
-			return fmt.Errorf("create JWKS authentication provider: %w", err)
-		}
-		connectOpts = append(connectOpts, connect.WithSecurity(authProvider, bundle.Policy))
-		subscribeOpts = append(subscribeOpts, subscribe.WithPolicy(bundle.Policy))
-		publishOpts = append(publishOpts, publish.WithPolicy(bundle.Policy))
-		tcpConfigPolicy = bundle.Policy
+	if securityBundle != nil {
+		connectOpts = append(connectOpts, connect.WithSecurity(authProvider, securityBundle.Policy))
+		subscribeOpts = append(subscribeOpts, subscribe.WithPolicy(securityBundle.Policy))
+		publishOpts = append(publishOpts, publish.WithPolicy(securityBundle.Policy))
+		tcpConfigPolicy = securityBundle.Policy
 	}
 
 	connections, err := connect.New(systemClock, sessions, deliveries, routes, systemScheduler, willBridge, connectOpts...)

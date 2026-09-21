@@ -81,10 +81,13 @@ func TestBuildBrokerCreateArgsRuntimeCollection(t *testing.T) {
 		"run", "--detach", "--name", containerName,
 		"--network", "none", "--cpus", "1", "--memory", "134217728b",
 		"--read-only", "--tmpfs", "/tmp:size=64m",
-		options.ImageReference, "-tcp-listen", "127.0.0.1:1883",
+		options.ImageReference, "-tcp-listen", "127.0.0.1:1883", "-allow-insecure-anonymous-mqtt",
 	}
 	if !reflect.DeepEqual(disabled, wantDisabled) {
 		t.Fatalf("disabled broker argv = %#v, want %#v", disabled, wantDisabled)
+	}
+	if countToken(disabled, "-allow-insecure-anonymous-mqtt") != 1 {
+		t.Fatalf("disabled broker argv = %#v, want one explicit insecure MQTT flag", disabled)
 	}
 
 	options.CollectRuntimeMetrics = true
@@ -92,6 +95,9 @@ func TestBuildBrokerCreateArgsRuntimeCollection(t *testing.T) {
 	enabled := buildBrokerCreateArgs(options, containerName)
 	if countToken(enabled, "--mount") != 1 || countToken(enabled, "-runtime-metrics-output") != 1 || countToken(enabled, "-runtime-metrics-interval") != 1 {
 		t.Fatalf("enabled broker argv = %#v, want one runtime mount and each runtime flag", enabled)
+	}
+	if countToken(enabled, "-allow-insecure-anonymous-mqtt") != 1 {
+		t.Fatalf("enabled broker argv = %#v, want one explicit insecure MQTT flag", enabled)
 	}
 	if !containsToken(enabled, "type=bind,source="+options.ArtifactDirectory+",destination=/benchmark-output") || !containsToken(enabled, "/benchmark-output/runtime-metrics.jsonl") || !containsToken(enabled, "500ms") {
 		t.Fatalf("enabled broker argv = %#v, missing runtime mount or flags", enabled)
@@ -105,6 +111,9 @@ func TestBuildBrokerCreateArgsRuntimeCollection(t *testing.T) {
 	joined := strings.Join(emqxArgs, "\x00")
 	if strings.Contains(joined, "runtime-metrics") || strings.Contains(joined, "benchmark-output") {
 		t.Fatalf("EMQX broker argv = %#v, must not include runtime collection", emqxArgs)
+	}
+	if countToken(emqxArgs, "-allow-insecure-anonymous-mqtt") != 0 {
+		t.Fatalf("EMQX broker argv = %#v, must not include NaruMQ insecure MQTT flag", emqxArgs)
 	}
 }
 

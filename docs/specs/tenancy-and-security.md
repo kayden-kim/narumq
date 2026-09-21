@@ -66,7 +66,9 @@ JWKS cache는 `fetchedAt`, TTL 만료 시각과 마지막 refresh 시각을 함�
 
 이 slice에서 MQTT CONNECT는 `HasUsername=true`와 `HasPassword=true`를 모두 요구한다. Username은 비어 있어도 되며 identity로 사용하지 않고, 로그·Metric·audit에 기록하지 않는다. Password에는 하나의 UTF-8 compact JWT만 넣는다. credential, Client ID binding 또는 Will ACL이 실패하면 MQTT 3.1.1 CONNACK `0x05`, MQTT 5 CONNACK `0x87`을 반환하고 연결을 닫는다. 실패 시 session, timer, route, queue, retained message와 Will을 변경하지 않는다.
 
-Broker 시작에는 `--security-config <path>`가 필수다. 파일은 알 수 없는 field와 두 번째 JSON value를 거절하는 strict decoder로 한 JSON value만 읽는다. duration은 양수인 Go duration string이어야 한다.
+MQTT listener(`-tcp-listen` 또는 `-tls-listen`)를 여는 Broker 시작에는 `-security-config <path>`가 필수다. 파일은 알 수 없는 field와 두 번째 JSON value를 거절하는 strict decoder로 한 JSON value만 읽는다. duration은 양수인 Go duration string이어야 한다. 이 설정의 decode와 JWT/JWKS provider 생성은 listener socket을 열기 전에 끝나야 하며, 누락·충돌·오류가 있으면 시작을 실패시킨다.
+
+유일한 개발·benchmark 예외는 `-tcp-listen`과 `-allow-insecure-anonymous-mqtt`를 함께 사용하고 `-tls-listen`을 비워 둔 경우다. `-tcp-listen`은 literal `127.0.0.0/8` 또는 `::1` loopback이어야 하며, `-security-config`와 예외 flag를 함께 사용할 수 없다. MQTT listener 없이 예외 flag만 주거나 TLS listener와 함께 주는 경우도 거절한다. 이 예외는 production security mode가 아니며 Phase 1 보안 완료 증거로 사용할 수 없다. MQTT listener가 없는 management-only 실행에는 `-security-config`를 요구하지 않는다.
 
 ```json
 {
@@ -208,7 +210,7 @@ audit event에는 password, bearer token, session cookie, private key와 원문 
 | ID | 수용 기준 | 시험 |
 | --- | --- | --- |
 | SEC-01 | TLS 1.2 이상, TLS 1.0/1.1 거절, AEAD cipher allowlist와 TLS/mTLS listener 왕복을 검증한다. | `tests/integration/mqtt_tls_test.go`의 `TestMQTTTLS_ConnectionAndDelivery`, `TestMQTTTLS_RejectInsecureTLSVersion` |
-| SEC-02 | algorithm allowlist, required `kid`, cached JWKS signature, exact issuer, audience membership, subject, exp/nbf와 clock skew를 순서대로 검증하고 key rotation을 fail-closed로 처리한다. | `internal/adapters/authentication`의 JWT/JWKS cache 시험 |
+| SEC-02 | algorithm allowlist, required `kid`, cached JWKS signature, exact issuer, audience membership, subject, exp/nbf와 clock skew를 순서대로 검증하고 key rotation을 fail-closed로 처리한다. MQTT listener startup은 `-security-config`를 요구하며, 유일한 예외는 literal loopback `-tcp-listen`과 `-allow-insecure-anonymous-mqtt`의 development·benchmark 조합이다. | `internal/adapters/authentication`의 JWT/JWKS cache 시험, `cmd/narumq/main_test.go`의 `TestRunWithContextMQTTSecurityMode`와 `TestRunWithContextSecurityConfig` |
 | SEC-03 | trusted CA 성공, untrusted CA 거절, 만료 인증서 거절을 검증한다. | `tests/integration/mqtt_tls_test.go`의 `TestMQTTTLS_mTLS_Success`, `TestMQTTTLS_mTLS_UntrustedCA_Rejected`, `TestMQTTTLS_mTLS_ExpiredCert_Rejected` |
 | SEC-04 | 인증서 CN/SAN 불일치를 거절하고, JWT 인증 결과의 exact allowed Client ID가 아니면 MQTT 3.1.1 `0x05` 또는 MQTT 5 `0x87`로 거절하고 state를 만들지 않는다. | `tests/integration/mqtt_tls_test.go`의 `TestMQTTTLS_mTLS_ClientIDMismatch_Rejected`, `internal/application/connect`, `tests/integration/mqtt_ingress_test.go`의 `TestMQTTSecurity` |
 | SEC-06 | publish, subscribe, unsubscribe와 Will은 deny > allow > default-deny를 적용하고 거절 전에는 mutation을 수행하지 않는다. | `internal/domain/security`, application mutation-order 시험, `tests/integration/mqtt_ingress_test.go`의 `TestMQTTSecurity` |
