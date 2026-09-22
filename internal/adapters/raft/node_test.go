@@ -43,9 +43,9 @@ func TestNodeConfigAndLifecycle(t *testing.T) {
 	if !status.Bootstrapped || status.AppliedIndex == 0 || status.CommitIndex != status.AppliedIndex {
 		t.Fatalf("bootstrap status = %#v", status)
 	}
-	commands := node.AppliedCommands()
-	if len(commands) != 0 {
-		t.Fatalf("bootstrap commands = %q, want empty", commands)
+	commits := node.AppliedCommits()
+	if len(commits) != 0 {
+		t.Fatalf("bootstrap commits = %#v, want empty", commits)
 	}
 	if err := node.Snapshot(); err != nil {
 		t.Fatalf("same-index Snapshot() = %v", err)
@@ -143,11 +143,11 @@ func TestNodeHelpersCloneAndFixedConfiguration(t *testing.T) {
 	if !fixedConfState(state, []NodeID{1, 2, 3}) {
 		t.Fatal("fixedConfState rejected sorted-equivalent voters")
 	}
-	commands := [][]byte{[]byte("one"), nil}
-	clone := cloneCommands(commands)
-	clone[0][0] = 'X'
-	if string(commands[0]) != "one" {
-		t.Fatal("cloneCommands shared payload")
+	commits := []CommitDTO{{Index: 1, Data: []byte("one")}, {Index: 2, Data: nil}}
+	clone := cloneCommits(commits)
+	clone[0].Data[0] = 'X'
+	if string(commits[0].Data) != "one" {
+		t.Fatal("cloneCommits shared payload")
 	}
 	entries := cloneEntries([]*pb.Entry{{Index: uint64Ptr(1), Data: []byte("entry")}})
 	entries[0].Data[0] = 'X'

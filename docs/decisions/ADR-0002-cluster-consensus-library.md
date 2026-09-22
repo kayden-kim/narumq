@@ -84,15 +84,16 @@ Library의 `Ready` 처리 규칙은 entry·`HardState`·snapshot을 안정 저�
 
 ## 7. 검증
 
-Phase 0 spike는 다음을 통과해야 한다.
+Phase 0 spike 및 Phase 2 session ownership core는 다음 검증 기준을 갖는다.
 
-1. 3-node에서 leader kill 뒤 committed state가 유지된다.
-2. Minority partition에서 새 write와 ownership이 commit되지 않는다.
-3. WAL append, `HardState` 저장과 outbound message ordering을 fault injection으로 검증한다.
-4. Snapshot 중 crash 뒤 마지막 committed index로 복구한다.
-5. Disk full과 느린 follower가 무제한 queue를 만들지 않는다.
-6. Membership change 중 crash와 재시작에서 member set이 수렴한다.
+1. 3-node에서 leader kill 뒤 committed state가 유지된다(`TestRaftConsensusSpike/leader_failure_preserves_committed_state`).
+2. Minority partition에서 새 write와 ownership이 commit되지 않는다(`TestRaftConsensusSpike/quorum_loss_cannot_commit`, `TestReplicatedSessionOwnership/minority_cannot_acquire_or_advance_epoch`).
+3. WAL append, `HardState` 저장과 outbound message ordering을 fault injection으로 검증한다(`internal/adapters/raft` unit test).
+4. Snapshot 중 crash 뒤 마지막 committed index로 복구한다(`TestRaftConsensusSpike/snapshot_plus_WAL_tail_restores_state`, `TestReplicatedSessionOwnership/restart_recovers_ownership_epoch_and_commit_index`).
+5. Disk full과 느린 follower가 무제한 queue를 만들지 않는다(후속 과제).
+6. Membership change 중 crash와 재시작에서 member set이 수렴한다(후속 과제).
 
+항목 1~4는 in-process deterministic harness에서 검증한다. 항목 5, 6 및 production peer transport가 검증되기 전까지 이 결정은 `Proposed` 상태를 유지한다.
 ## 8. 재검토 조건
 
 - Phase 0에서 required durability나 p99.9 목표를 충족하지 못한다.

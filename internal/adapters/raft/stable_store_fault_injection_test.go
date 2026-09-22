@@ -136,18 +136,21 @@ func TestWALDecodeBoundaryBranches(t *testing.T) {
 			t.Fatalf("decodeWALRecord(% X) unexpectedly succeeded", payload)
 		}
 	}
-	commands := make([][]byte, maxStateCommands+1)
-	if _, err := encodeApplicationState(commands); err == nil {
-		t.Fatal("encodeApplicationState accepted too many commands")
+	commits := make([]CommitDTO, maxStateCommands+1)
+	for i := range commits {
+		commits[i] = CommitDTO{Index: uint64(i + 1), Data: []byte("x")}
 	}
-	if _, err := decodeApplicationState(append([]byte(stateMagic), []byte{0, 0, 0, 0xFF, 0}...)); err == nil {
-		t.Fatal("decodeApplicationState accepted an oversized command count")
+	if _, err := encodeApplicationState(uint64(len(commits)), commits); err == nil {
+		t.Fatal("encodeApplicationState accepted too many commits")
 	}
-	if _, err := decodeApplicationState(append(append([]byte(stateMagic), []byte{0, 0, 0, 1}...), 0, 0)); err == nil {
-		t.Fatal("decodeApplicationState accepted a truncated command")
+	if _, err := decodeApplicationState(10, append([]byte(stateMagic), []byte{0, 0, 0, 0xFF, 0}...)); err == nil {
+		t.Fatal("decodeApplicationState accepted an oversized commit count")
 	}
-	if _, err := decodeApplicationState(append(append([]byte(stateMagic), []byte{0, 0, 0, 1}...), 0, 1, 0xff)); err == nil {
-		t.Fatal("decodeApplicationState accepted an invalid command length")
+	if _, err := decodeApplicationState(10, append(append([]byte(stateMagic), []byte{0, 0, 0, 1}...), 0, 0)); err == nil {
+		t.Fatal("decodeApplicationState accepted a truncated commit")
+	}
+	if _, err := decodeApplicationState(10, append(append([]byte(stateMagic), []byte{0, 0, 0, 1}...), 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 2, 0xff)); err == nil {
+		t.Fatal("decodeApplicationState accepted an invalid commit length")
 	}
 	invalid := &pb.Entry{Type: pb.EntryConfChange.Enum(), Data: []byte{0xff}}
 	if _, err := decodeConfChange(invalid); err == nil {
@@ -157,7 +160,7 @@ func TestWALDecodeBoundaryBranches(t *testing.T) {
 	if _, err := decodeConfChange(invalid); err == nil {
 		t.Fatal("decodeConfChange accepted malformed v2 data")
 	}
-	if cloneConfState(nil) == nil || len(cloneCommands(nil)) != 0 || len(cloneEntries(nil)) != 0 {
+	if cloneConfState(nil) == nil || len(cloneCommits(nil)) != 0 || len(cloneEntries(nil)) != 0 {
 		t.Fatal("clone helpers returned invalid empty values")
 	}
 	if got := appendUnique([]uint64{1}, 1); len(got) != 1 {
@@ -215,7 +218,7 @@ func TestStableStoreAppendReadyErrorBranches(t *testing.T) {
 		t.Fatal("close accepted sync failure")
 	}
 	filePersistenceOps = original
-	if err := store.createSnapshot(1, &pb.ConfState{}, [][]byte{make([]byte, maxCommandSize+1)}); err == nil {
+	if err := store.createSnapshot(1, &pb.ConfState{}, []CommitDTO{{Index: 1, Data: make([]byte, maxCommandSize+1)}}); err == nil {
 		t.Fatal("createSnapshot accepted an oversized command")
 	}
 }

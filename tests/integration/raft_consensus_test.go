@@ -11,6 +11,9 @@ import (
 	"testing"
 
 	raftadapter "narumq/internal/adapters/raft"
+	"narumq/internal/application/takeover"
+	"narumq/internal/domain/session"
+	"narumq/internal/domain/tenancy"
 )
 
 type messageRoute struct {
@@ -19,23 +22,25 @@ type messageRoute struct {
 }
 
 type deterministicCluster struct {
-	t       *testing.T
-	dirs    map[raftadapter.NodeID]string
-	nodes   map[raftadapter.NodeID]*raftadapter.Node
-	active  map[raftadapter.NodeID]bool
-	blocked map[messageRoute]bool
-	queue   []raftadapter.MessageDTO
+	t        *testing.T
+	dirs     map[raftadapter.NodeID]string
+	nodes    map[raftadapter.NodeID]*raftadapter.Node
+	active   map[raftadapter.NodeID]bool
+	blocked  map[messageRoute]bool
+	queue    []raftadapter.MessageDTO
+	onCommit map[raftadapter.NodeID]func([]raftadapter.CommitDTO)
 }
 
 func newDeterministicCluster(t *testing.T) *deterministicCluster {
 	t.Helper()
 	root := t.TempDir()
 	cluster := &deterministicCluster{
-		t:       t,
-		dirs:    make(map[raftadapter.NodeID]string, 3),
-		nodes:   make(map[raftadapter.NodeID]*raftadapter.Node, 3),
-		active:  make(map[raftadapter.NodeID]bool, 3),
-		blocked: make(map[messageRoute]bool),
+		t:        t,
+		dirs:     make(map[raftadapter.NodeID]string, 3),
+		nodes:    make(map[raftadapter.NodeID]*raftadapter.Node, 3),
+		active:   make(map[raftadapter.NodeID]bool, 3),
+		blocked:  make(map[messageRoute]bool),
+		onCommit: make(map[raftadapter.NodeID]func([]raftadapter.CommitDTO)),
 	}
 	for _, nodeID := range []raftadapter.NodeID{1, 2, 3} {
 		directory := filepath.Join(root, fmt.Sprintf("node-%d", nodeID))
@@ -85,6 +90,11 @@ func (c *deterministicCluster) pump() {
 			}
 			if len(batch.Messages) != 0 || len(batch.Commits) != 0 {
 				progress = true
+			}
+			if len(batch.Commits) != 0 {
+				if callback, ok := c.onCommit[nodeID]; ok && callback != nil {
+					callback(batch.Commits)
+				}
 			}
 			c.queue = append(c.queue, batch.Messages...)
 		}
@@ -164,10 +174,10 @@ func (c *deterministicCluster) nodeIDs() []raftadapter.NodeID {
 }
 
 func (c *deterministicCluster) commands(nodeID raftadapter.NodeID) []string {
-	commands := c.nodes[nodeID].AppliedCommands()
-	result := make([]string, len(commands))
-	for index, command := range commands {
-		result[index] = string(command)
+	commits := c.nodes[nodeID].AppliedCommits()
+	result := make([]string, len(commits))
+	for index, commit := range commits {
+		result[index] = string(commit.Data)
 	}
 	return result
 }
@@ -206,10 +216,10 @@ func TestRaftConsensusSpike(t *testing.T) {
 		cluster.queue = append(cluster.queue, messages...)
 		cluster.pump()
 		assertCommands(t, cluster, []raftadapter.NodeID{1, 2, 3}, []string{"alpha"})
-		commandCopy := cluster.nodes[2].AppliedCommands()
-		commandCopy[0][0] = 'X'
+		commitCopy := cluster.nodes[2].AppliedCommits()
+		commitCopy[0].Data[0] = 'X'
 		if got := cluster.commands(2); !slices.Equal(got, []string{"alpha"}) {
-			t.Fatalf("mutating AppliedCommands result changed node state: %v", got)
+			t.Fatalf("mutating AppliedCommits result changed node state: %v", got)
 		}
 		oldTerm := cluster.nodes[1].Status().Term
 		if err := cluster.nodes[1].Close(); err != nil {
@@ -327,3 +337,286 @@ func TestRaftConsensusSpike(t *testing.T) {
 }
 
 const maxProposalBytes = 64 * 1024
+
+// Traceability: PRD CLU-04/05/10; ADR-0002 §7; ADR-0004 §8; cluster spec §2/2.1/11.2.
+func TestReplicatedSessionOwnership(t *testing.T) {
+	t.Run("concurrent acquire elects single owner", func(t *testing.T) {
+		cluster := newDeterministicCluster(t)
+		machines := map[raftadapter.NodeID]*takeover.StateMachine{
+			1: takeover.NewStateMachine(),
+			2: takeover.NewStateMachine(),
+			3: takeover.NewStateMachine(),
+		}
+		for nodeID, sm := range machines {
+			id := nodeID
+			targetMachine := sm
+			cluster.onCommit[id] = func(commits []raftadapter.CommitDTO) {
+				if _, err := raftadapter.ApplyOwnershipCommits(targetMachine, commits); err != nil {
+					t.Fatalf("node %d ApplyOwnershipCommits failed: %v", id, err)
+				}
+			}
+		}
+
+		cluster.campaign(1)
+
+		tenantID, err := tenancy.NewTenantID("tenant-alpha")
+		if err != nil {
+			t.Fatal(err)
+		}
+		sessionKey, err := tenancy.NewSessionKey(tenantID, "client-shared")
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		cmdA, err := raftadapter.EncodeAcquireOwnershipCommand(takeover.AcquireOwnershipCommandDTO{
+			SessionKey:    sessionKey,
+			ExpectedEpoch: 0,
+			OwnerNodeID:   "node-1",
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		cmdB, err := raftadapter.EncodeAcquireOwnershipCommand(takeover.AcquireOwnershipCommandDTO{
+			SessionKey:    sessionKey,
+			ExpectedEpoch: 0,
+			OwnerNodeID:   "node-2",
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		if err := cluster.nodes[1].Propose(cmdA); err != nil {
+			t.Fatal(err)
+		}
+		if err := cluster.nodes[1].Propose(cmdB); err != nil {
+			t.Fatal(err)
+		}
+		cluster.pump()
+
+		for _, nodeID := range []raftadapter.NodeID{1, 2, 3} {
+			sm := machines[nodeID]
+			owner, exists := sm.Ownership(sessionKey)
+			if !exists {
+				t.Fatalf("node %d: session ownership missing", nodeID)
+			}
+			if owner.OwnerNodeID() != "node-1" {
+				t.Fatalf("node %d: OwnerNodeID = %q, want node-1", nodeID, owner.OwnerNodeID())
+			}
+			if owner.Epoch() != 1 {
+				t.Fatalf("node %d: Epoch = %d, want 1", nodeID, owner.Epoch())
+			}
+
+			if err := sm.Authorize(sessionKey, "node-1", 1); err != nil {
+				t.Fatalf("node %d: Authorize(node-1, 1) failed: %v", nodeID, err)
+			}
+			if err := sm.Authorize(sessionKey, "node-2", 1); !errors.Is(err, session.ErrInvalidOwnership) {
+				t.Fatalf("node %d: Authorize(node-2, 1) error = %v, want ErrInvalidOwnership", nodeID, err)
+			}
+		}
+	})
+
+	t.Run("minority cannot acquire or advance epoch", func(t *testing.T) {
+		cluster := newDeterministicCluster(t)
+		machines := map[raftadapter.NodeID]*takeover.StateMachine{
+			1: takeover.NewStateMachine(),
+			2: takeover.NewStateMachine(),
+			3: takeover.NewStateMachine(),
+		}
+		for nodeID, sm := range machines {
+			id := nodeID
+			targetMachine := sm
+			cluster.onCommit[id] = func(commits []raftadapter.CommitDTO) {
+				if _, err := raftadapter.ApplyOwnershipCommits(targetMachine, commits); err != nil {
+					t.Fatalf("node %d ApplyOwnershipCommits failed: %v", id, err)
+				}
+			}
+		}
+
+		cluster.campaign(1)
+
+		tenantID, _ := tenancy.NewTenantID("tenant-alpha")
+		sessionKey, _ := tenancy.NewSessionKey(tenantID, "client-fenced")
+
+		cmd1, err := raftadapter.EncodeAcquireOwnershipCommand(takeover.AcquireOwnershipCommandDTO{
+			SessionKey:    sessionKey,
+			ExpectedEpoch: 0,
+			OwnerNodeID:   "node-1",
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		cluster.propose(1, cmd1)
+
+		for _, nodeID := range []raftadapter.NodeID{1, 2, 3} {
+			owner, _ := machines[nodeID].Ownership(sessionKey)
+			if owner.Epoch() != 1 || owner.OwnerNodeID() != "node-1" {
+				t.Fatalf("node %d initial owner = %+v, want epoch 1 node-1", nodeID, owner)
+			}
+		}
+
+		for _, peer := range []raftadapter.NodeID{2, 3} {
+			cluster.blocked[messageRoute{from: 1, to: peer}] = true
+			cluster.blocked[messageRoute{from: peer, to: 1}] = true
+		}
+
+		minorityCmd, _ := raftadapter.EncodeAcquireOwnershipCommand(takeover.AcquireOwnershipCommandDTO{
+			SessionKey:    sessionKey,
+			ExpectedEpoch: 1,
+			OwnerNodeID:   "node-1",
+		})
+		_ = cluster.nodes[1].Propose(minorityCmd)
+		cluster.pump()
+
+		owner1, _ := machines[1].Ownership(sessionKey)
+		if owner1.Epoch() != 1 {
+			t.Fatalf("minority node 1 advanced epoch to %d without quorum", owner1.Epoch())
+		}
+
+		for _, nodeID := range []raftadapter.NodeID{2, 3} {
+			if err := cluster.nodes[nodeID].ForgetLeader(); err != nil {
+				t.Fatal(err)
+			}
+		}
+		cluster.pump()
+		cluster.campaign(2)
+
+		takeoverCmd, err := raftadapter.EncodeAcquireOwnershipCommand(takeover.AcquireOwnershipCommandDTO{
+			SessionKey:    sessionKey,
+			ExpectedEpoch: 1,
+			OwnerNodeID:   "node-2",
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		cluster.propose(2, takeoverCmd)
+
+		for _, nodeID := range []raftadapter.NodeID{2, 3} {
+			owner, exists := machines[nodeID].Ownership(sessionKey)
+			if !exists || owner.Epoch() != 2 || owner.OwnerNodeID() != "node-2" {
+				t.Fatalf("majority node %d owner = %+v, want epoch 2 node-2", nodeID, owner)
+			}
+		}
+		owner1, _ = machines[1].Ownership(sessionKey)
+		if owner1.Epoch() != 1 {
+			t.Fatalf("isolated node 1 owner = %+v, want epoch 1", owner1)
+		}
+
+		for _, peer := range []raftadapter.NodeID{2, 3} {
+			cluster.blocked[messageRoute{from: 1, to: peer}] = false
+			cluster.blocked[messageRoute{from: peer, to: 1}] = false
+		}
+		cluster.tickActive(5)
+
+		for _, nodeID := range []raftadapter.NodeID{1, 2, 3} {
+			sm := machines[nodeID]
+			owner, exists := sm.Ownership(sessionKey)
+			if !exists || owner.Epoch() != 2 || owner.OwnerNodeID() != "node-2" {
+				t.Fatalf("converged node %d owner = %+v, want epoch 2 node-2", nodeID, owner)
+			}
+
+			if err := sm.Authorize(sessionKey, "node-1", 1); !errors.Is(err, session.ErrStaleEpoch) {
+				t.Fatalf("node %d Authorize(node-1, 1) error = %v, want ErrStaleEpoch", nodeID, err)
+			}
+			if err := sm.Authorize(sessionKey, "node-2", 2); err != nil {
+				t.Fatalf("node %d Authorize(node-2, 2) failed: %v", nodeID, err)
+			}
+		}
+	})
+
+	t.Run("restart recovers ownership epoch and commit index", func(t *testing.T) {
+		cluster := newDeterministicCluster(t)
+		machines := map[raftadapter.NodeID]*takeover.StateMachine{
+			1: takeover.NewStateMachine(),
+			2: takeover.NewStateMachine(),
+			3: takeover.NewStateMachine(),
+		}
+		for nodeID, sm := range machines {
+			id := nodeID
+			targetMachine := sm
+			cluster.onCommit[id] = func(commits []raftadapter.CommitDTO) {
+				if _, err := raftadapter.ApplyOwnershipCommits(targetMachine, commits); err != nil {
+					t.Fatalf("node %d ApplyOwnershipCommits failed: %v", id, err)
+				}
+			}
+		}
+
+		cluster.campaign(1)
+
+		tenantID, _ := tenancy.NewTenantID("tenant-alpha")
+		sessionKey, _ := tenancy.NewSessionKey(tenantID, "client-recover")
+
+		cmd1, _ := raftadapter.EncodeAcquireOwnershipCommand(takeover.AcquireOwnershipCommandDTO{
+			SessionKey:    sessionKey,
+			ExpectedEpoch: 0,
+			OwnerNodeID:   "node-1",
+		})
+		cluster.propose(1, cmd1)
+
+		if err := cluster.nodes[2].Snapshot(); err != nil {
+			t.Fatalf("node 2 snapshot failed: %v", err)
+		}
+		snapshotIndex := cluster.nodes[2].Status().AppliedIndex
+
+		cmd2, _ := raftadapter.EncodeAcquireOwnershipCommand(takeover.AcquireOwnershipCommandDTO{
+			SessionKey:    sessionKey,
+			ExpectedEpoch: 1,
+			OwnerNodeID:   "node-2",
+		})
+		cluster.propose(1, cmd2)
+
+		preRestartOwner, ok := machines[2].Ownership(sessionKey)
+		if !ok || preRestartOwner.Epoch() != 2 {
+			t.Fatalf("pre-restart node 2 owner = %+v, want epoch 2", preRestartOwner)
+		}
+		preRestartCommitIndex := preRestartOwner.CommitIndex()
+		if preRestartCommitIndex <= snapshotIndex {
+			t.Fatalf("pre-restart commit index %d <= snapshot index %d", preRestartCommitIndex, snapshotIndex)
+		}
+
+		if err := cluster.nodes[2].Close(); err != nil {
+			t.Fatal(err)
+		}
+		cluster.active[2] = false
+
+		reopenedNode, err := raftadapter.Open(raftadapter.Config{
+			NodeID:    2,
+			PeerIDs:   []raftadapter.NodeID{1, 2, 3},
+			Directory: cluster.dirs[2],
+		})
+		if err != nil {
+			t.Fatalf("reopen node 2 failed: %v", err)
+		}
+		defer reopenedNode.Close()
+
+		recoveredMachine := takeover.NewStateMachine()
+		appliedCommits := reopenedNode.AppliedCommits()
+		results, err := raftadapter.ApplyOwnershipCommits(recoveredMachine, appliedCommits)
+		if err != nil {
+			t.Fatalf("replaying recovered commits failed: %v", err)
+		}
+		if len(results) == 0 {
+			t.Fatal("no commits replayed into recovered state machine")
+		}
+
+		recoveredOwner, ok := recoveredMachine.Ownership(sessionKey)
+		if !ok {
+			t.Fatal("recovered ownership missing for sessionKey")
+		}
+		if recoveredOwner.OwnerNodeID() != preRestartOwner.OwnerNodeID() {
+			t.Fatalf("recovered OwnerNodeID = %q, want %q", recoveredOwner.OwnerNodeID(), preRestartOwner.OwnerNodeID())
+		}
+		if recoveredOwner.Epoch() != preRestartOwner.Epoch() {
+			t.Fatalf("recovered Epoch = %d, want %d", recoveredOwner.Epoch(), preRestartOwner.Epoch())
+		}
+		if recoveredOwner.CommitIndex() != preRestartOwner.CommitIndex() {
+			t.Fatalf("recovered CommitIndex = %d, want %d", recoveredOwner.CommitIndex(), preRestartOwner.CommitIndex())
+		}
+
+		if err := recoveredMachine.Authorize(sessionKey, "node-2", 2); err != nil {
+			t.Fatalf("recovered Authorize(node-2, 2) failed: %v", err)
+		}
+		if err := recoveredMachine.Authorize(sessionKey, "node-1", 1); !errors.Is(err, session.ErrStaleEpoch) {
+			t.Fatalf("recovered Authorize(node-1, 1) error = %v, want ErrStaleEpoch", err)
+		}
+	})
+}

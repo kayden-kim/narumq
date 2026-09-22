@@ -109,10 +109,10 @@ NaruMQ source tree는 MQTT·session·routing·delivery·tenancy·security·clust
 ```
 
 현재 구현된 Phase 0 gate 3 + single-node ingress, gate 4 consensus spike와 TLS/mTLS transport security deliverable에
-Phase 1 security·tenant isolation slice가 추가되어 목표 tree의
+Phase 1 security·tenant isolation slice와 Phase 2 replicated session ownership core가 추가되어 목표 tree의
 `cmd/narumq`, `domain/mqtt`, `domain/session`, `domain/routing`, `domain/tenancy`,
 `domain/security`, `application/connect`, `application/publish`,
-`application/subscribe`, `application/ports/authentication`,
+`application/subscribe`, `application/takeover`, `application/ports/authentication`,
 `application/ports/deliveryqueue`, `application/ports/retained`,
 `adapters/authentication`, `adapters/tcp`, `adapters/tls`,
 `adapters/memory/deliveryqueue`, `adapters/memory/retained`,
@@ -189,6 +189,7 @@ flowchart LR
 | `internal/application/connect` | authentication, Client ID binding, Will ACL, lifecycle repository, queue/routing cleanup과 CONNACK orchestration | `domain/mqtt`, `domain/session`, `domain/routing`, `domain/tenancy`, `domain/security`, application ports |
 | `internal/application/subscribe` | tenant-aware ordered SUBACK/UNSUBACK reason, ACL preflight, retained replay와 route mutation | `domain/mqtt`, `domain/routing`, `domain/tenancy`, `domain/security`, application ports |
 | `internal/application/publish` | tenant-aware publish/Will ACL, retained replace/delete, expiry deadline와 route delivery | `domain/mqtt`, `domain/routing`, `domain/tenancy`, `domain/security`, application ports |
+| `internal/application/takeover` | Raft committed log에 기반한 세션 소유권 상태 머신(single owner 선출, monotonic epoch, stale epoch 거절) | `domain/session`, `domain/tenancy`, 표준 library |
 | `internal/application/ports/deliveryqueue` | `tenancy.SessionKey`와 `tenancy.Topic`을 운반하는 bounded queue capability | application/domain value만 |
 | `internal/application/ports/retained` | `(tenant, topic)` retained ownership과 expiry-aware list contract | `domain/mqtt`, `domain/tenancy`, 표준 library |
 | `internal/adapters/authentication` | JWKS fetch/cache, JWT signature·claim 검증, static identity binding과 mTLS certificate selector mapping | `application/ports/authentication`, `domain/tenancy`, `domain/security`, jwx와 표준 library |
@@ -198,7 +199,7 @@ flowchart LR
 | `internal/adapters/tcp` | bounded MQTT ingress, verified certificate DTO 전달, authentication-aware connection state, single writer와 lifecycle | application use cases/ports와 `domain/mqtt`, `domain/tenancy`, `domain/security` |
 | `internal/adapters/tls` | TLS 1.2+ listener, AEAD cipher allowlist, mTLS trust anchor와 verified certificate DTO 추출 | `application/ports/authentication`과 표준 library |
 | `internal/adapters/clock` | system clock와 scheduler를 공용 application port에 제공 | `application/ports/clock`, 표준 library |
-| `internal/adapters/raft` | etcd/raft 자료형과 deterministic node boundary를 adapter 안에 캡슐화 | `go.etcd.io/raft/v3`, `google.golang.org/protobuf`와 표준 library |
+| `internal/adapters/raft` | etcd/raft 자료형, deterministic node boundary, NMQSTATE2 snapshot/WAL persistence, ownership command codec | `application/takeover`, `domain/session`, `domain/tenancy`, `go.etcd.io/raft/v3`, `google.golang.org/protobuf`, 표준 library |
 | `internal/adapters/runtimemetrics` | Go process runtime metrics 표본을 JSONL로 수집 | 표준 library만 |
 
 Application은 concrete adapter를 import하지 않는다. Queue, clock, authentication과 session repository
