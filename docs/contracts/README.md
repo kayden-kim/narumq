@@ -23,9 +23,11 @@ Producer·consumer contract test와 compatibility matrix를 통과한 뒤에만 
 | Metrics catalog v1 | `SPEC-TBD-07`의 이름과 histogram bucket을 Phase 0 workload로 확정해야 한다. |
 | Rollout custom resource v1 | [ADR-0006](../decisions/ADR-0006-external-rollout-controller.md) 승인과 controller resource model이 필요하다. |
 | Replicated state encoding v1 | [ADR-0002](../decisions/ADR-0002-cluster-consensus-library.md)와 storage/RPC 후속 ADR 승인이 필요하다. |
-| SDK별 configuration profile | 지원 SDK와 최소 version을 정하는 `SPEC-TBD-10` inventory가 필요하다. |
 
-미결정 값을 임의 schema로 고정하지 않는다. 근거가 생기면 별도 contract version으로 추가한다.
+SDK별 client version과 실행 profile은 독립 contract를 만들지 않고
+[MQTT client compatibility v1](mqtt-client-compatibility-v1.md)의 checked-in
+Phase 1 profile과 결과 schema에서 관리한다. Drain inventory와 migration evidence가
+해결되기 전에는 해당 contract를 `Active`로 전환하지 않는다.
 
 ## Version 정책
 

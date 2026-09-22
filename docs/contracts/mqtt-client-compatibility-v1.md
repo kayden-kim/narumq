@@ -14,7 +14,7 @@
 | 관련 Architecture | [System overview](../architectures/system-overview.md), [Security boundaries](../architectures/security-boundaries.md) |
 | 관련 requirement | MQTT-01~MQTT-13, CLIENT-01~CLIENT-09, DEP-06~DEP-12 |
 | 호환성 범위 | MQTT 3.1.1 protocol level 4, MQTT 5.0 protocol level 5 |
-| 검증 | `tests/compatibility/mqtt-clients-v1` 예정. 현재 미구현 |
+| 검증 | `tests/compatibility/mqtt-clients-v1`의 strict Docker/E2E harness와 checked-in `profile.json` |
 
 ## 1. 공통 client 의무
 
@@ -28,6 +28,29 @@
 - MQTT 3.1.0 `MQIsdp`와 protocol level 3을 사용하지 않는다.
 
 Full jitter delay는 `random(0, min(cap, base × 2^attempt))` millisecond다. `base`, `cap`과 최대 attempt는 deployment profile이 정한다. 값이 없으면 SDK profile을 Active로 승인할 수 없다.
+
+이 문서의 Phase 1 자동 검증에서만 사용하는 profile bound는 다음과 같다. 이 값은 production rollout default가 아니며, rollout과 reconnect의 운영 수치는 `SPEC-TBD-04`가 계속 소유한다.
+
+| 항목 | Phase 1 test-only 값 |
+| --- | --- |
+| connect timeout | `10s` |
+| operation timeout | `10s` |
+| Session Expiry | `60s` |
+| Will Delay | `5s` |
+| reconnect within | `2s` |
+| reconnect base / cap | `100ms` / `2s` |
+| maximum attempts | `5` |
+| deterministic jitter seed | `20260921` |
+
+Profile status는 다음 의미만 사용한다.
+
+| 상태 | 의미 |
+| --- | --- |
+| `phase1_verified` | 이 문서에 연결된 Phase 1 single-node 자동 case와 artifact가 모두 통과했다. |
+| `blocked` | 현재 phase에 없는 broker 동작 또는 미결정 기준 때문에 실행할 수 없다. |
+| `unverified` | 지원 후보이지만 수용된 자동 artifact가 아직 없다. |
+
+전체 contract는 drain, Server Reference, rollout timing과 MQTT 3.1.0 migration evidence가 남아 있으므로 `Draft`를 유지한다. SDK matrix의 `phase1_verified`는 전체 contract를 `Active`로 승격하지 않는다.
 
 ## 2. Compatibility profile
 
@@ -76,13 +99,55 @@ IPv6 literal과 여러 reference 목록은 v1 profile에서 지원하지 않는�
 
 ## 6. SDK compatibility matrix
 
-지원 SDK와 최소 version은 실사용 inventory와 contract test로 확정한다. 확인 전에는 어떤 SDK도 “공식 지원”으로 표시하지 않는다.
+Phase 1 inventory는 다음 exact candidate minimum version으로 고정한다. 이 표의 상태는 SDK별 Phase 1 evidence 상태이며 “officially supported”를 의미하지 않는다.
 
-| SDK | 최소 version | MQTT 3.1.1 | MQTT 5 | `0x9C`·Server Reference | Session resume | 상태 |
+| SDK | 최소 version | MQTT 3.1.1 | MQTT 5 | `0x9C`·Server Reference | Session resume | Phase 1 상태 |
 | --- | --- | --- | --- | --- | --- | --- |
-| Phase 0 inventory 결과 | TBD | TBD | TBD | TBD | TBD | 미검증 |
+| Eclipse Paho Go MQTT 3.1.1 (`github.com/eclipse/paho.mqtt.golang`) | `v1.5.1` | `phase1_verified` | 해당 없음 | `blocked` | `phase1_verified` | `phase1_verified` |
+| Eclipse Paho Go MQTT 5 (`github.com/eclipse/paho.golang`) | `v0.23.0` | 해당 없음 | `phase1_verified` | `blocked` | `phase1_verified` | `phase1_verified` |
+| Eclipse Paho Python (`paho-mqtt`, callback API `VERSION2`) | `2.1.0` | `phase1_verified` | `phase1_verified` | `blocked` | `phase1_verified` | `phase1_verified` |
+현재 `phase1_verified` 상태는 최종 source tree에서 실행한 `phase1-paho-go-python-readiness-atomic-final` artifact의 `summary.json`에서 26개 expected case가 모두 통과하고 missing/unexpected case가 0임을 확인한 뒤 기록했다. artifact 위치는 `.artifacts/compatibility/mqtt-clients-v1/phase1-paho-go-python-readiness-atomic-final/`이다.
 
-Matrix 행을 Active로 바꾸려면 해당 SDK version의 connect, session resume, QoS retransmit, drain, Will과 malformed disconnect test artifact를 연결해야 한다.
+각 matrix 행의 Phase 1 evidence는 다음 case ID에 연결된다.
+
+```text
+go-mqtt311-basic-roundtrip
+go-mqtt311-persistent-resume
+go-mqtt311-qos1-retransmit
+go-mqtt311-qos2-retransmit
+go-mqtt311-abrupt-will
+go-mqtt5-basic-roundtrip
+go-mqtt5-persistent-resume
+go-mqtt5-qos1-retransmit
+go-mqtt5-qos2-retransmit
+go-mqtt5-will-delay-resume
+python-mqtt311-basic-roundtrip
+python-mqtt311-persistent-resume
+python-mqtt311-qos1-retransmit
+python-mqtt311-qos2-retransmit
+python-mqtt311-abrupt-will
+python-mqtt5-basic-roundtrip
+python-mqtt5-persistent-resume
+python-mqtt5-qos1-retransmit
+python-mqtt5-qos2-retransmit
+python-mqtt5-will-delay-resume
+go-to-python-mqtt311-qos1
+python-to-go-mqtt311-qos1
+go-to-python-mqtt5-qos1
+python-to-go-mqtt5-qos1
+go-mqtt31-rejected
+python-mqtt31-rejected
+```
+
+Cross-SDK QoS 1 case는 subscriber가 `ready.json`에 `schemaVersion`, `caseId`, `sdk`, `role=subscriber`, `protocol`, `ready=true`를 기록한 뒤에만 publisher를 시작한다. Orchestrator는 이 object를 strict decode하고 case·SDK·protocol을 검증한 뒤 publisher의 `readiness.json`으로 복사하여 `/input/readiness.json`에 read-only mount한다. Publisher는 파일이 없거나 형식·값이 다르면 publish하지 않고 failed result를 기록한다.
+
+`MQTT5_DRAIN_SAFE`는 `DEP-06`~`DEP-12`와 `SPEC-TBD-04` 때문에 계속 `blocked`다. 현재 phase에는 broker drain controller, `DISCONNECT 0x9C`, Server Reference와 rollout timing이 없다. Harness는 redirect나 malformed server DISCONNECT를 흉내 내지 않는다. MQTT 3.1.0 90일 inventory와 migration isolation도 아직 `blocked`다.
+
+SDK matrix row는 연결된 Phase 1 case가 모두 통과하고 immutable image/result artifact가 보존된 뒤에만 `phase1_verified`가 될 수 있다. required drain, Will 또는 migration evidence가 하나라도 `blocked`인 동안에는 이 Draft contract를 `Active`로 승격하지 않는다.
+
+### 6.1 Client-result schema
+
+각 SDK driver는 `schemaVersion`, `caseId`, `sdk`, `sdkVersion`, `protocol`, `profile`, `role`, `status`, `startedAt`, `finishedAt`, `observations`와 선택적 `error`를 포함하는 strict result object 하나를 기록한다. failed result에는 `error`가 반드시 있어야 한다. Orchestrator는 알 수 없는 schema version, 불일치하는 identity field, 누락된 required observation, 중복 role result와 예상 밖 case result를 거부한다.
 
 ## 7. 호환성 변경
 
@@ -93,10 +158,11 @@ Matrix 행을 Active로 바꾸려면 해당 SDK version의 connect, session resu
 
 ## 8. Draft blocker
 
-- `SPEC-TBD-04`: rollout·reconnect 시간과 backoff 수치
-- `SPEC-TBD-10`: 지원 SDK와 최소 version inventory
-- SDK별 automated compatibility harness
-- MQTT 3.1.0 90일 관찰과 legacy 격리 완료
+- `SPEC-TBD-04`: rollout·reconnect 시간과 production backoff 수치
+- `DEP-06`~`DEP-12`: drain controller, redirect, rollout barrier와 관련 운영 동작
+- `MQTT5_DRAIN_SAFE`: `DISCONNECT 0x9C`, Server Reference, malformed disconnect와 drain Will evidence
+- SDK별 automated compatibility harness의 Phase 1 artifact가 없는 후보는 `unverified`
+- MQTT 3.1.0 90일 관찰과 legacy 격리 완료 전까지 migration evidence가 blocked
 
 ## 9. 참고 자료
 

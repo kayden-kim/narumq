@@ -66,7 +66,12 @@ MQTT packet 이름, property와 reason code는 OASIS 명칭을 사용한다. 충
 | SPEC-TBD-07 | Metric 이름 전체와 histogram bucket | metrics catalog | label cardinality 제한을 지켜야 한다. |
 | SPEC-TBD-08 | 성능 SLO와 release-gating EMQX version·edition | Phase 0 benchmark record | BP-01 historical OSS comparator는 `5.8.8`로 고정됐지만, release-gating EMQX와 합격 수치는 미확정이다. 동일 조건에서 반복 측정해야 한다. |
 | SPEC-TBD-09 | backup RPO/RTO와 보존 기간 | disaster recovery spec | snapshot 원자성과 checksum 검증을 포함해야 한다. |
-| SPEC-TBD-10 | 지원 client SDK와 최소 version | [MQTT client compatibility v1](../contracts/mqtt-client-compatibility-v1.md) | Profile은 작성됐다. SDK inventory와 자동 호환 시험이 남아 있다. |
+
+### Phase 1 확정 SDK 목록
+
+Phase 1 SDK inventory는 `github.com/eclipse/paho.mqtt.golang v1.5.1`, `github.com/eclipse/paho.golang v0.23.0`, `paho-mqtt 2.1.0`으로 확정했다. 이 inventory는 Phase 1 compatibility evidence에만 적용하며, 자동 artifact가 없는 후보와 전체 contract 승격 조건은 compatibility contract에서 별도로 관리한다.
+
+Drain-safe support, `SPEC-TBD-04`, `DEP-06`~`DEP-12`와 MQTT 3.1.0 90일 migration evidence는 여전히 별도 blocker다.
 
 Management API v1 query profile은 미결정 항목이 아니다. 현재 active contract와 OpenAPI는 [`docs/contracts/management-api-v1.md`](../contracts/management-api-v1.md), [`docs/contracts/management-api-v1.openapi.json`](../contracts/management-api-v1.openapi.json)과 [`tests/contracts/management-api-v1`](../../tests/contracts/management-api-v1)에서 관리한다. Mutation·OIDC·rate limiting은 deferred scope다.
 

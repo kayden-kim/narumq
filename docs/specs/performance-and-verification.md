@@ -233,7 +233,25 @@ Phase 0에서 profile별 최소 throughput, 최대 p99·p99.9, connection당 mem
 | chaos | process/host loss, packet loss·latency·partition, disk full·slow I/O | production-like cluster |
 | benchmark | 성능·용량·회귀와 EMQX 비교 | 격리된 benchmark environment |
 
-### 7.1 Phase 0 mutation·fuzz gate
+### 7.1 Phase 1 MQTT client compatibility evidence
+
+Phase 1 SDK interoperability는 일반 unit test와 분리된 Docker/E2E evidence gate다. 저장소 root에서 Go `1.26.5`와 Linux/amd64 container를 실행할 수 있는 Docker daemon을 준비한 뒤 다음 command를 사용한다.
+
+```text
+go run ./tests/compatibility/mqtt-clients-v1 \
+  --run-id phase1-paho-go-python \
+  --output .artifacts/compatibility/mqtt-clients-v1/phase1-paho-go-python
+```
+
+Command는 checked-in `tests/compatibility/mqtt-clients-v1/profile.json`을 strict decode하고 Eclipse Paho Go MQTT 3.1.1 `v1.5.1`, Eclipse Paho Go MQTT 5 `v0.23.0`, Eclipse Paho Python `paho-mqtt 2.1.0` image를 amd64로 build한다. Docker가 없거나 image architecture가 amd64가 아니면 case를 시작하지 않고 environment manifest와 실패 artifact를 남긴다.
+
+성공 artifact는 `.artifacts/compatibility/mqtt-clients-v1/<run-id>/` 아래 `manifest.json`, `summary.json`, `cases.jsonl`, build log, image inspect metadata를 보존한다. 각 case는 broker log와 inspect, client stdout/stderr와 result JSON을 보존하고, QoS retransmission case는 proxy trace를 추가한다. Artifact에는 payload body, credential, raw certificate, 외부에서 주어진 Client ID와 secret을 기록해서는 안 된다.
+
+Phase 1 acceptance는 10개 Go case, 10개 Python case, 4개 cross-SDK QoS 1 case와 2개 MQTT 3.1.0 rejection case를 포함한 총 26개 expected case가 모두 성공하고 missing/unexpected result가 0인 경우에만 성공이다. `MQTT5_DRAIN_SAFE`, malformed server DISCONNECT와 Server Reference는 이 command에서 실행하지 않으며 `DEP-06`~`DEP-12`와 `SPEC-TBD-04` blocker로만 기록한다.
+
+이 Docker/E2E gate는 외부 dependency가 없어야 하는 `go test ./...`와 `go run ./tools/verify local`에 포함되지 않는다. 후자의 검증은 nested SDK module을 다운로드하거나 Docker를 시작하지 않아야 하며, compatibility command는 release evidence가 필요한 환경에서 명시적으로 실행한다.
+
+### 7.2 Phase 0 mutation·fuzz gate
 
 현재 Phase 0에서 mutation gate가 직접 다루는 critical state machine은
 `internal/domain/delivery/state.go`와 `internal/domain/session/state.go`다.
