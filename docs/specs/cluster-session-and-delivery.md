@@ -37,7 +37,7 @@ stateDiagram-v2
     Owned --> Unowned: "session expiry/삭제"
 ```
 
-ownership record는 최소 `sessionKey`, `ownerNodeId`, 단조 증가 `epoch`, 상태와 commit 식별자를 가져야 한다. 구체적인 저장 encoding은 storage ADR에서 정한다.
+ownership record는 최소 `sessionKey`, `ownerNodeId`, 단조 증가 `epoch`, 상태와 `commit identifier`를 가져야 한다. 이 Phase 2 evidence에서 `commit identifier`는 ownership aggregate가 opaque committed-command stream을 소비할 때 부여하는 application committed-command sequence position이다. 이는 consensus adapter의 Raft `StatusDTO.CommitIndex`나 snapshot index와 다르다. 구체적인 replicated state encoding은 storage/RPC ADR에서 정한다.
 
 Phase 2의 첫 단계인 replicated ownership core는 다음 관찰 계약을 만족해야 한다.
 1. 최초 acquire의 `expectedEpoch`는 `0`이어야 하며 성공 시 `epoch`는 `1`이 된다.
@@ -45,7 +45,7 @@ Phase 2의 첫 단계인 replicated ownership core는 다음 관찰 계약을 �
 3. `epoch`가 `uint64` 최대값에 도달하면 wrap-around하지 않고 mutation을 영구 중단한다.
 4. quorum commit 없는 proposal은 어떤 node의 state machine에도 반영되지 않는다.
 5. majority takeover 후 이전 `(ownerNodeId, epoch)`의 인가 요청은 거절되어야 한다.
-6. restart 및 snapshot replay 후에도 마지막 commit index와 epoch가 정확히 보존된다.
+6. restart 및 snapshot replay 후에도 마지막 application committed-command sequence position과 epoch가 정확히 보존된다.
 
 ### 2.1 Fencing 규칙
 
@@ -169,12 +169,12 @@ P1 rebalance가 활성화되면 target 편차, 최대 동시 이동 수와 이�
 
 ### 11.2 Phase 2 replicated session ownership core mapping
 
-아래 세 시나리오는 `internal/application/takeover` state machine과 `internal/adapters/raft`의 in-process deterministic 3-node harness가 검증하는 세션 소유권 핵심 증거다.
+아래 세 시나리오는 `internal/application/takeover`가 opaque committed-command bytes를 해석·순서화하고 `internal/adapters/raft`가 NMQSTATE1 snapshot/WAL로 그 bytes의 순서를 복구하는 in-process deterministic 3-node harness의 세션 소유권 핵심 증거다.
 
 | Scenario | 관찰할 결과 | Test mapping |
 | --- | --- | --- |
 | `concurrent acquire elects single owner` | 동일 `(tenantId, clientId)`에 동시 acquire 시 leader에서 먼저 commit된 owner만 epoch 1을 얻고 후속 제안은 `stale_epoch`로 거절되며 모든 node가 동일 상태로 수렴한다. | `TestReplicatedSessionOwnership/concurrent_acquire_elects_single_owner` |
 | `minority cannot acquire or advance epoch` | partition된 minority node의 ownership proposal은 commit되지 않으며 majority에서 새 leader가 epoch 2를 commit한 뒤 takeover한다. partition 복구 시 minority는 majority의 epoch 2로 수렴하고 이전 epoch 1 owner의 authorize는 거절된다. | `TestReplicatedSessionOwnership/minority_cannot_acquire_or_advance_epoch` |
-| `restart recovers ownership epoch and commit index` | snapshot과 WAL tail을 가진 node가 재시작 후 commit log를 replay했을 때 restart 전과 동일한 session owner, epoch, commit index로 복구된다. | `TestReplicatedSessionOwnership/restart_recovers_ownership_epoch_and_commit_index` |
+| `restart recovers ownership epoch and command sequence` | snapshot과 WAL tail을 가진 node가 재시작 후 opaque command stream을 replay했을 때 restart 전과 동일한 session owner, epoch, application committed-command sequence position으로 복구된다. | `TestReplicatedSessionOwnership/restart_recovers_ownership_epoch_and_command_sequence` |
 
 이 mapping은 CLU-04, CLU-05, CLU-10과 ADR-0004 §8(항목 1, 2, 5)의 session ownership/fencing core를 연결한다. 실제 MQTT CONNECT 경로와의 결합, multi-node TCP connection teardown, production peer transport, durable message ACK barrier는 이 core slice에 포함되지 않으며 수용 시험 전체 완료로 간주하지 않는다.

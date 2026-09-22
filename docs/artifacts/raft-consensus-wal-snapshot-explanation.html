@@ -204,7 +204,7 @@
           <div class="flow-item"><small>2 · 계산</small><strong><code>RawNode</code></strong><span>기록 순서 계산</span></div>
           <div class="flow-item"><small>3 · 저장</small><strong><code>wal.bin</code></strong><span>먼저 파일에 기록</span></div>
           <div class="flow-item"><small>4 · 전달</small><strong><code>MessageDTO</code></strong><span>시험 FIFO로 전달</span></div>
-          <div class="flow-item"><small>5 · 적용</small><strong><code>CommitDTO</code></strong><span>확정 명령을 상태에 반영</span></div>
+          <div class="flow-item"><small>5 · 적용</small><strong><code>BatchDTO.Commands</code></strong><span>확정된 opaque <code>[][]byte</code>를 상태에 반영</span></div>
           <div class="flow-item"><small>6 · 복구</small><strong>snapshot + WAL</strong><span>다시 열어 상태 복원</span></div>
         </div>
         <p class="small">시작점은 <a href="../../internal/adapters/raft/node.go#L130"><code>raft.Open</code></a>이고, 실제 시험의 노드 생성은 <a href="../../tests/integration/raft_consensus_test.go#L30"><code>newDeterministicCluster</code></a>입니다.</p>
@@ -265,15 +265,17 @@ return nil</pre>
           <div class="step"><div><strong><code>RawNode.Ready()</code></strong><p>이번에 처리할 기록 묶음을 꺼냅니다.</p></div></div>
           <div class="step highlight"><div><strong>WAL에 기록하고 <code>Sync</code></strong><p>디스크에 실제로 남았다고 확인한 뒤 다음 단계로 갑니다.</p></div></div>
           <div class="step"><div><strong>peer 메시지를 <code>MessageDTO</code>로 복사</strong><p>protobuf 바이트를 adapter 소유의 독립된 값으로 만듭니다.</p></div></div>
-          <div class="step"><div><strong>확정된 명령을 <code>CommitDTO</code>로 적용</strong><p>비어 있지 않은 일반 명령을 적용 목록에 추가합니다.</p></div></div>
+          <div class="step"><div><strong>확정된 명령을 <code>[][]byte</code>로 적용</strong><p>비어 있지 않은 일반 entry의 payload만 opaque command byte 목록에 추가합니다. Adapter는 JSON이나 ownership 의미를 해석하지 않습니다.</p></div></div>
           <div class="step"><div><strong><code>RawNode.Advance(ready)</code></strong><p>같은 <code>Ready</code>를 다시 처리하지 않았다고 계산기에 알립니다.</p></div></div>
         </div>
         <pre>// 설명을 위해 핵심 순서만 줄인 의사코드
 ready := n.raw.Ready()
 store.appendReady(ready)       // 실패하면 여기서 중단
 messages := copyPeerMessages(ready.Messages)
-commits := applyCommittedEntries(ready.CommittedEntries)
+commands := applyCommittedEntries(ready.CommittedEntries) // [][]byte
+batch := BatchDTO{Messages: messages, Commands: commands}
 n.raw.Advance(ready)</pre>
+        <p class="small"><code>Node.AppliedCommands()</code>는 snapshot과 WAL replay를 포함해 adapter가 보존한 opaque command bytes의 독립 복사본을 반환합니다. Ownership application이 필요할 때만 이 stream을 해석하고 application sequence position을 부여합니다.</p>
         <div class="callout">
           <strong>순서를 바꾸면 생기는 문제:</strong> 메시지를 먼저 보내고 프로세스가 죽으면, 다른 노드는 기록을 받았지만 보낸 노드의 디스크에는 그 기록이 없을 수 있습니다. 이 구현은 그 위험을 줄이기 위해 저장 성공 뒤에만 outbound 메시지를 만듭니다.
         </div>

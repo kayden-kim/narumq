@@ -36,16 +36,16 @@ func TestNodeConfigAndLifecycle(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(batch.Messages) != 0 || len(batch.Commits) != 0 {
-		t.Fatalf("bootstrap batch = %#v, want no external messages or application commits", batch)
+	if len(batch.Messages) != 0 || len(batch.Commands) != 0 {
+		t.Fatalf("bootstrap batch = %#v, want no external messages or application commands", batch)
 	}
 	status := node.Status()
 	if !status.Bootstrapped || status.AppliedIndex == 0 || status.CommitIndex != status.AppliedIndex {
 		t.Fatalf("bootstrap status = %#v", status)
 	}
-	commits := node.AppliedCommits()
-	if len(commits) != 0 {
-		t.Fatalf("bootstrap commits = %#v, want empty", commits)
+	commands := node.AppliedCommands()
+	if len(commands) != 0 {
+		t.Fatalf("bootstrap commands = %#v, want empty", commands)
 	}
 	if err := node.Snapshot(); err != nil {
 		t.Fatalf("same-index Snapshot() = %v", err)
@@ -143,11 +143,11 @@ func TestNodeHelpersCloneAndFixedConfiguration(t *testing.T) {
 	if !fixedConfState(state, []NodeID{1, 2, 3}) {
 		t.Fatal("fixedConfState rejected sorted-equivalent voters")
 	}
-	commits := []CommitDTO{{Index: 1, Data: []byte("one")}, {Index: 2, Data: nil}}
-	clone := cloneCommits(commits)
-	clone[0].Data[0] = 'X'
-	if string(commits[0].Data) != "one" {
-		t.Fatal("cloneCommits shared payload")
+	commands := [][]byte{[]byte("one"), nil}
+	clone := cloneCommands(commands)
+	clone[0][0] = 'X'
+	if string(commands[0]) != "one" {
+		t.Fatal("cloneCommands shared payload")
 	}
 	entries := cloneEntries([]*pb.Entry{{Index: uint64Ptr(1), Data: []byte("entry")}})
 	entries[0].Data[0] = 'X'
@@ -156,5 +156,88 @@ func TestNodeHelpersCloneAndFixedConfiguration(t *testing.T) {
 	}
 	if !errors.Is((&Node{}).fail(errors.New("failure")), ErrFailed) {
 		t.Fatal("fail() did not wrap ErrFailed")
+	}
+}
+
+func TestNodeCommandResultsAreDeepCopies(t *testing.T) {
+	nodes := make(map[NodeID]*Node, 3)
+	for _, nodeID := range []NodeID{1, 2, 3} {
+		node, err := Open(Config{
+			NodeID:    nodeID,
+			PeerIDs:   []NodeID{1, 2, 3},
+			Directory: filepath.Join(t.TempDir(), "node"),
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		nodes[nodeID] = node
+	}
+	defer func() {
+		for _, node := range nodes {
+			if err := node.Close(); err != nil {
+				t.Errorf("Close() = %v", err)
+			}
+		}
+	}()
+
+	var returnedCommands [][]byte
+	pump := func() {
+		t.Helper()
+		var queue []MessageDTO
+		for range 512 {
+			progress := false
+			for _, nodeID := range []NodeID{1, 2, 3} {
+				batch, err := nodes[nodeID].ProcessReady()
+				if err != nil {
+					t.Fatalf("node %d ProcessReady() = %v", nodeID, err)
+				}
+				if len(batch.Messages) != 0 || len(batch.Commands) != 0 {
+					progress = true
+				}
+				if returnedCommands == nil && len(batch.Commands) != 0 {
+					returnedCommands = batch.Commands
+				}
+				queue = append(queue, batch.Messages...)
+			}
+			if len(queue) != 0 {
+				pending := queue
+				queue = nil
+				for _, message := range pending {
+					if err := nodes[message.To].Step(message); err != nil {
+						t.Fatalf("deliver %d -> %d: %v", message.From, message.To, err)
+					}
+					progress = true
+				}
+			}
+			if !progress && len(queue) == 0 {
+				return
+			}
+		}
+		t.Fatal("node pump exceeded 512 rounds")
+	}
+
+	pump()
+	if err := nodes[1].Campaign(); err != nil {
+		t.Fatal(err)
+	}
+	pump()
+	if err := nodes[1].Propose([]byte("command")); err != nil {
+		t.Fatal(err)
+	}
+	pump()
+	if len(returnedCommands) != 1 || string(returnedCommands[0]) != "command" {
+		t.Fatalf("returned commands = %q, want command", returnedCommands)
+	}
+
+	returnedCommands[0][0] = 'X'
+	for _, nodeID := range []NodeID{1, 2, 3} {
+		if got := nodes[nodeID].AppliedCommands(); len(got) != 1 || string(got[0]) != "command" {
+			t.Fatalf("node %d AppliedCommands after BatchDTO mutation = %q, want command", nodeID, got)
+		}
+	}
+	applied := nodes[2].AppliedCommands()
+	applied[0][0] = 'Y'
+	if got := nodes[2].AppliedCommands(); len(got) != 1 || string(got[0]) != "command" {
+		t.Fatalf("AppliedCommands mutation changed node state: %q", got)
 	}
 }

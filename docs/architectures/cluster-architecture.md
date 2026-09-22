@@ -64,9 +64,9 @@ flowchart TB
 
 ## Phase 0/2 제한된 구현 증거
 
-현재 repository는 `internal/adapters/raft`에서 `go.etcd.io/raft/v3 v3.7.0`의 `RawNode`와 deterministic logical-tick harness, experimental local WAL·snapshot recovery(`NMQSTATE2`)를 검증하고, `internal/application/takeover`에서 Raft log에 commit된 세션 소유권 상태 전이(single owner 선출, majority takeover, stale epoch 거절, restart 복구)를 검증한다. 이 evidence는 consensus core와 세션 소유권 상태 머신의 결정론적 동작 경계만 보여준다. `cmd/narumq`의 composition root에는 조립하지 않으며 production peer transport/TLS, replicated MQTT message/route state, durable ACK barrier와 membership workflow는 연결되지 않았다.
+현재 repository는 `internal/adapters/raft`에서 `go.etcd.io/raft/v3 v3.7.0`의 `RawNode`와 deterministic logical-tick harness, opaque application command boundary(`BatchDTO.Commands`, `AppliedCommands`)와 NMQSTATE1 opaque command snapshot/WAL recovery를 검증한다. `internal/application/takeover`는 이 command bytes를 해석하고 application committed-command sequence position을 부여해 세션 소유권 상태 전이(single owner 선출, majority takeover, stale epoch 거절, restart 복구)를 검증한다. 이 evidence는 consensus core와 세션 소유권 상태 머신의 결정론적 동작 경계만 보여준다. `cmd/narumq`의 composition root에는 조립하지 않으며 production peer transport/TLS, replicated MQTT message/route state, durable ACK barrier와 membership workflow는 연결되지 않았다.
 
-따라서 위 runtime view의 `Raft core`·`WAL·snapshot`·authenticated transport 흐름은 Target 구조이고, 현재 구현된 실제 경로는 [adapter source](../../internal/adapters/raft/node.go), [stable store](../../internal/adapters/raft/stable_store.go), [takeover state machine](../../internal/application/takeover/machine.go), [integration evidence](../../tests/integration/raft_consensus_test.go)의 제한된 in-process core다. ADR-0002와 ADR-0004가 Proposed인 동안 이 view를 production 또는 Verified 상태로 승격하지 않는다.
+따라서 위 runtime view의 `Raft core`·`WAL·snapshot`·authenticated transport 흐름은 Target 구조이고, 현재 구현된 실제 경로는 [adapter source](../../internal/adapters/raft/node.go), [stable store](../../internal/adapters/raft/stable_store.go), [takeover state machine and codec](../../internal/application/takeover), [integration evidence](../../tests/integration/raft_consensus_test.go)의 제한된 in-process core다. ADR-0002와 ADR-0004가 Proposed인 동안 이 view를 production 또는 Verified 상태로 승격하지 않는다.
 ## 상태 소유권
 
 | 상태 | 권위 있는 위치 | Local copy의 역할 |

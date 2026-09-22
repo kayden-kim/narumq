@@ -27,7 +27,7 @@ const (
 	clusterMetaMagic = "NMQRAFT1"
 	walMagic         = "NMQWAL01"
 	snapshotMagic    = "NMQSNAP1"
-	stateMagic       = "NMQSTATE2"
+	stateMagic       = "NMQSTATE1"
 
 	formatVersion = 1
 
@@ -65,7 +65,7 @@ type stableStore struct {
 	snapshotIndex uint64
 	hardState     *pb.HardState
 	confState     *pb.ConfState
-	commits       []CommitDTO
+	commands      [][]byte
 	appliedIndex  uint64
 }
 
@@ -225,7 +225,7 @@ func openStableStore(directory string) (*stableStore, error) {
 			return nil, fmt.Errorf("apply persisted snapshot: %w", err)
 		}
 		store.confState = cloneConfState(latestSnapshot.GetMetadata().GetConfState())
-		store.commits, err = decodeApplicationState(snapshotIndex, latestSnapshot.GetData())
+		store.commands, err = decodeApplicationState(latestSnapshot.GetData())
 		if err != nil {
 			return nil, fmt.Errorf("%w: snapshot state: %v", ErrCorruptSnapshot, err)
 		}
@@ -247,7 +247,7 @@ func openStableStore(directory string) (*stableStore, error) {
 				}
 				store.snapshotIndex = index
 				store.confState = cloneConfState(record.snapshot.GetMetadata().GetConfState())
-				store.commits, err = decodeApplicationState(index, record.snapshot.GetData())
+				store.commands, err = decodeApplicationState(record.snapshot.GetData())
 				if err != nil {
 					return nil, fmt.Errorf("%w: WAL snapshot state: %v", ErrCorruptWAL, err)
 				}
@@ -335,7 +335,7 @@ func (s *stableStore) rebuildAppliedState(lastIndex uint64) error {
 		return fmt.Errorf("read recovered entries: %w", err)
 	}
 	confState := cloneConfState(s.confState)
-	commits := cloneCommits(s.commits)
+	commands := cloneCommands(s.commands)
 	for _, entry := range entries {
 		if entry.GetIndex() <= s.snapshotIndex || entry.GetIndex() > s.hardState.GetCommit() {
 			continue
@@ -346,10 +346,7 @@ func (s *stableStore) rebuildAppliedState(lastIndex uint64) error {
 				if len(entry.GetData()) > maxCommandSize {
 					return fmt.Errorf("%w: command at index %d exceeds %d bytes", ErrCorruptWAL, entry.GetIndex(), maxCommandSize)
 				}
-				commits = append(commits, CommitDTO{
-					Index: entry.GetIndex(),
-					Data:  bytes.Clone(entry.GetData()),
-				})
+				commands = append(commands, bytes.Clone(entry.GetData()))
 			}
 		case pb.EntryConfChange, pb.EntryConfChangeV2:
 			change, err := decodeConfChange(entry)
@@ -366,7 +363,7 @@ func (s *stableStore) rebuildAppliedState(lastIndex uint64) error {
 		s.appliedIndex = entry.GetIndex()
 	}
 	s.confState = confState
-	s.commits = commits
+	s.commands = commands
 	if s.appliedIndex < s.snapshotIndex {
 		s.appliedIndex = s.snapshotIndex
 	}
@@ -407,7 +404,7 @@ func (s *stableStore) appendReady(ready etcdraft.Ready) error {
 		}
 		s.snapshotIndex = ready.Snapshot.GetMetadata().GetIndex()
 		s.confState = cloneConfState(ready.Snapshot.GetMetadata().GetConfState())
-		s.commits, err = decodeApplicationState(ready.Snapshot.GetMetadata().GetIndex(), ready.Snapshot.GetData())
+		s.commands, err = decodeApplicationState(ready.Snapshot.GetData())
 		if err != nil {
 			return fmt.Errorf("decode ready snapshot state: %w", err)
 		}
@@ -441,7 +438,7 @@ func (s *stableStore) close() error {
 	return nil
 }
 
-func (s *stableStore) createSnapshot(index uint64, confState *pb.ConfState, commits []CommitDTO) error {
+func (s *stableStore) createSnapshot(index uint64, confState *pb.ConfState, commands [][]byte) error {
 	if index == 0 {
 		return nil
 	}
@@ -459,7 +456,7 @@ func (s *stableStore) createSnapshot(index uint64, confState *pb.ConfState, comm
 	if index > lastIndex {
 		return fmt.Errorf("snapshot index %d exceeds last index %d", index, lastIndex)
 	}
-	state, err := encodeApplicationState(index, commits)
+	state, err := encodeApplicationState(commands)
 	if err != nil {
 		return err
 	}
@@ -475,7 +472,7 @@ func (s *stableStore) createSnapshot(index uint64, confState *pb.ConfState, comm
 	}
 	s.snapshotIndex = index
 	s.confState = cloneConfState(confState)
-	s.commits = cloneCommits(commits)
+	s.commands = cloneCommands(commands)
 	s.appliedIndex = index
 	return nil
 }
@@ -566,7 +563,7 @@ func loadLatestSnapshot(directory string) (*pb.Snapshot, uint64, error) {
 	if snapshot.GetMetadata().GetIndex() != index {
 		return nil, 0, fmt.Errorf("%w: snapshot filename index mismatch", ErrCorruptSnapshot)
 	}
-	if _, err := decodeApplicationState(index, snapshot.GetData()); err != nil {
+	if _, err := decodeApplicationState(snapshot.GetData()); err != nil {
 		return nil, 0, fmt.Errorf("%w: snapshot state: %v", ErrCorruptSnapshot, err)
 	}
 	return &snapshot, index, nil
@@ -663,7 +660,7 @@ func readyRecord(ready etcdraft.Ready) (walRecord, error) {
 	}
 	if ready.Snapshot != nil && !etcdraft.IsEmptySnap(ready.Snapshot) {
 		record.snapshot = proto.Clone(ready.Snapshot).(*pb.Snapshot)
-		if _, err := decodeApplicationState(ready.Snapshot.GetMetadata().GetIndex(), record.snapshot.GetData()); err != nil {
+		if _, err := decodeApplicationState(record.snapshot.GetData()); err != nil {
 			return walRecord{}, fmt.Errorf("invalid ready snapshot state: %w", err)
 		}
 	}
@@ -777,7 +774,7 @@ func decodeWALRecord(payload []byte) (walRecord, error) {
 		if snapshot.GetMetadata().GetIndex() == 0 {
 			return walRecord{}, fmt.Errorf("empty snapshot")
 		}
-		if _, err := decodeApplicationState(snapshot.GetMetadata().GetIndex(), snapshot.GetData()); err != nil {
+		if _, err := decodeApplicationState(snapshot.GetData()); err != nil {
 			return walRecord{}, err
 		}
 		record.snapshot = &snapshot
@@ -817,37 +814,27 @@ func decodeWALRecord(payload []byte) (walRecord, error) {
 	return record, nil
 }
 
-func encodeApplicationState(snapshotIndex uint64, commits []CommitDTO) ([]byte, error) {
-	if len(commits) > maxStateCommands {
-		return nil, fmt.Errorf("application commit count exceeds bound")
+func encodeApplicationState(commands [][]byte) ([]byte, error) {
+	if len(commands) > maxStateCommands {
+		return nil, fmt.Errorf("application command count exceeds bound")
 	}
 	var buffer bytes.Buffer
 	buffer.WriteString(stateMagic)
 	var countBuf [4]byte
-	binary.BigEndian.PutUint32(countBuf[:], uint32(len(commits)))
+	binary.BigEndian.PutUint32(countBuf[:], uint32(len(commands)))
 	buffer.Write(countBuf[:])
 
-	var prevIndex uint64
-	var header [12]byte
-	for _, commit := range commits {
-		if commit.Index == 0 || commit.Index <= prevIndex {
-			return nil, fmt.Errorf("commit index %d not strictly increasing (previous %d)", commit.Index, prevIndex)
+	var lengthBuf [4]byte
+	for index, command := range commands {
+		if len(command) == 0 {
+			return nil, fmt.Errorf("application command at position %d has empty payload", index)
 		}
-		if commit.Index > snapshotIndex {
-			return nil, fmt.Errorf("commit index %d exceeds snapshot index %d", commit.Index, snapshotIndex)
+		if len(command) > maxCommandSize {
+			return nil, fmt.Errorf("application command exceeds %d bytes", maxCommandSize)
 		}
-		if len(commit.Data) == 0 {
-			return nil, fmt.Errorf("commit at index %d has empty payload", commit.Index)
-		}
-		if len(commit.Data) > maxCommandSize {
-			return nil, fmt.Errorf("application commit exceeds %d bytes", maxCommandSize)
-		}
-		prevIndex = commit.Index
-
-		binary.BigEndian.PutUint64(header[:8], commit.Index)
-		binary.BigEndian.PutUint32(header[8:], uint32(len(commit.Data)))
-		buffer.Write(header[:])
-		buffer.Write(commit.Data)
+		binary.BigEndian.PutUint32(lengthBuf[:], uint32(len(command)))
+		buffer.Write(lengthBuf[:])
+		buffer.Write(command)
 
 		if buffer.Len() > maxSnapshotPayload {
 			return nil, fmt.Errorf("application state exceeds %d bytes", maxSnapshotPayload)
@@ -856,7 +843,10 @@ func encodeApplicationState(snapshotIndex uint64, commits []CommitDTO) ([]byte, 
 	return buffer.Bytes(), nil
 }
 
-func decodeApplicationState(snapshotIndex uint64, data []byte) ([]CommitDTO, error) {
+func decodeApplicationState(data []byte) ([][]byte, error) {
+	if len(data) > maxSnapshotPayload {
+		return nil, fmt.Errorf("application state exceeds %d bytes", maxSnapshotPayload)
+	}
 	if len(data) < len(stateMagic)+4 || string(data[:len(stateMagic)]) != stateMagic {
 		return nil, fmt.Errorf("invalid application state magic")
 	}
@@ -864,43 +854,29 @@ func decodeApplicationState(snapshotIndex uint64, data []byte) ([]CommitDTO, err
 	count := binary.BigEndian.Uint32(data[position : position+4])
 	position += 4
 	if count > maxStateCommands {
-		return nil, fmt.Errorf("application commit count exceeds bound")
+		return nil, fmt.Errorf("application command count exceeds bound")
 	}
 
-	commits := make([]CommitDTO, 0, count)
-	var prevIndex uint64
+	commands := make([][]byte, 0, count)
 	for index := uint32(0); index < count; index++ {
-		if len(data)-position < 12 {
-			return nil, fmt.Errorf("truncated application commit header")
+		if len(data)-position < 4 {
+			return nil, fmt.Errorf("truncated application command header")
 		}
-		commitIndex := binary.BigEndian.Uint64(data[position : position+8])
-		length := binary.BigEndian.Uint32(data[position+8 : position+12])
-		position += 12
-
-		if commitIndex == 0 || commitIndex <= prevIndex {
-			return nil, fmt.Errorf("commit index %d not strictly increasing (previous %d)", commitIndex, prevIndex)
-		}
-		if commitIndex > snapshotIndex {
-			return nil, fmt.Errorf("commit index %d exceeds snapshot index %d", commitIndex, snapshotIndex)
-		}
+		length := binary.BigEndian.Uint32(data[position : position+4])
+		position += 4
 		if length == 0 {
-			return nil, fmt.Errorf("commit at index %d has empty payload", commitIndex)
+			return nil, fmt.Errorf("application command at position %d has empty payload", index)
 		}
 		if length > maxCommandSize || uint64(length) > uint64(len(data)-position) {
-			return nil, fmt.Errorf("invalid application commit length")
+			return nil, fmt.Errorf("invalid application command length")
 		}
-		prevIndex = commitIndex
-
-		commits = append(commits, CommitDTO{
-			Index: commitIndex,
-			Data:  bytes.Clone(data[position : position+int(length)]),
-		})
+		commands = append(commands, bytes.Clone(data[position:position+int(length)]))
 		position += int(length)
 	}
 	if position != len(data) {
 		return nil, fmt.Errorf("trailing application state bytes")
 	}
-	return commits, nil
+	return commands, nil
 }
 
 func decodeConfChange(entry *pb.Entry) (*pb.ConfChangeV2, error) {
@@ -955,16 +931,13 @@ func cloneConfState(state *pb.ConfState) *pb.ConfState {
 	return proto.Clone(state).(*pb.ConfState)
 }
 
-func cloneCommits(commits []CommitDTO) []CommitDTO {
-	if commits == nil {
+func cloneCommands(commands [][]byte) [][]byte {
+	if commands == nil {
 		return nil
 	}
-	cloned := make([]CommitDTO, len(commits))
-	for index, commit := range commits {
-		cloned[index] = CommitDTO{
-			Index: commit.Index,
-			Data:  bytes.Clone(commit.Data),
-		}
+	cloned := make([][]byte, len(commands))
+	for index, command := range commands {
+		cloned[index] = bytes.Clone(command)
 	}
 	return cloned
 }

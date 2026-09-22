@@ -36,7 +36,7 @@ Spike는 `raft.RawNode`의 synchronous `Ready`/`Advance` 경계와 `AsyncStorage
 
 Failover 검증은 follower 전용 `RawNode.ForgetLeader` seam을 `Campaign` 앞에 사용한다. 이 호출은 membership를 변경하지 않는다. Leader 장애 직후 `CheckQuorum`과 `PreVote`가 campaign을 무시할 수 있는 비결정적 lease window를 피하기 위한 결정이다.
 
-`internal/adapters/raft`는 etcd/raft 자료형을 adapter 안에 캡슐화하고, experimental WAL·snapshot과 deterministic node boundary를 소유한다. 검증 결과는 [adapter unit tests](../../internal/adapters/raft/node_test.go), [stable-store tests](../../internal/adapters/raft/stable_store_test.go), [integration spike](../../tests/integration/raft_consensus_test.go)에 기록한다. 이 evidence는 algorithm과 local recovery 가능성을 증명할 뿐 BP-03/BP-06, durable MQTT ACK, production transport 또는 production durability 완료를 뜻하지 않는다.
+`internal/adapters/raft`는 etcd/raft 자료형을 adapter 안에 캡슐화하고, opaque `[][]byte` command boundary, NMQSTATE1 opaque command snapshot/WAL과 deterministic node boundary를 소유한다. 이 spike adapter는 command payload를 해석하거나 application sequence를 만들지 않고 bytes를 순서대로 보존한다. ownership codec과 application committed-command sequence 해석은 `internal/application/takeover`가 소유한다. 검증 결과는 [adapter unit tests](../../internal/adapters/raft/node_test.go), [stable-store tests](../../internal/adapters/raft/stable_store_test.go), [integration spike](../../tests/integration/raft_consensus_test.go)에 기록한다. 이 evidence는 algorithm과 local recovery 가능성을 증명할 뿐 BP-03/BP-06, durable MQTT ACK, production transport 또는 production durability 완료를 뜻하지 않는다.
 
 ## 2. 배경
 
@@ -89,7 +89,7 @@ Phase 0 spike 및 Phase 2 session ownership core는 다음 검증 기준을 갖�
 1. 3-node에서 leader kill 뒤 committed state가 유지된다(`TestRaftConsensusSpike/leader_failure_preserves_committed_state`).
 2. Minority partition에서 새 write와 ownership이 commit되지 않는다(`TestRaftConsensusSpike/quorum_loss_cannot_commit`, `TestReplicatedSessionOwnership/minority_cannot_acquire_or_advance_epoch`).
 3. WAL append, `HardState` 저장과 outbound message ordering을 fault injection으로 검증한다(`internal/adapters/raft` unit test).
-4. Snapshot 중 crash 뒤 마지막 committed index로 복구한다(`TestRaftConsensusSpike/snapshot_plus_WAL_tail_restores_state`, `TestReplicatedSessionOwnership/restart_recovers_ownership_epoch_and_commit_index`).
+4. Snapshot 중 crash 뒤 마지막 committed index로 복구한다(`TestRaftConsensusSpike/snapshot_plus_WAL_tail_restores_state`, `TestReplicatedSessionOwnership/restart_recovers_ownership_epoch_and_command_sequence`). Ownership assertion의 commit identifier는 Raft index가 아니라 replay한 ownership command bytes의 application sequence position이다.
 5. Disk full과 느린 follower가 무제한 queue를 만들지 않는다(후속 과제).
 6. Membership change 중 crash와 재시작에서 member set이 수렴한다(후속 과제).
 

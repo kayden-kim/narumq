@@ -10,7 +10,7 @@ import (
 )
 
 var (
-	// ErrOutOfOrderCommit indicates that a commit index is zero or not strictly greater than the last applied index.
+	// ErrOutOfOrderCommit indicates that an application sequence index is zero or not strictly greater than the last applied sequence position.
 	ErrOutOfOrderCommit = errors.New("out of order commit index")
 )
 
@@ -42,7 +42,7 @@ func NewStateMachine() *StateMachine {
 	}
 }
 
-// LastAppliedIndex returns the highest Raft commit index applied so far.
+// LastAppliedIndex returns the highest application committed-command sequence position applied so far.
 func (sm *StateMachine) LastAppliedIndex() uint64 {
 	sm.mu.RLock()
 	defer sm.mu.RUnlock()
@@ -68,7 +68,11 @@ func (sm *StateMachine) Authorize(key tenancy.SessionKey, ownerNodeID string, ep
 	return record.Authorize(key, ownerNodeID, epoch)
 }
 
-// Apply processes a committed ownership command at the specified Raft commit index.
+// Apply processes a committed ownership command at the specified application sequence index.
+//
+// The commitIndex parameter is an application-owned monotonic sequence number
+// assigned while consuming the ownership aggregate's committed-command stream.
+// It is not a Raft log index or the consensus adapter's StatusDTO.CommitIndex.
 //
 // Invariants:
 //   - commitIndex must be non-zero and strictly greater than lastAppliedIndex.

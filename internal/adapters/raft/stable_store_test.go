@@ -31,8 +31,8 @@ func TestStableStoreReplayConflictingSuffix(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer store.close()
-	if got := commitStrings(store.commits); !equalStringValues(got, []string{"alpha", "beta", "gamma"}) {
-		t.Fatalf("replayed commits = %v", got)
+	if got := commandStrings(store.commands); !equalStringValues(got, []string{"alpha", "beta", "gamma"}) {
+		t.Fatalf("replayed commands = %v", got)
 	}
 	if store.hardState.GetCommit() != 3 || store.appliedIndex != 3 {
 		t.Fatalf("replayed progress = hardstate=%#v applied=%d", store.hardState, store.appliedIndex)
@@ -167,9 +167,9 @@ func TestStableStoreBootstrapIncompleteAndSnapshotTmpIgnored(t *testing.T) {
 		t.Fatal(err)
 	}
 	node.appliedIndex = 4
-	node.appliedCommits = []CommitDTO{{Index: 4, Data: []byte("alpha")}}
+	node.appliedCommands = [][]byte{[]byte("alpha")}
 	node.store.appliedIndex = 4
-	node.store.commits = cloneCommits(node.appliedCommits)
+	node.store.commands = cloneCommands(node.appliedCommands)
 	err = node.Snapshot()
 	filePersistenceOps = oldOps
 	if !errors.Is(err, ErrFailed) {
@@ -186,8 +186,8 @@ func TestStableStoreBootstrapIncompleteAndSnapshotTmpIgnored(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer restarted.Close()
-	if got := commitStrings(restarted.AppliedCommits()); !equalStringValues(got, []string{"alpha"}) {
-		t.Fatalf("restarted commits with stale tmp = %v", got)
+	if got := commandStrings(restarted.AppliedCommands()); !equalStringValues(got, []string{"alpha"}) {
+		t.Fatalf("restarted commands with stale tmp = %v", got)
 	}
 }
 
@@ -281,10 +281,10 @@ func encodeTestFrame(t *testing.T, record walRecord) []byte {
 	return frame
 }
 
-func commitStrings(commits []CommitDTO) []string {
-	values := make([]string, len(commits))
-	for index, commit := range commits {
-		values[index] = string(commit.Data)
+func commandStrings(commands [][]byte) []string {
+	values := make([]string, len(commands))
+	for index, command := range commands {
+		values[index] = string(command)
 	}
 	return values
 }

@@ -21,7 +21,9 @@ Session key `(tenantId, clientId)`마다 quorum에 commit된 ownership record를
 - `ownerNodeId`
 - 단조 증가하는 unsigned `epoch`
 - ownership state
-- 마지막 committed index
+- application committed-command sequence position
+
+이 sequence position은 ownership aggregate가 opaque committed-command bytes를 소비하며 부여한다. `internal/adapters/raft`의 spike boundary는 bytes를 해석하지 않고 순서와 Raft progress만 보존하며, `internal/application/takeover`의 ownership codec과 aggregate가 command 의미와 sequence를 소유한다. 따라서 이 identifier는 adapter의 Raft `StatusDTO.CommitIndex` 또는 snapshot index가 아니다.
 
 새 owner는 ownership command가 quorum에 commit되고 이전 값보다 큰 epoch를 받은 뒤에만 session state를 읽고 쓸 수 있다.
 
@@ -86,7 +88,7 @@ Phase 2 replicated session ownership core는 다음 검증 기준을 갖는다.
 2. Owner를 network partition한 뒤 majority에서 takeover하고 이전 owner write를 모두 거절한다(`TestReplicatedSessionOwnership/minority_cannot_acquire_or_advance_epoch`).
 3. Commit 응답 유실과 client retry가 epoch를 불필요하게 중복 증가시켜도 safety를 유지하는지 확인한다(후속 과제).
 4. Drain takeover 직후 이전 node의 route·inflight write를 거절한다(후속 과제).
-5. Snapshot restore 뒤 epoch가 감소하거나 재사용되지 않는지 확인한다(`TestReplicatedSessionOwnership/restart_recovers_ownership_epoch_and_commit_index`).
+5. Snapshot restore 뒤 epoch가 감소하거나 재사용되지 않는지 확인한다(`TestReplicatedSessionOwnership/restart_recovers_ownership_epoch_and_command_sequence`).
 
 항목 1, 2, 5는 in-process deterministic 3-node cluster와 takeover state machine에서 검증한다. 항목 3, 4와 실제 MQTT runtime/drain wiring이 검증되기 전까지 이 결정은 `Proposed` 상태를 유지한다.
 ## 9. 재검토 조건

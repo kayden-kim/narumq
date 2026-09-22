@@ -8,13 +8,13 @@ import (
 )
 
 var (
-	// ErrInvalidOwnership indicates an invalid session key, node ID, or commit index.
+	// ErrInvalidOwnership indicates an invalid session key, node ID, or application sequence index.
 	ErrInvalidOwnership = errors.New("invalid ownership")
 	// ErrStaleEpoch indicates that the expected epoch does not match the current ownership epoch.
 	ErrStaleEpoch = errors.New("stale ownership epoch")
 	// ErrEpochOverflow indicates that the ownership epoch cannot exceed math.MaxUint64.
 	ErrEpochOverflow = errors.New("ownership epoch overflow")
-	// ErrStaleCommitIndex indicates that the commit index is not strictly greater than the current commit index.
+	// ErrStaleCommitIndex indicates that the application sequence index is not strictly greater than the current sequence index.
 	ErrStaleCommitIndex = errors.New("stale ownership commit index")
 )
 
@@ -44,7 +44,7 @@ func (o Ownership) Epoch() Epoch {
 	return o.epoch
 }
 
-// CommitIndex returns the Raft commit index when this ownership record was committed.
+// CommitIndex returns the application committed-command sequence position for this ownership record.
 func (o Ownership) CommitIndex() uint64 {
 	return o.commitIndex
 }
@@ -70,6 +70,10 @@ func (o Ownership) Authorize(key tenancy.SessionKey, ownerNodeID string, epoch E
 }
 
 // AcquireOwnership validates and creates or updates a session ownership record.
+//
+// The commitIndex parameter is an application-owned monotonic sequence position
+// assigned while consuming the ownership aggregate's committed-command stream.
+// It is not a Raft log index or the consensus adapter's StatusDTO.CommitIndex.
 //
 // Invariants:
 // - key must be valid (non-empty TenantID and ClientID).

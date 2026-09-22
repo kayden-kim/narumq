@@ -84,16 +84,10 @@ type MessageDTO struct {
 	Data []byte
 }
 
-// CommitDTO is an ordered application command that reached the local commit boundary.
-type CommitDTO struct {
-	Index uint64
-	Data  []byte
-}
-
-// BatchDTO contains outbound peer messages and newly applied commands.
+// BatchDTO contains outbound peer messages and newly applied opaque commands.
 type BatchDTO struct {
 	Messages []MessageDTO
-	Commits  []CommitDTO
+	Commands [][]byte
 }
 
 // StatusDTO reports the node's deterministic Raft and application progress.
@@ -119,11 +113,11 @@ type Node struct {
 	closed  bool
 	failure error
 
-	bootstrapped   bool
-	confState      *pb.ConfState
-	appliedIndex   uint64
-	appliedCommits []CommitDTO
-	onReadyEvent   func(string)
+	bootstrapped    bool
+	confState       *pb.ConfState
+	appliedIndex    uint64
+	appliedCommands [][]byte
+	onReadyEvent    func(string)
 }
 
 // Open opens a new or previously bootstrapped deterministic three-voter node.
@@ -175,14 +169,14 @@ func Open(config Config) (*Node, error) {
 	}
 
 	node := &Node{
-		id:             config.NodeID,
-		peerIDs:        slices.Clone(peerIDs),
-		store:          store,
-		raw:            raw,
-		bootstrapped:   !isNew && fixedConfState(store.confState, peerIDs),
-		confState:      cloneConfState(store.confState),
-		appliedIndex:   store.appliedIndex,
-		appliedCommits: cloneCommits(store.commits),
+		id:              config.NodeID,
+		peerIDs:         slices.Clone(peerIDs),
+		store:           store,
+		raw:             raw,
+		bootstrapped:    !isNew && fixedConfState(store.confState, peerIDs),
+		confState:       cloneConfState(store.confState),
+		appliedIndex:    store.appliedIndex,
+		appliedCommands: cloneCommands(store.commands),
 	}
 	return node, nil
 }
@@ -303,10 +297,10 @@ func (n *Node) ProcessReady() (BatchDTO, error) {
 
 	if ready.Snapshot != nil && !etcdraft.IsEmptySnap(ready.Snapshot) {
 		n.confState = cloneConfState(ready.Snapshot.GetMetadata().GetConfState())
-		n.appliedCommits = cloneCommits(n.store.commits)
+		n.appliedCommands = cloneCommands(n.store.commands)
 		n.appliedIndex = ready.Snapshot.GetMetadata().GetIndex()
 	}
-	commits := make([]CommitDTO, 0, len(ready.CommittedEntries))
+	commands := make([][]byte, 0, len(ready.CommittedEntries))
 	for _, entry := range ready.CommittedEntries {
 		if entry.GetIndex() <= n.appliedIndex {
 			continue
@@ -317,9 +311,9 @@ func (n *Node) ProcessReady() (BatchDTO, error) {
 				if len(entry.GetData()) > maxCommandSize {
 					return BatchDTO{}, n.fail(fmt.Errorf("apply command at index %d: %w", entry.GetIndex(), ErrProposalTooLarge))
 				}
-				commit := CommitDTO{Index: entry.GetIndex(), Data: bytes.Clone(entry.GetData())}
-				n.appliedCommits = append(n.appliedCommits, commit)
-				commits = append(commits, CommitDTO{Index: entry.GetIndex(), Data: bytes.Clone(commit.Data)})
+				command := bytes.Clone(entry.GetData())
+				n.appliedCommands = append(n.appliedCommands, bytes.Clone(command))
+				commands = append(commands, command)
 			}
 		case pb.EntryConfChange, pb.EntryConfChangeV2:
 			change, err := decodeConfChange(entry)
@@ -337,12 +331,12 @@ func (n *Node) ProcessReady() (BatchDTO, error) {
 	}
 	n.store.appliedIndex = n.appliedIndex
 	n.store.confState = cloneConfState(n.confState)
-	n.store.commits = cloneCommits(n.appliedCommits)
+	n.store.commands = cloneCommands(n.appliedCommands)
 	if n.onReadyEvent != nil {
 		n.onReadyEvent("applied")
 	}
 	if !n.bootstrapped && fixedConfState(n.confState, n.peerIDs) {
-		if err := n.store.createSnapshot(n.appliedIndex, n.confState, n.appliedCommits); err != nil {
+		if err := n.store.createSnapshot(n.appliedIndex, n.confState, n.appliedCommands); err != nil {
 			return BatchDTO{}, n.fail(err)
 		}
 		n.bootstrapped = true
@@ -352,7 +346,7 @@ func (n *Node) ProcessReady() (BatchDTO, error) {
 	if n.onReadyEvent != nil {
 		n.onReadyEvent("advanced")
 	}
-	return BatchDTO{Messages: messages, Commits: commits}, nil
+	return BatchDTO{Messages: messages, Commands: commands}, nil
 }
 
 // Snapshot creates and persists an immutable application snapshot at AppliedIndex.
@@ -365,7 +359,7 @@ func (n *Node) Snapshot() error {
 	if n.appliedIndex == 0 {
 		return nil
 	}
-	if err := n.store.createSnapshot(n.appliedIndex, n.confState, n.appliedCommits); err != nil {
+	if err := n.store.createSnapshot(n.appliedIndex, n.confState, n.appliedCommands); err != nil {
 		return n.fail(err)
 	}
 	if fixedConfState(n.confState, n.peerIDs) {
@@ -403,11 +397,11 @@ func (n *Node) Status() StatusDTO {
 	}
 }
 
-// AppliedCommits returns deep copies of all non-empty committed application records.
-func (n *Node) AppliedCommits() []CommitDTO {
+// AppliedCommands returns deep copies of all non-empty committed application commands.
+func (n *Node) AppliedCommands() [][]byte {
 	n.mu.Lock()
 	defer n.mu.Unlock()
-	return cloneCommits(n.appliedCommits)
+	return cloneCommands(n.appliedCommands)
 }
 
 // Close closes the local WAL and makes all subsequent operations return ErrClosed.

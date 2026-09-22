@@ -79,7 +79,7 @@ func TestStateMachine_OrderedApply(t *testing.T) {
 	}
 }
 
-func TestStateMachine_RejectedCommandAdvancesCommitIndexWithoutMutatingMap(t *testing.T) {
+func TestStateMachine_RejectedCommandAdvancesSequenceIndexWithoutMutatingMap(t *testing.T) {
 	t.Parallel()
 
 	sm := takeover.NewStateMachine()
@@ -95,7 +95,7 @@ func TestStateMachine_RejectedCommandAdvancesCommitIndexWithoutMutatingMap(t *te
 		t.Fatalf("initial acquire failed: %+v", res1)
 	}
 
-	// 2. Competing acquire with stale expected epoch (0 instead of 1) at commitIndex 11
+	// 2. Competing acquire with stale expected epoch (0 instead of 1) at sequence position 11.
 	res2 := sm.Apply(11, takeover.AcquireOwnershipCommandDTO{
 		SessionKey:    key,
 		ExpectedEpoch: 0,
@@ -139,7 +139,7 @@ func TestStateMachine_OutOfOrderCommit(t *testing.T) {
 		t.Fatalf("apply at 10 failed: %+v", res1)
 	}
 
-	// Duplicate commit index 10
+	// Duplicate application sequence position 10.
 	resDup := sm.Apply(10, takeover.AcquireOwnershipCommandDTO{
 		SessionKey:    key,
 		ExpectedEpoch: 1,
@@ -149,7 +149,7 @@ func TestStateMachine_OutOfOrderCommit(t *testing.T) {
 		t.Fatalf("duplicate commit error = %v, want ErrOutOfOrderCommit", resDup.Err)
 	}
 
-	// Decreasing commit index 9
+	// Decreasing application sequence position 9.
 	resDec := sm.Apply(9, takeover.AcquireOwnershipCommandDTO{
 		SessionKey:    key,
 		ExpectedEpoch: 1,
@@ -159,7 +159,7 @@ func TestStateMachine_OutOfOrderCommit(t *testing.T) {
 		t.Fatalf("decreasing commit error = %v, want ErrOutOfOrderCommit", resDec.Err)
 	}
 
-	// Zero commit index
+	// Zero application sequence position.
 	resZero := sm.Apply(0, takeover.AcquireOwnershipCommandDTO{
 		SessionKey:    key,
 		ExpectedEpoch: 1,

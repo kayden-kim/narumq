@@ -74,52 +74,42 @@ func TestClusterMetadataAndSnapshotFilenameBoundaries(t *testing.T) {
 }
 
 func TestApplicationStateAndWALCodecBoundaries(t *testing.T) {
-	commits := []CommitDTO{
-		{Index: 1, Data: []byte("alpha")},
-		{Index: 2, Data: []byte("beta")},
-	}
-	state, err := encodeApplicationState(2, commits)
+	commands := [][]byte{[]byte("alpha"), []byte("beta")}
+	state, err := encodeApplicationState(commands)
 	if err != nil {
 		t.Fatal(err)
 	}
-	decoded, err := decodeApplicationState(2, state)
-	if err != nil || len(decoded) != 2 || string(decoded[0].Data) != "alpha" || string(decoded[1].Data) != "beta" {
+	decoded, err := decodeApplicationState(state)
+	if err != nil || len(decoded) != 2 || string(decoded[0]) != "alpha" || string(decoded[1]) != "beta" {
 		t.Fatalf("decoded state = %#v, error = %v", decoded, err)
 	}
-	decoded[1].Data[0] = 'X'
-	decodedAgain, err := decodeApplicationState(2, state)
-	if err != nil || string(decodedAgain[1].Data) != "beta" {
+	decoded[1][0] = 'X'
+	decodedAgain, err := decodeApplicationState(state)
+	if err != nil || string(decodedAgain[1]) != "beta" {
 		t.Fatalf("decoded state changed after caller mutation: %#v, error = %v", decodedAgain, err)
 	}
+	legacyStateMagic := append([]byte(stateMagic[:len(stateMagic)-1]), '2')
 	invalidStates := [][]byte{
 		{},
 		[]byte("bad"),
 		[]byte("NMQSTATE1"),
 		append([]byte(state), 0),
+		append(bytes.Clone(legacyStateMagic), []byte{0, 0, 0, 0}...),
 	}
 	for _, invalid := range invalidStates {
-		if _, err := decodeApplicationState(2, invalid); err == nil {
+		if _, err := decodeApplicationState(invalid); err == nil {
 			t.Fatalf("decodeApplicationState(% X) unexpectedly succeeded", invalid)
 		}
 	}
-	if _, err := encodeApplicationState(2, []CommitDTO{{Index: 2, Data: []byte("a")}, {Index: 1, Data: []byte("b")}}); err == nil {
-		t.Fatal("encodeApplicationState accepted decreasing index")
-	}
-	if _, err := encodeApplicationState(2, []CommitDTO{{Index: 1, Data: []byte("a")}, {Index: 1, Data: []byte("b")}}); err == nil {
-		t.Fatal("encodeApplicationState accepted duplicate index")
-	}
-	if _, err := encodeApplicationState(1, []CommitDTO{{Index: 2, Data: []byte("a")}}); err == nil {
-		t.Fatal("encodeApplicationState accepted index exceeding snapshot index")
-	}
-	if _, err := encodeApplicationState(1, []CommitDTO{{Index: 1, Data: nil}}); err == nil {
-		t.Fatal("encodeApplicationState accepted empty commit payload")
+	if _, err := encodeApplicationState([][]byte{nil}); err == nil {
+		t.Fatal("encodeApplicationState accepted empty command")
 	}
 	largeCommand := bytes.Repeat([]byte{'x'}, maxCommandSize+1)
-	if _, err := encodeApplicationState(1, []CommitDTO{{Index: 1, Data: largeCommand}}); err == nil {
+	if _, err := encodeApplicationState([][]byte{largeCommand}); err == nil {
 		t.Fatal("encodeApplicationState accepted oversized command")
 	}
 
-	snapshotData, err := encodeApplicationState(3, []CommitDTO{{Index: 3, Data: []byte("snap")}})
+	snapshotData, err := encodeApplicationState([][]byte{[]byte("snap")})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -274,7 +264,7 @@ func TestStableStoreRecoveryAndSnapshotBranches(t *testing.T) {
 	if err := store.appendReady(netraft.Ready{HardState: &pb.HardState{Term: &term, Commit: &commit}, Entries: []*pb.Entry{{Index: &entryIndex, Term: &term, Type: pb.EntryNormal.Enum(), Data: []byte("command")}}}); err != nil {
 		t.Fatal(err)
 	}
-	if err := store.createSnapshot(1, &pb.ConfState{Voters: []uint64{1, 2, 3}}, []CommitDTO{{Index: 1, Data: []byte("command")}}); err != nil {
+	if err := store.createSnapshot(1, &pb.ConfState{Voters: []uint64{1, 2, 3}}, [][]byte{[]byte("command")}); err != nil {
 		t.Fatal(err)
 	}
 	if err := store.createSnapshot(1, &pb.ConfState{Voters: []uint64{1, 2, 3}}, nil); err != nil {
@@ -292,8 +282,8 @@ func TestStableStoreRecoveryAndSnapshotBranches(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer recovered.close()
-	if recovered.snapshotIndex != 1 || recovered.appliedIndex != 1 || len(recovered.commits) != 1 {
-		t.Fatalf("recovered store = snapshot %d applied %d commits %d", recovered.snapshotIndex, recovered.appliedIndex, len(recovered.commits))
+	if recovered.snapshotIndex != 1 || recovered.appliedIndex != 1 || len(recovered.commands) != 1 {
+		t.Fatalf("recovered store = snapshot %d applied %d commands %d", recovered.snapshotIndex, recovered.appliedIndex, len(recovered.commands))
 	}
 	if err := persistSnapshotFile(directory, testSnapshot(1)); err != nil {
 		t.Fatal(err)
@@ -319,8 +309,8 @@ func TestStableStoreRebuildsAppliedStateAndRejectsUnknownEntries(t *testing.T) {
 	if err := store.rebuildAppliedState(2); err != nil {
 		t.Fatal(err)
 	}
-	if store.appliedIndex != 2 || len(store.commits) != 1 || !slicesContains(store.confState.Voters, 2) {
-		t.Fatalf("rebuilt state = applied %d commits %d voters %#v", store.appliedIndex, len(store.commits), store.confState.Voters)
+	if store.appliedIndex != 2 || len(store.commands) != 1 || !slicesContains(store.confState.Voters, 2) {
+		t.Fatalf("rebuilt state = applied %d commands %d voters %#v", store.appliedIndex, len(store.commands), store.confState.Voters)
 	}
 	unknownIndex := uint64(1)
 	unknownType := pb.EntryType(99)
@@ -371,6 +361,18 @@ func TestSnapshotLoaderRejectsCorruptFiles(t *testing.T) {
 		}
 		if _, _, err := loadLatestSnapshot(directory); !errors.Is(err, ErrCorruptSnapshot) {
 			t.Fatalf("filename mismatch error = %v", err)
+		}
+	})
+	t.Run("legacy application state", func(t *testing.T) {
+		directory := t.TempDir()
+		legacyStateMagic := append([]byte(stateMagic[:len(stateMagic)-1]), '2')
+		snapshot := testSnapshot(9)
+		snapshot.Data = append(bytes.Clone(legacyStateMagic), 0, 0, 0, 0)
+		if err := persistSnapshotFile(directory, snapshot); err != nil {
+			t.Fatal(err)
+		}
+		if _, _, err := loadLatestSnapshot(directory); !errors.Is(err, ErrCorruptSnapshot) {
+			t.Fatalf("legacy application state error = %v, want ErrCorruptSnapshot", err)
 		}
 	})
 }
@@ -447,7 +449,7 @@ func TestWALEncodingAndWriteAllFailureBranches(t *testing.T) {
 }
 
 func testSnapshot(index uint64) *pb.Snapshot {
-	state, _ := encodeApplicationState(index, []CommitDTO{{Index: index, Data: []byte("command")}})
+	state, _ := encodeApplicationState([][]byte{[]byte("command")})
 	return &pb.Snapshot{Metadata: &pb.SnapshotMetadata{Index: uint64Ptr(index), Term: uint64Ptr(1), ConfState: &pb.ConfState{Voters: []uint64{1, 2, 3}}}, Data: state}
 }
 

@@ -32,7 +32,7 @@ func TestOwnership_InitialAcquire(t *testing.T) {
 
 	key := mustSessionKey(t, "tenant-a", "client-1")
 
-	// Successful initial acquire with expected=0
+	// Successful initial acquire with expected=0 at application sequence position 100.
 	rec, err := session.AcquireOwnership(nil, key, 0, "node-1", 100)
 	if err != nil {
 		t.Fatalf("initial acquire failed: %v", err)
@@ -66,7 +66,7 @@ func TestOwnership_SubsequentAcquire(t *testing.T) {
 		t.Fatalf("initial acquire failed: %v", err)
 	}
 
-	// Takeover by node-2 with expected=1 and greater commit index
+	// Takeover by node-2 with expected=1 and greater application sequence position.
 	second, err := session.AcquireOwnership(&first, key, 1, "node-2", 105)
 	if err != nil {
 		t.Fatalf("takeover acquire failed: %v", err)
@@ -99,7 +99,7 @@ func TestOwnership_SubsequentAcquire(t *testing.T) {
 		t.Fatalf("stale expected epoch error = %v, want ErrStaleEpoch", err)
 	}
 
-	// Stale/equal commit index rejection
+	// Stale/equal application sequence position rejection.
 	_, err = session.AcquireOwnership(&third, key, 3, "node-3", 110)
 	if !errors.Is(err, session.ErrStaleCommitIndex) {
 		t.Fatalf("equal commit index error = %v, want ErrStaleCommitIndex", err)
@@ -136,7 +136,7 @@ func TestOwnership_InvalidInputs(t *testing.T) {
 		t.Fatalf("empty node ID error = %v, want ErrInvalidOwnership", err)
 	}
 
-	// Zero commit index
+	// Zero application sequence position.
 	if _, err := session.AcquireOwnership(nil, validKey, 0, "node-1", 0); !errors.Is(err, session.ErrInvalidOwnership) {
 		t.Fatalf("zero commit index error = %v, want ErrInvalidOwnership", err)
 	}
