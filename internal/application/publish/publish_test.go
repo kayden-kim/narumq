@@ -16,12 +16,14 @@ import (
 
 type recordingQueue struct {
 	deliveries []applicationdeliveryqueue.DeliveryDTO
+	attempts   []applicationdeliveryqueue.DeliveryDTO
 	errors     map[routing.SessionID]error
 	calls      []routing.SessionID
 }
 
 // recordingQueue models the application delivery queue contract by copying retained payloads.
 func (queue *recordingQueue) TryEnqueue(delivery applicationdeliveryqueue.DeliveryDTO, now time.Time) error {
+	queue.attempts = append(queue.attempts, delivery)
 	queue.calls = append(queue.calls, delivery.SessionID)
 	if err := queue.errors[delivery.SessionID]; err != nil {
 		return err
@@ -198,6 +200,90 @@ func TestPublishContinuesAfterSaturationAndUnavailableSessions(t *testing.T) {
 	}
 	if !reflect.DeepEqual(queue.calls, []routing.SessionID{"a", "b", "c"}) {
 		t.Fatalf("queue calls = %#v, want a,b,c", queue.calls)
+	}
+}
+
+// Traceability: PRD MQTT-07/TEST-03; MQTT-4.8.2-3.
+func TestPublishSharedSubscriptionHandoff(t *testing.T) {
+	routes := routing.NewTable()
+	filter := "$share/workers/tasks/+"
+	subscriptions := []struct {
+		sessionID routing.SessionID
+		qos       mqtt.QoS
+		rap       bool
+	}{
+		{sessionID: "worker-a", qos: mqtt.QoSAtMostOnce},
+		{sessionID: "worker-b", qos: mqtt.QoSAtLeastOnce, rap: true},
+		{sessionID: "worker-c", qos: mqtt.QoSExactlyOnce},
+	}
+	for _, subscription := range subscriptions {
+		if _, err := routes.Subscribe(subscription.sessionID, mqtt.Subscription{
+			Filter:            filter,
+			QoS:               subscription.qos,
+			RetainAsPublished: subscription.rap,
+		}); err != nil {
+			t.Fatalf("Subscribe(%q) error = %v", subscription.sessionID, err)
+		}
+	}
+
+	initial, err := routes.Match("publisher", "tasks/item", mqtt.QoSExactlyOnce, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(initial) != 1 || initial[0].Primary.SessionID != "worker-a" {
+		t.Fatalf("initial shared match = %#v, want worker-a primary", initial)
+	}
+
+	queue := &recordingQueue{errors: map[routing.SessionID]error{
+		"worker-b": applicationdeliveryqueue.ErrFull,
+		"worker-c": applicationdeliveryqueue.ErrUnavailable,
+	}}
+	useCase, err := newPublishUseCase(t, routes, queue, &recordingRetainedRepository{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := useCase.Publish("publisher", mqtt.Publish{
+		Version: mqtt.ProtocolV5,
+		QoS:     mqtt.QoSExactlyOnce,
+		Topic:   "tasks/item",
+		Payload: []byte("payload"),
+		Retain:  true,
+	}, testNow())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	wantResult := ResultDTO{
+		Delivered:   []routing.SessionID{"worker-a"},
+		Saturated:   []routing.SessionID{"worker-b"},
+		Unavailable: []routing.SessionID{"worker-c"},
+	}
+	if !reflect.DeepEqual(result, wantResult) {
+		t.Fatalf("result = %#v, want %#v", result, wantResult)
+	}
+	if !reflect.DeepEqual(queue.calls, []routing.SessionID{"worker-b", "worker-c", "worker-a"}) {
+		t.Fatalf("queue calls = %#v, want worker-b,worker-c,worker-a", queue.calls)
+	}
+	if len(queue.attempts) != 3 {
+		t.Fatalf("queue attempts = %d, want 3", len(queue.attempts))
+	}
+	wantAttempts := []struct {
+		sessionID routing.SessionID
+		qos       mqtt.QoS
+		retain    bool
+	}{
+		{sessionID: "worker-b", qos: mqtt.QoSAtLeastOnce, retain: true},
+		{sessionID: "worker-c", qos: mqtt.QoSExactlyOnce},
+		{sessionID: "worker-a", qos: mqtt.QoSAtMostOnce},
+	}
+	for index, wantAttempt := range wantAttempts {
+		attempt := queue.attempts[index]
+		if attempt.SessionID != wantAttempt.sessionID || attempt.QoS != wantAttempt.qos || attempt.Retain != wantAttempt.retain {
+			t.Fatalf("attempt %d = %#v, want session=%q qos=%d retain=%t", index, attempt, wantAttempt.sessionID, wantAttempt.qos, wantAttempt.retain)
+		}
+	}
+	if len(queue.deliveries) != 1 || queue.deliveries[0].SessionID != "worker-a" {
+		t.Fatalf("successful deliveries = %#v, want only worker-a", queue.deliveries)
 	}
 }
 

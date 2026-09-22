@@ -29,7 +29,9 @@ Retained runtime은 단일 process 안의 bounded development profile이며 clus
   Remaining Length 0만 허용하고 MQTT 5 DISCONNECT는 property-free allowlist만 지원한다.
 - `internal/domain/routing`은 non-shared 및 `$share/{ShareName}/{filter}` 공유 구독,
   `+`·`#` filter, `$` system topic 경계, session별 중복 제거와 overlap 최대 granted QoS를
-  결정한다. 공유 구독은 그룹 내 가입자 간 Round-Robin 부하 분산 및 그룹별 독립 전달을 수행한다.
+  결정한다. 공유 구독은 그룹 내 가입자를 Round-Robin으로 primary에 선택하고, 선택된
+  member의 delivery queue가 full 또는 unavailable이면 같은 group의 다음 eligible member로
+  순서대로 handoff한다.
   `No Local`은 비공유 구독에서 동일 publisher session을 제외하며(공유 구독에 NoLocal 설정 시
   0x82 Protocol Error 거절), `Retain As Published`는 live delivery의 RETAIN을 결정하며,
   `Retain Handling`은 SUBSCRIBE replay 시점에만 적용한다.
@@ -288,6 +290,9 @@ reconnect까지 보존하며, clean start/session expiry와 expiry deadline에 �
   FIFO, clean reset과 queued Message Expiry를 검증하고,
   `TestMQTTIngressPersistentOutboundQoSRecovery`는 PUBLISH/PUBREL 단계 recovery와
   Packet Identifier·DUP 규칙을 검증한다.
+- `TestMQTTIngressSharedSubscriptionHandoff`는 delivery queue가 가득 찬 persistent offline
+  member에서 같은 group의 다른 member로 handoff하고 reconnect queued delivery를 보존하는
+  실제 socket-level MQTT-07 failover 증거다.
 - `tests/integration/mqtt_tls_test.go`는 TLS 1.2/1.3, trusted/untrusted/expired client
   certificate, mTLS identity의 exact Client ID binding과 MQTT 5 wire CONNACK 결과를
   실제 socket에서 검증한다. `cmd/narumq` TLS flag test는 client-auth mode와 mTLS

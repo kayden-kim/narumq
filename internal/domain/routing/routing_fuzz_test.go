@@ -109,7 +109,7 @@ func FuzzTopicMatching(f *testing.F) {
 				wantQoS = publishQoS
 			}
 			wantRetain := publishedRetain && grantedSubscription.RetainAsPublished
-			if len(matches) != 1 || matches[0].SessionID != sessionID || matches[0].QoS != wantQoS || matches[0].Retain != wantRetain {
+			if len(matches) != 1 || matches[0].Primary.SessionID != sessionID || matches[0].Primary.QoS != wantQoS || matches[0].Primary.Retain != wantRetain {
 				t.Fatalf("matches = %#v, want one session %q at QoS %d retain %t", matches, sessionID, wantQoS, wantRetain)
 			}
 			return

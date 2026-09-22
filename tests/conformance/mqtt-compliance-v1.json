@@ -1236,6 +1236,10 @@
       ],
       "tests": [
         {
+          "name": "TestPublishSharedSubscriptionHandoff",
+          "package": "narumq/internal/application/publish"
+        },
+        {
           "name": "TestSharedSubscriptionMultipleGroups",
           "package": "narumq/internal/domain/routing"
         },
@@ -1253,6 +1257,10 @@
         },
         {
           "name": "TestMQTTIngressSharedSubscription",
+          "package": "narumq/tests/integration"
+        },
+        {
+          "name": "TestMQTTIngressSharedSubscriptionHandoff",
           "package": "narumq/tests/integration"
         }
       ]

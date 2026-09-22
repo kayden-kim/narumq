@@ -33,12 +33,17 @@ var (
 // SessionID identifies one active subscriber session within a routing table.
 type SessionID string
 
-// Match is one session-level delivery target and its effective delivery QoS.
-// Retain is the RETAIN flag for established-subscription delivery.
-type Match struct {
+// Target identifies one session and its effective delivery options.
+type Target struct {
 	SessionID SessionID
 	QoS       mqtt.QoS
 	Retain    bool
+}
+
+// Match is one logical delivery route with an ordered candidate list.
+type Match struct {
+	Primary   Target
+	Fallbacks []Target
 }
 
 // Table stores subscriptions and matches publications against a consistent
@@ -278,8 +283,9 @@ func (table *Table) RemoveSession(sessionID SessionID) bool {
 	return removed
 }
 
-// Match returns one target per session, ordered by SessionID. Overlapping
-// filters in one session collapse to one target using the highest granted QoS.
+// Match returns one logical route per matching non-shared session or shared
+// filter, ordered by the primary SessionID. Overlapping non-shared filters in
+// one session collapse to one target using the highest granted QoS.
 func (table *Table) Match(
 	publisherSessionID SessionID,
 	topic string,
@@ -330,14 +336,20 @@ func (table *Table) Match(
 			if maxGranted < effectiveQoS {
 				effectiveQoS = maxGranted
 			}
-			matches = append(matches, Match{SessionID: sessionID, QoS: effectiveQoS, Retain: retain})
+			matches = append(matches, Match{
+				Primary: Target{
+					SessionID: sessionID,
+					QoS:       effectiveQoS,
+					Retain:    retain,
+				},
+			})
 		}
 	}
 
 	if len(table.shared) > 0 {
 		sharedFilters := make([]string, 0, len(table.shared))
-		for f := range table.shared {
-			sharedFilters = append(sharedFilters, f)
+		for filter := range table.shared {
+			sharedFilters = append(sharedFilters, filter)
 		}
 		sort.Strings(sharedFilters)
 
@@ -355,20 +367,28 @@ func (table *Table) Match(
 				continue
 			}
 
-			candidates := make([]SessionID, 0, len(members))
-			for sID := range members {
-				if pubTenant != (tenancy.TenantID{}) || table.sessionTenants[sID] != (tenancy.TenantID{}) {
-					if table.sessionTenants[sID] != pubTenant {
+			candidates := make([]Target, 0, len(members))
+			for sessionID, subscription := range members {
+				if pubTenant != (tenancy.TenantID{}) || table.sessionTenants[sessionID] != (tenancy.TenantID{}) {
+					if table.sessionTenants[sessionID] != pubTenant {
 						continue
 					}
 				}
-				candidates = append(candidates, sID)
+				effectiveQoS := publishQoS
+				if subscription.QoS < effectiveQoS {
+					effectiveQoS = subscription.QoS
+				}
+				candidates = append(candidates, Target{
+					SessionID: sessionID,
+					QoS:       effectiveQoS,
+					Retain:    publishedRetain && subscription.RetainAsPublished,
+				})
 			}
 			if len(candidates) == 0 {
 				continue
 			}
-			sort.Slice(candidates, func(i, j int) bool {
-				return candidates[i] < candidates[j]
+			sort.Slice(candidates, func(left, right int) bool {
+				return candidates[left].SessionID < candidates[right].SessionID
 			})
 
 			cursorKey := sharedFilter
@@ -376,21 +396,22 @@ func (table *Table) Match(
 				cursorKey = pubTenant.String() + "/" + sharedFilter
 			}
 			cursor := table.sharedCursors[cursorKey]
-			chosenSession := candidates[cursor%uint64(len(candidates))]
-			table.sharedCursors[cursorKey]++
-
-			sub := members[chosenSession]
-			effectiveQoS := publishQoS
-			if sub.QoS < effectiveQoS {
-				effectiveQoS = sub.QoS
+			primaryIndex := int(cursor % uint64(len(candidates)))
+			primary := candidates[primaryIndex]
+			var fallbacks []Target
+			if len(candidates) > 1 {
+				fallbacks = make([]Target, 0, len(candidates)-1)
+				for offset := 1; offset < len(candidates); offset++ {
+					fallbacks = append(fallbacks, candidates[(primaryIndex+offset)%len(candidates)])
+				}
 			}
-			retain := publishedRetain && sub.RetainAsPublished
-			matches = append(matches, Match{SessionID: chosenSession, QoS: effectiveQoS, Retain: retain})
+			table.sharedCursors[cursorKey]++
+			matches = append(matches, Match{Primary: primary, Fallbacks: fallbacks})
 		}
 	}
 
 	sort.SliceStable(matches, func(left, right int) bool {
-		return matches[left].SessionID < matches[right].SessionID
+		return matches[left].Primary.SessionID < matches[right].Primary.SessionID
 	})
 	return matches, nil
 }

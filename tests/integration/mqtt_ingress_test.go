@@ -65,27 +65,37 @@ type ingressFixture struct {
 
 func newIngressFixture(t *testing.T) *ingressFixture {
 	t.Helper()
-	return newIngressFixtureWithRetainedCapacity(t, 1024, 1<<20)
+	return newIngressFixtureWithCapacities(t, 64, 1024, 1<<20, clock.SystemClock{})
 }
 
 func newIngressFixtureWithRetainedCapacity(t *testing.T, messageCapacity, byteCapacity int) *ingressFixture {
 	t.Helper()
-	return newIngressFixtureWithClock(t, messageCapacity, byteCapacity, clock.SystemClock{})
+	return newIngressFixtureWithCapacities(t, 64, messageCapacity, byteCapacity, clock.SystemClock{})
 }
 
 func newIngressFixtureWithClock(t *testing.T, messageCapacity, byteCapacity int, clockSource applicationclock.Clock) *ingressFixture {
+	t.Helper()
+	return newIngressFixtureWithCapacities(t, 64, messageCapacity, byteCapacity, clockSource)
+}
+
+func newIngressFixtureWithDeliveryCapacity(t *testing.T, deliveryCapacity int) *ingressFixture {
+	t.Helper()
+	return newIngressFixtureWithCapacities(t, deliveryCapacity, 1024, 1<<20, clock.SystemClock{})
+}
+
+func newIngressFixtureWithCapacities(t *testing.T, deliveryCapacity, retainedMessageCapacity, retainedByteCapacity int, clockSource applicationclock.Clock) *ingressFixture {
 	t.Helper()
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
 	}
 	routes := routing.NewTable()
-	deliveries, err := deliveryqueue.New(64)
+	deliveries, err := deliveryqueue.New(deliveryCapacity)
 	if err != nil {
 		listener.Close()
 		t.Fatal(err)
 	}
-	retainedRepository, err := memoryretained.New(messageCapacity, byteCapacity)
+	retainedRepository, err := memoryretained.New(retainedMessageCapacity, retainedByteCapacity)
 	if err != nil {
 		listener.Close()
 		t.Fatal(err)
@@ -1663,6 +1673,125 @@ func TestMQTTIngressSharedSubscription(t *testing.T) {
 	expectNoPacket(t, workerB)
 	expectNoPacket(t, auditor)
 	expectNoPacket(t, publisher)
+}
+
+// Traceability: PRD MQTT-07/TEST-03; MQTT-4.8.2-3.
+func TestMQTTIngressSharedSubscriptionHandoff(t *testing.T) {
+	fixture := newIngressFixtureWithDeliveryCapacity(t, 1)
+	defer fixture.close(t)
+
+	workerA := fixture.dial(t)
+	defer workerA.Close()
+	writePacket(t, workerA, fixture.encoder, &mqtt.Connect{
+		Version:               mqtt.ProtocolV5,
+		CleanStart:            true,
+		ClientID:              "worker-a",
+		SessionExpiryInterval: 60,
+	})
+	if ack := readPacket(t, workerA, fixture.decoder, mqtt.ProtocolV5).(*mqtt.ConnAck); ack.ReasonCode != 0 {
+		t.Fatalf("worker-a CONNACK = %#v", ack)
+	}
+	writePacket(t, workerA, fixture.encoder, &mqtt.Subscribe{
+		Version:  mqtt.ProtocolV5,
+		PacketID: 1,
+		Subscriptions: []mqtt.Subscription{{
+			Filter: "$share/workers/tasks/+",
+			QoS:    mqtt.QoSAtLeastOnce,
+		}},
+	})
+	if ack := readPacket(t, workerA, fixture.decoder, mqtt.ProtocolV5).(*mqtt.SubAck); ack.PacketID != 1 || !reflect.DeepEqual(ack.ReasonCodes, []byte{0x01}) {
+		t.Fatalf("worker-a SUBACK = %#v", ack)
+	}
+
+	workerB := fixture.dial(t)
+	defer workerB.Close()
+	writePacket(t, workerB, fixture.encoder, &mqtt.Connect{
+		Version:               mqtt.ProtocolV5,
+		CleanStart:            true,
+		ClientID:              "worker-b",
+		SessionExpiryInterval: 60,
+	})
+	if ack := readPacket(t, workerB, fixture.decoder, mqtt.ProtocolV5).(*mqtt.ConnAck); ack.ReasonCode != 0 {
+		t.Fatalf("worker-b CONNACK = %#v", ack)
+	}
+	writePacket(t, workerB, fixture.encoder, &mqtt.Subscribe{
+		Version:  mqtt.ProtocolV5,
+		PacketID: 1,
+		Subscriptions: []mqtt.Subscription{{
+			Filter: "$share/workers/tasks/+",
+			QoS:    mqtt.QoSAtLeastOnce,
+		}},
+	})
+	if ack := readPacket(t, workerB, fixture.decoder, mqtt.ProtocolV5).(*mqtt.SubAck); ack.PacketID != 1 || !reflect.DeepEqual(ack.ReasonCodes, []byte{0x01}) {
+		t.Fatalf("worker-b SUBACK = %#v", ack)
+	}
+
+	writePacket(t, workerA, fixture.encoder, &mqtt.Disconnect{Version: mqtt.ProtocolV5})
+	expectClosed(t, workerA)
+	waitForSessionDisconnected(t, fixture.repo, "worker-a")
+
+	publisher := fixture.dial(t)
+	defer publisher.Close()
+	writePacket(t, publisher, fixture.encoder, &mqtt.Connect{
+		Version:    mqtt.ProtocolV5,
+		CleanStart: true,
+		ClientID:   "handoff-publisher",
+	})
+	if ack := readPacket(t, publisher, fixture.decoder, mqtt.ProtocolV5).(*mqtt.ConnAck); ack.ReasonCode != 0 {
+		t.Fatalf("publisher CONNACK = %#v", ack)
+	}
+
+	publish := func(packetID mqtt.PacketIdentifier, payload string) {
+		t.Helper()
+		writePacket(t, publisher, fixture.encoder, &mqtt.Publish{
+			Version:  mqtt.ProtocolV5,
+			Topic:    "tasks/item",
+			Payload:  []byte(payload),
+			QoS:      mqtt.QoSAtLeastOnce,
+			PacketID: packetID,
+		})
+		ack := readPacket(t, publisher, fixture.decoder, mqtt.ProtocolV5).(*mqtt.PubAck)
+		if ack.PacketID != packetID || ack.ReasonCode != 0 {
+			t.Fatalf("publisher PUBACK = %#v, want packet ID %d and success", ack, packetID)
+		}
+	}
+
+	publish(1, "one")
+	expectNoPacket(t, workerB)
+
+	publish(2, "two")
+	workerBMessage := readPacket(t, workerB, fixture.decoder, mqtt.ProtocolV5).(*mqtt.Publish)
+	if workerBMessage.Topic != "tasks/item" || string(workerBMessage.Payload) != "two" {
+		t.Fatalf("worker-b message 2 = %#v, want payload two", workerBMessage)
+	}
+	writePacket(t, workerB, fixture.encoder, &mqtt.PubAck{Version: mqtt.ProtocolV5, PacketID: workerBMessage.PacketID})
+
+	publish(3, "three")
+	workerBMessage = readPacket(t, workerB, fixture.decoder, mqtt.ProtocolV5).(*mqtt.Publish)
+	if workerBMessage.Topic != "tasks/item" || string(workerBMessage.Payload) != "three" {
+		t.Fatalf("worker-b message 3 = %#v, want payload three", workerBMessage)
+	}
+	writePacket(t, workerB, fixture.encoder, &mqtt.PubAck{Version: mqtt.ProtocolV5, PacketID: workerBMessage.PacketID})
+	expectNoPacket(t, workerB)
+
+	reconnectedA := fixture.dial(t)
+	defer reconnectedA.Close()
+	writePacket(t, reconnectedA, fixture.encoder, &mqtt.Connect{
+		Version:               mqtt.ProtocolV5,
+		CleanStart:            false,
+		ClientID:              "worker-a",
+		SessionExpiryInterval: 60,
+	})
+	ack := readPacket(t, reconnectedA, fixture.decoder, mqtt.ProtocolV5).(*mqtt.ConnAck)
+	if ack.ReasonCode != 0 || !ack.SessionPresent {
+		t.Fatalf("worker-a reconnect CONNACK = %#v, want SessionPresent", ack)
+	}
+	queued := readPacket(t, reconnectedA, fixture.decoder, mqtt.ProtocolV5).(*mqtt.Publish)
+	if queued.Topic != "tasks/item" || string(queued.Payload) != "one" {
+		t.Fatalf("worker-a queued delivery = %#v, want only payload one", queued)
+	}
+	writePacket(t, reconnectedA, fixture.encoder, &mqtt.PubAck{Version: mqtt.ProtocolV5, PacketID: queued.PacketID})
+	expectNoPacket(t, reconnectedA)
 }
 
 // Requirements: TEN-01, TEN-02, TEN-03, TEN-04, TEN-05, SEC-04, SEC-06

@@ -88,7 +88,7 @@ func New(clock applicationclock.Clock, routes *routing.Table, queue deliveryqueu
 }
 
 // Publish validates the publisher and publication, commits retained mutation
-// before route matching, and continues after per-session saturation or
+// before route matching, and continues after per-candidate saturation or
 // unavailability. Unknown queue errors stop the fan-out and return partial
 // results so successful earlier deliveries are not hidden.
 func (useCase *UseCase) Publish(publisherSessionID routing.SessionID, packet mqtt.Publish, receivedAt time.Time, principal ...security.Principal) (ResultDTO, error) {
@@ -153,24 +153,32 @@ func (useCase *UseCase) Publish(publisherSessionID routing.SessionID, packet mqt
 		Unavailable: make([]routing.SessionID, 0),
 	}
 	for _, match := range matches {
-		delivery := deliveryqueue.DeliveryDTO{
-			SessionID: match.SessionID,
-			Topic:     packet.Topic,
-			Payload:   packet.Payload,
-			QoS:       match.QoS,
-			Retain:    match.Retain,
-			ExpiresAt: expiresAt,
-		}
-		err := useCase.queue.TryEnqueue(delivery, now)
-		switch {
-		case err == nil:
-			result.Delivered = append(result.Delivered, match.SessionID)
-		case errors.Is(err, deliveryqueue.ErrFull):
-			result.Saturated = append(result.Saturated, match.SessionID)
-		case errors.Is(err, deliveryqueue.ErrUnavailable):
-			result.Unavailable = append(result.Unavailable, match.SessionID)
-		default:
-			return result, err
+	candidateLoop:
+		for candidateIndex := -1; candidateIndex < len(match.Fallbacks); candidateIndex++ {
+			candidate := match.Primary
+			if candidateIndex >= 0 {
+				candidate = match.Fallbacks[candidateIndex]
+			}
+			delivery := deliveryqueue.DeliveryDTO{
+				SessionID: candidate.SessionID,
+				Topic:     packet.Topic,
+				Payload:   packet.Payload,
+				QoS:       candidate.QoS,
+				Retain:    candidate.Retain,
+				ExpiresAt: expiresAt,
+			}
+			err := useCase.queue.TryEnqueue(delivery, now)
+			switch {
+			case err == nil:
+				result.Delivered = append(result.Delivered, candidate.SessionID)
+				break candidateLoop
+			case errors.Is(err, deliveryqueue.ErrFull):
+				result.Saturated = append(result.Saturated, candidate.SessionID)
+			case errors.Is(err, deliveryqueue.ErrUnavailable):
+				result.Unavailable = append(result.Unavailable, candidate.SessionID)
+			default:
+				return result, err
+			}
 		}
 	}
 	return result, nil

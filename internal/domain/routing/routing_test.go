@@ -87,26 +87,26 @@ func TestWildcardMatchBoundariesAndSystemTopics(t *testing.T) {
 			name:  "exact-level-match",
 			topic: "sport/tennis/player1",
 			want: []Match{
-				{SessionID: "all", QoS: mqtt.QoSExactlyOnce},
-				{SessionID: "exact", QoS: mqtt.QoSExactlyOnce},
-				{SessionID: "multi", QoS: mqtt.QoSExactlyOnce},
-				{SessionID: "single", QoS: mqtt.QoSExactlyOnce},
+				{Primary: Target{SessionID: "all", QoS: mqtt.QoSExactlyOnce}},
+				{Primary: Target{SessionID: "exact", QoS: mqtt.QoSExactlyOnce}},
+				{Primary: Target{SessionID: "multi", QoS: mqtt.QoSExactlyOnce}},
+				{Primary: Target{SessionID: "single", QoS: mqtt.QoSExactlyOnce}},
 			},
 		},
 		{
 			name:  "hash-parent-match",
 			topic: "sport",
-			want:  []Match{{SessionID: "all", QoS: mqtt.QoSExactlyOnce}, {SessionID: "multi", QoS: mqtt.QoSExactlyOnce}},
+			want:  []Match{{Primary: Target{SessionID: "all", QoS: mqtt.QoSExactlyOnce}}, {Primary: Target{SessionID: "multi", QoS: mqtt.QoSExactlyOnce}}},
 		},
 		{
 			name:  "empty-level-single",
 			topic: "sport//player1",
-			want:  []Match{{SessionID: "all", QoS: mqtt.QoSExactlyOnce}, {SessionID: "multi", QoS: mqtt.QoSExactlyOnce}, {SessionID: "single", QoS: mqtt.QoSExactlyOnce}},
+			want:  []Match{{Primary: Target{SessionID: "all", QoS: mqtt.QoSExactlyOnce}}, {Primary: Target{SessionID: "multi", QoS: mqtt.QoSExactlyOnce}}, {Primary: Target{SessionID: "single", QoS: mqtt.QoSExactlyOnce}}},
 		},
 		{
 			name:  "system-topic-explicit-only",
 			topic: "$SYS/broker/uptime",
-			want:  []Match{{SessionID: "system", QoS: mqtt.QoSExactlyOnce}},
+			want:  []Match{{Primary: Target{SessionID: "system", QoS: mqtt.QoSExactlyOnce}}},
 		},
 	}
 	for _, testCase := range cases {
@@ -139,7 +139,7 @@ func TestSubscriptionReplacementUnsubscribeAndOverlapQoS(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := []Match{{SessionID: "client", QoS: mqtt.QoSAtLeastOnce}}
+	want := []Match{{Primary: Target{SessionID: "client", QoS: mqtt.QoSAtLeastOnce}}}
 	if !reflect.DeepEqual(matches, want) {
 		t.Fatalf("overlap matches = %#v, want %#v", matches, want)
 	}
@@ -156,7 +156,7 @@ func TestSubscriptionReplacementUnsubscribeAndOverlapQoS(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want = []Match{{SessionID: "client", QoS: mqtt.QoSAtMostOnce}}
+	want = []Match{{Primary: Target{SessionID: "client", QoS: mqtt.QoSAtMostOnce}}}
 	if !reflect.DeepEqual(matches, want) {
 		t.Fatalf("remaining matches = %#v, want %#v", matches, want)
 	}
@@ -297,7 +297,7 @@ func TestRoutingSystemTopicWildcardBoundary(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(matches) != 1 || matches[0].SessionID != "exact" {
+	if len(matches) != 1 || matches[0].Primary.SessionID != "exact" {
 		t.Fatalf("system topic matches = %#v, want exact subscription only", matches)
 	}
 }
@@ -380,10 +380,10 @@ func TestRoutingSubscriptionOptionsAndRetainFlags(t *testing.T) {
 		t.Fatal(err)
 	}
 	want := []Match{
-		{SessionID: "overlap", QoS: mqtt.QoSAtLeastOnce, Retain: true},
-		{SessionID: "rap-false", QoS: mqtt.QoSExactlyOnce},
-		{SessionID: "rap-true", QoS: mqtt.QoSExactlyOnce, Retain: true},
-		{SessionID: "self", QoS: mqtt.QoSAtMostOnce},
+		{Primary: Target{SessionID: "overlap", QoS: mqtt.QoSAtLeastOnce, Retain: true}},
+		{Primary: Target{SessionID: "rap-false", QoS: mqtt.QoSExactlyOnce}},
+		{Primary: Target{SessionID: "rap-true", QoS: mqtt.QoSExactlyOnce, Retain: true}},
+		{Primary: Target{SessionID: "self", QoS: mqtt.QoSAtMostOnce}},
 	}
 	if !reflect.DeepEqual(matches, want) {
 		t.Fatalf("option-aware matches = %#v, want %#v", matches, want)
@@ -491,29 +491,63 @@ func TestParseSharedFilter(t *testing.T) {
 // Traceability: PRD MQTT-07/TEST-03; MQTT-4.8.2-3.
 func TestSharedSubscriptionRoundRobin(t *testing.T) {
 	table := NewTable()
-	sessions := []SessionID{"worker-1", "worker-2", "worker-3"}
 	filter := "$share/workers/tasks/+"
-	for _, sID := range sessions {
-		if _, err := table.Subscribe(sID, mqtt.Subscription{Filter: filter, QoS: mqtt.QoSAtLeastOnce}); err != nil {
-			t.Fatalf("Subscribe(%q) error = %v", sID, err)
+	subscriptions := []struct {
+		sessionID SessionID
+		qos       mqtt.QoS
+		rap       bool
+	}{
+		{sessionID: "worker-1", qos: mqtt.QoSAtMostOnce},
+		{sessionID: "worker-2", qos: mqtt.QoSAtLeastOnce, rap: true},
+		{sessionID: "worker-3", qos: mqtt.QoSExactlyOnce},
+	}
+	for _, subscription := range subscriptions {
+		if _, err := table.Subscribe(subscription.sessionID, mqtt.Subscription{
+			Filter:            filter,
+			QoS:               subscription.qos,
+			RetainAsPublished: subscription.rap,
+		}); err != nil {
+			t.Fatalf("Subscribe(%q) error = %v", subscription.sessionID, err)
 		}
 	}
 
-	// 5 publications to "tasks/item" should distribute 1-2-3-1-2 across worker-1, worker-2, worker-3
-	expectedOrder := []SessionID{"worker-1", "worker-2", "worker-3", "worker-1", "worker-2"}
-	for i, wantSession := range expectedOrder {
-		matches, err := table.Match("publisher", "tasks/item", mqtt.QoSAtLeastOnce, false)
+	want := []Match{
+		{
+			Primary: Target{SessionID: "worker-1", QoS: mqtt.QoSAtMostOnce},
+			Fallbacks: []Target{
+				{SessionID: "worker-2", QoS: mqtt.QoSAtLeastOnce, Retain: true},
+				{SessionID: "worker-3", QoS: mqtt.QoSExactlyOnce},
+			},
+		},
+		{
+			Primary: Target{SessionID: "worker-2", QoS: mqtt.QoSAtLeastOnce, Retain: true},
+			Fallbacks: []Target{
+				{SessionID: "worker-3", QoS: mqtt.QoSExactlyOnce},
+				{SessionID: "worker-1", QoS: mqtt.QoSAtMostOnce},
+			},
+		},
+		{
+			Primary: Target{SessionID: "worker-3", QoS: mqtt.QoSExactlyOnce},
+			Fallbacks: []Target{
+				{SessionID: "worker-1", QoS: mqtt.QoSAtMostOnce},
+				{SessionID: "worker-2", QoS: mqtt.QoSAtLeastOnce, Retain: true},
+			},
+		},
+		{
+			Primary: Target{SessionID: "worker-1", QoS: mqtt.QoSAtMostOnce},
+			Fallbacks: []Target{
+				{SessionID: "worker-2", QoS: mqtt.QoSAtLeastOnce, Retain: true},
+				{SessionID: "worker-3", QoS: mqtt.QoSExactlyOnce},
+			},
+		},
+	}
+	for i, wantMatch := range want {
+		matches, err := table.Match("publisher", "tasks/item", mqtt.QoSExactlyOnce, true)
 		if err != nil {
 			t.Fatalf("Match() iter %d error = %v", i, err)
 		}
-		if len(matches) != 1 {
-			t.Fatalf("Match() iter %d returned %d matches, want 1", i, len(matches))
-		}
-		if matches[0].SessionID != wantSession {
-			t.Fatalf("Match() iter %d session = %q, want %q", i, matches[0].SessionID, wantSession)
-		}
-		if matches[0].QoS != mqtt.QoSAtLeastOnce {
-			t.Fatalf("Match() iter %d QoS = %d, want %d", i, matches[0].QoS, mqtt.QoSAtLeastOnce)
+		if !reflect.DeepEqual(matches, []Match{wantMatch}) {
+			t.Fatalf("Match() iter %d = %#v, want %#v", i, matches, []Match{wantMatch})
 		}
 	}
 }
@@ -535,10 +569,10 @@ func TestSharedSubscriptionMultipleGroups(t *testing.T) {
 	if len(matches) != 2 {
 		t.Fatalf("len(matches) = %d, want 2 (one per group)", len(matches))
 	}
-	if matches[0].SessionID != "group1-worker" || matches[0].QoS != mqtt.QoSExactlyOnce {
+	if matches[0].Primary.SessionID != "group1-worker" || matches[0].Primary.QoS != mqtt.QoSExactlyOnce {
 		t.Fatalf("group1 match = %#v", matches[0])
 	}
-	if matches[1].SessionID != "group2-worker" || matches[1].QoS != mqtt.QoSAtMostOnce {
+	if matches[1].Primary.SessionID != "group2-worker" || matches[1].Primary.QoS != mqtt.QoSAtMostOnce {
 		t.Fatalf("group2 match = %#v", matches[1])
 	}
 }
@@ -561,13 +595,13 @@ func TestSharedSubscriptionWithNonShared(t *testing.T) {
 	if len(matches) != 2 {
 		t.Fatalf("len(matches) = %d, want 2 (one non-shared, one shared)", len(matches))
 	}
-	if matches[0].SessionID != sessionID || matches[1].SessionID != sessionID {
+	if matches[0].Primary.SessionID != sessionID || matches[1].Primary.SessionID != sessionID {
 		t.Fatalf("matches = %#v, want both for %q", matches, sessionID)
 	}
-	q0Found := matches[0].QoS == mqtt.QoSAtMostOnce || matches[1].QoS == mqtt.QoSAtMostOnce
-	q2Found := matches[0].QoS == mqtt.QoSExactlyOnce || matches[1].QoS == mqtt.QoSExactlyOnce
+	q0Found := matches[0].Primary.QoS == mqtt.QoSAtMostOnce || matches[1].Primary.QoS == mqtt.QoSAtMostOnce
+	q2Found := matches[0].Primary.QoS == mqtt.QoSExactlyOnce || matches[1].Primary.QoS == mqtt.QoSExactlyOnce
 	if !q0Found || !q2Found {
-		t.Fatalf("matches QoS = [%d, %d], want 0 and 2", matches[0].QoS, matches[1].QoS)
+		t.Fatalf("matches QoS = [%d, %d], want 0 and 2", matches[0].Primary.QoS, matches[1].Primary.QoS)
 	}
 }
 
@@ -670,7 +704,7 @@ func TestRoutingTable_TenantIsolation(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(matchesA) != 1 || matchesA[0].SessionID != "sub-a" {
+	if len(matchesA) != 1 || matchesA[0].Primary.SessionID != "sub-a" {
 		t.Fatalf("pub-a matches = %#v, want only sub-a", matchesA)
 	}
 
@@ -679,7 +713,7 @@ func TestRoutingTable_TenantIsolation(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(matchesB) != 1 || matchesB[0].SessionID != "sub-b" {
+	if len(matchesB) != 1 || matchesB[0].Primary.SessionID != "sub-b" {
 		t.Fatalf("pub-b matches = %#v, want only sub-b", matchesB)
 	}
 
@@ -696,7 +730,7 @@ func TestRoutingTable_TenantIsolation(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(sharedMatchesA) != 1 || sharedMatchesA[0].SessionID != "sub-a" {
+	if len(sharedMatchesA) != 1 || sharedMatchesA[0].Primary.SessionID != "sub-a" {
 		t.Fatalf("shared pub-a matches = %#v, want only sub-a", sharedMatchesA)
 	}
 
@@ -704,7 +738,7 @@ func TestRoutingTable_TenantIsolation(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(sharedMatchesB) != 1 || sharedMatchesB[0].SessionID != "sub-b" {
+	if len(sharedMatchesB) != 1 || sharedMatchesB[0].Primary.SessionID != "sub-b" {
 		t.Fatalf("shared pub-b matches = %#v, want only sub-b", sharedMatchesB)
 	}
 }

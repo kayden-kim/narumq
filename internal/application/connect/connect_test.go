@@ -258,7 +258,7 @@ func TestConnectCleanResumeAndExpiryResetRoutingAndQueue(t *testing.T) {
 		t.Fatalf("resumed Connect() = %#v, %v", resumed, err)
 	}
 	matches, err := routes.Match("publisher", "sensors/room", mqtt.QoSAtMostOnce, false)
-	if err != nil || !reflect.DeepEqual(matches, []routing.Match{{SessionID: "client", QoS: mqtt.QoSAtMostOnce}}) {
+	if err != nil || !reflect.DeepEqual(matches, []routing.Match{{Primary: routing.Target{SessionID: "client", QoS: mqtt.QoSAtMostOnce}}}) {
 		t.Fatalf("resumed routes = %#v, %v", matches, err)
 	}
 	if len(queue.removes) != 1 || len(queue.registers) != 2 {
@@ -426,7 +426,7 @@ func TestDisconnectRemovesImmediateSessionsAndPreservesPersistentRoutes(t *testi
 		t.Fatalf("immediate repository entry = found %v, err %v", found, err)
 	}
 	matches, err = routes.Match("publisher", "events/created", mqtt.QoSAtMostOnce, false)
-	if err != nil || len(matches) != 1 || matches[0].SessionID != "persistent" {
+	if err != nil || len(matches) != 1 || matches[0].Primary.SessionID != "persistent" {
 		t.Fatalf("routes after immediate disconnect = %#v, %v", matches, err)
 	}
 	if len(queue.removes) != 3 {

@@ -132,14 +132,14 @@ func TestSubscribeKeepsOrderedReasonsAndIsolatesFailures(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(matches) != 2 || matches[0].SessionID != "client-a" || matches[1].SessionID != "client-a" {
+	if len(matches) != 2 || matches[0].Primary.SessionID != "client-a" || matches[1].Primary.SessionID != "client-a" {
 		t.Fatalf("sensors route = %#v", matches)
 	}
 	matches, err = routes.Match("publisher", "alerts/critical", mqtt.QoSExactlyOnce, false)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(matches) != 1 || matches[0].SessionID != "client-a" || matches[0].QoS != mqtt.QoSAtLeastOnce {
+	if len(matches) != 1 || matches[0].Primary.SessionID != "client-a" || matches[0].Primary.QoS != mqtt.QoSAtLeastOnce {
 		t.Fatalf("alerts route = %#v", matches)
 	}
 }
@@ -364,7 +364,7 @@ func TestSubscribeSharedSubscriptionSuppressesRetainedReplay(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(matches) != 1 || matches[0].SessionID != "worker" {
+	if len(matches) != 1 || matches[0].Primary.SessionID != "worker" {
 		t.Fatalf("live match = %#v, want worker", matches)
 	}
 }
