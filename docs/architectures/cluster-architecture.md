@@ -73,15 +73,15 @@ flowchart TB
 | --- | --- | --- |
 | Membership과 configuration | Quorum-committed cluster state | Discovery·health cache |
 | Session owner와 epoch | Replicated state machine | 현재 connection의 빠른 판정 |
-| Persistent subscription | Replicated state | Route index 구성 |
+| Persistent subscription | Replicated state | Node-local route projection 구성 |
 | QoS 1·2 inflight와 handshake | Replicated state | Packet 송수신 진행 |
 | Durable offline message | Replicated log·store | Owner의 delivery queue |
 | Retained message | Replicated state | Topic lookup cache |
-| Route metadata | Committed session·subscription state에서 추적 가능한 cluster state | Node-local route index |
+| Route metadata | Committed persistent-subscription state | Rebuildable node-local route projection |
 | Active TCP connection과 socket buffer | Connection을 수용한 node | 복제하지 않는다. Reconnect로 교체한다. |
 | Metric·log buffer | Node local, 외부 observability로 export | System of record가 아니다. |
 
-Route index의 정확한 복제·재구성 전략은 미결정이다. 어떤 방식을 선택해도 stale owner epoch가 delivery 권한을 유지해서는 안 된다.
+Route metadata는 committed persistent subscription에서 계산하는 node-local disposable projection이다. Node는 routing readiness를 광고하기 전에 이를 rebuild해야 하며, projection은 ownership·checkpoint·drain barrier의 근거가 아니다. Physical rebuild mechanics와 route-index partition placement는 미결정이다.
 
 ## Durable publish 경로
 
@@ -116,16 +116,18 @@ Publisher ingress node와 consensus leader는 같지 않을 수 있다. Runtime 
 2. Application이 현재 ownership record와 expected epoch를 확인한다.
 3. Candidate owner가 새 epoch command를 replication port에 제안한다.
 4. Quorum commit receipt를 받은 node만 session을 복구하고 traffic을 처리한다.
-5. 이전 epoch의 route·inflight·delivery write는 최종 저장 경계에서 거절한다.
+5. 현재 owner와 exact owner/epoch가 일치하는 route-affecting persistent subscription mutation과 inbound/outbound QoS inflight mutation만 authoritative session aggregate에 적용한다. 불일치 mutation은 최종 저장 경계에서 거절하며, route projection은 committed persistent subscription 결과에서만 파생한다.
 
 동시 CONNECT, reconnect, drain과 rebalance는 같은 ownership primitive를 공유한다. 상태 전이와 오류 결과는 [Cluster session과 durable delivery 스펙](../specs/cluster-session-and-delivery.md)을 따른다.
+
+Drain에서는 draining owner가 현재 epoch의 최종 subscription·inflight checkpoint를 commit한 뒤에만 successor의 더 큰 epoch ownership acquire를 commit한다. Acquire 이후 old owner의 route-affecting persistent subscription 또는 inbound/outbound QoS inflight mutation은 exact owner/epoch check에서 stale로 거절되고 authoritative aggregate를 바꾸지 않는다. Route projection은 committed persistent subscription 결과에서만 파생되며, 이를 rebuild한 뒤에만 readiness를 광고한다.
 
 ## Control path
 
 | Control path | 구조적 역할 | 권위 경계 |
 | --- | --- | --- |
 | Join·leave | Member 후보를 검증하고 cluster membership을 변경 | Quorum commit |
-| Readiness | Local sync, quorum, route와 replica 준비 상태를 집계 | Spec의 probe 조건 |
+| Readiness | Local sync, quorum, committed persistent-subscription에서 rebuild한 route projection과 replica 준비 상태를 집계 | Spec의 probe 조건 |
 | Drain | Connection admission을 닫고 ownership을 이전 | `SAFE_TO_STOP` barrier |
 | Snapshot·restore | Committed index 기준으로 state를 압축·복구 | Checksum과 schema compatibility |
 | Mixed-version rollout | N-1↔N wire·state 호환성을 유지 | Release compatibility contract |
@@ -146,7 +148,7 @@ Physical failure domain은 [EKS on EC2 deployment architecture](eks-ec2-deployme
 - WAL·snapshot storage engine과 `fsync` primitive
 - Peer RPC protocol, framing과 node identity bootstrap
 - Replicated state encoding contract
-- Route index partition·replication·rebuild 방식
+- Route index의 physical rebuild mechanics와 partition placement
 - 하나 또는 여러 consensus group을 사용하는 partition 전략
 - Backup store와 disaster recovery RPO/RTO
 

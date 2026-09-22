@@ -73,7 +73,7 @@
 | **Owner (소유자)** | 특정 세션에 대한 독점적인 읽기·쓰기 및 클라이언트 통신 권한을 가진 단일 노드 | 한 순간에 오직 하나의 노드만 활성 Owner가 될 수 있음 |
 | **Epoch (Fencing Token)** | 소유권이 바뀔 때마다 1씩 단조 증가(Monotonically Increasing)하는 정수 번호표 | 이전 Owner의 지연된 쓰기를 저장소에서 판별하고 걸러내는 방패 |
 | **Quorum (과반수)** | 클러스터 전체 노드 중 과반수(예: 3노드 중 2노드)의 합의 집합 | 새 Owner 선출과 Epoch 증가를 공식 승인하는 신뢰 경계 |
-| **Fenced Write (차단 쓰기)** | 저장소가 자신이 알고 있는 최신 Epoch보다 낮은 요청을 무조건 거부하는 동작 | 좀비 노드의 쓰기가 영속 저장소에 도달했을 때 최종 방어선 역할 |
+| **Fenced Write (차단 쓰기)** | 저장소가 현재 owner와 epoch를 정확히 일치하지 않는 요청을 거부하는 동작 | 좀비 노드의 쓰기가 영속 저장소에 도달했을 때 최종 방어선 역할 |
 
 ---
 
@@ -81,25 +81,37 @@
 
 분산 시스템의 권위자 마틴 클레프만(Martin Kleppmann)이 제시한 해결책은 **"저장소 수준의 번호표 검증(Fencing Token)"**입니다.
 
-NaruMQ는 새 노드가 세션 소유권을 가져올 때마다 Quorum을 통해 **이전보다 반드시 큰 번호(Epoch)**를 발급받게 합니다. 그리고 영속 저장소는 데이터를 기록할 때 **항상 번호표를 비교**합니다.
+NaruMQ는 새 노드가 세션 소유권을 가져올 때마다 Quorum을 통해 **이전보다 반드시 큰 번호(Epoch)**를 발급받게 합니다. 영속 저장소는 session mutation을 기록할 때 현재 `ownerNodeId`와 `epoch`를 모두 비교합니다. 더 큰 epoch를 route 또는 inflight mutation에 실어 보내는 것만으로는 ownership을 바꿀 수 없고, 더 큰 epoch는 성공한 `Acquire`를 통해서만 설치됩니다.
 
 ### 저장소의 Fencing 검증 의사코드 (Compare-and-Swap)
 ```go
-func (s *SessionStore) WriteSession(req *WriteRequest) error {
+// SessionMutationRequest의 의미상 필드는 sessionKey, ownerNodeId, epoch와
+// operation-specific mutation이다. 이것은 serialized wire schema가 아니다.
+func (s *SessionStore) ApplySessionMutation(req *SessionMutationRequest) error {
     s.mu.Lock()
     defer s.mu.Unlock()
 
-    // 저장소에 기록된 현재 세션의 최신 epoch를 확인
-    currentEpoch := s.getStoredEpoch(req.SessionKey)
-
-    // 요청에 담긴 번호표가 저장소의 최신 번호표보다 과거라면 문전박대!
-    if req.Epoch < currentEpoch {
-        return ErrFencedStaleWrite // "당신은 이미 해임된 과거의 노드입니다!" 거절
+    current, ok := s.getOwnership(req.SessionKey)
+    if !ok || req.OwnerNodeID != current.OwnerNodeID || req.Epoch != current.Epoch {
+        // committed sequence position은 소비하지만 aggregate는 바꾸지 않는다.
+        return ErrStaleAuthorization
     }
 
-    // 최신 번호표이거나 새 번호표라면 승인 및 epoch 갱신
-    s.currentEpoch[req.SessionKey] = req.Epoch
-    s.commitData(req.SessionKey, req.Data)
+    s.commitMutation(req.Mutation) // persistent subscription 또는 QoS inflight
+    return nil
+}
+
+// owner와 epoch를 설치하거나 증가시키는 경로는 Acquire뿐이다.
+func (s *SessionStore) Acquire(req *AcquireRequest) error {
+    current := s.getOwnership(req.SessionKey)
+    if req.ExpectedEpoch != current.Epoch {
+        return ErrStaleAcquire
+    }
+    if current.Epoch == MaxUint64 {
+        return ErrEpochExhausted
+    }
+
+    s.commitOwnership(req.SessionKey, req.OwnerNodeID, current.Epoch+1)
     return nil
 }
 ```
@@ -108,34 +120,43 @@ func (s *SessionStore) WriteSession(req *WriteRequest) error {
 
 ## 정상 흐름: Session Takeover (인계) 시퀀스
 
-클라이언트가 노드 A에서 노드 B로 재접속할 때, 펜싱 토큰을 활용한 안전한 세션 인계 과정은 다음과 같습니다.
+클라이언트가 노드 A에서 노드 B로 재접속할 때, 펜싱 토큰을 활용한 안전한 세션 인계 과정은 다음과 같습니다. Drain 중인 A의 최종 checkpoint와 B의 takeover가 하나의 committed ordering으로 관찰된다고 가정합니다.
 
 ```mermaid
 sequenceDiagram
     autonumber
     participant C as 단말 (Client)
-    participant A as 이전 노드 A (Epoch 41)
-    participant B as 새 노드 B (Epoch 42)
+    participant A as draining 노드 A (Epoch 41)
+    participant B as successor 노드 B (Epoch 42)
     participant Q as Quorum / 세션 저장소 (현재 Epoch 41)
 
-    Note over C,A: 단말이 통신 두절 후 노드 B에 재접속 시도
+    Note over A,Q: drain 시작, 새 connection admission 중단
+    A->>Q: 최종 subscription checkpoint (owner=A, epoch=41)
+    A->>Q: 최종 QoS inflight checkpoint (owner=A, epoch=41)
+    Q-->>A: 현재 epoch checkpoint commit
+
     C->>B: CONNECT (clientId="truck-101")
-    B->>Q: 세션 소유권 인계 요청 (Takeover)
+    B->>Q: Acquire (expectedEpoch=41, owner=B)
     Q->>Q: Quorum 과반수 합의로 새 Epoch 발급 (41 -> 42)
-    Q-->>B: 소유권 승인 (Epoch=42) 및 저장된 세션 상태 반환
+    Q-->>B: 소유권 승인 (Epoch=42) 및 committed session state 반환
+    B->>B: committed subscription에서 node-local route projection rebuild
+    B->>B: routing readiness 광고
     B-->>C: CONNACK (Session Present=1)
     Note over B,C: 노드 B가 새 Owner로서 메시지 통신 개시!
 
-    Note over A: 뒤늦게 깨어난 좀비 노드 A가 과거 세션 수정 시도
-    A->>Q: WriteSession (Epoch=41, 이전 오프라인 큐 갱신)
-    Q->>Q: 검증: 요청(41) < 저장소 최신(42) 판정!
-    Q-->>A: [Fenced/Rejected] 쓰기 거절 (ErrFencedStaleWrite)
-    Note over A: 노드 A: 소유권 상실 인지, 즉시 로컬 연결 강제 종료
+    Note over A,Q: Acquire commit 뒤 old owner command가 committed ordering됨
+    A->>Q: route-affecting subscription mutation (owner=A, epoch=41)
+    Q->>Q: exact owner/epoch check 실패
+    Q-->>A: [Rejected] stale/not-authorized, sequence position 소비, state 불변
+    A->>Q: QoS inflight mutation (owner=A, epoch=41)
+    Q->>Q: exact owner/epoch check 실패
+    Q-->>A: [Rejected] stale/not-authorized, sequence position 소비, state 불변
+    Note over Q: authoritative aggregate와 route projection은 변경되지 않음
 ```
 
-1. **소유권 획득 먼저**: 새 노드 B는 클라이언트에게 응답하기 전에 **반드시 Quorum 과반수로부터 새 Epoch(42) 커밋을 먼저 받아야** 합니다.
-2. **저장소가 최종 심판**: 이전 노드 A가 아무리 늦게 쓰기 요청을 보내더라도, 저장소가 `Epoch 41 < 42`임을 확인하고 거부하므로 데이터가 오염되지 않습니다.
-3. **알림에 의존하지 않음**: B가 A에게 "너 이제 소유자 아니야"라고 네트워크 메시지를 보낼 필요가 없습니다. 네트워크가 단절되어 알림이 유실되더라도 저장소의 Fencing 규칙 덕분에 시스템 전체가 안전합니다.
+1. **최종 checkpoint 후 소유권 획득**: A의 현재 epoch subscription·inflight checkpoint가 먼저 commit되고, B는 새 Epoch(42)의 Quorum commit을 받은 뒤에만 client traffic을 처리합니다.
+2. **저장소가 최종 심판**: A의 route-affecting subscription 또는 inflight mutation은 요청 도착 시각이나 local route cache와 무관하게 exact `ownerNodeId`·`epoch` check에서 거절됩니다. 거절 command도 application sequence position은 소비하지만 aggregate와 projection은 바꾸지 않습니다.
+3. **Projection은 다시 만들 수 있어야 함**: B는 committed persistent subscription에서 node-local route projection을 rebuild한 뒤에만 routing readiness를 광고합니다.
 
 ### Commit 응답 유실과 동일 command 재시도
 
@@ -206,7 +227,7 @@ Owner 노드가 변경되었을 때, 클라이언트가 끊김 없이 QoS 핸드
 2. 왜 단순 TTL 방식의 분산 락은 긴 GC Pause가 발생했을 때 데이터 오염을 막지 못하는가?
    *(답: 프로세스가 멈춰 있는 동안 TTL이 만료되어 다른 노드가 락을 가져가지만, 깨어난 이전 노드는 락 상실을 인지하지 못하고 지연된 쓰기를 그대로 실행하기 때문)*
 3. 저장소 계층에서 과거의 좀비 노드가 보낸 쓰기 요청을 판정하고 차단하는 구체적인 비교 조건은 무엇인가?
-   *(답: `요청에 담긴 Epoch < 저장소에 기록된 최신 Epoch`이면 Stale Write로 판정하여 무조건 거절함)*
+   *(답: 요청의 `ownerNodeId`가 현재 owner와 같고 `Epoch`가 `currentEpoch`와 정확히 같을 때만 인가하며, ownership record 누락·owner 불일치·epoch 불일치는 stale authorization으로 거절함)*
 
 ---
 

@@ -15,8 +15,8 @@
 ## 1. Cluster membership
 
 1. 기준 배포는 quorum에 참여하는 node 3개로 구성해야 한다.
-2. node는 `JOINING` 중 discovery, member 인증, log/snapshot 동기화와 route 준비를 마쳐야 한다.
-3. 초기 동기화가 끝나고 quorum을 확인하기 전에는 MQTT traffic readiness를 성공으로 반환해서는 안 된다.
+2. node는 `JOINING` 중 discovery, member 인증, log/snapshot 동기화와 committed persistent subscription에서 route projection을 rebuild하는 작업을 마쳐야 한다.
+3. 초기 동기화와 route projection rebuild가 끝나고 quorum을 확인하기 전에는 MQTT traffic readiness를 성공으로 반환해서는 안 된다.
 4. join, 정상 leave와 재시작은 수동 데이터 수정 없이 재시도할 수 있어야 한다.
 5. 비인가 member와 지원하지 않는 cluster protocol version은 membership에 추가해서는 안 된다.
 
@@ -50,19 +50,38 @@ Phase 2의 첫 단계인 replicated ownership core는 다음 관찰 계약을 �
 
 ### 2.1 Fencing 규칙
 
-- session state를 바꾸는 모든 write는 현재 epoch를 포함해야 한다.
-- 저장 경계는 현재 epoch보다 작은 write를 거절해야 한다.
+- session aggregate를 바꾸는 acquire 이외의 command의 의미상 envelope 필드는 `sessionKey`, `ownerNodeId`, `epoch`와 operation-specific subscription 또는 inflight mutation으로 한정한다. 이 이름은 필요한 의미 정보이며 serialized field나 byte format을 정하지 않는다.
+- committed apply는 `ownerNodeId == currentOwnerNodeId`이고 `epoch == currentEpoch`인 경우에만 acquire 이외의 session mutation을 인가한다.
+- ownership record가 없거나 owner가 다르거나 epoch가 다르면 stale/not-authorized mutation으로 결정적으로 거절한다.
+- 성공한 `Acquire`만 owner와 epoch를 설치하거나 증가시킬 수 있다. Subscription 또는 inflight mutation은 epoch가 현재 값보다 크더라도 새 owner나 epoch를 설치할 수 없다.
+- 문법적으로 유효하지만 stale한 committed mutation은 application committed-command sequence position을 소비하지만 ownership, persistent subscription, QoS inflight와 route projection은 바꾸지 않는다.
 - 새 owner는 더 큰 epoch가 quorum commit된 뒤에만 client traffic을 처리해야 한다.
 - 이전 owner는 takeover를 관찰한 즉시 read·write와 delivery를 중단하고 connection을 종료해야 한다.
 - timeout만으로 ownership을 추정하거나 임대 만료 전 stale owner write를 허용해서는 안 된다.
 
+구체적인 production error/DTO와 serialized bytes는 storage·RPC 결정 전까지 미결정이다.
+
+### 2.2 Session aggregate와 route projection
+
+`sessionKey`마다 ownership record, persistent subscription, inbound QoS inflight와 outbound QoS inflight를 하나의 논리적 replicated session aggregate로 취급한다. 한 `sessionKey`에 대한 command는 같은 committed ordering을 공유하고 하나의 aggregate 경계에서 원자적으로 적용해야 한다. Subscription 또는 inflight 변경 결과를 ownership 권한 판정 결과와 분리해 외부에 노출해서는 안 된다.
+
+Route metadata는 committed persistent subscription에서만 계산하는 node-local disposable projection이다. 이 projection은 authoritative aggregate에서 다시 만들 수 있어야 하며, node는 routing readiness를 광고하기 전에 rebuild를 완료해야 한다. Route projection은 ownership, checkpoint 또는 drain barrier의 근거로 사용할 수 없다.
+
+이 경계는 storage engine, persisted byte/schema encoding, peer RPC, consensus-group partitioning, production application port와 `cmd/narumq` 조립 방식을 결정하지 않는다. Durable offline message의 저장·전달 경계도 이 slice에서 확정하지 않는다.
+
+### 2.3 Takeover ordering
+
+- Drain 중인 owner는 successor의 더 큰 epoch `Acquire`가 commit되기 전에 현재 epoch로 최종 persistent subscription·QoS inflight checkpoint mutation을 quorum에 commit해야 한다.
+- Successor `Acquire`가 commit된 뒤 그보다 뒤에 committed ordering된 old owner의 route-affecting subscription 또는 inflight command는 exact owner/epoch check에서 거절되어야 한다. Command 도착 시각이나 locally cached route는 이 결과를 우회할 수 없으며 authoritative aggregate와 route projection은 바뀌지 않는다.
+
 동시 CONNECT 또는 partition 시험에서 성공 owner가 둘로 관찰되면 spec 위반이다.
+
 ## 3. Routing
 
 1. 어느 READY node에 publisher와 subscriber가 연결돼도 cluster 전체의 matching subscription으로 전달해야 한다.
 2. route key는 tenant 격리가 끝난 canonical topic/filter를 사용해야 한다.
-3. route 변경에는 session key, owner node, epoch와 subscription option이 연결돼야 한다.
-4. stale epoch의 route add·remove는 거절해야 한다.
+3. Route-affecting subscription mutation은 authoritative fenced command로 `sessionKey`, `ownerNodeId`, `epoch`와 subscription option을 전달한다. Committed apply 뒤 route projection은 committed persistent subscription state에서 파생하며, 별도의 authorized route mutation으로 처리하지 않는다.
+4. 이전 owner 또는 stale owner/epoch의 route-affecting subscription add·remove mutation은 거절해야 한다.
 5. route propagation 지연은 측정 가능해야 한다. 지연 중에도 권한 또는 tenant 경계를 우회해서는 안 된다.
 6. shared subscription member 선택은 tenant와 group 경계를 지켜야 하며, unavailable owner를 계속 선택해서는 안 된다.
 
@@ -179,4 +198,4 @@ P1 rebalance가 활성화되면 target 편차, 최대 동시 이동 수와 이�
 | `restart recovers ownership epoch and command sequence` | snapshot과 WAL tail을 가진 node가 재시작 후 opaque command stream을 replay했을 때 restart 전과 동일한 session owner, epoch, application committed-command sequence position으로 복구된다. | `TestReplicatedSessionOwnership/restart_recovers_ownership_epoch_and_command_sequence` |
 | `lost commit response retry preserves owner and epoch` | 동일한 opaque command payload 두 개가 모든 node에 commit되고 두 번째 retry가 `stale_epoch`로 거절되며, ownership은 node 1 / epoch 1 / sequence position 1에 남고 state machine은 application sequence position 2까지 진행한다. | `TestReplicatedSessionOwnership/lost_commit_response_retry_preserves_owner_and_epoch` |
 
-이 mapping은 CLU-04, CLU-05, CLU-10과 ADR-0004 §8(항목 1, 2, 3, 5)의 session ownership/fencing core를 연결한다. 실제 MQTT CONNECT 경로와의 결합, multi-node TCP connection teardown, production peer transport, durable message ACK barrier는 이 core slice에 포함되지 않으며 수용 시험 전체 완료로 간주하지 않는다.
+이 mapping은 CLU-04, CLU-05, CLU-10과 ADR-0004 §8(항목 1, 2, 3, 5)의 session ownership/fencing core를 연결한다. ADR-0004 §8 항목 4(takeover 뒤 이전에 인가되었던 이전 owner의 route-affecting persistent subscription mutation과 inbound/outbound QoS inflight mutation이 각각 commit되고, application sequence position을 소비하며, stale authorization을 반환하고, 3개 node 모두에서 authoritative aggregate와 파생 route projection을 변경하지 않는 deterministic evidence)는 아직 테스트에 연결되지 않은 미완료 과제로 남겨둔다. 실제 MQTT CONNECT 경로와의 결합, multi-node TCP connection teardown, production peer transport, durable message ACK barrier도 이 core slice에 포함되지 않으며 수용 시험 전체 완료로 간주하지 않는다.

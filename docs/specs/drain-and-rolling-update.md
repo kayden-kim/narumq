@@ -17,7 +17,7 @@
 ```mermaid
 stateDiagram-v2
     [*] --> JOINING
-    JOINING --> READY: "sync·quorum·route 준비"
+    JOINING --> READY: "sync·quorum·committed subscription route projection rebuild"
     READY --> DRAINING: "drain start"
     DRAINING --> READY: "취소 가능 + 안전한 rollback"
     DRAINING --> SAFE_TO_STOP: "barrier 충족"
@@ -33,6 +33,8 @@ stateDiagram-v2
 | `SAFE_TO_STOP` | 거절 | 0 | 실패 | 외부 gate가 승인할 수 있음 |
 
 정의하지 않은 상태 전이는 `409 invalid_node_transition`으로 거절하고 현재 state를 반환해야 한다. 모든 전이는 Metric과 구조화 로그에 남겨야 한다.
+
+Recovering 또는 joining node는 committed persistent subscription에서 node-local route projection을 rebuild하고 local sync·quorum 조건을 충족한 뒤에만 `READY`를 광고할 수 있다.
 
 ## 2. Drain operation resource
 
@@ -87,10 +89,12 @@ READY node에 처음 요청하면 `202 Accepted`와 operation을 반환해야 �
 2. 신규 connection admission을 닫고 readiness를 실패로 바꾼다.
 3. configured load balancer propagation delay 동안 기존 connection은 유지한다.
 4. connection rate limit 안에서 session checkpoint와 client reconnect를 유도한다.
-5. 각 persistent session의 inflight, subscription, offline queue와 owner epoch를 quorum에 반영한다.
-6. 새 owner의 더 큰 epoch와 session takeover를 확인한다.
+5. Successor의 더 큰 epoch `Acquire`가 commit되기 전에 draining owner가 현재 epoch로 최종 persistent subscription·QoS inflight checkpoint mutation을 quorum에 commit한다. 이 순서에는 이 스펙이 요구하는 다른 session checkpoint state도 포함한다.
+6. 최종 checkpoint 뒤 successor의 더 큰 epoch session takeover commit을 확인한다.
 7. safe-to-stop barrier를 평가한다.
 8. barrier가 성공하면 `SAFE_TO_STOP`을 commit하고 external rollout gate에 노출한다.
+
+최종 checkpoint와 successor `Acquire`의 commit 순서는 fencing 계약의 일부다. Successor `Acquire`가 commit된 뒤 그보다 뒤에 committed ordering된 old owner의 route-affecting subscription 또는 inflight command는 exact owner/epoch check에서 거절되고 authoritative aggregate와 route projection을 바꾸지 않는다. Command 도착 시각이나 locally cached route는 이 결과를 우회할 수 없다.
 
 Timeout은 operation을 `FAILED`로 만들 뿐 Pod 삭제를 승인하지 않는다. 실패한 node는 readiness가 내려간 DRAINING에 남아야 하며 operator가 원인을 해결하거나 명시적으로 취소해야 한다.
 
