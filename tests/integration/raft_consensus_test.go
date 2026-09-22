@@ -415,6 +415,80 @@ func TestReplicatedSessionOwnership(t *testing.T) {
 		}
 	})
 
+	t.Run("lost commit response retry preserves owner and epoch", func(t *testing.T) {
+		cluster := newDeterministicCluster(t)
+		machines := map[raftadapter.NodeID]*takeover.StateMachine{
+			1: takeover.NewStateMachine(),
+			2: takeover.NewStateMachine(),
+			3: takeover.NewStateMachine(),
+		}
+		resultsByNode := make(map[raftadapter.NodeID][]takeover.ApplyResultDTO, 3)
+		for nodeID, sm := range machines {
+			id := nodeID
+			targetMachine := sm
+			cluster.onCommands[id] = func(commands [][]byte) {
+				results, err := takeover.ApplyOwnershipCommands(targetMachine, commands)
+				if err != nil {
+					t.Fatalf("node %d ApplyOwnershipCommands failed: %v", id, err)
+				}
+				resultsByNode[id] = append(resultsByNode[id], results...)
+			}
+		}
+
+		cluster.campaign(1)
+
+		tenantID, err := tenancy.NewTenantID("tenant-alpha")
+		if err != nil {
+			t.Fatal(err)
+		}
+		sessionKey, err := tenancy.NewSessionKey(tenantID, "client-retry")
+		if err != nil {
+			t.Fatal(err)
+		}
+		command, err := takeover.EncodeAcquireOwnershipCommand(takeover.AcquireOwnershipCommandDTO{
+			SessionKey:    sessionKey,
+			ExpectedEpoch: 0,
+			OwnerNodeID:   "node-1",
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		wantCommand := bytes.Clone(command)
+
+		cluster.propose(1, command)
+		cluster.propose(1, command)
+
+		for _, nodeID := range []raftadapter.NodeID{1, 2, 3} {
+			results := resultsByNode[nodeID]
+			if len(results) != 2 {
+				t.Fatalf("node %d apply results = %d, want 2", nodeID, len(results))
+			}
+			if !results[0].Applied || results[0].Ownership.OwnerNodeID() != "node-1" || results[0].Ownership.Epoch() != 1 || results[0].Ownership.CommitIndex() != 1 {
+				t.Fatalf("node %d first result = %+v, want node-1 epoch 1 sequence 1", nodeID, results[0])
+			}
+			if results[1].Applied || !errors.Is(results[1].Err, session.ErrStaleEpoch) {
+				t.Fatalf("node %d retry result = %+v, want stale-epoch rejection", nodeID, results[1])
+			}
+
+			machine := machines[nodeID]
+			owner, exists := machine.Ownership(sessionKey)
+			if !exists || owner.OwnerNodeID() != "node-1" || owner.Epoch() != 1 || owner.CommitIndex() != 1 {
+				t.Fatalf("node %d ownership = %+v, want node-1 epoch 1 sequence 1", nodeID, owner)
+			}
+			if machine.LastAppliedIndex() != 2 {
+				t.Fatalf("node %d LastAppliedIndex = %d, want 2", nodeID, machine.LastAppliedIndex())
+			}
+			if err := machine.Authorize(sessionKey, "node-1", 1); err != nil {
+				t.Fatalf("node %d Authorize(node-1, 1) failed: %v", nodeID, err)
+			}
+
+			commands := cluster.nodes[nodeID].AppliedCommands()
+			if len(commands) != 2 || !bytes.Equal(commands[0], wantCommand) || !bytes.Equal(commands[1], wantCommand) {
+				t.Fatalf("node %d applied commands = %q, want two identical payloads %q", nodeID, commands, wantCommand)
+			}
+		}
+	})
+
 	t.Run("minority cannot acquire or advance epoch", func(t *testing.T) {
 		cluster := newDeterministicCluster(t)
 		machines := map[raftadapter.NodeID]*takeover.StateMachine{

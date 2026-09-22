@@ -137,7 +137,16 @@ sequenceDiagram
 2. **저장소가 최종 심판**: 이전 노드 A가 아무리 늦게 쓰기 요청을 보내더라도, 저장소가 `Epoch 41 < 42`임을 확인하고 거부하므로 데이터가 오염되지 않습니다.
 3. **알림에 의존하지 않음**: B가 A에게 "너 이제 소유자 아니야"라고 네트워크 메시지를 보낼 필요가 없습니다. 네트워크가 단절되어 알림이 유실되더라도 저장소의 Fencing 규칙 덕분에 시스템 전체가 안전합니다.
 
+### Commit 응답 유실과 동일 command 재시도
+
+첫 번째 acquire command가 Quorum에 commit되면 해당 세션의 ownership record는 epoch 1이 됩니다. 그러나 commit receipt가 네트워크에서 유실되면 client는 성공 여부를 알 수 없으므로, 같은 opaque command를 `expectedEpoch=0`으로 다시 보낼 수 있습니다.
+
+이 retry도 복제된 command stream의 다음 application sequence position인 2에서 소비됩니다. State machine은 현재 epoch 1과 retry의 `expectedEpoch=0`이 다르다는 것을 확인해 `stale_epoch`로 결정적으로 거절합니다. 따라서 owner는 계속 node 1이고 epoch도 1이며, 성공한 ownership record의 `commit identifier`인 `CommitIndex()`도 1로 유지됩니다.
+
+여기서 `StateMachine.LastAppliedIndex() == 2`는 두 개의 committed command payload를 순서대로 소비했다는 뜻이고, ownership record의 `CommitIndex() == 1`은 마지막으로 성공한 ownership 전이의 sequence position을 뜻합니다. 둘은 서로 다른 application 경계입니다. 이 증거는 retry가 epoch를 중복 증가시키지 않는 safety만 확인하며, production retry/response protocol이나 command의 exactly-once 실행을 정의하지 않습니다.
+
 ---
+
 
 ## 소유권 전환 시 복제되어야 하는 세션 상태
 

@@ -86,11 +86,11 @@ Phase 2 replicated session ownership core는 다음 검증 기준을 갖는다.
 
 1. 같은 session key의 동시 CONNECT에서 성공 owner가 하나인지 확인한다(`TestReplicatedSessionOwnership/concurrent_acquire_elects_single_owner`).
 2. Owner를 network partition한 뒤 majority에서 takeover하고 이전 owner write를 모두 거절한다(`TestReplicatedSessionOwnership/minority_cannot_acquire_or_advance_epoch`).
-3. Commit 응답 유실과 client retry가 epoch를 불필요하게 중복 증가시켜도 safety를 유지하는지 확인한다(후속 과제).
+3. Commit 응답이 유실된 뒤 client가 동일한 acquire를 retry하면, retry도 다음 application committed-command sequence position으로 commit되지만 현재 epoch와 expected epoch가 달라 `stale_epoch`로 결정적으로 거절되고 owner, epoch와 성공한 ownership record의 sequence position은 바뀌지 않는지 확인한다(`TestReplicatedSessionOwnership/lost_commit_response_retry_preserves_owner_and_epoch`).
 4. Drain takeover 직후 이전 node의 route·inflight write를 거절한다(후속 과제).
 5. Snapshot restore 뒤 epoch가 감소하거나 재사용되지 않는지 확인한다(`TestReplicatedSessionOwnership/restart_recovers_ownership_epoch_and_command_sequence`).
 
-항목 1, 2, 5는 in-process deterministic 3-node cluster와 takeover state machine에서 검증한다. 항목 3, 4와 실제 MQTT runtime/drain wiring이 검증되기 전까지 이 결정은 `Proposed` 상태를 유지한다.
+항목 1, 2, 3, 5는 in-process deterministic 3-node cluster와 takeover state machine에서 검증한다. 항목 4와 실제 MQTT runtime/drain wiring이 검증되기 전까지 이 결정은 `Proposed` 상태를 유지한다.
 ## 9. 재검토 조건
 
 - Consensus 구조가 여러 shard/group으로 바뀐다.

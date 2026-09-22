@@ -193,3 +193,51 @@ func TestOwnershipCodec_ApplyOwnershipCommands(t *testing.T) {
 		t.Fatalf("malformed stream ownership = %+v, want node-1 epoch 1 sequence 1", malformedOwner)
 	}
 }
+
+func TestOwnershipCodec_RetryAfterLostCommitResponseDoesNotAdvanceEpoch(t *testing.T) {
+	t.Parallel()
+
+	machine := takeover.NewStateMachine()
+	key := mustSessionKey(t, "tenant-a", "client-retry")
+	command, err := takeover.EncodeAcquireOwnershipCommand(takeover.AcquireOwnershipCommandDTO{
+		SessionKey:    key,
+		ExpectedEpoch: 0,
+		OwnerNodeID:   "node-1",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	firstResults, err := takeover.ApplyOwnershipCommands(machine, [][]byte{command})
+	if err != nil {
+		t.Fatalf("first ApplyOwnershipCommands failed: %v", err)
+	}
+	if len(firstResults) != 1 || !firstResults[0].Applied {
+		t.Fatalf("first results = %+v, want one applied result", firstResults)
+	}
+	if firstResults[0].Ownership.OwnerNodeID() != "node-1" || firstResults[0].Ownership.Epoch() != 1 || firstResults[0].Ownership.CommitIndex() != 1 {
+		t.Fatalf("first ownership = %+v, want node-1 epoch 1 sequence 1", firstResults[0].Ownership)
+	}
+	if machine.LastAppliedIndex() != 1 {
+		t.Fatalf("LastAppliedIndex after first command = %d, want 1", machine.LastAppliedIndex())
+	}
+
+	retryResults, err := takeover.ApplyOwnershipCommands(machine, [][]byte{command})
+	if err != nil {
+		t.Fatalf("retry ApplyOwnershipCommands failed: %v", err)
+	}
+	if len(retryResults) != 1 || retryResults[0].Applied || !errors.Is(retryResults[0].Err, session.ErrStaleEpoch) {
+		t.Fatalf("retry results = %+v, want one stale-epoch rejection", retryResults)
+	}
+
+	owner, ok := machine.Ownership(key)
+	if !ok {
+		t.Fatal("ownership missing after retry")
+	}
+	if owner.OwnerNodeID() != "node-1" || owner.Epoch() != 1 || owner.CommitIndex() != 1 {
+		t.Fatalf("ownership after retry = %+v, want node-1 epoch 1 sequence 1", owner)
+	}
+	if machine.LastAppliedIndex() != 2 {
+		t.Fatalf("LastAppliedIndex after retry = %d, want 2", machine.LastAppliedIndex())
+	}
+}
