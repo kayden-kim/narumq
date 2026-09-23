@@ -305,7 +305,8 @@ func parseCoverageProfile(root, path string, policy coveragePolicy) (coverageDat
 	if err != nil {
 		return coverageData{}, fmt.Errorf("read coverage profile %s: %w", path, err)
 	}
-	if !bytes.HasPrefix(content, []byte("mode: atomic\n")) {
+	lines := strings.Split(strings.TrimSuffix(string(content), "\n"), "\n")
+	if len(lines) == 0 || strings.TrimSuffix(lines[0], "\r") != "mode: atomic" {
 		return coverageData{}, fmt.Errorf("coverage profile %s must start with mode: atomic", path)
 	}
 	sources, err := loadProductionSources(root, policy.ProductionPatterns)
@@ -319,8 +320,8 @@ func parseCoverageProfile(root, path string, policy coveragePolicy) (coverageDat
 		CoveredFunc:    make(map[string]bool),
 	}
 	blocks := make(map[string]coverageBlock)
-	lines := strings.Split(strings.TrimSuffix(string(content), "\n"), "\n")
 	for lineNumber, line := range lines[1:] {
+		line = strings.TrimSuffix(line, "\r")
 		if strings.TrimSpace(line) == "" {
 			continue
 		}

@@ -6,12 +6,15 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"slices"
 	"sort"
 	"testing"
 
 	raftadapter "narumq/internal/adapters/raft"
 	"narumq/internal/application/takeover"
+	"narumq/internal/domain/mqtt"
+	"narumq/internal/domain/routing"
 	"narumq/internal/domain/session"
 	"narumq/internal/domain/tenancy"
 )
@@ -696,6 +699,177 @@ func TestReplicatedSessionOwnership(t *testing.T) {
 		}
 		if err := recoveredMachine.Authorize(sessionKey, "node-1", 1); !errors.Is(err, session.ErrStaleEpoch) {
 			t.Fatalf("recovered Authorize(node-1, 1) error = %v, want ErrStaleEpoch", err)
+		}
+	})
+	t.Run("stale owner session mutations are fenced after takeover", func(t *testing.T) {
+		cluster := newDeterministicCluster(t)
+		tenantID, err := tenancy.NewTenantID("tenant-alpha")
+		if err != nil {
+			t.Fatal(err)
+		}
+		key, err := tenancy.NewSessionKey(tenantID, "client-fenced-mutations")
+		if err != nil {
+			t.Fatal(err)
+		}
+		sessionID := routing.SessionID("client-fenced-mutations")
+		type typedMutation struct {
+			subscription *takeover.PersistentSubscriptionCommandDTO
+			inflight     *takeover.QoSInflightCommandDTO
+			outbound     bool
+		}
+		// Tokens exist only in this test: no persisted encoding for these DTOs is decided.
+		mutations := make(map[string]typedMutation)
+		sub := takeover.PersistentSubscriptionCommandDTO{SessionKey: key, OwnerNodeID: "node-1", Epoch: 1,
+			Subscription: mqtt.Subscription{Filter: "orders/#", QoS: mqtt.QoSAtLeastOnce}}
+		in := takeover.QoSInflightCommandDTO{SessionKey: key, OwnerNodeID: "node-1", Epoch: 1,
+			Publish: mqtt.Publish{Version: mqtt.ProtocolV5, QoS: mqtt.QoSAtLeastOnce, PacketID: 10, Topic: "orders/1"}}
+		out := in
+		out.Publish.PacketID = 20
+		mutations["test/subscription/baseline"] = typedMutation{subscription: &sub}
+		mutations["test/inbound/baseline"] = typedMutation{inflight: &in}
+		mutations["test/outbound/baseline"] = typedMutation{inflight: &out, outbound: true}
+		oldSub := sub
+		oldSub.Subscription.QoS = mqtt.QoSExactlyOnce
+		oldIn := in
+		oldIn.Publish.PacketID = 11
+		oldOut := out
+		oldOut.Publish.PacketID = 21
+		// Prepare the old-owner mutations before committing successor ownership.
+		mutations["test/subscription/stale"] = typedMutation{subscription: &oldSub}
+		mutations["test/inbound/stale"] = typedMutation{inflight: &oldIn}
+		mutations["test/outbound/stale"] = typedMutation{inflight: &oldOut, outbound: true}
+
+		machines := make(map[raftadapter.NodeID]*takeover.StateMachine, 3)
+		routes := make(map[raftadapter.NodeID]*routing.Table, 3)
+		resultsByNode := make(map[raftadapter.NodeID][]takeover.ApplyResultDTO, 3)
+		for _, nodeID := range cluster.nodeIDs() {
+			machine := takeover.NewStateMachine()
+			machines[nodeID] = machine
+			routes[nodeID] = routing.NewTable()
+			id := nodeID
+			cluster.onCommands[id] = func(commands [][]byte) {
+				for _, payload := range commands {
+					position := machine.LastAppliedIndex() + 1
+					var result takeover.ApplyResultDTO
+					if len(payload) != 0 && payload[0] == '{' {
+						command, err := takeover.DecodeAcquireOwnershipCommand(payload)
+						if err != nil {
+							t.Fatalf("node %d decode acquire: %v", id, err)
+						}
+						result = machine.Apply(position, command)
+					} else {
+						mutation, ok := mutations[string(payload)]
+						if !ok {
+							t.Fatalf("node %d unknown test mutation %q", id, payload)
+						}
+						switch {
+						case mutation.subscription != nil:
+							result = machine.ApplyPersistentSubscription(position, *mutation.subscription)
+						case mutation.inflight != nil && mutation.outbound:
+							result = machine.ApplyOutboundQoSInflight(position, *mutation.inflight)
+						case mutation.inflight != nil:
+							result = machine.ApplyInboundQoSInflight(position, *mutation.inflight)
+						default:
+							t.Fatalf("node %d empty test mutation %q", id, payload)
+						}
+						if result.Applied && mutation.subscription != nil {
+							table := routing.NewTable()
+							if err := table.BindSessionTenant(sessionID, tenantID); err != nil {
+								t.Fatal(err)
+							}
+							for _, subscription := range machine.PersistentSubscriptions(key) {
+								if _, err := table.Subscribe(sessionID, subscription); err != nil {
+									t.Fatal(err)
+								}
+							}
+							routes[id] = table
+						}
+					}
+					resultsByNode[id] = append(resultsByNode[id], result)
+				}
+			}
+		}
+		acquire := func(owner string, expected session.Epoch) []byte {
+			t.Helper()
+			payload, err := takeover.EncodeAcquireOwnershipCommand(takeover.AcquireOwnershipCommandDTO{
+				SessionKey: key, OwnerNodeID: owner, ExpectedEpoch: expected,
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			return payload
+		}
+		proposals := [][]byte{
+			acquire("node-1", 0),
+			[]byte("test/subscription/baseline"),
+			[]byte("test/inbound/baseline"),
+			[]byte("test/outbound/baseline"),
+			acquire("node-2", 1),
+			[]byte("test/subscription/stale"),
+			[]byte("test/inbound/stale"),
+			[]byte("test/outbound/stale"),
+		}
+		cluster.campaign(1)
+		for _, payload := range proposals[:5] {
+			cluster.propose(1, payload)
+		}
+		type aggregateSnapshot struct {
+			owner    session.Ownership
+			subs     []mqtt.Subscription
+			inbound  []mqtt.PacketIdentifier
+			outbound []mqtt.PacketIdentifier
+			lookup   mqtt.Subscription
+			found    bool
+			routes   []routing.SubscriptionRecord
+		}
+		snapshots := make(map[raftadapter.NodeID]aggregateSnapshot, 3)
+		for _, nodeID := range cluster.nodeIDs() {
+			machine := machines[nodeID]
+			owner, exists := machine.Ownership(key)
+			if !exists || owner.OwnerNodeID() != "node-2" || owner.Epoch() != 2 || owner.CommitIndex() != 5 || machine.LastAppliedIndex() != 5 {
+				t.Fatalf("node %d takeover owner = %v exists %v sequence %d", nodeID, owner, exists, machine.LastAppliedIndex())
+			}
+			lookup, found := routes[nodeID].Lookup(sessionID, "orders/#")
+			snapshots[nodeID] = aggregateSnapshot{owner, machine.PersistentSubscriptions(key), machine.InboundQoSInflight(key),
+				machine.OutboundQoSInflight(key), lookup, found, routes[nodeID].Snapshot()}
+		}
+		for _, payload := range proposals[5:] {
+			cluster.propose(1, payload)
+		}
+		for _, nodeID := range cluster.nodeIDs() {
+			results := resultsByNode[nodeID]
+			if len(results) != 8 {
+				t.Fatalf("node %d results = %d, want 8", nodeID, len(results))
+			}
+			for position, result := range results {
+				if position < 5 && (!result.Applied || result.Err != nil) {
+					t.Fatalf("node %d position %d = %+v, want applied", nodeID, position+1, result)
+				}
+				if position >= 5 && (result.Applied || !errors.Is(result.Err, session.ErrStaleEpoch)) {
+					t.Fatalf("node %d position %d = %+v, want stale epoch", nodeID, position+1, result)
+				}
+			}
+			machine := machines[nodeID]
+			owner, exists := machine.Ownership(key)
+			lookup, found := routes[nodeID].Lookup(sessionID, "orders/#")
+			got := aggregateSnapshot{owner, machine.PersistentSubscriptions(key), machine.InboundQoSInflight(key),
+				machine.OutboundQoSInflight(key), lookup, found, routes[nodeID].Snapshot()}
+			want := aggregateSnapshot{snapshots[nodeID].owner, []mqtt.Subscription{sub.Subscription},
+				[]mqtt.PacketIdentifier{10}, []mqtt.PacketIdentifier{20}, sub.Subscription, true,
+				[]routing.SubscriptionRecord{{TenantID: tenantID, SessionID: sessionID, TopicFilter: "orders/#", QoS: mqtt.QoSAtLeastOnce}}}
+			if !exists || !reflect.DeepEqual(snapshots[nodeID], want) || !reflect.DeepEqual(got, want) ||
+				machine.LastAppliedIndex() != 8 {
+				t.Fatalf("node %d snapshot after takeover = %+v, after stale = %+v, want %+v; sequence %d", nodeID, snapshots[nodeID], got, want, machine.LastAppliedIndex())
+			}
+			committed := cluster.nodes[nodeID].AppliedCommands()
+			if len(committed) != len(proposals) {
+				t.Fatalf("node %d committed %d commands, want %d", nodeID, len(committed), len(proposals))
+			}
+			for index, command := range committed {
+				if !bytes.Equal(command, proposals[index]) {
+					t.Fatalf("node %d command %d = %q, want %q", nodeID, index+1, command, proposals[index])
+				}
+			}
 		}
 	})
 }

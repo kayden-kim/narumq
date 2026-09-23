@@ -153,7 +153,7 @@ func checkGoFormat(root string) error {
 			failures = append(failures, fmt.Sprintf("%s: go/format: %v", relativePath(root, path), err))
 			continue
 		}
-		if string(formatted) != string(data) {
+		if string(formatted) != strings.ReplaceAll(string(data), "\r\n", "\n") {
 			failures = append(failures, relativePath(root, path))
 		}
 	}

@@ -189,7 +189,7 @@ P1 rebalance가 활성화되면 target 편차, 최대 동시 이동 수와 이�
 
 ### 11.2 Phase 2 replicated session ownership core mapping
 
-아래 네 시나리오는 `internal/application/takeover`가 opaque committed-command bytes를 해석·순서화하고 `internal/adapters/raft`가 NMQSTATE1 snapshot/WAL로 그 bytes의 순서를 복구하는 in-process deterministic 3-node harness의 세션 소유권 핵심 증거다.
+아래 다섯 시나리오는 `internal/application/takeover`가 application committed-command 순서로 세션 상태를 적용하고 `internal/adapters/raft`가 opaque bytes를 운반하는 in-process deterministic 3-node harness의 제한된 증거다. Acquire bytes는 `takeover`의 experimental codec으로 해석하며, subscription·inflight bytes는 해당 시험 안에서만 typed DTO를 찾는 token으로 해석한다. NMQSTATE1 snapshot/WAL의 재시작 복구 증거는 acquire command에만 해당하고 새 mutation type의 persisted encoding·재시작 replay를 증명하지 않는다.
 
 | Scenario | 관찰할 결과 | Test mapping |
 | --- | --- | --- |
@@ -197,5 +197,6 @@ P1 rebalance가 활성화되면 target 편차, 최대 동시 이동 수와 이�
 | `minority cannot acquire or advance epoch` | partition된 minority node의 ownership proposal은 commit되지 않으며 majority에서 새 leader가 epoch 2를 commit한 뒤 takeover한다. partition 복구 시 minority는 majority의 epoch 2로 수렴하고 이전 epoch 1 owner의 authorize는 거절된다. | `TestReplicatedSessionOwnership/minority_cannot_acquire_or_advance_epoch` |
 | `restart recovers ownership epoch and command sequence` | snapshot과 WAL tail을 가진 node가 재시작 후 opaque command stream을 replay했을 때 restart 전과 동일한 session owner, epoch, application committed-command sequence position으로 복구된다. | `TestReplicatedSessionOwnership/restart_recovers_ownership_epoch_and_command_sequence` |
 | `lost commit response retry preserves owner and epoch` | 동일한 opaque command payload 두 개가 모든 node에 commit되고 두 번째 retry가 `stale_epoch`로 거절되며, ownership은 node 1 / epoch 1 / sequence position 1에 남고 state machine은 application sequence position 2까지 진행한다. | `TestReplicatedSessionOwnership/lost_commit_response_retry_preserves_owner_and_epoch` |
+| `stale owner session mutations are fenced after takeover` | 5개 명령이 적용된 뒤 node 2/epoch 2 takeover의 ownership position은 5다. 미리 준비한 이전 owner의 persistent subscription 및 inbound/outbound QoS inflight 명령 세 개가 뒤이어 commit되어 3개 node 모두 application sequence 8까지 진행하지만 각각 `stale_epoch`로 거절된다. 구독 `orders/#` QoS 1, inbound `[10]`, outbound `[20]`과 각 node의 파생 route projection은 takeover 직후와 동일하게 유지된다. | `TestReplicatedSessionOwnership/stale_owner_session_mutations_are_fenced_after_takeover` |
 
-이 mapping은 CLU-04, CLU-05, CLU-10과 ADR-0004 §8(항목 1, 2, 3, 5)의 session ownership/fencing core를 연결한다. ADR-0004 §8 항목 4(takeover 뒤 이전에 인가되었던 이전 owner의 route-affecting persistent subscription mutation과 inbound/outbound QoS inflight mutation이 각각 commit되고, application sequence position을 소비하며, stale authorization을 반환하고, 3개 node 모두에서 authoritative aggregate와 파생 route projection을 변경하지 않는 deterministic evidence)는 아직 테스트에 연결되지 않은 미완료 과제로 남겨둔다. 실제 MQTT CONNECT 경로와의 결합, multi-node TCP connection teardown, production peer transport, durable message ACK barrier도 이 core slice에 포함되지 않으며 수용 시험 전체 완료로 간주하지 않는다.
+이 mapping은 CLU-04, CLU-05, CLU-10과 ADR-0004 §8 항목 1~5의 in-process session ownership/fencing core를 연결한다. 실제 MQTT CONNECT 경로와의 결합, multi-node TCP connection teardown, production peer transport, subscription·inflight persisted encoding/replay, durable message ACK barrier는 이 core slice에 포함되지 않으며 수용 시험 전체 완료로 간주하지 않는다.

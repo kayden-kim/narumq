@@ -112,3 +112,22 @@ func TestCheckGoFormatDoesNotModifySource(t *testing.T) {
 		t.Fatal("checkGoFormat() modified source")
 	}
 }
+
+func TestCheckGoFormatAcceptsCRLFWithoutChangingSource(t *testing.T) {
+	root := t.TempDir()
+	path := filepath.Join(root, "main.go")
+	original := []byte("package main\r\n\r\nfunc main() {}\r\n")
+	if err := os.WriteFile(path, original, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := checkGoFormat(root); err != nil {
+		t.Fatalf("checkGoFormat() rejected formatted CRLF source: %v", err)
+	}
+	updated, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(updated, original) {
+		t.Fatal("checkGoFormat() modified CRLF source")
+	}
+}

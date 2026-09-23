@@ -16,6 +16,40 @@ func TestParseCoverageProfileRejectsMalformedFixture(t *testing.T) {
 	}
 }
 
+func TestParseCoverageProfileAcceptsCRLF(t *testing.T) {
+	root := t.TempDir()
+	sourceDir := filepath.Join(root, "internal")
+	if err := os.MkdirAll(sourceDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	source, err := os.ReadFile(filepath.Join("testdata", "coverage", "same-methods.go"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(sourceDir, "sample.go"), source, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	profile, err := os.ReadFile(filepath.Join("testdata", "coverage", "same-methods.out"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	normalized := strings.ReplaceAll(string(profile), "\r\n", "\n")
+	profilePath := filepath.Join(root, "coverage.out")
+	if err := os.WriteFile(profilePath, []byte(strings.ReplaceAll(normalized, "\n", "\r\n")), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	data, err := parseCoverageProfile(root, profilePath, coveragePolicy{
+		ProductionPatterns: []string{"./internal/..."},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	overall, _ := calculateCoverage(data)
+	if overall.Function.Covered != 1 || overall.Function.Total != 2 || overall.Function.Percent != 50 {
+		t.Fatalf("CRLF fixture function coverage = %#v, want 1/2 (50%%)", overall.Function)
+	}
+}
+
 func TestCoverageRatchetRejectsMeasuredValueBelowBaseline(t *testing.T) {
 	policy, err := loadCoveragePolicy(filepath.Join("testdata", "coverage", "lower-ratchet.json"))
 	if err != nil {

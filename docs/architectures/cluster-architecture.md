@@ -116,7 +116,7 @@ Publisher ingress node와 consensus leader는 같지 않을 수 있다. Runtime 
 2. Application이 현재 ownership record와 expected epoch를 확인한다.
 3. Candidate owner가 새 epoch command를 replication port에 제안한다.
 4. Quorum commit receipt를 받은 node만 session을 복구하고 traffic을 처리한다.
-5. 현재 owner와 exact owner/epoch가 일치하는 route-affecting persistent subscription mutation과 inbound/outbound QoS inflight mutation만 authoritative session aggregate에 적용한다. 불일치 mutation은 최종 저장 경계에서 거절하며, route projection은 committed persistent subscription 결과에서만 파생한다.
+5. 현재 owner와 exact owner/epoch가 일치하는 모든 persistent subscription mutation과 inbound/outbound QoS inflight mutation만 authoritative session aggregate에 적용한다. 불일치 mutation은 최종 저장 경계에서 거절하며, route projection은 committed persistent subscription 결과에서만 파생한다.
 
 동시 CONNECT, reconnect, drain과 rebalance는 같은 ownership primitive를 공유한다. 상태 전이와 오류 결과는 [Cluster session과 durable delivery 스펙](../specs/cluster-session-and-delivery.md)을 따른다.
 
