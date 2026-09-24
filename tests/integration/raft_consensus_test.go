@@ -11,6 +11,8 @@ import (
 	"sort"
 	"testing"
 
+	raftpb "go.etcd.io/raft/v3/raftpb"
+	"google.golang.org/protobuf/proto"
 	raftadapter "narumq/internal/adapters/raft"
 	"narumq/internal/application/takeover"
 	"narumq/internal/domain/mqtt"
@@ -32,6 +34,7 @@ type deterministicCluster struct {
 	blocked    map[messageRoute]bool
 	queue      []raftadapter.MessageDTO
 	onCommands map[raftadapter.NodeID]func([][]byte)
+	onMessages func([]raftadapter.MessageDTO)
 }
 
 func newDeterministicCluster(t *testing.T) *deterministicCluster {
@@ -98,6 +101,9 @@ func (c *deterministicCluster) pump() {
 				if callback, ok := c.onCommands[nodeID]; ok && callback != nil {
 					callback(batch.Commands)
 				}
+			}
+			if c.onMessages != nil && len(batch.Messages) != 0 {
+				c.onMessages(batch.Messages)
 			}
 			c.queue = append(c.queue, batch.Messages...)
 		}
@@ -283,6 +289,81 @@ func TestRaftConsensusSpike(t *testing.T) {
 		if cluster.nodes[1].Status().Role == raftadapter.RoleLeader {
 			t.Fatalf("isolated old leader retained leadership: %#v", cluster.nodes[1].Status())
 		}
+	})
+
+	t.Run("slow follower keeps outbound append window bounded", func(t *testing.T) {
+		cluster := newDeterministicCluster(t)
+		cluster.campaign(1)
+		cluster.blocked[messageRoute{from: 1, to: 3}] = true
+		cluster.blocked[messageRoute{from: 3, to: 1}] = true
+		cluster.blocked[messageRoute{from: 2, to: 3}] = true
+		cluster.blocked[messageRoute{from: 3, to: 2}] = true
+
+		const maxInflightMessages = 16
+		inflightAppendRanges := make(map[[2]uint64]struct{}, maxInflightMessages)
+		cluster.onMessages = func(messages []raftadapter.MessageDTO) {
+			for _, message := range messages {
+				if message.From != 1 || message.To != 3 {
+					continue
+				}
+				var decoded raftpb.Message
+				if err := proto.Unmarshal(message.Data, &decoded); err != nil {
+					t.Fatalf("decode outbound message 1 -> 3: %v", err)
+				}
+				if decoded.GetType() != raftpb.MsgApp {
+					continue
+				}
+				entries := decoded.GetEntries()
+				if len(entries) == 0 {
+					continue
+				}
+				firstIndex := decoded.GetIndex() + 1
+				lastIndex := entries[len(entries)-1].GetIndex()
+				inflightAppendRanges[[2]uint64{firstIndex, lastIndex}] = struct{}{}
+			}
+		}
+
+		expectedCommands := make([]string, 0, 64)
+		for index := range 64 {
+			prefix := []byte(fmt.Sprintf("sequence-%02d", index))
+			command := append(prefix, bytes.Repeat([]byte{'x'}, 1024-len(prefix))...)
+			expectedCommands = append(expectedCommands, string(command))
+			if err := cluster.nodes[1].Propose(command); err != nil {
+				t.Fatalf("proposal %d: %v", index, err)
+			}
+			cluster.pump()
+			assertCommands(t, cluster, []raftadapter.NodeID{1, 2}, expectedCommands)
+			if got := cluster.commands(3); len(got) != 0 {
+				t.Fatalf("slow follower applied commands during partition: %v", got)
+			}
+			if got := len(inflightAppendRanges); got > maxInflightMessages {
+				t.Fatalf("distinct unacknowledged MsgApp ranges to slow follower = %d, want <= %d", got, maxInflightMessages)
+			}
+		}
+		if got := len(inflightAppendRanges); got == 0 {
+			t.Fatal("leader sent no entry-bearing MsgApp ranges to slow follower")
+		}
+		cluster.onMessages = nil
+
+		delete(cluster.blocked, messageRoute{from: 1, to: 3})
+		delete(cluster.blocked, messageRoute{from: 3, to: 1})
+		delete(cluster.blocked, messageRoute{from: 2, to: 3})
+		delete(cluster.blocked, messageRoute{from: 3, to: 2})
+		converged := false
+		for range 20 {
+			cluster.tickActive(1)
+			if slices.Equal(cluster.commands(1), expectedCommands) &&
+				slices.Equal(cluster.commands(2), expectedCommands) &&
+				slices.Equal(cluster.commands(3), expectedCommands) {
+				converged = true
+				break
+			}
+		}
+		if !converged {
+			t.Fatalf("cluster did not converge after healing slow-follower routes: node1=%d node2=%d node3=%d commands",
+				len(cluster.commands(1)), len(cluster.commands(2)), len(cluster.commands(3)))
+		}
+		assertCommands(t, cluster, []raftadapter.NodeID{1, 2, 3}, expectedCommands)
 	})
 
 	t.Run("WAL replay restores commit", func(t *testing.T) {

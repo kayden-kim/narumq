@@ -90,10 +90,11 @@ Phase 0 spike 및 Phase 2 session ownership core는 다음 검증 기준을 갖�
 2. Minority partition에서 새 write와 ownership이 commit되지 않는다(`TestRaftConsensusSpike/quorum_loss_cannot_commit`, `TestReplicatedSessionOwnership/minority_cannot_acquire_or_advance_epoch`).
 3. WAL append, `HardState` 저장과 outbound message ordering을 fault injection으로 검증한다(`internal/adapters/raft` unit test).
 4. Snapshot 중 crash 뒤 마지막 committed index로 복구한다(`TestRaftConsensusSpike/snapshot_plus_WAL_tail_restores_state`, `TestReplicatedSessionOwnership/restart_recovers_ownership_epoch_and_command_sequence`). Ownership assertion의 commit identifier는 Raft index가 아니라 replay한 ownership command bytes의 application sequence position이다.
-5. Disk full과 느린 follower가 무제한 queue를 만들지 않는다(후속 과제).
+5. WAL write 오류와 느린 follower flow-control에는 in-process partial evidence가 있다. `wal.bin` write에 `ENOSPC`를 주입하면 adapter가 outbound batch 없이 `ErrFailed`를 반환하고 terminal failed state에 머문다. Deterministic 3-node harness는 64개 command를 적용하는 동안 node 1→3의 미응답 entry-bearing `MsgApp` 고유 범위가 `MaxInflightMsgs=16`을 넘지 않고 연결 복구 후 세 node가 수렴함을 보인다(`TestNodeWALWriteFailureStopsOutbound`, `TestRaftConsensusSpike/slow_follower_keeps_outbound_append_window_bounded`). 빈 `MsgApp` commit update는 inflight entry window에 포함되지 않는다. 이는 실제 disk-full, production peer transport/queue 또는 느린 I/O 검증이 아니다.
 6. Membership change 중 crash와 재시작에서 member set이 수렴한다(후속 과제).
 
-항목 1~4는 in-process deterministic harness에서 검증한다. 항목 5, 6 및 production peer transport가 검증되기 전까지 이 결정은 `Proposed` 상태를 유지한다.
+항목 1~4는 in-process deterministic harness에서 검증했다. 항목 5는 in-process partial evidence만 있으며 실제 disk-full, 느린 I/O, production transport·queue, node readiness와 MQTT ACK는 미검증이다. 항목 6과 production peer transport가 검증되기 전까지 이 결정은 `Proposed` 상태를 유지한다.
+
 ## 8. 재검토 조건
 
 - Phase 0에서 required durability나 p99.9 목표를 충족하지 못한다.

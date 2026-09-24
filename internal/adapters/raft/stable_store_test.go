@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
 
 	etcdraft "go.etcd.io/raft/v3"
@@ -235,6 +236,67 @@ func TestNodeReadyOrderingAndPersistenceFailure(t *testing.T) {
 	}
 	if err := failureNode.Close(); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestNodeWALWriteFailureStopsOutbound(t *testing.T) {
+	directory := filepath.Join(t.TempDir(), "wal-write-failure")
+	node, err := Open(Config{NodeID: 1, PeerIDs: []NodeID{1, 2, 3}, Directory: directory})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		if err := node.Close(); err != nil {
+			t.Errorf("Close(): %v", err)
+		}
+	}()
+	if _, err := node.ProcessReady(); err != nil {
+		t.Fatal(err)
+	}
+
+	commandsBefore := commandStrings(node.AppliedCommands())
+	var events []string
+	node.onReadyEvent = func(event string) { events = append(events, event) }
+	if err := node.Campaign(); err != nil {
+		t.Fatal(err)
+	}
+
+	walPath := filepath.Join(directory, walName)
+	oldWrite := filePersistenceOps.write
+	defer func() { filePersistenceOps.write = oldWrite }()
+	filePersistenceOps.write = func(writer io.Writer, data []byte) (int, error) {
+		file, ok := writer.(*os.File)
+		if ok && file.Name() == walPath {
+			return 0, syscall.ENOSPC
+		}
+		return oldWrite(writer, data)
+	}
+	batch, processErr := node.ProcessReady()
+	filePersistenceOps.write = oldWrite
+
+	if !errors.Is(processErr, ErrFailed) || !errors.Is(processErr, syscall.ENOSPC) {
+		t.Fatalf("ProcessReady() error = %v, want ErrFailed wrapping ENOSPC", processErr)
+	}
+	if len(batch.Messages) != 0 || len(batch.Commands) != 0 {
+		t.Fatalf("failed Ready batch = %#v, want empty", batch)
+	}
+	if len(events) != 0 {
+		t.Fatalf("Ready events after WAL failure = %v, want none", events)
+	}
+	if got := commandStrings(node.AppliedCommands()); !equalStringValues(got, commandsBefore) {
+		t.Fatalf("applied commands after WAL failure = %v, want %v", got, commandsBefore)
+	}
+	if err := node.Campaign(); !errors.Is(err, ErrFailed) {
+		t.Fatalf("Campaign() after WAL failure = %v, want ErrFailed", err)
+	}
+	if err := node.Propose([]byte("after-wal-failure")); !errors.Is(err, ErrFailed) {
+		t.Fatalf("Propose() after WAL failure = %v, want ErrFailed", err)
+	}
+	if _, err := node.ProcessReady(); !errors.Is(err, ErrFailed) {
+		t.Fatalf("ProcessReady() after WAL failure = %v, want ErrFailed", err)
+	}
+	if err := node.Close(); err != nil {
+		t.Fatalf("Close() after WAL failure: %v", err)
 	}
 }
 
