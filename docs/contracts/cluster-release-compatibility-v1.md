@@ -1,6 +1,7 @@
 # Cluster release compatibility v1 Contract
 
 이 문서는 release N과 직전 지원 release N-1 node가 rolling upgrade·rollback 중 지켜야 할 cluster 호환성 범위를 정의한다. 실제 release 번호와 test artifact는 각 release matrix에서 이 template을 채운다.
+[ADR-0009](../decisions/ADR-0009-raft-production-state-profile.md)는 versioned protobuf application-state encoding family를 design target으로 선택했지만 exact schema는 정하지 않는다. 이 Draft contract는 future persisted command/snapshot의 release N/N-1 compatibility를 다루며 아직 호환성을 검증하지 않았다. 이는 fixed-voter wire만 정의하는 Active [Raft peer transport v1](raft-peer-transport-v1.md)과 별도 경계다.
 
 | 항목 | 값 |
 | --- | --- |
@@ -13,7 +14,7 @@
 | 기준 spec | [Cluster session과 durable delivery](../specs/cluster-session-and-delivery.md), [Drain과 rolling update](../specs/drain-and-rolling-update.md) |
 | 관련 Architecture | [Cluster architecture](../architectures/cluster-architecture.md), [EKS on EC2 deployment](../architectures/eks-ec2-deployment.md) |
 | 관련 requirement | CLU-11, NFR-15, DEP-18 |
-| 관련 결정 | [ADR-0002](../decisions/ADR-0002-cluster-consensus-library.md), [ADR-0006](../decisions/ADR-0006-external-rollout-controller.md) |
+| 관련 결정 | [ADR-0002](../decisions/ADR-0002-cluster-consensus-library.md), [ADR-0006](../decisions/ADR-0006-external-rollout-controller.md), [ADR-0009](../decisions/ADR-0009-raft-production-state-profile.md) |
 | 검증 | `tests/compatibility/cluster-release-v1` 예정. 현재 미구현 |
 
 ## 1. 지원 범위

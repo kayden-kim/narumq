@@ -10,8 +10,8 @@ NaruMQ cluster는 세 broker node가 같은 replicated state machine에 참여�
 | 범위 | Broker cluster의 runtime component와 상태 소유권 |
 | 관련 요구사항 | [PRD](../requirements/PRD.md) CLU-01~CLU-14, MQTT-02~05, NFR-07~NFR-10 |
 | 관련 스펙 | [Cluster session과 durable delivery](../specs/cluster-session-and-delivery.md), [MQTT protocol과 session](../specs/mqtt-protocol-and-session.md) |
-| 관련 결정 | [ADR-0002](../decisions/ADR-0002-cluster-consensus-library.md), [ADR-0003](../decisions/ADR-0003-durable-ack-barrier.md), [ADR-0004](../decisions/ADR-0004-session-ownership-and-fencing.md), [ADR-0008](../decisions/ADR-0008-raft-peer-transport.md). ADR-0002~0004는 Proposed |
-| 관련 Contract | [Cluster release compatibility v1](../contracts/cluster-release-compatibility-v1.md), Active [Raft peer transport v1](../contracts/raft-peer-transport-v1.md); replicated state encoding은 예정 |
+| 관련 결정 | [ADR-0002](../decisions/ADR-0002-cluster-consensus-library.md), [ADR-0003](../decisions/ADR-0003-durable-ack-barrier.md), [ADR-0004](../decisions/ADR-0004-session-ownership-and-fencing.md), [ADR-0008](../decisions/ADR-0008-raft-peer-transport.md), [ADR-0009](../decisions/ADR-0009-raft-production-state-profile.md) (Accepted, design target only). ADR-0002~0004는 Proposed |
+| 관련 Contract | [Cluster release compatibility v1](../contracts/cluster-release-compatibility-v1.md), Active [Raft peer transport v1](../contracts/raft-peer-transport-v1.md); replicated-state contract는 ADR-0009가 encoding family만 정했으며 exact schema는 미작성 |
 | 최종 확인일 | 2026-09-24 |
 
 ## Runtime component view
@@ -60,7 +60,7 @@ flowchart TB
     NLB --> IC
 ```
 
-`etcd/raft` production version과 WAL·snapshot은 Proposed [ADR-0002](../decisions/ADR-0002-cluster-consensus-library.md)의 범위다. 고정 voter `{1,2,3}`의 transport v1은 Accepted [ADR-0008](../decisions/ADR-0008-raft-peer-transport.md)과 Active [contract](../contracts/raft-peer-transport-v1.md)에서 정한다. Diagram은 이들 선택이 production cluster 전체로 승인되었다는 뜻이 아니다.
+Consensus module pin, file-backed WAL/snapshot과 sync target, application-state encoding family, 단일-group partition profile은 Accepted [ADR-0009](../decisions/ADR-0009-raft-production-state-profile.md)의 scoped design target이다. 이는 현재 구현의 production readiness, crash durability, durable ACK 또는 release 호환성을 승인하지 않는다. 고정 voter `{1,2,3}`의 transport v1은 Accepted [ADR-0008](../decisions/ADR-0008-raft-peer-transport.md)과 Active [contract](../contracts/raft-peer-transport-v1.md)에서 정한다.
 
 ## Phase 0/2 제한된 구현 증거
 
@@ -146,9 +146,10 @@ Physical failure domain은 [EKS on EC2 deployment architecture](eks-ec2-deployme
 
 ## 미결정 사항
 
-- Consensus module의 production version과 checksum
-- WAL·snapshot storage engine과 `fsync` primitive
-- Production replicated state encoding, group partitioning, backup·DR과 transport v1 범위를 벗어난 membership·release compatibility
-- 하나 또는 여러 consensus group을 사용하는 partition 전략
+아래 네 가지 design target은 [ADR-0009](../decisions/ADR-0009-raft-production-state-profile.md)에 scoped 범위로 기록했으며 runtime 승인이나 production acceptance를 뜻하지 않는다. 다음 구현·계약은 여전히 미결정 또는 미검증이다.
 
-각 선택은 별도 ADR 또는 contract가 승인될 때 이 view에 반영한다.
+- Exact WAL·snapshot on-disk schema와 lifecycle, crash recovery·retention 구현
+- Replicated-state protobuf의 exact messages·field numbers·limits·migration vectors 및 Active peer transport 범위 밖 RPC encoding
+- Route-index의 물리적 배치와 rebuild mechanics
+- Backup·DR, dynamic membership과 join·leave workflow
+- Release N/N-1 compatibility matrix와 양방향 검증

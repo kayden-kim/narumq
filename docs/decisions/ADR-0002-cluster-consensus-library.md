@@ -26,11 +26,11 @@ NaruMQ cluster의 consensus algorithm core로 Go module `go.etcd.io/raft/v3`를 
 - Backpressure, admission control과 health signal
 - Release 간 wire·persisted-state compatibility
 
-Production version은 Phase 0 spike가 통과한 정확한 module version과 checksum으로 고정한다. 이 ADR은 아직 그 version을 확정하지 않는다.
+Production target version은 `go.etcd.io/raft/v3 v3.7.0`으로 고정하며 module zip과 manifest checksum은 scoped [ADR-0009](ADR-0009-raft-production-state-profile.md)에 기록한다. 이는 production 검증이나 persisted-state·wire 호환성 증거가 아니며 이 ADR 자체를 승인하지 않는다. 나머지 §7 기준을 충족하기 전까지 ADR-0002는 `Proposed`로 유지한다.
 
 ### 1.1 Phase 0 gate 4 spike profile
 
-Phase 0 gate 4의 검증용 구현은 `go.etcd.io/raft/v3 v3.7.0`을 사용한다. 이 버전은 Go 1.26을 선언하는 현재 stable module이며, 이번 기록은 production version 승인이나 persisted-state·wire contract 승인이 아니다. ADR 상태는 `Proposed`로 유지한다.
+Phase 0 gate 4의 검증용 구현은 `go.etcd.io/raft/v3 v3.7.0`을 사용한다. 이 spike는 버전 pin과 production validation을 같은 의미로 취급하지 않는다. ADR-0009가 이 버전을 scoped design target으로 선택했지만, 그 선택은 production 작동이나 persisted-state·wire contract 승인을 뜻하지 않는다. ADR 상태는 `Proposed`로 유지한다.
 
 Spike는 `raft.RawNode`의 synchronous `Ready`/`Advance` 경계와 `AsyncStorageWrites=false`를 사용한다. `PreVote=true`, `CheckQuorum=true`, `ElectionTick=10`, `HeartbeatTick=1`, `MaxSizePerMsg=64 KiB`, `MaxCommittedSizePerReady=1 MiB`, `MaxUncommittedEntriesSize=1 MiB`, `MaxInflightMsgs=16`, `MaxInflightBytes=1 MiB`를 고정하고, logical tick·in-process FIFO message delivery로 실행을 결정적으로 재생한다. Voter는 고정된 `{1,2,3}`이며 membership change, real peer RPC, authentication과 MQTT command encoding은 이 profile의 범위가 아니다.
 
@@ -80,7 +80,7 @@ Library의 `Ready` 처리 규칙은 entry·`HardState`·snapshot을 안정 저�
 - WAL, snapshot, transport와 membership은 여전히 NaruMQ 책임이다.
 - `Ready` ordering 위반은 data loss를 만들 수 있으므로 model test와 crash test가 필요하다.
 - Module upgrade가 persisted state와 wire compatibility에 영향을 줄 수 있다.
-- 실제 storage engine과 RPC encoding은 별도 ADR로 결정해야 한다.
+Scoped file-backed WAL/snapshot target과 replicated application-state encoding family는 [ADR-0009](ADR-0009-raft-production-state-profile.md)에 기록한다. Production storage lifecycle과 exact persisted-state schema/compatibility는 별도 구현·contract·검증으로 남는다.
 
 ## 7. 검증
 

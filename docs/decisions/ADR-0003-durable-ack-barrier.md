@@ -10,7 +10,7 @@
 | 관련 스펙 | [MQTT protocol과 session](../specs/mqtt-protocol-and-session.md), [Cluster session과 durable delivery](../specs/cluster-session-and-delivery.md) |
 | 관련 Architecture | [Cluster architecture](../architectures/cluster-architecture.md), [EKS on EC2 deployment](../architectures/eks-ec2-deployment.md) |
 | 관련 결정 | [ADR-0002](ADR-0002-cluster-consensus-library.md) |
-| 관련 Contract | Replicated state encoding v1 예정. Storage·RPC 결정 전에는 작성하지 않는다. |
+| 관련 Contract | Replicated state encoding v1은 미작성. [ADR-0009](ADR-0009-raft-production-state-profile.md)가 protobuf family만 선택하며 exact schema와 compatibility는 Draft contract에서 정한다. |
 | 관련 해설 | [MQTT 전달 보장과 QoS·Session·Will protocol 흐름](../explainers/mqtt-delivery-guarantees-and-protocol-flows.md), [EKS 고가용성과 장애 도메인](../explainers/eks-ha-failure-domains.md) |
 
 ## 1. 결정
@@ -56,7 +56,7 @@ ACK 경계를 subscriber 유무와 분리하면 publish admission, monitoring과
 - 비기준 profile이 더 낮은 값을 사용하면 API·Dashboard·release artifact에 보장 축소를 표시해야 한다.
 - 설정 변경은 quorum commit과 compatibility 검증을 거쳐야 한다.
 
-Storage engine, volume topology와 `fsync` primitive의 세부 선택은 후속 storage ADR에서 결정한다.
+WAL·snapshot의 storage target과 `fsync` 순서는 scoped [ADR-0009](ADR-0009-raft-production-state-profile.md)에 기록한다. 이 선택은 production storage 구현·crash 복구·quorum ACK 검증을 완료하지 않으며, 이 ADR은 `Proposed` 상태로 남는다.
 
 ## 6. 실패 동작
 

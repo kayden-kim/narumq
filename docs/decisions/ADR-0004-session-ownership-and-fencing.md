@@ -10,7 +10,7 @@
 | 관련 스펙 | [Cluster session과 durable delivery](../specs/cluster-session-and-delivery.md), [Drain과 rolling update](../specs/drain-and-rolling-update.md) |
 | 관련 Architecture | [Cluster architecture](../architectures/cluster-architecture.md) |
 | 관련 결정 | [ADR-0002](ADR-0002-cluster-consensus-library.md), [ADR-0003](ADR-0003-durable-ack-barrier.md) |
-| 관련 Contract | 별도 Contract 없음. persisted state encoding은 Storage·RPC 결정 전까지 미결정이다. |
+| 관련 Contract | Replicated state encoding v1은 아직 미작성이다. Encoding family는 [ADR-0009](ADR-0009-raft-production-state-profile.md)가 정하고, exact schema와 bytes는 별도 contract에서 확정한다. |
 | 관련 해설 | [세션 소유권과 fencing](../explainers/session-ownership-and-fencing.md) |
 
 ## 1. 결정
@@ -35,7 +35,7 @@ Ownership acquire를 제외한 session aggregate mutation command의 의미상 e
 
 Route metadata는 committed persistent subscription에서만 계산하는 node-local disposable projection이다. Node는 이 projection을 authoritative state에서 다시 만들 수 있어야 하며, routing readiness를 광고하기 전에 rebuild를 완료해야 한다. Route projection은 ownership, session checkpoint 또는 drain barrier의 근거가 아니다.
 
-이 결정은 storage engine, persisted byte/schema encoding, peer RPC, consensus-group partitioning, production application port와 `cmd/narumq` 조립 방식을 결정하지 않는다. Durable offline message의 저장·전달 경계도 이 slice에서 확정하지 않는다.
+WAL·snapshot target, protobuf encoding family와 단일 consensus group은 scoped [ADR-0009](ADR-0009-raft-production-state-profile.md)에 기록한다. 이 ADR은 exact serialized bytes와 protobuf schema, production error/DTO, Active Raft peer transport v1 범위 밖의 peer compatibility, durable offline message 경계, production application port와 `cmd/narumq` 조립 방식을 정하지 않는다. 해당 contract와 runtime 검증은 미완료다.
 
 ### 1.2 Non-acquire mutation fencing
 
@@ -43,7 +43,7 @@ Committed apply는 `ownerNodeId == currentOwnerNodeId`이고 `epoch == currentEp
 
 Epoch를 설치하거나 증가시킬 수 있는 command는 성공한 `Acquire`뿐이다. Subscription 또는 inflight mutation은 epoch가 현재 값보다 크더라도 새 owner나 epoch를 설치할 수 없다.
 
-문법적으로 유효하지만 stale한 committed mutation은 application committed-command sequence position을 소비한다. 그러나 ownership, persistent subscription, QoS inflight와 route projection은 바꾸지 않는다. 구체적인 production error/DTO와 serialized bytes는 storage·RPC 결정 전까지 미결정이다.
+문법적으로 유효하지만 stale한 committed mutation은 application committed-command sequence position을 소비한다. 그러나 ownership, persistent subscription, QoS inflight와 route projection은 바꾸지 않는다. Production error/DTO와 exact serialized bytes는 [ADR-0009](ADR-0009-raft-production-state-profile.md)가 정한 encoding family에 맞춰 별도 Draft contract에서 확정해야 한다.
 
 Wall clock timeout이나 local connection 상태만으로 ownership을 획득했다고 판단하지 않는다. 시간 기반 lease는 liveness 보조 신호로 사용할 수 있지만 fencing authority가 될 수 없다.
 
