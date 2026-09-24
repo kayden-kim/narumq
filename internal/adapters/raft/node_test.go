@@ -131,6 +131,34 @@ func TestNodeMessageValidationAndFailureState(t *testing.T) {
 		t.Fatalf("ForgetLeader() after close = %v, want ErrClosed", err)
 	}
 }
+func TestNodeReportPeerMessageFailureValidatesFixedVoter(t *testing.T) {
+	node, err := Open(Config{NodeID: 1, PeerIDs: []NodeID{1, 2, 3}, Directory: filepath.Join(t.TempDir(), "node")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := node.ProcessReady(); err != nil {
+		t.Fatal(err)
+	}
+	for _, peerID := range []NodeID{0, 1, 4} {
+		if err := node.ReportPeerMessageFailure(peerID, false); !errors.Is(err, ErrInvalidMessage) {
+			t.Fatalf("ReportPeerMessageFailure(%d) = %v, want ErrInvalidMessage", peerID, err)
+		}
+	}
+	for _, failure := range []struct {
+		peerID     NodeID
+		isSnapshot bool
+	}{{peerID: 2}, {peerID: 3, isSnapshot: true}} {
+		if err := node.ReportPeerMessageFailure(failure.peerID, failure.isSnapshot); err != nil {
+			t.Fatalf("ReportPeerMessageFailure(%d, snapshot=%t): %v", failure.peerID, failure.isSnapshot, err)
+		}
+	}
+	if err := node.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := node.ReportPeerMessageFailure(2, false); !errors.Is(err, ErrClosed) {
+		t.Fatalf("ReportPeerMessageFailure() after close = %v, want ErrClosed", err)
+	}
+}
 
 func TestNodeHelpersCloneAndFixedConfiguration(t *testing.T) {
 	if fixedConfState(nil, []NodeID{1, 2, 3}) {

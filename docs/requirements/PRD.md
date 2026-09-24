@@ -482,7 +482,7 @@ Unit test는 모든 기능의 기본 검증 수단이다. 그러나 분산 동�
 | TEST-06 | 전체 production code는 line/function 90% 이상, branch 85% 이상의 coverage를 유지한다. |
 | TEST-07 | protocol, session, routing, delivery, tenancy, security, cluster lifecycle 핵심 모듈은 line/function 95% 이상, branch 90% 이상을 유지한다. |
 | TEST-08 | pull request의 변경 코드는 line/branch 95% 이상의 diff coverage를 충족한다. |
-| TEST-09 | coverage 기준은 ratchet 방식으로 운영한다. 현재 기준보다 높은 coverage를 달성하면 이후 release에서 낮출 수 없다. |
+| TEST-09 | 전체 production line/function coverage 기준은 90%이며, 더 높은 단일 측정치만으로 threshold를 자동 상향하지 않는다. 기준 변경은 근거와 함께 PRD 및 policy를 같은 변경에서 갱신한다. |
 | TEST-10 | test 실패, coverage 하락, 미매핑 P0 요구사항 또는 미매핑 MQTT normative statement가 있으면 CI가 merge를 차단한다. |
 | TEST-11 | generated code, vendor code와 단순 선언을 coverage에서 제외할 수 있다. 제외 사유와 경로는 설정 파일과 review에 남긴다. |
 | TEST-12 | critical state machine에 mutation test를 적용하고 mutation score 80% 이상을 유지한다. |

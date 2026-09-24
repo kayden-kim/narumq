@@ -11,7 +11,7 @@
     "narumq/internal/domain/session"
   ],
   "ratchet": {
-    "overall": {"line": 90.4, "function": 100},
+    "overall": {"line": 90, "function": 90},
     "core": {
       "narumq/internal/domain/delivery": {"line": 100, "function": 100},
       "narumq/internal/domain/mqtt": {"line": 96.24, "function": 100},

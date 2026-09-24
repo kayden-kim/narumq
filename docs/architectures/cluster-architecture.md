@@ -6,13 +6,13 @@ NaruMQ cluster는 세 broker node가 같은 replicated state machine에 참여�
 | --- | --- |
 | 관점 상태 | Target |
 | 문서 상태 | Draft |
-| 구현 증거 | 제한된 Phase 0/2 evidence: `internal/adapters/raft`, `internal/application/takeover`, `tests/integration/raft_consensus_test.go` |
+| 구현 증거 | 제한된 Phase 0/2 evidence: `internal/adapters/raft`, `internal/adapters/tcp`, `cmd/narumq -raft-peer-config`, `internal/application/takeover`, `tests/integration/raft_peer_transport_test.go`, `tests/integration/raft_consensus_test.go` |
 | 범위 | Broker cluster의 runtime component와 상태 소유권 |
 | 관련 요구사항 | [PRD](../requirements/PRD.md) CLU-01~CLU-14, MQTT-02~05, NFR-07~NFR-10 |
 | 관련 스펙 | [Cluster session과 durable delivery](../specs/cluster-session-and-delivery.md), [MQTT protocol과 session](../specs/mqtt-protocol-and-session.md) |
-| 관련 결정 | [ADR-0002](../decisions/ADR-0002-cluster-consensus-library.md), [ADR-0003](../decisions/ADR-0003-durable-ack-barrier.md), [ADR-0004](../decisions/ADR-0004-session-ownership-and-fencing.md). 모두 Proposed |
-| 관련 Contract | [Cluster release compatibility v1](../contracts/cluster-release-compatibility-v1.md), replicated state encoding은 예정 |
-| 최종 확인일 | 2026-09-19 |
+| 관련 결정 | [ADR-0002](../decisions/ADR-0002-cluster-consensus-library.md), [ADR-0003](../decisions/ADR-0003-durable-ack-barrier.md), [ADR-0004](../decisions/ADR-0004-session-ownership-and-fencing.md), [ADR-0008](../decisions/ADR-0008-raft-peer-transport.md). ADR-0002~0004는 Proposed |
+| 관련 Contract | [Cluster release compatibility v1](../contracts/cluster-release-compatibility-v1.md), Active [Raft peer transport v1](../contracts/raft-peer-transport-v1.md); replicated state encoding은 예정 |
+| 최종 확인일 | 2026-09-24 |
 
 ## Runtime component view
 
@@ -60,13 +60,15 @@ flowchart TB
     NLB --> IC
 ```
 
-`etcd/raft`, WAL과 transport의 정확한 API는 Proposed [ADR-0002](../decisions/ADR-0002-cluster-consensus-library.md)와 후속 ADR의 대상이다. Diagram은 library 선택이 승인되었다는 뜻이 아니다.
+`etcd/raft` production version과 WAL·snapshot은 Proposed [ADR-0002](../decisions/ADR-0002-cluster-consensus-library.md)의 범위다. 고정 voter `{1,2,3}`의 transport v1은 Accepted [ADR-0008](../decisions/ADR-0008-raft-peer-transport.md)과 Active [contract](../contracts/raft-peer-transport-v1.md)에서 정한다. Diagram은 이들 선택이 production cluster 전체로 승인되었다는 뜻이 아니다.
 
 ## Phase 0/2 제한된 구현 증거
 
-현재 repository는 `internal/adapters/raft`에서 `go.etcd.io/raft/v3 v3.7.0`의 `RawNode`와 deterministic logical-tick harness, opaque application command boundary(`BatchDTO.Commands`, `AppliedCommands`)와 NMQSTATE1 opaque command snapshot/WAL recovery를 검증한다. `internal/application/takeover`는 이 command bytes를 해석하고 application committed-command sequence position을 부여해 세션 소유권 상태 전이(single owner 선출, majority takeover, stale epoch 거절, restart 복구)를 검증한다. 이 evidence는 consensus core와 세션 소유권 상태 머신의 결정론적 동작 경계만 보여준다. `cmd/narumq`의 composition root에는 조립하지 않으며 production peer transport/TLS, replicated MQTT message/route state, durable ACK barrier와 membership workflow는 연결되지 않았다.
+현재 repository는 `internal/adapters/raft`에서 `go.etcd.io/raft/v3 v3.7.0`의 `RawNode`와 deterministic logical-tick harness, opaque application command boundary(`BatchDTO.Commands`, `AppliedCommands`)와 NMQSTATE1 opaque command snapshot/WAL recovery를 검증한다. `internal/application/takeover`는 이 command bytes를 해석하고 application committed-command sequence position을 부여해 세션 소유권 상태 전이(single owner 선출, majority takeover, stale epoch 거절, restart 복구)를 검증한다.
 
-따라서 위 runtime view의 `Raft core`·`WAL·snapshot`·authenticated transport 흐름은 Target 구조이고, 현재 구현된 실제 경로는 [adapter source](../../internal/adapters/raft/node.go), [stable store](../../internal/adapters/raft/stable_store.go), [takeover state machine and codec](../../internal/application/takeover), [integration evidence](../../tests/integration/raft_consensus_test.go)의 제한된 in-process core다. ADR-0002와 ADR-0004가 Proposed인 동안 이 view를 production 또는 Verified 상태로 승격하지 않는다.
+`cmd/narumq -raft-peer-config`는 고정 `{1,2,3}` voter의 production `RawNode`, mTLS TCP transport, bounded per-peer queues와 retry를 composition root에서 연결한다. 인증된 TLS loopback 3-node election/replication/catch-up 및 peer-only 실행 증거는 [transport integration tests](../../tests/integration/raft_peer_transport_test.go)와 [peer-only CLI tests](../../cmd/narumq/raft_peer_config_test.go)에 있다. 이 executable path는 MQTT listener, proposal API, replicated MQTT message/route state, durable ACK barrier, readiness 또는 membership workflow와 연결되지 않는다.
+
+따라서 위 runtime view의 전체 cluster는 여전히 Target 구조다. 현재 구현된 실제 경로는 [adapter source](../../internal/adapters/raft/node.go), [stable store](../../internal/adapters/raft/stable_store.go), [TCP peer transport](../../internal/adapters/tcp/peer_transport.go), [peer-only composition](../../cmd/narumq/raft_peer_config.go), [takeover state machine and codec](../../internal/application/takeover), [transport integration evidence](../../tests/integration/raft_peer_transport_test.go), [consensus integration evidence](../../tests/integration/raft_consensus_test.go)의 제한된 core다. ADR-0002와 ADR-0004가 Proposed인 동안 이 view를 production cluster 또는 Verified 상태로 승격하지 않는다.
 ## 상태 소유권
 
 | 상태 | 권위 있는 위치 | Local copy의 역할 |
@@ -146,10 +148,7 @@ Physical failure domain은 [EKS on EC2 deployment architecture](eks-ec2-deployme
 
 - Consensus module의 production version과 checksum
 - WAL·snapshot storage engine과 `fsync` primitive
-- Peer RPC protocol, framing과 node identity bootstrap
-- Replicated state encoding contract
-- Route index의 physical rebuild mechanics와 partition placement
+- Production replicated state encoding, group partitioning, backup·DR과 transport v1 범위를 벗어난 membership·release compatibility
 - 하나 또는 여러 consensus group을 사용하는 partition 전략
-- Backup store와 disaster recovery RPO/RTO
 
 각 선택은 별도 ADR 또는 contract가 승인될 때 이 view에 반영한다.

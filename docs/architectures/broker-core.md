@@ -147,8 +147,7 @@ Port는 구현 adapter 옆이 아니라 이를 사용하는 application 쪽이 �
 | Retained message | tenant-aware exact-topic replace/delete, deterministic expiry-aware list와 count·byte bounded ownership | `application/ports/retained.Repository` ← `adapters/memory/retained.Repository` |
 | Authentication | Credential 또는 verified client certificate를 binding Result로 변환하는 application port | `application/ports/authentication.AuthenticationProvider` 및 `ClientCertificateAuthenticationProvider` ← `adapters/authentication.JWKSAuthenticationProvider`, `MTLSAuthenticationProvider` |
 | Clock | deterministic expiry 입력 | `application/ports/clock.Clock` ← `adapters/clock.SystemClock` |
-| Replication | Command proposal, commit receipt와 membership 관찰 | `etcd/raft` adapter 후보 |
-| Peer transport | 인증된 node message 송수신과 backpressure | Cluster RPC adapter |
+| Replication | Command proposal, commit receipt와 membership 관찰 | 고정 voter peer-only 경로: `internal/adapters/raft` + `internal/adapters/tcp.TCPPeerTransport`; full application port는 후속 |
 | Metric·audit | Cardinality가 제한된 관측값과 비밀 없는 event 기록 | 후속 observability adapter |
 | Node discovery·platform | Member 후보와 workload lifecycle 관찰 | Kubernetes adapter |
 | Clock·random | Expiry와 jitter를 결정적으로 제공 | Runtime·test adapter |

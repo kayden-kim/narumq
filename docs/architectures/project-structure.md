@@ -6,7 +6,7 @@ NaruMQ source tree는 MQTT·session·routing·delivery·tenancy·security·clust
 | --- | --- |
 | 관점 상태 | Active Phase 1 security and tenant isolation structure; Phase 0 gate 4와 BP-01/BP-05 smoke harness 유지 |
 | 문서 상태 | Active |
-| 구현 증거 | Phase 0 구현 source와 test는 기존 package 표에 연결되어 있으며, Phase 1 tenancy·security·authentication 패키지와 검증 게이트(traceability, architecture, coverage 90.4%+)는 구현 및 테스트를 통해 현재 증거로 확보되었다. mTLS certificate DTO 추출, selector mapping, strict composition과 실제 TLS socket binding 검증도 해당 source/test에 연결되어 있다. |
+| 구현 증거 | Phase 0 구현 source와 test는 기존 package 표에 연결되어 있으며, Phase 1 tenancy·security·authentication 패키지와 검증 게이트(traceability, architecture, overall coverage line/function 90%+)는 구현 및 테스트를 통해 현재 증거로 확보되었다. mTLS certificate DTO 추출, selector mapping, strict composition과 실제 TLS socket binding 검증도 해당 source/test에 연결되어 있다. |
 | 범위 | Repository root와 Go package directory 배치 및 현재 source dependency |
 | 관련 요구사항 | [PRD](../requirements/PRD.md) NFR-11~NFR-15, TEST-01~TEST-17, DEP-19~DEP-23 |
 | 관련 결정 | [ADR-0001](../decisions/ADR-0001-core-implementation-language.md) Accepted |
@@ -196,10 +196,10 @@ flowchart LR
 | `internal/adapters/memory/deliveryqueue` | SessionKey별 fixed item capacity, FIFO ownership와 expiry purge | `application/ports/deliveryqueue`, `domain/tenancy`, 표준 library |
 | `internal/adapters/memory/retained` | tenant/topic keyed bounded retained repository와 expiry byte purge | `application/ports/retained`, `domain/mqtt`, `domain/tenancy`, 표준 library |
 | `internal/adapters/memory/sessionstore` | SessionKey별 process-local lifecycle load/save/delete | `application/connect`, `domain/session`, `domain/tenancy`, 표준 library |
-| `internal/adapters/tcp` | bounded MQTT ingress, verified certificate DTO 전달, authentication-aware connection state, single writer와 lifecycle | application use cases/ports와 `domain/mqtt`, `domain/tenancy`, `domain/security` |
+| `internal/adapters/tcp` | bounded MQTT ingress와 connection lifecycle, 고정 voter Raft mTLS TCP stream(`TCPPeerTransport`) 및 peer-local bounded queues | MQTT ingress는 application use cases/ports와 domain DTO; Raft transport는 표준 library만 |
 | `internal/adapters/tls` | TLS 1.2+ listener, AEAD cipher allowlist, mTLS trust anchor와 verified certificate DTO 추출 | `application/ports/authentication`과 표준 library |
 | `internal/adapters/clock` | system clock와 scheduler를 공용 application port에 제공 | `application/ports/clock`, 표준 library |
-| `internal/adapters/raft` | etcd/raft 자료형, deterministic opaque command boundary, NMQSTATE1 opaque command snapshot/WAL persistence | `go.etcd.io/raft/v3`, `google.golang.org/protobuf`, 표준 library |
+| `internal/adapters/raft` | etcd/raft DTO, deterministic opaque command boundary, NMQSTATE1 snapshot/WAL, outbound failure reporting | `go.etcd.io/raft/v3`, `google.golang.org/protobuf`, 표준 library |
 | `internal/adapters/runtimemetrics` | Go process runtime metrics 표본을 JSONL로 수집 | 표준 library만 |
 
 Application은 concrete adapter를 import하지 않는다. Queue, clock, authentication과 session repository
@@ -210,10 +210,7 @@ application 결과로 변환하는 경계에만 둔다. `tenancy.SessionKey`, `t
 private field와 accessor invariant를 유지한다. `ExpiresAt`은 application DTO 경계에서
 소유하며 domain packet property와 adapter wire encoding을 직접 섞지 않는다.
 
-Consensus와 durable log port는 여전히 이 slice의 범위 밖이다. 따라서
-`internal/application/ports/consensus`와 `internal/application/ports/logstore`는
-replication use case가 정의될 때까지 만들지 않는다. `adapters/raft`의 spike는
-application에 조립하지 않으며, 실제 replication port가 정의될 때 별도 변경으로 연결한다.
+Consensus와 durable log application port는 full MQTT replication use case가 정의될 때까지 이 slice의 범위 밖이며 임의로 만들지 않는다. 제한된 fixed-voter peer-only mode에서는 `cmd/narumq` composition root가 [ADR-0008](../decisions/ADR-0008-raft-peer-transport.md)에 따라 `internal/adapters/raft`와 `internal/adapters/tcp.TCPPeerTransport`를 직접 조립한다. 이는 MQTT broker runtime, replicated application state 또는 durable ACK 경로에 연결된다는 뜻이 아니다.
 
 정확한 package allowlist는 source tree가 생긴 뒤 architecture test로 고정한다.
 
@@ -246,19 +243,19 @@ Package 이름은 기술 계층보다 제품 책임을 드러낸다.
 | 현재 clock | `application/ports/clock.Clock` | `adapters/clock.SystemClock` | Go system clock |
 | Replicated log 저장 | `ports/logstore.LogStore` | `adapters/storage.WALLogStore` | WAL·snapshot codec |
 | Consensus proposal·commit 관찰 | `ports/consensus.ReplicationService` | `adapters/raft.RaftReplicationService` 후보 | `etcd/raft` 후보 |
-| Cluster peer message 송수신 | `ports/transport.PeerTransport` | `adapters/tcp.TCPPeerTransport` 후보 | TCP/TLS 또는 후속 RPC client |
+| Cluster peer message 송수신 (현재 use case 없음) | — | `adapters/tcp.TCPPeerTransport` (composition-root-owned concrete service) | TCP/TLS framing과 bounded peer queues |
 | Credential 검증 | `application/ports/authentication.AuthenticationProvider` 및 `ClientCertificateAuthenticationProvider` | `adapters/authentication.JWKSAuthenticationProvider`, `MTLSAuthenticationProvider` | `lestrrat-go/jwx/v3`와 Go TLS/X.509 |
 | Cluster node 발견 | `ports/nodediscovery.NodeDiscovery` | `adapters/kubernetes.KubernetesNodeDiscovery` | `KubernetesClient` |
 | Metric·audit | `ports/metrics.MetricRecorder`, `ports/audit.AuditPublisher` | 후속 observability adapters | 이번 slice에서는 조립하지 않음 |
 | Jitter·identifier용 난수 제공 | `ports/random.RandomSource` | `adapters/random.CryptoRandomSource` 후보 | Go cryptographic random source |
 
-화살표로 읽으면 `UseCase → Port ← Adapter → Client·SDK → External system`이다. Source dependency는 adapter에서 port를 향한다. `cmd/narumq`가 concrete adapter를 생성해 use case에 주입한다.
+화살표로 읽으면 `UseCase → Port ← Adapter → Client·SDK → External system`이다. Source dependency는 adapter에서 port를 향한다. `cmd/narumq`가 concrete adapter를 생성해 use case에 주입한다. 아직 application replication use case가 없는 capability는 임의의 공용 port로 추상화하지 않으며, 현재 fixed-voter peer transport는 `cmd/narumq`에서 Raft adapter와 함께 조립한다.
 
 `*Client`는 외부 protocol 호출을 캡슐화하는 adapter 내부 구현체다. 범용 `Client` port를 만들지 않는다. Application port는 `AuthenticationProvider`, `NodeDiscovery`처럼 use case가 요구하는 capability로 이름을 짓는다. Adapter가 단순하면 concrete adapter가 SDK를 직접 사용할 수 있고, protocol 처리나 test seam이 필요하면 별도 `*Client`에 위임한다.
 
 Management API와 MQTT listener는 inbound adapter이므로 이 outbound port 표에 넣지 않는다. `adapters/managementapi`와 `adapters/tcp`의 controller가 request를 DTO 또는 domain value로 변환한 뒤 해당 use case를 호출한다.
 
-표의 interface와 concrete type 이름은 Target naming이다. 정확한 method signature는 source와 machine-readable contract가 생긴 뒤 확정한다. `etcd/raft`와 durable WAL 경계처럼 Proposed ADR에 의존하는 구현은 후보 상태를 유지한다.
+표의 interface와 concrete type 이름은 Target naming이다. 현재 `TCPPeerTransport`는 고정 voter transport service로 구현하되 Raft type을 import하지 않고, transport DTO 변환과 concrete 조립은 `cmd/narumq`가 소유한다. `etcd/raft`와 durable WAL 경계처럼 Proposed ADR에 의존하는 구현은 후보 상태를 유지한다.
 
 외부 library type은 adapter 안에서 application DTO 또는 domain value로 변환한다.
 

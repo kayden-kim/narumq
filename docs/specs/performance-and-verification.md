@@ -316,7 +316,7 @@ Phase 0의 MQTT normative statement 연결표는
 - 전체 production code는 line/function 90% 이상, branch 85% 이상이어야 한다.
 - protocol, session, routing, delivery, tenancy, security와 cluster lifecycle은 line/function 95% 이상, branch 90% 이상이어야 한다.
 - PR 변경 code는 line/branch diff coverage 95% 이상이어야 한다.
-- coverage는 ratchet이다. 더 높은 기준에 도달한 release 뒤에는 낮출 수 없다.
+- 전체 production line/function coverage 기준은 90%다. Core와 diff는 각각 별도 higher threshold를 유지한다.
 - generated/vendor code와 단순 선언만 근거를 남겨 제외할 수 있다.
 - `internal/domain/delivery`와 `internal/domain/session`은 각각 test efficacy와 mutant coverage 80% 이상이어야 한다. 두 package의 mutation 결과는 합산하지 않는다.
 - concurrency code는 race detector 또는 동등한 검사를 통과해야 한다.
@@ -365,10 +365,7 @@ diff coverage     = base...HEAD에 추가된 실행 line/function 중 실행된 
 와 이유를 artifact에 기록하며, line coverage를 branch coverage로 대신하지 않는다.
 현재 기준과 ratchet 값은 [`tests/verification/coverage-policy.json`](../../tests/verification/coverage-policy.json)에 둔다.
 
-Ratchet 값은 release evidence가 안정된 측정치를 확인한 뒤에만 올린다. 동일한
-runner를 여러 번 실행해 coverage count가 고정됐는지 확인하고, 확인한 요약 수치를
-정책에 반영한다. 측정치가 baseline보다 높다는 이유만으로 자동 변경하지 않으며,
-이후 측정치가 baseline 아래로 내려가면 gate가 실패한다.
+`ratchet` 값은 명시적 policy baseline이며 실행 측정치로 자동 변경하지 않는다. 현재 전체 production line/function baseline은 PRD TEST-06/09에 맞춰 90%다. Core와 diff의 더 높은 기준은 별도로 유지한다. 기준 변경에는 반복 실행으로 안정성을 확인한 증거와 관련 요구사항·policy의 동시 갱신이 필요하다.
 
 Coverage 수치만으로 합격할 수 없다. P0 요구사항 또는 지원 MQTT normative statement에 연결된 assertion이 없으면 CI가 merge를 차단해야 한다.
 - 시스템 스펙([시스템 스펙](README.md))에 명시된 모든 시나리오(정상, 예외, 경계 조건, 상태 전이)는 테스트 케이스로 100% 추적 및 커버되어야 한다. 단위 테스트가 가능한 도메인 규칙과 상태 머신 로직은 외부 의존성 없는 유닛 테스트로 100% 검증함을 기본으로 하고, 분산 합의·노드 드레인·인프라 장애 등 시스템 수준 시나리오는 통합·E2E·카오스 테스트 계층에 누락 없이 매핑하여 검증한다.

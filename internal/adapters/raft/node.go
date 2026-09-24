@@ -79,9 +79,10 @@ type Config struct {
 
 // MessageDTO is the adapter-owned serialized peer message.
 type MessageDTO struct {
-	From NodeID
-	To   NodeID
-	Data []byte
+	From       NodeID
+	To         NodeID
+	Data       []byte
+	IsSnapshot bool
 }
 
 // BatchDTO contains outbound peer messages and newly applied opaque commands.
@@ -262,6 +263,24 @@ func (n *Node) Step(message MessageDTO) error {
 	return nil
 }
 
+// ReportPeerMessageFailure tells RawNode a transport rejected an outbound message.
+// Snapshot failure is reported separately so Raft can leave snapshot state and retry.
+func (n *Node) ReportPeerMessageFailure(peerID NodeID, isSnapshot bool) error {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	if err := n.stateError(); err != nil {
+		return err
+	}
+	if peerID == 0 || peerID == n.id || !slices.Contains(n.peerIDs, peerID) {
+		return ErrInvalidMessage
+	}
+	if isSnapshot {
+		n.raw.ReportSnapshot(uint64(peerID), etcdraft.SnapshotFailure)
+	}
+	n.raw.ReportUnreachable(uint64(peerID))
+	return nil
+}
+
 // ProcessReady durably records, applies, and advances one synchronous RawNode Ready.
 func (n *Node) ProcessReady() (BatchDTO, error) {
 	n.mu.Lock()
@@ -289,7 +308,12 @@ func (n *Node) ProcessReady() (BatchDTO, error) {
 		if len(data) > maxMessageSize {
 			return BatchDTO{}, n.fail(fmt.Errorf("outbound message exceeds %d bytes", maxMessageSize))
 		}
-		messages = append(messages, MessageDTO{From: NodeID(message.GetFrom()), To: NodeID(message.GetTo()), Data: bytes.Clone(data)})
+		messages = append(messages, MessageDTO{
+			From:       NodeID(message.GetFrom()),
+			To:         NodeID(message.GetTo()),
+			Data:       bytes.Clone(data),
+			IsSnapshot: message.GetType() == pb.MsgSnap,
+		})
 	}
 	if n.onReadyEvent != nil {
 		n.onReadyEvent("outbound")
