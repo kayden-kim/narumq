@@ -1,11 +1,13 @@
 package main
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
 	"go/ast"
+	"go/build"
 	goparser "go/parser"
 	"go/token"
 	"io"
@@ -341,6 +343,13 @@ func parseCoverageProfile(root, path string, policy coveragePolicy) (coverageDat
 		file := normalizeProfilePath(root, match[1])
 		source, exists := sources[file]
 		if !exists {
+			generated, generatedErr := isExcludedGeneratedSource(root, file)
+			if generatedErr != nil {
+				return coverageData{}, generatedErr
+			}
+			if generated {
+				continue
+			}
 			return coverageData{}, fmt.Errorf("coverage profile references non-production or unknown file %s", file)
 		}
 		if endLine > len(source.Lines) {
@@ -427,7 +436,11 @@ func loadProductionSources(root string, patterns []string) (map[string]sourceFil
 			if walkErr != nil {
 				return walkErr
 			}
-			if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".go") || strings.HasSuffix(entry.Name(), "_test.go") {
+			if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".go") || strings.HasSuffix(entry.Name(), "_test.go") || strings.HasSuffix(entry.Name(), ".pb.go") {
+				return nil
+			}
+			match, matchErr := build.Default.MatchFile(filepath.Dir(path), entry.Name())
+			if matchErr != nil || !match {
 				return nil
 			}
 			file, err := parseSourceFile(root, path)
@@ -448,6 +461,34 @@ func loadProductionSources(root string, patterns []string) (map[string]sourceFil
 		return nil, fmt.Errorf("production coverage patterns matched no Go source")
 	}
 	return sources, nil
+}
+
+func isExcludedGeneratedSource(root, file string) (bool, error) {
+	if (!strings.HasPrefix(file, "cmd/") && !strings.HasPrefix(file, "internal/")) ||
+		!strings.HasSuffix(file, ".pb.go") {
+		return false, nil
+	}
+	clean := filepath.Clean(filepath.FromSlash(file))
+	if filepath.IsAbs(clean) || clean == ".." || strings.HasPrefix(clean, ".."+string(filepath.Separator)) {
+		return false, nil
+	}
+	source, err := os.Open(filepath.Join(root, clean))
+	if err != nil {
+		if os.IsNotExist(err) {
+			return false, nil
+		}
+		return false, fmt.Errorf("open generated coverage source %s: %w", file, err)
+	}
+	defer source.Close()
+	scanner := bufio.NewScanner(source)
+	if !scanner.Scan() {
+		if err := scanner.Err(); err != nil {
+			return false, fmt.Errorf("read generated coverage source %s: %w", file, err)
+		}
+		return false, nil
+	}
+	header := scanner.Text()
+	return strings.HasPrefix(header, "// Code generated ") && strings.HasSuffix(header, " DO NOT EDIT."), nil
 }
 
 func parseSourceFile(root, path string) (sourceFile, error) {

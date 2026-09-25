@@ -742,3 +742,87 @@ func TestRoutingTable_TenantIsolation(t *testing.T) {
 		t.Fatalf("shared pub-b matches = %#v, want only sub-b", sharedMatchesB)
 	}
 }
+
+func TestReplaceProjectionWithSessionsAndTenantBinding(t *testing.T) {
+	tenantA, _ := tenancy.NewTenantID("tenant-a")
+	tenantB, _ := tenancy.NewTenantID("tenant-b")
+	table := NewTable()
+
+	// SessionTenant on nil table
+	var nilTable *Table
+	if got := nilTable.SessionTenant("session-1"); got.String() != "" {
+		t.Fatalf("expected empty tenant for nil table, got: %v", got)
+	}
+
+	// SessionTenant on uninitialized map
+	emptyTable := &Table{}
+	if got := emptyTable.SessionTenant("session-1"); got.String() != "" {
+		t.Fatalf("expected empty tenant for uninitialized table, got: %v", got)
+	}
+
+	// BindSessionTenant with nil sessionTenants map
+	if err := emptyTable.BindSessionTenant("session-1", tenantA); err != nil {
+		t.Fatalf("BindSessionTenant on emptyTable: %v", err)
+	}
+	if got := emptyTable.SessionTenant("session-1"); got != tenantA {
+		t.Fatalf("expected tenantA, got %v", got)
+	}
+	if err := emptyTable.BindSessionTenant("", tenantA); !errors.Is(err, ErrInvalidSessionID) {
+		t.Fatalf("expected ErrInvalidSessionID, got %v", err)
+	}
+
+	// Shared cursor preservation
+	sharedFilter := "$share/group/sensors/#"
+	if _, err := table.Subscribe("sub-1", mqtt.Subscription{Filter: sharedFilter, QoS: mqtt.QoSAtLeastOnce}); err != nil {
+		t.Fatal(err)
+	}
+	table.sharedCursors[sharedFilter] = 42
+
+	// ReplaceProjectionWithSessions with empty tenant error
+	err := table.ReplaceProjectionWithSessions([]ProjectionSession{
+		{TenantID: tenancy.TenantID{}, SessionID: "session-1"},
+	}, nil)
+	if err == nil || err.Error() != "route projection entry has no tenant" {
+		t.Fatalf("expected empty tenant error, got: %v", err)
+	}
+
+	// ReplaceProjectionWithSessions with multiple tenants for same session
+	err = table.ReplaceProjectionWithSessions([]ProjectionSession{
+		{TenantID: tenantA, SessionID: "session-1"},
+		{TenantID: tenantB, SessionID: "session-1"},
+	}, nil)
+	if err == nil || err.Error() != "route projection session belongs to multiple tenants" {
+		t.Fatalf("expected multiple tenants error, got: %v", err)
+	}
+
+	// Duplicate subscription in projection
+	err = table.ReplaceProjectionWithSessions(nil, []ProjectionSubscription{
+		{TenantID: tenantA, SessionID: "session-1", Subscription: mqtt.Subscription{Filter: "topic/#", QoS: 0}},
+		{TenantID: tenantA, SessionID: "session-1", Subscription: mqtt.Subscription{Filter: "topic/#", QoS: 1}},
+	})
+	if err == nil || err.Error() != "duplicate subscription in route projection" {
+		t.Fatalf("expected duplicate subscription error, got: %v", err)
+	}
+
+	// Invalid subscription filter in projection
+	err = table.ReplaceProjectionWithSessions(nil, []ProjectionSubscription{
+		{TenantID: tenantA, SessionID: "session-1", Subscription: mqtt.Subscription{Filter: "topic/+/invalid#", QoS: 0}},
+	})
+	if err == nil {
+		t.Fatal("expected invalid subscription error")
+	}
+
+	// Valid replacement preserving shared cursor
+	err = table.ReplaceProjectionWithSessions(
+		[]ProjectionSession{{TenantID: tenantA, SessionID: "session-1"}},
+		[]ProjectionSubscription{
+			{TenantID: tenantA, SessionID: "session-1", Subscription: mqtt.Subscription{Filter: sharedFilter, QoS: mqtt.QoSAtLeastOnce}},
+		},
+	)
+	if err != nil {
+		t.Fatalf("valid replacement failed: %v", err)
+	}
+	if table.sharedCursors[sharedFilter] != 42 {
+		t.Fatalf("shared cursor not preserved: %d", table.sharedCursors[sharedFilter])
+	}
+}

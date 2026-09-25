@@ -452,6 +452,7 @@ func (connection *connection) cleanup() {
 			if metrics := connection.metrics(); metrics != nil {
 				metrics.ConnectionClosed(proto, transport)
 			}
+			connection.server.unbindSession(connection.sessionID, connection)
 			disconnectReason := connection.disconnectReason
 			if connection.takeover.Load() {
 				disconnectReason = session.DisconnectNormal

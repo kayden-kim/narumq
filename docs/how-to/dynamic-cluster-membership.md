@@ -1,13 +1,13 @@
 # 동적 Raft 클러스터를 시작하고 멤버를 추가하는 방법
 
-이 절차는 초기 Raft cluster의 voter 세 개(voter는 합의 투표에 참여하는 node)를 시작하고 새 node를 quorum(현재 voter 과반수의 동의)으로 commit하는 `STAGED` identity로 등록하는 방법을 정의한다. 새 node는 먼저 learner(로그를 복제하지만 투표하지 않는 member)로 기록을 따라잡은 뒤 voter로 승격된다. 실제 다중 프로세스 acceptance의 일부 시나리오만 확인한 `Draft`이며 전체 acceptance를 통과하지 않았으므로 production 운용 절차로 사용하면 안 된다.
+이 절차는 초기 Raft cluster의 voter 세 개(voter는 합의 투표에 참여하는 node)를 시작하고 새 node를 quorum(현재 voter 과반수의 동의)으로 commit하는 `STAGED` identity로 등록하는 방법을 정의한다. 새 node는 먼저 learner(로그를 복제하지만 투표하지 않는 member)로 기록을 따라잡은 뒤 voter로 승격된다. 다중 프로세스 membership acceptance와 local verification은 통과했지만 실제 disk-full, backup/restore, durable QoS ACK 및 혼합 버전 운용은 검증되지 않은 `Draft`이므로 production 운용 절차로 사용하면 안 된다.
 
 | 항목 | 값 |
 | --- | --- |
 | 대상 독자 | cluster를 구성하고 변경하는 운영자 |
 | 검증 상태 | Draft |
-| 검증 환경·버전 | local multi-process Go test, generated peer mTLS certificates; partial evidence only |
-| 최종 검증일 | 2026-09-25 (부분 검증: process acceptance 및 TCP adapter race suite; 전체 acceptance 미완료) |
+| 검증 환경·버전 | local multi-process Go test, generated peer mTLS certificates; membership acceptance 및 full local gate PASS |
+| 최종 검증일 | 2026-09-25 (`go run ./tools/verify local` PASS; 다른 production cluster acceptance는 미완료) |
 | 관련 기준 문서 | [동적 멤버십 계약](../contracts/raft-membership-v2.md), [cluster session 명세](../specs/cluster-session-and-delivery.md), [ADR-0010](../decisions/ADR-0010-dynamic-cluster-membership.md), [cluster architecture](../architectures/cluster-architecture.md) |
 
 ## 1. 대상과 영향
@@ -62,38 +62,43 @@
 6. **동일 operation을 관찰해 종료 phase를 확인한다.** 저장한 ID로 `GET /api/v1/cluster/membership-operations/{operationId}`를 반복 조회한다. `STAGED`, `LEARNER`, `CATCHING_UP`, `PROMOTING`은 중간 상태다. `SUCCEEDED` 전까지 join 완료로 취급하지 않는다. 응답의 `committedIndex`는 해당 phase가 commit된 index이며 제안이 queue에 들어간 index가 아니다.
 
 
-7. **Restart는 같은 identity와 data directory로 수행한다.** Process를 종료하고 다시 시작할 때 기존 node의 같은 config, 인증서와 volume을 유지한다. Joiner 역할 node는 이미 voter로 commit된 뒤에도 startup 시 seed admission으로 현재 peer identity를 다시 얻으므로, `seedAddresses`에 든 seed 중 하나 이상이 접속 가능해야 한다. 바뀐 인증서나 손상된 WAL을 복구한다는 이유로 metadata를 삭제하거나 디렉터리를 비우지 않는다. 오류 시 진행을 멈추고 증거를 보존한다.
+7. **Restart는 같은 identity와 data directory로 수행한다.** Process를 종료하고 다시 시작할 때 기존 node의 같은 config, 인증서와 volume을 유지한다. Joiner 역할 node는 이미 voter로 commit된 뒤에도 startup 시 seed admission으로 현재 peer identity를 다시 얻으므로, `seedAddresses`에 든 seed 중 하나 이상이 접속 가능해야 한다. Recovery가 committed WAL replay로 typed snapshot보다 앞선 상태를 만들면 runtime은 peer transport를 열기 전에 replay 완료 상태의 새 typed snapshot을 저장한다. 바뀐 인증서나 손상된 WAL을 복구한다는 이유로 metadata를 삭제하거나 디렉터리를 비우지 않는다. 오류 시 진행을 멈추고 증거를 보존한다.
 
 ### 계획된 member 교체
 
-Replacement node는 기존 join 절차로 추가할 수 있다. 다만 현재 Draft runtime은 live MQTT connection을 drain하거나 ownership, persistent subscription, inflight checkpoint를 새 node로 이전하지 않는다. 대상에 committed ownership·subscription·checkpoint가 하나라도 남으면 operation은 `REMOVING`에 머물고 voter 구성은 그대로 유지된다.
+계획된 제거에서 leader는 대상 member가 소유한 모든 session을 남은 voter 중 member ID가 가장 작은 node로 이전한다. 소유권 이전과 epoch 증가는 commit된 뒤 대상 voter를 제거한다. 적용 과정에서 persistent subscription의 소유 node와 epoch를 갱신하고 기존 연결을 takeover로 닫는다. 이전이 막히면 제거 operation은 `REMOVING` 상태에 머문다. 대상에 commit된 checkpoint가 있거나, 남은 successor가 없거나, ownership epoch가 고갈됐거나, orphan subscription이 감지되면 제거를 차단한다. Checkpoint 이전은 지원하지 않으므로 해당 상태를 해소한 뒤 다시 시도한다. `LEAVING` member는 새 session admission을 거절한다.
 
-Management API에는 대상 member의 모든 session reference가 비었다고 증명하는 조회가 없다. 따라서 이 문서는 production cluster에서 `DELETE /api/v1/cluster/members/{memberId}`를 실행하는 절차로 사용해서는 안 된다. 현재 process acceptance의 제거 시나리오는 session state가 없는 임시 cluster에서만 수행한다. Active session/inflight handoff acceptance 전에는 기존 voter를 유지한다.
+중단된 제거를 관찰하거나 재시도할 때는 같은 operation ID와 idempotency key를 사용한다. 막힌 소유권 이전을 우회하려고 voter를 강제로 제거하지 않는다.
 
 ## 4. 검증
 
-전체 다중 프로세스 TLS acceptance는 아직 완료되지 않았다. 아래에는 실행한 process test가 관찰한 범위만 기록하며, 나머지 acceptance와 production 사용 여부는 Draft로 유지한다. 수용 기준은 [Cluster §11.5](../specs/cluster-session-and-delivery.md#115-dynamic-membershiprestart-convergencemqtt-readiness-mapping)를 따른다.
+다중 프로세스 TLS membership acceptance와 local verification gate는 통과했다. 아래에는 실행한 process test가 관찰한 범위만 기록하며, 전체 cluster의 다른 수용 기준과 production 사용 여부는 Draft로 유지한다. 수용 기준은 [Cluster §11.5](../specs/cluster-session-and-delivery.md#115-dynamic-membershiprestart-convergencemqtt-readiness-mapping)를 따른다.
 
 | 관찰 대상 | 성공 조건 | 확인 명령·방법 | 실제 결과 | 실행 증거 위치 |
 | --- | --- | --- | --- | --- |
 | Bootstrap readiness | 세 node 모두 fresh quorum barrier 이후 READY | 각 관리 endpoint의 `GET /health/ready` | 확인: 세 process 모두 READY이고 cluster summary에서 quorum과 공통 leader를 확인했다. | `tests/integration/cluster_membership_process_test.go::TestDynamicClusterMembershipProcessAcceptance` |
 | Join operation and idempotency | 동일 idempotency key 재시도가 같은 operation ID로 수렴하고 (stage 직후 및 promotion 완료 후), joiner가 learner catch-up 후 voter가 된다. | Stage API 및 `GET /api/v1/cluster/membership-operations/{operationId}` | 확인: stage 직후(STAGED) 및 promotion 완료 후(SUCCEEDED) 동일 key 재요청이 같은 operation ID를 반환했고 중복 config change/promotion 없이 joiner가 voter/READY 및 4-member summary에 도달했다. | `tests/integration/cluster_membership_process_test.go::TestDynamicClusterMembershipProcessAcceptance` |
-| Restart convergence | 같은 volume 재시작 후 committed membership과 operation phase가 수렴한다. | 실제 multi-process crash/restart acceptance | 부분 실행: operation 성공 뒤 node 4를 같은 volume에서 재시작해 READY와 SUCCEEDED를 확인했다. transition 경계 crash는 실행하지 않았다. | `tests/integration/cluster_membership_process_test.go::TestDynamicClusterMembershipProcessAcceptance` |
+| Restart convergence | 같은 volume 재시작 후 committed membership과 operation phase가 수렴한다. | `go test -race ./tests/integration -run '^TestDynamicClusterMembershipTransitionCrashRecovery$' -count=2`; `go run ./tools/verify local` | PASS: race-enabled crash/restart 반복 2회와 full local gate에서 committed voter set과 operation phase가 수렴했다. 이전 cycle 3 `CATCHING_UP` timeout 이후 빈 Raft entry를 typed snapshot index에 반영했다. | `tests/integration/cluster_membership_failpoint_process_test.go::TestDynamicClusterMembershipTransitionCrashRecovery` |
 | Three-voter replacement and retired ID | Member 3 planned removal 후 active voter set이 `{1,2,4}`(LEADER/FOLLOWER)로 수렴하고, member 3은 RETIRED가 되며, retired ID 3 재사용이 거절되고, 1 voter loss 후 quorum을 유지한다. | Management API 및 process acceptance | 확인: member 3 planned removal 후 active node가 정확히 `{1,2,4}`(voter role: LEADER/FOLLOWER)이고 member 3이 RETIRED로 수렴함을 확인했다. retired ID 3 재사용은 409 `member_id_reserved`로 거절됐고, 1 voter crash 후 2 survivor가 quorum, 200 readiness 및 MQTT CONNECT 수락을 유지했다. | `tests/integration/cluster_membership_process_test.go::TestDynamicClusterMembershipProcessAcceptance` |
 | Compatibility and identity rejection | Foreign CA, SAN/fingerprint/cluster ID 불일치, malformed hello, unsupported profile/schema 및 reserved ID는 log commit 및 Step에 도달하지 않는다. | Transport unit tests 및 Management API process acceptance | 확인: wire 레벨에서 foreign CA, SAN 불일치, cluster ID 불일치, malformed frame이 TLS/transport에서 거절되어 Step에 도달하지 않음을 확인했다. Management API에서 unsupported release/protocol/schema는 422 `compatibility_unsupported`로, reserved ID는 409로 거절되어 membership log에 commit되지 않았다. | `internal/adapters/tcp/peer_transport_v2_test.go`, `tests/integration/cluster_membership_process_test.go` |
 | Quorum loss rejection | Quorum loss 중 readiness가 내려가고 removal은 commit되지 않는다. | Management readiness 및 removal API | 확인: 2 voter crash로 quorum loss 시 `/health/ready`가 503으로 떨어지고, removal 요청이 503 `quorum_unavailable`로 거절되어 commit되지 않으며, MQTT admission이 거절됨을 확인했다. | `tests/integration/cluster_membership_process_test.go::TestDynamicClusterMembershipProcessAcceptance` |
-| MQTT admission and readiness barrier | 준비 전 CONNECT와 commit 전 subscription success ACK가 거절되고, readiness 회복 뒤 정책에 맞게 처리된다. | Management readiness 및 TLS MQTT black-box acceptance | 부분 실행: pre-readiness CONNECT 거절과 removal 뒤 새 leader의 READY/CONNECT 수락을 확인했다. 이전 실행에서는 removal 후 MQTT 3.1.1 CONNECT probe가 CONNACK reason `0x03`(Server unavailable)을 받았고, 진단 로그에는 node 1 readiness barrier의 `context deadline exceeded` (`applied=3`, `projection=3`)가 남았다. process test가 새 leader의 READY를 기다리도록 한 뒤 실행은 PASS했다. subscription ACK와 cross-node routing은 시험하지 않았다. | `tests/integration/cluster_membership_process_test.go::TestDynamicClusterMembershipProcessAcceptance` |
+| MQTT admission and readiness barrier | 준비 전 CONNECT와 commit 전 subscription success ACK가 거절되고, readiness 회복 뒤 정책에 맞게 처리된다. | `TestClusterReadinessGate` 및 failpoint process acceptance | PASS: readiness unit case가 applied-index gap과 projection failure를 확인하고 process test가 route projection rebuild 실패 시 503/CONNECT 거절, 회복 뒤 READY/CONNECT 수락을 확인했다. | `cmd/narumq/cluster_runtime_test.go::TestClusterReadinessGate`; `tests/integration/cluster_membership_failpoint_process_test.go` |
 | Peer identity refresh and learner TCP dial | Phase refresh keeps queued/in-progress outbound frames; old staged inbound frames cannot be leased; reconciliation waits for the current delivery to complete after `Step`. | `go test -race ./internal/adapters/tcp`; process diagnostic | PASS: adapter tests cover outbound preservation and inbound lease/reconciliation barrier. Earlier process diagnostics observed leader node 1 queue Raft messages for learner 4 while disconnected (queue reached 18); the TCP peer session later established and snapshot catch-up advanced. The code now preserves outbound frames across identity-preserving refresh and leases inbound delivery through `Step`. The observed symptom was a delayed dial, not evidence of a malformed address. | `internal/adapters/tcp/peer_transport_v2_test.go`; `tests/integration/cluster_membership_process_test.go` |
-| MQTT session-resume CONNECT | Persistent session resumes with accepted CONNACK and delivery state. | Isolated rerun of the session-resume cases in `tests/integration/mqtt_ingress_test.go` (`tcpadapter.NewServer`) | FAIL: the same MQTT header EOF reproduced on resumed CONNECT. Root cause is unknown; no before-change comparison exists, so this is not classified as a baseline failure. The dynamic Raft peer change does not modify this MQTT session path; unresolved. | [Cluster §11.5](../specs/cluster-session-and-delivery.md#115-dynamic-membershiprestart-convergencemqtt-readiness-mapping) |
-| Local repository verification | `go run ./tools/verify local` passes all local checks. | `go run ./tools/verify local` | FAIL at `go test ./... -count=1` (records codec vector mismatch, bp05, mqtt ingress EOF). Details recorded in [Cluster §11.5](../specs/cluster-session-and-delivery.md#115-dynamic-membershiprestart-convergencemqtt-readiness-mapping). This gate is not green. | [Cluster §11.5](../specs/cluster-session-and-delivery.md#115-dynamic-membershiprestart-convergencemqtt-readiness-mapping) |
+| MQTT session-resume CONNECT | Persistent session resumes with accepted CONNACK and delivery state. | `go test ./tests/integration -count=1` | PASS: integration package 전체가 통과했다. 이전 header EOF는 `connection.cleanup()`의 `unbindSession` 복구 뒤 재현되지 않았다. | `internal/adapters/tcp/server.go`; `tests/integration` |
+| Local repository verification | `go run ./tools/verify local` passes all local checks. | `go run ./tools/verify local` | PASS: gofmt, vet, 전체 test, fuzz 4종, race, traceability, architecture, coverage(전체 production line 91.59%, function 99.24%)와 두 mutation 대상군(각각 25/25, 46/46 killed). Branch coverage는 승인된 계측 도구가 없어 `not_evaluated`다. 빈 Raft entry 뒤 typed snapshot index와 Raft applied index를 맞추고, forwarding된 Raft request의 인증된 직접 송신자와 원래 요청자를 구분한다. | [Cluster §11.5](../specs/cluster-session-and-delivery.md#115-dynamic-membershiprestart-convergencemqtt-readiness-mapping) |
 
-공통 실행 증거:
+실행 증거:
 
 ```text
 go test ./tests/integration -run '^TestDynamicClusterMembershipProcessAcceptance$' -count=1 -v
+go test ./tests/integration -run '^TestDynamicClusterMembershipTransitionCrashRecovery$' -count=1 -v
+go test ./tests/integration -run '^TestDynamicClusterMembershipRemovalHandoffWaitsForQuorum$' -count=1 -v
+go test ./tests/integration -run '^(TestDynamicClusterMembershipProcessAcceptance|TestDynamicClusterMembershipTransitionCrashRecovery|TestDynamicClusterMembershipRemovalHandoffWaitsForQuorum)$' -count=1
+go test -race ./tests/integration -run '^TestDynamicClusterMembershipTransitionCrashRecovery$' -count=2
+go run ./tools/verify local
 ```
 
-결과: `PASS`. Test는 임시 process log를 종료 시 보존하지 않고 별도 run ID도 만들지 않는다. 따라서 위 결과는 관찰한 동작의 부분 증거이며, 전체 acceptance 완료나 production 적합성의 근거가 아니다.
+Membership acceptance와 full local gate가 모두 `PASS`였다. Coverage는 전체 production line 91.59%(기준 90%)였으며 두 mutation 대상군에서 각각 25/25, 46/46 killed였다. Branch coverage는 계측 도구 미설정으로 평가하지 않았다. 이 결과는 다른 production cluster 수용 기준을 대체하지 않는다.
 
 ## 5. 중단 조건
 
@@ -109,7 +114,7 @@ go test ./tests/integration -run '^TestDynamicClusterMembershipProcessAcceptance
 
 1. `STAGED` 이후 operation이 진행되지 않으면 동일 key와 동일 request만 재시도하고 원인을 확인한다. 새로운 stage key, 수동 tombstone 삭제, ID 재사용, 데이터 디렉터리 초기화는 복구 방법이 아니다.
 2. Joiner가 learner가 된 뒤 응답을 잃었으면 같은 persistent directory로 재시작하고 동일 operation을 조회한다. Heartbeat timeout이나 process 종료만으로 learner/voter를 자동 삭제하지 않는다.
-3. Planned removal은 successor ownership 및 subscription/inflight checkpoint가 commit된 뒤에만 허용된다. 전송·checkpoint 기능 또는 quorum이 확인되지 않으면 `DELETE /api/v1/cluster/members/{memberId}`를 호출하지 말고 기존 voter를 유지한다. 이 경로는 별도 acceptance를 통과하기 전까지 검증되지 않았다.
+3. Planned removal은 successor ownership 및 subscription/inflight checkpoint가 commit된 뒤에만 허용된다. 전송·checkpoint 기능 또는 quorum이 확인되지 않으면 `DELETE /api/v1/cluster/members/{memberId}`를 호출하지 말고 기존 voter를 유지한다. Active session handoff와 quorum loss 복구 acceptance는 `TestDynamicClusterMembershipRemovalHandoffWaitsForQuorum`로 검증했다.
 4. 운영 중인 volume의 손상·복구는 이 Draft의 범위가 아니다. 백업/restore 또는 디스크 장애를 수동 파일 교체로 해결하지 않는다.
 
 ## 7. 해결되지 않을 때 전달할 대상

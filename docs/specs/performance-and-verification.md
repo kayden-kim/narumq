@@ -311,13 +311,46 @@ Phase 0의 MQTT normative statement 연결표는
 비교한다. 따라서 matrix에만 있는 test, source에만 있는 statement, requirement union이
 다른 경우를 모두 실패로 처리한다.
 
+### 7.3 Cluster failpoint build
+
+Membership crash-boundary acceptance tests use the `narumq_failpoint` build tag.
+Only that build reads `NARUMQ_FAILPOINT`; the default build ignores the environment
+variable and never exits because of it. A matching point writes
+`narumq failpoint reached: <point>` to stderr and exits with code `86`.
+
+Accepted values are:
+
+```text
+add-learner-before-persist
+add-learner-after-persist
+add-learner-after-apply
+promote-voter-before-persist
+promote-voter-after-persist
+promote-voter-after-apply
+remove-member-before-persist
+remove-member-after-persist
+remove-member-after-apply
+snapshot-install-before-persist
+snapshot-install-after-persist
+begin-remove-after-apply
+route-projection-rebuild-error
+```
+
+This build tag is the first process-crash test seam in the repository. It is
+needed to stop a real process at a specific persistence or apply boundary; a
+timing-based kill cannot identify those internal boundaries reliably. The Raft
+adapter exposes a neutral `PersistenceBoundaryHook` for persistence tests, while
+the existing `filePersistenceOps` and `onReadyEvent` hooks support in-package
+adapter tests. Only the composition root handles the environment variable and
+process exit, so the adapter remains independent of command configuration.
+
 ## 8. Coverage와 test quality gate
 
 - 전체 production code는 line/function 90% 이상, branch 85% 이상이어야 한다.
 - protocol, session, routing, delivery, tenancy, security와 cluster lifecycle은 line/function 95% 이상, branch 90% 이상이어야 한다.
 - PR 변경 code는 line/branch diff coverage 95% 이상이어야 한다.
 - 전체 production line/function coverage 기준은 90%다. Core와 diff는 각각 별도 higher threshold를 유지한다.
-- generated/vendor code와 단순 선언만 근거를 남겨 제외할 수 있다.
+- Generated source is excluded only when it is under `cmd/` or `internal/`, ends in `.pb.go`, and begins with the standard `// Code generated … DO NOT EDIT.` marker. Other unknown files in a coverage profile fail verification.
 - `internal/domain/delivery`와 `internal/domain/session`은 각각 test efficacy와 mutant coverage 80% 이상이어야 한다. 두 package의 mutation 결과는 합산하지 않는다.
 - concurrency code는 race detector 또는 동등한 검사를 통과해야 한다.
 

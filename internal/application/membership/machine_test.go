@@ -582,3 +582,33 @@ func mustApplyResult(t *testing.T, machine *StateMachine, index uint64, command 
 	}
 	return result
 }
+
+func TestAdvanceAppliedIndexPreservesCommittedStateAcrossEmptyRaftEntries(t *testing.T) {
+	machine := NewStateMachine()
+	if err := machine.InitializeBootstrap(3, testVoters()); err != nil {
+		t.Fatal(err)
+	}
+	record := stageRecord(testOperation4, "join-4", 4)
+	applyMustSucceed(t, machine, 5, testCommand(testOperation4, &record))
+	if err := machine.AdvanceAppliedIndex(7); err != nil {
+		t.Fatalf("advance over empty Raft entries: %v", err)
+	}
+	if _, err := machine.Snapshot(5); !errors.Is(err, ErrSnapshotIndexMismatch) {
+		t.Fatalf("snapshot at stale application index = %v", err)
+	}
+	snapshot, err := machine.Snapshot(7)
+	if err != nil {
+		t.Fatalf("snapshot at Raft applied index: %v", err)
+	}
+	restored := NewStateMachine()
+	if err := restored.Restore(snapshot); err != nil {
+		t.Fatalf("restore after empty entries: %v", err)
+	}
+	if restored.LastAppliedIndex() != 7 || !reflect.DeepEqual(restored.Members(), machine.Members()) ||
+		!reflect.DeepEqual(restored.Operations(), machine.Operations()) {
+		t.Fatalf("restored state differs after empty entries: index=%d", restored.LastAppliedIndex())
+	}
+	if err := restored.AdvanceAppliedIndex(6); !errors.Is(err, ErrInvalidIndex) {
+		t.Fatalf("backward index advance = %v", err)
+	}
+}

@@ -251,7 +251,7 @@ func (transport *TCPPeerTransport) Serve(ctx context.Context) error {
 	transport.stop()
 	transport.workers.Wait()
 	transport.finish()
-	if errors.Is(err, net.ErrClosed) || runCtx.Err() != nil {
+	if errors.Is(err, net.ErrClosed) || ctx.Err() != nil {
 		return nil
 	}
 	return err
@@ -1145,7 +1145,7 @@ func (transport *DynamicTCPPeerTransport) Serve(ctx context.Context) error {
 	transport.shutdown()
 	transport.workers.Wait()
 	transport.finish()
-	if errors.Is(err, net.ErrClosed) || runCtx.Err() != nil {
+	if errors.Is(err, net.ErrClosed) || ctx.Err() != nil {
 		return nil
 	}
 	return err
@@ -1302,6 +1302,13 @@ func (transport *DynamicTCPPeerTransport) ResetPeer(peerID uint64) error {
 		_ = connection.Close()
 	}
 	return nil
+}
+
+// LocalIdentity returns a copy of the current local peer identity.
+func (transport *DynamicTCPPeerTransport) LocalIdentity() PeerIdentityDTO {
+	transport.mu.Lock()
+	defer transport.mu.Unlock()
+	return transport.local
 }
 
 // UpdateLocalIdentity applies a committed local phase or operation-ID change.
@@ -1745,15 +1752,6 @@ func (transport *DynamicTCPPeerTransport) handleRaftInbound(connection *tls.Conn
 	if err != nil {
 		return
 	}
-	if !transport.matchesTLSIdentity(connection, remote) {
-		transport.mu.Lock()
-		peer := transport.peers[remote.MemberID]
-		transport.mu.Unlock()
-		if peer != nil {
-			peer.recordError("peer certificate identity mismatch")
-		}
-		return
-	}
 	transport.mu.Lock()
 	peer, exists := transport.peers[remote.MemberID]
 	local := transport.local
@@ -1762,8 +1760,20 @@ func (transport *DynamicTCPPeerTransport) handleRaftInbound(connection *tls.Conn
 		return
 	}
 	expectedIdentity, identityRevision, stopped := peer.identitySnapshot()
-	if stopped || remote.MemberID >= local.MemberID || !samePeerIdentity(expectedIdentity, remote) {
-		peer.recordError("peer identity mismatch")
+	if stopped {
+		peer.recordError("peer stopped")
+		return
+	}
+	if !transport.matchesTLSIdentity(connection, expectedIdentity) {
+		peer.recordError("peer certificate identity mismatch")
+		return
+	}
+	if remote.MemberID >= local.MemberID {
+		peer.recordError(fmt.Sprintf("direction mismatch: remote %d >= local %d", remote.MemberID, local.MemberID))
+		return
+	}
+	if !compatiblePeerIdentity(expectedIdentity, remote) {
+		peer.recordError(fmt.Sprintf("incompatible identity: expected(phase=%d,op=%s) remote(phase=%d,op=%s)", expectedIdentity.Phase, expectedIdentity.OperationID, remote.Phase, remote.OperationID))
 		return
 	}
 	localPayload, err := encodeDynamicPeerHello(local)
@@ -1861,16 +1871,23 @@ func (transport *DynamicTCPPeerTransport) dialPeer(ctx context.Context, peer *dy
 			}
 		}
 		currentIdentity, currentRevision, stopped := peer.identitySnapshot()
-		if err == nil && (stopped || currentRevision != identityRevision ||
-			!samePeerIdentity(remote, currentIdentity) || !transport.matchesTLSIdentity(connection, remote)) {
-			err = ErrInvalidPeerMessage
+		if err == nil {
+			if stopped {
+				err = fmt.Errorf("peer stopped")
+			} else if currentRevision != identityRevision {
+				err = fmt.Errorf("revision mismatch: current %d != id %d", currentRevision, identityRevision)
+			} else if !transport.matchesTLSIdentity(connection, currentIdentity) {
+				err = fmt.Errorf("peer identity mismatch")
+			} else if !compatiblePeerIdentity(currentIdentity, remote) {
+				err = fmt.Errorf("incompatible identity: current(phase=%d,op=%s) remote(phase=%d,op=%s)", currentIdentity.Phase, currentIdentity.OperationID, remote.Phase, remote.OperationID)
+			}
 		}
 		if err != nil || connection.SetDeadline(time.Time{}) != nil {
 			peer.clearPending(connection)
 			_ = connection.Close()
 			transport.untrackConnection(connection)
-			if currentRevision == identityRevision && !stopped {
-				peer.recordError("peer identity mismatch")
+			if currentRevision == identityRevision && !stopped && err != nil {
+				peer.recordError(err.Error())
 			}
 			if stopped || !waitPeerRetry(ctx) {
 				return
@@ -2448,6 +2465,28 @@ func samePeerIdentity(left, right PeerIdentityDTO) bool {
 		left.ClusterProtocolMinor == right.ClusterProtocolMinor &&
 		left.StateSchemaMajor == right.StateSchemaMajor && left.StateSchemaMinor == right.StateSchemaMinor &&
 		left.Phase == right.Phase && left.OperationID == right.OperationID
+}
+
+func compatiblePeerIdentity(expected, remote PeerIdentityDTO) bool {
+	if !sameImmutableIdentity(expected, remote) {
+		return false
+	}
+	if expected.Phase == remote.Phase && expected.OperationID == remote.OperationID {
+		return true
+	}
+	if (expected.Phase == PeerPhaseVoter && remote.Phase == PeerPhaseLeaving && remote.OperationID != "") ||
+		(expected.Phase == PeerPhaseLeaving && remote.Phase == PeerPhaseVoter && expected.OperationID != "") {
+		return true
+	}
+	if (expected.Phase == PeerPhaseVoter && remote.Phase == PeerPhaseCatchingUp && remote.OperationID != "") ||
+		(expected.Phase == PeerPhaseCatchingUp && remote.Phase == PeerPhaseVoter && expected.OperationID != "") {
+		return true
+	}
+	if (expected.Phase == PeerPhaseLearner && remote.Phase == PeerPhaseCatchingUp) ||
+		(expected.Phase == PeerPhaseCatchingUp && remote.Phase == PeerPhaseLearner) {
+		return expected.OperationID == remote.OperationID
+	}
+	return false
 }
 
 func sameAdmissionCandidate(requested, committed PeerIdentityDTO) bool {

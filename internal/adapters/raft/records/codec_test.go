@@ -23,8 +23,8 @@ func TestCommandReferenceVectors(t *testing.T) {
 	}{
 		{"stage_join", &CommandEnvelope{SchemaMajor: 1, OperationId: op4, Payload: &CommandEnvelope_Membership{Membership: &MembershipRecord{OperationId: op4, Action: MembershipAction_MEMBERSHIP_ACTION_STAGE_JOIN, IdempotencyKey: "k1", Member: &MemberIdentity{MemberId: 4, ClusterId: "c", Address: "n:1", DnsSan: "n", CertificateSha256: bytes.Repeat([]byte{0x11}, 32), ReleaseVersion: "v1", ClusterProtocolMajor: 2, StateSchemaMajor: 1, Phase: MemberPhase_MEMBER_PHASE_STAGED, OperationId: op4}}}}, "08011a2430303030303030302d303030302d343030302d383030302d303030303030303030303034528d010a2430303030303030302d303030302d343030302d383030302d30303030303030303030303410011a026b31225f08041201631a036e3a3122016e2a20" + strings.Repeat("11", 32) + "32027631380248015801622430303030303030302d303030302d343030302d383030302d303030303030303030303034"},
 		{"ownership_acquire", &CommandEnvelope{SchemaMajor: 1, OperationId: op1, Payload: &CommandEnvelope_Ownership{Ownership: &OwnershipChange{TenantId: "t", ClientId: "c", OwnerNodeId: 1, Epoch: 1, Action: OwnershipAction_OWNERSHIP_ACTION_ACQUIRE}}}, "08011a2430303030303030302d303030302d343030302d383030302d3030303030303030303030315a0c0a0174120163200128013001"},
-		{"subscription_add", &CommandEnvelope{SchemaMajor: 1, OperationId: op1, Payload: &CommandEnvelope_Subscription{Subscription: &SubscriptionChange{TenantId: "t", ClientId: "c", OwnerNodeId: 1, Epoch: 1, Filter: "#", Qos: 1, Action: SubscriptionAction_SUBSCRIPTION_ACTION_ADD}}}, "08011a2430303030303030302d303030302d343030302d383030302d303030303030303030303031620f0a0174120163180120012a01235001"},
-		{"subscription_remove", &CommandEnvelope{SchemaMajor: 1, OperationId: op1, Payload: &CommandEnvelope_Subscription{Subscription: &SubscriptionChange{TenantId: "t", ClientId: "c", OwnerNodeId: 1, Epoch: 1, Filter: "#", Qos: 1, Action: SubscriptionAction_SUBSCRIPTION_ACTION_REMOVE}}}, "08011a2430303030303030302d303030302d343030302d383030302d303030303030303030303031620f0a0174120163180120012a01235002"},
+		{"subscription_add", &CommandEnvelope{SchemaMajor: 1, OperationId: op1, Payload: &CommandEnvelope_Subscription{Subscription: &SubscriptionChange{TenantId: "t", ClientId: "c", OwnerNodeId: 1, Epoch: 1, Filter: "#", Qos: 1, Action: SubscriptionAction_SUBSCRIPTION_ACTION_ADD}}}, "08011a2430303030303030302d303030302d343030302d383030302d30303030303030303030303162110a0174120163180120012a012330015001"},
+		{"subscription_remove", &CommandEnvelope{SchemaMajor: 1, OperationId: op1, Payload: &CommandEnvelope_Subscription{Subscription: &SubscriptionChange{TenantId: "t", ClientId: "c", OwnerNodeId: 1, Epoch: 1, Filter: "#", Qos: 1, Action: SubscriptionAction_SUBSCRIPTION_ACTION_REMOVE}}}, "08011a2430303030303030302d303030302d343030302d383030302d30303030303030303030303162110a0174120163180120012a012330015002"},
 		{"checkpoint", &CommandEnvelope{SchemaMajor: 1, OperationId: op1, Payload: &CommandEnvelope_Checkpoint{Checkpoint: &SessionCheckpoint{TenantId: "t", ClientId: "c", OwnerNodeId: 1, Epoch: 1, Inbound: []*InboundCheckpoint{{Publish: publish(), Phase: InboundDeliveryPhase_INBOUND_QOS1_AWAIT_ACCEPTANCE}}, Outbound: []*OutboundCheckpoint{{Publish: publish(), Phase: OutboundDeliveryPhase_OUTBOUND_AWAIT_PUBACK}}}}}, "08011a2430303030303030302d303030302d343030302d383030302d3030303030303030303030316a2e0a0174120163180120012a100a0c0805180128073201613a0178100132100a0c0805180128073201613a01781001"},
 	}
 	for _, tc := range cases {
@@ -79,7 +79,7 @@ func TestCommandRejectsNoncanonicalAndInvalid(t *testing.T) {
 		})
 	}
 	invalid := proto.Clone(valid).(*CommandEnvelope)
-	invalid.OperationId = strings.ToUpper(op1)
+	invalid.OperationId = "00000000-0000-4000-8000-00000000000A"
 	if _, err := MarshalCommand(invalid); err == nil {
 		t.Fatal("expected UUID validation error")
 	}

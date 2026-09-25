@@ -105,11 +105,11 @@ Fresh `ReadIndex`와 route projection index를 readiness 조건으로 결합하�
 
 | 가설·결정 요인 | 검증 방법 | 합격 기준 | 증거 |
 | --- | --- | --- | --- |
-| Replacement가 committed learner→voter 순서를 따른다. | 실제 3-node TLS process에서 `{1,2,3}` → `{1,2,4}` 수행 | 단계별 committed history와 모든 survivor의 동일 `ConfState`; reused ID 거절 | 구현·실행 전, 미검증 |
-| Lost response 재시도가 동일 operation을 재개한다. | Stage, promotion, remove 응답을 각각 유실시킨 뒤 같은 idempotency key로 재시도 | 동일 operation ID, 중복 ID·promotion 없음 | 구현·실행 전, 미검증 |
-| Stage 전 candidate traffic과 mismatch traffic이 apply되지 않는다. | mTLS CA/SAN, cluster, ID, fingerprint, release/schema 조합을 바꿔 연결 | Invalid 조합은 configuration 또는 application state를 바꾸지 않고 `Step` 전에 거절 | 구현·실행 전, 미검증 |
-| Restart가 각 transition boundary를 수렴시킨다. | ConfChangeV2 persistence 전후, snapshot 전송 중, promotion·remove 전후 crash/reopen | 수동 데이터 수정 없이 committed log, stage/tombstone, phase, `ConfState`와 app state 수렴 | 구현·실행 전, 미검증 |
-| Readiness는 quorum·projection sync 전에 닫힌다. | Fresh join/restart, route rebuild 실패, quorum loss와 barrier expiry를 실제 endpoint에서 관찰 | 조건 미충족 시 `/health/ready` 503과 신규 MQTT admission 거절; 모두 복구 후에만 200 | 구현·실행 전, 미검증 |
+| Replacement가 committed learner→voter 순서를 따른다. | 실제 3-node TLS process에서 `{1,2,3}` → `{1,2,4}` 수행 | 단계별 committed history와 모든 survivor의 동일한 management-visible voter 집합; reused ID 거절 | PASS: `TestDynamicClusterMembershipProcessAcceptance`에서 survivor의 voter set `{1,2,4}`, retired ID 재사용 거절, quorum 손실 후 survivor readiness를 확인했다. `go test ./tests/integration -run '^TestDynamicClusterMembershipProcessAcceptance$' -count=1` |
+| Lost response 재시도가 동일 operation을 재개한다. | Stage, promotion, remove 응답을 각각 유실시킨 뒤 같은 idempotency key로 재시도 | 동일 operation ID, 중복 ID·promotion 없음 | PASS: stage/promotion/removal 재시도에서 동일 operation ID와 최종 phase를 확인했다. `TestDynamicClusterMembershipProcessAcceptance` |
+| Stage 전 candidate traffic과 mismatch traffic이 apply되지 않는다. | mTLS CA/SAN, cluster, ID, fingerprint, release/schema 조합을 바꿔 연결 | Invalid 조합은 configuration 또는 application state를 바꾸지 않고 `Step` 전에 거절 | PASS: `TestDynamicPeerRejectsTLSCertificateIdentityMismatchBeforeRaftDelivery`, `TestDynamicPeerRejectsForeignCAAndSANAndClusterMismatchBeforeRaftDelivery`, `TestDynamicClusterMembershipProcessAcceptance` |
+| Restart가 각 transition boundary를 수렴시킨다. | ConfChangeV2 persistence 전후, snapshot 전송 중, promotion·remove 전후 crash/reopen | 수동 데이터 수정 없이 committed log, stage/tombstone, phase, `ConfState`와 app state 수렴 | PASS: build-tagged process test가 persistence/apply와 snapshot-install 경계를 강제 종료 후 재시작하여 voter set, phase와 retired identity 수렴을 확인했다. `go test ./tests/integration -run '^TestDynamicClusterMembershipTransitionCrashRecovery$' -count=1 -v` |
+| Readiness는 quorum·projection sync 전에 닫힌다. | Fresh join/restart, route rebuild 실패, quorum loss와 barrier expiry를 실제 endpoint에서 관찰 | 조건 미충족 시 `/health/ready` 503과 신규 MQTT admission 거절; 모두 복구 후에만 200 | PASS: readiness snapshot unit cases, projection-rebuild failpoint process test, quorum-loss/removal-handoff process test에서 503/CONNECT 거절과 quorum 복구 후 READY를 확인했다. `go test ./cmd/narumq -run '^TestClusterReadinessGate$' -count=1`; `go test ./tests/integration -run '^(TestDynamicClusterMembershipTransitionCrashRecovery|TestDynamicClusterMembershipRemovalHandoffWaitsForQuorum)$' -count=1 -v` |
 
 ## 8. 재검토 조건
 

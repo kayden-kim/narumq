@@ -86,6 +86,11 @@ type Config struct {
 	ClusterID         string
 	CertificateSHA256 [32]byte
 	BootstrapVoterIDs []NodeID
+	// PersistenceBoundaryHook, when non-nil, receives notifications immediately
+	// before and after stable Ready persistence of dynamic membership changes and
+	// incoming snapshots. The hook runs with the node lock held and must not call
+	// back into Node.
+	PersistenceBoundaryHook func(PersistenceBoundaryDTO)
 }
 
 // MembershipChangeAction identifies one supported single-step ConfChangeV2.
@@ -99,6 +104,23 @@ const (
 	// MembershipRemove removes a voter or learner after planned transfer.
 	MembershipRemove
 )
+
+// PersistenceStage identifies one side of stable Ready persistence.
+type PersistenceStage uint8
+
+const (
+	// PersistenceBeforeReady identifies the phase immediately before appending Ready to stable storage.
+	PersistenceBeforeReady PersistenceStage = iota + 1
+	// PersistenceAfterReady identifies the phase immediately after appending Ready to stable storage.
+	PersistenceAfterReady
+)
+
+// PersistenceBoundaryDTO describes membership-relevant Ready content around stable persistence.
+type PersistenceBoundaryDTO struct {
+	Stage                PersistenceStage
+	ConfigurationActions []MembershipChangeAction // dynamic ConfChangeV2 entries in Ready.Entries, log order
+	InstallsSnapshot     bool                     // Ready carries a non-empty incoming snapshot
+}
 
 // MembershipChangeDTO describes one committed Raft voter-set transition request.
 type MembershipChangeDTO struct {
@@ -182,6 +204,7 @@ type Node struct {
 	stateSnapshot        []byte
 	confChangePending    bool
 	onReadyEvent         func(string)
+	persistenceHook      func(PersistenceBoundaryDTO)
 }
 
 // Open opens a fixed-voter peer-only node or a v2 dynamic cluster member.
@@ -302,6 +325,7 @@ func Open(config Config) (*Node, error) {
 		commandIndexes:       slices.Clone(store.commandIndexes),
 		configurationChanges: slices.Clone(store.configurationChanges),
 		stateSnapshot:        bytes.Clone(store.snapshotData),
+		persistenceHook:      config.PersistenceBoundaryHook,
 	}
 	for _, change := range store.confChanges {
 		node.confState = cloneConfState(raw.ApplyConfChange(change))
@@ -509,8 +533,19 @@ func (n *Node) Step(message MessageDTO) error {
 	if err := proto.Unmarshal(payload, &decoded); err != nil {
 		return fmt.Errorf("%w: decode message: %v", ErrInvalidMessage, err)
 	}
-	if decoded.GetFrom() != uint64(message.From) || decoded.GetTo() != uint64(message.To) || decoded.GetFrom() == 0 || decoded.GetTo() == 0 {
+	if decoded.GetTo() != uint64(message.To) || decoded.GetFrom() == 0 || decoded.GetTo() == 0 {
 		return ErrInvalidMessage
+	}
+	if decoded.GetFrom() != uint64(message.From) {
+		// etcd/raft forwards these requests without replacing the original
+		// requester. Only an authenticated current member may relay one, and
+		// the logical requester must also remain in the committed ConfState.
+		if !n.dynamic || !containsMember(n.confState, message.From) ||
+			!containsMember(n.confState, NodeID(decoded.GetFrom())) ||
+			(decoded.GetType() != pb.MsgProp && decoded.GetType() != pb.MsgReadIndex &&
+				decoded.GetType() != pb.MsgTransferLeader) {
+			return ErrInvalidMessage
+		}
 	}
 	if err := n.raw.Step(&decoded); err != nil {
 		return fmt.Errorf("%w: %v", ErrInvalidMessage, err)
@@ -558,8 +593,43 @@ func (n *Node) ProcessReady() (BatchDTO, error) {
 			Index:          readState.Index,
 		})
 	}
+	var boundaryActions []MembershipChangeAction
+	installsSnapshot := false
+	if n.persistenceHook != nil {
+		if n.dynamic {
+			for _, entry := range ready.Entries {
+				if entry.GetType() == pb.EntryConfChangeV2 {
+					change, err := decodeConfChange(entry)
+					if err != nil {
+						continue
+					}
+					action, _, err := validateDynamicConfChange(change)
+					if err != nil {
+						continue
+					}
+					boundaryActions = append(boundaryActions, action)
+				}
+			}
+		}
+		installsSnapshot = ready.Snapshot != nil && !etcdraft.IsEmptySnap(ready.Snapshot)
+	}
+
+	if n.persistenceHook != nil && (len(boundaryActions) > 0 || installsSnapshot) {
+		n.persistenceHook(PersistenceBoundaryDTO{
+			Stage:                PersistenceBeforeReady,
+			ConfigurationActions: slices.Clone(boundaryActions),
+			InstallsSnapshot:     installsSnapshot,
+		})
+	}
 	if err := n.store.appendReady(ready); err != nil {
 		return BatchDTO{}, n.fail(err)
+	}
+	if n.persistenceHook != nil && (len(boundaryActions) > 0 || installsSnapshot) {
+		n.persistenceHook(PersistenceBoundaryDTO{
+			Stage:                PersistenceAfterReady,
+			ConfigurationActions: slices.Clone(boundaryActions),
+			InstallsSnapshot:     installsSnapshot,
+		})
 	}
 	if n.onReadyEvent != nil {
 		n.onReadyEvent("persisted")

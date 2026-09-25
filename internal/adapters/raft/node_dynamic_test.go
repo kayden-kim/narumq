@@ -4,8 +4,13 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
+	"io"
+	"os"
 	"path/filepath"
 	"slices"
+	"strings"
+	"sync"
+	"syscall"
 	"testing"
 
 	pb "go.etcd.io/raft/v3/raftpb"
@@ -360,5 +365,269 @@ func assertDynamicMembers(t *testing.T, nodes map[NodeID]*Node, voters, learners
 		if !slices.Equal(status.VoterIDs, voters) || !slices.Equal(status.LearnerIDs, learners) {
 			t.Fatalf("node %d membership = voters %v learners %v, want voters %v learners %v", nodeID, status.VoterIDs, status.LearnerIDs, voters, learners)
 		}
+	}
+}
+
+func TestDynamicPersistenceBoundaryHookReportsMembershipReady(t *testing.T) {
+	root := t.TempDir()
+	var eventsMu sync.Mutex
+	var events []PersistenceBoundaryDTO
+
+	cfg1 := dynamicTestConfig(1, filepath.Join(root, "node-1"))
+	cfg1.PersistenceBoundaryHook = func(b PersistenceBoundaryDTO) {
+		eventsMu.Lock()
+		defer eventsMu.Unlock()
+		events = append(events, PersistenceBoundaryDTO{
+			Stage:                b.Stage,
+			ConfigurationActions: slices.Clone(b.ConfigurationActions),
+			InstallsSnapshot:     b.InstallsSnapshot,
+		})
+	}
+
+	nodes := make(map[NodeID]*Node, 3)
+	var err error
+	nodes[1], err = Open(cfg1)
+	if err != nil {
+		t.Fatalf("open node 1: %v", err)
+	}
+	for _, nodeID := range []NodeID{2, 3} {
+		node, err := Open(dynamicTestConfig(nodeID, filepath.Join(root, fmt.Sprintf("node-%d", nodeID))))
+		if err != nil {
+			t.Fatalf("open node %d: %v", nodeID, err)
+		}
+		nodes[nodeID] = node
+	}
+	defer func() {
+		for _, node := range nodes {
+			_ = node.Close()
+		}
+	}()
+
+	pump := func() {
+		t.Helper()
+		for range 512 {
+			var messages []MessageDTO
+			for _, nodeID := range []NodeID{1, 2, 3} {
+				node := nodes[nodeID]
+				if node == nil {
+					continue
+				}
+				batch, err := node.ProcessReady()
+				if err != nil {
+					t.Fatalf("node %d ProcessReady(): %v", nodeID, err)
+				}
+				messages = append(messages, batch.Messages...)
+			}
+			if len(messages) == 0 {
+				return
+			}
+			for _, message := range messages {
+				target := nodes[message.To]
+				if target == nil {
+					continue
+				}
+				if err := target.Step(message); err != nil {
+					t.Fatalf("deliver %d -> %d: %v", message.From, message.To, err)
+				}
+			}
+		}
+		t.Fatal("Raft pump exceeded 512 rounds")
+	}
+
+	pump()
+	if err := nodes[1].Campaign(); err != nil {
+		t.Fatalf("campaign: %v", err)
+	}
+	pump()
+	if got := nodes[1].Status().Role; got != RoleLeader {
+		t.Fatalf("node 1 role = %v, want leader", got)
+	}
+
+	eventsMu.Lock()
+	events = nil
+	eventsMu.Unlock()
+
+	// Propose MembershipAddLearner for ID 4 from leader 1
+	if err := nodes[1].ProposeMembershipChange(MembershipChangeDTO{
+		OperationID: addLearnerOperation,
+		MemberID:    4,
+		Action:      MembershipAddLearner,
+	}); err != nil {
+		t.Fatalf("propose add learner: %v", err)
+	}
+	pump()
+
+	eventsMu.Lock()
+	learnerEvents := slices.Clone(events)
+	events = nil
+	eventsMu.Unlock()
+
+	if len(learnerEvents) < 2 {
+		t.Fatalf("expected at least 2 events for add learner, got %d: %+v", len(learnerEvents), learnerEvents)
+	}
+	var hasBefore, hasAfter bool
+	for _, ev := range learnerEvents {
+		if slices.Equal(ev.ConfigurationActions, []MembershipChangeAction{MembershipAddLearner}) && !ev.InstallsSnapshot {
+			if ev.Stage == PersistenceBeforeReady {
+				hasBefore = true
+			} else if ev.Stage == PersistenceAfterReady {
+				hasAfter = true
+			}
+		}
+	}
+	if !hasBefore || !hasAfter {
+		t.Fatalf("missing before or after event for add learner: %+v", learnerEvents)
+	}
+
+	// Injected write failure on wal.bin during MembershipPromoteVoter
+	walPath := filepath.Join(filepath.Join(root, "node-1"), walName)
+	oldWrite := filePersistenceOps.write
+	defer func() { filePersistenceOps.write = oldWrite }()
+	filePersistenceOps.write = func(writer io.Writer, data []byte) (int, error) {
+		file, ok := writer.(*os.File)
+		if ok && filepath.Clean(file.Name()) == filepath.Clean(walPath) {
+			return 0, syscall.ENOSPC
+		}
+		return oldWrite(writer, data)
+	}
+
+	eventsMu.Lock()
+	events = nil
+	eventsMu.Unlock()
+
+	if err := nodes[1].ProposeMembershipChange(MembershipChangeDTO{
+		OperationID: promoteOperation,
+		MemberID:    4,
+		Action:      MembershipPromoteVoter,
+	}); err != nil {
+		t.Fatalf("propose promote voter: %v", err)
+	}
+	_, processErr := nodes[1].ProcessReady()
+	filePersistenceOps.write = oldWrite
+	if processErr == nil {
+		t.Fatal("expected ProcessReady to fail with injected write error")
+	}
+
+	eventsMu.Lock()
+	failEvents := slices.Clone(events)
+	eventsMu.Unlock()
+
+	var failBefore, failAfter bool
+	for _, ev := range failEvents {
+		if slices.Equal(ev.ConfigurationActions, []MembershipChangeAction{MembershipPromoteVoter}) {
+			if ev.Stage == PersistenceBeforeReady {
+				failBefore = true
+			} else if ev.Stage == PersistenceAfterReady {
+				failAfter = true
+			}
+		}
+	}
+	if !failBefore {
+		t.Fatalf("expected Before event for promote voter, got: %+v", failEvents)
+	}
+	if failAfter {
+		t.Fatalf("expected NO After event after write failure, got: %+v", failEvents)
+	}
+
+	// Unbootstrapped learner receiving MsgSnap
+	var snapEvents []PersistenceBoundaryDTO
+	joiner, err := Open(Config{
+		NodeID: 4, Directory: filepath.Join(t.TempDir(), "node-4-snap"), DynamicMembership: true,
+		ClusterID: dynamicTestClusterID, CertificateSHA256: [32]byte{0x44},
+		PersistenceBoundaryHook: func(b PersistenceBoundaryDTO) {
+			snapEvents = append(snapEvents, PersistenceBoundaryDTO{
+				Stage:                b.Stage,
+				ConfigurationActions: slices.Clone(b.ConfigurationActions),
+				InstallsSnapshot:     b.InstallsSnapshot,
+			})
+		},
+	})
+	if err != nil {
+		t.Fatalf("open joiner: %v", err)
+	}
+	defer joiner.Close()
+
+	term := uint64(2)
+	snapMsg := &pb.Message{
+		Type: pb.MsgSnap.Enum(),
+		From: uint64Ptr(1),
+		To:   uint64Ptr(4),
+		Term: &term,
+		Snapshot: &pb.Snapshot{
+			Metadata: &pb.SnapshotMetadata{
+				Index: uint64Ptr(5),
+				Term:  uint64Ptr(2),
+				ConfState: &pb.ConfState{
+					Voters:   []uint64{1, 2, 3},
+					Learners: []uint64{4},
+				},
+			},
+			Data: []byte("dummy-snapshot"),
+		},
+	}
+	data, err := proto.Marshal(snapMsg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := joiner.Step(MessageDTO{From: 1, To: 4, Data: data}); err != nil {
+		t.Fatalf("step MsgSnap: %v", err)
+	}
+	if _, err := joiner.ProcessReady(); err != nil {
+		t.Fatalf("joiner ProcessReady with snapshot: %v", err)
+	}
+
+	if len(snapEvents) != 2 {
+		t.Fatalf("expected 2 snapEvents, got %d: %+v", len(snapEvents), snapEvents)
+	}
+	if snapEvents[0].Stage != PersistenceBeforeReady || !snapEvents[0].InstallsSnapshot {
+		t.Fatalf("expected snapEvents[0] BeforeReady with InstallsSnapshot=true, got %+v", snapEvents[0])
+	}
+	if snapEvents[1].Stage != PersistenceAfterReady || !snapEvents[1].InstallsSnapshot {
+		t.Fatalf("expected snapEvents[1] AfterReady with InstallsSnapshot=true, got %+v", snapEvents[1])
+	}
+}
+
+func TestDynamicStepAllowsOnlyAuthenticatedForwardedRequests(t *testing.T) {
+	node, err := Open(dynamicTestConfig(1, filepath.Join(t.TempDir(), "node-1")))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer node.Close()
+	if _, err := node.ProcessReady(); err != nil {
+		t.Fatal(err)
+	}
+	for _, test := range []struct {
+		name     string
+		sender   NodeID
+		origin   uint64
+		kind     pb.MessageType
+		rejected bool
+		dropped  bool
+	}{
+		{name: "forwarded read index", sender: 3, origin: 2, kind: pb.MsgReadIndex},
+		{name: "forwarded proposal without leader is dropped by Raft", sender: 3, origin: 2, kind: pb.MsgProp, dropped: true},
+		{name: "forwarded leader transfer", sender: 3, origin: 2, kind: pb.MsgTransferLeader},
+		{name: "replication cannot spoof", sender: 3, origin: 2, kind: pb.MsgApp, rejected: true},
+		{name: "unknown relay cannot forward", sender: 4, origin: 2, kind: pb.MsgReadIndex, rejected: true},
+		{name: "unknown requester cannot be forwarded", sender: 3, origin: 4, kind: pb.MsgReadIndex, rejected: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			data, err := proto.Marshal(&pb.Message{Type: test.kind.Enum(), From: &test.origin, To: uint64Ptr(1)})
+			if err != nil {
+				t.Fatal(err)
+			}
+			err = node.Step(MessageDTO{From: test.sender, To: 1, Data: data})
+			if test.dropped {
+				if err == nil || !strings.Contains(err.Error(), "proposal dropped") {
+					t.Fatalf("Step forwarded %s = %v, want Raft proposal dropped", test.kind, err)
+				}
+			} else if test.rejected {
+				if !errors.Is(err, ErrInvalidMessage) {
+					t.Fatalf("Step forwarded %s = %v, want ErrInvalidMessage", test.kind, err)
+				}
+			} else if err != nil {
+				t.Fatalf("Step forwarded %s = %v", test.kind, err)
+			}
+		})
 	}
 }

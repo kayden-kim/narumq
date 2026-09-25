@@ -78,10 +78,28 @@ func runClusterMode(ctx context.Context, config clusterConfigFile, logger *slog.
 	if err != nil {
 		return err
 	}
+	failpoint, err := loadClusterFailpoint()
+	if err != nil {
+		return fmt.Errorf("load cluster failpoint: %w", err)
+	}
+	if failpoint != clusterFailpointNone {
+		logger.Warn("cluster failpoint armed", "failpoint", string(failpoint))
+	}
+
+	var persistenceHook func(raftadapter.PersistenceBoundaryDTO)
+	if failpoint != clusterFailpointNone {
+		persistenceHook = func(boundary raftadapter.PersistenceBoundaryDTO) {
+			if failpoint.matchesPersistence(boundary) {
+				triggerClusterFailpoint(failpoint)
+			}
+		}
+	}
+
 	node, err := raftadapter.Open(raftadapter.Config{
 		NodeID: raftadapter.NodeID(config.NodeID), Directory: config.Directory,
 		DynamicMembership: true, ClusterID: config.ClusterID,
 		CertificateSHA256: localFingerprint, BootstrapVoterIDs: bootstrapIDs,
+		PersistenceBoundaryHook: persistenceHook,
 	})
 	if err != nil {
 		return fmt.Errorf("open dynamic raft node: %w", err)
@@ -109,6 +127,8 @@ func runClusterMode(ctx context.Context, config clusterConfigFile, logger *slog.
 		requests: make(chan clusterDriverRequest, 128), initialMessages: initialMessages,
 		localIdentity:      configuredLocalPeerIdentity(config, localFingerprint),
 		admittedCandidates: make(map[uint64]string),
+		failpoint:          failpoint,
+		handoffProposed:    make(map[string]uint64),
 	}
 	if local, found := committedLocalIdentity(machine, config.NodeID); found {
 		runtime.localIdentity = local
@@ -123,9 +143,11 @@ func runClusterMode(ctx context.Context, config clusterConfigFile, logger *slog.
 		}
 		runtime.lastSnapshotIndex = snapshot.LastIncludedIndex
 	}
-	if config.Role == "bootstrap" && len(node.ApplicationSnapshot()) == 0 {
+	// WAL replay can advance committed membership beyond the recovered snapshot; refresh it before peer transport starts.
+	// persistTypedSnapshot skips the write when trailing empty Raft entries leave the typed state behind the Raft applied index.
+	if runtime.initialized.Load() && runtime.machine.LastAppliedIndex() > runtime.lastSnapshotIndex {
 		if err := runtime.persistTypedSnapshot(true); err != nil {
-			return fmt.Errorf("persist bootstrap typed snapshot: %w", err)
+			return fmt.Errorf("persist initialized membership snapshot: %w", err)
 		}
 	}
 
@@ -139,9 +161,7 @@ func runClusterMode(ctx context.Context, config clusterConfigFile, logger *slog.
 		return fmt.Errorf("create dynamic raft peer transport: %w", err)
 	}
 	runtime.transport = transport
-	if err := runtime.rebuildRouteProjection(); err != nil {
-		return fmt.Errorf("project restored cluster routes: %w", err)
-	}
+	runtime.refreshRouteProjection()
 
 	securityBundle, jwtProvider, mtlsProvider, err := clusterMQTTSecurity(config)
 	if err != nil {
@@ -264,16 +284,18 @@ type clusterRuntime struct {
 	routes     *routing.Table
 	mqttServer *tcpadapter.Server
 
-	requests               chan clusterDriverRequest
-	sequence               atomic.Uint64
-	initialized            atomic.Bool
-	projectionMu           sync.Mutex
-	projectionIndex        atomic.Uint64
-	lastSnapshotIndex      uint64
-	initialMessages        []raftadapter.MessageDTO
-	autoCatchupPending     string
-	leadershipTransferTo   raftadapter.NodeID
-	leadershipTransferTerm uint64
+	requests                chan clusterDriverRequest
+	sequence                atomic.Uint64
+	initialized             atomic.Bool
+	projectionMu            sync.Mutex
+	projectionIndex         atomic.Uint64
+	projectionFailed        atomic.Bool
+	lastSnapshotIndex       uint64
+	initialMessages         []raftadapter.MessageDTO
+	autoCatchupPending      string
+	leadershipTransferTo    raftadapter.NodeID
+	leadershipTransferTerm  uint64
+	leadershipTransferTicks int
 
 	localMu            sync.Mutex
 	localIdentity      tcpadapter.PeerIdentityDTO
@@ -282,6 +304,9 @@ type clusterRuntime struct {
 	seedPeerMu         sync.RWMutex
 	seedPeers          []tcpadapter.PeerIdentityDTO
 	managementState    *appmgmt.Service
+	failpoint          clusterFailpoint
+	removalBlockLogged string
+	handoffProposed    map[string]uint64
 }
 
 type clusterDriverRequestKind uint8
@@ -418,6 +443,12 @@ func (runtime *clusterRuntime) shutdownHTTP(server *http.Server) {
 
 func (runtime *clusterRuntime) runSeedAdmission(ctx context.Context) error {
 	for ctx.Err() == nil {
+		if identity, found := committedLocalIdentity(runtime.machine, runtime.config.NodeID); found {
+			switch identity.Phase {
+			case tcpadapter.PeerPhaseLearner, tcpadapter.PeerPhaseCatchingUp, tcpadapter.PeerPhaseVoter:
+				return nil
+			}
+		}
 		var lastErr error
 		var lastFailedSeed string
 		admitted := false
@@ -431,20 +462,15 @@ func (runtime *clusterRuntime) runSeedAdmission(ctx context.Context) error {
 				runtime.seedPeerMu.Lock()
 				runtime.seedPeers = append(runtime.seedPeers[:0], voters...)
 				runtime.seedPeerMu.Unlock()
+				local := runtime.transport.LocalIdentity()
+				if local.Phase == tcpadapter.PeerPhaseLearner || local.Phase == tcpadapter.PeerPhaseCatchingUp || local.Phase == tcpadapter.PeerPhaseVoter {
+					return nil
+				}
+				admitted = true
+				break
 			}
-			if err != nil {
-				lastErr = err
-				lastFailedSeed = seed
-				continue
-			}
-			admitted = true
-			// Keep refreshing the committed phase through promotion: the joiner may
-			// lag the seed's phase until it can establish the matching Raft stream.
-			if identity, found := committedLocalIdentity(runtime.machine, runtime.config.NodeID); found &&
-				identity.Phase == tcpadapter.PeerPhaseVoter &&
-				containsNodeID(runtime.node.Status().VoterIDs, runtime.config.NodeID) {
-				return nil
-			}
+			lastErr = err
+			lastFailedSeed = seed
 		}
 		if !admitted && lastErr != nil && ctx.Err() == nil {
 			runtime.logger.Warn("dynamic peer seed admission failed",
@@ -479,7 +505,9 @@ func (runtime *clusterRuntime) runDriver(ctx context.Context) error {
 				return fmt.Errorf("process raft Ready: %w", err)
 			}
 			if clusterBatchEmpty(batch) {
-				runtime.projectionIndex.Store(runtime.node.Status().AppliedIndex)
+				if !runtime.projectionFailed.Load() {
+					runtime.projectionIndex.Store(runtime.node.Status().AppliedIndex)
+				}
 				deferredReads = runtime.completeReadStates(deferredReads, reads)
 				return nil
 			}
@@ -566,8 +594,19 @@ func (runtime *clusterRuntime) runDriver(ctx context.Context) error {
 				return err
 			}
 		case <-ticker.C:
+			status := runtime.node.Status()
+			if status.Role == raftadapter.RoleLeader {
+				for _, peerID := range status.LearnerIDs {
+					if peerStatus, err := runtime.transport.Status(uint64(peerID)); err == nil && !peerStatus.Connected {
+						_ = runtime.node.ReportPeerMessageFailure(peerID, true)
+					}
+				}
+			}
 			if err := runtime.node.Tick(); err != nil {
 				return fmt.Errorf("tick dynamic raft node: %w", err)
+			}
+			if runtime.projectionFailed.Load() {
+				runtime.refreshRouteProjection()
 			}
 			if err := processReady(); err != nil {
 				return err
@@ -578,11 +617,13 @@ func (runtime *clusterRuntime) runDriver(ctx context.Context) error {
 					waiter.result <- clusterReadResponse{err: waiter.ctx.Err()}
 				}
 			}
-			status := runtime.node.Status()
+			status = runtime.node.Status()
 			leadership := raftLeadership{leader: status.LeaderID, term: status.Term, role: status.Role}
 			if leadership != lastLeadership {
 				lastLeadership = leadership
 				runtime.autoCatchupPending = ""
+				clear(runtime.handoffProposed)
+				runtime.removalBlockLogged = ""
 			}
 			if err := runtime.advanceMembership(); err != nil {
 				return err
@@ -654,6 +695,9 @@ func (runtime *clusterRuntime) applyBatch(batch raftadapter.BatchDTO, proposals 
 					"phase", result.Operation.Phase,
 					"committed_index", result.Operation.CommittedIndex)
 			}
+			if runtime.failpoint.matchesConfigurationApply(event.configuration.Action) {
+				triggerClusterFailpoint(runtime.failpoint)
+			}
 			continue
 		}
 		command, err := decodeMembershipCommand(event.command)
@@ -678,6 +722,10 @@ func (runtime *clusterRuntime) applyBatch(batch raftadapter.BatchDTO, proposals 
 				"phase", result.Operation.Phase,
 				"committed_index", result.Operation.CommittedIndex)
 		}
+		if command.Membership != nil && command.Membership.Action == membership.MembershipActionBeginRemove &&
+			result.Outcome == membership.ApplyOutcomeApplied && runtime.failpoint.matchesBeginRemoveApply() {
+			triggerClusterFailpoint(runtime.failpoint)
+		}
 		if command.Ownership != nil && result.Outcome == membership.ApplyOutcomeApplied && result.Ownership != nil {
 			sessionID, err := clusterSessionID(command.Ownership.TenantID, command.Ownership.ClientID)
 			if err != nil {
@@ -689,10 +737,15 @@ func (runtime *clusterRuntime) applyBatch(batch raftadapter.BatchDTO, proposals 
 		}
 		runtime.resolveProposal(event.command, result, proposals)
 	}
-	if len(events) != 0 || len(batch.SnapshotData) != 0 {
-		if err := runtime.rebuildRouteProjection(); err != nil {
-			return fmt.Errorf("rebuild committed route projection: %w", err)
+	if runtime.initialized.Load() {
+		// Ready can end with empty Raft entries after its last typed event.
+		// Snapshot metadata and typed state must use the same applied index.
+		if err := runtime.machine.AdvanceAppliedIndex(runtime.node.Status().AppliedIndex); err != nil {
+			return fmt.Errorf("advance committed membership index: %w", err)
 		}
+	}
+	if len(events) != 0 || len(batch.SnapshotData) != 0 || runtime.projectionFailed.Load() {
+		runtime.refreshRouteProjection()
 	} else {
 		runtime.projectionIndex.Store(runtime.node.Status().AppliedIndex)
 	}
@@ -774,8 +827,11 @@ func (runtime *clusterRuntime) sendMessages(ctx context.Context, messages []raft
 			}
 			continue
 		}
+		// Raft may forward a proposal or ReadIndex while retaining its original
+		// requester in the protobuf From field. The transport identity is the
+		// authenticated immediate sender, not that logical requester.
 		err := runtime.transport.Send(tcpadapter.PeerMessageDTO{
-			From: uint64(message.From), To: uint64(message.To), Data: message.Data,
+			From: runtime.config.NodeID, To: uint64(message.To), Data: message.Data,
 		})
 		if err == nil {
 			continue
@@ -823,10 +879,14 @@ func (runtime *clusterRuntime) advanceMembership() error {
 	}
 	if runtime.leadershipTransferTo != 0 {
 		if status.Term == runtime.leadershipTransferTerm {
-			return nil
+			runtime.leadershipTransferTicks++
+			if runtime.leadershipTransferTicks <= 20 {
+				return nil
+			}
 		}
 		runtime.leadershipTransferTo = 0
 		runtime.leadershipTransferTerm = 0
+		runtime.leadershipTransferTicks = 0
 	}
 	operations := runtime.machine.Operations()
 	members := runtime.machine.Members()
@@ -899,8 +959,10 @@ func (runtime *clusterRuntime) advanceMembership() error {
 				var transferee raftadapter.NodeID
 				for _, voterID := range status.VoterIDs {
 					if voterID != raftadapter.NodeID(runtime.config.NodeID) {
-						transferee = voterID
-						break
+						if peerStatus, err := runtime.transport.Status(uint64(voterID)); err == nil && peerStatus.Connected {
+							transferee = voterID
+							break
+						}
 					}
 				}
 				if transferee == 0 {
@@ -914,27 +976,77 @@ func (runtime *clusterRuntime) advanceMembership() error {
 				}
 				runtime.leadershipTransferTo = transferee
 				runtime.leadershipTransferTerm = status.Term
+				runtime.leadershipTransferTicks = 0
 				return nil
 			}
-			for _, ownership := range runtime.machine.Ownerships() {
-				if ownership.OwnerNodeID == operation.MemberID {
-					return nil
-				}
+			voterIDs := make([]uint64, 0, len(status.VoterIDs))
+			for _, id := range status.VoterIDs {
+				voterIDs = append(voterIDs, uint64(id))
 			}
-			for _, subscription := range runtime.machine.Subscriptions() {
-				if subscription.OwnerNodeID == operation.MemberID {
-					return nil
+			plan := membership.PlanRemovalHandoff(
+				operation.MemberID, voterIDs,
+				runtime.machine.Ownerships(), runtime.machine.Subscriptions(), runtime.machine.Checkpoints(),
+			)
+			if plan.Block != "" {
+				logKey := operation.OperationID + ":" + string(plan.Block)
+				if logKey != runtime.removalBlockLogged {
+					runtime.removalBlockLogged = logKey
+					runtime.logger.Warn("planned removal waits for session handoff",
+						"operation_id", operation.OperationID,
+						"member_id", operation.MemberID,
+						"reason", string(plan.Block))
 				}
+				return nil
 			}
-			for _, checkpoint := range runtime.machine.Checkpoints() {
-				if checkpoint.OwnerNodeID == operation.MemberID {
-					return nil
+			runtime.removalBlockLogged = ""
+			if len(plan.Transfers) != 0 {
+				for _, transfer := range plan.Transfers {
+					key := transfer.TenantID + "\x00" + transfer.ClientID
+					if runtime.handoffProposed[key] == transfer.ExpectedEpoch {
+						continue
+					}
+					opID, err := newClusterOperationID()
+					if err != nil {
+						return fmt.Errorf("generate handoff operation id: %w", err)
+					}
+					transferCopy := transfer
+					accepted, err := runtime.proposeInternal(membership.CommandDTO{
+						SchemaMajor: membership.SchemaMajor,
+						SchemaMinor: membership.SchemaMinor,
+						OperationID: opID,
+						Ownership:   &transferCopy,
+					})
+					if err != nil {
+						return err
+					}
+					if accepted {
+						runtime.handoffProposed[key] = transfer.ExpectedEpoch
+					}
 				}
+				activeKeys := make(map[string]struct{}, len(plan.Transfers))
+				for _, transfer := range plan.Transfers {
+					activeKeys[transfer.TenantID+"\x00"+transfer.ClientID] = struct{}{}
+				}
+				for key := range runtime.handoffProposed {
+					if _, exists := activeKeys[key]; !exists {
+						delete(runtime.handoffProposed, key)
+					}
+				}
+				runtime.logger.Info("proposed planned-removal session handoff",
+					"operation_id", operation.OperationID,
+					"member_id", operation.MemberID,
+					"successor_node_id", plan.SuccessorNodeID,
+					"session_count", len(plan.Transfers))
+				return nil
 			}
-			return runtime.proposeMembershipChange(raftadapter.MembershipChangeDTO{
-				OperationID: operation.OperationID, MemberID: raftadapter.NodeID(operation.MemberID),
-				Action: raftadapter.MembershipRemove,
-			})
+			if plan.RemoveReady {
+				return runtime.proposeMembershipChange(raftadapter.MembershipChangeDTO{
+					OperationID: operation.OperationID,
+					MemberID:    raftadapter.NodeID(operation.MemberID),
+					Action:      raftadapter.MembershipRemove,
+				})
+			}
+			return nil
 		}
 	}
 	return nil
@@ -996,6 +1108,9 @@ func (runtime *clusterRuntime) persistTypedSnapshot(force bool) error {
 func (runtime *clusterRuntime) rebuildRouteProjection() error {
 	runtime.projectionMu.Lock()
 	defer runtime.projectionMu.Unlock()
+	if runtime.failpoint.failsRouteProjection() {
+		return errors.New("route projection rebuild failpoint")
+	}
 
 	projectionSessions := make([]routing.ProjectionSession, 0)
 	for _, ownership := range runtime.machine.Ownerships() {
@@ -1043,6 +1158,16 @@ func (runtime *clusterRuntime) rebuildRouteProjection() error {
 	}
 	runtime.projectionIndex.Store(runtime.node.Status().AppliedIndex)
 	return nil
+}
+
+func (runtime *clusterRuntime) refreshRouteProjection() {
+	if err := runtime.rebuildRouteProjection(); err != nil {
+		if !runtime.projectionFailed.Swap(true) {
+			runtime.logger.Warn("cluster route projection rebuild failed", "error", err.Error())
+		}
+		return
+	}
+	runtime.projectionFailed.Store(false)
 }
 
 func clusterSessionID(tenantID, clientID string) (routing.SessionID, error) {
@@ -1196,29 +1321,61 @@ func (runtime *clusterRuntime) clusterReady() bool {
 	return runtime.checkReadiness(ctx) == nil
 }
 
-func (runtime *clusterRuntime) checkReadiness(ctx context.Context) error {
-	if ctx == nil || !runtime.initialized.Load() || runtime.projectionIndex.Load() < runtime.node.Status().AppliedIndex {
-		return errClusterRuntimeNotReady
-	}
+type clusterReadinessSnapshot struct {
+	initialized       bool
+	projectionFailed  bool
+	bootstrapped      bool
+	dynamicMembership bool
+	localVoter        bool
+	localPhaseVoter   bool
+	projectionIndex   uint64
+	appliedIndex      uint64
+}
+
+func (s clusterReadinessSnapshot) admitsBarrier() bool {
+	return s.initialized &&
+		!s.projectionFailed &&
+		s.projectionIndex >= s.appliedIndex &&
+		s.bootstrapped &&
+		s.dynamicMembership &&
+		s.localVoter &&
+		s.localPhaseVoter
+}
+
+func (s clusterReadinessSnapshot) satisfiedAt(barrier uint64) bool {
+	return s.admitsBarrier() && barrier <= s.appliedIndex && barrier <= s.projectionIndex
+}
+
+func (runtime *clusterRuntime) readinessSnapshot() clusterReadinessSnapshot {
 	status := runtime.node.Status()
-	if !status.Bootstrapped || !status.DynamicMembership || !containsNodeID(status.VoterIDs, runtime.config.NodeID) {
+	member, found := committedLocalIdentity(runtime.machine, runtime.config.NodeID)
+	return clusterReadinessSnapshot{
+		initialized:       runtime.initialized.Load(),
+		projectionFailed:  runtime.projectionFailed.Load(),
+		bootstrapped:      status.Bootstrapped,
+		dynamicMembership: status.DynamicMembership,
+		localVoter:        containsNodeID(status.VoterIDs, runtime.config.NodeID),
+		localPhaseVoter:   found && member.Phase == tcpadapter.PeerPhaseVoter,
+		projectionIndex:   runtime.projectionIndex.Load(),
+		appliedIndex:      status.AppliedIndex,
+	}
+}
+
+func (runtime *clusterRuntime) checkReadiness(ctx context.Context) error {
+	if ctx == nil {
 		return errClusterRuntimeNotReady
 	}
-	member, found := committedLocalIdentity(runtime.machine, runtime.config.NodeID)
-	if !found || member.Phase != tcpadapter.PeerPhaseVoter {
+	if !runtime.readinessSnapshot().admitsBarrier() {
 		return errClusterRuntimeNotReady
 	}
 	barrier, err := runtime.requestReadBarrier(ctx)
 	if err != nil {
 		return err
 	}
-	status = runtime.node.Status()
-	if barrier > status.AppliedIndex || barrier > runtime.projectionIndex.Load() ||
-		!containsNodeID(status.VoterIDs, runtime.config.NodeID) {
+	if !runtime.readinessSnapshot().satisfiedAt(barrier) {
 		return errClusterRuntimeNotReady
 	}
 	return nil
-
 }
 
 func (runtime *clusterRuntime) requestReadBarrier(ctx context.Context) (uint64, error) {
@@ -1443,8 +1600,6 @@ func restoreClusterState(node *raftadapter.Node, config clusterConfigFile, boots
 		if err := machine.InitializeBootstrap(3, bootstrap); err != nil {
 			return nil, nil, fmt.Errorf("initialize bootstrap membership state: %w", err)
 		}
-	} else if status.AppliedIndex != 0 || len(node.AppliedCommandRecords()) != 0 || len(node.AppliedConfigurationChanges()) != 0 {
-		return nil, nil, errors.New("joiner has durable raft progress without a typed application snapshot")
 	}
 	if config.Role == "bootstrap" && machine.LastAppliedIndex() == 0 {
 		return nil, nil, errors.New("bootstrap membership state was not initialized")

@@ -266,6 +266,7 @@
         "MQTT-06",
         "MQTT-07",
         "MQTT-08",
+        "MQTT-12",
         "TEST-03",
         "TEST-04",
         "TEST-05"
@@ -274,6 +275,10 @@
         {
           "name": "TestUnsubscribeReasonsAndIdempotence",
           "package": "narumq/internal/application/subscribe"
+        },
+        {
+          "name": "TestCmmSubscriptionFamilyDecodeRejectsMalformedBodies",
+          "package": "narumq/internal/domain/mqtt"
         },
         {
           "name": "TestSubscriptionPacketsRoundTrip_MQTT311_MQTT5",
@@ -287,6 +292,7 @@
         "MQTT-06",
         "MQTT-07",
         "MQTT-08",
+        "MQTT-12",
         "TEST-03",
         "TEST-04",
         "TEST-05"
@@ -295,6 +301,10 @@
         {
           "name": "TestUnsubscribeReasonsAndIdempotence",
           "package": "narumq/internal/application/subscribe"
+        },
+        {
+          "name": "TestCmmSubscriptionFamilyDecodeRejectsMalformedBodies",
+          "package": "narumq/internal/domain/mqtt"
         },
         {
           "name": "TestSubscriptionPacketsRoundTrip_MQTT311_MQTT5",
@@ -308,14 +318,23 @@
         "MQTT-06",
         "MQTT-07",
         "MQTT-08",
+        "MQTT-12",
         "TEST-03",
         "TEST-04",
         "TEST-05"
       ],
       "tests": [
         {
+          "name": "TestCmmUnsubscribeInvalidSessionReportsTopicFilterInvalid",
+          "package": "narumq/internal/application/subscribe"
+        },
+        {
           "name": "TestUnsubscribeReasonsAndIdempotence",
           "package": "narumq/internal/application/subscribe"
+        },
+        {
+          "name": "TestCmmSubscriptionFamilyDecodeRejectsMalformedBodies",
+          "package": "narumq/internal/domain/mqtt"
         },
         {
           "name": "TestSubscriptionPacketsRoundTrip_MQTT311_MQTT5",
@@ -329,14 +348,23 @@
         "MQTT-06",
         "MQTT-07",
         "MQTT-08",
+        "MQTT-12",
         "TEST-03",
         "TEST-04",
         "TEST-05"
       ],
       "tests": [
         {
+          "name": "TestCmmUnsubscribeInvalidSessionReportsTopicFilterInvalid",
+          "package": "narumq/internal/application/subscribe"
+        },
+        {
           "name": "TestUnsubscribeReasonsAndIdempotence",
           "package": "narumq/internal/application/subscribe"
+        },
+        {
+          "name": "TestCmmSubscriptionFamilyDecodeRejectsMalformedBodies",
+          "package": "narumq/internal/domain/mqtt"
         },
         {
           "name": "TestSubscriptionPacketsRoundTrip_MQTT311_MQTT5",
@@ -861,12 +889,23 @@
       "id": "MQTT-3.8.3-4",
       "requirementIds": [
         "MQTT-07",
-        "TEST-03"
+        "MQTT-08",
+        "MQTT-12",
+        "TEST-03",
+        "TEST-04"
       ],
       "tests": [
         {
           "name": "TestSubscribeSharedSubscriptionRejectsNoLocal",
           "package": "narumq/internal/application/subscribe"
+        },
+        {
+          "name": "TestCmmSubscriptionFamilyDecodeRejectsMalformedBodies",
+          "package": "narumq/internal/domain/mqtt"
+        },
+        {
+          "name": "TestCmmSubscriptionOptionsRejectQoSThree",
+          "package": "narumq/internal/domain/mqtt"
         },
         {
           "name": "TestMQTTIngressSharedSubscription",
@@ -918,10 +957,15 @@
         "MQTT-01",
         "MQTT-06",
         "MQTT-08",
+        "MQTT-12",
         "TEST-03",
         "TEST-04"
       ],
       "tests": [
+        {
+          "name": "TestCmmSubscriptionFamilyDecodeRejectsMalformedBodies",
+          "package": "narumq/internal/domain/mqtt"
+        },
         {
           "name": "TestSubscriptionPacketsCanonicalWireAndFlags",
           "package": "narumq/internal/domain/mqtt"
@@ -937,11 +981,30 @@
       "requirementIds": [
         "MQTT-01",
         "MQTT-06",
+        "MQTT-07",
         "MQTT-08",
+        "MQTT-12",
         "TEST-03",
-        "TEST-04"
+        "TEST-04",
+        "TEST-05"
       ],
       "tests": [
+        {
+          "name": "TestCmmSubscribeNonV5FailuresUseGenericFailureCode",
+          "package": "narumq/internal/application/subscribe"
+        },
+        {
+          "name": "TestCmmSubscribeAckReasonProfileByVersion",
+          "package": "narumq/internal/domain/mqtt"
+        },
+        {
+          "name": "TestCmmSubscriptionFamilyDecodeRejectsMalformedBodies",
+          "package": "narumq/internal/domain/mqtt"
+        },
+        {
+          "name": "TestCmmSubscriptionOptionsRejectQoSThree",
+          "package": "narumq/internal/domain/mqtt"
+        },
         {
           "name": "TestSubscriptionPacketsCanonicalWireAndFlags",
           "package": "narumq/internal/domain/mqtt"

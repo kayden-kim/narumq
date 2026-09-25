@@ -51,6 +51,19 @@ func (machine *StateMachine) LastAppliedIndex() uint64 {
 	return machine.lastAppliedIndex
 }
 
+// AdvanceAppliedIndex records committed Raft entries with no application event
+// (for example, an election's empty entry). The driver calls this only after
+// applying every command and configuration change through index.
+func (machine *StateMachine) AdvanceAppliedIndex(index uint64) error {
+	machine.mu.Lock()
+	defer machine.mu.Unlock()
+	if index == 0 || index < machine.lastAppliedIndex {
+		return ErrInvalidIndex
+	}
+	machine.lastAppliedIndex = index
+	return nil
+}
+
 // InitializeBootstrap installs the three configured initial voters after their
 // bootstrap ConfChange entries have committed. It does not create fake operations.
 func (machine *StateMachine) InitializeBootstrap(index uint64, members []MemberIdentityDTO) error {

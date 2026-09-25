@@ -30,6 +30,7 @@ import (
 	"slices"
 	"sort"
 	"strconv"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -41,7 +42,25 @@ const (
 	clusterMembershipProcessAdmin     = "process-acceptance-admin-token"
 )
 
-func TestDynamicClusterMembershipProcessAcceptance(t *testing.T) {
+type clusterMembershipProcessFixture struct {
+	tempDir             string
+	repoRoot            string
+	binary              string
+	ctx                 context.Context
+	harness             *clusterMembershipProcessHarness
+	caPath              string
+	certificates        []clusterMembershipProcessCertificate
+	peerAddresses       []string
+	managementAddresses []string
+	mqttAddresses       []string
+	tokenPath           string
+	securityPath        string
+	accessToken         string
+	bootstrapMembers    []clusterMembershipProcessMember
+}
+
+func newClusterMembershipProcessFixture(t *testing.T, nodeCount int, buildTags string) *clusterMembershipProcessFixture {
+	t.Helper()
 	repoRoot := clusterMembershipProcessRepoRoot(t)
 	tempDir := t.TempDir()
 	binaryPath := filepath.Join(tempDir, "narumq")
@@ -50,20 +69,25 @@ func TestDynamicClusterMembershipProcessAcceptance(t *testing.T) {
 	}
 	buildCtx, buildCancel := context.WithTimeout(context.Background(), 3*time.Minute)
 	defer buildCancel()
-	build := exec.CommandContext(buildCtx, "go", "build", "-o", binaryPath, "./cmd/narumq")
+	args := []string{"build", "-o", binaryPath}
+	if buildTags != "" {
+		args = append(args, "-tags", buildTags)
+	}
+	args = append(args, "./cmd/narumq")
+	build := exec.CommandContext(buildCtx, "go", args...)
 	build.Dir = repoRoot
 	buildOutput, err := build.CombinedOutput()
 	if err != nil {
 		t.Fatalf("build cmd/narumq executable: %v\n%s", err, buildOutput)
 	}
 
-	clusterCtx, clusterCancel := context.WithTimeout(context.Background(), 5*time.Minute)
-	defer clusterCancel()
+	clusterCtx, clusterCancel := context.WithTimeout(context.Background(), 10*time.Minute)
+	t.Cleanup(clusterCancel)
 	harness := newClusterMembershipProcessHarness(t, clusterCtx, repoRoot, binaryPath)
 	t.Cleanup(harness.cleanup)
 
 	ca := newClusterMembershipProcessCA(t)
-	certificates := make([]clusterMembershipProcessCertificate, 4)
+	certificates := make([]clusterMembershipProcessCertificate, nodeCount)
 	for index := range certificates {
 		certificates[index] = newClusterMembershipProcessCertificate(t, ca, fmt.Sprintf("node%d.example.test", index+1))
 	}
@@ -73,12 +97,14 @@ func TestDynamicClusterMembershipProcessAcceptance(t *testing.T) {
 	}
 	clusterMembershipProcessWriteFile(t, caPath, ca.pem, 0o600)
 
-	addresses := clusterMembershipProcessAddresses(t, 12)
-	peerAddresses := addresses[0:4]
-	managementAddresses := addresses[4:8]
-	mqttAddresses := addresses[8:12]
+	addresses := clusterMembershipProcessAddresses(t, 3*nodeCount)
+	peerAddresses := addresses[0:nodeCount]
+	managementAddresses := addresses[nodeCount : 2*nodeCount]
+	mqttAddresses := addresses[2*nodeCount : 3*nodeCount]
+
 	tokenPath := filepath.Join(tempDir, "cluster-admin.token")
 	clusterMembershipProcessWriteFile(t, tokenPath, []byte(clusterMembershipProcessAdmin+"\n"), 0o600)
+
 	securityPath := filepath.Join(tempDir, "mqtt-security.json")
 	jwksURL, accessToken := clusterMembershipProcessJWTFixture(t)
 	securityConfig := []byte(fmt.Sprintf(`{
@@ -97,47 +123,132 @@ func TestDynamicClusterMembershipProcessAcceptance(t *testing.T) {
     "subject": "mqtt-process-client",
     "tenantId": "acceptance",
     "credentialId": "mqtt-process-client-credential",
-    "allowedClientIds": ["ready-connection-client"],
+    "allowedClientIds": ["ready-connection-client", "handoff-client"],
     "roles": ["client"]
   }],
-  "acl": []
+  "acl": [{
+    "tenantId": "acceptance",
+    "role": "client",
+    "effect": "allow",
+    "action": "subscribe",
+    "topicFilter": "handoff/#"
+  }]
 }`, jwksURL))
 	clusterMembershipProcessWriteFile(t, securityPath, securityConfig, 0o600)
 
-	members := make([]clusterMembershipProcessMember, 3)
-	for index := range members {
-		members[index] = clusterMembershipProcessMember{
+	bootstrapMembers := make([]clusterMembershipProcessMember, 3)
+	for index := range bootstrapMembers {
+		bootstrapMembers[index] = clusterMembershipProcessMember{
 			MemberID: uint64(index + 1), Address: peerAddresses[index],
 			DNSSAN:            certificates[index].dnsName,
 			CertificateSHA256: hex.EncodeToString(certificates[index].fingerprint[:]),
 		}
 	}
-	bootstrapProcesses := make([]*clusterMembershipProcess, 3)
-	bootstrapConfigs := make([]string, 3)
-	for index := range bootstrapProcesses {
-		dataDir := filepath.Join(tempDir, fmt.Sprintf("node-%d-data", index+1))
-		if err := os.MkdirAll(dataDir, 0o700); err != nil {
-			t.Fatalf("create bootstrap directory: %v", err)
-		}
-		config := clusterMembershipProcessConfig{
-			Mode: "cluster", ClusterID: clusterMembershipProcessClusterID,
-			NodeID: uint64(index + 1), Directory: dataDir,
-			ListenAddress: peerAddresses[index], AdvertisedAddress: peerAddresses[index],
-			LocalDNSName: certificates[index].dnsName, ReleaseVersion: clusterMembershipProcessRelease,
-			ClusterProtocolMajor: 2, ClusterProtocolMinor: 0, StateSchemaMajor: 1, StateSchemaMinor: 0,
-			Role: "bootstrap", BootstrapMembers: append([]clusterMembershipProcessMember(nil), members...),
-			SeedAddresses: []string{}, PeerTLS: clusterMembershipProcessTLS{
-				CertFile: certificates[index].certPath(tempDir), KeyFile: certificates[index].keyPath(tempDir), CAFile: caPath,
-			},
-			Management: clusterMembershipProcessManagement{ListenAddress: managementAddresses[index], ClusterAdminTokenFile: tokenPath},
-			MQTT:       clusterMembershipProcessMQTT{TCPListenAddress: mqttAddresses[index], TLSListenAddress: "", SecurityConfigFile: securityPath},
-		}
-		clusterMembershipProcessWriteFile(t, config.PeerTLS.CertFile, certificates[index].certPEM, 0o600)
-		clusterMembershipProcessWriteFile(t, config.PeerTLS.KeyFile, certificates[index].keyPEM, 0o600)
-		bootstrapConfigs[index] = filepath.Join(tempDir, fmt.Sprintf("node-%d.json", index+1))
-		clusterMembershipProcessWriteJSON(t, bootstrapConfigs[index], config)
-	}
 
+	return &clusterMembershipProcessFixture{
+		tempDir:             tempDir,
+		repoRoot:            repoRoot,
+		binary:              binaryPath,
+		ctx:                 clusterCtx,
+		harness:             harness,
+		caPath:              caPath,
+		certificates:        certificates,
+		peerAddresses:       peerAddresses,
+		managementAddresses: managementAddresses,
+		mqttAddresses:       mqttAddresses,
+		tokenPath:           tokenPath,
+		securityPath:        securityPath,
+		accessToken:         accessToken,
+		bootstrapMembers:    bootstrapMembers,
+	}
+}
+
+func (f *clusterMembershipProcessFixture) bootstrapConfig(memberID uint64) string {
+	index := int(memberID - 1)
+	dataDir := filepath.Join(f.tempDir, fmt.Sprintf("node-%d-data", memberID))
+	_ = os.MkdirAll(dataDir, 0o700)
+	config := clusterMembershipProcessConfig{
+		Mode: "cluster", ClusterID: clusterMembershipProcessClusterID,
+		NodeID: memberID, Directory: dataDir,
+		ListenAddress: f.peerAddresses[index], AdvertisedAddress: f.peerAddresses[index],
+		LocalDNSName: f.certificates[index].dnsName, ReleaseVersion: clusterMembershipProcessRelease,
+		ClusterProtocolMajor: 2, ClusterProtocolMinor: 0, StateSchemaMajor: 1, StateSchemaMinor: 0,
+		Role: "bootstrap", BootstrapMembers: append([]clusterMembershipProcessMember(nil), f.bootstrapMembers...),
+		SeedAddresses: []string{}, PeerTLS: clusterMembershipProcessTLS{
+			CertFile: f.certificates[index].certPath(f.tempDir), KeyFile: f.certificates[index].keyPath(f.tempDir), CAFile: f.caPath,
+		},
+		Management: clusterMembershipProcessManagement{ListenAddress: f.managementAddresses[index], ClusterAdminTokenFile: f.tokenPath},
+		MQTT:       clusterMembershipProcessMQTT{TCPListenAddress: f.mqttAddresses[index], TLSListenAddress: "", SecurityConfigFile: f.securityPath},
+	}
+	clusterMembershipProcessWriteFile(f.harness.t, config.PeerTLS.CertFile, f.certificates[index].certPEM, 0o600)
+	clusterMembershipProcessWriteFile(f.harness.t, config.PeerTLS.KeyFile, f.certificates[index].keyPEM, 0o600)
+	configPath := filepath.Join(f.tempDir, fmt.Sprintf("node-%d.json", memberID))
+	clusterMembershipProcessWriteJSON(f.harness.t, configPath, config)
+	return configPath
+}
+
+func (f *clusterMembershipProcessFixture) joinerConfig(memberID uint64, seedIDs []uint64) string {
+	index := int(memberID - 1)
+	dataDir := filepath.Join(f.tempDir, fmt.Sprintf("node-%d-data", memberID))
+	_ = os.MkdirAll(dataDir, 0o700)
+	seeds := make([]string, 0, len(seedIDs))
+	for _, seedID := range seedIDs {
+		seeds = append(seeds, "localhost:"+clusterMembershipProcessPort(f.peerAddresses[seedID-1]))
+	}
+	config := clusterMembershipProcessConfig{
+		Mode: "cluster", ClusterID: clusterMembershipProcessClusterID, NodeID: memberID,
+		Directory: dataDir, ListenAddress: f.peerAddresses[index], AdvertisedAddress: f.peerAddresses[index],
+		LocalDNSName: f.certificates[index].dnsName, ReleaseVersion: clusterMembershipProcessRelease,
+		ClusterProtocolMajor: 2, ClusterProtocolMinor: 0, StateSchemaMajor: 1, StateSchemaMinor: 0,
+		Role: "joiner", BootstrapMembers: []clusterMembershipProcessMember{},
+		SeedAddresses: seeds,
+		PeerTLS: clusterMembershipProcessTLS{
+			CertFile: f.certificates[index].certPath(f.tempDir), KeyFile: f.certificates[index].keyPath(f.tempDir), CAFile: f.caPath,
+		},
+		Management: clusterMembershipProcessManagement{ListenAddress: f.managementAddresses[index], ClusterAdminTokenFile: f.tokenPath},
+		MQTT:       clusterMembershipProcessMQTT{TCPListenAddress: f.mqttAddresses[index], TLSListenAddress: "", SecurityConfigFile: f.securityPath},
+	}
+	clusterMembershipProcessWriteFile(f.harness.t, config.PeerTLS.CertFile, f.certificates[index].certPEM, 0o600)
+	clusterMembershipProcessWriteFile(f.harness.t, config.PeerTLS.KeyFile, f.certificates[index].keyPEM, 0o600)
+	configPath := filepath.Join(f.tempDir, fmt.Sprintf("node-%d.json", memberID))
+	clusterMembershipProcessWriteJSON(f.harness.t, configPath, config)
+	return configPath
+}
+
+func (f *clusterMembershipProcessFixture) stageRequest(memberID uint64) clusterMembershipProcessStageRequest {
+	index := int(memberID - 1)
+	cert := f.certificates[index]
+	return clusterMembershipProcessStageRequest{
+		MemberID: memberID, Address: f.peerAddresses[index], DNSSAN: cert.dnsName,
+		CertificateSHA256:    hex.EncodeToString(cert.fingerprint[:]),
+		ReleaseVersion:       clusterMembershipProcessRelease,
+		ClusterProtocolMajor: 2, ClusterProtocolMinor: 0, StateSchemaMajor: 1, StateSchemaMinor: 0,
+	}
+}
+
+func (f *clusterMembershipProcessFixture) stageRequestBody(memberID uint64) []byte {
+	request := f.stageRequest(memberID)
+	requestBody, err := json.Marshal(request)
+	if err != nil {
+		f.harness.t.Fatalf("encode stage request for member %d: %v", memberID, err)
+	}
+	return requestBody
+}
+
+func TestDynamicClusterMembershipProcessAcceptance(t *testing.T) {
+	fixture := newClusterMembershipProcessFixture(t, 4, "")
+	harness := fixture.harness
+	clusterCtx := fixture.ctx
+	bootstrapConfigs := []string{
+		fixture.bootstrapConfig(1),
+		fixture.bootstrapConfig(2),
+		fixture.bootstrapConfig(3),
+	}
+	managementAddresses := fixture.managementAddresses
+	mqttAddresses := fixture.mqttAddresses
+	accessToken := fixture.accessToken
+
+	bootstrapProcesses := make([]*clusterMembershipProcess, 3)
 	// With only the first bootstrap voter running, readiness has no quorum. The
 	// external MQTT CONNECT must be rejected before any additional voter starts.
 	first, err := harness.start("bootstrap node 1", bootstrapConfigs[0], managementAddresses[0])
@@ -168,43 +279,9 @@ func TestDynamicClusterMembershipProcessAcceptance(t *testing.T) {
 		t.Fatalf("bootstrap elected unexpected leader member ID %d", leaderID)
 	}
 
-	joinerCert := certificates[3]
-	joinerConfigPath := filepath.Join(tempDir, "node-4.json")
-	joinerDataDir := filepath.Join(tempDir, "node-4-data")
-	if err := os.MkdirAll(joinerDataDir, 0o700); err != nil {
-		t.Fatalf("create joiner directory: %v", err)
-	}
-	joinerConfig := clusterMembershipProcessConfig{
-		Mode: "cluster", ClusterID: clusterMembershipProcessClusterID, NodeID: 4,
-		Directory: joinerDataDir, ListenAddress: peerAddresses[3], AdvertisedAddress: peerAddresses[3],
-		LocalDNSName: joinerCert.dnsName, ReleaseVersion: clusterMembershipProcessRelease,
-		ClusterProtocolMajor: 2, ClusterProtocolMinor: 0, StateSchemaMajor: 1, StateSchemaMinor: 0,
-		Role: "joiner", BootstrapMembers: []clusterMembershipProcessMember{},
-		SeedAddresses: []string{
-			"localhost:" + clusterMembershipProcessPort(peerAddresses[0]),
-			"localhost:" + clusterMembershipProcessPort(peerAddresses[1]),
-			"localhost:" + clusterMembershipProcessPort(peerAddresses[2]),
-		},
-		PeerTLS: clusterMembershipProcessTLS{
-			CertFile: joinerCert.certPath(tempDir), KeyFile: joinerCert.keyPath(tempDir), CAFile: caPath,
-		},
-		Management: clusterMembershipProcessManagement{ListenAddress: managementAddresses[3], ClusterAdminTokenFile: tokenPath},
-		MQTT:       clusterMembershipProcessMQTT{TCPListenAddress: mqttAddresses[3], TLSListenAddress: "", SecurityConfigFile: securityPath},
-	}
-	clusterMembershipProcessWriteFile(t, joinerConfig.PeerTLS.CertFile, joinerCert.certPEM, 0o600)
-	clusterMembershipProcessWriteFile(t, joinerConfig.PeerTLS.KeyFile, joinerCert.keyPEM, 0o600)
-	clusterMembershipProcessWriteJSON(t, joinerConfigPath, joinerConfig)
-
-	request := clusterMembershipProcessStageRequest{
-		MemberID: 4, Address: peerAddresses[3], DNSSAN: joinerCert.dnsName,
-		CertificateSHA256:    hex.EncodeToString(joinerCert.fingerprint[:]),
-		ReleaseVersion:       clusterMembershipProcessRelease,
-		ClusterProtocolMajor: 2, ClusterProtocolMinor: 0, StateSchemaMajor: 1, StateSchemaMinor: 0,
-	}
-	requestBody, err := json.Marshal(request)
-	if err != nil {
-		t.Fatalf("encode join request: %v", err)
-	}
+	joinerConfigPath := fixture.joinerConfig(4, []uint64{1, 2, 3})
+	request := fixture.stageRequest(4)
+	requestBody := fixture.stageRequestBody(4)
 	// Compatibility and identity rejection: verify that incompatible profiles and reserved IDs are rejected before staging.
 	for tcIndex, tc := range []struct {
 		name     string
@@ -403,15 +480,7 @@ func TestDynamicClusterMembershipProcessAcceptance(t *testing.T) {
 			status, retryRemoval, body, err)
 	}
 
-	retiredIdentity := request
-	retiredIdentity.MemberID = removalTargetID
-	retiredIdentity.Address = peerAddresses[removalTargetID-1]
-	retiredIdentity.DNSSAN = certificates[removalTargetID-1].dnsName
-	retiredIdentity.CertificateSHA256 = hex.EncodeToString(certificates[removalTargetID-1].fingerprint[:])
-	retiredBody, err := json.Marshal(retiredIdentity)
-	if err != nil {
-		t.Fatalf("encode retired ID reuse request: %v", err)
-	}
+	retiredBody := fixture.stageRequestBody(removalTargetID)
 	status, body, err = clusterMembershipProcessRequest(clusterCtx, http.MethodPost,
 		processesByID[retryLeaderID].managementURL()+"/api/v1/cluster/members",
 		retiredBody, clusterMembershipProcessAdmin, "process-acceptance-reuse-retired-id")
@@ -535,10 +604,13 @@ func newClusterMembershipProcessHarness(t *testing.T, ctx context.Context, root,
 	return &clusterMembershipProcessHarness{t: t, ctx: ctx, root: root, binary: binary}
 }
 
-func (h *clusterMembershipProcessHarness) start(name, configPath, managementAddress string) (*clusterMembershipProcess, error) {
+func (h *clusterMembershipProcessHarness) launch(name, configPath, managementAddress string, env []string) (*clusterMembershipProcess, error) {
 	processCtx, cancel := context.WithCancel(h.ctx)
 	command := exec.CommandContext(processCtx, h.binary, "-cluster-config", configPath)
 	command.Dir = h.root
+	if len(env) != 0 {
+		command.Env = append(os.Environ(), env...)
+	}
 	logs := &clusterMembershipProcessLog{limit: 1 << 20}
 	command.Stdout = logs
 	command.Stderr = logs
@@ -556,6 +628,14 @@ func (h *clusterMembershipProcessHarness) start(name, configPath, managementAddr
 	}()
 	h.processes = append(h.processes, process)
 	return process, nil
+}
+
+func (h *clusterMembershipProcessHarness) start(name, configPath, managementAddress string) (*clusterMembershipProcess, error) {
+	return h.launch(name, configPath, managementAddress, nil)
+}
+
+func (h *clusterMembershipProcessHarness) startArmed(name, configPath, managementAddress, failpoint string) (*clusterMembershipProcess, error) {
+	return h.launch(name, configPath, managementAddress, []string{"NARUMQ_FAILPOINT=" + failpoint})
 }
 
 func (h *clusterMembershipProcessHarness) cleanup() {
@@ -593,6 +673,22 @@ func (process *clusterMembershipProcess) isAlive() error {
 		return fmt.Errorf("%s exited: %v\n%s", process.name, process.waitErr, process.logs.String())
 	default:
 		return nil
+	}
+}
+
+func (process *clusterMembershipProcess) exitCode() (int, bool) {
+	select {
+	case <-process.done:
+		if process.waitErr == nil {
+			return 0, true
+		}
+		var exitErr *exec.ExitError
+		if errors.As(process.waitErr, &exitErr) {
+			return exitErr.ExitCode(), true
+		}
+		return -1, false
+	default:
+		return 0, false
 	}
 }
 
@@ -1298,4 +1394,187 @@ func clusterMembershipProcessIsClosed(err error) bool {
 	return errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) ||
 		errors.Is(err, net.ErrClosed) || errors.Is(err, os.ErrClosed) ||
 		(errors.As(err, &networkError) && !networkError.Timeout())
+}
+
+func clusterMembershipProcessRequireFailpointExit(t *testing.T, process *clusterMembershipProcess, point string) {
+	t.Helper()
+	select {
+	case <-process.done:
+	case <-time.After(30 * time.Second):
+		t.Fatalf("%s did not exit waiting for failpoint %s", process.name, point)
+	}
+	code, ok := process.exitCode()
+	if !ok || code != 86 {
+		t.Fatalf("%s exit code = %d (ok=%t), want 86; logs:\n%s", process.name, code, ok, process.logs.String())
+	}
+	wantMarker := "narumq failpoint reached: " + point
+	if !strings.Contains(process.logs.String(), wantMarker) {
+		t.Fatalf("%s output missing marker %q; logs:\n%s", process.name, wantMarker, process.logs.String())
+	}
+}
+
+func clusterMembershipProcessOpenSubscribedSession(t *testing.T, address, accessToken, clientID, filter string) net.Conn {
+	t.Helper()
+	deadline := time.Now().Add(10 * time.Second)
+	var lastErr error
+	for time.Now().Before(deadline) {
+		conn, err := clusterMembershipProcessTryOpenSubscribedSession(address, accessToken, clientID, filter)
+		if err == nil {
+			return conn
+		}
+		lastErr = err
+		time.Sleep(100 * time.Millisecond)
+	}
+	t.Fatalf("open subscribed session to %s timed out: %v", address, lastErr)
+	return nil
+}
+
+func clusterMembershipProcessTryOpenSubscribedSession(address, accessToken, clientID, filter string) (net.Conn, error) {
+	connection, err := net.DialTimeout("tcp", address, 2*time.Second)
+	if err != nil {
+		return nil, fmt.Errorf("dial: %w", err)
+	}
+	_ = connection.SetDeadline(time.Now().Add(3 * time.Second))
+
+	// CONNECT packet (MQTT 3.1.1, clean session 0, username + password => flags 0xC0)
+	body := []byte{0, 4, 'M', 'Q', 'T', 'T', 4, 0xC0, 0, 60}
+	for _, field := range []string{clientID, "jwt", accessToken} {
+		body = append(body, byte(len(field)>>8), byte(len(field)))
+		body = append(body, field...)
+	}
+	packet := []byte{0x10}
+	remaining := len(body)
+	for {
+		digit := byte(remaining % 128)
+		remaining /= 128
+		if remaining > 0 {
+			digit |= 0x80
+		}
+		packet = append(packet, digit)
+		if remaining == 0 {
+			break
+		}
+	}
+	packet = append(packet, body...)
+	if _, err := connection.Write(packet); err != nil {
+		_ = connection.Close()
+		return nil, fmt.Errorf("send CONNECT: %w", err)
+	}
+	var connackHeader [2]byte
+	if _, err := io.ReadFull(connection, connackHeader[:]); err != nil {
+		_ = connection.Close()
+		return nil, fmt.Errorf("read CONNACK header: %w", err)
+	}
+	var connackBody [2]byte
+	if _, err := io.ReadFull(connection, connackBody[:]); err != nil {
+		_ = connection.Close()
+		return nil, fmt.Errorf("read CONNACK body: %w", err)
+	}
+	if connackHeader != [2]byte{0x20, 2} || connackBody[1] != 0 {
+		_ = connection.Close()
+		return nil, fmt.Errorf("unexpected CONNACK: %x %x", connackHeader, connackBody)
+	}
+
+	// SUBSCRIBE packet: 0x82, packet ID 1, filter, QoS 0
+	subPayload := []byte{0, 1, byte(len(filter) >> 8), byte(len(filter))}
+	subPayload = append(subPayload, filter...)
+	subPayload = append(subPayload, 0)
+	subPacket := []byte{0x82, byte(len(subPayload))}
+	subPacket = append(subPacket, subPayload...)
+	if _, err := connection.Write(subPacket); err != nil {
+		_ = connection.Close()
+		return nil, fmt.Errorf("send SUBSCRIBE: %w", err)
+	}
+	var suback [5]byte
+	if _, err := io.ReadFull(connection, suback[:]); err != nil {
+		_ = connection.Close()
+		return nil, fmt.Errorf("read SUBACK: %w", err)
+	}
+	if suback != [5]byte{0x90, 0x03, 0x00, 0x01, 0x00} {
+		_ = connection.Close()
+		return nil, fmt.Errorf("unexpected SUBACK: %x, want 9003000100", suback)
+	}
+
+	_ = connection.SetDeadline(time.Time{})
+	return connection, nil
+}
+
+func clusterMembershipProcessAssertConnectionClosed(t *testing.T, conn net.Conn, timeout time.Duration) {
+	t.Helper()
+	_ = conn.SetReadDeadline(time.Now().Add(timeout))
+	var buf [1]byte
+	_, err := conn.Read(buf[:])
+	if err == nil {
+		t.Fatal("expected connection to be closed, but read succeeded")
+	}
+	if !clusterMembershipProcessIsClosed(err) {
+		t.Fatalf("expected closed error, got: %v", err)
+	}
+}
+
+func clusterMembershipProcessAssertConnectionOpen(t *testing.T, conn net.Conn, wait time.Duration) {
+	t.Helper()
+	_ = conn.SetReadDeadline(time.Now().Add(wait))
+	var buf [1]byte
+	_, err := conn.Read(buf[:])
+	if err == nil {
+		t.Fatal("unexpected read on open idle connection")
+	}
+	var netErr net.Error
+	if !errors.As(err, &netErr) || !netErr.Timeout() {
+		t.Fatalf("expected timeout indicating open connection, got: %v", err)
+	}
+	_ = conn.SetDeadline(time.Time{})
+}
+
+func clusterMembershipProcessWaitForRouteProjection(t *testing.T, ctx context.Context, processes []*clusterMembershipProcess, wantFilter string) {
+	t.Helper()
+	clusterMembershipProcessWait(t, ctx, fmt.Sprintf("route projection for filter %q", wantFilter), func() (bool, string, error) {
+		type subTuple struct {
+			tenantID string
+			clientID string
+			filter   string
+			qos      int
+		}
+		var reference *subTuple
+		for _, process := range processes {
+			status, body, err := clusterMembershipProcessRequest(ctx, http.MethodGet, process.managementURL()+"/api/v1/subscriptions?tenantId=acceptance", nil, clusterMembershipProcessAdmin, "")
+			if err != nil {
+				return false, fmt.Sprintf("%s query error: %v", process.name, err), nil
+			}
+			if status != http.StatusOK {
+				return false, fmt.Sprintf("%s status = %d", process.name, status), nil
+			}
+			var list struct {
+				Data []struct {
+					TenantID    string `json:"tenantId"`
+					ClientID    string `json:"clientId"`
+					TopicFilter string `json:"topicFilter"`
+					QoS         int    `json:"qos"`
+				} `json:"data"`
+			}
+			if err := json.Unmarshal([]byte(body), &list); err != nil {
+				return false, fmt.Sprintf("%s decode error: %v", process.name, err), nil
+			}
+			if len(list.Data) != 1 {
+				return false, fmt.Sprintf("%s has %d subscriptions, want 1", process.name, len(list.Data)), nil
+			}
+			sub := list.Data[0]
+			if sub.TenantID != "acceptance" || sub.TopicFilter != wantFilter {
+				return false, fmt.Sprintf("%s subscription = %+v, want tenant=acceptance, filter=%s", process.name, sub, wantFilter), nil
+			}
+			tuple := subTuple{
+				tenantID: sub.TenantID,
+				clientID: sub.ClientID,
+				filter:   sub.TopicFilter,
+				qos:      sub.QoS,
+			}
+			if reference == nil {
+				reference = &tuple
+			} else if *reference != tuple {
+				return false, fmt.Sprintf("projection mismatch between nodes: reference=%+v, %s=%+v", *reference, process.name, tuple), nil
+			}
+		}
+		return true, "all nodes agree on route projection", nil
+	})
 }

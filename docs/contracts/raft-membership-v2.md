@@ -37,6 +37,8 @@ A member record는 다음 값을 하나의 identity로 commit한다.
 
 TLS 1.3 mTLS가 CA chain과 EKU를 먼저 검증한다. Peer adapter는 TLS leaf certificate의 DNS SAN과 SHA-256을 committed identity와 대조한다. Peer adapter는 cluster ID, member ID, advertised address, protocol/state version, phase와 operation ID도 committed registry와 대조한다. 불일치, 미지원 version, malformed hello 또는 등록되지 않은 ID는 Raft payload를 `Step`에 전달하기 전에 connection을 닫는다.
 
+Raft frame의 TLS·hello identity는 **직접 보낸 peer**를 인증한다. `etcd/raft`가 `MsgProp`, `MsgReadIndex`, `MsgTransferLeader`를 leader에게 전달할 때 protobuf `From`에는 **원래 요청한 member ID**가 남을 수 있다. 이 세 유형에 한해서만 Raft adapter는 인증된 직접 송신자와 원래 요청자가 모두 현재 committed `ConfState`에 속하는지 확인한 뒤 전달한다. 그 외 Raft message는 protobuf `From`과 인증된 직접 송신자가 반드시 같아야 한다. Transport는 protobuf payload를 수정하지 않는다.
+
 Cluster protocol major는 정확히 `2`, minor는 `0`이어야 한다. State schema major/minor도 현재 Draft에서 정확히 `1.0`만 받는다. `releaseVersion`은 모든 committed member와 bytewise exact match여야 하며 mixed-release 운영을 지원하지 않는다. 더 큰 major·minor 또는 다른 release/schema는 `compatibility_unsupported`로 거절한다. 이 exact match rule은 release N/N-1 compatibility를 약속하지 않는다.
 
 ### 1.2 Membership phase와 안전한 순서
@@ -57,9 +59,9 @@ STAGED → LEARNER → CATCHING_UP → VOTER
 - 하나의 cluster group에서는 한 membership operation만 진행한다. Local proposal acceptance는 commitment가 아니며 management 성공 응답은 stage 또는 현재 phase의 commit 뒤에만 보낸다.
 - Heartbeat timeout은 failure observation일 뿐 remove command가 아니다. Unexpected failure에서 operator가 승인하지 않은 voter-set 변경은 금지한다.
 
-`ConfChangeV2`가 committed Ready entry일 때만 Raft adapter가 `RawNode.ApplyConfChange`를 호출한다. Application membership record와 derived registry는 같은 committed entry order를 소비한다. Recovery는 snapshot plus committed WAL tail에서 ConfState, staged record, phase, operation ID와 tombstone을 재구성한다.
+`ConfChangeV2`가 committed Ready entry일 때만 Raft adapter가 `RawNode.ApplyConfChange`를 호출한다. Application membership record와 derived registry는 같은 committed entry order를 소비한다. Recovery는 snapshot plus committed WAL tail에서 ConfState, staged record, phase, operation ID와 tombstone을 재구성한다. Replay로 application index가 기존 typed snapshot index보다 앞서면, peer transport를 시작하기 전에 replay 완료 상태로 새 typed snapshot을 저장한다.
 
-**현재 Draft 구현의 한계:** planned removal은 대상 member가 보유한 committed ownership, persistent subscription, session checkpoint가 모두 없을 때만 Raft configuration removal을 진행한다. 하나라도 남아 있으면 `REMOVING` 상태와 기존 voter 구성을 유지한다. Runtime은 live connection을 drain하거나 최종 checkpoint를 수집·전송·복구하지 않는다. 따라서 이는 §1.2의 planned-leave 보장을 구현한 것이 아니며, 현재 다중 프로세스 acceptance의 빈 session 상태 결과만으로 live session이 있는 cluster의 voter removal을 운영해서는 안 된다.
+**Planned removal session handoff:** planned removal 진행 중 리더는 대상 member가 소유한 모든 세션에 대해 남은 voter 중 가장 작은 member ID를 successor로 선택하여 `OwnershipActionTransfer` (epoch+1) 명령을 commit한다. Commit된 소유권 이전은 state machine에서 persistent subscription의 ownerNodeID와 epoch를 함께 갱신하며, 탈퇴 대상 노드의 로컬 소켓은 takeover로 안전하게 닫힌다(`CloseSessionForTakeover`). 탈퇴 대상 member에 속한 미완료 checkpoint가 존재하거나(`checkpoint_handoff_unsupported`), successor voter가 없거나(`no_successor_voter`), epoch가 고갈되었거나(`ownership_epoch_exhausted`), 고아 구독이 감지되면(`orphan_subscription`) removal은 fail-closed 원칙에 따라 차단되고 `REMOVING` 상태를 유지한다. 탈퇴 대상 노드는 `LEAVING` 상태 동안 신규 세션 admission을 거절한다.
 
 ### 1.3 Management API
 
@@ -259,6 +261,8 @@ Each active peer retains v1's independently bounded queue policy: outbound FIFO 
 
 Each snapshot `membership_history` record stores the exact `committed_index` of its committed transition. The command payload must leave that field zero because the Raft entry index is unknown when proposed; the application records the actual index while applying the committed entry. Snapshot validation requires `0 < committed_index <= last_included_index`. Restored operation status reports the latest transition's persisted index, never the snapshot boundary.
 
+Snapshot의 `lastIncludedIndex`는 Raft가 적용한 마지막 index와 일치해야 한다. 리더 선출로 생긴 빈 Raft entry처럼 application event가 없는 commit도 typed state의 적용 index를 전진시키되 member·operation 내용은 바꾸지 않는다. 그래야 learner 추가 직후 저장한 snapshot의 `ConfState`와 typed snapshot index가 같고, 새 learner가 해당 snapshot에서 복구할 수 있다.
+
 `PublishPacket` is the exact current `mqtt.Publish` domain subset: MQTT protocol version (`4` for 3.1.1, `5` for 5.0), DUP, QoS, retain, packet ID, topic, binary payload and optional message-expiry interval. QoS is `0..2`; packet ID is zero exactly for QoS 0 and nonzero for QoS 1/2. When `has_message_expiry_interval=false`, the stored interval is zero; otherwise it is seconds. `InboundCheckpoint` and `OutboundCheckpoint` map to `delivery.Inbound` and `delivery.Outbound` phases and accept only QoS 1/2 entries whose packet ID, direction and phase are consistent. The ownership/subscription command semantics follow `takeover.StateMachine`: committed ordering advances even when a syntactically valid stale epoch is rejected; mutation itself applies only when exact `(ownerNodeId, epoch)` matches.
 
 `SnapshotEnvelope` contains schema major/minor, `lastIncludedIndex`, `objectCount`, SHA-256 and typed `ReplicatedStateSnapshot`. `objectCount` is the total number of top-level repeated entries across members (including `RETIRED` tombstones), ownerships, subscriptions, session checkpoints, and membership-history records; a checkpoint is one object regardless of its number of inflight entries. Digest input is the deterministic protobuf serialization of `ReplicatedStateSnapshot` without the envelope. Any unknown field, unknown required enum/action, duplicate singular field, duplicate oneof, malformed UTF-8, noncanonical byte sequence, unsupported version, count mismatch or digest mismatch fails apply/recovery/readiness closed.
@@ -318,17 +322,17 @@ ownership_acquire (54 bytes)
 30 30 30 30 30 30 30 31 5A 0C 0A 01 74 12 01 63
 20 01 28 01 30 01
 
-subscription_add (57 bytes)
+subscription_add (59 bytes)
 08 01 1A 24 30 30 30 30 30 30 30 30 2D 30 30 30
 30 2D 34 30 30 30 2D 38 30 30 30 2D 30 30 30 30
-30 30 30 30 30 30 30 31 62 0F 0A 01 74 12 01 63
-18 01 20 01 2A 01 23 50 01
+30 30 30 30 30 30 30 31 62 11 0A 01 74 12 01 63
+18 01 20 01 2A 01 23 30 01 50 01
 
-subscription_remove (57 bytes)
+subscription_remove (59 bytes)
 08 01 1A 24 30 30 30 30 30 30 30 30 2D 30 30 30
 30 2D 34 30 30 30 2D 38 30 30 30 2D 30 30 30 30
-30 30 30 30 30 30 30 31 62 0F 0A 01 74 12 01 63
-18 01 20 01 2A 01 23 50 02
+30 30 30 30 30 30 30 31 62 11 0A 01 74 12 01 63
+18 01 20 01 2A 01 23 30 01 50 02
 
 checkpoint (88 bytes)
 08 01 1A 24 30 30 30 30 30 30 30 30 2D 30 30 30
