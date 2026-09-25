@@ -63,16 +63,26 @@ type ClusterSummaryDTO struct {
 
 // NodeSummaryDTO represents a node's operational snapshot.
 type NodeSummaryDTO struct {
-	NodeID           string    `json:"nodeId"`
-	Version          string    `json:"version"`
-	UptimeMs         int64     `json:"uptimeMs"`
-	State            NodeState `json:"state"`
-	Ready            bool      `json:"ready"`
-	ReadinessReason  *string   `json:"readinessReason"`
-	Role             string    `json:"role"` // LEADER, FOLLOWER, LEARNER
-	LastAppliedIndex int64     `json:"lastAppliedIndex"`
-	ConnectionCount  int       `json:"connectionCount"`
-	StoragePressure  bool      `json:"storagePressure"`
+	NodeID            string               `json:"nodeId"`
+	Version           string               `json:"version"`
+	UptimeMs          int64                `json:"uptimeMs"`
+	State             NodeState            `json:"state"`
+	Ready             bool                 `json:"ready"`
+	ReadinessReason   *string              `json:"readinessReason"`
+	Role              string               `json:"role"` // LEADER, FOLLOWER, LEARNER
+	LastAppliedIndex  int64                `json:"lastAppliedIndex"`
+	ConnectionCount   int                  `json:"connectionCount"`
+	StoragePressure   bool                 `json:"storagePressure"`
+	ReplicationHealth *string              `json:"replicationHealth,omitempty"`
+	LastErrorCode     *string              `json:"lastErrorCode,omitempty"`
+	ReplicationQueue  *ReplicationQueueDTO `json:"replicationQueue,omitempty"`
+}
+
+// ReplicationQueueDTO reports the queried node's bounded outbound peer queue toward one member.
+type ReplicationQueueDTO struct {
+	OutboundMessages int    `json:"outboundMessages"`
+	OutboundBytes    int    `json:"outboundBytes"`
+	RejectedMessages uint64 `json:"rejectedMessages"`
 }
 
 // ClientSessionDTO represents a client's session state.

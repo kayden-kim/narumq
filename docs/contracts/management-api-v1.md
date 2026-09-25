@@ -6,7 +6,7 @@ path, parameter, response schema와 media type은
 
 | 항목 | 값 |
 | --- | --- |
-| 이름과 version | `narumq-management-api` 1.0.0 |
+| 이름과 version | `narumq-management-api` 1.2.0 |
 | 상태 | Active |
 | Producer | NaruMQ broker management API |
 | Consumer | Dashboard·operator·monitoring integration의 query client |
@@ -111,6 +111,7 @@ method에 사용한다. 내부 오류와 credential은 response에 노출하지 
 - `/api/v1`의 required response field 삭제·rename·type 변경은 breaking change다.
 - Optional response field 추가는 contract suite와 consumer compatibility 확인 뒤에만
   허용한다.
+- Version 1.2.0은 `NodeData`에 optional `replicationHealth`, `lastErrorCode`, `replicationQueue` field를 추가했다. Field schema와 enum은 OpenAPI artifact가 기준이며, contract suite가 response shape를 검증한다.
 - Future catalog에 남아 있는 mutation endpoint, OIDC/JWT, API rate limiting,
   idempotency, audit event와 dashboard는 현재 Active query contract가 아니다. 이 기능을
   구현할 때는 별도 범위와 contract revision을 정한다.

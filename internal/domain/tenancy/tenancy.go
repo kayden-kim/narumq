@@ -86,6 +86,57 @@ func (key SessionKey) RoutingID() string {
 	return string(encoded)
 }
 
+// ParseSessionKeyRoutingID decodes the canonical internal identifier for a tenant-scoped session.
+func ParseSessionKeyRoutingID(routingID string) (SessionKey, error) {
+	if len(routingID) == 0 || routingID[0] != 0xff {
+		return SessionKey{}, ErrInvalidSessionKey
+	}
+
+	tenantLength, offset, err := parseSessionKeyRoutingIDLength(routingID, 1)
+	if err != nil || tenantLength > len(routingID)-offset {
+		return SessionKey{}, ErrInvalidSessionKey
+	}
+	tenantID, err := NewTenantID(routingID[offset : offset+tenantLength])
+	if err != nil {
+		return SessionKey{}, ErrInvalidSessionKey
+	}
+	offset += tenantLength
+
+	clientLength, offset, err := parseSessionKeyRoutingIDLength(routingID, offset)
+	if err != nil || clientLength != len(routingID)-offset {
+		return SessionKey{}, ErrInvalidSessionKey
+	}
+	key, err := NewSessionKey(tenantID, routingID[offset:])
+	if err != nil {
+		return SessionKey{}, ErrInvalidSessionKey
+	}
+	return key, nil
+}
+
+func parseSessionKeyRoutingIDLength(routingID string, offset int) (int, int, error) {
+	if offset >= len(routingID) {
+		return 0, 0, ErrInvalidSessionKey
+	}
+	separator := strings.IndexByte(routingID[offset:], ':')
+	if separator <= 0 {
+		return 0, 0, ErrInvalidSessionKey
+	}
+	lengthText := routingID[offset : offset+separator]
+	if len(lengthText) > 1 && lengthText[0] == '0' {
+		return 0, 0, ErrInvalidSessionKey
+	}
+	for index := range lengthText {
+		if lengthText[index] < '0' || lengthText[index] > '9' {
+			return 0, 0, ErrInvalidSessionKey
+		}
+	}
+	length, err := strconv.Atoi(lengthText)
+	if err != nil {
+		return 0, 0, ErrInvalidSessionKey
+	}
+	return length, offset + separator + 1, nil
+}
+
 // Topic identifies one concrete MQTT topic within a tenant.
 type Topic struct {
 	tenantID TenantID

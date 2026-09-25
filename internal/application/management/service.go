@@ -456,13 +456,14 @@ func (s *Service) ListSubscriptions(ctx context.Context, filter ports.Subscripti
 		if filter.TenantID != "" && tenantStr != filter.TenantID {
 			continue
 		}
-		if filter.ClientID != "" && string(r.SessionID) != filter.ClientID {
+		clientID := subscriptionClientID(r, tenantStr)
+		if filter.ClientID != "" && clientID != filter.ClientID {
 			continue
 		}
 
 		subs = append(subs, ports.SubscriptionDTO{
 			TenantID:    tenantStr,
-			ClientID:    string(r.SessionID),
+			ClientID:    clientID,
 			TopicFilter: r.TopicFilter,
 			QoS:         int(r.QoS),
 			SharedGroup: r.SharedGroup,
@@ -479,6 +480,17 @@ func (s *Service) ListSubscriptions(ctx context.Context, filter ports.Subscripti
 
 	paged, page := paginateSlice(subs, offset, limit)
 	return paged, page, nil
+}
+
+func subscriptionClientID(record routing.SubscriptionRecord, tenantID string) string {
+	sessionID := string(record.SessionID)
+	if key, err := tenancy.ParseSessionKeyRoutingID(sessionID); err == nil && key.TenantID().String() == tenantID {
+		return key.ClientID()
+	}
+	if prefix := tenantID + "/"; tenantID != "" && strings.HasPrefix(sessionID, prefix) {
+		return strings.TrimPrefix(sessionID, prefix)
+	}
+	return sessionID
 }
 
 // ListRetained lists retained message metadata matching filter.

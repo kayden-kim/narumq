@@ -40,6 +40,8 @@ var (
 	ErrClosed = errors.New("raft node is closed")
 	// ErrFailed means a persistence or apply failure permanently stopped the node.
 	ErrFailed = errors.New("raft node has failed")
+	// ErrStorage means a durable WAL, snapshot, or metadata write failed.
+	ErrStorage = errors.New("raft storage operation failed")
 	// ErrNotLeader means a proposal or campaign operation requires a leader.
 	ErrNotLeader = errors.New("raft node is not leader")
 	// ErrEmptyCommand means a proposal has no application bytes.
@@ -275,7 +277,7 @@ func Open(config Config) (*Node, error) {
 		MaxInflightBytes:          maxInflightBytes,
 		CheckQuorum:               true,
 		PreVote:                   true,
-		DisableProposalForwarding: true,
+		DisableProposalForwarding: false,
 		Logger:                    discardRaftLogger,
 	}
 	raw, err := etcdraft.NewRawNode(raftConfig)
@@ -392,14 +394,24 @@ func (n *Node) Tick() error {
 	return nil
 }
 
-// Propose accepts a copied application command only while this node is leader.
+// Propose submits a copied application command only while this node is leader.
 func (n *Node) Propose(data []byte) error {
+	return n.propose(data, false)
+}
+
+// ProposeForwarded submits a copied command locally and lets Raft forward it when this node is a follower.
+func (n *Node) ProposeForwarded(data []byte) error {
+	return n.propose(data, true)
+}
+
+func (n *Node) propose(data []byte, forwardToLeader bool) error {
 	n.mu.Lock()
 	defer n.mu.Unlock()
 	if err := n.stateError(); err != nil {
 		return err
 	}
-	if n.raw.Status().RaftState != etcdraft.StateLeader {
+	status := n.raw.Status()
+	if status.RaftState != etcdraft.StateLeader && (!forwardToLeader || status.Lead == etcdraft.None) {
 		return ErrNotLeader
 	}
 	if len(data) == 0 {
@@ -507,7 +519,7 @@ func (n *Node) SnapshotWithApplicationData(data []byte) error {
 		return nil
 	}
 	if err := n.store.createSnapshotData(n.appliedIndex, n.confState, data); err != nil {
-		return n.fail(err)
+		return n.fail(fmt.Errorf("%w: %w", ErrStorage, err))
 	}
 	n.appliedCommands = nil
 	n.commandIndexes = nil
@@ -622,7 +634,7 @@ func (n *Node) ProcessReady() (BatchDTO, error) {
 		})
 	}
 	if err := n.store.appendReady(ready); err != nil {
-		return BatchDTO{}, n.fail(err)
+		return BatchDTO{}, n.fail(fmt.Errorf("%w: %w", ErrStorage, err))
 	}
 	if n.persistenceHook != nil && (len(boundaryActions) > 0 || installsSnapshot) {
 		n.persistenceHook(PersistenceBoundaryDTO{
@@ -740,7 +752,7 @@ func (n *Node) ProcessReady() (BatchDTO, error) {
 		n.bootstrapped = containsMember(n.confState, n.id)
 	} else if !n.bootstrapped && fixedConfState(n.confState, n.peerIDs) {
 		if err := n.store.createSnapshot(n.appliedIndex, n.confState, n.appliedCommands); err != nil {
-			return BatchDTO{}, n.fail(err)
+			return BatchDTO{}, n.fail(fmt.Errorf("%w: %w", ErrStorage, err))
 		}
 		n.bootstrapped = true
 	}
@@ -773,7 +785,7 @@ func (n *Node) Snapshot() error {
 		return nil
 	}
 	if err := n.store.createSnapshot(n.appliedIndex, n.confState, n.appliedCommands); err != nil {
-		return n.fail(err)
+		return n.fail(fmt.Errorf("%w: %w", ErrStorage, err))
 	}
 	if fixedConfState(n.confState, n.peerIDs) {
 		n.bootstrapped = true

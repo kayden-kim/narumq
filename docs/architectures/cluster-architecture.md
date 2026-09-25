@@ -110,7 +110,7 @@ sequenceDiagram
     I-->>P: PUBACK 또는 PUBREC
 ```
 
-Publisher ingress node와 consensus leader는 같지 않을 수 있다. Runtime forwarding은 허용하지만 MQTT policy가 Raft·transport 자료형에 종속되면 안 된다.
+Publisher ingress node와 consensus leader는 같지 않을 수 있다. Runtime은 Raft peer transport를 통해 proposal을 leader로 전달하고 commit 결과를 ingress에 돌려준다. MQTT policy는 Raft·transport 자료형에 종속되면 안 된다.
 
 ## Session ownership 경로
 

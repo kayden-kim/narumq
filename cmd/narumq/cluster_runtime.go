@@ -53,8 +53,9 @@ const (
 )
 
 var (
-	errClusterRuntimeNotReady = errors.New("cluster runtime is not ready")
-	errClusterApplyDivergence = errors.New("committed cluster state diverges from membership state")
+	errClusterRuntimeNotReady  = errors.New("cluster runtime is not ready")
+	errClusterStorageUnhealthy = errors.New("cluster raft storage is not healthy")
+	errClusterApplyDivergence  = errors.New("committed cluster state diverges from membership state")
 )
 
 // runClusterMode composes the dynamic Raft control plane with MQTT admission and
@@ -123,6 +124,7 @@ func runClusterMode(ctx context.Context, config clusterConfigFile, logger *slog.
 
 	runtime := &clusterRuntime{
 		config: config, logger: logger, node: node, machine: machine,
+		storage:  newClusterStorageMonitor(time.Now, logger),
 		routes:   routing.NewTable(),
 		requests: make(chan clusterDriverRequest, 128), initialMessages: initialMessages,
 		localIdentity:      configuredLocalPeerIdentity(config, localFingerprint),
@@ -283,6 +285,7 @@ type clusterRuntime struct {
 	machine    *membership.StateMachine
 	routes     *routing.Table
 	mqttServer *tcpadapter.Server
+	storage    *clusterStorageMonitor
 
 	requests                chan clusterDriverRequest
 	sequence                atomic.Uint64
@@ -394,6 +397,10 @@ func (runtime *clusterRuntime) serve(parent context.Context, mqttServer *tcpadap
 			}
 		case err := <-driverDone:
 			driverDone = nil
+			if !shutdown && runtime.handleDriverFailure(err) {
+				results = append(results, fmt.Errorf("cluster raft driver: %w", err))
+				continue
+			}
 			if !shutdown {
 				if err == nil {
 					err = errors.New("driver stopped unexpectedly")
@@ -500,7 +507,9 @@ func (runtime *clusterRuntime) runDriver(ctx context.Context) error {
 
 	processReady := func() error {
 		for {
+			runtime.storage.begin()
 			batch, err := runtime.node.ProcessReady()
+			runtime.storage.end()
 			if err != nil {
 				return fmt.Errorf("process raft Ready: %w", err)
 			}
@@ -553,7 +562,7 @@ func (runtime *clusterRuntime) runDriver(ctx context.Context) error {
 				}
 				reads[request.contextKey] = clusterReadWaiter{ctx: request.context, result: request.readResult}
 			case clusterDriverProposal:
-				if err := runtime.node.Propose(request.data); err != nil {
+				if err := runtime.node.ProposeForwarded(request.data); err != nil {
 					request.applyResult <- clusterApplyResponse{err: err}
 					continue
 				}
@@ -1098,8 +1107,11 @@ func (runtime *clusterRuntime) persistTypedSnapshot(force bool) error {
 	if err != nil {
 		return fmt.Errorf("encode typed membership snapshot: %w", err)
 	}
-	if err := runtime.node.SnapshotWithApplicationData(data); err != nil {
-		return fmt.Errorf("persist typed membership snapshot: %w", err)
+	runtime.storage.begin()
+	snapshotErr := runtime.node.SnapshotWithApplicationData(data)
+	runtime.storage.end()
+	if snapshotErr != nil {
+		return fmt.Errorf("persist typed membership snapshot: %w", snapshotErr)
 	}
 	runtime.lastSnapshotIndex = lastApplied
 	return nil
@@ -1365,8 +1377,8 @@ func (runtime *clusterRuntime) checkReadiness(ctx context.Context) error {
 	if ctx == nil {
 		return errClusterRuntimeNotReady
 	}
-	if !runtime.readinessSnapshot().admitsBarrier() {
-		return errClusterRuntimeNotReady
+	if runtime.storage.view().health != clusterReplicationHealthy {
+		return errClusterStorageUnhealthy
 	}
 	barrier, err := runtime.requestReadBarrier(ctx)
 	if err != nil {
@@ -1415,7 +1427,7 @@ func (runtime *clusterRuntime) readBarrier(ctx context.Context) error {
 }
 
 func (runtime *clusterRuntime) Commit(ctx context.Context, command membership.CommandDTO) (membership.ApplyResultDTO, error) {
-	if ctx == nil {
+	if ctx == nil || runtime.storage.view().health == clusterReplicationFailed {
 		return membership.ApplyResultDTO{}, membership.ErrQuorumUnavailable
 	}
 	if err := runtime.readBarrier(ctx); err != nil {
@@ -1935,10 +1947,17 @@ type clusterHealthChecker struct {
 }
 
 func (checker *clusterHealthChecker) CheckReadiness(ctx context.Context) (managementports.HealthStatus, *string) {
+	view := checker.runtime.storage.view()
+	if view.health == clusterReplicationFailed {
+		return managementports.HealthStatusNotReady, &view.reason
+	}
 	if checker.runtime.managementState.NodeState() == managementports.NodeStateDraining ||
 		checker.runtime.managementState.NodeState() == managementports.NodeStateSafeToStop {
 		reason := "node is draining"
 		return managementports.HealthStatusNotReady, &reason
+	}
+	if view.health == clusterReplicationDegraded {
+		return managementports.HealthStatusNotReady, &view.reason
 	}
 	if ctx != nil {
 		checkCtx, cancel := context.WithTimeout(ctx, clusterReadTimeout)
@@ -1955,6 +1974,10 @@ func (checker *clusterHealthChecker) CheckReadiness(ctx context.Context) (manage
 }
 
 func (checker *clusterHealthChecker) CheckLiveness(ctx context.Context) (managementports.HealthStatus, *string) {
+	view := checker.runtime.storage.view()
+	if view.health == clusterReplicationFailed {
+		return managementports.HealthStatusDown, &view.reason
+	}
 	return checker.HealthChecker.CheckLiveness(ctx)
 }
 
@@ -2067,6 +2090,10 @@ func (provider *clusterStateProvider) nodeSummary(ctx context.Context, member me
 	applied := int64(0)
 	connections := 0
 	uptime := int64(0)
+	var replicationHealth *string
+	var lastErrorCode *string
+	var replicationQueue *managementports.ReplicationQueueDTO
+	storagePressure := false
 	if containsNodeID(status.VoterIDs, member.MemberID) {
 		role = "FOLLOWER"
 		if uint64(status.LeaderID) == member.MemberID {
@@ -2082,18 +2109,65 @@ func (provider *clusterStateProvider) nodeSummary(ctx context.Context, member me
 			state, ready, reason, connections, uptime = base.State, base.Ready, base.ReadinessReason, base.ConnectionCount, base.UptimeMs
 		}
 		applied = int64(status.AppliedIndex)
+		view := provider.runtime.storage.view()
+		replicationHealth = &view.health
+		if view.health != clusterReplicationHealthy {
+			ready = false
+			reason = &view.reason
+		}
+		if view.lastErrorCode != "" {
+			code := view.lastErrorCode
+			lastErrorCode = &code
+		}
+		storagePressure = view.storagePressure
 	} else {
 		message := "remote readiness is not available from this node"
 		reason = &message
 		if match, ok := provider.runtime.node.PeerMatchIndex(raftadapter.NodeID(member.MemberID)); ok {
 			applied = int64(match)
 		}
+		if peerStatus, err := provider.runtime.transport.Status(member.MemberID); err == nil {
+			health, errorCode, queue := remoteReplicationView(peerStatus)
+			replicationHealth = &health
+			lastErrorCode = errorCode
+			replicationQueue = queue
+		}
 	}
 	return &managementports.NodeSummaryDTO{
 		NodeID: id, Version: member.ReleaseVersion, UptimeMs: uptime, State: state, Ready: ready,
-		ReadinessReason: reason, Role: role, LastAppliedIndex: applied,
-		ConnectionCount: connections, StoragePressure: false,
+		ReadinessReason: reason, Role: role, LastAppliedIndex: applied, ConnectionCount: connections,
+		StoragePressure: storagePressure, ReplicationHealth: replicationHealth,
+		LastErrorCode: lastErrorCode, ReplicationQueue: replicationQueue,
 	}
+}
+
+func remoteReplicationView(status tcpadapter.PeerTransportStatusDTO) (string, *string, *managementports.ReplicationQueueDTO) {
+	health := clusterReplicationUnreachable
+	if status.Connected {
+		health = clusterReplicationHealthy
+	}
+	var errorCode *string
+	switch status.LastError {
+	case "":
+	case "peer disconnected":
+		code := clusterErrorPeerDisconnected
+		errorCode = &code
+	case "outbound queue full":
+		code := clusterErrorPeerQueueFull
+		errorCode = &code
+	case "invalid peer message":
+		code := clusterErrorPeerInvalidMessage
+		errorCode = &code
+	default:
+		code := clusterErrorPeerTransport
+		errorCode = &code
+	}
+	queue := &managementports.ReplicationQueueDTO{
+		OutboundMessages: status.OutboundQueuedMessages,
+		OutboundBytes:    status.OutboundQueuedBytes,
+		RejectedMessages: status.RejectedMessages,
+	}
+	return health, errorCode, queue
 }
 
 func decodeClusterCursor(cursor string) (int, error) {

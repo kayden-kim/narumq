@@ -90,6 +90,9 @@ func TestNodeMessageAndProposalValidation(t *testing.T) {
 	if err := node.Propose(nil); !errors.Is(err, ErrNotLeader) {
 		t.Fatalf("empty proposal on follower = %v, want ErrNotLeader", err)
 	}
+	if err := node.ProposeForwarded([]byte("command")); !errors.Is(err, ErrNotLeader) {
+		t.Fatalf("ProposeForwarded() without a leader = %v, want ErrNotLeader", err)
+	}
 }
 func TestNodeMessageValidationAndFailureState(t *testing.T) {
 	node, err := Open(Config{NodeID: 1, PeerIDs: []NodeID{1, 2, 3}, Directory: t.TempDir()})

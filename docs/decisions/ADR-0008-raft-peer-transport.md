@@ -54,7 +54,7 @@ Transport는 `internal/adapters/tcp`의 adapter-owned DTO를 사용하고 `inter
 
 - Certificate SAN에 설정된 peer DNS name이 있어야 하고, 양방향 TLS를 위한 client/server EKU를 갖춰야 한다.
 - Peer failure는 transport status에서 degraded로 드러난다. Bounded queue rejection은 해당 peer의 `ReportUnreachable`와 snapshot failure를 RawNode에 전달해 protocol 재전송을 유도하고, 같은 Ready의 다른 peer message는 계속 처리한다.
-- WAL/Node의 terminal failure는 driver의 fatal error다. 현재 executable peer-only mode는 MQTT endpoint, proposal API, readiness 또는 durable ACK를 제공하지 않는다.
+- WAL/Node의 terminal failure는 driver의 fatal error다. Peer transport는 Raft protobuf만 전달하며 client-facing proposal RPC를 제공하지 않는다. `cmd/narumq` runtime은 MQTT ingress의 ownership proposal을 Raft proposal forwarding으로 leader에 제출할 수 있지만, queue admission은 commit·readiness·durable ACK를 보장하지 않는다.
 - Membership change, dynamic discovery, certificate rotation, mixed-version rollout과 production replicated state는 후속 결정이다.
 
 ## 7. 검증

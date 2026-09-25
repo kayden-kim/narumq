@@ -42,6 +42,15 @@ func cmmTenantID(t *testing.T, value string) tenancy.TenantID {
 	return tenantID
 }
 
+func cmmSessionID(t *testing.T, tenantID tenancy.TenantID, clientID string) routing.SessionID {
+	t.Helper()
+	key, err := tenancy.NewSessionKey(tenantID, clientID)
+	if err != nil {
+		t.Fatalf("session key for %q: %v", clientID, err)
+	}
+	return routing.SessionID(key.RoutingID())
+}
+
 func cmmSaveSession(t *testing.T, store *sessionstore.MemorySessionRepository, connect mqtt.Connect, now time.Time, disconnect bool, tenant string) {
 	t.Helper()
 	var keys []tenancy.SessionKey
@@ -326,10 +335,10 @@ func TestCmmListSubscriptionsFiltersAndOrdersByClientThenTopic(t *testing.T) {
 	tenantA := cmmTenantID(t, "tenant-a")
 	group := "workers"
 	snapshot := cmmSubscriptionSnapshot{
-		{TenantID: tenantA, SessionID: "c2", TopicFilter: "b/#", QoS: mqtt.QoSAtLeastOnce},
-		{SessionID: "c1", TopicFilter: "z", QoS: mqtt.QoSAtMostOnce},
-		{SessionID: "c1", TopicFilter: "a", QoS: mqtt.QoSExactlyOnce, SharedGroup: &group},
-		{TenantID: tenantA, SessionID: "c1", TopicFilter: "m", QoS: mqtt.QoSAtLeastOnce},
+		{TenantID: tenantA, SessionID: cmmSessionID(t, tenantA, "c2"), TopicFilter: "b/#", QoS: mqtt.QoSAtLeastOnce},
+		{SessionID: cmmSessionID(t, cmmTenantID(t, "default"), "c1"), TopicFilter: "z", QoS: mqtt.QoSAtMostOnce},
+		{SessionID: cmmSessionID(t, cmmTenantID(t, "default"), "c1"), TopicFilter: "a", QoS: mqtt.QoSExactlyOnce, SharedGroup: &group},
+		{TenantID: tenantA, SessionID: cmmSessionID(t, tenantA, "c1"), TopicFilter: "m", QoS: mqtt.QoSAtLeastOnce},
 	}
 	service := NewService(ServiceConfig{}, nil, snapshot, nil, nil)
 	type key struct {
@@ -366,6 +375,39 @@ func TestCmmListSubscriptionsFiltersAndOrdersByClientThenTopic(t *testing.T) {
 	subscriptions, _, err := service.ListSubscriptions(ctx, ports.SubscriptionFilter{ClientID: "c1", Limit: 1})
 	if err != nil || len(subscriptions) != 1 || subscriptions[0].QoS != int(mqtt.QoSExactlyOnce) || subscriptions[0].SharedGroup == nil || *subscriptions[0].SharedGroup != group {
 		t.Fatalf("first c1 subscription=%+v err=%v", subscriptions, err)
+	}
+}
+
+func TestCmmListSubscriptionsResolvesLegacyClientIDs(t *testing.T) {
+	ctx := context.Background()
+	tenantA := cmmTenantID(t, "tenant-a")
+	snapshot := cmmSubscriptionSnapshot{
+		{TenantID: tenantA, SessionID: "tenant-a/client/with/slash", TopicFilter: "tenant/#"},
+		{SessionID: "raw-client", TopicFilter: "default/#"},
+	}
+	service := NewService(ServiceConfig{}, nil, snapshot, nil, nil)
+
+	cases := []struct {
+		name, tenant, client string
+	}{
+		{name: "tenant-prefixed ID", tenant: "tenant-a", client: "client/with/slash"},
+		{name: "raw client ID", tenant: "default", client: "raw-client"},
+	}
+	for _, testCase := range cases {
+		t.Run(testCase.name, func(t *testing.T) {
+			subscriptions, _, err := service.ListSubscriptions(ctx, ports.SubscriptionFilter{
+				TenantID: testCase.tenant, ClientID: testCase.client,
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(subscriptions) != 1 ||
+				subscriptions[0].TenantID != testCase.tenant ||
+				subscriptions[0].ClientID != testCase.client {
+				t.Fatalf("subscriptions = %+v, want one entry for tenant %q client %q",
+					subscriptions, testCase.tenant, testCase.client)
+			}
+		})
 	}
 }
 

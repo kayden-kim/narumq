@@ -344,6 +344,22 @@ the existing `filePersistenceOps` and `onReadyEvent` hooks support in-package
 adapter tests. Only the composition root handles the environment variable and
 process exit, so the adapter remains independent of command configuration.
 
+### 7.4 Cluster storage chaos evidence
+
+실제 disk full과 느린 storage I/O acceptance는 별도 Docker chaos gate다. Go `1.26.5`, Linux/amd64 Docker daemon, `/dev/fuse`, `CAP_SYS_ADMIN`과 Docker image build에 필요한 module network access를 준비한 뒤 repository root에서 실행한다.
+
+```text
+go run ./tests/chaos/cluster-storage-v1 \
+  --run-id storage-faults-20260925 \
+  --output .artifacts/chaos/cluster-storage-v1/storage-faults-20260925
+```
+
+Runner는 새 Docker network와 세 broker process로 `follower-disk-full`, `quorum-disk-full`, `follower-slow-io`를 순서대로 실행한다. Disk-full case는 제한 용량 tmpfs를 실제 ENOSPC까지 채우고, 느린 I/O case는 container 안 FUSE filesystem에서 write/`fsync`를 지연한다. 각 scenario는 readiness, replication health, MQTT CONNECT/SUBSCRIBE admission 결과, `lastAppliedIndex`와 outbound peer queue bounds를 확인한다. 이 시험은 QoS 1/2 durable ACK 또는 session/subscription replication acceptance가 아니다.
+
+성공 결과는 `.artifacts/chaos/cluster-storage-v1/<run-id>/`의 `manifest.json`, `summary.json`, `docker-build.log`, `image-inspect.json`, scenario별 `events.jsonl`과 `node<i>.log`에 남긴다. Token·JWT·private key·certificate 원문은 artifact에 기록하지 않는다.
+
+이 Docker/FUSE chaos gate는 외부 dependency가 없어야 하는 `go test ./...`와 `go run ./tools/verify local`에서 제외된다. 두 검증의 PASS만으로 실제 disk-full·slow-I/O 증거를 대체하지 않으며 chaos command를 별도로 실행해야 한다.
+
 ## 8. Coverage와 test quality gate
 
 - 전체 production code는 line/function 90% 이상, branch 85% 이상이어야 한다.

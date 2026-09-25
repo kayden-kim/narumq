@@ -631,3 +631,69 @@ func TestDynamicStepAllowsOnlyAuthenticatedForwardedRequests(t *testing.T) {
 		})
 	}
 }
+
+func TestDynamicFollowerForwardsApplicationProposal(t *testing.T) {
+	root := t.TempDir()
+	nodes := make(map[NodeID]*Node, 3)
+	for _, nodeID := range []NodeID{1, 2, 3} {
+		node, err := Open(dynamicTestConfig(nodeID, filepath.Join(root, fmt.Sprintf("node-%d", nodeID))))
+		if err != nil {
+			t.Fatalf("open node %d: %v", nodeID, err)
+		}
+		nodes[nodeID] = node
+	}
+	defer func() {
+		for _, node := range nodes {
+			if err := node.Close(); err != nil {
+				t.Errorf("close node: %v", err)
+			}
+		}
+	}()
+
+	pump := func() {
+		t.Helper()
+		for round := 0; round < 512; round++ {
+			var messages []MessageDTO
+			for _, nodeID := range []NodeID{1, 2, 3} {
+				batch, err := nodes[nodeID].ProcessReady()
+				if err != nil {
+					t.Fatalf("node %d ProcessReady(): %v", nodeID, err)
+				}
+				messages = append(messages, batch.Messages...)
+			}
+			if len(messages) == 0 {
+				return
+			}
+			for _, message := range messages {
+				if err := nodes[message.To].Step(message); err != nil {
+					t.Fatalf("deliver %d -> %d: %v", message.From, message.To, err)
+				}
+			}
+		}
+		t.Fatal("Raft pump exceeded 512 rounds")
+	}
+
+	pump()
+	if err := nodes[1].Campaign(); err != nil {
+		t.Fatalf("campaign node 1: %v", err)
+	}
+	pump()
+	if nodes[1].Status().Role != RoleLeader {
+		t.Fatalf("node 1 role = %v, want leader", nodes[1].Status().Role)
+	}
+
+	command := []byte("follower-application-proposal")
+	if err := nodes[2].Propose(command); !errors.Is(err, ErrNotLeader) {
+		t.Fatalf("Propose() on follower = %v, want leader-only ErrNotLeader", err)
+	}
+	if err := nodes[2].ProposeForwarded(command); err != nil {
+		t.Fatalf("forward proposal from node 2: %v", err)
+	}
+	pump()
+	for _, nodeID := range []NodeID{1, 2, 3} {
+		commands := nodes[nodeID].AppliedCommands()
+		if len(commands) != 1 || string(commands[0]) != string(command) {
+			t.Fatalf("node %d applied commands = %q, want [%q]", nodeID, commands, command)
+		}
+	}
+}

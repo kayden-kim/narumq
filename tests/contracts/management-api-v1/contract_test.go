@@ -49,7 +49,7 @@ func managementOperationFixtures() []operationFixture {
 		{method: http.MethodGet, path: "/health/drain", operationID: "getDrainCompletion", target: "/health/drain"},
 		{method: http.MethodGet, path: "/metrics", operationID: "getMetrics", target: "/metrics"},
 		{method: http.MethodGet, path: "/api/v1/cluster", operationID: "getCluster", target: "/api/v1/cluster"},
-		{method: http.MethodGet, path: "/api/v1/nodes", operationID: "listNodes", target: "/api/v1/nodes?state=READY&limit=50"},
+		{method: http.MethodGet, path: "/api/v1/nodes", operationID: "listNodes", target: "/api/v1/nodes?limit=50"},
 		{method: http.MethodGet, path: "/api/v1/nodes/{nodeId}", operationID: "getNode", target: "/api/v1/nodes/node-1"},
 		{method: http.MethodGet, path: "/api/v1/clients", operationID: "listClients", target: "/api/v1/clients?tenantId=default&clientIdPrefix=device-&nodeId=node-1&protocol=MQTT_5_0&limit=50"},
 		{method: http.MethodGet, path: "/api/v1/clients/{tenantId}/{clientId}", operationID: "getClientSession", target: "/api/v1/clients/default/device-1"},
@@ -200,24 +200,39 @@ func (contractStateProvider) GetClusterSummary(context.Context) ports.ClusterSum
 }
 
 func (contractStateProvider) GetNodeSummary(context.Context, string) (*ports.NodeSummaryDTO, error) {
-	reason := (*string)(nil)
+	reason := "raft storage I/O is slow"
+	health := "DEGRADED"
+	errorCode := "storage_slow"
 	return &ports.NodeSummaryDTO{
-		NodeID:           "node-1",
-		Version:          "1.0.0",
-		UptimeMs:         0,
-		State:            ports.NodeStateReady,
-		Ready:            true,
-		ReadinessReason:  reason,
-		Role:             "LEADER",
-		LastAppliedIndex: 0,
-		ConnectionCount:  0,
-		StoragePressure:  false,
+		NodeID:            "node-1",
+		Version:           "1.0.0",
+		UptimeMs:          0,
+		State:             ports.NodeStateReady,
+		Ready:             false,
+		ReadinessReason:   &reason,
+		Role:              "LEADER",
+		LastAppliedIndex:  0,
+		ConnectionCount:   0,
+		StoragePressure:   true,
+		ReplicationHealth: &health,
+		LastErrorCode:     &errorCode,
 	}, nil
 }
 
 func (contractStateProvider) ListNodeSummaries(context.Context, ports.NodeFilter) ([]ports.NodeSummaryDTO, *ports.PageDTO, error) {
-	node, _ := contractStateProvider{}.GetNodeSummary(context.Background(), "node-1")
-	return []ports.NodeSummaryDTO{*node}, emptyPage(), nil
+	local, _ := contractStateProvider{}.GetNodeSummary(context.Background(), "node-1")
+	reason := "remote readiness is not available from this node"
+	health := "UNREACHABLE"
+	errorCode := "peer_disconnected"
+	remote := ports.NodeSummaryDTO{
+		NodeID: "node-2", Version: "1.0.0", State: ports.NodeStateJoining, Ready: false,
+		ReadinessReason: &reason, Role: "FOLLOWER", LastAppliedIndex: 0,
+		StoragePressure: false, ReplicationHealth: &health, LastErrorCode: &errorCode,
+		ReplicationQueue: &ports.ReplicationQueueDTO{
+			OutboundMessages: 1, OutboundBytes: 128, RejectedMessages: 2,
+		},
+	}
+	return []ports.NodeSummaryDTO{*local, remote}, emptyPage(), nil
 }
 
 func (contractStateProvider) ListClients(context.Context, ports.ClientFilter) ([]ports.ClientSessionDTO, *ports.PageDTO, error) {

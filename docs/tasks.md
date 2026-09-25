@@ -10,7 +10,7 @@
 
 ## 장애·복구 수용 증거
 
-- [ ] [Failure recovery §7](specs/cluster-session-and-delivery.md#7-failure-recovery)과 [§11](specs/cluster-session-and-delivery.md#11-수용-시험): 실제 디스크 용량 고갈과 느린 I/O에서 replication health·readiness, commit 중단과 bounded transport queue를 관찰한다. `filePersistenceOps.write`의 주입 `ENOSPC`만으로 실제 disk-full 동작을 완료로 처리하지 않는다.
+- [x] [Failure recovery §7](specs/cluster-session-and-delivery.md#7-failure-recovery)과 [§11.6](specs/cluster-session-and-delivery.md#116-storage-fault-chaos-mapping): Docker chaos run `storage-fault-20260925d`에서 실제 tmpfs ENOSPC, FUSE slow-I/O, replication health/readiness, commit 진행·중단, bounded peer queue, follower recovery와 MQTT admission을 검증했다. 실행 증거와 관측값은 [Cluster §11.6](specs/cluster-session-and-delivery.md#116-storage-fault-chaos-mapping)에 기록했다. `go run ./tools/verify local`도 PASS했다. 이 범위는 durable MQTT ACK, snapshot/backup/restore 또는 power-loss 보장을 완료하지 않는다.
 - [ ] [Snapshot·backup·restore §10](specs/cluster-session-and-delivery.md#10-snapshot-backup과-restore): 실제 snapshot crash, backup/restore 및 재동기화의 원자성, checksum, commit 경계와 readiness를 시험한다. 기존 NMQSTATE1 로컬 replay만으로 production 복구를 판정하지 않는다.
 - [ ] [ADR-0003 §9](decisions/ADR-0003-durable-ack-barrier.md#9-검증): WAL write·`fsync`·commit 전후 crash, follower disk full·slow I/O·partition에서 잘못된 성공 ACK가 없는지와 성공 ACK 직후 각 replica kill에서 message gap 0을 검증한다.
 

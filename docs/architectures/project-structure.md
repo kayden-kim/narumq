@@ -87,6 +87,10 @@ NaruMQ source tree는 MQTT·session·routing·delivery·tenancy·security·clust
 │   │       └── runner.go    # Docker lifecycle and evidence artifacts
 │   ├── e2e/
 │   ├── chaos/
+│   │   └── cluster-storage-v1/
+│   │       ├── node/       # isolated nested Go module; go-fuse delay filesystem
+│   │       ├── Dockerfile
+│   │       └── runner.go   # disk-full/slow-I/O chaos lifecycle and evidence
 │   └── benchmark/
 │       ├── internal/
 │       │   ├── environment/
@@ -122,6 +126,7 @@ Phase 1 security·tenant isolation slice와 Phase 2 replicated session ownership
 `tests/benchmark/internal/mqttclient`는 benchmark 전용 MQTT 5 Clean Start/zero Session Expiry CONNECT와 frame I/O를 소유한다. `tests/benchmark/internal/jsonl`은 phase·event JSONL 파일의 공통 buffering/flush/close 동작을 소유하고, `tests/benchmark/internal/runtimeartifact`는 runtime 표본과 phase 경계를 검증해 target별 요약을 만든다. `tests/benchmark/internal/suiteartifact`는 반복 순서와 중앙값·MAD 계산만 소유하며 profile 의미와 BP별 metric 선택은 소유하지 않는다. 네 package와 `bp01`, `bp05`는 product runtime이 import하지 않는 benchmark-only source다.
 각 BP package는 profile 해석, workload 상태와 comparison 판정, suite parent·child artifact schema와 Docker 실행을 소유하며 shared package는 profile·summary 의미를 결정하지 않는다.
 `tests/compatibility/mqtt-clients-v1`는 product runtime과 독립된 black-box evidence harness다. `clients/go`는 root `go.mod`에 Paho dependency를 추가하지 않는 nested Go module로 MQTT 3.1.1/5 Go SDK 역할을 격리하고, `clients/python`은 hash-pinned `paho-mqtt` runtime과 VERSION2 callback adapter를 격리한다. `Dockerfile`은 두 SDK 이미지와 retransmission proxy를 linux/amd64 digest-pinned image로 만들며, `runner.go`는 broker·proxy·client container를 case마다 새로 만들고 결과·trace·log·manifest를 수집한다. 이 directory의 source는 product runtime이 import하지 않는다.
+`tests/chaos/cluster-storage-v1`는 실제 filesystem 용량 고갈과 느린 I/O를 Docker broker process에 적용하는 black-box evidence harness다. `node/`는 go-fuse를 root `go.mod`에 추가하지 않는 nested Go module이며, runner는 process·network·fault lifecycle과 secret-free evidence artifact를 소유한다. 두 경로의 source는 product runtime이 import하지 않는다.
 
 `tests/conformance/mqtt-compliance-v1.json`은 현재 구현이 지원한다고 선언한 MQTT
 3.1.1/5.0 normative statement와 source test function의 양방향 연결표다.

@@ -274,8 +274,8 @@ func TestNodeWALWriteFailureStopsOutbound(t *testing.T) {
 	batch, processErr := node.ProcessReady()
 	filePersistenceOps.write = oldWrite
 
-	if !errors.Is(processErr, ErrFailed) || !errors.Is(processErr, syscall.ENOSPC) {
-		t.Fatalf("ProcessReady() error = %v, want ErrFailed wrapping ENOSPC", processErr)
+	if !errors.Is(processErr, ErrFailed) || !errors.Is(processErr, ErrStorage) || !IsStorageFull(processErr) || !errors.Is(processErr, syscall.ENOSPC) {
+		t.Fatalf("ProcessReady() error = %v, want ErrFailed and ErrStorage wrapping ENOSPC", processErr)
 	}
 	if len(batch.Messages) != 0 || len(batch.Commands) != 0 {
 		t.Fatalf("failed Ready batch = %#v, want empty", batch)
