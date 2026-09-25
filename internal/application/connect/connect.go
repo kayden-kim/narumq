@@ -57,12 +57,18 @@ type SessionRepository interface {
 	Delete(clientID string) error
 }
 
-// ResultDTO reports the connection response and accepted session identity.
+// OwnershipCoordinator is the application-facing committed ownership boundary.
+type OwnershipCoordinator interface {
+	AcquireOwnership(context.Context, string, string, uint64) (uint64, error)
+}
+
+// ResultDTO reports the connection response, accepted session, and committed owner epoch.
 type ResultDTO struct {
-	SessionID routing.SessionID
-	Principal security.Principal
-	ConnAck   mqtt.ConnAck
-	Accepted  bool
+	SessionID      routing.SessionID
+	Principal      security.Principal
+	ConnAck        mqtt.ConnAck
+	Accepted       bool
+	OwnershipEpoch uint64
 }
 
 // ConnectRequestDTO carries the MQTT CONNECT packet and optional verified certificate identity.
@@ -94,6 +100,14 @@ func WithMetrics(metrics portsmetrics.MetricsRecorder) Option {
 	}
 }
 
+// WithOwnershipCoordinator commits cluster ownership before local session activation.
+func WithOwnershipCoordinator(coordinator OwnershipCoordinator, ownerNodeID uint64) Option {
+	return func(useCase *UseCase) {
+		useCase.ownershipCoordinator = coordinator
+		useCase.ownerNodeID = ownerNodeID
+	}
+}
+
 // UseCase serializes lifecycle persistence, routing cleanup and queue
 // registration so one process cannot activate or disconnect the same session
 // through interleaved operations.
@@ -110,6 +124,7 @@ type UseCase struct {
 	policy                   security.Policy
 	sessions                 SessionRepository
 	principals               map[routing.SessionID]security.Principal
+	sessionKeys              map[routing.SessionID]tenancy.SessionKey
 	deliveries               deliveryqueue.Queue
 	routes                   *routing.Table
 	scheduler                Scheduler
@@ -117,6 +132,18 @@ type UseCase struct {
 	activeTimers             map[string]*clientTimers
 	closed                   bool
 	metrics                  portsmetrics.MetricsRecorder
+	ownershipCoordinator     OwnershipCoordinator
+	ownerNodeID              uint64
+}
+
+// ClusterOwnershipConfigured reports whether a node-specific committed ownership barrier is installed.
+func (useCase *UseCase) ClusterOwnershipConfigured(ownerNodeID uint64) bool {
+	if useCase == nil || ownerNodeID == 0 {
+		return false
+	}
+	useCase.mu.Lock()
+	defer useCase.mu.Unlock()
+	return useCase.ownershipCoordinator != nil && useCase.ownerNodeID == ownerNodeID
 }
 
 func (useCase *UseCase) recordAuth(method string, success bool, reason string) {
@@ -177,6 +204,7 @@ func New(
 		clock:         clock,
 		sessions:      sessions,
 		principals:    make(map[routing.SessionID]security.Principal),
+		sessionKeys:   make(map[routing.SessionID]tenancy.SessionKey),
 		deliveries:    deliveries,
 		routes:        routes,
 		scheduler:     scheduler,
@@ -315,24 +343,38 @@ func (useCase *UseCase) ConnectContext(ctx context.Context, request ConnectReque
 	}
 
 	sessionID := routing.SessionID(packet.ClientID)
-	var sessionKey tenancy.SessionKey
+	var (
+		sessionKey    tenancy.SessionKey
+		sessionTenant tenancy.TenantID
+	)
 	if principal.Subject() != "" {
-		sessionKey, _ = tenancy.NewSessionKey(principal.TenantID(), packet.ClientID)
-		sessionID = routing.SessionID(principal.TenantID().String() + "/" + packet.ClientID)
+		sessionTenant = principal.TenantID()
+	} else if useCase.ownershipCoordinator != nil {
+		var err error
+		sessionTenant, err = tenancy.NewTenantID("default")
+		if err != nil {
+			return ResultDTO{}, err
+		}
+	}
+	if principal.Subject() != "" || useCase.ownershipCoordinator != nil {
+		var err error
+		sessionKey, err = tenancy.NewSessionKey(sessionTenant, packet.ClientID)
+		if err != nil {
+			return ResultDTO{}, err
+		}
+		if useCase.ownershipCoordinator != nil {
+			sessionID = routing.SessionID(sessionKey.RoutingID())
+		} else {
+			sessionID = routing.SessionID(sessionTenant.String() + "/" + packet.ClientID)
+		}
 	}
 
 	useCase.mu.Lock()
 	defer useCase.mu.Unlock()
 
 	timerKey := string(sessionID)
-	if timers, ok := useCase.activeTimers[timerKey]; ok {
-		if timers.willTimer != nil {
-			timers.willTimer.Stop()
-		}
-		if timers.expiryTimer != nil {
-			timers.expiryTimer.Stop()
-		}
-		delete(useCase.activeTimers, timerKey)
+	if useCase.ownershipCoordinator == nil {
+		useCase.stopSessionTimers(timerKey)
 	}
 
 	now := useCase.clock.Now()
@@ -352,6 +394,19 @@ func (useCase *UseCase) ConnectContext(ctx context.Context, request ConnectReque
 		}
 		return ResultDTO{}, err
 	}
+	var ownershipEpoch uint64
+	if useCase.ownershipCoordinator != nil {
+		tenantID := "default"
+		if principal.Subject() != "" {
+			tenantID = principal.TenantID().String()
+		}
+		ownershipEpoch, err = useCase.ownershipCoordinator.AcquireOwnership(ctx, tenantID, packet.ClientID, useCase.ownerNodeID)
+		if err != nil || ownershipEpoch == 0 {
+			result.ConnAck.ReasonCode = ownershipUnavailableReason(packet.Version)
+			return result, nil
+		}
+		useCase.stopSessionTimers(timerKey)
+	}
 	if err := useCase.saveSession(sessionKey, timerKey, opened); err != nil {
 		return ResultDTO{}, err
 	}
@@ -359,10 +414,12 @@ func (useCase *UseCase) ConnectContext(ctx context.Context, request ConnectReque
 	useCase.principals[sessionID] = principal
 	if !present {
 		useCase.deliveries.Remove(sessionID)
-		useCase.routes.RemoveSession(sessionID)
+		if useCase.ownershipCoordinator == nil {
+			useCase.routes.RemoveSession(sessionID)
+		}
 	}
-	if principal.Subject() != "" {
-		_ = useCase.routes.BindSessionTenant(sessionID, principal.TenantID())
+	if principal.Subject() != "" || useCase.ownershipCoordinator != nil {
+		_ = useCase.routes.BindSessionTenant(sessionID, sessionTenant)
 	}
 	if err := useCase.deliveries.Register(sessionID); err != nil {
 		var rollbackErr error
@@ -377,10 +434,14 @@ func (useCase *UseCase) ConnectContext(ctx context.Context, request ConnectReque
 		}
 		return ResultDTO{}, err
 	}
+	if sessionKey != (tenancy.SessionKey{}) {
+		useCase.sessionKeys[sessionID] = sessionKey
+	} else {
+		delete(useCase.sessionKeys, sessionID)
+	}
 	useCase.recordSessionGauge()
 	return ResultDTO{
-		SessionID: sessionID,
-		Principal: principal,
+		SessionID: sessionID, Principal: principal, OwnershipEpoch: ownershipEpoch,
 		ConnAck: mqtt.ConnAck{
 			Version:        packet.Version,
 			SessionPresent: present,
@@ -388,6 +449,17 @@ func (useCase *UseCase) ConnectContext(ctx context.Context, request ConnectReque
 		},
 		Accepted: true,
 	}, nil
+}
+func (useCase *UseCase) stopSessionTimers(timerKey string) {
+	if timers, ok := useCase.activeTimers[timerKey]; ok {
+		if timers.willTimer != nil {
+			timers.willTimer.Stop()
+		}
+		if timers.expiryTimer != nil {
+			timers.expiryTimer.Stop()
+		}
+		delete(useCase.activeTimers, timerKey)
+	}
 }
 
 // Disconnect closes one active lifecycle and evaluates session retention,
@@ -409,9 +481,11 @@ func (useCase *UseCase) Disconnect(sessionID routing.SessionID, reason session.D
 		delete(useCase.activeTimers, timerKey)
 	}
 
-	var sessionKey tenancy.SessionKey
-	if principal, ok := useCase.principals[sessionID]; ok && principal.Subject() != "" {
-		sessionKey, _ = tenancy.NewSessionKey(principal.TenantID(), principal.ClientID())
+	sessionKey, hasSessionKey := useCase.sessionKeys[sessionID]
+	if !hasSessionKey {
+		if principal, ok := useCase.principals[sessionID]; ok && principal.Subject() != "" {
+			sessionKey, _ = tenancy.NewSessionKey(principal.TenantID(), principal.ClientID())
+		}
 	}
 	state, found, err := useCase.loadSession(sessionKey, timerKey)
 	if err != nil {
@@ -433,7 +507,9 @@ func (useCase *UseCase) Disconnect(sessionID routing.SessionID, reason session.D
 			return err
 		}
 		useCase.deliveries.Remove(sessionID)
-		useCase.routes.RemoveSession(sessionID)
+		if useCase.ownershipCoordinator == nil {
+			useCase.routes.RemoveSession(sessionID)
+		}
 	} else {
 		if err := useCase.saveSession(sessionKey, timerKey, result.Lifecycle); err != nil {
 			useCase.mu.Unlock()
@@ -469,6 +545,7 @@ func (useCase *UseCase) Disconnect(sessionID routing.SessionID, reason session.D
 	}
 	if result.SessionRemoved {
 		delete(useCase.principals, sessionID)
+		delete(useCase.sessionKeys, sessionID)
 	}
 	useCase.mu.Unlock()
 	useCase.recordSessionGauge()
@@ -564,9 +641,11 @@ func (useCase *UseCase) onExpiryTimerForTimer(sessionID routing.SessionID, expec
 		}
 		delete(useCase.activeTimers, timerKey)
 	}
-	var sessionKey tenancy.SessionKey
-	if principal, ok := useCase.principals[sessionID]; ok && principal.Subject() != "" {
-		sessionKey, _ = tenancy.NewSessionKey(principal.TenantID(), principal.ClientID())
+	sessionKey, hasSessionKey := useCase.sessionKeys[sessionID]
+	if !hasSessionKey {
+		if principal, ok := useCase.principals[sessionID]; ok && principal.Subject() != "" {
+			sessionKey, _ = tenancy.NewSessionKey(principal.TenantID(), principal.ClientID())
+		}
 	}
 	state, found, err := useCase.loadSession(sessionKey, timerKey)
 	if err != nil || !found {
@@ -593,7 +672,9 @@ func (useCase *UseCase) onExpiryTimerForTimer(sessionID routing.SessionID, expec
 		return
 	}
 	useCase.deliveries.Remove(sessionID)
-	useCase.routes.RemoveSession(sessionID)
+	if useCase.ownershipCoordinator == nil {
+		useCase.routes.RemoveSession(sessionID)
+	}
 	shouldPublish := will != nil
 	if shouldPublish && useCase.authenticator != nil {
 		principal, ok := useCase.principals[sessionID]
@@ -607,6 +688,7 @@ func (useCase *UseCase) onExpiryTimerForTimer(sessionID routing.SessionID, expec
 		}
 	}
 	delete(useCase.principals, sessionID)
+	delete(useCase.sessionKeys, sessionID)
 	useCase.mu.Unlock()
 
 	if shouldPublish {
@@ -654,6 +736,13 @@ func notAuthorizedReason(version mqtt.ProtocolVersion) byte {
 	}
 	return 0x05
 }
+func ownershipUnavailableReason(version mqtt.ProtocolVersion) byte {
+	if version == mqtt.ProtocolV5 {
+		return 0x88
+	}
+	return 0x03
+}
+
 func duplicateConnectReason(version mqtt.ProtocolVersion) byte {
 	return clientIDRejectedReason(version)
 }

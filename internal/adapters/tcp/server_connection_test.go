@@ -93,6 +93,37 @@ func TestServeAndServerSessionHelpersBoundaries(t *testing.T) {
 	connection.requestClose()
 }
 
+func TestCloseSessionForTakeoverRemovesBindingAndStopsSocket(t *testing.T) {
+	runtime := newAdapterTestRuntime(t, 2, defaultAdapterConfig())
+	defer runtime.stop(t)
+	serverSocket, clientSocket := net.Pipe()
+	defer clientSocket.Close()
+	connection := newConnection(runtime.server, serverSocket)
+	connection.sessionID = "session"
+	connection.disconnectReason = session.DisconnectWithWill
+	if !runtime.server.bindSession(connection.sessionID, connection) {
+		t.Fatal("bindSession() failed")
+	}
+
+	if !runtime.server.CloseSessionForTakeover(connection.sessionID) {
+		t.Fatal("CloseSessionForTakeover() did not find the active session")
+	}
+	if runtime.server.bySession[connection.sessionID] != nil {
+		t.Fatal("takeover left the old connection bound to the session")
+	}
+	if !connection.takeover.Load() {
+		t.Fatal("takeover close did not mark the connection as non-abnormal")
+	}
+	select {
+	case <-connection.stop:
+	default:
+		t.Fatal("takeover did not stop the old connection")
+	}
+	if runtime.server.CloseSessionForTakeover(connection.sessionID) {
+		t.Fatal("second takeover close unexpectedly found the removed binding")
+	}
+}
+
 func TestConnectionQueueAndDispatchBoundaries(t *testing.T) {
 	runtime := newAdapterTestRuntime(t, 2, defaultAdapterConfig())
 	defer runtime.stop(t)

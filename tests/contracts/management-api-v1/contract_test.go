@@ -22,18 +22,23 @@ import (
 	"github.com/getkin/kin-openapi/routers/legacy"
 
 	managementhttp "narumq/internal/adapters/http/management"
+
 	adaptersmetrics "narumq/internal/adapters/metrics"
+	appmembership "narumq/internal/application/membership"
 	ports "narumq/internal/application/ports/management"
 )
 
 const contractServerURL = "https://narumq.example.invalid"
 
 type operationFixture struct {
-	method      string
-	path        string
-	operationID string
-	target      string
-	accept      string
+	method         string
+	path           string
+	operationID    string
+	target         string
+	accept         string
+	body           string
+	idempotencyKey string
+	expectedStatus int
 }
 
 func managementOperationFixtures() []operationFixture {
@@ -51,6 +56,23 @@ func managementOperationFixtures() []operationFixture {
 		{method: http.MethodGet, path: "/api/v1/subscriptions", operationID: "listSubscriptions", target: "/api/v1/subscriptions?tenantId=default&clientId=device-1&limit=50"},
 		{method: http.MethodGet, path: "/api/v1/retained", operationID: "listRetainedMessages", target: "/api/v1/retained?tenantId=default&topicPrefix=sensors/&limit=50"},
 		{method: http.MethodGet, path: "/api/v1/tenants", operationID: "listTenants", target: "/api/v1/tenants?limit=50"},
+	}
+}
+func membershipOperationFixtures() []operationFixture {
+	return []operationFixture{
+		{
+			method: http.MethodPost, path: "/api/v1/cluster/members", operationID: "stageClusterMember",
+			target: "/api/v1/cluster/members", body: `{"memberId":4,"address":"node4.example:19004","dnsSan":"node4.example","certificateSha256":"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef","releaseVersion":"1.0.0","clusterProtocolMajor":2,"clusterProtocolMinor":0,"stateSchemaMajor":1,"stateSchemaMinor":0}`,
+			idempotencyKey: "contract-stage-4", expectedStatus: http.StatusAccepted,
+		},
+		{
+			method: http.MethodDelete, path: "/api/v1/cluster/members/{memberId}", operationID: "removeClusterMember",
+			target: "/api/v1/cluster/members/3", idempotencyKey: "contract-remove-3", expectedStatus: http.StatusAccepted,
+		},
+		{
+			method: http.MethodGet, path: "/api/v1/cluster/membership-operations/{operationId}", operationID: "getMembershipOperation",
+			target: "/api/v1/cluster/membership-operations/00000000-0000-4000-8000-000000000004", expectedStatus: http.StatusOK,
+		},
 	}
 }
 
@@ -105,9 +127,19 @@ func contractValidationOptions() *openapi3filter.Options {
 }
 
 func newContractRequest(fixture operationFixture) *http.Request {
-	req := httptest.NewRequest(fixture.method, contractServerURL+fixture.target, nil)
+	var body io.Reader
+	if fixture.body != "" {
+		body = strings.NewReader(fixture.body)
+	}
+	req := httptest.NewRequest(fixture.method, contractServerURL+fixture.target, body)
 	if strings.HasPrefix(fixture.path, "/api/") {
 		req.Header.Set("Authorization", "Bearer contract-token")
+	}
+	if fixture.body != "" {
+		req.Header.Set("Content-Type", "application/json")
+	}
+	if fixture.idempotencyKey != "" {
+		req.Header.Set("Idempotency-Key", fixture.idempotencyKey)
 	}
 	if fixture.accept != "" {
 		req.Header.Set("Accept", fixture.accept)
@@ -282,9 +314,50 @@ func contractHandler(cfg managementhttp.ServerConfig) http.Handler {
 		adaptersmetrics.NewRegistry(),
 	)
 }
+func membershipContractHandler() http.Handler {
+	return managementhttp.NewRouterWithMembership(
+		managementhttp.ServerConfig{},
+		contractStateProvider{},
+		contractStateProvider{},
+		adaptersmetrics.NewRegistry(),
+		contractMembershipService{},
+	)
+}
+
+type contractMembershipService struct{}
+
+func (contractMembershipService) StageJoin(_ context.Context, request appmembership.StageJoinRequestDTO) (appmembership.MembershipOperationDTO, error) {
+	return appmembership.MembershipOperationDTO{
+		OperationID:    "00000000-0000-4000-8000-000000000004",
+		Action:         appmembership.MembershipActionStageJoin,
+		MemberID:       request.Member.MemberID,
+		Phase:          appmembership.OperationPhaseStaged,
+		CommittedIndex: 41,
+	}, nil
+}
+
+func (contractMembershipService) StartPlannedRemoval(_ context.Context, memberID uint64, _ string, _ uint64) (appmembership.MembershipOperationDTO, error) {
+	return appmembership.MembershipOperationDTO{
+		OperationID:    "00000000-0000-4000-8000-000000000004",
+		Action:         appmembership.MembershipActionBeginRemove,
+		MemberID:       memberID,
+		Phase:          appmembership.OperationPhaseRemoving,
+		CommittedIndex: 42,
+	}, nil
+}
+
+func (contractMembershipService) GetOperation(_ context.Context, operationID string) (appmembership.MembershipOperationDTO, error) {
+	return appmembership.MembershipOperationDTO{
+		OperationID:    operationID,
+		Action:         appmembership.MembershipActionStageJoin,
+		MemberID:       4,
+		Phase:          appmembership.OperationPhaseCatchingUp,
+		CommittedIndex: 43,
+	}, nil
+}
 
 func expectedOperationSet() []string {
-	fixtures := managementOperationFixtures()
+	fixtures := append(managementOperationFixtures(), membershipOperationFixtures()...)
 	operations := make([]string, 0, len(fixtures))
 	for _, fixture := range fixtures {
 		operations = append(operations, fixture.method+" "+fixture.path+" "+fixture.operationID)
@@ -355,6 +428,29 @@ func TestManagementHandlerResponsesMatchOpenAPI(t *testing.T) {
 					t.Fatalf("OpenMetrics body must end with # EOF: %q", openMetricsRecorder.Body.String())
 				}
 			}
+		})
+	}
+}
+func TestMembershipHandlerResponsesMatchOpenAPI(t *testing.T) {
+	_, router := loadManagementContract(t)
+	handler := membershipContractHandler()
+
+	for _, fixture := range membershipOperationFixtures() {
+		t.Run(fixture.operationID, func(t *testing.T) {
+			req := newContractRequest(fixture)
+			input, options := findContractRoute(t, router, req)
+			if input.Route.Operation.OperationID != fixture.operationID {
+				t.Fatalf("runtime fixture matched operation %q, want %q", input.Route.Operation.OperationID, fixture.operationID)
+			}
+			if err := openapi3filter.ValidateRequest(context.Background(), input); err != nil {
+				t.Fatalf("validate representative request: %v", err)
+			}
+			recorder := httptest.NewRecorder()
+			handler.ServeHTTP(recorder, req)
+			if recorder.Code != fixture.expectedStatus {
+				t.Fatalf("status = %d, want %d: %s", recorder.Code, fixture.expectedStatus, recorder.Body.String())
+			}
+			validateResponse(t, input, options, recorder)
 		})
 	}
 }

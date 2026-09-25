@@ -46,6 +46,19 @@ type Match struct {
 	Fallbacks []Target
 }
 
+// ProjectionSession is one committed tenant-scoped owner in a route projection.
+type ProjectionSession struct {
+	TenantID  tenancy.TenantID
+	SessionID SessionID
+}
+
+// ProjectionSubscription is one subscription in a full committed-state route projection.
+type ProjectionSubscription struct {
+	TenantID     tenancy.TenantID
+	SessionID    SessionID
+	Subscription mqtt.Subscription
+}
+
 // Table stores subscriptions and matches publications against a consistent
 // snapshot. The initial Phase 0 implementation deliberately scans the small
 // table instead of introducing an index whose invalidation rules are not yet
@@ -66,6 +79,68 @@ func NewTable() *Table {
 		sharedCursors:  make(map[string]uint64),
 		sessionTenants: make(map[SessionID]tenancy.TenantID),
 	}
+}
+
+// ReplaceProjection validates and atomically replaces the complete route projection.
+// Shared-subscription round-robin cursors are retained for groups present in both views.
+func (table *Table) ReplaceProjection(projection []ProjectionSubscription) error {
+	return table.ReplaceProjectionWithSessions(nil, projection)
+}
+
+// ReplaceProjectionWithSessions also installs committed tenant bindings for
+// owned sessions that do not currently have subscriptions.
+func (table *Table) ReplaceProjectionWithSessions(
+	sessions []ProjectionSession,
+	projection []ProjectionSubscription,
+) error {
+	next := NewTable()
+	type projectionKey struct {
+		sessionID SessionID
+		filter    string
+	}
+	seen := make(map[projectionKey]struct{}, len(projection))
+	sessionTenants := make(map[SessionID]tenancy.TenantID, len(sessions)+len(projection))
+	bindTenant := func(sessionID SessionID, tenantID tenancy.TenantID) error {
+		if tenantID.String() == "" {
+			return errors.New("route projection entry has no tenant")
+		}
+		if existing, exists := sessionTenants[sessionID]; exists && existing != tenantID {
+			return errors.New("route projection session belongs to multiple tenants")
+		}
+		sessionTenants[sessionID] = tenantID
+		return next.BindSessionTenant(sessionID, tenantID)
+	}
+	for _, entry := range sessions {
+		if err := bindTenant(entry.SessionID, entry.TenantID); err != nil {
+			return err
+		}
+	}
+	for _, entry := range projection {
+		key := projectionKey{sessionID: entry.SessionID, filter: entry.Subscription.Filter}
+		if _, duplicate := seen[key]; duplicate {
+			return errors.New("duplicate subscription in route projection")
+		}
+		seen[key] = struct{}{}
+		if err := bindTenant(entry.SessionID, entry.TenantID); err != nil {
+			return err
+		}
+		if _, err := next.Subscribe(entry.SessionID, entry.Subscription); err != nil {
+			return err
+		}
+	}
+
+	table.mu.Lock()
+	for filter := range next.shared {
+		if cursor, exists := table.sharedCursors[filter]; exists {
+			next.sharedCursors[filter] = cursor
+		}
+	}
+	table.subscriptions = next.subscriptions
+	table.shared = next.shared
+	table.sharedCursors = next.sharedCursors
+	table.sessionTenants = next.sessionTenants
+	table.mu.Unlock()
+	return nil
 }
 
 // ValidateTopicFilter validates MQTT wildcard placement and UTF-8 rules.

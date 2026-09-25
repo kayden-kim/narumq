@@ -752,7 +752,7 @@ func assertNoInboundPeerMessage(t *testing.T, messages <-chan tcpadapter.PeerMes
 
 func assertNodeUnchanged(t *testing.T, node *raftadapter.Node, status raftadapter.StatusDTO, commands [][]byte) {
 	t.Helper()
-	if got := node.Status(); got != status {
+	if got := node.Status(); !reflect.DeepEqual(got, status) {
 		t.Fatalf("rejected peer input changed Raft status: got %+v, want %+v", got, status)
 	}
 	if got := node.AppliedCommands(); !reflect.DeepEqual(got, commands) {

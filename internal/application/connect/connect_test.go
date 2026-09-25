@@ -27,17 +27,20 @@ func (clock *fakeClock) Now() time.Time {
 }
 
 type fakeSessionRepository struct {
-	states     map[string]session.Lifecycle
-	loadErr    error
-	saveErr    error
-	deleteErr  error
-	loadCalls  int
-	saveCalls  int
-	deleteCall int
+	states      map[string]session.Lifecycle
+	keyedStates map[tenancy.SessionKey]session.Lifecycle
+	loadErr     error
+	saveErr     error
+	deleteErr   error
+	loadCalls   int
+	saveCalls   int
+	deleteCall  int
 }
 
 func newFakeSessionRepository() *fakeSessionRepository {
-	return &fakeSessionRepository{states: make(map[string]session.Lifecycle)}
+	return &fakeSessionRepository{
+		states: make(map[string]session.Lifecycle), keyedStates: make(map[tenancy.SessionKey]session.Lifecycle),
+	}
 }
 
 func (repository *fakeSessionRepository) Load(clientID string) (session.Lifecycle, bool, error) {
@@ -65,6 +68,58 @@ func (repository *fakeSessionRepository) Delete(clientID string) error {
 	}
 	delete(repository.states, clientID)
 	return nil
+}
+
+func (repository *fakeSessionRepository) LoadKey(key tenancy.SessionKey) (session.Lifecycle, bool, error) {
+	repository.loadCalls++
+	if repository.loadErr != nil {
+		return session.Lifecycle{}, false, repository.loadErr
+	}
+	state, found := repository.keyedStates[key]
+	return state, found, nil
+}
+
+func (repository *fakeSessionRepository) SaveKey(key tenancy.SessionKey, state session.Lifecycle) error {
+	repository.saveCalls++
+	if repository.saveErr != nil {
+		return repository.saveErr
+	}
+	repository.keyedStates[key] = state
+	repository.states[state.ClientID()] = state
+	return nil
+}
+
+func (repository *fakeSessionRepository) DeleteKey(key tenancy.SessionKey) error {
+	repository.deleteCall++
+	if repository.deleteErr != nil {
+		return repository.deleteErr
+	}
+	delete(repository.keyedStates, key)
+	delete(repository.states, key.ClientID())
+	return nil
+}
+
+type fakeOwnershipCoordinator struct {
+	epoch       uint64
+	err         error
+	calls       int
+	tenantID    string
+	clientID    string
+	ownerNodeID uint64
+	onAcquire   func()
+}
+
+func (coordinator *fakeOwnershipCoordinator) AcquireOwnership(
+	ctx context.Context, tenantID, clientID string, ownerNodeID uint64,
+) (uint64, error) {
+	coordinator.calls++
+	coordinator.tenantID = tenantID
+	coordinator.clientID = clientID
+	coordinator.ownerNodeID = ownerNodeID
+	if coordinator.onAcquire != nil {
+		coordinator.onAcquire()
+	}
+	return coordinator.epoch, coordinator.err
 }
 
 type fakeDeliveryQueue struct {
@@ -1038,6 +1093,171 @@ func (metrics *fakeMetrics) SetSessionsActive(bool, int64)        {}
 func (metrics *fakeMetrics) SetSubscriptionsActive(int64)         {}
 func (metrics *fakeMetrics) SetRetainedStats(int64, int64)        {}
 func (metrics *fakeMetrics) ObservePublishDuration(time.Duration) {}
+
+func TestConnectCommitsOwnershipBeforeLocalActivation(t *testing.T) {
+	tests := []struct {
+		name       string
+		version    mqtt.ProtocolVersion
+		epoch      uint64
+		commitErr  error
+		wantReason byte
+		wantAccept bool
+	}{
+		{name: "committed", version: mqtt.ProtocolV311, epoch: 9, wantAccept: true},
+		{name: "quorum-unavailable", version: mqtt.ProtocolV5, commitErr: errors.New("no quorum"), wantReason: 0x88},
+	}
+
+	for _, testCase := range tests {
+		t.Run(testCase.name, func(t *testing.T) {
+			now := time.Date(2026, time.January, 1, 0, 0, 0, 0, time.UTC)
+			useCase, _, repository, queue, _, _, _ := newUseCase(t, now)
+			coordinator := &fakeOwnershipCoordinator{epoch: testCase.epoch, err: testCase.commitErr}
+			coordinator.onAcquire = func() {
+				if repository.saveCalls != 0 || len(queue.registers) != 0 {
+					t.Fatal("local session activated before committed ownership")
+				}
+			}
+			useCase.ownershipCoordinator = coordinator
+			useCase.ownerNodeID = 7
+
+			result, err := useCase.ConnectContext(context.Background(), ConnectRequestDTO{
+				Packet: mqtt.Connect{Version: testCase.version, ClientID: "cluster-client"},
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if result.Accepted != testCase.wantAccept || result.ConnAck.ReasonCode != testCase.wantReason {
+				t.Fatalf("ConnectContext() = %#v, want accepted=%t reason=%#x", result, testCase.wantAccept, testCase.wantReason)
+			}
+			if coordinator.calls != 1 || coordinator.tenantID != "default" || coordinator.clientID != "cluster-client" || coordinator.ownerNodeID != 7 {
+				t.Fatalf("ownership request = %#v", coordinator)
+			}
+			if testCase.wantAccept {
+				if result.OwnershipEpoch != testCase.epoch || repository.saveCalls != 1 || len(queue.registers) != 1 {
+					t.Fatalf("accepted CONNECT state = result:%#v saves:%d registers:%v", result, repository.saveCalls, queue.registers)
+				}
+			} else if result.OwnershipEpoch != 0 || repository.saveCalls != 0 || len(queue.registers) != 0 {
+				t.Fatalf("rejected CONNECT changed local state: result:%#v saves:%d registers:%v", result, repository.saveCalls, queue.registers)
+			}
+		})
+	}
+}
+
+func TestConnectClusterRoutingIDsIsolateSlashDelimitedTenantAndClientIDs(t *testing.T) {
+	now := time.Date(2026, time.January, 1, 0, 0, 0, 0, time.UTC)
+	firstTenant, err := tenancy.NewTenantID("a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	secondTenant, err := tenancy.NewTenantID("a/b")
+	if err != nil {
+		t.Fatal(err)
+	}
+	auth := &fakeAuthenticator{result: applicationauthentication.Result{
+		TenantID: firstTenant, Subject: "first", CredentialID: "first-token",
+		ExpiresAt: now.Add(time.Hour), Roles: []security.Role{"client"},
+		AllowedClientIDs: []string{"b/c"},
+	}}
+	clock := &fakeClock{now: now}
+	repository := newFakeSessionRepository()
+	queue := newFakeDeliveryQueue()
+	routes := routing.NewTable()
+	scheduler := &fakeScheduler{}
+	publisher := &fakeWillPublisher{}
+	coordinator := &fakeOwnershipCoordinator{epoch: 9}
+	useCase, err := New(
+		clock, repository, queue, routes, scheduler, publisher,
+		WithSecurity(auth, nil, security.Policy{}),
+		WithOwnershipCoordinator(coordinator, 1),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	connect := func(clientID, token string) ResultDTO {
+		t.Helper()
+		result, err := useCase.ConnectContext(context.Background(), ConnectRequestDTO{
+			Packet: mqtt.Connect{
+				Version: mqtt.ProtocolV5, ClientID: clientID, HasUsername: true, Username: "jwt",
+				HasPassword: true, Password: []byte(token),
+			},
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !result.Accepted {
+			t.Fatalf("CONNECT for %q rejected: %#v", clientID, result.ConnAck)
+		}
+		return result
+	}
+
+	first := connect("b/c", "first-token")
+	auth.result = applicationauthentication.Result{
+		TenantID: secondTenant, Subject: "second", CredentialID: "second-token",
+		ExpiresAt: now.Add(time.Hour), Roles: []security.Role{"client"},
+		AllowedClientIDs: []string{"c"},
+	}
+	second := connect("c", "second-token")
+	if first.SessionID == second.SessionID {
+		t.Fatalf("distinct tenant/client pairs share session ID %q", first.SessionID)
+	}
+	if len(queue.registers) != 2 {
+		t.Fatalf("registered cluster sessions = %v", queue.registers)
+	}
+
+	if _, err := routes.Subscribe(first.SessionID, mqtt.Subscription{Filter: "events/#"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := routes.Subscribe(second.SessionID, mqtt.Subscription{Filter: "events/#"}); err != nil {
+		t.Fatal(err)
+	}
+	publisherKey, err := tenancy.NewSessionKey(firstTenant, "publisher")
+	if err != nil {
+		t.Fatal(err)
+	}
+	publisherID := routing.SessionID(publisherKey.RoutingID())
+	if err := routes.BindSessionTenant(publisherID, firstTenant); err != nil {
+		t.Fatal(err)
+	}
+	matches, err := routes.Match(publisherID, "events/item", mqtt.QoSAtMostOnce, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(matches) != 1 || matches[0].Primary.SessionID != first.SessionID {
+		t.Fatalf("tenant a publication matched sessions from another tenant: %+v", matches)
+	}
+}
+
+func TestClusterAnonymousSessionDisconnectUsesTenantScopedKey(t *testing.T) {
+	now := time.Date(2026, time.January, 1, 0, 0, 0, 0, time.UTC)
+	useCase, _, repository, _, _, _, _ := newUseCase(t, now)
+	useCase.ownershipCoordinator = &fakeOwnershipCoordinator{epoch: 1}
+	useCase.ownerNodeID = 1
+
+	result, err := useCase.ConnectContext(context.Background(), ConnectRequestDTO{
+		Packet: mqtt.Connect{Version: mqtt.ProtocolV5, CleanStart: true, ClientID: "anonymous-client"},
+	})
+	if err != nil || !result.Accepted {
+		t.Fatalf("cluster anonymous CONNECT = (%+v, %v)", result, err)
+	}
+	defaultTenant, err := tenancy.NewTenantID("default")
+	if err != nil {
+		t.Fatal(err)
+	}
+	sessionKey, err := tenancy.NewSessionKey(defaultTenant, "anonymous-client")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, found := repository.keyedStates[sessionKey]; !found {
+		t.Fatal("cluster anonymous session was not stored under its default tenant key")
+	}
+	if err := useCase.Disconnect(result.SessionID, session.DisconnectNormal); err != nil {
+		t.Fatalf("cluster anonymous DISCONNECT: %v", err)
+	}
+	if len(repository.keyedStates) != 0 || len(repository.states) != 0 {
+		t.Fatalf("cluster anonymous disconnect left local session state: keyed=%v raw=%v", repository.keyedStates, repository.states)
+	}
+}
 
 // Requirements: SEC-04, TEN-01, TEN-02
 func TestConnectAuthenticatedPipeline(t *testing.T) {

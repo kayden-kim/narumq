@@ -1,0 +1,196 @@
+syntax = "proto3";
+
+package narumq.cluster.v1;
+
+option go_package = "narumq/internal/adapters/raft/records;records";
+
+// Draft wire contract. Implementations must reject unknown fields until a
+// reviewed schema minor and its compatibility matrix are published.
+
+enum MemberPhase {
+  MEMBER_PHASE_UNSPECIFIED = 0;
+  MEMBER_PHASE_STAGED = 1;
+  MEMBER_PHASE_LEARNER = 2;
+  MEMBER_PHASE_CATCHING_UP = 3;
+  MEMBER_PHASE_VOTER = 4;
+  MEMBER_PHASE_LEAVING = 5;
+  MEMBER_PHASE_RETIRED = 6;
+}
+
+enum MembershipAction {
+  MEMBERSHIP_ACTION_UNSPECIFIED = 0;
+  MEMBERSHIP_ACTION_STAGE_JOIN = 1;
+  MEMBERSHIP_ACTION_ADD_LEARNER = 2;
+  MEMBERSHIP_ACTION_PROMOTE_VOTER = 3;
+  MEMBERSHIP_ACTION_BEGIN_REMOVE = 4;
+  MEMBERSHIP_ACTION_REMOVE_MEMBER = 5;
+  MEMBERSHIP_ACTION_ABORT_STAGE = 6;
+}
+
+enum OwnershipAction {
+  OWNERSHIP_ACTION_UNSPECIFIED = 0;
+  OWNERSHIP_ACTION_ACQUIRE = 1;
+  OWNERSHIP_ACTION_TRANSFER = 2;
+  OWNERSHIP_ACTION_RELEASE = 3;
+}
+
+enum SubscriptionAction {
+  SUBSCRIPTION_ACTION_UNSPECIFIED = 0;
+  SUBSCRIPTION_ACTION_ADD = 1;
+  SUBSCRIPTION_ACTION_REMOVE = 2;
+}
+
+enum InboundDeliveryPhase {
+  INBOUND_PHASE_UNSPECIFIED = 0;
+  INBOUND_QOS1_AWAIT_ACCEPTANCE = 1;
+  INBOUND_QOS1_ACCEPTED = 2;
+  INBOUND_QOS2_AWAIT_ACCEPTANCE = 3;
+  INBOUND_QOS2_AWAIT_RELEASE = 4;
+  INBOUND_QOS2_AWAIT_FINAL_ACCEPTANCE = 5;
+  INBOUND_QOS2_COMPLETE = 6;
+}
+
+enum OutboundDeliveryPhase {
+  OUTBOUND_PHASE_UNSPECIFIED = 0;
+  OUTBOUND_AWAIT_PUBACK = 1;
+  OUTBOUND_AWAIT_PUBREC = 2;
+  OUTBOUND_AWAIT_PUBCOMP = 3;
+  OUTBOUND_COMPLETE = 4;
+}
+
+// Every application log entry has exactly one typed payload. operation_id is a
+// canonical lower-case UUID and is stable across retry of the same operation.
+message CommandEnvelope {
+  uint32 schema_major = 1;
+  uint32 schema_minor = 2;
+  string operation_id = 3;
+  oneof payload {
+    MembershipRecord membership = 10;
+    OwnershipChange ownership = 11;
+    SubscriptionChange subscription = 12;
+    SessionCheckpoint checkpoint = 13;
+  }
+}
+
+// Identity fields are committed before the candidate can send a Raft message.
+message MemberIdentity {
+  uint64 member_id = 1;
+  string cluster_id = 2;
+  string address = 3;
+  string dns_san = 4;
+  bytes certificate_sha256 = 5;
+  string release_version = 6;
+  uint32 cluster_protocol_major = 7;
+  uint32 cluster_protocol_minor = 8;
+  uint32 state_schema_major = 9;
+  uint32 state_schema_minor = 10;
+  MemberPhase phase = 11;
+  string operation_id = 12;
+}
+
+// The idempotency key is stored with the stage record so a lost HTTP reply does
+// not create a second operation. target_member_id is used only by remove work.
+message MembershipRecord {
+  string operation_id = 1;
+  MembershipAction action = 2;
+  string idempotency_key = 3;
+  MemberIdentity member = 4;
+  uint64 target_member_id = 5;
+  uint64 expected_conf_state_index = 6;
+  // Snapshot history stores the actual committed index of this transition.
+  // Command payloads must leave this field zero; adapters derive it from the
+  // committed Raft entry before taking a snapshot.
+  uint64 committed_index = 7;
+}
+
+message OwnershipChange {
+  string tenant_id = 1;
+  string client_id = 2;
+  uint64 expected_epoch = 3;
+  uint64 owner_node_id = 4;
+  uint64 epoch = 5;
+  OwnershipAction action = 6;
+}
+
+message OwnershipState {
+  string tenant_id = 1;
+  string client_id = 2;
+  uint64 owner_node_id = 3;
+  uint64 epoch = 4;
+  uint64 committed_index = 5;
+}
+
+message SubscriptionChange {
+  string tenant_id = 1;
+  string client_id = 2;
+  uint64 owner_node_id = 3;
+  uint64 epoch = 4;
+  string filter = 5;
+  uint32 qos = 6;
+  bool no_local = 7;
+  bool retain_as_published = 8;
+  uint32 retain_handling = 9;
+  SubscriptionAction action = 10;
+}
+
+// This is the exact supported MQTT PUBLISH domain subset, not an opaque Go
+// struct encoding. payload is bounded by the enclosing command limit.
+message PublishPacket {
+  uint32 protocol_version = 1;
+  bool dup = 2;
+  uint32 qos = 3;
+  bool retain = 4;
+  uint32 packet_id = 5;
+  string topic = 6;
+  bytes payload = 7;
+  bool has_message_expiry_interval = 8;
+  uint32 message_expiry_interval = 9;
+}
+
+message InboundCheckpoint {
+  PublishPacket publish = 1;
+  InboundDeliveryPhase phase = 2;
+}
+
+message OutboundCheckpoint {
+  PublishPacket publish = 1;
+  OutboundDeliveryPhase phase = 2;
+}
+
+message SessionCheckpoint {
+  string tenant_id = 1;
+  string client_id = 2;
+  uint64 owner_node_id = 3;
+  uint64 epoch = 4;
+  repeated InboundCheckpoint inbound = 5;
+  repeated OutboundCheckpoint outbound = 6;
+}
+
+message SubscriptionState {
+  string tenant_id = 1;
+  string client_id = 2;
+  uint64 owner_node_id = 3;
+  uint64 epoch = 4;
+  string filter = 5;
+  uint32 qos = 6;
+  bool no_local = 7;
+  bool retain_as_published = 8;
+  uint32 retain_handling = 9;
+}
+
+message ReplicatedStateSnapshot {
+  repeated MemberIdentity members = 1;
+  repeated OwnershipState ownerships = 2;
+  repeated SubscriptionState subscriptions = 3;
+  repeated SessionCheckpoint checkpoints = 4;
+  repeated MembershipRecord membership_history = 5;
+}
+
+message SnapshotEnvelope {
+  uint32 schema_major = 1;
+  uint32 schema_minor = 2;
+  uint64 last_included_index = 3;
+  uint64 object_count = 4;
+  bytes sha256 = 5;
+  ReplicatedStateSnapshot state = 6;
+}

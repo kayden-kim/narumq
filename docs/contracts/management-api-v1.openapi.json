@@ -3,8 +3,8 @@
   "jsonSchemaDialect": "https://json-schema.org/draft/2020-12/schema",
   "info": {
     "title": "NaruMQ Management API",
-    "version": "1.0.0",
-    "description": "Phase 1 query-only management and observability contract. Mutation, OIDC/JWT claim semantics, rate limiting, idempotency, audit and dashboard APIs are deferred."
+    "version": "1.1.0",
+    "description": "Query, observability, and authenticated cluster-membership management contract. OIDC/JWT claim semantics, rate limiting, audit and dashboard APIs are deferred."
   },
   "servers": [
     {
@@ -19,6 +19,7 @@
   "tags": [
     { "name": "Health" },
     { "name": "Cluster" },
+    { "name": "ClusterMembership" },
     { "name": "Nodes" },
     { "name": "Tenants" },
     { "name": "Clients" },
@@ -115,6 +116,111 @@
           "401": { "$ref": "#/components/responses/Unauthorized" },
           "403": { "$ref": "#/components/responses/Forbidden" },
           "405": { "$ref": "#/components/responses/MethodNotAllowed" }
+        }
+      }
+    },
+    "/api/v1/cluster/members": {
+      "post": {
+        "tags": ["ClusterMembership"],
+        "operationId": "stageClusterMember",
+        "summary": "Stage a new cluster member",
+        "description": "Requires ClusterAdmin. Strict JSON rejects unknown, duplicate, or trailing fields. Returns only after the STAGED record commits; 202 means the committed operation is still progressing.",
+        "parameters": [
+          { "$ref": "#/components/parameters/IdempotencyKey" }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": { "schema": { "$ref": "#/components/schemas/MemberAdmissionRequest" } }
+          }
+        },
+        "responses": {
+          "200": { "$ref": "#/components/responses/MembershipOperationResponse" },
+          "202": { "$ref": "#/components/responses/MembershipOperationResponse" },
+          "400": { "$ref": "#/components/responses/BadRequest" },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "403": { "$ref": "#/components/responses/Forbidden" },
+          "405": { "$ref": "#/components/responses/MethodNotAllowed" },
+          "409": {
+            "description": "Identity, idempotency key, or membership operation conflict.",
+            "headers": { "X-Request-Id": { "$ref": "#/components/headers/XRequestId" } },
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorResponse" } } }
+          },
+          "422": {
+            "description": "Cluster protocol, release, or state schema is unsupported.",
+            "headers": { "X-Request-Id": { "$ref": "#/components/headers/XRequestId" } },
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorResponse" } } }
+          },
+          "500": {
+            "description": "Redacted unexpected application or storage error.",
+            "headers": { "X-Request-Id": { "$ref": "#/components/headers/XRequestId" } },
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorResponse" } } }
+          },
+          "503": {
+            "description": "No fresh quorum barrier or committed stage is available.",
+            "headers": { "X-Request-Id": { "$ref": "#/components/headers/XRequestId" } },
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorResponse" } } }
+          }
+        }
+      }
+    },
+    "/api/v1/cluster/members/{memberId}": {
+      "delete": {
+        "tags": ["ClusterMembership"],
+        "operationId": "removeClusterMember",
+        "summary": "Start planned member removal",
+        "description": "Requires ClusterAdmin. Starts a REMOVING membership operation and marks the member as LEAVING; the voter is not removed until ownership/checkpoint transfer and the removal configuration commit.",
+        "parameters": [
+          { "$ref": "#/components/parameters/MemberId" },
+          { "$ref": "#/components/parameters/IdempotencyKey" }
+        ],
+        "responses": {
+          "200": { "$ref": "#/components/responses/MembershipOperationResponse" },
+          "202": { "$ref": "#/components/responses/MembershipOperationResponse" },
+          "400": { "$ref": "#/components/responses/BadRequest" },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "403": { "$ref": "#/components/responses/Forbidden" },
+          "404": { "$ref": "#/components/responses/NotFound" },
+          "405": { "$ref": "#/components/responses/MethodNotAllowed" },
+          "409": {
+            "description": "Identity, idempotency key, or membership operation conflict.",
+            "headers": { "X-Request-Id": { "$ref": "#/components/headers/XRequestId" } },
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorResponse" } } }
+          },
+          "500": {
+            "description": "Redacted unexpected application or storage error.",
+            "headers": { "X-Request-Id": { "$ref": "#/components/headers/XRequestId" } },
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorResponse" } } }
+          },
+          "503": {
+            "description": "No fresh quorum barrier or committed operation is available.",
+            "headers": { "X-Request-Id": { "$ref": "#/components/headers/XRequestId" } },
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorResponse" } } }
+          }
+        }
+      }
+    },
+    "/api/v1/cluster/membership-operations/{operationId}": {
+      "get": {
+        "tags": ["ClusterMembership"],
+        "operationId": "getMembershipOperation",
+        "summary": "Read committed membership operation status",
+        "description": "Requires ReadOnly. Returns the last locally observed committed phase; a leader is not required.",
+        "parameters": [
+          { "$ref": "#/components/parameters/OperationId" }
+        ],
+        "responses": {
+          "200": { "$ref": "#/components/responses/MembershipOperationResponse" },
+          "400": { "$ref": "#/components/responses/BadRequest" },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "403": { "$ref": "#/components/responses/Forbidden" },
+          "404": { "$ref": "#/components/responses/NotFound" },
+          "405": { "$ref": "#/components/responses/MethodNotAllowed" },
+          "500": {
+            "description": "Redacted unexpected application or storage error.",
+            "headers": { "X-Request-Id": { "$ref": "#/components/headers/XRequestId" } },
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorResponse" } } }
+          }
         }
       }
     },
@@ -343,6 +449,26 @@
         "description": "Page size. Defaults to 50 and cannot exceed 1000.",
         "example": 50,
         "schema": { "type": "integer", "minimum": 1, "maximum": 1000, "default": 50 }
+      },
+      "IdempotencyKey": {
+        "name": "Idempotency-Key",
+        "in": "header",
+        "required": true,
+        "description": "Printable ASCII 0x21 through 0x7e, 1 to 128 bytes; spaces are not allowed.",
+        "schema": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[!-~]{1,128}$" }
+      },
+      "MemberId": {
+        "name": "memberId",
+        "in": "path",
+        "required": true,
+        "description": "Canonical positive decimal uint64.",
+        "schema": { "type": "string", "minLength": 1, "maxLength": 20, "pattern": "^[1-9][0-9]*$" }
+      },
+      "OperationId": {
+        "name": "operationId",
+        "in": "path",
+        "required": true,
+        "schema": { "$ref": "#/components/schemas/CanonicalOperationId" }
       },
       "NodeId": {
         "name": "nodeId",
@@ -659,6 +785,15 @@
         "headers": { "X-Request-Id": { "$ref": "#/components/headers/XRequestId" } },
         "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorResponse" } } }
       },
+      "MembershipOperationResponse": {
+        "description": "Committed membership operation state.",
+        "headers": { "X-Request-Id": { "$ref": "#/components/headers/XRequestId" } },
+        "content": {
+          "application/json": {
+            "schema": { "$ref": "#/components/schemas/MembershipOperationEnvelope" }
+          }
+        }
+      },
       "MethodNotAllowed": {
         "description": "The route does not support the requested method.",
         "headers": { "X-Request-Id": { "$ref": "#/components/headers/XRequestId" } },
@@ -675,6 +810,53 @@
         "type": "string",
         "minLength": 1,
         "maxLength": 128
+      },
+      "CanonicalOperationId": {
+        "type": "string",
+        "format": "uuid",
+        "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+      },
+      "MemberAdmissionRequest": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["memberId", "address", "dnsSan", "certificateSha256", "releaseVersion", "clusterProtocolMajor", "clusterProtocolMinor", "stateSchemaMajor", "stateSchemaMinor"],
+        "properties": {
+          "memberId": { "type": "integer", "minimum": 1 },
+          "address": { "type": "string", "minLength": 1, "maxLength": 255 },
+          "dnsSan": { "type": "string", "minLength": 1, "maxLength": 253, "pattern": "^[a-z0-9.-]+$" },
+          "certificateSha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+          "releaseVersion": { "type": "string", "minLength": 1, "maxLength": 64 },
+          "clusterProtocolMajor": { "type": "integer", "minimum": 0, "maximum": 4294967295 },
+          "clusterProtocolMinor": { "type": "integer", "minimum": 0, "maximum": 4294967295 },
+          "stateSchemaMajor": { "type": "integer", "minimum": 0, "maximum": 4294967295 },
+          "stateSchemaMinor": { "type": "integer", "minimum": 0, "maximum": 4294967295 }
+        }
+      },
+      "MembershipAction": {
+        "type": "string",
+        "enum": ["ADD", "REMOVE"]
+      },
+      "MembershipPhase": {
+        "type": "string",
+        "enum": ["STAGED", "LEARNER", "CATCHING_UP", "PROMOTING", "TRANSFERRING", "REMOVING", "SUCCEEDED", "ABORTED"]
+      },
+      "MembershipOperation": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["operationId", "action", "memberId", "phase", "committedIndex"],
+        "properties": {
+          "operationId": { "$ref": "#/components/schemas/CanonicalOperationId" },
+          "action": { "$ref": "#/components/schemas/MembershipAction" },
+          "memberId": { "type": "integer", "minimum": 1 },
+          "phase": { "$ref": "#/components/schemas/MembershipPhase" },
+          "committedIndex": { "type": "integer", "minimum": 1 }
+        }
+      },
+      "MembershipOperationEnvelope": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["data"],
+        "properties": { "data": { "$ref": "#/components/schemas/MembershipOperation" } }
       },
       "Timestamp": {
         "type": "string",

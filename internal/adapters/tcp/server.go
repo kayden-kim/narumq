@@ -54,6 +54,8 @@ var (
 	ErrConnectionClosed = errors.New("tcp connection closed")
 	// ErrProtocol means that the client sent a packet invalid for the current state.
 	ErrProtocol = errors.New("MQTT protocol error")
+	// ErrClusterNotReady means that replicated state cannot safely accept a mutation.
+	ErrClusterNotReady = errors.New("cluster is not ready")
 )
 
 // Config bounds packet memory, handshake waiting, socket writes and per-connection
@@ -67,6 +69,9 @@ type Config struct {
 	ClientCertificateExtractor func(net.Conn) (applicationauthentication.ClientCertificateDTO, bool)
 	Policy                     security.Policy
 	Metrics                    portsmetrics.MetricsRecorder
+	ClusterMode                bool
+	LocalMemberID              uint64
+	ClusterReady               func() bool
 }
 
 // Server owns one listener, all connection goroutines and the session registry.
@@ -132,6 +137,12 @@ func NewServer(
 	if config.MaxPacketSize <= 0 || config.ConnectTimeout <= 0 || config.WriteTimeout <= 0 || config.ControlQueueCapacity <= 0 {
 		return nil, ErrInvalidConfig
 	}
+	if config.ClusterMode && (config.LocalMemberID == 0 ||
+		config.ClusterReady == nil ||
+		!connections.ClusterOwnershipConfigured(config.LocalMemberID) ||
+		!subscriptions.ClusterCommitterConfigured()) {
+		return nil, ErrInvalidConfig
+	}
 	if logger == nil {
 		logger = slog.Default()
 	}
@@ -148,6 +159,10 @@ func NewServer(
 		active:        make(map[*connection]struct{}),
 		bySession:     make(map[routing.SessionID]*connection),
 	}, nil
+}
+
+func (server *Server) clusterReady() bool {
+	return !server.config.ClusterMode || server.config.ClusterReady()
 }
 
 // AddListener registers an additional listener (such as a TLS listener) to accept connections.
@@ -312,6 +327,26 @@ func (server *Server) closeSession(sessionID routing.SessionID) {
 	}
 }
 
+// CloseSessionForTakeover closes the local socket after a committed cluster
+// ownership change, without treating takeover as an abnormal client failure.
+func (server *Server) CloseSessionForTakeover(sessionID routing.SessionID) bool {
+	if server == nil {
+		return false
+	}
+	server.mu.Lock()
+	connection := server.bySession[sessionID]
+	if connection != nil {
+		delete(server.bySession, sessionID)
+		connection.takeover.Store(true)
+	}
+	server.mu.Unlock()
+	if connection == nil {
+		return false
+	}
+	connection.requestClose()
+	return true
+}
+
 func (server *Server) stopAll() {
 	server.stopOnce.Do(func() {
 		server.mu.Lock()
@@ -359,9 +394,11 @@ type connection struct {
 	version          mqtt.ProtocolVersion
 	keepAlive        uint16
 	accepted         bool
+	ownership        subscribe.SessionOwnership
 	disconnectReason session.DisconnectReason
 	recovered        []deliveryqueue.OutboundDTO
 	deliveryBlocked  atomic.Bool
+	takeover         atomic.Bool
 
 	deliveryMu sync.Mutex
 	inbound    map[mqtt.PacketIdentifier]inboundState
@@ -415,8 +452,11 @@ func (connection *connection) cleanup() {
 			if metrics := connection.metrics(); metrics != nil {
 				metrics.ConnectionClosed(proto, transport)
 			}
-			connection.server.unbindSession(connection.sessionID, connection)
-			if err := connection.server.connections.Disconnect(connection.sessionID, connection.disconnectReason); err != nil && !errors.Is(err, connect.ErrSessionNotFound) {
+			disconnectReason := connection.disconnectReason
+			if connection.takeover.Load() {
+				disconnectReason = session.DisconnectNormal
+			}
+			if err := connection.server.connections.Disconnect(connection.sessionID, disconnectReason); err != nil && !errors.Is(err, connect.ErrSessionNotFound) {
 				connection.server.logger.Warn("MQTT session cleanup failed", "error", err.Error())
 			}
 		}
@@ -536,6 +576,17 @@ func (connection *connection) handleUnsupportedVersion(err error) bool {
 }
 
 func (connection *connection) activate(packet mqtt.Connect) error {
+	if connection.server.config.ClusterMode && !connection.server.clusterReady() {
+		reasonCode := byte(0x03)
+		if packet.Version == mqtt.ProtocolV5 {
+			reasonCode = 0x88
+		}
+		if err := connection.enqueueAndWait(&mqtt.ConnAck{Version: packet.Version, ReasonCode: reasonCode}); err != nil {
+			return err
+		}
+		connection.requestClose()
+		return nil
+	}
 	connection.deliveryBlocked.Store(true)
 	var clientCertificate *applicationauthentication.ClientCertificateDTO
 	if extractor := connection.server.config.ClientCertificateExtractor; extractor != nil {
@@ -558,8 +609,16 @@ func (connection *connection) activate(packet mqtt.Connect) error {
 		return nil
 	}
 	connection.sessionID = result.SessionID
-	connection.principal = result.Principal
 	connection.version = packet.Version
+	connection.principal = result.Principal
+	tenantID := "default"
+	if result.Principal.Subject() != "" {
+		tenantID = result.Principal.TenantID().String()
+	}
+	connection.ownership = subscribe.SessionOwnership{
+		TenantID: tenantID, ClientID: packet.ClientID,
+		OwnerNodeID: connection.server.config.LocalMemberID, Epoch: result.OwnershipEpoch,
+	}
 	connection.keepAlive = packet.KeepAlive
 	connection.accepted = true
 	if !connection.server.bindSession(connection.sessionID, connection) {
@@ -606,7 +665,13 @@ func (connection *connection) activate(packet mqtt.Connect) error {
 func (connection *connection) dispatch(packet mqtt.Packet) error {
 	switch value := packet.(type) {
 	case *mqtt.Subscribe:
-		result, err := connection.server.subscriptions.Subscribe(connection.sessionID, *value, connection.server.config.Clock.Now(), connection.principal)
+		if connection.server.config.ClusterMode && !connection.server.clusterReady() {
+			return ErrClusterNotReady
+		}
+		result, err := connection.server.subscriptions.SubscribeCommitted(
+			context.Background(), connection.sessionID, *value, connection.server.config.Clock.Now(),
+			connection.ownership, connection.principal,
+		)
 		if err != nil {
 			return err
 		}
@@ -618,8 +683,16 @@ func (connection *connection) dispatch(packet mqtt.Packet) error {
 		}
 		return nil
 	case *mqtt.Unsubscribe:
-		ack := connection.server.subscriptions.Unsubscribe(connection.sessionID, *value, connection.principal)
-		return connection.enqueueControl(&ack)
+		if connection.server.config.ClusterMode && !connection.server.clusterReady() {
+			return ErrClusterNotReady
+		}
+		ack, err := connection.server.subscriptions.UnsubscribeCommitted(
+			context.Background(), connection.sessionID, *value, connection.ownership, connection.principal,
+		)
+		if err != nil {
+			return err
+		}
+		return connection.enqueueAndWait(&ack)
 	case *mqtt.Publish:
 		return connection.dispatchPublish(*value)
 	case *mqtt.PubAck:
@@ -660,6 +733,21 @@ func (connection *connection) dispatchPublish(packet mqtt.Publish) error {
 		if err != nil || connection.server.config.Policy.AuthorizeTopic(connection.principal, security.ActionPublish, topic) != nil {
 			return connection.rejectUnauthorizedPublish(packet)
 		}
+	}
+	if connection.server.config.ClusterMode && packet.QoS > mqtt.QoSAtMostOnce {
+		if connection.version == mqtt.ProtocolV5 {
+			if err := connection.enqueueAndWait(&mqtt.Disconnect{
+				Version: connection.version, ReasonCode: 0x89,
+			}); err != nil {
+				return err
+			}
+		}
+		connection.requestClose()
+		return nil
+	}
+	if connection.server.config.ClusterMode && !connection.server.clusterReady() {
+		connection.requestClose()
+		return nil
 	}
 	if packet.QoS == mqtt.QoSAtMostOnce {
 		result, err := connection.server.publications.Publish(connection.sessionID, packet, connection.server.config.Clock.Now())

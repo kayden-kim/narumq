@@ -77,6 +77,7 @@ func runWithContext(ctx context.Context, args []string, logger *slog.Logger) err
 	runtimeMetricsInterval := flagSet.Duration("runtime-metrics-interval", 0, "sampling interval for Go runtime metrics")
 	securityConfigFile := flagSet.String("security-config", "", "path to strict JSON security configuration file")
 	raftPeerConfigFile := flagSet.String("raft-peer-config", "", "strict JSON config for fixed-voter peer-only mode")
+	clusterConfigPath := flagSet.String("cluster-config", "", "strict combined configuration for dynamic cluster mode")
 	allowInsecureAnonymousMQTT := flagSet.Bool("allow-insecure-anonymous-mqtt", false, "development-only anonymous MQTT over loopback TCP")
 	if err := flagSet.Parse(args); err != nil {
 		return err
@@ -87,6 +88,34 @@ func runWithContext(ctx context.Context, args []string, logger *slog.Logger) err
 			peerOnlyRequested = true
 		}
 	})
+	clusterModeRequested := false
+	flagSet.Visit(func(parsedFlag *flag.Flag) {
+		if parsedFlag.Name == "cluster-config" {
+			clusterModeRequested = true
+		}
+	})
+	if clusterModeRequested {
+		if *clusterConfigPath == "" {
+			return errors.New("-cluster-config requires a non-empty file path")
+		}
+		if flagSet.NArg() != 0 {
+			return errors.New("-cluster-config does not accept positional arguments")
+		}
+		var conflictingFlags []string
+		flagSet.Visit(func(parsedFlag *flag.Flag) {
+			if parsedFlag.Name != "cluster-config" {
+				conflictingFlags = append(conflictingFlags, "-"+parsedFlag.Name)
+			}
+		})
+		if len(conflictingFlags) != 0 {
+			return fmt.Errorf("-cluster-config cannot be combined with %s", strings.Join(conflictingFlags, ", "))
+		}
+		config, err := loadClusterConfigFile(*clusterConfigPath)
+		if err != nil {
+			return fmt.Errorf("load cluster config: %w", err)
+		}
+		return runClusterMode(ctx, config, logger)
+	}
 	if peerOnlyRequested {
 		if *raftPeerConfigFile == "" {
 			return errors.New("-raft-peer-config requires a non-empty file path")

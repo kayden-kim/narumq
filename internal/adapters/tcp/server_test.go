@@ -6,6 +6,7 @@ import (
 	"io"
 	"log/slog"
 	"net"
+	"reflect"
 	"sync"
 	"testing"
 	"time"
@@ -79,6 +80,39 @@ type adapterTestRuntime struct {
 	cancel   context.CancelFunc
 	done     chan error
 	repo     *sessionstore.MemorySessionRepository
+	cluster  *adapterTestClusterState
+}
+
+type adapterTestClusterState struct {
+	mu                sync.Mutex
+	ownershipCalls    int
+	subscriptionCalls []uint32
+	subscriptionErr   error
+}
+
+func (state *adapterTestClusterState) AcquireOwnership(
+	context.Context, string, string, uint64,
+) (uint64, error) {
+	state.mu.Lock()
+	defer state.mu.Unlock()
+	state.ownershipCalls++
+	return 1, nil
+}
+
+func (state *adapterTestClusterState) CommitSubscription(
+	_ context.Context,
+	_ string, _ string,
+	_ uint64, _ uint64,
+	_ string, _ uint32, _ bool, _ bool, _ uint32,
+	action uint32,
+) error {
+	state.mu.Lock()
+	defer state.mu.Unlock()
+	state.subscriptionCalls = append(state.subscriptionCalls, action)
+	if state.subscriptionErr != nil {
+		return state.subscriptionErr
+	}
+	return nil
 }
 
 func newAdapterTestRuntime(t *testing.T, queueCapacity int, config Config) *adapterTestRuntime {
@@ -97,11 +131,19 @@ func newAdapterTestRuntime(t *testing.T, queueCapacity int, config Config) *adap
 	clock := &adapterTestClock{now: time.Date(2026, time.January, 1, 0, 0, 0, 0, time.UTC)}
 	config.Clock = clock
 	willBridge := NewWillBridge()
-	connections, err := connect.New(clock, repository, queue, routes, adapterTestScheduler{}, willBridge)
+	var clusterState *adapterTestClusterState
+	var connectionOptions []connect.Option
+	var subscriptionOptions []subscribe.Option
+	if config.ClusterMode {
+		clusterState = &adapterTestClusterState{}
+		connectionOptions = append(connectionOptions, connect.WithOwnershipCoordinator(clusterState, config.LocalMemberID))
+		subscriptionOptions = append(subscriptionOptions, subscribe.WithCommitter(clusterState))
+	}
+	connections, err := connect.New(clock, repository, queue, routes, adapterTestScheduler{}, willBridge, connectionOptions...)
 	if err != nil {
 		t.Fatal(err)
 	}
-	subscriptions, err := subscribe.New(routes, queue, retainedRepository)
+	subscriptions, err := subscribe.New(routes, queue, retainedRepository, subscriptionOptions...)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -132,7 +174,7 @@ func newAdapterTestRuntime(t *testing.T, queueCapacity int, config Config) *adap
 	case <-time.After(time.Second):
 		t.Fatal("server did not accept net.Pipe connection")
 	}
-	return &adapterTestRuntime{server: server, listener: listener, client: client, cancel: cancel, done: done, repo: repository}
+	return &adapterTestRuntime{server: server, listener: listener, client: client, cancel: cancel, done: done, repo: repository, cluster: clusterState}
 }
 
 func (runtime *adapterTestRuntime) stop(t *testing.T) {
@@ -231,6 +273,111 @@ func requireConnectionClosedWithin(t *testing.T, connection net.Conn, timeout ti
 			return
 		}
 	}
+}
+
+func TestTCPClusterRejectsQoS1AndQoS2Mutations(t *testing.T) {
+	for _, testCase := range []struct {
+		name string
+		qos  mqtt.QoS
+	}{
+		{name: "qos1", qos: mqtt.QoSAtLeastOnce},
+		{name: "qos2", qos: mqtt.QoSExactlyOnce},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			config := defaultAdapterConfig()
+			config.ClusterMode = true
+			config.LocalMemberID = 4
+			config.ClusterReady = func() bool { return true }
+			runtime := newAdapterTestRuntime(t, 2, config)
+			defer runtime.stop(t)
+
+			writeTestPackets(t, runtime.client, &mqtt.Connect{
+				Version: mqtt.ProtocolV5, CleanStart: true, ClientID: "cluster-client",
+			})
+			_ = readTestFrame(t, runtime.client)
+			writeTestPackets(t, runtime.client, &mqtt.Publish{
+				Version: mqtt.ProtocolV5, Topic: "cluster/test", QoS: testCase.qos, PacketID: 1,
+				Payload: []byte("not durably replicated"),
+			})
+			frame := readTestFrame(t, runtime.client)
+			packet, consumed, err := runtime.server.decoder.Decode(frame, mqtt.ProtocolV5)
+			if err != nil || consumed != len(frame) {
+				t.Fatalf("decode QoS rejection: packet=%T consumed=%d err=%v", packet, consumed, err)
+			}
+			disconnect, ok := packet.(*mqtt.Disconnect)
+			if !ok || disconnect.ReasonCode != 0x89 {
+				t.Fatalf("cluster QoS %d rejection = %#v, want Server busy DISCONNECT", testCase.qos, packet)
+			}
+		})
+	}
+}
+
+func TestTCPClusterReadinessAndSubscriptionCommitFailuresRejectPackets(t *testing.T) {
+	t.Run("not-ready-connect", func(t *testing.T) {
+		config := defaultAdapterConfig()
+		config.ClusterMode = true
+		config.LocalMemberID = 4
+		config.ClusterReady = func() bool { return false }
+		runtime := newAdapterTestRuntime(t, 2, config)
+		defer runtime.stop(t)
+
+		writeTestPackets(t, runtime.client, &mqtt.Connect{
+			Version: mqtt.ProtocolV5, CleanStart: true, ClientID: "cluster-client",
+		})
+		frame := readTestFrame(t, runtime.client)
+		packet, consumed, err := runtime.server.decoder.Decode(frame, mqtt.ProtocolV5)
+		if err != nil || consumed != len(frame) {
+			t.Fatalf("decode rejected CONNACK: packet=%T consumed=%d err=%v", packet, consumed, err)
+		}
+		connAck, ok := packet.(*mqtt.ConnAck)
+		if !ok || connAck.ReasonCode != 0x88 {
+			t.Fatalf("not-ready CONNACK = %#v", packet)
+		}
+		runtime.cluster.mu.Lock()
+		ownershipCalls := runtime.cluster.ownershipCalls
+		runtime.cluster.mu.Unlock()
+		if ownershipCalls != 0 {
+			t.Fatalf("not-ready CONNECT committed ownership %d times", ownershipCalls)
+		}
+	})
+
+	t.Run("subscription-quorum-failure", func(t *testing.T) {
+		config := defaultAdapterConfig()
+		config.ClusterMode = true
+		config.LocalMemberID = 4
+		config.ClusterReady = func() bool { return true }
+		runtime := newAdapterTestRuntime(t, 2, config)
+		defer runtime.stop(t)
+		runtime.cluster.mu.Lock()
+		runtime.cluster.subscriptionErr = errors.New("quorum unavailable")
+		runtime.cluster.mu.Unlock()
+
+		writeTestPackets(t, runtime.client, &mqtt.Connect{
+			Version: mqtt.ProtocolV5, CleanStart: true, ClientID: "cluster-client",
+		})
+		_ = readTestFrame(t, runtime.client)
+		writeTestPackets(t, runtime.client, &mqtt.Subscribe{
+			Version: mqtt.ProtocolV5, PacketID: 1,
+			Subscriptions: []mqtt.Subscription{{Filter: "sensors/#", QoS: mqtt.QoSAtLeastOnce}},
+		})
+		if err := runtime.client.SetReadDeadline(time.Now().Add(time.Second)); err != nil {
+			if !errors.Is(err, io.ErrClosedPipe) && !errors.Is(err, net.ErrClosed) {
+				t.Fatal(err)
+			}
+		} else {
+			var response [1]byte
+			count, err := runtime.client.Read(response[:])
+			if err == nil || count != 0 {
+				t.Fatalf("failed subscription emitted %d response bytes (% X), err=%v", count, response[:count], err)
+			}
+		}
+		runtime.cluster.mu.Lock()
+		actions := append([]uint32(nil), runtime.cluster.subscriptionCalls...)
+		runtime.cluster.mu.Unlock()
+		if !reflect.DeepEqual(actions, []uint32{1}) {
+			t.Fatalf("committed subscription attempts = %v", actions)
+		}
+	})
 }
 
 // Traceability: PRD MQTT-01/MQTT-03/TEST-03; docs/specs/mqtt-protocol-and-session.md §1 and §2.

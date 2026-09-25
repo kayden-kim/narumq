@@ -15,6 +15,7 @@
 | [ADR-0007](ADR-0007-aws-production-deployment-platform.md) | Proposed | 초기 AWS production profile로 Amazon EKS on EC2를 사용한다. |
 | [ADR-0008](ADR-0008-raft-peer-transport.md) | Accepted | 고정 3-node Raft transport v1에 mTLS TCP와 bounded queues를 사용한다. |
 | [ADR-0009](ADR-0009-raft-production-state-profile.md) | Accepted (design target only) | Raft version, file-backed storage, replicated-state encoding family와 단일 group target을 정하되 production readiness는 승인하지 않는다. |
+| [ADR-0010](ADR-0010-dynamic-cluster-membership.md) | Accepted (membership 설계만) | Cluster membership은 staged learner 전환과 영구 node ID를 사용한다. |
 
 `Proposed` ADR은 검토 중인 제안이다. `Accepted` ADR은 각 기록에 명시한 범위 안에서 채택된 결정이다. `design target only`는 production runtime이나 acceptance 검증을 뜻하지 않는다.
 

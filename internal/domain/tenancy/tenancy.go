@@ -3,6 +3,7 @@ package tenancy
 
 import (
 	"errors"
+	"strconv"
 	"strings"
 	"unicode/utf8"
 )
@@ -65,6 +66,24 @@ func (key SessionKey) TenantID() TenantID {
 // ClientID returns the MQTT Client ID of the session key.
 func (key SessionKey) ClientID() string {
 	return key.clientID
+}
+
+// RoutingID returns an injective internal identifier for this tenant-scoped session.
+// Its invalid-UTF-8 prefix keeps it disjoint from raw MQTT Client IDs.
+func (key SessionKey) RoutingID() string {
+	if !key.tenantID.valid() || key.clientID == "" || !validMQTTString(key.clientID) {
+		return ""
+	}
+	tenantID := key.tenantID.String()
+	encoded := make([]byte, 1, 1+20+1+len(tenantID)+20+1+len(key.clientID))
+	encoded[0] = 0xff
+	encoded = strconv.AppendInt(encoded, int64(len(tenantID)), 10)
+	encoded = append(encoded, ':')
+	encoded = append(encoded, tenantID...)
+	encoded = strconv.AppendInt(encoded, int64(len(key.clientID)), 10)
+	encoded = append(encoded, ':')
+	encoded = append(encoded, key.clientID...)
+	return string(encoded)
 }
 
 // Topic identifies one concrete MQTT topic within a tenant.

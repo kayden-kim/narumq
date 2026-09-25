@@ -174,6 +174,28 @@ func TestRunWithContextDefaultsAndFlagErrors(t *testing.T) {
 	}
 }
 
+func TestClusterConfigFlagIsExclusive(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	cases := []struct {
+		name string
+		args []string
+		want string
+	}{
+		{name: "empty path", args: []string{"-cluster-config", ""}, want: "-cluster-config requires a non-empty file path"},
+		{name: "other runtime flags", args: []string{"-cluster-config", "cluster.json", "-tcp-listen", "127.0.0.1:1883"}, want: "-cluster-config cannot be combined with -tcp-listen"},
+		{name: "peer-only profile", args: []string{"-cluster-config", "cluster.json", "-raft-peer-config", "peer.json"}, want: "-cluster-config cannot be combined with -raft-peer-config"},
+		{name: "positional argument", args: []string{"-cluster-config", "cluster.json", "unexpected"}, want: "-cluster-config does not accept positional arguments"},
+	}
+	for _, testCase := range cases {
+		t.Run(testCase.name, func(t *testing.T) {
+			err := runWithContext(context.Background(), testCase.args, logger)
+			if err == nil || !strings.Contains(err.Error(), testCase.want) {
+				t.Fatalf("runWithContext() error = %v, want %q", err, testCase.want)
+			}
+		})
+	}
+}
+
 func TestRun_Defaults(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	if err := run(nil, logger); err != nil {

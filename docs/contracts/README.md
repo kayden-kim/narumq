@@ -11,6 +11,7 @@
 | [MQTT client compatibility v1](mqtt-client-compatibility-v1.md) | Draft | Broker ↔ MQTT client | 이 문서의 profile·matrix | MQTT-01~MQTT-13, CLIENT-01~CLIENT-09, DEP-06~DEP-12 |
 | [Cluster release compatibility v1](cluster-release-compatibility-v1.md) | Draft | Release N node ↔ N-1 node | 이 문서의 compatibility matrix | CLU-11, NFR-15, DEP-18 |
 | [Raft peer transport v1](raft-peer-transport-v1.md) | Active | NaruMQ Raft node ↔ NaruMQ Raft node | 이 문서의 hello·frame·queue·retry 계약 | CLU-01~CLU-02, CLU-09~CLU-10, SEC-09, NFR-07~NFR-10 |
+| [Raft membership v2](raft-membership-v2.md) | Draft | ClusterAdmin · joining broker ↔ Cluster leader · authenticated peer transport | 이 문서와 [replicated-state-v1.proto](replicated-state-v1.proto) | CLU-01~CLU-02, CLU-04~CLU-11, SEC-09~SEC-11, NFR-07~NFR-10 |
 
 `Active` contract는 기준 artifact, producer runtime과 자동 contract test가 같은 현재
 동작을 확인한 계약이다. `Draft` contract는 구현과 검증 전 계약 후보다.

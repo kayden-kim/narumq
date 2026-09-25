@@ -29,6 +29,27 @@ func NewRouter(
 	healthChecker ports.HealthChecker,
 	metricsReg portsmetrics.MetricsRenderer,
 ) http.Handler {
+	return newRouter(cfg, stateProvider, healthChecker, metricsReg, nil)
+}
+
+// NewRouterWithMembership constructs a router with dynamic membership operations.
+func NewRouterWithMembership(
+	cfg ServerConfig,
+	stateProvider ports.StateProvider,
+	healthChecker ports.HealthChecker,
+	metricsReg portsmetrics.MetricsRenderer,
+	membershipService MembershipUseCase,
+) http.Handler {
+	return newRouter(cfg, stateProvider, healthChecker, metricsReg, membershipService)
+}
+
+func newRouter(
+	cfg ServerConfig,
+	stateProvider ports.StateProvider,
+	healthChecker ports.HealthChecker,
+	metricsReg portsmetrics.MetricsRenderer,
+	membershipService MembershipUseCase,
+) http.Handler {
 	auth := NewAuthenticator(AuthConfig{
 		AuthToken:             cfg.AuthToken,
 		AuthTokenRole:         cfg.AuthTokenRole,
@@ -62,6 +83,12 @@ func NewRouter(
 	mux.HandleFunc("/api/v1/subscriptions", auth.RequireRole(RoleReadOnly, v1H.ListSubscriptions))
 	mux.HandleFunc("/api/v1/retained", auth.RequireRole(RoleReadOnly, v1H.ListRetained))
 	mux.HandleFunc("/api/v1/tenants", auth.RequireRole(RoleClusterAdmin, v1H.ListTenants))
+	if membershipService != nil {
+		membershipH := &membershipHandler{service: membershipService}
+		mux.HandleFunc("/api/v1/cluster/members", auth.RequireRole(RoleClusterAdmin, membershipH.StageMember))
+		mux.HandleFunc("/api/v1/cluster/members/{memberId}", auth.RequireRole(RoleClusterAdmin, membershipH.RemoveMember))
+		mux.HandleFunc("/api/v1/cluster/membership-operations/{operationId}", auth.RequireRole(RoleReadOnly, membershipH.GetOperation))
+	}
 
 	// Unknown paths use the same error envelope as known routes.
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
@@ -84,6 +111,27 @@ func NewServer(
 	healthChecker ports.HealthChecker,
 	metricsReg portsmetrics.MetricsRenderer,
 ) *http.Server {
+	return newServer(cfg, stateProvider, healthChecker, metricsReg, nil)
+}
+
+// NewServerWithMembership creates a management server with dynamic membership routes.
+func NewServerWithMembership(
+	cfg ServerConfig,
+	stateProvider ports.StateProvider,
+	healthChecker ports.HealthChecker,
+	metricsReg portsmetrics.MetricsRenderer,
+	membershipService MembershipUseCase,
+) *http.Server {
+	return newServer(cfg, stateProvider, healthChecker, metricsReg, membershipService)
+}
+
+func newServer(
+	cfg ServerConfig,
+	stateProvider ports.StateProvider,
+	healthChecker ports.HealthChecker,
+	metricsReg portsmetrics.MetricsRenderer,
+	membershipService MembershipUseCase,
+) *http.Server {
 	addr := cfg.ListenAddr
 	if addr == "" {
 		addr = ":8080"
@@ -97,7 +145,7 @@ func NewServer(
 		wTimeout = 10 * time.Second
 	}
 
-	handler := NewRouter(cfg, stateProvider, healthChecker, metricsReg)
+	handler := newRouter(cfg, stateProvider, healthChecker, metricsReg, membershipService)
 
 	return &http.Server{
 		Addr:         addr,

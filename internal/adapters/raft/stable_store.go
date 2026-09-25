@@ -25,30 +25,38 @@ const (
 	walName         = "wal.bin"
 
 	clusterMetaMagic = "NMQRAFT1"
+	dynamicMetaMagic = "NMQCLST2"
 	walMagic         = "NMQWAL01"
 	snapshotMagic    = "NMQSNAP1"
 	stateMagic       = "NMQSTATE1"
 
-	formatVersion = 1
+	formatVersion          = 1
+	dynamicMetaVersion     = 2
+	dynamicLaunchBootstrap = 1
+	dynamicLaunchJoiner    = 2
 
-	maxWALFramePayload = 2 * 1024 * 1024
-	maxSnapshotPayload = 64 * 1024 * 1024
-	maxStateCommands   = 1 << 20
-	maxCommandSize     = 64 * 1024
+	maxWALFramePayload         = 2 * 1024 * 1024
+	maxSnapshotPayload         = 64 * 1024 * 1024
+	maxDynamicWALFramePayload  = maxSnapshotPayload + maxWALFramePayload + 1024
+	maxDynamicRaftSnapshotSize = maxSnapshotPayload + 1024
+	maxStateCommands           = 1 << 20
+	maxCommandSize             = 64 * 1024
 )
 
 var crcTable = crc32.MakeTable(crc32.Castagnoli)
 
 type persistenceOps struct {
-	write  func(io.Writer, []byte) (int, error)
-	sync   func(*os.File) error
-	rename func(string, string) error
+	write         func(io.Writer, []byte) (int, error)
+	sync          func(*os.File) error
+	rename        func(string, string) error
+	syncDirectory func(string) error
 }
 
 var filePersistenceOps = persistenceOps{
-	write:  func(w io.Writer, data []byte) (int, error) { return w.Write(data) },
-	sync:   (*os.File).Sync,
-	rename: os.Rename,
+	write:         func(w io.Writer, data []byte) (int, error) { return w.Write(data) },
+	sync:          (*os.File).Sync,
+	rename:        renameFile,
+	syncDirectory: syncDirectory,
 }
 
 type walRecord struct {
@@ -61,12 +69,17 @@ type stableStore struct {
 	directory string
 	wal       *os.File
 	memory    *etcdraft.MemoryStorage
+	dynamic   bool
 
-	snapshotIndex uint64
-	hardState     *pb.HardState
-	confState     *pb.ConfState
-	commands      [][]byte
-	appliedIndex  uint64
+	snapshotIndex        uint64
+	hardState            *pb.HardState
+	confState            *pb.ConfState
+	commands             [][]byte
+	commandIndexes       []uint64
+	snapshotData         []byte
+	confChanges          []*pb.ConfChangeV2
+	configurationChanges []CommittedConfigurationDTO
+	appliedIndex         uint64
 }
 
 func prepareClusterDirectory(directory string, nodeID NodeID, peerIDs []NodeID) (bool, error) {
@@ -189,6 +202,167 @@ func validateClusterMeta(path string, nodeID NodeID, peerIDs []NodeID) error {
 	return nil
 }
 
+func prepareDynamicClusterDirectory(directory, clusterID string, nodeID NodeID, certificateSHA256 [32]byte, bootstrapVoterIDs []NodeID) (bool, error) {
+	if directory == "" || !validClusterID(clusterID) || nodeID == 0 || certificateSHA256 == ([32]byte{}) {
+		return false, ErrConfigMismatch
+	}
+	if len(bootstrapVoterIDs) != 0 {
+		normalized, err := normalizeBootstrapVoterIDs(nodeID, bootstrapVoterIDs)
+		if err != nil || !slices.Equal(normalized, bootstrapVoterIDs) {
+			return false, ErrConfigMismatch
+		}
+	}
+	info, err := os.Stat(directory)
+	switch {
+	case err == nil && !info.IsDir():
+		return false, fmt.Errorf("%w: directory is not a directory", ErrConfigMismatch)
+	case err != nil && !errors.Is(err, os.ErrNotExist):
+		return false, fmt.Errorf("open cluster directory: %w", err)
+	case errors.Is(err, os.ErrNotExist):
+		if err := os.MkdirAll(directory, 0o755); err != nil {
+			return false, fmt.Errorf("create cluster directory: %w", err)
+		}
+	}
+	metaPath := filepath.Join(directory, clusterMetaName)
+	if _, err := os.Stat(metaPath); errors.Is(err, os.ErrNotExist) {
+		entries, readErr := os.ReadDir(directory)
+		if readErr != nil {
+			return false, fmt.Errorf("inspect cluster directory: %w", readErr)
+		}
+		if len(entries) != 0 {
+			return false, ErrBootstrapIncomplete
+		}
+		if err := writeDynamicClusterMeta(metaPath, clusterID, nodeID, certificateSHA256, bootstrapVoterIDs); err != nil {
+			return false, err
+		}
+		return true, nil
+	} else if err != nil {
+		return false, fmt.Errorf("inspect cluster metadata: %w", err)
+	}
+	if err := validateDynamicClusterMeta(metaPath, clusterID, nodeID, certificateSHA256, bootstrapVoterIDs); err != nil {
+		return false, err
+	}
+	if err := filePersistenceOps.syncDirectory(directory); err != nil {
+		return false, fmt.Errorf("sync dynamic cluster metadata directory: %w", err)
+	}
+	return false, nil
+}
+
+func writeDynamicClusterMeta(path, clusterID string, nodeID NodeID, certificateSHA256 [32]byte, bootstrapVoterIDs []NodeID) error {
+	launchMode := byte(dynamicLaunchJoiner)
+	if len(bootstrapVoterIDs) != 0 {
+		launchMode = dynamicLaunchBootstrap
+	}
+	payload := make([]byte, 0, len(dynamicMetaMagic)+1+2+len(clusterID)+8+len(certificateSHA256)+1+2+8*len(bootstrapVoterIDs)+4)
+	payload = append(payload, dynamicMetaMagic...)
+	payload = append(payload, dynamicMetaVersion)
+	var short [2]byte
+	binary.BigEndian.PutUint16(short[:], uint16(len(clusterID)))
+	payload = append(payload, short[:]...)
+	payload = append(payload, clusterID...)
+	var number [8]byte
+	binary.BigEndian.PutUint64(number[:], uint64(nodeID))
+	payload = append(payload, number[:]...)
+	payload = append(payload, certificateSHA256[:]...)
+	payload = append(payload, launchMode)
+	binary.BigEndian.PutUint16(short[:], uint16(len(bootstrapVoterIDs)))
+	payload = append(payload, short[:]...)
+	for _, voterID := range bootstrapVoterIDs {
+		binary.BigEndian.PutUint64(number[:], uint64(voterID))
+		payload = append(payload, number[:]...)
+	}
+	var checksum [4]byte
+	binary.BigEndian.PutUint32(checksum[:], crc32.Checksum(payload, crcTable))
+	payload = append(payload, checksum[:]...)
+
+	tempPath := path + ".tmp"
+	file, err := os.OpenFile(tempPath, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o600)
+	if err != nil {
+		return fmt.Errorf("create dynamic cluster metadata: %w", err)
+	}
+	writeErr := writeAll(file, payload)
+	if writeErr == nil {
+		writeErr = filePersistenceOps.sync(file)
+	}
+	closeErr := file.Close()
+	if writeErr != nil {
+		return fmt.Errorf("persist dynamic cluster metadata: %w", writeErr)
+	}
+	if closeErr != nil {
+		return fmt.Errorf("close dynamic cluster metadata: %w", closeErr)
+	}
+	if err := filePersistenceOps.rename(tempPath, path); err != nil {
+		return fmt.Errorf("finalize dynamic cluster metadata: %w", err)
+	}
+	if err := filePersistenceOps.syncDirectory(filepath.Dir(path)); err != nil {
+		return fmt.Errorf("sync dynamic cluster metadata directory: %w", err)
+	}
+	return nil
+}
+
+func validateDynamicClusterMeta(path, clusterID string, nodeID NodeID, certificateSHA256 [32]byte, bootstrapVoterIDs []NodeID) error {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return fmt.Errorf("read dynamic cluster metadata: %w", err)
+	}
+	minimum := len(dynamicMetaMagic) + 1 + 2 + 8 + 32 + 1 + 2 + 4
+	if len(data) < minimum || string(data[:len(dynamicMetaMagic)]) != dynamicMetaMagic {
+		return fmt.Errorf("%w: invalid dynamic cluster metadata", ErrConfigMismatch)
+	}
+	if data[len(dynamicMetaMagic)] != dynamicMetaVersion {
+		return fmt.Errorf("%w: unsupported dynamic cluster metadata version", ErrConfigMismatch)
+	}
+	storedChecksum := binary.BigEndian.Uint32(data[len(data)-4:])
+	if crc32.Checksum(data[:len(data)-4], crcTable) != storedChecksum {
+		return fmt.Errorf("%w: dynamic cluster metadata checksum mismatch", ErrConfigMismatch)
+	}
+	position := len(dynamicMetaMagic) + 1
+	clusterLength := int(binary.BigEndian.Uint16(data[position : position+2]))
+	position += 2
+	if clusterLength < 1 || clusterLength > 200 || len(data) < position+clusterLength+8+32+1+2+4 {
+		return fmt.Errorf("%w: invalid dynamic cluster ID length", ErrConfigMismatch)
+	}
+	storedClusterID := string(data[position : position+clusterLength])
+	if !validClusterID(storedClusterID) {
+		return fmt.Errorf("%w: invalid dynamic cluster ID", ErrConfigMismatch)
+	}
+	position += clusterLength
+	storedNodeID := binary.BigEndian.Uint64(data[position : position+8])
+	position += 8
+	storedCertificateSHA256 := data[position : position+32]
+	position += 32
+	launchMode := data[position]
+	position++
+	voterCount := int(binary.BigEndian.Uint16(data[position : position+2]))
+	position += 2
+	if voterCount > 3 || len(data) != position+voterCount*8+4 {
+		return fmt.Errorf("%w: invalid dynamic bootstrap voter count", ErrConfigMismatch)
+	}
+	storedVoterIDs := make([]NodeID, voterCount)
+	for index := range storedVoterIDs {
+		storedVoterIDs[index] = NodeID(binary.BigEndian.Uint64(data[position : position+8]))
+		position += 8
+		if storedVoterIDs[index] == 0 || (index > 0 && storedVoterIDs[index-1] >= storedVoterIDs[index]) {
+			return fmt.Errorf("%w: dynamic bootstrap voter IDs are not strictly sorted", ErrConfigMismatch)
+		}
+	}
+	if (launchMode == dynamicLaunchBootstrap && (voterCount != 3 || !slices.Contains(storedVoterIDs, NodeID(storedNodeID)))) ||
+		(launchMode == dynamicLaunchJoiner && voterCount != 0) ||
+		(launchMode != dynamicLaunchBootstrap && launchMode != dynamicLaunchJoiner) {
+		return fmt.Errorf("%w: invalid dynamic launch mode", ErrConfigMismatch)
+	}
+	expectedLaunchMode := byte(dynamicLaunchJoiner)
+	if len(bootstrapVoterIDs) != 0 {
+		expectedLaunchMode = dynamicLaunchBootstrap
+	}
+	if storedClusterID != clusterID || storedNodeID != uint64(nodeID) ||
+		!bytes.Equal(storedCertificateSHA256, certificateSHA256[:]) ||
+		launchMode != expectedLaunchMode || !slices.Equal(storedVoterIDs, bootstrapVoterIDs) {
+		return fmt.Errorf("%w: dynamic cluster metadata identity mismatch", ErrConfigMismatch)
+	}
+	return nil
+}
+
 func hasFinalizedSnapshot(directory string) bool {
 	entries, err := os.ReadDir(directory)
 	if err != nil {
@@ -203,11 +377,19 @@ func hasFinalizedSnapshot(directory string) bool {
 }
 
 func openStableStore(directory string) (*stableStore, error) {
-	latestSnapshot, snapshotIndex, err := loadLatestSnapshot(directory)
+	return openStableStoreMode(directory, false)
+}
+
+func openDynamicStableStore(directory string) (*stableStore, error) {
+	return openStableStoreMode(directory, true)
+}
+
+func openStableStoreMode(directory string, dynamic bool) (*stableStore, error) {
+	latestSnapshot, snapshotIndex, err := loadLatestSnapshotMode(directory, dynamic)
 	if err != nil {
 		return nil, err
 	}
-	records, err := readWAL(filepath.Join(directory, walName))
+	records, err := readWALMode(filepath.Join(directory, walName), dynamic)
 	if err != nil {
 		return nil, err
 	}
@@ -216,6 +398,7 @@ func openStableStore(directory string) (*stableStore, error) {
 	store := &stableStore{
 		directory:     directory,
 		memory:        memory,
+		dynamic:       dynamic,
 		hardState:     &pb.HardState{},
 		confState:     &pb.ConfState{},
 		snapshotIndex: snapshotIndex,
@@ -225,8 +408,7 @@ func openStableStore(directory string) (*stableStore, error) {
 			return nil, fmt.Errorf("apply persisted snapshot: %w", err)
 		}
 		store.confState = cloneConfState(latestSnapshot.GetMetadata().GetConfState())
-		store.commands, err = decodeApplicationState(latestSnapshot.GetData())
-		if err != nil {
+		if err := store.loadSnapshotData(latestSnapshot.GetData()); err != nil {
 			return nil, fmt.Errorf("%w: snapshot state: %v", ErrCorruptSnapshot, err)
 		}
 		store.appliedIndex = snapshotIndex
@@ -245,10 +427,8 @@ func openStableStore(directory string) (*stableStore, error) {
 				if err := memory.ApplySnapshot(proto.Clone(record.snapshot).(*pb.Snapshot)); err != nil {
 					return nil, fmt.Errorf("%w: WAL snapshot: %v", ErrCorruptWAL, err)
 				}
-				store.snapshotIndex = index
 				store.confState = cloneConfState(record.snapshot.GetMetadata().GetConfState())
-				store.commands, err = decodeApplicationState(record.snapshot.GetData())
-				if err != nil {
+				if err := store.loadSnapshotData(record.snapshot.GetData()); err != nil {
 					return nil, fmt.Errorf("%w: WAL snapshot state: %v", ErrCorruptWAL, err)
 				}
 				store.appliedIndex = index
@@ -336,6 +516,8 @@ func (s *stableStore) rebuildAppliedState(lastIndex uint64) error {
 	}
 	confState := cloneConfState(s.confState)
 	commands := cloneCommands(s.commands)
+	commandIndexes := slices.Clone(s.commandIndexes)
+	configurationChanges := slices.Clone(s.configurationChanges)
 	for _, entry := range entries {
 		if entry.GetIndex() <= s.snapshotIndex || entry.GetIndex() > s.hardState.GetCommit() {
 			continue
@@ -343,20 +525,40 @@ func (s *stableStore) rebuildAppliedState(lastIndex uint64) error {
 		switch entry.GetType() {
 		case pb.EntryNormal:
 			if len(entry.GetData()) != 0 {
-				if len(entry.GetData()) > maxCommandSize {
-					return fmt.Errorf("%w: command at index %d exceeds %d bytes", ErrCorruptWAL, entry.GetIndex(), maxCommandSize)
+				commandLimit := maxCommandSize
+				if s.dynamic {
+					commandLimit = maxDynamicCommandSize
+				}
+				if len(entry.GetData()) > commandLimit {
+					return fmt.Errorf("%w: command at index %d exceeds %d bytes", ErrCorruptWAL, entry.GetIndex(), commandLimit)
 				}
 				commands = append(commands, bytes.Clone(entry.GetData()))
+				if s.dynamic {
+					commandIndexes = append(commandIndexes, entry.GetIndex())
+				}
 			}
 		case pb.EntryConfChange, pb.EntryConfChangeV2:
 			change, err := decodeConfChange(entry)
 			if err != nil {
 				return fmt.Errorf("%w: configuration entry %d: %v", ErrCorruptWAL, entry.GetIndex(), err)
 			}
+			if s.dynamic && entry.GetType() == pb.EntryConfChangeV2 {
+				action, memberID, err := validateDynamicConfChange(change)
+				if err != nil {
+					return fmt.Errorf("%w: dynamic configuration entry %d: %v", ErrCorruptWAL, entry.GetIndex(), err)
+				}
+				if err := validateDynamicConfStateTransition(confState, action, memberID); err != nil {
+					return fmt.Errorf("%w: dynamic configuration transition at index %d: %v", ErrCorruptWAL, entry.GetIndex(), err)
+				}
+				configurationChanges = append(configurationChanges, CommittedConfigurationDTO{
+					Index: entry.GetIndex(), OperationID: string(change.GetContext()), MemberID: memberID, Action: action,
+				})
+			}
 			confState, err = applyConfState(confState, change)
 			if err != nil {
 				return fmt.Errorf("%w: configuration entry %d: %v", ErrCorruptWAL, entry.GetIndex(), err)
 			}
+			s.confChanges = append(s.confChanges, proto.Clone(change).(*pb.ConfChangeV2))
 		default:
 			return fmt.Errorf("%w: unknown entry type %d", ErrCorruptWAL, entry.GetType())
 		}
@@ -364,23 +566,48 @@ func (s *stableStore) rebuildAppliedState(lastIndex uint64) error {
 	}
 	s.confState = confState
 	s.commands = commands
+	s.commandIndexes = commandIndexes
+	s.configurationChanges = configurationChanges
 	if s.appliedIndex < s.snapshotIndex {
 		s.appliedIndex = s.snapshotIndex
 	}
 	return nil
 }
 
+func (s *stableStore) loadSnapshotData(data []byte) error {
+	if s.dynamic {
+		if len(data) == 0 || len(data) > maxSnapshotPayload {
+			return fmt.Errorf("dynamic snapshot data is empty or exceeds %d bytes", maxSnapshotPayload)
+		}
+		s.snapshotData = bytes.Clone(data)
+		s.commands = nil
+		s.commandIndexes = nil
+		s.configurationChanges = nil
+		return nil
+	}
+	commands, err := decodeApplicationState(data)
+	if err != nil {
+		return err
+	}
+	s.commands = commands
+	return nil
+}
+
 func (s *stableStore) appendReady(ready etcdraft.Ready) error {
-	record, err := readyRecord(ready)
+	record, err := readyRecordMode(ready, s.dynamic)
 	if err != nil {
 		return err
 	}
-	payload, err := encodeWALRecord(record)
+	payload, err := encodeWALRecordMode(record, s.dynamic)
 	if err != nil {
 		return err
 	}
-	if len(payload) > maxWALFramePayload {
-		return fmt.Errorf("WAL frame exceeds %d bytes", maxWALFramePayload)
+	frameLimit := maxWALFramePayload
+	if s.dynamic {
+		frameLimit = maxDynamicWALFramePayload
+	}
+	if len(payload) > frameLimit {
+		return fmt.Errorf("WAL frame exceeds %d bytes", frameLimit)
 	}
 	var header [8]byte
 	binary.BigEndian.PutUint32(header[:4], uint32(len(payload)))
@@ -396,7 +623,7 @@ func (s *stableStore) appendReady(ready etcdraft.Ready) error {
 	}
 
 	if ready.Snapshot != nil && !etcdraft.IsEmptySnap(ready.Snapshot) {
-		if err := persistSnapshotFile(s.directory, ready.Snapshot); err != nil {
+		if err := persistSnapshotFileMode(s.directory, ready.Snapshot, s.dynamic); err != nil {
 			return err
 		}
 		if err := s.memory.ApplySnapshot(proto.Clone(ready.Snapshot).(*pb.Snapshot)); err != nil {
@@ -404,9 +631,8 @@ func (s *stableStore) appendReady(ready etcdraft.Ready) error {
 		}
 		s.snapshotIndex = ready.Snapshot.GetMetadata().GetIndex()
 		s.confState = cloneConfState(ready.Snapshot.GetMetadata().GetConfState())
-		s.commands, err = decodeApplicationState(ready.Snapshot.GetData())
-		if err != nil {
-			return fmt.Errorf("decode ready snapshot state: %w", err)
+		if err := s.loadSnapshotData(ready.Snapshot.GetData()); err != nil {
+			return fmt.Errorf("load ready snapshot state: %w", err)
 		}
 		s.appliedIndex = s.snapshotIndex
 	}
@@ -439,14 +665,39 @@ func (s *stableStore) close() error {
 }
 
 func (s *stableStore) createSnapshot(index uint64, confState *pb.ConfState, commands [][]byte) error {
+	if s.dynamic {
+		return ErrConfigMismatch
+	}
 	if index == 0 {
 		return nil
 	}
+	state, err := encodeApplicationState(commands)
+	if err != nil {
+		return err
+	}
+	return s.createSnapshotPayload(index, confState, state, commands, nil)
+}
+
+func (s *stableStore) createSnapshotData(index uint64, confState *pb.ConfState, data []byte) error {
+	if !s.dynamic || len(data) == 0 || len(data) > maxSnapshotPayload {
+		return ErrConfigMismatch
+	}
+	if index == 0 {
+		return nil
+	}
+	return s.createSnapshotPayload(index, confState, data, nil, data)
+}
+
+func (s *stableStore) createSnapshotPayload(index uint64, confState *pb.ConfState, data []byte, commands [][]byte, snapshotData []byte) error {
 	current, err := s.memory.Snapshot()
 	if err != nil {
 		return fmt.Errorf("read current snapshot: %w", err)
 	}
-	if index <= current.GetMetadata().GetIndex() {
+	currentIndex := current.GetMetadata().GetIndex()
+	if index <= currentIndex {
+		if s.dynamic && index == currentIndex && (!bytes.Equal(current.GetData(), data) || !confStateEqual(current.GetMetadata().GetConfState(), confState)) {
+			return fmt.Errorf("snapshot at index %d conflicts with persisted state", index)
+		}
 		return nil
 	}
 	lastIndex, err := s.memory.LastIndex()
@@ -456,15 +707,11 @@ func (s *stableStore) createSnapshot(index uint64, confState *pb.ConfState, comm
 	if index > lastIndex {
 		return fmt.Errorf("snapshot index %d exceeds last index %d", index, lastIndex)
 	}
-	state, err := encodeApplicationState(commands)
-	if err != nil {
-		return err
-	}
-	snapshot, err := s.memory.CreateSnapshot(index, cloneConfState(confState), state)
+	snapshot, err := s.memory.CreateSnapshot(index, cloneConfState(confState), bytes.Clone(data))
 	if err != nil {
 		return fmt.Errorf("create memory snapshot: %w", err)
 	}
-	if err := persistSnapshotFile(s.directory, snapshot); err != nil {
+	if err := persistSnapshotFileMode(s.directory, snapshot, s.dynamic); err != nil {
 		return err
 	}
 	if err := s.memory.Compact(index); err != nil && !errors.Is(err, etcdraft.ErrCompacted) {
@@ -473,11 +720,16 @@ func (s *stableStore) createSnapshot(index uint64, confState *pb.ConfState, comm
 	s.snapshotIndex = index
 	s.confState = cloneConfState(confState)
 	s.commands = cloneCommands(commands)
+	s.snapshotData = bytes.Clone(snapshotData)
 	s.appliedIndex = index
 	return nil
 }
 
 func persistSnapshotFile(directory string, snapshot *pb.Snapshot) error {
+	return persistSnapshotFileMode(directory, snapshot, false)
+}
+
+func persistSnapshotFileMode(directory string, snapshot *pb.Snapshot, dynamic bool) error {
 	if snapshot == nil || etcdraft.IsEmptySnap(snapshot) {
 		return nil
 	}
@@ -486,8 +738,12 @@ func persistSnapshotFile(directory string, snapshot *pb.Snapshot) error {
 	if err != nil {
 		return fmt.Errorf("marshal snapshot: %w", err)
 	}
-	if len(data) > maxSnapshotPayload {
-		return fmt.Errorf("snapshot exceeds %d bytes", maxSnapshotPayload)
+	snapshotLimit := maxSnapshotPayload
+	if dynamic {
+		snapshotLimit = maxDynamicRaftSnapshotSize
+	}
+	if len(data) > snapshotLimit {
+		return fmt.Errorf("snapshot exceeds %d bytes", snapshotLimit)
 	}
 	path := filepath.Join(directory, snapshotFilename(index))
 	if _, err := os.Stat(path); err == nil {
@@ -525,6 +781,10 @@ func persistSnapshotFile(directory string, snapshot *pb.Snapshot) error {
 }
 
 func loadLatestSnapshot(directory string) (*pb.Snapshot, uint64, error) {
+	return loadLatestSnapshotMode(directory, false)
+}
+
+func loadLatestSnapshotMode(directory string, dynamic bool) (*pb.Snapshot, uint64, error) {
 	entries, err := os.ReadDir(directory)
 	if err != nil {
 		return nil, 0, fmt.Errorf("inspect snapshots: %w", err)
@@ -549,7 +809,11 @@ func loadLatestSnapshot(directory string) (*pb.Snapshot, uint64, error) {
 		return nil, 0, fmt.Errorf("%w: invalid snapshot header", ErrCorruptSnapshot)
 	}
 	length := binary.BigEndian.Uint32(data[8:12])
-	if length > maxSnapshotPayload || int(length) != len(data)-16 {
+	snapshotLimit := uint32(maxSnapshotPayload)
+	if dynamic {
+		snapshotLimit = maxDynamicRaftSnapshotSize
+	}
+	if length > snapshotLimit || int(length) != len(data)-16 {
 		return nil, 0, fmt.Errorf("%w: invalid snapshot length", ErrCorruptSnapshot)
 	}
 	payload := data[16:]
@@ -563,13 +827,21 @@ func loadLatestSnapshot(directory string) (*pb.Snapshot, uint64, error) {
 	if snapshot.GetMetadata().GetIndex() != index {
 		return nil, 0, fmt.Errorf("%w: snapshot filename index mismatch", ErrCorruptSnapshot)
 	}
-	if _, err := decodeApplicationState(snapshot.GetData()); err != nil {
+	if dynamic {
+		if len(snapshot.GetData()) == 0 || len(snapshot.GetData()) > maxSnapshotPayload {
+			return nil, 0, fmt.Errorf("%w: dynamic snapshot payload is empty or exceeds %d bytes", ErrCorruptSnapshot, maxSnapshotPayload)
+		}
+	} else if _, err := decodeApplicationState(snapshot.GetData()); err != nil {
 		return nil, 0, fmt.Errorf("%w: snapshot state: %v", ErrCorruptSnapshot, err)
 	}
 	return &snapshot, index, nil
 }
 
 func readWAL(path string) ([]walRecord, error) {
+	return readWALMode(path, false)
+}
+
+func readWALMode(path string, dynamic bool) ([]walRecord, error) {
 	file, err := os.OpenFile(path, os.O_RDWR|os.O_CREATE, 0o600)
 	if err != nil {
 		return nil, fmt.Errorf("open WAL: %w", err)
@@ -606,8 +878,12 @@ func readWAL(path string) ([]walRecord, error) {
 			return nil, fmt.Errorf("%w: read WAL frame header: %v", ErrCorruptWAL, err)
 		}
 		length := binary.BigEndian.Uint32(header[:4])
-		if length > maxWALFramePayload {
-			return nil, fmt.Errorf("%w: WAL frame length %d exceeds %d", ErrCorruptWAL, length, maxWALFramePayload)
+		frameLimit := uint32(maxWALFramePayload)
+		if dynamic {
+			frameLimit = maxDynamicWALFramePayload
+		}
+		if length > frameLimit {
+			return nil, fmt.Errorf("%w: WAL frame length %d exceeds %d", ErrCorruptWAL, length, frameLimit)
 		}
 		frameEnd := offset + 8 + int64(length)
 		if frameEnd > fileSize {
@@ -630,7 +906,7 @@ func readWAL(path string) ([]walRecord, error) {
 			}
 			return nil, fmt.Errorf("%w: middle WAL frame checksum mismatch", ErrCorruptWAL)
 		}
-		record, err := decodeWALRecord(payload)
+		record, err := decodeWALRecordMode(payload, dynamic)
 		if err != nil {
 			return nil, fmt.Errorf("%w: decode WAL frame: %v", ErrCorruptWAL, err)
 		}
@@ -652,6 +928,10 @@ func truncateWAL(file *os.File, offset int64) error {
 }
 
 func readyRecord(ready etcdraft.Ready) (walRecord, error) {
+	return readyRecordMode(ready, false)
+}
+
+func readyRecordMode(ready etcdraft.Ready, dynamic bool) (walRecord, error) {
 	record := walRecord{
 		entries: cloneEntries(ready.Entries),
 	}
@@ -660,7 +940,11 @@ func readyRecord(ready etcdraft.Ready) (walRecord, error) {
 	}
 	if ready.Snapshot != nil && !etcdraft.IsEmptySnap(ready.Snapshot) {
 		record.snapshot = proto.Clone(ready.Snapshot).(*pb.Snapshot)
-		if _, err := decodeApplicationState(record.snapshot.GetData()); err != nil {
+		if dynamic {
+			if len(record.snapshot.GetData()) == 0 || len(record.snapshot.GetData()) > maxSnapshotPayload {
+				return walRecord{}, fmt.Errorf("dynamic snapshot payload is empty or exceeds %d bytes", maxSnapshotPayload)
+			}
+		} else if _, err := decodeApplicationState(record.snapshot.GetData()); err != nil {
 			return walRecord{}, fmt.Errorf("invalid ready snapshot state: %w", err)
 		}
 	}
@@ -668,6 +952,10 @@ func readyRecord(ready etcdraft.Ready) (walRecord, error) {
 }
 
 func encodeWALRecord(record walRecord) ([]byte, error) {
+	return encodeWALRecordMode(record, false)
+}
+
+func encodeWALRecordMode(record walRecord, dynamic bool) ([]byte, error) {
 	var buffer bytes.Buffer
 	buffer.WriteByte(formatVersion)
 	flags := byte(0)
@@ -693,8 +981,12 @@ func encodeWALRecord(record walRecord) ([]byte, error) {
 		if err != nil {
 			return nil, err
 		}
-		if len(data) > maxSnapshotPayload {
-			return nil, fmt.Errorf("snapshot exceeds %d bytes", maxSnapshotPayload)
+		snapshotLimit := maxSnapshotPayload
+		if dynamic {
+			snapshotLimit = maxDynamicRaftSnapshotSize
+		}
+		if len(data) > snapshotLimit {
+			return nil, fmt.Errorf("snapshot exceeds %d bytes", snapshotLimit)
 		}
 		var length [4]byte
 		binary.BigEndian.PutUint32(length[:], uint32(len(data)))
@@ -716,14 +1008,22 @@ func encodeWALRecord(record walRecord) ([]byte, error) {
 		binary.BigEndian.PutUint32(length[:], uint32(len(data)))
 		buffer.Write(length[:])
 		buffer.Write(data)
-		if buffer.Len() > maxWALFramePayload {
-			return nil, fmt.Errorf("WAL frame exceeds %d bytes", maxWALFramePayload)
+		frameLimit := maxWALFramePayload
+		if dynamic {
+			frameLimit = maxDynamicWALFramePayload
+		}
+		if buffer.Len() > frameLimit {
+			return nil, fmt.Errorf("WAL frame exceeds %d bytes", frameLimit)
 		}
 	}
 	return buffer.Bytes(), nil
 }
 
 func decodeWALRecord(payload []byte) (walRecord, error) {
+	return decodeWALRecordMode(payload, false)
+}
+
+func decodeWALRecordMode(payload []byte, dynamic bool) (walRecord, error) {
 	reader := newBoundedReader(payload)
 	version, err := reader.byte()
 	if err != nil || version != formatVersion {
@@ -760,7 +1060,11 @@ func decodeWALRecord(payload []byte) (walRecord, error) {
 		if err != nil {
 			return walRecord{}, err
 		}
-		if length > maxSnapshotPayload || uint64(length) > uint64(reader.remaining()) {
+		snapshotLimit := uint32(maxSnapshotPayload)
+		if dynamic {
+			snapshotLimit = maxDynamicRaftSnapshotSize
+		}
+		if length > snapshotLimit || uint64(length) > uint64(reader.remaining()) {
 			return walRecord{}, fmt.Errorf("invalid snapshot length")
 		}
 		data, err := reader.bytes(int(length))
@@ -774,7 +1078,11 @@ func decodeWALRecord(payload []byte) (walRecord, error) {
 		if snapshot.GetMetadata().GetIndex() == 0 {
 			return walRecord{}, fmt.Errorf("empty snapshot")
 		}
-		if _, err := decodeApplicationState(snapshot.GetData()); err != nil {
+		if dynamic {
+			if len(snapshot.GetData()) == 0 || len(snapshot.GetData()) > maxSnapshotPayload {
+				return walRecord{}, fmt.Errorf("dynamic snapshot payload is empty or exceeds %d bytes", maxSnapshotPayload)
+			}
+		} else if _, err := decodeApplicationState(snapshot.GetData()); err != nil {
 			return walRecord{}, err
 		}
 		record.snapshot = &snapshot
@@ -896,6 +1204,29 @@ func decodeConfChange(entry *pb.Entry) (*pb.ConfChangeV2, error) {
 	default:
 		return nil, fmt.Errorf("entry is not a configuration change")
 	}
+}
+
+func validateDynamicConfChange(change *pb.ConfChangeV2) (MembershipChangeAction, NodeID, error) {
+	if change == nil || len(change.GetChanges()) != 1 || change.GetTransition() != 0 ||
+		!validOperationID(string(change.GetContext())) {
+		return 0, 0, fmt.Errorf("configuration change must be one auto-transition with a canonical operation ID")
+	}
+	single := change.GetChanges()[0]
+	if single == nil || single.GetNodeId() == 0 {
+		return 0, 0, fmt.Errorf("configuration change member ID must be positive")
+	}
+	var action MembershipChangeAction
+	switch single.GetType() {
+	case pb.ConfChangeAddLearnerNode:
+		action = MembershipAddLearner
+	case pb.ConfChangeAddNode:
+		action = MembershipPromoteVoter
+	case pb.ConfChangeRemoveNode:
+		action = MembershipRemove
+	default:
+		return 0, 0, fmt.Errorf("unsupported configuration change type %d", single.GetType())
+	}
+	return action, NodeID(single.GetNodeId()), nil
 }
 
 func applyConfState(current *pb.ConfState, change *pb.ConfChangeV2) (*pb.ConfState, error) {
