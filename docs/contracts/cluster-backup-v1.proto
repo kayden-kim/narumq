@@ -1,0 +1,59 @@
+syntax = "proto3";
+package narumq.cluster.backup.v1;
+option go_package = "narumq/internal/adapters/raft/records;records";
+
+// Draft archive contract. Implementations must reject unknown fields.
+enum BackupConfigurationAction {
+  BACKUP_CONFIGURATION_ACTION_UNSPECIFIED = 0;
+  BACKUP_CONFIGURATION_ACTION_ADD_LEARNER = 1;
+  BACKUP_CONFIGURATION_ACTION_PROMOTE_VOTER = 2;
+  BACKUP_CONFIGURATION_ACTION_REMOVE = 3;
+}
+message BackupKindSummary {
+  uint64 count = 1;
+  bytes sha256 = 2;
+}
+message BackupStateSummary {
+  uint64 last_included_index = 1;
+  uint64 object_count = 2;
+  bytes sha256 = 3;
+  BackupKindSummary members = 4;
+  BackupKindSummary tenants = 5;
+  BackupKindSummary sessions = 6;
+  BackupKindSummary subscriptions = 7;
+  BackupKindSummary inflight = 8;
+  BackupKindSummary membership_history = 9;
+  repeated string not_replicated_kinds = 10;
+}
+message BackupManifest {
+  uint32 format_major = 1;
+  uint32 format_minor = 2;
+  string cluster_id = 3;
+  uint64 source_member_id = 4;
+  string producer_release = 5;
+  uint32 cluster_protocol_major = 6;
+  uint32 cluster_protocol_minor = 7;
+  uint32 state_schema_major = 8;
+  uint32 state_schema_minor = 9;
+  uint64 created_at_unix_millis = 10;
+  uint64 snapshot_index = 11;
+  uint64 snapshot_term = 12;
+  uint64 commit_index = 13;
+  uint64 commit_term = 14;
+  repeated uint64 voter_ids = 15;
+  repeated uint64 learner_ids = 16;
+  uint64 entry_count = 17;
+  BackupStateSummary boundary_state = 18;
+}
+message BackupConfigurationChange {
+  string operation_id = 1;
+  uint64 member_id = 2;
+  BackupConfigurationAction action = 3;
+}
+message BackupEntry {
+  uint64 index = 1;
+  oneof payload {
+    bytes command = 2;
+    BackupConfigurationChange configuration = 3;
+  }
+}

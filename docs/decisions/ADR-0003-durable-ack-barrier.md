@@ -10,7 +10,7 @@
 | 관련 스펙 | [MQTT protocol과 session](../specs/mqtt-protocol-and-session.md), [Cluster session과 durable delivery](../specs/cluster-session-and-delivery.md) |
 | 관련 Architecture | [Cluster architecture](../architectures/cluster-architecture.md), [EKS on EC2 deployment](../architectures/eks-ec2-deployment.md) |
 | 관련 결정 | [ADR-0002](ADR-0002-cluster-consensus-library.md) |
-| 관련 Contract | Replicated state encoding v1은 미작성. [ADR-0009](ADR-0009-raft-production-state-profile.md)가 protobuf family만 선택하며 exact schema와 compatibility는 Draft contract에서 정한다. |
+| 관련 Contract | Replicated state encoding v1의 Draft schema [`replicated-state-v1.proto`](../contracts/replicated-state-v1.proto)와 generated codec은 구현됐지만, 검토된 contract의 크기 제한·마이그레이션 규칙·릴리스 호환성은 미완료다. 이 ADR의 durable ACK 수용 기준은 별도로 검증한다. |
 | 관련 해설 | [MQTT 전달 보장과 QoS·Session·Will protocol 흐름](../explainers/mqtt-delivery-guarantees-and-protocol-flows.md), [EKS 고가용성과 장애 도메인](../explainers/eks-ha-failure-domains.md) |
 
 ## 1. 결정
@@ -92,6 +92,8 @@ WAL·snapshot의 storage target과 `fsync` 순서는 scoped [ADR-0009](ADR-0009-
 3. Follower disk full·slow I/O와 partition에서 잘못된 ACK이 없는지 검증한다.
 4. 같은 Packet Identifier 재전송이 중복 durable command를 만들지 않는지 검증한다.
 5. BP-03에서 group commit 크기별 p99·p99.9와 disk 비용을 측정한다.
+
+현재 별도 [Cluster backup v1 acceptance](../specs/cluster-session-and-delivery.md#117-cluster-backuprestore와-snapshot-finalize-수용-매핑)는 archive boundary, snapshot finalize 및 offline voter restore의 process recovery를 다룬다. 그 결과는 ACK 직후 replica kill, WAL write/`fsync`/commit crash, 잘못된 PUBACK/PUBREC 또는 message-gap 0을 검증하지 않으며 위 항목 1~5를 통과 처리하지 않는다. 이 ADR의 durable ACK 기준은 미완료다.
 
 ## 10. 재검토 조건
 

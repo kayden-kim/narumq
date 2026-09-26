@@ -21,9 +21,12 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
+
+	"narumq/internal/adapters/raft/records"
 )
 
 func TestRunClusterModeInProcess(t *testing.T) {
@@ -183,6 +186,14 @@ func TestRunClusterModeInProcess(t *testing.T) {
 		t.Fatalf("cluster summary status = %d, want 200", response.StatusCode)
 	}
 	clusterRuntimeTestAssertNodeListing(t, ctx, client, managementAddresses[0])
+	initialLeader := clusterRuntimeTestLeader(t, ctx, client, managementAddresses)
+	initialBackup := clusterRuntimeTestReadBackup(t, ctx, client, initialLeader)
+	if initialBackup.Manifest.GetClusterId() != "inprocess-coverage" || len(initialBackup.Manifest.GetVoterIds()) != 3 {
+		t.Fatalf("initial backup manifest=%+v", initialBackup.Manifest)
+	}
+	if initialBackup.Manifest.GetSnapshotIndex() == 0 || initialBackup.Manifest.GetSnapshotIndex() > initialBackup.Manifest.GetCommitIndex() {
+		t.Fatalf("initial backup has invalid snapshot/commit boundary: %+v", initialBackup.Manifest)
+	}
 	joinerID := uint64(4)
 	joinerDNS := fmt.Sprintf("node%d.example.test", joinerID)
 	joinerPeerAddress := clusterRuntimeTestFreeAddress(t)
@@ -240,6 +251,30 @@ func TestRunClusterModeInProcess(t *testing.T) {
 	stageOperationID := clusterRuntimeTestReadOperation(t, stageResponse)
 	if stageResponse.StatusCode != http.StatusAccepted {
 		t.Fatalf("stage joiner status = %d, want 202", stageResponse.StatusCode)
+	}
+	tailLeader := clusterRuntimeTestLeader(t, ctx, client, managementAddresses)
+	tailBackup := clusterRuntimeTestReadBackup(t, ctx, client, tailLeader)
+	if tailBackup.Manifest.GetCommitIndex() <= initialBackup.Manifest.GetCommitIndex() ||
+		tailBackup.Manifest.GetSnapshotIndex() != initialBackup.Manifest.GetSnapshotIndex() ||
+		tailBackup.Manifest.GetEntryCount() == 0 {
+		t.Fatalf("backup omitted the committed membership tail: initial=%+v current=%+v", initialBackup.Manifest, tailBackup.Manifest)
+	}
+	hasCommand := false
+	for _, entry := range tailBackup.Entries {
+		if entry.GetIndex() > tailBackup.Manifest.GetSnapshotIndex() && len(entry.GetCommand()) != 0 {
+			hasCommand = true
+			break
+		}
+	}
+	if !hasCommand {
+		t.Fatalf("backup contains no committed command after snapshot index %d", tailBackup.Manifest.GetSnapshotIndex())
+	}
+	restoredSeed, err := clusterRestoreSeed(configs[0], tailBackup)
+	if err != nil {
+		t.Fatalf("reconstruct staged membership from backup tail: %v", err)
+	}
+	if restoredSeed.SnapshotIndex != tailBackup.Manifest.GetCommitIndex() {
+		t.Fatalf("restored seed index=%d, backup commit=%d", restoredSeed.SnapshotIndex, tailBackup.Manifest.GetCommitIndex())
 	}
 
 	expectedNodes++
@@ -323,6 +358,44 @@ func clusterRuntimeTestDoRequest(ctx context.Context, client *http.Client, metho
 		request.Header.Set("Idempotency-Key", "inprocess-"+strings.ToLower(method))
 	}
 	return client.Do(request)
+}
+func clusterRuntimeTestReadBackup(t *testing.T, ctx context.Context, client *http.Client, address string) *records.BackupArchive {
+	t.Helper()
+	response, err := clusterRuntimeTestDoRequest(ctx, client, http.MethodPost, "http://"+address+"/api/v1/cluster/backups", nil)
+	if err != nil {
+		t.Fatalf("download in-process cluster backup: %v", err)
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(response.Body)
+		t.Fatalf("backup status=%d body=%s", response.StatusCode, body)
+	}
+	if got := response.Header.Get("Content-Type"); got != "application/octet-stream" {
+		t.Fatalf("backup content type=%q", got)
+	}
+	encoded, err := io.ReadAll(response.Body)
+	if err != nil {
+		t.Fatalf("read backup archive: %v", err)
+	}
+	archive, err := records.DecodeBackupArchive(encoded)
+	if err != nil {
+		t.Fatalf("decode downloaded backup archive: %v", err)
+	}
+	if len(encoded) < sha256.Size {
+		t.Fatalf("backup archive length=%d, smaller than its SHA-256 trailer", len(encoded))
+	}
+	trailer := encoded[len(encoded)-sha256.Size:]
+	if got := response.Header.Get("X-NaruMQ-Backup-SHA256"); got != hex.EncodeToString(trailer) {
+		t.Fatalf("backup checksum header=%q, want trailer %x", got, trailer)
+	}
+	if got := response.Header.Get("X-NaruMQ-Backup-Commit-Index"); got != strconv.FormatUint(archive.Manifest.GetCommitIndex(), 10) {
+		t.Fatalf("backup commit header=%q, archive commit=%d", got, archive.Manifest.GetCommitIndex())
+	}
+	if archive.Manifest.GetBoundaryState().GetLastIncludedIndex() != archive.Manifest.GetCommitIndex() {
+		t.Fatalf("backup boundary summary index=%d, commit=%d",
+			archive.Manifest.GetBoundaryState().GetLastIncludedIndex(), archive.Manifest.GetCommitIndex())
+	}
+	return archive
 }
 
 type clusterRuntimeTestOperationEnvelope struct {

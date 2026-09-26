@@ -14,19 +14,21 @@ const clusterFailpointExitCode = 86
 const (
 	clusterFailpointNone clusterFailpoint = ""
 
-	failpointAddLearnerBeforePersist   clusterFailpoint = "add-learner-before-persist"
-	failpointAddLearnerAfterPersist    clusterFailpoint = "add-learner-after-persist"
-	failpointAddLearnerAfterApply      clusterFailpoint = "add-learner-after-apply"
-	failpointPromoteVoterBeforePersist clusterFailpoint = "promote-voter-before-persist"
-	failpointPromoteVoterAfterPersist  clusterFailpoint = "promote-voter-after-persist"
-	failpointPromoteVoterAfterApply    clusterFailpoint = "promote-voter-after-apply"
-	failpointRemoveMemberBeforePersist clusterFailpoint = "remove-member-before-persist"
-	failpointRemoveMemberAfterPersist  clusterFailpoint = "remove-member-after-persist"
-	failpointRemoveMemberAfterApply    clusterFailpoint = "remove-member-after-apply"
-	failpointSnapshotInstallBefore     clusterFailpoint = "snapshot-install-before-persist"
-	failpointSnapshotInstallAfter      clusterFailpoint = "snapshot-install-after-persist"
-	failpointBeginRemoveAfterApply     clusterFailpoint = "begin-remove-after-apply"
-	failpointRouteProjectionRebuild    clusterFailpoint = "route-projection-rebuild-error"
+	failpointAddLearnerBeforePersist      clusterFailpoint = "add-learner-before-persist"
+	failpointAddLearnerAfterPersist       clusterFailpoint = "add-learner-after-persist"
+	failpointAddLearnerAfterApply         clusterFailpoint = "add-learner-after-apply"
+	failpointPromoteVoterBeforePersist    clusterFailpoint = "promote-voter-before-persist"
+	failpointPromoteVoterAfterPersist     clusterFailpoint = "promote-voter-after-persist"
+	failpointPromoteVoterAfterApply       clusterFailpoint = "promote-voter-after-apply"
+	failpointRemoveMemberBeforePersist    clusterFailpoint = "remove-member-before-persist"
+	failpointRemoveMemberAfterPersist     clusterFailpoint = "remove-member-after-persist"
+	failpointRemoveMemberAfterApply       clusterFailpoint = "remove-member-after-apply"
+	failpointSnapshotInstallBefore        clusterFailpoint = "snapshot-install-before-persist"
+	failpointSnapshotInstallAfter         clusterFailpoint = "snapshot-install-after-persist"
+	failpointSnapshotCreateBeforeFinalize clusterFailpoint = "snapshot-create-before-finalize"
+	failpointSnapshotCreateAfterFinalize  clusterFailpoint = "snapshot-create-after-finalize"
+	failpointBeginRemoveAfterApply        clusterFailpoint = "begin-remove-after-apply"
+	failpointRouteProjectionRebuild       clusterFailpoint = "route-projection-rebuild-error"
 )
 
 var validClusterFailpoints = []clusterFailpoint{
@@ -41,6 +43,8 @@ var validClusterFailpoints = []clusterFailpoint{
 	failpointRemoveMemberAfterApply,
 	failpointSnapshotInstallBefore,
 	failpointSnapshotInstallAfter,
+	failpointSnapshotCreateBeforeFinalize,
+	failpointSnapshotCreateAfterFinalize,
 	failpointBeginRemoveAfterApply,
 	failpointRouteProjectionRebuild,
 }
@@ -57,6 +61,16 @@ func parseClusterFailpoint(value string) (clusterFailpoint, error) {
 }
 
 func (point clusterFailpoint) matchesPersistence(boundary raftadapter.PersistenceBoundaryDTO) bool {
+	if boundary.CreatesSnapshot {
+		switch boundary.Stage {
+		case raftadapter.PersistenceBeforeSnapshotFinalize:
+			return point == failpointSnapshotCreateBeforeFinalize
+		case raftadapter.PersistenceAfterSnapshotFinalize:
+			return point == failpointSnapshotCreateAfterFinalize
+		default:
+			return false
+		}
+	}
 	if boundary.InstallsSnapshot {
 		switch boundary.Stage {
 		case raftadapter.PersistenceBeforeReady:

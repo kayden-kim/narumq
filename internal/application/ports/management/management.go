@@ -2,6 +2,7 @@ package management
 
 import (
 	"context"
+	"errors"
 	"time"
 
 	portsretained "narumq/internal/application/ports/retained"
@@ -182,6 +183,22 @@ type StateProvider interface {
 	ListSubscriptions(ctx context.Context, filter SubscriptionFilter) ([]SubscriptionDTO, *PageDTO, error)
 	ListRetained(ctx context.Context, filter RetainedFilter) ([]RetainedMetadataDTO, *PageDTO, error)
 	ListTenants(ctx context.Context, filter TenantFilter) ([]TenantSummaryDTO, *PageDTO, error)
+}
+
+// ErrClusterBackupUnavailable means a ready, quorum-fresh commit boundary could not be captured.
+var ErrClusterBackupUnavailable = errors.New("cluster backup is unavailable")
+
+// ClusterBackupDTO contains an encoded archive and its quorum-fresh commit boundary.
+type ClusterBackupDTO struct {
+	CommitIndex uint64
+	// ArchiveSHA256 is the archive trailer digest over framed bytes before the trailer.
+	ArchiveSHA256 [32]byte
+	Archive       []byte
+}
+
+// ClusterBackupProvider captures an archive at a quorum-fresh commit boundary.
+type ClusterBackupProvider interface {
+	CaptureClusterBackup(ctx context.Context) (ClusterBackupDTO, error)
 }
 
 // HealthChecker evaluates liveness, readiness, startup, and drain health states.

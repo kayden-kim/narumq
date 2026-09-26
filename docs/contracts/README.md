@@ -12,6 +12,7 @@
 | [Cluster release compatibility v1](cluster-release-compatibility-v1.md) | Draft | Release N node ↔ N-1 node | 이 문서의 compatibility matrix | CLU-11, NFR-15, DEP-18 |
 | [Raft peer transport v1](raft-peer-transport-v1.md) | Active | NaruMQ Raft node ↔ NaruMQ Raft node | 이 문서의 hello·frame·queue·retry 계약 | CLU-01~CLU-02, CLU-09~CLU-10, SEC-09, NFR-07~NFR-10 |
 | [Raft membership v2](raft-membership-v2.md) | Draft | ClusterAdmin · joining broker ↔ Cluster leader · authenticated peer transport | 이 문서와 [replicated-state-v1.proto](replicated-state-v1.proto) | CLU-01~CLU-02, CLU-04~CLU-11, SEC-09~SEC-11, NFR-07~NFR-10 |
+| [Cluster backup v1](cluster-backup-v1.md) | Draft | ClusterAdmin backup producer → offline restore CLI | [Protobuf archive schema](cluster-backup-v1.proto) | CLU-14 |
 
 `Active` contract는 기준 artifact, producer runtime과 자동 contract test가 같은 현재
 동작을 확인한 계약이다. `Draft` contract는 구현과 검증 전 계약 후보다.
@@ -24,7 +25,7 @@ Producer·consumer contract test와 compatibility matrix를 통과한 뒤에만 
 | --- | --- |
 | Metrics catalog v1 | `SPEC-TBD-07`의 이름과 histogram bucket을 Phase 0 workload로 확정해야 한다. |
 | Rollout custom resource v1 | [ADR-0006](../decisions/ADR-0006-external-rollout-controller.md) 승인과 controller resource model이 필요하다. |
-| Replicated state encoding v1 | [ADR-0009](../decisions/ADR-0009-raft-production-state-profile.md)는 protobuf family만 선택했다. Exact message·field·size·migration·byte schema를 정의하고 producer/consumer validation을 갖출 때까지 contract를 만들지 않는다. |
+| Replicated state encoding v1 | Draft schema [`replicated-state-v1.proto`](replicated-state-v1.proto)와 generated codec은 구현했지만, 공식 크기 제한·마이그레이션 규칙·릴리스 호환성 벡터를 포함한 검토된 contract는 아직 없다. |
 
 SDK별 client version과 실행 profile은 독립 contract를 만들지 않고
 [MQTT client compatibility v1](mqtt-client-compatibility-v1.md)의 checked-in

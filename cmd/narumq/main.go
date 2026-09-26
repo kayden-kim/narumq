@@ -78,6 +78,7 @@ func runWithContext(ctx context.Context, args []string, logger *slog.Logger) err
 	securityConfigFile := flagSet.String("security-config", "", "path to strict JSON security configuration file")
 	raftPeerConfigFile := flagSet.String("raft-peer-config", "", "strict JSON config for fixed-voter peer-only mode")
 	clusterConfigPath := flagSet.String("cluster-config", "", "strict combined configuration for dynamic cluster mode")
+	clusterRestoreArchive := flagSet.String("cluster-restore", "", "verify and seed a cluster backup archive, then exit")
 	allowInsecureAnonymousMQTT := flagSet.Bool("allow-insecure-anonymous-mqtt", false, "development-only anonymous MQTT over loopback TCP")
 	if err := flagSet.Parse(args); err != nil {
 		return err
@@ -89,21 +90,31 @@ func runWithContext(ctx context.Context, args []string, logger *slog.Logger) err
 		}
 	})
 	clusterModeRequested := false
+	clusterRestoreRequested := false
 	flagSet.Visit(func(parsedFlag *flag.Flag) {
-		if parsedFlag.Name == "cluster-config" {
+		switch parsedFlag.Name {
+		case "cluster-config":
 			clusterModeRequested = true
+		case "cluster-restore":
+			clusterRestoreRequested = true
 		}
 	})
+	if clusterRestoreRequested && !clusterModeRequested {
+		return errors.New("-cluster-restore requires -cluster-config")
+	}
 	if clusterModeRequested {
 		if *clusterConfigPath == "" {
 			return errors.New("-cluster-config requires a non-empty file path")
+		}
+		if clusterRestoreRequested && *clusterRestoreArchive == "" {
+			return errors.New("-cluster-restore requires a non-empty file path")
 		}
 		if flagSet.NArg() != 0 {
 			return errors.New("-cluster-config does not accept positional arguments")
 		}
 		var conflictingFlags []string
 		flagSet.Visit(func(parsedFlag *flag.Flag) {
-			if parsedFlag.Name != "cluster-config" {
+			if parsedFlag.Name != "cluster-config" && parsedFlag.Name != "cluster-restore" {
 				conflictingFlags = append(conflictingFlags, "-"+parsedFlag.Name)
 			}
 		})
@@ -113,6 +124,9 @@ func runWithContext(ctx context.Context, args []string, logger *slog.Logger) err
 		config, err := loadClusterConfigFile(*clusterConfigPath)
 		if err != nil {
 			return fmt.Errorf("load cluster config: %w", err)
+		}
+		if clusterRestoreRequested {
+			return restoreClusterBackup(config, *clusterRestoreArchive)
 		}
 		return runClusterMode(ctx, config, logger)
 	}

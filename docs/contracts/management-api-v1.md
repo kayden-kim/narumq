@@ -6,7 +6,7 @@ path, parameter, response schema와 media type은
 
 | 항목 | 값 |
 | --- | --- |
-| 이름과 version | `narumq-management-api` 1.2.0 |
+| 이름과 version | `narumq-management-api` 1.3.0 |
 | 상태 | Active |
 | Producer | NaruMQ broker management API |
 | Consumer | Dashboard·operator·monitoring integration의 query client |
@@ -31,6 +31,7 @@ path, parameter, response schema와 media type은
 | GET | `/health/drain` | drain-complete probe |
 | GET | `/metrics` | Prometheus/OpenMetrics scrape |
 | GET | `/api/v1/cluster` | cluster summary |
+| POST | `/api/v1/cluster/backups` | quorum-fresh 경계의 checksummed backup archive 다운로드 |
 | GET | `/api/v1/nodes` | node list |
 | GET | `/api/v1/nodes/{nodeId}` | node detail |
 | GET | `/api/v1/clients` | client session list |
@@ -50,8 +51,8 @@ message delete와 다른 mutation은 Phase 1에서 제공하지 않는다. 이 o
 - 이 contract는 OIDC issuer discovery, JWT signature, claim semantics, token scope 또는
   API key 발급 형식을 약속하지 않는다. 입력 credential은 configured opaque value와
   비교된다.
-- 인증되지 않은 요청은 `401`, 인증됐지만 route role이 부족한 요청은 `403`이다.
-  API query operation은 `ReadOnly`, tenant list는 `ClusterAdmin` role을 요구한다.
+- 인증되지 않은 요청은 `401`, 인증됐지만 role이 부족한 요청은 `403`이다. API query operation은
+  `ReadOnly`, tenant list와 cluster backup은 `ClusterAdmin` role을 요구한다.
 - Health probe와 `/metrics`의 익명 허용 여부는 listener configuration이다. OpenAPI의
   security scheme은 보호된 배포를 기술하고, local development의 anonymous policy를
   제거하지 않는다.
@@ -89,6 +90,11 @@ invalid_request`다. 다른 endpoint도 OpenAPI에 선언된 filter 외 값을 �
 `application/openmetrics-text; version=1.0.0; charset=utf-8`을, 그 외에는
 `text/plain; version=0.0.4; charset=utf-8`을 반환한다.
 
+`POST /api/v1/cluster/backups`는 JSON envelope 대신 `application/octet-stream` archive를
+반환한다. `X-NaruMQ-Backup-Commit-Index`는 archive의 commit index, `X-NaruMQ-Backup-SHA256`은
+archive framing을 검증하는 SHA-256 trailer digest다. Fresh quorum barrier가 불가능하면
+retryable `503 cluster_backup_unavailable`을 반환한다.
+
 JSON 오류는 다음 envelope다.
 
 ```json
@@ -112,7 +118,8 @@ method에 사용한다. 내부 오류와 credential은 response에 노출하지 
 - Optional response field 추가는 contract suite와 consumer compatibility 확인 뒤에만
   허용한다.
 - Version 1.2.0은 `NodeData`에 optional `replicationHealth`, `lastErrorCode`, `replicationQueue` field를 추가했다. Field schema와 enum은 OpenAPI artifact가 기준이며, contract suite가 response shape를 검증한다.
-- Future catalog에 남아 있는 mutation endpoint, OIDC/JWT, API rate limiting,
-  idempotency, audit event와 dashboard는 현재 Active query contract가 아니다. 이 기능을
-  구현할 때는 별도 범위와 contract revision을 정한다.
+- Version 1.3.0은 `POST /api/v1/cluster/backups`를 추가했다. ClusterAdmin 전용이며 fresh quorum barrier에서 캡처한 typed snapshot과 committed tail을 binary archive로 반환한다.
+- Future catalog에 남아 있는 다른 mutation endpoint, OIDC/JWT, API rate limiting,
+  audit event와 dashboard는 현재 Active contract가 아니다. 이 기능을 구현할 때는 별도
+  범위와 contract revision을 정한다.
 - Breaking change는 `/api/v2`와 별도 OpenAPI artifact로 제공한다.

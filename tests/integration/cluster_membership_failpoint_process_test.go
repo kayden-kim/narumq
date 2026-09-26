@@ -621,3 +621,37 @@ func clusterMembershipFindLeaderByMap(t *testing.T, ctx context.Context, nodes m
 	t.Fatalf("no node reported an active cluster leader")
 	return 0, ""
 }
+
+func TestSnapshotFinalizationCrashRecoveryAcrossProcessRestart(t *testing.T) {
+	fixture := newClusterMembershipProcessFixture(t, 4, "narumq_failpoint")
+	supervisor := newClusterMembershipFailpointSupervisor(t, fixture.ctx, fixture)
+
+	// The bootstrap typed snapshot is created during startup. Crashing before
+	// rename leaves only a temporary file; restart must finalize a usable snapshot.
+	supervisor.start(1, fixture.bootstrapConfig(1), "snapshot-create-before-finalize")
+	supervisor.waitForHits("snapshot-create-before-finalize")
+	supervisor.start(2, fixture.bootstrapConfig(2), "")
+	supervisor.start(3, fixture.bootstrapConfig(3), "")
+	supervisor.waitForAllReady([]uint64{1, 2, 3})
+	clusterMembershipProcessWaitForBootstrap(t, fixture.ctx, supervisor.procs([]uint64{1, 2, 3}))
+
+	// A committed learner transition forces a local snapshot. The second crash
+	// occurs after rename and directory sync; restart must recover that boundary.
+	supervisor.rearm(1, "snapshot-create-after-finalize")
+	_, leaderURL := supervisor.waitForLeader([]uint64{1, 2, 3})
+	status, body, err := clusterMembershipProcessRequest(fixture.ctx, http.MethodPost,
+		leaderURL+"/api/v1/cluster/members", fixture.stageRequestBody(4), clusterMembershipProcessAdmin, "snapshot-finalize-stage-node-4")
+	if err != nil || status != http.StatusAccepted {
+		t.Fatalf("stage member 4 status=%d body=%s err=%v", status, body, err)
+	}
+	operation, err := clusterMembershipProcessDecodeOperation(body)
+	if err != nil || operation.Phase != "STAGED" {
+		t.Fatalf("decode staged operation=%+v err=%v, want STAGED", operation, err)
+	}
+	supervisor.start(4, fixture.joinerConfig(4, []uint64{1, 2, 3}), "")
+	joiner := supervisor.nodes[4]
+	supervisor.waitForHits("snapshot-create-after-finalize")
+	supervisor.waitForOperation(3, operation.OperationID, "SUCCEEDED")
+	supervisor.waitForAllReady([]uint64{1, 2, 3, 4})
+	clusterMembershipProcessAssertConvergedSummary(t, fixture.ctx, supervisor.procs([]uint64{1, 2, 3}), joiner, 4)
+}

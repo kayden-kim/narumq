@@ -66,10 +66,11 @@ type walRecord struct {
 }
 
 type stableStore struct {
-	directory string
-	wal       *os.File
-	memory    *etcdraft.MemoryStorage
-	dynamic   bool
+	directory    string
+	wal          *os.File
+	memory       *etcdraft.MemoryStorage
+	dynamic      bool
+	finalizeHook func(PersistenceStage)
 
 	snapshotIndex        uint64
 	hardState            *pb.HardState
@@ -222,6 +223,12 @@ func prepareDynamicClusterDirectory(directory, clusterID string, nodeID NodeID, 
 		if err := os.MkdirAll(directory, 0o755); err != nil {
 			return false, fmt.Errorf("create cluster directory: %w", err)
 		}
+	}
+	markerPath := filepath.Join(directory, restoreMarkerName)
+	if _, err := os.Lstat(markerPath); err == nil {
+		return false, ErrBootstrapIncomplete
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return false, fmt.Errorf("inspect restore marker: %w", err)
 	}
 	metaPath := filepath.Join(directory, clusterMetaName)
 	if _, err := os.Stat(metaPath); errors.Is(err, os.ErrNotExist) {
@@ -623,7 +630,7 @@ func (s *stableStore) appendReady(ready etcdraft.Ready) error {
 	}
 
 	if ready.Snapshot != nil && !etcdraft.IsEmptySnap(ready.Snapshot) {
-		if err := persistSnapshotFileMode(s.directory, ready.Snapshot, s.dynamic); err != nil {
+		if err := persistSnapshotFileMode(s.directory, ready.Snapshot, s.dynamic, nil); err != nil {
 			return err
 		}
 		if err := s.memory.ApplySnapshot(proto.Clone(ready.Snapshot).(*pb.Snapshot)); err != nil {
@@ -711,7 +718,7 @@ func (s *stableStore) createSnapshotPayload(index uint64, confState *pb.ConfStat
 	if err != nil {
 		return fmt.Errorf("create memory snapshot: %w", err)
 	}
-	if err := persistSnapshotFileMode(s.directory, snapshot, s.dynamic); err != nil {
+	if err := persistSnapshotFileMode(s.directory, snapshot, s.dynamic, s.finalizeHook); err != nil {
 		return err
 	}
 	if err := s.memory.Compact(index); err != nil && !errors.Is(err, etcdraft.ErrCompacted) {
@@ -726,10 +733,10 @@ func (s *stableStore) createSnapshotPayload(index uint64, confState *pb.ConfStat
 }
 
 func persistSnapshotFile(directory string, snapshot *pb.Snapshot) error {
-	return persistSnapshotFileMode(directory, snapshot, false)
+	return persistSnapshotFileMode(directory, snapshot, false, nil)
 }
 
-func persistSnapshotFileMode(directory string, snapshot *pb.Snapshot, dynamic bool) error {
+func persistSnapshotFileMode(directory string, snapshot *pb.Snapshot, dynamic bool, finalizeHook func(PersistenceStage)) error {
 	if snapshot == nil || etcdraft.IsEmptySnap(snapshot) {
 		return nil
 	}
@@ -774,8 +781,17 @@ func persistSnapshotFileMode(directory string, snapshot *pb.Snapshot, dynamic bo
 	if closeErr != nil {
 		return fmt.Errorf("close snapshot: %w", closeErr)
 	}
+	if finalizeHook != nil {
+		finalizeHook(PersistenceBeforeSnapshotFinalize)
+	}
 	if err := filePersistenceOps.rename(tempPath, path); err != nil {
 		return fmt.Errorf("finalize snapshot: %w", err)
+	}
+	if err := filePersistenceOps.syncDirectory(directory); err != nil {
+		return fmt.Errorf("sync snapshot directory: %w", err)
+	}
+	if finalizeHook != nil {
+		finalizeHook(PersistenceAfterSnapshotFinalize)
 	}
 	return nil
 }

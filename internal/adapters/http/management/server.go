@@ -29,18 +29,19 @@ func NewRouter(
 	healthChecker ports.HealthChecker,
 	metricsReg portsmetrics.MetricsRenderer,
 ) http.Handler {
-	return newRouter(cfg, stateProvider, healthChecker, metricsReg, nil)
+	return newRouter(cfg, stateProvider, healthChecker, metricsReg, nil, nil)
 }
 
-// NewRouterWithMembership constructs a router with dynamic membership operations.
+// NewRouterWithMembership constructs a router with membership and cluster-backup operations.
 func NewRouterWithMembership(
 	cfg ServerConfig,
 	stateProvider ports.StateProvider,
 	healthChecker ports.HealthChecker,
 	metricsReg portsmetrics.MetricsRenderer,
 	membershipService MembershipUseCase,
+	backupProvider ports.ClusterBackupProvider,
 ) http.Handler {
-	return newRouter(cfg, stateProvider, healthChecker, metricsReg, membershipService)
+	return newRouter(cfg, stateProvider, healthChecker, metricsReg, membershipService, backupProvider)
 }
 
 func newRouter(
@@ -49,6 +50,7 @@ func newRouter(
 	healthChecker ports.HealthChecker,
 	metricsReg portsmetrics.MetricsRenderer,
 	membershipService MembershipUseCase,
+	backupProvider ports.ClusterBackupProvider,
 ) http.Handler {
 	auth := NewAuthenticator(AuthConfig{
 		AuthToken:             cfg.AuthToken,
@@ -89,6 +91,10 @@ func newRouter(
 		mux.HandleFunc("/api/v1/cluster/members/{memberId}", auth.RequireRole(RoleClusterAdmin, membershipH.RemoveMember))
 		mux.HandleFunc("/api/v1/cluster/membership-operations/{operationId}", auth.RequireRole(RoleReadOnly, membershipH.GetOperation))
 	}
+	if backupProvider != nil {
+		backupH := &clusterBackupHandler{provider: backupProvider}
+		mux.HandleFunc("/api/v1/cluster/backups", auth.RequireRole(RoleClusterAdmin, backupH.CreateBackup))
+	}
 
 	// Unknown paths use the same error envelope as known routes.
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
@@ -111,18 +117,19 @@ func NewServer(
 	healthChecker ports.HealthChecker,
 	metricsReg portsmetrics.MetricsRenderer,
 ) *http.Server {
-	return newServer(cfg, stateProvider, healthChecker, metricsReg, nil)
+	return newServer(cfg, stateProvider, healthChecker, metricsReg, nil, nil)
 }
 
-// NewServerWithMembership creates a management server with dynamic membership routes.
+// NewServerWithMembership creates a management server with membership and cluster-backup routes.
 func NewServerWithMembership(
 	cfg ServerConfig,
 	stateProvider ports.StateProvider,
 	healthChecker ports.HealthChecker,
 	metricsReg portsmetrics.MetricsRenderer,
 	membershipService MembershipUseCase,
+	backupProvider ports.ClusterBackupProvider,
 ) *http.Server {
-	return newServer(cfg, stateProvider, healthChecker, metricsReg, membershipService)
+	return newServer(cfg, stateProvider, healthChecker, metricsReg, membershipService, backupProvider)
 }
 
 func newServer(
@@ -131,11 +138,13 @@ func newServer(
 	healthChecker ports.HealthChecker,
 	metricsReg portsmetrics.MetricsRenderer,
 	membershipService MembershipUseCase,
+	backupProvider ports.ClusterBackupProvider,
 ) *http.Server {
 	addr := cfg.ListenAddr
 	if addr == "" {
 		addr = ":8080"
 	}
+
 	rTimeout := cfg.ReadTimeout
 	if rTimeout <= 0 {
 		rTimeout = 10 * time.Second
@@ -145,7 +154,7 @@ func newServer(
 		wTimeout = 10 * time.Second
 	}
 
-	handler := newRouter(cfg, stateProvider, healthChecker, metricsReg, membershipService)
+	handler := newRouter(cfg, stateProvider, healthChecker, metricsReg, membershipService, backupProvider)
 
 	return &http.Server{
 		Addr:         addr,

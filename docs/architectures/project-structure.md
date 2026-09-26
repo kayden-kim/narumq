@@ -12,7 +12,7 @@ NaruMQ source tree는 MQTT·session·routing·delivery·tenancy·security·clust
 | 관련 결정 | [ADR-0001](../decisions/ADR-0001-core-implementation-language.md) Accepted |
 | 관련 Architecture | [Broker core architecture](broker-core.md), [EKS on EC2 deployment](eks-ec2-deployment.md) |
 | 관련 Convention | [Go coding conventions](../conventions/go-coding-conventions.md) |
-| 최종 확인일 | 2026-09-20 |
+| 최종 확인일 | 2026-09-26 |
 
 ## Target repository tree
 
@@ -64,6 +64,7 @@ NaruMQ source tree는 MQTT·session·routing·delivery·tenancy·security·clust
 │       ├── prometheus/
 │       ├── random/
 │       ├── raft/
+│       │   └── records/
 │       ├── runtimemetrics/
 │       ├── storage/
 │       ├── tcp/
@@ -204,7 +205,8 @@ flowchart LR
 | `internal/adapters/tcp` | bounded MQTT ingress와 connection lifecycle, 고정 voter Raft mTLS TCP stream(`TCPPeerTransport`) 및 peer-local bounded queues | MQTT ingress는 application use cases/ports와 domain DTO; Raft transport는 표준 library만 |
 | `internal/adapters/tls` | TLS 1.2+ listener, AEAD cipher allowlist, mTLS trust anchor와 verified certificate DTO 추출 | `application/ports/authentication`과 표준 library |
 | `internal/adapters/clock` | system clock와 scheduler를 공용 application port에 제공 | `application/ports/clock`, 표준 library |
-| `internal/adapters/raft` | etcd/raft DTO, deterministic opaque command boundary, NMQSTATE1 snapshot/WAL, outbound failure reporting | `go.etcd.io/raft/v3`, `google.golang.org/protobuf`, 표준 library |
+| `internal/adapters/raft` | etcd/raft DTO, 영속 WAL/snapshot 파일, Raft backup/restore seed와 persistence boundary; replicated-state protobuf의 의미는 해석하지 않는다. | `go.etcd.io/raft/v3`, 표준 library |
+| `internal/adapters/raft/records` | 버전이 있는 replicated-state/backup protobuf binding, deterministic encoding, archive framing, checksum과 summary validation | `google.golang.org/protobuf`, 표준 library |
 | `internal/adapters/runtimemetrics` | Go process runtime metrics 표본을 JSONL로 수집 | 표준 library만 |
 
 Application은 concrete adapter를 import하지 않는다. Queue, clock, authentication과 session repository

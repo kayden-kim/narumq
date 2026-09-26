@@ -24,6 +24,8 @@ func TestClusterFailpointParse(t *testing.T) {
 		{"remove-member-after-apply", failpointRemoveMemberAfterApply, false},
 		{"snapshot-install-before-persist", failpointSnapshotInstallBefore, false},
 		{"snapshot-install-after-persist", failpointSnapshotInstallAfter, false},
+		{"snapshot-create-before-finalize", failpointSnapshotCreateBeforeFinalize, false},
+		{"snapshot-create-after-finalize", failpointSnapshotCreateAfterFinalize, false},
 		{"begin-remove-after-apply", failpointBeginRemoveAfterApply, false},
 		{"route-projection-rebuild-error", failpointRouteProjectionRebuild, false},
 		{"bogus", "", true},
@@ -82,6 +84,18 @@ func TestClusterFailpointMatchesOnlyItsBoundary(t *testing.T) {
 					(pt == failpointSnapshotInstallAfter && stage == raftadapter.PersistenceAfterReady)
 				if snapMatched != wantSnapMatch {
 					t.Errorf("matchesPersistence(%v, snapshot) = %t, want %t", stage, snapMatched, wantSnapMatch)
+				}
+			}
+			for _, stage := range []raftadapter.PersistenceStage{
+				raftadapter.PersistenceBeforeSnapshotFinalize,
+				raftadapter.PersistenceAfterSnapshotFinalize,
+			} {
+				boundary := raftadapter.PersistenceBoundaryDTO{Stage: stage, CreatesSnapshot: true}
+				matched := pt.matchesPersistence(boundary)
+				wantMatch := (pt == failpointSnapshotCreateBeforeFinalize && stage == raftadapter.PersistenceBeforeSnapshotFinalize) ||
+					(pt == failpointSnapshotCreateAfterFinalize && stage == raftadapter.PersistenceAfterSnapshotFinalize)
+				if matched != wantMatch {
+					t.Errorf("matchesPersistence(%v, local snapshot) = %t, want %t", stage, matched, wantMatch)
 				}
 			}
 

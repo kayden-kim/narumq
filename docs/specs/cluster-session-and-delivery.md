@@ -8,8 +8,8 @@
 | 관련 요구사항 | CLU-01~CLU-14, NFR-07~NFR-10, NFR-15 |
 | 근거 | [PRD 8장, 9.2절과 11.2절](../requirements/PRD.md) |
 | 관련 Architecture | [Cluster architecture](../architectures/cluster-architecture.md), [EKS on EC2 deployment](../architectures/eks-ec2-deployment.md) |
-| 관련 결정 | [ADR-0001](../decisions/ADR-0001-core-implementation-language.md), [ADR-0002](../decisions/ADR-0002-cluster-consensus-library.md), [ADR-0003](../decisions/ADR-0003-durable-ack-barrier.md), [ADR-0004](../decisions/ADR-0004-session-ownership-and-fencing.md), [ADR-0007](../decisions/ADR-0007-aws-production-deployment-platform.md), [ADR-0008](../decisions/ADR-0008-raft-peer-transport.md), [ADR-0009](../decisions/ADR-0009-raft-production-state-profile.md) |
-| 관련 Contract | [Cluster release compatibility v1](../contracts/cluster-release-compatibility-v1.md), [Raft peer transport v1](../contracts/raft-peer-transport-v1.md) |
+| 관련 결정 | [ADR-0001](../decisions/ADR-0001-core-implementation-language.md), [ADR-0002](../decisions/ADR-0002-cluster-consensus-library.md), [ADR-0003](../decisions/ADR-0003-durable-ack-barrier.md), [ADR-0004](../decisions/ADR-0004-session-ownership-and-fencing.md), [ADR-0007](../decisions/ADR-0007-aws-production-deployment-platform.md), [ADR-0008](../decisions/ADR-0008-raft-peer-transport.md), [ADR-0009](../decisions/ADR-0009-raft-production-state-profile.md), [ADR-0011](../decisions/ADR-0011-cluster-backup-restore-v1.md) |
+| 관련 Contract | [Cluster release compatibility v1](../contracts/cluster-release-compatibility-v1.md), [Raft peer transport v1](../contracts/raft-peer-transport-v1.md), Draft [Cluster backup v1](../contracts/cluster-backup-v1.md) |
 | 해설 | [세션 소유권과 fencing](../explainers/session-ownership-and-fencing.md), [EKS 고가용성과 장애 도메인](../explainers/eks-ha-failure-domains.md) |
 
 ## 1. Cluster membership
@@ -165,13 +165,13 @@ P1 rebalance가 활성화되면 target 편차, 최대 동시 이동 수와 이�
 
 ## 10. Snapshot, backup과 restore
 
-1. snapshot은 포함된 commit index와 checksum을 가져야 한다.
-2. backup은 복원에 필요한 snapshot, 후속 log와 schema/version metadata를 포함해야 한다.
-3. 빈 cluster restore는 tenant, session, subscription, retained, inflight·offline 상태의 개체 수와 checksum을 검증해야 한다.
-4. 검증이 실패한 restore는 cluster를 READY로 만들면 안 된다.
-5. backup 중 write와 crash가 발생해도 복원 결과는 선언된 commit 경계에서 일관돼야 한다.
-
-보존 기간과 disaster recovery RPO/RTO는 `SPEC-TBD-09`다.
+1. Snapshot은 포함한 commit index와 typed-state checksum을 가져야 한다. Finalize는 snapshot file sync, close, atomic rename, directory sync 순서이며, 그 경계에서 process crash가 발생해도 재시작 시 완전한 snapshot/WAL만 replay한다.
+2. Backup은 commit 경계와 일치하는 typed snapshot, 그 뒤의 committed application/configuration 기록, schema/release metadata 및 checksum을 포함해야 한다. Backup capture는 fresh quorum/read barrier를 거쳐야 한다.
+3. 전체 CLU-14 target에는 tenant, session ownership, subscription, retained, inflight와 offline state가 포함된다. 현재 [Cluster backup v1](../contracts/cluster-backup-v1.md)은 members, state에서 도출한 tenant ID, ownership, subscription, inflight/checkpoints와 membership history만 포함한다. `retained`와 `offline` message는 아직 복제·archive되지 않으므로 이 요구사항과 전체 CLU-14는 미완료다.
+4. Restore는 snapshot과 committed tail을 replay한 뒤 manifest의 commit-boundary count/checksum과 비교해야 한다. Format, identity, version, member identity 또는 summary가 일치하지 않으면 target storage를 바꾸기 전에 거절한다.
+5. Restore는 현재 v1에서 정확히 세 bootstrap voter ID와 동일한 cluster/release/protocol/schema/address/DNS SAN/certificate fingerprint를 요구한다. Archive에 learner ID가 있으면 거절한다. Cross-cluster migration과 voter-set 변경은 지원하지 않는다.
+6. Restore는 offline CLI로 voter별 빈 target directory를 seed한 뒤 종료한다. Durable restore marker가 남은 node는 일반 startup에서 READY가 되면 안 된다.
+7. v1 retention 기간과 disaster-recovery RPO/RTO는 `SPEC-TBD-09`이며, Linux EBS/power-loss 보장은 별도 acceptance로 남는다.
 
 ## 11. 수용 시험
 
@@ -179,7 +179,7 @@ P1 rebalance가 활성화되면 target 편차, 최대 동시 이동 수와 이�
 - 동시 CONNECT, owner kill, packet partition과 stale epoch write 거절을 검증한다.
 - quorum 상실 중 새 ownership과 durable ACK가 성공하지 않는지 검증한다.
 - 성공 durable ACK 직후 각 node를 kill해 message gap이 없는지 확인한다.
-- disk full, snapshot crash, restore와 resync 중 원자성·readiness를 확인한다.
+- disk full, snapshot finalize crash, v1 archive/restore·restart/resync 중 consistency와 readiness를 확인한다. Retained/offline recovery와 power-loss는 별도 미완료 기준이다.
 - N-1↔N rolling upgrade와 rollback을 양방향으로 시험한다.
 
 ### 11.1 Phase 0 gate 4 deterministic spike mapping
@@ -248,7 +248,7 @@ WAL 쓰기 시험의 `ENOSPC`는 `filePersistenceOps.write`에서 주입한 오�
 
 ### 11.5 Dynamic membership·restart convergence·MQTT readiness mapping
 
-아래 표의 동적 membership 시나리오는 각 시험 위치의 실행 결과로 확인한다. 각 행에는 대상 동작과 실행한 시험 증거를 연결했으며, production storage·disk-full·backup/restore·durable QoS ACK·release N/N-1은 별도 수용 범위로 남는다.
+아래 표의 동적 membership 시나리오는 각 시험 위치의 실행 결과로 확인한다. 이 section은 production storage·disk-full·backup/restore를 판정하지 않는다. Backup v1의 별도 process evidence는 §11.7이며, durable QoS ACK·release N/N-1은 미완료 수용 범위다.
 
 | Scenario | 관찰할 결과 | 시험 위치 | 실행 증거 |
 | --- | --- | --- | --- |
@@ -269,7 +269,7 @@ go test ./tests/integration -run '^TestDynamicClusterMembershipRemovalHandoffWai
 go test ./tests/integration -run '^(TestDynamicClusterMembershipProcessAcceptance|TestDynamicClusterMembershipTransitionCrashRecovery|TestDynamicClusterMembershipRemovalHandoffWaitsForQuorum)$' -count=1
 ```
 
-각 실행은 `PASS`였다. 첫 process acceptance는 기존 voter replacement, idempotency, compatibility, readiness와 quorum-loss 동작을 확인한다. Failpoint recovery 시험은 transition 경계의 process crash/restart, readiness failure와 projection recovery를 확인한다. Planned-leave 시험은 active session handoff를 quorum loss 동안 보류하고 quorum 복구 후 완료한다. 이 증거는 테스트 대상 시나리오의 acceptance 결과이며 production storage, 실제 disk-full, backup/restore, durable QoS ACK 및 release N/N-1 완료를 뜻하지 않는다.
+각 실행은 `PASS`였다. 첫 process acceptance는 기존 voter 교체, idempotency, compatibility, readiness와 quorum-loss 동작을 확인한다. Failpoint recovery 시험은 transition 경계의 process crash/restart, readiness failure와 projection recovery를 확인한다. Planned-leave 시험은 active session handoff를 quorum loss 동안 보류하고 quorum 복구 후 완료한다. 이 증거는 해당 membership scenario만 검증하며 production storage, 실제 disk-full, §11.7 backup/restore acceptance, durable QoS ACK 및 release N/N-1 완료를 뜻하지 않는다.
 
 실행 증거와 시험 매핑은 위 표와 [ADR-0010 §7](../decisions/ADR-0010-dynamic-cluster-membership.md#7-검증)에 기록한다.
 
@@ -289,4 +289,27 @@ go test ./tests/integration -run '^(TestDynamicClusterMembershipProcessAcceptanc
 
 검증 실행: `go run ./tests/chaos/cluster-storage-v1 --run-id storage-fault-20260925d --output .artifacts/chaos/cluster-storage-v1/storage-fault-20260925d`는 종료 코드 0으로 세 scenario 모두 PASS했다. `go run ./tools/verify local`도 PASS했다.
 
-Harness는 certificate, JWT와 token을 임시 fixture directory에만 두고 `.artifacts/chaos/cluster-storage-v1/<run-id>/`에는 manifest, probe/control event, summary, image metadata와 node log만 보존한다. 이 mapping은 disk-full·slow-I/O replication health, readiness, commit progress/halt 관찰과 bounded transport queue의 제한된 chaos evidence다. QoS 1/2 durable ACK, 실제 MQTT session/subscription 복제, snapshot backup/restore와 N/N-1 호환성 acceptance를 닫지 않는다.
+Harness는 certificate, JWT와 token을 임시 fixture directory에만 두고 `.artifacts/chaos/cluster-storage-v1/<run-id>/`에는 manifest, probe/control event, summary, image metadata와 node log만 보존한다. 이 mapping은 disk-full·slow-I/O replication health, readiness, commit progress/halt 관찰과 bounded transport queue의 제한된 chaos evidence다. 이 mapping은 QoS 1/2 durable ACK, 실제 MQTT session/subscription 복제, snapshot crash 또는 backup/restore를 검증하지 않는다. 해당 v1 process evidence는 별도 §11.7에 기록하며 N/N-1 호환성 acceptance도 닫지 않는다.
+
+### 11.7 Cluster backup/restore와 snapshot finalize 수용 매핑
+
+이 수용 시험은 v1 backup profile의 commit 경계, identity와 local process restart 범위만 확인한다. `CLU-14` 전체를 통과 처리하지 않는다. Archive는 현재 voter가 정확히 세 개이고 learner ID가 없을 때만 복원할 수 있다. `retained`/`offline` state, production EBS power-loss, retention/RPO/RTO와 archive N/N-1 호환성은 §10의 미완료 기준이다.
+
+| Scenario | 관찰할 결과 | 시험 위치 | 실행 증거 |
+| --- | --- | --- | --- |
+| Online boundary archive | ClusterAdmin API가 fresh quorum barrier 뒤 binary archive를 반환한다. Commit header가 manifest commit과 같고, staged command tail은 snapshot 뒤 archive에 포함된다. | `cmd/narumq.TestRunClusterModeInProcess`; `tests/integration.TestClusterBackupRestoreProcessCrashAndResync` | PASS: in-process API 시험이 archive를 decode하고 committed tail을 재구성했다. Process 시험은 API archive의 commit header와 SHA-256 trailer digest를 확인했다. |
+| Archive validation and identity | Corrupt/noncanonical/checksum·summary 오류, cluster/member ID·address·SAN/certificate·release/schema mismatch 및 learner archive는 target을 바꾸기 전에 거절한다. Exactly-three voter와 source-voter 조건을 강제한다. | `internal/adapters/raft/records` archive tests; `cmd/narumq.TestClusterRestoreSeedRejectsIdentityLearnerAndSummaryMismatch`, `TestClusterRestoreRejectsInvalidArchiveBeforeTouchingTarget`, CLI flag tests | PASS: `go test ./cmd/narumq/... ./internal/adapters/raft/... -count=1`에서 cmd/narumq, raft, records package가 통과했다. Restore marker가 남은 경로는 일반 open에서 거절되고 unrelated target entry는 보존된다. |
+| Offline restore, crash/restart and resync | 동일 archive를 세 bootstrap voter directory에 seed한다. Staged operation과 commit boundary가 유지되고, restored node process crash/restart 뒤 quorum READY에 도달하며, 새 joiner가 resync해 cluster summary가 수렴한다. | `tests/integration.TestClusterBackupRestoreProcessCrashAndResync` | PASS: process 시험이 online backup, 세 offline CLI restore, staged state 재확인, restored voter crash/restart와 joiner catch-up/convergence를 관찰했다. |
+| Snapshot finalize process crash | Temp file Sync 뒤 rename 전 crash와 rename/directory sync 후 crash에서 process restart 뒤 committed membership과 readiness가 수렴한다. | `tests/integration.TestSnapshotFinalizationCrashRecoveryAcrossProcessRestart` | PASS: build-tagged failpoint supervisor가 두 process exit를 확인하고 disarmed restart 뒤 bootstrap 및 membership operation convergence를 확인했다. |
+| Full CLU-14 state and production volume boundary | `retained`/`offline` 포함 전체 required kind의 count/checksum을 확인하고 EBS/전원 손실 경계에서 durable commit을 보존한다. | Production-like filesystem/EBS acceptance | 미실행. Scope를 줄여 통과 처리하지 않는다. |
+
+Process·membership 회귀 검증:
+
+```text
+go build ./...
+go test ./tests/integration -run '^(TestDynamicClusterMembershipProcessAcceptance|TestDynamicClusterMembershipTransitionCrashRecovery|TestDynamicClusterMembershipRemovalHandoffWaitsForQuorum|TestClusterBackupRestoreProcessCrashAndResync|TestSnapshotFinalizationCrashRecoveryAcrossProcessRestart)$' -count=1
+```
+
+실행 결과: `go build ./...` 성공, process/regression package `ok narumq/tests/integration 100.171s`. 이 실행은 명시된 다섯 process test만 포함하며 전체 repository `go test ./...`, race/fuzz/mutation gate 또는 production power-loss 시험 결과가 아니다.
+
+전체 로컬 검증: `go run ./tools/verify local` PASS (2026-09-26). Go package tests, fuzz 4종, race tests, traceability·architecture·coverage gate 및 mutation gate가 통과했다. 두 mutation 대상군 결과는 각각 25/25와 46/46 killed, lived/uncovered 0이었다. 이 로컬 gate는 구현 검증이며 `offline`/`retained` 상태, production EBS/power-loss, retention/RPO/RTO 또는 archive N/N-1 acceptance를 완료하지 않는다.

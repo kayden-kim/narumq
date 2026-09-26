@@ -3,6 +3,7 @@ package managementv1
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -73,6 +74,11 @@ func membershipOperationFixtures() []operationFixture {
 			method: http.MethodGet, path: "/api/v1/cluster/membership-operations/{operationId}", operationID: "getMembershipOperation",
 			target: "/api/v1/cluster/membership-operations/00000000-0000-4000-8000-000000000004", expectedStatus: http.StatusOK,
 		},
+	}
+}
+func backupOperationFixtures() []operationFixture {
+	return []operationFixture{
+		{method: http.MethodPost, path: "/api/v1/cluster/backups", operationID: "createClusterBackup", target: "/api/v1/cluster/backups", expectedStatus: http.StatusOK},
 	}
 }
 
@@ -329,14 +335,24 @@ func contractHandler(cfg managementhttp.ServerConfig) http.Handler {
 		adaptersmetrics.NewRegistry(),
 	)
 }
-func membershipContractHandler() http.Handler {
+func clusterManagementContractHandler() http.Handler {
 	return managementhttp.NewRouterWithMembership(
 		managementhttp.ServerConfig{},
 		contractStateProvider{},
 		contractStateProvider{},
 		adaptersmetrics.NewRegistry(),
 		contractMembershipService{},
+		contractBackupProvider{},
 	)
+}
+
+type contractBackupProvider struct{}
+
+func (contractBackupProvider) CaptureClusterBackup(context.Context) (ports.ClusterBackupDTO, error) {
+	framed := []byte("NMQBKUP1 contract fixture")
+	checksum := sha256.Sum256(framed)
+	archive := append(append([]byte(nil), framed...), checksum[:]...)
+	return ports.ClusterBackupDTO{CommitIndex: 41, ArchiveSHA256: checksum, Archive: archive}, nil
 }
 
 type contractMembershipService struct{}
@@ -373,6 +389,7 @@ func (contractMembershipService) GetOperation(_ context.Context, operationID str
 
 func expectedOperationSet() []string {
 	fixtures := append(managementOperationFixtures(), membershipOperationFixtures()...)
+	fixtures = append(fixtures, backupOperationFixtures()...)
 	operations := make([]string, 0, len(fixtures))
 	for _, fixture := range fixtures {
 		operations = append(operations, fixture.method+" "+fixture.path+" "+fixture.operationID)
@@ -448,9 +465,32 @@ func TestManagementHandlerResponsesMatchOpenAPI(t *testing.T) {
 }
 func TestMembershipHandlerResponsesMatchOpenAPI(t *testing.T) {
 	_, router := loadManagementContract(t)
-	handler := membershipContractHandler()
+	handler := clusterManagementContractHandler()
 
 	for _, fixture := range membershipOperationFixtures() {
+		t.Run(fixture.operationID, func(t *testing.T) {
+			req := newContractRequest(fixture)
+			input, options := findContractRoute(t, router, req)
+			if input.Route.Operation.OperationID != fixture.operationID {
+				t.Fatalf("runtime fixture matched operation %q, want %q", input.Route.Operation.OperationID, fixture.operationID)
+			}
+			if err := openapi3filter.ValidateRequest(context.Background(), input); err != nil {
+				t.Fatalf("validate representative request: %v", err)
+			}
+			recorder := httptest.NewRecorder()
+			handler.ServeHTTP(recorder, req)
+			if recorder.Code != fixture.expectedStatus {
+				t.Fatalf("status = %d, want %d: %s", recorder.Code, fixture.expectedStatus, recorder.Body.String())
+			}
+			validateResponse(t, input, options, recorder)
+		})
+	}
+}
+func TestClusterBackupHandlerResponseMatchesOpenAPI(t *testing.T) {
+	_, router := loadManagementContract(t)
+	handler := clusterManagementContractHandler()
+
+	for _, fixture := range backupOperationFixtures() {
 		t.Run(fixture.operationID, func(t *testing.T) {
 			req := newContractRequest(fixture)
 			input, options := findContractRoute(t, router, req)

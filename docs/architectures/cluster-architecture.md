@@ -10,9 +10,9 @@ NaruMQ cluster는 세 broker node가 같은 replicated state machine에 참여�
 | 범위 | Broker cluster의 runtime component와 상태 소유권 |
 | 관련 요구사항 | [PRD](../requirements/PRD.md) CLU-01~CLU-14, MQTT-02~05, NFR-07~NFR-10 |
 | 관련 스펙 | [Cluster session과 durable delivery](../specs/cluster-session-and-delivery.md), [MQTT protocol과 session](../specs/mqtt-protocol-and-session.md) |
-| 관련 결정 | [ADR-0002](../decisions/ADR-0002-cluster-consensus-library.md), [ADR-0003](../decisions/ADR-0003-durable-ack-barrier.md), [ADR-0004](../decisions/ADR-0004-session-ownership-and-fencing.md), [ADR-0008](../decisions/ADR-0008-raft-peer-transport.md), [ADR-0009](../decisions/ADR-0009-raft-production-state-profile.md) (Accepted, design target only). ADR-0002~0004는 Proposed |
-| 관련 Contract | [Cluster release compatibility v1](../contracts/cluster-release-compatibility-v1.md), Active [Raft peer transport v1](../contracts/raft-peer-transport-v1.md); replicated-state contract는 ADR-0009가 encoding family만 정했으며 exact schema는 미작성 |
-| 최종 확인일 | 2026-09-24 |
+| 관련 결정 | [ADR-0002](../decisions/ADR-0002-cluster-consensus-library.md), [ADR-0003](../decisions/ADR-0003-durable-ack-barrier.md), [ADR-0004](../decisions/ADR-0004-session-ownership-and-fencing.md), [ADR-0008](../decisions/ADR-0008-raft-peer-transport.md), [ADR-0009](../decisions/ADR-0009-raft-production-state-profile.md) (Accepted, design target only), [ADR-0011](../decisions/ADR-0011-cluster-backup-restore-v1.md) (Accepted, v1 scope only). ADR-0002~0004는 Proposed |
+| 관련 Contract | [Cluster release compatibility v1](../contracts/cluster-release-compatibility-v1.md), Active [Raft peer transport v1](../contracts/raft-peer-transport-v1.md), Draft [Replicated state v1](../contracts/replicated-state-v1.proto), Draft [Cluster backup v1](../contracts/cluster-backup-v1.md) |
+| 최종 확인일 | 2026-09-26 |
 
 ## Runtime component view
 
@@ -62,13 +62,16 @@ flowchart TB
 
 Consensus module pin, file-backed WAL/snapshot과 sync target, application-state encoding family, 단일-group partition profile은 Accepted [ADR-0009](../decisions/ADR-0009-raft-production-state-profile.md)의 scoped design target이다. 이는 현재 구현의 production readiness, crash durability, durable ACK 또는 release 호환성을 승인하지 않는다. 고정 voter `{1,2,3}`의 transport v1은 Accepted [ADR-0008](../decisions/ADR-0008-raft-peer-transport.md)과 Active [contract](../contracts/raft-peer-transport-v1.md)에서 정한다.
 
-## Phase 0/2 제한된 구현 증거
+## Raft core, cluster runtime과 제한된 acceptance evidence
 
-현재 repository는 `internal/adapters/raft`에서 `go.etcd.io/raft/v3 v3.7.0`의 `RawNode`와 deterministic logical-tick harness, opaque application command boundary(`BatchDTO.Commands`, `AppliedCommands`)와 NMQSTATE1 opaque command snapshot/WAL recovery를 검증한다. `internal/application/takeover`는 이 command bytes를 해석하고 application committed-command sequence position을 부여해 세션 소유권 상태 전이(single owner 선출, majority takeover, stale epoch 거절, restart 복구)를 검증한다.
+`internal/adapters/raft`는 `go.etcd.io/raft/v3 v3.7.0`의 `RawNode`, stable WAL/snapshot persistence, committed command/configuration boundary와 typed application snapshot을 제공한다. `internal/adapters/raft/records`는 replicated-state protobuf와 cluster backup archive framing/checksum을 소유한다. NMQSTATE1 opaque command replay와 `internal/application/takeover`는 이전 deterministic ownership spike의 경계이며 production cluster backup format이 아니다.
 
-`cmd/narumq -raft-peer-config`는 고정 `{1,2,3}` voter의 production `RawNode`, mTLS TCP transport, bounded per-peer queues와 retry를 composition root에서 연결한다. 인증된 TLS loopback 3-node election/replication/catch-up 및 peer-only 실행 증거는 [transport integration tests](../../tests/integration/raft_peer_transport_test.go)와 [peer-only CLI tests](../../cmd/narumq/raft_peer_config_test.go)에 있다. 이 executable path는 MQTT listener, proposal API, replicated MQTT message/route state, durable ACK barrier, readiness 또는 membership workflow와 연결되지 않는다.
+`cmd/narumq -raft-peer-config`는 고정 `{1,2,3}` voter의 peer-only Raft와 mTLS TCP transport다. 이 mode는 MQTT listener, application proposal API 또는 cluster readiness를 제공하지 않는다. Dynamic cluster의 composition root는 별도 `cmd/narumq -cluster-config`다. 이 mode는 Raft, authenticated peer transport, membership state machine, Management API, route projection 및 fresh quorum을 요구하는 MQTT admission을 process 안에서 조립한다.
 
-따라서 위 runtime view의 전체 cluster는 여전히 Target 구조다. 현재 구현된 실제 경로는 [adapter source](../../internal/adapters/raft/node.go), [stable store](../../internal/adapters/raft/stable_store.go), [TCP peer transport](../../internal/adapters/tcp/peer_transport.go), [peer-only composition](../../cmd/narumq/raft_peer_config.go), [takeover state machine and codec](../../internal/application/takeover), [transport integration evidence](../../tests/integration/raft_peer_transport_test.go), [consensus integration evidence](../../tests/integration/raft_consensus_test.go)의 제한된 core다. ADR-0002와 ADR-0004가 Proposed인 동안 이 view를 production cluster 또는 Verified 상태로 승격하지 않는다.
+`POST /api/v1/cluster/backups`는 ClusterAdmin 전용으로 fresh quorum barrier 뒤 typed snapshot과 committed tail을 담은 versioned archive를 반환한다. `-cluster-restore`는 그 archive를 오프라인에서 검사·seed하고 종료한다. 현재 restore는 같은 cluster ID와 정확한 3 bootstrap voter identity를 요구하며 archive에 learner가 있으면 거절한다. 구현 위치는 [`cluster_backup.go`](../../cmd/narumq/cluster_backup.go), [`cluster_backup_restore.go`](../../cmd/narumq/cluster_backup_restore.go), [backup archive codec](../../internal/adapters/raft/records/backup.go)이고 process acceptance는 [Cluster §11.7](../specs/cluster-session-and-delivery.md#117-cluster-backuprestore와-snapshot-finalize-수용-매핑)에 있다.
+
+이 evidence는 membership/readiness, commit-boundary archive, 3-voter offline seed와 local process crash/restart/resync만 검증한다. `offline`/`retained` message의 복제·backup, durable MQTT publish ACK, archive N/N-1 compatibility, retention/RPO/RTO 또는 production EBS power-loss를 승인하지 않는다. ADR-0002·0003·0004가 Proposed인 동안 전체 view도 production 또는 Verified 상태가 아니다.
+
 ## 상태 소유권
 
 | 상태 | 권위 있는 위치 | Local copy의 역할 |
@@ -146,10 +149,10 @@ Physical failure domain은 [EKS on EC2 deployment architecture](eks-ec2-deployme
 
 ## 미결정 사항
 
-아래 네 가지 design target은 [ADR-0009](../decisions/ADR-0009-raft-production-state-profile.md)에 scoped 범위로 기록했으며 runtime 승인이나 production acceptance를 뜻하지 않는다. 다음 구현·계약은 여전히 미결정 또는 미검증이다.
+아래 범위는 runtime 구현 또는 acceptance가 없거나 v1 backup profile의 제한을 넘어선다.
 
-- Exact WAL·snapshot on-disk schema와 lifecycle, crash recovery·retention 구현
-- Replicated-state protobuf의 exact messages·field numbers·limits·migration vectors 및 Active peer transport 범위 밖 RPC encoding
+- Production WAL/snapshot lifecycle·retention, 지원 filesystem/volume의 power-loss 및 volume-loss guarantee
+- Replicated-state schema의 migration·release compatibility vectors와 Active peer transport 밖 RPC encoding
 - Route-index의 물리적 배치와 rebuild mechanics
-- Backup·DR, dynamic membership과 join·leave workflow
+- Full CLU-14: `offline`/`retained` state, archive retention, disaster-recovery RPO/RTO, cross-cluster migration 및 3-voter 제한 밖 restore
 - Release N/N-1 compatibility matrix와 양방향 검증

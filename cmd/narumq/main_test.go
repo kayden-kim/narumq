@@ -185,6 +185,9 @@ func TestClusterConfigFlagIsExclusive(t *testing.T) {
 		{name: "other runtime flags", args: []string{"-cluster-config", "cluster.json", "-tcp-listen", "127.0.0.1:1883"}, want: "-cluster-config cannot be combined with -tcp-listen"},
 		{name: "peer-only profile", args: []string{"-cluster-config", "cluster.json", "-raft-peer-config", "peer.json"}, want: "-cluster-config cannot be combined with -raft-peer-config"},
 		{name: "positional argument", args: []string{"-cluster-config", "cluster.json", "unexpected"}, want: "-cluster-config does not accept positional arguments"},
+		{name: "restore requires config", args: []string{"-cluster-restore", "backup.nmqbak"}, want: "-cluster-restore requires -cluster-config"},
+		{name: "restore empty archive path", args: []string{"-cluster-config", "cluster.json", "-cluster-restore", ""}, want: "-cluster-restore requires a non-empty file path"},
+		{name: "restore runtime flag conflict", args: []string{"-cluster-config", "cluster.json", "-cluster-restore", "backup.nmqbak", "-tcp-listen", "127.0.0.1:1883"}, want: "-cluster-config cannot be combined with -tcp-listen"},
 	}
 	for _, testCase := range cases {
 		t.Run(testCase.name, func(t *testing.T) {

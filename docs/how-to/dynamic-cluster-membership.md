@@ -1,14 +1,14 @@
 # 동적 Raft 클러스터를 시작하고 멤버를 추가하는 방법
 
-이 절차는 초기 Raft cluster의 voter 세 개(voter는 합의 투표에 참여하는 node)를 시작하고 새 node를 quorum(현재 voter 과반수의 동의)으로 commit하는 `STAGED` identity로 등록하는 방법을 정의한다. 새 node는 먼저 learner(로그를 복제하지만 투표하지 않는 member)로 기록을 따라잡은 뒤 voter로 승격된다. 다중 프로세스 membership acceptance와 local verification은 통과했지만 실제 disk-full, backup/restore, durable QoS ACK 및 혼합 버전 운용은 검증되지 않은 `Draft`이므로 production 운용 절차로 사용하면 안 된다.
+이 절차는 초기 Raft cluster의 voter 세 개(voter는 합의 투표에 참여하는 node)를 시작하고 새 node를 quorum(현재 voter 과반수의 동의)으로 commit하는 `STAGED` identity로 등록하는 방법을 정의한다. 새 node는 먼저 learner(로그를 복제하지만 투표하지 않는 member)로 기록을 따라잡은 뒤 voter로 승격된다. Membership crash/restart와 한정된 3-voter backup/restore·snapshot-finalize process acceptance는 통과했지만, retained/offline state, durable QoS ACK, 실제 production power-loss 및 혼합 버전 운용은 미검증이다. 문서는 `Draft`이며 production membership 운영 절차로 사용하면 안 된다.
 
 | 항목 | 값 |
 | --- | --- |
 | 대상 독자 | cluster를 구성하고 변경하는 운영자 |
 | 검증 상태 | Draft |
-| 검증 환경·버전 | local multi-process Go test, generated peer mTLS certificates; membership acceptance 및 full local gate PASS |
-| 최종 검증일 | 2026-09-25 (`go run ./tools/verify local` PASS; 다른 production cluster acceptance는 미완료) |
-| 관련 기준 문서 | [동적 멤버십 계약](../contracts/raft-membership-v2.md), [cluster session 명세](../specs/cluster-session-and-delivery.md), [ADR-0010](../decisions/ADR-0010-dynamic-cluster-membership.md), [cluster architecture](../architectures/cluster-architecture.md) |
+| 검증 환경·버전 | Local multi-process Go tests with generated peer mTLS certificates; membership 및 3-voter backup/restore process regression PASS; `go run ./tools/verify local` PASS |
+| 최종 검증일 | 2026-09-26 (membership·backup/restore process regression과 repository local gate PASS) |
+| 관련 기준 문서 | [동적 멤버십 계약](../contracts/raft-membership-v2.md), [Cluster backup v1](../contracts/cluster-backup-v1.md), [Cluster backup/restore 절차](cluster-backup-restore.md), [cluster session 명세](../specs/cluster-session-and-delivery.md), [ADR-0010](../decisions/ADR-0010-dynamic-cluster-membership.md), [ADR-0011](../decisions/ADR-0011-cluster-backup-restore-v1.md), [cluster architecture](../architectures/cluster-architecture.md) |
 
 ## 1. 대상과 영향
 
@@ -115,7 +115,7 @@ Membership acceptance와 full local gate가 모두 `PASS`였다. Coverage는 전
 1. `STAGED` 이후 operation이 진행되지 않으면 동일 key와 동일 request만 재시도하고 원인을 확인한다. 새로운 stage key, 수동 tombstone 삭제, ID 재사용, 데이터 디렉터리 초기화는 복구 방법이 아니다.
 2. Joiner가 learner가 된 뒤 응답을 잃었으면 같은 persistent directory로 재시작하고 동일 operation을 조회한다. Heartbeat timeout이나 process 종료만으로 learner/voter를 자동 삭제하지 않는다.
 3. Planned removal은 successor ownership 및 subscription/inflight checkpoint가 commit된 뒤에만 허용된다. 전송·checkpoint 기능 또는 quorum이 확인되지 않으면 `DELETE /api/v1/cluster/members/{memberId}`를 호출하지 말고 기존 voter를 유지한다. Active session handoff와 quorum loss 복구 acceptance는 `TestDynamicClusterMembershipRemovalHandoffWaitsForQuorum`로 검증했다.
-4. 운영 중인 volume의 손상·복구는 이 Draft의 범위가 아니다. 백업/restore 또는 디스크 장애를 수동 파일 교체로 해결하지 않는다.
+4. 운영 중인 volume 손상·power-loss 복구는 이 Draft membership 절차의 범위가 아니다. 검증된 backup archive로 같은 3-voter identity를 seed하는 경우에만 [Cluster backup/restore 절차](cluster-backup-restore.md)를 참고한다. 그 절차도 `offline`/`retained` state와 production volume power-loss를 복원하지 않으며, 파일을 수동 복사·삭제하는 것은 복구 방법이 아니다.
 
 ## 7. 해결되지 않을 때 전달할 대상
 

@@ -90,8 +90,8 @@ type Config struct {
 	BootstrapVoterIDs []NodeID
 	// PersistenceBoundaryHook, when non-nil, receives notifications immediately
 	// before and after stable Ready persistence of dynamic membership changes and
-	// incoming snapshots. The hook runs with the node lock held and must not call
-	// back into Node.
+	// incoming snapshots, and local typed snapshot finalization. The hook runs with
+	// the node lock held and must not call back into Node.
 	PersistenceBoundaryHook func(PersistenceBoundaryDTO)
 }
 
@@ -107,7 +107,7 @@ const (
 	MembershipRemove
 )
 
-// PersistenceStage identifies one side of stable Ready persistence.
+// PersistenceStage identifies one side of stable Ready or snapshot persistence.
 type PersistenceStage uint8
 
 const (
@@ -115,13 +115,18 @@ const (
 	PersistenceBeforeReady PersistenceStage = iota + 1
 	// PersistenceAfterReady identifies the phase immediately after appending Ready to stable storage.
 	PersistenceAfterReady
+	// PersistenceBeforeSnapshotFinalize identifies the phase after snapshot temp-file sync and before rename.
+	PersistenceBeforeSnapshotFinalize
+	// PersistenceAfterSnapshotFinalize identifies the phase after snapshot rename and directory sync.
+	PersistenceAfterSnapshotFinalize
 )
 
-// PersistenceBoundaryDTO describes membership-relevant Ready content around stable persistence.
+// PersistenceBoundaryDTO describes membership-relevant Ready or local snapshot persistence.
 type PersistenceBoundaryDTO struct {
 	Stage                PersistenceStage
 	ConfigurationActions []MembershipChangeAction // dynamic ConfChangeV2 entries in Ready.Entries, log order
 	InstallsSnapshot     bool                     // Ready carries a non-empty incoming snapshot
+	CreatesSnapshot      bool                     // local typed snapshot file finalization
 }
 
 // MembershipChangeDTO describes one committed Raft voter-set transition request.
@@ -233,6 +238,11 @@ func Open(config Config) (*Node, error) {
 		store, err = openDynamicStableStore(config.Directory)
 		if err != nil {
 			return nil, err
+		}
+		if config.PersistenceBoundaryHook != nil {
+			store.finalizeHook = func(stage PersistenceStage) {
+				config.PersistenceBoundaryHook(PersistenceBoundaryDTO{Stage: stage, CreatesSnapshot: true})
+			}
 		}
 		if !isNew && len(initialVoterIDs) != 0 {
 			lastIndex, indexErr := store.memory.LastIndex()

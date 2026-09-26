@@ -10,7 +10,7 @@
 | 관련 스펙 | [Cluster session과 durable delivery](../specs/cluster-session-and-delivery.md), [Drain과 rolling update](../specs/drain-and-rolling-update.md) |
 | 관련 Architecture | [Cluster architecture](../architectures/cluster-architecture.md) |
 | 관련 결정 | [ADR-0002](ADR-0002-cluster-consensus-library.md), [ADR-0003](ADR-0003-durable-ack-barrier.md) |
-| 관련 Contract | Replicated state encoding v1은 아직 미작성이다. Encoding family는 [ADR-0009](ADR-0009-raft-production-state-profile.md)가 정하고, exact schema와 bytes는 별도 contract에서 확정한다. |
+| 관련 Contract | [`replicated-state-v1.proto`](../contracts/replicated-state-v1.proto)는 Draft schema다. generated codec은 구현됐지만, 공식 크기 제한·마이그레이션·릴리스 호환성 규칙을 포함한 contract는 아직 검토 중이다. |
 | 관련 해설 | [세션 소유권과 fencing](../explainers/session-ownership-and-fencing.md) |
 
 ## 1. 결정

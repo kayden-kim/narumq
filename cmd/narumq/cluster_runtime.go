@@ -273,7 +273,7 @@ func runClusterMode(ctx context.Context, config clusterConfigFile, logger *slog.
 	managementServer := adaptershttp.NewServerWithMembership(adaptershttp.ServerConfig{
 		ListenAddr: managementListener.Addr().String(), AuthToken: adminToken,
 		AuthTokenRole: adaptershttp.RoleClusterAdmin, AllowAnonymousProbes: true,
-	}, stateProvider, healthChecker, metricsRegistry, membershipService)
+	}, stateProvider, healthChecker, metricsRegistry, membershipService, runtime)
 	return runtime.serve(ctx, mqttServer, managementServer, managementListener)
 }
 
@@ -318,15 +318,17 @@ const (
 	clusterDriverRead clusterDriverRequestKind = iota + 1
 	clusterDriverProposal
 	clusterDriverCancelRead
+	clusterDriverBackup
 )
 
 type clusterDriverRequest struct {
-	kind        clusterDriverRequestKind
-	contextKey  string
-	context     context.Context
-	data        []byte
-	readResult  chan clusterReadResponse
-	applyResult chan clusterApplyResponse
+	kind         clusterDriverRequestKind
+	contextKey   string
+	context      context.Context
+	data         []byte
+	readResult   chan clusterReadResponse
+	applyResult  chan clusterApplyResponse
+	backupResult chan clusterBackupImageResponse
 }
 
 type clusterReadResponse struct {
@@ -337,6 +339,12 @@ type clusterReadResponse struct {
 type clusterApplyResponse struct {
 	result membership.ApplyResultDTO
 	err    error
+}
+
+type clusterBackupImageResponse struct {
+	image            raftadapter.BackupImageDTO
+	boundarySnapshot []byte
+	err              error
 }
 
 type clusterReadWaiter struct {
@@ -567,6 +575,12 @@ func (runtime *clusterRuntime) runDriver(ctx context.Context) error {
 					continue
 				}
 				proposals = append(proposals, clusterProposalWaiter{data: request.data, result: request.applyResult})
+			case clusterDriverBackup:
+				if request.context != nil && request.context.Err() != nil {
+					request.backupResult <- clusterBackupImageResponse{err: request.context.Err()}
+					continue
+				}
+				request.backupResult <- runtime.captureBackupImage()
 			case clusterDriverCancelRead:
 				if waiter, exists := reads[request.contextKey]; exists {
 					delete(reads, request.contextKey)

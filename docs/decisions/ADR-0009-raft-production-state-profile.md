@@ -35,17 +35,17 @@ Production target은 Go module `go.etcd.io/raft/v3 v3.7.0`으로 고정한다. �
 
 Write, file sync, rename 또는 directory sync가 실패하면 해당 node는 fail-closed 상태가 되어야 한다. 실패한 Ready와 연결된 outbound batch나 ACK를 내보내서는 안 된다. 복구는 완전하고 checksum을 확인한 WAL frame과 finalized snapshot만 replay한다. Commit된 기록 또는 WAL 중간 기록의 손상, 지원하지 않는 format은 fail closed다. Torn tail은 미commit 상태만 안전하게 버릴 수 있고, 마지막 durable commit을 잃을 가능성이 있으면 자동 절단하지 말고 복구를 실패시켜야 한다. WAL truncation·retention은 복구 가능한 snapshot과 그 뒤의 committed tail을 보존해야 한다.
 
-`File.Sync`와 directory sync는 지원 대상인 Linux local filesystem/EBS에서 요구하는 primitive다. 구체 filesystem·volume의 power-loss 보장은 production과 유사한 환경에서 별도 검증해야 한다. 주기적 compaction이나 backup이 구현·시험되었다고 주장하지 않는다.
+`File.Sync`와 directory sync는 지원 대상인 Linux local filesystem/EBS에서 요구하는 primitive다. Snapshot finalization과 dynamic cluster metadata는 file/directory sync를 수행하지만, WAL 신규 파일의 directory sync 및 production volume의 power-loss 보장은 아직 검증되지 않았다. v1 backup/restore는 ADR-0011 범위에서 구현·수용 시험했으나, scheduled backup이나 전체 disaster-recovery 보장을 뜻하지 않는다.
 
-기존 file-backed spike 패턴을 재사용하며 embedded database를 추가하지 않는다. 현재 `NMQWAL01`, `NMQSNAP1`, `NMQSTATE1` 형식은 directory sync, production WAL lifecycle과 typed application state가 빠져 있으므로 production format으로 부르지 않는다. 참고 구현은 [`stable_store.go`](../../internal/adapters/raft/stable_store.go)이며, 이 ADR은 그 구현의 production 적합성을 승인하지 않는다.
+기존 file-backed spike 패턴을 재사용하며 embedded database를 추가하지 않는다. `NMQWAL01`은 checksummed Ready frame을 WAL 파일에 sync하고, `NMQSNAP1`은 file `Sync`, atomic rename, 포함 directory `Sync`로 확정한다. WAL 신규 파일의 directory sync와 production WAL lifecycle·retention은 미완료다. `NMQSTATE1`은 fixed-voter 경로의 legacy opaque command-history snapshot이며, dynamic cluster는 Draft [`replicated-state-v1.proto`](../contracts/replicated-state-v1.proto)를 `records` codec으로 사용한다. 이 구현을 production format으로 승인하지 않으며 production volume/power-loss 검증도 남아 있다.
 
 ### 1.3 Replicated application command와 snapshot-state encoding
 
 Replicated application command와 snapshot state에는 versioned `proto3` protobuf, generated Go bindings, 안정된 persisted bytes와 checksum을 위한 deterministic serialization을 선택한다. 이 선택은 [Active Raft peer transport v1](../contracts/raft-peer-transport-v1.md)의 Raft protobuf message와 별도 경계다. 또한 [`takeover`의 experimental JSON acquire codec](../../internal/application/takeover/codec.go)의 `schemaVersion=1` 및 `NMQSTATE1`의 opaque byte history를 production encoding으로 승격하지 않는다.
 
-향후 각 command에는 schema major/minor, command type과 typed payload가 명시되어야 한다. `uint64` epoch와 session identity는 값 손실 없이 표현한다. 문법적으로 유효하지만 의미상 거절되는 committed command도 application sequence position을 소비한다. Snapshot에는 schema version, 포함된 committed index, object count와 canonical state representation의 SHA-256 digest가 있어야 한다. 알 수 없는 required command 또는 schema major, 잘못된 object count나 digest는 recovery/readiness를 실패시켜야 한다. Optional addition은 N/N-1 지원 조건을 확인하고 feature-gate 뒤에만 활성화한다.
+Draft [`replicated-state-v1.proto`](../contracts/replicated-state-v1.proto)와 `records` codec은 command schema major/minor·typed payload, snapshot schema·포함 index·object count·canonical state SHA-256을 이미 정의·검증하며, epoch 같은 `uint64` 값은 손실 없이 표현한다. Codec은 unknown field, 미지원 schema, 잘못된 count/digest를 거절한다. 이는 현재 Draft schema/codec 동작이지 검토된 cross-release compatibility 계약은 아니다. Application acceptance에서는 의미상 거절된 committed command도 sequence position을 소비해야 하며, optional addition은 검증된 N/N-1 지원 뒤에만 feature-gate를 해제한다.
 
-이 기술 선택만으로 exact protobuf message, field number, size limit, experimental file migration이나 byte vector는 승인되지 않는다. Production codec 구현 전에 [Contract 작성 규칙](../contracts/README.md)에 따라 Draft machine-readable replicated-state contract를 정의해야 한다. 해당 contract와 producer/consumer 검증 전에는 persisted-state compatibility를 주장하지 않는다.
+이 기술 선택만으로 persisted-state의 cross-release compatibility는 승인되지 않는다. Draft schema는 [`replicated-state-v1.proto`](../contracts/replicated-state-v1.proto)에 있고 generated codec도 구현되어 있지만, 별도 contract의 size limits, migration 규칙과 release compatibility vectors는 미완료다. Schema와 local producer/consumer 검증만으로 persisted-state compatibility를 주장하지 않는다.
 
 ### 1.4 Consensus group partition profile
 
@@ -95,25 +95,25 @@ Generated protobuf와 deterministic serialization은 타입을 가진 applicatio
 
 ### 부정적 결과와 비용
 
-- Directory sync 및 crash recovery를 포함한 production storage 구현과 power-loss 검증이 남는다.
+- Local snapshot finalization과 process crash/recovery는 시험했지만 production WAL lifecycle·retention 및 지원 filesystem/EBS의 power-loss 검증은 남는다.
 - Deterministic protobuf serialization만으로 N/N-1 호환성이 생기지 않으며 별도 schema contract, migration과 compatibility 시험이 필요하다.
 - 단일 group은 처리량 확장 경계를 둔다. 확장 전 실측과 별도 migration 결정이 필요하다.
-- 세 선택 모두 production runtime, MQTT readiness, durable ACK, backup/DR 또는 membership workflow 완료를 뜻하지 않는다.
+- Version pin과 storage/encoding profile만으로 production runtime, MQTT readiness, durable ACK, full disaster-recovery 또는 full CLU-14 완료를 뜻하지 않는다.
 
 ### 후속 작업
 
-- Draft replicated-state contract에서 exact protobuf fields, limits, vectors, migration과 N/N-1 rules를 정의한다.
-- Storage 구현에서 directory sync, crash/torn-tail, WAL retention과 snapshot restore를 검증한다.
-- Backup/DR, 실제 disk-full·slow-I/O, quorum ACK와 release N/N-1 acceptance는 연결된 스펙의 미완료 수용 시험으로 유지한다.
+- Draft replicated-state contract의 migration limits, release compatibility vectors와 N/N-1 rules를 확정한다.
+- Local directory sync/snapshot-finalize crash 및 3-voter backup restore acceptance는 [Cluster §11.7](../specs/cluster-session-and-delivery.md#117-cluster-backuprestore와-snapshot-finalize-수용-매핑)에서 통과했다. WAL torn-tail, retention 및 production EBS/power-loss 검증은 미완료다.
 
 ## 7. 검증
 
 | 가설·결정 요인 | 검증 방법 | 합격 기준 | 증거·상태 |
 | --- | --- | --- | --- |
 | Module pin이 저장소의 선택과 일치한다. | `go.mod`, `go.sum` 대조 및 `go mod verify`, `go mod download -json go.etcd.io/raft/v3@v3.7.0` 실행 | 버전과 양 checksum이 정확히 일치한다. | 2026-09-24: `go mod verify`가 `all modules verified`를 출력했고 module `Sum`/`GoModSum`이 `go.sum`과 일치했다([cluster spec §11.4](../specs/cluster-session-and-delivery.md#114-adr-0009-design-target-module-checksum-증거)). Module integrity 확인이며 production validation은 아니다. |
-| WAL Ready ordering과 snapshot file 순서를 기존 spike와 대조한다. | `stable_store.go`의 `appendReady` 및 `persistSnapshotFile` 흐름 검토 | WAL frame file Sync가 outbound/Advance보다 앞서고 snapshot은 temp write·Sync·close·rename을 사용한다. | 코드 경계 대조는 설계 근거일 뿐 directory sync와 production lifecycle의 증거가 아니다. |
+| WAL Ready ordering과 snapshot file 순서를 기존 spike와 대조한다. | `stable_store.go`의 `appendReady` 및 `persistSnapshotFile` 흐름·failpoint를 확인한다. | WAL frame file Sync가 outbound/Advance보다 앞서고 snapshot은 temp write·Sync·close·atomic rename·directory Sync를 수행한다. | 구현·unit test와 [§11.7 process acceptance](../specs/cluster-session-and-delivery.md#117-cluster-backuprestore와-snapshot-finalize-수용-매핑)이 rename 전·후 crash recovery를 확인한다. 이는 production power-loss guarantee가 아니다. |
 | Production storage 장애·복구가 durable commit을 보존한다. | 실제 filesystem에서 WAL/snapshot crash point, torn tail, disk full, file/directory sync 오류 주입 및 reopen 시험 | 마지막 durable commit 보존, 손상·호환 불가 state fail-closed, 오류 Ready의 outbound/ACK 없음 | 제한된 chaos evidence: run `storage-fault-20260925d`는 tmpfs 실제 ENOSPC 및 FUSE slow-I/O에서 `FAILED`/`DEGRADED`, readiness·MQTT admission, peer queue와 restart/recovery를 검증했다([cluster spec §11.6](../specs/cluster-session-and-delivery.md#116-storage-fault-chaos-mapping)). Durable commit 손실 부재, torn tail, file/directory sync 오류 및 ACK barrier는 미실행이므로 이 기준은 미통과 상태다. |
-| Snapshot, backup/restore와 power-loss 경계가 안전하다. | Production-like Linux local filesystem/EBS에서 snapshot crash, backup/restore와 power-loss 시험 | durable snapshot과 committed tail을 복구하고 checksum·object count 검증, readiness 차단 조건 충족 | 미실행. Volume power-loss 보장은 별도 증거가 필요하다. |
+| Local snapshot crash와 v1 backup/restore가 commit boundary를 유지한다. | Snapshot-finalize failpoint process restart와 online archive→오프라인 3-voter restore→node restart/resync 시험 | committed snapshot/tail 및 state summary가 복구되고 readiness가 quorum 수렴 뒤에만 성공한다. | PASS: [Cluster §11.7](../specs/cluster-session-and-delivery.md#117-cluster-backuprestore와-snapshot-finalize-수용-매핑)의 두 process test. 범위는 동일 cluster의 정확한 3 bootstrap voter이며 learner archive는 거절한다. |
+| Production power-loss와 전체 CLU-14 state가 안전하다. | Production-like Linux filesystem/EBS power-loss, `retained`/`offline` count/checksum·restore, volume-loss 및 restore retention 시험 | 마지막 durable commit 및 모든 required state 복구, checksum/object count 일치, 잘못된 node의 readiness 차단 | 미실행. Local process crash test는 실제 전원/volume 손실 evidence가 아니며 전체 CLU-14는 미완료다. |
 | 3/2 quorum에서 commit 이전 성공 ACK가 없다. | Cluster spec과 ADR-0003 수용 시험에서 node별 kill, quorum loss와 storage failure 검증 | 기존 ADR-0003 기준을 충족하고 committed ACK state의 message gap이 없다. | 미실행. ADR-0003은 `Proposed`, MQTT 경로도 미연결이다. |
 | State codec와 release N/N-1이 호환된다. | Draft machine-readable state contract 및 양방향 producer/consumer·snapshot compatibility 시험 | Unknown required record와 지원하지 않는 major는 readiness를 차단하고 N/N-1 행을 검증한다. | 미실행. Release matrix는 Draft이며 미검증 상태를 유지한다. |
 | 단일 group이 session aggregate ordering을 보존한다. | 동일 session key의 ownership/subscription/inflight command를 한 log로 적용하고 committed projection을 rebuild하는 통합 시험 | aggregate 변경의 동일 ordering·원자성 및 route readiness 전 rebuild | 설계 선택만 기록. Production application wiring과 시험은 미완료다. |

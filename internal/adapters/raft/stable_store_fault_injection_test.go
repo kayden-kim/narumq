@@ -80,6 +80,9 @@ func TestSnapshotPersistenceAndLoaderErrorBranches(t *testing.T) {
 		}},
 		{name: "sync", configure: func() { filePersistenceOps.sync = func(*os.File) error { return errors.New("sync failure") } }},
 		{name: "rename", configure: func() { filePersistenceOps.rename = func(string, string) error { return errors.New("rename failure") } }},
+		{name: "sync directory", configure: func() {
+			filePersistenceOps.syncDirectory = func(string) error { return errors.New("directory sync failure") }
+		}},
 	} {
 		t.Run(testCase.name, func(t *testing.T) {
 			filePersistenceOps = original
