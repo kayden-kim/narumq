@@ -23,6 +23,7 @@
 | 15 | [EKS 고가용성과 장애 도메인](eks-ha-failure-domains.md) | 세 broker를 어떤 장애 도메인으로 나눠야 실제 3-node HA가 되는가? | DEP-19~23, CLU-01~14, ADR-0007 |
 | 16 | [안전한 노드 drain과 Will](safe-node-drain-and-will.md) | Kubernetes 재배포 중 세션을 어떻게 인계하고 Will을 어떻게 처리하는가? | DEP-01~23, CLIENT-03~09 |
 | 17 | [AWS NLB와 MQTT 연결 lifecycle](aws-nlb-mqtt-connection-lifecycle.md) | NLB target 제외와 MQTT session 인계는 어떤 순서로 진행되는가? | DEP-03~07, DEP-12, DEP-22, ADR-0007 |
+| 18 | [EMQX와 NaruMQ 주요 기능 대조표](emqx-and-narumq-feature-comparison.md) | 현재 확인된 NaruMQ 기능은 EMQX self-hosted Enterprise 기능과 어디까지 같고 어떤 범위가 계획·미검증인가? | PRD, MQTT·cluster·security·management specs |
 
 ## 읽는 순서
 
@@ -58,3 +59,7 @@
 15. [EKS 고가용성과 장애 도메인](eks-ha-failure-domains.md)
 16. [안전한 노드 drain과 Will](safe-node-drain-and-will.md)
 17. [AWS NLB와 MQTT 연결 lifecycle](aws-nlb-mqtt-connection-lifecycle.md)
+
+## 참고: 제품 기능 대조
+
+[EMQX와 NaruMQ 주요 기능 대조표](emqx-and-narumq-feature-comparison.md)는 EMQX 공식 문서와 현재 NaruMQ 구현 evidence를 비교하는 참고 자료다. 이 표는 새 요구사항이나 production acceptance를 정의하지 않으며, 기존 일곱 단계 학습 순서와 별도로 읽을 수 있다.
