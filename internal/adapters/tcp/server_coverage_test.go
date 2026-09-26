@@ -1386,3 +1386,69 @@ func TestCSVPublishWillRoutingOutcomes(t *testing.T) {
 		t.Fatalf("saturated subscriber queue = %#v, want only the original item", items)
 	}
 }
+
+// Traceability: CLU-03; docs/specs/cluster-session-and-delivery.md §3.1, §11.10.
+func TestCSVDeliverForwardedRoutingOutcomes(t *testing.T) {
+	var detached *Server
+	if err := detached.DeliverForwarded(applicationdeliveryqueue.DeliveryDTO{
+		SessionID: "registered", Topic: "will/one", QoS: mqtt.QoSAtMostOnce,
+	}); !errors.Is(err, applicationdeliveryqueue.ErrUnavailable) {
+		t.Fatalf("DeliverForwarded(nil server) error = %v, want %v", err, applicationdeliveryqueue.ErrUnavailable)
+	}
+
+	deps := csvNewServer(t, newPipeListener(), csvServerOptions{queueCapacity: 1})
+	csvRegisterSubscriber(t, deps.server, deps.memory, "registered", "will/#", mqtt.QoSAtMostOnce)
+	serverSide, client := net.Pipe()
+	defer client.Close()
+	defer serverSide.Close()
+	registered := newConnection(deps.server, serverSide)
+	if !deps.server.bindSession("registered", registered) {
+		t.Fatal("bindSession(registered) failed")
+	}
+	defer registered.requestClose()
+	forwarded := applicationdeliveryqueue.DeliveryDTO{
+		SessionID: "registered", Topic: "will/one", Payload: []byte("forwarded"), QoS: mqtt.QoSAtMostOnce,
+	}
+	if err := deps.server.DeliverForwarded(forwarded); err != nil {
+		t.Fatalf("DeliverForwarded(registered) error = %v", err)
+	}
+	select {
+	case <-registered.deliveryWake:
+	default:
+		t.Fatal("registered subscriber was not woken after forwarded enqueue")
+	}
+	if items := takeDeliveries(t, deps.memory, "registered", time.Time{}); len(items) != 1 ||
+		string(items[0].Payload) != "forwarded" {
+		t.Fatalf("registered forwarded queue = %#v, want one forwarded item", items)
+	}
+
+	if err := deps.server.DeliverForwarded(applicationdeliveryqueue.DeliveryDTO{
+		SessionID: "missing", Topic: "will/one", QoS: mqtt.QoSAtMostOnce,
+	}); !errors.Is(err, applicationdeliveryqueue.ErrUnavailable) {
+		t.Fatalf("DeliverForwarded(unregistered) error = %v, want %v", err, applicationdeliveryqueue.ErrUnavailable)
+	}
+
+	csvRegisterSubscriber(t, deps.server, deps.memory, "slow", "will/#", mqtt.QoSAtMostOnce)
+	if err := deps.memory.TryEnqueue(applicationdeliveryqueue.DeliveryDTO{
+		SessionID: "slow", Topic: "will/old", Payload: []byte("old"),
+	}, time.Time{}); err != nil {
+		t.Fatal(err)
+	}
+	slowSide, slowClient := net.Pipe()
+	defer slowClient.Close()
+	defer slowSide.Close()
+	slow := newConnection(deps.server, slowSide)
+	if !deps.server.bindSession("slow", slow) {
+		t.Fatal("bindSession(slow) failed")
+	}
+	if err := deps.server.DeliverForwarded(applicationdeliveryqueue.DeliveryDTO{
+		SessionID: "slow", Topic: "will/one", Payload: []byte("full"), QoS: mqtt.QoSAtMostOnce,
+	}); !errors.Is(err, applicationdeliveryqueue.ErrFull) {
+		t.Fatalf("DeliverForwarded(full) error = %v, want %v", err, applicationdeliveryqueue.ErrFull)
+	}
+	csvRequireStopped(t, slow, true)
+	if items := takeDeliveries(t, deps.memory, "slow", time.Time{}); len(items) != 1 ||
+		string(items[0].Payload) != "old" {
+		t.Fatalf("full forwarded queue = %#v, want only the original item", items)
+	}
+}

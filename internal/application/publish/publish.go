@@ -89,8 +89,21 @@ func WithOfflineCommitter(committer OfflineCommitter) Option {
 	}
 }
 
-// UseCase stores retained state before routing one publication to all matching
-// sessions through the bounded delivery queue.
+// RemoteForwarder hands one matched delivery to the cluster node that owns the
+// subscriber session. handled=false keeps the delivery on the local queue path.
+type RemoteForwarder interface {
+	ForwardRemote(ctx context.Context, delivery deliveryqueue.DeliveryDTO) (handled bool, err error)
+}
+
+// WithRemoteForwarder configures cross-node live forwarding in cluster mode.
+func WithRemoteForwarder(forwarder RemoteForwarder) Option {
+	return func(useCase *UseCase) {
+		useCase.remoteForwarder = forwarder
+	}
+}
+
+// UseCase stores retained state before routing one publication through the
+// offline, remote-forwarding and local delivery paths.
 type UseCase struct {
 	clock             applicationclock.Clock
 	routes            *routing.Table
@@ -99,6 +112,7 @@ type UseCase struct {
 	retainedCommitter RetainedCommitter
 	policy            security.Policy
 	offlineCommitter  OfflineCommitter
+	remoteForwarder   RemoteForwarder
 	metrics           portsmetrics.MetricsRecorder
 }
 
@@ -219,6 +233,9 @@ func (useCase *UseCase) Publish(publisherSessionID routing.SessionID, packet mqt
 			if useCase.offlineCommitter != nil {
 				handled, err = useCase.offlineCommitter.CommitOffline(context.Background(), delivery, now)
 			}
+			if !handled && useCase.remoteForwarder != nil {
+				handled, err = useCase.remoteForwarder.ForwardRemote(context.Background(), delivery)
+			}
 			if !handled {
 				err = useCase.queue.TryEnqueue(delivery, now)
 			}
@@ -236,4 +253,22 @@ func (useCase *UseCase) Publish(publisherSessionID routing.SessionID, packet mqt
 		}
 	}
 	return result, nil
+}
+
+// AcceptForwarded enqueues one QoS 0 delivery that another cluster node matched for a
+// session connected to this node. Expired deliveries are dropped without error.
+func (useCase *UseCase) AcceptForwarded(delivery deliveryqueue.DeliveryDTO, now time.Time) error {
+	if err := routing.ValidateSessionID(delivery.SessionID); err != nil {
+		return err
+	}
+	if err := routing.ValidateTopicName(delivery.Topic); err != nil {
+		return err
+	}
+	if delivery.QoS != mqtt.QoSAtMostOnce {
+		return routing.ErrInvalidQoS
+	}
+	if delivery.Expired(now) {
+		return nil
+	}
+	return useCase.queue.TryEnqueue(delivery, now)
 }

@@ -6,12 +6,12 @@ NaruMQ cluster는 세 broker node가 같은 replicated state machine에 참여�
 | --- | --- |
 | 관점 상태 | Target |
 | 문서 상태 | Draft |
-| 구현 증거 | 제한된 Phase 0/2 evidence: `internal/adapters/raft`, `internal/adapters/tcp`, `cmd/narumq -raft-peer-config`, `internal/application/takeover`, `tests/integration/raft_peer_transport_test.go`, `tests/integration/raft_consensus_test.go` |
+| 구현 증거 | 제한된 구현 증거: `internal/adapters/raft`, dynamic peer transport, `cmd/narumq -cluster-config`, QoS 0 `NMQFWRD2` forwarding; `tests/integration.TestDynamicClusterLiveQoS0CrossNodeForwardingProcessAcceptance` 및 Cluster spec §11.10 |
 | 범위 | Broker cluster의 runtime component와 상태 소유권 |
 | 관련 요구사항 | [PRD](../requirements/PRD.md) CLU-01~CLU-14, MQTT-02~05, NFR-07~NFR-10 |
 | 관련 스펙 | [Cluster session과 durable delivery](../specs/cluster-session-and-delivery.md), [MQTT protocol과 session](../specs/mqtt-protocol-and-session.md) |
-| 관련 결정 | [ADR-0002](../decisions/ADR-0002-cluster-consensus-library.md), [ADR-0003](../decisions/ADR-0003-durable-ack-barrier.md), [ADR-0004](../decisions/ADR-0004-session-ownership-and-fencing.md), [ADR-0008](../decisions/ADR-0008-raft-peer-transport.md), [ADR-0009](../decisions/ADR-0009-raft-production-state-profile.md) (Accepted, design target only), [ADR-0011](../decisions/ADR-0011-cluster-backup-restore-v1.md) (historical v1), [ADR-0012](../decisions/ADR-0012-retained-replication-and-cluster-backup-v2.md), [ADR-0013](../decisions/ADR-0013-offline-queue-replication-and-cluster-backup-v3.md). ADR-0002~0004는 Proposed |
-| 관련 Contract | [Cluster release compatibility v1](../contracts/cluster-release-compatibility-v1.md), Active [Raft peer transport v1](../contracts/raft-peer-transport-v1.md), Draft [Replicated state v1](../contracts/replicated-state-v1.proto), Draft [Cluster backup v3](../contracts/cluster-backup-v3.md), Superseded [Cluster backup v2](../contracts/cluster-backup-v2.md), Superseded [Cluster backup v1](../contracts/cluster-backup-v1.md) |
+| 관련 결정 | [ADR-0002](../decisions/ADR-0002-cluster-consensus-library.md), [ADR-0003](../decisions/ADR-0003-durable-ack-barrier.md), [ADR-0004](../decisions/ADR-0004-session-ownership-and-fencing.md), [ADR-0008](../decisions/ADR-0008-raft-peer-transport.md), [ADR-0009](../decisions/ADR-0009-raft-production-state-profile.md) (Accepted, design target only), [ADR-0011](../decisions/ADR-0011-cluster-backup-restore-v1.md) (historical v1), [ADR-0012](../decisions/ADR-0012-retained-replication-and-cluster-backup-v2.md), [ADR-0013](../decisions/ADR-0013-offline-queue-replication-and-cluster-backup-v3.md), [ADR-0014](../decisions/ADR-0014-cross-node-live-qos0-forwarding.md) (live QoS 0 only). ADR-0002~0004는 Proposed |
+| 관련 Contract | [Cluster release compatibility v1](../contracts/cluster-release-compatibility-v1.md), Active [Raft peer transport v1](../contracts/raft-peer-transport-v1.md), Draft [Raft membership v2](../contracts/raft-membership-v2.md), Draft [Replicated state v1](../contracts/replicated-state-v1.proto), Draft [Cluster backup v3](../contracts/cluster-backup-v3.md), Superseded [Cluster backup v2](../contracts/cluster-backup-v2.md), Superseded [Cluster backup v1](../contracts/cluster-backup-v1.md) |
 | 최종 확인일 | 2026-09-26 |
 
 ## Runtime component view
@@ -72,7 +72,7 @@ Consensus module pin, file-backed WAL/snapshot과 sync target, application-state
 
 `POST /api/v1/cluster/backups`는 ClusterAdmin 전용으로 fresh quorum barrier 뒤 typed snapshot과 committed tail을 담은 archive v3(`NMQBKUP3`)를 반환한다. `-cluster-restore`는 그 archive를 오프라인에서 검사·seed하고 종료한다. Current restore는 같은 cluster ID와 정확한 3 bootstrap voter identity를 요구하며 archive에 learner가 있으면 거절한다. Archive v1과 v2는 읽지 않고 거절한다. 구현 위치는 [`cluster_backup.go`](../../cmd/narumq/cluster_backup.go), [`cluster_backup_restore.go`](../../cmd/narumq/cluster_backup_restore.go), [backup archive codec](../../internal/adapters/raft/records/backup.go), [Cluster backup v3 contract](../contracts/cluster-backup-v3.md)이고 process acceptance는 [Cluster §11.7](../specs/cluster-session-and-delivery.md#117-cluster-backuprestore와-snapshot-finalize-수용-매핑), [§11.8](../specs/cluster-session-and-delivery.md#118-retained-replication과-backup-v2-수용-매핑) 및 [§11.9](../specs/cluster-session-and-delivery.md#119-offline-queue-replication과-backup-v3-수용-매핑)에 있다.
 
-Dynamic cluster mode는 tenant-scoped retained value와 detached persistent session의 QoS 0 offline queue를 Raft에 commit한다. QoS 0 retained/offline publish의 cross-node replay, v3 archive/restore/restart/joiner catch-up은 §11.8 및 §11.9 process acceptance에서 확인했다. QoS 1/2 durable publish ACK, archive N/N-1 compatibility, retention/RPO/RTO와 production EBS power-loss는 검증하지 않았다. ADR-0002·0003·0004가 Proposed인 동안 전체 view도 production 또는 Verified 상태가 아니다.
+Dynamic cluster mode는 tenant-scoped retained value와 detached persistent session의 QoS 0 offline queue를 Raft에 commit한다. Connected QoS 0 delivery는 authenticated `NMQFWRD2` lane으로 committed owner에게 전달하며 Raft state에 쓰지 않는다. Offline/retained replication은 §11.8·§11.9, 3-process live forwarding은 §11.10 acceptance에서 확인한다. QoS 1/2 durable publish ACK, archive N/N-1 compatibility, retention/RPO/RTO와 production EBS power-loss는 검증하지 않았다. ADR-0002·0003·0004가 Proposed인 동안 전체 view도 production 또는 Verified 상태가 아니다.
 
 ## 상태 소유권
 
@@ -83,12 +83,43 @@ Dynamic cluster mode는 tenant-scoped retained value와 detached persistent sess
 | Persistent subscription | Replicated state | Node-local route projection 구성 |
 | QoS 1·2 inflight와 handshake | Replicated state | Packet 송수신 진행 |
 | Durable offline message | Replicated log·store | Owner의 delivery queue |
+| Connected live QoS 0 | Owner node의 process-local delivery queue | Ingress가 owner로 forwarding하며, replicated durable state가 아니다 |
 | Retained message | Replicated state | Topic lookup cache |
 | Route metadata | Committed persistent-subscription state | Rebuildable node-local route projection |
 | Active TCP connection과 socket buffer | Connection을 수용한 node | 복제하지 않는다. Reconnect로 교체한다. |
 | Metric·log buffer | Node local, 외부 observability로 export | System of record가 아니다. |
 
 Route metadata는 committed persistent subscription에서 계산하는 node-local disposable projection이다. Node는 routing readiness를 광고하기 전에 이를 rebuild해야 하며, projection은 ownership·checkpoint·drain barrier의 근거가 아니다. Physical rebuild mechanics와 route-index partition placement는 미결정이다.
+
+## Live QoS 0 delivery path
+
+이 경로는 연결된 subscriber session만 다룬다. 각 candidate의 순서는 detached-session offline `ENQUEUE`, remote owner forwarding, local queue enqueue다. Ingress node는 현재 committed state machine에서 ownership을 직접 읽으므로 message마다 Raft read barrier를 추가하지 않는다.
+
+```mermaid
+sequenceDiagram
+    participant P as Publisher
+    participant I as Ingress node
+    participant R as Committed route projection
+    participant T as NMQFWRD2 peer lane
+    participant O as Owner node
+    participant Q as Owner delivery queue
+    P->>I: QoS 0 PUBLISH
+    I->>R: Match subscriptions and shared fallback
+    R-->>I: Candidate + committed owner
+    alt Detached persistent session
+        I->>I: Commit offline ENQUEUE
+    else Connected remote owner
+        I->>T: Queue bounded delivery frame
+        T->>O: Authenticated forwarding stream
+        O->>O: Recheck committed local ownership
+        O->>Q: Enqueue only if session is registered
+    else Local owner or no owner row
+        I->>Q: Enqueue on ingress node
+    end
+```
+
+Ingress가 frame을 forwarding queue에 넣으면 전달 시도는 성공으로 처리하지만, receiver 확인 응답이나 재시도는 없다. 전달은 at-most-once(최대 한 번)이며 owner와 session이 일치하지 않거나 session이 등록되지 않으면 조용히 버린다. Owner queue가 가득 차면 subscriber connection을 닫는다. 이 경로는 QoS 1/2 forwarding이나 durable acknowledgement를 제공하지 않는다.
+
 
 ## Durable publish 경로
 

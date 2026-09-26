@@ -9,10 +9,10 @@
 | 소유자 | NaruMQ 프로젝트 |
 | 만드는 쪽(Producer) | ClusterAdmin API, joining broker, committed Raft member registry |
 | 사용하는 쪽(Consumer) | Cluster leader, joining broker, authenticated peer transport, management clients |
-| 방향 | Management HTTP request/response, TLS 1.3 peer admission handshake, Raft stream |
+| 방향 | Management HTTP request/response, TLS 1.3 peer admission handshake, Raft stream, delivery-forwarding stream |
 | 스키마 기준 파일 | 이 문서와 [replicated-state-v1.proto](replicated-state-v1.proto) |
 | 기준 동작 명세 | [Cluster session과 durable delivery](../specs/cluster-session-and-delivery.md) §1, §11 |
-| 관련 요구사항 | CLU-01~CLU-02, CLU-04~CLU-11, SEC-09~SEC-11, NFR-07~NFR-10 |
+| 관련 요구사항 | CLU-01~CLU-04, CLU-06~CLU-11, SEC-09~SEC-11, NFR-07~NFR-10 |
 | 호환성 범위 | Combined cluster runtime protocol `2.0`, state schema `1.0`; no N/N-1 claim |
 | 관련 시험 | Cluster spec §11 membership mapping; 현재 구현·시험 미완료 |
 
@@ -255,6 +255,29 @@ After the v2 hello, Raft frames use the same envelope shape as v1: `uint32 big-e
 
 Each active peer retains v1's independently bounded queue policy: outbound FIFO and inbound staging each at most 32 messages and 4 MiB framed bytes; an in-progress outbound write counts. A full queue rejects immediately and resets/reports only that peer. Reconciliation atomically swaps the committed peer-ID/address/certificate registry. A committed phase or operation-ID update for an unchanged immutable identity closes and re-authenticates the connection, preserves queued outbound Raft messages, discards inbound staging from the prior identity revision, and rejects read-loop frames captured under that revision. The v2 adapter exposes staged frames through a coalesced `InboundReady` signal and a `TakeInbound` lease; the cluster driver calls `Complete` after `Step`. Reconciliation blocks new leases, waits for any active lease to complete, then advances the identity revision and discards remaining old-revision staging before returning. An immutable-identity rebind or peer removal retires the peer and drains both queue accounting. Unknown peers are rejected. The 5-second per-frame I/O timeout and 100-ms retry interval are retained for v2; neither queue cap nor Raft entry inflight cap limits retained log size.
 
+#### Delivery forwarding stream
+
+The delivery-forwarding stream is additive on the same TLS 1.3 mTLS listener. Its authenticated hello has the same fields and validation as the `NMQRAFT2` hello above, except that the exact 8-byte magic is `NMQFWRD2`. The same committed identity, cluster/release/schema, phase and operation-ID checks apply. Only `LEARNER`, `CATCHING_UP`, `VOTER` and `LEAVING` are accepted. The existing dial rule applies: the lower member ID accepts and the higher member ID dials. The acceptor responds with its own `NMQFWRD2` hello; neither endpoint dispatches data frames before both hellos validate.
+
+After the hello, frames use `uint32 big-endian payload length | payload`; the prefix is not included in the payload limit. Payload length is `1..1,179,648` bytes. While waiting for the 4-byte length prefix, the reader has no idle deadline. After reading and validating the prefix it applies the 5-second I/O deadline to the payload. Zero, oversized or truncated frames close the stream.
+
+The v1 forwarded-delivery payload is encoded in this exact order:
+
+| Field | Encoding | Limit |
+| --- | --- | --- |
+| Format version | `uint8` | exactly `1` |
+| Session ID | `uint16` byte length + opaque routing-ID bytes (may be non-UTF-8) | `1..65,535` |
+| Topic | `uint16` byte length + UTF-8 bytes | `1..65,535` |
+| Flags | `uint8` | bit 0 is Retain; all other bits are zero |
+| Expiry | `uint64` Unix milliseconds | `0` means no expiry |
+| Payload | `uint32` byte length + bytes | total payload frame at most `1,179,648` bytes |
+
+All integers are unsigned big-endian. The session ID is an opaque internal routing identifier and is not decoded as UTF-8. Topic text must be valid UTF-8. Payload bytes are binary. No trailing bytes are allowed. A decoder rejects unsupported versions, invalid topic UTF-8, empty/oversized strings, unknown flag bits, truncated or inconsistent lengths, trailing bytes and a payload over the total frame bound. Decoding owns a copy of the payload bytes.
+
+Each peer has independent FIFO outbound and inbound-staging forwarding queues in each direction, each bounded to 1,024 frames and 8 MiB of framed bytes. A full forward queue rejects the delivery without resetting the Raft stream or the forwarding stream. Raft queues retain their separate existing 32-frame/4-MiB cap and full-queue behavior. Forward frames are delivered only to the forwarding receiver and never reach Raft `Step`. Receiver application may drop a frame whose committed local ownership/session registration no longer matches; there is no acknowledgement or retry.
+
+The forwarding stream does not alter `NMQRAFT2` hello or Raft message frame bytes, membership records, snapshots, backups or cluster protocol `2.0`.
+
 ### 1.6 Replicated records and snapshot
 
 `CommandEnvelope` uses protobuf `proto3` schema major/minor and exactly one payload: `MembershipRecord`, `OwnershipChange`, `SubscriptionChange` or `SessionCheckpoint`. `MembershipRecord` stores operation ID, action, persisted idempotency key, member identity, optional removal target, and `expected_conf_state_index` for compare-before-change; HTTP `committedIndex` is derived from the actual applied Raft entry index. `OwnershipChange` carries `(tenantId, clientId, expectedEpoch, ownerNodeId, epoch, action)`. `SubscriptionChange` carries `(tenantId, clientId, ownerNodeId, epoch, filter, qos, noLocal, retainAsPublished, retainHandling, add/remove)`. `SessionCheckpoint` contains typed inbound/outbound publish packet plus protocol delivery phase, not opaque Go bytes.
@@ -371,6 +394,7 @@ F4 C8 99 6F B9 24 27 AE 41 E4 64 9B 93 4C A4 95
 - Unknown fields are rejected in Draft schema v1; no mixed release or N/N-1 interoperability is claimed.
 - Field numbers and enum values are never reused. A breaking wire/state change requires a new contract major and explicit migration/recovery plan.
 - No v2 peer data is admitted before TLS, handshake identity and committed stage/configuration checks complete.
+- The additive `NMQFWRD2` delivery-forwarding stream preserves `NMQRAFT2` bytes and cluster protocol `2.0`; it does not claim mixed-release or N/N-1 interoperability.
 
 ## 4. Version and support status
 

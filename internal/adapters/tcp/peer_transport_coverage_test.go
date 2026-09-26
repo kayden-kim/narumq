@@ -324,7 +324,7 @@ func cptAdmissionResponseBytes(candidate PeerIdentityDTO, voters []PeerIdentityD
 
 func TestCptDynamicPeerHelloDecodeRejectsTruncatedAndInvalidFields(t *testing.T) {
 	valid := dynamicTestIdentity(1, "n:1", "n", PeerPhaseLearner, testOperationID, 0x11)
-	encoded, err := encodeDynamicPeerHello(valid)
+	encoded, err := encodeDynamicPeerHello(valid, dynamicRaftMagic)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -332,7 +332,7 @@ func TestCptDynamicPeerHelloDecodeRejectsTruncatedAndInvalidFields(t *testing.T)
 		t.Fatalf("test hello encoder differs from production encoder\n got: %x\nwant: %x", cptHelloBytes(valid), encoded)
 	}
 	for length := 0; length < len(encoded); length++ {
-		if _, err := decodeDynamicPeerHello(encoded[:length]); !errors.Is(err, ErrInvalidPeerMessage) {
+		if _, err := decodeDynamicPeerHello(encoded[:length], dynamicRaftMagic); !errors.Is(err, ErrInvalidPeerMessage) {
 			t.Fatalf("hello truncated to %d of %d bytes: err=%v", length, len(encoded), err)
 		}
 	}
@@ -359,7 +359,7 @@ func TestCptDynamicPeerHelloDecodeRejectsTruncatedAndInvalidFields(t *testing.T)
 	}
 	for name, payload := range cases {
 		t.Run(name, func(t *testing.T) {
-			if identity, err := decodeDynamicPeerHello(payload); !errors.Is(err, ErrInvalidPeerMessage) {
+			if identity, err := decodeDynamicPeerHello(payload, dynamicRaftMagic); !errors.Is(err, ErrInvalidPeerMessage) {
 				t.Fatalf("invalid hello decoded: identity=%+v err=%v", identity, err)
 			}
 		})
@@ -1651,7 +1651,7 @@ func TestCptDynamicInboundRejectsUnexpectedHandshakes(t *testing.T) {
 	cptDynamicPeer(transport, 4).stop()
 
 	hello := func(identity PeerIdentityDTO) []byte {
-		payload, err := encodeDynamicPeerHello(identity)
+		payload, err := encodeDynamicPeerHello(identity, dynamicRaftMagic)
 		if err != nil {
 			t.Fatal(err)
 		}

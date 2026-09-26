@@ -139,7 +139,12 @@ func newClusterMembershipProcessFixture(t *testing.T, nodeCount int, buildTags s
       "retained-subscriber-restarted",
       "retained-subscriber-joiner",
       "offline-subscriber",
-      "offline-publisher"
+      "offline-publisher",
+      "live-qos0-subscriber-2",
+      "live-qos0-subscriber-3",
+      "live-qos0-publisher-1",
+      "live-qos0-publisher-2",
+      "live-qos0-publisher-3"
     ],
     "roles": ["client"]
   }],
@@ -173,6 +178,18 @@ func newClusterMembershipProcessFixture(t *testing.T, nodeCount int, buildTags s
     "effect": "allow",
     "action": "subscribe",
     "topicFilter": "offline/#"
+  }, {
+    "tenantId": "acceptance",
+    "role": "client",
+    "effect": "allow",
+    "action": "publish",
+    "topicFilter": "live/#"
+  }, {
+    "tenantId": "acceptance",
+    "role": "client",
+    "effect": "allow",
+    "action": "subscribe",
+    "topicFilter": "live/#"
   }]
 }`, jwksURL))
 	clusterMembershipProcessWriteFile(t, securityPath, securityConfig, 0o600)
@@ -274,6 +291,73 @@ func (f *clusterMembershipProcessFixture) stageRequestBody(memberID uint64) []by
 		f.harness.t.Fatalf("encode stage request for member %d: %v", memberID, err)
 	}
 	return requestBody
+}
+
+// Traceability: CLU-03; docs/specs/cluster-session-and-delivery.md §3.1, §11.10.
+func TestDynamicClusterLiveQoS0CrossNodeForwardingProcessAcceptance(t *testing.T) {
+	fixture := newClusterMembershipProcessFixture(t, 3, "")
+	processes := make([]*clusterMembershipProcess, 3)
+	for index := range processes {
+		process, err := fixture.harness.start(
+			fmt.Sprintf("live QoS 0 bootstrap node %d", index+1),
+			fixture.bootstrapConfig(uint64(index+1)),
+			fixture.managementAddresses[index],
+		)
+		if err != nil {
+			t.Fatalf("start bootstrap node %d: %v", index+1, err)
+		}
+		processes[index] = process
+	}
+	clusterMembershipProcessWaitForBootstrap(t, fixture.ctx, processes)
+
+	subscriber2 := clusterMembershipProcessOpenSubscribedSession(
+		t, fixture.mqttAddresses[1], fixture.accessToken, "live-qos0-subscriber-2", "live/#",
+	)
+	defer subscriber2.Close()
+	subscriber3 := clusterMembershipProcessOpenSubscribedSession(
+		t, fixture.mqttAddresses[2], fixture.accessToken, "live-qos0-subscriber-3", "live/#",
+	)
+	defer subscriber3.Close()
+	clusterMembershipProcessWaitForRouteProjectionClients(
+		t, fixture.ctx, processes, "live/#", "live-qos0-subscriber-2", "live-qos0-subscriber-3",
+	)
+
+	const topic = "live/event"
+	for _, testCase := range []struct {
+		nodeIndex int
+		clientID  string
+		payload   string
+	}{
+		{nodeIndex: 0, clientID: "live-qos0-publisher-1", payload: "from-node-1"},
+		{nodeIndex: 1, clientID: "live-qos0-publisher-2", payload: "from-node-2"},
+	} {
+		clusterMembershipProcessPublish(
+			t, fixture.mqttAddresses[testCase.nodeIndex], fixture.accessToken, testCase.clientID, topic, []byte(testCase.payload),
+		)
+		clusterMembershipProcessRequireLivePublish(t, subscriber2, topic, testCase.payload)
+		clusterMembershipProcessRequireLivePublish(t, subscriber3, topic, testCase.payload)
+	}
+
+	if err := subscriber2.Close(); err != nil {
+		t.Fatalf("close subscriber on node 2 before owner move: %v", err)
+	}
+	movedSubscriber, present := clusterMembershipProcessReconnectSession(
+		t, fixture.mqttAddresses[0], fixture.accessToken, "live-qos0-subscriber-2",
+	)
+	defer movedSubscriber.Close()
+	if !present {
+		t.Fatal("subscriber reconnect on node 1 returned SessionPresent=false")
+	}
+	clusterMembershipProcessWaitForRouteProjectionClients(
+		t, fixture.ctx, processes, "live/#", "live-qos0-subscriber-2", "live-qos0-subscriber-3",
+	)
+
+	const movedPayload = "from-node-3"
+	clusterMembershipProcessPublish(
+		t, fixture.mqttAddresses[2], fixture.accessToken, "live-qos0-publisher-3", topic, []byte(movedPayload),
+	)
+	clusterMembershipProcessRequireLivePublish(t, movedSubscriber, topic, movedPayload)
+	clusterMembershipProcessRequireLivePublish(t, subscriber3, topic, movedPayload)
 }
 
 func TestDynamicClusterMembershipProcessAcceptance(t *testing.T) {
@@ -1690,6 +1774,70 @@ func clusterMembershipProcessWaitForRouteProjection(t *testing.T, ctx context.Co
 		}
 		return true, "all nodes agree on route projection", nil
 	})
+}
+
+func clusterMembershipProcessWaitForRouteProjectionClients(
+	t *testing.T,
+	ctx context.Context,
+	processes []*clusterMembershipProcess,
+	wantFilter string,
+	wantClientIDs ...string,
+) {
+	t.Helper()
+	want := append([]string(nil), wantClientIDs...)
+	sort.Strings(want)
+	clusterMembershipProcessWait(t, ctx, fmt.Sprintf("route projection for filter %q and clients %v", wantFilter, want), func() (bool, string, error) {
+		var reference []string
+		for _, process := range processes {
+			status, body, err := clusterMembershipProcessRequest(ctx, http.MethodGet,
+				process.managementURL()+"/api/v1/subscriptions?tenantId=acceptance", nil, clusterMembershipProcessAdmin, "")
+			if err != nil {
+				return false, fmt.Sprintf("%s query error: %v", process.name, err), nil
+			}
+			if status != http.StatusOK {
+				return false, fmt.Sprintf("%s status = %d", process.name, status), nil
+			}
+			var list struct {
+				Data []struct {
+					TenantID    string `json:"tenantId"`
+					ClientID    string `json:"clientId"`
+					TopicFilter string `json:"topicFilter"`
+					QoS         int    `json:"qos"`
+				} `json:"data"`
+			}
+			if err := json.Unmarshal([]byte(body), &list); err != nil {
+				return false, fmt.Sprintf("%s decode error: %v", process.name, err), nil
+			}
+			if len(list.Data) != len(want) {
+				return false, fmt.Sprintf("%s has %d subscriptions, want %d", process.name, len(list.Data), len(want)), nil
+			}
+			clientIDs := make([]string, len(list.Data))
+			for index, subscription := range list.Data {
+				if subscription.TenantID != "acceptance" || subscription.TopicFilter != wantFilter || subscription.QoS != 0 {
+					return false, fmt.Sprintf("%s subscription = %+v, want tenant=acceptance filter=%s QoS=0", process.name, subscription, wantFilter), nil
+				}
+				clientIDs[index] = subscription.ClientID
+			}
+			sort.Strings(clientIDs)
+			if !slices.Equal(clientIDs, want) {
+				return false, fmt.Sprintf("%s clients = %v, want %v", process.name, clientIDs, want), nil
+			}
+			if reference == nil {
+				reference = clientIDs
+			} else if !slices.Equal(reference, clientIDs) {
+				return false, fmt.Sprintf("projection mismatch: reference=%v, %s=%v", reference, process.name, clientIDs), nil
+			}
+		}
+		return true, "all nodes agree on route projection", nil
+	})
+}
+
+func clusterMembershipProcessRequireLivePublish(t *testing.T, connection net.Conn, topic, payload string) {
+	t.Helper()
+	publishes := clusterMembershipProcessReadPublishes(t, connection, 1)
+	if publishes[0] != [2]string{topic, payload} {
+		t.Fatalf("live publishes = %v, want topic=%q payload=%q", publishes, topic, payload)
+	}
 }
 
 func clusterMembershipProcessPublish(t *testing.T, address, accessToken, clientID, topic string, payload []byte) {

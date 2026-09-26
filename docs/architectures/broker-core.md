@@ -148,6 +148,7 @@ Port는 구현 adapter 옆이 아니라 이를 사용하는 application 쪽이 �
 | Authentication | Credential 또는 verified client certificate를 binding Result로 변환하는 application port | `application/ports/authentication.AuthenticationProvider` 및 `ClientCertificateAuthenticationProvider` ← `adapters/authentication.JWKSAuthenticationProvider`, `MTLSAuthenticationProvider` |
 | Clock | deterministic expiry 입력 | `application/ports/clock.Clock` ← `adapters/clock.SystemClock` |
 | Replication | Command proposal, commit receipt와 membership 관찰 | 고정 voter peer-only 경로: `internal/adapters/raft` + `internal/adapters/tcp.TCPPeerTransport`; full application port는 후속 |
+| Live QoS 0 forwarding | Connected remote-owned delivery를 owner node로 bounded at-most-once 전달 | `application/publish.RemoteForwarder` ← `cmd/narumq.clusterRuntime` → `internal/adapters/tcp.DynamicTCPPeerTransport` |
 | Metric·audit | Cardinality가 제한된 관측값과 비밀 없는 event 기록 | 후속 observability adapter |
 | Node discovery·platform | Member 후보와 workload lifecycle 관찰 | Kubernetes adapter |
 | Clock·random | Expiry와 jitter를 결정적으로 제공 | Runtime·test adapter |
@@ -168,6 +169,7 @@ entry와 Packet Identifier별 outbound QoS state를 함께 보관한다. Persist
 이 두 collection을 삭제하지 않으며, clean reset 또는 Session Expiry만 `Remove`를 통해
 전체 session state를 삭제한다. TCP connection은 active cache일 뿐이므로 reconnect 시
 queue boundary에서 outbound state를 다시 읽고, `CONNACK` 뒤에 복구 packet을 전송한다.
+Dynamic cluster의 connected remote-owned QoS 0 delivery는 `publish.RemoteForwarder` port를 통해 `clusterRuntime`으로 전달된다. Runtime은 local committed ownership을 읽고 별도 `NMQFWRD2` lane으로 owner node에 보낸다. Receiver는 ownership과 local queue 등록을 다시 확인한 뒤 `AcceptForwarded`로 enqueue한다. 이 volatile at-most-once 경로는 delivery queue의 node-local ownership이나 durable delivery guarantee를 바꾸지 않는다. Detached persistent session은 별도 offline commit 경로를 먼저 사용한다.
 
 ## 경계를 넘는 값
 

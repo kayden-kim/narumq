@@ -171,6 +171,7 @@ func runClusterMode(ctx context.Context, config clusterConfigFile, logger *slog.
 		return fmt.Errorf("create dynamic raft peer transport: %w", err)
 	}
 	runtime.transport = transport
+	runtime.forwarder = transport
 	runtime.refreshRouteProjection()
 
 	securityBundle, jwtProvider, mtlsProvider, err := clusterMQTTSecurity(config)
@@ -205,7 +206,10 @@ func runClusterMode(ctx context.Context, config clusterConfigFile, logger *slog.
 		subscribe.WithMetrics(metricsRegistry),
 		subscribe.WithCommitter(runtime),
 	}
-	publishOptions := []publish.Option{publish.WithMetrics(metricsRegistry), publish.WithRetainedCommitter(runtime), publish.WithOfflineCommitter(runtime)}
+	publishOptions := []publish.Option{
+		publish.WithMetrics(metricsRegistry), publish.WithRetainedCommitter(runtime),
+		publish.WithOfflineCommitter(runtime), publish.WithRemoteForwarder(runtime),
+	}
 	var tcpPolicy security.Policy
 	if securityBundle != nil {
 		connectOptions = append(connectOptions, connect.WithSecurity(jwtProvider, mtlsProvider, securityBundle.Policy))
@@ -248,6 +252,7 @@ func runClusterMode(ctx context.Context, config clusterConfigFile, logger *slog.
 			return fmt.Errorf("create cluster MQTT server: %w", err)
 		}
 		runtime.mqttServer = mqttServer
+		runtime.forwardSink = mqttServer
 		for _, listener := range mqttListeners[1:] {
 			if err := mqttServer.AddListener(listener); err != nil {
 				return fmt.Errorf("add cluster MQTT listener: %w", err)
@@ -282,15 +287,17 @@ func runClusterMode(ctx context.Context, config clusterConfigFile, logger *slog.
 }
 
 type clusterRuntime struct {
-	config     clusterConfigFile
-	logger     *slog.Logger
-	node       *raftadapter.Node
-	transport  *tcpadapter.DynamicTCPPeerTransport
-	machine    *membership.StateMachine
-	retained   *memoryretained.Repository
-	routes     *routing.Table
-	mqttServer *tcpadapter.Server
-	storage    *clusterStorageMonitor
+	config      clusterConfigFile
+	logger      *slog.Logger
+	node        *raftadapter.Node
+	transport   *tcpadapter.DynamicTCPPeerTransport
+	forwarder   clusterPeerForwarder
+	forwardSink clusterForwardSink
+	machine     *membership.StateMachine
+	retained    *memoryretained.Repository
+	routes      *routing.Table
+	mqttServer  *tcpadapter.Server
+	storage     *clusterStorageMonitor
 
 	requests                chan clusterDriverRequest
 	sequence                atomic.Uint64
@@ -381,8 +388,11 @@ func (runtime *clusterRuntime) serve(parent context.Context, mqttServer *tcpadap
 		go func() { admissionDone <- runtime.runSeedAdmission(ctx) }()
 	}
 
-	serviceDone := make(chan serviceResult, 2)
-	remaining := 0
+	serviceDone := make(chan serviceResult, 3)
+	remaining := 1
+	go func() {
+		serviceDone <- serviceResult{name: "cluster delivery forwarding receiver", err: runtime.runForwardReceiver(ctx)}
+	}()
 	if mqttServer != nil {
 		remaining++
 		go func() { serviceDone <- serviceResult{name: "cluster MQTT listener", err: mqttServer.Serve(ctx)} }()

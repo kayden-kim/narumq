@@ -1475,6 +1475,22 @@ func (server *Server) PublishWill(sessionID routing.SessionID, will mqtt.Will) e
 	return nil
 }
 
+// DeliverForwarded accepts a QoS 0 delivery from the cluster forwarding lane.
+// A full registered-session queue closes that subscriber session.
+func (server *Server) DeliverForwarded(delivery deliveryqueue.DeliveryDTO) error {
+	if server == nil || server.publications == nil {
+		return deliveryqueue.ErrUnavailable
+	}
+	err := server.publications.AcceptForwarded(delivery, server.config.Clock.Now())
+	if err == nil {
+		server.wakeSession(delivery.SessionID)
+	}
+	if errors.Is(err, deliveryqueue.ErrFull) {
+		server.closeSession(delivery.SessionID)
+	}
+	return err
+}
+
 // WillBridge routes will publications from connect.UseCase to the active Server.
 type WillBridge struct {
 	mu     sync.RWMutex

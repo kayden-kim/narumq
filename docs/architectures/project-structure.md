@@ -22,6 +22,7 @@ NaruMQ source tree는 MQTT·session·routing·delivery·tenancy·security·clust
 | --- | --- | --- |
 | 프로세스 시작 | `cmd/narumq/main.go` `main` → `run` → `runWithContext` | CLI 설정을 검사하고 아래 실행 모드 가운데 하나를 선택한다. |
 | Dynamic cluster | 호출: `cmd/narumq/main.go` `runWithContext` → 정의: `cmd/narumq/cluster_runtime.go` `runClusterMode` | `-cluster-config`를 사용해 dynamic cluster 경로로 진입한다. |
+| Dynamic cluster live QoS 0 delivery | `publish.UseCase.Publish` → `clusterRuntime.ForwardRemote` → `DynamicTCPPeerTransport.Forward`; receiver: `clusterRuntime.runForwardReceiver` → `acceptForwardedFrame` → `tcp.Server.DeliverForwarded` → `publish.UseCase.AcceptForwarded` | `NMQFWRD2`는 Raft log와 분리되며 receiver는 현재 committed owner와 local queue 등록을 확인한다. |
 | Cluster restore | 호출: `cmd/narumq/main.go` `runWithContext` → 정의: `cmd/narumq/cluster_backup_restore.go` `restoreClusterBackup` | `-cluster-config`와 `-cluster-restore`를 함께 지정하면 archive 복원 경로를 선택한다. |
 | Fixed-voter peer-only | 호출: `cmd/narumq/main.go` `runWithContext` → 정의: `cmd/narumq/raft_peer_config.go` `runRaftPeerOnly` | `-raft-peer-config`로 MQTT/management listener와 분리된 peer-only 경로를 선택한다. |
 | Standalone listener 시작 | `cmd/narumq/main.go` `runWithContext` → `serveServices`에 `mqttServer` (`*tcpadapter.Server`)와 `httpServer` (`*http.Server`) 인스턴스를 전달해 listener 실행을 맡긴다. | `-tcp-listen`/`-tls-listen` 및 `-http-listen` 설정에 따라 standalone MQTT와 management HTTP listener를 시작한다. |
@@ -210,7 +211,7 @@ flowchart LR
 | `internal/application/ports/authentication` | `Credential`과 verified client certificate DTO 및 binding result를 정의하는 authentication port | `domain/tenancy`, `domain/security`, 표준 library |
 | `internal/application/connect` | authentication, Client ID binding, Will ACL, lifecycle repository, queue/routing cleanup과 CONNACK orchestration | `domain/mqtt`, `domain/session`, `domain/routing`, `domain/tenancy`, `domain/security`, application ports |
 | `internal/application/subscribe` | tenant-aware ordered SUBACK/UNSUBACK reason, ACL preflight, retained replay와 route mutation | `domain/mqtt`, `domain/routing`, `domain/tenancy`, `domain/security`, application ports |
-| `internal/application/publish` | tenant-aware publish/Will ACL, retained replace/delete, expiry deadline와 route delivery | `domain/mqtt`, `domain/routing`, `domain/tenancy`, `domain/security`, application ports |
+| `internal/application/publish` | tenant-aware publish/Will ACL, retained replace/delete, expiry deadline, offline/remote/local candidate precedence와 route delivery | `domain/mqtt`, `domain/routing`, `domain/tenancy`, `domain/security`, application ports |
 | `internal/application/takeover` | typed ownership·persistent subscription·inbound/outbound QoS inflight session aggregate와 application committed-command sequence/fencing. Experimental codec은 acquire만 처리하며, 이 slice의 disposable routing projection은 3-node 시험 harness에만 있다. | `domain/session`, `domain/tenancy`, `domain/mqtt`, `domain/delivery`, `domain/routing`, 표준 library |
 | `internal/application/ports/deliveryqueue` | `tenancy.SessionKey`와 `tenancy.Topic`을 운반하는 bounded queue capability | application/domain value만 |
 | `internal/application/ports/retained` | `(tenant, topic)` retained ownership과 expiry-aware list contract | `domain/mqtt`, `domain/tenancy`, 표준 library |
@@ -218,7 +219,7 @@ flowchart LR
 | `internal/adapters/memory/deliveryqueue` | SessionKey별 fixed item capacity, FIFO ownership와 expiry purge | `application/ports/deliveryqueue`, `domain/tenancy`, 표준 library |
 | `internal/adapters/memory/retained` | tenant/topic keyed bounded retained repository와 expiry byte purge | `application/ports/retained`, `domain/mqtt`, `domain/tenancy`, 표준 library |
 | `internal/adapters/memory/sessionstore` | SessionKey별 process-local lifecycle load/save/delete | `application/connect`, `domain/session`, `domain/tenancy`, 표준 library |
-| `internal/adapters/tcp` | bounded MQTT ingress와 connection lifecycle, 고정 voter Raft mTLS TCP stream(`TCPPeerTransport`) 및 peer-local bounded queues | MQTT ingress는 application use cases/ports와 domain DTO; Raft transport는 표준 library만 |
+| `internal/adapters/tcp` | bounded MQTT ingress와 connection lifecycle, fixed-voter Raft stream 및 dynamic v2의 독립 Raft/delivery-forwarding mTLS streams와 bounded queues | MQTT ingress는 application use cases/ports와 domain DTO; Raft/forward streams는 표준 library와 application boundary만 |
 | `internal/adapters/tls` | TLS 1.2+ listener, AEAD cipher allowlist, mTLS trust anchor와 verified certificate DTO 추출 | `application/ports/authentication`과 표준 library |
 | `internal/adapters/clock` | system clock와 scheduler를 공용 application port에 제공 | `application/ports/clock`, 표준 library |
 | `internal/adapters/raft` | etcd/raft DTO, 영속 WAL/snapshot 파일, Raft backup/restore seed와 persistence boundary; replicated-state protobuf의 의미는 해석하지 않는다. | `go.etcd.io/raft/v3`, 표준 library |

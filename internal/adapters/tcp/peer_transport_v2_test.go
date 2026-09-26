@@ -43,7 +43,7 @@ func takeDynamicPeerMessage(t *testing.T, transport *DynamicTCPPeerTransport) Pe
 
 func TestDynamicPeerHelloGoldenBytes(t *testing.T) {
 	identity := dynamicTestIdentity(1, "n:1", "n", PeerPhaseVoter, "", 0x11)
-	got, err := encodeDynamicPeerHello(identity)
+	got, err := encodeDynamicPeerHello(identity, dynamicRaftMagic)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -56,7 +56,7 @@ func TestDynamicPeerHelloGoldenBytes(t *testing.T) {
 		t.Fatalf("v2 hello bytes differ\n got: %x\nwant: %x", got, want)
 	}
 	assertDynamicFramedPayload(t, want, dynamicHelloLimit)
-	decoded, err := decodeDynamicPeerHello(want)
+	decoded, err := decodeDynamicPeerHello(want, dynamicRaftMagic)
 	if err != nil || !samePeerIdentity(decoded, identity) {
 		t.Fatalf("decode golden v2 hello: identity=%+v err=%v", decoded, err)
 	}
@@ -115,7 +115,7 @@ func TestDynamicSeedAdmissionGoldenBytes(t *testing.T) {
 
 func TestDynamicPeerHelloAndAdmissionRejectMalformedData(t *testing.T) {
 	identity := dynamicTestIdentity(1, "n:1", "n", PeerPhaseVoter, "", 0x11)
-	hello, err := encodeDynamicPeerHello(identity)
+	hello, err := encodeDynamicPeerHello(identity, dynamicRaftMagic)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -130,30 +130,30 @@ func TestDynamicPeerHelloAndAdmissionRejectMalformedData(t *testing.T) {
 	}
 	for name, payload := range cases {
 		t.Run(name, func(t *testing.T) {
-			if _, err := decodeDynamicPeerHello(payload); err == nil {
+			if _, err := decodeDynamicPeerHello(payload, dynamicRaftMagic); err == nil {
 				t.Fatal("malformed peer hello was accepted")
 			}
 		})
 	}
 	stagedHello := identity
 	stagedHello.Phase = PeerPhaseStaged
-	if _, err := encodeDynamicPeerHello(stagedHello); err == nil {
+	if _, err := encodeDynamicPeerHello(stagedHello, dynamicRaftMagic); err == nil {
 		t.Fatal("STAGED identity was encoded as a Raft peer")
 	}
 	learnerHello := identity
 	learnerHello.Phase = PeerPhaseLearner
-	if _, err := encodeDynamicPeerHello(learnerHello); err == nil {
+	if _, err := encodeDynamicPeerHello(learnerHello, dynamicRaftMagic); err == nil {
 		t.Fatal("learner hello without an operation ID was accepted")
 	}
 	learnerHello.OperationID = testOperationID
-	learnerBytes, err := encodeDynamicPeerHello(learnerHello)
+	learnerBytes, err := encodeDynamicPeerHello(learnerHello, dynamicRaftMagic)
 	if err != nil {
 		t.Fatalf("encode valid learner hello: %v", err)
 	}
 	if !bytes.Equal(learnerBytes[len(learnerBytes)-36:], []byte(testOperationID)) {
 		t.Fatalf("learner operation ID is not exactly the trailing 36 ASCII bytes: %x", learnerBytes[len(learnerBytes)-36:])
 	}
-	if decoded, err := decodeDynamicPeerHello(learnerBytes); err != nil || !samePeerIdentity(decoded, learnerHello) {
+	if decoded, err := decodeDynamicPeerHello(learnerBytes, dynamicRaftMagic); err != nil || !samePeerIdentity(decoded, learnerHello) {
 		t.Fatalf("decode learner hello: identity=%+v err=%v", decoded, err)
 	}
 
@@ -523,7 +523,7 @@ func TestDynamicJoinerAcceptCapacityExpandsAfterAdmission(t *testing.T) {
 		if err := connection.SetDeadline(time.Now().Add(2 * time.Second)); err != nil {
 			t.Fatalf("set voter %d handshake deadline: %v", voter.MemberID, err)
 		}
-		hello, err := encodeDynamicPeerHello(voter)
+		hello, err := encodeDynamicPeerHello(voter, dynamicRaftMagic)
 		if err != nil {
 			t.Fatalf("encode voter %d hello: %v", voter.MemberID, err)
 		}
@@ -534,7 +534,7 @@ func TestDynamicJoinerAcceptCapacityExpandsAfterAdmission(t *testing.T) {
 		if err != nil {
 			t.Fatalf("read voter %d hello response: %v", voter.MemberID, err)
 		}
-		remote, err := decodeDynamicPeerHello(response)
+		remote, err := decodeDynamicPeerHello(response, dynamicRaftMagic)
 		if err != nil || !samePeerIdentity(remote, admittedLocal) {
 			t.Fatalf("voter %d received local identity %+v, decode error=%v", voter.MemberID, remote, err)
 		}
