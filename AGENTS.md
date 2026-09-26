@@ -5,7 +5,7 @@
 - 프로젝트 문서(`docs/`)와 해설을 작성할 때는 도메인 및 전문 기술 지식이 없는 신입 주니어 개발자를 대상으로 하되, 코드 작업과 일반 작업 보고는 간결하고 사실 중심의 엔지니어링 톤을 유지한다.
 - 전문 용어는 구체적인 동작과 함께 설명하고, 처음 등장할 때 쉬운 뜻과 역할을 덧붙인다. 현업에서 널리 사용하는 용어는 억지로 한국어로 번역하지 않고 그대로 사용할 수 있다.
 - 일반 설명은 쉬운 한국어로 쓰되, 발음을 그대로 옮긴 외래어에는 원문을 덧붙이지 않는다. 코드 식별자·공식 이름·문서 상태 값은 원문을 유지한다.
-- 변경 전에 관련 문서와 유사한 기존 구현을 확인하고, 프로젝트의 구조([Project structure](docs/architectures/project-structure.md)), 역할 분담, 이름 짓기, 코드 작성 방식 등 기존 패턴과 규칙을 우선 준수하며, Go 코드 작성 시 [Go coding conventions](docs/conventions/go-coding-conventions.md)을 따른다.
+- 변경 전에 관련 문서와 유사한 기존 구현을 확인하고, [Project structure의 코드 지도 절](docs/architectures/project-structure.md)과 [Broker core architecture](docs/architectures/broker-core.md)에서 변경 대상의 코드 위치·진입점·의존 흐름을 찾는다. 프로젝트 구조, 역할 분담, 이름 짓기, 코드 작성 방식 등 기존 패턴과 규칙을 우선 준수하며, Go 코드 작성 시 [Go coding conventions](docs/conventions/go-coding-conventions.md)을 따른다.
 - 클린 아키텍처(Clean Architecture / Ports and Adapters) 원칙을 준수한다: 소스 코드 의존성은 항상 바깥쪽(`internal/adapters`)에서 안쪽 정책(`internal/application`, `internal/domain`)으로만 향해야 하며, `domain`은 외부 프레임워크, 라이브러리, I/O 패키지를 일절 import하지 않는다. 인터페이스(Port)는 이를 사용하는 `application` 계층이 소유하고, 외부 데이터 타입은 어댑터 경계에서 DTO 또는 도메인 값으로 변환하며, 구체 구현체 조립은 `cmd/narumq`(Composition Root)에서만 수행한다([Broker core architecture](docs/architectures/broker-core.md), [Broker core의 계층 경계](docs/explainers/broker-core-boundaries.md) 참조).
 - 동작 명세([시스템 스펙](docs/specs/README.md))의 모든 시나리오는 테스트에 연결해 누락 없이 검증한다. 외부 의존성 없이 확인할 도메인 규칙·상태 머신 로직은 유닛 테스트로, 노드 드레인이나 인프라 장애 등 시스템 시나리오는 통합·E2E·카오스 테스트 계층에 누락 없이 매핑하여 검증하며, 테스트와 기준 검증이 없는 코드는 완료로 간주하지 않는다([Performance와 verification](docs/specs/performance-and-verification.md) 참조). 단, 문서·설정·정적 리소스처럼 테스트가 불가능하거나 무의미한 변경은 빌드, 린트, 육안 검증 등 적합한 확인 방법으로 대체한다.
 - 기존 방식으로 요구사항을 충족할 수 있으면 해당 방식을 재사용한다. 확장이 필요한 경우 기존 구조와 패턴에 어울리는 최소한의 변경으로 구현하고, 유사한 기능에도 일관되게 적용할 수 있는 규약으로 확장한다.
@@ -19,3 +19,8 @@
 4. 변경한 시나리오의 테스트와 프로젝트가 정한 완료 검증을 실행한다. 동작 명세의 수용 시험 표에서 시험 위치와 실제 실행 증거를 연결하고, 실행하지 못한 검증은 이유와 함께 미실행으로 남긴다. 문서·설정 등 테스트가 불가능한 작업은 빌드·린트·실행 결과 등의 검증 증거를 남긴다.
 5. 영향받은 기준 문서와 해설·실행 절차를 같은 변경에서 갱신한다. 문서를 추가·이동·폐기하면 해당 문서 목록과 관련 링크도 갱신한다.
 6. 완료 보고에는 변경 내용, 실행한 검증과 결과, 실행하지 못한 검증과 남은 미결정 사항을 구분해 적는다. 검증하지 못한 수용 기준이 있으면 완료로 보고하지 않는다.
+
+## 변경 이해 요약
+
+구조나 호출 흐름이 바뀐 작업은 완료 보고에 결과와 대표 입력·결과, 진입점에서 결과까지의 파일·함수 흐름, 변경 파일별 책임, 설계 판단과 근거, 확인한 사실과 추정, 갱신한 문서를 짧게 적는다. 단일 함수의 결함 수정이나 설정·문구 변경처럼 구조와 흐름이 그대로면 생략한다.
+

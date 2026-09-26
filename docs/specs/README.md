@@ -21,6 +21,8 @@
 | [Management API와 observability](management-api-and-observability.md) | REST resource, 공통 JSON 계약, probe, Metric, Dashboard 조회 | API-01~API-09, UI-01~UI-10 |
 | [Drain과 rolling update](drain-and-rolling-update.md) | node lifecycle, drain API, safe-to-stop barrier, client redirect, rollout gate, AWS deployment profile | DEP-01~DEP-24, CLIENT-01~CLIENT-09 |
 | [Performance와 verification](performance-and-verification.md) | 성능 측정, 시험 계층, coverage, release gate와 증거물 | NFR-01~NFR-06, NFR-11~NFR-15, PERF-01~PERF-12, TEST-01~TEST-17 |
+| [시스템 스펙 템플릿](system-spec.template.md) | 기능의 외부 동작과 수용 시험을 작성하는 시작점 | - |
+| [화면 스펙 템플릿](screen-spec.template.md) | [화면 스펙 선택 기준](AGENTS.md)에 해당할 때 화면 동작과 화면 시나리오를 단일 기준으로 작성 | - |
 
 하나의 요구사항이 여러 문서에 나타나면 각 문서는 자기 경계의 관찰 가능한 동작만 정의한다. 예를 들어 session takeover의 소유권 규칙은 cluster spec이, 배포 중 실행 순서는 drain spec이 기준이다.
 

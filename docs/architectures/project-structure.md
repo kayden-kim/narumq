@@ -14,6 +14,22 @@ NaruMQ source tree는 MQTT·session·routing·delivery·tenancy·security·clust
 | 관련 Convention | [Go coding conventions](../conventions/go-coding-conventions.md) |
 | 최종 확인일 | 2026-09-26 |
 
+## 코드 지도: 실행 모드와 MQTT CONNECT 대표 흐름
+
+이 절은 CLI 실행 모드와 standalone MQTT·관리 HTTP 진입점을 찾고, MQTT CONNECT 한 흐름을 대표 예시로 따라간다. 모든 패킷 handler와 cluster 내부 흐름을 나열하지는 않으며, 자세한 구조 책임은 아래 package map과 관련 architecture·spec·contract 문서를 따른다. 아래 `Target repository tree`는 별도의 목표 구조다.
+
+| 진입점·흐름 | 코드 위치와 심볼 | 역할 |
+| --- | --- | --- |
+| 프로세스 시작 | `cmd/narumq/main.go` `main` → `run` → `runWithContext` | CLI 설정을 검사하고 아래 실행 모드 가운데 하나를 선택한다. |
+| Dynamic cluster | 호출: `cmd/narumq/main.go` `runWithContext` → 정의: `cmd/narumq/cluster_runtime.go` `runClusterMode` | `-cluster-config`를 사용해 dynamic cluster 경로로 진입한다. |
+| Cluster restore | 호출: `cmd/narumq/main.go` `runWithContext` → 정의: `cmd/narumq/cluster_backup_restore.go` `restoreClusterBackup` | `-cluster-config`와 `-cluster-restore`를 함께 지정하면 archive 복원 경로를 선택한다. |
+| Fixed-voter peer-only | 호출: `cmd/narumq/main.go` `runWithContext` → 정의: `cmd/narumq/raft_peer_config.go` `runRaftPeerOnly` | `-raft-peer-config`로 MQTT/management listener와 분리된 peer-only 경로를 선택한다. |
+| Standalone listener 시작 | `cmd/narumq/main.go` `runWithContext` → `serveServices`에 `mqttServer` (`*tcpadapter.Server`)와 `httpServer` (`*http.Server`) 인스턴스를 전달해 listener 실행을 맡긴다. | `-tcp-listen`/`-tls-listen` 및 `-http-listen` 설정에 따라 standalone MQTT와 management HTTP listener를 시작한다. |
+| MQTT CONNECT 대표 흐름 | 호출 위치: `cmd/narumq/main.go` `runWithContext` → `serveServices`가 `mqttServer` 변수의 `Serve` 메서드를 호출; 정의 위치: `internal/adapters/tcp/server.go` `(*Server).Serve` → `(*connection).readLoop` → `(*connection).activate` → `internal/application/connect/connect.go` `UseCase.ConnectContext` | listener가 CONNECT를 디코딩해 application use case에 전달한다. 수락되면 session 정보를 연결에 설정하고 CONNACK을 보낸다. |
+| 관리 HTTP | 생성 위치: `cmd/narumq/main.go` `runWithContext` → `internal/adapters/http/management/server.go` `NewServer` → `newServer` → `newRouter`; 호출 위치: `serveServices`가 `httpServer` 변수 (`*http.Server`)의 `Serve(httpListener)` 메서드를 호출 | Management API 요청은 HTTP 경계에서 처리한다. 정확한 경로와 응답 형식은 [management API contract](../contracts/management-api-v1.md)가 기준이다. |
+
+대표 CONNECT 동작은 [MQTT protocol과 session 스펙](../specs/mqtt-protocol-and-session.md)의 CONNECT 처리 순서 및 [`tests/integration/mqtt_ingress_test.go`](../../tests/integration/mqtt_ingress_test.go)에서 확인한다. Dynamic cluster와 peer-only 흐름은 각각 [Cluster architecture](cluster-architecture.md), [Raft peer transport contract](../contracts/raft-peer-transport-v1.md)를 따른다. 이 표는 진입 경로 안내이며 내부 처리 전체를 검증하는 증거는 아니다.
+
 ## Target repository tree
 
 아래 tree는 목표 구조다. Deliverable이 생기기 전에는 빈 directory를 미리 만들지 않는다.
