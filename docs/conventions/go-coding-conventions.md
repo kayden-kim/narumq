@@ -349,22 +349,31 @@ go run ./tools/verify local
 go run ./tools/verify ci --base <merge-base>
 ```
 
-`local`과 `ci`는 gofmt 사전 검사 뒤 다음 순서의 13개 command를 실행한다.
-gofmt 검사는 source를 수정하지 않고 불일치가 있으면 이후 command를 실행하지 않는다.
+`local`은 gofmt 검사 뒤 10개 command, `ci`는 같은 검사와 mutation을 더해 12개
+command를 실행한다. gofmt 검사는 source를 수정하지 않으며 불일치가 있으면 gate를
+중단한다. 독립 command는 동시에 실행하고, 하나가 실패하면 나머지를 취소한다.
+Coverage policy 판정은 전체 test command가 만든 profile을 기다린 뒤 실행한다.
+
+`go test ./...`의 test parallel limit은 2다. 명시적으로 병렬 실행하는 다섯 process
+acceptance test는 동시에 최대 두 개까지 실행한다.
 
 ```text
-gofmt 검사
+공통:
 → go vet ./...
-→ go test ./... -count=1
-→ 4 bounded fuzz campaigns
-→ go test -race ./... -count=1
 → traceability
 → architecture
-→ atomic coverage profile generation
+→ go test ./... -parallel=2 -count=1 -covermode=atomic -coverpkg=./cmd/...,./internal/... -coverprofile=.artifacts/verification/coverage.out
+→ go test -race ./cmd/... ./internal/... -count=1
+→ 4 bounded fuzz campaigns (각 -parallel=1)
 → coverage policy
+
+CI 전용:
 → delivery mutation
 → session mutation
 ```
+
+Mutation command는 CI gate에서만 자동 실행한다. Local 개발 gate는 mutation을 제외하고
+전체 package suite, race, fuzz와 coverage 검증을 유지한다.
 
 네 fuzz campaign은 각각 별도 process와 single worker로 실행한다.
 개별 fuzz failure는 다음 exact command로 재현할 수 있다.

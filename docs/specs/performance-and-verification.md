@@ -256,11 +256,15 @@ Phase 1 acceptance는 10개 Go case, 10개 Python case, 4개 cross-SDK QoS 1 cas
 현재 Phase 0에서 mutation gate가 직접 다루는 critical state machine은
 `internal/domain/delivery/state.go`와 `internal/domain/session/state.go`다.
 두 package를 하나의 합산 점수로 평가하지 않고 package별로 독립 실행한다.
+
+`ci` 실행에서만 두 package mutation command를 수행한다. `local`은 전체 unit·integration
+suite와 bounded fuzz를 실행해 빠른 개발 피드백을 제공하고, CI는 여기에 mutation gate를 더한다.
 mutation 도구는 repository의 Go tool dependency로 고정한 Gremlins `v0.6.0`이며,
 정책은 [`tests/verification/gremlins.yaml`](../../tests/verification/gremlins.yaml)에
 둔다. 이 정책은 `workers=1`, `test-cpu=1`, `efficacy=80`, `mutant-coverage=80`을
-고정하고 source·file·mutant exclusion을 사용하지 않는다. 각 package는 다음 command와
-JSON artifact를 별도로 만든다.
+고정하고 source·file·mutant exclusion을 사용하지 않는다. 각 package의 worker는
+서로 격리된 임시 작업 디렉터리에서 독립 mutant를 검사한다. 각 package는 다음
+command와 JSON artifact를 별도로 만든다.
 
 ```text
 go tool gremlins unleash --config=tests/verification/gremlins.yaml --output=.artifacts/verification/mutation-delivery.json internal/domain/delivery
@@ -285,8 +289,8 @@ package의 실패를 상쇄하지 않는다. equivalent mutant를 별도로 제�
 정상·오류·경계 전이 assertion을 보강한다.
 
 TEST-13의 표준 fuzz campaign은 다음 네 target을 각각 별도 process로 실행한다.
-`-fuzztime=10000x`는 고정 작업량이고 `-parallel=1`은 한 process 안의 fuzz worker를
-하나로 제한한다.
+Local/CI runner는 네 process를 동시에 시작하되 각 process의 `-parallel=1`과
+`-fuzztime=10000x` 고정 quota를 유지한다.
 
 ```text
 go test ./internal/domain/mqtt -run=^$ -fuzz=^FuzzDecoder$ -fuzztime=10000x -parallel=1
@@ -377,29 +381,35 @@ go run ./tools/verify local
 go run ./tools/verify ci --base <merge-base>
 ```
 
-두 runner는 gofmt 사전 검사 뒤 아래 13개 command를 이 순서로 실행하고 첫 실패에서
-멈춘다.
+두 runner는 gofmt 사전 검사 뒤 `local` 10개, `ci` 12개 command를 실행한다. CI에만
+delivery와 session mutation command가 추가된다. Coverage profile을 사용하는 마지막
+coverage 판정만 병렬 단계가 끝날 때까지 미룬다. 나머지 독립 command는 동시에 실행하며,
+하나가 실패하면 나머지 process를 취소한다. 전체 test suite와 atomic coverage profile은
+두 runner 모두 한 번의 `go test ./...`로 수행하며, test parallel limit은 2다. 명시적으로 병렬
+실행하는 다섯 개 process acceptance test도 동시에 최대 두 개만 실행한다. race detector는 실제 production package
+test (`./cmd/...`, `./internal/...`)에 적용한다. integration suite는 별도 child broker
+process를 빌드해 실행하므로 test binary에만 적용되는 race detector가 해당 broker process를
+검사하지 않는다.
 
 ```text
 go vet ./...
-go test ./... -count=1
-4 bounded fuzz campaigns
-go test -race ./... -count=1
 go run ./tools/verify traceability
-go run ./tools/verify architecture
-atomic coverage profile generation
+go test ./... -parallel=2 -count=1 -covermode=atomic -coverpkg=./cmd/...,./internal/... -coverprofile=.artifacts/verification/coverage.out
+go test -race ./cmd/... ./internal/... -count=1
+4 bounded fuzz campaigns (concurrent, each -parallel=1)
+CI only: delivery + session mutation (concurrent, each workers=1, test-cpu=1)
 go run ./tools/verify coverage ...
-delivery mutation
-session mutation
 ```
 
-`ci`는 coverage command에만 `--base <merge-base>`를 정확히 한 번 전달한다.
-mutation command에는 diff base를 전달하지 않는다. coverage 원본과 요약은
+
+`ci`는 coverage command에만 `--base <merge-base>`를 정확히 한 번 전달한다. Mutation
+command에는 diff base를 전달하지 않는다. coverage 원본과 요약은
 `.artifacts/verification/coverage.out` 및
 `.artifacts/verification/coverage-summary.json`에, package별 mutation 결과는
 `.artifacts/verification/mutation-delivery.json`과
 `.artifacts/verification/mutation-session.json`에 남긴다. `ci`는 같은 검증에 더해
 `base...HEAD`의 production 변경 line/function diff coverage를 확인한다.
+
 
 Coverage 계산은 Go atomic coverprofile의 executable block을 합쳐 다음처럼 만든다.
 

@@ -43,6 +43,11 @@ const (
 	clusterMembershipProcessAdmin     = "process-acceptance-admin-token"
 )
 
+var clusterMembershipProcessAddressLeases = struct {
+	sync.Mutex
+	addresses map[string]struct{}
+}{addresses: make(map[string]struct{})}
+
 type clusterMembershipProcessFixture struct {
 	tempDir             string
 	repoRoot            string
@@ -85,7 +90,6 @@ func newClusterMembershipProcessFixture(t *testing.T, nodeCount int, buildTags s
 	clusterCtx, clusterCancel := context.WithTimeout(context.Background(), 10*time.Minute)
 	t.Cleanup(clusterCancel)
 	harness := newClusterMembershipProcessHarness(t, clusterCtx, repoRoot, binaryPath)
-	t.Cleanup(harness.cleanup)
 
 	ca := newClusterMembershipProcessCA(t)
 	certificates := make([]clusterMembershipProcessCertificate, nodeCount)
@@ -99,6 +103,8 @@ func newClusterMembershipProcessFixture(t *testing.T, nodeCount int, buildTags s
 	clusterMembershipProcessWriteFile(t, caPath, ca.pem, 0o600)
 
 	addresses := clusterMembershipProcessAddresses(t, 3*nodeCount)
+	t.Cleanup(harness.cleanup)
+
 	peerAddresses := addresses[0:nodeCount]
 	managementAddresses := addresses[nodeCount : 2*nodeCount]
 	mqttAddresses := addresses[2*nodeCount : 3*nodeCount]
@@ -271,6 +277,8 @@ func (f *clusterMembershipProcessFixture) stageRequestBody(memberID uint64) []by
 }
 
 func TestDynamicClusterMembershipProcessAcceptance(t *testing.T) {
+	t.Parallel()
+
 	fixture := newClusterMembershipProcessFixture(t, 4, "")
 	harness := fixture.harness
 	clusterCtx := fixture.ctx
@@ -1045,6 +1053,13 @@ func clusterMembershipProcessAddresses(t *testing.T, count int) []string {
 	t.Helper()
 	listeners := make([]net.Listener, 0, count)
 	addresses := make([]string, 0, count)
+	t.Cleanup(func() {
+		clusterMembershipProcessAddressLeases.Lock()
+		defer clusterMembershipProcessAddressLeases.Unlock()
+		for _, address := range addresses {
+			delete(clusterMembershipProcessAddressLeases.addresses, address)
+		}
+	})
 	defer func() {
 		for _, listener := range listeners {
 			_ = listener.Close()
@@ -1055,8 +1070,19 @@ func clusterMembershipProcessAddresses(t *testing.T, count int) []string {
 		if err != nil {
 			t.Fatalf("reserve loopback port: %v", err)
 		}
+		address := listener.Addr().String()
+		clusterMembershipProcessAddressLeases.Lock()
+		_, leased := clusterMembershipProcessAddressLeases.addresses[address]
+		if !leased {
+			clusterMembershipProcessAddressLeases.addresses[address] = struct{}{}
+		}
+		clusterMembershipProcessAddressLeases.Unlock()
+		if leased {
+			_ = listener.Close()
+			continue
+		}
 		listeners = append(listeners, listener)
-		addresses = append(addresses, listener.Addr().String())
+		addresses = append(addresses, address)
 	}
 	return addresses
 }

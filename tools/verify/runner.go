@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"go/format"
 	"os"
@@ -9,6 +10,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 )
 
 type commandSpec struct {
@@ -58,31 +60,94 @@ func runVerification(ctx context.Context, root string, options verificationOptio
 	if err := os.MkdirAll(filepath.Join(root, ".artifacts", "verification"), 0o755); err != nil {
 		return fmt.Errorf("create verification artifact directory: %w", err)
 	}
-	commands := []commandSpec{
-		{Name: "go", Args: []string{"vet", "./..."}},
-		{Name: "go", Args: []string{"test", "./...", "-count=1"}},
+	fuzzCommands := []commandSpec{
 		{Name: "go", Args: []string{"test", "./internal/domain/mqtt", "-run=^$", "-fuzz=^FuzzDecoder$", "-fuzztime=10000x", "-parallel=1"}},
 		{Name: "go", Args: []string{"test", "./internal/domain/mqtt", "-run=^$", "-fuzz=^FuzzCodecRoundTrip$", "-fuzztime=10000x", "-parallel=1"}},
 		{Name: "go", Args: []string{"test", "./internal/domain/routing", "-run=^$", "-fuzz=^FuzzTopicMatching$", "-fuzztime=10000x", "-parallel=1"}},
 		{Name: "go", Args: []string{"test", "./internal/domain/session", "-run=^$", "-fuzz=^FuzzLifecycleTransitions$", "-fuzztime=10000x", "-parallel=1"}},
-		{Name: "go", Args: []string{"test", "-race", "./...", "-count=1"}},
+	}
+	mutationCommands := []commandSpec{
+		{Name: "go", Args: []string{"tool", "gremlins", "unleash", "--config=tests/verification/gremlins.yaml", "--output=.artifacts/verification/mutation-delivery.json", "internal/domain/delivery"}},
+		{Name: "go", Args: []string{"tool", "gremlins", "unleash", "--config=tests/verification/gremlins.yaml", "--output=.artifacts/verification/mutation-session.json", "internal/domain/session"}},
+	}
+	preflightCommands := []commandSpec{
+		{Name: "go", Args: []string{"vet", "./..."}},
 		{Name: "go", Args: []string{"run", "./tools/verify", "traceability"}},
 		{Name: "go", Args: []string{"run", "./tools/verify", "architecture"}},
-		{Name: "go", Args: []string{"test", "./cmd/...", "./internal/...", "./tests/integration/...", "-count=1", "-covermode=atomic", "-coverpkg=./cmd/...,./internal/...", "-coverprofile=.artifacts/verification/coverage.out"}},
 	}
-	coverageArgs := []string{"run", "./tools/verify", "coverage", "--profile", ".artifacts/verification/coverage.out", "--policy", defaultCoveragePolicyPath, "--report", ".artifacts/verification/coverage-summary.json"}
-	if options.CI {
-		coverageArgs = append(coverageArgs, "--base", options.Base)
-	}
-	commands = append(commands,
+	coverageArgs := []string{"test", "./...", "-parallel=2", "-count=1", "-covermode=atomic", "-coverpkg=./cmd/...,./internal/...", "-coverprofile=.artifacts/verification/coverage.out"}
+	parallelCommands := append([]commandSpec{}, preflightCommands...)
+	parallelCommands = append(parallelCommands,
 		commandSpec{Name: "go", Args: coverageArgs},
-		commandSpec{Name: "go", Args: []string{"tool", "gremlins", "unleash", "--config=tests/verification/gremlins.yaml", "--output=.artifacts/verification/mutation-delivery.json", "internal/domain/delivery"}},
-		commandSpec{Name: "go", Args: []string{"tool", "gremlins", "unleash", "--config=tests/verification/gremlins.yaml", "--output=.artifacts/verification/mutation-session.json", "internal/domain/session"}},
+		commandSpec{Name: "go", Args: []string{"test", "-race", "./cmd/...", "./internal/...", "-count=1"}},
 	)
-	for _, command := range commands {
-		if err := runner(ctx, root, command); err != nil {
-			return fmt.Errorf("verification stopped after %s: %w", formatCommand(command), err)
+	parallelCommands = append(parallelCommands, fuzzCommands...)
+
+	if options.CI {
+		parallelCommands = append(parallelCommands, mutationCommands...)
+	}
+	if err := runConcurrent(ctx, root, parallelCommands, runner); err != nil {
+		return fmt.Errorf("verification stopped during parallel checks: %w", err)
+	}
+	coverageCommand := commandSpec{
+		Name: "go",
+		Args: []string{"run", "./tools/verify", "coverage", "--profile", ".artifacts/verification/coverage.out", "--policy", defaultCoveragePolicyPath, "--report", ".artifacts/verification/coverage-summary.json"},
+	}
+	if options.CI {
+		coverageCommand.Args = append(coverageCommand.Args, "--base", options.Base)
+	}
+	if err := runner(ctx, root, coverageCommand); err != nil {
+		return fmt.Errorf("verification stopped after %s: %w", formatCommand(coverageCommand), err)
+	}
+	return nil
+}
+
+func runConcurrent(ctx context.Context, root string, commands []commandSpec, runner commandRunner) error {
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	type result struct {
+		index int
+		err   error
+	}
+	results := make(chan result, len(commands))
+	var workers sync.WaitGroup
+	var cancelOnce sync.Once
+	for index, command := range commands {
+		workers.Add(1)
+		go func(index int, command commandSpec) {
+			defer workers.Done()
+			err := runner(ctx, root, command)
+			if err != nil {
+				cancelOnce.Do(cancel)
+			}
+			results <- result{index: index, err: err}
+		}(index, command)
+	}
+	workers.Wait()
+	close(results)
+	failures := make([]error, len(commands))
+	for result := range results {
+		if result.err != nil {
+			failures[result.index] = fmt.Errorf("%s: %w", formatCommand(commands[result.index]), result.err)
 		}
+	}
+	var failed []error
+	var canceled []error
+	for _, err := range failures {
+		if err == nil {
+			continue
+		}
+		if errors.Is(err, context.Canceled) {
+			canceled = append(canceled, err)
+			continue
+		}
+		failed = append(failed, err)
+	}
+	if len(failed) > 0 {
+		return errors.Join(failed...)
+	}
+	if ctx.Err() != nil {
+		return errors.Join(append(canceled, ctx.Err())...)
 	}
 	return nil
 }

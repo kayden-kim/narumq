@@ -260,6 +260,8 @@ func (s *clusterMembershipFailpointSupervisor) procs(ids []uint64) []*clusterMem
 }
 
 func TestDynamicClusterMembershipTransitionCrashRecovery(t *testing.T) {
+	t.Parallel()
+
 	fixture := newClusterMembershipProcessFixture(t, 6, "narumq_failpoint")
 	ctx := fixture.ctx
 	supervisor := newClusterMembershipFailpointSupervisor(t, ctx, fixture)
@@ -267,7 +269,7 @@ func TestDynamicClusterMembershipTransitionCrashRecovery(t *testing.T) {
 	// Cycle 1 initial armed states:
 	// n1: add-learner-before-persist, n2: promote-voter-before-persist, n3: disarmed
 	supervisor.start(3, fixture.bootstrapConfig(3), "")
-	time.Sleep(1500 * time.Millisecond)
+	clusterMembershipProcessWaitForStatus(t, ctx, supervisor.nodes[3], "/health/live", http.StatusOK)
 	supervisor.start(1, fixture.bootstrapConfig(1), "add-learner-before-persist")
 	supervisor.start(2, fixture.bootstrapConfig(2), "promote-voter-before-persist")
 
@@ -443,6 +445,8 @@ func TestDynamicClusterMembershipTransitionCrashRecovery(t *testing.T) {
 }
 
 func TestDynamicClusterMembershipRemovalHandoffWaitsForQuorum(t *testing.T) {
+	t.Parallel()
+
 	fixture := newClusterMembershipProcessFixture(t, 4, "narumq_failpoint")
 	ctx := fixture.ctx
 	harness := fixture.harness
@@ -452,7 +456,7 @@ func TestDynamicClusterMembershipRemovalHandoffWaitsForQuorum(t *testing.T) {
 	if err != nil {
 		t.Fatalf("start n3: %v", err)
 	}
-	time.Sleep(1500 * time.Millisecond)
+	clusterMembershipProcessWaitForStatus(t, ctx, n3, "/health/live", http.StatusOK)
 	n1, err := harness.startArmed("bootstrap node 1", fixture.bootstrapConfig(1), fixture.managementAddresses[0], "begin-remove-after-apply")
 	if err != nil {
 		t.Fatalf("start n1: %v", err)
@@ -623,6 +627,8 @@ func clusterMembershipFindLeaderByMap(t *testing.T, ctx context.Context, nodes m
 }
 
 func TestSnapshotFinalizationCrashRecoveryAcrossProcessRestart(t *testing.T) {
+	t.Parallel()
+
 	fixture := newClusterMembershipProcessFixture(t, 4, "narumq_failpoint")
 	supervisor := newClusterMembershipFailpointSupervisor(t, fixture.ctx, fixture)
 

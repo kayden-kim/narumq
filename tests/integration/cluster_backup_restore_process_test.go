@@ -21,6 +21,8 @@ import (
 
 // Traceability: CLU-14; docs/specs/cluster-session-and-delivery.md §4.1, §10, §11.7, §11.9.
 func TestClusterBackupRestoreProcessCrashAndResync(t *testing.T) {
+	t.Parallel()
+
 	fixture := newClusterMembershipProcessFixture(t, 4, "")
 	ctx := fixture.ctx
 	bootstrapConfigPaths := []string{
