@@ -512,8 +512,11 @@ func (s *Service) ListRetained(ctx context.Context, filter ports.RetainedFilter)
 	if s.retainedRepo != nil {
 		rawMessages, err := s.retainedRepo.List(now)
 		if err == nil {
-			tenantStr := s.defaultTenantID.String()
 			for _, m := range rawMessages {
+				tenantStr := m.TenantID.String()
+				if tenantStr == "" {
+					tenantStr = s.defaultTenantID.String()
+				}
 				if filter.TenantID != "" && tenantStr != filter.TenantID {
 					continue
 				}
@@ -539,8 +542,11 @@ func (s *Service) ListRetained(ctx context.Context, filter ports.RetainedFilter)
 		}
 	}
 
-	// Deterministic sorting by topic
+	// Deterministic sorting by tenant then topic.
 	sort.Slice(list, func(i, j int) bool {
+		if list[i].TenantID != list[j].TenantID {
+			return list[i].TenantID < list[j].TenantID
+		}
 		return list[i].Topic < list[j].Topic
 	})
 

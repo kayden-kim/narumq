@@ -58,6 +58,10 @@ func (queue *csvQueue) setOutboundErrors(completeErr, replaceErr error) {
 	queue.replaceOutboundErr = replaceErr
 }
 
+func (queue *csvQueue) ListQueued(sessionID routing.SessionID, now time.Time) ([]applicationdeliveryqueue.DeliveryDTO, error) {
+	return queue.Queue.ListQueued(sessionID, now)
+}
+
 func (queue *csvQueue) ListOutbound(sessionID routing.SessionID) ([]applicationdeliveryqueue.OutboundDTO, error) {
 	queue.mu.Lock()
 	hook := queue.listOutbound

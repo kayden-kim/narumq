@@ -2,7 +2,7 @@
 // versions:
 // 	protoc-gen-go v1.36.11
 // 	protoc        v5.26.1
-// source: docs/contracts/cluster-backup-v1.proto
+// source: docs/contracts/cluster-backup-v3.proto
 
 package records
 
@@ -21,7 +21,7 @@ const (
 	_ = protoimpl.EnforceVersion(protoimpl.MaxVersion - 20)
 )
 
-// Draft archive contract. Implementations must reject unknown fields.
+// Draft archive contract v3. Implementations must reject unknown fields.
 type BackupConfigurationAction int32
 
 const (
@@ -58,11 +58,11 @@ func (x BackupConfigurationAction) String() string {
 }
 
 func (BackupConfigurationAction) Descriptor() protoreflect.EnumDescriptor {
-	return file_docs_contracts_cluster_backup_v1_proto_enumTypes[0].Descriptor()
+	return file_docs_contracts_cluster_backup_v3_proto_enumTypes[0].Descriptor()
 }
 
 func (BackupConfigurationAction) Type() protoreflect.EnumType {
-	return &file_docs_contracts_cluster_backup_v1_proto_enumTypes[0]
+	return &file_docs_contracts_cluster_backup_v3_proto_enumTypes[0]
 }
 
 func (x BackupConfigurationAction) Number() protoreflect.EnumNumber {
@@ -71,7 +71,7 @@ func (x BackupConfigurationAction) Number() protoreflect.EnumNumber {
 
 // Deprecated: Use BackupConfigurationAction.Descriptor instead.
 func (BackupConfigurationAction) EnumDescriptor() ([]byte, []int) {
-	return file_docs_contracts_cluster_backup_v1_proto_rawDescGZIP(), []int{0}
+	return file_docs_contracts_cluster_backup_v3_proto_rawDescGZIP(), []int{0}
 }
 
 type BackupKindSummary struct {
@@ -84,7 +84,7 @@ type BackupKindSummary struct {
 
 func (x *BackupKindSummary) Reset() {
 	*x = BackupKindSummary{}
-	mi := &file_docs_contracts_cluster_backup_v1_proto_msgTypes[0]
+	mi := &file_docs_contracts_cluster_backup_v3_proto_msgTypes[0]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -96,7 +96,7 @@ func (x *BackupKindSummary) String() string {
 func (*BackupKindSummary) ProtoMessage() {}
 
 func (x *BackupKindSummary) ProtoReflect() protoreflect.Message {
-	mi := &file_docs_contracts_cluster_backup_v1_proto_msgTypes[0]
+	mi := &file_docs_contracts_cluster_backup_v3_proto_msgTypes[0]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -109,7 +109,7 @@ func (x *BackupKindSummary) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use BackupKindSummary.ProtoReflect.Descriptor instead.
 func (*BackupKindSummary) Descriptor() ([]byte, []int) {
-	return file_docs_contracts_cluster_backup_v1_proto_rawDescGZIP(), []int{0}
+	return file_docs_contracts_cluster_backup_v3_proto_rawDescGZIP(), []int{0}
 }
 
 func (x *BackupKindSummary) GetCount() uint64 {
@@ -127,24 +127,25 @@ func (x *BackupKindSummary) GetSha256() []byte {
 }
 
 type BackupStateSummary struct {
-	state              protoimpl.MessageState `protogen:"open.v1"`
-	LastIncludedIndex  uint64                 `protobuf:"varint,1,opt,name=last_included_index,json=lastIncludedIndex,proto3" json:"last_included_index,omitempty"`
-	ObjectCount        uint64                 `protobuf:"varint,2,opt,name=object_count,json=objectCount,proto3" json:"object_count,omitempty"`
-	Sha256             []byte                 `protobuf:"bytes,3,opt,name=sha256,proto3" json:"sha256,omitempty"`
-	Members            *BackupKindSummary     `protobuf:"bytes,4,opt,name=members,proto3" json:"members,omitempty"`
-	Tenants            *BackupKindSummary     `protobuf:"bytes,5,opt,name=tenants,proto3" json:"tenants,omitempty"`
-	Sessions           *BackupKindSummary     `protobuf:"bytes,6,opt,name=sessions,proto3" json:"sessions,omitempty"`
-	Subscriptions      *BackupKindSummary     `protobuf:"bytes,7,opt,name=subscriptions,proto3" json:"subscriptions,omitempty"`
-	Inflight           *BackupKindSummary     `protobuf:"bytes,8,opt,name=inflight,proto3" json:"inflight,omitempty"`
-	MembershipHistory  *BackupKindSummary     `protobuf:"bytes,9,opt,name=membership_history,json=membershipHistory,proto3" json:"membership_history,omitempty"`
-	NotReplicatedKinds []string               `protobuf:"bytes,10,rep,name=not_replicated_kinds,json=notReplicatedKinds,proto3" json:"not_replicated_kinds,omitempty"`
-	unknownFields      protoimpl.UnknownFields
-	sizeCache          protoimpl.SizeCache
+	state             protoimpl.MessageState `protogen:"open.v1"`
+	LastIncludedIndex uint64                 `protobuf:"varint,1,opt,name=last_included_index,json=lastIncludedIndex,proto3" json:"last_included_index,omitempty"`
+	ObjectCount       uint64                 `protobuf:"varint,2,opt,name=object_count,json=objectCount,proto3" json:"object_count,omitempty"`
+	Sha256            []byte                 `protobuf:"bytes,3,opt,name=sha256,proto3" json:"sha256,omitempty"`
+	Members           *BackupKindSummary     `protobuf:"bytes,4,opt,name=members,proto3" json:"members,omitempty"`
+	Tenants           *BackupKindSummary     `protobuf:"bytes,5,opt,name=tenants,proto3" json:"tenants,omitempty"`
+	Sessions          *BackupKindSummary     `protobuf:"bytes,6,opt,name=sessions,proto3" json:"sessions,omitempty"`
+	Subscriptions     *BackupKindSummary     `protobuf:"bytes,7,opt,name=subscriptions,proto3" json:"subscriptions,omitempty"`
+	Inflight          *BackupKindSummary     `protobuf:"bytes,8,opt,name=inflight,proto3" json:"inflight,omitempty"`
+	MembershipHistory *BackupKindSummary     `protobuf:"bytes,9,opt,name=membership_history,json=membershipHistory,proto3" json:"membership_history,omitempty"`
+	Retained          *BackupKindSummary     `protobuf:"bytes,11,opt,name=retained,proto3" json:"retained,omitempty"`
+	Offline           *BackupKindSummary     `protobuf:"bytes,12,opt,name=offline,proto3" json:"offline,omitempty"`
+	unknownFields     protoimpl.UnknownFields
+	sizeCache         protoimpl.SizeCache
 }
 
 func (x *BackupStateSummary) Reset() {
 	*x = BackupStateSummary{}
-	mi := &file_docs_contracts_cluster_backup_v1_proto_msgTypes[1]
+	mi := &file_docs_contracts_cluster_backup_v3_proto_msgTypes[1]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -156,7 +157,7 @@ func (x *BackupStateSummary) String() string {
 func (*BackupStateSummary) ProtoMessage() {}
 
 func (x *BackupStateSummary) ProtoReflect() protoreflect.Message {
-	mi := &file_docs_contracts_cluster_backup_v1_proto_msgTypes[1]
+	mi := &file_docs_contracts_cluster_backup_v3_proto_msgTypes[1]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -169,7 +170,7 @@ func (x *BackupStateSummary) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use BackupStateSummary.ProtoReflect.Descriptor instead.
 func (*BackupStateSummary) Descriptor() ([]byte, []int) {
-	return file_docs_contracts_cluster_backup_v1_proto_rawDescGZIP(), []int{1}
+	return file_docs_contracts_cluster_backup_v3_proto_rawDescGZIP(), []int{1}
 }
 
 func (x *BackupStateSummary) GetLastIncludedIndex() uint64 {
@@ -235,9 +236,16 @@ func (x *BackupStateSummary) GetMembershipHistory() *BackupKindSummary {
 	return nil
 }
 
-func (x *BackupStateSummary) GetNotReplicatedKinds() []string {
+func (x *BackupStateSummary) GetRetained() *BackupKindSummary {
 	if x != nil {
-		return x.NotReplicatedKinds
+		return x.Retained
+	}
+	return nil
+}
+
+func (x *BackupStateSummary) GetOffline() *BackupKindSummary {
+	if x != nil {
+		return x.Offline
 	}
 	return nil
 }
@@ -268,7 +276,7 @@ type BackupManifest struct {
 
 func (x *BackupManifest) Reset() {
 	*x = BackupManifest{}
-	mi := &file_docs_contracts_cluster_backup_v1_proto_msgTypes[2]
+	mi := &file_docs_contracts_cluster_backup_v3_proto_msgTypes[2]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -280,7 +288,7 @@ func (x *BackupManifest) String() string {
 func (*BackupManifest) ProtoMessage() {}
 
 func (x *BackupManifest) ProtoReflect() protoreflect.Message {
-	mi := &file_docs_contracts_cluster_backup_v1_proto_msgTypes[2]
+	mi := &file_docs_contracts_cluster_backup_v3_proto_msgTypes[2]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -293,7 +301,7 @@ func (x *BackupManifest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use BackupManifest.ProtoReflect.Descriptor instead.
 func (*BackupManifest) Descriptor() ([]byte, []int) {
-	return file_docs_contracts_cluster_backup_v1_proto_rawDescGZIP(), []int{2}
+	return file_docs_contracts_cluster_backup_v3_proto_rawDescGZIP(), []int{2}
 }
 
 func (x *BackupManifest) GetFormatMajor() uint32 {
@@ -426,14 +434,14 @@ type BackupConfigurationChange struct {
 	state         protoimpl.MessageState    `protogen:"open.v1"`
 	OperationId   string                    `protobuf:"bytes,1,opt,name=operation_id,json=operationId,proto3" json:"operation_id,omitempty"`
 	MemberId      uint64                    `protobuf:"varint,2,opt,name=member_id,json=memberId,proto3" json:"member_id,omitempty"`
-	Action        BackupConfigurationAction `protobuf:"varint,3,opt,name=action,proto3,enum=narumq.cluster.backup.v1.BackupConfigurationAction" json:"action,omitempty"`
+	Action        BackupConfigurationAction `protobuf:"varint,3,opt,name=action,proto3,enum=narumq.cluster.backup.v3.BackupConfigurationAction" json:"action,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
 
 func (x *BackupConfigurationChange) Reset() {
 	*x = BackupConfigurationChange{}
-	mi := &file_docs_contracts_cluster_backup_v1_proto_msgTypes[3]
+	mi := &file_docs_contracts_cluster_backup_v3_proto_msgTypes[3]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -445,7 +453,7 @@ func (x *BackupConfigurationChange) String() string {
 func (*BackupConfigurationChange) ProtoMessage() {}
 
 func (x *BackupConfigurationChange) ProtoReflect() protoreflect.Message {
-	mi := &file_docs_contracts_cluster_backup_v1_proto_msgTypes[3]
+	mi := &file_docs_contracts_cluster_backup_v3_proto_msgTypes[3]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -458,7 +466,7 @@ func (x *BackupConfigurationChange) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use BackupConfigurationChange.ProtoReflect.Descriptor instead.
 func (*BackupConfigurationChange) Descriptor() ([]byte, []int) {
-	return file_docs_contracts_cluster_backup_v1_proto_rawDescGZIP(), []int{3}
+	return file_docs_contracts_cluster_backup_v3_proto_rawDescGZIP(), []int{3}
 }
 
 func (x *BackupConfigurationChange) GetOperationId() string {
@@ -496,7 +504,7 @@ type BackupEntry struct {
 
 func (x *BackupEntry) Reset() {
 	*x = BackupEntry{}
-	mi := &file_docs_contracts_cluster_backup_v1_proto_msgTypes[4]
+	mi := &file_docs_contracts_cluster_backup_v3_proto_msgTypes[4]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -508,7 +516,7 @@ func (x *BackupEntry) String() string {
 func (*BackupEntry) ProtoMessage() {}
 
 func (x *BackupEntry) ProtoReflect() protoreflect.Message {
-	mi := &file_docs_contracts_cluster_backup_v1_proto_msgTypes[4]
+	mi := &file_docs_contracts_cluster_backup_v3_proto_msgTypes[4]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -521,7 +529,7 @@ func (x *BackupEntry) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use BackupEntry.ProtoReflect.Descriptor instead.
 func (*BackupEntry) Descriptor() ([]byte, []int) {
-	return file_docs_contracts_cluster_backup_v1_proto_rawDescGZIP(), []int{4}
+	return file_docs_contracts_cluster_backup_v3_proto_rawDescGZIP(), []int{4}
 }
 
 func (x *BackupEntry) GetIndex() uint64 {
@@ -572,26 +580,27 @@ func (*BackupEntry_Command) isBackupEntry_Payload() {}
 
 func (*BackupEntry_Configuration) isBackupEntry_Payload() {}
 
-var File_docs_contracts_cluster_backup_v1_proto protoreflect.FileDescriptor
+var File_docs_contracts_cluster_backup_v3_proto protoreflect.FileDescriptor
 
-const file_docs_contracts_cluster_backup_v1_proto_rawDesc = "" +
+const file_docs_contracts_cluster_backup_v3_proto_rawDesc = "" +
 	"\n" +
-	"&docs/contracts/cluster-backup-v1.proto\x12\x18narumq.cluster.backup.v1\"A\n" +
+	"&docs/contracts/cluster-backup-v3.proto\x12\x18narumq.cluster.backup.v3\"A\n" +
 	"\x11BackupKindSummary\x12\x14\n" +
 	"\x05count\x18\x01 \x01(\x04R\x05count\x12\x16\n" +
-	"\x06sha256\x18\x02 \x01(\fR\x06sha256\"\x80\x05\n" +
+	"\x06sha256\x18\x02 \x01(\fR\x06sha256\"\xfa\x05\n" +
 	"\x12BackupStateSummary\x12.\n" +
 	"\x13last_included_index\x18\x01 \x01(\x04R\x11lastIncludedIndex\x12!\n" +
 	"\fobject_count\x18\x02 \x01(\x04R\vobjectCount\x12\x16\n" +
 	"\x06sha256\x18\x03 \x01(\fR\x06sha256\x12E\n" +
-	"\amembers\x18\x04 \x01(\v2+.narumq.cluster.backup.v1.BackupKindSummaryR\amembers\x12E\n" +
-	"\atenants\x18\x05 \x01(\v2+.narumq.cluster.backup.v1.BackupKindSummaryR\atenants\x12G\n" +
-	"\bsessions\x18\x06 \x01(\v2+.narumq.cluster.backup.v1.BackupKindSummaryR\bsessions\x12Q\n" +
-	"\rsubscriptions\x18\a \x01(\v2+.narumq.cluster.backup.v1.BackupKindSummaryR\rsubscriptions\x12G\n" +
-	"\binflight\x18\b \x01(\v2+.narumq.cluster.backup.v1.BackupKindSummaryR\binflight\x12Z\n" +
-	"\x12membership_history\x18\t \x01(\v2+.narumq.cluster.backup.v1.BackupKindSummaryR\x11membershipHistory\x120\n" +
-	"\x14not_replicated_kinds\x18\n" +
-	" \x03(\tR\x12notReplicatedKinds\"\x8b\x06\n" +
+	"\amembers\x18\x04 \x01(\v2+.narumq.cluster.backup.v3.BackupKindSummaryR\amembers\x12E\n" +
+	"\atenants\x18\x05 \x01(\v2+.narumq.cluster.backup.v3.BackupKindSummaryR\atenants\x12G\n" +
+	"\bsessions\x18\x06 \x01(\v2+.narumq.cluster.backup.v3.BackupKindSummaryR\bsessions\x12Q\n" +
+	"\rsubscriptions\x18\a \x01(\v2+.narumq.cluster.backup.v3.BackupKindSummaryR\rsubscriptions\x12G\n" +
+	"\binflight\x18\b \x01(\v2+.narumq.cluster.backup.v3.BackupKindSummaryR\binflight\x12Z\n" +
+	"\x12membership_history\x18\t \x01(\v2+.narumq.cluster.backup.v3.BackupKindSummaryR\x11membershipHistory\x12G\n" +
+	"\bretained\x18\v \x01(\v2+.narumq.cluster.backup.v3.BackupKindSummaryR\bretained\x12E\n" +
+	"\aoffline\x18\f \x01(\v2+.narumq.cluster.backup.v3.BackupKindSummaryR\aofflineJ\x04\b\n" +
+	"\x10\vR\x14not_replicated_kinds\"\x8b\x06\n" +
 	"\x0eBackupManifest\x12!\n" +
 	"\fformat_major\x18\x01 \x01(\rR\vformatMajor\x12!\n" +
 	"\fformat_minor\x18\x02 \x01(\rR\vformatMinor\x12\x1d\n" +
@@ -615,15 +624,15 @@ const file_docs_contracts_cluster_backup_v1_proto_rawDesc = "" +
 	"learnerIds\x12\x1f\n" +
 	"\ventry_count\x18\x11 \x01(\x04R\n" +
 	"entryCount\x12S\n" +
-	"\x0eboundary_state\x18\x12 \x01(\v2,.narumq.cluster.backup.v1.BackupStateSummaryR\rboundaryState\"\xa8\x01\n" +
+	"\x0eboundary_state\x18\x12 \x01(\v2,.narumq.cluster.backup.v3.BackupStateSummaryR\rboundaryState\"\xa8\x01\n" +
 	"\x19BackupConfigurationChange\x12!\n" +
 	"\foperation_id\x18\x01 \x01(\tR\voperationId\x12\x1b\n" +
 	"\tmember_id\x18\x02 \x01(\x04R\bmemberId\x12K\n" +
-	"\x06action\x18\x03 \x01(\x0e23.narumq.cluster.backup.v1.BackupConfigurationActionR\x06action\"\xa7\x01\n" +
+	"\x06action\x18\x03 \x01(\x0e23.narumq.cluster.backup.v3.BackupConfigurationActionR\x06action\"\xa7\x01\n" +
 	"\vBackupEntry\x12\x14\n" +
 	"\x05index\x18\x01 \x01(\x04R\x05index\x12\x1a\n" +
 	"\acommand\x18\x02 \x01(\fH\x00R\acommand\x12[\n" +
-	"\rconfiguration\x18\x03 \x01(\v23.narumq.cluster.backup.v1.BackupConfigurationChangeH\x00R\rconfigurationB\t\n" +
+	"\rconfiguration\x18\x03 \x01(\v23.narumq.cluster.backup.v3.BackupConfigurationChangeH\x00R\rconfigurationB\t\n" +
 	"\apayload*\xcc\x01\n" +
 	"\x19BackupConfigurationAction\x12+\n" +
 	"'BACKUP_CONFIGURATION_ACTION_UNSPECIFIED\x10\x00\x12+\n" +
@@ -632,50 +641,52 @@ const file_docs_contracts_cluster_backup_v1_proto_rawDesc = "" +
 	"\"BACKUP_CONFIGURATION_ACTION_REMOVE\x10\x03B/Z-narumq/internal/adapters/raft/records;recordsb\x06proto3"
 
 var (
-	file_docs_contracts_cluster_backup_v1_proto_rawDescOnce sync.Once
-	file_docs_contracts_cluster_backup_v1_proto_rawDescData []byte
+	file_docs_contracts_cluster_backup_v3_proto_rawDescOnce sync.Once
+	file_docs_contracts_cluster_backup_v3_proto_rawDescData []byte
 )
 
-func file_docs_contracts_cluster_backup_v1_proto_rawDescGZIP() []byte {
-	file_docs_contracts_cluster_backup_v1_proto_rawDescOnce.Do(func() {
-		file_docs_contracts_cluster_backup_v1_proto_rawDescData = protoimpl.X.CompressGZIP(unsafe.Slice(unsafe.StringData(file_docs_contracts_cluster_backup_v1_proto_rawDesc), len(file_docs_contracts_cluster_backup_v1_proto_rawDesc)))
+func file_docs_contracts_cluster_backup_v3_proto_rawDescGZIP() []byte {
+	file_docs_contracts_cluster_backup_v3_proto_rawDescOnce.Do(func() {
+		file_docs_contracts_cluster_backup_v3_proto_rawDescData = protoimpl.X.CompressGZIP(unsafe.Slice(unsafe.StringData(file_docs_contracts_cluster_backup_v3_proto_rawDesc), len(file_docs_contracts_cluster_backup_v3_proto_rawDesc)))
 	})
-	return file_docs_contracts_cluster_backup_v1_proto_rawDescData
+	return file_docs_contracts_cluster_backup_v3_proto_rawDescData
 }
 
-var file_docs_contracts_cluster_backup_v1_proto_enumTypes = make([]protoimpl.EnumInfo, 1)
-var file_docs_contracts_cluster_backup_v1_proto_msgTypes = make([]protoimpl.MessageInfo, 5)
-var file_docs_contracts_cluster_backup_v1_proto_goTypes = []any{
-	(BackupConfigurationAction)(0),    // 0: narumq.cluster.backup.v1.BackupConfigurationAction
-	(*BackupKindSummary)(nil),         // 1: narumq.cluster.backup.v1.BackupKindSummary
-	(*BackupStateSummary)(nil),        // 2: narumq.cluster.backup.v1.BackupStateSummary
-	(*BackupManifest)(nil),            // 3: narumq.cluster.backup.v1.BackupManifest
-	(*BackupConfigurationChange)(nil), // 4: narumq.cluster.backup.v1.BackupConfigurationChange
-	(*BackupEntry)(nil),               // 5: narumq.cluster.backup.v1.BackupEntry
+var file_docs_contracts_cluster_backup_v3_proto_enumTypes = make([]protoimpl.EnumInfo, 1)
+var file_docs_contracts_cluster_backup_v3_proto_msgTypes = make([]protoimpl.MessageInfo, 5)
+var file_docs_contracts_cluster_backup_v3_proto_goTypes = []any{
+	(BackupConfigurationAction)(0),    // 0: narumq.cluster.backup.v3.BackupConfigurationAction
+	(*BackupKindSummary)(nil),         // 1: narumq.cluster.backup.v3.BackupKindSummary
+	(*BackupStateSummary)(nil),        // 2: narumq.cluster.backup.v3.BackupStateSummary
+	(*BackupManifest)(nil),            // 3: narumq.cluster.backup.v3.BackupManifest
+	(*BackupConfigurationChange)(nil), // 4: narumq.cluster.backup.v3.BackupConfigurationChange
+	(*BackupEntry)(nil),               // 5: narumq.cluster.backup.v3.BackupEntry
 }
-var file_docs_contracts_cluster_backup_v1_proto_depIdxs = []int32{
-	1, // 0: narumq.cluster.backup.v1.BackupStateSummary.members:type_name -> narumq.cluster.backup.v1.BackupKindSummary
-	1, // 1: narumq.cluster.backup.v1.BackupStateSummary.tenants:type_name -> narumq.cluster.backup.v1.BackupKindSummary
-	1, // 2: narumq.cluster.backup.v1.BackupStateSummary.sessions:type_name -> narumq.cluster.backup.v1.BackupKindSummary
-	1, // 3: narumq.cluster.backup.v1.BackupStateSummary.subscriptions:type_name -> narumq.cluster.backup.v1.BackupKindSummary
-	1, // 4: narumq.cluster.backup.v1.BackupStateSummary.inflight:type_name -> narumq.cluster.backup.v1.BackupKindSummary
-	1, // 5: narumq.cluster.backup.v1.BackupStateSummary.membership_history:type_name -> narumq.cluster.backup.v1.BackupKindSummary
-	2, // 6: narumq.cluster.backup.v1.BackupManifest.boundary_state:type_name -> narumq.cluster.backup.v1.BackupStateSummary
-	0, // 7: narumq.cluster.backup.v1.BackupConfigurationChange.action:type_name -> narumq.cluster.backup.v1.BackupConfigurationAction
-	4, // 8: narumq.cluster.backup.v1.BackupEntry.configuration:type_name -> narumq.cluster.backup.v1.BackupConfigurationChange
-	9, // [9:9] is the sub-list for method output_type
-	9, // [9:9] is the sub-list for method input_type
-	9, // [9:9] is the sub-list for extension type_name
-	9, // [9:9] is the sub-list for extension extendee
-	0, // [0:9] is the sub-list for field type_name
+var file_docs_contracts_cluster_backup_v3_proto_depIdxs = []int32{
+	1,  // 0: narumq.cluster.backup.v3.BackupStateSummary.members:type_name -> narumq.cluster.backup.v3.BackupKindSummary
+	1,  // 1: narumq.cluster.backup.v3.BackupStateSummary.tenants:type_name -> narumq.cluster.backup.v3.BackupKindSummary
+	1,  // 2: narumq.cluster.backup.v3.BackupStateSummary.sessions:type_name -> narumq.cluster.backup.v3.BackupKindSummary
+	1,  // 3: narumq.cluster.backup.v3.BackupStateSummary.subscriptions:type_name -> narumq.cluster.backup.v3.BackupKindSummary
+	1,  // 4: narumq.cluster.backup.v3.BackupStateSummary.inflight:type_name -> narumq.cluster.backup.v3.BackupKindSummary
+	1,  // 5: narumq.cluster.backup.v3.BackupStateSummary.membership_history:type_name -> narumq.cluster.backup.v3.BackupKindSummary
+	1,  // 6: narumq.cluster.backup.v3.BackupStateSummary.retained:type_name -> narumq.cluster.backup.v3.BackupKindSummary
+	1,  // 7: narumq.cluster.backup.v3.BackupStateSummary.offline:type_name -> narumq.cluster.backup.v3.BackupKindSummary
+	2,  // 8: narumq.cluster.backup.v3.BackupManifest.boundary_state:type_name -> narumq.cluster.backup.v3.BackupStateSummary
+	0,  // 9: narumq.cluster.backup.v3.BackupConfigurationChange.action:type_name -> narumq.cluster.backup.v3.BackupConfigurationAction
+	4,  // 10: narumq.cluster.backup.v3.BackupEntry.configuration:type_name -> narumq.cluster.backup.v3.BackupConfigurationChange
+	11, // [11:11] is the sub-list for method output_type
+	11, // [11:11] is the sub-list for method input_type
+	11, // [11:11] is the sub-list for extension type_name
+	11, // [11:11] is the sub-list for extension extendee
+	0,  // [0:11] is the sub-list for field type_name
 }
 
-func init() { file_docs_contracts_cluster_backup_v1_proto_init() }
-func file_docs_contracts_cluster_backup_v1_proto_init() {
-	if File_docs_contracts_cluster_backup_v1_proto != nil {
+func init() { file_docs_contracts_cluster_backup_v3_proto_init() }
+func file_docs_contracts_cluster_backup_v3_proto_init() {
+	if File_docs_contracts_cluster_backup_v3_proto != nil {
 		return
 	}
-	file_docs_contracts_cluster_backup_v1_proto_msgTypes[4].OneofWrappers = []any{
+	file_docs_contracts_cluster_backup_v3_proto_msgTypes[4].OneofWrappers = []any{
 		(*BackupEntry_Command)(nil),
 		(*BackupEntry_Configuration)(nil),
 	}
@@ -683,18 +694,18 @@ func file_docs_contracts_cluster_backup_v1_proto_init() {
 	out := protoimpl.TypeBuilder{
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
-			RawDescriptor: unsafe.Slice(unsafe.StringData(file_docs_contracts_cluster_backup_v1_proto_rawDesc), len(file_docs_contracts_cluster_backup_v1_proto_rawDesc)),
+			RawDescriptor: unsafe.Slice(unsafe.StringData(file_docs_contracts_cluster_backup_v3_proto_rawDesc), len(file_docs_contracts_cluster_backup_v3_proto_rawDesc)),
 			NumEnums:      1,
 			NumMessages:   5,
 			NumExtensions: 0,
 			NumServices:   0,
 		},
-		GoTypes:           file_docs_contracts_cluster_backup_v1_proto_goTypes,
-		DependencyIndexes: file_docs_contracts_cluster_backup_v1_proto_depIdxs,
-		EnumInfos:         file_docs_contracts_cluster_backup_v1_proto_enumTypes,
-		MessageInfos:      file_docs_contracts_cluster_backup_v1_proto_msgTypes,
+		GoTypes:           file_docs_contracts_cluster_backup_v3_proto_goTypes,
+		DependencyIndexes: file_docs_contracts_cluster_backup_v3_proto_depIdxs,
+		EnumInfos:         file_docs_contracts_cluster_backup_v3_proto_enumTypes,
+		MessageInfos:      file_docs_contracts_cluster_backup_v3_proto_msgTypes,
 	}.Build()
-	File_docs_contracts_cluster_backup_v1_proto = out.File
-	file_docs_contracts_cluster_backup_v1_proto_goTypes = nil
-	file_docs_contracts_cluster_backup_v1_proto_depIdxs = nil
+	File_docs_contracts_cluster_backup_v3_proto = out.File
+	file_docs_contracts_cluster_backup_v3_proto_goTypes = nil
+	file_docs_contracts_cluster_backup_v3_proto_depIdxs = nil
 }

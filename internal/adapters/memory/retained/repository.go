@@ -11,7 +11,13 @@ import (
 	applicationretained "narumq/internal/application/ports/retained"
 	"narumq/internal/domain/mqtt"
 	"narumq/internal/domain/routing"
+	"narumq/internal/domain/tenancy"
 )
+
+type retainedKey struct {
+	tenant string
+	topic  string
+}
 
 var (
 	// ErrInvalidCapacity means that a retained repository cannot enforce a
@@ -21,18 +27,18 @@ var (
 	ErrInvalidMessage = errors.New("retained message is invalid")
 )
 
-// Repository stores one owned retained value per exact topic.
+// Repository stores one owned retained value per tenant and exact topic.
 type Repository struct {
 	mu          sync.Mutex
 	maxMessages int
 	maxBytes    int
 	bytes       int
-	messages    map[string]applicationretained.MessageDTO
+	messages    map[retainedKey]applicationretained.MessageDTO
 	metrics     portsmetrics.MetricsRecorder
 }
 
 // New creates a retained repository bounded by message count and aggregate
-// topic, payload, and publisher-session identity bytes.
+// tenant, topic, payload, and publisher-session identity bytes.
 func New(maxMessages, maxBytes int, recorder ...portsmetrics.MetricsRecorder) (*Repository, error) {
 	if maxMessages <= 0 || maxBytes <= 0 {
 		return nil, ErrInvalidCapacity
@@ -44,7 +50,7 @@ func New(maxMessages, maxBytes int, recorder ...portsmetrics.MetricsRecorder) (*
 	return &Repository{
 		maxMessages: maxMessages,
 		maxBytes:    maxBytes,
-		messages:    make(map[string]applicationretained.MessageDTO),
+		messages:    make(map[retainedKey]applicationretained.MessageDTO),
 		metrics:     metrics,
 	}, nil
 }
@@ -60,8 +66,8 @@ func (repository *Repository) SetMetricsRecorder(metrics portsmetrics.MetricsRec
 	repository.recordStatsLocked()
 }
 
-// Replace atomically replaces the exact-topic value or returns ErrFull without
-// changing the previous value. Payload is copied before it is retained.
+// Replace atomically replaces the tenant's exact-topic value or returns ErrFull
+// without changing the previous value. Payload is copied before it is retained.
 func (repository *Repository) Replace(message applicationretained.MessageDTO, now time.Time) error {
 	if repository == nil {
 		return ErrInvalidCapacity
@@ -74,7 +80,8 @@ func (repository *Repository) Replace(message applicationretained.MessageDTO, no
 	repository.mu.Lock()
 	defer repository.mu.Unlock()
 	repository.purgeExpiredLocked(now)
-	previous, exists := repository.messages[message.Topic]
+	key := retainedKey{tenant: message.TenantID.String(), topic: message.Topic}
+	previous, exists := repository.messages[key]
 	currentCount := len(repository.messages)
 	currentBytes := repository.bytes
 	if exists {
@@ -86,34 +93,70 @@ func (repository *Repository) Replace(message applicationretained.MessageDTO, no
 		return applicationretained.ErrFull
 	}
 	message.Payload = cloneBytes(message.Payload)
-	repository.messages[message.Topic] = message
+	repository.messages[key] = message
 	repository.bytes = currentBytes + messageBytes
 	repository.recordStatsLocked()
 	return nil
 }
 
-// Delete removes the exact-topic value. Deleting an absent value succeeds.
-func (repository *Repository) Delete(topic string) error {
+// ReplaceAll atomically replaces every retained value without purging expiry.
+func (repository *Repository) ReplaceAll(messages []applicationretained.MessageDTO) error {
+	if repository == nil {
+		return ErrInvalidCapacity
+	}
+	if len(messages) > repository.maxMessages {
+		return applicationretained.ErrFull
+	}
+	next := make(map[retainedKey]applicationretained.MessageDTO, len(messages))
+	totalBytes := 0
+	for _, message := range messages {
+		if err := validateMessage(message); err != nil {
+			return err
+		}
+		key := retainedKey{tenant: message.TenantID.String(), topic: message.Topic}
+		if _, exists := next[key]; exists {
+			return ErrInvalidMessage
+		}
+		messageBytes := retainedBytes(message)
+		if messageBytes > repository.maxBytes-totalBytes {
+			return applicationretained.ErrFull
+		}
+		totalBytes += messageBytes
+		message.Payload = cloneBytes(message.Payload)
+		next[key] = message
+	}
+
+	repository.mu.Lock()
+	defer repository.mu.Unlock()
+	repository.messages = next
+	repository.bytes = totalBytes
+	repository.recordStatsLocked()
+	return nil
+}
+
+// Delete removes one tenant's exact-topic value. Deleting an absent value succeeds.
+func (repository *Repository) Delete(tenantID tenancy.TenantID, topic string) error {
 	if repository == nil {
 		return ErrInvalidCapacity
 	}
 	if err := routing.ValidateTopicName(topic); err != nil {
 		return err
 	}
+	key := retainedKey{tenant: tenantID.String(), topic: topic}
 	repository.mu.Lock()
 	defer repository.mu.Unlock()
-	message, exists := repository.messages[topic]
+	message, exists := repository.messages[key]
 	if !exists {
 		return nil
 	}
-	delete(repository.messages, topic)
+	delete(repository.messages, key)
 	repository.bytes -= retainedBytes(message)
 	repository.recordStatsLocked()
 	return nil
 }
 
-// List returns a topic-sorted snapshot with payloads independent from storage
-// and from one another.
+// List returns a (tenant, topic)-sorted snapshot with payloads independent from
+// storage and from one another.
 func (repository *Repository) List(now time.Time) ([]applicationretained.MessageDTO, error) {
 	if repository == nil {
 		return nil, ErrInvalidCapacity
@@ -128,6 +171,11 @@ func (repository *Repository) List(now time.Time) ([]applicationretained.Message
 		messages = append(messages, message)
 	}
 	sort.Slice(messages, func(left, right int) bool {
+		leftTenant := messages[left].TenantID.String()
+		rightTenant := messages[right].TenantID.String()
+		if leftTenant != rightTenant {
+			return leftTenant < rightTenant
+		}
 		return messages[left].Topic < messages[right].Topic
 	})
 	return messages, nil
@@ -143,12 +191,13 @@ func (repository *Repository) Stats(now time.Time) (int, int) {
 	repository.recordStatsLocked()
 	return len(repository.messages), repository.bytes
 }
+
 func (repository *Repository) purgeExpiredLocked(now time.Time) {
-	for topic, message := range repository.messages {
+	for key, message := range repository.messages {
 		if message.ExpiresAt.IsZero() || now.Before(message.ExpiresAt) {
 			continue
 		}
-		delete(repository.messages, topic)
+		delete(repository.messages, key)
 		repository.bytes -= retainedBytes(message)
 	}
 }
@@ -176,7 +225,7 @@ func validateMessage(message applicationretained.MessageDTO) error {
 }
 
 func retainedBytes(message applicationretained.MessageDTO) int {
-	return len(message.Topic) + len(message.Payload) + len(message.PublisherSessionID)
+	return len(message.TenantID.String()) + len(message.Topic) + len(message.Payload) + len(message.PublisherSessionID)
 }
 
 func cloneBytes(value []byte) []byte {

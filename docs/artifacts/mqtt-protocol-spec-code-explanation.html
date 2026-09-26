@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <meta name="description" content="NaruMQ MQTT 프로토콜, 라우팅, 제한된 전달 큐, QoS 상태, 세션 상태가 실제 코드에서 연결되는 과정을 설명하는 문서">
+  <meta name="description" content="NaruMQ MQTT 프로토콜, 라우팅, standalone retained memory와 dynamic cluster Raft retained state, QoS와 세션 전달 흐름을 설명하는 문서">
   <title>NaruMQ MQTT 프로토콜과 코드 흐름</title>
   <style>
     :root {
@@ -129,13 +129,12 @@
       <h1>네트워크 바이트가 검증된 메시지와 세션 상태가 되기까지</h1>
       <p class="lead">
         이 문서는 MQTT 패킷을 읽고 쓰는 코드만 따로 설명하지 않습니다.
-        <strong>연결 요청이 들어와 세션이 열리고, subscription option이 보존되고, retained publication이 bounded repository를 갱신하고, 발행 메시지가 맞는 구독자의 제한된 큐에 들어간 뒤, 다시 MQTT 응답 바이트가 나가는 전체 흐름</strong>을 실제 코드와 현재 loopback TCP 실행 범위에 연결합니다.
+        <strong>연결 요청이 들어와 세션이 열리고, subscription option이 보존되고, standalone retained publication이 bounded memory를 갱신하거나 dynamic cluster retained publication이 tenant별 Raft state에 commit되고, 발행 메시지가 맞는 구독자의 제한된 큐에 들어간 뒤 MQTT 응답 바이트가 나가는 흐름</strong>을 실제 코드, standalone loopback TCP, cluster process acceptance에 연결합니다.
       </p>
       <div class="badges">
-        <span class="commit">7117790 기준선</span>
-        <span class="commit">332606f 라우팅·큐</span>
-        <span class="commit">79b4663 QoS·세션</span>
-        <span class="commit">aebafa9 문서 통합</span>
+        <span class="commit">Standalone QoS 1/2와 process-local session</span>
+        <span class="commit">Cluster QoS 0 retained replication</span>
+        <span class="commit">NMQBKUP3 retained+offline archive</span>
         <span class="badge">MQTT 3.1.1 · MQTT 5.0</span>
         <span class="badge">Go · Clean Architecture</span>
       </div>
@@ -402,27 +401,41 @@ if packet.HasMessageExpiryInterval {
 now := useCase.clock.Now()
 expired := !expiresAt.IsZero() &amp;&amp; !now.Before(expiresAt)
 if packet.Retain {
-    if len(packet.Payload) == 0 || expired {
-        retained.Delete(packet.Topic)
+    tenantID := useCase.routes.SessionTenant(publisherSessionID)
+    deleteValue := len(packet.Payload) == 0 || expired
+    message := retained.MessageDTO{
+        TenantID: tenantID, PublisherSessionID: publisherSessionID, Topic: packet.Topic,
+    }
+    if !deleteValue {
+        message.Payload = packet.Payload
+        message.QoS = packet.QoS
+        message.ExpiresAt = expiresAt
+    }
+    if useCase.retainedCommitter != nil {
+        // Raft commit and node-local projection update happen before routing.
+        err = useCase.retainedCommitter.CommitRetained(context.Background(),
+            RetainedChangeDTO{Message: message, Delete: deleteValue, ProposedAt: now})
+    } else if deleteValue {
+        err = useCase.retained.Delete(tenantID, packet.Topic)
     } else {
-        retained.Replace(retained.MessageDTO{
-            PublisherSessionID: publisherSessionID,
-            Topic:              packet.Topic,
-            Payload:            packet.Payload,
-            QoS:                packet.QoS,
-            ExpiresAt:          expiresAt,
-        }, now)
+        err = useCase.retained.Replace(message, now)
+    }
+    if err != nil {
+        return ResultDTO{}, err
     }
 }
+if expired {
+    return ResultDTO{}, nil
+}
+matches, err := useCase.routes.Match(publisherSessionID, packet.Topic, packet.QoS, packet.Retain)
+// Successful retained state change precedes route matching/live fan-out.
+
 // internal/application/subscribe/subscribe.go
 queue.TryEnqueueBatch(replay, now)
 routes.Subscribe(sessionID, subscription) // replay batch committed first</code></pre>
         <p>
-          retained repository는 exact topic별 최신 QoS 값을 bounded memory에 보관합니다.
-          Message Expiry가 있으면 ingress 수신 시각 기준의 <code>ExpiresAt</code>도 함께
-          보관합니다. queue와 repository는 <code>now &gt;= ExpiresAt</code>에서 lazy purge하므로
-          만료 값은 replay되지 않습니다. replay queue가 가득 차면 route를 만들지 않고
-          MQTT version에 맞는 실패 reason을 반환합니다.
+          Retained key는 <code>(tenantId, exact Topic Name)</code>입니다. Standalone에서는 bounded memory repository가 authority이고, dynamic cluster에서는 <code>RetainedCommitter</code>가 mutation을 Raft에 commit합니다. Publisher node는 committed command를 local apply하고 replay projection을 갱신한 뒤 route matching과 live fan-out을 시작합니다. 다른 node는 각자 committed command를 apply하거나 snapshot catch-up할 때 local projection을 갱신합니다. Publish 완료가 모든 peer projection의 갱신 완료를 보장하지는 않습니다.
+          Standalone repository와 cluster replay projection은 <code>List(now)</code>에서 <code>now &gt;= ExpiresAt</code>인 값을 제거합니다. Raft 권위 state는 다음 retained command를 apply할 때 proposal 시각으로 만료 값을 결정적으로 제거하므로, 그 전에는 만료 entry가 snapshot/archive와 용량 한도에 남을 수 있습니다. Replay queue가 가득 차면 route를 만들지 않고 MQTT version에 맞는 실패 reason을 반환합니다.
         </p>
         <p>영속 세션의 queued delivery와 outbound Packet ID 상태도 같은 application-owned queue에 보관됩니다. persistent disconnect에서는 삭제하지 않고, Clean Start 또는 Session Expiry가 실제 세션을 제거할 때만 함께 제거합니다.</p>
         <div class="grid">
@@ -442,12 +455,12 @@ for _, match := range matches {
     err := useCase.queue.TryEnqueue(delivery, now)
     // ErrFull/ErrUnavailable은 다른 session fan-out을 막지 않는다.
 }</code></pre>
-            <p>한 세션의 큐가 가득 차도 다른 세션을 계속 시도합니다. retained 저장 성공은 이후 queue 결과와 독립적이며 부분 결과를 반환합니다.</p>
+            <p>한 세션의 큐가 가득 차도 다른 세션을 계속 시도합니다. Cluster retained commit은 route matching/live fan-out보다 먼저 완료되어야 합니다. Commit error는 해당 publish call의 fan-out을 막고, timeout만으로 proposal이 반영되지 않았다고 단정할 수는 없습니다.</p>
           </article>
           <article class="card">
             <h3>메모리 경계</h3>
             <p><a href="../../internal/adapters/memory/deliveryqueue/queue.go#L62">TryEnqueue</a>와 <a href="../../internal/adapters/memory/deliveryqueue/queue.go#L83">TryEnqueueBatch</a>는 payload를 복사하고 batch 전체를 수용할 수 없으면 아무것도 추가하지 않습니다.</p>
-            <p><a href="../../internal/adapters/memory/retained/repository.go#L26">retained.Repository</a>는 entry 수와 topic·payload·publisher identity bytes를 함께 제한합니다.</p>
+            <p><a href="../../internal/adapters/memory/retained/repository.go#L26">retained.Repository</a>는 전체 tenant에 걸친 entry 수와 tenant/topic/payload/publisher-routing-ID bytes 합계로 제한됩니다. 별도 tenant별 quota가 아니라 standalone authority이자 cluster replay projection입니다.</p>
             <p>같은 메모리 adapter가 Packet ID별 QoS 1·2 상태도 보관합니다. <code>PromoteHead</code>는 FIFO head를 outbound 상태로 원자적으로 옮기고, ACK dispatcher는 <code>ReplaceOutbound</code>·<code>CompleteOutbound</code>로 상태를 먼저 갱신한 뒤 다음 출력을 깨웁니다.</p>
           </article>
         </div>
@@ -571,7 +584,7 @@ writerLoop:
           <tbody>
             <tr><td>첫 패킷</td><td>CONNECT만 허용하고 connect 응용 기능으로 세션을 활성화합니다.</td><td>다른 종류면 프로토콜 오류입니다.</td></tr>
             <tr><td>SUBSCRIBE</td><td>필터마다 검증하고 retained replay batch를 queue에 먼저 예약한 뒤 route를 설치합니다.</td><td>queue가 부족하면 이전 route를 유지하고 version별 reason을 반환합니다.</td></tr>
-            <tr><td>PUBLISH QoS 0·1·2</td><td>retained replace/delete와 option-aware routing 뒤 성공한 세션을 깨우고, QoS 1·2는 수신 handshake를 완료합니다.</td><td>retained capacity 오류나 protocol 상태 오류를 version별 ACK/close로 처리합니다.</td></tr>
+            <tr><td>PUBLISH QoS 0·1·2</td><td>Standalone은 QoS 0·1·2, dynamic cluster ingress는 QoS 0만 받습니다. Cluster retained mutation은 Raft commit과 local projection 반영 뒤 route matching/live fan-out을 시작합니다.</td><td>Retained commit error는 해당 call의 fan-out을 막습니다. Timeout이면 commit outcome이 불확실할 수 있습니다.</td></tr>
             <tr><td>제어 출력</td><td>CONNACK·SUBACK·PINGRESP·실패 ACK를 제한된 control queue에 넣습니다.</td><td>control queue가 가득 차면 연결을 닫습니다.</td></tr>
             <tr><td>DISCONNECT</td><td>barrier가 앞선 제어 패킷의 출력을 기다린 뒤 세션을 정리합니다.</td><td>write barrier 실패 또는 control queue 포화면 연결을 닫습니다.</td></tr>
 <tr><td>SUBACK replay ordering</td><td>Subscribe 결과가 retained delivery를 큐에 넣어도 TCP dispatch는 SUBACK write 완료 뒤 dedicated wake를 보냅니다.</td><td>이미 pending인 delivery나 동시 publish의 wire 순서는 보장하지 않습니다.</td></tr>
@@ -594,13 +607,17 @@ writerLoop:
             <tr><td>CONNECT·소유권</td><td>3.1.1/5.0 왕복, 선택 필드, 잘못된 플래그·버전·크기, 입력 버퍼와 반환 값의 독립성</td><td><a href="../../internal/domain/mqtt/connect_test.go">connect_test.go</a>, <a href="../../internal/domain/mqtt/packet_edge_test.go">packet_edge_test.go</a>, <a href="../../internal/domain/mqtt/packet_fuzz_test.go">packet_fuzz_test.go</a></td></tr>
             <tr><td>ACK 코덱</td><td>PubAck·PubRec·PubRel·PubComp 왕복, Packet ID·reason code·속성 길이 검증</td><td><a href="../../internal/domain/mqtt/ack_test.go">ack_test.go</a></td></tr>
             <tr><td>라우팅·options</td><td>와일드카드 위치, 공유 구독 거절, 시스템 토픽, overlap 1회 전달, NL/RAP RETAIN 정책과 유효 QoS 계산</td><td><a href="../../internal/domain/routing/routing_test.go">routing_test.go</a>, <a href="../../internal/application/subscribe/subscribe_test.go">subscribe_test.go</a></td></tr>
-            <tr><td>retained repository</td><td>exact-topic replace/delete, count·byte capacity, payload ownership, absolute expiry lazy purge와 deterministic list</td><td><a href="../../internal/adapters/memory/retained/repository_test.go">repository_test.go</a></td></tr>
+            <tr><td>retained repository</td><td>tenant + exact-topic replace/delete, count·byte capacity, payload ownership, expiry purge와 deterministic list</td><td><a href="../../internal/adapters/memory/retained/repository_test.go">repository_test.go</a></td></tr>
+            <tr><td>Cluster retained + offline + backup v3</td><td>Tenant-scoped retained state와 detached session의 QoS 0 offline queue는 node 사이 replay/복제되고 NMQBKUP3 restore, restart, learner catch-up 뒤에도 유지됩니다.</td><td><a href="../../internal/application/membership/retained_test.go">membership retained tests</a>, <a href="../../internal/application/membership/offline_test.go">membership offline tests</a>, <a href="../../tests/integration/cluster_backup_restore_process_test.go">TestClusterBackupRestoreProcessCrashAndResync</a>, <a href="../contracts/cluster-backup-v3.md">backup v3 contract</a></td></tr>
             <tr><td>발행·큐</td><td>세션별 fan-out, Full/Unavailable 부분 결과, FIFO, atomic batch, payload 복사, RAP와 expiry deadline, process-local offline/outbound recovery 상태</td><td><a href="../../internal/application/publish/publish_test.go">publish_test.go</a>, <a href="../../internal/adapters/memory/deliveryqueue/queue_test.go">queue_test.go</a></td></tr>
             <tr><td>Persistent recovery wire</td><td>persistent disconnect 후 FIFO offline delivery, CONNACK-before-recovery, QoS 1·2 DUP/Packet ID 재사용, PUBREL 재개, clean reset와 expiry suppression</td><td><a href="../../tests/integration/mqtt_ingress_test.go">TestMQTTIngressPersistentOfflineDelivery</a>, <a href="../../tests/integration/mqtt_ingress_test.go">TestMQTTIngressPersistentOutboundQoSRecovery</a></td></tr>
             <tr><td>Message Expiry wire</td><td>MQTT 5 property 검증, MQTT 3.1.1 property 거절, 10초 deadline·3초 경과 뒤 remaining 7초·deadline no-delivery</td><td><a href="../../internal/domain/mqtt/publish_test.go">publish_test.go</a>, <a href="../../tests/integration/mqtt_ingress_test.go">mqtt_ingress_test.go</a></td></tr>
           </tbody>
         </table>
         <pre><code>go test ./internal/domain/mqtt ./internal/domain/routing ./internal/domain/delivery ./internal/domain/session ./internal/application/connect ./internal/application/subscribe ./internal/application/publish ./internal/application/ports/deliveryqueue ./internal/application/ports/retained ./internal/adapters/memory/deliveryqueue ./internal/adapters/memory/retained ./internal/adapters/tcp ./tests/integration -count=1</code></pre>
+        <p class="small">Retained/backup 변경의 실행 증거에 해당하는 명령:</p>
+        <pre><code>go test ./internal/application/membership/... ./internal/adapters/raft/records/... ./internal/adapters/memory/retained/... ./internal/application/publish/... ./internal/application/subscribe/... ./internal/application/management/... ./internal/adapters/http/management/... ./cmd/narumq/... ./tests/contracts/... -count=1
+go test ./tests/integration -run '^(TestClusterBackupRestoreProcessCrashAndResync|TestDynamicClusterMembershipProcessAcceptance|TestDynamicClusterMembershipTransitionCrashRecovery|TestDynamicClusterMembershipRemovalHandoffWaitsForQuorum|TestSnapshotFinalizationCrashRecoveryAcrossProcessRestart)$' -count=1 -v</code></pre>
       </div>
     </section>
 
@@ -616,8 +633,9 @@ writerLoop:
               <li>CONNECT, CONNACK, PUBLISH, 구독·ACK·제어 패킷 값</li>
               <li>와일드카드 기반 비공유 구독 매칭과 session별 FIFO 큐</li>
               <li>subscription option별 No Local·Retain As Published와 Retain Handling</li>
-              <li>QoS 0·1·2 ingress/outbound ACK 상태 머신과 중복·재개 규칙</li>
-              <li>exact-topic retained replace/delete, atomic retained replay와 expiry lazy purge</li>
+              <li>Standalone은 QoS 0·1·2 ingress/outbound ACK 상태와 재전송을 지원하며 dynamic cluster MQTT ingress는 현재 QoS 0만 받습니다.</li>
+              <li>Tenant + exact topic별 retained replace/delete와 원자적 replay, standalone profile의 expiry purge</li>
+              <li>Dynamic cluster의 QoS 0 retained/offline Raft commit, node 간 replay, NMQBKUP3 archive/restore, restart와 learner catch-up</li>
               <li>Message Expiry absolute deadline, remaining interval serialization과 MQTT version별 property 규칙</li>
               <li>Clean Start, Session Expiry, Session Present 상태</li>
               <li>개발용 TCP ingress와 SUBACK-before-replay single writer 출력 순서</li>
@@ -627,19 +645,23 @@ writerLoop:
           <article class="card warning">
             <h3>현재 문서와 코드가 명시하는 제한</h3>
             <ul>
-              <li>persistent offline queue와 미완료 QoS 1·2 outbound는 process-local memory에서 재연결까지 보존하며 Clean Start 또는 Session Expiry에서 제거</li>
-              <li>process restart·replication·cluster durable ACK, ACL·tenant 격리, 전역 quota·metric catalog는 별도 경계</li>
+              <li>Persistent offline queue와 미완료 QoS 1·2 outbound 복구는 process-local memory에 머무릅니다. Cluster는 offline delivery를 복제하지 않고 QoS 1·2 durable ACK를 제공하지 않습니다.</li>
+              <li>Retained cluster write는 정확히 같은 release/protocol/schema profile이 필요합니다. 이 gate는 N/N-1 rolling upgrade나 rollback 호환성을 입증하지 않습니다.</li>
               <li>Message Expiry metadata는 MQTT 3.1.1 outbound wire에서 생략되지만 queued/PUBLISH-stage deadline은 적용</li>
-              <li>영속 저장소와 restart recovery는 별도 경계</li>
+              <li>Persistent session/offline delivery의 영속 저장과 process 재시작 자동 복구는 retained cluster backup 경로와 별개입니다.</li>
             </ul>
           </article>
         </div>
         <blockquote>
-          위 제한은 “빠진 코드를 숨기기 위한 변명”이 아니라 현재 호출 관계를 읽은 결과입니다. delivery recovery는 process-local memory와 현재 프로세스의 session lifecycle에 한정되며, Message Expiry는 application DTO의 absolute deadline을 통해 transport version과 독립적으로 적용됩니다.
+          현재 제한은 실제 호출 관계에 근거합니다. Session/offline delivery 복구는 process-local memory에 한정되지만, retained state는 standalone memory 경로와 dynamic cluster Raft 경로로 나뉩니다. Cluster 경로는 tenant-scoped QoS 0 retained replication과 v2 backup만 증명하며, 일반 QoS 1·2 durable delivery를 포함하지 않습니다.
         </blockquote>
         <h3>다음에 함께 읽을 문서</h3>
         <ul class="source-list">
           <li><a href="../specs/mqtt-protocol-and-session.md">MQTT 프로토콜·세션 시스템 스펙</a></li>
+          <li><a href="../specs/cluster-session-and-delivery.md">Cluster session·delivery spec과 acceptance evidence</a></li>
+          <li><a href="../contracts/cluster-backup-v3.md">Cluster backup v3 contract</a></li>
+          <li><a href="../decisions/ADR-0012-retained-replication-and-cluster-backup-v2.md">ADR-0012 retained replication 결정</a></li>
+          <li><a href="../decisions/ADR-0013-offline-queue-replication-and-cluster-backup-v3.md">ADR-0013 offline queue replication과 backup v3 결정</a></li>
           <li><a href="../architectures/broker-core.md">브로커 코어 경계</a></li>
           <li><a href="../architectures/project-structure.md">프로젝트 구조</a></li>
           <li><a href="../explainers/mqtt-delivery-guarantees-and-protocol-flows.md">전달 보장과 프로토콜 흐름 통합 해설</a></li>
@@ -654,7 +676,7 @@ writerLoop:
 
   <footer>
     <div class="wrap">
-      <p>문서 기준: <code>7117790</code>, <code>332606f</code>, <code>79b4663</code>, <code>aebafa9</code> 및 현재 작업 트리의 실제 호출 관계.</p>
+      <p>현재 호출 관계와 테스트 evidence 기준: 2026-09-26. Cluster retained/backup v2는 focused package suite, 다섯 process regression과 `go run ./tools/verify local`에서 확인했다. Offline queue replication과 production power-loss 보장은 이 artifact의 범위 밖입니다.</p>
       <p>읽는 순서: 결과 → 커밋 변화 → 구조 → 코덱 → 라우팅·큐 → QoS → 세션 → TCP 실행 → 검증 → 범위.</p>
     </div>
   </footer>

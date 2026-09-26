@@ -93,7 +93,7 @@ WAL·snapshot의 storage target과 `fsync` 순서는 scoped [ADR-0009](ADR-0009-
 4. 같은 Packet Identifier 재전송이 중복 durable command를 만들지 않는지 검증한다.
 5. BP-03에서 group commit 크기별 p99·p99.9와 disk 비용을 측정한다.
 
-현재 별도 [Cluster backup v1 acceptance](../specs/cluster-session-and-delivery.md#117-cluster-backuprestore와-snapshot-finalize-수용-매핑)는 archive boundary, snapshot finalize 및 offline voter restore의 process recovery를 다룬다. 그 결과는 ACK 직후 replica kill, WAL write/`fsync`/commit crash, 잘못된 PUBACK/PUBREC 또는 message-gap 0을 검증하지 않으며 위 항목 1~5를 통과 처리하지 않는다. 이 ADR의 durable ACK 기준은 미완료다.
+현재 별도 [Cluster backup/restore acceptance](../specs/cluster-session-and-delivery.md#117-cluster-backuprestore와-snapshot-finalize-수용-매핑)는 archive boundary, snapshot finalize와 offline voter restore의 process recovery를 다룬다. Retained replication과 v2 backup/restore는 [§11.8](../specs/cluster-session-and-delivery.md#118-retained-replication과-backup-v2-수용-매핑)에서 별도로 확인한다. 이 evidence는 ACK 직후 replica kill, WAL write/`fsync`/commit crash, 잘못된 PUBACK/PUBREC 또는 message-gap 0을 검증하지 않으며 ADR-0003 §9 항목 1~5를 통과 처리하지 않는다. Durable ACK 기준은 미완료다.
 
 ## 10. 재검토 조건
 

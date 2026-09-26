@@ -6,21 +6,20 @@ import (
 	"encoding/binary"
 	"fmt"
 	"hash/crc32"
-	"slices"
 	"sort"
 
 	"google.golang.org/protobuf/proto"
 )
 
 const (
-	backupMagic            = "NMQBKUP1"
+	backupMagic            = "NMQBKUP3"
 	maxBackupManifestBytes = 64 << 10
 	maxBackupEntryBytes    = maxCommandBytes + 1024
 	maxBackupEntries       = 1_000_000
 )
 
 // BackupFormatMajor is the supported cluster backup format major version.
-const BackupFormatMajor = 1
+const BackupFormatMajor = 3
 
 // BackupFormatMinor is the supported cluster backup format minor version.
 const BackupFormatMinor = 0
@@ -29,8 +28,7 @@ const BackupFormatMinor = 0
 const MaxBackupArchiveBytes = 1 << 30
 
 var (
-	backupCRCTable           = crc32.MakeTable(crc32.Castagnoli)
-	notReplicatedBackupKinds = []string{"offline", "retained"}
+	backupCRCTable = crc32.MakeTable(crc32.Castagnoli)
 )
 
 // BackupArchive contains a typed snapshot and every committed record after it.
@@ -100,6 +98,12 @@ func EncodeBackupArchive(archive *BackupArchive) ([]byte, [sha256.Size]byte, err
 
 // DecodeBackupArchive verifies the framing, checksums, schemas and commit range of an archive.
 func DecodeBackupArchive(data []byte) (*BackupArchive, error) {
+	if len(data) >= len("NMQBKUP1") && string(data[:len("NMQBKUP1")]) == "NMQBKUP1" {
+		return nil, backupArchiveError("unsupported archive format 1; capture a new backup with this release")
+	}
+	if len(data) >= len("NMQBKUP2") && string(data[:len("NMQBKUP2")]) == "NMQBKUP2" {
+		return nil, backupArchiveError("unsupported archive format 2; capture a new backup with this release")
+	}
 	if len(data) < len(backupMagic)+sha256.Size || len(data) > MaxBackupArchiveBytes {
 		return nil, backupArchiveError("archive size is out of range")
 	}
@@ -197,21 +201,34 @@ func SummarizeSnapshot(encoded []byte) (*BackupStateSummary, error) {
 	if err != nil {
 		return nil, err
 	}
+	retained, err := summarizeBackupKind(&ReplicatedStateSnapshot{Retained: state.Retained}, uint64(len(state.Retained)))
+	if err != nil {
+		return nil, err
+	}
+	offlineCount := uint64(0)
+	for _, session := range state.OfflineSessions {
+		offlineCount += uint64(1 + len(session.Messages))
+	}
+	offline, err := summarizeBackupKind(&ReplicatedStateSnapshot{OfflineSessions: state.OfflineSessions}, offlineCount)
+	if err != nil {
+		return nil, err
+	}
 	tenants, err := summarizeBackupTenants(state)
 	if err != nil {
 		return nil, err
 	}
 	return &BackupStateSummary{
-		LastIncludedIndex:  envelope.LastIncludedIndex,
-		ObjectCount:        envelope.ObjectCount,
-		Sha256:             bytes.Clone(envelope.Sha256),
-		Members:            members,
-		Tenants:            tenants,
-		Sessions:           sessions,
-		Subscriptions:      subscriptions,
-		Inflight:           inflight,
-		MembershipHistory:  membershipHistory,
-		NotReplicatedKinds: slices.Clone(notReplicatedBackupKinds),
+		LastIncludedIndex: envelope.LastIncludedIndex,
+		ObjectCount:       envelope.ObjectCount,
+		Sha256:            bytes.Clone(envelope.Sha256),
+		Members:           members,
+		Tenants:           tenants,
+		Sessions:          sessions,
+		Subscriptions:     subscriptions,
+		Inflight:          inflight,
+		MembershipHistory: membershipHistory,
+		Retained:          retained,
+		Offline:           offline,
 	}, nil
 }
 
@@ -275,13 +292,12 @@ func validateBackupManifest(manifest *BackupManifest) error {
 		{name: "subscriptions", summary: state.Subscriptions},
 		{name: "inflight", summary: state.Inflight},
 		{name: "membership_history", summary: state.MembershipHistory},
+		{name: "retained", summary: state.Retained},
+		{name: "offline", summary: state.Offline},
 	} {
 		if item.summary == nil || len(item.summary.Sha256) != sha256.Size {
 			return backupArchiveError("%s summary and SHA-256 are required", item.name)
 		}
-	}
-	if !slices.Equal(state.NotReplicatedKinds, notReplicatedBackupKinds) {
-		return backupArchiveError("not-replicated kinds must be [offline retained]")
 	}
 	return nil
 }
@@ -395,6 +411,12 @@ func summarizeBackupTenants(state *ReplicatedStateSnapshot) (*BackupKindSummary,
 	}
 	for _, checkpoint := range state.Checkpoints {
 		unique[checkpoint.TenantId] = struct{}{}
+	}
+	for _, retained := range state.Retained {
+		unique[retained.TenantId] = struct{}{}
+	}
+	for _, offline := range state.OfflineSessions {
+		unique[offline.TenantId] = struct{}{}
 	}
 	tenants := make([]string, 0, len(unique))
 	for tenant := range unique {

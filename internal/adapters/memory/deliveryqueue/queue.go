@@ -3,14 +3,14 @@
 package deliveryqueue
 
 import (
+	"bytes"
 	"errors"
-	"sort"
-	"sync"
-	"time"
-
 	"narumq/internal/application/ports/deliveryqueue"
 	"narumq/internal/domain/mqtt"
 	"narumq/internal/domain/routing"
+	"sort"
+	"sync"
+	"time"
 )
 
 var (
@@ -227,6 +227,33 @@ func (queue *Queue) PromoteHead(outbound deliveryqueue.OutboundDTO, now time.Tim
 	state.queued = state.queued[1:]
 	state.outbound[outbound.PacketID] = outbound
 	return nil
+}
+
+// ListQueued returns unexpired queued deliveries in FIFO order. It copies
+// the deliveries and payloads without mutating the queue state.
+func (queue *Queue) ListQueued(sessionID routing.SessionID, now time.Time) ([]deliveryqueue.DeliveryDTO, error) {
+	if queue == nil {
+		return nil, deliveryqueue.ErrUnavailable
+	}
+	if err := validateSessionID(sessionID); err != nil {
+		return nil, err
+	}
+	queue.mu.Lock()
+	defer queue.mu.Unlock()
+	state, exists := queue.sessions[sessionID]
+	if !exists {
+		return nil, deliveryqueue.ErrUnavailable
+	}
+	result := make([]deliveryqueue.DeliveryDTO, 0, len(state.queued))
+	for _, item := range state.queued {
+		if item.Expired(now) {
+			continue
+		}
+		copied := item
+		copied.Payload = bytes.Clone(item.Payload)
+		result = append(result, copied)
+	}
+	return result, nil
 }
 
 // ListOutbound returns incomplete outbound state sorted by Packet Identifier.

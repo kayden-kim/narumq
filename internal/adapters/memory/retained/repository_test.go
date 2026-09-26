@@ -9,6 +9,7 @@ import (
 	applicationretained "narumq/internal/application/ports/retained"
 	"narumq/internal/domain/mqtt"
 	"narumq/internal/domain/routing"
+	"narumq/internal/domain/tenancy"
 )
 
 // Traceability: PRD MQTT-04/MQTT-08/TEST-04/05; docs/specs/mqtt-protocol-and-session.md §5.
@@ -53,10 +54,10 @@ func TestRetainedRepositoryReplaceDeleteCapacityAndOwnership(t *testing.T) {
 		t.Fatalf("capacity preserved values = %#v", listed)
 	}
 
-	if err := repository.Delete("a"); err != nil {
+	if err := repository.Delete(tenancy.TenantID{}, "a"); err != nil {
 		t.Fatal(err)
 	}
-	if err := repository.Delete("a"); err != nil {
+	if err := repository.Delete(tenancy.TenantID{}, "a"); err != nil {
 		t.Fatal(err)
 	}
 	listed, err = repository.List(time.Time{})
@@ -65,6 +66,105 @@ func TestRetainedRepositoryReplaceDeleteCapacityAndOwnership(t *testing.T) {
 	}
 	if err := repository.Replace(applicationretained.MessageDTO{PublisherSessionID: "publisher-c", Topic: "c", Payload: []byte("overflow"), QoS: mqtt.QoSAtMostOnce}, time.Time{}); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// Traceability: PRD MQTT-04/TEN-05; docs/specs/mqtt-protocol-and-session.md §5.
+func TestRetainedRepositoryScopesValuesByTenant(t *testing.T) {
+	tenantA, err := tenancy.NewTenantID("tenant-a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	tenantB, err := tenancy.NewTenantID("tenant-b")
+	if err != nil {
+		t.Fatal(err)
+	}
+	repository, err := New(2, 128)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, message := range []applicationretained.MessageDTO{
+		{TenantID: tenantB, PublisherSessionID: "pub-b", Topic: "shared/topic", Payload: []byte("b")},
+		{TenantID: tenantA, PublisherSessionID: "pub-a", Topic: "shared/topic", Payload: []byte("a")},
+	} {
+		if err := repository.Replace(message, time.Time{}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	listed, err := repository.List(time.Time{})
+	if err != nil || len(listed) != 2 ||
+		listed[0].TenantID != tenantA || string(listed[0].Payload) != "a" ||
+		listed[1].TenantID != tenantB || string(listed[1].Payload) != "b" {
+		t.Fatalf("tenant-scoped retained values = %#v, %v", listed, err)
+	}
+	if err := repository.Delete(tenantA, "shared/topic"); err != nil {
+		t.Fatal(err)
+	}
+	listed, err = repository.List(time.Time{})
+	if err != nil || len(listed) != 1 || listed[0].TenantID != tenantB || string(listed[0].Payload) != "b" {
+		t.Fatalf("values after tenant-specific delete = %#v, %v", listed, err)
+	}
+}
+
+// Traceability: PRD MQTT-04/TEST-04; docs/specs/mqtt-protocol-and-session.md §5.
+func TestRetainedRepositoryReplaceAllIsAtomic(t *testing.T) {
+	tenantA, err := tenancy.NewTenantID("tenant-a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	repository, err := New(2, 40)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := repository.Replace(applicationretained.MessageDTO{
+		TenantID: tenantA, PublisherSessionID: "pub", Topic: "old", Payload: []byte("old"),
+	}, time.Time{}); err != nil {
+		t.Fatal(err)
+	}
+	input := []applicationretained.MessageDTO{
+		{TenantID: tenantA, PublisherSessionID: "pub", Topic: "a", Payload: []byte("a")},
+		{TenantID: tenantA, PublisherSessionID: "pub", Topic: "b", Payload: []byte("b")},
+	}
+	if err := repository.ReplaceAll(input); err != nil {
+		t.Fatal(err)
+	}
+	input[0].Payload[0] = 'x'
+	listed, err := repository.List(time.Time{})
+	if err != nil || len(listed) != 2 || listed[0].Topic != "a" || string(listed[0].Payload) != "a" ||
+		listed[1].Topic != "b" || string(listed[1].Payload) != "b" {
+		t.Fatalf("ReplaceAll values = %#v, %v", listed, err)
+	}
+
+	for name, invalid := range map[string][]applicationretained.MessageDTO{
+		"count": {
+			{TenantID: tenantA, PublisherSessionID: "pub", Topic: "c", Payload: []byte("c")},
+			{TenantID: tenantA, PublisherSessionID: "pub", Topic: "d", Payload: []byte("d")},
+			{TenantID: tenantA, PublisherSessionID: "pub", Topic: "e", Payload: []byte("e")},
+		},
+		"bytes": {
+			{TenantID: tenantA, PublisherSessionID: "pub", Topic: "c", Payload: []byte("01234567890123456789")},
+			{TenantID: tenantA, PublisherSessionID: "pub", Topic: "d", Payload: []byte("0123456789")},
+		},
+		"duplicate": {
+			{TenantID: tenantA, PublisherSessionID: "pub", Topic: "same", Payload: []byte("a")},
+			{TenantID: tenantA, PublisherSessionID: "pub", Topic: "same", Payload: []byte("b")},
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			want := applicationretained.ErrFull
+			if name == "duplicate" {
+				want = ErrInvalidMessage
+			}
+			if err := repository.ReplaceAll(invalid); !errors.Is(err, want) {
+				t.Fatalf("ReplaceAll() error = %v, want %v", err, want)
+			}
+			after, err := repository.List(time.Time{})
+			if err != nil || len(after) != 2 ||
+				after[0].Topic != "a" || string(after[0].Payload) != "a" ||
+				after[1].Topic != "b" || string(after[1].Payload) != "b" {
+				t.Fatalf("failed ReplaceAll changed prior state: %#v, %v", after, err)
+			}
+		})
 	}
 }
 
@@ -93,7 +193,7 @@ func TestRetainedRepositoryRejectsInvalidValues(t *testing.T) {
 			}
 		})
 	}
-	if err := repository.Delete(""); !errors.Is(err, routing.ErrInvalidTopicName) {
+	if err := repository.Delete(tenancy.TenantID{}, ""); !errors.Is(err, routing.ErrInvalidTopicName) {
 		t.Fatalf("Delete(\"\") error = %v, want %v", err, routing.ErrInvalidTopicName)
 	}
 }

@@ -1,20 +1,22 @@
-# Cluster backup v1 인터페이스 계약(Contract)
+# Cluster backup v1 historical interface contract
 
-이 계약은 실행 중인 3-voter cluster에서 일관된 commit 경계의 archive를 만들고, 검증한 archive로 각 voter의 빈 저장 디렉터리를 오프라인에서 seed하는 형식을 정의한다. 이 계약은 전체 CLU-14 또는 disaster-recovery 운영 정책을 완료하지 않는다.
+이 문서는 v1 archive 형식의 역사적 기록이다. [Cluster backup v3](cluster-backup-v3.md)가 현재 archive 계약을 대체한다. 현재 release의 restore CLI는 v1 archive를 거절한다.
+
+이 계약은 실행 중인 3-voter cluster에서 일관된 commit 경계의 archive를 만들고, 검증한 archive로 각 voter의 빈 저장 디렉터리를 오프라인에서 seed하는 형식을 정의했다. 이 계약은 전체 CLU-14 또는 disaster-recovery 운영 정책을 완료하지 않는다.
 
 | 항목 | 값 |
 | --- | --- |
 | 이름과 버전 | `cluster-backup-v1` 1.0.0 |
-| 상태 | Draft |
+| 상태 | Superseded |
 | 소유자 | NaruMQ cluster |
 | 만드는 쪽(Producer) | ClusterAdmin이 호출하는 `POST /api/v1/cluster/backups` |
 | 사용하는 쪽(Consumer) | `narumq -cluster-config <file> -cluster-restore <archive>` |
 | 방향 | Broker → binary archive → 오프라인 restore CLI |
-| 스키마 기준 파일 | [cluster-backup-v1.proto](cluster-backup-v1.proto) |
-| 기준 동작 명세 | [Cluster §10](../specs/cluster-session-and-delivery.md#10-snapshot-backup과-restore), [§11.7](../specs/cluster-session-and-delivery.md#117-cluster-backuprestore와-snapshot-finalize-수용-매핑) |
+| 스키마 기준 파일 | v1 proto source와 generated binding은 v2/v3 cutover 때 제거했다. 현재 schema는 [cluster-backup-v3.proto](cluster-backup-v3.proto)다. |
+| 기준 동작 명세 | [Cluster §10](../specs/cluster-session-and-delivery.md#10-snapshot-backup과-restore), [§11.7](../specs/cluster-session-and-delivery.md#117-cluster-backuprestore와-snapshot-finalize-수용-매핑) (v1 historical evidence) |
 | 관련 요구사항 | [PRD CLU-14](../requirements/PRD.md#92-클러스터와-세션) |
-| 호환성 범위 | archive format `1.0`; 동일 `clusterId`, release/protocol/schema, 정확히 현재 3개 bootstrap voter identity |
-| 관련 시험 | Codec: `internal/adapters/raft/records.TestBackupArchiveRoundTripAndChecksums`; producer·consumer/process evidence: Cluster §11.7 |
+| 호환성 범위 | Historical archive format `1.0`; current v3 restore는 읽지 않는다. v1 당시에는 동일 `clusterId`, release/protocol/schema와 정확히 현재 3개 bootstrap voter identity를 요구했다. |
+| 관련 시험 | Historical codec/process evidence: [Cluster §11.7](../specs/cluster-session-and-delivery.md#117-cluster-backuprestore와-snapshot-finalize-수용-매핑) |
 
 ## 1. 형식과 의미
 
@@ -64,11 +66,10 @@ Manifest의 `boundary_state`는 `commit_index`에서 재구성된 state의 전�
 - Archive major/minor `1.0`, cluster protocol `2.0`, state schema `1.0`만 지원한다.
 - Restore는 cross-cluster migration, voter 재구성, learner 복원을 지원하지 않는다. 현재 bootstrap voter ID와 각 identity를 바꾸지 않는다.
 - 추가 required field, frame 변경 또는 summary 의미 변경은 호환성을 깨므로 새 format major와 migration 계획이 필요하다.
-- `offline`/`retained` 포함 여부를 현재 계약의 의미로 오해하지 않는다. 해당 state를 보존하는 archive는 이 format의 지원 범위 밖이다.
-- Restore process test는 staged command tail, seed startup, node crash/restart와 joiner resync를 검증한다. 이는 `CLU-14`의 retained/offline checksum, 장기 보존/RPO/RTO, power-loss 또는 production EBS guarantee를 충족했다는 뜻이 아니다.
+- v1은 `offline`/`retained`를 제외했다. Retained 복제와 backup v2는 [ADR-0012](../decisions/ADR-0012-retained-replication-and-cluster-backup-v2.md) 및 [Cluster §11.8](../specs/cluster-session-and-delivery.md#118-retained-replication과-backup-v2-수용-매핑)에서 별도로 검증한다. Offline queue, 장기 보존/RPO/RTO, power-loss 또는 production EBS 보장은 여전히 확인하지 않았다.
 
-## 5. 초안을 확정하기 전에 해결할 사항
+## 5. v1 당시 미해결 사항
 
-- Offline queue와 retained state를 포함한 전체 CLU-14 object set, retention 정책, disaster-recovery RPO/RTO.
+- Offline queue를 포함한 전체 CLU-14 object set, retention 정책과 disaster-recovery RPO/RTO.
 - Production-like Linux filesystem/EBS power-loss 및 volume-loss acceptance.
 - Release 간 archive producer/consumer 호환성 matrix와 승인된 migration/rollback 정책.

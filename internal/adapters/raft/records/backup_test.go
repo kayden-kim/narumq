@@ -46,6 +46,8 @@ func TestBackupArchiveRejectsCorruptAndNoncanonicalFrames(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	v1FormatArchive := backupTestAppendTrailer([]byte("NMQBKUP1"))
+	v2FormatArchive := backupTestAppendTrailer([]byte("NMQBKUP2"))
 	badMagic := bytes.Clone(encoded[:len(encoded)-sha256.Size])
 	badMagic[0] ^= 0xff
 	cases := []struct {
@@ -53,15 +55,20 @@ func TestBackupArchiveRejectsCorruptAndNoncanonicalFrames(t *testing.T) {
 		data   []byte
 		marker string
 	}{
+		{name: "v1 archive", data: v1FormatArchive, marker: "unsupported archive format 1; capture a new backup with this release"},
+		{name: "v2 archive", data: v2FormatArchive, marker: "unsupported archive format 2; capture a new backup with this release"},
 		{name: "magic", data: backupTestAppendTrailer(badMagic), marker: "magic mismatch"},
-		{name: "trailer", data: bytes.Clone(encoded), marker: "checksum mismatch"},
+		{name: "trailer", data: func() []byte {
+			b := bytes.Clone(encoded)
+			b[len(b)-1] ^= 0xff
+			return b
+		}(), marker: "checksum mismatch"},
 		{name: "frame crc", data: backupTestCorruptAndResign(encoded, 12), marker: "frame 0 checksum mismatch"},
 		{name: "truncated", data: bytes.Clone(encoded[:len(encoded)-1]), marker: "checksum mismatch"},
 		{name: "trailing byte", data: backupTestAppendTrailer(append(bytes.Clone(encoded[:len(encoded)-sha256.Size]), 0xa5)), marker: "trailing bytes"},
 		{name: "unknown manifest field", data: backupTestRawArchive(t, unknownManifestBytes, archive.Snapshot, archive.Entries), marker: "unknown fields"},
 		{name: "noncanonical manifest", data: backupTestRawArchive(t, append(bytes.Clone(manifestBytes), 0x08, byte(BackupFormatMajor)), archive.Snapshot, archive.Entries), marker: "not canonical"},
 	}
-	cases[1].data[len(cases[1].data)-1] ^= 0xff
 	for _, testCase := range cases {
 		t.Run(testCase.name, func(t *testing.T) {
 			_, err := DecodeBackupArchive(testCase.data)
@@ -81,9 +88,12 @@ func TestBackupArchiveRejectsInvalidManifestAndEntryRanges(t *testing.T) {
 		{name: "entry count", mutate: func(archive *BackupArchive) { archive.Manifest.EntryCount++ }, marker: "entry count mismatch"},
 		{name: "snapshot index", mutate: func(archive *BackupArchive) { archive.Manifest.SnapshotIndex-- }, marker: "snapshot index does not match manifest"},
 		{name: "entry before snapshot", mutate: func(archive *BackupArchive) { archive.Entries[0].Index = archive.Manifest.SnapshotIndex }, marker: "entry index out of range"},
-		{name: "not replicated kinds", mutate: func(archive *BackupArchive) {
-			archive.Manifest.BoundaryState.NotReplicatedKinds = []string{"retained", "offline"}
-		}, marker: "not-replicated kinds"},
+		{name: "missing offline summary", mutate: func(archive *BackupArchive) {
+			archive.Manifest.BoundaryState.Offline = nil
+		}, marker: "offline summary and SHA-256 are required"},
+		{name: "missing retained summary", mutate: func(archive *BackupArchive) {
+			archive.Manifest.BoundaryState.Retained = nil
+		}, marker: "retained summary and SHA-256 are required"},
 	} {
 		t.Run(testCase.name, func(t *testing.T) {
 			archive := backupTestArchive(t)
@@ -119,6 +129,17 @@ func TestSummarizeSnapshotCountsTenantsAndInflightDeterministically(t *testing.T
 			Inbound:  []*InboundCheckpoint{{Publish: &PublishPacket{ProtocolVersion: 5, Qos: 1, PacketId: 7, Topic: "orders/a"}, Phase: InboundDeliveryPhase_INBOUND_QOS1_AWAIT_ACCEPTANCE}},
 			Outbound: []*OutboundCheckpoint{{Publish: &PublishPacket{ProtocolVersion: 5, Qos: 1, PacketId: 8, Topic: "orders/a"}, Phase: OutboundDeliveryPhase_OUTBOUND_AWAIT_PUBACK}},
 		}},
+		Retained: []*RetainedState{{
+			TenantId: "tenant-c", Topic: "events", PublisherClientId: "publisher",
+			Qos: 1, Payload: []byte("retained"),
+		}},
+		OfflineSessions: []*OfflineSessionState{{
+			TenantId: "tenant-d", ClientId: "client-d", Epoch: 1, NextSequence: 3,
+			Messages: []*OfflineMessage{
+				{Sequence: 1, Topic: "offline/1", Payload: []byte("one"), Qos: 0},
+				{Sequence: 2, Topic: "offline/2", Payload: []byte("two"), Qos: 0},
+			},
+		}},
 	}
 	second := proto.Clone(first).(*ReplicatedStateSnapshot)
 	second.Ownerships[0], second.Ownerships[1] = second.Ownerships[1], second.Ownerships[0]
@@ -141,14 +162,28 @@ func TestSummarizeSnapshotCountsTenantsAndInflightDeterministically(t *testing.T
 	if !proto.Equal(firstSummary, secondSummary) {
 		t.Fatalf("summary changed with input ordering: first=%+v second=%+v", firstSummary, secondSummary)
 	}
-	if firstSummary.Tenants.Count != 2 || firstSummary.Sessions.Count != 2 || firstSummary.Subscriptions.Count != 1 || firstSummary.Inflight.Count != 2 {
-		t.Fatalf("summary counts = tenants:%d sessions:%d subscriptions:%d inflight:%d", firstSummary.Tenants.Count, firstSummary.Sessions.Count, firstSummary.Subscriptions.Count, firstSummary.Inflight.Count)
+	if firstSummary.Tenants.Count != 4 || firstSummary.Sessions.Count != 2 || firstSummary.Subscriptions.Count != 1 || firstSummary.Inflight.Count != 2 || firstSummary.Retained.Count != 1 || firstSummary.Offline.Count != 3 {
+		t.Fatalf("summary counts = tenants:%d sessions:%d subscriptions:%d inflight:%d retained:%d offline:%d", firstSummary.Tenants.Count, firstSummary.Sessions.Count, firstSummary.Subscriptions.Count, firstSummary.Inflight.Count, firstSummary.Retained.Count, firstSummary.Offline.Count)
 	}
 	// The test's tenant identifiers are distinct, so check the canonical encoding directly.
-	canonicalTenants := []byte{0, 8, 't', 'e', 'n', 'a', 'n', 't', '-', 'a', 0, 8, 't', 'e', 'n', 'a', 'n', 't', '-', 'b'}
+	canonicalTenants := []byte{0, 8, 't', 'e', 'n', 'a', 'n', 't', '-', 'a', 0, 8, 't', 'e', 'n', 'a', 'n', 't', '-', 'b', 0, 8, 't', 'e', 'n', 'a', 'n', 't', '-', 'c', 0, 8, 't', 'e', 'n', 'a', 'n', 't', '-', 'd'}
 	wantTenantDigest := sha256.Sum256(canonicalTenants)
 	if !bytes.Equal(firstSummary.Tenants.Sha256, wantTenantDigest[:]) {
 		t.Fatalf("tenant digest = %x, want %x", firstSummary.Tenants.Sha256, wantTenantDigest)
+	}
+	wantRetained, err := summarizeBackupKind(&ReplicatedStateSnapshot{Retained: first.Retained}, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !proto.Equal(firstSummary.Retained, wantRetained) {
+		t.Fatalf("retained summary = %+v, want %+v", firstSummary.Retained, wantRetained)
+	}
+	wantOffline, err := summarizeBackupKind(&ReplicatedStateSnapshot{OfflineSessions: first.OfflineSessions}, 3)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !proto.Equal(firstSummary.Offline, wantOffline) {
+		t.Fatalf("offline summary = %+v, want %+v", firstSummary.Offline, wantOffline)
 	}
 }
 

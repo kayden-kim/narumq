@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strings"
 	"testing"
 
 	raftadapter "narumq/internal/adapters/raft"
@@ -125,6 +126,19 @@ func TestClusterRestoreRejectsInvalidArchiveBeforeTouchingTarget(t *testing.T) {
 	}
 	if _, err := os.Stat(config.Directory); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("restore target after invalid archive: stat error=%v, want not-exist", err)
+	}
+
+	v2Path := filepath.Join(t.TempDir(), "v2.nmqbak")
+	v2Bytes := append([]byte("NMQBKUP2"), make([]byte, 32)...)
+	if err := os.WriteFile(v2Path, v2Bytes, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	err := restoreClusterBackup(config, v2Path)
+	if err == nil || !strings.Contains(err.Error(), "unsupported archive format 2") {
+		t.Fatalf("restoreClusterBackup(v2) error = %v, want unsupported archive format 2", err)
+	}
+	if _, err := os.Stat(config.Directory); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("restore target after v2 archive: stat error=%v, want not-exist", err)
 	}
 }
 

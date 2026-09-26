@@ -41,6 +41,9 @@ func (*recordingQueue) Peek(routing.SessionID, time.Time) (deliveryqueue.Deliver
 }
 func (*recordingQueue) CompleteHead(routing.SessionID) error                   { return nil }
 func (*recordingQueue) PromoteHead(deliveryqueue.OutboundDTO, time.Time) error { return nil }
+func (*recordingQueue) ListQueued(routing.SessionID, time.Time) ([]deliveryqueue.DeliveryDTO, error) {
+	return nil, nil
+}
 func (*recordingQueue) ListOutbound(routing.SessionID) ([]deliveryqueue.OutboundDTO, error) {
 	return nil, nil
 }
@@ -57,7 +60,7 @@ type recordingRetained struct {
 func (repository *recordingRetained) Replace(message retained.MessageDTO, _ time.Time) error {
 	return nil
 }
-func (repository *recordingRetained) Delete(string) error { return nil }
+func (repository *recordingRetained) Delete(tenancy.TenantID, string) error { return nil }
 func (repository *recordingRetained) List(time.Time) ([]retained.MessageDTO, error) {
 	if repository.err != nil {
 		return nil, repository.err
@@ -174,6 +177,39 @@ func TestSubscribeRetainHandlingAndReplayQoS(t *testing.T) {
 	}
 	if third.RetainedQueued != 0 || len(queue.deliveries) != 1 {
 		t.Fatalf("RH=2 replayed retained values: %#v, count %d", queue.deliveries, third.RetainedQueued)
+	}
+}
+
+// Traceability: PRD MQTT-04/TEN-05; docs/specs/mqtt-protocol-and-session.md §5.
+func TestSubscribeRetainedReplayIsTenantScoped(t *testing.T) {
+	tenantA, err := tenancy.NewTenantID("tenant-a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	tenantB, err := tenancy.NewTenantID("tenant-b")
+	if err != nil {
+		t.Fatal(err)
+	}
+	routes := routing.NewTable()
+	if err := routes.BindSessionTenant("subscriber", tenantA); err != nil {
+		t.Fatal(err)
+	}
+	queue := &recordingQueue{}
+	repository := &recordingRetained{messages: []retained.MessageDTO{
+		{TenantID: tenantB, PublisherSessionID: "publisher-b", Topic: "a/one", Payload: []byte("other"), QoS: mqtt.QoSAtMostOnce},
+		{TenantID: tenantA, PublisherSessionID: "publisher-a", Topic: "a/one", Payload: []byte("allowed"), QoS: mqtt.QoSAtMostOnce},
+	}}
+	useCase := newSubscribeUseCase(t, routes, queue, repository)
+	result, err := useCase.Subscribe("subscriber", mqtt.Subscribe{
+		Version: mqtt.ProtocolV5, PacketID: 1,
+		Subscriptions: []mqtt.Subscription{{Filter: "a/#", QoS: mqtt.QoSAtMostOnce}},
+	}, time.Time{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.RetainedQueued != 1 || len(queue.deliveries) != 1 ||
+		queue.deliveries[0].Topic != "a/one" || string(queue.deliveries[0].Payload) != "allowed" {
+		t.Fatalf("cross-tenant retained replay = result %+v, deliveries %#v", result, queue.deliveries)
 	}
 }
 

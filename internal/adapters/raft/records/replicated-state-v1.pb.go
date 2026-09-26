@@ -244,6 +244,107 @@ func (SubscriptionAction) EnumDescriptor() ([]byte, []int) {
 	return file_docs_contracts_replicated_state_v1_proto_rawDescGZIP(), []int{3}
 }
 
+type RetainedAction int32
+
+const (
+	RetainedAction_RETAINED_ACTION_UNSPECIFIED RetainedAction = 0
+	RetainedAction_RETAINED_ACTION_REPLACE     RetainedAction = 1
+	RetainedAction_RETAINED_ACTION_DELETE      RetainedAction = 2
+)
+
+// Enum value maps for RetainedAction.
+var (
+	RetainedAction_name = map[int32]string{
+		0: "RETAINED_ACTION_UNSPECIFIED",
+		1: "RETAINED_ACTION_REPLACE",
+		2: "RETAINED_ACTION_DELETE",
+	}
+	RetainedAction_value = map[string]int32{
+		"RETAINED_ACTION_UNSPECIFIED": 0,
+		"RETAINED_ACTION_REPLACE":     1,
+		"RETAINED_ACTION_DELETE":      2,
+	}
+)
+
+func (x RetainedAction) Enum() *RetainedAction {
+	p := new(RetainedAction)
+	*p = x
+	return p
+}
+
+func (x RetainedAction) String() string {
+	return protoimpl.X.EnumStringOf(x.Descriptor(), protoreflect.EnumNumber(x))
+}
+
+func (RetainedAction) Descriptor() protoreflect.EnumDescriptor {
+	return file_docs_contracts_replicated_state_v1_proto_enumTypes[4].Descriptor()
+}
+
+func (RetainedAction) Type() protoreflect.EnumType {
+	return &file_docs_contracts_replicated_state_v1_proto_enumTypes[4]
+}
+
+func (x RetainedAction) Number() protoreflect.EnumNumber {
+	return protoreflect.EnumNumber(x)
+}
+
+// Deprecated: Use RetainedAction.Descriptor instead.
+func (RetainedAction) EnumDescriptor() ([]byte, []int) {
+	return file_docs_contracts_replicated_state_v1_proto_rawDescGZIP(), []int{4}
+}
+
+type OfflineAction int32
+
+const (
+	OfflineAction_OFFLINE_ACTION_UNSPECIFIED OfflineAction = 0
+	OfflineAction_OFFLINE_ACTION_DETACH      OfflineAction = 1
+	OfflineAction_OFFLINE_ACTION_ENQUEUE     OfflineAction = 2
+	OfflineAction_OFFLINE_ACTION_CLAIM       OfflineAction = 3
+)
+
+// Enum value maps for OfflineAction.
+var (
+	OfflineAction_name = map[int32]string{
+		0: "OFFLINE_ACTION_UNSPECIFIED",
+		1: "OFFLINE_ACTION_DETACH",
+		2: "OFFLINE_ACTION_ENQUEUE",
+		3: "OFFLINE_ACTION_CLAIM",
+	}
+	OfflineAction_value = map[string]int32{
+		"OFFLINE_ACTION_UNSPECIFIED": 0,
+		"OFFLINE_ACTION_DETACH":      1,
+		"OFFLINE_ACTION_ENQUEUE":     2,
+		"OFFLINE_ACTION_CLAIM":       3,
+	}
+)
+
+func (x OfflineAction) Enum() *OfflineAction {
+	p := new(OfflineAction)
+	*p = x
+	return p
+}
+
+func (x OfflineAction) String() string {
+	return protoimpl.X.EnumStringOf(x.Descriptor(), protoreflect.EnumNumber(x))
+}
+
+func (OfflineAction) Descriptor() protoreflect.EnumDescriptor {
+	return file_docs_contracts_replicated_state_v1_proto_enumTypes[5].Descriptor()
+}
+
+func (OfflineAction) Type() protoreflect.EnumType {
+	return &file_docs_contracts_replicated_state_v1_proto_enumTypes[5]
+}
+
+func (x OfflineAction) Number() protoreflect.EnumNumber {
+	return protoreflect.EnumNumber(x)
+}
+
+// Deprecated: Use OfflineAction.Descriptor instead.
+func (OfflineAction) EnumDescriptor() ([]byte, []int) {
+	return file_docs_contracts_replicated_state_v1_proto_rawDescGZIP(), []int{5}
+}
+
 type InboundDeliveryPhase int32
 
 const (
@@ -289,11 +390,11 @@ func (x InboundDeliveryPhase) String() string {
 }
 
 func (InboundDeliveryPhase) Descriptor() protoreflect.EnumDescriptor {
-	return file_docs_contracts_replicated_state_v1_proto_enumTypes[4].Descriptor()
+	return file_docs_contracts_replicated_state_v1_proto_enumTypes[6].Descriptor()
 }
 
 func (InboundDeliveryPhase) Type() protoreflect.EnumType {
-	return &file_docs_contracts_replicated_state_v1_proto_enumTypes[4]
+	return &file_docs_contracts_replicated_state_v1_proto_enumTypes[6]
 }
 
 func (x InboundDeliveryPhase) Number() protoreflect.EnumNumber {
@@ -302,7 +403,7 @@ func (x InboundDeliveryPhase) Number() protoreflect.EnumNumber {
 
 // Deprecated: Use InboundDeliveryPhase.Descriptor instead.
 func (InboundDeliveryPhase) EnumDescriptor() ([]byte, []int) {
-	return file_docs_contracts_replicated_state_v1_proto_rawDescGZIP(), []int{4}
+	return file_docs_contracts_replicated_state_v1_proto_rawDescGZIP(), []int{6}
 }
 
 type OutboundDeliveryPhase int32
@@ -344,11 +445,11 @@ func (x OutboundDeliveryPhase) String() string {
 }
 
 func (OutboundDeliveryPhase) Descriptor() protoreflect.EnumDescriptor {
-	return file_docs_contracts_replicated_state_v1_proto_enumTypes[5].Descriptor()
+	return file_docs_contracts_replicated_state_v1_proto_enumTypes[7].Descriptor()
 }
 
 func (OutboundDeliveryPhase) Type() protoreflect.EnumType {
-	return &file_docs_contracts_replicated_state_v1_proto_enumTypes[5]
+	return &file_docs_contracts_replicated_state_v1_proto_enumTypes[7]
 }
 
 func (x OutboundDeliveryPhase) Number() protoreflect.EnumNumber {
@@ -357,7 +458,7 @@ func (x OutboundDeliveryPhase) Number() protoreflect.EnumNumber {
 
 // Deprecated: Use OutboundDeliveryPhase.Descriptor instead.
 func (OutboundDeliveryPhase) EnumDescriptor() ([]byte, []int) {
-	return file_docs_contracts_replicated_state_v1_proto_rawDescGZIP(), []int{5}
+	return file_docs_contracts_replicated_state_v1_proto_rawDescGZIP(), []int{7}
 }
 
 // Every application log entry has exactly one typed payload. operation_id is a
@@ -373,6 +474,8 @@ type CommandEnvelope struct {
 	//	*CommandEnvelope_Ownership
 	//	*CommandEnvelope_Subscription
 	//	*CommandEnvelope_Checkpoint
+	//	*CommandEnvelope_Retained
+	//	*CommandEnvelope_Offline
 	Payload       isCommandEnvelope_Payload `protobuf_oneof:"payload"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
@@ -472,6 +575,24 @@ func (x *CommandEnvelope) GetCheckpoint() *SessionCheckpoint {
 	return nil
 }
 
+func (x *CommandEnvelope) GetRetained() *RetainedChange {
+	if x != nil {
+		if x, ok := x.Payload.(*CommandEnvelope_Retained); ok {
+			return x.Retained
+		}
+	}
+	return nil
+}
+
+func (x *CommandEnvelope) GetOffline() *OfflineChange {
+	if x != nil {
+		if x, ok := x.Payload.(*CommandEnvelope_Offline); ok {
+			return x.Offline
+		}
+	}
+	return nil
+}
+
 type isCommandEnvelope_Payload interface {
 	isCommandEnvelope_Payload()
 }
@@ -492,6 +613,14 @@ type CommandEnvelope_Checkpoint struct {
 	Checkpoint *SessionCheckpoint `protobuf:"bytes,13,opt,name=checkpoint,proto3,oneof"`
 }
 
+type CommandEnvelope_Retained struct {
+	Retained *RetainedChange `protobuf:"bytes,14,opt,name=retained,proto3,oneof"`
+}
+
+type CommandEnvelope_Offline struct {
+	Offline *OfflineChange `protobuf:"bytes,15,opt,name=offline,proto3,oneof"`
+}
+
 func (*CommandEnvelope_Membership) isCommandEnvelope_Payload() {}
 
 func (*CommandEnvelope_Ownership) isCommandEnvelope_Payload() {}
@@ -499,6 +628,10 @@ func (*CommandEnvelope_Ownership) isCommandEnvelope_Payload() {}
 func (*CommandEnvelope_Subscription) isCommandEnvelope_Payload() {}
 
 func (*CommandEnvelope_Checkpoint) isCommandEnvelope_Payload() {}
+
+func (*CommandEnvelope_Retained) isCommandEnvelope_Payload() {}
+
+func (*CommandEnvelope_Offline) isCommandEnvelope_Payload() {}
 
 // Identity fields are committed before the candidate can send a Raft message.
 type MemberIdentity struct {
@@ -1304,6 +1437,462 @@ func (x *SessionCheckpoint) GetOutbound() []*OutboundCheckpoint {
 	return nil
 }
 
+// Retained values are keyed by (tenant_id, topic). Timestamps are proposer Unix
+// milliseconds; apply purges values with 0 < expires_at <= proposed_at.
+type RetainedChange struct {
+	state                protoimpl.MessageState `protogen:"open.v1"`
+	TenantId             string                 `protobuf:"bytes,1,opt,name=tenant_id,json=tenantId,proto3" json:"tenant_id,omitempty"`
+	Topic                string                 `protobuf:"bytes,2,opt,name=topic,proto3" json:"topic,omitempty"`
+	PublisherClientId    string                 `protobuf:"bytes,3,opt,name=publisher_client_id,json=publisherClientId,proto3" json:"publisher_client_id,omitempty"`
+	Qos                  uint32                 `protobuf:"varint,4,opt,name=qos,proto3" json:"qos,omitempty"`
+	Payload              []byte                 `protobuf:"bytes,5,opt,name=payload,proto3" json:"payload,omitempty"`
+	ExpiresAtUnixMillis  uint64                 `protobuf:"varint,6,opt,name=expires_at_unix_millis,json=expiresAtUnixMillis,proto3" json:"expires_at_unix_millis,omitempty"`
+	ProposedAtUnixMillis uint64                 `protobuf:"varint,7,opt,name=proposed_at_unix_millis,json=proposedAtUnixMillis,proto3" json:"proposed_at_unix_millis,omitempty"`
+	Action               RetainedAction         `protobuf:"varint,8,opt,name=action,proto3,enum=narumq.cluster.v1.RetainedAction" json:"action,omitempty"`
+	unknownFields        protoimpl.UnknownFields
+	sizeCache            protoimpl.SizeCache
+}
+
+func (x *RetainedChange) Reset() {
+	*x = RetainedChange{}
+	mi := &file_docs_contracts_replicated_state_v1_proto_msgTypes[10]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *RetainedChange) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*RetainedChange) ProtoMessage() {}
+
+func (x *RetainedChange) ProtoReflect() protoreflect.Message {
+	mi := &file_docs_contracts_replicated_state_v1_proto_msgTypes[10]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use RetainedChange.ProtoReflect.Descriptor instead.
+func (*RetainedChange) Descriptor() ([]byte, []int) {
+	return file_docs_contracts_replicated_state_v1_proto_rawDescGZIP(), []int{10}
+}
+
+func (x *RetainedChange) GetTenantId() string {
+	if x != nil {
+		return x.TenantId
+	}
+	return ""
+}
+
+func (x *RetainedChange) GetTopic() string {
+	if x != nil {
+		return x.Topic
+	}
+	return ""
+}
+
+func (x *RetainedChange) GetPublisherClientId() string {
+	if x != nil {
+		return x.PublisherClientId
+	}
+	return ""
+}
+
+func (x *RetainedChange) GetQos() uint32 {
+	if x != nil {
+		return x.Qos
+	}
+	return 0
+}
+
+func (x *RetainedChange) GetPayload() []byte {
+	if x != nil {
+		return x.Payload
+	}
+	return nil
+}
+
+func (x *RetainedChange) GetExpiresAtUnixMillis() uint64 {
+	if x != nil {
+		return x.ExpiresAtUnixMillis
+	}
+	return 0
+}
+
+func (x *RetainedChange) GetProposedAtUnixMillis() uint64 {
+	if x != nil {
+		return x.ProposedAtUnixMillis
+	}
+	return 0
+}
+
+func (x *RetainedChange) GetAction() RetainedAction {
+	if x != nil {
+		return x.Action
+	}
+	return RetainedAction_RETAINED_ACTION_UNSPECIFIED
+}
+
+type RetainedState struct {
+	state               protoimpl.MessageState `protogen:"open.v1"`
+	TenantId            string                 `protobuf:"bytes,1,opt,name=tenant_id,json=tenantId,proto3" json:"tenant_id,omitempty"`
+	Topic               string                 `protobuf:"bytes,2,opt,name=topic,proto3" json:"topic,omitempty"`
+	PublisherClientId   string                 `protobuf:"bytes,3,opt,name=publisher_client_id,json=publisherClientId,proto3" json:"publisher_client_id,omitempty"`
+	Qos                 uint32                 `protobuf:"varint,4,opt,name=qos,proto3" json:"qos,omitempty"`
+	Payload             []byte                 `protobuf:"bytes,5,opt,name=payload,proto3" json:"payload,omitempty"`
+	ExpiresAtUnixMillis uint64                 `protobuf:"varint,6,opt,name=expires_at_unix_millis,json=expiresAtUnixMillis,proto3" json:"expires_at_unix_millis,omitempty"`
+	unknownFields       protoimpl.UnknownFields
+	sizeCache           protoimpl.SizeCache
+}
+
+func (x *RetainedState) Reset() {
+	*x = RetainedState{}
+	mi := &file_docs_contracts_replicated_state_v1_proto_msgTypes[11]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *RetainedState) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*RetainedState) ProtoMessage() {}
+
+func (x *RetainedState) ProtoReflect() protoreflect.Message {
+	mi := &file_docs_contracts_replicated_state_v1_proto_msgTypes[11]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use RetainedState.ProtoReflect.Descriptor instead.
+func (*RetainedState) Descriptor() ([]byte, []int) {
+	return file_docs_contracts_replicated_state_v1_proto_rawDescGZIP(), []int{11}
+}
+
+func (x *RetainedState) GetTenantId() string {
+	if x != nil {
+		return x.TenantId
+	}
+	return ""
+}
+
+func (x *RetainedState) GetTopic() string {
+	if x != nil {
+		return x.Topic
+	}
+	return ""
+}
+
+func (x *RetainedState) GetPublisherClientId() string {
+	if x != nil {
+		return x.PublisherClientId
+	}
+	return ""
+}
+
+func (x *RetainedState) GetQos() uint32 {
+	if x != nil {
+		return x.Qos
+	}
+	return 0
+}
+
+func (x *RetainedState) GetPayload() []byte {
+	if x != nil {
+		return x.Payload
+	}
+	return nil
+}
+
+func (x *RetainedState) GetExpiresAtUnixMillis() uint64 {
+	if x != nil {
+		return x.ExpiresAtUnixMillis
+	}
+	return 0
+}
+
+// Offline entries belong to detached persistent sessions keyed by (tenant_id, client_id).
+// Timestamps are proposer Unix milliseconds; apply purges 0 < expires_at <= proposed_at.
+type OfflineMessage struct {
+	state               protoimpl.MessageState `protogen:"open.v1"`
+	Sequence            uint64                 `protobuf:"varint,1,opt,name=sequence,proto3" json:"sequence,omitempty"`
+	Topic               string                 `protobuf:"bytes,2,opt,name=topic,proto3" json:"topic,omitempty"`
+	Payload             []byte                 `protobuf:"bytes,3,opt,name=payload,proto3" json:"payload,omitempty"`
+	Qos                 uint32                 `protobuf:"varint,4,opt,name=qos,proto3" json:"qos,omitempty"`
+	Retain              bool                   `protobuf:"varint,5,opt,name=retain,proto3" json:"retain,omitempty"`
+	ExpiresAtUnixMillis uint64                 `protobuf:"varint,6,opt,name=expires_at_unix_millis,json=expiresAtUnixMillis,proto3" json:"expires_at_unix_millis,omitempty"`
+	unknownFields       protoimpl.UnknownFields
+	sizeCache           protoimpl.SizeCache
+}
+
+func (x *OfflineMessage) Reset() {
+	*x = OfflineMessage{}
+	mi := &file_docs_contracts_replicated_state_v1_proto_msgTypes[12]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *OfflineMessage) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*OfflineMessage) ProtoMessage() {}
+
+func (x *OfflineMessage) ProtoReflect() protoreflect.Message {
+	mi := &file_docs_contracts_replicated_state_v1_proto_msgTypes[12]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use OfflineMessage.ProtoReflect.Descriptor instead.
+func (*OfflineMessage) Descriptor() ([]byte, []int) {
+	return file_docs_contracts_replicated_state_v1_proto_rawDescGZIP(), []int{12}
+}
+
+func (x *OfflineMessage) GetSequence() uint64 {
+	if x != nil {
+		return x.Sequence
+	}
+	return 0
+}
+
+func (x *OfflineMessage) GetTopic() string {
+	if x != nil {
+		return x.Topic
+	}
+	return ""
+}
+
+func (x *OfflineMessage) GetPayload() []byte {
+	if x != nil {
+		return x.Payload
+	}
+	return nil
+}
+
+func (x *OfflineMessage) GetQos() uint32 {
+	if x != nil {
+		return x.Qos
+	}
+	return 0
+}
+
+func (x *OfflineMessage) GetRetain() bool {
+	if x != nil {
+		return x.Retain
+	}
+	return false
+}
+
+func (x *OfflineMessage) GetExpiresAtUnixMillis() uint64 {
+	if x != nil {
+		return x.ExpiresAtUnixMillis
+	}
+	return 0
+}
+
+type OfflineChange struct {
+	state                      protoimpl.MessageState `protogen:"open.v1"`
+	TenantId                   string                 `protobuf:"bytes,1,opt,name=tenant_id,json=tenantId,proto3" json:"tenant_id,omitempty"`
+	ClientId                   string                 `protobuf:"bytes,2,opt,name=client_id,json=clientId,proto3" json:"client_id,omitempty"`
+	OwnerNodeId                uint64                 `protobuf:"varint,3,opt,name=owner_node_id,json=ownerNodeId,proto3" json:"owner_node_id,omitempty"`
+	Epoch                      uint64                 `protobuf:"varint,4,opt,name=epoch,proto3" json:"epoch,omitempty"`
+	Action                     OfflineAction          `protobuf:"varint,5,opt,name=action,proto3,enum=narumq.cluster.v1.OfflineAction" json:"action,omitempty"`
+	SessionExpiresAtUnixMillis uint64                 `protobuf:"varint,6,opt,name=session_expires_at_unix_millis,json=sessionExpiresAtUnixMillis,proto3" json:"session_expires_at_unix_millis,omitempty"`
+	ProposedAtUnixMillis       uint64                 `protobuf:"varint,7,opt,name=proposed_at_unix_millis,json=proposedAtUnixMillis,proto3" json:"proposed_at_unix_millis,omitempty"`
+	Messages                   []*OfflineMessage      `protobuf:"bytes,8,rep,name=messages,proto3" json:"messages,omitempty"`
+	unknownFields              protoimpl.UnknownFields
+	sizeCache                  protoimpl.SizeCache
+}
+
+func (x *OfflineChange) Reset() {
+	*x = OfflineChange{}
+	mi := &file_docs_contracts_replicated_state_v1_proto_msgTypes[13]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *OfflineChange) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*OfflineChange) ProtoMessage() {}
+
+func (x *OfflineChange) ProtoReflect() protoreflect.Message {
+	mi := &file_docs_contracts_replicated_state_v1_proto_msgTypes[13]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use OfflineChange.ProtoReflect.Descriptor instead.
+func (*OfflineChange) Descriptor() ([]byte, []int) {
+	return file_docs_contracts_replicated_state_v1_proto_rawDescGZIP(), []int{13}
+}
+
+func (x *OfflineChange) GetTenantId() string {
+	if x != nil {
+		return x.TenantId
+	}
+	return ""
+}
+
+func (x *OfflineChange) GetClientId() string {
+	if x != nil {
+		return x.ClientId
+	}
+	return ""
+}
+
+func (x *OfflineChange) GetOwnerNodeId() uint64 {
+	if x != nil {
+		return x.OwnerNodeId
+	}
+	return 0
+}
+
+func (x *OfflineChange) GetEpoch() uint64 {
+	if x != nil {
+		return x.Epoch
+	}
+	return 0
+}
+
+func (x *OfflineChange) GetAction() OfflineAction {
+	if x != nil {
+		return x.Action
+	}
+	return OfflineAction_OFFLINE_ACTION_UNSPECIFIED
+}
+
+func (x *OfflineChange) GetSessionExpiresAtUnixMillis() uint64 {
+	if x != nil {
+		return x.SessionExpiresAtUnixMillis
+	}
+	return 0
+}
+
+func (x *OfflineChange) GetProposedAtUnixMillis() uint64 {
+	if x != nil {
+		return x.ProposedAtUnixMillis
+	}
+	return 0
+}
+
+func (x *OfflineChange) GetMessages() []*OfflineMessage {
+	if x != nil {
+		return x.Messages
+	}
+	return nil
+}
+
+type OfflineSessionState struct {
+	state                      protoimpl.MessageState `protogen:"open.v1"`
+	TenantId                   string                 `protobuf:"bytes,1,opt,name=tenant_id,json=tenantId,proto3" json:"tenant_id,omitempty"`
+	ClientId                   string                 `protobuf:"bytes,2,opt,name=client_id,json=clientId,proto3" json:"client_id,omitempty"`
+	Epoch                      uint64                 `protobuf:"varint,3,opt,name=epoch,proto3" json:"epoch,omitempty"`
+	SessionExpiresAtUnixMillis uint64                 `protobuf:"varint,4,opt,name=session_expires_at_unix_millis,json=sessionExpiresAtUnixMillis,proto3" json:"session_expires_at_unix_millis,omitempty"`
+	NextSequence               uint64                 `protobuf:"varint,5,opt,name=next_sequence,json=nextSequence,proto3" json:"next_sequence,omitempty"`
+	Messages                   []*OfflineMessage      `protobuf:"bytes,6,rep,name=messages,proto3" json:"messages,omitempty"`
+	unknownFields              protoimpl.UnknownFields
+	sizeCache                  protoimpl.SizeCache
+}
+
+func (x *OfflineSessionState) Reset() {
+	*x = OfflineSessionState{}
+	mi := &file_docs_contracts_replicated_state_v1_proto_msgTypes[14]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *OfflineSessionState) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*OfflineSessionState) ProtoMessage() {}
+
+func (x *OfflineSessionState) ProtoReflect() protoreflect.Message {
+	mi := &file_docs_contracts_replicated_state_v1_proto_msgTypes[14]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use OfflineSessionState.ProtoReflect.Descriptor instead.
+func (*OfflineSessionState) Descriptor() ([]byte, []int) {
+	return file_docs_contracts_replicated_state_v1_proto_rawDescGZIP(), []int{14}
+}
+
+func (x *OfflineSessionState) GetTenantId() string {
+	if x != nil {
+		return x.TenantId
+	}
+	return ""
+}
+
+func (x *OfflineSessionState) GetClientId() string {
+	if x != nil {
+		return x.ClientId
+	}
+	return ""
+}
+
+func (x *OfflineSessionState) GetEpoch() uint64 {
+	if x != nil {
+		return x.Epoch
+	}
+	return 0
+}
+
+func (x *OfflineSessionState) GetSessionExpiresAtUnixMillis() uint64 {
+	if x != nil {
+		return x.SessionExpiresAtUnixMillis
+	}
+	return 0
+}
+
+func (x *OfflineSessionState) GetNextSequence() uint64 {
+	if x != nil {
+		return x.NextSequence
+	}
+	return 0
+}
+
+func (x *OfflineSessionState) GetMessages() []*OfflineMessage {
+	if x != nil {
+		return x.Messages
+	}
+	return nil
+}
+
 type SubscriptionState struct {
 	state             protoimpl.MessageState `protogen:"open.v1"`
 	TenantId          string                 `protobuf:"bytes,1,opt,name=tenant_id,json=tenantId,proto3" json:"tenant_id,omitempty"`
@@ -1321,7 +1910,7 @@ type SubscriptionState struct {
 
 func (x *SubscriptionState) Reset() {
 	*x = SubscriptionState{}
-	mi := &file_docs_contracts_replicated_state_v1_proto_msgTypes[10]
+	mi := &file_docs_contracts_replicated_state_v1_proto_msgTypes[15]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1333,7 +1922,7 @@ func (x *SubscriptionState) String() string {
 func (*SubscriptionState) ProtoMessage() {}
 
 func (x *SubscriptionState) ProtoReflect() protoreflect.Message {
-	mi := &file_docs_contracts_replicated_state_v1_proto_msgTypes[10]
+	mi := &file_docs_contracts_replicated_state_v1_proto_msgTypes[15]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1346,7 +1935,7 @@ func (x *SubscriptionState) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SubscriptionState.ProtoReflect.Descriptor instead.
 func (*SubscriptionState) Descriptor() ([]byte, []int) {
-	return file_docs_contracts_replicated_state_v1_proto_rawDescGZIP(), []int{10}
+	return file_docs_contracts_replicated_state_v1_proto_rawDescGZIP(), []int{15}
 }
 
 func (x *SubscriptionState) GetTenantId() string {
@@ -1419,13 +2008,15 @@ type ReplicatedStateSnapshot struct {
 	Subscriptions     []*SubscriptionState   `protobuf:"bytes,3,rep,name=subscriptions,proto3" json:"subscriptions,omitempty"`
 	Checkpoints       []*SessionCheckpoint   `protobuf:"bytes,4,rep,name=checkpoints,proto3" json:"checkpoints,omitempty"`
 	MembershipHistory []*MembershipRecord    `protobuf:"bytes,5,rep,name=membership_history,json=membershipHistory,proto3" json:"membership_history,omitempty"`
+	Retained          []*RetainedState       `protobuf:"bytes,6,rep,name=retained,proto3" json:"retained,omitempty"`
+	OfflineSessions   []*OfflineSessionState `protobuf:"bytes,7,rep,name=offline_sessions,json=offlineSessions,proto3" json:"offline_sessions,omitempty"`
 	unknownFields     protoimpl.UnknownFields
 	sizeCache         protoimpl.SizeCache
 }
 
 func (x *ReplicatedStateSnapshot) Reset() {
 	*x = ReplicatedStateSnapshot{}
-	mi := &file_docs_contracts_replicated_state_v1_proto_msgTypes[11]
+	mi := &file_docs_contracts_replicated_state_v1_proto_msgTypes[16]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1437,7 +2028,7 @@ func (x *ReplicatedStateSnapshot) String() string {
 func (*ReplicatedStateSnapshot) ProtoMessage() {}
 
 func (x *ReplicatedStateSnapshot) ProtoReflect() protoreflect.Message {
-	mi := &file_docs_contracts_replicated_state_v1_proto_msgTypes[11]
+	mi := &file_docs_contracts_replicated_state_v1_proto_msgTypes[16]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1450,7 +2041,7 @@ func (x *ReplicatedStateSnapshot) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ReplicatedStateSnapshot.ProtoReflect.Descriptor instead.
 func (*ReplicatedStateSnapshot) Descriptor() ([]byte, []int) {
-	return file_docs_contracts_replicated_state_v1_proto_rawDescGZIP(), []int{11}
+	return file_docs_contracts_replicated_state_v1_proto_rawDescGZIP(), []int{16}
 }
 
 func (x *ReplicatedStateSnapshot) GetMembers() []*MemberIdentity {
@@ -1488,6 +2079,20 @@ func (x *ReplicatedStateSnapshot) GetMembershipHistory() []*MembershipRecord {
 	return nil
 }
 
+func (x *ReplicatedStateSnapshot) GetRetained() []*RetainedState {
+	if x != nil {
+		return x.Retained
+	}
+	return nil
+}
+
+func (x *ReplicatedStateSnapshot) GetOfflineSessions() []*OfflineSessionState {
+	if x != nil {
+		return x.OfflineSessions
+	}
+	return nil
+}
+
 type SnapshotEnvelope struct {
 	state             protoimpl.MessageState   `protogen:"open.v1"`
 	SchemaMajor       uint32                   `protobuf:"varint,1,opt,name=schema_major,json=schemaMajor,proto3" json:"schema_major,omitempty"`
@@ -1502,7 +2107,7 @@ type SnapshotEnvelope struct {
 
 func (x *SnapshotEnvelope) Reset() {
 	*x = SnapshotEnvelope{}
-	mi := &file_docs_contracts_replicated_state_v1_proto_msgTypes[12]
+	mi := &file_docs_contracts_replicated_state_v1_proto_msgTypes[17]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1514,7 +2119,7 @@ func (x *SnapshotEnvelope) String() string {
 func (*SnapshotEnvelope) ProtoMessage() {}
 
 func (x *SnapshotEnvelope) ProtoReflect() protoreflect.Message {
-	mi := &file_docs_contracts_replicated_state_v1_proto_msgTypes[12]
+	mi := &file_docs_contracts_replicated_state_v1_proto_msgTypes[17]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1527,7 +2132,7 @@ func (x *SnapshotEnvelope) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SnapshotEnvelope.ProtoReflect.Descriptor instead.
 func (*SnapshotEnvelope) Descriptor() ([]byte, []int) {
-	return file_docs_contracts_replicated_state_v1_proto_rawDescGZIP(), []int{12}
+	return file_docs_contracts_replicated_state_v1_proto_rawDescGZIP(), []int{17}
 }
 
 func (x *SnapshotEnvelope) GetSchemaMajor() uint32 {
@@ -1576,7 +2181,7 @@ var File_docs_contracts_replicated_state_v1_proto protoreflect.FileDescriptor
 
 const file_docs_contracts_replicated_state_v1_proto_rawDesc = "" +
 	"\n" +
-	"(docs/contracts/replicated-state-v1.proto\x12\x11narumq.cluster.v1\"\xa5\x03\n" +
+	"(docs/contracts/replicated-state-v1.proto\x12\x11narumq.cluster.v1\"\xa4\x04\n" +
 	"\x0fCommandEnvelope\x12!\n" +
 	"\fschema_major\x18\x01 \x01(\rR\vschemaMajor\x12!\n" +
 	"\fschema_minor\x18\x02 \x01(\rR\vschemaMinor\x12!\n" +
@@ -1589,7 +2194,9 @@ const file_docs_contracts_replicated_state_v1_proto_rawDesc = "" +
 	"\fsubscription\x18\f \x01(\v2%.narumq.cluster.v1.SubscriptionChangeH\x00R\fsubscription\x12F\n" +
 	"\n" +
 	"checkpoint\x18\r \x01(\v2$.narumq.cluster.v1.SessionCheckpointH\x00R\n" +
-	"checkpointB\t\n" +
+	"checkpoint\x12?\n" +
+	"\bretained\x18\x0e \x01(\v2!.narumq.cluster.v1.RetainedChangeH\x00R\bretained\x12<\n" +
+	"\aoffline\x18\x0f \x01(\v2 .narumq.cluster.v1.OfflineChangeH\x00R\aofflineB\t\n" +
 	"\apayload\"\xf8\x03\n" +
 	"\x0eMemberIdentity\x12\x1b\n" +
 	"\tmember_id\x18\x01 \x01(\x04R\bmemberId\x12\x1d\n" +
@@ -1661,7 +2268,46 @@ const file_docs_contracts_replicated_state_v1_proto_rawDesc = "" +
 	"\rowner_node_id\x18\x03 \x01(\x04R\vownerNodeId\x12\x14\n" +
 	"\x05epoch\x18\x04 \x01(\x04R\x05epoch\x12>\n" +
 	"\ainbound\x18\x05 \x03(\v2$.narumq.cluster.v1.InboundCheckpointR\ainbound\x12A\n" +
-	"\boutbound\x18\x06 \x03(\v2%.narumq.cluster.v1.OutboundCheckpointR\boutbound\"\xa5\x02\n" +
+	"\boutbound\x18\x06 \x03(\v2%.narumq.cluster.v1.OutboundCheckpointR\boutbound\"\xc6\x02\n" +
+	"\x0eRetainedChange\x12\x1b\n" +
+	"\ttenant_id\x18\x01 \x01(\tR\btenantId\x12\x14\n" +
+	"\x05topic\x18\x02 \x01(\tR\x05topic\x12.\n" +
+	"\x13publisher_client_id\x18\x03 \x01(\tR\x11publisherClientId\x12\x10\n" +
+	"\x03qos\x18\x04 \x01(\rR\x03qos\x12\x18\n" +
+	"\apayload\x18\x05 \x01(\fR\apayload\x123\n" +
+	"\x16expires_at_unix_millis\x18\x06 \x01(\x04R\x13expiresAtUnixMillis\x125\n" +
+	"\x17proposed_at_unix_millis\x18\a \x01(\x04R\x14proposedAtUnixMillis\x129\n" +
+	"\x06action\x18\b \x01(\x0e2!.narumq.cluster.v1.RetainedActionR\x06action\"\xd3\x01\n" +
+	"\rRetainedState\x12\x1b\n" +
+	"\ttenant_id\x18\x01 \x01(\tR\btenantId\x12\x14\n" +
+	"\x05topic\x18\x02 \x01(\tR\x05topic\x12.\n" +
+	"\x13publisher_client_id\x18\x03 \x01(\tR\x11publisherClientId\x12\x10\n" +
+	"\x03qos\x18\x04 \x01(\rR\x03qos\x12\x18\n" +
+	"\apayload\x18\x05 \x01(\fR\apayload\x123\n" +
+	"\x16expires_at_unix_millis\x18\x06 \x01(\x04R\x13expiresAtUnixMillis\"\xbb\x01\n" +
+	"\x0eOfflineMessage\x12\x1a\n" +
+	"\bsequence\x18\x01 \x01(\x04R\bsequence\x12\x14\n" +
+	"\x05topic\x18\x02 \x01(\tR\x05topic\x12\x18\n" +
+	"\apayload\x18\x03 \x01(\fR\apayload\x12\x10\n" +
+	"\x03qos\x18\x04 \x01(\rR\x03qos\x12\x16\n" +
+	"\x06retain\x18\x05 \x01(\bR\x06retain\x123\n" +
+	"\x16expires_at_unix_millis\x18\x06 \x01(\x04R\x13expiresAtUnixMillis\"\xf7\x02\n" +
+	"\rOfflineChange\x12\x1b\n" +
+	"\ttenant_id\x18\x01 \x01(\tR\btenantId\x12\x1b\n" +
+	"\tclient_id\x18\x02 \x01(\tR\bclientId\x12\"\n" +
+	"\rowner_node_id\x18\x03 \x01(\x04R\vownerNodeId\x12\x14\n" +
+	"\x05epoch\x18\x04 \x01(\x04R\x05epoch\x128\n" +
+	"\x06action\x18\x05 \x01(\x0e2 .narumq.cluster.v1.OfflineActionR\x06action\x12B\n" +
+	"\x1esession_expires_at_unix_millis\x18\x06 \x01(\x04R\x1asessionExpiresAtUnixMillis\x125\n" +
+	"\x17proposed_at_unix_millis\x18\a \x01(\x04R\x14proposedAtUnixMillis\x12=\n" +
+	"\bmessages\x18\b \x03(\v2!.narumq.cluster.v1.OfflineMessageR\bmessages\"\x8d\x02\n" +
+	"\x13OfflineSessionState\x12\x1b\n" +
+	"\ttenant_id\x18\x01 \x01(\tR\btenantId\x12\x1b\n" +
+	"\tclient_id\x18\x02 \x01(\tR\bclientId\x12\x14\n" +
+	"\x05epoch\x18\x03 \x01(\x04R\x05epoch\x12B\n" +
+	"\x1esession_expires_at_unix_millis\x18\x04 \x01(\x04R\x1asessionExpiresAtUnixMillis\x12#\n" +
+	"\rnext_sequence\x18\x05 \x01(\x04R\fnextSequence\x12=\n" +
+	"\bmessages\x18\x06 \x03(\v2!.narumq.cluster.v1.OfflineMessageR\bmessages\"\xa5\x02\n" +
 	"\x11SubscriptionState\x12\x1b\n" +
 	"\ttenant_id\x18\x01 \x01(\tR\btenantId\x12\x1b\n" +
 	"\tclient_id\x18\x02 \x01(\tR\bclientId\x12\"\n" +
@@ -1671,7 +2317,7 @@ const file_docs_contracts_replicated_state_v1_proto_rawDesc = "" +
 	"\x03qos\x18\x06 \x01(\rR\x03qos\x12\x19\n" +
 	"\bno_local\x18\a \x01(\bR\anoLocal\x12.\n" +
 	"\x13retain_as_published\x18\b \x01(\bR\x11retainAsPublished\x12'\n" +
-	"\x0fretain_handling\x18\t \x01(\rR\x0eretainHandling\"\x81\x03\n" +
+	"\x0fretain_handling\x18\t \x01(\rR\x0eretainHandling\"\x92\x04\n" +
 	"\x17ReplicatedStateSnapshot\x12;\n" +
 	"\amembers\x18\x01 \x03(\v2!.narumq.cluster.v1.MemberIdentityR\amembers\x12A\n" +
 	"\n" +
@@ -1679,7 +2325,9 @@ const file_docs_contracts_replicated_state_v1_proto_rawDesc = "" +
 	"ownerships\x12J\n" +
 	"\rsubscriptions\x18\x03 \x03(\v2$.narumq.cluster.v1.SubscriptionStateR\rsubscriptions\x12F\n" +
 	"\vcheckpoints\x18\x04 \x03(\v2$.narumq.cluster.v1.SessionCheckpointR\vcheckpoints\x12R\n" +
-	"\x12membership_history\x18\x05 \x03(\v2#.narumq.cluster.v1.MembershipRecordR\x11membershipHistory\"\x85\x02\n" +
+	"\x12membership_history\x18\x05 \x03(\v2#.narumq.cluster.v1.MembershipRecordR\x11membershipHistory\x12<\n" +
+	"\bretained\x18\x06 \x03(\v2 .narumq.cluster.v1.RetainedStateR\bretained\x12Q\n" +
+	"\x10offline_sessions\x18\a \x03(\v2&.narumq.cluster.v1.OfflineSessionStateR\x0fofflineSessions\"\x85\x02\n" +
 	"\x10SnapshotEnvelope\x12!\n" +
 	"\fschema_major\x18\x01 \x01(\rR\vschemaMajor\x12!\n" +
 	"\fschema_minor\x18\x02 \x01(\rR\vschemaMinor\x12.\n" +
@@ -1711,7 +2359,16 @@ const file_docs_contracts_replicated_state_v1_proto_rawDesc = "" +
 	"\x12SubscriptionAction\x12#\n" +
 	"\x1fSUBSCRIPTION_ACTION_UNSPECIFIED\x10\x00\x12\x1b\n" +
 	"\x17SUBSCRIPTION_ACTION_ADD\x10\x01\x12\x1e\n" +
-	"\x1aSUBSCRIPTION_ACTION_REMOVE\x10\x02*\xfa\x01\n" +
+	"\x1aSUBSCRIPTION_ACTION_REMOVE\x10\x02*j\n" +
+	"\x0eRetainedAction\x12\x1f\n" +
+	"\x1bRETAINED_ACTION_UNSPECIFIED\x10\x00\x12\x1b\n" +
+	"\x17RETAINED_ACTION_REPLACE\x10\x01\x12\x1a\n" +
+	"\x16RETAINED_ACTION_DELETE\x10\x02*\x80\x01\n" +
+	"\rOfflineAction\x12\x1e\n" +
+	"\x1aOFFLINE_ACTION_UNSPECIFIED\x10\x00\x12\x19\n" +
+	"\x15OFFLINE_ACTION_DETACH\x10\x01\x12\x1a\n" +
+	"\x16OFFLINE_ACTION_ENQUEUE\x10\x02\x12\x18\n" +
+	"\x14OFFLINE_ACTION_CLAIM\x10\x03*\xfa\x01\n" +
 	"\x14InboundDeliveryPhase\x12\x1d\n" +
 	"\x19INBOUND_PHASE_UNSPECIFIED\x10\x00\x12!\n" +
 	"\x1dINBOUND_QOS1_AWAIT_ACCEPTANCE\x10\x01\x12\x19\n" +
@@ -1739,56 +2396,71 @@ func file_docs_contracts_replicated_state_v1_proto_rawDescGZIP() []byte {
 	return file_docs_contracts_replicated_state_v1_proto_rawDescData
 }
 
-var file_docs_contracts_replicated_state_v1_proto_enumTypes = make([]protoimpl.EnumInfo, 6)
-var file_docs_contracts_replicated_state_v1_proto_msgTypes = make([]protoimpl.MessageInfo, 13)
+var file_docs_contracts_replicated_state_v1_proto_enumTypes = make([]protoimpl.EnumInfo, 8)
+var file_docs_contracts_replicated_state_v1_proto_msgTypes = make([]protoimpl.MessageInfo, 18)
 var file_docs_contracts_replicated_state_v1_proto_goTypes = []any{
 	(MemberPhase)(0),                // 0: narumq.cluster.v1.MemberPhase
 	(MembershipAction)(0),           // 1: narumq.cluster.v1.MembershipAction
 	(OwnershipAction)(0),            // 2: narumq.cluster.v1.OwnershipAction
 	(SubscriptionAction)(0),         // 3: narumq.cluster.v1.SubscriptionAction
-	(InboundDeliveryPhase)(0),       // 4: narumq.cluster.v1.InboundDeliveryPhase
-	(OutboundDeliveryPhase)(0),      // 5: narumq.cluster.v1.OutboundDeliveryPhase
-	(*CommandEnvelope)(nil),         // 6: narumq.cluster.v1.CommandEnvelope
-	(*MemberIdentity)(nil),          // 7: narumq.cluster.v1.MemberIdentity
-	(*MembershipRecord)(nil),        // 8: narumq.cluster.v1.MembershipRecord
-	(*OwnershipChange)(nil),         // 9: narumq.cluster.v1.OwnershipChange
-	(*OwnershipState)(nil),          // 10: narumq.cluster.v1.OwnershipState
-	(*SubscriptionChange)(nil),      // 11: narumq.cluster.v1.SubscriptionChange
-	(*PublishPacket)(nil),           // 12: narumq.cluster.v1.PublishPacket
-	(*InboundCheckpoint)(nil),       // 13: narumq.cluster.v1.InboundCheckpoint
-	(*OutboundCheckpoint)(nil),      // 14: narumq.cluster.v1.OutboundCheckpoint
-	(*SessionCheckpoint)(nil),       // 15: narumq.cluster.v1.SessionCheckpoint
-	(*SubscriptionState)(nil),       // 16: narumq.cluster.v1.SubscriptionState
-	(*ReplicatedStateSnapshot)(nil), // 17: narumq.cluster.v1.ReplicatedStateSnapshot
-	(*SnapshotEnvelope)(nil),        // 18: narumq.cluster.v1.SnapshotEnvelope
+	(RetainedAction)(0),             // 4: narumq.cluster.v1.RetainedAction
+	(OfflineAction)(0),              // 5: narumq.cluster.v1.OfflineAction
+	(InboundDeliveryPhase)(0),       // 6: narumq.cluster.v1.InboundDeliveryPhase
+	(OutboundDeliveryPhase)(0),      // 7: narumq.cluster.v1.OutboundDeliveryPhase
+	(*CommandEnvelope)(nil),         // 8: narumq.cluster.v1.CommandEnvelope
+	(*MemberIdentity)(nil),          // 9: narumq.cluster.v1.MemberIdentity
+	(*MembershipRecord)(nil),        // 10: narumq.cluster.v1.MembershipRecord
+	(*OwnershipChange)(nil),         // 11: narumq.cluster.v1.OwnershipChange
+	(*OwnershipState)(nil),          // 12: narumq.cluster.v1.OwnershipState
+	(*SubscriptionChange)(nil),      // 13: narumq.cluster.v1.SubscriptionChange
+	(*PublishPacket)(nil),           // 14: narumq.cluster.v1.PublishPacket
+	(*InboundCheckpoint)(nil),       // 15: narumq.cluster.v1.InboundCheckpoint
+	(*OutboundCheckpoint)(nil),      // 16: narumq.cluster.v1.OutboundCheckpoint
+	(*SessionCheckpoint)(nil),       // 17: narumq.cluster.v1.SessionCheckpoint
+	(*RetainedChange)(nil),          // 18: narumq.cluster.v1.RetainedChange
+	(*RetainedState)(nil),           // 19: narumq.cluster.v1.RetainedState
+	(*OfflineMessage)(nil),          // 20: narumq.cluster.v1.OfflineMessage
+	(*OfflineChange)(nil),           // 21: narumq.cluster.v1.OfflineChange
+	(*OfflineSessionState)(nil),     // 22: narumq.cluster.v1.OfflineSessionState
+	(*SubscriptionState)(nil),       // 23: narumq.cluster.v1.SubscriptionState
+	(*ReplicatedStateSnapshot)(nil), // 24: narumq.cluster.v1.ReplicatedStateSnapshot
+	(*SnapshotEnvelope)(nil),        // 25: narumq.cluster.v1.SnapshotEnvelope
 }
 var file_docs_contracts_replicated_state_v1_proto_depIdxs = []int32{
-	8,  // 0: narumq.cluster.v1.CommandEnvelope.membership:type_name -> narumq.cluster.v1.MembershipRecord
-	9,  // 1: narumq.cluster.v1.CommandEnvelope.ownership:type_name -> narumq.cluster.v1.OwnershipChange
-	11, // 2: narumq.cluster.v1.CommandEnvelope.subscription:type_name -> narumq.cluster.v1.SubscriptionChange
-	15, // 3: narumq.cluster.v1.CommandEnvelope.checkpoint:type_name -> narumq.cluster.v1.SessionCheckpoint
-	0,  // 4: narumq.cluster.v1.MemberIdentity.phase:type_name -> narumq.cluster.v1.MemberPhase
-	1,  // 5: narumq.cluster.v1.MembershipRecord.action:type_name -> narumq.cluster.v1.MembershipAction
-	7,  // 6: narumq.cluster.v1.MembershipRecord.member:type_name -> narumq.cluster.v1.MemberIdentity
-	2,  // 7: narumq.cluster.v1.OwnershipChange.action:type_name -> narumq.cluster.v1.OwnershipAction
-	3,  // 8: narumq.cluster.v1.SubscriptionChange.action:type_name -> narumq.cluster.v1.SubscriptionAction
-	12, // 9: narumq.cluster.v1.InboundCheckpoint.publish:type_name -> narumq.cluster.v1.PublishPacket
-	4,  // 10: narumq.cluster.v1.InboundCheckpoint.phase:type_name -> narumq.cluster.v1.InboundDeliveryPhase
-	12, // 11: narumq.cluster.v1.OutboundCheckpoint.publish:type_name -> narumq.cluster.v1.PublishPacket
-	5,  // 12: narumq.cluster.v1.OutboundCheckpoint.phase:type_name -> narumq.cluster.v1.OutboundDeliveryPhase
-	13, // 13: narumq.cluster.v1.SessionCheckpoint.inbound:type_name -> narumq.cluster.v1.InboundCheckpoint
-	14, // 14: narumq.cluster.v1.SessionCheckpoint.outbound:type_name -> narumq.cluster.v1.OutboundCheckpoint
-	7,  // 15: narumq.cluster.v1.ReplicatedStateSnapshot.members:type_name -> narumq.cluster.v1.MemberIdentity
-	10, // 16: narumq.cluster.v1.ReplicatedStateSnapshot.ownerships:type_name -> narumq.cluster.v1.OwnershipState
-	16, // 17: narumq.cluster.v1.ReplicatedStateSnapshot.subscriptions:type_name -> narumq.cluster.v1.SubscriptionState
-	15, // 18: narumq.cluster.v1.ReplicatedStateSnapshot.checkpoints:type_name -> narumq.cluster.v1.SessionCheckpoint
-	8,  // 19: narumq.cluster.v1.ReplicatedStateSnapshot.membership_history:type_name -> narumq.cluster.v1.MembershipRecord
-	17, // 20: narumq.cluster.v1.SnapshotEnvelope.state:type_name -> narumq.cluster.v1.ReplicatedStateSnapshot
-	21, // [21:21] is the sub-list for method output_type
-	21, // [21:21] is the sub-list for method input_type
-	21, // [21:21] is the sub-list for extension type_name
-	21, // [21:21] is the sub-list for extension extendee
-	0,  // [0:21] is the sub-list for field type_name
+	10, // 0: narumq.cluster.v1.CommandEnvelope.membership:type_name -> narumq.cluster.v1.MembershipRecord
+	11, // 1: narumq.cluster.v1.CommandEnvelope.ownership:type_name -> narumq.cluster.v1.OwnershipChange
+	13, // 2: narumq.cluster.v1.CommandEnvelope.subscription:type_name -> narumq.cluster.v1.SubscriptionChange
+	17, // 3: narumq.cluster.v1.CommandEnvelope.checkpoint:type_name -> narumq.cluster.v1.SessionCheckpoint
+	18, // 4: narumq.cluster.v1.CommandEnvelope.retained:type_name -> narumq.cluster.v1.RetainedChange
+	21, // 5: narumq.cluster.v1.CommandEnvelope.offline:type_name -> narumq.cluster.v1.OfflineChange
+	0,  // 6: narumq.cluster.v1.MemberIdentity.phase:type_name -> narumq.cluster.v1.MemberPhase
+	1,  // 7: narumq.cluster.v1.MembershipRecord.action:type_name -> narumq.cluster.v1.MembershipAction
+	9,  // 8: narumq.cluster.v1.MembershipRecord.member:type_name -> narumq.cluster.v1.MemberIdentity
+	2,  // 9: narumq.cluster.v1.OwnershipChange.action:type_name -> narumq.cluster.v1.OwnershipAction
+	3,  // 10: narumq.cluster.v1.SubscriptionChange.action:type_name -> narumq.cluster.v1.SubscriptionAction
+	14, // 11: narumq.cluster.v1.InboundCheckpoint.publish:type_name -> narumq.cluster.v1.PublishPacket
+	6,  // 12: narumq.cluster.v1.InboundCheckpoint.phase:type_name -> narumq.cluster.v1.InboundDeliveryPhase
+	14, // 13: narumq.cluster.v1.OutboundCheckpoint.publish:type_name -> narumq.cluster.v1.PublishPacket
+	7,  // 14: narumq.cluster.v1.OutboundCheckpoint.phase:type_name -> narumq.cluster.v1.OutboundDeliveryPhase
+	15, // 15: narumq.cluster.v1.SessionCheckpoint.inbound:type_name -> narumq.cluster.v1.InboundCheckpoint
+	16, // 16: narumq.cluster.v1.SessionCheckpoint.outbound:type_name -> narumq.cluster.v1.OutboundCheckpoint
+	4,  // 17: narumq.cluster.v1.RetainedChange.action:type_name -> narumq.cluster.v1.RetainedAction
+	5,  // 18: narumq.cluster.v1.OfflineChange.action:type_name -> narumq.cluster.v1.OfflineAction
+	20, // 19: narumq.cluster.v1.OfflineChange.messages:type_name -> narumq.cluster.v1.OfflineMessage
+	20, // 20: narumq.cluster.v1.OfflineSessionState.messages:type_name -> narumq.cluster.v1.OfflineMessage
+	9,  // 21: narumq.cluster.v1.ReplicatedStateSnapshot.members:type_name -> narumq.cluster.v1.MemberIdentity
+	12, // 22: narumq.cluster.v1.ReplicatedStateSnapshot.ownerships:type_name -> narumq.cluster.v1.OwnershipState
+	23, // 23: narumq.cluster.v1.ReplicatedStateSnapshot.subscriptions:type_name -> narumq.cluster.v1.SubscriptionState
+	17, // 24: narumq.cluster.v1.ReplicatedStateSnapshot.checkpoints:type_name -> narumq.cluster.v1.SessionCheckpoint
+	10, // 25: narumq.cluster.v1.ReplicatedStateSnapshot.membership_history:type_name -> narumq.cluster.v1.MembershipRecord
+	19, // 26: narumq.cluster.v1.ReplicatedStateSnapshot.retained:type_name -> narumq.cluster.v1.RetainedState
+	22, // 27: narumq.cluster.v1.ReplicatedStateSnapshot.offline_sessions:type_name -> narumq.cluster.v1.OfflineSessionState
+	24, // 28: narumq.cluster.v1.SnapshotEnvelope.state:type_name -> narumq.cluster.v1.ReplicatedStateSnapshot
+	29, // [29:29] is the sub-list for method output_type
+	29, // [29:29] is the sub-list for method input_type
+	29, // [29:29] is the sub-list for extension type_name
+	29, // [29:29] is the sub-list for extension extendee
+	0,  // [0:29] is the sub-list for field type_name
 }
 
 func init() { file_docs_contracts_replicated_state_v1_proto_init() }
@@ -1801,14 +2473,16 @@ func file_docs_contracts_replicated_state_v1_proto_init() {
 		(*CommandEnvelope_Ownership)(nil),
 		(*CommandEnvelope_Subscription)(nil),
 		(*CommandEnvelope_Checkpoint)(nil),
+		(*CommandEnvelope_Retained)(nil),
+		(*CommandEnvelope_Offline)(nil),
 	}
 	type x struct{}
 	out := protoimpl.TypeBuilder{
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_docs_contracts_replicated_state_v1_proto_rawDesc), len(file_docs_contracts_replicated_state_v1_proto_rawDesc)),
-			NumEnums:      6,
-			NumMessages:   13,
+			NumEnums:      8,
+			NumMessages:   18,
 			NumExtensions: 0,
 			NumServices:   0,
 		},

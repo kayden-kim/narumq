@@ -7,6 +7,71 @@ const (
 	SchemaMinor uint32 = 0
 )
 
+// Retained capacity is enforced deterministically at apply time and matches
+// the per-node retained projection limits.
+const (
+	MaxRetainedMessages     = 1024
+	MaxRetainedBytes        = 16 << 20
+	MaxRetainedPayloadBytes = 1_000_000
+)
+
+// Offline capacity is enforced deterministically at apply time.
+const (
+	MaxOfflineMessagesPerSession = 64
+	MaxOfflineMessages           = 4096
+	MaxOfflineBytes              = 16 << 20
+	MaxOfflinePayloadBytes       = 1_000_000
+	MaxOfflineDetachMessageBytes = 768 << 10
+)
+
+// OfflineAction identifies a replicated offline session/message mutation.
+type OfflineAction uint32
+
+const (
+	OfflineActionUnspecified OfflineAction = iota
+	OfflineActionDetach
+	OfflineActionEnqueue
+	OfflineActionClaim
+)
+
+// OfflineMessageDTO is one queued offline delivery.
+type OfflineMessageDTO struct {
+	Sequence            uint64
+	Topic               string
+	Payload             []byte
+	QoS                 uint32
+	Retain              bool
+	ExpiresAtUnixMillis uint64
+}
+
+// OfflineChangeDTO detaches a session, enqueues an offline message, or claims offline messages.
+type OfflineChangeDTO struct {
+	TenantID                   string
+	ClientID                   string
+	OwnerNodeID                uint64
+	Epoch                      uint64
+	Action                     OfflineAction
+	SessionExpiresAtUnixMillis uint64
+	ProposedAtUnixMillis       uint64
+	Messages                   []OfflineMessageDTO
+}
+
+// OfflineSessionStateDTO is the committed offline queue of one detached session.
+type OfflineSessionStateDTO struct {
+	TenantID                   string
+	ClientID                   string
+	Epoch                      uint64
+	SessionExpiresAtUnixMillis uint64
+	NextSequence               uint64
+	Messages                   []OfflineMessageDTO
+}
+
+// OfflineClaimDTO carries messages returned by an authorized CLAIM mutation.
+type OfflineClaimDTO struct {
+	Found    bool
+	Messages []OfflineMessageDTO
+}
+
 // MemberPhase is a replicated membership lifecycle phase.
 type MemberPhase uint32
 
@@ -50,6 +115,15 @@ const (
 	SubscriptionActionUnspecified SubscriptionAction = iota
 	SubscriptionActionAdd
 	SubscriptionActionRemove
+)
+
+// RetainedAction identifies a replicated retained-message mutation.
+type RetainedAction uint32
+
+const (
+	RetainedActionUnspecified RetainedAction = iota
+	RetainedActionReplace
+	RetainedActionDelete
 )
 
 // InboundDeliveryPhase is the exact replicated inbound QoS checkpoint phase.
@@ -97,6 +171,8 @@ type CommandDTO struct {
 	Ownership    *OwnershipChangeDTO
 	Subscription *SubscriptionChangeDTO
 	Checkpoint   *SessionCheckpointDTO
+	Retained     *RetainedChangeDTO
+	Offline      *OfflineChangeDTO
 }
 
 // MemberIdentityDTO is a committed cluster member identity and lifecycle phase.
@@ -173,6 +249,29 @@ type SubscriptionStateDTO struct {
 	RetainHandling    uint32
 }
 
+// RetainedChangeDTO replaces or deletes the retained value of (TenantID, Topic).
+// Timestamps are proposer Unix milliseconds; apply never reads a local clock.
+type RetainedChangeDTO struct {
+	TenantID             string
+	Topic                string
+	PublisherClientID    string
+	QoS                  uint32
+	Payload              []byte
+	ExpiresAtUnixMillis  uint64
+	ProposedAtUnixMillis uint64
+	Action               RetainedAction
+}
+
+// RetainedStateDTO is one committed retained value.
+type RetainedStateDTO struct {
+	TenantID            string
+	Topic               string
+	PublisherClientID   string
+	QoS                 uint32
+	Payload             []byte
+	ExpiresAtUnixMillis uint64
+}
+
 // PublishPacketDTO contains the supported, lossless MQTT PUBLISH checkpoint fields.
 type PublishPacketDTO struct {
 	ProtocolVersion          uint32
@@ -233,6 +332,9 @@ const (
 	ConflictOwnershipMissing         ApplyConflictCode = "ownership_missing"
 	ConflictMemberNotFound           ApplyConflictCode = "member_not_found"
 	ConflictCompatibilityUnsupported ApplyConflictCode = "compatibility_unsupported"
+	ConflictRetainedCapacity         ApplyConflictCode = "retained_capacity_exceeded"
+	ConflictOfflineCapacity          ApplyConflictCode = "offline_capacity_exceeded"
+	ConflictOfflineSessionMissing    ApplyConflictCode = "offline_session_missing"
 )
 
 // ApplyResultDTO reports the deterministic result at a committed application index.
@@ -244,6 +346,7 @@ type ApplyResultDTO struct {
 	Ownership    *OwnershipStateDTO
 	Subscription *SubscriptionStateDTO
 	Checkpoint   *SessionCheckpointDTO
+	OfflineClaim *OfflineClaimDTO
 }
 
 // MembershipOperationPhase is the management-facing current operation status.
@@ -286,4 +389,6 @@ type SnapshotDTO struct {
 	Subscriptions     []SubscriptionStateDTO
 	Checkpoints       []SessionCheckpointDTO
 	MembershipHistory []MembershipRecordDTO
+	Retained          []RetainedStateDTO
+	OfflineSessions   []OfflineSessionStateDTO
 }

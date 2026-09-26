@@ -16,8 +16,9 @@
 | [ADR-0008](ADR-0008-raft-peer-transport.md) | Accepted | 고정 3-node Raft transport v1에 mTLS TCP와 bounded queues를 사용한다. |
 | [ADR-0009](ADR-0009-raft-production-state-profile.md) | Accepted (design target only) | Raft version, file-backed storage, replicated-state encoding family와 단일 group target을 정하되 production readiness는 승인하지 않는다. |
 | [ADR-0010](ADR-0010-dynamic-cluster-membership.md) | Accepted (membership 설계만) | Cluster membership은 staged learner 전환과 영구 node ID를 사용한다. |
-| [ADR-0011](ADR-0011-cluster-backup-restore-v1.md) | Accepted (v1 scope only) | Commit-boundary archive와 offline voter restore를 사용한다. |
-
+| [ADR-0011](ADR-0011-cluster-backup-restore-v1.md) | Superseded (v1 archive only) | Commit-boundary archive와 offline voter restore를 사용했다. |
+| [ADR-0012](ADR-0012-retained-replication-and-cluster-backup-v2.md) | Accepted (retained scope; archive v2는 ADR-0013이 대체) | Retained state를 Raft로 복제하고 backup v2에 포함한다. |
+| [ADR-0013](ADR-0013-offline-queue-replication-and-cluster-backup-v3.md) | Accepted (offline QoS 0 + backup v3 scope only) | Detached persistent session의 QoS 0 offline message를 Raft로 복제하고 backup v3에 포함한다. |
 `Proposed` ADR은 검토 중인 제안이다. `Accepted` ADR은 각 기록에 명시한 범위 안에서 채택된 결정이다. `design target only`는 production runtime이나 acceptance 검증을 뜻하지 않는다.
 
 ## 번호와 변경

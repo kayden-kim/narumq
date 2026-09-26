@@ -349,7 +349,7 @@ func clusterManagementContractHandler() http.Handler {
 type contractBackupProvider struct{}
 
 func (contractBackupProvider) CaptureClusterBackup(context.Context) (ports.ClusterBackupDTO, error) {
-	framed := []byte("NMQBKUP1 contract fixture")
+	framed := []byte("NMQBKUP3 contract fixture")
 	checksum := sha256.Sum256(framed)
 	archive := append(append([]byte(nil), framed...), checksum[:]...)
 	return ports.ClusterBackupDTO{CommitIndex: 41, ArchiveSHA256: checksum, Archive: archive}, nil

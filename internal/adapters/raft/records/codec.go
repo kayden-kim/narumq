@@ -16,11 +16,19 @@ import (
 )
 
 const (
-	maxCommandBytes   = 1 << 20
-	maxSnapshotBytes  = 64 << 20
-	maxEntries        = 1_000_000
-	maxPublishPayload = 1_000_000
+	maxCommandBytes              = 1 << 20
+	maxSnapshotBytes             = 64 << 20
+	maxEntries                   = 1_000_000
+	maxPublishPayload            = 1_000_000
+	maxRetainedMessages          = 1024
+	maxOfflineMessages           = 4096
+	maxOfflineMessagesPerSession = 64
+	maxOfflineBytes              = 16 << 20
+	maxOfflineDetachMessageBytes = 768 << 10
 )
+
+// ErrCommandTooLarge means a command exceeds the replicated command size limit.
+var ErrCommandTooLarge = errors.New("command exceeds 1 MiB limit")
 
 var deterministic = proto.MarshalOptions{Deterministic: true}
 
@@ -40,7 +48,7 @@ func MarshalCommand(command *CommandEnvelope) ([]byte, error) {
 		return nil, fmt.Errorf("marshal command: %w", err)
 	}
 	if len(encoded) > maxCommandBytes {
-		return nil, errors.New("command exceeds 1 MiB limit")
+		return nil, ErrCommandTooLarge
 	}
 	return encoded, nil
 }
@@ -48,7 +56,7 @@ func MarshalCommand(command *CommandEnvelope) ([]byte, error) {
 // UnmarshalCommand decodes a canonical v1 command, rejecting unknown and noncanonical wire data.
 func UnmarshalCommand(encoded []byte) (*CommandEnvelope, error) {
 	if len(encoded) > maxCommandBytes {
-		return nil, errors.New("command exceeds 1 MiB limit")
+		return nil, ErrCommandTooLarge
 	}
 	command := new(CommandEnvelope)
 	if err := (proto.UnmarshalOptions{DiscardUnknown: false}).Unmarshal(encoded, command); err != nil {
@@ -90,7 +98,13 @@ func MarshalSnapshot(state *ReplicatedStateSnapshot, lastIncludedIndex uint64) (
 	if err != nil {
 		return nil, fmt.Errorf("marshal snapshot state: %w", err)
 	}
-	count := uint64(len(ordered.Members) + len(ordered.Ownerships) + len(ordered.Subscriptions) + len(ordered.Checkpoints) + len(ordered.MembershipHistory))
+	offlineMessagesCount := 0
+	for _, session := range ordered.OfflineSessions {
+		if session != nil {
+			offlineMessagesCount += len(session.Messages)
+		}
+	}
+	count := uint64(len(ordered.Members) + len(ordered.Ownerships) + len(ordered.Subscriptions) + len(ordered.Checkpoints) + len(ordered.MembershipHistory) + len(ordered.Retained) + len(ordered.OfflineSessions) + offlineMessagesCount)
 	digest := sha256.Sum256(stateBytes)
 	envelope := &SnapshotEnvelope{SchemaMajor: 1, LastIncludedIndex: lastIncludedIndex, ObjectCount: count, Sha256: digest[:], State: ordered}
 	encoded, err := deterministic.Marshal(envelope)
@@ -130,7 +144,13 @@ func UnmarshalSnapshot(encoded []byte) (*SnapshotEnvelope, error) {
 	if err := validateSnapshotMembershipIndexes(envelope.State, envelope.LastIncludedIndex); err != nil {
 		return nil, err
 	}
-	count := uint64(len(envelope.State.Members) + len(envelope.State.Ownerships) + len(envelope.State.Subscriptions) + len(envelope.State.Checkpoints) + len(envelope.State.MembershipHistory))
+	offlineMessagesCount := 0
+	for _, session := range envelope.State.OfflineSessions {
+		if session != nil {
+			offlineMessagesCount += len(session.Messages)
+		}
+	}
+	count := uint64(len(envelope.State.Members) + len(envelope.State.Ownerships) + len(envelope.State.Subscriptions) + len(envelope.State.Checkpoints) + len(envelope.State.MembershipHistory) + len(envelope.State.Retained) + len(envelope.State.OfflineSessions) + offlineMessagesCount)
 	if envelope.ObjectCount != count {
 		return nil, errors.New("snapshot object count mismatch")
 	}
@@ -186,6 +206,16 @@ func validateCommand(c *CommandEnvelope) error {
 			return errors.New("checkpoint payload is required")
 		}
 		return validateCheckpoint(payload.Checkpoint)
+	case *CommandEnvelope_Retained:
+		if payload.Retained == nil {
+			return errors.New("retained payload is required")
+		}
+		return validateRetained(payload.Retained)
+	case *CommandEnvelope_Offline:
+		if payload.Offline == nil {
+			return errors.New("offline payload is required")
+		}
+		return validateOffline(payload.Offline)
 	default:
 		return errors.New("command must contain exactly one known payload")
 	}
@@ -351,6 +381,113 @@ func validateCheckpoint(c *SessionCheckpoint) error {
 	}
 	return nil
 }
+
+func validateRetained(change *RetainedChange) error {
+	if !boundedUTF8(change.TenantId, 1, 128) || !boundedUTF8(change.PublisherClientId, 1, 256) || !validTopic(change.Topic) {
+		return errors.New("retained tenant_id, publisher_client_id, or topic is invalid")
+	}
+	if change.ProposedAtUnixMillis == 0 {
+		return errors.New("retained proposed_at_unix_millis must be positive")
+	}
+	switch change.Action {
+	case RetainedAction_RETAINED_ACTION_REPLACE:
+		if len(change.Payload) == 0 || len(change.Payload) > maxPublishPayload || change.Qos > 2 {
+			return errors.New("invalid retained replacement")
+		}
+	case RetainedAction_RETAINED_ACTION_DELETE:
+		if len(change.Payload) != 0 || change.Qos != 0 || change.ExpiresAtUnixMillis != 0 {
+			return errors.New("invalid retained delete")
+		}
+	default:
+		return errors.New("invalid retained action")
+	}
+	return nil
+}
+
+func validateRetainedState(state *RetainedState) error {
+	if state == nil {
+		return errors.New("nil snapshot retained state")
+	}
+	if !boundedUTF8(state.TenantId, 1, 128) || !boundedUTF8(state.PublisherClientId, 1, 256) || !validTopic(state.Topic) || len(state.Payload) == 0 || len(state.Payload) > maxPublishPayload || state.Qos > 2 {
+		return errors.New("invalid snapshot retained state")
+	}
+	return nil
+}
+
+func validateOffline(change *OfflineChange) error {
+	if !boundedUTF8(change.TenantId, 1, 128) || !boundedUTF8(change.ClientId, 1, 256) {
+		return errors.New("invalid offline tenant_id or client_id")
+	}
+	if change.Epoch == 0 || change.ProposedAtUnixMillis == 0 {
+		return errors.New("offline epoch and proposed_at_unix_millis must be positive")
+	}
+	for _, msg := range change.Messages {
+		if msg == nil {
+			return errors.New("nil offline message")
+		}
+		if msg.Sequence != 0 {
+			return errors.New("offline message sequence must be zero in command")
+		}
+		if !validTopic(msg.Topic) {
+			return errors.New("invalid offline message topic")
+		}
+		if msg.Qos != 0 {
+			return errors.New("offline message QoS must be 0")
+		}
+		if len(msg.Payload) > maxPublishPayload {
+			return errors.New("offline message payload exceeds limit")
+		}
+	}
+	switch change.Action {
+	case OfflineAction_OFFLINE_ACTION_DETACH:
+		if change.OwnerNodeId == 0 || len(change.Messages) > maxOfflineMessagesPerSession {
+			return errors.New("invalid offline detach command")
+		}
+		totalBytes := 0
+		for _, msg := range change.Messages {
+			totalBytes += len(msg.Topic) + len(msg.Payload)
+		}
+		if totalBytes > maxOfflineDetachMessageBytes {
+			return errors.New("offline detach message bytes exceed limit")
+		}
+	case OfflineAction_OFFLINE_ACTION_ENQUEUE:
+		if change.OwnerNodeId != 0 || len(change.Messages) != 1 || change.SessionExpiresAtUnixMillis != 0 {
+			return errors.New("invalid offline enqueue command")
+		}
+	case OfflineAction_OFFLINE_ACTION_CLAIM:
+		if change.OwnerNodeId == 0 || len(change.Messages) != 0 || change.SessionExpiresAtUnixMillis != 0 {
+			return errors.New("invalid offline claim command")
+		}
+	default:
+		return errors.New("invalid offline action")
+	}
+	return nil
+}
+
+func validateOfflineSessionState(state *OfflineSessionState) error {
+	if state == nil {
+		return errors.New("nil snapshot offline session")
+	}
+	if !boundedUTF8(state.TenantId, 1, 128) || !boundedUTF8(state.ClientId, 1, 256) || state.Epoch == 0 || state.NextSequence < 1 {
+		return errors.New("invalid snapshot offline session identity or sequence")
+	}
+	if len(state.Messages) > maxOfflineMessagesPerSession {
+		return errors.New("snapshot offline session exceeds message limit")
+	}
+	for i, msg := range state.Messages {
+		if msg == nil {
+			return errors.New("nil snapshot offline message")
+		}
+		if msg.Sequence == 0 || msg.Sequence >= state.NextSequence || !validTopic(msg.Topic) || msg.Qos != 0 || len(msg.Payload) > maxPublishPayload {
+			return errors.New("invalid snapshot offline message")
+		}
+		if i > 0 && state.Messages[i-1].Sequence >= msg.Sequence {
+			return errors.New("snapshot offline messages are not strictly ordered by sequence")
+		}
+	}
+	return nil
+}
+
 func validatePublish(p *PublishPacket, checkpoint bool) error {
 	if p.ProtocolVersion != 4 && p.ProtocolVersion != 5 {
 		return errors.New("publish protocol_version must be 4 or 5")
@@ -376,9 +513,21 @@ func validatePublish(p *PublishPacket, checkpoint bool) error {
 	return nil
 }
 func validateSnapshotState(s *ReplicatedStateSnapshot) error {
-	count := len(s.Members) + len(s.Ownerships) + len(s.Subscriptions) + len(s.Checkpoints) + len(s.MembershipHistory)
+	offlineMessagesCount := 0
+	for _, session := range s.OfflineSessions {
+		if session != nil {
+			offlineMessagesCount += len(session.Messages)
+		}
+	}
+	count := len(s.Members) + len(s.Ownerships) + len(s.Subscriptions) + len(s.Checkpoints) + len(s.MembershipHistory) + len(s.Retained) + len(s.OfflineSessions) + offlineMessagesCount
 	if count > maxEntries {
 		return errors.New("snapshot exceeds 1,000,000 top-level entries")
+	}
+	if len(s.Retained) > maxRetainedMessages {
+		return errors.New("snapshot exceeds retained message limit")
+	}
+	if offlineMessagesCount > maxOfflineMessages {
+		return errors.New("snapshot exceeds offline message limit")
 	}
 	for _, m := range s.Members {
 		if m == nil {
@@ -445,6 +594,36 @@ func validateSnapshotState(s *ReplicatedStateSnapshot) error {
 			return errors.New("snapshot membership history is not uniquely sorted")
 		}
 	}
+	for _, retained := range s.Retained {
+		if err := validateRetainedState(retained); err != nil {
+			return err
+		}
+	}
+	for i := 1; i < len(s.Retained); i++ {
+		a, b := s.Retained[i-1], s.Retained[i]
+		if compare2(a.TenantId, a.Topic, b.TenantId, b.Topic) >= 0 {
+			return errors.New("snapshot retained values are not uniquely sorted")
+		}
+	}
+	offlineBytes := 0
+	for _, session := range s.OfflineSessions {
+		if err := validateOfflineSessionState(session); err != nil {
+			return err
+		}
+		for _, msg := range session.Messages {
+			messageBytes := len(session.TenantId) + len(session.ClientId) + len(msg.Topic) + len(msg.Payload)
+			if messageBytes > maxOfflineBytes-offlineBytes {
+				return errors.New("snapshot exceeds offline byte limit")
+			}
+			offlineBytes += messageBytes
+		}
+	}
+	for i := 1; i < len(s.OfflineSessions); i++ {
+		a, b := s.OfflineSessions[i-1], s.OfflineSessions[i]
+		if compare2(a.TenantId, a.ClientId, b.TenantId, b.ClientId) >= 0 {
+			return errors.New("snapshot offline sessions are not uniquely sorted")
+		}
+	}
 	return nil
 }
 
@@ -504,6 +683,24 @@ func sortSnapshot(s *ReplicatedStateSnapshot) {
 			return false
 		}
 		return s.MembershipHistory[i].OperationId < s.MembershipHistory[j].OperationId
+	})
+	sort.Slice(s.Retained, func(i, j int) bool {
+		if s.Retained[i] == nil {
+			return s.Retained[j] != nil
+		}
+		if s.Retained[j] == nil {
+			return false
+		}
+		return compare2(s.Retained[i].TenantId, s.Retained[i].Topic, s.Retained[j].TenantId, s.Retained[j].Topic) < 0
+	})
+	sort.Slice(s.OfflineSessions, func(i, j int) bool {
+		if s.OfflineSessions[i] == nil {
+			return s.OfflineSessions[j] != nil
+		}
+		if s.OfflineSessions[j] == nil {
+			return false
+		}
+		return compare2(s.OfflineSessions[i].TenantId, s.OfflineSessions[i].ClientId, s.OfflineSessions[j].TenantId, s.OfflineSessions[j].ClientId) < 0
 	})
 	for _, c := range s.Checkpoints {
 		if c == nil {

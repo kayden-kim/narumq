@@ -772,7 +772,7 @@ Phase 0은 기준과 도구를 확정하는 단계다. Phase 1부터 기능을 �
 | --- | --- | --- |
 | MQTT-01~MQTT-13, CLIENT-01~CLIENT-08 | [MQTT protocol과 session](../specs/mqtt-protocol-and-session.md) | [MQTT client compatibility v1](../contracts/mqtt-client-compatibility-v1.md) |
 | CLU-01~CLU-13, NFR-07~NFR-10, NFR-15 | [Cluster session과 durable delivery](../specs/cluster-session-and-delivery.md) | [Cluster release compatibility v1](../contracts/cluster-release-compatibility-v1.md) |
-| CLU-14 | [Cluster session과 durable delivery](../specs/cluster-session-and-delivery.md) §10·§11.7 | [Cluster backup v1](../contracts/cluster-backup-v1.md), [Management API v1](../contracts/management-api-v1.md) |
+| CLU-14 | [Cluster session과 durable delivery](../specs/cluster-session-and-delivery.md) §10·§11.7·§11.8·§11.9 | [Cluster backup v3](../contracts/cluster-backup-v3.md), [Management API v1](../contracts/management-api-v1.md) |
 | TEN-01~TEN-10, SEC-01~SEC-12, NFR-16~NFR-19 | [Tenant와 security](../specs/tenancy-and-security.md) | [Audit event v1](../contracts/audit-event-v1.md), [Management API v1](../contracts/management-api-v1.md) |
 | API-01~API-09, UI-01~UI-10 | [Management API와 observability](../specs/management-api-and-observability.md) | [Management API v1](../contracts/management-api-v1.md), [Audit event v1](../contracts/audit-event-v1.md) |
 | DEP-01~DEP-24, CLIENT-01~CLIENT-09 | [Drain과 rolling update](../specs/drain-and-rolling-update.md) | [Management API v1](../contracts/management-api-v1.md), [MQTT client compatibility v1](../contracts/mqtt-client-compatibility-v1.md) |

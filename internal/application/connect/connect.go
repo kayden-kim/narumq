@@ -108,6 +108,36 @@ func WithOwnershipCoordinator(coordinator OwnershipCoordinator, ownerNodeID uint
 	}
 }
 
+const offlineDetachTimeout = 5 * time.Second
+
+// DetachRequestDTO carries a persistent session's committed detach and its pending local queue.
+type DetachRequestDTO struct {
+	TenantID, ClientID string
+	OwnerNodeID, Epoch uint64
+	SessionExpiresAt   time.Time // zero means the session never expires
+	DetachedAt         time.Time
+	Pending            []deliveryqueue.DeliveryDTO
+}
+
+// OfflineClaimDTO is the committed offline state claimed by a new owner epoch.
+type OfflineClaimDTO struct {
+	Found      bool
+	Deliveries []deliveryqueue.DeliveryDTO
+}
+
+// OfflineCoordinator replicates detached-session offline queues in cluster mode.
+type OfflineCoordinator interface {
+	DetachSession(ctx context.Context, request DetachRequestDTO) error
+	ClaimOffline(ctx context.Context, tenantID, clientID string, ownerNodeID, epoch uint64, claimedAt time.Time) (OfflineClaimDTO, error)
+}
+
+// WithOfflineCoordinator configures offline queue replication for cluster mode.
+func WithOfflineCoordinator(coordinator OfflineCoordinator) Option {
+	return func(useCase *UseCase) {
+		useCase.offlineCoordinator = coordinator
+	}
+}
+
 // UseCase serializes lifecycle persistence, routing cleanup and queue
 // registration so one process cannot activate or disconnect the same session
 // through interleaved operations.
@@ -134,6 +164,8 @@ type UseCase struct {
 	metrics                  portsmetrics.MetricsRecorder
 	ownershipCoordinator     OwnershipCoordinator
 	ownerNodeID              uint64
+	offlineCoordinator       OfflineCoordinator
+	ownershipEpochs          map[routing.SessionID]uint64
 }
 
 // ClusterOwnershipConfigured reports whether a node-specific committed ownership barrier is installed.
@@ -201,15 +233,16 @@ func New(
 		return nil, ErrNilWillPublisher
 	}
 	useCase := &UseCase{
-		clock:         clock,
-		sessions:      sessions,
-		principals:    make(map[routing.SessionID]security.Principal),
-		sessionKeys:   make(map[routing.SessionID]tenancy.SessionKey),
-		deliveries:    deliveries,
-		routes:        routes,
-		scheduler:     scheduler,
-		willPublisher: willPublisher,
-		activeTimers:  make(map[string]*clientTimers),
+		clock:           clock,
+		sessions:        sessions,
+		principals:      make(map[routing.SessionID]security.Principal),
+		sessionKeys:     make(map[routing.SessionID]tenancy.SessionKey),
+		ownershipEpochs: make(map[routing.SessionID]uint64),
+		deliveries:      deliveries,
+		routes:          routes,
+		scheduler:       scheduler,
+		willPublisher:   willPublisher,
+		activeTimers:    make(map[string]*clientTimers),
 	}
 	for _, opt := range opts {
 		if opt != nil {
@@ -395,17 +428,16 @@ func (useCase *UseCase) ConnectContext(ctx context.Context, request ConnectReque
 		return ResultDTO{}, err
 	}
 	var ownershipEpoch uint64
+	ownershipTenantID := "default"
+	if principal.Subject() != "" {
+		ownershipTenantID = principal.TenantID().String()
+	}
 	if useCase.ownershipCoordinator != nil {
-		tenantID := "default"
-		if principal.Subject() != "" {
-			tenantID = principal.TenantID().String()
-		}
-		ownershipEpoch, err = useCase.ownershipCoordinator.AcquireOwnership(ctx, tenantID, packet.ClientID, useCase.ownerNodeID)
+		ownershipEpoch, err = useCase.ownershipCoordinator.AcquireOwnership(ctx, ownershipTenantID, packet.ClientID, useCase.ownerNodeID)
 		if err != nil || ownershipEpoch == 0 {
 			result.ConnAck.ReasonCode = ownershipUnavailableReason(packet.Version)
 			return result, nil
 		}
-		useCase.stopSessionTimers(timerKey)
 	}
 	if err := useCase.saveSession(sessionKey, timerKey, opened); err != nil {
 		return ResultDTO{}, err
@@ -433,6 +465,41 @@ func (useCase *UseCase) ConnectContext(ctx context.Context, request ConnectReque
 			return ResultDTO{}, errors.Join(err, rollbackErr)
 		}
 		return ResultDTO{}, err
+	}
+	if useCase.ownershipCoordinator != nil && useCase.offlineCoordinator == nil {
+		useCase.stopSessionTimers(timerKey)
+	}
+	if useCase.offlineCoordinator != nil && ownershipEpoch != 0 {
+		claim, err := useCase.offlineCoordinator.ClaimOffline(ctx, ownershipTenantID, packet.ClientID, useCase.ownerNodeID, ownershipEpoch, now)
+		if err != nil {
+			var rollbackErr error
+			if found {
+				rollbackErr = useCase.saveSession(sessionKey, timerKey, existing)
+			} else {
+				rollbackErr = useCase.deleteSession(sessionKey, timerKey)
+			}
+			delete(useCase.principals, sessionID)
+			if !found {
+				useCase.deliveries.Remove(sessionID)
+				useCase.routes.RemoveSession(sessionID)
+			}
+			if rollbackErr != nil {
+				return ResultDTO{}, errors.Join(err, rollbackErr)
+			}
+			result.ConnAck.ReasonCode = ownershipUnavailableReason(packet.Version)
+			return result, nil
+		}
+		// Keep prior timers armed until CLAIM succeeds; callbacks wait on useCase.mu.
+		useCase.stopSessionTimers(timerKey)
+		if claim.Found && !packet.CleanStart {
+			present = true
+			if len(claim.Deliveries) > 0 {
+				_ = useCase.deliveries.TryEnqueueBatch(claim.Deliveries, now)
+			}
+		}
+	}
+	if ownershipEpoch != 0 {
+		useCase.ownershipEpochs[sessionID] = ownershipEpoch
 	}
 	if sessionKey != (tenancy.SessionKey{}) {
 		useCase.sessionKeys[sessionID] = sessionKey
@@ -496,7 +563,8 @@ func (useCase *UseCase) Disconnect(sessionID routing.SessionID, reason session.D
 		useCase.mu.Unlock()
 		return ErrSessionNotFound
 	}
-	result, err := state.Disconnect(useCase.clock.Now(), reason)
+	now := useCase.clock.Now()
+	result, err := state.Disconnect(now, reason)
 	if err != nil {
 		useCase.mu.Unlock()
 		return err
@@ -514,6 +582,30 @@ func (useCase *UseCase) Disconnect(sessionID routing.SessionID, reason session.D
 		if err := useCase.saveSession(sessionKey, timerKey, result.Lifecycle); err != nil {
 			useCase.mu.Unlock()
 			return err
+		}
+		epoch, hasEpoch := useCase.ownershipEpochs[sessionID]
+		if useCase.offlineCoordinator != nil && hasEpoch && hasSessionKey {
+			pending, err := useCase.deliveries.ListQueued(sessionID, now)
+			if err == nil {
+				var sessionExpiresAt time.Time
+				if result.ScheduleExpiry {
+					sessionExpiresAt = now.Add(result.ExpiryDuration)
+				}
+				detachCtx, cancel := context.WithTimeout(context.Background(), offlineDetachTimeout)
+				detachErr := useCase.offlineCoordinator.DetachSession(detachCtx, DetachRequestDTO{
+					TenantID:         sessionKey.TenantID().String(),
+					ClientID:         sessionKey.ClientID(),
+					OwnerNodeID:      useCase.ownerNodeID,
+					Epoch:            epoch,
+					SessionExpiresAt: sessionExpiresAt,
+					DetachedAt:       now,
+					Pending:          pending,
+				})
+				cancel()
+				if detachErr == nil {
+					useCase.deliveries.Remove(sessionID)
+				}
+			}
 		}
 	}
 
@@ -547,6 +639,7 @@ func (useCase *UseCase) Disconnect(sessionID routing.SessionID, reason session.D
 		delete(useCase.principals, sessionID)
 		delete(useCase.sessionKeys, sessionID)
 	}
+	delete(useCase.ownershipEpochs, sessionID)
 	useCase.mu.Unlock()
 	useCase.recordSessionGauge()
 

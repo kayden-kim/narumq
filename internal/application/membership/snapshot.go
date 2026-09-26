@@ -57,13 +57,34 @@ func (machine *StateMachine) Restore(snapshot SnapshotDTO) error {
 	for _, checkpoint := range copyOfSnapshot.Checkpoints {
 		checkpoints[sessionKey{tenantID: checkpoint.TenantID, clientID: checkpoint.ClientID}] = cloneCheckpoint(checkpoint)
 	}
-
+	retained := make(map[retainedKey]RetainedStateDTO, len(copyOfSnapshot.Retained))
+	retainedBytes := 0
+	for _, state := range copyOfSnapshot.Retained {
+		retained[retainedKey{tenantID: state.TenantID, topic: state.Topic}] = state
+		retainedBytes += retainedStateBytes(state)
+	}
+	offline := make(map[sessionKey]OfflineSessionStateDTO, len(copyOfSnapshot.OfflineSessions))
+	offlineMessages := 0
+	offlineBytes := 0
+	for _, session := range copyOfSnapshot.OfflineSessions {
+		cloned := cloneOfflineSession(session)
+		offline[sessionKey{tenantID: session.TenantID, clientID: session.ClientID}] = cloned
+		offlineMessages += len(session.Messages)
+		for _, msg := range session.Messages {
+			offlineBytes += offlineMessageBytes(session.TenantID, session.ClientID, msg)
+		}
+	}
 	machine.lastAppliedIndex = copyOfSnapshot.LastIncludedIndex
 	machine.members = members
 	machine.operations = operations
 	machine.idempotency = idempotency
 	machine.ownerships = ownerships
 	machine.subscriptions = subscriptions
+	machine.retained = retained
+	machine.retainedBytes = retainedBytes
+	machine.offline = offline
+	machine.offlineMessages = offlineMessages
+	machine.offlineBytes = offlineBytes
 	machine.checkpoints = checkpoints
 	return nil
 }
@@ -75,7 +96,9 @@ func (machine *StateMachine) snapshotLocked(lastIncludedIndex uint64) SnapshotDT
 		Ownerships:        make([]OwnershipStateDTO, 0, len(machine.ownerships)),
 		Subscriptions:     make([]SubscriptionStateDTO, 0, len(machine.subscriptions)),
 		Checkpoints:       make([]SessionCheckpointDTO, 0, len(machine.checkpoints)),
+		Retained:          make([]RetainedStateDTO, 0, len(machine.retained)),
 		MembershipHistory: make([]MembershipRecordDTO, 0, len(machine.operations)),
+		OfflineSessions:   make([]OfflineSessionStateDTO, 0, len(machine.offline)),
 	}
 	for _, member := range machine.members {
 		snapshot.Members = append(snapshot.Members, cloneMember(member))
@@ -92,6 +115,14 @@ func (machine *StateMachine) snapshotLocked(lastIncludedIndex uint64) SnapshotDT
 	for _, operation := range machine.operations {
 		snapshot.MembershipHistory = append(snapshot.MembershipHistory, cloneMembershipRecord(operation.view.Record))
 	}
+	for _, retained := range machine.retained {
+		snapshot.Retained = append(snapshot.Retained, cloneRetainedState(retained))
+	}
+	offlineMessagesCount := 0
+	for _, session := range machine.offline {
+		snapshot.OfflineSessions = append(snapshot.OfflineSessions, cloneOfflineSession(session))
+		offlineMessagesCount += len(session.Messages)
+	}
 	sort.Slice(snapshot.Members, func(left, right int) bool { return snapshot.Members[left].MemberID < snapshot.Members[right].MemberID })
 	sort.Slice(snapshot.Ownerships, func(left, right int) bool {
 		return compareSession(snapshot.Ownerships[left].TenantID, snapshot.Ownerships[left].ClientID, snapshot.Ownerships[right].TenantID, snapshot.Ownerships[right].ClientID) < 0
@@ -102,8 +133,14 @@ func (machine *StateMachine) snapshotLocked(lastIncludedIndex uint64) SnapshotDT
 	sort.Slice(snapshot.Checkpoints, func(left, right int) bool {
 		return compareSession(snapshot.Checkpoints[left].TenantID, snapshot.Checkpoints[left].ClientID, snapshot.Checkpoints[right].TenantID, snapshot.Checkpoints[right].ClientID) < 0
 	})
+	sort.Slice(snapshot.Retained, func(left, right int) bool {
+		return compareRetained(snapshot.Retained[left], snapshot.Retained[right]) < 0
+	})
 	sort.Slice(snapshot.MembershipHistory, func(left, right int) bool {
 		return snapshot.MembershipHistory[left].OperationID < snapshot.MembershipHistory[right].OperationID
+	})
+	sort.Slice(snapshot.OfflineSessions, func(left, right int) bool {
+		return compareOffline(snapshot.OfflineSessions[left], snapshot.OfflineSessions[right]) < 0
 	})
 	for index := range snapshot.Checkpoints {
 		sort.Slice(snapshot.Checkpoints[index].Inbound, func(left, right int) bool {
@@ -113,7 +150,7 @@ func (machine *StateMachine) snapshotLocked(lastIncludedIndex uint64) SnapshotDT
 			return snapshot.Checkpoints[index].Outbound[left].Publish.PacketID < snapshot.Checkpoints[index].Outbound[right].Publish.PacketID
 		})
 	}
-	snapshot.ObjectCount = uint64(len(snapshot.Members) + len(snapshot.Ownerships) + len(snapshot.Subscriptions) + len(snapshot.Checkpoints) + len(snapshot.MembershipHistory))
+	snapshot.ObjectCount = uint64(len(snapshot.Members) + len(snapshot.Ownerships) + len(snapshot.Subscriptions) + len(snapshot.Checkpoints) + len(snapshot.MembershipHistory) + len(snapshot.Retained) + len(snapshot.OfflineSessions) + offlineMessagesCount)
 	return snapshot
 }
 
@@ -230,9 +267,19 @@ func cloneSnapshot(snapshot SnapshotDTO) SnapshotDTO {
 	for index, record := range snapshot.MembershipHistory {
 		copyOfSnapshot.MembershipHistory[index] = cloneMembershipRecord(record)
 	}
+	copyOfSnapshot.Retained = make([]RetainedStateDTO, len(snapshot.Retained))
+	for index, state := range snapshot.Retained {
+		copyOfSnapshot.Retained[index] = cloneRetainedState(state)
+	}
+	if snapshot.OfflineSessions != nil {
+		copyOfSnapshot.OfflineSessions = make([]OfflineSessionStateDTO, len(snapshot.OfflineSessions))
+		for index, session := range snapshot.OfflineSessions {
+			copyOfSnapshot.OfflineSessions[index] = cloneOfflineSession(session)
+		}
+	}
 	return copyOfSnapshot
 }
 
 func sameSnapshotState(left, right SnapshotDTO) bool {
-	return left.SchemaMajor == right.SchemaMajor && left.SchemaMinor == right.SchemaMinor && left.LastIncludedIndex == right.LastIncludedIndex && left.ObjectCount == right.ObjectCount && reflect.DeepEqual(left.Members, right.Members) && reflect.DeepEqual(left.Ownerships, right.Ownerships) && reflect.DeepEqual(left.Subscriptions, right.Subscriptions) && reflect.DeepEqual(left.Checkpoints, right.Checkpoints) && reflect.DeepEqual(left.MembershipHistory, right.MembershipHistory)
+	return left.SchemaMajor == right.SchemaMajor && left.SchemaMinor == right.SchemaMinor && left.LastIncludedIndex == right.LastIncludedIndex && left.ObjectCount == right.ObjectCount && reflect.DeepEqual(left.Members, right.Members) && reflect.DeepEqual(left.Ownerships, right.Ownerships) && reflect.DeepEqual(left.Subscriptions, right.Subscriptions) && reflect.DeepEqual(left.Checkpoints, right.Checkpoints) && reflect.DeepEqual(left.MembershipHistory, right.MembershipHistory) && reflect.DeepEqual(left.Retained, right.Retained) && reflect.DeepEqual(left.OfflineSessions, right.OfflineSessions)
 }

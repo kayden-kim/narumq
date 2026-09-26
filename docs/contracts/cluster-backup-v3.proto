@@ -1,8 +1,8 @@
 syntax = "proto3";
-package narumq.cluster.backup.v1;
+package narumq.cluster.backup.v3;
 option go_package = "narumq/internal/adapters/raft/records;records";
 
-// Draft archive contract. Implementations must reject unknown fields.
+// Draft archive contract v3. Implementations must reject unknown fields.
 enum BackupConfigurationAction {
   BACKUP_CONFIGURATION_ACTION_UNSPECIFIED = 0;
   BACKUP_CONFIGURATION_ACTION_ADD_LEARNER = 1;
@@ -23,7 +23,10 @@ message BackupStateSummary {
   BackupKindSummary subscriptions = 7;
   BackupKindSummary inflight = 8;
   BackupKindSummary membership_history = 9;
-  repeated string not_replicated_kinds = 10;
+  reserved 10;
+  reserved "not_replicated_kinds";
+  BackupKindSummary retained = 11;
+  BackupKindSummary offline = 12;
 }
 message BackupManifest {
   uint32 format_major = 1;

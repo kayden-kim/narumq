@@ -359,12 +359,9 @@ Volume 복제와 NaruMQ quorum 복제는 같은 보장이 아니다. Durable ACK
 - Durable ACK: [Raft quorum과 durable ACK](raft-quorum-and-durable-ack.md), [ADR-0003](../decisions/ADR-0003-durable-ack-barrier.md)
 - 계획 drain과 Will: [안전한 노드 drain과 Will](safe-node-drain-and-will.md)
 
-현재 Go 구현은 packet codec, delivery/session value-state, routing, subscribe/publish orchestration,
-connect lifecycle, process-local session store와 loopback-only TCP ingress까지 제공한다. 실제
-ingress 성공 경계는 QoS 0·`Retain=false`이며, TLS/auth, tenant/ACL, shared/retained runtime,
-Will timer, session takeover, persistence, quorum runtime과 Receive Maximum/quota는 아직
-지원하지 않는다. 이 문서의 protocol flow는 production target의 normative 설명이고,
-현재 development slice가 durable network·storage 보장을 이미 제공한다는 뜻은 아니다.
+Current Go implementation은 MQTT packet codec, delivery/session value-state, routing, publish/subscribe orchestration과 TCP ingress를 제공한다. Dynamic cluster mode에서는 QoS 0 retained PUBLISH와 detached persistent session의 QoS 0 offline queue를 Raft에 commit한 뒤 tenant-scoped state를 다른 node의 replay projection에 반영하며, NMQBKUP3 archive가 retained state와 offline queue를 restore한다. Process acceptance는 cross-node replay, restore, restart와 joiner catch-up을 확인했다.
+
+이 결과는 일반 QoS 1/2 durable publish ACK를 보증하지 않는다. Durable QoS 1/2 ACK, full CLU-14, release 간 archive compatibility와 production EBS/power-loss는 별도 acceptance가 필요하다. 위 protocol flow는 표준 동작과 제품 목표를 설명하며, 각 구현 범위는 [Cluster spec](../specs/cluster-session-and-delivery.md)과 [Cluster backup v3 contract](../contracts/cluster-backup-v3.md)의 검증 상태를 따른다.
 
 ## 9. 확인 질문
 

@@ -68,6 +68,7 @@ type Queue interface {
 	Peek(sessionID routing.SessionID, now time.Time) (DeliveryDTO, bool, error)
 	CompleteHead(sessionID routing.SessionID) error
 	PromoteHead(outbound OutboundDTO, now time.Time) error
+	ListQueued(sessionID routing.SessionID, now time.Time) ([]DeliveryDTO, error)
 	ListOutbound(sessionID routing.SessionID) ([]OutboundDTO, error)
 	ReplaceOutbound(outbound OutboundDTO) error
 	CompleteOutbound(sessionID routing.SessionID, packetID mqtt.PacketIdentifier) error

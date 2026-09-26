@@ -1,6 +1,6 @@
 # Raft failure-bound 증거 이후 잔여 작업
 
-이 목록은 [cluster 수용 시험](specs/cluster-session-and-delivery.md#11-수용-시험)과 [ADR-0002 §7](decisions/ADR-0002-cluster-consensus-library.md#7-검증)에서 in-process WAL 쓰기 실패·느린 follower 및 cluster backup v1 process acceptance만으로 닫히지 않은 작업을 추린 것이다. 프로젝트 전체 백로그가 아니며 동작과 완료 판정의 기준은 링크한 스펙·결정 기록이다.
+이 목록은 [cluster 수용 시험](specs/cluster-session-and-delivery.md#11-수용-시험)과 [ADR-0002 §7](decisions/ADR-0002-cluster-consensus-library.md#7-검증)에서 in-process WAL 쓰기 실패·느린 follower 및 backup v1/v2 process acceptance만으로 닫히지 않은 작업을 추린 것이다. 프로젝트 전체 백로그가 아니며 동작과 완료 판정의 기준은 링크한 스펙·결정 기록이다.
 
 ## Production 경계와 설계 결정
 
@@ -11,15 +11,29 @@
 ## 장애·복구 수용 증거
 
 - [x] [Failure recovery §7](specs/cluster-session-and-delivery.md#7-failure-recovery)과 [§11.6](specs/cluster-session-and-delivery.md#116-storage-fault-chaos-mapping): Docker chaos run `storage-fault-20260925d`에서 실제 tmpfs ENOSPC, FUSE slow-I/O, replication health/readiness, commit 진행·중단, bounded peer queue, follower recovery와 MQTT admission을 검증했다. 실행 증거와 관측값은 [Cluster §11.6](specs/cluster-session-and-delivery.md#116-storage-fault-chaos-mapping)에 기록했다. `go run ./tools/verify local`도 PASS했다. 이 범위는 durable MQTT ACK, snapshot/backup/restore 또는 power-loss 보장을 완료하지 않는다.
-- [x] [Cluster backup v1 §10·§11.7](specs/cluster-session-and-delivery.md#10-snapshot-backup과-restore): versioned archive, online commit-boundary API, checksum/state summary 검증, exact 3-voter offline restore marker, snapshot finalize 전·후 process crash, restored-node restart와 joiner resync를 구현·검증했다. Regression command는 `go build ./...` 및 §11.7의 다섯 process test이며 모두 PASS했다. `go run ./tools/verify local`도 PASS했으며 mutation gate는 25/25·46/46 killed, lived/uncovered 0이었다. 이는 v1의 제한된 scope만 완료한 것으로 전체 CLU-14가 아니다.
-- [ ] [CLU-14 전체 backup/restore](specs/cluster-session-and-delivery.md#10-snapshot-backup과-restore): `offline`/`retained` message를 포함한 전체 state kind의 복제, archive count/checksum과 restore/resync를 구현·검증한다. 지금 archive는 이 두 kind를 명시적으로 제외한다.
+- [x] [Cluster backup v1 §10·§11.7](specs/cluster-session-and-delivery.md#10-snapshot-backup과-restore): Historical v1 archive의 online commit-boundary API, checksum/state summary, exact 3-voter offline restore marker, snapshot-finalize crash와 restart/resync acceptance를 구현·검증했다. 이 v1 기록은 v2 cutover 뒤 Superseded됐으며 현재 release는 v1 archive를 읽지 않는다. 이 완료는 전체 CLU-14가 아니다.
+- [x] [Retained replication and backup v2](specs/cluster-session-and-delivery.md#118-retained-replication과-backup-v2-수용-매핑): Tenant-scoped retained state를 Raft로 commit하고 local replay projection, snapshot, NMQBKUP2 count/checksum, offline restore·restart·joiner replay를 검증했다. 저장 한도는 모든 tenant의 전체 합계이며 PRD TEN-08의 tenant별 retained bytes quota는 이 acceptance 범위에 포함되지 않는다. `go build ./...`, focused package suite, process regressions와 `go run ./tools/verify local`은 PASS했다. Acceptance는 QoS 0 retained path만 확인했으며 offline queue, durable QoS 1/2 ACK, production power-loss를 포함하지 않는다.
+- [ ] [CLU-14 remaining offline state and production storage](specs/cluster-session-and-delivery.md#10-snapshot-backup과-restore): `offline` message replication/archive, 전체 required state count/checksum과 restore/resync를 부분 구현·검증했으나, Production-like Linux filesystem/EBS power-loss, WAL torn-tail, volume loss와 retention/RPO/RTO는 미실행 상태로 남아 있다. 또한 PRD TEN-08의 tenant별 offline queue quota(PRD.md:255)는 이번 변경에서 제외되어 미충족 상태다.
+  - 부분 완료 증거 (1–4단계):
+    - [ADR-0013](decisions/ADR-0013-offline-queue-replication-and-cluster-backup-v3.md) 채택: detached persistent session QoS 0 offline replication, at-most-once claim, deterministic limits, archive v3 및 cutover drain 정책 확정.
+    - `internal/application/membership`: offline command/state(DETACH, ENQUEUE, CLAIM), deterministic FIFO sequence, capacity conflict, proposer-time expiry, snapshot validation 구현.
+    - `internal/adapters/raft/records`: replicated-state-v1 proto/codec offline 지원 및 `cluster-backup-v3.proto`(`NMQBKUP3`) 필수 offline kind summary, v1/v2 archive 명시 거절.
+    - `internal/application/connect` 및 `internal/application/publish`: persistent disconnect pending queue DETACH, connect CLAIM 및 offline delivery 재개, detached 대상 ENQUEUE port 연결, CLAIM 거절 시 first-session queue/tenant route rollback 및 existing-session timer/queue/route 보존.
+    - `cmd/narumq`: cluster records bridge, exact profile compatibility gate (`Commit` barrier), cluster offline command 조립.
+    - Process acceptance: `TestClusterBackupRestoreProcessCrashAndResync` (17.62s); owner crash 뒤 reconnect SessionPresent=true 및 FIFO 순서 수신, v3 backup capture(format 3, retained 2, offline 3), restored node 2 delivery, joiner delivery, 두 node 간 backup summary 완전 일치 검증([Cluster §11.9](specs/cluster-session-and-delivery.md#119-offline-queue-replication과-backup-v3-수용-매핑)).
+    - Local verification gate: `GOMAXPROCS=4 go run ./tools/verify local` PASS after the route/timer rollback fixes: unit/integration suites, 4 fuzz targets, all-package race, traceability, architecture and coverage pass. Mutation reports: 17 killed/8 timed out and 42 killed/4 timed out; 0 lived/uncovered. Timeout은 kill로 계산하지 않았다. Windows의 unconstrained race run은 system commit limit 오류 1455로 실패해 제한 실행했다.
+  - 미완료 항목 (5단계 및 미결정):
+    - Production gate: Linux/EBS power-loss, WAL torn-tail, volume loss/reseed, backup retention 및 승인된 RPO/RTO([`SPEC-TBD-09`](specs/cluster-session-and-delivery.md#10-snapshot-backup과-restore), PRD §18 질문 12).
+    - PRD TEN-08: tenant별 offline queue, retained bytes, 저장 용량 quota 및 초과 경보.
+    - Release 간 archive producer/consumer compatibility matrix 및 N/N-1 호환성.
+    - QoS 1/2 offline delivery 및 durable ACK barrier([ADR-0003 §9](decisions/ADR-0003-durable-ack-barrier.md#9-검증)).
 - [ ] [ADR-0009 production storage boundary](decisions/ADR-0009-raft-production-state-profile.md#7-검증): Production-like Linux filesystem/EBS power-loss, WAL torn-tail, volume loss와 retention/RPO/RTO를 시험한다. Local process crash는 전원/volume 손실 검증이 아니다.
 - [ ] [ADR-0003 §9](decisions/ADR-0003-durable-ack-barrier.md#9-검증): WAL write·`fsync`·commit 전후 crash, follower disk full·slow I/O·partition에서 잘못된 성공 ACK가 없는지와 성공 ACK 직후 각 replica kill에서 message gap 0을 검증한다.
 
 ## MQTT·session 결합 및 release 수용
 
 - [ ] [Cluster §11.2](specs/cluster-session-and-delivery.md#112-phase-2-replicated-session-ownership-core-mapping)와 [ADR-0004 §8](decisions/ADR-0004-session-ownership-and-fencing.md#8-검증): in-process ownership core를 실제 MQTT CONNECT·session takeover·connection teardown·drain 경로에 연결하고, persistent subscription·inflight의 production encoding/replay와 route projection rebuild를 검증한다.
-- [ ] [Cluster §4~5](specs/cluster-session-and-delivery.md#4-replicated-state)와 [ADR-0003](decisions/ADR-0003-durable-ack-barrier.md): persistent subscription, QoS inflight, offline·retained message 등 필요한 상태를 복제하고 QoS 1/2 성공 PUBACK/PUBREC을 quorum stable write·commit 뒤로 연결한다. 재전송에서 중복 durable command가 생기지 않는지 검증한다.
+- [ ] [Cluster §4~5](specs/cluster-session-and-delivery.md#4-replicated-state)와 [ADR-0003](decisions/ADR-0003-durable-ack-barrier.md): persistent subscription, QoS inflight와 QoS 1/2 offline message 등 필요한 state를 복제하고 QoS 1/2 성공 PUBACK/PUBREC을 quorum stable write·commit 뒤로 연결한다. Retained 및 detached QoS 0 offline replication은 §11.8 및 §11.9의 제한된 acceptance에서 별도로 확인했다. 재전송에서 중복 durable command가 생기지 않는지 검증한다.
 - [ ] [Cluster §11](specs/cluster-session-and-delivery.md#11-수용-시험): 서로 다른 node에 연결된 publisher/subscriber의 QoS·subscription 유형, 동시 CONNECT·stale epoch, quorum loss와 durable ACK 시나리오를 실제 cluster 경로에서 시험한다. 기존 deterministic spike를 E2E 완료로 간주하지 않는다.
 - [ ] [Cluster §8 및 §11](specs/cluster-session-and-delivery.md#8-mixed-version-compatibility): N-1↔N rolling upgrade·rollback을 양방향으로 시험하고 wire·persisted-state·snapshot 호환성 증거를 확보한다.
 

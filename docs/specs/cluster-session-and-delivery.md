@@ -8,8 +8,8 @@
 | 관련 요구사항 | CLU-01~CLU-14, NFR-07~NFR-10, NFR-15 |
 | 근거 | [PRD 8장, 9.2절과 11.2절](../requirements/PRD.md) |
 | 관련 Architecture | [Cluster architecture](../architectures/cluster-architecture.md), [EKS on EC2 deployment](../architectures/eks-ec2-deployment.md) |
-| 관련 결정 | [ADR-0001](../decisions/ADR-0001-core-implementation-language.md), [ADR-0002](../decisions/ADR-0002-cluster-consensus-library.md), [ADR-0003](../decisions/ADR-0003-durable-ack-barrier.md), [ADR-0004](../decisions/ADR-0004-session-ownership-and-fencing.md), [ADR-0007](../decisions/ADR-0007-aws-production-deployment-platform.md), [ADR-0008](../decisions/ADR-0008-raft-peer-transport.md), [ADR-0009](../decisions/ADR-0009-raft-production-state-profile.md), [ADR-0011](../decisions/ADR-0011-cluster-backup-restore-v1.md) |
-| 관련 Contract | [Cluster release compatibility v1](../contracts/cluster-release-compatibility-v1.md), [Raft peer transport v1](../contracts/raft-peer-transport-v1.md), Draft [Cluster backup v1](../contracts/cluster-backup-v1.md) |
+| 관련 결정 | [ADR-0001](../decisions/ADR-0001-core-implementation-language.md), [ADR-0002](../decisions/ADR-0002-cluster-consensus-library.md), [ADR-0003](../decisions/ADR-0003-durable-ack-barrier.md), [ADR-0004](../decisions/ADR-0004-session-ownership-and-fencing.md), [ADR-0007](../decisions/ADR-0007-aws-production-deployment-platform.md), [ADR-0008](../decisions/ADR-0008-raft-peer-transport.md), [ADR-0009](../decisions/ADR-0009-raft-production-state-profile.md), [ADR-0011](../decisions/ADR-0011-cluster-backup-restore-v1.md) (historical v1 boundary), [ADR-0012](../decisions/ADR-0012-retained-replication-and-cluster-backup-v2.md) (retained scope), [ADR-0013](../decisions/ADR-0013-offline-queue-replication-and-cluster-backup-v3.md) |
+| 관련 Contract | [Cluster release compatibility v1](../contracts/cluster-release-compatibility-v1.md), [Raft peer transport v1](../contracts/raft-peer-transport-v1.md), Draft [Cluster backup v3](../contracts/cluster-backup-v3.md), Superseded [Cluster backup v2](../contracts/cluster-backup-v2.md), Superseded [Cluster backup v1](../contracts/cluster-backup-v1.md) |
 | 해설 | [세션 소유권과 fencing](../explainers/session-ownership-and-fencing.md), [EKS 고가용성과 장애 도메인](../explainers/eks-ha-failure-domains.md) |
 
 ## 1. Cluster membership
@@ -69,8 +69,7 @@ Production error/DTO와 serialized bytes는 [ADR-0009](../decisions/ADR-0009-raf
 
 Route metadata는 committed persistent subscription에서만 계산하는 node-local disposable projection이다. 이 projection은 authoritative aggregate에서 다시 만들 수 있어야 하며, node는 routing readiness를 광고하기 전에 rebuild를 완료해야 한다. Route projection은 ownership, checkpoint 또는 drain barrier의 근거로 사용할 수 없다.
 
-WAL·snapshot target, protobuf encoding family와 단일 group profile은 scoped [ADR-0009](../decisions/ADR-0009-raft-production-state-profile.md)에 기록한다. Exact persisted bytes/schema, Active Raft peer transport v1 범위 밖의 peer compatibility, production application port와 `cmd/narumq` 조립 방식은 여전히 미정이다. Durable offline message의 저장·전달 경계도 이 slice에서 확정하지 않는다.
-
+WAL·snapshot target, protobuf encoding family와 단일 group profile은 scoped [ADR-0009](../decisions/ADR-0009-raft-production-state-profile.md)에 기록한다. Exact persisted bytes/schema, Active Raft peer transport v1 범위 밖의 peer compatibility, production application port와 `cmd/narumq` 조립 방식은 여전히 미정이다. Detached persistent session의 QoS 0 offline queue 경계는 §4.1과 [ADR-0013](../decisions/ADR-0013-offline-queue-replication-and-cluster-backup-v3.md)이 정하며, QoS 1/2 durable offline message의 저장·전달 경계는 이 slice에서 확정하지 않는다.
 ### 2.3 Takeover ordering
 
 - Drain 중인 owner는 successor의 더 큰 epoch `Acquire`가 commit되기 전에 현재 epoch로 최종 persistent subscription·QoS inflight checkpoint mutation을 quorum에 commit해야 한다.
@@ -101,6 +100,24 @@ WAL·snapshot target, protobuf encoding family와 단일 group profile은 scoped
 | ownership·route metadata | stale owner를 fence하고 routing을 다시 구성한다. |
 
 replica 수가 configured write quorum보다 적으면 durable write를 성공 처리해서는 안 된다. replication lag 또는 disk pressure가 한도를 넘으면 publish admission을 늦추거나 거절해야 하며, 이미 성공 ACK한 durable state를 임의로 drop해서는 안 된다.
+
+### 4.1 Offline message capture와 전달
+
+Cluster mode에서 persistent session(MQTT 3.1.1 CleanSession=0 또는 MQTT 5 CleanStart=0 및 Session Expiry Interval > 0)이 연결을 종료한 뒤부터 다음 재접속 전까지의 구간을 **detached** 상태로 취급한다. Detached session에 도착한 QoS 0 message만 Raft committed state machine에 저장한다. Connected session의 live delivery는 기존 node-local queue를 유지하며, QoS 1/2 offline entry, durable ACK 및 cross-node live fan-out은 이 경계에 포함되지 않는다.
+
+1. **Key와 복제 상태:** 각 `(tenantId, clientId)` session key마다 `OfflineSessionState`를 둔다. 필드는 `tenantId`, `clientId`, 단조 증가 `epoch`, `sessionExpiresAtUnixMillis`, 단조 증가 `nextSequence`와 `messages[]`다. 각 `OfflineMessage`는 `sequence`, `topic`, `payload`, `qos(=0)`, `retain`, `expiresAtUnixMillis`를 가진다. Message identity는 session 안에서 1부터 단조 증가하는 `sequence`이며 FIFO 순서다.
+2. **명령:** `OfflineChange`는 세 action을 가진다.
+   - `DETACH`: owner node가 persistent session disconnect 시 제안한다. `(ownerNodeId, epoch)`가 현재 ownership과 정확히 일치해야 한다(아니면 `stale_epoch`). Record가 없으면 `nextSequence=1`로 생성한다. 동일 epoch record가 이미 있으면 no-op `Applied`다. 더 작은 epoch record가 있으면 기존 message를 보존하고 epoch를 올린 뒤 이어 붙인다. Local queue 잔여 FIFO message는 최대 64개, `topic+payload` 합계 최대 768 KiB까지 함께 싣는다.
+   - `ENQUEUE`: 어느 node든 publish 대상이 detached session이면 제안한다. `ownerNodeId=0`, message 정확히 1개다. Record가 존재하고 `record.epoch == command.epoch`여야 한다(아니면 `offline_session_missing`).
+   - `CLAIM`: CONNECT가 새 ownership epoch를 commit한 직후 새 owner가 제안한다. `(ownerNodeId, epoch)`가 현재 ownership과 같아야 한다(아니면 `stale_epoch`). Record를 삭제하고 그 message들을 apply 결과로 반환한다. Record가 없으면 `Found=false`다.
+3. **전달 의미:** at-most-once다. CLAIM commit이 record를 먼저 지우고 그 다음 local queue로 전달한다. CLAIM 성공 뒤 전송 전 crash하면 해당 QoS 0 message는 유실될 수 있다. 자동 재시도는 하지 않는다. Commit timeout 뒤 늦게 commit된 ENQUEUE는 queue에 남는다.
+4. **결정적 한도:** Apply는 session당 64 message, 전체 tenant 합산 4,096 message·16 MiB, payload당 1,000,000 bytes를 제한한다. DETACH 한 command의 `topic+payload` 합계는 768 KiB 이하여야 한다. 크기는 `len(tenantId)+len(clientId)+len(topic)+len(payload)`의 합이다. 한도를 넘으면 command 전체를 `offline_capacity_exceeded`로 거절하고 기존 state를 보존한다(같은 apply의 만료 purge는 유지). Detached session record 수는 ownership row 수를 넘지 않으므로 별도 상한을 두지 않는다. PRD TEN-08의 tenant별 offline queue quota는 제공하지 않는다.
+5. **만료:** 모든 offline command apply는 먼저 proposer 시각(`proposedAtUnixMillis`) 기준으로 `0 < expiresAt <= proposedAt`인 message와 `0 < sessionExpiresAt <= proposedAt`인 session record를 지운다. Local replica clock은 읽지 않는다. `sessionExpiresAt`은 disconnect 시각 + MQTT 5 Session Expiry Interval이며, 만료가 없으면 0이다.
+6. **Ownership 연동:** Ownership `Release`가 apply되면 같은 key의 offline record도 지운다. Transfer/acquire는 record를 보존하며 새 owner의 CLAIM이 가져간다. 모든 offline record는 `record.epoch` 이상의 ownership row를 가져야 한다.
+7. **SessionPresent:** `CleanStart=0` CONNECT의 CLAIM이 `Found=true`이면 다른 node로 reconnect해도 CONNACK `SessionPresent=1`이고 message를 sequence FIFO로 전달한다. `CleanStart=1`이면 CLAIM으로 record를 지우고 message는 버린다.
+8. **Fallback:** DETACH가 quorum/compatibility/stale-epoch 이유로 실패하면 local queue를 그대로 둔다. CLAIM이 실패하면 CONNECT를 ownership-unavailable reason으로 거절하고 local session 변경을 rollback한다. 기존 local session이 없었던 시도는 새 delivery queue 등록과 tenant route binding도 제거한다. 기존 local session이 있으면 CLAIM 성공 전까지 기존 expiry/WILL timer를 유지하고, 실패 시 기존 timer와 session 상태를 보존한다. ENQUEUE 실패는 해당 대상만 `Saturated`(capacity) 또는 `Unavailable`(그 외)로 보고한다.
+9. **알려진 한계:** Owner node가 연결 중에 crash하면 DETACH가 없어 이후 message는 capture되지 않는다. Detach 전환 중 local queue 조회와 제거 사이에 해당 node로 도착한 QoS 0 message는 유실될 수 있다. ENQUEUE는 대상 session마다 commit 1회다.
+10. **Schema와 profile gate:** Replicated-state schema는 `1.0`을 유지하고 unknown field를 거절한다. Offline command는 fresh read barrier 뒤 모든 non-retired member의 release/protocol/schema가 일치하는 exact member-profile gate 뒤에서만 제안한다.
 
 ## 5. Publish commit과 delivery
 
@@ -159,6 +176,8 @@ partition이 복구되면 committed log가 기준이 된다. minority의 specula
 - 호환할 수 없는 변경은 rolling update를 시작하기 전에 preflight에서 거절해야 한다.
 - 호환 matrix는 release artifact에 포함해야 한다.
 
+현재 retained profile은 rolling compatibility가 아니다. Fresh read barrier 뒤 모든 non-retired member의 release, protocol와 schema가 정확히 일치하는지 확인하고, 하나라도 다르면 retained mutation을 시작하지 않는다. 이 gate는 혼합 버전 기록을 차단하지만 N/N-1 상호 운용이나 rollback 안전성을 입증하지 않는다.
+
 ## 9. Rebalance
 
 P1 rebalance가 활성화되면 target 편차, 최대 동시 이동 수와 이동 rate를 설정해야 한다. Rebalance는 ownership transfer와 같은 fencing·checkpoint 규칙을 따라야 한다. QoS state를 복제하기 전에 기존 owner를 종료해서는 안 된다.
@@ -167,11 +186,11 @@ P1 rebalance가 활성화되면 target 편차, 최대 동시 이동 수와 이�
 
 1. Snapshot은 포함한 commit index와 typed-state checksum을 가져야 한다. Finalize는 snapshot file sync, close, atomic rename, directory sync 순서이며, 그 경계에서 process crash가 발생해도 재시작 시 완전한 snapshot/WAL만 replay한다.
 2. Backup은 commit 경계와 일치하는 typed snapshot, 그 뒤의 committed application/configuration 기록, schema/release metadata 및 checksum을 포함해야 한다. Backup capture는 fresh quorum/read barrier를 거쳐야 한다.
-3. 전체 CLU-14 target에는 tenant, session ownership, subscription, retained, inflight와 offline state가 포함된다. 현재 [Cluster backup v1](../contracts/cluster-backup-v1.md)은 members, state에서 도출한 tenant ID, ownership, subscription, inflight/checkpoints와 membership history만 포함한다. `retained`와 `offline` message는 아직 복제·archive되지 않으므로 이 요구사항과 전체 CLU-14는 미완료다.
+3. 전체 CLU-14 target에는 tenant, session ownership, subscription, retained, inflight와 offline state가 포함된다. Current [Cluster backup v3](../contracts/cluster-backup-v3.md)는 retained state와 offline queue를 replication snapshot/archive count·checksum에 포함한다. Historical v2는 retained만, historical v1은 retained/offline 모두 제외했다. Retained 및 offline process acceptance는 각각 §11.8과 §11.9에 있다. Linux/EBS power-loss와 retention/RPO/RTO는 여전히 미완료다.
 4. Restore는 snapshot과 committed tail을 replay한 뒤 manifest의 commit-boundary count/checksum과 비교해야 한다. Format, identity, version, member identity 또는 summary가 일치하지 않으면 target storage를 바꾸기 전에 거절한다.
-5. Restore는 현재 v1에서 정확히 세 bootstrap voter ID와 동일한 cluster/release/protocol/schema/address/DNS SAN/certificate fingerprint를 요구한다. Archive에 learner ID가 있으면 거절한다. Cross-cluster migration과 voter-set 변경은 지원하지 않는다.
+5. Current v3 restore는 동일 cluster/release/protocol/schema, 정확히 세 bootstrap voter ID와 동일 address/DNS SAN/certificate fingerprint를 요구한다. Archive에 learner ID가 있으면 거절한다. v1/v2 archive는 current restore에서 거절하며 cross-cluster migration과 voter-set 변경도 지원하지 않는다.
 6. Restore는 offline CLI로 voter별 빈 target directory를 seed한 뒤 종료한다. Durable restore marker가 남은 node는 일반 startup에서 READY가 되면 안 된다.
-7. v1 retention 기간과 disaster-recovery RPO/RTO는 `SPEC-TBD-09`이며, Linux EBS/power-loss 보장은 별도 acceptance로 남는다.
+7. Retention 기간과 disaster-recovery RPO/RTO는 `SPEC-TBD-09`이며, Linux EBS/power-loss 보장은 별도 acceptance로 남는다.
 
 ## 11. 수용 시험
 
@@ -179,7 +198,7 @@ P1 rebalance가 활성화되면 target 편차, 최대 동시 이동 수와 이�
 - 동시 CONNECT, owner kill, packet partition과 stale epoch write 거절을 검증한다.
 - quorum 상실 중 새 ownership과 durable ACK가 성공하지 않는지 검증한다.
 - 성공 durable ACK 직후 각 node를 kill해 message gap이 없는지 확인한다.
-- disk full, snapshot finalize crash, v1 archive/restore·restart/resync 중 consistency와 readiness를 확인한다. Retained/offline recovery와 power-loss는 별도 미완료 기준이다.
+- disk full, snapshot finalize crash, archive/restore·restart/resync 중 consistency와 readiness를 확인한다. Production EBS/power-loss는 별도 미완료 기준이다.
 - N-1↔N rolling upgrade와 rollback을 양방향으로 시험한다.
 
 ### 11.1 Phase 0 gate 4 deterministic spike mapping
@@ -293,23 +312,55 @@ Harness는 certificate, JWT와 token을 임시 fixture directory에만 두고 `.
 
 ### 11.7 Cluster backup/restore와 snapshot finalize 수용 매핑
 
-이 수용 시험은 v1 backup profile의 commit 경계, identity와 local process restart 범위만 확인한다. `CLU-14` 전체를 통과 처리하지 않는다. Archive는 현재 voter가 정확히 세 개이고 learner ID가 없을 때만 복원할 수 있다. `retained`/`offline` state, production EBS power-loss, retention/RPO/RTO와 archive N/N-1 호환성은 §10의 미완료 기준이다.
+이 수용 시험은 historical v2 archive의 commit 경계, identity와 local process restore/restart 범위를 확인한다. Retained-specific assertions는 §11.8에 연결하며, current archive와 offline queue는 §11.9를 따른다. Restore는 정확히 세 bootstrap voter를 요구하고 learner archive와 v1 bytes를 거절한다. Production EBS power-loss, retention/RPO/RTO와 archive N/N-1 compatibility는 미완료다.
 
 | Scenario | 관찰할 결과 | 시험 위치 | 실행 증거 |
 | --- | --- | --- | --- |
-| Online boundary archive | ClusterAdmin API가 fresh quorum barrier 뒤 binary archive를 반환한다. Commit header가 manifest commit과 같고, staged command tail은 snapshot 뒤 archive에 포함된다. | `cmd/narumq.TestRunClusterModeInProcess`; `tests/integration.TestClusterBackupRestoreProcessCrashAndResync` | PASS: in-process API 시험이 archive를 decode하고 committed tail을 재구성했다. Process 시험은 API archive의 commit header와 SHA-256 trailer digest를 확인했다. |
-| Archive validation and identity | Corrupt/noncanonical/checksum·summary 오류, cluster/member ID·address·SAN/certificate·release/schema mismatch 및 learner archive는 target을 바꾸기 전에 거절한다. Exactly-three voter와 source-voter 조건을 강제한다. | `internal/adapters/raft/records` archive tests; `cmd/narumq.TestClusterRestoreSeedRejectsIdentityLearnerAndSummaryMismatch`, `TestClusterRestoreRejectsInvalidArchiveBeforeTouchingTarget`, CLI flag tests | PASS: `go test ./cmd/narumq/... ./internal/adapters/raft/... -count=1`에서 cmd/narumq, raft, records package가 통과했다. Restore marker가 남은 경로는 일반 open에서 거절되고 unrelated target entry는 보존된다. |
-| Offline restore, crash/restart and resync | 동일 archive를 세 bootstrap voter directory에 seed한다. Staged operation과 commit boundary가 유지되고, restored node process crash/restart 뒤 quorum READY에 도달하며, 새 joiner가 resync해 cluster summary가 수렴한다. | `tests/integration.TestClusterBackupRestoreProcessCrashAndResync` | PASS: process 시험이 online backup, 세 offline CLI restore, staged state 재확인, restored voter crash/restart와 joiner catch-up/convergence를 관찰했다. |
+| Online boundary archive | ClusterAdmin API가 fresh quorum barrier 뒤 v2 binary archive를 반환한다. Commit header가 manifest commit과 같고 committed tail이 snapshot 뒤 archive에 포함된다. | `cmd/narumq.TestRunClusterModeInProcess`; `tests/integration.TestClusterBackupRestoreProcessCrashAndResync` | PASS: in-process API 시험이 archive를 decode하고 committed tail을 재구성했다. Process 시험은 v2 format, retained summary, commit header와 SHA-256 trailer digest를 확인했다. |
+| Archive validation and identity | Corrupt/noncanonical/checksum·summary 오류, cluster/member ID·address/SAN/certificate·release/schema mismatch, learner 및 v1 archive는 target을 바꾸기 전에 거절한다. | `internal/adapters/raft/records` archive tests; `cmd/narumq` restore tests | PASS: focused package suite에서 archive codec와 restore package가 통과했다. `NMQBKUP1`은 명시적 unsupported-format 오류로 거절한다. |
+| Offline restore, crash/restart and resync | 같은 v2 archive를 세 bootstrap voter directory에 seed한다. Staged operation과 retained state가 유지되고, restored node crash/restart 뒤 quorum READY, 신규 joiner catch-up과 replay가 수렴한다. | `tests/integration.TestClusterBackupRestoreProcessCrashAndResync` | PASS: process test가 세 offline restore, cross-node·restored·restarted·joiner retained replay, staged state와 summary convergence를 관찰했다. |
 | Snapshot finalize process crash | Temp file Sync 뒤 rename 전 crash와 rename/directory sync 후 crash에서 process restart 뒤 committed membership과 readiness가 수렴한다. | `tests/integration.TestSnapshotFinalizationCrashRecoveryAcrossProcessRestart` | PASS: build-tagged failpoint supervisor가 두 process exit를 확인하고 disarmed restart 뒤 bootstrap 및 membership operation convergence를 확인했다. |
-| Full CLU-14 state and production volume boundary | `retained`/`offline` 포함 전체 required kind의 count/checksum을 확인하고 EBS/전원 손실 경계에서 durable commit을 보존한다. | Production-like filesystem/EBS acceptance | 미실행. Scope를 줄여 통과 처리하지 않는다. |
-
-Process·membership 회귀 검증:
+| Production volume boundary | EBS/전원 손실 경계에서 durable commit을 보존한다. | Production-like filesystem/EBS acceptance | 미실행. Retained/offline process pass로 scope를 줄여 통과 처리하지 않는다. |
+Process·membership·retained regression 검증:
 
 ```text
 go build ./...
-go test ./tests/integration -run '^(TestDynamicClusterMembershipProcessAcceptance|TestDynamicClusterMembershipTransitionCrashRecovery|TestDynamicClusterMembershipRemovalHandoffWaitsForQuorum|TestClusterBackupRestoreProcessCrashAndResync|TestSnapshotFinalizationCrashRecoveryAcrossProcessRestart)$' -count=1
+go test ./tests/integration -run '^(TestClusterBackupRestoreProcessCrashAndResync|TestDynamicClusterMembershipProcessAcceptance|TestDynamicClusterMembershipTransitionCrashRecovery|TestDynamicClusterMembershipRemovalHandoffWaitsForQuorum|TestSnapshotFinalizationCrashRecoveryAcrossProcessRestart)$' -count=1 -v
 ```
 
-실행 결과: `go build ./...` 성공, process/regression package `ok narumq/tests/integration 100.171s`. 이 실행은 명시된 다섯 process test만 포함하며 전체 repository `go test ./...`, race/fuzz/mutation gate 또는 production power-loss 시험 결과가 아니다.
+실행 결과: `go build ./...` 통과; process/regression package는 `ok narumq/tests/integration 90.062s`였다. 위 명령은 지정한 다섯 process test만 포함하며 전체 repository `go test ./...`, race/fuzz/mutation gate 또는 production power-loss 시험 결과가 아니다.
 
-전체 로컬 검증: `go run ./tools/verify local` PASS (2026-09-26). Go package tests, fuzz 4종, race tests, traceability·architecture·coverage gate 및 mutation gate가 통과했다. 두 mutation 대상군 결과는 각각 25/25와 46/46 killed, lived/uncovered 0이었다. 이 로컬 gate는 구현 검증이며 `offline`/`retained` 상태, production EBS/power-loss, retention/RPO/RTO 또는 archive N/N-1 acceptance를 완료하지 않는다.
+`go run ./tools/verify local` PASS: 현재 tree에서 일반·race package suite, 제한 fuzz, traceability, architecture와 coverage gate가 통과했다. Mutation gate는 delivery target 25/25 kill, session/ownership target 45/46 kill·1 timeout, lived/uncovered mutant 0으로 끝났으며 verifier는 `local: PASS`를 반환했다. Timeout은 완료된 kill로 계산하지 않았다. 이 local gate는 production storage나 전체 CLU-14 acceptance를 대체하지 않는다.
+
+### 11.8 Retained replication과 backup v2 수용 매핑
+
+Retained key는 `(tenantId, exact Topic Name)`이다. Cluster MQTT ingress의 현재 범위는 QoS 0 PUBLISH다. Retained mutation은 Raft commit 뒤 다른 node의 replay projection에 반영되고, v2 snapshot/archive는 같은 committed retained state와 kind summary를 보존한다. Offline queue와 durable QoS 1/2 ACK는 이 acceptance 범위가 아니다.
+
+| Scenario | 관찰할 결과 | 시험 위치 | 실행 증거 |
+| --- | --- | --- | --- |
+| Tenant-scoped retained state와 deterministic limits | 같은 topic의 다른 tenant 값은 분리된다. Replace/delete, proposal-time expiry, 전체 tenant 합산 1,024 object/16 MiB/1,000,000-byte payload limit, per-tenant quota 미제공과 canonical snapshot을 검증한다. | `internal/application/membership/retained_test.go`; `internal/adapters/raft/records/retained_codec_test.go` | PASS: focused package suite에서 tenant boundary, expiry, capacity conflict, snapshot과 codec tests가 통과했다. |
+| Commit-before-route와 projection recovery | Retained commit은 route matching보다 먼저 일어난다. Commit error에서 fan-out하지 않고, snapshot/startup projection은 committed state에서 rebuild한다. | `internal/application/publish/retained_commit_test.go`; `cmd/narumq/cluster_retained_test.go`; `cmd/narumq/cluster_runtime_test.go` | PASS: focused package suite에서 publish commit behavior, exact profile/read-barrier gate, projection rebuild/incremental sync와 failure/readiness tests가 통과했다. |
+| Live cross-node retained replay | Node 1에서 retained `a=alpha`, `b=beta`를 publish하고 `b`를 삭제한 뒤 `c=gamma`를 publish한다. 다른 node가 정확히 `{a:alpha,c:gamma}`를 replay하며 삭제한 값은 나타나지 않는다. | `tests/integration.TestClusterBackupRestoreProcessCrashAndResync` | PASS: process acceptance가 실제 MQTT QoS 0 PUBLISH/SUBSCRIBE로 cross-node replay를 확인했다. |
+| v2 backup, restore, restart와 catch-up | Archive format major 2, retained summary count 2와 `not_replicated_kinds=["offline"]`를 확인한다. 세 voter restore, restored-node crash/restart와 learner catch-up 뒤 모두 `{a:alpha,c:gamma}`를 replay한다. | `tests/integration.TestClusterBackupRestoreProcessCrashAndResync` | PASS: process acceptance가 archive metadata, API commit/checksum header, restore, restart와 joiner replay/convergence를 확인했다. |
+| Focused package regression | Membership, records, retained repository, publish/subscribe/management, runtime와 contract consumers가 일관되게 동작한다. | `go test ./internal/application/membership/... ./internal/adapters/raft/records/... ./internal/adapters/memory/retained/... ./internal/application/publish/... ./internal/application/subscribe/... ./internal/application/management/... ./internal/adapters/http/management/... ./cmd/narumq/... ./tests/contracts/... -count=1` | PASS: 전체 지정 package suite 통과. |
+| Process/membership regression | Backup/restore retained replay, dynamic join, transition recovery, removal handoff와 snapshot finalize crash recovery가 통과한다. | §11.7의 다섯-test command | PASS: `ok narumq/tests/integration 90.062s`. |
+| Full local repository gate | 현재 package/integration suite, race suite, 제한 fuzz, traceability, architecture, coverage와 mutation 검증이 통과한다. | `go run ./tools/verify local` | PASS: `local: PASS`; mutation은 25/25 및 45/46 kill, 두 번째 target에서 1 timeout, lived/uncovered 0이다. |
+| Offline queue, durable QoS ACK, mixed-release rolling upgrade와 production power-loss | 해당 state와 보장이 요구된 수용 시나리오에서 통과한다. | Offline/durable-delivery 및 production-like storage acceptance | 미실행. 전체 CLU-14나 production readiness를 승인하지 않는다. |
+
+이 local gate PASS는 offline queue replication, archive N/N-1 compatibility, retention/RPO/RTO, durable QoS 1/2 ACK 또는 production EBS/power-loss 수용을 의미하지 않는다. Retained acceptance는 위의 제한된 process proof이며 전체 CLU-14가 아니다.
+
+### 11.9 Offline queue replication과 backup v3 수용 매핑
+
+Offline key는 `(tenantId, clientId)`다. Cluster mode에서 persistent session이 detached 상태일 때 도착한 QoS 0 message를 Raft committed state machine에 복제하고, reconnect 때 새 owner가 CLAIM으로 가져간다. Backup v3(`NMQBKUP3`)는 retained와 offline kind summary를 필수로 포함하고 v1/v2 archive를 거절한다.
+
+| Scenario | 관찰할 결과 | 시험 위치 | 실행 증거 |
+| --- | --- | --- | --- |
+| Offline FIFO, fencing and capacity limits | Detach, enqueue, claim이 sequence 1..N 순서와 payload를 복구한다. Stale epoch/non-owner claim과 epoch 불일치 enqueue는 거절된다. Session당 64개, 전체 4,096개·16 MiB, payload 1,000,000 bytes 초과는 `offline_capacity_exceeded`로 거절되며 기존 state를 보존한다. Expiry purge는 proposer 시각 기준이다. | `internal/application/membership/offline_test.go`; `internal/adapters/raft/records/offline_codec_test.go` | PASS: `go test ./internal/application/membership/... ./internal/adapters/raft/records/... -count=1` |
+| Connect and publish offline integration | Disconnect 시 persistent session pending queue를 DETACH하고 local queue를 제거한다. DETACH 실패 시 local queue를 보존한다. CleanStart=0 CONNECT의 CLAIM 성공 시 SessionPresent=true와 복구 queue를 설치한다. CLAIM 실패 시 CONNECT와 local session 변경을 rollback하며, 새 session이면 queue 등록 및 tenant route binding을 제거하고, 기존 session이면 queue·route·expiry timer를 보존한다. Detached 대상 publish는 Raft ENQUEUE를 호출한다. | `internal/application/connect/offline_test.go`; `internal/application/publish/offline_commit_test.go`; `cmd/narumq/cluster_offline_test.go` | PASS: connect/publish/runtime focused suites 통과. 마지막 route/timer rollback 수정 뒤 `go test ./internal/application/connect/... -count=1` 통과. |
+| Backup v3 and historical v1/v2 archive rejection | V3 archive format major 3, required `offline` kind count/digest와 offline tenant digest를 검증한다. Format 1과 format 2 archive는 `unsupported archive format N`으로 명시 거절하며 target directory를 변경하지 않는다. | `internal/adapters/raft/records/backup_test.go`; `cmd/narumq/cluster_backup_restore_test.go` | PASS: `go test ./internal/adapters/raft/records/... ./cmd/narumq/... -run 'TestBackupArchive|TestClusterRestore' -count=1` |
+| Real-cluster cross-node offline enqueue and owner crash delivery | Node 1 detached subscriber로 Node 2가 publish한 QoS 0 message 세 개를 복제한다. Owner node 1 crash 뒤 Node 3으로 reconnect 시 CONNACK `SessionPresent=true`와 세 message가 FIFO 순서로 1회씩 도착한다. | `tests/integration/cluster_backup_restore_process_test.go` | PASS: `TestClusterBackupRestoreProcessCrashAndResync` (17.62s); Node 1 crash 뒤 Node 3 reconnect에서 `SessionPresent=true`와 `[offline/1, offline/2, offline/3]`이 FIFO 순서로 정확히 1회 수신됨. |
+| Backup v3 restore, restart and joiner convergence | Node 1 재시작 후 네 번째 message가 offline queue에 든 상태에서 backup v3를 뜬다(format 3, retained count 2, offline count 3). 세 voter restore 후 restored node 2 reconnect에서 네 번째 message가 도착한다. 이후 발행된 다섯 번째 message는 joiner reconnect에서 도착한다. Restored node와 joiner의 backup summary가 동일 commit index에서 일치한다. | `tests/integration/cluster_backup_restore_process_test.go` | PASS: `TestClusterBackupRestoreProcessCrashAndResync`; format major 3, retained 2, offline 3, restored node 2에서 `offline/4`, joiner에서 `offline/5` 수신, 동일 commit index에서 summary 완전 일치. |
+| Full local repository verification | Current package suite, race suite, fuzz, traceability, architecture, coverage and mutation checks pass. | `GOMAXPROCS=4 go run ./tools/verify local` | PASS after route/timer rollback fixes: `local: PASS`; unit/integration suites, four fuzz targets, all-package race, traceability, architecture and coverage pass. Mutation reports: 17 killed/8 timed out and 42 killed/4 timed out; 0 lived/uncovered. Timeout은 kill로 계산하지 않았다. Windows의 unconstrained race run은 system commit limit 1455로 실패해 제한 실행했다. |
+| Production storage and tenant quota boundary | Linux/EBS power-loss, WAL torn-tail, volume loss/reseed, retention/RPO/RTO와 PRD TEN-08 tenant별 quota를 검증한다. | Linux/EBS production acceptance 및 tenant quota acceptance | 미실행. 범위 밖이며 CLU-14 전체 완료나 production readiness를 선언하지 않는다. |
+
+이 local gate와 process acceptance는 QoS 0 offline queue 복제와 backup v3 검증 결과이며, durable QoS 1/2 ACK, archive N/N-1 compatibility, retention/RPO/RTO, PRD TEN-08 tenant별 quota 또는 production EBS/power-loss 수용을 의미하지 않는다.

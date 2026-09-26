@@ -53,9 +53,10 @@ const (
 )
 
 var (
-	errClusterRuntimeNotReady  = errors.New("cluster runtime is not ready")
-	errClusterStorageUnhealthy = errors.New("cluster raft storage is not healthy")
-	errClusterApplyDivergence  = errors.New("committed cluster state diverges from membership state")
+	errClusterRuntimeNotReady           = errors.New("cluster runtime is not ready")
+	errClusterStorageUnhealthy          = errors.New("cluster raft storage is not healthy")
+	errClusterApplyDivergence           = errors.New("committed cluster state diverges from membership state")
+	errClusterExactProfileCompatibility = errors.New("retained and offline replication requires every active member to match the local release and schema")
 )
 
 // runClusterMode composes the dynamic Raft control plane with MQTT admission and
@@ -122,8 +123,14 @@ func runClusterMode(ctx context.Context, config clusterConfigFile, logger *slog.
 		}
 	}()
 
+	metricsRegistry := adaptersmetrics.NewRegistry()
+	retainedRepository, err := memoryretained.New(membership.MaxRetainedMessages, membership.MaxRetainedBytes, metricsRegistry)
+	if err != nil {
+		return fmt.Errorf("create retained repository: %w", err)
+	}
 	runtime := &clusterRuntime{
 		config: config, logger: logger, node: node, machine: machine,
+		retained: retainedRepository,
 		storage:  newClusterStorageMonitor(time.Now, logger),
 		routes:   routing.NewTable(),
 		requests: make(chan clusterDriverRequest, 128), initialMessages: initialMessages,
@@ -132,6 +139,7 @@ func runClusterMode(ctx context.Context, config clusterConfigFile, logger *slog.
 		failpoint:          failpoint,
 		handoffProposed:    make(map[string]uint64),
 	}
+	runtime.retainedResyncRequired.Store(true)
 	if local, found := committedLocalIdentity(machine, config.NodeID); found {
 		runtime.localIdentity = local
 	}
@@ -180,14 +188,9 @@ func runClusterMode(ctx context.Context, config clusterConfigFile, logger *slog.
 	}
 	listeners = append(listeners, managementListener)
 
-	metricsRegistry := adaptersmetrics.NewRegistry()
 	deliveries, err := deliveryqueue.New(64)
 	if err != nil {
 		return fmt.Errorf("create delivery queue: %w", err)
-	}
-	retainedRepository, err := memoryretained.New(1024, 16<<20, metricsRegistry)
-	if err != nil {
-		return fmt.Errorf("create retained repository: %w", err)
 	}
 	sessions := sessionstore.New()
 	willBridge := tcpadapter.NewWillBridge()
@@ -196,12 +199,13 @@ func runClusterMode(ctx context.Context, config clusterConfigFile, logger *slog.
 	connectOptions := []connect.Option{
 		connect.WithMetrics(metricsRegistry),
 		connect.WithOwnershipCoordinator(runtime, config.NodeID),
+		connect.WithOfflineCoordinator(runtime),
 	}
 	subscribeOptions := []subscribe.Option{
 		subscribe.WithMetrics(metricsRegistry),
 		subscribe.WithCommitter(runtime),
 	}
-	publishOptions := []publish.Option{publish.WithMetrics(metricsRegistry)}
+	publishOptions := []publish.Option{publish.WithMetrics(metricsRegistry), publish.WithRetainedCommitter(runtime), publish.WithOfflineCommitter(runtime)}
 	var tcpPolicy security.Policy
 	if securityBundle != nil {
 		connectOptions = append(connectOptions, connect.WithSecurity(jwtProvider, mtlsProvider, securityBundle.Policy))
@@ -283,6 +287,7 @@ type clusterRuntime struct {
 	node       *raftadapter.Node
 	transport  *tcpadapter.DynamicTCPPeerTransport
 	machine    *membership.StateMachine
+	retained   *memoryretained.Repository
 	routes     *routing.Table
 	mqttServer *tcpadapter.Server
 	storage    *clusterStorageMonitor
@@ -293,6 +298,7 @@ type clusterRuntime struct {
 	projectionMu            sync.Mutex
 	projectionIndex         atomic.Uint64
 	projectionFailed        atomic.Bool
+	retainedResyncRequired  atomic.Bool
 	lastSnapshotIndex       uint64
 	initialMessages         []raftadapter.MessageDTO
 	autoCatchupPending      string
@@ -684,6 +690,7 @@ func (runtime *clusterRuntime) applyBatch(batch raftadapter.BatchDTO, proposals 
 		if err := runtime.machine.Restore(snapshot); err != nil {
 			return fmt.Errorf("restore membership state machine: %w", err)
 		}
+		runtime.retainedResyncRequired.Store(true)
 		runtime.lastSnapshotIndex = snapshot.LastIncludedIndex
 		runtime.initialized.Store(true)
 	}
@@ -757,6 +764,9 @@ func (runtime *clusterRuntime) applyBatch(batch raftadapter.BatchDTO, proposals 
 			if runtime.mqttServer != nil {
 				runtime.mqttServer.CloseSessionForTakeover(sessionID)
 			}
+		}
+		if command.Retained != nil && result.Outcome == membership.ApplyOutcomeApplied {
+			runtime.syncRetainedProjection(*command.Retained)
 		}
 		runtime.resolveProposal(event.command, result, proposals)
 	}
@@ -1137,6 +1147,11 @@ func (runtime *clusterRuntime) rebuildRouteProjection() error {
 	if runtime.failpoint.failsRouteProjection() {
 		return errors.New("route projection rebuild failpoint")
 	}
+	if runtime.retainedResyncRequired.Load() {
+		if err := runtime.rebuildRetainedProjectionLocked(); err != nil {
+			return err
+		}
+	}
 
 	projectionSessions := make([]routing.ProjectionSession, 0)
 	for _, ownership := range runtime.machine.Ownerships() {
@@ -1447,6 +1462,9 @@ func (runtime *clusterRuntime) Commit(ctx context.Context, command membership.Co
 	if err := runtime.readBarrier(ctx); err != nil {
 		return membership.ApplyResultDTO{}, classifyClusterPortError(err)
 	}
+	if (command.Retained != nil || command.Offline != nil) && !clusterExactProfileCompatible(runtime.machine.Members(), runtime.config) {
+		return membership.ApplyResultDTO{}, errClusterExactProfileCompatibility
+	}
 	data, err := encodeMembershipCommand(command)
 	if err != nil {
 		return membership.ApplyResultDTO{}, err
@@ -1466,6 +1484,25 @@ func (runtime *clusterRuntime) Commit(ctx context.Context, command membership.Co
 	case <-ctx.Done():
 		return membership.ApplyResultDTO{}, membership.ErrQuorumUnavailable
 	}
+}
+
+func clusterExactProfileCompatible(members []membership.MemberIdentityDTO, config clusterConfigFile) bool {
+	activeMembers := 0
+	for _, member := range members {
+		if member.Phase == membership.MemberPhaseRetired {
+			continue
+		}
+		activeMembers++
+		if member.ClusterID != config.ClusterID ||
+			member.ReleaseVersion != config.ReleaseVersion ||
+			member.ClusterProtocolMajor != config.ClusterProtocolMajor ||
+			member.ClusterProtocolMinor != config.ClusterProtocolMinor ||
+			member.StateSchemaMajor != config.StateSchemaMajor ||
+			member.StateSchemaMinor != config.StateSchemaMinor {
+			return false
+		}
+	}
+	return activeMembers > 0
 }
 
 func (runtime *clusterRuntime) Members(ctx context.Context) ([]membership.MemberIdentityDTO, error) {

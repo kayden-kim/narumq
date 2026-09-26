@@ -57,6 +57,33 @@ func TestMembershipRecordBridgeRoundTripsTypedCommands(t *testing.T) {
 				}},
 			},
 		},
+		{
+			SchemaMajor: membership.SchemaMajor, OperationID: bridgeOperation1,
+			Retained: &membership.RetainedChangeDTO{
+				TenantID: "tenant", Topic: "status", PublisherClientID: "publisher",
+				QoS: 1, Payload: []byte("retained"), ExpiresAtUnixMillis: 2000,
+				ProposedAtUnixMillis: 1000, Action: membership.RetainedActionReplace,
+			},
+		},
+		{
+			SchemaMajor: membership.SchemaMajor, OperationID: bridgeOperation1,
+			Retained: &membership.RetainedChangeDTO{
+				TenantID: "tenant", Topic: "status", PublisherClientID: "publisher",
+				ProposedAtUnixMillis: 1000, Action: membership.RetainedActionDelete,
+			},
+		},
+		{
+			SchemaMajor: membership.SchemaMajor, OperationID: bridgeOperation1,
+			Offline: &membership.OfflineChangeDTO{
+				TenantID: "tenant", ClientID: "client", OwnerNodeID: 1, Epoch: 1,
+				Action: membership.OfflineActionDetach, SessionExpiresAtUnixMillis: 2000,
+				ProposedAtUnixMillis: 1000,
+				Messages: []membership.OfflineMessageDTO{{
+					Sequence: 0, Topic: "status", Payload: []byte("val"), QoS: 0,
+					ExpiresAtUnixMillis: 1500,
+				}},
+			},
+		},
 	}
 
 	for index, command := range commands {
@@ -109,7 +136,17 @@ func TestMembershipRecordBridgePreservesSnapshotIndexesAndDigest(t *testing.T) {
 			OperationID: bridgeOperation4, Action: membership.MembershipActionStageJoin,
 			IdempotencyKey: "key-4", Member: &member, ExpectedConfStateIndex: 12, CommittedIndex: 9,
 		}},
-		ObjectCount: 5,
+		Retained: []membership.RetainedStateDTO{{
+			TenantID: "tenant", Topic: "status", PublisherClientID: "publisher",
+			QoS: 1, Payload: []byte("retained"), ExpiresAtUnixMillis: 2000,
+		}},
+		OfflineSessions: []membership.OfflineSessionStateDTO{{
+			TenantID: "tenant", ClientID: "client", Epoch: 1, NextSequence: 2,
+			Messages: []membership.OfflineMessageDTO{{
+				Sequence: 1, Topic: "status", Payload: []byte("val"), QoS: 0,
+			}},
+		}},
+		ObjectCount: 8,
 	}
 	wire, err := encodeMembershipSnapshot(snapshot)
 	if err != nil {

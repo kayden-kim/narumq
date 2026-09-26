@@ -4,6 +4,7 @@
 package publish
 
 import (
+	"context"
 	"errors"
 	"time"
 
@@ -52,15 +53,53 @@ func WithMetrics(metrics portsmetrics.MetricsRecorder) Option {
 	}
 }
 
+// RetainedCommitter commits a retained mutation to replicated cluster state
+// before routing. When it returns nil the committed value is already visible
+// in the node's retained projection.
+type RetainedCommitter interface {
+	CommitRetained(ctx context.Context, change RetainedChangeDTO) error
+}
+
+// RetainedChangeDTO is one retained replace or delete requested by PUBLISH.
+// Message.TenantID, PublisherSessionID and Topic are always set; Payload, QoS
+// and ExpiresAt are zero for Delete.
+type RetainedChangeDTO struct {
+	Message    retained.MessageDTO
+	Delete     bool
+	ProposedAt time.Time
+}
+
+// WithRetainedCommitter configures the committed-state barrier for cluster retained changes.
+func WithRetainedCommitter(committer RetainedCommitter) Option {
+	return func(useCase *UseCase) {
+		useCase.retainedCommitter = committer
+	}
+}
+
+// OfflineCommitter durably queues a delivery whose target session is detached in committed cluster state.
+// handled=false means the target is not detached and the caller uses the local queue.
+type OfflineCommitter interface {
+	CommitOffline(ctx context.Context, delivery deliveryqueue.DeliveryDTO, proposedAt time.Time) (handled bool, err error)
+}
+
+// WithOfflineCommitter configures the committer for detached persistent sessions in cluster mode.
+func WithOfflineCommitter(committer OfflineCommitter) Option {
+	return func(useCase *UseCase) {
+		useCase.offlineCommitter = committer
+	}
+}
+
 // UseCase stores retained state before routing one publication to all matching
 // sessions through the bounded delivery queue.
 type UseCase struct {
-	clock    applicationclock.Clock
-	routes   *routing.Table
-	queue    deliveryqueue.Queue
-	retained retained.Repository
-	policy   security.Policy
-	metrics  portsmetrics.MetricsRecorder
+	clock             applicationclock.Clock
+	routes            *routing.Table
+	queue             deliveryqueue.Queue
+	retained          retained.Repository
+	retainedCommitter RetainedCommitter
+	policy            security.Policy
+	offlineCommitter  OfflineCommitter
+	metrics           portsmetrics.MetricsRecorder
 }
 
 // New creates a publish use case over the supplied route, queue, and retained
@@ -123,17 +162,25 @@ func (useCase *UseCase) Publish(publisherSessionID routing.SessionID, packet mqt
 	now := useCase.clock.Now()
 	expired := !expiresAt.IsZero() && !now.Before(expiresAt)
 	if packet.Retain {
+		tenantID := useCase.routes.SessionTenant(publisherSessionID)
+		deleteValue := len(packet.Payload) == 0 || expired
+		message := retained.MessageDTO{
+			TenantID: tenantID, PublisherSessionID: publisherSessionID, Topic: packet.Topic,
+		}
+		if !deleteValue {
+			message.Payload = packet.Payload
+			message.QoS = packet.QoS
+			message.ExpiresAt = expiresAt
+		}
 		var err error
-		if len(packet.Payload) == 0 || expired {
-			err = useCase.retained.Delete(packet.Topic)
+		if useCase.retainedCommitter != nil {
+			err = useCase.retainedCommitter.CommitRetained(context.Background(), RetainedChangeDTO{
+				Message: message, Delete: deleteValue, ProposedAt: now,
+			})
+		} else if deleteValue {
+			err = useCase.retained.Delete(tenantID, packet.Topic)
 		} else {
-			err = useCase.retained.Replace(retained.MessageDTO{
-				PublisherSessionID: publisherSessionID,
-				Topic:              packet.Topic,
-				Payload:            packet.Payload,
-				QoS:                packet.QoS,
-				ExpiresAt:          expiresAt,
-			}, now)
+			err = useCase.retained.Replace(message, now)
 		}
 		if err != nil {
 			return ResultDTO{}, err
@@ -167,7 +214,14 @@ func (useCase *UseCase) Publish(publisherSessionID routing.SessionID, packet mqt
 				Retain:    candidate.Retain,
 				ExpiresAt: expiresAt,
 			}
-			err := useCase.queue.TryEnqueue(delivery, now)
+			var err error
+			handled := false
+			if useCase.offlineCommitter != nil {
+				handled, err = useCase.offlineCommitter.CommitOffline(context.Background(), delivery, now)
+			}
+			if !handled {
+				err = useCase.queue.TryEnqueue(delivery, now)
+			}
 			switch {
 			case err == nil:
 				result.Delivered = append(result.Delivered, candidate.SessionID)

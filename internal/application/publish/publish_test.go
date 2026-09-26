@@ -57,6 +57,9 @@ func (*recordingQueue) CompleteHead(routing.SessionID) error { return nil }
 func (*recordingQueue) PromoteHead(applicationdeliveryqueue.OutboundDTO, time.Time) error {
 	return nil
 }
+func (*recordingQueue) ListQueued(routing.SessionID, time.Time) ([]applicationdeliveryqueue.DeliveryDTO, error) {
+	return nil, nil
+}
 func (*recordingQueue) ListOutbound(routing.SessionID) ([]applicationdeliveryqueue.OutboundDTO, error) {
 	return nil, nil
 }
@@ -65,9 +68,14 @@ func (*recordingQueue) CompleteOutbound(routing.SessionID, mqtt.PacketIdentifier
 	return nil
 }
 
+type retainedDelete struct {
+	tenantID tenancy.TenantID
+	topic    string
+}
+
 type recordingRetainedRepository struct {
 	replaces   []applicationretained.MessageDTO
-	deletes    []string
+	deletes    []retainedDelete
 	replaceErr error
 	deleteErr  error
 }
@@ -81,11 +89,11 @@ func (repository *recordingRetainedRepository) Replace(message applicationretain
 	return nil
 }
 
-func (repository *recordingRetainedRepository) Delete(topic string) error {
+func (repository *recordingRetainedRepository) Delete(tenantID tenancy.TenantID, topic string) error {
 	if repository.deleteErr != nil {
 		return repository.deleteErr
 	}
-	repository.deletes = append(repository.deletes, topic)
+	repository.deletes = append(repository.deletes, retainedDelete{tenantID: tenantID, topic: topic})
 	return nil
 }
 
@@ -331,6 +339,16 @@ func TestPublishRejectsInvalidTopicBeforeQueue(t *testing.T) {
 // Traceability: PRD MQTT-04/MQTT-08/TEST-04/05; docs/specs/mqtt-protocol-and-session.md §5; MQTT-3.3.1-5/6/7.
 func TestPublishRetainedReplaceDeleteAndNonRetainedNoop(t *testing.T) {
 	routes := routing.NewTable()
+	tenantID, err := tenancy.NewTenantID("tenant-a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := routes.BindSessionTenant("publisher", tenantID); err != nil {
+		t.Fatal(err)
+	}
+	if err := routes.BindSessionTenant("subscriber", tenantID); err != nil {
+		t.Fatal(err)
+	}
 	if _, err := routes.Subscribe("subscriber", mqtt.Subscription{Filter: "sensors/#", QoS: mqtt.QoSAtMostOnce, RetainAsPublished: true}); err != nil {
 		t.Fatal(err)
 	}
@@ -345,8 +363,9 @@ func TestPublishRetainedReplaceDeleteAndNonRetainedNoop(t *testing.T) {
 		t.Fatal(err)
 	}
 	payload[0] = 'X'
-	if len(retainedRepository.replaces) != 1 || string(retainedRepository.replaces[0].Payload) != "old" || retainedRepository.replaces[0].PublisherSessionID != "publisher" {
-		t.Fatalf("retained replaces = %#v, want owned old value", retainedRepository.replaces)
+	if len(retainedRepository.replaces) != 1 || string(retainedRepository.replaces[0].Payload) != "old" ||
+		retainedRepository.replaces[0].PublisherSessionID != "publisher" || retainedRepository.replaces[0].TenantID != tenantID {
+		t.Fatalf("retained replaces = %#v, want owned tenant-scoped old value", retainedRepository.replaces)
 	}
 	if len(queue.deliveries) != 1 || !queue.deliveries[0].Retain {
 		t.Fatalf("live retained delivery = %#v, want RETAIN=true", queue.deliveries)
@@ -360,8 +379,8 @@ func TestPublishRetainedReplaceDeleteAndNonRetainedNoop(t *testing.T) {
 	if _, err := useCase.Publish("publisher", mqtt.Publish{Version: mqtt.ProtocolV5, QoS: mqtt.QoSAtMostOnce, Retain: true, Topic: "sensors/state"}, testNow()); err != nil {
 		t.Fatal(err)
 	}
-	if !reflect.DeepEqual(retainedRepository.deletes, []string{"sensors/state"}) {
-		t.Fatalf("retained deletes = %#v, want exact topic", retainedRepository.deletes)
+	if !reflect.DeepEqual(retainedRepository.deletes, []retainedDelete{{tenantID: tenantID, topic: "sensors/state"}}) {
+		t.Fatalf("retained deletes = %#v, want exact tenant and topic", retainedRepository.deletes)
 	}
 	if len(queue.deliveries) != 3 || !queue.deliveries[2].Retain || len(queue.deliveries[2].Payload) != 0 {
 		t.Fatalf("zero-byte live delivery = %#v, want retained empty publication", queue.deliveries[2:])
@@ -505,7 +524,7 @@ func TestPublishStoresOneAbsoluteExpiryDeadlineAndAcceptsExpiredPublication(t *t
 	if len(result.Delivered) != 0 || len(result.Saturated) != 0 || len(result.Unavailable) != 0 {
 		t.Fatalf("expired result = %#v, want accepted without delivery", result)
 	}
-	if !reflect.DeepEqual(repository.deletes, []string{"events/state"}) {
+	if !reflect.DeepEqual(repository.deletes, []retainedDelete{{topic: "events/state"}}) {
 		t.Fatalf("expired retained deletes = %#v, want topic deletion", repository.deletes)
 	}
 }

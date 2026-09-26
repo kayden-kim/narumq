@@ -34,7 +34,7 @@ func newBackupHTTPTestHandler(provider ports.ClusterBackupProvider, role Role) h
 }
 
 func TestClusterBackupHTTPStreamsArchiveAndBoundaryHeaders(t *testing.T) {
-	framed := []byte("NMQBKUP1\x00fixture")
+	framed := []byte("NMQBKUP2\x00fixture")
 	checksum := sha256.Sum256(framed)
 	archive := append(append([]byte(nil), framed...), checksum[:]...)
 	provider := &clusterBackupProviderStub{backup: ports.ClusterBackupDTO{
@@ -60,7 +60,7 @@ func TestClusterBackupHTTPStreamsArchiveAndBoundaryHeaders(t *testing.T) {
 	if got := response.Header().Get("X-Narumq-Backup-Commit-Index"); got != "42" {
 		t.Fatalf("commit index header=%q", got)
 	}
-	if got := response.Header().Get("X-Narumq-Backup-SHA256"); got != "a721cb2d4f588700cce033e62b9388fba5618db45dc5620c0b51d54a6153d81a" {
+	if got := response.Header().Get("X-Narumq-Backup-SHA256"); got != "4fad4467470fe92dd25a91fea286ec44502af592942608b5257bfcd97e9617af" {
 		t.Fatalf("archive checksum header=%q", got)
 	}
 	if got := response.Header().Get("Content-Length"); got != strconv.Itoa(len(archive)) {

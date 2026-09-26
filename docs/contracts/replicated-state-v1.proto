@@ -4,8 +4,9 @@ package narumq.cluster.v1;
 
 option go_package = "narumq/internal/adapters/raft/records;records";
 
-// Draft wire contract. Implementations must reject unknown fields until a
-// reviewed schema minor and its compatibility matrix are published.
+// Draft state schema 1.0 rejects unknown fields. Mixed-release membership is
+// unsupported; retained and offline commands are admitted only when every active committed
+// member's exact release, cluster protocol, and state schema match locally.
 
 enum MemberPhase {
   MEMBER_PHASE_UNSPECIFIED = 0;
@@ -40,6 +41,19 @@ enum SubscriptionAction {
   SUBSCRIPTION_ACTION_REMOVE = 2;
 }
 
+enum RetainedAction {
+  RETAINED_ACTION_UNSPECIFIED = 0;
+  RETAINED_ACTION_REPLACE = 1;
+  RETAINED_ACTION_DELETE = 2;
+}
+
+enum OfflineAction {
+  OFFLINE_ACTION_UNSPECIFIED = 0;
+  OFFLINE_ACTION_DETACH = 1;
+  OFFLINE_ACTION_ENQUEUE = 2;
+  OFFLINE_ACTION_CLAIM = 3;
+}
+
 enum InboundDeliveryPhase {
   INBOUND_PHASE_UNSPECIFIED = 0;
   INBOUND_QOS1_AWAIT_ACCEPTANCE = 1;
@@ -69,6 +83,8 @@ message CommandEnvelope {
     OwnershipChange ownership = 11;
     SubscriptionChange subscription = 12;
     SessionCheckpoint checkpoint = 13;
+    RetainedChange retained = 14;
+    OfflineChange offline = 15;
   }
 }
 
@@ -166,6 +182,59 @@ message SessionCheckpoint {
   repeated OutboundCheckpoint outbound = 6;
 }
 
+// Retained values are keyed by (tenant_id, topic). Timestamps are proposer Unix
+// milliseconds; apply purges values with 0 < expires_at <= proposed_at.
+message RetainedChange {
+  string tenant_id = 1;
+  string topic = 2;
+  string publisher_client_id = 3;
+  uint32 qos = 4;
+  bytes payload = 5;
+  uint64 expires_at_unix_millis = 6;
+  uint64 proposed_at_unix_millis = 7;
+  RetainedAction action = 8;
+}
+
+message RetainedState {
+  string tenant_id = 1;
+  string topic = 2;
+  string publisher_client_id = 3;
+  uint32 qos = 4;
+  bytes payload = 5;
+  uint64 expires_at_unix_millis = 6;
+}
+
+// Offline entries belong to detached persistent sessions keyed by (tenant_id, client_id).
+// Timestamps are proposer Unix milliseconds; apply purges 0 < expires_at <= proposed_at.
+message OfflineMessage {
+  uint64 sequence = 1;
+  string topic = 2;
+  bytes payload = 3;
+  uint32 qos = 4;
+  bool retain = 5;
+  uint64 expires_at_unix_millis = 6;
+}
+
+message OfflineChange {
+  string tenant_id = 1;
+  string client_id = 2;
+  uint64 owner_node_id = 3;
+  uint64 epoch = 4;
+  OfflineAction action = 5;
+  uint64 session_expires_at_unix_millis = 6;
+  uint64 proposed_at_unix_millis = 7;
+  repeated OfflineMessage messages = 8;
+}
+
+message OfflineSessionState {
+  string tenant_id = 1;
+  string client_id = 2;
+  uint64 epoch = 3;
+  uint64 session_expires_at_unix_millis = 4;
+  uint64 next_sequence = 5;
+  repeated OfflineMessage messages = 6;
+}
+
 message SubscriptionState {
   string tenant_id = 1;
   string client_id = 2;
@@ -184,6 +253,8 @@ message ReplicatedStateSnapshot {
   repeated SubscriptionState subscriptions = 3;
   repeated SessionCheckpoint checkpoints = 4;
   repeated MembershipRecord membership_history = 5;
+  repeated RetainedState retained = 6;
+  repeated OfflineSessionState offline_sessions = 7;
 }
 
 message SnapshotEnvelope {

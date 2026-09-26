@@ -291,8 +291,12 @@ func (useCase *UseCase) retainedBatch(sessionID routing.SessionID, subscription 
 	if err != nil {
 		return nil, err
 	}
+	subscriberTenant := useCase.routes.SessionTenant(sessionID)
 	batch := make([]deliveryqueue.DeliveryDTO, 0, len(messages))
 	for _, message := range messages {
+		if message.TenantID != subscriberTenant {
+			continue
+		}
 		matched, err := routing.TopicMatchesFilter(message.Topic, subscription.Filter)
 		if err != nil {
 			return nil, err

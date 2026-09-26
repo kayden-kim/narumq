@@ -68,6 +68,47 @@ func encodeMembershipCommand(command membership.CommandDTO) ([]byte, error) {
 		}
 		wire.Payload = &records.CommandEnvelope_Checkpoint{Checkpoint: checkpoint}
 	}
+	if command.Retained != nil {
+		payloadCount++
+		action, err := retainedActionToRecord(command.Retained.Action)
+		if err != nil {
+			return nil, err
+		}
+		wire.Payload = &records.CommandEnvelope_Retained{Retained: &records.RetainedChange{
+			TenantId: command.Retained.TenantID, Topic: command.Retained.Topic,
+			PublisherClientId: command.Retained.PublisherClientID, Qos: command.Retained.QoS,
+			Payload: command.Retained.Payload, ExpiresAtUnixMillis: command.Retained.ExpiresAtUnixMillis,
+			ProposedAtUnixMillis: command.Retained.ProposedAtUnixMillis, Action: action,
+		}}
+	}
+	if command.Offline != nil {
+		payloadCount++
+		action, err := offlineActionToRecord(command.Offline.Action)
+		if err != nil {
+			return nil, err
+		}
+		messages := make([]*records.OfflineMessage, 0, len(command.Offline.Messages))
+		for _, msg := range command.Offline.Messages {
+			messages = append(messages, &records.OfflineMessage{
+				Sequence:            msg.Sequence,
+				Topic:               msg.Topic,
+				Payload:             msg.Payload,
+				Qos:                 msg.QoS,
+				Retain:              msg.Retain,
+				ExpiresAtUnixMillis: msg.ExpiresAtUnixMillis,
+			})
+		}
+		wire.Payload = &records.CommandEnvelope_Offline{Offline: &records.OfflineChange{
+			TenantId:                   command.Offline.TenantID,
+			ClientId:                   command.Offline.ClientID,
+			OwnerNodeId:                command.Offline.OwnerNodeID,
+			Epoch:                      command.Offline.Epoch,
+			Action:                     action,
+			SessionExpiresAtUnixMillis: command.Offline.SessionExpiresAtUnixMillis,
+			ProposedAtUnixMillis:       command.Offline.ProposedAtUnixMillis,
+			Messages:                   messages,
+		}}
+	}
 	if payloadCount != 1 {
 		return nil, errors.New("application command must contain exactly one payload")
 	}
@@ -128,6 +169,44 @@ func decodeMembershipCommand(data []byte) (membership.CommandDTO, error) {
 			return membership.CommandDTO{}, err
 		}
 		command.Checkpoint = checkpoint
+	case *records.CommandEnvelope_Retained:
+		value := payload.Retained
+		action, err := retainedActionFromRecord(value.GetAction())
+		if err != nil {
+			return membership.CommandDTO{}, err
+		}
+		command.Retained = &membership.RetainedChangeDTO{
+			TenantID: value.GetTenantId(), Topic: value.GetTopic(), PublisherClientID: value.GetPublisherClientId(),
+			QoS: value.GetQos(), Payload: value.GetPayload(), ExpiresAtUnixMillis: value.GetExpiresAtUnixMillis(),
+			ProposedAtUnixMillis: value.GetProposedAtUnixMillis(), Action: action,
+		}
+	case *records.CommandEnvelope_Offline:
+		value := payload.Offline
+		action, err := offlineActionFromRecord(value.GetAction())
+		if err != nil {
+			return membership.CommandDTO{}, err
+		}
+		messages := make([]membership.OfflineMessageDTO, 0, len(value.GetMessages()))
+		for _, msg := range value.GetMessages() {
+			messages = append(messages, membership.OfflineMessageDTO{
+				Sequence:            msg.GetSequence(),
+				Topic:               msg.GetTopic(),
+				Payload:             msg.GetPayload(),
+				QoS:                 msg.GetQos(),
+				Retain:              msg.GetRetain(),
+				ExpiresAtUnixMillis: msg.GetExpiresAtUnixMillis(),
+			})
+		}
+		command.Offline = &membership.OfflineChangeDTO{
+			TenantID:                   value.GetTenantId(),
+			ClientID:                   value.GetClientId(),
+			OwnerNodeID:                value.GetOwnerNodeId(),
+			Epoch:                      value.GetEpoch(),
+			Action:                     action,
+			SessionExpiresAtUnixMillis: value.GetSessionExpiresAtUnixMillis(),
+			ProposedAtUnixMillis:       value.GetProposedAtUnixMillis(),
+			Messages:                   messages,
+		}
 	default:
 		return membership.CommandDTO{}, errors.New("decoded command has no supported payload")
 	}
@@ -186,7 +265,36 @@ func encodeMembershipSnapshot(snapshot membership.SnapshotDTO) ([]byte, error) {
 			ExpectedConfStateIndex: record.ExpectedConfStateIndex, CommittedIndex: record.CommittedIndex,
 		})
 	}
-	objectCount := uint64(len(snapshot.Members) + len(snapshot.Ownerships) + len(snapshot.Subscriptions) + len(snapshot.Checkpoints) + len(snapshot.MembershipHistory))
+	for _, retained := range snapshot.Retained {
+		state.Retained = append(state.Retained, &records.RetainedState{
+			TenantId: retained.TenantID, Topic: retained.Topic, PublisherClientId: retained.PublisherClientID,
+			Qos: retained.QoS, Payload: retained.Payload, ExpiresAtUnixMillis: retained.ExpiresAtUnixMillis,
+		})
+	}
+	offlineMessagesCount := 0
+	for _, session := range snapshot.OfflineSessions {
+		messages := make([]*records.OfflineMessage, 0, len(session.Messages))
+		for _, msg := range session.Messages {
+			messages = append(messages, &records.OfflineMessage{
+				Sequence:            msg.Sequence,
+				Topic:               msg.Topic,
+				Payload:             msg.Payload,
+				Qos:                 msg.QoS,
+				Retain:              msg.Retain,
+				ExpiresAtUnixMillis: msg.ExpiresAtUnixMillis,
+			})
+		}
+		offlineMessagesCount += len(session.Messages)
+		state.OfflineSessions = append(state.OfflineSessions, &records.OfflineSessionState{
+			TenantId:                   session.TenantID,
+			ClientId:                   session.ClientID,
+			Epoch:                      session.Epoch,
+			SessionExpiresAtUnixMillis: session.SessionExpiresAtUnixMillis,
+			NextSequence:               session.NextSequence,
+			Messages:                   messages,
+		})
+	}
+	objectCount := uint64(len(snapshot.Members) + len(snapshot.Ownerships) + len(snapshot.Subscriptions) + len(snapshot.Checkpoints) + len(snapshot.MembershipHistory) + len(snapshot.Retained) + len(snapshot.OfflineSessions) + offlineMessagesCount)
 	if snapshot.ObjectCount != objectCount {
 		return nil, errors.New("application snapshot object count does not match its contents")
 	}
@@ -262,7 +370,61 @@ func decodeMembershipSnapshot(data []byte) (membership.SnapshotDTO, error) {
 			ExpectedConfStateIndex: record.GetExpectedConfStateIndex(), CommittedIndex: record.GetCommittedIndex(),
 		})
 	}
+	for _, retained := range state.GetRetained() {
+		snapshot.Retained = append(snapshot.Retained, membership.RetainedStateDTO{
+			TenantID: retained.GetTenantId(), Topic: retained.GetTopic(),
+			PublisherClientID: retained.GetPublisherClientId(), QoS: retained.GetQos(),
+			Payload: retained.GetPayload(), ExpiresAtUnixMillis: retained.GetExpiresAtUnixMillis(),
+		})
+	}
+	for _, session := range state.GetOfflineSessions() {
+		messages := make([]membership.OfflineMessageDTO, 0, len(session.GetMessages()))
+		for _, msg := range session.GetMessages() {
+			messages = append(messages, membership.OfflineMessageDTO{
+				Sequence:            msg.GetSequence(),
+				Topic:               msg.GetTopic(),
+				Payload:             msg.GetPayload(),
+				QoS:                 msg.GetQos(),
+				Retain:              msg.GetRetain(),
+				ExpiresAtUnixMillis: msg.GetExpiresAtUnixMillis(),
+			})
+		}
+		snapshot.OfflineSessions = append(snapshot.OfflineSessions, membership.OfflineSessionStateDTO{
+			TenantID:                   session.GetTenantId(),
+			ClientID:                   session.GetClientId(),
+			Epoch:                      session.GetEpoch(),
+			SessionExpiresAtUnixMillis: session.GetSessionExpiresAtUnixMillis(),
+			NextSequence:               session.GetNextSequence(),
+			Messages:                   messages,
+		})
+	}
 	return snapshot, nil
+}
+
+func offlineActionToRecord(action membership.OfflineAction) (records.OfflineAction, error) {
+	switch action {
+	case membership.OfflineActionDetach:
+		return records.OfflineAction_OFFLINE_ACTION_DETACH, nil
+	case membership.OfflineActionEnqueue:
+		return records.OfflineAction_OFFLINE_ACTION_ENQUEUE, nil
+	case membership.OfflineActionClaim:
+		return records.OfflineAction_OFFLINE_ACTION_CLAIM, nil
+	default:
+		return 0, fmt.Errorf("unsupported offline action %d", action)
+	}
+}
+
+func offlineActionFromRecord(action records.OfflineAction) (membership.OfflineAction, error) {
+	switch action {
+	case records.OfflineAction_OFFLINE_ACTION_DETACH:
+		return membership.OfflineActionDetach, nil
+	case records.OfflineAction_OFFLINE_ACTION_ENQUEUE:
+		return membership.OfflineActionEnqueue, nil
+	case records.OfflineAction_OFFLINE_ACTION_CLAIM:
+		return membership.OfflineActionClaim, nil
+	default:
+		return 0, fmt.Errorf("unsupported offline action %d", action)
+	}
 }
 
 func memberIdentityToRecord(member *membership.MemberIdentityDTO) (*records.MemberIdentity, error) {
@@ -353,6 +515,20 @@ func subscriptionActionFromRecord(action records.SubscriptionAction) (membership
 		return 0, fmt.Errorf("unsupported subscription action %d", action)
 	}
 	return membership.SubscriptionAction(action), nil
+}
+
+func retainedActionToRecord(action membership.RetainedAction) (records.RetainedAction, error) {
+	if action < membership.RetainedActionReplace || action > membership.RetainedActionDelete {
+		return 0, fmt.Errorf("unsupported retained action %d", action)
+	}
+	return records.RetainedAction(action), nil
+}
+
+func retainedActionFromRecord(action records.RetainedAction) (membership.RetainedAction, error) {
+	if action < records.RetainedAction_RETAINED_ACTION_REPLACE || action > records.RetainedAction_RETAINED_ACTION_DELETE {
+		return 0, fmt.Errorf("unsupported retained action %d", action)
+	}
+	return membership.RetainedAction(action), nil
 }
 
 func inboundPhaseToRecord(phase membership.InboundDeliveryPhase) (records.InboundDeliveryPhase, error) {

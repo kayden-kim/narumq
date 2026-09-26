@@ -411,3 +411,79 @@ func TestQueueUnavailableAndInvalidOperations(t *testing.T) {
 		t.Fatalf("re-register nil outbound map = %v", err)
 	}
 }
+
+// Traceability: PRD MQTT-11/TEST-04/05; docs/specs/cluster-session-and-delivery.md §4.1, §11.9.
+func TestListQueuedReturnsLiveFIFOCopiesWithoutMutation(t *testing.T) {
+	now := testNow()
+	var nilQueue *Queue
+	if _, err := nilQueue.ListQueued("session-1", now); !errors.Is(err, applicationdeliveryqueue.ErrUnavailable) {
+		t.Fatalf("nilQueue.ListQueued() error = %v, want unavailable", err)
+	}
+
+	queue, err := New(10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := queue.ListQueued("", now); !errors.Is(err, routing.ErrInvalidSessionID) {
+		t.Fatalf("queue.ListQueued(\"\") error = %v, want invalid session id", err)
+	}
+	if _, err := queue.ListQueued("missing", now); !errors.Is(err, applicationdeliveryqueue.ErrUnavailable) {
+		t.Fatalf("queue.ListQueued(missing) error = %v, want unavailable", err)
+	}
+
+	sessionID := routing.SessionID("session-live")
+	if err := queue.Register(sessionID); err != nil {
+		t.Fatal(err)
+	}
+
+	deliveries := []applicationdeliveryqueue.DeliveryDTO{
+		{SessionID: sessionID, Topic: "topic/1", Payload: []byte("payload-1"), QoS: mqtt.QoSAtMostOnce},
+		{SessionID: sessionID, Topic: "topic/2", Payload: []byte("payload-2"), QoS: mqtt.QoSAtMostOnce, ExpiresAt: now.Add(time.Minute)},
+		{SessionID: sessionID, Topic: "topic/3", Payload: []byte("payload-3"), QoS: mqtt.QoSAtMostOnce},
+	}
+	if err := queue.TryEnqueueBatch(deliveries, now); err != nil {
+		t.Fatalf("TryEnqueueBatch() error = %v", err)
+	}
+
+	listed, err := queue.ListQueued(sessionID, now)
+	if err != nil {
+		t.Fatalf("ListQueued() error = %v", err)
+	}
+	if len(listed) != 3 {
+		t.Fatalf("len(listed) = %d, want 3 before expiry", len(listed))
+	}
+	if listed[0].Topic != "topic/1" || string(listed[0].Payload) != "payload-1" {
+		t.Fatalf("listed[0] = %#v, want topic/1", listed[0])
+	}
+	if listed[1].Topic != "topic/2" || string(listed[1].Payload) != "payload-2" {
+		t.Fatalf("listed[1] = %#v, want topic/2", listed[1])
+	}
+	if listed[2].Topic != "topic/3" || string(listed[2].Payload) != "payload-3" {
+		t.Fatalf("listed[2] = %#v, want topic/3", listed[2])
+	}
+
+	// A later read filters an expired entry but leaves the queue untouched.
+	listedLater, err := queue.ListQueued(sessionID, now.Add(2*time.Minute))
+	if err != nil {
+		t.Fatalf("ListQueued() after expiry: %v", err)
+	}
+	if len(listedLater) != 2 || listedLater[0].Topic != "topic/1" || listedLater[1].Topic != "topic/3" {
+		t.Fatalf("ListQueued() after expiry = %#v, want topic/1 then topic/3", listedLater)
+	}
+	if len(queue.sessions[sessionID].queued) != 3 {
+		t.Fatalf("ListQueued() mutated queue length to %d, want 3", len(queue.sessions[sessionID].queued))
+	}
+
+	// Mutate a returned payload: it must not affect queue state.
+	listed[0].Payload[0] = 'X'
+	peeked, ok, err := queue.Peek(sessionID, now)
+	if err != nil || !ok {
+		t.Fatalf("Peek() after ListQueued = %#v, %v, %v", peeked, ok, err)
+	}
+	if string(peeked.Payload) != "payload-1" {
+		t.Fatalf("Peek payload mutated: got %s, want payload-1", string(peeked.Payload))
+	}
+	if peeked.Topic != "topic/1" {
+		t.Fatalf("Peek topic = %s, want topic/1", peeked.Topic)
+	}
+}

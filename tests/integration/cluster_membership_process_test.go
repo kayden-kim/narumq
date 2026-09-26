@@ -10,6 +10,7 @@ import (
 	"crypto/sha256"
 	"crypto/x509"
 	"crypto/x509/pkix"
+	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
 	"encoding/pem"
@@ -123,7 +124,17 @@ func newClusterMembershipProcessFixture(t *testing.T, nodeCount int, buildTags s
     "subject": "mqtt-process-client",
     "tenantId": "acceptance",
     "credentialId": "mqtt-process-client-credential",
-    "allowedClientIds": ["ready-connection-client", "handoff-client"],
+    "allowedClientIds": [
+      "ready-connection-client",
+      "handoff-client",
+      "retained-publisher",
+      "retained-subscriber-source",
+      "retained-subscriber-restored",
+      "retained-subscriber-restarted",
+      "retained-subscriber-joiner",
+      "offline-subscriber",
+      "offline-publisher"
+    ],
     "roles": ["client"]
   }],
   "acl": [{
@@ -132,6 +143,30 @@ func newClusterMembershipProcessFixture(t *testing.T, nodeCount int, buildTags s
     "effect": "allow",
     "action": "subscribe",
     "topicFilter": "handoff/#"
+  }, {
+    "tenantId": "acceptance",
+    "role": "client",
+    "effect": "allow",
+    "action": "publish",
+    "topicFilter": "retained/#"
+  }, {
+    "tenantId": "acceptance",
+    "role": "client",
+    "effect": "allow",
+    "action": "subscribe",
+    "topicFilter": "retained/#"
+  }, {
+    "tenantId": "acceptance",
+    "role": "client",
+    "effect": "allow",
+    "action": "publish",
+    "topicFilter": "offline/#"
+  }, {
+    "tenantId": "acceptance",
+    "role": "client",
+    "effect": "allow",
+    "action": "subscribe",
+    "topicFilter": "offline/#"
   }]
 }`, jwksURL))
 	clusterMembershipProcessWriteFile(t, securityPath, securityConfig, 0o600)
@@ -1499,6 +1534,58 @@ func clusterMembershipProcessTryOpenSubscribedSession(address, accessToken, clie
 	return connection, nil
 }
 
+func clusterMembershipProcessReconnectSession(t *testing.T, address, accessToken, clientID string) (net.Conn, bool) {
+	t.Helper()
+	deadline := time.Now().Add(10 * time.Second)
+	var lastErr error
+	for time.Now().Before(deadline) {
+		conn, present, err := clusterMembershipProcessTryReconnectSession(address, accessToken, clientID)
+		if err == nil {
+			return conn, present
+		}
+		lastErr = err
+		time.Sleep(100 * time.Millisecond)
+	}
+	t.Fatalf("reconnect session to %s timed out: %v", address, lastErr)
+	return nil, false
+}
+
+func clusterMembershipProcessTryReconnectSession(address, accessToken, clientID string) (net.Conn, bool, error) {
+	connection, err := net.DialTimeout("tcp", address, 2*time.Second)
+	if err != nil {
+		return nil, false, fmt.Errorf("dial: %w", err)
+	}
+	_ = connection.SetDeadline(time.Now().Add(3 * time.Second))
+
+	// CONNECT packet (MQTT 3.1.1, clean session 0, username + password => flags 0xC0)
+	body := []byte{0, 4, 'M', 'Q', 'T', 'T', 4, 0xC0, 0, 60}
+	for _, field := range []string{clientID, "jwt", accessToken} {
+		body = append(body, byte(len(field)>>8), byte(len(field)))
+		body = append(body, field...)
+	}
+	packet := clusterMembershipProcessEncodeMQTTPacket(0x10, body)
+	if _, err := connection.Write(packet); err != nil {
+		_ = connection.Close()
+		return nil, false, fmt.Errorf("send CONNECT: %w", err)
+	}
+	var connackHeader [2]byte
+	if _, err := io.ReadFull(connection, connackHeader[:]); err != nil {
+		_ = connection.Close()
+		return nil, false, fmt.Errorf("read CONNACK header: %w", err)
+	}
+	var connackBody [2]byte
+	if _, err := io.ReadFull(connection, connackBody[:]); err != nil {
+		_ = connection.Close()
+		return nil, false, fmt.Errorf("read CONNACK body: %w", err)
+	}
+	if connackHeader != [2]byte{0x20, 2} || connackBody[1] != 0 {
+		_ = connection.Close()
+		return nil, false, fmt.Errorf("unexpected CONNACK: %x %x", connackHeader, connackBody)
+	}
+	_ = connection.SetDeadline(time.Time{})
+	return connection, (connackBody[0] & 1) != 0, nil
+}
+
 func clusterMembershipProcessAssertConnectionClosed(t *testing.T, conn net.Conn, timeout time.Duration) {
 	t.Helper()
 	_ = conn.SetReadDeadline(time.Now().Add(timeout))
@@ -1577,4 +1664,191 @@ func clusterMembershipProcessWaitForRouteProjection(t *testing.T, ctx context.Co
 		}
 		return true, "all nodes agree on route projection", nil
 	})
+}
+
+func clusterMembershipProcessPublish(t *testing.T, address, accessToken, clientID, topic string, payload []byte) {
+	t.Helper()
+	clusterMembershipProcessPublishWithRetain(t, address, accessToken, clientID, topic, payload, false)
+}
+
+func clusterMembershipProcessPublishRetained(t *testing.T, address, accessToken, clientID, topic string, payload []byte) {
+	t.Helper()
+	clusterMembershipProcessPublishWithRetain(t, address, accessToken, clientID, topic, payload, true)
+}
+
+func clusterMembershipProcessPublishWithRetain(t *testing.T, address, accessToken, clientID, topic string, payload []byte, retain bool) {
+	t.Helper()
+	deadline := time.Now().Add(10 * time.Second)
+	var lastErr error
+	for time.Now().Before(deadline) {
+		err := clusterMembershipProcessTryPublishWithRetain(address, accessToken, clientID, topic, payload, retain)
+		if err == nil {
+			return
+		}
+		lastErr = err
+		time.Sleep(100 * time.Millisecond)
+	}
+	t.Fatalf("publish to %s timed out: %v", address, lastErr)
+}
+
+func clusterMembershipProcessTryPublishWithRetain(address, accessToken, clientID, topic string, payload []byte, retain bool) error {
+	connection, err := net.DialTimeout("tcp", address, 2*time.Second)
+	if err != nil {
+		return fmt.Errorf("dial: %w", err)
+	}
+	defer connection.Close()
+	_ = connection.SetDeadline(time.Now().Add(3 * time.Second))
+
+	connectBody := []byte{0, 4, 'M', 'Q', 'T', 'T', 4, 0xC2, 0, 60}
+	for _, field := range []string{clientID, "jwt", accessToken} {
+		connectBody = append(connectBody, byte(len(field)>>8), byte(len(field)))
+		connectBody = append(connectBody, field...)
+	}
+	if _, err := connection.Write(clusterMembershipProcessEncodeMQTTPacket(0x10, connectBody)); err != nil {
+		return fmt.Errorf("send CONNECT: %w", err)
+	}
+	header, body, err := clusterMembershipProcessReadMQTTPacket(connection)
+	if err != nil || header != 0x20 || !bytes.Equal(body, []byte{0, 0}) {
+		return fmt.Errorf("publisher CONNACK = (%x, %x), error %v", header, body, err)
+	}
+
+	if len(topic) > 0xffff {
+		return fmt.Errorf("topic length %d exceeds MQTT string limit", len(topic))
+	}
+	publishBody := []byte{byte(len(topic) >> 8), byte(len(topic))}
+	publishBody = append(publishBody, topic...)
+	publishBody = append(publishBody, payload...)
+	publishHeader := byte(0x30)
+	if retain {
+		publishHeader = 0x31
+	}
+	if _, err := connection.Write(clusterMembershipProcessEncodeMQTTPacket(publishHeader, publishBody)); err != nil {
+		return fmt.Errorf("send PUBLISH %q: %w", topic, err)
+	}
+	if _, err := connection.Write([]byte{0xC0, 0}); err != nil {
+		return fmt.Errorf("send PINGREQ: %w", err)
+	}
+	header, body, err = clusterMembershipProcessReadMQTTPacket(connection)
+	if err != nil || header != 0xD0 || len(body) != 0 {
+		return fmt.Errorf("publisher PINGRESP = (%x, %x), error %v", header, body, err)
+	}
+	if _, err := connection.Write([]byte{0xE0, 0}); err != nil && !clusterMembershipProcessIsClosed(err) {
+		return fmt.Errorf("send DISCONNECT: %w", err)
+	}
+	return nil
+}
+
+func clusterMembershipProcessReadRetained(t *testing.T, connection net.Conn, want int) map[string]string {
+	t.Helper()
+	values := make(map[string]string, want)
+	for len(values) < want {
+		_ = connection.SetReadDeadline(time.Now().Add(5 * time.Second))
+		header, body, err := clusterMembershipProcessReadMQTTPacket(connection)
+		if err != nil {
+			t.Fatalf("read retained PUBLISH %d/%d: %v", len(values)+1, want, err)
+		}
+		if header != 0x31 || len(body) < 2 {
+			t.Fatalf("retained PUBLISH header/body = %02x/%x, want QoS 0 RETAIN", header, body)
+		}
+		topicLength := int(binary.BigEndian.Uint16(body[:2]))
+		if topicLength == 0 || topicLength > len(body)-2 {
+			t.Fatalf("retained PUBLISH topic length %d exceeds body length %d", topicLength, len(body))
+		}
+		topic := string(body[2 : 2+topicLength])
+		if _, exists := values[topic]; exists {
+			t.Fatalf("duplicate retained PUBLISH for topic %q", topic)
+		}
+		values[topic] = string(body[2+topicLength:])
+	}
+
+	_ = connection.SetReadDeadline(time.Now().Add(500 * time.Millisecond))
+	if header, body, err := clusterMembershipProcessReadMQTTPacket(connection); err == nil {
+		t.Fatalf("unexpected MQTT packet after retained replay: header=%02x body=%x", header, body)
+	} else {
+		var networkError net.Error
+		if !errors.As(err, &networkError) || !networkError.Timeout() {
+			t.Fatalf("retained replay connection ended instead of remaining idle: %v", err)
+		}
+	}
+	_ = connection.SetReadDeadline(time.Time{})
+	return values
+}
+
+func clusterMembershipProcessReadPublishes(t *testing.T, connection net.Conn, want int) [][2]string {
+	t.Helper()
+	var values [][2]string
+	for len(values) < want {
+		_ = connection.SetReadDeadline(time.Now().Add(5 * time.Second))
+		header, body, err := clusterMembershipProcessReadMQTTPacket(connection)
+		if err != nil {
+			t.Fatalf("read PUBLISH %d/%d: %v", len(values)+1, want, err)
+		}
+		if header != 0x30 || len(body) < 2 {
+			t.Fatalf("PUBLISH header/body = %02x/%x, want QoS 0, retain 0", header, body)
+		}
+		topicLength := int(binary.BigEndian.Uint16(body[:2]))
+		if topicLength == 0 || topicLength > len(body)-2 {
+			t.Fatalf("PUBLISH topic length %d exceeds body length %d", topicLength, len(body))
+		}
+		topic := string(body[2 : 2+topicLength])
+		payload := string(body[2+topicLength:])
+		values = append(values, [2]string{topic, payload})
+	}
+
+	_ = connection.SetReadDeadline(time.Now().Add(500 * time.Millisecond))
+	if header, body, err := clusterMembershipProcessReadMQTTPacket(connection); err == nil {
+		t.Fatalf("unexpected MQTT packet after publishes: header=%02x body=%x", header, body)
+	} else {
+		var networkError net.Error
+		if !errors.As(err, &networkError) || !networkError.Timeout() {
+			t.Fatalf("connection ended instead of remaining idle: %v", err)
+		}
+	}
+	_ = connection.SetReadDeadline(time.Time{})
+	return values
+}
+
+func clusterMembershipProcessEncodeMQTTPacket(header byte, body []byte) []byte {
+	packet := []byte{header}
+	remaining := len(body)
+	for {
+		digit := byte(remaining % 128)
+		remaining /= 128
+		if remaining > 0 {
+			digit |= 0x80
+		}
+		packet = append(packet, digit)
+		if remaining == 0 {
+			break
+		}
+	}
+	return append(packet, body...)
+}
+
+func clusterMembershipProcessReadMQTTPacket(connection net.Conn) (byte, []byte, error) {
+	var header [1]byte
+	if _, err := io.ReadFull(connection, header[:]); err != nil {
+		return 0, nil, err
+	}
+	remaining, multiplier, complete := 0, 1, false
+	for range 4 {
+		var encoded [1]byte
+		if _, err := io.ReadFull(connection, encoded[:]); err != nil {
+			return 0, nil, err
+		}
+		remaining += int(encoded[0]&0x7f) * multiplier
+		if encoded[0]&0x80 == 0 {
+			complete = true
+			break
+		}
+		multiplier *= 128
+	}
+	if !complete {
+		return 0, nil, errors.New("MQTT remaining length uses more than four bytes")
+	}
+	body := make([]byte, remaining)
+	if _, err := io.ReadFull(connection, body); err != nil {
+		return 0, nil, err
+	}
+	return header[0], body, nil
 }

@@ -123,14 +123,19 @@ func (coordinator *fakeOwnershipCoordinator) AcquireOwnership(
 }
 
 type fakeDeliveryQueue struct {
-	registered  map[routing.SessionID]bool
-	registerErr error
-	registers   []routing.SessionID
-	removes     []routing.SessionID
+	registered    map[routing.SessionID]bool
+	registerErr   error
+	registers     []routing.SessionID
+	removes       []routing.SessionID
+	queued        map[routing.SessionID][]deliveryqueue.DeliveryDTO
+	listQueuedErr error
 }
 
 func newFakeDeliveryQueue() *fakeDeliveryQueue {
-	return &fakeDeliveryQueue{registered: make(map[routing.SessionID]bool)}
+	return &fakeDeliveryQueue{
+		registered: make(map[routing.SessionID]bool),
+		queued:     make(map[routing.SessionID][]deliveryqueue.DeliveryDTO),
+	}
 }
 
 func (queue *fakeDeliveryQueue) Register(sessionID routing.SessionID) error {
@@ -145,13 +150,17 @@ func (queue *fakeDeliveryQueue) Register(sessionID routing.SessionID) error {
 func (queue *fakeDeliveryQueue) Remove(sessionID routing.SessionID) {
 	queue.removes = append(queue.removes, sessionID)
 	delete(queue.registered, sessionID)
+	delete(queue.queued, sessionID)
 }
 
 func (*fakeDeliveryQueue) TryEnqueue(deliveryqueue.DeliveryDTO, time.Time) error {
 	return nil
 }
 
-func (*fakeDeliveryQueue) TryEnqueueBatch([]deliveryqueue.DeliveryDTO, time.Time) error {
+func (queue *fakeDeliveryQueue) TryEnqueueBatch(deliveries []deliveryqueue.DeliveryDTO, _ time.Time) error {
+	for _, d := range deliveries {
+		queue.queued[d.SessionID] = append(queue.queued[d.SessionID], d)
+	}
 	return nil
 }
 
@@ -160,6 +169,12 @@ func (*fakeDeliveryQueue) Peek(routing.SessionID, time.Time) (deliveryqueue.Deli
 }
 func (*fakeDeliveryQueue) CompleteHead(routing.SessionID) error                   { return nil }
 func (*fakeDeliveryQueue) PromoteHead(deliveryqueue.OutboundDTO, time.Time) error { return nil }
+func (queue *fakeDeliveryQueue) ListQueued(sessionID routing.SessionID, _ time.Time) ([]deliveryqueue.DeliveryDTO, error) {
+	if queue.listQueuedErr != nil {
+		return nil, queue.listQueuedErr
+	}
+	return append([]deliveryqueue.DeliveryDTO(nil), queue.queued[sessionID]...), nil
+}
 func (*fakeDeliveryQueue) ListOutbound(routing.SessionID) ([]deliveryqueue.OutboundDTO, error) {
 	return nil, nil
 }

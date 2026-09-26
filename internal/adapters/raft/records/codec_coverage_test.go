@@ -92,7 +92,7 @@ func crrHistory(operationID string, committed uint64) *MembershipRecord {
 }
 
 func crrObjectCount(state *ReplicatedStateSnapshot) uint64 {
-	return uint64(len(state.Members) + len(state.Ownerships) + len(state.Subscriptions) + len(state.Checkpoints) + len(state.MembershipHistory))
+	return uint64(len(state.Members) + len(state.Ownerships) + len(state.Subscriptions) + len(state.Checkpoints) + len(state.MembershipHistory) + len(state.Retained))
 }
 
 // crrRawSnapshot encodes a snapshot envelope with a correct digest and count but

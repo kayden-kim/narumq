@@ -12,12 +12,19 @@
 | [Cluster release compatibility v1](cluster-release-compatibility-v1.md) | Draft | Release N node ↔ N-1 node | 이 문서의 compatibility matrix | CLU-11, NFR-15, DEP-18 |
 | [Raft peer transport v1](raft-peer-transport-v1.md) | Active | NaruMQ Raft node ↔ NaruMQ Raft node | 이 문서의 hello·frame·queue·retry 계약 | CLU-01~CLU-02, CLU-09~CLU-10, SEC-09, NFR-07~NFR-10 |
 | [Raft membership v2](raft-membership-v2.md) | Draft | ClusterAdmin · joining broker ↔ Cluster leader · authenticated peer transport | 이 문서와 [replicated-state-v1.proto](replicated-state-v1.proto) | CLU-01~CLU-02, CLU-04~CLU-11, SEC-09~SEC-11, NFR-07~NFR-10 |
-| [Cluster backup v1](cluster-backup-v1.md) | Draft | ClusterAdmin backup producer → offline restore CLI | [Protobuf archive schema](cluster-backup-v1.proto) | CLU-14 |
+| [Cluster backup v3](cluster-backup-v3.md) | Draft | ClusterAdmin backup producer → offline restore CLI | [Protobuf archive schema](cluster-backup-v3.proto) | CLU-14 |
+| [Cluster backup v2](cluster-backup-v2.md) | Superseded | Historical producer → historical offline restore CLI | v2 source/generated binding은 제거됨 | CLU-14 |
+| [Cluster backup v1](cluster-backup-v1.md) | Superseded | Historical producer → historical offline restore CLI | v1 source/generated binding은 제거됨 | CLU-14 |
 
 `Active` contract는 기준 artifact, producer runtime과 자동 contract test가 같은 현재
-동작을 확인한 계약이다. `Draft` contract는 구현과 검증 전 계약 후보다.
+동작을 확인한 계약이다. `Draft` contract는 구현이 존재할 수 있지만 경계 규칙,
+compatibility matrix 또는 contract test mapping의 검토·승인이 아직 끝나지 않은 상태다.
 Producer·consumer contract test와 compatibility matrix를 통과한 뒤에만 `Active`로
 전환한다.
+
+`Superseded` contract는 역사적 형식이나 결정을 보존하지만 현재 producer·consumer가
+새 데이터를 만들거나 읽는 데 사용하지 않는다. Migration 대상과 종료 조건은 대체
+contract에 명시한다.
 
 ## 아직 만들지 않는 Contract
 

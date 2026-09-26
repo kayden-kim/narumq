@@ -30,6 +30,11 @@ type StateMachine struct {
 	ownerships       map[sessionKey]OwnershipStateDTO
 	subscriptions    map[subscriptionKey]SubscriptionStateDTO
 	checkpoints      map[sessionKey]SessionCheckpointDTO
+	retained         map[retainedKey]RetainedStateDTO
+	retainedBytes    int
+	offline          map[sessionKey]OfflineSessionStateDTO
+	offlineMessages  int
+	offlineBytes     int
 }
 
 // NewStateMachine constructs an empty deterministic replicated-state machine.
@@ -41,6 +46,8 @@ func NewStateMachine() *StateMachine {
 		ownerships:    make(map[sessionKey]OwnershipStateDTO),
 		subscriptions: make(map[subscriptionKey]SubscriptionStateDTO),
 		checkpoints:   make(map[sessionKey]SessionCheckpointDTO),
+		retained:      make(map[retainedKey]RetainedStateDTO),
+		offline:       make(map[sessionKey]OfflineSessionStateDTO),
 	}
 }
 
@@ -79,7 +86,7 @@ func (machine *StateMachine) InitializeBootstrap(index uint64, members []MemberI
 	}
 	machine.mu.Lock()
 	defer machine.mu.Unlock()
-	if machine.lastAppliedIndex != 0 || len(machine.members) != 0 || len(machine.operations) != 0 || len(machine.ownerships) != 0 || len(machine.subscriptions) != 0 || len(machine.checkpoints) != 0 {
+	if machine.lastAppliedIndex != 0 || len(machine.members) != 0 || len(machine.operations) != 0 || len(machine.ownerships) != 0 || len(machine.subscriptions) != 0 || len(machine.checkpoints) != 0 || len(machine.retained) != 0 || len(machine.offline) != 0 {
 		return ErrBootstrapAlreadyInitialized
 	}
 	for _, member := range copied {
@@ -111,6 +118,10 @@ func (machine *StateMachine) Apply(index uint64, command CommandDTO) (ApplyResul
 		return machine.applySubscription(index, *command.Subscription), nil
 	case command.Checkpoint != nil:
 		return machine.applyCheckpoint(index, *command.Checkpoint), nil
+	case command.Retained != nil:
+		return machine.applyRetained(index, *command.Retained), nil
+	case command.Offline != nil:
+		return machine.applyOffline(index, *command.Offline), nil
 	default:
 		// validateCommand rejects an empty discriminated union before advancing.
 		return result, nil
@@ -370,6 +381,7 @@ func (machine *StateMachine) applyOwnership(index uint64, change OwnershipChange
 			return conflictResult(index, ConflictStaleEpoch)
 		}
 		delete(machine.ownerships, key)
+		machine.removeOfflineLocked(key)
 		return result
 	}
 	state := OwnershipStateDTO{TenantID: change.TenantID, ClientID: change.ClientID, OwnerNodeID: change.OwnerNodeID, Epoch: change.Epoch, CommittedIndex: index}

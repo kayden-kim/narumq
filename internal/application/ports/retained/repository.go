@@ -7,6 +7,7 @@ import (
 
 	"narumq/internal/domain/mqtt"
 	"narumq/internal/domain/routing"
+	"narumq/internal/domain/tenancy"
 )
 
 var (
@@ -19,6 +20,7 @@ var (
 // Callers lend Payload for the duration of a method call. Implementations that
 // retain or return it must copy it.
 type MessageDTO struct {
+	TenantID           tenancy.TenantID
 	PublisherSessionID routing.SessionID
 	Topic              string
 	Payload            []byte
@@ -26,11 +28,11 @@ type MessageDTO struct {
 	ExpiresAt          time.Time
 }
 
-// Repository stores one retained value per exact topic. List returns values
-// sorted by Topic; every returned payload is independent from repository
-// storage and from every other returned value.
+// Repository stores one retained value per (tenant, exact topic). List returns
+// values sorted by (TenantID.String(), Topic); every returned payload is
+// independent from repository storage and from every other returned value.
 type Repository interface {
 	Replace(message MessageDTO, now time.Time) error
-	Delete(topic string) error
+	Delete(tenantID tenancy.TenantID, topic string) error
 	List(now time.Time) ([]MessageDTO, error)
 }

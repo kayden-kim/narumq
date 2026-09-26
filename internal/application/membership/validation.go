@@ -53,6 +53,12 @@ func validateCommand(command CommandDTO) error {
 	if command.Checkpoint != nil {
 		payloadCount++
 	}
+	if command.Retained != nil {
+		payloadCount++
+	}
+	if command.Offline != nil {
+		payloadCount++
+	}
 	if payloadCount != 1 {
 		return ErrInvalidCommand
 	}
@@ -73,6 +79,48 @@ func validateCommand(command CommandDTO) error {
 		if validateCheckpoint(*command.Checkpoint) != nil {
 			return ErrInvalidCommand
 		}
+	case command.Retained != nil:
+		if validateRetainedChange(*command.Retained) != nil {
+			return ErrInvalidCommand
+		}
+	case command.Offline != nil:
+		if validateOfflineChange(*command.Offline) != nil {
+			return ErrInvalidCommand
+		}
+	}
+	return nil
+}
+func validateOfflineChange(change OfflineChangeDTO) error {
+	if !validSessionIdentity(change.TenantID, change.ClientID) || change.Epoch == 0 || change.ProposedAtUnixMillis == 0 {
+		return ErrInvalidCommand
+	}
+	for _, msg := range change.Messages {
+		if msg.Sequence != 0 || !validTopic(msg.Topic) || msg.QoS != 0 || len(msg.Payload) > MaxOfflinePayloadBytes {
+			return ErrInvalidCommand
+		}
+	}
+	switch change.Action {
+	case OfflineActionDetach:
+		if change.OwnerNodeID == 0 || len(change.Messages) > MaxOfflineMessagesPerSession {
+			return ErrInvalidCommand
+		}
+		totalBytes := 0
+		for _, msg := range change.Messages {
+			totalBytes += len(msg.Topic) + len(msg.Payload)
+		}
+		if totalBytes > MaxOfflineDetachMessageBytes {
+			return ErrInvalidCommand
+		}
+	case OfflineActionEnqueue:
+		if change.OwnerNodeID != 0 || len(change.Messages) != 1 || change.SessionExpiresAtUnixMillis != 0 {
+			return ErrInvalidCommand
+		}
+	case OfflineActionClaim:
+		if change.OwnerNodeID == 0 || len(change.Messages) != 0 || change.SessionExpiresAtUnixMillis != 0 {
+			return ErrInvalidCommand
+		}
+	default:
+		return ErrInvalidCommand
 	}
 	return nil
 }
@@ -167,6 +215,31 @@ func validateCheckpoint(checkpoint SessionCheckpointDTO) error {
 	}
 	return nil
 }
+func validateRetainedChange(change RetainedChangeDTO) error {
+	if !validSessionIdentity(change.TenantID, change.PublisherClientID) || !validTopic(change.Topic) || change.ProposedAtUnixMillis == 0 {
+		return ErrInvalidCommand
+	}
+	switch change.Action {
+	case RetainedActionReplace:
+		if len(change.Payload) == 0 || len(change.Payload) > MaxRetainedPayloadBytes || change.QoS > 2 {
+			return ErrInvalidCommand
+		}
+	case RetainedActionDelete:
+		if len(change.Payload) != 0 || change.QoS != 0 || change.ExpiresAtUnixMillis != 0 {
+			return ErrInvalidCommand
+		}
+	default:
+		return ErrInvalidCommand
+	}
+	return nil
+}
+
+func validRetainedState(state RetainedStateDTO) bool {
+	return validSessionIdentity(state.TenantID, state.PublisherClientID) &&
+		validTopic(state.Topic) &&
+		len(state.Payload) > 0 && len(state.Payload) <= MaxRetainedPayloadBytes &&
+		state.QoS <= 2
+}
 
 func validatePublish(publish PublishPacketDTO, checkpoint bool) error {
 	if publish.ProtocolVersion != 4 && publish.ProtocolVersion != 5 || publish.QoS > 2 || publish.PacketID > 65535 || ((publish.QoS == 0) != (publish.PacketID == 0)) {
@@ -201,8 +274,12 @@ func validSnapshot(snapshot SnapshotDTO) error {
 	if snapshot.SchemaMajor != SchemaMajor || snapshot.SchemaMinor != SchemaMinor || (len(snapshot.Digest) != 0 && len(snapshot.Digest) != 32) {
 		return ErrInvalidSnapshot
 	}
-	count := len(snapshot.Members) + len(snapshot.Ownerships) + len(snapshot.Subscriptions) + len(snapshot.Checkpoints) + len(snapshot.MembershipHistory)
-	if count > maxSnapshotEntries || snapshot.ObjectCount != uint64(count) || (count > 0 && snapshot.LastIncludedIndex == 0) {
+	offlineMessagesCount := 0
+	for _, session := range snapshot.OfflineSessions {
+		offlineMessagesCount += len(session.Messages)
+	}
+	count := len(snapshot.Members) + len(snapshot.Ownerships) + len(snapshot.Subscriptions) + len(snapshot.Checkpoints) + len(snapshot.MembershipHistory) + len(snapshot.Retained) + len(snapshot.OfflineSessions) + offlineMessagesCount
+	if count > maxSnapshotEntries || snapshot.ObjectCount != uint64(count) || (count > 0 && snapshot.LastIncludedIndex == 0) || len(snapshot.Retained) > MaxRetainedMessages {
 		return ErrInvalidSnapshot
 	}
 	for index, member := range snapshot.Members {
@@ -210,10 +287,12 @@ func validSnapshot(snapshot SnapshotDTO) error {
 			return ErrInvalidSnapshot
 		}
 	}
+	ownershipEpochs := make(map[sessionKey]uint64, len(snapshot.Ownerships))
 	for index, ownership := range snapshot.Ownerships {
 		if !validSessionIdentity(ownership.TenantID, ownership.ClientID) || ownership.OwnerNodeID == 0 || ownership.Epoch == 0 || ownership.CommittedIndex == 0 || ownership.CommittedIndex > snapshot.LastIncludedIndex || (index > 0 && compareSession(snapshot.Ownerships[index-1].TenantID, snapshot.Ownerships[index-1].ClientID, ownership.TenantID, ownership.ClientID) >= 0) {
 			return ErrInvalidSnapshot
 		}
+		ownershipEpochs[sessionKey{tenantID: ownership.TenantID, clientID: ownership.ClientID}] = ownership.Epoch
 	}
 	for index, subscription := range snapshot.Subscriptions {
 		if !validSessionIdentity(subscription.TenantID, subscription.ClientID) || subscription.OwnerNodeID == 0 || subscription.Epoch == 0 || !validTopicFilter(subscription.Filter) || subscription.QoS > 2 || subscription.RetainHandling > 2 || (index > 0 && compareSubscription(snapshot.Subscriptions[index-1], subscription) >= 0) {
@@ -227,6 +306,45 @@ func validSnapshot(snapshot SnapshotDTO) error {
 	}
 	for index, record := range snapshot.MembershipHistory {
 		if validateMembershipRecord(record) != nil || record.CommittedIndex == 0 || record.CommittedIndex > snapshot.LastIncludedIndex || (index > 0 && snapshot.MembershipHistory[index-1].OperationID >= record.OperationID) {
+			return ErrInvalidSnapshot
+		}
+	}
+	retainedBytes := 0
+	for index, retained := range snapshot.Retained {
+		if !validRetainedState(retained) || (index > 0 && compareRetained(snapshot.Retained[index-1], retained) >= 0) {
+			return ErrInvalidSnapshot
+		}
+		size := retainedStateBytes(retained)
+		if size > MaxRetainedBytes-retainedBytes {
+			return ErrInvalidSnapshot
+		}
+		retainedBytes += size
+	}
+	totalOfflineMessages := 0
+	totalOfflineBytes := 0
+	for index, session := range snapshot.OfflineSessions {
+		if !validSessionIdentity(session.TenantID, session.ClientID) || session.Epoch == 0 || session.NextSequence < 1 || (index > 0 && compareSession(snapshot.OfflineSessions[index-1].TenantID, snapshot.OfflineSessions[index-1].ClientID, session.TenantID, session.ClientID) >= 0) {
+			return ErrInvalidSnapshot
+		}
+		ownerEpoch, hasOwner := ownershipEpochs[sessionKey{tenantID: session.TenantID, clientID: session.ClientID}]
+		if !hasOwner || ownerEpoch < session.Epoch {
+			return ErrInvalidSnapshot
+		}
+		if len(session.Messages) > MaxOfflineMessagesPerSession {
+			return ErrInvalidSnapshot
+		}
+		for mIdx, msg := range session.Messages {
+			if msg.Sequence == 0 || msg.Sequence >= session.NextSequence || !validTopic(msg.Topic) || msg.QoS != 0 || len(msg.Payload) > MaxOfflinePayloadBytes || (mIdx > 0 && session.Messages[mIdx-1].Sequence >= msg.Sequence) {
+				return ErrInvalidSnapshot
+			}
+			msgBytes := offlineMessageBytes(session.TenantID, session.ClientID, msg)
+			if msgBytes > MaxOfflineBytes-totalOfflineBytes {
+				return ErrInvalidSnapshot
+			}
+			totalOfflineBytes += msgBytes
+		}
+		totalOfflineMessages += len(session.Messages)
+		if totalOfflineMessages > MaxOfflineMessages {
 			return ErrInvalidSnapshot
 		}
 	}
@@ -342,6 +460,21 @@ func compareSession(leftTenant, leftClient, rightTenant, rightClient string) int
 	return 0
 }
 
+func compareRetained(left, right RetainedStateDTO) int {
+	if left.TenantID < right.TenantID {
+		return -1
+	}
+	if left.TenantID > right.TenantID {
+		return 1
+	}
+	if left.Topic < right.Topic {
+		return -1
+	}
+	if left.Topic > right.Topic {
+		return 1
+	}
+	return 0
+}
 func compareSubscription(left, right SubscriptionStateDTO) int {
 	if result := compareSession(left.TenantID, left.ClientID, right.TenantID, right.ClientID); result != 0 {
 		return result
@@ -353,4 +486,5 @@ func compareSubscription(left, right SubscriptionStateDTO) int {
 		return 1
 	}
 	return 0
+
 }

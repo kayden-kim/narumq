@@ -445,3 +445,29 @@ func TestCmmListRetainedFiltersOrdersAndReportsExpiry(t *testing.T) {
 		t.Fatalf("other tenant retained=%+v err=%v", otherTenant, err)
 	}
 }
+
+// Traceability: PRD TEN-04/TEN-05; docs/specs/mqtt-protocol-and-session.md §5.
+func TestCmmListRetainedUsesTenantLabelsAndFilter(t *testing.T) {
+	ctx := context.Background()
+	tenantA := cmmTenantID(t, "tenant-a")
+	tenantB := cmmTenantID(t, "tenant-b")
+	service := NewService(ServiceConfig{}, nil, nil, cmmRetainedSnapshot{
+		{TenantID: tenantB, Topic: "shared/topic", Payload: []byte("b")},
+		{TenantID: tenantA, Topic: "shared/topic", Payload: []byte("a")},
+		{Topic: "shared/topic", Payload: []byte("default")},
+	}, nil)
+
+	all, _, err := service.ListRetained(ctx, ports.RetainedFilter{})
+	if err != nil || len(all) != 3 ||
+		all[0].TenantID != "default" || all[1].TenantID != "tenant-a" || all[2].TenantID != "tenant-b" {
+		t.Fatalf("tenant-sorted retained list = %+v, %v", all, err)
+	}
+	filtered, _, err := service.ListRetained(ctx, ports.RetainedFilter{TenantID: "tenant-b"})
+	if err != nil || len(filtered) != 1 || filtered[0].TenantID != "tenant-b" || filtered[0].PayloadBytes != 1 {
+		t.Fatalf("tenant-b retained filter = %+v, %v", filtered, err)
+	}
+	defaultTenant, _, err := service.ListRetained(ctx, ports.RetainedFilter{TenantID: "default"})
+	if err != nil || len(defaultTenant) != 1 || defaultTenant[0].TenantID != "default" {
+		t.Fatalf("default tenant retained filter = %+v, %v", defaultTenant, err)
+	}
+}
