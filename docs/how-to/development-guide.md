@@ -1,0 +1,229 @@
+# NaruMQ 로컬 개발 환경을 구성하고 검증하는 방법
+
+이 절차는 NaruMQ 브로커 코어 및 어댑터 코드를 개발·수정하고, 클린 아키텍처 계층 규칙과 코딩 컨벤션을 준수하며, 단위 테스트, 동시성 레이스 검출, 퍼즈 테스트, 아키텍처 규칙 검사, 규격 추적성 검사, 커버리지 정책 및 뮤테이션 테스트를 포함한 종합 검증 도구 체인(`tools/verify`)을 실행하여 변경 사항을 안전하게 검증하는 방법을 안내한다.
+
+| 항목 | 값 |
+| --- | --- |
+| 대상 독자 | NaruMQ 브로커 코어와 어댑터를 개발하고 수정·기여하려는 백엔드 소프트웨어 엔지니어 |
+| 검증 상태 | Draft; Windows/amd64, Go 1.26.5 환경에서 아키텍처 규칙 검증, 추적성 검증, cmd/narumq 단위 테스트 실행 확인 완료 (종합 13단계 tools/verify local 전체 파이프라인은 미실행) |
+| 검증 환경·버전 | Windows/amd64, Go 1.26.5 |
+| 최종 검증일 | 2026-09-26 |
+| 관련 기준 문서 | [Go 코딩 컨벤션](../conventions/go-coding-conventions.md), [Project structure의 코드 지도](../architectures/project-structure.md), [Broker core architecture](../architectures/broker-core.md), [Performance와 verification 스펙](../specs/performance-and-verification.md) |
+
+## 1. 대상과 영향
+
+- 대상: NaruMQ 전체 소스 코드 저장소(`cmd/`, `internal/`, `tests/`, `tools/`).
+- 개발 범위:
+  - **도메인 계층 (`internal/domain/`)**: 순수 MQTT 비즈니스 불변식과 상태 머신 (외부 프레임워크 및 I/O import 엄격 금지).
+  - **애플리케이션 계층 (`internal/application/`)**: 유스케이스 흐름 조율 및 애플리케이션 포트(인터페이스), 경계 DTO.
+  - **어댑터 계층 (`internal/adapters/`)**: TCP/TLS 소켓, 관리 HTTP, Raft 합의, 인메모리/디스크 스토리지 등의 구체 I/O 구현체.
+  - **조립 루트 (`cmd/narumq/`)**: CLI 옵션 파싱, 어댑터 생성 및 유스케이스 의존성 주입(Composition Root).
+  - **검증 도구 (`tools/verify/`)**: 아키텍처, 커버리지, 규격 추적성, 뮤테이션 등을 검증하는 독립 실행 도구.
+- **현재 구현 상태 및 검증 경계:**
+  - 현재 소스 트리는 **Phase 1 단일 노드 보안 및 테넌트 격리 슬라이스**가 구현·검증되어 있으며, 분산 클러스터 및 세션 복제는 **Phase 2 진행 중(In-progress)** 상태다.
+  - 개발용 standalone 리스너(`cmd/narumq/main.go`)는 인메모리 세션/큐/retained 저장소를 사용하며 `qos0_only`로 동작한다. 영속적 세션 복구나 분산 HA 보장은 standalone 단일 프로세스의 범위가 아니다.
+- 개발 환경의 안전성: 개발 및 검증 작업은 로컬 워크스페이스에서 격리되어 수행되므로 운영 시스템에 직접적인 영향을 주지 않는다.
+
+## 2. 전제 조건
+
+- [ ] Go 1.26.5 이상의 Go 공식 툴체인이 설치되어 있다. (`go.mod` 파일의 요구 버전 기준)
+- [ ] Git 클라이언트가 설치되어 저장소 최신 브랜치를 체크아웃했다.
+- [ ] 코드 작성 전 [Go 코딩 컨벤션](../conventions/go-coding-conventions.md)과 [Broker core architecture](../architectures/broker-core.md)를 읽고 숙지했다.
+- [ ] 신규 기능이나 동작 변경 시, 관련 [시스템 스펙](../specs/)과 [경계 계약](../contracts/)을 단일 기준(SSOT)으로 삼는다.
+- [ ] 비밀 값(개인키, API 토큰 등)을 테스트 파일이나 커밋에 포함하지 않는다.
+
+## 3. 절차
+
+모든 작업은 저장소 루트 디렉터리(`narumq`)에서 실행한다.
+
+### 1단계: 개발 환경 설정 및 모듈 의존성 검증
+
+저장소를 준비하고 정의된 Go 모듈 의존성을 동기화한다.
+
+```sh
+# 의존성 모듈 다운로드
+go mod download
+
+# 다운로드된 모듈의 해시 무결성 검증
+go mod verify
+```
+
+기대 결과: `all modules verified`가 출력되며 오류 없이 완료된다.
+
+### 2단계: 아키텍처 계층 원칙 이해 및 코드 작성
+
+NaruMQ는 **클린 아키텍처(Clean Architecture / Ports and Adapters)** 패턴을 철저히 준수한다. 코드를 수정하거나 추가할 때 다음 의존성 규칙을 반드시 지켜야 한다.
+
+```text
+[Composition Root: cmd/narumq]
+        │                │
+        ▼                ▼
+[internal/adapters] ──> [internal/application] ──> [internal/domain]
+```
+
+1. **`internal/domain` (도메인 정책)**
+   - MQTT 패킷 검증, 세션 상태 전이, 토픽 라우팅 매칭, 테넌트 불변식을 소유한다.
+   - **절대 규칙:** 표준 라이브러리(`net`, `os` 제외, 순수 로직 관련 라이브러리 위주) 외에 외부 라이브러리나 상위 패키지(`application`, `adapters`)를 일절 import하지 않는다.
+2. **`internal/application` (유스케이스 및 포트)**
+   - `ConnectContext`, `Publish`, `Subscribe` 등 비즈니스 흐름을 조율한다.
+   - 외부 I/O가 필요한 경우 인터페이스(포트, 예: `SessionRepository`, `Clock`)를 직접 정의하여 소유한다.
+   - **절대 규칙:** 구체 어댑터(`internal/adapters`)를 import하지 않는다.
+3. **`internal/adapters` (인프라 어댑터)**
+   - 네트워크 통신, HTTP 핸들러, etcd/raft 연동, 메모리 캐시 등 I/O를 수행하며 애플리케이션의 포트를 구현한다.
+   - 외부 데이터 타입을 도메인/애플리케이션 DTO로 변환하여 전달한다.
+4. **`cmd/narumq` (Composition Root)**
+   - 설정을 읽고 구체 어댑터를 생성하여 유스케이스 포트에 주입(Dependency Injection)하는 유일한 장소다.
+
+#### 주요 코딩 컨벤션 요약
+- **식별자 명명:** 역할에 맞는 접두사와 접미사를 붙인다.
+  - 저장소 포트: `*Repository` (예: `SessionRepository`)
+  - 구체 구현체: `WALSessionRepository`, `MemorySessionRepository`
+  - 데이터 전송 객체: 반드시 `*DTO` 접미사를 사용한다 (예: `ConnectRequestDTO`). `*Dto`는 금지된다.
+  - 약어 대소문자: `ClientID`, `JWKSClient`, `HTTPServer`, `TLSConfig`처럼 전체 대문자를 유지한다.
+- **문서화 주석:** 외부로 노출(exported)되는 모든 패키지, 타입, 함수, 메서드에는 대상 이름으로 시작하는 완전한 영문 doc comment를 작성한다.
+
+### 3단계: 개별 단위 테스트 및 레이스 조건 검사
+
+코드를 수정한 후 해당 패키지의 단위 테스트를 먼저 실행하여 빠른 피드백을 얻는다.
+
+1. 특정 패키지 단위 테스트 실행:
+   ```sh
+   go test ./internal/domain/mqtt/... -count=1
+   ```
+   기대 결과: `ok   narumq/internal/domain/mqtt ...` 출력.
+
+2. 전체 패키지 단위 테스트 실행:
+   ```sh
+   go test ./... -count=1
+   ```
+   기대 결과: 전체 패키지 테스트 통과.
+
+3. 동시성 레이스 조건(Race Detector) 검사:
+   ```sh
+   go test -race ./... -count=1
+   ```
+   기대 결과: 데이터 레이스 경고 없이 전체 통과.
+
+### 4단계: 바운디드 퍼즈 캠페인(Bounded Fuzz Campaigns) 실행
+
+NaruMQ는 중요한 상태 머신과 파서의 불변식을 보장하기 위해 4개의 핵심 퍼즈 타깃에 대해 고정 작업량(`-fuzztime=10000x`, `-parallel=1`)의 퍼즈 테스트를 필수 관문으로 운영한다.
+
+```sh
+# 1. MQTT 디코더 퍼즈
+go test ./internal/domain/mqtt -run=^$ -fuzz=^FuzzDecoder$ -fuzztime=10000x -parallel=1
+
+# 2. MQTT 코덱 왕복(Round-trip) 퍼즈
+go test ./internal/domain/mqtt -run=^$ -fuzz=^FuzzCodecRoundTrip$ -fuzztime=10000x -parallel=1
+
+# 3. 토픽 매칭 및 와일드카드 퍼즈
+go test ./internal/domain/routing -run=^$ -fuzz=^FuzzTopicMatching$ -fuzztime=10000x -parallel=1
+
+# 4. 세션 라이프사이클 상태 전이 퍼즈
+go test ./internal/domain/session -run=^$ -fuzz=^FuzzLifecycleTransitions$ -fuzztime=10000x -parallel=1
+```
+
+기대 결과: 각 명령이 실패 입력(crash corpus) 없이 정상 종료된다.
+
+### 5단계: 로컬 종합 검증 도구 체인(`tools/verify local`) 실행
+
+코드 변경을 완료하고 커밋하기 전, 저장소의 공식 통합 검증 러너를 실행한다. 이 도구는 CI 파이프라인과 동일한 수준의 무결성을 로컬에서 검증한다.
+
+```sh
+go run ./tools/verify local
+```
+
+이 명령은 내부적으로 다음 13단계 파이프라인을 순차 실행하며, 하나라도 실패하면 즉시 중단한다.
+
+1. **`gofmt` 검사**: 코드 포맷팅 일치 여부 확인.
+2. **`go vet ./...`**: 비정상적인 코드 패턴 정적 분석.
+3. **`go test ./... -count=1`**: 전체 단위 테스트 실행.
+4. **4대 Fuzz Campaigns**: 4단계의 퍼즈 테스트 4종 실행.
+5. **`go test -race ./... -count=1`**: 전체 패키지 대상 레이스 검출기 실행.
+6. **`tools/verify traceability`**: 소스 코드의 규격 주석과 `tests/conformance/mqtt-compliance-v1.json` 적합성 매트릭스의 양방향 일치 검증.
+7. **`tools/verify architecture`**: 클린 아키텍처 계층 의존성 규칙 검증 (도메인이 어댑터를 참조하는지 등을 정적 그래프로 검사).
+8. **Atomic 커버리지 프로파일 생성**: 커버리지 데이터 수집 (`.artifacts/verification/coverage.out`).
+9. **`tools/verify coverage`**: 커버리지 정책(`coverage-policy.json`) 검사 (전체 프로덕션 코드 90% 이상 커버리지 floor/ratchet 준수 여부).
+10. **`gremlins` 뮤테이션 테스트 (delivery)**: `internal/domain/delivery` 상태 머신에 변이를 주입하여 테스트의 결함 검출 능력 검증 (80% 이상).
+11. **`gremlins` 뮤테이션 테스트 (session)**: `internal/domain/session` 상태 머신 결함 검출 능력 검증 (80% 이상).
+
+기대 결과: 마지막에 `local: PASS` 메시지가 출력되고 종료 코드 0으로 완료된다.
+
+### 6단계: 로컬 브로커 기동 및 수동 확인
+
+실제 네트워크 상에서 동작을 시험해보고 싶다면 로컬 개발 모드로 브로커를 기동한다.
+
+```sh
+go run ./cmd/narumq -tcp-listen 127.0.0.1:1883 -http-listen 127.0.0.1:8080 -allow-insecure-anonymous-mqtt
+```
+
+- **구현 경계 안내:** 단일 프로세스 standalone 리스너는 개발 및 단일 노드 검증용으로 인메모리 세션/큐/retained 저장소를 사용하며 `qos0_only`로 동작한다.
+- 별도 터미널에서 `curl http://127.0.0.1:8080/health/ready`로 준비 상태를 확인한다.
+- 상세한 실행 옵션과 보안 설정 적용은 [설치 가이드](installation-guide.md)를 참조한다.
+
+## 4. 검증
+
+개발자가 수행한 작업의 완료 여부는 다음 기준표로 판정한다. 본 작업의 실제 검증은 Windows/amd64 환경에서 아키텍처 규칙 검증, 추적성 검증, `cmd/narumq` 단위 테스트를 실행해 확인하였으며, 뮤테이션 및 13단계 종합 로컬 검증(`tools/verify local`)은 미실행 상태다.
+
+| 관찰 대상 | 성공 조건 | 확인 방법 | 실제 결과 | 실행 증거 위치 |
+| --- | --- | --- | --- | --- |
+| 단위 테스트 및 레이스 | 전체 테스트 PASS 및 Data Race 0건 | `go test -race ./... -count=1` | 통과; `cmd/narumq` 단위 테스트 통과 (전체 패키지 -race 테스트는 미실행) | 콘솔 출력 |
+| 아키텍처 규칙 | 계층 간 허용되지 않은 import 0건 | `go run ./tools/verify architecture` | 통과; `architecture: PASS` | 콘솔 출력 |
+| 규격 추적성 | 매트릭스와 소스 코드 요구사항 100% 일치 | `go run ./tools/verify traceability` | 통과; `traceability: PASS` | 콘솔 출력 |
+| 코드 커버리지 | 전체 라인/함수 커버리지 90% 이상 유지 | `go run ./tools/verify coverage ...` | 미실행; 본 작업에서 커버리지 프로파일 미생성 | `.artifacts/verification/coverage-summary.json` |
+| 뮤테이션 테스트 | Delivery 및 Session 각 80% 이상 사멸률 | `gremlins unleash ...` | 미실행; 본 작업에서 뮤테이션 미실행 | `.artifacts/verification/mutation-*.json` |
+| 종합 로컬 검증 | 13단계 파이프라인 전체 완료 | `go run ./tools/verify local` | 미실행; 13단계 전체 파이프라인 미실행 | 콘솔 출력 |
+
+## 5. 중단 조건 및 빈발 문제 해결
+
+검증 도구 실행 중 다음 오류가 발생하면 즉시 수정을 진행한다.
+
+### 1. `architecture: FAIL` (아키텍처 규칙 위반)
+- **원인:** `internal/domain` 패키지가 외부 라이브러리나 `adapters` 패키지를 import했거나, `application` 계층이 구체 `adapters`를 직접 참조한 경우.
+- **해결:** 의존성 방향을 역전시킨다. `application/ports`에 인터페이스를 정의하고, 어댑터가 이를 구현하도록 변경한 후 `cmd/narumq`에서 주입받는다.
+
+### 2. `traceability: FAIL` (규격 추적성 불일치)
+- **원인:** MQTT 표준 규격 관련 테스트 함수를 추가/변경하면서 `tests/conformance/mqtt-compliance-v1.json` 매트릭스에 누락되었거나 주석의 조항 번호가 다른 경우.
+- **해결:** `tests/conformance/mqtt-compliance-v1.json` 파일을 열어 해당 테스트 함수와 관련 OASIS MQTT 규격 ID 및 PRD 요구사항 ID를 일치시킨다.
+
+### 3. `coverage: FAIL` (커버리지 기준 미달)
+- **원인:** 새로 작성한 비즈니스 로직에 단위 테스트가 충분하지 않아 라인/함수 커버리지가 기준치(90%) 밑으로 떨어진 경우.
+- **해결:** 정상 경로뿐만 아니라 경계 조건(Boundary condition), 예외 처리, 에러 반환 경로를 커버하는 단위 테스트 케이스를 `*_test.go`에 추가한다.
+
+### 4. `gofmt check failed` (포맷팅 불일치)
+- **원인:** Go 표준 포맷팅 룰에 맞지 않는 파일이 존재하는 경우.
+- **해결:** `gofmt -w .`를 실행하여 포맷팅을 자동으로 정돈한다.
+
+## 6. 이전 상태로 되돌리는 방법
+
+작업 중 발생한 변경 사항을 되돌릴 때는 **저장소 전체를 파괴하는 명령(`git restore .`, `git clean -fd`)을 사용하지 말고**, 변경된 대상을 먼저 확인한 후 안전하게 선택 복구한다.
+
+1. **현재 변경 및 미추적 파일 상태를 먼저 확인한다:**
+   ```sh
+   git status
+   git diff
+   ```
+2. **자신이 작업한 특정 파일만 선택하여 원래 상태로 복원한다:**
+   ```sh
+   git restore <수정한_파일_경로>
+   ```
+3. **테스트 목적으로 직접 생성한 미추적 파일만 지정하여 삭제한다:**
+   ```sh
+   rm <직접_생성한_임시_파일_경로>
+   ```
+4. **빌드 및 로컬 검증 중 생성된 산출물은 해당 전용 파일만 정리한다:**
+   저장소에 이미 존재하는 `.artifacts/verification/` 디렉터리 전체를 삭제하지 말고, 이번 작업으로 새로 생성된 특정 파일만 개별 정리한다.
+   ```sh
+   # 빌드 바이너리 삭제
+   rm -f bin/narumq bin/narumq.exe
+
+   # 검증 시 새로 생성된 임시 커버리지 파일만 개별 삭제 (기존 베이스라인 증거 보존)
+   rm -f .artifacts/verification/coverage.out .artifacts/verification/coverage-summary.json
+   ```
+
+## 7. 문제 전달
+
+검증 단계에서 해결하기 어려운 아키텍처 충돌이나 모듈 간 의존성 사이클이 발생할 경우 다음 규칙에 따라 전달한다.
+
+- 전달 대상: 백엔드 테크 리드 및 플랫폼 아키텍트.
+- 보존할 증거: `go run ./tools/verify local` 실패 로그 전문, `git diff` 내용, 관련 spec/contract 문서 링크.
+- 비밀 값 제외 규칙: 토큰, 패스워드, 개인키 등 보안 자격 증명은 보고서나 이슈 본문에 절대 기입하지 않는다.
