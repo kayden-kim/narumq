@@ -63,6 +63,9 @@ func TestDynamicClusterDurableQoSTakeoverProcessAcceptance(t *testing.T) {
 		t.Fatal("subscriber reconnect on node 2 returned SessionPresent=false")
 	}
 	clusterMembershipProcessWaitForRouteProjection(t, ctx, nodes, "durable-takeover/#")
+	for _, process := range nodes {
+		clusterMembershipProcessWaitForStatus(t, ctx, process, "/health/ready", http.StatusOK)
+	}
 	clusterDurableProcessPublish(t, publisher, "durable-takeover/one", 1, 11, "one")
 	clusterDurableProcessAck(t, publisher, 4, 11)
 	first := clusterDurableProcessRead(t, subscriber)
@@ -143,6 +146,11 @@ func TestDynamicClusterDurableQoSAckThenKillProcessAcceptance(t *testing.T) {
 	defer noQuorum1.Close()
 	noQuorum2 := clusterDurableProcessConnect(t, fixture.mqttAddresses[2], fixture.accessToken, "durable-no-quorum-2", true)
 	defer noQuorum2.Close()
+	// Later CONNECTs advance committed ownership on all three nodes. Ensure
+	// each local projection has caught up before testing durable routing.
+	for _, process := range nodes {
+		clusterMembershipProcessWaitForStatus(t, fixture.ctx, process, "/health/ready", http.StatusOK)
+	}
 	clusterDurableProcessPublish(t, publisher, "durable-ack/committed", 1, 21, "committed")
 	clusterDurableProcessAck(t, publisher, 4, 21)
 	if err := nodes[0].crash(5 * time.Second); err != nil {
@@ -200,14 +208,14 @@ func TestDynamicClusterDurableQoSBackupRestoreProcessAcceptance(t *testing.T) {
 	defer publisher.Close()
 	clusterDurableProcessPublish(t, publisher, "durable-backup/one", 1, 41, "inflight-one")
 	clusterDurableProcessAck(t, publisher, 4, 41)
-	one := clusterDurableProcessRead(t, subscriber)
-	if one.kind != 3 || one.qos != 1 {
-		t.Fatalf("backup QoS1 inflight=%+v", one)
-	}
 	clusterDurableProcessPublish(t, publisher, "durable-backup/two", 2, 42, "inflight-two")
 	clusterDurableProcessAck(t, publisher, 5, 42)
 	clusterDurableProcessPubrel(t, publisher, 42)
 	clusterDurableProcessAck(t, publisher, 7, 42)
+	one := clusterDurableProcessRead(t, subscriber)
+	if one.kind != 3 || one.qos != 1 {
+		t.Fatalf("backup QoS1 inflight=%+v", one)
+	}
 	two := clusterDurableProcessRead(t, subscriber)
 	if two.kind != 3 || two.qos != 2 {
 		t.Fatalf("backup QoS2 inflight=%+v", two)
@@ -470,55 +478,54 @@ func clusterDurableProcessConnectWill(t *testing.T, address, token, clientID str
 	return nil
 }
 
+func clusterDurableProcessListSubscriptions(ctx context.Context, process *clusterMembershipProcess) ([]string, error) {
+	status, body, err := clusterMembershipProcessRequest(ctx, http.MethodGet,
+		process.managementURL()+"/api/v1/subscriptions?tenantId=acceptance", nil, clusterMembershipProcessAdmin, "")
+	if err != nil {
+		return nil, fmt.Errorf("%s subscription query: %w", process.name, err)
+	}
+	if status != http.StatusOK {
+		return nil, fmt.Errorf("%s subscription status = %d, want %d", process.name, status, http.StatusOK)
+	}
+	var list struct {
+		Data []struct {
+			TenantID    string `json:"tenantId"`
+			ClientID    string `json:"clientId"`
+			TopicFilter string `json:"topicFilter"`
+			QoS         int    `json:"qos"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(body, &list); err != nil {
+		return nil, fmt.Errorf("%s decode subscriptions: %w", process.name, err)
+	}
+	subscriptions := make([]string, 0, len(list.Data))
+	for _, subscription := range list.Data {
+		if subscription.TenantID != "acceptance" {
+			return nil, fmt.Errorf("%s subscription tenant = %q, want acceptance", process.name, subscription.TenantID)
+		}
+		subscriptions = append(subscriptions,
+			fmt.Sprintf("%s|%s|%d", subscription.ClientID, subscription.TopicFilter, subscription.QoS))
+	}
+	sort.Strings(subscriptions)
+	return subscriptions, nil
+}
+
 func clusterDurableProcessWaitForSubscriptions(t *testing.T, ctx context.Context, processes []*clusterMembershipProcess, want ...string) {
 	t.Helper()
 	expected := append([]string(nil), want...)
 	sort.Strings(expected)
 	clusterMembershipProcessWait(t, ctx, fmt.Sprintf("subscription projection %v", expected), func() (bool, string, error) {
-		var reference []string
 		for _, process := range processes {
-			status, body, err := clusterMembershipProcessRequest(ctx, http.MethodGet,
-				process.managementURL()+"/api/v1/subscriptions?tenantId=acceptance", nil, clusterMembershipProcessAdmin, "")
+			got, err := clusterDurableProcessListSubscriptions(ctx, process)
 			if err != nil {
-				return false, fmt.Sprintf("%s query error: %v", process.name, err), nil
+				return false, err.Error(), nil
 			}
-			if status != http.StatusOK {
-				return false, fmt.Sprintf("%s status = %d", process.name, status), nil
-			}
-			var list struct {
-				Data []struct {
-					TenantID    string `json:"tenantId"`
-					ClientID    string `json:"clientId"`
-					TopicFilter string `json:"topicFilter"`
-					QoS         int    `json:"qos"`
-				} `json:"data"`
-			}
-			if err := json.Unmarshal([]byte(body), &list); err != nil {
-				return false, fmt.Sprintf("%s decode error: %v", process.name, err), nil
-			}
-			got := make([]string, 0, len(list.Data))
-			for _, subscription := range list.Data {
-				if subscription.TenantID != "acceptance" {
-					return false, fmt.Sprintf("%s subscription tenant = %q, want acceptance", process.name, subscription.TenantID), nil
-				}
-				got = append(got, fmt.Sprintf("%s|%s|%d", subscription.ClientID, subscription.TopicFilter, subscription.QoS))
-			}
-			sort.Strings(got)
 			if len(got) != len(expected) {
 				return false, fmt.Sprintf("%s subscriptions = %v, want %v", process.name, got, expected), nil
 			}
 			for index := range got {
 				if got[index] != expected[index] {
 					return false, fmt.Sprintf("%s subscriptions = %v, want %v", process.name, got, expected), nil
-				}
-			}
-			if reference == nil {
-				reference = got
-			} else {
-				for index := range got {
-					if got[index] != reference[index] {
-						return false, fmt.Sprintf("subscription projection mismatch: reference=%v, %s=%v", reference, process.name, got), nil
-					}
 				}
 			}
 		}
@@ -555,6 +562,19 @@ func clusterDurableProcessSubscribe(t *testing.T, conn net.Conn, id uint16, filt
 		t.Fatalf("SUBACK kind=%d payload=%x err=%v", kind, payload, err)
 	}
 }
+func clusterDurableProcessUnsubscribe(t *testing.T, conn net.Conn, id uint16, filter string) {
+	t.Helper()
+	body := []byte{byte(id >> 8), byte(id), byte(len(filter) >> 8), byte(len(filter))}
+	body = append(body, filter...)
+	if err := clusterDurableProcessWrite(conn, 0xA2, body); err != nil {
+		t.Fatal(err)
+	}
+	kind, _, payload, err := clusterDurableProcessReadRaw(conn)
+	if err != nil || kind != 11 || len(payload) < 2 || binary.BigEndian.Uint16(payload[:2]) != id {
+		t.Fatalf("UNSUBACK kind=%d payload=%x err=%v, want kind=11 packet ID=%d", kind, payload, err, id)
+	}
+}
+
 func clusterDurableProcessPublish(t *testing.T, conn net.Conn, topic string, qos byte, id uint16, payload string) {
 	t.Helper()
 	body := []byte{byte(len(topic) >> 8), byte(len(topic))}

@@ -8,6 +8,7 @@ import (
 	"net"
 	"reflect"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -310,6 +311,7 @@ func TestTCPClusterRejectsQoS1AndQoS2Mutations(t *testing.T) {
 			config.ClusterMode = true
 			config.LocalMemberID = 4
 			config.ClusterReady = func() bool { return true }
+			config.ClusterProjectionReady = func() bool { return true }
 			runtime := newAdapterTestRuntime(t, 2, config)
 			defer runtime.stop(t)
 
@@ -340,6 +342,7 @@ func TestTCPClusterReadinessAndSubscriptionCommitFailuresRejectPackets(t *testin
 		config.ClusterMode = true
 		config.LocalMemberID = 4
 		config.ClusterReady = func() bool { return false }
+		config.ClusterProjectionReady = func() bool { return true }
 		runtime := newAdapterTestRuntime(t, 2, config)
 		defer runtime.stop(t)
 
@@ -368,6 +371,7 @@ func TestTCPClusterReadinessAndSubscriptionCommitFailuresRejectPackets(t *testin
 		config.ClusterMode = true
 		config.LocalMemberID = 4
 		config.ClusterReady = func() bool { return true }
+		config.ClusterProjectionReady = func() bool { return true }
 		runtime := newAdapterTestRuntime(t, 2, config)
 		defer runtime.stop(t)
 		runtime.cluster.mu.Lock()
@@ -400,6 +404,121 @@ func TestTCPClusterReadinessAndSubscriptionCommitFailuresRejectPackets(t *testin
 			t.Fatalf("committed subscription attempts = %v", actions)
 		}
 	})
+}
+
+// Traceability: CLU-03; docs/specs/cluster-session-and-delivery.md §3.1, §11.10.
+func TestTCPClusterQoS0UsesLocalProjectionWithoutQuorumBarrier(t *testing.T) {
+	quorumAvailable := atomic.Bool{}
+	quorumAvailable.Store(true)
+	var quorumChecks atomic.Int32
+	config := defaultAdapterConfig()
+	config.ClusterMode = true
+	config.LocalMemberID = 4
+	config.ClusterReady = func() bool {
+		quorumChecks.Add(1)
+		return quorumAvailable.Load()
+	}
+	config.ClusterProjectionReady = func() bool { return true }
+	runtime := newAdapterTestRuntime(t, 2, config)
+	defer runtime.stop(t)
+
+	writeTestPackets(t, runtime.client, &mqtt.Connect{
+		Version: mqtt.ProtocolV5, CleanStart: true, ClientID: "cluster-subscriber",
+	})
+	_ = readTestFrame(t, runtime.client)
+	writeTestPackets(t, runtime.client, &mqtt.Subscribe{
+		Version: mqtt.ProtocolV5, PacketID: 1,
+		Subscriptions: []mqtt.Subscription{{Filter: "cluster/#", QoS: mqtt.QoSAtMostOnce}},
+	})
+	_ = readTestFrame(t, runtime.client)
+
+	publisherClient, publisherServer := net.Pipe()
+	defer publisherClient.Close()
+	runtime.listener.connections <- publisherServer
+	select {
+	case <-runtime.listener.accepted:
+	case <-time.After(time.Second):
+		t.Fatal("server did not accept publisher connection")
+	}
+	writeTestPackets(t, publisherClient, &mqtt.Connect{
+		Version: mqtt.ProtocolV5, CleanStart: true, ClientID: "cluster-publisher",
+	})
+	_ = readTestFrame(t, publisherClient)
+
+	quorumChecksBeforePublish := quorumChecks.Load()
+	quorumAvailable.Store(false)
+	writeTestPackets(t, publisherClient,
+		&mqtt.Publish{Version: mqtt.ProtocolV5, Topic: "cluster/item", Payload: []byte("local")},
+		&mqtt.PingReq{Version: mqtt.ProtocolV5},
+	)
+	pingFrame := readTestFrame(t, publisherClient)
+	if len(pingFrame) != 2 || pingFrame[0] != 0xD0 || pingFrame[1] != 0x00 {
+		t.Fatalf("publisher PINGRESP = % X", pingFrame)
+	}
+	if calls := quorumChecks.Load(); calls != quorumChecksBeforePublish {
+		t.Fatalf("QoS 0 PUBLISH requested quorum readiness %d times", calls-quorumChecksBeforePublish)
+	}
+
+	deliveryFrame := readTestFrame(t, runtime.client)
+	packet, consumed, err := runtime.server.decoder.Decode(deliveryFrame, mqtt.ProtocolV5)
+	if err != nil || consumed != len(deliveryFrame) {
+		t.Fatalf("decode local QoS 0 delivery: packet=%T consumed=%d err=%v", packet, consumed, err)
+	}
+	delivered, ok := packet.(*mqtt.Publish)
+	if !ok || delivered.Topic != "cluster/item" || string(delivered.Payload) != "local" {
+		t.Fatalf("subscriber packet = %#v, want local QoS 0 delivery", packet)
+	}
+}
+
+// Traceability: CLU-03; docs/specs/cluster-session-and-delivery.md §3.1, §11.10.
+func TestTCPClusterQoS0RejectsWhenLocalProjectionIsNotReady(t *testing.T) {
+	config := defaultAdapterConfig()
+	config.ClusterMode = true
+	config.LocalMemberID = 4
+	config.ClusterReady = func() bool { return true }
+	config.ClusterProjectionReady = func() bool { return false }
+	runtime := newAdapterTestRuntime(t, 2, config)
+	defer runtime.stop(t)
+
+	writeTestPackets(t, runtime.client, &mqtt.Connect{
+		Version: mqtt.ProtocolV5, CleanStart: true, ClientID: "projection-subscriber",
+	})
+	_ = readTestFrame(t, runtime.client)
+	writeTestPackets(t, runtime.client, &mqtt.Subscribe{
+		Version: mqtt.ProtocolV5, PacketID: 1,
+		Subscriptions: []mqtt.Subscription{{Filter: "cluster/#", QoS: mqtt.QoSAtMostOnce}},
+	})
+	_ = readTestFrame(t, runtime.client)
+
+	publisherClient, publisherServer := net.Pipe()
+	defer publisherClient.Close()
+	runtime.listener.connections <- publisherServer
+	select {
+	case <-runtime.listener.accepted:
+	case <-time.After(time.Second):
+		t.Fatal("server did not accept publisher connection")
+	}
+	writeTestPackets(t, publisherClient, &mqtt.Connect{
+		Version: mqtt.ProtocolV5, CleanStart: true, ClientID: "projection-publisher",
+	})
+	_ = readTestFrame(t, publisherClient)
+	writeTestPackets(t, publisherClient, &mqtt.Publish{
+		Version: mqtt.ProtocolV5, Topic: "cluster/item", Payload: []byte("must-not-route"),
+	})
+	requireConnectionClosed(t, publisherClient)
+
+	if err := runtime.client.SetReadDeadline(time.Now().Add(100 * time.Millisecond)); err != nil {
+		t.Fatal(err)
+	}
+	var response [1]byte
+	_, err := runtime.client.Read(response[:])
+	var networkError net.Error
+	if !errors.As(err, &networkError) || !networkError.Timeout() {
+		t.Fatalf("subscriber received data or closed while projection was not ready: byte=%#x err=%v", response[0], err)
+	}
+	if err := runtime.client.SetReadDeadline(time.Time{}); err != nil {
+		t.Fatal(err)
+	}
 }
 
 // Traceability: PRD MQTT-01/MQTT-03/TEST-03; docs/specs/mqtt-protocol-and-session.md §1 and §2.

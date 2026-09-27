@@ -272,6 +272,7 @@ func runClusterMode(ctx context.Context, config clusterConfigFile, logger *slog.
 			ControlQueueCapacity: 16, ClientCertificateExtractor: tlsadapter.ExtractVerifiedClientCertificateDTO,
 			Policy: tcpPolicy, Metrics: metricsRegistry, ClusterMode: true,
 			LocalMemberID: config.NodeID, ClusterReady: runtime.clusterReady,
+			ClusterProjectionReady: runtime.clusterProjectionReady,
 		}, decoder, encoder, connections, subscriptions, publications, deliveries, logger)
 		if err != nil {
 			return fmt.Errorf("create cluster MQTT server: %w", err)
@@ -397,8 +398,10 @@ type clusterReadWaiter struct {
 }
 
 type clusterProposalWaiter struct {
-	data   []byte
-	result chan clusterApplyResponse
+	data     []byte
+	result   chan clusterApplyResponse
+	response clusterApplyResponse
+	applied  bool
 }
 
 type clusterApplyEvent struct {
@@ -836,7 +839,7 @@ func (runtime *clusterRuntime) applyBatch(batch raftadapter.BatchDTO, proposals 
 			result.Delivery != nil && len(result.Delivery.Enqueued) > 0 {
 			runtime.notifyDurable(command.Delivery.TenantID, result.Delivery.Enqueued)
 		}
-		runtime.resolveProposal(event.command, result, proposals)
+		runtime.stageProposalResult(event.command, result, proposals)
 	}
 	if runtime.initialized.Load() {
 		// Ready can end with empty Raft entries after its last typed event.
@@ -850,6 +853,9 @@ func (runtime *clusterRuntime) applyBatch(batch raftadapter.BatchDTO, proposals 
 	} else {
 		runtime.projectionIndex.Store(runtime.node.Status().AppliedIndex)
 	}
+	// Commit callers may immediately issue another publish after success.
+	// Release waiters only after the route projection covers this Ready batch.
+	runtime.resolveAppliedProposals(proposals)
 	if len(events) != 0 {
 		if err := runtime.maybeSnapshot(len(batch.ConfigurationChanges) != 0); err != nil {
 			return err
@@ -877,16 +883,30 @@ func (runtime *clusterRuntime) applyConfiguration(change raftadapter.CommittedCo
 	return result, nil
 }
 
-func (runtime *clusterRuntime) resolveProposal(data []byte, result membership.ApplyResultDTO, waiters *[]clusterProposalWaiter) {
+func (runtime *clusterRuntime) stageProposalResult(data []byte, result membership.ApplyResultDTO, waiters *[]clusterProposalWaiter) {
 	for index := range *waiters {
-		if !bytes.Equal((*waiters)[index].data, data) {
+		waiter := &(*waiters)[index]
+		if waiter.applied || !bytes.Equal(waiter.data, data) {
 			continue
 		}
-		waiter := (*waiters)[index]
-		copy((*waiters)[index:], (*waiters)[index+1:])
-		*waiters = (*waiters)[:len(*waiters)-1]
-		waiter.result <- clusterApplyResponse{result: result}
+		waiter.response = clusterApplyResponse{result: result}
+		waiter.applied = true
 		return
+	}
+}
+
+func (runtime *clusterRuntime) resolveAppliedProposals(waiters *[]clusterProposalWaiter) {
+	for index := 0; index < len(*waiters); {
+		waiter := (*waiters)[index]
+		if !waiter.applied {
+			index++
+			continue
+		}
+		waiter.result <- waiter.response
+		last := len(*waiters) - 1
+		copy((*waiters)[index:], (*waiters)[index+1:])
+		(*waiters)[last] = clusterProposalWaiter{}
+		*waiters = (*waiters)[:last]
 	}
 }
 
@@ -1433,6 +1453,16 @@ func (runtime *clusterRuntime) clusterReady() bool {
 	return runtime.checkReadiness(ctx) == nil
 }
 
+func (runtime *clusterRuntime) clusterProjectionReady() bool {
+	if runtime == nil || runtime.node == nil || runtime.machine == nil || runtime.storage == nil {
+		return false
+	}
+	if runtime.storage.view().health != clusterReplicationHealthy {
+		return false
+	}
+	return runtime.readinessSnapshot().admitsBarrier()
+}
+
 type clusterReadinessSnapshot struct {
 	initialized       bool
 	projectionFailed  bool
@@ -1444,14 +1474,17 @@ type clusterReadinessSnapshot struct {
 	appliedIndex      uint64
 }
 
-func (s clusterReadinessSnapshot) admitsBarrier() bool {
+func (s clusterReadinessSnapshot) hasLocalAdmissionState() bool {
 	return s.initialized &&
 		!s.projectionFailed &&
-		s.projectionIndex >= s.appliedIndex &&
 		s.bootstrapped &&
 		s.dynamicMembership &&
 		s.localVoter &&
 		s.localPhaseVoter
+}
+
+func (s clusterReadinessSnapshot) admitsBarrier() bool {
+	return s.hasLocalAdmissionState() && s.projectionIndex >= s.appliedIndex
 }
 
 func (s clusterReadinessSnapshot) satisfiedAt(barrier uint64) bool {

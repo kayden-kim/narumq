@@ -373,6 +373,7 @@ func csvClusterRuntime(t *testing.T, ready *atomic.Bool) *adapterTestRuntime {
 	config.ClusterMode = true
 	config.LocalMemberID = 4
 	config.ClusterReady = ready.Load
+	config.ClusterProjectionReady = ready.Load
 	return newAdapterTestRuntime(t, 2, config)
 }
 
@@ -422,6 +423,7 @@ func TestCSVNewServerRejectsIncompleteClusterWiring(t *testing.T) {
 		config.ClusterMode = true
 		config.LocalMemberID = memberID
 		config.ClusterReady = ready
+		config.ClusterProjectionReady = func() bool { return true }
 		return config
 	}
 	alwaysReady := func() bool { return true }
@@ -434,6 +436,15 @@ func TestCSVNewServerRejectsIncompleteClusterWiring(t *testing.T) {
 	}{
 		{name: "missing member", config: clusterConfig(0, alwaysReady), connections: ownedConnections, subscriptions: committedSubscriptions, want: ErrInvalidConfig},
 		{name: "missing readiness", config: clusterConfig(4, nil), connections: ownedConnections, subscriptions: committedSubscriptions, want: ErrInvalidConfig},
+		{
+			name: "missing local projection readiness",
+			config: func() Config {
+				config := clusterConfig(4, alwaysReady)
+				config.ClusterProjectionReady = nil
+				return config
+			}(),
+			connections: ownedConnections, subscriptions: committedSubscriptions, want: ErrInvalidConfig,
+		},
 		{name: "ownership for another member", config: clusterConfig(5, alwaysReady), connections: ownedConnections, subscriptions: committedSubscriptions, want: ErrInvalidConfig},
 		{name: "no ownership coordinator", config: clusterConfig(4, alwaysReady), connections: newConnections(), subscriptions: committedSubscriptions, want: ErrInvalidConfig},
 		{name: "no subscription committer", config: clusterConfig(4, alwaysReady), connections: ownedConnections, subscriptions: newSubscriptions(), want: ErrInvalidConfig},

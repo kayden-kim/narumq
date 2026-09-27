@@ -9,10 +9,12 @@ import (
 	"path/filepath"
 	"reflect"
 	"testing"
+	"time"
 
 	raftadapter "narumq/internal/adapters/raft"
 	tcpadapter "narumq/internal/adapters/tcp"
 	"narumq/internal/application/membership"
+	"narumq/internal/domain/mqtt"
 	"narumq/internal/domain/routing"
 	"narumq/internal/domain/tenancy"
 )
@@ -191,6 +193,70 @@ func TestClusterReadinessGate(t *testing.T) {
 				t.Errorf("satisfiedAt(%d) = %t, want %t", tc.barrier, got, tc.wantSatisfied)
 			}
 		})
+	}
+}
+
+// Traceability: CLU-03; docs/specs/cluster-session-and-delivery.md §1, §3.1.
+func TestClusterProjectionReadyRequiresInitializedCurrentProjection(t *testing.T) {
+	config := validBootstrapClusterConfig()
+	directory := t.TempDir()
+	if err := raftadapter.BeginRestore(directory); err != nil {
+		t.Fatalf("begin restore: %v", err)
+	}
+	fingerprint := [32]byte{0x42}
+	if err := raftadapter.CompleteRestore(directory, raftadapter.RestoreSeedDTO{
+		ClusterID: config.ClusterID, NodeID: raftadapter.NodeID(config.NodeID),
+		CertificateSHA256: fingerprint, BootstrapVoterIDs: []raftadapter.NodeID{1, 2, 3},
+		SnapshotIndex: 10, SnapshotTerm: 1, ApplicationData: []byte("membership snapshot"),
+	}); err != nil {
+		t.Fatalf("complete restore: %v", err)
+	}
+	node, err := raftadapter.Open(raftadapter.Config{
+		NodeID: raftadapter.NodeID(config.NodeID), Directory: directory, DynamicMembership: true,
+		ClusterID: config.ClusterID, CertificateSHA256: fingerprint,
+		BootstrapVoterIDs: []raftadapter.NodeID{1, 2, 3},
+	})
+	if err != nil {
+		t.Fatalf("open restored node: %v", err)
+	}
+	defer node.Close()
+	status := node.Status()
+	if !status.Bootstrapped || !status.DynamicMembership || status.AppliedIndex != 10 || !containsNodeID(status.VoterIDs, config.NodeID) {
+		t.Fatalf("restored node status = %+v", status)
+	}
+
+	runtime := &clusterRuntime{
+		config: config, node: node, machine: retainedTestMachine(t, config, config.ReleaseVersion),
+		storage: newClusterStorageMonitor(time.Now, nil),
+	}
+	runtime.initialized.Store(true)
+	runtime.projectionIndex.Store(status.AppliedIndex)
+	if !runtime.clusterProjectionReady() {
+		t.Fatal("caught-up initialized local projection was not admitted")
+	}
+
+	runtime.initialized.Store(false)
+	if runtime.clusterProjectionReady() {
+		t.Fatal("uninitialized runtime admitted local projection")
+	}
+	runtime.initialized.Store(true)
+
+	runtime.projectionFailed.Store(true)
+	if runtime.clusterProjectionReady() {
+		t.Fatal("failed projection was admitted")
+	}
+	runtime.projectionFailed.Store(false)
+	runtime.projectionIndex.Store(status.AppliedIndex - 1)
+
+	startedAt := time.Now()
+	admitted := runtime.clusterProjectionReady()
+	elapsed := time.Since(startedAt)
+	snapshot := runtime.readinessSnapshot()
+	if admitted {
+		t.Fatalf("projection behind the applied index was admitted: snapshot=%+v", snapshot)
+	}
+	if elapsed >= time.Second {
+		t.Fatalf("behind-index projection check took %s, want an immediate fail-closed result", elapsed)
 	}
 }
 
@@ -434,13 +500,22 @@ func TestResolveProposalAndCompleteReadStates(t *testing.T) {
 		{data: cmd2, result: ch2},
 	}
 	res := membership.ApplyResultDTO{Index: 42, Outcome: membership.ApplyOutcomeApplied}
-	runtime.resolveProposal(cmd1, res, &waiters)
+	runtime.stageProposalResult(cmd1, res, &waiters)
+	if len(waiters) != 2 || !bytes.Equal(waiters[0].data, cmd1) {
+		t.Fatalf("staged waiters = %+v", waiters)
+	}
+	select {
+	case <-ch1:
+		t.Fatal("proposal result was sent before projection refresh")
+	default:
+	}
+	runtime.resolveAppliedProposals(&waiters)
 	if len(waiters) != 1 || !bytes.Equal(waiters[0].data, cmd2) {
-		t.Fatalf("waiters = %+v", waiters)
+		t.Fatalf("resolved waiters = %+v", waiters)
 	}
 	gotRes := <-ch1
 	if gotRes.result.Index != 42 {
-		t.Fatalf("gotRes index = %d", gotRes.result.Index)
+		t.Fatalf("got result index = %d", gotRes.result.Index)
 	}
 
 	readResult := make(chan clusterReadResponse, 1)
@@ -628,6 +703,176 @@ func TestReplayClusterAppliedRestoresDurableDeliveryWithoutDuplicateTail(t *test
 	}
 	if machine.LastAppliedIndex() != 7 {
 		t.Fatalf("rejected replay advanced applied index to %d", machine.LastAppliedIndex())
+	}
+}
+
+// Traceability: CLU-05/CLU-06; docs/specs/cluster-session-and-delivery.md §2.1, §2.2, §11.14.
+func TestClusterSnapshotAndWALTailReplayRestoresSessionAggregateAndRouteProjection(t *testing.T) {
+	config := validBootstrapClusterConfig()
+	machine := retainedTestMachine(t, config, config.ReleaseVersion)
+	applied := func(index uint64, command membership.CommandDTO) raftadapter.AppliedCommandDTO {
+		t.Helper()
+		operationID, err := newClusterOperationID()
+		if err != nil {
+			t.Fatal(err)
+		}
+		command.SchemaMajor = membership.SchemaMajor
+		command.SchemaMinor = membership.SchemaMinor
+		command.OperationID = operationID
+		data, err := encodeMembershipCommand(command)
+		if err != nil {
+			t.Fatalf("encode replay command at index %d: %v", index, err)
+		}
+		return raftadapter.AppliedCommandDTO{Index: index, Data: data}
+	}
+	commands := []raftadapter.AppliedCommandDTO{
+		applied(2, membership.CommandDTO{Ownership: &membership.OwnershipChangeDTO{
+			TenantID: "tenant-a", ClientID: "sub-a", OwnerNodeID: 1, Epoch: 1,
+			Action: membership.OwnershipActionAcquire,
+		}}),
+		applied(3, membership.CommandDTO{Subscription: &membership.SubscriptionChangeDTO{
+			TenantID: "tenant-a", ClientID: "sub-a", OwnerNodeID: 1, Epoch: 1,
+			Filter: "opts/#", QoS: 2, NoLocal: true, RetainAsPublished: true, RetainHandling: 2,
+			Action: membership.SubscriptionActionAdd,
+		}}),
+		applied(4, membership.CommandDTO{Subscription: &membership.SubscriptionChangeDTO{
+			TenantID: "tenant-a", ClientID: "sub-a", OwnerNodeID: 1, Epoch: 1,
+			Filter: "plain/+/x", QoS: 1, Action: membership.SubscriptionActionAdd,
+		}}),
+		applied(5, membership.CommandDTO{Subscription: &membership.SubscriptionChangeDTO{
+			TenantID: "tenant-a", ClientID: "sub-a", OwnerNodeID: 1, Epoch: 1,
+			Filter: "gone/#", QoS: 1, Action: membership.SubscriptionActionAdd,
+		}}),
+		applied(6, membership.CommandDTO{Subscription: &membership.SubscriptionChangeDTO{
+			TenantID: "tenant-a", ClientID: "sub-a", OwnerNodeID: 1, Epoch: 1,
+			Filter: "gone/#", Action: membership.SubscriptionActionRemove,
+		}}),
+		applied(7, membership.CommandDTO{Delivery: &membership.DeliveryChangeDTO{
+			TenantID: "tenant-a", ClientID: "sub-a", OwnerNodeID: 1, Epoch: 1,
+			Action: membership.DeliveryActionAttach, ProposedAtUnixMillis: 1_700_000_000_001,
+		}}),
+		applied(8, membership.CommandDTO{Delivery: &membership.DeliveryChangeDTO{
+			TenantID: "tenant-a", ClientID: "publisher", Action: membership.DeliveryActionPublish,
+			ProposedAtUnixMillis: 1_700_000_000_002, Topic: "opts/a", Payload: []byte("one"), PublishQoS: 1,
+			Targets: []membership.DeliveryTargetDTO{{ClientID: "sub-a"}},
+		}}),
+		applied(9, membership.CommandDTO{Delivery: &membership.DeliveryChangeDTO{
+			TenantID: "tenant-a", ClientID: "sub-a", OwnerNodeID: 1, Epoch: 1,
+			Action: membership.DeliveryActionSend, ProposedAtUnixMillis: 1_700_000_000_003,
+			Sequence: 1, PacketID: 7,
+		}}),
+		applied(10, membership.CommandDTO{Ownership: &membership.OwnershipChangeDTO{
+			TenantID: "tenant-a", ClientID: "sub-a", ExpectedEpoch: 1, OwnerNodeID: 2, Epoch: 2,
+			Action: membership.OwnershipActionAcquire,
+		}}),
+		applied(11, membership.CommandDTO{Subscription: &membership.SubscriptionChangeDTO{
+			TenantID: "tenant-a", ClientID: "sub-a", OwnerNodeID: 1, Epoch: 1,
+			Filter: "stale/#", QoS: 1, Action: membership.SubscriptionActionAdd,
+		}}),
+		applied(12, membership.CommandDTO{Delivery: &membership.DeliveryChangeDTO{
+			TenantID: "tenant-a", ClientID: "sub-a", OwnerNodeID: 1, Epoch: 1,
+			Action: membership.DeliveryActionSend, ProposedAtUnixMillis: 1_700_000_000_004,
+			Sequence: 1, PacketID: 9,
+		}}),
+		applied(13, membership.CommandDTO{Subscription: &membership.SubscriptionChangeDTO{
+			TenantID: "tenant-a", ClientID: "sub-a", OwnerNodeID: 2, Epoch: 2,
+			Filter: "late/+", QoS: 1, Action: membership.SubscriptionActionAdd,
+		}}),
+	}
+
+	reference := retainedTestMachine(t, config, config.ReleaseVersion)
+	if err := replayClusterApplied(reference, commands, nil); err != nil {
+		t.Fatalf("replay reference aggregate: %v", err)
+	}
+	if err := replayClusterApplied(machine, commands[:8], nil); err != nil {
+		t.Fatalf("replay through snapshot boundary: %v", err)
+	}
+	snapshot, err := machine.Snapshot(9)
+	if err != nil {
+		t.Fatalf("snapshot at index 9: %v", err)
+	}
+	snapshotData, err := encodeMembershipSnapshot(snapshot)
+	if err != nil {
+		t.Fatalf("encode membership snapshot: %v", err)
+	}
+	decoded, err := decodeMembershipSnapshot(snapshotData)
+	if err != nil {
+		t.Fatalf("decode membership snapshot: %v", err)
+	}
+	restored := membership.NewStateMachine()
+	if err := restored.Restore(decoded); err != nil {
+		t.Fatalf("restore membership snapshot: %v", err)
+	}
+	if err := replayClusterApplied(restored, commands, nil); err != nil {
+		t.Fatalf("replay WAL tail after snapshot: %v", err)
+	}
+
+	subscriptions := restored.Subscriptions()
+	if !reflect.DeepEqual(subscriptions, reference.Subscriptions()) {
+		t.Fatalf("replayed subscriptions = %+v, want reference %+v", subscriptions, reference.Subscriptions())
+	}
+	wantSubscriptions := []membership.SubscriptionStateDTO{
+		{TenantID: "tenant-a", ClientID: "sub-a", OwnerNodeID: 2, Epoch: 2, Filter: "late/+", QoS: 1},
+		{TenantID: "tenant-a", ClientID: "sub-a", OwnerNodeID: 2, Epoch: 2, Filter: "opts/#", QoS: 2, NoLocal: true, RetainAsPublished: true, RetainHandling: 2},
+		{TenantID: "tenant-a", ClientID: "sub-a", OwnerNodeID: 2, Epoch: 2, Filter: "plain/+/x", QoS: 1},
+	}
+	if !reflect.DeepEqual(subscriptions, wantSubscriptions) {
+		t.Fatalf("replayed subscriptions = %+v, want %+v", subscriptions, wantSubscriptions)
+	}
+	delivery, exists := restored.DeliverySession("tenant-a", "sub-a")
+	referenceDelivery, referenceExists := reference.DeliverySession("tenant-a", "sub-a")
+	if !exists || !referenceExists || !reflect.DeepEqual(delivery, referenceDelivery) ||
+		len(delivery.Messages) != 1 || delivery.Messages[0].PacketID != 7 || delivery.Messages[0].PacketID == 9 {
+		t.Fatalf("replayed delivery = %+v exists=%t, want reference %+v exists=%t with committed packet ID 7",
+			delivery, exists, referenceDelivery, referenceExists)
+	}
+	var foundOwnership bool
+	for _, ownership := range restored.Ownerships() {
+		if ownership.TenantID == "tenant-a" && ownership.ClientID == "sub-a" {
+			foundOwnership = true
+			if ownership.OwnerNodeID != 2 || ownership.Epoch != 2 {
+				t.Fatalf("replayed ownership = %+v, want owner 2 epoch 2", ownership)
+			}
+		}
+	}
+	if !foundOwnership {
+		t.Fatal("replayed ownership for tenant-a/sub-a is missing")
+	}
+
+	node, err := raftadapter.Open(raftadapter.Config{
+		NodeID: 1, PeerIDs: []raftadapter.NodeID{1, 2, 3}, Directory: t.TempDir(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer node.Close()
+	routes := routing.NewTable()
+	runtime := &clusterRuntime{
+		node: node, machine: restored, routes: routes,
+		logger: slog.New(slog.NewTextHandler(io.Discard, nil)),
+	}
+	if err := runtime.rebuildRouteProjection(); err != nil {
+		t.Fatalf("rebuildRouteProjection: %v", err)
+	}
+	sessionID, err := clusterSessionID("tenant-a", "sub-a")
+	if err != nil {
+		t.Fatalf("clusterSessionID: %v", err)
+	}
+	got, found := routes.Lookup(sessionID, "opts/#")
+	want := mqtt.Subscription{
+		Filter: "opts/#", QoS: mqtt.QoSExactlyOnce, NoLocal: true,
+		RetainAsPublished: true, RetainHandling: mqtt.DoNotSendRetained,
+	}
+	if !found || got != want {
+		t.Fatalf("projected opts/# = %+v found=%t, want %+v", got, found, want)
+	}
+	if _, found := routes.Lookup(sessionID, "late/+"); !found {
+		t.Fatal("projected late/+ subscription is missing")
+	}
+	for _, filter := range []string{"gone/#", "stale/#"} {
+		if _, found := routes.Lookup(sessionID, filter); found {
+			t.Fatalf("projected stale/removed subscription %q is present", filter)
+		}
 	}
 }
 

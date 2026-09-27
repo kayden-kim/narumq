@@ -73,6 +73,8 @@ type Config struct {
 	ClusterMode                bool
 	LocalMemberID              uint64
 	ClusterReady               func() bool
+	// ClusterProjectionReady checks local committed projection readiness without a quorum read barrier.
+	ClusterProjectionReady func() bool
 }
 
 // Server owns one listener, all connection goroutines and the session registry.
@@ -140,6 +142,7 @@ func NewServer(
 	}
 	if config.ClusterMode && (config.LocalMemberID == 0 ||
 		config.ClusterReady == nil ||
+		config.ClusterProjectionReady == nil ||
 		!connections.ClusterOwnershipConfigured(config.LocalMemberID) ||
 		!subscriptions.ClusterCommitterConfigured()) {
 		return nil, ErrInvalidConfig
@@ -164,6 +167,10 @@ func NewServer(
 
 func (server *Server) clusterReady() bool {
 	return !server.config.ClusterMode || server.config.ClusterReady()
+}
+
+func (server *Server) clusterProjectionReady() bool {
+	return !server.config.ClusterMode || server.config.ClusterProjectionReady()
 }
 
 // AddListener registers an additional listener (such as a TLS listener) to accept connections.
@@ -817,7 +824,7 @@ func (connection *connection) dispatchPublish(packet mqtt.Publish) error {
 		connection.requestClose()
 		return nil
 	}
-	if connection.server.config.ClusterMode && !connection.server.clusterReady() {
+	if connection.server.config.ClusterMode && !connection.server.clusterProjectionReady() {
 		connection.requestClose()
 		return nil
 	}

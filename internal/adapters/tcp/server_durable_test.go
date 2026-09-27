@@ -74,6 +74,7 @@ func durableTCPRuntime(t *testing.T, version mqtt.ProtocolVersion, committer *du
 	config.ClusterMode = true
 	config.LocalMemberID = 4
 	config.ClusterReady = func() bool { return true }
+	config.ClusterProjectionReady = func() bool { return true }
 	runtime := newAdapterTestRuntime(t, 8, config)
 	t.Cleanup(func() { runtime.stop(t) })
 	return runtime, durableTCPConnection(t, runtime, version, committer)
@@ -142,6 +143,46 @@ func TestTCPDurableQoS1AcknowledgesOnlyAfterCommit(t *testing.T) {
 				t.Fatalf("committed transitions = %#v, want one QoS 1 PUBLISH", committer.changes)
 			}
 			requireControlPacket(t, conn, &mqtt.PubAck{PacketID: 19})
+		})
+	}
+}
+
+// Traceability: CLU-14; docs/specs/cluster-session-and-delivery.md §4.2, §11.11.
+func TestTCPClusterDurablePublishUsesCommitWithoutReadinessPreflight(t *testing.T) {
+	for _, testCase := range []struct {
+		name        string
+		qos         mqtt.QoS
+		packetID    mqtt.PacketIdentifier
+		action      membership.DeliveryAction
+		acknowledge mqtt.Packet
+	}{
+		{
+			name: "qos1", qos: mqtt.QoSAtLeastOnce, packetID: 25,
+			action: membership.DeliveryActionPublish, acknowledge: &mqtt.PubAck{PacketID: 25},
+		},
+		{
+			name: "qos2", qos: mqtt.QoSExactlyOnce, packetID: 26,
+			action: membership.DeliveryActionReceive, acknowledge: &mqtt.PubRec{PacketID: 26},
+		},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			committer := &durableTCPCommitter{}
+			runtime, conn := durableTCPRuntime(t, mqtt.ProtocolV5, committer)
+			runtime.server.config.ClusterReady = func() bool {
+				t.Error("durable PUBLISH performed a separate quorum readiness check")
+				return false
+			}
+			packet := mqtt.Publish{
+				Version: mqtt.ProtocolV5, Topic: "durable/item", Payload: []byte("committed"),
+				QoS: testCase.qos, PacketID: testCase.packetID,
+			}
+			if err := conn.dispatchPublish(packet); err != nil {
+				t.Fatalf("dispatchPublish: %v", err)
+			}
+			if len(committer.changes) != 1 || committer.changes[0].Action != testCase.action {
+				t.Fatalf("committed transitions = %#v, want action %d", committer.changes, testCase.action)
+			}
+			requireControlPacket(t, conn, testCase.acknowledge)
 		})
 	}
 }

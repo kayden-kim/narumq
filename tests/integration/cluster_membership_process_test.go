@@ -169,7 +169,11 @@ func newClusterMembershipProcessFixture(t *testing.T, nodeCount int, buildTags s
       "durable-fault-pub-q2",
       "durable-fault-sentinel",
       "durable-fault-isolated-q1",
-      "durable-fault-isolated-q2"
+      "durable-fault-isolated-q2",
+      "replay-sub",
+      "replay-pub-1",
+      "replay-pub-2",
+      "replay-pub-4"
     ],
     "roles": ["client"]
   }],
@@ -293,6 +297,24 @@ func newClusterMembershipProcessFixture(t *testing.T, nodeCount int, buildTags s
     "effect": "allow",
     "action": "subscribe",
     "topicFilter": "durable-fault/#"
+  }, {
+    "tenantId": "acceptance",
+    "role": "client",
+    "effect": "allow",
+    "action": "publish",
+    "topicFilter": "replay/#"
+  }, {
+    "tenantId": "acceptance",
+    "role": "client",
+    "effect": "allow",
+    "action": "subscribe",
+    "topicFilter": "replay/#"
+  }, {
+    "tenantId": "acceptance",
+    "role": "client",
+    "effect": "allow",
+    "action": "unsubscribe",
+    "topicFilter": "replay/#"
   }]
 }`, jwksURL))
 	clusterMembershipProcessWriteFile(t, securityPath, securityConfig, 0o600)
