@@ -182,6 +182,9 @@ func (*fakeDeliveryQueue) ReplaceOutbound(deliveryqueue.OutboundDTO) error { ret
 func (*fakeDeliveryQueue) CompleteOutbound(routing.SessionID, mqtt.PacketIdentifier) error {
 	return nil
 }
+func (*fakeDeliveryQueue) ResetDurable(routing.SessionID, uint64, []deliveryqueue.DeliveryDTO, []deliveryqueue.OutboundDTO, time.Time) error {
+	return nil
+}
 
 type fakeTimer struct {
 	stopped  bool

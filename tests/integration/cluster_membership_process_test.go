@@ -144,7 +144,18 @@ func newClusterMembershipProcessFixture(t *testing.T, nodeCount int, buildTags s
       "live-qos0-subscriber-3",
       "live-qos0-publisher-1",
       "live-qos0-publisher-2",
-      "live-qos0-publisher-3"
+      "live-qos0-publisher-3",
+      "durable-takeover-sub",
+      "durable-offline-sub",
+      "durable-takeover-pub",
+      "durable-takeover-qos2-pub",
+      "durable-takeover-sentinel",
+      "durable-ack-sub",
+      "durable-ack-pub",
+      "durable-no-quorum-1",
+      "durable-no-quorum-2",
+      "durable-backup-sub",
+      "durable-backup-pub"
     ],
     "roles": ["client"]
   }],
@@ -190,6 +201,42 @@ func newClusterMembershipProcessFixture(t *testing.T, nodeCount int, buildTags s
     "effect": "allow",
     "action": "subscribe",
     "topicFilter": "live/#"
+  }, {
+    "tenantId": "acceptance",
+    "role": "client",
+    "effect": "allow",
+    "action": "publish",
+    "topicFilter": "durable-takeover/#"
+  }, {
+    "tenantId": "acceptance",
+    "role": "client",
+    "effect": "allow",
+    "action": "subscribe",
+    "topicFilter": "durable-takeover/#"
+  }, {
+    "tenantId": "acceptance",
+    "role": "client",
+    "effect": "allow",
+    "action": "publish",
+    "topicFilter": "durable-ack/#"
+  }, {
+    "tenantId": "acceptance",
+    "role": "client",
+    "effect": "allow",
+    "action": "subscribe",
+    "topicFilter": "durable-ack/#"
+  }, {
+    "tenantId": "acceptance",
+    "role": "client",
+    "effect": "allow",
+    "action": "publish",
+    "topicFilter": "durable-backup/#"
+  }, {
+    "tenantId": "acceptance",
+    "role": "client",
+    "effect": "allow",
+    "action": "subscribe",
+    "topicFilter": "durable-backup/#"
   }]
 }`, jwksURL))
 	clusterMembershipProcessWriteFile(t, securityPath, securityConfig, 0o600)

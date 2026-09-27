@@ -15,6 +15,7 @@ import (
 	memoryretained "narumq/internal/adapters/memory/retained"
 	"narumq/internal/adapters/memory/sessionstore"
 	"narumq/internal/application/connect"
+	"narumq/internal/application/membership"
 	applicationauthentication "narumq/internal/application/ports/authentication"
 	applicationdeliveryqueue "narumq/internal/application/ports/deliveryqueue"
 	"narumq/internal/application/publish"
@@ -115,6 +116,24 @@ func (state *adapterTestClusterState) CommitSubscription(
 	return nil
 }
 
+func (state *adapterTestClusterState) CommitDelivery(
+	_ context.Context, change membership.DeliveryChangeDTO,
+) (membership.ApplyResultDTO, error) {
+	if change.Action != membership.DeliveryActionAttach {
+		return membership.ApplyResultDTO{
+			Outcome:  membership.ApplyOutcomeApplied,
+			Delivery: &membership.DeliveryResultDTO{Found: true},
+		}, nil
+	}
+	session := membership.DeliverySessionStateDTO{
+		TenantID: change.TenantID, ClientID: change.ClientID, NextSequence: 1,
+	}
+	return membership.ApplyResultDTO{
+		Outcome:  membership.ApplyOutcomeApplied,
+		Delivery: &membership.DeliveryResultDTO{Session: &session},
+	}, nil
+}
+
 func newAdapterTestRuntime(t *testing.T, queueCapacity int, config Config) *adapterTestRuntime {
 	t.Helper()
 	listener := newPipeListener()
@@ -136,7 +155,10 @@ func newAdapterTestRuntime(t *testing.T, queueCapacity int, config Config) *adap
 	var subscriptionOptions []subscribe.Option
 	if config.ClusterMode {
 		clusterState = &adapterTestClusterState{}
-		connectionOptions = append(connectionOptions, connect.WithOwnershipCoordinator(clusterState, config.LocalMemberID))
+		connectionOptions = append(connectionOptions,
+			connect.WithOwnershipCoordinator(clusterState, config.LocalMemberID),
+			connect.WithDurableDeliveryCommitter(clusterState),
+		)
 		subscriptionOptions = append(subscriptionOptions, subscribe.WithCommitter(clusterState))
 	}
 	connections, err := connect.New(clock, repository, queue, routes, adapterTestScheduler{}, willBridge, connectionOptions...)

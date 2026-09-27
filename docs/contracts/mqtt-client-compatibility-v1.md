@@ -57,7 +57,7 @@ Profile status는 다음 의미만 사용한다.
 | Profile | Protocol | Session 설정 | 계획 drain | Will 보장 |
 | --- | --- | --- | --- | --- |
 | `MQTT311_BASIC` | MQTT 3.1.1 | `Clean Session=1` 허용 | Connection 종료 뒤 공통 LB로 재접속 | Server 주도 종료에서 Will이 발행될 수 있다. |
-| `MQTT311_PERSISTENT` | MQTT 3.1.1 | `Clean Session=0`, 같은 Client ID | Session checkpoint 뒤 공통 LB로 재접속 | Will을 설정한 client는 no-Will 보장 대상이 아니다. |
+| `MQTT311_PERSISTENT` | MQTT 3.1.1 | `Clean Session=0`, 같은 Client ID | Broker가 committed session state를 복구한 뒤 공통 LB로 재접속 | Will을 설정한 client는 no-Will 보장 대상이 아니다. |
 | `MQTT5_STANDARD` | MQTT 5.0 | Workload 필요에 맞는 Clean Start·Session Expiry | `DISCONNECT 0x9C`를 처리하거나 공통 LB로 재접속 | Will Delay 설정에 따름 |
 | `MQTT5_DRAIN_SAFE` | MQTT 5.0 | `Clean Start=0`, Session Expiry가 최악 배포 시간보다 큼 | `0x9C`와 Server Reference 처리, 같은 session key로 재접속 | Will Delay 안에 재접속하면 계획 drain Will을 억제한다. |
 
@@ -92,9 +92,9 @@ IPv6 literal과 여러 reference 목록은 v1 profile에서 지원하지 않는�
 | 조건 | Broker 동작 | Client 동작 | 분류 |
 | --- | --- | --- | --- |
 | MQTT 5, delay 안에 session resume | `0x9C`와 Server Reference 뒤 connection 종료 | 같은 session key로 재접속 | `suppressed_reconnected_within_delay` |
-| MQTT 5, 정상 DISCONNECT 협력 | Checkpoint 완료 신호 제공 | Client가 정상 DISCONNECT 후 재접속 | `suppressed_normal_disconnect` |
+| MQTT 5, 정상 DISCONNECT 협력 | Broker의 session-state replication 완료 신호 제공 | Client가 정상 DISCONNECT 후 재접속 | `suppressed_normal_disconnect` |
 | MQTT 5, Will Delay 0·만료 | 표준 시점에 Will 처리 | 재접속하더라도 이미 발행될 수 있음 | `expected_zero_or_expired_will_delay` |
-| MQTT 3.1.1, Will 설정 | Checkpoint 뒤 connection 종료 | 공통 LB로 재접속 | `expected_mqtt311_server_disconnect` |
+| MQTT 3.1.1, Will 설정 | Broker가 committed session state를 보존한 뒤 connection 종료 | 공통 LB로 재접속 | `expected_mqtt311_server_disconnect` |
 | `MQTT5_DRAIN_SAFE` 조건 충족인데 Will 발행 | 원인과 packet trace 기록 | Disconnect·resume trace 제공 | `unexpected_supported_client` |
 
 ## 6. SDK compatibility matrix

@@ -60,13 +60,13 @@ func encodeMembershipCommand(command membership.CommandDTO) ([]byte, error) {
 			RetainHandling: command.Subscription.RetainHandling, Action: action,
 		}}
 	}
-	if command.Checkpoint != nil {
+	if command.Delivery != nil {
 		payloadCount++
-		checkpoint, err := checkpointToRecord(*command.Checkpoint)
+		value, err := deliveryChangeToRecord(*command.Delivery)
 		if err != nil {
 			return nil, err
 		}
-		wire.Payload = &records.CommandEnvelope_Checkpoint{Checkpoint: checkpoint}
+		wire.Payload = &records.CommandEnvelope_Delivery{Delivery: value}
 	}
 	if command.Retained != nil {
 		payloadCount++
@@ -163,12 +163,12 @@ func decodeMembershipCommand(data []byte) (membership.CommandDTO, error) {
 			NoLocal: value.GetNoLocal(), RetainAsPublished: value.GetRetainAsPublished(),
 			RetainHandling: value.GetRetainHandling(), Action: action,
 		}
-	case *records.CommandEnvelope_Checkpoint:
-		checkpoint, err := checkpointFromRecord(payload.Checkpoint)
+	case *records.CommandEnvelope_Delivery:
+		value, err := deliveryChangeFromRecord(payload.Delivery)
 		if err != nil {
 			return membership.CommandDTO{}, err
 		}
-		command.Checkpoint = checkpoint
+		command.Delivery = value
 	case *records.CommandEnvelope_Retained:
 		value := payload.Retained
 		action, err := retainedActionFromRecord(value.GetAction())
@@ -243,12 +243,14 @@ func encodeMembershipSnapshot(snapshot membership.SnapshotDTO) ([]byte, error) {
 			RetainAsPublished: subscription.RetainAsPublished, RetainHandling: subscription.RetainHandling,
 		})
 	}
-	for _, checkpoint := range snapshot.Checkpoints {
-		value, conversionErr := checkpointToRecord(checkpoint)
+	deliveryEntriesCount := 0
+	for _, session := range snapshot.DeliverySessions {
+		value, conversionErr := deliverySessionToRecord(session)
 		if conversionErr != nil {
 			return nil, conversionErr
 		}
-		state.Checkpoints = append(state.Checkpoints, value)
+		state.DeliverySessions = append(state.DeliverySessions, value)
+		deliveryEntriesCount += len(session.Messages) + len(session.Inbound)
 	}
 	for _, record := range snapshot.MembershipHistory {
 		member, conversionErr := memberIdentityToRecord(record.Member)
@@ -294,7 +296,7 @@ func encodeMembershipSnapshot(snapshot membership.SnapshotDTO) ([]byte, error) {
 			Messages:                   messages,
 		})
 	}
-	objectCount := uint64(len(snapshot.Members) + len(snapshot.Ownerships) + len(snapshot.Subscriptions) + len(snapshot.Checkpoints) + len(snapshot.MembershipHistory) + len(snapshot.Retained) + len(snapshot.OfflineSessions) + offlineMessagesCount)
+	objectCount := uint64(len(snapshot.Members) + len(snapshot.Ownerships) + len(snapshot.Subscriptions) + len(snapshot.DeliverySessions) + deliveryEntriesCount + len(snapshot.MembershipHistory) + len(snapshot.Retained) + len(snapshot.OfflineSessions) + offlineMessagesCount)
 	if snapshot.ObjectCount != objectCount {
 		return nil, errors.New("application snapshot object count does not match its contents")
 	}
@@ -348,12 +350,12 @@ func decodeMembershipSnapshot(data []byte) (membership.SnapshotDTO, error) {
 			RetainHandling: subscription.GetRetainHandling(),
 		})
 	}
-	for _, checkpoint := range state.GetCheckpoints() {
-		value, err := checkpointFromRecord(checkpoint)
+	for _, session := range state.GetDeliverySessions() {
+		value, err := deliverySessionFromRecord(session)
 		if err != nil {
 			return membership.SnapshotDTO{}, err
 		}
-		snapshot.Checkpoints = append(snapshot.Checkpoints, *value)
+		snapshot.DeliverySessions = append(snapshot.DeliverySessions, value)
 	}
 	for _, record := range state.GetMembershipHistory() {
 		member, err := memberIdentityFromRecord(record.GetMember())
@@ -531,100 +533,126 @@ func retainedActionFromRecord(action records.RetainedAction) (membership.Retaine
 	return membership.RetainedAction(action), nil
 }
 
-func inboundPhaseToRecord(phase membership.InboundDeliveryPhase) (records.InboundDeliveryPhase, error) {
-	if phase < membership.InboundQoS1AwaitAcceptance || phase > membership.InboundQoS2Complete {
-		return 0, fmt.Errorf("unsupported inbound delivery phase %d", phase)
+func deliveryActionToRecord(action membership.DeliveryAction) (records.DeliveryAction, error) {
+	if action < membership.DeliveryActionPublish || action > membership.DeliveryActionDiscard {
+		return 0, fmt.Errorf("unsupported delivery action %d", action)
 	}
-	return records.InboundDeliveryPhase(phase), nil
+	return records.DeliveryAction(action), nil
 }
 
-func inboundPhaseFromRecord(phase records.InboundDeliveryPhase) (membership.InboundDeliveryPhase, error) {
-	if phase < records.InboundDeliveryPhase_INBOUND_QOS1_AWAIT_ACCEPTANCE || phase > records.InboundDeliveryPhase_INBOUND_QOS2_COMPLETE {
-		return 0, fmt.Errorf("unsupported inbound delivery phase %d", phase)
+func deliveryActionFromRecord(action records.DeliveryAction) (membership.DeliveryAction, error) {
+	if action < records.DeliveryAction_DELIVERY_ACTION_PUBLISH || action > records.DeliveryAction_DELIVERY_ACTION_DISCARD {
+		return 0, fmt.Errorf("unsupported delivery action %d", action)
 	}
-	return membership.InboundDeliveryPhase(phase), nil
+	return membership.DeliveryAction(action), nil
 }
 
-func outboundPhaseToRecord(phase membership.OutboundDeliveryPhase) (records.OutboundDeliveryPhase, error) {
-	if phase < membership.OutboundAwaitPubAck || phase > membership.OutboundComplete {
-		return 0, fmt.Errorf("unsupported outbound delivery phase %d", phase)
+func deliveryPhaseToRecord(phase membership.DeliveryPhase) (records.DeliveryPhase, error) {
+	if phase < membership.DeliveryPhaseQueued || phase > membership.DeliveryPhaseAwaitPubComp {
+		return 0, fmt.Errorf("unsupported delivery phase %d", phase)
 	}
-	return records.OutboundDeliveryPhase(phase), nil
+	return records.DeliveryPhase(phase), nil
 }
 
-func outboundPhaseFromRecord(phase records.OutboundDeliveryPhase) (membership.OutboundDeliveryPhase, error) {
-	if phase < records.OutboundDeliveryPhase_OUTBOUND_AWAIT_PUBACK || phase > records.OutboundDeliveryPhase_OUTBOUND_COMPLETE {
-		return 0, fmt.Errorf("unsupported outbound delivery phase %d", phase)
+func deliveryPhaseFromRecord(phase records.DeliveryPhase) (membership.DeliveryPhase, error) {
+	if phase < records.DeliveryPhase_DELIVERY_PHASE_QUEUED || phase > records.DeliveryPhase_DELIVERY_PHASE_AWAIT_PUBCOMP {
+		return 0, fmt.Errorf("unsupported delivery phase %d", phase)
 	}
-	return membership.OutboundDeliveryPhase(phase), nil
+	return membership.DeliveryPhase(phase), nil
 }
 
-func checkpointToRecord(checkpoint membership.SessionCheckpointDTO) (*records.SessionCheckpoint, error) {
-	wire := &records.SessionCheckpoint{
-		TenantId: checkpoint.TenantID, ClientId: checkpoint.ClientID,
-		OwnerNodeId: checkpoint.OwnerNodeID, Epoch: checkpoint.Epoch,
+func deliveryChangeToRecord(change membership.DeliveryChangeDTO) (*records.DeliveryChange, error) {
+	action, err := deliveryActionToRecord(change.Action)
+	if err != nil {
+		return nil, err
 	}
-	for _, item := range checkpoint.Inbound {
-		phase, err := inboundPhaseToRecord(item.Phase)
+	value := &records.DeliveryChange{
+		TenantId: change.TenantID, ClientId: change.ClientID, OwnerNodeId: change.OwnerNodeID,
+		Epoch: change.Epoch, Action: action, ProposedAtUnixMillis: change.ProposedAtUnixMillis,
+		Topic: change.Topic, Payload: append([]byte(nil), change.Payload...), Retain: change.Retain,
+		ExpiresAtUnixMillis: change.ExpiresAtUnixMillis, PacketId: change.PacketID,
+		Sequence: change.Sequence, Reset_: change.Reset,
+		SessionExpiresAtUnixMillis: change.SessionExpiresAtUnixMillis, PublishQos: change.PublishQoS,
+	}
+	for _, target := range change.Targets {
+		value.Targets = append(value.Targets, &records.DeliveryTarget{ClientId: target.ClientID, Retain: target.Retain})
+	}
+	return value, nil
+}
+
+func deliveryChangeFromRecord(change *records.DeliveryChange) (*membership.DeliveryChangeDTO, error) {
+	if change == nil {
+		return nil, errors.New("delivery change record is nil")
+	}
+	action, err := deliveryActionFromRecord(change.GetAction())
+	if err != nil {
+		return nil, err
+	}
+	value := &membership.DeliveryChangeDTO{
+		TenantID: change.GetTenantId(), ClientID: change.GetClientId(), OwnerNodeID: change.GetOwnerNodeId(),
+		Epoch: change.GetEpoch(), Action: action, ProposedAtUnixMillis: change.GetProposedAtUnixMillis(),
+		Topic: change.GetTopic(), Payload: append([]byte(nil), change.GetPayload()...), Retain: change.GetRetain(),
+		ExpiresAtUnixMillis: change.GetExpiresAtUnixMillis(), PacketID: change.GetPacketId(),
+		Sequence: change.GetSequence(), Reset: change.GetReset_(),
+		SessionExpiresAtUnixMillis: change.GetSessionExpiresAtUnixMillis(), PublishQoS: change.GetPublishQos(),
+	}
+	for _, target := range change.GetTargets() {
+		value.Targets = append(value.Targets, membership.DeliveryTargetDTO{ClientID: target.GetClientId(), Retain: target.GetRetain()})
+	}
+	return value, nil
+}
+
+func deliverySessionToRecord(session membership.DeliverySessionStateDTO) (*records.DeliverySessionState, error) {
+	value := &records.DeliverySessionState{
+		TenantId: session.TenantID, ClientId: session.ClientID,
+		SessionExpiresAtUnixMillis: session.SessionExpiresAtUnixMillis, NextSequence: session.NextSequence,
+	}
+	for _, message := range session.Messages {
+		phase, err := deliveryPhaseToRecord(message.Phase)
 		if err != nil {
 			return nil, err
 		}
-		wire.Inbound = append(wire.Inbound, &records.InboundCheckpoint{Publish: publishToRecord(item.Publish), Phase: phase})
+		value.Messages = append(value.Messages, &records.DeliveryMessage{
+			Sequence: message.Sequence, Topic: message.Topic, Payload: append([]byte(nil), message.Payload...),
+			Qos: message.QoS, Retain: message.Retain, ExpiresAtUnixMillis: message.ExpiresAtUnixMillis,
+			PacketId: message.PacketID, Phase: phase,
+		})
 	}
-	for _, item := range checkpoint.Outbound {
-		phase, err := outboundPhaseToRecord(item.Phase)
-		if err != nil {
-			return nil, err
-		}
-		wire.Outbound = append(wire.Outbound, &records.OutboundCheckpoint{Publish: publishToRecord(item.Publish), Phase: phase})
+	for _, inbound := range session.Inbound {
+		value.Inbound = append(value.Inbound, &records.InboundMessage{
+			PacketId: inbound.PacketID, Topic: inbound.Topic, Payload: append([]byte(nil), inbound.Payload...),
+			Retain: inbound.Retain, ExpiresAtUnixMillis: inbound.ExpiresAtUnixMillis,
+			Released: inbound.Released, ReleasedIndex: inbound.ReleasedIndex,
+		})
 	}
-	return wire, nil
+	return value, nil
 }
 
-func checkpointFromRecord(checkpoint *records.SessionCheckpoint) (*membership.SessionCheckpointDTO, error) {
-	if checkpoint == nil {
-		return nil, errors.New("checkpoint record is nil")
+func deliverySessionFromRecord(session *records.DeliverySessionState) (membership.DeliverySessionStateDTO, error) {
+	if session == nil {
+		return membership.DeliverySessionStateDTO{}, errors.New("delivery session record is nil")
 	}
-	result := &membership.SessionCheckpointDTO{
-		TenantID: checkpoint.GetTenantId(), ClientID: checkpoint.GetClientId(),
-		OwnerNodeID: checkpoint.GetOwnerNodeId(), Epoch: checkpoint.GetEpoch(),
+	value := membership.DeliverySessionStateDTO{
+		TenantID: session.GetTenantId(), ClientID: session.GetClientId(),
+		SessionExpiresAtUnixMillis: session.GetSessionExpiresAtUnixMillis(), NextSequence: session.GetNextSequence(),
 	}
-	for _, item := range checkpoint.GetInbound() {
-		phase, err := inboundPhaseFromRecord(item.GetPhase())
+	for _, message := range session.GetMessages() {
+		phase, err := deliveryPhaseFromRecord(message.GetPhase())
 		if err != nil {
-			return nil, err
+			return membership.DeliverySessionStateDTO{}, err
 		}
-		result.Inbound = append(result.Inbound, membership.InboundCheckpointDTO{Publish: publishFromRecord(item.GetPublish()), Phase: phase})
+		value.Messages = append(value.Messages, membership.DeliveryMessageDTO{
+			Sequence: message.GetSequence(), Topic: message.GetTopic(), Payload: append([]byte(nil), message.GetPayload()...),
+			QoS: message.GetQos(), Retain: message.GetRetain(), ExpiresAtUnixMillis: message.GetExpiresAtUnixMillis(),
+			PacketID: message.GetPacketId(), Phase: phase,
+		})
 	}
-	for _, item := range checkpoint.GetOutbound() {
-		phase, err := outboundPhaseFromRecord(item.GetPhase())
-		if err != nil {
-			return nil, err
-		}
-		result.Outbound = append(result.Outbound, membership.OutboundCheckpointDTO{Publish: publishFromRecord(item.GetPublish()), Phase: phase})
+	for _, inbound := range session.GetInbound() {
+		value.Inbound = append(value.Inbound, membership.DeliveryInboundDTO{
+			PacketID: inbound.GetPacketId(), Topic: inbound.GetTopic(), Payload: append([]byte(nil), inbound.GetPayload()...),
+			Retain: inbound.GetRetain(), ExpiresAtUnixMillis: inbound.GetExpiresAtUnixMillis(),
+			Released: inbound.GetReleased(), ReleasedIndex: inbound.GetReleasedIndex(),
+		})
 	}
-	return result, nil
-}
-
-func publishToRecord(packet membership.PublishPacketDTO) *records.PublishPacket {
-	return &records.PublishPacket{
-		ProtocolVersion: packet.ProtocolVersion, Dup: packet.DUP, Qos: packet.QoS,
-		Retain: packet.Retain, PacketId: packet.PacketID, Topic: packet.Topic,
-		Payload:                  append([]byte(nil), packet.Payload...),
-		HasMessageExpiryInterval: packet.HasMessageExpiryInterval,
-		MessageExpiryInterval:    packet.MessageExpiryInterval,
-	}
-}
-
-func publishFromRecord(packet *records.PublishPacket) membership.PublishPacketDTO {
-	if packet == nil {
-		return membership.PublishPacketDTO{}
-	}
-	return membership.PublishPacketDTO{
-		ProtocolVersion: packet.GetProtocolVersion(), DUP: packet.GetDup(), QoS: packet.GetQos(),
-		Retain: packet.GetRetain(), PacketID: packet.GetPacketId(), Topic: packet.GetTopic(),
-		Payload:                  append([]byte(nil), packet.GetPayload()...),
-		HasMessageExpiryInterval: packet.GetHasMessageExpiryInterval(),
-		MessageExpiryInterval:    packet.GetMessageExpiryInterval(),
-	}
+	return value, nil
 }

@@ -109,15 +109,15 @@ func TestMembershipRecordEnumMappingsAreBijectiveAndBounded(t *testing.T) {
 			records.SubscriptionAction_SUBSCRIPTION_ACTION_ADD, records.SubscriptionAction_SUBSCRIPTION_ACTION_REMOVE,
 			subscriptionActionToRecord, subscriptionActionFromRecord)
 	})
-	t.Run("inbound phase", func(t *testing.T) {
-		ccfCheckEnumMapping(t, membership.InboundQoS1AwaitAcceptance, membership.InboundQoS2Complete,
-			records.InboundDeliveryPhase_INBOUND_QOS1_AWAIT_ACCEPTANCE, records.InboundDeliveryPhase_INBOUND_QOS2_COMPLETE,
-			inboundPhaseToRecord, inboundPhaseFromRecord)
+	t.Run("delivery action", func(t *testing.T) {
+		ccfCheckEnumMapping(t, membership.DeliveryActionPublish, membership.DeliveryActionDiscard,
+			records.DeliveryAction_DELIVERY_ACTION_PUBLISH, records.DeliveryAction_DELIVERY_ACTION_DISCARD,
+			deliveryActionToRecord, deliveryActionFromRecord)
 	})
-	t.Run("outbound phase", func(t *testing.T) {
-		ccfCheckEnumMapping(t, membership.OutboundAwaitPubAck, membership.OutboundComplete,
-			records.OutboundDeliveryPhase_OUTBOUND_AWAIT_PUBACK, records.OutboundDeliveryPhase_OUTBOUND_COMPLETE,
-			outboundPhaseToRecord, outboundPhaseFromRecord)
+	t.Run("delivery phase", func(t *testing.T) {
+		ccfCheckEnumMapping(t, membership.DeliveryPhaseQueued, membership.DeliveryPhaseAwaitPubComp,
+			records.DeliveryPhase_DELIVERY_PHASE_QUEUED, records.DeliveryPhase_DELIVERY_PHASE_AWAIT_PUBCOMP,
+			deliveryPhaseToRecord, deliveryPhaseFromRecord)
 	})
 }
 
@@ -125,7 +125,10 @@ func TestMembershipRecordBridgeRejectsUnsupportedCommandValues(t *testing.T) {
 	member := ccfStagedMember()
 	invalidPhaseMember := member
 	invalidPhaseMember.Phase = membership.MemberPhaseUnspecified
-	publish := membership.PublishPacketDTO{ProtocolVersion: 5, QoS: 1, PacketID: 1, Topic: "a/b", Payload: []byte("p")}
+	delivery := membership.DeliveryChangeDTO{
+		TenantID: "tenant", ClientID: "client", Action: membership.DeliveryActionPublish,
+		ProposedAtUnixMillis: 1, Topic: "a/b", Payload: []byte("p"), PublishQoS: 1,
+	}
 	cases := []struct {
 		name    string
 		command membership.CommandDTO
@@ -143,15 +146,18 @@ func TestMembershipRecordBridgeRejectsUnsupportedCommandValues(t *testing.T) {
 		{name: "subscription action", command: membership.CommandDTO{Subscription: &membership.SubscriptionChangeDTO{
 			TenantID: "tenant", ClientID: "client", OwnerNodeID: 1, Epoch: 1, Filter: "a/#", Action: membership.SubscriptionActionRemove + 1,
 		}}, want: "unsupported subscription action"},
-		{name: "inbound phase", command: membership.CommandDTO{Checkpoint: &membership.SessionCheckpointDTO{
-			TenantID: "tenant", ClientID: "client", OwnerNodeID: 1, Epoch: 1,
-			Inbound: []membership.InboundCheckpointDTO{{Publish: publish, Phase: membership.InboundQoS2Complete + 1}},
-		}}, want: "unsupported inbound delivery phase"},
-		{name: "outbound phase", command: membership.CommandDTO{Checkpoint: &membership.SessionCheckpointDTO{
-			TenantID: "tenant", ClientID: "client", OwnerNodeID: 1, Epoch: 1,
-			Outbound: []membership.OutboundCheckpointDTO{{Publish: publish, Phase: membership.OutboundPhaseUnspecified}},
-		}}, want: "unsupported outbound delivery phase"},
+		{name: "delivery action", command: membership.CommandDTO{Delivery: func() *membership.DeliveryChangeDTO {
+			value := delivery
+			value.Action = membership.DeliveryActionDiscard + 1
+			return &value
+		}()}, want: "unsupported delivery action"},
 		{name: "two payloads", command: membership.CommandDTO{
+			Delivery: &delivery,
+			Ownership: &membership.OwnershipChangeDTO{
+				TenantID: "tenant", ClientID: "client", OwnerNodeID: 1, Epoch: 1, Action: membership.OwnershipActionAcquire,
+			},
+		}, want: "exactly one payload"},
+		{name: "ownership and subscription", command: membership.CommandDTO{
 			Ownership: &membership.OwnershipChangeDTO{
 				TenantID: "tenant", ClientID: "client", OwnerNodeID: 1, Epoch: 1, Action: membership.OwnershipActionAcquire,
 			},
@@ -206,11 +212,11 @@ func TestMembershipRecordBridgeRejectsMalformedWire(t *testing.T) {
 	if snapshot, err := decodeMembershipSnapshot(malformed); err == nil || !reflect.DeepEqual(snapshot, membership.SnapshotDTO{}) {
 		t.Fatalf("decodeMembershipSnapshot(malformed) = (%#v, %v), want zero snapshot and error", snapshot, err)
 	}
-	if _, err := checkpointFromRecord(nil); err == nil {
-		t.Fatal("checkpointFromRecord accepted nil record")
+	if _, err := deliveryChangeFromRecord(nil); err == nil {
+		t.Fatal("deliveryChangeFromRecord accepted nil record")
 	}
-	if got := publishFromRecord(nil); !reflect.DeepEqual(got, membership.PublishPacketDTO{}) {
-		t.Fatalf("publishFromRecord(nil) = %#v, want zero packet", got)
+	if got, err := deliverySessionFromRecord(nil); err == nil || !reflect.DeepEqual(got, membership.DeliverySessionStateDTO{}) {
+		t.Fatalf("deliverySessionFromRecord(nil) = (%#v, %v), want zero state and error", got, err)
 	}
 }
 
@@ -231,13 +237,13 @@ func TestMembershipRecordBridgeRejectsInvalidSnapshots(t *testing.T) {
 			s.Members = []membership.MemberIdentityDTO{invalidPhaseMember}
 			s.ObjectCount = 1
 		}, want: "unsupported member phase"},
-		{name: "checkpoint phase", edit: func(s *membership.SnapshotDTO) {
-			s.Checkpoints = []membership.SessionCheckpointDTO{{
-				TenantID: "tenant", ClientID: "client", OwnerNodeID: 1, Epoch: 1,
-				Inbound: []membership.InboundCheckpointDTO{{Phase: membership.InboundPhaseUnspecified}},
+		{name: "delivery phase", edit: func(s *membership.SnapshotDTO) {
+			s.DeliverySessions = []membership.DeliverySessionStateDTO{{
+				TenantID: "tenant", ClientID: "client", NextSequence: 2,
+				Messages: []membership.DeliveryMessageDTO{{Sequence: 1, Topic: "a/b", QoS: 1, PacketID: 1, Phase: membership.DeliveryPhaseUnspecified}},
 			}}
-			s.ObjectCount = 1
-		}, want: "unsupported inbound delivery phase"},
+			s.ObjectCount = 2
+		}, want: "unsupported delivery phase"},
 		{name: "history member phase", edit: func(s *membership.SnapshotDTO) {
 			s.MembershipHistory = []membership.MembershipRecordDTO{{
 				OperationID: ccfOperation, Action: membership.MembershipActionStageJoin, IdempotencyKey: "k",

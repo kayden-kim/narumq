@@ -261,6 +261,31 @@ func TestDispatchPublishQoS2AndHandshake(t *testing.T) {
 	default:
 		t.Fatal("expected PubComp for unknown ID in control queue")
 	}
+	// A subsequent inbound exchange must still acquire deliveryMu.
+	nextPublish := make(chan error, 1)
+	go func() {
+		nextPublish <- conn.dispatchPublish(mqtt.Publish{
+			Version: mqtt.ProtocolV5, Topic: "after/unknown-pubrel", Payload: []byte("next"),
+			QoS: mqtt.QoSExactlyOnce, PacketID: 1000,
+		})
+	}()
+	select {
+	case err := <-nextPublish:
+		if err != nil {
+			t.Fatalf("next QoS2 PUBLISH after unknown PUBREL: %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("next QoS2 PUBLISH blocked after unknown PUBREL")
+	}
+	select {
+	case msg := <-conn.controlQueue:
+		pubrec, ok := msg.packet.(*mqtt.PubRec)
+		if !ok || pubrec.PacketID != 1000 {
+			t.Fatalf("next QoS2 response = %#v, want PUBREC for 1000", msg.packet)
+		}
+	default:
+		t.Fatal("next QoS2 PUBLISH did not enqueue PUBREC")
+	}
 }
 
 // Traceability: PRD MQTT-08/TEST-03/TEST-04/TEST-05; docs/specs/mqtt-protocol-and-session.md §5; MQTT-3.3.2-5/6.

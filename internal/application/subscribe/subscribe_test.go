@@ -48,6 +48,9 @@ func (*recordingQueue) ListOutbound(routing.SessionID) ([]deliveryqueue.Outbound
 	return nil, nil
 }
 func (*recordingQueue) ReplaceOutbound(deliveryqueue.OutboundDTO) error { return nil }
+func (*recordingQueue) ResetDurable(routing.SessionID, uint64, []deliveryqueue.DeliveryDTO, []deliveryqueue.OutboundDTO, time.Time) error {
+	return nil
+}
 func (*recordingQueue) CompleteOutbound(routing.SessionID, mqtt.PacketIdentifier) error {
 	return nil
 }

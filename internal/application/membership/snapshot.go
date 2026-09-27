@@ -53,9 +53,19 @@ func (machine *StateMachine) Restore(snapshot SnapshotDTO) error {
 	for _, subscription := range copyOfSnapshot.Subscriptions {
 		subscriptions[subscriptionKey{sessionKey: sessionKey{tenantID: subscription.TenantID, clientID: subscription.ClientID}, filter: subscription.Filter}] = subscription
 	}
-	checkpoints := make(map[sessionKey]SessionCheckpointDTO, len(copyOfSnapshot.Checkpoints))
-	for _, checkpoint := range copyOfSnapshot.Checkpoints {
-		checkpoints[sessionKey{tenantID: checkpoint.TenantID, clientID: checkpoint.ClientID}] = cloneCheckpoint(checkpoint)
+	delivery := make(map[sessionKey]DeliverySessionStateDTO, len(copyOfSnapshot.DeliverySessions))
+	deliveryEntries, deliveryBytes := 0, 0
+	for _, record := range copyOfSnapshot.DeliverySessions {
+		key := sessionKey{tenantID: record.TenantID, clientID: record.ClientID}
+		cloned := cloneDeliverySession(record)
+		delivery[key] = cloned
+		deliveryEntries += len(cloned.Messages) + len(cloned.Inbound)
+		for _, message := range cloned.Messages {
+			deliveryBytes += deliveryMessageBytes(key, message)
+		}
+		for _, inbound := range cloned.Inbound {
+			deliveryBytes += deliveryInboundBytes(key, inbound)
+		}
 	}
 	retained := make(map[retainedKey]RetainedStateDTO, len(copyOfSnapshot.Retained))
 	retainedBytes := 0
@@ -83,9 +93,10 @@ func (machine *StateMachine) Restore(snapshot SnapshotDTO) error {
 	machine.retained = retained
 	machine.retainedBytes = retainedBytes
 	machine.offline = offline
-	machine.offlineMessages = offlineMessages
 	machine.offlineBytes = offlineBytes
-	machine.checkpoints = checkpoints
+	machine.delivery = delivery
+	machine.deliveryEntries = deliveryEntries
+	machine.deliveryBytes = deliveryBytes
 	return nil
 }
 
@@ -95,8 +106,7 @@ func (machine *StateMachine) snapshotLocked(lastIncludedIndex uint64) SnapshotDT
 		Members:           make([]MemberIdentityDTO, 0, len(machine.members)),
 		Ownerships:        make([]OwnershipStateDTO, 0, len(machine.ownerships)),
 		Subscriptions:     make([]SubscriptionStateDTO, 0, len(machine.subscriptions)),
-		Checkpoints:       make([]SessionCheckpointDTO, 0, len(machine.checkpoints)),
-		Retained:          make([]RetainedStateDTO, 0, len(machine.retained)),
+		DeliverySessions:  make([]DeliverySessionStateDTO, 0, len(machine.delivery)),
 		MembershipHistory: make([]MembershipRecordDTO, 0, len(machine.operations)),
 		OfflineSessions:   make([]OfflineSessionStateDTO, 0, len(machine.offline)),
 	}
@@ -109,8 +119,8 @@ func (machine *StateMachine) snapshotLocked(lastIncludedIndex uint64) SnapshotDT
 	for _, subscription := range machine.subscriptions {
 		snapshot.Subscriptions = append(snapshot.Subscriptions, subscription)
 	}
-	for _, checkpoint := range machine.checkpoints {
-		snapshot.Checkpoints = append(snapshot.Checkpoints, cloneCheckpoint(checkpoint))
+	for _, record := range machine.delivery {
+		snapshot.DeliverySessions = append(snapshot.DeliverySessions, cloneDeliverySession(record))
 	}
 	for _, operation := range machine.operations {
 		snapshot.MembershipHistory = append(snapshot.MembershipHistory, cloneMembershipRecord(operation.view.Record))
@@ -130,8 +140,8 @@ func (machine *StateMachine) snapshotLocked(lastIncludedIndex uint64) SnapshotDT
 	sort.Slice(snapshot.Subscriptions, func(left, right int) bool {
 		return compareSubscription(snapshot.Subscriptions[left], snapshot.Subscriptions[right]) < 0
 	})
-	sort.Slice(snapshot.Checkpoints, func(left, right int) bool {
-		return compareSession(snapshot.Checkpoints[left].TenantID, snapshot.Checkpoints[left].ClientID, snapshot.Checkpoints[right].TenantID, snapshot.Checkpoints[right].ClientID) < 0
+	sort.Slice(snapshot.DeliverySessions, func(left, right int) bool {
+		return compareSession(snapshot.DeliverySessions[left].TenantID, snapshot.DeliverySessions[left].ClientID, snapshot.DeliverySessions[right].TenantID, snapshot.DeliverySessions[right].ClientID) < 0
 	})
 	sort.Slice(snapshot.Retained, func(left, right int) bool {
 		return compareRetained(snapshot.Retained[left], snapshot.Retained[right]) < 0
@@ -142,15 +152,19 @@ func (machine *StateMachine) snapshotLocked(lastIncludedIndex uint64) SnapshotDT
 	sort.Slice(snapshot.OfflineSessions, func(left, right int) bool {
 		return compareOffline(snapshot.OfflineSessions[left], snapshot.OfflineSessions[right]) < 0
 	})
-	for index := range snapshot.Checkpoints {
-		sort.Slice(snapshot.Checkpoints[index].Inbound, func(left, right int) bool {
-			return snapshot.Checkpoints[index].Inbound[left].Publish.PacketID < snapshot.Checkpoints[index].Inbound[right].Publish.PacketID
+	for index := range snapshot.DeliverySessions {
+		sort.Slice(snapshot.DeliverySessions[index].Messages, func(left, right int) bool {
+			return snapshot.DeliverySessions[index].Messages[left].Sequence < snapshot.DeliverySessions[index].Messages[right].Sequence
 		})
-		sort.Slice(snapshot.Checkpoints[index].Outbound, func(left, right int) bool {
-			return snapshot.Checkpoints[index].Outbound[left].Publish.PacketID < snapshot.Checkpoints[index].Outbound[right].Publish.PacketID
+		sort.Slice(snapshot.DeliverySessions[index].Inbound, func(left, right int) bool {
+			return snapshot.DeliverySessions[index].Inbound[left].PacketID < snapshot.DeliverySessions[index].Inbound[right].PacketID
 		})
 	}
-	snapshot.ObjectCount = uint64(len(snapshot.Members) + len(snapshot.Ownerships) + len(snapshot.Subscriptions) + len(snapshot.Checkpoints) + len(snapshot.MembershipHistory) + len(snapshot.Retained) + len(snapshot.OfflineSessions) + offlineMessagesCount)
+	deliveryEntries := 0
+	for _, record := range snapshot.DeliverySessions {
+		deliveryEntries += len(record.Messages) + len(record.Inbound)
+	}
+	snapshot.ObjectCount = uint64(len(snapshot.Members) + len(snapshot.Ownerships) + len(snapshot.Subscriptions) + len(snapshot.DeliverySessions) + deliveryEntries + len(snapshot.MembershipHistory) + len(snapshot.Retained) + len(snapshot.OfflineSessions) + offlineMessagesCount)
 	return snapshot
 }
 
@@ -259,9 +273,9 @@ func cloneSnapshot(snapshot SnapshotDTO) SnapshotDTO {
 	}
 	copyOfSnapshot.Ownerships = append([]OwnershipStateDTO(nil), snapshot.Ownerships...)
 	copyOfSnapshot.Subscriptions = append([]SubscriptionStateDTO(nil), snapshot.Subscriptions...)
-	copyOfSnapshot.Checkpoints = make([]SessionCheckpointDTO, len(snapshot.Checkpoints))
-	for index, checkpoint := range snapshot.Checkpoints {
-		copyOfSnapshot.Checkpoints[index] = cloneCheckpoint(checkpoint)
+	copyOfSnapshot.DeliverySessions = make([]DeliverySessionStateDTO, len(snapshot.DeliverySessions))
+	for index, record := range snapshot.DeliverySessions {
+		copyOfSnapshot.DeliverySessions[index] = cloneDeliverySession(record)
 	}
 	copyOfSnapshot.MembershipHistory = make([]MembershipRecordDTO, len(snapshot.MembershipHistory))
 	for index, record := range snapshot.MembershipHistory {
@@ -281,5 +295,5 @@ func cloneSnapshot(snapshot SnapshotDTO) SnapshotDTO {
 }
 
 func sameSnapshotState(left, right SnapshotDTO) bool {
-	return left.SchemaMajor == right.SchemaMajor && left.SchemaMinor == right.SchemaMinor && left.LastIncludedIndex == right.LastIncludedIndex && left.ObjectCount == right.ObjectCount && reflect.DeepEqual(left.Members, right.Members) && reflect.DeepEqual(left.Ownerships, right.Ownerships) && reflect.DeepEqual(left.Subscriptions, right.Subscriptions) && reflect.DeepEqual(left.Checkpoints, right.Checkpoints) && reflect.DeepEqual(left.MembershipHistory, right.MembershipHistory) && reflect.DeepEqual(left.Retained, right.Retained) && reflect.DeepEqual(left.OfflineSessions, right.OfflineSessions)
+	return left.SchemaMajor == right.SchemaMajor && left.SchemaMinor == right.SchemaMinor && left.LastIncludedIndex == right.LastIncludedIndex && left.ObjectCount == right.ObjectCount && reflect.DeepEqual(left.Members, right.Members) && reflect.DeepEqual(left.Ownerships, right.Ownerships) && reflect.DeepEqual(left.Subscriptions, right.Subscriptions) && reflect.DeepEqual(left.DeliverySessions, right.DeliverySessions) && reflect.DeepEqual(left.MembershipHistory, right.MembershipHistory) && reflect.DeepEqual(left.Retained, right.Retained) && reflect.DeepEqual(left.OfflineSessions, right.OfflineSessions)
 }

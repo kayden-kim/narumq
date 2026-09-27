@@ -120,7 +120,7 @@ func (s *SessionStore) Acquire(req *AcquireRequest) error {
 
 ## 정상 흐름: Session Takeover (인계) 시퀀스
 
-클라이언트가 노드 A에서 노드 B로 재접속할 때, 펜싱 토큰을 활용한 안전한 세션 인계 과정은 다음과 같습니다. Drain 중인 A의 최종 checkpoint와 B의 takeover가 하나의 committed ordering으로 관찰된다고 가정합니다.
+클라이언트가 노드 A에서 노드 B로 재접속할 때, 펜싱 토큰을 활용한 세션 인계 과정은 다음과 같습니다. QoS 1/2 state transition은 각 wire effect보다 먼저 commit되므로 별도의 최종 checkpoint를 보내지 않습니다. Planned drain 자체는 아직 구현되지 않았습니다.
 
 ```mermaid
 sequenceDiagram
@@ -131,9 +131,7 @@ sequenceDiagram
     participant Q as Quorum / 세션 저장소 (현재 Epoch 41)
 
     Note over A,Q: drain 시작, 새 connection admission 중단
-    A->>Q: 최종 subscription checkpoint (owner=A, epoch=41)
-    A->>Q: 최종 QoS inflight checkpoint (owner=A, epoch=41)
-    Q-->>A: 현재 epoch checkpoint commit
+    Note over A,Q: Persistent subscription과 각 QoS transition은 변경 시점에 commit됨; 별도 최종 checkpoint 없음
 
     C->>B: CONNECT (clientId="truck-101")
     B->>Q: Acquire (expectedEpoch=41, owner=B)
@@ -154,7 +152,7 @@ sequenceDiagram
     Note over Q: authoritative aggregate와 route projection은 변경되지 않음
 ```
 
-1. **최종 checkpoint 후 소유권 획득**: A의 현재 epoch subscription·inflight checkpoint가 먼저 commit되고, B는 새 Epoch(42)의 Quorum commit을 받은 뒤에만 client traffic을 처리합니다.
+1. **Commit된 session state로 takeover**: 각 QoS transition은 현재 epoch에서 commit됩니다. B는 새 Epoch(42)의 Quorum commit을 받은 뒤 ATTACH로 durable queue와 inflight state를 복구하고 client traffic을 처리합니다.
 2. **저장소가 최종 심판**: A의 route-affecting subscription 또는 inflight mutation은 요청 도착 시각이나 local route cache와 무관하게 exact `ownerNodeId`·`epoch` check에서 거절됩니다. 거절 command도 application sequence position은 소비하지만 aggregate와 projection은 바꾸지 않습니다.
 3. **Projection은 다시 만들 수 있어야 함**: B는 committed persistent subscription에서 node-local route projection을 rebuild한 뒤에만 routing readiness를 광고합니다.
 

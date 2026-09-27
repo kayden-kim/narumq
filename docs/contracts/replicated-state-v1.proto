@@ -5,8 +5,8 @@ package narumq.cluster.v1;
 option go_package = "narumq/internal/adapters/raft/records;records";
 
 // Draft state schema 1.0 rejects unknown fields. Mixed-release membership is
-// unsupported; retained and offline commands are admitted only when every active committed
-// member's exact release, cluster protocol, and state schema match locally.
+// unsupported; retained, offline, and delivery commands are admitted only when every active
+// committed member's exact release, cluster protocol, and state schema match locally.
 
 enum MemberPhase {
   MEMBER_PHASE_UNSPECIFIED = 0;
@@ -54,22 +54,26 @@ enum OfflineAction {
   OFFLINE_ACTION_CLAIM = 3;
 }
 
-enum InboundDeliveryPhase {
-  INBOUND_PHASE_UNSPECIFIED = 0;
-  INBOUND_QOS1_AWAIT_ACCEPTANCE = 1;
-  INBOUND_QOS1_ACCEPTED = 2;
-  INBOUND_QOS2_AWAIT_ACCEPTANCE = 3;
-  INBOUND_QOS2_AWAIT_RELEASE = 4;
-  INBOUND_QOS2_AWAIT_FINAL_ACCEPTANCE = 5;
-  INBOUND_QOS2_COMPLETE = 6;
+
+enum DeliveryAction {
+  DELIVERY_ACTION_UNSPECIFIED = 0;
+  DELIVERY_ACTION_PUBLISH = 1;
+  DELIVERY_ACTION_RECEIVE = 2;
+  DELIVERY_ACTION_RELEASE = 3;
+  DELIVERY_ACTION_SEND = 4;
+  DELIVERY_ACTION_ADVANCE = 5;
+  DELIVERY_ACTION_COMPLETE = 6;
+  DELIVERY_ACTION_ATTACH = 7;
+  DELIVERY_ACTION_DETACH = 8;
+  DELIVERY_ACTION_DISCARD = 9;
 }
 
-enum OutboundDeliveryPhase {
-  OUTBOUND_PHASE_UNSPECIFIED = 0;
-  OUTBOUND_AWAIT_PUBACK = 1;
-  OUTBOUND_AWAIT_PUBREC = 2;
-  OUTBOUND_AWAIT_PUBCOMP = 3;
-  OUTBOUND_COMPLETE = 4;
+enum DeliveryPhase {
+  DELIVERY_PHASE_UNSPECIFIED = 0;
+  DELIVERY_PHASE_QUEUED = 1;
+  DELIVERY_PHASE_AWAIT_PUBACK = 2;
+  DELIVERY_PHASE_AWAIT_PUBREC = 3;
+  DELIVERY_PHASE_AWAIT_PUBCOMP = 4;
 }
 
 // Every application log entry has exactly one typed payload. operation_id is a
@@ -82,10 +86,13 @@ message CommandEnvelope {
     MembershipRecord membership = 10;
     OwnershipChange ownership = 11;
     SubscriptionChange subscription = 12;
-    SessionCheckpoint checkpoint = 13;
+    DeliveryChange delivery = 16;
     RetainedChange retained = 14;
     OfflineChange offline = 15;
   }
+  reserved 13;
+  reserved "checkpoint";
+
 }
 
 // Identity fields are committed before the candidate can send a Raft message.
@@ -149,37 +156,59 @@ message SubscriptionChange {
   SubscriptionAction action = 10;
 }
 
-// This is the exact supported MQTT PUBLISH domain subset, not an opaque Go
-// struct encoding. payload is bounded by the enclosing command limit.
-message PublishPacket {
-  uint32 protocol_version = 1;
-  bool dup = 2;
-  uint32 qos = 3;
-  bool retain = 4;
-  uint32 packet_id = 5;
-  string topic = 6;
-  bytes payload = 7;
-  bool has_message_expiry_interval = 8;
-  uint32 message_expiry_interval = 9;
+
+message DeliveryTarget {
+  string client_id = 1;
+  bool retain = 2;
 }
 
-message InboundCheckpoint {
-  PublishPacket publish = 1;
-  InboundDeliveryPhase phase = 2;
-}
-
-message OutboundCheckpoint {
-  PublishPacket publish = 1;
-  OutboundDeliveryPhase phase = 2;
-}
-
-message SessionCheckpoint {
+message DeliveryChange {
   string tenant_id = 1;
   string client_id = 2;
   uint64 owner_node_id = 3;
   uint64 epoch = 4;
-  repeated InboundCheckpoint inbound = 5;
-  repeated OutboundCheckpoint outbound = 6;
+  DeliveryAction action = 5;
+  uint64 proposed_at_unix_millis = 6;
+  string topic = 7;
+  bytes payload = 8;
+  bool retain = 9;
+  uint64 expires_at_unix_millis = 10;
+  uint32 packet_id = 11;
+  repeated DeliveryTarget targets = 12;
+  uint64 sequence = 13;
+  bool reset = 14;
+  uint64 session_expires_at_unix_millis = 15;
+  uint32 publish_qos = 16;
+}
+
+message DeliveryMessage {
+  uint64 sequence = 1;
+  string topic = 2;
+  bytes payload = 3;
+  uint32 qos = 4;
+  bool retain = 5;
+  uint64 expires_at_unix_millis = 6;
+  uint32 packet_id = 7;
+  DeliveryPhase phase = 8;
+}
+
+message InboundMessage {
+  uint32 packet_id = 1;
+  string topic = 2;
+  bytes payload = 3;
+  bool retain = 4;
+  uint64 expires_at_unix_millis = 5;
+  bool released = 6;
+  uint64 released_index = 7;
+}
+
+message DeliverySessionState {
+  string tenant_id = 1;
+  string client_id = 2;
+  uint64 session_expires_at_unix_millis = 3;
+  uint64 next_sequence = 4;
+  repeated DeliveryMessage messages = 5;
+  repeated InboundMessage inbound = 6;
 }
 
 // Retained values are keyed by (tenant_id, topic). Timestamps are proposer Unix
@@ -251,10 +280,12 @@ message ReplicatedStateSnapshot {
   repeated MemberIdentity members = 1;
   repeated OwnershipState ownerships = 2;
   repeated SubscriptionState subscriptions = 3;
-  repeated SessionCheckpoint checkpoints = 4;
+  reserved 4;
+  reserved "checkpoints";
   repeated MembershipRecord membership_history = 5;
   repeated RetainedState retained = 6;
   repeated OfflineSessionState offline_sessions = 7;
+  repeated DeliverySessionState delivery_sessions = 8;
 }
 
 message SnapshotEnvelope {

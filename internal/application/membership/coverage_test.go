@@ -51,12 +51,18 @@ func cmaSubscriptionCommand(operationID string, change SubscriptionChangeDTO) Co
 	return CommandDTO{SchemaMajor: SchemaMajor, SchemaMinor: SchemaMinor, OperationID: operationID, Subscription: &change}
 }
 
-func cmaCheckpointCommand(operationID string, checkpoint SessionCheckpointDTO) CommandDTO {
-	return CommandDTO{SchemaMajor: SchemaMajor, SchemaMinor: SchemaMinor, OperationID: operationID, Checkpoint: &checkpoint}
+func cmaDeliveryCommand(change DeliveryChangeDTO) CommandDTO {
+	return CommandDTO{SchemaMajor: SchemaMajor, SchemaMinor: SchemaMinor, OperationID: testOperation4, Delivery: &change}
 }
 
-func cmaPublish(qos, packetID uint32) PublishPacketDTO {
-	return PublishPacketDTO{ProtocolVersion: 5, QoS: qos, PacketID: packetID, Topic: "orders/new", Payload: []byte("payload")}
+func cmaWithDelivery(mutate func(*DeliveryChangeDTO)) CommandDTO {
+	change := DeliveryChangeDTO{
+		TenantID: cmaTenantID, ClientID: cmaClientID, OwnerNodeID: 1, Epoch: 1,
+		Action: DeliveryActionReceive, ProposedAtUnixMillis: 1, PacketID: 7,
+		Topic: "orders/new", Payload: []byte("payload"),
+	}
+	mutate(&change)
+	return cmaDeliveryCommand(change)
 }
 
 func cmaWithOwnership(mutate func(*OwnershipChangeDTO)) CommandDTO {
@@ -69,20 +75,6 @@ func cmaWithSubscription(mutate func(*SubscriptionChangeDTO)) CommandDTO {
 	change := SubscriptionChangeDTO{TenantID: cmaTenantID, ClientID: cmaClientID, OwnerNodeID: 1, Epoch: 1, Filter: "orders/#", QoS: 1, Action: SubscriptionActionAdd}
 	mutate(&change)
 	return cmaSubscriptionCommand(testOperation4, change)
-}
-
-func cmaWithCheckpoint(mutate func(*SessionCheckpointDTO)) CommandDTO {
-	checkpoint := SessionCheckpointDTO{
-		TenantID: cmaTenantID, ClientID: cmaClientID, OwnerNodeID: 1, Epoch: 1,
-		Inbound:  []InboundCheckpointDTO{{Publish: cmaPublish(1, 7), Phase: InboundQoS1AwaitAcceptance}},
-		Outbound: []OutboundCheckpointDTO{{Publish: cmaPublish(1, 7), Phase: OutboundAwaitPubAck}},
-	}
-	mutate(&checkpoint)
-	return cmaCheckpointCommand(testOperation4, checkpoint)
-}
-
-func cmaWithInboundPublish(mutate func(*PublishPacketDTO)) CommandDTO {
-	return cmaWithCheckpoint(func(checkpoint *SessionCheckpointDTO) { mutate(&checkpoint.Inbound[0].Publish) })
 }
 
 // cmaLongDNSName returns a four-label DNS name of 192+lastLabel bytes whose labels are individually valid.
@@ -151,7 +143,7 @@ func TestCMAApplyAcceptsStructurallyValidBaseCommands(t *testing.T) {
 		{name: "abort stage", command: cmaMembershipCommand(MembershipActionAbortStage, 0, cmaMemberPointer(4, MemberPhaseRetired, ""), nil), outcome: ApplyOutcomeConflict, conflict: ConflictConfigurationMismatch},
 		{name: "ownership", command: cmaWithOwnership(func(*OwnershipChangeDTO) {}), outcome: ApplyOutcomeApplied},
 		{name: "subscription", command: cmaWithSubscription(func(*SubscriptionChangeDTO) {}), outcome: ApplyOutcomeApplied},
-		{name: "checkpoint", command: cmaWithCheckpoint(func(*SessionCheckpointDTO) {}), outcome: ApplyOutcomeApplied},
+		{name: "delivery receive", command: cmaWithDelivery(func(*DeliveryChangeDTO) {}), outcome: ApplyOutcomeConflict, conflict: ConflictDeliverySessionMissing},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -307,35 +299,24 @@ func TestCMAApplyRejectsMalformedCommandsWithoutAdvancing(t *testing.T) {
 		{name: "subscription unspecified action", command: cmaWithSubscription(func(change *SubscriptionChangeDTO) { change.Action = SubscriptionActionUnspecified })},
 		{name: "subscription action beyond remove", command: cmaWithSubscription(func(change *SubscriptionChangeDTO) { change.Action = SubscriptionActionRemove + 1 })},
 
-		{name: "checkpoint invalid session", command: cmaWithCheckpoint(func(checkpoint *SessionCheckpointDTO) { checkpoint.ClientID = "" })},
-		{name: "checkpoint zero owner", command: cmaWithCheckpoint(func(checkpoint *SessionCheckpointDTO) { checkpoint.OwnerNodeID = 0 })},
-		{name: "checkpoint zero epoch", command: cmaWithCheckpoint(func(checkpoint *SessionCheckpointDTO) { checkpoint.Epoch = 0 })},
-		{name: "publish protocol version 3", command: cmaWithInboundPublish(func(publish *PublishPacketDTO) { publish.ProtocolVersion = 3 })},
-		{name: "publish QoS 3", command: cmaWithInboundPublish(func(publish *PublishPacketDTO) { publish.QoS = 3 })},
-		{name: "publish packet ID above 65535", command: cmaWithInboundPublish(func(publish *PublishPacketDTO) { publish.PacketID = 65536 })},
-		{name: "publish QoS 1 without packet ID", command: cmaWithInboundPublish(func(publish *PublishPacketDTO) { publish.PacketID = 0 })},
-		{name: "publish QoS 0 with packet ID", command: cmaWithInboundPublish(func(publish *PublishPacketDTO) { publish.QoS = 0 })},
-		{name: "checkpointed QoS 0 publish", command: cmaWithInboundPublish(func(publish *PublishPacketDTO) {
-			publish.QoS = 0
-			publish.PacketID = 0
+		{name: "delivery empty tenant", command: cmaWithDelivery(func(change *DeliveryChangeDTO) { change.TenantID = "" })},
+		{name: "delivery empty client", command: cmaWithDelivery(func(change *DeliveryChangeDTO) { change.ClientID = "" })},
+		{name: "delivery zero owner", command: cmaWithDelivery(func(change *DeliveryChangeDTO) { change.OwnerNodeID = 0 })},
+		{name: "delivery zero epoch", command: cmaWithDelivery(func(change *DeliveryChangeDTO) { change.Epoch = 0 })},
+		{name: "delivery zero proposed time", command: cmaWithDelivery(func(change *DeliveryChangeDTO) { change.ProposedAtUnixMillis = 0 })},
+		{name: "delivery packet ID above MQTT range", command: cmaWithDelivery(func(change *DeliveryChangeDTO) { change.PacketID = 65536 })},
+		{name: "delivery invalid topic", command: cmaWithDelivery(func(change *DeliveryChangeDTO) { change.Topic = "orders/+" })},
+		{name: "delivery payload above limit", command: cmaWithDelivery(func(change *DeliveryChangeDTO) { change.Payload = make([]byte, MaxDeliveryPayloadBytes+1) })},
+		{name: "delivery action beyond discard", command: cmaWithDelivery(func(change *DeliveryChangeDTO) { change.Action = DeliveryActionDiscard + 1 })},
+		{name: "delivery target duplicate", command: cmaDeliveryCommand(DeliveryChangeDTO{
+			TenantID: cmaTenantID, ClientID: cmaClientID, Action: DeliveryActionPublish, ProposedAtUnixMillis: 1, Topic: "orders/new", PublishQoS: 1,
+			Targets: []DeliveryTargetDTO{{ClientID: "a"}, {ClientID: "a"}},
 		})},
-		{name: "MQTT 3.1.1 publish with message expiry", command: cmaWithInboundPublish(func(publish *PublishPacketDTO) {
-			publish.ProtocolVersion = 4
-			publish.HasMessageExpiryInterval = true
-			publish.MessageExpiryInterval = 60
+		{name: "delivery publish with owner", command: cmaDeliveryCommand(DeliveryChangeDTO{
+			TenantID: cmaTenantID, ClientID: cmaClientID, OwnerNodeID: 1, Epoch: 1, Action: DeliveryActionPublish,
+			ProposedAtUnixMillis: 1, Topic: "orders/new", PublishQoS: 1,
 		})},
-		{name: "message expiry value without presence flag", command: cmaWithInboundPublish(func(publish *PublishPacketDTO) { publish.MessageExpiryInterval = 60 })},
-		{name: "publish payload above limit", command: cmaWithInboundPublish(func(publish *PublishPacketDTO) { publish.Payload = make([]byte, maxPublishPayloadBytes+1) })},
-		{name: "publish empty topic", command: cmaWithInboundPublish(func(publish *PublishPacketDTO) { publish.Topic = "" })},
-		{name: "publish wildcard topic", command: cmaWithInboundPublish(func(publish *PublishPacketDTO) { publish.Topic = "orders/+" })},
-		{name: "publish invalid UTF-8 topic", command: cmaWithInboundPublish(func(publish *PublishPacketDTO) { publish.Topic = "orders/\xff" })},
-		{name: "inbound packet IDs decreasing", command: cmaWithCheckpoint(func(checkpoint *SessionCheckpointDTO) {
-			checkpoint.Inbound = append(checkpoint.Inbound, InboundCheckpointDTO{Publish: cmaPublish(1, 6), Phase: InboundQoS1Accepted})
-		})},
-		{name: "outbound invalid publish", command: cmaWithCheckpoint(func(checkpoint *SessionCheckpointDTO) { checkpoint.Outbound[0].Publish.ProtocolVersion = 3 })},
-		{name: "outbound packet IDs decreasing", command: cmaWithCheckpoint(func(checkpoint *SessionCheckpointDTO) {
-			checkpoint.Outbound = append(checkpoint.Outbound, OutboundCheckpointDTO{Publish: cmaPublish(1, 6), Phase: OutboundComplete})
-		})},
+		{name: "delivery receive with zero packet ID", command: cmaWithDelivery(func(change *DeliveryChangeDTO) { change.PacketID = 0 })},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -393,67 +374,23 @@ func TestCMAApplyAcceptsInclusiveFieldBoundaries(t *testing.T) {
 		}
 	})
 
-	t.Run("checkpoint publish at maximum payload and packet ID", func(t *testing.T) {
+	t.Run("delivery receive at maximum payload and packet ID", func(t *testing.T) {
 		machine := cmaSessionMachine(t)
-		command := cmaWithInboundPublish(func(publish *PublishPacketDTO) {
-			publish.QoS = 2
-			publish.PacketID = 65535
-			publish.Payload = make([]byte, maxPublishPayloadBytes)
-			publish.HasMessageExpiryInterval = true
-			publish.MessageExpiryInterval = 60
+		applyMustSucceed(t, machine, 3, cmaDeliveryCommand(DeliveryChangeDTO{
+			TenantID: cmaTenantID, ClientID: cmaClientID, OwnerNodeID: 1, Epoch: 1,
+			Action: DeliveryActionAttach, ProposedAtUnixMillis: 1,
+		}))
+		command := cmaDeliveryCommand(DeliveryChangeDTO{
+			TenantID: cmaTenantID, ClientID: cmaClientID, OwnerNodeID: 1, Epoch: 1,
+			Action: DeliveryActionReceive, ProposedAtUnixMillis: 2, PacketID: 65535,
+			Topic: "orders/new", Payload: make([]byte, MaxDeliveryPayloadBytes),
 		})
-		command.Checkpoint.Inbound[0].Phase = InboundQoS2AwaitRelease
-		applyMustSucceed(t, machine, 3, command)
-		stored := machine.Checkpoints()
-		if len(stored) != 1 || len(stored[0].Inbound) != 1 || stored[0].Inbound[0].Publish.PacketID != 65535 || len(stored[0].Inbound[0].Publish.Payload) != maxPublishPayloadBytes || stored[0].Inbound[0].Publish.MessageExpiryInterval != 60 {
-			t.Fatalf("boundary checkpoint was not stored verbatim: %+v", stored)
+		applyMustSucceed(t, machine, 4, command)
+		stored, exists := machine.DeliverySession(cmaTenantID, cmaClientID)
+		if !exists || len(stored.Inbound) != 1 || stored.Inbound[0].PacketID != 65535 || len(stored.Inbound[0].Payload) != MaxDeliveryPayloadBytes {
+			t.Fatalf("boundary delivery receive was not stored: %+v", stored)
 		}
 	})
-}
-
-func TestCMACheckpointDeliveryPhaseMatrix(t *testing.T) {
-	inboundValid := map[uint32]map[InboundDeliveryPhase]bool{
-		1: {InboundQoS1AwaitAcceptance: true, InboundQoS1Accepted: true},
-		2: {InboundQoS2AwaitAcceptance: true, InboundQoS2AwaitRelease: true, InboundQoS2AwaitFinalAcceptance: true, InboundQoS2Complete: true},
-	}
-	outboundValid := map[uint32]map[OutboundDeliveryPhase]bool{
-		1: {OutboundAwaitPubAck: true, OutboundComplete: true},
-		2: {OutboundAwaitPubRec: true, OutboundAwaitPubComp: true, OutboundComplete: true},
-	}
-	check := func(t *testing.T, command CommandDTO, valid bool) {
-		t.Helper()
-		machine := cmaSessionMachine(t)
-		result, err := machine.Apply(3, command)
-		if valid {
-			if err != nil || result.Outcome != ApplyOutcomeApplied || result.Checkpoint == nil || !reflect.DeepEqual(machine.Checkpoints(), []SessionCheckpointDTO{*command.Checkpoint}) {
-				t.Fatalf("valid phase Apply = (%+v, %v) stored=%+v", result, err, machine.Checkpoints())
-			}
-			return
-		}
-		if !errors.Is(err, ErrInvalidCommand) || machine.LastAppliedIndex() != 2 || len(machine.Checkpoints()) != 0 {
-			t.Fatalf("invalid phase Apply error=%v last applied=%d checkpoints=%+v", err, machine.LastAppliedIndex(), machine.Checkpoints())
-		}
-	}
-	for _, qos := range []uint32{1, 2} {
-		for phase := InboundPhaseUnspecified; phase <= InboundQoS2Complete+1; phase++ {
-			t.Run(fmt.Sprintf("inbound QoS %d phase %d", qos, phase), func(t *testing.T) {
-				command := cmaWithCheckpoint(func(checkpoint *SessionCheckpointDTO) {
-					checkpoint.Inbound = []InboundCheckpointDTO{{Publish: cmaPublish(qos, 7), Phase: phase}}
-					checkpoint.Outbound = nil
-				})
-				check(t, command, inboundValid[qos][phase])
-			})
-		}
-		for phase := OutboundPhaseUnspecified; phase <= OutboundComplete+1; phase++ {
-			t.Run(fmt.Sprintf("outbound QoS %d phase %d", qos, phase), func(t *testing.T) {
-				command := cmaWithCheckpoint(func(checkpoint *SessionCheckpointDTO) {
-					checkpoint.Inbound = nil
-					checkpoint.Outbound = []OutboundCheckpointDTO{{Publish: cmaPublish(qos, 7), Phase: phase}}
-				})
-				check(t, command, outboundValid[qos][phase])
-			})
-		}
-	}
 }
 
 func TestCMAApplyConfigurationRejectsInvalidInputsAndMisalignedPhases(t *testing.T) {
@@ -857,15 +794,24 @@ func cmaRemovalInProgressMachine(t *testing.T) (*StateMachine, uint64) {
 	for sequence, clientID := range []string{"c", "a", "b"} {
 		applyMustSucceed(t, machine, next(), cmaOwnershipCommand(cmaOperationID(100+sequence), OwnershipChangeDTO{TenantID: cmaTenantID, ClientID: clientID, OwnerNodeID: 1, Epoch: 1, Action: OwnershipActionAcquire}))
 	}
-	for sequence, filter := range []string{"z/#", "m/#"} {
+	for sequence, filter := range []string{"orders/#", "orders/new"} {
 		applyMustSucceed(t, machine, next(), cmaSubscriptionCommand(cmaOperationID(110+sequence), SubscriptionChangeDTO{TenantID: cmaTenantID, ClientID: "a", OwnerNodeID: 1, Epoch: 1, Filter: filter, QoS: 1, Action: SubscriptionActionAdd}))
 	}
-	checkpoint := SessionCheckpointDTO{
-		TenantID: cmaTenantID, ClientID: "a", OwnerNodeID: 1, Epoch: 1,
-		Inbound:  []InboundCheckpointDTO{{Publish: cmaPublish(1, 3), Phase: InboundQoS1Accepted}, {Publish: cmaPublish(2, 9), Phase: InboundQoS2AwaitRelease}},
-		Outbound: []OutboundCheckpointDTO{{Publish: cmaPublish(1, 4), Phase: OutboundAwaitPubAck}, {Publish: cmaPublish(2, 8), Phase: OutboundAwaitPubComp}},
+	attach := DeliveryChangeDTO{TenantID: cmaTenantID, ClientID: "a", OwnerNodeID: 1, Epoch: 1, Action: DeliveryActionAttach, ProposedAtUnixMillis: 1}
+	applyMustSucceed(t, machine, next(), cmaDeliveryCommand(attach))
+
+	for _, packetID := range []uint32{3, 9} {
+		receive := DeliveryChangeDTO{TenantID: cmaTenantID, ClientID: "a", OwnerNodeID: 1, Epoch: 1, Action: DeliveryActionReceive, ProposedAtUnixMillis: 1, PacketID: packetID, Topic: "orders/new", Payload: []byte("payload")}
+		applyMustSucceed(t, machine, next(), cmaDeliveryCommand(receive))
 	}
-	applyMustSucceed(t, machine, next(), cmaCheckpointCommand(cmaOperationID(120), checkpoint))
+	for _, qos := range []uint32{1, 2} {
+		publish := DeliveryChangeDTO{TenantID: cmaTenantID, ClientID: "publisher", Action: DeliveryActionPublish, ProposedAtUnixMillis: 1, Topic: "orders/new", Payload: []byte("payload"), PublishQoS: qos, Targets: []DeliveryTargetDTO{{ClientID: "a"}}}
+		applyMustSucceed(t, machine, next(), cmaDeliveryCommand(publish))
+	}
+	for index, packetID := range []uint32{4, 8} {
+		send := DeliveryChangeDTO{TenantID: cmaTenantID, ClientID: "a", OwnerNodeID: 1, Epoch: 1, Action: DeliveryActionSend, ProposedAtUnixMillis: 1, Sequence: uint64(index + 1), PacketID: packetID}
+		applyMustSucceed(t, machine, next(), cmaDeliveryCommand(send))
+	}
 	return machine, index
 }
 
@@ -962,7 +908,7 @@ func TestCMARestoreRejectsInconsistentSnapshotsAtomically(t *testing.T) {
 	if err != nil {
 		t.Fatalf("snapshot: %v", err)
 	}
-	if len(valid.Members) != 5 || len(valid.Ownerships) != 3 || len(valid.Subscriptions) != 2 || len(valid.Checkpoints) != 1 || len(valid.MembershipHistory) != 3 {
+	if len(valid.Members) != 5 || len(valid.Ownerships) != 3 || len(valid.Subscriptions) != 2 || len(valid.DeliverySessions) != 1 || len(valid.DeliverySessions[0].Messages) != 2 || len(valid.DeliverySessions[0].Inbound) != 2 || len(valid.MembershipHistory) != 3 {
 		t.Fatalf("unexpected fixture shape: %+v", valid)
 	}
 	tests := []struct {
@@ -994,10 +940,12 @@ func TestCMARestoreRejectsInconsistentSnapshotsAtomically(t *testing.T) {
 		{name: "subscription filters out of order", mutate: func(snapshot *SnapshotDTO) {
 			snapshot.Subscriptions[0], snapshot.Subscriptions[1] = snapshot.Subscriptions[1], snapshot.Subscriptions[0]
 		}},
-		{name: "checkpoint zero owner", mutate: func(snapshot *SnapshotDTO) { snapshot.Checkpoints[0].OwnerNodeID = 0 }},
-		{name: "checkpoint duplicate session", mutate: func(snapshot *SnapshotDTO) {
-			snapshot.Checkpoints = append(snapshot.Checkpoints, cloneCheckpoint(snapshot.Checkpoints[0]))
-			snapshot.ObjectCount++
+		{name: "delivery next sequence zero", mutate: func(snapshot *SnapshotDTO) { snapshot.DeliverySessions[0].NextSequence = 0 }},
+		{name: "delivery message packet phase mismatch", mutate: func(snapshot *SnapshotDTO) { snapshot.DeliverySessions[0].Messages[0].PacketID = 0 }},
+		{name: "delivery duplicate session", mutate: func(snapshot *SnapshotDTO) {
+			copy := cloneDeliverySession(snapshot.DeliverySessions[0])
+			snapshot.DeliverySessions = append(snapshot.DeliverySessions, copy)
+			snapshot.ObjectCount += 5
 		}},
 		{name: "history member not committed", mutate: func(snapshot *SnapshotDTO) { snapshot.MembershipHistory[1].Member.MemberID = 99 }},
 		{name: "history identity differs from member", mutate: func(snapshot *SnapshotDTO) {

@@ -124,10 +124,15 @@ func TestSummarizeSnapshotCountsTenantsAndInflightDeterministically(t *testing.T
 			{TenantId: "tenant-a", ClientId: "client-b", OwnerNodeId: 2, Epoch: 1},
 		},
 		Subscriptions: []*SubscriptionState{{TenantId: "tenant-b", ClientId: "client-a", OwnerNodeId: 1, Epoch: 1, Filter: "orders/#", Qos: 1}},
-		Checkpoints: []*SessionCheckpoint{{
-			TenantId: "tenant-a", ClientId: "client-a", OwnerNodeId: 1, Epoch: 1,
-			Inbound:  []*InboundCheckpoint{{Publish: &PublishPacket{ProtocolVersion: 5, Qos: 1, PacketId: 7, Topic: "orders/a"}, Phase: InboundDeliveryPhase_INBOUND_QOS1_AWAIT_ACCEPTANCE}},
-			Outbound: []*OutboundCheckpoint{{Publish: &PublishPacket{ProtocolVersion: 5, Qos: 1, PacketId: 8, Topic: "orders/a"}, Phase: OutboundDeliveryPhase_OUTBOUND_AWAIT_PUBACK}},
+		DeliverySessions: []*DeliverySessionState{{
+			TenantId: "tenant-a", ClientId: "client-a", NextSequence: 2,
+			Messages: []*DeliveryMessage{{
+				Sequence: 1, Topic: "orders/a", Payload: []byte("outbound"), Qos: 1,
+				PacketId: 8, Phase: DeliveryPhase_DELIVERY_PHASE_AWAIT_PUBACK,
+			}},
+			Inbound: []*InboundMessage{{
+				PacketId: 7, Topic: "orders/a", Payload: []byte("inbound"),
+			}},
 		}},
 		Retained: []*RetainedState{{
 			TenantId: "tenant-c", Topic: "events", PublisherClientId: "publisher",
@@ -178,12 +183,52 @@ func TestSummarizeSnapshotCountsTenantsAndInflightDeterministically(t *testing.T
 	if !proto.Equal(firstSummary.Retained, wantRetained) {
 		t.Fatalf("retained summary = %+v, want %+v", firstSummary.Retained, wantRetained)
 	}
+	wantInflight, err := summarizeBackupKind(&ReplicatedStateSnapshot{DeliverySessions: first.DeliverySessions}, 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !proto.Equal(firstSummary.Inflight, wantInflight) {
+		t.Fatalf("inflight summary = %+v, want %+v", firstSummary.Inflight, wantInflight)
+	}
 	wantOffline, err := summarizeBackupKind(&ReplicatedStateSnapshot{OfflineSessions: first.OfflineSessions}, 3)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if !proto.Equal(firstSummary.Offline, wantOffline) {
 		t.Fatalf("offline summary = %+v, want %+v", firstSummary.Offline, wantOffline)
+	}
+}
+
+// Traceability: CLU-14; docs/specs/cluster-session-and-delivery.md §4.2, §11.11.
+func TestBackupArchiveRejectsInconsistentMembershipAndEntries(t *testing.T) {
+	for _, testCase := range []struct {
+		name   string
+		mutate func(*BackupArchive)
+		marker string
+	}{
+		{name: "unsorted voters", mutate: func(archive *BackupArchive) { archive.Manifest.VoterIds = []uint64{3, 1} }, marker: "voter IDs must be positive and strictly increasing"},
+		{name: "overlapping learner", mutate: func(archive *BackupArchive) { archive.Manifest.LearnerIds = []uint64{1} }, marker: "voter and learner IDs overlap"},
+		{name: "unsupported state schema", mutate: func(archive *BackupArchive) { archive.Manifest.StateSchemaMajor++ }, marker: "unsupported state schema"},
+		{name: "missing member summary", mutate: func(archive *BackupArchive) { archive.Manifest.BoundaryState.Members = nil }, marker: "members summary and SHA-256 are required"},
+		{name: "nil entry", mutate: func(archive *BackupArchive) { archive.Entries[0] = nil }, marker: "entry index out of range"},
+		{name: "missing entry payload", mutate: func(archive *BackupArchive) { archive.Entries[0].Payload = nil }, marker: "entry payload is required"},
+		{name: "invalid command entry", mutate: func(archive *BackupArchive) {
+			archive.Entries[0].Payload = &BackupEntry_Command{Command: []byte{0xff}}
+		}, marker: "entry command"},
+		{name: "invalid configuration entry", mutate: func(archive *BackupArchive) {
+			archive.Entries[0].Payload = &BackupEntry_Configuration{Configuration: &BackupConfigurationChange{
+				OperationId: "invalid", MemberId: 4,
+				Action: BackupConfigurationAction_BACKUP_CONFIGURATION_ACTION_ADD_LEARNER,
+			}}
+		}, marker: "invalid configuration entry"},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			archive := backupTestArchive(t)
+			testCase.mutate(archive)
+			if _, _, err := EncodeBackupArchive(archive); err == nil || !strings.Contains(err.Error(), testCase.marker) {
+				t.Fatalf("EncodeBackupArchive() error=%v, want %q", err, testCase.marker)
+			}
+		})
 	}
 }
 

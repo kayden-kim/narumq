@@ -300,121 +300,109 @@ func TestStateMachineOwnershipFencingAndSubscriptionUpdateRemove(t *testing.T) {
 	}
 }
 
-func TestStateMachineOwnershipTransferRebindsSubscriptionsButKeepsCheckpointOwner(t *testing.T) {
+func TestStateMachineOwnershipTransferRebindsSubscriptionsAndPreservesDelivery(t *testing.T) {
 	machine := NewStateMachine()
-	acquire := CommandDTO{
+	applyMustSucceed(t, machine, 1, CommandDTO{
 		SchemaMajor: 1, OperationID: testOperation4,
-		Ownership: &OwnershipChangeDTO{
-			TenantID: "tenant", ClientID: "client", OwnerNodeID: 1, Epoch: 1,
-			Action: OwnershipActionAcquire,
-		},
-	}
-	applyMustSucceed(t, machine, 1, acquire)
-	addSubscription := CommandDTO{
-		SchemaMajor: 1, OperationID: testOperation5,
-		Subscription: &SubscriptionChangeDTO{
-			TenantID: "tenant", ClientID: "client", OwnerNodeID: 1, Epoch: 1,
-			Filter: "orders/#", QoS: 1, NoLocal: true, Action: SubscriptionActionAdd,
-		},
-	}
-	applyMustSucceed(t, machine, 2, addSubscription)
-	publish := PublishPacketDTO{
-		ProtocolVersion: 5, QoS: 1, PacketID: 8, Topic: "orders/new", Payload: []byte("payload"),
-	}
-	checkpoint := SessionCheckpointDTO{
-		TenantID: "tenant", ClientID: "client", OwnerNodeID: 1, Epoch: 1,
-		Inbound:  []InboundCheckpointDTO{{Publish: publish, Phase: InboundQoS1AwaitAcceptance}},
-		Outbound: []OutboundCheckpointDTO{{Publish: publish, Phase: OutboundAwaitPubAck}},
-	}
-	applyMustSucceed(t, machine, 3, CommandDTO{
-		SchemaMajor: 1, OperationID: testOperation6, Checkpoint: &checkpoint,
+		Ownership: &OwnershipChangeDTO{TenantID: "tenant", ClientID: "client", OwnerNodeID: 1, Epoch: 1, Action: OwnershipActionAcquire},
 	})
-
-	transfer := CommandDTO{
+	applyMustSucceed(t, machine, 2, CommandDTO{
+		SchemaMajor: 1, OperationID: testOperation5,
+		Subscription: &SubscriptionChangeDTO{TenantID: "tenant", ClientID: "client", OwnerNodeID: 1, Epoch: 1, Filter: "orders/#", QoS: 1, NoLocal: true, Action: SubscriptionActionAdd},
+	})
+	applyMustSucceed(t, machine, 3, CommandDTO{
+		SchemaMajor: 1, OperationID: testOperation6,
+		Delivery: &DeliveryChangeDTO{TenantID: "tenant", ClientID: "client", OwnerNodeID: 1, Epoch: 1, Action: DeliveryActionAttach, ProposedAtUnixMillis: 1},
+	})
+	applyMustSucceed(t, machine, 4, CommandDTO{
 		SchemaMajor: 1, OperationID: testOperation7,
-		Ownership: &OwnershipChangeDTO{
-			TenantID: "tenant", ClientID: "client", ExpectedEpoch: 1, OwnerNodeID: 2, Epoch: 2,
-			Action: OwnershipActionTransfer,
+		Delivery: &DeliveryChangeDTO{
+			TenantID: "tenant", ClientID: "publisher", Action: DeliveryActionPublish, ProposedAtUnixMillis: 2,
+			Topic: "orders/new", Payload: []byte("payload"), PublishQoS: 1,
+			Targets: []DeliveryTargetDTO{{ClientID: "client"}},
 		},
+	})
+	transfer := CommandDTO{
+		SchemaMajor: 1, OperationID: testOperation8,
+		Ownership: &OwnershipChangeDTO{TenantID: "tenant", ClientID: "client", ExpectedEpoch: 1, OwnerNodeID: 2, Epoch: 2, Action: OwnershipActionTransfer},
 	}
-	applyMustSucceed(t, machine, 4, transfer)
+	applyMustSucceed(t, machine, 5, transfer)
 	subscriptions := machine.Subscriptions()
-	checkpoints := machine.Checkpoints()
 	if len(subscriptions) != 1 || subscriptions[0].OwnerNodeID != 2 || subscriptions[0].Epoch != 2 ||
 		subscriptions[0].Filter != "orders/#" || subscriptions[0].QoS != 1 || !subscriptions[0].NoLocal {
 		t.Fatalf("subscription state after ownership transfer = %+v", subscriptions)
 	}
-	if len(checkpoints) != 1 || checkpoints[0].OwnerNodeID != 1 || checkpoints[0].Epoch != 1 ||
-		len(checkpoints[0].Inbound) != 1 || len(checkpoints[0].Outbound) != 1 ||
-		!bytes.Equal(checkpoints[0].Inbound[0].Publish.Payload, []byte("payload")) ||
-		!bytes.Equal(checkpoints[0].Outbound[0].Publish.Payload, []byte("payload")) {
-		t.Fatalf("ownership transfer changed checkpoint before explicit handoff: %+v", checkpoints)
+	state, exists := machine.DeliverySession("tenant", "client")
+	if !exists || state.NextSequence != 2 || len(state.Messages) != 1 || string(state.Messages[0].Payload) != "payload" {
+		t.Fatalf("delivery state after ownership transfer = (%+v, %t)", state, exists)
 	}
-
-	staleSubscription := addSubscription
-	staleSubscription.OperationID = testOperation8
-	staleSubscription.Subscription = &SubscriptionChangeDTO{
-		TenantID: "tenant", ClientID: "client", OwnerNodeID: 1, Epoch: 1,
-		Filter: "orders/#", QoS: 0, Action: SubscriptionActionRemove,
-	}
-	if result := mustApplyResult(t, machine, 5, staleSubscription); result.Conflict != ConflictStaleEpoch {
-		t.Fatalf("stale subscription after transfer conflict = %q", result.Conflict)
-	}
-	staleCheckpoint := checkpoint
-	staleCheckpoint.Inbound = nil
-	if result := mustApplyResult(t, machine, 6, CommandDTO{
+	stale := CommandDTO{
 		SchemaMajor: 1, OperationID: "00000000-0000-4000-8000-000000000011",
-		Checkpoint: &staleCheckpoint,
-	}); result.Conflict != ConflictStaleEpoch {
-		t.Fatalf("stale checkpoint after transfer conflict = %q", result.Conflict)
+		Delivery: &DeliveryChangeDTO{TenantID: "tenant", ClientID: "client", OwnerNodeID: 1, Epoch: 1,
+			Action: DeliveryActionSend, ProposedAtUnixMillis: 3, Sequence: 1, PacketID: 7},
 	}
-	if after := machine.Subscriptions(); len(after) != 1 || after[0] != subscriptions[0] {
-		t.Fatalf("stale subscription changed transferred aggregate: %+v", after)
+	if result := mustApplyResult(t, machine, 6, stale); result.Conflict != ConflictStaleEpoch {
+		t.Fatalf("stale delivery command after transfer conflict = %q", result.Conflict)
 	}
-	if after := machine.Checkpoints(); len(after) != 1 || after[0].OwnerNodeID != 1 ||
-		after[0].Epoch != 1 || !bytes.Equal(after[0].Inbound[0].Publish.Payload, []byte("payload")) {
-		t.Fatalf("stale checkpoint changed owner checkpoint: %+v", after)
+	if state, _ := machine.DeliverySession("tenant", "client"); state.Messages[0].PacketID != 0 {
+		t.Fatalf("stale owner changed transferred delivery: %+v", state)
+	}
+	applyMustSucceed(t, machine, 7, CommandDTO{
+		SchemaMajor: 1, OperationID: "00000000-0000-4000-8000-000000000012",
+		Ownership: &OwnershipChangeDTO{TenantID: "tenant", ClientID: "client", ExpectedEpoch: 2, OwnerNodeID: 2, Epoch: 2, Action: OwnershipActionRelease},
+	})
+	if _, exists := machine.DeliverySession("tenant", "client"); exists {
+		t.Fatal("ownership release retained durable delivery state")
 	}
 }
 
-func TestStateMachineCheckpointPhaseValidationAndDeepOwnership(t *testing.T) {
+func TestStateMachineDeliveryInboundReleaseAndSnapshotValidation(t *testing.T) {
 	machine := NewStateMachine()
-	acquire := CommandDTO{
+	applyMustSucceed(t, machine, 1, CommandDTO{
 		SchemaMajor: 1, OperationID: testOperation4,
-		Ownership: &OwnershipChangeDTO{TenantID: "tenant", ClientID: "client", OwnerNodeID: 1, Epoch: 1, Action: OwnershipActionAcquire},
+		Ownership: &OwnershipChangeDTO{TenantID: "tenant", ClientID: "publisher", OwnerNodeID: 1, Epoch: 1, Action: OwnershipActionAcquire},
+	})
+	applyMustSucceed(t, machine, 2, CommandDTO{
+		SchemaMajor: 1, OperationID: testOperation5,
+		Delivery: &DeliveryChangeDTO{TenantID: "tenant", ClientID: "publisher", OwnerNodeID: 1, Epoch: 1, Action: DeliveryActionAttach, ProposedAtUnixMillis: 1},
+	})
+	receive := DeliveryChangeDTO{TenantID: "tenant", ClientID: "publisher", OwnerNodeID: 1, Epoch: 1,
+		Action: DeliveryActionReceive, ProposedAtUnixMillis: 2, PacketID: 9, Topic: "orders/new", Payload: []byte("payload")}
+	applyMustSucceed(t, machine, 3, CommandDTO{SchemaMajor: 1, OperationID: testOperation6, Delivery: &receive})
+	result := applyMustSucceed(t, machine, 4, CommandDTO{SchemaMajor: 1, OperationID: testOperation7, Delivery: &DeliveryChangeDTO{
+		TenantID: "tenant", ClientID: "publisher", OwnerNodeID: 1, Epoch: 1,
+		Action: DeliveryActionRelease, ProposedAtUnixMillis: 3, PacketID: 9, PublishQoS: 2,
+	}})
+	if result.Delivery == nil || !result.Delivery.Found || !result.Delivery.Released {
+		t.Fatalf("first RELEASE result = %+v", result.Delivery)
 	}
-	applyMustSucceed(t, machine, 1, acquire)
-	publish := PublishPacketDTO{ProtocolVersion: 5, QoS: 1, PacketID: 7, Topic: "orders/new", Payload: []byte("payload")}
-	invalid := SessionCheckpointDTO{
-		TenantID: "tenant", ClientID: "client", OwnerNodeID: 1, Epoch: 1,
-		Inbound: []InboundCheckpointDTO{{Publish: publish, Phase: InboundQoS2AwaitRelease}},
+	state, _ := machine.DeliverySession("tenant", "publisher")
+	if len(state.Inbound) != 1 || !state.Inbound[0].Released || state.Inbound[0].ReleasedIndex != 4 ||
+		len(state.Inbound[0].Payload) != 0 || state.Inbound[0].Topic != "orders/new" {
+		t.Fatalf("RELEASE did not retain a compact tombstone: %+v", state.Inbound)
 	}
-	invalidCommand := CommandDTO{SchemaMajor: 1, OperationID: testOperation5, Checkpoint: &invalid}
-	if _, err := machine.Apply(2, invalidCommand); !errors.Is(err, ErrInvalidCommand) {
-		t.Fatalf("QoS/phase mismatch error=%v, want ErrInvalidCommand", err)
+	duplicate := applyMustSucceed(t, machine, 5, CommandDTO{SchemaMajor: 1, OperationID: testOperation8, Delivery: &DeliveryChangeDTO{
+		TenantID: "tenant", ClientID: "publisher", OwnerNodeID: 1, Epoch: 1,
+		Action: DeliveryActionRelease, ProposedAtUnixMillis: 4, PacketID: 9, PublishQoS: 2,
+	}})
+	if duplicate.Delivery.Found || !duplicate.Delivery.Released || len(duplicate.Delivery.Enqueued) != 0 {
+		t.Fatalf("duplicate RELEASE result = %+v", duplicate.Delivery)
 	}
-	invalid.Inbound[0].Phase = InboundQoS1AwaitAcceptance
-	invalid.Inbound = append(invalid.Inbound, invalid.Inbound[0])
-	invalidCommand.Checkpoint = &invalid
-	if _, err := machine.Apply(2, invalidCommand); !errors.Is(err, ErrInvalidCommand) {
-		t.Fatalf("duplicate packet ID error=%v, want ErrInvalidCommand", err)
+	snapshot, err := machine.Snapshot(5)
+	if err != nil {
+		t.Fatalf("snapshot: %v", err)
 	}
-	if machine.LastAppliedIndex() != 1 {
-		t.Fatalf("invalid checkpoints advanced applied index to %d", machine.LastAppliedIndex())
+	invalid := cloneSnapshot(snapshot)
+	invalid.DeliverySessions[0].Inbound[0].ReleasedIndex = 0
+	if err := NewStateMachine().Restore(invalid); !errors.Is(err, ErrInvalidSnapshot) {
+		t.Fatalf("invalid delivery snapshot restore error = %v", err)
 	}
-
-	valid := SessionCheckpointDTO{
-		TenantID: "tenant", ClientID: "client", OwnerNodeID: 1, Epoch: 1,
-		Inbound:  []InboundCheckpointDTO{{Publish: publish, Phase: InboundQoS1AwaitAcceptance}},
-		Outbound: []OutboundCheckpointDTO{{Publish: publish, Phase: OutboundAwaitPubAck}},
+	restored := NewStateMachine()
+	if err := restored.Restore(snapshot); err != nil {
+		t.Fatalf("restore delivery snapshot: %v", err)
 	}
-	command := CommandDTO{SchemaMajor: 1, OperationID: testOperation5, Checkpoint: &valid}
-	result := applyMustSucceed(t, machine, 2, command)
-	valid.Inbound[0].Publish.Payload[0] = 'X'
-	result.Checkpoint.Inbound[0].Publish.Payload[0] = 'Y'
-	stored := machine.Checkpoints()
-	if !bytes.Equal(stored[0].Inbound[0].Publish.Payload, []byte("payload")) || !bytes.Equal(stored[0].Outbound[0].Publish.Payload, []byte("payload")) {
-		t.Fatalf("checkpoint payload was not deep-owned: %+v", stored[0])
+	if got, ok := restored.DeliverySession("tenant", "publisher"); !ok || !reflect.DeepEqual(got, state) {
+		t.Fatalf("restored delivery session = (%+v, %t), want (%+v, true)", got, ok, state)
 	}
 }
 
@@ -438,47 +426,52 @@ func TestStateMachineSnapshotCanonicalOrderAndDeepOwnership(t *testing.T) {
 		applyMustSucceed(t, machine, uint64(index+4), command)
 	}
 	for index, tenantID := range tenants {
-		checkpoint := SessionCheckpointDTO{
-			TenantID: tenantID, ClientID: "client", OwnerNodeID: 1, Epoch: 1,
-			Inbound: []InboundCheckpointDTO{{Publish: PublishPacketDTO{ProtocolVersion: 5, QoS: 1, PacketID: 8, Topic: "events/in", Payload: []byte(tenantID)}, Phase: InboundQoS1AwaitAcceptance}},
+		delivery := &DeliveryChangeDTO{TenantID: tenantID, ClientID: "client", OwnerNodeID: 1, Epoch: 1, Action: DeliveryActionAttach, ProposedAtUnixMillis: 1}
+		command := CommandDTO{SchemaMajor: 1, OperationID: fmt.Sprintf("00000000-0000-4000-8000-%012d", index+30), Delivery: delivery}
+		applyMustSucceed(t, machine, uint64(index+6), command)
+	}
+	for index, tenantID := range tenants {
+		publish := &DeliveryChangeDTO{
+			TenantID: tenantID, ClientID: "publisher", Action: DeliveryActionPublish, ProposedAtUnixMillis: 2,
+			Topic: "events/in", Payload: []byte(tenantID), PublishQoS: 1, Targets: []DeliveryTargetDTO{{ClientID: "client"}},
 		}
-		checkpointCommand := CommandDTO{SchemaMajor: 1, OperationID: fmt.Sprintf("00000000-0000-4000-8000-%012d", index+30), Checkpoint: &checkpoint}
-		applyMustSucceed(t, machine, uint64(index+6), checkpointCommand)
+		command := CommandDTO{SchemaMajor: 1, OperationID: fmt.Sprintf("00000000-0000-4000-8000-%012d", index+40), Delivery: publish}
+		applyMustSucceed(t, machine, uint64(index+8), command)
 	}
 	stage := stageRecord(testOperation5, "join-5", 5)
-	applyMustSucceed(t, machine, 8, testCommand(testOperation5, &stage))
+	applyMustSucceed(t, machine, 10, testCommand(testOperation5, &stage))
 	retired := testMember(5, MemberPhaseRetired, "")
 	abort := MembershipRecordDTO{OperationID: testOperation5, Action: MembershipActionAbortStage, IdempotencyKey: "join-5", Member: &retired}
-	applyMustSucceed(t, machine, 9, testCommand(testOperation5, &abort))
+	applyMustSucceed(t, machine, 11, testCommand(testOperation5, &abort))
 	stage = stageRecord(testOperation4, "join-4", 4)
-	applyMustSucceed(t, machine, 10, testCommand(testOperation4, &stage))
+	applyMustSucceed(t, machine, 12, testCommand(testOperation4, &stage))
 
-	snapshot, err := machine.Snapshot(10)
+	snapshot, err := machine.Snapshot(12)
 	if err != nil {
 		t.Fatalf("snapshot: %v", err)
 	}
-	if snapshot.ObjectCount != 13 || snapshot.Members[0].MemberID != 1 || snapshot.Members[4].MemberID != 5 || snapshot.Ownerships[0].TenantID != "alpha" || snapshot.Subscriptions[0].TenantID != "alpha" || snapshot.Checkpoints[0].TenantID != "alpha" || snapshot.MembershipHistory[0].OperationID != testOperation4 {
+	if snapshot.ObjectCount != 15 || snapshot.Members[0].MemberID != 1 || snapshot.Members[4].MemberID != 5 || snapshot.Ownerships[0].TenantID != "alpha" || snapshot.Subscriptions[0].TenantID != "alpha" || snapshot.DeliverySessions[0].TenantID != "alpha" || snapshot.MembershipHistory[0].OperationID != testOperation4 {
 		t.Fatalf("snapshot order/count is not canonical: %+v", snapshot)
 	}
-	repeated, err := machine.Snapshot(10)
+	repeated, err := machine.Snapshot(12)
 	if err != nil || !reflect.DeepEqual(snapshot, repeated) {
 		t.Fatalf("repeated snapshot differs: err=%v", err)
 	}
-	if _, err := machine.Snapshot(9); !errors.Is(err, ErrSnapshotIndexMismatch) {
+	if _, err := machine.Snapshot(11); !errors.Is(err, ErrSnapshotIndexMismatch) {
 		t.Fatalf("wrong requested snapshot index error=%v", err)
 	}
 
 	restoreInput := cloneSnapshot(snapshot)
 	snapshot.Members[0].CertificateSHA256[0] ^= 0xff
-	snapshot.Checkpoints[0].Inbound[0].Publish.Payload[0] = 'X'
-	if machine.Members()[0].CertificateSHA256[0] != voters[0].CertificateSHA256[0] || !bytes.Equal(machine.Checkpoints()[0].Inbound[0].Publish.Payload, []byte("alpha")) {
+	snapshot.DeliverySessions[0].Messages[0].Payload[0] = 'X'
+	if machine.Members()[0].CertificateSHA256[0] != voters[0].CertificateSHA256[0] || string(machine.DeliverySessions()[0].Messages[0].Payload) != "alpha" {
 		t.Fatal("snapshot result shared mutable memory with state machine")
 	}
 	members := machine.Members()
 	members[0].CertificateSHA256[0] ^= 0xff
-	checkpoints := machine.Checkpoints()
-	checkpoints[0].Inbound[0].Publish.Payload[0] = 'Y'
-	if machine.Members()[0].CertificateSHA256[0] != voters[0].CertificateSHA256[0] || !bytes.Equal(machine.Checkpoints()[0].Inbound[0].Publish.Payload, []byte("alpha")) {
+	deliverySessions := machine.DeliverySessions()
+	deliverySessions[0].Messages[0].Payload[0] = 'Y'
+	if machine.Members()[0].CertificateSHA256[0] != voters[0].CertificateSHA256[0] || string(machine.DeliverySessions()[0].Messages[0].Payload) != "alpha" {
 		t.Fatal("read-only getters shared mutable memory with state machine")
 	}
 
@@ -486,15 +479,15 @@ func TestStateMachineSnapshotCanonicalOrderAndDeepOwnership(t *testing.T) {
 	if err := restored.Restore(restoreInput); err != nil {
 		t.Fatalf("restore canonical snapshot: %v", err)
 	}
-	if restored.LastAppliedIndex() != 10 || !reflect.DeepEqual(restored.Members(), machine.Members()) || !reflect.DeepEqual(restored.Ownerships(), machine.Ownerships()) || !reflect.DeepEqual(restored.Subscriptions(), machine.Subscriptions()) || !reflect.DeepEqual(restored.Checkpoints(), machine.Checkpoints()) {
+	if restored.LastAppliedIndex() != 12 || !reflect.DeepEqual(restored.Members(), machine.Members()) || !reflect.DeepEqual(restored.Ownerships(), machine.Ownerships()) || !reflect.DeepEqual(restored.Subscriptions(), machine.Subscriptions()) || !reflect.DeepEqual(restored.DeliverySessions(), machine.DeliverySessions()) {
 		t.Fatalf("restored state differs: index=%d", restored.LastAppliedIndex())
 	}
 	aborted, exists := restored.GetOperation(testOperation5)
-	if !exists || aborted.CommittedIndex != 9 || aborted.Record.CommittedIndex != 9 {
+	if !exists || aborted.CommittedIndex != 11 || aborted.Record.CommittedIndex != 11 {
 		t.Fatalf("restored aborted operation lost exact committed index: %+v", aborted)
 	}
 	staged, exists := restored.GetOperation(testOperation4)
-	if !exists || staged.CommittedIndex != 10 || staged.Record.CommittedIndex != 10 {
+	if !exists || staged.CommittedIndex != 12 || staged.Record.CommittedIndex != 12 {
 		t.Fatalf("restored staged operation lost exact committed index: %+v", staged)
 	}
 }

@@ -46,12 +46,12 @@ Retained key는 `(tenantId, exact Topic Name)`이다. 같은 topic이라도 tena
 
 ### Retained replication
 
-- Cluster MQTT ingress는 현재 QoS 0 PUBLISH를 지원한다. `Retain=true`이면 publish use case가 route matching과 live fan-out보다 먼저 retained mutation을 Raft committed state에 기록한다. Commit이 실패하면 해당 PUBLISH의 live fan-out도 시작하지 않는다.
+- Cluster backup v2가 기록한 시점의 MQTT ingress는 QoS 0 PUBLISH를 지원했다. `Retain=true`이면 publish use case가 route matching과 live fan-out보다 먼저 retained mutation을 Raft committed state에 기록했으며, commit failure에서는 fan-out을 시작하지 않았다. 이후 QoS 1/2 durable delivery 경로는 별도 [ADR-0015](../decisions/ADR-0015-cluster-durable-qos-delivery.md)로 정의됐다.
 - Retained value는 `(tenantId, exact Topic Name)`에 속하며 payload, publisher client ID, QoS와 expiry deadline을 포함한다. 적용 한도는 모든 tenant를 합친 전체 기준으로 value 1,024개, 계산된 총 16 MiB, payload당 1,000,000 bytes다. 총 크기는 tenant ID, topic, payload와 publisher routing ID의 byte 길이를 합산하며 tenant별 retained-storage quota는 제공하지 않는다.
 - MQTT 5 Message Expiry deadline은 ingress에서 계산해 retained value에 저장한다. Local replay projection은 `List(now)`에서 만료 값을 제거한다. Raft 권위 state는 다음 retained command를 apply할 때 그 command의 proposal 시각으로 만료 entry를 결정적으로 제거하므로, 그 전에는 만료 entry가 snapshot/archive와 용량 한도에 남을 수 있다.
 - Commit 뒤 publisher node는 local apply 중 committed value를 retained repository에 반영한다. 다른 node는 committed command를 apply하거나 snapshot catch-up할 때 local projection을 갱신한다. Publish completion은 모든 peer projection 갱신을 기다리지 않는다. Local repository는 replay 조회용 projection(복제 원본에서 다시 만들 수 있는 조회용 사본)이며 권위 있는 값은 Raft state다. Startup 또는 snapshot restore 뒤 projection을 committed state에서 다시 만든다. Projection 재구성이 실패하면 readiness를 허용하지 않는다.
 - Retained command는 unknown field를 거절하는 schema `1.0` state에 추가됐다. Retained commit 전 fresh read barrier에서 모든 non-retired committed member의 release, cluster protocol과 state schema가 local member와 정확히 일치하는지 확인한다. 일치하지 않으면 mutation을 제안하지 않는다. Retained 기능에 대한 mixed-release membership과 rolling upgrade는 지원하지 않는다.
-- Retained count/byte limit를 넘으면 해당 값으로 replace하지 않고 live fan-out도 시작하지 않는다. Apply는 proposal 시각에 이미 만료된 entry를 먼저 제거할 수 있다. MQTT 5 ingress는 `0x97`(`Quota exceeded`) DISCONNECT를 보내고 연결을 닫는다. Cluster ingress에서 QoS 1/2 PUBLISH는 지원하지 않는다.
+- Retained count/byte limit를 넘으면 해당 값으로 replace하지 않고 live fan-out도 시작하지 않는다. Apply는 proposal 시각에 이미 만료된 entry를 먼저 제거할 수 있다. MQTT 5 ingress는 `0x97`(`Quota exceeded`) DISCONNECT를 보내고 연결을 닫는다. 이 v2 contract가 기록한 당시에는 Cluster ingress에서 QoS 1/2 PUBLISH를 지원하지 않았다. 현재 durable QoS 1/2 scope는 [ADR-0015](../decisions/ADR-0015-cluster-durable-qos-delivery.md)와 [Cluster §4.2](../specs/cluster-session-and-delivery.md#42-durable-qos-1-2-delivery)를 참조한다.
 
 ### Offline restore
 

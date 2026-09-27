@@ -16,15 +16,20 @@ import (
 )
 
 const (
-	maxCommandBytes              = 1 << 20
-	maxSnapshotBytes             = 64 << 20
-	maxEntries                   = 1_000_000
-	maxPublishPayload            = 1_000_000
-	maxRetainedMessages          = 1024
-	maxOfflineMessages           = 4096
-	maxOfflineMessagesPerSession = 64
-	maxOfflineBytes              = 16 << 20
-	maxOfflineDetachMessageBytes = 768 << 10
+	maxCommandBytes               = 1 << 20
+	maxSnapshotBytes              = 64 << 20
+	maxEntries                    = 1_000_000
+	maxPublishPayload             = 1_000_000
+	maxDeliveryMessagesPerSession = 64
+	maxDeliveryInboundPerSession  = 64
+	maxDeliveryEntries            = 4096
+	maxDeliveryBytes              = 16 << 20
+	maxDeliveryTargets            = 1024
+	maxRetainedMessages           = 1024
+	maxOfflineMessages            = 4096
+	maxOfflineMessagesPerSession  = 64
+	maxOfflineBytes               = 16 << 20
+	maxOfflineDetachMessageBytes  = 768 << 10
 )
 
 // ErrCommandTooLarge means a command exceeds the replicated command size limit.
@@ -104,7 +109,7 @@ func MarshalSnapshot(state *ReplicatedStateSnapshot, lastIncludedIndex uint64) (
 			offlineMessagesCount += len(session.Messages)
 		}
 	}
-	count := uint64(len(ordered.Members) + len(ordered.Ownerships) + len(ordered.Subscriptions) + len(ordered.Checkpoints) + len(ordered.MembershipHistory) + len(ordered.Retained) + len(ordered.OfflineSessions) + offlineMessagesCount)
+	count := uint64(len(ordered.Members) + len(ordered.Ownerships) + len(ordered.Subscriptions) + len(ordered.DeliverySessions) + deliveryObjectCount(ordered.DeliverySessions) + len(ordered.MembershipHistory) + len(ordered.Retained) + len(ordered.OfflineSessions) + offlineMessagesCount)
 	digest := sha256.Sum256(stateBytes)
 	envelope := &SnapshotEnvelope{SchemaMajor: 1, LastIncludedIndex: lastIncludedIndex, ObjectCount: count, Sha256: digest[:], State: ordered}
 	encoded, err := deterministic.Marshal(envelope)
@@ -150,7 +155,7 @@ func UnmarshalSnapshot(encoded []byte) (*SnapshotEnvelope, error) {
 			offlineMessagesCount += len(session.Messages)
 		}
 	}
-	count := uint64(len(envelope.State.Members) + len(envelope.State.Ownerships) + len(envelope.State.Subscriptions) + len(envelope.State.Checkpoints) + len(envelope.State.MembershipHistory) + len(envelope.State.Retained) + len(envelope.State.OfflineSessions) + offlineMessagesCount)
+	count := uint64(len(envelope.State.Members) + len(envelope.State.Ownerships) + len(envelope.State.Subscriptions) + len(envelope.State.DeliverySessions) + deliveryObjectCount(envelope.State.DeliverySessions) + len(envelope.State.MembershipHistory) + len(envelope.State.Retained) + len(envelope.State.OfflineSessions) + offlineMessagesCount)
 	if envelope.ObjectCount != count {
 		return nil, errors.New("snapshot object count mismatch")
 	}
@@ -201,11 +206,11 @@ func validateCommand(c *CommandEnvelope) error {
 			return errors.New("subscription payload is required")
 		}
 		return validateSubscription(payload.Subscription)
-	case *CommandEnvelope_Checkpoint:
-		if payload.Checkpoint == nil {
-			return errors.New("checkpoint payload is required")
+	case *CommandEnvelope_Delivery:
+		if payload.Delivery == nil {
+			return errors.New("delivery payload is required")
 		}
-		return validateCheckpoint(payload.Checkpoint)
+		return validateDeliveryChange(payload.Delivery)
 	case *CommandEnvelope_Retained:
 		if payload.Retained == nil {
 			return errors.New("retained payload is required")
@@ -325,58 +330,75 @@ func validateSubscription(s *SubscriptionChange) error {
 	}
 	return nil
 }
-func validateCheckpoint(c *SessionCheckpoint) error {
-	if !boundedUTF8(c.TenantId, 1, 128) || !boundedUTF8(c.ClientId, 1, 256) {
-		return errors.New("checkpoint tenant_id or client_id is out of bounds")
+func validateDeliveryChange(change *DeliveryChange) error {
+	if !boundedUTF8(change.TenantId, 1, 128) || !boundedUTF8(change.ClientId, 1, 256) {
+		return errors.New("delivery tenant_id or client_id is out of bounds")
 	}
-	if c.OwnerNodeId == 0 || c.Epoch == 0 {
-		return errors.New("checkpoint owner_node_id and epoch must be positive")
+	if change.Action < DeliveryAction_DELIVERY_ACTION_PUBLISH || change.Action > DeliveryAction_DELIVERY_ACTION_DISCARD {
+		return errors.New("invalid delivery action")
 	}
-	seenIn, seenOut := map[uint32]bool{}, map[uint32]bool{}
-	for _, item := range c.Inbound {
-		if item == nil || item.Publish == nil {
-			return errors.New("inbound checkpoint requires publish packet")
-		}
-		if err := validatePublish(item.Publish, true); err != nil {
-			return err
-		}
-		if item.Phase < InboundDeliveryPhase_INBOUND_QOS1_AWAIT_ACCEPTANCE || item.Phase > InboundDeliveryPhase_INBOUND_QOS2_COMPLETE {
-			return errors.New("invalid inbound delivery phase")
-		}
-		if (item.Publish.Qos == 1 && item.Phase > InboundDeliveryPhase_INBOUND_QOS1_ACCEPTED) || (item.Publish.Qos == 2 && item.Phase < InboundDeliveryPhase_INBOUND_QOS2_AWAIT_ACCEPTANCE) {
-			return errors.New("inbound delivery phase conflicts with QoS")
-		}
-		if seenIn[item.Publish.PacketId] {
-			return errors.New("duplicate inbound packet ID")
-		}
-		seenIn[item.Publish.PacketId] = true
+	if change.ProposedAtUnixMillis == 0 {
+		return errors.New("delivery proposed_at_unix_millis must be positive")
 	}
-	for _, item := range c.Outbound {
-		if item == nil || item.Publish == nil {
-			return errors.New("outbound checkpoint requires publish packet")
-		}
-		if err := validatePublish(item.Publish, true); err != nil {
-			return err
-		}
-		if item.Phase < OutboundDeliveryPhase_OUTBOUND_AWAIT_PUBACK || item.Phase > OutboundDeliveryPhase_OUTBOUND_COMPLETE {
-			return errors.New("invalid outbound delivery phase")
-		}
-		if (item.Publish.Qos == 1 && item.Phase != OutboundDeliveryPhase_OUTBOUND_AWAIT_PUBACK && item.Phase != OutboundDeliveryPhase_OUTBOUND_COMPLETE) || (item.Publish.Qos == 2 && item.Phase != OutboundDeliveryPhase_OUTBOUND_AWAIT_PUBREC && item.Phase != OutboundDeliveryPhase_OUTBOUND_AWAIT_PUBCOMP && item.Phase != OutboundDeliveryPhase_OUTBOUND_COMPLETE) {
-			return errors.New("outbound delivery phase conflicts with QoS")
-		}
-		if seenOut[item.Publish.PacketId] {
-			return errors.New("duplicate outbound packet ID")
-		}
-		seenOut[item.Publish.PacketId] = true
+	if change.PublishQos > 2 {
+		return errors.New("delivery publish_qos is out of range")
 	}
-	for i := 1; i < len(c.Inbound); i++ {
-		if c.Inbound[i-1].Publish.PacketId >= c.Inbound[i].Publish.PacketId {
-			return errors.New("inbound checkpoints are not uniquely sorted by packet ID")
+	validateTargets := func() error {
+		if len(change.Targets) > maxDeliveryTargets {
+			return errors.New("delivery targets exceed limit")
 		}
+		seen := make(map[string]struct{}, len(change.Targets))
+		for _, target := range change.Targets {
+			if target == nil || !boundedUTF8(target.ClientId, 1, 256) {
+				return errors.New("invalid delivery target client_id")
+			}
+			if _, exists := seen[target.ClientId]; exists {
+				return errors.New("duplicate delivery target")
+			}
+			seen[target.ClientId] = struct{}{}
+		}
+		return nil
 	}
-	for i := 1; i < len(c.Outbound); i++ {
-		if c.Outbound[i-1].Publish.PacketId >= c.Outbound[i].Publish.PacketId {
-			return errors.New("outbound checkpoints are not uniquely sorted by packet ID")
+	switch change.Action {
+	case DeliveryAction_DELIVERY_ACTION_PUBLISH:
+		if change.OwnerNodeId != 0 || change.Epoch != 0 || change.PacketId != 0 || change.Sequence != 0 || change.Reset_ || change.SessionExpiresAtUnixMillis != 0 {
+			return errors.New("invalid delivery publish command fields")
+		}
+		if change.PublishQos == 0 || !validTopic(change.Topic) || len(change.Payload) > maxPublishPayload {
+			return errors.New("invalid delivery publish message")
+		}
+		return validateTargets()
+	case DeliveryAction_DELIVERY_ACTION_RECEIVE:
+		if change.OwnerNodeId == 0 || change.Epoch == 0 || change.PacketId == 0 || change.PacketId > 65535 || change.PublishQos != 0 || change.Sequence != 0 || change.Reset_ || change.SessionExpiresAtUnixMillis != 0 || len(change.Targets) != 0 {
+			return errors.New("invalid delivery receive command fields")
+		}
+		if !validTopic(change.Topic) || len(change.Payload) > maxPublishPayload {
+			return errors.New("invalid delivery receive message")
+		}
+	case DeliveryAction_DELIVERY_ACTION_RELEASE:
+		if change.OwnerNodeId == 0 || change.Epoch == 0 || change.PacketId == 0 || change.PacketId > 65535 || change.PublishQos != 2 || change.Topic != "" || len(change.Payload) != 0 || change.Retain || change.ExpiresAtUnixMillis != 0 || change.Sequence != 0 || change.Reset_ || change.SessionExpiresAtUnixMillis != 0 {
+			return errors.New("invalid delivery release command fields")
+		}
+		return validateTargets()
+	case DeliveryAction_DELIVERY_ACTION_SEND:
+		if change.OwnerNodeId == 0 || change.Epoch == 0 || change.Sequence == 0 || change.PacketId == 0 || change.PacketId > 65535 || change.PublishQos != 0 || change.Topic != "" || len(change.Payload) != 0 || change.Retain || change.ExpiresAtUnixMillis != 0 || len(change.Targets) != 0 || change.Reset_ || change.SessionExpiresAtUnixMillis != 0 {
+			return errors.New("invalid delivery send command fields")
+		}
+	case DeliveryAction_DELIVERY_ACTION_ADVANCE, DeliveryAction_DELIVERY_ACTION_COMPLETE:
+		if change.OwnerNodeId == 0 || change.Epoch == 0 || change.PacketId == 0 || change.PacketId > 65535 || change.PublishQos != 0 || change.Topic != "" || len(change.Payload) != 0 || change.Retain || change.ExpiresAtUnixMillis != 0 || len(change.Targets) != 0 || change.Sequence != 0 || change.Reset_ || change.SessionExpiresAtUnixMillis != 0 {
+			return errors.New("invalid delivery acknowledgement command fields")
+		}
+	case DeliveryAction_DELIVERY_ACTION_ATTACH:
+		if change.OwnerNodeId == 0 || change.Epoch == 0 || change.PublishQos != 0 || change.Topic != "" || len(change.Payload) != 0 || change.Retain || change.ExpiresAtUnixMillis != 0 || change.PacketId != 0 || len(change.Targets) != 0 || change.Sequence != 0 || change.SessionExpiresAtUnixMillis != 0 {
+			return errors.New("invalid delivery attach command fields")
+		}
+	case DeliveryAction_DELIVERY_ACTION_DETACH:
+		if change.OwnerNodeId == 0 || change.Epoch == 0 || change.PublishQos != 0 || change.Topic != "" || len(change.Payload) != 0 || change.Retain || change.ExpiresAtUnixMillis != 0 || change.PacketId != 0 || len(change.Targets) != 0 || change.Sequence != 0 || change.Reset_ {
+			return errors.New("invalid delivery detach command fields")
+		}
+	case DeliveryAction_DELIVERY_ACTION_DISCARD:
+		if change.OwnerNodeId == 0 || change.Epoch == 0 || change.PublishQos != 0 || change.Topic != "" || len(change.Payload) != 0 || change.Retain || change.ExpiresAtUnixMillis != 0 || change.PacketId != 0 || len(change.Targets) != 0 || change.Sequence != 0 || change.Reset_ || change.SessionExpiresAtUnixMillis != 0 {
+			return errors.New("invalid delivery discard command fields")
 		}
 	}
 	return nil
@@ -488,30 +510,77 @@ func validateOfflineSessionState(state *OfflineSessionState) error {
 	return nil
 }
 
-func validatePublish(p *PublishPacket, checkpoint bool) error {
-	if p.ProtocolVersion != 4 && p.ProtocolVersion != 5 {
-		return errors.New("publish protocol_version must be 4 or 5")
+func validateDeliverySessionState(state *DeliverySessionState) error {
+	if state == nil {
+		return errors.New("nil snapshot delivery session")
 	}
-	if p.Qos > 2 || ((p.Qos == 0) != (p.PacketId == 0)) {
-		return errors.New("publish QoS and packet_id are inconsistent")
+	if !boundedUTF8(state.TenantId, 1, 128) || !boundedUTF8(state.ClientId, 1, 256) || state.NextSequence < 1 {
+		return errors.New("invalid snapshot delivery session identity or sequence")
 	}
-	if checkpoint && p.Qos == 0 {
-		return errors.New("checkpoint publish QoS must be 1 or 2")
+	if len(state.Messages) > maxDeliveryMessagesPerSession || len(state.Inbound) > maxDeliveryInboundPerSession {
+		return errors.New("snapshot delivery session exceeds entry limit")
 	}
-	if p.ProtocolVersion == 4 && p.HasMessageExpiryInterval {
-		return errors.New("MQTT 3.1.1 publish cannot carry message expiry")
+	seenPacketIDs := make(map[uint32]struct{}, len(state.Messages))
+	for i, message := range state.Messages {
+		if message == nil {
+			return errors.New("nil snapshot delivery message")
+		}
+		if message.Sequence == 0 || message.Sequence >= state.NextSequence || !validTopic(message.Topic) || message.Qos < 1 || message.Qos > 2 || len(message.Payload) > maxPublishPayload {
+			return errors.New("invalid snapshot delivery message")
+		}
+		if i > 0 && state.Messages[i-1].Sequence >= message.Sequence {
+			return errors.New("snapshot delivery messages are not strictly ordered by sequence")
+		}
+		if message.PacketId == 0 {
+			if message.Phase != DeliveryPhase_DELIVERY_PHASE_QUEUED {
+				return errors.New("queued delivery message has an invalid phase")
+			}
+			continue
+		}
+		if message.PacketId > 65535 {
+			return errors.New("delivery packet ID is out of range")
+		}
+		if _, exists := seenPacketIDs[message.PacketId]; exists {
+			return errors.New("duplicate delivery packet ID")
+		}
+		seenPacketIDs[message.PacketId] = struct{}{}
+		if (message.Qos == 1 && message.Phase != DeliveryPhase_DELIVERY_PHASE_AWAIT_PUBACK) ||
+			(message.Qos == 2 && message.Phase != DeliveryPhase_DELIVERY_PHASE_AWAIT_PUBREC && message.Phase != DeliveryPhase_DELIVERY_PHASE_AWAIT_PUBCOMP) {
+			return errors.New("delivery phase conflicts with QoS")
+		}
 	}
-	if !validTopic(p.Topic) {
-		return errors.New("invalid MQTT topic")
-	}
-	if len(p.Payload) > maxPublishPayload {
-		return errors.New("publish payload exceeds 1,000,000 bytes")
-	}
-	if !p.HasMessageExpiryInterval && p.MessageExpiryInterval != 0 {
-		return errors.New("message expiry interval must be zero when absent")
+	for i, inbound := range state.Inbound {
+		if inbound == nil {
+			return errors.New("nil snapshot inbound message")
+		}
+		if inbound.PacketId == 0 || inbound.PacketId > 65535 || !validTopic(inbound.Topic) || len(inbound.Payload) > maxPublishPayload {
+			return errors.New("invalid snapshot inbound message")
+		}
+		if i > 0 && state.Inbound[i-1].PacketId >= inbound.PacketId {
+			return errors.New("snapshot inbound messages are not strictly ordered by packet ID")
+		}
+		if (!inbound.Released && inbound.ReleasedIndex != 0) ||
+			(inbound.Released && (inbound.ReleasedIndex == 0 || len(inbound.Payload) != 0)) {
+			return errors.New("invalid snapshot inbound release state")
+		}
 	}
 	return nil
 }
+
+func deliveryEntryBytes(tenantID, clientID, topic string, payload []byte) int {
+	return len(tenantID) + len(clientID) + len(topic) + len(payload)
+}
+
+func deliveryObjectCount(sessions []*DeliverySessionState) int {
+	count := 0
+	for _, session := range sessions {
+		if session != nil {
+			count += len(session.Messages) + len(session.Inbound)
+		}
+	}
+	return count
+}
+
 func validateSnapshotState(s *ReplicatedStateSnapshot) error {
 	offlineMessagesCount := 0
 	for _, session := range s.OfflineSessions {
@@ -519,9 +588,9 @@ func validateSnapshotState(s *ReplicatedStateSnapshot) error {
 			offlineMessagesCount += len(session.Messages)
 		}
 	}
-	count := len(s.Members) + len(s.Ownerships) + len(s.Subscriptions) + len(s.Checkpoints) + len(s.MembershipHistory) + len(s.Retained) + len(s.OfflineSessions) + offlineMessagesCount
+	count := len(s.Members) + len(s.Ownerships) + len(s.Subscriptions) + len(s.DeliverySessions) + deliveryObjectCount(s.DeliverySessions) + len(s.MembershipHistory) + len(s.Retained) + len(s.OfflineSessions) + offlineMessagesCount
 	if count > maxEntries {
-		return errors.New("snapshot exceeds 1,000,000 top-level entries")
+		return errors.New("snapshot exceeds 1,000,000 entries")
 	}
 	if len(s.Retained) > maxRetainedMessages {
 		return errors.New("snapshot exceeds retained message limit")
@@ -564,19 +633,30 @@ func validateSnapshotState(s *ReplicatedStateSnapshot) error {
 			return errors.New("snapshot subscriptions are not uniquely sorted")
 		}
 	}
-	for _, c := range s.Checkpoints {
-		if c == nil {
-			return errors.New("nil snapshot checkpoint")
-		}
-		if err := validateCheckpoint(c); err != nil {
+	deliveryEntries, deliveryBytes := 0, 0
+	for _, session := range s.DeliverySessions {
+		if err := validateDeliverySessionState(session); err != nil {
 			return err
 		}
-	}
-	for i := 1; i < len(s.Checkpoints); i++ {
-		a, b := s.Checkpoints[i-1], s.Checkpoints[i]
-		if compare2(a.TenantId, a.ClientId, b.TenantId, b.ClientId) >= 0 {
-			return errors.New("snapshot checkpoints are not uniquely sorted")
+		deliveryEntries += len(session.Messages) + len(session.Inbound)
+		for _, message := range session.Messages {
+			deliveryBytes += deliveryEntryBytes(session.TenantId, session.ClientId, message.Topic, message.Payload)
 		}
+		for _, inbound := range session.Inbound {
+			deliveryBytes += deliveryEntryBytes(session.TenantId, session.ClientId, inbound.Topic, inbound.Payload)
+		}
+	}
+	for i := 1; i < len(s.DeliverySessions); i++ {
+		a, b := s.DeliverySessions[i-1], s.DeliverySessions[i]
+		if compare2(a.TenantId, a.ClientId, b.TenantId, b.ClientId) >= 0 {
+			return errors.New("snapshot delivery sessions are not uniquely sorted")
+		}
+	}
+	if deliveryEntries > maxDeliveryEntries {
+		return errors.New("snapshot exceeds delivery entry limit")
+	}
+	if deliveryBytes > maxDeliveryBytes {
+		return errors.New("snapshot exceeds delivery byte limit")
 	}
 	for _, m := range s.MembershipHistory {
 		if m == nil {
@@ -633,6 +713,13 @@ func validateSnapshotMembershipIndexes(s *ReplicatedStateSnapshot, lastIncludedI
 			return errors.New("membership history committed_index exceeds last_included_index")
 		}
 	}
+	for _, session := range s.DeliverySessions {
+		for _, inbound := range session.Inbound {
+			if inbound.ReleasedIndex > lastIncludedIndex {
+				return errors.New("delivery released_index exceeds last_included_index")
+			}
+		}
+	}
 	return nil
 }
 func sortSnapshot(s *ReplicatedStateSnapshot) {
@@ -665,14 +752,14 @@ func sortSnapshot(s *ReplicatedStateSnapshot) {
 		a, b := s.Subscriptions[i], s.Subscriptions[j]
 		return compare3(a.TenantId, a.ClientId, a.Filter, b.TenantId, b.ClientId, b.Filter) < 0
 	})
-	sort.Slice(s.Checkpoints, func(i, j int) bool {
-		if s.Checkpoints[i] == nil {
-			return s.Checkpoints[j] != nil
+	sort.Slice(s.DeliverySessions, func(i, j int) bool {
+		if s.DeliverySessions[i] == nil {
+			return s.DeliverySessions[j] != nil
 		}
-		if s.Checkpoints[j] == nil {
+		if s.DeliverySessions[j] == nil {
 			return false
 		}
-		a, b := s.Checkpoints[i], s.Checkpoints[j]
+		a, b := s.DeliverySessions[i], s.DeliverySessions[j]
 		return compare2(a.TenantId, a.ClientId, b.TenantId, b.ClientId) < 0
 	})
 	sort.Slice(s.MembershipHistory, func(i, j int) bool {
@@ -702,27 +789,27 @@ func sortSnapshot(s *ReplicatedStateSnapshot) {
 		}
 		return compare2(s.OfflineSessions[i].TenantId, s.OfflineSessions[i].ClientId, s.OfflineSessions[j].TenantId, s.OfflineSessions[j].ClientId) < 0
 	})
-	for _, c := range s.Checkpoints {
-		if c == nil {
+	for _, session := range s.DeliverySessions {
+		if session == nil {
 			continue
 		}
-		sort.Slice(c.Inbound, func(i, j int) bool {
-			if c.Inbound[i] == nil || c.Inbound[i].Publish == nil {
+		sort.Slice(session.Messages, func(i, j int) bool {
+			if session.Messages[i] == nil {
+				return session.Messages[j] != nil
+			}
+			if session.Messages[j] == nil {
 				return false
 			}
-			if c.Inbound[j] == nil || c.Inbound[j].Publish == nil {
-				return true
-			}
-			return c.Inbound[i].Publish.PacketId < c.Inbound[j].Publish.PacketId
+			return session.Messages[i].Sequence < session.Messages[j].Sequence
 		})
-		sort.Slice(c.Outbound, func(i, j int) bool {
-			if c.Outbound[i] == nil || c.Outbound[i].Publish == nil {
+		sort.Slice(session.Inbound, func(i, j int) bool {
+			if session.Inbound[i] == nil {
+				return session.Inbound[j] != nil
+			}
+			if session.Inbound[j] == nil {
 				return false
 			}
-			if c.Outbound[j] == nil || c.Outbound[j].Publish == nil {
-				return true
-			}
-			return c.Outbound[i].Publish.PacketId < c.Outbound[j].Publish.PacketId
+			return session.Inbound[i].PacketId < session.Inbound[j].PacketId
 		})
 	}
 }

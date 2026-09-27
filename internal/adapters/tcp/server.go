@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"narumq/internal/application/connect"
+	"narumq/internal/application/membership"
 	applicationauthentication "narumq/internal/application/ports/authentication"
 	applicationclock "narumq/internal/application/ports/clock"
 	"narumq/internal/application/ports/deliveryqueue"
@@ -327,6 +328,22 @@ func (server *Server) closeSession(sessionID routing.SessionID) {
 	}
 }
 
+// DeliverDurable queues one already-committed QoS 1/2 delivery on its live owner.
+func (server *Server) DeliverDurable(delivery deliveryqueue.DeliveryDTO) error {
+	if server == nil || delivery.DurableSequence == 0 || delivery.DurableEpoch == 0 ||
+		(delivery.QoS != mqtt.QoSAtLeastOnce && delivery.QoS != mqtt.QoSExactlyOnce) {
+		return deliveryqueue.ErrUnavailable
+	}
+	if err := server.deliveries.TryEnqueue(delivery, server.config.Clock.Now()); err != nil {
+		if errors.Is(err, deliveryqueue.ErrFull) {
+			server.closeSession(delivery.SessionID)
+		}
+		return err
+	}
+	server.wakeSession(delivery.SessionID)
+	return nil
+}
+
 // CloseSessionForTakeover closes the local socket after a committed cluster
 // ownership change, without treating takeover as an abnormal client failure.
 func (server *Server) CloseSessionForTakeover(sessionID routing.SessionID) bool {
@@ -620,8 +637,15 @@ func (connection *connection) activate(packet mqtt.Connect) error {
 		TenantID: tenantID, ClientID: packet.ClientID,
 		OwnerNodeID: connection.server.config.LocalMemberID, Epoch: result.OwnershipEpoch,
 	}
-	connection.keepAlive = packet.KeepAlive
 	connection.accepted = true
+	if result.DeliverySession != nil {
+		if err := connection.restoreInbound(result.DeliverySession); err != nil {
+			return err
+		}
+	} else if connection.server.config.ClusterMode {
+		return ErrProtocol
+	}
+	connection.keepAlive = packet.KeepAlive
 	if !connection.server.bindSession(connection.sessionID, connection) {
 		connection.accepted = false
 		_ = connection.server.connections.Disconnect(connection.sessionID, session.DisconnectAbnormal)
@@ -660,6 +684,55 @@ func (connection *connection) activate(packet mqtt.Connect) error {
 	}
 	connection.deliveryBlocked.Store(false)
 	connection.wakeDelivery()
+	return nil
+}
+func (connection *connection) restoreInbound(session *membership.DeliverySessionStateDTO) error {
+	if session == nil {
+		return nil
+	}
+	now := connection.server.config.Clock.Now()
+	for _, record := range session.Inbound {
+		if record.PacketID == 0 || record.PacketID > 65535 {
+			return ErrProtocol
+		}
+		packetID := mqtt.PacketIdentifier(record.PacketID)
+		packet := mqtt.Publish{
+			Version:  connection.version,
+			Topic:    record.Topic,
+			Payload:  record.Payload,
+			Retain:   record.Retain,
+			QoS:      mqtt.QoSExactlyOnce,
+			PacketID: packetID,
+		}
+		receivedAt := now
+		if record.ExpiresAtUnixMillis > 0 {
+			receivedAt = time.UnixMilli(int64(record.ExpiresAtUnixMillis))
+			packet.HasMessageExpiryInterval = true
+			packet.MessageExpiryInterval = 0
+		}
+		state, _, err := delivery.NewInbound(packet)
+		if err != nil {
+			return ErrProtocol
+		}
+		state, _, err = state.Accept()
+		if err != nil {
+			return ErrProtocol
+		}
+		if record.Released {
+			state, _, err = state.Receive(&mqtt.PubRel{Version: connection.version, PacketID: packetID})
+			if err != nil {
+				return ErrProtocol
+			}
+			state, _, err = state.Accept()
+			if err != nil {
+				return ErrProtocol
+			}
+		}
+		if _, exists := connection.inbound[packetID]; exists {
+			return ErrProtocol
+		}
+		connection.inbound[packetID] = inboundState{state: state, receivedAt: receivedAt}
+	}
 	return nil
 }
 
@@ -735,11 +808,9 @@ func (connection *connection) dispatchPublish(packet mqtt.Publish) error {
 			return connection.rejectUnauthorizedPublish(packet)
 		}
 	}
-	if connection.server.config.ClusterMode && packet.QoS > mqtt.QoSAtMostOnce {
+	if connection.server.config.ClusterMode && packet.QoS > mqtt.QoSAtMostOnce && !connection.server.publications.DurableEnabled() {
 		if connection.version == mqtt.ProtocolV5 {
-			if err := connection.enqueueAndWait(&mqtt.Disconnect{
-				Version: connection.version, ReasonCode: 0x89,
-			}); err != nil {
+			if err := connection.enqueueAndWait(&mqtt.Disconnect{Version: connection.version, ReasonCode: 0x89}); err != nil {
 				return err
 			}
 		}
@@ -804,7 +875,7 @@ func (connection *connection) dispatchPublish(packet mqtt.Publish) error {
 		result, err := connection.server.publications.Publish(connection.sessionID, *action.Deliver, receivedAt)
 		if err != nil {
 			connection.deliveryMu.Unlock()
-			if errors.Is(err, applicationretained.ErrFull) {
+			if errors.Is(err, applicationretained.ErrFull) || errors.Is(err, publish.ErrDurableDeliveryCapacity) {
 				if connection.version == mqtt.ProtocolV5 {
 					return connection.enqueueControl(&mqtt.PubAck{
 						Version:    connection.version,
@@ -862,6 +933,26 @@ func (connection *connection) dispatchPublish(packet mqtt.Publish) error {
 			return nil
 		}
 
+		if connection.server.config.ClusterMode {
+			err := connection.server.publications.ReceiveQoS2(
+				connection.sessionID, connection.ownership.OwnerNodeID, connection.ownership.Epoch,
+				packet, receivedAt, connection.principal,
+			)
+			if err != nil {
+				connection.deliveryMu.Unlock()
+				if errors.Is(err, publish.ErrDurableDeliveryCapacity) {
+					if connection.version == mqtt.ProtocolV5 {
+						return connection.enqueueControl(&mqtt.PubRec{
+							Version: connection.version, PacketID: packet.PacketID, ReasonCode: 0x97,
+						})
+					}
+					connection.cleanup()
+					connection.requestClose()
+					return nil
+				}
+				return err
+			}
+		}
 		state, _, err := delivery.NewInbound(packet)
 		if err != nil {
 			connection.deliveryMu.Unlock()
@@ -892,16 +983,11 @@ func (connection *connection) dispatchPubRel(packet *mqtt.PubRel) error {
 	entry, exists := connection.inbound[packet.PacketID]
 	if !exists {
 		connection.deliveryMu.Unlock()
-		if connection.version == mqtt.ProtocolV5 {
-			return connection.enqueueControl(&mqtt.PubComp{
-				Version:    connection.version,
-				PacketID:   packet.PacketID,
-				ReasonCode: 0x92,
-			})
-		}
+		reasonCode := byte(0x92)
 		return connection.enqueueControl(&mqtt.PubComp{
-			Version:  connection.version,
-			PacketID: packet.PacketID,
+			Version:    connection.version,
+			PacketID:   packet.PacketID,
+			ReasonCode: reasonCode,
 		})
 	}
 
@@ -912,7 +998,18 @@ func (connection *connection) dispatchPubRel(packet *mqtt.PubRel) error {
 	}
 
 	if action.Deliver != nil {
-		result, err := connection.server.publications.Publish(connection.sessionID, *action.Deliver, entry.receivedAt)
+		var result publish.ResultDTO
+		var err error
+		if connection.server.config.ClusterMode {
+			result, err = connection.server.publications.PublishQoS2Release(
+				connection.sessionID, connection.ownership.OwnerNodeID, connection.ownership.Epoch,
+				*action.Deliver, entry.receivedAt, connection.principal,
+			)
+		} else {
+			result, err = connection.server.publications.Publish(
+				connection.sessionID, *action.Deliver, entry.receivedAt, connection.principal,
+			)
+		}
 		if err != nil {
 			connection.deliveryMu.Unlock()
 			if errors.Is(err, applicationretained.ErrFull) {
@@ -1315,10 +1412,12 @@ func (connection *connection) writeDeliveries() error {
 			return err
 		}
 		outbound := deliveryqueue.OutboundDTO{
-			SessionID: connection.sessionID,
-			PacketID:  packetID,
-			State:     state,
-			ExpiresAt: item.ExpiresAt,
+			SessionID:       connection.sessionID,
+			PacketID:        packetID,
+			State:           state,
+			ExpiresAt:       item.ExpiresAt,
+			DurableSequence: item.DurableSequence,
+			DurableEpoch:    item.DurableEpoch,
 		}
 		err = connection.server.deliveries.PromoteHead(outbound, now)
 		switch {

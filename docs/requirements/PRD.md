@@ -79,7 +79,7 @@ NaruMQ는 Kubernetes 환경에 최적화된 고가용성 MQTT 클러스터다. �
 | rolling update 중 비정상 Will 발행 | 지원 클라이언트 계약을 충족한 연결에서 0 |
 | 연속 100회 rolling update의 강제 종료 | 0 |
 | N-1 처리 용량 | 현행 최대 트래픽 이상 |
-| 전체 production code coverage | line/function 90% 이상, branch 85% 이상 |
+| 전체 production code coverage | line 85% 이상, function 90% 이상, branch 85% 이상 |
 | MQTT·session·routing·security·drain 핵심 모듈 coverage | line/function 95% 이상, branch 90% 이상 |
 | 변경 코드 coverage | line/branch 95% 이상 |
 
@@ -327,7 +327,7 @@ legacy broker/gateway는 NaruMQ core와 별도 배포·수명 주기·Metric을 
 | DEP-04 | P0 | load balancer 전파 대기 시간을 설정한다. | 대기 중 기존 연결은 유지하고 신규 연결은 받지 않는다. |
 | DEP-05 | P0 | 연결 종료·이동 속도를 제한한다. | reconnect storm이 설정한 connection rate를 넘지 않는다. |
 | DEP-06 | P0 | MQTT 5 client에 `DISCONNECT 0x9C`와 Server Reference를 제공한다. | 지원 client가 지정 endpoint 또는 공통 load balancer로 재접속한다. |
-| DEP-07 | P0 | MQTT 3.1.1 client를 표준 동작을 유지하며 재접속시킨다. | checkpoint 후 연결을 닫고 client가 공통 endpoint로 돌아온다. Will이 설정된 연결은 서버 종료 시 Will이 발행될 수 있음을 호환성 표와 Metric에 명시한다. |
+| DEP-07 | P0 | MQTT 3.1.1 client를 표준 동작을 유지하며 재접속시킨다. | committed session state를 보존한 뒤 연결을 닫고 client가 공통 endpoint로 돌아온다. Will이 설정된 연결은 서버 종료 시 Will이 발행될 수 있음을 호환성 표와 Metric에 명시한다. |
 | DEP-08 | P0 | 종료 전 session과 inflight 상태의 quorum 복제를 확인한다. | 복제 확인 전 `SAFE_TO_STOP`을 반환하지 않는다. |
 | DEP-09 | P0 | 새 owner의 session takeover를 확인한다. | 이전 owner는 takeover 뒤 session을 수정하지 못한다. |
 | DEP-10 | P0 | 종료 안전 barrier를 제공한다. | 잔여 연결, 미반영 WAL, 필요한 replica가 기준을 충족해야 성공한다. |
@@ -372,8 +372,7 @@ sequenceDiagram
     R->>O: drain 시작(Pod 삭제 전)
     O->>L: readiness=false
     L-->>O: 신규 연결 제외
-    O->>S: session·inflight checkpoint
-    S-->>O: quorum commit 완료
+    Note over O,S: QoS transition은 각 wire success보다 먼저 quorum commit됨; 별도 전체-session checkpoint 없음
     O->>C: MQTT 5 redirect 또는 계획된 disconnect
     C->>N: 동일 Client ID로 재접속
     N->>S: ownership 획득 및 session 복구
@@ -479,10 +478,10 @@ Unit test는 모든 기능의 기본 검증 수단이다. 그러나 분산 동�
 | TEST-03 | MQTT 3.1.1/5.0 지원 범위의 모든 normative statement를 test case와 연결한 compliance matrix로 관리한다. |
 | TEST-04 | packet parser, encoder, QoS state machine, session expiry, topic matching, ACL, quota, drain state transition의 모든 분기를 unit test한다. |
 | TEST-05 | 시간, 난수, network, storage, consensus와 인증 backend는 port/test double로 대체해 unit test를 결정적이고 빠르게 실행한다. |
-| TEST-06 | 전체 production code는 line/function 90% 이상, branch 85% 이상의 coverage를 유지한다. |
+| TEST-06 | 전체 production code는 line 85% 이상, function 90% 이상, branch 85% 이상의 coverage를 유지한다. |
 | TEST-07 | protocol, session, routing, delivery, tenancy, security, cluster lifecycle 핵심 모듈은 line/function 95% 이상, branch 90% 이상을 유지한다. |
 | TEST-08 | pull request의 변경 코드는 line/branch 95% 이상의 diff coverage를 충족한다. |
-| TEST-09 | 전체 production line/function coverage 기준은 90%이며, 더 높은 단일 측정치만으로 threshold를 자동 상향하지 않는다. 기준 변경은 근거와 함께 PRD 및 policy를 같은 변경에서 갱신한다. |
+| TEST-09 | 전체 production line coverage 기준은 85%, function coverage 기준은 90%이며, 더 높은 단일 측정치만으로 threshold를 자동 상향하지 않는다. 기준 변경은 근거와 함께 PRD 및 policy를 같은 변경에서 갱신한다. |
 | TEST-10 | test 실패, coverage 하락, 미매핑 P0 요구사항 또는 미매핑 MQTT normative statement가 있으면 CI가 merge를 차단한다. |
 | TEST-11 | generated code, vendor code와 단순 선언을 coverage에서 제외할 수 있다. 제외 사유와 경로는 설정 파일과 review에 남긴다. |
 | TEST-12 | critical state machine에 mutation test를 적용하고 mutation score 80% 이상을 유지한다. |

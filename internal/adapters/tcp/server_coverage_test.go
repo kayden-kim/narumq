@@ -101,6 +101,15 @@ func (queue *csvQueue) ReplaceOutbound(outbound applicationdeliveryqueue.Outboun
 	}
 	return queue.Queue.ReplaceOutbound(outbound)
 }
+func (queue *csvQueue) ResetDurable(
+	sessionID routing.SessionID,
+	epoch uint64,
+	queued []applicationdeliveryqueue.DeliveryDTO,
+	outbound []applicationdeliveryqueue.OutboundDTO,
+	now time.Time,
+) error {
+	return queue.Queue.ResetDurable(sessionID, epoch, queued, outbound, now)
+}
 
 // csvLogBuffer is a goroutine-safe slog sink.
 type csvLogBuffer struct {
@@ -1001,9 +1010,14 @@ func TestCSVClusterQoS1PublishFromMQTT311ClosesWithoutDisconnect(t *testing.T) {
 	runtime := csvClusterRuntime(t, &ready)
 	defer runtime.stop(t)
 	csvConnect(t, runtime.server, runtime.client, &mqtt.Connect{Version: mqtt.ProtocolV311, CleanStart: true, ClientID: "legacy"})
-	writeTestPackets(t, runtime.client, &mqtt.Publish{
-		Version: mqtt.ProtocolV311, Topic: "cluster/test", QoS: mqtt.QoSAtLeastOnce, PacketID: 1, Payload: []byte("x"),
+	encoded := encodeTestPacket(t, &mqtt.Publish{
+		Version: mqtt.ProtocolV311, Topic: "cluster/test", QoS: mqtt.QoSAtLeastOnce,
+		PacketID: 1, Payload: []byte("x"),
 	})
+	if _, err := runtime.client.Write(encoded); err != nil &&
+		!errors.Is(err, io.ErrClosedPipe) && !errors.Is(err, net.ErrClosed) {
+		t.Fatalf("write rejected MQTT 3.1.1 PUBLISH: %v", err)
+	}
 	csvRequireClosedWithoutResponse(t, runtime.client)
 }
 

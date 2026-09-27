@@ -32,9 +32,9 @@
 
 ## 2. 배경
 
-현재 cluster MQTT ingress는 QoS 0만 받으며 live route와 bounded delivery queue는 node-local이다. Persistent session이 끊긴 뒤 다른 node로 reconnect하면 이전 queue를 이어받지 못한다. Retained state는 ADR-0012에서 Raft와 backup v2에 연결됐지만 offline queue는 빠져 있어 detached delivery가 owner node crash, restore와 joiner catch-up을 지나 보존되지 않는다.
+ADR-0013 결정 당시 Cluster MQTT ingress는 QoS 0만 받았으며 live route와 bounded delivery queue는 node-local이었다. Persistent session이 끊긴 뒤 다른 node로 reconnect하면 이전 queue를 이어받지 못했다. Retained state는 ADR-0012에서 Raft와 backup v2에 연결됐지만 offline queue는 빠져 있어 detached delivery가 owner node crash, restore와 joiner catch-up을 지나 보존되지 않았다.
 
-이 변경은 delivery queue 전체를 replicated authority로 바꾸지 않는다. Detach 시점에 남은 local FIFO를 캡처하고, 그 뒤 detached 대상에 매칭된 delivery만 ENQUEUE한다. CONNECT ownership acquire 뒤 CLAIM으로 새 owner가 가져간다. Connected live delivery와 QoS 1/2 ACK·inflight state는 별도 작업이다.
+이 변경은 delivery queue 전체를 replicated authority로 바꾸지 않는다. Detach 시점에 남은 local FIFO를 캡처하고, 그 뒤 detached 대상에 매칭된 delivery만 ENQUEUE한다. CONNECT ownership acquire 뒤 CLAIM으로 새 owner가 가져간다. 당시 connected live delivery와 QoS 1/2 ACK·inflight state는 별도 작업이었으며, live QoS 0 forwarding은 ADR-0014, durable QoS 1/2는 후속 ADR-0015에서 정의했다.
 
 TEN-08은 P0 요구사항이며 tenant별 offline queue, retained bytes와 저장 용량 quota를 요구한다. 이 결정의 승인 범위에서는 tenant별 quota를 제외하므로 TEN-08의 해당 수용 기준은 미충족 상태로 남는다. Global offline capacity는 tenant quota를 대체하지 않는다.
 

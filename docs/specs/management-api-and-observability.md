@@ -196,5 +196,6 @@ UI mutation은 해당 API가 active contract에 추가될 때 같은 RBAC, 확�
 - 같은 contract suite가 pagination `1`/`1000` 경계, `1001` 초과, duplicate·unknown query와 subscriptions/retained의 required `tenantId`를 검증한다.
 - 같은 contract suite가 anonymous, 잘못된 credential, ReadOnly bearer/API key 성공과 ClusterAdmin 권한 부족 `403`을 검증한다.
 - startup, liveness, readiness와 drain-complete가 quorum·sync·drain 상태 조합을 정확히 반영하는지 시험한다.
+- Cluster startup probe는 typed Raft recovery가 끝나기 전 `STARTING`, recovery 뒤 base lifecycle 상태를 반환해야 한다. `cmd/narumq/cluster_storage_health_test.go::TestClusterStartupWaitsForTypedRecovery`가 두 상태를 확인한다.
 - Metric format, type, HELP/UNIT, histogram bucket과 금지 label을 자동 검사한다.
 - deferred mutation endpoint의 idempotency, audit와 dashboard aggregation/masking 검증은 해당 endpoint가 contract에 추가될 때 이 목록에 연결한다.

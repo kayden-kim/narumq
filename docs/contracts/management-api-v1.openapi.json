@@ -220,7 +220,7 @@
         "tags": ["ClusterMembership"],
         "operationId": "removeClusterMember",
         "summary": "Start planned member removal",
-        "description": "Requires ClusterAdmin. Starts a REMOVING membership operation and marks the member as LEAVING; the voter is not removed until ownership/checkpoint transfer and the removal configuration commit.",
+        "description": "Requires ClusterAdmin. Starts a REMOVING membership operation and marks the member as LEAVING; the voter is not removed until ownership transfer and the removal configuration commit.",
         "parameters": [
           { "$ref": "#/components/parameters/MemberId" },
           { "$ref": "#/components/parameters/IdempotencyKey" }

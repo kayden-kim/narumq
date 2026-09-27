@@ -6,8 +6,8 @@ MQTT의 QoS는 한 sender와 receiver 사이의 한 protocol hop을 보장한다
 | --- | --- |
 | 기준 독자 | Go 문법과 HTTP/TCP 기초는 알지만 MQTT broker, Session, 분산 저장소가 생소한 주니어 개발자 |
 | 선수 문서 | [MQTT의 역사와 버전 진화: MQIsdp부터 MQTT 5.0까지](mqtt-history-and-version-evolution.md) |
-| 관련 기준 문서 | [PRD](../requirements/PRD.md), [MQTT protocol과 session spec](../specs/mqtt-protocol-and-session.md), [Cluster session spec](../specs/cluster-session-and-delivery.md) |
-| 대상 version·확인일 | MQTT 3.1.1 / MQTT 5.0, 2026-09-19 |
+| 관련 기준 문서 | [PRD](../requirements/PRD.md), [MQTT protocol과 session spec](../specs/mqtt-protocol-and-session.md), [Cluster session spec](../specs/cluster-session-and-delivery.md), [ADR-0015 durable QoS 1/2](../decisions/ADR-0015-cluster-durable-qos-delivery.md) |
+| 대상 version·확인일 | MQTT 3.1.1 / MQTT 5.0, 2026-09-27 |
 
 ## 1. 한눈에 보는 답
 
@@ -359,9 +359,9 @@ Volume 복제와 NaruMQ quorum 복제는 같은 보장이 아니다. Durable ACK
 - Durable ACK: [Raft quorum과 durable ACK](raft-quorum-and-durable-ack.md), [ADR-0003](../decisions/ADR-0003-durable-ack-barrier.md)
 - 계획 drain과 Will: [안전한 노드 drain과 Will](safe-node-drain-and-will.md)
 
-Current Go implementation은 MQTT packet codec, delivery/session value-state, routing, publish/subscribe orchestration과 TCP ingress를 제공한다. Dynamic cluster mode에서는 QoS 0 retained PUBLISH와 detached persistent session의 QoS 0 offline queue를 Raft에 commit한 뒤 tenant-scoped state를 다른 node의 replay projection에 반영하며, NMQBKUP3 archive가 retained state와 offline queue를 restore한다. Process acceptance는 cross-node replay, restore, restart와 joiner catch-up을 확인했다.
+Current Go implementation은 MQTT packet codec, delivery/session value-state, routing, publish/subscribe orchestration과 TCP ingress를 제공한다. Dynamic cluster는 QoS 0 retained/offline state와 QoS 1/2 durable target queue, publisher inbound QoS 2 state를 Raft에 commit한다. Limited process acceptance는 detached QoS 1/2 queue/reconnect, subscriber/publisher takeover, backup v3 restore, ACK 뒤 publisher-node process kill 및 quorum loss 중 성공 ACK 부재를 확인한다([Cluster §4.2·§11.11](../specs/cluster-session-and-delivery.md#42-durable-qos-1-2-delivery)).
 
-이 결과는 일반 QoS 1/2 durable publish ACK를 보증하지 않는다. Durable QoS 1/2 ACK, full CLU-14, release 간 archive compatibility와 production EBS/power-loss는 별도 acceptance가 필요하다. 위 protocol flow는 표준 동작과 제품 목표를 설명하며, 각 구현 범위는 [Cluster spec](../specs/cluster-session-and-delivery.md)과 [Cluster backup v3 contract](../contracts/cluster-backup-v3.md)의 검증 상태를 따른다.
+이 evidence는 production WAL/fsync·EBS power-loss, BP-03, N/N-1, TEN-08 또는 전체 CLU-14 완료를 뜻하지 않는다. 위 protocol flow는 표준 동작과 제품 목표를 설명하며, 구현 범위와 실행 결과는 [Cluster spec](../specs/cluster-session-and-delivery.md) 및 [ADR-0015](../decisions/ADR-0015-cluster-durable-qos-delivery.md)의 acceptance mapping을 따른다.
 
 ## 9. 확인 질문
 

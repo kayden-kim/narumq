@@ -225,6 +225,125 @@ func TestQueueOutboundBoundSortingAndRemoval(t *testing.T) {
 	}
 }
 
+// Traceability: CLU-05/CLU-06; docs/specs/cluster-session-and-delivery.md §4.2, §11.11.
+func TestQueueResetDurableReplacesStateAndBoundsLocalQueue(t *testing.T) {
+	now := testNow()
+	queue, err := New(3)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sessionID := routing.SessionID("session-durable")
+	if err := queue.Register(sessionID); err != nil {
+		t.Fatal(err)
+	}
+
+	oldDurable := applicationdeliveryqueue.DeliveryDTO{
+		SessionID: sessionID, Topic: "old/outbound", Payload: []byte("old"),
+		DurableSequence: 1, DurableEpoch: 1,
+	}
+	if err := queue.TryEnqueue(oldDurable, now); err != nil {
+		t.Fatal(err)
+	}
+	if err := queue.PromoteHead(outboundFor(t, sessionID, 1, time.Time{}), now); err != nil {
+		t.Fatal(err)
+	}
+	if err := queue.TryEnqueue(applicationdeliveryqueue.DeliveryDTO{SessionID: sessionID, Topic: "local/outbound"}, now); err != nil {
+		t.Fatal(err)
+	}
+	if err := queue.PromoteHead(outboundFor(t, sessionID, 2, time.Time{}), now); err != nil {
+		t.Fatal(err)
+	}
+	if err := queue.TryEnqueueBatch([]applicationdeliveryqueue.DeliveryDTO{
+		{SessionID: sessionID, Topic: "old/queued", DurableSequence: 2, DurableEpoch: 1},
+		{SessionID: sessionID, Topic: "local/keep"},
+		{SessionID: sessionID, Topic: "local/drop"},
+	}, now); err != nil {
+		t.Fatal(err)
+	}
+
+	durableQueued := []applicationdeliveryqueue.DeliveryDTO{
+		{SessionID: sessionID, Topic: "new/one", Payload: []byte("one"), DurableSequence: 3, DurableEpoch: 2},
+		{SessionID: sessionID, Topic: "expired", DurableSequence: 4, DurableEpoch: 2, ExpiresAt: now.Add(-time.Second)},
+		{SessionID: sessionID, Topic: "new/two", DurableSequence: 5, DurableEpoch: 2},
+	}
+	durableOutbound := outboundFor(t, sessionID, 3, time.Time{})
+	durableOutbound.DurableSequence, durableOutbound.DurableEpoch = 1, 2
+	if err := queue.ResetDurable(sessionID, 2, durableQueued, []applicationdeliveryqueue.OutboundDTO{durableOutbound}, now); err != nil {
+		t.Fatalf("ResetDurable() error = %v", err)
+	}
+	durableQueued[0].Payload[0] = 'X'
+
+	queued, err := queue.ListQueued(sessionID, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(queued) != 3 ||
+		queued[0].Topic != "new/one" || queued[0].DurableSequence != 3 || queued[0].DurableEpoch != 2 || string(queued[0].Payload) != "one" ||
+		queued[1].Topic != "new/two" || queued[1].DurableSequence != 5 ||
+		queued[2].Topic != "local/keep" || queued[2].DurableSequence != 0 {
+		t.Fatalf("ResetDurable() queued order/state = %+v", queued)
+	}
+	outbound, err := queue.ListOutbound(sessionID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(outbound) != 2 ||
+		outbound[0].PacketID != 2 || outbound[0].DurableEpoch != 0 ||
+		outbound[1].PacketID != 3 || outbound[1].DurableSequence != 1 || outbound[1].DurableEpoch != 2 {
+		t.Fatalf("ResetDurable() outbound replacement = %+v", outbound)
+	}
+}
+
+// Traceability: CLU-05/CLU-06; docs/specs/cluster-session-and-delivery.md §4.2, §11.11.
+func TestQueueResetDurablePacketIDConflictIsAtomic(t *testing.T) {
+	now := testNow()
+	queue, err := New(2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sessionID := routing.SessionID("session-durable")
+	if err := queue.Register(sessionID); err != nil {
+		t.Fatal(err)
+	}
+	if err := queue.TryEnqueue(applicationdeliveryqueue.DeliveryDTO{SessionID: sessionID, Topic: "local/queued"}, now); err != nil {
+		t.Fatal(err)
+	}
+	localOutbound := outboundFor(t, sessionID, 7, time.Time{})
+	if err := queue.TryEnqueue(applicationdeliveryqueue.DeliveryDTO{SessionID: sessionID, Topic: "local/outbound"}, now); err != nil {
+		t.Fatal(err)
+	}
+	if err := queue.PromoteHead(localOutbound, now); err != nil {
+		t.Fatal(err)
+	}
+	beforeQueued, err := queue.ListQueued(sessionID, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	beforeOutbound, err := queue.ListOutbound(sessionID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	conflicting := outboundFor(t, sessionID, 7, time.Time{})
+	conflicting.DurableSequence, conflicting.DurableEpoch = 1, 2
+	if err := queue.ResetDurable(sessionID, 2, []applicationdeliveryqueue.DeliveryDTO{
+		{SessionID: sessionID, Topic: "durable", DurableSequence: 1, DurableEpoch: 2},
+	}, []applicationdeliveryqueue.OutboundDTO{conflicting}, now); !errors.Is(err, applicationdeliveryqueue.ErrPacketIDConflict) {
+		t.Fatalf("ResetDurable() conflict error = %v, want packet identifier conflict", err)
+	}
+	afterQueued, err := queue.ListQueued(sessionID, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	afterOutbound, err := queue.ListOutbound(sessionID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(afterQueued, beforeQueued) || !reflect.DeepEqual(afterOutbound, beforeOutbound) {
+		t.Fatalf("failed ResetDurable() mutated queue: before=(%+v,%+v) after=(%+v,%+v)",
+			beforeQueued, beforeOutbound, afterQueued, afterOutbound)
+	}
+}
+
 func TestQueueOutboundCapacityLeavesHeadOnFailure(t *testing.T) {
 	now := testNow()
 	queue, err := New(1)

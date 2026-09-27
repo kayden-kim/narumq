@@ -13,8 +13,9 @@ const op1 = "00000000-0000-4000-8000-000000000001"
 const op4 = "00000000-0000-4000-8000-000000000004"
 
 func TestCommandReferenceVectors(t *testing.T) {
-	publish := func() *PublishPacket {
-		return &PublishPacket{ProtocolVersion: 5, Qos: 1, PacketId: 7, Topic: "a", Payload: []byte("x")}
+	publish := &DeliveryChange{
+		TenantId: "t", ClientId: "c", Action: DeliveryAction_DELIVERY_ACTION_PUBLISH,
+		ProposedAtUnixMillis: 1, Topic: "a", Payload: []byte("x"), PublishQos: 1,
 	}
 	cases := []struct {
 		name    string
@@ -25,7 +26,7 @@ func TestCommandReferenceVectors(t *testing.T) {
 		{"ownership_acquire", &CommandEnvelope{SchemaMajor: 1, OperationId: op1, Payload: &CommandEnvelope_Ownership{Ownership: &OwnershipChange{TenantId: "t", ClientId: "c", OwnerNodeId: 1, Epoch: 1, Action: OwnershipAction_OWNERSHIP_ACTION_ACQUIRE}}}, "08011a2430303030303030302d303030302d343030302d383030302d3030303030303030303030315a0c0a0174120163200128013001"},
 		{"subscription_add", &CommandEnvelope{SchemaMajor: 1, OperationId: op1, Payload: &CommandEnvelope_Subscription{Subscription: &SubscriptionChange{TenantId: "t", ClientId: "c", OwnerNodeId: 1, Epoch: 1, Filter: "#", Qos: 1, Action: SubscriptionAction_SUBSCRIPTION_ACTION_ADD}}}, "08011a2430303030303030302d303030302d343030302d383030302d30303030303030303030303162110a0174120163180120012a012330015001"},
 		{"subscription_remove", &CommandEnvelope{SchemaMajor: 1, OperationId: op1, Payload: &CommandEnvelope_Subscription{Subscription: &SubscriptionChange{TenantId: "t", ClientId: "c", OwnerNodeId: 1, Epoch: 1, Filter: "#", Qos: 1, Action: SubscriptionAction_SUBSCRIPTION_ACTION_REMOVE}}}, "08011a2430303030303030302d303030302d343030302d383030302d30303030303030303030303162110a0174120163180120012a012330015002"},
-		{"checkpoint", &CommandEnvelope{SchemaMajor: 1, OperationId: op1, Payload: &CommandEnvelope_Checkpoint{Checkpoint: &SessionCheckpoint{TenantId: "t", ClientId: "c", OwnerNodeId: 1, Epoch: 1, Inbound: []*InboundCheckpoint{{Publish: publish(), Phase: InboundDeliveryPhase_INBOUND_QOS1_AWAIT_ACCEPTANCE}}, Outbound: []*OutboundCheckpoint{{Publish: publish(), Phase: OutboundDeliveryPhase_OUTBOUND_AWAIT_PUBACK}}}}}, "08011a2430303030303030302d303030302d343030302d383030302d3030303030303030303030316a2e0a0174120163180120012a100a0c0805180128073201613a0178100132100a0c0805180128073201613a01781001"},
+		{"delivery_publish", &CommandEnvelope{SchemaMajor: 1, OperationId: op1, Payload: &CommandEnvelope_Delivery{Delivery: publish}}, "08011a2430303030303030302d303030302d343030302d383030302d3030303030303030303030318201130a0174120163280130013a0161420178800101"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -40,8 +41,12 @@ func TestCommandReferenceVectors(t *testing.T) {
 			if !bytes.Equal(got, want) {
 				t.Fatalf("wire mismatch: got %x want %x", got, want)
 			}
-			if _, err := UnmarshalCommand(want); err != nil {
+			decoded, err := UnmarshalCommand(want)
+			if err != nil {
 				t.Fatalf("decode fixture: %v", err)
+			}
+			if !proto.Equal(decoded, tc.command) {
+				t.Fatalf("decoded fixture = %v, want %v", decoded, tc.command)
 			}
 		})
 	}

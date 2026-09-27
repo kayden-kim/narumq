@@ -18,7 +18,7 @@
 3. **전달 보장:** At-most-once이며 ACK와 자동 retry가 없다. Ingress에서 peer outbound queue에 frame을 넣은 시점을 성공으로 본다. 연결 손실, queue full, ownership race 또는 receiver queue full에서 message가 유실될 수 있다. FIFO 순서는 같은 `(ingress node, owner node)` 쌍 안에서만 보장한다. Will publish도 같은 경로를 사용한다.
 4. **격리된 한도:** 각 방향·peer별 forwarding queue는 최대 1,024 frame 및 framed bytes 8 MiB다. Raft queue는 기존 peer별 32 frame 및 4 MiB 한도와 full 시 reset 동작을 유지한다. Forward queue full은 Raft stream을 reset하지 않는다. Receiver delivery queue가 full이면 local delivery saturation과 같이 subscriber connection을 닫는다.
 5. **Protocol compatibility:** Cluster protocol은 `2.0`으로 유지한다. `NMQRAFT2` hello와 Raft frame bytes는 바뀌지 않으며, `NMQFWRD2`는 같은 TLS 1.3 mTLS listener의 additive stream이다. 알 수 없는 magic을 지원하지 않는 node는 연결을 닫는다. 현재 exact-release gate는 mixed-release runtime을 지원하지 않는다.
-6. **Scope:** Cluster ingress에서 QoS 1/2는 기존처럼 거절한다. Forwarded payload는 Raft log, snapshot, backup 또는 offline queue에 기록되지 않는다.
+6. **Scope:** 이 결정은 QoS 0 cross-node forwarding만 정의한다. ADR-0014를 작성할 당시 Cluster ingress의 QoS 1/2는 거절됐으며, 이후 durable QoS 1/2 경로는 [ADR-0015](ADR-0015-cluster-durable-qos-delivery.md)에서 별도로 정의했다. 이 결정의 forwarded QoS 0 payload는 Raft log, snapshot, backup 또는 offline queue에 기록되지 않는다.
 
 ## 2. 배경
 
@@ -64,9 +64,9 @@ Detached check를 remote forwarding보다 먼저 하는 이유는 detached sessi
 
 ### 후속 작업
 
-- [ ] QoS 1/2 route delivery와 durable ACK barrier를 ADR-0003 범위에서 결정·검증한다.
-- [ ] Ownership race 및 stale-epoch end-to-end acceptance를 수행한다.
-- [ ] Quorum loss에서 durable publish ACK가 성공하지 않는지 검증한다.
+- [x] QoS 1/2 route delivery와 durable ACK barrier는 후속 ADR-0015에서 정의하고 limited process acceptance로 확인했다: detached session queue, subscriber/publisher takeover, backup restore, ACK 뒤 process kill 및 quorum-loss ACK rejection. Broader QoS/subscription/ownership cases, WAL/fsync failure boundary와 production storage는 별도 gate로 남는다.
+- [ ] Ownership race 및 stale-epoch end-to-end acceptance의 추가 조합을 수행한다.
+- [x] QoS 1 PUBACK/QoS 2 PUBREC quorum-loss rejection은 `TestDynamicClusterDurableQoSAckThenKillProcessAcceptance`에서 확인했다. ACK 뒤 각 replica crash와 production WAL/fsync boundary는 ADR-0003 §9에서 계속 미완료다.
 - [ ] Release N/N-1 transport compatibility는 별도 승인된 compatibility matrix로 확인한다.
 
 ## 7. 검증
@@ -74,13 +74,13 @@ Detached check를 remote forwarding보다 먼저 하는 이유는 detached sessi
 | 결정 요인 | 검증 방법 | 합격 기준 | 증거 |
 | --- | --- | --- | --- |
 | Isolated forwarding lane | Dynamic peer transport unit tests | Forward queue는 독립된 frame/byte quota를 적용하고 Raft queue/full 동작에 영향을 주지 않는다. | 구현·시험 후 Cluster §11.10에 기록 |
-| Cross-node live QoS 0 routing | Three-process MQTT acceptance | 원격 subscriber가 FIFO 순서로 한 번씩 수신하고 local+remote fan-out 및 owner reconnect 뒤 이전 owner node로의 전달을 확인한다. | 미실행: 구현 후 Cluster §11.10에 기록 |
-| QoS 1/2, stale ownership race, quorum-loss durable ACK | Cluster acceptance | 각 별도 delivery/ownership/ACK 기준을 통과한다. | 미실행·이 결정 범위 밖; 후속 작업으로 유지 |
+| Cross-node live QoS 0 routing | Three-process MQTT acceptance | 원격 subscriber의 FIFO 전달, local+remote fan-out 및 owner reconnect 뒤 이전 owner node로의 전달을 확인한다. | PASS: `TestDynamicClusterLiveQoS0CrossNodeForwardingProcessAcceptance`; 상세는 Cluster §11.10 |
+| QoS 1/2, stale ownership race, quorum-loss durable ACK | ADR-0015 §11.11 process acceptance와 별도 stale-ownership acceptance | QoS 1/2 detached queue, takeover/restore 및 quorum-loss ACK rejection을 확인한다. Broader stale ownership tests는 별도로 수행한다. | Limited QoS 1/2 evidence PASS in [ADR-0015](ADR-0015-cluster-durable-qos-delivery.md#7-검증); broader stale ownership race는 미실행·이 결정 범위 밖 |
 | Production storage와 release N/N-1 | Linux/EBS 및 release compatibility acceptance | Production failure 경계 및 N/N-1 양방향 조합을 검증한다. | 미실행·별도 gate |
 
 ## 8. 재검토 조건
 
 - At-most-once QoS 0 loss window가 CLU-03 또는 client contract와 맞지 않는다는 근거가 생기면 검토한다.
-- QoS 1/2, receiver acknowledgement/retry 또는 durable cross-node delivery를 요구하면 별도 state/ACK 결정과 함께 재검토한다.
+- QoS 1/2 전달과 durable ACK는 후속 ADR-0015에서 정의하고 제한된 process acceptance로 확인했다. 더 넓은 전달 보장이나 cross-node forwarding 계약이 바뀌면 이 ADR을 재검토한다.
 - Forwarding을 Raft connection에 multiplex하거나 release 간 혼합 운영을 허용하려면 protocol version과 compatibility contract를 새로 승인한다.
 - Shared subscription, stale ownership 또는 ordering 요구가 현재 후보 순서·at-most-once semantics를 바꾸면 spec과 이 ADR을 함께 갱신한다.

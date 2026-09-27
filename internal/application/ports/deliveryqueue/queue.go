@@ -22,13 +22,18 @@ var (
 )
 
 // DeliveryDTO is the application boundary value handed to one session queue.
+// DurableSequence is zero for process-local deliveries and positive for
+// replicated durable deliveries. DurableEpoch identifies the owner epoch that
+// loaded a durable delivery; it is zero for process-local deliveries.
 type DeliveryDTO struct {
-	SessionID routing.SessionID
-	Topic     string
-	Payload   []byte
-	QoS       mqtt.QoS
-	Retain    bool
-	ExpiresAt time.Time
+	SessionID       routing.SessionID
+	Topic           string
+	Payload         []byte
+	QoS             mqtt.QoS
+	Retain          bool
+	ExpiresAt       time.Time
+	DurableSequence uint64
+	DurableEpoch    uint64
 }
 
 // Expired reports whether this delivery has reached its absolute expiry
@@ -71,14 +76,29 @@ type Queue interface {
 	ListQueued(sessionID routing.SessionID, now time.Time) ([]DeliveryDTO, error)
 	ListOutbound(sessionID routing.SessionID) ([]OutboundDTO, error)
 	ReplaceOutbound(outbound OutboundDTO) error
+	// ResetDurable atomically replaces one session's durable queue state after
+	// attachment. Durable queued items must be in strictly increasing sequence
+	// order and carry the supplied positive owner epoch. Durable outbound items
+	// must carry that epoch, a positive source sequence, and be packet-ID
+	// ordered. Expired durable queued items are omitted. Existing process-local
+	// queued items are retained after the durable items, trimming only their
+	// tail to capacity. Process-local outbound items are retained unless their
+	// packet ID conflicts with durable outbound state; conflicts, invalid input,
+	// or capacity failures leave the queue unchanged. Implementations must clone
+	// retained payloads before returning.
+	ResetDurable(sessionID routing.SessionID, epoch uint64, queued []DeliveryDTO, outbound []OutboundDTO, now time.Time) error
 	CompleteOutbound(sessionID routing.SessionID, packetID mqtt.PacketIdentifier) error
 }
 
 // OutboundDTO is the application boundary value for one incomplete sender-side
-// QoS 1 or QoS 2 exchange.
+// QoS 1 or QoS 2 exchange. DurableSequence identifies its source durable queue
+// item, while DurableEpoch identifies the owner epoch; both are zero for
+// process-local outbound state.
 type OutboundDTO struct {
-	SessionID routing.SessionID
-	PacketID  mqtt.PacketIdentifier
-	State     delivery.Outbound
-	ExpiresAt time.Time
+	SessionID       routing.SessionID
+	PacketID        mqtt.PacketIdentifier
+	State           delivery.Outbound
+	ExpiresAt       time.Time
+	DurableSequence uint64
+	DurableEpoch    uint64
 }

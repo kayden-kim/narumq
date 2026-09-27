@@ -190,10 +190,10 @@ func SummarizeSnapshot(encoded []byte) (*BackupStateSummary, error) {
 		return nil, err
 	}
 	inflightCount := uint64(0)
-	for _, checkpoint := range state.Checkpoints {
-		inflightCount += uint64(len(checkpoint.Inbound) + len(checkpoint.Outbound))
+	for _, session := range state.DeliverySessions {
+		inflightCount += uint64(len(session.Messages) + len(session.Inbound))
 	}
-	inflight, err := summarizeBackupKind(&ReplicatedStateSnapshot{Checkpoints: state.Checkpoints}, inflightCount)
+	inflight, err := summarizeBackupKind(&ReplicatedStateSnapshot{DeliverySessions: state.DeliverySessions}, inflightCount)
 	if err != nil {
 		return nil, err
 	}
@@ -409,8 +409,8 @@ func summarizeBackupTenants(state *ReplicatedStateSnapshot) (*BackupKindSummary,
 	for _, subscription := range state.Subscriptions {
 		unique[subscription.TenantId] = struct{}{}
 	}
-	for _, checkpoint := range state.Checkpoints {
-		unique[checkpoint.TenantId] = struct{}{}
+	for _, session := range state.DeliverySessions {
+		unique[session.TenantId] = struct{}{}
 	}
 	for _, retained := range state.Retained {
 		unique[retained.TenantId] = struct{}{}

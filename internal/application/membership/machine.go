@@ -29,7 +29,9 @@ type StateMachine struct {
 	idempotency      map[string]string
 	ownerships       map[sessionKey]OwnershipStateDTO
 	subscriptions    map[subscriptionKey]SubscriptionStateDTO
-	checkpoints      map[sessionKey]SessionCheckpointDTO
+	delivery         map[sessionKey]DeliverySessionStateDTO
+	deliveryEntries  int
+	deliveryBytes    int
 	retained         map[retainedKey]RetainedStateDTO
 	retainedBytes    int
 	offline          map[sessionKey]OfflineSessionStateDTO
@@ -45,7 +47,7 @@ func NewStateMachine() *StateMachine {
 		idempotency:   make(map[string]string),
 		ownerships:    make(map[sessionKey]OwnershipStateDTO),
 		subscriptions: make(map[subscriptionKey]SubscriptionStateDTO),
-		checkpoints:   make(map[sessionKey]SessionCheckpointDTO),
+		delivery:      make(map[sessionKey]DeliverySessionStateDTO),
 		retained:      make(map[retainedKey]RetainedStateDTO),
 		offline:       make(map[sessionKey]OfflineSessionStateDTO),
 	}
@@ -86,7 +88,7 @@ func (machine *StateMachine) InitializeBootstrap(index uint64, members []MemberI
 	}
 	machine.mu.Lock()
 	defer machine.mu.Unlock()
-	if machine.lastAppliedIndex != 0 || len(machine.members) != 0 || len(machine.operations) != 0 || len(machine.ownerships) != 0 || len(machine.subscriptions) != 0 || len(machine.checkpoints) != 0 || len(machine.retained) != 0 || len(machine.offline) != 0 {
+	if machine.lastAppliedIndex != 0 || len(machine.members) != 0 || len(machine.operations) != 0 || len(machine.ownerships) != 0 || len(machine.subscriptions) != 0 || len(machine.delivery) != 0 || len(machine.retained) != 0 || len(machine.offline) != 0 {
 		return ErrBootstrapAlreadyInitialized
 	}
 	for _, member := range copied {
@@ -116,8 +118,8 @@ func (machine *StateMachine) Apply(index uint64, command CommandDTO) (ApplyResul
 		return machine.applyOwnership(index, *command.Ownership), nil
 	case command.Subscription != nil:
 		return machine.applySubscription(index, *command.Subscription), nil
-	case command.Checkpoint != nil:
-		return machine.applyCheckpoint(index, *command.Checkpoint), nil
+	case command.Delivery != nil:
+		return machine.applyDelivery(index, *command.Delivery), nil
 	case command.Retained != nil:
 		return machine.applyRetained(index, *command.Retained), nil
 	case command.Offline != nil:
@@ -381,6 +383,8 @@ func (machine *StateMachine) applyOwnership(index uint64, change OwnershipChange
 			return conflictResult(index, ConflictStaleEpoch)
 		}
 		delete(machine.ownerships, key)
+		machine.removeDeliveryLocked(key)
+		machine.removeSubscriptionsLocked(key)
 		machine.removeOfflineLocked(key)
 		return result
 	}
@@ -396,8 +400,6 @@ func (machine *StateMachine) applyOwnership(index uint64, change OwnershipChange
 		subscription.Epoch = change.Epoch
 		machine.subscriptions[subscriptionID] = subscription
 	}
-	// Inflight checkpoint ownership is not transferred here. A separate
-	// checkpoint handoff must prove the owner's final live state first.
 	result.Ownership = new(state)
 	return result
 }
@@ -419,18 +421,8 @@ func (machine *StateMachine) applySubscription(index uint64, change Subscription
 		RetainAsPublished: change.RetainAsPublished, RetainHandling: change.RetainHandling,
 	}
 	machine.subscriptions[subscriptionID] = state
+	machine.ensureDeliveryRecordLocked(key)
 	result.Subscription = new(state)
-	return result
-}
-
-func (machine *StateMachine) applyCheckpoint(index uint64, checkpoint SessionCheckpointDTO) ApplyResultDTO {
-	key := sessionKey{tenantID: checkpoint.TenantID, clientID: checkpoint.ClientID}
-	if !machine.authorized(key, checkpoint.OwnerNodeID, checkpoint.Epoch) {
-		return conflictResult(index, ConflictStaleEpoch)
-	}
-	state := cloneCheckpoint(checkpoint)
-	machine.checkpoints[key] = state
-	result := ApplyResultDTO{Index: index, Outcome: ApplyOutcomeApplied, Checkpoint: new(cloneCheckpoint(state))}
 	return result
 }
 
@@ -532,20 +524,6 @@ func (machine *StateMachine) Subscriptions() []SubscriptionStateDTO {
 	return subscriptions
 }
 
-// Checkpoints returns a tenant/client-sorted deep copy of session checkpoints.
-func (machine *StateMachine) Checkpoints() []SessionCheckpointDTO {
-	machine.mu.RLock()
-	defer machine.mu.RUnlock()
-	checkpoints := make([]SessionCheckpointDTO, 0, len(machine.checkpoints))
-	for _, checkpoint := range machine.checkpoints {
-		checkpoints = append(checkpoints, cloneCheckpoint(checkpoint))
-	}
-	sort.Slice(checkpoints, func(left, right int) bool {
-		return compareSession(checkpoints[left].TenantID, checkpoints[left].ClientID, checkpoints[right].TenantID, checkpoints[right].ClientID) < 0
-	})
-	return checkpoints
-}
-
 func operationResult(index uint64, operation MembershipOperationDTO) ApplyResultDTO {
 	return ApplyResultDTO{Index: index, Outcome: ApplyOutcomeApplied, Operation: new(cloneOperation(operation))}
 }
@@ -591,18 +569,6 @@ func cloneMembershipRecord(record MembershipRecordDTO) MembershipRecordDTO {
 		record.Member = &member
 	}
 	return record
-}
-
-func cloneCheckpoint(checkpoint SessionCheckpointDTO) SessionCheckpointDTO {
-	checkpoint.Inbound = append([]InboundCheckpointDTO(nil), checkpoint.Inbound...)
-	for index := range checkpoint.Inbound {
-		checkpoint.Inbound[index].Publish.Payload = bytes.Clone(checkpoint.Inbound[index].Publish.Payload)
-	}
-	checkpoint.Outbound = append([]OutboundCheckpointDTO(nil), checkpoint.Outbound...)
-	for index := range checkpoint.Outbound {
-		checkpoint.Outbound[index].Publish.Payload = bytes.Clone(checkpoint.Outbound[index].Publish.Payload)
-	}
-	return checkpoint
 }
 
 func cloneOperation(operation MembershipOperationDTO) MembershipOperationDTO {

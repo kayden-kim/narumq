@@ -16,9 +16,7 @@ func TestPlanRemovalHandoffTransfersLeavingOwnerSessions(t *testing.T) {
 		{TenantID: "a", ClientID: "x", OwnerNodeID: 3, Epoch: 2, Filter: "topic/#"},
 		{TenantID: "a", ClientID: "y", OwnerNodeID: 1, Epoch: 5, Filter: "other/#"},
 	}
-	checkpoints := []SessionCheckpointDTO{}
-
-	plan := PlanRemovalHandoff(leavingID, voterIDs, ownerships, subscriptions, checkpoints)
+	plan := PlanRemovalHandoff(leavingID, voterIDs, ownerships, subscriptions)
 	if plan.Block != RemovalHandoffBlockNone {
 		t.Fatalf("unexpected block: %s", plan.Block)
 	}
@@ -69,7 +67,7 @@ func TestPlanRemovalHandoffTransferAcceptedByStateMachine(t *testing.T) {
 	leavingID := uint64(3)
 	voterIDs := []uint64{1, 2, 3, 4}
 
-	plan := PlanRemovalHandoff(leavingID, voterIDs, machine.Ownerships(), machine.Subscriptions(), machine.Checkpoints())
+	plan := PlanRemovalHandoff(leavingID, voterIDs, machine.Ownerships(), machine.Subscriptions())
 	if len(plan.Transfers) != 1 {
 		t.Fatalf("expected 1 transfer, got %d", len(plan.Transfers))
 	}
@@ -89,7 +87,7 @@ func TestPlanRemovalHandoffTransferAcceptedByStateMachine(t *testing.T) {
 		t.Fatalf("subscription not rebound: %+v", subs)
 	}
 
-	replan := PlanRemovalHandoff(leavingID, voterIDs, machine.Ownerships(), machine.Subscriptions(), machine.Checkpoints())
+	replan := PlanRemovalHandoff(leavingID, voterIDs, machine.Ownerships(), machine.Subscriptions())
 	if replan.Block != RemovalHandoffBlockNone {
 		t.Fatalf("unexpected block after transfer: %s", replan.Block)
 	}
@@ -105,17 +103,13 @@ func TestPlanRemovalHandoffBlocksRemoval(t *testing.T) {
 		voterIDs      []uint64
 		ownerships    []OwnershipStateDTO
 		subscriptions []SubscriptionStateDTO
-		checkpoints   []SessionCheckpointDTO
 		wantBlock     RemovalHandoffBlock
 	}{
 		{
-			name:      "checkpoint pending",
+			name:      "no successor",
 			leavingID: 3,
-			voterIDs:  []uint64{1, 2, 3},
-			checkpoints: []SessionCheckpointDTO{
-				{TenantID: "t", ClientID: "c", OwnerNodeID: 3, Epoch: 1},
-			},
-			wantBlock: RemovalHandoffBlockCheckpointPending,
+			voterIDs:  []uint64{3},
+			wantBlock: RemovalHandoffBlockNoSuccessor,
 		},
 		{
 			name:      "no successor",
@@ -145,7 +139,7 @@ func TestPlanRemovalHandoffBlocksRemoval(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			plan := PlanRemovalHandoff(tc.leavingID, tc.voterIDs, tc.ownerships, tc.subscriptions, tc.checkpoints)
+			plan := PlanRemovalHandoff(tc.leavingID, tc.voterIDs, tc.ownerships, tc.subscriptions)
 			if plan.Block != tc.wantBlock {
 				t.Fatalf("Block = %q, want %q", plan.Block, tc.wantBlock)
 			}

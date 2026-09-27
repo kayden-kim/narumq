@@ -1,20 +1,20 @@
 # 동적 Raft 클러스터를 시작하고 멤버를 추가하는 방법
 
-이 절차는 초기 Raft cluster의 voter 세 개(voter는 합의 투표에 참여하는 node)를 시작하고 새 node를 quorum(현재 voter 과반수의 동의)으로 commit하는 `STAGED` identity로 등록하는 방법을 정의한다. 새 node는 먼저 learner(로그를 복제하지만 투표하지 않는 member)로 기록을 따라잡은 뒤 voter로 승격된다. Membership crash/restart와 retained QoS 0 replay, v3 backup/restore·snapshot-finalize process acceptance는 통과했다. Durable QoS 1/2 ACK와 production power-loss는 미검증이므로 전체 cluster production 절차로 사용하면 안 된다.
+이 절차는 초기 Raft cluster의 voter 세 개(voter는 합의 투표에 참여하는 node)를 시작하고 새 node를 quorum(현재 voter 과반수의 동의)으로 commit하는 `STAGED` identity로 등록하는 방법을 정의한다. 새 node는 먼저 learner(로그를 복제하지만 투표하지 않는 member)로 기록을 따라잡은 뒤 voter로 승격된다. Membership crash/restart, retained QoS 0 replay, v3 backup/restore·snapshot-finalize와 제한된 QoS 1/2 durable delivery process acceptance는 통과했다. Production power-loss, N/N-1과 전체 lifecycle 동등성은 미검증이므로 이 초안은 production 실행을 승인하지 않는다.
 
 | 항목 | 값 |
 | --- | --- |
 | 대상 독자 | cluster를 구성하고 변경하는 운영자 |
 | 검증 상태 | Draft |
-| 검증 환경·버전 | 생성된 peer mTLS 인증서를 사용하는 로컬 다중 프로세스 Go 시험; membership·retained/v2 backup process regression과 전체 local verification gate PASS |
-| 최종 검증일 | 2026-09-26 |
-| 관련 기준 문서 | [동적 멤버십 계약](../contracts/raft-membership-v2.md), [Cluster backup v3](../contracts/cluster-backup-v3.md), [Cluster backup/restore 절차](cluster-backup-restore.md), [cluster session 명세](../specs/cluster-session-and-delivery.md), [ADR-0010](../decisions/ADR-0010-dynamic-cluster-membership.md), [ADR-0012](../decisions/ADR-0012-retained-replication-and-cluster-backup-v2.md), [ADR-0013](../decisions/ADR-0013-offline-queue-replication-and-cluster-backup-v3.md), [cluster architecture](../architectures/cluster-architecture.md) |
+| 검증 환경·버전 | 로컬 다중 프로세스 Go acceptance: membership·retained/offline·durable QoS 1/2 process tests 및 focused package suite |
+| 최종 검증일 | 2026-09-27 |
+| 관련 기준 문서 | [동적 멤버십 계약](../contracts/raft-membership-v2.md), [Cluster backup v3](../contracts/cluster-backup-v3.md), [Cluster backup/restore 절차](cluster-backup-restore.md), [cluster session 명세](../specs/cluster-session-and-delivery.md), [ADR-0010](../decisions/ADR-0010-dynamic-cluster-membership.md), [ADR-0012](../decisions/ADR-0012-retained-replication-and-cluster-backup-v2.md), [ADR-0013](../decisions/ADR-0013-offline-queue-replication-and-cluster-backup-v3.md), [ADR-0015](../decisions/ADR-0015-cluster-durable-qos-delivery.md), [cluster architecture](../architectures/cluster-architecture.md) |
 
 ## 1. 대상과 영향
 
 - 대상: 동일한 `clusterId`와 bootstrap voter set을 사용하는 세 node 및 새 joiner
 - 예상 사용자 영향: bootstrap과 멤버십 변경 중 quorum, 인증서, 네트워크 설정이 맞지 않으면 신규 MQTT 연결이 거절될 수 있다.
-- 운영 경계: 이 기능은 durable MQTT publish/세션 전달이나 QoS 1/2 성공 ACK를 보증하지 않는다. 별도 process acceptance에서 QoS 0 retained state의 cross-node replay는 확인했으며, 이를 일반 live delivery 또는 offline queue replication으로 확대 해석하지 않는다.
+- 운영 경계: 제한된 process acceptance에서 durable QoS 1/2 detached delivery, ACK commit boundary, takeover와 backup/restore를 확인했다. Production power-loss, N/N-1, TEN-08 tenant quota, QoS 0 general live forwarding 및 전체 drain 동작까지 승인한 것은 아니다. Procedure는 계속 Draft이므로 production cluster에는 적용하지 않는다.
 
 ## 2. 전제 조건
 
@@ -66,7 +66,7 @@
 
 ### 계획된 member 교체
 
-계획된 제거에서 leader는 대상 member가 소유한 모든 session을 남은 voter 중 member ID가 가장 작은 node로 이전한다. 소유권 이전과 epoch 증가는 commit된 뒤 대상 voter를 제거한다. 적용 과정에서 persistent subscription의 소유 node와 epoch를 갱신하고 기존 연결을 takeover로 닫는다. 이전이 막히면 제거 operation은 `REMOVING` 상태에 머문다. 대상에 commit된 checkpoint가 있거나, 남은 successor가 없거나, ownership epoch가 고갈됐거나, orphan subscription이 감지되면 제거를 차단한다. Checkpoint 이전은 지원하지 않으므로 해당 상태를 해소한 뒤 다시 시도한다. `LEAVING` member는 새 session admission을 거절한다.
+계획된 제거에서 leader는 대상 member가 소유한 모든 session을 남은 voter 중 member ID가 가장 작은 node로 이전한다. 소유권 이전과 epoch 증가는 commit된 뒤 대상 voter를 제거한다. 적용 과정에서 persistent subscription의 소유 node와 epoch를 갱신하고 기존 연결을 takeover로 닫는다. 이전이 막히면 제거 operation은 `REMOVING` 상태에 머문다. Successor voter가 없거나 ownership epoch가 고갈됐거나 orphan subscription이 감지되면 제거를 차단한다. QoS 1/2 delivery state는 `(tenantId, clientId)` key로 quorum에 이미 복제되어 있으므로 별도 checkpoint handoff가 필요하지 않고, 새 owner는 다음 CONNECT에서 ATTACH로 이를 복구한다. `LEAVING` member는 새 session admission을 거절한다.
 
 중단된 제거를 관찰하거나 재시도할 때는 같은 operation ID와 idempotency key를 사용한다. 막힌 소유권 이전을 우회하려고 voter를 강제로 제거하지 않는다.
 
@@ -112,8 +112,8 @@ go test ./tests/integration -run '^(TestClusterBackupRestoreProcessCrashAndResyn
 
 1. `STAGED` 이후 operation이 진행되지 않으면 동일 key와 동일 request만 재시도하고 원인을 확인한다. 새로운 stage key, 수동 tombstone 삭제, ID 재사용, 데이터 디렉터리 초기화는 복구 방법이 아니다.
 2. Joiner가 learner가 된 뒤 응답을 잃었으면 같은 persistent directory로 재시작하고 동일 operation을 조회한다. Heartbeat timeout이나 process 종료만으로 learner/voter를 자동 삭제하지 않는다.
-3. Planned removal은 successor ownership 및 subscription/inflight checkpoint가 commit된 뒤에만 허용된다. 전송·checkpoint 기능 또는 quorum이 확인되지 않으면 `DELETE /api/v1/cluster/members/{memberId}`를 호출하지 말고 기존 voter를 유지한다. Active session handoff와 quorum loss 복구 acceptance는 `TestDynamicClusterMembershipRemovalHandoffWaitsForQuorum`로 검증했다.
-4. Restore 절차인 [Cluster backup/restore](cluster-backup-restore.md)는 v2 archive에 retained state를 포함하지만 `offline` queue와 production volume power-loss는 복원하지 않는다. 이전 v1 release 또는 binary로 downgrade하는 경로는 지원하지 않는다.
+3. Planned removal은 successor ownership transfer가 commit된 뒤에만 허용된다. Durable delivery aggregate는 별도 checkpoint command 없이 새 owner가 다음 CONNECT에서 ATTACH로 재개한다. Quorum이나 successor transfer가 확인되지 않으면 `DELETE /api/v1/cluster/members/{memberId}`를 호출하지 말고 기존 voter를 유지한다. Active session handoff와 quorum loss 복구 acceptance는 `TestDynamicClusterMembershipRemovalHandoffWaitsForQuorum`로 검증했다.
+4. Restore 절차인 [Cluster backup/restore](cluster-backup-restore.md)는 v3 archive에 retained, offline 및 durable delivery state를 포함한다. Production volume power-loss는 검증하지 않으며, 이전 v1/v2 archive 또는 binary로 downgrade하는 경로는 지원하지 않는다.
 
 ## 7. 해결되지 않을 때 전달할 대상
 

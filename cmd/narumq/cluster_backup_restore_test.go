@@ -265,3 +265,219 @@ func clusterRestoreTestArchive(t *testing.T, config clusterConfigFile, mutate fu
 	}
 	return backup.Archive
 }
+
+// Traceability: CLU-14; docs/specs/cluster-session-and-delivery.md §4.2, §11.11.
+func TestClusterBackupArchivePreservesDurableQoSState(t *testing.T) {
+	config := validBootstrapClusterConfig()
+	runtime, stop := newTestClusterOfflineRuntime(t, config)
+	defer stop()
+	seedClusterDurableDelivery(t, runtime)
+
+	boundary, err := runtime.machine.Snapshot(runtime.machine.LastAppliedIndex())
+	if err != nil {
+		t.Fatalf("snapshot committed durable state: %v", err)
+	}
+	encodedSnapshot, err := encodeMembershipSnapshot(boundary)
+	if err != nil {
+		t.Fatalf("encode committed durable state: %v", err)
+	}
+	image := raftadapter.BackupImageDTO{
+		SnapshotIndex: boundary.LastIncludedIndex, SnapshotTerm: 1, SnapshotData: encodedSnapshot,
+		CommitIndex: boundary.LastIncludedIndex, CommitTerm: 1, VoterIDs: []raftadapter.NodeID{1, 2, 3},
+	}
+	backup, err := buildClusterBackupArchive(config, image, encodedSnapshot)
+	if err != nil {
+		t.Fatalf("build committed durable backup: %v", err)
+	}
+	archive, err := records.DecodeBackupArchive(backup.Archive)
+	if err != nil {
+		t.Fatalf("decode committed durable backup: %v", err)
+	}
+	if archive.Manifest.GetBoundaryState().GetInflight().GetCount() != 1 {
+		t.Fatalf("backup inflight summary=%+v, want one QoS 2 delivery", archive.Manifest.GetBoundaryState().GetInflight())
+	}
+	restored, err := decodeMembershipSnapshot(archive.Snapshot)
+	if err != nil {
+		t.Fatalf("decode backup snapshot: %v", err)
+	}
+	if len(restored.DeliverySessions) != 1 {
+		t.Fatalf("backup delivery sessions=%+v, want one", restored.DeliverySessions)
+	}
+	session := restored.DeliverySessions[0]
+	if session.ClientID != "client-a" || len(session.Messages) != 1 ||
+		session.Messages[0].Sequence != 1 || session.Messages[0].QoS != 2 ||
+		session.Messages[0].Phase != membership.DeliveryPhaseQueued ||
+		string(session.Messages[0].Payload) != "first" {
+		t.Fatalf("backup did not preserve queued QoS 2 state: %+v", session)
+	}
+
+	inconsistent := image
+	inconsistent.CommitIndex++
+	if _, err := buildClusterBackupArchive(config, inconsistent, encodedSnapshot); err == nil {
+		t.Fatal("backup accepted a boundary snapshot behind the commit index")
+	}
+}
+
+// Traceability: CLU-14; docs/specs/cluster-session-and-delivery.md §4.2, §11.11.
+func TestClusterRestoreSeedReplaysConfigurationTail(t *testing.T) {
+	config := validBootstrapClusterConfig()
+	_, bootstrapMembers, err := clusterBootstrapIdentities(config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	machine := membership.NewStateMachine()
+	if err := machine.InitializeBootstrap(1, bootstrapMembers); err != nil {
+		t.Fatalf("initialize restore base: %v", err)
+	}
+	baseSnapshot, err := machine.Snapshot(machine.LastAppliedIndex())
+	if err != nil {
+		t.Fatalf("snapshot restore base: %v", err)
+	}
+	baseData, err := encodeMembershipSnapshot(baseSnapshot)
+	if err != nil {
+		t.Fatalf("encode restore base: %v", err)
+	}
+	joinID, err := newClusterOperationID()
+	if err != nil {
+		t.Fatal(err)
+	}
+	removeID, err := newClusterOperationID()
+	if err != nil {
+		t.Fatal(err)
+	}
+	member := bootstrapMembers[0]
+	member.MemberID = 4
+	member.Address = "127.0.0.1:19004"
+	member.DNSSAN = "node-4"
+	member.Phase = membership.MemberPhaseStaged
+	member.OperationID = joinID
+	command := func(index uint64, operationID string, action membership.MembershipAction, phase membership.MemberPhase, target uint64) raftadapter.AppliedCommandDTO {
+		t.Helper()
+		member.OperationID = operationID
+		member.Phase = phase
+		record := &membership.MembershipRecordDTO{
+			OperationID: operationID, Action: action, Member: &member, TargetMemberID: target,
+		}
+		if action == membership.MembershipActionStageJoin {
+			record.IdempotencyKey = "join-4"
+		} else if action == membership.MembershipActionBeginRemove {
+			record.IdempotencyKey = "remove-4"
+		} else {
+			record.IdempotencyKey = "join-4"
+		}
+		data, err := encodeMembershipCommand(membership.CommandDTO{
+			SchemaMajor: membership.SchemaMajor, SchemaMinor: membership.SchemaMinor,
+			OperationID: operationID, Membership: record,
+		})
+		if err != nil {
+			t.Fatalf("encode membership command at index %d: %v", index, err)
+		}
+		return raftadapter.AppliedCommandDTO{Index: index, Data: data}
+	}
+	commands := []raftadapter.AppliedCommandDTO{
+		command(2, joinID, membership.MembershipActionStageJoin, membership.MemberPhaseStaged, 0),
+		command(4, joinID, membership.MembershipActionAddLearner, membership.MemberPhaseCatchingUp, 0),
+		command(6, removeID, membership.MembershipActionBeginRemove, membership.MemberPhaseLeaving, 4),
+	}
+	configurations := []raftadapter.CommittedConfigurationDTO{
+		{Index: 3, OperationID: joinID, MemberID: 4, Action: raftadapter.MembershipAddLearner},
+		{Index: 5, OperationID: joinID, MemberID: 4, Action: raftadapter.MembershipPromoteVoter},
+		{Index: 7, OperationID: removeID, MemberID: 4, Action: raftadapter.MembershipRemove},
+	}
+	if err := replayClusterApplied(machine, commands, configurations); err != nil {
+		t.Fatalf("apply membership configuration tail: %v", err)
+	}
+	boundary, err := machine.Snapshot(machine.LastAppliedIndex())
+	if err != nil {
+		t.Fatalf("snapshot restore boundary: %v", err)
+	}
+	boundaryData, err := encodeMembershipSnapshot(boundary)
+	if err != nil {
+		t.Fatalf("encode restore boundary: %v", err)
+	}
+	boundarySummary, err := records.SummarizeSnapshot(boundaryData)
+	if err != nil {
+		t.Fatalf("summarize restore boundary: %v", err)
+	}
+	entries := []*records.BackupEntry{
+		{Index: 2, Payload: &records.BackupEntry_Command{Command: commands[0].Data}},
+		{Index: 3, Payload: &records.BackupEntry_Configuration{Configuration: &records.BackupConfigurationChange{
+			OperationId: joinID, MemberId: 4, Action: records.BackupConfigurationAction_BACKUP_CONFIGURATION_ACTION_ADD_LEARNER,
+		}}},
+		{Index: 4, Payload: &records.BackupEntry_Command{Command: commands[1].Data}},
+		{Index: 5, Payload: &records.BackupEntry_Configuration{Configuration: &records.BackupConfigurationChange{
+			OperationId: joinID, MemberId: 4, Action: records.BackupConfigurationAction_BACKUP_CONFIGURATION_ACTION_PROMOTE_VOTER,
+		}}},
+		{Index: 6, Payload: &records.BackupEntry_Command{Command: commands[2].Data}},
+		{Index: 7, Payload: &records.BackupEntry_Configuration{Configuration: &records.BackupConfigurationChange{
+			OperationId: removeID, MemberId: 4, Action: records.BackupConfigurationAction_BACKUP_CONFIGURATION_ACTION_REMOVE,
+		}}},
+	}
+	archive := &records.BackupArchive{
+		Manifest: &records.BackupManifest{
+			FormatMajor: records.BackupFormatMajor, FormatMinor: records.BackupFormatMinor,
+			ClusterId: config.ClusterID, SourceMemberId: 1, ProducerRelease: config.ReleaseVersion,
+			ClusterProtocolMajor: config.ClusterProtocolMajor, ClusterProtocolMinor: config.ClusterProtocolMinor,
+			StateSchemaMajor: config.StateSchemaMajor, StateSchemaMinor: config.StateSchemaMinor,
+			CreatedAtUnixMillis: 1, SnapshotIndex: baseSnapshot.LastIncludedIndex, SnapshotTerm: 1,
+			CommitIndex: boundary.LastIncludedIndex, CommitTerm: 1, VoterIds: []uint64{1, 2, 3},
+			EntryCount: uint64(len(entries)), BoundaryState: boundarySummary,
+		},
+		Snapshot: baseData, Entries: entries,
+	}
+	encoded, _, err := records.EncodeBackupArchive(archive)
+	if err != nil {
+		t.Fatalf("encode configuration-tail archive: %v", err)
+	}
+	decoded, err := records.DecodeBackupArchive(encoded)
+	if err != nil {
+		t.Fatalf("decode configuration-tail archive: %v", err)
+	}
+	seed, err := clusterRestoreSeed(config, decoded)
+	if err != nil {
+		t.Fatalf("restore configuration-tail archive: %v", err)
+	}
+	restored, err := decodeMembershipSnapshot(seed.ApplicationData)
+	if err != nil {
+		t.Fatalf("decode restored state: %v", err)
+	}
+	if seed.SnapshotIndex != 7 || restored.LastIncludedIndex != 7 {
+		t.Fatalf("restore commit boundary seed=%d state=%d", seed.SnapshotIndex, restored.LastIncludedIndex)
+	}
+	retired := false
+	for _, restoredMember := range restored.Members {
+		if restoredMember.MemberID == 4 && restoredMember.Phase == membership.MemberPhaseRetired {
+			retired = true
+		}
+	}
+	if !retired {
+		t.Fatalf("configuration replay did not retain retired member identity: %+v", restored.Members)
+	}
+}
+
+// Traceability: CLU-14; docs/specs/cluster-session-and-delivery.md §4.2, §11.11.
+func TestClusterBackupConfigurationActionsRoundTrip(t *testing.T) {
+	for _, testCase := range []struct {
+		raftAction   raftadapter.MembershipChangeAction
+		backupAction records.BackupConfigurationAction
+	}{
+		{raftadapter.MembershipAddLearner, records.BackupConfigurationAction_BACKUP_CONFIGURATION_ACTION_ADD_LEARNER},
+		{raftadapter.MembershipPromoteVoter, records.BackupConfigurationAction_BACKUP_CONFIGURATION_ACTION_PROMOTE_VOTER},
+		{raftadapter.MembershipRemove, records.BackupConfigurationAction_BACKUP_CONFIGURATION_ACTION_REMOVE},
+	} {
+		backupAction, err := backupConfigurationAction(testCase.raftAction)
+		if err != nil || backupAction != testCase.backupAction {
+			t.Fatalf("backup configuration action %d=(%d,%v), want %d", testCase.raftAction, backupAction, err, testCase.backupAction)
+		}
+		raftAction, err := restoreConfigurationAction(testCase.backupAction)
+		if err != nil || raftAction != testCase.raftAction {
+			t.Fatalf("restore configuration action %d=(%d,%v), want %d", testCase.backupAction, raftAction, err, testCase.raftAction)
+		}
+	}
+	if _, err := backupConfigurationAction(raftadapter.MembershipChangeAction(99)); err == nil {
+		t.Fatal("unsupported Raft configuration action was encoded")
+	}
+	if _, err := restoreConfigurationAction(records.BackupConfigurationAction(99)); err == nil {
+		t.Fatal("unsupported backup configuration action was restored")
+	}
+}

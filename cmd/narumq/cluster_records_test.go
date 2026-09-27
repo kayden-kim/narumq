@@ -45,16 +45,19 @@ func TestMembershipRecordBridgeRoundTripsTypedCommands(t *testing.T) {
 		},
 		{
 			SchemaMajor: membership.SchemaMajor, OperationID: bridgeOperation1,
-			Checkpoint: &membership.SessionCheckpointDTO{
-				TenantID: "tenant", ClientID: "client", OwnerNodeID: 1, Epoch: 1,
-				Inbound: []membership.InboundCheckpointDTO{{
-					Publish: membership.PublishPacketDTO{ProtocolVersion: 5, QoS: 1, PacketID: 7, Topic: "sensors/temp", Payload: []byte("x"), HasMessageExpiryInterval: true, MessageExpiryInterval: 60},
-					Phase:   membership.InboundQoS1AwaitAcceptance,
-				}},
-				Outbound: []membership.OutboundCheckpointDTO{{
-					Publish: membership.PublishPacketDTO{ProtocolVersion: 5, QoS: 2, PacketID: 8, Topic: "commands/reply", Payload: []byte("y")},
-					Phase:   membership.OutboundAwaitPubRec,
-				}},
+			Delivery: &membership.DeliveryChangeDTO{
+				TenantID: "tenant", ClientID: "publisher", OwnerNodeID: 1, Epoch: 1,
+				Action: membership.DeliveryActionReceive, ProposedAtUnixMillis: 1000,
+				Topic: "sensors/temp", Payload: []byte("x"), PacketID: 7, Retain: true,
+			},
+		},
+		{
+			SchemaMajor: membership.SchemaMajor, OperationID: bridgeOperation4,
+			Delivery: &membership.DeliveryChangeDTO{
+				TenantID: "tenant", ClientID: "publisher",
+				Action: membership.DeliveryActionPublish, ProposedAtUnixMillis: 1000,
+				Topic: "commands/reply", Payload: []byte("y"), PublishQoS: 2,
+				Targets: []membership.DeliveryTargetDTO{{ClientID: "client", Retain: true}},
 			},
 		},
 		{
@@ -125,11 +128,14 @@ func TestMembershipRecordBridgePreservesSnapshotIndexesAndDigest(t *testing.T) {
 		Members:       []membership.MemberIdentityDTO{member},
 		Ownerships:    []membership.OwnershipStateDTO{{TenantID: "tenant", ClientID: "client", OwnerNodeID: 1, Epoch: 1, CommittedIndex: 8}},
 		Subscriptions: []membership.SubscriptionStateDTO{{TenantID: "tenant", ClientID: "client", OwnerNodeID: 1, Epoch: 1, Filter: "sensors/#", QoS: 1}},
-		Checkpoints: []membership.SessionCheckpointDTO{{
-			TenantID: "tenant", ClientID: "client", OwnerNodeID: 1, Epoch: 1,
-			Outbound: []membership.OutboundCheckpointDTO{{
-				Publish: membership.PublishPacketDTO{ProtocolVersion: 5, QoS: 1, PacketID: 9, Topic: "sensors/temp", Payload: []byte("z")},
-				Phase:   membership.OutboundAwaitPubAck,
+		DeliverySessions: []membership.DeliverySessionStateDTO{{
+			TenantID: "tenant", ClientID: "client", NextSequence: 2,
+			Messages: []membership.DeliveryMessageDTO{{
+				Sequence: 1, Topic: "sensors/temp", Payload: []byte("z"), QoS: 1,
+				PacketID: 9, Phase: membership.DeliveryPhaseAwaitPubAck,
+			}},
+			Inbound: []membership.DeliveryInboundDTO{{
+				PacketID: 7, Topic: "sensors/temp", Payload: []byte("inbound"), Retain: true,
 			}},
 		}},
 		MembershipHistory: []membership.MembershipRecordDTO{{
@@ -146,7 +152,7 @@ func TestMembershipRecordBridgePreservesSnapshotIndexesAndDigest(t *testing.T) {
 				Sequence: 1, Topic: "status", Payload: []byte("val"), QoS: 0,
 			}},
 		}},
-		ObjectCount: 8,
+		ObjectCount: 10,
 	}
 	wire, err := encodeMembershipSnapshot(snapshot)
 	if err != nil {

@@ -11,11 +11,11 @@
 | 관련 Contract | [MQTT client compatibility v1](../contracts/mqtt-client-compatibility-v1.md) |
 | 해설 | [MQTT 전달 보장과 QoS·Session·Will protocol 흐름](../explainers/mqtt-delivery-guarantees-and-protocol-flows.md) |
 
-## 현재 구현 상태: Phase 1 standalone QoS 1/2 delivery와 dynamic cluster retained replication
+## 현재 구현 상태: standalone QoS 1/2와 dynamic cluster의 제한된 durable QoS 1/2 delivery
 
 Standalone runtime은 MQTT 3.1.1/5.0 client의 `CONNECT → SUBSCRIBE/PUBLISH → PING/DISCONNECT`와 process-local session delivery를 제공한다. 기본 standalone startup은 `-security-config` secure mode로 JWT/JWKS 또는 verified client certificate mTLS authentication과 tenant-aware ACL을 적용한다. mTLS는 handshake가 검증한 client certificate의 `commonName`, `dnsSan`, `emailSan` selector를 strict identity binding으로 바꾸며 configured Client ID가 허용 목록과 일치해야 한다. 인증·tenant 경계 없는 plaintext ingress는 `-allow-insecure-anonymous-mqtt`를 지정한 literal loopback `-tcp-listen` development·benchmark 예외에서만 허용하며 TLS listener에는 적용하지 않는다.
 
-Dynamic cluster는 별도 `-cluster-config` composition root다. 현재 cluster MQTT ingress는 QoS 0 retained PUBLISH와 detached persistent session의 QoS 0 offline queue를 Raft로 commit하고 cross-node replay하며 NMQBKUP3 archive에 포함한다(세부 규칙은 [Cluster §4.1](cluster-session-and-delivery.md#41-offline-message-capture와-전달) 참조). 이 범위는 일반 QoS 1/2 durable ACK를 의미하지 않는다. 자세한 evidence는 [Cluster §11.8](cluster-session-and-delivery.md#118-retained-replication과-backup-v2-수용-매핑)과 [§11.9](cluster-session-and-delivery.md#119-offline-queue-replication과-backup-v3-수용-매핑)에 있다.
+Dynamic cluster는 별도 `-cluster-config` composition root다. QoS 0 retained PUBLISH와 detached persistent session의 QoS 0 offline queue는 Raft에 commit해 replay하고 NMQBKUP3 archive에 포함한다([Cluster §4.1](cluster-session-and-delivery.md#41-offline-message-capture와-전달), §11.8–§11.9). 추가로 ADR-0015가 QoS 1/2 client PUBLISH·Will, session별 durable target queue와 publisher QoS 2 inbound state를 제공하며 성공 ACK는 관련 command commit 뒤 반환한다. Detached QoS 1/2 delivery, takeover, backup restore, process kill과 quorum-loss 동작은 제한된 process acceptance로 확인했다([Cluster §4.2](cluster-session-and-delivery.md#42-durable-qos-1-2-delivery), §11.11). Production storage/EBS power-loss, BP-03, N/N-1과 TEN-08은 포함하지 않는다.
 
 - `internal/domain/mqtt`는 CONNECT/CONNACK, QoS 0·1·2 PUBLISH, PUBACK/PUBREC/PUBREL/PUBCOMP,
   SUBSCRIBE 계열과 PINGREQ/PINGRESP/DISCONNECT를 decode·encode한다. PING packet은
@@ -32,13 +32,13 @@ Dynamic cluster는 별도 `-cluster-config` composition root다. 현재 cluster 
   replay batch를 route mutation 전에 queue에 원자적으로 예약한다. MQTT 3.1.1과
   MQTT 5의 non-shared retained replay 및 MQTT 5 subscription options를 지원하며,
   공유 구독 가입 시 retained message replay를 억제([MQTT-4.8.2-1])하고 NoLocal을 프로토콜 에러로 거절([MQTT-3.8.3-4])한다.
-- `internal/application/publish`는 tenant와 exact topic별 retained PUBLISH를 replace/delete한다. Standalone profile은 QoS 0·1·2 ingress를 처리한다. Dynamic cluster TCP ingress는 현재 QoS 0만 허용하고, retained mutation은 `RetainedCommitter`로 Raft commit한 뒤 route matching/live fan-out을 시작한다.
+- `internal/application/publish`는 tenant와 exact topic별 retained PUBLISH를 replace/delete한다. Standalone profile은 QoS 0·1·2 ingress를 처리한다. Dynamic cluster는 QoS 0 retained/offline 경로와 ADR-0015의 QoS 1/2 durable publish 경로를 분리하며, durable delivery commit 순서와 ACK 조건은 [Cluster §4.2](cluster-session-and-delivery.md#42-durable-qos-1-2-delivery)에 정의한다.
 - `internal/domain/mqtt`의 MQTT 5 PUBLISH는 Message Expiry Interval property를 검증하고,
   application은 ingress 수신 시각과 interval을 한 번만 계산해 absolute deadline으로
   변환한다. Standalone delivery queue와 memory retained repository는 `now >= deadline`에서 lazy purge한다. Dynamic cluster retained state는 expiry deadline과 proposal 시각을 command에 포함해 Raft apply에서 만료를 결정적으로 제거한다. MQTT 5 onward PUBLISH에는 올림한 남은 초를 다시 넣으며 MQTT 3.1.1 wire에는 property를 쓰지 않아도 같은 deadline을 적용한다.
 - `internal/application/ports/retained`와 `internal/adapters/memory/retained`는 bounded tenant/topic repository를 제공한다. Standalone mode에서는 이것이 process-local authority다. Dynamic cluster mode에서는 같은 adapter가 replay lookup projection이며, 권위 있는 retained state는 replicated state machine이 소유한다. Startup·snapshot restore 뒤 projection을 rebuild하며 실패하면 readiness를 허용하지 않는다. Cluster retained process evidence는 [§11.8](cluster-session-and-delivery.md#118-retained-replication과-backup-v2-수용-매핑)에 있다.
 - Standalone ingress는 QoS 0·1·2를 지원한다. QoS 1은 메시지 라우팅 후 PUBACK을 반환하며, QoS 2는 수신 시 PUBREC을 반환하고 PUBREL 수신 시 라우팅 후 PUBCOMP를 반환한다. 중복 Packet Identifier 재전송 시 중복 라우팅 없이 동일 ACK를 반환한다.
-- Standalone outbound delivery는 구독자의 granted QoS와 메시지 QoS 중 낮은 QoS로 전송하며, QoS 1/2는 connection별 packet identifier로 구독자 handshake를 완료한다. Cluster retained ingress는 QoS 0만 허용한다.
+- Standalone outbound delivery는 구독자의 granted QoS와 메시지 QoS 중 낮은 QoS로 전송하며 QoS 1/2 subscriber handshake를 완료한다. Dynamic cluster QoS 1/2 durable delivery도 MQTT handshake를 복구할 수 있지만 process acceptance는 [Cluster §11.11](cluster-session-and-delivery.md#1111-qos-12-durable-delivery-수용-매핑)의 범위에 한정된다. Cluster QoS 0 retained replay의 evidence는 §11.8에 있다.
 - 만료되지 않은 persistent session은 network connection이 종료되어도 process-local
   delivery queue의 FIFO queued entry와 완료되지 않은 송신 QoS 1/2 상태를 보존한다.
   새 connection은 `CONNACK`을 먼저 전송한 뒤 복구 packet을 전송해야 한다.
@@ -48,7 +48,7 @@ Dynamic cluster는 별도 `-cluster-config` composition root다. 현재 cluster 
 - Message Expiry가 지난 queued entry와 PUBLISH-stage 송신 상태는 제거하고 전송하지
   않는다. 이미 PUBLISH를 수신한 뒤 `PUBCOMP`를 기다리는 QoS 2 `PUBREL` 상태는
   원래 publication deadline과 무관하게 복구한다.
-`internal/adapters/memory/sessionstore`와 delivery queue는 session/offline-delivery state를 process-local memory에 저장한다. Standalone mode에서 이 session state는 process restart, replication, durable storage 복구를 지원하지 않는다. Cluster mode에서 detached persistent session의 QoS 0 offline queue는 [Cluster §4.1](cluster-session-and-delivery.md#41-offline-message-capture와-전달)에 따라 Raft로 복제되고 복구된다. TLS transport와 mTLS client authentication은 listener 계약에 정의한 범위에서 지원한다.
+`internal/adapters/memory/sessionstore`와 delivery queue는 session state와 local delivery projection을 process-local memory에 둔다. Standalone mode는 이를 process restart, replication 또는 durable storage recovery에 보존하지 않는다. Cluster mode에서는 detached QoS 0 offline queue를 [Cluster §4.1](cluster-session-and-delivery.md#41-offline-message-capture와-전달), QoS 1/2 durable target queue 및 inbound/outbound protocol state를 [§4.2](cluster-session-and-delivery.md#42-durable-qos-1-2-delivery)에 따라 Raft에서 복구한다. QoS 1/2 evidence와 production durability 한계는 [§11.11](cluster-session-and-delivery.md#1111-qos-12-durable-delivery-수용-매핑)을 참조한다. TLS transport와 mTLS client authentication은 listener 계약에 정의한 범위에서 지원한다.
 
 영속 session의 queued·in-flight delivery state는 clean reset 또는 Session Expiry가
 끝날 때만 제거한다. 정상적인 persistent disconnect에서는 session, route와 함께 delivery
@@ -185,7 +185,7 @@ MQTT 3.1.1은 연결을 닫는다.
 
 ## 5. Retained Message
 
-Standalone development profile은 bounded process-local retained repository를 사용한다. Dynamic cluster profile은 Raft committed retained state를 권위 있는 값으로 쓰고 node-local repository를 replay용 projection으로 재구성한다. Cluster ingress는 현재 QoS 0 PUBLISH만 지원한다. `Retain=true` mutation은 fresh read barrier와 정확한 member profile 확인 뒤 route matching/live fan-out보다 먼저 commit되어야 한다. Commit 실패 시 해당 PUBLISH의 live fan-out을 시작하지 않는다.
+Standalone development profile은 bounded process-local retained repository를 사용한다. Dynamic cluster profile은 Raft committed retained state를 권위 있는 값으로 쓰고 node-local repository를 replay용 projection으로 재구성한다. Retained replication/cross-node replay acceptance는 QoS 0 PUBLISH를 대상으로 했다([Cluster §11.8](cluster-session-and-delivery.md#118-retained-replication과-backup-v2-수용-매핑)). QoS 1/2 `Retain=true` publish의 mutation 순서는 [Cluster §4.2](cluster-session-and-delivery.md#42-durable-qos-1-2-delivery)에 따르며, 개별 QoS 1/2 retained acceptance는 §11.11에서 별도로 수행하지 않았다. Retained mutation은 fresh read barrier와 정확한 member profile 확인 뒤 route matching/live fan-out보다 먼저 commit되어야 한다. Commit 실패 시 해당 PUBLISH의 live fan-out을 시작하지 않는다.
 
 - Retained key는 tenant와 exact Topic Name의 쌍 `(tenantId, topic)`이다. 같은 topic이어도 tenant가 다르면 서로 다른 value를 보관한다.
 - 입력 `PUBLISH`가 `Retain=true`이고 payload가 비어 있지 않으면 해당 tenant/topic의 마지막 value를 publisher session identity 및 QoS와 함께 replace한다.
@@ -241,6 +241,7 @@ reconnect까지 보존하며, clean start/session expiry와 expiry deadline에 �
   이 동작과 Metric 집계는 `tests/integration/management_api_test.go::TestMQTT310RejectionIsObservable`에서 두 wire variant를 함께 검증한다.
 - wildcard 경계, shared subscription failover와 MQTT 5 subscription option 조합을 검증한다.
 - parser fuzzing, slowloris, packet·queue 상한 시험에서 memory와 goroutine leak이 없어야 한다.
+- Cluster mode에서 설정된 TCP/TLS listener를 열고, TLS 설정 실패 시 이미 연 TCP listener를 닫는다. `cmd/narumq/cluster_runtime_test.go::TestClusterMQTTListenersBindConfiguredEndpointsAndClosePartialOpen`이 binding과 cleanup을 확인한다.
 - 두 protocol version client가 같은 외부 topic에서 ACL 범위 안의 메시지를 상호 전달해야 한다.
 - 이 slice의 acceptance mapping은 `tests/integration/mqtt_ingress_test.go`의 MQTT 3.1.1/5.0
   CONNECT, QoS 0 fan-out, retained replace/delete, retained Message Expiry,

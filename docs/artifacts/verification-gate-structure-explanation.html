@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <meta name="description" content="NaruMQ local·CI verification gate가 입력을 받아 fuzz, race, traceability, architecture, coverage, mutation 증거와 PASS/실패 결과를 만드는 과정을 설명하는 문서">
+  <meta name="description" content="NaruMQ local·CI verification gate가 fuzz, race, traceability, architecture, coverage와 CI-only mutation 검사를 수행해 PASS/실패 증거를 만드는 과정을 설명하는 문서">
   <title>NaruMQ Verification Gate 구조</title>
   <style>
     :root {
@@ -128,12 +128,12 @@
       <h1>코드 변경이 `PASS`가 되기까지</h1>
       <p class="lead">
         이 문서는 NaruMQ의 현재 local·CI verification gate를 명령 목록으로만 나열하지 않습니다.
-        <strong>개발자가 실행한 한 줄의 입력이 runner의 상태와 13개 command를 거쳐 fuzz·race·traceability·architecture·coverage·mutation 증거와 최종 종료 상태가 되는 과정</strong>을 실제 코드와 기준 문서에 연결해 설명합니다.
+        <strong>local에서는 9개 병렬 command와 후속 coverage policy 검사를, CI에서는 여기에 두 mutation command를 더해 검증 증거와 최종 종료 상태를 만드는 과정</strong>을 실제 코드와 기준 문서에 연결해 설명합니다.
       </p>
       <div class="badges">
         <span class="commit">TEST-12 · TEST-13</span>
-        <span class="badge">13개 command</span>
-        <span class="badge">첫 실패에서 중단</span>
+        <span class="badge">local: 10 commands</span>
+        <span class="badge">CI: +2 mutation</span>
         <span class="badge">local · CI</span>
         <span class="badge">Go 1.26.5</span>
       </div>
@@ -145,7 +145,7 @@
       <a href="#result">결과부터</a>
       <a href="#concepts">검증 개념</a>
       <a href="#runner">runner 흐름</a>
-      <a href="#sequence">13단계</a>
+      <a href="#sequence">command graph</a>
       <a href="#fuzz">fuzz</a>
       <a href="#mutation">mutation</a>
       <a href="#coverage">coverage</a>
@@ -160,16 +160,16 @@
         <div class="section-kicker">01 · 결과부터</div>
         <h2>게이트의 결과는 숫자 하나가 아니라, 재현 가능한 증거 묶음이다</h2>
         <p>
-          개발자는 저장소 루트에서 <code>go run ./tools/verify local</code>을 실행합니다. CI에서는 여기에 diff coverage의 기준 ref를 더해 <code>go run ./tools/verify ci --base &lt;merge-base&gt;</code>를 실행합니다. 두 진입점은 같은 command graph를 사용하고, CI의 차이는 coverage command에만 <code>--base</code>를 전달하는 것입니다.
+          개발자는 저장소 루트에서 <code>go run ./tools/verify local</code>을 실행합니다. CI에서는 <code>go run ./tools/verify ci --base &lt;merge-base&gt;</code>로 PR diff coverage를 평가하고, 병렬 단계에 Delivery·Session mutation 검사를 추가합니다. 두 진입점은 <code>runVerification</code>을 공유하지만 CI는 이 두 검사를 더 실행하며 coverage command에만 <code>--base</code>를 전달합니다.
         </p>
         <div class="flow" aria-label="verification gate 전체 흐름">
           <div class="node"><span class="label">입력</span><br><code>local</code> 또는 <code>ci --base</code><br><span class="small">repository root</span></div>
           <div class="arrow">→</div>
           <div class="node"><span class="label">사전 검사</span><br><code>go.mod</code>·gofmt<br><span class="small">실행 전 구조 확인</span></div>
           <div class="arrow">→</div>
-          <div class="node"><span class="label">검증 graph</span><br>13개 command<br><span class="small">순서 고정·첫 실패 중단</span></div>
+          <div class="node"><span class="label">검증 graph</span><br>local 9 parallel + coverage<br><span class="small">CI adds 2 mutation checks</span></div>
           <div class="arrow">→</div>
-          <div class="node"><span class="label">증거</span><br><code>.artifacts/verification/</code><br><span class="small">coverage·mutation JSON</span></div>
+          <div class="node"><span class="label">증거</span><br><code>.artifacts/verification/</code><br><span class="small">coverage JSON; mutation JSON in CI</span></div>
           <div class="arrow">→</div>
           <div class="node"><span class="label">출력</span><br><code>local: PASS</code><br>또는 실패 command</div>
         </div>
@@ -180,11 +180,11 @@
           </article>
           <article class="card callout">
             <h3>실패의 의미</h3>
-            <p>runner는 실패한 command의 이름을 감싸 반환하고 그 뒤 단계는 실행하지 않습니다. 따라서 “어디까지 확인됐는가”가 로그 순서에 남습니다.</p>
+            <p>병렬 command 중 실패가 나면 runner가 나머지 작업의 cancellation을 요청하고 실패 결과를 모읍니다. 병렬 단계가 실패하면 후속 coverage policy 검사는 실행되지 않습니다.</p>
           </article>
           <article class="card warning">
             <h3>혼동하면 안 되는 것</h3>
-            <p>coverage 숫자가 높아도 traceability나 mutation이 실패하면 gate는 닫히지 않습니다. 각 검사는 서로 다른 종류의 누락을 찾습니다.</p>
+            <p>coverage 숫자가 높아도 traceability가 실패하면 local gate는 통과하지 않습니다. CI에는 여기에 mutation gate도 추가됩니다. 각 검사는 서로 다른 종류의 누락을 찾습니다.</p>
           </article>
         </div>
       </div>
@@ -206,7 +206,7 @@
             <tr><td>traceability</td><td>지원한다고 선언한 규격·요구사항에 실제 test가 연결됐는가?</td><td>source의 `Traceability` metadata와 conformance matrix를 양방향 비교합니다.</td></tr>
             <tr><td>architecture</td><td>package가 허용되지 않은 방향으로 의존하지 않는가?</td><td>현재 `go list` import graph를 domain·application·adapter 경계와 비교합니다.</td></tr>
             <tr><td>coverage</td><td>실행 가능한 production code가 실제로 실행됐는가?</td><td>atomic coverprofile과 policy floor·ratchet·CI diff를 평가합니다.</td></tr>
-            <tr><td>mutation</td><td>test assertion이 production 조건의 변화를 실제로 잡는가?</td><td>delivery/session state machine mutant를 package별로 변형해 실행합니다.</td></tr>
+            <tr><td>mutation</td><td>test assertion이 production 조건의 변화를 실제로 잡는가?</td><td>Delivery/Session mutant를 package별로 변형해 실행합니다. CI 전용이며 local에는 포함되지 않습니다.</td></tr>
           </tbody>
         </table>
         <blockquote>
@@ -220,9 +220,9 @@
         <div class="section-kicker">03 · runner 흐름</div>
         <h2>입력은 `main.go`에서 시작하고, 실제 순서는 `runVerification`이 소유한다</h2>
         <p>
-          <a href="../../tools/verify/main.go#L27">`tools/verify/main.go`</a>는 subcommand를 고릅니다. `local`은 <code>runLocal</code>, `ci`는 base ref를 먼저 확인한 뒤 <code>runCI</code>를 호출합니다. 두 함수는 공통 함수인 <a href="../../tools/verify/runner.go#L51">`runVerification`</a>으로 들어가므로 local과 CI 사이에서 command 순서가 갈라지지 않습니다.
+          <a href="../../tools/verify/main.go#L27">`tools/verify/main.go`</a>는 subcommand를 고릅니다. `local`은 <code>runLocal</code>, `ci`는 base ref를 먼저 확인한 뒤 <code>runCI</code>를 호출합니다. 두 함수는 <a href="../../tools/verify/runner.go#L53">`runVerification`</a>을 공유합니다. CI는 mutation command 두 개와 coverage diff base를 추가하며, local은 mutation을 실행하지 않습니다.
         </p>
-        <pre><code>// tools/verify/runner.go:40-56
+        <pre><code>// tools/verify/runner.go:42-103
 func runLocal(ctx context.Context, root string, runner commandRunner) error {
     return runVerification(ctx, root, verificationOptions{}, runner)
 }
@@ -238,29 +238,27 @@ func runVerification(...) error {
     ensureRepositoryRoot(root)
     checkGoFormat(root)
     os.MkdirAll(".artifacts/verification", 0o755)
-    // 아래 commandSpec 배열을 순서대로 실행한다.
+    // gofmt check; parallel command group; then coverageCommand
 }</code></pre>
         <p>
-          사전 단계는 아직 외부 command를 실행하지 않습니다. <a href="../../tools/verify/runner.go#L109">`ensureRepositoryRoot`</a>는 module path가 <code>narumq</code>인지 확인하고, <a href="../../tools/verify/runner.go#L124">`checkGoFormat`</a>은 Go source를 수정하지 않고 포맷 불일치만 보고합니다. 이 단계가 실패하면 13개 command는 시작되지 않습니다.
+          사전 단계는 외부 command 실행 전 저장소와 gofmt를 확인합니다. <a href="../../tools/verify/runner.go#L54">`ensureRepositoryRoot`</a>와 <a href="../../tools/verify/runner.go#L57">`checkGoFormat`</a> 중 하나라도 실패하면 command가 시작되지 않습니다. local은 9개 command를 병렬 실행하고, CI는 여기에 mutation 두 개를 더합니다. 병렬 단계가 성공한 뒤에만 coverage policy command를 실행합니다.
         </p>
         <div class="grid">
           <article class="card wide">
             <h3>실제 command 실행은 주입된 runner가 맡는다</h3>
-            <pre><code>// tools/verify/runner.go:82-102
-for _, command := range commands {
-    if err := runner(ctx, root, command); err != nil {
-        return fmt.Errorf("verification stopped after %s: %w",
-            formatCommand(command), err)
-    }
+            <pre><code>// tools/verify/runner.go:89-100
+if err := runConcurrent(ctx, root, parallelCommands, runner); err != nil {
+    return fmt.Errorf("verification stopped during parallel checks: %w", err)
 }
-
-// 실제 실행에서는 executeCommand가 exec.CommandContext로
-// command.Name과 command.Args를 실행하고 exit code를 보존한다.</code></pre>
-            <p><code>commandRunner</code>를 함수 타입으로 분리했기 때문에 production에서는 실제 process를 실행하고, runner test에서는 command를 기록하는 가짜 함수를 넣을 수 있습니다. 이 seam은 검증 대상이 business logic이 아니라 “순서와 중단 계약”임을 드러냅니다.</p>
+if err := runner(ctx, root, coverageCommand); err != nil {
+    return fmt.Errorf("verification stopped after %s: %w",
+        formatCommand(coverageCommand), err)
+}</code></pre>
+            <p><code>commandRunner</code> 주입으로 production에서는 실제 process를 실행하고, runner test에서는 local·CI command 집합, 병렬 실패 취소와 coverage 단계의 실행 조건을 검증합니다.</p>
           </article>
           <article class="card">
-            <h3>첫 실패 중단</h3>
-            <p>예를 들어 unit command가 실패하면 fuzz·race·coverage·mutation은 실행되지 않습니다. 로그에 실패 command가 포함되므로 뒤 단계가 실행됐다고 추정하지 않아도 됩니다.</p>
+            <h3>병렬 실패 처리</h3>
+            <p><code>runConcurrent</code>는 실패 뒤 peer command 취소를 요청하고 종료를 기다립니다. 취소되지 않은 실패를 함께 반환하며, 이 단계가 실패하면 coverage policy command는 시작하지 않습니다.</p>
           </article>
         </div>
       </div>
@@ -268,25 +266,24 @@ for _, command := range commands {
 
     <section id="sequence">
       <div class="wrap">
-        <div class="section-kicker">04 · 고정된 순서</div>
-        <h2>13개 command는 빠른 피드백에서 비싼 gate로 진행한다</h2>
+        <div class="section-kicker">04 · command graph</div>
+        <h2>local 9개 병렬 command 뒤 coverage policy를 평가한다</h2>
         <p>
-          앞 단계는 컴파일·기본 동작·입력 안정성을 빠르게 확인하고, 뒤 단계는 race·coverage·mutation처럼 더 오래 걸리거나 artifact를 필요로 하는 검사를 수행합니다. 이 순서는 <a href="../../tools/verify/runner_test.go#L38">`TestRunCIRequiresBaseAndPropagatesBaseToCoverage`</a>에서 전체 `Name`·`Args` 목록으로 고정되어 있습니다.
+          아래 9개 local command는 병렬 실행되므로 목록 순서는 실행 순서가 아닙니다. CI는 두 mutation command를 같은 병렬 단계에 더합니다. 병렬 검사가 성공하면 coverage policy가 뒤이어 실행됩니다. Runner test는 local 10개 command와 CI 12개 command, mutation의 CI 전용 여부, coverage에만 전달되는 base를 확인합니다.
         </p>
         <div class="timeline">
-          <div class="timeline-item"><div class="timeline-id">01 · vet</div><div class="timeline-body"><h3><code>go vet ./...</code></h3><p>컴파일 가능한 코드에서 정적 분석 경고를 찾습니다.</p></div></div>
-          <div class="timeline-item"><div class="timeline-id">02 · unit</div><div class="timeline-body"><h3><code>go test ./... -count=1</code></h3><p>test cache를 사용하지 않고 전체 package test를 실행합니다.</p></div></div>
-          <div class="timeline-item"><div class="timeline-id">03 · fuzz</div><div class="timeline-body"><h3>MQTT <code>FuzzDecoder</code></h3><p>malformed frame이 panic하거나 정의되지 않은 error를 만들지 않는지 확인합니다.</p></div></div>
-          <div class="timeline-item"><div class="timeline-id">04 · fuzz</div><div class="timeline-body"><h3>MQTT <code>FuzzCodecRoundTrip</code></h3><p>성공한 packet codec round-trip이 packet 의미를 바꾸지 않는지 확인합니다.</p></div></div>
-          <div class="timeline-item"><div class="timeline-id">05 · fuzz</div><div class="timeline-body"><h3>routing <code>FuzzTopicMatching</code></h3><p>filter·topic validation과 독립 oracle 기반 match·QoS invariant를 확인합니다.</p></div></div>
-          <div class="timeline-item"><div class="timeline-id">06 · fuzz</div><div class="timeline-body"><h3>session <code>FuzzLifecycleTransitions</code></h3><p>Clean Start, Session Expiry, reconnect와 expiry edge를 확인합니다.</p></div></div>
-          <div class="timeline-item"><div class="timeline-id">07 · race</div><div class="timeline-body"><h3><code>go test -race ./... -count=1</code></h3><p>동시 접근에서 data race가 없는지 전체 package를 다시 실행합니다.</p></div></div>
-          <div class="timeline-item"><div class="timeline-id">08 · trace</div><div class="timeline-body"><h3><code>go run ./tools/verify traceability</code></h3><p>source metadata, MQTT matrix, requirement union이 서로 일치하는지 확인합니다.</p></div></div>
-          <div class="timeline-item"><div class="timeline-id">09 · graph</div><div class="timeline-body"><h3><code>go run ./tools/verify architecture</code></h3><p>실제 production import graph가 Clean Architecture 경계를 지키는지 확인합니다.</p></div></div>
-          <div class="timeline-item"><div class="timeline-id">10 · profile</div><div class="timeline-body"><h3>atomic coverage profile 생성</h3><p>production package와 integration test를 <code>.artifacts/verification/coverage.out</code>에 기록합니다.</p></div></div>
-          <div class="timeline-item"><div class="timeline-id">11 · policy</div><div class="timeline-body"><h3><code>go run ./tools/verify coverage ...</code></h3><p>floor·ratchet·diff coverage를 평가하고 <code>coverage-summary.json</code>을 남깁니다.</p></div></div>
-          <div class="timeline-item"><div class="timeline-id">12 · mutation</div><div class="timeline-body"><h3>delivery mutation</h3><p><code>internal/domain/delivery</code> state machine을 변형하고 JSON 결과를 남깁니다.</p></div></div>
-          <div class="timeline-item"><div class="timeline-id">13 · mutation</div><div class="timeline-body"><h3>session mutation</h3><p><code>internal/domain/session</code> state machine을 변형하고 JSON 결과를 남깁니다.</p></div></div>
+          <div class="timeline-item"><div class="timeline-id">01 · parallel</div><div class="timeline-body"><h3><code>go vet ./...</code></h3><p>비정상적인 코드 패턴을 정적으로 검사합니다.</p></div></div>
+          <div class="timeline-item"><div class="timeline-id">02 · parallel</div><div class="timeline-body"><h3><code>go run ./tools/verify traceability</code></h3><p>source metadata, MQTT matrix와 requirement union이 일치하는지 검사합니다.</p></div></div>
+          <div class="timeline-item"><div class="timeline-id">03 · parallel</div><div class="timeline-body"><h3><code>go run ./tools/verify architecture</code></h3><p>production import graph가 Clean Architecture 경계를 지키는지 확인합니다.</p></div></div>
+          <div class="timeline-item"><div class="timeline-id">04 · parallel</div><div class="timeline-body"><h3><code>go test ./...</code> + atomic profile</h3><p>전체 package test를 실행하고 `.artifacts/verification/coverage.out`을 만듭니다.</p></div></div>
+          <div class="timeline-item"><div class="timeline-id">05 · parallel</div><div class="timeline-body"><h3><code>go test -race ./cmd/... ./internal/... -count=1</code></h3><p>production packages의 data race를 검사합니다.</p></div></div>
+          <div class="timeline-item"><div class="timeline-id">06 · parallel fuzz</div><div class="timeline-body"><h3>MQTT <code>FuzzDecoder</code></h3><p>malformed frame의 panic·정의되지 않은 오류를 검사합니다.</p></div></div>
+          <div class="timeline-item"><div class="timeline-id">07 · parallel fuzz</div><div class="timeline-body"><h3>MQTT <code>FuzzCodecRoundTrip</code></h3><p>성공한 packet codec round-trip이 packet 의미를 보존하는지 확인합니다.</p></div></div>
+          <div class="timeline-item"><div class="timeline-id">08 · parallel fuzz</div><div class="timeline-body"><h3>routing <code>FuzzTopicMatching</code></h3><p>filter·topic validation과 독립 oracle 기반 match·QoS invariant를 검사합니다.</p></div></div>
+          <div class="timeline-item"><div class="timeline-id">09 · parallel fuzz</div><div class="timeline-body"><h3>session <code>FuzzLifecycleTransitions</code></h3><p>Clean Start, Session Expiry, reconnect와 expiry edge를 검사합니다.</p></div></div>
+          <div class="timeline-item"><div class="timeline-id">10 · after parallel</div><div class="timeline-body"><h3><code>go run ./tools/verify coverage ...</code></h3><p>floor·ratchet를 평가하고 `coverage-summary.json`을 남깁니다; CI에서는 diff coverage도 평가합니다.</p></div></div>
+          <div class="timeline-item"><div class="timeline-id">CI-only · parallel</div><div class="timeline-body"><h3>Delivery mutation</h3><p><code>internal/domain/delivery</code> state machine을 변형하고 JSON 결과를 남깁니다.</p></div></div>
+          <div class="timeline-item"><div class="timeline-id">CI-only · parallel</div><div class="timeline-body"><h3>Session mutation</h3><p><code>internal/domain/session</code> state machine을 변형하고 JSON 결과를 남깁니다.</p></div></div>
         </div>
       </div>
     </section>
@@ -329,7 +326,7 @@ go test ./internal/domain/session -run=^$ -fuzz=^FuzzLifecycleTransitions$ -fuzz
         <div class="section-kicker">06 · mutation</div>
         <h2>mutation은 test가 실제 규칙의 변화를 잡는지 확인한다</h2>
         <p>
-          mutation testing은 production 조건을 일부러 바꿉니다. 예를 들어 조건의 부정을 뒤집거나 경계 비교를 바꾼 뒤 기존 test를 실행합니다. test가 실패하면 mutant는 <code>KILLED</code>, 계속 통과하면 <code>LIVED</code>, 해당 코드가 실행되지 않으면 <code>NOT_COVERED</code>입니다.
+          mutation testing은 production 조건을 일부러 바꿔 테스트의 결함 검출력을 확인합니다. <code>local</code>은 이 검사를 실행하지 않고 CI만 Delivery·Session mutation command를 병렬 단계에 추가합니다. Test가 실패하면 mutant는 <code>KILLED</code>, 계속 통과하면 <code>LIVED</code>, 해당 코드가 실행되지 않으면 <code>NOT_COVERED</code>입니다.
         </p>
         <div class="flow" aria-label="mutation 흐름">
           <div class="node"><span class="label">원본</span><br><code>state.go</code><br><span class="small">delivery / session</span></div>
@@ -386,7 +383,7 @@ go tool gremlins unleash --config=tests/verification/gremlins.yaml --output=.art
         <table>
           <thead><tr><th>정책 층</th><th>현재 기준</th><th>설정 위치</th></tr></thead>
           <tbody>
-            <tr><td>전체 production</td><td>line/function 90%</td><td><a href="../../tests/verification/coverage-policy.json">overallFloor</a></td></tr>
+            <tr><td>전체 production</td><td>line 85% / function 90%</td><td><a href="../../tests/verification/coverage-policy.json">overallFloor</a></td></tr>
             <tr><td>core package</td><td>line/function 95%</td><td><a href="../../tests/verification/coverage-policy.json">coreFloor·corePackages</a></td></tr>
             <tr><td>PR diff</td><td>line/function 95%</td><td><a href="../../tests/verification/coverage-policy.json">diffFloor</a></td></tr>
             <tr><td>ratchet</td><td>정책 파일의 명시값이며 측정치만으로 자동 변경하지 않음</td><td><a href="../../tests/verification/coverage-policy.json">ratchet</a></td></tr>
@@ -408,37 +405,32 @@ go tool gremlins unleash --config=tests/verification/gremlins.yaml --output=.art
     <section id="contracts">
       <div class="wrap">
         <div class="section-kicker">08 · 계약과 실패</div>
-        <h2>runner test가 순서·중단·base 전달을 실행 계약으로 고정한다</h2>
+        <h2>runner tests fix command counts, parallel cancellation and base propagation</h2>
         <p>
-          <a href="../../tools/verify/runner_test.go#L13">`TestRunLocalExecutesOrderedCommandsAndStopsAtFirstFailure`</a>는 두 번째 command에서 가짜 실패를 반환합니다. 기대 결과는 첫 번째 <code>go vet</code>와 두 번째 unit test만 실행되고, fuzz 이후 단계는 실행되지 않는 것입니다.
+          <a href="../../tools/verify/runner_test.go#L72">`TestRunLocalOmitsMutationChecksAndCoverageWithoutBase`</a>는 local의 10개 command와 mutation/base 제외를 확인합니다. <a href="../../tools/verify/runner_test.go#L15">`TestRunCIRequiresBaseAndPropagatesBaseToCoverage`</a>는 CI의 12개 command와 coverage-only base 전달을 확인하고, <a href="../../tools/verify/runner_test.go#L109">`TestRunConcurrentCancelsRemainingCommandsOnFailure`</a>는 병렬 실패 시 취소를 확인합니다.
         </p>
-        <pre><code>// tools/verify/runner_test.go:18-35
-runner := func(_ context.Context, _ string, spec commandSpec) error {
-    commands = append(commands, formatCommand(spec))
-    if len(commands) == 2 {
-        return failure
-    }
-    return nil
-}
-
-// 결과: len(commands)==2
-// commands[0] = go vet ./...
-// commands[1] = go test ./... -count=1</code></pre>
+        <pre><code>// tools/verify/runner_test.go:109-128
+err := runConcurrent(context.Background(), ".", []commandSpec{
+    {Name: "go", Args: []string{"fail"}},
+    {Name: "go", Args: []string{"wait"}},
+}, runner)
+if !errors.Is(err, failure) {
+    t.Fatalf("runConcurrent() error = %v, want original failure", err)
+}</code></pre>
         <p>
-          성공 경로는 13개 <code>commandSpec</code>의 이름과 인자를 exact comparison합니다. 이 검사가 없으면 command를 하나 추가하거나 base를 잘못된 단계에 전달해도 package test 자체는 통과할 수 있습니다.
+          Runner test는 local의 10개 command와 CI의 12개 command를 비교하며, local에 mutation이 없고 CI의 `--base`가 coverage command에만 한 번 전달되는지 확인합니다.
         </p>
         <table>
-          <thead><tr><th>실패 위치</th><th>runner의 반응</th><th>뒤 단계</th></tr></thead>
+          <thead><tr><th>실패 위치</th><th>runner의 반응</th><th>후속 처리</th></tr></thead>
           <tbody>
-            <tr><td>repository root</td><td>module path 오류 반환</td><td>실행하지 않음</td></tr>
-            <tr><td>gofmt precheck</td><td>source를 바꾸지 않고 파일 목록 반환</td><td>실행하지 않음</td></tr>
-            <tr><td>unit·fuzz·race</td><td>실패 command와 exit code를 wrapping</td><td>실행하지 않음</td></tr>
-            <tr><td>traceability·architecture</td><td>정책 위반을 command 실패로 전달</td><td>coverage·mutation 실행하지 않음</td></tr>
-            <tr><td>coverage·mutation</td><td>artifact와 함께 gate 실패</td><td>이미 끝난 앞 단계는 유지</td></tr>
+            <tr><td>repository root</td><td>module path 오류 반환</td><td>command 실행 안 함</td></tr>
+            <tr><td>gofmt precheck</td><td>source를 바꾸지 않고 파일 목록 반환</td><td>command 실행 안 함</td></tr>
+            <tr><td>parallel checks</td><td>peer 취소를 요청하고 확인된 실패를 모음</td><td>실패하면 coverage policy를 실행하지 않음</td></tr>
+            <tr><td>coverage policy</td><td>artifact와 함께 gate 실패</td><td>병렬 단계 artifact는 유지</td></tr>
           </tbody>
         </table>
         <blockquote>
-          현재 runner는 mutation JSON을 다시 읽어 점수를 계산하지 않습니다. Gremlins가 config threshold를 적용하고 exit code를 반환하며, runner는 그 process 결과와 JSON artifact를 보존합니다. 따라서 score를 볼 때는 package별 JSON을 직접 확인해야 합니다.
+          mutation JSON은 CI mutation command의 산출물입니다. Gremlins가 config threshold를 적용하고 exit code를 반환하며, runner는 process 결과와 JSON artifact를 보존합니다. 따라서 score를 볼 때는 package별 JSON을 직접 확인해야 합니다.
         </blockquote>
       </div>
     </section>
@@ -453,8 +445,8 @@ runner := func(_ context.Context, _ string, spec commandSpec) error {
             <ul>
               <li><code>.artifacts/verification/coverage.out</code> — atomic raw profile</li>
               <li><code>.artifacts/verification/coverage-summary.json</code> — floor·ratchet·diff 평가</li>
-              <li><code>.artifacts/verification/mutation-delivery.json</code> — delivery mutation 결과</li>
-              <li><code>.artifacts/verification/mutation-session.json</code> — session mutation 결과</li>
+              <li><code>.artifacts/verification/mutation-delivery.json</code> — CI-only delivery mutation 결과</li>
+              <li><code>.artifacts/verification/mutation-session.json</code> — CI-only session mutation 결과</li>
               <li><code>internal/domain/*/testdata/fuzz/&lt;Target&gt;/</code> — 발견된 failure corpus</li>
             </ul>
           </article>
@@ -467,12 +459,12 @@ runner := func(_ context.Context, _ string, spec commandSpec) error {
         <pre><code>go run ./tools/verify local
 go run ./tools/verify ci --base HEAD~1</code></pre>
         <p>
-          이 두 명령이 성공하려면 코드, source traceability metadata, conformance matrix, coverage policy, Gremlins config와 test corpus가 서로 같은 계약을 가져야 합니다. HTML을 읽는 것 자체는 검증 실행이 아니므로, release evidence에는 실제 command output과 artifact를 별도로 보존해야 합니다.
+          CI run에는 Gremlins config와 test corpus가 필요합니다. Local run은 mutation artifact를 만들지 않습니다. HTML을 읽는 것 자체는 검증 실행이 아니므로, release evidence에는 실제 command output과 artifact를 별도로 보존해야 합니다.
         </p>
         <h3>관련 소스와 기준 문서</h3>
         <ul class="source-list">
           <li><a href="../../tools/verify/main.go">`tools/verify/main.go`</a> — local·CI 진입점</li>
-          <li><a href="../../tools/verify/runner.go">`tools/verify/runner.go`</a> — command graph·첫 실패 중단</li>
+          <li><a href="../../tools/verify/runner.go">`tools/verify/runner.go`</a> — parallel command graph·coverage 후속 검사·오류 취합</li>
           <li><a href="../../tools/verify/runner_test.go">`tools/verify/runner_test.go`</a> — 실행 계약 회귀 test</li>
           <li><a href="../../internal/domain/mqtt/packet_fuzz_test.go">MQTT fuzz targets</a></li>
           <li><a href="../../internal/domain/routing/routing_fuzz_test.go">routing fuzz target</a></li>
@@ -490,7 +482,7 @@ go run ./tools/verify ci --base HEAD~1</code></pre>
   <footer>
     <div class="wrap">
       <p>기준 문서: `docs/specs/performance-and-verification.md`, `docs/conventions/go-coding-conventions.md` 및 현재 `tools/verify` 구현.</p>
-      <p>읽는 순서: 결과 → 검증 개념 → runner 흐름 → 13단계 → fuzz → mutation → coverage → 계약·실패 → 증거·범위.</p>
+      <p>읽는 순서: 결과 → 검증 개념 → runner 흐름 → command graph → fuzz → CI mutation → coverage → 계약·실패 → 증거·범위.</p>
     </div>
   </footer>
 </body>

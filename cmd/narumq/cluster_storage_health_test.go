@@ -158,6 +158,24 @@ func TestStorageHealthReadinessPreservesLifecycleState(t *testing.T) {
 	}
 }
 
+// Traceability: API-04; docs/specs/management-api-and-observability.md §3, §8.
+func TestClusterStartupWaitsForTypedRecovery(t *testing.T) {
+	state := appmgmt.NewService(appmgmt.ServiceConfig{StartedAt: time.Unix(1, 0)}, nil, nil, nil, nil)
+	state.SetNodeState(managementports.NodeStateReady, nil)
+	runtime := &clusterRuntime{}
+	checker := &clusterHealthChecker{HealthChecker: state, runtime: runtime}
+
+	status, reason := checker.CheckStartup(context.Background())
+	if status != managementports.HealthStatusStarting || reason == nil || *reason != "typed raft state has not been recovered" {
+		t.Fatalf("startup before recovery=(%q,%v), want STARTING", status, reason)
+	}
+	runtime.initialized.Store(true)
+	status, reason = checker.CheckStartup(context.Background())
+	if status != managementports.HealthStatusUp || reason != nil {
+		t.Fatalf("startup after typed recovery=(%q,%v), want UP", status, reason)
+	}
+}
+
 func TestFailedStorageLivenessReturnsDown(t *testing.T) {
 	monitor := newClusterStorageMonitor(func() time.Time { return time.Unix(1, 0) }, nil)
 	monitor.fail(fmt.Errorf("%w: %w", raftadapter.ErrFailed, raftadapter.ErrStorage))

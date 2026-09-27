@@ -4,13 +4,18 @@ package connect
 import (
 	"context"
 	"errors"
+	"fmt"
+	"sort"
 	"sync"
 	"time"
 
+	"narumq/internal/application/membership"
 	applicationauthentication "narumq/internal/application/ports/authentication"
 	applicationclock "narumq/internal/application/ports/clock"
 	"narumq/internal/application/ports/deliveryqueue"
+	"narumq/internal/application/ports/deliverystate"
 	portsmetrics "narumq/internal/application/ports/metrics"
+	"narumq/internal/domain/delivery"
 	"narumq/internal/domain/mqtt"
 	"narumq/internal/domain/routing"
 	"narumq/internal/domain/security"
@@ -33,6 +38,8 @@ var (
 	ErrNilWillPublisher = errors.New("connect will publisher is nil")
 	// ErrSessionNotFound means that a disconnect target has no stored session.
 	ErrSessionNotFound = errors.New("connect session not found")
+	// ErrDurableDeliveryRejected means a committed delivery transition could not be applied.
+	ErrDurableDeliveryRejected = errors.New("connect durable delivery transition rejected")
 )
 
 // Timer allows cancelling a scheduled callback.
@@ -62,13 +69,15 @@ type OwnershipCoordinator interface {
 	AcquireOwnership(context.Context, string, string, uint64) (uint64, error)
 }
 
-// ResultDTO reports the connection response, accepted session, and committed owner epoch.
+// ResultDTO reports the connection response, accepted session, committed owner
+// epoch, and recovered durable delivery state.
 type ResultDTO struct {
-	SessionID      routing.SessionID
-	Principal      security.Principal
-	ConnAck        mqtt.ConnAck
-	Accepted       bool
-	OwnershipEpoch uint64
+	SessionID       routing.SessionID
+	Principal       security.Principal
+	ConnAck         mqtt.ConnAck
+	Accepted        bool
+	OwnershipEpoch  uint64
+	DeliverySession *membership.DeliverySessionStateDTO
 }
 
 // ConnectRequestDTO carries the MQTT CONNECT packet and optional verified certificate identity.
@@ -138,6 +147,14 @@ func WithOfflineCoordinator(coordinator OfflineCoordinator) Option {
 	}
 }
 
+// WithDurableDeliveryCommitter commits attachment and cleanup transitions for
+// the session's replicated QoS 1/2 state.
+func WithDurableDeliveryCommitter(committer deliverystate.Committer) Option {
+	return func(useCase *UseCase) {
+		useCase.durableDeliveryCommitter = committer
+	}
+}
+
 // UseCase serializes lifecycle persistence, routing cleanup and queue
 // registration so one process cannot activate or disconnect the same session
 // through interleaved operations.
@@ -165,6 +182,7 @@ type UseCase struct {
 	ownershipCoordinator     OwnershipCoordinator
 	ownerNodeID              uint64
 	offlineCoordinator       OfflineCoordinator
+	durableDeliveryCommitter deliverystate.Committer
 	ownershipEpochs          map[routing.SessionID]uint64
 }
 
@@ -249,7 +267,183 @@ func New(
 			opt(useCase)
 		}
 	}
+
+	if useCase.durableDeliveryCommitter != nil && (useCase.ownershipCoordinator == nil || useCase.ownerNodeID == 0) {
+		return nil, ErrDurableDeliveryRejected
+	}
 	return useCase, nil
+}
+func (useCase *UseCase) commitDurableDelivery(ctx context.Context, change membership.DeliveryChangeDTO) (membership.ApplyResultDTO, error) {
+	if useCase.durableDeliveryCommitter == nil {
+		return membership.ApplyResultDTO{}, ErrDurableDeliveryRejected
+	}
+	result, err := useCase.durableDeliveryCommitter.CommitDelivery(ctx, change)
+	if err != nil {
+		return membership.ApplyResultDTO{}, err
+	}
+	if result.Outcome != membership.ApplyOutcomeApplied {
+		return membership.ApplyResultDTO{}, fmt.Errorf("%w: outcome=%d conflict=%s", ErrDurableDeliveryRejected, result.Outcome, result.Conflict)
+	}
+	return result, nil
+}
+
+func (useCase *UseCase) attachDurableDelivery(
+	ctx context.Context,
+	sessionKey tenancy.SessionKey,
+	sessionID routing.SessionID,
+	epoch uint64,
+	version mqtt.ProtocolVersion,
+	cleanStart bool,
+	now time.Time,
+) (*membership.DeliverySessionStateDTO, bool, error) {
+	proposedAt := now.UnixMilli()
+	if proposedAt <= 0 {
+		return nil, false, ErrDurableDeliveryRejected
+	}
+	result, err := useCase.commitDurableDelivery(ctx, membership.DeliveryChangeDTO{
+		TenantID:             sessionKey.TenantID().String(),
+		ClientID:             sessionKey.ClientID(),
+		OwnerNodeID:          useCase.ownerNodeID,
+		Epoch:                epoch,
+		Action:               membership.DeliveryActionAttach,
+		ProposedAtUnixMillis: uint64(proposedAt),
+		Reset:                cleanStart,
+	})
+	if err != nil {
+		return nil, false, err
+	}
+	if result.Delivery == nil || result.Delivery.Session == nil {
+		return nil, false, ErrDurableDeliveryRejected
+	}
+	state := result.Delivery.Session
+	if err := useCase.resetDurableQueue(sessionID, epoch, version, *state, now); err != nil {
+		return nil, false, err
+	}
+	return state, result.Delivery.Found, nil
+}
+
+func (useCase *UseCase) resetDurableQueue(
+	sessionID routing.SessionID,
+	epoch uint64,
+	version mqtt.ProtocolVersion,
+	state membership.DeliverySessionStateDTO,
+	now time.Time,
+) error {
+	queued := make([]deliveryqueue.DeliveryDTO, 0, len(state.Messages))
+	outbound := make([]deliveryqueue.OutboundDTO, 0, len(state.Messages))
+	for _, message := range state.Messages {
+		expiresAt, err := deliveryExpiryTime(message.ExpiresAtUnixMillis)
+		if err != nil {
+			return err
+		}
+		switch message.Phase {
+		case membership.DeliveryPhaseQueued:
+			if message.PacketID != 0 || message.QoS == 0 || message.QoS > uint32(mqtt.QoSExactlyOnce) {
+				return ErrDurableDeliveryRejected
+			}
+			queued = append(queued, deliveryqueue.DeliveryDTO{
+				SessionID: sessionID, Topic: message.Topic, Payload: message.Payload,
+				QoS: mqtt.QoS(message.QoS), Retain: message.Retain, ExpiresAt: expiresAt,
+				DurableSequence: message.Sequence, DurableEpoch: epoch,
+			})
+		case membership.DeliveryPhaseAwaitPubAck, membership.DeliveryPhaseAwaitPubRec, membership.DeliveryPhaseAwaitPubComp:
+			if message.PacketID == 0 || message.QoS == 0 || message.QoS > uint32(mqtt.QoSExactlyOnce) {
+				return ErrDurableDeliveryRejected
+			}
+			packetID := mqtt.PacketIdentifier(message.PacketID)
+			publish := mqtt.Publish{
+				Version: version, QoS: mqtt.QoS(message.QoS), PacketID: packetID,
+				Topic: message.Topic, Payload: message.Payload, Retain: message.Retain,
+			}
+			if version == mqtt.ProtocolV5 && !expiresAt.IsZero() {
+				publish.HasMessageExpiryInterval = true
+				publish.MessageExpiryInterval, _ = (deliveryqueue.DeliveryDTO{ExpiresAt: expiresAt}).RemainingExpiryInterval(now)
+			}
+			outboundState, _, err := delivery.NewOutbound(publish)
+			if err != nil {
+				return fmt.Errorf("%w: %v", ErrDurableDeliveryRejected, err)
+			}
+			switch message.Phase {
+			case membership.DeliveryPhaseAwaitPubAck:
+				if message.QoS != uint32(mqtt.QoSAtLeastOnce) {
+					return ErrDurableDeliveryRejected
+				}
+			case membership.DeliveryPhaseAwaitPubRec:
+				if message.QoS != uint32(mqtt.QoSExactlyOnce) {
+					return ErrDurableDeliveryRejected
+				}
+			case membership.DeliveryPhaseAwaitPubComp:
+				if message.QoS != uint32(mqtt.QoSExactlyOnce) {
+					return ErrDurableDeliveryRejected
+				}
+				outboundState, _, err = outboundState.Receive(mqtt.PubRec{Version: version, PacketID: packetID})
+				if err != nil {
+					return fmt.Errorf("%w: %v", ErrDurableDeliveryRejected, err)
+				}
+			}
+			outbound = append(outbound, deliveryqueue.OutboundDTO{
+				SessionID: sessionID, PacketID: packetID, State: outboundState, ExpiresAt: expiresAt,
+				DurableSequence: message.Sequence, DurableEpoch: epoch,
+			})
+		default:
+			return ErrDurableDeliveryRejected
+		}
+	}
+	sort.Slice(outbound, func(i, j int) bool { return outbound[i].PacketID < outbound[j].PacketID })
+	if err := useCase.deliveries.ResetDurable(sessionID, epoch, queued, outbound, now); err != nil {
+		return fmt.Errorf("reset durable delivery queue: %w", err)
+	}
+	if activator, ok := useCase.durableDeliveryCommitter.(deliverystate.Activator); ok {
+		if err := activator.ActivateDelivery(sessionID, epoch, state.NextSequence-1); err != nil {
+			return fmt.Errorf("activate durable delivery projection: %w", err)
+		}
+	}
+	return nil
+}
+
+func deliveryExpiryTime(unixMillis uint64) (time.Time, error) {
+	if unixMillis == 0 {
+		return time.Time{}, nil
+	}
+	if unixMillis > uint64(1<<63-1) {
+		return time.Time{}, ErrDurableDeliveryRejected
+	}
+	return time.UnixMilli(int64(unixMillis)), nil
+}
+
+func (useCase *UseCase) commitDeliveryLifecycle(
+	ctx context.Context,
+	sessionKey tenancy.SessionKey,
+	epoch uint64,
+	action membership.DeliveryAction,
+	proposedAt time.Time,
+	sessionExpiresAt time.Time,
+) error {
+	if useCase.durableDeliveryCommitter == nil {
+		return nil
+	}
+	proposedMillis := proposedAt.UnixMilli()
+	if epoch == 0 || proposedMillis <= 0 {
+		return ErrDurableDeliveryRejected
+	}
+	expiresMillis := uint64(0)
+	if !sessionExpiresAt.IsZero() {
+		millis := sessionExpiresAt.UnixMilli()
+		if millis <= 0 {
+			return ErrDurableDeliveryRejected
+		}
+		expiresMillis = uint64(millis)
+	}
+	_, err := useCase.commitDurableDelivery(ctx, membership.DeliveryChangeDTO{
+		TenantID:                   sessionKey.TenantID().String(),
+		ClientID:                   sessionKey.ClientID(),
+		OwnerNodeID:                useCase.ownerNodeID,
+		Epoch:                      epoch,
+		Action:                     action,
+		ProposedAtUnixMillis:       uint64(proposedMillis),
+		SessionExpiresAtUnixMillis: expiresMillis,
+	})
+	return err
 }
 
 // Connect validates the development listener's supported session policy and
@@ -439,6 +633,9 @@ func (useCase *UseCase) ConnectContext(ctx context.Context, request ConnectReque
 			return result, nil
 		}
 	}
+	if ownershipEpoch != 0 {
+		useCase.ownershipEpochs[sessionID] = ownershipEpoch
+	}
 	if err := useCase.saveSession(sessionKey, timerKey, opened); err != nil {
 		return ResultDTO{}, err
 	}
@@ -466,12 +663,48 @@ func (useCase *UseCase) ConnectContext(ctx context.Context, request ConnectReque
 		}
 		return ResultDTO{}, err
 	}
+
+	var (
+		durableDeliverySession *membership.DeliverySessionStateDTO
+		durableDeliveryPresent bool
+		offlinePresent         bool
+	)
+	if useCase.durableDeliveryCommitter != nil {
+		durableDeliverySession, durableDeliveryPresent, err = useCase.attachDurableDelivery(
+			ctx, sessionKey, sessionID, ownershipEpoch, packet.Version, packet.CleanStart, now,
+		)
+		if err != nil {
+			var rollbackErr error
+			if found {
+				rollbackErr = useCase.saveSession(sessionKey, timerKey, existing)
+			} else {
+				rollbackErr = useCase.deleteSession(sessionKey, timerKey)
+			}
+			delete(useCase.principals, sessionID)
+			if !found {
+				useCase.deliveries.Remove(sessionID)
+				useCase.routes.RemoveSession(sessionID)
+			}
+			if rollbackErr != nil {
+				return ResultDTO{}, errors.Join(err, rollbackErr)
+			}
+			result.ConnAck.ReasonCode = ownershipUnavailableReason(packet.Version)
+			return result, nil
+		}
+		if packet.CleanStart || !durableDeliveryPresent {
+			useCase.routes.RemoveSession(sessionID)
+			_ = useCase.routes.BindSessionTenant(sessionID, sessionTenant)
+		}
+	}
 	if useCase.ownershipCoordinator != nil && useCase.offlineCoordinator == nil {
 		useCase.stopSessionTimers(timerKey)
 	}
 	if useCase.offlineCoordinator != nil && ownershipEpoch != 0 {
 		claim, err := useCase.offlineCoordinator.ClaimOffline(ctx, ownershipTenantID, packet.ClientID, useCase.ownerNodeID, ownershipEpoch, now)
 		if err != nil {
+			if deactivator, ok := useCase.durableDeliveryCommitter.(deliverystate.Deactivator); ok {
+				deactivator.DeactivateDelivery(sessionID, ownershipEpoch)
+			}
 			var rollbackErr error
 			if found {
 				rollbackErr = useCase.saveSession(sessionKey, timerKey, existing)
@@ -491,6 +724,7 @@ func (useCase *UseCase) ConnectContext(ctx context.Context, request ConnectReque
 		}
 		// Keep prior timers armed until CLAIM succeeds; callbacks wait on useCase.mu.
 		useCase.stopSessionTimers(timerKey)
+		offlinePresent = claim.Found
 		if claim.Found && !packet.CleanStart {
 			present = true
 			if len(claim.Deliveries) > 0 {
@@ -498,8 +732,8 @@ func (useCase *UseCase) ConnectContext(ctx context.Context, request ConnectReque
 			}
 		}
 	}
-	if ownershipEpoch != 0 {
-		useCase.ownershipEpochs[sessionID] = ownershipEpoch
+	if useCase.durableDeliveryCommitter != nil {
+		present = !packet.CleanStart && (durableDeliveryPresent || offlinePresent)
 	}
 	if sessionKey != (tenancy.SessionKey{}) {
 		useCase.sessionKeys[sessionID] = sessionKey
@@ -508,7 +742,7 @@ func (useCase *UseCase) ConnectContext(ctx context.Context, request ConnectReque
 	}
 	useCase.recordSessionGauge()
 	return ResultDTO{
-		SessionID: sessionID, Principal: principal, OwnershipEpoch: ownershipEpoch,
+		SessionID: sessionID, Principal: principal, OwnershipEpoch: ownershipEpoch, DeliverySession: durableDeliverySession,
 		ConnAck: mqtt.ConnAck{
 			Version:        packet.Version,
 			SessionPresent: present,
@@ -569,13 +803,35 @@ func (useCase *UseCase) Disconnect(sessionID routing.SessionID, reason session.D
 		useCase.mu.Unlock()
 		return err
 	}
+	epoch, hasEpoch := useCase.ownershipEpochs[sessionID]
+	var sessionExpiresAt time.Time
+	if result.ScheduleExpiry {
+		sessionExpiresAt = now.Add(result.ExpiryDuration)
+	}
+	var deliveryTransitionErr error
 	if result.SessionRemoved {
+		if useCase.durableDeliveryCommitter != nil {
+			if !hasSessionKey || !hasEpoch {
+				useCase.mu.Unlock()
+				return ErrDurableDeliveryRejected
+			}
+			if err := useCase.saveSession(sessionKey, timerKey, result.Lifecycle); err != nil {
+				useCase.mu.Unlock()
+				return err
+			}
+			if err := useCase.commitDeliveryLifecycle(
+				context.Background(), sessionKey, epoch, membership.DeliveryActionDiscard, now, time.Time{},
+			); err != nil {
+				useCase.mu.Unlock()
+				return err
+			}
+		}
 		if err := useCase.deleteSession(sessionKey, timerKey); err != nil {
 			useCase.mu.Unlock()
 			return err
 		}
 		useCase.deliveries.Remove(sessionID)
-		if useCase.ownershipCoordinator == nil {
+		if useCase.ownershipCoordinator == nil || useCase.durableDeliveryCommitter != nil {
 			useCase.routes.RemoveSession(sessionID)
 		}
 	} else {
@@ -583,13 +839,23 @@ func (useCase *UseCase) Disconnect(sessionID routing.SessionID, reason session.D
 			useCase.mu.Unlock()
 			return err
 		}
-		epoch, hasEpoch := useCase.ownershipEpochs[sessionID]
+		if useCase.durableDeliveryCommitter != nil {
+			if !hasSessionKey || !hasEpoch {
+				deliveryTransitionErr = ErrDurableDeliveryRejected
+			} else {
+				deliveryTransitionErr = useCase.commitDeliveryLifecycle(
+					context.Background(), sessionKey, epoch, membership.DeliveryActionDetach, now, sessionExpiresAt,
+				)
+			}
+		}
 		if useCase.offlineCoordinator != nil && hasEpoch && hasSessionKey {
 			pending, err := useCase.deliveries.ListQueued(sessionID, now)
 			if err == nil {
-				var sessionExpiresAt time.Time
-				if result.ScheduleExpiry {
-					sessionExpiresAt = now.Add(result.ExpiryDuration)
+				qosZeroPending := pending[:0]
+				for _, item := range pending {
+					if item.DurableSequence == 0 && item.QoS == mqtt.QoSAtMostOnce {
+						qosZeroPending = append(qosZeroPending, item)
+					}
 				}
 				detachCtx, cancel := context.WithTimeout(context.Background(), offlineDetachTimeout)
 				detachErr := useCase.offlineCoordinator.DetachSession(detachCtx, DetachRequestDTO{
@@ -599,7 +865,7 @@ func (useCase *UseCase) Disconnect(sessionID routing.SessionID, reason session.D
 					Epoch:            epoch,
 					SessionExpiresAt: sessionExpiresAt,
 					DetachedAt:       now,
-					Pending:          pending,
+					Pending:          qosZeroPending,
 				})
 				cancel()
 				if detachErr == nil {
@@ -639,16 +905,18 @@ func (useCase *UseCase) Disconnect(sessionID routing.SessionID, reason session.D
 		delete(useCase.principals, sessionID)
 		delete(useCase.sessionKeys, sessionID)
 	}
-	delete(useCase.ownershipEpochs, sessionID)
+	if result.SessionRemoved {
+		delete(useCase.ownershipEpochs, sessionID)
+	}
 	useCase.mu.Unlock()
 	useCase.recordSessionGauge()
 
 	if shouldPublish {
 		if err := useCase.willPublisher.PublishWill(sessionID, *willToPublish); err != nil {
-			return err
+			return errors.Join(deliveryTransitionErr, err)
 		}
 	}
-	return nil
+	return deliveryTransitionErr
 }
 
 func (useCase *UseCase) onWillTimer(sessionID routing.SessionID) {
@@ -755,6 +1023,20 @@ func (useCase *UseCase) onExpiryTimerForTimer(sessionID routing.SessionID, expec
 		useCase.mu.Unlock()
 		return
 	}
+	if useCase.durableDeliveryCommitter != nil {
+		epoch, hasEpoch := useCase.ownershipEpochs[sessionID]
+		if !hasSessionKey || !hasEpoch || useCase.commitDeliveryLifecycle(
+			context.Background(), sessionKey, epoch, membership.DeliveryActionDiscard, now, time.Time{},
+		) != nil {
+			if !useCase.closed {
+				retryTimers := &clientTimers{}
+				retryTimers.expiryTimer = useCase.scheduleExpiryTimerLocked(sessionID, time.Second, retryTimers)
+				useCase.activeTimers[timerKey] = retryTimers
+			}
+			useCase.mu.Unlock()
+			return
+		}
+	}
 	if err := useCase.deleteSession(sessionKey, timerKey); err != nil {
 		if !useCase.closed {
 			retryTimers := &clientTimers{}
@@ -765,7 +1047,7 @@ func (useCase *UseCase) onExpiryTimerForTimer(sessionID routing.SessionID, expec
 		return
 	}
 	useCase.deliveries.Remove(sessionID)
-	if useCase.ownershipCoordinator == nil {
+	if useCase.ownershipCoordinator == nil || useCase.durableDeliveryCommitter != nil {
 		useCase.routes.RemoveSession(sessionID)
 	}
 	shouldPublish := will != nil
@@ -782,6 +1064,7 @@ func (useCase *UseCase) onExpiryTimerForTimer(sessionID routing.SessionID, expec
 	}
 	delete(useCase.principals, sessionID)
 	delete(useCase.sessionKeys, sessionID)
+	delete(useCase.ownershipEpochs, sessionID)
 	useCase.mu.Unlock()
 
 	if shouldPublish {

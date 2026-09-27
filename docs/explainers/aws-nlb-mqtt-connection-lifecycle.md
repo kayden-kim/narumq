@@ -1,6 +1,6 @@
 # AWS NLB와 MQTT 연결 lifecycle
 
-Amazon Network Load Balancer(NLB)에서 target을 제외해도 이미 연결된 MQTT 전송 제어 프로토콜(Transmission Control Protocol, TCP) connection이 다른 broker로 이동하지는 않는다. 안전한 rolling update에는 신규 연결 제외, NLB 설정 전파 대기, broker의 session checkpoint, 의도적인 client reconnect와 `SAFE_TO_STOP` 검증이 모두 필요하다.
+Amazon Network Load Balancer(NLB)에서 target을 제외해도 이미 연결된 MQTT 전송 제어 프로토콜(Transmission Control Protocol, TCP) connection이 다른 broker로 이동하지는 않는다. 안전한 rolling update에는 신규 연결 제외, NLB 설정 전파 대기, quorum에 복제된 session state, 의도적인 client reconnect와 `SAFE_TO_STOP` 검증이 필요하다. QoS 전이는 각각 wire effect보다 먼저 commit되며 별도 전체 session checkpoint는 없다. Planned drain과 `SAFE_TO_STOP`은 아직 구현되지 않았으므로 이 문서는 목표 설계 절차다.
 
 | 항목 | 값 |
 | --- | --- |
@@ -53,8 +53,7 @@ sequenceDiagram
     K->>L: endpoint/target 제외 반영
     Note over K,L: controller와 NLB 전파 지연
     L-->>B: 신규 connection 유입 감소·중단
-    B->>Q: session·inflight checkpoint
-    Q-->>B: quorum commit
+    Note over O,Q: Session과 QoS 진행 상태는 각 전이에서 이미 commit됨; 별도 전체 checkpoint 없음
     B-->>C: MQTT 5 redirect 또는 계획된 연결 종료
     C->>L: 공통 endpoint로 재접속
     L->>N: 새 TCP connection
@@ -75,7 +74,7 @@ NLB target에는 계획된 **deregistration**과 health check 실패로 인한 *
 - Deregistration delay가 끝난 뒤 connection을 종료할지는 target group의 connection termination 속성에 영향을 받는다.
 - Unhealthy target의 established connection 종료에는 별도 target health 속성이 적용된다.
 
-Readiness 변경이 실제 환경에서 target deregistration으로 이어지는지, health check 실패로 먼저 관찰되는지는 AWS Load Balancer Controller version, target type와 health check 설정에 따라 검증해야 한다. Unhealthy 경로가 established connection을 예상보다 일찍 끊으면 session checkpoint와 rate-limited reconnect 전에 RST가 발생할 수 있다.
+Readiness 변경이 실제 환경에서 target deregistration으로 이어지는지, health check 실패로 먼저 관찰되는지는 AWS Load Balancer Controller version, target type와 health check 설정에 따라 검증해야 한다. Unhealthy 경로가 established connection을 예상보다 일찍 끊으면 새 node가 committed session state를 복구하기 전에 RST가 발생할 수 있다.
 
 따라서 release profile은 “readiness를 내린다”만 기록하지 않고 다음을 증거로 남긴다.
 
@@ -141,7 +140,7 @@ NLB의 TCP idle timeout과 MQTT Keep Alive는 서로 다른 timer다.
 | Readiness 뒤에도 신규 connection 유입 | Endpoint·target 전파 지연 | 전파 대기와 마지막 신규 connection 시각을 확인한다. |
 | 기존 connection이 즉시 RST | Unhealthy termination, Pod 종료 또는 network failure | Planned deregistration 경로와 분리해 조사한다. |
 | Reconnect가 같은 draining broker로 돌아옴 | Target 제외 미완료 또는 다른 endpoint 사용 | Client endpoint와 NLB target state를 확인한다. |
-| Client가 새 broker에 연결됐지만 session 없음 | Client ID·tenant·expiry 불일치 또는 checkpoint 실패 | NLB 문제가 아니라 MQTT session 계약을 확인한다. |
+| Client가 새 broker에 연결됐지만 session 없음 | Client ID·tenant·expiry 불일치 또는 committed session state 복구 실패 | NLB 문제가 아니라 MQTT session 계약을 확인한다. |
 | 예상 밖 Will 대량 발행 | Will Delay 부족, MQTT 3.1.1 server close, 강제 connection 종료 | Protocol version과 종료 주체별 metric을 분리한다. |
 | Target은 drained지만 Pod 삭제 불가 | Active owner·replication backlog·quorum 위험 | `SAFE_TO_STOP` barrier 실패를 정상적으로 차단한 상태다. |
 

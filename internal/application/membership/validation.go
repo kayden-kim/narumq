@@ -50,7 +50,7 @@ func validateCommand(command CommandDTO) error {
 	if command.Subscription != nil {
 		payloadCount++
 	}
-	if command.Checkpoint != nil {
+	if command.Delivery != nil {
 		payloadCount++
 	}
 	if command.Retained != nil {
@@ -75,8 +75,8 @@ func validateCommand(command CommandDTO) error {
 		if validateSubscriptionChange(*command.Subscription) != nil {
 			return ErrInvalidCommand
 		}
-	case command.Checkpoint != nil:
-		if validateCheckpoint(*command.Checkpoint) != nil {
+	case command.Delivery != nil:
+		if validateDelivery(*command.Delivery) != nil {
 			return ErrInvalidCommand
 		}
 	case command.Retained != nil:
@@ -195,26 +195,77 @@ func validateSubscriptionChange(change SubscriptionChangeDTO) error {
 	return nil
 }
 
-func validateCheckpoint(checkpoint SessionCheckpointDTO) error {
-	if !validSessionIdentity(checkpoint.TenantID, checkpoint.ClientID) || checkpoint.OwnerNodeID == 0 || checkpoint.Epoch == 0 {
+func validateDelivery(change DeliveryChangeDTO) error {
+	if !validSessionIdentity(change.TenantID, change.ClientID) || change.Action < DeliveryActionPublish || change.Action > DeliveryActionDiscard || change.ProposedAtUnixMillis == 0 {
 		return ErrInvalidCommand
 	}
-	var previous uint32
-	for index, entry := range checkpoint.Inbound {
-		if validatePublish(entry.Publish, true) != nil || !validInboundPhase(entry.Publish.QoS, entry.Phase) || (index > 0 && entry.Publish.PacketID <= previous) {
-			return ErrInvalidCommand
+	validTargets := func() bool {
+		if len(change.Targets) > MaxDeliveryTargets {
+			return false
 		}
-		previous = entry.Publish.PacketID
+		seen := make(map[string]struct{}, len(change.Targets))
+		for _, target := range change.Targets {
+			if !validSessionIdentity(change.TenantID, target.ClientID) {
+				return false
+			}
+			if _, exists := seen[target.ClientID]; exists {
+				return false
+			}
+			seen[target.ClientID] = struct{}{}
+		}
+		return true
 	}
-	previous = 0
-	for index, entry := range checkpoint.Outbound {
-		if validatePublish(entry.Publish, true) != nil || !validOutboundPhase(entry.Publish.QoS, entry.Phase) || (index > 0 && entry.Publish.PacketID <= previous) {
+	noPublisherFence := change.OwnerNodeID == 0 && change.Epoch == 0
+	fenced := change.OwnerNodeID > 0 && change.Epoch > 0
+	switch change.Action {
+	case DeliveryActionPublish:
+		if !noPublisherFence || !validTopic(change.Topic) || len(change.Payload) > MaxDeliveryPayloadBytes || !validTargets() || change.Sequence != 0 || change.PacketID != 0 || change.Reset || change.SessionExpiresAtUnixMillis != 0 || change.PublishQoS < 1 || change.PublishQoS > 2 {
 			return ErrInvalidCommand
 		}
-		previous = entry.Publish.PacketID
+	case DeliveryActionReceive:
+		if !fenced || !validTopic(change.Topic) || len(change.Payload) > MaxDeliveryPayloadBytes || change.PacketID == 0 || change.PacketID > 65535 || change.Sequence != 0 || len(change.Targets) != 0 || change.Reset || change.SessionExpiresAtUnixMillis != 0 || change.PublishQoS != 0 {
+			return ErrInvalidCommand
+		}
+	case DeliveryActionRelease:
+		if !fenced || change.PacketID == 0 || change.PacketID > 65535 || !validTargets() || change.Topic != "" || len(change.Payload) != 0 || change.Retain || change.ExpiresAtUnixMillis != 0 || change.Sequence != 0 || change.Reset || change.SessionExpiresAtUnixMillis != 0 || change.PublishQoS != 2 {
+			return ErrInvalidCommand
+		}
+	case DeliveryActionSend:
+		if !fenced || change.Sequence == 0 || change.PacketID == 0 || change.PacketID > 65535 || !deliveryZeroContent(change) {
+			return ErrInvalidCommand
+		}
+	case DeliveryActionAdvance, DeliveryActionComplete:
+		if !fenced || change.PacketID == 0 || change.PacketID > 65535 || change.Sequence != 0 || !deliveryZeroContent(change) {
+			return ErrInvalidCommand
+		}
+	case DeliveryActionAttach:
+		if !fenced || change.Reset && (change.Topic != "" || len(change.Payload) != 0) || !deliveryZeroContentExceptReset(change) {
+			return ErrInvalidCommand
+		}
+	case DeliveryActionDetach:
+		if !fenced || !deliveryZeroContentExceptSessionExpiry(change) {
+			return ErrInvalidCommand
+		}
+	case DeliveryActionDiscard:
+		if !fenced || change.PacketID != 0 || change.Sequence != 0 || !deliveryZeroContent(change) {
+			return ErrInvalidCommand
+		}
 	}
 	return nil
 }
+
+func deliveryZeroContent(change DeliveryChangeDTO) bool {
+	return change.Topic == "" && len(change.Payload) == 0 && !change.Retain && change.ExpiresAtUnixMillis == 0 && len(change.Targets) == 0 && !change.Reset && change.SessionExpiresAtUnixMillis == 0 && change.PublishQoS == 0
+}
+
+func deliveryZeroContentExceptReset(change DeliveryChangeDTO) bool {
+	return change.Topic == "" && len(change.Payload) == 0 && !change.Retain && change.ExpiresAtUnixMillis == 0 && len(change.Targets) == 0 && change.PacketID == 0 && change.Sequence == 0 && change.SessionExpiresAtUnixMillis == 0 && change.PublishQoS == 0
+}
+
+func deliveryZeroContentExceptSessionExpiry(change DeliveryChangeDTO) bool {
+	return change.Topic == "" && len(change.Payload) == 0 && !change.Retain && change.ExpiresAtUnixMillis == 0 && len(change.Targets) == 0 && change.PacketID == 0 && change.Sequence == 0 && !change.Reset && change.PublishQoS == 0
+}
+
 func validateRetainedChange(change RetainedChangeDTO) error {
 	if !validSessionIdentity(change.TenantID, change.PublisherClientID) || !validTopic(change.Topic) || change.ProposedAtUnixMillis == 0 {
 		return ErrInvalidCommand
@@ -241,35 +292,6 @@ func validRetainedState(state RetainedStateDTO) bool {
 		state.QoS <= 2
 }
 
-func validatePublish(publish PublishPacketDTO, checkpoint bool) error {
-	if publish.ProtocolVersion != 4 && publish.ProtocolVersion != 5 || publish.QoS > 2 || publish.PacketID > 65535 || ((publish.QoS == 0) != (publish.PacketID == 0)) {
-		return ErrInvalidCommand
-	}
-	if checkpoint && publish.QoS == 0 || publish.ProtocolVersion == 4 && publish.HasMessageExpiryInterval || !publish.HasMessageExpiryInterval && publish.MessageExpiryInterval != 0 || len(publish.Payload) > maxPublishPayloadBytes || !validTopic(publish.Topic) {
-		return ErrInvalidCommand
-	}
-	return nil
-}
-
-func validInboundPhase(qos uint32, phase InboundDeliveryPhase) bool {
-	if qos == 1 {
-		return phase == InboundQoS1AwaitAcceptance || phase == InboundQoS1Accepted
-	}
-	if qos == 2 {
-		return phase >= InboundQoS2AwaitAcceptance && phase <= InboundQoS2Complete
-	}
-	return false
-}
-
-func validOutboundPhase(qos uint32, phase OutboundDeliveryPhase) bool {
-	if qos == 1 {
-		return phase == OutboundAwaitPubAck || phase == OutboundComplete
-	}
-	if qos == 2 {
-		return phase == OutboundAwaitPubRec || phase == OutboundAwaitPubComp || phase == OutboundComplete
-	}
-	return false
-}
 func validSnapshot(snapshot SnapshotDTO) error {
 	if snapshot.SchemaMajor != SchemaMajor || snapshot.SchemaMinor != SchemaMinor || (len(snapshot.Digest) != 0 && len(snapshot.Digest) != 32) {
 		return ErrInvalidSnapshot
@@ -278,7 +300,11 @@ func validSnapshot(snapshot SnapshotDTO) error {
 	for _, session := range snapshot.OfflineSessions {
 		offlineMessagesCount += len(session.Messages)
 	}
-	count := len(snapshot.Members) + len(snapshot.Ownerships) + len(snapshot.Subscriptions) + len(snapshot.Checkpoints) + len(snapshot.MembershipHistory) + len(snapshot.Retained) + len(snapshot.OfflineSessions) + offlineMessagesCount
+	deliveryObjects := len(snapshot.DeliverySessions)
+	for _, session := range snapshot.DeliverySessions {
+		deliveryObjects += len(session.Messages) + len(session.Inbound)
+	}
+	count := len(snapshot.Members) + len(snapshot.Ownerships) + len(snapshot.Subscriptions) + deliveryObjects + len(snapshot.MembershipHistory) + len(snapshot.Retained) + len(snapshot.OfflineSessions) + offlineMessagesCount
 	if count > maxSnapshotEntries || snapshot.ObjectCount != uint64(count) || (count > 0 && snapshot.LastIncludedIndex == 0) || len(snapshot.Retained) > MaxRetainedMessages {
 		return ErrInvalidSnapshot
 	}
@@ -299,9 +325,37 @@ func validSnapshot(snapshot SnapshotDTO) error {
 			return ErrInvalidSnapshot
 		}
 	}
-	for index, checkpoint := range snapshot.Checkpoints {
-		if validateCheckpoint(checkpoint) != nil || (index > 0 && compareSession(snapshot.Checkpoints[index-1].TenantID, snapshot.Checkpoints[index-1].ClientID, checkpoint.TenantID, checkpoint.ClientID) >= 0) {
+	for index, record := range snapshot.DeliverySessions {
+		key := sessionKey{tenantID: record.TenantID, clientID: record.ClientID}
+		if !validSessionIdentity(record.TenantID, record.ClientID) || record.NextSequence < 1 || (index > 0 && compareSession(snapshot.DeliverySessions[index-1].TenantID, snapshot.DeliverySessions[index-1].ClientID, record.TenantID, record.ClientID) >= 0) {
 			return ErrInvalidSnapshot
+		}
+		if _, exists := ownershipEpochs[key]; !exists || len(record.Messages) > MaxDeliveryMessagesPerSession || len(record.Inbound) > MaxDeliveryInboundPerSession {
+			return ErrInvalidSnapshot
+		}
+		packetIDs := make(map[uint32]struct{}, len(record.Messages))
+		for mi, message := range record.Messages {
+			if message.Sequence == 0 || message.Sequence >= record.NextSequence || !validTopic(message.Topic) || message.QoS < 1 || message.QoS > 2 || len(message.Payload) > MaxDeliveryPayloadBytes || (mi > 0 && record.Messages[mi-1].Sequence >= message.Sequence) {
+				return ErrInvalidSnapshot
+			}
+			if message.PacketID == 0 {
+				if message.Phase != DeliveryPhaseQueued {
+					return ErrInvalidSnapshot
+				}
+			} else {
+				if message.PacketID > 65535 || (message.QoS == 1 && message.Phase != DeliveryPhaseAwaitPubAck) || (message.QoS == 2 && message.Phase != DeliveryPhaseAwaitPubRec && message.Phase != DeliveryPhaseAwaitPubComp) {
+					return ErrInvalidSnapshot
+				}
+				if _, exists := packetIDs[message.PacketID]; exists {
+					return ErrInvalidSnapshot
+				}
+				packetIDs[message.PacketID] = struct{}{}
+			}
+		}
+		for ii, inbound := range record.Inbound {
+			if inbound.PacketID == 0 || inbound.PacketID > 65535 || (ii > 0 && record.Inbound[ii-1].PacketID >= inbound.PacketID) || (!inbound.Released && inbound.ReleasedIndex != 0) || (inbound.Released && (inbound.ReleasedIndex == 0 || inbound.ReleasedIndex > snapshot.LastIncludedIndex || len(inbound.Payload) != 0)) || len(inbound.Payload) > MaxDeliveryPayloadBytes || !validTopic(inbound.Topic) {
+				return ErrInvalidSnapshot
+			}
 		}
 	}
 	for index, record := range snapshot.MembershipHistory {
@@ -345,6 +399,19 @@ func validSnapshot(snapshot SnapshotDTO) error {
 		}
 		totalOfflineMessages += len(session.Messages)
 		if totalOfflineMessages > MaxOfflineMessages {
+			return ErrInvalidSnapshot
+		}
+	}
+	totalDeliveryEntries, totalDeliveryBytes := 0, 0
+	for _, record := range snapshot.DeliverySessions {
+		totalDeliveryEntries += len(record.Messages) + len(record.Inbound)
+		for _, message := range record.Messages {
+			totalDeliveryBytes += len(record.TenantID) + len(record.ClientID) + len(message.Topic) + len(message.Payload)
+		}
+		for _, inbound := range record.Inbound {
+			totalDeliveryBytes += len(record.TenantID) + len(record.ClientID) + len(inbound.Topic) + len(inbound.Payload)
+		}
+		if totalDeliveryEntries > MaxDeliveryEntries || totalDeliveryBytes > MaxDeliveryBytes {
 			return ErrInvalidSnapshot
 		}
 	}

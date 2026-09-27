@@ -584,7 +584,7 @@ writerLoop:
           <tbody>
             <tr><td>첫 패킷</td><td>CONNECT만 허용하고 connect 응용 기능으로 세션을 활성화합니다.</td><td>다른 종류면 프로토콜 오류입니다.</td></tr>
             <tr><td>SUBSCRIBE</td><td>필터마다 검증하고 retained replay batch를 queue에 먼저 예약한 뒤 route를 설치합니다.</td><td>queue가 부족하면 이전 route를 유지하고 version별 reason을 반환합니다.</td></tr>
-            <tr><td>PUBLISH QoS 0·1·2</td><td>Standalone은 QoS 0·1·2, dynamic cluster ingress는 QoS 0만 받습니다. Cluster retained mutation은 Raft commit과 local projection 반영 뒤 route matching/live fan-out을 시작합니다.</td><td>Retained commit error는 해당 call의 fan-out을 막습니다. Timeout이면 commit outcome이 불확실할 수 있습니다.</td></tr>
+            <tr><td>PUBLISH QoS 0·1·2</td><td>Standalone은 QoS 0·1·2, dynamic cluster는 QoS 0 retained/offline과 ADR-0015의 QoS 1/2 durable publish 경로를 지원합니다. 성공 ACK는 관련 durable command commit 뒤 반환합니다.</td><td>Retained commit error는 해당 call의 fan-out을 막습니다. Timeout이면 commit outcome이 불확실할 수 있습니다.</td></tr>
             <tr><td>제어 출력</td><td>CONNACK·SUBACK·PINGRESP·실패 ACK를 제한된 control queue에 넣습니다.</td><td>control queue가 가득 차면 연결을 닫습니다.</td></tr>
             <tr><td>DISCONNECT</td><td>barrier가 앞선 제어 패킷의 출력을 기다린 뒤 세션을 정리합니다.</td><td>write barrier 실패 또는 control queue 포화면 연결을 닫습니다.</td></tr>
 <tr><td>SUBACK replay ordering</td><td>Subscribe 결과가 retained delivery를 큐에 넣어도 TCP dispatch는 SUBACK write 완료 뒤 dedicated wake를 보냅니다.</td><td>이미 pending인 delivery나 동시 publish의 wire 순서는 보장하지 않습니다.</td></tr>
@@ -633,9 +633,9 @@ go test ./tests/integration -run '^(TestClusterBackupRestoreProcessCrashAndResyn
               <li>CONNECT, CONNACK, PUBLISH, 구독·ACK·제어 패킷 값</li>
               <li>와일드카드 기반 비공유 구독 매칭과 session별 FIFO 큐</li>
               <li>subscription option별 No Local·Retain As Published와 Retain Handling</li>
-              <li>Standalone은 QoS 0·1·2 ingress/outbound ACK 상태와 재전송을 지원하며 dynamic cluster MQTT ingress는 현재 QoS 0만 받습니다.</li>
+              <li>Standalone은 QoS 0·1·2 ingress/outbound ACK 상태와 재전송을 지원합니다. Dynamic cluster는 QoS 0 retained/offline replication과 제한된 QoS 1/2 durable delivery·ACK acceptance를 제공합니다.</li>
               <li>Tenant + exact topic별 retained replace/delete와 원자적 replay, standalone profile의 expiry purge</li>
-              <li>Dynamic cluster의 QoS 0 retained/offline Raft commit, node 간 replay, NMQBKUP3 archive/restore, restart와 learner catch-up</li>
+              <li>Dynamic cluster의 QoS 0 retained/offline와 QoS 1/2 durable delivery state, backup v3 archive/restore 및 process acceptance</li>
               <li>Message Expiry absolute deadline, remaining interval serialization과 MQTT version별 property 규칙</li>
               <li>Clean Start, Session Expiry, Session Present 상태</li>
               <li>개발용 TCP ingress와 SUBACK-before-replay single writer 출력 순서</li>

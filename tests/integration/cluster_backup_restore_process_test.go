@@ -252,8 +252,14 @@ func TestClusterBackupRestoreProcessCrashAndResync(t *testing.T) {
 
 	// Verify total kind summary convergence between restored[1] and joiner
 	clusterMembershipProcessWait(t, ctx, "converged backup summary between restored node 2 and joiner", func() (bool, string, error) {
-		_, archiveA, _ := clusterBackupRestoreProcessCaptureBackup(t, ctx, restored[1].managementURL())
-		_, archiveB, _ := clusterBackupRestoreProcessCaptureBackup(t, ctx, joiner.managementURL())
+		_, archiveA, _, err := clusterBackupRestoreProcessCaptureBackup(t, ctx, restored[1].managementURL())
+		if err != nil {
+			return false, "restored node 2 backup unavailable: " + err.Error(), nil
+		}
+		_, archiveB, _, err := clusterBackupRestoreProcessCaptureBackup(t, ctx, joiner.managementURL())
+		if err != nil {
+			return false, "joiner backup unavailable: " + err.Error(), nil
+		}
 		if archiveA.Manifest.GetCommitIndex() != archiveB.Manifest.GetCommitIndex() {
 			return false, fmt.Sprintf("commit index mismatch: node 2 has %d, joiner has %d", archiveA.Manifest.GetCommitIndex(), archiveB.Manifest.GetCommitIndex()), nil
 		}
@@ -264,30 +270,30 @@ func TestClusterBackupRestoreProcessCrashAndResync(t *testing.T) {
 	})
 }
 
-func clusterBackupRestoreProcessCaptureBackup(t *testing.T, ctx context.Context, baseURL string) ([]byte, *records.BackupArchive, http.Header) {
+func clusterBackupRestoreProcessCaptureBackup(t *testing.T, ctx context.Context, baseURL string) ([]byte, *records.BackupArchive, http.Header, error) {
 	t.Helper()
 	backupRequest, err := http.NewRequestWithContext(ctx, http.MethodPost, baseURL+"/api/v1/cluster/backups", nil)
 	if err != nil {
-		t.Fatalf("create online backup request: %v", err)
+		return nil, nil, nil, fmt.Errorf("create online backup request: %w", err)
 	}
 	backupRequest.Header.Set("Authorization", "Bearer "+clusterMembershipProcessAdmin)
 	backupResponse, err := (&http.Client{Timeout: 10 * time.Second}).Do(backupRequest)
 	if err != nil {
-		t.Fatalf("capture online backup: %v", err)
+		return nil, nil, nil, fmt.Errorf("capture online backup: %w", err)
 	}
 	archiveBytes, readErr := io.ReadAll(backupResponse.Body)
 	closeErr := backupResponse.Body.Close()
 	if readErr != nil || closeErr != nil {
-		t.Fatalf("read online backup body: read=%v close=%v", readErr, closeErr)
+		return nil, nil, backupResponse.Header, fmt.Errorf("read online backup body: read=%v close=%v", readErr, closeErr)
 	}
 	if backupResponse.StatusCode != http.StatusOK || backupResponse.Header.Get("Content-Type") != "application/octet-stream" {
-		t.Fatalf("online backup status=%d content-type=%q body-size=%d", backupResponse.StatusCode, backupResponse.Header.Get("Content-Type"), len(archiveBytes))
+		return nil, nil, backupResponse.Header, fmt.Errorf("online backup status=%d content-type=%q body-size=%d", backupResponse.StatusCode, backupResponse.Header.Get("Content-Type"), len(archiveBytes))
 	}
 	archive, err := records.DecodeBackupArchive(archiveBytes)
 	if err != nil {
-		t.Fatalf("decode online backup archive: %v", err)
+		return nil, nil, backupResponse.Header, fmt.Errorf("decode online backup archive: %w", err)
 	}
-	return archiveBytes, archive, backupResponse.Header
+	return archiveBytes, archive, backupResponse.Header, nil
 }
 
 func clusterBackupRestoreProcessWaitForOfflineCount(t *testing.T, ctx context.Context, baseURL string, want uint64) ([]byte, *records.BackupArchive, http.Header) {
@@ -298,7 +304,10 @@ func clusterBackupRestoreProcessWaitForOfflineCount(t *testing.T, ctx context.Co
 		lastHeaders http.Header
 	)
 	clusterMembershipProcessWait(t, ctx, fmt.Sprintf("offline summary count %d", want), func() (bool, string, error) {
-		b, archive, headers := clusterBackupRestoreProcessCaptureBackup(t, ctx, baseURL)
+		b, archive, headers, err := clusterBackupRestoreProcessCaptureBackup(t, ctx, baseURL)
+		if err != nil {
+			return false, "backup unavailable: " + err.Error(), nil
+		}
 		lastBytes = b
 		lastArchive = archive
 		lastHeaders = headers

@@ -5,9 +5,9 @@
 | 항목 | 값 |
 | --- | --- |
 | 대상 독자 | NaruMQ 브로커 코어와 어댑터를 개발하고 수정·기여하려는 백엔드 소프트웨어 엔지니어 |
-| 검증 상태 | Draft; Windows/amd64, Go 1.26.5 환경에서 아키텍처 규칙 검증, 추적성 검증, cmd/narumq 단위 테스트 실행 확인 완료 (종합 13단계 tools/verify local 전체 파이프라인은 미실행) |
+| 검증 상태 | Draft; Windows/amd64, Go 1.26.5에서 `GOMAXPROCS=4 go run ./tools/verify local` 통과. 수동 로컬 broker smoke는 미실행 |
 | 검증 환경·버전 | Windows/amd64, Go 1.26.5 |
-| 최종 검증일 | 2026-09-26 |
+| 최종 검증일 | 2026-09-27 |
 | 관련 기준 문서 | [Go 코딩 컨벤션](../conventions/go-coding-conventions.md), [Project structure의 코드 지도](../architectures/project-structure.md), [Broker core architecture](../architectures/broker-core.md), [Performance와 verification 스펙](../specs/performance-and-verification.md) |
 
 ## 1. 대상과 영향
@@ -126,25 +126,21 @@ go test ./internal/domain/session -run=^$ -fuzz=^FuzzLifecycleTransitions$ -fuzz
 
 ### 5단계: 로컬 종합 검증 도구 체인(`tools/verify local`) 실행
 
-코드 변경을 완료하고 커밋하기 전, 저장소의 공식 통합 검증 러너를 실행한다. 이 도구는 CI 파이프라인과 동일한 수준의 무결성을 로컬에서 검증한다.
+저장소의 로컬 검증 gate를 실행한다. CI는 이 gate에 PR diff coverage와 두 Gremlins mutation 검사를 추가하므로, local PASS만으로 CI 검증 전체를 대체하지 않는다.
 
 ```sh
 go run ./tools/verify local
 ```
 
-이 명령은 내부적으로 다음 13단계 파이프라인을 순차 실행하며, 하나라도 실패하면 즉시 중단한다.
+이 명령은 먼저 `gofmt`를 검사한 뒤, 아래 9개 검증 command를 병렬 실행한다. 모두 통과하면 coverage policy 검사를 실행한다. `local`은 mutation 검사를 실행하지 않는다.
 
-1. **`gofmt` 검사**: 코드 포맷팅 일치 여부 확인.
-2. **`go vet ./...`**: 비정상적인 코드 패턴 정적 분석.
-3. **`go test ./... -count=1`**: 전체 단위 테스트 실행.
-4. **4대 Fuzz Campaigns**: 4단계의 퍼즈 테스트 4종 실행.
-5. **`go test -race ./... -count=1`**: 전체 패키지 대상 레이스 검출기 실행.
-6. **`tools/verify traceability`**: 소스 코드의 규격 주석과 `tests/conformance/mqtt-compliance-v1.json` 적합성 매트릭스의 양방향 일치 검증.
-7. **`tools/verify architecture`**: 클린 아키텍처 계층 의존성 규칙 검증 (도메인이 어댑터를 참조하는지 등을 정적 그래프로 검사).
-8. **Atomic 커버리지 프로파일 생성**: 커버리지 데이터 수집 (`.artifacts/verification/coverage.out`).
-9. **`tools/verify coverage`**: 커버리지 정책(`coverage-policy.json`) 검사 (전체 프로덕션 코드 90% 이상 커버리지 floor/ratchet 준수 여부).
-10. **`gremlins` 뮤테이션 테스트 (delivery)**: `internal/domain/delivery` 상태 머신에 변이를 주입하여 테스트의 결함 검출 능력 검증 (80% 이상).
-11. **`gremlins` 뮤테이션 테스트 (session)**: `internal/domain/session` 상태 머신 결함 검출 능력 검증 (80% 이상).
+1. **Preflight (3개 command):** `go vet ./...`, `go run ./tools/verify traceability`, `go run ./tools/verify architecture`.
+2. **전체 package test와 atomic coverage profile (병렬):** 전체 테스트를 실행해 `.artifacts/verification/coverage.out`을 생성한다.
+3. **Race suite (병렬):** `go test -race ./cmd/... ./internal/... -count=1`.
+4. **4대 fuzz campaigns (병렬):** decoder, codec round-trip, topic matching, session lifecycle를 각각 고정 실행 횟수로 검사한다.
+5. **Coverage policy:** 병렬 검사가 성공한 뒤 line 85% 및 function 90% floor/ratchet를 검사한다.
+
+로컬 실행은 총 10개 비-mutation command(병렬 9개와 coverage policy 1개)이며, CI 실행은 병렬 단계에 Delivery와 Session의 두 Gremlins mutation command를 더한다.
 
 기대 결과: 마지막에 `local: PASS` 메시지가 출력되고 종료 코드 0으로 완료된다.
 
@@ -162,16 +158,16 @@ go run ./cmd/narumq -tcp-listen 127.0.0.1:1883 -http-listen 127.0.0.1:8080 -allo
 
 ## 4. 검증
 
-개발자가 수행한 작업의 완료 여부는 다음 기준표로 판정한다. 본 작업의 실제 검증은 Windows/amd64 환경에서 아키텍처 규칙 검증, 추적성 검증, `cmd/narumq` 단위 테스트를 실행해 확인하였으며, 뮤테이션 및 13단계 종합 로컬 검증(`tools/verify local`)은 미실행 상태다.
+개발자가 수행한 작업의 완료 여부는 다음 기준표로 판정한다. 이 문서의 현재 검증은 Windows/amd64, Go 1.26.5에서 `GOMAXPROCS=4 go run ./tools/verify local`이 `local: PASS`로 끝났고, 커버리지 요약을 생성했다. Branch coverage는 `not_evaluated`이며, mutation과 수동 로컬 broker smoke는 실행하지 않았다.
 
 | 관찰 대상 | 성공 조건 | 확인 방법 | 실제 결과 | 실행 증거 위치 |
 | --- | --- | --- | --- | --- |
-| 단위 테스트 및 레이스 | 전체 테스트 PASS 및 Data Race 0건 | `go test -race ./... -count=1` | 통과; `cmd/narumq` 단위 테스트 통과 (전체 패키지 -race 테스트는 미실행) | 콘솔 출력 |
+| 단위 테스트 및 레이스 | 전체 테스트 PASS 및 Data Race 0건 | `GOMAXPROCS=4 go run ./tools/verify local` | 통과; 전체 package test와 `go test -race ./cmd/... ./internal/... -count=1` 단계 완료 | 콘솔 출력 |
 | 아키텍처 규칙 | 계층 간 허용되지 않은 import 0건 | `go run ./tools/verify architecture` | 통과; `architecture: PASS` | 콘솔 출력 |
 | 규격 추적성 | 매트릭스와 소스 코드 요구사항 100% 일치 | `go run ./tools/verify traceability` | 통과; `traceability: PASS` | 콘솔 출력 |
-| 코드 커버리지 | 전체 라인/함수 커버리지 90% 이상 유지 | `go run ./tools/verify coverage ...` | 미실행; 본 작업에서 커버리지 프로파일 미생성 | `.artifacts/verification/coverage-summary.json` |
-| 뮤테이션 테스트 | Delivery 및 Session 각 80% 이상 사멸률 | `gremlins unleash ...` | 미실행; 본 작업에서 뮤테이션 미실행 | `.artifacts/verification/mutation-*.json` |
-| 종합 로컬 검증 | 13단계 파이프라인 전체 완료 | `go run ./tools/verify local` | 미실행; 13단계 전체 파이프라인 미실행 | 콘솔 출력 |
+| 코드 커버리지 | 전체 라인 85% 이상, 함수 90% 이상 유지 | `GOMAXPROCS=4 go run ./tools/verify local` | 통과; line 90.07% (19,421/21,561), function 99.81% (1,066/1,068); branch `not_evaluated` (계측 도구 미설정) | `.artifacts/verification/coverage-summary.json` |
+| 뮤테이션 테스트 | Delivery 및 Session 각 80% 이상 사멸률 | `gremlins unleash ...` | 미실행; `local` gate는 mutation을 포함하지 않아 별도 실행 필요 | `.artifacts/verification/mutation-*.json` |
+| 종합 로컬 검증 | 로컬 검증 gate 전체 완료 및 종료 코드 0 | `GOMAXPROCS=4 go run ./tools/verify local` | 통과; `coverage: PASS`, `local: PASS` | 콘솔 출력 |
 
 ## 5. 중단 조건 및 빈발 문제 해결
 
@@ -186,7 +182,7 @@ go run ./cmd/narumq -tcp-listen 127.0.0.1:1883 -http-listen 127.0.0.1:8080 -allo
 - **해결:** `tests/conformance/mqtt-compliance-v1.json` 파일을 열어 해당 테스트 함수와 관련 OASIS MQTT 규격 ID 및 PRD 요구사항 ID를 일치시킨다.
 
 ### 3. `coverage: FAIL` (커버리지 기준 미달)
-- **원인:** 새로 작성한 비즈니스 로직에 단위 테스트가 충분하지 않아 라인/함수 커버리지가 기준치(90%) 밑으로 떨어진 경우.
+- **원인:** 새로 작성한 비즈니스 로직에 단위 테스트가 충분하지 않아 라인 85% 또는 함수 90% 기준 밑으로 떨어진 경우.
 - **해결:** 정상 경로뿐만 아니라 경계 조건(Boundary condition), 예외 처리, 에러 반환 경로를 커버하는 단위 테스트 케이스를 `*_test.go`에 추가한다.
 
 ### 4. `gofmt check failed` (포맷팅 불일치)

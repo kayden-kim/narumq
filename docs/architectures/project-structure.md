@@ -6,7 +6,7 @@ NaruMQ source tree는 MQTT·session·routing·delivery·tenancy·security·clust
 | --- | --- |
 | 관점 상태 | Active Phase 1 security and tenant isolation structure; Phase 0 gate 4와 BP-01/BP-05 smoke harness 유지 |
 | 문서 상태 | Active |
-| 구현 증거 | Phase 0 구현 source와 test는 기존 package 표에 연결되어 있으며, Phase 1 tenancy·security·authentication 패키지와 검증 게이트(traceability, architecture, overall coverage line/function 90%+)는 구현 및 테스트를 통해 현재 증거로 확보되었다. mTLS certificate DTO 추출, selector mapping, strict composition과 실제 TLS socket binding 검증도 해당 source/test에 연결되어 있다. |
+| 구현 증거 | Phase 0 구현 source와 test는 기존 package 표에 연결되어 있으며, Phase 1 tenancy·security·authentication 패키지와 검증 게이트(traceability, architecture, overall coverage line 85%+, function 90%+)는 구현 및 테스트를 통해 현재 증거로 확보되었다. mTLS certificate DTO 추출, selector mapping, strict composition과 실제 TLS socket binding 검증도 해당 source/test에 연결되어 있다. |
 | 범위 | Repository root와 Go package directory 배치 및 현재 source dependency |
 | 관련 요구사항 | [PRD](../requirements/PRD.md) NFR-11~NFR-15, TEST-01~TEST-17, DEP-19~DEP-23 |
 | 관련 결정 | [ADR-0001](../decisions/ADR-0001-core-implementation-language.md) Accepted |

@@ -24,6 +24,16 @@ const (
 	MaxOfflineDetachMessageBytes = 768 << 10
 )
 
+// Durable delivery capacity is enforced deterministically at apply time.
+const (
+	MaxDeliveryMessagesPerSession = 64
+	MaxDeliveryInboundPerSession  = 64
+	MaxDeliveryEntries            = 4096
+	MaxDeliveryBytes              = 16 << 20
+	MaxDeliveryPayloadBytes       = 1_000_000
+	MaxDeliveryTargets            = 1024
+)
+
 // OfflineAction identifies a replicated offline session/message mutation.
 type OfflineAction uint32
 
@@ -126,28 +136,31 @@ const (
 	RetainedActionDelete
 )
 
-// InboundDeliveryPhase is the exact replicated inbound QoS checkpoint phase.
-type InboundDeliveryPhase uint32
+// DeliveryAction identifies a replicated durable-delivery mutation.
+type DeliveryAction uint32
 
 const (
-	InboundPhaseUnspecified InboundDeliveryPhase = iota
-	InboundQoS1AwaitAcceptance
-	InboundQoS1Accepted
-	InboundQoS2AwaitAcceptance
-	InboundQoS2AwaitRelease
-	InboundQoS2AwaitFinalAcceptance
-	InboundQoS2Complete
+	DeliveryActionUnspecified DeliveryAction = iota
+	DeliveryActionPublish
+	DeliveryActionReceive
+	DeliveryActionRelease
+	DeliveryActionSend
+	DeliveryActionAdvance
+	DeliveryActionComplete
+	DeliveryActionAttach
+	DeliveryActionDetach
+	DeliveryActionDiscard
 )
 
-// OutboundDeliveryPhase is the exact replicated outbound QoS checkpoint phase.
-type OutboundDeliveryPhase uint32
+// DeliveryPhase identifies an outbound durable message state.
+type DeliveryPhase uint32
 
 const (
-	OutboundPhaseUnspecified OutboundDeliveryPhase = iota
-	OutboundAwaitPubAck
-	OutboundAwaitPubRec
-	OutboundAwaitPubComp
-	OutboundComplete
+	DeliveryPhaseUnspecified DeliveryPhase = iota
+	DeliveryPhaseQueued
+	DeliveryPhaseAwaitPubAck
+	DeliveryPhaseAwaitPubRec
+	DeliveryPhaseAwaitPubComp
 )
 
 // ConfigurationAction identifies a committed Raft configuration transition.
@@ -170,7 +183,7 @@ type CommandDTO struct {
 	Membership   *MembershipRecordDTO
 	Ownership    *OwnershipChangeDTO
 	Subscription *SubscriptionChangeDTO
-	Checkpoint   *SessionCheckpointDTO
+	Delivery     *DeliveryChangeDTO
 	Retained     *RetainedChangeDTO
 	Offline      *OfflineChangeDTO
 }
@@ -272,39 +285,77 @@ type RetainedStateDTO struct {
 	ExpiresAtUnixMillis uint64
 }
 
-// PublishPacketDTO contains the supported, lossless MQTT PUBLISH checkpoint fields.
-type PublishPacketDTO struct {
-	ProtocolVersion          uint32
-	DUP                      bool
-	QoS                      uint32
-	Retain                   bool
-	PacketID                 uint32
-	Topic                    string
-	Payload                  []byte
-	HasMessageExpiryInterval bool
-	MessageExpiryInterval    uint32
+// DeliveryTargetDTO is an ingress-projected candidate target; apply revalidates it.
+type DeliveryTargetDTO struct {
+	ClientID string
+	Retain   bool
 }
 
-// InboundCheckpointDTO stores one inbound QoS 1/2 exchange and its phase.
-type InboundCheckpointDTO struct {
-	Publish PublishPacketDTO
-	Phase   InboundDeliveryPhase
+// DeliveryChangeDTO carries one durable delivery action.
+type DeliveryChangeDTO struct {
+	TenantID                   string
+	ClientID                   string
+	OwnerNodeID                uint64
+	Epoch                      uint64
+	Action                     DeliveryAction
+	ProposedAtUnixMillis       uint64
+	Topic                      string
+	Payload                    []byte
+	Retain                     bool
+	ExpiresAtUnixMillis        uint64
+	PacketID                   uint32
+	Targets                    []DeliveryTargetDTO
+	Sequence                   uint64
+	Reset                      bool
+	SessionExpiresAtUnixMillis uint64
+	PublishQoS                 uint32
 }
 
-// OutboundCheckpointDTO stores one outbound QoS 1/2 exchange and its phase.
-type OutboundCheckpointDTO struct {
-	Publish PublishPacketDTO
-	Phase   OutboundDeliveryPhase
+// DeliveryMessageDTO stores one durable outbound delivery.
+type DeliveryMessageDTO struct {
+	Sequence            uint64
+	Topic               string
+	Payload             []byte
+	QoS                 uint32
+	Retain              bool
+	ExpiresAtUnixMillis uint64
+	PacketID            uint32
+	Phase               DeliveryPhase
 }
 
-// SessionCheckpointDTO atomically replaces checkpointed inflight session state.
-type SessionCheckpointDTO struct {
-	TenantID    string
-	ClientID    string
-	OwnerNodeID uint64
-	Epoch       uint64
-	Inbound     []InboundCheckpointDTO
-	Outbound    []OutboundCheckpointDTO
+// DeliveryInboundDTO stores a publisher-side QoS 2 exchange or RELEASE tombstone.
+type DeliveryInboundDTO struct {
+	PacketID            uint32
+	Topic               string
+	Payload             []byte
+	Retain              bool
+	ExpiresAtUnixMillis uint64
+	Released            bool
+	ReleasedIndex       uint64
+}
+
+// DeliverySessionStateDTO is one session's durable queue and inbound QoS 2 state.
+type DeliverySessionStateDTO struct {
+	TenantID                   string
+	ClientID                   string
+	SessionExpiresAtUnixMillis uint64
+	NextSequence               uint64
+	Messages                   []DeliveryMessageDTO
+	Inbound                    []DeliveryInboundDTO
+}
+
+type DeliveryEnqueuedDTO struct {
+	ClientID string
+	Sequence uint64
+}
+
+type DeliveryResultDTO struct {
+	Found     bool
+	Released  bool
+	Enqueued  []DeliveryEnqueuedDTO
+	Saturated []string
+	Skipped   []string
+	Session   *DeliverySessionStateDTO
 }
 
 // ApplyOutcome identifies whether a committed command changed replicated state.
@@ -335,6 +386,10 @@ const (
 	ConflictRetainedCapacity         ApplyConflictCode = "retained_capacity_exceeded"
 	ConflictOfflineCapacity          ApplyConflictCode = "offline_capacity_exceeded"
 	ConflictOfflineSessionMissing    ApplyConflictCode = "offline_session_missing"
+	ConflictDeliveryCapacity         ApplyConflictCode = "delivery_capacity_exceeded"
+	ConflictDeliveryMissing          ApplyConflictCode = "delivery_missing"
+	ConflictDeliveryPacketID         ApplyConflictCode = "delivery_packet_id_conflict"
+	ConflictDeliverySessionMissing   ApplyConflictCode = "delivery_session_missing"
 )
 
 // ApplyResultDTO reports the deterministic result at a committed application index.
@@ -345,7 +400,7 @@ type ApplyResultDTO struct {
 	Operation    *MembershipOperationDTO
 	Ownership    *OwnershipStateDTO
 	Subscription *SubscriptionStateDTO
-	Checkpoint   *SessionCheckpointDTO
+	Delivery     *DeliveryResultDTO
 	OfflineClaim *OfflineClaimDTO
 }
 
@@ -387,7 +442,7 @@ type SnapshotDTO struct {
 	Members           []MemberIdentityDTO
 	Ownerships        []OwnershipStateDTO
 	Subscriptions     []SubscriptionStateDTO
-	Checkpoints       []SessionCheckpointDTO
+	DeliverySessions  []DeliverySessionStateDTO
 	MembershipHistory []MembershipRecordDTO
 	Retained          []RetainedStateDTO
 	OfflineSessions   []OfflineSessionStateDTO

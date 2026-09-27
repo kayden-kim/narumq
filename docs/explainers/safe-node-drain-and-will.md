@@ -1,6 +1,6 @@
 # 안전한 노드 drain과 Will
 
-안전한 rolling update는 Pod가 종료된 뒤 복구하는 절차가 아니다. Pod 삭제를 요청하기 전에 broker가 새 연결을 차단해야 한다. 승인 응답을 기다리는 inflight 상태와 session을 다수 replica의 합의인 quorum에 반영한 뒤 client 재접속과 takeover도 확인해야 한다. Kubernetes의 종료 직전 lifecycle hook인 `preStop`은 이 과정을 승인하는 gate가 아니라 최후 방어선이다.
+안전한 rolling update는 Pod가 종료된 뒤 복구하는 절차가 아니다. Pod 삭제를 요청하기 전에 broker가 새 연결을 차단해야 한다. QoS 1/2 session 전이는 각각 quorum에 commit된 뒤 protocol success를 반환하므로 successor가 committed state를 이어받을 수 있다. 별도의 전체-session checkpoint나 `SAFE_TO_STOP` drain barrier는 아직 구현되지 않았으며, 아래 절차는 목표 설계다. Kubernetes의 종료 직전 lifecycle hook인 `preStop`은 이 과정을 승인하는 gate가 아니라 최후 방어선이다.
 
 | 항목 | 값 |
 | --- | --- |
@@ -12,13 +12,13 @@
 ## 읽고 나면 답할 수 있는 질문
 
 - Readiness 실패, drain 완료와 `SAFE_TO_STOP`을 서로 다른 상태로 설명할 수 있다.
-- Pod 삭제 요청 전에 session checkpoint와 takeover가 끝나야 하는 이유를 설명할 수 있다.
+- Pod 삭제 요청 전에 신규 admission 중단과 session state takeover가 필요한 이유를 설명할 수 있다.
 - `preStop`과 `terminationGracePeriodSeconds`가 보장하는 범위를 구분할 수 있다.
 - MQTT version과 Will Delay에 따라 계획된 drain의 Will 결과가 달라지는 이유를 설명할 수 있다.
 
 ## 문제 상황: Pod부터 삭제했더니 Will이 쏟아졌다
 
-Rolling update controller가 broker의 session 상태를 확인하지 않고 Pod 삭제부터 요청했다고 하자. 기존 TCP connection은 끊기고 client가 한꺼번에 재접속한다. Session checkpoint가 quorum에 반영되지 않았다면 새 node는 inflight 상태를 이어받지 못한다. 비정상 종료로 판정된 client의 Will도 대량 발행될 수 있다.
+Rolling update controller가 broker의 session 상태를 확인하지 않고 Pod 삭제부터 요청했다고 하자. 기존 TCP connection은 끊기고 client가 한꺼번에 재접속한다. Commit되지 않은 session mutation은 새 node가 복구할 수 없고, 비정상 종료로 판정된 client의 Will도 대량 발행될 수 있다.
 
 안전한 drain은 “SIGTERM을 잘 처리하는 코드” 하나가 아니다. Load balancer, broker, client와 rollout controller가 순서대로 상태를 바꾸는 protocol이다.
 
@@ -37,7 +37,7 @@ Rolling update controller가 broker의 session 상태를 확인하지 않고 Pod
 | 주체 | 책임 |
 | --- | --- |
 | Rollout controller | Pod 삭제 전에 drain을 시작하고 `SAFE_TO_STOP`을 확인한다. |
-| Broker node | 새 연결 차단, checkpoint, 속도 제한, redirect와 takeover 확인을 수행한다. |
+| Broker node | 새 연결 차단, 복제된 session state의 takeover, 속도 제한과 redirect를 수행한다. |
 | MQTT client | 같은 Client ID로 재접속하고 backoff·jitter·session resume 계약을 지킨다. |
 
 Broker 혼자 TCP 연결을 다른 Pod로 옮길 수 없다. 기존 연결을 끝내고 클라이언트가 새 연결을 만들어야 한다.
@@ -59,8 +59,7 @@ sequenceDiagram
     R->>O: drain 시작
     O->>L: readiness=false
     L-->>O: 신규 연결 제외
-    O->>Q: session·inflight checkpoint
-    Q-->>O: quorum commit
+    Note over O,Q: Persistent subscription과 각 QoS protocol 전이는 normal traffic 중 이미 quorum commit됨
     O->>C: redirect 또는 연결 종료
     C->>N: 같은 Client ID로 재접속
     N->>Q: 새 epoch 획득과 session 복구

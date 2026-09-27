@@ -5,7 +5,6 @@ type RemovalHandoffBlock string
 const (
 	RemovalHandoffBlockNone               RemovalHandoffBlock = ""
 	RemovalHandoffBlockNoSuccessor        RemovalHandoffBlock = "no_successor_voter"
-	RemovalHandoffBlockCheckpointPending  RemovalHandoffBlock = "checkpoint_handoff_unsupported"
 	RemovalHandoffBlockEpochExhausted     RemovalHandoffBlock = "ownership_epoch_exhausted"
 	RemovalHandoffBlockOrphanSubscription RemovalHandoffBlock = "orphan_subscription"
 )
@@ -23,7 +22,6 @@ func PlanRemovalHandoff(
 	voterIDs []uint64,
 	ownerships []OwnershipStateDTO,
 	subscriptions []SubscriptionStateDTO,
-	checkpoints []SessionCheckpointDTO,
 ) RemovalHandoffPlanDTO {
 	var successor uint64
 	foundSuccessor := false
@@ -37,15 +35,6 @@ func PlanRemovalHandoff(
 	}
 	if !foundSuccessor {
 		return RemovalHandoffPlanDTO{Block: RemovalHandoffBlockNoSuccessor}
-	}
-
-	for _, cp := range checkpoints {
-		if cp.OwnerNodeID == leavingMemberID {
-			return RemovalHandoffPlanDTO{
-				SuccessorNodeID: successor,
-				Block:           RemovalHandoffBlockCheckpointPending,
-			}
-		}
 	}
 
 	var transfers []OwnershipChangeDTO

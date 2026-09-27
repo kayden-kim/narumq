@@ -13,12 +13,12 @@
 ## 1. 대상과 영향
 
 - 대상: 동일 `clusterId`와 동일한 현재 bootstrap voter ID 세 개로 구성된 cluster.
-- Backup API archive는 `members`, state에서 도출한 tenant ID, session ownership, subscriptions, QoS inflight/checkpoints, membership history, retained state 및 offline queue를 포함한다.
-- Retained state는 `(tenantId, exact Topic Name)`별 마지막 값이고, offline state는 detached persistent session의 QoS 0 queue다. Archive summary에 retained 및 offline count/digest가 포함된다.
+- Backup API archive는 `members`, state에서 도출한 tenant ID, session ownership, subscriptions, durable delivery session의 queued/inflight 및 inbound QoS 2 state, membership history, retained state 및 offline queue를 포함한다.
+- Retained state는 `(tenantId, exact Topic Name)`별 마지막 값이고, offline state는 detached persistent session의 QoS 0 queue다. Archive summary는 `retained`, `offline`, `inflight`를 별도 kind로 집계하며 `inflight`에는 durable delivery message와 inbound QoS 2 state가 포함된다.
 - Restore는 현재 voter 세 개만 지원한다. Archive에 learner ID가 있으면 거절한다. 다른 cluster ID로 이동하거나 node ID/address/DNS SAN/certificate fingerprint를 바꾸는 작업이 아니다. v1(`NMQBKUP1`) 및 v2(`NMQBKUP2`) archive는 current restore에서 명시적으로 거절한다.
 - Cutover와 업그레이드 전 drain: 새 build로 cluster를 업그레이드할 때 이전 build의 node-local queue는 복제되지 않으므로, 업그레이드 전에 persistent subscriber를 재접속시켜 대기 큐를 drain해야 한다. Drain하지 않은 기존 node-local 큐는 프로세스 종료와 함께 유실될 수 있다.
 - Archive에는 고객 식별자, retained payload와 session 정보가 들어갈 수 있다. 인증된 암호화 저장소에 보관하고 access를 제한한다.
-- Backup 요청은 쓰기를 중지하지 않는다. Fresh quorum barrier가 유효하지 않으면 retryable `503`을 반환한다. Retained operation에는 정확한 release/protocol/schema member profile 확인이 적용되므로 mixed-release retained writes는 지원하지 않는다.
+- Backup 요청은 쓰기를 중지하지 않는다. Fresh quorum barrier가 유효하지 않으면 retryable `503`을 반환한다. Retained, offline 및 durable delivery operation에는 정확한 release/protocol/schema member profile 확인이 적용되므로 mixed-release writes는 지원하지 않는다.
 
 ## 2. 전제 조건
 

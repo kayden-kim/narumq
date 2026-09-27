@@ -93,7 +93,7 @@ WAL·snapshot의 storage target과 `fsync` 순서는 scoped [ADR-0009](ADR-0009-
 4. 같은 Packet Identifier 재전송이 중복 durable command를 만들지 않는지 검증한다.
 5. BP-03에서 group commit 크기별 p99·p99.9와 disk 비용을 측정한다.
 
-현재 별도 [Cluster backup/restore acceptance](../specs/cluster-session-and-delivery.md#117-cluster-backuprestore와-snapshot-finalize-수용-매핑)는 archive boundary, snapshot finalize와 offline voter restore의 process recovery를 다룬다. Retained replication과 v2 backup/restore는 [§11.8](../specs/cluster-session-and-delivery.md#118-retained-replication과-backup-v2-수용-매핑)에서 별도로 확인한다. 이 evidence는 ACK 직후 replica kill, WAL write/`fsync`/commit crash, 잘못된 PUBACK/PUBREC 또는 message-gap 0을 검증하지 않으며 ADR-0003 §9 항목 1~5를 통과 처리하지 않는다. Durable ACK 기준은 미완료다.
+이 ADR-0003 §9 기준에 대한 후속 evidence는 [ADR-0015 §7](ADR-0015-cluster-durable-qos-delivery.md#7-검증)과 [Cluster §11.11](../specs/cluster-session-and-delivery.md#1111-qos-12-durable-delivery-수용-매핑)에 있다. Process acceptance는 QoS 1 PUBACK 뒤 publisher node process를 kill하고 persistent subscriber reconnect 뒤 committed message를 받는지, quorum loss 중 QoS 1 PUBACK/QoS 2 PUBREC 성공을 보내지 않는지 확인했다. 이는 일부 ACK/message-gap 시나리오를 검증하지만, 각 replica kill, WAL write/`fsync`/commit 전후 crash injection, follower disk-full/slow-I/O ACK boundary 또는 BP-03을 확인하지 않는다. ADR-0003 §9 gate는 이 나머지 항목이 끝날 때까지 미완료다.
 
 ## 10. 재검토 조건
 

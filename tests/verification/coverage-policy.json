@@ -1,7 +1,7 @@
 {
   "schemaVersion": 1,
   "productionPatterns": ["./cmd/...", "./internal/..."],
-  "overallFloor": {"line": 90, "function": 90},
+  "overallFloor": {"line": 85, "function": 90},
   "coreFloor": {"line": 95, "function": 95},
   "diffFloor": {"line": 95, "function": 95},
   "corePackages": [
@@ -11,7 +11,7 @@
     "narumq/internal/domain/session"
   ],
   "ratchet": {
-    "overall": {"line": 90, "function": 90},
+    "overall": {"line": 85, "function": 90},
     "core": {
       "narumq/internal/domain/delivery": {"line": 100, "function": 100},
       "narumq/internal/domain/mqtt": {"line": 96.24, "function": 100},

@@ -225,7 +225,107 @@ func (queue *Queue) PromoteHead(outbound deliveryqueue.OutboundDTO, now time.Tim
 	}
 	clear(state.queued[:1])
 	state.queued = state.queued[1:]
+	outbound.DurableSequence = head.DurableSequence
+	outbound.DurableEpoch = head.DurableEpoch
 	state.outbound[outbound.PacketID] = outbound
+	return nil
+}
+
+// ResetDurable atomically replaces durable state while preserving process-local
+// state that remains compatible with the restored durable queue.
+func (queue *Queue) ResetDurable(
+	sessionID routing.SessionID,
+	epoch uint64,
+	queued []deliveryqueue.DeliveryDTO,
+	outbound []deliveryqueue.OutboundDTO,
+	now time.Time,
+) error {
+	if queue == nil {
+		return deliveryqueue.ErrUnavailable
+	}
+	if err := validateSessionID(sessionID); err != nil || epoch == 0 {
+		return deliveryqueue.ErrUnavailable
+	}
+	queue.mu.Lock()
+	defer queue.mu.Unlock()
+	state, exists := queue.sessions[sessionID]
+	if !exists {
+		return deliveryqueue.ErrUnavailable
+	}
+	if len(queued) > queue.capacity || len(outbound) > queue.capacity {
+		return deliveryqueue.ErrFull
+	}
+
+	var previousSequence uint64
+	liveQueued := make([]deliveryqueue.DeliveryDTO, 0, len(queued))
+	for _, item := range queued {
+		if item.SessionID != sessionID ||
+			item.DurableSequence == 0 ||
+			item.DurableEpoch != epoch ||
+			item.DurableSequence <= previousSequence {
+			return deliveryqueue.ErrUnavailable
+		}
+		previousSequence = item.DurableSequence
+		if !item.Expired(now) {
+			item.Payload = cloneBytes(item.Payload)
+			liveQueued = append(liveQueued, item)
+		}
+	}
+	if len(liveQueued) > queue.capacity {
+		return deliveryqueue.ErrFull
+	}
+
+	durableOutbound := make(map[mqtt.PacketIdentifier]deliveryqueue.OutboundDTO, len(outbound))
+	var previousPacketID mqtt.PacketIdentifier
+	for _, item := range outbound {
+		if item.SessionID != sessionID ||
+			item.PacketID == 0 ||
+			item.DurableSequence == 0 ||
+			item.DurableEpoch != epoch ||
+			item.PacketID <= previousPacketID {
+			if item.PacketID == 0 || item.PacketID <= previousPacketID {
+				return deliveryqueue.ErrPacketIDConflict
+			}
+			return deliveryqueue.ErrUnavailable
+		}
+		previousPacketID = item.PacketID
+		durableOutbound[item.PacketID] = item
+	}
+
+	localQueued := make([]deliveryqueue.DeliveryDTO, 0, len(state.queued))
+	for _, item := range state.queued {
+		if item.DurableSequence != 0 || item.Expired(now) {
+			continue
+		}
+		item.Payload = cloneBytes(item.Payload)
+		localQueued = append(localQueued, item)
+	}
+	if len(liveQueued)+len(localQueued) > queue.capacity {
+		localQueued = localQueued[:queue.capacity-len(liveQueued)]
+	}
+
+	nextOutbound := make(map[mqtt.PacketIdentifier]deliveryqueue.OutboundDTO, len(durableOutbound)+len(state.outbound))
+	for packetID, item := range state.outbound {
+		if item.DurableEpoch != 0 {
+			continue
+		}
+		if _, conflict := durableOutbound[packetID]; conflict {
+			return deliveryqueue.ErrPacketIDConflict
+		}
+		nextOutbound[packetID] = item
+	}
+	for packetID, item := range durableOutbound {
+		nextOutbound[packetID] = item
+	}
+	if len(nextOutbound) > queue.capacity {
+		return deliveryqueue.ErrFull
+	}
+
+	nextQueued := make([]deliveryqueue.DeliveryDTO, 0, len(liveQueued)+len(localQueued))
+	nextQueued = append(nextQueued, liveQueued...)
+	nextQueued = append(nextQueued, localQueued...)
+	state.queued = nextQueued
+	state.outbound = nextOutbound
 	return nil
 }
 

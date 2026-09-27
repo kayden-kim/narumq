@@ -4,6 +4,9 @@ import (
 	"bytes"
 	"io"
 	"log/slog"
+	"net"
+	"os"
+	"path/filepath"
 	"reflect"
 	"testing"
 
@@ -516,5 +519,165 @@ func TestRebuildAndRefreshRouteProjection(t *testing.T) {
 	runtime.refreshRouteProjection()
 	if runtime.projectionFailed.Load() {
 		t.Fatal("expected projectionFailed=false after clear")
+	}
+}
+
+// Traceability: CLU-14; docs/specs/cluster-session-and-delivery.md §4.2, §11.11.
+func TestReplayClusterAppliedRestoresDurableDeliveryWithoutDuplicateTail(t *testing.T) {
+	config := validBootstrapClusterConfig()
+	machine := retainedTestMachine(t, config, config.ReleaseVersion)
+	applied := func(index uint64, command membership.CommandDTO) raftadapter.AppliedCommandDTO {
+		t.Helper()
+		operationID, err := newClusterOperationID()
+		if err != nil {
+			t.Fatal(err)
+		}
+		command.SchemaMajor = membership.SchemaMajor
+		command.SchemaMinor = membership.SchemaMinor
+		command.OperationID = operationID
+		data, err := encodeMembershipCommand(command)
+		if err != nil {
+			t.Fatalf("encode durable replay command at index %d: %v", index, err)
+		}
+		return raftadapter.AppliedCommandDTO{Index: index, Data: data}
+	}
+	commands := []raftadapter.AppliedCommandDTO{
+		applied(5, membership.CommandDTO{Delivery: &membership.DeliveryChangeDTO{
+			TenantID: "tenant-a", ClientID: "publisher", Action: membership.DeliveryActionPublish,
+			ProposedAtUnixMillis: 1_700_000_000_003, Topic: "events/replay", Payload: []byte("durable"),
+			PublishQoS: 2, Targets: []membership.DeliveryTargetDTO{{ClientID: "durable-client"}},
+		}}),
+		applied(4, membership.CommandDTO{Delivery: &membership.DeliveryChangeDTO{
+			TenantID: "tenant-a", ClientID: "durable-client", OwnerNodeID: config.NodeID, Epoch: 1,
+			Action: membership.DeliveryActionAttach, ProposedAtUnixMillis: 1_700_000_000_002,
+		}}),
+		applied(3, membership.CommandDTO{Subscription: &membership.SubscriptionChangeDTO{
+			TenantID: "tenant-a", ClientID: "durable-client", OwnerNodeID: config.NodeID, Epoch: 1,
+			Filter: "events/#", QoS: 2, Action: membership.SubscriptionActionAdd,
+		}}),
+		applied(2, membership.CommandDTO{Ownership: &membership.OwnershipChangeDTO{
+			TenantID: "tenant-a", ClientID: "durable-client", OwnerNodeID: config.NodeID, Epoch: 1,
+			Action: membership.OwnershipActionAcquire,
+		}}),
+	}
+	configurationOperationID, err := newClusterOperationID()
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, bootstrapMembers, err := clusterBootstrapIdentities(config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	learner := bootstrapMembers[0]
+	learner.MemberID = 4
+	learner.Address = "127.0.0.1:19004"
+	learner.DNSSAN = "node-4"
+	learner.Phase = membership.MemberPhaseStaged
+	learner.OperationID = configurationOperationID
+	stage := membership.CommandDTO{
+		SchemaMajor: membership.SchemaMajor, SchemaMinor: membership.SchemaMinor, OperationID: configurationOperationID,
+		Membership: &membership.MembershipRecordDTO{
+			OperationID: configurationOperationID, Action: membership.MembershipActionStageJoin,
+			IdempotencyKey: "join-4", Member: &learner,
+		},
+	}
+	stageData, err := encodeMembershipCommand(stage)
+	if err != nil {
+		t.Fatalf("encode staged learner command: %v", err)
+	}
+	commands = append(commands, raftadapter.AppliedCommandDTO{Index: 6, Data: stageData})
+	configurations := []raftadapter.CommittedConfigurationDTO{{
+		Index: 7, OperationID: configurationOperationID, MemberID: 4, Action: raftadapter.MembershipAddLearner,
+	}}
+
+	if err := replayClusterApplied(machine, commands, configurations); err != nil {
+		t.Fatalf("replay committed delivery tail: %v", err)
+	}
+	state, exists := machine.DeliverySession("tenant-a", "durable-client")
+	if !exists || len(state.Messages) != 1 || state.Messages[0].Sequence != 1 ||
+		state.Messages[0].Phase != membership.DeliveryPhaseQueued || state.Messages[0].QoS != 2 ||
+		string(state.Messages[0].Payload) != "durable" {
+		t.Fatalf("replayed delivery state=%+v exists=%t", state, exists)
+	}
+	var replayedLearner bool
+	for _, member := range machine.Members() {
+		if member.MemberID == 4 && member.Phase == membership.MemberPhaseLearner {
+			replayedLearner = true
+		}
+	}
+	if !replayedLearner || machine.LastAppliedIndex() != 7 {
+		t.Fatalf("replayed membership learner=%t appliedIndex=%d", replayedLearner, machine.LastAppliedIndex())
+	}
+	if err := replayClusterApplied(machine, commands, configurations); err != nil {
+		t.Fatalf("replay already-applied delivery tail: %v", err)
+	}
+	state, exists = machine.DeliverySession("tenant-a", "durable-client")
+	if !exists || len(state.Messages) != 1 || state.Messages[0].Sequence != 1 {
+		t.Fatalf("replayed tail duplicated durable delivery: %+v exists=%t", state, exists)
+	}
+	if err := replayClusterApplied(machine, append(commands, commands[0]), nil); err == nil {
+		t.Fatal("duplicate committed delivery index was accepted")
+	}
+	if err := replayClusterApplied(machine, nil, []raftadapter.CommittedConfigurationDTO{{
+		Index: 8, OperationID: configurationOperationID, MemberID: 5, Action: raftadapter.MembershipChangeAction(99),
+	}}); err == nil {
+		t.Fatal("unknown committed configuration action was accepted")
+	}
+	if err := replayClusterApplied(machine, []raftadapter.AppliedCommandDTO{{Index: 8, Data: []byte{0xff}}}, nil); err == nil {
+		t.Fatal("malformed committed command was accepted")
+	}
+	if machine.LastAppliedIndex() != 7 {
+		t.Fatalf("rejected replay advanced applied index to %d", machine.LastAppliedIndex())
+	}
+}
+
+// Traceability: MQTT-01; docs/specs/mqtt-protocol-and-session.md §1.
+func TestClusterMQTTListenersBindConfiguredEndpointsAndClosePartialOpen(t *testing.T) {
+	listeners, err := clusterMQTTListeners(clusterConfigFile{})
+	if err != nil || len(listeners) != 0 {
+		t.Fatalf("empty cluster MQTT listeners=%v err=%v", listeners, err)
+	}
+
+	tcpAddress := clusterRuntimeTestFreeAddress(t)
+	invalidTLS := clusterConfigFile{
+		MQTT:    clusterMQTT{TCPListenAddress: tcpAddress, TLSListenAddress: clusterRuntimeTestFreeAddress(t)},
+		PeerTLS: clusterPeerTLS{CertFile: filepath.Join(t.TempDir(), "missing.crt"), KeyFile: filepath.Join(t.TempDir(), "missing.key")},
+	}
+	if listeners, err := clusterMQTTListeners(invalidTLS); err == nil || listeners != nil {
+		t.Fatalf("invalid TLS listener result=%v err=%v, want closed partial TCP listener and error", listeners, err)
+	}
+	rebound, err := net.Listen("tcp", tcpAddress)
+	if err != nil {
+		t.Fatalf("TCP listener remained open after TLS setup failure: %v", err)
+	}
+	if err := rebound.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	ca, caKey, _ := newClusterRuntimeTestCA(t)
+	certPEM, keyPEM, _ := issueClusterRuntimeTestCertificate(t, ca, caKey, "mqtt.example.test", 11)
+	certPath := filepath.Join(t.TempDir(), "mqtt.crt")
+	keyPath := filepath.Join(t.TempDir(), "mqtt.key")
+	if err := os.WriteFile(certPath, certPEM, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(keyPath, keyPEM, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	config := clusterConfigFile{
+		MQTT: clusterMQTT{
+			TCPListenAddress: clusterRuntimeTestFreeAddress(t),
+			TLSListenAddress: clusterRuntimeTestFreeAddress(t),
+		},
+		PeerTLS: clusterPeerTLS{CertFile: certPath, KeyFile: keyPath},
+	}
+	listeners, err = clusterMQTTListeners(config)
+	if err != nil || len(listeners) != 2 {
+		t.Fatalf("configured TCP/TLS listeners=%v err=%v, want two bound listeners", listeners, err)
+	}
+	for _, listener := range listeners {
+		if err := listener.Close(); err != nil {
+			t.Fatal(err)
+		}
 	}
 }

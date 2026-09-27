@@ -85,7 +85,7 @@ Route metadata에는 session key, owner node, owner epoch와 subscription option
 
 ## Retained message 흐름
 
-Standalone development profile은 `Retain=true` QoS 0 publication을 bounded process-local repository에 보관한다. Dynamic cluster profile은 tenant와 exact Topic Name을 retained key로 쓰고, Raft committed state를 권위 있는 값으로 보관한다. Cluster MQTT ingress는 현재 QoS 0 PUBLISH만 허용한다.
+Standalone development profile은 `Retain=true` QoS 0 publication을 bounded process-local repository에 보관한다. Dynamic cluster profile은 tenant와 exact Topic Name을 retained key로 쓰고 Raft committed state를 권위 있는 값으로 보관한다. QoS 0 retained replication과 cross-node replay는 §11.8에서 확인했으며, QoS 1/2 publish retained mutation은 ADR-0015 §4.2의 commit 경계를 따른다. 이 QoS 1/2 retained 조합의 개별 process acceptance는 §11.11에서 별도로 확인하지 않았다.
 
 ```text
 PUBLISH Retain=true, payload="new"
@@ -110,7 +110,7 @@ PUBLISH Retain=true, payload=""
 - Message Expiry deadline은 cluster command에 포함되며 모든 replica가 같은 proposal 시각을 사용한다. Startup/restore 뒤 local replay projection은 committed retained state에서 다시 만든다.
 - MQTT 5 quota 초과는 DISCONNECT reason `0x97`로 연결을 닫는다. MQTT 3.1.1은 protocol에 없는 reason code를 보내지 않고 연결을 닫는다.
 
-Retained message는 “마지막으로 알려진 값”이다. Offline queue처럼 특정 session이 접속하지 않은 동안 모든 publication을 쌓지 않는다. Cluster delivery queue와 QoS 1/2 durable acknowledgement는 별도 미완료 범위다.
+Retained message는 “마지막으로 알려진 값”이다. Offline queue처럼 특정 session이 접속하지 않은 동안 publication을 쌓지 않는다. Cluster QoS 1/2 durable target queue와 success-ACK barrier는 ADR-0015에 구현되어 있으며, detached delivery, takeover, backup/restore, process-kill 및 quorum-loss behavior는 [Cluster §11.11](../specs/cluster-session-and-delivery.md#1111-qos-12-durable-delivery-수용-매핑)의 제한된 process acceptance에서 확인했다. Production storage power-loss와 N/N-1은 별도 미완료 gate다.
 
 
 ## Shared subscription 흐름

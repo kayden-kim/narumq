@@ -38,7 +38,7 @@
 - Cluster-mode readiness는 committed local voter role, snapshot/WAL replay 및 committed index 동기화, committed subscription에서 재구축한 route projection, persistence health와 fresh quorum `ReadIndex` barrier를 모두 요구한다. 재시작 후 barrier와 projection을 다시 통과하기 전에는 READY가 아니다.
 - 증명된 quorum barrier는 짧은 deadline 동안만 유효하다. 실패한 다음 probe 또는 deadline 만료 시 readiness와 새 MQTT admission을 즉시 차단한다. Liveness는 quorum과 독립적이다.
 - Cluster-mode CONNECT는 ownership acquire가 commit되기 전 긍정 CONNACK을 반환하지 않는다. SUBSCRIBE/UNSUBSCRIBE는 typed subscription command commit 뒤에만 SUBACK/UNSUBACK 성공을 반환한다.
-- 이 slice에는 전체 durable publish acceptance가 포함되지 않는다. 별도 replicated acceptance path가 없는 QoS 1/2 mutation은 positive PUBACK/PUBREC을 반환하지 않고 거절하거나 연결을 닫는다. Readiness는 membership과 route admission 준비를 뜻할 뿐 production QoS durability, durable ACK 또는 release N/N-1 support를 뜻하지 않는다.
+- 이 membership acceptance slice에는 전체 durable publish acceptance가 포함되지 않았다. 당시 별도 replicated acceptance path가 없는 QoS 1/2 mutation은 positive PUBACK/PUBREC을 반환하지 않고 거절하거나 연결을 닫았다. 이후 QoS 1/2 durable path는 [ADR-0015](ADR-0015-cluster-durable-qos-delivery.md)와 [Cluster §11.11](../specs/cluster-session-and-delivery.md#1111-qos-12-durable-delivery-수용-매핑)에서 제한된 범위로 검증했다. Readiness는 membership과 route admission 준비를 뜻할 뿐 production QoS durability, WAL/fsync gate 또는 release N/N-1 support를 뜻하지 않는다.
 
 ### 1.4 Wire·state contract와 변경 승인
 

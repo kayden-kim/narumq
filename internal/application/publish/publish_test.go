@@ -19,10 +19,14 @@ type recordingQueue struct {
 	attempts   []applicationdeliveryqueue.DeliveryDTO
 	errors     map[routing.SessionID]error
 	calls      []routing.SessionID
+	onEnqueue  func()
 }
 
 // recordingQueue models the application delivery queue contract by copying retained payloads.
 func (queue *recordingQueue) TryEnqueue(delivery applicationdeliveryqueue.DeliveryDTO, now time.Time) error {
+	if queue.onEnqueue != nil {
+		queue.onEnqueue()
+	}
 	queue.attempts = append(queue.attempts, delivery)
 	queue.calls = append(queue.calls, delivery.SessionID)
 	if err := queue.errors[delivery.SessionID]; err != nil {
@@ -65,6 +69,9 @@ func (*recordingQueue) ListOutbound(routing.SessionID) ([]applicationdeliveryque
 }
 func (*recordingQueue) ReplaceOutbound(applicationdeliveryqueue.OutboundDTO) error { return nil }
 func (*recordingQueue) CompleteOutbound(routing.SessionID, mqtt.PacketIdentifier) error {
+	return nil
+}
+func (*recordingQueue) ResetDurable(routing.SessionID, uint64, []applicationdeliveryqueue.DeliveryDTO, []applicationdeliveryqueue.OutboundDTO, time.Time) error {
 	return nil
 }
 

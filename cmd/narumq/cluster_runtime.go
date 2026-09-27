@@ -56,7 +56,7 @@ var (
 	errClusterRuntimeNotReady           = errors.New("cluster runtime is not ready")
 	errClusterStorageUnhealthy          = errors.New("cluster raft storage is not healthy")
 	errClusterApplyDivergence           = errors.New("committed cluster state diverges from membership state")
-	errClusterExactProfileCompatibility = errors.New("retained and offline replication requires every active member to match the local release and schema")
+	errClusterExactProfileCompatibility = errors.New("retained, offline, and durable delivery replication requires every active member to match the local release and schema")
 )
 
 // runClusterMode composes the dynamic Raft control plane with MQTT admission and
@@ -189,18 +189,21 @@ func runClusterMode(ctx context.Context, config clusterConfigFile, logger *slog.
 	}
 	listeners = append(listeners, managementListener)
 
-	deliveries, err := deliveryqueue.New(64)
+	systemClock := clock.SystemClock{}
+	memoryDeliveries, err := deliveryqueue.New(64)
 	if err != nil {
 		return fmt.Errorf("create delivery queue: %w", err)
 	}
+	runtime.localDeliveries = memoryDeliveries
+	deliveries := &clusterDurableQueue{Queue: runtime.localDeliveries, runtime: runtime, clock: systemClock}
 	sessions := sessionstore.New()
 	willBridge := tcpadapter.NewWillBridge()
-	systemClock := clock.SystemClock{}
 	systemScheduler := clock.SystemScheduler{}
 	connectOptions := []connect.Option{
 		connect.WithMetrics(metricsRegistry),
 		connect.WithOwnershipCoordinator(runtime, config.NodeID),
 		connect.WithOfflineCoordinator(runtime),
+		connect.WithDurableDeliveryCommitter(runtime),
 	}
 	subscribeOptions := []subscribe.Option{
 		subscribe.WithMetrics(metricsRegistry),
@@ -209,6 +212,7 @@ func runClusterMode(ctx context.Context, config clusterConfigFile, logger *slog.
 	publishOptions := []publish.Option{
 		publish.WithMetrics(metricsRegistry), publish.WithRetainedCommitter(runtime),
 		publish.WithOfflineCommitter(runtime), publish.WithRemoteForwarder(runtime),
+		publish.WithDurableDeliveryCommitter(runtime),
 	}
 	var tcpPolicy security.Policy
 	if securityBundle != nil {
@@ -252,6 +256,7 @@ func runClusterMode(ctx context.Context, config clusterConfigFile, logger *slog.
 			return fmt.Errorf("create cluster MQTT server: %w", err)
 		}
 		runtime.mqttServer = mqttServer
+		runtime.durableSink = mqttServer
 		runtime.forwardSink = mqttServer
 		for _, listener := range mqttListeners[1:] {
 			if err := mqttServer.AddListener(listener); err != nil {
@@ -287,17 +292,21 @@ func runClusterMode(ctx context.Context, config clusterConfigFile, logger *slog.
 }
 
 type clusterRuntime struct {
-	config      clusterConfigFile
-	logger      *slog.Logger
-	node        *raftadapter.Node
-	transport   *tcpadapter.DynamicTCPPeerTransport
-	forwarder   clusterPeerForwarder
-	forwardSink clusterForwardSink
-	machine     *membership.StateMachine
-	retained    *memoryretained.Repository
-	routes      *routing.Table
-	mqttServer  *tcpadapter.Server
-	storage     *clusterStorageMonitor
+	config             clusterConfigFile
+	logger             *slog.Logger
+	node               *raftadapter.Node
+	transport          *tcpadapter.DynamicTCPPeerTransport
+	forwarder          clusterPeerForwarder
+	forwardSink        clusterForwardSink
+	machine            *membership.StateMachine
+	retained           *memoryretained.Repository
+	routes             *routing.Table
+	mqttServer         *tcpadapter.Server
+	localDeliveries    *deliveryqueue.Queue
+	durableSink        clusterDurableSink
+	durableMu          sync.Mutex
+	durableAttachments map[routing.SessionID]clusterDurableAttachment
+	storage            *clusterStorageMonitor
 
 	requests                chan clusterDriverRequest
 	sequence                atomic.Uint64
@@ -774,9 +783,14 @@ func (runtime *clusterRuntime) applyBatch(batch raftadapter.BatchDTO, proposals 
 			if runtime.mqttServer != nil {
 				runtime.mqttServer.CloseSessionForTakeover(sessionID)
 			}
+			runtime.removeStaleDurableAttachment(sessionID, *result.Ownership)
 		}
 		if command.Retained != nil && result.Outcome == membership.ApplyOutcomeApplied {
 			runtime.syncRetainedProjection(*command.Retained)
+		}
+		if command.Delivery != nil && result.Outcome == membership.ApplyOutcomeApplied &&
+			result.Delivery != nil && len(result.Delivery.Enqueued) > 0 {
+			runtime.notifyDurable(command.Delivery.TenantID, result.Delivery.Enqueued)
 		}
 		runtime.resolveProposal(event.command, result, proposals)
 	}
@@ -1028,7 +1042,7 @@ func (runtime *clusterRuntime) advanceMembership() error {
 			}
 			plan := membership.PlanRemovalHandoff(
 				operation.MemberID, voterIDs,
-				runtime.machine.Ownerships(), runtime.machine.Subscriptions(), runtime.machine.Checkpoints(),
+				runtime.machine.Ownerships(), runtime.machine.Subscriptions(),
 			)
 			if plan.Block != "" {
 				logKey := operation.OperationID + ":" + string(plan.Block)
@@ -1472,7 +1486,7 @@ func (runtime *clusterRuntime) Commit(ctx context.Context, command membership.Co
 	if err := runtime.readBarrier(ctx); err != nil {
 		return membership.ApplyResultDTO{}, classifyClusterPortError(err)
 	}
-	if (command.Retained != nil || command.Offline != nil) && !clusterExactProfileCompatible(runtime.machine.Members(), runtime.config) {
+	if (command.Retained != nil || command.Offline != nil || command.Delivery != nil) && !clusterExactProfileCompatible(runtime.machine.Members(), runtime.config) {
 		return membership.ApplyResultDTO{}, errClusterExactProfileCompatibility
 	}
 	data, err := encodeMembershipCommand(command)
@@ -1558,11 +1572,6 @@ func (runtime *clusterRuntime) AcquireOwnership(ctx context.Context, tenantID, c
 	action := membership.OwnershipActionAcquire
 	epoch = 1
 	if found {
-		for _, checkpoint := range runtime.machine.Checkpoints() {
-			if checkpoint.TenantID == tenantID && checkpoint.ClientID == clientID {
-				return 0, membership.ErrQuorumUnavailable
-			}
-		}
 		if ownership.Epoch == ^uint64(0) {
 			return 0, membership.ErrQuorumUnavailable
 		}

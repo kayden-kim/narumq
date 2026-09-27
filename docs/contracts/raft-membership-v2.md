@@ -53,7 +53,7 @@ STAGED → LEARNER → CATCHING_UP → VOTER
 - `LEARNER`는 `ConfChangeV2` learner addition이 commit되고 `RawNode.ApplyConfChange`가 적용된 상태다.
 - `CATCHING_UP`은 learner가 snapshot과 committed log tail을 적용 중인 상태다.
 - `VOTER`는 log catch-up 확인 뒤 별도의 `ConfChangeV2` promotion이 commit된 상태다.
-- Planned removal은 `VOTER → LEAVING → RETIRED`다. 모든 session owner transfer와 inbound/outbound checkpoint를 successor 쪽에서 commit하기 전에는 `RETIRED`로 바꾸거나 voter를 제거하지 않는다.
+- Planned removal은 `VOTER → LEAVING → RETIRED`다. 모든 session ownership을 successor로 이전하고 replicated durable queue·inflight state를 이어받을 수 있게 한 뒤에만 `RETIRED`로 바꾸거나 voter를 제거한다.
 - `ABORT_STAGE`는 learner로 전환하기 전의 stage만 취소한다. 이미 `ConfChangeV2`가 commit된 learner를 heartbeat timeout으로 제거하는 용도로 사용할 수 없다.
 - `RETIRED` identity와 ID tombstone은 snapshot에 남는다. ID는 다시 stage할 수 없다.
 - 하나의 cluster group에서는 한 membership operation만 진행한다. Local proposal acceptance는 commitment가 아니며 management 성공 응답은 stage 또는 현재 phase의 commit 뒤에만 보낸다.
@@ -61,7 +61,7 @@ STAGED → LEARNER → CATCHING_UP → VOTER
 
 `ConfChangeV2`가 committed Ready entry일 때만 Raft adapter가 `RawNode.ApplyConfChange`를 호출한다. Application membership record와 derived registry는 같은 committed entry order를 소비한다. Recovery는 snapshot plus committed WAL tail에서 ConfState, staged record, phase, operation ID와 tombstone을 재구성한다. Replay로 application index가 기존 typed snapshot index보다 앞서면, peer transport를 시작하기 전에 replay 완료 상태로 새 typed snapshot을 저장한다.
 
-**Planned removal session handoff:** planned removal 진행 중 리더는 대상 member가 소유한 모든 세션에 대해 남은 voter 중 가장 작은 member ID를 successor로 선택하여 `OwnershipActionTransfer` (epoch+1) 명령을 commit한다. Commit된 소유권 이전은 state machine에서 persistent subscription의 ownerNodeID와 epoch를 함께 갱신하며, 탈퇴 대상 노드의 로컬 소켓은 takeover로 안전하게 닫힌다(`CloseSessionForTakeover`). 탈퇴 대상 member에 속한 미완료 checkpoint가 존재하거나(`checkpoint_handoff_unsupported`), successor voter가 없거나(`no_successor_voter`), epoch가 고갈되었거나(`ownership_epoch_exhausted`), 고아 구독이 감지되면(`orphan_subscription`) removal은 fail-closed 원칙에 따라 차단되고 `REMOVING` 상태를 유지한다. 탈퇴 대상 노드는 `LEAVING` 상태 동안 신규 세션 admission을 거절한다.
+**Planned removal session handoff:** planned removal 진행 중 리더는 대상 member가 소유한 모든 세션에 대해 남은 voter 중 가장 작은 member ID를 successor로 선택하여 `OwnershipActionTransfer` (epoch+1) 명령을 commit한다. 소유권 이전은 authoritative `DeliverySessionState`를 바꾸지 않고, 새 owner는 ATTACH로 queued message와 inbound/outbound QoS 상태를 복구한다. 탈퇴 대상 노드의 로컬 소켓은 takeover로 안전하게 닫힌다(`CloseSessionForTakeover`). successor voter가 없거나(`no_successor_voter`), epoch가 고갈되었거나(`ownership_epoch_exhausted`), 고아 구독이 감지되면(`orphan_subscription`) removal은 fail-closed 원칙에 따라 차단되고 `REMOVING` 상태를 유지한다. 탈퇴 대상 노드는 `LEAVING` 상태 동안 신규 세션 admission을 거절한다.
 
 ### 1.3 Management API
 
@@ -107,7 +107,7 @@ Required header `Idempotency-Key`는 UTF-8이 아닌 printable ASCII `0x21..0x7e
 
 #### `DELETE /api/v1/cluster/members/{memberId}`
 
-Active voter의 planned leave operation을 시작한다. `memberId`는 canonical positive decimal `uint64`이고, 필수 `Idempotency-Key` 및 operation record 규칙은 POST와 같다. Request body는 없다. Response는 POST와 동일한 operation schema에서 `action="REMOVE"`, 최초 operation `phase="REMOVING"`을 반환한다. Member lifecycle은 `VOTER → LEAVING → RETIRED`다. `REMOVING`은 ownership/checkpoint transfer와 configuration removal을 진행 중인 operation을 뜻하며, `SUCCEEDED` 전에는 voter가 제거된 것으로 간주하지 않는다.
+Active voter의 planned leave operation을 시작한다. `memberId`는 canonical positive decimal `uint64`이고, 필수 `Idempotency-Key` 및 operation record 규칙은 POST와 같다. Request body는 없다. Response는 POST와 동일한 operation schema에서 `action="REMOVE"`, 최초 operation `phase="REMOVING"`을 반환한다. Member lifecycle은 `VOTER → LEAVING → RETIRED`다. `REMOVING`은 ownership transfer 뒤 durable session state를 새 owner에서 재개하고 configuration removal을 진행하는 operation을 뜻하며, `SUCCEEDED` 전에는 voter가 제거된 것으로 간주하지 않는다.
 
 #### `GET /api/v1/cluster/membership-operations/{operationId}`
 
@@ -280,15 +280,15 @@ The forwarding stream does not alter `NMQRAFT2` hello or Raft message frame byte
 
 ### 1.6 Replicated records and snapshot
 
-`CommandEnvelope` uses protobuf `proto3` schema major/minor and exactly one payload: `MembershipRecord`, `OwnershipChange`, `SubscriptionChange` or `SessionCheckpoint`. `MembershipRecord` stores operation ID, action, persisted idempotency key, member identity, optional removal target, and `expected_conf_state_index` for compare-before-change; HTTP `committedIndex` is derived from the actual applied Raft entry index. `OwnershipChange` carries `(tenantId, clientId, expectedEpoch, ownerNodeId, epoch, action)`. `SubscriptionChange` carries `(tenantId, clientId, ownerNodeId, epoch, filter, qos, noLocal, retainAsPublished, retainHandling, add/remove)`. `SessionCheckpoint` contains typed inbound/outbound publish packet plus protocol delivery phase, not opaque Go bytes.
+`CommandEnvelope` uses protobuf `proto3` schema major/minor and exactly one payload: `MembershipRecord`, `OwnershipChange`, `SubscriptionChange`, `DeliveryChange`, `RetainedChange` or `OfflineChange`. `MembershipRecord` stores operation ID, action, persisted idempotency key, member identity, optional removal target, and `expected_conf_state_index` for compare-before-change; HTTP `committedIndex` is derived from the actual applied Raft entry index. `OwnershipChange` carries `(tenantId, clientId, expectedEpoch, ownerNodeId, epoch, action)`. `SubscriptionChange` carries `(tenantId, clientId, ownerNodeId, epoch, filter, qos, noLocal, retainAsPublished, retainHandling, add/remove)`. `DeliveryChange` stores one session-fenced durable action and its action-specific publication, packet, sequence, reset or expiry fields. Field number 13 and the former `checkpoint` name remain reserved.
 
 Each snapshot `membership_history` record stores the exact `committed_index` of its committed transition. The command payload must leave that field zero because the Raft entry index is unknown when proposed; the application records the actual index while applying the committed entry. Snapshot validation requires `0 < committed_index <= last_included_index`. Restored operation status reports the latest transition's persisted index, never the snapshot boundary.
 
 Snapshot의 `lastIncludedIndex`는 Raft가 적용한 마지막 index와 일치해야 한다. 리더 선출로 생긴 빈 Raft entry처럼 application event가 없는 commit도 typed state의 적용 index를 전진시키되 member·operation 내용은 바꾸지 않는다. 그래야 learner 추가 직후 저장한 snapshot의 `ConfState`와 typed snapshot index가 같고, 새 learner가 해당 snapshot에서 복구할 수 있다.
 
-`PublishPacket` is the exact current `mqtt.Publish` domain subset: MQTT protocol version (`4` for 3.1.1, `5` for 5.0), DUP, QoS, retain, packet ID, topic, binary payload and optional message-expiry interval. QoS is `0..2`; packet ID is zero exactly for QoS 0 and nonzero for QoS 1/2. When `has_message_expiry_interval=false`, the stored interval is zero; otherwise it is seconds. `InboundCheckpoint` and `OutboundCheckpoint` map to `delivery.Inbound` and `delivery.Outbound` phases and accept only QoS 1/2 entries whose packet ID, direction and phase are consistent. The ownership/subscription command semantics follow `takeover.StateMachine`: committed ordering advances even when a syntactically valid stale epoch is rejected; mutation itself applies only when exact `(ownerNodeId, epoch)` matches.
+`DeliverySessionState` is the replicated per-session aggregate keyed by `(tenantId, clientId)`. It contains the monotonically increasing `next_sequence`, ordered `DeliveryMessage` entries and packet-ID-ordered `InboundMessage` entries. A delivery message stores topic, binary payload, effective QoS, retain, expiry, packet ID and delivery phase; packet ID zero denotes `QUEUED`. Inbound state stores the publisher-side QoS 2 payload before PUBREL and a payload-free tombstone after RELEASE. ATTACH/DETACH/DISCARD and SEND/ADVANCE/COMPLETE commands mutate this aggregate using exact owner/epoch fencing. Stale commands consume their committed ordering position but do not mutate the aggregate.
 
-`SnapshotEnvelope` contains schema major/minor, `lastIncludedIndex`, `objectCount`, SHA-256 and typed `ReplicatedStateSnapshot`. `objectCount` is the total number of top-level repeated entries across members (including `RETIRED` tombstones), ownerships, subscriptions, session checkpoints, and membership-history records; a checkpoint is one object regardless of its number of inflight entries. Digest input is the deterministic protobuf serialization of `ReplicatedStateSnapshot` without the envelope. Any unknown field, unknown required enum/action, duplicate singular field, duplicate oneof, malformed UTF-8, noncanonical byte sequence, unsupported version, count mismatch or digest mismatch fails apply/recovery/readiness closed.
+`SnapshotEnvelope` contains schema major/minor, `lastIncludedIndex`, `objectCount`, SHA-256 and typed `ReplicatedStateSnapshot`. `objectCount` counts repeated entries across members, ownerships, subscriptions, delivery sessions and their messages/inbound entries, membership history, retained values, offline sessions and their queued messages. Digest input is the deterministic protobuf serialization of `ReplicatedStateSnapshot` without the envelope. Any unknown field, unknown required enum/action, duplicate singular field, duplicate oneof, malformed UTF-8, noncanonical byte sequence, unsupported version, count mismatch or digest mismatch fails apply/recovery/readiness closed.
 
 ### 1.7 Limits, ordering and canonical bytes
 
@@ -305,15 +305,15 @@ Snapshot의 `lastIncludedIndex`는 Raft가 적용한 마지막 index와 일치�
 | client ID | 1..256 UTF-8 bytes |
 | topic/filter | 1..65,535 valid MQTT UTF-8 bytes; filter validated by MQTT filter rules |
 | certificate fingerprint | exactly 32 bytes in protobuf; lowercase 64-hex at HTTP JSON boundary |
-| `PublishPacket.protocol_version` | exactly `4` (MQTT 3.1.1) or `5` (MQTT 5.0) |
-| QoS and packet ID | QoS `0..2`; packet ID zero iff QoS 0 |
+| Durable delivery QoS and packet ID | `DeliveryMessage.qos` is 1 or 2; packet ID is zero exactly for `QUEUED` and nonzero for inflight; phase must agree with QoS |
+| Inbound QoS 2 state | packet ID is `1..65535`; unreleased entries retain payload, released tombstones have empty payload and a valid `released_index` |
 | Subscription QoS / retain handling | QoS `0..2`; retain handling `0..2` |
-| Checkpoint | only QoS 1/2; phase must be valid for packet direction and QoS |
-| Message expiry | uint32 seconds; absent flag requires zero interval |
+| Durable delivery limits | at most 64 messages and 64 inbound entries per session; at most 4,096 entries and 16 MiB across the cluster; at most 1,024 targets per publish |
+| Message expiry | unsigned Unix milliseconds; `0` means no expiry |
 | MQTT publish payload | at most 1,000,000 bytes and enclosing command still <=1 MiB |
-| top-level snapshot entries | at most 1,000,000 across all repeated fields; 64 MiB serialized snapshot bound applies first |
+| Snapshot entries | at most 1,000,000, including nested delivery messages/inbound entries and offline messages; 64 MiB serialized snapshot bound applies first |
 
-Deterministic protobuf serialization is mandatory. Proto3 default-valued scalar fields are omitted; fields use ascending field-number order. Repeated `members` sort by `member_id`; `ownerships` by bytewise UTF-8 `(tenant_id, client_id)`; `subscriptions` by bytewise `(tenant_id, client_id, filter)`; `checkpoints` by bytewise `(tenant_id, client_id)`; `membership_history` by bytewise `operation_id`; each checkpoint's `inbound` and `outbound` sort independently by ascending nonzero packet ID. Duplicate canonical keys are invalid. A consumer verifies canonical bytes by parsing, enforcing duplicate/unknown-field rejection, deterministic re-serialization and byte equality. Removed field numbers and enum values are reserved permanently.
+Deterministic protobuf serialization is mandatory. Proto3 default-valued scalar fields are omitted; fields use ascending field-number order. Repeated `members` sort by `member_id`; `ownerships` by bytewise UTF-8 `(tenant_id, client_id)`; `subscriptions` by bytewise `(tenant_id, client_id, filter)`; `delivery_sessions` by bytewise `(tenant_id, client_id)`; `membership_history` by bytewise `operation_id`; each delivery session's `messages` sort by ascending sequence and `inbound` by ascending nonzero packet ID. Duplicate canonical keys are invalid. A consumer verifies canonical bytes by parsing, enforcing duplicate/unknown-field rejection, deterministic re-serialization and byte equality. Removed field numbers and enum values are reserved permanently.
 
 The following reference vectors use schema `1.0`, proto3 deterministic field ordering, omitted scalar defaults, and the fixture values stated in each name. Hex bytes are grouped only for readability; concatenation is the exact encoding. They are contract fixtures, not yet producer/consumer test evidence.
 | Fixture | Semantic values |
@@ -321,7 +321,7 @@ The following reference vectors use schema `1.0`, proto3 deterministic field ord
 | `stage_join` | operation `00000000-0000-4000-8000-000000000004`; key `k1`; member 4; cluster `c`; address `n:1`; DNS `n`; 32 bytes `0x11`; release `v1`; protocol `2.0`; state schema `1.0` |
 | `ownership_acquire` | operation `00000000-0000-4000-8000-000000000001`; tenant `t`; client `c`; expected epoch 0; owner 1; epoch 1; action `ACQUIRE` |
 | `subscription_add` / `subscription_remove` | same operation/tenant/client/owner/epoch as ownership; filter `#`; QoS 1; actions 1/2 |
-| `checkpoint` | operation/tenant/client/owner/epoch as above; MQTT 5 PUBLISH QoS 1, packet 7, topic `a`, payload `x`; inbound QoS1-await-acceptance and outbound awaiting-PUBACK |
+| `delivery_publish` | operation/tenant/client as ownership; `PUBLISH`, proposed time 1, topic `a`, payload `x`, publish QoS 1 |
 | `empty_snapshot` | envelope schema `1.0`, index 1, object count 0, empty typed state; state digest is SHA-256 of empty bytes |
 
 ```text
@@ -357,13 +357,12 @@ subscription_remove (59 bytes)
 30 30 30 30 30 30 30 31 62 11 0A 01 74 12 01 63
 18 01 20 01 2A 01 23 30 01 50 02
 
-checkpoint (88 bytes)
-08 01 1A 24 30 30 30 30 30 30 30 30 2D 30 30 30
-30 2D 34 30 30 30 2D 38 30 30 30 2D 30 30 30 30
-30 30 30 30 30 30 30 31 6A 2E 0A 01 74 12 01 63
-18 01 20 01 2A 10 0A 0C 08 05 18 01 28 07 32 01
-61 3A 01 78 10 01 32 10 0A 0C 08 05 18 01 28 07
-32 01 61 3A 01 78 10 01
+delivery_publish (62 bytes)
+08 01 1A 24 30 30 30 30 30 30 30 30 2D 30 30 30 30
+2D 34 30 30 30 2D 38 30 30 30 2D 30 30 30 30 30 30
+30 30 30 30 30 31 82 01 13 0A 01 74 12 01 63 28 01
+30 01 3A 01 61 42 01 78 80 01 01
+
 
 empty_snapshot (40 bytes)
 08 01 18 01 2A 20 E3 B0 C4 42 98 FC 1C 14 9A FB
