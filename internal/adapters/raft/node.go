@@ -93,6 +93,28 @@ type Config struct {
 	// incoming snapshots, and local typed snapshot finalization. The hook runs with
 	// the node lock held and must not call back into Node.
 	PersistenceBoundaryHook func(PersistenceBoundaryDTO)
+	// WALBoundaryHook, when non-nil, receives notifications for Ready frames
+	// containing non-empty normal entries. The hook runs with the node lock held,
+	// must not call back into Node, and must not retain WALBoundaryDTO.Entries.
+	WALBoundaryHook func(WALBoundaryDTO)
+}
+
+// WALBoundaryStage identifies one step of appending a Ready frame to wal.bin.
+type WALBoundaryStage uint8
+
+const (
+	// WALBeforeWrite runs before the frame header is written.
+	WALBeforeWrite WALBoundaryStage = iota + 1
+	// WALBeforeSync runs after the frame header and payload writes, before File.Sync.
+	WALBeforeSync
+	// WALAfterSync runs after File.Sync succeeds, before snapshot and memory updates.
+	WALAfterSync
+)
+
+// WALBoundaryDTO describes a Ready WAL frame carrying non-empty normal entries.
+type WALBoundaryDTO struct {
+	Stage   WALBoundaryStage
+	Entries [][]byte // borrowed entry payloads in log order; valid only during the call
 }
 
 // MembershipChangeAction identifies one supported single-step ConfChangeV2.
@@ -239,6 +261,7 @@ func Open(config Config) (*Node, error) {
 		if err != nil {
 			return nil, err
 		}
+		store.walHook = config.WALBoundaryHook
 		if config.PersistenceBoundaryHook != nil {
 			store.finalizeHook = func(stage PersistenceStage) {
 				config.PersistenceBoundaryHook(PersistenceBoundaryDTO{Stage: stage, CreatesSnapshot: true})
@@ -271,6 +294,7 @@ func Open(config Config) (*Node, error) {
 		if err != nil {
 			return nil, err
 		}
+		store.walHook = config.WALBoundaryHook
 	}
 
 	raftConfig := &etcdraft.Config{

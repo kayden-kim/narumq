@@ -206,6 +206,9 @@ func createChaosFixture() (*chaosFixture, error) {
 		for nodeID := 1; nodeID <= chaosNodeCount; nodeID++ {
 			allowedClientIDs = append(allowedClientIDs, fmt.Sprintf("chaos-recovery-%d", nodeID))
 		}
+		allowedClientIDs = append(allowedClientIDs,
+			"chaos-durable-sub", "chaos-durable-pub-1", "chaos-durable-pub-2", "chaos-durable-pub-3",
+			"chaos-durable-halt-1", "chaos-durable-halt-2", "chaos-durable-sentinel")
 		security := mqttSecurityConfig{
 			JWT: mqttJWTConfig{
 				Issuer: "https://issuer.example", Audience: "narumq", Algorithms: []string{"RS256"},
@@ -217,9 +220,10 @@ func createChaosFixture() (*chaosFixture, error) {
 				CredentialID: "chaos-client-credential", AllowedClientIDs: allowedClientIDs,
 				Roles: []string{"client"},
 			}},
-			ACL: []mqttACLConfig{{
-				TenantID: "chaos", Role: "client", Effect: "allow", Action: "subscribe", TopicFilter: "chaos/#",
-			}},
+			ACL: []mqttACLConfig{
+				{TenantID: "chaos", Role: "client", Effect: "allow", Action: "subscribe", TopicFilter: "chaos/#"},
+				{TenantID: "chaos", Role: "client", Effect: "allow", Action: "publish", TopicFilter: "chaos/durable/#"},
+			},
 		}
 		securityJSON, err := json.Marshal(security)
 		if err != nil {

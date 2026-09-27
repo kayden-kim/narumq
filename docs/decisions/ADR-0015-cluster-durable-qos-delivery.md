@@ -77,7 +77,7 @@ QoS 1/2 publish 안의 effective-QoS-0 subscriber를 기존 lane에 남기면 �
 
 - [ ] Connected owner node crash 후 DETACH 부재로 남는 session queue와 expiry/capacity 영향을 평가한다.
 - [ ] BP-03 보완 근거를 실행하고 결과를 기록한다.
-- [ ] [ADR-0003 §9-2](ADR-0003-durable-ack-barrier.md#9-검증)의 WAL/fsync crash injection을 실행한다.
+- [x] [ADR-0003 §9-2](ADR-0003-durable-ack-barrier.md#9-검증)의 WAL write·`fsync` 전/후와 commit/apply process-crash injection을 실행했다. Process acceptance는 별도 [Cluster §11.13](../specs/cluster-session-and-delivery.md#1113-adr-0003-durable-ack-fault-수용-매핑)에 기록했다. 이는 power-loss, Docker storage-fault ACK gate 또는 ADR-0003 §9 전체의 완료를 뜻하지 않는다.
 - [ ] N-1 compatibility 및 cutover/rollback 범위를 별도로 결정하고 검증한다.
 - [ ] TEN-08 tenant별 quota를 정책·집행·시험으로 보완한다. 현재 global limit는 이를 대체하지 않는다.
 
@@ -86,7 +86,8 @@ QoS 1/2 publish 안의 effective-QoS-0 subscriber를 기존 lane에 남기면 �
 | 결정 요인 | 검증 방법 | 합격 기준 | 증거 |
 | --- | --- | --- | --- |
 | Durable state, queue, publisher/subscriber protocol과 runtime 전이 | [Cluster §11.11](../specs/cluster-session-and-delivery.md#1111-qos-12-durable-delivery-수용-매핑)의 focused unit suite와 네 process acceptance를 실행했다. | Unit 시험은 state transition, ACK order, takeover, duplicate, QoS 2 Will QoS 보존, saturation과 quorum-loss 동작을 확인한다. Process acceptance는 detached QoS 1/2 session queue, owner takeover, backup/restore, ACK 뒤 process kill, quorum loss 및 QoS 2 Will reconnect/takeover를 확인한다. | PASS: focused package suite 통과. 네 process acceptance PASS (38.493s); QoS 2 Will reconnect/takeover 시험 포함. 상세 test path와 결과는 §11.11에 기록했다. |
-| Production storage, BP-03, N-1 | WAL/fsync crash injection, production-like storage 및 N-1 compatibility acceptance | 해당 별도 기준과 증거를 만족한다. | 이 ADR 승인 범위 밖; 미실행. |
+| ADR-0003 WAL/commit process crash evidence | [Cluster §11.13](../specs/cluster-session-and-delivery.md#1113-adr-0003-durable-ack-fault-수용-매핑)의 replica kill, 20-case WAL/commit matrix, partition process acceptance 및 Docker storage-fault ACK chaos | 성공 ACK 뒤 replica kill에서도 QoS 1/2 message gap이 없고, 미commit WAL stage에서 leader가 성공 ACK하지 않으며 majority는 partition 중 처리한다. Storage chaos는 fault 중 ACK와 recovery delivery barrier를 만족한다. | PASS: six replica-kill combinations, 20 crash subtests, two partition scenarios 및 Docker run `storage-fault-durable-20260927d`의 세 storage scenario 통과. 상세 ACK/count는 §11.13 참조. `File.Sync` process-crash evidence는 physical power-loss proof가 아니다. |
+| Production storage, BP-03, N-1 | WAL/fsync crash injection, production-like storage 및 N-1 compatibility acceptance | 해당 별도 기준과 증거를 만족한다. | ADR-0003의 process injection은 실행했지만 production/EBS power-loss, BP-03와 N-1은 이 ADR 범위 밖이며 미실행이다. |
 
 ## 8. 재검토 조건
 

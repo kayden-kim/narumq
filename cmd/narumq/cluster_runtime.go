@@ -87,6 +87,25 @@ func runClusterMode(ctx context.Context, config clusterConfigFile, logger *slog.
 	if failpoint != clusterFailpointNone {
 		logger.Warn("cluster failpoint armed", "failpoint", string(failpoint))
 	}
+	faults := newClusterFaultControl(loadClusterFaultControlPath(), logger)
+	if faults.enabled() {
+		logger.Warn("cluster fault control armed", "path", faults.path)
+	}
+
+	var walBoundaryHook func(raftadapter.WALBoundaryDTO)
+	if faults.enabled() || deliveryWALFailpoint(raftadapter.WALBeforeWrite) == failpoint ||
+		deliveryWALFailpoint(raftadapter.WALBeforeSync) == failpoint ||
+		deliveryWALFailpoint(raftadapter.WALAfterSync) == failpoint {
+		walBoundaryHook = func(boundary raftadapter.WALBoundaryDTO) {
+			point := deliveryWALFailpoint(boundary.Stage)
+			if point == clusterFailpointNone || !containsDeliveryAckCommand(boundary.Entries) {
+				return
+			}
+			if failpoint == point || faults.crash() == point {
+				triggerClusterFailpoint(point)
+			}
+		}
+	}
 
 	var persistenceHook func(raftadapter.PersistenceBoundaryDTO)
 	if failpoint != clusterFailpointNone {
@@ -101,7 +120,7 @@ func runClusterMode(ctx context.Context, config clusterConfigFile, logger *slog.
 		NodeID: raftadapter.NodeID(config.NodeID), Directory: config.Directory,
 		DynamicMembership: true, ClusterID: config.ClusterID,
 		CertificateSHA256: localFingerprint, BootstrapVoterIDs: bootstrapIDs,
-		PersistenceBoundaryHook: persistenceHook,
+		PersistenceBoundaryHook: persistenceHook, WALBoundaryHook: walBoundaryHook,
 	})
 	if err != nil {
 		return fmt.Errorf("open dynamic raft node: %w", err)
@@ -137,6 +156,7 @@ func runClusterMode(ctx context.Context, config clusterConfigFile, logger *slog.
 		localIdentity:      configuredLocalPeerIdentity(config, localFingerprint),
 		admittedCandidates: make(map[uint64]string),
 		failpoint:          failpoint,
+		faults:             faults,
 		handoffProposed:    make(map[string]uint64),
 	}
 	runtime.retainedResyncRequired.Store(true)
@@ -171,6 +191,7 @@ func runClusterMode(ctx context.Context, config clusterConfigFile, logger *slog.
 		return fmt.Errorf("create dynamic raft peer transport: %w", err)
 	}
 	runtime.transport = transport
+	defer transport.Close()
 	runtime.forwarder = transport
 	runtime.refreshRouteProjection()
 
@@ -330,6 +351,7 @@ type clusterRuntime struct {
 	seedPeers          []tcpadapter.PeerIdentityDTO
 	managementState    *appmgmt.Service
 	failpoint          clusterFailpoint
+	faults             *clusterFaultControl
 	removalBlockLogged string
 	handoffProposed    map[string]uint64
 }
@@ -430,7 +452,11 @@ func (runtime *clusterRuntime) serve(parent context.Context, mqttServer *tcpadap
 			}
 		case err := <-driverDone:
 			driverDone = nil
-			if !shutdown && runtime.handleDriverFailure(err) {
+			keepServing := !shutdown && runtime.handleDriverFailure(err)
+			if runtime.transport != nil {
+				_ = runtime.transport.Close()
+			}
+			if keepServing {
 				results = append(results, fmt.Errorf("cluster raft driver: %w", err))
 				continue
 			}
@@ -446,6 +472,10 @@ func (runtime *clusterRuntime) serve(parent context.Context, mqttServer *tcpadap
 			}
 		case result := <-serviceDone:
 			remaining--
+			if result.name == "cluster delivery forwarding receiver" && result.err == nil &&
+				runtime.storage != nil && runtime.storage.view().health == clusterReplicationFailed {
+				continue
+			}
 			if result.err != nil && !shutdown {
 				results = append(results, fmt.Errorf("%s: %w", result.name, result.err))
 				shutdown = true
@@ -530,7 +560,6 @@ func (runtime *clusterRuntime) runSeedAdmission(ctx context.Context) error {
 func (runtime *clusterRuntime) runDriver(ctx context.Context) error {
 	serveResult := make(chan error, 1)
 	go func() { serveResult <- runtime.transport.Serve(ctx) }()
-	defer runtime.transport.Close()
 	ticker := time.NewTicker(clusterTickInterval)
 	defer ticker.Stop()
 	reads := make(map[string]clusterReadWaiter)
@@ -627,6 +656,10 @@ func (runtime *clusterRuntime) runDriver(ctx context.Context) error {
 				continue
 			}
 			message := delivery.Message
+			if runtime.faults.isolates(message.From) {
+				delivery.Complete()
+				continue
+			}
 			err := runtime.node.Step(raftadapter.MessageDTO{
 				From: raftadapter.NodeID(message.From), To: raftadapter.NodeID(message.To), Data: message.Data,
 			})
@@ -694,6 +727,10 @@ func clusterBatchEmpty(batch raftadapter.BatchDTO) bool {
 		len(batch.SnapshotData) == 0 && len(batch.ReadStates) == 0
 }
 
+func (runtime *clusterRuntime) deliveryCrashArmed(point clusterFailpoint) bool {
+	return runtime.failpoint == point || runtime.faults.crash() == point
+}
+
 func (runtime *clusterRuntime) applyBatch(batch raftadapter.BatchDTO, proposals *[]clusterProposalWaiter) error {
 	if len(batch.Commands) != len(batch.CommandIndexes) {
 		return errors.New("raft command data and indexes are not aligned")
@@ -756,9 +793,16 @@ func (runtime *clusterRuntime) applyBatch(batch raftadapter.BatchDTO, proposals 
 		if !runtime.initialized.Load() {
 			return errors.New("application command arrived before typed state initialization")
 		}
+		deliveryAckCommand := isDeliveryAckCommand(command)
+		if deliveryAckCommand && runtime.deliveryCrashArmed(failpointDeliveryCommitBeforeApply) {
+			triggerClusterFailpoint(failpointDeliveryCommitBeforeApply)
+		}
 		result, err := runtime.machine.Apply(event.index, command)
 		if err != nil {
 			return fmt.Errorf("apply committed command at raft index %d: %w", event.index, err)
+		}
+		if deliveryAckCommand && runtime.deliveryCrashArmed(failpointDeliveryCommitAfterApply) {
+			triggerClusterFailpoint(failpointDeliveryCommitAfterApply)
 		}
 		if result.Outcome == membership.ApplyOutcomeConflict && command.Membership != nil &&
 			command.Membership.Action == membership.MembershipActionAddLearner {
@@ -873,6 +917,9 @@ func (runtime *clusterRuntime) completeReadStates(states []raftadapter.ReadState
 func (runtime *clusterRuntime) sendMessages(ctx context.Context, messages []raftadapter.MessageDTO) error {
 	rejected := make(map[raftadapter.NodeID]struct{}, len(messages))
 	for _, message := range messages {
+		if runtime.faults.isolates(uint64(message.To)) {
+			continue
+		}
 		// A Ready batch can contain a response to a peer removed by that same committed change.
 		// Keep registered seed peers available before a joining node has a local ConfState.
 		if _, statusErr := runtime.transport.Status(uint64(message.To)); errors.Is(statusErr, tcpadapter.ErrUnknownPeer) {

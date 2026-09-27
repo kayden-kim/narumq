@@ -30,6 +30,11 @@ const (
 	failpointBeginRemoveAfterApply        clusterFailpoint = "begin-remove-after-apply"
 	failpointRouteProjectionRebuild       clusterFailpoint = "route-projection-rebuild-error"
 	failpointOwnershipAcquireAfterCommit  clusterFailpoint = "ownership-acquire-after-commit"
+	failpointDeliveryWALBeforeWrite       clusterFailpoint = "delivery-wal-before-write"
+	failpointDeliveryWALBeforeSync        clusterFailpoint = "delivery-wal-before-sync"
+	failpointDeliveryWALAfterSync         clusterFailpoint = "delivery-wal-after-sync"
+	failpointDeliveryCommitBeforeApply    clusterFailpoint = "delivery-commit-before-apply"
+	failpointDeliveryCommitAfterApply     clusterFailpoint = "delivery-commit-after-apply"
 )
 
 var validClusterFailpoints = []clusterFailpoint{
@@ -49,6 +54,11 @@ var validClusterFailpoints = []clusterFailpoint{
 	failpointBeginRemoveAfterApply,
 	failpointRouteProjectionRebuild,
 	failpointOwnershipAcquireAfterCommit,
+	failpointDeliveryWALBeforeWrite,
+	failpointDeliveryWALBeforeSync,
+	failpointDeliveryWALAfterSync,
+	failpointDeliveryCommitBeforeApply,
+	failpointDeliveryCommitAfterApply,
 }
 
 func parseClusterFailpoint(value string) (clusterFailpoint, error) {
@@ -60,6 +70,19 @@ func parseClusterFailpoint(value string) (clusterFailpoint, error) {
 		return "", fmt.Errorf("unknown cluster failpoint %q", value)
 	}
 	return point, nil
+}
+
+func deliveryWALFailpoint(stage raftadapter.WALBoundaryStage) clusterFailpoint {
+	switch stage {
+	case raftadapter.WALBeforeWrite:
+		return failpointDeliveryWALBeforeWrite
+	case raftadapter.WALBeforeSync:
+		return failpointDeliveryWALBeforeSync
+	case raftadapter.WALAfterSync:
+		return failpointDeliveryWALAfterSync
+	default:
+		return clusterFailpointNone
+	}
 }
 
 func (point clusterFailpoint) matchesPersistence(boundary raftadapter.PersistenceBoundaryDTO) bool {

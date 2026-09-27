@@ -7,6 +7,7 @@ import (
 
 	pb "go.etcd.io/raft/v3/raftpb"
 	"google.golang.org/protobuf/proto"
+	"os"
 )
 
 func TestNodeConfigAndLifecycle(t *testing.T) {
@@ -270,5 +271,115 @@ func TestNodeCommandResultsAreDeepCopies(t *testing.T) {
 	applied[0][0] = 'Y'
 	if got := nodes[2].AppliedCommands(); len(got) != 1 || string(got[0]) != "command" {
 		t.Fatalf("AppliedCommands mutation changed node state: %q", got)
+	}
+}
+
+func TestWALBoundaryHookReportsNormalEntryStages(t *testing.T) {
+	root := t.TempDir()
+	directories := map[NodeID]string{
+		1: filepath.Join(root, "node-1"),
+		2: filepath.Join(root, "node-2"),
+		3: filepath.Join(root, "node-3"),
+	}
+	var hookInvocations int
+	var stages []WALBoundaryStage
+	var walSizes []int64
+	nodes := make(map[NodeID]*Node, 3)
+	for _, nodeID := range []NodeID{1, 2, 3} {
+		config := Config{
+			NodeID:    nodeID,
+			PeerIDs:   []NodeID{1, 2, 3},
+			Directory: directories[nodeID],
+		}
+		if nodeID == 1 {
+			config.WALBoundaryHook = func(boundary WALBoundaryDTO) {
+				hookInvocations++
+				for _, entry := range boundary.Entries {
+					if string(entry) != "cmd" {
+						continue
+					}
+					info, err := os.Stat(filepath.Join(directories[1], walName))
+					if err != nil {
+						t.Errorf("stat WAL at stage %d: %v", boundary.Stage, err)
+						return
+					}
+					stages = append(stages, boundary.Stage)
+					walSizes = append(walSizes, info.Size())
+				}
+			}
+		}
+		node, err := Open(config)
+		if err != nil {
+			t.Fatal(err)
+		}
+		nodes[nodeID] = node
+	}
+	defer func() {
+		for _, node := range nodes {
+			if err := node.Close(); err != nil {
+				t.Errorf("Close() = %v", err)
+			}
+		}
+	}()
+
+	pump := func() {
+		t.Helper()
+		var queue []MessageDTO
+		for range 512 {
+			progress := false
+			for _, nodeID := range []NodeID{1, 2, 3} {
+				batch, err := nodes[nodeID].ProcessReady()
+				if err != nil {
+					t.Fatalf("node %d ProcessReady() = %v", nodeID, err)
+				}
+				if len(batch.Messages) != 0 || len(batch.Commands) != 0 {
+					progress = true
+				}
+				queue = append(queue, batch.Messages...)
+			}
+			if len(queue) != 0 {
+				pending := queue
+				queue = nil
+				for _, message := range pending {
+					if err := nodes[message.To].Step(message); err != nil {
+						t.Fatalf("deliver %d -> %d: %v", message.From, message.To, err)
+					}
+					progress = true
+				}
+			}
+			if !progress && len(queue) == 0 {
+				return
+			}
+		}
+		t.Fatal("node pump exceeded 512 rounds")
+	}
+
+	pump()
+	if err := nodes[1].Campaign(); err != nil {
+		t.Fatal(err)
+	}
+	pump()
+	if hookInvocations != 0 {
+		t.Fatalf("WAL hook ran %d times for election entries: stages = %v", hookInvocations, stages)
+	}
+	if err := nodes[1].Propose([]byte("cmd")); err != nil {
+		t.Fatal(err)
+	}
+	pump()
+
+	wantStages := []WALBoundaryStage{WALBeforeWrite, WALBeforeSync, WALAfterSync}
+	if hookInvocations != len(wantStages) {
+		t.Fatalf("WAL hook invocation count = %d, want %d", hookInvocations, len(wantStages))
+	}
+	if len(stages) != len(wantStages) {
+		t.Fatalf("WAL stages = %v, want %v", stages, wantStages)
+	}
+	for index, want := range wantStages {
+		if stages[index] != want {
+			t.Fatalf("WAL stages = %v, want %v", stages, wantStages)
+		}
+	}
+	if walSizes[1] <= walSizes[0] {
+		t.Fatalf("WAL size before sync = %d, must exceed size before write = %d", walSizes[1], walSizes[0])
 	}
 }

@@ -317,11 +317,11 @@ Phase 0의 MQTT normative statement 연결표는
 
 ### 7.3 Cluster failpoint build
 
-Membership crash-boundary acceptance tests use the `narumq_failpoint` build tag.
-Only that build reads `NARUMQ_FAILPOINT`; the default build ignores the environment
-variable and never exits because of it. A matching point writes
-`narumq failpoint reached: <point>` to stderr and exits with code `86`.
-
+Membership crash-boundary and durable-ACK acceptance tests use the
+`narumq_failpoint` build tag. Only that build reads `NARUMQ_FAILPOINT` and
+`NARUMQ_FAILPOINT_CONTROL`; the default build ignores both environment variables
+and never exits or injects peer isolation because of them. A matching crash point
+writes `narumq failpoint reached: <point>` to stderr and exits with code `86`.
 Accepted values are:
 
 ```text
@@ -339,17 +339,34 @@ snapshot-install-after-persist
 begin-remove-after-apply
 route-projection-rebuild-error
 ownership-acquire-after-commit
+delivery-wal-before-write
+delivery-wal-before-sync
+delivery-wal-after-sync
+delivery-commit-before-apply
+delivery-commit-after-apply
 ```
 
-This build tag is the first process-crash test seam in the repository. It is
-needed to stop a real process at a specific persistence or apply boundary; a
-timing-based kill cannot identify those internal boundaries reliably. The Raft
-adapter exposes a neutral `PersistenceBoundaryHook` for persistence tests, while
-the existing `filePersistenceOps` and `onReadyEvent` hooks support in-package
-adapter tests. Only the composition root handles the environment variable and
-process exit, so the adapter remains independent of command configuration.
-The `ownership-acquire-after-commit` point is in the composition-root ownership coordinator, after quorum commit and before
-CONNECT local activation; it is not a persistence boundary.
+This build tag provides process-crash seams at membership, snapshot, ownership,
+and durable-delivery boundaries; timing-based kills cannot identify those points
+reliably. `NARUMQ_FAILPOINT_CONTROL` names a JSON file read synchronously while
+the tagged runtime is active:
+
+```json
+{"crash":"delivery-wal-before-sync","isolatePeers":[2]}
+```
+
+`crash` selects one registered point; `isolatePeers` lists peer node IDs to
+isolate in both outbound sends and inbound peer-message handling. Removing the
+file or making it empty disarms the control. Invalid JSON or failpoint names are
+logged and do not trigger a fault. The Raft adapter exposes `PersistenceBoundaryHook`
+for persistence tests and a separate `WALBoundaryHook` for non-empty normal
+entries at WAL-before-write, before-sync and after-sync. That hook runs with the
+node lock held and its entry bytes are borrowed only for the callback. The
+composition root decodes those entries and limits these crash points to durable
+`DeliveryActionPublish`/`DeliveryActionReceive`; adapter code remains independent
+of command configuration. Existing `filePersistenceOps` and `onReadyEvent` hooks
+remain in-package adapter seams. `ownership-acquire-after-commit` remains a
+composition-root boundary after quorum commit and before CONNECT local activation.
 
 ### 7.4 Cluster storage chaos evidence
 
@@ -361,11 +378,25 @@ go run ./tests/chaos/cluster-storage-v1 \
   --output .artifacts/chaos/cluster-storage-v1/storage-faults-20260925
 ```
 
-Runner는 새 Docker network와 세 broker process로 `follower-disk-full`, `quorum-disk-full`, `follower-slow-io`를 순서대로 실행한다. Disk-full case는 제한 용량 tmpfs를 실제 ENOSPC까지 채우고, 느린 I/O case는 container 안 FUSE filesystem에서 write/`fsync`를 지연한다. 각 scenario는 readiness, replication health, MQTT CONNECT/SUBSCRIBE admission 결과, `lastAppliedIndex`와 outbound peer queue bounds를 확인한다. 이 시험은 QoS 1/2 durable ACK 또는 session/subscription replication acceptance가 아니다.
+Runner는 새 Docker network와 세 broker process로 `follower-disk-full`, `quorum-disk-full`, `follower-slow-io`를 순서대로 실행한다. 기존 admission probe 외에 persistent `chaos-durable-sub` subscriber를 준비하고 실제 QoS 1/2 publish ACK를 확인한다. Follower fault에서는 leader와 healthy follower가 각각 QoS 1 두 건과 QoS 2 한 건을 ACK하고 recovery 뒤 sentinel barrier까지 정확히 한 번 전달되어야 한다. Quorum fault에서는 clean QoS 1과 persistent QoS 2 publish에 fault 중 ACK가 없고, recovery 뒤 SessionPresent가 복원된 QoS 2 재개와 at-most-once QoS 1 결과를 확인한다. 결과는 `scenarioEvidence.durableAck`의 `ackedBeforeFault`, `ackedDuringFault`, `unackedDuringFault`, `ackedAfterRecovery`, `missingAcked`, `duplicates`, `recoverySessionPresent`로 기록한다. 이전 `storage-fault-20260925d` 증거는 MQTT admission만 검사했으며 durable ACK 결과를 대체하지 않는다.
 
 성공 결과는 `.artifacts/chaos/cluster-storage-v1/<run-id>/`의 `manifest.json`, `summary.json`, `docker-build.log`, `image-inspect.json`, scenario별 `events.jsonl`과 `node<i>.log`에 남긴다. Token·JWT·private key·certificate 원문은 artifact에 기록하지 않는다.
 
 이 Docker/FUSE chaos gate는 외부 dependency가 없어야 하는 `go test ./...`와 `go run ./tools/verify local`에서 제외된다. 두 검증의 PASS만으로 실제 disk-full·slow-I/O 증거를 대체하지 않으며 chaos command를 별도로 실행해야 한다.
+
+Durable ACK extension unit test:
+
+```text
+go test ./tests/chaos/cluster-storage-v1 -count=1
+```
+
+2026-09-27 Docker durable ACK run:
+
+```text
+GOMAXPROCS=2 go run ./tests/chaos/cluster-storage-v1 --run-id storage-fault-durable-20260927d --output .artifacts/chaos/cluster-storage-v1/storage-fault-durable-20260927d
+```
+
+PASS, exit code 0; `summary.json` reports all three scenarios passed. Follower disk-full and slow-I/O ACKed all six leader/healthy-follower QoS 1/2 topics during the fault; recovery delivered each payload once with no missing ACKed messages or duplicates. Quorum disk-full kept fault-time QoS 1/2 unacknowledged; recovery resumed persistent QoS 2 with `SessionPresent=true`, while QoS 1 remained at-most-once. Artifacts: `.artifacts/chaos/cluster-storage-v1/storage-fault-durable-20260927d/`. Earlier run attempts exposed Docker startup, node startup, and fault-handling ordering defects; the passing run occurred after those fixes. BP-03 and Linux/EBS/physical power-loss gates remain open.
 
 ## 8. Coverage와 test quality gate
 

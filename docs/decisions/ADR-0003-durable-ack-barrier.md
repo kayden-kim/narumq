@@ -93,7 +93,11 @@ WAL·snapshot의 storage target과 `fsync` 순서는 scoped [ADR-0009](ADR-0009-
 4. 같은 Packet Identifier 재전송이 중복 durable command를 만들지 않는지 검증한다.
 5. BP-03에서 group commit 크기별 p99·p99.9와 disk 비용을 측정한다.
 
-이 ADR-0003 §9 기준에 대한 후속 evidence는 [ADR-0015 §7](ADR-0015-cluster-durable-qos-delivery.md#7-검증)과 [Cluster §11.11](../specs/cluster-session-and-delivery.md#1111-qos-12-durable-delivery-수용-매핑)에 있다. Process acceptance는 QoS 1 PUBACK 뒤 publisher node process를 kill하고 persistent subscriber reconnect 뒤 committed message를 받는지, quorum loss 중 QoS 1 PUBACK/QoS 2 PUBREC 성공을 보내지 않는지 확인했다. 이는 일부 ACK/message-gap 시나리오를 검증하지만, 각 replica kill, WAL write/`fsync`/commit 전후 crash injection, follower disk-full/slow-I/O ACK boundary 또는 BP-03을 확인하지 않는다. ADR-0003 §9 gate는 이 나머지 항목이 끝날 때까지 미완료다.
+추가 process evidence는 [Cluster §11.13](../specs/cluster-session-and-delivery.md#1113-adr-0003-durable-ack-fault-수용-매핑)에 기록했다. `NARUMQ_DURABLE_ACK_FAULTS=1 go test ./tests/integration -run '^TestDynamicClusterDurableAck(ReplicaKill|CrashPoint|Partition)ProcessAcceptance$' -count=1 -v -timeout 30m`가 PASS했다: 세 replica 각각에서 QoS 1/2 ACK 직후 kill한 여섯 조합은 recovery 뒤 count=1, WAL/commit crash matrix의 20개 조합과 leader/follower partition 두 시나리오도 통과했다. WAL-before-write/sync/after-sync leader failpoint에서 QoS 1 성공 ACK는 없었고 QoS 2 packet은 recovery 뒤 한 번 전달됐다. Commit-before/after-apply는 leader/follower, QoS 1/2 모두 ACK 뒤 한 번 전달됐다. Partition에서는 isolated node가 성공 ACK를 보내지 않았고 majority는 계속 ACK했다.
+
+`storage-fault-durable-20260927d`에서 Docker durable ACK chaos gate도 PASS했다. Follower disk-full와 slow-I/O에서 leader·healthy follower의 QoS 1/2 여섯 topic이 fault 중 ACK되고, recovery 뒤 payload가 각 한 번 전달됐으며 누락·중복은 없었다. Quorum loss에서는 fault 중 QoS 1/2 ACK가 없었고, recovery 뒤 persistent QoS 2가 같은 packet identifier와 `SessionPresent=true`로 재개됐으며 QoS 1은 at-most-once 결과를 보였다. 실행 증거는 [Cluster §11.13](../specs/cluster-session-and-delivery.md#1113-adr-0003-durable-ack-fault-수용-매핑)에 있다.
+
+Process exit는 실제 전원 손실을 모사하지 않는다. 특히 WAL-after-sync는 `File.Sync` 성공 뒤의 process crash일 뿐 device/page-cache power-loss proof가 아니다. BP-03 및 Linux/EBS power-loss도 미실행이다. ADR-0003은 `Proposed` 상태로 유지하고 §9 gate를 완료로 표시하지 않는다.
 
 ## 10. 재검토 조건
 

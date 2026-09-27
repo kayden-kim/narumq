@@ -78,7 +78,18 @@ type scenarioEvidence struct {
 	UptimeBeforeRecoveryMs            int64                       `json:"uptimeBeforeRecoveryMs,omitempty"`
 	UptimeAfterRecoveryMs             int64                       `json:"uptimeAfterRecoveryMs,omitempty"`
 	IOProbeDurationMs                 int64                       `json:"ioProbeDurationMs,omitempty"`
+	DurableAck                        *durableAckEvidence         `json:"durableAck,omitempty"`
 	OriginalBaselineReconnectAccepted bool                        `json:"originalBaselineReconnectAccepted"`
+}
+
+type durableAckEvidence struct {
+	AckedBeforeFault       []string `json:"ackedBeforeFault"`
+	AckedDuringFault       []string `json:"ackedDuringFault"`
+	UnackedDuringFault     []string `json:"unackedDuringFault"`
+	AckedAfterRecovery     []string `json:"ackedAfterRecovery"`
+	MissingAcked           []string `json:"missingAcked"`
+	Duplicates             []string `json:"duplicates"`
+	RecoverySessionPresent *bool    `json:"recoverySessionPresent,omitempty"`
 }
 
 type diskFillEvidence struct {

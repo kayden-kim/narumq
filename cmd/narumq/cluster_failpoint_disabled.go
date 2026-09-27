@@ -6,5 +6,9 @@ func loadClusterFailpoint() (clusterFailpoint, error) {
 	return clusterFailpointNone, nil
 }
 
+func loadClusterFaultControlPath() string {
+	return ""
+}
+
 func triggerClusterFailpoint(point clusterFailpoint) {
 }

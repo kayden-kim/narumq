@@ -76,7 +76,7 @@ func (runtime *clusterRuntime) runForwardReceiver(ctx context.Context) error {
 			return nil
 		case _, ok := <-ready:
 			if !ok {
-				if ctx.Err() != nil {
+				if ctx.Err() != nil || (runtime.storage != nil && runtime.storage.view().health == clusterReplicationFailed) {
 					return nil
 				}
 				return errors.New("dynamic peer transport forwarding-ready channel closed unexpectedly")

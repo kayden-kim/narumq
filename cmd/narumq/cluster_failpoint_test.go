@@ -29,6 +29,11 @@ func TestClusterFailpointParse(t *testing.T) {
 		{"begin-remove-after-apply", failpointBeginRemoveAfterApply, false},
 		{"route-projection-rebuild-error", failpointRouteProjectionRebuild, false},
 		{"ownership-acquire-after-commit", failpointOwnershipAcquireAfterCommit, false},
+		{"delivery-wal-before-write", failpointDeliveryWALBeforeWrite, false},
+		{"delivery-wal-before-sync", failpointDeliveryWALBeforeSync, false},
+		{"delivery-wal-after-sync", failpointDeliveryWALAfterSync, false},
+		{"delivery-commit-before-apply", failpointDeliveryCommitBeforeApply, false},
+		{"delivery-commit-after-apply", failpointDeliveryCommitAfterApply, false},
 		{"bogus", "", true},
 		{"add-learner", "", true},
 	}
@@ -124,5 +129,23 @@ func TestClusterFailpointMatchesOnlyItsBoundary(t *testing.T) {
 				t.Errorf("matchesOwnershipAcquireAfterCommit() = %t, want %t", got, pt == failpointOwnershipAcquireAfterCommit)
 			}
 		})
+	}
+}
+
+func TestDeliveryWALFailpointMapsOnlyKnownStages(t *testing.T) {
+	cases := []struct {
+		stage raftadapter.WALBoundaryStage
+		want  clusterFailpoint
+	}{
+		{raftadapter.WALBeforeWrite, failpointDeliveryWALBeforeWrite},
+		{raftadapter.WALBeforeSync, failpointDeliveryWALBeforeSync},
+		{raftadapter.WALAfterSync, failpointDeliveryWALAfterSync},
+		{0, clusterFailpointNone},
+		{raftadapter.WALBoundaryStage(255), clusterFailpointNone},
+	}
+	for _, tc := range cases {
+		if got := deliveryWALFailpoint(tc.stage); got != tc.want {
+			t.Errorf("deliveryWALFailpoint(%d) = %q, want %q", tc.stage, got, tc.want)
+		}
 	}
 }

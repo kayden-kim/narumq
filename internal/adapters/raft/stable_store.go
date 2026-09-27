@@ -71,6 +71,7 @@ type stableStore struct {
 	memory       *etcdraft.MemoryStorage
 	dynamic      bool
 	finalizeHook func(PersistenceStage)
+	walHook      func(WALBoundaryDTO)
 
 	snapshotIndex        uint64
 	hardState            *pb.HardState
@@ -619,14 +620,32 @@ func (s *stableStore) appendReady(ready etcdraft.Ready) error {
 	var header [8]byte
 	binary.BigEndian.PutUint32(header[:4], uint32(len(payload)))
 	binary.BigEndian.PutUint32(header[4:], crc32.Checksum(payload, crcTable))
+	var normalEntries [][]byte
+	if s.walHook != nil {
+		for index := range ready.Entries {
+			entry := ready.Entries[index]
+			if entry.GetType() == pb.EntryNormal && len(entry.GetData()) != 0 {
+				normalEntries = append(normalEntries, entry.GetData())
+			}
+		}
+	}
+	if len(normalEntries) != 0 {
+		s.walHook(WALBoundaryDTO{Stage: WALBeforeWrite, Entries: normalEntries})
+	}
 	if err := writeAll(s.wal, header[:]); err != nil {
 		return fmt.Errorf("append WAL frame header: %w", err)
 	}
 	if err := writeAll(s.wal, payload); err != nil {
 		return fmt.Errorf("append WAL frame payload: %w", err)
 	}
+	if len(normalEntries) != 0 {
+		s.walHook(WALBoundaryDTO{Stage: WALBeforeSync, Entries: normalEntries})
+	}
 	if err := filePersistenceOps.sync(s.wal); err != nil {
 		return fmt.Errorf("sync WAL: %w", err)
+	}
+	if len(normalEntries) != 0 {
+		s.walHook(WALBoundaryDTO{Stage: WALAfterSync, Entries: normalEntries})
 	}
 
 	if ready.Snapshot != nil && !etcdraft.IsEmptySnap(ready.Snapshot) {

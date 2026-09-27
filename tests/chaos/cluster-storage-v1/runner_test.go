@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"net"
 	"testing"
 	"time"
@@ -123,5 +124,127 @@ func TestQueueSamplesEnforceTransportBounds(t *testing.T) {
 				t.Fatalf("queueCapReached() = %t, want %t", got, test.wantCapReached)
 			}
 		})
+	}
+}
+
+func TestDurableClientAwaitAckClassifiesOutcomes(t *testing.T) {
+	tests := []struct {
+		name       string
+		server     func(net.Conn, context.Context) error
+		timeout    time.Duration
+		want       durableAckOutcome
+		wantAckErr bool
+	}{
+		{
+			name:    "matching PUBACK after unrelated packet identifier",
+			timeout: time.Second,
+			want:    durableAcked,
+			server: func(connection net.Conn, ctx context.Context) error {
+				if err := writeMQTTPacket(connection, ctx, mqttControlPacket(0x40, 2)); err != nil {
+					return err
+				}
+				return writeMQTTPacket(connection, ctx, mqttControlPacket(0x40, 1))
+			},
+		},
+		{
+			name:       "connection closed",
+			timeout:    time.Second,
+			want:       durableClosed,
+			wantAckErr: true,
+			server:     func(net.Conn, context.Context) error { return nil },
+		},
+		{
+			name:       "no response before deadline",
+			timeout:    50 * time.Millisecond,
+			want:       durableTimedOut,
+			wantAckErr: true,
+			server: func(_ net.Conn, ctx context.Context) error {
+				<-ctx.Done()
+				return nil
+			},
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			clientConnection, brokerConnection := net.Pipe()
+			client := &durableClient{connection: clientConnection}
+			ctx, cancel := context.WithTimeout(context.Background(), test.timeout)
+			defer cancel()
+			serverDone := make(chan error, 1)
+			go func() {
+				defer brokerConnection.Close()
+				serverDone <- test.server(brokerConnection, ctx)
+			}()
+			outcome, err := client.awaitAck(ctx, 1, 1)
+			client.close()
+			if outcome != test.want {
+				t.Fatalf("awaitAck() outcome = %q, want %q; error=%v", outcome, test.want, err)
+			}
+			if (err != nil) != test.wantAckErr {
+				t.Fatalf("awaitAck() error = %v, want error=%t", err, test.wantAckErr)
+			}
+			select {
+			case serverErr := <-serverDone:
+				if serverErr != nil {
+					t.Fatalf("fake broker exchange failed: %v", serverErr)
+				}
+			case <-time.After(time.Second):
+				t.Fatal("fake broker did not finish the exchange")
+			}
+		})
+	}
+}
+
+func TestDurableClientReadsQoS2Delivery(t *testing.T) {
+	clientConnection, brokerConnection := net.Pipe()
+	client := &durableClient{connection: clientConnection}
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	serverDone := make(chan error, 1)
+	go func() {
+		defer brokerConnection.Close()
+		topic := "chaos/durable/test"
+		publishBody := []byte{0, byte(len(topic))}
+		publishBody = append(publishBody, topic...)
+		publishBody = append(publishBody, 0, 7)
+		publishBody = append(publishBody, "payload"...)
+		if err := writeMQTTPacket(brokerConnection, ctx, mqttPacket(0x34, publishBody)); err != nil {
+			serverDone <- err
+			return
+		}
+		header, body, err := readMQTTPacket(brokerConnection, ctx)
+		if err != nil {
+			serverDone <- err
+			return
+		}
+		if header != 0x50 || !hasPacketID(body, 7) {
+			serverDone <- fmt.Errorf("PUBREC = header 0x%02x body %x, want packet identifier 7", header, body)
+			return
+		}
+		if err := writeMQTTPacket(brokerConnection, ctx, mqttControlPacket(0x62, 7)); err != nil {
+			serverDone <- err
+			return
+		}
+		header, body, err = readMQTTPacket(brokerConnection, ctx)
+		if err == nil && (header != 0x70 || !hasPacketID(body, 7)) {
+			err = fmt.Errorf("PUBCOMP = header 0x%02x body %x, want packet identifier 7", header, body)
+		}
+		serverDone <- err
+	}()
+	message, err := client.receiveQoS2Delivery(ctx)
+	client.close()
+	if err != nil {
+		t.Fatalf("receiveQoS2Delivery() error = %v", err)
+	}
+	if message.topic != "chaos/durable/test" || string(message.payload) != "payload" || message.qos != 2 || message.packetID != 7 {
+		t.Fatalf("received message = %#v, want expected topic, payload, QoS 2 and packet identifier", message)
+	}
+	select {
+	case serverErr := <-serverDone:
+		if serverErr != nil {
+			t.Fatalf("fake broker exchange failed: %v", serverErr)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("fake broker did not finish the QoS 2 exchange")
 	}
 }

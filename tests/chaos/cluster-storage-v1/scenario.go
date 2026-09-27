@@ -27,13 +27,14 @@ const (
 )
 
 type storageFaultScenario struct {
-	options  scenarioRunOptions
-	fixture  *chaosFixture
-	docker   *scenarioDocker
-	recorder *eventRecorder
-	api      *apiHTTPClient
-	evidence scenarioEvidence
-	probeID  int
+	options           scenarioRunOptions
+	fixture           *chaosFixture
+	docker            *scenarioDocker
+	recorder          *eventRecorder
+	api               *apiHTTPClient
+	evidence          scenarioEvidence
+	probeID           int
+	durableSubscriber *durableClient
 }
 
 func runStorageScenario(ctx context.Context, options scenarioRunOptions) (result scenarioSummary) {
@@ -98,6 +99,10 @@ func (scenario *storageFaultScenario) run(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	if err := scenario.prepareDurableSubscriber(ctx, leader); err != nil {
+		return err
+	}
+	defer scenario.durableSubscriber.close()
 	scenario.evidence.LeaderNodeID = leader
 	followers := followerNodeIDs(leader)
 	switch scenario.options.ScenarioID {
@@ -173,7 +178,7 @@ func (scenario *storageFaultScenario) commonStartup(ctx context.Context) (string
 			if err != nil {
 				return false, err
 			}
-			if status != http.StatusOK || !hasBaselineSubscription(response) {
+			if status != http.StatusOK || !hasSubscription(response, "chaos-baseline", "chaos/baseline/#") {
 				return false, fmt.Errorf("node %s does not list the baseline subscription", nodeID)
 			}
 		}
@@ -392,10 +397,17 @@ func (scenario *storageFaultScenario) runFollowerDiskFull(ctx context.Context, l
 			return fmt.Errorf("failed follower %s accepted an MQTT probe", targetID)
 		}
 	}
+	expectedDurableTopics, err := scenario.publishFollowerFaultMessages(ctx, leaderID, healthyID)
+	if err != nil {
+		return err
+	}
 	if err := scenario.observeHealthyProgress(ctx, leaderID, targetID, healthyID, true, true); err != nil {
 		return err
 	}
-	return scenario.recoverFollower(ctx, leaderID, targetID, 120*time.Second, true)
+	if err := scenario.recoverFollower(ctx, leaderID, targetID, 120*time.Second, true); err != nil {
+		return err
+	}
+	return scenario.verifyDurableDelivery(ctx, expectedDurableTopics, nil)
 }
 
 func (scenario *storageFaultScenario) observeHealthyProgress(ctx context.Context, leaderID, targetID, healthyID string, requireQueueCap, requireAppliedConvergence bool) error {
@@ -543,6 +555,25 @@ func (scenario *storageFaultScenario) recoverFollower(ctx context.Context, leade
 
 func (scenario *storageFaultScenario) runQuorumDiskFull(ctx context.Context, leaderID string, followers []string) error {
 	scenario.evidence.TargetNodeIDs = append([]string(nil), followers...)
+	preFaultQoS1 := durableTopic(scenario.options.ScenarioID, "leader", "before-qos1")
+	preFaultQoS2 := durableTopic(scenario.options.ScenarioID, "leader", "before-qos2")
+	if err := scenario.durablePublish(ctx, leaderID, "chaos-durable-pub-3", preFaultQoS1, 1, "before-fault", true); err != nil {
+		return err
+	}
+	if err := scenario.durablePublish(ctx, leaderID, "chaos-durable-pub-3", preFaultQoS2, 2, "before-fault", true); err != nil {
+		return err
+	}
+	leaderAddress := "127.0.0.1:" + scenario.docker.mqttPorts[leaderID]
+	cleanHaltClient, _, err := dialDurableClient(ctx, leaderAddress, scenario.fixture.AccessToken, "chaos-durable-halt-1", true)
+	if err != nil {
+		return err
+	}
+	defer cleanHaltClient.close()
+	persistentHaltClient, _, err := dialDurableClient(ctx, leaderAddress, scenario.fixture.AccessToken, "chaos-durable-halt-2", false)
+	if err != nil {
+		return err
+	}
+	defer persistentHaltClient.close()
 	for _, nodeID := range followers {
 		if _, err := scenario.fillDisk(ctx, nodeID); err != nil {
 			return err
@@ -608,6 +639,21 @@ func (scenario *storageFaultScenario) runQuorumDiskFull(ctx context.Context, lea
 		return fmt.Errorf("leader readiness during quorum loss returned HTTP %d, want 503", ready.HTTPStatus)
 	}
 	scenario.evidence.LeaderReadiness = &ready
+	duringFaultQoS1 := durableTopic(scenario.options.ScenarioID, "quorum", "unacked-qos1")
+	duringFaultQoS2 := durableTopic(scenario.options.ScenarioID, "quorum", "unacked-qos2")
+	qos2State, err := scenario.publishDuringQuorumFault(ctx, leaderID, cleanHaltClient, persistentHaltClient, duringFaultQoS1, duringFaultQoS2)
+	if err != nil {
+		return err
+	}
+	if len(scenario.evidence.DurableAck.UnackedDuringFault) != 2 || len(scenario.evidence.DurableAck.AckedDuringFault) != 0 {
+		return fmt.Errorf("quorum durable ACK outcomes: acked=%v unacked=%v, want 0 ACKed and 2 unacked", scenario.evidence.DurableAck.AckedDuringFault, scenario.evidence.DurableAck.UnackedDuringFault)
+	}
+	if err := cleanHaltClient.close(); err != nil {
+		return fmt.Errorf("close clean durable publisher before recovery: %w", err)
+	}
+	if err := persistentHaltClient.close(); err != nil {
+		return fmt.Errorf("close persistent durable publisher before recovery: %w", err)
+	}
 
 	haltStarted := time.Now()
 	for time.Since(haltStarted) < quorumHaltWindow {
@@ -719,6 +765,30 @@ func (scenario *storageFaultScenario) runQuorumDiskFull(ctx context.Context, lea
 	if err := scenario.reconnectOriginalBaseline(ctx, leaderID); err != nil {
 		return err
 	}
+	recoveryClient, sessionPresent, err := dialDurableClient(ctx, leaderAddress, scenario.fixture.AccessToken, "chaos-durable-halt-2", false)
+	if err != nil {
+		return err
+	}
+	defer recoveryClient.close()
+	sessionPresentEvidence := sessionPresent
+	scenario.evidence.DurableAck.RecoverySessionPresent = &sessionPresentEvidence
+	if !sessionPresent {
+		return errors.New("persistent QoS 2 publisher session was not present after recovery")
+	}
+	recoveryAckCtx, cancelRecoveryAck := context.WithTimeout(ctx, durableAckTimeout)
+	recoveryOutcome, recoveryAckErr := recoveryClient.resumeQoS2(recoveryAckCtx, qos2State.packetID, qos2State.topic, []byte(qos2State.topic), qos2State.pubrecReceived)
+	cancelRecoveryAck()
+	if err := scenario.recordDurableAck(leaderID, "chaos-durable-halt-2", qos2State.topic, 2, "after-recovery", recoveryOutcome, recoveryAckErr); err != nil {
+		return err
+	}
+	if recoveryOutcome != durableAcked {
+		return fmt.Errorf("replayed QoS 2 publish %s outcome %q, want ACK: %v", qos2State.topic, recoveryOutcome, recoveryAckErr)
+	}
+	if err := scenario.verifyDurableDelivery(ctx,
+		[]string{preFaultQoS1, preFaultQoS2, duringFaultQoS2},
+		[]string{duringFaultQoS1}); err != nil {
+		return err
+	}
 	scenario.evidence.RecoveryDurationMs = time.Since(recoveryStarted).Milliseconds()
 	scenario.evidence.ConvergedAppliedIndex = convergedIndex
 	return nil
@@ -795,6 +865,10 @@ func (scenario *storageFaultScenario) runFollowerSlowIO(ctx context.Context, lea
 		if probe.Classification == "accepted" {
 			return fmt.Errorf("degraded follower %s accepted MQTT", targetID)
 		}
+	}
+	expectedDurableTopics, err := scenario.publishFollowerFaultMessages(ctx, leaderID, healthyID)
+	if err != nil {
+		return err
 	}
 	if err := scenario.observeHealthyProgress(ctx, leaderID, targetID, healthyID, false, false); err != nil {
 		return err
@@ -873,6 +947,9 @@ func (scenario *storageFaultScenario) runFollowerSlowIO(ctx context.Context, lea
 	if err := scenario.reconnectOriginalBaseline(ctx, targetID); err != nil {
 		return err
 	}
+	if err := scenario.verifyDurableDelivery(ctx, expectedDurableTopics, nil); err != nil {
+		return err
+	}
 	logs, err := scenario.docker.nodeLogs(ctx, targetID)
 	if err != nil {
 		return err
@@ -913,7 +990,7 @@ func (scenario *storageFaultScenario) waitForBaselineSubscription(ctx context.Co
 		if err != nil {
 			return false, err
 		}
-		if status != http.StatusOK || !hasBaselineSubscription(response) {
+		if status != http.StatusOK || !hasSubscription(response, "chaos-baseline", "chaos/baseline/#") {
 			return false, fmt.Errorf("node %s does not list the baseline subscription", nodeID)
 		}
 		return true, nil
@@ -935,9 +1012,9 @@ func (scenario *storageFaultScenario) reconnectOriginalBaseline(ctx context.Cont
 	return nil
 }
 
-func hasBaselineSubscription(response subscriptionEnvelope) bool {
+func hasSubscription(response subscriptionEnvelope, clientID, topicFilter string) bool {
 	for _, subscription := range response.Data {
-		if subscription.TenantID == "chaos" && subscription.ClientID == "chaos-baseline" && subscription.TopicFilter == "chaos/baseline/#" {
+		if subscription.TenantID == "chaos" && subscription.ClientID == clientID && subscription.TopicFilter == topicFilter {
 			return true
 		}
 	}
