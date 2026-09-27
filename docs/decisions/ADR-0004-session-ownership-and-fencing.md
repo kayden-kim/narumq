@@ -105,8 +105,9 @@ Phase 2 replicated session ownership core는 다음 검증 기준을 갖는다.
 3. Commit 응답이 유실된 뒤 client가 동일한 acquire를 retry하면, retry도 다음 application committed-command sequence position으로 commit되지만 현재 epoch와 expected epoch가 달라 `stale_epoch`로 결정적으로 거절되고 owner, epoch와 성공한 ownership record의 sequence position은 바뀌지 않는지 확인한다(`TestReplicatedSessionOwnership/lost_commit_response_retry_preserves_owner_and_epoch`).
 4. Takeover 뒤 이전에 인가되었던 이전 owner의 route-affecting persistent subscription mutation과 inbound/outbound QoS inflight mutation이 각각 commit되고, application committed-command sequence position을 소비하며, stale authorization을 반환하고, 3개 node 모두에서 authoritative aggregate와 파생 route projection을 변경하지 않는지 확인한다(`TestReplicatedSessionOwnership/stale_owner_session_mutations_are_fenced_after_takeover`).
 5. Snapshot restore 뒤 epoch가 감소하거나 재사용되지 않는지 확인한다(`TestReplicatedSessionOwnership/restart_recovers_ownership_epoch_and_command_sequence`).
+6. 실제 MQTT CONNECT에서 ownership `Acquire`가 commit된 뒤 local activation/성공 CONNACK 전에 중단되는 경계와, takeover가 이전 owner의 client socket을 닫는지를 확인한다(`TestDynamicClusterMQTTConnectOwnershipTakeoverProcessAcceptance`; [Cluster spec §11.12](../specs/cluster-session-and-delivery.md#1112-mqtt-connect-ownership-acquisition과-takeover-수용-매핑)).
 
-항목 1~5는 in-process deterministic 3-node cluster와 takeover state machine에서 검증한다. 항목 4의 subscription·inflight bytes는 이 시험 안의 typed-token registry로만 해석하며 production persisted encoding이나 재시작 복구를 검증하지 않는다. 실제 MQTT runtime/drain wiring이 검증되기 전까지 이 결정은 `Proposed` 상태를 유지한다.
+항목 1~5는 in-process deterministic 3-node cluster와 takeover state machine에서 검증한다. 항목 4의 subscription·inflight bytes는 이 시험 안의 typed-token registry로만 해석하며 production persisted encoding이나 재시작 복구를 검증하지 않는다. CONNECT acquire·takeover teardown 범위는 2026-09-27 사용자 승인에 따라 process 수준으로 검증했다. drain/`SAFE_TO_STOP` wiring이 검증되기 전까지 이 결정은 `Proposed` 상태를 유지한다.
 
 ## 9. 재검토 조건
 

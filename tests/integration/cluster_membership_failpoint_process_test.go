@@ -661,3 +661,101 @@ func TestSnapshotFinalizationCrashRecoveryAcrossProcessRestart(t *testing.T) {
 	supervisor.waitForAllReady([]uint64{1, 2, 3, 4})
 	clusterMembershipProcessAssertConvergedSummary(t, fixture.ctx, supervisor.procs([]uint64{1, 2, 3}), joiner, 4)
 }
+
+// Traceability: CLU-04, CLU-05; docs/specs/cluster-session-and-delivery.md §2, §2.1, §11.12.
+func TestDynamicClusterMQTTConnectOwnershipTakeoverProcessAcceptance(t *testing.T) {
+	t.Parallel()
+
+	const (
+		clientID = "ownership-takeover-client"
+		filter   = "ownership/#"
+		topic    = "ownership/event"
+		point    = "ownership-acquire-after-commit"
+	)
+	fixture := newClusterMembershipProcessFixture(t, 3, "narumq_failpoint")
+
+	p1, err := fixture.harness.start(
+		"ownership bootstrap node 1", fixture.bootstrapConfig(1), fixture.managementAddresses[0],
+	)
+	if err != nil {
+		t.Fatalf("start node 1: %v", err)
+	}
+	p3, err := fixture.harness.start(
+		"ownership bootstrap node 3", fixture.bootstrapConfig(3), fixture.managementAddresses[2],
+	)
+	if err != nil {
+		t.Fatalf("start node 3: %v", err)
+	}
+	p2, err := fixture.harness.startArmed(
+		"ownership failpoint node 2", fixture.bootstrapConfig(2), fixture.managementAddresses[1], point,
+	)
+	if err != nil {
+		t.Fatalf("start armed node 2: %v", err)
+	}
+	processes := []*clusterMembershipProcess{p1, p2, p3}
+	clusterMembershipProcessWaitForBootstrap(t, fixture.ctx, processes)
+
+	owner1 := clusterMembershipProcessOpenSubscribedSession(
+		t, fixture.mqttAddresses[0], fixture.accessToken, clientID, filter,
+	)
+	defer owner1.Close()
+	clusterMembershipProcessWaitForRouteProjectionClients(t, fixture.ctx, processes, filter, clientID)
+
+	owner3, present := clusterMembershipProcessReconnectSession(
+		t, fixture.mqttAddresses[2], fixture.accessToken, clientID,
+	)
+	defer owner3.Close()
+	if !present {
+		t.Fatal("node 3 takeover returned SessionPresent=false")
+	}
+	clusterMembershipProcessAssertConnectionClosed(t, owner1, 10*time.Second)
+	clusterMembershipProcessWaitForRouteProjectionClients(t, fixture.ctx, processes, filter, clientID)
+	clusterMembershipProcessPublish(
+		t, fixture.mqttAddresses[0], fixture.accessToken, "ownership-publisher-1", topic, []byte("after-takeover"),
+	)
+	clusterMembershipProcessRequireLivePublish(t, owner3, topic, "after-takeover")
+
+	deadline := time.Now().Add(15 * time.Second)
+	var lastErr error
+	observedNoConnAck := false
+	for time.Now().Before(deadline) {
+		conn, _, err := clusterMembershipProcessTryReconnectSession(
+			fixture.mqttAddresses[1], fixture.accessToken, clientID,
+		)
+		switch {
+		case err == nil:
+			_ = conn.Close()
+			t.Fatal("armed node 2 returned a positive CONNACK after ownership commit")
+		case strings.HasPrefix(err.Error(), "read CONNACK header: ") && clusterMembershipProcessIsClosed(err):
+			observedNoConnAck = true
+		default:
+			lastErr = err
+			if p2.isAlive() != nil {
+				t.Fatalf("node 2 exited without an established CONNECT attempt ending before CONNACK: %v", err)
+			}
+		}
+		if observedNoConnAck {
+			break
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	if !observedNoConnAck {
+		t.Fatalf("node 2 did not close the CONNECT socket without CONNACK within 15s; last error: %v", lastErr)
+	}
+	clusterMembershipProcessRequireFailpointExit(t, p2, point)
+	clusterMembershipProcessAssertConnectionClosed(t, owner3, 30*time.Second)
+
+	survivors := []*clusterMembershipProcess{p1, p3}
+	recovered, present := clusterMembershipProcessReconnectSession(
+		t, fixture.mqttAddresses[0], fixture.accessToken, clientID,
+	)
+	defer recovered.Close()
+	if !present {
+		t.Fatal("node 1 recovery reconnect returned SessionPresent=false")
+	}
+	clusterMembershipProcessWaitForRouteProjectionClients(t, fixture.ctx, survivors, filter, clientID)
+	clusterMembershipProcessPublish(
+		t, fixture.mqttAddresses[2], fixture.accessToken, "ownership-publisher-3", topic, []byte("after-recovery"),
+	)
+	clusterMembershipProcessRequireLivePublish(t, recovered, topic, "after-recovery")
+}

@@ -29,6 +29,7 @@ const (
 	failpointSnapshotCreateAfterFinalize  clusterFailpoint = "snapshot-create-after-finalize"
 	failpointBeginRemoveAfterApply        clusterFailpoint = "begin-remove-after-apply"
 	failpointRouteProjectionRebuild       clusterFailpoint = "route-projection-rebuild-error"
+	failpointOwnershipAcquireAfterCommit  clusterFailpoint = "ownership-acquire-after-commit"
 )
 
 var validClusterFailpoints = []clusterFailpoint{
@@ -47,6 +48,7 @@ var validClusterFailpoints = []clusterFailpoint{
 	failpointSnapshotCreateAfterFinalize,
 	failpointBeginRemoveAfterApply,
 	failpointRouteProjectionRebuild,
+	failpointOwnershipAcquireAfterCommit,
 }
 
 func parseClusterFailpoint(value string) (clusterFailpoint, error) {
@@ -120,4 +122,8 @@ func (point clusterFailpoint) matchesBeginRemoveApply() bool {
 
 func (point clusterFailpoint) failsRouteProjection() bool {
 	return point == failpointRouteProjectionRebuild
+}
+
+func (point clusterFailpoint) matchesOwnershipAcquireAfterCommit() bool {
+	return point == failpointOwnershipAcquireAfterCommit
 }

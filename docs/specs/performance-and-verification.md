@@ -338,6 +338,7 @@ snapshot-install-before-persist
 snapshot-install-after-persist
 begin-remove-after-apply
 route-projection-rebuild-error
+ownership-acquire-after-commit
 ```
 
 This build tag is the first process-crash test seam in the repository. It is
@@ -347,6 +348,8 @@ adapter exposes a neutral `PersistenceBoundaryHook` for persistence tests, while
 the existing `filePersistenceOps` and `onReadyEvent` hooks support in-package
 adapter tests. Only the composition root handles the environment variable and
 process exit, so the adapter remains independent of command configuration.
+The `ownership-acquire-after-commit` point is in the composition-root ownership coordinator, after quorum commit and before
+CONNECT local activation; it is not a persistence boundary.
 
 ### 7.4 Cluster storage chaos evidence
 

@@ -160,7 +160,10 @@ func newClusterMembershipProcessFixture(t *testing.T, nodeCount int, buildTags s
       "durable-will-observer",
       "durable-will-pub-1",
       "durable-will-pub-2",
-      "durable-will-sentinel"
+      "durable-will-sentinel",
+      "ownership-takeover-client",
+      "ownership-publisher-1",
+      "ownership-publisher-3"
     ],
     "roles": ["client"]
   }],
@@ -260,6 +263,18 @@ func newClusterMembershipProcessFixture(t *testing.T, nodeCount int, buildTags s
     "effect": "allow",
     "action": "will",
     "topicFilter": "durable-will/#"
+  }, {
+    "tenantId": "acceptance",
+    "role": "client",
+    "effect": "allow",
+    "action": "publish",
+    "topicFilter": "ownership/#"
+  }, {
+    "tenantId": "acceptance",
+    "role": "client",
+    "effect": "allow",
+    "action": "subscribe",
+    "topicFilter": "ownership/#"
   }]
 }`, jwksURL))
 	clusterMembershipProcessWriteFile(t, securityPath, securityConfig, 0o600)

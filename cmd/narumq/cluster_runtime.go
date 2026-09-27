@@ -1594,6 +1594,9 @@ func (runtime *clusterRuntime) AcquireOwnership(ctx context.Context, tenantID, c
 	if err != nil || result.Outcome != membership.ApplyOutcomeApplied || result.Ownership == nil {
 		return 0, membership.ErrQuorumUnavailable
 	}
+	if runtime.failpoint.matchesOwnershipAcquireAfterCommit() {
+		triggerClusterFailpoint(runtime.failpoint)
+	}
 	return result.Ownership.Epoch, nil
 }
 

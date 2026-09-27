@@ -28,6 +28,7 @@ func TestClusterFailpointParse(t *testing.T) {
 		{"snapshot-create-after-finalize", failpointSnapshotCreateAfterFinalize, false},
 		{"begin-remove-after-apply", failpointBeginRemoveAfterApply, false},
 		{"route-projection-rebuild-error", failpointRouteProjectionRebuild, false},
+		{"ownership-acquire-after-commit", failpointOwnershipAcquireAfterCommit, false},
 		{"bogus", "", true},
 		{"add-learner", "", true},
 	}
@@ -118,6 +119,9 @@ func TestClusterFailpointMatchesOnlyItsBoundary(t *testing.T) {
 			// Test route projection rebuild error
 			if got := pt.failsRouteProjection(); got != (pt == failpointRouteProjectionRebuild) {
 				t.Errorf("failsRouteProjection() = %t, want %t", got, pt == failpointRouteProjectionRebuild)
+			}
+			if got := pt.matchesOwnershipAcquireAfterCommit(); got != (pt == failpointOwnershipAcquireAfterCommit) {
+				t.Errorf("matchesOwnershipAcquireAfterCommit() = %t, want %t", got, pt == failpointOwnershipAcquireAfterCommit)
 			}
 		})
 	}
