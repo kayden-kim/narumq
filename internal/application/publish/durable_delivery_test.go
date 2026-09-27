@@ -194,6 +194,34 @@ func TestPublishQoS2WillAndStandaloneBehavior(t *testing.T) {
 	}
 }
 
+func TestPublishQoS2WillUsesAuthenticatedTenantAfterSessionRemoval(t *testing.T) {
+	useCase, queue, committer, now := durablePublishFixture(t, membership.DeliveryResultDTO{
+		Enqueued: []membership.DeliveryEnqueuedDTO{{ClientID: "durable-sub", Sequence: 1}},
+	}, nil)
+	publisher := mustPublishSessionID(t, "publisher")
+	publisherKey, err := tenancy.ParseSessionKeyRoutingID(string(publisher))
+	if err != nil {
+		t.Fatal(err)
+	}
+	useCase.routes.RemoveSession(publisher)
+
+	packet := mqtt.Publish{Version: mqtt.ProtocolV5, Topic: "events/will", Payload: []byte("will"), QoS: mqtt.QoSExactlyOnce}
+	if _, err := useCase.PublishWill(publisher, publisherKey, packet, now); err != nil {
+		t.Fatal(err)
+	}
+	if len(committer.changes) != 1 {
+		t.Fatalf("QoS2 Will commit count = %d, want 1", len(committer.changes))
+	}
+	change := committer.changes[0]
+	if change.Action != membership.DeliveryActionPublish || change.TenantID != "tenant-a" || change.ClientID != "publisher" ||
+		change.PublishQoS != 2 || len(change.Targets) != 1 || change.Targets[0].ClientID != "durable-sub" {
+		t.Fatalf("QoS2 Will commit = %+v", change)
+	}
+	if len(queue.attempts) != 1 || queue.attempts[0].SessionID != mustPublishSessionID(t, "qos0-sub") {
+		t.Fatalf("QoS2 Will QoS0 lane = %+v, want qos0-sub", queue.attempts)
+	}
+}
+
 // Traceability: CLU-14; docs/specs/cluster-session-and-delivery.md §4.2, §11.11.
 func TestReceiveQoS2CommitsPublisherStateBeforeAcknowledgement(t *testing.T) {
 	useCase, queue, committer, now := durablePublishFixture(t, membership.DeliveryResultDTO{Found: true}, nil)

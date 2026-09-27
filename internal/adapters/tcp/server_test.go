@@ -799,7 +799,7 @@ func TestNewServerRejectsInvalidDependenciesAndBounds(t *testing.T) {
 
 func TestWillBridge_Unbound(t *testing.T) {
 	bridge := NewWillBridge()
-	if err := bridge.PublishWill("session", mqtt.Will{Topic: "test"}); err != nil {
+	if err := bridge.PublishWill("session", tenancy.SessionKey{}, mqtt.Will{Topic: "test"}); err != nil {
 		t.Fatalf("unbound PublishWill error = %v", err)
 	}
 }

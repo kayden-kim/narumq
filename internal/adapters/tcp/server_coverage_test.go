@@ -1378,7 +1378,7 @@ func TestCSVPacketTypeNames(t *testing.T) {
 
 func TestCSVPublishWillRoutingOutcomes(t *testing.T) {
 	deps := csvNewServer(t, newPipeListener(), csvServerOptions{queueCapacity: 1})
-	if err := deps.server.PublishWill("victim", mqtt.Will{Topic: "will/#", Payload: []byte("x")}); !errors.Is(err, routing.ErrInvalidTopicName) {
+	if err := deps.server.PublishWill("victim", tenancy.SessionKey{}, mqtt.Will{Topic: "will/#", Payload: []byte("x")}); !errors.Is(err, routing.ErrInvalidTopicName) {
 		t.Fatalf("PublishWill(invalid topic) error = %v, want %v", err, routing.ErrInvalidTopicName)
 	}
 
@@ -1392,7 +1392,7 @@ func TestCSVPublishWillRoutingOutcomes(t *testing.T) {
 	if !deps.server.bindSession("slow", slow) {
 		t.Fatal("bindSession(slow) failed")
 	}
-	if err := deps.server.PublishWill("victim", mqtt.Will{Topic: "will/victim", Payload: []byte("gone")}); err != nil {
+	if err := deps.server.PublishWill("victim", tenancy.SessionKey{}, mqtt.Will{Topic: "will/victim", Payload: []byte("gone")}); err != nil {
 		t.Fatalf("PublishWill(saturated) error = %v", err)
 	}
 	csvRequireStopped(t, slow, true)

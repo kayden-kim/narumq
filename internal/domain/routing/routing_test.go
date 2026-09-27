@@ -743,6 +743,66 @@ func TestRoutingTable_TenantIsolation(t *testing.T) {
 	}
 }
 
+func TestMatchForTenantAfterPublisherSessionRemovalKeepsTenantIsolation(t *testing.T) {
+	table := NewTable()
+	tenantA, err := tenancy.NewTenantID("tenant-a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	tenantB, err := tenancy.NewTenantID("tenant-b")
+	if err != nil {
+		t.Fatal(err)
+	}
+	publisherKey, err := tenancy.NewSessionKey(tenantA, "publisher")
+	if err != nil {
+		t.Fatal(err)
+	}
+	publisher := SessionID(publisherKey.RoutingID())
+	subscriberAKey, err := tenancy.NewSessionKey(tenantA, "subscriber-a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	subscriberA := SessionID(subscriberAKey.RoutingID())
+	subscriberBKey, err := tenancy.NewSessionKey(tenantB, "subscriber-b")
+	if err != nil {
+		t.Fatal(err)
+	}
+	subscriberB := SessionID(subscriberBKey.RoutingID())
+	for _, binding := range []struct {
+		sessionID SessionID
+		tenantID  tenancy.TenantID
+	}{
+		{sessionID: publisher, tenantID: tenantA},
+		{sessionID: subscriberA, tenantID: tenantA},
+		{sessionID: subscriberB, tenantID: tenantB},
+	} {
+		if err := table.BindSessionTenant(binding.sessionID, binding.tenantID); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, subscriber := range []SessionID{subscriberA, subscriberB} {
+		if _, err := table.Subscribe(subscriber, mqtt.Subscription{Filter: "events/#", QoS: mqtt.QoSExactlyOnce}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	table.RemoveSession(publisher)
+
+	matches, err := table.MatchForTenant(publisher, tenantA, "events/will", mqtt.QoSExactlyOnce, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(matches) != 1 || matches[0].Primary.SessionID != subscriberA {
+		t.Fatalf("tenant-scoped matches = %+v, want only %q", matches, subscriberA)
+	}
+	unscopedMatches, err := table.Match(publisher, "events/will", mqtt.QoSExactlyOnce, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(unscopedMatches) != 0 {
+		t.Fatalf("unscoped matches = %+v, want no tenant subscriptions", unscopedMatches)
+	}
+}
+
 func TestReplaceProjectionWithSessionsAndTenantBinding(t *testing.T) {
 	tenantA, _ := tenancy.NewTenantID("tenant-a")
 	tenantB, _ := tenancy.NewTenantID("tenant-b")

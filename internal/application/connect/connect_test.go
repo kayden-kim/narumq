@@ -211,8 +211,9 @@ func (s *fakeScheduler) AfterFunc(d time.Duration, f func()) Timer {
 }
 
 type publishedWill struct {
-	sessionID routing.SessionID
-	will      mqtt.Will
+	sessionID    routing.SessionID
+	publisherKey tenancy.SessionKey
+	will         mqtt.Will
 }
 
 type fakeWillPublisher struct {
@@ -220,8 +221,8 @@ type fakeWillPublisher struct {
 	err       error
 }
 
-func (p *fakeWillPublisher) PublishWill(sessionID routing.SessionID, will mqtt.Will) error {
-	p.published = append(p.published, publishedWill{sessionID: sessionID, will: will})
+func (p *fakeWillPublisher) PublishWill(sessionID routing.SessionID, publisherKey tenancy.SessionKey, will mqtt.Will) error {
+	p.published = append(p.published, publishedWill{sessionID: sessionID, publisherKey: publisherKey, will: will})
 	return p.err
 }
 

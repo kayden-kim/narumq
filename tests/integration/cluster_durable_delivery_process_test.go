@@ -1,14 +1,17 @@
 package integration
 
 import (
+	"context"
 	"encoding/binary"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net"
+	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"testing"
 	"time"
 )
@@ -291,6 +294,99 @@ func TestDynamicClusterDurableQoSBackupRestoreProcessAcceptance(t *testing.T) {
 	_ = resumed.SetReadDeadline(time.Time{})
 }
 
+// Traceability: CLU-07/CLU-09; docs/specs/cluster-session-and-delivery.md §4.2, §11.11.
+func TestDynamicClusterDurableQoS2WillProcessAcceptance(t *testing.T) {
+	fixture, nodes := clusterDurableProcessStart(t)
+	ctx := fixture.ctx
+
+	detachedSubscriber := clusterDurableProcessConnect(t, fixture.mqttAddresses[1], fixture.accessToken, "durable-will-sub", false)
+	defer detachedSubscriber.Close()
+	clusterDurableProcessSubscribe(t, detachedSubscriber, 1, "durable-will/#", 2)
+	observer := clusterDurableProcessConnect(t, fixture.mqttAddresses[0], fixture.accessToken, "durable-will-observer", true)
+	defer observer.Close()
+	clusterDurableProcessSubscribe(t, observer, 1, "durable-will/+", 0)
+	clusterDurableProcessWaitForSubscriptions(t, ctx, nodes,
+		"durable-will-observer|durable-will/+|0",
+		"durable-will-sub|durable-will/#|2")
+
+	clusterDurableProcessWriteFatal(t, detachedSubscriber, 0xE0, nil)
+	clusterMembershipProcessAssertConnectionClosed(t, detachedSubscriber, 2*time.Second)
+	_ = detachedSubscriber.Close()
+
+	willPublisherOne := clusterDurableProcessConnectWill(t, fixture.mqttAddresses[0], fixture.accessToken, "durable-will-pub-1", true,
+		&clusterDurableProcessWill{topic: "durable-will/one", payload: "will-one", qos: 2})
+	defer willPublisherOne.Close()
+	_ = willPublisherOne.Close()
+	observedWill := clusterDurableProcessRead(t, observer)
+	if observedWill.kind != 3 || observedWill.qos != 0 || observedWill.topic != "durable-will/one" || observedWill.payload != "will-one" {
+		t.Fatalf("QoS 0 observer Will=%+v, want durable-will/one payload will-one", observedWill)
+	}
+	clusterDurableProcessWriteFatal(t, observer, 0xE0, nil)
+	clusterMembershipProcessAssertConnectionClosed(t, observer, 2*time.Second)
+	_ = observer.Close()
+
+	subscriber := clusterDurableProcessConnect(t, fixture.mqttAddresses[2], fixture.accessToken, "durable-will-sub", false)
+	defer subscriber.Close()
+	if !clusterDurableProcessSessionPresent(t, subscriber) {
+		t.Fatal("QoS2 Will subscriber reconnect returned SessionPresent=false")
+	}
+	willOne := clusterDurableProcessRead(t, subscriber)
+	if willOne.kind != 3 || willOne.qos != 2 || willOne.packetID == 0 || willOne.topic != "durable-will/one" || willOne.payload != "will-one" {
+		t.Fatalf("detached QoS2 Will delivery=%+v", willOne)
+	}
+	clusterDurableProcessWriteFatal(t, subscriber, 0x50, []byte{byte(willOne.packetID >> 8), byte(willOne.packetID)})
+	clusterDurableProcessAck(t, subscriber, 6, willOne.packetID)
+	clusterDurableProcessWriteFatal(t, subscriber, 0x70, []byte{byte(willOne.packetID >> 8), byte(willOne.packetID)})
+	clusterMembershipProcessWaitForRouteProjection(t, ctx, nodes, "durable-will/#")
+
+	willPublisherTwo := clusterDurableProcessConnectWill(t, fixture.mqttAddresses[0], fixture.accessToken, "durable-will-pub-2", true,
+		&clusterDurableProcessWill{topic: "durable-will/two", payload: "will-two", qos: 2})
+	defer willPublisherTwo.Close()
+	_ = willPublisherTwo.Close()
+	willTwo := clusterDurableProcessRead(t, subscriber)
+	if willTwo.kind != 3 || willTwo.qos != 2 || willTwo.packetID == 0 || willTwo.topic != "durable-will/two" || willTwo.payload != "will-two" {
+		t.Fatalf("second QoS2 Will delivery=%+v", willTwo)
+	}
+	clusterDurableProcessWriteFatal(t, subscriber, 0x50, []byte{byte(willTwo.packetID >> 8), byte(willTwo.packetID)})
+	clusterDurableProcessAck(t, subscriber, 6, willTwo.packetID)
+
+	if err := nodes[2].crash(5 * time.Second); err != nil {
+		t.Fatalf("crash QoS2 Will subscriber owner: %v", err)
+	}
+	restarted, err := fixture.harness.start("durable will node 3 restart", fixture.bootstrapConfig(3), fixture.managementAddresses[2])
+	if err != nil {
+		t.Fatalf("restart QoS2 Will subscriber owner: %v", err)
+	}
+	nodes[2] = restarted
+	clusterMembershipProcessWaitForBootstrap(t, ctx, nodes)
+	_ = subscriber.Close()
+
+	subscriber = clusterDurableProcessConnect(t, fixture.mqttAddresses[1], fixture.accessToken, "durable-will-sub", false)
+	defer subscriber.Close()
+	if !clusterDurableProcessSessionPresent(t, subscriber) {
+		t.Fatal("QoS2 Will takeover reconnect returned SessionPresent=false")
+	}
+	takeover := clusterDurableProcessRead(t, subscriber)
+	if takeover.kind == 3 {
+		t.Fatalf("QoS2 Will takeover resent PUBLISH=%+v, want PUBREL %d", takeover, willTwo.packetID)
+	}
+	if takeover.kind != 6 || takeover.packetID != willTwo.packetID {
+		t.Fatalf("QoS2 Will takeover packet=%+v, want PUBREL %d", takeover, willTwo.packetID)
+	}
+	clusterDurableProcessWriteFatal(t, subscriber, 0x70, []byte{byte(willTwo.packetID >> 8), byte(willTwo.packetID)})
+	clusterMembershipProcessWaitForRouteProjection(t, ctx, nodes, "durable-will/#")
+
+	sentinelPublisher := clusterDurableProcessConnect(t, fixture.mqttAddresses[0], fixture.accessToken, "durable-will-sentinel", true)
+	defer sentinelPublisher.Close()
+	clusterDurableProcessPublish(t, sentinelPublisher, "durable-will/after", 1, 30, "after")
+	clusterDurableProcessAck(t, sentinelPublisher, 4, 30)
+	sentinel := clusterDurableProcessRead(t, subscriber)
+	if sentinel.kind != 3 || sentinel.qos != 1 || sentinel.packetID == 0 || sentinel.topic != "durable-will/after" || sentinel.payload != "after" {
+		t.Fatalf("QoS2 Will was duplicated before sentinel: %+v", sentinel)
+	}
+	clusterDurableProcessWriteFatal(t, subscriber, 0x40, []byte{byte(sentinel.packetID >> 8), byte(sentinel.packetID)})
+}
+
 type clusterDurableProcessPacket struct {
 	kind     byte
 	dup      bool
@@ -298,6 +394,11 @@ type clusterDurableProcessPacket struct {
 	packetID uint16
 	topic    string
 	payload  string
+}
+type clusterDurableProcessWill struct {
+	topic   string
+	payload string
+	qos     byte
 }
 
 func clusterDurableProcessStart(t *testing.T) (*clusterMembershipProcessFixture, []*clusterMembershipProcess) {
@@ -316,6 +417,10 @@ func clusterDurableProcessStart(t *testing.T) (*clusterMembershipProcessFixture,
 }
 
 func clusterDurableProcessConnect(t *testing.T, address, token, clientID string, clean bool) net.Conn {
+	return clusterDurableProcessConnectWill(t, address, token, clientID, clean, nil)
+}
+
+func clusterDurableProcessConnectWill(t *testing.T, address, token, clientID string, clean bool, will *clusterDurableProcessWill) net.Conn {
 	t.Helper()
 	deadline := time.Now().Add(15 * time.Second)
 	var lastErr error
@@ -330,8 +435,16 @@ func clusterDurableProcessConnect(t *testing.T, address, token, clientID string,
 			if clean {
 				flags |= 2
 			}
+			if will != nil {
+				flags |= 0x04 | will.qos<<3
+			}
 			body := []byte{0, 4, 'M', 'Q', 'T', 'T', 4, flags, 0, 60}
-			for _, field := range []string{clientID, "jwt", token} {
+			fields := []string{clientID}
+			if will != nil {
+				fields = append(fields, will.topic, will.payload)
+			}
+			fields = append(fields, "jwt", token)
+			for _, field := range fields {
 				body = append(body, byte(len(field)>>8), byte(len(field)))
 				body = append(body, field...)
 			}
@@ -355,6 +468,62 @@ func clusterDurableProcessConnect(t *testing.T, address, token, clientID string,
 	}
 	t.Fatalf("connect MQTT client %q to %s timed out: %v", clientID, address, lastErr)
 	return nil
+}
+
+func clusterDurableProcessWaitForSubscriptions(t *testing.T, ctx context.Context, processes []*clusterMembershipProcess, want ...string) {
+	t.Helper()
+	expected := append([]string(nil), want...)
+	sort.Strings(expected)
+	clusterMembershipProcessWait(t, ctx, fmt.Sprintf("subscription projection %v", expected), func() (bool, string, error) {
+		var reference []string
+		for _, process := range processes {
+			status, body, err := clusterMembershipProcessRequest(ctx, http.MethodGet,
+				process.managementURL()+"/api/v1/subscriptions?tenantId=acceptance", nil, clusterMembershipProcessAdmin, "")
+			if err != nil {
+				return false, fmt.Sprintf("%s query error: %v", process.name, err), nil
+			}
+			if status != http.StatusOK {
+				return false, fmt.Sprintf("%s status = %d", process.name, status), nil
+			}
+			var list struct {
+				Data []struct {
+					TenantID    string `json:"tenantId"`
+					ClientID    string `json:"clientId"`
+					TopicFilter string `json:"topicFilter"`
+					QoS         int    `json:"qos"`
+				} `json:"data"`
+			}
+			if err := json.Unmarshal([]byte(body), &list); err != nil {
+				return false, fmt.Sprintf("%s decode error: %v", process.name, err), nil
+			}
+			got := make([]string, 0, len(list.Data))
+			for _, subscription := range list.Data {
+				if subscription.TenantID != "acceptance" {
+					return false, fmt.Sprintf("%s subscription tenant = %q, want acceptance", process.name, subscription.TenantID), nil
+				}
+				got = append(got, fmt.Sprintf("%s|%s|%d", subscription.ClientID, subscription.TopicFilter, subscription.QoS))
+			}
+			sort.Strings(got)
+			if len(got) != len(expected) {
+				return false, fmt.Sprintf("%s subscriptions = %v, want %v", process.name, got, expected), nil
+			}
+			for index := range got {
+				if got[index] != expected[index] {
+					return false, fmt.Sprintf("%s subscriptions = %v, want %v", process.name, got, expected), nil
+				}
+			}
+			if reference == nil {
+				reference = got
+			} else {
+				for index := range got {
+					if got[index] != reference[index] {
+						return false, fmt.Sprintf("subscription projection mismatch: reference=%v, %s=%v", reference, process.name, got), nil
+					}
+				}
+			}
+		}
+		return true, "all nodes agree on subscription projection", nil
+	})
 }
 
 type clusterDurableProcessConn struct {

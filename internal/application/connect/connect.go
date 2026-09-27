@@ -52,9 +52,9 @@ type Scheduler interface {
 	AfterFunc(d time.Duration, f func()) Timer
 }
 
-// WillPublisher routes published will messages to subscribers.
+// WillPublisher routes published will messages using their authenticated session identity.
 type WillPublisher interface {
-	PublishWill(sessionID routing.SessionID, will mqtt.Will) error
+	PublishWill(sessionID routing.SessionID, publisherKey tenancy.SessionKey, will mqtt.Will) error
 }
 
 // SessionRepository stores the lifecycle value for one Client ID.
@@ -912,7 +912,7 @@ func (useCase *UseCase) Disconnect(sessionID routing.SessionID, reason session.D
 	useCase.recordSessionGauge()
 
 	if shouldPublish {
-		if err := useCase.willPublisher.PublishWill(sessionID, *willToPublish); err != nil {
+		if err := useCase.willPublisher.PublishWill(sessionID, sessionKey, *willToPublish); err != nil {
 			return errors.Join(deliveryTransitionErr, err)
 		}
 	}
@@ -974,7 +974,7 @@ func (useCase *UseCase) onWillTimerForTimer(sessionID routing.SessionID, expecte
 	useCase.mu.Unlock()
 
 	if shouldPublish {
-		_ = useCase.willPublisher.PublishWill(sessionID, *will)
+		_ = useCase.willPublisher.PublishWill(sessionID, sessionKey, *will)
 	}
 }
 
@@ -1068,7 +1068,7 @@ func (useCase *UseCase) onExpiryTimerForTimer(sessionID routing.SessionID, expec
 	useCase.mu.Unlock()
 
 	if shouldPublish {
-		_ = useCase.willPublisher.PublishWill(sessionID, *will)
+		_ = useCase.willPublisher.PublishWill(sessionID, sessionKey, *will)
 	}
 }
 

@@ -164,7 +164,23 @@ func (useCase *UseCase) DurableEnabled() bool {
 // Publish validates and routes one PUBLISH. Cluster QoS 1/2 changes commit
 // before success can be acknowledged; QoS 0 retains the existing delivery path.
 func (useCase *UseCase) Publish(publisherSessionID routing.SessionID, packet mqtt.Publish, receivedAt time.Time, principal ...security.Principal) (ResultDTO, error) {
-	return useCase.publish(publisherSessionID, packet, receivedAt, nil, principal...)
+	return useCase.publish(publisherSessionID, packet, receivedAt, nil, nil, principal...)
+}
+
+// PublishWill routes a server-generated Will using the authenticated session identity.
+func (useCase *UseCase) PublishWill(
+	publisherSessionID routing.SessionID,
+	publisherKey tenancy.SessionKey,
+	packet mqtt.Publish,
+	receivedAt time.Time,
+) (ResultDTO, error) {
+	if publisherKey.RoutingID() == "" {
+		return useCase.Publish(publisherSessionID, packet, receivedAt)
+	}
+	if publisherKey.RoutingID() != string(publisherSessionID) {
+		return ResultDTO{}, errInvalidDurableSession
+	}
+	return useCase.publish(publisherSessionID, packet, receivedAt, nil, &publisherKey)
 }
 
 // ReceiveQoS2 persists the publisher-side QoS 2 PUBLISH before the caller sends
@@ -203,7 +219,7 @@ func (useCase *UseCase) ReceiveQoS2(
 	if ownerNodeID == 0 || epoch == 0 {
 		return ErrDurableDeliveryRejected
 	}
-	publisherKey, err := useCase.durablePublisherKey(publisherSessionID)
+	publisherKey, err := useCase.durablePublisherKey(publisherSessionID, nil)
 	if err != nil {
 		return err
 	}
@@ -274,7 +290,7 @@ func (useCase *UseCase) PublishQoS2Release(
 		return ResultDTO{}, ErrDurableDeliveryRejected
 	}
 	release := &durableRelease{ownerNodeID: ownerNodeID, epoch: epoch}
-	return useCase.publish(publisherSessionID, packet, receivedAt, release, principal...)
+	return useCase.publish(publisherSessionID, packet, receivedAt, release, nil, principal...)
 }
 
 type durableRelease struct {
@@ -301,6 +317,7 @@ func (useCase *UseCase) publish(
 	packet mqtt.Publish,
 	receivedAt time.Time,
 	release *durableRelease,
+	trustedPublisherKey *tenancy.SessionKey,
 	principal ...security.Principal,
 ) (ResultDTO, error) {
 	if useCase != nil && useCase.metrics != nil {
@@ -336,6 +353,9 @@ func (useCase *UseCase) publish(
 	durable := useCase.durableDeliveryCommitter != nil && packet.QoS > mqtt.QoSAtMostOnce
 	if packet.Retain {
 		tenantID := useCase.routes.SessionTenant(publisherSessionID)
+		if trustedPublisherKey != nil {
+			tenantID = trustedPublisherKey.TenantID()
+		}
 		deleteValue := len(packet.Payload) == 0 || expired
 		message := retained.MessageDTO{
 			TenantID: tenantID, PublisherSessionID: publisherSessionID, Topic: packet.Topic,
@@ -366,7 +386,11 @@ func (useCase *UseCase) publish(
 	var matches []routing.Match
 	if !expired {
 		var err error
-		matches, err = useCase.routes.Match(publisherSessionID, packet.Topic, packet.QoS, packet.Retain)
+		if trustedPublisherKey != nil {
+			matches, err = useCase.routes.MatchForTenant(publisherSessionID, trustedPublisherKey.TenantID(), packet.Topic, packet.QoS, packet.Retain)
+		} else {
+			matches, err = useCase.routes.Match(publisherSessionID, packet.Topic, packet.QoS, packet.Retain)
+		}
 		if err != nil {
 			return ResultDTO{}, err
 		}
@@ -381,7 +405,7 @@ func (useCase *UseCase) publish(
 		durableOutcomes = make(map[routing.SessionID]durableOutcome, len(matches))
 	}
 	if durable {
-		deliveryResult, targets, err := useCase.commitDurableDelivery(publisherSessionID, packet, expiresAt, now, matches, release)
+		deliveryResult, targets, err := useCase.commitDurableDelivery(publisherSessionID, trustedPublisherKey, packet, expiresAt, now, matches, release)
 		if err != nil {
 			return result, err
 		}
@@ -472,12 +496,13 @@ func (useCase *UseCase) publish(
 
 func (useCase *UseCase) commitDurableDelivery(
 	publisherSessionID routing.SessionID,
+	trustedPublisherKey *tenancy.SessionKey,
 	packet mqtt.Publish,
 	expiresAt, proposedAt time.Time,
 	matches []routing.Match,
 	release *durableRelease,
 ) (membership.DeliveryResultDTO, []durableTarget, error) {
-	publisherKey, err := useCase.durablePublisherKey(publisherSessionID)
+	publisherKey, err := useCase.durablePublisherKey(publisherSessionID, trustedPublisherKey)
 	if err != nil {
 		return membership.DeliveryResultDTO{}, nil, err
 	}
@@ -561,7 +586,16 @@ func (useCase *UseCase) commitDurableDelivery(
 	}
 	return *committed.Delivery, targets, nil
 }
-func (useCase *UseCase) durablePublisherKey(publisherSessionID routing.SessionID) (tenancy.SessionKey, error) {
+func (useCase *UseCase) durablePublisherKey(publisherSessionID routing.SessionID, trustedPublisherKey *tenancy.SessionKey) (tenancy.SessionKey, error) {
+	if trustedPublisherKey != nil {
+		if trustedPublisherKey.RoutingID() != string(publisherSessionID) {
+			return tenancy.SessionKey{}, errInvalidDurableSession
+		}
+		if boundTenant := useCase.routes.SessionTenant(publisherSessionID); boundTenant != (tenancy.TenantID{}) && boundTenant != trustedPublisherKey.TenantID() {
+			return tenancy.SessionKey{}, errInvalidDurableSession
+		}
+		return *trustedPublisherKey, nil
+	}
 	key, err := tenancy.ParseSessionKeyRoutingID(string(publisherSessionID))
 	if err != nil || useCase.routes.SessionTenant(publisherSessionID) != key.TenantID() {
 		return tenancy.SessionKey{}, errInvalidDurableSession

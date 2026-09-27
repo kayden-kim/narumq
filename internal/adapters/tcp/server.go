@@ -1551,9 +1551,9 @@ func packetTypeName(packet mqtt.Packet) string {
 	}
 }
 
-// PublishWill implements connect.WillPublisher by routing a will message through publications
-// and waking or closing targeted subscriber sessions.
-func (server *Server) PublishWill(sessionID routing.SessionID, will mqtt.Will) error {
+// PublishWill implements connect.WillPublisher by routing a Will through publications
+// with the session's authenticated tenant identity and waking or closing target sessions.
+func (server *Server) PublishWill(sessionID routing.SessionID, publisherKey tenancy.SessionKey, will mqtt.Will) error {
 	publishPacket := mqtt.Publish{
 		Version: mqtt.ProtocolV5,
 		QoS:     mqtt.QoS(will.QoS),
@@ -1561,7 +1561,7 @@ func (server *Server) PublishWill(sessionID routing.SessionID, will mqtt.Will) e
 		Topic:   will.Topic,
 		Payload: will.Payload,
 	}
-	result, err := server.publications.Publish(sessionID, publishPacket, server.config.Clock.Now())
+	result, err := server.publications.PublishWill(sessionID, publisherKey, publishPacket, server.config.Clock.Now())
 	if err != nil {
 		return err
 	}
@@ -1608,13 +1608,13 @@ func (b *WillBridge) Bind(target connect.WillPublisher) {
 	b.target = target
 }
 
-// PublishWill forwards the will message to the bound publisher.
-func (b *WillBridge) PublishWill(sessionID routing.SessionID, will mqtt.Will) error {
+// PublishWill forwards the Will with its authenticated session identity to the bound publisher.
+func (b *WillBridge) PublishWill(sessionID routing.SessionID, publisherKey tenancy.SessionKey, will mqtt.Will) error {
 	b.mu.RLock()
 	target := b.target
 	b.mu.RUnlock()
 	if target == nil {
 		return nil
 	}
-	return target.PublishWill(sessionID, will)
+	return target.PublishWill(sessionID, publisherKey, will)
 }

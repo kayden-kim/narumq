@@ -85,7 +85,7 @@ QoS 1/2 publish 안의 effective-QoS-0 subscriber를 기존 lane에 남기면 �
 
 | 결정 요인 | 검증 방법 | 합격 기준 | 증거 |
 | --- | --- | --- | --- |
-| Durable state, queue, publisher/subscriber protocol과 runtime 전이 | [Cluster §11.11](../specs/cluster-session-and-delivery.md#1111-qos-12-durable-delivery-수용-매핑)의 focused unit suite와 세 process acceptance를 실행했다. | Unit 시험은 state transition, ACK order, takeover, duplicate, QoS 2 Will QoS 보존, saturation과 quorum-loss 동작을 확인한다. Process acceptance는 detached QoS 1/2 session queue, owner takeover, backup/restore, ACK 뒤 process kill 및 quorum loss를 확인한다. | PASS: focused package suite 통과. 세 process acceptance PASS (31.414s); 상세 test path와 결과는 §11.11에 기록했다. |
+| Durable state, queue, publisher/subscriber protocol과 runtime 전이 | [Cluster §11.11](../specs/cluster-session-and-delivery.md#1111-qos-12-durable-delivery-수용-매핑)의 focused unit suite와 네 process acceptance를 실행했다. | Unit 시험은 state transition, ACK order, takeover, duplicate, QoS 2 Will QoS 보존, saturation과 quorum-loss 동작을 확인한다. Process acceptance는 detached QoS 1/2 session queue, owner takeover, backup/restore, ACK 뒤 process kill, quorum loss 및 QoS 2 Will reconnect/takeover를 확인한다. | PASS: focused package suite 통과. 네 process acceptance PASS (38.493s); QoS 2 Will reconnect/takeover 시험 포함. 상세 test path와 결과는 §11.11에 기록했다. |
 | Production storage, BP-03, N-1 | WAL/fsync crash injection, production-like storage 및 N-1 compatibility acceptance | 해당 별도 기준과 증거를 만족한다. | 이 ADR 승인 범위 밖; 미실행. |
 
 ## 8. 재검토 조건

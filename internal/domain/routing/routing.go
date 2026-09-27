@@ -367,26 +367,63 @@ func (table *Table) Match(
 	publishQoS mqtt.QoS,
 	publishedRetain bool,
 ) ([]Match, error) {
-	if err := ValidateSessionID(publisherSessionID); err != nil {
+	if err := validateMatchInput(publisherSessionID, topic, publishQoS); err != nil {
 		return nil, err
-	}
-	if err := ValidateTopicName(topic); err != nil {
-		return nil, err
-	}
-	if publishQoS > mqtt.QoSExactlyOnce {
-		return nil, ErrInvalidQoS
 	}
 
 	table.mu.Lock()
 	defer table.mu.Unlock()
+	return table.matchLocked(table.sessionTenants[publisherSessionID], publisherSessionID, topic, publishQoS, publishedRetain), nil
+}
 
-	pubTenant := table.sessionTenants[publisherSessionID]
+// MatchForTenant matches a publication using its authenticated tenant after the
+// publisher session has been removed from the routing projection.
+func (table *Table) MatchForTenant(
+	publisherSessionID SessionID,
+	publisherTenant tenancy.TenantID,
+	topic string,
+	publishQoS mqtt.QoS,
+	publishedRetain bool,
+) ([]Match, error) {
+	if err := validateMatchInput(publisherSessionID, topic, publishQoS); err != nil {
+		return nil, err
+	}
+	if publisherTenant.String() == "" {
+		return nil, tenancy.ErrInvalidTenantID
+	}
+
+	table.mu.Lock()
+	defer table.mu.Unlock()
+	if boundTenant := table.sessionTenants[publisherSessionID]; boundTenant != (tenancy.TenantID{}) && boundTenant != publisherTenant {
+		return nil, tenancy.ErrTenantMismatch
+	}
+	return table.matchLocked(publisherTenant, publisherSessionID, topic, publishQoS, publishedRetain), nil
+}
+
+func validateMatchInput(publisherSessionID SessionID, topic string, publishQoS mqtt.QoS) error {
+	if err := ValidateSessionID(publisherSessionID); err != nil {
+		return err
+	}
+	if err := ValidateTopicName(topic); err != nil {
+		return err
+	}
+	if publishQoS > mqtt.QoSExactlyOnce {
+		return ErrInvalidQoS
+	}
+	return nil
+}
+
+func (table *Table) matchLocked(
+	publisherTenant tenancy.TenantID,
+	publisherSessionID SessionID,
+	topic string,
+	publishQoS mqtt.QoS,
+	publishedRetain bool,
+) []Match {
 	matches := make([]Match, 0, len(table.subscriptions)+len(table.shared))
 	for sessionID, byFilter := range table.subscriptions {
-		if pubTenant != (tenancy.TenantID{}) || table.sessionTenants[sessionID] != (tenancy.TenantID{}) {
-			if table.sessionTenants[sessionID] != pubTenant {
-				continue
-			}
+		if table.sessionTenants[sessionID] != publisherTenant {
+			continue
 		}
 		var (
 			maxGranted mqtt.QoS
@@ -444,10 +481,8 @@ func (table *Table) Match(
 
 			candidates := make([]Target, 0, len(members))
 			for sessionID, subscription := range members {
-				if pubTenant != (tenancy.TenantID{}) || table.sessionTenants[sessionID] != (tenancy.TenantID{}) {
-					if table.sessionTenants[sessionID] != pubTenant {
-						continue
-					}
+				if table.sessionTenants[sessionID] != publisherTenant {
+					continue
 				}
 				effectiveQoS := publishQoS
 				if subscription.QoS < effectiveQoS {
@@ -467,8 +502,8 @@ func (table *Table) Match(
 			})
 
 			cursorKey := sharedFilter
-			if pubTenant != (tenancy.TenantID{}) {
-				cursorKey = pubTenant.String() + "/" + sharedFilter
+			if publisherTenant != (tenancy.TenantID{}) {
+				cursorKey = publisherTenant.String() + "/" + sharedFilter
 			}
 			cursor := table.sharedCursors[cursorKey]
 			primaryIndex := int(cursor % uint64(len(candidates)))
@@ -488,7 +523,7 @@ func (table *Table) Match(
 	sort.SliceStable(matches, func(left, right int) bool {
 		return matches[left].Primary.SessionID < matches[right].Primary.SessionID
 	})
-	return matches, nil
+	return matches
 }
 
 // ValidateSessionID validates the session key used by routing operations.
