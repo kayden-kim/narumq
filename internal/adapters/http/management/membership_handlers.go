@@ -314,7 +314,10 @@ func writeMembershipServiceError(w http.ResponseWriter, r *http.Request, err err
 		membership.ServiceErrorIdempotencyConflict,
 		membership.ServiceErrorMembershipInProgress,
 		membership.ServiceErrorOperationConflict,
-		membership.ServiceErrorNotLeader:
+		membership.ServiceErrorNotLeader,
+		membership.ServiceErrorInvalidNodeTransition,
+		membership.ServiceErrorDrainNotCancellable,
+		membership.ServiceErrorNodeDrainInProgress:
 		status = http.StatusConflict
 	case membership.ServiceErrorCompatibilityUnsupported:
 		status = http.StatusUnprocessableEntity
@@ -323,5 +326,9 @@ func writeMembershipServiceError(w http.ResponseWriter, r *http.Request, err err
 	default:
 		serviceError = &membership.ServiceError{Code: "internal_error", Message: "internal membership error"}
 	}
-	WriteError(w, r, status, string(serviceError.Code), serviceError.Message, serviceError.Retryable, nil)
+	var details any
+	if serviceError.NodeState != "" {
+		details = map[string]any{"state": serviceError.NodeState}
+	}
+	WriteError(w, r, status, string(serviceError.Code), serviceError.Message, serviceError.Retryable, details)
 }

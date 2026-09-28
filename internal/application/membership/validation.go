@@ -7,6 +7,7 @@ import (
 	"strings"
 	"unicode/utf8"
 
+	"narumq/internal/domain/nodedrain"
 	"narumq/internal/domain/routing"
 	"narumq/internal/domain/tenancy"
 )
@@ -59,6 +60,9 @@ func validateCommand(command CommandDTO) error {
 	if command.Offline != nil {
 		payloadCount++
 	}
+	if command.NodeDrain != nil {
+		payloadCount++
+	}
 	if payloadCount != 1 {
 		return ErrInvalidCommand
 	}
@@ -85,6 +89,10 @@ func validateCommand(command CommandDTO) error {
 		}
 	case command.Offline != nil:
 		if validateOfflineChange(*command.Offline) != nil {
+			return ErrInvalidCommand
+		}
+	case command.NodeDrain != nil:
+		if validateNodeDrainChange(*command.NodeDrain) != nil {
 			return ErrInvalidCommand
 		}
 	}
@@ -304,13 +312,30 @@ func validSnapshot(snapshot SnapshotDTO) error {
 	for _, session := range snapshot.DeliverySessions {
 		deliveryObjects += len(session.Messages) + len(session.Inbound)
 	}
-	count := len(snapshot.Members) + len(snapshot.Ownerships) + len(snapshot.Subscriptions) + deliveryObjects + len(snapshot.MembershipHistory) + len(snapshot.Retained) + len(snapshot.OfflineSessions) + offlineMessagesCount
+	count := len(snapshot.Members) + len(snapshot.Ownerships) + len(snapshot.Subscriptions) + deliveryObjects + len(snapshot.MembershipHistory) + len(snapshot.Retained) + len(snapshot.OfflineSessions) + offlineMessagesCount + len(snapshot.NodeDrains)
 	if count > maxSnapshotEntries || snapshot.ObjectCount != uint64(count) || (count > 0 && snapshot.LastIncludedIndex == 0) || len(snapshot.Retained) > MaxRetainedMessages {
 		return ErrInvalidSnapshot
 	}
+	nodeDrainMembers := make(map[uint64]MemberPhase, len(snapshot.Members))
 	for index, member := range snapshot.Members {
 		if validateMemberIdentity(member) != nil || (index > 0 && (snapshot.Members[index-1].MemberID >= member.MemberID || !compatibleMemberProfile(snapshot.Members[0], member))) {
 			return ErrInvalidSnapshot
+		}
+		nodeDrainMembers[member.MemberID] = member.Phase
+	}
+	activeDrains := 0
+	for index, state := range snapshot.NodeDrains {
+		memberPhase, memberExists := nodeDrainMembers[state.MemberID]
+		if validateNodeDrainState(state) != nil || state.CommittedIndex > snapshot.LastIncludedIndex ||
+			(index > 0 && snapshot.NodeDrains[index-1].MemberID >= state.MemberID) ||
+			!memberExists || memberPhase == MemberPhaseRetired {
+			return ErrInvalidSnapshot
+		}
+		if state.Phase.Active() && state.Phase != nodedrain.PhaseCompleted {
+			activeDrains++
+			if activeDrains > 1 {
+				return ErrInvalidSnapshot
+			}
 		}
 	}
 	ownershipEpochs := make(map[sessionKey]uint64, len(snapshot.Ownerships))

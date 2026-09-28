@@ -1,6 +1,8 @@
 // Package membership owns committed cluster membership and replicated session state.
 package membership
 
+import "narumq/internal/domain/nodedrain"
+
 // SchemaMajor and SchemaMinor identify the supported replicated-state contract.
 const (
 	SchemaMajor uint32 = 1
@@ -173,6 +175,19 @@ const (
 	ConfigurationActionRemoveMember
 )
 
+// NodeDrainAction identifies one committed node drain state transition.
+type NodeDrainAction uint32
+
+const (
+	NodeDrainActionUnspecified NodeDrainAction = iota
+	NodeDrainActionStart
+	NodeDrainActionAdvance
+	NodeDrainActionComplete
+	NodeDrainActionFail
+	NodeDrainActionCancel
+	NodeDrainActionClear
+)
+
 // CommandDTO is an application-owned discriminated union for one committed command.
 // Exactly one payload must be non-nil. Its fields intentionally mirror the v1
 // replicated-state contract without importing adapter or generated wire types.
@@ -186,6 +201,7 @@ type CommandDTO struct {
 	Delivery     *DeliveryChangeDTO
 	Retained     *RetainedChangeDTO
 	Offline      *OfflineChangeDTO
+	NodeDrain    *NodeDrainChangeDTO
 }
 
 // MemberIdentityDTO is a committed cluster member identity and lifecycle phase.
@@ -389,6 +405,9 @@ const (
 	ConflictDeliveryCapacity         ApplyConflictCode = "delivery_capacity_exceeded"
 	ConflictDeliveryMissing          ApplyConflictCode = "delivery_missing"
 	ConflictDeliveryPacketID         ApplyConflictCode = "delivery_packet_id_conflict"
+	ConflictNodeDrainActive          ApplyConflictCode = "node_drain_active"
+	ConflictNodeDrainInProgress      ApplyConflictCode = "node_drain_in_progress"
+	ConflictDrainNotCancellable      ApplyConflictCode = "drain_not_cancellable"
 	ConflictDeliverySessionMissing   ApplyConflictCode = "delivery_session_missing"
 )
 
@@ -402,6 +421,7 @@ type ApplyResultDTO struct {
 	Subscription *SubscriptionStateDTO
 	Delivery     *DeliveryResultDTO
 	OfflineClaim *OfflineClaimDTO
+	NodeDrain    *NodeDrainStateDTO
 }
 
 // MembershipOperationPhase is the management-facing current operation status.
@@ -430,6 +450,60 @@ type MembershipOperationDTO struct {
 	Record   MembershipRecordDTO
 }
 
+// StartNodeDrainRequestDTO contains the operator's validated drain parameters.
+type StartNodeDrainRequestDTO struct {
+	MemberID                           uint64
+	IdempotencyKey, ServerReference    string
+	ConnectionRatePerSecond            uint32
+	LoadBalancerPropagationDelayMillis uint64
+	TimeoutMillis                      uint64
+}
+
+// NodeDrainProgressDTO reports the committed safe-to-stop progress counters.
+type NodeDrainProgressDTO struct {
+	ConnectionsInitial, ConnectionsRemaining    uint64
+	SessionsReadyForTakeover, SessionsTakenOver uint64
+	SessionsFailed, PendingWAL, UnderReplicated uint64
+}
+
+// NodeDrainChangeDTO carries one deterministic replicated drain transition.
+type NodeDrainChangeDTO struct {
+	Action                             NodeDrainAction
+	MemberID                           uint64
+	DrainOperationID, IdempotencyKey   string
+	ServerReference                    string
+	ConnectionRatePerSecond            uint32
+	LoadBalancerPropagationDelayMillis uint64
+	TimeoutMillis                      uint64
+	Phase                              nodedrain.Phase
+	Progress                           NodeDrainProgressDTO
+	FailureCode, BlockingReason        string
+	ProposedAtUnixMillis               uint64
+}
+
+// NodeDrainStateDTO is the committed state of one node drain operation.
+type NodeDrainStateDTO struct {
+	DrainOperationID                          string
+	MemberID                                  uint64
+	IdempotencyKey                            string
+	Phase                                     nodedrain.Phase
+	ServerReference                           string
+	ConnectionRatePerSecond                   uint32
+	LoadBalancerPropagationDelayMillis        uint64
+	TimeoutMillis                             uint64
+	StartedAtUnixMillis, DeadlineAtUnixMillis uint64
+	PhaseStartedAtUnixMillis                  uint64
+	Progress                                  NodeDrainProgressDTO
+	FailureCode, BlockingReason               string
+	CommittedIndex                            uint64
+}
+
+// NodeDrainOperationDTO combines one drain state with retry classification.
+type NodeDrainOperationDTO struct {
+	State    NodeDrainStateDTO
+	Replayed bool
+}
+
 // SnapshotDTO is the canonical application view of a replicated state snapshot.
 // Digest is opaque adapter-verified envelope data; an empty Digest asks the adapter
 // to compute the contract's deterministic protobuf state digest when encoding.
@@ -446,4 +520,5 @@ type SnapshotDTO struct {
 	MembershipHistory []MembershipRecordDTO
 	Retained          []RetainedStateDTO
 	OfflineSessions   []OfflineSessionStateDTO
+	NodeDrains        []NodeDrainStateDTO
 }

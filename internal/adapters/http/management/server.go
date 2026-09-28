@@ -29,19 +29,20 @@ func NewRouter(
 	healthChecker ports.HealthChecker,
 	metricsReg portsmetrics.MetricsRenderer,
 ) http.Handler {
-	return newRouter(cfg, stateProvider, healthChecker, metricsReg, nil, nil)
+	return newRouter(cfg, stateProvider, healthChecker, metricsReg, nil, nil, nil)
 }
 
-// NewRouterWithMembership constructs a router with membership and cluster-backup operations.
+// NewRouterWithMembership constructs a router with membership, node drain, and cluster-backup routes.
 func NewRouterWithMembership(
 	cfg ServerConfig,
 	stateProvider ports.StateProvider,
 	healthChecker ports.HealthChecker,
 	metricsReg portsmetrics.MetricsRenderer,
 	membershipService MembershipUseCase,
+	drainService NodeDrainUseCase,
 	backupProvider ports.ClusterBackupProvider,
 ) http.Handler {
-	return newRouter(cfg, stateProvider, healthChecker, metricsReg, membershipService, backupProvider)
+	return newRouter(cfg, stateProvider, healthChecker, metricsReg, membershipService, drainService, backupProvider)
 }
 
 func newRouter(
@@ -50,8 +51,10 @@ func newRouter(
 	healthChecker ports.HealthChecker,
 	metricsReg portsmetrics.MetricsRenderer,
 	membershipService MembershipUseCase,
+	drainService NodeDrainUseCase,
 	backupProvider ports.ClusterBackupProvider,
 ) http.Handler {
+
 	auth := NewAuthenticator(AuthConfig{
 		AuthToken:             cfg.AuthToken,
 		AuthTokenRole:         cfg.AuthTokenRole,
@@ -91,6 +94,23 @@ func newRouter(
 		mux.HandleFunc("/api/v1/cluster/members/{memberId}", auth.RequireRole(RoleClusterAdmin, membershipH.RemoveMember))
 		mux.HandleFunc("/api/v1/cluster/membership-operations/{operationId}", auth.RequireRole(RoleReadOnly, membershipH.GetOperation))
 	}
+	if drainService != nil {
+		drainH := &nodeDrainHandler{service: drainService}
+		mux.HandleFunc("/api/v1/nodes/{nodeId}/drain", func(w http.ResponseWriter, r *http.Request) {
+			switch r.Method {
+			case http.MethodPost:
+				auth.RequireRole(RoleOperator, drainH.Start)(w, r)
+			case http.MethodGet:
+				auth.RequireRole(RoleReadOnly, drainH.Get)(w, r)
+			case http.MethodDelete:
+				auth.RequireRole(RoleOperator, drainH.Cancel)(w, r)
+			default:
+				auth.RequireRole(RoleReadOnly, func(w http.ResponseWriter, r *http.Request) {
+					WriteError(w, r, http.StatusMethodNotAllowed, "method_not_allowed", "method not allowed", false, nil)
+				})(w, r)
+			}
+		})
+	}
 	if backupProvider != nil {
 		backupH := &clusterBackupHandler{provider: backupProvider}
 		mux.HandleFunc("/api/v1/cluster/backups", auth.RequireRole(RoleClusterAdmin, backupH.CreateBackup))
@@ -117,19 +137,20 @@ func NewServer(
 	healthChecker ports.HealthChecker,
 	metricsReg portsmetrics.MetricsRenderer,
 ) *http.Server {
-	return newServer(cfg, stateProvider, healthChecker, metricsReg, nil, nil)
+	return newServer(cfg, stateProvider, healthChecker, metricsReg, nil, nil, nil)
 }
 
-// NewServerWithMembership creates a management server with membership and cluster-backup routes.
+// NewServerWithMembership creates a management server with membership, node drain, and cluster-backup routes.
 func NewServerWithMembership(
 	cfg ServerConfig,
 	stateProvider ports.StateProvider,
 	healthChecker ports.HealthChecker,
 	metricsReg portsmetrics.MetricsRenderer,
 	membershipService MembershipUseCase,
+	drainService NodeDrainUseCase,
 	backupProvider ports.ClusterBackupProvider,
 ) *http.Server {
-	return newServer(cfg, stateProvider, healthChecker, metricsReg, membershipService, backupProvider)
+	return newServer(cfg, stateProvider, healthChecker, metricsReg, membershipService, drainService, backupProvider)
 }
 
 func newServer(
@@ -138,8 +159,10 @@ func newServer(
 	healthChecker ports.HealthChecker,
 	metricsReg portsmetrics.MetricsRenderer,
 	membershipService MembershipUseCase,
+	drainService NodeDrainUseCase,
 	backupProvider ports.ClusterBackupProvider,
 ) *http.Server {
+
 	addr := cfg.ListenAddr
 	if addr == "" {
 		addr = ":8080"
@@ -154,7 +177,7 @@ func newServer(
 		wTimeout = 10 * time.Second
 	}
 
-	handler := newRouter(cfg, stateProvider, healthChecker, metricsReg, membershipService, backupProvider)
+	handler := newRouter(cfg, stateProvider, healthChecker, metricsReg, membershipService, drainService, backupProvider)
 
 	return &http.Server{
 		Addr:         addr,

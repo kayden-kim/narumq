@@ -73,6 +73,7 @@ type Config struct {
 	ClusterMode                bool
 	LocalMemberID              uint64
 	ClusterReady               func() bool
+	ClusterAdmissionOpen       func() bool
 	// ClusterProjectionReady checks local committed projection readiness without a quorum read barrier.
 	ClusterProjectionReady func() bool
 }
@@ -142,6 +143,7 @@ func NewServer(
 	}
 	if config.ClusterMode && (config.LocalMemberID == 0 ||
 		config.ClusterReady == nil ||
+		config.ClusterAdmissionOpen == nil ||
 		config.ClusterProjectionReady == nil ||
 		!connections.ClusterOwnershipConfigured(config.LocalMemberID) ||
 		!subscriptions.ClusterCommitterConfigured()) {
@@ -371,6 +373,44 @@ func (server *Server) CloseSessionForTakeover(sessionID routing.SessionID) bool 
 	return true
 }
 
+const drainDisconnectFlushTimeout = 2 * time.Second
+
+// CloseSessionForDrain sends a reconnect-directed DISCONNECT before closing an MQTT 5 session.
+func (server *Server) CloseSessionForDrain(sessionID routing.SessionID, serverReference string) bool {
+	if server == nil {
+		return false
+	}
+	server.mu.Lock()
+	connection := server.bySession[sessionID]
+	if connection != nil {
+		delete(server.bySession, sessionID)
+		connection.takeover.Store(true)
+	}
+	server.mu.Unlock()
+	if connection == nil {
+		return false
+	}
+	if connection.version == mqtt.ProtocolV5 {
+		connection.enqueueFinal(&mqtt.Disconnect{
+			Version: mqtt.ProtocolV5, ReasonCode: 0x9C, ServerReference: serverReference,
+		})
+		time.AfterFunc(drainDisconnectFlushTimeout, connection.requestClose)
+		return true
+	}
+	connection.requestClose()
+	return true
+}
+
+// ActiveConnectionCount returns sockets accepted by the server, including pre-CONNECT sockets.
+func (server *Server) ActiveConnectionCount() int {
+	if server == nil {
+		return 0
+	}
+	server.mu.Lock()
+	defer server.mu.Unlock()
+	return len(server.active)
+}
+
 func (server *Server) stopAll() {
 	server.stopOnce.Do(func() {
 		server.mu.Lock()
@@ -394,9 +434,10 @@ func (server *Server) stopAll() {
 }
 
 type controlMessage struct {
-	packet  mqtt.Packet
-	done    chan error
-	barrier bool
+	packet     mqtt.Packet
+	done       chan error
+	barrier    bool
+	closeAfter bool
 }
 type inboundState struct {
 	state      delivery.Inbound
@@ -601,7 +642,9 @@ func (connection *connection) handleUnsupportedVersion(err error) bool {
 }
 
 func (connection *connection) activate(packet mqtt.Connect) error {
-	if connection.server.config.ClusterMode && !connection.server.clusterReady() {
+
+	if connection.server.config.ClusterMode &&
+		(!connection.server.config.ClusterAdmissionOpen() || !connection.server.clusterReady()) {
 		reasonCode := byte(0x03)
 		if packet.Version == mqtt.ProtocolV5 {
 			reasonCode = 0x88
@@ -1224,6 +1267,21 @@ func (connection *connection) enqueueControl(packet mqtt.Packet) error {
 	}
 }
 
+func (connection *connection) enqueueFinal(packet mqtt.Packet) {
+	select {
+	case <-connection.stop:
+		return
+	default:
+	}
+	select {
+	case <-connection.stop:
+		return
+	case connection.controlQueue <- controlMessage{packet: packet, closeAfter: true}:
+	default:
+		connection.requestClose()
+	}
+}
+
 func (connection *connection) enqueueAndWait(packet mqtt.Packet) error {
 	if packet == nil {
 		return ErrProtocol
@@ -1302,6 +1360,10 @@ func (connection *connection) writerLoop() {
 				connection.requestClose()
 				return
 			}
+			if message.closeAfter {
+				connection.requestClose()
+				return
+			}
 			continue
 		}
 		select {
@@ -1309,6 +1371,10 @@ func (connection *connection) writerLoop() {
 			return
 		case message := <-connection.controlQueue:
 			if err := connection.writeMessage(message); err != nil {
+				connection.requestClose()
+				return
+			}
+			if message.closeAfter {
 				connection.requestClose()
 				return
 			}

@@ -173,7 +173,16 @@ func newClusterMembershipProcessFixture(t *testing.T, nodeCount int, buildTags s
       "replay-sub",
       "replay-pub-1",
       "replay-pub-2",
-      "replay-pub-4"
+      "replay-pub-4",
+      "drain-v5-a",
+      "drain-open-1",
+      "drain-open-2",
+      "drain-open-3",
+      "drain-detached-c",
+      "drain-new-rejected",
+      "drain-after-restart",
+      "drain-publisher",
+      "drain-cancel-check"
     ],
     "roles": ["client"]
   }],
@@ -315,6 +324,18 @@ func newClusterMembershipProcessFixture(t *testing.T, nodeCount int, buildTags s
     "effect": "allow",
     "action": "unsubscribe",
     "topicFilter": "replay/#"
+  }, {
+    "tenantId": "acceptance",
+    "role": "client",
+    "effect": "allow",
+    "action": "publish",
+    "topicFilter": "drain/#"
+  }, {
+    "tenantId": "acceptance",
+    "role": "client",
+    "effect": "allow",
+    "action": "subscribe",
+    "topicFilter": "drain/#"
   }]
 }`, jwksURL))
 	clusterMembershipProcessWriteFile(t, securityPath, securityConfig, 0o600)

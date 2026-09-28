@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
+	"narumq/internal/domain/nodedrain"
 
 	"narumq/internal/adapters/raft/records"
 	"narumq/internal/application/membership"
@@ -109,6 +110,27 @@ func encodeMembershipCommand(command membership.CommandDTO) ([]byte, error) {
 			Messages:                   messages,
 		}}
 	}
+	if command.NodeDrain != nil {
+		payloadCount++
+		action, err := nodeDrainActionToRecord(command.NodeDrain.Action)
+		if err != nil {
+			return nil, err
+		}
+		phase, err := drainPhaseToRecord(command.NodeDrain.Phase)
+		if err != nil {
+			return nil, err
+		}
+		wire.Payload = &records.CommandEnvelope_NodeDrain{NodeDrain: &records.NodeDrainChange{
+			Action: action, MemberId: command.NodeDrain.MemberID,
+			DrainOperationId: command.NodeDrain.DrainOperationID, IdempotencyKey: command.NodeDrain.IdempotencyKey,
+			ServerReference: command.NodeDrain.ServerReference, ConnectionRatePerSecond: command.NodeDrain.ConnectionRatePerSecond,
+			LoadBalancerPropagationDelayMillis: command.NodeDrain.LoadBalancerPropagationDelayMillis,
+			TimeoutMillis:                      command.NodeDrain.TimeoutMillis, Phase: phase,
+			Progress:    nodeDrainProgressToRecord(command.NodeDrain.Progress),
+			FailureCode: command.NodeDrain.FailureCode, BlockingReason: command.NodeDrain.BlockingReason,
+			ProposedAtUnixMillis: command.NodeDrain.ProposedAtUnixMillis,
+		}}
+	}
 	if payloadCount != 1 {
 		return nil, errors.New("application command must contain exactly one payload")
 	}
@@ -207,6 +229,26 @@ func decodeMembershipCommand(data []byte) (membership.CommandDTO, error) {
 			ProposedAtUnixMillis:       value.GetProposedAtUnixMillis(),
 			Messages:                   messages,
 		}
+	case *records.CommandEnvelope_NodeDrain:
+		value := payload.NodeDrain
+		action, err := nodeDrainActionFromRecord(value.GetAction())
+		if err != nil {
+			return membership.CommandDTO{}, err
+		}
+		phase, err := drainPhaseFromRecord(value.GetPhase(), true)
+		if err != nil {
+			return membership.CommandDTO{}, err
+		}
+		command.NodeDrain = &membership.NodeDrainChangeDTO{
+			Action: action, MemberID: value.GetMemberId(), DrainOperationID: value.GetDrainOperationId(),
+			IdempotencyKey: value.GetIdempotencyKey(), ServerReference: value.GetServerReference(),
+			ConnectionRatePerSecond:            value.GetConnectionRatePerSecond(),
+			LoadBalancerPropagationDelayMillis: value.GetLoadBalancerPropagationDelayMillis(),
+			TimeoutMillis:                      value.GetTimeoutMillis(), Phase: phase,
+			Progress:    nodeDrainProgressFromRecord(value.GetProgress()),
+			FailureCode: value.GetFailureCode(), BlockingReason: value.GetBlockingReason(),
+			ProposedAtUnixMillis: value.GetProposedAtUnixMillis(),
+		}
 	default:
 		return membership.CommandDTO{}, errors.New("decoded command has no supported payload")
 	}
@@ -296,7 +338,22 @@ func encodeMembershipSnapshot(snapshot membership.SnapshotDTO) ([]byte, error) {
 			Messages:                   messages,
 		})
 	}
-	objectCount := uint64(len(snapshot.Members) + len(snapshot.Ownerships) + len(snapshot.Subscriptions) + len(snapshot.DeliverySessions) + deliveryEntriesCount + len(snapshot.MembershipHistory) + len(snapshot.Retained) + len(snapshot.OfflineSessions) + offlineMessagesCount)
+	for _, drain := range snapshot.NodeDrains {
+		phase, conversionErr := drainPhaseToRecord(drain.Phase)
+		if conversionErr != nil {
+			return nil, conversionErr
+		}
+		state.NodeDrains = append(state.NodeDrains, &records.NodeDrainState{
+			DrainOperationId: drain.DrainOperationID, MemberId: drain.MemberID, IdempotencyKey: drain.IdempotencyKey,
+			Phase: phase, ServerReference: drain.ServerReference, ConnectionRatePerSecond: drain.ConnectionRatePerSecond,
+			LoadBalancerPropagationDelayMillis: drain.LoadBalancerPropagationDelayMillis,
+			TimeoutMillis:                      drain.TimeoutMillis, StartedAtUnixMillis: drain.StartedAtUnixMillis,
+			DeadlineAtUnixMillis: drain.DeadlineAtUnixMillis, PhaseStartedAtUnixMillis: drain.PhaseStartedAtUnixMillis,
+			Progress: nodeDrainProgressToRecord(drain.Progress), FailureCode: drain.FailureCode,
+			BlockingReason: drain.BlockingReason, CommittedIndex: drain.CommittedIndex,
+		})
+	}
+	objectCount := uint64(len(snapshot.Members) + len(snapshot.Ownerships) + len(snapshot.Subscriptions) + len(snapshot.DeliverySessions) + deliveryEntriesCount + len(snapshot.MembershipHistory) + len(snapshot.Retained) + len(snapshot.OfflineSessions) + offlineMessagesCount + len(snapshot.NodeDrains))
 	if snapshot.ObjectCount != objectCount {
 		return nil, errors.New("application snapshot object count does not match its contents")
 	}
@@ -398,6 +455,22 @@ func decodeMembershipSnapshot(data []byte) (membership.SnapshotDTO, error) {
 			SessionExpiresAtUnixMillis: session.GetSessionExpiresAtUnixMillis(),
 			NextSequence:               session.GetNextSequence(),
 			Messages:                   messages,
+		})
+	}
+	for _, drain := range state.GetNodeDrains() {
+		phase, conversionErr := drainPhaseFromRecord(drain.GetPhase(), false)
+		if conversionErr != nil {
+			return membership.SnapshotDTO{}, conversionErr
+		}
+		snapshot.NodeDrains = append(snapshot.NodeDrains, membership.NodeDrainStateDTO{
+			DrainOperationID: drain.GetDrainOperationId(), MemberID: drain.GetMemberId(), IdempotencyKey: drain.GetIdempotencyKey(),
+			Phase: phase, ServerReference: drain.GetServerReference(),
+			ConnectionRatePerSecond:            drain.GetConnectionRatePerSecond(),
+			LoadBalancerPropagationDelayMillis: drain.GetLoadBalancerPropagationDelayMillis(),
+			TimeoutMillis:                      drain.GetTimeoutMillis(), StartedAtUnixMillis: drain.GetStartedAtUnixMillis(),
+			DeadlineAtUnixMillis: drain.GetDeadlineAtUnixMillis(), PhaseStartedAtUnixMillis: drain.GetPhaseStartedAtUnixMillis(),
+			Progress: nodeDrainProgressFromRecord(drain.GetProgress()), FailureCode: drain.GetFailureCode(),
+			BlockingReason: drain.GetBlockingReason(), CommittedIndex: drain.GetCommittedIndex(),
 		})
 	}
 	return snapshot, nil
@@ -655,4 +728,52 @@ func deliverySessionFromRecord(session *records.DeliverySessionState) (membershi
 		})
 	}
 	return value, nil
+}
+func nodeDrainActionToRecord(action membership.NodeDrainAction) (records.NodeDrainAction, error) {
+	if action < membership.NodeDrainActionStart || action > membership.NodeDrainActionClear {
+		return 0, fmt.Errorf("unsupported node drain action %d", action)
+	}
+	return records.NodeDrainAction(action), nil
+}
+
+func nodeDrainActionFromRecord(action records.NodeDrainAction) (membership.NodeDrainAction, error) {
+	if action < records.NodeDrainAction_NODE_DRAIN_ACTION_START || action > records.NodeDrainAction_NODE_DRAIN_ACTION_CLEAR {
+		return 0, fmt.Errorf("unsupported node drain action %d", action)
+	}
+	return membership.NodeDrainAction(action), nil
+}
+
+func drainPhaseToRecord(phase nodedrain.Phase) (records.NodeDrainPhase, error) {
+	if phase != nodedrain.PhaseUnspecified && !phase.Valid() {
+		return 0, fmt.Errorf("unsupported node drain phase %d", phase)
+	}
+	return records.NodeDrainPhase(phase), nil
+}
+
+func drainPhaseFromRecord(phase records.NodeDrainPhase, allowUnspecified bool) (nodedrain.Phase, error) {
+	value := nodedrain.Phase(phase)
+	if (allowUnspecified && phase == records.NodeDrainPhase_NODE_DRAIN_PHASE_UNSPECIFIED) || value.Valid() {
+		return value, nil
+	}
+	return 0, fmt.Errorf("unsupported node drain phase %d", phase)
+}
+
+func nodeDrainProgressToRecord(progress membership.NodeDrainProgressDTO) *records.NodeDrainProgress {
+	return &records.NodeDrainProgress{
+		ConnectionsInitial: progress.ConnectionsInitial, ConnectionsRemaining: progress.ConnectionsRemaining,
+		SessionsReadyForTakeover: progress.SessionsReadyForTakeover, SessionsTakenOver: progress.SessionsTakenOver,
+		SessionsFailed: progress.SessionsFailed, PendingWal: progress.PendingWAL, UnderReplicated: progress.UnderReplicated,
+	}
+}
+
+func nodeDrainProgressFromRecord(progress *records.NodeDrainProgress) membership.NodeDrainProgressDTO {
+	if progress == nil {
+		return membership.NodeDrainProgressDTO{}
+	}
+	return membership.NodeDrainProgressDTO{
+		ConnectionsInitial: progress.GetConnectionsInitial(), ConnectionsRemaining: progress.GetConnectionsRemaining(),
+		SessionsReadyForTakeover: progress.GetSessionsReadyForTakeover(), SessionsTakenOver: progress.GetSessionsTakenOver(),
+		SessionsFailed: progress.GetSessionsFailed(), PendingWAL: progress.GetPendingWal(),
+		UnderReplicated: progress.GetUnderReplicated(),
+	}
 }

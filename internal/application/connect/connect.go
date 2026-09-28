@@ -1072,6 +1072,22 @@ func (useCase *UseCase) onExpiryTimerForTimer(sessionID routing.SessionID, expec
 	}
 }
 
+// PendingWillCount returns the number of active delayed Will timers.
+func (useCase *UseCase) PendingWillCount() int {
+	if useCase == nil {
+		return 0
+	}
+	useCase.mu.Lock()
+	defer useCase.mu.Unlock()
+	count := 0
+	for _, timers := range useCase.activeTimers {
+		if timers != nil && timers.willTimer != nil {
+			count++
+		}
+	}
+	return count
+}
+
 // Close stops and cancels all pending timers across all sessions.
 func (useCase *UseCase) Close() error {
 	if useCase == nil {

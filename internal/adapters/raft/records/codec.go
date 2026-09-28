@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"errors"
 	"fmt"
+	"math"
 	"net"
 	"sort"
 	"strconv"
@@ -13,6 +14,8 @@ import (
 
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/reflect/protoreflect"
+
+	"narumq/internal/domain/nodedrain"
 )
 
 const (
@@ -109,7 +112,7 @@ func MarshalSnapshot(state *ReplicatedStateSnapshot, lastIncludedIndex uint64) (
 			offlineMessagesCount += len(session.Messages)
 		}
 	}
-	count := uint64(len(ordered.Members) + len(ordered.Ownerships) + len(ordered.Subscriptions) + len(ordered.DeliverySessions) + deliveryObjectCount(ordered.DeliverySessions) + len(ordered.MembershipHistory) + len(ordered.Retained) + len(ordered.OfflineSessions) + offlineMessagesCount)
+	count := uint64(len(ordered.Members) + len(ordered.Ownerships) + len(ordered.Subscriptions) + len(ordered.DeliverySessions) + deliveryObjectCount(ordered.DeliverySessions) + len(ordered.MembershipHistory) + len(ordered.Retained) + len(ordered.OfflineSessions) + offlineMessagesCount + len(ordered.NodeDrains))
 	digest := sha256.Sum256(stateBytes)
 	envelope := &SnapshotEnvelope{SchemaMajor: 1, LastIncludedIndex: lastIncludedIndex, ObjectCount: count, Sha256: digest[:], State: ordered}
 	encoded, err := deterministic.Marshal(envelope)
@@ -155,7 +158,7 @@ func UnmarshalSnapshot(encoded []byte) (*SnapshotEnvelope, error) {
 			offlineMessagesCount += len(session.Messages)
 		}
 	}
-	count := uint64(len(envelope.State.Members) + len(envelope.State.Ownerships) + len(envelope.State.Subscriptions) + len(envelope.State.DeliverySessions) + deliveryObjectCount(envelope.State.DeliverySessions) + len(envelope.State.MembershipHistory) + len(envelope.State.Retained) + len(envelope.State.OfflineSessions) + offlineMessagesCount)
+	count := uint64(len(envelope.State.Members) + len(envelope.State.Ownerships) + len(envelope.State.Subscriptions) + len(envelope.State.DeliverySessions) + deliveryObjectCount(envelope.State.DeliverySessions) + len(envelope.State.MembershipHistory) + len(envelope.State.Retained) + len(envelope.State.OfflineSessions) + offlineMessagesCount + len(envelope.State.NodeDrains))
 	if envelope.ObjectCount != count {
 		return nil, errors.New("snapshot object count mismatch")
 	}
@@ -221,6 +224,11 @@ func validateCommand(c *CommandEnvelope) error {
 			return errors.New("offline payload is required")
 		}
 		return validateOffline(payload.Offline)
+	case *CommandEnvelope_NodeDrain:
+		if payload.NodeDrain == nil {
+			return errors.New("node drain payload is required")
+		}
+		return validateNodeDrainChange(payload.NodeDrain)
 	default:
 		return errors.New("command must contain exactly one known payload")
 	}
@@ -299,6 +307,94 @@ func validateIdentity(m *MemberIdentity) error {
 		return errors.New("stable member phase must not carry operation_id")
 	}
 	return nil
+}
+
+func validateNodeDrainChange(change *NodeDrainChange) error {
+	if change == nil || change.MemberId == 0 || !validUUID(change.DrainOperationId) || change.ProposedAtUnixMillis == 0 {
+		return errors.New("invalid node drain identity or proposal time")
+	}
+	parametersZero := change.IdempotencyKey == "" && change.ServerReference == "" &&
+		change.ConnectionRatePerSecond == 0 && change.LoadBalancerPropagationDelayMillis == 0 && change.TimeoutMillis == 0
+	progressZero := change.Progress == nil || nodeDrainProgressZero(change.Progress)
+	failureZero := change.FailureCode == "" && change.BlockingReason == ""
+	switch change.Action {
+	case NodeDrainAction_NODE_DRAIN_ACTION_START:
+		if !printableKey(change.IdempotencyKey) ||
+			!validNodeDrainParameters(change.ServerReference, change.ConnectionRatePerSecond, change.LoadBalancerPropagationDelayMillis, change.TimeoutMillis) ||
+			change.ProposedAtUnixMillis > math.MaxUint64-change.TimeoutMillis ||
+			change.Phase != NodeDrainPhase_NODE_DRAIN_PHASE_UNSPECIFIED || !progressZero || !failureZero {
+			return errors.New("invalid node drain start")
+		}
+	case NodeDrainAction_NODE_DRAIN_ACTION_ADVANCE:
+		if !parametersZero || change.Phase < NodeDrainPhase_NODE_DRAIN_PHASE_EXCLUDING_TRAFFIC ||
+			change.Phase > NodeDrainPhase_NODE_DRAIN_PHASE_VERIFYING_BARRIER || !failureZero {
+			return errors.New("invalid node drain advance")
+		}
+	case NodeDrainAction_NODE_DRAIN_ACTION_COMPLETE:
+		if !parametersZero || change.Phase != NodeDrainPhase_NODE_DRAIN_PHASE_UNSPECIFIED || !failureZero {
+			return errors.New("invalid node drain completion")
+		}
+	case NodeDrainAction_NODE_DRAIN_ACTION_FAIL:
+		if !parametersZero || change.Phase != NodeDrainPhase_NODE_DRAIN_PHASE_UNSPECIFIED ||
+			!validDrainFailureToken(change.FailureCode, false) || !validDrainFailureToken(change.BlockingReason, true) {
+			return errors.New("invalid node drain failure")
+		}
+	case NodeDrainAction_NODE_DRAIN_ACTION_CANCEL, NodeDrainAction_NODE_DRAIN_ACTION_CLEAR:
+		if !parametersZero || change.Phase != NodeDrainPhase_NODE_DRAIN_PHASE_UNSPECIFIED || !progressZero || !failureZero {
+			return errors.New("invalid node drain terminal action")
+		}
+	default:
+		return errors.New("invalid node drain action")
+	}
+	if change.Progress != nil && !progressZero &&
+		change.Action != NodeDrainAction_NODE_DRAIN_ACTION_ADVANCE && change.Action != NodeDrainAction_NODE_DRAIN_ACTION_COMPLETE && change.Action != NodeDrainAction_NODE_DRAIN_ACTION_FAIL {
+		return errors.New("node drain action does not accept progress")
+	}
+	return nil
+}
+
+func validateNodeDrainState(state *NodeDrainState) error {
+	if state == nil || state.MemberId == 0 || !validUUID(state.DrainOperationId) || !printableKey(state.IdempotencyKey) ||
+		state.Phase < NodeDrainPhase_NODE_DRAIN_PHASE_EXCLUDING_TRAFFIC || state.Phase > NodeDrainPhase_NODE_DRAIN_PHASE_CANCELLED ||
+		state.StartedAtUnixMillis == 0 || state.DeadlineAtUnixMillis <= state.StartedAtUnixMillis ||
+		state.DeadlineAtUnixMillis-state.StartedAtUnixMillis != state.TimeoutMillis ||
+		state.PhaseStartedAtUnixMillis < state.StartedAtUnixMillis || state.CommittedIndex == 0 ||
+		!validNodeDrainParameters(state.ServerReference, state.ConnectionRatePerSecond, state.LoadBalancerPropagationDelayMillis, state.TimeoutMillis) {
+		return errors.New("invalid snapshot node drain state")
+	}
+	if state.Phase == NodeDrainPhase_NODE_DRAIN_PHASE_FAILED {
+		if !validDrainFailureToken(state.FailureCode, false) || !validDrainFailureToken(state.BlockingReason, true) {
+			return errors.New("invalid snapshot node drain failure")
+		}
+	} else if state.FailureCode != "" || state.BlockingReason != "" {
+		return errors.New("snapshot node drain failure fields require FAILED phase")
+	}
+	return nil
+}
+
+func validNodeDrainParameters(serverReference string, rate uint32, lbDelay, timeout uint64) bool {
+	return nodedrain.ValidateParameters(serverReference, rate, lbDelay, timeout) == nil
+}
+
+func nodeDrainProgressZero(progress *NodeDrainProgress) bool {
+	return progress.ConnectionsInitial == 0 && progress.ConnectionsRemaining == 0 &&
+		progress.SessionsReadyForTakeover == 0 && progress.SessionsTakenOver == 0 &&
+		progress.SessionsFailed == 0 && progress.PendingWal == 0 && progress.UnderReplicated == 0
+}
+
+func validDrainFailureToken(value string, allowEmpty bool) bool {
+	if value == "" {
+		return allowEmpty
+	}
+	if len(value) > 64 {
+		return false
+	}
+	for i := 0; i < len(value); i++ {
+		if value[i] != '_' && (value[i] < 'a' || value[i] > 'z') {
+			return false
+		}
+	}
+	return true
 }
 func validateOwnership(o *OwnershipChange) error {
 	if !boundedUTF8(o.TenantId, 1, 128) || !boundedUTF8(o.ClientId, 1, 256) {
@@ -588,7 +684,7 @@ func validateSnapshotState(s *ReplicatedStateSnapshot) error {
 			offlineMessagesCount += len(session.Messages)
 		}
 	}
-	count := len(s.Members) + len(s.Ownerships) + len(s.Subscriptions) + len(s.DeliverySessions) + deliveryObjectCount(s.DeliverySessions) + len(s.MembershipHistory) + len(s.Retained) + len(s.OfflineSessions) + offlineMessagesCount
+	count := len(s.Members) + len(s.Ownerships) + len(s.Subscriptions) + len(s.DeliverySessions) + deliveryObjectCount(s.DeliverySessions) + len(s.MembershipHistory) + len(s.Retained) + len(s.OfflineSessions) + offlineMessagesCount + len(s.NodeDrains)
 	if count > maxEntries {
 		return errors.New("snapshot exceeds 1,000,000 entries")
 	}
@@ -609,6 +705,35 @@ func validateSnapshotState(s *ReplicatedStateSnapshot) error {
 	for i := 1; i < len(s.Members); i++ {
 		if s.Members[i-1].MemberId >= s.Members[i].MemberId {
 			return errors.New("snapshot members are not uniquely sorted")
+		}
+	}
+
+	membersByID := make(map[uint64]*MemberIdentity, len(s.Members))
+	for _, member := range s.Members {
+		membersByID[member.MemberId] = member
+	}
+	activeDrainCount := 0
+	for _, state := range s.NodeDrains {
+		if state == nil {
+			return errors.New("nil snapshot node drain state")
+		}
+		if err := validateNodeDrainState(state); err != nil {
+			return err
+		}
+		member, exists := membersByID[state.MemberId]
+		if !exists || member.Phase == MemberPhase_MEMBER_PHASE_RETIRED {
+			return errors.New("snapshot node drain member is missing or retired")
+		}
+		if nodedrain.Phase(state.Phase).Active() && nodedrain.Phase(state.Phase) != nodedrain.PhaseCompleted {
+			activeDrainCount++
+			if activeDrainCount > 1 {
+				return errors.New("snapshot contains multiple active node drains")
+			}
+		}
+	}
+	for i := 1; i < len(s.NodeDrains); i++ {
+		if s.NodeDrains[i-1].MemberId >= s.NodeDrains[i].MemberId {
+			return errors.New("snapshot node drains are not uniquely sorted")
 		}
 	}
 	for _, o := range s.Ownerships {
@@ -713,6 +838,11 @@ func validateSnapshotMembershipIndexes(s *ReplicatedStateSnapshot, lastIncludedI
 			return errors.New("membership history committed_index exceeds last_included_index")
 		}
 	}
+	for _, state := range s.NodeDrains {
+		if state.CommittedIndex > lastIncludedIndex {
+			return errors.New("node drain committed_index exceeds last_included_index")
+		}
+	}
 	for _, session := range s.DeliverySessions {
 		for _, inbound := range session.Inbound {
 			if inbound.ReleasedIndex > lastIncludedIndex {
@@ -779,6 +909,15 @@ func sortSnapshot(s *ReplicatedStateSnapshot) {
 			return false
 		}
 		return compare2(s.Retained[i].TenantId, s.Retained[i].Topic, s.Retained[j].TenantId, s.Retained[j].Topic) < 0
+	})
+	sort.Slice(s.NodeDrains, func(i, j int) bool {
+		if s.NodeDrains[i] == nil {
+			return s.NodeDrains[j] != nil
+		}
+		if s.NodeDrains[j] == nil {
+			return false
+		}
+		return s.NodeDrains[i].MemberId < s.NodeDrains[j].MemberId
 	})
 	sort.Slice(s.OfflineSessions, func(i, j int) bool {
 		if s.OfflineSessions[i] == nil {

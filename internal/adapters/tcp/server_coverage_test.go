@@ -373,6 +373,7 @@ func csvClusterRuntime(t *testing.T, ready *atomic.Bool) *adapterTestRuntime {
 	config.ClusterMode = true
 	config.LocalMemberID = 4
 	config.ClusterReady = ready.Load
+	config.ClusterAdmissionOpen = func() bool { return true }
 	config.ClusterProjectionReady = ready.Load
 	return newAdapterTestRuntime(t, 2, config)
 }
@@ -423,6 +424,7 @@ func TestCSVNewServerRejectsIncompleteClusterWiring(t *testing.T) {
 		config.ClusterMode = true
 		config.LocalMemberID = memberID
 		config.ClusterReady = ready
+		config.ClusterAdmissionOpen = func() bool { return true }
 		config.ClusterProjectionReady = func() bool { return true }
 		return config
 	}
@@ -436,6 +438,15 @@ func TestCSVNewServerRejectsIncompleteClusterWiring(t *testing.T) {
 	}{
 		{name: "missing member", config: clusterConfig(0, alwaysReady), connections: ownedConnections, subscriptions: committedSubscriptions, want: ErrInvalidConfig},
 		{name: "missing readiness", config: clusterConfig(4, nil), connections: ownedConnections, subscriptions: committedSubscriptions, want: ErrInvalidConfig},
+		{
+			name: "missing admission hook",
+			config: func() Config {
+				config := clusterConfig(4, alwaysReady)
+				config.ClusterAdmissionOpen = nil
+				return config
+			}(),
+			connections: ownedConnections, subscriptions: committedSubscriptions, want: ErrInvalidConfig,
+		},
 		{
 			name: "missing local projection readiness",
 			config: func() Config {

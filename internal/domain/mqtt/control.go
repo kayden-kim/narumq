@@ -1,5 +1,10 @@
 package mqtt
 
+import (
+	"strings"
+	"unicode/utf8"
+)
+
 // PingReq requests a keep-alive response from the broker.
 type PingReq struct {
 	// Version is the negotiated MQTT protocol version.
@@ -34,6 +39,8 @@ type Disconnect struct {
 	Version ProtocolVersion
 	// ReasonCode is zero for normal termination.
 	ReasonCode byte
+	// ServerReference is MQTT 5 property 0x1C, sent from server to client.
+	ServerReference string
 }
 
 func (p Disconnect) packetType() PacketType {
@@ -123,6 +130,22 @@ func encodePingResp(ping PingResp, maxPacketSize int) ([]byte, error) {
 func encodeDisconnect(disconnect Disconnect, maxPacketSize int) ([]byte, error) {
 	if disconnect.Version != ProtocolV311 && disconnect.Version != ProtocolV5 {
 		return nil, ErrUnsupportedProtocolVersion
+	}
+	if disconnect.ServerReference != "" {
+		if disconnect.Version != ProtocolV5 || (disconnect.ReasonCode != 0x9C && disconnect.ReasonCode != 0x9D) ||
+			len(disconnect.ServerReference) > 65535 || !utf8.ValidString(disconnect.ServerReference) ||
+			strings.IndexByte(disconnect.ServerReference, 0) >= 0 {
+			return nil, ErrMalformedPacket
+		}
+		propertyLength := 3 + len(disconnect.ServerReference)
+		body := []byte{disconnect.ReasonCode}
+		body = appendVariableByteInteger(body, propertyLength)
+		body = append(body, 0x1C)
+		body = appendUTF8Field(body, disconnect.ServerReference)
+		if len(body) > maxPacketSize {
+			return nil, ErrPacketTooLarge
+		}
+		return body, nil
 	}
 	if disconnect.Version == ProtocolV311 {
 		if disconnect.ReasonCode != 0 {

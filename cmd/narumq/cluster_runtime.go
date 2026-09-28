@@ -40,6 +40,7 @@ import (
 	"narumq/internal/application/publish"
 	"narumq/internal/application/subscribe"
 	"narumq/internal/domain/mqtt"
+	"narumq/internal/domain/nodedrain"
 	"narumq/internal/domain/routing"
 	"narumq/internal/domain/security"
 	"narumq/internal/domain/tenancy"
@@ -56,7 +57,7 @@ var (
 	errClusterRuntimeNotReady           = errors.New("cluster runtime is not ready")
 	errClusterStorageUnhealthy          = errors.New("cluster raft storage is not healthy")
 	errClusterApplyDivergence           = errors.New("committed cluster state diverges from membership state")
-	errClusterExactProfileCompatibility = errors.New("retained, offline, and durable delivery replication requires every active member to match the local release and schema")
+	errClusterExactProfileCompatibility = errors.New("retained, offline, durable delivery, and node drain replication require every active member to match the local release and schema")
 )
 
 // runClusterMode composes the dynamic Raft control plane with MQTT admission and
@@ -151,6 +152,7 @@ func runClusterMode(ctx context.Context, config clusterConfigFile, logger *slog.
 		config: config, logger: logger, node: node, machine: machine,
 		retained: retainedRepository,
 		storage:  newClusterStorageMonitor(time.Now, logger),
+		metrics:  metricsRegistry,
 		routes:   routing.NewTable(),
 		requests: make(chan clusterDriverRequest, 128), initialMessages: initialMessages,
 		localIdentity:      configuredLocalPeerIdentity(config, localFingerprint),
@@ -159,6 +161,7 @@ func runClusterMode(ctx context.Context, config clusterConfigFile, logger *slog.
 		faults:             faults,
 		handoffProposed:    make(map[string]uint64),
 	}
+	runtime.drain = &clusterDrainController{runtime: runtime}
 	runtime.retainedResyncRequired.Store(true)
 	if local, found := committedLocalIdentity(machine, config.NodeID); found {
 		runtime.localIdentity = local
@@ -246,6 +249,7 @@ func runClusterMode(ctx context.Context, config clusterConfigFile, logger *slog.
 	if err != nil {
 		return fmt.Errorf("create cluster connect use case: %w", err)
 	}
+	runtime.connectUseCase = connections
 	defer connections.Close()
 	subscriptions, err := subscribe.New(runtime.routes, deliveries, retainedRepository, subscribeOptions...)
 	if err != nil {
@@ -272,6 +276,7 @@ func runClusterMode(ctx context.Context, config clusterConfigFile, logger *slog.
 			ControlQueueCapacity: 16, ClientCertificateExtractor: tlsadapter.ExtractVerifiedClientCertificateDTO,
 			Policy: tcpPolicy, Metrics: metricsRegistry, ClusterMode: true,
 			LocalMemberID: config.NodeID, ClusterReady: runtime.clusterReady,
+			ClusterAdmissionOpen:   runtime.drain.admissionOpen,
 			ClusterProjectionReady: runtime.clusterProjectionReady,
 		}, decoder, encoder, connections, subscriptions, publications, deliveries, logger)
 		if err != nil {
@@ -292,6 +297,10 @@ func runClusterMode(ctx context.Context, config clusterConfigFile, logger *slog.
 	if err != nil {
 		return fmt.Errorf("create membership service: %w", err)
 	}
+	drainService, err := membership.NewDrainService(runtime, systemClock)
+	if err != nil {
+		return fmt.Errorf("create node drain service: %w", err)
+	}
 	baseManagement := appmgmt.NewService(appmgmt.ServiceConfig{
 		ClusterID: config.ClusterID, NodeID: strconv.FormatUint(config.NodeID, 10), ReleaseVersion: config.ReleaseVersion,
 	}, sessions, runtime.routes, retainedRepository, metricsRegistry)
@@ -309,7 +318,7 @@ func runClusterMode(ctx context.Context, config clusterConfigFile, logger *slog.
 	managementServer := adaptershttp.NewServerWithMembership(adaptershttp.ServerConfig{
 		ListenAddr: managementListener.Addr().String(), AuthToken: adminToken,
 		AuthTokenRole: adaptershttp.RoleClusterAdmin, AllowAnonymousProbes: true,
-	}, stateProvider, healthChecker, metricsRegistry, membershipService, runtime)
+	}, stateProvider, healthChecker, metricsRegistry, membershipService, drainService, runtime)
 	return runtime.serve(ctx, mqttServer, managementServer, managementListener)
 }
 
@@ -329,6 +338,10 @@ type clusterRuntime struct {
 	durableMu          sync.Mutex
 	durableAttachments map[routing.SessionID]clusterDurableAttachment
 	storage            *clusterStorageMonitor
+	drain              *clusterDrainController
+	connectUseCase     *connect.UseCase
+	metrics            *adaptersmetrics.Registry
+	localCommits       atomic.Int64
 
 	requests                chan clusterDriverRequest
 	sequence                atomic.Uint64
@@ -415,6 +428,7 @@ func (runtime *clusterRuntime) serve(parent context.Context, mqttServer *tcpadap
 	defer cancel()
 	driverDone := make(chan error, 1)
 	go func() { driverDone <- runtime.runDriver(ctx) }()
+	runtime.drain.start(ctx)
 
 	var admissionDone chan error
 	if runtime.config.Role == "joiner" {
@@ -501,6 +515,7 @@ func (runtime *clusterRuntime) serve(parent context.Context, mqttServer *tcpadap
 			}
 		}
 	}
+	runtime.drain.stopAndWait()
 	runtime.managementState.SetNodeState(managementports.NodeStateSafeToStop, nil)
 	return errors.Join(results...)
 }
@@ -712,6 +727,9 @@ func (runtime *clusterRuntime) runDriver(ctx context.Context) error {
 			if err := runtime.advanceMembership(); err != nil {
 				return err
 			}
+			if err := runtime.advanceDrainLeadership(); err != nil {
+				return err
+			}
 			if err := processReady(); err != nil {
 				return err
 			}
@@ -818,6 +836,18 @@ func (runtime *clusterRuntime) applyBatch(batch raftadapter.BatchDTO, proposals 
 				"phase", result.Operation.Phase,
 				"committed_index", result.Operation.CommittedIndex)
 		}
+		if command.NodeDrain != nil && result.Outcome == membership.ApplyOutcomeApplied && result.NodeDrain != nil {
+			runtime.logger.Info("committed node drain transition",
+				"drain_operation_id", result.NodeDrain.DrainOperationID,
+				"member_id", result.NodeDrain.MemberID,
+				"action", command.NodeDrain.Action,
+				"phase", result.NodeDrain.Phase.String(),
+				"failure_code", result.NodeDrain.FailureCode,
+				"committed_index", event.index)
+			if runtime.metrics != nil && result.NodeDrain.MemberID == runtime.config.NodeID {
+				runtime.metrics.NodeDrainTransition(result.NodeDrain.Phase.String())
+			}
+		}
 		if command.Membership != nil && command.Membership.Action == membership.MembershipActionBeginRemove &&
 			result.Outcome == membership.ApplyOutcomeApplied && runtime.failpoint.matchesBeginRemoveApply() {
 			triggerClusterFailpoint(runtime.failpoint)
@@ -828,7 +858,11 @@ func (runtime *clusterRuntime) applyBatch(batch raftadapter.BatchDTO, proposals 
 				return fmt.Errorf("committed ownership session identity is invalid: %w", err)
 			}
 			if runtime.mqttServer != nil {
-				runtime.mqttServer.CloseSessionForTakeover(sessionID)
+				if runtime.drain != nil && runtime.drain.admissionClosed.Load() && result.Ownership.OwnerNodeID != runtime.config.NodeID {
+					runtime.mqttServer.CloseSessionForDrain(sessionID, runtime.drain.currentServerReference())
+				} else {
+					runtime.mqttServer.CloseSessionForTakeover(sessionID)
+				}
 			}
 			runtime.removeStaleDurableAttachment(sessionID, *result.Ownership)
 		}
@@ -852,6 +886,9 @@ func (runtime *clusterRuntime) applyBatch(batch raftadapter.BatchDTO, proposals 
 		runtime.refreshRouteProjection()
 	} else {
 		runtime.projectionIndex.Store(runtime.node.Status().AppliedIndex)
+	}
+	if runtime.drain != nil {
+		runtime.drain.sync()
 	}
 	// Commit callers may immediately issue another publish after success.
 	// Release waiters only after the route projection covers this Ready batch.
@@ -1080,28 +1117,7 @@ func (runtime *clusterRuntime) advanceMembership() error {
 			}
 		case membership.OperationPhaseRemoving:
 			if operation.MemberID == runtime.config.NodeID {
-				var transferee raftadapter.NodeID
-				for _, voterID := range status.VoterIDs {
-					if voterID != raftadapter.NodeID(runtime.config.NodeID) {
-						if peerStatus, err := runtime.transport.Status(uint64(voterID)); err == nil && peerStatus.Connected {
-							transferee = voterID
-							break
-						}
-					}
-				}
-				if transferee == 0 {
-					return nil
-				}
-				if err := runtime.node.TransferLeadership(transferee); err != nil {
-					if errors.Is(err, raftadapter.ErrNotLeader) {
-						return nil
-					}
-					return fmt.Errorf("transfer leadership before removing local voter: %w", err)
-				}
-				runtime.leadershipTransferTo = transferee
-				runtime.leadershipTransferTerm = status.Term
-				runtime.leadershipTransferTicks = 0
-				return nil
+				return runtime.transferLocalLeadership(status)
 			}
 			voterIDs := make([]uint64, 0, len(status.VoterIDs))
 			for _, id := range status.VoterIDs {
@@ -1560,13 +1576,15 @@ func (runtime *clusterRuntime) readBarrier(ctx context.Context) error {
 }
 
 func (runtime *clusterRuntime) Commit(ctx context.Context, command membership.CommandDTO) (membership.ApplyResultDTO, error) {
+	runtime.localCommits.Add(1)
+	defer runtime.localCommits.Add(-1)
 	if ctx == nil || runtime.storage.view().health == clusterReplicationFailed {
 		return membership.ApplyResultDTO{}, membership.ErrQuorumUnavailable
 	}
 	if err := runtime.readBarrier(ctx); err != nil {
 		return membership.ApplyResultDTO{}, classifyClusterPortError(err)
 	}
-	if (command.Retained != nil || command.Offline != nil || command.Delivery != nil) && !clusterExactProfileCompatible(runtime.machine.Members(), runtime.config) {
+	if (command.Retained != nil || command.Offline != nil || command.Delivery != nil || command.NodeDrain != nil) && !clusterExactProfileCompatible(runtime.machine.Members(), runtime.config) {
 		return membership.ApplyResultDTO{}, errClusterExactProfileCompatibility
 	}
 	data, err := encodeMembershipCommand(command)
@@ -1638,6 +1656,13 @@ func (runtime *clusterRuntime) GetOwnership(ctx context.Context, tenantID, clien
 	}
 	ownership, found := runtime.machine.GetOwnership(tenantID, clientID)
 	return ownership, found, nil
+}
+func (runtime *clusterRuntime) GetNodeDrain(ctx context.Context, memberID uint64) (membership.NodeDrainStateDTO, bool, error) {
+	if err := runtime.readBarrier(ctx); err != nil {
+		return membership.NodeDrainStateDTO{}, false, classifyClusterPortError(err)
+	}
+	state, found := runtime.machine.GetNodeDrain(memberID)
+	return state, found, nil
 }
 
 func (runtime *clusterRuntime) AcquireOwnership(ctx context.Context, tenantID, clientID string, ownerNodeID uint64) (uint64, error) {
@@ -2104,6 +2129,10 @@ func (checker *clusterHealthChecker) CheckReadiness(ctx context.Context) (manage
 	if view.health == clusterReplicationFailed {
 		return managementports.HealthStatusNotReady, &view.reason
 	}
+	if checker.runtime.drain != nil && !checker.runtime.drain.admissionOpen() {
+		reason := "node drain record is active"
+		return managementports.HealthStatusNotReady, &reason
+	}
 	if checker.runtime.managementState.NodeState() == managementports.NodeStateDraining ||
 		checker.runtime.managementState.NodeState() == managementports.NodeStateSafeToStop {
 		reason := "node is draining"
@@ -2157,11 +2186,23 @@ func (provider *clusterStateProvider) GetClusterSummary(ctx context.Context) man
 	activeMembers := 0
 	joining := 0
 	ready := 0
+	draining := 0
+	safeToStop := 0
 	for _, member := range provider.runtime.machine.Members() {
 		if member.Phase == membership.MemberPhaseRetired {
 			continue
 		}
 		activeMembers++
+		if drain, exists := provider.runtime.machine.GetNodeDrain(member.MemberID); exists && drain.Phase.Active() {
+			switch nodedrain.LifecycleOf(drain.Phase) {
+			case nodedrain.LifecycleDraining:
+				draining++
+				continue
+			case nodedrain.LifecycleSafeToStop:
+				safeToStop++
+				continue
+			}
+		}
 		if member.MemberID == provider.runtime.config.NodeID && provider.runtime.hasFreshProof() && member.Phase == membership.MemberPhaseVoter {
 			ready++
 		} else {
@@ -2173,7 +2214,9 @@ func (provider *clusterStateProvider) GetClusterSummary(ctx context.Context) man
 	summary.MemberCount = activeMembers
 	summary.QuorumSize = len(status.VoterIDs)/2 + 1
 	summary.QuorumAvailable = provider.runtime.hasFreshProof()
-	summary.NodesByState = managementports.NodesByStateDTO{Joining: joining, Ready: ready}
+	summary.NodesByState = managementports.NodesByStateDTO{
+		Joining: joining, Ready: ready, Draining: draining, SafeToStop: safeToStop,
+	}
 	summary.UnderReplicated = len(status.LearnerIDs)
 	if status.LeaderID == 0 {
 		summary.LeaderNodeID = nil
@@ -2275,6 +2318,10 @@ func (provider *clusterStateProvider) nodeSummary(ctx context.Context, member me
 		storagePressure = view.storagePressure
 	} else {
 		message := "remote readiness is not available from this node"
+		if drain, exists := provider.runtime.machine.GetNodeDrain(member.MemberID); exists && drain.Phase.Active() {
+			state = managementports.NodeState(nodedrain.LifecycleOf(drain.Phase))
+			message = "node drain record is active"
+		}
 		reason = &message
 		if match, ok := provider.runtime.node.PeerMatchIndex(raftadapter.NodeID(member.MemberID)); ok {
 			applied = int64(match)

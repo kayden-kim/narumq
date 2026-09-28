@@ -47,7 +47,7 @@ Profile status는 다음 의미만 사용한다.
 | 상태 | 의미 |
 | --- | --- |
 | `phase1_verified` | 이 문서에 연결된 Phase 1 single-node 자동 case와 artifact가 모두 통과했다. |
-| `blocked` | 현재 phase에 없는 broker 동작 또는 미결정 기준 때문에 실행할 수 없다. |
+| `blocked` | 필수 broker 동작, 결정되지 않은 기준 또는 아직 충족하지 못한 compatibility evidence 때문에 시험을 통과시킬 수 없다. |
 | `unverified` | 지원 후보이지만 수용된 자동 artifact가 아직 없다. |
 
 전체 contract는 drain, Server Reference, rollout timing과 MQTT 3.1.0 migration evidence가 남아 있으므로 `Draft`를 유지한다. SDK matrix의 `phase1_verified`는 전체 contract를 `Active`로 승격하지 않는다.
@@ -141,7 +141,7 @@ python-mqtt31-rejected
 
 Cross-SDK QoS 1 case는 subscriber가 `ready.json`에 `schemaVersion`, `caseId`, `sdk`, `role=subscriber`, `protocol`, `ready=true`를 기록한 뒤에만 publisher를 시작한다. Orchestrator는 이 object를 strict decode하고 case·SDK·protocol을 검증한 뒤 publisher의 `readiness.json`으로 복사하여 `/input/readiness.json`에 read-only mount한다. Publisher는 파일이 없거나 형식·값이 다르면 publish하지 않고 failed result를 기록한다.
 
-`MQTT5_DRAIN_SAFE`는 `DEP-06`~`DEP-12`와 `SPEC-TBD-04` 때문에 계속 `blocked`다. 현재 phase에는 broker drain controller, `DISCONNECT 0x9C`, Server Reference와 rollout timing이 없다. Harness는 redirect나 malformed server DISCONNECT를 흉내 내지 않는다. MQTT 3.1.0 90일 inventory와 migration isolation도 아직 `blocked`다.
+`MQTT5_DRAIN_SAFE`는 supported SDK의 `Server Reference` 자동 추종, drain 중 Will matrix, rollout timing이 검증되지 않아 `blocked`다. Broker-side drain controller와 `DISCONNECT 0x9C`/Server Reference 송신은 구현됐으며 [Drain spec §10](../specs/drain-and-rolling-update.md#10-broker-drain-수용-시험-매핑)의 process evidence로 연결한다. 이 호환성 harness는 client가 redirect를 따라가는 동작이나 malformed server DISCONNECT를 시험하지 않는다. MQTT 3.1.0 90일 inventory와 migration isolation도 계속 `blocked`다.
 
 SDK matrix row는 연결된 Phase 1 case가 모두 통과하고 immutable image/result artifact가 보존된 뒤에만 `phase1_verified`가 될 수 있다. required drain, Will 또는 migration evidence가 하나라도 `blocked`인 동안에는 이 Draft contract를 `Active`로 승격하지 않는다.
 
@@ -159,8 +159,8 @@ SDK matrix row는 연결된 Phase 1 case가 모두 통과하고 immutable image/
 ## 8. Draft blocker
 
 - `SPEC-TBD-04`: rollout·reconnect 시간과 production backoff 수치
-- `DEP-06`~`DEP-12`: drain controller, redirect, rollout barrier와 관련 운영 동작
-- `MQTT5_DRAIN_SAFE`: `DISCONNECT 0x9C`, Server Reference, malformed disconnect와 drain Will evidence
+- `DEP-06`~`DEP-12`: supported SDK redirect·reconnect, MQTT 3.1.1/Will 판정, external rollout gate의 end-to-end evidence
+- `MQTT5_DRAIN_SAFE`: supported SDK별 `DISCONNECT 0x9C`/Server Reference 추종, malformed packet rejection, drain Will evidence
 - SDK별 automated compatibility harness의 Phase 1 artifact가 없는 후보는 `unverified`
 - MQTT 3.1.0 90일 관찰과 legacy 격리 완료 전까지 migration evidence가 blocked
 

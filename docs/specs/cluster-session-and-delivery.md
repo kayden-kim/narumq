@@ -72,7 +72,7 @@ Route metadata는 committed persistent subscription에서만 계산하는 node-l
 WAL·snapshot target, protobuf encoding family와 단일 group profile은 scoped [ADR-0009](../decisions/ADR-0009-raft-production-state-profile.md)에 기록한다. Exact replicated-state message schema는 [replicated-state-v1.proto](../contracts/replicated-state-v1.proto)에 정의한다. N-1 compatibility와 production storage 보장은 검증되지 않았다. Detached persistent session의 QoS 0 offline queue 경계는 §4.1과 [ADR-0013](../decisions/ADR-0013-offline-queue-replication-and-cluster-backup-v3.md)이 정하고, QoS 1/2 durable message·inflight state와 전달 경계는 §4.2와 [ADR-0015](../decisions/ADR-0015-cluster-durable-qos-delivery.md)가 정한다.
 ### 2.3 Takeover ordering
 
-- Outbound `SEND`, `ADVANCE`, `COMPLETE`는 각각 PUBLISH, PUBREL 또는 packet identifier 해제의 wire effect보다 먼저 commit해야 한다. Successor의 더 큰 epoch `Acquire`가 commit되면 이전 owner의 후속 command는 exact owner/epoch check에서 거절되며, successor는 ATTACH로 committed delivery state를 재개한다. Drain 지원은 이 규칙만으로 구현되었다고 간주하지 않는다.
+- Outbound `SEND`, `ADVANCE`, `COMPLETE`는 각각 PUBLISH, PUBREL 또는 packet identifier 해제의 wire effect보다 먼저 commit해야 한다. Successor의 더 큰 epoch `Acquire`가 commit되면 이전 owner의 후속 command는 exact owner/epoch check에서 거절되며, successor는 ATTACH로 committed delivery state를 재개한다. 이 ordering 규칙만으로 drain lifecycle이 충족되지는 않으며, broker drain contract는 [Drain spec](drain-and-rolling-update.md)을 따른다.
 
 동시 CONNECT 또는 partition 시험에서 성공 owner가 둘로 관찰되면 spec 위반이다.
 
@@ -151,7 +151,7 @@ QoS 2 publisher inbound record는 PUBREL 전 상태 또는 완료 tombstone을 �
 QoS 1/2 PUBLISH에서 effective QoS가 0인 subscriber는 durable queue가 아니라 기존 QoS 0 경로를 따른다. 이 at-most-once lane은 delivery commit 뒤 detached session이면 offline ENQUEUE, remote owner이면 `NMQFWRD2` forwarding, 그 밖에는 local queue를 사용한다. PUBACK/PUBCOMP 뒤 lane 실패 또는 ingress node crash로 전달이 유실될 수 있다. 이는 MQTT QoS 0 및 ADR-0013의 보장 범위와 같다.
 
 SUBSCRIBE 중 retained message 재생과 DETACH 실패 뒤 남은 local QoS 0 message는 node-local 예외이며 owner crash/takeover 시 복구되지 않는다. Local QoS 0 message는 durable queue 뒤 순서로 유지되고 capacity 초과분은 잘릴 수 있다. Connected session의 owner node가 crash하고 client가 돌아오지 않아 DETACH가 없으면 session expiry 갱신이 없을 수 있다. Record는 session당 64개까지 찬 뒤 이후 matching target은 `Saturated`로 건너뛰며 global quota도 고갈될 수 있다.
-이 범위는 ADR-0015가 정한 cluster QoS 1/2 durable delivery 동작이다. §11.11은 detached session queue 전달, QoS inflight takeover, QoS 2 Will reconnect/takeover 전달, backup restore, ACK 뒤 process kill 및 quorum-loss 거절을 확인한 unit/process evidence를 기록한다. Production storage/EBS power-loss, BP-03, N-1 compatibility, TEN-08 quota 및 drain/SAFE_TO_STOP는 승인 범위와 별도로 남는다.
+이 범위는 ADR-0015가 정한 cluster QoS 1/2 durable delivery 동작이다. §11.11은 detached session queue 전달, QoS inflight takeover, QoS 2 Will reconnect/takeover 전달, backup restore, ACK 뒤 process kill 및 quorum-loss 거절을 확인한 unit/process evidence를 기록한다. Drain/`SAFE_TO_STOP`은 ADR-0015 범위에 포함되지 않으며 broker drain 동작과 process evidence는 [Drain spec §10](drain-and-rolling-update.md#10-broker-drain-수용-시험-매핑)에 별도로 기록한다. Production storage/EBS power-loss, BP-03, N-1 compatibility와 TEN-08 quota도 별도 gate다.
 
 
 
@@ -449,13 +449,13 @@ Focused verification:
 go test ./internal/application/membership ./internal/adapters/raft/records ./internal/adapters/memory/deliveryqueue ./internal/application/publish ./internal/application/connect ./internal/adapters/tcp ./cmd/narumq
 ```
 
-이전 verification run에서 네 process acceptance test PASS (38.493s)와 `GOMAXPROCS=4 go run ./tools/verify local` PASS (188.23s)를 관찰했다. 이는 waiter-release 변경 전 evidence이며 현재 full gate 결과는 §11.14에 기록한다. Production storage/EBS power-loss, BP-03, N-1 compatibility, TEN-08 또는 drain/SAFE_TO_STOP는 별도 상태로 남는다.
+이전 verification run에서 네 process acceptance test PASS (38.493s)와 `GOMAXPROCS=4 go run ./tools/verify local` PASS (188.23s)를 관찰했다. 이는 waiter-release 변경 전 evidence이며 현재 full gate 결과는 §11.14에 기록한다. Drain/`SAFE_TO_STOP`은 별도 broker-side scope이며 [Drain spec §10](drain-and-rolling-update.md#10-broker-drain-수용-시험-매핑)에 process evidence를 연결한다. Production storage/EBS power-loss, BP-03, N-1 compatibility와 TEN-08은 계속 별도 상태다.
 
 ### 11.12 MQTT CONNECT ownership acquisition과 takeover 수용 매핑
 
 이 절은 §2·§2.1의 quorum commit 뒤에만 성공 CONNACK을 보내고 takeover 뒤 이전 owner의 client connection을 종료해야 하는 규칙을 실제 3-process MQTT 경로에서 확인한다. `ownership-acquire-after-commit` failpoint는 ownership `Acquire`가 apply된 뒤 CONNECT local activation 전에 node 2를 종료해 CONNACK이 commit보다 먼저 반환되지 않는 경계를 확인한다.
 
-Persistent subscription·inflight의 production encoding/replay와 route projection rebuild 수용은 §11.14에서 별도로 확인한다. 이 범위에는 drain/`SAFE_TO_STOP`, 동시 CONNECT, stale-epoch end-to-end 시험은 포함하지 않는다.
+Persistent subscription·inflight의 production encoding/replay와 route projection rebuild 수용은 §11.14에서 별도로 확인한다. 이 tranche에는 drain/`SAFE_TO_STOP`, 동시 CONNECT, stale-epoch end-to-end 시험은 포함되지 않는다. Broker drain acceptance는 [Drain spec §10](drain-and-rolling-update.md#10-broker-drain-수용-시험-매핑)에 별도 기록한다.
 
 | Scenario | 관찰할 결과 | 시험 위치 | 실행 증거 |
 | --- | --- | --- | --- |
@@ -525,4 +525,4 @@ The final standard `GOMAXPROCS=4 go run ./tools/verify local` passed traceabilit
 
 Earlier reduced-resource attempts had intermittent failures: a `GOMAXPROCS=2` gate saw a JWKS request-count mismatch and ThreadSanitizer allocation failure; a `GOGC=75` run observed EOF for QoS 2 packet 42 while the old test still read the subscriber delivery before sending that packet. The test now exercises the immediate sequence and passed three times plus in the final full gate. No applied/projection index snapshot was captured in that earlier EOF run, so its cause remains unconfirmed. Earlier EOFs for packet IDs 11 and 21 also lack readiness/index evidence. Runtime does not wait for catch-up; process readiness waits remain test-only.
 
-이 process acceptance는 MQTT 3.1.1 경로를 사용한다. MQTT 5 subscription option의 cross-node process matrix, 동시 CONNECT, drain/`SAFE_TO_STOP`은 이 tranche에서 확인하지 않았으며 item 37은 drain/`SAFE_TO_STOP` wiring 때문에 열린 상태다.
+이 process acceptance는 MQTT 3.1.1 경로를 사용한다. MQTT 5 subscription option의 cross-node process matrix, 동시 CONNECT와 stale-epoch end-to-end는 이 tranche에서 확인하지 않았다. Broker drain/`SAFE_TO_STOP`은 이 mapping의 범위 밖이며 별도 수용 결과를 [Drain spec §10](drain-and-rolling-update.md#10-broker-drain-수용-시험-매핑)에 기록한다.

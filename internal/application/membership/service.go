@@ -47,6 +47,9 @@ const (
 	ServiceErrorNotLeader                ServiceErrorCode = "not_leader"
 	ServiceErrorQuorumUnavailable        ServiceErrorCode = "quorum_unavailable"
 	ServiceErrorCompatibilityUnsupported ServiceErrorCode = "compatibility_unsupported"
+	ServiceErrorInvalidNodeTransition    ServiceErrorCode = "invalid_node_transition"
+	ServiceErrorDrainNotCancellable      ServiceErrorCode = "drain_not_cancellable"
+	ServiceErrorNodeDrainInProgress      ServiceErrorCode = "node_drain_in_progress"
 )
 
 // ServiceError exposes a stable sanitized message and retry classification without
@@ -55,6 +58,7 @@ type ServiceError struct {
 	Code      ServiceErrorCode
 	Message   string
 	Retryable bool
+	NodeState string
 }
 
 // Is preserves application-owned port classifications without exposing adapter causes.
@@ -274,6 +278,12 @@ func newServiceError(code ServiceErrorCode, retryable bool) *ServiceError {
 		message = "committed membership outcome is unavailable"
 	case ServiceErrorCompatibilityUnsupported:
 		message = "member compatibility is unsupported"
+	case ServiceErrorInvalidNodeTransition:
+		message = "node lifecycle transition is not allowed"
+	case ServiceErrorDrainNotCancellable:
+		message = "node drain can no longer be cancelled"
+	case ServiceErrorNodeDrainInProgress:
+		message = "another node drain is in progress"
 	}
 	return &ServiceError{Code: code, Message: message, Retryable: retryable}
 }

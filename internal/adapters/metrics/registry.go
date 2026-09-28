@@ -93,6 +93,7 @@ type Registry struct {
 	packetsSentTotal     map[string]*atomic.Int64 // key: packetType
 	authAttemptsTotal    map[string]*atomic.Int64 // key: method,result,reason
 	connectRejectedTotal atomic.Int64
+	nodeDrainTransitions map[string]*atomic.Int64
 
 	publishLatency *Histogram
 }
@@ -104,6 +105,7 @@ func NewRegistry() *Registry {
 		packetsReceivedTotal: make(map[string]*atomic.Int64),
 		packetsSentTotal:     make(map[string]*atomic.Int64),
 		authAttemptsTotal:    make(map[string]*atomic.Int64),
+		nodeDrainTransitions: make(map[string]*atomic.Int64),
 		publishLatency:       NewHistogram(defaultPublishLatencyBuckets),
 	}
 }
@@ -250,6 +252,17 @@ func (r *Registry) ConnectRejected(protocol string, reason string) {
 	r.connectRejectedTotal.Add(1)
 }
 
+// NodeDrainTransition increments the committed local-node drain phase counter.
+func (r *Registry) NodeDrainTransition(phase string) {
+	switch phase {
+	case "EXCLUDING_TRAFFIC", "WAITING_FOR_LB", "VERIFYING_SESSION_STATE", "TRANSFERRING_SESSIONS",
+		"VERIFYING_BARRIER", "COMPLETED", "FAILED", "CANCELLED":
+	default:
+		return
+	}
+	r.getCounter(r.nodeDrainTransitions, fmt.Sprintf(`phase="%s"`, phase)).Add(1)
+}
+
 // SetSessionsActive updates session gauges.
 func (r *Registry) SetSessionsActive(persistent bool, count int64) {
 	if count < 0 {
@@ -350,6 +363,10 @@ func (r *Registry) Render(isOpenMetrics bool) []byte {
 	fmt.Fprintf(&buf, "# HELP narumq_mqtt_connect_rejected_total MQTT CONNECT attempts rejected by compatibility reason.\n")
 	fmt.Fprintf(&buf, "# TYPE narumq_mqtt_connect_rejected_total counter\n")
 	fmt.Fprintf(&buf, "narumq_mqtt_connect_rejected_total{protocol=\"3.1.0\",reason=\"unsupported_protocol_version\"} %d\n", r.connectRejectedTotal.Load())
+	// 11. narumq_node_drain_transitions_total
+	fmt.Fprintf(&buf, "# HELP narumq_node_drain_transitions_total Committed node drain phase transitions observed for the local node.\n")
+	fmt.Fprintf(&buf, "# TYPE narumq_node_drain_transitions_total counter\n")
+	r.renderCounterMap(&buf, "narumq_node_drain_transitions_total", r.nodeDrainTransitions)
 
 	// 11. narumq_publish_latency_seconds
 	fmt.Fprintf(&buf, "# HELP narumq_publish_latency_seconds Latency of publish processing in seconds.\n")

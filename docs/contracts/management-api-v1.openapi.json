@@ -3,8 +3,8 @@
   "jsonSchemaDialect": "https://json-schema.org/draft/2020-12/schema",
   "info": {
     "title": "NaruMQ Management API",
-    "version": "1.3.0",
-    "description": "Query, observability, authenticated cluster-membership management, and cluster-backup operations. OIDC/JWT claim semantics, rate limiting, audit and dashboard APIs are deferred."
+    "version": "1.4.0",
+    "description": "Query, observability, authenticated cluster membership, broker node drain, and cluster-backup operations. OIDC/JWT claim semantics, rate limiting, audit and dashboard APIs are deferred."
   },
   "servers": [
     {
@@ -316,6 +316,98 @@
         }
       }
     },
+    "/api/v1/nodes/{nodeId}/drain": {
+      "parameters": [{ "$ref": "#/components/parameters/DrainNodeId" }],
+      "post": {
+        "tags": ["Nodes"],
+        "operationId": "startNodeDrain",
+        "summary": "Start or replay a broker node drain",
+        "description": "Requires Operator. The target must be a committed voter. Numeric request fields are required; the first committed operation returns 202 and a replay returns 200.",
+        "parameters": [{ "$ref": "#/components/parameters/IdempotencyKey" }],
+        "requestBody": {
+          "required": true,
+          "content": { "application/json": { "schema": { "$ref": "#/components/schemas/NodeDrainRequest" } } }
+        },
+        "responses": {
+          "200": { "$ref": "#/components/responses/NodeDrainOperationResponse" },
+          "202": { "$ref": "#/components/responses/NodeDrainOperationResponse" },
+          "400": { "$ref": "#/components/responses/BadRequest" },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "403": { "$ref": "#/components/responses/Forbidden" },
+          "404": { "$ref": "#/components/responses/NotFound" },
+          "405": { "$ref": "#/components/responses/MethodNotAllowed" },
+          "409": {
+            "description": "Drain idempotency, target lifecycle, or another active node drain conflict (including invalid_node_transition, drain_not_cancellable, node_drain_in_progress, and idempotency_conflict).",
+            "headers": { "X-Request-Id": { "$ref": "#/components/headers/XRequestId" } },
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorResponse" } } }
+          },
+          "500": {
+            "description": "Redacted unexpected application or storage error.",
+            "headers": { "X-Request-Id": { "$ref": "#/components/headers/XRequestId" } },
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorResponse" } } }
+          },
+          "503": {
+            "description": "No fresh quorum barrier or committed operation is available.",
+            "headers": { "X-Request-Id": { "$ref": "#/components/headers/XRequestId" } },
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorResponse" } } }
+          }
+        }
+      },
+      "get": {
+        "tags": ["Nodes"],
+        "operationId": "getNodeDrain",
+        "summary": "Read committed node drain state",
+        "description": "Requires ReadOnly. Completes a fresh quorum read barrier and returns the committed drain operation.",
+        "responses": {
+          "200": { "$ref": "#/components/responses/NodeDrainOperationResponse" },
+          "400": { "$ref": "#/components/responses/BadRequest" },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "403": { "$ref": "#/components/responses/Forbidden" },
+          "404": { "$ref": "#/components/responses/NotFound" },
+          "405": { "$ref": "#/components/responses/MethodNotAllowed" },
+          "500": {
+            "description": "Redacted unexpected application or storage error.",
+            "headers": { "X-Request-Id": { "$ref": "#/components/headers/XRequestId" } },
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorResponse" } } }
+          },
+          "503": {
+            "description": "A fresh quorum read barrier is unavailable.",
+            "headers": { "X-Request-Id": { "$ref": "#/components/headers/XRequestId" } },
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorResponse" } } }
+          }
+        }
+      },
+      "delete": {
+        "tags": ["Nodes"],
+        "operationId": "cancelNodeDrain",
+        "summary": "Cancel a cancellable node drain",
+        "description": "Requires Operator and an Idempotency-Key. Completed SAFE_TO_STOP operations cannot be cancelled.",
+        "parameters": [{ "$ref": "#/components/parameters/IdempotencyKey" }],
+        "responses": {
+          "200": { "$ref": "#/components/responses/NodeDrainOperationResponse" },
+          "400": { "$ref": "#/components/responses/BadRequest" },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "403": { "$ref": "#/components/responses/Forbidden" },
+          "404": { "$ref": "#/components/responses/NotFound" },
+          "405": { "$ref": "#/components/responses/MethodNotAllowed" },
+          "409": {
+            "description": "The drain transition is not allowed or cannot be cancelled (including invalid_node_transition and drain_not_cancellable).",
+            "headers": { "X-Request-Id": { "$ref": "#/components/headers/XRequestId" } },
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorResponse" } } }
+          },
+          "500": {
+            "description": "Redacted unexpected application or storage error.",
+            "headers": { "X-Request-Id": { "$ref": "#/components/headers/XRequestId" } },
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorResponse" } } }
+          },
+          "503": {
+            "description": "No committed cancellation result is available.",
+            "headers": { "X-Request-Id": { "$ref": "#/components/headers/XRequestId" } },
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorResponse" } } }
+          }
+        }
+      }
+    },
     "/api/v1/clients": {
       "get": {
         "tags": ["Clients"],
@@ -527,6 +619,13 @@
         "required": true,
         "example": "node-1",
         "schema": { "$ref": "#/components/schemas/OpaqueId" }
+      },
+      "DrainNodeId": {
+        "name": "nodeId",
+        "in": "path",
+        "required": true,
+        "description": "Canonical positive decimal uint64 member ID.",
+        "schema": { "type": "string", "minLength": 1, "maxLength": 20, "pattern": "^[1-9][0-9]*$" }
       },
       "TenantId": {
         "name": "tenantId",
@@ -867,6 +966,15 @@
           }
         }
       },
+      "NodeDrainOperationResponse": {
+        "description": "Committed node drain operation state.",
+        "headers": { "X-Request-Id": { "$ref": "#/components/headers/XRequestId" } },
+        "content": {
+          "application/json": {
+            "schema": { "$ref": "#/components/schemas/NodeDrainOperationEnvelope" }
+          }
+        }
+      },
       "MethodNotAllowed": {
         "description": "The route does not support the requested method.",
         "headers": { "X-Request-Id": { "$ref": "#/components/headers/XRequestId" } },
@@ -930,6 +1038,92 @@
         "additionalProperties": false,
         "required": ["data"],
         "properties": { "data": { "$ref": "#/components/schemas/MembershipOperation" } }
+      },
+      "NodeDrainRequest": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["connectionRatePerSecond", "loadBalancerPropagationDelayMs", "timeoutMs"],
+        "properties": {
+          "serverReference": {
+            "type": "string",
+            "maxLength": 256,
+            "description": "Optional MQTT 5 Server Reference; at most 256 UTF-8 bytes and no control characters."
+          },
+          "connectionRatePerSecond": { "type": "integer", "minimum": 1, "maximum": 10000 },
+          "loadBalancerPropagationDelayMs": { "type": "integer", "minimum": 0, "maximum": 3600000 },
+          "timeoutMs": {
+            "type": "integer",
+            "minimum": 1000,
+            "maximum": 86400000,
+            "description": "Must be greater than loadBalancerPropagationDelayMs."
+          }
+        }
+      },
+      "NodeDrainPhase": {
+        "type": "string",
+        "enum": ["EXCLUDING_TRAFFIC", "WAITING_FOR_LB", "VERIFYING_SESSION_STATE", "TRANSFERRING_SESSIONS", "VERIFYING_BARRIER", "COMPLETED", "FAILED", "CANCELLED"]
+      },
+      "NodeDrainOperation": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["operationId", "nodeId", "state", "phase", "startedAt", "deadlineAt", "connections", "sessions", "replication", "safeToStop", "failure"],
+        "properties": {
+          "operationId": { "$ref": "#/components/schemas/CanonicalOperationId" },
+          "nodeId": { "type": "string", "minLength": 1, "maxLength": 20, "pattern": "^[1-9][0-9]*$" },
+          "state": { "type": "string", "enum": ["DRAINING", "SAFE_TO_STOP", "READY"] },
+          "phase": { "$ref": "#/components/schemas/NodeDrainPhase" },
+          "startedAt": { "$ref": "#/components/schemas/Timestamp" },
+          "deadlineAt": { "$ref": "#/components/schemas/Timestamp" },
+          "connections": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["initial", "remaining"],
+            "properties": {
+              "initial": { "type": "integer", "minimum": 0 },
+              "remaining": { "type": "integer", "minimum": 0 }
+            }
+          },
+          "sessions": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["stateReadyForTakeover", "takenOver", "failed"],
+            "properties": {
+              "stateReadyForTakeover": { "type": "integer", "minimum": 0 },
+              "takenOver": { "type": "integer", "minimum": 0 },
+              "failed": { "type": "integer", "minimum": 0 }
+            }
+          },
+          "replication": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["pendingWal", "underReplicated"],
+            "properties": {
+              "pendingWal": { "type": "integer", "minimum": 0 },
+              "underReplicated": { "type": "integer", "minimum": 0 }
+            }
+          },
+          "safeToStop": { "type": "boolean" },
+          "failure": {
+            "oneOf": [
+              { "type": "null" },
+              {
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["code", "blockingReason"],
+                "properties": {
+                  "code": { "type": "string", "minLength": 1, "maxLength": 64 },
+                  "blockingReason": { "type": ["string", "null"], "maxLength": 64 }
+                }
+              }
+            ]
+          }
+        }
+      },
+      "NodeDrainOperationEnvelope": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["data"],
+        "properties": { "data": { "$ref": "#/components/schemas/NodeDrainOperation" } }
       },
       "Timestamp": {
         "type": "string",

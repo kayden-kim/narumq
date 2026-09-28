@@ -26,6 +26,8 @@ import (
 
 	adaptersmetrics "narumq/internal/adapters/metrics"
 	appmembership "narumq/internal/application/membership"
+	"narumq/internal/domain/nodedrain"
+
 	ports "narumq/internal/application/ports/management"
 )
 
@@ -76,6 +78,25 @@ func membershipOperationFixtures() []operationFixture {
 		},
 	}
 }
+func drainOperationFixtures() []operationFixture {
+	return []operationFixture{
+		{
+			method: http.MethodPost, path: "/api/v1/nodes/{nodeId}/drain", operationID: "startNodeDrain",
+			target:         "/api/v1/nodes/3/drain",
+			body:           `{"serverReference":"node3.example:1883","connectionRatePerSecond":10,"loadBalancerPropagationDelayMs":1000,"timeoutMs":60000}`,
+			idempotencyKey: "contract-drain-start", expectedStatus: http.StatusAccepted,
+		},
+		{
+			method: http.MethodGet, path: "/api/v1/nodes/{nodeId}/drain", operationID: "getNodeDrain",
+			target: "/api/v1/nodes/3/drain", expectedStatus: http.StatusOK,
+		},
+		{
+			method: http.MethodDelete, path: "/api/v1/nodes/{nodeId}/drain", operationID: "cancelNodeDrain",
+			target: "/api/v1/nodes/3/drain", idempotencyKey: "contract-drain-cancel", expectedStatus: http.StatusOK,
+		},
+	}
+}
+
 func backupOperationFixtures() []operationFixture {
 	return []operationFixture{
 		{method: http.MethodPost, path: "/api/v1/cluster/backups", operationID: "createClusterBackup", target: "/api/v1/cluster/backups", expectedStatus: http.StatusOK},
@@ -342,8 +363,10 @@ func clusterManagementContractHandler() http.Handler {
 		contractStateProvider{},
 		adaptersmetrics.NewRegistry(),
 		contractMembershipService{},
+		contractDrainService{},
 		contractBackupProvider{},
 	)
+
 }
 
 type contractBackupProvider struct{}
@@ -387,9 +410,36 @@ func (contractMembershipService) GetOperation(_ context.Context, operationID str
 	}, nil
 }
 
+type contractDrainService struct{}
+
+func (contractDrainService) StartNodeDrain(_ context.Context, request appmembership.StartNodeDrainRequestDTO) (appmembership.NodeDrainOperationDTO, error) {
+	return appmembership.NodeDrainOperationDTO{State: appmembership.NodeDrainStateDTO{
+		DrainOperationID: "00000000-0000-4000-8000-000000000005",
+		MemberID:         request.MemberID, Phase: nodedrain.PhaseExcludingTraffic,
+		StartedAtUnixMillis: 1, DeadlineAtUnixMillis: 60001,
+	}}, nil
+}
+
+func (contractDrainService) GetNodeDrain(_ context.Context, memberID uint64) (appmembership.NodeDrainOperationDTO, error) {
+	return appmembership.NodeDrainOperationDTO{State: appmembership.NodeDrainStateDTO{
+		DrainOperationID: "00000000-0000-4000-8000-000000000005",
+		MemberID:         memberID, Phase: nodedrain.PhaseTransferringSessions,
+		StartedAtUnixMillis: 1, DeadlineAtUnixMillis: 60001,
+	}}, nil
+}
+
+func (contractDrainService) CancelNodeDrain(_ context.Context, memberID uint64) (appmembership.NodeDrainOperationDTO, error) {
+	return appmembership.NodeDrainOperationDTO{State: appmembership.NodeDrainStateDTO{
+		DrainOperationID: "00000000-0000-4000-8000-000000000005",
+		MemberID:         memberID, Phase: nodedrain.PhaseCancelled,
+		StartedAtUnixMillis: 1, DeadlineAtUnixMillis: 60001,
+	}}, nil
+}
+
 func expectedOperationSet() []string {
 	fixtures := append(managementOperationFixtures(), membershipOperationFixtures()...)
 	fixtures = append(fixtures, backupOperationFixtures()...)
+	fixtures = append(fixtures, drainOperationFixtures()...)
 	operations := make([]string, 0, len(fixtures))
 	for _, fixture := range fixtures {
 		operations = append(operations, fixture.method+" "+fixture.path+" "+fixture.operationID)
@@ -486,6 +536,30 @@ func TestMembershipHandlerResponsesMatchOpenAPI(t *testing.T) {
 		})
 	}
 }
+func TestDrainHandlerResponsesMatchOpenAPI(t *testing.T) {
+	_, router := loadManagementContract(t)
+	handler := clusterManagementContractHandler()
+
+	for _, fixture := range drainOperationFixtures() {
+		t.Run(fixture.operationID, func(t *testing.T) {
+			req := newContractRequest(fixture)
+			input, options := findContractRoute(t, router, req)
+			if input.Route.Operation.OperationID != fixture.operationID {
+				t.Fatalf("runtime fixture matched operation %q, want %q", input.Route.Operation.OperationID, fixture.operationID)
+			}
+			if err := openapi3filter.ValidateRequest(context.Background(), input); err != nil {
+				t.Fatalf("validate representative request: %v", err)
+			}
+			recorder := httptest.NewRecorder()
+			handler.ServeHTTP(recorder, req)
+			if recorder.Code != fixture.expectedStatus {
+				t.Fatalf("status = %d, want %d: %s", recorder.Code, fixture.expectedStatus, recorder.Body.String())
+			}
+			validateResponse(t, input, options, recorder)
+		})
+	}
+}
+
 func TestClusterBackupHandlerResponseMatchesOpenAPI(t *testing.T) {
 	_, router := loadManagementContract(t)
 	handler := clusterManagementContractHandler()

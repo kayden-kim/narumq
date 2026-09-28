@@ -1,10 +1,10 @@
 # Management API와 observability 스펙
 
-이 문서는 operator, GitOps controller, Dashboard와 monitoring system이 NaruMQ를 조회·변경하는 HTTP·Metric 계약의 전체 목표를 정의한다. 현재 normative query profile은 [Management API v1 contract](../contracts/management-api-v1.md)와 [OpenAPI 3.1 contract](../contracts/management-api-v1.openapi.json)으로 확정하고, 이 문서의 미래 catalog는 명시적으로 deferred scope로 표시한다.
+이 문서는 operator, GitOps controller, Dashboard와 monitoring system이 NaruMQ를 조회·변경하는 HTTP·Metric 계약의 전체 목표를 정의한다. 현재 active profile은 [Management API v1 contract](../contracts/management-api-v1.md)와 [OpenAPI 3.1 contract](../contracts/management-api-v1.openapi.json)으로 확정하고, 다른 미래 catalog는 명시적으로 deferred scope로 표시한다.
 
 | 항목 | 값 |
 | --- | --- |
-| 상태 | Active (Phase 1 query profile); mutation·OIDC·운영 자동화 항목은 deferred |
+| 상태 | Active (Phase 1 query profile와 broker drain; 다른 mutation·OIDC·운영 자동화는 deferred) |
 | 관련 요구사항 | API-01~API-09, UI-01~UI-10, SEC-10~SEC-11 |
 | 근거 | [PRD 9.5절, 9.6절과 14장](../requirements/PRD.md) |
 | 관련 spec | [Tenant와 security](tenancy-and-security.md), [Drain](drain-and-rolling-update.md) |
@@ -18,7 +18,7 @@
 - request와 response body는 `application/json` UTF-8을 사용한다.
 - `/api/v1` 요청은 인증과 RBAC를 통과해야 한다. Health probe와 `/metrics`의 익명 노출 범위는 listener 정책으로 제한할 수 있다.
 - 서버는 수신한 유효 request ID를 사용하거나 새 값을 생성해 `X-Request-Id`에 반환해야 한다.
-- Phase 1은 조회 전용이다. mutation의 감사·idempotency 요구사항은 2.2의 deferred endpoint가 활성화될 때 적용한다.
+- Phase 1의 일반 catalog은 조회 전용이며 broker node drain만 별도 active mutation으로 제공한다. Drain은 `Idempotency-Key`를 요구하고, 다른 mutation은 계속 deferred다.
 
 ### 1.1 Management listener와 인증 정책
 
@@ -82,19 +82,19 @@ cursor는 불투명 값이다. client는 cursor 내용을 해석해서는 안 �
 | `429` | API rate limit 초과. 가능한 경우 `Retry-After` 포함 |
 | `503` | quorum, dependency 또는 readiness 문제로 일시 처리 불가 |
 
-오류 code 전체 목록과 각 endpoint의 response status는 [Management API v1 OpenAPI](../contracts/management-api-v1.openapi.json)에서 확정한다. 내부 stack, storage key와 secret을 오류에 포함해서는 안 된다. Mutation 전용 상태(`409`, `422`, `429`)는 deferred scope다.
+오류 code 전체 목록과 각 endpoint의 response status는 [Management API v1 OpenAPI](../contracts/management-api-v1.openapi.json)에서 확정한다. 내부 stack, storage key와 secret을 오류에 포함해서는 안 된다. Active drain은 `409` 상태를 사용하며, `422`와 `429`를 포함한 다른 mutation 동작은 deferred다.
 
 ### 1.4 Deferred mutation과 idempotency
 
-Phase 1에는 mutation endpoint가 없다. 아래 idempotency와 conditional-write 규칙은 2.2의 endpoint가 active contract에 추가될 때 적용한다.
+Active broker drain endpoint는 `Idempotency-Key`를 요구한다. 같은 node에 active operation이 있으면 새 operation을 만들지 않고 committed operation을 돌려준다. 같은 key에 다른 parameter를 보내면 `409 idempotency_conflict`다. 다른 mutation endpoint는 아직 deferred다.
 
-mutation endpoint는 `Idempotency-Key`를 받아야 한다. 같은 principal, endpoint와 key에 같은 payload를 재시도하면 최초 결과와 의미가 같아야 한다. 같은 key에 다른 payload가 오면 `409 idempotency_conflict`를 반환해야 한다. resource 변경은 가능한 경우 version/ETag 기반 조건부 요청을 지원해야 한다.
+향후 mutation은 `Idempotency-Key`를 받아야 한다. 같은 principal, endpoint와 key에 같은 payload를 재시도하면 최초 결과와 의미가 같아야 한다. 같은 key에 다른 payload가 오면 `409 idempotency_conflict`를 반환해야 한다. Resource 변경은 가능한 경우 version/ETag 기반 조건부 요청을 지원해야 한다.
 
 ## 2. Endpoint catalog
 
-### 2.1 Phase 1 active query profile
+### 2.1 Phase 1 active profile
 
-아래 13개 GET operation이 현재 구현·계약 대상이다. 정확한 parameter allowlist, schema, response와 operation ID는 OpenAPI가 SSOT이며 `tests/contracts/management-api-v1`가 runtime handler와 일치하는지 검사한다.
+현재 13개 GET operation과 broker drain POST/GET/DELETE가 구현·계약 대상이다. 정확한 parameter allowlist, schema, response와 operation ID는 OpenAPI가 SSOT이며 `tests/contracts/management-api-v1`가 runtime handler와 일치하는지 검사한다.
 
 | Method | Path | 성공 동작 | 권한 |
 | --- | --- | --- | --- |
@@ -105,7 +105,9 @@ mutation endpoint는 `Idempotency-Key`를 받아야 한다. 같은 principal, en
 | GET | `/metrics` | Prometheus 또는 OpenMetrics scrape | monitoring policy |
 | GET | `/api/v1/cluster` | quorum과 cluster 요약 조회 | ReadOnly |
 | GET | `/api/v1/nodes` | state filter와 pagination을 사용한 node 목록 조회 | ReadOnly |
-| GET | `/api/v1/nodes/{nodeId}` | node 상세 조회 | ReadOnly |
+| POST | `/api/v1/nodes/{nodeId}/drain` | committed voter의 broker drain 시작 또는 현재 operation 재생 | Operator |
+| GET | `/api/v1/nodes/{nodeId}/drain` | committed drain operation 조회 | ReadOnly |
+| DELETE | `/api/v1/nodes/{nodeId}/drain` | cancellable drain operation 취소 | Operator |
 | GET | `/api/v1/clients` | tenant·client prefix·node·protocol filter로 client 검색 | ReadOnly, tenant scope |
 | GET | `/api/v1/clients/{tenantId}/{clientId}` | session 상세 조회 | ReadOnly, tenant scope |
 | GET | `/api/v1/subscriptions` | required `tenantId` 범위의 subscription 조회 | ReadOnly, tenant scope |
@@ -118,7 +120,6 @@ mutation endpoint는 `Idempotency-Key`를 받아야 한다. 같은 principal, en
 
 | Method | Path | Deferred 이유 |
 | --- | --- | --- |
-| POST/GET/DELETE | `/api/v1/nodes/{nodeId}/drain` | drain controller와 rollout 상태 계약 미확정 |
 | POST | `/api/v1/tenants` | tenant mutation, idempotency와 audit 계약 미확정 |
 | GET/PUT | `/api/v1/tenants/{tenantId}/quotas` | quota 저장·version 계약 미확정 |
 | GET/PUT | `/api/v1/tenants/{tenantId}/policies` | ACL 저장·version 계약 미확정 |
@@ -126,7 +127,7 @@ mutation endpoint는 `Idempotency-Key`를 받아야 한다. 같은 principal, en
 | POST | `/api/v1/clients/{tenantId}/{clientId}/redirect` | MQTT 5 redirect controller 계약 미확정 |
 | DELETE | `/api/v1/retained/{topic}` | retained mutation과 tenant-safe topic encoding 미확정 |
 
-Drain endpoint의 body와 상태는 [drain spec](drain-and-rolling-update.md)을 기준으로 한다. MQTT redirect는 MQTT 5 `0x9C`와 Server Reference를 사용하며 MQTT 3.1.1 client에 같은 의미를 약속해서는 안 된다.
+Active drain endpoint의 body와 상태는 [drain spec](drain-and-rolling-update.md)을 기준으로 한다. Future MQTT redirect는 MQTT 5 `0x9C`와 Server Reference를 사용할 수 있지만 MQTT 3.1.1 client에 같은 의미를 약속해서는 안 된다.
 
 ## 3. Probe 의미
 
@@ -178,7 +179,7 @@ Node 상세는 `nodeId`, version, uptime, lifecycle state, readiness 원인, rol
 | gauge | 합계가 의미 있는 값만 합산한다. quorum, leader와 state는 합산하지 않고 명시적 gauge로 표시한다. |
 | histogram | 같은 bucket 경계만 cluster에서 합산한다. quantile을 node별로 계산해 평균내서는 안 된다. |
 
-최소 범주는 connection/session/subscription, message·packet·ACK, latency, cluster·replication, storage, auth·ACL, drain과 process resource다. Metric 전체 이름과 bucket은 `SPEC-TBD-07`에서 확정한다.
+최소 범주는 connection/session/subscription, message·packet·ACK, latency, cluster·replication, storage, auth·ACL, drain과 process resource다. `narumq_node_drain_transitions_total{phase}`는 committed node drain 상태를 phase별로 집계하며, label은 8개 유효 drain phase만 허용한다. 다른 Metric 이름과 histogram bucket은 `SPEC-TBD-07`에서 확정한다.
 
 기본 label에 원문 `clientId`, username, IP, 임의 topic, request ID와 token claim을 넣어서는 안 된다. 제한된 exact topic Metric은 P1 opt-in resource로 제공하며 tenant, 최대 등록 수와 TTL을 적용해야 한다.
 

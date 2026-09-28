@@ -5,7 +5,7 @@ package narumq.cluster.v1;
 option go_package = "narumq/internal/adapters/raft/records;records";
 
 // Draft state schema 1.0 rejects unknown fields. Mixed-release membership is
-// unsupported; retained, offline, and delivery commands are admitted only when every active
+// unsupported; retained, offline, delivery, and node drain commands are admitted only when every active
 // committed member's exact release, cluster protocol, and state schema match locally.
 
 enum MemberPhase {
@@ -76,6 +76,72 @@ enum DeliveryPhase {
   DELIVERY_PHASE_AWAIT_PUBCOMP = 4;
 }
 
+enum NodeDrainAction {
+  NODE_DRAIN_ACTION_UNSPECIFIED = 0;
+  NODE_DRAIN_ACTION_START = 1;
+  NODE_DRAIN_ACTION_ADVANCE = 2;
+  NODE_DRAIN_ACTION_COMPLETE = 3;
+  NODE_DRAIN_ACTION_FAIL = 4;
+  NODE_DRAIN_ACTION_CANCEL = 5;
+  NODE_DRAIN_ACTION_CLEAR = 6;
+}
+
+enum NodeDrainPhase {
+  NODE_DRAIN_PHASE_UNSPECIFIED = 0;
+  NODE_DRAIN_PHASE_EXCLUDING_TRAFFIC = 1;
+  NODE_DRAIN_PHASE_WAITING_FOR_LB = 2;
+  NODE_DRAIN_PHASE_VERIFYING_SESSION_STATE = 3;
+  NODE_DRAIN_PHASE_TRANSFERRING_SESSIONS = 4;
+  NODE_DRAIN_PHASE_VERIFYING_BARRIER = 5;
+  NODE_DRAIN_PHASE_COMPLETED = 6;
+  NODE_DRAIN_PHASE_FAILED = 7;
+  NODE_DRAIN_PHASE_CANCELLED = 8;
+}
+
+message NodeDrainProgress {
+  uint64 connections_initial = 1;
+  uint64 connections_remaining = 2;
+  uint64 sessions_ready_for_takeover = 3;
+  uint64 sessions_taken_over = 4;
+  uint64 sessions_failed = 5;
+  uint64 pending_wal = 6;
+  uint64 under_replicated = 7;
+}
+
+message NodeDrainChange {
+  NodeDrainAction action = 1;
+  uint64 member_id = 2;
+  string drain_operation_id = 3;
+  string idempotency_key = 4;
+  string server_reference = 5;
+  uint32 connection_rate_per_second = 6;
+  uint64 load_balancer_propagation_delay_millis = 7;
+  uint64 timeout_millis = 8;
+  NodeDrainPhase phase = 9;
+  NodeDrainProgress progress = 10;
+  string failure_code = 11;
+  string blocking_reason = 12;
+  uint64 proposed_at_unix_millis = 13;
+}
+
+message NodeDrainState {
+  string drain_operation_id = 1;
+  uint64 member_id = 2;
+  string idempotency_key = 3;
+  NodeDrainPhase phase = 4;
+  string server_reference = 5;
+  uint32 connection_rate_per_second = 6;
+  uint64 load_balancer_propagation_delay_millis = 7;
+  uint64 timeout_millis = 8;
+  uint64 started_at_unix_millis = 9;
+  uint64 deadline_at_unix_millis = 10;
+  uint64 phase_started_at_unix_millis = 11;
+  NodeDrainProgress progress = 12;
+  string failure_code = 13;
+  string blocking_reason = 14;
+  uint64 committed_index = 15;
+}
+
 // Every application log entry has exactly one typed payload. operation_id is a
 // canonical lower-case UUID and is stable across retry of the same operation.
 message CommandEnvelope {
@@ -89,6 +155,7 @@ message CommandEnvelope {
     DeliveryChange delivery = 16;
     RetainedChange retained = 14;
     OfflineChange offline = 15;
+    NodeDrainChange node_drain = 17;
   }
   reserved 13;
   reserved "checkpoint";
@@ -286,6 +353,7 @@ message ReplicatedStateSnapshot {
   repeated RetainedState retained = 6;
   repeated OfflineSessionState offline_sessions = 7;
   repeated DeliverySessionState delivery_sessions = 8;
+  repeated NodeDrainState node_drains = 9;
 }
 
 message SnapshotEnvelope {

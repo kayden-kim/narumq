@@ -6,7 +6,7 @@ path, parameter, response schema와 media type은
 
 | 항목 | 값 |
 | --- | --- |
-| 이름과 version | `narumq-management-api` 1.3.0 |
+| 이름과 version | `narumq-management-api` 1.4.0 |
 | 상태 | Active |
 | Producer | NaruMQ broker management API |
 | Consumer | Dashboard·operator·monitoring integration의 query client |
@@ -34,15 +34,18 @@ path, parameter, response schema와 media type은
 | POST | `/api/v1/cluster/backups` | quorum-fresh 경계의 checksummed backup archive 다운로드 |
 | GET | `/api/v1/nodes` | node list |
 | GET | `/api/v1/nodes/{nodeId}` | node detail |
+| POST | `/api/v1/nodes/{nodeId}/drain` | broker drain 시작 또는 기존 operation 재생 |
+| GET | `/api/v1/nodes/{nodeId}/drain` | committed drain operation 조회 |
+| DELETE | `/api/v1/nodes/{nodeId}/drain` | 취소 가능한 drain operation 취소 |
 | GET | `/api/v1/clients` | client session list |
 | GET | `/api/v1/clients/{tenantId}/{clientId}` | client session detail |
 | GET | `/api/v1/subscriptions` | subscription list |
 | GET | `/api/v1/retained` | retained metadata list |
 | GET | `/api/v1/tenants` | tenant list |
 
-Drain mutation, tenant create/quota/policy mutation, client disconnect/redirect, retained
-message delete와 다른 mutation은 Phase 1에서 제공하지 않는다. 이 operation catalog에
-없는 path를 client가 호출할 수 있다는 계약은 없다.
+Version 1.4.0은 dynamic-cluster broker drain을 active contract에 추가한다. 이 endpoint는
+standalone mode에서 제공되지 않으며, 외부 rollout controller와 Pod 삭제 승인은 포함하지 않는다.
+이 catalog에 없는 path를 client가 호출할 수 있다는 계약은 없다.
 
 ## 2. Authentication과 authorization
 
@@ -51,8 +54,8 @@ message delete와 다른 mutation은 Phase 1에서 제공하지 않는다. 이 o
 - 이 contract는 OIDC issuer discovery, JWT signature, claim semantics, token scope 또는
   API key 발급 형식을 약속하지 않는다. 입력 credential은 configured opaque value와
   비교된다.
-- 인증되지 않은 요청은 `401`, 인증됐지만 role이 부족한 요청은 `403`이다. API query operation은
-  `ReadOnly`, tenant list와 cluster backup은 `ClusterAdmin` role을 요구한다.
+- API query operation과 node drain GET은 `ReadOnly`; node drain POST와 DELETE는 `Operator`를
+  요구한다. Tenant list와 cluster backup은 `ClusterAdmin` role을 요구한다.
 - Health probe와 `/metrics`의 익명 허용 여부는 listener configuration이다. OpenAPI의
   security scheme은 보호된 배포를 기술하고, local development의 anonymous policy를
   제거하지 않는다.
@@ -119,7 +122,6 @@ method에 사용한다. 내부 오류와 credential은 response에 노출하지 
   허용한다.
 - Version 1.2.0은 `NodeData`에 optional `replicationHealth`, `lastErrorCode`, `replicationQueue` field를 추가했다. Field schema와 enum은 OpenAPI artifact가 기준이며, contract suite가 response shape를 검증한다.
 - Version 1.3.0은 `POST /api/v1/cluster/backups`를 추가했다. ClusterAdmin 전용이며 fresh quorum barrier에서 캡처한 typed snapshot과 committed tail을 binary archive로 반환한다.
-- Future catalog에 남아 있는 다른 mutation endpoint, OIDC/JWT, API rate limiting,
-  audit event와 dashboard는 현재 Active contract가 아니다. 이 기능을 구현할 때는 별도
-  범위와 contract revision을 정한다.
+- Version 1.4.0은 `/api/v1/nodes/{nodeId}/drain`의 POST/GET/DELETE를 추가한다. Drain request parameter bounds와 replay semantics는 [Drain spec](../specs/drain-and-rolling-update.md)을 따른다.
+- Future catalog의 다른 mutation endpoint, OIDC/JWT, API rate limiting, audit event와 dashboard는 현재 Active contract가 아니다. 이 기능을 구현할 때는 별도 범위와 contract revision을 정한다.
 - Breaking change는 `/api/v2`와 별도 OpenAPI artifact로 제공한다.

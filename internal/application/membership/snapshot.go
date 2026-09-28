@@ -84,6 +84,10 @@ func (machine *StateMachine) Restore(snapshot SnapshotDTO) error {
 			offlineBytes += offlineMessageBytes(session.TenantID, session.ClientID, msg)
 		}
 	}
+	nodeDrains := make(map[uint64]NodeDrainStateDTO, len(copyOfSnapshot.NodeDrains))
+	for _, state := range copyOfSnapshot.NodeDrains {
+		nodeDrains[state.MemberID] = state
+	}
 	machine.lastAppliedIndex = copyOfSnapshot.LastIncludedIndex
 	machine.members = members
 	machine.operations = operations
@@ -94,6 +98,7 @@ func (machine *StateMachine) Restore(snapshot SnapshotDTO) error {
 	machine.retainedBytes = retainedBytes
 	machine.offline = offline
 	machine.offlineBytes = offlineBytes
+	machine.nodeDrains = nodeDrains
 	machine.delivery = delivery
 	machine.deliveryEntries = deliveryEntries
 	machine.deliveryBytes = deliveryBytes
@@ -109,6 +114,8 @@ func (machine *StateMachine) snapshotLocked(lastIncludedIndex uint64) SnapshotDT
 		DeliverySessions:  make([]DeliverySessionStateDTO, 0, len(machine.delivery)),
 		MembershipHistory: make([]MembershipRecordDTO, 0, len(machine.operations)),
 		OfflineSessions:   make([]OfflineSessionStateDTO, 0, len(machine.offline)),
+		Retained:          make([]RetainedStateDTO, 0, len(machine.retained)),
+		NodeDrains:        make([]NodeDrainStateDTO, 0, len(machine.nodeDrains)),
 	}
 	for _, member := range machine.members {
 		snapshot.Members = append(snapshot.Members, cloneMember(member))
@@ -133,6 +140,9 @@ func (machine *StateMachine) snapshotLocked(lastIncludedIndex uint64) SnapshotDT
 		snapshot.OfflineSessions = append(snapshot.OfflineSessions, cloneOfflineSession(session))
 		offlineMessagesCount += len(session.Messages)
 	}
+	for _, state := range machine.nodeDrains {
+		snapshot.NodeDrains = append(snapshot.NodeDrains, state)
+	}
 	sort.Slice(snapshot.Members, func(left, right int) bool { return snapshot.Members[left].MemberID < snapshot.Members[right].MemberID })
 	sort.Slice(snapshot.Ownerships, func(left, right int) bool {
 		return compareSession(snapshot.Ownerships[left].TenantID, snapshot.Ownerships[left].ClientID, snapshot.Ownerships[right].TenantID, snapshot.Ownerships[right].ClientID) < 0
@@ -152,6 +162,9 @@ func (machine *StateMachine) snapshotLocked(lastIncludedIndex uint64) SnapshotDT
 	sort.Slice(snapshot.OfflineSessions, func(left, right int) bool {
 		return compareOffline(snapshot.OfflineSessions[left], snapshot.OfflineSessions[right]) < 0
 	})
+	sort.Slice(snapshot.NodeDrains, func(left, right int) bool {
+		return snapshot.NodeDrains[left].MemberID < snapshot.NodeDrains[right].MemberID
+	})
 	for index := range snapshot.DeliverySessions {
 		sort.Slice(snapshot.DeliverySessions[index].Messages, func(left, right int) bool {
 			return snapshot.DeliverySessions[index].Messages[left].Sequence < snapshot.DeliverySessions[index].Messages[right].Sequence
@@ -164,7 +177,7 @@ func (machine *StateMachine) snapshotLocked(lastIncludedIndex uint64) SnapshotDT
 	for _, record := range snapshot.DeliverySessions {
 		deliveryEntries += len(record.Messages) + len(record.Inbound)
 	}
-	snapshot.ObjectCount = uint64(len(snapshot.Members) + len(snapshot.Ownerships) + len(snapshot.Subscriptions) + len(snapshot.DeliverySessions) + deliveryEntries + len(snapshot.MembershipHistory) + len(snapshot.Retained) + len(snapshot.OfflineSessions) + offlineMessagesCount)
+	snapshot.ObjectCount = uint64(len(snapshot.Members) + len(snapshot.Ownerships) + len(snapshot.Subscriptions) + len(snapshot.DeliverySessions) + deliveryEntries + len(snapshot.MembershipHistory) + len(snapshot.Retained) + len(snapshot.OfflineSessions) + offlineMessagesCount + len(snapshot.NodeDrains))
 	return snapshot
 }
 
@@ -291,9 +304,10 @@ func cloneSnapshot(snapshot SnapshotDTO) SnapshotDTO {
 			copyOfSnapshot.OfflineSessions[index] = cloneOfflineSession(session)
 		}
 	}
+	copyOfSnapshot.NodeDrains = append([]NodeDrainStateDTO(nil), snapshot.NodeDrains...)
 	return copyOfSnapshot
 }
 
 func sameSnapshotState(left, right SnapshotDTO) bool {
-	return left.SchemaMajor == right.SchemaMajor && left.SchemaMinor == right.SchemaMinor && left.LastIncludedIndex == right.LastIncludedIndex && left.ObjectCount == right.ObjectCount && reflect.DeepEqual(left.Members, right.Members) && reflect.DeepEqual(left.Ownerships, right.Ownerships) && reflect.DeepEqual(left.Subscriptions, right.Subscriptions) && reflect.DeepEqual(left.DeliverySessions, right.DeliverySessions) && reflect.DeepEqual(left.MembershipHistory, right.MembershipHistory) && reflect.DeepEqual(left.Retained, right.Retained) && reflect.DeepEqual(left.OfflineSessions, right.OfflineSessions)
+	return left.SchemaMajor == right.SchemaMajor && left.SchemaMinor == right.SchemaMinor && left.LastIncludedIndex == right.LastIncludedIndex && left.ObjectCount == right.ObjectCount && reflect.DeepEqual(left.Members, right.Members) && reflect.DeepEqual(left.Ownerships, right.Ownerships) && reflect.DeepEqual(left.Subscriptions, right.Subscriptions) && reflect.DeepEqual(left.DeliverySessions, right.DeliverySessions) && reflect.DeepEqual(left.MembershipHistory, right.MembershipHistory) && reflect.DeepEqual(left.Retained, right.Retained) && reflect.DeepEqual(left.OfflineSessions, right.OfflineSessions) && reflect.DeepEqual(left.NodeDrains, right.NodeDrains)
 }

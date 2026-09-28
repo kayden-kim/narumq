@@ -247,19 +247,18 @@ Command는 checked-in `tests/compatibility/mqtt-clients-v1/profile.json`을 stri
 
 성공 artifact는 `.artifacts/compatibility/mqtt-clients-v1/<run-id>/` 아래 `manifest.json`, `summary.json`, `cases.jsonl`, build log, image inspect metadata를 보존한다. 각 case는 broker log와 inspect, client stdout/stderr와 result JSON을 보존하고, QoS retransmission case는 proxy trace를 추가한다. Artifact에는 payload body, credential, raw certificate, 외부에서 주어진 Client ID와 secret을 기록해서는 안 된다.
 
-Phase 1 acceptance는 10개 Go case, 10개 Python case, 4개 cross-SDK QoS 1 case와 2개 MQTT 3.1.0 rejection case를 포함한 총 26개 expected case가 모두 성공하고 missing/unexpected result가 0인 경우에만 성공이다. `MQTT5_DRAIN_SAFE`, malformed server DISCONNECT와 Server Reference는 이 command에서 실행하지 않으며 `DEP-06`~`DEP-12`와 `SPEC-TBD-04` blocker로만 기록한다.
+Phase 1 compatibility acceptance는 Go 10개, Python 10개, cross-SDK QoS 1 4개와 MQTT 3.1.0 거부 2개, 총 26개 expected case를 검사한다. 이 Docker 명령은 `MQTT5_DRAIN_SAFE`, malformed server DISCONNECT 또는 Server Reference 자동 추종을 실행하지 않는다. Broker의 `DISCONNECT 0x9C`/Server Reference process acceptance는 [Drain spec §10](drain-and-rolling-update.md#10-broker-drain-수용-시험-매핑)에 별도로 기록하며, supported SDK 전체의 redirect/Will 호환성을 증명하지 않는다. 따라서 DEP-06/07/12와 `SPEC-TBD-04`는 release blocker로 남는다.
 
 이 Docker/E2E gate는 외부 dependency가 없어야 하는 `go test ./...`와 `go run ./tools/verify local`에 포함되지 않는다. 후자의 검증은 nested SDK module을 다운로드하거나 Docker를 시작하지 않아야 하며, compatibility command는 release evidence가 필요한 환경에서 명시적으로 실행한다.
 
 ### 7.2 Phase 0 mutation·fuzz gate
 
-현재 Phase 0에서 mutation gate가 직접 다루는 critical state machine은
-`internal/domain/delivery/state.go`와 `internal/domain/session/state.go`다.
-두 package를 하나의 합산 점수로 평가하지 않고 package별로 독립 실행한다.
+현재 mutation gate는 critical state machine인 `internal/domain/delivery/state.go`,
+`internal/domain/session/state.go`, `internal/domain/nodedrain`을 package별로
+실행한다. 한 package의 결과로 다른 package의 점수를 상쇄하지 않는다.
 
-`ci` 실행에서만 두 package mutation command를 수행한다. `local`은 전체 unit·integration
+`ci` 실행에서만 세 package mutation command를 수행한다. `local`은 전체 unit·integration
 suite와 bounded fuzz를 실행해 빠른 개발 피드백을 제공하고, CI는 여기에 mutation gate를 더한다.
-mutation 도구는 repository의 Go tool dependency로 고정한 Gremlins `v0.6.0`이며,
 정책은 [`tests/verification/gremlins.yaml`](../../tests/verification/gremlins.yaml)에
 둔다. 이 정책은 `workers=1`, `test-cpu=1`, `efficacy=80`, `mutant-coverage=80`을
 고정하고 source·file·mutant exclusion을 사용하지 않는다. 각 package의 worker는
@@ -268,6 +267,7 @@ command와 JSON artifact를 별도로 만든다.
 
 ```text
 go tool gremlins unleash --config=tests/verification/gremlins.yaml --output=.artifacts/verification/mutation-delivery.json internal/domain/delivery
+go tool gremlins unleash --config=tests/verification/gremlins.yaml --output=.artifacts/verification/mutation-nodedrain.json internal/domain/nodedrain
 go tool gremlins unleash --config=tests/verification/gremlins.yaml --output=.artifacts/verification/mutation-session.json internal/domain/session
 ```
 
@@ -284,7 +284,7 @@ mutant coverage =
 ```
 
 두 수치가 각 package에서 모두 80 이상이어야 한다. 한 package의 높은 점수로 다른
-package의 실패를 상쇄하지 않는다. equivalent mutant를 별도로 제외하지 않으며,
+package의 실패를 상쇄하지 않는다. Equivalent mutant를 별도로 제외하지 않으며,
 관찰 가능한 계약이 누락되어 `LIVED`가 발생하면 해당 package의 기존 state test에
 정상·오류·경계 전이 assertion을 보강한다.
 
@@ -302,9 +302,7 @@ go test ./internal/domain/session -run=^$ -fuzz=^FuzzLifecycleTransitions$ -fuzz
 Go fuzz가 생성하는 입력의 발견 순서는 deterministic하지 않다. 따라서 gate의 반복
 계약은 입력 순서가 아니라 네 target의 고정 quota와 실패 입력의 보존이다. 실패가
 발견되면 해당 package의 `testdata/fuzz/<Target>/` corpus로 승격해 ordinary test와
-후속 fuzz 실행에서 재현되게 한다. 현재 Phase 0에는 production ownership, ACL,
-drain state machine이 없으므로 mutation target이 아니다. 해당 기능이 구현되는
-변경에서는 그 package의 80% 기준과 runner command를 같은 변경에 추가한다.
+후속 fuzz 실행에서 재현한다.
 
 Feature와 bug fix는 실패를 재현하는 test를 포함해야 한다. Flaky test 격리는 임시 조치이며 owner와 해소 기한을 기록해야 한다.
 
@@ -401,11 +399,11 @@ PASS, exit code 0; `summary.json` reports all three scenarios passed. Follower d
 ## 8. Coverage와 test quality gate
 
 - 전체 production code는 line 85% 이상, function 90% 이상, branch 85% 이상이어야 한다.
-- protocol, session, routing, delivery, tenancy, security와 cluster lifecycle은 line/function 95% 이상, branch 90% 이상이어야 한다.
+- protocol, session, routing, delivery, tenancy, security, cluster lifecycle과 node drain domain은 line/function 95% 이상, branch 90% 이상이어야 한다.
 - PR 변경 code는 line/branch diff coverage 95% 이상이어야 한다.
 - 전체 production line coverage 기준은 85%, function coverage 기준은 90%다. Core와 diff는 각각 별도 higher threshold를 유지한다.
 - Generated source is excluded only when it is under `cmd/` or `internal/`, ends in `.pb.go`, and begins with the standard `// Code generated … DO NOT EDIT.` marker. Other unknown files in a coverage profile fail verification.
-- `internal/domain/delivery`와 `internal/domain/session`은 각각 test efficacy와 mutant coverage 80% 이상이어야 한다. 두 package의 mutation 결과는 합산하지 않는다.
+- `internal/domain/delivery`, `internal/domain/session`, `internal/domain/nodedrain`은 각각 test efficacy와 mutant coverage 80% 이상이어야 한다. 두 수치와 package별 판정은 합산하지 않는다.
 - concurrency code는 race detector 또는 동등한 검사를 통과해야 한다.
 
 현재 Phase 0의 자동 검증 표준 진입점은 다음 명령이다.
@@ -415,9 +413,9 @@ go run ./tools/verify local
 go run ./tools/verify ci --base <merge-base>
 ```
 
-두 runner는 gofmt 사전 검사 뒤 `local` 10개, `ci` 12개 command를 실행한다. CI에만
-delivery와 session mutation command가 추가된다. Coverage profile을 사용하는 마지막
-coverage 판정만 병렬 단계가 끝날 때까지 미룬다. 나머지 독립 command는 동시에 실행하며,
+두 runner는 gofmt 사전 검사 뒤 `local` 10개, `ci` 13개 command를 실행한다. CI에만
+delivery, nodedrain, session mutation command가 추가된다. Coverage profile을 사용하는 마지막
+coverage 판정만 병렬 단계가 끝난 뒤 실행한다. 나머지 독립 command는 동시에 실행하며,
 하나가 실패하면 나머지 process를 취소한다. 전체 test suite와 atomic coverage profile은
 두 runner 모두 한 번의 `go test ./...`로 수행하며, test parallel limit은 2다. 명시적으로 병렬
 실행하는 다섯 개 process acceptance test도 동시에 최대 두 개만 실행한다. race detector는 실제 production package
@@ -431,7 +429,7 @@ go run ./tools/verify traceability
 go test ./... -parallel=2 -count=1 -covermode=atomic -coverpkg=./cmd/...,./internal/... -coverprofile=.artifacts/verification/coverage.out
 go test -race ./cmd/... ./internal/... -count=1
 4 bounded fuzz campaigns (concurrent, each -parallel=1)
-CI only: delivery + session mutation (concurrent, each workers=1, test-cpu=1)
+CI only: delivery + nodedrain + session mutation (concurrent, each workers=1, test-cpu=1)
 go run ./tools/verify coverage ...
 ```
 
@@ -439,9 +437,8 @@ go run ./tools/verify coverage ...
 `ci`는 coverage command에만 `--base <merge-base>`를 정확히 한 번 전달한다. Mutation
 command에는 diff base를 전달하지 않는다. coverage 원본과 요약은
 `.artifacts/verification/coverage.out` 및
-`.artifacts/verification/coverage-summary.json`에, package별 mutation 결과는
-`.artifacts/verification/mutation-delivery.json`과
-`.artifacts/verification/mutation-session.json`에 남긴다. `ci`는 같은 검증에 더해
+`.artifacts/verification/mutation-delivery.json`,
+`.artifacts/verification/mutation-nodedrain.json`, `.artifacts/verification/mutation-session.json`에 남긴다. `ci`는 같은 검증에 더해
 `base...HEAD`의 production 변경 line/function diff coverage를 확인한다.
 
 
@@ -486,7 +483,7 @@ P0 traffic 승인은 다음 증거가 모두 있을 때만 가능하다.
 
 1. 모든 P0 요구사항에 unit test와 자동 acceptance test가 연결돼 있다.
 2. MQTT compliance matrix에 지원 normative statement가 빠짐없이 연결돼 있다.
-3. coverage와 race gate, 네 bounded fuzz campaign, 그리고 `internal/domain/delivery`·`internal/domain/session`의 package별 mutation gate가 모두 통과했다. 각 mutation JSON은 `.artifacts/verification/`에 보존하고 두 점수 공식과 80% 기준을 적용한다.
+3. Coverage와 race gate, 네 bounded fuzz campaign, 그리고 `internal/domain/delivery`·`internal/domain/nodedrain`·`internal/domain/session`의 package별 mutation gate가 모두 통과했다. 각 mutation JSON은 `.artifacts/verification/`에 보존하고 두 점수가 각각 80% 이상이어야 한다.
 4. BP-01~BP-07을 각 기능이 완성된 phase에서 실행했고 raw artifact가 있다.
 5. 정상 3-node와 N-1에서 확정한 production profile SLO를 충족했다.
 6. 단일 node kill에서 durable ACK message gap이 0이다.
@@ -499,6 +496,7 @@ P0 traffic 승인은 다음 증거가 모두 있을 때만 가능하다.
 표준 runner가 생성한 `.artifacts/verification/coverage.out`,
 `.artifacts/verification/coverage-summary.json`,
 `.artifacts/verification/mutation-delivery.json`과
+`.artifacts/verification/mutation-nodedrain.json`,
 `.artifacts/verification/mutation-session.json`이 release evidence의 검증 원본이다.
 Fuzz failure가 발생하면 해당 package의 `testdata/fuzz/<Target>/` corpus도 함께
 보존해야 하며, quota를 채웠다는 사실만으로 보존된 failure를 삭제하거나

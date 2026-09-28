@@ -6,13 +6,13 @@ NaruMQ source tree는 MQTT·session·routing·delivery·tenancy·security·clust
 | --- | --- |
 | 관점 상태 | Active Phase 1 security and tenant isolation structure; Phase 0 gate 4와 BP-01/BP-05 smoke harness 유지 |
 | 문서 상태 | Active |
-| 구현 증거 | Phase 0 구현 source와 test는 기존 package 표에 연결되어 있으며, Phase 1 tenancy·security·authentication 패키지와 검증 게이트(traceability, architecture, overall coverage line 85%+, function 90%+)는 구현 및 테스트를 통해 현재 증거로 확보되었다. mTLS certificate DTO 추출, selector mapping, strict composition과 실제 TLS socket binding 검증도 해당 source/test에 연결되어 있다. |
+| 구현 증거 | Phase 0 gate 3·4, Phase 1 tenancy·security·mTLS, Phase 2 replicated session/backup/QoS 1/2와 broker-side drain slice가 source·test에 연결되어 있다. Node drain process acceptance 두 개는 PASS (combined 25.916s; [Drain spec §10](../specs/drain-and-rolling-update.md#10-broker-drain-수용-시험-매핑)); full rollout·SDK compatibility·production storage gate는 별도다. |
 | 범위 | Repository root와 Go package directory 배치 및 현재 source dependency |
 | 관련 요구사항 | [PRD](../requirements/PRD.md) NFR-11~NFR-15, TEST-01~TEST-17, DEP-19~DEP-23 |
 | 관련 결정 | [ADR-0001](../decisions/ADR-0001-core-implementation-language.md) Accepted |
 | 관련 Architecture | [Broker core architecture](broker-core.md), [EKS on EC2 deployment](eks-ec2-deployment.md) |
 | 관련 Convention | [Go coding conventions](../conventions/go-coding-conventions.md) |
-| 최종 확인일 | 2026-09-26 |
+| 최종 확인일 | 2026-09-28 |
 
 ## 코드 지도: 실행 모드와 MQTT CONNECT 대표 흐름
 
@@ -22,7 +22,7 @@ NaruMQ source tree는 MQTT·session·routing·delivery·tenancy·security·clust
 | --- | --- | --- |
 | 프로세스 시작 | `cmd/narumq/main.go` `main` → `run` → `runWithContext` | CLI 설정을 검사하고 아래 실행 모드 가운데 하나를 선택한다. |
 | Dynamic cluster | 호출: `cmd/narumq/main.go` `runWithContext` → 정의: `cmd/narumq/cluster_runtime.go` `runClusterMode` | `-cluster-config`를 사용해 dynamic cluster 경로로 진입한다. |
-| Dynamic cluster live QoS 0 delivery | `publish.UseCase.Publish` → `clusterRuntime.ForwardRemote` → `DynamicTCPPeerTransport.Forward`; receiver: `clusterRuntime.runForwardReceiver` → `acceptForwardedFrame` → `tcp.Server.DeliverForwarded` → `publish.UseCase.AcceptForwarded` | `NMQFWRD2`는 Raft log와 분리되며 receiver는 현재 committed owner와 local queue 등록을 확인한다. |
+| Dynamic cluster node drain | Management API `POST/GET/DELETE /api/v1/nodes/{nodeId}/drain` → `membership.DrainService` → `clusterRuntime.Commit` → replicated `NodeDrain` apply; controller: `cmd/narumq/cluster_drain.go` → `internal/domain/nodedrain` barrier rules → MQTT admission and ownership transfer | Quorum-committed phase/state resumes after process restart; `SAFE_TO_STOP` does not approve Pod deletion. Process evidence is in [Drain spec §10](../specs/drain-and-rolling-update.md#10-broker-drain-수용-시험-매핑). |
 | Cluster restore | 호출: `cmd/narumq/main.go` `runWithContext` → 정의: `cmd/narumq/cluster_backup_restore.go` `restoreClusterBackup` | `-cluster-config`와 `-cluster-restore`를 함께 지정하면 archive 복원 경로를 선택한다. |
 | Fixed-voter peer-only | 호출: `cmd/narumq/main.go` `runWithContext` → 정의: `cmd/narumq/raft_peer_config.go` `runRaftPeerOnly` | `-raft-peer-config`로 MQTT/management listener와 분리된 peer-only 경로를 선택한다. |
 | Standalone listener 시작 | `cmd/narumq/main.go` `runWithContext` → `serveServices`에 `mqttServer` (`*tcpadapter.Server`)와 `httpServer` (`*http.Server`) 인스턴스를 전달해 listener 실행을 맡긴다. | `-tcp-listen`/`-tls-listen` 및 `-http-listen` 설정에 따라 standalone MQTT와 management HTTP listener를 시작한다. |
@@ -48,13 +48,14 @@ NaruMQ source tree는 MQTT·session·routing·delivery·tenancy·security·clust
 │   │   ├── delivery/
 │   │   ├── tenancy/
 │   │   ├── security/
-│   │   └── clusterlifecycle/
+│   │   ├── clusterlifecycle/
+│   │   └── nodedrain/
 │   ├── application/
 │   │   ├── connect/
 │   │   ├── publish/
 │   │   ├── subscribe/
 │   │   ├── takeover/
-│   │   ├── drain/
+│   │   ├── membership/
 │   │   └── ports/
 │   │       ├── audit/
 │   │       ├── authentication/
@@ -131,14 +132,16 @@ NaruMQ source tree는 MQTT·session·routing·delivery·tenancy·security·clust
 ```
 
 현재 구현된 Phase 0 gate 3 + single-node ingress, gate 4 consensus spike와 TLS/mTLS transport security deliverable에
-Phase 1 security·tenant isolation slice와 Phase 2 replicated session ownership core가 추가되어 목표 tree의
+Phase 1 security·tenant isolation slice, Phase 2 replicated session ownership core와 broker drain slice가 추가되어 목표 tree의
 `cmd/narumq`, `domain/mqtt`, `domain/session`, `domain/routing`, `domain/tenancy`,
-`domain/security`, `application/connect`, `application/publish`,
-`application/subscribe`, `application/takeover`, `application/ports/authentication`,
+`domain/security`, `domain/nodedrain`, `application/connect`, `application/publish`,
+`application/subscribe`, `application/takeover`, `application/membership`, `application/ports/authentication`,
 `application/ports/deliveryqueue`, `application/ports/retained`,
 `adapters/authentication`, `adapters/tcp`, `adapters/tls`,
 `adapters/memory/deliveryqueue`, `adapters/memory/retained`,
 `adapters/memory/sessionstore`, `adapters/clock`, `adapters/raft`가 해당한다.
+`internal/domain/nodedrain`은 drain phase 전이와 safe-to-stop barrier를 표준 library 값으로 판정한다.
+`internal/application/membership`은 drain 요청과 replicated state port를 연결하고, `cmd/narumq/cluster_drain.go`는 dynamic-cluster runtime의 admission, transfer driver, recovery와 lifecycle을 조립한다.
 `internal/adapters/runtimemetrics`는 Go process 내부의 `runtime/metrics`를 고정 JSONL schema로 수집하는 outbound 진단 adapter다.
 `tests/benchmark/internal/environment`는 BP-01과 BP-05가 공유하는 immutable image, broker container, readiness, resource limit, runner container, Docker stats와 artifact 수집 경계를 소유한다.
 `tests/benchmark/internal/mqttclient`는 benchmark 전용 MQTT 5 Clean Start/zero Session Expiry CONNECT와 frame I/O를 소유한다. `tests/benchmark/internal/jsonl`은 phase·event JSONL 파일의 공통 buffering/flush/close 동작을 소유하고, `tests/benchmark/internal/runtimeartifact`는 runtime 표본과 phase 경계를 검증해 target별 요약을 만든다. `tests/benchmark/internal/suiteartifact`는 반복 순서와 중앙값·MAD 계산만 소유하며 profile 의미와 BP별 metric 선택은 소유하지 않는다. 네 package와 `bp01`, `bp05`는 product runtime이 import하지 않는 benchmark-only source다.
@@ -245,12 +248,13 @@ Package 이름은 기술 계층보다 제품 책임을 드러낸다.
 | 책임 | Domain package | Application package 예 |
 | --- | --- | --- |
 | MQTT 연결·packet | `domain/mqtt` | `application/connect`, `application/publish`, `application/subscribe` |
-| Session·ownership | `domain/session` | `application/connect`, `application/takeover`, `application/drain` |
+| Session·ownership | `domain/session` | `application/connect`, `application/takeover`, `application/membership` |
+| Node drain lifecycle·barrier | `domain/nodedrain` | `application/membership`, `cmd/narumq` runtime controller |
 | Subscription route | `domain/routing` | `application/subscribe`, `application/publish` |
 | Delivery·inflight | `domain/delivery` | `application/publish`, `application/takeover` |
 | Tenant namespace·quota | `domain/tenancy` | 각 use case에서 policy 호출 |
 | Authentication·authorization policy | `domain/security` | `application/connect`와 management use case 후보 |
-| Membership·node lifecycle | `domain/clusterlifecycle` | `application/takeover`, `application/drain` |
+| Membership·node lifecycle | `domain/clusterlifecycle` | `application/takeover`, `application/membership` |
 
 새 package는 변경 이유와 invariant가 기존 package와 다를 때만 만든다. 단순히 file 수가 늘었다는 이유로 package를 나누지 않는다.
 

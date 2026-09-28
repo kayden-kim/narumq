@@ -30,8 +30,8 @@ func TestRunCIRequiresBaseAndPropagatesBaseToCoverage(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if len(commands) != 12 {
-		t.Fatalf("command count = %d, want 12", len(commands))
+	if len(commands) != 13 {
+		t.Fatalf("command count = %d, want 13", len(commands))
 	}
 	want := []commandSpec{
 		{Name: "go", Args: []string{"vet", "./..."}},
@@ -44,6 +44,7 @@ func TestRunCIRequiresBaseAndPropagatesBaseToCoverage(t *testing.T) {
 		{Name: "go", Args: []string{"test", "./internal/domain/routing", "-run=^$", "-fuzz=^FuzzTopicMatching$", "-fuzztime=10000x", "-parallel=1"}},
 		{Name: "go", Args: []string{"test", "./internal/domain/session", "-run=^$", "-fuzz=^FuzzLifecycleTransitions$", "-fuzztime=10000x", "-parallel=1"}},
 		{Name: "go", Args: []string{"tool", "gremlins", "unleash", "--config=tests/verification/gremlins.yaml", "--output=.artifacts/verification/mutation-delivery.json", "internal/domain/delivery"}},
+		{Name: "go", Args: []string{"tool", "gremlins", "unleash", "--config=tests/verification/gremlins.yaml", "--output=.artifacts/verification/mutation-nodedrain.json", "internal/domain/nodedrain"}},
 		{Name: "go", Args: []string{"tool", "gremlins", "unleash", "--config=tests/verification/gremlins.yaml", "--output=.artifacts/verification/mutation-session.json", "internal/domain/session"}},
 		{Name: "go", Args: []string{"run", "./tools/verify", "coverage", "--profile", ".artifacts/verification/coverage.out", "--policy", defaultCoveragePolicyPath, "--report", ".artifacts/verification/coverage-summary.json", "--base", "HEAD~1"}},
 	}

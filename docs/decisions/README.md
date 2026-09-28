@@ -21,6 +21,7 @@
 | [ADR-0013](ADR-0013-offline-queue-replication-and-cluster-backup-v3.md) | Accepted (offline QoS 0 + backup v3 scope only) | Detached persistent session의 QoS 0 offline message를 Raft로 복제하고 backup v3에 포함한다. |
 | [ADR-0014](ADR-0014-cross-node-live-qos0-forwarding.md) | Accepted (cluster live QoS 0 forwarding only; QoS 1/2·durable ACK 제외) | Dynamic cluster의 cross-node live QoS 0 delivery를 별도 `NMQFWRD2` peer stream으로 전달한다. |
 | [ADR-0015](ADR-0015-cluster-durable-qos-delivery.md) | Accepted (cluster QoS 1/2 durable delivery scope; production storage·BP-03·N-1 제외) | Cluster QoS 1/2 전달 queue와 inflight를 Raft에 복제하고 ACK보다 먼저 commit한다. |
+| [ADR-0016](ADR-0016-node-drain-and-safe-to-stop.md) | Accepted (broker drain/`SAFE_TO_STOP` scope only; rollout·SDK/Will·production storage·BP-07·N-1 제외) | Replicated drain operation과 `SAFE_TO_STOP` barrier를 제공한다. |
 `Proposed` ADR은 검토 중인 제안이다. `Accepted` ADR은 각 기록에 명시한 범위 안에서 채택된 결정이다. `design target only`는 production runtime이나 acceptance 검증을 뜻하지 않는다.
 
 ## 번호와 변경

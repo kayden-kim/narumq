@@ -37,6 +37,7 @@ type StateMachine struct {
 	offline          map[sessionKey]OfflineSessionStateDTO
 	offlineMessages  int
 	offlineBytes     int
+	nodeDrains       map[uint64]NodeDrainStateDTO
 }
 
 // NewStateMachine constructs an empty deterministic replicated-state machine.
@@ -50,6 +51,7 @@ func NewStateMachine() *StateMachine {
 		delivery:      make(map[sessionKey]DeliverySessionStateDTO),
 		retained:      make(map[retainedKey]RetainedStateDTO),
 		offline:       make(map[sessionKey]OfflineSessionStateDTO),
+		nodeDrains:    make(map[uint64]NodeDrainStateDTO),
 	}
 }
 
@@ -88,7 +90,7 @@ func (machine *StateMachine) InitializeBootstrap(index uint64, members []MemberI
 	}
 	machine.mu.Lock()
 	defer machine.mu.Unlock()
-	if machine.lastAppliedIndex != 0 || len(machine.members) != 0 || len(machine.operations) != 0 || len(machine.ownerships) != 0 || len(machine.subscriptions) != 0 || len(machine.delivery) != 0 || len(machine.retained) != 0 || len(machine.offline) != 0 {
+	if machine.lastAppliedIndex != 0 || len(machine.members) != 0 || len(machine.operations) != 0 || len(machine.ownerships) != 0 || len(machine.subscriptions) != 0 || len(machine.delivery) != 0 || len(machine.retained) != 0 || len(machine.offline) != 0 || len(machine.nodeDrains) != 0 {
 		return ErrBootstrapAlreadyInitialized
 	}
 	for _, member := range copied {
@@ -124,6 +126,8 @@ func (machine *StateMachine) Apply(index uint64, command CommandDTO) (ApplyResul
 		return machine.applyRetained(index, *command.Retained), nil
 	case command.Offline != nil:
 		return machine.applyOffline(index, *command.Offline), nil
+	case command.NodeDrain != nil:
+		return machine.applyNodeDrain(index, *command.NodeDrain), nil
 	default:
 		// validateCommand rejects an empty discriminated union before advancing.
 		return result, nil
@@ -183,6 +187,7 @@ func (machine *StateMachine) ApplyConfiguration(index uint64, operationID string
 		nextRecord.Action = MembershipActionRemoveMember
 		nextRecord.Member = new(cloneMember(next))
 		operation.view.Phase = OperationPhaseSucceeded
+		delete(machine.nodeDrains, memberID)
 	}
 	nextRecord.CommittedIndex = index
 	machine.members[memberID] = next

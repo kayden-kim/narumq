@@ -32,7 +32,7 @@ Archive는 아래 byte 순서로 구성한다. 모든 protobuf frame은 determin
 
 전체 archive는 1 GiB를 넘을 수 없고, committed entry 수는 1,000,000개를 넘을 수 없다. Consumer는 frame 길이와 CRC32C(Castagnoli), trailer digest, protobuf canonical encoding, format major/minor, snapshot index, entry count와 entry 범위를 검증한다. Unknown major/minor는 지원하지 않는다.
 
-`boundary_state`는 `commit_index`에서 재구성한 전체 및 kind별 object count/SHA-256을 담는다. Required kind는 members, tenants, sessions, subscriptions, inflight, membership history, retained와 offline이다. `offline` summary의 count는 detached offline session record 수와 그 record에 든 queued message 수의 합이다. `inflight` summary의 count는 모든 `DeliverySessionState`에서 `len(messages)+len(inbound)`의 합이며 digest는 `delivery_sessions`만 가진 typed snapshot을 사용한다. Tenant digest는 ownership, subscription, delivery, retained, offline record의 tenant ID를 포함한다. `not_replicated_kinds` field는 이 형식에 없다.
+`boundary_state`는 `commit_index`에서 재구성한 전체 및 kind별 object count/SHA-256을 담는다. Required kind는 members, tenants, sessions, subscriptions, inflight, membership history, retained와 offline이다. `offline` summary의 count는 detached offline session record 수와 그 record에 든 queued message 수의 합이다. `inflight` summary의 count는 모든 `DeliverySessionState`에서 `len(messages)+len(inbound)`의 합이며 digest는 `delivery_sessions`만 가진 typed snapshot을 사용한다. Tenant digest는 ownership, subscription, delivery, retained, offline record의 tenant ID를 포함한다. Node drain record는 typed snapshot의 전체 state digest에 포함되며 별도 kind summary를 추가하지 않는다. `not_replicated_kinds` field는 이 형식에 없다.
 
 Retained key는 `(tenantId, exact Topic Name)`이다. Offline key는 `(tenantId, clientId)`이며 각 detached persistent session의 message는 단조 증가 sequence로 FIFO 순서를 보존한다. Exact state transition, ownership fencing, at-most-once claim, expiry와 capacity는 [Cluster §4.1](../specs/cluster-session-and-delivery.md#41-offline-message-capture와-전달)을 따른다. Durable delivery session과 inbound/outbound QoS state는 [Cluster §4.2](../specs/cluster-session-and-delivery.md#42-qos-12-durable-delivery)와 [ADR-0015](../decisions/ADR-0015-cluster-durable-qos-delivery.md)를 따른다.
 
@@ -50,7 +50,8 @@ Retained key는 `(tenantId, exact Topic Name)`이다. Offline key는 `(tenantId,
 - Cluster MQTT ingress는 QoS 0/1/2 PUBLISH를 지원한다. Detached persistent session의 matching QoS 0 delivery는 §4.1의 Raft offline state를 사용한다. Connected QoS 0은 §3.1의 live path를 사용하며, QoS 1/2 delivery와 inbound state는 §4.2의 durable delivery session에 기록한다.
 - Disconnect 시 persistent session의 pending QoS 0 FIFO는 DETACH command로 capture한다. 새 ownership epoch의 CONNECT는 durable delivery state를 ATTACH로 복구하고 QoS 0 offline queue는 CLAIM으로 가져와 durable delivery 뒤에 전달한다.
 - Offline limit는 session당 64 message, 전체 4,096 message·16 MiB, payload당 1,000,000 bytes, DETACH command당 topic+payload 768 KiB다. Tenant별 quota는 이 contract에서 제공하지 않으며 PRD TEN-08의 P0 requirement는 미충족이다.
-- Replicated-state schema `1.0`은 unknown-field rejection을 유지한다. Retained, offline, delivery command는 fresh read barrier 뒤 모든 non-retired member의 release/protocol/schema가 정확히 일치하는 profile에서만 제안한다. 이 제한은 N/N-1 rolling compatibility를 의미하지 않는다.
+- Replicated-state schema `1.0`은 unknown-field rejection을 유지한다. Retained, offline, delivery와 node drain command는 fresh read barrier 뒤 모든 non-retired member의 release/protocol/schema가 정확히 일치하는 profile에서만 제안한다. 이 제한은 N/N-1 rolling compatibility를 의미하지 않는다.
+- Node drain operation은 replicated typed snapshot과 whole-state SHA-256에 포함된다. Restore된 진행 중 operation은 저장된 phase와 original deadline에서 재개한다. Restored `COMPLETED` record는 node가 readiness를 다시 통과한 뒤 replicated `CLEAR`로 제거한다.
 
 ### QoS 1/2 durable delivery state
 
@@ -93,4 +94,4 @@ QoS 1/2 delivery session은 `ReplicatedStateSnapshot.delivery_sessions`에 저�
 - `SPEC-TBD-09` retention 및 disaster-recovery RPO/RTO 목표.
 - Release 간 archive producer/consumer compatibility matrix와 승인된 migration/rollback 정책.
 - PRD TEN-08 P0의 tenant별 offline queue, retained bytes, 저장 용량 quota와 초과 경보.
-- Delivery-session backup/restore process acceptance는 `inflight` summary와 restored state를 포함해 Cluster §11.11에서 검증할 계획이며 아직 실행 증거가 없다.
+- Durable delivery-session backup/restore process acceptance는 Cluster §11.11에서 `inflight` summary와 restored state를 포함해 통과했다. Production storage/EBS acceptance와 release compatibility matrix는 별도 미완료 항목이다.

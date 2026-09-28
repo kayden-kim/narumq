@@ -311,6 +311,7 @@ func TestTCPClusterRejectsQoS1AndQoS2Mutations(t *testing.T) {
 			config.ClusterMode = true
 			config.LocalMemberID = 4
 			config.ClusterReady = func() bool { return true }
+			config.ClusterAdmissionOpen = func() bool { return true }
 			config.ClusterProjectionReady = func() bool { return true }
 			runtime := newAdapterTestRuntime(t, 2, config)
 			defer runtime.stop(t)
@@ -342,6 +343,7 @@ func TestTCPClusterReadinessAndSubscriptionCommitFailuresRejectPackets(t *testin
 		config.ClusterMode = true
 		config.LocalMemberID = 4
 		config.ClusterReady = func() bool { return false }
+		config.ClusterAdmissionOpen = func() bool { return true }
 		config.ClusterProjectionReady = func() bool { return true }
 		runtime := newAdapterTestRuntime(t, 2, config)
 		defer runtime.stop(t)
@@ -371,6 +373,7 @@ func TestTCPClusterReadinessAndSubscriptionCommitFailuresRejectPackets(t *testin
 		config.ClusterMode = true
 		config.LocalMemberID = 4
 		config.ClusterReady = func() bool { return true }
+		config.ClusterAdmissionOpen = func() bool { return true }
 		config.ClusterProjectionReady = func() bool { return true }
 		runtime := newAdapterTestRuntime(t, 2, config)
 		defer runtime.stop(t)
@@ -418,6 +421,7 @@ func TestTCPClusterQoS0UsesLocalProjectionWithoutQuorumBarrier(t *testing.T) {
 		quorumChecks.Add(1)
 		return quorumAvailable.Load()
 	}
+	config.ClusterAdmissionOpen = func() bool { return true }
 	config.ClusterProjectionReady = func() bool { return true }
 	runtime := newAdapterTestRuntime(t, 2, config)
 	defer runtime.stop(t)
@@ -476,6 +480,7 @@ func TestTCPClusterQoS0RejectsWhenLocalProjectionIsNotReady(t *testing.T) {
 	config.ClusterMode = true
 	config.LocalMemberID = 4
 	config.ClusterReady = func() bool { return true }
+	config.ClusterAdmissionOpen = func() bool { return true }
 	config.ClusterProjectionReady = func() bool { return false }
 	runtime := newAdapterTestRuntime(t, 2, config)
 	defer runtime.stop(t)

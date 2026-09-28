@@ -138,6 +138,36 @@ func TestRegistryRendersMQTT310UnsupportedVersionRejection(t *testing.T) {
 	}
 }
 
+// Traceability: DEP-01; docs/specs/drain-and-rolling-update.md §6, §10.
+func TestRegistryNodeDrainTransitionMetricUsesFixedPhaseLabels(t *testing.T) {
+	registry := NewRegistry()
+	phases := []string{
+		"EXCLUDING_TRAFFIC", "WAITING_FOR_LB", "VERIFYING_SESSION_STATE", "TRANSFERRING_SESSIONS",
+		"VERIFYING_BARRIER", "COMPLETED", "FAILED", "CANCELLED",
+	}
+	for _, phase := range phases {
+		registry.NodeDrainTransition(phase)
+	}
+	registry.NodeDrainTransition("UNSPECIFIED")
+	registry.NodeDrainTransition("arbitrary")
+
+	output := string(registry.Render(true))
+	if !strings.Contains(output, "# HELP narumq_node_drain_transitions_total Committed node drain phase transitions observed for the local node.\n") ||
+		!strings.Contains(output, "# TYPE narumq_node_drain_transitions_total counter\n") {
+		t.Fatalf("drain transition metric metadata missing:\n%s", output)
+	}
+	for _, phase := range phases {
+		line := `narumq_node_drain_transitions_total{phase="` + phase + `"} 1`
+		if !strings.Contains(output, line+"\n") {
+			t.Errorf("drain transition metric missing %q:\n%s", line, output)
+		}
+	}
+	if strings.Contains(output, `narumq_node_drain_transitions_total{phase="UNSPECIFIED"}`) ||
+		strings.Contains(output, `narumq_node_drain_transitions_total{phase="arbitrary"}`) {
+		t.Fatalf("metric accepted a non-phase label:\n%s", output)
+	}
+}
+
 func TestRegistry_Concurrency(t *testing.T) {
 	reg := NewRegistry()
 	var wg sync.WaitGroup

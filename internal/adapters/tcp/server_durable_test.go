@@ -74,6 +74,7 @@ func durableTCPRuntime(t *testing.T, version mqtt.ProtocolVersion, committer *du
 	config.ClusterMode = true
 	config.LocalMemberID = 4
 	config.ClusterReady = func() bool { return true }
+	config.ClusterAdmissionOpen = func() bool { return true }
 	config.ClusterProjectionReady = func() bool { return true }
 	runtime := newAdapterTestRuntime(t, 8, config)
 	t.Cleanup(func() { runtime.stop(t) })

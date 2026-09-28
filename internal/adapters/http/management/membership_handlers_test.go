@@ -52,7 +52,7 @@ func (stub *membershipServiceStub) GetOperation(_ context.Context, operationID s
 func newMembershipHTTPTestHandler(service MembershipUseCase, role Role) http.Handler {
 	return NewRouterWithMembership(
 		ServerConfig{AuthToken: "cluster-secret", AuthTokenRole: role},
-		&mockStateProvider{}, nil, nil, service, nil,
+		&mockStateProvider{}, nil, nil, service, nil, nil,
 	)
 }
 
