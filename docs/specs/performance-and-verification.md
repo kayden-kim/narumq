@@ -350,13 +350,27 @@ reliably. `NARUMQ_FAILPOINT_CONTROL` names a JSON file read synchronously while
 the tagged runtime is active:
 
 ```json
-{"crash":"delivery-wal-before-sync","isolatePeers":[2]}
+{"crash":"delivery-wal-before-sync","isolatePeers":[2],"holdCommands":["subscription"]}
 ```
 
 `crash` selects one registered point; `isolatePeers` lists peer node IDs to
 isolate in both outbound sends and inbound peer-message handling. Removing the
-file or making it empty disarms the control. Invalid JSON or failpoint names are
-logged and do not trigger a fault. The Raft adapter exposes `PersistenceBoundaryHook`
+file or making it empty disarms the control. Invalid JSON, crash/fault names, or
+hold kinds are logged and disable the control for that read. `holdCommands`
+accepts `ownership`, `subscription`, and `delivery`. A matching command pauses
+after its read barrier and any applicable exact-profile check, before command encoding and
+proposal submission. The tagged process writes
+`narumq failpoint holding: <label>`, polls the control file until the kind is
+removed or the file is cleared, and warns then proceeds after 60 seconds. On
+release, the proposal uses a 10-second context derived from
+`context.WithoutCancel`, so cancellation of the original caller while held does
+not cancel the proposal. The result marker is
+`narumq failpoint held result: <label> outcome=applied`,
+`... outcome=conflict conflict=<code>`, or
+`... outcome=error error=<message>`. This command hold is available only in
+the failpoint build.
+
+The Raft adapter exposes `PersistenceBoundaryHook`
 for persistence tests and a separate `WALBoundaryHook` for non-empty normal
 entries at WAL-before-write, before-sync and after-sync. That hook runs with the
 node lock held and its entry bytes are borrowed only for the callback. The

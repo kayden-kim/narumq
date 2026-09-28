@@ -227,6 +227,8 @@ func (useCase *UseCase) subscribeOne(
 			return notAuthorizedSubscriptionReason(version), 0, nil
 		}
 	}
+	// Capture the prior state before a cluster commit can project this route locally.
+	_, existed := useCase.routes.Lookup(sessionID, subscription.Filter)
 	if err := useCase.commitSubscription(
 		ctx, ownership, subscription.Filter, uint32(subscription.QoS),
 		subscription.NoLocal, subscription.RetainAsPublished, uint32(subscription.RetainHandling),
@@ -234,7 +236,6 @@ func (useCase *UseCase) subscribeOne(
 	); err != nil {
 		return 0, 0, err
 	}
-	_, existed := useCase.routes.Lookup(sessionID, subscription.Filter)
 	replay := version == mqtt.ProtocolV311
 	switch subscription.RetainHandling {
 	case mqtt.SendRetainedAtSubscribe:

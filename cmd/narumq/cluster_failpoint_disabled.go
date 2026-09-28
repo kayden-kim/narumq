@@ -12,3 +12,5 @@ func loadClusterFaultControlPath() string {
 
 func triggerClusterFailpoint(point clusterFailpoint) {
 }
+
+func writeClusterFaultMarker(message string) {}

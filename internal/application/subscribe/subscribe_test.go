@@ -1,6 +1,7 @@
 package subscribe
 
 import (
+	"context"
 	"errors"
 	"reflect"
 	"testing"
@@ -181,6 +182,70 @@ func TestSubscribeRetainHandlingAndReplayQoS(t *testing.T) {
 	if third.RetainedQueued != 0 || len(queue.deliveries) != 1 {
 		t.Fatalf("RH=2 replayed retained values: %#v, count %d", queue.deliveries, third.RetainedQueued)
 	}
+}
+
+func TestSubscribeRetainHandlingIfNewChecksBeforeCommittedProjection(t *testing.T) {
+	tenantID, err := tenancy.NewTenantID("tenant-a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	routes := routing.NewTable()
+	if err := routes.BindSessionTenant("subscriber", tenantID); err != nil {
+		t.Fatal(err)
+	}
+	queue := &recordingQueue{}
+	repository := &recordingRetained{messages: []retained.MessageDTO{
+		{TenantID: tenantID, Topic: "a/one", Payload: []byte("retained"), QoS: mqtt.QoSAtLeastOnce},
+	}}
+	committer := &projectingSubscriptionCommitter{routes: routes}
+	useCase, err := New(routes, queue, repository, WithCommitter(committer))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	for packetID := byte(1); packetID <= 2; packetID++ {
+		result, err := useCase.SubscribeCommitted(
+			context.Background(), "subscriber",
+			mqtt.Subscribe{
+				Version: mqtt.ProtocolV5, PacketID: mqtt.PacketIdentifier(packetID),
+				Subscriptions: []mqtt.Subscription{{
+					Filter: "a/#", QoS: mqtt.QoSAtLeastOnce, RetainHandling: mqtt.SendRetainedIfNew,
+				}},
+			},
+			time.Time{}, SessionOwnership{ClientID: "subscriber"},
+		)
+		if err != nil {
+			t.Fatal(err)
+		}
+		wantQueued := 0
+		if packetID == 1 {
+			wantQueued = 1
+		}
+		if result.RetainedQueued != wantQueued {
+			t.Fatalf("packet %d retained queued=%d, want %d", packetID, result.RetainedQueued, wantQueued)
+		}
+	}
+	if len(queue.deliveries) != 1 || queue.deliveries[0].Topic != "a/one" || string(queue.deliveries[0].Payload) != "retained" {
+		t.Fatalf("RH=1 delivery queue = %#v, want one initial retained delivery", queue.deliveries)
+	}
+}
+
+type projectingSubscriptionCommitter struct {
+	routes *routing.Table
+}
+
+func (committer *projectingSubscriptionCommitter) CommitSubscription(
+	_ context.Context, _ string, clientID string, _, _ uint64, filter string, qos uint32,
+	noLocal, retainAsPublished bool, retainHandling, action uint32,
+) error {
+	if action != subscriptionActionAdd {
+		return nil
+	}
+	_, err := committer.routes.Subscribe(routing.SessionID(clientID), mqtt.Subscription{
+		Filter: filter, QoS: mqtt.QoS(qos), NoLocal: noLocal,
+		RetainAsPublished: retainAsPublished, RetainHandling: mqtt.RetainHandling(retainHandling),
+	})
+	return err
 }
 
 // Traceability: PRD MQTT-04/TEN-05; docs/specs/mqtt-protocol-and-session.md §5.

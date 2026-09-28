@@ -59,6 +59,11 @@ type ProjectionSubscription struct {
 	Subscription mqtt.Subscription
 }
 
+type sharedCursorKey struct {
+	tenantID tenancy.TenantID
+	filter   string
+}
+
 // Table stores subscriptions and matches publications against a consistent
 // snapshot. The initial Phase 0 implementation deliberately scans the small
 // table instead of introducing an index whose invalidation rules are not yet
@@ -67,7 +72,7 @@ type Table struct {
 	mu             sync.RWMutex
 	subscriptions  map[SessionID]map[string]mqtt.Subscription
 	shared         map[string]map[SessionID]mqtt.Subscription // sharedFilter -> SessionID -> Subscription
-	sharedCursors  map[string]uint64                          // sharedFilter -> round-robin cursor
+	sharedCursors  map[sharedCursorKey]uint64                 // tenant and shared filter -> round-robin cursor
 	sessionTenants map[SessionID]tenancy.TenantID
 }
 
@@ -76,7 +81,7 @@ func NewTable() *Table {
 	return &Table{
 		subscriptions:  make(map[SessionID]map[string]mqtt.Subscription),
 		shared:         make(map[string]map[SessionID]mqtt.Subscription),
-		sharedCursors:  make(map[string]uint64),
+		sharedCursors:  make(map[sharedCursorKey]uint64),
 		sessionTenants: make(map[SessionID]tenancy.TenantID),
 	}
 }
@@ -130,9 +135,12 @@ func (table *Table) ReplaceProjectionWithSessions(
 	}
 
 	table.mu.Lock()
-	for filter := range next.shared {
-		if cursor, exists := table.sharedCursors[filter]; exists {
-			next.sharedCursors[filter] = cursor
+	for key, cursor := range table.sharedCursors {
+		for sessionID := range next.shared[key.filter] {
+			if next.sessionTenants[sessionID] == key.tenantID {
+				next.sharedCursors[key] = cursor
+				break
+			}
 		}
 	}
 	table.subscriptions = next.subscriptions
@@ -215,7 +223,7 @@ func (table *Table) Subscribe(sessionID SessionID, subscription mqtt.Subscriptio
 		table.shared = make(map[string]map[SessionID]mqtt.Subscription)
 	}
 	if table.sharedCursors == nil {
-		table.sharedCursors = make(map[string]uint64)
+		table.sharedCursors = make(map[sharedCursorKey]uint64)
 	}
 
 	if IsSharedFilter(subscription.Filter) {
@@ -295,9 +303,7 @@ func (table *Table) Unsubscribe(sessionID SessionID, filter string) (removed boo
 		delete(bySession, sessionID)
 		if len(bySession) == 0 {
 			delete(table.shared, filter)
-			if table.sharedCursors != nil {
-				delete(table.sharedCursors, filter)
-			}
+			table.deleteSharedCursorsLocked(filter)
 		}
 		return true, nil
 	}
@@ -317,6 +323,14 @@ func (table *Table) Unsubscribe(sessionID SessionID, filter string) (removed boo
 		delete(table.subscriptions, sessionID)
 	}
 	return true, nil
+}
+
+func (table *Table) deleteSharedCursorsLocked(filter string) {
+	for key := range table.sharedCursors {
+		if key.filter == filter {
+			delete(table.sharedCursors, key)
+		}
+	}
 }
 
 // RemoveSession removes every subscription owned by sessionID in one
@@ -348,9 +362,7 @@ func (table *Table) RemoveSession(sessionID SessionID) bool {
 				removed = true
 				if len(bySession) == 0 {
 					delete(table.shared, filter)
-					if table.sharedCursors != nil {
-						delete(table.sharedCursors, filter)
-					}
+					table.deleteSharedCursorsLocked(filter)
 				}
 			}
 		}
@@ -466,7 +478,7 @@ func (table *Table) matchLocked(
 		sort.Strings(sharedFilters)
 
 		if table.sharedCursors == nil {
-			table.sharedCursors = make(map[string]uint64)
+			table.sharedCursors = make(map[sharedCursorKey]uint64)
 		}
 
 		for _, sharedFilter := range sharedFilters {
@@ -501,10 +513,7 @@ func (table *Table) matchLocked(
 				return candidates[left].SessionID < candidates[right].SessionID
 			})
 
-			cursorKey := sharedFilter
-			if publisherTenant != (tenancy.TenantID{}) {
-				cursorKey = publisherTenant.String() + "/" + sharedFilter
-			}
+			cursorKey := sharedCursorKey{tenantID: publisherTenant, filter: sharedFilter}
 			cursor := table.sharedCursors[cursorKey]
 			primaryIndex := int(cursor % uint64(len(candidates)))
 			primary := candidates[primaryIndex]

@@ -182,7 +182,40 @@ func newClusterMembershipProcessFixture(t *testing.T, nodeCount int, buildTags s
       "drain-new-rejected",
       "drain-after-restart",
       "drain-publisher",
-      "drain-cancel-check"
+      "drain-cancel-check",
+      "matrix-pub",
+      "matrix-exact-s0",
+      "matrix-exact-s1",
+      "matrix-exact-s2",
+      "matrix-plus-s0",
+      "matrix-plus-s1",
+      "matrix-plus-s2",
+      "matrix-hash-s0",
+      "matrix-hash-s1",
+      "matrix-hash-s2",
+      "matrix-shared-a",
+      "matrix-shared-b",
+      "retain-v311",
+      "retain-rh0",
+      "retain-rh1",
+      "retain-rh2",
+      "rap-1",
+      "rap-0",
+      "nolocal-v5",
+      "concurrent-held",
+      "concurrent-race-1",
+      "concurrent-race-2",
+      "concurrent-race-3",
+      "concurrent-race-4",
+      "concurrent-race-5",
+      "concurrent-race-6",
+      "concurrent-race-7",
+      "concurrent-race-8",
+      "concurrent-race-9",
+      "concurrent-race-10",
+      "stale-owner",
+      "stale-inflight",
+      "stale-pub"
     ],
     "roles": ["client"]
   }],
@@ -336,6 +369,78 @@ func newClusterMembershipProcessFixture(t *testing.T, nodeCount int, buildTags s
     "effect": "allow",
     "action": "subscribe",
     "topicFilter": "drain/#"
+  }, {
+    "tenantId": "acceptance",
+    "role": "client",
+    "effect": "allow",
+    "action": "publish",
+    "topicFilter": "matrix/#"
+  }, {
+    "tenantId": "acceptance",
+    "role": "client",
+    "effect": "allow",
+    "action": "subscribe",
+    "topicFilter": "matrix/#"
+  }, {
+    "tenantId": "acceptance",
+    "role": "client",
+    "effect": "allow",
+    "action": "publish",
+    "topicFilter": "retain/#"
+  }, {
+    "tenantId": "acceptance",
+    "role": "client",
+    "effect": "allow",
+    "action": "subscribe",
+    "topicFilter": "retain/#"
+  }, {
+    "tenantId": "acceptance",
+    "role": "client",
+    "effect": "allow",
+    "action": "publish",
+    "topicFilter": "rap/#"
+  }, {
+    "tenantId": "acceptance",
+    "role": "client",
+    "effect": "allow",
+    "action": "subscribe",
+    "topicFilter": "rap/#"
+  }, {
+    "tenantId": "acceptance",
+    "role": "client",
+    "effect": "allow",
+    "action": "publish",
+    "topicFilter": "nolocal/#"
+  }, {
+    "tenantId": "acceptance",
+    "role": "client",
+    "effect": "allow",
+    "action": "subscribe",
+    "topicFilter": "nolocal/#"
+  }, {
+    "tenantId": "acceptance",
+    "role": "client",
+    "effect": "allow",
+    "action": "publish",
+    "topicFilter": "concurrent/#"
+  }, {
+    "tenantId": "acceptance",
+    "role": "client",
+    "effect": "allow",
+    "action": "subscribe",
+    "topicFilter": "concurrent/#"
+  }, {
+    "tenantId": "acceptance",
+    "role": "client",
+    "effect": "allow",
+    "action": "publish",
+    "topicFilter": "stale/#"
+  }, {
+    "tenantId": "acceptance",
+    "role": "client",
+    "effect": "allow",
+    "action": "subscribe",
+    "topicFilter": "stale/#"
   }]
 }`, jwksURL))
 	clusterMembershipProcessWriteFile(t, securityPath, securityConfig, 0o600)

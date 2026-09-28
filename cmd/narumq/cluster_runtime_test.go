@@ -2,12 +2,15 @@ package main
 
 import (
 	"bytes"
+	"context"
+	"errors"
 	"io"
 	"log/slog"
 	"net"
 	"os"
 	"path/filepath"
 	"reflect"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -225,12 +228,15 @@ func TestClusterProjectionReadyRequiresInitializedCurrentProjection(t *testing.T
 		t.Fatalf("restored node status = %+v", status)
 	}
 
+	var storageNow atomic.Int64
+	storageNow.Store(time.Now().UnixNano())
 	runtime := &clusterRuntime{
 		config: config, node: node, machine: retainedTestMachine(t, config, config.ReleaseVersion),
-		storage: newClusterStorageMonitor(time.Now, nil),
+		storage: newClusterStorageMonitor(func() time.Time { return time.Unix(0, storageNow.Load()) }, nil),
 	}
 	runtime.initialized.Store(true)
 	runtime.projectionIndex.Store(status.AppliedIndex)
+	runtime.publishProjectionAdmissionStatus(status)
 	if !runtime.clusterProjectionReady() {
 		t.Fatal("caught-up initialized local projection was not admitted")
 	}
@@ -246,6 +252,15 @@ func TestClusterProjectionReadyRequiresInitializedCurrentProjection(t *testing.T
 		t.Fatal("failed projection was admitted")
 	}
 	runtime.projectionFailed.Store(false)
+	runtime.projectionAdmissionSequence.Store(1)
+	runtime.finishProjectionAdmissionSequence(errors.New("Ready processing failed"))
+	if runtime.projectionAdmissionSequence.Load()&1 != 0 {
+		t.Fatal("Ready failure left the admission sequence active")
+	}
+	if runtime.clusterProjectionReady() {
+		t.Fatal("failed Ready driver admitted local projection")
+	}
+	runtime.driverFailed.Store(false)
 	runtime.projectionIndex.Store(status.AppliedIndex - 1)
 
 	startedAt := time.Now()
@@ -257,6 +272,28 @@ func TestClusterProjectionReadyRequiresInitializedCurrentProjection(t *testing.T
 	}
 	if elapsed >= time.Second {
 		t.Fatalf("behind-index projection check took %s, want an immediate fail-closed result", elapsed)
+	}
+	runtime.projectionIndex.Store(status.AppliedIndex)
+	runtime.storage.begin()
+	runtime.projectionAdmissionSequence.Add(1)
+	defer runtime.projectionAdmissionSequence.Add(1)
+	defer runtime.storage.end()
+	readyResult := make(chan bool, 1)
+	started := make(chan struct{})
+	go func() {
+		close(started)
+		readyResult <- runtime.clusterProjectionReady()
+	}()
+	<-started
+	time.Sleep(clusterProjectionAdmissionPollInterval)
+	storageNow.Add(int64(clusterStorageSlowThreshold))
+	select {
+	case ready := <-readyResult:
+		if ready {
+			t.Fatal("admission passed while storage was degraded during a Ready drain")
+		}
+	case <-time.After(250 * time.Millisecond):
+		t.Fatal("admission waited behind the active Ready drain after storage degraded")
 	}
 }
 
@@ -532,6 +569,88 @@ func TestResolveProposalAndCompleteReadStates(t *testing.T) {
 	resp := <-readResult
 	if resp.index != 0 {
 		t.Fatalf("resp index = %d", resp.index)
+	}
+}
+
+func TestFailPendingProposalsOnDriverExit(t *testing.T) {
+	driverErr := errors.New("raft driver failed")
+	stagedResult := make(chan clusterApplyResponse, 1)
+	unappliedResult := make(chan clusterApplyResponse, 1)
+	waiters := []clusterProposalWaiter{
+		{
+			data:    []byte("staged"),
+			result:  stagedResult,
+			applied: true,
+			response: clusterApplyResponse{
+				result: membership.ApplyResultDTO{
+					Index:   42,
+					Outcome: membership.ApplyOutcomeApplied,
+				},
+			},
+		},
+		{data: []byte("unapplied"), result: unappliedResult},
+	}
+
+	runtime := &clusterRuntime{}
+	runtime.failPendingProposals(&waiters, driverErr)
+	if len(waiters) != 0 {
+		t.Fatalf("remaining waiters = %d, want 0", len(waiters))
+	}
+	for _, testCase := range []struct {
+		name   string
+		result <-chan clusterApplyResponse
+	}{
+		{name: "staged", result: stagedResult},
+		{name: "unapplied", result: unappliedResult},
+	} {
+		select {
+		case response := <-testCase.result:
+			if !errors.Is(response.err, driverErr) {
+				t.Errorf("%s waiter error = %v, want %v", testCase.name, response.err, driverErr)
+			}
+		default:
+			t.Errorf("%s waiter was not released", testCase.name)
+		}
+	}
+
+	stoppedResult := make(chan clusterApplyResponse, 1)
+	stoppedWaiters := []clusterProposalWaiter{{result: stoppedResult}}
+	runtime.failPendingProposals(&stoppedWaiters, nil)
+	if response := <-stoppedResult; response.err == nil {
+		t.Fatal("driver exit without an error completed a pending proposal successfully")
+	}
+	queuedResult := make(chan clusterApplyResponse, 1)
+	runtime.requests = make(chan clusterDriverRequest, 1)
+	runtime.requests <- clusterDriverRequest{
+		kind:        clusterDriverProposal,
+		applyResult: queuedResult,
+	}
+	runtime.failQueuedDriverRequests(driverErr)
+	if response := <-queuedResult; !errors.Is(response.err, driverErr) {
+		t.Fatalf("queued proposal error = %v, want %v", response.err, driverErr)
+	}
+	if len(runtime.requests) != 0 {
+		t.Fatalf("queued requests remain = %d, want 0", len(runtime.requests))
+	}
+}
+func TestDriverRequestsRejectAfterExit(t *testing.T) {
+	stopped := make(chan struct{})
+	close(stopped)
+	runtime := &clusterRuntime{
+		requests:      make(chan clusterDriverRequest, 1),
+		driverStopped: stopped,
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+
+	if _, err := runtime.submitProposal(ctx, []byte("proposal")); !errors.Is(err, membership.ErrQuorumUnavailable) {
+		t.Fatalf("submitProposal error = %v, want %v", err, membership.ErrQuorumUnavailable)
+	}
+	if _, err := runtime.requestReadBarrier(ctx); !errors.Is(err, raftadapter.ErrFailed) {
+		t.Fatalf("requestReadBarrier error = %v, want %v", err, raftadapter.ErrFailed)
+	}
+	if len(runtime.requests) != 0 {
+		t.Fatalf("requests after driver exit = %d, want 0", len(runtime.requests))
 	}
 }
 

@@ -833,10 +833,13 @@ func TestReplaceProjectionWithSessionsAndTenantBinding(t *testing.T) {
 
 	// Shared cursor preservation
 	sharedFilter := "$share/group/sensors/#"
+	if err := table.BindSessionTenant("sub-1", tenantA); err != nil {
+		t.Fatal(err)
+	}
 	if _, err := table.Subscribe("sub-1", mqtt.Subscription{Filter: sharedFilter, QoS: mqtt.QoSAtLeastOnce}); err != nil {
 		t.Fatal(err)
 	}
-	table.sharedCursors[sharedFilter] = 42
+	table.sharedCursors[sharedCursorKey{tenantID: tenantA, filter: sharedFilter}] = 42
 
 	// ReplaceProjectionWithSessions with empty tenant error
 	err := table.ReplaceProjectionWithSessions([]ProjectionSession{
@@ -874,15 +877,54 @@ func TestReplaceProjectionWithSessionsAndTenantBinding(t *testing.T) {
 
 	// Valid replacement preserving shared cursor
 	err = table.ReplaceProjectionWithSessions(
-		[]ProjectionSession{{TenantID: tenantA, SessionID: "session-1"}},
+		[]ProjectionSession{{TenantID: tenantA, SessionID: "sub-1"}},
 		[]ProjectionSubscription{
-			{TenantID: tenantA, SessionID: "session-1", Subscription: mqtt.Subscription{Filter: sharedFilter, QoS: mqtt.QoSAtLeastOnce}},
+			{TenantID: tenantA, SessionID: "sub-1", Subscription: mqtt.Subscription{Filter: sharedFilter, QoS: mqtt.QoSAtLeastOnce}},
 		},
 	)
 	if err != nil {
 		t.Fatalf("valid replacement failed: %v", err)
 	}
-	if table.sharedCursors[sharedFilter] != 42 {
-		t.Fatalf("shared cursor not preserved: %d", table.sharedCursors[sharedFilter])
+	cursorKey := sharedCursorKey{tenantID: tenantA, filter: sharedFilter}
+	if table.sharedCursors[cursorKey] != 42 {
+		t.Fatalf("shared cursor not preserved: %d", table.sharedCursors[cursorKey])
+	}
+}
+
+func TestReplaceProjectionPreservesTenantSharedRoundRobinCursor(t *testing.T) {
+	tenantID, err := tenancy.NewTenantID("tenant-a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	filter := "$share/group/sensors/#"
+	sessions := []ProjectionSession{
+		{TenantID: tenantID, SessionID: "subscriber-a"},
+		{TenantID: tenantID, SessionID: "subscriber-b"},
+	}
+	projection := []ProjectionSubscription{
+		{TenantID: tenantID, SessionID: "subscriber-a", Subscription: mqtt.Subscription{Filter: filter, QoS: mqtt.QoSAtLeastOnce}},
+		{TenantID: tenantID, SessionID: "subscriber-b", Subscription: mqtt.Subscription{Filter: filter, QoS: mqtt.QoSAtLeastOnce}},
+	}
+	table := NewTable()
+	if err := table.ReplaceProjectionWithSessions(sessions, projection); err != nil {
+		t.Fatal(err)
+	}
+
+	first, err := table.MatchForTenant("publisher", tenantID, "sensors/one", mqtt.QoSAtLeastOnce, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(first) != 1 || first[0].Primary.SessionID != "subscriber-a" {
+		t.Fatalf("first shared target = %+v, want subscriber-a", first)
+	}
+	if err := table.ReplaceProjectionWithSessions(sessions, projection); err != nil {
+		t.Fatal(err)
+	}
+	second, err := table.MatchForTenant("publisher", tenantID, "sensors/one", mqtt.QoSAtLeastOnce, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(second) != 1 || second[0].Primary.SessionID != "subscriber-b" {
+		t.Fatalf("shared target after projection replacement = %+v, want subscriber-b", second)
 	}
 }

@@ -657,33 +657,8 @@ func clusterDrainProcessReadVariableByteInteger(data []byte, offset int) (int, i
 
 func clusterDrainProcessReadV5Publish(t *testing.T, connection net.Conn) (string, []byte, byte, uint16) {
 	t.Helper()
-	_ = connection.SetReadDeadline(time.Now().Add(5 * time.Second))
-	kind, flags, body, err := clusterDurableProcessReadRaw(connection)
-	_ = connection.SetReadDeadline(time.Time{})
-	if err != nil || kind != 3 || len(body) < 2 {
-		t.Fatalf("read MQTT 5 PUBLISH kind=%d body=%x err=%v", kind, body, err)
-	}
-	topicLength := int(binary.BigEndian.Uint16(body[:2]))
-	if 2+topicLength > len(body) {
-		t.Fatalf("truncated MQTT 5 PUBLISH topic: %x", body)
-	}
-	topic := string(body[2 : 2+topicLength])
-	offset := 2 + topicLength
-	qos := (flags >> 1) & 3
-	var packetID uint16
-	if qos > 0 {
-		if offset+2 > len(body) {
-			t.Fatalf("truncated MQTT 5 PUBLISH packet ID: %x", body)
-		}
-		packetID = binary.BigEndian.Uint16(body[offset : offset+2])
-		offset += 2
-	}
-	propertyLength, propertiesStart, err := clusterDrainProcessReadVariableByteInteger(body, offset)
-	if err != nil || propertyLength > len(body)-propertiesStart {
-		t.Fatalf("MQTT 5 PUBLISH property length=%d offset=%d body=%x err=%v", propertyLength, propertiesStart, body, err)
-	}
-	payloadOffset := propertiesStart + propertyLength
-	return topic, append([]byte(nil), body[payloadOffset:]...), qos, packetID
+	delivery := clusterMatrixReadPublish(t, connection, true, 5*time.Second)
+	return delivery.topic, []byte(delivery.payload), delivery.qos, delivery.packetID
 }
 
 func drainProcessTimeSpan(values []time.Time) time.Duration {

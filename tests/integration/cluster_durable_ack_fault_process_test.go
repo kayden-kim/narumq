@@ -501,6 +501,11 @@ func clusterDurableFaultWriteControl(t *testing.T, path, crash string, isolate [
 	if err != nil {
 		t.Fatalf("encode control file: %v", err)
 	}
+	clusterFaultWriteControlJSON(t, path, data)
+}
+
+func clusterFaultWriteControlJSON(t *testing.T, path string, data []byte) {
+	t.Helper()
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		t.Fatalf("create control directory: %v", err)
 	}
@@ -510,7 +515,7 @@ func clusterDurableFaultWriteControl(t *testing.T, path, crash string, isolate [
 	}
 	deadline := time.Now().Add(2 * time.Second)
 	for {
-		err = os.Rename(tempPath, path)
+		err := os.Rename(tempPath, path)
 		if err == nil {
 			break
 		}
@@ -534,8 +539,16 @@ func clusterDurableFaultWriteControl(t *testing.T, path, crash string, isolate [
 
 func clusterDurableFaultClearControl(t *testing.T, path string) {
 	t.Helper()
-	if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
-		t.Fatalf("remove control file %q: %v", path, err)
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		err := os.Remove(path)
+		if err == nil || errors.Is(err, os.ErrNotExist) {
+			return
+		}
+		if !time.Now().Before(deadline) {
+			t.Fatalf("remove control file %q: %v", path, err)
+		}
+		time.Sleep(10 * time.Millisecond)
 	}
 }
 

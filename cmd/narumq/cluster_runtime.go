@@ -47,10 +47,12 @@ import (
 )
 
 const (
-	clusterReadTimeout       = 2 * time.Second
-	clusterTickInterval      = 100 * time.Millisecond
-	clusterSnapshotInterval  = 1000
-	clusterDefaultPacketSize = 1 << 20
+	clusterReadTimeout                     = 2 * time.Second
+	clusterProjectionAdmissionPollInterval = 10 * time.Millisecond
+	clusterTickInterval                    = 100 * time.Millisecond
+	clusterSnapshotInterval                = 1000
+	clusterDefaultPacketSize               = 1 << 20
+	clusterHeldProposalTimeout             = 10 * time.Second
 )
 
 var (
@@ -155,6 +157,7 @@ func runClusterMode(ctx context.Context, config clusterConfigFile, logger *slog.
 		metrics:  metricsRegistry,
 		routes:   routing.NewTable(),
 		requests: make(chan clusterDriverRequest, 128), initialMessages: initialMessages,
+		driverStopped:      make(chan struct{}),
 		localIdentity:      configuredLocalPeerIdentity(config, localFingerprint),
 		admittedCandidates: make(map[uint64]string),
 		failpoint:          failpoint,
@@ -343,19 +346,28 @@ type clusterRuntime struct {
 	metrics            *adaptersmetrics.Registry
 	localCommits       atomic.Int64
 
-	requests                chan clusterDriverRequest
-	sequence                atomic.Uint64
-	initialized             atomic.Bool
-	projectionMu            sync.Mutex
-	projectionIndex         atomic.Uint64
-	projectionFailed        atomic.Bool
-	retainedResyncRequired  atomic.Bool
-	lastSnapshotIndex       uint64
-	initialMessages         []raftadapter.MessageDTO
-	autoCatchupPending      string
-	leadershipTransferTo    raftadapter.NodeID
-	leadershipTransferTerm  uint64
-	leadershipTransferTicks int
+	requests                    chan clusterDriverRequest
+	driverStopped               chan struct{}
+	driverStopOnce              sync.Once
+	sequence                    atomic.Uint64
+	initialized                 atomic.Bool
+	projectionMu                sync.Mutex
+	projectionAdmissionSequence atomic.Uint64
+	projectionIndex             atomic.Uint64
+	projectionFailed            atomic.Bool
+	driverFailed                atomic.Bool
+	admissionBootstrapped       atomic.Bool
+	admissionDynamicMembership  atomic.Bool
+	admissionLocalVoter         atomic.Bool
+	admissionLocalPhaseVoter    atomic.Bool
+	admissionAppliedIndex       atomic.Uint64
+	retainedResyncRequired      atomic.Bool
+	lastSnapshotIndex           uint64
+	initialMessages             []raftadapter.MessageDTO
+	autoCatchupPending          string
+	leadershipTransferTo        raftadapter.NodeID
+	leadershipTransferTerm      uint64
+	leadershipTransferTicks     int
 
 	localMu            sync.Mutex
 	localIdentity      tcpadapter.PeerIdentityDTO
@@ -575,7 +587,7 @@ func (runtime *clusterRuntime) runSeedAdmission(ctx context.Context) error {
 	return nil
 }
 
-func (runtime *clusterRuntime) runDriver(ctx context.Context) error {
+func (runtime *clusterRuntime) runDriver(ctx context.Context) (driverErr error) {
 	serveResult := make(chan error, 1)
 	go func() { serveResult <- runtime.transport.Serve(ctx) }()
 	ticker := time.NewTicker(clusterTickInterval)
@@ -583,9 +595,32 @@ func (runtime *clusterRuntime) runDriver(ctx context.Context) error {
 	reads := make(map[string]clusterReadWaiter)
 	var proposals []clusterProposalWaiter
 	deferredReads := make([]raftadapter.ReadStateDTO, 0)
+	defer func() {
+		runtime.driverFailed.Store(true)
+		runtime.driverStopOnce.Do(func() {
+			if runtime.driverStopped != nil {
+				close(runtime.driverStopped)
+			}
+		})
+		exitErr := driverErr
+		if exitErr == nil {
+			exitErr = errors.New("cluster raft driver stopped before pending work completed")
+		}
+		for key, waiter := range reads {
+			if waiter.result != nil {
+				waiter.result <- clusterReadResponse{err: exitErr}
+			}
+			delete(reads, key)
+		}
+		runtime.failPendingProposals(&proposals, exitErr)
+		runtime.failQueuedDriverRequests(exitErr)
+	}()
 	lastLeadership := raftLeadership{}
 
-	processReady := func() error {
+	processReady := func() (readyErr error) {
+		// The even/odd sequence brackets Ready processing without blocking admission's storage-health checks.
+		runtime.projectionAdmissionSequence.Add(1)
+		defer func() { runtime.finishProjectionAdmissionSequence(readyErr) }()
 		for {
 			runtime.storage.begin()
 			batch, err := runtime.node.ProcessReady()
@@ -594,8 +629,15 @@ func (runtime *clusterRuntime) runDriver(ctx context.Context) error {
 				return fmt.Errorf("process raft Ready: %w", err)
 			}
 			if clusterBatchEmpty(batch) {
-				if !runtime.projectionFailed.Load() {
-					runtime.projectionIndex.Store(runtime.node.Status().AppliedIndex)
+				status := runtime.node.Status()
+				projectionReady := !runtime.projectionFailed.Load()
+				if projectionReady {
+					runtime.projectionIndex.Store(status.AppliedIndex)
+				}
+				runtime.publishProjectionAdmissionStatus(status)
+				if projectionReady {
+					// Resolve proposals only after the Ready drain and current projection are complete.
+					runtime.resolveAppliedProposals(&proposals)
 				}
 				deferredReads = runtime.completeReadStates(deferredReads, reads)
 				return nil
@@ -890,9 +932,6 @@ func (runtime *clusterRuntime) applyBatch(batch raftadapter.BatchDTO, proposals 
 	if runtime.drain != nil {
 		runtime.drain.sync()
 	}
-	// Commit callers may immediately issue another publish after success.
-	// Release waiters only after the route projection covers this Ready batch.
-	runtime.resolveAppliedProposals(proposals)
 	if len(events) != 0 {
 		if err := runtime.maybeSnapshot(len(batch.ConfigurationChanges) != 0); err != nil {
 			return err
@@ -944,6 +983,45 @@ func (runtime *clusterRuntime) resolveAppliedProposals(waiters *[]clusterProposa
 		copy((*waiters)[index:], (*waiters)[index+1:])
 		(*waiters)[last] = clusterProposalWaiter{}
 		*waiters = (*waiters)[:last]
+	}
+}
+
+func (runtime *clusterRuntime) failPendingProposals(waiters *[]clusterProposalWaiter, driverErr error) {
+	if len(*waiters) == 0 {
+		return
+	}
+	if driverErr == nil {
+		driverErr = errors.New("cluster raft driver stopped before proposal projection completed")
+	}
+	for _, waiter := range *waiters {
+		if waiter.result != nil {
+			waiter.result <- clusterApplyResponse{err: driverErr}
+		}
+	}
+	*waiters = nil
+}
+
+func (runtime *clusterRuntime) failQueuedDriverRequests(driverErr error) {
+	for {
+		select {
+		case request := <-runtime.requests:
+			switch request.kind {
+			case clusterDriverRead:
+				if request.readResult != nil {
+					request.readResult <- clusterReadResponse{err: driverErr}
+				}
+			case clusterDriverProposal:
+				if request.applyResult != nil {
+					request.applyResult <- clusterApplyResponse{err: driverErr}
+				}
+			case clusterDriverBackup:
+				if request.backupResult != nil {
+					request.backupResult <- clusterBackupImageResponse{err: driverErr}
+				}
+			}
+		default:
+			return
+		}
 	}
 }
 
@@ -1473,13 +1551,43 @@ func (runtime *clusterRuntime) clusterProjectionReady() bool {
 	if runtime == nil || runtime.node == nil || runtime.machine == nil || runtime.storage == nil {
 		return false
 	}
-	if runtime.storage.view().health != clusterReplicationHealthy {
-		return false
+	waitStarted := time.Time{}
+	for {
+		// Check health independently of Ready processing; slow storage must not block the MQTT read path.
+		if runtime.storage.view().health != clusterReplicationHealthy {
+			return false
+		}
+		sequence := runtime.projectionAdmissionSequence.Load()
+		if sequence&1 != 0 {
+			if waitStarted.IsZero() {
+				waitStarted = time.Now()
+			}
+			if time.Since(waitStarted) >= clusterReadTimeout {
+				return false
+			}
+			time.Sleep(clusterProjectionAdmissionPollInterval)
+			continue
+		}
+		snapshot := runtime.projectionReadinessSnapshot()
+		if runtime.projectionAdmissionSequence.Load() != sequence {
+			continue
+		}
+		if runtime.storage.view().health != clusterReplicationHealthy {
+			return false
+		}
+		return snapshot.admitsBarrier()
 	}
-	return runtime.readinessSnapshot().admitsBarrier()
+}
+
+func (runtime *clusterRuntime) finishProjectionAdmissionSequence(readyErr error) {
+	if readyErr != nil {
+		runtime.driverFailed.Store(true)
+	}
+	runtime.projectionAdmissionSequence.Add(1)
 }
 
 type clusterReadinessSnapshot struct {
+	driverFailed      bool
 	initialized       bool
 	projectionFailed  bool
 	bootstrapped      bool
@@ -1494,6 +1602,7 @@ func (s clusterReadinessSnapshot) hasLocalAdmissionState() bool {
 	return s.initialized &&
 		!s.projectionFailed &&
 		s.bootstrapped &&
+		!s.driverFailed &&
 		s.dynamicMembership &&
 		s.localVoter &&
 		s.localPhaseVoter
@@ -1516,10 +1625,34 @@ func (runtime *clusterRuntime) readinessSnapshot() clusterReadinessSnapshot {
 		bootstrapped:      status.Bootstrapped,
 		dynamicMembership: status.DynamicMembership,
 		localVoter:        containsNodeID(status.VoterIDs, runtime.config.NodeID),
+		driverFailed:      runtime.driverFailed.Load(),
 		localPhaseVoter:   found && member.Phase == tcpadapter.PeerPhaseVoter,
 		projectionIndex:   runtime.projectionIndex.Load(),
 		appliedIndex:      status.AppliedIndex,
 	}
+}
+
+func (runtime *clusterRuntime) projectionReadinessSnapshot() clusterReadinessSnapshot {
+	return clusterReadinessSnapshot{
+		initialized:       runtime.initialized.Load(),
+		projectionFailed:  runtime.projectionFailed.Load(),
+		bootstrapped:      runtime.admissionBootstrapped.Load(),
+		dynamicMembership: runtime.admissionDynamicMembership.Load(),
+		localVoter:        runtime.admissionLocalVoter.Load(),
+		localPhaseVoter:   runtime.admissionLocalPhaseVoter.Load(),
+		projectionIndex:   runtime.projectionIndex.Load(),
+		appliedIndex:      runtime.admissionAppliedIndex.Load(),
+		driverFailed:      runtime.driverFailed.Load(),
+	}
+}
+
+func (runtime *clusterRuntime) publishProjectionAdmissionStatus(status raftadapter.StatusDTO) {
+	member, found := committedLocalIdentity(runtime.machine, runtime.config.NodeID)
+	runtime.admissionBootstrapped.Store(status.Bootstrapped)
+	runtime.admissionDynamicMembership.Store(status.DynamicMembership)
+	runtime.admissionLocalVoter.Store(containsNodeID(status.VoterIDs, runtime.config.NodeID))
+	runtime.admissionLocalPhaseVoter.Store(found && member.Phase == tcpadapter.PeerPhaseVoter)
+	runtime.admissionAppliedIndex.Store(status.AppliedIndex)
 }
 
 func (runtime *clusterRuntime) checkReadiness(ctx context.Context) error {
@@ -1543,6 +1676,14 @@ func (runtime *clusterRuntime) requestReadBarrier(ctx context.Context) (uint64, 
 	if ctx == nil {
 		return 0, errClusterRuntimeNotReady
 	}
+	if runtime.driverFailed.Load() {
+		return 0, raftadapter.ErrFailed
+	}
+	select {
+	case <-runtime.driverStopped:
+		return 0, raftadapter.ErrFailed
+	default:
+	}
 	var raw [8]byte
 	binary.BigEndian.PutUint64(raw[:], runtime.sequence.Add(1))
 	key := string(raw[:])
@@ -1550,12 +1691,21 @@ func (runtime *clusterRuntime) requestReadBarrier(ctx context.Context) (uint64, 
 	request := clusterDriverRequest{kind: clusterDriverRead, contextKey: key, context: ctx, readResult: result}
 	select {
 	case runtime.requests <- request:
+	case <-runtime.driverStopped:
+		return 0, raftadapter.ErrFailed
 	case <-ctx.Done():
 		return 0, ctx.Err()
 	}
 	select {
 	case response := <-result:
 		return response.index, response.err
+	case <-runtime.driverStopped:
+		select {
+		case response := <-result:
+			return response.index, response.err
+		default:
+			return 0, raftadapter.ErrFailed
+		}
 	case <-ctx.Done():
 		select {
 		case runtime.requests <- clusterDriverRequest{kind: clusterDriverCancelRead, contextKey: key}:
@@ -1587,25 +1737,62 @@ func (runtime *clusterRuntime) Commit(ctx context.Context, command membership.Co
 	if (command.Retained != nil || command.Offline != nil || command.Delivery != nil || command.NodeDrain != nil) && !clusterExactProfileCompatible(runtime.machine.Members(), runtime.config) {
 		return membership.ApplyResultDTO{}, errClusterExactProfileCompatibility
 	}
+	label, held := runtime.faults.holdCommand(command)
 	data, err := encodeMembershipCommand(command)
 	if err != nil {
 		return membership.ApplyResultDTO{}, err
 	}
-	result := make(chan clusterApplyResponse, 1)
+	proposalCtx := ctx
+	var cancel context.CancelFunc
+	if held {
+		proposalCtx, cancel = context.WithTimeout(context.WithoutCancel(ctx), clusterHeldProposalTimeout)
+		defer cancel()
+	}
+	result, err := runtime.submitProposal(proposalCtx, data)
+	if held {
+		runtime.faults.reportHeldResult(label, result, err)
+	}
+	return result, err
+}
+
+func (runtime *clusterRuntime) submitProposal(ctx context.Context, data []byte) (membership.ApplyResultDTO, error) {
+	if runtime.driverFailed.Load() {
+		return membership.ApplyResultDTO{}, membership.ErrQuorumUnavailable
+	}
 	select {
-	case runtime.requests <- clusterDriverRequest{kind: clusterDriverProposal, data: data, applyResult: result}:
+	case <-runtime.driverStopped:
+		return membership.ApplyResultDTO{}, membership.ErrQuorumUnavailable
+	default:
+	}
+	result := make(chan clusterApplyResponse, 1)
+	request := clusterDriverRequest{kind: clusterDriverProposal, data: data, applyResult: result}
+	select {
+	case runtime.requests <- request:
+	case <-runtime.driverStopped:
+		return membership.ApplyResultDTO{}, membership.ErrQuorumUnavailable
 	case <-ctx.Done():
 		return membership.ApplyResultDTO{}, membership.ErrQuorumUnavailable
 	}
 	select {
 	case response := <-result:
-		if response.err != nil {
-			return membership.ApplyResultDTO{}, classifyClusterPortError(response.err)
+		return clusterApplyResponseResult(response)
+	case <-runtime.driverStopped:
+		select {
+		case response := <-result:
+			return clusterApplyResponseResult(response)
+		default:
+			return membership.ApplyResultDTO{}, membership.ErrQuorumUnavailable
 		}
-		return response.result, nil
 	case <-ctx.Done():
 		return membership.ApplyResultDTO{}, membership.ErrQuorumUnavailable
 	}
+}
+
+func clusterApplyResponseResult(response clusterApplyResponse) (membership.ApplyResultDTO, error) {
+	if response.err != nil {
+		return membership.ApplyResultDTO{}, classifyClusterPortError(response.err)
+	}
+	return response.result, nil
 }
 
 func clusterExactProfileCompatible(members []membership.MemberIdentityDTO, config clusterConfigFile) bool {

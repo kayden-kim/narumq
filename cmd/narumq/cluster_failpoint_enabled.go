@@ -19,3 +19,7 @@ func triggerClusterFailpoint(point clusterFailpoint) {
 	fmt.Fprintf(os.Stderr, "narumq failpoint reached: %s\n", point)
 	os.Exit(clusterFailpointExitCode)
 }
+
+func writeClusterFaultMarker(message string) {
+	fmt.Fprintln(os.Stderr, message)
+}
