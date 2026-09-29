@@ -32,7 +32,7 @@ Archive는 아래 byte 순서로 구성한다. 모든 protobuf frame은 determin
 
 전체 archive는 1 GiB를 넘을 수 없고, committed entry 수는 1,000,000개를 넘을 수 없다. Consumer는 frame 길이와 CRC32C(Castagnoli), trailer digest, protobuf canonical encoding, format major/minor, snapshot index, entry count와 entry 범위를 검증한다. Unknown major/minor는 지원하지 않는다.
 
-`boundary_state`는 `commit_index`에서 재구성한 전체 및 kind별 object count/SHA-256을 담는다. Required kind는 members, tenants, sessions, subscriptions, inflight, membership history, retained와 offline이다. `offline` summary의 count는 detached offline session record 수와 그 record에 든 queued message 수의 합이다. `inflight` summary의 count는 모든 `DeliverySessionState`에서 `len(messages)+len(inbound)`의 합이며 digest는 `delivery_sessions`만 가진 typed snapshot을 사용한다. Tenant digest는 ownership, subscription, delivery, retained, offline record의 tenant ID를 포함한다. Node drain record는 typed snapshot의 전체 state digest에 포함되며 별도 kind summary를 추가하지 않는다. `not_replicated_kinds` field는 이 형식에 없다.
+`boundary_state`는 `commit_index`에서 재구성한 전체 및 kind별 object count/SHA-256을 담는다. Required kind는 members, tenants, sessions, subscriptions, inflight, membership history, retained와 offline이다. `offline` summary의 count는 detached offline session record 수와 그 record에 든 queued message 수의 합이다. `inflight` summary의 count는 모든 `DeliverySessionState`에서 `len(messages)+len(inbound)`의 합이며 digest는 `delivery_sessions`만 가진 typed snapshot을 사용한다. Tenant digest는 ownership, subscription, delivery, retained, offline record의 tenant ID를 포함한다. Node drain record와 tenant quota profile은 별도 kind summary 없이 typed snapshot과 whole-state SHA-256에 포함된다. `not_replicated_kinds` field는 이 형식에 없다. |
 
 Retained key는 `(tenantId, exact Topic Name)`이다. Offline key는 `(tenantId, clientId)`이며 각 detached persistent session의 message는 단조 증가 sequence로 FIFO 순서를 보존한다. Exact state transition, ownership fencing, at-most-once claim, expiry와 capacity는 [Cluster §4.1](../specs/cluster-session-and-delivery.md#41-offline-message-capture와-전달)을 따른다. Durable delivery session과 inbound/outbound QoS state는 [Cluster §4.2](../specs/cluster-session-and-delivery.md#42-qos-12-durable-delivery)와 [ADR-0015](../decisions/ADR-0015-cluster-durable-qos-delivery.md)를 따른다.
 
@@ -49,9 +49,9 @@ Retained key는 `(tenantId, exact Topic Name)`이다. Offline key는 `(tenantId,
 - Retained value, offline queue와 durable delivery state는 committed typed state이며 snapshot, backup summary와 restore에서 함께 보존한다. Restore된 state는 새 owner와 catch-up node가 사용할 수 있다.
 - Cluster MQTT ingress는 QoS 0/1/2 PUBLISH를 지원한다. Detached persistent session의 matching QoS 0 delivery는 §4.1의 Raft offline state를 사용한다. Connected QoS 0은 §3.1의 live path를 사용하며, QoS 1/2 delivery와 inbound state는 §4.2의 durable delivery session에 기록한다.
 - Disconnect 시 persistent session의 pending QoS 0 FIFO는 DETACH command로 capture한다. 새 ownership epoch의 CONNECT는 durable delivery state를 ATTACH로 복구하고 QoS 0 offline queue는 CLAIM으로 가져와 durable delivery 뒤에 전달한다.
-- Offline limit는 session당 64 message, 전체 4,096 message·16 MiB, payload당 1,000,000 bytes, DETACH command당 topic+payload 768 KiB다. Tenant별 quota는 이 contract에서 제공하지 않으며 PRD TEN-08의 P0 requirement는 미충족이다.
+- Offline limit는 session당 64 message, 전체 4,096 message·16 MiB, payload당 1,000,000 bytes, DETACH command당 topic+payload 768 KiB다. Tenant 저장 quota는 [ADR-0017](../decisions/ADR-0017-tenant-storage-quota.md)에 따라 retained, QoS 0 offline queue, durable delivery outbound·inbound state를 집계하며 새 state 초과를 거절한다.
 - Replicated-state schema `1.0`은 unknown-field rejection을 유지한다. Retained, offline, delivery와 node drain command는 fresh read barrier 뒤 모든 non-retired member의 release/protocol/schema가 정확히 일치하는 profile에서만 제안한다. 이 제한은 N/N-1 rolling compatibility를 의미하지 않는다.
-- Node drain operation은 replicated typed snapshot과 whole-state SHA-256에 포함된다. Restore된 진행 중 operation은 저장된 phase와 original deadline에서 재개한다. Restored `COMPLETED` record는 node가 readiness를 다시 통과한 뒤 replicated `CLEAR`로 제거한다.
+- Node drain operation과 tenant quota profile은 replicated typed snapshot 및 whole-state SHA-256에 포함된다. Restore된 진행 중 drain operation은 저장된 phase와 original deadline에서 재개한다. Restored `COMPLETED` record는 node가 readiness를 다시 통과한 뒤 replicated `CLEAR`로 제거한다.
 
 ### QoS 1/2 durable delivery state
 
@@ -86,12 +86,12 @@ QoS 1/2 delivery session은 `ReplicatedStateSnapshot.delivery_sessions`에 저�
 - Restore는 cross-cluster migration, voter 재구성, learner 복원을 지원하지 않는다. 현재 bootstrap voter ID와 member identity를 바꾸지 않는다.
 - Retained, offline, delivery field 추가는 unknown field를 거절하는 schema `1.0`의 replicated-state wire format 변경이다. 같은 schema 번호만으로 release 호환을 추정하지 않는다. Retained/offline/delivery proposal 전에 모든 non-retired member의 release/protocol/schema 정확한 일치가 필요하다.
 - 이전 release로 rolling rollback 또는 v3 archive를 이전 release에서 restore하는 경로는 지원하지 않는다. N/N-1 archive compatibility는 별도 승인과 acceptance가 필요하다.
-- Production Linux/EBS power-loss, WAL torn-tail, volume loss, retention/RPO/RTO, BP-03와 TEN-08 tenant별 quota는 이 archive contract로 완료되지 않는다. Application-level durable QoS 1/2 ACK 및 replication behavior는 §4.2에 정의하지만, production storage guarantee를 의미하지 않는다.
+- Production Linux/EBS power-loss, WAL torn-tail, volume loss, retention/RPO/RTO, BP-03 및 N/N-1 compatibility는 이 archive contract로 완료되지 않는다. PRD TEN-08 tenant storage quota는 [ADR-0017](../decisions/ADR-0017-tenant-storage-quota.md)과 [Cluster §11.16](../specs/cluster-session-and-delivery.md#1116-tenant-storage-quota-수용-매핑)에서 별도로 제공·검증한다.
 
 ## 5. 초안을 확정하기 전에 해결할 사항
 
 - Production-like Linux filesystem/EBS power-loss, WAL torn-tail 및 volume-loss/reseed acceptance.
 - `SPEC-TBD-09` retention 및 disaster-recovery RPO/RTO 목표.
 - Release 간 archive producer/consumer compatibility matrix와 승인된 migration/rollback 정책.
-- PRD TEN-08 P0의 tenant별 offline queue, retained bytes, 저장 용량 quota와 초과 경보.
+- PRD TEN-08 tenant 저장 quota와 초과 경보는 [ADR-0017](../decisions/ADR-0017-tenant-storage-quota.md) 및 Cluster §11.16에서 관리한다.
 - Durable delivery-session backup/restore process acceptance는 Cluster §11.11에서 `inflight` summary와 restored state를 포함해 통과했다. Production storage/EBS acceptance와 release compatibility matrix는 별도 미완료 항목이다.

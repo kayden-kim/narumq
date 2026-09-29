@@ -1,6 +1,7 @@
 package metrics
 
 import (
+	"fmt"
 	"strings"
 	"sync"
 	"testing"
@@ -165,6 +166,95 @@ func TestRegistryNodeDrainTransitionMetricUsesFixedPhaseLabels(t *testing.T) {
 	if strings.Contains(output, `narumq_node_drain_transitions_total{phase="UNSPECIFIED"}`) ||
 		strings.Contains(output, `narumq_node_drain_transitions_total{phase="arbitrary"}`) {
 		t.Fatalf("metric accepted a non-phase label:\n%s", output)
+	}
+}
+
+// Traceability: TEN-08; docs/specs/tenancy-and-security.md §5.1.
+func TestRegistryTenantQuotaMetricsAndProfileGauges(t *testing.T) {
+	registry := NewRegistry()
+	if label := registry.RecordTenantQuotaRejection("acme", "retained_bytes"); label != "acme" {
+		t.Fatalf("tenant metric label = %q, want acme", label)
+	}
+	registry.RecordTenantQuotaRejection("acme", "retained_bytes")
+	registry.RecordTenantQuotaRejection(`tenant"west`, "offline_queue_bytes")
+	if label := registry.RecordTenantQuotaRejection("bad\ntenant", "storage_bytes"); label != tenantQuotaOverflowLabel {
+		t.Fatalf("control-character tenant label = %q, want %q", label, tenantQuotaOverflowLabel)
+	}
+	if label := registry.RecordTenantQuotaRejection("acme", "unbounded_dimension"); label != "" {
+		t.Fatalf("unknown quota dimension label = %q, want empty", label)
+	}
+	registry.SetTenantQuotaProfile(true, 7, true)
+
+	output := string(registry.Render(true))
+	for _, line := range []string{
+		"narumq_tenant_quota_profile_committed 1\n",
+		"narumq_tenant_quota_profile_version 7\n",
+		"narumq_tenant_quota_config_mismatch 1\n",
+		`narumq_tenant_quota_rejections_total{tenant="acme",dimension="retained_bytes"} 2`,
+		`narumq_tenant_quota_rejections_total{tenant="tenant\"west",dimension="offline_queue_bytes"} 1`,
+		`narumq_tenant_quota_rejections_total{tenant="_overflow",dimension="storage_bytes"} 1`,
+	} {
+		if !strings.Contains(output, line) {
+			t.Errorf("missing tenant quota metric %q:\n%s", line, output)
+		}
+	}
+	if strings.Contains(output, "bad\ntenant") || strings.Contains(output, "unbounded_dimension") {
+		t.Fatalf("invalid tenant or dimension escaped metric normalization:\n%s", output)
+	}
+
+	registry.SetTenantQuotaProfile(false, 99, true)
+	output = string(registry.Render(false))
+	for _, line := range []string{
+		"narumq_tenant_quota_profile_committed 0\n",
+		"narumq_tenant_quota_profile_version 0\n",
+		"narumq_tenant_quota_config_mismatch 0\n",
+	} {
+		if !strings.Contains(output, line) {
+			t.Errorf("uncommitted profile gauge did not reset: missing %q", line)
+		}
+	}
+	if strings.Contains(output, "# EOF") {
+		t.Fatalf("Prometheus rendering unexpectedly included OpenMetrics EOF")
+	}
+}
+
+// Traceability: TEN-08; docs/specs/tenancy-and-security.md §5.1.
+func TestRegistryTenantQuotaMetricBoundsTenantLabels(t *testing.T) {
+	registry := NewRegistry()
+	for index := 0; index < maxTenantQuotaMetricTenants; index++ {
+		label := fmt.Sprintf("tenant-%04d", index)
+		if got := registry.RecordTenantQuotaRejection(label, "retained_bytes"); got != label {
+			t.Fatalf("tenant %d label = %q, want %q", index, got, label)
+		}
+	}
+	if got := registry.RecordTenantQuotaRejection("tenant-overflow-a", "retained_bytes"); got != tenantQuotaOverflowLabel {
+		t.Fatalf("first overflow label = %q, want %q", got, tenantQuotaOverflowLabel)
+	}
+	if got := registry.RecordTenantQuotaRejection("tenant-overflow-b", "retained_bytes"); got != tenantQuotaOverflowLabel {
+		t.Fatalf("second overflow label = %q, want %q", got, tenantQuotaOverflowLabel)
+	}
+
+	output := string(registry.Render(false))
+	if !strings.Contains(output, `narumq_tenant_quota_rejections_total{tenant="_overflow",dimension="retained_bytes"} 2`) {
+		t.Fatalf("overflow tenants did not share one counter:\n%s", output)
+	}
+	labels := make(map[string]struct{})
+	for _, line := range strings.Split(output, "\n") {
+		if !strings.HasPrefix(line, "narumq_tenant_quota_rejections_total{tenant=") {
+			continue
+		}
+		start := strings.Index(line, `tenant="`)
+		end := strings.Index(line, `",dimension=`)
+		if start < 0 || end < 0 {
+			t.Fatalf("malformed tenant quota metric line %q", line)
+		}
+		labels[line[start+len(`tenant="`):end]] = struct{}{}
+	}
+	if got, want := len(labels), maxTenantQuotaMetricTenants+1; got != want {
+		t.Fatalf("distinct rendered tenant labels = %d, want %d including _overflow", got, want)
+	}
+	if got := len(registry.tenantQuotaTenants); got != maxTenantQuotaMetricTenants {
+		t.Fatalf("retained tenant label count = %d, want bounded at %d", got, maxTenantQuotaMetricTenants)
 	}
 }
 

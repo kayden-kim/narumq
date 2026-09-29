@@ -22,6 +22,7 @@ NaruMQ source tree는 MQTT·session·routing·delivery·tenancy·security·clust
 | --- | --- | --- |
 | 프로세스 시작 | `cmd/narumq/main.go` `main` → `run` → `runWithContext` | CLI 설정을 검사하고 아래 실행 모드 가운데 하나를 선택한다. |
 | Dynamic cluster | 호출: `cmd/narumq/main.go` `runWithContext` → 정의: `cmd/narumq/cluster_runtime.go` `runClusterMode` | `-cluster-config`를 사용해 dynamic cluster 경로로 진입한다. |
+| Dynamic cluster tenant storage quota | `-cluster-config` → `cmd/narumq/cluster_config.go`의 `tenantQuotas` 엄격 파싱 → `cmd/narumq/cluster_tenant_quota.go`의 profile controller → `clusterRuntime.Commit` → 커밋된 membership quota profile과 사용량 계산 → `internal/adapters/metrics` | MQTT readiness는 quota profile의 quorum commit을 요구한다. Admission은 커밋된 profile을 따른다. 로컬 설정 version이 더 높으면 controller가 profile을 제안하며, mismatch 경보는 커밋된 version이 더 높거나 같은 version의 내용이 다를 때 발생한다. 수용 증거는 [Cluster spec §11.16](../specs/cluster-session-and-delivery.md#1116-tenant-storage-quota-수용-매핑)에 있다. |
 | Dynamic cluster node drain | Management API `POST/GET/DELETE /api/v1/nodes/{nodeId}/drain` → `membership.DrainService` → `clusterRuntime.Commit` → replicated `NodeDrain` apply; controller: `cmd/narumq/cluster_drain.go` → `internal/domain/nodedrain` barrier rules → MQTT admission and ownership transfer | Quorum-committed phase/state resumes after process restart; `SAFE_TO_STOP` does not approve Pod deletion. Process evidence is in [Drain spec §10](../specs/drain-and-rolling-update.md#10-broker-drain-수용-시험-매핑). |
 | Cluster restore | 호출: `cmd/narumq/main.go` `runWithContext` → 정의: `cmd/narumq/cluster_backup_restore.go` `restoreClusterBackup` | `-cluster-config`와 `-cluster-restore`를 함께 지정하면 archive 복원 경로를 선택한다. |
 | Fixed-voter peer-only | 호출: `cmd/narumq/main.go` `runWithContext` → 정의: `cmd/narumq/raft_peer_config.go` `runRaftPeerOnly` | `-raft-peer-config`로 MQTT/management listener와 분리된 peer-only 경로를 선택한다. |
@@ -253,6 +254,7 @@ Package 이름은 기술 계층보다 제품 책임을 드러낸다.
 | Subscription route | `domain/routing` | `application/subscribe`, `application/publish` |
 | Delivery·inflight | `domain/delivery` | `application/publish`, `application/takeover` |
 | Tenant namespace·quota | `domain/tenancy` | 각 use case에서 policy 호출 |
+| Replicated tenant storage quota | `domain/tenancy` tenant identity value | `application/membership` owns the committed profile, deterministic accounting and admission; `cmd/narumq/cluster_records.go` bridges DTOs; `adapters/raft/records` owns wire/snapshot validation and codec |
 | Authentication·authorization policy | `domain/security` | `application/connect`와 management use case 후보 |
 | Membership·node lifecycle | `domain/clusterlifecycle` | `application/takeover`, `application/membership` |
 

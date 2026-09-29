@@ -164,6 +164,7 @@ func runClusterMode(ctx context.Context, config clusterConfigFile, logger *slog.
 		faults:             faults,
 		handoffProposed:    make(map[string]uint64),
 	}
+	runtime.tenantQuotaController = &clusterTenantQuotaController{runtime: runtime}
 	runtime.drain = &clusterDrainController{runtime: runtime}
 	runtime.retainedResyncRequired.Store(true)
 	if local, found := committedLocalIdentity(machine, config.NodeID); found {
@@ -326,25 +327,27 @@ func runClusterMode(ctx context.Context, config clusterConfigFile, logger *slog.
 }
 
 type clusterRuntime struct {
-	config             clusterConfigFile
-	logger             *slog.Logger
-	node               *raftadapter.Node
-	transport          *tcpadapter.DynamicTCPPeerTransport
-	forwarder          clusterPeerForwarder
-	forwardSink        clusterForwardSink
-	machine            *membership.StateMachine
-	retained           *memoryretained.Repository
-	routes             *routing.Table
-	mqttServer         *tcpadapter.Server
-	localDeliveries    *deliveryqueue.Queue
-	durableSink        clusterDurableSink
-	durableMu          sync.Mutex
-	durableAttachments map[routing.SessionID]clusterDurableAttachment
-	storage            *clusterStorageMonitor
-	drain              *clusterDrainController
-	connectUseCase     *connect.UseCase
-	metrics            *adaptersmetrics.Registry
-	localCommits       atomic.Int64
+	config                  clusterConfigFile
+	logger                  *slog.Logger
+	node                    *raftadapter.Node
+	transport               *tcpadapter.DynamicTCPPeerTransport
+	forwarder               clusterPeerForwarder
+	forwardSink             clusterForwardSink
+	machine                 *membership.StateMachine
+	retained                *memoryretained.Repository
+	routes                  *routing.Table
+	mqttServer              *tcpadapter.Server
+	localDeliveries         *deliveryqueue.Queue
+	durableSink             clusterDurableSink
+	durableMu               sync.Mutex
+	durableAttachments      map[routing.SessionID]clusterDurableAttachment
+	storage                 *clusterStorageMonitor
+	drain                   *clusterDrainController
+	tenantQuotaController   *clusterTenantQuotaController
+	tenantQuotaRejectionLog tenantQuotaRejectionReporter
+	connectUseCase          *connect.UseCase
+	metrics                 *adaptersmetrics.Registry
+	localCommits            atomic.Int64
 
 	requests                    chan clusterDriverRequest
 	driverStopped               chan struct{}
@@ -440,6 +443,7 @@ func (runtime *clusterRuntime) serve(parent context.Context, mqttServer *tcpadap
 	defer cancel()
 	driverDone := make(chan error, 1)
 	go func() { driverDone <- runtime.runDriver(ctx) }()
+	runtime.tenantQuotaController.start(ctx)
 	runtime.drain.start(ctx)
 
 	var admissionDone chan error
@@ -528,6 +532,7 @@ func (runtime *clusterRuntime) serve(parent context.Context, mqttServer *tcpadap
 		}
 	}
 	runtime.drain.stopAndWait()
+	runtime.tenantQuotaController.stopAndWait()
 	runtime.managementState.SetNodeState(managementports.NodeStateSafeToStop, nil)
 	return errors.Join(results...)
 }
@@ -1587,15 +1592,16 @@ func (runtime *clusterRuntime) finishProjectionAdmissionSequence(readyErr error)
 }
 
 type clusterReadinessSnapshot struct {
-	driverFailed      bool
-	initialized       bool
-	projectionFailed  bool
-	bootstrapped      bool
-	dynamicMembership bool
-	localVoter        bool
-	localPhaseVoter   bool
-	projectionIndex   uint64
-	appliedIndex      uint64
+	driverFailed                bool
+	initialized                 bool
+	projectionFailed            bool
+	bootstrapped                bool
+	dynamicMembership           bool
+	localVoter                  bool
+	localPhaseVoter             bool
+	tenantQuotaProfileCommitted bool
+	projectionIndex             uint64
+	appliedIndex                uint64
 }
 
 func (s clusterReadinessSnapshot) hasLocalAdmissionState() bool {
@@ -1605,7 +1611,8 @@ func (s clusterReadinessSnapshot) hasLocalAdmissionState() bool {
 		!s.driverFailed &&
 		s.dynamicMembership &&
 		s.localVoter &&
-		s.localPhaseVoter
+		s.localPhaseVoter &&
+		s.tenantQuotaProfileCommitted
 }
 
 func (s clusterReadinessSnapshot) admitsBarrier() bool {
@@ -1615,34 +1622,43 @@ func (s clusterReadinessSnapshot) admitsBarrier() bool {
 func (s clusterReadinessSnapshot) satisfiedAt(barrier uint64) bool {
 	return s.admitsBarrier() && barrier <= s.appliedIndex && barrier <= s.projectionIndex
 }
+func (runtime *clusterRuntime) hasCommittedTenantQuotaProfile() bool {
+	if runtime == nil || runtime.machine == nil {
+		return false
+	}
+	_, found := runtime.machine.TenantQuotaProfile()
+	return found
+}
 
 func (runtime *clusterRuntime) readinessSnapshot() clusterReadinessSnapshot {
 	status := runtime.node.Status()
 	member, found := committedLocalIdentity(runtime.machine, runtime.config.NodeID)
 	return clusterReadinessSnapshot{
-		initialized:       runtime.initialized.Load(),
-		projectionFailed:  runtime.projectionFailed.Load(),
-		bootstrapped:      status.Bootstrapped,
-		dynamicMembership: status.DynamicMembership,
-		localVoter:        containsNodeID(status.VoterIDs, runtime.config.NodeID),
-		driverFailed:      runtime.driverFailed.Load(),
-		localPhaseVoter:   found && member.Phase == tcpadapter.PeerPhaseVoter,
-		projectionIndex:   runtime.projectionIndex.Load(),
-		appliedIndex:      status.AppliedIndex,
+		initialized:                 runtime.initialized.Load(),
+		projectionFailed:            runtime.projectionFailed.Load(),
+		bootstrapped:                status.Bootstrapped,
+		dynamicMembership:           status.DynamicMembership,
+		localVoter:                  containsNodeID(status.VoterIDs, runtime.config.NodeID),
+		driverFailed:                runtime.driverFailed.Load(),
+		localPhaseVoter:             found && member.Phase == tcpadapter.PeerPhaseVoter,
+		projectionIndex:             runtime.projectionIndex.Load(),
+		appliedIndex:                status.AppliedIndex,
+		tenantQuotaProfileCommitted: runtime.hasCommittedTenantQuotaProfile(),
 	}
 }
 
 func (runtime *clusterRuntime) projectionReadinessSnapshot() clusterReadinessSnapshot {
 	return clusterReadinessSnapshot{
-		initialized:       runtime.initialized.Load(),
-		projectionFailed:  runtime.projectionFailed.Load(),
-		bootstrapped:      runtime.admissionBootstrapped.Load(),
-		dynamicMembership: runtime.admissionDynamicMembership.Load(),
-		localVoter:        runtime.admissionLocalVoter.Load(),
-		localPhaseVoter:   runtime.admissionLocalPhaseVoter.Load(),
-		projectionIndex:   runtime.projectionIndex.Load(),
-		appliedIndex:      runtime.admissionAppliedIndex.Load(),
-		driverFailed:      runtime.driverFailed.Load(),
+		initialized:                 runtime.initialized.Load(),
+		projectionFailed:            runtime.projectionFailed.Load(),
+		bootstrapped:                runtime.admissionBootstrapped.Load(),
+		dynamicMembership:           runtime.admissionDynamicMembership.Load(),
+		localVoter:                  runtime.admissionLocalVoter.Load(),
+		localPhaseVoter:             runtime.admissionLocalPhaseVoter.Load(),
+		projectionIndex:             runtime.projectionIndex.Load(),
+		appliedIndex:                runtime.admissionAppliedIndex.Load(),
+		driverFailed:                runtime.driverFailed.Load(),
+		tenantQuotaProfileCommitted: runtime.hasCommittedTenantQuotaProfile(),
 	}
 }
 
@@ -1734,7 +1750,8 @@ func (runtime *clusterRuntime) Commit(ctx context.Context, command membership.Co
 	if err := runtime.readBarrier(ctx); err != nil {
 		return membership.ApplyResultDTO{}, classifyClusterPortError(err)
 	}
-	if (command.Retained != nil || command.Offline != nil || command.Delivery != nil || command.NodeDrain != nil) && !clusterExactProfileCompatible(runtime.machine.Members(), runtime.config) {
+	if (command.Retained != nil || command.Offline != nil || command.Delivery != nil || command.NodeDrain != nil || command.TenantQuota != nil) &&
+		!clusterExactProfileCompatible(runtime.machine.Members(), runtime.config) {
 		return membership.ApplyResultDTO{}, errClusterExactProfileCompatibility
 	}
 	label, held := runtime.faults.holdCommand(command)
@@ -1751,6 +1768,9 @@ func (runtime *clusterRuntime) Commit(ctx context.Context, command membership.Co
 	result, err := runtime.submitProposal(proposalCtx, data)
 	if held {
 		runtime.faults.reportHeldResult(label, result, err)
+	}
+	if err == nil {
+		runtime.reportTenantQuotaRejection(result.TenantQuota)
 	}
 	return result, err
 }
@@ -2334,7 +2354,7 @@ func (checker *clusterHealthChecker) CheckReadiness(ctx context.Context) (manage
 		ctx = checkCtx
 	}
 	if err := checker.runtime.checkReadiness(ctx); err != nil {
-		reason := "cluster quorum, committed voter role, or route projection is not ready"
+		reason := "cluster quorum, committed voter role, route projection, or tenant quota profile is not ready"
 		checker.runtime.managementState.SetNodeState(managementports.NodeStateJoining, &reason)
 		return managementports.HealthStatusNotReady, &reason
 	}

@@ -84,14 +84,10 @@ func TestUnconfiguredRemotePeerDistinguishesPendingAndInvalidTargets(t *testing.
 
 func TestClusterReadinessGate(t *testing.T) {
 	base := clusterReadinessSnapshot{
-		initialized:       true,
-		projectionFailed:  false,
-		bootstrapped:      true,
-		dynamicMembership: true,
-		localVoter:        true,
-		localPhaseVoter:   true,
-		projectionIndex:   10,
-		appliedIndex:      10,
+		initialized: true, projectionFailed: false,
+		bootstrapped: true, dynamicMembership: true,
+		localVoter: true, localPhaseVoter: true, tenantQuotaProfileCommitted: true,
+		projectionIndex: 10, appliedIndex: 10,
 	}
 
 	cases := []struct {
@@ -177,6 +173,15 @@ func TestClusterReadinessGate(t *testing.T) {
 			wantSatisfied: false,
 		},
 		{
+			name: "tenant quota profile not committed",
+			mutate: func(s *clusterReadinessSnapshot) {
+				s.tenantQuotaProfileCommitted = false
+			},
+			barrier:       10,
+			wantAdmits:    false,
+			wantSatisfied: false,
+		},
+		{
 			name:          "all satisfied",
 			mutate:        func(s *clusterReadinessSnapshot) {},
 			barrier:       10,
@@ -230,8 +235,16 @@ func TestClusterProjectionReadyRequiresInitializedCurrentProjection(t *testing.T
 
 	var storageNow atomic.Int64
 	storageNow.Store(time.Now().UnixNano())
+	machine := retainedTestMachine(t, config, config.ReleaseVersion)
+	if _, err := machine.Apply(2, membership.CommandDTO{
+		SchemaMajor: membership.SchemaMajor, SchemaMinor: membership.SchemaMinor,
+		OperationID: "00000000-0000-4000-8000-000000000001",
+		TenantQuota: &membership.TenantQuotaChangeDTO{Profile: membership.DefaultTenantQuotaProfile()},
+	}); err != nil {
+		t.Fatalf("install default tenant quota profile: %v", err)
+	}
 	runtime := &clusterRuntime{
-		config: config, node: node, machine: retainedTestMachine(t, config, config.ReleaseVersion),
+		config: config, node: node, machine: machine,
 		storage: newClusterStorageMonitor(func() time.Time { return time.Unix(0, storageNow.Load()) }, nil),
 	}
 	runtime.initialized.Store(true)

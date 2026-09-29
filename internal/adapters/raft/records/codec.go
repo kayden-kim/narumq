@@ -16,23 +16,30 @@ import (
 	"google.golang.org/protobuf/reflect/protoreflect"
 
 	"narumq/internal/domain/nodedrain"
+	"narumq/internal/domain/tenancy"
 )
 
 const (
-	maxCommandBytes               = 1 << 20
-	maxSnapshotBytes              = 64 << 20
-	maxEntries                    = 1_000_000
-	maxPublishPayload             = 1_000_000
-	maxDeliveryMessagesPerSession = 64
-	maxDeliveryInboundPerSession  = 64
-	maxDeliveryEntries            = 4096
-	maxDeliveryBytes              = 16 << 20
-	maxDeliveryTargets            = 1024
-	maxRetainedMessages           = 1024
-	maxOfflineMessages            = 4096
-	maxOfflineMessagesPerSession  = 64
-	maxOfflineBytes               = 16 << 20
-	maxOfflineDetachMessageBytes  = 768 << 10
+	maxCommandBytes                    = 1 << 20
+	maxSnapshotBytes                   = 64 << 20
+	maxEntries                         = 1_000_000
+	maxPublishPayload                  = 1_000_000
+	maxDeliveryMessagesPerSession      = 64
+	maxDeliveryInboundPerSession       = 64
+	maxDeliveryEntries                 = 4096
+	maxDeliveryBytes                   = 16 << 20
+	maxDeliveryTargets                 = 1024
+	maxRetainedMessages                = 1024
+	maxOfflineMessages                 = 4096
+	maxOfflineMessagesPerSession       = 64
+	maxOfflineBytes                    = 16 << 20
+	maxOfflineDetachMessageBytes       = 768 << 10
+	maxTenantQuotaTenants              = 1024
+	maxTenantIDBytes                   = 128
+	maxTenantQuotaRetainedBytes        = 16 << 20
+	maxTenantQuotaOfflineQueueMessages = maxOfflineMessages + maxDeliveryEntries
+	maxTenantQuotaOfflineQueueBytes    = maxOfflineBytes + maxDeliveryBytes
+	maxTenantQuotaStorageBytes         = maxTenantQuotaRetainedBytes + maxOfflineBytes + maxDeliveryBytes
 )
 
 // ErrCommandTooLarge means a command exceeds the replicated command size limit.
@@ -112,7 +119,7 @@ func MarshalSnapshot(state *ReplicatedStateSnapshot, lastIncludedIndex uint64) (
 			offlineMessagesCount += len(session.Messages)
 		}
 	}
-	count := uint64(len(ordered.Members) + len(ordered.Ownerships) + len(ordered.Subscriptions) + len(ordered.DeliverySessions) + deliveryObjectCount(ordered.DeliverySessions) + len(ordered.MembershipHistory) + len(ordered.Retained) + len(ordered.OfflineSessions) + offlineMessagesCount + len(ordered.NodeDrains))
+	count := uint64(len(ordered.Members) + len(ordered.Ownerships) + len(ordered.Subscriptions) + len(ordered.DeliverySessions) + deliveryObjectCount(ordered.DeliverySessions) + len(ordered.MembershipHistory) + len(ordered.Retained) + len(ordered.OfflineSessions) + offlineMessagesCount + len(ordered.NodeDrains) + tenantQuotaProfileObjectCount(ordered.TenantQuotaProfile))
 	digest := sha256.Sum256(stateBytes)
 	envelope := &SnapshotEnvelope{SchemaMajor: 1, LastIncludedIndex: lastIncludedIndex, ObjectCount: count, Sha256: digest[:], State: ordered}
 	encoded, err := deterministic.Marshal(envelope)
@@ -158,7 +165,7 @@ func UnmarshalSnapshot(encoded []byte) (*SnapshotEnvelope, error) {
 			offlineMessagesCount += len(session.Messages)
 		}
 	}
-	count := uint64(len(envelope.State.Members) + len(envelope.State.Ownerships) + len(envelope.State.Subscriptions) + len(envelope.State.DeliverySessions) + deliveryObjectCount(envelope.State.DeliverySessions) + len(envelope.State.MembershipHistory) + len(envelope.State.Retained) + len(envelope.State.OfflineSessions) + offlineMessagesCount + len(envelope.State.NodeDrains))
+	count := uint64(len(envelope.State.Members) + len(envelope.State.Ownerships) + len(envelope.State.Subscriptions) + len(envelope.State.DeliverySessions) + deliveryObjectCount(envelope.State.DeliverySessions) + len(envelope.State.MembershipHistory) + len(envelope.State.Retained) + len(envelope.State.OfflineSessions) + offlineMessagesCount + len(envelope.State.NodeDrains) + tenantQuotaProfileObjectCount(envelope.State.TenantQuotaProfile))
 	if envelope.ObjectCount != count {
 		return nil, errors.New("snapshot object count mismatch")
 	}
@@ -229,6 +236,11 @@ func validateCommand(c *CommandEnvelope) error {
 			return errors.New("node drain payload is required")
 		}
 		return validateNodeDrainChange(payload.NodeDrain)
+	case *CommandEnvelope_TenantQuota:
+		if payload.TenantQuota == nil {
+			return errors.New("tenant quota payload is required")
+		}
+		return validateTenantQuotaChange(payload.TenantQuota)
 	default:
 		return errors.New("command must contain exactly one known payload")
 	}
@@ -351,6 +363,45 @@ func validateNodeDrainChange(change *NodeDrainChange) error {
 		return errors.New("node drain action does not accept progress")
 	}
 	return nil
+}
+func validateTenantQuotaChange(change *TenantQuotaChange) error {
+	if change == nil || change.Profile == nil {
+		return errors.New("tenant quota profile is required")
+	}
+	return validateTenantQuotaProfile(change.Profile)
+}
+
+func validateTenantQuotaProfile(profile *TenantQuotaProfile) error {
+	if profile == nil || profile.DefaultQuota == nil {
+		return errors.New("tenant quota profile and default quota are required")
+	}
+	if profile.DefaultQuota.TenantId != "" || !validTenantQuotaLimits(profile.DefaultQuota) {
+		return errors.New("invalid default tenant quota")
+	}
+	if len(profile.Tenants) > maxTenantQuotaTenants {
+		return errors.New("tenant quota profile exceeds tenant limit")
+	}
+	previousTenantID := ""
+	for index, quota := range profile.Tenants {
+		if quota == nil || !boundedUTF8(quota.TenantId, 1, maxTenantIDBytes) || !validTenantQuotaLimits(quota) {
+			return errors.New("invalid tenant quota entry")
+		}
+		if _, err := tenancy.NewTenantID(quota.TenantId); err != nil {
+			return errors.New("invalid tenant quota tenant_id")
+		}
+		if index > 0 && previousTenantID >= quota.TenantId {
+			return errors.New("tenant quota entries are not uniquely sorted")
+		}
+		previousTenantID = quota.TenantId
+	}
+	return nil
+}
+
+func validTenantQuotaLimits(quota *TenantStorageQuota) bool {
+	return quota.RetainedBytes > 0 && quota.RetainedBytes <= maxTenantQuotaRetainedBytes &&
+		quota.OfflineQueueMessages > 0 && quota.OfflineQueueMessages <= maxTenantQuotaOfflineQueueMessages &&
+		quota.OfflineQueueBytes > 0 && quota.OfflineQueueBytes <= maxTenantQuotaOfflineQueueBytes &&
+		quota.StorageBytes > 0 && quota.StorageBytes <= maxTenantQuotaStorageBytes
 }
 
 func validateNodeDrainState(state *NodeDrainState) error {
@@ -676,6 +727,12 @@ func deliveryObjectCount(sessions []*DeliverySessionState) int {
 	}
 	return count
 }
+func tenantQuotaProfileObjectCount(profile *TenantQuotaProfile) int {
+	if profile == nil {
+		return 0
+	}
+	return 1 + len(profile.Tenants)
+}
 
 func validateSnapshotState(s *ReplicatedStateSnapshot) error {
 	offlineMessagesCount := 0
@@ -684,9 +741,14 @@ func validateSnapshotState(s *ReplicatedStateSnapshot) error {
 			offlineMessagesCount += len(session.Messages)
 		}
 	}
-	count := len(s.Members) + len(s.Ownerships) + len(s.Subscriptions) + len(s.DeliverySessions) + deliveryObjectCount(s.DeliverySessions) + len(s.MembershipHistory) + len(s.Retained) + len(s.OfflineSessions) + offlineMessagesCount + len(s.NodeDrains)
+	count := len(s.Members) + len(s.Ownerships) + len(s.Subscriptions) + len(s.DeliverySessions) + deliveryObjectCount(s.DeliverySessions) + len(s.MembershipHistory) + len(s.Retained) + len(s.OfflineSessions) + offlineMessagesCount + len(s.NodeDrains) + tenantQuotaProfileObjectCount(s.TenantQuotaProfile)
 	if count > maxEntries {
 		return errors.New("snapshot exceeds 1,000,000 entries")
+	}
+	if s.TenantQuotaProfile != nil {
+		if err := validateTenantQuotaProfile(s.TenantQuotaProfile); err != nil {
+			return err
+		}
 	}
 	if len(s.Retained) > maxRetainedMessages {
 		return errors.New("snapshot exceeds retained message limit")

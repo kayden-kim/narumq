@@ -5,7 +5,7 @@ package narumq.cluster.v1;
 option go_package = "narumq/internal/adapters/raft/records;records";
 
 // Draft state schema 1.0 rejects unknown fields. Mixed-release membership is
-// unsupported; retained, offline, delivery, and node drain commands are admitted only when every active
+// unsupported; retained, offline, delivery, node drain, and tenant quota commands are admitted only when every active
 // committed member's exact release, cluster protocol, and state schema match locally.
 
 enum MemberPhase {
@@ -156,6 +156,7 @@ message CommandEnvelope {
     RetainedChange retained = 14;
     OfflineChange offline = 15;
     NodeDrainChange node_drain = 17;
+    TenantQuotaChange tenant_quota = 18;
   }
   reserved 13;
   reserved "checkpoint";
@@ -300,8 +301,29 @@ message RetainedState {
   uint64 expires_at_unix_millis = 6;
 }
 
+// A quota profile is versioned and sorted by tenant_id. The empty tenant_id on
+// default_quota identifies the fallback limit applied to omitted tenants.
+message TenantStorageQuota {
+  string tenant_id = 1;
+  uint64 retained_bytes = 2;
+  uint64 offline_queue_messages = 3;
+  uint64 offline_queue_bytes = 4;
+  uint64 storage_bytes = 5;
+}
+
+message TenantQuotaProfile {
+  uint64 version = 1;
+  TenantStorageQuota default_quota = 2;
+  repeated TenantStorageQuota tenants = 3;
+}
+
+message TenantQuotaChange {
+  TenantQuotaProfile profile = 1;
+}
+
 // Offline entries belong to detached persistent sessions keyed by (tenant_id, client_id).
 // Timestamps are proposer Unix milliseconds; apply purges 0 < expires_at <= proposed_at.
+
 message OfflineMessage {
   uint64 sequence = 1;
   string topic = 2;
@@ -354,6 +376,7 @@ message ReplicatedStateSnapshot {
   repeated OfflineSessionState offline_sessions = 7;
   repeated DeliverySessionState delivery_sessions = 8;
   repeated NodeDrainState node_drains = 9;
+  TenantQuotaProfile tenant_quota_profile = 10;
 }
 
 message SnapshotEnvelope {

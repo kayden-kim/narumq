@@ -9,9 +9,29 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+	"unicode"
 
 	ports "narumq/internal/application/ports/metrics"
+	"narumq/internal/domain/tenancy"
 )
+
+const (
+	maxTenantQuotaMetricTenants = 1024
+	tenantQuotaOverflowLabel    = "_overflow"
+)
+
+type tenantQuotaMetricKey struct {
+	tenantID  string
+	dimension string
+}
+
+type tenantQuotaMetricEntry struct {
+	tenantID  string
+	dimension string
+	count     int64
+}
+
+var prometheusLabelEscaper = strings.NewReplacer("\\", "\\\\", "\"", "\\\"", "\n", "\\n")
 
 // Default histogram buckets for publish latency in seconds.
 var defaultPublishLatencyBuckets = []float64{
@@ -89,11 +109,16 @@ type Registry struct {
 	retainedMessages    atomic.Int64
 	retainedBytes       atomic.Int64
 
-	packetsReceivedTotal map[string]*atomic.Int64 // key: packetType
-	packetsSentTotal     map[string]*atomic.Int64 // key: packetType
-	authAttemptsTotal    map[string]*atomic.Int64 // key: method,result,reason
-	connectRejectedTotal atomic.Int64
-	nodeDrainTransitions map[string]*atomic.Int64
+	packetsReceivedTotal        map[string]*atomic.Int64 // key: packetType
+	packetsSentTotal            map[string]*atomic.Int64 // key: packetType
+	authAttemptsTotal           map[string]*atomic.Int64 // key: method,result,reason
+	connectRejectedTotal        atomic.Int64
+	nodeDrainTransitions        map[string]*atomic.Int64
+	tenantQuotaRejections       map[tenantQuotaMetricKey]*atomic.Int64
+	tenantQuotaTenants          map[string]struct{}
+	tenantQuotaProfileCommitted atomic.Int64
+	tenantQuotaProfileVersion   atomic.Uint64
+	tenantQuotaConfigMismatch   atomic.Int64
 
 	publishLatency *Histogram
 }
@@ -101,12 +126,14 @@ type Registry struct {
 // NewRegistry initializes an empty Registry.
 func NewRegistry() *Registry {
 	return &Registry{
-		connectionsTotal:     make(map[string]*atomic.Int64),
-		packetsReceivedTotal: make(map[string]*atomic.Int64),
-		packetsSentTotal:     make(map[string]*atomic.Int64),
-		authAttemptsTotal:    make(map[string]*atomic.Int64),
-		nodeDrainTransitions: make(map[string]*atomic.Int64),
-		publishLatency:       NewHistogram(defaultPublishLatencyBuckets),
+		connectionsTotal:      make(map[string]*atomic.Int64),
+		packetsReceivedTotal:  make(map[string]*atomic.Int64),
+		packetsSentTotal:      make(map[string]*atomic.Int64),
+		authAttemptsTotal:     make(map[string]*atomic.Int64),
+		nodeDrainTransitions:  make(map[string]*atomic.Int64),
+		tenantQuotaRejections: make(map[tenantQuotaMetricKey]*atomic.Int64),
+		tenantQuotaTenants:    make(map[string]struct{}),
+		publishLatency:        NewHistogram(defaultPublishLatencyBuckets),
 	}
 }
 
@@ -263,6 +290,52 @@ func (r *Registry) NodeDrainTransition(phase string) {
 	r.getCounter(r.nodeDrainTransitions, fmt.Sprintf(`phase="%s"`, phase)).Add(1)
 }
 
+// RecordTenantQuotaRejection increments a bounded tenant-and-dimension counter and returns its rendered tenant label.
+func (r *Registry) RecordTenantQuotaRejection(tenantID, dimension string) string {
+	switch dimension {
+	case "retained_bytes", "offline_queue_messages", "offline_queue_bytes", "storage_bytes":
+	default:
+		return ""
+	}
+	if _, err := tenancy.NewTenantID(tenantID); err != nil || strings.IndexFunc(tenantID, unicode.IsControl) >= 0 {
+		tenantID = tenantQuotaOverflowLabel
+	}
+
+	r.mu.Lock()
+	if _, exists := r.tenantQuotaTenants[tenantID]; !exists {
+		if len(r.tenantQuotaTenants) >= maxTenantQuotaMetricTenants {
+			tenantID = tenantQuotaOverflowLabel
+		} else {
+			r.tenantQuotaTenants[tenantID] = struct{}{}
+		}
+	}
+	key := tenantQuotaMetricKey{tenantID: tenantID, dimension: dimension}
+	counter := r.tenantQuotaRejections[key]
+	if counter == nil {
+		counter = &atomic.Int64{}
+		r.tenantQuotaRejections[key] = counter
+	}
+	counter.Add(1)
+	r.mu.Unlock()
+	return tenantID
+}
+
+// SetTenantQuotaProfile updates gauges describing the locally committed quota profile.
+func (r *Registry) SetTenantQuotaProfile(committed bool, version uint64, configMismatch bool) {
+	var committedValue, mismatchValue int64
+	if committed {
+		committedValue = 1
+	} else {
+		version = 0
+	}
+	if committed && configMismatch {
+		mismatchValue = 1
+	}
+	r.tenantQuotaProfileCommitted.Store(committedValue)
+	r.tenantQuotaProfileVersion.Store(version)
+	r.tenantQuotaConfigMismatch.Store(mismatchValue)
+}
+
 // SetSessionsActive updates session gauges.
 func (r *Registry) SetSessionsActive(persistent bool, count int64) {
 	if count < 0 {
@@ -367,6 +440,18 @@ func (r *Registry) Render(isOpenMetrics bool) []byte {
 	fmt.Fprintf(&buf, "# HELP narumq_node_drain_transitions_total Committed node drain phase transitions observed for the local node.\n")
 	fmt.Fprintf(&buf, "# TYPE narumq_node_drain_transitions_total counter\n")
 	r.renderCounterMap(&buf, "narumq_node_drain_transitions_total", r.nodeDrainTransitions)
+	fmt.Fprintf(&buf, "# HELP narumq_tenant_quota_profile_committed Whether a tenant quota profile is committed locally.\n")
+	fmt.Fprintf(&buf, "# TYPE narumq_tenant_quota_profile_committed gauge\n")
+	fmt.Fprintf(&buf, "narumq_tenant_quota_profile_committed %d\n", r.tenantQuotaProfileCommitted.Load())
+	fmt.Fprintf(&buf, "# HELP narumq_tenant_quota_profile_version Version of the locally committed tenant quota profile.\n")
+	fmt.Fprintf(&buf, "# TYPE narumq_tenant_quota_profile_version gauge\n")
+	fmt.Fprintf(&buf, "narumq_tenant_quota_profile_version %d\n", r.tenantQuotaProfileVersion.Load())
+	fmt.Fprintf(&buf, "# HELP narumq_tenant_quota_config_mismatch Whether the local quota configuration conflicts with the committed profile.\n")
+	fmt.Fprintf(&buf, "# TYPE narumq_tenant_quota_config_mismatch gauge\n")
+	fmt.Fprintf(&buf, "narumq_tenant_quota_config_mismatch %d\n", r.tenantQuotaConfigMismatch.Load())
+	fmt.Fprintf(&buf, "# HELP narumq_tenant_quota_rejections_total Committed storage mutations rejected by tenant quota dimension.\n")
+	fmt.Fprintf(&buf, "# TYPE narumq_tenant_quota_rejections_total counter\n")
+	r.renderTenantQuotaRejections(&buf)
 
 	// 11. narumq_publish_latency_seconds
 	fmt.Fprintf(&buf, "# HELP narumq_publish_latency_seconds Latency of publish processing in seconds.\n")
@@ -405,5 +490,25 @@ func (r *Registry) renderCounterMap(buf *bytes.Buffer, name string, m map[string
 
 	for _, e := range entries {
 		fmt.Fprintf(buf, "%s{%s} %d\n", name, e.labels, e.val)
+	}
+}
+func (r *Registry) renderTenantQuotaRejections(buf *bytes.Buffer) {
+	r.mu.RLock()
+	entries := make([]tenantQuotaMetricEntry, 0, len(r.tenantQuotaRejections))
+	for key, counter := range r.tenantQuotaRejections {
+		entries = append(entries, tenantQuotaMetricEntry{
+			tenantID: key.tenantID, dimension: key.dimension, count: counter.Load(),
+		})
+	}
+	r.mu.RUnlock()
+	sort.Slice(entries, func(left, right int) bool {
+		if entries[left].tenantID != entries[right].tenantID {
+			return entries[left].tenantID < entries[right].tenantID
+		}
+		return entries[left].dimension < entries[right].dimension
+	})
+	for _, entry := range entries {
+		fmt.Fprintf(buf, "narumq_tenant_quota_rejections_total{tenant=\"%s\",dimension=\"%s\"} %d\n",
+			prometheusLabelEscaper.Replace(entry.tenantID), prometheusLabelEscaper.Replace(entry.dimension), entry.count)
 	}
 }

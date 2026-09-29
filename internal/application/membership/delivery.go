@@ -17,7 +17,7 @@ func (machine *StateMachine) applyDelivery(index uint64, change DeliveryChangeDT
 		if change.ExpiresAtUnixMillis > 0 && change.ExpiresAtUnixMillis <= change.ProposedAtUnixMillis {
 			return result
 		}
-		result.Delivery.Enqueued, result.Delivery.Saturated, result.Delivery.Skipped = machine.enqueueDeliveryTargetsLocked(change.TenantID, change.Topic, change.Payload, change.PublishQoS, change.Retain, change.ExpiresAtUnixMillis, change.Targets)
+		result.Delivery.Enqueued, result.Delivery.Saturated, result.Delivery.Skipped, result.TenantQuota = machine.enqueueDeliveryTargetsLocked(change.TenantID, change.Topic, change.Payload, change.PublishQoS, change.Retain, change.ExpiresAtUnixMillis, change.Targets)
 		return result
 	case DeliveryActionReceive:
 		if !machine.authorized(key, change.OwnerNodeID, change.Epoch) {
@@ -64,6 +64,11 @@ func (machine *StateMachine) applyDelivery(index uint64, change DeliveryChangeDT
 		if machine.deliveryEntries-oldBoolCount(oldIndex >= 0 || removeIndex >= 0)+1 > MaxDeliveryEntries || machine.deliveryBytes-oldBytes+newBytes > MaxDeliveryBytes {
 			return conflictResult(index, ConflictDeliveryCapacity)
 		}
+		if rejection := machine.tenantQuotaExceededLocked(change.TenantID, 0, 0, 0, newBytes-oldBytes); rejection != nil {
+			result := conflictResult(index, ConflictDeliveryCapacity)
+			result.TenantQuota = rejection
+			return result
+		}
 		newInbound.Payload = bytes.Clone(change.Payload)
 		if oldIndex >= 0 {
 			record.Inbound = append(record.Inbound[:oldIndex], record.Inbound[oldIndex+1:]...)
@@ -73,8 +78,7 @@ func (machine *StateMachine) applyDelivery(index uint64, change DeliveryChangeDT
 		record.Inbound = append(record.Inbound, newInbound)
 		sort.Slice(record.Inbound, func(i, j int) bool { return record.Inbound[i].PacketID < record.Inbound[j].PacketID })
 		machine.delivery[key] = record
-		machine.deliveryEntries += 1 - oldBoolCount(oldIndex >= 0 || removeIndex >= 0)
-		machine.deliveryBytes += newBytes - oldBytes
+		machine.addDeliveryInboundUsageLocked(change.TenantID, 1-oldBoolCount(oldIndex >= 0 || removeIndex >= 0), newBytes-oldBytes)
 		return result
 	case DeliveryActionRelease:
 		if !machine.authorized(key, change.OwnerNodeID, change.Epoch) {
@@ -102,14 +106,14 @@ func (machine *StateMachine) applyDelivery(index uint64, change DeliveryChangeDT
 		result.Delivery.Found = true
 		result.Delivery.Released = true
 		publishPayload := bytes.Clone(inbound.Payload)
-		machine.deliveryBytes -= len(inbound.Payload)
+		machine.addDeliveryInboundUsageLocked(change.TenantID, 0, -len(inbound.Payload))
 		inbound.Payload = nil
 		inbound.Released = true
 		inbound.ReleasedIndex = index
 		record.Inbound[inboundIndex] = inbound
 		machine.delivery[key] = record
 		if inbound.ExpiresAtUnixMillis == 0 || inbound.ExpiresAtUnixMillis > change.ProposedAtUnixMillis {
-			result.Delivery.Enqueued, result.Delivery.Saturated, result.Delivery.Skipped = machine.enqueueDeliveryTargetsLocked(change.TenantID, inbound.Topic, publishPayload, change.PublishQoS, inbound.Retain, inbound.ExpiresAtUnixMillis, change.Targets)
+			result.Delivery.Enqueued, result.Delivery.Saturated, result.Delivery.Skipped, result.TenantQuota = machine.enqueueDeliveryTargetsLocked(change.TenantID, inbound.Topic, publishPayload, change.PublishQoS, inbound.Retain, inbound.ExpiresAtUnixMillis, change.Targets)
 		}
 		return result
 	case DeliveryActionSend:
@@ -178,8 +182,7 @@ func (machine *StateMachine) applyDelivery(index uint64, change DeliveryChangeDT
 		}
 		for i, message := range record.Messages {
 			if message.PacketID == change.PacketID {
-				machine.deliveryEntries--
-				machine.deliveryBytes -= deliveryMessageBytes(key, message)
+				machine.addDeliveryMessageUsageLocked(key.tenantID, -1, -deliveryMessageBytes(key, message))
 				record.Messages = append(record.Messages[:i], record.Messages[i+1:]...)
 				machine.delivery[key] = record
 				return result
@@ -242,7 +245,7 @@ func deliveryMessageBySequence(messages []DeliveryMessageDTO, sequence uint64) i
 	return index
 }
 
-func (machine *StateMachine) enqueueDeliveryTargetsLocked(tenantID, topic string, payload []byte, publishQoS uint32, retain bool, expiry uint64, targets []DeliveryTargetDTO) (enqueued []DeliveryEnqueuedDTO, saturated, skipped []string) {
+func (machine *StateMachine) enqueueDeliveryTargetsLocked(tenantID, topic string, payload []byte, publishQoS uint32, retain bool, expiry uint64, targets []DeliveryTargetDTO) (enqueued []DeliveryEnqueuedDTO, saturated, skipped []string, quotaRejection *TenantQuotaRejectionDTO) {
 	for _, target := range targets {
 		key := sessionKey{tenantID: tenantID, clientID: target.ClientID}
 		owner, exists := machine.ownerships[key]
@@ -281,8 +284,16 @@ func (machine *StateMachine) enqueueDeliveryTargetsLocked(tenantID, topic string
 			saturated = append(saturated, target.ClientID)
 			continue
 		}
-		message := DeliveryMessageDTO{Sequence: record.NextSequence, Topic: topic, Payload: bytes.Clone(payload), QoS: qos, Retain: target.Retain, ExpiresAtUnixMillis: expiry, Phase: DeliveryPhaseQueued}
-		if len(record.Messages) >= MaxDeliveryMessagesPerSession || machine.deliveryEntries >= MaxDeliveryEntries || machine.deliveryBytes+deliveryMessageBytes(key, message) > MaxDeliveryBytes {
+		message := DeliveryMessageDTO{Sequence: record.NextSequence, Topic: topic, Payload: payload, QoS: qos, Retain: target.Retain, ExpiresAtUnixMillis: expiry, Phase: DeliveryPhaseQueued}
+		messageBytes := deliveryMessageBytes(key, message)
+		if len(record.Messages) >= MaxDeliveryMessagesPerSession || machine.deliveryEntries >= MaxDeliveryEntries || machine.deliveryBytes+messageBytes > MaxDeliveryBytes {
+			saturated = append(saturated, target.ClientID)
+			continue
+		}
+		if rejection := machine.tenantQuotaExceededLocked(tenantID, 0, 1, messageBytes, messageBytes); rejection != nil {
+			if quotaRejection == nil {
+				quotaRejection = rejection
+			}
 			saturated = append(saturated, target.ClientID)
 			continue
 		}
@@ -290,8 +301,7 @@ func (machine *StateMachine) enqueueDeliveryTargetsLocked(tenantID, topic string
 		record.NextSequence++
 		record.Messages = append(record.Messages, message)
 		machine.delivery[key] = record
-		machine.deliveryEntries++
-		machine.deliveryBytes += deliveryMessageBytes(key, message)
+		machine.addDeliveryMessageUsageLocked(key.tenantID, 1, messageBytes)
 		enqueued = append(enqueued, DeliveryEnqueuedDTO{ClientID: target.ClientID, Sequence: message.Sequence})
 	}
 	return
@@ -305,12 +315,10 @@ func (machine *StateMachine) ensureDeliveryRecordLocked(key sessionKey) {
 
 func (machine *StateMachine) clearDeliveryEntriesLocked(key sessionKey, record *DeliverySessionStateDTO) {
 	for _, message := range record.Messages {
-		machine.deliveryEntries--
-		machine.deliveryBytes -= deliveryMessageBytes(key, message)
+		machine.addDeliveryMessageUsageLocked(key.tenantID, -1, -deliveryMessageBytes(key, message))
 	}
 	for _, inbound := range record.Inbound {
-		machine.deliveryEntries--
-		machine.deliveryBytes -= deliveryInboundBytes(key, inbound)
+		machine.addDeliveryInboundUsageLocked(key.tenantID, -1, -deliveryInboundBytes(key, inbound))
 	}
 	record.Messages = nil
 	record.Inbound = nil
@@ -345,8 +353,7 @@ func (machine *StateMachine) purgeExpiredDeliveryLocked(proposedAt uint64) {
 		kept := record.Messages[:0]
 		for _, message := range record.Messages {
 			if message.PacketID == 0 && message.ExpiresAtUnixMillis > 0 && message.ExpiresAtUnixMillis <= proposedAt {
-				machine.deliveryEntries--
-				machine.deliveryBytes -= deliveryMessageBytes(key, message)
+				machine.addDeliveryMessageUsageLocked(key.tenantID, -1, -deliveryMessageBytes(key, message))
 				continue
 			}
 			kept = append(kept, message)

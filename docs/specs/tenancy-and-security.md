@@ -5,7 +5,7 @@
 | 항목 | 값 |
 | --- | --- |
 | 상태 | Active (Phase 1 security and tenant isolation slice) |
-| 적용 범위 | Phase 1에서 구현하는 TEN-01~TEN-05, SEC-02~SEC-04, SEC-06과 SEC-08의 JWKS fail-closed 동작. quota·blocklist, management API, audit sink과 기존 연결 재인증은 후속 범위다. Metrics는 인증 성공·실패와 session gauge를 포함한 현재 구현 범위만 다루며, 상세 observability 정책은 후속 범위다. |
+| 적용 범위 | Phase 1에서 TEN-01~TEN-05, SEC-02~SEC-04, SEC-06과 SEC-08의 JWKS fail-closed 동작을 구현한다. Dynamic cluster의 tenant별 저장 quota(TEN-08)는 [ADR-0017](../decisions/ADR-0017-tenant-storage-quota.md) 범위에서 제공한다. Traffic·connection quota와 blocklist, management API, audit sink, 기존 연결 재인증은 후속 범위다. Metrics는 인증 성공·실패와 session gauge 및 ADR-0017의 quota 경보를 포함하며, 상세 observability 정책은 후속 범위다. |
 | 근거 | [PRD 9.3절, 9.4절과 11.4절](../requirements/PRD.md), [RFC 8725](https://www.rfc-editor.org/rfc/rfc8725.html) |
 | 관련 spec | [MQTT protocol과 session](mqtt-protocol-and-session.md), [Management API](management-api-and-observability.md) |
 | 관련 Architecture | [Security boundaries](../architectures/security-boundaries.md), [System overview](../architectures/system-overview.md) |
@@ -222,10 +222,50 @@ ACL은 authenticated principal이 가진 모든 role의 tenant-local rule을 대
 | --- | --- | --- |
 | 연결 상태 | connection, session, subscription | 새 생성 거절. 기존 정상 상태를 임의 삭제하지 않는다. |
 | traffic | message rate, byte rate, payload size | bounded backpressure 후 protocol reason으로 거절하거나 연결 종료 |
-| 저장 | offline queue message/bytes, retained bytes, 전체 저장량 | 새 durable state 거절 또는 사전 확정된 eviction 정책 적용 |
+| 저장 | offline queue message/bytes, retained bytes, 전체 저장량 | 새 durable state를 거절하고 기존 state를 보존한다. Dynamic cluster의 tenant별 저장 quota와 초과 동작은 §5.1을 따른다. |
 | 선택 Metric | exact topic 등록 수, TTL | wildcard 거절, 상한 초과 등록 거절 |
 
-저장 quota의 eviction 순서와 상한은 configuration spec에서 확정해야 한다. 어떤 정책이든 이미 성공 durable ACK한 message를 보장 범위 밖에서 조용히 삭제해서는 안 된다. expiry 또는 명시한 quota 정책으로 삭제하면 사유별 Metric과 감사 가능한 기록을 남겨야 한다.
+저장 quota 상한과 초과 정책은 [ADR-0017](../decisions/ADR-0017-tenant-storage-quota.md)에 따른다. Cluster는 초과 시 eviction 없이 새 state만 거절해야 하며, quota 축소 뒤에도 기존 state를 보존하고 usage를 줄이는 변경을 허용해야 한다.
+
+### 5.1 저장 quota
+
+Dynamic cluster는 tenant별 retained bytes, offline queue와 저장 총량을 제한해야 한다. 한 tenant의 초과가 다른 tenant에 설정된 한도를 바꾸지 않는다. 적용 차원, byte 계산, global limit 우선순위와 profile version은 [ADR-0017](../decisions/ADR-0017-tenant-storage-quota.md)을 따른다.
+
+| 설정 key | 집계 대상 | cluster-wide 최대값 |
+| --- | --- | ---: |
+| `retainedBytes` | 해당 tenant의 retained value 계산 bytes 합 | 16 MiB |
+| `offlineQueueMessages` | QoS 0 offline message와 durable delivery outbound message(QUEUED·inflight) 수 | 8,192 |
+| `offlineQueueBytes` | 위 message들의 계산 bytes 합 | 32 MiB |
+| `storageBytes` | retained, QoS 0 offline, durable delivery outbound·inbound QoS 2 bytes 합 | 48 MiB |
+
+`-cluster-config`에는 다음 형태의 `tenantQuotas` profile을 선택적으로 지정한다. 명시 profile의 `version`은 1 이상이며, tenant별 항목은 `tenantId` 순으로 적용된다.
+
+```json
+{
+  "tenantQuotas": {
+    "version": 1,
+    "default": {
+      "retainedBytes": 16777216,
+      "offlineQueueMessages": 8192,
+      "offlineQueueBytes": 33554432,
+      "storageBytes": 50331648
+    },
+    "tenants": [
+      {
+        "tenantId": "acme",
+        "retainedBytes": 1048576,
+        "offlineQueueMessages": 256,
+        "offlineQueueBytes": 1048576,
+        "storageBytes": 4194304
+      }
+    ]
+  }
+}
+```
+
+Profile은 더 높은 version의 Raft command가 commit된 뒤 모든 replica에 적용된다. 설정에 tenant 항목이 없으면 `default`를 사용한다. `tenantQuotas`를 생략하면 각 dimension의 cluster-wide 최대값인 version 0 built-in profile이 사용된다. 새 저장이 quota를 넘으면 retained/offline mutation은 기존 capacity 결과로 거절한다. Durable delivery는 초과한 target만 `Saturated`로 건너뛰고 다른 target을 계속 처리한다. QoS 1/2 publisher의 ACK 동작은 기존 durable delivery 계약을 따른다.
+
+Proposer node는 `narumq_tenant_quota_rejections_total{tenant,dimension}` counter를 올리고 같은 tenant·dimension 경보 log를 10초 rate-limit한다. Tenant label은 최대 1,024개까지 보존하고 나머지는 `_overflow` label로 집계한다. Profile commit 여부, version과 local config mismatch는 각각 `narumq_tenant_quota_profile_committed`, `narumq_tenant_quota_profile_version`, `narumq_tenant_quota_config_mismatch`로 노출한다. Committed profile이 복구되기 전에는 cluster MQTT readiness를 허용하지 않는다.
 
 ## 6. 관리 plane RBAC
 

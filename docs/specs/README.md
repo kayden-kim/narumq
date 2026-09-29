@@ -61,7 +61,7 @@ MQTT packet 이름, property와 reason code는 OASIS 명칭을 사용한다. 충
 | ID | 미결정 항목 | 확정 위치 | 제약 |
 | --- | --- | --- | --- |
 | SPEC-TBD-01 | WAL 영속화 기준, replication factor, write quorum | [ADR-0002](../decisions/ADR-0002-cluster-consensus-library.md), [ADR-0003](../decisions/ADR-0003-durable-ack-barrier.md) | 두 ADR은 Proposed다. 승인 전에는 제품 기본값으로 확정하지 않는다. |
-| SPEC-TBD-02 | listener, packet, inflight, queue와 tenant quota 수치 | configuration spec | 무제한 값은 허용하지 않는다. |
+| SPEC-TBD-02 | listener, packet, inflight, queue 및 tenant quota 수치 | 일반 설정은 configuration spec; Dynamic cluster tenant 저장 quota와 최대값은 [ADR-0017](../decisions/ADR-0017-tenant-storage-quota.md) | Tenant storage quota는 네 dimension과 cluster-wide 최대값이 확정됐다. 그 밖의 무제한 값은 허용하지 않는다. |
 | SPEC-TBD-03 | session·message expiry 상한과 offline queue 초과 정책 | configuration spec | 적용 결과가 protocol 응답과 Metric에 드러나야 한다. |
 | SPEC-TBD-04 | drain rate, LB 전파 대기, timeout, grace period | [ADR-0006](../decisions/ADR-0006-external-rollout-controller.md), deployment spec | Controller 전략은 Proposed이며 수치는 N-1 용량과 최악 종료 시간으로 확정해야 한다. |
 | SPEC-TBD-05 | topic 내부 prefix encoding과 canonicalization 세부 규칙 | tenancy ADR/spec 개정 | 외부 topic과 tenant 격리를 보존해야 한다. |

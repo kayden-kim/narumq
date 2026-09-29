@@ -1144,24 +1144,46 @@ func (logs *clusterMembershipProcessLog) String() string {
 }
 
 type clusterMembershipProcessConfig struct {
-	Mode                 string                             `json:"mode"`
-	ClusterID            string                             `json:"clusterId"`
-	NodeID               uint64                             `json:"nodeId"`
-	Directory            string                             `json:"directory"`
-	ListenAddress        string                             `json:"listenAddress"`
-	AdvertisedAddress    string                             `json:"advertisedAddress"`
-	LocalDNSName         string                             `json:"localDnsName"`
-	ReleaseVersion       string                             `json:"releaseVersion"`
-	ClusterProtocolMajor uint32                             `json:"clusterProtocolMajor"`
-	ClusterProtocolMinor uint32                             `json:"clusterProtocolMinor"`
-	StateSchemaMajor     uint32                             `json:"stateSchemaMajor"`
-	StateSchemaMinor     uint32                             `json:"stateSchemaMinor"`
-	Role                 string                             `json:"role"`
-	BootstrapMembers     []clusterMembershipProcessMember   `json:"bootstrapMembers"`
-	SeedAddresses        []string                           `json:"seedAddresses"`
-	PeerTLS              clusterMembershipProcessTLS        `json:"peerTLS"`
-	Management           clusterMembershipProcessManagement `json:"management"`
-	MQTT                 clusterMembershipProcessMQTT       `json:"mqtt"`
+	Mode                 string                                      `json:"mode"`
+	ClusterID            string                                      `json:"clusterId"`
+	NodeID               uint64                                      `json:"nodeId"`
+	Directory            string                                      `json:"directory"`
+	ListenAddress        string                                      `json:"listenAddress"`
+	AdvertisedAddress    string                                      `json:"advertisedAddress"`
+	LocalDNSName         string                                      `json:"localDnsName"`
+	ReleaseVersion       string                                      `json:"releaseVersion"`
+	ClusterProtocolMajor uint32                                      `json:"clusterProtocolMajor"`
+	ClusterProtocolMinor uint32                                      `json:"clusterProtocolMinor"`
+	StateSchemaMajor     uint32                                      `json:"stateSchemaMajor"`
+	StateSchemaMinor     uint32                                      `json:"stateSchemaMinor"`
+	Role                 string                                      `json:"role"`
+	BootstrapMembers     []clusterMembershipProcessMember            `json:"bootstrapMembers"`
+	SeedAddresses        []string                                    `json:"seedAddresses"`
+	PeerTLS              clusterMembershipProcessTLS                 `json:"peerTLS"`
+	Management           clusterMembershipProcessManagement          `json:"management"`
+	MQTT                 clusterMembershipProcessMQTT                `json:"mqtt"`
+	TenantQuotas         *clusterMembershipProcessTenantQuotaProfile `json:"tenantQuotas,omitempty"`
+}
+
+type clusterMembershipProcessTenantQuotaProfile struct {
+	Version uint64                                      `json:"version"`
+	Default clusterMembershipProcessTenantQuotaLimits   `json:"default"`
+	Tenants []clusterMembershipProcessTenantQuotaTenant `json:"tenants"`
+}
+
+type clusterMembershipProcessTenantQuotaLimits struct {
+	RetainedBytes        uint64 `json:"retainedBytes"`
+	OfflineQueueMessages uint64 `json:"offlineQueueMessages"`
+	OfflineQueueBytes    uint64 `json:"offlineQueueBytes"`
+	StorageBytes         uint64 `json:"storageBytes"`
+}
+
+type clusterMembershipProcessTenantQuotaTenant struct {
+	TenantID             string `json:"tenantId"`
+	RetainedBytes        uint64 `json:"retainedBytes"`
+	OfflineQueueMessages uint64 `json:"offlineQueueMessages"`
+	OfflineQueueBytes    uint64 `json:"offlineQueueBytes"`
+	StorageBytes         uint64 `json:"storageBytes"`
 }
 
 type clusterMembershipProcessMember struct {

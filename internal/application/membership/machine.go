@@ -22,22 +22,25 @@ type operationState struct {
 
 // StateMachine applies committed replicated state in strictly increasing order.
 type StateMachine struct {
-	mu               sync.RWMutex
-	lastAppliedIndex uint64
-	members          map[uint64]MemberIdentityDTO
-	operations       map[string]operationState
-	idempotency      map[string]string
-	ownerships       map[sessionKey]OwnershipStateDTO
-	subscriptions    map[subscriptionKey]SubscriptionStateDTO
-	delivery         map[sessionKey]DeliverySessionStateDTO
-	deliveryEntries  int
-	deliveryBytes    int
-	retained         map[retainedKey]RetainedStateDTO
-	retainedBytes    int
-	offline          map[sessionKey]OfflineSessionStateDTO
-	offlineMessages  int
-	offlineBytes     int
-	nodeDrains       map[uint64]NodeDrainStateDTO
+	mu                  sync.RWMutex
+	lastAppliedIndex    uint64
+	members             map[uint64]MemberIdentityDTO
+	operations          map[string]operationState
+	idempotency         map[string]string
+	ownerships          map[sessionKey]OwnershipStateDTO
+	subscriptions       map[subscriptionKey]SubscriptionStateDTO
+	delivery            map[sessionKey]DeliverySessionStateDTO
+	deliveryEntries     int
+	deliveryBytes       int
+	retained            map[retainedKey]RetainedStateDTO
+	retainedBytes       int
+	offline             map[sessionKey]OfflineSessionStateDTO
+	offlineMessages     int
+	offlineBytes        int
+	tenantUsage         map[string]tenantStorageUsage
+	tenantQuota         *TenantQuotaProfileDTO
+	tenantQuotaByTenant map[string]TenantStorageQuotaDTO
+	nodeDrains          map[uint64]NodeDrainStateDTO
 }
 
 // NewStateMachine constructs an empty deterministic replicated-state machine.
@@ -51,6 +54,7 @@ func NewStateMachine() *StateMachine {
 		delivery:      make(map[sessionKey]DeliverySessionStateDTO),
 		retained:      make(map[retainedKey]RetainedStateDTO),
 		offline:       make(map[sessionKey]OfflineSessionStateDTO),
+		tenantUsage:   make(map[string]tenantStorageUsage),
 		nodeDrains:    make(map[uint64]NodeDrainStateDTO),
 	}
 }
@@ -90,7 +94,7 @@ func (machine *StateMachine) InitializeBootstrap(index uint64, members []MemberI
 	}
 	machine.mu.Lock()
 	defer machine.mu.Unlock()
-	if machine.lastAppliedIndex != 0 || len(machine.members) != 0 || len(machine.operations) != 0 || len(machine.ownerships) != 0 || len(machine.subscriptions) != 0 || len(machine.delivery) != 0 || len(machine.retained) != 0 || len(machine.offline) != 0 || len(machine.nodeDrains) != 0 {
+	if machine.lastAppliedIndex != 0 || len(machine.members) != 0 || len(machine.operations) != 0 || len(machine.ownerships) != 0 || len(machine.subscriptions) != 0 || len(machine.delivery) != 0 || len(machine.retained) != 0 || len(machine.offline) != 0 || machine.tenantQuota != nil || len(machine.nodeDrains) != 0 {
 		return ErrBootstrapAlreadyInitialized
 	}
 	for _, member := range copied {
@@ -126,6 +130,8 @@ func (machine *StateMachine) Apply(index uint64, command CommandDTO) (ApplyResul
 		return machine.applyRetained(index, *command.Retained), nil
 	case command.Offline != nil:
 		return machine.applyOffline(index, *command.Offline), nil
+	case command.TenantQuota != nil:
+		return machine.applyTenantQuota(index, *command.TenantQuota), nil
 	case command.NodeDrain != nil:
 		return machine.applyNodeDrain(index, *command.NodeDrain), nil
 	default:

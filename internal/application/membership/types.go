@@ -36,6 +36,54 @@ const (
 	MaxDeliveryTargets            = 1024
 )
 
+// Tenant storage quota limits and usage are bounded by the existing cluster-wide capacities.
+const (
+	MaxTenantQuotaTenants              = 1024
+	MaxTenantQuotaRetainedBytes        = MaxRetainedBytes
+	MaxTenantQuotaOfflineQueueMessages = MaxOfflineMessages + MaxDeliveryEntries
+	MaxTenantQuotaOfflineQueueBytes    = MaxOfflineBytes + MaxDeliveryBytes
+	MaxTenantQuotaStorageBytes         = MaxRetainedBytes + MaxOfflineBytes + MaxDeliveryBytes
+)
+
+// TenantStorageQuotaDTO bounds replicated storage for one tenant. TenantID is empty for the default quota.
+type TenantStorageQuotaDTO struct {
+	TenantID             string
+	RetainedBytes        uint64
+	OfflineQueueMessages uint64
+	OfflineQueueBytes    uint64
+	StorageBytes         uint64
+}
+
+// TenantQuotaProfileDTO is one versioned tenant storage quota configuration.
+// Tenants are sorted strictly ascending by TenantID.
+type TenantQuotaProfileDTO struct {
+	Version uint64
+	Default TenantStorageQuotaDTO
+	Tenants []TenantStorageQuotaDTO
+}
+
+// TenantQuotaChangeDTO installs a newer tenant storage quota profile.
+type TenantQuotaChangeDTO struct {
+	Profile TenantQuotaProfileDTO
+}
+
+// TenantQuotaDimension identifies a storage quota limit.
+type TenantQuotaDimension string
+
+const (
+	TenantQuotaRetainedBytes        TenantQuotaDimension = "retained_bytes"
+	TenantQuotaOfflineQueueMessages TenantQuotaDimension = "offline_queue_messages"
+	TenantQuotaOfflineQueueBytes    TenantQuotaDimension = "offline_queue_bytes"
+	TenantQuotaStorageBytes         TenantQuotaDimension = "storage_bytes"
+)
+
+// TenantQuotaRejectionDTO reports the tenant quota that rejected or saturated a storage mutation.
+type TenantQuotaRejectionDTO struct {
+	TenantID       string
+	Dimension      TenantQuotaDimension
+	ProfileVersion uint64
+}
+
 // OfflineAction identifies a replicated offline session/message mutation.
 type OfflineAction uint32
 
@@ -202,6 +250,7 @@ type CommandDTO struct {
 	Retained     *RetainedChangeDTO
 	Offline      *OfflineChangeDTO
 	NodeDrain    *NodeDrainChangeDTO
+	TenantQuota  *TenantQuotaChangeDTO
 }
 
 // MemberIdentityDTO is a committed cluster member identity and lifecycle phase.
@@ -409,6 +458,7 @@ const (
 	ConflictNodeDrainInProgress      ApplyConflictCode = "node_drain_in_progress"
 	ConflictDrainNotCancellable      ApplyConflictCode = "drain_not_cancellable"
 	ConflictDeliverySessionMissing   ApplyConflictCode = "delivery_session_missing"
+	ConflictTenantQuotaStale         ApplyConflictCode = "tenant_quota_stale"
 )
 
 // ApplyResultDTO reports the deterministic result at a committed application index.
@@ -422,6 +472,7 @@ type ApplyResultDTO struct {
 	Delivery     *DeliveryResultDTO
 	OfflineClaim *OfflineClaimDTO
 	NodeDrain    *NodeDrainStateDTO
+	TenantQuota  *TenantQuotaRejectionDTO
 }
 
 // MembershipOperationPhase is the management-facing current operation status.
@@ -508,17 +559,18 @@ type NodeDrainOperationDTO struct {
 // Digest is opaque adapter-verified envelope data; an empty Digest asks the adapter
 // to compute the contract's deterministic protobuf state digest when encoding.
 type SnapshotDTO struct {
-	SchemaMajor       uint32
-	SchemaMinor       uint32
-	LastIncludedIndex uint64
-	ObjectCount       uint64
-	Digest            []byte
-	Members           []MemberIdentityDTO
-	Ownerships        []OwnershipStateDTO
-	Subscriptions     []SubscriptionStateDTO
-	DeliverySessions  []DeliverySessionStateDTO
-	MembershipHistory []MembershipRecordDTO
-	Retained          []RetainedStateDTO
-	OfflineSessions   []OfflineSessionStateDTO
-	NodeDrains        []NodeDrainStateDTO
+	SchemaMajor        uint32
+	SchemaMinor        uint32
+	LastIncludedIndex  uint64
+	ObjectCount        uint64
+	Digest             []byte
+	Members            []MemberIdentityDTO
+	Ownerships         []OwnershipStateDTO
+	Subscriptions      []SubscriptionStateDTO
+	DeliverySessions   []DeliverySessionStateDTO
+	MembershipHistory  []MembershipRecordDTO
+	Retained           []RetainedStateDTO
+	OfflineSessions    []OfflineSessionStateDTO
+	NodeDrains         []NodeDrainStateDTO
+	TenantQuotaProfile *TenantQuotaProfileDTO
 }

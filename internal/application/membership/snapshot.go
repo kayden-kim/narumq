@@ -55,39 +55,65 @@ func (machine *StateMachine) Restore(snapshot SnapshotDTO) error {
 	}
 	delivery := make(map[sessionKey]DeliverySessionStateDTO, len(copyOfSnapshot.DeliverySessions))
 	deliveryEntries, deliveryBytes := 0, 0
+	tenantUsage := make(map[string]tenantStorageUsage, len(copyOfSnapshot.DeliverySessions)+len(copyOfSnapshot.Retained)+len(copyOfSnapshot.OfflineSessions))
 	for _, record := range copyOfSnapshot.DeliverySessions {
 		key := sessionKey{tenantID: record.TenantID, clientID: record.ClientID}
 		cloned := cloneDeliverySession(record)
 		delivery[key] = cloned
 		deliveryEntries += len(cloned.Messages) + len(cloned.Inbound)
+		usage := tenantUsage[key.tenantID]
 		for _, message := range cloned.Messages {
-			deliveryBytes += deliveryMessageBytes(key, message)
+			byteCount := deliveryMessageBytes(key, message)
+			deliveryBytes += byteCount
+			usage.queueMessages++
+			usage.queueBytes += byteCount
+			usage.storageBytes += byteCount
 		}
 		for _, inbound := range cloned.Inbound {
-			deliveryBytes += deliveryInboundBytes(key, inbound)
+			byteCount := deliveryInboundBytes(key, inbound)
+			deliveryBytes += byteCount
+			usage.storageBytes += byteCount
+		}
+		if usage != (tenantStorageUsage{}) {
+			tenantUsage[key.tenantID] = usage
 		}
 	}
 	retained := make(map[retainedKey]RetainedStateDTO, len(copyOfSnapshot.Retained))
 	retainedBytes := 0
 	for _, state := range copyOfSnapshot.Retained {
 		retained[retainedKey{tenantID: state.TenantID, topic: state.Topic}] = state
-		retainedBytes += retainedStateBytes(state)
+		byteCount := retainedStateBytes(state)
+		retainedBytes += byteCount
+		usage := tenantUsage[state.TenantID]
+		usage.retainedBytes += byteCount
+		usage.storageBytes += byteCount
+		tenantUsage[state.TenantID] = usage
 	}
 	offline := make(map[sessionKey]OfflineSessionStateDTO, len(copyOfSnapshot.OfflineSessions))
 	offlineMessages := 0
 	offlineBytes := 0
 	for _, session := range copyOfSnapshot.OfflineSessions {
 		cloned := cloneOfflineSession(session)
-		offline[sessionKey{tenantID: session.TenantID, clientID: session.ClientID}] = cloned
+		key := sessionKey{tenantID: session.TenantID, clientID: session.ClientID}
+		offline[key] = cloned
 		offlineMessages += len(session.Messages)
+		usage := tenantUsage[key.tenantID]
 		for _, msg := range session.Messages {
-			offlineBytes += offlineMessageBytes(session.TenantID, session.ClientID, msg)
+			byteCount := offlineMessageBytes(session.TenantID, session.ClientID, msg)
+			offlineBytes += byteCount
+			usage.queueMessages++
+			usage.queueBytes += byteCount
+			usage.storageBytes += byteCount
+		}
+		if usage != (tenantStorageUsage{}) {
+			tenantUsage[key.tenantID] = usage
 		}
 	}
 	nodeDrains := make(map[uint64]NodeDrainStateDTO, len(copyOfSnapshot.NodeDrains))
 	for _, state := range copyOfSnapshot.NodeDrains {
 		nodeDrains[state.MemberID] = state
 	}
+	tenantQuota, tenantQuotaByTenant := installTenantQuotaProfile(copyOfSnapshot.TenantQuotaProfile)
 	machine.lastAppliedIndex = copyOfSnapshot.LastIncludedIndex
 	machine.members = members
 	machine.operations = operations
@@ -102,20 +128,24 @@ func (machine *StateMachine) Restore(snapshot SnapshotDTO) error {
 	machine.delivery = delivery
 	machine.deliveryEntries = deliveryEntries
 	machine.deliveryBytes = deliveryBytes
+	machine.tenantUsage = tenantUsage
+	machine.tenantQuota = tenantQuota
+	machine.tenantQuotaByTenant = tenantQuotaByTenant
 	return nil
 }
 
 func (machine *StateMachine) snapshotLocked(lastIncludedIndex uint64) SnapshotDTO {
 	snapshot := SnapshotDTO{
 		SchemaMajor: SchemaMajor, SchemaMinor: SchemaMinor, LastIncludedIndex: lastIncludedIndex,
-		Members:           make([]MemberIdentityDTO, 0, len(machine.members)),
-		Ownerships:        make([]OwnershipStateDTO, 0, len(machine.ownerships)),
-		Subscriptions:     make([]SubscriptionStateDTO, 0, len(machine.subscriptions)),
-		DeliverySessions:  make([]DeliverySessionStateDTO, 0, len(machine.delivery)),
-		MembershipHistory: make([]MembershipRecordDTO, 0, len(machine.operations)),
-		OfflineSessions:   make([]OfflineSessionStateDTO, 0, len(machine.offline)),
-		Retained:          make([]RetainedStateDTO, 0, len(machine.retained)),
-		NodeDrains:        make([]NodeDrainStateDTO, 0, len(machine.nodeDrains)),
+		Members:            make([]MemberIdentityDTO, 0, len(machine.members)),
+		Ownerships:         make([]OwnershipStateDTO, 0, len(machine.ownerships)),
+		Subscriptions:      make([]SubscriptionStateDTO, 0, len(machine.subscriptions)),
+		DeliverySessions:   make([]DeliverySessionStateDTO, 0, len(machine.delivery)),
+		MembershipHistory:  make([]MembershipRecordDTO, 0, len(machine.operations)),
+		OfflineSessions:    make([]OfflineSessionStateDTO, 0, len(machine.offline)),
+		Retained:           make([]RetainedStateDTO, 0, len(machine.retained)),
+		NodeDrains:         make([]NodeDrainStateDTO, 0, len(machine.nodeDrains)),
+		TenantQuotaProfile: cloneTenantQuotaProfile(machine.tenantQuota),
 	}
 	for _, member := range machine.members {
 		snapshot.Members = append(snapshot.Members, cloneMember(member))
@@ -177,7 +207,7 @@ func (machine *StateMachine) snapshotLocked(lastIncludedIndex uint64) SnapshotDT
 	for _, record := range snapshot.DeliverySessions {
 		deliveryEntries += len(record.Messages) + len(record.Inbound)
 	}
-	snapshot.ObjectCount = uint64(len(snapshot.Members) + len(snapshot.Ownerships) + len(snapshot.Subscriptions) + len(snapshot.DeliverySessions) + deliveryEntries + len(snapshot.MembershipHistory) + len(snapshot.Retained) + len(snapshot.OfflineSessions) + offlineMessagesCount + len(snapshot.NodeDrains))
+	snapshot.ObjectCount = uint64(len(snapshot.Members) + len(snapshot.Ownerships) + len(snapshot.Subscriptions) + len(snapshot.DeliverySessions) + deliveryEntries + len(snapshot.MembershipHistory) + len(snapshot.Retained) + len(snapshot.OfflineSessions) + offlineMessagesCount + len(snapshot.NodeDrains) + tenantQuotaObjectCount(snapshot.TenantQuotaProfile))
 	return snapshot
 }
 
@@ -305,9 +335,14 @@ func cloneSnapshot(snapshot SnapshotDTO) SnapshotDTO {
 		}
 	}
 	copyOfSnapshot.NodeDrains = append([]NodeDrainStateDTO(nil), snapshot.NodeDrains...)
+	copyOfSnapshot.TenantQuotaProfile = cloneTenantQuotaProfile(snapshot.TenantQuotaProfile)
 	return copyOfSnapshot
 }
 
 func sameSnapshotState(left, right SnapshotDTO) bool {
-	return left.SchemaMajor == right.SchemaMajor && left.SchemaMinor == right.SchemaMinor && left.LastIncludedIndex == right.LastIncludedIndex && left.ObjectCount == right.ObjectCount && reflect.DeepEqual(left.Members, right.Members) && reflect.DeepEqual(left.Ownerships, right.Ownerships) && reflect.DeepEqual(left.Subscriptions, right.Subscriptions) && reflect.DeepEqual(left.DeliverySessions, right.DeliverySessions) && reflect.DeepEqual(left.MembershipHistory, right.MembershipHistory) && reflect.DeepEqual(left.Retained, right.Retained) && reflect.DeepEqual(left.OfflineSessions, right.OfflineSessions) && reflect.DeepEqual(left.NodeDrains, right.NodeDrains)
+	return left.SchemaMajor == right.SchemaMajor && left.SchemaMinor == right.SchemaMinor && left.LastIncludedIndex == right.LastIncludedIndex && left.ObjectCount == right.ObjectCount &&
+		reflect.DeepEqual(left.Members, right.Members) && reflect.DeepEqual(left.Ownerships, right.Ownerships) && reflect.DeepEqual(left.Subscriptions, right.Subscriptions) &&
+		reflect.DeepEqual(left.DeliverySessions, right.DeliverySessions) && reflect.DeepEqual(left.MembershipHistory, right.MembershipHistory) &&
+		reflect.DeepEqual(left.Retained, right.Retained) && reflect.DeepEqual(left.OfflineSessions, right.OfflineSessions) && reflect.DeepEqual(left.NodeDrains, right.NodeDrains) &&
+		sameTenantQuotaProfile(left.TenantQuotaProfile, right.TenantQuotaProfile)
 }

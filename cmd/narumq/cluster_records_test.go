@@ -87,6 +87,16 @@ func TestMembershipRecordBridgeRoundTripsTypedCommands(t *testing.T) {
 				}},
 			},
 		},
+		{
+			SchemaMajor: membership.SchemaMajor, OperationID: bridgeOperation1,
+			TenantQuota: &membership.TenantQuotaChangeDTO{Profile: membership.TenantQuotaProfileDTO{
+				Version: 7, Default: membership.DefaultTenantQuotaProfile().Default,
+				Tenants: []membership.TenantStorageQuotaDTO{{
+					TenantID: "tenant-a", RetainedBytes: 128, OfflineQueueMessages: 64,
+					OfflineQueueBytes: 4096, StorageBytes: 8192,
+				}},
+			}},
+		},
 	}
 
 	for index, command := range commands {
@@ -152,7 +162,14 @@ func TestMembershipRecordBridgePreservesSnapshotIndexesAndDigest(t *testing.T) {
 				Sequence: 1, Topic: "status", Payload: []byte("val"), QoS: 0,
 			}},
 		}},
-		ObjectCount: 10,
+		TenantQuotaProfile: &membership.TenantQuotaProfileDTO{
+			Version: 7, Default: membership.DefaultTenantQuotaProfile().Default,
+			Tenants: []membership.TenantStorageQuotaDTO{{
+				TenantID: "tenant-a", RetainedBytes: 128, OfflineQueueMessages: 64,
+				OfflineQueueBytes: 4096, StorageBytes: 8192,
+			}},
+		},
+		ObjectCount: 12,
 	}
 	wire, err := encodeMembershipSnapshot(snapshot)
 	if err != nil {

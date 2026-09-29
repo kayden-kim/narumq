@@ -60,6 +60,9 @@ func validateCommand(command CommandDTO) error {
 	if command.Offline != nil {
 		payloadCount++
 	}
+	if command.TenantQuota != nil {
+		payloadCount++
+	}
 	if command.NodeDrain != nil {
 		payloadCount++
 	}
@@ -93,6 +96,10 @@ func validateCommand(command CommandDTO) error {
 		}
 	case command.NodeDrain != nil:
 		if validateNodeDrainChange(*command.NodeDrain) != nil {
+			return ErrInvalidCommand
+		}
+	case command.TenantQuota != nil:
+		if validateTenantQuotaCommand(*command.TenantQuota) != nil {
 			return ErrInvalidCommand
 		}
 	}
@@ -301,7 +308,7 @@ func validRetainedState(state RetainedStateDTO) bool {
 }
 
 func validSnapshot(snapshot SnapshotDTO) error {
-	if snapshot.SchemaMajor != SchemaMajor || snapshot.SchemaMinor != SchemaMinor || (len(snapshot.Digest) != 0 && len(snapshot.Digest) != 32) {
+	if snapshot.SchemaMajor != SchemaMajor || snapshot.SchemaMinor != SchemaMinor || (len(snapshot.Digest) != 0 && len(snapshot.Digest) != 32) || validateSnapshotTenantQuotaProfile(snapshot.TenantQuotaProfile) != nil {
 		return ErrInvalidSnapshot
 	}
 	offlineMessagesCount := 0
@@ -312,7 +319,7 @@ func validSnapshot(snapshot SnapshotDTO) error {
 	for _, session := range snapshot.DeliverySessions {
 		deliveryObjects += len(session.Messages) + len(session.Inbound)
 	}
-	count := len(snapshot.Members) + len(snapshot.Ownerships) + len(snapshot.Subscriptions) + deliveryObjects + len(snapshot.MembershipHistory) + len(snapshot.Retained) + len(snapshot.OfflineSessions) + offlineMessagesCount + len(snapshot.NodeDrains)
+	count := len(snapshot.Members) + len(snapshot.Ownerships) + len(snapshot.Subscriptions) + deliveryObjects + len(snapshot.MembershipHistory) + len(snapshot.Retained) + len(snapshot.OfflineSessions) + offlineMessagesCount + len(snapshot.NodeDrains) + tenantQuotaObjectCount(snapshot.TenantQuotaProfile)
 	if count > maxSnapshotEntries || snapshot.ObjectCount != uint64(count) || (count > 0 && snapshot.LastIncludedIndex == 0) || len(snapshot.Retained) > MaxRetainedMessages {
 		return ErrInvalidSnapshot
 	}

@@ -11,27 +11,72 @@ import (
 	"strconv"
 	"strings"
 	"unicode/utf8"
+
+	"narumq/internal/application/membership"
 )
 
 type clusterConfigFile struct {
-	Mode                 string                   `json:"mode"`
-	ClusterID            string                   `json:"clusterId"`
-	NodeID               uint64                   `json:"nodeId"`
-	Directory            string                   `json:"directory"`
-	ListenAddress        string                   `json:"listenAddress"`
-	AdvertisedAddress    string                   `json:"advertisedAddress"`
-	LocalDNSName         string                   `json:"localDnsName"`
-	ReleaseVersion       string                   `json:"releaseVersion"`
-	ClusterProtocolMajor uint32                   `json:"clusterProtocolMajor"`
-	ClusterProtocolMinor uint32                   `json:"clusterProtocolMinor"`
-	StateSchemaMajor     uint32                   `json:"stateSchemaMajor"`
-	StateSchemaMinor     uint32                   `json:"stateSchemaMinor"`
-	Role                 string                   `json:"role"`
-	BootstrapMembers     []clusterBootstrapMember `json:"bootstrapMembers"`
-	SeedAddresses        []string                 `json:"seedAddresses"`
-	PeerTLS              clusterPeerTLS           `json:"peerTLS"`
-	Management           clusterManagement        `json:"management"`
-	MQTT                 clusterMQTT              `json:"mqtt"`
+	Mode                 string                           `json:"mode"`
+	ClusterID            string                           `json:"clusterId"`
+	NodeID               uint64                           `json:"nodeId"`
+	Directory            string                           `json:"directory"`
+	ListenAddress        string                           `json:"listenAddress"`
+	AdvertisedAddress    string                           `json:"advertisedAddress"`
+	LocalDNSName         string                           `json:"localDnsName"`
+	ReleaseVersion       string                           `json:"releaseVersion"`
+	ClusterProtocolMajor uint32                           `json:"clusterProtocolMajor"`
+	ClusterProtocolMinor uint32                           `json:"clusterProtocolMinor"`
+	StateSchemaMajor     uint32                           `json:"stateSchemaMajor"`
+	StateSchemaMinor     uint32                           `json:"stateSchemaMinor"`
+	Role                 string                           `json:"role"`
+	BootstrapMembers     []clusterBootstrapMember         `json:"bootstrapMembers"`
+	SeedAddresses        []string                         `json:"seedAddresses"`
+	PeerTLS              clusterPeerTLS                   `json:"peerTLS"`
+	Management           clusterManagement                `json:"management"`
+	MQTT                 clusterMQTT                      `json:"mqtt"`
+	TenantQuotas         *clusterTenantQuotaProfileConfig `json:"tenantQuotas,omitempty"`
+}
+
+type clusterTenantQuotaProfileConfig struct {
+	Version uint64                           `json:"version"`
+	Default clusterTenantQuotaLimitsConfig   `json:"default"`
+	Tenants []clusterTenantQuotaTenantConfig `json:"tenants"`
+}
+
+type clusterTenantQuotaLimitsConfig struct {
+	RetainedBytes        uint64 `json:"retainedBytes"`
+	OfflineQueueMessages uint64 `json:"offlineQueueMessages"`
+	OfflineQueueBytes    uint64 `json:"offlineQueueBytes"`
+	StorageBytes         uint64 `json:"storageBytes"`
+}
+
+type clusterTenantQuotaTenantConfig struct {
+	TenantID             string `json:"tenantId"`
+	RetainedBytes        uint64 `json:"retainedBytes"`
+	OfflineQueueMessages uint64 `json:"offlineQueueMessages"`
+	OfflineQueueBytes    uint64 `json:"offlineQueueBytes"`
+	StorageBytes         uint64 `json:"storageBytes"`
+}
+
+func (profile clusterTenantQuotaProfileConfig) membershipProfile() membership.TenantQuotaProfileDTO {
+	tenants := make([]membership.TenantStorageQuotaDTO, len(profile.Tenants))
+	for index, tenant := range profile.Tenants {
+		tenants[index] = membership.TenantStorageQuotaDTO{
+			TenantID: tenant.TenantID, RetainedBytes: tenant.RetainedBytes,
+			OfflineQueueMessages: tenant.OfflineQueueMessages,
+			OfflineQueueBytes:    tenant.OfflineQueueBytes, StorageBytes: tenant.StorageBytes,
+		}
+	}
+	return membership.TenantQuotaProfileDTO{
+		Version: profile.Version,
+		Default: membership.TenantStorageQuotaDTO{
+			RetainedBytes:        profile.Default.RetainedBytes,
+			OfflineQueueMessages: profile.Default.OfflineQueueMessages,
+			OfflineQueueBytes:    profile.Default.OfflineQueueBytes,
+			StorageBytes:         profile.Default.StorageBytes,
+		},
+		Tenants: tenants,
+	}
 }
 
 type clusterBootstrapMember struct {
@@ -173,12 +218,13 @@ func checkClusterJSON(reader io.Reader) error {
 
 func expectedClusterJSONType(path string) string {
 	switch path {
-	case "", "peerTLS", "management", "mqtt":
+	case "", "peerTLS", "management", "mqtt", "tenantQuotas", "tenantQuotas.default":
 		return "object"
-	case "bootstrapMembers", "seedAddresses":
+	case "bootstrapMembers", "seedAddresses", "tenantQuotas.tenants":
 		return "array"
 	default:
-		if strings.HasPrefix(path, "bootstrapMembers[") && strings.HasSuffix(path, "]") {
+		if (strings.HasPrefix(path, "bootstrapMembers[") || strings.HasPrefix(path, "tenantQuotas.tenants[")) &&
+			strings.HasSuffix(path, "]") {
 			return "object"
 		}
 		return ""
@@ -196,9 +242,15 @@ func expectClusterKeys(path string, seen map[string]struct{}) error {
 		required = []string{"listenAddress", "clusterAdminTokenFile"}
 	case "mqtt":
 		required = []string{"tcpListenAddress", "tlsListenAddress", "securityConfigFile"}
+	case "tenantQuotas":
+		required = []string{"version", "default", "tenants"}
+	case "tenantQuotas.default":
+		required = []string{"retainedBytes", "offlineQueueMessages", "offlineQueueBytes", "storageBytes"}
 	default:
 		if strings.HasPrefix(path, "bootstrapMembers[") && strings.HasSuffix(path, "]") {
 			required = []string{"memberId", "address", "dnsSan", "certificateSha256"}
+		} else if strings.HasPrefix(path, "tenantQuotas.tenants[") && strings.HasSuffix(path, "]") {
+			required = []string{"tenantId", "retainedBytes", "offlineQueueMessages", "offlineQueueBytes", "storageBytes"}
 		}
 	}
 	for _, key := range required {
@@ -251,6 +303,14 @@ func validateClusterConfig(config clusterConfigFile) error {
 	}
 	if !validRequiredPath(config.MQTT.SecurityConfigFile) {
 		return errors.New("mqtt securityConfigFile is required")
+	}
+	if config.TenantQuotas != nil {
+		if config.TenantQuotas.Version == 0 {
+			return errors.New("tenantQuotas version must be at least 1")
+		}
+		if err := membership.ValidateTenantQuotaProfile(config.TenantQuotas.membershipProfile()); err != nil {
+			return fmt.Errorf("tenantQuotas is invalid: %w", err)
+		}
 	}
 	if config.Role == "bootstrap" {
 		if len(config.BootstrapMembers) != 3 {

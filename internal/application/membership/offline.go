@@ -49,6 +49,11 @@ func (machine *StateMachine) applyOffline(index uint64, change OfflineChangeDTO)
 		if machine.offlineBytes-existingBytes+existingBytes+newBytes > MaxOfflineBytes {
 			return conflictResult(index, ConflictOfflineCapacity)
 		}
+		if rejection := machine.tenantQuotaExceededLocked(change.TenantID, 0, newCount, newBytes, newBytes); rejection != nil {
+			result := conflictResult(index, ConflictOfflineCapacity)
+			result.TenantQuota = rejection
+			return result
+		}
 
 		merged := make([]OfflineMessageDTO, 0, existingCount+newCount)
 		merged = append(merged, cloneOfflineMessages(existingMessages)...)
@@ -61,8 +66,7 @@ func (machine *StateMachine) applyOffline(index uint64, change OfflineChangeDTO)
 		}
 
 		if exists {
-			machine.offlineMessages -= existingCount
-			machine.offlineBytes -= existingBytes
+			machine.addOfflineUsageLocked(change.TenantID, -existingCount, -existingBytes)
 		}
 		machine.offline[key] = OfflineSessionStateDTO{
 			TenantID:                   change.TenantID,
@@ -72,8 +76,7 @@ func (machine *StateMachine) applyOffline(index uint64, change OfflineChangeDTO)
 			NextSequence:               nextSeq,
 			Messages:                   merged,
 		}
-		machine.offlineMessages += len(merged)
-		machine.offlineBytes += existingBytes + newBytes
+		machine.addOfflineUsageLocked(change.TenantID, len(merged), existingBytes+newBytes)
 		return result
 
 	case OfflineActionEnqueue:
@@ -92,6 +95,11 @@ func (machine *StateMachine) applyOffline(index uint64, change OfflineChangeDTO)
 		if machine.offlineBytes+addedBytes > MaxOfflineBytes {
 			return conflictResult(index, ConflictOfflineCapacity)
 		}
+		if rejection := machine.tenantQuotaExceededLocked(change.TenantID, 0, 1, addedBytes, addedBytes); rejection != nil {
+			result := conflictResult(index, ConflictOfflineCapacity)
+			result.TenantQuota = rejection
+			return result
+		}
 
 		clonedMsg := msg
 		clonedMsg.Sequence = record.NextSequence
@@ -99,8 +107,7 @@ func (machine *StateMachine) applyOffline(index uint64, change OfflineChangeDTO)
 		record.NextSequence++
 		record.Messages = append(record.Messages, clonedMsg)
 		machine.offline[key] = record
-		machine.offlineMessages++
-		machine.offlineBytes += addedBytes
+		machine.addOfflineUsageLocked(change.TenantID, 1, addedBytes)
 		return result
 
 	case OfflineActionClaim:
@@ -133,11 +140,12 @@ func (machine *StateMachine) removeOfflineLocked(key sessionKey) {
 	if !exists {
 		return
 	}
-	delete(machine.offline, key)
-	machine.offlineMessages -= len(record.Messages)
+	removedBytes := 0
 	for _, msg := range record.Messages {
-		machine.offlineBytes -= offlineMessageBytes(key.tenantID, key.clientID, msg)
+		removedBytes += offlineMessageBytes(key.tenantID, key.clientID, msg)
 	}
+	delete(machine.offline, key)
+	machine.addOfflineUsageLocked(key.tenantID, -len(record.Messages), -removedBytes)
 }
 
 func (machine *StateMachine) purgeExpiredOfflineLocked(proposedAt uint64) {
@@ -164,8 +172,7 @@ func (machine *StateMachine) purgeExpiredOfflineLocked(proposedAt uint64) {
 		if removedCount > 0 {
 			record.Messages = retained
 			machine.offline[key] = record
-			machine.offlineMessages -= removedCount
-			machine.offlineBytes -= removedBytes
+			machine.addOfflineUsageLocked(key.tenantID, -removedCount, -removedBytes)
 		}
 	}
 }

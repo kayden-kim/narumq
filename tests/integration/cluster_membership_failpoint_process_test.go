@@ -70,6 +70,80 @@ func (s *clusterMembershipFailpointSupervisor) rearm(id uint64, point string) {
 	s.nodes[id] = newProc
 	clusterMembershipProcessWaitForStatus(s.t, s.ctx, newProc, "/health/ready", http.StatusOK)
 }
+
+func (s *clusterMembershipFailpointSupervisor) rearmSnapshotFinalization(id uint64, point string) {
+	s.t.Helper()
+	proc, exists := s.nodes[id]
+	if !exists || proc == nil {
+		s.t.Fatalf("rearm node %d does not exist", id)
+	}
+	if err := proc.stop(5 * time.Second); err != nil {
+		s.t.Fatalf("stop node %d before rearming: %v", id, err)
+	}
+	name := fmt.Sprintf("node %d", id)
+	mgmtAddr := s.fixture.managementAddresses[id-1]
+	deadline := time.Now().Add(time.Minute)
+	for attempt := 0; attempt < 2; attempt++ {
+		s.armed[id] = point
+		armed, err := s.fixture.harness.startArmed(name, s.configs[id], mgmtAddr, point)
+		if err != nil {
+			s.t.Fatalf("restart armed node %d: %v", id, err)
+		}
+		s.nodes[id] = armed
+		if s.waitForArmedReady(armed, point, deadline) {
+			return
+		}
+		clusterMembershipProcessRequireFailpointExit(s.t, armed, point)
+		delete(s.armed, id)
+		if attempt == 1 {
+			s.t.Fatalf("snapshot finalization failpoint fired during both startup attempts:\n%s", armed.logs.String())
+			return
+		}
+
+		// One recovery snapshot may finalize before readiness. Verify its restart,
+		// stop that recovered process, then arm the learner-transition snapshot.
+		recovered, err := s.fixture.harness.start(name, s.configs[id], mgmtAddr)
+		if err != nil {
+			s.t.Fatalf("restart node %d after recovery snapshot: %v", id, err)
+		}
+		s.nodes[id] = recovered
+		ctx, cancel := context.WithDeadline(s.ctx, deadline)
+		clusterMembershipProcessWaitForStatus(s.t, ctx, recovered, "/health/ready", http.StatusOK)
+		cancel()
+		if err := recovered.stop(5 * time.Second); err != nil {
+			s.t.Fatalf("stop node %d after recovery snapshot: %v", id, err)
+		}
+	}
+}
+
+func (s *clusterMembershipFailpointSupervisor) waitForArmedReady(proc *clusterMembershipProcess, point string, deadline time.Time) bool {
+	s.t.Helper()
+	var lastStatus int
+	var lastBody []byte
+	var lastErr error
+	for time.Now().Before(deadline) {
+		select {
+		case <-proc.done:
+			return false
+		default:
+		}
+		lastStatus, lastBody, lastErr = clusterMembershipProcessRequest(
+			s.ctx, http.MethodGet, proc.managementURL()+"/health/ready", nil, "", "",
+		)
+		if lastErr == nil && lastStatus == http.StatusOK {
+			select {
+			case <-proc.done:
+				return false
+			default:
+				return true
+			}
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	s.t.Fatalf("node %s did not become ready with failpoint %s armed: status=%d body=%s err=%v",
+		proc.name, point, lastStatus, lastBody, lastErr)
+	return false
+}
 func (s *clusterMembershipFailpointSupervisor) stop(id uint64) {
 	s.t.Helper()
 	proc := s.nodes[id]
@@ -149,6 +223,23 @@ func (s *clusterMembershipFailpointSupervisor) waitForHits(points ...string) {
 			return false, fmt.Sprintf("failpoint %s was not reached", point), nil
 		})
 	}
+}
+func (s *clusterMembershipFailpointSupervisor) failpointHitCount(point string) int {
+	count := 0
+	for _, hit := range s.hits {
+		if hit == point {
+			count++
+		}
+	}
+	return count
+}
+
+func (s *clusterMembershipFailpointSupervisor) waitForHitCount(point string, want int) {
+	s.t.Helper()
+	s.wait(fmt.Sprintf("wait for failpoint %s hit count %d", point, want), func() (bool, string, error) {
+		got := s.failpointHitCount(point)
+		return got >= want, fmt.Sprintf("hit count=%d want at least %d", got, want), nil
+	})
 }
 
 func (s *clusterMembershipFailpointSupervisor) findLeader(voterIDs []uint64) (uint64, string) {
@@ -594,9 +685,11 @@ func TestDynamicClusterMembershipRemovalHandoffWaitsForQuorum(t *testing.T) {
 		t.Fatal("failed to submit or recover remove-3 operation after quorum return")
 	}
 
-	// 9. Wait for SUCCEEDED
+	// The old owner closes this socket when it applies the committed ownership
+	// transfer. Check that handoff effect independently of n4's removal status.
+	clusterMembershipProcessAssertConnectionClosed(t, conn, 30*time.Second)
+	// 9. Wait for planned membership removal to succeed on the surviving node.
 	clusterMembershipProcessWaitForOperation(t, ctx, n4, removeOpID, "SUCCEEDED")
-	clusterMembershipProcessAssertConnectionClosed(t, conn, 10*time.Second)
 	clusterMembershipProcessAssertVotersAndRetired(t, ctx, []*clusterMembershipProcess{n1, n2, n4}, []string{"1", "2", "4"}, "3")
 	clusterMembershipProcessWaitForRouteProjection(t, ctx, []*clusterMembershipProcess{n1, n2, n4}, "handoff/state")
 
@@ -641,10 +734,17 @@ func TestSnapshotFinalizationCrashRecoveryAcrossProcessRestart(t *testing.T) {
 	supervisor.waitForAllReady([]uint64{1, 2, 3})
 	clusterMembershipProcessWaitForBootstrap(t, fixture.ctx, supervisor.procs([]uint64{1, 2, 3}))
 
-	// A committed learner transition forces a local snapshot. The second crash
-	// occurs after rename and directory sync; restart must recover that boundary.
-	supervisor.rearm(1, "snapshot-create-after-finalize")
+	// The learner transition must create the second snapshot. One recovery
+	// snapshot may finalize during startup; the specialized rearm allows that
+	// single crash, proves restart, and requires the armed node to become ready.
+	const snapshotFinalizationFailpoint = "snapshot-create-after-finalize"
+	supervisor.rearmSnapshotFinalization(1, snapshotFinalizationFailpoint)
 	_, leaderURL := supervisor.waitForLeader([]uint64{1, 2, 3})
+	if point, armed := supervisor.armed[1]; !armed || point != snapshotFinalizationFailpoint {
+		t.Fatalf("node 1 failpoint was consumed before staging the learner: armed=%t point=%q", armed, point)
+	}
+	armedNode := supervisor.nodes[1]
+	hitsBeforeStage := supervisor.failpointHitCount(snapshotFinalizationFailpoint)
 	status, body, err := clusterMembershipProcessRequest(fixture.ctx, http.MethodPost,
 		leaderURL+"/api/v1/cluster/members", fixture.stageRequestBody(4), clusterMembershipProcessAdmin, "snapshot-finalize-stage-node-4")
 	if err != nil || status != http.StatusAccepted {
@@ -656,7 +756,13 @@ func TestSnapshotFinalizationCrashRecoveryAcrossProcessRestart(t *testing.T) {
 	}
 	supervisor.start(4, fixture.joinerConfig(4, []uint64{1, 2, 3}), "")
 	joiner := supervisor.nodes[4]
-	supervisor.waitForHits("snapshot-create-after-finalize")
+	supervisor.waitForHitCount(snapshotFinalizationFailpoint, hitsBeforeStage+1)
+	armedLogs := armedNode.logs.String()
+	if !strings.Contains(armedLogs, fmt.Sprintf(`"operation_id":"%s"`, operation.OperationID)) ||
+		!strings.Contains(armedLogs, `"member_id":4`) || !strings.Contains(armedLogs, `"phase":"STAGED"`) {
+		t.Fatalf("node 1 reached the snapshot failpoint without applying learner operation %q:\n%s",
+			operation.OperationID, armedLogs)
+	}
 	supervisor.waitForOperation(3, operation.OperationID, "SUCCEEDED")
 	supervisor.waitForAllReady([]uint64{1, 2, 3, 4})
 	clusterMembershipProcessAssertConvergedSummary(t, fixture.ctx, supervisor.procs([]uint64{1, 2, 3}), joiner, 4)

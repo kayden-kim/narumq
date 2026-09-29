@@ -131,6 +131,12 @@ func encodeMembershipCommand(command membership.CommandDTO) ([]byte, error) {
 			ProposedAtUnixMillis: command.NodeDrain.ProposedAtUnixMillis,
 		}}
 	}
+	if command.TenantQuota != nil {
+		payloadCount++
+		wire.Payload = &records.CommandEnvelope_TenantQuota{TenantQuota: &records.TenantQuotaChange{
+			Profile: tenantQuotaProfileToRecord(&command.TenantQuota.Profile),
+		}}
+	}
 	if payloadCount != 1 {
 		return nil, errors.New("application command must contain exactly one payload")
 	}
@@ -249,6 +255,12 @@ func decodeMembershipCommand(data []byte) (membership.CommandDTO, error) {
 			FailureCode: value.GetFailureCode(), BlockingReason: value.GetBlockingReason(),
 			ProposedAtUnixMillis: value.GetProposedAtUnixMillis(),
 		}
+	case *records.CommandEnvelope_TenantQuota:
+		profile := tenantQuotaProfileFromRecord(payload.TenantQuota.GetProfile())
+		if profile == nil {
+			return membership.CommandDTO{}, errors.New("tenant quota profile is required")
+		}
+		command.TenantQuota = &membership.TenantQuotaChangeDTO{Profile: *profile}
 	default:
 		return membership.CommandDTO{}, errors.New("decoded command has no supported payload")
 	}
@@ -353,7 +365,9 @@ func encodeMembershipSnapshot(snapshot membership.SnapshotDTO) ([]byte, error) {
 			BlockingReason: drain.BlockingReason, CommittedIndex: drain.CommittedIndex,
 		})
 	}
-	objectCount := uint64(len(snapshot.Members) + len(snapshot.Ownerships) + len(snapshot.Subscriptions) + len(snapshot.DeliverySessions) + deliveryEntriesCount + len(snapshot.MembershipHistory) + len(snapshot.Retained) + len(snapshot.OfflineSessions) + offlineMessagesCount + len(snapshot.NodeDrains))
+	state.TenantQuotaProfile = tenantQuotaProfileToRecord(snapshot.TenantQuotaProfile)
+	quotaProfileObjectCount := membershipQuotaProfileObjectCount(snapshot.TenantQuotaProfile)
+	objectCount := uint64(len(snapshot.Members) + len(snapshot.Ownerships) + len(snapshot.Subscriptions) + len(snapshot.DeliverySessions) + deliveryEntriesCount + len(snapshot.MembershipHistory) + len(snapshot.Retained) + len(snapshot.OfflineSessions) + offlineMessagesCount + len(snapshot.NodeDrains) + quotaProfileObjectCount)
 	if snapshot.ObjectCount != objectCount {
 		return nil, errors.New("application snapshot object count does not match its contents")
 	}
@@ -473,7 +487,68 @@ func decodeMembershipSnapshot(data []byte) (membership.SnapshotDTO, error) {
 			BlockingReason: drain.GetBlockingReason(), CommittedIndex: drain.GetCommittedIndex(),
 		})
 	}
+	snapshot.TenantQuotaProfile = tenantQuotaProfileFromRecord(state.GetTenantQuotaProfile())
 	return snapshot, nil
+}
+func tenantQuotaProfileToRecord(profile *membership.TenantQuotaProfileDTO) *records.TenantQuotaProfile {
+	if profile == nil {
+		return nil
+	}
+	var tenants []*records.TenantStorageQuota
+	if profile.Tenants != nil {
+		tenants = make([]*records.TenantStorageQuota, 0, len(profile.Tenants))
+	}
+	for _, quota := range profile.Tenants {
+		tenants = append(tenants, tenantStorageQuotaToRecord(quota))
+	}
+	return &records.TenantQuotaProfile{
+		Version: profile.Version, DefaultQuota: tenantStorageQuotaToRecord(profile.Default), Tenants: tenants,
+	}
+}
+
+func tenantQuotaProfileFromRecord(profile *records.TenantQuotaProfile) *membership.TenantQuotaProfileDTO {
+	if profile == nil {
+		return nil
+	}
+	var tenants []membership.TenantStorageQuotaDTO
+	if profile.Tenants != nil {
+		tenants = make([]membership.TenantStorageQuotaDTO, 0, len(profile.Tenants))
+	}
+	for _, quota := range profile.Tenants {
+		if quota == nil {
+			return nil
+		}
+		tenants = append(tenants, tenantStorageQuotaFromRecord(quota))
+	}
+	if profile.DefaultQuota == nil {
+		return nil
+	}
+	return &membership.TenantQuotaProfileDTO{
+		Version: profile.Version, Default: tenantStorageQuotaFromRecord(profile.DefaultQuota), Tenants: tenants,
+	}
+}
+
+func tenantStorageQuotaToRecord(quota membership.TenantStorageQuotaDTO) *records.TenantStorageQuota {
+	return &records.TenantStorageQuota{
+		TenantId: quota.TenantID, RetainedBytes: quota.RetainedBytes,
+		OfflineQueueMessages: quota.OfflineQueueMessages, OfflineQueueBytes: quota.OfflineQueueBytes,
+		StorageBytes: quota.StorageBytes,
+	}
+}
+
+func tenantStorageQuotaFromRecord(quota *records.TenantStorageQuota) membership.TenantStorageQuotaDTO {
+	return membership.TenantStorageQuotaDTO{
+		TenantID: quota.GetTenantId(), RetainedBytes: quota.GetRetainedBytes(),
+		OfflineQueueMessages: quota.GetOfflineQueueMessages(), OfflineQueueBytes: quota.GetOfflineQueueBytes(),
+		StorageBytes: quota.GetStorageBytes(),
+	}
+}
+
+func membershipQuotaProfileObjectCount(profile *membership.TenantQuotaProfileDTO) int {
+	if profile == nil {
+		return 0
+	}
+	return 1 + len(profile.Tenants)
 }
 
 func offlineActionToRecord(action membership.OfflineAction) (records.OfflineAction, error) {

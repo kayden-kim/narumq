@@ -18,7 +18,7 @@ func (machine *StateMachine) applyRetained(index uint64, change RetainedChangeDT
 			continue
 		}
 		delete(machine.retained, key)
-		machine.retainedBytes -= retainedStateBytes(current)
+		machine.addRetainedUsageLocked(current.TenantID, -retainedStateBytes(current))
 	}
 
 	key := retainedKey{tenantID: change.TenantID, topic: change.Topic}
@@ -27,7 +27,7 @@ func (machine *StateMachine) applyRetained(index uint64, change RetainedChangeDT
 	if change.Action == RetainedActionDelete {
 		if exists {
 			delete(machine.retained, key)
-			machine.retainedBytes -= retainedStateBytes(current)
+			machine.addRetainedUsageLocked(current.TenantID, -retainedStateBytes(current))
 		}
 		return result
 	}
@@ -47,9 +47,21 @@ func (machine *StateMachine) applyRetained(index uint64, change RetainedChangeDT
 	if count > MaxRetainedMessages || stateBytes > MaxRetainedBytes-currentBytes {
 		return conflictResult(index, ConflictRetainedCapacity)
 	}
+	oldBytes := 0
+	if exists {
+		oldBytes = retainedStateBytes(current)
+	}
+	if rejection := machine.tenantQuotaExceededLocked(change.TenantID, stateBytes-oldBytes, 0, 0, stateBytes-oldBytes); rejection != nil {
+		result := conflictResult(index, ConflictRetainedCapacity)
+		result.TenantQuota = rejection
+		return result
+	}
 	state.Payload = bytes.Clone(change.Payload)
+	if exists {
+		machine.addRetainedUsageLocked(current.TenantID, -retainedStateBytes(current))
+	}
 	machine.retained[key] = state
-	machine.retainedBytes = currentBytes + stateBytes
+	machine.addRetainedUsageLocked(change.TenantID, stateBytes)
 	return result
 }
 
