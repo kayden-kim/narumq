@@ -48,7 +48,7 @@ func TestDynamicPeerHelloGoldenBytes(t *testing.T) {
 		t.Fatal(err)
 	}
 	want, err := hex.DecodeString("4e4d51524146543200020000000163000000000000000100036e3a3100016e" +
-		strings.Repeat("11", sha256.Size) + "000176000200000001000004")
+		strings.Repeat("11", sha256.Size) + "0005312e302e30000200000001000004")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -69,7 +69,7 @@ func TestDynamicSeedAdmissionGoldenBytes(t *testing.T) {
 		t.Fatal(err)
 	}
 	want, err := hex.DecodeString("4e4d514a4f494e3200020000000163000000000000000400036e3a3400016e" +
-		strings.Repeat("22", sha256.Size) + "00017600010000")
+		strings.Repeat("22", sha256.Size) + "0005312e302e3000010000")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -206,7 +206,7 @@ func TestDynamicPeerReconcileAndQueueBounds(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	local := identityForTestCertificate(1, "127.0.0.1:19001", "node1.example", PeerPhaseVoter, "", "v1", serverTLS.Certificates[0])
+	local := identityForTestCertificate(1, "127.0.0.1:19001", "node1.example", PeerPhaseVoter, "", "1.0.0", serverTLS.Certificates[0])
 	transport, err := NewDynamicTCPPeerTransport(DynamicPeerTransportConfig{
 		LocalIdentity: local, Listener: listener, ServerTLS: serverTLS, ClientTLS: clientTLS,
 		AdmissionHandler: func(context.Context, PeerIdentityDTO) (SeedAdmissionResponseDTO, error) {
@@ -305,13 +305,13 @@ func TestDynamicSeedAdmissionRequiresTLSBoundCommittedStage(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	seedLocal := identityForTestCertificate(1, "127.0.0.1:19001", "seed.example", PeerPhaseVoter, "", "v1", seedServerTLS.Certificates[0])
+	seedLocal := identityForTestCertificate(1, "127.0.0.1:19001", "seed.example", PeerPhaseVoter, "", "1.0.0", seedServerTLS.Certificates[0])
 	voters := []PeerIdentityDTO{seedLocal}
 	voters = append(voters,
 		dynamicTestIdentity(2, "127.0.0.1:19002", "node2.example", PeerPhaseVoter, "", 0x12),
 		dynamicTestIdentity(3, "127.0.0.1:19003", "node3.example", PeerPhaseVoter, "", 0x13))
 	for index := range voters {
-		voters[index].ReleaseVersion = "v1"
+		voters[index].ReleaseVersion = "1.0.0"
 	}
 	var admissionCalls atomic.Int32
 	var responsePhase atomic.Uint32
@@ -347,8 +347,9 @@ func TestDynamicSeedAdmissionRequiresTLSBoundCommittedStage(t *testing.T) {
 		_ = seed.Close()
 	}()
 
-	candidate4 := identityForTestCertificate(4, "127.0.0.1:19004", "node4.example", PeerPhaseStaged, "", "v1", candidate4ServerTLS.Certificates[0])
-	candidate5 := identityForTestCertificate(5, "127.0.0.1:19005", "node5.example", PeerPhaseStaged, testOperationID5, "v1", candidate5ServerTLS.Certificates[0])
+	candidate4 := identityForTestCertificate(4, "127.0.0.1:19004", "node4.example", PeerPhaseStaged, "", "1.0.0", candidate4ServerTLS.Certificates[0])
+	candidate4.ReleaseVersion = "1.1.0"
+	candidate5 := identityForTestCertificate(5, "127.0.0.1:19005", "node5.example", PeerPhaseStaged, testOperationID5, "1.0.0", candidate5ServerTLS.Certificates[0])
 	candidate4Transport := newAdmissionCandidateTransport(t, candidate4, candidate4ServerTLS, candidate4ClientTLS)
 	defer candidate4Transport.Close()
 	endpoints, err := candidate4Transport.RequestSeedAdmission(context.Background(), listener.Addr().String(), "seed.example")
@@ -418,19 +419,19 @@ func TestDynamicJoinerAcceptCapacityExpandsAfterAdmission(t *testing.T) {
 		t.Fatal(err)
 	}
 	local := identityForTestCertificate(
-		4, listener.Addr().String(), names[3], PeerPhaseStaged, testOperationID, "v1",
+		4, listener.Addr().String(), names[3], PeerPhaseStaged, testOperationID, "1.0.0",
 		localServerTLS.Certificates[0],
 	)
 	voterAddresses := []string{"127.0.0.1:19001", "127.0.0.1:19002", "127.0.0.1:19003"}
 	voters := make([]PeerIdentityDTO, 3)
 	for index := range voters {
 		voters[index] = identityForTestCertificate(
-			uint64(index+1), voterAddresses[index], names[index], PeerPhaseVoter, "", "v1",
+			uint64(index+1), voterAddresses[index], names[index], PeerPhaseVoter, "", "1.0.0",
 			serverTLS[index].Certificates[0],
 		)
 	}
 	candidate := identityForTestCertificate(
-		5, "127.0.0.1:19005", names[4], PeerPhaseStaged, testOperationID5, "v1",
+		5, "127.0.0.1:19005", names[4], PeerPhaseStaged, testOperationID5, "1.0.0",
 		serverTLS[4].Certificates[0],
 	)
 	admissionStarted := make(chan struct{}, 1)
@@ -565,8 +566,8 @@ func TestDynamicPeerRejectsTLSCertificateIdentityMismatchBeforeRaftDelivery(t *t
 		_ = listener1.Close()
 		t.Fatal(err)
 	}
-	local1 := identityForTestCertificate(1, listener1.Addr().String(), "node1.example", PeerPhaseVoter, "", "v1", serverTLS1.Certificates[0])
-	local2 := identityForTestCertificate(2, listener2.Addr().String(), "node2.example", PeerPhaseVoter, "", "v1", serverTLS2.Certificates[0])
+	local1 := identityForTestCertificate(1, listener1.Addr().String(), "node1.example", PeerPhaseVoter, "", "1.0.0", serverTLS1.Certificates[0])
+	local2 := identityForTestCertificate(2, listener2.Addr().String(), "node2.example", PeerPhaseVoter, "", "1.0.0", serverTLS2.Certificates[0])
 	wrongNode2 := local2
 	wrongNode2.CertificateSHA256[0] ^= 0xff
 	newRejectingHandler := func(context.Context, PeerIdentityDTO) (SeedAdmissionResponseDTO, error) {
@@ -661,8 +662,8 @@ func TestDynamicPeerRejectsForeignCAAndSANAndClusterMismatchBeforeRaftDelivery(t
 		}
 		defer foreignListener.Close()
 
-		local2 := identityForTestCertificate(2, listener2.Addr().String(), "node2.example", PeerPhaseVoter, "", "v1", serverTLS2.Certificates[0])
-		foreignLocal := identityForTestCertificate(1, foreignListener.Addr().String(), "foreign.example", PeerPhaseVoter, "", "v1", foreignServerTLS.Certificates[0])
+		local2 := identityForTestCertificate(2, listener2.Addr().String(), "node2.example", PeerPhaseVoter, "", "1.0.0", serverTLS2.Certificates[0])
+		foreignLocal := identityForTestCertificate(1, foreignListener.Addr().String(), "foreign.example", PeerPhaseVoter, "", "1.0.0", foreignServerTLS.Certificates[0])
 
 		rejectingHandler := func(context.Context, PeerIdentityDTO) (SeedAdmissionResponseDTO, error) {
 			return SeedAdmissionResponseDTO{}, errors.New("not staged")
@@ -743,11 +744,11 @@ func TestDynamicPeerRejectsForeignCAAndSANAndClusterMismatchBeforeRaftDelivery(t
 		}
 		defer listener2.Close()
 
-		local1 := identityForTestCertificate(1, listener1.Addr().String(), "node1.example", PeerPhaseVoter, "", "v1", serverTLS1.Certificates[0])
-		expectedPeer2 := identityForTestCertificate(2, listener2.Addr().String(), "node2.example", PeerPhaseVoter, "", "v1", serverTLS2.Certificates[0])
+		local1 := identityForTestCertificate(1, listener1.Addr().String(), "node1.example", PeerPhaseVoter, "", "1.0.0", serverTLS1.Certificates[0])
+		expectedPeer2 := identityForTestCertificate(2, listener2.Addr().String(), "node2.example", PeerPhaseVoter, "", "1.0.0", serverTLS2.Certificates[0])
 		expectedPeer2.DNSSAN = "node2.example"
 
-		local2 := identityForTestCertificate(2, listener2.Addr().String(), "attacker.example", PeerPhaseVoter, "", "v1", serverTLS2.Certificates[0])
+		local2 := identityForTestCertificate(2, listener2.Addr().String(), "attacker.example", PeerPhaseVoter, "", "1.0.0", serverTLS2.Certificates[0])
 
 		rejectingHandler := func(context.Context, PeerIdentityDTO) (SeedAdmissionResponseDTO, error) {
 			return SeedAdmissionResponseDTO{}, errors.New("not staged")
@@ -816,9 +817,9 @@ func TestDynamicPeerRejectsForeignCAAndSANAndClusterMismatchBeforeRaftDelivery(t
 		}
 		defer listener2.Close()
 
-		local1 := identityForTestCertificate(1, listener1.Addr().String(), "node1.example", PeerPhaseVoter, "", "v1", serverTLS1.Certificates[0])
+		local1 := identityForTestCertificate(1, listener1.Addr().String(), "node1.example", PeerPhaseVoter, "", "1.0.0", serverTLS1.Certificates[0])
 		local1.ClusterID = "cluster-alpha"
-		local2 := identityForTestCertificate(2, listener2.Addr().String(), "node2.example", PeerPhaseVoter, "", "v1", serverTLS2.Certificates[0])
+		local2 := identityForTestCertificate(2, listener2.Addr().String(), "node2.example", PeerPhaseVoter, "", "1.0.0", serverTLS2.Certificates[0])
 		local2.ClusterID = "cluster-beta"
 
 		rejectingHandler := func(context.Context, PeerIdentityDTO) (SeedAdmissionResponseDTO, error) {
@@ -888,8 +889,8 @@ func TestDynamicPeerRejectsForeignCAAndSANAndClusterMismatchBeforeRaftDelivery(t
 		}
 		defer listener1.Close()
 
-		local1 := identityForTestCertificate(1, listener1.Addr().String(), "node1.example", PeerPhaseVoter, "", "v1", serverTLS1.Certificates[0])
-		peer2 := identityForTestCertificate(2, "127.0.0.1:19002", "node2.example", PeerPhaseVoter, "", "v1", clientTLS2Config.Certificates[0])
+		local1 := identityForTestCertificate(1, listener1.Addr().String(), "node1.example", PeerPhaseVoter, "", "1.0.0", serverTLS1.Certificates[0])
+		peer2 := identityForTestCertificate(2, "127.0.0.1:19002", "node2.example", PeerPhaseVoter, "", "1.0.0", clientTLS2Config.Certificates[0])
 
 		transport1, err := NewDynamicTCPPeerTransport(DynamicPeerTransportConfig{
 			LocalIdentity: local1, Listener: listener1, ServerTLS: serverTLS1, ClientTLS: clientTLS1,
@@ -947,10 +948,10 @@ func TestDynamicPeerTransportPreservesQueuedFramesAcrossPhaseChange(t *testing.T
 		t.Fatal(err)
 	}
 	local1 := identityForTestCertificate(
-		1, listener1.Addr().String(), "node1.example", PeerPhaseVoter, "", "v1", serverTLS1.Certificates[0],
+		1, listener1.Addr().String(), "node1.example", PeerPhaseVoter, "", "1.0.0", serverTLS1.Certificates[0],
 	)
 	local2 := identityForTestCertificate(
-		2, listener2.Addr().String(), "node2.example", PeerPhaseCatchingUp, testOperationID, "v1", serverTLS2.Certificates[0],
+		2, listener2.Addr().String(), "node2.example", PeerPhaseCatchingUp, testOperationID, "1.0.0", serverTLS2.Certificates[0],
 	)
 	learner2 := local2
 	learner2.Phase = PeerPhaseLearner
@@ -1104,9 +1105,9 @@ func TestDynamicPeerTransportExchangesRaftFrames(t *testing.T) {
 		t.Fatal(err)
 	}
 	local1 := identityForTestCertificate(1, listener1.Addr().String(), "node1.example",
-		PeerPhaseVoter, "", "v1", serverTLS1.Certificates[0])
+		PeerPhaseVoter, "", "1.0.0", serverTLS1.Certificates[0])
 	local2 := identityForTestCertificate(2, listener2.Addr().String(), "node2.example",
-		PeerPhaseVoter, "", "v1", serverTLS2.Certificates[0])
+		PeerPhaseVoter, "", "1.0.0", serverTLS2.Certificates[0])
 	newRejectingHandler := func(context.Context, PeerIdentityDTO) (SeedAdmissionResponseDTO, error) {
 		return SeedAdmissionResponseDTO{}, errors.New("candidate is not a seed")
 	}
@@ -1160,7 +1161,7 @@ func TestDynamicPeerTransportServeCancellation(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	local := identityForTestCertificate(1, "127.0.0.1:19001", "node1.example", PeerPhaseVoter, "", "v1", serverTLS.Certificates[0])
+	local := identityForTestCertificate(1, "127.0.0.1:19001", "node1.example", PeerPhaseVoter, "", "1.0.0", serverTLS.Certificates[0])
 	transport, err := NewDynamicTCPPeerTransport(DynamicPeerTransportConfig{
 		LocalIdentity: local, Listener: listener, ServerTLS: serverTLS, ClientTLS: clientTLS,
 		AdmissionHandler: func(context.Context, PeerIdentityDTO) (SeedAdmissionResponseDTO, error) {
@@ -1239,7 +1240,7 @@ func dynamicTestIdentity(
 ) PeerIdentityDTO {
 	identity := PeerIdentityDTO{
 		MemberID: memberID, ClusterID: "c", Address: address, DNSSAN: dnsName,
-		ReleaseVersion: "v", ClusterProtocolMajor: 2, ClusterProtocolMinor: 0,
+		ReleaseVersion: "1.0.0", ClusterProtocolMajor: 2, ClusterProtocolMinor: 0,
 		StateSchemaMajor: 1, StateSchemaMinor: 0, Phase: phase, OperationID: operationID,
 	}
 	for index := range identity.CertificateSHA256 {
@@ -1424,7 +1425,7 @@ func TestDynamicPeerLocalIdentityUpdatesCommittedPhase(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	local := identityForTestCertificate(1, "127.0.0.1:19001", "node1.example", PeerPhaseLearner, testOperationID, "v1", serverTLS.Certificates[0])
+	local := identityForTestCertificate(1, "127.0.0.1:19001", "node1.example", PeerPhaseLearner, testOperationID, "1.0.0", serverTLS.Certificates[0])
 	transport, err := NewDynamicTCPPeerTransport(DynamicPeerTransportConfig{
 		LocalIdentity: local, Listener: listener, ServerTLS: serverTLS, ClientTLS: clientTLS,
 		AdmissionHandler: func(context.Context, PeerIdentityDTO) (SeedAdmissionResponseDTO, error) {

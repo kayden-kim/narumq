@@ -61,7 +61,7 @@ func TestRunClusterModeInProcess(t *testing.T) {
 			Mode: "cluster", ClusterID: "inprocess-coverage", NodeID: nodeID,
 			Directory:     filepath.Join(directory, fmt.Sprintf("node%d", nodeID)),
 			ListenAddress: peerAddresses[index], AdvertisedAddress: peerAddresses[index],
-			LocalDNSName: dnsName, ReleaseVersion: "1.0.0",
+			LocalDNSName: dnsName, ReleaseVersion: buildReleaseVersion,
 			ClusterProtocolMajor: 2, StateSchemaMajor: 1, Role: "bootstrap",
 			PeerTLS: clusterPeerTLS{CertFile: certPath, KeyFile: keyPath, CAFile: caPath},
 			Management: clusterManagement{
@@ -210,7 +210,7 @@ func TestRunClusterModeInProcess(t *testing.T) {
 	joinerConfig := clusterConfigFile{
 		Mode: "cluster", ClusterID: "inprocess-coverage", NodeID: joinerID,
 		Directory: filepath.Join(directory, "node4"), ListenAddress: joinerPeerAddress,
-		AdvertisedAddress: joinerPeerAddress, LocalDNSName: joinerDNS, ReleaseVersion: "1.0.0",
+		AdvertisedAddress: joinerPeerAddress, LocalDNSName: joinerDNS, ReleaseVersion: buildReleaseVersion,
 		ClusterProtocolMajor: 2, StateSchemaMajor: 1, Role: "joiner",
 		SeedAddresses: []string{
 			clusterRuntimeTestSeedAddress(t, peerAddresses[0]),
@@ -237,7 +237,7 @@ func TestRunClusterModeInProcess(t *testing.T) {
 		StateSchemaMinor     uint32 `json:"stateSchemaMinor"`
 	}{
 		MemberID: joinerID, Address: joinerPeerAddress, DNSSAN: joinerDNS,
-		CertificateSHA256: hex.EncodeToString(joinerFingerprint[:]), ReleaseVersion: "1.0.0",
+		CertificateSHA256: hex.EncodeToString(joinerFingerprint[:]), ReleaseVersion: buildReleaseVersion,
 		ClusterProtocolMajor: 2, StateSchemaMajor: 1,
 	})
 	if err != nil {

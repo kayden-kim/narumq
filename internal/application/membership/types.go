@@ -240,17 +240,19 @@ const (
 // Exactly one payload must be non-nil. Its fields intentionally mirror the v1
 // replicated-state contract without importing adapter or generated wire types.
 type CommandDTO struct {
-	SchemaMajor  uint32
-	SchemaMinor  uint32
-	OperationID  string
-	Membership   *MembershipRecordDTO
-	Ownership    *OwnershipChangeDTO
-	Subscription *SubscriptionChangeDTO
-	Delivery     *DeliveryChangeDTO
-	Retained     *RetainedChangeDTO
-	Offline      *OfflineChangeDTO
-	NodeDrain    *NodeDrainChangeDTO
-	TenantQuota  *TenantQuotaChangeDTO
+	SchemaMajor       uint32
+	SchemaMinor       uint32
+	OperationID       string
+	Membership        *MembershipRecordDTO
+	Ownership         *OwnershipChangeDTO
+	Subscription      *SubscriptionChangeDTO
+	Delivery          *DeliveryChangeDTO
+	Retained          *RetainedChangeDTO
+	Offline           *OfflineChangeDTO
+	NodeDrain         *NodeDrainChangeDTO
+	TenantQuota       *TenantQuotaChangeDTO
+	MemberProfile     *MemberProfileChangeDTO
+	FeatureActivation *FeatureActivationDTO
 }
 
 // MemberIdentityDTO is a committed cluster member identity and lifecycle phase.
@@ -261,12 +263,38 @@ type MemberIdentityDTO struct {
 	DNSSAN               string
 	CertificateSHA256    []byte
 	ReleaseVersion       string
+	Features             []string
 	ClusterProtocolMajor uint32
 	ClusterProtocolMinor uint32
 	StateSchemaMajor     uint32
 	StateSchemaMinor     uint32
 	Phase                MemberPhase
 	OperationID          string
+}
+
+// MemberProfileChangeDTO updates the mutable release profile of one committed member.
+type MemberProfileChangeDTO struct {
+	MemberID       uint64
+	ReleaseVersion string
+	Features       []string
+}
+
+// FeatureActivationDTO requests cluster-wide activation of one advertised feature.
+type FeatureActivationDTO struct {
+	Feature string
+}
+
+// MemberFeatureProfileDTO reports one non-retired member's committed feature profile.
+type MemberFeatureProfileDTO struct {
+	MemberID       uint64
+	ReleaseVersion string
+	Features       []string
+}
+
+// FeatureStateDTO reports all committed active features and non-retired member profiles.
+type FeatureStateDTO struct {
+	ActiveFeatures []string
+	Members        []MemberFeatureProfileDTO
 }
 
 // MembershipRecordDTO is one current membership-operation history record.
@@ -448,6 +476,8 @@ const (
 	ConflictOwnershipMissing         ApplyConflictCode = "ownership_missing"
 	ConflictMemberNotFound           ApplyConflictCode = "member_not_found"
 	ConflictCompatibilityUnsupported ApplyConflictCode = "compatibility_unsupported"
+	ConflictActiveFeatureMissing     ApplyConflictCode = "active_feature_missing"
+	ConflictFeatureUnsupported       ApplyConflictCode = "feature_not_supported_by_all_members"
 	ConflictRetainedCapacity         ApplyConflictCode = "retained_capacity_exceeded"
 	ConflictOfflineCapacity          ApplyConflictCode = "offline_capacity_exceeded"
 	ConflictOfflineSessionMissing    ApplyConflictCode = "offline_session_missing"
@@ -573,4 +603,5 @@ type SnapshotDTO struct {
 	OfflineSessions    []OfflineSessionStateDTO
 	NodeDrains         []NodeDrainStateDTO
 	TenantQuotaProfile *TenantQuotaProfileDTO
+	ActiveFeatures     []string
 }

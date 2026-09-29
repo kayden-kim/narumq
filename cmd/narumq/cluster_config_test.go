@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -10,7 +11,7 @@ func validBootstrapClusterConfig() clusterConfigFile {
 	return clusterConfigFile{
 		Mode: "cluster", ClusterID: "sample-cluster", NodeID: 1, Directory: "data/node1",
 		ListenAddress: "127.0.0.1:19001", AdvertisedAddress: "127.0.0.1:19001", LocalDNSName: "node1.example",
-		ReleaseVersion: "1.0.0", ClusterProtocolMajor: 2, StateSchemaMajor: 1,
+		ReleaseVersion: buildReleaseVersion, ClusterProtocolMajor: 2, StateSchemaMajor: 1,
 		Role: "bootstrap",
 		BootstrapMembers: []clusterBootstrapMember{
 			{MemberID: 1, Address: "127.0.0.1:19001", DNSSAN: "node1.example", CertificateSHA256: strings.Repeat("a", 64)},
@@ -51,6 +52,10 @@ func validTenantQuotaProfileConfig() *clusterTenantQuotaProfileConfig {
 }
 
 func TestParseClusterConfigValidRoles(t *testing.T) {
+	wantRelease, wantFeatures, err := resolveBuildIdentity()
+	if err != nil {
+		t.Fatal(err)
+	}
 	for _, config := range []clusterConfigFile{validBootstrapClusterConfig(), validJoinerClusterConfig()} {
 		data, err := json.Marshal(config)
 		if err != nil {
@@ -62,6 +67,9 @@ func TestParseClusterConfigValidRoles(t *testing.T) {
 		}
 		if parsed.Role != config.Role || parsed.NodeID != config.NodeID {
 			t.Fatalf("parsed identity = (%s, %d), want (%s, %d)", parsed.Role, parsed.NodeID, config.Role, config.NodeID)
+		}
+		if parsed.ReleaseVersion != wantRelease || !slices.Equal(parsed.Features, wantFeatures) {
+			t.Fatalf("parsed build identity = (%q, %q), want (%q, %q)", parsed.ReleaseVersion, parsed.Features, wantRelease, wantFeatures)
 		}
 	}
 }
@@ -194,7 +202,7 @@ func TestParseClusterConfigRejectsDuplicateUnknownMissingAndTrailingJSON(t *test
 		{name: "duplicate top-level", json: strings.Replace(valid, `"mode":"cluster"`, `"mode":"cluster","mode":"cluster"`, 1)},
 		{name: "duplicate nested", json: strings.Replace(valid, `"peerTLS":{"certFile":`, `"peerTLS":{"certFile":"first","certFile":`, 1)},
 		{name: "unknown field", json: strings.TrimSuffix(valid, "}") + `,"unknown":true}`},
-		{name: "missing required key", json: strings.Replace(valid, `,"stateSchemaMinor":0`, "", 1)},
+		{name: "releaseVersion from JSON", json: strings.TrimSuffix(valid, "}") + `,"releaseVersion":"1.0.0"}`},
 		{name: "missing nested key", json: strings.Replace(valid, `,"keyFile":"certs/node1.key"`, "", 1)},
 		{name: "null array", json: strings.Replace(valid, `"seedAddresses":[]`, `"seedAddresses":null`, 1)},
 		{name: "null object", json: strings.Replace(valid, `"peerTLS":{`, `"peerTLS":null`, 1)},

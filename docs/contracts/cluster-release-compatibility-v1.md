@@ -1,7 +1,7 @@
 # Cluster release compatibility v1 Contract
 
-이 문서는 release N과 직전 지원 release N-1 node가 rolling upgrade·rollback 중 지켜야 할 cluster 호환성 범위를 정의한다. 실제 release 번호와 test artifact는 각 release matrix에서 이 template을 채운다.
-[ADR-0009](../decisions/ADR-0009-raft-production-state-profile.md)는 versioned protobuf application-state encoding family를 design target으로 선택했지만 exact schema는 정하지 않는다. 이 Draft contract는 future persisted command/snapshot의 release N/N-1 compatibility를 다루며 아직 호환성을 검증하지 않았다. 이는 fixed-voter wire만 정의하는 Active [Raft peer transport v1](raft-peer-transport-v1.md)과 별도 경계다.
+이 문서는 release N과 직전 지원 release N-1 node가 rolling upgrade·rollback 중 지켜야 할 cluster 호환성 범위를 정의한다. 승인된 [ADR-0018](../decisions/ADR-0018-release-compatibility-window.md)에 따라 release는 같은 major의 인접 minor끼리만 혼합 운영한다. 실제 historical source가 없으므로 수용 시험은 동일 source를 release identity가 다른 binary로 build하며, source 간 wire 차이를 증명하지 않는다.
+이 Draft contract는 Cluster RPC, replicated state와 snapshot의 release 간 동작을 다루며 acceptance matrix가 통과되기 전까지 검증된 호환성으로 표시하지 않는다. 이는 fixed-voter wire만 정의하는 Active [Raft peer transport v1](raft-peer-transport-v1.md)과 별도 경계다.
 
 | 항목 | 값 |
 | --- | --- |
@@ -14,8 +14,8 @@
 | 기준 spec | [Cluster session과 durable delivery](../specs/cluster-session-and-delivery.md), [Drain과 rolling update](../specs/drain-and-rolling-update.md) |
 | 관련 Architecture | [Cluster architecture](../architectures/cluster-architecture.md), [EKS on EC2 deployment](../architectures/eks-ec2-deployment.md) |
 | 관련 requirement | CLU-11, NFR-15, DEP-18 |
-| 관련 결정 | [ADR-0002](../decisions/ADR-0002-cluster-consensus-library.md), [ADR-0006](../decisions/ADR-0006-external-rollout-controller.md), [ADR-0009](../decisions/ADR-0009-raft-production-state-profile.md) |
-| 검증 | `tests/compatibility/cluster-release-v1` 예정. 현재 미구현 |
+| 관련 결정 | [ADR-0002](../decisions/ADR-0002-cluster-consensus-library.md), [ADR-0006](../decisions/ADR-0006-external-rollout-controller.md), [ADR-0009](../decisions/ADR-0009-raft-production-state-profile.md), [ADR-0018](../decisions/ADR-0018-release-compatibility-window.md) |
+| 검증 | `tests/integration/cluster_release_compat_process_test.go`; [Cluster spec §11.17](../specs/cluster-session-and-delivery.md#1117-n-1n-rolling-upgraderollback-수용-매핑) process acceptance PASS (105.55s; package 105.695s); release-profile controller transitions PASS, including compatible snapshot invalidation and unsupported restored-feature latching; repository-wide instrumented `go test ./...` PASS (40 packages, 6 without tests; 288.23s); `GOMAXPROCS=4 go run ./tools/verify local` PASS (292.39s). |
 
 ## 1. 지원 범위
 
@@ -44,49 +44,51 @@ N-2 이하와의 mixed cluster는 지원하지 않는다. Rollout preflight는 �
 
 ## 3. Version handshake
 
-Cluster connection은 application traffic 전에 다음 논리 정보를 교환해야 한다.
+Authenticated peer hello와 seed admission은 canonical `releaseVersion`을 교환한다. Feature set은 hello field가 아니며 committed member profile에서 전파된다.
 
 | Field | Type | 의미 |
 | --- | --- | --- |
-| `releaseVersion` | non-empty string | Node release version |
+| `releaseVersion` | `MAJOR.MINOR.PATCH` string | Build release identity. 각 구성 요소는 선행 0 없는 `uint32` decimal이며 `v` 접두어, pre-release·build suffix는 허용하지 않는다. |
 | `clusterProtocolMajor` | unsigned integer | Breaking wire compatibility generation |
 | `clusterProtocolMinor` | unsigned integer | Backward-compatible wire capability level |
 | `stateSchemaMajor` | unsigned integer | Breaking persisted-state generation |
 | `stateSchemaMinor` | unsigned integer | Backward-compatible state capability level |
-| `features` | set of string | 명시적으로 활성화 가능한 capability |
-| `minimumPeerRelease` | non-empty string | 이 node가 지원하는 가장 오래된 peer release |
 
-정확한 RPC encoding은 transport ADR과 machine-readable contract에서 확정한다. 이 artifact가 없으면 본 contract를 Active로 전환할 수 없다.
+두 release는 major가 같고 minor 차이가 0 또는 1이면 호환된다. Patch 차이는 무시하며 규칙은 대칭이다. Major가 다르거나 minor 차이가 2 이상이면 peer admission과 dynamic peer reconciliation을 거절한다. `minimumPeerRelease`를 wire 또는 config에 추가하지 않는다. Cluster protocol은 정확히 `2.0`, state schema는 정확히 `1.0`으로 비교한다.
 
-Major가 다르거나 peer release가 범위를 벗어나면 join을 거절한다. Minor 차이는 필요한 feature가 교집합에 있을 때만 허용한다.
+Release version과 feature set은 mutable committed member profile이다. Restart한 node는 build identity를 `MemberProfileChange`로 commit한 뒤 READY가 된다. Feature는 정렬된 opaque token set으로 기록되고, active feature를 지원하지 않는 node는 READY가 되지 않는다.
 
 ## 4. Feature activation
 
 - 새 feature는 mixed cluster에서 기본 비활성화한다.
-- 모든 quorum member가 feature를 광고하고 N-1 rollback이 불필요해진 뒤에만 persistent format을 활성화한다.
+- `FeatureActivation`은 모든 non-retired member(Staged 포함)가 feature를 광고할 때만 persistent feature state에 commit한다. Active feature 재요청은 성공 no-op이며, 조건을 충족하지 못하면 non-retryable conflict `feature_not_supported_by_all_members`를 반환한다.
 - Activation은 quorum에 commit된 cluster setting으로 기록한다.
 - Activation 뒤 N-1이 읽을 수 없는 state를 쓰면 rollback 가능 상태를 끝낸 것으로 표시해야 한다.
 - Rollback window 안에는 irreversible migration을 실행해서는 안 된다.
 
-## 5. Persisted state와 snapshot
+## 5. Readiness와 persisted state
 
-- 모든 record는 schema major/minor와 record type을 식별할 수 있어야 한다.
-- Consumer는 같은 major의 모르는 optional field를 보존하거나 무시하되 기존 의미를 바꾸지 않는다.
+- 모든 node는 running build의 release/features와 committed member profile이 일치하기 전 READY가 되어서는 안 된다.
+- 모든 non-retired member의 release는 동일 major이며 minor 범위 폭이 1 이하여야 한다. Retired member는 현재 release window 계산에서 제외한다.
+- Feature token은 `^[a-z][a-z0-9-]{0,62}$` 형식이며 build당 최대 16개다. Committed feature set과 active feature set은 정렬되고 중복이 없어야 한다.
+- 새 feature는 mixed cluster에서 inactive로 시작한다. `FeatureActivation`은 모든 non-retired member(Staged 포함)가 feature를 광고할 때만 commit할 수 있다. 그렇지 않으면 HTTP `409 feature_not_supported_by_all_members`를 반환한다.
+- 활성화된 feature를 지원하지 않는 build는 `incompatible_state_schema: ...` readiness reason으로 READY를 거절한다. 해당 node가 제안하는 profile update도 `active_feature_missing` conflict로 거절한다.
+- 모든 record는 schema major/minor와 record type을 식별할 수 있어야 한다. Consumer는 같은 major의 모르는 optional field를 보존하거나 무시하되 기존 의미를 바꾸지 않는다.
 - 모르는 required record type이나 major를 만나면 READY가 되지 않고 `incompatible_state_schema`를 보고한다.
 - Snapshot manifest는 producer release, schema version, last included index, object count와 checksum을 포함해야 한다.
 - Snapshot restore 뒤 object count와 checksum이 맞지 않으면 apply하지 않는다.
 
 ## 6. Release matrix
 
-각 release N은 다음 표를 실제 version과 artifact link로 채워 release bundle에 포함한다.
+아래 matrix의 실제 수용 시험은 동일 source를 서로 다른 `-ldflags` build identity로 build한다. 이는 gate·activation·rollback mechanics를 증명하지만 서로 다른 historical source 사이의 wire compatibility 증거는 아니다. 실행 결과와 범위는 Cluster spec §11.17에 기록한다.
 
-| Current | Peer | Upgrade | Rollback | Leader 양방향 | Snapshot 양방향 | 상태 |
-| --- | --- | --- | --- | --- | --- | --- |
-| N | N | 필수 | 해당 없음 | 필수 | 필수 | 미검증 |
-| N | N-1 | 필수 | 필수 | 필수 | 필수 | 미검증 |
-| N | N-2 | 비지원 | 비지원 | 비지원 | 비지원 | 명시적 거절 |
+| Current | Peer | Upgrade | Rollback | Leader 양방향 | Snapshot 양방향 | Test | 실행 증거 | 상태 |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| N | N | 필수 | 해당 없음 | 필수 | 필수 | `TestDynamicClusterReleaseCompatibilityProcessAcceptance`, scenario 6 | [Cluster spec §11.17](../specs/cluster-session-and-delivery.md#1117-n-1n-rolling-upgraderollback-수용-매핑), two strict same-release snapshot transfers (105.695s) | PASS (synthetic builds) |
+| N | N-1 | 필수 | 필수 | 필수 | 필수 | `TestDynamicClusterReleaseCompatibilityProcessAcceptance`, scenarios 2–5 | [Cluster spec §11.17](../specs/cluster-session-and-delivery.md#1117-n-1n-rolling-upgraderollback-수용-매핑), strict installed snapshots in both release directions (105.695s) | PASS (synthetic builds) |
+| N | N-2 | 비지원 | 비지원 | 비지원 | 비지원 | 같은 process acceptance의 N-2 rejection scenario | [Cluster spec §11.17](../specs/cluster-session-and-delivery.md#1117-n-1n-rolling-upgraderollback-수용-매핑), same run (105.695s) | PASS (명시적 거절) |
 
-`미검증` 행이 있으면 release gate를 통과할 수 없다.
+모든 matrix 행이 same-source synthetic release build acceptance에서 PASS했다. Historical source 간 호환성은 이 증거에 포함되지 않는다.
 
 ## 7. Breaking change
 
@@ -100,9 +102,10 @@ Major가 다르거나 peer release가 범위를 벗어나면 join을 거절한�
 
 Major 변경은 in-place mixed upgrade로 처리하지 않는다. 별도 migration plan, backup·restore 검증과 downtime 또는 bridge release가 필요하다.
 
-## 8. Draft blocker
+## 8. Blocker와 제외 범위
 
-- Cluster RPC와 persisted record의 machine-readable encoding contract
-- 실제 release N/N-1 version
-- Leader·snapshot 양방향 compatibility harness
-- Irreversible feature activation과 rollback window 운영 정책
+- 남음: rollback window가 끝났다고 운영자가 판정하는 정책과 irreversible feature activation 승인 절차.
+- 남음: [ADR-0006](../decisions/ADR-0006-external-rollout-controller.md)의 rollout controller preflight. 이 ADR-0018 범위는 Pod 교체 전 preflight 구현을 포함하지 않는다.
+- 남음: Backup archive cross-release restore. Current archive restore는 exact cluster/release identity 규칙을 유지하며 별도 CLU-14 항목이다.
+- 남음: 실제 과거 source revision 사이의 wire/state compatibility. 현재 과거 source가 없으므로 동일 source의 synthetic build로 증명하지 않는다.
+- 해결: same-source synthetic process acceptance의 N/N 양 peer 역할 snapshot transfer, N/N-1 upgrade·rollback·양방향 installed snapshot 및 N-2 명시적 거절 matrix가 PASS했다. Historical source 간 wire/state compatibility와 rollback-window 운영 정책은 미결정으로 남는다.

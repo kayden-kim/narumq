@@ -71,7 +71,7 @@ func TestStateMachineInitializeBootstrapRequiresThreeCanonicalVoters(t *testing.
 		t.Fatalf("unsorted bootstrap error=%v, want ErrInvalidCommand", err)
 	}
 	mismatchedProfile := append([]MemberIdentityDTO(nil), voters...)
-	mismatchedProfile[2].ReleaseVersion = "other"
+	mismatchedProfile[2].ReleaseVersion = "1.2.4"
 	if err := machine.InitializeBootstrap(1, mismatchedProfile); !errors.Is(err, ErrInvalidCommand) {
 		t.Fatalf("mixed bootstrap profile error=%v, want ErrInvalidCommand", err)
 	}

@@ -4,9 +4,9 @@ package narumq.cluster.v1;
 
 option go_package = "narumq/internal/adapters/raft/records;records";
 
-// Draft state schema 1.0 rejects unknown fields. Mixed-release membership is
-// unsupported; retained, offline, delivery, node drain, and tenant quota commands are admitted only when every active
-// committed member's exact release, cluster protocol, and state schema match locally.
+// Draft state schema 1.0 admits adjacent minor releases; retained, offline, delivery,
+// node drain, and tenant quota commands require compatible releases and exact protocol
+// and state schema versions across every active committed member.
 
 enum MemberPhase {
   MEMBER_PHASE_UNSPECIFIED = 0;
@@ -157,6 +157,8 @@ message CommandEnvelope {
     OfflineChange offline = 15;
     NodeDrainChange node_drain = 17;
     TenantQuotaChange tenant_quota = 18;
+    MemberProfileChange member_profile = 19;
+    FeatureActivation feature_activation = 20;
   }
   reserved 13;
   reserved "checkpoint";
@@ -164,6 +166,7 @@ message CommandEnvelope {
 }
 
 // Identity fields are committed before the candidate can send a Raft message.
+// Release version and features are mutable profile fields.
 message MemberIdentity {
   uint64 member_id = 1;
   string cluster_id = 2;
@@ -177,6 +180,7 @@ message MemberIdentity {
   uint32 state_schema_minor = 10;
   MemberPhase phase = 11;
   string operation_id = 12;
+  repeated string features = 13;
 }
 
 // The idempotency key is stored with the stage record so a lost HTTP reply does
@@ -321,6 +325,16 @@ message TenantQuotaChange {
   TenantQuotaProfile profile = 1;
 }
 
+message MemberProfileChange {
+  uint64 member_id = 1;
+  string release_version = 2;
+  repeated string features = 3;
+}
+
+message FeatureActivation {
+  string feature = 1;
+}
+
 // Offline entries belong to detached persistent sessions keyed by (tenant_id, client_id).
 // Timestamps are proposer Unix milliseconds; apply purges 0 < expires_at <= proposed_at.
 
@@ -377,6 +391,7 @@ message ReplicatedStateSnapshot {
   repeated DeliverySessionState delivery_sessions = 8;
   repeated NodeDrainState node_drains = 9;
   TenantQuotaProfile tenant_quota_profile = 10;
+  repeated string active_features = 11;
 }
 
 message SnapshotEnvelope {

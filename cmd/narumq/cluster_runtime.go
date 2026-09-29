@@ -16,6 +16,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -41,6 +42,7 @@ import (
 	"narumq/internal/application/subscribe"
 	"narumq/internal/domain/mqtt"
 	"narumq/internal/domain/nodedrain"
+	"narumq/internal/domain/release"
 	"narumq/internal/domain/routing"
 	"narumq/internal/domain/security"
 	"narumq/internal/domain/tenancy"
@@ -56,10 +58,10 @@ const (
 )
 
 var (
-	errClusterRuntimeNotReady           = errors.New("cluster runtime is not ready")
-	errClusterStorageUnhealthy          = errors.New("cluster raft storage is not healthy")
-	errClusterApplyDivergence           = errors.New("committed cluster state diverges from membership state")
-	errClusterExactProfileCompatibility = errors.New("retained, offline, durable delivery, and node drain replication require every active member to match the local release and schema")
+	errClusterRuntimeNotReady      = errors.New("cluster runtime is not ready")
+	errClusterStorageUnhealthy     = errors.New("cluster raft storage is not healthy")
+	errClusterApplyDivergence      = errors.New("committed cluster state diverges from membership state")
+	errClusterProfileCompatibility = errors.New("retained, offline, durable delivery, node drain, and tenant quota replication require every active member to run a compatible release and schema")
 )
 
 // runClusterMode composes the dynamic Raft control plane with MQTT admission and
@@ -165,9 +167,10 @@ func runClusterMode(ctx context.Context, config clusterConfigFile, logger *slog.
 		handoffProposed:    make(map[string]uint64),
 	}
 	runtime.tenantQuotaController = &clusterTenantQuotaController{runtime: runtime}
+	runtime.releaseProfile = &clusterReleaseProfileController{runtime: runtime}
 	runtime.drain = &clusterDrainController{runtime: runtime}
 	runtime.retainedResyncRequired.Store(true)
-	if local, found := committedLocalIdentity(machine, config.NodeID); found {
+	if local, found := committedLocalIdentity(machine, config.NodeID, config.ReleaseVersion); found {
 		runtime.localIdentity = local
 	}
 	if machineInitialised(machine) {
@@ -188,11 +191,16 @@ func runClusterMode(ctx context.Context, config clusterConfigFile, logger *slog.
 		}
 	}
 
+	initialPeers, incompatibilityReason := clusterPeerSetForReleaseWindow(
+		config.ReleaseVersion, committedPeerIdentities(machine, node.Status(), config.NodeID),
+	)
+	if incompatibilityReason != "" {
+		runtime.releaseProfile.setIncompatible(incompatibilityReason)
+	}
 	transport, err := tcpadapter.NewDynamicTCPPeerTransport(tcpadapter.DynamicPeerTransportConfig{
 		LocalIdentity: runtime.localIdentity, Listener: peerListener,
 		ServerTLS: peerServerTLS, ClientTLS: peerClientTLS,
-		Peers:            committedPeerIdentities(machine, node.Status(), config.NodeID),
-		AdmissionHandler: runtime.admitPeer,
+		Peers: initialPeers, AdmissionHandler: runtime.admitPeer,
 	})
 	if err != nil {
 		return fmt.Errorf("create dynamic raft peer transport: %w", err)
@@ -344,6 +352,7 @@ type clusterRuntime struct {
 	storage                 *clusterStorageMonitor
 	drain                   *clusterDrainController
 	tenantQuotaController   *clusterTenantQuotaController
+	releaseProfile          *clusterReleaseProfileController
 	tenantQuotaRejectionLog tenantQuotaRejectionReporter
 	connectUseCase          *connect.UseCase
 	metrics                 *adaptersmetrics.Registry
@@ -444,6 +453,7 @@ func (runtime *clusterRuntime) serve(parent context.Context, mqttServer *tcpadap
 	driverDone := make(chan error, 1)
 	go func() { driverDone <- runtime.runDriver(ctx) }()
 	runtime.tenantQuotaController.start(ctx)
+	runtime.releaseProfile.start(ctx)
 	runtime.drain.start(ctx)
 
 	var admissionDone chan error
@@ -533,6 +543,7 @@ func (runtime *clusterRuntime) serve(parent context.Context, mqttServer *tcpadap
 	}
 	runtime.drain.stopAndWait()
 	runtime.tenantQuotaController.stopAndWait()
+	runtime.releaseProfile.stopAndWait()
 	runtime.managementState.SetNodeState(managementports.NodeStateSafeToStop, nil)
 	return errors.Join(results...)
 }
@@ -548,7 +559,7 @@ func (runtime *clusterRuntime) shutdownHTTP(server *http.Server) {
 
 func (runtime *clusterRuntime) runSeedAdmission(ctx context.Context) error {
 	for ctx.Err() == nil {
-		if identity, found := committedLocalIdentity(runtime.machine, runtime.config.NodeID); found {
+		if identity, found := committedLocalIdentity(runtime.machine, runtime.config.NodeID, runtime.config.ReleaseVersion); found {
 			switch identity.Phase {
 			case tcpadapter.PeerPhaseLearner, tcpadapter.PeerPhaseCatchingUp, tcpadapter.PeerPhaseVoter:
 				return nil
@@ -814,6 +825,7 @@ func (runtime *clusterRuntime) applyBatch(batch raftadapter.BatchDTO, proposals 
 		if err := runtime.machine.Restore(snapshot); err != nil {
 			return fmt.Errorf("restore membership state machine: %w", err)
 		}
+		runtime.releaseProfile.observeSnapshotRestore()
 		runtime.retainedResyncRequired.Store(true)
 		runtime.lastSnapshotIndex = snapshot.LastIncludedIndex
 		runtime.initialized.Store(true)
@@ -869,6 +881,7 @@ func (runtime *clusterRuntime) applyBatch(batch raftadapter.BatchDTO, proposals 
 		if err != nil {
 			return fmt.Errorf("apply committed command at raft index %d: %w", event.index, err)
 		}
+		runtime.releaseProfile.observeAppliedCommand(command, result)
 		if deliveryAckCommand && runtime.deliveryCrashArmed(failpointDeliveryCommitAfterApply) {
 			triggerClusterFailpoint(failpointDeliveryCommitAfterApply)
 		}
@@ -1420,12 +1433,16 @@ func (runtime *clusterRuntime) reconcileCommittedPeers() error {
 		committedPeerIdentities(runtime.machine, status, runtime.config.NodeID),
 		runtime.seedPeers, status, runtime.config.NodeID,
 	)
+	peers, incompatibilityReason := clusterPeerSetForReleaseWindow(runtime.config.ReleaseVersion, peers)
+	if incompatibilityReason != "" {
+		runtime.releaseProfile.setIncompatible(incompatibilityReason)
+	}
 	err := runtime.transport.ReconcilePeers(peers)
 	runtime.seedPeerMu.RUnlock()
 	if err != nil {
 		return fmt.Errorf("reconcile committed raft peers: %w", err)
 	}
-	local, found := committedLocalIdentity(runtime.machine, runtime.config.NodeID)
+	local, found := committedLocalIdentity(runtime.machine, runtime.config.NodeID, runtime.config.ReleaseVersion)
 	if !found {
 		return nil
 	}
@@ -1537,7 +1554,7 @@ func (runtime *clusterRuntime) admitPeer(ctx context.Context, candidate tcpadapt
 func samePeerRequest(member membership.MemberIdentityDTO, candidate tcpadapter.PeerIdentityDTO) bool {
 	return member.MemberID == candidate.MemberID && member.ClusterID == candidate.ClusterID &&
 		member.Address == candidate.Address && member.DNSSAN == candidate.DNSSAN &&
-		bytes.Equal(member.CertificateSHA256, candidate.CertificateSHA256[:]) && member.ReleaseVersion == candidate.ReleaseVersion &&
+		bytes.Equal(member.CertificateSHA256, candidate.CertificateSHA256[:]) && release.CompatibleStrings(member.ReleaseVersion, candidate.ReleaseVersion) &&
 		member.ClusterProtocolMajor == candidate.ClusterProtocolMajor && member.ClusterProtocolMinor == candidate.ClusterProtocolMinor &&
 		member.StateSchemaMajor == candidate.StateSchemaMajor && member.StateSchemaMinor == candidate.StateSchemaMinor
 }
@@ -1600,6 +1617,7 @@ type clusterReadinessSnapshot struct {
 	localVoter                  bool
 	localPhaseVoter             bool
 	tenantQuotaProfileCommitted bool
+	releaseProfileSynced        bool
 	projectionIndex             uint64
 	appliedIndex                uint64
 }
@@ -1612,7 +1630,8 @@ func (s clusterReadinessSnapshot) hasLocalAdmissionState() bool {
 		s.dynamicMembership &&
 		s.localVoter &&
 		s.localPhaseVoter &&
-		s.tenantQuotaProfileCommitted
+		s.tenantQuotaProfileCommitted &&
+		s.releaseProfileSynced
 }
 
 func (s clusterReadinessSnapshot) admitsBarrier() bool {
@@ -1632,7 +1651,7 @@ func (runtime *clusterRuntime) hasCommittedTenantQuotaProfile() bool {
 
 func (runtime *clusterRuntime) readinessSnapshot() clusterReadinessSnapshot {
 	status := runtime.node.Status()
-	member, found := committedLocalIdentity(runtime.machine, runtime.config.NodeID)
+	member, found := committedLocalIdentity(runtime.machine, runtime.config.NodeID, runtime.config.ReleaseVersion)
 	return clusterReadinessSnapshot{
 		initialized:                 runtime.initialized.Load(),
 		projectionFailed:            runtime.projectionFailed.Load(),
@@ -1641,9 +1660,10 @@ func (runtime *clusterRuntime) readinessSnapshot() clusterReadinessSnapshot {
 		localVoter:                  containsNodeID(status.VoterIDs, runtime.config.NodeID),
 		driverFailed:                runtime.driverFailed.Load(),
 		localPhaseVoter:             found && member.Phase == tcpadapter.PeerPhaseVoter,
+		tenantQuotaProfileCommitted: runtime.hasCommittedTenantQuotaProfile(),
+		releaseProfileSynced:        runtime.releaseProfileSynced(),
 		projectionIndex:             runtime.projectionIndex.Load(),
 		appliedIndex:                status.AppliedIndex,
-		tenantQuotaProfileCommitted: runtime.hasCommittedTenantQuotaProfile(),
 	}
 }
 
@@ -1655,15 +1675,16 @@ func (runtime *clusterRuntime) projectionReadinessSnapshot() clusterReadinessSna
 		dynamicMembership:           runtime.admissionDynamicMembership.Load(),
 		localVoter:                  runtime.admissionLocalVoter.Load(),
 		localPhaseVoter:             runtime.admissionLocalPhaseVoter.Load(),
+		tenantQuotaProfileCommitted: runtime.hasCommittedTenantQuotaProfile(),
+		releaseProfileSynced:        runtime.releaseProfileSynced(),
 		projectionIndex:             runtime.projectionIndex.Load(),
 		appliedIndex:                runtime.admissionAppliedIndex.Load(),
 		driverFailed:                runtime.driverFailed.Load(),
-		tenantQuotaProfileCommitted: runtime.hasCommittedTenantQuotaProfile(),
 	}
 }
 
 func (runtime *clusterRuntime) publishProjectionAdmissionStatus(status raftadapter.StatusDTO) {
-	member, found := committedLocalIdentity(runtime.machine, runtime.config.NodeID)
+	member, found := committedLocalIdentity(runtime.machine, runtime.config.NodeID, runtime.config.ReleaseVersion)
 	runtime.admissionBootstrapped.Store(status.Bootstrapped)
 	runtime.admissionDynamicMembership.Store(status.DynamicMembership)
 	runtime.admissionLocalVoter.Store(containsNodeID(status.VoterIDs, runtime.config.NodeID))
@@ -1751,8 +1772,8 @@ func (runtime *clusterRuntime) Commit(ctx context.Context, command membership.Co
 		return membership.ApplyResultDTO{}, classifyClusterPortError(err)
 	}
 	if (command.Retained != nil || command.Offline != nil || command.Delivery != nil || command.NodeDrain != nil || command.TenantQuota != nil) &&
-		!clusterExactProfileCompatible(runtime.machine.Members(), runtime.config) {
-		return membership.ApplyResultDTO{}, errClusterExactProfileCompatibility
+		!clusterProfilesCompatible(runtime.machine.Members(), runtime.config) {
+		return membership.ApplyResultDTO{}, errClusterProfileCompatibility
 	}
 	label, held := runtime.faults.holdCommand(command)
 	data, err := encodeMembershipCommand(command)
@@ -1815,7 +1836,7 @@ func clusterApplyResponseResult(response clusterApplyResponse) (membership.Apply
 	return response.result, nil
 }
 
-func clusterExactProfileCompatible(members []membership.MemberIdentityDTO, config clusterConfigFile) bool {
+func clusterProfilesCompatible(members []membership.MemberIdentityDTO, config clusterConfigFile) bool {
 	activeMembers := 0
 	for _, member := range members {
 		if member.Phase == membership.MemberPhaseRetired {
@@ -1823,7 +1844,7 @@ func clusterExactProfileCompatible(members []membership.MemberIdentityDTO, confi
 		}
 		activeMembers++
 		if member.ClusterID != config.ClusterID ||
-			member.ReleaseVersion != config.ReleaseVersion ||
+			!release.CompatibleStrings(member.ReleaseVersion, config.ReleaseVersion) ||
 			member.ClusterProtocolMajor != config.ClusterProtocolMajor ||
 			member.ClusterProtocolMinor != config.ClusterProtocolMinor ||
 			member.StateSchemaMajor != config.StateSchemaMajor ||
@@ -1839,6 +1860,13 @@ func (runtime *clusterRuntime) Members(ctx context.Context) ([]membership.Member
 		return nil, classifyClusterPortError(err)
 	}
 	return runtime.machine.Members(), nil
+}
+
+func (runtime *clusterRuntime) ActiveFeatures(ctx context.Context) ([]string, error) {
+	if err := runtime.readBarrier(ctx); err != nil {
+		return nil, classifyClusterPortError(err)
+	}
+	return runtime.machine.ActiveFeatures(), nil
 }
 
 func (runtime *clusterRuntime) GetOperation(ctx context.Context, operationID string) (membership.MembershipOperationDTO, bool, error) {
@@ -2110,9 +2138,10 @@ func clusterBootstrapIdentities(config clusterConfigFile) ([]raftadapter.NodeID,
 		members = append(members, membership.MemberIdentityDTO{
 			MemberID: configured.MemberID, ClusterID: config.ClusterID, Address: configured.Address,
 			DNSSAN: configured.DNSSAN, CertificateSHA256: fingerprint,
-			ReleaseVersion: config.ReleaseVersion, ClusterProtocolMajor: config.ClusterProtocolMajor,
-			ClusterProtocolMinor: config.ClusterProtocolMinor, StateSchemaMajor: config.StateSchemaMajor,
-			StateSchemaMinor: config.StateSchemaMinor, Phase: membership.MemberPhaseVoter,
+			ReleaseVersion: config.ReleaseVersion, Features: slices.Clone(config.Features),
+			ClusterProtocolMajor: config.ClusterProtocolMajor, ClusterProtocolMinor: config.ClusterProtocolMinor,
+			StateSchemaMajor: config.StateSchemaMajor, StateSchemaMinor: config.StateSchemaMinor,
+			Phase: membership.MemberPhaseVoter,
 		})
 	}
 	return ids, members, nil
@@ -2131,11 +2160,15 @@ func configuredLocalPeerIdentity(config clusterConfigFile, fingerprint [32]byte)
 	}
 }
 
-func committedLocalIdentity(machine *membership.StateMachine, memberID uint64) (tcpadapter.PeerIdentityDTO, bool) {
+func committedLocalIdentity(machine *membership.StateMachine, memberID uint64, releaseVersion string) (tcpadapter.PeerIdentityDTO, bool) {
 	for _, member := range machine.Members() {
 		if member.MemberID == memberID {
 			identity, err := peerIdentityFromMember(&member)
-			return identity, err == nil
+			if err != nil {
+				return tcpadapter.PeerIdentityDTO{}, false
+			}
+			identity.ReleaseVersion = releaseVersion
+			return identity, true
 		}
 	}
 	return tcpadapter.PeerIdentityDTO{}, false
@@ -2202,6 +2235,28 @@ func committedPeerIdentities(machine *membership.StateMachine, status raftadapte
 	}
 	sort.Slice(peers, func(left, right int) bool { return peers[left].MemberID < peers[right].MemberID })
 	return peers
+}
+func clusterPeerSetForReleaseWindow(localRelease string, peers []tcpadapter.PeerIdentityDTO) ([]tcpadapter.PeerIdentityDTO, string) {
+	const reason = "incompatible_state_schema: committed cluster release profiles are outside the supported compatibility window"
+	var sawIncompatiblePeer bool
+	var incompatibilityReason string
+	compatiblePeers := peers[:0]
+	for _, peer := range peers {
+		if !release.CompatibleStrings(localRelease, peer.ReleaseVersion) {
+			sawIncompatiblePeer = true
+			continue
+		}
+		for _, previous := range compatiblePeers {
+			if !release.CompatibleStrings(previous.ReleaseVersion, peer.ReleaseVersion) {
+				incompatibilityReason = reason
+			}
+		}
+		compatiblePeers = append(compatiblePeers, peer)
+	}
+	if sawIncompatiblePeer && len(compatiblePeers) == 0 {
+		incompatibilityReason = reason
+	}
+	return compatiblePeers, incompatibilityReason
 }
 
 // mergeSeedAdmissionPeers keeps seed-authenticated voter identities until the
@@ -2348,13 +2403,17 @@ func (checker *clusterHealthChecker) CheckReadiness(ctx context.Context) (manage
 	if view.health == clusterReplicationDegraded {
 		return managementports.HealthStatusNotReady, &view.reason
 	}
+	if reason := checker.runtime.releaseProfileIncompatibleReason(); reason != nil {
+		checker.runtime.managementState.SetNodeState(managementports.NodeStateJoining, reason)
+		return managementports.HealthStatusNotReady, reason
+	}
 	if ctx != nil {
 		checkCtx, cancel := context.WithTimeout(ctx, clusterReadTimeout)
 		defer cancel()
 		ctx = checkCtx
 	}
 	if err := checker.runtime.checkReadiness(ctx); err != nil {
-		reason := "cluster quorum, committed voter role, route projection, or tenant quota profile is not ready"
+		reason := "cluster quorum, committed voter role, route projection, tenant quota profile, or release profile is not ready"
 		checker.runtime.managementState.SetNodeState(managementports.NodeStateJoining, &reason)
 		return managementports.HealthStatusNotReady, &reason
 	}

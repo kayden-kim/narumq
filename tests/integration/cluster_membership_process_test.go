@@ -39,7 +39,7 @@ import (
 
 const (
 	clusterMembershipProcessClusterID = "process-acceptance-cluster"
-	clusterMembershipProcessRelease   = "1.0.0"
+	clusterMembershipProcessRelease   = "0.0.0"
 	clusterMembershipProcessAdmin     = "process-acceptance-admin-token"
 )
 
@@ -73,19 +73,7 @@ func newClusterMembershipProcessFixture(t *testing.T, nodeCount int, buildTags s
 	if runtime.GOOS == "windows" {
 		binaryPath += ".exe"
 	}
-	buildCtx, buildCancel := context.WithTimeout(context.Background(), 3*time.Minute)
-	defer buildCancel()
-	args := []string{"build", "-o", binaryPath}
-	if buildTags != "" {
-		args = append(args, "-tags", buildTags)
-	}
-	args = append(args, "./cmd/narumq")
-	build := exec.CommandContext(buildCtx, "go", args...)
-	build.Dir = repoRoot
-	buildOutput, err := build.CombinedOutput()
-	if err != nil {
-		t.Fatalf("build cmd/narumq executable: %v\n%s", err, buildOutput)
-	}
+	clusterMembershipProcessBuild(t, repoRoot, binaryPath, buildTags, "")
 
 	clusterCtx, clusterCancel := context.WithTimeout(context.Background(), 10*time.Minute)
 	t.Cleanup(clusterCancel)
@@ -215,7 +203,11 @@ func newClusterMembershipProcessFixture(t *testing.T, nodeCount int, buildTags s
       "concurrent-race-10",
       "stale-owner",
       "stale-inflight",
-      "stale-pub"
+      "stale-pub",
+      "compat-sub",
+      "compat-load",
+      "compat-pub",
+      "compat-retained-check"
     ],
     "roles": ["client"]
   }],
@@ -441,6 +433,18 @@ func newClusterMembershipProcessFixture(t *testing.T, nodeCount int, buildTags s
     "effect": "allow",
     "action": "subscribe",
     "topicFilter": "stale/#"
+  }, {
+    "tenantId": "acceptance",
+    "role": "client",
+    "effect": "allow",
+    "action": "publish",
+    "topicFilter": "compat/#"
+  }, {
+    "tenantId": "acceptance",
+    "role": "client",
+    "effect": "allow",
+    "action": "subscribe",
+    "topicFilter": "compat/#"
   }]
 }`, jwksURL))
 	clusterMembershipProcessWriteFile(t, securityPath, securityConfig, 0o600)
@@ -472,6 +476,35 @@ func newClusterMembershipProcessFixture(t *testing.T, nodeCount int, buildTags s
 	}
 }
 
+func clusterMembershipProcessBuild(t *testing.T, repoRoot, binaryPath, buildTags, ldflags string) {
+	t.Helper()
+	buildCtx, buildCancel := context.WithTimeout(context.Background(), 3*time.Minute)
+	defer buildCancel()
+	args := []string{"build", "-o", binaryPath}
+	if buildTags != "" {
+		args = append(args, "-tags", buildTags)
+	}
+	if ldflags != "" {
+		args = append(args, "-ldflags", ldflags)
+	}
+	args = append(args, "./cmd/narumq")
+	build := exec.CommandContext(buildCtx, "go", args...)
+	build.Dir = repoRoot
+	buildOutput, err := build.CombinedOutput()
+	if err != nil {
+		t.Fatalf("build cmd/narumq executable: %v\n%s", err, buildOutput)
+	}
+}
+
+func (f *clusterMembershipProcessFixture) buildBinary(t *testing.T, name, ldflags string) string {
+	t.Helper()
+	binaryPath := filepath.Join(f.tempDir, name)
+	if runtime.GOOS == "windows" {
+		binaryPath += ".exe"
+	}
+	clusterMembershipProcessBuild(t, f.repoRoot, binaryPath, "", ldflags)
+	return binaryPath
+}
 func (f *clusterMembershipProcessFixture) bootstrapConfig(memberID uint64) string {
 	index := int(memberID - 1)
 	dataDir := filepath.Join(f.tempDir, fmt.Sprintf("node-%d-data", memberID))
@@ -480,7 +513,7 @@ func (f *clusterMembershipProcessFixture) bootstrapConfig(memberID uint64) strin
 		Mode: "cluster", ClusterID: clusterMembershipProcessClusterID,
 		NodeID: memberID, Directory: dataDir,
 		ListenAddress: f.peerAddresses[index], AdvertisedAddress: f.peerAddresses[index],
-		LocalDNSName: f.certificates[index].dnsName, ReleaseVersion: clusterMembershipProcessRelease,
+		LocalDNSName:         f.certificates[index].dnsName,
 		ClusterProtocolMajor: 2, ClusterProtocolMinor: 0, StateSchemaMajor: 1, StateSchemaMinor: 0,
 		Role: "bootstrap", BootstrapMembers: append([]clusterMembershipProcessMember(nil), f.bootstrapMembers...),
 		SeedAddresses: []string{}, PeerTLS: clusterMembershipProcessTLS{
@@ -507,7 +540,7 @@ func (f *clusterMembershipProcessFixture) joinerConfig(memberID uint64, seedIDs 
 	config := clusterMembershipProcessConfig{
 		Mode: "cluster", ClusterID: clusterMembershipProcessClusterID, NodeID: memberID,
 		Directory: dataDir, ListenAddress: f.peerAddresses[index], AdvertisedAddress: f.peerAddresses[index],
-		LocalDNSName: f.certificates[index].dnsName, ReleaseVersion: clusterMembershipProcessRelease,
+		LocalDNSName:         f.certificates[index].dnsName,
 		ClusterProtocolMajor: 2, ClusterProtocolMinor: 0, StateSchemaMajor: 1, StateSchemaMinor: 0,
 		Role: "joiner", BootstrapMembers: []clusterMembershipProcessMember{},
 		SeedAddresses: seeds,
@@ -983,8 +1016,12 @@ func newClusterMembershipProcessHarness(t *testing.T, ctx context.Context, root,
 }
 
 func (h *clusterMembershipProcessHarness) launch(name, configPath, managementAddress string, env []string) (*clusterMembershipProcess, error) {
+	return h.launchBinary(h.binary, name, configPath, managementAddress, env)
+}
+
+func (h *clusterMembershipProcessHarness) launchBinary(binary, name, configPath, managementAddress string, env []string) (*clusterMembershipProcess, error) {
 	processCtx, cancel := context.WithCancel(h.ctx)
-	command := exec.CommandContext(processCtx, h.binary, "-cluster-config", configPath)
+	command := exec.CommandContext(processCtx, binary, "-cluster-config", configPath)
 	command.Dir = h.root
 	if len(env) != 0 {
 		command.Env = append(os.Environ(), env...)
@@ -1010,6 +1047,10 @@ func (h *clusterMembershipProcessHarness) launch(name, configPath, managementAdd
 
 func (h *clusterMembershipProcessHarness) start(name, configPath, managementAddress string) (*clusterMembershipProcess, error) {
 	return h.launch(name, configPath, managementAddress, nil)
+}
+
+func (h *clusterMembershipProcessHarness) startBinary(binary, name, configPath, managementAddress string) (*clusterMembershipProcess, error) {
+	return h.launchBinary(binary, name, configPath, managementAddress, nil)
 }
 
 func (h *clusterMembershipProcessHarness) startArmed(name, configPath, managementAddress, failpoint string) (*clusterMembershipProcess, error) {
@@ -1151,7 +1192,6 @@ type clusterMembershipProcessConfig struct {
 	ListenAddress        string                                      `json:"listenAddress"`
 	AdvertisedAddress    string                                      `json:"advertisedAddress"`
 	LocalDNSName         string                                      `json:"localDnsName"`
-	ReleaseVersion       string                                      `json:"releaseVersion"`
 	ClusterProtocolMajor uint32                                      `json:"clusterProtocolMajor"`
 	ClusterProtocolMinor uint32                                      `json:"clusterProtocolMinor"`
 	StateSchemaMajor     uint32                                      `json:"stateSchemaMajor"`
@@ -1490,6 +1530,11 @@ func clusterMembershipProcessWaitForStatus(t *testing.T, ctx context.Context, pr
 
 func clusterMembershipProcessWaitForBootstrap(t *testing.T, ctx context.Context, processes []*clusterMembershipProcess) {
 	t.Helper()
+	clusterMembershipProcessWaitForBootstrapRelease(t, ctx, processes, clusterMembershipProcessRelease)
+}
+
+func clusterMembershipProcessWaitForBootstrapRelease(t *testing.T, ctx context.Context, processes []*clusterMembershipProcess, release string) {
+	t.Helper()
 	clusterMembershipProcessWait(t, ctx, "three bootstrap voters ready with an elected leader", func() (bool, string, error) {
 		for _, process := range processes {
 			if process == nil {
@@ -1515,8 +1560,8 @@ func clusterMembershipProcessWaitForBootstrap(t *testing.T, ctx context.Context,
 			if status != http.StatusOK {
 				return false, fmt.Sprintf("%s cluster summary status=%d body=%s", process.name, status, body), nil
 			}
-			if summary.ClusterID != clusterMembershipProcessClusterID || summary.ReleaseVersion != clusterMembershipProcessRelease || summary.MemberCount != 3 || !summary.QuorumAvailable || summary.LeaderNodeID == nil || *summary.LeaderNodeID == "" {
-				return false, fmt.Sprintf("%s cluster summary=%+v, want 3 voters, quorum, and leader", process.name, summary), nil
+			if summary.ClusterID != clusterMembershipProcessClusterID || summary.ReleaseVersion != release || summary.MemberCount != 3 || !summary.QuorumAvailable || summary.LeaderNodeID == nil || *summary.LeaderNodeID == "" {
+				return false, fmt.Sprintf("%s cluster summary=%+v, want release %s, 3 voters, quorum, and leader", process.name, summary, release), nil
 			}
 			if leader == "" {
 				leader = *summary.LeaderNodeID
@@ -1683,7 +1728,10 @@ func clusterMembershipProcessRequest(ctx context.Context, method, url string, bo
 	if idempotencyKey != "" {
 		request.Header.Set("Idempotency-Key", idempotencyKey)
 	}
-	response, err := (&http.Client{Timeout: 5 * time.Second}).Do(request)
+	// Child processes reuse listener addresses after restart; do not reuse pooled connections across process lifetimes.
+	transport := &http.Transport{Proxy: nil, DisableKeepAlives: true}
+	defer transport.CloseIdleConnections()
+	response, err := (&http.Client{Timeout: 5 * time.Second, Transport: transport}).Do(request)
 	if err != nil {
 		return 0, nil, err
 	}
@@ -1832,11 +1880,19 @@ func clusterMembershipProcessRequireFailpointExit(t *testing.T, process *cluster
 }
 
 func clusterMembershipProcessOpenSubscribedSession(t *testing.T, address, accessToken, clientID, filter string) net.Conn {
+	return clusterMembershipProcessOpenSubscribedSessionWithClean(t, address, accessToken, clientID, filter, false)
+}
+
+func clusterMembershipProcessOpenCleanSubscribedSession(t *testing.T, address, accessToken, clientID, filter string) net.Conn {
+	return clusterMembershipProcessOpenSubscribedSessionWithClean(t, address, accessToken, clientID, filter, true)
+}
+
+func clusterMembershipProcessOpenSubscribedSessionWithClean(t *testing.T, address, accessToken, clientID, filter string, cleanSession bool) net.Conn {
 	t.Helper()
 	deadline := time.Now().Add(10 * time.Second)
 	var lastErr error
 	for time.Now().Before(deadline) {
-		conn, err := clusterMembershipProcessTryOpenSubscribedSession(address, accessToken, clientID, filter)
+		conn, err := clusterMembershipProcessTryOpenSubscribedSessionWithClean(address, accessToken, clientID, filter, cleanSession)
 		if err == nil {
 			return conn
 		}
@@ -1848,14 +1904,22 @@ func clusterMembershipProcessOpenSubscribedSession(t *testing.T, address, access
 }
 
 func clusterMembershipProcessTryOpenSubscribedSession(address, accessToken, clientID, filter string) (net.Conn, error) {
+	return clusterMembershipProcessTryOpenSubscribedSessionWithClean(address, accessToken, clientID, filter, false)
+}
+
+func clusterMembershipProcessTryOpenSubscribedSessionWithClean(address, accessToken, clientID, filter string, cleanSession bool) (net.Conn, error) {
 	connection, err := net.DialTimeout("tcp", address, 2*time.Second)
 	if err != nil {
 		return nil, fmt.Errorf("dial: %w", err)
 	}
 	_ = connection.SetDeadline(time.Now().Add(3 * time.Second))
 
-	// CONNECT packet (MQTT 3.1.1, clean session 0, username + password => flags 0xC0)
-	body := []byte{0, 4, 'M', 'Q', 'T', 'T', 4, 0xC0, 0, 60}
+	// CONNECT packet (MQTT 3.1.1, username + password; clean-session is selected by the caller).
+	connectFlags := byte(0xC0)
+	if cleanSession {
+		connectFlags |= 0x02
+	}
+	body := []byte{0, 4, 'M', 'Q', 'T', 'T', 4, connectFlags, 0, 60}
 	for _, field := range []string{clientID, "jwt", accessToken} {
 		body = append(body, byte(len(field)>>8), byte(len(field)))
 		body = append(body, field...)

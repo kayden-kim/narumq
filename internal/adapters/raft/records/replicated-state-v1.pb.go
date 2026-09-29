@@ -1003,6 +1003,8 @@ type CommandEnvelope struct {
 	//	*CommandEnvelope_Offline
 	//	*CommandEnvelope_NodeDrain
 	//	*CommandEnvelope_TenantQuota
+	//	*CommandEnvelope_MemberProfile
+	//	*CommandEnvelope_FeatureActivation
 	Payload       isCommandEnvelope_Payload `protobuf_oneof:"payload"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
@@ -1138,6 +1140,24 @@ func (x *CommandEnvelope) GetTenantQuota() *TenantQuotaChange {
 	return nil
 }
 
+func (x *CommandEnvelope) GetMemberProfile() *MemberProfileChange {
+	if x != nil {
+		if x, ok := x.Payload.(*CommandEnvelope_MemberProfile); ok {
+			return x.MemberProfile
+		}
+	}
+	return nil
+}
+
+func (x *CommandEnvelope) GetFeatureActivation() *FeatureActivation {
+	if x != nil {
+		if x, ok := x.Payload.(*CommandEnvelope_FeatureActivation); ok {
+			return x.FeatureActivation
+		}
+	}
+	return nil
+}
+
 type isCommandEnvelope_Payload interface {
 	isCommandEnvelope_Payload()
 }
@@ -1174,6 +1194,14 @@ type CommandEnvelope_TenantQuota struct {
 	TenantQuota *TenantQuotaChange `protobuf:"bytes,18,opt,name=tenant_quota,json=tenantQuota,proto3,oneof"`
 }
 
+type CommandEnvelope_MemberProfile struct {
+	MemberProfile *MemberProfileChange `protobuf:"bytes,19,opt,name=member_profile,json=memberProfile,proto3,oneof"`
+}
+
+type CommandEnvelope_FeatureActivation struct {
+	FeatureActivation *FeatureActivation `protobuf:"bytes,20,opt,name=feature_activation,json=featureActivation,proto3,oneof"`
+}
+
 func (*CommandEnvelope_Membership) isCommandEnvelope_Payload() {}
 
 func (*CommandEnvelope_Ownership) isCommandEnvelope_Payload() {}
@@ -1190,7 +1218,12 @@ func (*CommandEnvelope_NodeDrain) isCommandEnvelope_Payload() {}
 
 func (*CommandEnvelope_TenantQuota) isCommandEnvelope_Payload() {}
 
+func (*CommandEnvelope_MemberProfile) isCommandEnvelope_Payload() {}
+
+func (*CommandEnvelope_FeatureActivation) isCommandEnvelope_Payload() {}
+
 // Identity fields are committed before the candidate can send a Raft message.
+// Release version and features are mutable profile fields.
 type MemberIdentity struct {
 	state                protoimpl.MessageState `protogen:"open.v1"`
 	MemberId             uint64                 `protobuf:"varint,1,opt,name=member_id,json=memberId,proto3" json:"member_id,omitempty"`
@@ -1205,6 +1238,7 @@ type MemberIdentity struct {
 	StateSchemaMinor     uint32                 `protobuf:"varint,10,opt,name=state_schema_minor,json=stateSchemaMinor,proto3" json:"state_schema_minor,omitempty"`
 	Phase                MemberPhase            `protobuf:"varint,11,opt,name=phase,proto3,enum=narumq.cluster.v1.MemberPhase" json:"phase,omitempty"`
 	OperationId          string                 `protobuf:"bytes,12,opt,name=operation_id,json=operationId,proto3" json:"operation_id,omitempty"`
+	Features             []string               `protobuf:"bytes,13,rep,name=features,proto3" json:"features,omitempty"`
 	unknownFields        protoimpl.UnknownFields
 	sizeCache            protoimpl.SizeCache
 }
@@ -1321,6 +1355,13 @@ func (x *MemberIdentity) GetOperationId() string {
 		return x.OperationId
 	}
 	return ""
+}
+
+func (x *MemberIdentity) GetFeatures() []string {
+	if x != nil {
+		return x.Features
+	}
+	return nil
 }
 
 // The idempotency key is stored with the stage record so a lost HTTP reply does
@@ -2556,6 +2597,110 @@ func (x *TenantQuotaChange) GetProfile() *TenantQuotaProfile {
 	return nil
 }
 
+type MemberProfileChange struct {
+	state          protoimpl.MessageState `protogen:"open.v1"`
+	MemberId       uint64                 `protobuf:"varint,1,opt,name=member_id,json=memberId,proto3" json:"member_id,omitempty"`
+	ReleaseVersion string                 `protobuf:"bytes,2,opt,name=release_version,json=releaseVersion,proto3" json:"release_version,omitempty"`
+	Features       []string               `protobuf:"bytes,3,rep,name=features,proto3" json:"features,omitempty"`
+	unknownFields  protoimpl.UnknownFields
+	sizeCache      protoimpl.SizeCache
+}
+
+func (x *MemberProfileChange) Reset() {
+	*x = MemberProfileChange{}
+	mi := &file_docs_contracts_replicated_state_v1_proto_msgTypes[19]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *MemberProfileChange) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*MemberProfileChange) ProtoMessage() {}
+
+func (x *MemberProfileChange) ProtoReflect() protoreflect.Message {
+	mi := &file_docs_contracts_replicated_state_v1_proto_msgTypes[19]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use MemberProfileChange.ProtoReflect.Descriptor instead.
+func (*MemberProfileChange) Descriptor() ([]byte, []int) {
+	return file_docs_contracts_replicated_state_v1_proto_rawDescGZIP(), []int{19}
+}
+
+func (x *MemberProfileChange) GetMemberId() uint64 {
+	if x != nil {
+		return x.MemberId
+	}
+	return 0
+}
+
+func (x *MemberProfileChange) GetReleaseVersion() string {
+	if x != nil {
+		return x.ReleaseVersion
+	}
+	return ""
+}
+
+func (x *MemberProfileChange) GetFeatures() []string {
+	if x != nil {
+		return x.Features
+	}
+	return nil
+}
+
+type FeatureActivation struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Feature       string                 `protobuf:"bytes,1,opt,name=feature,proto3" json:"feature,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *FeatureActivation) Reset() {
+	*x = FeatureActivation{}
+	mi := &file_docs_contracts_replicated_state_v1_proto_msgTypes[20]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *FeatureActivation) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*FeatureActivation) ProtoMessage() {}
+
+func (x *FeatureActivation) ProtoReflect() protoreflect.Message {
+	mi := &file_docs_contracts_replicated_state_v1_proto_msgTypes[20]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use FeatureActivation.ProtoReflect.Descriptor instead.
+func (*FeatureActivation) Descriptor() ([]byte, []int) {
+	return file_docs_contracts_replicated_state_v1_proto_rawDescGZIP(), []int{20}
+}
+
+func (x *FeatureActivation) GetFeature() string {
+	if x != nil {
+		return x.Feature
+	}
+	return ""
+}
+
 type OfflineMessage struct {
 	state               protoimpl.MessageState `protogen:"open.v1"`
 	Sequence            uint64                 `protobuf:"varint,1,opt,name=sequence,proto3" json:"sequence,omitempty"`
@@ -2570,7 +2715,7 @@ type OfflineMessage struct {
 
 func (x *OfflineMessage) Reset() {
 	*x = OfflineMessage{}
-	mi := &file_docs_contracts_replicated_state_v1_proto_msgTypes[19]
+	mi := &file_docs_contracts_replicated_state_v1_proto_msgTypes[21]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2582,7 +2727,7 @@ func (x *OfflineMessage) String() string {
 func (*OfflineMessage) ProtoMessage() {}
 
 func (x *OfflineMessage) ProtoReflect() protoreflect.Message {
-	mi := &file_docs_contracts_replicated_state_v1_proto_msgTypes[19]
+	mi := &file_docs_contracts_replicated_state_v1_proto_msgTypes[21]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2595,7 +2740,7 @@ func (x *OfflineMessage) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use OfflineMessage.ProtoReflect.Descriptor instead.
 func (*OfflineMessage) Descriptor() ([]byte, []int) {
-	return file_docs_contracts_replicated_state_v1_proto_rawDescGZIP(), []int{19}
+	return file_docs_contracts_replicated_state_v1_proto_rawDescGZIP(), []int{21}
 }
 
 func (x *OfflineMessage) GetSequence() uint64 {
@@ -2656,7 +2801,7 @@ type OfflineChange struct {
 
 func (x *OfflineChange) Reset() {
 	*x = OfflineChange{}
-	mi := &file_docs_contracts_replicated_state_v1_proto_msgTypes[20]
+	mi := &file_docs_contracts_replicated_state_v1_proto_msgTypes[22]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2668,7 +2813,7 @@ func (x *OfflineChange) String() string {
 func (*OfflineChange) ProtoMessage() {}
 
 func (x *OfflineChange) ProtoReflect() protoreflect.Message {
-	mi := &file_docs_contracts_replicated_state_v1_proto_msgTypes[20]
+	mi := &file_docs_contracts_replicated_state_v1_proto_msgTypes[22]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2681,7 +2826,7 @@ func (x *OfflineChange) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use OfflineChange.ProtoReflect.Descriptor instead.
 func (*OfflineChange) Descriptor() ([]byte, []int) {
-	return file_docs_contracts_replicated_state_v1_proto_rawDescGZIP(), []int{20}
+	return file_docs_contracts_replicated_state_v1_proto_rawDescGZIP(), []int{22}
 }
 
 func (x *OfflineChange) GetTenantId() string {
@@ -2754,7 +2899,7 @@ type OfflineSessionState struct {
 
 func (x *OfflineSessionState) Reset() {
 	*x = OfflineSessionState{}
-	mi := &file_docs_contracts_replicated_state_v1_proto_msgTypes[21]
+	mi := &file_docs_contracts_replicated_state_v1_proto_msgTypes[23]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2766,7 +2911,7 @@ func (x *OfflineSessionState) String() string {
 func (*OfflineSessionState) ProtoMessage() {}
 
 func (x *OfflineSessionState) ProtoReflect() protoreflect.Message {
-	mi := &file_docs_contracts_replicated_state_v1_proto_msgTypes[21]
+	mi := &file_docs_contracts_replicated_state_v1_proto_msgTypes[23]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2779,7 +2924,7 @@ func (x *OfflineSessionState) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use OfflineSessionState.ProtoReflect.Descriptor instead.
 func (*OfflineSessionState) Descriptor() ([]byte, []int) {
-	return file_docs_contracts_replicated_state_v1_proto_rawDescGZIP(), []int{21}
+	return file_docs_contracts_replicated_state_v1_proto_rawDescGZIP(), []int{23}
 }
 
 func (x *OfflineSessionState) GetTenantId() string {
@@ -2841,7 +2986,7 @@ type SubscriptionState struct {
 
 func (x *SubscriptionState) Reset() {
 	*x = SubscriptionState{}
-	mi := &file_docs_contracts_replicated_state_v1_proto_msgTypes[22]
+	mi := &file_docs_contracts_replicated_state_v1_proto_msgTypes[24]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2853,7 +2998,7 @@ func (x *SubscriptionState) String() string {
 func (*SubscriptionState) ProtoMessage() {}
 
 func (x *SubscriptionState) ProtoReflect() protoreflect.Message {
-	mi := &file_docs_contracts_replicated_state_v1_proto_msgTypes[22]
+	mi := &file_docs_contracts_replicated_state_v1_proto_msgTypes[24]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2866,7 +3011,7 @@ func (x *SubscriptionState) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SubscriptionState.ProtoReflect.Descriptor instead.
 func (*SubscriptionState) Descriptor() ([]byte, []int) {
-	return file_docs_contracts_replicated_state_v1_proto_rawDescGZIP(), []int{22}
+	return file_docs_contracts_replicated_state_v1_proto_rawDescGZIP(), []int{24}
 }
 
 func (x *SubscriptionState) GetTenantId() string {
@@ -2943,13 +3088,14 @@ type ReplicatedStateSnapshot struct {
 	DeliverySessions   []*DeliverySessionState `protobuf:"bytes,8,rep,name=delivery_sessions,json=deliverySessions,proto3" json:"delivery_sessions,omitempty"`
 	NodeDrains         []*NodeDrainState       `protobuf:"bytes,9,rep,name=node_drains,json=nodeDrains,proto3" json:"node_drains,omitempty"`
 	TenantQuotaProfile *TenantQuotaProfile     `protobuf:"bytes,10,opt,name=tenant_quota_profile,json=tenantQuotaProfile,proto3" json:"tenant_quota_profile,omitempty"`
+	ActiveFeatures     []string                `protobuf:"bytes,11,rep,name=active_features,json=activeFeatures,proto3" json:"active_features,omitempty"`
 	unknownFields      protoimpl.UnknownFields
 	sizeCache          protoimpl.SizeCache
 }
 
 func (x *ReplicatedStateSnapshot) Reset() {
 	*x = ReplicatedStateSnapshot{}
-	mi := &file_docs_contracts_replicated_state_v1_proto_msgTypes[23]
+	mi := &file_docs_contracts_replicated_state_v1_proto_msgTypes[25]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2961,7 +3107,7 @@ func (x *ReplicatedStateSnapshot) String() string {
 func (*ReplicatedStateSnapshot) ProtoMessage() {}
 
 func (x *ReplicatedStateSnapshot) ProtoReflect() protoreflect.Message {
-	mi := &file_docs_contracts_replicated_state_v1_proto_msgTypes[23]
+	mi := &file_docs_contracts_replicated_state_v1_proto_msgTypes[25]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2974,7 +3120,7 @@ func (x *ReplicatedStateSnapshot) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ReplicatedStateSnapshot.ProtoReflect.Descriptor instead.
 func (*ReplicatedStateSnapshot) Descriptor() ([]byte, []int) {
-	return file_docs_contracts_replicated_state_v1_proto_rawDescGZIP(), []int{23}
+	return file_docs_contracts_replicated_state_v1_proto_rawDescGZIP(), []int{25}
 }
 
 func (x *ReplicatedStateSnapshot) GetMembers() []*MemberIdentity {
@@ -3040,6 +3186,13 @@ func (x *ReplicatedStateSnapshot) GetTenantQuotaProfile() *TenantQuotaProfile {
 	return nil
 }
 
+func (x *ReplicatedStateSnapshot) GetActiveFeatures() []string {
+	if x != nil {
+		return x.ActiveFeatures
+	}
+	return nil
+}
+
 type SnapshotEnvelope struct {
 	state             protoimpl.MessageState   `protogen:"open.v1"`
 	SchemaMajor       uint32                   `protobuf:"varint,1,opt,name=schema_major,json=schemaMajor,proto3" json:"schema_major,omitempty"`
@@ -3054,7 +3207,7 @@ type SnapshotEnvelope struct {
 
 func (x *SnapshotEnvelope) Reset() {
 	*x = SnapshotEnvelope{}
-	mi := &file_docs_contracts_replicated_state_v1_proto_msgTypes[24]
+	mi := &file_docs_contracts_replicated_state_v1_proto_msgTypes[26]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3066,7 +3219,7 @@ func (x *SnapshotEnvelope) String() string {
 func (*SnapshotEnvelope) ProtoMessage() {}
 
 func (x *SnapshotEnvelope) ProtoReflect() protoreflect.Message {
-	mi := &file_docs_contracts_replicated_state_v1_proto_msgTypes[24]
+	mi := &file_docs_contracts_replicated_state_v1_proto_msgTypes[26]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3079,7 +3232,7 @@ func (x *SnapshotEnvelope) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SnapshotEnvelope.ProtoReflect.Descriptor instead.
 func (*SnapshotEnvelope) Descriptor() ([]byte, []int) {
-	return file_docs_contracts_replicated_state_v1_proto_rawDescGZIP(), []int{24}
+	return file_docs_contracts_replicated_state_v1_proto_rawDescGZIP(), []int{26}
 }
 
 func (x *SnapshotEnvelope) GetSchemaMajor() uint32 {
@@ -3169,7 +3322,7 @@ const file_docs_contracts_replicated_state_v1_proto_rawDesc = "" +
 	"\bprogress\x18\f \x01(\v2$.narumq.cluster.v1.NodeDrainProgressR\bprogress\x12!\n" +
 	"\ffailure_code\x18\r \x01(\tR\vfailureCode\x12'\n" +
 	"\x0fblocking_reason\x18\x0e \x01(\tR\x0eblockingReason\x12'\n" +
-	"\x0fcommitted_index\x18\x0f \x01(\x04R\x0ecommittedIndex\"\xbf\x05\n" +
+	"\x0fcommitted_index\x18\x0f \x01(\x04R\x0ecommittedIndex\"\xe7\x06\n" +
 	"\x0fCommandEnvelope\x12!\n" +
 	"\fschema_major\x18\x01 \x01(\rR\vschemaMajor\x12!\n" +
 	"\fschema_minor\x18\x02 \x01(\rR\vschemaMinor\x12!\n" +
@@ -3185,9 +3338,11 @@ const file_docs_contracts_replicated_state_v1_proto_rawDesc = "" +
 	"\aoffline\x18\x0f \x01(\v2 .narumq.cluster.v1.OfflineChangeH\x00R\aoffline\x12C\n" +
 	"\n" +
 	"node_drain\x18\x11 \x01(\v2\".narumq.cluster.v1.NodeDrainChangeH\x00R\tnodeDrain\x12I\n" +
-	"\ftenant_quota\x18\x12 \x01(\v2$.narumq.cluster.v1.TenantQuotaChangeH\x00R\vtenantQuotaB\t\n" +
+	"\ftenant_quota\x18\x12 \x01(\v2$.narumq.cluster.v1.TenantQuotaChangeH\x00R\vtenantQuota\x12O\n" +
+	"\x0emember_profile\x18\x13 \x01(\v2&.narumq.cluster.v1.MemberProfileChangeH\x00R\rmemberProfile\x12U\n" +
+	"\x12feature_activation\x18\x14 \x01(\v2$.narumq.cluster.v1.FeatureActivationH\x00R\x11featureActivationB\t\n" +
 	"\apayloadJ\x04\b\r\x10\x0eR\n" +
-	"checkpoint\"\xf8\x03\n" +
+	"checkpoint\"\x94\x04\n" +
 	"\x0eMemberIdentity\x12\x1b\n" +
 	"\tmember_id\x18\x01 \x01(\x04R\bmemberId\x12\x1d\n" +
 	"\n" +
@@ -3202,7 +3357,8 @@ const file_docs_contracts_replicated_state_v1_proto_rawDesc = "" +
 	"\x12state_schema_minor\x18\n" +
 	" \x01(\rR\x10stateSchemaMinor\x124\n" +
 	"\x05phase\x18\v \x01(\x0e2\x1e.narumq.cluster.v1.MemberPhaseR\x05phase\x12!\n" +
-	"\foperation_id\x18\f \x01(\tR\voperationId\"\xe4\x02\n" +
+	"\foperation_id\x18\f \x01(\tR\voperationId\x12\x1a\n" +
+	"\bfeatures\x18\r \x03(\tR\bfeatures\"\xe4\x02\n" +
 	"\x10MembershipRecord\x12!\n" +
 	"\foperation_id\x18\x01 \x01(\tR\voperationId\x12;\n" +
 	"\x06action\x18\x02 \x01(\x0e2#.narumq.cluster.v1.MembershipActionR\x06action\x12'\n" +
@@ -3309,7 +3465,13 @@ const file_docs_contracts_replicated_state_v1_proto_rawDesc = "" +
 	"\rdefault_quota\x18\x02 \x01(\v2%.narumq.cluster.v1.TenantStorageQuotaR\fdefaultQuota\x12?\n" +
 	"\atenants\x18\x03 \x03(\v2%.narumq.cluster.v1.TenantStorageQuotaR\atenants\"T\n" +
 	"\x11TenantQuotaChange\x12?\n" +
-	"\aprofile\x18\x01 \x01(\v2%.narumq.cluster.v1.TenantQuotaProfileR\aprofile\"\xbb\x01\n" +
+	"\aprofile\x18\x01 \x01(\v2%.narumq.cluster.v1.TenantQuotaProfileR\aprofile\"w\n" +
+	"\x13MemberProfileChange\x12\x1b\n" +
+	"\tmember_id\x18\x01 \x01(\x04R\bmemberId\x12'\n" +
+	"\x0frelease_version\x18\x02 \x01(\tR\x0ereleaseVersion\x12\x1a\n" +
+	"\bfeatures\x18\x03 \x03(\tR\bfeatures\"-\n" +
+	"\x11FeatureActivation\x12\x18\n" +
+	"\afeature\x18\x01 \x01(\tR\afeature\"\xbb\x01\n" +
 	"\x0eOfflineMessage\x12\x1a\n" +
 	"\bsequence\x18\x01 \x01(\x04R\bsequence\x12\x14\n" +
 	"\x05topic\x18\x02 \x01(\tR\x05topic\x12\x18\n" +
@@ -3342,7 +3504,7 @@ const file_docs_contracts_replicated_state_v1_proto_rawDesc = "" +
 	"\x03qos\x18\x06 \x01(\rR\x03qos\x12\x19\n" +
 	"\bno_local\x18\a \x01(\bR\anoLocal\x12.\n" +
 	"\x13retain_as_published\x18\b \x01(\bR\x11retainAsPublished\x12'\n" +
-	"\x0fretain_handling\x18\t \x01(\rR\x0eretainHandling\"\xd0\x05\n" +
+	"\x0fretain_handling\x18\t \x01(\rR\x0eretainHandling\"\xf9\x05\n" +
 	"\x17ReplicatedStateSnapshot\x12;\n" +
 	"\amembers\x18\x01 \x03(\v2!.narumq.cluster.v1.MemberIdentityR\amembers\x12A\n" +
 	"\n" +
@@ -3356,7 +3518,8 @@ const file_docs_contracts_replicated_state_v1_proto_rawDesc = "" +
 	"\vnode_drains\x18\t \x03(\v2!.narumq.cluster.v1.NodeDrainStateR\n" +
 	"nodeDrains\x12W\n" +
 	"\x14tenant_quota_profile\x18\n" +
-	" \x01(\v2%.narumq.cluster.v1.TenantQuotaProfileR\x12tenantQuotaProfileJ\x04\b\x04\x10\x05R\vcheckpoints\"\x85\x02\n" +
+	" \x01(\v2%.narumq.cluster.v1.TenantQuotaProfileR\x12tenantQuotaProfile\x12'\n" +
+	"\x0factive_features\x18\v \x03(\tR\x0eactiveFeaturesJ\x04\b\x04\x10\x05R\vcheckpoints\"\x85\x02\n" +
 	"\x10SnapshotEnvelope\x12!\n" +
 	"\fschema_major\x18\x01 \x01(\rR\vschemaMajor\x12!\n" +
 	"\fschema_minor\x18\x02 \x01(\rR\vschemaMinor\x12.\n" +
@@ -3447,7 +3610,7 @@ func file_docs_contracts_replicated_state_v1_proto_rawDescGZIP() []byte {
 }
 
 var file_docs_contracts_replicated_state_v1_proto_enumTypes = make([]protoimpl.EnumInfo, 10)
-var file_docs_contracts_replicated_state_v1_proto_msgTypes = make([]protoimpl.MessageInfo, 25)
+var file_docs_contracts_replicated_state_v1_proto_msgTypes = make([]protoimpl.MessageInfo, 27)
 var file_docs_contracts_replicated_state_v1_proto_goTypes = []any{
 	(MemberPhase)(0),                // 0: narumq.cluster.v1.MemberPhase
 	(MembershipAction)(0),           // 1: narumq.cluster.v1.MembershipAction
@@ -3478,12 +3641,14 @@ var file_docs_contracts_replicated_state_v1_proto_goTypes = []any{
 	(*TenantStorageQuota)(nil),      // 26: narumq.cluster.v1.TenantStorageQuota
 	(*TenantQuotaProfile)(nil),      // 27: narumq.cluster.v1.TenantQuotaProfile
 	(*TenantQuotaChange)(nil),       // 28: narumq.cluster.v1.TenantQuotaChange
-	(*OfflineMessage)(nil),          // 29: narumq.cluster.v1.OfflineMessage
-	(*OfflineChange)(nil),           // 30: narumq.cluster.v1.OfflineChange
-	(*OfflineSessionState)(nil),     // 31: narumq.cluster.v1.OfflineSessionState
-	(*SubscriptionState)(nil),       // 32: narumq.cluster.v1.SubscriptionState
-	(*ReplicatedStateSnapshot)(nil), // 33: narumq.cluster.v1.ReplicatedStateSnapshot
-	(*SnapshotEnvelope)(nil),        // 34: narumq.cluster.v1.SnapshotEnvelope
+	(*MemberProfileChange)(nil),     // 29: narumq.cluster.v1.MemberProfileChange
+	(*FeatureActivation)(nil),       // 30: narumq.cluster.v1.FeatureActivation
+	(*OfflineMessage)(nil),          // 31: narumq.cluster.v1.OfflineMessage
+	(*OfflineChange)(nil),           // 32: narumq.cluster.v1.OfflineChange
+	(*OfflineSessionState)(nil),     // 33: narumq.cluster.v1.OfflineSessionState
+	(*SubscriptionState)(nil),       // 34: narumq.cluster.v1.SubscriptionState
+	(*ReplicatedStateSnapshot)(nil), // 35: narumq.cluster.v1.ReplicatedStateSnapshot
+	(*SnapshotEnvelope)(nil),        // 36: narumq.cluster.v1.SnapshotEnvelope
 }
 var file_docs_contracts_replicated_state_v1_proto_depIdxs = []int32{
 	8,  // 0: narumq.cluster.v1.NodeDrainChange.action:type_name -> narumq.cluster.v1.NodeDrainAction
@@ -3496,41 +3661,43 @@ var file_docs_contracts_replicated_state_v1_proto_depIdxs = []int32{
 	18, // 7: narumq.cluster.v1.CommandEnvelope.subscription:type_name -> narumq.cluster.v1.SubscriptionChange
 	20, // 8: narumq.cluster.v1.CommandEnvelope.delivery:type_name -> narumq.cluster.v1.DeliveryChange
 	24, // 9: narumq.cluster.v1.CommandEnvelope.retained:type_name -> narumq.cluster.v1.RetainedChange
-	30, // 10: narumq.cluster.v1.CommandEnvelope.offline:type_name -> narumq.cluster.v1.OfflineChange
+	32, // 10: narumq.cluster.v1.CommandEnvelope.offline:type_name -> narumq.cluster.v1.OfflineChange
 	11, // 11: narumq.cluster.v1.CommandEnvelope.node_drain:type_name -> narumq.cluster.v1.NodeDrainChange
 	28, // 12: narumq.cluster.v1.CommandEnvelope.tenant_quota:type_name -> narumq.cluster.v1.TenantQuotaChange
-	0,  // 13: narumq.cluster.v1.MemberIdentity.phase:type_name -> narumq.cluster.v1.MemberPhase
-	1,  // 14: narumq.cluster.v1.MembershipRecord.action:type_name -> narumq.cluster.v1.MembershipAction
-	14, // 15: narumq.cluster.v1.MembershipRecord.member:type_name -> narumq.cluster.v1.MemberIdentity
-	2,  // 16: narumq.cluster.v1.OwnershipChange.action:type_name -> narumq.cluster.v1.OwnershipAction
-	3,  // 17: narumq.cluster.v1.SubscriptionChange.action:type_name -> narumq.cluster.v1.SubscriptionAction
-	6,  // 18: narumq.cluster.v1.DeliveryChange.action:type_name -> narumq.cluster.v1.DeliveryAction
-	19, // 19: narumq.cluster.v1.DeliveryChange.targets:type_name -> narumq.cluster.v1.DeliveryTarget
-	7,  // 20: narumq.cluster.v1.DeliveryMessage.phase:type_name -> narumq.cluster.v1.DeliveryPhase
-	21, // 21: narumq.cluster.v1.DeliverySessionState.messages:type_name -> narumq.cluster.v1.DeliveryMessage
-	22, // 22: narumq.cluster.v1.DeliverySessionState.inbound:type_name -> narumq.cluster.v1.InboundMessage
-	4,  // 23: narumq.cluster.v1.RetainedChange.action:type_name -> narumq.cluster.v1.RetainedAction
-	26, // 24: narumq.cluster.v1.TenantQuotaProfile.default_quota:type_name -> narumq.cluster.v1.TenantStorageQuota
-	26, // 25: narumq.cluster.v1.TenantQuotaProfile.tenants:type_name -> narumq.cluster.v1.TenantStorageQuota
-	27, // 26: narumq.cluster.v1.TenantQuotaChange.profile:type_name -> narumq.cluster.v1.TenantQuotaProfile
-	5,  // 27: narumq.cluster.v1.OfflineChange.action:type_name -> narumq.cluster.v1.OfflineAction
-	29, // 28: narumq.cluster.v1.OfflineChange.messages:type_name -> narumq.cluster.v1.OfflineMessage
-	29, // 29: narumq.cluster.v1.OfflineSessionState.messages:type_name -> narumq.cluster.v1.OfflineMessage
-	14, // 30: narumq.cluster.v1.ReplicatedStateSnapshot.members:type_name -> narumq.cluster.v1.MemberIdentity
-	17, // 31: narumq.cluster.v1.ReplicatedStateSnapshot.ownerships:type_name -> narumq.cluster.v1.OwnershipState
-	32, // 32: narumq.cluster.v1.ReplicatedStateSnapshot.subscriptions:type_name -> narumq.cluster.v1.SubscriptionState
-	15, // 33: narumq.cluster.v1.ReplicatedStateSnapshot.membership_history:type_name -> narumq.cluster.v1.MembershipRecord
-	25, // 34: narumq.cluster.v1.ReplicatedStateSnapshot.retained:type_name -> narumq.cluster.v1.RetainedState
-	31, // 35: narumq.cluster.v1.ReplicatedStateSnapshot.offline_sessions:type_name -> narumq.cluster.v1.OfflineSessionState
-	23, // 36: narumq.cluster.v1.ReplicatedStateSnapshot.delivery_sessions:type_name -> narumq.cluster.v1.DeliverySessionState
-	12, // 37: narumq.cluster.v1.ReplicatedStateSnapshot.node_drains:type_name -> narumq.cluster.v1.NodeDrainState
-	27, // 38: narumq.cluster.v1.ReplicatedStateSnapshot.tenant_quota_profile:type_name -> narumq.cluster.v1.TenantQuotaProfile
-	33, // 39: narumq.cluster.v1.SnapshotEnvelope.state:type_name -> narumq.cluster.v1.ReplicatedStateSnapshot
-	40, // [40:40] is the sub-list for method output_type
-	40, // [40:40] is the sub-list for method input_type
-	40, // [40:40] is the sub-list for extension type_name
-	40, // [40:40] is the sub-list for extension extendee
-	0,  // [0:40] is the sub-list for field type_name
+	29, // 13: narumq.cluster.v1.CommandEnvelope.member_profile:type_name -> narumq.cluster.v1.MemberProfileChange
+	30, // 14: narumq.cluster.v1.CommandEnvelope.feature_activation:type_name -> narumq.cluster.v1.FeatureActivation
+	0,  // 15: narumq.cluster.v1.MemberIdentity.phase:type_name -> narumq.cluster.v1.MemberPhase
+	1,  // 16: narumq.cluster.v1.MembershipRecord.action:type_name -> narumq.cluster.v1.MembershipAction
+	14, // 17: narumq.cluster.v1.MembershipRecord.member:type_name -> narumq.cluster.v1.MemberIdentity
+	2,  // 18: narumq.cluster.v1.OwnershipChange.action:type_name -> narumq.cluster.v1.OwnershipAction
+	3,  // 19: narumq.cluster.v1.SubscriptionChange.action:type_name -> narumq.cluster.v1.SubscriptionAction
+	6,  // 20: narumq.cluster.v1.DeliveryChange.action:type_name -> narumq.cluster.v1.DeliveryAction
+	19, // 21: narumq.cluster.v1.DeliveryChange.targets:type_name -> narumq.cluster.v1.DeliveryTarget
+	7,  // 22: narumq.cluster.v1.DeliveryMessage.phase:type_name -> narumq.cluster.v1.DeliveryPhase
+	21, // 23: narumq.cluster.v1.DeliverySessionState.messages:type_name -> narumq.cluster.v1.DeliveryMessage
+	22, // 24: narumq.cluster.v1.DeliverySessionState.inbound:type_name -> narumq.cluster.v1.InboundMessage
+	4,  // 25: narumq.cluster.v1.RetainedChange.action:type_name -> narumq.cluster.v1.RetainedAction
+	26, // 26: narumq.cluster.v1.TenantQuotaProfile.default_quota:type_name -> narumq.cluster.v1.TenantStorageQuota
+	26, // 27: narumq.cluster.v1.TenantQuotaProfile.tenants:type_name -> narumq.cluster.v1.TenantStorageQuota
+	27, // 28: narumq.cluster.v1.TenantQuotaChange.profile:type_name -> narumq.cluster.v1.TenantQuotaProfile
+	5,  // 29: narumq.cluster.v1.OfflineChange.action:type_name -> narumq.cluster.v1.OfflineAction
+	31, // 30: narumq.cluster.v1.OfflineChange.messages:type_name -> narumq.cluster.v1.OfflineMessage
+	31, // 31: narumq.cluster.v1.OfflineSessionState.messages:type_name -> narumq.cluster.v1.OfflineMessage
+	14, // 32: narumq.cluster.v1.ReplicatedStateSnapshot.members:type_name -> narumq.cluster.v1.MemberIdentity
+	17, // 33: narumq.cluster.v1.ReplicatedStateSnapshot.ownerships:type_name -> narumq.cluster.v1.OwnershipState
+	34, // 34: narumq.cluster.v1.ReplicatedStateSnapshot.subscriptions:type_name -> narumq.cluster.v1.SubscriptionState
+	15, // 35: narumq.cluster.v1.ReplicatedStateSnapshot.membership_history:type_name -> narumq.cluster.v1.MembershipRecord
+	25, // 36: narumq.cluster.v1.ReplicatedStateSnapshot.retained:type_name -> narumq.cluster.v1.RetainedState
+	33, // 37: narumq.cluster.v1.ReplicatedStateSnapshot.offline_sessions:type_name -> narumq.cluster.v1.OfflineSessionState
+	23, // 38: narumq.cluster.v1.ReplicatedStateSnapshot.delivery_sessions:type_name -> narumq.cluster.v1.DeliverySessionState
+	12, // 39: narumq.cluster.v1.ReplicatedStateSnapshot.node_drains:type_name -> narumq.cluster.v1.NodeDrainState
+	27, // 40: narumq.cluster.v1.ReplicatedStateSnapshot.tenant_quota_profile:type_name -> narumq.cluster.v1.TenantQuotaProfile
+	35, // 41: narumq.cluster.v1.SnapshotEnvelope.state:type_name -> narumq.cluster.v1.ReplicatedStateSnapshot
+	42, // [42:42] is the sub-list for method output_type
+	42, // [42:42] is the sub-list for method input_type
+	42, // [42:42] is the sub-list for extension type_name
+	42, // [42:42] is the sub-list for extension extendee
+	0,  // [0:42] is the sub-list for field type_name
 }
 
 func init() { file_docs_contracts_replicated_state_v1_proto_init() }
@@ -3547,6 +3714,8 @@ func file_docs_contracts_replicated_state_v1_proto_init() {
 		(*CommandEnvelope_Offline)(nil),
 		(*CommandEnvelope_NodeDrain)(nil),
 		(*CommandEnvelope_TenantQuota)(nil),
+		(*CommandEnvelope_MemberProfile)(nil),
+		(*CommandEnvelope_FeatureActivation)(nil),
 	}
 	type x struct{}
 	out := protoimpl.TypeBuilder{
@@ -3554,7 +3723,7 @@ func file_docs_contracts_replicated_state_v1_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_docs_contracts_replicated_state_v1_proto_rawDesc), len(file_docs_contracts_replicated_state_v1_proto_rawDesc)),
 			NumEnums:      10,
-			NumMessages:   25,
+			NumMessages:   27,
 			NumExtensions: 0,
 			NumServices:   0,
 		},

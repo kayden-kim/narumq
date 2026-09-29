@@ -20,7 +20,7 @@
 
 ### 1.1 Committed member identity
 
-A member record는 다음 값을 하나의 identity로 commit한다.
+A committed member record stores peer identity, protocol/schema and lifecycle state, plus mutable release/features build profile fields.
 
 | 필드 | 자료형 | 필수 제약 |
 | --- | --- | --- |
@@ -29,17 +29,20 @@ A member record는 다음 값을 하나의 identity로 commit한다.
 | `address` | UTF-8 host:port string | 1~255 bytes; port `1..65535`; wildcard listener 주소 금지 |
 | `dnsSan` | DNS name | 1~253 ASCII bytes; IP literal 금지 |
 | `certificateSha256` | 32 raw bytes | TLS leaf certificate DER의 SHA-256 |
-| `releaseVersion` | UTF-8 string | 1~64 bytes; 빈 값 금지 |
+| `releaseVersion` | canonical `MAJOR.MINOR.PATCH` string | 1..64 ASCII bytes; same major and minor distance at most 1 from each non-retired member; mutable committed build profile |
+| `features` | sorted unique string set | At most 16 opaque tokens matching `^[a-z][a-z0-9-]{0,62}$`; mutable committed build profile |
 | `clusterProtocolMajor`, `clusterProtocolMinor` | `uint32` | v2 profile은 정확히 `2.0` |
 | `stateSchemaMajor`, `stateSchemaMinor` | `uint32` | 초기 Draft profile은 정확히 `1.0` |
 | `phase` | enum | `STAGED`, `LEARNER`, `CATCHING_UP`, `VOTER`, `LEAVING`, `RETIRED` |
 | `operationId` | lower-case UUID string | 변경 진행 중에는 non-empty; 안정된 기존 voter/learner에는 empty 가능 |
 
+`releaseVersion`은 선행 0 없는 `MAJOR.MINOR.PATCH` 형식이며 각 부분은 `uint32` decimal이다. `v` 접두어, pre-release 및 build suffix는 허용하지 않는다. Release compatibility는 같은 major이고 minor 차이가 1 이하일 때 true이며 patch는 무시한다. `releaseVersion`과 `features`는 mutable profile이므로 member identity 비교에서 제외하고 별도 committed profile update로 바꾼다. Cluster ID, certificate binding, address, protocol/schema와 membership phase의 기존 identity·exact 검사는 유지한다.
+
 TLS 1.3 mTLS가 CA chain과 EKU를 먼저 검증한다. Peer adapter는 TLS leaf certificate의 DNS SAN과 SHA-256을 committed identity와 대조한다. Peer adapter는 cluster ID, member ID, advertised address, protocol/state version, phase와 operation ID도 committed registry와 대조한다. 불일치, 미지원 version, malformed hello 또는 등록되지 않은 ID는 Raft payload를 `Step`에 전달하기 전에 connection을 닫는다.
 
 Raft frame의 TLS·hello identity는 **직접 보낸 peer**를 인증한다. `etcd/raft`가 `MsgProp`, `MsgReadIndex`, `MsgTransferLeader`를 leader에게 전달할 때 protobuf `From`에는 **원래 요청한 member ID**가 남을 수 있다. 이 세 유형에 한해서만 Raft adapter는 인증된 직접 송신자와 원래 요청자가 모두 현재 committed `ConfState`에 속하는지 확인한 뒤 전달한다. 그 외 Raft message는 protobuf `From`과 인증된 직접 송신자가 반드시 같아야 한다. Transport는 protobuf payload를 수정하지 않는다.
 
-Cluster protocol major는 정확히 `2`, minor는 `0`이어야 한다. State schema major/minor도 현재 Draft에서 정확히 `1.0`만 받는다. `releaseVersion`은 모든 committed member와 bytewise exact match여야 하며 mixed-release 운영을 지원하지 않는다. 더 큰 major·minor 또는 다른 release/schema는 `compatibility_unsupported`로 거절한다. 이 exact match rule은 release N/N-1 compatibility를 약속하지 않는다.
+Cluster protocol major는 정확히 `2`, minor는 `0`이어야 한다. State schema major/minor도 현재 Draft에서 정확히 `1.0`만 받는다. Release는 동일 major의 인접 minor까지만 허용한다. 다른 major 또는 minor 차이가 2 이상이면 `compatibility_unsupported`로 거절한다. Cluster protocol과 schema는 계속 exact match다.
 
 ### 1.2 Membership phase와 안전한 순서
 
@@ -130,6 +133,7 @@ Active voter의 planned leave operation을 시작한다. `memberId`는 canonical
 | 409 | `idempotency_conflict` | 같은 key가 다른 canonical request에 이미 사용됨 | false |
 | 409 | `membership_change_in_progress` | 다른 membership operation이 terminal phase가 아님 | true |
 | 409 | `not_leader` | mutation endpoint가 current leader가 아님 | true |
+| 409 | `feature_not_supported_by_all_members` | Feature activation 시 non-retired member 중 feature를 광고하지 않는 member가 있음 | false |
 | 422 | `compatibility_unsupported` | release, cluster protocol 또는 schema 조합 미지원 | false |
 | 503 | `quorum_unavailable` | Fresh quorum barrier/commit이 불가능 | true |
 | 500 | `internal_error` | redacted unexpected service/storage error | false |
@@ -138,7 +142,7 @@ No-leader/quorum mutation은 어떤 stage/configuration entry도 남기지 않�
 
 ### 1.4 Combined cluster configuration
 
-`-cluster-config <path>`는 MQTT, management와 dynamic Raft membership을 함께 조립하는 strict JSON mode다. Flag 자체 외의 다른 CLI flag나 positional argument를 허용하지 않으며 기존 `-raft-peer-config <path>`와 상호 배타적이다. 기존 peer-only config의 schema와 disk semantics는 바꾸지 않는다. Config file에 알 수 없는 key, 중복 key, trailing value 또는 missing required field가 있으면 process startup을 거절한다. Relative path는 process current working directory 기준이다.
+`-cluster-config <path>`는 MQTT, management와 dynamic Raft membership을 함께 조립하는 strict JSON mode다. Flag 자체 외의 다른 CLI flag나 positional argument를 허용하지 않으며 기존 `-raft-peer-config <path>`와 상호 배타적이다. 기존 peer-only config의 schema와 disk semantics는 바꾸지 않는다. Config file에 알 수 없는 key, 중복 key, trailing value 또는 missing required field가 있으면 process startup을 거절한다. `releaseVersion`은 build identity에서 오므로 JSON에 이 key를 넣으면 unknown field로 startup을 거절한다. Relative path는 process current working directory 기준이다.
 
 | Field | JSON type | Required rule |
 | --- | --- | --- |
@@ -149,7 +153,6 @@ No-leader/quorum mutation은 어떤 stage/configuration entry도 남기지 않�
 | `listenAddress` | string | local peer TCP bind `host:port` |
 | `advertisedAddress` | string | reachable peer `host:port`; never wildcard |
 | `localDnsName` | string | certificate DNS SAN and committed local identity |
-| `releaseVersion` | string | `1..64` UTF-8 bytes |
 | `clusterProtocolMajor`, `clusterProtocolMinor` | uint32 | exactly `2`, `0` |
 | `stateSchemaMajor`, `stateSchemaMinor` | uint32 | exactly `1`, `0` for this Draft |
 | `role` | string | exactly `"bootstrap"` or `"joiner"` |
@@ -159,9 +162,9 @@ No-leader/quorum mutation은 어떤 stage/configuration entry도 남기지 않�
 | `management` | object | required `listenAddress`, `clusterAdminTokenFile`; token is opaque secret input |
 | `mqtt` | object | required `tcpListenAddress`, `tlsListenAddress`, `securityConfigFile`; empty address disables that listener |
 
-Each `bootstrapMembers` element has exactly `{memberId:uint64,address:string,dnsSan:string,certificateSha256:string}` with the same identity constraints as §1.1. All three bootstrap configs use bytewise-canonical sorting by `memberId` and the same set. A member's own certificate fingerprint and SAN must match its entry. `seedAddresses` address the peer admission listener, not an arbitrary discovery authority; each host is a lowercase DNS name used for the TLS server name and must match the contacted seed certificate SAN. ClusterAdmin token contents are read from the referenced file; the raw token is not part of JSON or logs.
+Each `bootstrapMembers` element has exactly `{memberId:uint64,address:string,dnsSan:string,certificateSha256:string}` with the same identity constraints as §1.1. All three bootstrap configs use bytewise-canonical sorting by `memberId` and the same set. A member's own certificate fingerprint and SAN must match its entry. All bootstrap nodes must use the same build release and feature set. `seedAddresses` address the peer admission listener, not an arbitrary discovery authority; each host is a lowercase DNS name used for the TLS server name and must match the contacted seed certificate SAN. ClusterAdmin token contents are read from the referenced file; the raw token is not part of JSON or logs.
 
-Bootstrap example (`<64 lowercase hex>` is a configuration value supplied from the certificate fingerprint, not a literal accepted value):
+Bootstrap example (`<64 lowercase hex>` is a configuration value supplied from the certificate fingerprint, not a literal accepted value). The example's release and features come from the binary's build identity:
 ```json
 {
   "mode": "cluster",
@@ -171,7 +174,6 @@ Bootstrap example (`<64 lowercase hex>` is a configuration value supplied from t
   "listenAddress": "127.0.0.1:19001",
   "advertisedAddress": "127.0.0.1:19001",
   "localDnsName": "node1.example",
-  "releaseVersion": "1.0.0",
   "clusterProtocolMajor": 2,
   "clusterProtocolMinor": 0,
   "stateSchemaMajor": 1,
@@ -189,11 +191,11 @@ Bootstrap example (`<64 lowercase hex>` is a configuration value supplied from t
 }
 ```
 
-Bootstrap requires `role="bootstrap"`, an empty data directory and exactly three bootstrap identities including the local ID. All initial node configs must carry the same `clusterId` and identical canonical bootstrap identity set. Bootstrap must not overwrite any non-empty directory.
+Bootstrap requires `role="bootstrap"`, an empty data directory and exactly three bootstrap identities including the local ID. All initial node configs must carry the same `clusterId` and identical canonical bootstrap identity set. Bootstrap nodes must use the same build release and features. Bootstrap must not overwrite any non-empty directory.
 
 Joiner requires `role="joiner"`, one or more configured canonical DNS `seedAddresses` (`host:port`, never an IP literal), an already-issued positive `nodeId`, empty `bootstrapMembers`, its local `advertisedAddress`/DNS SAN/certificate fingerprint, and a new/empty directory. It must not call `RawNode.Bootstrap`; it first performs seed admission and proves an exactly matching committed `STAGED` record. `seedAddresses` are discovery/bootstrap contacts, not an authority to add peers.
 
-All modes require `peerTLS` cert/key/CA, local certificate DNS SAN and fingerprint equality, explicit `management.clusterAdminTokenFile`, release and schema versions, persistent `directory`, and MQTT TLS/security configuration if an MQTT listener is enabled. Admin token contents are read as a secret file and never logged or returned. Standalone runtime does not load this mode and is unchanged.
+All modes require `peerTLS` cert/key/CA, local certificate DNS SAN and fingerprint equality, explicit `management.clusterAdminTokenFile`, build release and feature identity, protocol/schema versions, persistent `directory`, and MQTT TLS/security configuration if an MQTT listener is enabled. The removed JSON key `releaseVersion` is an unknown field and rejects startup. Admin token contents are read as a secret file and never logged or returned. Standalone runtime does not load this mode and is unchanged.
 
 #### Persistent local identity metadata
 
@@ -280,7 +282,7 @@ The forwarding stream does not alter `NMQRAFT2` hello or Raft message frame byte
 
 ### 1.6 Replicated records and snapshot
 
-`CommandEnvelope` uses protobuf `proto3` schema major/minor and exactly one payload: `MembershipRecord`, `OwnershipChange`, `SubscriptionChange`, `DeliveryChange`, `RetainedChange` or `OfflineChange`. `MembershipRecord` stores operation ID, action, persisted idempotency key, member identity, optional removal target, and `expected_conf_state_index` for compare-before-change; HTTP `committedIndex` is derived from the actual applied Raft entry index. `OwnershipChange` carries `(tenantId, clientId, expectedEpoch, ownerNodeId, epoch, action)`. `SubscriptionChange` carries `(tenantId, clientId, ownerNodeId, epoch, filter, qos, noLocal, retainAsPublished, retainHandling, add/remove)`. `DeliveryChange` stores one session-fenced durable action and its action-specific publication, packet, sequence, reset or expiry fields. Field number 13 and the former `checkpoint` name remain reserved.
+`CommandEnvelope` uses protobuf `proto3` schema major/minor and exactly one payload. It supports `MembershipRecord`, `OwnershipChange`, `SubscriptionChange`, `DeliveryChange`, `RetainedChange`, `OfflineChange`, `MemberProfileChange` and `FeatureActivation`. `MemberProfileChange` carries `member_id`, canonical `release_version` and sorted `features`; it updates only mutable build profile fields. `FeatureActivation` carries an opaque feature token and is applied only when every non-retired member advertises it. `MemberIdentity` carries the committed release/features profile; `ReplicatedStateSnapshot.active_features` is a sorted feature set. Membership and session command semantics remain unchanged.
 
 Each snapshot `membership_history` record stores the exact `committed_index` of its committed transition. The command payload must leave that field zero because the Raft entry index is unknown when proposed; the application records the actual index while applying the committed entry. Snapshot validation requires `0 < committed_index <= last_included_index`. Restored operation status reports the latest transition's persisted index, never the snapshot boundary.
 
@@ -288,7 +290,7 @@ Snapshot의 `lastIncludedIndex`는 Raft가 적용한 마지막 index와 일치�
 
 `DeliverySessionState` is the replicated per-session aggregate keyed by `(tenantId, clientId)`. It contains the monotonically increasing `next_sequence`, ordered `DeliveryMessage` entries and packet-ID-ordered `InboundMessage` entries. A delivery message stores topic, binary payload, effective QoS, retain, expiry, packet ID and delivery phase; packet ID zero denotes `QUEUED`. Inbound state stores the publisher-side QoS 2 payload before PUBREL and a payload-free tombstone after RELEASE. ATTACH/DETACH/DISCARD and SEND/ADVANCE/COMPLETE commands mutate this aggregate using exact owner/epoch fencing. Stale commands consume their committed ordering position but do not mutate the aggregate.
 
-`SnapshotEnvelope` contains schema major/minor, `lastIncludedIndex`, `objectCount`, SHA-256 and typed `ReplicatedStateSnapshot`. `objectCount` counts repeated entries across members, ownerships, subscriptions, delivery sessions and their messages/inbound entries, membership history, retained values, offline sessions and their queued messages. Digest input is the deterministic protobuf serialization of `ReplicatedStateSnapshot` without the envelope. Any unknown field, unknown required enum/action, duplicate singular field, duplicate oneof, malformed UTF-8, noncanonical byte sequence, unsupported version, count mismatch or digest mismatch fails apply/recovery/readiness closed.
+`SnapshotEnvelope` contains schema major/minor, `lastIncludedIndex`, `objectCount`, SHA-256 and typed `ReplicatedStateSnapshot`. `objectCount` counts repeated entries across members, their feature values, ownerships, subscriptions, delivery sessions and their messages/inbound entries, membership history, retained values, offline sessions and their queued messages, and active feature values. Digest input is the deterministic protobuf serialization of `ReplicatedStateSnapshot` without the envelope. Any unknown field, unknown required enum/action, duplicate singular field, duplicate oneof, malformed UTF-8, noncanonical byte sequence, unsupported version, count mismatch or digest mismatch fails apply/recovery/readiness closed.
 
 ### 1.7 Limits, ordering and canonical bytes
 
@@ -299,7 +301,7 @@ Snapshot의 `lastIncludedIndex`는 Raft가 적용한 마지막 index와 일치�
 | Cluster ID | 1..200 UTF-8 bytes |
 | Address | 1..255 UTF-8 bytes, valid host:port |
 | DNS SAN | 1..253 ASCII DNS bytes |
-| release version | 1..64 UTF-8 bytes |
+| release version | canonical `MAJOR.MINOR.PATCH`, each component a no-leading-zero `uint32` decimal; at most 64 ASCII bytes |
 | idempotency key | 1..128 printable ASCII bytes, no spaces |
 | tenant ID | 1..128 UTF-8 bytes |
 | client ID | 1..256 UTF-8 bytes |
@@ -313,31 +315,31 @@ Snapshot의 `lastIncludedIndex`는 Raft가 적용한 마지막 index와 일치�
 | MQTT publish payload | at most 1,000,000 bytes and enclosing command still <=1 MiB |
 | Snapshot entries | at most 1,000,000, including nested delivery messages/inbound entries and offline messages; 64 MiB serialized snapshot bound applies first |
 
-Deterministic protobuf serialization is mandatory. Proto3 default-valued scalar fields are omitted; fields use ascending field-number order. Repeated `members` sort by `member_id`; `ownerships` by bytewise UTF-8 `(tenant_id, client_id)`; `subscriptions` by bytewise `(tenant_id, client_id, filter)`; `delivery_sessions` by bytewise `(tenant_id, client_id)`; `membership_history` by bytewise `operation_id`; each delivery session's `messages` sort by ascending sequence and `inbound` by ascending nonzero packet ID. Duplicate canonical keys are invalid. A consumer verifies canonical bytes by parsing, enforcing duplicate/unknown-field rejection, deterministic re-serialization and byte equality. Removed field numbers and enum values are reserved permanently.
+Deterministic protobuf serialization is mandatory. Proto3 default-valued scalar fields are omitted; fields use ascending field-number order. Repeated `members` sort by `member_id`; each member's `features` sort lexically with no duplicates; `active_features` sort lexically with no duplicates; `ownerships` by bytewise UTF-8 `(tenant_id, client_id)`; `subscriptions` by bytewise `(tenant_id, client_id, filter)`; `delivery_sessions` by bytewise `(tenant_id, client_id)`; `membership_history` by bytewise `operation_id`; each delivery session's `messages` sort by ascending sequence and `inbound` by ascending nonzero packet ID. Duplicate canonical keys are invalid. A consumer verifies canonical bytes by parsing, enforcing duplicate/unknown-field rejection, deterministic re-serialization and byte equality. Removed field numbers and enum values are reserved permanently.
 
 The following reference vectors use schema `1.0`, proto3 deterministic field ordering, omitted scalar defaults, and the fixture values stated in each name. Hex bytes are grouped only for readability; concatenation is the exact encoding. They are contract fixtures, not yet producer/consumer test evidence.
 | Fixture | Semantic values |
 | --- | --- |
-| `stage_join` | operation `00000000-0000-4000-8000-000000000004`; key `k1`; member 4; cluster `c`; address `n:1`; DNS `n`; 32 bytes `0x11`; release `v1`; protocol `2.0`; state schema `1.0` |
+| `stage_join` | operation `00000000-0000-4000-8000-000000000004`; key `k1`; member 4; cluster `c`; address `n:1`; DNS `n`; 32 bytes `0x11`; release `1.0.0`; protocol `2.0`; state schema `1.0` |
 | `ownership_acquire` | operation `00000000-0000-4000-8000-000000000001`; tenant `t`; client `c`; expected epoch 0; owner 1; epoch 1; action `ACQUIRE` |
 | `subscription_add` / `subscription_remove` | same operation/tenant/client/owner/epoch as ownership; filter `#`; QoS 1; actions 1/2 |
 | `delivery_publish` | operation/tenant/client as ownership; `PUBLISH`, proposed time 1, topic `a`, payload `x`, publish QoS 1 |
 | `empty_snapshot` | envelope schema `1.0`, index 1, object count 0, empty typed state; state digest is SHA-256 of empty bytes |
 
 ```text
-stage_join (184 bytes)
+stage_join (187 bytes)
 08 01 1A 24 30 30 30 30 30 30 30 30 2D 30 30 30
 30 2D 34 30 30 30 2D 38 30 30 30 2D 30 30 30 30
-30 30 30 30 30 30 30 34 52 8D 01 0A 24 30 30 30
+30 30 30 30 30 30 30 34 52 90 01 0A 24 30 30 30
 30 30 30 30 30 2D 30 30 30 30 2D 34 30 30 30 2D
 38 30 30 30 2D 30 30 30 30 30 30 30 30 30 30 30
-34 10 01 1A 02 6B 31 22 5F 08 04 12 01 63 1A 03
+34 10 01 1A 02 6B 31 22 62 08 04 12 01 63 1A 03
 6E 3A 31 22 01 6E 2A 20 11 11 11 11 11 11 11 11
 11 11 11 11 11 11 11 11 11 11 11 11 11 11 11 11
-11 11 11 11 11 11 11 11 32 02 76 31 38 02 48 01
-58 01 62 24 30 30 30 30 30 30 30 30 2D 30 30 30
-30 2D 34 30 30 30 2D 38 30 30 30 2D 30 30 30 30
-30 30 30 30 30 30 30 34
+11 11 11 11 11 11 11 11 32 05 31 2E 30 2E 30 38
+02 48 01 58 01 62 24 30 30 30 30 30 30 30 30 2D
+30 30 30 30 2D 34 30 30 30 2D 38 30 30 30 2D 30
+30 30 30 30 30 30 30 30 30 30 34
 
 ownership_acquire (54 bytes)
 08 01 1A 24 30 30 30 30 30 30 30 30 2D 30 30 30
@@ -382,7 +384,8 @@ F4 C8 99 6F B9 24 27 AE 41 E4 64 9B 93 4C A4 95
 | `membership_change_in_progress` | another transition is active | yes after existing transition ends | none |
 | `not_leader` | mutation reaches non-leader endpoint | yes after leader discovery | none |
 | `quorum_unavailable` | stage/phase cannot commit | yes after quorum recovery | no uncommitted record acknowledged |
-| `compatibility_unsupported` | release/protocol/schema not exactly supported | no | none |
+| `compatibility_unsupported` | release is outside the same-major one-minor window, or protocol/schema is not exact `2.0`/`1.0` | no | none |
+| `feature_not_supported_by_all_members` | active feature is not advertised by every non-retired member | no | no activation applied |
 | `peer_identity_rejected` | TLS/hello identity mismatch | no until operator fixes identity | no Raft frame reaches `Step` |
 | `incompatible_state_schema` | unknown/invalid typed record, schema or snapshot | no | no READY; corrupted state is not rewritten |
 
@@ -390,26 +393,26 @@ F4 C8 99 6F B9 24 27 AE 41 E4 64 9B 93 4C A4 95
 
 - Membership v2 never changes `raft-peer-transport-v1` or v1 `NMQRAFT1` bytes.
 - `NMQSTATE1` is not a replicated-state v1 encoding and receives no implicit migration or conversion.
-- Unknown fields are rejected in Draft schema v1; no mixed release or N/N-1 interoperability is claimed.
+- Unknown fields are rejected in Draft schema v1. Release compatibility allows only same-major releases whose minor versions differ by at most one; protocol `2.0` and schema `1.0` remain exact-match.
+- Member release/features are mutable committed profile fields. Feature activation is committed only when every non-retired member advertises the feature; an unsupported active feature prevents readiness.
 - Field numbers and enum values are never reused. A breaking wire/state change requires a new contract major and explicit migration/recovery plan.
 - No v2 peer data is admitted before TLS, handshake identity and committed stage/configuration checks complete.
-- The additive `NMQFWRD2` delivery-forwarding stream preserves `NMQRAFT2` bytes and cluster protocol `2.0`; it does not claim mixed-release or N/N-1 interoperability.
+- The additive `NMQFWRD2` delivery-forwarding stream preserves `NMQRAFT2` bytes and cluster protocol `2.0`.
 
 ## 4. Version and support status
 
 | Status | Condition | Replacement |
 | --- | --- | --- |
-| Draft | Design approved; implementation and membership/restart/readiness tests incomplete | Remains Draft until all producer/consumer contract tests and cluster acceptance evidence pass |
-| Active | Exact runtime, OpenAPI and typed state artifacts plus evidence match this contract | None defined |
+| Draft | Release/profile implementation and mixed-binary acceptance evidence are incomplete | Remains Draft until package, process and local verification gates pass |
+| Active | Runtime, OpenAPI and typed state artifacts plus N-1↔N evidence match this contract | None defined |
 
 ## 5. Examples and contract tests
 
-The JSON and frame examples in §1 define canonical field semantics, but are not runtime evidence. The Draft has no producer/consumer contract tests yet. Planned locations: v2 hello and queue tests under `internal/adapters/tcp`, typed state codec tests under `internal/adapters/raft`, management producers under `internal/adapters/http/management`, API consumer tests under `tests/contracts/management-api-v1`, and multi-process acceptance under `tests/integration`.
+The JSON and frame examples in §1 define canonical field semantics. Release parsing/profile updates are tested in `internal/application/membership`, typed codec and snapshot validation in `internal/adapters/raft/records`, peer compatibility in `internal/adapters/tcp`, management producers in `internal/adapters/http/management`, API fixtures in `tests/contracts/management-api-v1`, and multi-process acceptance in `tests/integration/cluster_release_compat_process_test.go`.
 
 ## 6. Draft blockers
 
-- Implement v2 peer admission and atomically reconciled dynamic peer registry without changing v1.
-- Implement committed membership application, crash/restart replay, typed state codec, snapshot checksum and generated or reviewed wire vectors.
-- Implement management mutations/status, strict configuration loader and producer/consumer API tests.
-- Run actual TLS 3-process replacement, lost-response retry, transition-boundary crash/restart, MQTT route/readiness and quorum-loss tests.
-- Define an actual release compatibility matrix only after N and N-1 runtime artifacts exist; this Draft does not claim one.
+- Run package, generated-protobuf, mixed-binary process and repository local/architecture gates.
+- Define rollback-window operations and rollout-controller preflight separately; preflight is not implemented by this contract change.
+- Keep backup archive cross-release restore exact; it is a separate CLU-14 item.
+- Same-source synthetic builds do not establish wire compatibility between historical source revisions.

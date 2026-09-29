@@ -1,12 +1,12 @@
 # Management API v1 Contract
 
-이 문서는 NaruMQ Management API v1의 현재 Phase 1 query profile을 정의한다. 정확한
+이 문서는 NaruMQ Management API v1의 query와 승인된 mutation profile을 정의한다. 정확한
 path, parameter, response schema와 media type은
 [OpenAPI JSON](management-api-v1.openapi.json)이 기준이다.
 
 | 항목 | 값 |
 | --- | --- |
-| 이름과 version | `narumq-management-api` 1.4.0 |
+| 이름과 version | `narumq-management-api` 1.5.0 |
 | 상태 | Active |
 | Producer | NaruMQ broker management API |
 | Consumer | Dashboard·operator·monitoring integration의 query client |
@@ -15,7 +15,7 @@ path, parameter, response schema와 media type은
 | 기준 spec | [Management API와 observability](../specs/management-api-and-observability.md) |
 | 관련 Architecture | [System overview](../architectures/system-overview.md), [Security boundaries](../architectures/security-boundaries.md) |
 | 관련 requirement | API-02, API-04~API-09, SEC-10~SEC-11 |
-| 관련 결정 | [ADR-0005](../decisions/ADR-0005-management-api-contract-format.md) |
+| 관련 결정 | [ADR-0005](../decisions/ADR-0005-management-api-contract-format.md), [ADR-0018](../decisions/ADR-0018-release-compatibility-window.md) |
 | 호환성 범위 | `/api/v1` query producer와 v1 query consumer |
 | 검증 | `tests/contracts/management-api-v1`와 `tests/integration/management_api_test.go` |
 
@@ -32,6 +32,8 @@ path, parameter, response schema와 media type은
 | GET | `/metrics` | Prometheus/OpenMetrics scrape |
 | GET | `/api/v1/cluster` | cluster summary |
 | POST | `/api/v1/cluster/backups` | quorum-fresh 경계의 checksummed backup archive 다운로드 |
+| GET | `/api/v1/cluster/features` | committed active feature와 member build profile 조회 |
+| POST | `/api/v1/cluster/features/{feature}` | 모든 non-retired member가 지원하는 feature 활성화 |
 | GET | `/api/v1/nodes` | node list |
 | GET | `/api/v1/nodes/{nodeId}` | node detail |
 | POST | `/api/v1/nodes/{nodeId}/drain` | broker drain 시작 또는 기존 operation 재생 |
@@ -43,9 +45,7 @@ path, parameter, response schema와 media type은
 | GET | `/api/v1/retained` | retained metadata list |
 | GET | `/api/v1/tenants` | tenant list |
 
-Version 1.4.0은 dynamic-cluster broker drain을 active contract에 추가한다. 이 endpoint는
-standalone mode에서 제공되지 않으며, 외부 rollout controller와 Pod 삭제 승인은 포함하지 않는다.
-이 catalog에 없는 path를 client가 호출할 수 있다는 계약은 없다.
+Version 1.5.0은 cluster feature 조회와 activation을 active contract에 추가한다. 조회는 `ReadOnly`, activation은 `ClusterAdmin`을 요구하며 dynamic cluster mode에서 제공된다. 이 catalog에 없는 path를 client가 호출할 수 있다는 계약은 없다.
 
 ## 2. Authentication과 authorization
 
@@ -54,8 +54,7 @@ standalone mode에서 제공되지 않으며, 외부 rollout controller와 Pod �
 - 이 contract는 OIDC issuer discovery, JWT signature, claim semantics, token scope 또는
   API key 발급 형식을 약속하지 않는다. 입력 credential은 configured opaque value와
   비교된다.
-- API query operation과 node drain GET은 `ReadOnly`; node drain POST와 DELETE는 `Operator`를
-  요구한다. Tenant list와 cluster backup은 `ClusterAdmin` role을 요구한다.
+- API query operation과 node drain GET, cluster feature GET은 `ReadOnly`; node drain POST/DELETE는 `Operator`를 요구한다. Tenant list, cluster backup과 cluster feature POST는 `ClusterAdmin` role을 요구한다.
 - Health probe와 `/metrics`의 익명 허용 여부는 listener configuration이다. OpenAPI의
   security scheme은 보호된 배포를 기술하고, local development의 anonymous policy를
   제거하지 않는다.
@@ -123,5 +122,6 @@ method에 사용한다. 내부 오류와 credential은 response에 노출하지 
 - Version 1.2.0은 `NodeData`에 optional `replicationHealth`, `lastErrorCode`, `replicationQueue` field를 추가했다. Field schema와 enum은 OpenAPI artifact가 기준이며, contract suite가 response shape를 검증한다.
 - Version 1.3.0은 `POST /api/v1/cluster/backups`를 추가했다. ClusterAdmin 전용이며 fresh quorum barrier에서 캡처한 typed snapshot과 committed tail을 binary archive로 반환한다.
 - Version 1.4.0은 `/api/v1/nodes/{nodeId}/drain`의 POST/GET/DELETE를 추가한다. Drain request parameter bounds와 replay semantics는 [Drain spec](../specs/drain-and-rolling-update.md)을 따른다.
+- Version 1.5.0은 `GET /api/v1/cluster/features`와 `POST /api/v1/cluster/features/{feature}`를 추가한다. 성공 response는 `activeFeatures`와 member별 `nodeId`, `releaseVersion`, `features`를 data envelope로 반환하며, 미지원 feature activation은 non-retryable `409 feature_not_supported_by_all_members`다.
 - Future catalog의 다른 mutation endpoint, OIDC/JWT, API rate limiting, audit event와 dashboard는 현재 Active contract가 아니다. 이 기능을 구현할 때는 별도 범위와 contract revision을 정한다.
 - Breaking change는 `/api/v2`와 별도 OpenAPI artifact로 제공한다.

@@ -15,19 +15,25 @@ import (
 const managementOperationID = "00000000-0000-4000-8000-000000000004"
 
 type membershipServiceStub struct {
-	stageOperation       membership.MembershipOperationDTO
-	removeOperation      membership.MembershipOperationDTO
-	getOperation         membership.MembershipOperationDTO
-	stageError           error
-	removeError          error
-	getError             error
-	stageCalls           int
-	removeCalls          int
-	getCalls             int
-	stageRequest         membership.StageJoinRequestDTO
-	removeMemberID       uint64
-	removeIdempotencyKey string
-	getOperationID       string
+	stageOperation         membership.MembershipOperationDTO
+	removeOperation        membership.MembershipOperationDTO
+	getOperation           membership.MembershipOperationDTO
+	stageError             error
+	removeError            error
+	getError               error
+	stageCalls             int
+	removeCalls            int
+	getCalls               int
+	stageRequest           membership.StageJoinRequestDTO
+	removeMemberID         uint64
+	removeIdempotencyKey   string
+	getOperationID         string
+	featureState           membership.FeatureStateDTO
+	featureQueryError      error
+	featureActivationErr   error
+	featureQueryCalls      int
+	featureActivationCalls int
+	activatedFeature       string
 }
 
 func (stub *membershipServiceStub) StageJoin(_ context.Context, request membership.StageJoinRequestDTO) (membership.MembershipOperationDTO, error) {
@@ -47,6 +53,16 @@ func (stub *membershipServiceStub) GetOperation(_ context.Context, operationID s
 	stub.getCalls++
 	stub.getOperationID = operationID
 	return stub.getOperation, stub.getError
+}
+func (stub *membershipServiceStub) ClusterFeatures(context.Context) (membership.FeatureStateDTO, error) {
+	stub.featureQueryCalls++
+	return stub.featureState, stub.featureQueryError
+}
+
+func (stub *membershipServiceStub) ActivateFeature(_ context.Context, feature string) (membership.FeatureStateDTO, error) {
+	stub.featureActivationCalls++
+	stub.activatedFeature = feature
+	return stub.featureState, stub.featureActivationErr
 }
 
 func newMembershipHTTPTestHandler(service MembershipUseCase, role Role) http.Handler {

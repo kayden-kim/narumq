@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"narumq/internal/domain/nodedrain"
+	"slices"
 
 	"narumq/internal/adapters/raft/records"
 	"narumq/internal/application/membership"
@@ -137,6 +138,19 @@ func encodeMembershipCommand(command membership.CommandDTO) ([]byte, error) {
 			Profile: tenantQuotaProfileToRecord(&command.TenantQuota.Profile),
 		}}
 	}
+	if command.MemberProfile != nil {
+		payloadCount++
+		wire.Payload = &records.CommandEnvelope_MemberProfile{MemberProfile: &records.MemberProfileChange{
+			MemberId: command.MemberProfile.MemberID, ReleaseVersion: command.MemberProfile.ReleaseVersion,
+			Features: slices.Clone(command.MemberProfile.Features),
+		}}
+	}
+	if command.FeatureActivation != nil {
+		payloadCount++
+		wire.Payload = &records.CommandEnvelope_FeatureActivation{FeatureActivation: &records.FeatureActivation{
+			Feature: command.FeatureActivation.Feature,
+		}}
+	}
 	if payloadCount != 1 {
 		return nil, errors.New("application command must contain exactly one payload")
 	}
@@ -261,6 +275,21 @@ func decodeMembershipCommand(data []byte) (membership.CommandDTO, error) {
 			return membership.CommandDTO{}, errors.New("tenant quota profile is required")
 		}
 		command.TenantQuota = &membership.TenantQuotaChangeDTO{Profile: *profile}
+	case *records.CommandEnvelope_MemberProfile:
+		value := payload.MemberProfile
+		if value == nil {
+			return membership.CommandDTO{}, errors.New("member profile payload is required")
+		}
+		command.MemberProfile = &membership.MemberProfileChangeDTO{
+			MemberID: value.GetMemberId(), ReleaseVersion: value.GetReleaseVersion(),
+			Features: slices.Clone(value.GetFeatures()),
+		}
+	case *records.CommandEnvelope_FeatureActivation:
+		value := payload.FeatureActivation
+		if value == nil {
+			return membership.CommandDTO{}, errors.New("feature activation payload is required")
+		}
+		command.FeatureActivation = &membership.FeatureActivationDTO{Feature: value.GetFeature()}
 	default:
 		return membership.CommandDTO{}, errors.New("decoded command has no supported payload")
 	}
@@ -366,8 +395,9 @@ func encodeMembershipSnapshot(snapshot membership.SnapshotDTO) ([]byte, error) {
 		})
 	}
 	state.TenantQuotaProfile = tenantQuotaProfileToRecord(snapshot.TenantQuotaProfile)
+	state.ActiveFeatures = slices.Clone(snapshot.ActiveFeatures)
 	quotaProfileObjectCount := membershipQuotaProfileObjectCount(snapshot.TenantQuotaProfile)
-	objectCount := uint64(len(snapshot.Members) + len(snapshot.Ownerships) + len(snapshot.Subscriptions) + len(snapshot.DeliverySessions) + deliveryEntriesCount + len(snapshot.MembershipHistory) + len(snapshot.Retained) + len(snapshot.OfflineSessions) + offlineMessagesCount + len(snapshot.NodeDrains) + quotaProfileObjectCount)
+	objectCount := uint64(len(snapshot.Members) + len(snapshot.Ownerships) + len(snapshot.Subscriptions) + len(snapshot.DeliverySessions) + deliveryEntriesCount + len(snapshot.MembershipHistory) + len(snapshot.Retained) + len(snapshot.OfflineSessions) + offlineMessagesCount + len(snapshot.NodeDrains) + len(snapshot.ActiveFeatures) + quotaProfileObjectCount)
 	if snapshot.ObjectCount != objectCount {
 		return nil, errors.New("application snapshot object count does not match its contents")
 	}
@@ -396,7 +426,7 @@ func decodeMembershipSnapshot(data []byte) (membership.SnapshotDTO, error) {
 	snapshot := membership.SnapshotDTO{
 		SchemaMajor: wire.GetSchemaMajor(), SchemaMinor: wire.GetSchemaMinor(),
 		LastIncludedIndex: wire.GetLastIncludedIndex(), ObjectCount: wire.GetObjectCount(),
-		Digest: append([]byte(nil), wire.GetSha256()...),
+		Digest: append([]byte(nil), wire.GetSha256()...), ActiveFeatures: slices.Clone(state.GetActiveFeatures()),
 	}
 	for _, member := range state.GetMembers() {
 		value, err := memberIdentityFromRecord(member)
@@ -588,6 +618,7 @@ func memberIdentityToRecord(member *membership.MemberIdentityDTO) (*records.Memb
 	return &records.MemberIdentity{
 		MemberId: member.MemberID, ClusterId: member.ClusterID, Address: member.Address, DnsSan: member.DNSSAN,
 		CertificateSha256: append([]byte(nil), member.CertificateSHA256...), ReleaseVersion: member.ReleaseVersion,
+		Features:             slices.Clone(member.Features),
 		ClusterProtocolMajor: member.ClusterProtocolMajor, ClusterProtocolMinor: member.ClusterProtocolMinor,
 		StateSchemaMajor: member.StateSchemaMajor, StateSchemaMinor: member.StateSchemaMinor,
 		Phase: phase, OperationId: member.OperationID,
@@ -605,6 +636,7 @@ func memberIdentityFromRecord(member *records.MemberIdentity) (*membership.Membe
 	return &membership.MemberIdentityDTO{
 		MemberID: member.GetMemberId(), ClusterID: member.GetClusterId(), Address: member.GetAddress(), DNSSAN: member.GetDnsSan(),
 		CertificateSHA256: append([]byte(nil), member.GetCertificateSha256()...), ReleaseVersion: member.GetReleaseVersion(),
+		Features:             slices.Clone(member.GetFeatures()),
 		ClusterProtocolMajor: member.GetClusterProtocolMajor(), ClusterProtocolMinor: member.GetClusterProtocolMinor(),
 		StateSchemaMajor: member.GetStateSchemaMajor(), StateSchemaMinor: member.GetStateSchemaMinor(),
 		Phase: phase, OperationID: member.GetOperationId(),

@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -86,7 +87,7 @@ func TestClusterReadinessGate(t *testing.T) {
 	base := clusterReadinessSnapshot{
 		initialized: true, projectionFailed: false,
 		bootstrapped: true, dynamicMembership: true,
-		localVoter: true, localPhaseVoter: true, tenantQuotaProfileCommitted: true,
+		localVoter: true, localPhaseVoter: true, tenantQuotaProfileCommitted: true, releaseProfileSynced: true,
 		projectionIndex: 10, appliedIndex: 10,
 	}
 
@@ -173,6 +174,15 @@ func TestClusterReadinessGate(t *testing.T) {
 			wantSatisfied: false,
 		},
 		{
+			name: "release profile not synchronized",
+			mutate: func(s *clusterReadinessSnapshot) {
+				s.releaseProfileSynced = false
+			},
+			barrier:       10,
+			wantAdmits:    false,
+			wantSatisfied: false,
+		},
+		{
 			name: "tenant quota profile not committed",
 			mutate: func(s *clusterReadinessSnapshot) {
 				s.tenantQuotaProfileCommitted = false
@@ -245,8 +255,10 @@ func TestClusterProjectionReadyRequiresInitializedCurrentProjection(t *testing.T
 	}
 	runtime := &clusterRuntime{
 		config: config, node: node, machine: machine,
-		storage: newClusterStorageMonitor(func() time.Time { return time.Unix(0, storageNow.Load()) }, nil),
+		storage:        newClusterStorageMonitor(func() time.Time { return time.Unix(0, storageNow.Load()) }, nil),
+		releaseProfile: &clusterReleaseProfileController{},
 	}
+	runtime.releaseProfile.synced.Store(true)
 	runtime.initialized.Store(true)
 	runtime.projectionIndex.Store(status.AppliedIndex)
 	runtime.publishProjectionAdmissionStatus(status)
@@ -406,7 +418,7 @@ func TestPeerIdentityFromMember(t *testing.T) {
 		Address:           "a:1",
 		DNSSAN:            "a",
 		CertificateSHA256: bytes.Repeat([]byte{0x42}, 32),
-		ReleaseVersion:    "1.0",
+		ReleaseVersion:    "1.0.0",
 		Phase:             membership.MemberPhaseVoter,
 	}
 	got, err := peerIdentityFromMember(valid)
@@ -437,19 +449,19 @@ func TestConfiguredLocalPeerIdentity(t *testing.T) {
 func TestCommittedLocalAndPeerIdentities(t *testing.T) {
 	machine := membership.NewStateMachine()
 	voters := []membership.MemberIdentityDTO{
-		{MemberID: 1, ClusterID: "c", Address: "a:1", DNSSAN: "a", CertificateSHA256: bytes.Repeat([]byte{1}, 32), ReleaseVersion: "1.0", ClusterProtocolMajor: 2, StateSchemaMajor: 1, Phase: membership.MemberPhaseVoter},
-		{MemberID: 2, ClusterID: "c", Address: "a:2", DNSSAN: "a", CertificateSHA256: bytes.Repeat([]byte{2}, 32), ReleaseVersion: "1.0", ClusterProtocolMajor: 2, StateSchemaMajor: 1, Phase: membership.MemberPhaseVoter},
-		{MemberID: 3, ClusterID: "c", Address: "a:3", DNSSAN: "a", CertificateSHA256: bytes.Repeat([]byte{3}, 32), ReleaseVersion: "1.0", ClusterProtocolMajor: 2, StateSchemaMajor: 1, Phase: membership.MemberPhaseVoter},
+		{MemberID: 1, ClusterID: "c", Address: "a:1", DNSSAN: "a", CertificateSHA256: bytes.Repeat([]byte{1}, 32), ReleaseVersion: "1.0.0", ClusterProtocolMajor: 2, StateSchemaMajor: 1, Phase: membership.MemberPhaseVoter},
+		{MemberID: 2, ClusterID: "c", Address: "a:2", DNSSAN: "a", CertificateSHA256: bytes.Repeat([]byte{2}, 32), ReleaseVersion: "1.0.0", ClusterProtocolMajor: 2, StateSchemaMajor: 1, Phase: membership.MemberPhaseVoter},
+		{MemberID: 3, ClusterID: "c", Address: "a:3", DNSSAN: "a", CertificateSHA256: bytes.Repeat([]byte{3}, 32), ReleaseVersion: "1.0.0", ClusterProtocolMajor: 2, StateSchemaMajor: 1, Phase: membership.MemberPhaseVoter},
 	}
 	if err := machine.InitializeBootstrap(3, voters); err != nil {
 		t.Fatal(err)
 	}
 
-	local, found := committedLocalIdentity(machine, 1)
-	if !found || local.MemberID != 1 {
-		t.Fatalf("committedLocalIdentity(1) found=%t local=%+v", found, local)
+	local, found := committedLocalIdentity(machine, 1, "1.1.0")
+	if !found || local.MemberID != 1 || local.ReleaseVersion != "1.1.0" {
+		t.Fatalf("committedLocalIdentity(1, 1.1.0) found=%t local=%+v", found, local)
 	}
-	_, notFound := committedLocalIdentity(machine, 99)
+	_, notFound := committedLocalIdentity(machine, 99, "1.1.0")
 	if notFound {
 		t.Fatal("expected 99 not found")
 	}
@@ -463,24 +475,84 @@ func TestCommittedLocalAndPeerIdentities(t *testing.T) {
 		t.Fatalf("committedPeerIdentities = %+v, want peers 2 and 3", peers)
 	}
 }
+func TestClusterPeerSetForReleaseWindow(t *testing.T) {
+	tests := []struct {
+		name             string
+		localRelease     string
+		peerReleases     []string
+		wantPeerCount    int
+		wantIncompatible bool
+	}{
+		{name: "adjacent release", localRelease: "1.1.0", peerReleases: []string{"1.2.0"}, wantPeerCount: 1},
+		{name: "local is outside window", localRelease: "1.0.0", peerReleases: []string{"1.2.0"}, wantIncompatible: true},
+		{name: "peer releases are outside each other window", localRelease: "1.1.0", peerReleases: []string{"1.0.0", "1.2.0"}, wantPeerCount: 2, wantIncompatible: true},
+		{name: "reject incompatible peer but preserve compatible quorum peer", localRelease: "1.2.0", peerReleases: []string{"1.0.0", "1.2.0"}, wantPeerCount: 1},
+		{name: "reject all incompatible peers and quarantine local node", localRelease: "1.2.0", peerReleases: []string{"1.0.0"}, wantIncompatible: true},
+		{name: "empty peer set", localRelease: "1.0.0"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			peers := make([]tcpadapter.PeerIdentityDTO, len(test.peerReleases))
+			for index, version := range test.peerReleases {
+				peers[index].ReleaseVersion = version
+			}
+			filtered, reason := clusterPeerSetForReleaseWindow(test.localRelease, peers)
+			if (reason != "") != test.wantIncompatible {
+				t.Fatalf("incompatibility reason = %q, want incompatible=%t", reason, test.wantIncompatible)
+			}
+			if len(filtered) != test.wantPeerCount {
+				t.Fatalf("peer count = %d, want %d", len(filtered), test.wantPeerCount)
+			}
+			if test.wantIncompatible && !strings.HasPrefix(reason, "incompatible_state_schema: ") {
+				t.Fatalf("incompatibility reason = %q, want readiness prefix", reason)
+			}
+		})
+	}
+}
+
+func TestClusterBootstrapIdentitiesIncludesBuildFeatures(t *testing.T) {
+	config := validBootstrapClusterConfig()
+	config.Features = []string{"compatibility-probe"}
+	_, members, err := clusterBootstrapIdentities(config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(members) != 3 {
+		t.Fatalf("bootstrap members = %d, want 3", len(members))
+	}
+	for _, member := range members {
+		if !reflect.DeepEqual(member.Features, config.Features) {
+			t.Fatalf("member %d features = %v, want %v", member.MemberID, member.Features, config.Features)
+		}
+	}
+	config.Features[0] = "mutated"
+	if members[0].Features[0] != "compatibility-probe" {
+		t.Fatalf("bootstrap member features alias config: %v", members[0].Features)
+	}
+}
 
 func TestSamePeerRequest(t *testing.T) {
 	fp := [32]byte{1, 2, 3}
 	member := membership.MemberIdentityDTO{
 		MemberID: 1, ClusterID: "c", Address: "a:1", DNSSAN: "a",
-		CertificateSHA256: fp[:], ReleaseVersion: "1.0",
+		CertificateSHA256: fp[:], ReleaseVersion: "1.0.0",
 		ClusterProtocolMajor: 2, ClusterProtocolMinor: 0,
 		StateSchemaMajor: 1, StateSchemaMinor: 0,
 	}
 	candidate := tcpadapter.PeerIdentityDTO{
 		MemberID: 1, ClusterID: "c", Address: "a:1", DNSSAN: "a",
-		CertificateSHA256: fp, ReleaseVersion: "1.0",
+		CertificateSHA256: fp, ReleaseVersion: "1.1.0",
 		ClusterProtocolMajor: 2, ClusterProtocolMinor: 0,
 		StateSchemaMajor: 1, StateSchemaMinor: 0,
 	}
 	if !samePeerRequest(member, candidate) {
-		t.Fatal("expected match")
+		t.Fatal("expected adjacent release match")
 	}
+	candidate.ReleaseVersion = "1.2.0"
+	if samePeerRequest(member, candidate) {
+		t.Fatal("expected incompatible release mismatch")
+	}
+	candidate.ReleaseVersion = "1.1.0"
 	diffID := candidate
 	diffID.MemberID = 2
 	if samePeerRequest(member, diffID) {

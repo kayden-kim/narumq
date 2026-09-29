@@ -106,8 +106,8 @@ func TestDynamicClusterCrossNodeDeliveryMatrixProcessAcceptance(t *testing.T) {
 		}
 		defer connectionB.Close()
 		filter := "$share/matrix-group/matrix/shared/#"
-		clusterMatrixSubscribeV5(t, connectionA, 1, filter, 0x01, 1)
-		clusterMatrixSubscribeV5(t, connectionB, 1, filter, 0x01, 1)
+		clusterMatrixSubscribeV5(t, fixture, nodes, connectionA, 1, filter, 0x01, 1)
+		clusterMatrixSubscribeV5(t, fixture, nodes, connectionB, 1, filter, 0x01, 1)
 		addSubscription("matrix-shared-a", "matrix/shared/#", 1)
 		addSubscription("matrix-shared-b", "matrix/shared/#", 1)
 		clusterMatrixWaitForSubscriptions(t, ctx, nodes, want...)
@@ -268,6 +268,7 @@ func TestDynamicClusterCrossNodeDeliveryMatrixProcessAcceptance(t *testing.T) {
 		for index, test := range retainedCases {
 			connection, _, code, err := clusterDrainProcessConnectV5(fixture.mqttAddresses[1], fixture.accessToken, test.clientID, false)
 			if err != nil || code != 0 {
+				clusterMatrixLogBrokerDiagnostics(t, fixture, nodes)
 				t.Fatalf("connect MQTT 5 %s: code=%d err=%v", test.clientID, code, err)
 			}
 			connections[index] = connection
@@ -275,7 +276,7 @@ func TestDynamicClusterCrossNodeDeliveryMatrixProcessAcceptance(t *testing.T) {
 		}
 		for index, test := range retainedCases {
 			connection := connections[index]
-			clusterMatrixSubscribeV5(t, connection, 1, "retain/one", test.options, 1)
+			clusterMatrixSubscribeV5(t, fixture, nodes, connection, 1, "retain/one", test.options, 1)
 			addSubscription(test.clientID, "retain/one", 1)
 			clusterMatrixWaitForSubscriptions(t, ctx, nodes, want...)
 			if test.retained {
@@ -286,7 +287,7 @@ func TestDynamicClusterCrossNodeDeliveryMatrixProcessAcceptance(t *testing.T) {
 				clusterMatrixAck(t, connection, delivery)
 			}
 			if test.repeat {
-				clusterMatrixSubscribeV5(t, connection, 2, "retain/one", test.options, 1)
+				clusterMatrixSubscribeV5(t, fixture, nodes, connection, 2, "retain/one", test.options, 1)
 				clusterMatrixAssertQuiet(t, connection, time.Second)
 			}
 			if !test.retained {
@@ -304,8 +305,8 @@ func TestDynamicClusterCrossNodeDeliveryMatrixProcessAcceptance(t *testing.T) {
 			t.Fatalf("connect MQTT 5 rap-0: code=%d err=%v", code, err)
 		}
 		defer rap0.Close()
-		clusterMatrixSubscribeV5(t, rap1, 1, "rap/live", 0x09, 1)
-		clusterMatrixSubscribeV5(t, rap0, 1, "rap/live", 0x01, 1)
+		clusterMatrixSubscribeV5(t, fixture, nodes, rap1, 1, "rap/live", 0x09, 1)
+		clusterMatrixSubscribeV5(t, fixture, nodes, rap0, 1, "rap/live", 0x01, 1)
 		addSubscription("rap-1", "rap/live", 1)
 		addSubscription("rap-0", "rap/live", 1)
 		clusterMatrixWaitForSubscriptions(t, ctx, nodes, want...)
@@ -322,15 +323,12 @@ func TestDynamicClusterCrossNodeDeliveryMatrixProcessAcceptance(t *testing.T) {
 			clusterMatrixAck(t, recipient.conn, delivery)
 		}
 
-		noLocal, _, code, err := clusterDrainProcessConnectV5(fixture.mqttAddresses[1], fixture.accessToken, "nolocal-v5", false)
-		if err != nil || code != 0 {
-			t.Fatalf("connect MQTT 5 nolocal-v5: code=%d err=%v", code, err)
-		}
+		noLocal := clusterMatrixConnectV5WithServerUnavailableRetry(t, fixture, nodes, fixture.mqttAddresses[1], "nolocal-v5")
 		defer noLocal.Close()
-		clusterMatrixSubscribeV5(t, noLocal, 1, "nolocal/topic", 0x05, 1)
+		clusterMatrixSubscribeV5(t, fixture, nodes, noLocal, 1, "nolocal/topic", 0x05, 1)
 		addSubscription("nolocal-v5", "nolocal/topic", 1)
 		clusterMatrixWaitForSubscriptions(t, ctx, nodes, want...)
-		clusterMatrixPublishV5(t, noLocal, "nolocal/topic", 1, 7, "self")
+		clusterMatrixPublishV5(t, fixture, nodes, noLocal, "nolocal/topic", 1, 7, "self")
 		if err := clusterMatrixSendPublish(publisher, "nolocal/topic", 1, 302, "remote", false); err != nil {
 			for _, process := range nodes {
 				exitCode, exited := process.exitCode()
@@ -345,6 +343,40 @@ func TestDynamicClusterCrossNodeDeliveryMatrixProcessAcceptance(t *testing.T) {
 		clusterMatrixAck(t, noLocal, delivery)
 		clusterMatrixAssertQuiet(t, noLocal, time.Second)
 	})
+}
+
+func clusterMatrixConnectV5WithServerUnavailableRetry(
+	t *testing.T,
+	fixture *clusterMembershipProcessFixture,
+	nodes []*clusterMembershipProcess,
+	address, clientID string,
+) net.Conn {
+	t.Helper()
+	deadline := time.Now().Add(15 * time.Second)
+	attempts := 0
+	for time.Now().Before(deadline) {
+		attempts++
+		connection, _, code, err := clusterDrainProcessConnectV5(address, fixture.accessToken, clientID, false)
+		if err != nil {
+			clusterMatrixLogBrokerDiagnostics(t, fixture, nodes)
+			t.Fatalf("connect MQTT 5 %s: code=%d err=%v", clientID, code, err)
+		}
+		if code == 0 {
+			if attempts > 1 {
+				t.Logf("MQTT 5 CONNECT %s succeeded after %d transient 0x88 Server Unavailable rejections", clientID, attempts-1)
+			}
+			return connection
+		}
+		_ = connection.Close()
+		if code != 0x88 {
+			clusterMatrixLogBrokerDiagnostics(t, fixture, nodes)
+			t.Fatalf("connect MQTT 5 %s: code=%d, want success or transient 0x88 Server Unavailable rejection", clientID, code)
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	clusterMatrixLogBrokerDiagnostics(t, fixture, nodes)
+	t.Fatalf("connect MQTT 5 %s stayed unavailable after %d attempts with reason 0x88", clientID, attempts)
+	return nil
 }
 func clusterMatrixWaitForSubscriptions(t *testing.T, ctx context.Context, nodes []*clusterMembershipProcess, want ...string) {
 	t.Helper()
@@ -414,7 +446,7 @@ func clusterMatrixAwaitAck(connection net.Conn, want byte, packetID uint16, time
 	return nil
 }
 
-func clusterMatrixPublishV5(t *testing.T, connection net.Conn, topic string, qos byte, packetID uint16, payload string) {
+func clusterMatrixPublishV5(t *testing.T, fixture *clusterMembershipProcessFixture, nodes []*clusterMembershipProcess, connection net.Conn, topic string, qos byte, packetID uint16, payload string) {
 	t.Helper()
 	body := []byte{byte(len(topic) >> 8), byte(len(topic))}
 	body = append(body, topic...)
@@ -427,6 +459,7 @@ func clusterMatrixPublishV5(t *testing.T, connection net.Conn, topic string, qos
 		t.Fatalf("send MQTT 5 QoS %d PUBLISH: %v", qos, err)
 	}
 	if qos == 1 && !clusterDurableFaultAwaitAck(t, connection, 4, packetID, 5*time.Second) {
+		clusterMatrixLogBrokerDiagnostics(t, fixture, nodes)
 		t.Fatalf("MQTT 5 QoS 1 PUBLISH packet %d did not receive PUBACK", packetID)
 	}
 }
@@ -513,7 +546,7 @@ func clusterMatrixAssertQuiet(t *testing.T, connection net.Conn, duration time.D
 	t.Fatalf("unexpected MQTT packet while quiet: kind=%d flags=%#x body=%x", kind, flags, body)
 }
 
-func clusterMatrixSubscribeV5(t *testing.T, connection net.Conn, packetID uint16, filter string, options byte, grantedQoS byte) {
+func clusterMatrixSubscribeV5(t *testing.T, fixture *clusterMembershipProcessFixture, nodes []*clusterMembershipProcess, connection net.Conn, packetID uint16, filter string, options byte, grantedQoS byte) {
 	t.Helper()
 	body := []byte{byte(packetID >> 8), byte(packetID), 0, byte(len(filter) >> 8), byte(len(filter))}
 	body = append(body, filter...)
@@ -525,6 +558,7 @@ func clusterMatrixSubscribeV5(t *testing.T, connection net.Conn, packetID uint16
 	kind, _, ack, err := clusterDurableProcessReadRaw(connection)
 	_ = connection.SetReadDeadline(time.Time{})
 	if err != nil || kind != 9 || len(ack) != 4 || binary.BigEndian.Uint16(ack[:2]) != packetID || ack[2] != 0 || ack[3] != grantedQoS {
+		clusterMatrixLogBrokerDiagnostics(t, fixture, nodes)
 		t.Fatalf("MQTT 5 SUBACK kind=%d body=%x err=%v, want packet=%d reason=%d", kind, ack, err, packetID, grantedQoS)
 	}
 }
@@ -564,4 +598,27 @@ func clusterMatrixWaitForRetained(t *testing.T, ctx context.Context, nodes []*cl
 		}
 		return true, "all node retained projections agree", nil
 	})
+}
+
+func clusterMatrixLogBrokerDiagnostics(t *testing.T, fixture *clusterMembershipProcessFixture, nodes []*clusterMembershipProcess) {
+	t.Helper()
+	for _, process := range nodes {
+		exitCode, exited := process.exitCode()
+		t.Logf("node=%s alive=%v exited=%t exitCode=%d logs=%q",
+			process.name, process.isAlive(), exited, exitCode, process.logs.String())
+
+		readinessCtx, cancelReadiness := context.WithTimeout(fixture.ctx, time.Second)
+		readinessStatus, readinessBody, readinessErr := clusterMembershipProcessRequest(
+			readinessCtx, http.MethodGet, process.managementURL()+"/health/ready", nil, "", "")
+		cancelReadiness()
+		t.Logf("node=%s readiness status=%d body=%s err=%v",
+			process.name, readinessStatus, readinessBody, readinessErr)
+
+		summaryCtx, cancelSummary := context.WithTimeout(fixture.ctx, time.Second)
+		summary, summaryStatus, summaryBody, summaryErr := clusterMembershipProcessGetSummary(
+			summaryCtx, process.managementURL(), clusterMembershipProcessAdmin)
+		cancelSummary()
+		t.Logf("node=%s cluster status=%d summary=%+v body=%q err=%v",
+			process.name, summaryStatus, summary, summaryBody, summaryErr)
+	}
 }

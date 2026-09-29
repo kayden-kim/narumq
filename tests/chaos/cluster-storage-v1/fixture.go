@@ -44,7 +44,6 @@ type chaosClusterConfig struct {
 	ListenAddress        string                `json:"listenAddress"`
 	AdvertisedAddress    string                `json:"advertisedAddress"`
 	LocalDNSName         string                `json:"localDnsName"`
-	ReleaseVersion       string                `json:"releaseVersion"`
 	ClusterProtocolMajor uint32                `json:"clusterProtocolMajor"`
 	ClusterProtocolMinor uint32                `json:"clusterProtocolMinor"`
 	StateSchemaMajor     uint32                `json:"stateSchemaMajor"`
@@ -237,7 +236,7 @@ func createChaosFixture() (*chaosFixture, error) {
 			Mode: "cluster", ClusterID: "narumq-chaos", NodeID: uint64(nodeNumber),
 			Directory: "/var/lib/narumq/node", ListenAddress: "0.0.0.0:7000",
 			AdvertisedAddress: fmt.Sprintf("%s:7000", dnsName), LocalDNSName: dnsName,
-			ReleaseVersion: "1.0.0", ClusterProtocolMajor: 2, ClusterProtocolMinor: 0,
+			ClusterProtocolMajor: 2, ClusterProtocolMinor: 0,
 			StateSchemaMajor: 1, StateSchemaMinor: 0, Role: "bootstrap",
 			BootstrapMembers: members, SeedAddresses: []string{},
 			PeerTLS:    chaosPeerTLSConfig{CertFile: "/config/node.pem", KeyFile: "/config/node-key.pem", CAFile: "/config/ca.pem"},

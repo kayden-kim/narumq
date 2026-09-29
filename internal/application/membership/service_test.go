@@ -3,6 +3,7 @@ package membership
 import (
 	"context"
 	"errors"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -35,6 +36,13 @@ func (port *stateMachinePort) Members(ctx context.Context) ([]MemberIdentityDTO,
 		return nil, err
 	}
 	return port.machine.Members(), nil
+}
+
+func (port *stateMachinePort) ActiveFeatures(ctx context.Context) ([]string, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	return port.machine.ActiveFeatures(), nil
 }
 
 func (port *stateMachinePort) GetOperation(ctx context.Context, operationID string) (MembershipOperationDTO, bool, error) {
@@ -204,5 +212,86 @@ func TestServicePreservesNotLeaderPortClassification(t *testing.T) {
 	_, err = service.StartPlannedRemoval(context.Background(), 3, "remove-key", 1)
 	if !errors.As(err, &serviceError) || !errors.Is(err, ErrNotLeader) || serviceError.Code != ServiceErrorNotLeader || !serviceError.Retryable {
 		t.Fatalf("remove non-leader error=%v, want retryable not_leader", err)
+	}
+}
+
+type reverseMembersPort struct {
+	*stateMachinePort
+}
+
+func (port *reverseMembersPort) Members(ctx context.Context) ([]MemberIdentityDTO, error) {
+	members, err := port.stateMachinePort.Members(ctx)
+	if err == nil {
+		slices.Reverse(members)
+	}
+	return members, err
+}
+
+func TestServiceClusterFeaturesReturnsSortedNonRetiredProfiles(t *testing.T) {
+	machine := releaseProfileMachine(t, "1.2.0", nil)
+	snapshot, err := machine.Snapshot(1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	retired := testMember(4, MemberPhaseRetired, "")
+	retired.ReleaseVersion = "1.0.0"
+	snapshot.Members = append(snapshot.Members, retired)
+	snapshot.ObjectCount++
+	machine = NewStateMachine()
+	if err := machine.Restore(snapshot); err != nil {
+		t.Fatalf("restore retired member: %v", err)
+	}
+	port := &reverseMembersPort{stateMachinePort: &stateMachinePort{machine: machine}}
+	service, err := NewService(port)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	state, err := service.ClusterFeatures(context.Background())
+	if err != nil {
+		t.Fatalf("read feature state: %v", err)
+	}
+	if state.ActiveFeatures == nil || len(state.ActiveFeatures) != 0 || state.Members == nil || len(state.Members) != 3 {
+		t.Fatalf("feature state shape = %+v", state)
+	}
+	for index, member := range state.Members {
+		if member.MemberID != uint64(index+1) || member.ReleaseVersion != "1.2.0" || member.Features == nil || len(member.Features) != 0 {
+			t.Errorf("member profile[%d] = %+v", index, member)
+		}
+	}
+}
+
+func TestServiceActivateFeatureCommitsAndMapsUnsupportedMembers(t *testing.T) {
+	machine := releaseProfileMachine(t, "1.2.0", []string{"compatibility-probe"})
+	port := &stateMachinePort{machine: machine, nextIndex: 1}
+	service, err := NewService(port)
+	if err != nil {
+		t.Fatal(err)
+	}
+	state, err := service.ActivateFeature(context.Background(), "compatibility-probe")
+	if err != nil || !slices.Equal(state.ActiveFeatures, []string{"compatibility-probe"}) || port.commitCalls != 1 {
+		t.Fatalf("activate feature state=%+v err=%v commits=%d", state, err, port.commitCalls)
+	}
+	state, err = service.ActivateFeature(context.Background(), "compatibility-probe")
+	if err != nil || !slices.Equal(state.ActiveFeatures, []string{"compatibility-probe"}) || port.commitCalls != 2 {
+		t.Fatalf("repeat feature activation state=%+v err=%v commits=%d", state, err, port.commitCalls)
+	}
+	if _, err := service.ActivateFeature(context.Background(), "Bad"); err == nil || port.commitCalls != 2 {
+		t.Fatalf("invalid feature error=%v commits=%d", err, port.commitCalls)
+	}
+
+	unsupportedMachine := releaseProfileMachine(t, "1.2.0", []string{"compatibility-probe"})
+	if result := applyMemberProfileForTest(t, unsupportedMachine, 2, 3, "1.2.0", nil); result.Outcome != ApplyOutcomeApplied {
+		t.Fatalf("remove member feature profile = %+v", result)
+	}
+	unsupportedPort := &stateMachinePort{machine: unsupportedMachine, nextIndex: 2}
+	unsupportedService, err := NewService(unsupportedPort)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = unsupportedService.ActivateFeature(context.Background(), "compatibility-probe")
+	var serviceError *ServiceError
+	if !errors.As(err, &serviceError) || serviceError.Code != ServiceErrorFeatureUnsupported || serviceError.Retryable || unsupportedPort.commitCalls != 1 {
+		t.Fatalf("unsupported activation error=%v commits=%d", err, unsupportedPort.commitCalls)
 	}
 }

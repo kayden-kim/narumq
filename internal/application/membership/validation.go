@@ -8,6 +8,7 @@ import (
 	"unicode/utf8"
 
 	"narumq/internal/domain/nodedrain"
+	"narumq/internal/domain/release"
 	"narumq/internal/domain/routing"
 	"narumq/internal/domain/tenancy"
 )
@@ -29,7 +30,6 @@ const (
 	maxClusterIDBytes      = 200
 	maxAddressBytes        = 255
 	maxDNSNameBytes        = 253
-	maxReleaseVersionBytes = 64
 	maxTenantIDBytes       = 128
 	maxClientIDBytes       = 256
 	maxTopicFilterBytes    = 65535
@@ -64,6 +64,12 @@ func validateCommand(command CommandDTO) error {
 		payloadCount++
 	}
 	if command.NodeDrain != nil {
+		payloadCount++
+	}
+	if command.MemberProfile != nil {
+		payloadCount++
+	}
+	if command.FeatureActivation != nil {
 		payloadCount++
 	}
 	if payloadCount != 1 {
@@ -102,6 +108,24 @@ func validateCommand(command CommandDTO) error {
 		if validateTenantQuotaCommand(*command.TenantQuota) != nil {
 			return ErrInvalidCommand
 		}
+	case command.MemberProfile != nil:
+		if validateMemberProfileChange(*command.MemberProfile) != nil {
+			return ErrInvalidCommand
+		}
+	case command.FeatureActivation != nil:
+		if !release.ValidFeature(command.FeatureActivation.Feature) {
+			return ErrInvalidCommand
+		}
+	}
+	return nil
+}
+
+func validateMemberProfileChange(change MemberProfileChangeDTO) error {
+	if change.MemberID == 0 {
+		return ErrInvalidCommand
+	}
+	if _, err := release.Parse(change.ReleaseVersion); err != nil || !release.ValidFeatureSet(change.Features) {
+		return ErrInvalidCommand
 	}
 	return nil
 }
@@ -180,7 +204,10 @@ func validateMembershipRecord(record MembershipRecordDTO) error {
 }
 
 func validateMemberIdentity(member MemberIdentityDTO) error {
-	if member.MemberID == 0 || !boundedUTF8(member.ClusterID, 1, maxClusterIDBytes) || !boundedUTF8(member.Address, 1, maxAddressBytes) || !validAddress(member.Address) || !validDNSName(member.DNSSAN) || len(member.CertificateSHA256) != 32 || !boundedUTF8(member.ReleaseVersion, 1, maxReleaseVersionBytes) {
+	if member.MemberID == 0 || !boundedUTF8(member.ClusterID, 1, maxClusterIDBytes) || !boundedUTF8(member.Address, 1, maxAddressBytes) || !validAddress(member.Address) || !validDNSName(member.DNSSAN) || len(member.CertificateSHA256) != 32 {
+		return ErrInvalidCommand
+	}
+	if _, err := release.Parse(member.ReleaseVersion); err != nil || !release.ValidFeatureSet(member.Features) {
 		return ErrInvalidCommand
 	}
 	if member.ClusterProtocolMajor != 2 || member.ClusterProtocolMinor != 0 || member.StateSchemaMajor != SchemaMajor || member.StateSchemaMinor != SchemaMinor || member.Phase < MemberPhaseStaged || member.Phase > MemberPhaseRetired {
@@ -308,7 +335,8 @@ func validRetainedState(state RetainedStateDTO) bool {
 }
 
 func validSnapshot(snapshot SnapshotDTO) error {
-	if snapshot.SchemaMajor != SchemaMajor || snapshot.SchemaMinor != SchemaMinor || (len(snapshot.Digest) != 0 && len(snapshot.Digest) != 32) || validateSnapshotTenantQuotaProfile(snapshot.TenantQuotaProfile) != nil {
+	if snapshot.SchemaMajor != SchemaMajor || snapshot.SchemaMinor != SchemaMinor || (len(snapshot.Digest) != 0 && len(snapshot.Digest) != 32) ||
+		!release.ValidFeatureSet(snapshot.ActiveFeatures) || validateSnapshotTenantQuotaProfile(snapshot.TenantQuotaProfile) != nil {
 		return ErrInvalidSnapshot
 	}
 	offlineMessagesCount := 0
@@ -319,16 +347,28 @@ func validSnapshot(snapshot SnapshotDTO) error {
 	for _, session := range snapshot.DeliverySessions {
 		deliveryObjects += len(session.Messages) + len(session.Inbound)
 	}
-	count := len(snapshot.Members) + len(snapshot.Ownerships) + len(snapshot.Subscriptions) + deliveryObjects + len(snapshot.MembershipHistory) + len(snapshot.Retained) + len(snapshot.OfflineSessions) + offlineMessagesCount + len(snapshot.NodeDrains) + tenantQuotaObjectCount(snapshot.TenantQuotaProfile)
+	count := len(snapshot.Members) + len(snapshot.Ownerships) + len(snapshot.Subscriptions) + deliveryObjects + len(snapshot.MembershipHistory) + len(snapshot.Retained) + len(snapshot.OfflineSessions) + offlineMessagesCount + len(snapshot.NodeDrains) + len(snapshot.ActiveFeatures) + tenantQuotaObjectCount(snapshot.TenantQuotaProfile)
 	if count > maxSnapshotEntries || snapshot.ObjectCount != uint64(count) || (count > 0 && snapshot.LastIncludedIndex == 0) || len(snapshot.Retained) > MaxRetainedMessages {
 		return ErrInvalidSnapshot
 	}
 	nodeDrainMembers := make(map[uint64]MemberPhase, len(snapshot.Members))
 	for index, member := range snapshot.Members {
-		if validateMemberIdentity(member) != nil || (index > 0 && (snapshot.Members[index-1].MemberID >= member.MemberID || !compatibleMemberProfile(snapshot.Members[0], member))) {
+		if validateMemberIdentity(member) != nil {
 			return ErrInvalidSnapshot
 		}
+		if index > 0 {
+			first := snapshot.Members[0]
+			previous := snapshot.Members[index-1]
+			if previous.MemberID >= member.MemberID || member.ClusterID != first.ClusterID ||
+				member.ClusterProtocolMajor != first.ClusterProtocolMajor || member.ClusterProtocolMinor != first.ClusterProtocolMinor ||
+				member.StateSchemaMajor != first.StateSchemaMajor || member.StateSchemaMinor != first.StateSchemaMinor {
+				return ErrInvalidSnapshot
+			}
+		}
 		nodeDrainMembers[member.MemberID] = member.Phase
+	}
+	if !activeReleaseWindowValid(snapshot.Members) {
+		return ErrInvalidSnapshot
 	}
 	activeDrains := 0
 	for index, state := range snapshot.NodeDrains {
@@ -462,7 +502,10 @@ func validSessionIdentity(tenantID, clientID string) bool {
 	return err == nil
 }
 func validateMemberIdentityContent(member MemberIdentityDTO) error {
-	if member.MemberID == 0 || !boundedUTF8(member.ClusterID, 1, maxClusterIDBytes) || !boundedUTF8(member.Address, 1, maxAddressBytes) || !validAddress(member.Address) || !validDNSName(member.DNSSAN) || len(member.CertificateSHA256) != 32 || !boundedUTF8(member.ReleaseVersion, 1, maxReleaseVersionBytes) {
+	if member.MemberID == 0 || !boundedUTF8(member.ClusterID, 1, maxClusterIDBytes) || !boundedUTF8(member.Address, 1, maxAddressBytes) || !validAddress(member.Address) || !validDNSName(member.DNSSAN) || len(member.CertificateSHA256) != 32 {
+		return ErrInvalidCommand
+	}
+	if _, err := release.Parse(member.ReleaseVersion); err != nil || !release.ValidFeatureSet(member.Features) {
 		return ErrInvalidCommand
 	}
 	return nil
@@ -491,7 +534,7 @@ func validAddress(address string) bool {
 	return validDNSName(host)
 }
 func compatibleMemberProfile(left, right MemberIdentityDTO) bool {
-	return left.ClusterID == right.ClusterID && left.ReleaseVersion == right.ReleaseVersion && left.ClusterProtocolMajor == right.ClusterProtocolMajor && left.ClusterProtocolMinor == right.ClusterProtocolMinor && left.StateSchemaMajor == right.StateSchemaMajor && left.StateSchemaMinor == right.StateSchemaMinor
+	return left.ClusterID == right.ClusterID && release.CompatibleStrings(left.ReleaseVersion, right.ReleaseVersion) && left.ClusterProtocolMajor == right.ClusterProtocolMajor && left.ClusterProtocolMinor == right.ClusterProtocolMinor && left.StateSchemaMajor == right.StateSchemaMajor && left.StateSchemaMinor == right.StateSchemaMinor
 }
 
 func validDNSName(value string) bool {

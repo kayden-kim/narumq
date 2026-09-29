@@ -22,7 +22,7 @@ func TestCommandReferenceVectors(t *testing.T) {
 		command *CommandEnvelope
 		wire    string
 	}{
-		{"stage_join", &CommandEnvelope{SchemaMajor: 1, OperationId: op4, Payload: &CommandEnvelope_Membership{Membership: &MembershipRecord{OperationId: op4, Action: MembershipAction_MEMBERSHIP_ACTION_STAGE_JOIN, IdempotencyKey: "k1", Member: &MemberIdentity{MemberId: 4, ClusterId: "c", Address: "n:1", DnsSan: "n", CertificateSha256: bytes.Repeat([]byte{0x11}, 32), ReleaseVersion: "v1", ClusterProtocolMajor: 2, StateSchemaMajor: 1, Phase: MemberPhase_MEMBER_PHASE_STAGED, OperationId: op4}}}}, "08011a2430303030303030302d303030302d343030302d383030302d303030303030303030303034528d010a2430303030303030302d303030302d343030302d383030302d30303030303030303030303410011a026b31225f08041201631a036e3a3122016e2a20" + strings.Repeat("11", 32) + "32027631380248015801622430303030303030302d303030302d343030302d383030302d303030303030303030303034"},
+		{"stage_join", &CommandEnvelope{SchemaMajor: 1, OperationId: op4, Payload: &CommandEnvelope_Membership{Membership: &MembershipRecord{OperationId: op4, Action: MembershipAction_MEMBERSHIP_ACTION_STAGE_JOIN, IdempotencyKey: "k1", Member: &MemberIdentity{MemberId: 4, ClusterId: "c", Address: "n:1", DnsSan: "n", CertificateSha256: bytes.Repeat([]byte{0x11}, 32), ReleaseVersion: "1.0.0", ClusterProtocolMajor: 2, StateSchemaMajor: 1, Phase: MemberPhase_MEMBER_PHASE_STAGED, OperationId: op4}}}}, "08011a2430303030303030302d303030302d343030302d383030302d3030303030303030303030345290010a2430303030303030302d303030302d343030302d383030302d30303030303030303030303410011a026b31226208041201631a036e3a3122016e2a20" + strings.Repeat("11", 32) + "3205312e302e30380248015801622430303030303030302d303030302d343030302d383030302d303030303030303030303034"},
 		{"ownership_acquire", &CommandEnvelope{SchemaMajor: 1, OperationId: op1, Payload: &CommandEnvelope_Ownership{Ownership: &OwnershipChange{TenantId: "t", ClientId: "c", OwnerNodeId: 1, Epoch: 1, Action: OwnershipAction_OWNERSHIP_ACTION_ACQUIRE}}}, "08011a2430303030303030302d303030302d343030302d383030302d3030303030303030303030315a0c0a0174120163200128013001"},
 		{"subscription_add", &CommandEnvelope{SchemaMajor: 1, OperationId: op1, Payload: &CommandEnvelope_Subscription{Subscription: &SubscriptionChange{TenantId: "t", ClientId: "c", OwnerNodeId: 1, Epoch: 1, Filter: "#", Qos: 1, Action: SubscriptionAction_SUBSCRIPTION_ACTION_ADD}}}, "08011a2430303030303030302d303030302d343030302d383030302d30303030303030303030303162110a0174120163180120012a012330015001"},
 		{"subscription_remove", &CommandEnvelope{SchemaMajor: 1, OperationId: op1, Payload: &CommandEnvelope_Subscription{Subscription: &SubscriptionChange{TenantId: "t", ClientId: "c", OwnerNodeId: 1, Epoch: 1, Filter: "#", Qos: 1, Action: SubscriptionAction_SUBSCRIPTION_ACTION_REMOVE}}}, "08011a2430303030303030302d303030302d343030302d383030302d30303030303030303030303162110a0174120163180120012a012330015002"},
@@ -137,7 +137,7 @@ func TestCodecRepresentativeBounds(t *testing.T) {
 	if _, err := MarshalCommand(command); err == nil {
 		t.Fatal("expected tenant bound rejection")
 	}
-	command = &CommandEnvelope{SchemaMajor: 1, OperationId: op1, Payload: &CommandEnvelope_Membership{Membership: &MembershipRecord{OperationId: op1, Action: MembershipAction_MEMBERSHIP_ACTION_STAGE_JOIN, IdempotencyKey: "k", Member: &MemberIdentity{MemberId: 1, ClusterId: "c", Address: "n:1", DnsSan: "n", CertificateSha256: []byte{1}, ReleaseVersion: "v", ClusterProtocolMajor: 2, StateSchemaMajor: 1, Phase: MemberPhase_MEMBER_PHASE_STAGED, OperationId: op1}}}}
+	command = &CommandEnvelope{SchemaMajor: 1, OperationId: op1, Payload: &CommandEnvelope_Membership{Membership: &MembershipRecord{OperationId: op1, Action: MembershipAction_MEMBERSHIP_ACTION_STAGE_JOIN, IdempotencyKey: "k", Member: &MemberIdentity{MemberId: 1, ClusterId: "c", Address: "n:1", DnsSan: "n", CertificateSha256: []byte{1}, ReleaseVersion: "1.0.0", ClusterProtocolMajor: 2, StateSchemaMajor: 1, Phase: MemberPhase_MEMBER_PHASE_STAGED, OperationId: op1}}}}
 	if _, err := MarshalCommand(command); err == nil {
 		t.Fatal("expected fingerprint length rejection")
 	}
@@ -146,7 +146,7 @@ func TestCodecRepresentativeBounds(t *testing.T) {
 func TestMembershipCommittedIndexIsSnapshotOnlyAndSurvivesRestore(t *testing.T) {
 	member := &MemberIdentity{
 		MemberId: 4, ClusterId: "c", Address: "n:1", DnsSan: "n",
-		CertificateSha256: bytes.Repeat([]byte{0x11}, 32), ReleaseVersion: "v1",
+		CertificateSha256: bytes.Repeat([]byte{0x11}, 32), ReleaseVersion: "1.0.0",
 		ClusterProtocolMajor: 2, StateSchemaMajor: 1,
 		Phase: MemberPhase_MEMBER_PHASE_STAGED, OperationId: op4,
 	}

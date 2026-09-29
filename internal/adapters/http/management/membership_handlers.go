@@ -22,6 +22,10 @@ type MembershipUseCase interface {
 	StageJoin(context.Context, membership.StageJoinRequestDTO) (membership.MembershipOperationDTO, error)
 	StartPlannedRemoval(context.Context, uint64, string, uint64) (membership.MembershipOperationDTO, error)
 	GetOperation(context.Context, string) (membership.MembershipOperationDTO, error)
+	// ClusterFeatures reads committed feature state and non-retired member profiles.
+	ClusterFeatures(context.Context) (membership.FeatureStateDTO, error)
+	// ActivateFeature commits cluster-wide activation of a supported feature.
+	ActivateFeature(context.Context, string) (membership.FeatureStateDTO, error)
 }
 
 type membershipHandler struct {
@@ -317,7 +321,8 @@ func writeMembershipServiceError(w http.ResponseWriter, r *http.Request, err err
 		membership.ServiceErrorNotLeader,
 		membership.ServiceErrorInvalidNodeTransition,
 		membership.ServiceErrorDrainNotCancellable,
-		membership.ServiceErrorNodeDrainInProgress:
+		membership.ServiceErrorNodeDrainInProgress,
+		membership.ServiceErrorFeatureUnsupported:
 		status = http.StatusConflict
 	case membership.ServiceErrorCompatibilityUnsupported:
 		status = http.StatusUnprocessableEntity

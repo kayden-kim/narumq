@@ -36,7 +36,7 @@ func ccfDiscardLogger() *slog.Logger {
 func ccfStagedMember() membership.MemberIdentityDTO {
 	return membership.MemberIdentityDTO{
 		MemberID: 4, ClusterID: "cluster", Address: "node4.example:19004", DNSSAN: "node4.example",
-		CertificateSHA256: bytes.Repeat([]byte{0x22}, 32), ReleaseVersion: "v1",
+		CertificateSHA256: bytes.Repeat([]byte{0x22}, 32), ReleaseVersion: "1.0.0",
 		ClusterProtocolMajor: 2, StateSchemaMajor: 1,
 		Phase: membership.MemberPhaseStaged, OperationID: ccfOperation,
 	}
@@ -360,8 +360,8 @@ func TestValidateClusterConfigReportsFirstInvalidField(t *testing.T) {
 		want string
 	}{
 		{name: "blank cluster ID", edit: func(c *clusterConfigFile) { c.ClusterID = " x" }, want: "clusterId must contain"},
-		{name: "empty release", edit: func(c *clusterConfigFile) { c.ReleaseVersion = "" }, want: "releaseVersion must contain"},
-		{name: "oversize release", edit: func(c *clusterConfigFile) { c.ReleaseVersion = strings.Repeat("v", 65) }, want: "releaseVersion must contain"},
+		{name: "invalid build release", edit: func(c *clusterConfigFile) { c.ReleaseVersion = "v1" }, want: "build release version must be MAJOR.MINOR.PATCH"},
+		{name: "invalid build features", edit: func(c *clusterConfigFile) { c.Features = []string{"Bad"} }, want: "build features are invalid"},
 		{name: "unknown role", edit: func(c *clusterConfigFile) { c.Role = "observer" }, want: "role must be bootstrap or joiner"},
 		{name: "blank directory", edit: func(c *clusterConfigFile) { c.Directory = " data" }, want: "directory is required"},
 		{name: "listen without port", edit: func(c *clusterConfigFile) { c.ListenAddress = "127.0.0.1" }, want: "listenAddress must be a valid host:port"},

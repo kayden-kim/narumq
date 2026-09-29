@@ -5,6 +5,10 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"errors"
+	"slices"
+	"sort"
+
+	"narumq/internal/domain/release"
 )
 
 var (
@@ -21,6 +25,7 @@ var (
 type CommandPort interface {
 	Commit(ctx context.Context, command CommandDTO) (ApplyResultDTO, error)
 	Members(ctx context.Context) ([]MemberIdentityDTO, error)
+	ActiveFeatures(ctx context.Context) ([]string, error)
 	GetOperation(ctx context.Context, operationID string) (MembershipOperationDTO, bool, error)
 	GetOperationByIdempotencyKey(ctx context.Context, idempotencyKey string) (MembershipOperationDTO, bool, error)
 	GetOwnership(ctx context.Context, tenantID, clientID string) (OwnershipStateDTO, bool, error)
@@ -47,6 +52,7 @@ const (
 	ServiceErrorNotLeader                ServiceErrorCode = "not_leader"
 	ServiceErrorQuorumUnavailable        ServiceErrorCode = "quorum_unavailable"
 	ServiceErrorCompatibilityUnsupported ServiceErrorCode = "compatibility_unsupported"
+	ServiceErrorFeatureUnsupported       ServiceErrorCode = "feature_not_supported_by_all_members"
 	ServiceErrorInvalidNodeTransition    ServiceErrorCode = "invalid_node_transition"
 	ServiceErrorDrainNotCancellable      ServiceErrorCode = "drain_not_cancellable"
 	ServiceErrorNodeDrainInProgress      ServiceErrorCode = "node_drain_in_progress"
@@ -218,6 +224,73 @@ func (service *Service) GetOperation(ctx context.Context, operationID string) (M
 	return cloneOperation(operation), nil
 }
 
+// ClusterFeatures returns the committed feature set and profiles of non-retired members.
+func (service *Service) ClusterFeatures(ctx context.Context) (FeatureStateDTO, error) {
+	if ctx == nil {
+		return FeatureStateDTO{}, newServiceError(ServiceErrorInvalidRequest, false)
+	}
+	if ctx.Err() != nil {
+		return FeatureStateDTO{}, newServiceError(ServiceErrorQuorumUnavailable, true)
+	}
+	members, err := service.port.Members(ctx)
+	if err != nil {
+		return FeatureStateDTO{}, portFailure(err)
+	}
+	activeFeatures, err := service.port.ActiveFeatures(ctx)
+	if err != nil {
+		return FeatureStateDTO{}, portFailure(err)
+	}
+
+	profiles := make([]MemberFeatureProfileDTO, 0, len(members))
+	for _, member := range members {
+		if member.Phase == MemberPhaseRetired {
+			continue
+		}
+		features := slices.Clone(member.Features)
+		if features == nil {
+			features = []string{}
+		}
+		profiles = append(profiles, MemberFeatureProfileDTO{
+			MemberID: member.MemberID, ReleaseVersion: member.ReleaseVersion, Features: features,
+		})
+	}
+	sort.Slice(profiles, func(left, right int) bool { return profiles[left].MemberID < profiles[right].MemberID })
+	if activeFeatures == nil {
+		activeFeatures = []string{}
+	} else {
+		activeFeatures = slices.Clone(activeFeatures)
+	}
+	return FeatureStateDTO{ActiveFeatures: activeFeatures, Members: profiles}, nil
+}
+
+// ActivateFeature commits cluster-wide activation of one feature advertised by every non-retired member.
+func (service *Service) ActivateFeature(ctx context.Context, feature string) (FeatureStateDTO, error) {
+	if ctx == nil || !release.ValidFeature(feature) {
+		return FeatureStateDTO{}, newServiceError(ServiceErrorInvalidRequest, false)
+	}
+	if ctx.Err() != nil {
+		return FeatureStateDTO{}, newServiceError(ServiceErrorQuorumUnavailable, true)
+	}
+	operationID, err := newOperationID()
+	if err != nil {
+		return FeatureStateDTO{}, newServiceError(ServiceErrorQuorumUnavailable, true)
+	}
+	result, err := service.port.Commit(ctx, CommandDTO{
+		SchemaMajor: SchemaMajor, SchemaMinor: SchemaMinor, OperationID: operationID,
+		FeatureActivation: &FeatureActivationDTO{Feature: feature},
+	})
+	if err != nil {
+		return FeatureStateDTO{}, portFailure(err)
+	}
+	if result.Outcome == ApplyOutcomeConflict {
+		return FeatureStateDTO{}, conflictServiceError(result.Conflict)
+	}
+	if result.Outcome != ApplyOutcomeApplied || result.Index == 0 {
+		return FeatureStateDTO{}, newServiceError(ServiceErrorQuorumUnavailable, true)
+	}
+	return service.ClusterFeatures(ctx)
+}
+
 func (service *Service) commitOperation(ctx context.Context, command CommandDTO) (MembershipOperationDTO, error) {
 	result, err := service.port.Commit(ctx, command)
 	if err != nil {
@@ -250,6 +323,8 @@ func conflictServiceError(conflict ApplyConflictCode) *ServiceError {
 		return newServiceError(ServiceErrorResourceNotFound, false)
 	case ConflictCompatibilityUnsupported:
 		return newServiceError(ServiceErrorCompatibilityUnsupported, false)
+	case ConflictFeatureUnsupported:
+		return newServiceError(ServiceErrorFeatureUnsupported, false)
 	default:
 		return newServiceError(ServiceErrorOperationConflict, false)
 	}
@@ -278,6 +353,8 @@ func newServiceError(code ServiceErrorCode, retryable bool) *ServiceError {
 		message = "committed membership outcome is unavailable"
 	case ServiceErrorCompatibilityUnsupported:
 		message = "member compatibility is unsupported"
+	case ServiceErrorFeatureUnsupported:
+		message = "feature is not supported by every active member"
 	case ServiceErrorInvalidNodeTransition:
 		message = "node lifecycle transition is not allowed"
 	case ServiceErrorDrainNotCancellable:

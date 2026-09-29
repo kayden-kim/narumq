@@ -16,9 +16,10 @@ const (
 func TestMembershipRecordBridgeRoundTripsTypedCommands(t *testing.T) {
 	member := membership.MemberIdentityDTO{
 		MemberID: 4, ClusterID: "cluster", Address: "node4.example:19004", DNSSAN: "node4.example",
-		CertificateSHA256: bytes.Repeat([]byte{0x11}, 32), ReleaseVersion: "v1",
+		CertificateSHA256: bytes.Repeat([]byte{0x11}, 32), ReleaseVersion: "1.0.0",
 		ClusterProtocolMajor: 2, StateSchemaMajor: 1,
 		Phase: membership.MemberPhaseStaged, OperationID: bridgeOperation4,
+		Features: []string{"compatibility-probe"},
 	}
 	commands := []membership.CommandDTO{
 		{
@@ -97,6 +98,16 @@ func TestMembershipRecordBridgeRoundTripsTypedCommands(t *testing.T) {
 				}},
 			}},
 		},
+		{
+			SchemaMajor: membership.SchemaMajor, OperationID: bridgeOperation4,
+			MemberProfile: &membership.MemberProfileChangeDTO{
+				MemberID: 4, ReleaseVersion: "1.0.0", Features: []string{"compatibility-probe"},
+			},
+		},
+		{
+			SchemaMajor: membership.SchemaMajor, OperationID: bridgeOperation1,
+			FeatureActivation: &membership.FeatureActivationDTO{Feature: "compatibility-probe"},
+		},
 	}
 
 	for index, command := range commands {
@@ -129,13 +140,14 @@ func TestMembershipRecordBridgeRoundTripsTypedCommands(t *testing.T) {
 func TestMembershipRecordBridgePreservesSnapshotIndexesAndDigest(t *testing.T) {
 	member := membership.MemberIdentityDTO{
 		MemberID: 4, ClusterID: "cluster", Address: "node4.example:19004", DNSSAN: "node4.example",
-		CertificateSHA256: bytes.Repeat([]byte{0x11}, 32), ReleaseVersion: "v1",
+		CertificateSHA256: bytes.Repeat([]byte{0x11}, 32), ReleaseVersion: "1.0.0",
 		ClusterProtocolMajor: 2, StateSchemaMajor: 1,
 		Phase: membership.MemberPhaseStaged, OperationID: bridgeOperation4,
+		Features: []string{"compatibility-probe"},
 	}
 	snapshot := membership.SnapshotDTO{
 		SchemaMajor: membership.SchemaMajor, SchemaMinor: membership.SchemaMinor, LastIncludedIndex: 10,
-		Members:       []membership.MemberIdentityDTO{member},
+		Members: []membership.MemberIdentityDTO{member}, ActiveFeatures: []string{"compatibility-probe"},
 		Ownerships:    []membership.OwnershipStateDTO{{TenantID: "tenant", ClientID: "client", OwnerNodeID: 1, Epoch: 1, CommittedIndex: 8}},
 		Subscriptions: []membership.SubscriptionStateDTO{{TenantID: "tenant", ClientID: "client", OwnerNodeID: 1, Epoch: 1, Filter: "sensors/#", QoS: 1}},
 		DeliverySessions: []membership.DeliverySessionStateDTO{{
@@ -169,7 +181,7 @@ func TestMembershipRecordBridgePreservesSnapshotIndexesAndDigest(t *testing.T) {
 				OfflineQueueBytes: 4096, StorageBytes: 8192,
 			}},
 		},
-		ObjectCount: 12,
+		ObjectCount: 13,
 	}
 	wire, err := encodeMembershipSnapshot(snapshot)
 	if err != nil {

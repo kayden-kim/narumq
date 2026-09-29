@@ -86,19 +86,26 @@ func TestDynamicClusterConcurrentConnectProcessAcceptance(t *testing.T) {
 			clientID := fmt.Sprintf("concurrent-race-%d", round)
 			results := clusterFencingConnectSimultaneously(endpoints, fixture.accessToken, clientID)
 			var live []clusterFencingConnectionResult
-			for _, result := range results {
+			for index := range results {
+				result := results[index]
 				if result.err != nil {
 					t.Fatalf("round %d node %d CONNECT: %v", round, result.nodeID, result.err)
 				}
 				if result.code != 0 && result.code != 3 {
 					t.Fatalf("round %d node %d CONNECT return code=%d, want 0 or 3", round, result.nodeID, result.code)
 				}
-				if result.conn != nil && clusterFencingAlive(result.conn) {
-					live = append(live, result)
+				if result.conn != nil {
+					result.probe = clusterFencingAlive(result.conn)
+					results[index] = result
+					if result.probe.alive {
+						live = append(live, result)
+					}
 				}
 			}
 			if len(live) != 1 {
 				for _, result := range results {
+					t.Logf("round %d node %d CONNECT code=%d probe alive=%t elapsed=%s err=%v",
+						round, result.nodeID, result.code, result.probe.alive, result.probe.elapsed, result.probe.err)
 					if result.conn != nil {
 						_ = result.conn.Close()
 					}
@@ -234,6 +241,13 @@ type clusterFencingConnectionResult struct {
 	conn   net.Conn
 	code   byte
 	err    error
+	probe  clusterFencingProbeResult
+}
+
+type clusterFencingProbeResult struct {
+	alive   bool
+	elapsed time.Duration
+	err     error
 }
 
 func clusterFencingProcessStart(t *testing.T) (*clusterMembershipProcessFixture, []*clusterMembershipProcess, []string) {
@@ -349,25 +363,84 @@ func clusterFencingAck(t *testing.T, connection net.Conn, packetID uint16) {
 	clusterDurableProcessWriteFatal(t, connection, 0x40, []byte{byte(packetID >> 8), byte(packetID)})
 }
 
-func clusterFencingAlive(connection net.Conn) bool {
-	_ = connection.SetDeadline(time.Now().Add(3 * time.Second))
+func clusterFencingAlive(connection net.Conn) (result clusterFencingProbeResult) {
+	started := time.Now()
+	if err := connection.SetDeadline(time.Now().Add(3 * time.Second)); err != nil {
+		result.err = fmt.Errorf("set PING deadline: %w", err)
+		result.elapsed = time.Since(started)
+		return result
+	}
+	defer func() {
+		if err := connection.SetDeadline(time.Time{}); err != nil && result.err == nil {
+			result.err = fmt.Errorf("clear PING deadline: %w", err)
+		}
+		result.elapsed = time.Since(started)
+	}()
+
 	if err := clusterDurableProcessWrite(connection, 0xC0, nil); err != nil {
-		_ = connection.SetDeadline(time.Time{})
-		return false
+		result.err = fmt.Errorf("write PINGREQ: %w", err)
+		return result
 	}
 	kind, _, body, err := clusterDurableProcessReadRaw(connection)
-	_ = connection.SetDeadline(time.Time{})
 	if err != nil {
-		if clusterMembershipProcessIsClosed(err) {
-			return false
-		}
-		var networkError net.Error
-		if errors.As(err, &networkError) && networkError.Timeout() {
-			return false
-		}
-		return false
+		result.err = fmt.Errorf("read PINGRESP: %w", err)
+		return result
 	}
-	return kind == 13 && len(body) == 0
+	if kind != 13 || len(body) != 0 {
+		result.err = fmt.Errorf("unexpected PING response kind=%d body=%x", kind, body)
+		return result
+	}
+	result.alive = true
+	return result
+}
+
+func TestClusterFencingAliveDeadlineFailureStopsProbe(t *testing.T) {
+	wantErr := errors.New("deadline unavailable")
+	connection := &clusterFencingDeadlineErrorConn{deadlineErr: wantErr}
+
+	result := clusterFencingAlive(connection)
+	if !errors.Is(result.err, wantErr) {
+		t.Fatalf("probe error = %v, want wrapped %v", result.err, wantErr)
+	}
+	if result.alive {
+		t.Fatal("probe reported alive after deadline failure")
+	}
+	if result.elapsed < 5*time.Millisecond {
+		t.Fatalf("probe elapsed = %s, want elapsed time including failed SetDeadline", result.elapsed)
+	}
+	if connection.deadlineCalls != 1 || connection.reads != 0 || connection.writes != 0 {
+		t.Fatalf("deadline/read/write calls = %d/%d/%d, want 1/0/0",
+			connection.deadlineCalls, connection.reads, connection.writes)
+	}
+}
+
+type clusterFencingDeadlineErrorConn struct {
+	deadlineCalls int
+	reads         int
+	writes        int
+	deadlineErr   error
+}
+
+func (c *clusterFencingDeadlineErrorConn) Read([]byte) (int, error) {
+	c.reads++
+	return 0, errors.New("unexpected read")
+}
+
+func (c *clusterFencingDeadlineErrorConn) Write([]byte) (int, error) {
+	c.writes++
+	return 0, errors.New("unexpected write")
+}
+
+func (*clusterFencingDeadlineErrorConn) Close() error                     { return nil }
+func (*clusterFencingDeadlineErrorConn) LocalAddr() net.Addr              { return nil }
+func (*clusterFencingDeadlineErrorConn) RemoteAddr() net.Addr             { return nil }
+func (*clusterFencingDeadlineErrorConn) SetReadDeadline(time.Time) error  { return nil }
+func (*clusterFencingDeadlineErrorConn) SetWriteDeadline(time.Time) error { return nil }
+
+func (c *clusterFencingDeadlineErrorConn) SetDeadline(time.Time) error {
+	c.deadlineCalls++
+	time.Sleep(10 * time.Millisecond)
+	return c.deadlineErr
 }
 
 func clusterFencingLiveNodeIDs(results []clusterFencingConnectionResult) []uint64 {

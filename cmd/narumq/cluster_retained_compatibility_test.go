@@ -12,8 +12,9 @@ import (
 )
 
 // Traceability: CLU-14; docs/specs/cluster-session-and-delivery.md §8, §11.8.
-func TestClusterRetainedProfileRequiresEveryActiveMemberToMatch(t *testing.T) {
+func TestClusterRetainedProfileRequiresEveryActiveMemberCompatible(t *testing.T) {
 	config := validBootstrapClusterConfig()
+	config.ReleaseVersion = "1.1.0"
 	matching := membership.MemberIdentityDTO{
 		ClusterID: config.ClusterID, ReleaseVersion: config.ReleaseVersion,
 		ClusterProtocolMajor: config.ClusterProtocolMajor, ClusterProtocolMinor: config.ClusterProtocolMinor,
@@ -27,11 +28,12 @@ func TestClusterRetainedProfileRequiresEveryActiveMemberToMatch(t *testing.T) {
 	}{
 		{name: "all active members match", members: []membership.MemberIdentityDTO{matching, matching}, want: true},
 		{name: "empty membership", members: nil, want: false},
-		{name: "release mismatch voter", members: []membership.MemberIdentityDTO{matching, mutateMemberProfileForTest(matching, func(member *membership.MemberIdentityDTO) { member.ReleaseVersion = "0.9.0" })}},
-		{name: "release mismatch learner", members: []membership.MemberIdentityDTO{matching, mutateMemberProfileForTest(matching, func(member *membership.MemberIdentityDTO) {
-			member.ReleaseVersion = "0.9.0"
+		{name: "adjacent older release voter", members: []membership.MemberIdentityDTO{matching, mutateMemberProfileForTest(matching, func(member *membership.MemberIdentityDTO) { member.ReleaseVersion = "1.0.0" })}, want: true},
+		{name: "adjacent newer release learner", members: []membership.MemberIdentityDTO{matching, mutateMemberProfileForTest(matching, func(member *membership.MemberIdentityDTO) {
+			member.ReleaseVersion = "1.2.0"
 			member.Phase = membership.MemberPhaseLearner
-		})}},
+		})}, want: true},
+		{name: "release outside compatibility window", members: []membership.MemberIdentityDTO{matching, mutateMemberProfileForTest(matching, func(member *membership.MemberIdentityDTO) { member.ReleaseVersion = "0.9.0" })}},
 		{name: "protocol mismatch", members: []membership.MemberIdentityDTO{mutateMemberProfileForTest(matching, func(member *membership.MemberIdentityDTO) { member.ClusterProtocolMinor++ })}},
 		{name: "schema mismatch", members: []membership.MemberIdentityDTO{mutateMemberProfileForTest(matching, func(member *membership.MemberIdentityDTO) { member.StateSchemaMinor++ })}},
 		{name: "cluster mismatch", members: []membership.MemberIdentityDTO{mutateMemberProfileForTest(matching, func(member *membership.MemberIdentityDTO) { member.ClusterID = "other-cluster" })}},
@@ -42,8 +44,8 @@ func TestClusterRetainedProfileRequiresEveryActiveMemberToMatch(t *testing.T) {
 	}
 	for _, test := range cases {
 		t.Run(test.name, func(t *testing.T) {
-			if got := clusterExactProfileCompatible(test.members, config); got != test.want {
-				t.Fatalf("clusterExactProfileCompatible() = %v, want %v", got, test.want)
+			if got := clusterProfilesCompatible(test.members, config); got != test.want {
+				t.Fatalf("clusterProfilesCompatible() = %v, want %v", got, test.want)
 			}
 		})
 	}
@@ -90,7 +92,7 @@ func TestClusterRetainedCommitChecksMembershipAfterFreshReadBarrier(t *testing.T
 	request.readResult <- clusterReadResponse{index: 1}
 	select {
 	case err := <-result:
-		if !errors.Is(err, errClusterExactProfileCompatibility) {
+		if !errors.Is(err, errClusterProfileCompatibility) {
 			t.Fatalf("Commit(mixed-release retained after barrier) = %v, want compatibility refusal", err)
 		}
 	case <-ctx.Done():

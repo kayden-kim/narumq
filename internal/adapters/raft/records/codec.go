@@ -16,6 +16,7 @@ import (
 	"google.golang.org/protobuf/reflect/protoreflect"
 
 	"narumq/internal/domain/nodedrain"
+	"narumq/internal/domain/release"
 	"narumq/internal/domain/tenancy"
 )
 
@@ -119,7 +120,7 @@ func MarshalSnapshot(state *ReplicatedStateSnapshot, lastIncludedIndex uint64) (
 			offlineMessagesCount += len(session.Messages)
 		}
 	}
-	count := uint64(len(ordered.Members) + len(ordered.Ownerships) + len(ordered.Subscriptions) + len(ordered.DeliverySessions) + deliveryObjectCount(ordered.DeliverySessions) + len(ordered.MembershipHistory) + len(ordered.Retained) + len(ordered.OfflineSessions) + offlineMessagesCount + len(ordered.NodeDrains) + tenantQuotaProfileObjectCount(ordered.TenantQuotaProfile))
+	count := uint64(len(ordered.Members) + len(ordered.Ownerships) + len(ordered.Subscriptions) + len(ordered.DeliverySessions) + deliveryObjectCount(ordered.DeliverySessions) + len(ordered.MembershipHistory) + len(ordered.Retained) + len(ordered.OfflineSessions) + offlineMessagesCount + len(ordered.NodeDrains) + len(ordered.ActiveFeatures) + tenantQuotaProfileObjectCount(ordered.TenantQuotaProfile))
 	digest := sha256.Sum256(stateBytes)
 	envelope := &SnapshotEnvelope{SchemaMajor: 1, LastIncludedIndex: lastIncludedIndex, ObjectCount: count, Sha256: digest[:], State: ordered}
 	encoded, err := deterministic.Marshal(envelope)
@@ -165,7 +166,7 @@ func UnmarshalSnapshot(encoded []byte) (*SnapshotEnvelope, error) {
 			offlineMessagesCount += len(session.Messages)
 		}
 	}
-	count := uint64(len(envelope.State.Members) + len(envelope.State.Ownerships) + len(envelope.State.Subscriptions) + len(envelope.State.DeliverySessions) + deliveryObjectCount(envelope.State.DeliverySessions) + len(envelope.State.MembershipHistory) + len(envelope.State.Retained) + len(envelope.State.OfflineSessions) + offlineMessagesCount + len(envelope.State.NodeDrains) + tenantQuotaProfileObjectCount(envelope.State.TenantQuotaProfile))
+	count := uint64(len(envelope.State.Members) + len(envelope.State.Ownerships) + len(envelope.State.Subscriptions) + len(envelope.State.DeliverySessions) + deliveryObjectCount(envelope.State.DeliverySessions) + len(envelope.State.MembershipHistory) + len(envelope.State.Retained) + len(envelope.State.OfflineSessions) + offlineMessagesCount + len(envelope.State.NodeDrains) + len(envelope.State.ActiveFeatures) + tenantQuotaProfileObjectCount(envelope.State.TenantQuotaProfile))
 	if envelope.ObjectCount != count {
 		return nil, errors.New("snapshot object count mismatch")
 	}
@@ -241,6 +242,28 @@ func validateCommand(c *CommandEnvelope) error {
 			return errors.New("tenant quota payload is required")
 		}
 		return validateTenantQuotaChange(payload.TenantQuota)
+	case *CommandEnvelope_MemberProfile:
+		if payload.MemberProfile == nil {
+			return errors.New("member profile payload is required")
+		}
+		if payload.MemberProfile.MemberId == 0 {
+			return errors.New("member_profile member_id must be positive")
+		}
+		if _, err := release.Parse(payload.MemberProfile.ReleaseVersion); err != nil {
+			return errors.New("member_profile release_version must be canonical MAJOR.MINOR.PATCH")
+		}
+		if !release.ValidFeatureSet(payload.MemberProfile.Features) {
+			return errors.New("member_profile features must be sorted valid feature tokens")
+		}
+		return nil
+	case *CommandEnvelope_FeatureActivation:
+		if payload.FeatureActivation == nil {
+			return errors.New("feature activation payload is required")
+		}
+		if !release.ValidFeature(payload.FeatureActivation.Feature) {
+			return errors.New("feature_activation feature is invalid")
+		}
+		return nil
 	default:
 		return errors.New("command must contain exactly one known payload")
 	}
@@ -302,8 +325,11 @@ func validateIdentity(m *MemberIdentity) error {
 	if len(m.CertificateSha256) != 32 {
 		return errors.New("certificate_sha256 must be 32 bytes")
 	}
-	if !boundedUTF8(m.ReleaseVersion, 1, 64) {
-		return errors.New("release_version must be 1..64 UTF-8 bytes")
+	if _, err := release.Parse(m.ReleaseVersion); err != nil {
+		return errors.New("release_version must be canonical MAJOR.MINOR.PATCH")
+	}
+	if !release.ValidFeatureSet(m.Features) {
+		return errors.New("member features must be sorted valid feature tokens")
 	}
 	if m.ClusterProtocolMajor != 2 || m.ClusterProtocolMinor != 0 || m.StateSchemaMajor != 1 || m.StateSchemaMinor != 0 {
 		return errors.New("unsupported cluster protocol or state schema version")
@@ -741,9 +767,12 @@ func validateSnapshotState(s *ReplicatedStateSnapshot) error {
 			offlineMessagesCount += len(session.Messages)
 		}
 	}
-	count := len(s.Members) + len(s.Ownerships) + len(s.Subscriptions) + len(s.DeliverySessions) + deliveryObjectCount(s.DeliverySessions) + len(s.MembershipHistory) + len(s.Retained) + len(s.OfflineSessions) + offlineMessagesCount + len(s.NodeDrains) + tenantQuotaProfileObjectCount(s.TenantQuotaProfile)
+	count := len(s.Members) + len(s.Ownerships) + len(s.Subscriptions) + len(s.DeliverySessions) + deliveryObjectCount(s.DeliverySessions) + len(s.MembershipHistory) + len(s.Retained) + len(s.OfflineSessions) + offlineMessagesCount + len(s.NodeDrains) + len(s.ActiveFeatures) + tenantQuotaProfileObjectCount(s.TenantQuotaProfile)
 	if count > maxEntries {
 		return errors.New("snapshot exceeds 1,000,000 entries")
+	}
+	if !release.ValidFeatureSet(s.ActiveFeatures) {
+		return errors.New("active_features must be sorted valid feature tokens")
 	}
 	if s.TenantQuotaProfile != nil {
 		if err := validateTenantQuotaProfile(s.TenantQuotaProfile); err != nil {

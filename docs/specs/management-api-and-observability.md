@@ -4,12 +4,12 @@
 
 | 항목 | 값 |
 | --- | --- |
-| 상태 | Active (Phase 1 query profile와 broker drain; 다른 mutation·OIDC·운영 자동화는 deferred) |
+| 상태 | Active (Phase 1 query profile, broker drain and cluster feature activation; other mutation·OIDC·운영 자동화는 deferred) |
 | 관련 요구사항 | API-01~API-09, UI-01~UI-10, SEC-10~SEC-11 |
 | 근거 | [PRD 9.5절, 9.6절과 14장](../requirements/PRD.md) |
 | 관련 spec | [Tenant와 security](tenancy-and-security.md), [Drain](drain-and-rolling-update.md) |
 | 관련 Architecture | [System overview](../architectures/system-overview.md), [Security boundaries](../architectures/security-boundaries.md) |
-| 관련 결정 | [ADR-0005](../decisions/ADR-0005-management-api-contract-format.md) |
+| 관련 결정 | [ADR-0005](../decisions/ADR-0005-management-api-contract-format.md), [ADR-0018](../decisions/ADR-0018-release-compatibility-window.md) |
 | 관련 Contract | [Management API v1](../contracts/management-api-v1.md), [Management API OpenAPI](../contracts/management-api-v1.openapi.json), [Audit event v1](../contracts/audit-event-v1.md) |
 
 ## 1. HTTP 공통 계약
@@ -18,7 +18,7 @@
 - request와 response body는 `application/json` UTF-8을 사용한다.
 - `/api/v1` 요청은 인증과 RBAC를 통과해야 한다. Health probe와 `/metrics`의 익명 노출 범위는 listener 정책으로 제한할 수 있다.
 - 서버는 수신한 유효 request ID를 사용하거나 새 값을 생성해 `X-Request-Id`에 반환해야 한다.
-- Phase 1의 일반 catalog은 조회 전용이며 broker node drain만 별도 active mutation으로 제공한다. Drain은 `Idempotency-Key`를 요구하고, 다른 mutation은 계속 deferred다.
+- Phase 1 catalog는 조회와 broker node drain을 제공한다. Cluster feature GET은 `ReadOnly`, cluster feature activation은 `ClusterAdmin`의 active mutation이며, 그 밖의 mutation은 deferred다.
 
 ### 1.1 Management listener와 인증 정책
 
@@ -82,11 +82,11 @@ cursor는 불투명 값이다. client는 cursor 내용을 해석해서는 안 �
 | `429` | API rate limit 초과. 가능한 경우 `Retry-After` 포함 |
 | `503` | quorum, dependency 또는 readiness 문제로 일시 처리 불가 |
 
-오류 code 전체 목록과 각 endpoint의 response status는 [Management API v1 OpenAPI](../contracts/management-api-v1.openapi.json)에서 확정한다. 내부 stack, storage key와 secret을 오류에 포함해서는 안 된다. Active drain은 `409` 상태를 사용하며, `422`와 `429`를 포함한 다른 mutation 동작은 deferred다.
+오류 code 전체 목록과 각 endpoint의 response status는 [Management API v1 OpenAPI](../contracts/management-api-v1.openapi.json)에서 확정한다. 내부 stack, storage key와 secret을 오류에 포함해서는 안 된다. Active drain과 feature activation은 `409` 상태를 사용한다. Feature activation의 `feature_not_supported_by_all_members`는 non-retryable이며, `422`와 `429`를 포함한 다른 mutation 동작은 deferred다.
 
 ### 1.4 Deferred mutation과 idempotency
 
-Active broker drain endpoint는 `Idempotency-Key`를 요구한다. 같은 node에 active operation이 있으면 새 operation을 만들지 않고 committed operation을 돌려준다. 같은 key에 다른 parameter를 보내면 `409 idempotency_conflict`다. 다른 mutation endpoint는 아직 deferred다.
+Active broker drain endpoint는 `Idempotency-Key`를 요구한다. 같은 node에 active operation이 있으면 새 operation을 만들지 않고 committed operation을 돌려준다. 같은 key에 다른 parameter를 보내면 `409 idempotency_conflict`다. Feature activation은 같은 active feature를 다시 요청하면 성공 no-op이므로 별도 idempotency key가 필요하지 않다. 그 밖의 mutation endpoint는 아직 deferred다.
 
 향후 mutation은 `Idempotency-Key`를 받아야 한다. 같은 principal, endpoint와 key에 같은 payload를 재시도하면 최초 결과와 의미가 같아야 한다. 같은 key에 다른 payload가 오면 `409 idempotency_conflict`를 반환해야 한다. Resource 변경은 가능한 경우 version/ETag 기반 조건부 요청을 지원해야 한다.
 
@@ -94,7 +94,7 @@ Active broker drain endpoint는 `Idempotency-Key`를 요구한다. 같은 node�
 
 ### 2.1 Phase 1 active profile
 
-현재 13개 GET operation과 broker drain POST/GET/DELETE가 구현·계약 대상이다. 정확한 parameter allowlist, schema, response와 operation ID는 OpenAPI가 SSOT이며 `tests/contracts/management-api-v1`가 runtime handler와 일치하는지 검사한다.
+- 현재 16개 GET operation과 cluster backup POST, broker drain POST/GET/DELETE, cluster feature POST가 구현·계약 대상이다. 정확한 parameter allowlist, schema, response와 operation ID는 OpenAPI가 SSOT이며 `tests/contracts/management-api-v1`가 runtime handler와 일치하는지 검사한다.
 
 | Method | Path | 성공 동작 | 권한 |
 | --- | --- | --- | --- |
@@ -104,7 +104,11 @@ Active broker drain endpoint는 `Idempotency-Key`를 요구한다. 같은 node�
 | GET | `/health/drain` | node가 `SAFE_TO_STOP`이면 `200` | probe policy |
 | GET | `/metrics` | Prometheus 또는 OpenMetrics scrape | monitoring policy |
 | GET | `/api/v1/cluster` | quorum과 cluster 요약 조회 | ReadOnly |
+| POST | `/api/v1/cluster/backups` | quorum-fresh typed state backup archive 다운로드 | ClusterAdmin |
 | GET | `/api/v1/nodes` | state filter와 pagination을 사용한 node 목록 조회 | ReadOnly |
+| GET | `/api/v1/nodes/{nodeId}` | node detail 조회 | ReadOnly |
+| GET | `/api/v1/cluster/features` | committed active feature와 member build profile 조회 | ReadOnly |
+| POST | `/api/v1/cluster/features/{feature}` | 모든 non-retired member가 지원하는 feature 활성화; replay는 성공 no-op | ClusterAdmin |
 | POST | `/api/v1/nodes/{nodeId}/drain` | committed voter의 broker drain 시작 또는 현재 operation 재생 | Operator |
 | GET | `/api/v1/nodes/{nodeId}/drain` | committed drain operation 조회 | ReadOnly |
 | DELETE | `/api/v1/nodes/{nodeId}/drain` | cancellable drain operation 취소 | Operator |
@@ -193,7 +197,9 @@ UI mutation은 해당 API가 active contract에 추가될 때 같은 RBAC, 확�
 
 ## 9. 수용 시험
 
-- `tests/contracts/management-api-v1`가 OpenAPI 문서 자체, 13개 operation set, representative success response와 Prometheus/OpenMetrics media type을 검증한다.
+- Contract suite는 OpenAPI 자체와 22개 active operation set, representative success response와 Prometheus/OpenMetrics media type을 검증한다.
+- Feature 조회 response는 `data.activeFeatures`와 `data.members`를 포함한다. 각 member는 decimal string `nodeId`, canonical `releaseVersion`, 정렬된 `features`를 가진다. 빈 collection은 JSON `[]`로 반환한다.
+- Contract suite는 cluster feature GET response shape, 활성화 POST의 200, 미지원 feature의 non-retryable 409, invalid feature의 400과 ReadOnly role POST의 403을 검사한다.
 - 같은 contract suite가 pagination `1`/`1000` 경계, `1001` 초과, duplicate·unknown query와 subscriptions/retained의 required `tenantId`를 검증한다.
 - 같은 contract suite가 anonymous, 잘못된 credential, ReadOnly bearer/API key 성공과 ClusterAdmin 권한 부족 `403`을 검증한다.
 - startup, liveness, readiness와 drain-complete가 quorum·sync·drain 상태 조합을 정확히 반영하는지 시험한다.

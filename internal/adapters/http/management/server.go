@@ -32,7 +32,7 @@ func NewRouter(
 	return newRouter(cfg, stateProvider, healthChecker, metricsReg, nil, nil, nil)
 }
 
-// NewRouterWithMembership constructs a router with membership, node drain, and cluster-backup routes.
+// NewRouterWithMembership constructs a router with membership, cluster-feature, node-drain, and cluster-backup routes.
 func NewRouterWithMembership(
 	cfg ServerConfig,
 	stateProvider ports.StateProvider,
@@ -93,6 +93,29 @@ func newRouter(
 		mux.HandleFunc("/api/v1/cluster/members", auth.RequireRole(RoleClusterAdmin, membershipH.StageMember))
 		mux.HandleFunc("/api/v1/cluster/members/{memberId}", auth.RequireRole(RoleClusterAdmin, membershipH.RemoveMember))
 		mux.HandleFunc("/api/v1/cluster/membership-operations/{operationId}", auth.RequireRole(RoleReadOnly, membershipH.GetOperation))
+		featureH := &clusterFeatureHandler{service: membershipService}
+		methodNotAllowed := func(allow string) http.HandlerFunc {
+			return func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Allow", allow)
+				WriteError(w, r, http.StatusMethodNotAllowed, "method_not_allowed", "method not allowed", false, nil)
+			}
+		}
+		mux.HandleFunc("/api/v1/cluster/features", func(w http.ResponseWriter, r *http.Request) {
+			switch r.Method {
+			case http.MethodGet:
+				auth.RequireRole(RoleReadOnly, featureH.List)(w, r)
+			default:
+				auth.RequireRole(RoleReadOnly, methodNotAllowed(http.MethodGet))(w, r)
+			}
+		})
+		mux.HandleFunc("/api/v1/cluster/features/{feature}", func(w http.ResponseWriter, r *http.Request) {
+			switch r.Method {
+			case http.MethodPost:
+				auth.RequireRole(RoleClusterAdmin, featureH.Activate)(w, r)
+			default:
+				auth.RequireRole(RoleReadOnly, methodNotAllowed(http.MethodPost))(w, r)
+			}
+		})
 	}
 	if drainService != nil {
 		drainH := &nodeDrainHandler{service: drainService}

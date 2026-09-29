@@ -16,6 +16,8 @@ import (
 	"sync"
 	"time"
 	"unicode/utf8"
+
+	"narumq/internal/domain/release"
 )
 
 const (
@@ -1555,6 +1557,7 @@ func (transport *DynamicTCPPeerTransport) replaceLanePeersLocked(
 			old.mu.Lock()
 			switch {
 			case samePeerIdentity(old.identity, identity):
+				old.identity = identity
 				old.mu.Unlock()
 				next[identity.MemberID] = old
 				continue
@@ -1692,7 +1695,7 @@ func (transport *DynamicTCPPeerTransport) RequestSeedAdmission(
 	for index := range response.CurrentVoters {
 		endpoint := &response.CurrentVoters[index]
 		if endpoint.MemberID == local.MemberID || endpoint.ClusterID != local.ClusterID ||
-			endpoint.ReleaseVersion != local.ReleaseVersion ||
+			!release.CompatibleStrings(local.ReleaseVersion, endpoint.ReleaseVersion) ||
 			endpoint.ClusterProtocolMajor != dynamicProtocolMajor ||
 			endpoint.ClusterProtocolMinor != dynamicProtocolMinor ||
 			endpoint.StateSchemaMajor != dynamicSchemaMajor ||
@@ -1847,7 +1850,7 @@ func (transport *DynamicTCPPeerTransport) handleAdmission(
 	handler := transport.admission
 	transport.mu.Unlock()
 	if closed || request.Candidate.ClusterID != localClusterID ||
-		request.Candidate.ReleaseVersion != localReleaseVersion {
+		!release.CompatibleStrings(localReleaseVersion, request.Candidate.ReleaseVersion) {
 		reject()
 		return
 	}
@@ -1898,6 +1901,10 @@ func (transport *DynamicTCPPeerTransport) handleStreamInbound(
 	}
 	if !compatiblePeerIdentity(expectedIdentity, remote) {
 		peer.recordError(fmt.Sprintf("incompatible identity: expected(phase=%d,op=%s) remote(phase=%d,op=%s)", expectedIdentity.Phase, expectedIdentity.OperationID, remote.Phase, remote.OperationID))
+		return
+	}
+	if !release.CompatibleStrings(local.ReleaseVersion, remote.ReleaseVersion) {
+		peer.recordError(fmt.Sprintf("incompatible release: local=%s remote=%s", local.ReleaseVersion, remote.ReleaseVersion))
 		return
 	}
 	localPayload, err := encodeDynamicPeerHello(local, lane.magic())
@@ -2004,6 +2011,8 @@ func (transport *DynamicTCPPeerTransport) dialPeer(ctx context.Context, peer *dy
 				err = fmt.Errorf("peer identity mismatch")
 			} else if !compatiblePeerIdentity(currentIdentity, remote) {
 				err = fmt.Errorf("incompatible identity: current(phase=%d,op=%s) remote(phase=%d,op=%s)", currentIdentity.Phase, currentIdentity.OperationID, remote.Phase, remote.OperationID)
+			} else if !release.CompatibleStrings(local.ReleaseVersion, remote.ReleaseVersion) {
+				err = fmt.Errorf("incompatible release: local=%s remote=%s", local.ReleaseVersion, remote.ReleaseVersion)
 			}
 		}
 		if err != nil || connection.SetDeadline(time.Time{}) != nil {
@@ -2444,7 +2453,7 @@ func validateDynamicPeerSet(local PeerIdentityDTO, peers []PeerIdentityDTO) erro
 			return fmt.Errorf("duplicate dynamic peer ID")
 		}
 		seen[identity.MemberID] = struct{}{}
-		if identity.ClusterID != local.ClusterID || identity.ReleaseVersion != local.ReleaseVersion ||
+		if identity.ClusterID != local.ClusterID || !release.CompatibleStrings(local.ReleaseVersion, identity.ReleaseVersion) ||
 			identity.ClusterProtocolMajor != local.ClusterProtocolMajor ||
 			identity.ClusterProtocolMinor != local.ClusterProtocolMinor ||
 			identity.StateSchemaMajor != local.StateSchemaMajor ||
@@ -2465,7 +2474,7 @@ func validateDynamicIdentity(identity PeerIdentityDTO, allowStaged bool) error {
 	if !validV2Address(identity.Address) || !validV2DNSName(identity.DNSSAN) {
 		return fmt.Errorf("peer address and DNS SAN are invalid")
 	}
-	if len(identity.ReleaseVersion) < 1 || len(identity.ReleaseVersion) > 64 || !utf8.ValidString(identity.ReleaseVersion) {
+	if _, err := release.Parse(identity.ReleaseVersion); err != nil {
 		return fmt.Errorf("release version is invalid")
 	}
 	if identity.ClusterProtocolMajor != dynamicProtocolMajor || identity.ClusterProtocolMinor != dynamicProtocolMinor ||
@@ -2596,7 +2605,7 @@ func sameImmutableIdentity(left, right PeerIdentityDTO) bool {
 func samePeerIdentity(left, right PeerIdentityDTO) bool {
 	return left.MemberID == right.MemberID && left.ClusterID == right.ClusterID &&
 		left.Address == right.Address && left.DNSSAN == right.DNSSAN &&
-		left.CertificateSHA256 == right.CertificateSHA256 && left.ReleaseVersion == right.ReleaseVersion &&
+		left.CertificateSHA256 == right.CertificateSHA256 &&
 		left.ClusterProtocolMajor == right.ClusterProtocolMajor &&
 		left.ClusterProtocolMinor == right.ClusterProtocolMinor &&
 		left.StateSchemaMajor == right.StateSchemaMajor && left.StateSchemaMinor == right.StateSchemaMinor &&
@@ -2824,8 +2833,7 @@ func validateAdmissionResult(candidate PeerIdentityDTO, response SeedAdmissionRe
 	voters := append([]PeerIdentityDTO(nil), response.CurrentVoters...)
 	sort.Slice(voters, func(left, right int) bool { return voters[left].MemberID < voters[right].MemberID })
 	for index, voter := range voters {
-		if voter.ClusterID != candidate.ClusterID || voter.ReleaseVersion != candidate.ReleaseVersion ||
-			voter.ClusterProtocolMajor != candidate.ClusterProtocolMajor ||
+		if voter.ClusterID != candidate.ClusterID || !release.CompatibleStrings(candidate.ReleaseVersion, voter.ReleaseVersion) ||
 			voter.ClusterProtocolMinor != candidate.ClusterProtocolMinor ||
 			voter.StateSchemaMajor != candidate.StateSchemaMajor ||
 			voter.StateSchemaMinor != candidate.StateSchemaMinor ||

@@ -78,6 +78,7 @@ func TestDynamicClusterNodeDrainProcessAcceptance(t *testing.T) {
 		_ = rejected.Close()
 	}
 	if rejectErr != nil || rejectReason != 0x88 {
+		clusterMatrixLogBrokerDiagnostics(t, fixture, processes)
 		t.Fatalf("new MQTT 5 CONNECT reason=0x%02x err=%v, want 0x88", rejectReason, rejectErr)
 	}
 

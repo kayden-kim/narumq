@@ -102,6 +102,12 @@ func backupOperationFixtures() []operationFixture {
 		{method: http.MethodPost, path: "/api/v1/cluster/backups", operationID: "createClusterBackup", target: "/api/v1/cluster/backups", expectedStatus: http.StatusOK},
 	}
 }
+func featureOperationFixtures() []operationFixture {
+	return []operationFixture{
+		{method: http.MethodGet, path: "/api/v1/cluster/features", operationID: "listClusterFeatures", target: "/api/v1/cluster/features", expectedStatus: http.StatusOK},
+		{method: http.MethodPost, path: "/api/v1/cluster/features/{feature}", operationID: "activateClusterFeature", target: "/api/v1/cluster/features/compatibility-probe", expectedStatus: http.StatusOK},
+	}
+}
 
 func contractDocumentPath(t *testing.T) string {
 	t.Helper()
@@ -409,6 +415,23 @@ func (contractMembershipService) GetOperation(_ context.Context, operationID str
 		CommittedIndex: 43,
 	}, nil
 }
+func (contractMembershipService) ClusterFeatures(context.Context) (appmembership.FeatureStateDTO, error) {
+	return appmembership.FeatureStateDTO{
+		ActiveFeatures: []string{},
+		Members: []appmembership.MemberFeatureProfileDTO{{
+			MemberID: 1, ReleaseVersion: "1.2.0", Features: []string{"compatibility-probe"},
+		}},
+	}, nil
+}
+
+func (contractMembershipService) ActivateFeature(_ context.Context, feature string) (appmembership.FeatureStateDTO, error) {
+	return appmembership.FeatureStateDTO{
+		ActiveFeatures: []string{feature},
+		Members: []appmembership.MemberFeatureProfileDTO{{
+			MemberID: 1, ReleaseVersion: "1.2.0", Features: []string{"compatibility-probe"},
+		}},
+	}, nil
+}
 
 type contractDrainService struct{}
 
@@ -440,6 +463,7 @@ func expectedOperationSet() []string {
 	fixtures := append(managementOperationFixtures(), membershipOperationFixtures()...)
 	fixtures = append(fixtures, backupOperationFixtures()...)
 	fixtures = append(fixtures, drainOperationFixtures()...)
+	fixtures = append(fixtures, featureOperationFixtures()...)
 	operations := make([]string, 0, len(fixtures))
 	for _, fixture := range fixtures {
 		operations = append(operations, fixture.method+" "+fixture.path+" "+fixture.operationID)
@@ -565,6 +589,30 @@ func TestClusterBackupHandlerResponseMatchesOpenAPI(t *testing.T) {
 	handler := clusterManagementContractHandler()
 
 	for _, fixture := range backupOperationFixtures() {
+		t.Run(fixture.operationID, func(t *testing.T) {
+			req := newContractRequest(fixture)
+			input, options := findContractRoute(t, router, req)
+			if input.Route.Operation.OperationID != fixture.operationID {
+				t.Fatalf("runtime fixture matched operation %q, want %q", input.Route.Operation.OperationID, fixture.operationID)
+			}
+			if err := openapi3filter.ValidateRequest(context.Background(), input); err != nil {
+				t.Fatalf("validate representative request: %v", err)
+			}
+			recorder := httptest.NewRecorder()
+			handler.ServeHTTP(recorder, req)
+			if recorder.Code != fixture.expectedStatus {
+				t.Fatalf("status = %d, want %d: %s", recorder.Code, fixture.expectedStatus, recorder.Body.String())
+			}
+			validateResponse(t, input, options, recorder)
+		})
+	}
+}
+
+func TestClusterFeatureHandlerResponsesMatchOpenAPI(t *testing.T) {
+	_, router := loadManagementContract(t)
+	handler := clusterManagementContractHandler()
+
+	for _, fixture := range featureOperationFixtures() {
 		t.Run(fixture.operationID, func(t *testing.T) {
 			req := newContractRequest(fixture)
 			input, options := findContractRoute(t, router, req)

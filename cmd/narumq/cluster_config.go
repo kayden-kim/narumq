@@ -13,17 +13,20 @@ import (
 	"unicode/utf8"
 
 	"narumq/internal/application/membership"
+	"narumq/internal/domain/release"
 )
 
 type clusterConfigFile struct {
-	Mode                 string                           `json:"mode"`
-	ClusterID            string                           `json:"clusterId"`
-	NodeID               uint64                           `json:"nodeId"`
-	Directory            string                           `json:"directory"`
-	ListenAddress        string                           `json:"listenAddress"`
-	AdvertisedAddress    string                           `json:"advertisedAddress"`
-	LocalDNSName         string                           `json:"localDnsName"`
-	ReleaseVersion       string                           `json:"releaseVersion"`
+	Mode              string `json:"mode"`
+	ClusterID         string `json:"clusterId"`
+	NodeID            uint64 `json:"nodeId"`
+	Directory         string `json:"directory"`
+	ListenAddress     string `json:"listenAddress"`
+	AdvertisedAddress string `json:"advertisedAddress"`
+	LocalDNSName      string `json:"localDnsName"`
+	// ReleaseVersion and Features are resolved from build identity, never from JSON.
+	ReleaseVersion       string                           `json:"-"`
+	Features             []string                         `json:"-"`
 	ClusterProtocolMajor uint32                           `json:"clusterProtocolMajor"`
 	ClusterProtocolMinor uint32                           `json:"clusterProtocolMinor"`
 	StateSchemaMajor     uint32                           `json:"stateSchemaMajor"`
@@ -131,10 +134,12 @@ func parseClusterConfig(reader io.Reader) (clusterConfigFile, error) {
 	if err := decoder.Decode(&config); err != nil {
 		return clusterConfigFile{}, errors.New("cluster config has invalid JSON or field types")
 	}
-	var trailing any
-	if err := decoder.Decode(&trailing); !errors.Is(err, io.EOF) {
-		return clusterConfigFile{}, errors.New("cluster config contains trailing JSON value")
+	releaseVersion, features, err := resolveBuildIdentity()
+	if err != nil {
+		return clusterConfigFile{}, err
 	}
+	config.ReleaseVersion = releaseVersion
+	config.Features = features
 	if err := validateClusterConfig(config); err != nil {
 		return clusterConfigFile{}, err
 	}
@@ -235,7 +240,7 @@ func expectClusterKeys(path string, seen map[string]struct{}) error {
 	var required []string
 	switch path {
 	case "":
-		required = []string{"mode", "clusterId", "nodeId", "directory", "listenAddress", "advertisedAddress", "localDnsName", "releaseVersion", "clusterProtocolMajor", "clusterProtocolMinor", "stateSchemaMajor", "stateSchemaMinor", "role", "bootstrapMembers", "seedAddresses", "peerTLS", "management", "mqtt"}
+		required = []string{"mode", "clusterId", "nodeId", "directory", "listenAddress", "advertisedAddress", "localDnsName", "clusterProtocolMajor", "clusterProtocolMinor", "stateSchemaMajor", "stateSchemaMinor", "role", "bootstrapMembers", "seedAddresses", "peerTLS", "management", "mqtt"}
 	case "peerTLS":
 		required = []string{"certFile", "keyFile", "caFile"}
 	case "management":
@@ -271,8 +276,11 @@ func validateClusterConfig(config clusterConfigFile) error {
 	if config.NodeID == 0 {
 		return errors.New("nodeId must be positive")
 	}
-	if !validClusterString(config.ReleaseVersion, 1, 64) {
-		return errors.New("releaseVersion must contain 1 to 64 UTF-8 bytes")
+	if _, err := release.Parse(config.ReleaseVersion); err != nil {
+		return errors.New("build release version must be MAJOR.MINOR.PATCH")
+	}
+	if !release.ValidFeatureSet(config.Features) {
+		return errors.New("build features are invalid")
 	}
 	if config.ClusterProtocolMajor != 2 || config.ClusterProtocolMinor != 0 || config.StateSchemaMajor != 1 || config.StateSchemaMinor != 0 {
 		return errors.New("unsupported cluster protocol or state schema version")

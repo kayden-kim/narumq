@@ -73,7 +73,7 @@ func (node *cptNode) leaf() *x509.Certificate {
 }
 
 func (node *cptNode) identity(memberID uint64, address string, phase PeerPhaseDTO, operationID string) PeerIdentityDTO {
-	return identityForTestCertificate(memberID, address, node.dnsName, phase, operationID, "v", node.serverTLS.Certificates[0])
+	return identityForTestCertificate(memberID, address, node.dnsName, phase, operationID, "1.0.0", node.serverTLS.Certificates[0])
 }
 
 func (node *cptNode) dialConfig(serverName string) *tls.Config {
@@ -502,6 +502,7 @@ func TestCptSeedAdmissionResponseCodecRejectsInvalidResponses(t *testing.T) {
 
 func TestCptAdmissionResultValidation(t *testing.T) {
 	requested := dynamicTestIdentity(4, "n:4", "node4.example", PeerPhaseStaged, "", 0x44)
+	requested.ReleaseVersion = "1.1.0"
 	committed := requested
 	committed.OperationID = testOperationID
 	valid := SeedAdmissionResponseDTO{Accepted: true, Candidate: committed, CurrentVoters: cptVoters()}
@@ -526,7 +527,7 @@ func TestCptAdmissionResultValidation(t *testing.T) {
 			response.CurrentVoters[0].ClusterID = "other"
 		}},
 		{name: "voter release differs", mutate: func(response *SeedAdmissionResponseDTO) {
-			response.CurrentVoters[1].ReleaseVersion = "v2"
+			response.CurrentVoters[1].ReleaseVersion = "1.3.0"
 		}},
 		{name: "voter schema differs", mutate: func(response *SeedAdmissionResponseDTO) {
 			response.CurrentVoters[2].StateSchemaMinor = 1
@@ -1304,7 +1305,7 @@ func TestCptDynamicReconcilePeersRejectsInvalidSetsAtomically(t *testing.T) {
 	}{
 		{name: "local member", peers: []PeerIdentityDTO{addition, local}, wantErr: "local member ID"},
 		{name: "duplicate member", peers: []PeerIdentityDTO{addition, addition}, wantErr: "duplicate dynamic peer ID"},
-		{name: "release mismatch", peers: []PeerIdentityDTO{with(func(identity *PeerIdentityDTO) { identity.ReleaseVersion = "v2" })}, wantErr: "compatibility mismatch"},
+		{name: "release mismatch", peers: []PeerIdentityDTO{with(func(identity *PeerIdentityDTO) { identity.ReleaseVersion = "1.2.0" })}, wantErr: "compatibility mismatch"},
 		{name: "invalid address", peers: []PeerIdentityDTO{with(func(identity *PeerIdentityDTO) { identity.Address = "bad" })}, wantErr: "dynamic peer 3"},
 	}
 	for _, test := range cases {
@@ -1320,6 +1321,214 @@ func TestCptDynamicReconcilePeersRejectsInvalidSetsAtomically(t *testing.T) {
 				t.Fatalf("rejected reconcile registered peer 3: %v", err)
 			}
 		})
+	}
+}
+
+func TestCptValidateDynamicPeerSetUsesAdjacentReleaseWindow(t *testing.T) {
+	cases := []struct {
+		name      string
+		local     string
+		peer      string
+		wantError bool
+	}{
+		{name: "local older", local: "1.1.0", peer: "1.2.0"},
+		{name: "local newer", local: "1.2.0", peer: "1.1.0"},
+		{name: "reject N-2", local: "1.2.0", peer: "1.0.0", wantError: true},
+		{name: "reject newer N+2", local: "1.0.0", peer: "1.2.0", wantError: true},
+	}
+	for _, test := range cases {
+		t.Run(test.name, func(t *testing.T) {
+			local := dynamicTestIdentity(1, "127.0.0.1:19001", "node1.example", PeerPhaseVoter, "", 0x11)
+			local.ReleaseVersion = test.local
+			peer := dynamicTestIdentity(2, "127.0.0.1:19002", "node2.example", PeerPhaseVoter, "", 0x22)
+			peer.ReleaseVersion = test.peer
+			err := validateDynamicPeerSet(local, []PeerIdentityDTO{peer})
+			if test.wantError {
+				if err == nil || !strings.Contains(err.Error(), "compatibility mismatch") {
+					t.Fatalf("validateDynamicPeerSet error = %v, want compatibility mismatch", err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("validateDynamicPeerSet rejected adjacent releases: %v", err)
+			}
+		})
+	}
+}
+
+func TestCptDynamicHelloAcceptsAdjacentReleasesAndRefreshesProfile(t *testing.T) {
+	left, right := cptNewNode(t, "node1.example"), cptNewNode(t, "node2.example")
+	cptTrustEachOther(left, right)
+	leftListener, rightListener := cptListen(t), cptListen(t)
+	leftIdentity := left.identity(1, leftListener.Addr().String(), PeerPhaseVoter, "")
+	leftIdentity.ReleaseVersion = "1.1.0"
+	rightIdentity := right.identity(2, rightListener.Addr().String(), PeerPhaseVoter, "")
+	rightIdentity.ReleaseVersion = "1.2.0"
+	leftTransport := left.newDynamic(t, leftListener, leftIdentity, []PeerIdentityDTO{rightIdentity}, nil)
+	rightTransport := right.newDynamic(t, rightListener, rightIdentity, []PeerIdentityDTO{leftIdentity}, nil)
+	cptServe(t, leftTransport.Serve)
+	cptServe(t, rightTransport.Serve)
+	cptWaitUntil(t, "adjacent-release peer handshake", func() bool {
+		leftStatus, leftErr := leftTransport.Status(rightIdentity.MemberID)
+		rightStatus, rightErr := rightTransport.Status(leftIdentity.MemberID)
+		return leftErr == nil && rightErr == nil && leftStatus.Connected && rightStatus.Connected
+	})
+
+	leftPeer := cptDynamicPeer(leftTransport, rightIdentity.MemberID)
+	if leftPeer == nil {
+		t.Fatal("adjacent-release peer was not registered")
+	}
+	oldIdentity, _, _ := leftPeer.identitySnapshot()
+	refreshed := rightIdentity
+	refreshed.ReleaseVersion = "1.1.0"
+	if !samePeerIdentity(oldIdentity, refreshed) {
+		t.Fatalf("release-only peer update changed immutable identity: old=%+v refreshed=%+v", oldIdentity, refreshed)
+	}
+	if err := leftTransport.ReconcilePeers([]PeerIdentityDTO{refreshed}); err != nil {
+		t.Fatalf("refresh adjacent peer release profile: %v", err)
+	}
+	if status, err := leftTransport.Status(rightIdentity.MemberID); err != nil || !status.Connected {
+		t.Fatalf("release-only profile refresh dropped live peer: status=%+v err=%v", status, err)
+	}
+	identity, _, stopped := cptDynamicPeer(leftTransport, rightIdentity.MemberID).identitySnapshot()
+	if stopped || identity.ReleaseVersion != refreshed.ReleaseVersion {
+		t.Fatalf("peer profile after refresh = %+v stopped=%t", identity, stopped)
+	}
+
+	message := PeerMessageDTO{From: leftIdentity.MemberID, To: rightIdentity.MemberID, Data: []byte("adjacent-release")}
+	if err := leftTransport.Send(message); err != nil {
+		t.Fatalf("send over adjacent-release connection: %v", err)
+	}
+	select {
+	case <-rightTransport.InboundReady():
+		delivery, received := rightTransport.TakeInbound()
+		if !received || !bytes.Equal(delivery.Message.Data, message.Data) {
+			t.Fatalf("received message = %+v received=%t", delivery.Message, received)
+		}
+		delivery.Complete()
+	case <-time.After(cptWaitTimeout):
+		t.Fatal("adjacent-release peer message was not delivered")
+	}
+}
+
+func TestCptDynamicHelloRejectsNMinusTwoRelease(t *testing.T) {
+	left, right := cptNewNode(t, "node1.example"), cptNewNode(t, "node2.example")
+	cptTrustEachOther(left, right)
+	leftListener, rightListener := cptListen(t), cptListen(t)
+	leftIdentity := left.identity(1, leftListener.Addr().String(), PeerPhaseVoter, "")
+	leftIdentity.ReleaseVersion = "1.0.0"
+	rightIdentity := right.identity(2, rightListener.Addr().String(), PeerPhaseVoter, "")
+	rightIdentity.ReleaseVersion = "1.2.0"
+	leftView := rightIdentity
+	leftView.ReleaseVersion = "1.1.0"
+	rightView := leftIdentity
+	rightView.ReleaseVersion = "1.1.0"
+	leftTransport := left.newDynamic(t, leftListener, leftIdentity, []PeerIdentityDTO{leftView}, nil)
+	rightTransport := right.newDynamic(t, rightListener, rightIdentity, []PeerIdentityDTO{rightView}, nil)
+	cptServe(t, leftTransport.Serve)
+	cptServe(t, rightTransport.Serve)
+	cptWaitUntil(t, "N-2 release handshake rejection", func() bool {
+		rightStatus, rightErr := rightTransport.Status(leftIdentity.MemberID)
+		return rightErr == nil && strings.HasPrefix(rightStatus.LastError, "incompatible release:")
+	})
+	for _, pair := range []struct {
+		name      string
+		transport *DynamicTCPPeerTransport
+		peerID    uint64
+	}{
+		{name: "lower member outbound", transport: leftTransport, peerID: rightIdentity.MemberID},
+		{name: "higher member inbound", transport: rightTransport, peerID: leftIdentity.MemberID},
+	} {
+		status, err := pair.transport.Status(pair.peerID)
+		if err != nil || status.Connected {
+			t.Fatalf("%s status = %+v err=%v", pair.name, status, err)
+		}
+	}
+}
+
+func TestCptDynamicOutboundHelloRejectsNMinusTwoRelease(t *testing.T) {
+	dialer, server := cptNewNode(t, "node1.example"), cptNewNode(t, "node2.example")
+	cptTrustEachOther(dialer, server)
+	transportListener, serverListener := cptListen(t), cptListen(t)
+	local := dialer.identity(1, transportListener.Addr().String(), PeerPhaseVoter, "")
+	local.ReleaseVersion = "1.2.0"
+	expectedRemote := server.identity(2, serverListener.Addr().String(), PeerPhaseVoter, "")
+	expectedRemote.ReleaseVersion = "1.1.0"
+	actualRemote := expectedRemote
+	actualRemote.ReleaseVersion = "1.0.0"
+	transport := dialer.newDynamic(t, transportListener, local, []PeerIdentityDTO{expectedRemote}, nil)
+
+	serverResult := make(chan error, 1)
+	serverDone := make(chan struct{})
+	go func() {
+		defer close(serverDone)
+		for {
+			connection, err := serverListener.Accept()
+			if err != nil {
+				select {
+				case serverResult <- err:
+				default:
+				}
+				return
+			}
+			func() {
+				defer connection.Close()
+				_ = connection.SetDeadline(time.Now().Add(cptWaitTimeout))
+				tlsConnection := tls.Server(connection, server.serverTLS.Clone())
+				if err := tlsConnection.Handshake(); err != nil {
+					return
+				}
+				if _, err := readDynamicFrame(tlsConnection, dynamicHelloLimit); err != nil {
+					return
+				}
+				hello, err := encodeDynamicPeerHello(actualRemote, dynamicRaftMagic)
+				if err == nil {
+					err = writeDynamicFrame(tlsConnection, hello, dynamicHelloLimit)
+				}
+				if err == nil {
+					select {
+					case serverResult <- nil:
+					default:
+					}
+				}
+			}()
+		}
+	}()
+	t.Cleanup(func() {
+		_ = serverListener.Close()
+		select {
+		case <-serverDone:
+		case <-time.After(cptWaitTimeout):
+			t.Error("fake peer did not stop after listener closure")
+		}
+	})
+	cptServe(t, transport.Serve)
+	deadline := time.Now().Add(cptWaitTimeout)
+	for {
+		status, err := transport.Status(expectedRemote.MemberID)
+		if err == nil && strings.HasPrefix(status.LastError, "incompatible release:") {
+			break
+		}
+		if time.Now().After(deadline) {
+			select {
+			case serverErr := <-serverResult:
+				t.Fatalf("outbound N-2 hello status = %+v err=%v; fake peer result=%v", status, err, serverErr)
+			default:
+				t.Fatalf("outbound N-2 hello status = %+v err=%v; fake peer did not finish the handshake", status, err)
+			}
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	if status, err := transport.Status(expectedRemote.MemberID); err != nil || status.Connected {
+		t.Fatalf("outbound N-2 peer status = %+v err=%v", status, err)
+	}
+	select {
+	case err := <-serverResult:
+		if err != nil {
+			t.Fatalf("fake peer handshake: %v", err)
+		}
+	case <-time.After(cptWaitTimeout):
+		t.Fatal("fake peer did not complete the hello exchange")
 	}
 }
 
@@ -1709,7 +1918,7 @@ func TestCptDynamicInboundRejectsUnexpectedHandshakes(t *testing.T) {
 		{name: "certificate fingerprint mismatch", payload: request(func(candidate *PeerIdentityDTO) {
 			candidate.CertificateSHA256 = cptFingerprint(0x99)
 		})},
-		{name: "release mismatch", payload: request(func(candidate *PeerIdentityDTO) { candidate.ReleaseVersion = "v2" })},
+		{name: "release mismatch", payload: request(func(candidate *PeerIdentityDTO) { candidate.ReleaseVersion = "1.2.0" })},
 		{name: "cluster mismatch", payload: request(func(candidate *PeerIdentityDTO) { candidate.ClusterID = "other" })},
 		{name: "matching candidate reaches handler", payload: request(func(*PeerIdentityDTO) {}), wantCalls: 1},
 	}

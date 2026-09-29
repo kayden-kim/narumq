@@ -2,6 +2,7 @@ package membership
 
 import (
 	"bytes"
+	"slices"
 	"sort"
 	"sync"
 )
@@ -40,6 +41,7 @@ type StateMachine struct {
 	tenantUsage         map[string]tenantStorageUsage
 	tenantQuota         *TenantQuotaProfileDTO
 	tenantQuotaByTenant map[string]TenantStorageQuotaDTO
+	activeFeatures      []string
 	nodeDrains          map[uint64]NodeDrainStateDTO
 }
 
@@ -87,14 +89,14 @@ func (machine *StateMachine) InitializeBootstrap(index uint64, members []MemberI
 	}
 	copied := make([]MemberIdentityDTO, len(members))
 	for memberIndex, member := range members {
-		if validateMemberIdentity(member) != nil || member.Phase != MemberPhaseVoter || member.OperationID != "" || (memberIndex > 0 && (members[memberIndex-1].MemberID >= member.MemberID || !compatibleMemberProfile(members[0], member))) {
+		if validateMemberIdentity(member) != nil || member.Phase != MemberPhaseVoter || member.OperationID != "" || (memberIndex > 0 && (members[memberIndex-1].MemberID >= member.MemberID || !sameMemberProfile(members[0], member))) {
 			return ErrInvalidCommand
 		}
 		copied[memberIndex] = cloneMember(member)
 	}
 	machine.mu.Lock()
 	defer machine.mu.Unlock()
-	if machine.lastAppliedIndex != 0 || len(machine.members) != 0 || len(machine.operations) != 0 || len(machine.ownerships) != 0 || len(machine.subscriptions) != 0 || len(machine.delivery) != 0 || len(machine.retained) != 0 || len(machine.offline) != 0 || machine.tenantQuota != nil || len(machine.nodeDrains) != 0 {
+	if machine.lastAppliedIndex != 0 || len(machine.members) != 0 || len(machine.operations) != 0 || len(machine.ownerships) != 0 || len(machine.subscriptions) != 0 || len(machine.delivery) != 0 || len(machine.retained) != 0 || len(machine.offline) != 0 || machine.tenantQuota != nil || len(machine.nodeDrains) != 0 || len(machine.activeFeatures) != 0 {
 		return ErrBootstrapAlreadyInitialized
 	}
 	for _, member := range copied {
@@ -134,6 +136,10 @@ func (machine *StateMachine) Apply(index uint64, command CommandDTO) (ApplyResul
 		return machine.applyTenantQuota(index, *command.TenantQuota), nil
 	case command.NodeDrain != nil:
 		return machine.applyNodeDrain(index, *command.NodeDrain), nil
+	case command.MemberProfile != nil:
+		return machine.applyMemberProfile(index, *command.MemberProfile), nil
+	case command.FeatureActivation != nil:
+		return machine.applyFeatureActivation(index, *command.FeatureActivation), nil
 	default:
 		// validateCommand rejects an empty discriminated union before advancing.
 		return result, nil
@@ -242,7 +248,7 @@ func (machine *StateMachine) stageJoin(index uint64, record MembershipRecordDTO)
 		return conflictResult(index, ConflictMemberIDReserved)
 	}
 	for _, committed := range machine.members {
-		if !compatibleMemberProfile(member, committed) {
+		if committed.Phase != MemberPhaseRetired && !compatibleMemberProfile(member, committed) {
 			return conflictResult(index, ConflictCompatibilityUnsupported)
 		}
 	}
@@ -565,12 +571,21 @@ func validRemoveAction(action MembershipAction) bool {
 	return action == MembershipActionBeginRemove || action == MembershipActionRemoveMember
 }
 
+// sameMemberIdentity compares stable identity; release version and features are mutable profile fields.
 func sameMemberIdentity(left, right MemberIdentityDTO) bool {
-	return left.MemberID == right.MemberID && left.ClusterID == right.ClusterID && left.Address == right.Address && left.DNSSAN == right.DNSSAN && bytes.Equal(left.CertificateSHA256, right.CertificateSHA256) && left.ReleaseVersion == right.ReleaseVersion && left.ClusterProtocolMajor == right.ClusterProtocolMajor && left.ClusterProtocolMinor == right.ClusterProtocolMinor && left.StateSchemaMajor == right.StateSchemaMajor && left.StateSchemaMinor == right.StateSchemaMinor
+	return left.MemberID == right.MemberID && left.ClusterID == right.ClusterID && left.Address == right.Address && left.DNSSAN == right.DNSSAN && bytes.Equal(left.CertificateSHA256, right.CertificateSHA256) && left.ClusterProtocolMajor == right.ClusterProtocolMajor && left.ClusterProtocolMinor == right.ClusterProtocolMinor && left.StateSchemaMajor == right.StateSchemaMajor && left.StateSchemaMinor == right.StateSchemaMinor
+}
+
+func sameMemberProfile(left, right MemberIdentityDTO) bool {
+	return left.ClusterID == right.ClusterID && left.ReleaseVersion == right.ReleaseVersion &&
+		slices.Equal(left.Features, right.Features) &&
+		left.ClusterProtocolMajor == right.ClusterProtocolMajor && left.ClusterProtocolMinor == right.ClusterProtocolMinor &&
+		left.StateSchemaMajor == right.StateSchemaMajor && left.StateSchemaMinor == right.StateSchemaMinor
 }
 
 func cloneMember(member MemberIdentityDTO) MemberIdentityDTO {
 	member.CertificateSHA256 = bytes.Clone(member.CertificateSHA256)
+	member.Features = slices.Clone(member.Features)
 	return member
 }
 

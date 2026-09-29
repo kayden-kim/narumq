@@ -266,9 +266,12 @@ func TestCMAApplyRejectsMalformedCommandsWithoutAdvancing(t *testing.T) {
 		{name: "DNS SAN with underscore", command: cmaWithMember(func(member *MemberIdentityDTO) { member.DNSSAN = "node_4.example" })},
 		{name: "certificate digest 31 bytes", command: cmaWithMember(func(member *MemberIdentityDTO) { member.CertificateSHA256 = member.CertificateSHA256[:31] })},
 		{name: "empty release version", command: cmaWithMember(func(member *MemberIdentityDTO) { member.ReleaseVersion = "" })},
+		{name: "noncanonical release version", command: cmaWithMember(func(member *MemberIdentityDTO) { member.ReleaseVersion = "v1.2.3" })},
 		{name: "release version above 64 bytes", command: cmaWithMember(func(member *MemberIdentityDTO) {
-			member.ReleaseVersion = strings.Repeat("r", maxReleaseVersionBytes+1)
+			member.ReleaseVersion = strings.Repeat("1", 65)
 		})},
+		{name: "invalid member feature token", command: cmaWithMember(func(member *MemberIdentityDTO) { member.Features = []string{"Bad"} })},
+		{name: "unsorted member features", command: cmaWithMember(func(member *MemberIdentityDTO) { member.Features = []string{"zeta", "alpha"} })},
 		{name: "cluster protocol major 3", command: cmaWithMember(func(member *MemberIdentityDTO) { member.ClusterProtocolMajor = 3 })},
 		{name: "cluster protocol minor 1", command: cmaWithMember(func(member *MemberIdentityDTO) { member.ClusterProtocolMinor = 1 })},
 		{name: "state schema major 2", command: cmaWithMember(func(member *MemberIdentityDTO) { member.StateSchemaMajor = 2 })},
@@ -342,8 +345,8 @@ func TestCMAApplyAcceptsInclusiveFieldBoundaries(t *testing.T) {
 		mutate func(*MembershipRecordDTO)
 	}{
 		{name: "cluster ID of 200 bytes", mutate: func(record *MembershipRecordDTO) { record.Member.ClusterID = strings.Repeat("c", maxClusterIDBytes) }},
-		{name: "release version of 64 bytes", mutate: func(record *MembershipRecordDTO) {
-			record.Member.ReleaseVersion = strings.Repeat("r", maxReleaseVersionBytes)
+		{name: "maximum uint32 release component", mutate: func(record *MembershipRecordDTO) {
+			record.Member.ReleaseVersion = "4294967295.0.0"
 		}},
 		{name: "IPv6 address with maximum port", mutate: func(record *MembershipRecordDTO) { record.Member.Address = "[2001:db8::4]:65535" }},
 		{name: "address of 255 bytes", mutate: func(record *MembershipRecordDTO) { record.Member.Address = cmaLongDNSName(61) + ":1" }},
@@ -1271,6 +1274,7 @@ func TestCMAConflictServiceErrorMatchesHTTPContract(t *testing.T) {
 		{conflict: ConflictOperationNotFound, code: ServiceErrorResourceNotFound},
 		{conflict: ConflictMemberNotFound, code: ServiceErrorResourceNotFound},
 		{conflict: ConflictCompatibilityUnsupported, code: ServiceErrorCompatibilityUnsupported},
+		{conflict: ConflictFeatureUnsupported, code: ServiceErrorFeatureUnsupported},
 		{conflict: ConflictOperationID, code: ServiceErrorOperationConflict},
 		{conflict: ConflictPhase, code: ServiceErrorOperationConflict},
 		{conflict: ConflictConfigurationMismatch, code: ServiceErrorOperationConflict},

@@ -356,7 +356,7 @@ func runWithContext(ctx context.Context, args []string, logger *slog.Logger) err
 		appmgmt.ServiceConfig{
 			ClusterID:      "narumq-cluster-1",
 			NodeID:         "narumq-node-1",
-			ReleaseVersion: "1.0.0",
+			ReleaseVersion: buildReleaseVersion,
 		},
 		sessions,
 		routes,

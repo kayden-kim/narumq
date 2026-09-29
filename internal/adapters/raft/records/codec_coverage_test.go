@@ -3,6 +3,7 @@ package records
 import (
 	"bytes"
 	"crypto/sha256"
+	"slices"
 	"strings"
 	"testing"
 
@@ -31,7 +32,7 @@ func crrWantErr(t *testing.T, err error, want string) {
 func crrVoter(id uint64) *MemberIdentity {
 	return &MemberIdentity{
 		MemberId: id, ClusterId: "cluster-a", Address: "node.example:7000", DnsSan: "node.example",
-		CertificateSha256: bytes.Repeat([]byte{0xab}, 32), ReleaseVersion: "v1.2.3",
+		CertificateSha256: bytes.Repeat([]byte{0xab}, 32), ReleaseVersion: "1.2.3",
 		ClusterProtocolMajor: 2, StateSchemaMajor: 1, Phase: MemberPhase_MEMBER_PHASE_VOTER,
 	}
 }
@@ -262,6 +263,77 @@ func TestCrrMembershipCommandValidation(t *testing.T) {
 	}
 }
 
+func TestCrrProfileCommandsRoundTripAndValidation(t *testing.T) {
+	commands := []*CommandEnvelope{
+		{
+			SchemaMajor: 1, OperationId: crrOp2,
+			Payload: &CommandEnvelope_MemberProfile{MemberProfile: &MemberProfileChange{
+				MemberId: 3, ReleaseVersion: "1.2.0", Features: []string{"alpha", "compatibility-probe"},
+			}},
+		},
+		{
+			SchemaMajor: 1, OperationId: crrOp3,
+			Payload: &CommandEnvelope_FeatureActivation{FeatureActivation: &FeatureActivation{Feature: "compatibility-probe"}},
+		},
+	}
+	for _, command := range commands {
+		encoded, err := MarshalCommand(command)
+		if err != nil {
+			t.Fatalf("marshal %T: %v", command.Payload, err)
+		}
+		decoded, err := UnmarshalCommand(encoded)
+		if err != nil {
+			t.Fatalf("unmarshal %T: %v", command.Payload, err)
+		}
+		if !proto.Equal(command, decoded) {
+			t.Fatalf("round trip %T = %v, want %v", command.Payload, decoded, command)
+		}
+	}
+
+	invalid := []*CommandEnvelope{
+		{
+			SchemaMajor: 1, OperationId: crrOp2,
+			Payload: &CommandEnvelope_MemberProfile{MemberProfile: &MemberProfileChange{ReleaseVersion: "1.2.0"}},
+		},
+		{
+			SchemaMajor: 1, OperationId: crrOp2,
+			Payload: &CommandEnvelope_MemberProfile{MemberProfile: &MemberProfileChange{
+				MemberId: 3, ReleaseVersion: "v1.2.0",
+			}},
+		},
+		{
+			SchemaMajor: 1, OperationId: crrOp2,
+			Payload: &CommandEnvelope_MemberProfile{MemberProfile: &MemberProfileChange{
+				MemberId: 3, ReleaseVersion: "1.2.0", Features: []string{"zeta", "alpha"},
+			}},
+		},
+		{
+			SchemaMajor: 1, OperationId: crrOp3,
+			Payload: &CommandEnvelope_FeatureActivation{FeatureActivation: &FeatureActivation{Feature: "Bad"}},
+		},
+	}
+	for index, command := range invalid {
+		if _, err := MarshalCommand(command); err == nil {
+			t.Errorf("invalid profile command %d was accepted", index)
+		}
+	}
+}
+
+func TestCrrActiveFeaturesSnapshotRoundTripAndObjectCount(t *testing.T) {
+	state := &ReplicatedStateSnapshot{ActiveFeatures: []string{"alpha", "compatibility-probe"}}
+	encoded, err := MarshalSnapshot(state, 1)
+	if err != nil {
+		t.Fatalf("marshal active feature snapshot: %v", err)
+	}
+	envelope, err := UnmarshalSnapshot(encoded)
+	if err != nil {
+		t.Fatalf("unmarshal active feature snapshot: %v", err)
+	}
+	if envelope.ObjectCount != 2 || !slices.Equal(envelope.State.ActiveFeatures, state.ActiveFeatures) {
+		t.Fatalf("active feature snapshot count=%d features=%q", envelope.ObjectCount, envelope.State.ActiveFeatures)
+	}
+}
+
 func TestCrrMemberIdentityValidation(t *testing.T) {
 	cases := []struct {
 		name   string
@@ -296,6 +368,9 @@ func TestCrrMemberIdentityValidation(t *testing.T) {
 		{"missing_certificate", func(m *MemberIdentity) { m.CertificateSha256 = nil }, "certificate_sha256"},
 		{"empty_release", func(m *MemberIdentity) { m.ReleaseVersion = "" }, "release_version"},
 		{"long_release", func(m *MemberIdentity) { m.ReleaseVersion = strings.Repeat("v", 65) }, "release_version"},
+		{"noncanonical_release", func(m *MemberIdentity) { m.ReleaseVersion = "v1.2.3" }, "release_version"},
+		{"invalid_feature", func(m *MemberIdentity) { m.Features = []string{"Bad"} }, "member features"},
+		{"unsorted_features", func(m *MemberIdentity) { m.Features = []string{"zeta", "alpha"} }, "member features"},
 		{"protocol_major", func(m *MemberIdentity) { m.ClusterProtocolMajor = 3 }, "unsupported cluster protocol"},
 		{"protocol_minor", func(m *MemberIdentity) { m.ClusterProtocolMinor = 1 }, "unsupported cluster protocol"},
 		{"schema_major", func(m *MemberIdentity) { m.StateSchemaMajor = 2 }, "unsupported cluster protocol"},
@@ -321,7 +396,7 @@ func TestCrrMemberIdentityValidation(t *testing.T) {
 		"ipv4_literal": func(m *MemberIdentity) { m.Address = "10.0.0.1:1" },
 		"ipv6_literal": func(m *MemberIdentity) { m.Address = "[::1]:65535" },
 		"max_bounds": func(m *MemberIdentity) {
-			m.ClusterId, m.ReleaseVersion = strings.Repeat("c", 200), strings.Repeat("v", 64)
+			m.ClusterId, m.ReleaseVersion = strings.Repeat("c", 200), "4294967295.4294967295.4294967295"
 		},
 		"max_label":          func(m *MemberIdentity) { m.DnsSan = strings.Repeat("a", 63) + ".example" },
 		"max_dns_san":        func(m *MemberIdentity) { m.DnsSan = strings.Repeat("a.", 126) + "a" },
@@ -652,7 +727,7 @@ func TestCrrMarshalSnapshotRejectsInvalidState(t *testing.T) {
 		{"member_unknown", &ReplicatedStateSnapshot{Members: []*MemberIdentity{withUnknownMember}}, "unknown fields"},
 		{"history_member_unknown", &ReplicatedStateSnapshot{MembershipHistory: []*MembershipRecord{withUnknownHistory}}, "unknown fields"},
 		{"invalid_member", &ReplicatedStateSnapshot{Members: []*MemberIdentity{crrVoter(0)}}, "member_id must be positive"},
-		{"duplicate_member", &ReplicatedStateSnapshot{Members: []*MemberIdentity{crrVoter(2), crrVoter(2)}}, "snapshot members are not uniquely sorted"},
+		{"active_features_unsorted", &ReplicatedStateSnapshot{ActiveFeatures: []string{"zeta", "alpha"}}, "active_features"},
 		{"ownership_empty_tenant", ownership(func(o *OwnershipState) { o.TenantId = "" }), "invalid snapshot ownership"},
 		{"ownership_long_client", ownership(func(o *OwnershipState) { o.ClientId = strings.Repeat("c", 257) }), "invalid snapshot ownership"},
 		{"ownership_zero_owner", ownership(func(o *OwnershipState) { o.OwnerNodeId = 0 }), "invalid snapshot ownership"},

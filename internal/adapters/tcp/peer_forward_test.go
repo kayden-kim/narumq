@@ -221,9 +221,9 @@ func newForwardTestTransportPair(t *testing.T) (
 		t.Fatal(err)
 	}
 	local1 := identityForTestCertificate(1, listener1.Addr().String(), "node1.example",
-		PeerPhaseVoter, "", "v1", serverTLS1.Certificates[0])
+		PeerPhaseVoter, "", "1.0.0", serverTLS1.Certificates[0])
 	local2 := identityForTestCertificate(2, listener2.Addr().String(), "node2.example",
-		PeerPhaseVoter, "", "v1", serverTLS2.Certificates[0])
+		PeerPhaseVoter, "", "1.0.0", serverTLS2.Certificates[0])
 	rejectingHandler := func(context.Context, PeerIdentityDTO) (SeedAdmissionResponseDTO, error) {
 		return SeedAdmissionResponseDTO{}, errors.New("candidate is not a seed")
 	}
