@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	netraft "go.etcd.io/raft/v3"
@@ -223,5 +224,66 @@ func TestStableStoreAppendReadyErrorBranches(t *testing.T) {
 	filePersistenceOps = original
 	if err := store.createSnapshot(1, &pb.ConfState{}, [][]byte{make([]byte, maxCommandSize+1)}); err == nil {
 		t.Fatal("createSnapshot accepted an oversized command")
+	}
+}
+
+func TestOpenStableStoreSyncsDirectoryWhenOpeningWAL(t *testing.T) {
+	original := filePersistenceOps
+	defer func() { filePersistenceOps = original }()
+
+	var syncedDirectories []string
+	filePersistenceOps.syncDirectory = func(directory string) error {
+		syncedDirectories = append(syncedDirectories, directory)
+		return nil
+	}
+
+	directory := t.TempDir()
+	store, err := openDynamicStableStore(directory)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(syncedDirectories) != 1 || syncedDirectories[0] != directory {
+		store.close()
+		t.Fatalf("new WAL directory syncs = %v, want [%s]", syncedDirectories, directory)
+	}
+	if err := store.close(); err != nil {
+		t.Fatal(err)
+	}
+
+	syncedDirectories = nil
+	store, err = openDynamicStableStore(directory)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(syncedDirectories) != 1 || syncedDirectories[0] != directory {
+		store.close()
+		t.Fatalf("reopened WAL directory syncs = %v, want [%s]", syncedDirectories, directory)
+	}
+	if err := store.close(); err != nil {
+		t.Fatal(err)
+	}
+
+	retryDirectory := t.TempDir()
+	syncAttempts := 0
+	filePersistenceOps.syncDirectory = func(string) error {
+		syncAttempts++
+		if syncAttempts == 1 {
+			return errors.New("directory sync failure")
+		}
+		return nil
+	}
+	if _, err := openDynamicStableStore(retryDirectory); err == nil || !strings.Contains(err.Error(), "sync WAL directory") {
+		t.Fatalf("first open error = %v, want WAL directory sync failure", err)
+	}
+	store, err = openDynamicStableStore(retryDirectory)
+	if err != nil {
+		t.Fatalf("retry after directory sync failure: %v", err)
+	}
+	if syncAttempts != 2 {
+		store.close()
+		t.Fatalf("directory sync attempts after retry = %d, want 2", syncAttempts)
+	}
+	if err := store.close(); err != nil {
+		t.Fatal(err)
 	}
 }

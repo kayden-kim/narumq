@@ -4,6 +4,8 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -217,4 +219,82 @@ func runProbeIO(args []string) error {
 func parseDelayValue(data []byte) (int64, bool) {
 	value, err := strconv.ParseInt(strings.TrimSpace(string(data)), 10, 64)
 	return value, err == nil && value >= 0 && value <= maxDelayMilliseconds
+}
+
+func runStorageMode(args []string) error {
+	flags := newFlagSet("storage-mode")
+	control := flags.String("control", "", "supervisor control URL")
+	mode := flags.String("mode", "", "storage mode")
+	if err := parseFlags(flags, args); err != nil {
+		return err
+	}
+	if err := requireFlag("control", *control); err != nil {
+		return err
+	}
+	if err := requireFlag("mode", *mode); err != nil {
+		return err
+	}
+	path := "/chaos/storage/mode?mode=" + url.QueryEscape(*mode)
+	return runControlRequest(*control, http.MethodPost, path)
+}
+
+func runStorageStatus(args []string) error {
+	flags := newFlagSet("storage-status")
+	control := flags.String("control", "", "supervisor control URL")
+	if err := parseFlags(flags, args); err != nil {
+		return err
+	}
+	if err := requireFlag("control", *control); err != nil {
+		return err
+	}
+	return runControlRequest(*control, http.MethodGet, "/chaos/storage")
+}
+
+func runPowerCut(args []string) error {
+	flags := newFlagSet("power-cut")
+	control := flags.String("control", "", "supervisor control URL")
+	torn := flags.Bool("torn", false, "leave a partial WAL tail")
+	if err := parseFlags(flags, args); err != nil {
+		return err
+	}
+	if err := requireFlag("control", *control); err != nil {
+		return err
+	}
+	path := fmt.Sprintf("/chaos/power-cut?torn=%t", *torn)
+	return runControlRequest(*control, http.MethodPost, path)
+}
+
+func runPowerOn(args []string) error {
+	flags := newFlagSet("power-on")
+	control := flags.String("control", "", "supervisor control URL")
+	if err := parseFlags(flags, args); err != nil {
+		return err
+	}
+	if err := requireFlag("control", *control); err != nil {
+		return err
+	}
+	return runControlRequest(*control, http.MethodPost, "/chaos/power-on")
+}
+
+func runControlRequest(control, method, path string) error {
+	request, err := http.NewRequest(method, strings.TrimRight(control, "/")+path, nil)
+	if err != nil {
+		return fmt.Errorf("create control request: %w", err)
+	}
+	response, err := (&http.Client{Timeout: 30 * time.Second}).Do(request)
+	if err != nil {
+		return fmt.Errorf("send control request: %w", err)
+	}
+	defer response.Body.Close()
+	body, err := io.ReadAll(response.Body)
+	if err != nil {
+		return fmt.Errorf("read control response: %w", err)
+	}
+	if _, err := os.Stdout.Write(body); err != nil {
+		return fmt.Errorf("write control response: %w", err)
+	}
+	if response.StatusCode < http.StatusOK || response.StatusCode >= http.StatusMultipleChoices {
+		return fmt.Errorf("control %s returned HTTP %d: %s", path, response.StatusCode, body)
+	}
+	return nil
 }

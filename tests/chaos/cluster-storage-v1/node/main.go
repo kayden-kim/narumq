@@ -17,7 +17,7 @@ func main() {
 
 func run(args []string) error {
 	if len(args) == 0 {
-		return fmt.Errorf("expected a command: supervise, fill-disk, free-disk, set-io-delay, or probe-io")
+		return fmt.Errorf("expected a command: supervise, fill-disk, free-disk, set-io-delay, probe-io, storage-mode, storage-status, power-cut, or power-on")
 	}
 	switch args[0] {
 	case "supervise":
@@ -30,6 +30,14 @@ func run(args []string) error {
 		return runSetIODelay(args[1:])
 	case "probe-io":
 		return runProbeIO(args[1:])
+	case "storage-mode":
+		return runStorageMode(args[1:])
+	case "storage-status":
+		return runStorageStatus(args[1:])
+	case "power-cut":
+		return runPowerCut(args[1:])
+	case "power-on":
+		return runPowerOn(args[1:])
 	default:
 		return fmt.Errorf("unknown command %q", args[0])
 	}

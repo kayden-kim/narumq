@@ -183,6 +183,12 @@ Dynamic cluster의 connected remote-owned QoS 0 delivery는 `publish.RemoteForwa
 
 성능 때문에 zero-copy가 필요해도 buffer 수명과 소유권을 port contract에 명시해야 한다. Framework object를 안쪽으로 전달하는 방식으로 최적화하지 않는다.
 
+## Raft 영속성 경계
+
+Dynamic cluster 저장소는 `internal/adapters/raft/stable_store.go`가 소유한다. `openStableStoreMode`는 확정된 snapshot과 WAL을 읽은 뒤, 없는 `wal.bin`에 magic header를 쓴다. WAL file과 상위 directory는 신규 생성뿐 아니라 매번 open할 때 sync해 이전 open에서 directory sync가 실패했어도 재시도 뒤 WAL 이름을 신뢰하게 한다. `(*stableStore).appendReady`는 checksummed Ready frame을 WAL에 기록하고 sync한 뒤 in-memory storage에 적용한다. Snapshot 확정은 임시 파일을 기록·sync하고 rename한 뒤 directory를 sync한다. 파일 또는 directory sync 오류는 성공한 영속화로 취급하지 않고 Raft runtime에 반환한다.
+
+`stable_store_fault_injection_test.go`는 신규 WAL 생성, 재-open, directory sync 실패 뒤 같은 directory 재시도 경계를 검증한다. 별도의 black-box harness인 `tests/chaos/cluster-storage-v1`은 sync 오류를 주입하고 제어된 전원 차단 뒤 sync되지 않은 FUSE 상태를 되돌린다. 이 로컬 시험은 선택한 영속화 순서를 검증하지만 production Linux filesystem, EBS 또는 실제 전원 손실의 내구성을 입증하지 않는다. 이는 ADR-0009의 미완료 gate다.
+
 ## 목표 package 구조
 
 Directory와 package의 기준 tree는 [Project structure](project-structure.md)에서 관리한다. 이 문서는 component 책임과 source dependency만 기준으로 삼는다. Framework 이름이 최상위 제품 구조를 결정하지 않게 한다.

@@ -14,9 +14,10 @@ import (
 )
 
 const (
-	overallRunTimeout  = 30 * time.Minute
+	overallRunTimeout  = 60 * time.Minute
 	scenarioRunTimeout = 8 * time.Minute
 	chaosDockerfile    = "tests/chaos/cluster-storage-v1/Dockerfile"
+	chaosControlURL    = "http://127.0.0.1:18080"
 )
 
 type commandRunner interface {
@@ -319,7 +320,7 @@ func (scenario *scenarioDocker) startNodes(ctx context.Context, fixture *chaosFi
 			"--mount", fmt.Sprintf("type=bind,source=%s,destination=/config,readonly", filepath.ToSlash(node.ConfigDir)),
 			"--publish", "127.0.0.1::8080", "--publish", "127.0.0.1::1883",
 		}
-		if scenario.options.ScenarioID == "follower-slow-io" {
+		if usesChaosFS(scenario.options.ScenarioID) {
 			args = append(args,
 				"--tmpfs", "/var/lib/narumq-backing:size=256m",
 				"--tmpfs", "/var/lib/narumq:size=1m",
@@ -334,8 +335,8 @@ func (scenario *scenarioDocker) startNodes(ctx context.Context, fixture *chaosFi
 			"--data-dir", "/var/lib/narumq/node", "--jwks-file", "/config/jwks.json",
 			"--jwks-listen", "127.0.0.1:18080", "--delay-file", "/run/narumq-chaos/io-delay",
 		)
-		if scenario.options.ScenarioID == "follower-slow-io" {
-			args = append(args, "--slowfs-backing", "/var/lib/narumq-backing", "--slowfs-mount", "/var/lib/narumq")
+		if usesChaosFS(scenario.options.ScenarioID) {
+			args = append(args, "--chaosfs-backing", "/var/lib/narumq-backing", "--chaosfs-mount", "/var/lib/narumq")
 		}
 		output, err := scenario.options.Runner.Run(ctx, scenario.options.RepoRoot, "docker", args...)
 		if err != nil {
@@ -387,6 +388,15 @@ func (scenario *scenarioDocker) startNodes(ctx context.Context, fixture *chaosFi
 	return nil
 }
 
+func usesChaosFS(scenarioID string) bool {
+	switch scenarioID {
+	case "follower-slow-io", "follower-sync-error", "follower-torn-power-loss", "cluster-power-loss":
+		return true
+	default:
+		return false
+	}
+}
+
 func (scenario *scenarioDocker) execNode(ctx context.Context, nodeID string, command string, args ...string) ([]byte, error) {
 	name, ok := scenario.containerNames[nodeID]
 	if !ok {
@@ -403,6 +413,10 @@ func (scenario *scenarioDocker) execNode(ctx context.Context, nodeID string, com
 		return output, fmt.Errorf("node %s %s: %w", nodeID, command, err)
 	}
 	return output, nil
+}
+func (scenario *scenarioDocker) chaosControl(ctx context.Context, nodeID, command string, args ...string) ([]byte, error) {
+	commandArgs := append([]string{"--control", chaosControlURL}, args...)
+	return scenario.execNode(ctx, nodeID, command, commandArgs...)
 }
 
 func (scenario *scenarioDocker) signalBrokerRestart(ctx context.Context, nodeID string) error {

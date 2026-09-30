@@ -485,18 +485,24 @@ func openStableStoreMode(directory string, dynamic bool) (*stableStore, error) {
 	if err != nil {
 		return nil, fmt.Errorf("open WAL: %w", err)
 	}
-	if stat, statErr := wal.Stat(); statErr != nil {
+	stat, statErr := wal.Stat()
+	if statErr != nil {
 		wal.Close()
 		return nil, fmt.Errorf("stat WAL: %w", statErr)
-	} else if stat.Size() == 0 {
+	}
+	if stat.Size() == 0 {
 		if err := writeAll(wal, []byte(walMagic)); err != nil {
 			wal.Close()
 			return nil, fmt.Errorf("initialize WAL: %w", err)
 		}
-		if err := filePersistenceOps.sync(wal); err != nil {
-			wal.Close()
-			return nil, fmt.Errorf("sync WAL header: %w", err)
-		}
+	}
+	if err := filePersistenceOps.sync(wal); err != nil {
+		wal.Close()
+		return nil, fmt.Errorf("sync WAL on open: %w", err)
+	}
+	if err := filePersistenceOps.syncDirectory(directory); err != nil {
+		wal.Close()
+		return nil, fmt.Errorf("sync WAL directory: %w", err)
 	}
 	if _, err := wal.Seek(0, io.SeekEnd); err != nil {
 		wal.Close()

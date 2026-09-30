@@ -89,15 +89,16 @@ WAL·snapshot의 storage target과 `fsync` 순서는 scoped [ADR-0009](ADR-0009-
 
 1. ACK 직후 각 replica를 차례로 kill해 message gap이 0인지 확인한다.
 2. WAL write, `fsync`, commit 전후 모든 지점에 crash를 주입한다.
-3. Follower disk full·slow I/O와 partition에서 잘못된 ACK이 없는지 검증한다.
+3. Follower disk full·slow I/O·failed fsync와 partition에서 잘못된 ACK이 없는지 검증한다.
 4. 같은 Packet Identifier 재전송이 중복 durable command를 만들지 않는지 검증한다.
 5. BP-03에서 group commit 크기별 p99·p99.9와 disk 비용을 측정한다.
+6. Held WAL fsync 중 follower torn cut과 simultaneous three-node power cut 뒤 ACKed delivery·session recovery를 확인한다. Cluster-cut acceptance는 `client.publish`가 PUBLISH packet을 성공적으로 쓴 뒤 in-flight barrier를 signal하고 `awaitAck` 전에 publisher를 보류한다. Cut 때문에 PUBACK 관찰이 중단된 그 QoS 1 결과만 `unknown`이다. Known timeout/closed outcomes는 no-ACK으로 기록하되 unknown으로 오분류하지 않는다. Docker/FUSE simulation은 physical power-loss evidence가 아니다.
 
 추가 process evidence는 [Cluster §11.13](../specs/cluster-session-and-delivery.md#1113-adr-0003-durable-ack-fault-수용-매핑)에 기록했다. `NARUMQ_DURABLE_ACK_FAULTS=1 go test ./tests/integration -run '^TestDynamicClusterDurableAck(ReplicaKill|CrashPoint|Partition)ProcessAcceptance$' -count=1 -v -timeout 30m`가 PASS했다: 세 replica 각각에서 QoS 1/2 ACK 직후 kill한 여섯 조합은 recovery 뒤 count=1, WAL/commit crash matrix의 20개 조합과 leader/follower partition 두 시나리오도 통과했다. WAL-before-write/sync/after-sync leader failpoint에서 QoS 1 성공 ACK는 없었고 QoS 2 packet은 recovery 뒤 한 번 전달됐다. Commit-before/after-apply는 leader/follower, QoS 1/2 모두 ACK 뒤 한 번 전달됐다. Partition에서는 isolated node가 성공 ACK를 보내지 않았고 majority는 계속 ACK했다.
 
-`storage-fault-durable-20260927d`에서 Docker durable ACK chaos gate도 PASS했다. Follower disk-full와 slow-I/O에서 leader·healthy follower의 QoS 1/2 여섯 topic이 fault 중 ACK되고, recovery 뒤 payload가 각 한 번 전달됐으며 누락·중복은 없었다. Quorum loss에서는 fault 중 QoS 1/2 ACK가 없었고, recovery 뒤 persistent QoS 2가 같은 packet identifier와 `SessionPresent=true`로 재개됐으며 QoS 1은 at-most-once 결과를 보였다. 실행 증거는 [Cluster §11.13](../specs/cluster-session-and-delivery.md#1113-adr-0003-durable-ack-fault-수용-매핑)에 있다.
+`storage-fault-durable-20260927d`의 세-scenario Docker durable ACK gate는 PASS했다. Final six-scenario gate `storage-power-loss-20260930g`도 PASS했다: sync-error reopen은 exit code 1로 fail-closed됐고 ACKed QoS 1/2 일곱 건이 recovery 뒤 전달됐다. 실제 `node/wal.bin`에서 held WAL fsync/torn cut은 16 unsynced bytes 중 8 bytes를 남겼다. Simultaneous three-node cut 뒤 index 39→42 수렴, `SessionPresent=true`, ACKed QoS 1/2 여섯 건의 missing/duplicate는 0이었다. During-cut publisher는 네 QoS 1 ACK와 PUBLISH write 뒤 await 전 barrier에서 hold된 `qos1-05`의 unknown PUBACK outcome을 기록했다. Unknown evidence에는 `qos1-05`만 포함하며, known timeout/closed 결과와 구분한다. 상세 evidence는 [Cluster §11.6·§11.13](../specs/cluster-session-and-delivery.md#116-storage-fault-chaos-mapping)에 연결한다. 이는 Docker/FUSE simulation이며 physical power-loss 보장은 아니다.
 
-Process exit는 실제 전원 손실을 모사하지 않는다. 특히 WAL-after-sync는 `File.Sync` 성공 뒤의 process crash일 뿐 device/page-cache power-loss proof가 아니다. BP-03 및 Linux/EBS power-loss도 미실행이다. ADR-0003은 `Proposed` 상태로 유지하고 §9 gate를 완료로 표시하지 않는다.
+Process exit는 실제 전원 손실을 모사하지 않는다. 특히 WAL-after-sync는 `File.Sync` 성공 뒤의 process crash일 뿐 device/page-cache power-loss proof가 아니다. Docker/FUSE cut도 rollback journal을 적용한 local simulation이며 BP-03, Linux/EBS power-loss 및 production volume 검증을 대체하지 않는다. 이 gate들은 미실행이다. ADR-0003은 `Proposed` 상태로 유지하고 §9 전체를 완료로 표시하지 않는다.
 
 ## 10. 재검토 조건
 

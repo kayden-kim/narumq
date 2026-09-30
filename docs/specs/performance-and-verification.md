@@ -382,7 +382,7 @@ composition-root boundary after quorum commit and before CONNECT local activatio
 
 ### 7.4 Cluster storage chaos evidence
 
-실제 disk full과 느린 storage I/O acceptance는 별도 Docker chaos gate다. Go `1.26.5`, Linux/amd64 Docker daemon, `/dev/fuse`, `CAP_SYS_ADMIN`과 Docker image build에 필요한 module network access를 준비한 뒤 repository root에서 실행한다.
+실제 ENOSPC, 느린 storage I/O와 sync/power-loss fault acceptance는 별도 Docker chaos gate다. Go `1.26.5`, Linux/amd64 Docker daemon, `/dev/fuse`, `CAP_SYS_ADMIN`과 image build에 필요한 module network access를 준비한 뒤 repository root에서 실행한다. 전원 차단은 journal로 sync되지 않은 FUSE 상태를 되돌리는 local simulation이며 물리 power loss나 EBS 검증이 아니다.
 
 ```text
 go run ./tests/chaos/cluster-storage-v1 \
@@ -390,7 +390,7 @@ go run ./tests/chaos/cluster-storage-v1 \
   --output .artifacts/chaos/cluster-storage-v1/storage-faults-20260925
 ```
 
-Runner는 새 Docker network와 세 broker process로 `follower-disk-full`, `quorum-disk-full`, `follower-slow-io`를 순서대로 실행한다. 기존 admission probe 외에 persistent `chaos-durable-sub` subscriber를 준비하고 실제 QoS 1/2 publish ACK를 확인한다. Follower fault에서는 leader와 healthy follower가 각각 QoS 1 두 건과 QoS 2 한 건을 ACK하고 recovery 뒤 sentinel barrier까지 정확히 한 번 전달되어야 한다. Quorum fault에서는 clean QoS 1과 persistent QoS 2 publish에 fault 중 ACK가 없고, recovery 뒤 SessionPresent가 복원된 QoS 2 재개와 at-most-once QoS 1 결과를 확인한다. 결과는 `scenarioEvidence.durableAck`의 `ackedBeforeFault`, `ackedDuringFault`, `unackedDuringFault`, `ackedAfterRecovery`, `missingAcked`, `duplicates`, `recoverySessionPresent`로 기록한다. 이전 `storage-fault-20260925d` 증거는 MQTT admission만 검사했으며 durable ACK 결과를 대체하지 않는다.
+Runner는 새 Docker network와 세 broker process에서 여섯 scenario를 순서대로 실행한다: `follower-disk-full`, `quorum-disk-full`, `follower-slow-io`, `follower-sync-error`, `follower-torn-power-loss`, `cluster-power-loss`. Persistent `chaos-durable-sub` subscriber로 QoS 1/2 ACK와 sentinel delivery를 확인한다. Follower storage fault는 healthy quorum의 ACK/recovery를, quorum loss는 no-ACK와 QoS 2 same-packet resume·QoS 1 at-most-once를 확인한다. Sync-error는 follower fsync failure와 fail-closed reopen을 확인한다. Torn-power-loss는 held WAL fsync와 torn-tail rollback 뒤 delivery를 확인한다. Cluster-power-loss는 in-flight QoS 1 publisher 중 세 node cut을 동시에 시작하고 full restart 뒤 READY, leader/index convergence, persistent `SessionPresent` 및 ACKed delivery를 확인한다. `scenarioEvidence.durableAck`는 `ackedBeforeFault`, `ackedDuringFault`, `unackedDuringFault`, `ackedAfterRecovery`, `missingAcked`, `duplicates`, `recoverySessionPresent`를 기록한다. 이전 `storage-fault-20260925d`는 MQTT admission만 검사했으며 durable ACK 결과를 대체하지 않는다.
 
 성공 결과는 `.artifacts/chaos/cluster-storage-v1/<run-id>/`의 `manifest.json`, `summary.json`, `docker-build.log`, `image-inspect.json`, scenario별 `events.jsonl`과 `node<i>.log`에 남긴다. Token·JWT·private key·certificate 원문은 artifact에 기록하지 않는다.
 
@@ -409,6 +409,16 @@ GOMAXPROCS=2 go run ./tests/chaos/cluster-storage-v1 --run-id storage-fault-dura
 ```
 
 PASS, exit code 0; `summary.json` reports all three scenarios passed. Follower disk-full and slow-I/O ACKed all six leader/healthy-follower QoS 1/2 topics during the fault; recovery delivered each payload once with no missing ACKed messages or duplicates. Quorum disk-full kept fault-time QoS 1/2 unacknowledged; recovery resumed persistent QoS 2 with `SessionPresent=true`, while QoS 1 remained at-most-once. Artifacts: `.artifacts/chaos/cluster-storage-v1/storage-fault-durable-20260927d/`. Earlier run attempts exposed Docker startup, node startup, and fault-handling ordering defects; the passing run occurred after those fixes. BP-03 and Linux/EBS/physical power-loss gates remain open.
+
+2026-09-30 최종 여섯 scenario Docker gate:
+
+```text
+GOMAXPROCS=2 go run ./tests/chaos/cluster-storage-v1 --run-id storage-power-loss-20260930g --output .artifacts/chaos/cluster-storage-v1/storage-power-loss-20260930g
+```
+
+PASS, 종료 코드 0; 여섯 scenario 모두 통과했다. Sync-error 시나리오에서 `fail-fsync`를 유지한 채 broker를 재시작하자 process가 exit code 1로 fail-closed됐다. Normal mode 전환·restart 뒤 ACK된 QoS 1/2 일곱 topic이 전달됐다. Torn-WAL cut은 held fsync 1회, 실제 `node/wal.bin`의 unsynced 16 bytes 중 8 bytes를 보존했다. Cluster 시나리오에서는 세 broker 모두 exit 137, index 39→42 수렴, `SessionPresent=true`였다. 네 during-cut QoS 1 ACK와 cut 중 실제 PUBLISH write 후 `awaitAck` 전에 막아 둔 `qos1-05`의 `unknown` PUBACK outcome을 기록했다. `AckOutcomeUnknownDuringFault`에는 이 topic만 들고, known timeout/closed outcomes는 unacked로 남겼다. Cut 전·중 ACK된 여섯 topic에 누락·중복이 없었다. Unknown outcome은 commit되지 않았다는 뜻이 아니며 payload는 at-most-once로 검증했다. Artifact: `.artifacts/chaos/cluster-storage-v1/storage-power-loss-20260930g/summary.json`. Docker/FUSE simulation은 physical power-loss나 production EBS 증거가 아니다.
+
+Mounted FUSE acceptance는 `/dev/fuse`, `CAP_SYS_ADMIN`, `apparmor=unconfined`를 설정한 pinned `golang:1.26.5-bookworm@sha256:53eeac89074db483fdf0ab3be1df32bf6e47562263d2d0d6baa7f26acb4957dd` container에서 실행했다. `tests/chaos/cluster-storage-v1/node`에서 `NARUMQ_CHAOSFS_MOUNT_TEST=1 go test ./... -count=1`가 통과했다. 이 시험은 file/directory durability, held WAL fsync·torn rollback, cut 시작 뒤 늦게 도착한 WAL fsync의 거부, file/directory sync failure를 확인한다. 같은 suite의 `TestChaosControllerRejectsHeldFsyncResumingAfterRemount`도 release→remount→late-resume에서 stale callback이 `EIO`로 거부되는지 확인했다.
 
 ## 8. Coverage와 test quality gate
 

@@ -102,7 +102,11 @@ func (scenario *storageFaultScenario) run(ctx context.Context) error {
 	if err := scenario.prepareDurableSubscriber(ctx, leader); err != nil {
 		return err
 	}
-	defer scenario.durableSubscriber.close()
+	defer func() {
+		if scenario.durableSubscriber != nil {
+			_ = scenario.durableSubscriber.close()
+		}
+	}()
 	scenario.evidence.LeaderNodeID = leader
 	followers := followerNodeIDs(leader)
 	switch scenario.options.ScenarioID {
@@ -112,13 +116,53 @@ func (scenario *storageFaultScenario) run(ctx context.Context) error {
 		return scenario.runQuorumDiskFull(ctx, leader, followers)
 	case "follower-slow-io":
 		return scenario.runFollowerSlowIO(ctx, leader, followers[0], followers[1])
+	case "follower-sync-error":
+		return scenario.runFollowerSyncError(ctx, leader, followers[0], followers[1])
+	case "follower-torn-power-loss":
+		return scenario.runFollowerTornPowerLoss(ctx, leader, followers[0], followers[1])
+	case "cluster-power-loss":
+		return scenario.runClusterPowerLoss(ctx, leader, followers)
 	default:
 		return fmt.Errorf("unknown storage-fault scenario %q", scenario.options.ScenarioID)
 	}
 }
 
 func (scenario *storageFaultScenario) commonStartup(ctx context.Context) (string, error) {
-	if err := waitFor(ctx, startupTimeout, probeInterval, func() (bool, error) {
+	if err := scenario.waitAllReady(ctx, startupTimeout); err != nil {
+		return "", err
+	}
+	leader, err := scenario.waitLeaderAgreement(ctx)
+	if err != nil {
+		return "", err
+	}
+	if err := waitFor(ctx, 30*time.Second, probeInterval, func() (bool, error) {
+		result := scenario.mqtt(ctx, leader, "chaos-baseline", "chaos/baseline/#")
+		if result.Classification != "accepted" {
+			return false, fmt.Errorf("baseline MQTT probe on leader %s was %s", leader, result.Classification)
+		}
+		return true, nil
+	}); err != nil {
+		return "", fmt.Errorf("leader baseline MQTT admission: %w", err)
+	}
+	if err := waitFor(ctx, 30*time.Second, probeInterval, func() (bool, error) {
+		for _, nodeID := range nodeIDs() {
+			response, status, _, err := scenario.subscriptions(ctx, nodeID)
+			if err != nil {
+				return false, err
+			}
+			if status != http.StatusOK || !hasSubscription(response, "chaos-baseline", "chaos/baseline/#") {
+				return false, fmt.Errorf("node %s does not list the baseline subscription", nodeID)
+			}
+		}
+		return true, nil
+	}); err != nil {
+		return "", fmt.Errorf("baseline subscription did not appear on every node: %w", err)
+	}
+	return leader, nil
+}
+
+func (scenario *storageFaultScenario) waitAllReady(ctx context.Context, timeout time.Duration) error {
+	if err := waitFor(ctx, timeout, probeInterval, func() (bool, error) {
 		for _, nodeID := range nodeIDs() {
 			observation, err := scenario.health(ctx, nodeID, "/health/ready")
 			if err != nil {
@@ -130,9 +174,12 @@ func (scenario *storageFaultScenario) commonStartup(ctx context.Context) (string
 		}
 		return true, nil
 	}); err != nil {
-		return "", fmt.Errorf("wait for all nodes to become ready: %w", err)
+		return fmt.Errorf("wait for all nodes to become ready: %w", err)
 	}
+	return nil
+}
 
+func (scenario *storageFaultScenario) waitLeaderAgreement(ctx context.Context) (string, error) {
 	var leader string
 	if err := waitFor(ctx, 30*time.Second, probeInterval, func() (bool, error) {
 		var agreed string
@@ -160,31 +207,6 @@ func (scenario *storageFaultScenario) commonStartup(ctx context.Context) (string
 		return true, nil
 	}); err != nil {
 		return "", fmt.Errorf("wait for leader agreement: %w", err)
-	}
-
-	if err := waitFor(ctx, 30*time.Second, probeInterval, func() (bool, error) {
-		result := scenario.mqtt(ctx, leader, "chaos-baseline", "chaos/baseline/#")
-		if result.Classification != "accepted" {
-			return false, fmt.Errorf("baseline MQTT probe on leader %s was %s", leader, result.Classification)
-		}
-		return true, nil
-	}); err != nil {
-		return "", fmt.Errorf("leader baseline MQTT admission: %w", err)
-	}
-
-	if err := waitFor(ctx, 30*time.Second, probeInterval, func() (bool, error) {
-		for _, nodeID := range nodeIDs() {
-			response, status, _, err := scenario.subscriptions(ctx, nodeID)
-			if err != nil {
-				return false, err
-			}
-			if status != http.StatusOK || !hasSubscription(response, "chaos-baseline", "chaos/baseline/#") {
-				return false, fmt.Errorf("node %s does not list the baseline subscription", nodeID)
-			}
-		}
-		return true, nil
-	}); err != nil {
-		return "", fmt.Errorf("baseline subscription did not appear on every node: %w", err)
 	}
 	return leader, nil
 }
@@ -327,7 +349,7 @@ func (scenario *storageFaultScenario) fillDisk(ctx context.Context, nodeID strin
 	return evidence, scenario.recorder.record("disk", nodeID, evidence)
 }
 
-func (scenario *storageFaultScenario) inspectFailedFollower(ctx context.Context, nodeID, expectedMessage string) error {
+func (scenario *storageFaultScenario) inspectFailedFollower(ctx context.Context, nodeID, expectedCode, expectedMessage string) error {
 	ready, err := scenario.health(ctx, nodeID, "/health/ready")
 	if err != nil {
 		return err
@@ -346,7 +368,7 @@ func (scenario *storageFaultScenario) inspectFailedFollower(ctx context.Context,
 	if err != nil {
 		return err
 	}
-	if summary.Ready || summary.ReplicationHealth != "FAILED" || summary.LastErrorCode != "storage_no_space" || !summary.StoragePressure {
+	if summary.Ready || summary.ReplicationHealth != "FAILED" || summary.LastErrorCode != expectedCode || !summary.StoragePressure {
 		return fmt.Errorf("node %s failed summary mismatch: ready=%t health=%q code=%q pressure=%t", nodeID, summary.Ready, summary.ReplicationHealth, summary.LastErrorCode, summary.StoragePressure)
 	}
 	running, err := scenario.docker.containerRunning(ctx, nodeID)
@@ -388,7 +410,7 @@ func (scenario *storageFaultScenario) runFollowerDiskFull(ctx context.Context, l
 		return fmt.Errorf("target follower did not report FAILED: %w", err)
 	}
 	scenario.evidence.DetectionDurationMs = time.Since(detectedAt).Milliseconds()
-	if err := scenario.inspectFailedFollower(ctx, targetID, "raft storage failed: no space left; restart required"); err != nil {
+	if err := scenario.inspectFailedFollower(ctx, targetID, "storage_no_space", "raft storage failed: no space left; restart required"); err != nil {
 		return err
 	}
 	for attempt := 0; attempt < 3; attempt++ {
@@ -407,7 +429,7 @@ func (scenario *storageFaultScenario) runFollowerDiskFull(ctx context.Context, l
 	if err := scenario.recoverFollower(ctx, leaderID, targetID, 120*time.Second, true); err != nil {
 		return err
 	}
-	return scenario.verifyDurableDelivery(ctx, expectedDurableTopics, nil)
+	return scenario.verifyDurableDelivery(ctx, leaderID, expectedDurableTopics, nil)
 }
 
 func (scenario *storageFaultScenario) observeHealthyProgress(ctx context.Context, leaderID, targetID, healthyID string, requireQueueCap, requireAppliedConvergence bool) error {
@@ -506,6 +528,10 @@ func (scenario *storageFaultScenario) recoverFollower(ctx context.Context, leade
 	if err := scenario.docker.signalBrokerRestart(ctx, targetID); err != nil {
 		return err
 	}
+	return scenario.awaitFollowerRecovery(ctx, targetID, leader.LastAppliedIndex, timeout, requireCleanError)
+}
+
+func (scenario *storageFaultScenario) awaitFollowerRecovery(ctx context.Context, targetID string, leaderIndex int64, timeout time.Duration, requireCleanError bool) error {
 	recoveryStarted := time.Now()
 	var latest nodeData
 	if err := waitFor(ctx, timeout, probeInterval, func() (bool, error) {
@@ -520,13 +546,13 @@ func (scenario *storageFaultScenario) recoverFollower(ctx context.Context, leade
 		if err != nil {
 			return false, err
 		}
-		return latest.ReplicationHealth == "HEALTHY" && latest.LastAppliedIndex >= leader.LastAppliedIndex, nil
+		return latest.ReplicationHealth == "HEALTHY" && latest.LastAppliedIndex >= leaderIndex, nil
 	}); err != nil {
 		return fmt.Errorf("node %s did not recover: %w", targetID, err)
 	}
 	scenario.evidence.RecoveryDurationMs = time.Since(recoveryStarted).Milliseconds()
-	if latest.LastAppliedIndex < leader.LastAppliedIndex {
-		return fmt.Errorf("recovered node %s applied index %d is behind leader recovery index %d", targetID, latest.LastAppliedIndex, leader.LastAppliedIndex)
+	if latest.LastAppliedIndex < leaderIndex {
+		return fmt.Errorf("recovered node %s applied index %d is behind leader recovery index %d", targetID, latest.LastAppliedIndex, leaderIndex)
 	}
 	if latest.StoragePressure || !latest.Ready {
 		return fmt.Errorf("recovered node %s still reports storage pressure or not-ready", targetID)
@@ -610,7 +636,7 @@ func (scenario *storageFaultScenario) runQuorumDiskFull(ctx context.Context, lea
 	}
 	scenario.evidence.DetectionDurationMs = time.Since(detectionStarted).Milliseconds()
 	for _, nodeID := range followers {
-		if err := scenario.inspectFailedFollower(ctx, nodeID, "raft storage failed: no space left; restart required"); err != nil {
+		if err := scenario.inspectFailedFollower(ctx, nodeID, "storage_no_space", "raft storage failed: no space left; restart required"); err != nil {
 			return err
 		}
 	}
@@ -784,7 +810,7 @@ func (scenario *storageFaultScenario) runQuorumDiskFull(ctx context.Context, lea
 	if recoveryOutcome != durableAcked {
 		return fmt.Errorf("replayed QoS 2 publish %s outcome %q, want ACK: %v", qos2State.topic, recoveryOutcome, recoveryAckErr)
 	}
-	if err := scenario.verifyDurableDelivery(ctx,
+	if err := scenario.verifyDurableDelivery(ctx, leaderID,
 		[]string{preFaultQoS1, preFaultQoS2, duringFaultQoS2},
 		[]string{duringFaultQoS1}); err != nil {
 		return err
@@ -947,7 +973,7 @@ func (scenario *storageFaultScenario) runFollowerSlowIO(ctx context.Context, lea
 	if err := scenario.reconnectOriginalBaseline(ctx, targetID); err != nil {
 		return err
 	}
-	if err := scenario.verifyDurableDelivery(ctx, expectedDurableTopics, nil); err != nil {
+	if err := scenario.verifyDurableDelivery(ctx, leaderID, expectedDurableTopics, nil); err != nil {
 		return err
 	}
 	logs, err := scenario.docker.nodeLogs(ctx, targetID)

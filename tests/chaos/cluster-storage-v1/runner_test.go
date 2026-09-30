@@ -248,3 +248,83 @@ func TestDurableClientReadsQoS2Delivery(t *testing.T) {
 		t.Fatal("fake broker did not finish the QoS 2 exchange")
 	}
 }
+func TestValidateTornWALCut(t *testing.T) {
+	valid := powerCutEvidence{
+		Torn: true, BrokerExitCode: 137, ReleasedFsyncs: 1,
+		Files: []rolledBackFile{{Path: "node/wal.bin", DurableBytes: 16, UnsyncedBytes: 8, KeptBytes: 4}},
+	}
+	tests := []struct {
+		name     string
+		evidence powerCutEvidence
+		wantErr  bool
+	}{
+		{name: "valid torn WAL prefix", evidence: valid},
+		{name: "no WAL file", evidence: powerCutEvidence{Torn: true, BrokerExitCode: 137, ReleasedFsyncs: 1}, wantErr: true},
+		{name: "unrelated WAL file", evidence: func() powerCutEvidence {
+			v := valid
+			v.Files = append([]rolledBackFile(nil), valid.Files...)
+			v.Files[0].Path = "other/wal.bin"
+			return v
+		}(), wantErr: true},
+		{name: "empty kept prefix", evidence: func() powerCutEvidence {
+			v := valid
+			v.Files = append([]rolledBackFile(nil), valid.Files...)
+			v.Files[0].KeptBytes = 0
+			return v
+		}(), wantErr: true},
+		{name: "entire unsynced tail kept", evidence: func() powerCutEvidence {
+			v := valid
+			v.Files = append([]rolledBackFile(nil), valid.Files...)
+			v.Files[0].KeptBytes = v.Files[0].UnsyncedBytes
+			return v
+		}(), wantErr: true},
+		{name: "not torn", evidence: func() powerCutEvidence { v := valid; v.Torn = false; return v }(), wantErr: true},
+		{name: "no held fsync released", evidence: func() powerCutEvidence { v := valid; v.ReleasedFsyncs = 0; return v }(), wantErr: true},
+		{name: "clean broker exit", evidence: func() powerCutEvidence { v := valid; v.BrokerExitCode = 0; return v }(), wantErr: true},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			err := validateTornWALCut(test.evidence)
+			if (err != nil) != test.wantErr {
+				t.Fatalf("validateTornWALCut() error = %v, want error=%t", err, test.wantErr)
+			}
+		})
+	}
+}
+func TestRecordDurableAckOnlyMarksExplicitUnknown(t *testing.T) {
+	recorder, err := newEventRecorder(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := recorder.close(); err != nil {
+			t.Errorf("close event recorder: %v", err)
+		}
+	})
+	evidence := &durableAckEvidence{
+		AckedBeforeFault: []string{}, AckedDuringFault: []string{}, UnackedDuringFault: []string{},
+		AckOutcomeUnknownDuringFault: []string{}, AckedAfterRecovery: []string{}, MissingAcked: []string{}, Duplicates: []string{},
+	}
+	scenario := &storageFaultScenario{
+		evidence: scenarioEvidence{DurableAck: evidence},
+		recorder: recorder,
+	}
+	for _, result := range []struct {
+		topic   string
+		outcome durableAckOutcome
+	}{
+		{topic: "known-timeout", outcome: durableTimedOut},
+		{topic: "known-closed", outcome: durableClosed},
+		{topic: "unknown", outcome: durableUnknown},
+	} {
+		if err := scenario.recordDurableAck("1", "publisher", result.topic, 1, "during-fault", result.outcome, nil); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if len(evidence.UnackedDuringFault) != 3 {
+		t.Fatalf("unacked topics = %v, want all three non-ACK outcomes", evidence.UnackedDuringFault)
+	}
+	if len(evidence.AckOutcomeUnknownDuringFault) != 1 || evidence.AckOutcomeUnknownDuringFault[0] != "unknown" {
+		t.Fatalf("unknown ACK outcomes = %v, want only the explicitly unknown topic", evidence.AckOutcomeUnknownDuringFault)
+	}
+}

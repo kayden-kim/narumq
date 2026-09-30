@@ -30,6 +30,7 @@ NaruMQ source tree는 MQTT·session·routing·delivery·tenancy·security·clust
 | Standalone listener 시작 | `cmd/narumq/main.go` `runWithContext` → `serveServices`에 `mqttServer` (`*tcpadapter.Server`)와 `httpServer` (`*http.Server`) 인스턴스를 전달해 listener 실행을 맡긴다. | `-tcp-listen`/`-tls-listen` 및 `-http-listen` 설정에 따라 standalone MQTT와 management HTTP listener를 시작한다. |
 | MQTT CONNECT 대표 흐름 | 호출 위치: `cmd/narumq/main.go` `runWithContext` → `serveServices`가 `mqttServer` 변수의 `Serve` 메서드를 호출; 정의 위치: `internal/adapters/tcp/server.go` `(*Server).Serve` → `(*connection).readLoop` → `(*connection).activate` → `internal/application/connect/connect.go` `UseCase.ConnectContext` | listener가 CONNECT를 디코딩해 application use case에 전달한다. 수락되면 session 정보를 연결에 설정하고 CONNACK을 보낸다. |
 | 관리 HTTP | 생성 위치: `cmd/narumq/main.go` `runWithContext` → `internal/adapters/http/management/server.go` `NewServer` → `newServer` → `newRouter`; 호출 위치: `serveServices`가 `httpServer` 변수 (`*http.Server`)의 `Serve(httpListener)` 메서드를 호출 | Management API 요청은 HTTP 경계에서 처리한다. 정확한 경로와 응답 형식은 [management API contract](../contracts/management-api-v1.md)가 기준이다. |
+| Storage-fault chaos | `tests/chaos/cluster-storage-v1/runner.go` `Run` → `runStorageScenario` → `scenario.go`/`power.go`; 별도 node module: `node/chaosfs.go`, `node/chaosfs_journal.go`, `node/supervise.go`, `node/commands.go` | Docker 실행기가 ENOSPC, 느린 I/O, fsync·directory-sync 오류, 보류된 fsync와 전원 차단을 적용하고 process·storage 증거를 기록한다. |
 
 대표 CONNECT 동작은 [MQTT protocol과 session 스펙](../specs/mqtt-protocol-and-session.md)의 CONNECT 처리 순서 및 [`tests/integration/mqtt_ingress_test.go`](../../tests/integration/mqtt_ingress_test.go)에서 확인한다. Dynamic cluster와 peer-only 흐름은 각각 [Cluster architecture](cluster-architecture.md), [Raft peer transport contract](../contracts/raft-peer-transport-v1.md)를 따른다. 이 표는 진입 경로 안내이며 내부 처리 전체를 검증하는 증거는 아니다.
 
@@ -109,9 +110,9 @@ NaruMQ source tree는 MQTT·session·routing·delivery·tenancy·security·clust
 │   ├── e2e/
 │   ├── chaos/
 │   │   └── cluster-storage-v1/
-│   │       ├── node/       # isolated nested Go module; go-fuse delay filesystem
+│   │       ├── node/       # isolated nested Go module; FUSE storage faults, fsync control and power-loss rollback
 │   │       ├── Dockerfile
-│   │       └── runner.go   # disk-full/slow-I/O chaos lifecycle and evidence
+│   │       └── runner.go   # six-scenario Docker orchestration, process controls and evidence
 │   └── benchmark/
 │       ├── internal/
 │       │   ├── environment/
@@ -149,7 +150,7 @@ Phase 1 security·tenant isolation slice, Phase 2 replicated session ownership c
 `tests/benchmark/internal/mqttclient`는 benchmark 전용 MQTT 5 Clean Start/zero Session Expiry CONNECT와 frame I/O를 소유한다. `tests/benchmark/internal/jsonl`은 phase·event JSONL 파일의 공통 buffering/flush/close 동작을 소유하고, `tests/benchmark/internal/runtimeartifact`는 runtime 표본과 phase 경계를 검증해 target별 요약을 만든다. `tests/benchmark/internal/suiteartifact`는 반복 순서와 중앙값·MAD 계산만 소유하며 profile 의미와 BP별 metric 선택은 소유하지 않는다. 네 package와 `bp01`, `bp05`는 product runtime이 import하지 않는 benchmark-only source다.
 각 BP package는 profile 해석, workload 상태와 comparison 판정, suite parent·child artifact schema와 Docker 실행을 소유하며 shared package는 profile·summary 의미를 결정하지 않는다.
 `tests/compatibility/mqtt-clients-v1`는 product runtime과 독립된 black-box evidence harness다. `clients/go`는 root `go.mod`에 Paho dependency를 추가하지 않는 nested Go module로 MQTT 3.1.1/5 Go SDK 역할을 격리하고, `clients/python`은 hash-pinned `paho-mqtt` runtime과 VERSION2 callback adapter를 격리한다. `Dockerfile`은 두 SDK 이미지와 retransmission proxy를 linux/amd64 digest-pinned image로 만들며, `runner.go`는 broker·proxy·client container를 case마다 새로 만들고 결과·trace·log·manifest를 수집한다. 이 directory의 source는 product runtime이 import하지 않는다.
-`tests/chaos/cluster-storage-v1`는 실제 filesystem 용량 고갈과 느린 I/O를 Docker broker process에 적용하는 black-box evidence harness다. `node/`는 go-fuse를 root `go.mod`에 추가하지 않는 nested Go module이며, runner는 process·network·fault lifecycle과 secret-free evidence artifact를 소유한다. 두 경로의 source는 product runtime이 import하지 않는다.
+`tests/chaos/cluster-storage-v1`는 ENOSPC, 지연·실패하는 file/directory sync, 보류된 WAL fsync와 제어된 전원 차단을 broker process에 적용하는 black-box Docker 증거 harness다. `node/`는 go-fuse 의존성을 root `go.mod`에 추가하지 않도록 별도 Go module로 유지한다. `chaosfs_journal.go`는 전원 차단 뒤 동기화되지 않은 file bytes와 namespace 작업을 복원하며, `supervise.go`와 `commands.go`는 process-local fault control을 제공한다. `runner.go`, `scenario.go`, `power.go`는 cluster lifecycle, scenario assertion과 secret-free 증거 artifact를 관리한다. 이 harness는 production runtime이 아니며 물리 EBS 내구성을 입증하지 않는다.
 
 `tests/conformance/mqtt-compliance-v1.json`은 현재 구현이 지원한다고 선언한 MQTT
 3.1.1/5.0 normative statement와 source test function의 양방향 연결표다.

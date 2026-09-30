@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"sync"
 	"time"
 )
 
@@ -19,6 +20,9 @@ var storageFaultScenarios = []string{
 	"follower-disk-full",
 	"quorum-disk-full",
 	"follower-slow-io",
+	"follower-sync-error",
+	"follower-torn-power-loss",
+	"cluster-power-loss",
 }
 
 type runOptions struct {
@@ -46,6 +50,9 @@ type scenarioSummary struct {
 
 type scenarioEvidence struct {
 	LeaderNodeID                      string                      `json:"leaderNodeId,omitempty"`
+	RecoveryLeaderNodeID              string                      `json:"recoveryLeaderNodeId,omitempty"`
+	InFlightPublishTopic              string                      `json:"inFlightPublishTopic,omitempty"`
+	InFlightPublishAckOutcome         string                      `json:"inFlightPublishAckOutcome,omitempty"`
 	TargetNodeIDs                     []string                    `json:"targetNodeIds,omitempty"`
 	DiskFill                          *diskFillEvidence           `json:"diskFill,omitempty"`
 	DiskFills                         map[string]diskFillEvidence `json:"diskFills,omitempty"`
@@ -80,16 +87,44 @@ type scenarioEvidence struct {
 	IOProbeDurationMs                 int64                       `json:"ioProbeDurationMs,omitempty"`
 	DurableAck                        *durableAckEvidence         `json:"durableAck,omitempty"`
 	OriginalBaselineReconnectAccepted bool                        `json:"originalBaselineReconnectAccepted"`
+	PowerCuts                         map[string]powerCutEvidence `json:"powerCuts,omitempty"`
+	HeldWALFsyncs                     int                         `json:"heldWalFsyncs,omitempty"`
+	ReopenExitCode                    *int                        `json:"reopenExitCode,omitempty"`
+	ReopenFailClosed                  bool                        `json:"reopenFailClosed,omitempty"`
 }
 
 type durableAckEvidence struct {
-	AckedBeforeFault       []string `json:"ackedBeforeFault"`
-	AckedDuringFault       []string `json:"ackedDuringFault"`
-	UnackedDuringFault     []string `json:"unackedDuringFault"`
-	AckedAfterRecovery     []string `json:"ackedAfterRecovery"`
-	MissingAcked           []string `json:"missingAcked"`
-	Duplicates             []string `json:"duplicates"`
-	RecoverySessionPresent *bool    `json:"recoverySessionPresent,omitempty"`
+	AckedBeforeFault             []string `json:"ackedBeforeFault"`
+	AckedDuringFault             []string `json:"ackedDuringFault"`
+	UnackedDuringFault           []string `json:"unackedDuringFault"`
+	AckOutcomeUnknownDuringFault []string `json:"ackOutcomeUnknownDuringFault"`
+	AckedAfterRecovery           []string `json:"ackedAfterRecovery"`
+	MissingAcked                 []string `json:"missingAcked"`
+	Duplicates                   []string `json:"duplicates"`
+	RecoverySessionPresent       *bool    `json:"recoverySessionPresent,omitempty"`
+}
+
+type powerCutEvidence struct {
+	Torn           bool              `json:"torn"`
+	BrokerExitCode int               `json:"brokerExitCode"`
+	ReleasedFsyncs int               `json:"releasedFsyncs"`
+	Files          []rolledBackFile  `json:"files"`
+	Entries        []rolledBackEntry `json:"entries"`
+}
+
+type rolledBackFile struct {
+	Path           string `json:"path"`
+	DurableBytes   int64  `json:"durableBytes"`
+	UnsyncedBytes  int64  `json:"unsyncedBytes"`
+	KeptBytes      int64  `json:"keptBytes"`
+	RestoredRanges int    `json:"restoredRanges"`
+}
+
+type rolledBackEntry struct {
+	Directory string `json:"directory"`
+	Operation string `json:"operation"`
+	Name      string `json:"name"`
+	NewName   string `json:"newName,omitempty"`
 }
 
 type diskFillEvidence struct {
@@ -134,6 +169,7 @@ type scenarioEvent struct {
 }
 
 type eventRecorder struct {
+	mu      sync.Mutex
 	file    *os.File
 	encoder *json.Encoder
 }
@@ -148,13 +184,20 @@ func newEventRecorder(directory string) (*eventRecorder, error) {
 	}
 	return &eventRecorder{file: file, encoder: json.NewEncoder(file)}, nil
 }
-
 func (recorder *eventRecorder) record(kind, nodeID string, data any) error {
+
+	recorder.mu.Lock()
+	defer recorder.mu.Unlock()
 	return recorder.encoder.Encode(scenarioEvent{At: time.Now().UTC(), Kind: kind, NodeID: nodeID, Data: data})
 }
 
 func (recorder *eventRecorder) close() error {
-	if recorder == nil || recorder.file == nil {
+	if recorder == nil {
+		return nil
+	}
+	recorder.mu.Lock()
+	defer recorder.mu.Unlock()
+	if recorder.file == nil {
 		return nil
 	}
 	syncErr := recorder.file.Sync()

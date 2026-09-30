@@ -8,6 +8,7 @@ import (
 	"net"
 	"sort"
 	"strings"
+	"sync/atomic"
 	"time"
 )
 
@@ -15,6 +16,7 @@ const (
 	durableAckTimeout       = 2 * time.Second
 	durableDeliveryTimeout  = 15 * time.Second
 	durableDeliveryQuietFor = time.Second
+	inflightCutSequence     = 5
 )
 
 type durableAckOutcome string
@@ -23,6 +25,7 @@ const (
 	durableAcked    durableAckOutcome = "acked"
 	durableTimedOut durableAckOutcome = "timeout"
 	durableClosed   durableAckOutcome = "closed"
+	durableUnknown  durableAckOutcome = "unknown"
 )
 
 type durableClient struct {
@@ -30,6 +33,77 @@ type durableClient struct {
 	stopClose      func() bool
 	nextPacketID   uint16
 	pubrecReceived map[uint16]bool
+}
+
+type inflightPublishResult struct {
+	acked          []string
+	unacked        []string
+	unackedOutcome durableAckOutcome
+	unackedErr     error
+	err            error
+}
+
+func (scenario *storageFaultScenario) startInflightPublisher(ctx context.Context, nodeID string, acked *atomic.Int64, inFlight chan<- string) <-chan inflightPublishResult {
+	results := make(chan inflightPublishResult, 1)
+	go func() {
+		defer close(results)
+		result := inflightPublishResult{acked: make([]string, 0, inflightCutSequence-1), unacked: make([]string, 0, 1)}
+		address := "127.0.0.1:" + scenario.docker.mqttPorts[nodeID]
+		client, _, err := dialDurableClient(ctx, address, scenario.fixture.AccessToken, "chaos-durable-pub-3", true)
+		if err != nil {
+			result.err = err
+			results <- result
+			return
+		}
+		defer client.close()
+		for sequence := 1; sequence <= 40; sequence++ {
+			topic := durableTopic(scenario.options.ScenarioID, "leader", fmt.Sprintf("qos1-%02d", sequence))
+			packetID, err := client.publish(ctx, topic, []byte(topic), 1)
+			if err != nil {
+				result.unacked = append(result.unacked, topic)
+				result.unackedOutcome = durableClosed
+				result.unackedErr = err
+				results <- result
+				return
+			}
+			if sequence == inflightCutSequence {
+				select {
+				case inFlight <- topic:
+				case <-ctx.Done():
+					result.err = ctx.Err()
+					results <- result
+					return
+				}
+				<-ctx.Done()
+				result.unacked = append(result.unacked, topic)
+				result.unackedOutcome = durableUnknown
+				result.unackedErr = errors.New("power cut interrupted PUBACK observation; broker commit outcome is unknown")
+				results <- result
+				return
+			}
+			ackCtx, cancel := context.WithTimeout(ctx, durableAckTimeout)
+			outcome, ackErr := client.awaitAck(ackCtx, packetID, 1)
+			cancel()
+			if outcome != durableAcked {
+				result.unacked = append(result.unacked, topic)
+				result.unackedOutcome = outcome
+				result.unackedErr = ackErr
+				results <- result
+				return
+			}
+			result.acked = append(result.acked, topic)
+			acked.Add(1)
+			if sequence < inflightCutSequence {
+				if err := sleepContext(ctx, 100*time.Millisecond); err != nil {
+					result.err = err
+					results <- result
+					return
+				}
+			}
+		}
+		results <- result
+	}()
+	return results
 }
 
 type durableMessage struct {
@@ -83,7 +157,7 @@ func (scenario *storageFaultScenario) prepareDurableSubscriber(ctx context.Conte
 	scenario.durableSubscriber = client
 	scenario.evidence.DurableAck = &durableAckEvidence{
 		AckedBeforeFault: []string{}, AckedDuringFault: []string{}, UnackedDuringFault: []string{},
-		AckedAfterRecovery: []string{}, MissingAcked: []string{}, Duplicates: []string{},
+		AckOutcomeUnknownDuringFault: []string{}, AckedAfterRecovery: []string{}, MissingAcked: []string{}, Duplicates: []string{},
 	}
 	if err := waitFor(ctx, 30*time.Second, probeInterval, func() (bool, error) {
 		for _, nodeID := range nodeIDs() {
@@ -311,6 +385,10 @@ func (scenario *storageFaultScenario) durablePublish(ctx context.Context, nodeID
 		return err
 	}
 	defer client.close()
+	return scenario.publishDurableClient(ctx, nodeID, clientID, client, topic, qos, phase, expectAck)
+}
+
+func (scenario *storageFaultScenario) publishDurableClient(ctx context.Context, nodeID, clientID string, client *durableClient, topic string, qos byte, phase string, expectAck bool) error {
 	packetID, err := client.publish(ctx, topic, []byte(topic), qos)
 	if err != nil {
 		return fmt.Errorf("publish durable topic %s: %w", topic, err)
@@ -340,18 +418,30 @@ func (scenario *storageFaultScenario) publishFollowerFaultMessages(ctx context.C
 	var expected []string
 	for index, publisher := range publishers {
 		clientID := fmt.Sprintf("chaos-durable-pub-%d", index+1)
-		for sequence := 1; sequence <= 2; sequence++ {
-			topic := durableTopic(scenario.options.ScenarioID, publisher.source, fmt.Sprintf("qos1-%d", sequence))
-			if err := scenario.durablePublish(ctx, publisher.nodeID, clientID, topic, 1, "during-fault", true); err != nil {
-				return expected, err
-			}
-			expected = append(expected, topic)
-		}
-		topic := durableTopic(scenario.options.ScenarioID, publisher.source, "qos2")
-		if err := scenario.durablePublish(ctx, publisher.nodeID, clientID, topic, 2, "during-fault", true); err != nil {
+		address := "127.0.0.1:" + scenario.docker.mqttPorts[publisher.nodeID]
+		client, _, err := dialDurableClient(ctx, address, scenario.fixture.AccessToken, clientID, true)
+		if err != nil {
 			return expected, err
 		}
-		expected = append(expected, topic)
+		publishErr := func() error {
+			defer client.close()
+			for sequence := 1; sequence <= 2; sequence++ {
+				topic := durableTopic(scenario.options.ScenarioID, publisher.source, fmt.Sprintf("qos1-%d", sequence))
+				if err := scenario.publishDurableClient(ctx, publisher.nodeID, clientID, client, topic, 1, "during-fault", true); err != nil {
+					return err
+				}
+				expected = append(expected, topic)
+			}
+			topic := durableTopic(scenario.options.ScenarioID, publisher.source, "qos2")
+			if err := scenario.publishDurableClient(ctx, publisher.nodeID, clientID, client, topic, 2, "during-fault", true); err != nil {
+				return err
+			}
+			expected = append(expected, topic)
+			return nil
+		}()
+		if publishErr != nil {
+			return expected, publishErr
+		}
 	}
 	return expected, nil
 }
@@ -431,6 +521,9 @@ func (scenario *storageFaultScenario) recordDurableAck(nodeID, clientID, topic s
 		}
 	} else if phase == "during-fault" {
 		scenario.evidence.DurableAck.UnackedDuringFault = append(scenario.evidence.DurableAck.UnackedDuringFault, topic)
+		if outcome == durableUnknown {
+			scenario.evidence.DurableAck.AckOutcomeUnknownDuringFault = append(scenario.evidence.DurableAck.AckOutcomeUnknownDuringFault, topic)
+		}
 	}
 	return scenario.recorder.record("durable-ack", nodeID, map[string]any{
 		"clientId": clientID, "topic": topic, "qos": qos, "phase": phase,
@@ -438,13 +531,13 @@ func (scenario *storageFaultScenario) recordDurableAck(nodeID, clientID, topic s
 	})
 }
 
-func (scenario *storageFaultScenario) verifyDurableDelivery(ctx context.Context, expectedTopics, atMostOnceTopics []string) error {
+func (scenario *storageFaultScenario) verifyDurableDelivery(ctx context.Context, leaderID string, expectedTopics, atMostOnceTopics []string) error {
 	evidence := scenario.evidence.DurableAck
 	if evidence == nil || scenario.durableSubscriber == nil {
 		return errors.New("durable ACK subscriber was not prepared")
 	}
 	sentinelTopic := durableTopic(scenario.options.ScenarioID, "sentinel", "barrier")
-	if err := scenario.durablePublish(ctx, scenario.evidence.LeaderNodeID, "chaos-durable-sentinel", sentinelTopic, 1, "sentinel", true); err != nil {
+	if err := scenario.durablePublish(ctx, leaderID, "chaos-durable-sentinel", sentinelTopic, 1, "sentinel", true); err != nil {
 		return fmt.Errorf("publish durable delivery sentinel: %w", err)
 	}
 	expected := make(map[string]bool, len(expectedTopics))
