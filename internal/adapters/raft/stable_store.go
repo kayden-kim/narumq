@@ -66,6 +66,11 @@ type walRecord struct {
 	entries   []*pb.Entry
 }
 
+// persistent reports whether the record carries state that recovery must replay.
+func (record walRecord) persistent() bool {
+	return record.hardState != nil || record.snapshot != nil || len(record.entries) != 0
+}
+
 type stableStore struct {
 	directory       string
 	wal             *os.File
@@ -614,6 +619,41 @@ func (s *stableStore) appendReady(ready etcdraft.Ready) error {
 	if err != nil {
 		return err
 	}
+	if record.persistent() {
+		if err := s.appendWALFrame(ready, record); err != nil {
+			return err
+		}
+	}
+
+	if ready.Snapshot != nil && !etcdraft.IsEmptySnap(ready.Snapshot) {
+		if err := persistSnapshotFileMode(s.directory, ready.Snapshot, s.dynamic, nil); err != nil {
+			return err
+		}
+		if err := s.memory.ApplySnapshot(proto.Clone(ready.Snapshot).(*pb.Snapshot)); err != nil {
+			return fmt.Errorf("apply ready snapshot: %w", err)
+		}
+		s.snapshotIndex = ready.Snapshot.GetMetadata().GetIndex()
+		s.confState = cloneConfState(ready.Snapshot.GetMetadata().GetConfState())
+		if err := s.loadSnapshotData(ready.Snapshot.GetData()); err != nil {
+			return fmt.Errorf("load ready snapshot state: %w", err)
+		}
+		s.appliedIndex = s.snapshotIndex
+	}
+	if len(ready.Entries) != 0 {
+		if err := s.memory.Append(cloneEntries(ready.Entries)); err != nil {
+			return fmt.Errorf("append ready entries: %w", err)
+		}
+	}
+	if ready.HardState != nil {
+		s.hardState = proto.Clone(ready.HardState).(*pb.HardState)
+		if err := s.memory.SetHardState(proto.Clone(ready.HardState).(*pb.HardState)); err != nil {
+			return fmt.Errorf("set ready hard state: %w", err)
+		}
+	}
+	return nil
+}
+
+func (s *stableStore) appendWALFrame(ready etcdraft.Ready, record walRecord) error {
 	payload, err := encodeWALRecordMode(record, s.dynamic)
 	if err != nil {
 		return err
@@ -666,34 +706,9 @@ func (s *stableStore) appendReady(ready etcdraft.Ready) error {
 	if len(normalEntries) != 0 {
 		s.walHook(WALBoundaryDTO{Stage: WALAfterSync, Entries: normalEntries})
 	}
-
-	if ready.Snapshot != nil && !etcdraft.IsEmptySnap(ready.Snapshot) {
-		if err := persistSnapshotFileMode(s.directory, ready.Snapshot, s.dynamic, nil); err != nil {
-			return err
-		}
-		if err := s.memory.ApplySnapshot(proto.Clone(ready.Snapshot).(*pb.Snapshot)); err != nil {
-			return fmt.Errorf("apply ready snapshot: %w", err)
-		}
-		s.snapshotIndex = ready.Snapshot.GetMetadata().GetIndex()
-		s.confState = cloneConfState(ready.Snapshot.GetMetadata().GetConfState())
-		if err := s.loadSnapshotData(ready.Snapshot.GetData()); err != nil {
-			return fmt.Errorf("load ready snapshot state: %w", err)
-		}
-		s.appliedIndex = s.snapshotIndex
-	}
-	if len(ready.Entries) != 0 {
-		if err := s.memory.Append(cloneEntries(ready.Entries)); err != nil {
-			return fmt.Errorf("append ready entries: %w", err)
-		}
-	}
-	if ready.HardState != nil {
-		s.hardState = proto.Clone(ready.HardState).(*pb.HardState)
-		if err := s.memory.SetHardState(proto.Clone(ready.HardState).(*pb.HardState)); err != nil {
-			return fmt.Errorf("set ready hard state: %w", err)
-		}
-	}
 	return nil
 }
+
 func (s *stableStore) close() error {
 	if s.wal == nil {
 		return nil

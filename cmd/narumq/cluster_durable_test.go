@@ -446,3 +446,98 @@ func TestClusterRuntimeCommitsOwnershipAndEpochFencedSubscriptions(t *testing.T)
 		}
 	}
 }
+
+// Traceability: CLU-14; docs/specs/cluster-session-and-delivery.md §4.2.
+func TestClusterDurableQueueDefersPromotionWhenQuorumUnavailable(t *testing.T) {
+	runtime, sessionID, stop := newClusterDurableTestRuntime(t)
+	defer stop()
+	_, enqueued := seedClusterDurableDelivery(t, runtime)
+	queue, err := memorydeliveryqueue.New(8)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := queue.Register(sessionID); err != nil {
+		t.Fatal(err)
+	}
+	now := time.UnixMilli(1_700_000_000_100)
+	if err := queue.TryEnqueue(applicationdeliveryqueue.DeliveryDTO{
+		SessionID: sessionID, Topic: "events/one", Payload: []byte("first"), QoS: mqtt.QoSExactlyOnce,
+		DurableSequence: enqueued.Sequence, DurableEpoch: 1,
+	}, now); err != nil {
+		t.Fatal(err)
+	}
+	decorator := &clusterDurableQueue{Queue: queue, runtime: runtime, clock: clockadapter.SystemClock{}}
+	runtime.storage.fail(errors.New("simulated storage failure"))
+	err = decorator.PromoteHead(applicationdeliveryqueue.OutboundDTO{
+		SessionID: sessionID, PacketID: 17, DurableSequence: enqueued.Sequence, DurableEpoch: 1,
+	}, now)
+	if !errors.Is(err, applicationdeliveryqueue.ErrRetryableUnavailable) {
+		t.Fatalf("promotion error=%v, want retryable queue unavailability", err)
+	}
+	message, exists := runtime.machine.DeliveryMessage("tenant-a", "client-a", enqueued.Sequence)
+	if !exists || message.Phase != membership.DeliveryPhaseQueued {
+		t.Fatalf("unavailable promotion changed durable state: %+v exists=%t", message, exists)
+	}
+	queued, err := queue.ListQueued(sessionID, now)
+	if err != nil || len(queued) != 1 || queued[0].DurableSequence != enqueued.Sequence {
+		t.Fatalf("unavailable promotion changed queued head: %+v err=%v", queued, err)
+	}
+	outbound, err := queue.ListOutbound(sessionID)
+	if err != nil || len(outbound) != 0 {
+		t.Fatalf("unavailable promotion created local outbound state: %+v err=%v", outbound, err)
+	}
+}
+func TestClusterDurableQueueLifecycleRemovesMessages(t *testing.T) {
+	runtime, sessionID, stop := newClusterDurableTestRuntime(t)
+	defer stop()
+	_, enqueued := seedClusterDurableDelivery(t, runtime)
+	queue, err := memorydeliveryqueue.New(256)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := queue.Register(sessionID); err != nil {
+		t.Fatal(err)
+	}
+	decorator := &clusterDurableQueue{Queue: queue, runtime: runtime, clock: clockadapter.SystemClock{}}
+	now := time.UnixMilli(1_700_000_000_100)
+	for i := uint64(1); i <= 100; i++ {
+		seq := enqueued.Sequence + i
+		pubResult, err := runtime.CommitDelivery(context.Background(), membership.DeliveryChangeDTO{
+			TenantID: "tenant-a", ClientID: "publisher-a", Action: membership.DeliveryActionPublish,
+			ProposedAtUnixMillis: uint64(1_700_000_000_100 + i), Topic: "events/test", Payload: []byte("payload"),
+			PublishQoS: 2, Targets: []membership.DeliveryTargetDTO{{ClientID: "client-a"}},
+		})
+		if err != nil {
+			t.Fatalf("publish %d: %v", i, err)
+		}
+		if len(pubResult.Delivery.Saturated) > 0 {
+			state, _ := runtime.machine.DeliverySession("tenant-a", "client-a")
+			t.Fatalf("publish %d was SATURATED! saturated=%v messages_len=%d",
+				i, pubResult.Delivery.Saturated, len(state.Messages))
+		}
+		packetID := mqtt.PacketIdentifier(i%100 + 1)
+		if err := queue.TryEnqueue(applicationdeliveryqueue.DeliveryDTO{
+			SessionID: sessionID, Topic: "events/test", Payload: []byte("payload"), QoS: mqtt.QoSExactlyOnce,
+			DurableSequence: seq, DurableEpoch: 1,
+		}, now); err != nil {
+			t.Fatalf("tryEnqueue %d: %v", i, err)
+		}
+		if err := decorator.PromoteHead(applicationdeliveryqueue.OutboundDTO{
+			SessionID: sessionID, PacketID: packetID, DurableSequence: seq, DurableEpoch: 1,
+		}, now); err != nil {
+			t.Fatalf("promoteHead %d: %v", i, err)
+		}
+		if err := decorator.ReplaceOutbound(applicationdeliveryqueue.OutboundDTO{
+			SessionID: sessionID, PacketID: packetID, DurableSequence: seq, DurableEpoch: 1,
+		}); err != nil {
+			t.Fatalf("replaceOutbound %d: %v", i, err)
+		}
+		if err := decorator.CompleteOutbound(sessionID, packetID); err != nil {
+			t.Fatalf("completeOutbound %d: %v", i, err)
+		}
+		sessionState, _ := runtime.machine.DeliverySession("tenant-a", "client-a")
+		if len(sessionState.Messages) != 1 {
+			t.Fatalf("after complete %d: len(Messages)=%d, want 1", i, len(sessionState.Messages))
+		}
+	}
+}

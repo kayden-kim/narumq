@@ -60,6 +60,8 @@ var (
 	ErrClusterNotReady = errors.New("cluster is not ready")
 )
 
+const deliveryRetryInterval = 100 * time.Millisecond
+
 // Config bounds packet memory, handshake waiting, socket writes and per-connection
 // control output. Delivery queue capacity is owned by the injected queue.
 type Config struct {
@@ -445,6 +447,11 @@ type inboundState struct {
 	receivedAt time.Time
 }
 
+type pendingDeliveryPromotion struct {
+	sequence uint64
+	packetID mqtt.PacketIdentifier
+}
+
 type connection struct {
 	server       *Server
 	socket       net.Conn
@@ -466,10 +473,11 @@ type connection struct {
 	deliveryBlocked  atomic.Bool
 	takeover         atomic.Bool
 
-	deliveryMu sync.Mutex
-	inbound    map[mqtt.PacketIdentifier]inboundState
-	outbound   map[mqtt.PacketIdentifier]deliveryqueue.OutboundDTO
-	packetIDs  *packetIDAllocator
+	deliveryMu       sync.Mutex
+	inbound          map[mqtt.PacketIdentifier]inboundState
+	outbound         map[mqtt.PacketIdentifier]deliveryqueue.OutboundDTO
+	pendingPromotion pendingDeliveryPromotion
+	packetIDs        *packetIDAllocator
 }
 
 func (connection *connection) metrics() portsmetrics.MetricsRecorder {
@@ -1374,6 +1382,43 @@ func (connection *connection) refreshReadDeadline() error {
 func (connection *connection) writerLoop() {
 	defer close(connection.writerDone)
 	defer connection.failQueuedControls()
+	var deliveryRetryTimer *time.Timer
+	var deliveryRetry <-chan time.Time
+	defer func() {
+		if deliveryRetryTimer != nil {
+			deliveryRetryTimer.Stop()
+		}
+	}()
+	handleDeliveryWake := func() bool {
+		err := connection.writeDeliveries()
+		if errors.Is(err, deliveryqueue.ErrRetryableUnavailable) {
+			if deliveryRetryTimer == nil {
+				deliveryRetryTimer = time.NewTimer(deliveryRetryInterval)
+			} else {
+				if !deliveryRetryTimer.Stop() {
+					select {
+					case <-deliveryRetryTimer.C:
+					default:
+					}
+				}
+				deliveryRetryTimer.Reset(deliveryRetryInterval)
+			}
+			deliveryRetry = deliveryRetryTimer.C
+			return true
+		}
+		if deliveryRetryTimer != nil && !deliveryRetryTimer.Stop() {
+			select {
+			case <-deliveryRetryTimer.C:
+			default:
+			}
+		}
+		deliveryRetry = nil
+		if err != nil {
+			connection.requestClose()
+			return false
+		}
+		return true
+	}
 	for {
 		if message, ok := connection.nextControl(); ok {
 			if err := connection.writeMessage(message); err != nil {
@@ -1399,12 +1444,23 @@ func (connection *connection) writerLoop() {
 				return
 			}
 		case <-connection.deliveryWake:
-			if err := connection.writeDeliveries(); err != nil {
-				connection.requestClose()
+			if !handleDeliveryWake() {
 				return
 			}
+		case <-deliveryRetry:
+			deliveryRetry = nil
+			connection.wakeDelivery()
 		}
 	}
+}
+
+func (connection *connection) discardPendingPromotion() {
+	connection.deliveryMu.Lock()
+	if packetID := connection.pendingPromotion.packetID; packetID != 0 {
+		connection.packetIDs.release(packetID)
+		connection.pendingPromotion = pendingDeliveryPromotion{}
+	}
+	connection.deliveryMu.Unlock()
 }
 
 func (connection *connection) nextControl() (controlMessage, bool) {
@@ -1448,19 +1504,34 @@ func (connection *connection) writeDeliveries() error {
 		return err
 	}
 	for {
+		for {
+			message, ok := connection.nextControl()
+			if !ok {
+				break
+			}
+			if err := connection.writeMessage(message); err != nil {
+				return err
+			}
+			if message.closeAfter {
+				return ErrConnectionClosed
+			}
+		}
 		now := connection.server.config.Clock.Now()
 		item, ok, err := connection.server.deliveries.Peek(connection.sessionID, now)
 		if err != nil {
-			if connection.isStopping() || errors.Is(err, deliveryqueue.ErrUnavailable) {
+			connection.discardPendingPromotion()
+			if connection.isStopping() {
 				return nil
 			}
 			return err
 		}
 		if !ok {
+			connection.discardPendingPromotion()
 			return nil
 		}
 		remainingExpiryInterval, hasExpiry := item.RemainingExpiryInterval(now)
 		if item.QoS == mqtt.QoSAtMostOnce {
+			connection.discardPendingPromotion()
 			packet := mqtt.Publish{
 				Version:                  connection.version,
 				Topic:                    item.Topic,
@@ -1483,10 +1554,18 @@ func (connection *connection) writeDeliveries() error {
 		}
 
 		connection.deliveryMu.Lock()
-		packetID, err := connection.packetIDs.acquire()
-		if err != nil {
-			connection.deliveryMu.Unlock()
-			return nil
+		packetID := connection.pendingPromotion.packetID
+		if packetID != 0 && connection.pendingPromotion.sequence != item.DurableSequence {
+			connection.packetIDs.release(packetID)
+			connection.pendingPromotion = pendingDeliveryPromotion{}
+			packetID = 0
+		}
+		if packetID == 0 {
+			packetID, err = connection.packetIDs.acquire()
+			if err != nil {
+				connection.deliveryMu.Unlock()
+				return nil
+			}
 		}
 		publish := mqtt.Publish{
 			Version:                  connection.version,
@@ -1501,6 +1580,7 @@ func (connection *connection) writeDeliveries() error {
 		state, action, err := delivery.NewOutbound(publish)
 		if err != nil {
 			connection.packetIDs.release(packetID)
+			connection.pendingPromotion = pendingDeliveryPromotion{}
 			connection.deliveryMu.Unlock()
 			return err
 		}
@@ -1515,21 +1595,38 @@ func (connection *connection) writeDeliveries() error {
 		err = connection.server.deliveries.PromoteHead(outbound, now)
 		switch {
 		case err == nil:
+			connection.pendingPromotion = pendingDeliveryPromotion{}
 			connection.outbound[packetID] = outbound
+		case errors.Is(err, deliveryqueue.ErrRetryableUnavailable):
+			connection.pendingPromotion = pendingDeliveryPromotion{
+				sequence: item.DurableSequence,
+				packetID: packetID,
+			}
+			connection.deliveryMu.Unlock()
+			return err
 		case errors.Is(err, deliveryqueue.ErrExpired):
 			connection.packetIDs.release(packetID)
+			connection.pendingPromotion = pendingDeliveryPromotion{}
 			connection.deliveryMu.Unlock()
 			continue
+		case errors.Is(err, deliveryqueue.ErrUnavailable):
+			connection.packetIDs.release(packetID)
+			connection.pendingPromotion = pendingDeliveryPromotion{}
+			connection.deliveryMu.Unlock()
+			return err
 		case errors.Is(err, deliveryqueue.ErrFull):
 			connection.packetIDs.release(packetID)
+			connection.pendingPromotion = pendingDeliveryPromotion{}
 			connection.deliveryMu.Unlock()
 			return nil
 		case errors.Is(err, deliveryqueue.ErrPacketIDConflict):
 			connection.packetIDs.release(packetID)
+			connection.pendingPromotion = pendingDeliveryPromotion{}
 			connection.deliveryMu.Unlock()
 			return ErrProtocol
 		default:
 			connection.packetIDs.release(packetID)
+			connection.pendingPromotion = pendingDeliveryPromotion{}
 			connection.deliveryMu.Unlock()
 			return err
 		}

@@ -1221,6 +1221,37 @@ func (queue *scriptedDeliveryQueue) CompleteOutbound(sessionID routing.SessionID
 	return queue.completeOutboundErr
 }
 
+type controlInterleavingDeliveryQueue struct {
+	*scriptedDeliveryQueue
+	onFirstPeek func()
+}
+
+func (q *controlInterleavingDeliveryQueue) Peek(sessionID routing.SessionID, now time.Time) (applicationdeliveryqueue.DeliveryDTO, bool, error) {
+	if q.onFirstPeek != nil {
+		q.onFirstPeek()
+	}
+	return q.scriptedDeliveryQueue.Peek(sessionID, now)
+}
+
+type retryablePromotionDeliveryQueue struct {
+	applicationdeliveryqueue.Queue
+	failOnce chan struct{}
+	attempts chan applicationdeliveryqueue.OutboundDTO
+}
+
+func (queue *retryablePromotionDeliveryQueue) PromoteHead(
+	outbound applicationdeliveryqueue.OutboundDTO,
+	now time.Time,
+) error {
+	queue.attempts <- outbound
+	select {
+	case <-queue.failOnce:
+		return applicationdeliveryqueue.ErrRetryableUnavailable
+	default:
+		return queue.Queue.PromoteHead(outbound, now)
+	}
+}
+
 // Traceability: PRD MQTT-02/TEST-03/04/05; docs/specs/mqtt-protocol-and-session.md §3.2.
 func TestDeliveryWriterRetainsStateOnQueueAndWireErrors(t *testing.T) {
 	newRuntime := func(t *testing.T) *adapterTestRuntime {
@@ -1235,7 +1266,6 @@ func TestDeliveryWriterRetainsStateOnQueueAndWireErrors(t *testing.T) {
 		runtime.server.deliveries = &scriptedDeliveryQueue{
 			items:           []applicationdeliveryqueue.DeliveryDTO{{SessionID: "qos0-error", Topic: "topic"}},
 			completeHeadErr: queueErr,
-			peekErr:         applicationdeliveryqueue.ErrUnavailable,
 		}
 		serverSocket, clientSocket := net.Pipe()
 		defer serverSocket.Close()
@@ -1258,7 +1288,6 @@ func TestDeliveryWriterRetainsStateOnQueueAndWireErrors(t *testing.T) {
 			defer runtime.stop(t)
 			runtime.server.deliveries = &scriptedDeliveryQueue{
 				items:      []applicationdeliveryqueue.DeliveryDTO{{SessionID: "promote-error", Topic: "topic", QoS: mqtt.QoSAtLeastOnce}},
-				peekErr:    applicationdeliveryqueue.ErrUnavailable,
 				promoteErr: queueErr,
 			}
 			serverSocket, clientSocket := net.Pipe()
@@ -1272,6 +1301,184 @@ func TestDeliveryWriterRetainsStateOnQueueAndWireErrors(t *testing.T) {
 			}
 		})
 	}
+
+	t.Run("later durable notification retries with the same Packet ID", func(t *testing.T) {
+		runtime := newRuntime(t)
+		defer runtime.stop(t)
+		baseQueue := runtime.server.deliveries
+		sessionID := routing.SessionID("retryable-notification")
+		if err := baseQueue.Register(sessionID); err != nil {
+			t.Fatal(err)
+		}
+		queue := &retryablePromotionDeliveryQueue{
+			Queue:    baseQueue,
+			failOnce: make(chan struct{}, 1),
+			attempts: make(chan applicationdeliveryqueue.OutboundDTO, 4),
+		}
+		queue.failOnce <- struct{}{}
+		runtime.server.deliveries = queue
+		serverSocket, clientSocket := net.Pipe()
+		connection := newConnection(runtime.server, serverSocket)
+		connection.sessionID = sessionID
+		connection.version = mqtt.ProtocolV5
+		if !runtime.server.bindSession(sessionID, connection) {
+			t.Fatal("failed to bind delivery session")
+		}
+		go connection.writerLoop()
+		defer func() {
+			connection.requestClose()
+			<-connection.writerDone
+			runtime.server.unbindSession(sessionID, connection)
+			_ = clientSocket.Close()
+		}()
+		readAttempt := func() applicationdeliveryqueue.OutboundDTO {
+			t.Helper()
+			select {
+			case attempt := <-queue.attempts:
+				return attempt
+			case <-time.After(2 * time.Second):
+				t.Fatal("timed out waiting for durable promotion")
+				return applicationdeliveryqueue.OutboundDTO{}
+			}
+		}
+		readPublish := func() *mqtt.Publish {
+			t.Helper()
+			frame := readTestFrame(t, clientSocket)
+			packet, consumed, err := runtime.server.decoder.Decode(frame, mqtt.ProtocolV5)
+			if err != nil || consumed != len(frame) {
+				t.Fatalf("decode delivery frame: packet=%T consumed=%d err=%v", packet, consumed, err)
+				return nil
+			}
+			publish, ok := packet.(*mqtt.Publish)
+			if !ok {
+				t.Fatalf("delivery packet=%T, want PUBLISH", packet)
+				return nil
+			}
+			return publish
+		}
+
+		if err := runtime.server.DeliverDurable(applicationdeliveryqueue.DeliveryDTO{
+			SessionID: sessionID, Topic: "retry/first", Payload: []byte("first"), QoS: mqtt.QoSAtLeastOnce,
+			DurableSequence: 1, DurableEpoch: 1,
+		}); err != nil {
+			t.Fatal(err)
+		}
+		firstAttempt := readAttempt()
+		if firstAttempt.PacketID == 0 {
+			t.Fatal("first promotion used a zero Packet ID")
+		}
+		if err := runtime.server.DeliverDurable(applicationdeliveryqueue.DeliveryDTO{
+			SessionID: sessionID, Topic: "retry/second", Payload: []byte("second"), QoS: mqtt.QoSAtLeastOnce,
+			DurableSequence: 2, DurableEpoch: 1,
+		}); err != nil {
+			t.Fatal(err)
+		}
+		retryAttempt := readAttempt()
+		if retryAttempt.PacketID != firstAttempt.PacketID {
+			t.Fatalf("retry Packet ID=%d, want preserved %d", retryAttempt.PacketID, firstAttempt.PacketID)
+		}
+		firstPublish := readPublish()
+		if firstPublish.PacketID != firstAttempt.PacketID || firstPublish.Topic != "retry/first" {
+			t.Fatalf("first retried PUBLISH=%#v, want packet %d topic retry/first", firstPublish, firstAttempt.PacketID)
+		}
+		secondAttempt := readAttempt()
+		if secondAttempt.PacketID == firstAttempt.PacketID {
+			t.Fatalf("next delivery reused in-flight Packet ID %d", secondAttempt.PacketID)
+		}
+		secondPublish := readPublish()
+		if secondPublish.PacketID != secondAttempt.PacketID || secondPublish.Topic != "retry/second" {
+			t.Fatalf("second PUBLISH=%#v, want packet %d topic retry/second", secondPublish, secondAttempt.PacketID)
+		}
+	})
+
+	t.Run("retry timer resumes retained head", func(t *testing.T) {
+		runtime := newRuntime(t)
+		defer runtime.stop(t)
+		baseQueue := runtime.server.deliveries
+		sessionID := routing.SessionID("retryable-timer")
+		if err := baseQueue.Register(sessionID); err != nil {
+			t.Fatal(err)
+		}
+		queue := &retryablePromotionDeliveryQueue{
+			Queue:    baseQueue,
+			failOnce: make(chan struct{}, 1),
+			attempts: make(chan applicationdeliveryqueue.OutboundDTO, 2),
+		}
+		queue.failOnce <- struct{}{}
+		runtime.server.deliveries = queue
+		serverSocket, clientSocket := net.Pipe()
+		connection := newConnection(runtime.server, serverSocket)
+		connection.sessionID = sessionID
+		connection.version = mqtt.ProtocolV5
+		if !runtime.server.bindSession(sessionID, connection) {
+			t.Fatal("failed to bind delivery session")
+		}
+		go connection.writerLoop()
+		defer func() {
+			connection.requestClose()
+			<-connection.writerDone
+			runtime.server.unbindSession(sessionID, connection)
+			_ = clientSocket.Close()
+		}()
+		readAttempt := func() applicationdeliveryqueue.OutboundDTO {
+			t.Helper()
+			select {
+			case attempt := <-queue.attempts:
+				return attempt
+			case <-time.After(deliveryRetryInterval + time.Second):
+				t.Fatal("timed out waiting for timed durable retry")
+				return applicationdeliveryqueue.OutboundDTO{}
+			}
+		}
+		if err := runtime.server.DeliverDurable(applicationdeliveryqueue.DeliveryDTO{
+			SessionID: sessionID, Topic: "retry/timer", Payload: []byte("timer"), QoS: mqtt.QoSExactlyOnce,
+			DurableSequence: 1, DurableEpoch: 1,
+		}); err != nil {
+			t.Fatal(err)
+		}
+		firstAttempt := readAttempt()
+		retryAttempt := readAttempt()
+		if retryAttempt.PacketID != firstAttempt.PacketID {
+			t.Fatalf("timer retry Packet ID=%d, want preserved %d", retryAttempt.PacketID, firstAttempt.PacketID)
+		}
+		frame := readTestFrame(t, clientSocket)
+		packet, consumed, err := runtime.server.decoder.Decode(frame, mqtt.ProtocolV5)
+		publish, ok := packet.(*mqtt.Publish)
+		if err != nil || consumed != len(frame) || !ok ||
+			publish.Topic != "retry/timer" || publish.PacketID != firstAttempt.PacketID {
+			t.Fatalf("timer retry PUBLISH=%#v consumed=%d err=%v", packet, consumed, err)
+		}
+	})
+
+	t.Run("missing promotion state closes the writer", func(t *testing.T) {
+		runtime := newRuntime(t)
+		defer runtime.stop(t)
+		runtime.server.deliveries = &scriptedDeliveryQueue{
+			items: []applicationdeliveryqueue.DeliveryDTO{{
+				SessionID: "missing-state", Topic: "topic", QoS: mqtt.QoSAtLeastOnce,
+			}},
+			promoteErr: applicationdeliveryqueue.ErrUnavailable,
+		}
+		serverSocket, clientSocket := net.Pipe()
+		connection := newConnection(runtime.server, serverSocket)
+		connection.sessionID = "missing-state"
+		connection.version = mqtt.ProtocolV5
+		go connection.writerLoop()
+		defer func() {
+			connection.requestClose()
+			<-connection.writerDone
+			_ = clientSocket.Close()
+		}()
+		connection.wakeDelivery()
+		select {
+		case <-connection.writerDone:
+		case <-time.After(time.Second):
+			t.Fatal("writer remained open after promotion reported a missing session state")
+		}
+		if !connection.isStopping() {
+			t.Fatal("missing promotion state did not close the connection")
+		}
+	})
 
 	t.Run("promote unknown error", func(t *testing.T) {
 		runtime := newRuntime(t)
@@ -1354,6 +1561,76 @@ func TestDeliveryWriterRetainsStateOnQueueAndWireErrors(t *testing.T) {
 		}
 		if err := connection.writeRecoveredDeliveries(); err == nil {
 			t.Fatal("writeRecoveredDeliveries() succeeded after PUBREL peer close")
+		}
+	})
+
+	t.Run("queued control PUBREL is serviced before remaining delivery backlog", func(t *testing.T) {
+		runtime := newRuntime(t)
+		defer runtime.stop(t)
+		serverSocket, clientSocket := net.Pipe()
+		defer serverSocket.Close()
+		defer clientSocket.Close()
+		sessionID := routing.SessionID("control-ahead-of-backlog")
+		connection := newConnection(runtime.server, serverSocket)
+		connection.sessionID = sessionID
+		connection.version = mqtt.ProtocolV5
+
+		enqueuedPubRel := false
+		hookQueue := &scriptedDeliveryQueue{
+			items: []applicationdeliveryqueue.DeliveryDTO{
+				{SessionID: sessionID, Topic: "delivery/1"},
+				{SessionID: sessionID, Topic: "delivery/2"},
+			},
+		}
+		originalPeek := hookQueue.items
+		_ = originalPeek
+		// Wrap Peek so that after the first item is inspected, a PUBREL is queued into controlQueue
+		wrappedQueue := &controlInterleavingDeliveryQueue{
+			scriptedDeliveryQueue: hookQueue,
+			onFirstPeek: func() {
+				if !enqueuedPubRel {
+					enqueuedPubRel = true
+					_ = connection.enqueueControl(&mqtt.PubRel{Version: mqtt.ProtocolV5, PacketID: 99})
+				}
+			},
+		}
+		runtime.server.deliveries = wrappedQueue
+
+		done := make(chan error, 1)
+		go func() { done <- connection.writeDeliveries() }()
+
+		f1 := readTestFrame(t, clientSocket)
+		p1, _, err := runtime.server.decoder.Decode(f1, mqtt.ProtocolV5)
+		if err != nil {
+			t.Fatalf("decode frame 1: %v", err)
+		}
+		pub1, ok := p1.(*mqtt.Publish)
+		if !ok || pub1.Topic != "delivery/1" {
+			t.Fatalf("frame 1 = %T %+v, want PUBLISH delivery/1", p1, p1)
+		}
+
+		f2 := readTestFrame(t, clientSocket)
+		p2, _, err := runtime.server.decoder.Decode(f2, mqtt.ProtocolV5)
+		if err != nil {
+			t.Fatalf("decode frame 2: %v", err)
+		}
+		pubrel, ok := p2.(*mqtt.PubRel)
+		if !ok || pubrel.PacketID != 99 {
+			t.Fatalf("frame 2 = %T %+v, want PUBREL packet 99 serviced before delivery/2", p2, p2)
+		}
+
+		f3 := readTestFrame(t, clientSocket)
+		p3, _, err := runtime.server.decoder.Decode(f3, mqtt.ProtocolV5)
+		if err != nil {
+			t.Fatalf("decode frame 3: %v", err)
+		}
+		pub2, ok := p3.(*mqtt.Publish)
+		if !ok || pub2.Topic != "delivery/2" {
+			t.Fatalf("frame 3 = %T %+v, want PUBLISH delivery/2", p3, p3)
+		}
+
+		if err := <-done; err != nil {
+			t.Fatalf("writeDeliveries error: %v", err)
 		}
 	})
 }

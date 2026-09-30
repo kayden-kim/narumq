@@ -55,6 +55,9 @@ const (
 	clusterSnapshotInterval                = 1000
 	clusterDefaultPacketSize               = 1 << 20
 	clusterHeldProposalTimeout             = 10 * time.Second
+	clusterDriverStageLimit                = 64
+	clusterDefaultControlQueueCapacity     = 256
+	clusterDefaultDeliveryQueueCapacity    = 256
 	clusterCommitFailureLogInterval        = time.Second
 )
 
@@ -210,6 +213,7 @@ func runClusterMode(ctx context.Context, config clusterConfigFile, logger *slog.
 		return fmt.Errorf("create dynamic raft peer transport: %w", err)
 	}
 	runtime.transport = transport
+	runtime.inboundQueue = transport
 	defer transport.Close()
 	runtime.forwarder = transport
 	runtime.refreshRouteProjection()
@@ -230,7 +234,7 @@ func runClusterMode(ctx context.Context, config clusterConfigFile, logger *slog.
 	listeners = append(listeners, managementListener)
 
 	systemClock := clock.SystemClock{}
-	memoryDeliveries, err := deliveryqueue.New(64)
+	memoryDeliveries, err := deliveryqueue.New(clusterDefaultDeliveryQueueCapacity)
 	if err != nil {
 		return fmt.Errorf("create delivery queue: %w", err)
 	}
@@ -289,7 +293,7 @@ func runClusterMode(ctx context.Context, config clusterConfigFile, logger *slog.
 		mqttServer, err = tcpadapter.NewServer(mqttListeners[0], tcpadapter.Config{
 			Clock: systemClock, MaxPacketSize: clusterDefaultPacketSize,
 			ConnectTimeout: 10 * time.Second, WriteTimeout: 5 * time.Second,
-			ControlQueueCapacity: 16, ClientCertificateExtractor: tlsadapter.ExtractVerifiedClientCertificateDTO,
+			ControlQueueCapacity: clusterDefaultControlQueueCapacity, ClientCertificateExtractor: tlsadapter.ExtractVerifiedClientCertificateDTO,
 			Policy: tcpPolicy, Metrics: metricsRegistry, ClusterMode: true,
 			LocalMemberID: config.NodeID, ClusterReady: runtime.clusterReady,
 			ClusterAdmissionOpen:   runtime.drain.admissionOpen,
@@ -359,11 +363,16 @@ type clusterCommitFailureSummary struct {
 	sinceLastLog uint64
 }
 
+type clusterInboundRaftQueue interface {
+	TakeInbound() (tcpadapter.PeerInboundDelivery, bool)
+}
+
 type clusterRuntime struct {
 	config                  clusterConfigFile
 	logger                  *slog.Logger
 	node                    *raftadapter.Node
 	transport               *tcpadapter.DynamicTCPPeerTransport
+	inboundQueue            clusterInboundRaftQueue
 	forwarder               clusterPeerForwarder
 	forwardSink             clusterForwardSink
 	machine                 *membership.StateMachine
@@ -715,34 +724,9 @@ func (runtime *clusterRuntime) runDriver(ctx context.Context) (driverErr error) 
 			}
 			return fmt.Errorf("serve dynamic peer transport: %w", err)
 		case request := <-runtime.requests:
-			switch request.kind {
-			case clusterDriverRead:
-				if request.context != nil && request.context.Err() != nil {
-					request.readResult <- clusterReadResponse{err: request.context.Err()}
-					continue
-				}
-				if err := runtime.node.ReadIndex([]byte(request.contextKey)); err != nil {
-					request.readResult <- clusterReadResponse{err: err}
-					continue
-				}
-				reads[request.contextKey] = clusterReadWaiter{ctx: request.context, result: request.readResult}
-			case clusterDriverProposal:
-				if err := runtime.node.ProposeForwarded(request.data); err != nil {
-					request.applyResult <- clusterApplyResponse{err: err}
-					continue
-				}
-				proposals = append(proposals, clusterProposalWaiter{data: request.data, result: request.applyResult})
-			case clusterDriverBackup:
-				if request.context != nil && request.context.Err() != nil {
-					request.backupResult <- clusterBackupImageResponse{err: request.context.Err()}
-					continue
-				}
-				request.backupResult <- runtime.captureBackupImage()
-			case clusterDriverCancelRead:
-				if waiter, exists := reads[request.contextKey]; exists {
-					delete(reads, request.contextKey)
-					waiter.result <- clusterReadResponse{err: context.Canceled}
-				}
+			runtime.handleDriverRequest(request, reads, &proposals)
+			if err := runtime.stageQueuedDriverWork(reads, &proposals); err != nil {
+				return err
 			}
 			if err := processReady(); err != nil {
 				return err
@@ -754,25 +738,15 @@ func (runtime *clusterRuntime) runDriver(ctx context.Context) (driverErr error) 
 				}
 				return errors.New("dynamic peer transport inbound-ready channel closed unexpectedly")
 			}
-			delivery, received := runtime.transport.TakeInbound()
+			delivery, received := runtime.inboundQueue.TakeInbound()
 			if !received {
 				continue
 			}
-			message := delivery.Message
-			if runtime.faults.isolates(message.From) {
-				delivery.Complete()
-				continue
+			if err := runtime.stepInboundDelivery(delivery); err != nil {
+				return err
 			}
-			err := runtime.node.Step(raftadapter.MessageDTO{
-				From: raftadapter.NodeID(message.From), To: raftadapter.NodeID(message.To), Data: message.Data,
-			})
-			delivery.Complete()
-			if err != nil {
-				if errors.Is(err, raftadapter.ErrInvalidMessage) {
-					_ = runtime.transport.ResetPeer(message.From)
-					continue
-				}
-				return fmt.Errorf("step Raft message from peer %d: %w", message.From, err)
+			if err := runtime.stageQueuedDriverWork(reads, &proposals); err != nil {
+				return err
 			}
 			if err := processReady(); err != nil {
 				return err
@@ -820,6 +794,113 @@ func (runtime *clusterRuntime) runDriver(ctx context.Context) (driverErr error) 
 			}
 		}
 	}
+}
+
+func (runtime *clusterRuntime) handleDriverRequest(
+	request clusterDriverRequest,
+	reads map[string]clusterReadWaiter,
+	proposals *[]clusterProposalWaiter,
+) {
+	switch request.kind {
+	case clusterDriverRead:
+		if request.context != nil && request.context.Err() != nil {
+			request.readResult <- clusterReadResponse{err: request.context.Err()}
+			return
+		}
+		if err := runtime.node.ReadIndex([]byte(request.contextKey)); err != nil {
+			request.readResult <- clusterReadResponse{err: err}
+			return
+		}
+		reads[request.contextKey] = clusterReadWaiter{ctx: request.context, result: request.readResult}
+	case clusterDriverProposal:
+		if err := runtime.node.ProposeForwarded(request.data); err != nil {
+			request.applyResult <- clusterApplyResponse{err: err}
+			return
+		}
+		*proposals = append(*proposals, clusterProposalWaiter{data: request.data, result: request.applyResult})
+	case clusterDriverBackup:
+		if request.context != nil && request.context.Err() != nil {
+			request.backupResult <- clusterBackupImageResponse{err: request.context.Err()}
+			return
+		}
+		request.backupResult <- runtime.captureBackupImage()
+	case clusterDriverCancelRead:
+		if waiter, exists := reads[request.contextKey]; exists {
+			delete(reads, request.contextKey)
+			waiter.result <- clusterReadResponse{err: context.Canceled}
+		}
+	}
+}
+
+func (runtime *clusterRuntime) stepInboundDelivery(delivery tcpadapter.PeerInboundDelivery) error {
+	message := delivery.Message
+	if runtime.faults.isolates(message.From) {
+		delivery.Complete()
+		return nil
+	}
+	err := runtime.node.Step(raftadapter.MessageDTO{
+		From: raftadapter.NodeID(message.From), To: raftadapter.NodeID(message.To), Data: message.Data,
+	})
+	delivery.Complete()
+	if err != nil {
+		if errors.Is(err, raftadapter.ErrInvalidMessage) {
+			_ = runtime.transport.ResetPeer(message.From)
+			return nil
+		}
+		return fmt.Errorf("step Raft message from peer %d: %w", message.From, err)
+	}
+	return nil
+}
+
+// stageQueuedDriverRequests stages up to limit already-queued requests without blocking.
+func (runtime *clusterRuntime) stageQueuedDriverRequests(
+	limit int,
+	reads map[string]clusterReadWaiter,
+	proposals *[]clusterProposalWaiter,
+) int {
+	staged := 0
+	for staged < limit {
+		select {
+		case request := <-runtime.requests:
+			runtime.handleDriverRequest(request, reads, proposals)
+			staged++
+		default:
+			return staged
+		}
+	}
+	return staged
+}
+
+// stageQueuedInbound steps up to limit already-staged inbound Raft frames and returns the count.
+func (runtime *clusterRuntime) stageQueuedInbound(limit int) (int, error) {
+	staged := 0
+	for staged < limit {
+		delivery, received := runtime.inboundQueue.TakeInbound()
+		if !received {
+			return staged, nil
+		}
+		staged++
+		if err := runtime.stepInboundDelivery(delivery); err != nil {
+			return staged, err
+		}
+	}
+	return staged, nil
+}
+
+// stageQueuedDriverWork shares a 64-item additional-work budget and reserves inbound Raft progress first.
+func (runtime *clusterRuntime) stageQueuedDriverWork(
+	reads map[string]clusterReadWaiter,
+	proposals *[]clusterProposalWaiter,
+) error {
+	stagedInbound, err := runtime.stageQueuedInbound(1)
+	if err != nil {
+		return err
+	}
+	remaining := clusterDriverStageLimit - stagedInbound
+	stagedRequests := runtime.stageQueuedDriverRequests(remaining, reads, proposals)
+	remaining -= stagedRequests
+	_, err = runtime.stageQueuedInbound(remaining)
+	return err
 }
 
 type raftLeadership struct {
@@ -956,9 +1037,16 @@ func (runtime *clusterRuntime) applyBatch(batch raftadapter.BatchDTO, proposals 
 		if command.Retained != nil && result.Outcome == membership.ApplyOutcomeApplied {
 			runtime.syncRetainedProjection(*command.Retained)
 		}
-		if command.Delivery != nil && result.Outcome == membership.ApplyOutcomeApplied &&
-			result.Delivery != nil && len(result.Delivery.Enqueued) > 0 {
-			runtime.notifyDurable(command.Delivery.TenantID, result.Delivery.Enqueued)
+		if command.Delivery != nil && result.Outcome == membership.ApplyOutcomeApplied && result.Delivery != nil {
+			if len(result.Delivery.Enqueued) > 0 {
+				runtime.notifyDurable(command.Delivery.TenantID, result.Delivery.Enqueued)
+			}
+			if len(result.Delivery.Saturated) > 0 && runtime.logger != nil {
+				runtime.logger.Warn("durable delivery targets saturated", "tenant_id", command.Delivery.TenantID, "saturated", result.Delivery.Saturated)
+			}
+			if len(result.Delivery.Skipped) > 0 && runtime.logger != nil {
+				runtime.logger.Warn("durable delivery targets skipped", "tenant_id", command.Delivery.TenantID, "skipped", result.Delivery.Skipped)
+			}
 		}
 		runtime.stageProposalResult(event.command, result, proposals)
 	}
@@ -1783,8 +1871,12 @@ func (runtime *clusterRuntime) readBarrier(ctx context.Context) error {
 	if ctx == nil {
 		return errClusterRuntimeNotReady
 	}
-	checkCtx, cancel := context.WithTimeout(ctx, clusterReadTimeout)
-	defer cancel()
+	checkCtx := ctx
+	var cancel context.CancelFunc
+	if _, ok := ctx.Deadline(); !ok {
+		checkCtx, cancel = context.WithTimeout(ctx, clusterReadTimeout)
+		defer cancel()
+	}
 	_, err := runtime.requestReadBarrier(checkCtx)
 	return err
 }

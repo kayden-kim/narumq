@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"net"
@@ -654,6 +655,137 @@ func TestResolveProposalAndCompleteReadStates(t *testing.T) {
 	resp := <-readResult
 	if resp.index != 0 {
 		t.Fatalf("resp index = %d", resp.index)
+	}
+}
+
+type queuedInboundStageSource struct {
+	deliveries []tcpadapter.PeerInboundDelivery
+	next       int
+}
+
+func (source *queuedInboundStageSource) TakeInbound() (tcpadapter.PeerInboundDelivery, bool) {
+	if source.next == len(source.deliveries) {
+		return tcpadapter.PeerInboundDelivery{}, false
+	}
+	delivery := source.deliveries[source.next]
+	source.next++
+	return delivery, true
+}
+
+func TestStageQueuedDriverRequestsStopsAtLimit(t *testing.T) {
+	node, err := raftadapter.Open(raftadapter.Config{
+		NodeID: 1, PeerIDs: []raftadapter.NodeID{1, 2, 3}, Directory: t.TempDir(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		if err := node.Close(); err != nil {
+			t.Errorf("Close() = %v", err)
+		}
+	}()
+	runtime := &clusterRuntime{
+		node:     node,
+		requests: make(chan clusterDriverRequest, 4),
+		logger:   slog.New(slog.NewTextHandler(io.Discard, nil)),
+	}
+	reads := make(map[string]clusterReadWaiter)
+	var proposals []clusterProposalWaiter
+	for _, key := range []string{"r1", "r2", "r3"} {
+		runtime.requests <- clusterDriverRequest{
+			kind: clusterDriverRead, contextKey: key, context: context.Background(),
+			readResult: make(chan clusterReadResponse, 1),
+		}
+	}
+
+	if staged := runtime.stageQueuedDriverRequests(2, reads, &proposals); staged != 2 {
+		t.Fatalf("staged requests = %d, want 2", staged)
+	}
+	if len(reads) != 2 || reads["r1"].result == nil || reads["r2"].result == nil {
+		t.Fatalf("staged reads = %+v, want r1 and r2 only", reads)
+	}
+	if _, exists := reads["r3"]; exists {
+		t.Fatalf("staged reads unexpectedly include r3: %+v", reads)
+	}
+	if len(runtime.requests) != 1 {
+		t.Fatalf("queued requests after limit = %d, want 1", len(runtime.requests))
+	}
+
+	applyResult := make(chan clusterApplyResponse, 1)
+	runtime.requests <- clusterDriverRequest{
+		kind: clusterDriverProposal, data: []byte("p"), applyResult: applyResult,
+	}
+	if staged := runtime.stageQueuedDriverRequests(64, reads, &proposals); staged != 2 {
+		t.Fatalf("staged remaining requests = %d, want 2", staged)
+	}
+	if len(reads) != 3 || reads["r3"].result == nil {
+		t.Fatalf("staged reads after draining = %+v, want r1, r2, r3", reads)
+	}
+	if len(runtime.requests) != 0 {
+		t.Fatalf("queued requests after drain = %d, want 0", len(runtime.requests))
+	}
+	if response := <-applyResult; !errors.Is(response.err, raftadapter.ErrNotLeader) {
+		t.Fatalf("proposal error = %v, want ErrNotLeader", response.err)
+	}
+	if len(proposals) != 0 {
+		t.Fatalf("proposal waiters = %+v, want none", proposals)
+	}
+	if staged := runtime.stageQueuedDriverRequests(64, reads, &proposals); staged != 0 {
+		t.Fatalf("staged requests from empty queue = %d, want 0", staged)
+	}
+}
+
+func TestStageQueuedDriverWorkReservesInboundProgress(t *testing.T) {
+	node, err := raftadapter.Open(raftadapter.Config{
+		NodeID: 1, PeerIDs: []raftadapter.NodeID{1, 2, 3}, Directory: t.TempDir(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		if err := node.Close(); err != nil {
+			t.Errorf("Close() = %v", err)
+		}
+	}()
+	faultPath := filepath.Join(t.TempDir(), "fault-control.json")
+	if err := os.WriteFile(faultPath, []byte(`{"isolatePeers":[2]}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	inbound := &queuedInboundStageSource{deliveries: []tcpadapter.PeerInboundDelivery{
+		{Message: tcpadapter.PeerMessageDTO{From: 2, To: 1}},
+		{Message: tcpadapter.PeerMessageDTO{From: 2, To: 1}},
+	}}
+	runtime := &clusterRuntime{
+		node: node, requests: make(chan clusterDriverRequest, clusterDriverStageLimit),
+		inboundQueue: inbound, faults: newClusterFaultControl(faultPath, slog.New(slog.NewTextHandler(io.Discard, nil))),
+	}
+	for index := 0; index < clusterDriverStageLimit; index++ {
+		key := fmt.Sprintf("read-%02d", index)
+		runtime.requests <- clusterDriverRequest{
+			kind: clusterDriverRead, contextKey: key, context: context.Background(),
+			readResult: make(chan clusterReadResponse, 1),
+		}
+	}
+	reads := make(map[string]clusterReadWaiter)
+	var proposals []clusterProposalWaiter
+
+	if err := runtime.stageQueuedDriverWork(reads, &proposals); err != nil {
+		t.Fatal(err)
+	}
+	if inbound.next != 1 || len(reads) != clusterDriverStageLimit-1 || len(runtime.requests) != 1 {
+		t.Fatalf("first staged batch: inbound=%d reads=%d requests=%d, want 1, %d, 1",
+			inbound.next, len(reads), len(runtime.requests), clusterDriverStageLimit-1)
+	}
+	if inbound.next+len(reads) != clusterDriverStageLimit {
+		t.Fatalf("first staged work=%d, want shared limit %d", inbound.next+len(reads), clusterDriverStageLimit)
+	}
+
+	if err := runtime.stageQueuedDriverWork(reads, &proposals); err != nil {
+		t.Fatal(err)
+	}
+	if inbound.next != 2 || len(reads) != clusterDriverStageLimit || len(runtime.requests) != 0 {
+		t.Fatalf("second staged batch: inbound=%d reads=%d requests=%d, want 2, %d, 0",
+			inbound.next, len(reads), len(runtime.requests), clusterDriverStageLimit)
 	}
 }
 

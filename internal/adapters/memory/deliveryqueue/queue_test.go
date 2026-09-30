@@ -94,8 +94,8 @@ func TestQueueFIFOAndPayloadOwnership(t *testing.T) {
 	if err := queue.CompleteHead("session-a"); err != nil {
 		t.Fatal(err)
 	}
-	if _, ok, err := queue.Peek("session-a", time.Time{}); !errors.Is(err, applicationdeliveryqueue.ErrUnavailable) || ok {
-		t.Fatalf("empty Peek() = ok %v, err %v, want unavailable", ok, err)
+	if _, ok, err := queue.Peek("session-a", time.Time{}); err != nil || ok {
+		t.Fatalf("empty Peek() = ok %v, err %v, want empty without error", ok, err)
 	}
 }
 

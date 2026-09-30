@@ -492,3 +492,167 @@ func TestWALSyncObserverReportsSuccessfulReadyFsyncs(t *testing.T) {
 		t.Fatalf("observer calls after failed fsync = %d, want %d", len(observations), observationsBeforeFailure)
 	}
 }
+func TestProcessReadySkipsWALFrameWithoutPersistentState(t *testing.T) {
+	root := t.TempDir()
+	directories := map[NodeID]string{
+		1: filepath.Join(root, "node-1"),
+		2: filepath.Join(root, "node-2"),
+		3: filepath.Join(root, "node-3"),
+	}
+	var observations []WALSyncDTO
+	nodes := make(map[NodeID]*Node, 3)
+	for _, nodeID := range []NodeID{1, 2, 3} {
+		config := Config{
+			NodeID:    nodeID,
+			PeerIDs:   []NodeID{1, 2, 3},
+			Directory: directories[nodeID],
+		}
+		if nodeID == 1 {
+			config.WALSyncObserver = func(observation WALSyncDTO) {
+				observations = append(observations, observation)
+			}
+		}
+		node, err := Open(config)
+		if err != nil {
+			t.Fatal(err)
+		}
+		nodes[nodeID] = node
+	}
+	defer func() {
+		for nodeID, node := range nodes {
+			if err := node.Close(); err != nil {
+				t.Errorf("close node %d: %v", nodeID, err)
+			}
+		}
+	}()
+
+	pump := func() {
+		t.Helper()
+		var queue []MessageDTO
+		for range 512 {
+			progress := false
+			for _, nodeID := range []NodeID{1, 2, 3} {
+				batch, err := nodes[nodeID].ProcessReady()
+				if err != nil {
+					t.Fatalf("node %d ProcessReady() = %v", nodeID, err)
+				}
+				if len(batch.Messages) != 0 || len(batch.Commands) != 0 {
+					progress = true
+				}
+				queue = append(queue, batch.Messages...)
+			}
+			if len(queue) != 0 {
+				pending := queue
+				queue = nil
+				for _, message := range pending {
+					if err := nodes[message.To].Step(message); err != nil {
+						t.Fatalf("deliver %d -> %d: %v", message.From, message.To, err)
+					}
+					progress = true
+				}
+			}
+			if !progress && len(queue) == 0 {
+				return
+			}
+		}
+		t.Fatal("node pump exceeded 512 rounds")
+	}
+
+	pump()
+	if err := nodes[1].Campaign(); err != nil {
+		t.Fatal(err)
+	}
+	pump()
+	if err := nodes[1].Propose([]byte("cmd")); err != nil {
+		t.Fatal(err)
+	}
+	pump()
+
+	walPath := filepath.Join(directories[1], walName)
+	walInfo, err := os.Stat(walPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	observationsBeforeRead := len(observations)
+	walSizeBeforeRead := walInfo.Size()
+
+	if err := nodes[1].ReadIndex([]byte("barrier")); err != nil {
+		t.Fatal(err)
+	}
+	batch, err := nodes[1].ProcessReady()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(batch.Messages) == 0 {
+		t.Fatal("ReadIndex Ready has no heartbeat messages")
+	}
+	if len(observations) != observationsBeforeRead {
+		t.Fatalf("WAL sync observations after heartbeat Ready = %d, want %d", len(observations), observationsBeforeRead)
+	}
+	walInfo, err = os.Stat(walPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if walInfo.Size() != walSizeBeforeRead {
+		t.Fatalf("WAL size after heartbeat Ready = %d, want %d", walInfo.Size(), walSizeBeforeRead)
+	}
+
+	for _, message := range batch.Messages {
+		if err := nodes[message.To].Step(message); err != nil {
+			t.Fatalf("deliver %d -> %d: %v", message.From, message.To, err)
+		}
+	}
+	var responses []MessageDTO
+	for _, nodeID := range []NodeID{2, 3} {
+		followerBatch, err := nodes[nodeID].ProcessReady()
+		if err != nil {
+			t.Fatalf("node %d ProcessReady() = %v", nodeID, err)
+		}
+		responses = append(responses, followerBatch.Messages...)
+	}
+	for _, message := range responses {
+		if err := nodes[message.To].Step(message); err != nil {
+			t.Fatalf("deliver %d -> %d: %v", message.From, message.To, err)
+		}
+	}
+	batch, err = nodes[1].ProcessReady()
+	if err != nil {
+		t.Fatal(err)
+	}
+	foundReadState := false
+	for _, readState := range batch.ReadStates {
+		if string(readState.RequestContext) == "barrier" {
+			foundReadState = true
+			break
+		}
+	}
+	if !foundReadState {
+		t.Fatalf("ReadStates = %+v, want request context barrier", batch.ReadStates)
+	}
+	if len(observations) != observationsBeforeRead {
+		t.Fatalf("WAL sync observations after ReadState Ready = %d, want %d", len(observations), observationsBeforeRead)
+	}
+	walInfo, err = os.Stat(walPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if walInfo.Size() != walSizeBeforeRead {
+		t.Fatalf("WAL size after ReadState Ready = %d, want %d", walInfo.Size(), walSizeBeforeRead)
+	}
+
+	observationsBeforeProposal := len(observations)
+	if err := nodes[1].Propose([]byte("after-barrier")); err != nil {
+		t.Fatal(err)
+	}
+	pump()
+	foundEntrySync := false
+	for _, observation := range observations[observationsBeforeProposal:] {
+		if observation.Entries >= 1 {
+			foundEntrySync = true
+			break
+		}
+	}
+	if !foundEntrySync {
+		t.Fatalf("new WAL sync observations = %#v, want an entry-bearing sync", observations[observationsBeforeProposal:])
+	}
+}

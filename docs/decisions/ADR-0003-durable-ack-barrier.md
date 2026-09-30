@@ -90,7 +90,7 @@ WAL·snapshot의 storage target과 `fsync` 순서는 scoped [ADR-0009](ADR-0009-
 1. ACK 직후 각 replica를 차례로 kill해 message gap이 0인지 확인한다.
 2. WAL write, `fsync`, commit 전후 모든 지점에 crash를 주입한다.
 3. Follower disk full·slow I/O·failed fsync와 partition에서 잘못된 ACK이 없는지 검증한다.
-4. 같은 Packet Identifier 재전송이 중복 durable command를 만들지 않는지 검증한다.
+4. 같은 Packet Identifier 재전송이 중복 durable command를 만들지 않는지 검증하고, `ErrRetryableUnavailable` 시 Packet ID 보존과 timer 재시도를 검증한다.
 5. BP-03에서 group commit 크기별 p99·p99.9와 disk 비용을 측정한다.
 6. Held WAL fsync 중 follower torn cut과 simultaneous three-node power cut 뒤 ACKed delivery·session recovery를 확인한다. Cluster-cut acceptance는 `client.publish`가 PUBLISH packet을 성공적으로 쓴 뒤 in-flight barrier를 signal하고 `awaitAck` 전에 publisher를 보류한다. Cut 때문에 PUBACK 관찰이 중단된 그 QoS 1 결과만 `unknown`이다. Known timeout/closed outcomes는 no-ACK으로 기록하되 unknown으로 오분류하지 않는다. Docker/FUSE simulation은 physical power-loss evidence가 아니다.
 
@@ -101,6 +101,8 @@ WAL·snapshot의 storage target과 `fsync` 순서는 scoped [ADR-0009](ADR-0009-
 Process exit는 실제 전원 손실을 모사하지 않는다. 특히 WAL-after-sync는 `File.Sync` 성공 뒤의 process crash일 뿐 device/page-cache power-loss proof가 아니다. Docker/FUSE cut도 rollback journal을 적용한 local simulation이며 Linux/EBS 또는 실제 physical power-loss를 대체하지 않는다.
 
 고정 profile BP-03 local compare `bp03-20260930T061549.390008900Z-28772`, `bp03-20260930T063854.898438300Z-34520`는 모두 NaruMQ workload invalid로 끝났다. Node 3에서 각각 `dispatch MQTT PUBLISH: quorum unavailable`, `dispatch MQTT PUBREL: quorum unavailable`가 관측되어 유효한 ACK/WAL 수치를 얻지 못했다. 추가 고정 smoke 5회 suite `bp03-suite-20260930T064519.153992500Z-35844`도 완료 반복 5회 중 유효 반복 0회로 invalid였다. NaruMQ가 5회 모두 overload 및 workload invariant 실패로 invalid했고, EMQX도 1회차 workload invariant 실패로 suite aggregate metric이 생성되지 않았다. 이 실행들은 §9-5 group-commit 크기별 p99/p99.9와 disk 비용의 증거가 아니다. 유효한 BP-03 측정과 Linux/EBS·physical power-loss·production volume gate가 남아 있으므로 ADR-0003은 `Proposed` 상태이며 §9 전체를 완료로 표시하지 않는다.
+추가 BP-03 compare `bp03-20260930T123200.653059500Z-32492`도 NaruMQ workload `valid=false`로 종료됐고 EMQX만 valid였다. NaruMQ step 2는 overload와 QoS 1/2 delivery gaps를 기록했으며 q2-02 TCP reset으로 중단됐다. 완주한 step 1의 per-node fsync occupancy는 40.56%/41.46%/42.01%, `meanEntriesPerSync`는 0.505802/0.505003/0.505535였고 step 2 WAL end scrape는 없다. 시작 시각의 세 `read_barrier` deadline warning과 reset 사이 인과는 확인되지 않았다. Conditional suite는 실행하지 않았고 이 diagnostic run은 §9-5의 유효한 성능·durability evidence가 아니므로 ADR-0003은 `Proposed`로 유지한다([성능 검증 §3.4](../specs/performance-and-verification.md#34-bp-03-durable-delivery-smoke-관찰-경계)).
+추가 compare `bp03-20260930T145505.056290600Z-31628`과 이후 진단 run `bp03-20260930T150424.465458500Z-37680`은 `ControlQueueCapacity: 256`, `deliveryqueue: 256`, `deliveryRetryInterval: 100ms`, `writeDeliveries` 내 control packet 플러시 적용 뒤 실행했다. `q2-02` 소켓 리셋이 해소되어 워크로드 전체를 완주했고, Step 1(gap 0), Step 2(480/480 전송·전달 완료, gap 0)와 Offline 구간(64/64 전달, sessionPresent 4/4)은 통과했다. 그러나 Follower node 3에 연결된 `q2-01`의 ACK 지연(avg 447.1ms)으로 Step 2 max schedule lag 3.336s(`generatorOverload=true`)가 발생했고, Step 3는 `bp03-sub-q2-02` 포화 28건(QoS 2 gap 28)과 max schedule lag 22.164s로 인해 NaruMQ workload는 invalid였다. 복구 불변식을 위반하는 commit-only Ready fsync 생략 시도 및 PacketID 경합이 있는 락 분리 실험은 모두 안전하게 되돌렸으며, proposal 전 fresh read barrier는 유지한다. Conditional suite는 실행하지 않았으며 ADR-0003은 계속 `Proposed` 상태다([성능 검증 §3.4](../specs/performance-and-verification.md#34-bp-03-durable-delivery-smoke-관찰-경계)).
 
 ## 10. 재검토 조건
 

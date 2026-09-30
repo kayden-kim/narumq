@@ -1379,8 +1379,8 @@ func TestCSVWriteDeliveriesKeepsPromotedMessageInflightOnWireFailure(t *testing.
 	if resent, ok := action.Send.(*mqtt.Publish); !ok || resent.Topic != "wire/topic" || !resent.DUP {
 		t.Fatalf("resume = %#v, want DUP PUBLISH wire/topic", action.Send)
 	}
-	if _, _, err := deps.memory.Peek(conn.sessionID, time.Time{}); !errors.Is(err, applicationdeliveryqueue.ErrUnavailable) {
-		t.Fatalf("promoted head still queued: %v", err)
+	if _, ok, err := deps.memory.Peek(conn.sessionID, time.Time{}); err != nil || ok {
+		t.Fatalf("promoted head still queued: ok=%t err=%v", ok, err)
 	}
 }
 

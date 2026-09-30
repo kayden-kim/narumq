@@ -174,7 +174,7 @@ func (runtime *clusterRuntime) notifyDurableLocked(tenantID string, enqueued []m
 		}
 		if err := runtime.durableSink.DeliverDurable(delivery); err != nil {
 			if runtime.logger != nil {
-				runtime.logger.Debug("durable delivery projection was not queued", "session_id", sessionID, "sequence", item.Sequence, "error", err)
+				runtime.logger.Warn("durable delivery projection was not queued", "session_id", sessionID, "sequence", item.Sequence, "error", err)
 			}
 		}
 	}
@@ -236,11 +236,17 @@ func (queue *clusterDurableQueue) PromoteHead(outbound applicationdeliveryqueue.
 		outbound.SessionID, outbound.DurableEpoch, membership.DeliveryActionSend,
 		outbound.DurableSequence, outbound.PacketID, now,
 	)
+	if errors.Is(err, membership.ErrQuorumUnavailable) {
+		return applicationdeliveryqueue.ErrRetryableUnavailable
+	}
 	if err != nil {
 		return err
 	}
 	if result.Outcome != membership.ApplyOutcomeApplied {
 		if result.Conflict == membership.ConflictDeliveryMissing {
+			if queue.runtime != nil && queue.runtime.logger != nil {
+				queue.runtime.logger.Warn("durable delivery missing conflict on promote, dropping queued head", "session_id", outbound.SessionID, "sequence", outbound.DurableSequence)
+			}
 			if err := queue.Queue.CompleteHead(outbound.SessionID); err != nil && !errors.Is(err, applicationdeliveryqueue.ErrUnavailable) {
 				return err
 			}

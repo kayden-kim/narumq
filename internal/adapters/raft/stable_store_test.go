@@ -240,28 +240,83 @@ func TestNodeReadyOrderingAndPersistenceFailure(t *testing.T) {
 }
 
 func TestNodeWALWriteFailureStopsOutbound(t *testing.T) {
-	directory := filepath.Join(t.TempDir(), "wal-write-failure")
-	node, err := Open(Config{NodeID: 1, PeerIDs: []NodeID{1, 2, 3}, Directory: directory})
-	if err != nil {
-		t.Fatal(err)
+	root := t.TempDir()
+	directories := map[NodeID]string{
+		1: filepath.Join(root, "node-1"),
+		2: filepath.Join(root, "node-2"),
+		3: filepath.Join(root, "node-3"),
+	}
+	nodes := make(map[NodeID]*Node, 3)
+	for _, nodeID := range []NodeID{1, 2, 3} {
+		node, err := Open(Config{
+			NodeID: nodeID, PeerIDs: []NodeID{1, 2, 3}, Directory: directories[nodeID],
+		})
+		if err != nil {
+			t.Fatalf("open node %d: %v", nodeID, err)
+		}
+		nodes[nodeID] = node
 	}
 	defer func() {
-		if err := node.Close(); err != nil {
-			t.Errorf("Close(): %v", err)
+		for nodeID, node := range nodes {
+			if err := node.Close(); err != nil {
+				t.Errorf("close node %d: %v", nodeID, err)
+			}
 		}
 	}()
-	if _, err := node.ProcessReady(); err != nil {
-		t.Fatal(err)
+
+	pump := func() {
+		t.Helper()
+		var queue []MessageDTO
+		for range 512 {
+			progress := false
+			for _, nodeID := range []NodeID{1, 2, 3} {
+				batch, err := nodes[nodeID].ProcessReady()
+				if err != nil {
+					t.Fatalf("node %d ProcessReady() = %v", nodeID, err)
+				}
+				if len(batch.Messages) != 0 || len(batch.Commands) != 0 {
+					progress = true
+				}
+				queue = append(queue, batch.Messages...)
+			}
+			if len(queue) != 0 {
+				pending := queue
+				queue = nil
+				for _, message := range pending {
+					if err := nodes[message.To].Step(message); err != nil {
+						t.Fatalf("deliver %d -> %d: %v", message.From, message.To, err)
+					}
+					progress = true
+				}
+			}
+			if !progress && len(queue) == 0 {
+				return
+			}
+		}
+		t.Fatal("node pump exceeded 512 rounds")
 	}
 
-	commandsBefore := commandStrings(node.AppliedCommands())
+	pump()
+	if err := nodes[1].Campaign(); err != nil {
+		t.Fatal(err)
+	}
+	pump()
+	if got := nodes[1].Status().Role; got != RoleLeader {
+		t.Fatalf("node 1 role after campaign = %v, want leader", got)
+	}
+	if err := nodes[1].Propose([]byte("baseline")); err != nil {
+		t.Fatal(err)
+	}
+	pump()
+
+	commandsBefore := commandStrings(nodes[1].AppliedCommands())
 	var events []string
-	node.onReadyEvent = func(event string) { events = append(events, event) }
-	if err := node.Campaign(); err != nil {
+	nodes[1].onReadyEvent = func(event string) { events = append(events, event) }
+	if err := nodes[1].Propose([]byte("write-failure")); err != nil {
 		t.Fatal(err)
 	}
 
-	walPath := filepath.Join(directory, walName)
+	walPath := filepath.Join(directories[1], walName)
 	oldWrite := filePersistenceOps.write
 	defer func() { filePersistenceOps.write = oldWrite }()
 	filePersistenceOps.write = func(writer io.Writer, data []byte) (int, error) {
@@ -271,7 +326,7 @@ func TestNodeWALWriteFailureStopsOutbound(t *testing.T) {
 		}
 		return oldWrite(writer, data)
 	}
-	batch, processErr := node.ProcessReady()
+	batch, processErr := nodes[1].ProcessReady()
 	filePersistenceOps.write = oldWrite
 
 	if !errors.Is(processErr, ErrFailed) || !errors.Is(processErr, ErrStorage) || !IsStorageFull(processErr) || !errors.Is(processErr, syscall.ENOSPC) {
@@ -283,20 +338,22 @@ func TestNodeWALWriteFailureStopsOutbound(t *testing.T) {
 	if len(events) != 0 {
 		t.Fatalf("Ready events after WAL failure = %v, want none", events)
 	}
-	if got := commandStrings(node.AppliedCommands()); !equalStringValues(got, commandsBefore) {
+	if got := commandStrings(nodes[1].AppliedCommands()); !equalStringValues(got, commandsBefore) {
 		t.Fatalf("applied commands after WAL failure = %v, want %v", got, commandsBefore)
 	}
-	if err := node.Campaign(); !errors.Is(err, ErrFailed) {
+	if err := nodes[1].Campaign(); !errors.Is(err, ErrFailed) {
 		t.Fatalf("Campaign() after WAL failure = %v, want ErrFailed", err)
 	}
-	if err := node.Propose([]byte("after-wal-failure")); !errors.Is(err, ErrFailed) {
+	if err := nodes[1].Propose([]byte("after-wal-failure")); !errors.Is(err, ErrFailed) {
 		t.Fatalf("Propose() after WAL failure = %v, want ErrFailed", err)
 	}
-	if _, err := node.ProcessReady(); !errors.Is(err, ErrFailed) {
+	if _, err := nodes[1].ProcessReady(); !errors.Is(err, ErrFailed) {
 		t.Fatalf("ProcessReady() after WAL failure = %v, want ErrFailed", err)
 	}
-	if err := node.Close(); err != nil {
-		t.Fatalf("Close() after WAL failure: %v", err)
+	for nodeID, node := range nodes {
+		if err := node.Close(); err != nil {
+			t.Fatalf("close node %d after WAL failure: %v", nodeID, err)
+		}
 	}
 }
 

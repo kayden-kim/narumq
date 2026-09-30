@@ -15,6 +15,9 @@ var (
 	ErrFull = errors.New("delivery queue full")
 	// ErrUnavailable means that a session or requested delivery state is unavailable.
 	ErrUnavailable = errors.New("delivery queue unavailable")
+	// ErrRetryableUnavailable means a durable promotion could not be confirmed because quorum was unavailable.
+	// The transition may have committed; callers must retry with the same Packet Identifier.
+	ErrRetryableUnavailable = errors.New("delivery transition temporarily unavailable")
 	// ErrExpired means that the delivery at the queue head passed its deadline.
 	ErrExpired = errors.New("delivery expired")
 	// ErrPacketIDConflict means that an outbound Packet Identifier is already stored.
@@ -70,6 +73,7 @@ type Queue interface {
 	Remove(sessionID routing.SessionID)
 	TryEnqueue(delivery DeliveryDTO, now time.Time) error
 	TryEnqueueBatch(deliveries []DeliveryDTO, now time.Time) error
+	// Peek reports an empty registered queue as (zero, false, nil). ErrUnavailable means the session or queue state is missing.
 	Peek(sessionID routing.SessionID, now time.Time) (DeliveryDTO, bool, error)
 	CompleteHead(sessionID routing.SessionID) error
 	PromoteHead(outbound OutboundDTO, now time.Time) error

@@ -144,7 +144,8 @@ func (queue *Queue) tryEnqueueBatchLocked(deliveries []deliveryqueue.DeliveryDTO
 }
 
 // Peek returns the live FIFO head without removing it. Expired entries before
-// the head are purged and the returned payload is independent of stored state.
+// the head are purged; an empty registered queue returns ok=false without an error.
+// The returned payload is independent of stored state.
 func (queue *Queue) Peek(sessionID routing.SessionID, now time.Time) (deliveryqueue.DeliveryDTO, bool, error) {
 	if queue == nil {
 		return deliveryqueue.DeliveryDTO{}, false, deliveryqueue.ErrUnavailable
@@ -160,7 +161,7 @@ func (queue *Queue) Peek(sessionID routing.SessionID, now time.Time) (deliveryqu
 	}
 	state.queued = purgeExpired(state.queued, now)
 	if len(state.queued) == 0 {
-		return deliveryqueue.DeliveryDTO{}, false, deliveryqueue.ErrUnavailable
+		return deliveryqueue.DeliveryDTO{}, false, nil
 	}
 	head := state.queued[0]
 	head.Payload = cloneBytes(head.Payload)
