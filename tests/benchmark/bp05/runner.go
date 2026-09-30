@@ -286,6 +286,7 @@ func runConnectionRamp(ctx context.Context, profile Profile, address, phase stri
 				ClientID:         clientID,
 				KeepAlive:        uint16(profile.KeepAliveSeconds),
 				HandshakeTimeout: mqttclient.DefaultHandshakeTimeout,
+				CleanStart:       true,
 			})
 			finished := time.Now()
 			latency := finished.Sub(started)

@@ -14,10 +14,10 @@ func TestComputeResourceSummaryUsesPhaseWindowsAndSignedPerConnectionDelta(t *te
 	phasesPath := filepath.Join(dir, "phases.jsonl")
 	workloadPath := filepath.Join(dir, "workload-summary.json")
 	stats := strings.Join([]string{
-		`{"collectedAt":"2026-09-19T00:00:00Z","container":"broker","docker":{"CPUPerc":"1.00%","MemUsage":"100B / 1GiB"}}`,
-		`{"collectedAt":"2026-09-19T00:00:01Z","container":"broker","docker":{"CPUPerc":"1.00%","MemUsage":"200B / 1GiB"}}`,
-		`{"collectedAt":"2026-09-19T00:00:03Z","container":"broker","docker":{"CPUPerc":"1.00%","MemUsage":"300B / 1GiB"}}`,
-		`{"collectedAt":"2026-09-19T00:00:04Z","container":"broker","docker":{"CPUPerc":"1.00%","MemUsage":"500B / 1GiB"}}`,
+		`{"collectedAt":"2026-09-19T00:00:00Z","container":"broker","docker":{"CPUPerc":"1.00%","MemUsage":"100B / 1GiB","NetIO":"0B / 0B","BlockIO":"0B / 0B"}}`,
+		`{"collectedAt":"2026-09-19T00:00:01Z","container":"broker","docker":{"CPUPerc":"1.00%","MemUsage":"200B / 1GiB","NetIO":"0B / 0B","BlockIO":"0B / 0B"}}`,
+		`{"collectedAt":"2026-09-19T00:00:03Z","container":"broker","docker":{"CPUPerc":"1.00%","MemUsage":"300B / 1GiB","NetIO":"0B / 0B","BlockIO":"0B / 0B"}}`,
+		`{"collectedAt":"2026-09-19T00:00:04Z","container":"broker","docker":{"CPUPerc":"1.00%","MemUsage":"500B / 1GiB","NetIO":"0B / 0B","BlockIO":"0B / 0B"}}`,
 	}, "\n") + "\n"
 	if err := os.WriteFile(statsPath, []byte(stats), 0o644); err != nil {
 		t.Fatal(err)
@@ -53,7 +53,7 @@ func TestComputeResourceSummaryRejectsInsufficientSamples(t *testing.T) {
 	statsPath := filepath.Join(dir, "broker-stats.jsonl")
 	phasesPath := filepath.Join(dir, "phases.jsonl")
 	workloadPath := filepath.Join(dir, "workload-summary.json")
-	if err := os.WriteFile(statsPath, []byte(`{"collectedAt":"2026-09-19T00:00:00Z","container":"broker","docker":{"CPUPerc":"1.00%","MemUsage":"100B / 1GiB"}}`+"\n"), 0o644); err != nil {
+	if err := os.WriteFile(statsPath, []byte(`{"collectedAt":"2026-09-19T00:00:00Z","container":"broker","docker":{"CPUPerc":"1.00%","MemUsage":"100B / 1GiB","NetIO":"0B / 0B","BlockIO":"0B / 0B"}}`+"\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(phasesPath, []byte(strings.Join([]string{

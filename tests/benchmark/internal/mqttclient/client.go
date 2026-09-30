@@ -17,19 +17,24 @@ const (
 	DefaultHandshakeTimeout = 30 * time.Second
 )
 
-// ConnectOptions fixes the MQTT contract shared by benchmark runners.
+// ConnectOptions configures an MQTT 5 CONNECT with caller-selected Clean Start, Session Expiry and credentials.
 type ConnectOptions struct {
-	Address          string
-	ClientID         string
-	KeepAlive        uint16
-	HandshakeTimeout time.Duration
+	Address               string
+	ClientID              string
+	KeepAlive             uint16
+	HandshakeTimeout      time.Duration
+	CleanStart            bool
+	SessionExpiryInterval uint32
+	Username              string
+	Password              []byte
 }
 
 // ConnectTiming records the wall-clock points used by a connection attempt.
 type ConnectTiming struct {
-	StartedAt time.Time
-	ConnAckAt time.Time
-	Latency   time.Duration
+	StartedAt      time.Time
+	ConnAckAt      time.Time
+	Latency        time.Duration
+	SessionPresent bool
 }
 
 // Client owns one MQTT TCP connection and its packet codecs.
@@ -44,7 +49,7 @@ type Client struct {
 	closeErr         error
 }
 
-// Connect opens a MQTT 5, Clean Start connection with zero session expiry.
+// Connect performs an MQTT 5 CONNECT with caller-selected Clean Start, Session Expiry and credentials.
 func Connect(ctx context.Context, options ConnectOptions) (*Client, ConnectTiming, error) {
 	if ctx == nil {
 		ctx = context.Background()
@@ -76,10 +81,14 @@ func Connect(ctx context.Context, options ConnectOptions) (*Client, ConnectTimin
 	client := &Client{connection: connection, encoder: encoder, decoder: decoder, handshakeTimeout: handshakeTimeout}
 	packet := &mqtt.Connect{
 		Version:               mqtt.ProtocolV5,
-		CleanStart:            true,
-		SessionExpiryInterval: 0,
+		CleanStart:            options.CleanStart,
+		SessionExpiryInterval: options.SessionExpiryInterval,
 		KeepAlive:             options.KeepAlive,
 		ClientID:              options.ClientID,
+		HasUsername:           options.Username != "",
+		Username:              options.Username,
+		HasPassword:           len(options.Password) > 0,
+		Password:              options.Password,
 	}
 	if err := client.Write(packet, handshakeTimeout); err != nil {
 		_ = client.Close()
@@ -90,12 +99,17 @@ func Connect(ctx context.Context, options ConnectOptions) (*Client, ConnectTimin
 		_ = client.Close()
 		return nil, ConnectTiming{}, err
 	}
-	if connAck.Version != mqtt.ProtocolV5 || connAck.SessionPresent || connAck.ReasonCode != 0 {
+	if connAck.Version != mqtt.ProtocolV5 || (options.CleanStart && connAck.SessionPresent) || connAck.ReasonCode != 0 {
 		_ = client.Close()
 		return nil, ConnectTiming{}, fmt.Errorf("unexpected CONNACK %#v", connAck)
 	}
 	connAckAt := time.Now()
-	return client, ConnectTiming{StartedAt: startedAt, ConnAckAt: connAckAt, Latency: connAckAt.Sub(startedAt)}, nil
+	return client, ConnectTiming{
+		StartedAt:      startedAt,
+		ConnAckAt:      connAckAt,
+		Latency:        connAckAt.Sub(startedAt),
+		SessionPresent: connAck.SessionPresent,
+	}, nil
 }
 
 // Write encodes and writes one complete MQTT packet.

@@ -90,6 +90,10 @@ type StatsSample struct {
 	CPUPercent       float64        `json:"cpuPercent"`
 	MemoryUsageBytes int64          `json:"memoryUsageBytes"`
 	MemoryLimitBytes int64          `json:"memoryLimitBytes"`
+	NetworkRxBytes   int64          `json:"networkRxBytes"`
+	NetworkTxBytes   int64          `json:"networkTxBytes"`
+	BlockReadBytes   int64          `json:"blockReadBytes"`
+	BlockWriteBytes  int64          `json:"blockWriteBytes"`
 }
 
 // BuildImages builds the broker image and the requested benchmark runner image.

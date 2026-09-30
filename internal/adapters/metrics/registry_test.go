@@ -126,6 +126,34 @@ func TestRegistry_OperationsAndRendering(t *testing.T) {
 	}
 }
 
+func TestRegistryRendersWALSyncMetrics(t *testing.T) {
+	registry := NewRegistry()
+	registry.ObserveWALSync(300*time.Microsecond, 0, 100)
+	registry.ObserveWALSync(20*time.Millisecond, 3, 4104)
+	registry.ObserveWALSync(2*time.Second, 300, 8)
+
+	output := string(registry.Render(true))
+	wantLines := []string{
+		`narumq_raft_wal_sync_duration_seconds_bucket{le="0.0005"} 1`,
+		`narumq_raft_wal_sync_duration_seconds_bucket{le="0.025"} 2`,
+		`narumq_raft_wal_sync_duration_seconds_bucket{le="1"} 2`,
+		`narumq_raft_wal_sync_duration_seconds_bucket{le="+Inf"} 3`,
+		`narumq_raft_wal_sync_entries_bucket{le="0"} 1`,
+		`narumq_raft_wal_sync_entries_bucket{le="4"} 2`,
+		`narumq_raft_wal_sync_entries_bucket{le="256"} 2`,
+		"narumq_raft_wal_sync_entries_count 3",
+		"narumq_raft_wal_written_bytes_total 4212",
+	}
+	for _, line := range wantLines {
+		if !strings.Contains(output, line+"\n") {
+			t.Errorf("missing WAL metric line %q", line)
+		}
+	}
+	if !strings.HasSuffix(output, "# EOF\n") {
+		t.Fatalf("OpenMetrics output must end with '# EOF\\n'")
+	}
+}
+
 func TestRegistryRendersMQTT310UnsupportedVersionRejection(t *testing.T) {
 	reg := NewRegistry()
 	reg.ConnectRejected(ports.ProtocolMQTT310, ports.ConnectRejectReasonUnsupportedProtocolVersion)

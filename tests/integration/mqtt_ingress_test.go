@@ -874,6 +874,33 @@ func TestMQTTIngressQoS1Handshake(t *testing.T) {
 
 			// Subscriber must NOT receive duplicate message
 			expectNoPacket(t, subConn)
+			// A fresh DUP=0 PUBLISH may reuse the identifier after PUBACK.
+			writePacket(t, pubConn, fixture.encoder, &mqtt.Publish{
+				Version:  tc.version,
+				Topic:    "qos1/handshake",
+				Payload:  []byte("hello-qos1-again"),
+				QoS:      mqtt.QoSAtLeastOnce,
+				PacketID: 101,
+			})
+			reuseAck := readPacket(t, pubConn, fixture.decoder, tc.version).(*mqtt.PubAck)
+			if reuseAck.PacketID != 101 {
+				t.Fatalf("reused-ID PUBACK packet ID = %d, want 101", reuseAck.PacketID)
+			}
+			if tc.version == mqtt.ProtocolV5 && reuseAck.ReasonCode != 0 {
+				t.Fatalf("reused-ID PUBACK reason code = 0x%02X, want 0", reuseAck.ReasonCode)
+			}
+			reuseDelivery := readPacket(t, subConn, fixture.decoder, tc.version).(*mqtt.Publish)
+			if reuseDelivery.Topic != "qos1/handshake" || string(reuseDelivery.Payload) != "hello-qos1-again" {
+				t.Fatalf("reused-ID delivered publication = %#v", reuseDelivery)
+			}
+			if reuseDelivery.QoS != mqtt.QoSAtLeastOnce || reuseDelivery.PacketID == 0 {
+				t.Fatalf("reused-ID delivery QoS/PacketID invalid: QoS=%v, PacketID=%v", reuseDelivery.QoS, reuseDelivery.PacketID)
+			}
+			writePacket(t, subConn, fixture.encoder, &mqtt.PubAck{
+				Version:  tc.version,
+				PacketID: reuseDelivery.PacketID,
+			})
+			expectNoPacket(t, subConn)
 		})
 	}
 }
@@ -1010,6 +1037,52 @@ func TestMQTTIngressQoS2Handshake(t *testing.T) {
 			}
 
 			// Subscriber must NOT receive duplicate
+			expectNoPacket(t, subConn)
+			// A fresh DUP=0 PUBLISH may reuse the identifier after PUBCOMP.
+			writePacket(t, pubConn, fixture.encoder, &mqtt.Publish{
+				Version:  tc.version,
+				Topic:    "qos2/handshake",
+				Payload:  []byte("hello-qos2-again"),
+				QoS:      mqtt.QoSExactlyOnce,
+				PacketID: 202,
+			})
+			reuseRec := readPacket(t, pubConn, fixture.decoder, tc.version).(*mqtt.PubRec)
+			if reuseRec.PacketID != 202 {
+				t.Fatalf("reused-ID PUBREC packet ID = %d, want 202", reuseRec.PacketID)
+			}
+			if tc.version == mqtt.ProtocolV5 && reuseRec.ReasonCode != 0 {
+				t.Fatalf("reused-ID PUBREC reason code = 0x%02X, want 0", reuseRec.ReasonCode)
+			}
+			writePacket(t, pubConn, fixture.encoder, &mqtt.PubRel{
+				Version:  tc.version,
+				PacketID: 202,
+			})
+			reuseComp := readPacket(t, pubConn, fixture.decoder, tc.version).(*mqtt.PubComp)
+			if reuseComp.PacketID != 202 {
+				t.Fatalf("reused-ID PUBCOMP packet ID = %d, want 202", reuseComp.PacketID)
+			}
+			if tc.version == mqtt.ProtocolV5 && reuseComp.ReasonCode != 0 {
+				t.Fatalf("reused-ID PUBCOMP reason code = 0x%02X, want 0", reuseComp.ReasonCode)
+			}
+			reuseDelivery := readPacket(t, subConn, fixture.decoder, tc.version).(*mqtt.Publish)
+			if reuseDelivery.Topic != "qos2/handshake" || string(reuseDelivery.Payload) != "hello-qos2-again" {
+				t.Fatalf("reused-ID delivered publication = %#v", reuseDelivery)
+			}
+			if reuseDelivery.QoS != mqtt.QoSExactlyOnce || reuseDelivery.PacketID == 0 {
+				t.Fatalf("reused-ID delivery QoS/PacketID invalid: QoS=%v, PacketID=%v", reuseDelivery.QoS, reuseDelivery.PacketID)
+			}
+			writePacket(t, subConn, fixture.encoder, &mqtt.PubRec{
+				Version:  tc.version,
+				PacketID: reuseDelivery.PacketID,
+			})
+			reuseBrokerRel := readPacket(t, subConn, fixture.decoder, tc.version).(*mqtt.PubRel)
+			if reuseBrokerRel.PacketID != reuseDelivery.PacketID {
+				t.Fatalf("reused-ID broker PUBREL packet ID = %d, want %d", reuseBrokerRel.PacketID, reuseDelivery.PacketID)
+			}
+			writePacket(t, subConn, fixture.encoder, &mqtt.PubComp{
+				Version:  tc.version,
+				PacketID: reuseDelivery.PacketID,
+			})
 			expectNoPacket(t, subConn)
 		})
 	}

@@ -661,6 +661,44 @@ func TestCSVReadLoopEnforcesAdapterBoundWhenDecoderAllowsMore(t *testing.T) {
 	_ = serverSide.Close()
 }
 
+func TestConnectionRunLogsPacketHandlingErrorsButNotPeerClose(t *testing.T) {
+	for _, testCase := range []struct {
+		name       string
+		closePeer  bool
+		wantLogged bool
+	}{
+		{name: "malformed MQTT packet", wantLogged: true},
+		{name: "peer closed", closePeer: true},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			deps := csvNewServer(t, newPipeListener(), csvServerOptions{})
+			serverSide, clientSide := net.Pipe()
+			connection := newConnection(deps.server, serverSide)
+			done := make(chan struct{})
+			go func() {
+				connection.run()
+				close(done)
+			}()
+			if testCase.closePeer {
+				_ = clientSide.Close()
+			} else if _, err := clientSide.Write([]byte{0x10, 0x00}); err != nil {
+				t.Fatalf("write malformed CONNECT = %v", err)
+			}
+			select {
+			case <-done:
+			case <-time.After(time.Second):
+				t.Fatal("connection.run() did not stop after the peer packet ended")
+			}
+			_ = clientSide.Close()
+			logs := deps.logs.String()
+			logged := strings.Contains(logs, "MQTT connection handling failed")
+			if logged != testCase.wantLogged {
+				t.Fatalf("connection logs = %q, want handling error logged=%v", logs, testCase.wantLogged)
+			}
+		})
+	}
+}
+
 // csvDeadlineConn fails SetReadDeadline starting with call number failFrom.
 type csvDeadlineConn struct {
 	net.Conn

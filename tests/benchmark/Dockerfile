@@ -5,7 +5,8 @@ WORKDIR /src
 COPY . .
 RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags='-s -w' -o /out/narumq ./cmd/narumq \
     && CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags='-s -w' -o /out/bp01 ./tests/benchmark/bp01 \
-    && CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags='-s -w' -o /out/bp05 ./tests/benchmark/bp05
+    && CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags='-s -w' -o /out/bp05 ./tests/benchmark/bp05 \
+    && CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags='-s -w' -o /out/bp03 ./tests/benchmark/bp03
 
 FROM scratch AS narumq
 COPY --from=build /out/narumq /narumq
@@ -18,3 +19,7 @@ ENTRYPOINT ["/bp01"]
 FROM scratch AS bp05-runner
 COPY --from=build /out/bp05 /bp05
 ENTRYPOINT ["/bp05"]
+
+FROM scratch AS bp03-runner
+COPY --from=build /out/bp03 /bp03
+ENTRYPOINT ["/bp03"]

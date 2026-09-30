@@ -38,6 +38,11 @@ var defaultPublishLatencyBuckets = []float64{
 	0.0005, 0.001, 0.0025, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5,
 }
 
+// Default histogram buckets for Raft WAL sync observations.
+var defaultWALSyncDurationBuckets = []float64{0.0001, 0.00025, 0.0005, 0.001, 0.0025, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1}
+
+var defaultWALSyncEntriesBuckets = []float64{0, 1, 2, 4, 8, 16, 32, 64, 128, 256}
+
 // Histogram tracks distribution of floating-point observations.
 type Histogram struct {
 	buckets []float64
@@ -120,7 +125,10 @@ type Registry struct {
 	tenantQuotaProfileVersion   atomic.Uint64
 	tenantQuotaConfigMismatch   atomic.Int64
 
-	publishLatency *Histogram
+	publishLatency  *Histogram
+	walSyncDuration *Histogram
+	walSyncEntries  *Histogram
+	walWrittenBytes atomic.Uint64
 }
 
 // NewRegistry initializes an empty Registry.
@@ -134,6 +142,8 @@ func NewRegistry() *Registry {
 		tenantQuotaRejections: make(map[tenantQuotaMetricKey]*atomic.Int64),
 		tenantQuotaTenants:    make(map[string]struct{}),
 		publishLatency:        NewHistogram(defaultPublishLatencyBuckets),
+		walSyncDuration:       NewHistogram(defaultWALSyncDurationBuckets),
+		walSyncEntries:        NewHistogram(defaultWALSyncEntriesBuckets),
 	}
 }
 
@@ -373,6 +383,16 @@ func (r *Registry) ObservePublishDuration(duration time.Duration) {
 	r.publishLatency.Observe(duration.Seconds())
 }
 
+// ObserveWALSync records a successful dynamic Raft Ready WAL frame fsync.
+func (r *Registry) ObserveWALSync(duration time.Duration, entries int, frameBytes int) {
+	r.walSyncDuration.Observe(duration.Seconds())
+	r.walSyncEntries.Observe(float64(entries))
+	if frameBytes < 0 {
+		frameBytes = 0
+	}
+	r.walWrittenBytes.Add(uint64(frameBytes))
+}
+
 // ActiveConnections returns the current number of active connections.
 func (r *Registry) ActiveConnections() int64 {
 	v := r.connectionsActive.Load()
@@ -456,19 +476,33 @@ func (r *Registry) Render(isOpenMetrics bool) []byte {
 	// 11. narumq_publish_latency_seconds
 	fmt.Fprintf(&buf, "# HELP narumq_publish_latency_seconds Latency of publish processing in seconds.\n")
 	fmt.Fprintf(&buf, "# TYPE narumq_publish_latency_seconds histogram\n")
-	buckets, counts, count, sum := r.publishLatency.Snapshot()
-	for i, b := range buckets {
-		fmt.Fprintf(&buf, "narumq_publish_latency_seconds_bucket{le=\"%g\"} %d\n", b, counts[i])
-	}
-	fmt.Fprintf(&buf, "narumq_publish_latency_seconds_bucket{le=\"+Inf\"} %d\n", count)
-	fmt.Fprintf(&buf, "narumq_publish_latency_seconds_sum %.6f\n", sum)
-	fmt.Fprintf(&buf, "narumq_publish_latency_seconds_count %d\n", count)
+	renderHistogram(&buf, "narumq_publish_latency_seconds", r.publishLatency)
+
+	fmt.Fprintf(&buf, "# HELP narumq_raft_wal_sync_duration_seconds Duration of fsync for one Raft Ready WAL frame.\n")
+	fmt.Fprintf(&buf, "# TYPE narumq_raft_wal_sync_duration_seconds histogram\n")
+	renderHistogram(&buf, "narumq_raft_wal_sync_duration_seconds", r.walSyncDuration)
+	fmt.Fprintf(&buf, "# HELP narumq_raft_wal_sync_entries Raft log entries persisted by one WAL frame fsync.\n")
+	fmt.Fprintf(&buf, "# TYPE narumq_raft_wal_sync_entries histogram\n")
+	renderHistogram(&buf, "narumq_raft_wal_sync_entries", r.walSyncEntries)
+	fmt.Fprintf(&buf, "# HELP narumq_raft_wal_written_bytes_total Bytes appended to the Raft WAL including frame headers.\n")
+	fmt.Fprintf(&buf, "# TYPE narumq_raft_wal_written_bytes_total counter\n")
+	fmt.Fprintf(&buf, "narumq_raft_wal_written_bytes_total %d\n", r.walWrittenBytes.Load())
 
 	if isOpenMetrics {
 		fmt.Fprintf(&buf, "# EOF\n")
 	}
 
 	return buf.Bytes()
+}
+
+func renderHistogram(buf *bytes.Buffer, name string, histogram *Histogram) {
+	buckets, counts, count, sum := histogram.Snapshot()
+	for i, bucket := range buckets {
+		fmt.Fprintf(buf, "%s_bucket{le=\"%g\"} %d\n", name, bucket, counts[i])
+	}
+	fmt.Fprintf(buf, "%s_bucket{le=\"+Inf\"} %d\n", name, count)
+	fmt.Fprintf(buf, "%s_sum %.6f\n", name, sum)
+	fmt.Fprintf(buf, "%s_count %d\n", name, count)
 }
 
 func (r *Registry) renderCounterMap(buf *bytes.Buffer, name string, m map[string]*atomic.Int64) {

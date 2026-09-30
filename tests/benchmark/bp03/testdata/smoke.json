@@ -1,0 +1,22 @@
+{
+  "profileId": "bp03-smoke-v1",
+  "purpose": "smoke",
+  "seed": 3,
+  "pairsPerQoS": 2,
+  "payloadBytes": 256,
+  "sessionExpirySeconds": 300,
+  "maxInflightPerPublisher": 8,
+  "ackTimeoutMillis": 10000,
+  "ratesPerStreamPerSecond": [5, 10, 25],
+  "warmupMillis": 2000,
+  "measureMillis": 12000,
+  "drainMillis": 5000,
+  "offlineSettleMillis": 1000,
+  "offlineMessagesPerStream": 32,
+  "reconnectTimeoutMillis": 20000,
+  "maxMessages": 4096,
+  "brokerCPUs": 1,
+  "brokerMemoryBytes": 1073741824,
+  "generatorCPUs": 2,
+  "generatorMemoryBytes": 536870912
+}

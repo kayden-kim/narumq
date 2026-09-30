@@ -136,6 +136,109 @@ func TestFinishTargetFailurePreservesAllReasons(t *testing.T) {
 	}
 }
 
+func validClusterOptions() ClusterTargetOptions {
+	return ClusterTargetOptions{
+		BenchmarkID: "bp03", RunID: "run-1", Target: "narumq",
+		ArtifactDirectory: "artifacts/narumq", ProfilePath: "profile.json",
+		ImageReference: "narumq:run-1", RunnerReference: "runner:run-1",
+		RunnerImageID: "runner-id", RunnerTarget: "bp03-runner",
+		NetworkOwnerArgs:            []string{"serve-jwks", "--file", "/config/jwks.json"},
+		NetworkOwnerConfigDirectory: "public-jwks",
+		RunnerConfigDirectory:       "runner-config",
+		Nodes: []ClusterNodeSpec{
+			{Name: "node1", DNSName: "node1.bp03.test", ConfigDirectory: "node1", MountConfig: true, DataDestination: "/var/lib/narumq", BrokerArgs: []string{"-cluster-config", "/config/node.json"}},
+			{Name: "node2", DNSName: "node2.bp03.test", ConfigDirectory: "node2", DataDestination: "/var/lib/narumq"},
+			{Name: "node3", DNSName: "node3.bp03.test", ConfigDirectory: "node3", DataDestination: "/var/lib/narumq"},
+		},
+		BrokerCPUs: 1, BrokerMemoryBytes: 1 << 30, GeneratorCPUs: 2, GeneratorMemoryBytes: 1 << 29,
+		RunnerArgs: []string{"run"}, Timeout: time.Minute, StartupTimeout: time.Minute,
+	}
+}
+
+func TestValidateClusterTargetOptions(t *testing.T) {
+	valid := validClusterOptions()
+	if err := validateClusterTargetOptions(valid); err != nil {
+		t.Fatalf("valid cluster options: %v", err)
+	}
+	cases := []struct {
+		name   string
+		modify func(*ClusterTargetOptions)
+	}{
+		{"two nodes", func(o *ClusterTargetOptions) { o.Nodes = o.Nodes[:2] }},
+		{"duplicate dns names", func(o *ClusterTargetOptions) { o.Nodes[1].DNSName = o.Nodes[0].DNSName }},
+		{"wrong runner target", func(o *ClusterTargetOptions) { o.RunnerTarget = "bp01-runner" }},
+		{"missing network owner public config", func(o *ClusterTargetOptions) { o.NetworkOwnerConfigDirectory = "" }},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			options := validClusterOptions()
+			tc.modify(&options)
+			if err := validateClusterTargetOptions(options); err == nil {
+				t.Fatal("validateClusterTargetOptions accepted invalid options")
+			}
+		})
+	}
+}
+
+func TestBuildClusterBrokerArgs(t *testing.T) {
+	options := validClusterOptions()
+	node := ClusterNodeSpec{Name: "node2", DNSName: "node2.bp03.test", ConfigDirectory: "node2-config", DataDestination: "/opt/emqx/data", LogDestination: "/opt/emqx/log", BrokerEnv: []string{"EMQX_NODE__NAME=emqx@node2.bp03.test", "EMQX_DURABLE_SESSIONS__ENABLE=false"}}
+	options.Target = "emqx"
+	options.ImageReference = EMQXImageReference
+	emqx := buildClusterBrokerArgs(options, node, "owner")
+	if !containsToken(emqx, "type=volume,source=bp03-run-1-emqx-node2-log,destination=/opt/emqx/log") || !containsToken(emqx, "EMQX_NODE__NAME=emqx@node2.bp03.test") || !containsToken(emqx, "EMQX_DURABLE_SESSIONS__ENABLE=false") {
+		t.Fatalf("EMQX broker args missing log mount/env: %#v", emqx)
+	}
+
+	options.Target = "narumq"
+	naruNode := ClusterNodeSpec{Name: "node1", ConfigDirectory: "node1-config", MountConfig: true, DataDestination: "/var/lib/narumq", BrokerArgs: []string{"-cluster-config", "/config/node.json"}}
+	naru := buildClusterBrokerArgs(options, naruNode, "owner")
+	if !containsToken(naru, "type=bind,source=node1-config,destination=/config,readonly") || !containsToken(naru, "-cluster-config") || !containsToken(naru, "/config/node.json") {
+		t.Fatalf("NaruMQ broker args missing config mount/args: %#v", naru)
+	}
+}
+
+func TestBuildClusterNetworkOwnerArgsUsesPublicConfig(t *testing.T) {
+	options := validClusterOptions()
+	node := options.Nodes[0]
+	owner := buildClusterNetworkOwnerArgs(options, node, "bp03-run-1-narumq-node1-net")
+	if !containsToken(owner, "type=bind,source=public-jwks,destination=/config,readonly") {
+		t.Fatalf("network owner args missing public config mount: %#v", owner)
+	}
+	if containsToken(owner, "type=bind,source=node1,destination=/config,readonly") {
+		t.Fatalf("network owner args expose node-private config: %#v", owner)
+	}
+	if !containsToken(owner, "/config/jwks.json") {
+		t.Fatalf("network owner args do not serve /config/jwks.json: %#v", owner)
+	}
+	broker := buildClusterBrokerArgs(options, node, "owner")
+	if !containsToken(broker, "type=bind,source=node1,destination=/config,readonly") ||
+		containsToken(broker, "type=bind,source=public-jwks,destination=/config,readonly") {
+		t.Fatalf("broker config mount changed: %#v", broker)
+	}
+}
+func TestRedactInspectEnvSecrets(t *testing.T) {
+	input := []byte(`[{"Id":"container","Config":{"Env":["EMQX_NODE__COOKIE=private-cookie","NARUMQ_ADMIN_TOKEN=private-token","EMQX_DURABLE_SESSIONS__ENABLE=false"]}}]`)
+	redacted, err := redactInspectEnvSecrets(input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	output := string(redacted)
+	for _, value := range []string{"private-cookie", "private-token"} {
+		if strings.Contains(output, value) {
+			t.Errorf("redacted inspect JSON contains secret value %q", value)
+		}
+	}
+	for _, value := range []string{"EMQX_NODE__COOKIE=REDACTED", "NARUMQ_ADMIN_TOKEN=REDACTED", "EMQX_DURABLE_SESSIONS__ENABLE=false"} {
+		if !strings.Contains(output, value) {
+			t.Errorf("redacted inspect JSON omits %q", value)
+		}
+	}
+	if _, err := redactInspectEnvSecrets([]byte("{")); err == nil {
+		t.Fatal("redactInspectEnvSecrets() accepted malformed JSON")
+	}
+}
+
 func countToken(values []string, want string) int {
 	count := 0
 	for _, value := range values {

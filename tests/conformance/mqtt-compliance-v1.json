@@ -1025,6 +1025,10 @@
       ],
       "tests": [
         {
+          "name": "TestDispatchPublishReusesCompletedPacketIdentifier",
+          "package": "narumq/internal/adapters/tcp"
+        },
+        {
           "name": "TestInboundQoS1AcceptanceAndDuplicateConvergence",
           "package": "narumq/internal/domain/delivery"
         },
@@ -1055,6 +1059,10 @@
         "TEST-05"
       ],
       "tests": [
+        {
+          "name": "TestDispatchPublishReusesCompletedPacketIdentifier",
+          "package": "narumq/internal/adapters/tcp"
+        },
         {
           "name": "TestInboundQoS1AcceptanceAndDuplicateConvergence",
           "package": "narumq/internal/domain/delivery"
@@ -1087,6 +1095,10 @@
       ],
       "tests": [
         {
+          "name": "TestDispatchPublishReusesCompletedPacketIdentifier",
+          "package": "narumq/internal/adapters/tcp"
+        },
+        {
           "name": "TestInboundQoS2DurableHandoffAndDuplicateConvergence",
           "package": "narumq/internal/domain/delivery"
         },
@@ -1117,6 +1129,10 @@
         "TEST-05"
       ],
       "tests": [
+        {
+          "name": "TestDispatchPublishReusesCompletedPacketIdentifier",
+          "package": "narumq/internal/adapters/tcp"
+        },
         {
           "name": "TestInboundQoS2DurableHandoffAndDuplicateConvergence",
           "package": "narumq/internal/domain/delivery"

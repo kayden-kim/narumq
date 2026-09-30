@@ -55,6 +55,7 @@ const (
 	clusterSnapshotInterval                = 1000
 	clusterDefaultPacketSize               = 1 << 20
 	clusterHeldProposalTimeout             = 10 * time.Second
+	clusterCommitFailureLogInterval        = time.Second
 )
 
 var (
@@ -121,11 +122,15 @@ func runClusterMode(ctx context.Context, config clusterConfigFile, logger *slog.
 		}
 	}
 
+	metricsRegistry := adaptersmetrics.NewRegistry()
 	node, err := raftadapter.Open(raftadapter.Config{
 		NodeID: raftadapter.NodeID(config.NodeID), Directory: config.Directory,
 		DynamicMembership: true, ClusterID: config.ClusterID,
 		CertificateSHA256: localFingerprint, BootstrapVoterIDs: bootstrapIDs,
 		PersistenceBoundaryHook: persistenceHook, WALBoundaryHook: walBoundaryHook,
+		WALSyncObserver: func(sync raftadapter.WALSyncDTO) {
+			metricsRegistry.ObserveWALSync(sync.Duration, sync.Entries, sync.FrameBytes)
+		},
 	})
 	if err != nil {
 		return fmt.Errorf("open dynamic raft node: %w", err)
@@ -147,7 +152,6 @@ func runClusterMode(ctx context.Context, config clusterConfigFile, logger *slog.
 		}
 	}()
 
-	metricsRegistry := adaptersmetrics.NewRegistry()
 	retainedRepository, err := memoryretained.New(membership.MaxRetainedMessages, membership.MaxRetainedBytes, metricsRegistry)
 	if err != nil {
 		return fmt.Errorf("create retained repository: %w", err)
@@ -334,6 +338,27 @@ func runClusterMode(ctx context.Context, config clusterConfigFile, logger *slog.
 	return runtime.serve(ctx, mqttServer, managementServer, managementListener)
 }
 
+type clusterCommitFailureKey struct {
+	stage       string
+	class       string
+	commandKind string
+}
+
+type clusterCommitFailureState struct {
+	firstAt       time.Time
+	lastAt        time.Time
+	lastLoggedAt  time.Time
+	count         uint64
+	reportedCount uint64
+}
+
+type clusterCommitFailureSummary struct {
+	firstAt      time.Time
+	lastAt       time.Time
+	totalCount   uint64
+	sinceLastLog uint64
+}
+
 type clusterRuntime struct {
 	config                  clusterConfigFile
 	logger                  *slog.Logger
@@ -357,6 +382,8 @@ type clusterRuntime struct {
 	connectUseCase          *connect.UseCase
 	metrics                 *adaptersmetrics.Registry
 	localCommits            atomic.Int64
+	commitFailureMu         sync.Mutex
+	commitFailureLogs       map[clusterCommitFailureKey]clusterCommitFailureState
 
 	requests                    chan clusterDriverRequest
 	driverStopped               chan struct{}
@@ -1765,10 +1792,16 @@ func (runtime *clusterRuntime) readBarrier(ctx context.Context) error {
 func (runtime *clusterRuntime) Commit(ctx context.Context, command membership.CommandDTO) (membership.ApplyResultDTO, error) {
 	runtime.localCommits.Add(1)
 	defer runtime.localCommits.Add(-1)
-	if ctx == nil || runtime.storage.view().health == clusterReplicationFailed {
+	if ctx == nil {
+		runtime.logCommitFailure("invalid_context", ctx, command, membership.ErrQuorumUnavailable)
+		return membership.ApplyResultDTO{}, membership.ErrQuorumUnavailable
+	}
+	if runtime.storage.view().health == clusterReplicationFailed {
+		runtime.logCommitFailure("storage_failed", ctx, command, membership.ErrQuorumUnavailable)
 		return membership.ApplyResultDTO{}, membership.ErrQuorumUnavailable
 	}
 	if err := runtime.readBarrier(ctx); err != nil {
+		runtime.logCommitFailure("read_barrier", ctx, command, err)
 		return membership.ApplyResultDTO{}, classifyClusterPortError(err)
 	}
 	if (command.Retained != nil || command.Offline != nil || command.Delivery != nil || command.NodeDrain != nil || command.TenantQuota != nil) &&
@@ -1786,7 +1819,7 @@ func (runtime *clusterRuntime) Commit(ctx context.Context, command membership.Co
 		proposalCtx, cancel = context.WithTimeout(context.WithoutCancel(ctx), clusterHeldProposalTimeout)
 		defer cancel()
 	}
-	result, err := runtime.submitProposal(proposalCtx, data)
+	result, err := runtime.submitProposal(proposalCtx, data, command)
 	if held {
 		runtime.faults.reportHeldResult(label, result, err)
 	}
@@ -1795,13 +1828,141 @@ func (runtime *clusterRuntime) Commit(ctx context.Context, command membership.Co
 	}
 	return result, err
 }
+func classifyCommitFailure(err error) string {
+	switch {
+	case err == nil:
+		return "unspecified"
+	case errors.Is(err, context.DeadlineExceeded):
+		return "deadline"
+	case errors.Is(err, context.Canceled):
+		return "canceled"
+	case errors.Is(err, membership.ErrNotLeader):
+		return "not_leader"
+	case errors.Is(err, raftadapter.ErrFailed):
+		return "raft_failed"
+	case errors.Is(err, membership.ErrQuorumUnavailable):
+		return "quorum_unavailable"
+	default:
+		return "other"
+	}
+}
 
-func (runtime *clusterRuntime) submitProposal(ctx context.Context, data []byte) (membership.ApplyResultDTO, error) {
+func (runtime *clusterRuntime) commitFailureLogSummary(stage, class, commandKind string, now time.Time) (clusterCommitFailureSummary, bool) {
+	key := clusterCommitFailureKey{stage: stage, class: class, commandKind: commandKind}
+	runtime.commitFailureMu.Lock()
+	defer runtime.commitFailureMu.Unlock()
+	if runtime.commitFailureLogs == nil {
+		runtime.commitFailureLogs = make(map[clusterCommitFailureKey]clusterCommitFailureState)
+	}
+	state, exists := runtime.commitFailureLogs[key]
+	if !exists {
+		state = clusterCommitFailureState{
+			firstAt: now, lastAt: now, lastLoggedAt: now, count: 1, reportedCount: 1,
+		}
+		runtime.commitFailureLogs[key] = state
+		return clusterCommitFailureSummary{
+			firstAt: now, lastAt: now, totalCount: 1, sinceLastLog: 1,
+		}, true
+	}
+	state.count++
+	state.lastAt = now
+	if now.Sub(state.lastLoggedAt) < clusterCommitFailureLogInterval {
+		runtime.commitFailureLogs[key] = state
+		return clusterCommitFailureSummary{}, false
+	}
+	summary := clusterCommitFailureSummary{
+		firstAt: state.firstAt, lastAt: state.lastAt,
+		totalCount: state.count, sinceLastLog: state.count - state.reportedCount,
+	}
+	state.lastLoggedAt = now
+	state.reportedCount = state.count
+	runtime.commitFailureLogs[key] = state
+	return summary, true
+}
+
+func (runtime *clusterRuntime) logCommitFailure(stage string, ctx context.Context, command membership.CommandDTO, err error) {
+	if runtime == nil || runtime.logger == nil {
+		return
+	}
+	class := classifyCommitFailure(err)
+	commandKind := ""
+	if command.Delivery != nil {
+		commandKind = "durable_delivery"
+	}
+	summary, emit := runtime.commitFailureLogSummary(stage, class, commandKind, time.Now())
+	if !emit {
+		return
+	}
+	fields := []any{
+		"commit_stage", stage, "failure_class", class, "error", err,
+		"failure_count", summary.totalCount, "failures_since_previous_log", summary.sinceLastLog,
+		"first_failure_at", summary.firstAt, "last_failure_at", summary.lastAt,
+	}
+	if commandKind != "" {
+		fields = append(fields, "command_kind", commandKind)
+	}
+	if ctx != nil {
+		if contextErr := ctx.Err(); contextErr != nil {
+			fields = append(fields, "context_error", contextErr)
+		}
+	}
+	if runtime.node != nil {
+		status := runtime.node.Status()
+		fields = append(fields, "node_id", status.NodeID, "leader_id", status.LeaderID,
+			"role", uint8(status.Role), "term", status.Term, "commit_index", status.CommitIndex,
+			"applied_index", status.AppliedIndex, "voter_ids", status.VoterIDs, "learner_ids", status.LearnerIDs)
+		if runtime.transport != nil {
+			peerStatuses := make([]tcpadapter.PeerTransportStatusDTO, 0, len(status.VoterIDs)+len(status.LearnerIDs))
+			peerStatusErrors := make([]string, 0)
+			appendPeerStatus := func(peerID raftadapter.NodeID) {
+				if peerID == status.NodeID {
+					return
+				}
+				peerStatus, statusErr := runtime.transport.Status(uint64(peerID))
+				if statusErr != nil {
+					peerStatusErrors = append(peerStatusErrors, fmt.Sprintf("peer %d: %v", peerID, statusErr))
+					return
+				}
+				peerStatuses = append(peerStatuses, peerStatus)
+			}
+			for _, peerID := range status.VoterIDs {
+				appendPeerStatus(peerID)
+			}
+			for _, peerID := range status.LearnerIDs {
+				appendPeerStatus(peerID)
+			}
+			fields = append(fields, "peer_statuses", peerStatuses)
+			if len(peerStatusErrors) > 0 {
+				fields = append(fields, "peer_status_errors", peerStatusErrors)
+			}
+		}
+	}
+	if runtime.storage != nil {
+		storage := runtime.storage.view()
+		fields = append(fields, "storage_health", storage.health, "storage_error_code", storage.lastErrorCode,
+			"storage_pressure", storage.storagePressure, "storage_reason", storage.reason)
+	}
+	fields = append(fields, "driver_failed", runtime.driverFailed.Load())
+	driverStopped := false
+	if runtime.driverStopped != nil {
+		select {
+		case <-runtime.driverStopped:
+			driverStopped = true
+		default:
+		}
+	}
+	fields = append(fields, "driver_stopped", driverStopped)
+	runtime.logger.Warn("cluster command commit failed", fields...)
+}
+
+func (runtime *clusterRuntime) submitProposal(ctx context.Context, data []byte, command membership.CommandDTO) (membership.ApplyResultDTO, error) {
 	if runtime.driverFailed.Load() {
+		runtime.logCommitFailure("proposal", ctx, command, membership.ErrQuorumUnavailable)
 		return membership.ApplyResultDTO{}, membership.ErrQuorumUnavailable
 	}
 	select {
 	case <-runtime.driverStopped:
+		runtime.logCommitFailure("proposal", ctx, command, membership.ErrQuorumUnavailable)
 		return membership.ApplyResultDTO{}, membership.ErrQuorumUnavailable
 	default:
 	}
@@ -1810,21 +1971,39 @@ func (runtime *clusterRuntime) submitProposal(ctx context.Context, data []byte) 
 	select {
 	case runtime.requests <- request:
 	case <-runtime.driverStopped:
+		runtime.logCommitFailure("proposal", ctx, command, membership.ErrQuorumUnavailable)
 		return membership.ApplyResultDTO{}, membership.ErrQuorumUnavailable
 	case <-ctx.Done():
+		failure := context.Cause(ctx)
+		if failure == nil {
+			failure = membership.ErrQuorumUnavailable
+		}
+		runtime.logCommitFailure("proposal", ctx, command, failure)
 		return membership.ApplyResultDTO{}, membership.ErrQuorumUnavailable
 	}
 	select {
 	case response := <-result:
+		if response.err != nil {
+			runtime.logCommitFailure("proposal_apply", ctx, command, response.err)
+		}
 		return clusterApplyResponseResult(response)
 	case <-runtime.driverStopped:
 		select {
 		case response := <-result:
+			if response.err != nil {
+				runtime.logCommitFailure("proposal_apply", ctx, command, response.err)
+			}
 			return clusterApplyResponseResult(response)
 		default:
+			runtime.logCommitFailure("proposal", ctx, command, membership.ErrQuorumUnavailable)
 			return membership.ApplyResultDTO{}, membership.ErrQuorumUnavailable
 		}
 	case <-ctx.Done():
+		failure := context.Cause(ctx)
+		if failure == nil {
+			failure = membership.ErrQuorumUnavailable
+		}
+		runtime.logCommitFailure("proposal", ctx, command, failure)
 		return membership.ApplyResultDTO{}, membership.ErrQuorumUnavailable
 	}
 }

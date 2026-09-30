@@ -383,3 +383,112 @@ func TestWALBoundaryHookReportsNormalEntryStages(t *testing.T) {
 		t.Fatalf("WAL size before sync = %d, must exceed size before write = %d", walSizes[1], walSizes[0])
 	}
 }
+
+func TestWALSyncObserverReportsSuccessfulReadyFsyncs(t *testing.T) {
+	root := t.TempDir()
+	directories := map[NodeID]string{
+		1: filepath.Join(root, "node-1"),
+		2: filepath.Join(root, "node-2"),
+		3: filepath.Join(root, "node-3"),
+	}
+	var observations []WALSyncDTO
+	nodes := make(map[NodeID]*Node, 3)
+	for _, nodeID := range []NodeID{1, 2, 3} {
+		config := Config{
+			NodeID:    nodeID,
+			PeerIDs:   []NodeID{1, 2, 3},
+			Directory: directories[nodeID],
+		}
+		if nodeID == 1 {
+			config.WALSyncObserver = func(observation WALSyncDTO) {
+				observations = append(observations, observation)
+			}
+		}
+		node, err := Open(config)
+		if err != nil {
+			t.Fatal(err)
+		}
+		nodes[nodeID] = node
+	}
+	defer func() {
+		for _, node := range nodes {
+			if err := node.Close(); err != nil {
+				t.Errorf("Close() = %v", err)
+			}
+		}
+	}()
+
+	pump := func() {
+		t.Helper()
+		var queue []MessageDTO
+		for range 512 {
+			progress := false
+			for _, nodeID := range []NodeID{1, 2, 3} {
+				batch, err := nodes[nodeID].ProcessReady()
+				if err != nil {
+					t.Fatalf("node %d ProcessReady() = %v", nodeID, err)
+				}
+				if len(batch.Messages) != 0 || len(batch.Commands) != 0 {
+					progress = true
+				}
+				queue = append(queue, batch.Messages...)
+			}
+			if len(queue) != 0 {
+				pending := queue
+				queue = nil
+				for _, message := range pending {
+					if err := nodes[message.To].Step(message); err != nil {
+						t.Fatalf("deliver %d -> %d: %v", message.From, message.To, err)
+					}
+					progress = true
+				}
+			}
+			if !progress && len(queue) == 0 {
+				return
+			}
+		}
+		t.Fatal("node pump exceeded 512 rounds")
+	}
+
+	pump()
+	if err := nodes[1].Campaign(); err != nil {
+		t.Fatal(err)
+	}
+	pump()
+	if err := nodes[1].Propose([]byte("cmd")); err != nil {
+		t.Fatal(err)
+	}
+	pump()
+
+	var observedProposal bool
+	for _, observation := range observations {
+		if observation.Entries >= 1 && observation.FrameBytes > 8 && observation.Duration >= 0 {
+			observedProposal = true
+			break
+		}
+	}
+	if !observedProposal {
+		t.Fatalf("successful WAL sync observations = %#v, want a proposal frame", observations)
+	}
+
+	observationsBeforeFailure := len(observations)
+	if err := nodes[1].Propose([]byte("sync-failure")); err != nil {
+		t.Fatal(err)
+	}
+	originalOps := filePersistenceOps
+	t.Cleanup(func() { filePersistenceOps = originalOps })
+	filePersistenceOps.sync = func(file *os.File) error {
+		if filepath.Base(file.Name()) == walName {
+			return errors.New("injected WAL sync failure")
+		}
+		return originalOps.sync(file)
+	}
+	_, err := nodes[1].ProcessReady()
+	filePersistenceOps = originalOps
+	if !errors.Is(err, ErrFailed) {
+		t.Fatalf("ProcessReady() error = %v, want ErrFailed", err)
+	}
+	if len(observations) != observationsBeforeFailure {
+		t.Fatalf("observer calls after failed fsync = %d, want %d", len(observations), observationsBeforeFailure)
+	}
+}

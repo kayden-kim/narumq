@@ -728,7 +728,7 @@ func TestDriverRequestsRejectAfterExit(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
 
-	if _, err := runtime.submitProposal(ctx, []byte("proposal")); !errors.Is(err, membership.ErrQuorumUnavailable) {
+	if _, err := runtime.submitProposal(ctx, []byte("proposal"), membership.CommandDTO{}); !errors.Is(err, membership.ErrQuorumUnavailable) {
 		t.Fatalf("submitProposal error = %v, want %v", err, membership.ErrQuorumUnavailable)
 	}
 	if _, err := runtime.requestReadBarrier(ctx); !errors.Is(err, raftadapter.ErrFailed) {
@@ -736,6 +736,66 @@ func TestDriverRequestsRejectAfterExit(t *testing.T) {
 	}
 	if len(runtime.requests) != 0 {
 		t.Fatalf("requests after driver exit = %d, want 0", len(runtime.requests))
+	}
+}
+
+func TestCommitFailureLogSummaryIsRateLimitedByStageAndClass(t *testing.T) {
+	runtime := &clusterRuntime{}
+	start := time.Unix(100, 0)
+	first, emit := runtime.commitFailureLogSummary("read_barrier", "deadline", "durable_delivery", start)
+	if !emit || first.totalCount != 1 || first.sinceLastLog != 1 {
+		t.Fatalf("first failure summary = %+v emit=%t, want immediate count 1", first, emit)
+	}
+	if _, emit := runtime.commitFailureLogSummary("read_barrier", "deadline", "durable_delivery", start.Add(100*time.Millisecond)); emit {
+		t.Fatal("same-stage/class failure was not rate limited")
+	}
+	next, emit := runtime.commitFailureLogSummary("read_barrier", "deadline", "durable_delivery", start.Add(time.Second))
+	if !emit || next.totalCount != 3 || next.sinceLastLog != 2 ||
+		!next.firstAt.Equal(start) || !next.lastAt.Equal(start.Add(time.Second)) {
+		t.Fatalf("aggregated failure summary = %+v emit=%t, want count 3 and 2 since last log", next, emit)
+	}
+	if _, emit := runtime.commitFailureLogSummary("proposal", "deadline", "durable_delivery", start.Add(time.Second)); !emit {
+		t.Fatal("different stage was suppressed")
+	}
+	if _, emit := runtime.commitFailureLogSummary("read_barrier", "other", "durable_delivery", start.Add(time.Second)); !emit {
+		t.Fatal("different error class was suppressed")
+	}
+}
+
+func TestSubmitProposalLogsRawApplyFailureOnce(t *testing.T) {
+	var logs bytes.Buffer
+	runtime := &clusterRuntime{
+		logger:        slog.New(slog.NewTextHandler(&logs, nil)),
+		requests:      make(chan clusterDriverRequest),
+		driverStopped: make(chan struct{}),
+	}
+	applyErr := errors.New("apply storage cause")
+	result := make(chan error, 1)
+	go func() {
+		_, err := runtime.submitProposal(context.Background(), []byte("proposal"), membership.CommandDTO{})
+		result <- err
+	}()
+	var request clusterDriverRequest
+	select {
+	case request = <-runtime.requests:
+	case <-time.After(time.Second):
+		t.Fatal("submitProposal did not enqueue a request")
+	}
+	request.applyResult <- clusterApplyResponse{err: applyErr}
+	select {
+	case err := <-result:
+		if !errors.Is(err, membership.ErrQuorumUnavailable) {
+			t.Fatalf("submitProposal error = %v, want %v", err, membership.ErrQuorumUnavailable)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("submitProposal did not return after apply response")
+	}
+	output := logs.String()
+	if got := strings.Count(output, "cluster command commit failed"); got != 1 {
+		t.Fatalf("commit diagnostic count = %d, want 1: %s", got, output)
+	}
+	if !strings.Contains(output, "commit_stage=proposal_apply") || !strings.Contains(output, applyErr.Error()) {
+		t.Fatalf("diagnostic omitted the apply stage or raw error: %s", output)
 	}
 }
 

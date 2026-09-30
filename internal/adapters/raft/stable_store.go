@@ -14,6 +14,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 
 	etcdraft "go.etcd.io/raft/v3"
 	pb "go.etcd.io/raft/v3/raftpb"
@@ -66,12 +67,13 @@ type walRecord struct {
 }
 
 type stableStore struct {
-	directory    string
-	wal          *os.File
-	memory       *etcdraft.MemoryStorage
-	dynamic      bool
-	finalizeHook func(PersistenceStage)
-	walHook      func(WALBoundaryDTO)
+	directory       string
+	wal             *os.File
+	memory          *etcdraft.MemoryStorage
+	dynamic         bool
+	finalizeHook    func(PersistenceStage)
+	walHook         func(WALBoundaryDTO)
+	walSyncObserver func(WALSyncDTO)
 
 	snapshotIndex        uint64
 	hardState            *pb.HardState
@@ -647,8 +649,19 @@ func (s *stableStore) appendReady(ready etcdraft.Ready) error {
 	if len(normalEntries) != 0 {
 		s.walHook(WALBoundaryDTO{Stage: WALBeforeSync, Entries: normalEntries})
 	}
+	var syncStarted time.Time
+	if s.walSyncObserver != nil {
+		syncStarted = time.Now()
+	}
 	if err := filePersistenceOps.sync(s.wal); err != nil {
 		return fmt.Errorf("sync WAL: %w", err)
+	}
+	if s.walSyncObserver != nil {
+		s.walSyncObserver(WALSyncDTO{
+			Duration:   time.Since(syncStarted),
+			Entries:    len(ready.Entries),
+			FrameBytes: len(header) + len(payload),
+		})
 	}
 	if len(normalEntries) != 0 {
 		s.walHook(WALBoundaryDTO{Stage: WALAfterSync, Entries: normalEntries})

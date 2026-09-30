@@ -58,7 +58,7 @@ func RunTarget(ctx context.Context, options TargetOptions) (TargetResult, error)
 	if err := waitForContainerRunning(ctx, containerName, options.StartupTimeout); err != nil {
 		return finishTargetFailure(result, err), nil
 	}
-	if err := waitForBrokerReady(ctx, containerName, options.Target, options.StartupTimeout); err != nil {
+	if err := waitForBrokerReady(ctx, containerName, brokerReadyMarker(options.Target), options.StartupTimeout); err != nil {
 		return finishTargetFailure(result, err), nil
 	}
 	if result.ImageID, err = dockerImageID(ctx, "", options.ImageReference); err != nil {
@@ -214,7 +214,7 @@ func validateTargetOptions(options TargetOptions) error {
 	if strings.TrimSpace(options.ImageReference) == "" || strings.TrimSpace(options.RunnerReference) == "" {
 		return errors.New("broker and runner image references are required")
 	}
-	if options.RunnerTarget != "bp01-runner" && options.RunnerTarget != "bp05-runner" {
+	if options.RunnerTarget != "bp01-runner" && options.RunnerTarget != "bp05-runner" && options.RunnerTarget != "bp03-runner" {
 		return fmt.Errorf("unsupported runner target %q", options.RunnerTarget)
 	}
 	if options.BrokerCPUs <= 0 || math.IsNaN(options.BrokerCPUs) || math.IsInf(options.BrokerCPUs, 0) || options.BrokerMemoryBytes <= 0 || options.GeneratorCPUs <= 0 || math.IsNaN(options.GeneratorCPUs) || math.IsInf(options.GeneratorCPUs, 0) || options.GeneratorMemoryBytes <= 0 {
@@ -315,11 +315,14 @@ func waitForContainerRunning(ctx context.Context, containerName string, timeout 
 	}
 }
 
-func waitForBrokerReady(ctx context.Context, containerName, target string, timeout time.Duration) error {
-	marker := "MQTT TCP listener started"
+func brokerReadyMarker(target string) string {
 	if target == "emqx" {
-		marker = "EMQX 5.8.8 is running now!"
+		return "EMQX 5.8.8 is running now!"
 	}
+	return "MQTT TCP listener started"
+}
+
+func waitForBrokerReady(ctx context.Context, containerName, marker string, timeout time.Duration) error {
 	deadline := time.Now().Add(timeout)
 	for {
 		status, inspectErr := commandOutput(ctx, "", "docker", "inspect", "--format", "{{.State.Status}}", containerName)

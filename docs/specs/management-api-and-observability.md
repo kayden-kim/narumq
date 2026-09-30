@@ -183,6 +183,18 @@ Node 상세는 `nodeId`, version, uptime, lifecycle state, readiness 원인, rol
 | gauge | 합계가 의미 있는 값만 합산한다. quorum, leader와 state는 합산하지 않고 명시적 gauge로 표시한다. |
 | histogram | 같은 bucket 경계만 cluster에서 합산한다. quantile을 node별로 계산해 평균내서는 안 된다. |
 
+Dynamic cluster의 Raft WAL 동기화 세 series는 **Ready WAL frame 한 건의 파일 fsync 성공**만 관찰한다. Raft Ready batch는 복제 log를 기록하는 작업 단위다. 이 계측은 `File.Sync` 시간과 frame 내용만 나타내며 snapshot, metadata, restore 동기화 또는 fixed-voter 경로를 포함하지 않는다.
+
+| Metric | Type | 값과 bucket |
+| --- | --- | --- |
+| `narumq_raft_wal_sync_duration_seconds` | histogram | 성공한 Ready WAL frame fsync의 초 단위 시간. finite bucket: `0.0001`, `0.00025`, `0.0005`, `0.001`, `0.0025`, `0.005`, `0.01`, `0.025`, `0.05`, `0.1`, `0.25`, `0.5`, `1`; 표준 `+Inf` bucket을 추가한다. |
+| `narumq_raft_wal_sync_entries` | histogram | 해당 frame에 저장한 Raft log entry 수. finite bucket: `0`, `1`, `2`, `4`, `8`, `16`, `32`, `64`, `128`, `256`; 표준 `+Inf` bucket을 추가한다. |
+| `narumq_raft_wal_written_bytes_total` | counter | WAL에 append한 bytes의 누적값. 8-byte frame header와 encoded payload를 포함한다. |
+
+이 세 series는 **label을 갖지 않는다**. 따라서 client ID, tenant, arbitrary topic 또는 node identity를 label에 추가해서는 안 된다. Registry는 모든 모드에서 series를 render하며 WAL observer가 연결되지 않은 standalone/fixed-voter 모드의 값은 0이다. Histogram을 cluster 차원으로 합산할 때는 node별 raw bucket count를 동일 경계에서 더하고, node별 quantile의 평균을 구하지 않는다.
+
+`internal/adapters/raft`의 `WALSyncObserver`는 dynamic cluster의 successful Ready WAL `File.Sync` 뒤에만 불린다. Fsync 실패는 관찰하지 않으며, fixed-voter `raft_peer_config.go` 경로에는 observer를 연결하지 않는다. 시험 위치: `internal/adapters/raft/node_test.go::TestWALSyncObserverReportsSuccessfulReadyFsyncs`와 `internal/adapters/metrics/registry_test.go::TestRegistryRendersWALSyncMetrics`.
+
 최소 범주는 connection/session/subscription, message·packet·ACK, latency, cluster·replication, storage, auth·ACL, drain과 process resource다. `narumq_node_drain_transitions_total{phase}`는 committed node drain 상태를 phase별로 집계하며, label은 8개 유효 drain phase만 허용한다. Dynamic cluster의 저장 quota는 `narumq_tenant_quota_rejections_total{tenant,dimension}` counter와 `narumq_tenant_quota_profile_committed`, `narumq_tenant_quota_profile_version`, `narumq_tenant_quota_config_mismatch` gauge를 제공한다. `tenant`는 처음 본 값 1,024개까지만 그대로 보존하고 나머지는 `_overflow`로 합친다. `dimension`은 `retained_bytes`, `offline_queue_messages`, `offline_queue_bytes`, `storage_bytes`만 허용한다. 기존 Metric 이름과 histogram bucket은 `SPEC-TBD-07`에서 확정한다. |
 
 기본 label에 원문 `clientId`, username, IP, 임의 topic, request ID와 token claim을 넣어서는 안 된다. 제한된 exact topic Metric은 P1 opt-in resource로 제공하며 tenant, 최대 등록 수와 TTL을 적용해야 한다.

@@ -92,6 +92,7 @@ func executeWorkload(ctx context.Context, options RunOptions, collector *Collect
 		ClientID:         "bp01-subscriber",
 		KeepAlive:        30,
 		HandshakeTimeout: handshakeTimeout,
+		CleanStart:       true,
 	})
 	if err != nil {
 		return fmt.Errorf("connect subscriber: %w", err)
@@ -124,6 +125,7 @@ func executeWorkload(ctx context.Context, options RunOptions, collector *Collect
 		ClientID:         "bp01-publisher",
 		KeepAlive:        30,
 		HandshakeTimeout: handshakeTimeout,
+		CleanStart:       true,
 	})
 	if err != nil {
 		stopOnce.Do(func() { close(stopReceiver) })

@@ -4,15 +4,15 @@ NaruMQ source tree는 MQTT·session·routing·delivery·tenancy·security·clust
 
 | 항목 | 값 |
 | --- | --- |
-| 관점 상태 | Active Phase 1 security and tenant isolation structure; Phase 0 gate 4와 BP-01/BP-05 smoke harness 유지 |
+| 관점 상태 | Active Phase 1 security and tenant isolation structure; Phase 0 gate 4와 BP-01/BP-03/BP-05 smoke harness 유지 |
 | 문서 상태 | Active |
-| 구현 증거 | Phase 0 gate 3·4, Phase 1 tenancy·security·mTLS, Phase 2 replicated session/backup/QoS 1/2와 broker-side drain slice가 source·test에 연결되어 있다. Node drain process acceptance 두 개는 PASS (combined 25.916s; [Drain spec §10](../specs/drain-and-rolling-update.md#10-broker-drain-수용-시험-매핑)); full rollout·SDK compatibility·production storage gate는 별도다. |
+| 구현 증거 | Phase 0 gate 3·4, Phase 1 tenancy·security·mTLS, Phase 2 replicated session/backup/QoS 1/2와 broker-side drain slice가 source·test에 연결되어 있다. BP-03 smoke harness source와 package tests는 추가되었으며, Docker 결과는 [performance spec §3.4](../specs/performance-and-verification.md#34-bp-03-durable-delivery-smoke-관찰-경계)에 별도로 기록한다. Node drain process acceptance 두 개는 PASS (combined 25.916s; [Drain spec §10](../specs/drain-and-rolling-update.md#10-broker-drain-수용-시험-매핑)); full rollout·SDK compatibility·production storage gate는 별도다. |
 | 범위 | Repository root와 Go package directory 배치 및 현재 source dependency |
 | 관련 요구사항 | [PRD](../requirements/PRD.md) NFR-11~NFR-15, TEST-01~TEST-17, DEP-19~DEP-23 |
 | 관련 결정 | [ADR-0001](../decisions/ADR-0001-core-implementation-language.md) Accepted |
 | 관련 Architecture | [Broker core architecture](broker-core.md), [EKS on EC2 deployment](eks-ec2-deployment.md) |
 | 관련 Convention | [Go coding conventions](../conventions/go-coding-conventions.md) |
-| 최종 확인일 | 2026-09-29 |
+| 최종 확인일 | 2026-09-30 |
 
 ## 코드 지도: 실행 모드와 MQTT CONNECT 대표 흐름
 
@@ -121,6 +121,7 @@ NaruMQ source tree는 MQTT·session·routing·delivery·tenancy·security·clust
 │       │   ├── runtimeartifact/
 │       │   └── suiteartifact/
 │       ├── bp01/
+│       ├── bp03/
 │       └── bp05/
 ├── tools/
 │   └── verify/
@@ -146,8 +147,8 @@ Phase 1 security·tenant isolation slice, Phase 2 replicated session ownership c
 `internal/domain/nodedrain`은 drain phase 전이와 safe-to-stop barrier를 표준 library 값으로 판정한다.
 `internal/application/membership`은 drain 요청과 replicated state port를 연결하고, `cmd/narumq/cluster_drain.go`는 dynamic-cluster runtime의 admission, transfer driver, recovery와 lifecycle을 조립한다.
 `internal/adapters/runtimemetrics`는 Go process 내부의 `runtime/metrics`를 고정 JSONL schema로 수집하는 outbound 진단 adapter다.
-`tests/benchmark/internal/environment`는 BP-01과 BP-05가 공유하는 immutable image, broker container, readiness, resource limit, runner container, Docker stats와 artifact 수집 경계를 소유한다.
-`tests/benchmark/internal/mqttclient`는 benchmark 전용 MQTT 5 Clean Start/zero Session Expiry CONNECT와 frame I/O를 소유한다. `tests/benchmark/internal/jsonl`은 phase·event JSONL 파일의 공통 buffering/flush/close 동작을 소유하고, `tests/benchmark/internal/runtimeartifact`는 runtime 표본과 phase 경계를 검증해 target별 요약을 만든다. `tests/benchmark/internal/suiteartifact`는 반복 순서와 중앙값·MAD 계산만 소유하며 profile 의미와 BP별 metric 선택은 소유하지 않는다. 네 package와 `bp01`, `bp05`는 product runtime이 import하지 않는 benchmark-only source다.
+`tests/benchmark/internal/environment`는 BP-01/BP-03/BP-05의 immutable image, single-broker·3-node cluster container, readiness, resource limit, runner container, Docker stats와 artifact 수집 경계를 소유한다. BP-03에서 `bp03/compare.go`는 비교 실행을 조립하고, `fixture.go`는 target용 인증·cluster 설정을 임시 생성한다. Network owner에는 공개 JWKS만 mount하고 runner credential, broker별 private peer key와 admin token은 별도 directory로 분리한다. `runner.go`·`aggregate.go`·`metrics.go`·`resource.go`는 workload, message/WAL/resource summary를 만든다. `suite.go`는 BP-03 metric 선택과 반복 parent artifact를 소유한다.
+`tests/benchmark/internal/mqttclient`는 benchmark 전용 MQTT 5 CONNECT 옵션과 frame I/O를 소유한다. `tests/benchmark/internal/jsonl`은 phase·event JSONL 파일의 공통 buffering/flush/close 동작을 소유하고, `tests/benchmark/internal/runtimeartifact`는 runtime 표본과 phase 경계를 검증해 target별 요약을 만든다. `tests/benchmark/internal/suiteartifact`는 반복 순서와 중앙값·MAD 계산만 소유하며 profile 의미와 BP별 metric 선택은 소유하지 않는다. 공유 package와 `bp01`, `bp03`, `bp05`는 product runtime이 import하지 않는 benchmark-only source다.
 각 BP package는 profile 해석, workload 상태와 comparison 판정, suite parent·child artifact schema와 Docker 실행을 소유하며 shared package는 profile·summary 의미를 결정하지 않는다.
 `tests/compatibility/mqtt-clients-v1`는 product runtime과 독립된 black-box evidence harness다. `clients/go`는 root `go.mod`에 Paho dependency를 추가하지 않는 nested Go module로 MQTT 3.1.1/5 Go SDK 역할을 격리하고, `clients/python`은 hash-pinned `paho-mqtt` runtime과 VERSION2 callback adapter를 격리한다. `Dockerfile`은 두 SDK 이미지와 retransmission proxy를 linux/amd64 digest-pinned image로 만들며, `runner.go`는 broker·proxy·client container를 case마다 새로 만들고 결과·trace·log·manifest를 수집한다. 이 directory의 source는 product runtime이 import하지 않는다.
 `tests/chaos/cluster-storage-v1`는 ENOSPC, 지연·실패하는 file/directory sync, 보류된 WAL fsync와 제어된 전원 차단을 broker process에 적용하는 black-box Docker 증거 harness다. `node/`는 go-fuse 의존성을 root `go.mod`에 추가하지 않도록 별도 Go module로 유지한다. `chaosfs_journal.go`는 전원 차단 뒤 동기화되지 않은 file bytes와 namespace 작업을 복원하며, `supervise.go`와 `commands.go`는 process-local fault control을 제공한다. `runner.go`, `scenario.go`, `power.go`는 cluster lifecycle, scenario assertion과 secret-free 증거 artifact를 관리한다. 이 harness는 production runtime이 아니며 물리 EBS 내구성을 입증하지 않는다.

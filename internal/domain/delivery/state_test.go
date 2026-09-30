@@ -186,6 +186,49 @@ func TestInboundQoS2DurableHandoffAndDuplicateConvergence(t *testing.T) {
 	}
 }
 
+func TestInboundIsCompleteTracksFinalAcknowledgement(t *testing.T) {
+	qos1, _, err := NewInbound(mqtt.Publish{Version: mqtt.ProtocolV5, QoS: mqtt.QoSAtLeastOnce, PacketID: 1, Topic: "orders"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if qos1.IsComplete() {
+		t.Fatal("new QoS 1 exchange is complete")
+	}
+	qos1, _, err = qos1.Accept()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !qos1.IsComplete() {
+		t.Fatal("accepted QoS 1 exchange is not complete")
+	}
+
+	qos2, _, err := NewInbound(mqtt.Publish{Version: mqtt.ProtocolV5, QoS: mqtt.QoSExactlyOnce, PacketID: 2, Topic: "orders"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if qos2.IsComplete() {
+		t.Fatal("new QoS 2 exchange is complete")
+	}
+	qos2, _, err = qos2.Accept()
+	if err != nil {
+		t.Fatal(err)
+	}
+	qos2, _, err = qos2.Receive(&mqtt.PubRel{Version: mqtt.ProtocolV5, PacketID: 2})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if qos2.IsComplete() {
+		t.Fatal("QoS 2 exchange completed before PUBCOMP")
+	}
+	qos2, _, err = qos2.Accept()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !qos2.IsComplete() {
+		t.Fatal("QoS 2 exchange is not complete after PUBCOMP")
+	}
+}
+
 // Traceability: PRD MQTT-02; packet value/pointer ownership and invalid transition edges.
 func TestPacketHelpersValuePointerAndNilBranches(t *testing.T) {
 	packetCases := []struct {

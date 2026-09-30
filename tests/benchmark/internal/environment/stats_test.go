@@ -9,7 +9,7 @@ import (
 
 func TestReadStatsParsesDecimalAndBinaryUnits(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "stats.jsonl")
-	data := `{"collectedAt":"2026-09-19T00:00:00Z","container":"broker","docker":{"CPUPerc":"12.5%","MemUsage":"1.5MiB / 2GB"}}` + "\n"
+	data := `{"collectedAt":"2026-09-19T00:00:00Z","container":"broker","docker":{"CPUPerc":"12.5%","MemUsage":"1.5MiB / 2GB","NetIO":"1.5kB / 2MB","BlockIO":"0B / 0B"}}` + "\n"
 	if err := os.WriteFile(path, []byte(data), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -17,7 +17,7 @@ func TestReadStatsParsesDecimalAndBinaryUnits(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(samples) != 1 || samples[0].CPUPercent != 12.5 || samples[0].MemoryUsageBytes != 1572864 || samples[0].MemoryLimitBytes != 2000000000 {
+	if len(samples) != 1 || samples[0].CPUPercent != 12.5 || samples[0].MemoryUsageBytes != 1572864 || samples[0].MemoryLimitBytes != 2000000000 || samples[0].NetworkRxBytes != 1500 || samples[0].NetworkTxBytes != 2000000 || samples[0].BlockReadBytes != 0 || samples[0].BlockWriteBytes != 0 {
 		t.Fatalf("ReadStats() = %#v", samples)
 	}
 	if _, ok := samples[0].Docker["MemUsage"]; !ok {
@@ -27,9 +27,9 @@ func TestReadStatsParsesDecimalAndBinaryUnits(t *testing.T) {
 
 func TestReadStatsRejectsUnknownNegativeAndMalformedUnits(t *testing.T) {
 	cases := []string{
-		`{"collectedAt":"2026-09-19T00:00:00Z","container":"broker","docker":{"CPUPerc":"1%","MemUsage":"1TiB / 2GiB"}}`,
-		`{"collectedAt":"2026-09-19T00:00:00Z","container":"broker","docker":{"CPUPerc":"1%","MemUsage":"-1B / 2GiB"}}`,
-		`{"collectedAt":"2026-09-19T00:00:00Z","container":"broker","docker":{"CPUPerc":"NaN%","MemUsage":"1B / 2GiB"}}`,
+		`{"collectedAt":"2026-09-19T00:00:00Z","container":"broker","docker":{"CPUPerc":"1%","MemUsage":"1XB / 2GiB","NetIO":"0B / 0B","BlockIO":"0B / 0B"}}`,
+		`{"collectedAt":"2026-09-19T00:00:00Z","container":"broker","docker":{"CPUPerc":"1%","MemUsage":"-1B / 2GiB","NetIO":"0B / 0B","BlockIO":"0B / 0B"}}`,
+		`{"collectedAt":"2026-09-19T00:00:00Z","container":"broker","docker":{"CPUPerc":"NaN%","MemUsage":"1B / 2GiB","NetIO":"0B / 0B","BlockIO":"0B / 0B"}}`,
 	}
 	for _, line := range cases {
 		path := filepath.Join(t.TempDir(), "stats.jsonl")

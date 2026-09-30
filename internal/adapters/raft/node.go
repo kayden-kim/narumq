@@ -10,6 +10,7 @@ import (
 	"slices"
 	"sort"
 	"sync"
+	"time"
 	"unicode/utf8"
 
 	etcdraft "go.etcd.io/raft/v3"
@@ -97,6 +98,9 @@ type Config struct {
 	// containing non-empty normal entries. The hook runs with the node lock held,
 	// must not call back into Node, and must not retain WALBoundaryDTO.Entries.
 	WALBoundaryHook func(WALBoundaryDTO)
+	// WALSyncObserver, when non-nil, receives each successful Ready WAL fsync.
+	// The observer runs with the node lock held; it must not block or call back into Node.
+	WALSyncObserver func(WALSyncDTO)
 }
 
 // WALBoundaryStage identifies one step of appending a Ready frame to wal.bin.
@@ -115,6 +119,13 @@ const (
 type WALBoundaryDTO struct {
 	Stage   WALBoundaryStage
 	Entries [][]byte // borrowed entry payloads in log order; valid only during the call
+}
+
+// WALSyncDTO describes one successful fsync of a Ready WAL frame.
+type WALSyncDTO struct {
+	Duration   time.Duration
+	Entries    int
+	FrameBytes int
 }
 
 // MembershipChangeAction identifies one supported single-step ConfChangeV2.
@@ -262,6 +273,7 @@ func Open(config Config) (*Node, error) {
 			return nil, err
 		}
 		store.walHook = config.WALBoundaryHook
+		store.walSyncObserver = config.WALSyncObserver
 		if config.PersistenceBoundaryHook != nil {
 			store.finalizeHook = func(stage PersistenceStage) {
 				config.PersistenceBoundaryHook(PersistenceBoundaryDTO{Stage: stage, CreatesSnapshot: true})
@@ -295,6 +307,7 @@ func Open(config Config) (*Node, error) {
 			return nil, err
 		}
 		store.walHook = config.WALBoundaryHook
+		store.walSyncObserver = config.WALSyncObserver
 	}
 
 	raftConfig := &etcdraft.Config{

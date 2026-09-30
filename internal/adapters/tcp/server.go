@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/tls"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"net"
@@ -480,7 +481,16 @@ func (connection *connection) metrics() portsmetrics.MetricsRecorder {
 
 func (connection *connection) run() {
 	go connection.writerLoop()
-	_ = connection.readLoop()
+	if err := connection.readLoop(); err != nil && !connection.isStopping() {
+		var networkError net.Error
+		expectedClose := errors.Is(err, io.EOF) || errors.Is(err, io.ErrClosedPipe) || errors.Is(err, net.ErrClosed)
+		if errors.As(err, &networkError) && networkError.Timeout() {
+			expectedClose = true
+		}
+		if !expectedClose {
+			connection.server.logger.Warn("MQTT connection handling failed", "error", err.Error())
+		}
+	}
 	connection.cleanup()
 	connection.requestClose()
 	<-connection.writerDone
@@ -585,7 +595,7 @@ func (connection *connection) readLoop() error {
 				connected = true
 				version = connection.version
 			} else if err := connection.dispatch(packet); err != nil {
-				return err
+				return fmt.Errorf("dispatch MQTT %s: %w", packetTypeName(packet), err)
 			}
 			if connection.isStopping() {
 				return nil
@@ -901,7 +911,12 @@ func (connection *connection) dispatchPublish(packet mqtt.Publish) error {
 		}
 		receivedAt := connection.server.config.Clock.Now()
 		connection.deliveryMu.Lock()
-		if existing, exists := connection.inbound[packet.PacketID]; exists {
+		existing, exists := connection.inbound[packet.PacketID]
+		if exists && existing.state.IsComplete() && !packet.DUP {
+			delete(connection.inbound, packet.PacketID)
+			exists = false
+		}
+		if exists {
 			nextState, action, err := existing.state.Receive(&packet)
 			if err != nil {
 				connection.deliveryMu.Unlock()
@@ -968,7 +983,12 @@ func (connection *connection) dispatchPublish(packet mqtt.Publish) error {
 		}
 		receivedAt := connection.server.config.Clock.Now()
 		connection.deliveryMu.Lock()
-		if existing, exists := connection.inbound[packet.PacketID]; exists {
+		existing, exists := connection.inbound[packet.PacketID]
+		if exists && existing.state.IsComplete() && !packet.DUP {
+			delete(connection.inbound, packet.PacketID)
+			exists = false
+		}
+		if exists {
 			nextState, action, err := existing.state.Receive(&packet)
 			if err != nil {
 				connection.deliveryMu.Unlock()

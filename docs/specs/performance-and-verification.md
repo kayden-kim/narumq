@@ -97,10 +97,11 @@ memoryBytesPerIdleConnection =
 
 ### 3.3 PERF-07 반복 suite 측정 계약
 
-BP-01과 BP-05의 `compare`는 한 번의 독립 실행을 기록하고, 반복 측정은 각 benchmark package의 `suite` 명령이 소유한다. suite는 다음 명령 형식을 사용한다.
+BP-01, BP-03과 BP-05의 `compare`는 각각 한 번의 독립 실행을 기록하고, 반복 측정은 각 benchmark package의 `suite` 명령이 소유한다. suite는 다음 명령 형식을 사용한다.
 
 ```text
 go run ./tests/benchmark/bp01 suite --profile <path> [--output <root>] [--repetitions <n>]
+go run ./tests/benchmark/bp03 suite --profile <path> [--output <root>] [--repetitions <n>]
 go run ./tests/benchmark/bp05 suite --profile <path> [--output <root>] [--repetitions <n>]
 ```
 
@@ -127,7 +128,95 @@ suite directory는 `.artifacts/benchmark/<benchmark>/<suite-id>/`이며 `profile
 
 image build/pull 또는 suite manifest 갱신처럼 실행 추적 자체가 불가능한 준비·기록 실패는 즉시 suite를 끝내고 빈 target `metrics`와 해당 이유를 기록한다. 회차의 target 실행, comparison, 필수 metric sample 또는 runtime applicability 실패는 추적 가능한 범위에서 후속 회차를 계속 보존하되 suite 전체를 invalid로 표시한다. 이 경우 parent summary의 모든 target `metrics`는 비우고 실패 이유와 child raw artifact만 남긴다. 단, NaruMQ runtime의 GC CPU metric이 한 회차라도 unavailable이면 이는 유효한 unavailable 상태로 기록하며 suite invalid 사유로 삼지 않고, 세 CPU metric만 생략한다. 모든 suite artifact와 smoke 반복 결과는 `releaseGating=false`를 유지하며 production profile, Gate 8 통과, NaruMQ 우위를 판정하지 않는다.
 
-반복 순서와 중앙값·MAD 계산은 `tests/benchmark/internal/suiteartifact`가 소유한다. BP-01과 BP-05 package는 metric 선택, parent·child artifact schema와 Docker 실행을 각각 소유한다.
+반복 순서와 중앙값·MAD 계산은 `tests/benchmark/internal/suiteartifact`가 소유한다. BP-01, BP-03과 BP-05 package는 metric 선택, parent·child artifact schema와 Docker 실행을 각각 소유한다.
+
+### 3.4 BP-03 Durable Delivery smoke 관찰 경계
+
+BP-03은 QoS 1/2 persistent session의 durable delivery 경로에서 ACK, 수신 누락·중복, WAL 동기화 분포와 자원 사용을 기록하는 고정 smoke workload다. `compare` 단일 실행은 기본적으로 NaruMQ를 먼저 실행하고, `suite`는 target 순서를 번갈아 적용한다. 이 benchmark는 smoke workload의 재현성과 수집 경로를 검증하며 production SLO, 우열 또는 release 통과를 판정하지 않는다. 모든 BP-03 artifact는 `releaseGating=false`다.
+
+#### Topology와 비교 경계
+
+- NaruMQ는 `narumq-bp03` dynamic cluster의 3개 broker node를 사용한다. QoS 1/2 ACK는 quorum에 복제된 Raft WAL Ready frame의 fsync 뒤에 관찰한다. 세 node는 Docker named volume을 사용한다.
+- EMQX는 pinned EMQX 5.8.8 Open Source Edition의 3-node static cluster다. `durable_sessions.enable=false`인 일반 persistent session state는 node-local memory에 있고 replicated durable log나 fsync를 사용하지 않는다.
+- 두 target은 profile에 지정된 broker CPU/memory limit, runner CPU/memory limit, payload, stream, rate와 phase를 공유한다. Broker는 read-only root filesystem에서 실행하고, runner는 별도 container를 사용한다. 각 broker container는 자체 network namespace owner와 Docker bridge network를 공유한다.
+- NaruMQ fixture는 MQTT CONNECT에서 JWKS를 통해 RS256 JWT를 검증하고 peer 간에는 mTLS를 사용한다. Broker별 node config, private peer key, management token은 해당 broker에만 mount한다. Runner credential은 별도로 제공하며, network owner에는 `jwks.json`만 포함된 read-only directory를 mount한다.
+- EMQX target에는 authenticator를 설정하지 않는다. Runner가 credential을 보내더라도 EMQX는 이를 JWT로 검증하지 않으므로 인증 경계가 동등하지 않다.
+- `replication` 차이는 **EMQX OSS 5.8.8 regular session은 node-local memory를 사용하고 `builtin_raft`는 Enterprise 전용**이라는 점이다. `durability` 차이는 **EMQX PUBACK이 fsync보다 먼저 반환**된다는 점이다. `authentication` 차이는 **NaruMQ는 CONNECT에서 JWT를 검증하지만 EMQX에는 authenticator가 없다**는 점이다. 비교 산출물은 세 차원을 `nonEquivalent`로 기록하고 ACK latency를 직접적인 우열 비교에서 제외한다.
+- Storage는 로컬 Docker named volume을 사용한다. Linux/EBS production filesystem, 실제 전원 손실, production volume loss/reseed 또는 승인된 RPO/RTO를 입증하지 않는다.
+
+#### 고정 smoke profile
+
+`tests/benchmark/bp03/testdata/smoke.json`은 아래 profile을 strict decode한다. 숫자 수용 범위는 smoke 하네스의 안전 한계이며 production capacity나 SLO가 아니다.
+
+| 필드 | Smoke 값 | 의미와 유효 범위 |
+| --- | --- | --- |
+| `profileId` | `bp03-smoke-v1` | 비어 있지 않은 실행 이름 |
+| `purpose` | `smoke` | 유일하게 허용하는 목적 |
+| `seed` | `3` | 재현 가능한 payload seed |
+| `pairsPerQoS` | `2` | QoS 1과 QoS 2 각각 publisher/subscriber 2개 stream |
+| `payloadBytes` | `256` | 16–65,536 bytes |
+| `sessionExpirySeconds` | `300` | 1–86,400 seconds |
+| `maxInflightPerPublisher` | `8` | 1–32개 미응답 publish |
+| `ackTimeoutMillis` | `10000` | 1,000–60,000 ms |
+| `ratesPerStreamPerSecond` | `[5, 10, 25]` | 1–8개의 오름차순 rate, 각각 1–1,000 message/s |
+| `warmupMillis` | `2000` | 각 rate의 warm-up 시간; 통계에서 제외 |
+| `measureMillis` | `12000` | 각 rate의 측정 시간; 최소 3,000 ms |
+| `drainMillis` | `5000` | ACK된 publish의 수신을 기다리는 최대 시간 |
+| `offlineSettleMillis` | `1000` | subscriber disconnect 뒤 기다리는 시간 |
+| `offlineMessagesPerStream` | `32` | QoS별 두 stream이 offline 중 보낼 메시지 수; session당 64보다 작음 |
+| `reconnectTimeoutMillis` | `20000` | session 재접속·offline 전달 대기 한도 |
+| `maxMessages` | `4096` | runner collector가 보유할 수 있는 총 message 상한 |
+| `brokerCPUs` / `brokerMemoryBytes` | `1` / `1073741824` | 각 broker container의 CPU와 byte 단위 memory limit |
+| `generatorCPUs` / `generatorMemoryBytes` | `2` / `536870912` | runner container의 CPU와 byte 단위 memory limit |
+
+각 QoS의 publisher와 subscriber는 서로 다른 cluster node를 사용한다. persistent subscriber가 연결을 끊은 동안 stream별 32개 메시지를 publish하고, 다른 node로 `CleanStart=false` 재접속해 `SessionPresent=true`와 모든 offline 메시지의 전달을 확인한다. `compare` 한 번은 NaruMQ와 EMQX를 각각 실행하고, `suite` 기본값은 독립 실행 5회다.
+
+#### 관찰 순서와 유효성
+
+Runner는 다음 phase를 순서대로 기록한다.
+
+1. `readiness`: NaruMQ 세 node의 health, cluster ID와 같은 leader를 확인한다. 두 target 모두 6개 node 쌍의 cross-node QoS 1 probe publish와 delivery를 확인한다.
+2. `setup`: persistent subscriber를 구독시키고 publisher를 연결한다. Subscriber는 `CleanStart=true`와 profile Session Expiry, publisher는 `CleanStart=true`와 Session Expiry 0을 사용한다.
+3. 각 rate에서 `step-<ss>-warmup` 뒤 `step-<ss>-measure`를 실행한다. Runner는 절대 시각 schedule과 최대 inflight publish 수를 적용한다. QoS 1은 PUBACK, QoS 2는 PUBCOMP 수신 뒤 inflight slot을 해제한다. 측정 전 warm-up 교환이 완료되거나 timeout될 때까지 기다린다. NaruMQ는 각 measure 경계에서 `/metrics`를 scrape하며, end scrape 전에 publisher 교환이 완료되거나 timeout되도록 기다리고 해당 window의 ACK 분모를 그 시점에 고정한다.
+4. `drain`: 새 publish를 멈추고 drain 한도 안에 ACK된 measure 메시지가 수신될 때까지 기다린다.
+5. `offline`: subscriber를 정상 disconnect하고 settle 시간 뒤 stream마다 QoS 1/2 메시지 32개를 publish한다. End scrape 전에 publisher 교환이 완료되거나 timeout될 때까지 기다린다. NaruMQ는 이 구간의 WAL metric도 scrape한다.
+6. `reconnect`: 하나의 deadline 안에 각 persistent subscriber를 다른 node로 재접속하고 offline delivery를 기다린다. 연결 시도도 같은 deadline에 포함한다. `SessionPresent=false`는 실패이며, 예상한 모든 offline receipt와 publisher ACK, QoS 2 PUBCOMP가 끝나기 전에 연결을 정리하지 않는다.
+7. `cleanup`: reader를 멱등하게 중지하고 DISCONNECT를 보낸 뒤 socket을 닫으며, reader가 종료된 후 raw message/phase 기록과 요약을 저장한다.
+
+`workload-summary.json`은 각 measure step 및 offline QoS별 offered/sent/acked/delivered/gap/duplicate, ACK 및 publish-to-delivery latency와 rate를 기록한다. `gap`은 성공 ACK를 받았지만 drain 기한까지 수신하지 못한 메시지 수다. QoS 1 duplicate는 보고하지만 at-least-once 규칙상 무효화하지 않는다. QoS 2 duplicate, protocol error, session 미복원, generator overload, timeout·rejected ACK, 불완전 교환 또는 gap은 workload를 invalid로 만든다. QoS 2 교환은 PUBCOMP에서 완료된다. PUBREC 뒤 발생한 timeout도 timeout으로 집계하며 해당 교환은 미완료 상태로 남는다. `generatorOverload`는 기록한 publish의 `schedule lag >= stream interval`일 때 설정되며 CPU utilization 지표가 아니다. 이 값만으로 runner CPU 포화와 broker/ACK backpressure를 구분하거나 quorum failure의 원인을 증명할 수 없다.
+
+`resource-summary.json`은 runner phase의 시작·종료 시각으로 broker 및 network-owner Docker stats를 자른다. 각 measure/offline window와 node에서 broker CPU median, memory 최대값, block read/write delta 및 owner network Rx/Tx delta를 기록하고 cluster total과 ACK당 network/block write 값을 계산한다. Window에서 source/node 표본이 두 개 미만이면 resource summary는 invalid다. Block write가 0인 표본은 유효한 값이다. Owner의 network delta가 모두 0이면 `networkStatsAvailable=false`로 기록하고 suite network metric을 생략하지만 workload를 무효화하지 않는다. 시간 경계가 서로 다른 clock을 사용하므로 `clockSource`는 `stats=host clock, phases=runner container clock`이다.
+
+NaruMQ `wal-summary.json`은 `narumq_raft_wal_sync_duration_seconds`, `narumq_raft_wal_sync_entries`, `narumq_raft_wal_written_bytes_total`의 window 시작/종료 scrape 차이를 node별·cluster 합계로 기록한다. 각 window의 전체 WAL series가 관측되고 성공한 Ready WAL fsync가 하나 이상이어야 valid다. `walBytesPerAckedMessage`는 해당 window publisher 교환이 완료되거나 timeout된 뒤 고정한 ACK 수를 분모로 한다. EMQX는 WAL 수치를 0으로 가장하지 않고 `applicability=not_applicable`, reason `EMQX regular sessions keep state in memory and write no replicated durable log`를 기록한다.
+
+Rate sweep `[5, 10, 25]`에 대해 각 NaruMQ measure window의 WAL sync count/rate, entries-per-sync 분포와 mean, fsync duration p50/p99/p999, WAL bytes 및 ACK당 byte를 함께 보존한다. 관찰된 entries-per-sync 분포는 이 benchmark에서의 group commit 크기를 설명한다. 이 변경은 write path를 바꾸거나 group-commit 설정 knob를 추가하지 않으며, smoke sweep으로 설정값이나 production threshold를 결정하지 않는다. Suite parent는 ACK latency p99/p999, delivery p99, ACK rate, ACK당 network/block-write 비용, offline reconnect drain 최대값, NaruMQ WAL sync rate/entries-per-sync/ACK당 byte의 중앙값과 MAD를 보고한다. NaruMQ와 EMQX ACK latency는 durability·replication·authentication 경계가 다르므로 직접 비교하지 않는다.
+
+Runner unit tests는 collector 경계와 WAL histogram delta를 검증한다. `go test ./tests/benchmark/bp03 -count=1`은 profile, fixture, workload, resource/WAL parser, comparison 및 suite 계약을 확인한다. 격리된 Docker 실행 증거는 다음 명령으로 만든다.
+
+```text
+go run ./tests/benchmark/bp03 compare --profile tests/benchmark/bp03/testdata/smoke.json
+go run ./tests/benchmark/bp03 suite --profile tests/benchmark/bp03/testdata/smoke.json
+```
+
+이 명령의 artifact는 수집 경계가 동작했다는 local smoke 증거다. Docker named volume 결과는 Linux/EBS production durability, 승인되지 않은 SPEC-TBD-08 수치 또는 release gate를 대신하지 않는다.
+
+#### Local execution evidence
+
+- `bp03-20260930T061549.390008900Z-28772`와 `bp03-20260930T063854.898438300Z-34520`에서 고정 smoke profile로 `compare`를 실행했다. 두 결과 모두 top-level `valid=false`; EMQX workload/resource는 valid, NaruMQ target은 invalid였다.
+- 첫 실행은 NaruMQ step 1 schedule lag가 6.358초로 `generatorOverload=true`였고, node 3 broker log에 `dispatch MQTT PUBLISH: quorum unavailable`가 남았다. 두 번째는 schedule lag 8.965초, `generatorOverload=true`였으며 node 3 log에 `dispatch MQTT PUBREL: quorum unavailable`가 남았다. 각각의 runner가 q2-01 connection reset으로 종료됐다.
+- 이 두 artifact는 실패 원인 진단만을 위한 local 실행 기록이다. 유효한 NaruMQ workload가 없어 ACK/WAL 비용을 비교 결과로 채택하지 않았으며, BP-03 smoke acceptance를 충족하지 않는다.
+- 5회 suite `bp03-suite-20260930T064519.153992500Z-35844`는 고정 smoke profile로 요청된 5회 실행을 모두 마쳤지만, parent 결과는 `valid=false`, 성공 반복은 `0/5`, 집계 metric은 비어 있었다. NaruMQ는 다섯 회 모두 workload가 invalid였다. 각 회차의 step 1에서 `generatorOverload=true`와 protocol error 1건이 기록됐고, 최대 schedule lag는 2.914–5.913초였다. Runner는 네 회차에서 TCP reset, 한 회차에서 EOF로 종료됐으며, NaruMQ broker log에는 네 회차에서 `quorum unavailable`가 기록됐다. EMQX는 4/5회 유효했고, 첫 회차는 QoS 1 message invariant 실패로 invalid였다. 유효한 5회 suite가 없어 median/MAD와 target 비교 결과는 채택하지 않았다.
+- `bp03-20260930T085025.956335900Z-23820`은 같은 고정 smoke profile (`profile SHA-256=0b8a88abac04fcfffeb72152cb86ae6aab4682808df7e4d43c9ee3df8661c92a`)로 실행했다. 시작 전 Docker에 실행 중인 container가 없었다. EMQX pinned image `emqx/emqx:5.8.8@sha256:4593b6e30196754779fa14483332cb0be56c233f1c8a387b1308bec4337c0144`는 runner가 CONNECT username `jwt`와 JWT credential을 전송한 상태에서 workload/resource가 valid였다. EMQX에는 authenticator를 설정하지 않았으며, 인증 경계 차이는 그대로다.
+- 같은 run에서 NaruMQ workload는 invalid였다. Runner는 `subscriber q1-02 read: EOF`를 기록했고 node 3 broker log에는 `dispatch MQTT PUBLISH: quorum unavailable`가 남았다. 첫 measure step은 최대 schedule lag 8.307초와 `generatorOverload=true`를 기록했으며, QoS 1은 120 offered 중 109 ACK·71 delivery·38 gap, QoS 2는 120 offered 중 60 ACK·50 delivery·10 gap이었다. WAL summary에는 metric window가 없었다. 이 관찰만으로 두 log/event 사이의 인과관계를 주장하지 않는다.
+- Top-level compare는 `valid=false`이며, 이 실행은 실패 진단 기록일 뿐 BP-03 수용 증거나 ACK/WAL 비교 결과로 채택하지 않았다. Single compare가 invalid였으므로 5회 suite를 실행하지 않았다.
+- 소스 흐름으로 실패 경로는 좁힐 수 있지만 실패 단계는 구분할 수 없다. TCP `dispatchPublish` → durable `publish.UseCase.Publish`/`ReceiveQoS2` → `CommitDelivery` (5초 제한) → `clusterRuntime.Commit` 순서이며, `Commit`은 proposal을 보내기 전에 2초 제한의 fresh read barrier를 수행한다. `classifyClusterPortError`는 `ErrNotLeader`가 아닌 error를 모두 `quorum unavailable`로 바꾸고, `submitProposal`도 driver 중단이나 context 종료 때 같은 sentinel을 반환한다.
+- Runner log에는 q1-02 EOF 시각이 없고, NaruMQ metric 파일은 step-01 시작 scrape뿐이다. Node 3 broker warning은 08:51:16.432에 기록되어 measure 종료 08:51:16.271보다 161 ms 늦다. Artifact만으로는 어느 `Commit` 단계가 실패했는지, EOF와 warning이 인과 관계인지 판별할 수 없다. Read-barrier timeout은 시간상 가능한 추정이지만 확인되지는 않았다. 이 관찰로 quorum 동작을 바꾸는 broker 수정은 정당화되지 않는다. 진단 계측은 `storage_failed`, `read_barrier`, `proposal`, `proposal_apply` 단계를 error 원인과 함께 기록하고, Raft leader/role/term/index 및 voter·learner와 transport peer 상태, storage 상태와 driver 종료 상태를 남긴다. Runner는 client별 최초 reader error에 UTC RFC3339Nano 시각을 붙인다. 이 계측은 proposal·read-barrier 동작이나 error 반환 계약을 바꾸지 않는다.
+- 진단 계측 후 동일 smoke profile (`SHA-256=0b8a88abac04fcfffeb72152cb86ae6aab4682808df7e4d43c9ee3df8661c92a`)로 실행한 `bp03-20260930T103830.508843700Z-27552`도 top-level `valid=false`였다. 실행 전 `docker ps` 결과는 비어 있었다. EMQX workload/resource는 valid였고 NaruMQ는 invalid였다. `comparison.json`의 `equivalent=true`는 workload·resource·runner image·topology 일치만 뜻하며 durability, replication, authentication 경계가 같다는 뜻은 아니다. 이 compare가 invalid여서 5회 suite는 실행하지 않았다.
+- NaruMQ step 1 measure(10:39:05.013–10:39:32.863 UTC)는 최대 schedule lag 14.100초와 `generatorOverload=true`를 기록했다. QoS 1/2 각각 120개가 전송·ACK·전달됐고 gap은 0이었다. Runner는 다음 warmup step 02의 settle 중 `2026-09-30T10:39:41.60414586Z`에 q1-02의 TCP reset으로 종료됐다. Step 2/3 measure는 시작하지 못했고 offline 요약은 QoS 1/2 모두 64 offered, 0 sent·delivered, sessionPresent 0/4였다. Resource/WAL 관찰도 step 1만 있으므로 이 실행의 ACK/WAL 비용은 채택하지 않는다.
+- Node 3은 `10:39:38.5113769Z`와 `10:39:41.603979495Z`에 `command_kind=durable_delivery`, `commit_stage=read_barrier`, `error=context deadline exceeded`를 기록했다. 첫 경고 97.6 µs 뒤에는 `dispatch MQTT PUBACK: quorum unavailable`, 두 번째 경고 166 µs 뒤에는 runner의 q1-02 reader reset이 기록됐다. 두 node 3 snapshot 모두 leader 1, follower role 0, term 2였고 commit/applied index는 각각 1392와 1517, voter set은 1/2/3이었다. Peer 1/2 모두 connected였고 transport error는 없었으며, inbound/outbound 각 peer queue는 1 message 이하, storage는 HEALTHY, `driver_failed=false`, `driver_stopped=false`였다. 계측은 즉시 실패 지점을 2초 fresh read barrier timeout, proposal 이전으로 좁혔지만 barrier가 제한 시간 안에 끝나지 않은 원인은 증명하지 못한다. Generator overload와 invalid workload가 있었으므로 이 결과만으로 정상 부하의 broker 결함을 결론 내리거나 Raft/read-barrier 동작을 바꾸지 않는다.
+- Smoke profile의 2-pair stream mapping에서는 q2-01 publisher와 q1-02 subscriber가 모두 node 3에 연결되지만 서로 다른 client ID·TCP connection이다. Node 3의 `dispatch MQTT PUBLISH` warning과 runner의 q1-02 reader EOF/reset은 같은 connection으로 입증되지 않았으며, node-level log에는 client identity가 없다. 이후 `read_barrier` warning과 q1-02 reset도 시간 순서만 확인됐고 인과관계는 입증되지 않았다.
+- `cluster command commit failed` 진단은 failure stage·class·command kind별로 초당 최대 1건을 출력한다. `failure_count`, `failures_since_previous_log`, `first_failure_at`, `last_failure_at`로 반복을 요약한다. Proposal apply 원인은 `submitProposal` 경계에서 한 번 기록하며 `Commit`의 중복 warning은 제거했다. 로그에는 tenant/client ID나 command payload를 넣지 않는다.
+
 
 ## 4. 필수 benchmark profile
 
@@ -180,6 +269,15 @@ BP-05 제한된 smoke 실행은 `.artifacts/benchmark/bp05/<run-id>/`에 다음 
 - EMQX target의 `runtime-summary.json` (`not_applicable` 상태와 Go 프로세스에만 적용된다는 이유)
 
 이 artifact는 하네스 동작과 제한된 Phase 0 gate 6 증거를 보존한다. 전체 BP-05 용량, `B_conn`, production SLO와 release gating 결과를 대신하지 않으며 `releaseGating=false`를 유지한다.
+
+BP-03 single-run artifact는 `.artifacts/benchmark/bp03/<run-id>/`에 보존한다.
+
+- Root: `profile.json`, host/image/topology metadata가 있는 `manifest.json`, `comparison.json`, per-target validity와 `workload-summary.json`·`resource-summary.json`·`wal-summary.json`을 포함하는 `summary.json`.
+- 각 `narumq/`, `emqx/` target은 `phases.jsonl`, `messages.jsonl`, workload/resource/WAL summary, runner log, broker log, secret 환경 값을 redaction한 Docker inspect JSON, broker/network-owner `*-stats.jsonl`을 보존한다.
+- NaruMQ만 `metrics/nodeN-step-<ss>-{start,end}.prom`, `metrics/nodeN-offline-{start,end}.prom` 원시 scrape를 보존한다. EMQX WAL artifact는 `applicability=not_applicable`을 기록한다.
+- Fixture JWT, management token, private key와 certificate는 run directory 밖의 임시 directory에만 두고 두 target 실행 뒤 제거한다. Network owner에는 공개 JWKS만 전달한다. Artifact에는 secret 값을 저장하지 않는다.
+
+BP-03 local run은 Docker named-volume WAL 관측 증거만 제공한다. 이 artifact를 production filesystem/EBS, physical power-loss 또는 production RPO/RTO 증거로 표현해서는 안 된다.
 
 반복 suite는 위 target artifact를 다음 parent 파일로 함께 보존한다.
 

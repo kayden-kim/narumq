@@ -148,6 +148,11 @@ type Inbound struct {
 	phase   inboundPhase
 }
 
+// IsComplete reports whether the inbound exchange has reached its final ACK phase.
+func (state Inbound) IsComplete() bool {
+	return state.phase == inboundQoS1Accepted || state.phase == inboundQoS2Complete
+}
+
 // NewInbound creates a receiver state and the initial application handoff.
 func NewInbound(publish mqtt.Publish) (Inbound, Action, error) {
 	if err := validateQoSPublish(publish); err != nil {

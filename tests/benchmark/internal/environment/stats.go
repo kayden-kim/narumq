@@ -73,6 +73,14 @@ func decodeStatsLine(data []byte) (StatsSample, error) {
 	if err != nil {
 		return StatsSample{}, err
 	}
+	networkText, err := stringField(raw.Docker, "NetIO")
+	if err != nil {
+		return StatsSample{}, err
+	}
+	blockText, err := stringField(raw.Docker, "BlockIO")
+	if err != nil {
+		return StatsSample{}, err
+	}
 	cpu, err := parseCPUPercent(cpuText)
 	if err != nil {
 		return StatsSample{}, fmt.Errorf("CPUPerc: %w", err)
@@ -81,13 +89,19 @@ func decodeStatsLine(data []byte) (StatsSample, error) {
 	if err != nil {
 		return StatsSample{}, fmt.Errorf("MemUsage: %w", err)
 	}
+	networkRx, networkTx, err := parseMemoryUsage(networkText)
+	if err != nil {
+		return StatsSample{}, fmt.Errorf("NetIO: %w", err)
+	}
+	blockRead, blockWrite, err := parseMemoryUsage(blockText)
+	if err != nil {
+		return StatsSample{}, fmt.Errorf("BlockIO: %w", err)
+	}
 	return StatsSample{
-		CollectedAt:      raw.CollectedAt,
-		Container:        raw.Container,
-		Docker:           raw.Docker,
-		CPUPercent:       cpu,
-		MemoryUsageBytes: memoryUsage,
-		MemoryLimitBytes: memoryLimit,
+		CollectedAt: raw.CollectedAt, Container: raw.Container, Docker: raw.Docker,
+		CPUPercent: cpu, MemoryUsageBytes: memoryUsage, MemoryLimitBytes: memoryLimit,
+		NetworkRxBytes: networkRx, NetworkTxBytes: networkTx,
+		BlockReadBytes: blockRead, BlockWriteBytes: blockWrite,
 	}, nil
 }
 
@@ -148,12 +162,15 @@ func parseByteQuantity(value string) (int64, error) {
 		suffix string
 		factor float64
 	}{
-		{suffix: "KiB", factor: 1 << 10},
-		{suffix: "MiB", factor: 1 << 20},
+		{suffix: "TiB", factor: 1 << 40},
+		{suffix: "TB", factor: 1e12},
 		{suffix: "GiB", factor: 1 << 30},
-		{suffix: "KB", factor: 1e3},
-		{suffix: "MB", factor: 1e6},
 		{suffix: "GB", factor: 1e9},
+		{suffix: "MiB", factor: 1 << 20},
+		{suffix: "MB", factor: 1e6},
+		{suffix: "KiB", factor: 1 << 10},
+		{suffix: "kB", factor: 1e3},
+		{suffix: "KB", factor: 1e3},
 		{suffix: "B", factor: 1},
 	}
 	for _, unit := range units {

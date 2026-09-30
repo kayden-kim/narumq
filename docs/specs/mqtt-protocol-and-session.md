@@ -140,6 +140,7 @@ active duplicate를 negative CONNACK으로 거절한다.
 | 0 | packet을 수용해 routing queue로 넘긴 시점 | ACK가 없다. 장애 시 유실될 수 있다. |
 | 1 | 메시지와 필요한 전달 상태가 configured durability barrier를 통과한 뒤 성공 PUBACK | 같은 Packet Identifier와 DUP 재전송을 최소 한 번 의미로 처리한다. 이미 성공 처리한 packet은 중복 durable message를 만들지 않고 일관된 PUBACK을 반환해야 한다. |
 | 2 | 수신 PUBLISH와 handshake 상태가 durability barrier를 통과한 뒤 성공 PUBREC | PUBREL과 PUBCOMP까지 상태를 복구한다. 중복 PUBLISH·PUBREL은 같은 handshake 결과로 수렴해야 한다. |
+수신 QoS 1/2 핸드셰이크가 PUBACK 또는 PUBCOMP로 완료되면 client는 같은 연결에서 Packet Identifier를 다시 사용할 수 있다. 이때 `DUP=0`인 새 PUBLISH는 새 교환이며, broker는 기존 완료 상태만 바꾸고 메시지를 새로 처리해야 한다. 진행 중인 교환 상태는 재사용으로 덮어쓰지 않는다. QoS 2 완료 상태의 tombstone은 반복 PUBREL을 멱등 처리하며, 같은 Packet Identifier의 새 RECEIVE가 commit될 때 교체한다.
 
 quorum, 저장 quota 또는 replication 조건을 충족하지 못하면 성공 PUBACK/PUBREC을 반환해서는 안 된다. MQTT 5에서는 상황에 맞는 `0x89`(`Server busy`), `0x97`(`Quota exceeded`) 또는 `0x83`(`Implementation specific error`)를 사용할 수 있다. MQTT 3.1.1에서 packet 단위 실패를 표현할 수 없으면 연결을 닫을 수 있다. 어느 경우든 성공 ACK로 위장해서는 안 된다.
 
@@ -252,6 +253,7 @@ reconnect까지 보존하며, clean start/session expiry와 expiry deadline에 �
   FIFO, clean reset과 queued Message Expiry를 검증하고,
   `TestMQTTIngressPersistentOutboundQoSRecovery`는 PUBLISH/PUBREL 단계 recovery와
   Packet Identifier·DUP 규칙을 검증한다.
+- `internal/adapters/tcp/server_durable_test.go::TestDispatchPublishReusesCompletedPacketIdentifier` directly verifies durable QoS 1/2 reuse after PUBACK/PUBCOMP commits a new exchange, while pre-PUBCOMP QoS 2 PUBLISH preserves its in-flight RECEIVE. `tests/integration/mqtt_ingress_test.go::TestMQTTIngressQoS1Handshake` and `TestMQTTIngressQoS2Handshake` verify the corresponding second ACK and routed delivery over real sockets after legal `DUP=0` Packet Identifier reuse.
 - `TestMQTTIngressSharedSubscriptionHandoff`는 delivery queue가 가득 찬 persistent offline
   member에서 같은 group의 다른 member로 handoff하고 reconnect queued delivery를 보존하는
   실제 socket-level MQTT-07 failover 증거다.

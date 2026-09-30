@@ -246,6 +246,82 @@ func TestTCPDurableQoS2ReceiveReleaseAndCapacity(t *testing.T) {
 	})
 }
 
+// Traceability: PRD MQTT-02/TEST-03/TEST-04/TEST-05; docs/specs/mqtt-protocol-and-session.md §3.1; MQTT-4.3.2-1, MQTT-4.3.2-2, MQTT-4.3.3-1, MQTT-4.3.3-2.
+func TestDispatchPublishReusesCompletedPacketIdentifier(t *testing.T) {
+	for _, testCase := range []struct {
+		name string
+		qos  mqtt.QoS
+	}{
+		{name: "QoS 1", qos: mqtt.QoSAtLeastOnce},
+		{name: "QoS 2", qos: mqtt.QoSExactlyOnce},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			committer := &durableTCPCommitter{}
+			_, conn := durableTCPRuntime(t, mqtt.ProtocolV5, committer)
+
+			publish := func(payload string) {
+				t.Helper()
+				packet := mqtt.Publish{
+					Version: mqtt.ProtocolV5, Topic: "durable/item", Payload: []byte(payload),
+					QoS: testCase.qos, PacketID: 25,
+				}
+				if err := conn.dispatchPublish(packet); err != nil {
+					t.Fatalf("dispatchPublish(%q): %v", payload, err)
+				}
+				if testCase.qos == mqtt.QoSAtLeastOnce {
+					requireControlPacket(t, conn, &mqtt.PubAck{PacketID: packet.PacketID})
+					return
+				}
+				requireControlPacket(t, conn, &mqtt.PubRec{PacketID: packet.PacketID})
+				if payload == "first" {
+					premature := packet
+					premature.Payload = []byte("premature")
+					if err := conn.dispatchPublish(premature); err != nil {
+						t.Fatalf("repeat PUBLISH before PUBCOMP: %v", err)
+					}
+					requireControlPacket(t, conn, &mqtt.PubRec{PacketID: packet.PacketID})
+					if len(committer.changes) != 1 {
+						t.Fatalf("premature reuse committed %d changes, want only initial RECEIVE", len(committer.changes))
+					}
+				}
+				if err := conn.dispatchPubRel(&mqtt.PubRel{Version: mqtt.ProtocolV5, PacketID: packet.PacketID}); err != nil {
+					t.Fatalf("dispatchPubRel(%q): %v", payload, err)
+				}
+				requireControlPacket(t, conn, &mqtt.PubComp{PacketID: packet.PacketID})
+			}
+
+			publish("first")
+			publish("second")
+
+			wantActions := []membership.DeliveryAction{membership.DeliveryActionPublish, membership.DeliveryActionPublish}
+			if testCase.qos == mqtt.QoSExactlyOnce {
+				wantActions = []membership.DeliveryAction{
+					membership.DeliveryActionReceive, membership.DeliveryActionRelease,
+					membership.DeliveryActionReceive, membership.DeliveryActionRelease,
+				}
+			}
+			if len(committer.changes) != len(wantActions) {
+				t.Fatalf("committed changes = %#v, want %d protocol transitions", committer.changes, len(wantActions))
+			}
+			for index, action := range wantActions {
+				change := committer.changes[index]
+				if change.Action != action {
+					t.Fatalf("committed change %d action = %d, want %d", index, change.Action, action)
+				}
+				if testCase.qos == mqtt.QoSAtLeastOnce && string(change.Payload) != []string{"first", "second"}[index] {
+					t.Fatalf("committed QoS 1 PUBLISH payload %d = %q", index, change.Payload)
+				}
+				if testCase.qos == mqtt.QoSExactlyOnce && change.PacketID != 25 {
+					t.Fatalf("committed change %d packet ID = %d, want 25", index, change.PacketID)
+				}
+				if action == membership.DeliveryActionReceive && string(change.Payload) != []string{"first", "second"}[index/2] {
+					t.Fatalf("committed RECEIVE payload %d = %q", index, change.Payload)
+				}
+			}
+		})
+	}
+}
+
 func TestTCPDurableRestoredInboundRespondsToDuplicates(t *testing.T) {
 	_, conn := durableTCPRuntime(t, mqtt.ProtocolV5, &durableTCPCommitter{})
 	if err := conn.restoreInbound(&membership.DeliverySessionStateDTO{Inbound: []membership.DeliveryInboundDTO{

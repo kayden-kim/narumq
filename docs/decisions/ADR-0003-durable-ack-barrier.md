@@ -98,7 +98,9 @@ WAL·snapshot의 storage target과 `fsync` 순서는 scoped [ADR-0009](ADR-0009-
 
 `storage-fault-durable-20260927d`의 세-scenario Docker durable ACK gate는 PASS했다. Final six-scenario gate `storage-power-loss-20260930g`도 PASS했다: sync-error reopen은 exit code 1로 fail-closed됐고 ACKed QoS 1/2 일곱 건이 recovery 뒤 전달됐다. 실제 `node/wal.bin`에서 held WAL fsync/torn cut은 16 unsynced bytes 중 8 bytes를 남겼다. Simultaneous three-node cut 뒤 index 39→42 수렴, `SessionPresent=true`, ACKed QoS 1/2 여섯 건의 missing/duplicate는 0이었다. During-cut publisher는 네 QoS 1 ACK와 PUBLISH write 뒤 await 전 barrier에서 hold된 `qos1-05`의 unknown PUBACK outcome을 기록했다. Unknown evidence에는 `qos1-05`만 포함하며, known timeout/closed 결과와 구분한다. 상세 evidence는 [Cluster §11.6·§11.13](../specs/cluster-session-and-delivery.md#116-storage-fault-chaos-mapping)에 연결한다. 이는 Docker/FUSE simulation이며 physical power-loss 보장은 아니다.
 
-Process exit는 실제 전원 손실을 모사하지 않는다. 특히 WAL-after-sync는 `File.Sync` 성공 뒤의 process crash일 뿐 device/page-cache power-loss proof가 아니다. Docker/FUSE cut도 rollback journal을 적용한 local simulation이며 BP-03, Linux/EBS power-loss 및 production volume 검증을 대체하지 않는다. 이 gate들은 미실행이다. ADR-0003은 `Proposed` 상태로 유지하고 §9 전체를 완료로 표시하지 않는다.
+Process exit는 실제 전원 손실을 모사하지 않는다. 특히 WAL-after-sync는 `File.Sync` 성공 뒤의 process crash일 뿐 device/page-cache power-loss proof가 아니다. Docker/FUSE cut도 rollback journal을 적용한 local simulation이며 Linux/EBS 또는 실제 physical power-loss를 대체하지 않는다.
+
+고정 profile BP-03 local compare `bp03-20260930T061549.390008900Z-28772`, `bp03-20260930T063854.898438300Z-34520`는 모두 NaruMQ workload invalid로 끝났다. Node 3에서 각각 `dispatch MQTT PUBLISH: quorum unavailable`, `dispatch MQTT PUBREL: quorum unavailable`가 관측되어 유효한 ACK/WAL 수치를 얻지 못했다. 추가 고정 smoke 5회 suite `bp03-suite-20260930T064519.153992500Z-35844`도 완료 반복 5회 중 유효 반복 0회로 invalid였다. NaruMQ가 5회 모두 overload 및 workload invariant 실패로 invalid했고, EMQX도 1회차 workload invariant 실패로 suite aggregate metric이 생성되지 않았다. 이 실행들은 §9-5 group-commit 크기별 p99/p99.9와 disk 비용의 증거가 아니다. 유효한 BP-03 측정과 Linux/EBS·physical power-loss·production volume gate가 남아 있으므로 ADR-0003은 `Proposed` 상태이며 §9 전체를 완료로 표시하지 않는다.
 
 ## 10. 재검토 조건
 
