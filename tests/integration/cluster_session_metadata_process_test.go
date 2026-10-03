@@ -13,6 +13,8 @@ import (
 
 // Traceability: CLU-08; docs/specs/cluster-session-and-delivery.md §4.3, §11.24.
 func TestDynamicClusterSessionMetadataProcessAcceptance(t *testing.T) {
+	t.Parallel()
+
 	fixture, nodes := clusterDurableProcessStart(t)
 	ctx := fixture.ctx
 

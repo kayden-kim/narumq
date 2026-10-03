@@ -16,6 +16,8 @@ import (
 
 // Traceability: CLU-04/CLU-05; docs/specs/cluster-session-and-delivery.md §2, §2.1, §11.15.
 func TestDynamicClusterConcurrentConnectProcessAcceptance(t *testing.T) {
+	t.Parallel()
+
 	fixture, nodes, controlPaths := clusterFencingProcessStart(t)
 	endpoints := []clusterFencingEndpoint{
 		{nodeID: 2, address: fixture.mqttAddresses[1]},
@@ -127,6 +129,8 @@ func TestDynamicClusterConcurrentConnectProcessAcceptance(t *testing.T) {
 
 // Traceability: CLU-05/CLU-06; docs/specs/cluster-session-and-delivery.md §2.1, §2.3, §11.15.
 func TestDynamicClusterStaleEpochFencingProcessAcceptance(t *testing.T) {
+	t.Parallel()
+
 	fixture, nodes, controlPaths := clusterFencingProcessStart(t)
 	publisher := clusterDurableProcessConnect(t, fixture.mqttAddresses[1], fixture.accessToken, "stale-pub", true)
 	defer publisher.Close()

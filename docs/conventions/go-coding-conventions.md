@@ -349,13 +349,15 @@ go run ./tools/verify local
 go run ./tools/verify ci --base <merge-base>
 ```
 
-`local`은 gofmt 검사 뒤 10개 command, `ci`는 같은 검사와 mutation을 더해 12개
+`local`은 gofmt 검사 뒤 10개 command, `ci`는 같은 검사와 mutation을 더해 13개
 command를 실행한다. gofmt 검사는 source를 수정하지 않으며 불일치가 있으면 gate를
 중단한다. 독립 command는 동시에 실행하고, 하나가 실패하면 나머지를 취소한다.
 Coverage policy 판정은 전체 test command가 만든 profile을 기다린 뒤 실행한다.
 
-`go test ./...`의 test parallel limit은 2다. 명시적으로 병렬 실행하는 다섯 process
-acceptance test는 동시에 최대 두 개까지 실행한다.
+검증 게이트는 `go test ./... -parallel=2`로 test parallel limit을 2로 설정한다.
+기본 gate의 격리된 cluster process acceptance test는 `t.Parallel()`로 이 상한을
+함께 사용한다. 시험별 데이터와 포트는 공유하지 않는다. 빌드 공유와 opt-in 시험의
+범위는 [성능 및 검증 §8](../specs/performance-and-verification.md#8-coverage와-test-quality-gate)을 따른다.
 
 ```text
 공통:
@@ -369,6 +371,7 @@ acceptance test는 동시에 최대 두 개까지 실행한다.
 
 CI 전용:
 → delivery mutation
+→ nodedrain mutation
 → session mutation
 ```
 

@@ -15,6 +15,8 @@ import (
 
 // Traceability: TEN-08; docs/specs/cluster-session-and-delivery.md §11.16.
 func TestDynamicClusterTenantStorageQuotaProcessAcceptance(t *testing.T) {
+	t.Parallel()
+
 	fixture := newClusterMembershipProcessFixture(t, 3, "")
 	configPaths := make([]string, 3)
 	for index := range configPaths {

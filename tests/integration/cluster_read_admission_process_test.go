@@ -10,6 +10,8 @@ import (
 
 // Traceability: CLU-14; docs/specs/performance-and-verification.md §3.4.
 func TestDynamicClusterConcurrentFreshReadProcessAcceptance(t *testing.T) {
+	t.Parallel()
+
 	fixture, nodes := clusterDurableProcessStart(t)
 	leader, _ := clusterMembershipProcessFindLeader(t, fixture.ctx, nodes, 3)
 	follower := nodes[0]

@@ -18,6 +18,8 @@ import (
 
 // Traceability: CLU-05/CLU-06/CLU-07/CLU-09; docs/specs/cluster-session-and-delivery.md §4.2, §11.11.
 func TestDynamicClusterDurableQoSTakeoverProcessAcceptance(t *testing.T) {
+	t.Parallel()
+
 	fixture, nodes := clusterDurableProcessStart(t)
 	ctx := fixture.ctx
 	offlineSubscriber := clusterDurableProcessConnect(t, fixture.mqttAddresses[1], fixture.accessToken, "durable-offline-sub", false)
@@ -135,6 +137,8 @@ func TestDynamicClusterDurableQoSTakeoverProcessAcceptance(t *testing.T) {
 
 // Traceability: CLU-07/CLU-09; docs/specs/cluster-session-and-delivery.md §4.2, §11.11.
 func TestDynamicClusterDurableQoSAckThenKillProcessAcceptance(t *testing.T) {
+	t.Parallel()
+
 	fixture, nodes := clusterDurableProcessStart(t)
 	subscriber := clusterDurableProcessConnect(t, fixture.mqttAddresses[2], fixture.accessToken, "durable-ack-sub", false)
 	defer subscriber.Close()
@@ -206,6 +210,8 @@ func TestDynamicClusterDurableQoSAckThenKillProcessAcceptance(t *testing.T) {
 
 // Traceability: CLU-07; docs/specs/cluster-session-and-delivery.md §4.2, §11.11.
 func TestDynamicClusterDurableQoSBackupRestoreProcessAcceptance(t *testing.T) {
+	t.Parallel()
+
 	fixture, nodes := clusterDurableProcessStart(t)
 	subscriber := clusterDurableProcessConnect(t, fixture.mqttAddresses[1], fixture.accessToken, "durable-backup-sub", false)
 	defer subscriber.Close()
@@ -311,6 +317,8 @@ func TestDynamicClusterDurableQoSBackupRestoreProcessAcceptance(t *testing.T) {
 
 // Traceability: CLU-07/CLU-09; docs/specs/cluster-session-and-delivery.md §4.2, §11.11.
 func TestDynamicClusterDurableQoS2WillProcessAcceptance(t *testing.T) {
+	t.Parallel()
+
 	fixture, nodes := clusterDurableProcessStart(t)
 	ctx := fixture.ctx
 

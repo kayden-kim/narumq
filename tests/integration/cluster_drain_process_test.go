@@ -16,6 +16,8 @@ import (
 
 // Traceability: DEP-06/DEP-12; docs/specs/drain-and-rolling-update.md §2.1, §2.2, §2.3, §3, §4, §6, §10.
 func TestDynamicClusterNodeDrainProcessAcceptance(t *testing.T) {
+	t.Parallel()
+
 	fixture := newClusterMembershipProcessFixture(t, 3, "")
 	processes := clusterDrainProcessStartCluster(t, fixture)
 	ctx := fixture.ctx
@@ -224,6 +226,8 @@ func TestDynamicClusterNodeDrainProcessAcceptance(t *testing.T) {
 
 // Traceability: DEP-06/DEP-12; docs/specs/drain-and-rolling-update.md §2.1, §2.3, §3, §6, §8, §10.
 func TestDynamicClusterNodeDrainCancelTimeoutAndResumeProcessAcceptance(t *testing.T) {
+	t.Parallel()
+
 	fixture := newClusterMembershipProcessFixture(t, 3, "")
 	processes := clusterDrainProcessStartCluster(t, fixture)
 	ctx := fixture.ctx

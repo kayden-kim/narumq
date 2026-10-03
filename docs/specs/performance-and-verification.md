@@ -799,11 +799,20 @@ go run ./tools/verify ci --base <merge-base>
 delivery, nodedrain, session mutation command가 추가된다. Coverage profile을 사용하는 마지막
 coverage 판정만 병렬 단계가 끝난 뒤 실행한다. 나머지 독립 command는 동시에 실행하며,
 하나가 실패하면 나머지 process를 취소한다. 전체 test suite와 atomic coverage profile은
-두 runner 모두 한 번의 `go test ./...`로 수행하며, test parallel limit은 2다. 명시적으로 병렬
-실행하는 다섯 개 process acceptance test도 동시에 최대 두 개만 실행한다. race detector는 실제 production package
-test (`./cmd/...`, `./internal/...`)에 적용한다. integration suite는 별도 child broker
-process를 빌드해 실행하므로 test binary에만 적용되는 race detector가 해당 broker process를
-검사하지 않는다.
+두 runner 모두 한 번의 `go test ./...`로 수행하며, test parallel limit은 2다. 기본 gate의
+격리된 cluster process acceptance test는 `t.Parallel()`로 이 상한을 함께 사용한다.
+각 시험의 data directory·인증서·포트·failpoint control은 독립적으로 유지한다.
+장애 관찰 시간과 assertion은 줄이지 않는다. Opt-in 장애·release·WAL lifecycle 시험의
+실행 조건과 순서는 유지한다.
+
+Integration test process는 일반 broker와 `narumq_failpoint` broker를 build tag별로 한 번만
+빌드한다. 공유 실행 파일은 `TestMain`이 만든 임시 directory에 두며, 모든 시험과 child
+process 정리가 끝난 뒤 삭제한다. 다른 release의 `ldflags`나 historical source를 쓰는
+빌드는 공유하지 않는다. 다음 `go test` 실행에서는 새로 빌드해 이전 실행 파일을 재사용하지 않는다.
+
+Race detector는 실제 production package test (`./cmd/...`, `./internal/...`)에 적용한다.
+Integration suite는 별도 child broker process를 빌드해 실행하므로 test binary에만 적용되는
+race detector가 해당 broker process를 검사하지 않는다.
 
 ```text
 go vet ./...
@@ -841,6 +850,44 @@ diff coverage     = base...HEAD에 추가된 실행 line/function 중 실행된 
 
 Coverage 수치만으로 합격할 수 없다. P0 요구사항 또는 지원 MQTT normative statement에 연결된 assertion이 없으면 CI가 merge를 차단해야 한다.
 - 시스템 스펙([시스템 스펙](README.md))에 명시된 모든 시나리오(정상, 예외, 경계 조건, 상태 전이)는 테스트 케이스로 100% 추적 및 커버되어야 한다. 단위 테스트가 가능한 도메인 규칙과 상태 머신 로직은 외부 의존성 없는 유닛 테스트로 100% 검증함을 기본으로 하고, 분산 합의·노드 드레인·인프라 장애 등 시스템 수준 시나리오는 통합·E2E·카오스 테스트 계층에 누락 없이 매핑하여 검증한다.
+
+### 8.1 2026-10-03 검증 게이트 실행 시간 개선
+
+기본 cluster process 시험의 순차 실행과 같은 broker의 반복 빌드를 줄였다.
+Broker runtime, 시험의 장애 관찰 시간, assertion, coverage 기준과 fuzz quota는 바꾸지 않았다.
+
+Windows/amd64·Go 1.26.5에서 아래 통합 시험 명령을 변경 전후 각각 실행했다.
+두 실행 모두 `GOMAXPROCS`는 설정하지 않았다.
+
+```text
+go test ./tests/integration -parallel=2 -count=1 -json -covermode=atomic -coverpkg=./cmd/...,./internal/...
+```
+
+| 확인 항목 | 변경 전 | 변경 후 |
+| --- | --- | --- |
+| 통합 시험 package 시간 | 372.966s | 209.303s |
+| 명령 전체 시간 | 379.14s | 212.98s |
+| 성공한 최상위 시험 | 51개 | 같은 51개 |
+| Skip 목록 | 기존 opt-in 목록 | 같은 목록 |
+
+Package 시간은 163.663s, 약 43.9% 줄었다. 변경 후 JSON event에서 동시에 실행한
+최상위 시험은 최대 두 개였다. 공유 broker build 로그는 일반·failpoint 각각 한 건이었다.
+원시 출력은 `.artifacts/verification/gate-speed-before.jsonl`과 `gate-speed-after.jsonl`에 보존했다.
+
+공유 실행 파일의 수명과 fixture 격리는 실제 process 시험으로 확인했다.
+Live QoS 0 forwarding, concurrent fresh read, concurrent CONNECT, stale epoch fencing
+시험을 `-parallel=2 -count=2 -race`로 실행해 8/8 PASS였다(33.96s wall).
+빌드는 build tag별 한 번이었고 `TestMain` 종료 뒤 두 실행 파일이 삭제된 것을 확인했다.
+출력은 `.artifacts/verification/gate-speed-smoke.jsonl`에 보존했다.
+이 race 실행은 test process를 검사하며 child broker의 race 검사를 대신하지 않는다.
+
+전체 `local` gate는 `GOMAXPROCS=4`를 설정한 환경에서 PASS였다(241.324s wall,
+integration 207.182s). Gofmt, vet, traceability, architecture, 전체 package/integration,
+production package race, 네 fuzz target 각각 10,000회와 coverage를 확인했다.
+Production line coverage는 85.98%, function coverage는 97.41%였다.
+출력은 `.artifacts/verification/gate-speed-local.log`와 기존 coverage artifact에 보존했다.
+CI 전용 mutation과 opt-in 외부 수용 시험은 이번 실행에서 수행하지 않았다.
+위 실행 기록을 덧붙인 문서는 gate 종료 뒤 편집했으며 상대 링크를 별도로 확인했다.
 
 ## 9. Architecture verification
 

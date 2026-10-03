@@ -15,6 +15,8 @@ import (
 
 // Traceability: CLU-03/CLU-06/CLU-07/CLU-08; docs/specs/cluster-session-and-delivery.md §3, §3.1, §4.2, §11.15.
 func TestDynamicClusterCrossNodeDeliveryMatrixProcessAcceptance(t *testing.T) {
+	t.Parallel()
+
 	fixture, nodes := clusterDurableProcessStart(t)
 	publisher := clusterDurableProcessConnect(t, fixture.mqttAddresses[0], fixture.accessToken, "matrix-pub", true)
 	t.Cleanup(func() { _ = publisher.Close() })

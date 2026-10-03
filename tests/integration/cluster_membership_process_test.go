@@ -48,6 +48,27 @@ var clusterMembershipProcessAddressLeases = struct {
 	addresses map[string]struct{}
 }{addresses: make(map[string]struct{})}
 
+var clusterMembershipProcessBinaries = struct {
+	sync.Mutex
+	directory string
+	paths     map[string]string
+}{paths: make(map[string]string)}
+
+func TestMain(m *testing.M) {
+	directory, err := os.MkdirTemp("", "narumq-integration-binaries-")
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "create integration binary directory: %v\n", err)
+		os.Exit(1)
+	}
+	clusterMembershipProcessBinaries.directory = directory
+	code := m.Run()
+	if err := os.RemoveAll(directory); err != nil {
+		fmt.Fprintf(os.Stderr, "remove integration binary directory: %v\n", err)
+		code = 1
+	}
+	os.Exit(code)
+}
+
 type clusterMembershipProcessFixture struct {
 	tempDir             string
 	repoRoot            string
@@ -69,11 +90,7 @@ func newClusterMembershipProcessFixture(t *testing.T, nodeCount int, buildTags s
 	t.Helper()
 	repoRoot := clusterMembershipProcessRepoRoot(t)
 	tempDir := t.TempDir()
-	binaryPath := filepath.Join(tempDir, "narumq")
-	if runtime.GOOS == "windows" {
-		binaryPath += ".exe"
-	}
-	clusterMembershipProcessBuild(t, repoRoot, binaryPath, buildTags, "")
+	binaryPath := clusterMembershipProcessSharedBinary(t, repoRoot, buildTags)
 
 	clusterCtx, clusterCancel := context.WithTimeout(context.Background(), 10*time.Minute)
 	t.Cleanup(clusterCancel)
@@ -524,6 +541,24 @@ func newClusterMembershipProcessFixture(t *testing.T, nodeCount int, buildTags s
 	}
 }
 
+func clusterMembershipProcessSharedBinary(t *testing.T, repoRoot, buildTags string) string {
+	t.Helper()
+	clusterMembershipProcessBinaries.Lock()
+	defer clusterMembershipProcessBinaries.Unlock()
+	if path, found := clusterMembershipProcessBinaries.paths[buildTags]; found {
+		return path
+	}
+	path := filepath.Join(clusterMembershipProcessBinaries.directory,
+		fmt.Sprintf("narumq-%d", len(clusterMembershipProcessBinaries.paths)))
+	if runtime.GOOS == "windows" {
+		path += ".exe"
+	}
+	clusterMembershipProcessBuild(t, repoRoot, path, buildTags, "")
+	clusterMembershipProcessBinaries.paths[buildTags] = path
+	t.Logf("built shared broker binary: tags=%q path=%s", buildTags, path)
+	return path
+}
+
 func clusterMembershipProcessBuild(t *testing.T, repoRoot, binaryPath, buildTags, ldflags string) {
 	t.Helper()
 	buildCtx, buildCancel := context.WithTimeout(context.Background(), 3*time.Minute)
@@ -632,6 +667,8 @@ func (f *clusterMembershipProcessFixture) stageRequestBody(memberID uint64) []by
 
 // Traceability: CLU-03; docs/specs/cluster-session-and-delivery.md §3.1, §11.10.
 func TestDynamicClusterLiveQoS0CrossNodeForwardingProcessAcceptance(t *testing.T) {
+	t.Parallel()
+
 	fixture := newClusterMembershipProcessFixture(t, 3, "")
 	processes := make([]*clusterMembershipProcess, 3)
 	for index := range processes {

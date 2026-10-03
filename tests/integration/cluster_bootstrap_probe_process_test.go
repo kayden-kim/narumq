@@ -107,6 +107,8 @@ func TestDynamicClusterVoterVolumeLossProcessAcceptance(t *testing.T) {
 
 // Traceability: CLU-02/CLU-07/CLU-14; docs/specs/cluster-session-and-delivery.md §1, §11.20.
 func TestDynamicClusterBootstrapProbeAllowsLateCoBootstrapPeer(t *testing.T) {
+	t.Parallel()
+
 	fixture := newClusterMembershipProcessFixture(t, 3, "narumq_failpoint")
 	ctx := fixture.ctx
 	processes := make([]*clusterMembershipProcess, 3)

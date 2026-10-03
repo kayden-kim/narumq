@@ -179,6 +179,16 @@ BP-03의 Enterprise comparator 설정과 image digest는 `bp03/compare.go`가 �
 보유한다. `tools/verify`는 이 두 파일과 실제 Go package graph를 읽는 repository
 검증 command이며, runtime product package가 import하지 않는다.
 
+Integration process 시험의 호출 흐름은 `tests/integration/cluster_membership_process_test.go`의
+`TestMain` → `m.Run` → 각 process 시험 → `newClusterMembershipProcessFixture` →
+`clusterMembershipProcessSharedBinary` → `clusterMembershipProcessBuild`다.
+`TestMain`은 실행 전체의 임시 directory를 만들고 마지막에 삭제한다.
+`newClusterMembershipProcessFixture`는 build tag별 공유 실행 파일을 받지만 data directory,
+인증서와 주소 lease는 시험마다 만든다. 기본 cluster process 시험은 `t.Parallel()`로 실행하며
+`tools/verify/runner.go`의 `-parallel=2`가 동시에 실행할 시험 수를 제한한다.
+`buildBinaryFrom`의 release/historical source 빌드는 fixture에 별도로 둔다.
+검증 범위와 실행 조건은 [성능 및 검증 §8](../specs/performance-and-verification.md#8-coverage와-test-quality-gate)을 따른다.
+
 ## Directory naming
 
 - Go package directory는 package 이름과 같은 소문자 한 단어를 사용한다.

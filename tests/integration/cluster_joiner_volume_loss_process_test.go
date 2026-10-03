@@ -20,6 +20,8 @@ import (
 
 // Traceability: CLU-02/CLU-07/CLU-14; ADR-0024; cluster spec §1, §7, §11.20.
 func TestDynamicClusterJoinerVoterVolumeLossProcessAcceptance(t *testing.T) {
+	t.Parallel()
+
 	for _, state := range []struct {
 		name             string
 		replaceBootstrap bool
