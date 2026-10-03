@@ -22,6 +22,7 @@ NaruMQ source tree는 MQTT·session·routing·delivery·tenancy·security·clust
 | --- | --- | --- |
 | 프로세스 시작 | `cmd/narumq/main.go` `main` → `run` → `runWithContext` | CLI 설정을 검사하고 아래 실행 모드 가운데 하나를 선택한다. |
 | Dynamic cluster | 호출: `cmd/narumq/main.go` `runWithContext` → 정의: `cmd/narumq/cluster_runtime.go` `runClusterMode` | `-cluster-config`를 사용해 dynamic cluster 경로로 진입한다. |
+| Dynamic cluster 빈 directory bootstrap | `cluster_runtime.go` `runClusterMode` → `cluster_bootstrap_probe.go` `clusterDirectoryEmpty`·`runClusterBootstrapProbe` → `internal/adapters/tcp/peer_bootstrap_probe.go` `ServeBootstrapProbe`·`ProbeBootstrapPeer` → `raftadapter.Open` | Open 전에 raw peer listener만 연다. Probe server의 연결을 종료하고 deadline을 초기화한 뒤 같은 listener를 running transport에 넘긴다. `BootstrapAllowedPeerIDs`는 transport가 process memory에 소유하며 `peer_transport_flow.go` `receiveRaftFrame`이 첫 Raft payload 수신에서 해제한다. 비어 있지 않은 volume과 joiner 경로는 기존 순서를 유지한다. [ADR-0022](../decisions/ADR-0022-bootstrap-volume-loss-guard.md) 참조. |
 | Dynamic cluster PUBLISH admission | `internal/adapters/tcp/server.go` `readLoop` → `server_phases.go` `dispatchPhased` → `server_submission.go` `beginInboundPublish` 또는 `dispatchPublishAt` → `cmd/narumq/cluster_runtime.go` `clusterProjectionReady` → Ready 진행 중이면 `clusterDriverProjection` → `resolveProjectionRequests` | Driver가 현재 commit index까지 apply/projection을 완료한 경계에서 local health와 applied index를 검사한다. Durable write마다 fresh ReadIndex proof를 얻는 `beginCommit`의 경계를 대신하지 않는다. |
 | Dynamic cluster proposal 수집 | `cluster_runtime.go` `runDriver` → `resolveCommitReads` → `cluster_proposals.go` `submitCommitBatch` → `node.go` `ProposeBatchForwarded` | 독립 fresh proof를 완료한 FIFO command를 64개·64 KiB 예산으로 묶는다. 지금 대기 중인 inbound/request만 staging하고 8ms 추가 대기는 제거한다. |
 | Raft 비동기 저장·apply 완료 | `node.go` `Open` → `node_ready.go` `ProcessReady` → `wal_worker.go` `WALAppendWorker.run`·`persistBatch` → `stable_store.go` `writeWALFrame`; 완료 → `applyRecord` → runtime `applyBatch`·`CompleteApply` | Disk 전용 단일 writer가 여러 CRC frame을 한 sync로 기록한다. Driver는 저장 중 tick·peer 응답을 처리하고 저장 의존 응답·application apply는 완료 경계를 지킨다. Snapshot·backup 대기는 driver가 소유하며 `Close`가 worker를 join한다. [ADR-0020](../decisions/ADR-0020-asynchronous-raft-wal-group-commit.md) 참조. |
@@ -327,7 +328,7 @@ internal/adapters/storage/session_record_mapper.go
 internal/adapters/managementapi/generated/
 ```
 
-처음부터 `storage/record` package를 만들지는 않는다. Record와 codec을 여러 storage component가 공유하거나 [persisted state 호환성](../contracts/cluster-release-compatibility-v1.md#5-persisted-state와-snapshot)을 독립적으로 검증해야 할 때 분리한다.
+처음부터 `storage/record` package를 만들지는 않는다. Record와 codec을 여러 storage component가 공유하거나 [persisted state 호환성](../contracts/cluster-release-compatibility-v1.md#5-readiness와-persisted-state)을 독립적으로 검증해야 할 때 분리한다.
 
 ## File 배치
 

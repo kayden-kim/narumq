@@ -194,6 +194,8 @@ Bootstrap example (`<64 lowercase hex>` is a configuration value supplied from t
 
 Bootstrap requires `role="bootstrap"`, an empty data directory and exactly three bootstrap identities including the local ID. All initial node configs must carry the same `clusterId` and identical canonical bootstrap identity set. Bootstrap nodes must use the same build release and features. Bootstrap must not overwrite any non-empty directory.
 
+An empty or missing directory with `role="bootstrap"` first completes the `NMQBOOT2` probe in §1.5 against every other bootstrap member and must not open Raft, management or MQTT listeners before it succeeds.
+
 Joiner requires `role="joiner"`, one or more configured canonical DNS `seedAddresses` (`host:port`, never an IP literal), an already-issued positive `nodeId`, empty `bootstrapMembers`, its local `advertisedAddress`/DNS SAN/certificate fingerprint, and a new/empty directory. It must not call `RawNode.Bootstrap`; it first performs seed admission and proves an exactly matching committed `STAGED` record. `seedAddresses` are discovery/bootstrap contacts, not an authority to add peers.
 
 All modes require `peerTLS` cert/key/CA, local certificate DNS SAN and fingerprint equality, explicit `management.clusterAdminTokenFile`, build release and feature identity, protocol/schema versions, persistent `directory`, and MQTT TLS/security configuration if an MQTT listener is enabled. The removed JSON key `releaseVersion` is an unknown field and rejects startup. Admin token contents are read as a secret file and never logged or returned. Standalone runtime does not load this mode and is unchanged.
@@ -230,6 +232,35 @@ Request payload fields, in exact order:
 
 Accepted response bytes are also length-prefixed `NMQJOIN2` frames (uint32 big-endian, maximum 64 KiB). Payload fields in order: 8-byte magic; uint16 major/minor (`2,0`); uint8 status (`1` accepted, `0` rejected); for accepted only, uint16 cluster-ID length+bytes; uint16 operation-ID length and bytes (empty only for stable `VOTER`, otherwise canonical 36-byte UUID); uint64 candidate member ID; 32-byte candidate certificate fingerprint; uint16 candidate DNS SAN length+bytes; uint8 committed candidate phase (`STAGED=1`, `LEARNER=2`, `CATCHING_UP=3`, or `VOTER=4`); uint16 state-schema major/minor; uint16 endpoint count (exactly the three incumbent voters, excluding the candidate); then each endpoint sorted by ascending member ID as uint64 ID, uint16 address length+bytes, uint16 DNS SAN length+bytes, 32-byte certificate fingerprint, and uint8 phase (`VOTER=4`).
 The joiner repeats the idempotent admission request while its response is `STAGED`; it must not open a Raft stream in that phase. Once a seed reports a committed `LEARNER`, `CATCHING_UP`, or `VOTER` identity, the joiner applies that identity to its local transport and reconciles the three incumbent peers. This lets the joiner learn the committed configuration/log without accepting a Raft hello for an uncommitted learner. A seed admission response is phase-aware but does not itself commit membership.
+
+#### Empty-directory bootstrap probe
+
+The additive `NMQBOOT2` exchange uses the same TLS 1.3 mTLS peer listener. Each request and response has a uint32 big-endian payload-length prefix; the payload limit is 1024 bytes.
+
+Request payload fields, in exact order:
+
+| Field | Encoding | Limit |
+| --- | --- | --- |
+| Magic | 8 bytes ASCII `NMQBOOT2` | exact |
+| Protocol | uint16 major, uint16 minor | `2,0` |
+| Cluster ID | uint16 length + UTF-8 bytes | `1..200` |
+| Prober member ID | uint64 | positive |
+
+Response payload is exactly 29 bytes, in this order:
+
+| Field | Encoding | Rule |
+| --- | --- | --- |
+| Magic | 8 bytes ASCII `NMQBOOT2` | exact |
+| Protocol | uint16 major, uint16 minor | `2,0` |
+| Status | uint8 | `0` rejected, `1` EMPTY, `2` READY, `3` PROGRESSED |
+| Term | uint64 | zero for status `0` or `1` |
+| Commit index | uint64 | zero for status `0` or `1` |
+
+Decode failure, cluster ID mismatch, prober ID equal to local ID, unknown prober, or a TLS client certificate whose fingerprint or DNS SAN differs from the known identity returns status `0`. A running transport without a progress handler also returns status `0`. During pre-bootstrap probing, a valid configured peer receives `EMPTY`. A running responder returns `PROGRESSED` when `Term > 1` or `CommitIndex > 3`, unless it remembers the prober as a co-bootstrap peer; otherwise it returns `READY`. Both running statuses include actual term and commit index.
+
+The prober waits for every configured peer and refuses startup if any reports `PROGRESSED`. It remembers peers that answered `EMPTY` in process memory. The first received Raft frame from such a peer clears its allowance; forwarding frames do not. The safety decision and deployment constraints are in [ADR-0022](../decisions/ADR-0022-bootstrap-volume-loss-guard.md).
+
+The prober sets TLS `ServerName` to the peer DNS SAN and verifies the server leaf fingerprint after the handshake.
 
 #### Authenticated Raft hello
 
@@ -411,6 +442,7 @@ F4 C8 99 6F B9 24 27 AE 41 E4 64 9B 93 4C A4 95
 - Field numbers and enum values are never reused. A breaking wire/state change requires a new contract major and explicit migration/recovery plan.
 - No v2 peer data is admitted before TLS, handshake identity and committed stage/configuration checks complete.
 - The additive `NMQFWRD2` delivery-forwarding stream preserves `NMQRAFT2` bytes and cluster protocol `2.0`.
+- `NMQBOOT2` is additive on the same listener and preserves `NMQJOIN2`/`NMQRAFT2` bytes and cluster protocol `2.0`; a peer that does not recognize it closes the socket and the prober keeps waiting.
 
 ## 4. Version and support status
 

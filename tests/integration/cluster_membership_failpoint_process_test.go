@@ -360,7 +360,6 @@ func TestDynamicClusterMembershipTransitionCrashRecovery(t *testing.T) {
 	// Cycle 1 initial armed states:
 	// n1: add-learner-before-persist, n2: promote-voter-before-persist, n3: disarmed
 	supervisor.start(3, fixture.bootstrapConfig(3), "")
-	clusterMembershipProcessWaitForStatus(t, ctx, supervisor.nodes[3], "/health/live", http.StatusOK)
 	supervisor.start(1, fixture.bootstrapConfig(1), "add-learner-before-persist")
 	supervisor.start(2, fixture.bootstrapConfig(2), "promote-voter-before-persist")
 
@@ -547,7 +546,6 @@ func TestDynamicClusterMembershipRemovalHandoffWaitsForQuorum(t *testing.T) {
 	if err != nil {
 		t.Fatalf("start n3: %v", err)
 	}
-	clusterMembershipProcessWaitForStatus(t, ctx, n3, "/health/live", http.StatusOK)
 	n1, err := harness.startArmed("bootstrap node 1", fixture.bootstrapConfig(1), fixture.managementAddresses[0], "begin-remove-after-apply")
 	if err != nil {
 		t.Fatalf("start n1: %v", err)
@@ -728,9 +726,9 @@ func TestSnapshotFinalizationCrashRecoveryAcrossProcessRestart(t *testing.T) {
 	// The bootstrap typed snapshot is created during startup. Crashing before
 	// rename leaves only a temporary file; restart must finalize a usable snapshot.
 	supervisor.start(1, fixture.bootstrapConfig(1), "snapshot-create-before-finalize")
-	supervisor.waitForHits("snapshot-create-before-finalize")
 	supervisor.start(2, fixture.bootstrapConfig(2), "")
 	supervisor.start(3, fixture.bootstrapConfig(3), "")
+	supervisor.waitForHits("snapshot-create-before-finalize")
 	supervisor.waitForAllReady([]uint64{1, 2, 3})
 	clusterMembershipProcessWaitForBootstrap(t, fixture.ctx, supervisor.procs([]uint64{1, 2, 3}))
 

@@ -35,6 +35,7 @@ const (
 	failpointDeliveryWALAfterSync         clusterFailpoint = "delivery-wal-after-sync"
 	failpointDeliveryCommitBeforeApply    clusterFailpoint = "delivery-commit-before-apply"
 	failpointDeliveryCommitAfterApply     clusterFailpoint = "delivery-commit-after-apply"
+	failpointBootstrapProbeDelay          clusterFailpoint = "bootstrap-probe-delay"
 )
 
 var validClusterFailpoints = []clusterFailpoint{
@@ -59,6 +60,7 @@ var validClusterFailpoints = []clusterFailpoint{
 	failpointDeliveryWALAfterSync,
 	failpointDeliveryCommitBeforeApply,
 	failpointDeliveryCommitAfterApply,
+	failpointBootstrapProbeDelay,
 }
 
 func parseClusterFailpoint(value string) (clusterFailpoint, error) {
@@ -149,4 +151,8 @@ func (point clusterFailpoint) failsRouteProjection() bool {
 
 func (point clusterFailpoint) matchesOwnershipAcquireAfterCommit() bool {
 	return point == failpointOwnershipAcquireAfterCommit
+}
+
+func (point clusterFailpoint) delaysBootstrapProbe() bool {
+	return point == failpointBootstrapProbeDelay
 }

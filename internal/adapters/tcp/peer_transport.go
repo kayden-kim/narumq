@@ -955,13 +955,14 @@ func validateLocalCertificate(certificate tls.Certificate, localDNSName string) 
 }
 
 const (
-	dynamicProtocolMajor  = 2
-	dynamicProtocolMinor  = 0
-	dynamicSchemaMajor    = 1
-	dynamicSchemaMinor    = 0
-	dynamicHelloLimit     = 1024
-	dynamicAdmissionLimit = 64 << 10
-	dynamicFrameLimit     = 1 << 20
+	dynamicProtocolMajor       = 2
+	dynamicProtocolMinor       = 0
+	dynamicSchemaMajor         = 1
+	dynamicSchemaMinor         = 0
+	dynamicHelloLimit          = 1024
+	dynamicAdmissionLimit      = 64 << 10
+	dynamicFrameLimit          = 1 << 20
+	dynamicBootstrapProbeMagic = "NMQBOOT2"
 )
 
 // PeerPhaseDTO is a committed cluster-membership phase used by v2 peer transport.
@@ -1016,12 +1017,14 @@ type SeedAdmissionHandler func(context.Context, PeerIdentityDTO) (SeedAdmissionR
 
 // DynamicPeerTransportConfig configures the additive v2 TLS listener and committed peer set.
 type DynamicPeerTransportConfig struct {
-	LocalIdentity    PeerIdentityDTO
-	Listener         net.Listener
-	ServerTLS        *tls.Config
-	ClientTLS        *tls.Config
-	Peers            []PeerIdentityDTO
-	AdmissionHandler SeedAdmissionHandler
+	LocalIdentity           PeerIdentityDTO
+	Listener                net.Listener
+	ServerTLS               *tls.Config
+	ClientTLS               *tls.Config
+	Peers                   []PeerIdentityDTO
+	AdmissionHandler        SeedAdmissionHandler
+	BootstrapProgress       BootstrapProgressHandler
+	BootstrapAllowedPeerIDs []uint64
 }
 
 // DynamicTCPPeerTransport owns a dynamic v2 TLS listener and its reconciled peer workers.
@@ -1034,6 +1037,9 @@ type DynamicTCPPeerTransport struct {
 	serverTLS          *tls.Config
 	clientTLS          *tls.Config
 	admission          SeedAdmissionHandler
+	bootstrapProgress  BootstrapProgressHandler
+	bootstrapMu        sync.Mutex
+	bootstrapAllowed   map[uint64]struct{}
 	peers              map[uint64]*dynamicPeerState
 	forwardPeers       map[uint64]*dynamicPeerState
 	inboundReady       chan struct{}
@@ -1154,24 +1160,29 @@ func NewDynamicTCPPeerTransport(config DynamicPeerTransportConfig) (*DynamicTCPP
 	}
 
 	transport := &DynamicTCPPeerTransport{
-		local:         config.LocalIdentity,
-		localID:       config.LocalIdentity.MemberID,
-		clusterID:     config.LocalIdentity.ClusterID,
-		listener:      tls.NewListener(config.Listener, serverTLS),
-		serverTLS:     serverTLS,
-		clientTLS:     clientTLS,
-		admission:     config.AdmissionHandler,
-		peers:         make(map[uint64]*dynamicPeerState),
-		forwardPeers:  make(map[uint64]*dynamicPeerState),
-		inboundReady:  make(chan struct{}, 1),
-		outboundReady: make(chan struct{}, 1),
-		forwardReady:  make(chan struct{}, 1),
-		connections:   make(map[net.Conn]struct{}),
-		done:          make(chan struct{}),
+		local:             config.LocalIdentity,
+		localID:           config.LocalIdentity.MemberID,
+		clusterID:         config.LocalIdentity.ClusterID,
+		listener:          tls.NewListener(config.Listener, serverTLS),
+		serverTLS:         serverTLS,
+		clientTLS:         clientTLS,
+		admission:         config.AdmissionHandler,
+		bootstrapProgress: config.BootstrapProgress,
+		bootstrapAllowed:  make(map[uint64]struct{}, len(config.BootstrapAllowedPeerIDs)),
+		peers:             make(map[uint64]*dynamicPeerState),
+		forwardPeers:      make(map[uint64]*dynamicPeerState),
+		inboundReady:      make(chan struct{}, 1),
+		outboundReady:     make(chan struct{}, 1),
+		forwardReady:      make(chan struct{}, 1),
+		connections:       make(map[net.Conn]struct{}),
+		done:              make(chan struct{}),
 	}
 	if err := validateDynamicPeerSet(config.LocalIdentity, config.Peers); err != nil {
 		_ = transport.listener.Close()
 		return nil, err
+	}
+	for _, id := range config.BootstrapAllowedPeerIDs {
+		transport.bootstrapAllowed[id] = struct{}{}
 	}
 	for _, identity := range config.Peers {
 		transport.peers[identity.MemberID] = newDynamicLanePeerState(transport, identity, dynamicLaneRaft)
@@ -1830,6 +1841,8 @@ func (transport *DynamicTCPPeerTransport) handleInbound(ctx context.Context, soc
 	switch string(payload[:8]) {
 	case "NMQJOIN2":
 		transport.handleAdmission(ctx, connection, payload)
+	case dynamicBootstrapProbeMagic:
+		transport.handleBootstrapProbe(connection, payload)
 	case dynamicRaftMagic:
 		transport.handleStreamInbound(connection, payload, dynamicLaneRaft)
 	case dynamicForwardMagic:
@@ -1846,7 +1859,7 @@ func (transport *DynamicTCPPeerTransport) handleAdmission(
 		_ = writeDynamicFrame(connection, rejectedSeedAdmissionResponse(), dynamicAdmissionLimit)
 	}
 	request, err := decodeSeedAdmissionRequest(payload)
-	if err != nil || !transport.matchesTLSIdentity(connection, request.Candidate) {
+	if err != nil || !matchesPeerCertificate(connection, request.Candidate) {
 		reject()
 		return
 	}
@@ -1898,7 +1911,7 @@ func (transport *DynamicTCPPeerTransport) handleStreamInbound(
 		peer.recordError("peer stopped")
 		return
 	}
-	if !transport.matchesTLSIdentity(connection, expectedIdentity) {
+	if !matchesPeerCertificate(connection, expectedIdentity) {
 		peer.recordError("peer certificate identity mismatch")
 		return
 	}
@@ -2014,7 +2027,7 @@ func (transport *DynamicTCPPeerTransport) dialPeer(ctx context.Context, peer *dy
 				err = fmt.Errorf("peer stopped")
 			} else if currentRevision != identityRevision {
 				err = fmt.Errorf("revision mismatch: current %d != id %d", currentRevision, identityRevision)
-			} else if !transport.matchesTLSIdentity(connection, currentIdentity) {
+			} else if !matchesPeerCertificate(connection, currentIdentity) {
 				err = fmt.Errorf("peer identity mismatch")
 			} else if !compatiblePeerIdentity(currentIdentity, remote) {
 				err = fmt.Errorf("incompatible identity: current(phase=%d,op=%s) remote(phase=%d,op=%s)", currentIdentity.Phase, currentIdentity.OperationID, remote.Phase, remote.OperationID)
@@ -2043,7 +2056,7 @@ func (transport *DynamicTCPPeerTransport) dialPeer(ctx context.Context, peer *dy
 	}
 }
 
-func (transport *DynamicTCPPeerTransport) matchesTLSIdentity(connection *tls.Conn, identity PeerIdentityDTO) bool {
+func matchesPeerCertificate(connection *tls.Conn, identity PeerIdentityDTO) bool {
 	state := connection.ConnectionState()
 	if len(state.PeerCertificates) == 0 {
 		return false
@@ -3039,6 +3052,8 @@ func readDynamicHandshakeFrame(connection net.Conn) ([]byte, error) {
 	case dynamicRaftMagic:
 		maximum = dynamicHelloLimit
 	case dynamicForwardMagic:
+		maximum = dynamicHelloLimit
+	case dynamicBootstrapProbeMagic:
 		maximum = dynamicHelloLimit
 	default:
 		return nil, ErrInvalidPeerMessage

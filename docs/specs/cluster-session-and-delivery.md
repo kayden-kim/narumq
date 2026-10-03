@@ -19,6 +19,7 @@
 3. 초기 동기화와 route projection rebuild가 끝나고 quorum을 확인하기 전에는 MQTT traffic readiness를 성공으로 반환해서는 안 된다.
 4. join, 정상 leave와 재시작은 수동 데이터 수정 없이 재시도할 수 있어야 한다.
 5. 비인가 member와 지원하지 않는 cluster protocol version은 membership에 추가해서는 안 된다.
+6. data directory가 없거나 빈 bootstrap voter는 다른 bootstrap voter 모두에게 진행 여부를 확인한 뒤에만 Raft를 bootstrap한다. 어느 voter라도 term 1·commit 3을 넘었고 이 voter를 함께 시작한 peer로 허용하지 않으면 시작하지 않고 `cluster bootstrap refused` 오류로 종료한다. 확인 중에는 management·MQTT listener를 열지 않는다.
 
 외부 cluster 조회는 최소한 node별 `nodeId`, lifecycle state, release version, member role, readiness, replication health와 마지막 오류를 제공해야 한다. `replicationHealth`는 조회 node 자신에 대해서는 local Raft storage 상태를, 원격 peer 행에 대해서는 조회 node에서 관찰한 peer 연결 상태를 나타내며 원격 peer의 storage 상태를 뜻하지 않는다. `lastErrorCode`는 내부 오류 원문 대신 안정된 오류 code를 제공한다. `replicationQueue`는 조회 node에서 해당 원격 peer로 보내는 outbound 대기열을 나타낸다. 정확한 field 형식은 [Management API v1 Contract](../contracts/management-api-v1.md)과 OpenAPI 문서를 따른다.
 
@@ -213,6 +214,7 @@ partition이 복구되면 committed log가 기준이 된다. minority의 specula
    - `FAILED` node는 새로운 commit을 성공으로 반환해서는 안 된다. Quorum이 남아 있는 healthy node는 진행할 수 있고, quorum이 없으면 commit을 거절해야 한다. `DEGRADED`는 commit을 계속 시도할 수 있다.
    - `lastErrorCode`는 내부 오류 문자열 대신 `storage_no_space`, `storage_io_error`, `storage_slow`, `raft_node_failed`, `peer_disconnected`, `peer_queue_full`, `peer_invalid_message`, `peer_transport_error` 중 안정된 code만 제공한다. local slow-I/O code는 상태가 회복된 뒤에도 최근 원인으로 남는다.
    - 원격 node 행의 `replicationHealth`는 조회 node에서 관찰한 peer 연결 상태다. 연결되어 있으면 `HEALTHY`, 끊겼으면 `UNREACHABLE`이며, `lastErrorCode`는 연결 상태와 별개로 마지막 알려진 transport 오류를 안정된 code로 나타낸다. 이 값은 원격 node의 Raft 또는 storage health를 의미하지 않는다. `replicationQueue`는 조회 node에서 해당 peer로 보내는 outbound message 수, byte 수와 거절 수를 나타내며 실제 transport 제한을 넘지 않아야 한다. 원시 transport 오류 문자열은 API 응답에 포함하지 않는다.
+6. volume을 잃은 voter는 같은 ID로 다시 bootstrap하지 않는다. 새 ID를 stage·join해 voter로 승격한 뒤 잃은 member를 planned removal로 제거한다. Removal은 잃은 member의 session ownership을 남은 voter로 이전한다.
 
 ## 8. Mixed-version compatibility
 
@@ -707,3 +709,41 @@ Exact protocol/schema 경계 시험 추가 뒤 focused restore suite PASS (2.71s
 
 Skip은 acceptance가 아니다. Historical-source matrix, Linux/EBS와 `SPEC-TBD-09` retention/RPO/RTO는 열린 gate로 남는다.
 
+
+### 11.20 Voter volume 손실 보호와 재시드 수용 매핑
+
+[ADR-0022](../decisions/ADR-0022-bootstrap-volume-loss-guard.md)의 빈 directory bootstrap 보호와 새 ID 교체를 검증한다. 로컬 process 종료·volume 삭제는 production Linux/EBS 손실 시험을 대신하지 않는다.
+
+| Scenario | 관찰할 결과 | 시험 위치 | 실행 증거 |
+| --- | --- | --- | --- |
+| Probe wire·TLS·listener 재사용 | 고정 bytes, configured peer만 EMPTY, cancel 뒤 listener 재사용 | `internal/adapters/tcp.TestBootstrapProbeGoldenBytes`, `TestServeBootstrapProbeAnswersConfiguredPeerOnly`, `TestBootstrapProbeRejectsInvalidWire` | PASS: 아래 transport 명령 package 0.755s, wall 2.99s; 실제 TLS socket과 raw listener 재사용 확인 |
+| Co-bootstrap 허용 해제 | 진행한 peer에 READY, Raft frame 수신 뒤 PROGRESSED, 초기 term/index READY, nil handler 거절 | `internal/adapters/tcp.TestDynamicTransportBootstrapProbeAllowanceClearsOnRaftFrame` | PASS: 같은 transport 실행, 실제 Raft payload 수신 전후 probe 확인 |
+| Directory·all-peer barrier·취소 | 없는/빈 directory만 검사, 모든 peer 응답 대기, PROGRESSED 거절, context 취소 | `cmd/narumq.TestClusterDirectoryEmpty`, `TestClusterBootstrapProbeWaitsForEveryPeer`, `TestClusterBootstrapProbeRejectsProgressedPeer`, `TestClusterBootstrapProbeStopsOnContextCancel` | PASS: package 0.190s, wall 2.90s; 같은 round의 가장 작은 PROGRESSED ID 선택도 확인 |
+| 손실 voter 거절 | 같은 ID 재시작 exit 1·오류 로그, directory 미변경, 두 survivor READY | `tests/integration.TestDynamicClusterVoterVolumeLossProcessAcceptance` | PASS: 10.12s; 변경 전 동일 시험은 30초 내 거절되지 않아 예상 지점 FAIL (package 36.184s, wall 38.27s) |
+| 새 ID 재시드 | `{1,2,4}` voter와 retired 3, joiner에서 retained `v1`, SessionPresent와 offline `kept` 복구 | 같은 process acceptance | PASS: 같은 10.12s 실행에서 down voter planned removal과 상태 복구 확인 |
+| 늦은 초기 peer 허용 | Node 3 probe 지연 중 management 미개방, 진행한 peer READY 응답, 세 node READY | `tests/integration.TestDynamicClusterBootstrapProbeAllowsLateCoBootstrapPeer` | PASS: 25.84s; delay 20초 유지. 두 새 process 시험 package 36.133s, wall 38.22s |
+| Membership·crash·snapshot 회귀 | 새 listener 계약과 기존 membership/recovery 결과 유지 | `TestDynamicClusterMembershipProcessAcceptance`, `TestDynamicClusterMembershipTransitionCrashRecovery`, `TestDynamicClusterMembershipRemovalHandoffWaitsForQuorum`, `TestSnapshotFinalizationCrashRecoveryAcrossProcessRestart` | PASS: 네 시험, package 58.398s, wall 60.45s |
+| Release·backup 회귀 | 인접 release와 archive restore process acceptance 유지 | `TestDynamicClusterReleaseCompatibilityProcessAcceptance`, `TestClusterBackupRestoreReleaseWindowProcessAcceptance` | PASS: 각각 83.43s·23.39s, package 106.979s, wall 108.18s; 같은 source synthetic release 경계 |
+| Durable ACK fault 회귀 | Replica kill·crash point·partition에서 기존 ACK 경계 유지 | `TestDynamicClusterDurableAckReplicaKillProcessAcceptance`, `TestDynamicClusterDurableAckCrashPointProcessAcceptance`, `TestDynamicClusterDurableAckPartitionProcessAcceptance` | PASS: 세 replica × QoS 1/2 kill, 20 crash 조합, 두 partition 시나리오; package 159.740s, wall 160.95s |
+| Docker storage chaos | 기존 여섯 storage 시나리오 모두 PASS | `tests/chaos/cluster-storage-v1` | PASS 6/6: `storage-bootprobe-20261003`, wall 243.96s; artifact `.artifacts/chaos/cluster-storage-v1/storage-bootprobe-20261003/` |
+| Repository local gate | `local: PASS` | `go run ./tools/verify local` | PASS: wall 336.41s, integration 300.618s; traceability·architecture·네 fuzz target 각 10,000회·package/integration·package race·coverage |
+| Joiner voter 빈 volume | 기존 seed admission이 빈 volume의 같은 ID 재참여를 거절 | `cmd/narumq/cluster_runtime.go` `admitPeer` 코드 근거만 | Process 미실행 |
+| Production Linux/EBS volume loss | 실제 영속 volume 손실과 새 ID 복구 | Production acceptance | 미실행; CLU-14·ADR-0009 열린 gate 유지 |
+
+2026-10-03 Windows 로컬 실행 명령 (작업 위치 `D:/Workspace/narumq`):
+
+```text
+GOMAXPROCS=4 go test ./internal/adapters/tcp -run 'BootstrapProbe' -count=1 -v
+GOMAXPROCS=4 go test ./cmd/narumq -run '^(TestClusterDirectoryEmpty|TestClusterBootstrapProbe)' -count=1 -v
+GOMAXPROCS=4 go test ./tests/integration -run '^TestDynamicClusterVoterVolumeLossProcessAcceptance$' -count=1 -v -timeout 20m
+GOMAXPROCS=4 go test ./tests/integration -run '^(TestDynamicClusterVoterVolumeLossProcessAcceptance|TestDynamicClusterBootstrapProbeAllowsLateCoBootstrapPeer)$' -count=1 -v -timeout 20m
+GOMAXPROCS=4 go test ./tests/integration -run '^(TestDynamicClusterMembershipProcessAcceptance|TestDynamicClusterMembershipTransitionCrashRecovery|TestDynamicClusterMembershipRemovalHandoffWaitsForQuorum|TestSnapshotFinalizationCrashRecoveryAcrossProcessRestart)$' -count=1 -v -timeout 30m
+NARUMQ_RELEASE_COMPAT=1 GOMAXPROCS=4 go test ./tests/integration -run '^(TestDynamicClusterReleaseCompatibilityProcessAcceptance|TestClusterBackupRestoreReleaseWindowProcessAcceptance)$' -count=1 -v -timeout 30m
+NARUMQ_DURABLE_ACK_FAULTS=1 GOMAXPROCS=4 go test ./tests/integration -run '^TestDynamicClusterDurableAck(ReplicaKill|CrashPoint|Partition)ProcessAcceptance$' -count=1 -v -timeout 30m
+GOMAXPROCS=2 go run ./tests/chaos/cluster-storage-v1 --run-id storage-bootprobe-20261003 --output .artifacts/chaos/cluster-storage-v1/storage-bootprobe-20261003
+GOMAXPROCS=4 go run ./tools/verify local
+```
+
+위 env 표기는 실행 조건이며 Windows에서는 Python `subprocess.run`의 argv와 env dict로 전달했다. 단독 volume-loss 명령은 구현 전 실패 재현에 사용했고, 구현 후에는 두 process 시험을 묶은 명령으로 확인했다. 최초 transport 시험의 추가 certificate mismatch case는 client의 local SAN 검증에서 먼저 실패했다. 요청 ID만 configured peer로 가장하도록 fixture를 고쳐 실제 responder의 certificate 거절을 확인했으며 production 검증 정책은 완화하지 않았다.
+
+Docker 결과의 여섯 ID는 `follower-disk-full`, `quorum-disk-full`, `follower-slow-io`, `follower-sync-error`, `follower-torn-power-loss`, `cluster-power-loss`이고 모두 `passed`였다. Chaos runner 시작 순서는 변경하지 않았다. Local gate 뒤 변경은 이 증거 기록과 관련 문서 링크뿐이다. CLU-to-test 연결은 이 표에서 관리하며 MQTT/TEST traceability gate가 CLU token까지 검증한다는 뜻은 아니다.

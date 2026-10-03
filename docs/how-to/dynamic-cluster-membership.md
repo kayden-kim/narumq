@@ -45,6 +45,8 @@
 
    `-cluster-config`는 다른 CLI flag나 positional argument와 함께 쓸 수 없다. 각 process는 자신이 소유한 영속 디렉터리만 사용한다. 서로 다른 bootstrap identity set으로 node를 시작하지 않는다.
 
+   빈 directory의 세 bootstrap node는 모두 동시에 시작해야 한다. Peer 확인 중에는 management·MQTT listener가 열리지 않으므로 첫 node의 health 응답을 기다린 뒤 다음 node를 시작하지 않는다. Kubernetes StatefulSet은 `podManagementPolicy: Parallel`을 사용한다.
+
 3. **모든 node의 readiness를 확인한다.** Management endpoint에서 `/health/ready`를 조회한다. Liveness 응답만으로 준비 완료를 판단하지 않는다. READY는 committed voter role, replay/catch-up, route projection 재구축, healthy persistence 및 fresh quorum `ReadIndex` barrier(현재 Raft quorum에서 읽기 일관성을 확인하는 경계)가 모두 성공한 상태여야 한다. 어느 node라도 READY가 아니거나 quorum을 확인할 수 없으면 join을 진행하지 않는다.
 
 4. **관리 API로 joiner identity를 한 번 stage한다.** 멤버십 contract §1.3의 request body에 joiner의 member ID, peer address, DNS SAN, leaf certificate SHA-256, release/protocol/schema version을 넣는다. `POST /api/v1/cluster/members`에는 같은 request 재시도를 구분하는 `Idempotency-Key`와 `ClusterAdmin` bearer token을 보낸다. `202 Accepted`는 `STAGED` 기록이 commit되었으며 operation이 계속 진행 중이라는 뜻이다. Response의 `operationId`를 보존한다.
@@ -70,9 +72,22 @@
 
 중단된 제거를 관찰하거나 재시도할 때는 같은 operation ID와 idempotency key를 사용한다. 막힌 소유권 이전을 우회하려고 voter를 강제로 제거하지 않는다.
 
+### 손실된 voter volume 교체
+
+이 절차는 [ADR-0022](../decisions/ADR-0022-bootstrap-volume-loss-guard.md)와 [Cluster §7](../specs/cluster-session-and-delivery.md#7-failure-recovery)를 따른다. Quorum이 남아 있어야 하며, 손실 volume을 빈 directory로 바꿔 같은 ID를 시작하는 방법은 사용하지 않는다.
+
+1. 손실 node를 중지하고 손실된 data directory를 그대로 두어 재시작하지 않는다. 조사 증거를 보존하며 기존 volume과 새 joiner volume을 분리한다.
+2. 새 ID로 `POST /api/v1/cluster/members`를 호출한 뒤 joiner를 시작하고 해당 operation의 `SUCCEEDED`를 기다린다.
+3. `DELETE /api/v1/cluster/members/{lostId}`를 호출하고 `SUCCEEDED`를 기다린다. 이 planned removal은 손실 member의 session ownership을 남은 voter로 이전한다.
+4. 손실 ID는 재사용하지 않는다. 새 voter의 READY와 retained·persistent session·offline message 복구를 확인한다.
+
+초기 배포에서 `cluster bootstrap refused`가 나오고 **아직 사용자 데이터가 없다면**, 세 node를 모두 중지하고 세 directory를 비운 뒤 동시에 다시 시작한다. 사용자 데이터가 있는 cluster에서는 directory를 지우지 말고 원래 volume을 복구하거나 위 새 ID 교체 절차를 따른다.
+
 ## 4. 검증
 
 다중 프로세스 TLS membership과 retained/v2 backup process acceptance에서 관찰한 범위만 기록한다. 전체 cluster의 다른 수용 기준과 production 사용 여부는 Draft로 유지한다. Membership evidence는 [Cluster §11.5](../specs/cluster-session-and-delivery.md#115-dynamic-membershiprestart-convergencemqtt-readiness-mapping), retained evidence는 [§11.8](../specs/cluster-session-and-delivery.md#118-retained-replication과-backup-v2-수용-매핑)에 연결한다.
+
+빈 volume bootstrap 거절, 새 ID 교체 뒤 retained·offline·persistent session 복구, 늦은 초기 peer 허용은 [Cluster §11.20](../specs/cluster-session-and-delivery.md#1120-voter-volume-손실-보호와-재시드-수용-매핑)의 실제 process 실행 증거를 따른다. Production Linux/EBS volume 손실과 joiner voter의 빈 volume 재시작은 process 미검증으로 유지한다.
 
 | 관찰 대상 | 성공 조건 | 확인 명령·방법 | 실제 결과 | 실행 증거 위치 |
 | --- | --- | --- | --- | --- |
@@ -102,6 +117,7 @@ go test ./tests/integration -run '^(TestClusterBackupRestoreProcessCrashAndResyn
 
 - TLS SAN/fingerprint, cluster ID, member ID, release/protocol/schema 불일치
 - bootstrap member set 불일치, 비어 있지 않은 신규 데이터 디렉터리, 중복·retired ID
+- `cluster bootstrap refused` 로그: 같은 ID의 빈 volume으로 재시작하지 않는다.
 - Management API에서 `not_leader`, `quorum_unavailable`, identity/idempotency conflict 또는 미지원 compatibility 응답
 - 기존 node 하나라도 readiness 실패, committed operation phase가 예상 상태에서 멈춤, peer 연결 또는 persistence 오류
 - Joiner가 stage commit 전에 Raft peer stream을 시작하거나 별도 bootstrap을 시도함

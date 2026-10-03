@@ -126,6 +126,57 @@ func runClusterMode(ctx context.Context, config clusterConfigFile, logger *slog.
 		}
 	}
 
+	var peerListener net.Listener
+	var bootstrapAllowed []uint64
+	var listeners []net.Listener
+	defer func() {
+		for _, listener := range listeners {
+			_ = listener.Close()
+		}
+	}()
+	if config.Role == "bootstrap" {
+		empty, err := clusterDirectoryEmpty(config.Directory)
+		if err != nil {
+			return err
+		}
+		if empty {
+			peerListener, err = net.Listen("tcp", config.ListenAddress)
+			if err != nil {
+				return fmt.Errorf("listen for cluster peers on %q: %w", config.ListenAddress, err)
+			}
+			listeners = append(listeners, peerListener)
+			local := configuredLocalPeerIdentity(config, localFingerprint)
+			peers, err := configuredBootstrapPeerIdentities(config)
+			if err != nil {
+				return err
+			}
+			probeCtx, stopProbe := context.WithCancel(ctx)
+			serveResult := make(chan error, 1)
+			go func() {
+				serveResult <- tcpadapter.ServeBootstrapProbe(probeCtx, peerListener, peerServerTLS, local, peers)
+			}()
+			if failpoint.delaysBootstrapProbe() {
+				select {
+				case <-time.After(clusterBootstrapProbeFailpointDelay):
+				case <-ctx.Done():
+					stopProbe()
+					<-serveResult
+					return ctx.Err()
+				}
+			}
+			bootstrapAllowed, err = runClusterBootstrapProbe(ctx, peers, func(c context.Context, p tcpadapter.PeerIdentityDTO) (tcpadapter.BootstrapProbeResultDTO, error) {
+				return tcpadapter.ProbeBootstrapPeer(c, peerClientTLS, local, p)
+			}, clusterBootstrapProbeInterval, logger)
+			stopProbe()
+			if serveErr := <-serveResult; serveErr != nil {
+				return serveErr
+			}
+			if err != nil {
+				return err
+			}
+		}
+	}
+
 	metricsRegistry := adaptersmetrics.NewRegistry()
 	storageMonitor := newClusterStorageMonitor(time.Now, logger)
 	node, err := raftadapter.Open(raftadapter.Config{
@@ -153,16 +204,13 @@ func runClusterMode(ctx context.Context, config clusterConfigFile, logger *slog.
 	if err != nil {
 		return err
 	}
-	peerListener, err := net.Listen("tcp", config.ListenAddress)
-	if err != nil {
-		return fmt.Errorf("listen for cluster peers on %q: %w", config.ListenAddress, err)
-	}
-	listeners := []net.Listener{peerListener}
-	defer func() {
-		for _, listener := range listeners {
-			_ = listener.Close()
+	if peerListener == nil {
+		peerListener, err = net.Listen("tcp", config.ListenAddress)
+		if err != nil {
+			return fmt.Errorf("listen for cluster peers on %q: %w", config.ListenAddress, err)
 		}
-	}()
+		listeners = append(listeners, peerListener)
+	}
 
 	retainedRepository, err := memoryretained.New(membership.MaxRetainedMessages, membership.MaxRetainedBytes, metricsRegistry)
 	if err != nil {
@@ -217,6 +265,7 @@ func runClusterMode(ctx context.Context, config clusterConfigFile, logger *slog.
 		LocalIdentity: runtime.localIdentity, Listener: peerListener,
 		ServerTLS: peerServerTLS, ClientTLS: peerClientTLS,
 		Peers: initialPeers, AdmissionHandler: runtime.admitPeer,
+		BootstrapProgress: runtime.bootstrapProgress, BootstrapAllowedPeerIDs: bootstrapAllowed,
 	})
 	if err != nil {
 		return fmt.Errorf("create dynamic raft peer transport: %w", err)

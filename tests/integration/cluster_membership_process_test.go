@@ -684,22 +684,24 @@ func TestDynamicClusterMembershipProcessAcceptance(t *testing.T) {
 	accessToken := fixture.accessToken
 
 	bootstrapProcesses := make([]*clusterMembershipProcess, 3)
-	// With only the first bootstrap voter running, readiness has no quorum. The
-	// external MQTT CONNECT must be rejected before any additional voter starts.
+	// An empty-directory bootstrap voter waits for both peers before opening
+	// Raft, management or MQTT listeners.
 	first, err := harness.start("bootstrap node 1", bootstrapConfigs[0], managementAddresses[0])
 	if err != nil {
 		t.Fatalf("start first bootstrap process: %v", err)
 	}
 	bootstrapProcesses[0] = first
-	clusterMembershipProcessWaitForStatus(t, clusterCtx, first, "/health/live", http.StatusOK)
-	readyStatus, readyBody, err := clusterMembershipProcessRequest(clusterCtx, http.MethodGet, first.managementURL()+"/health/ready", nil, "", "")
-	if err != nil {
-		t.Fatalf("query isolated voter readiness: %v", err)
+	time.Sleep(2 * time.Second)
+	if err := first.isAlive(); err != nil {
+		t.Fatalf("isolated bootstrap voter exited: %v", err)
 	}
-	if readyStatus != http.StatusServiceUnavailable {
-		t.Fatalf("isolated bootstrap voter readiness status=%d body=%s, want 503", readyStatus, readyBody)
+	if status, _, err := clusterMembershipProcessRequest(clusterCtx, http.MethodGet, first.managementURL()+"/health/live", nil, "", ""); err == nil {
+		t.Fatalf("isolated empty bootstrap voter served management status=%d before peers answered", status)
 	}
-	clusterMembershipProcessAssertMQTTRejected(t, mqttAddresses[0])
+	if conn, err := net.DialTimeout("tcp", mqttAddresses[0], time.Second); err == nil {
+		_ = conn.Close()
+		t.Fatal("isolated empty bootstrap voter opened MQTT before peers answered")
+	}
 
 	for index := 1; index < len(bootstrapProcesses); index++ {
 		process, startErr := harness.start(fmt.Sprintf("bootstrap node %d", index+1), bootstrapConfigs[index], managementAddresses[index])

@@ -42,6 +42,9 @@ func (peer *dynamicPeerState) receiveRaftFrame(ctx context.Context, connection n
 	if _, err := io.ReadFull(connection, frame.data); err != nil {
 		return err
 	}
+	if peer.owner != nil {
+		peer.owner.clearBootstrapAllowance(peer.id)
+	}
 	peer.mu.Lock()
 	if err := ctx.Err(); err != nil {
 		peer.mu.Unlock()

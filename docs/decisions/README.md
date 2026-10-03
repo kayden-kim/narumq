@@ -27,6 +27,7 @@
 | [ADR-0019](ADR-0019-untargeted-durable-publish-quorum-barrier.md) | Accepted (zero-durable-target scope only) | Durable target이 없는 QoS 1/2 publish는 delivery command 대신 quorum read barrier 뒤 완료한다. |
 | [ADR-0020](ADR-0020-asynchronous-raft-wal-group-commit.md) | Accepted (비동기 저장 구조만; production storage·BP-03 제외) | 공식 Raft 저장 완료 메시지와 단일 bounded WAL writer의 group commit을 사용한다. |
 | [ADR-0021](ADR-0021-backup-archive-release-window.md) | Accepted (backup archive v3 restore release window only; historical-source wire·production storage 제외) | N/N-1 양방향 restore를 허용하고 미지원 active feature를 storage 변경 전에 거절한다. |
+| [ADR-0022](ADR-0022-bootstrap-volume-loss-guard.md) | Accepted (empty-directory bootstrap guard와 local process acceptance; production EBS 제외) | 빈 bootstrap directory는 모든 peer 진행 확인 뒤에만 시작하며 함께 시작한 peer는 Raft frame 수신 전까지 허용한다. |
 
 `Proposed` ADR은 검토 중인 제안이다. `Accepted` ADR은 각 기록에 명시한 범위 안에서 채택된 결정이다. `design target only`는 production runtime이나 acceptance 검증을 뜻하지 않는다.
 
