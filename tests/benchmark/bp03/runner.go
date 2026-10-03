@@ -44,20 +44,22 @@ type expiredAck struct {
 	sequence uint64
 }
 type runClient struct {
-	client         *mqttclient.Client
-	stream         streamSpec
-	stop           chan struct{}
-	done           chan struct{}
-	stopOnce       sync.Once
-	closeOnce      sync.Once
-	ackMu          sync.Mutex
-	pending        map[mqtt.PacketIdentifier]pendingAck
-	readFailure    error
-	readFailureAt  time.Time
-	changed        chan struct{}
-	SessionPresent bool
-	connAckAt      time.Time
-	closeErr       error
+	client              *mqttclient.Client
+	stream              streamSpec
+	stop                chan struct{}
+	done                chan struct{}
+	stopOnce            sync.Once
+	closeOnce           sync.Once
+	ackMu               sync.Mutex
+	pending             map[mqtt.PacketIdentifier]pendingAck
+	subscriberPending   map[mqtt.PacketIdentifier]bool
+	subscriberCompleted map[mqtt.PacketIdentifier]bool
+	readFailure         error
+	readFailureAt       time.Time
+	changed             chan struct{}
+	SessionPresent      bool
+	connAckAt           time.Time
+	closeErr            error
 }
 
 type phaseEvent struct {
@@ -183,9 +185,16 @@ func executeBP03(ctx context.Context, profile Profile, target string, nodes, man
 	measureBounds := make(map[int][2]time.Time)
 	walWindows := make([]walWindowInput, 0, len(profile.RatesPerStreamPerSecond)+1)
 	var clients []*runClient
+	var stopDiagnostics func() error
 	var cleanupOnce sync.Once
 	cleanup := func() {
 		cleanupOnce.Do(func() {
+			if cause := context.Cause(ctx); cause != nil && !errors.Is(runErr, cause) {
+				runErr = errors.Join(cause, runErr)
+			}
+			if stopDiagnostics != nil {
+				runErr = errors.Join(runErr, stopDiagnostics())
+			}
 			_ = closeClients(clients, time.Second)
 			if err := messages.writeMessages(filepath.Join(outputDir, "messages.jsonl")); err != nil {
 				runErr = errors.Join(runErr, fmt.Errorf("write messages.jsonl: %w", err))
@@ -221,6 +230,12 @@ func executeBP03(ctx context.Context, profile Profile, target string, nodes, man
 		return readiness(ctx, target, nodes, management, creds.ManagementToken, start.Add(90*time.Second), creds)
 	}); err != nil {
 		return err
+	}
+	if target == "narumq" {
+		stopDiagnostics, err = startDiagnosticSampler(management, creds.ManagementToken, outputDir)
+		if err != nil {
+			return err
+		}
 	}
 	streams := makeStreams(profile, nodes)
 	nextSequences := make(map[string]*uint64, len(streams))
@@ -322,7 +337,6 @@ func executeBP03(ctx context.Context, profile Profile, target string, nodes, man
 		if err := closeClients(mapValues(subscribers), 2*time.Second); err != nil {
 			return fmt.Errorf("disconnect subscribers before offline publish window: %w", err)
 		}
-		subscribers = make(map[string]*runClient, len(streams))
 		if err := waitForContext(ctx, time.Duration(profile.OfflineSettleMillis)*time.Millisecond); err != nil {
 		}
 		if err := publishWindow(ctx, profile, streams, publishers, messages, nextSequences, 0, profile.RatesPerStreamPerSecond[0], int64(profile.OfflineMessagesPerStream)*1000/int64(profile.RatesPerStreamPerSecond[0]), "offline"); err != nil {
@@ -362,6 +376,9 @@ func executeBP03(ctx context.Context, profile Profile, target string, nodes, man
 				continue
 			}
 			messages.recordOfflineSession(true)
+			previous := subscribers[stream.name]
+			subscriber.subscriberPending = previous.subscriberPending
+			subscriber.subscriberCompleted = previous.subscriberCompleted
 			clients = append(clients, subscriber)
 			subscribers[stream.name] = subscriber
 			reconnectStarts[stream.name] = subscriber.connAckAt
@@ -534,12 +551,15 @@ func failProtocolReader(client *runClient, col *collector, cancel context.Cancel
 }
 
 func startReader(client *runClient, col *collector, profile Profile, cancel context.CancelCauseFunc) {
+	if client.subscriberPending == nil {
+		client.subscriberPending = make(map[mqtt.PacketIdentifier]bool)
+		client.subscriberCompleted = make(map[mqtt.PacketIdentifier]bool)
+	}
 	client.done = make(chan struct{})
 	go func() {
 		defer close(client.done)
 		defer client.signal()
-		pending := make(map[mqtt.PacketIdentifier]bool)
-		completed := make(map[mqtt.PacketIdentifier]bool)
+		pending, completed := client.subscriberPending, client.subscriberCompleted
 		for {
 			packet, err := client.client.Read(100 * time.Millisecond)
 			if err != nil {

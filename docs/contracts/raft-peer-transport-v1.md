@@ -75,7 +75,7 @@ Golden vector (payload bytes `08 01`):
 
 Outbound `Send`는 payload를 소유한 copy로 queue에 넣는다. Queue count 또는 bytes limit에 걸리면 즉시 `ErrPeerBackpressure`를 반환하며 기존 queue를 넘기거나 다른 peer를 차단하지 않는다. Driver는 반환된 Ready message를 다른 peer로 계속 전달하고, 거절된 destination에 Raft의 unreachable/snapshot-failure 보고를 보내 재전송을 유도한다. Queue rejection은 개별 message delivery를 보장하지 않으며, 성공한 queue admission도 network delivery, peer processing, Raft commit, durable ACK 또는 MQTT readiness를 의미하지 않는다. Inbound staging이 가득 차면 해당 connection을 닫고 buffer bound를 지킨다.
 
-Raft `MaxInflightMsgs=16`(entry-bearing `MsgApp`), queue count/bytes, OS socket buffer와 retained log는 각각 독립적인 bound다. `ProcessReady`는 한 batch만 처리하므로 rejected peer 때문에 다음 peer의 message 처리가 막히지 않는다.
+Raft `MaxInflightMsgs=16`(entry-bearing `MsgApp`), queue count/bytes, OS socket buffer와 retained log는 각각 독립적인 bound다. `ProcessReady`는 저장 완료를 nonblocking poll하고 한 bounded 출력 batch를 반환하므로 rejected peer 때문에 다음 peer의 message 처리가 막히지 않는다. Library local storage thread ID와 `MsgStorageAppend`/`MsgStorageApply` 및 완료 메시지는 peer wire에서 금지한다. 저장·application 완료는 [ADR-0020](../decisions/ADR-0020-asynchronous-raft-wal-group-commit.md)을 따른다.
 
 ## 5. Compatibility and failure handling
 

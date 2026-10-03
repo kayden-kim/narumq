@@ -99,8 +99,8 @@ sequenceDiagram
     F1-->>L: AppendEntriesResponse (Persisted 성공 보고)
 
     Note over L,F1: 4. Committed! 리더와 팔로워 A(2대) 영속화 완료 (Quorum 달성)
-    L-->>C: PUBACK (내구성 장벽 완료: 클러스터 스펙상 성공 승인 반환)
-    Note over L: 5. Applied: 세션 라우팅 및 큐에 메시지 적재
+    Note over L: 5. Applied: 세션 라우팅 및 큐에 메시지 적재·projection 확인
+    L-->>C: PUBACK (영속화·commit·application 완료 뒤 성공 승인)
 
     Note over F2: 뒤늦게 팔로워 B도 쓰기 완료 후 응답
     F2-->>L: AppendEntriesResponse (지연 응답)
@@ -134,6 +134,8 @@ NaruMQ가 채택을 검토 중인 `etcd/raft`([ADR-0002](../decisions/ADR-0002-c
 ```
 
 즉, 라이브러리가 `"이 로그들을 디스크에 쓰고 피어들에게 보내라"`는 작업 지시서(`Ready` 구조체)를 내놓으면, **실제 디스크 fsync를 수행하고 결과를 통보하는 것은 NaruMQ 스토리지 엔진의 책임**입니다.
+
+현재 저장 실행 경로는 [ADR-0020](../decisions/ADR-0020-asynchronous-raft-wal-group-commit.md)을 따릅니다. Driver는 `MsgStorageAppend`를 단일 WAL worker에 전달하고, worker가 기록·fsync를 마치면 메시지에 붙어 있던 완료 응답을 Raft에 돌려줍니다. Driver가 디스크를 기다리지 않는다는 뜻이지, MQTT ACK가 fsync보다 먼저 나온다는 뜻은 아닙니다. Application apply도 앞선 저장 요청이 끝난 뒤 노출되고, runtime이 상태와 projection을 반영한 뒤 `CompleteApply`를 호출합니다. 이 메시지 교환이 예전 `Advance` 호출을 대신합니다.
 
 ---
 

@@ -29,12 +29,13 @@ type releaseProfileDecision struct {
 }
 
 type clusterReleaseProfileController struct {
-	runtime      *clusterRuntime
-	wg           sync.WaitGroup
-	stateMu      sync.Mutex
-	revision     uint64
-	synced       atomic.Bool
-	incompatible atomic.Pointer[string]
+	runtime       *clusterRuntime
+	wg            sync.WaitGroup
+	stateMu       sync.Mutex
+	revision      uint64
+	reconcileWake chan struct{}
+	synced        atomic.Bool
+	incompatible  atomic.Pointer[string]
 }
 
 func (controller *clusterReleaseProfileController) start(ctx context.Context) {
@@ -45,6 +46,9 @@ func (controller *clusterReleaseProfileController) start(ctx context.Context) {
 		controller.setIncompatible(reason)
 		return
 	}
+	controller.stateMu.Lock()
+	controller.reconcileWake = make(chan struct{}, 1)
+	controller.stateMu.Unlock()
 	controller.wg.Add(1)
 	go func() {
 		defer controller.wg.Done()
@@ -95,6 +99,8 @@ func (controller *clusterReleaseProfileController) run(ctx context.Context) {
 			return
 		case <-ticker.C:
 			controller.reconcile(ctx)
+		case <-controller.reconcileWake:
+			controller.reconcile(ctx)
 		}
 	}
 }
@@ -113,11 +119,17 @@ func (controller *clusterReleaseProfileController) reconcile(ctx context.Context
 	revision := controller.beginReconcile()
 	members, err := controller.runtime.Members(ctx)
 	if err != nil {
+		if controller.synced.Load() && controller.runtime.logger != nil {
+			controller.runtime.logger.Warn("cluster release profile confirmation failed", "stage", "members", "error", err.Error())
+		}
 		controller.finishReconcile(revision, false)
 		return
 	}
 	activeFeatures, err := controller.runtime.ActiveFeatures(ctx)
 	if err != nil {
+		if controller.synced.Load() && controller.runtime.logger != nil {
+			controller.runtime.logger.Warn("cluster release profile confirmation failed", "stage", "active_features", "error", err.Error())
+		}
 		controller.finishReconcile(revision, false)
 		return
 	}
@@ -125,12 +137,18 @@ func (controller *clusterReleaseProfileController) reconcile(ctx context.Context
 	decision := evaluateReleaseProfile(members, activeFeatures, config.NodeID, config.ReleaseVersion, config.Features)
 	switch decision.action {
 	case releaseProfileWait:
+		if controller.synced.Load() && controller.runtime.logger != nil {
+			controller.runtime.logger.Warn("cluster release profile confirmation failed", "stage", "local_member_unavailable")
+		}
 		controller.finishReconcile(revision, false)
 	case releaseProfileSynced:
 		controller.finishReconcile(revision, true)
 	case releaseProfileIncompatible:
 		controller.setIncompatible(decision.reason)
 	case releaseProfilePropose:
+		if controller.synced.Load() && controller.runtime.logger != nil {
+			controller.runtime.logger.Warn("cluster release profile confirmation failed", "stage", "profile_mismatch")
+		}
 		controller.finishReconcile(revision, false)
 		operationID, err := newClusterOperationID()
 		if err != nil {
@@ -174,6 +192,12 @@ func (controller *clusterReleaseProfileController) invalidate() {
 	controller.stateMu.Lock()
 	controller.revision++
 	controller.synced.Store(false)
+	// Coalesce invalidations while a fresh confirmation is already pending.
+	// The wake changes scheduling only; invalidate closes the gate first.
+	select {
+	case controller.reconcileWake <- struct{}{}:
+	default:
+	}
 	controller.stateMu.Unlock()
 }
 
@@ -182,6 +206,9 @@ func (controller *clusterReleaseProfileController) observeAppliedCommand(command
 		return
 	}
 	if command.MemberProfile != nil && command.MemberProfile.MemberID == controller.runtime.config.NodeID {
+		if controller.synced.Load() && controller.runtime.logger != nil {
+			controller.runtime.logger.Warn("cluster release profile invalidated", "stage", "local_profile_applied")
+		}
 		controller.invalidate()
 	}
 	if command.FeatureActivation != nil {
@@ -198,6 +225,9 @@ func (controller *clusterReleaseProfileController) observeSnapshotRestore() {
 	if reason := controller.unsupportedActiveFeatureReason(); reason != "" {
 		controller.setIncompatible(reason)
 		return
+	}
+	if controller.synced.Load() && controller.runtime.logger != nil {
+		controller.runtime.logger.Warn("cluster release profile invalidated", "stage", "snapshot_restored")
 	}
 	controller.invalidate()
 }

@@ -154,6 +154,27 @@ func TestRegistryRendersWALSyncMetrics(t *testing.T) {
 	}
 }
 
+func TestRaftStageHistogramsKeepStagesIsolatedAndBoundOverflow(t *testing.T) {
+	registry := NewRegistry()
+	registry.ObserveRaftStage(RaftInboundQueue, time.Millisecond)
+	registry.ObserveRaftStage(RaftReadIndex, 2*time.Second)
+	registry.ObserveRaftStage(RaftReadIndex, 12*time.Second)
+	registry.ObserveRaftStage(255, time.Hour)
+	output := string(registry.Render(false))
+	for _, line := range []string{
+		`narumq_raft_stage_duration_seconds_count{stage="inbound_queue"} 1`,
+		`narumq_raft_stage_duration_seconds_bucket{stage="read_index",le="2"} 1`,
+		`narumq_raft_stage_duration_seconds_bucket{stage="read_index",le="10"} 1`,
+		`narumq_raft_stage_duration_seconds_bucket{stage="read_index",le="+Inf"} 2`,
+		`narumq_raft_stage_duration_seconds_sum{stage="read_index"} 14.000000`,
+		`narumq_raft_stage_duration_seconds_count{stage="proposal"} 0`,
+	} {
+		if !strings.Contains(output, line+"\n") {
+			t.Errorf("missing stage distribution %q", line)
+		}
+	}
+}
+
 func TestRegistryRendersMQTT310UnsupportedVersionRejection(t *testing.T) {
 	reg := NewRegistry()
 	reg.ConnectRejected(ports.ProtocolMQTT310, ports.ConnectRejectReasonUnsupportedProtocolVersion)

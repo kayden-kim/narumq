@@ -24,6 +24,18 @@ var (
 	ErrPacketIDConflict = errors.New("delivery packet identifier conflict")
 )
 
+// PendingTransition owns one queued outbound change. Wait is called exactly
+// once and updates local queue state only after the durable barrier succeeds.
+type PendingTransition interface {
+	Wait() error
+}
+
+// CompletedTransition is the already-completed result of an in-memory change.
+// It performs no I/O and needs no background worker or channel.
+type CompletedTransition struct{}
+
+func (CompletedTransition) Wait() error { return nil }
+
 // DeliveryDTO is the application boundary value handed to one session queue.
 // DurableSequence is zero for process-local deliveries and positive for
 // replicated durable deliveries. DurableEpoch identifies the owner epoch that
@@ -74,12 +86,20 @@ type Queue interface {
 	TryEnqueue(delivery DeliveryDTO, now time.Time) error
 	TryEnqueueBatch(deliveries []DeliveryDTO, now time.Time) error
 	// Peek reports an empty registered queue as (zero, false, nil). ErrUnavailable means the session or queue state is missing.
+	// PeekBatch fills at most len(destination) owned FIFO values.
+	PeekBatch(sessionID routing.SessionID, now time.Time, destination []DeliveryDTO) (int, error)
 	Peek(sessionID routing.SessionID, now time.Time) (DeliveryDTO, bool, error)
 	CompleteHead(sessionID routing.SessionID) error
+	// PromoteBatch returns the successfully promoted contiguous prefix. Every
+	// pending durable result is drained even when a preceding item fails.
+	// A nonzero prefix does not suppress an error. Callers retain every suffix
+	// PacketID until retry or connection teardown; later SENDs may have committed.
+	PromoteBatch(outbound []OutboundDTO, now time.Time) (int, error)
 	PromoteHead(outbound OutboundDTO, now time.Time) error
 	ListQueued(sessionID routing.SessionID, now time.Time) ([]DeliveryDTO, error)
 	ListOutbound(sessionID routing.SessionID) ([]OutboundDTO, error)
 	ReplaceOutbound(outbound OutboundDTO) error
+	BeginReplaceOutbound(outbound OutboundDTO) (PendingTransition, error)
 	// ResetDurable atomically replaces one session's durable queue state after
 	// attachment. Durable queued items must be in strictly increasing sequence
 	// order and carry the supplied positive owner epoch. Durable outbound items
@@ -92,6 +112,7 @@ type Queue interface {
 	// retained payloads before returning.
 	ResetDurable(sessionID routing.SessionID, epoch uint64, queued []DeliveryDTO, outbound []OutboundDTO, now time.Time) error
 	CompleteOutbound(sessionID routing.SessionID, packetID mqtt.PacketIdentifier) error
+	BeginCompleteOutbound(outbound OutboundDTO) (PendingTransition, error)
 }
 
 // OutboundDTO is the application boundary value for one incomplete sender-side

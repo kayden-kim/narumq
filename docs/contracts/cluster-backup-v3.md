@@ -1,6 +1,6 @@
 # Cluster backup v3 인터페이스 계약(Contract)
 
-이 계약은 실행 중인 3-voter cluster에서 하나의 commit 경계를 담은 archive를 만들고, 검증된 archive로 동일 cluster의 빈 voter 저장 디렉터리를 오프라인 seed하는 형식을 정의한다. Retained state, detached persistent session의 QoS 0 offline queue, durable QoS 1/2 delivery session과 inflight state를 포함한다. Production storage acceptance, BP-03, archive N/N-1 compatibility와 disaster-recovery 보존 정책은 이 계약만으로 완료되지 않는다.
+이 계약은 실행 중인 3-voter cluster에서 하나의 commit 경계를 담은 archive를 만들고, 검증된 archive로 동일 cluster의 빈 voter 저장 디렉터리를 오프라인 seed하는 형식을 정의한다. Retained state, detached persistent session의 QoS 0 offline queue, durable QoS 1/2 delivery session과 inflight state를 포함한다. [ADR-0021](../decisions/ADR-0021-backup-archive-release-window.md)은 N/N-1 restore 정책을 채택한다. Production storage acceptance, historical-source 호환성과 disaster-recovery 보존 정책은 이 계약만으로 완료되지 않는다.
 
 | 항목 | 값 |
 | --- | --- |
@@ -13,9 +13,9 @@
 | 스키마 기준 파일 | [cluster-backup-v3.proto](cluster-backup-v3.proto) |
 | replicated-state schema | [replicated-state-v1.proto](replicated-state-v1.proto), schema `1.0` |
 | 기준 동작 명세 | [Cluster §4.1·§4.2·§10](../specs/cluster-session-and-delivery.md), [§11.9·§11.11](../specs/cluster-session-and-delivery.md#1111-qos-12-durable-delivery-수용-매핑) |
-| 관련 결정 | [ADR-0013](../decisions/ADR-0013-offline-queue-replication-and-cluster-backup-v3.md), [ADR-0015](../decisions/ADR-0015-cluster-durable-qos-delivery.md) |
+| 관련 결정 | [ADR-0013](../decisions/ADR-0013-offline-queue-replication-and-cluster-backup-v3.md), [ADR-0015](../decisions/ADR-0015-cluster-durable-qos-delivery.md), [ADR-0021](../decisions/ADR-0021-backup-archive-release-window.md) |
 | 관련 요구사항 | [PRD CLU-14](../requirements/PRD.md#92-클러스터와-세션) |
-| 호환성 범위 | archive format `3.0`; 동일 `clusterId`, release/protocol/schema 및 현재 3개 bootstrap voter identity |
+| 호환성 범위 | archive format `3.0`; 동일 `clusterId`, protocol/schema 및 현재 3개 bootstrap voter identity; producer·voter release는 restore build와 같은 major·minor 차이 1 이하 |
 | 관련 시험 | Codec: `internal/adapters/raft/records`; retained/offline producer·consumer: Cluster §11.9; durable delivery/backup evidence: Cluster §11.11 |
 
 ## 1. 형식과 의미
@@ -50,7 +50,7 @@ Retained key는 `(tenantId, exact Topic Name)`이다. Offline key는 `(tenantId,
 - Cluster MQTT ingress는 QoS 0/1/2 PUBLISH를 지원한다. Detached persistent session의 matching QoS 0 delivery는 §4.1의 Raft offline state를 사용한다. Connected QoS 0은 §3.1의 live path를 사용하며, QoS 1/2 delivery와 inbound state는 §4.2의 durable delivery session에 기록한다.
 - Disconnect 시 persistent session의 pending QoS 0 FIFO는 DETACH command로 capture한다. 새 ownership epoch의 CONNECT는 durable delivery state를 ATTACH로 복구하고 QoS 0 offline queue는 CLAIM으로 가져와 durable delivery 뒤에 전달한다.
 - Offline limit는 session당 64 message, 전체 4,096 message·16 MiB, payload당 1,000,000 bytes, DETACH command당 topic+payload 768 KiB다. Tenant 저장 quota는 [ADR-0017](../decisions/ADR-0017-tenant-storage-quota.md)에 따라 retained, QoS 0 offline queue, durable delivery outbound·inbound state를 집계하며 새 state 초과를 거절한다.
-- Replicated-state schema `1.0`은 unknown-field rejection을 유지한다. Retained, offline, delivery와 node drain command는 fresh read barrier 뒤 모든 non-retired member의 release/protocol/schema가 정확히 일치하는 profile에서만 제안한다. 이 제한은 N/N-1 rolling compatibility를 의미하지 않는다.
+- Replicated-state schema `1.0`은 unknown-field rejection을 유지한다. Replication proposal의 fresh read와 release-profile gate는 [Release compatibility v1](cluster-release-compatibility-v1.md)을 따른다.
 - Node drain operation과 tenant quota profile은 replicated typed snapshot 및 whole-state SHA-256에 포함된다. Restore된 진행 중 drain operation은 저장된 phase와 original deadline에서 재개한다. Restored `COMPLETED` record는 node가 readiness를 다시 통과한 뒤 replicated `CLEAR`로 제거한다.
 
 ### QoS 1/2 durable delivery state
@@ -62,10 +62,10 @@ QoS 1/2 delivery session은 `ReplicatedStateSnapshot.delivery_sessions`에 저�
 
 - Restore는 실행 중인 cluster process가 아닌 **중지된 node**에서 수행한다. CLI는 config, format, identity, state와 checksum을 target에 쓰기 전에 검증한다. 성공하면 seed를 저장하고 종료하며 cluster listener를 시작하지 않는다.
 - `-cluster-config`는 `role=bootstrap`이며 현재 voter 세 개를 정확히 포함해야 한다. Archive voter ID와 config bootstrap member ID는 같은 정렬된 집합이어야 하고 archive에 learner ID가 하나라도 있으면 restore를 거절한다.
-- `clusterId`, producer release, cluster protocol, state schema는 config와 같아야 한다. 각 bootstrap voter의 member ID, peer address, DNS SAN 및 certificate SHA-256 fingerprint도 committed member identity와 일치해야 한다. Archive source는 현재 voter여야 하며 local `nodeId`도 voter 집합에 속해야 한다.
+- `clusterId`, cluster protocol과 state schema는 config와 같아야 한다. Producer와 모든 voter release는 restore build와 같은 major·minor 차이 1 이하이어야 한다. Window 밖 producer는 `backup producer release <producer> is outside the supported release window of <restore>`로 거절한다. Commit 경계 state에 restore build가 지원하지 않는 active feature가 있으면 `backup active feature "<feature>" is not supported by this release`로 거절한다. 두 검증은 target storage 변경 전에 수행한다. 각 bootstrap voter의 member ID, peer address, DNS SAN 및 certificate SHA-256 fingerprint도 committed member identity와 일치해야 한다. Archive source와 local `nodeId`는 voter 집합에 속해야 한다.
 - 같은 archive를 각 voter의 별도 빈 data directory에 한 번씩 restore한다. 기존 data directory나 foreign file을 덮어쓰지 않는다.
 - `restore-incomplete` marker가 남으면 일반 cluster startup은 실패한다. Marker나 restore 파일을 수동 삭제하지 않는다. 같은 archive와 올바른 config로 restore를 다시 실행하거나 운영 담당자에게 이관한다.
-- Restore 완료 뒤 각 node를 정상 `-cluster-config` 경로로 시작한다. READY는 snapshot/WAL replay와 fresh quorum/readiness 검증 뒤에만 반환한다.
+- Restore는 committed member profile을 다시 쓰지 않는다. Restore 완료 뒤 정상 `-cluster-config` 경로로 시작하며 snapshot/WAL replay와 fresh quorum 검증에 더해 build profile의 `MemberProfileChange` commit·재확인 전에는 READY가 되지 않는다.
 
 ## 3. 오류
 
@@ -84,14 +84,27 @@ QoS 1/2 delivery session은 `ReplicatedStateSnapshot.delivery_sessions`에 저�
 - `NMQBKUP1`과 `NMQBKUP2` archive는 명시적으로 거절한다. 오류는 각각 `unsupported archive format 1; capture a new backup with this release`, `unsupported archive format 2; capture a new backup with this release`다. 각 archive는 이를 지원하는 이전 release에서만 복원한다.
 - v2→v3 live migration과 converter는 제공하지 않는다. Cutover 전에 운영자는 persistent subscriber를 다시 연결해 기존 node-local queue를 drain해야 한다. Drain하지 않은 queue는 이전 process 종료와 함께 사라질 수 있다. 새 build의 replicated offline/durable delivery state는 빈 상태로 시작하며, v2 archive를 v3 reader로 변환하는 경로는 없다.
 - Restore는 cross-cluster migration, voter 재구성, learner 복원을 지원하지 않는다. 현재 bootstrap voter ID와 member identity를 바꾸지 않는다.
-- Retained, offline, delivery field 추가는 unknown field를 거절하는 schema `1.0`의 replicated-state wire format 변경이다. 같은 schema 번호만으로 release 호환을 추정하지 않는다. Retained/offline/delivery proposal 전에 모든 non-retired member의 release/protocol/schema 정확한 일치가 필요하다.
-- 이전 release로 rolling rollback 또는 v3 archive를 이전 release에서 restore하는 경로는 지원하지 않는다. N/N-1 archive compatibility는 별도 승인과 acceptance가 필요하다.
-- Production Linux/EBS power-loss, WAL torn-tail, volume loss, retention/RPO/RTO, BP-03 및 N/N-1 compatibility는 이 archive contract로 완료되지 않는다. PRD TEN-08 tenant storage quota는 [ADR-0017](../decisions/ADR-0017-tenant-storage-quota.md)과 [Cluster §11.16](../specs/cluster-session-and-delivery.md#1116-tenant-storage-quota-수용-매핑)에서 별도로 제공·검증한다.
+- Retained, offline, delivery field 추가는 unknown field를 거절하는 schema `1.0`의 replicated-state wire format 변경이다. 같은 schema 번호만으로 release 호환을 추정하지 않는다. Archive·typed snapshot·committed tail·boundary summary를 기존 strict codec로 검증하며 알 수 없는 field·command·summary는 target storage 변경 전에 거절한다. Release window나 inactive feature가 decode 실패를 허용하지 않는다.
+- N archive를 N-1에서 restore할 수 있다. 단 N-1이 모르는 active feature가 있으면 거절한다. N-2 이하·다른 major는 거절한다. Rolling rollback은 [ADR-0018](../decisions/ADR-0018-release-compatibility-window.md), archive restore는 [ADR-0021](../decisions/ADR-0021-backup-archive-release-window.md)을 따른다.
+- Production Linux/EBS power-loss, WAL torn-tail, volume loss, retention/RPO/RTO, BP-03 및 historical-source compatibility는 이 archive contract로 완료되지 않는다. PRD TEN-08 tenant storage quota는 [ADR-0017](../decisions/ADR-0017-tenant-storage-quota.md)과 [Cluster §11.16](../specs/cluster-session-and-delivery.md#1116-tenant-storage-quota-수용-매핑)에서 별도로 제공·검증한다.
+
+### Archive producer/consumer release matrix
+
+아래 행은 모든 voter도 consumer의 window 안에 있고 기존 identity·codec·summary 검증이 통과한다는 조건이다. `N/N-1`은 같은 major의 인접 minor를 뜻한다. 실행 증거는 [Cluster §11.19](../specs/cluster-session-and-delivery.md#1119-backup-archive-nn-1-restore-수용-매핑)에만 기록한다.
+
+| Producer → consumer | Active feature 조건 | 결과·검증 범위 |
+| --- | --- | --- |
+| N-1 → N | Consumer가 모두 지원 | 허용; synthetic binary upgrade restore |
+| N → N-1 | Consumer가 모두 지원 | 허용; feature 비활성 archive의 synthetic binary downgrade restore |
+| N → N-1 | Consumer가 지원하지 않는 feature 존재 | Target 변경 전에 거절; synthetic binary process acceptance |
+| 같은 minor, patch 차이 | Consumer가 모두 지원 | 허용; unit boundary |
+| Minor 차이 2 이상 또는 다른 major | 관계없음 | Target 변경 전에 거절; N→N-2 process 및 양방향·major unit boundary |
+
 
 ## 5. 초안을 확정하기 전에 해결할 사항
 
 - Production-like Linux filesystem/EBS power-loss, WAL torn-tail 및 volume-loss/reseed acceptance.
 - `SPEC-TBD-09` retention 및 disaster-recovery RPO/RTO 목표.
-- Release 간 archive producer/consumer compatibility matrix와 승인된 migration/rollback 정책.
+- 실제 과거 source revision 사이의 archive producer/consumer compatibility matrix. 승인된 N/N-1 restore 정책과 synthetic build acceptance는 [Cluster §11.19](../specs/cluster-session-and-delivery.md#1119-backup-archive-nn-1-restore-수용-매핑)에서 관리한다.
 - PRD TEN-08 tenant 저장 quota와 초과 경보는 [ADR-0017](../decisions/ADR-0017-tenant-storage-quota.md) 및 Cluster §11.16에서 관리한다.
-- Durable delivery-session backup/restore process acceptance는 Cluster §11.11에서 `inflight` summary와 restored state를 포함해 통과했다. Production storage/EBS acceptance와 release compatibility matrix는 별도 미완료 항목이다.
+- Durable delivery-session backup/restore process acceptance는 Cluster §11.11에서 `inflight` summary와 restored state를 포함해 통과했다. Production storage/EBS acceptance와 historical-source compatibility는 별도 미완료 항목이다.

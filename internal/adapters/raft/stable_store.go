@@ -14,7 +14,6 @@ import (
 	"sort"
 	"strconv"
 	"strings"
-	"time"
 
 	etcdraft "go.etcd.io/raft/v3"
 	pb "go.etcd.io/raft/v3/raftpb"
@@ -614,105 +613,68 @@ func (s *stableStore) loadSnapshotData(data []byte) error {
 	return nil
 }
 
-func (s *stableStore) appendReady(ready etcdraft.Ready) error {
-	record, err := readyRecordMode(ready, s.dynamic)
-	if err != nil {
-		return err
-	}
-	if record.persistent() {
-		if err := s.appendWALFrame(ready, record); err != nil {
-			return err
+// applyRecord publishes only records whose worker completion followed fsync.
+// Node's mutex owns all mutable metadata; the WAL worker never touches it.
+func (s *stableStore) applyRecord(record walRecord) error {
+	if record.snapshot != nil {
+		if err := s.memory.ApplySnapshot(record.snapshot); err != nil {
+			return fmt.Errorf("apply stored snapshot: %w", err)
 		}
-	}
-
-	if ready.Snapshot != nil && !etcdraft.IsEmptySnap(ready.Snapshot) {
-		if err := persistSnapshotFileMode(s.directory, ready.Snapshot, s.dynamic, nil); err != nil {
-			return err
-		}
-		if err := s.memory.ApplySnapshot(proto.Clone(ready.Snapshot).(*pb.Snapshot)); err != nil {
-			return fmt.Errorf("apply ready snapshot: %w", err)
-		}
-		s.snapshotIndex = ready.Snapshot.GetMetadata().GetIndex()
-		s.confState = cloneConfState(ready.Snapshot.GetMetadata().GetConfState())
-		if err := s.loadSnapshotData(ready.Snapshot.GetData()); err != nil {
-			return fmt.Errorf("load ready snapshot state: %w", err)
+		s.snapshotIndex = record.snapshot.GetMetadata().GetIndex()
+		s.confState = cloneConfState(record.snapshot.GetMetadata().GetConfState())
+		if err := s.loadSnapshotData(record.snapshot.GetData()); err != nil {
+			return fmt.Errorf("load stored snapshot state: %w", err)
 		}
 		s.appliedIndex = s.snapshotIndex
 	}
-	if len(ready.Entries) != 0 {
-		if err := s.memory.Append(cloneEntries(ready.Entries)); err != nil {
-			return fmt.Errorf("append ready entries: %w", err)
+	if len(record.entries) != 0 {
+		if err := s.memory.Append(record.entries); err != nil {
+			return fmt.Errorf("append stored entries: %w", err)
 		}
 	}
-	if ready.HardState != nil {
-		s.hardState = proto.Clone(ready.HardState).(*pb.HardState)
-		if err := s.memory.SetHardState(proto.Clone(ready.HardState).(*pb.HardState)); err != nil {
-			return fmt.Errorf("set ready hard state: %w", err)
+	if record.hardState != nil {
+		s.hardState = record.hardState
+		if err := s.memory.SetHardState(record.hardState); err != nil {
+			return fmt.Errorf("set stored hard state: %w", err)
 		}
 	}
 	return nil
 }
 
-func (s *stableStore) appendWALFrame(ready etcdraft.Ready, record walRecord) error {
+// writeWALFrame preserves the existing frame format without synchronizing it.
+// Only the WAL worker may call it; Responses require a subsequent successful sync.
+func (s *stableStore) writeWALFrame(record walRecord, normalEntries [][]byte) (int, error) {
 	payload, err := encodeWALRecordMode(record, s.dynamic)
 	if err != nil {
-		return err
+		return 0, err
 	}
 	frameLimit := maxWALFramePayload
 	if s.dynamic {
 		frameLimit = maxDynamicWALFramePayload
 	}
 	if len(payload) > frameLimit {
-		return fmt.Errorf("WAL frame exceeds %d bytes", frameLimit)
+		return 0, fmt.Errorf("WAL frame exceeds %d bytes", frameLimit)
 	}
 	var header [8]byte
 	binary.BigEndian.PutUint32(header[:4], uint32(len(payload)))
 	binary.BigEndian.PutUint32(header[4:], crc32.Checksum(payload, crcTable))
-	var normalEntries [][]byte
-	if s.walHook != nil {
-		for index := range ready.Entries {
-			entry := ready.Entries[index]
-			if entry.GetType() == pb.EntryNormal && len(entry.GetData()) != 0 {
-				normalEntries = append(normalEntries, entry.GetData())
-			}
-		}
-	}
-	if len(normalEntries) != 0 {
+	if s.walHook != nil && len(normalEntries) != 0 {
 		s.walHook(WALBoundaryDTO{Stage: WALBeforeWrite, Entries: normalEntries})
 	}
 	if err := writeAll(s.wal, header[:]); err != nil {
-		return fmt.Errorf("append WAL frame header: %w", err)
+		return 0, fmt.Errorf("append WAL frame header: %w", err)
 	}
 	if err := writeAll(s.wal, payload); err != nil {
-		return fmt.Errorf("append WAL frame payload: %w", err)
+		return 0, fmt.Errorf("append WAL frame payload: %w", err)
 	}
-	if len(normalEntries) != 0 {
-		s.walHook(WALBoundaryDTO{Stage: WALBeforeSync, Entries: normalEntries})
-	}
-	var syncStarted time.Time
-	if s.walSyncObserver != nil {
-		syncStarted = time.Now()
-	}
-	if err := filePersistenceOps.sync(s.wal); err != nil {
-		return fmt.Errorf("sync WAL: %w", err)
-	}
-	if s.walSyncObserver != nil {
-		s.walSyncObserver(WALSyncDTO{
-			Duration:   time.Since(syncStarted),
-			Entries:    len(ready.Entries),
-			FrameBytes: len(header) + len(payload),
-		})
-	}
-	if len(normalEntries) != 0 {
-		s.walHook(WALBoundaryDTO{Stage: WALAfterSync, Entries: normalEntries})
-	}
-	return nil
+	return len(header) + len(payload), nil
 }
 
 func (s *stableStore) close() error {
 	if s.wal == nil {
 		return nil
 	}
+	defer func() { s.wal = nil }()
 	if err := filePersistenceOps.sync(s.wal); err != nil {
 		_ = s.wal.Close()
 		return fmt.Errorf("close WAL: %w", err)
@@ -720,7 +682,6 @@ func (s *stableStore) close() error {
 	if err := s.wal.Close(); err != nil {
 		return fmt.Errorf("close WAL: %w", err)
 	}
-	s.wal = nil
 	return nil
 }
 
@@ -1002,13 +963,13 @@ func readyRecord(ready etcdraft.Ready) (walRecord, error) {
 
 func readyRecordMode(ready etcdraft.Ready, dynamic bool) (walRecord, error) {
 	record := walRecord{
-		entries: cloneEntries(ready.Entries),
+		entries: slices.Clone(ready.Entries),
 	}
 	if ready.HardState != nil && !etcdraft.IsEmptyHardState(ready.HardState) {
-		record.hardState = proto.Clone(ready.HardState).(*pb.HardState)
+		record.hardState = ready.HardState
 	}
 	if ready.Snapshot != nil && !etcdraft.IsEmptySnap(ready.Snapshot) {
-		record.snapshot = proto.Clone(ready.Snapshot).(*pb.Snapshot)
+		record.snapshot = ready.Snapshot
 		if dynamic {
 			if len(record.snapshot.GetData()) == 0 || len(record.snapshot.GetData()) > maxSnapshotPayload {
 				return walRecord{}, fmt.Errorf("dynamic snapshot payload is empty or exceeds %d bytes", maxSnapshotPayload)

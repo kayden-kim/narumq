@@ -54,6 +54,12 @@ func (queue *recordingQueue) Register(sessionID routing.SessionID) error {
 
 func (queue *recordingQueue) Remove(sessionID routing.SessionID) {}
 
+func (*recordingQueue) PeekBatch(routing.SessionID, time.Time, []applicationdeliveryqueue.DeliveryDTO) (int, error) {
+	return 0, nil
+}
+func (*recordingQueue) PromoteBatch([]applicationdeliveryqueue.OutboundDTO, time.Time) (int, error) {
+	return 0, nil
+}
 func (*recordingQueue) Peek(routing.SessionID, time.Time) (applicationdeliveryqueue.DeliveryDTO, bool, error) {
 	return applicationdeliveryqueue.DeliveryDTO{}, false, nil
 }
@@ -70,6 +76,20 @@ func (*recordingQueue) ListOutbound(routing.SessionID) ([]applicationdeliveryque
 func (*recordingQueue) ReplaceOutbound(applicationdeliveryqueue.OutboundDTO) error { return nil }
 func (*recordingQueue) CompleteOutbound(routing.SessionID, mqtt.PacketIdentifier) error {
 	return nil
+}
+
+func (queue *recordingQueue) BeginReplaceOutbound(outbound applicationdeliveryqueue.OutboundDTO) (applicationdeliveryqueue.PendingTransition, error) {
+	if err := queue.ReplaceOutbound(outbound); err != nil {
+		return nil, err
+	}
+	return applicationdeliveryqueue.CompletedTransition{}, nil
+}
+
+func (queue *recordingQueue) BeginCompleteOutbound(outbound applicationdeliveryqueue.OutboundDTO) (applicationdeliveryqueue.PendingTransition, error) {
+	if err := queue.CompleteOutbound(outbound.SessionID, outbound.PacketID); err != nil {
+		return nil, err
+	}
+	return applicationdeliveryqueue.CompletedTransition{}, nil
 }
 func (*recordingQueue) ResetDurable(routing.SessionID, uint64, []applicationdeliveryqueue.DeliveryDTO, []applicationdeliveryqueue.OutboundDTO, time.Time) error {
 	return nil

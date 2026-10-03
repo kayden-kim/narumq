@@ -130,7 +130,7 @@ func TestFailedStorageClosesReadinessAndCommit(t *testing.T) {
 	}
 	runtime.storage.fail(fmt.Errorf("%w: %w", raftadapter.ErrFailed, raftadapter.ErrStorage))
 
-	if err := runtime.checkReadiness(context.Background()); !errors.Is(err, errClusterStorageUnhealthy) {
+	if err := runtime.checkReadiness(context.Background(), "health"); !errors.Is(err, errClusterStorageUnhealthy) {
 		t.Fatalf("checkReadiness() = %v, want storage unhealthy", err)
 	}
 	if _, err := runtime.Commit(context.Background(), membership.CommandDTO{}); !errors.Is(err, membership.ErrQuorumUnavailable) {

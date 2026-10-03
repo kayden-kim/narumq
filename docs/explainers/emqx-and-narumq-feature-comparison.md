@@ -7,13 +7,13 @@ EMQX Self-Hosted Enterprise는 MQTT broker 외에도 rule engine, data integrati
 | 기준 독자 | EMQX 운영자와 NaruMQ 기능·이전 범위를 비교하는 개발자·운영자 |
 | 먼저 읽을 문서 | [PRD의 실제 EMQX 비교 기준](../requirements/PRD.md), [MQTT session과 delivery spec](../specs/mqtt-protocol-and-session.md) |
 | 관련 기준 문서 | [PRD](../requirements/PRD.md), [Cluster spec](../specs/cluster-session-and-delivery.md), [Tenant·security spec](../specs/tenancy-and-security.md), [Management API spec](../specs/management-api-and-observability.md) |
-| 대상 버전·확인일 | EMQX 공식 `latest` rolling docs(기능별 최소 version은 아래 참고); NaruMQ current working tree; 2026-09-27 |
+| 대상 버전·확인일 | 일반 기능 대조: EMQX 공식 `latest` rolling docs·NaruMQ 조사 당시 working tree(2026-09-27). 내구성·ACK 세부 비교: EMQX 5.8.8 Enterprise·NaruMQ 기준 문서와 실행 evidence(2026-10-01) |
 
 ## 비교 범위와 판정 기준
 
 - **EMQX 기준:** 공식 기능 비교표의 **Self-Hosted (Enterprise)** 열을 주 기준으로 사용한다. 그 표에는 EMQX Cloud Serverless와 Dedicated Flex도 별도 열로 있으므로 self-hosted 기능을 Cloud 전체에 일반화하지 않는다. EMQX 5.9부터 BSL 1.1이 적용되고, 문서상 단일 node Community License와 상용 cluster license 조건이 있으므로 사용 version·license를 별도로 고정해야 한다. [E1][E16]
 - **NaruMQ 기준:** 현재 상태는 code와 대응 수용 시험의 evidence로 판정한다. MQTT·cluster spec은 Draft이고 cluster architecture는 Target/Draft다. Draft/Target의 normative statement만으로 구현 완료 처리하지 않으며, cluster 기능은 수용 시험이 확인한 범위(in-process, process-level, production)를 구분한다. [N1][N2][N5][N6]
-- **EMQX edition 선택은 미결정:** NaruMQ PRD는 benchmark에 쓸 EMQX version과 edition을 미결정 질문으로 남긴다. 이 문서는 제품 검증이나 전환 결정을 대신하지 않는다. 실제 기준 환경이 다른 edition/version이면 그 기준으로 표를 다시 확인한다. [N5]
+- **EMQX 비교 대상의 적용 범위:** 2026-10-01 사용자 요청으로 BP-03 local smoke는 EMQX 5.8.8 Enterprise의 replicated Durable Sessions와 JWT 인증으로 전환했다. 설정·실행 증거와 남은 ACK/fsync·보안 차이는 [성능 검증 §3.4](../specs/performance-and-verification.md#34-bp-03-durable-delivery-smoke-관찰-경계)를 따른다. BP-01/BP-05의 역사적 OSS comparator와 장기 production benchmark version·edition의 미결정 상태는 바꾸지 않는다. 이 문서는 제품 검증이나 전환 결정을 대신하지 않는다. [N5]
 
 **EMQX version 차이:** `latest`는 rolling docs다. Durable Sessions는 v5.7부터, Namespace는 v5.9부터 제공되는 등 기능별 최소 version이 다르다. 이 표는 모든 기능이 하나의 EMQX version에 동시에 있다는 뜻이 아니므로 실제 기준 release에서 확인한다. [E3][E11]
 
@@ -32,6 +32,7 @@ EMQX Self-Hosted Enterprise는 MQTT broker 외에도 rule engine, data integrati
 | 제품 범위 | MQTT broker, 통합 처리, schema, 다중 프로토콜 gateway와 관리 기능을 포함한다. [E1][E13] | MQTT broker 중심. Kafka·DB connector 묶음, 범용 rule engine과 비-MQTT gateway는 초기 제품 비목표다. [N5] | EMQX는 application integration platform까지 제공한다. NaruMQ는 현재 그 기능을 직접 대체하지 않는다. |
 | MQTT 및 client compatibility | MQTT 3.x·5.0, TCP/TLS, WS/WSS와 QUIC 등 문서화된 연결 경로가 있다. [E1][E6][E7] | MQTT 3.1.1/5.0, TCP/TLS 구현. MQTT 3.1.0은 거절하며 WebSocket/WSS는 PRD의 선택 기능이다. [N1][N5] | 오래된 client protocol과 browser/QUIC transport 사용 여부를 먼저 inventory해야 한다. |
 | Session 내구성 | 일반 session은 node memory, Durable Sessions는 설정 시 disk-backed storage와 cluster replication을 사용한다. [E3] | Standalone session은 process-local. Dynamic cluster의 retained/offline QoS 0 replay 및 QoS 1/2 durable detached queue, reconnect, inflight takeover와 backup v3 restore는 제한된 process acceptance에서 확인됐다. Production power-loss와 release N/N-1은 별도 미검증 gate다. [N1][N2] | QoS 1/2 process acceptance를 production storage 또는 모든 lifecycle 조합의 동등성으로 확대 해석하지 않는다. |
+| 성공 ACK의 내구성 의미 | BP-03의 5.8.8은 메시지 저장을 비동기로 요청하므로 PUBACK가 저장 buffer 처리보다 먼저 나올 수 있다. [E17][E18][E20] | ADR-0003이 명세한 경계는 과반수 WAL 영속화·commit 후 PUBACK/PUBREC이다. ADR은 `Proposed`이며 production 보장 수용은 미완료다. [N9] | 같은 3 replicas나 QoS label만으로 ACK 보장이 동등해지지 않는다. 아래 내구성 세부 비교를 참고한다. |
 | 운영 기능 | Dashboard, management API, rule/connector 관리, cluster rebalancing·node evacuation 등 기능이 있다. [E1][E13][E14] | 13개 GET query profile, health probe와 Prometheus/OpenMetrics가 구현되어 있다. Dashboard와 mutation/drain API는 deferred다. [N4][N5] | UI 및 operator workflow를 API·외부 도구로 대체할 수 있는지 확인해야 한다. |
 | 생산 준비 evidence | 기능과 배포 지원은 version/edition/license에 따라 달라진다. [E1][E16] | EKS EC2 3-AZ가 목표 profile이다. Linux/EBS power-loss, volume loss와 RPO/RTO gate는 미실행으로 남았다. [N5][N6] | 문서상 기능 유무만으로 동일한 production guarantee를 추론할 수 없다. |
 
@@ -58,11 +59,59 @@ EMQX Self-Hosted Enterprise는 MQTT broker 외에도 rule engine, data integrati
 | 기능 | EMQX Self-Hosted Enterprise | NaruMQ 현재 상태 | 비교 시 주의점 |
 | --- | --- | --- | --- |
 | Cluster 구성과 scaling | 공식 기능표는 multi-node cluster, discovery, autoscaling과 network split recovery를 제시한다. Self-hosted, Serverless와 Dedicated Flex의 cluster 특성은 다르다. [E1] | **부분:** Process acceptance는 dynamic membership add/remove, transition crash/restart, readiness와 active-session handoff를 확인한다. `TestDynamicClusterMembershipProcessAcceptance` 등은 전체 cluster architecture나 production readiness를 승인하지 않는다. [N2][N6] | 분산 방식의 이름보다 quorum loss, membership change, stale owner 차단과 복구 경계가 실사용에 중요하다. |
-| Durable storage와 failover | Durable Storage는 RocksDB 기반 disk persistence와 Raft replication을 사용한다. 기능은 `durable_sessions.enable`로 활성화하며 성능·latency 비용이 있다. [E3] | **부분:** QoS 1/2 quorum ACK, detached delivery/takeover, process crash recovery와 backup v3 restore를 제한된 process acceptance로 확인했다. Linux/EBS power-loss, volume loss, WAL/fsync crash, BP-03과 N/N-1은 미검증이다. [N2][N6] | Local process crash acceptance는 production durability와 동일하지 않다. |
+| Durable storage와 failover | Durable Storage는 RocksDB 기반 disk persistence와 Raft replication을 사용한다. Durable Sessions는 `durable_sessions.enable`로 활성화하지만 이것이 MQTT ACK의 동기 영속화 경계를 뜻하지는 않는다. [E3][E17][E18] | **부분:** QoS 1/2 detached delivery/takeover, process crash recovery와 backup v3 restore를 제한된 process acceptance로 확인했다. WAL/commit crash와 Docker/FUSE 장애 시험의 부분 증거는 있지만 production Linux/EBS power-loss, volume loss, 유효한 BP-03과 N/N-1 gate는 남아 있다. [N2][N7][N9] | 저장 기능, ACK 시점의 약속, 실제 장애 시험의 검증 범위를 구분한다. |
 | Backup·restore | 공식 feature list는 data persistence와 cluster tooling을 제공하지만, 이 표만으로 NMQBKUP3와 같은 archive format/restore policy의 동등성을 판단할 수 없다. [E1] | **부분:** `TestClusterBackupRestoreProcessCrashAndResync`는 retained/offline QoS 0을, `TestDynamicClusterDurableQoSBackupRestoreProcessAcceptance`는 QoS 1/2 delivery state와 publisher tombstone의 backup v3 restore를 확인했다. EBS power-loss, volume loss/reseed와 retention/RPO/RTO는 미실행이다. [N2][N6] | Backup format 지원 여부와 실제 disaster recovery RPO/RTO를 따로 검증한다. |
 | Node evacuation, drain, rebalance | Self-Hosted Enterprise 기능표는 node evacuation/rebalance와 hot upgrade를 포함한다. EMQX 문서는 maintenance 전 traffic/session evacuation workflow를 설명한다. [E1] | **계획/미완료:** Safe drain은 PRD lifecycle 목표지만 active management contract에서 drain mutation은 deferred다. | 연결 이동, replicated session state takeover와 Pod 삭제 gate를 별도로 비교한다. |
 | Dynamic membership compatibility | Discovery 방식과 cluster 운영은 feature/version/edition에 종속된다. [E1] | **부분:** Membership process acceptance와 profile gate가 있지만, N/N-1 mixed-version state 호환성은 acceptance 완료로 간주하지 않는다. Retained/offline current profile은 exact member profile 조건을 쓴다. [N2][N6] | 동일 cluster에 서로 다른 release를 섞을 수 있다고 추정하지 말고 지원 matrix를 확인한다. |
 | Production deployment profile | Self-hosted Enterprise와 Kubernetes Operator 배포를 문서화한다. [E1] | **계획·미검증:** EKS EC2 3-AZ가 목표 production profile이다. EBS/WAL power-loss gate 전에는 production storage guarantee로 표현하지 않는다. [N5][N6] | Docker/local process test는 Linux/EBS volume failure나 AZ durability proof가 아니다. |
+
+### Durable Storage와 durable ACK의 보장 경계
+
+이 절은 BP-03에 고정한 **EMQX 5.8.8 Enterprise**와 NaruMQ의 dynamic cluster 계약을 비교한다. 다른 EMQX release나 NaruMQ standalone memory profile에 그대로 적용하지 않는다. **복제 저장 구성은 유사하지만 성공 ACK의 내구성 의미는 동등하지 않다.** NaruMQ의 명세가 더 엄격하다는 사실과 production에서 그 보장을 완전히 검증했다는 주장은 별개다. [N7][N9]
+
+**Durable Storage**는 메시지를 디스크에 저장하고 여러 node에 복제하는 저장소다. **Durable ACK**는 client에게 성공을 응답하기 전에 어떤 저장·복제 작업을 완료하는지 정하는 약속이다. **WAL**은 복구를 위해 command를 먼저 기록하는 로그이며, `fsync`는 운영체제에 디스크 동기화를 요청하는 작업이다. 같은 Raft나 replica 수를 사용해도 MQTT ACK가 그 완료를 기다리는지는 별도로 확인할 항목이다.
+
+| 비교 항목 | EMQX 5.8.8 소스·실행에서 확인한 동작 | NaruMQ가 명세한 계약 |
+| --- | --- | --- |
+| 일반 메시지 저장 대상 | `emqx_persistent_session_ds_router:has_any_route`로 매칭 durable-session route가 있는지 확인한다. 단순히 live MQTT subscription이 있다는 조건이 아니다. [E17] | ADR-0019: committed QoS≥1 matching subscription(durable target)이 있을 때만 delivery 기록을 저장한다. Retained 값과 QoS 2 수신 상태는 별도로 저장한다. 모든 성공 ACK는 quorum 확인 뒤 반환한다. [N9][N10] |
+| QoS 1 PUBACK | `sync => false`로 저장을 요청한다. Buffer에 비동기 요청을 보내고 저장 완료 응답을 기다리지 않는 경로다. [E17][E18][E20] | Target이 있으면 delivery command commit 뒤, 없으면 write 없이 quorum ReadIndex barrier 뒤 PUBACK한다. EMQX 비동기 ACK는 채택하지 않는다. [N10] |
+| QoS 2 PUBREC | **소스 경로 확인:** broker publish 뒤 `awaiting_rel`을 갱신하고 state commit timer를 설정한다. Channel은 그 결과로 PUBREC을 만든다. 아래 격리 실험은 PUBREC을 시험하지 않았다. [E20][E21] | 원본 메시지와 복구에 필요한 handshake·delivery command를 영속화·commit한 뒤 성공 PUBREC을 반환하는 계약이다. [N1][N9] |
+| 장애 검증 | 아래 실험은 저장 처리 전 PUBACK를 확인했다. 3-node ACK 직후 장애·전원 손실 또는 실제 메시지 손실을 검증한 것은 아니다. | Process crash·WAL/commit crash·partition 및 Docker/FUSE simulation의 부분 증거가 있다. ADR-0003은 `Proposed`이고 BP-03·production storage 수용은 미완료다. [N7][N9] |
+
+EMQX의 메시지 저장 호출은 다음과 같다. `sync`는 이 저장 API의 완료 응답을 기다리는지 나타내며, `fsync` 설정과 같은 이름의 옵션으로 해석하지 않는다. [E17][E18]
+
+```erlang
+emqx_ds:store_batch(?PERSISTENT_MESSAGE_DB, [Msg], #{sync => false}).
+```
+
+현재 BP-03의 message database는 `atomic_batches=false`이며 이 호출은 `emqx_ds_buffer` 경로를 사용한다. `sync=false`에서는 `gen_server:cast`로 비동기 요청을 보낸다. Buffer가 이후 batch를 처리할 때 Raft 저장을 호출하므로 MQTT 성공 ACK가 그 처리·복제 완료를 기다리는 경계는 아니다. [N7][E18][E19]
+
+**격리 실행 증거(2026-10-01):** BP-03과 같은 pinned Enterprise image로 별도 container `bp03-ack-boundary-probe-20261001`을 실행했다. 이 실험의 설정은 `builtin_raft`, `n_sites=1`, `replication_factor=1`, `n_shards=1`이며 **3-node quorum 내구성 시험이 아니다**.
+
+1. Session Expiry 60초의 실제 MQTT durable subscriber가 `durability-probe/#`를 QoS 1로 구독했고 SUBACK을 받았다. 메시지 topic에 durable route가 있는 것도 확인했다.
+2. 메시지 저장 buffer만 `sys:suspend`로 일시 정지했다.
+3. Publisher가 QoS 1 메시지를 보냈고 성공 PUBACK body `00070000`을 받았다.
+4. Buffer가 여전히 정지한 상태에서 해당 메시지가 처리되지 않은 `enqueue_req` 비동기 요청으로 저장 담당 process의 **메모리 대기열**에 남아 있었다.
+5. Buffer를 재개한 뒤 subscriber가 정확한 topic·payload를 받았다. 연결과 격리 container는 정리했다.
+
+이 실행은 **PUBACK가 저장 buffer 처리보다 먼저 나올 수 있음**을 입증한다. 그 대기 중 crash/kill을 주입하지 않았으므로 실제 손실을 관측한 결과로 표현하지 않는다. QoS 2 판단은 위 소스 경로에 근거하며 이 실험의 실행 결과로 확대하지 않는다. 별도 BP-03 3-node run의 replica set과 정상 workload·offline/reconnect 결과는 [성능 검증 §3.4](../specs/performance-and-verification.md#34-bp-03-durable-delivery-smoke-관찰-경계)에 있다. 이는 3 replicas의 구성·정상 동작 증거이지 ACK 직후 clustered fault proof가 아니다. [N7]
+
+#### 채택: durable target이 없을 때 delivery 기록 생략
+
+2026-10-02 **ADR-0019로 target 없는 delivery command 생략을 채택했다.** Durable target 후보는 PUBLISH 준비 시점의 ingress route projection에 있는 primary 후보 중 effective QoS가 1 이상인 subscription이다. Session의 persistent 여부는 후보 포함 여부를 바꾸지 않으며, apply 시 committed ownership과 subscription을 다시 검증한다. [N2][N10]
+
+Target 후보가 없는 QoS 1 client PUBLISH와 QoS 1/2 Will은 delivery PUBLISH command를 만들지 않는다. 대신 fresh quorum ReadIndex barrier를 통과하고 그 index까지 local apply와 route projection이 끝난 뒤 QoS 0 lane을 처리한다. QoS 1 client는 그 다음에 PUBACK을 받으며 Will에는 publisher ACK가 없다. Quorum barrier가 실패하거나 5초 안에 끝나지 않으면 QoS 0 lane과 성공 PUBACK을 막고 연결을 닫는다.
+
+| 상황 | 채택한 저장·ACK 범위 |
+| --- | --- |
+| Committed QoS 1 이상 subscription이 매칭됨 | Session의 persistent 여부와 무관하게 durable target으로 delivery state를 저장하고 command를 commit한다. |
+| Target 후보가 없음 | Delivery payload와 record를 저장하지 않는다. Quorum 확인은 유지하지만 미래 subscriber 전달이나 장애 뒤 전달을 보장하지 않는다. QoS 2 client PUBLISH inbound RECEIVE와 retained 값은 별도로 저장한다. |
+| Retained PUBLISH | 구독자 유무와 별개로 retained mutation을 commit한다. |
+| QoS 2 client PUBLISH와 RELEASE | RECEIVE는 target과 무관하게 PUBREC 전에 commit하고, RELEASE도 target 수와 무관하게 PUBCOMP 전에 commit한다. |
+
+EMQX 5.8.8은 matching durable-session route가 있을 때 메시지 저장 경로를 사용하며 `sync => false`로 PUBACK을 저장 완료 전에 반환할 수 있다. NaruMQ는 저장 대상만 나누고 성공 ACK의 quorum 확인은 유지한다. Target이 없을 때는 저장 command 대신 ReadIndex barrier를 사용하며 EMQX의 asynchronous ACK를 채택하지 않는다. 이 구분은 [ADR-0019](../decisions/ADR-0019-untargeted-durable-publish-quorum-barrier.md)의 범위다. [E17][E18][N10]
+
+이 변경은 target 없는 QoS 1 client PUBLISH와 QoS 1/2 Will의 delivery write만 생략한다. Retained mutation, publisher QoS 2 RECEIVE, QoS 2 RELEASE와 target 있는 QoS 1/2 delivery는 기존 저장 경계를 유지한다. 기존 BP-03 부하는 durable target이 매칭되는 workload이므로 이번 변경이 해당 benchmark의 비용이나 미달성 결과를 바꾸지 않는다. [N7][N10]
 
 ### Security와 multi-tenancy
 
@@ -127,6 +176,8 @@ EMQX Self-Hosted Enterprise는 MQTT broker 외에도 rule engine, data integrati
 - [N6] [Cluster architecture](../architectures/cluster-architecture.md)
 - [N7] [Performance와 verification spec](../specs/performance-and-verification.md)
 - [N8] [Standalone Will and Session Expiry socket test](../../tests/integration/mqtt_ingress_test.go)
+- [N9] [ADR-0003: Durable ACK 경계와 대안](../decisions/ADR-0003-durable-ack-barrier.md)
+- [N10] [ADR-0019: Target 없는 durable publish의 quorum barrier](../decisions/ADR-0019-untargeted-durable-publish-quorum-barrier.md)
 
 ### EMQX 공식 문서
 
@@ -146,3 +197,8 @@ EMQX Self-Hosted Enterprise는 MQTT broker 외에도 rule engine, data integrati
 - [E14] [REST API](https://docs.emqx.com/en/emqx/latest/guides/api.html)
 - [E15] [Monitor EMQX with Prometheus](https://docs.emqx.com/en/emqx/latest/guides/observability/prometheus.html)
 - [E16] [Work with EMQX Enterprise License](https://docs.emqx.com/en/emqx/latest/get-started/deploy/license.html)
+- [E17] [EMQX e5.8.8 메시지 저장 대상과 비동기 호출](https://github.com/emqx/emqx/blob/e5.8.8/apps/emqx/src/emqx_persistent_message.erl)
+- [E18] [EMQX e5.8.8 저장 buffer의 동기·비동기 요청](https://github.com/emqx/emqx/blob/e5.8.8/apps/emqx_durable_storage/src/emqx_ds_buffer.erl)
+- [E19] [EMQX e5.8.8 Raft backend의 buffered 저장 경로](https://github.com/emqx/emqx/blob/e5.8.8/apps/emqx_ds_builtin_raft/src/emqx_ds_replication_layer.erl)
+- [E20] [EMQX e5.8.8 MQTT channel의 PUBACK/PUBREC 생성](https://github.com/emqx/emqx/blob/e5.8.8/apps/emqx/src/emqx_channel.erl)
+- [E21] [EMQX e5.8.8 durable session의 QoS 2 publish·state commit](https://github.com/emqx/emqx/blob/e5.8.8/apps/emqx/src/emqx_persistent_session_ds.erl)

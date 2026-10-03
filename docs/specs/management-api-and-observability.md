@@ -156,6 +156,10 @@ Cluster 요약은 최소 다음 정보를 제공해야 한다.
 
 Node 상세는 `nodeId`, version, uptime, lifecycle state, readiness 원인, role, last applied index, resource pressure, connection 수와 drain operation을 포함해야 한다. Cluster mode에서 현재 node의 `replicationHealth`는 local Raft storage 상태를 나타내고, 원격 peer 행에서는 조회 node가 관찰한 peer 연결 상태를 나타내며 remote storage 상태를 주장하지 않는다. `lastErrorCode`는 원인별 안정된 code다. 원격 peer 행의 `replicationQueue`는 조회 node에서 해당 peer로 보내는 outbound message·byte·rejection 수를 제공한다. Local `DEGRADED`·`FAILED`는 lifecycle `state`를 변경하지 않고 readiness와 `storagePressure`에 반영하며, 내부 오류 원문을 노출해서는 안 된다. 정확한 field name과 schema는 OpenAPI에서 고정한다.
 
+Dynamic Raft inbound의 count·byte 한도에는 payload를 읽기 위해 예약한 frame과 driver가 인수했지만 아직 `Complete`하지 않은 frame도 포함한다. 포화된 reader는 payload를 할당하지 않은 채 공간을 기다리며, 이 아직 예약하지 못한 frame은 queue count·byte에 더하지 않는다. 한 reader의 예약·대기·해제는 [v2 Raft 경계 계약](../contracts/raft-membership-v2.md)의 채택된 inbound 정책을 따른다. Forwarding lane과 fixed-voter queue의 의미는 바꾸지 않는다.
+
+`cluster readiness rejected` 내부 로그의 `purpose=publish`는 PUBLISH의 local projection admission이다. 이 판정은 quorum proof가 아니므로 snapshot을 기록하더라도 `fresh_proof_confirmed=false`다. 실제 fresh read barrier를 통과한 readiness의 local snapshot 거절만 이 필드를 `true`로 기록한다. Snapshot 적용과 profile 조회 오류로 동기화가 해제될 때는 release-profile 로그의 고정 `stage`로 원인을 구분한다. Writer의 치명적인 delivery/control 오류는 socket을 닫기 전에 기록한다. Tenant/client ID·topic·payload·token을 추가하지 않는다.
+
 ## 5. Filtering과 masking
 
 - 목록 endpoint는 cursor pagination과 endpoint별 allowlist filter만 허용해야 한다.
@@ -183,17 +187,22 @@ Node 상세는 `nodeId`, version, uptime, lifecycle state, readiness 원인, rol
 | gauge | 합계가 의미 있는 값만 합산한다. quorum, leader와 state는 합산하지 않고 명시적 gauge로 표시한다. |
 | histogram | 같은 bucket 경계만 cluster에서 합산한다. quantile을 node별로 계산해 평균내서는 안 된다. |
 
-Dynamic cluster의 Raft WAL 동기화 세 series는 **Ready WAL frame 한 건의 파일 fsync 성공**만 관찰한다. Raft Ready batch는 복제 log를 기록하는 작업 단위다. 이 계측은 `File.Sync` 시간과 frame 내용만 나타내며 snapshot, metadata, restore 동기화 또는 fixed-voter 경로를 포함하지 않는다.
+Dynamic cluster의 Raft WAL 동기화 세 series는 **WAL group fsync 한 번의 성공**을 관찰한다. [ADR-0020](../decisions/ADR-0020-asynchronous-raft-wal-group-commit.md)의 단일 worker는 이미 대기 중인 여러 Ready 저장 요청을 각각 CRC frame으로 기록하고 한 번 sync할 수 있다. Histogram 한 표본은 frame 수가 아니라 실제 성공한 `File.Sync` 한 번이다. Duration은 이 호출의 시간만, entries와 bytes는 그 sync가 함께 확정한 frame들의 합계를 나타낸다. Snapshot 파일·directory, metadata, restore 동기화 또는 fixed-voter 경로는 포함하지 않는다.
 
 | Metric | Type | 값과 bucket |
 | --- | --- | --- |
-| `narumq_raft_wal_sync_duration_seconds` | histogram | 성공한 Ready WAL frame fsync의 초 단위 시간. finite bucket: `0.0001`, `0.00025`, `0.0005`, `0.001`, `0.0025`, `0.005`, `0.01`, `0.025`, `0.05`, `0.1`, `0.25`, `0.5`, `1`; 표준 `+Inf` bucket을 추가한다. |
-| `narumq_raft_wal_sync_entries` | histogram | 해당 frame에 저장한 Raft log entry 수. finite bucket: `0`, `1`, `2`, `4`, `8`, `16`, `32`, `64`, `128`, `256`; 표준 `+Inf` bucket을 추가한다. |
-| `narumq_raft_wal_written_bytes_total` | counter | WAL에 append한 bytes의 누적값. 8-byte frame header와 encoded payload를 포함한다. |
+| `narumq_raft_wal_sync_duration_seconds` | histogram | 성공한 WAL group fsync의 초 단위 시간. finite bucket: `0.0001`, `0.00025`, `0.0005`, `0.001`, `0.0025`, `0.005`, `0.01`, `0.025`, `0.05`, `0.1`, `0.25`, `0.5`, `1`; 표준 `+Inf` bucket을 추가한다. |
+| `narumq_raft_wal_sync_entries` | histogram | 해당 fsync로 확정한 모든 CRC frame의 Raft log entry 합계. Commit-only frame은 0 entries로 포함한다. finite bucket: `0`, `1`, `2`, `4`, `8`, `16`, `32`, `64`, `128`, `256`; 표준 `+Inf` bucket을 추가한다. |
+| `narumq_raft_wal_written_bytes_total` | counter | 성공한 group fsync가 확정한 append bytes의 누적값. 각 frame의 8-byte header와 encoded payload를 합산한다. 실패한 write·sync의 bytes는 계측하지 않는다. |
 
 이 세 series는 **label을 갖지 않는다**. 따라서 client ID, tenant, arbitrary topic 또는 node identity를 label에 추가해서는 안 된다. Registry는 모든 모드에서 series를 render하며 WAL observer가 연결되지 않은 standalone/fixed-voter 모드의 값은 0이다. Histogram을 cluster 차원으로 합산할 때는 node별 raw bucket count를 동일 경계에서 더하고, node별 quantile의 평균을 구하지 않는다.
 
-`internal/adapters/raft`의 `WALSyncObserver`는 dynamic cluster의 successful Ready WAL `File.Sync` 뒤에만 불린다. Fsync 실패는 관찰하지 않으며, fixed-voter `raft_peer_config.go` 경로에는 observer를 연결하지 않는다. 시험 위치: `internal/adapters/raft/node_test.go::TestWALSyncObserverReportsSuccessfulReadyFsyncs`와 `internal/adapters/metrics/registry_test.go::TestRegistryRendersWALSyncMetrics`.
+`internal/adapters/raft`의 `WALSyncObserver`는 dynamic cluster의 successful WAL group `File.Sync` 뒤에 한 번만 불린다. 저장 값이 없어 frame·sync가 생략된 요청과 fsync 실패는 관찰하지 않으며, fixed-voter `raft_peer_config.go` 경로에는 observer를 연결하지 않는다. 시험 위치: `internal/adapters/raft/wal_worker_test.go::TestWALWorkerGroupsQueuedFramesAndFailsClosed`, `internal/adapters/raft/node_test.go::TestWALSyncObserverReportsSuccessfulReadyFsyncs`, `internal/adapters/metrics/registry_test.go::TestRegistryRendersWALSyncMetrics`.
+
+Dynamic cluster는 `narumq_raft_stage_duration_seconds{stage}` histogram으로 driver의 처리·대기 시간을 기록한다. 고정 stage와 시작·종료 경계는 [BP-03 Raft 병목 진단](performance-and-verification.md#raft-병목-진단)을 따른다. Finite bucket은 `0.0001`, `0.00025`, `0.0005`, `0.001`, `0.0025`, `0.005`, `0.01`, `0.025`, `0.05`, `0.1`, `0.25`, `0.5`, `1`, `2`, `5`, `10`초이며 표준 `+Inf`를 추가한다. Registry는 모든 mode에서 render하지만 dynamic driver가 아닌 경로의 값은 0이다. 이 값에는 실패와 빈 Ready 처리도 포함되므로 WAL 성공 수나 MQTT 성공 ACK 수와 같은 분모로 취급하지 않는다.
+
+Dynamic cluster의 readiness 거절은 `cluster readiness rejected` 구조화 로그로 진단한다. 고정 purpose·stage, 판정 시점 snapshot, 첫 불충족 조건, 집계·출력 제한과 민감정보 제외 규칙은 [BP-03 진단 실행 기록](performance-and-verification.md#local-execution-evidence)을 따른다. Storage 검사나 fresh proof 단계에서 거절되면 아직 local snapshot을 판정하지 않았으므로 해당 flag와 index를 기록하지 않는다. 새 Metric label이나 API 응답 필드는 추가하지 않으며 기존 readiness·CONNACK 결과는 유지한다.
+
 
 최소 범주는 connection/session/subscription, message·packet·ACK, latency, cluster·replication, storage, auth·ACL, drain과 process resource다. `narumq_node_drain_transitions_total{phase}`는 committed node drain 상태를 phase별로 집계하며, label은 8개 유효 drain phase만 허용한다. Dynamic cluster의 저장 quota는 `narumq_tenant_quota_rejections_total{tenant,dimension}` counter와 `narumq_tenant_quota_profile_committed`, `narumq_tenant_quota_profile_version`, `narumq_tenant_quota_config_mismatch` gauge를 제공한다. `tenant`는 처음 본 값 1,024개까지만 그대로 보존하고 나머지는 `_overflow`로 합친다. `dimension`은 `retained_bytes`, `offline_queue_messages`, `offline_queue_bytes`, `storage_bytes`만 허용한다. 기존 Metric 이름과 histogram bucket은 `SPEC-TBD-07`에서 확정한다. |
 

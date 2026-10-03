@@ -12,6 +12,7 @@ import (
 	raftadapter "narumq/internal/adapters/raft"
 	"narumq/internal/adapters/raft/records"
 	"narumq/internal/application/membership"
+	"narumq/internal/domain/release"
 )
 
 func restoreClusterBackup(config clusterConfigFile, archivePath string) error {
@@ -80,10 +81,12 @@ func clusterRestoreSeed(config clusterConfigFile, archive *records.BackupArchive
 	if manifest.GetClusterId() != config.ClusterID {
 		return raftadapter.RestoreSeedDTO{}, errors.New("backup cluster ID does not match cluster config")
 	}
-	if manifest.GetProducerRelease() != config.ReleaseVersion ||
-		manifest.GetClusterProtocolMajor() != config.ClusterProtocolMajor || manifest.GetClusterProtocolMinor() != config.ClusterProtocolMinor ||
+	if !release.CompatibleStrings(manifest.GetProducerRelease(), config.ReleaseVersion) {
+		return raftadapter.RestoreSeedDTO{}, fmt.Errorf("backup producer release %s is outside the supported release window of %s", manifest.GetProducerRelease(), config.ReleaseVersion)
+	}
+	if manifest.GetClusterProtocolMajor() != config.ClusterProtocolMajor || manifest.GetClusterProtocolMinor() != config.ClusterProtocolMinor ||
 		manifest.GetStateSchemaMajor() != config.StateSchemaMajor || manifest.GetStateSchemaMinor() != config.StateSchemaMinor {
-		return raftadapter.RestoreSeedDTO{}, errors.New("backup release or schema does not match cluster config")
+		return raftadapter.RestoreSeedDTO{}, errors.New("backup cluster protocol or state schema does not match cluster config")
 	}
 	if len(manifest.GetVoterIds()) != 3 {
 		return raftadapter.RestoreSeedDTO{}, errors.New("cluster restore requires exactly three backup voters")
@@ -154,6 +157,11 @@ func clusterRestoreSeed(config clusterConfigFile, archive *records.BackupArchive
 	}
 	if !records.EqualBackupStateSummary(boundarySummary, manifest.GetBoundaryState()) {
 		return raftadapter.RestoreSeedDTO{}, errors.New("restored state does not match backup boundary summary")
+	}
+	for _, feature := range machine.ActiveFeatures() {
+		if !release.Contains(config.Features, feature) {
+			return raftadapter.RestoreSeedDTO{}, fmt.Errorf("backup active feature %q is not supported by this release", feature)
+		}
 	}
 	if err := validateRestoredMemberIdentities(config, manifest, boundary.Members); err != nil {
 		return raftadapter.RestoreSeedDTO{}, err
@@ -240,7 +248,7 @@ func validateRestoredMemberIdentities(config clusterConfigFile, manifest *record
 		}
 		if member.ClusterID != config.ClusterID || member.MemberID != configured.MemberID || member.Address != configured.Address ||
 			member.DNSSAN != configured.DNSSAN || !bytes.Equal(member.CertificateSHA256, fingerprint) ||
-			member.ReleaseVersion != config.ReleaseVersion || member.ClusterProtocolMajor != config.ClusterProtocolMajor ||
+			!release.CompatibleStrings(member.ReleaseVersion, config.ReleaseVersion) || member.ClusterProtocolMajor != config.ClusterProtocolMajor ||
 			member.ClusterProtocolMinor != config.ClusterProtocolMinor || member.StateSchemaMajor != config.StateSchemaMajor ||
 			member.StateSchemaMinor != config.StateSchemaMinor {
 			return fmt.Errorf("backup voter %d identity does not match cluster config", id)

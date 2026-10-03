@@ -19,6 +19,7 @@ import (
 	"narumq/internal/application/membership"
 	applicationauthentication "narumq/internal/application/ports/authentication"
 	applicationdeliveryqueue "narumq/internal/application/ports/deliveryqueue"
+	"narumq/internal/application/ports/deliverystate"
 	"narumq/internal/application/publish"
 	"narumq/internal/application/subscribe"
 	"narumq/internal/domain/mqtt"
@@ -86,19 +87,40 @@ type adapterTestRuntime struct {
 }
 
 type adapterTestClusterState struct {
-	mu                sync.Mutex
-	ownershipCalls    int
-	subscriptionCalls []uint32
-	subscriptionErr   error
+	mu                     sync.Mutex
+	ownershipCalls         int
+	ownershipEpoch         uint64
+	ownershipCommitted     func(string, string, uint64, uint64)
+	ownershipCommitStarted chan struct{}
+	ownershipCommitRelease <-chan struct{}
+	subscriptionCalls      []uint32
+	subscriptionErr        error
 }
 
 func (state *adapterTestClusterState) AcquireOwnership(
-	context.Context, string, string, uint64,
+	_ context.Context, tenantID, clientID string, ownerNodeID uint64,
 ) (uint64, error) {
 	state.mu.Lock()
-	defer state.mu.Unlock()
 	state.ownershipCalls++
-	return 1, nil
+	epoch := state.ownershipEpoch
+	if epoch == 0 {
+		epoch = 1
+	}
+	committed := state.ownershipCommitted
+	started := state.ownershipCommitStarted
+	state.ownershipCommitStarted = nil
+	release := state.ownershipCommitRelease
+	state.mu.Unlock()
+	if committed != nil {
+		committed(tenantID, clientID, ownerNodeID, epoch)
+	}
+	if started != nil {
+		close(started)
+	}
+	if release != nil {
+		<-release
+	}
+	return epoch, nil
 }
 
 func (state *adapterTestClusterState) CommitSubscription(
@@ -135,7 +157,15 @@ func (state *adapterTestClusterState) CommitDelivery(
 	}, nil
 }
 
-func newAdapterTestRuntime(t *testing.T, queueCapacity int, config Config) *adapterTestRuntime {
+func (state *adapterTestClusterState) BeginDelivery(ctx context.Context, change membership.DeliveryChangeDTO) (deliverystate.Pending, error) {
+	result, err := state.CommitDelivery(ctx, change)
+	if err != nil {
+		return nil, err
+	}
+	return testPendingDelivery{result: result}, nil
+}
+
+func newAdapterTestRuntime(t *testing.T, queueCapacity int, config Config, configure ...func(*Server)) *adapterTestRuntime {
 	t.Helper()
 	listener := newPipeListener()
 	routes := routing.NewTable()
@@ -185,6 +215,9 @@ func newAdapterTestRuntime(t *testing.T, queueCapacity int, config Config) *adap
 	server, err := NewServer(listener, config, decoder, encoder, connections, subscriptions, publications, queue, slog.New(slog.NewTextHandler(io.Discard, nil)))
 	if err != nil {
 		t.Fatal(err)
+	}
+	for _, setup := range configure {
+		setup(server)
 	}
 	willBridge.Bind(server)
 	ctx, cancel := context.WithCancel(context.Background())
@@ -853,6 +886,7 @@ func TestTCPWriterClosesConnectionAfterWriteTimeout(t *testing.T) {
 	runtimeServer := &Server{
 		config:  Config{Clock: &adapterTestClock{now: time.Now()}, WriteTimeout: 20 * time.Millisecond},
 		encoder: encoder,
+		logger:  slog.Default(),
 	}
 	connection := &connection{
 		server:       runtimeServer,

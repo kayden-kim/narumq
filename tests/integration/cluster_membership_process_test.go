@@ -142,6 +142,7 @@ func newClusterMembershipProcessFixture(t *testing.T, nodeCount int, buildTags s
       "durable-ack-pub",
       "durable-no-quorum-1",
       "durable-no-quorum-2",
+      "durable-no-quorum-3",
       "durable-backup-sub",
       "durable-backup-pub",
       "durable-will-sub",
@@ -207,7 +208,12 @@ func newClusterMembershipProcessFixture(t *testing.T, nodeCount int, buildTags s
       "compat-sub",
       "compat-load",
       "compat-pub",
-      "compat-retained-check"
+      "compat-retained-check",
+      "archive-retained-pub",
+      "archive-offline-sub",
+      "archive-offline-pub",
+      "archive-upgrade-retained",
+      "archive-downgrade-retained"
     ],
     "roles": ["client"]
   }],
@@ -246,6 +252,18 @@ func newClusterMembershipProcessFixture(t *testing.T, nodeCount int, buildTags s
     "role": "client",
     "effect": "allow",
     "action": "publish",
+    "topicFilter": "archive/#"
+  }, {
+    "tenantId": "acceptance",
+    "role": "client",
+    "effect": "allow",
+    "action": "subscribe",
+    "topicFilter": "archive/#"
+  }, {
+    "tenantId": "acceptance",
+    "role": "client",
+    "effect": "allow",
+    "action": "publish",
     "topicFilter": "live/#"
   }, {
     "tenantId": "acceptance",
@@ -277,6 +295,12 @@ func newClusterMembershipProcessFixture(t *testing.T, nodeCount int, buildTags s
     "effect": "allow",
     "action": "subscribe",
     "topicFilter": "durable-ack/#"
+  }, {
+    "tenantId": "acceptance",
+    "role": "client",
+    "effect": "allow",
+    "action": "publish",
+    "topicFilter": "durable-untargeted/#"
   }, {
     "tenantId": "acceptance",
     "role": "client",

@@ -28,6 +28,7 @@ type bp03Fixture struct {
 	Directory                   string
 	RunnerConfigDirectory       string
 	NetworkOwnerConfigDirectory string
+	EMQXConfigDirectory         string
 	NodeConfigDirectories       []string
 	CredentialsPath             string
 	ManagementToken             string
@@ -144,6 +145,7 @@ func newBP03Fixture(profile Profile, runID string) (*bp03Fixture, error) {
 		Directory:                   directory,
 		RunnerConfigDirectory:       filepath.Join(directory, "runner"),
 		NetworkOwnerConfigDirectory: filepath.Join(directory, "network-owner"),
+		EMQXConfigDirectory:         filepath.Join(directory, "emqx"),
 		NodeConfigDirectories:       make([]string, bp03NodeCount),
 	}
 	cleanup := func(err error) (*bp03Fixture, error) {
@@ -158,6 +160,13 @@ func newBP03Fixture(profile Profile, runID string) (*bp03Fixture, error) {
 	}
 	if err := os.Mkdir(fixture.NetworkOwnerConfigDirectory, 0o700); err != nil {
 		return cleanup(fmt.Errorf("create BP03 network owner public config directory: %w", err))
+	}
+	if err := os.Mkdir(fixture.EMQXConfigDirectory, 0o700); err != nil {
+		return cleanup(fmt.Errorf("create BP03 EMQX config directory: %w", err))
+	}
+	const emqxACL = "{allow, {username, \"jwt\"}, all, [\"bp03/#\"]}.\n{deny, all}.\n"
+	if err := writeBP03FixtureFile(filepath.Join(fixture.EMQXConfigDirectory, "acl.conf"), []byte(emqxACL)); err != nil {
+		return cleanup(fmt.Errorf("write BP03 EMQX ACL: %w", err))
 	}
 
 	adminBytes := make([]byte, 32)
@@ -391,6 +400,9 @@ func newBP03JWTFixture() ([]byte, string, error) {
 		return nil, "", fmt.Errorf("encode BP03 MQTT JWKS: %w", err)
 	}
 	token := jwt.New()
+	// EMQX 5.8 compares configured claims as strings; a single audience remains
+	// the same JWT audience when serialized in its RFC 7519 string form.
+	token.Options().Enable(jwt.FlattenAudience)
 	for name, value := range map[string]any{
 		"iss": "https://issuer.example", "aud": []string{"narumq"},
 		"sub": "bp03-client", "exp": time.Now().Add(2 * time.Hour),

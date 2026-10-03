@@ -248,20 +248,13 @@ func TestClusterReleaseProfileReconcileProposalClearsSyncedState(t *testing.T) {
 		}
 		request.readResult <- clusterReadResponse{index: 1}
 	}
-	commitBarrier := clusterReleaseProfileTestReceiveRequest(t, ctx, runtime)
-	if commitBarrier.kind != clusterDriverRead {
-		t.Fatalf("commit barrier kind=%d, want cluster read", commitBarrier.kind)
-	}
+	commit := clusterReleaseProfileTestReceiveRequest(t, ctx, runtime)
 	if controller.synced.Load() {
 		t.Fatal("profile mismatch kept readiness synchronized while proposal barrier was pending")
 	}
-	commitBarrier.readResult <- clusterReadResponse{index: 2}
-
-	proposal := clusterReleaseProfileTestReceiveRequest(t, ctx, runtime)
-	if proposal.kind != clusterDriverProposal {
-		t.Fatalf("proposal request kind=%d, want cluster proposal", proposal.kind)
+	commit.pending.staged <- clusterCommitStage{
+		err: errors.New("stop before proposal completion"), barrierFailure: true,
 	}
-	proposal.applyResult <- clusterApplyResponse{err: errors.New("stop after observing proposal")}
 	select {
 	case <-reconcileDone:
 	case <-ctx.Done():

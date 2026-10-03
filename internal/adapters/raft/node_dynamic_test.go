@@ -49,7 +49,7 @@ func TestDynamicMembershipChangesApplyAndReplayAfterRestart(t *testing.T) {
 		for round := 0; round < 512; round++ {
 			var messages []MessageDTO
 			for _, nodeID := range []NodeID{1, 2, 3} {
-				batch, err := nodes[nodeID].ProcessReady()
+				batch, err := processReadyForTest(t, nodes[nodeID])
 				if err != nil {
 					t.Fatalf("node %d ProcessReady(): %v", nodeID, err)
 				}
@@ -64,7 +64,7 @@ func TestDynamicMembershipChangesApplyAndReplayAfterRestart(t *testing.T) {
 				if target == nil {
 					continue
 				}
-				if err := target.Step(message); err != nil {
+				if _, err := target.Step(message); err != nil {
 					t.Fatalf("deliver %d -> %d: %v", message.From, message.To, err)
 				}
 			}
@@ -196,10 +196,10 @@ func TestUnbootstrappedDynamicNodeAcknowledgesLeaderReplication(t *testing.T) {
 		if err != nil {
 			t.Fatalf("marshal Raft message: %v", err)
 		}
-		if err := node.Step(MessageDTO{From: NodeID(message.GetFrom()), To: NodeID(message.GetTo()), Data: data}); err != nil {
+		if _, err := node.Step(MessageDTO{From: NodeID(message.GetFrom()), To: NodeID(message.GetTo()), Data: data}); err != nil {
 			t.Fatalf("step Raft message type %s: %v", message.GetType(), err)
 		}
-		batch, err := node.ProcessReady()
+		batch, err := processReadyForTest(t, node)
 		if err != nil {
 			t.Fatalf("process Raft message type %s: %v", message.GetType(), err)
 		}
@@ -271,7 +271,7 @@ func TestDynamicLearnerReplaysCommittedMembershipWithoutBootstrapState(t *testin
 		for round := 0; round < 512; round++ {
 			var messages []MessageDTO
 			for _, nodeID := range []NodeID{1, 2, 3, 4} {
-				batch, err := nodes[nodeID].ProcessReady()
+				batch, err := processReadyForTest(t, nodes[nodeID])
 				if err != nil {
 					t.Fatalf("node %d ProcessReady(): %v", nodeID, err)
 				}
@@ -281,7 +281,7 @@ func TestDynamicLearnerReplaysCommittedMembershipWithoutBootstrapState(t *testin
 				return
 			}
 			for _, message := range messages {
-				if err := nodes[message.To].Step(message); err != nil {
+				if _, err := nodes[message.To].Step(message); err != nil {
 					t.Fatalf("deliver %d -> %d: %v", message.From, message.To, err)
 				}
 			}
@@ -329,7 +329,7 @@ func TestDynamicApplicationSnapshotBeyondStaticLimitSurvivesRestart(t *testing.T
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := node.ProcessReady(); err != nil {
+	if _, err := processReadyForTest(t, node); err != nil {
 		t.Fatal(err)
 	}
 	payload := bytes.Repeat([]byte{0xA5}, 4*1024*1024)
@@ -412,7 +412,7 @@ func TestDynamicPersistenceBoundaryHookReportsMembershipReady(t *testing.T) {
 				if node == nil {
 					continue
 				}
-				batch, err := node.ProcessReady()
+				batch, err := processReadyForTest(t, node)
 				if err != nil {
 					t.Fatalf("node %d ProcessReady(): %v", nodeID, err)
 				}
@@ -426,7 +426,7 @@ func TestDynamicPersistenceBoundaryHookReportsMembershipReady(t *testing.T) {
 				if target == nil {
 					continue
 				}
-				if err := target.Step(message); err != nil {
+				if _, err := target.Step(message); err != nil {
 					t.Fatalf("deliver %d -> %d: %v", message.From, message.To, err)
 				}
 			}
@@ -502,7 +502,7 @@ func TestDynamicPersistenceBoundaryHookReportsMembershipReady(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("propose promote voter: %v", err)
 	}
-	_, processErr := nodes[1].ProcessReady()
+	_, processErr := processReadyForTest(t, nodes[1])
 	filePersistenceOps.write = oldWrite
 	if processErr == nil {
 		t.Fatal("expected ProcessReady to fail with injected write error")
@@ -569,10 +569,10 @@ func TestDynamicPersistenceBoundaryHookReportsMembershipReady(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := joiner.Step(MessageDTO{From: 1, To: 4, Data: data}); err != nil {
+	if _, err := joiner.Step(MessageDTO{From: 1, To: 4, Data: data}); err != nil {
 		t.Fatalf("step MsgSnap: %v", err)
 	}
-	if _, err := joiner.ProcessReady(); err != nil {
+	if _, err := processReadyForTest(t, joiner); err != nil {
 		t.Fatalf("joiner ProcessReady with snapshot: %v", err)
 	}
 
@@ -593,7 +593,7 @@ func TestDynamicStepAllowsOnlyAuthenticatedForwardedRequests(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer node.Close()
-	if _, err := node.ProcessReady(); err != nil {
+	if _, err := processReadyForTest(t, node); err != nil {
 		t.Fatal(err)
 	}
 	for _, test := range []struct {
@@ -616,7 +616,7 @@ func TestDynamicStepAllowsOnlyAuthenticatedForwardedRequests(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			err = node.Step(MessageDTO{From: test.sender, To: 1, Data: data})
+			_, err = node.Step(MessageDTO{From: test.sender, To: 1, Data: data})
 			if test.dropped {
 				if err == nil || !strings.Contains(err.Error(), "proposal dropped") {
 					t.Fatalf("Step forwarded %s = %v, want Raft proposal dropped", test.kind, err)
@@ -655,7 +655,7 @@ func TestDynamicFollowerForwardsApplicationProposal(t *testing.T) {
 		for round := 0; round < 512; round++ {
 			var messages []MessageDTO
 			for _, nodeID := range []NodeID{1, 2, 3} {
-				batch, err := nodes[nodeID].ProcessReady()
+				batch, err := processReadyForTest(t, nodes[nodeID])
 				if err != nil {
 					t.Fatalf("node %d ProcessReady(): %v", nodeID, err)
 				}
@@ -665,7 +665,7 @@ func TestDynamicFollowerForwardsApplicationProposal(t *testing.T) {
 				return
 			}
 			for _, message := range messages {
-				if err := nodes[message.To].Step(message); err != nil {
+				if _, err := nodes[message.To].Step(message); err != nil {
 					t.Fatalf("deliver %d -> %d: %v", message.From, message.To, err)
 				}
 			}
@@ -694,6 +694,49 @@ func TestDynamicFollowerForwardsApplicationProposal(t *testing.T) {
 		commands := nodes[nodeID].AppliedCommands()
 		if len(commands) != 1 || string(commands[0]) != string(command) {
 			t.Fatalf("node %d applied commands = %q, want [%q]", nodeID, commands, command)
+		}
+	}
+
+	batch := [][]byte{[]byte("batch-a"), []byte("batch-b"), []byte("batch-c")}
+	if err := nodes[2].ProposeBatchForwarded([][]byte{[]byte("must-not-apply"), nil}); !errors.Is(err, ErrEmptyCommand) {
+		t.Fatalf("invalid batch error = %v, want ErrEmptyCommand", err)
+	}
+	if err := nodes[2].ProposeBatchForwarded([][]byte{make([]byte, maxDynamicCommandSize/2), make([]byte, maxDynamicCommandSize/2)}); !errors.Is(err, ErrProposalTooLarge) {
+		t.Fatalf("oversized forwarded frame error = %v, want ErrProposalTooLarge", err)
+	}
+	if err := nodes[2].ProposeBatchForwarded(batch); err != nil {
+		t.Fatal(err)
+	}
+	// The caller can reuse its bytes before either replication or WAL sync.
+	batch[0][0] = 'X'
+	pump()
+	want := []string{string(command), "batch-a", "batch-b", "batch-c"}
+	for _, nodeID := range []NodeID{1, 2, 3} {
+		got := nodes[nodeID].AppliedCommands()
+		if len(got) != len(want) {
+			t.Fatalf("node %d applied %q, want %q", nodeID, got, want)
+		}
+		for index, expected := range want {
+			if string(got[index]) != expected {
+				t.Fatalf("node %d command %d = %q, want %q", nodeID, index, got[index], expected)
+			}
+		}
+		if err := nodes[nodeID].Close(); err != nil {
+			t.Fatal(err)
+		}
+		reopened, err := Open(dynamicTestConfig(nodeID, filepath.Join(root, fmt.Sprintf("node-%d", nodeID))))
+		if err != nil {
+			t.Fatal(err)
+		}
+		nodes[nodeID] = reopened
+		records := reopened.AppliedCommandRecords()
+		if len(records) != len(want) {
+			t.Fatalf("node %d replayed records = %v, want %q", nodeID, records, want)
+		}
+		for index, record := range records {
+			if string(record.Data) != want[index] || (index > 0 && record.Index != records[index-1].Index+1) {
+				t.Fatalf("node %d replayed record %d = %+v", nodeID, index, record)
+			}
 		}
 	}
 }

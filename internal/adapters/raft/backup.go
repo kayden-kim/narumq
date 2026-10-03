@@ -35,6 +35,9 @@ func (n *Node) BackupImage() (BackupImageDTO, error) {
 	if !n.dynamic {
 		return BackupImageDTO{}, ErrConfigMismatch
 	}
+	if n.applying != nil || n.appliedIndex > n.store.hardState.GetCommit() {
+		return BackupImageDTO{}, ErrBackpressure
+	}
 	snapshot, err := n.store.memory.Snapshot()
 	if err != nil {
 		return BackupImageDTO{}, fmt.Errorf("read backup snapshot: %w", err)

@@ -2,14 +2,14 @@
 
 | 항목 | 내용 |
 | --- | --- |
-| 상태 | Accepted (cluster QoS 1/2 durable delivery scope; production storage·BP-03·N-1 제외) |
+| 상태 | Accepted (cluster QoS 1/2 durable delivery scope; production storage·BP-03·N-1 제외; §1–8의 target 0개 PUBLISH commit은 ADR-0019가 대체) |
 | 결정일 | 2026-09-27 |
 | 결정자 | NaruMQ 프로젝트 (승인된 작업 계획) |
 | 관련 요구사항 | [PRD CLU-05·CLU-06·CLU-07·CLU-09·CLU-12](../requirements/PRD.md#92-클러스터와-세션), [PRD TEN-08](../requirements/PRD.md#93-멀티테넌시) (tenant별 quota는 미충족·후속) |
 | 관련 스펙·데이터 계약 | [Cluster §4.2·§11.11](../specs/cluster-session-and-delivery.md), [replicated-state-v1.proto](../contracts/replicated-state-v1.proto), [Cluster backup v3](../contracts/cluster-backup-v3.md) |
 | 관련 아키텍처 | [Cluster architecture](../architectures/cluster-architecture.md), [Broker core boundaries](../explainers/broker-core-boundaries.md) |
 | 이 결정이 대체하는 이전 결정 기록(ADR) | 없음 |
-| 이 결정을 대체한 새 결정 기록(ADR) | 없음 |
+| 이 결정을 대체한 새 결정 기록(ADR) | [ADR-0019](ADR-0019-untargeted-durable-publish-quorum-barrier.md) (§1–8의 target 0개 PUBLISH commit 문장만 대체) |
 
 ## 1. 결정
 
@@ -81,6 +81,7 @@ QoS 1/2 publish 안의 effective-QoS-0 subscriber를 기존 lane에 남기면 �
   - 고정 smoke profile 5회 suite `bp03-suite-20260930T064519.153992500Z-35844`도 NaruMQ 0/5 유효, EMQX 4/5 유효로 parent `valid=false`였다. NaruMQ의 매 회차 workload invalid와 빈 aggregate metric은 유효한 비교·ACK/WAL 수치가 아님을 뜻한다([성능 검증 §3.4](../specs/performance-and-verification.md#34-bp-03-durable-delivery-smoke-관찰-경계)).
   - 추가 compare `bp03-20260930T123200.653059500Z-32492`에서 EMQX workload/resource는 valid였으나 NaruMQ는 step 2 overload, QoS 1/2 gaps와 q2-02 TCP reset으로 invalid였다. Step 1의 per-node fsync occupancy 40.56%/41.46%/42.01%, `meanEntriesPerSync` 0.505802/0.505003/0.505535는 diagnostic 값일 뿐이며 step 2 WAL end scrape가 없어 valid BP-03 결과가 아니다. NaruMQ invalid branch에 따라 5회 suite를 실행하지 않았고 항목은 미완료다([성능 검증 §3.4](../specs/performance-and-verification.md#34-bp-03-durable-delivery-smoke-관찰-경계)).
   - BP-03 후속 항목은 valid comparison/suite 증거가 나올 때까지 미완료다.
+  - 2026-10-01 최종 compare `bp03-20261001T133103.344202600Z-10712`도 NaruMQ invalid였다. Step 1·2는 QoS 1/2 gap/duplicate 0이지만 Step 3 warmup에서 peer inbound queue 포화와 durable timeout·subscriber EOF로 중단됐다. Conditional suite는 실행하지 않았다. 최신 process crash·Docker/FUSE 여섯 scenario와 local verifier는 PASS했으나 BP-03 수용을 대체하지 않는다. 이 항목은 계속 미완료다([성능 검증 §3.4](../specs/performance-and-verification.md#34-bp-03-durable-delivery-smoke-관찰-경계)).
 - [x] [ADR-0003 §9-2](ADR-0003-durable-ack-barrier.md#9-검증)의 WAL write·`fsync` 전/후와 commit/apply process-crash injection을 실행했다. Process acceptance는 별도 [Cluster §11.13](../specs/cluster-session-and-delivery.md#1113-adr-0003-durable-ack-fault-수용-매핑)에 기록했다. 이는 power-loss, Docker storage-fault ACK gate 또는 ADR-0003 §9 전체의 완료를 뜻하지 않는다.
 - [ ] N-1 compatibility 및 cutover/rollback 범위를 별도로 결정하고 검증한다.
 - [ ] TEN-08 tenant별 quota를 정책·집행·시험으로 보완한다. 현재 global limit는 이를 대체하지 않는다.

@@ -57,10 +57,11 @@ type PeerMessageDTO struct {
 
 // PeerInboundDelivery holds one authenticated peer frame until its consumer completes processing.
 type PeerInboundDelivery struct {
-	Message PeerMessageDTO
-	peer    *dynamicPeerState
-	frame   peerFrame
-	id      uint64
+	Message    PeerMessageDTO
+	EnqueuedAt time.Time
+	peer       *dynamicPeerState
+	frame      peerFrame
+	id         uint64
 }
 
 // Complete releases the delivery and its inbound queue accounting.
@@ -128,6 +129,7 @@ type peerFrame struct {
 	data             []byte
 	size             int
 	identityRevision uint64
+	enqueuedAt       time.Time
 }
 
 type peerTransportState struct {
@@ -1035,6 +1037,7 @@ type DynamicTCPPeerTransport struct {
 	peers              map[uint64]*dynamicPeerState
 	forwardPeers       map[uint64]*dynamicPeerState
 	inboundReady       chan struct{}
+	outboundReady      chan struct{}
 	forwardReady       chan struct{}
 	connections        map[net.Conn]struct{}
 	inboundConnections int
@@ -1101,6 +1104,7 @@ type dynamicPeerState struct {
 	wake                    chan struct{}
 	inbox                   chan peerFrame
 	deliveryWake            chan struct{}
+	capacityWake            chan struct{}
 	inboundDelivering       bool
 	inboundDeliveryRevision uint64
 	inboundDeliveryID       uint64
@@ -1150,19 +1154,20 @@ func NewDynamicTCPPeerTransport(config DynamicPeerTransportConfig) (*DynamicTCPP
 	}
 
 	transport := &DynamicTCPPeerTransport{
-		local:        config.LocalIdentity,
-		localID:      config.LocalIdentity.MemberID,
-		clusterID:    config.LocalIdentity.ClusterID,
-		listener:     tls.NewListener(config.Listener, serverTLS),
-		serverTLS:    serverTLS,
-		clientTLS:    clientTLS,
-		admission:    config.AdmissionHandler,
-		peers:        make(map[uint64]*dynamicPeerState),
-		forwardPeers: make(map[uint64]*dynamicPeerState),
-		inboundReady: make(chan struct{}, 1),
-		forwardReady: make(chan struct{}, 1),
-		connections:  make(map[net.Conn]struct{}),
-		done:         make(chan struct{}),
+		local:         config.LocalIdentity,
+		localID:       config.LocalIdentity.MemberID,
+		clusterID:     config.LocalIdentity.ClusterID,
+		listener:      tls.NewListener(config.Listener, serverTLS),
+		serverTLS:     serverTLS,
+		clientTLS:     clientTLS,
+		admission:     config.AdmissionHandler,
+		peers:         make(map[uint64]*dynamicPeerState),
+		forwardPeers:  make(map[uint64]*dynamicPeerState),
+		inboundReady:  make(chan struct{}, 1),
+		outboundReady: make(chan struct{}, 1),
+		forwardReady:  make(chan struct{}, 1),
+		connections:   make(map[net.Conn]struct{}),
+		done:          make(chan struct{}),
 	}
 	if err := validateDynamicPeerSet(config.LocalIdentity, config.Peers); err != nil {
 		_ = transport.listener.Close()
@@ -1261,11 +1266,7 @@ func (transport *DynamicTCPPeerTransport) sendLane(message PeerMessageDTO, lane 
 		if peer.lastError == "" {
 			peer.lastError = "outbound queue full"
 		}
-		connection := peer.connection
 		peer.mu.Unlock()
-		if lane == dynamicLaneRaft && connection != nil {
-			_ = connection.Close()
-		}
 		return ErrPeerBackpressure
 	}
 	frame := &peerFrame{data: append([]byte(nil), message.Data...), size: frameSize}
@@ -1325,10 +1326,11 @@ func (transport *DynamicTCPPeerTransport) takeLane(lane dynamicLane) (PeerInboun
 			peer.inboundDelivering = true
 			peer.inboundDeliveryRevision = frame.identityRevision
 			delivery := PeerInboundDelivery{
-				Message: PeerMessageDTO{From: peer.id, To: transport.localID, Data: frame.data},
-				peer:    peer,
-				frame:   frame,
-				id:      peer.inboundDeliveryID,
+				Message:    PeerMessageDTO{From: peer.id, To: transport.localID, Data: frame.data},
+				EnqueuedAt: frame.enqueuedAt,
+				peer:       peer,
+				frame:      frame,
+				id:         peer.inboundDeliveryID,
 			}
 			peer.mu.Unlock()
 			transport.signalLane(lane)
@@ -1389,6 +1391,7 @@ func (transport *DynamicTCPPeerTransport) ResetPeer(peerID uint64) error {
 	peer.mu.Lock()
 	connection := peer.connection
 	peer.connection = nil
+	peer.signalInboundCapacityLocked()
 	peer.rejected++
 	peer.lastError = "invalid peer message"
 	peer.mu.Unlock()
@@ -1758,11 +1761,15 @@ func newDynamicLanePeerState(
 	lane dynamicLane,
 ) *dynamicPeerState {
 	queueMessages := lane.queueMessages()
-	return &dynamicPeerState{
+	peer := &dynamicPeerState{
 		owner: owner, id: identity.MemberID, identity: identity, lane: lane,
 		wake: make(chan struct{}, 1), inbox: make(chan peerFrame, queueMessages),
 		outbox: make([]*peerFrame, queueMessages), deliveryWake: make(chan struct{}, 1),
 	}
+	if lane == dynamicLaneRaft {
+		peer.capacityWake = make(chan struct{}, 1)
+	}
+	return peer
 }
 
 func (peer *dynamicPeerState) identitySnapshot() (PeerIdentityDTO, uint64, bool) {
@@ -2158,6 +2165,7 @@ func (peer *dynamicPeerState) runConnection(ctx context.Context, connection net.
 	}
 	previous := peer.connection
 	peer.connection = connection
+	peer.signalInboundCapacityLocked()
 	if peer.pending == connection {
 		peer.pending = nil
 	}
@@ -2177,16 +2185,22 @@ func (peer *dynamicPeerState) runConnection(ctx context.Context, connection net.
 	}
 	readErr := make(chan error, 1)
 	readDone := make(chan struct{})
+	readerCtx, cancelReader := context.WithCancel(ctx)
 	go func() {
 		defer close(readDone)
 		for {
-			var data []byte
-			var err error
-			if peer.lane == dynamicLaneForward {
-				data, err = readDynamicIdleFrame(connection, peer.lane.frameLimit())
-			} else {
-				data, err = readDynamicFrame(connection, peer.lane.frameLimit())
+			if peer.lane == dynamicLaneRaft {
+				if err := peer.receiveRaftFrame(readerCtx, connection, identityRevision); err != nil {
+					if !errors.Is(err, net.ErrClosed) && !errors.Is(err, io.EOF) &&
+						!errors.Is(err, ErrPeerTransportClosed) && readerCtx.Err() == nil {
+						peer.recordError("peer read failed")
+					}
+					readErr <- err
+					return
+				}
+				continue
 			}
+			data, err := readDynamicIdleFrame(connection, peer.lane.frameLimit())
 			if err != nil {
 				if !errors.Is(err, net.ErrClosed) && !errors.Is(err, io.EOF) {
 					peer.recordError("peer read failed")
@@ -2204,6 +2218,7 @@ func (peer *dynamicPeerState) runConnection(ctx context.Context, connection net.
 		}
 	}()
 	defer func() {
+		cancelReader()
 		_ = connection.Close()
 		<-readDone
 		peer.mu.Lock()
@@ -2254,6 +2269,7 @@ func (peer *dynamicPeerState) enqueueInbound(data []byte, identityRevision uint6
 	}
 	peer.inMessages++
 	peer.inBytes += frame.size
+	frame.enqueuedAt = time.Now()
 	peer.inbox <- *frame
 	if peer.owner != nil {
 		peer.owner.signalLane(peer.lane)
@@ -2271,6 +2287,7 @@ func (peer *dynamicPeerState) completeInboundLocked(frame peerFrame) {
 	if frame.identityRevision == peer.identityRevision && peer.inMessages > 0 && peer.inBytes >= frame.size {
 		peer.inMessages--
 		peer.inBytes -= frame.size
+		peer.signalInboundCapacityLocked()
 	}
 }
 
@@ -2291,6 +2308,7 @@ func (peer *dynamicPeerState) beginIdentityChangeLocked() {
 		return
 	}
 	peer.identityChanging = true
+	peer.signalInboundCapacityLocked()
 }
 
 func (peer *dynamicPeerState) completeInboundDelivery(frame peerFrame, deliveryID uint64) {
@@ -2378,6 +2396,9 @@ func (peer *dynamicPeerState) completeOutbound(frame *peerFrame) {
 		peer.outBytes -= frame.size
 	}
 	peer.mu.Unlock()
+	if peer.lane == dynamicLaneRaft {
+		peer.owner.signalOutboundCapacity()
+	}
 }
 
 func (peer *dynamicPeerState) signal() {
@@ -2412,6 +2433,7 @@ func (peer *dynamicPeerState) stop() {
 	cancel := peer.cancel
 	peer.connection = nil
 	peer.pending = nil
+	peer.signalInboundCapacityLocked()
 	for index := range peer.outbox {
 		peer.outbox[index] = nil
 	}

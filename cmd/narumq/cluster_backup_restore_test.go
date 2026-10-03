@@ -114,6 +114,34 @@ func TestClusterRestoreSeedRejectsIdentityLearnerAndSummaryMismatch(t *testing.T
 	}
 }
 
+// Traceability: CLU-11/CLU-14; docs/specs/cluster-session-and-delivery.md §10, §11.19.
+func TestClusterRestoreSeedRejectsProtocolAndSchemaMismatch(t *testing.T) {
+	config := validBootstrapClusterConfig()
+	encoded := clusterRestoreTestArchive(t, config, nil)
+	for _, test := range []struct {
+		name   string
+		mutate func(*records.BackupManifest)
+	}{
+		{"protocol major", func(manifest *records.BackupManifest) { manifest.ClusterProtocolMajor++ }},
+		{"protocol minor", func(manifest *records.BackupManifest) { manifest.ClusterProtocolMinor++ }},
+		{"schema major", func(manifest *records.BackupManifest) { manifest.StateSchemaMajor++ }},
+		{"schema minor", func(manifest *records.BackupManifest) { manifest.StateSchemaMinor++ }},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			// Decode a fresh archive so the case owns its manifest.
+			archive, err := records.DecodeBackupArchive(encoded)
+			if err != nil {
+				t.Fatal(err)
+			}
+			test.mutate(archive.Manifest)
+			if _, err := clusterRestoreSeed(config, archive); err == nil ||
+				!strings.Contains(err.Error(), "backup cluster protocol or state schema does not match cluster config") {
+				t.Fatalf("restore error = %v, want exact protocol/schema rejection", err)
+			}
+		})
+	}
+}
+
 func TestClusterRestoreRejectsInvalidArchiveBeforeTouchingTarget(t *testing.T) {
 	config := validBootstrapClusterConfig()
 	config.Directory = filepath.Join(t.TempDir(), "restore-target")
@@ -480,4 +508,140 @@ func TestClusterBackupConfigurationActionsRoundTrip(t *testing.T) {
 	if _, err := restoreConfigurationAction(records.BackupConfigurationAction(99)); err == nil {
 		t.Fatal("unsupported backup configuration action was restored")
 	}
+}
+
+// Traceability: CLU-11/CLU-14; docs/specs/cluster-session-and-delivery.md §10, §11.19.
+func TestClusterRestoreSeedAppliesAdjacentReleaseWindow(t *testing.T) {
+	for _, test := range []struct {
+		archive string
+		restore string
+		allowed bool
+	}{
+		{"1.1.0", "1.2.0", true},
+		{"1.2.0", "1.1.0", true},
+		{"1.2.5", "1.2.0", true},
+		{"1.0.0", "1.2.0", false},
+		{"1.2.0", "1.0.0", false},
+		{"2.2.0", "1.2.0", false},
+	} {
+		t.Run(test.archive+"->"+test.restore, func(t *testing.T) {
+			archiveConfig := validBootstrapClusterConfig()
+			archiveConfig.ReleaseVersion = test.archive
+			archive, err := records.DecodeBackupArchive(clusterRestoreTestArchive(t, archiveConfig, nil))
+			if err != nil {
+				t.Fatal(err)
+			}
+			restoreConfig := validBootstrapClusterConfig()
+			restoreConfig.ReleaseVersion = test.restore
+			seed, err := clusterRestoreSeed(restoreConfig, archive)
+			if !test.allowed {
+				if err == nil || !strings.Contains(err.Error(), "outside the supported release window") {
+					t.Fatalf("restore error = %v, want release window rejection", err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			boundary, err := decodeMembershipSnapshot(seed.ApplicationData)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(boundary.Members) != 3 {
+				t.Fatalf("seeded members = %+v, want three voters", boundary.Members)
+			}
+			for _, member := range boundary.Members {
+				if member.ReleaseVersion != test.archive {
+					t.Fatalf("seeded member %d release = %q, want preserved %q", member.MemberID, member.ReleaseVersion, test.archive)
+				}
+			}
+		})
+	}
+}
+
+// Traceability: CLU-11/CLU-14; docs/specs/cluster-session-and-delivery.md §10, §11.19.
+func TestClusterRestoreSeedRejectsUnsupportedActiveFeature(t *testing.T) {
+	config := validBootstrapClusterConfig()
+	config.ReleaseVersion = "1.2.0"
+	config.Features = []string{"compatibility-probe"}
+	archive, err := records.DecodeBackupArchive(clusterRestoreTestArchiveWithActiveFeature(t, config, "compatibility-probe"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	restoreConfig := validBootstrapClusterConfig()
+	restoreConfig.ReleaseVersion = "1.1.0"
+	restoreConfig.Features = nil
+	if _, err := clusterRestoreSeed(restoreConfig, archive); err == nil ||
+		!strings.Contains(err.Error(), `backup active feature "compatibility-probe" is not supported by this release`) {
+		t.Fatalf("restore error = %v, want unsupported active feature", err)
+	}
+	seed, err := clusterRestoreSeed(config, archive)
+	if err != nil {
+		t.Fatal(err)
+	}
+	boundary, err := decodeMembershipSnapshot(seed.ApplicationData)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(boundary.ActiveFeatures, []string{"compatibility-probe"}) {
+		t.Fatalf("restored active features = %v", boundary.ActiveFeatures)
+	}
+}
+
+// Traceability: CLU-11/CLU-14; docs/specs/cluster-session-and-delivery.md §10, §11.19.
+func TestClusterRestoreMemberReleaseWindow(t *testing.T) {
+	config := validBootstrapClusterConfig()
+	config.ReleaseVersion = "1.2.0"
+	archive, err := records.DecodeBackupArchive(clusterRestoreTestArchive(t, config, nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, members, err := clusterBootstrapIdentities(config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	members[1].ReleaseVersion = "1.1.0"
+	if err := validateRestoredMemberIdentities(config, archive.Manifest, members); err != nil {
+		t.Fatal(err)
+	}
+	members[1].ReleaseVersion = "1.0.0"
+	if err := validateRestoredMemberIdentities(config, archive.Manifest, members); err == nil {
+		t.Fatal("accepted voter outside release window")
+	}
+}
+
+func clusterRestoreTestArchiveWithActiveFeature(t *testing.T, config clusterConfigFile, feature string) []byte {
+	t.Helper()
+	_, members, err := clusterBootstrapIdentities(config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	machine := membership.NewStateMachine()
+	if err := machine.InitializeBootstrap(3, members); err != nil {
+		t.Fatal(err)
+	}
+	result, err := machine.Apply(4, membership.CommandDTO{
+		SchemaMajor: membership.SchemaMajor, SchemaMinor: membership.SchemaMinor,
+		OperationID:       "00000000-0000-4000-8000-000000000001",
+		FeatureActivation: &membership.FeatureActivationDTO{Feature: feature},
+	})
+	if err != nil || result.Outcome != membership.ApplyOutcomeApplied {
+		t.Fatalf("activate backup feature = (%+v, %v), want applied", result, err)
+	}
+	snapshot, err := machine.Snapshot(4)
+	if err != nil {
+		t.Fatal(err)
+	}
+	encoded, err := encodeMembershipSnapshot(snapshot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	backup, err := buildClusterBackupArchive(config, raftadapter.BackupImageDTO{
+		SnapshotIndex: 4, SnapshotTerm: 1, SnapshotData: encoded,
+		CommitIndex: 4, CommitTerm: 1, VoterIDs: []raftadapter.NodeID{1, 2, 3},
+	}, encoded)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return backup.Archive
 }

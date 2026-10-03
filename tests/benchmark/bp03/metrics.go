@@ -100,7 +100,7 @@ func writeWALSummary(outputDir, target string, windows []walWindowInput) (WALSum
 	summary := WALSummary{SchemaVersion: 1, Target: target, Windows: []walWindowSummary{}, FailureReasons: []string{}}
 	if target == "emqx" {
 		summary.Applicability = "not_applicable"
-		summary.Reason = "EMQX regular sessions keep state in memory and write no replicated durable log"
+		summary.Reason = "EMQX Durable Storage does not expose the NaruMQ Ready WAL metrics collected by this harness"
 	} else {
 		summary.Valid = true
 		if len(windows) == 0 {

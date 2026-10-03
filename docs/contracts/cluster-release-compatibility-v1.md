@@ -38,6 +38,7 @@ N-2 이하와의 mixed cluster는 지원하지 않는다. Rollout preflight는 �
 | Replicated command | N은 N-1이 이해하지 못하는 command를 mixed cluster에서 propose하지 않는다. |
 | Persisted record | N이 쓴 record를 rollback한 N-1이 읽거나 명시적으로 feature-gated 상태로 남긴다. |
 | Snapshot | Sender·receiver 양방향으로 schema와 checksum을 검증한다. |
+| Backup archive | Producer·voter release가 restore build와 window 안이고 restore build가 모든 active feature를 지원할 때만 restore한다. Protocol/schema exact·strict codec 검증은 유지한다 ([ADR-0021](../decisions/ADR-0021-backup-archive-release-window.md)). |
 | Membership | Node ID와 member generation의 의미를 바꾸지 않는다. |
 | Management API | Rollout controller가 사용하는 v1 field와 error code를 유지한다. |
 | Metric·health | Readiness와 drain state 의미를 release 사이에서 바꾸지 않는다. |
@@ -77,6 +78,7 @@ Release version과 feature set은 mutable committed member profile이다. Restar
 - 모르는 required record type이나 major를 만나면 READY가 되지 않고 `incompatible_state_schema`를 보고한다.
 - Snapshot manifest는 producer release, schema version, last included index, object count와 checksum을 포함해야 한다.
 - Snapshot restore 뒤 object count와 checksum이 맞지 않으면 apply하지 않는다.
+- Snapshot restore와 committed local profile 변경은 release-profile gate를 즉시 닫는다. 이때 controller에 알림을 보내 다음 500ms 주기를 기다리지 않고 기존 `Members`·`ActiveFeatures` fresh read barrier로 재확인을 시작한다. 알림은 대기 중 최대 한 개로 합치며, 적용 전 revision의 조회 결과는 gate를 다시 열 수 없다. 재확인 오류·profile 불일치·지원하지 않는 active feature에서는 계속 닫힌다. PUBLISH를 별도로 재시도하거나 admission 대기를 늘리지 않는다.
 
 ## 6. Release matrix
 
@@ -106,6 +108,6 @@ Major 변경은 in-place mixed upgrade로 처리하지 않는다. 별도 migrati
 
 - 남음: rollback window가 끝났다고 운영자가 판정하는 정책과 irreversible feature activation 승인 절차.
 - 남음: [ADR-0006](../decisions/ADR-0006-external-rollout-controller.md)의 rollout controller preflight. 이 ADR-0018 범위는 Pod 교체 전 preflight 구현을 포함하지 않는다.
-- 남음: Backup archive cross-release restore. Current archive restore는 exact cluster/release identity 규칙을 유지하며 별도 CLU-14 항목이다.
+- 해결 범위: [ADR-0021](../decisions/ADR-0021-backup-archive-release-window.md)의 backup archive N/N-1 restore 정책. Synthetic build process acceptance 실행 증거는 [Cluster §11.19](../specs/cluster-session-and-delivery.md#1119-backup-archive-nn-1-restore-수용-매핑)에 기록한다. Historical-source compatibility는 별도다.
 - 남음: 실제 과거 source revision 사이의 wire/state compatibility. 현재 과거 source가 없으므로 동일 source의 synthetic build로 증명하지 않는다.
 - 해결: same-source synthetic process acceptance의 N/N 양 peer 역할 snapshot transfer, N/N-1 upgrade·rollback·양방향 installed snapshot 및 N-2 명시적 거절 matrix가 PASS했다. Historical source 간 wire/state compatibility와 rollback-window 운영 정책은 미결정으로 남는다.

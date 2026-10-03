@@ -49,7 +49,7 @@ var (
 	ErrEmptyCommand = errors.New("raft proposal is empty")
 	// ErrProposalTooLarge means a proposal exceeds the fixed spike limit.
 	ErrProposalTooLarge = errors.New("raft proposal is too large")
-	// ErrBackpressure means etcd/raft rejected a proposal at its uncommitted limit.
+	// ErrBackpressure means proposal or local storage admission has no capacity.
 	ErrBackpressure = errors.New("raft proposal backpressure")
 	// ErrInvalidMessage means a peer message failed the adapter boundary checks.
 	ErrInvalidMessage = errors.New("invalid raft peer message")
@@ -61,6 +61,8 @@ var (
 	ErrMembershipChangeInProgress = errors.New("raft membership change is in progress")
 	// ErrInvalidLeadershipTransfer means leadership cannot be transferred to the requested member.
 	ErrInvalidLeadershipTransfer = errors.New("invalid raft leadership transfer")
+	// ErrApplySequence means the consumer did not acknowledge its current batch.
+	ErrApplySequence = errors.New("invalid raft application completion sequence")
 )
 
 var discardRaftLogger = &etcdraft.DefaultLogger{Logger: log.New(io.Discard, "", 0)}
@@ -89,18 +91,18 @@ type Config struct {
 	ClusterID         string
 	CertificateSHA256 [32]byte
 	BootstrapVoterIDs []NodeID
-	// PersistenceBoundaryHook, when non-nil, receives notifications immediately
-	// before and after stable Ready persistence of dynamic membership changes and
-	// incoming snapshots, and local typed snapshot finalization. The hook runs with
-	// the node lock held and must not call back into Node.
+	// PersistenceBoundaryHook observes storage boundaries. WAL hooks run on the
+	// single WAL worker; local snapshot hooks run on the caller. Hooks must not
+	// call Node or retain borrowed payloads.
 	PersistenceBoundaryHook func(PersistenceBoundaryDTO)
-	// WALBoundaryHook, when non-nil, receives notifications for Ready frames
-	// containing non-empty normal entries. The hook runs with the node lock held,
-	// must not call back into Node, and must not retain WALBoundaryDTO.Entries.
+	// WALBoundaryHook observes entry frames on the single WAL worker.
 	WALBoundaryHook func(WALBoundaryDTO)
-	// WALSyncObserver, when non-nil, receives each successful Ready WAL fsync.
-	// The observer runs with the node lock held; it must not block or call back into Node.
+	// WALSyncObserver observes one successful fsync, including all grouped frames.
+	// It runs on the WAL worker and must not block or call Node.
 	WALSyncObserver func(WALSyncDTO)
+	// StorageActivityObserver brackets each worker I/O batch (true, then false).
+	// It may run concurrently with health readers and must not call Node.
+	StorageActivityObserver func(bool)
 }
 
 // WALBoundaryStage identifies one step of appending a Ready frame to wal.bin.
@@ -121,7 +123,7 @@ type WALBoundaryDTO struct {
 	Entries [][]byte // borrowed entry payloads in log order; valid only during the call
 }
 
-// WALSyncDTO describes one successful fsync of a Ready WAL frame.
+// WALSyncDTO describes one successful fsync covering one or more WAL frames.
 type WALSyncDTO struct {
 	Duration   time.Duration
 	Entries    int
@@ -189,6 +191,13 @@ type MessageDTO struct {
 	To         NodeID
 	Data       []byte
 	IsSnapshot bool
+	Type       string
+}
+
+// StepResultDTO classifies accepted work without exposing Raft protobuf types.
+type StepResultDTO struct {
+	Proposal         bool
+	ReadIndexRequest bool
 }
 
 // BatchDTO contains outbound messages, committed commands, snapshots, and read barriers.
@@ -200,6 +209,10 @@ type BatchDTO struct {
 	SnapshotData         []byte
 	SnapshotIndex        uint64
 	ReadStates           []ReadStateDTO
+	// Progress reports local Ready work even when there is no consumer output.
+	Progress bool
+	// ApplySequence must be completed after the consumer applies this batch.
+	ApplySequence uint64
 }
 
 // AppliedCommandDTO pairs one committed application command with its Raft log index.
@@ -222,8 +235,8 @@ type StatusDTO struct {
 	DynamicMembership bool
 }
 
-// Node owns one thread-safe wrapper around the thread-unsafe etcd/raft RawNode.
-// The wrapper never starts goroutines or reads wall-clock time; callers own ticks and delivery.
+// Node serializes RawNode and memory state while one owned WAL worker persists
+// immutable append requests. Callers own logical ticks and application apply.
 type Node struct {
 	mu sync.Mutex
 
@@ -235,6 +248,16 @@ type Node struct {
 	closed  bool
 	failure error
 
+	writer               *WALAppendWorker
+	appendPending        int
+	appendBytes          int
+	appendSequence       uint64
+	durableSequence      uint64
+	heldAppend           *walAppendRequest
+	applyQueue           []storageApplyRequest
+	applying             *storageApplyRequest
+	applySequence        uint64
+	readyInputBytes      int
 	bootstrapped         bool
 	confState            *pb.ConfState
 	appliedIndex         uint64
@@ -243,8 +266,6 @@ type Node struct {
 	configurationChanges []CommittedConfigurationDTO
 	stateSnapshot        []byte
 	confChangePending    bool
-	onReadyEvent         func(string)
-	persistenceHook      func(PersistenceBoundaryDTO)
 }
 
 // Open opens a fixed-voter peer-only node or a v2 dynamic cluster member.
@@ -316,7 +337,7 @@ func Open(config Config) (*Node, error) {
 		HeartbeatTick:             heartbeatTick,
 		Storage:                   store.memory,
 		Applied:                   store.appliedIndex,
-		AsyncStorageWrites:        false,
+		AsyncStorageWrites:        true,
 		MaxSizePerMsg:             maxSizePerMessage,
 		MaxCommittedSizePerReady:  maxCommittedReadySize,
 		MaxUncommittedEntriesSize: maxUncommittedEntrySize,
@@ -374,7 +395,6 @@ func Open(config Config) (*Node, error) {
 		commandIndexes:       slices.Clone(store.commandIndexes),
 		configurationChanges: slices.Clone(store.configurationChanges),
 		stateSnapshot:        bytes.Clone(store.snapshotData),
-		persistenceHook:      config.PersistenceBoundaryHook,
 	}
 	for _, change := range store.confChanges {
 		node.confState = cloneConfState(raw.ApplyConfChange(change))
@@ -390,6 +410,7 @@ func Open(config Config) (*Node, error) {
 	if config.DynamicMembership {
 		node.confChangePending = node.hasUncommittedConfChange()
 	}
+	node.writer = newWALAppendWorker(store, config.PersistenceBoundaryHook, config.StorageActivityObserver)
 	return node, nil
 }
 
@@ -451,13 +472,69 @@ func (n *Node) ProposeForwarded(data []byte) error {
 	return n.propose(data, true)
 }
 
+// ProposeBatchForwarded submits ordered independent entries in one MsgProp.
+// Validation is atomic; storage, commitment and per-entry apply remain unchanged.
+func (n *Node) ProposeBatchForwarded(commands [][]byte) error {
+	if len(commands) == 1 {
+		return n.propose(commands[0], true)
+	}
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	if err := n.stateError(); err != nil {
+		return err
+	}
+	status := n.raw.BasicStatus()
+	if status.RaftState != etcdraft.StateLeader && status.Lead == etcdraft.None {
+		return ErrNotLeader
+	}
+	if len(commands) == 0 {
+		return ErrEmptyCommand
+	}
+	if len(commands) > 64 {
+		return ErrProposalTooLarge
+	}
+	limit := maxProposalSize
+	if n.dynamic {
+		limit = maxDynamicCommandSize
+	}
+	entries := make([]*pb.Entry, len(commands))
+	for index, command := range commands {
+		if len(command) == 0 {
+			return ErrEmptyCommand
+		}
+		if len(command) > limit {
+			return ErrProposalTooLarge
+		}
+		entries[index] = &pb.Entry{Data: command}
+	}
+	message := &pb.Message{Type: pb.MsgProp.Enum(), From: new(uint64(n.id)), Entries: entries}
+	// A follower forwards this message intact; bound its encoded wire size too.
+	if proto.Size(message)+32 > maxMessageSize {
+		return ErrProposalTooLarge
+	}
+	if n.storageSaturated() || n.readyInputBytes+proto.Size(message) > maxWALFramePayload-1024 {
+		return ErrBackpressure
+	}
+	for _, entry := range entries {
+		entry.Data = bytes.Clone(entry.Data)
+	}
+	if err := n.raw.Step(message); err != nil {
+		if errors.Is(err, etcdraft.ErrProposalDropped) {
+			return fmt.Errorf("%w: %v", ErrBackpressure, err)
+		}
+		return err
+	}
+	n.readyInputBytes += proto.Size(message)
+	return nil
+}
+
 func (n *Node) propose(data []byte, forwardToLeader bool) error {
 	n.mu.Lock()
 	defer n.mu.Unlock()
 	if err := n.stateError(); err != nil {
 		return err
 	}
-	status := n.raw.Status()
+	status := n.raw.BasicStatus()
 	if status.RaftState != etcdraft.StateLeader && (!forwardToLeader || status.Lead == etcdraft.None) {
 		return ErrNotLeader
 	}
@@ -471,6 +548,9 @@ func (n *Node) propose(data []byte, forwardToLeader bool) error {
 	if len(data) > limit {
 		return ErrProposalTooLarge
 	}
+	if n.storageSaturated() || n.readyInputBytes+len(data)+32 > maxWALFramePayload-1024 {
+		return ErrBackpressure
+	}
 	command := bytes.Clone(data)
 	if err := n.raw.Propose(command); err != nil {
 		if errors.Is(err, etcdraft.ErrProposalDropped) {
@@ -478,6 +558,7 @@ func (n *Node) propose(data []byte, forwardToLeader bool) error {
 		}
 		return err
 	}
+	n.readyInputBytes += len(data) + 32
 	return nil
 }
 
@@ -488,7 +569,7 @@ func (n *Node) ProposeMembershipChange(change MembershipChangeDTO) error {
 	if err := n.stateError(); err != nil {
 		return err
 	}
-	if !n.dynamic || change.MemberID == 0 || !validOperationID(change.OperationID) {
+	if !n.dynamic || change.MemberID == 0 || etcdraft.IsLocalMsgTarget(uint64(change.MemberID)) || !validOperationID(change.OperationID) {
 		return ErrConfigMismatch
 	}
 	if n.raw.Status().RaftState != etcdraft.StateLeader {
@@ -496,6 +577,9 @@ func (n *Node) ProposeMembershipChange(change MembershipChangeDTO) error {
 	}
 	if n.confChangePending || n.hasUncommittedConfChange() {
 		return ErrMembershipChangeInProgress
+	}
+	if n.storageSaturated() {
+		return ErrBackpressure
 	}
 	var changeType pb.ConfChangeType
 	switch change.Action {
@@ -562,6 +646,9 @@ func (n *Node) SnapshotWithApplicationData(data []byte) error {
 	if !n.dynamic || len(data) == 0 || len(data) > maxSnapshotPayload {
 		return ErrConfigMismatch
 	}
+	if n.appendPending != 0 || n.heldAppend != nil || n.applying != nil || len(n.applyQueue) != 0 {
+		return ErrBackpressure
+	}
 	if n.appliedIndex == 0 {
 		return nil
 	}
@@ -578,22 +665,23 @@ func (n *Node) SnapshotWithApplicationData(data []byte) error {
 }
 
 // Step validates and delivers one serialized peer message to the local RawNode.
-func (n *Node) Step(message MessageDTO) error {
+// Its result allows the driver to flush read fan-out without splitting replication batches.
+func (n *Node) Step(message MessageDTO) (StepResultDTO, error) {
 	n.mu.Lock()
 	defer n.mu.Unlock()
 	if err := n.stateError(); err != nil {
-		return err
+		return StepResultDTO{}, err
 	}
 	if message.From == 0 || message.To == 0 || message.To != n.id || len(message.Data) == 0 || len(message.Data) > maxMessageSize {
-		return ErrInvalidMessage
+		return StepResultDTO{}, ErrInvalidMessage
 	}
 	payload := bytes.Clone(message.Data)
 	var decoded pb.Message
 	if err := proto.Unmarshal(payload, &decoded); err != nil {
-		return fmt.Errorf("%w: decode message: %v", ErrInvalidMessage, err)
+		return StepResultDTO{}, fmt.Errorf("%w: decode message: %v", ErrInvalidMessage, err)
 	}
 	if decoded.GetTo() != uint64(message.To) || decoded.GetFrom() == 0 || decoded.GetTo() == 0 {
-		return ErrInvalidMessage
+		return StepResultDTO{}, ErrInvalidMessage
 	}
 	if decoded.GetFrom() != uint64(message.From) {
 		// etcd/raft forwards these requests without replacing the original
@@ -603,13 +691,26 @@ func (n *Node) Step(message MessageDTO) error {
 			!containsMember(n.confState, NodeID(decoded.GetFrom())) ||
 			(decoded.GetType() != pb.MsgProp && decoded.GetType() != pb.MsgReadIndex &&
 				decoded.GetType() != pb.MsgTransferLeader) {
-			return ErrInvalidMessage
+			return StepResultDTO{}, ErrInvalidMessage
 		}
 	}
-	if err := n.raw.Step(&decoded); err != nil {
-		return fmt.Errorf("%w: %v", ErrInvalidMessage, err)
+	if etcdraft.IsLocalMsgTarget(decoded.GetFrom()) || etcdraft.IsLocalMsgTarget(decoded.GetTo()) ||
+		decoded.GetType() == pb.MsgStorageAppend || decoded.GetType() == pb.MsgStorageAppendResp ||
+		decoded.GetType() == pb.MsgStorageApply || decoded.GetType() == pb.MsgStorageApplyResp {
+		return StepResultDTO{}, ErrInvalidMessage
 	}
-	return nil
+	if decoded.GetType() == pb.MsgProp || decoded.GetType() == pb.MsgApp || decoded.GetType() == pb.MsgSnap {
+		if n.storageSaturated() || (decoded.GetType() != pb.MsgSnap &&
+			n.readyInputBytes+len(message.Data) > maxWALFramePayload-1024) {
+			return StepResultDTO{}, ErrBackpressure
+		}
+		n.readyInputBytes += len(message.Data)
+	}
+	if err := n.raw.Step(&decoded); err != nil {
+		return StepResultDTO{}, fmt.Errorf("%w: %v", ErrInvalidMessage, err)
+	}
+	proposal := decoded.GetType() == pb.MsgProp && n.raw.BasicStatus().RaftState == etcdraft.StateLeader
+	return StepResultDTO{Proposal: proposal, ReadIndexRequest: decoded.GetType() == pb.MsgReadIndex}, nil
 }
 
 // ReportPeerMessageFailure tells RawNode a transport rejected an outbound message.
@@ -634,188 +735,15 @@ func (n *Node) ReportPeerMessageFailure(peerID NodeID, isSnapshot bool) error {
 	return nil
 }
 
-// ProcessReady durably records, applies, and advances one synchronous RawNode Ready.
+// ProcessReady polls storage completions and accepts bounded asynchronous Ready
+// work. It never waits for WAL I/O. CompleteApply acknowledges consumer output.
 func (n *Node) ProcessReady() (BatchDTO, error) {
 	n.mu.Lock()
 	defer n.mu.Unlock()
 	if err := n.stateError(); err != nil {
 		return BatchDTO{}, err
 	}
-	if !n.raw.HasReady() {
-		return BatchDTO{}, nil
-	}
-	ready := n.raw.Ready()
-	readStates := make([]ReadStateDTO, 0, len(ready.ReadStates))
-	for _, readState := range ready.ReadStates {
-		readStates = append(readStates, ReadStateDTO{
-			RequestContext: bytes.Clone(readState.RequestCtx),
-			Index:          readState.Index,
-		})
-	}
-	var boundaryActions []MembershipChangeAction
-	installsSnapshot := false
-	if n.persistenceHook != nil {
-		if n.dynamic {
-			for _, entry := range ready.Entries {
-				if entry.GetType() == pb.EntryConfChangeV2 {
-					change, err := decodeConfChange(entry)
-					if err != nil {
-						continue
-					}
-					action, _, err := validateDynamicConfChange(change)
-					if err != nil {
-						continue
-					}
-					boundaryActions = append(boundaryActions, action)
-				}
-			}
-		}
-		installsSnapshot = ready.Snapshot != nil && !etcdraft.IsEmptySnap(ready.Snapshot)
-	}
-
-	if n.persistenceHook != nil && (len(boundaryActions) > 0 || installsSnapshot) {
-		n.persistenceHook(PersistenceBoundaryDTO{
-			Stage:                PersistenceBeforeReady,
-			ConfigurationActions: slices.Clone(boundaryActions),
-			InstallsSnapshot:     installsSnapshot,
-		})
-	}
-	if err := n.store.appendReady(ready); err != nil {
-		return BatchDTO{}, n.fail(fmt.Errorf("%w: %w", ErrStorage, err))
-	}
-	if n.persistenceHook != nil && (len(boundaryActions) > 0 || installsSnapshot) {
-		n.persistenceHook(PersistenceBoundaryDTO{
-			Stage:                PersistenceAfterReady,
-			ConfigurationActions: slices.Clone(boundaryActions),
-			InstallsSnapshot:     installsSnapshot,
-		})
-	}
-	if n.onReadyEvent != nil {
-		n.onReadyEvent("persisted")
-	}
-
-	messages := make([]MessageDTO, 0, len(ready.Messages))
-	for _, message := range ready.Messages {
-		data, err := proto.Marshal(message)
-		if err != nil {
-			return BatchDTO{}, n.fail(fmt.Errorf("marshal outbound message: %w", err))
-		}
-		if len(data) > maxMessageSize {
-			return BatchDTO{}, n.fail(fmt.Errorf("outbound message exceeds %d bytes", maxMessageSize))
-		}
-		messages = append(messages, MessageDTO{
-			From:       NodeID(message.GetFrom()),
-			To:         NodeID(message.GetTo()),
-			Data:       bytes.Clone(data),
-			IsSnapshot: message.GetType() == pb.MsgSnap,
-		})
-	}
-	if n.onReadyEvent != nil {
-		n.onReadyEvent("outbound")
-	}
-
-	var snapshotData []byte
-	var snapshotIndex uint64
-	if ready.Snapshot != nil && !etcdraft.IsEmptySnap(ready.Snapshot) {
-		n.confState = cloneConfState(ready.Snapshot.GetMetadata().GetConfState())
-		n.appliedCommands = cloneCommands(n.store.commands)
-		n.commandIndexes = slices.Clone(n.store.commandIndexes)
-		n.configurationChanges = slices.Clone(n.store.configurationChanges)
-		n.appliedIndex = ready.Snapshot.GetMetadata().GetIndex()
-		if n.dynamic {
-			n.stateSnapshot = bytes.Clone(ready.Snapshot.GetData())
-			snapshotData = bytes.Clone(ready.Snapshot.GetData())
-			snapshotIndex = n.appliedIndex
-		}
-	}
-	var commandIndexes []uint64
-	var configurationChanges []CommittedConfigurationDTO
-	commands := make([][]byte, 0, len(ready.CommittedEntries))
-	for _, entry := range ready.CommittedEntries {
-		if entry.GetIndex() <= n.appliedIndex {
-			continue
-		}
-		switch entry.GetType() {
-		case pb.EntryNormal:
-			if len(entry.GetData()) != 0 {
-				commandLimit := maxCommandSize
-				if n.dynamic {
-					commandLimit = maxDynamicCommandSize
-				}
-				if len(entry.GetData()) > commandLimit {
-					return BatchDTO{}, n.fail(fmt.Errorf("apply command at index %d: %w", entry.GetIndex(), ErrProposalTooLarge))
-				}
-				command := bytes.Clone(entry.GetData())
-				n.appliedCommands = append(n.appliedCommands, bytes.Clone(command))
-				if n.dynamic {
-					n.commandIndexes = append(n.commandIndexes, entry.GetIndex())
-					commandIndexes = append(commandIndexes, entry.GetIndex())
-				}
-				commands = append(commands, command)
-			}
-		case pb.EntryConfChange, pb.EntryConfChangeV2:
-			change, err := decodeConfChange(entry)
-			if err != nil {
-				return BatchDTO{}, n.fail(fmt.Errorf("apply configuration at index %d: %w", entry.GetIndex(), err))
-			}
-			if n.dynamic && entry.GetType() == pb.EntryConfChangeV2 {
-				action, memberID, err := validateDynamicConfChange(change)
-				if err != nil {
-					return BatchDTO{}, n.fail(fmt.Errorf("apply dynamic configuration at index %d: %w", entry.GetIndex(), err))
-				}
-				if err := validateDynamicConfStateTransition(n.confState, action, memberID); err != nil {
-					return BatchDTO{}, n.fail(fmt.Errorf("apply dynamic configuration at index %d: %w", entry.GetIndex(), err))
-				}
-				committedChange := CommittedConfigurationDTO{
-					Index: entry.GetIndex(), OperationID: string(change.GetContext()), MemberID: memberID, Action: action,
-				}
-				n.configurationChanges = append(n.configurationChanges, committedChange)
-				configurationChanges = append(configurationChanges, committedChange)
-			}
-			expectedConfState, err := applyConfState(n.confState, change)
-			if err != nil {
-				return BatchDTO{}, n.fail(fmt.Errorf("apply configuration at index %d: %w", entry.GetIndex(), err))
-			}
-			appliedConfState := n.raw.ApplyConfChange(change)
-			if !confStateEqual(appliedConfState, expectedConfState) {
-				return BatchDTO{}, n.fail(fmt.Errorf("apply configuration at index %d: RawNode ConfState %s differs from expected %s", entry.GetIndex(), appliedConfState.String(), expectedConfState.String()))
-			}
-			n.confState = cloneConfState(appliedConfState)
-			n.confChangePending = false
-		default:
-			return BatchDTO{}, n.fail(fmt.Errorf("apply unknown entry type %d", entry.GetType()))
-		}
-		n.appliedIndex = entry.GetIndex()
-	}
-	n.store.appliedIndex = n.appliedIndex
-	n.store.confState = cloneConfState(n.confState)
-	n.store.commands = cloneCommands(n.appliedCommands)
-	n.store.commandIndexes = slices.Clone(n.commandIndexes)
-	n.store.configurationChanges = slices.Clone(n.configurationChanges)
-	if n.onReadyEvent != nil {
-		n.onReadyEvent("applied")
-	}
-	if n.dynamic {
-		n.bootstrapped = containsMember(n.confState, n.id)
-	} else if !n.bootstrapped && fixedConfState(n.confState, n.peerIDs) {
-		if err := n.store.createSnapshot(n.appliedIndex, n.confState, n.appliedCommands); err != nil {
-			return BatchDTO{}, n.fail(fmt.Errorf("%w: %w", ErrStorage, err))
-		}
-		n.bootstrapped = true
-	}
-	if n.dynamic {
-		n.confChangePending = n.hasUncommittedConfChange()
-	}
-
-	n.raw.Advance(ready)
-	if n.onReadyEvent != nil {
-		n.onReadyEvent("advanced")
-	}
-	return BatchDTO{
-		Messages: messages, Commands: commands, CommandIndexes: commandIndexes,
-		ConfigurationChanges: configurationChanges,
-		SnapshotData:         snapshotData, SnapshotIndex: snapshotIndex, ReadStates: readStates,
-	}, nil
+	return n.processReadyLocked()
 }
 
 // Snapshot creates and persists an immutable application snapshot at AppliedIndex.
@@ -827,6 +755,9 @@ func (n *Node) Snapshot() error {
 	}
 	if n.dynamic {
 		return ErrConfigMismatch
+	}
+	if n.appendPending != 0 || n.heldAppend != nil || n.applying != nil || len(n.applyQueue) != 0 {
+		return ErrBackpressure
 	}
 	if n.appliedIndex == 0 {
 		return nil
@@ -844,7 +775,7 @@ func (n *Node) Snapshot() error {
 func (n *Node) Status() StatusDTO {
 	n.mu.Lock()
 	defer n.mu.Unlock()
-	status := n.raw.Status()
+	status := n.raw.BasicStatus()
 	role := RoleFollower
 	switch status.RaftState {
 	case etcdraft.StateCandidate, etcdraft.StatePreCandidate:
@@ -925,15 +856,37 @@ func (n *Node) PeerMatchIndex(peerID NodeID) (uint64, bool) {
 // Close closes the local WAL and makes all subsequent operations return ErrClosed.
 func (n *Node) Close() error {
 	n.mu.Lock()
+	if !n.closed {
+		n.closed = true
+		n.writer.finalAppend = n.heldAppend
+		close(n.writer.requests)
+	}
+	n.mu.Unlock()
+	<-n.writer.done
+	n.mu.Lock()
 	defer n.mu.Unlock()
-	if n.closed {
-		return nil
+	var finalError error
+	if n.heldAppend != nil || len(n.writer.requests) != 0 {
+		finalError = n.writer.finalError
+		if finalError == nil && n.failure != nil {
+			finalError = n.failure
+		}
+		n.heldAppend = nil
+		// A terminal worker may have exited before Close published finalAppend.
+		for len(n.writer.results) != 0 {
+			result := <-n.writer.results
+			if result.err != nil {
+				finalError = result.err
+			}
+		}
+		for len(n.writer.requests) != 0 {
+			<-n.writer.requests // Terminal failure was reported; release dead work.
+		}
+		if finalError != nil {
+			finalError = fmt.Errorf("%w: pending append on close: %w", ErrStorage, finalError)
+		}
 	}
-	n.closed = true
-	if err := n.store.close(); err != nil {
-		return err
-	}
-	return nil
+	return errors.Join(finalError, n.store.close())
 }
 
 func (n *Node) stateError() error {
@@ -954,13 +907,13 @@ func (n *Node) fail(err error) error {
 }
 
 func normalizePeerIDs(nodeID NodeID, peerIDs []NodeID) ([]NodeID, error) {
-	if nodeID == 0 || len(peerIDs) != 3 {
+	if nodeID == 0 || etcdraft.IsLocalMsgTarget(uint64(nodeID)) || len(peerIDs) != 3 {
 		return nil, fmt.Errorf("%w: exactly three nonzero peer IDs including node are required", ErrConfigMismatch)
 	}
 	normalized := slices.Clone(peerIDs)
 	sort.Slice(normalized, func(left, right int) bool { return normalized[left] < normalized[right] })
 	for index, peerID := range normalized {
-		if peerID == 0 || (index > 0 && normalized[index-1] == peerID) {
+		if peerID == 0 || etcdraft.IsLocalMsgTarget(uint64(peerID)) || (index > 0 && normalized[index-1] == peerID) {
 			return nil, fmt.Errorf("%w: peer IDs must be unique and nonzero", ErrConfigMismatch)
 		}
 	}
@@ -983,7 +936,7 @@ func fixedConfState(state *pb.ConfState, peerIDs []NodeID) bool {
 }
 
 func normalizeBootstrapVoterIDs(nodeID NodeID, voterIDs []NodeID) ([]NodeID, error) {
-	if nodeID == 0 {
+	if nodeID == 0 || etcdraft.IsLocalMsgTarget(uint64(nodeID)) {
 		return nil, ErrConfigMismatch
 	}
 	if len(voterIDs) == 0 {
@@ -993,7 +946,7 @@ func normalizeBootstrapVoterIDs(nodeID NodeID, voterIDs []NodeID) ([]NodeID, err
 		return nil, fmt.Errorf("%w: bootstrap requires three sorted voter IDs including the local member", ErrConfigMismatch)
 	}
 	for index, voterID := range voterIDs {
-		if voterID == 0 || (index > 0 && voterIDs[index-1] == voterID) {
+		if voterID == 0 || etcdraft.IsLocalMsgTarget(uint64(voterID)) || (index > 0 && voterIDs[index-1] == voterID) {
 			return nil, fmt.Errorf("%w: bootstrap voter IDs must be unique and nonzero", ErrConfigMismatch)
 		}
 	}

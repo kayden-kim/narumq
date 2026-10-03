@@ -129,6 +129,7 @@ type Registry struct {
 	walSyncDuration *Histogram
 	walSyncEntries  *Histogram
 	walWrittenBytes atomic.Uint64
+	raftStages      [raftStageCount]*Histogram
 }
 
 // NewRegistry initializes an empty Registry.
@@ -144,6 +145,7 @@ func NewRegistry() *Registry {
 		publishLatency:        NewHistogram(defaultPublishLatencyBuckets),
 		walSyncDuration:       NewHistogram(defaultWALSyncDurationBuckets),
 		walSyncEntries:        NewHistogram(defaultWALSyncEntriesBuckets),
+		raftStages:            newRaftStageHistograms(),
 	}
 }
 
@@ -383,7 +385,7 @@ func (r *Registry) ObservePublishDuration(duration time.Duration) {
 	r.publishLatency.Observe(duration.Seconds())
 }
 
-// ObserveWALSync records a successful dynamic Raft Ready WAL frame fsync.
+// ObserveWALSync records one successful dynamic Raft WAL group fsync.
 func (r *Registry) ObserveWALSync(duration time.Duration, entries int, frameBytes int) {
 	r.walSyncDuration.Observe(duration.Seconds())
 	r.walSyncEntries.Observe(float64(entries))
@@ -478,15 +480,16 @@ func (r *Registry) Render(isOpenMetrics bool) []byte {
 	fmt.Fprintf(&buf, "# TYPE narumq_publish_latency_seconds histogram\n")
 	renderHistogram(&buf, "narumq_publish_latency_seconds", r.publishLatency)
 
-	fmt.Fprintf(&buf, "# HELP narumq_raft_wal_sync_duration_seconds Duration of fsync for one Raft Ready WAL frame.\n")
+	fmt.Fprintf(&buf, "# HELP narumq_raft_wal_sync_duration_seconds Duration of one successful Raft WAL group fsync.\n")
 	fmt.Fprintf(&buf, "# TYPE narumq_raft_wal_sync_duration_seconds histogram\n")
 	renderHistogram(&buf, "narumq_raft_wal_sync_duration_seconds", r.walSyncDuration)
-	fmt.Fprintf(&buf, "# HELP narumq_raft_wal_sync_entries Raft log entries persisted by one WAL frame fsync.\n")
+	fmt.Fprintf(&buf, "# HELP narumq_raft_wal_sync_entries Raft log entries persisted by one WAL group fsync.\n")
 	fmt.Fprintf(&buf, "# TYPE narumq_raft_wal_sync_entries histogram\n")
 	renderHistogram(&buf, "narumq_raft_wal_sync_entries", r.walSyncEntries)
 	fmt.Fprintf(&buf, "# HELP narumq_raft_wal_written_bytes_total Bytes appended to the Raft WAL including frame headers.\n")
 	fmt.Fprintf(&buf, "# TYPE narumq_raft_wal_written_bytes_total counter\n")
 	fmt.Fprintf(&buf, "narumq_raft_wal_written_bytes_total %d\n", r.walWrittenBytes.Load())
+	r.renderRaftStages(&buf)
 
 	if isOpenMetrics {
 		fmt.Fprintf(&buf, "# EOF\n")

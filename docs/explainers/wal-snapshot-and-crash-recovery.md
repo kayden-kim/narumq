@@ -9,7 +9,7 @@
 | 관련 기준 문서 | [PRD](../requirements/PRD.md) (CLU-06~12, NFR-07~10), [Cluster session spec](../specs/cluster-session-and-delivery.md) (제10절 Snapshot, backup과 restore), [ADR-0003: Durable ACK barrier](../decisions/ADR-0003-durable-ack-barrier.md) (Proposed) |
 | 대상 version·확인일 | Draft 0.5 |
 
-이 문서는 일반 원리와 NaruMQ의 목표 경계를 설명합니다. 구체적인 스토리지 엔진 제품 및 레코드 바이너리 인코딩 선택은 아직 [ADR-0003](../decisions/ADR-0003-durable-ack-barrier.md)을 비롯한 후속 스토리지 ADR의 `Proposed`(제안) 단계입니다.
+이 문서는 일반 원리와 NaruMQ 구현을 구분해 설명합니다. File WAL·snapshot과 module pin은 [ADR-0009](../decisions/ADR-0009-raft-production-state-profile.md), 비동기 저장 실행 구조는 [ADR-0020](../decisions/ADR-0020-asynchronous-raft-wal-group-commit.md)의 제한된 범위에서 채택했습니다. Production filesystem·전원 손실 수용과 ADR-0003 전체 승인은 별도입니다.
 
 ## 읽고 나면 답할 수 있는 질문
 
@@ -66,6 +66,14 @@ MQTT 브로커는 초당 수만 건의 QoS 1/2 메시지를 쏟아붓는 수많�
 
 - **CRC32 체크섬의 역할**: 크래시 발생 시 OS 버퍼에 있던 바이트가 절반만 기록되고 잘릴 수 있습니다. 복구 시 `Length`만큼 바이트를 읽은 뒤 `CRC32`를 계산하여 레코드 헤더의 체크섬과 비교합니다.
 - **불일치 시 판정**: 파일 맨 끝부분의 체크섬 불일치는 크래시 당시의 미완료 쓰기(Torn Write)이므로 안전하게 버립니다. 만약 파일 중간에서 체크섬이 깨졌다면 하드웨어 결함이므로 복구를 즉시 중단하고 경보를 울립니다.
+
+### 현재 코드: 저장 대기와 driver 진행 분리
+
+`internal/adapters/raft/node_ready.go`의 `ProcessReady`는 저장 요청을 `wal_worker.go`의 단일 worker에 넘깁니다. Worker는 이미 대기 중인 여러 요청을 기존 CRC frame으로 각각 기록한 뒤 한 번 fsync합니다. 세 frame A·B·C가 같은 sync를 기다려도 frame 형식과 복구 순서는 바뀌지 않습니다. 성공 완료 뒤에만 `stable_store.go`의 `applyRecord`로 memory index를 갱신하고 저장 의존 응답을 전달합니다.
+
+이를 group commit이라고 합니다. 여러 요청이 동기화 비용을 나누지만, sync 실패 시 그 batch는 성공 완료를 내지 않습니다. Worker가 디스크를 기다리는 동안 driver는 heartbeat·tick을 처리할 수 있습니다. Application apply는 앞선 저장 요청이 모두 완료된 뒤 반환하며, runtime의 `applyBatch`·`CompleteApply`와 projection 확인을 거쳐 MQTT ACK로 이어집니다. `TestNodeHeldAppendWithholdsReplicationAndApply`와 `TestWALWorkerGroupsQueuedFramesAndFailsClosed`가 이 경계를 확인합니다.
+
+현재 local snapshot은 pending WAL·apply가 없는 경계에서 파일을 확정합니다. 아래 백그라운드 snapshot·과거 WAL 삭제 그림은 일반적인 목표 흐름이며, 현재 adapter가 WAL segment 삭제나 지연 없는 snapshot을 구현했다는 뜻은 아닙니다.
 
 ---
 

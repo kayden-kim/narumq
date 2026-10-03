@@ -766,11 +766,31 @@ func (useCase *UseCase) stopSessionTimers(timerKey string) {
 // Disconnect closes one active lifecycle and evaluates session retention,
 // timer scheduling, and will message publication.
 func (useCase *UseCase) Disconnect(sessionID routing.SessionID, reason session.DisconnectReason) error {
+	return useCase.disconnect(sessionID, reason, 0, false)
+}
+
+// DisconnectIfOwnershipEpoch closes one lifecycle only while its local
+// ownership epoch still matches the connection that is being cleaned up.
+func (useCase *UseCase) DisconnectIfOwnershipEpoch(
+	sessionID routing.SessionID, reason session.DisconnectReason, expectedEpoch uint64,
+) error {
+	return useCase.disconnect(sessionID, reason, expectedEpoch, true)
+}
+
+func (useCase *UseCase) disconnect(
+	sessionID routing.SessionID, reason session.DisconnectReason, expectedEpoch uint64, checkOwnershipEpoch bool,
+) error {
 	if useCase == nil {
 		return ErrNilSessionRepository
 	}
 	useCase.mu.Lock()
-
+	if checkOwnershipEpoch {
+		currentEpoch, exists := useCase.ownershipEpochs[sessionID]
+		if currentEpoch != expectedEpoch || exists != (expectedEpoch != 0) {
+			useCase.mu.Unlock()
+			return nil
+		}
+	}
 	timerKey := string(sessionID)
 	if timers, ok := useCase.activeTimers[timerKey]; ok {
 		if timers.willTimer != nil {

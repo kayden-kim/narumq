@@ -9,7 +9,7 @@
 | 관련 스펙·데이터 계약 | [Cluster session과 durable delivery §8·§11](../specs/cluster-session-and-delivery.md), [Cluster release compatibility v1](../contracts/cluster-release-compatibility-v1.md), [Raft membership v2](../contracts/raft-membership-v2.md), [Management API v1](../contracts/management-api-v1.md) |
 | 관련 아키텍처 | [Cluster architecture](../architectures/cluster-architecture.md), [Project structure](../architectures/project-structure.md) |
 | 이 결정이 대체하는 이전 결정 기록(ADR) | 없음 |
-| 이 결정을 대체한 새 결정 기록(ADR) | 없음 |
+| 이 결정을 대체한 새 결정 기록(ADR) | [ADR-0021](ADR-0021-backup-archive-release-window.md)이 archive cross-release restore 제외만 대체한다. |
 
 ## 1. 결정
 

@@ -251,6 +251,24 @@ func TestDynamicPeerReconcileAndQueueBounds(t *testing.T) {
 	old.connection = activeSocket
 	old.mu.Unlock()
 	defer retiredSocket.Close()
+	if err := transport.Send(PeerMessageDTO{From: local.MemberID, To: peer.MemberID, Data: []byte{4}}); !errors.Is(err, ErrPeerBackpressure) {
+		t.Fatalf("connected full queue: got %v", err)
+	}
+	if err := retiredSocket.SetReadDeadline(time.Now().Add(time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	writeResult := make(chan error, 1)
+	go func() {
+		_, err := activeSocket.Write([]byte{0x42})
+		writeResult <- err
+	}()
+	var received [1]byte
+	if _, err := io.ReadFull(retiredSocket, received[:]); err != nil {
+		t.Fatalf("outbound backpressure closed the active connection: %v", err)
+	}
+	if err := <-writeResult; err != nil || received[0] != 0x42 {
+		t.Fatalf("active connection probe: received=%x err=%v", received, err)
+	}
 
 	rebound := peer
 	rebound.Address = "127.0.0.1:19005"

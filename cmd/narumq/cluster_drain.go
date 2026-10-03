@@ -506,7 +506,7 @@ func (controller *clusterDrainController) clearCompleted(ctx context.Context, op
 			return
 		}
 		checkCtx, cancelCheck := context.WithTimeout(ctx, clusterReadTimeout)
-		readinessErr := controller.runtime.checkReadiness(checkCtx)
+		readinessErr := controller.runtime.checkReadiness(checkCtx, "drain")
 		cancelCheck()
 		if readinessErr != nil {
 			warnWait("runtime_not_ready", readinessErr)

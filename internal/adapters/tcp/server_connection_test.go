@@ -8,7 +8,9 @@ import (
 	"time"
 
 	"narumq/internal/application/connect"
+	"narumq/internal/application/membership"
 	applicationdeliveryqueue "narumq/internal/application/ports/deliveryqueue"
+	"narumq/internal/application/subscribe"
 	"narumq/internal/domain/mqtt"
 	"narumq/internal/domain/routing"
 	"narumq/internal/domain/session"
@@ -121,6 +123,246 @@ func TestCloseSessionForTakeoverRemovesBindingAndStopsSocket(t *testing.T) {
 	}
 	if runtime.server.CloseSessionForTakeover(connection.sessionID) {
 		t.Fatal("second takeover close unexpectedly found the removed binding")
+	}
+}
+
+func TestPendingOwnershipFenceIsTenantScoped(t *testing.T) {
+	runtime := newAdapterTestRuntime(t, 2, defaultAdapterConfig())
+	defer runtime.stop(t)
+
+	const clientID = "shared-client-id"
+	socketA, peerA := net.Pipe()
+	defer peerA.Close()
+	connectionA := newConnection(runtime.server, socketA)
+	defer connectionA.requestClose()
+	connectionA.ownership = subscribe.SessionOwnership{
+		TenantID: "tenant-a", ClientID: clientID, OwnerNodeID: 1, Epoch: 1,
+	}
+	runtime.server.trackConnecting(clientID, connectionA)
+
+	socketB, peerB := net.Pipe()
+	defer peerB.Close()
+	connectionB := newConnection(runtime.server, socketB)
+	defer connectionB.requestClose()
+	connectionB.ownership = subscribe.SessionOwnership{
+		TenantID: "tenant-b", ClientID: clientID, OwnerNodeID: 1, Epoch: 1,
+	}
+	runtime.server.trackConnecting(clientID, connectionB)
+
+	runtime.server.RecordCommittedOwnership(membership.OwnershipStateDTO{
+		TenantID: "tenant-b", ClientID: clientID, OwnerNodeID: 1, Epoch: 1,
+	})
+	runtime.server.RecordCommittedOwnership(membership.OwnershipStateDTO{
+		TenantID: "tenant-a", ClientID: clientID, OwnerNodeID: 2, Epoch: 2,
+	})
+
+	if runtime.server.bindSession("tenant-a/session", connectionA) || !connectionA.takeover.Load() {
+		t.Fatal("tenant A stale connection bound despite its newer ownership fence")
+	}
+	if !runtime.server.bindSession("tenant-b/session", connectionB) {
+		t.Fatal("tenant A ownership fence rejected tenant B's matching epoch")
+	}
+}
+
+func TestCommittedTakeoverFencesConnectBeforeSessionBinding(t *testing.T) {
+	const clientID = "in-flight-client"
+	clusterConfig := func(memberID uint64) Config {
+		config := defaultAdapterConfig()
+		config.ClusterMode = true
+		config.LocalMemberID = memberID
+		config.ClusterReady = func() bool { return true }
+		config.ClusterAdmissionOpen = func() bool { return true }
+		config.ClusterProjectionReady = func() bool { return true }
+		return config
+	}
+
+	staleRuntime := newAdapterTestRuntime(t, 2, clusterConfig(1))
+	defer staleRuntime.stop(t)
+	currentRuntime := newAdapterTestRuntime(t, 2, clusterConfig(2))
+	defer currentRuntime.stop(t)
+
+	started := make(chan struct{})
+	release := make(chan struct{})
+	staleRuntime.cluster.mu.Lock()
+	staleRuntime.cluster.ownershipEpoch = 1
+	staleRuntime.cluster.ownershipCommitted = func(tenantID, committedClientID string, ownerNodeID, epoch uint64) {
+		staleRuntime.server.RecordCommittedOwnership(membership.OwnershipStateDTO{
+			TenantID: tenantID, ClientID: committedClientID, OwnerNodeID: ownerNodeID, Epoch: epoch,
+		})
+	}
+	staleRuntime.cluster.ownershipCommitStarted = started
+	staleRuntime.cluster.ownershipCommitRelease = release
+	staleRuntime.cluster.mu.Unlock()
+
+	writeTestPackets(t, staleRuntime.client, &mqtt.Connect{
+		Version: mqtt.ProtocolV5, CleanStart: true, ClientID: clientID,
+	})
+	select {
+	case <-started:
+	case <-time.After(time.Second):
+		t.Fatal("first CONNECT did not reach its committed ownership pause")
+	}
+
+	staleRuntime.server.mu.Lock()
+	pending := staleRuntime.server.connectingByClientID[clientID]
+	pendingCount := 0
+	if pending != nil {
+		pendingCount = len(pending.connections)
+	}
+	staleRuntime.server.mu.Unlock()
+	if pendingCount != 1 {
+		t.Fatalf("in-flight CONNECT registrations = %d, want 1", pendingCount)
+	}
+
+	staleRuntime.server.RecordCommittedOwnership(membership.OwnershipStateDTO{
+		TenantID: "default", ClientID: clientID, OwnerNodeID: 2, Epoch: 2,
+	})
+	close(release)
+
+	if err := staleRuntime.client.SetReadDeadline(time.Now().Add(time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	var response [1]byte
+	count, err := staleRuntime.client.Read(response[:])
+	if count != 0 {
+		t.Fatalf("stale CONNECT received CONNACK bytes % X", response[:count])
+	}
+	if err == nil {
+		t.Fatal("stale CONNECT socket remained open without CONNACK")
+	}
+	var networkErr net.Error
+	if errors.As(err, &networkErr) && networkErr.Timeout() {
+		t.Fatalf("stale CONNECT did not close after takeover: %v", err)
+	}
+	if _, found, err := staleRuntime.repo.Load(clientID); err != nil || found {
+		t.Fatalf("rejected stale CONNECT local session = found %v, err %v; want cleanup", found, err)
+	}
+
+	currentRuntime.cluster.mu.Lock()
+	currentRuntime.cluster.ownershipEpoch = 2
+	currentRuntime.cluster.ownershipCommitted = func(tenantID, committedClientID string, ownerNodeID, epoch uint64) {
+		currentRuntime.server.RecordCommittedOwnership(membership.OwnershipStateDTO{
+			TenantID: tenantID, ClientID: committedClientID, OwnerNodeID: ownerNodeID, Epoch: epoch,
+		})
+	}
+	currentRuntime.cluster.mu.Unlock()
+	writeTestPackets(t, currentRuntime.client, &mqtt.Connect{
+		Version: mqtt.ProtocolV5, CleanStart: true, ClientID: clientID,
+	})
+	connAck := readTestFrame(t, currentRuntime.client)
+	if len(connAck) < 4 || connAck[0] != 0x20 || connAck[3] != 0 {
+		t.Fatalf("current owner CONNACK = % X, want success", connAck)
+	}
+
+	staleRuntime.server.mu.Lock()
+	staleBound := false
+	for _, connection := range staleRuntime.server.bySession {
+		staleBound = staleBound || connection.ownership.ClientID == clientID
+	}
+	staleRuntime.server.mu.Unlock()
+	currentRuntime.server.mu.Lock()
+	currentBound := false
+	for _, connection := range currentRuntime.server.bySession {
+		currentBound = currentBound || (connection.ownership.ClientID == clientID &&
+			connection.ownership.OwnerNodeID == 2 && connection.ownership.Epoch == 2)
+	}
+	currentRuntime.server.mu.Unlock()
+	if staleBound || !currentBound {
+		t.Fatalf("session owners after takeover: stale bound=%t, current epoch-2 bound=%t", staleBound, currentBound)
+	}
+}
+
+func TestOldConnectionCleanupCannotDisconnectReplacementEpoch(t *testing.T) {
+	const clientID = "replacement-client"
+	config := defaultAdapterConfig()
+	config.ClusterMode = true
+	config.LocalMemberID = 1
+	config.ClusterReady = func() bool { return true }
+	config.ClusterAdmissionOpen = func() bool { return true }
+	config.ClusterProjectionReady = func() bool { return true }
+	runtime := newAdapterTestRuntime(t, 2, config)
+	defer runtime.stop(t)
+
+	recordOwnership := func(tenantID, committedClientID string, ownerNodeID, epoch uint64) {
+		runtime.server.RecordCommittedOwnership(membership.OwnershipStateDTO{
+			TenantID: tenantID, ClientID: committedClientID, OwnerNodeID: ownerNodeID, Epoch: epoch,
+		})
+	}
+	runtime.cluster.mu.Lock()
+	runtime.cluster.ownershipEpoch = 1
+	runtime.cluster.ownershipCommitted = recordOwnership
+	runtime.cluster.mu.Unlock()
+
+	writeTestPackets(t, runtime.client, &mqtt.Connect{
+		Version: mqtt.ProtocolV5, CleanStart: true, ClientID: clientID,
+	})
+	connAck := readTestFrame(t, runtime.client)
+	if len(connAck) < 4 || connAck[0] != 0x20 || connAck[3] != 0 {
+		t.Fatalf("initial owner CONNACK = % X, want success", connAck)
+	}
+
+	runtime.server.mu.Lock()
+	var old *connection
+	for _, candidate := range runtime.server.bySession {
+		if candidate.ownership.ClientID == clientID {
+			old = candidate
+			break
+		}
+	}
+	runtime.server.mu.Unlock()
+	if old == nil {
+		t.Fatal("initial connection was not bound")
+	}
+
+	old.deliveryMu.Lock()
+	cleanupGateHeld := true
+	defer func() {
+		if cleanupGateHeld {
+			old.deliveryMu.Unlock()
+		}
+	}()
+	if !runtime.server.CloseSessionForTakeover(old.sessionID) {
+		t.Fatal("CloseSessionForTakeover() did not close the old connection")
+	}
+	if err := runtime.server.connections.Disconnect(old.sessionID, session.DisconnectNormal); err != nil {
+		t.Fatalf("detach old local lifecycle: %v", err)
+	}
+
+	runtime.cluster.mu.Lock()
+	runtime.cluster.ownershipEpoch = 2
+	runtime.cluster.mu.Unlock()
+	serverSocket, replacementClient := net.Pipe()
+	defer replacementClient.Close()
+	defer serverSocket.Close()
+	runtime.listener.connections <- serverSocket
+	select {
+	case <-runtime.listener.accepted:
+	case <-time.After(time.Second):
+		t.Fatal("replacement TCP connection was not accepted")
+	}
+	writeTestPackets(t, replacementClient, &mqtt.Connect{
+		Version: mqtt.ProtocolV5, CleanStart: true, ClientID: clientID,
+	})
+	connAck = readTestFrame(t, replacementClient)
+	if len(connAck) < 4 || connAck[0] != 0x20 || connAck[3] != 0 {
+		t.Fatalf("replacement owner CONNACK = % X, want success", connAck)
+	}
+
+	runtime.server.mu.Lock()
+	replacement := runtime.server.bySession[old.sessionID]
+	runtime.server.mu.Unlock()
+	if replacement == nil || replacement == old || replacement.ownership.Epoch != 2 {
+		t.Fatalf("bound replacement = %#v, want a distinct epoch-2 connection", replacement)
+	}
+
+	old.deliveryMu.Unlock()
+	cleanupGateHeld = false
+	old.cleanup()
+	result, err := runtime.server.connections.ConnectContext(context.Background(), connect.ConnectRequestDTO{
+		Packet: mqtt.Connect{Version: mqtt.ProtocolV5, CleanStart: true, ClientID: clientID},
+	})
+	if err != nil || result.Accepted {
+		t.Fatalf("duplicate CONNECT after old cleanup = (%#v, %v), want replacement still connected", result, err)
 	}
 }
 

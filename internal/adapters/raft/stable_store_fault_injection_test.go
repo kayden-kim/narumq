@@ -186,28 +186,28 @@ func TestStableStoreAppendReadyErrorBranches(t *testing.T) {
 	defer store.close()
 	original := filePersistenceOps
 	filePersistenceOps.write = func(io.Writer, []byte) (int, error) { return 0, errors.New("append write failure") }
-	if err := store.appendReady(netraft.Ready{Entries: []*pb.Entry{{Index: uint64Ptr(1)}}}); err == nil {
+	if err := appendReadyForTest(store, netraft.Ready{Entries: []*pb.Entry{{Index: uint64Ptr(1)}}}); err == nil {
 		t.Fatal("appendReady accepted write failure")
 	}
 	filePersistenceOps = original
 	filePersistenceOps.sync = func(*os.File) error { return errors.New("append sync failure") }
-	if err := store.appendReady(netraft.Ready{Entries: []*pb.Entry{{Index: uint64Ptr(1)}}}); err == nil {
+	if err := appendReadyForTest(store, netraft.Ready{Entries: []*pb.Entry{{Index: uint64Ptr(1)}}}); err == nil {
 		t.Fatal("appendReady accepted sync failure")
 	}
 	filePersistenceOps = original
 	invalidSnapshot := &pb.Snapshot{Metadata: &pb.SnapshotMetadata{Index: uint64Ptr(1)}}
-	if err := store.appendReady(netraft.Ready{Snapshot: invalidSnapshot}); err == nil {
+	if err := appendReadyForTest(store, netraft.Ready{Snapshot: invalidSnapshot}); err == nil {
 		t.Fatal("appendReady accepted invalid snapshot state")
 	}
 	filePersistenceOps = original
-	if err := store.appendReady(netraft.Ready{Entries: []*pb.Entry{{Index: uint64Ptr(1), Data: bytes.Repeat([]byte{'x'}, maxWALFramePayload)}}}); err == nil {
+	if err := appendReadyForTest(store, netraft.Ready{Entries: []*pb.Entry{{Index: uint64Ptr(1), Data: bytes.Repeat([]byte{'x'}, maxWALFramePayload)}}}); err == nil {
 		t.Fatal("appendReady accepted an oversized entry")
 	}
 	snapshotStore, err := openStableStore(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := snapshotStore.appendReady(netraft.Ready{Snapshot: testSnapshot(1)}); err != nil {
+	if err := appendReadyForTest(snapshotStore, netraft.Ready{Snapshot: testSnapshot(1)}); err != nil {
 		t.Fatal(err)
 	}
 	if err := snapshotStore.close(); err != nil {

@@ -23,6 +23,29 @@ import (
 const (
 	bp03BuildBaseImageSubstitution = "planned digest was unavailable in Docker Hub; immutable digest resolved from golang:1.26.5-bookworm on 2026-09-19"
 	bp03NetworkMode                = "bridge network; broker shares netns owner"
+	bp03EMQXImageReference         = "emqx/emqx-enterprise:5.8.8@sha256:d166efa91eae706ffbfca3f47e36fae0fd441507a8a57bda622da09e4a019c14"
+	bp03EMQXDurabilityReady        = `begin
+		Config = emqx_ds_replication_layer_meta:db_config(messages),
+		Sites = emqx_ds_replication_layer_meta:db_sites(messages),
+		Shards = emqx_ds_replication_layer_meta:shards(messages),
+		{ok, Authenticators} = emqx_authn_chains:list_authenticators('mqtt:global'),
+		emqx:get_config([durable_sessions, enable]) =:= true andalso
+		lists:member({messages, builtin_raft}, emqx_ds:which_dbs()) andalso
+		maps:get(n_sites, Config) =:= 3 andalso
+		maps:get(replication_factor, Config) =:= 3 andalso
+		length(Sites) =:= 3 andalso length(Shards) =:= 1 andalso
+		lists:sort([emqx_ds_replication_layer_meta:node(Site) || Site <- Sites]) =:= lists:sort(emqx:running_nodes()) andalso
+		lists:all(fun(Shard) ->
+			lists:sort(emqx_ds_replication_layer_meta:replica_set(messages, Shard)) =:= lists:sort(Sites) andalso
+			emqx_ds_replication_layer_meta:replica_set_transitions(messages, Shard) =:= []
+		end, Shards) andalso
+		lists:any(fun(#{id := <<"jwt">>, enable := true}) -> true; (_) -> false end, Authenticators)
+	end`
+	bp03EMQXDurabilitySnapshot = `{emqx:get_config([durable_sessions]),
+		emqx_ds_replication_layer_meta:db_config(messages), emqx:get_config([authentication]),
+		[{Shard, emqx_ds_replication_layer_meta:replica_set(messages, Shard),
+			emqx_ds_replication_layer_meta:replica_set_transitions(messages, Shard)}
+			|| Shard <- emqx_ds_replication_layer_meta:shards(messages)]}`
 )
 
 type bp03ArtifactProfile struct {
@@ -67,7 +90,7 @@ type bp03EMQXMetadata struct {
 	Version        string `json:"version"`
 	Edition        string `json:"edition"`
 	License        string `json:"license"`
-	EOL            string `json:"eol"`
+	EOL            string `json:"eol,omitempty"`
 	ImageReference string `json:"imageReference"`
 	ImageIndex     string `json:"imageIndexDigest"`
 	Historical     bool   `json:"historicalComparator"`
@@ -261,7 +284,7 @@ func compareCommand(ctx context.Context, args []string, stdout, stderr io.Writer
 		_, _ = fmt.Fprintln(stdout, filepath.Join(runDir, "manifest.json"))
 		return cause
 	}
-	if err := environment.EnsureEMQXImage(ctx, runDir); err != nil {
+	if err := environment.EnsureEMQXImage(ctx, runDir, bp03EMQXImageReference); err != nil {
 		return writeFailure(err)
 	}
 	images, err := environment.BuildImages(ctx, environment.BuildOptions{
@@ -295,7 +318,7 @@ func compareCommand(ctx context.Context, args []string, stdout, stderr io.Writer
 
 func newBP03Manifest(options bp03RunOptions, startedAt time.Time) bp03Manifest {
 	imageIndex := ""
-	if parts := strings.SplitN(environment.EMQXImageReference, "@", 2); len(parts) == 2 {
+	if parts := strings.SplitN(bp03EMQXImageReference, "@", 2); len(parts) == 2 {
 		imageIndex = parts[1]
 	}
 	return bp03Manifest{
@@ -315,19 +338,18 @@ func newBP03Manifest(options bp03RunOptions, startedAt time.Time) bp03Manifest {
 		PlannedBuildBaseImage:      environment.PlannedBuildBaseImage,
 		BuildBaseImageSubstitution: bp03BuildBaseImageSubstitution,
 		EMQX: bp03EMQXMetadata{
-			Version:        environment.EMQXVersion,
-			Edition:        environment.EMQXEdition,
-			License:        environment.EMQXLicense,
-			EOL:            environment.EMQXEOLEnd,
-			ImageReference: environment.EMQXImageReference,
+			Version:        "5.8.8",
+			Edition:        "Enterprise",
+			License:        "EMQX Enterprise evaluation; 25 concurrent sessions; non-production only",
+			ImageReference: bp03EMQXImageReference,
 			ImageIndex:     imageIndex,
 			Historical:     true,
 		},
 		Topology: bp03Topology{
 			Nodes:              3,
 			NetworkMode:        bp03NetworkMode,
-			NaruMQStorage:      "Raft WAL fsync per Ready frame on docker named volume",
-			EMQXSessionStorage: "memory; durable_sessions.enable=false",
+			NaruMQStorage:      "Raft WAL asynchronous single-writer group commit with fsync before dependent replication and ACK on docker named volume",
+			EMQXSessionStorage: "durable sessions; builtin_raft messages; 3 sites; 3 replicas; 1 shard; docker named volumes",
 			RuntimeMetrics:     "not_collected: -cluster-config rejects other flags",
 		},
 		SummaryPath:    filepath.Join(options.RunDir, "summary.json"),
@@ -454,7 +476,9 @@ func runBP03Target(ctx context.Context, options bp03RunOptions, fixture *bp03Fix
 			"--credentials", "/runner-config/credentials.json", "--output", "/output",
 		}
 	} else {
-		clusterOptions.ImageReference = environment.EMQXImageReference
+		clusterOptions.ImageReference = bp03EMQXImageReference
+		clusterOptions.EMQXReadyCondition = bp03EMQXDurabilityReady
+		clusterOptions.EMQXSnapshotExpression = bp03EMQXDurabilitySnapshot
 		clusterOptions.RunnerArgs = []string{
 			"run", "--profile", "/input/profile.json", "--target", "emqx",
 			"--nodes", "node1.bp03.test:1883,node2.bp03.test:1883,node3.bp03.test:1883",
@@ -565,15 +589,24 @@ func bp03ClusterNodes(target string, options bp03RunOptions, fixture *bp03Fixtur
 		if target == "narumq" {
 			node.BrokerArgs = []string{"-cluster-config", "/config/node.json"}
 		} else {
+			node.ConfigDirectory = fixture.EMQXConfigDirectory
+			node.MountConfig = true
 			node.DataDestination = "/opt/emqx/data"
 			node.LogDestination = "/opt/emqx/log"
-			node.ReadyLogMarker = "EMQX 5.8.8 is running now!"
+			node.ReadyLogMarker = "EMQX Enterprise 5.8.8 is running now!"
 			node.BrokerEnv = []string{
 				"EMQX_NODE__NAME=emqx@" + name + ".bp03.test",
 				"EMQX_NODE__COOKIE=bp03-" + options.RunID + "-emqx-cookie",
 				"EMQX_CLUSTER__DISCOVERY_STRATEGY=static",
 				"EMQX_CLUSTER__STATIC__SEEDS=[emqx@node1.bp03.test,emqx@node2.bp03.test,emqx@node3.bp03.test]",
-				"EMQX_DURABLE_SESSIONS__ENABLE=false",
+				"EMQX_DURABLE_SESSIONS__ENABLE=true",
+				"EMQX_DURABLE_STORAGE__MESSAGES__BACKEND=builtin_raft",
+				"EMQX_DURABLE_STORAGE__MESSAGES__N_SITES=3",
+				"EMQX_DURABLE_STORAGE__MESSAGES__REPLICATION_FACTOR=3",
+				"EMQX_DURABLE_STORAGE__MESSAGES__N_SHARDS=1",
+				`EMQX_AUTHENTICATION=[{"mechanism":"jwt","enable":true,"use_jwks":true,"endpoint":"http://127.0.0.1:18080/jwks.json","refresh_interval":300,"from":"password","verify_claims":{"iss":"https://issuer.example","aud":"narumq","sub":"bp03-client"}}]`,
+				`EMQX_AUTHORIZATION__SOURCES=[{"type":"file","enable":true,"path":"/config/acl.conf"}]`,
+				"EMQX_AUTHORIZATION__NO_MATCH=deny",
 			}
 		}
 		nodes[index] = node
@@ -619,7 +652,7 @@ func buildBP03Comparison(manifest bp03Manifest, summary bp03Summary) bp03Compari
 		RunID:                        manifest.RunID,
 		Equivalent:                   equivalent,
 		ReleaseGating:                false,
-		Reason:                       "identical workload profile, resource limits, runner image, and three-node topology; broker persistence and replication semantics differ",
+		Reason:                       "identical workload profile, resource limits, runner image, and three-node topology; both use replicated durable message storage, but exact ACK/storage and security contracts remain non-equivalent",
 		ProfileSHA256:                manifest.Profile.RawSHA256,
 		ResolvedProfile:              manifest.Profile.Resolved,
 		ResourceLimits:               left.ResourceLimits,
@@ -627,9 +660,8 @@ func buildBP03Comparison(manifest bp03Manifest, summary bp03Summary) bp03Compari
 		RunnerImageID:                manifest.RunnerImageID,
 		AckLatencyDirectlyComparable: false,
 		NonEquivalent: []bp03Difference{
-			{Dimension: "replication", Reason: "EMQX OSS 5.8.8 regular sessions are node-local memory; builtin_raft is Enterprise-only"},
-			{Dimension: "durability", Reason: "EMQX PUBACK is not preceded by fsync"},
-			{Dimension: "authentication", Reason: "NaruMQ validates JWT at CONNECT; EMQX runs without authenticator"},
+			{Dimension: "durability", Reason: "EMQX uses Durable Storage batching and session persistence; equivalence to NaruMQ's quorum WAL fsync-before-ACK contract is not verified"},
+			{Dimension: "authentication", Reason: "both validate JWKS JWT; EMQX fixture does not reproduce NaruMQ tenant/client-ID bindings or peer mTLS"},
 		},
 		Targets: make(map[string]bp03ComparisonTarget, 2),
 	}

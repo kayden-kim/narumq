@@ -10,7 +10,7 @@
 | 관련 아키텍처 | [Cluster architecture](../architectures/cluster-architecture.md) |
 | 관련 ADR | [ADR-0002](ADR-0002-cluster-consensus-library.md), [ADR-0003](ADR-0003-durable-ack-barrier.md), [ADR-0004](ADR-0004-session-ownership-and-fencing.md), [ADR-0008](ADR-0008-raft-peer-transport.md) |
 | 이 결정이 대체하는 이전 결정 기록(ADR) | 없음 |
-| 이 결정을 대체한 새 결정 기록(ADR) | 없음 |
+| 이 결정을 대체한 새 결정 기록(ADR) | [ADR-0020](ADR-0020-asynchronous-raft-wal-group-commit.md): §1.2의 synchronous Ready scheduling만 대체 |
 
 이 ADR은 아래 네 가지 설계 선택만 채택한다. 현재 runtime의 production readiness, production crash recovery·내구성, durable MQTT ACK 또는 release N/N-1 호환성을 승인하지 않는다. 상위 [ADR-0002](ADR-0002-cluster-consensus-library.md), [ADR-0003](ADR-0003-durable-ack-barrier.md), [ADR-0004](ADR-0004-session-ownership-and-fencing.md)는 계속 `Proposed`이며, cluster architecture와 [release compatibility contract](../contracts/cluster-release-compatibility-v1.md)는 각각 `Target / Draft`, `Draft`로 남는다.
 
@@ -29,11 +29,15 @@ Production target은 Go module `go.etcd.io/raft/v3 v3.7.0`으로 고정한다. �
 
 ### 1.2 WAL·snapshot storage와 동기화
 
+아래 synchronous 처리 설명은 당시 채택한 profile의 기록이다. 현재 저장 scheduling과 완료 응답의 기준은 사용자 지시로 채택한 [ADR-0020](ADR-0020-asynchronous-raft-wal-group-commit.md)이다. Module pin·WAL/snapshot 형식·directory sync·commit-only HardState 영속화와 production 수용 제외는 유지한다.
+
 `internal/adapters/raft`가 소유하는 append-only file WAL과 immutable snapshot file을 선택한다. `etcd/raft` `RawNode`와 in-memory index는 process 안의 계산·조회 cache이며 system of record가 아니다. 기존의 synchronous Ready 처리 경계를 유지한다.
 
 영속할 `HardState`(term·vote·commit), entries 또는 수신 snapshot이 하나라도 있는 Ready는 이를 하나의 checksummed WAL frame으로 기록하고 WAL 파일에 `os.File.Sync`를 호출한다.
 셋 다 없는 Ready(outbound message, ReadState, 이미 기록된 committed entry의 apply만 있는 Ready)는 복구할 상태가 없으므로 frame을 쓰지 않고 sync도 호출하지 않는다. 그 message가 의존하는 상태는 이전 Ready에서 이미 sync되었다.
-Dynamic cluster driver는 호출을 유발한 request 또는 inbound frame을 이미 처리한 뒤, 대기 중인 request와 inbound Raft frame을 최대 64개 추가로 Raft node에 적용하고 Ready를 처리한다. Inbound frame이 대기 중이면 한 frame을 먼저 처리한 뒤 나머지 공용 예산으로 request와 inbound frame을 staging해 request backlog가 Raft progress를 굶기지 않게 한다. 그래서 여러 proposal이 한 frame과 한 번의 sync로 영속된다(group commit, ADR-0003 §8). 이 호출이 성공하기 전에는 관련 outbound message를 내보내거나 `Advance`를 호출하거나 해당 영속화를 stable하다고 취급해서는 안 된다. Snapshot은 같은 filesystem directory 안의 임시 파일에 기록한 뒤 파일 `Sync`, close, atomic rename, 포함 directory `Sync` 순서로 확정한다. Snapshot을 durable하다고 선언하거나 WAL을 compact·폐기하기 전에 이 순서를 완료한다. WAL이나 metadata 파일을 새로 만들거나 rename할 때도 directory를 `Sync`한다.
+Dynamic cluster driver는 호출을 유발한 request 또는 inbound frame을 이미 처리한 뒤, 대기 중인 request와 inbound Raft frame을 최대 64개 추가로 Raft node에 적용하고 Ready를 처리한다. 대기 중인 inbound frame을 공용 64개 예산 안에서 먼저 처리한 뒤 남은 예산으로 request와 새 inbound frame을 staging한다. 이는 peer 수신 queue를 먼저 비우기 위한 처리 순서이며 별도의 무제한 drain이나 예산을 추가하지 않는다. 그래서 여러 proposal이 한 frame과 한 번의 sync로 영속된다(group commit, ADR-0003 §8). 이 호출이 성공하기 전에는 관련 outbound message를 내보내거나 `Advance`를 호출하거나 해당 영속화를 stable하다고 취급해서는 안 된다. Snapshot은 같은 filesystem directory 안의 임시 파일에 기록한 뒤 파일 `Sync`, close, atomic rename, 포함 directory `Sync` 순서로 확정한다. Snapshot을 durable하다고 선언하거나 WAL을 compact·폐기하기 전에 이 순서를 완료한다. WAL이나 metadata 파일을 새로 만들거나 rename할 때도 directory를 `Sync`한다.
+수집은 외부 event 진입뿐 아니라 각 Ready의 WAL sync·application apply·outbound 전송이 끝난 경계에서도 반복한다. Sync 중 도착한 request와 Raft frame을 다음 Ready에 포함해 새 entries와 commit-only `HardState`를 함께 기록할 수 있다. 매번 추가 work item은 64개 이하이며 대기 중인 inbound를 우선 처리한다. Leader의 새 application proposal이 있을 때만 재사용 timer의 8ms deadline까지 추가 도착을 수집한다. Follower forwarding·복제 ACK와 ReadIndex control만 처리할 때는 기다리지 않는다. `Node.HasPendingLeaderProposal`은 이 수집용 힌트이며 quorum proof·durability 판정에는 쓰지 않는다. 외부 group-commit 설정 항목은 없다. 적용·projection과 해당 outbound 처리가 끝난 proposal은 drain 전체의 종료를 기다리지 않고 반환한다. Projection checkpoint는 applied index가 현재 commit index까지 따라온 경계에서만 반환하며, cancel·health failure·driver 종료는 대기 요청도 종료한다. 긴 drain 중에도 driver tick, context와 transport 종료를 처리한다. 모든 `HardState`, WAL sync, snapshot 및 ACK 경계는 유지한다.
+수집 도중 read·projection·backup 같은 control request나 proposal이 아닌 Raft frame을 처리하면 timer를 더 기다리지 않고 즉시 Ready를 처리한다. 처음 처리한 event나 이미 대기 중이던 항목에 control이 있으면 수집 timer를 시작하지 않는다. `Node.Step`은 기존 단일 decode·검증 뒤 leader가 받아들인 proposal인지 함께 반환하므로 frame을 다시 decode하지 않는다.
 
 Write, file sync, rename 또는 directory sync가 실패하면 해당 node는 fail-closed 상태가 되어야 한다. 실패한 Ready와 연결된 outbound batch나 ACK를 내보내서는 안 된다. 복구는 완전하고 checksum을 확인한 WAL frame과 finalized snapshot만 replay한다. Commit된 기록 또는 WAL 중간 기록의 손상, 지원하지 않는 format은 fail closed다. Torn tail은 미commit 상태만 안전하게 버릴 수 있고, 마지막 durable commit을 잃을 가능성이 있으면 자동 절단하지 말고 복구를 실패시켜야 한다. WAL truncation·retention은 복구 가능한 snapshot과 그 뒤의 committed tail을 보존해야 한다.
 
@@ -120,6 +124,10 @@ Generated protobuf와 deterministic serialization은 타입을 가진 applicatio
 | State codec와 release N/N-1이 호환된다. | Draft machine-readable state contract 및 양방향 producer/consumer·snapshot compatibility 시험 | Unknown required record와 지원하지 않는 major는 readiness를 차단하고 N/N-1 행을 검증한다. | 미실행. Release matrix는 Draft이며 미검증 상태를 유지한다. |
 | 단일 group이 session aggregate ordering을 보존한다. | 동일 session key의 ownership/subscription/inflight command를 한 log로 적용하고 committed projection을 rebuild하는 통합 시험 | aggregate 변경의 동일 ordering·원자성 및 route readiness 전 rebuild | PASS: `TestClusterSnapshotAndWALTailReplayRestoresSessionAggregateAndRouteProjection`은 production protobuf command와 typed snapshot/tail을 복원하고, `TestDynamicClusterPersistentSubscriptionReplayProcessAcceptance`는 전체 process crash/restart, first-ready joiner projection과 joiner ingress routing을 확인했다([Cluster §11.14](../specs/cluster-session-and-delivery.md#1114-persistent-subscriptioninflight-replay와-route-projection-rebuild-수용-매핑)). 이는 Linux/EBS power-loss, N/N-1 compatibility 또는 drain 검증이 아니다. |
 BP-03 구현 단위 검증: `go test ./internal/adapters/raft -count=1`과 `go test ./cmd/narumq -count=1` PASS. `TestProcessReadySkipsWALFrameWithoutPersistentState`는 message/ReadState-only Ready에서 WAL frame·sync가 생기지 않음을, `TestStageQueuedDriverRequestsStopsAtLimit`는 staged request cap과 후속 FIFO 처리를 확인한다. `TestClusterDurableQueueDefersPromotionWhenQuorumUnavailable`와 TCP delivery writer retry 회귀 시험도 해당 package suite에서 PASS했다. Storage chaos run `storage-power-20260930-walskip3`의 여섯 scenario는 PASS했다([Cluster §11.6](../specs/cluster-session-and-delivery.md#116-storage-fault-chaos-mapping)). 반면 BP-03 compare `bp03-20260930T123200.653059500Z-32492`의 NaruMQ workload는 invalid였으며 suite를 실행하지 않았으므로 group-commit 성능 acceptance는 미완료다([성능 검증 §3.4](../specs/performance-and-verification.md#34-bp-03-durable-delivery-smoke-관찰-경계)).
+
+위 staging count 시험은 당시 실행의 역사적 기록이다. Fresh ReadIndex 발행 제어 채택 뒤에는 내부 수집 개수만 고정하는 두 시험을 제거하고, 실제 TCP에서의 proof 완료·queue 상한과 미발행 요청의 취소·driver 종료 시험으로 대체했다. 현재 연결과 실행 증거는 [성능 검증 §3.4](../specs/performance-and-verification.md#34-bp-03-durable-delivery-smoke-관찰-경계)에 기록한다.
+
+후속 안전성 수정은 transport의 outbound backpressure에서 정상 연결을 유지하고, driver의 inbound·request staging 총합 64를 지키며, batch SEND의 모든 suffix PacketID를 보존한다. 일부 SEND가 commit되었어도 호출자가 오류를 받는 경우를 실패로 숨기지 않고 동일 ID 재시도로 수렴시킨다. WAL의 commit-only HardState sync와 각 durable command의 fresh proof는 그대로 유지한다. 변경 후 실행 결과와 유효하지 않은 BP-03 진단 경계는 [성능 검증 §3.4](../specs/performance-and-verification.md#34-bp-03-durable-delivery-smoke-관찰-경계), [MQTT batch 수용 시험](../specs/mqtt-protocol-and-session.md#8-수용-시험)에 기록한다.
 
 ## 8. 재검토 조건
 

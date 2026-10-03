@@ -10,6 +10,7 @@ import (
 	"narumq/internal/application/membership"
 	applicationclock "narumq/internal/application/ports/clock"
 	applicationdeliveryqueue "narumq/internal/application/ports/deliveryqueue"
+	"narumq/internal/application/ports/deliverystate"
 	"narumq/internal/domain/mqtt"
 	"narumq/internal/domain/routing"
 	"narumq/internal/domain/tenancy"
@@ -43,16 +44,27 @@ func (runtime *clusterRuntime) CommitDelivery(
 	ctx context.Context,
 	change membership.DeliveryChangeDTO,
 ) (membership.ApplyResultDTO, error) {
+	pending, err := runtime.BeginDelivery(ctx, change)
+	if err != nil {
+		return membership.ApplyResultDTO{}, err
+	}
+	return pending.Wait()
+}
+
+func (runtime *clusterRuntime) BeginDelivery(
+	ctx context.Context,
+	change membership.DeliveryChangeDTO,
+) (deliverystate.Pending, error) {
 	if runtime == nil {
-		return membership.ApplyResultDTO{}, membership.ErrQuorumUnavailable
+		return nil, membership.ErrQuorumUnavailable
 	}
 	if change.Action == membership.DeliveryActionPublish || change.Action == membership.DeliveryActionRelease {
 		if _, err := clusterSessionID(change.TenantID, change.ClientID); err != nil {
-			return membership.ApplyResultDTO{}, err
+			return nil, err
 		}
 		for _, target := range change.Targets {
 			if _, err := clusterSessionID(change.TenantID, target.ClientID); err != nil {
-				return membership.ApplyResultDTO{}, err
+				return nil, err
 			}
 		}
 	}
@@ -70,19 +82,55 @@ func (runtime *clusterRuntime) CommitDelivery(
 		ctx = context.Background()
 	}
 	commitCtx, cancel := context.WithTimeout(ctx, clusterDurableCommitTimeout)
-	defer cancel()
 	operationID, err := newClusterOperationID()
 	if err != nil {
-		return membership.ApplyResultDTO{}, err
+		cancel()
+		return nil, err
 	}
-	result, err := runtime.Commit(commitCtx, membership.CommandDTO{
+	pending, err := runtime.beginCommit(commitCtx, membership.CommandDTO{
 		SchemaMajor: membership.SchemaMajor, SchemaMinor: membership.SchemaMinor,
 		OperationID: operationID, Delivery: &change,
 	})
-	if errors.Is(err, records.ErrCommandTooLarge) {
-		return membership.ApplyResultDTO{}, applicationdeliveryqueue.ErrFull
+	if err != nil {
+		cancel()
+		if errors.Is(err, records.ErrCommandTooLarge) {
+			return nil, applicationdeliveryqueue.ErrFull
+		}
+		return nil, err
 	}
-	return result, err
+	pending.deliveryCancel = cancel
+	return pending, nil
+}
+
+type clusterQuorumBarrier struct {
+	request *clusterReadRequest
+	cancel  context.CancelFunc
+}
+
+func (barrier clusterQuorumBarrier) Wait() error {
+	defer barrier.cancel()
+	if _, err := barrier.request.wait(); err != nil {
+		return classifyClusterPortError(err)
+	}
+	return nil
+}
+
+// BeginQuorumBarrier replaces an empty-target PUBLISH command with a fresh
+// quorum ReadIndex that is locally applied and projected; it proposes nothing.
+func (runtime *clusterRuntime) BeginQuorumBarrier(ctx context.Context) (deliverystate.QuorumBarrier, error) {
+	if runtime == nil || runtime.storage.view().health == clusterReplicationFailed {
+		return nil, membership.ErrQuorumUnavailable
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	barrierCtx, cancel := context.WithTimeout(ctx, clusterDurableCommitTimeout)
+	request, err := runtime.beginReadBarrier(barrierCtx)
+	if err != nil {
+		cancel()
+		return nil, classifyClusterPortError(err)
+	}
+	return clusterQuorumBarrier{request: request, cancel: cancel}, nil
 }
 
 func (runtime *clusterRuntime) ActivateDelivery(sessionID routing.SessionID, epoch, loadedThrough uint64) error {
@@ -225,6 +273,89 @@ func durableApplyError(result membership.ApplyResultDTO) error {
 	return fmt.Errorf("%w: %s", errClusterDurableConflict, result.Conflict)
 }
 
+func (queue *clusterDurableQueue) PeekBatch(sessionID routing.SessionID, now time.Time, destination []applicationdeliveryqueue.DeliveryDTO) (int, error) {
+	if queue == nil || queue.Queue == nil {
+		return 0, applicationdeliveryqueue.ErrUnavailable
+	}
+	return queue.Queue.PeekBatch(sessionID, now, destination)
+}
+
+func (queue *clusterDurableQueue) PromoteBatch(outbounds []applicationdeliveryqueue.OutboundDTO, now time.Time) (int, error) {
+	if queue == nil || queue.Queue == nil {
+		return 0, applicationdeliveryqueue.ErrUnavailable
+	}
+	if len(outbounds) == 0 {
+		return 0, nil
+	}
+	type pendingItem struct {
+		pending  deliverystate.Pending
+		beginErr error
+	}
+	pendingItems := make([]pendingItem, len(outbounds))
+	for i, outbound := range outbounds {
+		if outbound.DurableSequence == 0 || (!outbound.ExpiresAt.IsZero() && !now.Before(outbound.ExpiresAt)) {
+			continue
+		}
+		key, err := tenancy.ParseSessionKeyRoutingID(string(outbound.SessionID))
+		if err != nil {
+			pendingItems[i].beginErr = err
+			break
+		}
+		if now.UnixMilli() <= 0 {
+			pendingItems[i].beginErr = membership.ErrInvalidCommand
+			break
+		}
+		p, err := queue.runtime.BeginDelivery(context.Background(), membership.DeliveryChangeDTO{
+			TenantID: key.TenantID().String(), ClientID: key.ClientID(), OwnerNodeID: queue.runtime.config.NodeID,
+			Epoch: outbound.DurableEpoch, Action: membership.DeliveryActionSend,
+			ProposedAtUnixMillis: uint64(now.UnixMilli()), Sequence: outbound.DurableSequence,
+			PacketID: uint32(outbound.PacketID),
+		})
+		pendingItems[i] = pendingItem{pending: p, beginErr: err}
+		if err != nil {
+			break
+		}
+	}
+	results := make([]struct {
+		res membership.ApplyResultDTO
+		err error
+	}, len(outbounds))
+	for i, item := range pendingItems {
+		if item.beginErr != nil {
+			results[i].err = item.beginErr
+		} else if item.pending != nil {
+			results[i].res, results[i].err = item.pending.Wait()
+		}
+	}
+	promoted := 0
+	for i, outbound := range outbounds {
+		if outbound.DurableSequence > 0 && (outbound.ExpiresAt.IsZero() || now.Before(outbound.ExpiresAt)) {
+			r := results[i]
+			if errors.Is(r.err, membership.ErrQuorumUnavailable) {
+				return promoted, applicationdeliveryqueue.ErrRetryableUnavailable
+			}
+			if r.err != nil {
+				return promoted, r.err
+			}
+			if r.res.Outcome != membership.ApplyOutcomeApplied {
+				if r.res.Conflict == membership.ConflictDeliveryMissing {
+					if queue.runtime != nil && queue.runtime.logger != nil {
+						queue.runtime.logger.Warn("durable delivery missing conflict on promote, dropping queued head", "session_id", outbound.SessionID, "sequence", outbound.DurableSequence)
+					}
+					_ = queue.Queue.CompleteHead(outbound.SessionID)
+					return promoted, applicationdeliveryqueue.ErrExpired
+				}
+				return promoted, durableApplyError(r.res)
+			}
+		}
+		if err := queue.Queue.PromoteHead(outbound, now); err != nil {
+			return promoted, err
+		}
+		promoted++
+	}
+	return promoted, nil
+}
+
 func (queue *clusterDurableQueue) PromoteHead(outbound applicationdeliveryqueue.OutboundDTO, now time.Time) error {
 	if queue == nil || queue.Queue == nil {
 		return applicationdeliveryqueue.ErrUnavailable
@@ -300,4 +431,66 @@ func (queue *clusterDurableQueue) CompleteOutbound(sessionID routing.SessionID, 
 		break
 	}
 	return queue.Queue.CompleteOutbound(sessionID, packetID)
+}
+
+type clusterPendingOutbound struct {
+	queue    *clusterDurableQueue
+	outbound applicationdeliveryqueue.OutboundDTO
+	pending  deliverystate.Pending
+	complete bool
+}
+
+func (pending clusterPendingOutbound) Wait() error {
+	result, err := pending.pending.Wait()
+	if err != nil {
+		return err
+	}
+	if result.Outcome != membership.ApplyOutcomeApplied {
+		return durableApplyError(result)
+	}
+	if pending.complete {
+		return pending.queue.Queue.CompleteOutbound(pending.outbound.SessionID, pending.outbound.PacketID)
+	}
+	return pending.queue.Queue.ReplaceOutbound(pending.outbound)
+}
+
+func (queue *clusterDurableQueue) beginOutbound(outbound applicationdeliveryqueue.OutboundDTO, complete bool) (applicationdeliveryqueue.PendingTransition, error) {
+	if queue == nil || queue.Queue == nil {
+		return nil, applicationdeliveryqueue.ErrUnavailable
+	}
+	if outbound.DurableSequence == 0 {
+		if complete {
+			return queue.Queue.BeginCompleteOutbound(outbound)
+		}
+		return queue.Queue.BeginReplaceOutbound(outbound)
+	}
+	key, err := tenancy.ParseSessionKeyRoutingID(string(outbound.SessionID))
+	if err != nil {
+		return nil, err
+	}
+	now := queue.clock.Now()
+	if now.UnixMilli() <= 0 {
+		return nil, membership.ErrInvalidCommand
+	}
+	action := membership.DeliveryActionAdvance
+	if complete {
+		action = membership.DeliveryActionComplete
+	}
+	pending, err := queue.runtime.BeginDelivery(context.Background(), membership.DeliveryChangeDTO{
+		TenantID: key.TenantID().String(), ClientID: key.ClientID(), OwnerNodeID: queue.runtime.config.NodeID,
+		Epoch: outbound.DurableEpoch, Action: action, ProposedAtUnixMillis: uint64(now.UnixMilli()),
+		PacketID: uint32(outbound.PacketID),
+	})
+	if err != nil {
+		return nil, err
+	}
+	return clusterPendingOutbound{queue: queue, outbound: outbound, pending: pending, complete: complete}, nil
+}
+
+func (queue *clusterDurableQueue) BeginReplaceOutbound(outbound applicationdeliveryqueue.OutboundDTO) (applicationdeliveryqueue.PendingTransition, error) {
+	return queue.beginOutbound(outbound, false)
+}
+
+func (queue *clusterDurableQueue) BeginCompleteOutbound(outbound applicationdeliveryqueue.OutboundDTO) (applicationdeliveryqueue.PendingTransition, error) {
+	return queue.beginOutbound(outbound, true)
 }

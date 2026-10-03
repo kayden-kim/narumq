@@ -37,6 +37,12 @@ func (queue *recordingQueue) TryEnqueueBatch(deliveries []deliveryqueue.Delivery
 	}
 	return nil
 }
+func (*recordingQueue) PeekBatch(routing.SessionID, time.Time, []deliveryqueue.DeliveryDTO) (int, error) {
+	return 0, nil
+}
+func (*recordingQueue) PromoteBatch([]deliveryqueue.OutboundDTO, time.Time) (int, error) {
+	return 0, nil
+}
 func (*recordingQueue) Peek(routing.SessionID, time.Time) (deliveryqueue.DeliveryDTO, bool, error) {
 	return deliveryqueue.DeliveryDTO{}, false, nil
 }
@@ -54,6 +60,20 @@ func (*recordingQueue) ResetDurable(routing.SessionID, uint64, []deliveryqueue.D
 }
 func (*recordingQueue) CompleteOutbound(routing.SessionID, mqtt.PacketIdentifier) error {
 	return nil
+}
+
+func (queue *recordingQueue) BeginReplaceOutbound(outbound deliveryqueue.OutboundDTO) (deliveryqueue.PendingTransition, error) {
+	if err := queue.ReplaceOutbound(outbound); err != nil {
+		return nil, err
+	}
+	return deliveryqueue.CompletedTransition{}, nil
+}
+
+func (queue *recordingQueue) BeginCompleteOutbound(outbound deliveryqueue.OutboundDTO) (deliveryqueue.PendingTransition, error) {
+	if err := queue.CompleteOutbound(outbound.SessionID, outbound.PacketID); err != nil {
+		return nil, err
+	}
+	return deliveryqueue.CompletedTransition{}, nil
 }
 
 type recordingRetained struct {

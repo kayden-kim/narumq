@@ -8,6 +8,7 @@ import (
 
 	"narumq/internal/application/membership"
 	"narumq/internal/application/ports/deliveryqueue"
+	"narumq/internal/application/ports/deliverystate"
 	"narumq/internal/domain/mqtt"
 	"narumq/internal/domain/routing"
 	"narumq/internal/domain/security"
@@ -15,11 +16,14 @@ import (
 )
 
 type recordingDeliveryCommitter struct {
-	changes     []membership.DeliveryChangeDTO
-	result      membership.DeliveryResultDTO
-	err         error
-	completed   bool
-	applyResult *membership.ApplyResultDTO
+	changes         []membership.DeliveryChangeDTO
+	result          membership.DeliveryResultDTO
+	err             error
+	completed       bool
+	applyResult     *membership.ApplyResultDTO
+	barriers        int
+	barrierBeginErr error
+	barrierErr      error
 }
 
 func (c *recordingDeliveryCommitter) CommitDelivery(_ context.Context, change membership.DeliveryChangeDTO) (membership.ApplyResultDTO, error) {
@@ -32,6 +36,39 @@ func (c *recordingDeliveryCommitter) CommitDelivery(_ context.Context, change me
 		return *c.applyResult, nil
 	}
 	return membership.ApplyResultDTO{Outcome: membership.ApplyOutcomeApplied, Delivery: &c.result}, nil
+}
+
+type testPendingDelivery struct {
+	result membership.ApplyResultDTO
+}
+
+func (pending testPendingDelivery) Wait() (membership.ApplyResultDTO, error) {
+	return pending.result, nil
+}
+
+func (c *recordingDeliveryCommitter) BeginDelivery(ctx context.Context, change membership.DeliveryChangeDTO) (deliverystate.Pending, error) {
+	result, err := c.CommitDelivery(ctx, change)
+	if err != nil {
+		return nil, err
+	}
+	return testPendingDelivery{result: result}, nil
+}
+
+type testQuorumBarrier struct {
+	committer *recordingDeliveryCommitter
+}
+
+func (barrier testQuorumBarrier) Wait() error {
+	barrier.committer.completed = true
+	return barrier.committer.barrierErr
+}
+
+func (c *recordingDeliveryCommitter) BeginQuorumBarrier(context.Context) (deliverystate.QuorumBarrier, error) {
+	c.barriers++
+	if c.barrierBeginErr != nil {
+		return nil, c.barrierBeginErr
+	}
+	return testQuorumBarrier{committer: c}, nil
 }
 
 func mustPublishSessionID(t *testing.T, clientID string) routing.SessionID {
@@ -112,26 +149,174 @@ func TestPublishDurableQoSCommitsBeforeQoS0Fallback(t *testing.T) {
 	}
 }
 
-func TestPublishDurableCommitsWithNoDurableTargets(t *testing.T) {
+func untargetedDurablePublishFixture(t *testing.T, options ...Option) (*UseCase, *recordingQueue, *recordingDeliveryCommitter, time.Time) {
+	t.Helper()
 	now := testNow()
 	routes := routing.NewTable()
-	tenant, _ := tenancy.NewTenantID("tenant-a")
-	publisher := mustPublishSessionID(t, "publisher")
-	if err := routes.BindSessionTenant(publisher, tenant); err != nil {
+	tenant, err := tenancy.NewTenantID("tenant-a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, id := range []string{"publisher", "qos0-sub"} {
+		key, err := tenancy.NewSessionKey(tenant, id)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := routes.BindSessionTenant(routing.SessionID(key.RoutingID()), tenant); err != nil {
+			t.Fatal(err)
+		}
+	}
+	qos0Key, _ := tenancy.NewSessionKey(tenant, "qos0-sub")
+	if _, err := routes.Subscribe(routing.SessionID(qos0Key.RoutingID()), mqtt.Subscription{Filter: "events/#", QoS: mqtt.QoSAtMostOnce}); err != nil {
 		t.Fatal(err)
 	}
 	queue := &recordingQueue{errors: make(map[routing.SessionID]error)}
 	committer := &recordingDeliveryCommitter{}
-	useCase, err := New(&fakeClock{now: now}, routes, queue, &recordingRetainedRepository{}, WithDurableDeliveryCommitter(committer))
+	queue.onEnqueue = func() {
+		if !committer.completed {
+			t.Error("QoS 0 fallback ran before quorum barrier completed")
+		}
+	}
+	opts := append([]Option{WithDurableDeliveryCommitter(committer)}, options...)
+	useCase, err := New(&fakeClock{now: now}, routes, queue, &recordingRetainedRepository{}, opts...)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := useCase.Publish(publisher, mqtt.Publish{Version: mqtt.ProtocolV5, Topic: "events/none", QoS: mqtt.QoSAtLeastOnce}, now); err != nil {
-		t.Fatal(err)
+	return useCase, queue, committer, now
+}
+
+// Traceability: CLU-07; docs/specs/cluster-session-and-delivery.md §4.2, §11.11.
+func TestPublishDurableWithoutTargetsUsesQuorumBarrier(t *testing.T) {
+	t.Run("qos1 publish", func(t *testing.T) {
+		useCase, queue, committer, now := untargetedDurablePublishFixture(t)
+		if _, err := useCase.Publish(mustPublishSessionID(t, "publisher"), mqtt.Publish{
+			Version: mqtt.ProtocolV5, Topic: "events/none", QoS: mqtt.QoSAtLeastOnce,
+		}, now); err != nil {
+			t.Fatal(err)
+		}
+		if len(committer.changes) != 0 || committer.barriers != 1 || len(queue.attempts) != 1 {
+			t.Fatalf("changes=%+v barriers=%d QoS0 attempts=%+v", committer.changes, committer.barriers, queue.attempts)
+		}
+		if queue.attempts[0].SessionID != mustPublishSessionID(t, "qos0-sub") {
+			t.Fatalf("QoS0 attempts = %+v, want qos0-sub", queue.attempts)
+		}
+	})
+
+	t.Run("qos1 begin publish", func(t *testing.T) {
+		useCase, queue, committer, now := untargetedDurablePublishFixture(t)
+		pending, err := useCase.BeginPublish(mustPublishSessionID(t, "publisher"), mqtt.Publish{
+			Version: mqtt.ProtocolV5, Topic: "events/none", QoS: mqtt.QoSAtLeastOnce,
+		}, now)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if committer.completed || len(queue.attempts) != 0 {
+			t.Fatalf("BeginPublish completed before Wait: completed=%t attempts=%+v", committer.completed, queue.attempts)
+		}
+		if _, err := pending.Wait(); err != nil {
+			t.Fatal(err)
+		}
+		if len(committer.changes) != 0 || committer.barriers != 1 || len(queue.attempts) != 1 {
+			t.Fatalf("changes=%+v barriers=%d QoS0 attempts=%+v", committer.changes, committer.barriers, queue.attempts)
+		}
+	})
+
+	t.Run("qos2 will", func(t *testing.T) {
+		useCase, queue, committer, now := untargetedDurablePublishFixture(t)
+		publisher := mustPublishSessionID(t, "publisher")
+		publisherKey, err := tenancy.ParseSessionKeyRoutingID(string(publisher))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := useCase.PublishWill(publisher, publisherKey, mqtt.Publish{
+			Version: mqtt.ProtocolV5, Topic: "events/none", QoS: mqtt.QoSExactlyOnce,
+		}, now); err != nil {
+			t.Fatal(err)
+		}
+		if len(committer.changes) != 0 || committer.barriers != 1 || len(queue.attempts) != 1 {
+			t.Fatalf("changes=%+v barriers=%d QoS0 attempts=%+v", committer.changes, committer.barriers, queue.attempts)
+		}
+	})
+
+	for _, asynchronous := range []bool{false, true} {
+		name := "sync"
+		if asynchronous {
+			name = "begin"
+		}
+		for _, failBegin := range []bool{false, true} {
+			failure := "wait failure"
+			if failBegin {
+				failure = "begin failure"
+			}
+			t.Run(name+" barrier "+failure, func(t *testing.T) {
+				useCase, queue, committer, now := untargetedDurablePublishFixture(t)
+				barrierErr := errors.New("quorum lost")
+				if failBegin {
+					committer.barrierBeginErr = barrierErr
+				} else {
+					committer.barrierErr = barrierErr
+				}
+				packet := mqtt.Publish{
+					Version: mqtt.ProtocolV5, Topic: "events/none", QoS: mqtt.QoSAtLeastOnce,
+				}
+				var err error
+				if asynchronous {
+					var pending PendingPublish
+					pending, err = useCase.BeginPublish(mustPublishSessionID(t, "publisher"), packet, now)
+					if failBegin {
+						if !errors.Is(err, barrierErr) {
+							t.Fatalf("BeginPublish error = %v, want %v", err, barrierErr)
+						}
+					} else {
+						if err != nil {
+							t.Fatal(err)
+						}
+						if committer.completed || len(queue.attempts) != 0 {
+							t.Fatalf("publication completed before Wait: completed=%t attempts=%+v", committer.completed, queue.attempts)
+						}
+						_, err = pending.Wait()
+					}
+				} else {
+					_, err = useCase.Publish(mustPublishSessionID(t, "publisher"), packet, now)
+				}
+				if !errors.Is(err, barrierErr) {
+					t.Fatalf("publication error = %v, want %v", err, barrierErr)
+				}
+				if committer.barriers != 1 || len(committer.changes) != 0 || len(queue.attempts) != 0 {
+					t.Fatalf("barriers=%d changes=%+v QoS0 attempts=%+v", committer.barriers, committer.changes, queue.attempts)
+				}
+			})
+		}
 	}
-	if len(committer.changes) != 1 || len(committer.changes[0].Targets) != 0 {
-		t.Fatalf("commits = %+v, want one empty-target PUBLISH", committer.changes)
-	}
+
+	t.Run("retained qos1", func(t *testing.T) {
+		retainedCommitter := &recordingRetainedCommitter{}
+		useCase, _, committer, now := untargetedDurablePublishFixture(t, WithRetainedCommitter(retainedCommitter))
+		if _, err := useCase.Publish(mustPublishSessionID(t, "publisher"), mqtt.Publish{
+			Version: mqtt.ProtocolV5, Topic: "events/retained", Payload: []byte("value"),
+			QoS: mqtt.QoSAtLeastOnce, Retain: true,
+		}, now); err != nil {
+			t.Fatal(err)
+		}
+		if len(retainedCommitter.changes) != 1 || len(committer.changes) != 0 || committer.barriers != 1 {
+			t.Fatalf("retained=%d delivery changes=%+v barriers=%d", len(retainedCommitter.changes), committer.changes, committer.barriers)
+		}
+	})
+
+	t.Run("release keeps command", func(t *testing.T) {
+		useCase, _, committer, now := untargetedDurablePublishFixture(t)
+		_, err := useCase.PublishQoS2Release(mustPublishSessionID(t, "publisher"), 4, 9, mqtt.Publish{
+			Version: mqtt.ProtocolV5, Topic: "events/none", Payload: []byte("value"),
+			QoS: mqtt.QoSExactlyOnce, PacketID: 17,
+		}, now)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(committer.changes) != 1 || committer.changes[0].Action != membership.DeliveryActionRelease ||
+			len(committer.changes[0].Targets) != 0 || committer.barriers != 0 {
+			t.Fatalf("changes=%+v barriers=%d", committer.changes, committer.barriers)
+		}
+	})
 }
 
 func TestPublishDurableCommitErrorStopsQoS0Fanout(t *testing.T) {

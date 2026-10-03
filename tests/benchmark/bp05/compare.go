@@ -311,7 +311,7 @@ func compareCommand(ctx context.Context, args []string, stdout, stderr io.Writer
 	options.Images = images
 	currentManifest.RunnerImage = images.RunnerReference
 	currentManifest.RunnerImageID = images.RunnerID
-	if err := environment.EnsureEMQXImage(ctx, runDir); err != nil {
+	if err := environment.EnsureEMQXImage(ctx, runDir, environment.EMQXImageReference); err != nil {
 		return writeFailure(err.Error())
 	}
 

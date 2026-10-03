@@ -35,6 +35,7 @@ type ClusterTargetOptions struct {
 	BrokerMemoryBytes, GeneratorMemoryBytes                    int64
 	RunnerArgs                                                 []string
 	Timeout, StartupTimeout                                    time.Duration
+	EMQXReadyCondition, EMQXSnapshotExpression                 string
 }
 
 // ClusterNodeResult contains per-node container names and artifact paths.
@@ -139,6 +140,23 @@ func RunClusterTarget(ctx context.Context, options ClusterTargetOptions) (Cluste
 		if node.ReadyLogMarker != "" {
 			if err := waitForBrokerReady(ctx, result.Nodes[i].BrokerContainer, node.ReadyLogMarker, options.StartupTimeout); err != nil {
 				return fail(err)
+			}
+		}
+	}
+	if options.Target == "emqx" {
+		if err := waitForEMQXClusterReady(ctx, options, result.Nodes); err != nil {
+			return fail(err)
+		}
+		if options.EMQXSnapshotExpression != "" {
+			for _, node := range result.Nodes {
+				output, err := commandOutput(ctx, "", "docker", "exec", node.BrokerContainer, "emqx", "eval", options.EMQXSnapshotExpression+".")
+				if err != nil {
+					return fail(fmt.Errorf("capture %s EMQX durable state: %w", node.Name, err))
+				}
+				path := filepath.Join(options.ArtifactDirectory, node.Name, "emqx-durability.txt")
+				if err := os.WriteFile(path, output, 0o644); err != nil {
+					return fail(fmt.Errorf("write EMQX durable state: %w", err))
+				}
 			}
 		}
 	}
@@ -254,6 +272,49 @@ func RunClusterTarget(ctx context.Context, options ClusterTargetOptions) (Cluste
 	}
 	result.FinishedAt = time.Now().UTC().Format(time.RFC3339Nano)
 	return result, nil
+}
+
+// Static discovery can restart authorization after the first boot log.
+// Probe the installed hook and complete membership before starting MQTT clients.
+func waitForEMQXClusterReady(ctx context.Context, options ClusterTargetOptions, nodes []ClusterNodeResult) error {
+	names := make([]string, len(options.Nodes))
+	for i, node := range options.Nodes {
+		names[i] = strconv.Quote("emqx@" + node.DNSName)
+	}
+	expression := "try emqx:is_running() andalso " +
+		"lists:sort([atom_to_list(N) || N <- emqx:running_nodes()]) =:= " +
+		"lists:sort([" + strings.Join(names, ",") + "]) andalso " +
+		"is_list(emqx_authz:lookup())"
+	if options.EMQXReadyCondition != "" {
+		expression += " andalso (" + options.EMQXReadyCondition + ")"
+	}
+	expression += " catch _:_ -> false end."
+	readyCtx, cancel := context.WithTimeout(ctx, options.StartupTimeout)
+	defer cancel()
+	ticker := time.NewTicker(250 * time.Millisecond)
+	defer ticker.Stop()
+	var lastErr error
+	for {
+		ready := true
+		for _, node := range nodes {
+			probeCtx, stop := context.WithTimeout(readyCtx, 5*time.Second)
+			output, err := commandOutput(probeCtx, "", "docker", "exec", node.BrokerContainer, "emqx", "eval", expression)
+			stop()
+			if err != nil || strings.TrimSpace(string(output)) != "true" {
+				ready = false
+				lastErr = fmt.Errorf("EMQX %s membership/authorization readiness: output=%q error=%v", node.Name, strings.TrimSpace(string(output)), err)
+				break
+			}
+		}
+		if ready {
+			return nil
+		}
+		select {
+		case <-readyCtx.Done():
+			return fmt.Errorf("wait for EMQX cluster readiness: %w: %v", readyCtx.Err(), lastErr)
+		case <-ticker.C:
+		}
+	}
 }
 
 func validateClusterTargetOptions(o ClusterTargetOptions) error {

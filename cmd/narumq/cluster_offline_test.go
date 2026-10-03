@@ -52,6 +52,17 @@ func newTestClusterOfflineRuntime(t *testing.T, config clusterConfigFile) (*clus
 				switch req.kind {
 				case clusterDriverRead:
 					req.readResult <- clusterReadResponse{index: applyIndex}
+				case clusterDriverCommit:
+					pending := req.pending
+					pending.staged <- clusterCommitStage{context: pending.context}
+					cmd, err := decodeMembershipCommand(pending.data)
+					if err != nil {
+						pending.result <- clusterApplyResponse{err: err}
+						continue
+					}
+					applyIndex++
+					res, err := runtime.machine.Apply(applyIndex, cmd)
+					pending.result <- clusterApplyResponse{result: res, err: err}
 				case clusterDriverProposal:
 					cmd, err := decodeMembershipCommand(req.data)
 					if err != nil {

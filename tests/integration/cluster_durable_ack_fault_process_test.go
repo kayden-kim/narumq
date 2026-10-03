@@ -25,8 +25,33 @@ func TestDynamicClusterDurableAckReplicaKillProcessAcceptance(t *testing.T) {
 	followerKills := map[byte]bool{1: false, 2: false}
 	index := 0
 	for _, qos := range []byte{1, 2} {
-		for victimID := uint64(1); victimID <= 3; victimID++ {
+		victims := []uint64{1, 2, 3}
+		for len(victims) > 0 {
 			leaderID, _ := clusterMembershipProcessFindLeader(t, fixture.ctx, nodes, 3)
+			victimIndex := -1
+			switch {
+			case !leaderKills[qos]:
+				for candidateIndex, candidateID := range victims {
+					if candidateID == leaderID {
+						victimIndex = candidateIndex
+						break
+					}
+				}
+			case !followerKills[qos]:
+				for candidateIndex, candidateID := range victims {
+					if candidateID != leaderID {
+						victimIndex = candidateIndex
+						break
+					}
+				}
+			default:
+				victimIndex = 0
+			}
+			if victimIndex < 0 {
+				t.Fatalf("QoS %d cannot select remaining replica for leader=%d victims=%v", qos, leaderID, victims)
+			}
+			victimID := victims[victimIndex]
+			victims = append(victims[:victimIndex], victims[victimIndex+1:]...)
 			role := "follower"
 			if victimID == leaderID {
 				role = "leader"

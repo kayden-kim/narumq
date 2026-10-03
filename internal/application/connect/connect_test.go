@@ -164,6 +164,12 @@ func (queue *fakeDeliveryQueue) TryEnqueueBatch(deliveries []deliveryqueue.Deliv
 	return nil
 }
 
+func (*fakeDeliveryQueue) PeekBatch(routing.SessionID, time.Time, []deliveryqueue.DeliveryDTO) (int, error) {
+	return 0, nil
+}
+func (*fakeDeliveryQueue) PromoteBatch([]deliveryqueue.OutboundDTO, time.Time) (int, error) {
+	return 0, nil
+}
 func (*fakeDeliveryQueue) Peek(routing.SessionID, time.Time) (deliveryqueue.DeliveryDTO, bool, error) {
 	return deliveryqueue.DeliveryDTO{}, false, nil
 }
@@ -181,6 +187,20 @@ func (*fakeDeliveryQueue) ListOutbound(routing.SessionID) ([]deliveryqueue.Outbo
 func (*fakeDeliveryQueue) ReplaceOutbound(deliveryqueue.OutboundDTO) error { return nil }
 func (*fakeDeliveryQueue) CompleteOutbound(routing.SessionID, mqtt.PacketIdentifier) error {
 	return nil
+}
+
+func (queue *fakeDeliveryQueue) BeginReplaceOutbound(outbound deliveryqueue.OutboundDTO) (deliveryqueue.PendingTransition, error) {
+	if err := queue.ReplaceOutbound(outbound); err != nil {
+		return nil, err
+	}
+	return deliveryqueue.CompletedTransition{}, nil
+}
+
+func (queue *fakeDeliveryQueue) BeginCompleteOutbound(outbound deliveryqueue.OutboundDTO) (deliveryqueue.PendingTransition, error) {
+	if err := queue.CompleteOutbound(outbound.SessionID, outbound.PacketID); err != nil {
+		return nil, err
+	}
+	return deliveryqueue.CompletedTransition{}, nil
 }
 func (*fakeDeliveryQueue) ResetDurable(routing.SessionID, uint64, []deliveryqueue.DeliveryDTO, []deliveryqueue.OutboundDTO, time.Time) error {
 	return nil
@@ -1159,6 +1179,56 @@ func TestConnectCommitsOwnershipBeforeLocalActivation(t *testing.T) {
 				t.Fatalf("rejected CONNECT changed local state: result:%#v saves:%d registers:%v", result, repository.saveCalls, queue.registers)
 			}
 		})
+	}
+}
+func TestDisconnectIfOwnershipEpochLeavesReplacementSessionUntouched(t *testing.T) {
+	now := time.Date(2026, time.January, 1, 0, 0, 0, 0, time.UTC)
+	useCase, _, repository, queue, _, _, willPublisher := newUseCase(t, now)
+	coordinator := &fakeOwnershipCoordinator{epoch: 1}
+	useCase.ownershipCoordinator = coordinator
+	useCase.ownerNodeID = 1
+	connect := func(will *mqtt.Will) ResultDTO {
+		t.Helper()
+		result, err := useCase.ConnectContext(context.Background(), ConnectRequestDTO{
+			Packet: mqtt.Connect{
+				Version: mqtt.ProtocolV5, CleanStart: true, ClientID: "epoch-fenced",
+				Will: will,
+			},
+		})
+		if err != nil || !result.Accepted {
+			t.Fatalf("ConnectContext() = (%#v, %v), want accepted", result, err)
+		}
+		return result
+	}
+
+	old := connect(nil)
+	if err := useCase.Disconnect(old.SessionID, session.DisconnectNormal); err != nil {
+		t.Fatalf("initial Disconnect() = %v", err)
+	}
+	coordinator.epoch = 2
+	current := connect(&mqtt.Will{Topic: "replacement/will", Payload: []byte("replacement")})
+	if current.OwnershipEpoch != 2 {
+		t.Fatalf("replacement ownership epoch = %d, want 2", current.OwnershipEpoch)
+	}
+	registerCount := len(queue.registers)
+	removeCount := len(queue.removes)
+
+	if err := useCase.DisconnectIfOwnershipEpoch(
+		old.SessionID, session.DisconnectAbnormal, old.OwnershipEpoch,
+	); err != nil {
+		t.Fatalf("stale DisconnectIfOwnershipEpoch() = %v", err)
+	}
+	state, found, err := repository.Load("epoch-fenced")
+	if err != nil || !found || !state.Connected() {
+		t.Fatalf("replacement lifecycle = (%#v, %v, %v), want connected", state, found, err)
+	}
+	if !queue.registered[current.SessionID] ||
+		len(queue.registers) != registerCount || len(queue.removes) != removeCount {
+		t.Fatalf("stale cleanup changed replacement queue: registered=%t registers=%v removes=%v",
+			queue.registered[current.SessionID], queue.registers, queue.removes)
+	}
+	if len(willPublisher.published) != 0 {
+		t.Fatalf("stale cleanup published replacement Will: %#v", willPublisher.published)
 	}
 }
 

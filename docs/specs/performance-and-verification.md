@@ -137,11 +137,11 @@ BP-03은 QoS 1/2 persistent session의 durable delivery 경로에서 ACK, 수신
 #### Topology와 비교 경계
 
 - NaruMQ는 `narumq-bp03` dynamic cluster의 3개 broker node를 사용한다. QoS 1/2 ACK는 quorum에 복제된 Raft WAL Ready frame의 fsync 뒤에 관찰한다. 세 node는 Docker named volume을 사용한다.
-- EMQX는 pinned EMQX 5.8.8 Open Source Edition의 3-node static cluster다. `durable_sessions.enable=false`인 일반 persistent session state는 node-local memory에 있고 replicated durable log나 fsync를 사용하지 않는다.
+- 2026-10-01 사용자 요청으로 BP-03 comparator만 pinned EMQX 5.8.8 Enterprise의 3-node static cluster로 전환한다. Image index digest는 `sha256:d166efa91eae706ffbfca3f47e36fae0fd441507a8a57bda622da09e4a019c14`다. `durable_sessions.enable=true`, `durable_storage.messages.backend=builtin_raft`, `n_sites=3`, `replication_factor=3`, `n_shards=1`을 고정한다. 하나의 message shard는 NaruMQ의 단일 Raft group에 가깝게 맞춘 선택이며 session metadata의 복제 방식까지 동일하다는 뜻은 아니다. BP-01/BP-05의 기존 OSS comparator는 변경하지 않는다. 기본 evaluation license는 최대 25 concurrent sessions, 비운영 평가용이며 commercial license·운영 사용 승인을 뜻하지 않는다.
 - 두 target은 profile에 지정된 broker CPU/memory limit, runner CPU/memory limit, payload, stream, rate와 phase를 공유한다. Broker는 read-only root filesystem에서 실행하고, runner는 별도 container를 사용한다. 각 broker container는 자체 network namespace owner와 Docker bridge network를 공유한다.
 - NaruMQ fixture는 MQTT CONNECT에서 JWKS를 통해 RS256 JWT를 검증하고 peer 간에는 mTLS를 사용한다. Broker별 node config, private peer key, management token은 해당 broker에만 mount한다. Runner credential은 별도로 제공하며, network owner에는 `jwks.json`만 포함된 read-only directory를 mount한다.
-- EMQX target에는 authenticator를 설정하지 않는다. Runner가 credential을 보내더라도 EMQX는 이를 JWT로 검증하지 않으므로 인증 경계가 동등하지 않다.
-- `replication` 차이는 **EMQX OSS 5.8.8 regular session은 node-local memory를 사용하고 `builtin_raft`는 Enterprise 전용**이라는 점이다. `durability` 차이는 **EMQX PUBACK이 fsync보다 먼저 반환**된다는 점이다. `authentication` 차이는 **NaruMQ는 CONNECT에서 JWT를 검증하지만 EMQX에는 authenticator가 없다**는 점이다. 비교 산출물은 세 차원을 `nonEquivalent`로 기록하고 ACK latency를 직접적인 우열 비교에서 제외한다.
+- EMQX도 동일한 runner JWT를 JWKS로 검증하고 issuer·audience·subject를 검사한다. File ACL은 `bp03/#` publish/subscribe만 허용한다. Broker에는 별도 EMQX config directory만 mount해 NaruMQ private key·admin token을 노출하지 않는다.
+- 복제된 durable message storage는 양쪽 모두 3-node로 맞추지만 EMQX의 메시지 batch·session metadata 저장, ACK와 fsync의 정확한 순서, NaruMQ의 tenant/client-ID binding과 peer mTLS는 같은 계약으로 검증되지 않았다. 비교 산출물은 남은 차이를 `nonEquivalent`로 기록하고 ACK latency를 직접적인 우열 비교에서 제외한다. `durable_sessions.enable`만 켠 것을 quorum 영속화 동등성의 증거로 취급하지 않는다.
 - Storage는 로컬 Docker named volume을 사용한다. Linux/EBS production filesystem, 실제 전원 손실, production volume loss/reseed 또는 승인된 RPO/RTO를 입증하지 않는다.
 
 #### 고정 smoke profile
@@ -175,21 +175,75 @@ BP-03은 QoS 1/2 persistent session의 durable delivery 경로에서 ACK, 수신
 
 Runner는 다음 phase를 순서대로 기록한다.
 
-1. `readiness`: NaruMQ 세 node의 health, cluster ID와 같은 leader를 확인한다. 두 target 모두 6개 node 쌍의 cross-node QoS 1 probe publish와 delivery를 확인한다.
+1. `readiness`: NaruMQ 세 node의 health, cluster ID와 같은 leader를 확인한다. EMQX는 최초 부팅 로그만으로 준비 완료를 판단하지 않는다. Runner 시작 전에 pinned 5.8.8의 `emqx eval`로 세 node 모두 `emqx:is_running()`, 기대한 세 node의 `emqx:running_nodes()`, 설치된 authorization hook을 조회하는 `emqx_authz:lookup()`을 확인한다. 추가로 실제 Durable Storage가 `builtin_raft`이고 하나의 message shard에 세 site의 replica가 배치됐으며 replica transition이 없는지 확인한다. 유효 JWT authenticator도 설치돼 있어야 한다. 초기화가 끝나지 않으면 기존 startup deadline 안에서 기다리며 일반 memory session으로 fallback하지 않는다. 확인 결과를 node별 artifact에 저장한다. 두 target 모두 이후 6개 node 쌍의 cross-node QoS 1 probe publish와 delivery를 확인한다.
 2. `setup`: persistent subscriber를 구독시키고 publisher를 연결한다. Subscriber는 `CleanStart=true`와 profile Session Expiry, publisher는 `CleanStart=true`와 Session Expiry 0을 사용한다.
 3. 각 rate에서 `step-<ss>-warmup` 뒤 `step-<ss>-measure`를 실행한다. Runner는 절대 시각 schedule과 최대 inflight publish 수를 적용한다. QoS 1은 PUBACK, QoS 2는 PUBCOMP 수신 뒤 inflight slot을 해제한다. 측정 전 warm-up 교환이 완료되거나 timeout될 때까지 기다린다. NaruMQ는 각 measure 경계에서 `/metrics`를 scrape하며, end scrape 전에 publisher 교환이 완료되거나 timeout되도록 기다리고 해당 window의 ACK 분모를 그 시점에 고정한다.
 4. `drain`: 새 publish를 멈추고 drain 한도 안에 ACK된 measure 메시지가 수신될 때까지 기다린다.
 5. `offline`: subscriber를 정상 disconnect하고 settle 시간 뒤 stream마다 QoS 1/2 메시지 32개를 publish한다. End scrape 전에 publisher 교환이 완료되거나 timeout될 때까지 기다린다. NaruMQ는 이 구간의 WAL metric도 scrape한다.
-6. `reconnect`: 하나의 deadline 안에 각 persistent subscriber를 다른 node로 재접속하고 offline delivery를 기다린다. 연결 시도도 같은 deadline에 포함한다. `SessionPresent=false`는 실패이며, 예상한 모든 offline receipt와 publisher ACK, QoS 2 PUBCOMP가 끝나기 전에 연결을 정리하지 않는다.
+6. `reconnect`: 하나의 deadline 안에 각 persistent subscriber를 다른 node로 재접속하고 offline delivery를 기다린다. 연결 시도도 같은 deadline에 포함한다. `SessionPresent=false`는 실패이며, 예상한 모든 offline receipt와 publisher ACK, QoS 2 PUBCOMP가 끝나기 전에 연결을 정리하지 않는다. Subscriber의 QoS 2 수신 상태는 socket이 아니라 persistent session에 속한다. Disconnect 때 reader 종료를 기다린 뒤 미완료 PUBLISH와 완료된 PUBREL의 Packet ID 상태를 새 연결에 넘긴다. 따라서 세션 재개 직후 받은 기존 PUBREL에는 PUBCOMP를 반환하되 delivery를 다시 집계하지 않는다. 알 수 없는 Packet ID와 잘못된 packet은 기존대로 protocol error다.
 7. `cleanup`: reader를 멱등하게 중지하고 DISCONNECT를 보낸 뒤 socket을 닫으며, reader가 종료된 후 raw message/phase 기록과 요약을 저장한다.
 
 `workload-summary.json`은 각 measure step 및 offline QoS별 offered/sent/acked/delivered/gap/duplicate, ACK 및 publish-to-delivery latency와 rate를 기록한다. `gap`은 성공 ACK를 받았지만 drain 기한까지 수신하지 못한 메시지 수다. QoS 1 duplicate는 보고하지만 at-least-once 규칙상 무효화하지 않는다. QoS 2 duplicate, protocol error, session 미복원, generator overload, timeout·rejected ACK, 불완전 교환 또는 gap은 workload를 invalid로 만든다. QoS 2 교환은 PUBCOMP에서 완료된다. PUBREC 뒤 발생한 timeout도 timeout으로 집계하며 해당 교환은 미완료 상태로 남는다. `generatorOverload`는 기록한 publish의 `schedule lag >= stream interval`일 때 설정되며 CPU utilization 지표가 아니다. 이 값만으로 runner CPU 포화와 broker/ACK backpressure를 구분하거나 quorum failure의 원인을 증명할 수 없다.
 
+Reader 실패가 workload context를 취소하면 최종 오류에 최초 reader 원인도 보존한다. 뒤따른 DNS·dial 취소만으로 원인을 판단하지 않는다. `tests/benchmark/bp03.TestSubscriberReaderResumesQoS2Release`는 실제 TCP 연결을 바꾼 뒤 미완료 교환과 PUBCOMP 재전송의 Packet ID 처리 및 exactly-once 집계를 확인한다. 수정 전 두 경우 모두 PUBCOMP를 받지 못해 FAIL했다. 이 결함 재현은 기존 BP-03 reconnect 실패의 최초 packet을 확인한 증거와 구분한다.
+
 `resource-summary.json`은 runner phase의 시작·종료 시각으로 broker 및 network-owner Docker stats를 자른다. 각 measure/offline window와 node에서 broker CPU median, memory 최대값, block read/write delta 및 owner network Rx/Tx delta를 기록하고 cluster total과 ACK당 network/block write 값을 계산한다. Window에서 source/node 표본이 두 개 미만이면 resource summary는 invalid다. Block write가 0인 표본은 유효한 값이다. Owner의 network delta가 모두 0이면 `networkStatsAvailable=false`로 기록하고 suite network metric을 생략하지만 workload를 무효화하지 않는다. 시간 경계가 서로 다른 clock을 사용하므로 `clockSource`는 `stats=host clock, phases=runner container clock`이다.
 
-NaruMQ `wal-summary.json`은 `narumq_raft_wal_sync_duration_seconds`, `narumq_raft_wal_sync_entries`, `narumq_raft_wal_written_bytes_total`의 window 시작/종료 scrape 차이를 node별·cluster 합계로 기록한다. 각 window의 전체 WAL series가 관측되고 성공한 Ready WAL fsync가 하나 이상이어야 valid다. `walBytesPerAckedMessage`는 해당 window publisher 교환이 완료되거나 timeout된 뒤 고정한 ACK 수를 분모로 한다. EMQX는 WAL 수치를 0으로 가장하지 않고 `applicability=not_applicable`, reason `EMQX regular sessions keep state in memory and write no replicated durable log`를 기록한다.
+NaruMQ `wal-summary.json`은 `narumq_raft_wal_sync_duration_seconds`, `narumq_raft_wal_sync_entries`, `narumq_raft_wal_written_bytes_total`의 window 시작/종료 scrape 차이를 node별·cluster 합계로 기록한다. 각 window의 전체 WAL series가 관측되고 성공한 Ready WAL fsync가 하나 이상이어야 valid다. `walBytesPerAckedMessage`는 해당 window publisher 교환이 완료되거나 timeout된 뒤 고정한 ACK 수를 분모로 한다. EMQX는 replicated Durable Storage를 사용하지만 같은 NaruMQ WAL metric을 제공하지 않으므로 WAL 수치를 0으로 가장하지 않고 `applicability=not_applicable`, reason `EMQX Durable Storage does not expose the NaruMQ Ready WAL metrics collected by this harness`를 기록한다. 이는 EMQX가 WAL을 쓰지 않는다는 뜻이 아니다.
 
 Rate sweep `[5, 10, 25]`에 대해 각 NaruMQ measure window의 WAL sync count/rate, entries-per-sync 분포와 mean, fsync duration p50/p99/p999, WAL bytes 및 ACK당 byte를 함께 보존한다. 관찰된 entries-per-sync 분포는 이 benchmark에서의 group commit 크기를 설명한다. 이 benchmark는 group-commit 설정 knob를 추가하지 않으며, smoke sweep으로 설정값이나 production threshold를 결정하지 않는다. Suite parent는 ACK latency p99/p999, delivery p99, ACK rate, ACK당 network/block-write 비용, offline reconnect drain 최대값, NaruMQ WAL sync rate/entries-per-sync/ACK당 byte의 중앙값과 MAD를 보고한다. NaruMQ와 EMQX ACK latency는 durability·replication·authentication 경계가 다르므로 직접 비교하지 않는다.
+
+##### Raft 병목 진단
+
+BP-03 개선은 peer queue 포화와 WAL 지연 사이의 원인을 분리한 뒤 진행한다. 높은 `fsync` 점유율만으로 queue 포화의 원인을 확정하지 않는다. 고정 workload·자원·ACK 경계는 그대로 유지한다.
+
+- NaruMQ는 `narumq_raft_stage_duration_seconds{stage}`에 `inbound_queue`(인증된 frame enqueue부터 driver 인수), `commit_queue`(commit 제출 시도부터 발행 제어를 통과한 driver request 처리 시작), `ready`(동기식 Ready 처리), `apply`(application 적용), `send`(transport enqueue), `read_index`(driver ReadIndex 시작부터 로컬 apply/projection 확인 또는 실패), `proposal`(proposal 시작부터 application 적용·projection 완료 응답 또는 driver 실패)의 시간을 초 단위 histogram으로 기록한다.
+- Stage label은 위 고정 목록만 사용한다. Client·tenant·payload를 label에 넣지 않는다. 완료된 작업만 duration에 포함하며 실패도 포함한다. Proposal의 client timeout과 이후 실제 apply는 서로 다른 사건이므로 stage histogram만으로 성공 ACK를 판정하지 않는다. `commit_queue`에는 channel 제출 대기와 인수한 FIFO head의 발행 제어 대기도 포함한다.
+- Runner는 readiness 뒤부터 정리 직전까지 1초 간격으로 node별 `/metrics` 원문과 요청 시작·종료 UTC 시각을 보존한다. 실패 종료에도 최종 scrape를 시도하고 scrape 실패를 기록한다. 이 진단 artifact는 measure window의 WAL summary와 분리하며, 실패 run을 유효한 성능 결과로 바꾸지 않는다.
+- 원인 판단은 같은 시간 구간의 stage histogram 증가량, WAL sync 시간, broker의 peer 포화·deadline 로그를 대조한다. 계측 결과가 지목한 경로만 개선하며 fresh proof, commit-only HardState sync, Packet ID·epoch fencing은 생략하지 않는다.
+
+계측으로 WAL 대기와 다수의 peer frame이 확인되면 이미 fresh proof를 완료한 FIFO command를 최대 64개·64 KiB 수집 예산으로 하나의 Raft `MsgProp`에 묶을 수 있다. 각 command는 독립 log entry와 apply 결과를 유지한다. 64 KiB를 넘는 단일 command는 기존 단건 경로를 사용하며, 여러 command를 담는 forwarded frame은 adapter의 1 MiB wire 한도를 넘지 않는다. 새 proof의 공유·cache, ACK 선반환, command schema 변경, HardState sync 생략은 이 개선에 포함하지 않는다. Batch 거절은 모든 소속 command에 오류를 전달하며 자동 재제안하지 않는다.
+
+시험 연결: `internal/adapters/metrics/registry_test.go::TestRaftStageHistogramsKeepStagesIsolatedAndBoundOverflow`는 stage 분리와 bucket overflow를, `internal/adapters/raft/node_dynamic_test.go::TestDynamicFollowerForwardsApplicationProposal`는 batch의 입력 copy·전체 거절·entry 순서와 WAL 재개방 복구를, `cmd/narumq/cluster_runtime_test.go::TestClusterCommitReadProofPreservesSubmissionOrderAndCancellation`은 미완료 proof·projection·취소가 batch 제출을 막는 조건을 확인한다. 실제 scrape 보존과 workload 결과는 아래 실행 증거에 연결한다.
+
+2026-10-02 사용자 지시 `개선 진행해`로 dynamic driver의 fresh ReadIndex 발행 제어를 채택한다. Peer별 outbound count·byte 여유에서 control 진행용 두 frame·512 byte를 제외하고, read 한 건의 heartbeat·proof response 두 frame 비용과 같은 Ready 전에 이미 발행한 read를 계산한다. 여러 node가 동시에 발행하면 leader의 같은 FIFO를 쓰므로 현재 voter·learner 수로 예산을 나눈다. 분모는 1–15로 제한해 큰 cluster에서도 최소 한 요청의 진행을 허용하며, 이는 전체 incoming frame의 무손실 보장이 아니다. 빈 queue의 3-voter cluster에서 node별 발행 중인 local proof는 최대 5개다. Follower는 현재 leader의 여유를 사용하고, leader는 local vote와 함께 quorum을 구성할 만큼의 voter가 수용할 수 있는 예산을 사용한다. 느린 minority peer 하나가 healthy quorum 전체를 막지 않는다. 초과 요청은 기존 bounded request channel과 driver가 인수한 단일 FIFO head에서 기다린다. Head의 원래 context·deadline을 유지하고 취소·driver 종료 때 결과를 반환한다.
+
+Driver는 outbound write 완료의 합쳐진 알림에서 예산을 다시 계산하며, 기다리는 동안 inbound 응답과 tick·Ready·apply를 계속 처리한다. Fan-out을 만드는 inbound ReadIndex request 뒤에는 추가 inbound staging을 멈추고 먼저 Ready를 처리한다. Replication·heartbeat response는 기존 64개 공용 staging 예산에서 모아 WAL 기록을 불필요하게 나누지 않으며 timed proposal 수집은 control에서 끝낸다. Ready 전송 뒤에는 Go scheduler에 실행 기회를 양보해 transport writer가 queue를 비울 수 있게 한다. 이는 특정 peer 완료를 기다리거나 timeout을 늘리는 동작이 아니다. Queue 상한·outbound full 거절·peer FIFO·command별 fresh proof·HardState sync·MQTT ACK·readiness 계약은 그대로다. 예산은 새 local 요청의 생성 제어이며 transport 예약이나 모든 Raft frame의 무손실 보장이 아니다. Incoming forwarded ReadIndex와 replication이 만드는 전송량은 실제 runtime·BP-03의 포화·stage/WAL 시간과 함께 검증한다. `AsyncStorageWrites`는 이번 범위가 아니며 flag 전환으로 구현하지 않는다.
+
+수용 시험: `cmd/narumq/cluster_read_admission_test.go::TestClusterFollowerReadBurstCompletesAfterEgressDrain`은 실제 3-node Raft·mTLS TCP와 정지한 초기 writer에서 follower 요청 64개의 독립 fresh proof 완료와 outbound 상한·거절 부재를 확인한다. 수정 전 32/64 완료·32개 미완료로 FAIL했다. 이 재현은 제한된 egress에서의 결함 증거이며 기존 BP-03 실패의 인과나 성능 향상을 증명하지 않는다. 변경 후 실행 결과와 고정 compare·조건부 반복 suite·안전성 검증은 아래 실행 증거에 연결한다.
+
+추가 시험 연결: `TestClusterLeaderReadBurstPreservesHealthyQuorumWithBlockedMinority`는 세 번째 peer의 writer를 시작하지 않은 실제 TCP 조건에서 leader의 64개 fresh proof가 healthy quorum으로 완료되는지 확인한다. `TestClusterUnissuedReadReturnsCancellationAndDriverFailure`는 count·byte 부족에서 아직 발행하지 않은 head의 취소·driver 종료 결과와 소유권 해제를, `internal/adapters/tcp.TestDynamicOutboundCapacityRemainsChargedUntilWireCompletion`은 진행 중인 socket write의 count·byte 유지와 wire 완료 후 wake·회수를 확인한다. `tests/integration.TestDynamicClusterConcurrentFreshReadProcessAcceptance`는 실제 세 broker process에서 follower의 concurrent summary 64개가 각 fresh quorum 결과를 반환하는지 확인한다.
+
+##### 2026-10-02 fresh ReadIndex 발행 제어 — 부분 실행 증거
+
+수정 전 실제 TCP follower burst는 독립 proof 64개 중 32개만 완료하고 32개가 deadline까지 남아 FAIL했다. 발행 제어와 응답 비용·writer scheduling을 반영한 뒤 follower burst, blocked minority, 미발행 head의 cancellation/driver failure, in-progress outbound 회수 시험은 PASS했다. 실제 세 broker process에서 follower summary 64개는 각 요청의 fresh quorum proof를 확인하고 18.5784ms에 모두 완료했다(`TestDynamicClusterConcurrentFreshReadProcessAcceptance`, package 11.675s). 이는 해당 bounded burst 수용 증거이며 고정 BP-03를 대신하지 않는다.
+
+같은 고정 smoke profile로 실행한 두 compare는 EMQX valid / NaruMQ invalid였다.
+
+| Run ID | 관찰 결과 | 판정 경계 |
+| --- | --- | --- |
+| `bp03-20261002T125831.714550600Z-9640` | Step 1 QoS별 120 sent/ACK/delivery 일치. Step 2는 QoS 1 77/69/36, QoS 2 104/103/65로 중단했고 generator overload가 기록됐다. | Workload 중 outbound 포화 로그는 없었다. MQTT PUBLISH 연결 종료의 첫 원인을 확인하지 못했으므로 driver 수집 방식과의 인과를 주장하지 않는다. |
+| `bp03-20261002T131133.804863100Z-35944` | ReadIndex request만 inbound 수집을 끝내도록 좁힌 뒤 Step 1·2·3 QoS별 120/240/600 sent/ACK/delivery 일치, gap·duplicate 0, overload 없음. Offline QoS 1 64/64/64, QoS 2 64/64/0, sessionPresent 3/4, protocolErrors 1. | 마지막 오류는 `q2-02` 재접속 DNS lookup의 context 취소다. Workload 중 peer 포화·readiness 거절·deadline 로그는 없었으며 DNS나 CONNACK 거절을 근본 원인으로 확정하지 않는다. |
+
+두 실행의 artifact는 `.artifacts/benchmark/bp03/<run-id>/`에 보존했다. 두 번째 run의 Step 3 ACK p99는 QoS 1 103.370073ms, QoS 2 108.084611ms였지만 invalid run의 부분 관찰이다. Conditional 5회 suite나 BP-03 합격 근거로 채택하지 않는다.
+
+이후 runner의 QoS 2 수신 상태가 socket마다 초기화되는 결함을 실제 재접속 fixture로 재현했다. 미완료 PUBREL과 완료 교환의 재전송 두 경우 모두 PUBCOMP 대기 timeout으로 FAIL했고, session 상태 보존 뒤 PASS했다. 이 수정은 unknown Packet ID 거절·exactly-once 집계와 profile·ACK 경계를 유지한다. 최초 reader 취소 원인도 최종 오류에 보존한다. 전체 focused package 실행 `go test ./cmd/narumq ./internal/adapters/raft ./internal/adapters/tcp ./tests/benchmark/bp03 -count=1`은 PASS했다(14.069/2.044/10.279/0.509s).
+
+Runner session 수정 뒤 compare `bp03-20261002T132456.532540300Z-2904`도 EMQX valid / NaruMQ invalid였다(203.66s wall). Step 1·2의 count invariant는 유지됐지만 Step 3 QoS 1 sent/ACK/delivery는 257/249/123(gap 126), QoS 2는 373/371/241(gap 130)이었고 offline·reconnect는 수행하지 못했다. Generator overload·protocol error는 없었다. 13:26:01.832 UTC의 leader node 1→2 `MsgReadIndexResp` outbound 32-message 포화 뒤 durable target saturation이 기록됐고, 최초 reader 오류는 13:26:06.804 UTC `q2-02` subscriber EOF로 보존됐다. Local origin당 15개 제한만으로는 여러 origin의 fan-out을 충분히 제어하지 못했으므로 voter·learner 수에 예산을 나누는 위 규칙으로 보강한다. 이는 session 수정으로 BP-03가 해결됐다는 증거가 아니다.
+
+`TestClusterConcurrentOriginsReadBurstCompletesAfterEgressDrain`는 실제 세 TCP node가 동시에 64개씩 발행할 때 독립 proof 192개 완료와 healthy-peer 무거절·queue 상한을 확인한다. 기존 15개 제한에서도 이 unrestricted-CPU fixture는 PASS(0.19s)했으므로 BP-03의 1-CPU 응답 포화를 재현한 시험이라고 주장하지 않는다. 부하 profile·자원·proof·ACK 계약은 변경하지 않는다.
+
+Origin 수에 따른 예산 분할 적용 뒤 실제 TCP follower·blocked minority·동시 origin burst와 취소/driver 종료 시험은 PASS했다(각 0.20/0.20/0.20/0.26s). 동시 origin의 192개 독립 proof를 기존 2초 deadline 안에 완료했고 healthy peer의 거절은 없었다. 실제 세 broker process의 follower summary 64개도 fresh quorum proof와 함께 17.314ms에 완료했다(`tests/integration` 6.117s). `GOMAXPROCS=4`로 두 package의 해당 시험을 실행했으며 이 결과는 제한된 container CPU의 BP-03 수용과 구분한다.
+
+예산 분할 뒤 고정 compare `bp03-20261002T133437.979734800Z-36656`는 전체 workload를 완주했다(211.31s wall). Step 1·2·3 QoS별 sent/ACK/delivery는 각각 120/240/600으로 일치했고, offline QoS 1/2도 각각 64/64/64였다. Gap·duplicate·protocol error는 0, `SessionPresent=4/4`, reconnect drain 최대 475.524832ms였다. Workload 중 peer 포화·readiness 거절·deadline 로그는 없었다. 그러나 Step 3 최대 schedule lag는 3.809644755s로 `generatorOverload=true`였고 전체 NaruMQ workload는 **invalid**였다. EMQX는 valid였다. 해당 run의 유일한 workload failure reason은 `step 03 generator overload`이며, 유효 run을 고르는 재실행이나 조건부 5회 suite는 하지 않는다.
+
+Step 3 ACK p99는 QoS 1 880.258472ms, QoS 2 116.766664ms였다. 같은 measure 경계 scrape 증가량에서 node 1/2/3 Ready 시간은 12.600190/12.763175/12.722284초, WAL fsync는 12.179688/12.362633/12.315901초였다. Fsync가 Ready 시간의 96.66/96.86/96.81%를 차지했다. 완료된 commit queue 표본의 평균은 4.579/56.919/8.678ms였고 admission 제어로 보류한 시간도 포함한다. 이 합계는 병렬 요청의 관찰값이므로 서로 더해 wall time이나 단일 ACK의 지연으로 해석하지 않는다. Queue 포화 없는 완주는 확인됐으나 schedule lag와 synchronous WAL 점유의 인과·개선량은 확정하지 않았다. `AsyncStorageWrites` adapter 재설계나 추가 성능 정책은 이번 채택 범위 밖이다.
+
+최신 코드의 matched-target durable ACK fault process suite는 PASS(`narumq/tests/integration` 158.343s; 159.65s wall)였다. Replica kill 여섯 조합 31.34s, WAL/commit crash 20개 조합 100.74s, leader/follower partition 두 scenario 26.11s에서 ACK·복구 경계를 유지했다. 이어진 Docker/FUSE `storage-readcredit-20261002`는 exit 0, 여섯 scenario 모두 PASS(248.43s wall)였다. Slow-I/O에서 healthy quorum progress 55/55, recovery 12.198s, applied index 373 수렴과 최종 ACKed delivery를 확인했다. 모든 `missingAcked`·`duplicates`는 비어 있고 quorum disk-full 중 성공 ACK는 없었다. 상세 evidence는 [Cluster §11.6·§11.13](cluster-session-and-delivery.md#116-storage-fault-chaos-mapping)에 연결한다. 이는 physical power-loss나 유효한 BP-03 성능 수용의 증거가 아니다.
+
+최종 `GOMAXPROCS=4 go run ./tools/verify local` PASS(299.58s wall; integration 262.907s)였다. Traceability, 네 fuzz target 각각 10,000회, architecture, package·integration 시험, package race와 coverage를 통과했다. Runner의 재접속 PUBREL/PUBCOMP 회귀와 unknown Packet ID의 protocol-error 종료도 포함한다. 최종 문서 증거는 이 gate 결과와 별도로 연결을 검증한다. BP-03 invalid·조건부 5회 suite 미실행·production storage 미수용 상태는 바꾸지 않는다.
+
+
 
 Runner unit tests는 collector 경계와 WAL histogram delta를 검증한다. `go test ./tests/benchmark/bp03 -count=1`은 profile, fixture, workload, resource/WAL parser, comparison 및 suite 계약을 확인한다. 격리된 Docker 실행 증거는 다음 명령으로 만든다.
 
@@ -201,6 +255,81 @@ go run ./tests/benchmark/bp03 suite --profile tests/benchmark/bp03/testdata/smok
 이 명령의 artifact는 수집 경계가 동작했다는 local smoke 증거다. Docker named volume 결과는 Linux/EBS production durability, 승인되지 않은 SPEC-TBD-08 수치 또는 release gate를 대신하지 않는다.
 
 #### Local execution evidence
+
+##### 2026-10-02 계측과 proposal batching — 수용 미완료
+
+같은 고정 smoke profile (`SHA-256=0b8a88abac04fcfffeb72152cb86ae6aab4682808df7e4d43c9ee3df8661c92a`)로 아래 두 `compare`를 실행했다. 두 run 모두 EMQX target은 valid, NaruMQ target은 invalid다. ACK 경계는 계속 직접 비교할 수 없다. 아래 수치는 실패 run의 부분 관찰이며 성능 개선의 확정 근거, 유효 benchmark 또는 BP-03 완료 증거로 채택하지 않는다.
+
+| 실행 | 관찰 | 진단 artifact |
+| --- | --- | --- |
+| `bp03-20261002T004857.831093300Z-6908` — 계측 baseline | Step 1·2는 QoS별 sent/ACK/delivery 120/120/120 및 240/240/240, gap·duplicate 0, generator overload 없음. Step 3은 warmup에서 종료해 measure sent 0. | `narumq/diagnostics.jsonl` 108건과 node별 원문 scrape; scrape error 0. |
+| `bp03-20261002T005736.207420300Z-19400` — proposal batching | Step 1·2의 같은 count invariant는 유지했으나 Step 3은 invalid. QoS 1 offered/sent/ACK/delivery = 600/518/510/419, gap 91; QoS 2 = 600/600/600/507, gap 93. 두 QoS duplicate 0, generator overload 없음. Offline·reconnect 수용은 완료하지 못함. | `narumq/diagnostics.jsonl` 138건과 node별 원문 scrape; scrape error 0. |
+
+Baseline Step 2의 node별 첫·마지막 진단 scrape(00:49:44.160–00:49:55.167 UTC, 약 11초) 증가량에서 Ready 처리 합계는 9.026/9.598/9.723초, WAL fsync 합계는 8.693/9.270/9.405초였다. WAL fsync는 Ready 처리 시간의 96.32/96.59/96.73%를 차지했다. Application apply는 0.141/0.142/0.136초, transport enqueue는 0.057/0.051/0.051초였다. 이는 동기식 WAL 대기가 driver 시간의 대부분이라는 관찰이지 queue 포화의 단일 원인을 증명하지 않는다. Stage 합계는 여러 요청의 시간이 겹칠 수 있으므로 서로 더해 wall time으로 해석하지 않는다.
+
+Batching run은 Step 3 warmup 뒤 measure를 시작했지만 node 1 outbound 포화(00:58:37.073), inbound 포화로 peer 2 연결 종료(00:58:44.255), durable delivery 포화와 read/proposal deadline, subscriber EOF 뒤 중단됐다. 부분 Step 2의 QoS 1 ACK p99는 82.662→73.308 ms, delivery p99는 160.159→129.527 ms였고 QoS 2는 각각 79.266→77.731 ms, 188.248→159.472 ms였다. 각 변경당 한 번의 invalid 실행이므로 이 차이를 재현 가능한 개선율로 주장하지 않는다.
+
+Artifact root는 `.artifacts/benchmark/bp03/<run-id>/`다. 실제 실패와 timing 증거는 `comparison.json`, `narumq/workload-summary.json`, `narumq/diagnostics.jsonl`, `narumq/metrics/`, node별 log에 보존했다. 두 compare가 invalid여서 조건부 5회 suite는 실행하지 않았다. **BP-03와 ADR-0003 성능 수용은 미완료**로 유지한다. 이 두 실행 당시 inbound 포화는 연결을 닫는 기존 정책이었다. 이후 사용자가 `제한된 수신 대기 채택`을 명시적으로 선택해 [v2 경계 계약](../contracts/raft-membership-v2.md)의 적용 범위를 dynamic Raft inbound에 한정해 갱신했다. 새 정책의 실행 결과는 별도 후속 증거로 구분한다.
+
+계측·batching의 focused package 시험은 `go test ./internal/adapters/raft ./cmd/narumq ./internal/adapters/metrics ./tests/benchmark/bp03 -count=1` PASS였다(각 1.943/12.501/0.350/0.439s). Dynamic follower batch의 입력 copy·전체 거절·순서·WAL 복구와 FIFO proof/cancellation 회귀를 포함한다. 실제 durable ACK fault 시험 `GOMAXPROCS=4 NARUMQ_DURABLE_ACK_FAULTS=1 go test ./tests/integration -run 'TestDynamicClusterDurableAck.*ProcessAcceptance' -count=1 -v -timeout 30m`도 PASS(159.235s)했다. 세 replica × QoS 1/2 ACK 뒤 kill, 20개 WAL/commit crash 조합, leader/follower partition의 시험·결과는 [Cluster §11.13](cluster-session-and-delivery.md#1113-adr-0003-durable-ack-fault-수용-매핑)에 연결한다.
+
+Batching 뒤 storage fault 실행 `GOMAXPROCS=2 go run ./tests/chaos/cluster-storage-v1 --run-id storage-proposals-20261002 --output .artifacts/chaos/cluster-storage-v1/storage-proposals-20261002`는 exit 0, 여섯 scenario 모두 PASS였다(259.07s wall). `summary.json`의 모든 `missingAcked`·`duplicates`는 비어 있고 quorum disk-full 중 성공 ACK는 없었다. Scenario별 ACK·복구 증거는 [Cluster §11.6](cluster-session-and-delivery.md#116-storage-fault-chaos-mapping)에 연결한다. Docker/FUSE 결과는 production physical power-loss 증거가 아니다.
+
+최종 `GOMAXPROCS=4 go run ./tools/verify local` PASS(301.06s wall): traceability, 네 fuzz target 각각 10,000회, architecture, package·integration 시험, race, coverage를 통과했다. Integration package는 261.972s였다. 이 안전성 검증과 부분 실행 관찰만으로 BP-03 수용 상태를 바꾸지 않는다.
+
+##### 명시적 채택 뒤 bounded 수신 대기 — 수용 미완료
+
+사용자의 `제한된 수신 대기 채택` 선택 뒤 dynamic Raft lane에만 공간 예약과 TCP 읽기 중단을 적용했다. 32개·4 MiB 한도, 유효 prefix 뒤의 5초 payload deadline, idle-prefix 동작, command별 fresh proof·독립 entry·quorum-before-ACK은 유지했다. Fixed-voter와 delivery-forwarding lane은 바꾸지 않았다.
+
+첫 후속 compare `bp03-20261002T021302.960231500Z-30036`도 EMQX valid / NaruMQ invalid였다(205.86s wall). Step 1·2는 QoS별 sent/ACK/delivery 120/120/120 및 240/240/240, gap·duplicate 0이었다. Step 3 QoS 1 offered/sent/ACK/delivery는 600/594/586/571(gap 15), QoS 2는 600/600/600/583(gap 17)이었다. Duplicate 0, generator overload 없음, 최대 schedule lag 1.877 ms였다. Offline·reconnect는 수행하지 못했다. `diagnostics.jsonl`은 종료 scrape를 포함한 147건, scrape error 0이었다. 단일 invalid run의 gap 감소는 재현 가능한 개선 근거로 채택하지 않는다.
+
+해당 node log에는 inbound queue 포화 연결 종료가 없었다. Node 2→1 outbound queue 포화는 02:14:13.710 UTC에 32 messages·613 bytes, 연결 유지 상태로 기록됐고, 02:14:18.705 이후 durable read-barrier·proposal deadline과 MQTT EOF가 발생했다. 시간 순서는 관찰됐지만 거절된 frame의 종류와 특정 timeout 사이 인과는 확인되지 않았다. 기존 outbound `ErrPeerBackpressure`·unreachable 보고는 이번 inbound 정책의 변경 범위 밖이며 유지했다.
+
+별도 종료 경계 회귀에서 payload를 모두 읽은 직후 context를 취소하면 frame을 stage하는 결함을 재현했다: `TestDynamicRaftInboundCancellationBeforeStagingReturnsReservation`이 `cancellation after payload read: <nil>`로 FAIL했다. Staging 직전 cancellation fence를 추가한 뒤 `go test ./internal/adapters/tcp ./cmd/narumq ./internal/adapters/raft ./tests/benchmark/bp03 -count=1` PASS(9.611/12.325/1.821/0.450s; 15.44s wall)했다. Count·byte cap, FIFO 재개, lease·reservation, 취소·identity·shutdown·연결 교체·writer failure·timeout·truncated payload의 시험은 [v2 계약](../contracts/raft-membership-v2.md)에 연결한다.
+
+Cancellation fence 뒤 최종 compare `bp03-20261002T021958.747822300Z-10548`도 EMQX valid / NaruMQ invalid였다(211.02s wall). 고정 profile SHA-256은 위 실행들과 같았다. 이번 실행에서는 Step 1·2·3의 QoS별 sent/ACK/delivery가 각각 120/120/120, 240/240/240, 600/600/600으로 일치했고 gap·duplicate 0, generator overload 없음이었다. 그러나 offline QoS 1은 64/64/64, QoS 2는 sent/ACK/delivery 64/64/32(gap 32)였으며 `SessionPresent`는 3/4였다. 네 번째 subscriber `q2-02`의 재접속이 실패한 CONNACK은 reason `0x88`(Server unavailable)이었다. 이는 session state 유실의 증거가 아니라 재접속 수용 실패이며 BP-03 전체는 invalid다.
+
+최종 run은 `diagnostics.jsonl` 162건·scrape error 0을 보존했다. Node log에 inbound queue 포화 연결 종료는 없었지만 02:21:17.769–17.796 UTC에 outbound 32-message 포화가 기록됐고, node 3에서 02:21:19.936의 read-barrier deadline과 02:21:22.766의 durable read-barrier deadline·PUBACK 처리 실패가 이어졌다. 거절된 frame과 재접속 실패의 인과는 아직 미확정이다. 두 후속 compare 모두 invalid여서 조건부 5회 suite는 실행하지 않았으며, 반복 성능 개선·BP-03·ADR-0003 수용 완료를 주장하지 않는다.
+
+최종 bounded 수신 코드의 `NARUMQ_DURABLE_ACK_FAULTS=1` matched-target process suite는 PASS(159.613s)였고, 뒤이어 실행한 `GOMAXPROCS=4 go run ./tools/verify local`도 traceability·네 fuzz target·architecture·package/integration·race·coverage PASS였다(integration package 257.151s; 두 명령 합계 460.37s wall).
+
+반면 Docker/FUSE `storage-flow-20261002`는 exit 1(255.22s wall), **5/6 PASS**였다. `follower-slow-io`는 follower가 HEALTHY·READY로 복구되고 baseline MQTT 재접속이 수락된 뒤 leader의 durable sentinel CONNECT가 `0003`(Server unavailable)으로 거절되어 최종 ACKed delivery 확인을 완료하지 못했다. 다른 다섯 scenario는 통과했다. 실패 scenario의 `missingAcked`·`duplicates` 배열이 비어 있어도 sentinel 검증 전에 중단됐으므로 무누락·무중복 통과 증거가 아니다. 상세 결과는 [Cluster §11.6](cluster-session-and-delivery.md#116-storage-fault-chaos-mapping)에 연결한다.
+
+CONNECT/readiness의 projection lag fail-closed 정책은 이번 승인 범위 밖이므로 유지했다. Fresh proof 뒤 Ready 중간 상태에서 projection checkpoint를 기다리도록 바꾸는 선택은 별도의 미승인 후보다. 그 새 동작을 요구한 실험 시험 두 개는 기존 정책에서 즉시 거절되어 FAIL한 뒤 되돌렸으며, 실제 chaos의 거절 원인이라는 증거로 채택하지 않는다. BP-03와 storage-fault 수용은 미완료로 남긴다.
+
+Inbound 범위의 마지막 종료 보강에서는 `ResetPeer`가 socket만 닫고 capacity waiter를 깨우지 않는 누락을 확인했다. Prefix만 쓴 시험은 reader가 아직 공간 대기에 들어가기 전에 reset될 수 있어 통과를 증거로 쓰지 않았다. `TestDynamicRaftResetUnblocksActiveCapacityWait`를 실제 대기 select 진입과 동기화한 뒤에는 `reset socket left the capacity waiter alive`로 FAIL했다. `ResetPeer`의 connection 무효화와 같은 mutex 안에서 capacity wake를 signal한 뒤 TCP·runtime package 시험 PASS(10.039/10.840s; 13.79s wall)했다. 이 보강은 malformed-peer reset의 종료 경계이며 앞선 BP-03 재접속·slow-I/O sentinel 실패를 해결했다는 증거가 아니다. 위 compare·ACK fault·chaos 실행은 reset wake 보강 전의 증거로 구분한다.
+
+Reset wake 보강과 미승인 readiness 시험 원복 뒤 최종 `GOMAXPROCS=4 go run ./tools/verify local` PASS(305.88s wall; integration 271.163s)했다. Traceability, 네 fuzz target 각각 10,000회, architecture, package/integration 시험, race와 coverage를 통과했다. 이 결과는 malformed-peer reset 회귀와 기존 readiness 계약을 포함한 repository gate의 증거이며, 앞선 invalid BP-03와 5/6 chaos 결과를 합격으로 바꾸지 않는다.
+
+##### 2026-10-02 readiness 거절 진단 — 기존 계약 유지
+
+이후 사용자는 `기존 계약 유지·진단 진행`을 선택했다. Readiness의 storage 검사·fresh quorum proof·local snapshot 판정 순서와 반환 오류는 바꾸지 않는다. `cluster readiness rejected` 로그는 실제 거절에 사용한 storage view와 local snapshot을 기록한다. `purpose`는 `mqtt`, `health`, `summary`, `backup`, `drain`으로 호출 경로를 구분하고, `readiness_stage`는 `readiness_storage`, `readiness_fresh_read`, `readiness_local_state`만 사용한다. Management summary의 quorum 조회를 MQTT admission으로 오인하지 않도록 `hasFreshProof`는 `summary`로 구분한다. Fresh proof 실패에는 오류 분류를, local 상태 실패에는 첫 불충족 조건과 모든 판정 flag·proof/applied/projection index를 남긴다. 여러 조건이 동시에 실패할 수 있으므로 첫 조건만으로 다른 조건이 정상이었다고 해석하지 않는다.
+
+Local snapshot 앞뒤의 `ready_sequence_before`·`ready_sequence_after`도 함께 기록한다. 홀수는 Ready의 WAL·apply·projection 처리 구간이며, 두 값이 다르면 snapshot 수집 중 처리 구간이 바뀌었다는 뜻이다. 이는 기다리거나 재판정할 근거로 사용하지 않는다. Storage 값은 기존 첫 검사 시점의 값이며 이후 상태로 다시 샘플링하지 않는다. 같은 purpose·stage·거절 분류는 기존 commit 실패 로그 집계 방식으로 첫 건과 1초 간격 표본만 출력하고 건수를 누적한다. 로그는 해당 표본의 판정 증거이지 그 사이의 개별 CONNECT 기록이 아니다. Client/tenant ID, payload, topic, token은 추가하지 않으며, retry·checkpoint 대기·proof 재사용·ACK 경계 변경은 포함하지 않는다.
+
+실행: `go test ./cmd/narumq -count=1` PASS(11.448s; 13.85s wall), summary 호출 분리 뒤 `GOMAXPROCS=4 go test ./cmd/narumq -count=1` PASS(10.916s; 13.71s wall). 기존 storage fail-closed·projection admission·fresh-proof/FIFO 시험을 유지했으며 checkpoint 대기를 요구하는 시험은 추가하지 않았다.
+
+고정 profile SHA-256과 resource/workload 조건을 유지한 진단 compare 두 건은 다음과 같다. 둘 다 EMQX valid / NaruMQ invalid이고 `ackLatencyDirectlyComparable=false`다.
+
+| 실행 | 실제 결과 | readiness 진단 |
+| --- | --- | --- |
+| `bp03-20261002T030945.504296100Z-15728` — 206.84s wall; summary purpose 분리 전 | Step 1·2·3 모두 QoS별 sent/ACK/delivery 120/240/600 일치, gap·duplicate 0, overload 없음. Offline QoS 1은 64/64/64, QoS 2는 64/64/0, `SessionPresent=3/4`. Runner는 `q2-02` DNS lookup의 context 취소로 중단. | Node 2·3의 startup health 거절 표본 3건은 `release_profile_unsynced`; proof/applied/projection index 모두 5, Ready sequence는 같은 짝수. Workload 중 readiness 거절 표본은 없었다. Diagnostic scrape 156건·error 0. |
+| `bp03-20261002T031550.460725700Z-39164` — 194.24s wall; summary purpose 분리 뒤 | Step 1·2는 QoS별 120/240 sent/ACK/delivery 일치. Step 3 도중 QoS 1 sent/ACK/delivery 255/247/121(gap 126), QoS 2 371/370/241(gap 129), duplicate 0·overload 없음. `q1-01` subscriber EOF로 중단되어 offline·reconnect는 미실행. | Startup health 표본 3건은 같은 `release_profile_unsynced`, index 5/5/5·안정된 짝수 sequence였다. Workload 중 readiness 거절 표본은 없었다. Diagnostic scrape 120건·error 0. |
+
+첫 run의 node 3은 03:11:08.873 UTC에 durable read-barrier deadline과 `dispatch MQTT PUBACK: quorum unavailable`를 기록했다. Runner의 reconnect reader는 오류 시 상위 context를 취소하므로 마지막 DNS 취소만으로 DNS 장애나 CONNACK 거절을 주장하지 않는다. 두 번째 run은 03:16:51.197 UTC에 node 1→2 outbound 32-message 포화, 03:16:53.607부터 durable target saturation, 03:16:56.178에 node 2 durable read-barrier deadline·PUBACK 실패·subscriber EOF, 03:16:56.206에 proposal deadline·PUBLISH 실패가 관찰됐다. 거절된 peer frame이 timeout을 일으켰다는 인과는 미확정이다. 두 run은 이전 offline CONNACK 거절을 재현하지 않았으며 projection lag가 그 원인이라고 결론내릴 근거도 없다. Invalid compare이므로 조건부 5회 suite는 실행하지 않았다.
+
+Docker/FUSE `storage-readiness-20261002`는 exit 0, **6/6 PASS**(249.71s wall)였다. Fault 중 follower disk-full·sync-error의 MQTT 거절은 `readiness_storage`, health `FAILED`, code `storage_no_space`·`storage_io_error`였다. Slow-I/O 거절은 같은 stage에서 `DEGRADED`·`storage_slow`였다. Quorum disk-full의 leader는 local storage `HEALTHY` 상태에서도 `readiness_fresh_read`·`deadline`·`fresh_proof_confirmed=false`로 거절했다. 판정 단계가 달라 아직 읽지 않은 local flag를 허위로 기록하지 않았다. Startup health의 local 거절은 quota profile 미커밋 또는 release profile 미동기화였다. 두 compare와 이 chaos에서 기록한 local snapshot 27건은 모두 projection index가 applied index 이상이었으며, 이는 기록한 표본의 관찰이지 모든 요청의 무경합 보장은 아니다.
+
+Slow-I/O는 leader progress 55/55, recovery 12.213s, applied index 373 수렴과 최종 sentinel·ACKed delivery 검증을 통과했다. 여섯 scenario의 missing/duplicate 배열이 모두 비어 있고 해당 검증도 실제 완료됐다. 이전 `storage-flow-20261002`의 복구 후 sentinel CONNACK 실패는 재현되지 않았으므로 readiness 정책 변경으로 해결했다고 주장하지 않는다. 상세 chaos 수용은 [Cluster §11.6](cluster-session-and-delivery.md#116-storage-fault-chaos-mapping)에 연결한다.
+
+같은 판정 계측의 matched-target durable ACK process suite PASS(157.322s: replica kill 31.79s, 20 WAL/commit crash 99.60s, partition 25.78s), 이어진 `GOMAXPROCS=4 go run ./tools/verify local` PASS(integration 245.901s; 두 명령 합계 435.04s wall)였다. Traceability·네 fuzz target 각 10,000회·architecture·package/integration·race·coverage를 통과했다. 이 외부 실행과 gate는 마지막 로그 attr 구성의 allocation 보강 전 증거로 구분한다.
+
+마지막 로그 구성은 typed `slog.Attr`와 고정 buffer로 바꿔 숫자 boxing·slice 확장 복사를 피했다. Disabled WARN과 rate-limit 표본 제외 건은 attr를 구성하지 않는다. `GOMAXPROCS=4 go test ./cmd/narumq -gcflags=-m -count=1` PASS(13.168s; 16.47s wall)였으며 compiler escape analysis에서 local snapshot과 두 append는 `does not escape`였다. 판정 입력·로그 필드·반환 오류는 그대로 유지한다.
+
+최종 typed attr 코드로 Docker/FUSE `storage-readinessattrs-20261002`도 **6/6 PASS**했다(scenario 실행 247.896s). MQTT 표본은 다시 storage 거절 3건과 quorum-loss fresh-proof deadline 9건으로 분리됐고, numeric/boolean 필드는 원문 JSON에서 해당 타입으로 보존됐다. Local snapshot에는 projection/applied gap이 없었다. Slow-I/O는 progress 55/55, recovery 12.195s, index 373 수렴과 sentinel·ACKed delivery를 통과했으며 모든 scenario의 missing/duplicate가 없었다. 뒤이어 최종 `GOMAXPROCS=4 go run ./tools/verify local`도 traceability·네 fuzz 각 10,000회·architecture·package/integration·race·coverage PASS(integration 279.091s; chaos와 gate 합계 558.26s wall)했다. 이 gate는 마지막 source 변경 뒤의 증거다. BP-03 compare 두 건은 attr 구성 보강 전의 workload 증거이며 invalid 상태·반복 suite 미실행·ADR-0003 미완료는 그대로다.
+
+
+아래 `bp03-20261001T133103.344202600Z-10712`까지의 실행은 Enterprise 전환 전 OSS·memory-session comparator의 과거 증거다. Enterprise 구성의 실행 증거는 별도 run ID로 구분하며 같은 내구성 조건의 측정으로 섞지 않는다.
 
 - `bp03-20260930T061549.390008900Z-28772`와 `bp03-20260930T063854.898438300Z-34520`에서 고정 smoke profile로 `compare`를 실행했다. 두 결과 모두 top-level `valid=false`; EMQX workload/resource는 valid, NaruMQ target은 invalid였다.
 - 첫 실행은 NaruMQ step 1 schedule lag가 6.358초로 `generatorOverload=true`였고, node 3 broker log에 `dispatch MQTT PUBLISH: quorum unavailable`가 남았다. 두 번째는 schedule lag 8.965초, `generatorOverload=true`였으며 node 3 log에 `dispatch MQTT PUBREL: quorum unavailable`가 남았다. 각각의 runner가 q2-01 connection reset으로 종료됐다.
@@ -227,6 +356,106 @@ go run ./tests/benchmark/bp03 suite --profile tests/benchmark/bp03/testdata/smok
 - Step 3는 1200/1200 전송·ACK 완료했고, QoS 1은 600/600 전달(gap 0)이었으나, `bp03-sub-q2-02`의 `durable delivery targets saturated` 경고가 28건 기록되며 QoS 2 572/600 전달(gap 28), max schedule lag 22.164s로 `generatorOverload=true`였다.
 - 진단 메트릭과 로그 분석: `writeDeliveries` 내 `nextControl()` 소진 후 실행한 run `145505`에서는 Step 2의 QoS 2 gap이 0건으로 관측되었고 포화 경고도 발생하지 않았다. 회귀 시험 `server_qos_delivery_test.go::TestDeliveryWriterRetainsStateOnQueueAndWireErrors/queued_control_PUBREL_is_serviced_before_remaining_delivery_backlog`는 전달 백로그보다 앞서 대기 중인 제어 패킷(PUBREL)이 소켓으로 처리됨을 결정론적으로 검증한다. 이후 진행한 추가 진단 시도 `bp03-20260930T150424.465458500Z-37680`에서 락 해제 실험을 시도했으나 PacketID 경합 및 복구 불변식 안전성을 위해 이전의 안전한 락 구조로 완전히 되돌렸다. 복구 불변식을 위반하는 commit-only Ready fsync 생략 시도 역시 되돌렸으며, SSOT 규격에 따른 proposal 전 fresh read barrier는 그대로 유지한다.
 - NaruMQ workload가 invalid여서 conditional 5회 suite는 실행하지 않았으며, BP-03은 미달성 상태다. 이 결과들은 `.artifacts/benchmark/bp03/bp03-20260930T145505.056290600Z-31628/` 및 `bp03-20260930T150424.465458500Z-37680/`에 보존했다.
+- 2026-10-01 추가 진단 compare `bp03-20261001T131030.071121600Z-2212`, `bp03-20261001T131403.928045500Z-37288`도 `valid=false`였다. 두 run 모두 Step 1의 QoS별 120/120, Step 2의 QoS별 240/240 전송·ACK·전달과 gap/duplicate 0을 확인했고 해당 step의 generator overload는 없었다. 첫 run의 최대 schedule lag는 1.256463/1.144711ms, 둘째는 1.216113/1.556861ms였다. 이후 subscriber EOF로 Step 3 warmup 중에 중단되어 offline/reconnect는 실행되지 않았다. 둘째 run에서 13:15:03 UTC outbound queue 32개 포화, 13:15:08 UTC node 2·3의 durable `read_barrier` deadline과 PUBREC/PUBLISH quorum-unavailable, `q2-02` EOF가 관측됐다. 이 관측만으로 WAL 지연과 timeout의 인과를 확정하지 않는다. 두 run은 최종 suffix 예약 안전성 수정 전 진단이며 유효한 비교 결과로 채택하지 않는다.
+
+#### 2026-10-01 최종 재검증
+
+최종 코드의 고정 compare `bp03-20261001T133103.344202600Z-10712`는 exit 1, top-level `valid=false`였다. EMQX workload/resource는 valid이고 NaruMQ는 invalid였다. 실행 전 Docker container가 없었으며 다른 검증 작업과 겹치지 않았다. Profile은 `tests/benchmark/bp03/testdata/smoke.json`, SHA-256 `0b8a88abac04fcfffeb72152cb86ae6aab4682808df7e4d43c9ee3df8661c92a`로 변경하지 않았다.
+
+- Step 1은 QoS 1/2 각각 120/120, Step 2는 각각 240/240 전송·ACK·전달을 완료했다. 두 step 모두 gap/duplicate 0, `generatorOverload=false`; max schedule lag는 1.148269/1.194068ms였다.
+- Step 3 warmup에서 13:32:02.561 UTC node 2의 peer 1 inbound queue가 32개로 포화되고 연결이 끊긴 상태를 기록했다. Node 1에서도 inbound 포화가 이어졌다. 13:32:07.528 UTC node 2의 durable proposal deadline과 `dispatch MQTT PUBACK: quorum unavailable` 뒤, 13:32:07.529 UTC subscriber `q1-01` EOF가 기록됐다. 13:32:07.570 UTC durable `read_barrier` deadline과 PUBLISH quorum-unavailable도 기록됐다. Warmup을 끝까지 완료하지 못해 Step 3 측정·offline·reconnect는 실행되지 않았다. Summary의 이 구간 0 값은 성공 또는 message gap 부재를 뜻하지 않는다.
+- 시작 시각 13:31:29–31 UTC의 세 `read_barrier` warning은 command kind가 없는 초기 조회이며, 뒤의 durable timeout과 구분한다. 포화·timeout 순서는 관측 사실이지만 WAL 비용이 직접 원인이라는 인과는 확인하지 않았다.
+
+아래는 완료된 WAL scrape window의 **진단 값**이다. Fsync occupancy는 node별 sync duration sum 증가량을 해당 WAL window 시간으로 나눈 비율이다. Node 간 시간을 합산하거나 완료된 두 step만으로 전체 run을 유효하다고 판단하지 않는다.
+
+| WAL window | 관측 시간 | Node 1/2/3 fsync occupancy | Node 1/2/3 meanEntriesPerSync |
+| --- | --- | --- | --- |
+| Step 1 | 12.041271s | 39.42% / 41.08% / 41.65% | 0.588091 / 0.584860 / 0.585828 |
+| Step 2 | 12.081434s | 79.54% / 84.64% / 85.39% | 0.859767 / 0.821490 / 0.832250 |
+
+NaruMQ invalid 분기에 따라 이번 최종 코드의 conditional 5회 suite는 실행하지 않았다. 유효한 ACK/WAL 비교, 반복 suite 및 ADR-0003 §9-5 acceptance로 채택하지 않으며 BP-03은 미완료다. 승인된 계획의 invalid 분기에 따라 추가 성능 변경 없이 진단 결과를 기록했다. Commit-only HardState sync와 command별 fresh proof는 유지한다. Artifact는 `.artifacts/benchmark/bp03/bp03-20261001T133103.344202600Z-10712/`에 보존했다.
+
+기능·안전성 검증은 별도로 통과했다:
+
+- Targeted `-race` 실행의 package별 결과는 cmd runtime 12.766s, Raft 3.567s, chaos runner 1.739s로 PASS였다. 같은 실행의 TCP package는 추가 시험의 잘못된 DTO 필드 참조로 compile에 실패했으며 이를 수정했다. 이후 `GOMAXPROCS=4 go test ./internal/adapters/tcp -count=1 -race` PASS (13.691s). Batch retry 시험은 앞선 commit의 응답만 오류로 돌아오는 경우와 모든 suffix ID 보존, local/durable queue의 wire topic·ID 순서를 확인한다.
+- `GOMAXPROCS=4 NARUMQ_DURABLE_ACK_FAULTS=1 go test ./tests/integration -run '^TestDynamicClusterDurableAck(ReplicaKill|CrashPoint|Partition)ProcessAcceptance$' -count=1 -v -timeout 30m` PASS (161.165s): replica kill 6개, WAL/commit crash 20개, partition 2개 시나리오.
+- Docker/FUSE run `storage-batch-20261001`의 여섯 scenario 모두 PASS (263.29s). 상세 ACK·cut·recovery 증거는 [Cluster §11.6](cluster-session-and-delivery.md#116-storage-fault-chaos-mapping)에 기록했다. 이 결과는 실제 전원 손실 또는 production Linux/EBS 증거가 아니다.
+- 최종 compare 이후 `GOMAXPROCS=4 go run ./tools/verify local` PASS (306.35s): package/integration/race, 네 fuzz target, traceability, architecture, coverage. 앞선 local run에서 발견한 TCP test fixture data race는 위 초기화 순서 수정으로 해소됐으며 최종 race suite에서 재발하지 않았다.
+
+#### 2026-10-03 공식 async WAL·group commit 실행
+
+[ADR-0020](../decisions/ADR-0020-asynchronous-raft-wal-group-commit.md)을 채택했다. Disk 전용 단일 worker에 bounded append 요청을 넘기고 이미 대기 중인 CRC frame들을 한 sync로 기록한다. Driver의 8ms timed collection은 제거하지만 command별 fresh ReadIndex와 commit-only HardState sync는 유지한다. Local WAL 완료 전 entry-bearing replication도 보류한다. `CompleteApply`는 runtime state·projection 적용 뒤 호출한다. Ready histogram은 이제 fsync를 포함하지 않는 poll 시간이므로 이전 Ready/WAL 시간 비율과 직접 비교하지 않는다.
+
+동일 고정 smoke profile SHA-256 `0b8a88abac04fcfffeb72152cb86ae6aab4682808df7e4d43c9ee3df8661c92a`의 compare `bp03-20261002T165307.722011400Z-40216`는 exit 0, 두 target workload/resource가 valid였다. Profile·resource·deadline·queue를 늘리지 않았다.
+
+| NaruMQ 측정 | Step 1 | Step 2 | Step 3 |
+| --- | --- | --- | --- |
+| QoS별 offered·sent·ACKed·delivered | 120 각각 | 240 각각 | 600 각각 |
+| 최대 schedule lag | 1.131ms | 1.231ms | 2.569ms |
+| Generator overload·gap·duplicate | false·0·0 | false·0·0 | false·0·0 |
+| QoS 1 ACK p99 | 23.657ms | 48.877ms | 59.531ms |
+| QoS 2 ACK p99 | 28.350ms | 44.711ms | 60.689ms |
+
+Offline QoS별 64개 전송·ACK·전달, sessionPresent 4/4, protocol error 0이었다. Step 3 cluster sync 6,625회·14,381 entries, mean 2.171 entries/sync, WAL window 12.071719s였다. 이전 invalid 진단 compare `bp03-20261002T133437.979734800Z-36656`의 Step 3은 sync 8,100회·14,204 entries, mean 1.754, schedule lag 3.809645s였다. 이번 관측은 단일 고정 workload 개선이며 production 성능이나 실패 원인 전체를 입증하지 않는다. 두 window 길이도 같지 않다. Initial compare metadata의 `fsync per Ready frame` 표현은 이 cutover 뒤 오래된 설명이며 suite부터 async single-writer group commit으로 수정했다.
+
+단일 compare가 유효해 조건부 독립 5회 suite를 실행했다. `bp03-suite-20261002T165724.420235500Z-25996`는 exit 1, **4/5 성공·parent valid=false**였다. 회차 1·2·4·5의 양쪽 target은 valid였고 NaruMQ Step 3 schedule lag는 1.179–1.318ms였다. 3회차는 Step 1·2 count를 통과한 뒤 Step 3 warmup에서 publisher `q1-02` EOF (`2026-10-02T17:04:43.022186277Z`)로 중단했다. Node 2는 직전 `dispatch MQTT PUBLISH: tcp connection closed`, 약 4.91초 뒤 durable proposal deadline을 기록했다. 원인은 확인되지 않았으며 뒤의 timeout을 EOF 원인으로 단정하지 않는다. Step 3·offline의 0 값은 성공이 아니라 미실행이다. Parent metric은 비었고 median/MAD를 채택하지 않는다. 실패를 지우기 위한 추가 suite는 실행하지 않았다.
+
+Artifact는 `.artifacts/benchmark/bp03/<위 run ID>/`에 있다. 동일 workload/resource의 `equivalent=true`는 정확한 ACK/storage·security 계약 등가를 뜻하지 않으며 `releaseGating=false`다. **BP-03 반복 수용과 ADR-0003은 미완료**다.
+
+안전성은 [Cluster §11.18](cluster-session-and-delivery.md#1118-비동기-walapplication-완료-경계-수용-매핑)에 연결한다. Raft/runtime race PASS, 실제 MQTT takeover·backup/restore·drain·peer smoke PASS, matched-target ACK fault suite PASS(159.50s wall), Docker/FUSE 최종 6/6 PASS(251.16s wall)였다. 초기 leader before-write 조기 ACK와 첫 chaos의 in-flight projection readiness 실패는 수정·재검증했으며 기록을 숨기지 않는다. Production Linux/EBS·물리 전원 손실은 미실행이다.
+
+최종 `GOMAXPROCS=4 go run ./tools/verify local` PASS (301.74s wall; integration 264.667s). Traceability·architecture·네 fuzz target 각 10,000회·전체 package/integration·production package race·coverage를 확인했다. 이 gate는 위 단일 compare·5회 suite와 최종 readiness 코드 뒤 실행했으며 BP-03 parent invalid를 대체하지 않는다.
+
+후속 보완은 [관측성 스펙](management-api-and-observability.md)의 WAL histogram과 metric HELP를 실제 성공한 group sync당 한 표본·여러 frame의 entries/bytes 합계로 일치시켰다. Registry focused suite·traceability PASS. 보관 append 종료 저장·오류 반환, 보류 복제 bytes 소유와 held-sync heartbeat 회귀는 Raft race suite PASS였다. 이후 ACK fault suite PASS (160.56s wall), Docker/FUSE `storage-asyncclose-20261003` 6/6 PASS (242.19s wall), local gate PASS (292.24s wall). 마지막 consumed-error 종료 보고 보강 뒤 최종 local gate도 PASS (289.24s wall)다. 위 BP-03 artifact는 후속 보완 전 실행이며, 4/5 invalid suite를 최신 코드의 반복 성능 통과로 재해석하지 않는다.
+
+##### 2026-10-03 EOF 재현과 release-profile 재확인 wake
+
+사용자의 실패 원인 조사 요청으로 연결 종료 진단을 보강했다. Async PUBLISH의 local admission 거절이 `ErrConnectionClosed`로 잘못 분류되던 경로는 `ErrClusterNotReady`로 수정했다. `TestDurablePublishProjectionDenialIsNotSocketFailure`는 기존 오류로 FAIL을 재현한 뒤 QoS 1/2에서 성공 ACK·inbound mutation·durable 제출 없이 올바른 오류를 반환함을 확인한다. Outer phase의 fail-closed 종료 정책은 유지한다. Writer는 실제 delivery/control 치명 오류를 종료 전에 기록하며, throwaway smoke에서 `write pipe: i/o timeout` 로그 뒤 peer EOF를 확인했다.
+
+진단 실행을 성공 결과만 골라 수용하지 않는다:
+
+| 실행 | 결과·관찰 |
+| --- | --- |
+| `bp03-20261002T181557.406064300Z-5612` / `bp03-suite-20261002T181947.588338600Z-18508` | Compare 양쪽 valid, suite 5/5 valid. 원인 수정 전에도 성공한 표본이므로 EOF 해소 증거가 아니다. |
+| `bp03-20261002T184957.134456000Z-41612` / `bp03-suite-20261002T185324.743416400Z-2264` | Compare valid, suite 4/5 invalid. 3회차 node 2에서 applied/projection 4017/4017, storage `HEALTHY`, `release_profile_synced=false`의 PUBLISH 거절 뒤 publisher EOF를 관찰했다. |
+| `bp03-suite-20261002T191223.997944900Z-35300` | Release 전이 진단을 추가한 suite도 4/5 invalid. 1회차 node 3에서 `19:13:20.191710238Z` snapshot restore invalidation → `19:13:20.221105598Z` PUBLISH의 `release_profile_unsynced` 거절 → `19:13:20.223362862Z` publisher `q2-01` EOF를 확인했다. 거절 snapshot은 applied/projection 4043/4043, storage `HEALTHY`였다. |
+
+이 마지막 재현에서 최초 종료를 유발한 것은 restore 뒤 재확인되지 않은 release-profile gate다. Controller는 기존에 다음 500ms periodic reconcile까지 기다릴 수 있었다. 뒤늦은 proposal timeout이나 teardown의 quorum 오류를 이 EOF 원인으로 취급하지 않는다. 초기 `bp03-suite-20261002T165724.420235500Z-25996`에는 전이 진단이 없으므로 같은 원인이었다고 확정하지 않는다.
+
+개선은 scheduling에 한정한다. Snapshot restore·committed local profile 변경은 **계속 즉시 gate를 닫고**, 대기 알림 최대 한 개로 controller를 깨운다. 재확인은 기존 `Members`·`ActiveFeatures`의 두 fresh read barrier와 revision fence를 유지한다. 성공 재확인 전에는 gate를 열지 않으며 오류·unsupported feature는 fail closed다. PUBLISH retry·admission 대기 추가·proof cache·queue/deadline/resource 증가는 없다. `TestClusterReleaseProfileSnapshotWakeReconfirmsAfterStaleRead`는 기존 코드의 periodic 대기로 FAIL했고 보완 뒤 controller race suite가 PASS했다. 같은 시험에서 restore 직후·이전 revision 완료 뒤·새 두 barrier 완료 전의 닫힌 gate를 확인한다. 기존 compatible-snapshot invalidation 시험은 변경하지 않았다.
+
+보완 뒤 최종 compare `bp03-20261002T193345.142241000Z-38956` (206.24s wall)는 양쪽 workload/resource valid였다. 같은 고정 profile SHA-256 `0b8a88abac04fcfffeb72152cb86ae6aab4682808df7e4d43c9ee3df8661c92a`와 resource 제한으로 독립 5회 suite `bp03-suite-20261002T193711.351279300Z-4364` (927.13s wall)는 **5/5·parent valid=true**였다. 각 회차 Step 3 QoS별 offered·sent·ACKed·delivered 600개, offline QoS별 64개, sessionPresent 4/4, gap·duplicate 0이었다. Step 3 max schedule lag는 1.177–1.641ms이고 overload는 없었다.
+
+| Suite Step 3 NaruMQ metric | 중앙값 | MAD | 최소–최대 |
+| --- | --- | --- | --- |
+| QoS 1 ACK p99 | 54.895ms | 1.657ms | 53.238–57.203ms |
+| QoS 2 ACK p99 | 56.611ms | 3.149ms | 53.387–62.605ms |
+| Mean entries/sync | 2.053607 | 0.003409 | 2.036770–2.071090 |
+
+최종 5회에는 `snapshot_restored` 진단 표본이 없었다. 이 suite는 고정 local smoke의 반복 수용 근거이지, snapshot 직후 모든 PUBLISH가 성공하거나 모든 향후 EOF가 제거됐다는 증명이 아니다. 실제 설치 snapshot은 별도 `NARUMQ_RELEASE_COMPAT=1` process acceptance에서 N/N-1 양방향·두 N node와 MQTT/durable session을 확인했다(PASS, 85.55s wall). Gate가 닫힌 동안의 거절은 의도된 계약으로 남는다. `releaseGating=false`·`ackLatencyDirectlyComparable=false`와 storage/security 계약의 비등가도 유지하며 ADR-0003 전체 또는 production 수용을 완료하지 않는다.
+
+안전성 재검증: `GOMAXPROCS=4 NARUMQ_DURABLE_ACK_FAULTS=1 go test ./tests/integration -run '^TestDynamicClusterDurableAck(ReplicaKill|CrashPoint|Partition)ProcessAcceptance$' -count=1 -v -timeout 30m` PASS (160.53s wall; replica/QoS 6개·crash 20개·partition 2개). `GOMAXPROCS=2 go run ./tests/chaos/cluster-storage-v1 --run-id storage-releasewake-20261003 --output .artifacts/chaos/cluster-storage-v1/storage-releasewake-20261003`도 6/6 PASS (241.47s wall), 모든 scenario의 `missingAcked`·`duplicates`는 비었다.
+
+위 외부 실행 뒤 로그의 `fresh_proof_confirmed`를 명시적인 판정 입력으로 정정했다. Local PUBLISH snapshot은 새 quorum proof가 아니므로 `false`, fresh readiness barrier 뒤 snapshot은 `true`다. 초기 진단 artifact의 PUBLISH `fresh_proof_confirmed=true,proof_index=0`은 잘못된 표시였으며 fresh proof 근거로 쓰지 않는다. 두 JSON 값의 구분은 throwaway smoke로 관찰했다. Scheduling·readiness·ACK 동작은 이 로그 정정에서 바꾸지 않았다.
+
+Wake·proof 진단 코드와 회귀를 정리한 단계의 `GOMAXPROCS=4 go run ./tools/verify local`은 PASS (293.03s wall; integration 264.789s)였다. Traceability·architecture·네 fuzz target 각 10,000회·전체 package/integration·production package race·coverage를 확인했다. Wake 회귀는 별도 `-count=10 -race`도 PASS (7.29s wall)였다. 실행 결과를 덧붙인 문서 변경은 gate 뒤에 했으며 편집 결과를 육안 확인했다. 임시 diagnostic smoke 파일은 제거했다. Production Linux/EBS·physical power-loss 검증과 group 크기별 production 성능은 미실행이며 이 로컬 검증으로 대체하지 않는다.
+
+마지막 writer 보완은 `NewServer`가 non-nil logger를 보장하는 불변식을 그대로 사용한다. 생성자를 거치지 않은 timeout 시험 fixture에 logger를 제공하고 production writer의 중복 nil 검사는 제거했다. Focused writer 시험에서 실제 `write pipe: i/o timeout` warning과 연결 종료를 확인했다. 이 코드·fixture 및 앞선 문서 정정 뒤 full local gate도 PASS (278.34s wall; integration 245.843s)였다. 이 마지막 실행의 결과를 기록한 문서 덧붙임은 다시 gate 뒤에 했으며 편집 결과를 육안 확인했다. Benchmark·ACK fault·chaos artifact는 앞서 설명한 wake 코드의 외부 실행이며 이 fixture 정리로 재측정한 결과로 표시하지 않는다.
+
+
+
+#### 2026-10-01 Enterprise comparator 구성 검증
+
+`go run ./tests/benchmark/bp03 compare --profile tests/benchmark/bp03/testdata/smoke.json`을 실행했다. Run ID는 `bp03-20261001T142245.697829200Z-22092`, profile SHA-256은 기존과 같은 `0b8a88abac04fcfffeb72152cb86ae6aab4682808df7e4d43c9ee3df8661c92a`다. 이번 실행부터 EMQX는 위에 고정한 Enterprise image와 Durable Sessions·JWT 설정을 사용한다.
+
+- **실제 구성:** 세 node의 `emqx-durability.txt`에서 `durable_sessions.enable=true`, message backend `builtin_raft`, `n_sites=3`, `replication_factor=3`, `n_shards=1`을 확인했다. Shard `0`의 replica set에는 같은 세 site가 있었고 transition은 비어 있었다. JWT authenticator는 활성 상태이며 JWKS와 `iss`·`aud`·`sub` 검증 설정이 기록됐다. 설정만 선언하고 memory backend로 실행하는 fallback은 없다.
+- **EMQX PASS:** workload와 resource summary가 모두 valid였다. QoS 1과 QoS 2 각각 Step 1에서 120/120, Step 2에서 240/240, Step 3에서 600/600 ACK·delivery를 완료했다. 각 step의 max schedule lag는 2.008ms, 1.435ms, 1.682ms였고 `generatorOverload=false`였다. Offline에서는 QoS별 64/64 ACK·delivery, reconnect의 `SessionPresent=4/4`를 확인했다. 누락·중복·ACK 거절·timeout은 없었다.
+- **전체 compare FAIL:** NaruMQ는 Step 1·2의 QoS별 120/120·240/240 ACK·delivery를 완료했지만 Step 3 warmup에서 중단됐다. 14:23:48 UTC부터 node 1과 node 3에 inbound queue 포화가 기록됐고, 14:23:53에 node 3 durable proposal deadline, `dispatch MQTT PUBACK: quorum unavailable`, subscriber `q1-02` EOF가 이어졌다. Step 3 측정·offline·reconnect는 실행하지 못했다. 전체 결과는 `valid=false`이며 유효한 NaruMQ/EMQX 성능 비교나 BP-03 acceptance가 아니다.
+- **검증 범위:** 이번 smoke는 replicated Durable Sessions 구성과 실제 MQTT workload·offline/reconnect 경로의 증거다. EMQX restart/power-loss, quorum `fsync` 이전 ACK 여부, NaruMQ와 같은 QoS state 영속 시점 및 peer mTLS는 검증하지 않았다. `comparison.json`의 durability·authentication `nonEquivalent`와 `ackLatencyDirectlyComparable=false`를 유지한다. EMQX WAL summary의 `not_applicable`은 수집 지표의 차이이며 WAL 부재를 뜻하지 않는다.
+- **Package 검증:** `GOMAXPROCS=4 go test ./tests/benchmark/bp03 ./tests/benchmark/bp01 ./tests/benchmark/bp05 ./tests/benchmark/internal/environment -count=1` PASS. BP-01/BP-05의 OSS image는 유지하며 image pull API의 변경된 호출 지점을 함께 검증했다.
+- **최종 local 검증:** Enterprise 전환과 위 실행 증거 반영 후 `GOMAXPROCS=4 go run ./tools/verify local` PASS (316.76s). Package·integration·race, 네 fuzz target, traceability, architecture, coverage를 통과했다. 이 검증은 invalid인 BP-03 workload를 유효하게 바꾸거나 미실행 durability 경계를 대신하지 않는다.
+
+Artifact는 `.artifacts/benchmark/bp03/bp03-20261001T142245.697829200Z-22092/`에 보존했다. Enterprise 평가판의 25 concurrent session·non-production 제한을 기록하며 production license와 장기 comparator 선택을 대신하지 않는다.
 
 
 ## 4. 필수 benchmark profile
@@ -285,7 +514,7 @@ BP-03 single-run artifact는 `.artifacts/benchmark/bp03/<run-id>/`에 보존한�
 
 - Root: `profile.json`, host/image/topology metadata가 있는 `manifest.json`, `comparison.json`, per-target validity와 `workload-summary.json`·`resource-summary.json`·`wal-summary.json`을 포함하는 `summary.json`.
 - 각 `narumq/`, `emqx/` target은 `phases.jsonl`, `messages.jsonl`, workload/resource/WAL summary, runner log, broker log, secret 환경 값을 redaction한 Docker inspect JSON, broker/network-owner `*-stats.jsonl`을 보존한다.
-- NaruMQ만 `metrics/nodeN-step-<ss>-{start,end}.prom`, `metrics/nodeN-offline-{start,end}.prom` 원시 scrape를 보존한다. EMQX WAL artifact는 `applicability=not_applicable`을 기록한다.
+- NaruMQ만 `metrics/nodeN-step-<ss>-{start,end}.prom`, `metrics/nodeN-offline-{start,end}.prom`과 `metrics/nodeN-diagnostic-<sequence>.prom` 원시 scrape를 보존한다. `diagnostics.jsonl`은 node별 요청 시작·종료 UTC 시각, 원시 파일 상대 경로 또는 scrape 오류를 기록한다. EMQX WAL artifact는 `applicability=not_applicable`을 기록한다.
 - Fixture JWT, management token, private key와 certificate는 run directory 밖의 임시 directory에만 두고 두 target 실행 뒤 제거한다. Network owner에는 공개 JWKS만 전달한다. Artifact에는 secret 값을 저장하지 않는다.
 
 BP-03 local run은 Docker named-volume WAL 관측 증거만 제공한다. 이 artifact를 production filesystem/EBS, physical power-loss 또는 production RPO/RTO 증거로 표현해서는 안 된다.

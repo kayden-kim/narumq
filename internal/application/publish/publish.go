@@ -6,7 +6,6 @@ package publish
 import (
 	"context"
 	"errors"
-	"fmt"
 	"time"
 
 	"narumq/internal/application/membership"
@@ -110,8 +109,8 @@ func WithRemoteForwarder(forwarder RemoteForwarder) Option {
 	}
 }
 
-// WithDurableDeliveryCommitter configures the replicated QoS 1/2 delivery barrier.
-func WithDurableDeliveryCommitter(committer deliverystate.Committer) Option {
+// WithDurableDeliveryCommitter configures the replicated QoS 1/2 delivery commit and quorum barrier.
+func WithDurableDeliveryCommitter(committer deliverystate.PublishCommitter) Option {
 	return func(useCase *UseCase) {
 		useCase.durableDeliveryCommitter = committer
 	}
@@ -125,7 +124,7 @@ type UseCase struct {
 	queue                    deliveryqueue.Queue
 	retained                 retained.Repository
 	retainedCommitter        RetainedCommitter
-	durableDeliveryCommitter deliverystate.Committer
+	durableDeliveryCommitter deliverystate.PublishCommitter
 	policy                   security.Policy
 	offlineCommitter         OfflineCommitter
 	remoteForwarder          RemoteForwarder
@@ -192,41 +191,57 @@ func (useCase *UseCase) ReceiveQoS2(
 	receivedAt time.Time,
 	principal ...security.Principal,
 ) error {
+	pending, err := useCase.BeginReceiveQoS2(publisherSessionID, ownerNodeID, epoch, packet, receivedAt, principal...)
+	if err != nil {
+		return err
+	}
+	return pending.Wait()
+}
+
+// BeginReceiveQoS2 submits in caller order without acknowledging durability.
+// The caller must wait for completion before sending PUBREC.
+func (useCase *UseCase) BeginReceiveQoS2(
+	publisherSessionID routing.SessionID,
+	ownerNodeID, epoch uint64,
+	packet mqtt.Publish,
+	receivedAt time.Time,
+	principal ...security.Principal,
+) (PendingReceive, error) {
 	if useCase == nil {
-		return ErrNilClock
+		return PendingReceive{}, ErrNilClock
 	}
 	if packet.QoS != mqtt.QoSExactlyOnce || packet.PacketID == 0 {
-		return routing.ErrInvalidQoS
+		return PendingReceive{}, routing.ErrInvalidQoS
 	}
 	if err := routing.ValidateSessionID(publisherSessionID); err != nil {
-		return err
+		return PendingReceive{}, err
 	}
 	if err := routing.ValidateTopicName(packet.Topic); err != nil {
-		return err
+		return PendingReceive{}, err
 	}
 	if len(principal) > 0 && principal[0].Subject() != "" {
 		topic, err := tenancy.NewTopic(principal[0].TenantID(), packet.Topic)
 		if err != nil {
-			return security.ErrNotAuthorized
+			return PendingReceive{}, security.ErrNotAuthorized
 		}
 		if err := useCase.policy.AuthorizeTopic(principal[0], security.ActionPublish, topic); err != nil {
-			return security.ErrNotAuthorized
+			return PendingReceive{}, security.ErrNotAuthorized
 		}
 	}
 	if useCase.durableDeliveryCommitter == nil {
-		return ErrDurableDeliveryRejected
+		return PendingReceive{}, ErrDurableDeliveryRejected
 	}
 	if ownerNodeID == 0 || epoch == 0 {
-		return ErrDurableDeliveryRejected
+		return PendingReceive{}, ErrDurableDeliveryRejected
 	}
 	publisherKey, err := useCase.durablePublisherKey(publisherSessionID, nil)
 	if err != nil {
-		return err
+		return PendingReceive{}, err
 	}
 	now := useCase.clock.Now()
 	proposedMillis := now.UnixMilli()
 	if proposedMillis <= 0 {
-		return errInvalidDurableTimestamp
+		return PendingReceive{}, errInvalidDurableTimestamp
 	}
 	var expiresAt time.Time
 	if packet.HasMessageExpiryInterval {
@@ -236,11 +251,11 @@ func (useCase *UseCase) ReceiveQoS2(
 	if !expiresAt.IsZero() {
 		millis := expiresAt.UnixMilli()
 		if millis <= 0 {
-			return errInvalidDurableTimestamp
+			return PendingReceive{}, errInvalidDurableTimestamp
 		}
 		expiresMillis = uint64(millis)
 	}
-	committed, err := useCase.durableDeliveryCommitter.CommitDelivery(context.Background(), membership.DeliveryChangeDTO{
+	pending, err := useCase.durableDeliveryCommitter.BeginDelivery(context.Background(), membership.DeliveryChangeDTO{
 		TenantID:             publisherKey.TenantID().String(),
 		ClientID:             publisherKey.ClientID(),
 		OwnerNodeID:          ownerNodeID,
@@ -254,18 +269,10 @@ func (useCase *UseCase) ReceiveQoS2(
 		PacketID:             uint32(packet.PacketID),
 	})
 	if err != nil {
-		if errors.Is(err, deliveryqueue.ErrFull) {
-			return ErrDurableDeliveryCapacity
-		}
-		return err
+		_, err = durableDeliveryResult(membership.ApplyResultDTO{}, err)
+		return PendingReceive{}, err
 	}
-	if committed.Outcome != membership.ApplyOutcomeApplied || committed.Delivery == nil {
-		if committed.Conflict == membership.ConflictDeliveryCapacity {
-			return ErrDurableDeliveryCapacity
-		}
-		return fmt.Errorf("%w: outcome=%d conflict=%s", ErrDurableDeliveryRejected, committed.Outcome, committed.Conflict)
-	}
-	return nil
+	return PendingReceive{pending: pending}, nil
 }
 
 // PublishQoS2Release commits the publisher's QoS 2 RELEASE transition before
@@ -304,6 +311,10 @@ type durableTarget struct {
 	retain    bool
 }
 
+func needsDeliveryCommand(release *durableRelease, targets []durableTarget) bool {
+	return release != nil || len(targets) != 0
+}
+
 type durableOutcome uint8
 
 const (
@@ -326,22 +337,69 @@ func (useCase *UseCase) publish(
 			useCase.metrics.ObservePublishDuration(time.Since(start))
 		}()
 	}
-	if err := routing.ValidateSessionID(publisherSessionID); err != nil {
+	prepared, err := useCase.preparePublication(publisherSessionID, packet, receivedAt, trustedPublisherKey, principal...)
+	if err != nil {
 		return ResultDTO{}, err
+	}
+	if prepared.durable {
+		change, targets, err := useCase.prepareDurableDelivery(publisherSessionID, trustedPublisherKey, packet, prepared.expiresAt, prepared.now, prepared.matches, release)
+		if err != nil {
+			return ResultDTO{}, err
+		}
+		var deliveryResult membership.DeliveryResultDTO
+		if needsDeliveryCommand(release, targets) {
+			committed, commitErr := useCase.durableDeliveryCommitter.CommitDelivery(context.Background(), change)
+			deliveryResult, err = durableDeliveryResult(committed, commitErr)
+			if err != nil {
+				return ResultDTO{}, err
+			}
+		} else {
+			barrier, err := useCase.durableDeliveryCommitter.BeginQuorumBarrier(context.Background())
+			if err != nil {
+				return ResultDTO{}, err
+			}
+			if err := barrier.Wait(); err != nil {
+				return ResultDTO{}, err
+			}
+		}
+		return useCase.completePublication(prepared, &deliveryResult, targets, release != nil)
+	}
+	if prepared.expired {
+		return ResultDTO{}, nil
+	}
+	return useCase.completePublication(prepared, nil, nil, false)
+}
+
+type preparedPublication struct {
+	packet           mqtt.Publish
+	now, expiresAt   time.Time
+	expired, durable bool
+	matches          []routing.Match
+}
+
+func (useCase *UseCase) preparePublication(
+	publisherSessionID routing.SessionID,
+	packet mqtt.Publish,
+	receivedAt time.Time,
+	trustedPublisherKey *tenancy.SessionKey,
+	principal ...security.Principal,
+) (preparedPublication, error) {
+	if err := routing.ValidateSessionID(publisherSessionID); err != nil {
+		return preparedPublication{}, err
 	}
 	if err := routing.ValidateTopicName(packet.Topic); err != nil {
-		return ResultDTO{}, err
+		return preparedPublication{}, err
 	}
 	if packet.QoS > mqtt.QoSExactlyOnce {
-		return ResultDTO{}, routing.ErrInvalidQoS
+		return preparedPublication{}, routing.ErrInvalidQoS
 	}
 	if len(principal) > 0 && principal[0].Subject() != "" {
 		topic, err := tenancy.NewTopic(principal[0].TenantID(), packet.Topic)
 		if err != nil {
-			return ResultDTO{}, security.ErrNotAuthorized
+			return preparedPublication{}, security.ErrNotAuthorized
 		}
 		if err := useCase.policy.AuthorizeTopic(principal[0], security.ActionPublish, topic); err != nil {
-			return ResultDTO{}, security.ErrNotAuthorized
+			return preparedPublication{}, security.ErrNotAuthorized
 		}
 	}
 	var expiresAt time.Time
@@ -376,11 +434,8 @@ func (useCase *UseCase) publish(
 			err = useCase.retained.Replace(message, now)
 		}
 		if err != nil {
-			return ResultDTO{}, err
+			return preparedPublication{}, err
 		}
-	}
-	if expired && !durable {
-		return ResultDTO{}, nil
 	}
 
 	var matches []routing.Match
@@ -392,9 +447,24 @@ func (useCase *UseCase) publish(
 			matches, err = useCase.routes.Match(publisherSessionID, packet.Topic, packet.QoS, packet.Retain)
 		}
 		if err != nil {
-			return ResultDTO{}, err
+			return preparedPublication{}, err
 		}
 	}
+	return preparedPublication{
+		packet: packet, now: now, expiresAt: expiresAt,
+		expired: expired, durable: durable, matches: matches,
+	}, nil
+}
+
+func (useCase *UseCase) completePublication(
+	prepared preparedPublication,
+	deliveryResult *membership.DeliveryResultDTO,
+	targets []durableTarget,
+	release bool,
+) (ResultDTO, error) {
+	packet := prepared.packet
+	now, expiresAt, matches := prepared.now, prepared.expiresAt, prepared.matches
+	durable, expired := prepared.durable, prepared.expired
 	result := ResultDTO{
 		Delivered:   make([]routing.SessionID, 0, len(matches)),
 		Saturated:   make([]routing.SessionID, 0),
@@ -405,10 +475,6 @@ func (useCase *UseCase) publish(
 		durableOutcomes = make(map[routing.SessionID]durableOutcome, len(matches))
 	}
 	if durable {
-		deliveryResult, targets, err := useCase.commitDurableDelivery(publisherSessionID, trustedPublisherKey, packet, expiresAt, now, matches, release)
-		if err != nil {
-			return result, err
-		}
 		targetSessionByClient := make(map[string]routing.SessionID, len(targets))
 		for _, target := range targets {
 			durableOutcomes[target.sessionID] = durableOutcomeSkipped
@@ -424,7 +490,7 @@ func (useCase *UseCase) publish(
 				durableOutcomes[sessionID] = durableOutcomeSaturated
 			}
 		}
-		if release != nil && !deliveryResult.Found {
+		if release && !deliveryResult.Found {
 			return result, nil
 		}
 	}
@@ -494,27 +560,27 @@ func (useCase *UseCase) publish(
 	return result, nil
 }
 
-func (useCase *UseCase) commitDurableDelivery(
+func (useCase *UseCase) prepareDurableDelivery(
 	publisherSessionID routing.SessionID,
 	trustedPublisherKey *tenancy.SessionKey,
 	packet mqtt.Publish,
 	expiresAt, proposedAt time.Time,
 	matches []routing.Match,
 	release *durableRelease,
-) (membership.DeliveryResultDTO, []durableTarget, error) {
+) (membership.DeliveryChangeDTO, []durableTarget, error) {
 	publisherKey, err := useCase.durablePublisherKey(publisherSessionID, trustedPublisherKey)
 	if err != nil {
-		return membership.DeliveryResultDTO{}, nil, err
+		return membership.DeliveryChangeDTO{}, nil, err
 	}
 	proposedMillis := proposedAt.UnixMilli()
 	if proposedMillis <= 0 {
-		return membership.DeliveryResultDTO{}, nil, errInvalidDurableTimestamp
+		return membership.DeliveryChangeDTO{}, nil, errInvalidDurableTimestamp
 	}
 	expiresMillis := uint64(0)
 	if !expiresAt.IsZero() {
 		millis := expiresAt.UnixMilli()
 		if millis <= 0 {
-			return membership.DeliveryResultDTO{}, nil, errInvalidDurableTimestamp
+			return membership.DeliveryChangeDTO{}, nil, errInvalidDurableTimestamp
 		}
 		expiresMillis = uint64(millis)
 	}
@@ -528,7 +594,7 @@ func (useCase *UseCase) commitDurableDelivery(
 		}
 		key, err := tenancy.ParseSessionKeyRoutingID(string(candidate.SessionID))
 		if err != nil || key.TenantID() != publisherKey.TenantID() {
-			return membership.DeliveryResultDTO{}, nil, errInvalidDurableSession
+			return membership.DeliveryChangeDTO{}, nil, errInvalidDurableSession
 		}
 		clientID := key.ClientID()
 		if index, exists := targetsByClient[clientID]; exists {
@@ -570,21 +636,7 @@ func (useCase *UseCase) commitDurableDelivery(
 			Targets:              deliveryTargets,
 		}
 	}
-	committed, err := useCase.durableDeliveryCommitter.CommitDelivery(context.Background(), change)
-	if err != nil {
-		if errors.Is(err, deliveryqueue.ErrFull) {
-			return membership.DeliveryResultDTO{}, nil, ErrDurableDeliveryCapacity
-		}
-		return membership.DeliveryResultDTO{}, nil, err
-	}
-
-	if committed.Outcome != membership.ApplyOutcomeApplied || committed.Delivery == nil {
-		if committed.Conflict == membership.ConflictDeliveryCapacity {
-			return membership.DeliveryResultDTO{}, nil, ErrDurableDeliveryCapacity
-		}
-		return membership.DeliveryResultDTO{}, nil, fmt.Errorf("%w: outcome=%d conflict=%s", ErrDurableDeliveryRejected, committed.Outcome, committed.Conflict)
-	}
-	return *committed.Delivery, targets, nil
+	return change, targets, nil
 }
 func (useCase *UseCase) durablePublisherKey(publisherSessionID routing.SessionID, trustedPublisherKey *tenancy.SessionKey) (tenancy.SessionKey, error) {
 	if trustedPublisherKey != nil {

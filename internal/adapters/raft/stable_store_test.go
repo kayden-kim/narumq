@@ -92,7 +92,7 @@ func TestStableStoreRejectsLengthAllocationAndIdentityMismatch(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := node.ProcessReady(); err != nil {
+	if _, err := processReadyForTest(t, node); err != nil {
 		t.Fatal(err)
 	}
 	if err := node.Close(); err != nil {
@@ -108,7 +108,7 @@ func TestStableStoreRejectsCorruptLatestSnapshot(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := node.ProcessReady(); err != nil {
+	if _, err := processReadyForTest(t, node); err != nil {
 		t.Fatal(err)
 	}
 	if err := node.Close(); err != nil {
@@ -149,7 +149,7 @@ func TestStableStoreBootstrapIncompleteAndSnapshotTmpIgnored(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := node.ProcessReady(); err != nil {
+	if _, err := processReadyForTest(t, node); err != nil {
 		t.Fatal(err)
 	}
 	snapshotIndex := node.Status().AppliedIndex
@@ -164,7 +164,7 @@ func TestStableStoreBootstrapIncompleteAndSnapshotTmpIgnored(t *testing.T) {
 		Entries:   []*pb.Entry{{Index: new(uint64(4)), Term: new(uint64(1)), Type: pb.EntryNormal.Enum(), Data: []byte("alpha")}},
 		HardState: &pb.HardState{Term: new(uint64(1)), Commit: new(uint64(4))},
 	}
-	if err := node.store.appendReady(ready); err != nil {
+	if err := appendReadyForTest(node.store, ready); err != nil {
 		t.Fatal(err)
 	}
 	node.appliedIndex = 4
@@ -192,46 +192,19 @@ func TestStableStoreBootstrapIncompleteAndSnapshotTmpIgnored(t *testing.T) {
 	}
 }
 
-func TestNodeReadyOrderingAndPersistenceFailure(t *testing.T) {
-	directory := filepath.Join(t.TempDir(), "ordering")
-	node, err := Open(Config{NodeID: 1, PeerIDs: []NodeID{1, 2, 3}, Directory: directory})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := node.ProcessReady(); err != nil {
-		t.Fatal(err)
-	}
-	var events []string
-	node.onReadyEvent = func(event string) { events = append(events, event) }
-	if err := node.raw.Campaign(); err != nil {
-		t.Fatal(err)
-	}
-	batch, err := node.ProcessReady()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(batch.Messages) == 0 {
-		t.Fatal("campaign did not produce outbound messages")
-	}
-	if !equalStringValues(events, []string{"persisted", "outbound", "applied", "advanced"}) {
-		t.Fatalf("Ready events = %v", events)
-	}
-	if err := node.Close(); err != nil {
-		t.Fatal(err)
-	}
-
-	failureNode, err := Open(Config{NodeID: 1, PeerIDs: []NodeID{1, 2, 3}, Directory: filepath.Join(t.TempDir(), "failure")})
+func TestNodeBootstrapSyncFailureIsTerminal(t *testing.T) {
+	failureNode, err := Open(Config{NodeID: 1, PeerIDs: []NodeID{1, 2, 3}, Directory: t.TempDir()})
 	if err != nil {
 		t.Fatal(err)
 	}
 	oldOps := filePersistenceOps
 	filePersistenceOps.sync = func(*os.File) error { return errors.New("injected sync failure") }
-	failedBatch, failedErr := failureNode.ProcessReady()
+	failedBatch, failedErr := processReadyForTest(t, failureNode)
 	filePersistenceOps = oldOps
 	if !errors.Is(failedErr, ErrFailed) || len(failedBatch.Messages) != 0 {
 		t.Fatalf("persistence failure batch=%#v error=%v", failedBatch, failedErr)
 	}
-	if _, err := failureNode.ProcessReady(); !errors.Is(err, ErrFailed) {
+	if _, err := processReadyForTest(t, failureNode); !errors.Is(err, ErrFailed) {
 		t.Fatalf("reprocessing failed node error = %v, want ErrFailed", err)
 	}
 	if err := failureNode.Close(); err != nil {
@@ -270,7 +243,7 @@ func TestNodeWALWriteFailureStopsOutbound(t *testing.T) {
 		for range 512 {
 			progress := false
 			for _, nodeID := range []NodeID{1, 2, 3} {
-				batch, err := nodes[nodeID].ProcessReady()
+				batch, err := processReadyForTest(t, nodes[nodeID])
 				if err != nil {
 					t.Fatalf("node %d ProcessReady() = %v", nodeID, err)
 				}
@@ -283,7 +256,7 @@ func TestNodeWALWriteFailureStopsOutbound(t *testing.T) {
 				pending := queue
 				queue = nil
 				for _, message := range pending {
-					if err := nodes[message.To].Step(message); err != nil {
+					if _, err := nodes[message.To].Step(message); err != nil {
 						t.Fatalf("deliver %d -> %d: %v", message.From, message.To, err)
 					}
 					progress = true
@@ -310,8 +283,6 @@ func TestNodeWALWriteFailureStopsOutbound(t *testing.T) {
 	pump()
 
 	commandsBefore := commandStrings(nodes[1].AppliedCommands())
-	var events []string
-	nodes[1].onReadyEvent = func(event string) { events = append(events, event) }
 	if err := nodes[1].Propose([]byte("write-failure")); err != nil {
 		t.Fatal(err)
 	}
@@ -326,7 +297,7 @@ func TestNodeWALWriteFailureStopsOutbound(t *testing.T) {
 		}
 		return oldWrite(writer, data)
 	}
-	batch, processErr := nodes[1].ProcessReady()
+	batch, processErr := processReadyForTest(t, nodes[1])
 	filePersistenceOps.write = oldWrite
 
 	if !errors.Is(processErr, ErrFailed) || !errors.Is(processErr, ErrStorage) || !IsStorageFull(processErr) || !errors.Is(processErr, syscall.ENOSPC) {
@@ -334,9 +305,6 @@ func TestNodeWALWriteFailureStopsOutbound(t *testing.T) {
 	}
 	if len(batch.Messages) != 0 || len(batch.Commands) != 0 {
 		t.Fatalf("failed Ready batch = %#v, want empty", batch)
-	}
-	if len(events) != 0 {
-		t.Fatalf("Ready events after WAL failure = %v, want none", events)
 	}
 	if got := commandStrings(nodes[1].AppliedCommands()); !equalStringValues(got, commandsBefore) {
 		t.Fatalf("applied commands after WAL failure = %v, want %v", got, commandsBefore)
@@ -347,7 +315,7 @@ func TestNodeWALWriteFailureStopsOutbound(t *testing.T) {
 	if err := nodes[1].Propose([]byte("after-wal-failure")); !errors.Is(err, ErrFailed) {
 		t.Fatalf("Propose() after WAL failure = %v, want ErrFailed", err)
 	}
-	if _, err := nodes[1].ProcessReady(); !errors.Is(err, ErrFailed) {
+	if _, err := processReadyForTest(t, nodes[1]); !errors.Is(err, ErrFailed) {
 		t.Fatalf("ProcessReady() after WAL failure = %v, want ErrFailed", err)
 	}
 	for nodeID, node := range nodes {

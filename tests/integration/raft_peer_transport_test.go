@@ -137,7 +137,7 @@ func TestRaftPeerTransportRejectsUnauthenticatedAndMalformedPeers(t *testing.T) 
 		}
 	})
 	for {
-		batch, err := node.ProcessReady()
+		batch, err := processReadyForTest(t, node)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -208,7 +208,7 @@ func TestRaftPeerTransportRejectsUnauthenticatedAndMalformedPeers(t *testing.T) 
 	}
 	writeTestPeerFrame(t, conn, mismatched)
 	message := receivePeerMessage(t, transport.Receive())
-	if err := node.Step(raftadapter.MessageDTO{From: raftadapter.NodeID(message.From), To: raftadapter.NodeID(message.To), Data: message.Data}); err == nil {
+	if _, err := node.Step(raftadapter.MessageDTO{From: raftadapter.NodeID(message.From), To: raftadapter.NodeID(message.To), Data: message.Data}); err == nil {
 		t.Fatal("Node.Step accepted a protobuf From value different from authenticated peer identity")
 	}
 	if err := transport.ResetPeer(message.From); err != nil {
@@ -222,7 +222,7 @@ func TestRaftPeerTransportRejectsUnauthenticatedAndMalformedPeers(t *testing.T) 
 	writeTestPeerHello(t, conn, "test-cluster", 1, 0, 2)
 	writeTestPeerFrame(t, conn, []byte{0xff})
 	message = receivePeerMessage(t, transport.Receive())
-	if err := node.Step(raftadapter.MessageDTO{From: raftadapter.NodeID(message.From), To: raftadapter.NodeID(message.To), Data: message.Data}); err == nil {
+	if _, err := node.Step(raftadapter.MessageDTO{From: raftadapter.NodeID(message.From), To: raftadapter.NodeID(message.To), Data: message.Data}); err == nil {
 		t.Fatal("Node.Step accepted malformed Raft protobuf bytes")
 	}
 	if err := transport.ResetPeer(message.From); err != nil {
@@ -349,6 +349,9 @@ func runIntegrationRaftPeerLoop(ctx context.Context, node *raftadapter.Node, tra
 			if err != nil {
 				return err
 			}
+			if err := node.CompleteApply(batch.ApplySequence); err != nil {
+				return err
+			}
 			for _, message := range batch.Messages {
 				err := transport.Send(tcpadapter.PeerMessageDTO{
 					From: uint64(message.From),
@@ -362,7 +365,7 @@ func runIntegrationRaftPeerLoop(ctx context.Context, node *raftadapter.Node, tra
 					return err
 				}
 			}
-			if len(batch.Messages) == 0 && len(batch.Commands) == 0 {
+			if !batch.Progress {
 				return nil
 			}
 		}
@@ -380,6 +383,10 @@ func runIntegrationRaftPeerLoop(ctx context.Context, node *raftadapter.Node, tra
 				return fmt.Errorf("peer transport stopped unexpectedly")
 			}
 			return err
+		case <-node.StorageReady():
+			if err := processReady(); err != nil {
+				return err
+			}
 		case message, ok := <-transport.Receive():
 			if !ok {
 				if ctx.Err() != nil {
@@ -387,11 +394,11 @@ func runIntegrationRaftPeerLoop(ctx context.Context, node *raftadapter.Node, tra
 				}
 				return fmt.Errorf("peer transport receive closed")
 			}
-			if err := node.Step(raftadapter.MessageDTO{
+			if _, err := node.Step(raftadapter.MessageDTO{
 				From: raftadapter.NodeID(message.From),
 				To:   raftadapter.NodeID(message.To),
 				Data: message.Data,
-			}); err != nil && !errors.Is(err, raftadapter.ErrInvalidMessage) {
+			}); err != nil && !errors.Is(err, raftadapter.ErrInvalidMessage) && !errors.Is(err, raftadapter.ErrBackpressure) {
 				return err
 			}
 			if err := processReady(); err != nil {

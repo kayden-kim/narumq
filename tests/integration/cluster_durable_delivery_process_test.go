@@ -145,6 +145,8 @@ func TestDynamicClusterDurableQoSAckThenKillProcessAcceptance(t *testing.T) {
 	noQuorum1 := clusterDurableProcessConnect(t, fixture.mqttAddresses[2], fixture.accessToken, "durable-no-quorum-1", true)
 	defer noQuorum1.Close()
 	noQuorum2 := clusterDurableProcessConnect(t, fixture.mqttAddresses[2], fixture.accessToken, "durable-no-quorum-2", true)
+	noQuorum3 := clusterDurableProcessConnect(t, fixture.mqttAddresses[2], fixture.accessToken, "durable-no-quorum-3", true)
+	defer noQuorum3.Close()
 	defer noQuorum2.Close()
 	// Later CONNECTs advance committed ownership on all three nodes. Ensure
 	// each local projection has caught up before testing durable routing.
@@ -153,6 +155,8 @@ func TestDynamicClusterDurableQoSAckThenKillProcessAcceptance(t *testing.T) {
 	}
 	clusterDurableProcessPublish(t, publisher, "durable-ack/committed", 1, 21, "committed")
 	clusterDurableProcessAck(t, publisher, 4, 21)
+	clusterDurableProcessPublish(t, publisher, "durable-untargeted/with-quorum", 1, 22, "untargeted")
+	clusterDurableProcessAck(t, publisher, 4, 22)
 	if err := nodes[0].crash(5 * time.Second); err != nil {
 		t.Fatalf("crash publisher node after PUBACK: %v", err)
 	}
@@ -185,6 +189,8 @@ func TestDynamicClusterDurableQoSAckThenKillProcessAcceptance(t *testing.T) {
 	clusterDurableProcessAssertNoSuccess(t, noQuorum1, 4, 31)
 	clusterDurableProcessPublish(t, noQuorum2, "durable-ack/no-quorum-2", 2, 32, "no-quorum")
 	clusterDurableProcessAssertNoSuccess(t, noQuorum2, 5, 32)
+	clusterDurableProcessPublish(t, noQuorum3, "durable-untargeted/no-quorum", 1, 33, "untargeted")
+	clusterDurableProcessAssertNoSuccess(t, noQuorum3, 4, 33)
 	for _, index := range []int{0, 1} {
 		restarted, err := fixture.harness.start(fmt.Sprintf("durable ack voter %d restart", index+1), fixture.bootstrapConfig(uint64(index+1)), fixture.managementAddresses[index])
 		if err != nil {
@@ -195,6 +201,7 @@ func TestDynamicClusterDurableQoSAckThenKillProcessAcceptance(t *testing.T) {
 	clusterMembershipProcessWaitForBootstrap(t, fixture.ctx, nodes)
 	_ = noQuorum1.Close()
 	_ = noQuorum2.Close()
+	_ = noQuorum3.Close()
 }
 
 // Traceability: CLU-07; docs/specs/cluster-session-and-delivery.md §4.2, §11.11.

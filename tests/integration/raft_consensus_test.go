@@ -90,7 +90,7 @@ func (c *deterministicCluster) pump() {
 			if !c.active[nodeID] {
 				continue
 			}
-			batch, err := c.nodes[nodeID].ProcessReady()
+			batch, err := processReadyForTest(c.t, c.nodes[nodeID])
 			if err != nil {
 				c.t.Fatalf("node %d ProcessReady(): %v", nodeID, err)
 			}
@@ -116,7 +116,7 @@ func (c *deterministicCluster) pump() {
 					progress = true
 					continue
 				}
-				if err := c.nodes[route.to].Step(message); err != nil {
+				if _, err := c.nodes[route.to].Step(message); err != nil {
 					c.t.Fatalf("deliver %d -> %d: %v", route.from, route.to, err)
 				}
 				if len(message.Data) != 0 {
@@ -210,7 +210,7 @@ func TestRaftConsensusSpike(t *testing.T) {
 			t.Fatal(err)
 		}
 		command[0] = 'X'
-		batch, err := cluster.nodes[1].ProcessReady()
+		batch, err := processReadyForTest(t, cluster.nodes[1])
 		if err != nil {
 			t.Fatal(err)
 		}

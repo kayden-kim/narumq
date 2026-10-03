@@ -13,8 +13,8 @@ import (
 
 const raftPeerTickInterval = 100 * time.Millisecond
 
-// runRaftPeerDriver serializes logical ticks and authenticated transport messages
-// through one Raft Node. ProcessReady persists before outbound queue admission.
+// runRaftPeerDriver serializes logical ticks, authenticated messages and storage
+// completions while WAL I/O runs independently.
 func runRaftPeerDriver(ctx context.Context, node *raftadapter.Node, transport *tcpadapter.TCPPeerTransport, logger *slog.Logger) error {
 	if ctx == nil || node == nil || transport == nil {
 		return fmt.Errorf("raft peer driver requires context, node, and transport")
@@ -58,6 +58,11 @@ func runRaftPeerDriver(ctx context.Context, node *raftadapter.Node, transport *t
 				return fmt.Errorf("raft peer transport stopped unexpectedly")
 			}
 			return fmt.Errorf("serve raft peer transport: %w", err)
+		case <-node.StorageReady():
+			if err := processRaftReady(ctx, node, transport, logger); err != nil {
+				return err
+			}
+			observeStatus()
 		case message, ok := <-transport.Receive():
 			if !ok {
 				if ctx.Err() != nil {
@@ -65,11 +70,15 @@ func runRaftPeerDriver(ctx context.Context, node *raftadapter.Node, transport *t
 				}
 				return fmt.Errorf("raft peer transport receive channel closed unexpectedly")
 			}
-			if err := node.Step(raftadapter.MessageDTO{
+			if _, err := node.Step(raftadapter.MessageDTO{
 				From: raftadapter.NodeID(message.From),
 				To:   raftadapter.NodeID(message.To),
 				Data: message.Data,
 			}); err != nil {
+				if errors.Is(err, raftadapter.ErrBackpressure) {
+					// Replication retries; forwarded proposals can time out unacked.
+					continue
+				}
 				if errors.Is(err, raftadapter.ErrInvalidMessage) {
 					logger.Warn("discarding invalid raft peer message", "peer_id", message.From)
 					if err := transport.ResetPeer(message.From); err != nil && ctx.Err() == nil {
@@ -100,12 +109,22 @@ func runRaftPeerDriver(ctx context.Context, node *raftadapter.Node, transport *t
 }
 
 func processRaftReady(ctx context.Context, node *raftadapter.Node, transport *tcpadapter.TCPPeerTransport, logger *slog.Logger) error {
-	batch, err := node.ProcessReady()
-	if err != nil {
-		return fmt.Errorf("process raft Ready: %w", err)
+	for {
+		batch, err := node.ProcessReady()
+		if err != nil {
+			return fmt.Errorf("process raft Ready: %w", err)
+		}
+		// Peer-only consumers use Node's opaque command history, not MQTT ACKs.
+		if err := node.CompleteApply(batch.ApplySequence); err != nil {
+			return err
+		}
+		if err := processRaftMessages(ctx, node, transport, logger, batch.Messages); err != nil {
+			return err
+		}
+		if !batch.Progress {
+			return nil
+		}
 	}
-	// Commands are already applied by Node.ProcessReady. They are not MQTT ACKs or readiness.
-	return processRaftMessages(ctx, node, transport, logger, batch.Messages)
 }
 
 func processRaftMessages(ctx context.Context, node *raftadapter.Node, transport *tcpadapter.TCPPeerTransport, logger *slog.Logger, messages []raftadapter.MessageDTO) error {

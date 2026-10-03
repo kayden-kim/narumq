@@ -1209,6 +1209,32 @@ func (queue *scriptedDeliveryQueue) Peek(sessionID routing.SessionID, now time.T
 	return applicationdeliveryqueue.DeliveryDTO{}, false, nil
 }
 
+func (queue *scriptedDeliveryQueue) PeekBatch(sessionID routing.SessionID, now time.Time, destination []applicationdeliveryqueue.DeliveryDTO) (int, error) {
+	if len(destination) == 0 {
+		return 0, nil
+	}
+	head, ok, err := queue.Peek(sessionID, now)
+	if err != nil {
+		return 0, err
+	}
+	if !ok {
+		return 0, nil
+	}
+	destination[0] = head
+	return 1, nil
+}
+
+func (queue *scriptedDeliveryQueue) PromoteBatch(outbounds []applicationdeliveryqueue.OutboundDTO, now time.Time) (int, error) {
+	if len(outbounds) == 0 {
+		return 0, nil
+	}
+	err := queue.PromoteHead(outbounds[0], now)
+	if err != nil {
+		return 0, err
+	}
+	return 1, nil
+}
+
 func (queue *scriptedDeliveryQueue) CompleteHead(sessionID routing.SessionID) error {
 	return queue.completeHeadErr
 }
@@ -1221,6 +1247,20 @@ func (queue *scriptedDeliveryQueue) CompleteOutbound(sessionID routing.SessionID
 	return queue.completeOutboundErr
 }
 
+func (queue *scriptedDeliveryQueue) BeginReplaceOutbound(outbound applicationdeliveryqueue.OutboundDTO) (applicationdeliveryqueue.PendingTransition, error) {
+	if err := queue.ReplaceOutbound(outbound); err != nil {
+		return nil, err
+	}
+	return applicationdeliveryqueue.CompletedTransition{}, nil
+}
+
+func (queue *scriptedDeliveryQueue) BeginCompleteOutbound(outbound applicationdeliveryqueue.OutboundDTO) (applicationdeliveryqueue.PendingTransition, error) {
+	if err := queue.CompleteOutbound(outbound.SessionID, outbound.PacketID); err != nil {
+		return nil, err
+	}
+	return applicationdeliveryqueue.CompletedTransition{}, nil
+}
+
 type controlInterleavingDeliveryQueue struct {
 	*scriptedDeliveryQueue
 	onFirstPeek func()
@@ -1231,6 +1271,13 @@ func (q *controlInterleavingDeliveryQueue) Peek(sessionID routing.SessionID, now
 		q.onFirstPeek()
 	}
 	return q.scriptedDeliveryQueue.Peek(sessionID, now)
+}
+
+func (q *controlInterleavingDeliveryQueue) PeekBatch(sessionID routing.SessionID, now time.Time, destination []applicationdeliveryqueue.DeliveryDTO) (int, error) {
+	if q.onFirstPeek != nil {
+		q.onFirstPeek()
+	}
+	return q.scriptedDeliveryQueue.PeekBatch(sessionID, now, destination)
 }
 
 type retryablePromotionDeliveryQueue struct {
@@ -1250,6 +1297,20 @@ func (queue *retryablePromotionDeliveryQueue) PromoteHead(
 	default:
 		return queue.Queue.PromoteHead(outbound, now)
 	}
+}
+
+func (queue *retryablePromotionDeliveryQueue) PromoteBatch(
+	outbounds []applicationdeliveryqueue.OutboundDTO,
+	now time.Time,
+) (int, error) {
+	if len(outbounds) == 0 {
+		return 0, nil
+	}
+	err := queue.PromoteHead(outbounds[0], now)
+	if err != nil {
+		return 0, err
+	}
+	return 1, nil
 }
 
 // Traceability: PRD MQTT-02/TEST-03/04/05; docs/specs/mqtt-protocol-and-session.md §3.2.

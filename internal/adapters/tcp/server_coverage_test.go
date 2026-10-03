@@ -72,6 +72,27 @@ func (queue *csvQueue) ListOutbound(sessionID routing.SessionID) ([]applicationd
 	return queue.Queue.ListOutbound(sessionID)
 }
 
+func (queue *csvQueue) PeekBatch(sessionID routing.SessionID, now time.Time, destination []applicationdeliveryqueue.DeliveryDTO) (int, error) {
+	queue.mu.Lock()
+	hook := queue.peek
+	queue.mu.Unlock()
+	if hook != nil {
+		if len(destination) == 0 {
+			return 0, nil
+		}
+		item, ok, err := hook(sessionID, now)
+		if err != nil {
+			return 0, err
+		}
+		if !ok {
+			return 0, nil
+		}
+		destination[0] = item
+		return 1, nil
+	}
+	return queue.Queue.PeekBatch(sessionID, now, destination)
+}
+
 func (queue *csvQueue) Peek(sessionID routing.SessionID, now time.Time) (applicationdeliveryqueue.DeliveryDTO, bool, error) {
 	queue.mu.Lock()
 	hook := queue.peek
@@ -100,6 +121,20 @@ func (queue *csvQueue) ReplaceOutbound(outbound applicationdeliveryqueue.Outboun
 		return err
 	}
 	return queue.Queue.ReplaceOutbound(outbound)
+}
+
+func (queue *csvQueue) BeginReplaceOutbound(outbound applicationdeliveryqueue.OutboundDTO) (applicationdeliveryqueue.PendingTransition, error) {
+	if err := queue.ReplaceOutbound(outbound); err != nil {
+		return nil, err
+	}
+	return applicationdeliveryqueue.CompletedTransition{}, nil
+}
+
+func (queue *csvQueue) BeginCompleteOutbound(outbound applicationdeliveryqueue.OutboundDTO) (applicationdeliveryqueue.PendingTransition, error) {
+	if err := queue.CompleteOutbound(outbound.SessionID, outbound.PacketID); err != nil {
+		return nil, err
+	}
+	return applicationdeliveryqueue.CompletedTransition{}, nil
 }
 func (queue *csvQueue) ResetDurable(
 	sessionID routing.SessionID,

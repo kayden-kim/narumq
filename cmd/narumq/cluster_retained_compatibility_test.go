@@ -85,11 +85,10 @@ func TestClusterRetainedCommitChecksMembershipAfterFreshReadBarrier(t *testing.T
 	case <-ctx.Done():
 		t.Fatal("Commit() did not request a fresh read barrier")
 	}
-	if request.kind != clusterDriverRead || request.readResult == nil {
-		t.Fatalf("first Commit request = %+v, want read barrier", request)
-	}
 	runtime.machine = machineAfterBarrier
-	request.readResult <- clusterReadResponse{index: 1}
+	request.pending.readConfirmed = true
+	runtime.pendingCommits = append(runtime.pendingCommits, request.pending)
+	runtime.resolveCommitReads(nil, nil)
 	select {
 	case err := <-result:
 		if !errors.Is(err, errClusterProfileCompatibility) {

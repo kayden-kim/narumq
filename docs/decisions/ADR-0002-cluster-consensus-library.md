@@ -38,6 +38,19 @@ Failover 검증은 follower 전용 `RawNode.ForgetLeader` seam을 `Campaign` 앞
 
 `internal/adapters/raft`는 etcd/raft 자료형을 adapter 안에 캡슐화하고, opaque `[][]byte` command boundary, NMQSTATE1 opaque command snapshot/WAL과 deterministic node boundary를 소유한다. 이 spike adapter는 command payload를 해석하거나 application sequence를 만들지 않고 bytes를 순서대로 보존한다. ownership codec과 application committed-command sequence 해석은 `internal/application/takeover`가 소유한다. 검증 결과는 [adapter unit tests](../../internal/adapters/raft/node_test.go), [stable-store tests](../../internal/adapters/raft/stable_store_test.go), [integration spike](../../tests/integration/raft_consensus_test.go)에 기록한다. 이 evidence는 algorithm과 local recovery 가능성을 증명할 뿐 BP-03/BP-06, durable MQTT ACK, production transport 또는 production durability 완료를 뜻하지 않는다.
 
+### 1.2 Dynamic driver의 제한된 발행 제어 채택
+
+2026-10-02 사용자 지시 `개선 진행해`는 dynamic driver의 peer 용량 기반 fresh ReadIndex 발행과 공정한 Ready 진행을 채택한다. 64개 request를 먼저 발행한 뒤 32개 egress에서 거절하는 방식 대신, 현재 count·byte 여유와 heartbeat·proof response 비용에 맞춰 미발행 FIFO head를 보존한다. 실제 follower burst 시험은 수정 전 64개 중 32개만 완료했고, 첫 local admission 구현의 process 시험도 `MsgReadIndexResp` 포화에서 네 summary의 quorum proof에 실패했다. 따라서 요청 방향만 계산하는 대안은 채택하지 않고 응답 비용과 transport writer의 실행 기회를 함께 반영한다.
+
+후속 고정 BP-03에서는 여러 origin이 같은 leader queue를 쓰며 `MsgReadIndexResp`가 거절됐다. 따라서 local origin당 15개 예산을 독립적으로 사용하는 대신 voter·learner 수로 비용을 나눈다(빈 3-voter cluster의 node별 5개). 분모는 1–15 범위이며 최소 한 요청의 진행을 허용한다. 이 보수적인 분할은 단일 origin의 burst 여유를 줄이는 대신 동시 fan-out 압력을 줄인다. 전역 credit 예약·incoming frame 무손실·BP-03 수용 보장은 아니며 실제 실행으로 판정한다.
+
+이는 RawNode의 synchronous Ready·WAL sync·Advance와 command별 fresh proof를 유지하는 내부 scheduling 선택이다. Queue 확대, timeout 연장, proof 공유·cache, outbound 자동 retry 또는 readiness 완화는 포함하지 않는다. `AsyncStorageWrites`는 storage 메시지와 영속화 후 응답 경로가 구현되지 않았으므로 별도 adapter 재설계·crash-ordering 검증 없이 켜지 않는다. 실제 시험과 BP-03의 유효 여부는 [성능 검증 §3.4](../specs/performance-and-verification.md#34-bp-03-durable-delivery-smoke-관찰-경계)를 기준으로 하며 이 scoped 채택은 ADR-0002 전체를 Accepted로 바꾸지 않는다.
+
+### 1.3 비동기 저장 경로 채택
+
+사용자 지시 `제안한 방식대로 개선해보자`로 [ADR-0020](ADR-0020-asynchronous-raft-wal-group-commit.md)의 공식 `AsyncStorageWrites` adapter와 bounded WAL group commit을 채택한다. §1.1·§1.2의 synchronous scheduling 설명은 이전 구현의 기록이며 현재 실행 경계는 새 ADR을 따른다. Version pin·fresh proof·quorum 영속화 뒤 ACK는 유지한다. ADR-0002 전체와 BP-03 수용 상태는 이 설계 채택만으로 바꾸지 않는다.
+
+
 ## 2. 배경
 
 NaruMQ는 단일 node 장애에서 durable ACK message RPO 0, minority의 새 ownership 금지와 자동 복구를 요구한다. Consensus algorithm을 직접 구현하면 제품 고유의 MQTT·session 문제보다 algorithm 안전성 검증에 더 큰 비용이 든다.

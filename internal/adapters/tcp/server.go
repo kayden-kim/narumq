@@ -96,12 +96,23 @@ type Server struct {
 	mu                   sync.Mutex
 	active               map[*connection]struct{}
 	bySession            map[routing.SessionID]*connection
+	connectingByClientID map[string]*pendingConnectingGroup
 	stopped              bool
 	stopOnce             sync.Once
 	listenersWaitGroup   sync.WaitGroup
 	connectionsWaitGroup sync.WaitGroup
 	serveCtx             context.Context
 	recordAcceptErr      func(error)
+}
+
+type pendingOwnershipFence struct {
+	ownerNodeID uint64
+	epoch       uint64
+}
+
+type pendingConnectingGroup struct {
+	connections map[*connection]struct{}
+	ownership   map[string]pendingOwnershipFence
 }
 
 // NewServer creates a TCP ingress over application use cases and packet codec.
@@ -156,17 +167,18 @@ func NewServer(
 		logger = slog.Default()
 	}
 	return &Server{
-		listeners:     []net.Listener{listener},
-		config:        config,
-		decoder:       decoder,
-		encoder:       encoder,
-		connections:   connections,
-		subscriptions: subscriptions,
-		publications:  publications,
-		deliveries:    deliveries,
-		logger:        logger,
-		active:        make(map[*connection]struct{}),
-		bySession:     make(map[routing.SessionID]*connection),
+		listeners:            []net.Listener{listener},
+		config:               config,
+		decoder:              decoder,
+		encoder:              encoder,
+		connections:          connections,
+		subscriptions:        subscriptions,
+		publications:         publications,
+		deliveries:           deliveries,
+		logger:               logger,
+		active:               make(map[*connection]struct{}),
+		bySession:            make(map[routing.SessionID]*connection),
+		connectingByClientID: make(map[string]*pendingConnectingGroup),
 	}, nil
 }
 
@@ -284,6 +296,9 @@ func newConnection(server *Server, socket net.Conn) *connection {
 		outbound:         make(map[mqtt.PacketIdentifier]deliveryqueue.OutboundDTO),
 		packetIDs:        newPacketIDAllocator(),
 	}
+	if server.config.ClusterMode && server.publications.DurableEnabled() {
+		connection.phases = newConnectionPhases()
+	}
 	return connection
 }
 
@@ -304,9 +319,86 @@ func (server *Server) removeActive(connection *connection) {
 	server.mu.Unlock()
 }
 
+func (server *Server) trackConnecting(clientID string, conn *connection) {
+	if server == nil || conn == nil {
+		return
+	}
+	server.mu.Lock()
+	defer server.mu.Unlock()
+	server.untrackConnectingLocked(conn)
+	group := server.connectingByClientID[clientID]
+	if group == nil {
+		group = &pendingConnectingGroup{
+			connections: make(map[*connection]struct{}),
+			ownership:   make(map[string]pendingOwnershipFence),
+		}
+		server.connectingByClientID[clientID] = group
+	}
+	group.connections[conn] = struct{}{}
+	conn.connectingClientID = clientID
+	conn.connectingTracked = true
+}
+
+func (server *Server) untrackConnecting(connection *connection) {
+	if server == nil || connection == nil {
+		return
+	}
+	server.mu.Lock()
+	server.untrackConnectingLocked(connection)
+	server.mu.Unlock()
+}
+
+func (server *Server) untrackConnectingLocked(connection *connection) {
+	if !connection.connectingTracked {
+		return
+	}
+	clientID := connection.connectingClientID
+	if group := server.connectingByClientID[clientID]; group != nil {
+		delete(group.connections, connection)
+		if len(group.connections) == 0 {
+			delete(server.connectingByClientID, clientID)
+		}
+	}
+	connection.connectingClientID = ""
+	connection.connectingTracked = false
+}
+
+// RecordCommittedOwnership fences in-flight CONNECT activation against a newer
+// ownership command that applies before the connection binds its session.
+func (server *Server) RecordCommittedOwnership(ownership membership.OwnershipStateDTO) {
+	if server == nil {
+		return
+	}
+	server.mu.Lock()
+	defer server.mu.Unlock()
+	group := server.connectingByClientID[ownership.ClientID]
+	if group == nil {
+		return
+	}
+	if current, exists := group.ownership[ownership.TenantID]; !exists || ownership.Epoch > current.epoch {
+		group.ownership[ownership.TenantID] = pendingOwnershipFence{
+			ownerNodeID: ownership.OwnerNodeID,
+			epoch:       ownership.Epoch,
+		}
+	}
+}
+
 func (server *Server) bindSession(sessionID routing.SessionID, connection *connection) bool {
 	server.mu.Lock()
 	defer server.mu.Unlock()
+	defer server.untrackConnectingLocked(connection)
+	if connection.isStopping() {
+		return false
+	}
+	if connection.connectingTracked {
+		if group := server.connectingByClientID[connection.connectingClientID]; group != nil {
+			if fence, exists := group.ownership[connection.ownership.TenantID]; exists &&
+				(fence.ownerNodeID != connection.ownership.OwnerNodeID || fence.epoch != connection.ownership.Epoch) {
+				connection.takeover.Store(true)
+				return false
+			}
+		}
+	}
 	if existing, exists := server.bySession[sessionID]; exists && existing != connection {
 		return false
 	}
@@ -459,25 +551,29 @@ type connection struct {
 	deliveryWake chan struct{}
 	stop         chan struct{}
 	writerDone   chan struct{}
+	phases       *connectionPhases
 
-	stopOnce         sync.Once
-	cleanupOnce      sync.Once
-	sessionID        routing.SessionID
-	principal        security.Principal
-	version          mqtt.ProtocolVersion
-	keepAlive        uint16
-	accepted         bool
-	ownership        subscribe.SessionOwnership
-	disconnectReason session.DisconnectReason
-	recovered        []deliveryqueue.OutboundDTO
-	deliveryBlocked  atomic.Bool
-	takeover         atomic.Bool
+	stopOnce           sync.Once
+	cleanupOnce        sync.Once
+	sessionID          routing.SessionID
+	principal          security.Principal
+	version            mqtt.ProtocolVersion
+	keepAlive          uint16
+	accepted           bool
+	ownership          subscribe.SessionOwnership
+	disconnectReason   session.DisconnectReason
+	recovered          []deliveryqueue.OutboundDTO
+	deliveryBlocked    atomic.Bool
+	connectingClientID string
+	connectingTracked  bool
+	takeover           atomic.Bool
 
-	deliveryMu       sync.Mutex
-	inbound          map[mqtt.PacketIdentifier]inboundState
-	outbound         map[mqtt.PacketIdentifier]deliveryqueue.OutboundDTO
-	pendingPromotion pendingDeliveryPromotion
-	packetIDs        *packetIDAllocator
+	deliveryMu        sync.Mutex
+	cleaned           bool
+	inbound           map[mqtt.PacketIdentifier]inboundState
+	outbound          map[mqtt.PacketIdentifier]deliveryqueue.OutboundDTO
+	pendingPromotions [8]pendingDeliveryPromotion
+	packetIDs         *packetIDAllocator
 }
 
 func (connection *connection) metrics() portsmetrics.MetricsRecorder {
@@ -488,6 +584,9 @@ func (connection *connection) metrics() portsmetrics.MetricsRecorder {
 }
 
 func (connection *connection) run() {
+	if connection.phases != nil {
+		connection.phases.start(connection)
+	}
 	go connection.writerLoop()
 	if err := connection.readLoop(); err != nil && !connection.isStopping() {
 		var networkError net.Error
@@ -499,15 +598,21 @@ func (connection *connection) run() {
 			connection.server.logger.Warn("MQTT connection handling failed", "error", err.Error())
 		}
 	}
-	connection.cleanup()
 	connection.requestClose()
+	if connection.phases != nil {
+		connection.phases.workers.Wait()
+	}
 	<-connection.writerDone
+	connection.cleanup()
 	connection.server.removeActive(connection)
 }
 
 func (connection *connection) requestClose() {
 	connection.stopOnce.Do(func() {
 		close(connection.stop)
+		if connection.phases != nil {
+			connection.phases.notifyStop()
+		}
 		_ = connection.socket.Close()
 	})
 }
@@ -523,6 +628,11 @@ func (connection *connection) isStopping() bool {
 
 func (connection *connection) cleanup() {
 	connection.cleanupOnce.Do(func() {
+		connection.deliveryMu.Lock()
+		connection.cleaned = true
+		clear(connection.inbound)
+		clear(connection.outbound)
+		connection.deliveryMu.Unlock()
 		if connection.accepted {
 			proto := portsmetrics.ProtocolMQTT50
 			if connection.version == mqtt.ProtocolV311 {
@@ -540,14 +650,12 @@ func (connection *connection) cleanup() {
 			if connection.takeover.Load() {
 				disconnectReason = session.DisconnectNormal
 			}
-			if err := connection.server.connections.Disconnect(connection.sessionID, disconnectReason); err != nil && !errors.Is(err, connect.ErrSessionNotFound) {
+			if err := connection.server.connections.DisconnectIfOwnershipEpoch(
+				connection.sessionID, disconnectReason, connection.ownership.Epoch,
+			); err != nil && !errors.Is(err, connect.ErrSessionNotFound) {
 				connection.server.logger.Warn("MQTT session cleanup failed", "error", err.Error())
 			}
 		}
-		connection.deliveryMu.Lock()
-		clear(connection.inbound)
-		clear(connection.outbound)
-		connection.deliveryMu.Unlock()
 	})
 }
 
@@ -602,8 +710,16 @@ func (connection *connection) readLoop() error {
 				}
 				connected = true
 				version = connection.version
-			} else if err := connection.dispatch(packet); err != nil {
-				return fmt.Errorf("dispatch MQTT %s: %w", packetTypeName(packet), err)
+			} else {
+				var dispatchErr error
+				if connection.phases != nil {
+					dispatchErr = connection.dispatchPhased(packet, consumed)
+				} else {
+					dispatchErr = connection.dispatch(packet)
+				}
+				if dispatchErr != nil {
+					return fmt.Errorf("dispatch MQTT %s: %w", packetTypeName(packet), dispatchErr)
+				}
 			}
 			if connection.isStopping() {
 				return nil
@@ -674,6 +790,10 @@ func (connection *connection) activate(packet mqtt.Connect) error {
 		return nil
 	}
 	connection.deliveryBlocked.Store(true)
+	if connection.server.config.ClusterMode {
+		connection.server.trackConnecting(packet.ClientID, connection)
+		defer connection.server.untrackConnecting(connection)
+	}
 	var clientCertificate *applicationauthentication.ClientCertificateDTO
 	if extractor := connection.server.config.ClientCertificateExtractor; extractor != nil {
 		if extracted, ok := extractor(connection.socket); ok {
@@ -716,7 +836,13 @@ func (connection *connection) activate(packet mqtt.Connect) error {
 	connection.keepAlive = packet.KeepAlive
 	if !connection.server.bindSession(connection.sessionID, connection) {
 		connection.accepted = false
-		_ = connection.server.connections.Disconnect(connection.sessionID, session.DisconnectAbnormal)
+		reason := session.DisconnectAbnormal
+		if connection.takeover.Load() {
+			reason = session.DisconnectNormal
+		}
+		_ = connection.server.connections.DisconnectIfOwnershipEpoch(
+			connection.sessionID, reason, connection.ownership.Epoch,
+		)
 		return ErrProtocol
 	}
 	recovered, err := connection.server.deliveries.ListOutbound(connection.sessionID)
@@ -810,6 +936,10 @@ func (connection *connection) dispatch(packet mqtt.Packet) error {
 		if connection.server.config.ClusterMode && !connection.server.clusterReady() {
 			return ErrClusterNotReady
 		}
+		connection.deliveryBlocked.Store(true)
+		if err := connection.enqueueBarrier(); err != nil {
+			return err
+		}
 		result, err := connection.server.subscriptions.SubscribeCommitted(
 			context.Background(), connection.sessionID, *value, connection.server.config.Clock.Now(),
 			connection.ownership, connection.principal,
@@ -820,9 +950,8 @@ func (connection *connection) dispatch(packet mqtt.Packet) error {
 		if err := connection.enqueueAndWait(&result.Ack); err != nil {
 			return err
 		}
-		if result.RetainedQueued > 0 {
-			connection.wakeDelivery()
-		}
+		connection.deliveryBlocked.Store(false)
+		connection.wakeDelivery()
 		return nil
 	case *mqtt.Unsubscribe:
 		if connection.server.config.ClusterMode && !connection.server.clusterReady() {
@@ -870,6 +999,10 @@ func (connection *connection) dispatch(packet mqtt.Packet) error {
 }
 
 func (connection *connection) dispatchPublish(packet mqtt.Publish) error {
+	return connection.dispatchPublishAt(packet, connection.server.config.Clock.Now())
+}
+
+func (connection *connection) dispatchPublishAt(packet mqtt.Publish, receivedAt time.Time) error {
 	if connection.principal.Subject() != "" {
 		topic, err := tenancy.NewTopic(connection.principal.TenantID(), packet.Topic)
 		if err != nil || connection.server.config.Policy.AuthorizeTopic(connection.principal, security.ActionPublish, topic) != nil {
@@ -890,7 +1023,7 @@ func (connection *connection) dispatchPublish(packet mqtt.Publish) error {
 		return nil
 	}
 	if packet.QoS == mqtt.QoSAtMostOnce {
-		result, err := connection.server.publications.Publish(connection.sessionID, packet, connection.server.config.Clock.Now())
+		result, err := connection.server.publications.Publish(connection.sessionID, packet, receivedAt)
 		if err != nil {
 			if errors.Is(err, applicationretained.ErrFull) {
 				if connection.version == mqtt.ProtocolV5 {
@@ -898,7 +1031,6 @@ func (connection *connection) dispatchPublish(packet mqtt.Publish) error {
 						return err
 					}
 				}
-				connection.cleanup()
 				connection.requestClose()
 				return nil
 			}
@@ -917,7 +1049,6 @@ func (connection *connection) dispatchPublish(packet mqtt.Publish) error {
 		if packet.PacketID == 0 {
 			return ErrProtocol
 		}
-		receivedAt := connection.server.config.Clock.Now()
 		connection.deliveryMu.Lock()
 		existing, exists := connection.inbound[packet.PacketID]
 		if exists && existing.state.IsComplete() && !packet.DUP {
@@ -945,7 +1076,9 @@ func (connection *connection) dispatchPublish(packet mqtt.Publish) error {
 			return ErrProtocol
 		}
 
+		connection.deliveryMu.Unlock()
 		result, err := connection.server.publications.Publish(connection.sessionID, *action.Deliver, receivedAt)
+		connection.deliveryMu.Lock()
 		if err != nil {
 			connection.deliveryMu.Unlock()
 			if errors.Is(err, applicationretained.ErrFull) || errors.Is(err, publish.ErrDurableDeliveryCapacity) {
@@ -956,7 +1089,6 @@ func (connection *connection) dispatchPublish(packet mqtt.Publish) error {
 						ReasonCode: 0x97,
 					})
 				}
-				connection.cleanup()
 				connection.requestClose()
 				return nil
 			}
@@ -989,7 +1121,6 @@ func (connection *connection) dispatchPublish(packet mqtt.Publish) error {
 		if packet.PacketID == 0 {
 			return ErrProtocol
 		}
-		receivedAt := connection.server.config.Clock.Now()
 		connection.deliveryMu.Lock()
 		existing, exists := connection.inbound[packet.PacketID]
 		if exists && existing.state.IsComplete() && !packet.DUP {
@@ -1012,10 +1143,12 @@ func (connection *connection) dispatchPublish(packet mqtt.Publish) error {
 		}
 
 		if connection.server.config.ClusterMode {
+			connection.deliveryMu.Unlock()
 			err := connection.server.publications.ReceiveQoS2(
 				connection.sessionID, connection.ownership.OwnerNodeID, connection.ownership.Epoch,
 				packet, receivedAt, connection.principal,
 			)
+			connection.deliveryMu.Lock()
 			if err != nil {
 				connection.deliveryMu.Unlock()
 				if errors.Is(err, publish.ErrDurableDeliveryCapacity) {
@@ -1024,7 +1157,6 @@ func (connection *connection) dispatchPublish(packet mqtt.Publish) error {
 							Version: connection.version, PacketID: packet.PacketID, ReasonCode: 0x97,
 						})
 					}
-					connection.cleanup()
 					connection.requestClose()
 					return nil
 				}
@@ -1078,6 +1210,7 @@ func (connection *connection) dispatchPubRel(packet *mqtt.PubRel) error {
 	if action.Deliver != nil {
 		var result publish.ResultDTO
 		var err error
+		connection.deliveryMu.Unlock()
 		if connection.server.config.ClusterMode {
 			result, err = connection.server.publications.PublishQoS2Release(
 				connection.sessionID, connection.ownership.OwnerNodeID, connection.ownership.Epoch,
@@ -1088,6 +1221,7 @@ func (connection *connection) dispatchPubRel(packet *mqtt.PubRel) error {
 				connection.sessionID, *action.Deliver, entry.receivedAt, connection.principal,
 			)
 		}
+		connection.deliveryMu.Lock()
 		if err != nil {
 			connection.deliveryMu.Unlock()
 			if errors.Is(err, applicationretained.ErrFull) {
@@ -1096,7 +1230,6 @@ func (connection *connection) dispatchPubRel(packet *mqtt.PubRel) error {
 						return err
 					}
 				}
-				connection.cleanup()
 				connection.requestClose()
 				return nil
 			}
@@ -1148,7 +1281,10 @@ func (connection *connection) dispatchPubAck(packet *mqtt.PubAck) error {
 		return ErrProtocol
 	}
 	if action.Complete {
-		if err := connection.server.deliveries.CompleteOutbound(connection.sessionID, packet.PacketID); err != nil {
+		connection.deliveryMu.Unlock()
+		err := connection.server.deliveries.CompleteOutbound(connection.sessionID, packet.PacketID)
+		connection.deliveryMu.Lock()
+		if err != nil {
 			connection.deliveryMu.Unlock()
 			return err
 		}
@@ -1159,7 +1295,10 @@ func (connection *connection) dispatchPubAck(packet *mqtt.PubAck) error {
 		return nil
 	}
 	outbound.State = nextState
-	if err := connection.server.deliveries.ReplaceOutbound(outbound); err != nil {
+	connection.deliveryMu.Unlock()
+	err = connection.server.deliveries.ReplaceOutbound(outbound)
+	connection.deliveryMu.Lock()
+	if err != nil {
 		connection.deliveryMu.Unlock()
 		return err
 	}
@@ -1184,7 +1323,10 @@ func (connection *connection) dispatchPubRec(packet *mqtt.PubRec) error {
 		return ErrProtocol
 	}
 	if action.Complete {
-		if err := connection.server.deliveries.CompleteOutbound(connection.sessionID, packet.PacketID); err != nil {
+		connection.deliveryMu.Unlock()
+		err := connection.server.deliveries.CompleteOutbound(connection.sessionID, packet.PacketID)
+		connection.deliveryMu.Lock()
+		if err != nil {
 			connection.deliveryMu.Unlock()
 			return err
 		}
@@ -1195,7 +1337,10 @@ func (connection *connection) dispatchPubRec(packet *mqtt.PubRec) error {
 		return nil
 	}
 	outbound.State = nextState
-	if err := connection.server.deliveries.ReplaceOutbound(outbound); err != nil {
+	connection.deliveryMu.Unlock()
+	err = connection.server.deliveries.ReplaceOutbound(outbound)
+	connection.deliveryMu.Lock()
+	if err != nil {
 		connection.deliveryMu.Unlock()
 		return err
 	}
@@ -1228,7 +1373,10 @@ func (connection *connection) dispatchPubComp(packet *mqtt.PubComp) error {
 		return ErrProtocol
 	}
 	if action.Complete {
-		if err := connection.server.deliveries.CompleteOutbound(connection.sessionID, packet.PacketID); err != nil {
+		connection.deliveryMu.Unlock()
+		err := connection.server.deliveries.CompleteOutbound(connection.sessionID, packet.PacketID)
+		connection.deliveryMu.Lock()
+		if err != nil {
 			connection.deliveryMu.Unlock()
 			return err
 		}
@@ -1239,7 +1387,10 @@ func (connection *connection) dispatchPubComp(packet *mqtt.PubComp) error {
 		return nil
 	}
 	outbound.State = nextState
-	if err := connection.server.deliveries.ReplaceOutbound(outbound); err != nil {
+	connection.deliveryMu.Unlock()
+	err = connection.server.deliveries.ReplaceOutbound(outbound)
+	connection.deliveryMu.Lock()
+	if err != nil {
 		connection.deliveryMu.Unlock()
 		return err
 	}
@@ -1414,6 +1565,9 @@ func (connection *connection) writerLoop() {
 		}
 		deliveryRetry = nil
 		if err != nil {
+			if !connection.isStopping() {
+				connection.server.logger.Warn("MQTT writer failed", "stage", "delivery", "error", err.Error())
+			}
 			connection.requestClose()
 			return false
 		}
@@ -1422,6 +1576,9 @@ func (connection *connection) writerLoop() {
 	for {
 		if message, ok := connection.nextControl(); ok {
 			if err := connection.writeMessage(message); err != nil {
+				if !connection.isStopping() {
+					connection.server.logger.Warn("MQTT writer failed", "stage", "control", "error", err.Error())
+				}
 				connection.requestClose()
 				return
 			}
@@ -1436,6 +1593,9 @@ func (connection *connection) writerLoop() {
 			return
 		case message := <-connection.controlQueue:
 			if err := connection.writeMessage(message); err != nil {
+				if !connection.isStopping() {
+					connection.server.logger.Warn("MQTT writer failed", "stage", "control", "error", err.Error())
+				}
 				connection.requestClose()
 				return
 			}
@@ -1456,10 +1616,12 @@ func (connection *connection) writerLoop() {
 
 func (connection *connection) discardPendingPromotion() {
 	connection.deliveryMu.Lock()
-	if packetID := connection.pendingPromotion.packetID; packetID != 0 {
-		connection.packetIDs.release(packetID)
-		connection.pendingPromotion = pendingDeliveryPromotion{}
+	for _, promotion := range connection.pendingPromotions {
+		if promotion.packetID != 0 {
+			connection.packetIDs.release(promotion.packetID)
+		}
 	}
+	clear(connection.pendingPromotions[:])
 	connection.deliveryMu.Unlock()
 }
 
@@ -1517,7 +1679,8 @@ func (connection *connection) writeDeliveries() error {
 			}
 		}
 		now := connection.server.config.Clock.Now()
-		item, ok, err := connection.server.deliveries.Peek(connection.sessionID, now)
+		var batch [8]deliveryqueue.DeliveryDTO
+		count, err := connection.server.deliveries.PeekBatch(connection.sessionID, now, batch[:])
 		if err != nil {
 			connection.discardPendingPromotion()
 			if connection.isStopping() {
@@ -1525,10 +1688,11 @@ func (connection *connection) writeDeliveries() error {
 			}
 			return err
 		}
-		if !ok {
+		if count == 0 {
 			connection.discardPendingPromotion()
 			return nil
 		}
+		item := batch[0]
 		remainingExpiryInterval, hasExpiry := item.RemainingExpiryInterval(now)
 		if item.QoS == mqtt.QoSAtMostOnce {
 			connection.discardPendingPromotion()
@@ -1553,85 +1717,135 @@ func (connection *connection) writeDeliveries() error {
 			return ErrProtocol
 		}
 
-		connection.deliveryMu.Lock()
-		packetID := connection.pendingPromotion.packetID
-		if packetID != 0 && connection.pendingPromotion.sequence != item.DurableSequence {
-			connection.packetIDs.release(packetID)
-			connection.pendingPromotion = pendingDeliveryPromotion{}
-			packetID = 0
+		numDurable := 0
+		for i := range count {
+			if batch[i].QoS == mqtt.QoSAtMostOnce || batch[i].QoS > mqtt.QoSExactlyOnce {
+				break
+			}
+			numDurable++
 		}
-		if packetID == 0 {
-			packetID, err = connection.packetIDs.acquire()
+
+		connection.deliveryMu.Lock()
+		for index, promotion := range connection.pendingPromotions {
+			if promotion.packetID == 0 {
+				continue
+			}
+			found := false
+			for _, candidate := range batch[:numDurable] {
+				if candidate.DurableSequence == promotion.sequence {
+					found = true
+					break
+				}
+			}
+			if !found {
+				connection.packetIDs.release(promotion.packetID)
+				connection.pendingPromotions[index] = pendingDeliveryPromotion{}
+			}
+		}
+		var allocatedStorage [8]mqtt.PacketIdentifier
+		var outboundStorage [8]deliveryqueue.OutboundDTO
+		var packetStorage [8]mqtt.Packet
+		var usedReservations [8]bool
+		allocatedIDs := allocatedStorage[:0]
+		outbounds := outboundStorage[:0]
+		toSendPackets := packetStorage[:0]
+		allocFailed := false
+		for i := range numDurable {
+			d := batch[i]
+			var pid mqtt.PacketIdentifier
+			for reservationIndex, promotion := range connection.pendingPromotions {
+				if !usedReservations[reservationIndex] && promotion.packetID != 0 && promotion.sequence == d.DurableSequence {
+					pid = promotion.packetID
+					usedReservations[reservationIndex] = true
+					break
+				}
+			}
+			if pid == 0 {
+				var err error
+				pid, err = connection.packetIDs.acquire()
+				if err != nil {
+					allocFailed = true
+					break
+				}
+			}
+			allocatedIDs = append(allocatedIDs, pid)
+			remExp, hasExp := d.RemainingExpiryInterval(now)
+			pub := mqtt.Publish{
+				Version:                  connection.version,
+				Topic:                    d.Topic,
+				Payload:                  d.Payload,
+				Retain:                   d.Retain,
+				QoS:                      d.QoS,
+				PacketID:                 pid,
+				HasMessageExpiryInterval: connection.version == mqtt.ProtocolV5 && hasExp,
+				MessageExpiryInterval:    remExp,
+			}
+			st, act, err := delivery.NewOutbound(pub)
 			if err != nil {
+				for _, id := range allocatedIDs {
+					connection.packetIDs.release(id)
+				}
+				clear(connection.pendingPromotions[:])
 				connection.deliveryMu.Unlock()
+				return err
+			}
+			toSendPackets = append(toSendPackets, act.Send)
+			outbounds = append(outbounds, deliveryqueue.OutboundDTO{
+				SessionID:       connection.sessionID,
+				PacketID:        pid,
+				State:           st,
+				ExpiresAt:       d.ExpiresAt,
+				DurableSequence: d.DurableSequence,
+				DurableEpoch:    d.DurableEpoch,
+			})
+		}
+		if len(outbounds) == 0 {
+			connection.deliveryMu.Unlock()
+			if allocFailed {
 				return nil
 			}
-		}
-		publish := mqtt.Publish{
-			Version:                  connection.version,
-			Topic:                    item.Topic,
-			Payload:                  item.Payload,
-			Retain:                   item.Retain,
-			QoS:                      item.QoS,
-			PacketID:                 packetID,
-			HasMessageExpiryInterval: connection.version == mqtt.ProtocolV5 && hasExpiry,
-			MessageExpiryInterval:    remainingExpiryInterval,
-		}
-		state, action, err := delivery.NewOutbound(publish)
-		if err != nil {
-			connection.packetIDs.release(packetID)
-			connection.pendingPromotion = pendingDeliveryPromotion{}
-			connection.deliveryMu.Unlock()
-			return err
-		}
-		outbound := deliveryqueue.OutboundDTO{
-			SessionID:       connection.sessionID,
-			PacketID:        packetID,
-			State:           state,
-			ExpiresAt:       item.ExpiresAt,
-			DurableSequence: item.DurableSequence,
-			DurableEpoch:    item.DurableEpoch,
-		}
-		err = connection.server.deliveries.PromoteHead(outbound, now)
-		switch {
-		case err == nil:
-			connection.pendingPromotion = pendingDeliveryPromotion{}
-			connection.outbound[packetID] = outbound
-		case errors.Is(err, deliveryqueue.ErrRetryableUnavailable):
-			connection.pendingPromotion = pendingDeliveryPromotion{
-				sequence: item.DurableSequence,
-				packetID: packetID,
-			}
-			connection.deliveryMu.Unlock()
-			return err
-		case errors.Is(err, deliveryqueue.ErrExpired):
-			connection.packetIDs.release(packetID)
-			connection.pendingPromotion = pendingDeliveryPromotion{}
-			connection.deliveryMu.Unlock()
-			continue
-		case errors.Is(err, deliveryqueue.ErrUnavailable):
-			connection.packetIDs.release(packetID)
-			connection.pendingPromotion = pendingDeliveryPromotion{}
-			connection.deliveryMu.Unlock()
-			return err
-		case errors.Is(err, deliveryqueue.ErrFull):
-			connection.packetIDs.release(packetID)
-			connection.pendingPromotion = pendingDeliveryPromotion{}
-			connection.deliveryMu.Unlock()
-			return nil
-		case errors.Is(err, deliveryqueue.ErrPacketIDConflict):
-			connection.packetIDs.release(packetID)
-			connection.pendingPromotion = pendingDeliveryPromotion{}
-			connection.deliveryMu.Unlock()
 			return ErrProtocol
-		default:
-			connection.packetIDs.release(packetID)
-			connection.pendingPromotion = pendingDeliveryPromotion{}
-			connection.deliveryMu.Unlock()
-			return err
 		}
 		connection.deliveryMu.Unlock()
-		if err := connection.writePacket(action.Send); err != nil {
+
+		promoted, err := connection.server.deliveries.PromoteBatch(outbounds, now)
+
+		connection.deliveryMu.Lock()
+		if connection.cleaned {
+			for _, pid := range allocatedIDs {
+				connection.packetIDs.release(pid)
+			}
+			clear(connection.pendingPromotions[:])
+			connection.deliveryMu.Unlock()
+			return ErrConnectionClosed
+		}
+		for i := range promoted {
+			connection.outbound[outbounds[i].PacketID] = outbounds[i]
+		}
+		clear(connection.pendingPromotions[:])
+		for i := promoted; i < len(outbounds); i++ {
+			connection.pendingPromotions[i-promoted] = pendingDeliveryPromotion{
+				sequence: outbounds[i].DurableSequence,
+				packetID: outbounds[i].PacketID,
+			}
+		}
+		connection.deliveryMu.Unlock()
+
+		for i := range promoted {
+			if err := connection.writePacket(toSendPackets[i]); err != nil {
+				return err
+			}
+		}
+		if err != nil {
+			if errors.Is(err, deliveryqueue.ErrExpired) {
+				continue
+			}
+			if errors.Is(err, deliveryqueue.ErrFull) {
+				return nil
+			}
+			if errors.Is(err, deliveryqueue.ErrPacketIDConflict) {
+				return ErrProtocol
+			}
 			return err
 		}
 	}

@@ -8,6 +8,7 @@ import (
 
 	"narumq/internal/application/membership"
 	"narumq/internal/application/ports/deliveryqueue"
+	"narumq/internal/application/ports/deliverystate"
 	"narumq/internal/domain/mqtt"
 	"narumq/internal/domain/routing"
 	"narumq/internal/domain/session"
@@ -68,6 +69,22 @@ func (c *recordingDurableConnectCommitter) CommitDelivery(_ context.Context, cha
 		result = c.attachResult
 	}
 	return membership.ApplyResultDTO{Outcome: membership.ApplyOutcomeApplied, Delivery: &result}, nil
+}
+
+type testPendingDelivery struct {
+	result membership.ApplyResultDTO
+}
+
+func (pending testPendingDelivery) Wait() (membership.ApplyResultDTO, error) {
+	return pending.result, nil
+}
+
+func (c *recordingDurableConnectCommitter) BeginDelivery(ctx context.Context, change membership.DeliveryChangeDTO) (deliverystate.Pending, error) {
+	result, err := c.CommitDelivery(ctx, change)
+	if err != nil {
+		return nil, err
+	}
+	return testPendingDelivery{result: result}, nil
 }
 func (c *recordingDurableConnectCommitter) ActivateDelivery(id routing.SessionID, epoch, through uint64) error {
 	if c.onActivate != nil {

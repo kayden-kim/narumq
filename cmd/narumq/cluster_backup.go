@@ -16,13 +16,36 @@ const clusterBackupTimeout = 5 * time.Second
 
 var _ managementports.ClusterBackupProvider = (*clusterRuntime)(nil)
 
+// resolveBackupRequests captures only after storage and application work settle.
+// Waiting here does not retain the inbound FIFO head or block the driver.
+func (runtime *clusterRuntime) resolveBackupRequests(driverErr error) {
+	remaining := runtime.backupRequests[:0]
+	for _, request := range runtime.backupRequests {
+		err := driverErr
+		if request.context != nil && request.context.Err() != nil {
+			err = request.context.Err()
+		}
+		if err == nil && runtime.node.StoragePending() {
+			remaining = append(remaining, request)
+			continue
+		}
+		response := clusterBackupImageResponse{err: err}
+		if err == nil {
+			response = runtime.captureBackupImage()
+		}
+		request.backupResult <- response
+	}
+	clear(runtime.backupRequests[len(remaining):])
+	runtime.backupRequests = remaining
+}
+
 func (runtime *clusterRuntime) CaptureClusterBackup(ctx context.Context) (managementports.ClusterBackupDTO, error) {
 	if ctx == nil || runtime == nil || runtime.node == nil {
 		return managementports.ClusterBackupDTO{}, fmt.Errorf("%w: cluster runtime is not available", managementports.ErrClusterBackupUnavailable)
 	}
 	backupCtx, cancel := context.WithTimeout(ctx, clusterBackupTimeout)
 	defer cancel()
-	if err := runtime.checkReadiness(backupCtx); err != nil {
+	if err := runtime.checkReadiness(backupCtx, "backup"); err != nil {
 		return managementports.ClusterBackupDTO{}, fmt.Errorf("%w: quorum-fresh boundary: %v", managementports.ErrClusterBackupUnavailable, err)
 	}
 

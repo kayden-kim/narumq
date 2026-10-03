@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"net"
+	"sync"
 	"testing"
 	"time"
 
@@ -11,6 +12,7 @@ import (
 	memoryretained "narumq/internal/adapters/memory/retained"
 	"narumq/internal/application/membership"
 	applicationdeliveryqueue "narumq/internal/application/ports/deliveryqueue"
+	"narumq/internal/application/ports/deliverystate"
 	"narumq/internal/application/publish"
 	"narumq/internal/application/subscribe"
 	"narumq/internal/domain/mqtt"
@@ -19,8 +21,10 @@ import (
 )
 
 type durableTCPCommitter struct {
-	changes []membership.DeliveryChangeDTO
-	err     error
+	changes    []membership.DeliveryChangeDTO
+	err        error
+	barriers   int
+	barrierErr error
 }
 
 func (committer *durableTCPCommitter) CommitDelivery(_ context.Context, change membership.DeliveryChangeDTO) (membership.ApplyResultDTO, error) {
@@ -34,7 +38,36 @@ func (committer *durableTCPCommitter) CommitDelivery(_ context.Context, change m
 	}, nil
 }
 
-func durableTCPConnection(t *testing.T, runtime *adapterTestRuntime, version mqtt.ProtocolVersion, committer *durableTCPCommitter) *connection {
+type testPendingDelivery struct {
+	result membership.ApplyResultDTO
+}
+
+func (pending testPendingDelivery) Wait() (membership.ApplyResultDTO, error) {
+	return pending.result, nil
+}
+
+func (committer *durableTCPCommitter) BeginDelivery(ctx context.Context, change membership.DeliveryChangeDTO) (deliverystate.Pending, error) {
+	result, err := committer.CommitDelivery(ctx, change)
+	if err != nil {
+		return nil, err
+	}
+	return testPendingDelivery{result: result}, nil
+}
+
+type testQuorumBarrier struct {
+	err error
+}
+
+func (barrier testQuorumBarrier) Wait() error {
+	return barrier.err
+}
+
+func (committer *durableTCPCommitter) BeginQuorumBarrier(context.Context) (deliverystate.QuorumBarrier, error) {
+	committer.barriers++
+	return testQuorumBarrier{err: committer.barrierErr}, nil
+}
+
+func durableTCPConnection(t *testing.T, runtime *adapterTestRuntime, version mqtt.ProtocolVersion, committer deliverystate.PublishCommitter) *connection {
 	t.Helper()
 	retained, err := memoryretained.New(32, 4096)
 	if err != nil {
@@ -53,6 +86,17 @@ func durableTCPConnection(t *testing.T, runtime *adapterTestRuntime, version mqt
 	if err := routes.BindSessionTenant(sessionID, tenantID); err != nil {
 		t.Fatal(err)
 	}
+	subscriberKey, err := tenancy.NewSessionKey(tenantID, "durable-subscriber")
+	if err != nil {
+		t.Fatal(err)
+	}
+	subscriberID := routing.SessionID(subscriberKey.RoutingID())
+	if err := routes.BindSessionTenant(subscriberID, tenantID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := routes.Subscribe(subscriberID, mqtt.Subscription{Filter: "durable/item", QoS: mqtt.QoSAtLeastOnce}); err != nil {
+		t.Fatal(err)
+	}
 	publications, err := publish.New(runtime.server.config.Clock, routes, runtime.server.deliveries, retained,
 		publish.WithDurableDeliveryCommitter(committer))
 	if err != nil {
@@ -68,7 +112,7 @@ func durableTCPConnection(t *testing.T, runtime *adapterTestRuntime, version mqt
 	return conn
 }
 
-func durableTCPRuntime(t *testing.T, version mqtt.ProtocolVersion, committer *durableTCPCommitter) (*adapterTestRuntime, *connection) {
+func durableTCPRuntime(t *testing.T, version mqtt.ProtocolVersion, committer deliverystate.PublishCommitter) (*adapterTestRuntime, *connection) {
 	t.Helper()
 	config := defaultAdapterConfig()
 	config.ClusterMode = true
@@ -76,9 +120,12 @@ func durableTCPRuntime(t *testing.T, version mqtt.ProtocolVersion, committer *du
 	config.ClusterReady = func() bool { return true }
 	config.ClusterAdmissionOpen = func() bool { return true }
 	config.ClusterProjectionReady = func() bool { return true }
-	runtime := newAdapterTestRuntime(t, 8, config)
+	var conn *connection
+	runtime := newAdapterTestRuntime(t, 8, config, func(server *Server) {
+		conn = durableTCPConnection(t, &adapterTestRuntime{server: server}, version, committer)
+	})
 	t.Cleanup(func() { runtime.stop(t) })
-	return runtime, durableTCPConnection(t, runtime, version, committer)
+	return runtime, conn
 }
 
 func requireControlPacket(t *testing.T, conn *connection, want mqtt.Packet) mqtt.Packet {
@@ -447,5 +494,131 @@ func TestTCPDeliverDurableClosesOwnerWhenQueueIsFull(t *testing.T) {
 	queued, err := queue.ListQueued(sessionID, time.Time{})
 	if err != nil || len(queued) != 1 || queued[0].DurableSequence != first.DurableSequence {
 		t.Fatalf("queue after saturation=%+v err=%v", queued, err)
+	}
+}
+
+// Traceability: CLU-07; docs/specs/cluster-session-and-delivery.md §4.2, §11.11.
+func TestTCPDurableQoS1WithoutTargetAcknowledgesAfterQuorumBarrier(t *testing.T) {
+	for _, testCase := range []struct {
+		name       string
+		barrierErr error
+		wantErr    error
+	}{
+		{name: "barrier succeeds"},
+		{name: "barrier fails", barrierErr: membership.ErrQuorumUnavailable, wantErr: membership.ErrQuorumUnavailable},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			committer := &durableTCPCommitter{barrierErr: testCase.barrierErr}
+			_, conn := durableTCPRuntime(t, mqtt.ProtocolV5, committer)
+			err := conn.dispatchPublish(mqtt.Publish{
+				Version: mqtt.ProtocolV5, Topic: "durable/untargeted", Payload: []byte("value"),
+				QoS: mqtt.QoSAtLeastOnce, PacketID: 41,
+			})
+			if testCase.wantErr != nil {
+				if !errors.Is(err, testCase.wantErr) {
+					t.Fatalf("dispatchPublish error = %v, want %v", err, testCase.wantErr)
+				}
+				if committer.barriers != 1 || len(committer.changes) != 0 {
+					t.Fatalf("barriers=%d changes=%+v", committer.barriers, committer.changes)
+				}
+				select {
+				case message := <-conn.controlQueue:
+					t.Fatalf("failed quorum barrier emitted %T", message.packet)
+				default:
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			if committer.barriers != 1 || len(committer.changes) != 0 {
+				t.Fatalf("barriers=%d changes=%+v", committer.barriers, committer.changes)
+			}
+			requireControlPacket(t, conn, &mqtt.PubAck{PacketID: 41})
+		})
+	}
+}
+
+type heldTCPQuorumBarrier struct {
+	entered chan struct{}
+	release chan struct{}
+	err     error
+}
+
+func (barrier heldTCPQuorumBarrier) Wait() error {
+	close(barrier.entered)
+	<-barrier.release
+	return barrier.err
+}
+
+type heldTCPBarrierCommitter struct {
+	durableTCPCommitter
+	barrier heldTCPQuorumBarrier
+}
+
+func (committer *heldTCPBarrierCommitter) BeginQuorumBarrier(context.Context) (deliverystate.QuorumBarrier, error) {
+	committer.barriers++
+	return committer.barrier, nil
+}
+
+// Traceability: CLU-07; docs/specs/cluster-session-and-delivery.md §4.2, §11.11.
+func TestTCPDurablePhasesWithoutTargetWaitForQuorumBarrier(t *testing.T) {
+	for _, barrierErr := range []error{nil, membership.ErrQuorumUnavailable} {
+		name := "success"
+		if barrierErr != nil {
+			name = "quorum lost"
+		}
+		t.Run(name, func(t *testing.T) {
+			committer := &heldTCPBarrierCommitter{barrier: heldTCPQuorumBarrier{
+				entered: make(chan struct{}), release: make(chan struct{}), err: barrierErr,
+			}}
+			_, conn := durableTCPRuntime(t, mqtt.ProtocolV5, committer)
+			conn.phases.start(conn)
+			var release sync.Once
+			t.Cleanup(func() {
+				release.Do(func() { close(committer.barrier.release) })
+				conn.requestClose()
+				conn.phases.workers.Wait()
+			})
+			if err := conn.dispatchPhased(&mqtt.Publish{
+				Version: mqtt.ProtocolV5, Topic: "durable/untargeted", Payload: []byte("value"),
+				QoS: mqtt.QoSAtLeastOnce, PacketID: 42,
+			}, 32); err != nil {
+				t.Fatal(err)
+			}
+			select {
+			case <-committer.barrier.entered:
+			case <-time.After(time.Second):
+				t.Fatal("completion worker did not wait for the quorum barrier")
+			}
+			select {
+			case message := <-conn.controlQueue:
+				t.Fatalf("pending quorum barrier emitted %#v", message.packet)
+			default:
+			}
+			if committer.barriers != 1 || len(committer.changes) != 0 {
+				t.Fatalf("barriers=%d changes=%+v", committer.barriers, committer.changes)
+			}
+			release.Do(func() { close(committer.barrier.release) })
+			if barrierErr != nil {
+				select {
+				case <-conn.stop:
+				case <-time.After(time.Second):
+					t.Fatal("failed quorum barrier did not close the connection")
+				}
+				conn.phases.workers.Wait()
+				select {
+				case message := <-conn.controlQueue:
+					t.Fatalf("failed quorum barrier emitted %#v", message.packet)
+				default:
+				}
+				return
+			}
+			packet := readPhaseControl(t, conn)
+			ack, ok := packet.(*mqtt.PubAck)
+			if !ok || ack.PacketID != 42 || ack.ReasonCode != 0 {
+				t.Fatalf("barrier completion emitted %#v, want successful PUBACK 42", packet)
+			}
+		})
 	}
 }

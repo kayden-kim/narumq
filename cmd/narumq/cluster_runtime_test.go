@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"errors"
-	"fmt"
 	"io"
 	"log/slog"
 	"net"
@@ -292,13 +291,95 @@ func TestClusterProjectionReadyRequiresInitializedCurrentProjection(t *testing.T
 	startedAt := time.Now()
 	admitted := runtime.clusterProjectionReady()
 	elapsed := time.Since(startedAt)
-	snapshot := runtime.readinessSnapshot()
+	snapshot := runtime.projectionReadinessSnapshot()
 	if admitted {
 		t.Fatalf("projection behind the applied index was admitted: snapshot=%+v", snapshot)
 	}
 	if elapsed >= time.Second {
 		t.Fatalf("behind-index projection check took %s, want an immediate fail-closed result", elapsed)
 	}
+	t.Run("admission queued during Ready is served before the next drain", func(t *testing.T) {
+		runtime.projectionIndex.Store(status.AppliedIndex)
+		runtime.requests = make(chan clusterDriverRequest, 1)
+		defer func() { runtime.requests = nil }()
+		runtime.projectionAdmissionSequence.Add(1)
+		result := make(chan bool, 1)
+		go func() { result <- runtime.clusterProjectionReady() }()
+		var request clusterDriverRequest
+		select {
+		case request = <-runtime.requests:
+		case <-time.After(250 * time.Millisecond):
+			runtime.finishProjectionAdmissionSequence(nil)
+			<-result
+			t.Fatal("active Ready admission never queued a driver checkpoint")
+		}
+		runtime.finishProjectionAdmissionSequence(nil)
+		runtime.handleDriverRequest(request, nil, nil)
+		runtime.resolveProjectionRequests(nil, true)
+		// The next drain begins before the blocked ingress goroutine can sample
+		// the even sequence. Its checkpoint still linearized in the completed drain.
+		runtime.projectionAdmissionSequence.Add(1)
+		defer runtime.finishProjectionAdmissionSequence(nil)
+		select {
+		case admitted := <-result:
+			if !admitted {
+				t.Fatal("healthy completed projection checkpoint was rejected")
+			}
+		case <-time.After(250 * time.Millisecond):
+			t.Fatal("admission missed the stable checkpoint between Ready drains")
+		}
+	})
+
+	t.Run("queued admission rejects a projection gap", func(t *testing.T) {
+		runtime.requests = make(chan clusterDriverRequest, 1)
+		defer func() { runtime.requests = nil }()
+		runtime.projectionAdmissionSequence.Add(1)
+		result := make(chan bool, 1)
+		go func() { result <- runtime.clusterProjectionReady() }()
+		var request clusterDriverRequest
+		select {
+		case request = <-runtime.requests:
+		case <-time.After(time.Second):
+			runtime.finishProjectionAdmissionSequence(nil)
+			<-result
+			t.Fatal("admission checkpoint was not queued")
+		}
+		runtime.projectionIndex.Store(status.AppliedIndex - 1)
+		runtime.finishProjectionAdmissionSequence(nil)
+		runtime.handleDriverRequest(request, nil, nil)
+		runtime.resolveProjectionRequests(nil, true)
+		if <-result {
+			t.Fatal("queued admission accepted an unapplied projection")
+		}
+	})
+
+	t.Run("driver exit releases blocked admission", func(t *testing.T) {
+		runtime.projectionIndex.Store(status.AppliedIndex)
+		runtime.requests = make(chan clusterDriverRequest, 1)
+		runtime.driverStopped = make(chan struct{})
+		defer func() { runtime.requests, runtime.driverStopped = nil, nil }()
+		runtime.projectionAdmissionSequence.Add(1)
+		defer runtime.finishProjectionAdmissionSequence(nil)
+		result := make(chan bool, 1)
+		go func() { result <- runtime.clusterProjectionReady() }()
+		select {
+		case <-runtime.requests:
+		case <-time.After(time.Second):
+			close(runtime.driverStopped)
+			<-result
+			t.Fatal("admission checkpoint was not queued")
+		}
+		close(runtime.driverStopped)
+		select {
+		case admitted := <-result:
+			if admitted {
+				t.Fatal("stopped driver accepted pending admission")
+			}
+		case <-time.After(250 * time.Millisecond):
+			t.Fatal("driver exit left admission blocked")
+		}
+	})
+
 	runtime.projectionIndex.Store(status.AppliedIndex)
 	runtime.storage.begin()
 	runtime.projectionAdmissionSequence.Add(1)
@@ -658,137 +739,6 @@ func TestResolveProposalAndCompleteReadStates(t *testing.T) {
 	}
 }
 
-type queuedInboundStageSource struct {
-	deliveries []tcpadapter.PeerInboundDelivery
-	next       int
-}
-
-func (source *queuedInboundStageSource) TakeInbound() (tcpadapter.PeerInboundDelivery, bool) {
-	if source.next == len(source.deliveries) {
-		return tcpadapter.PeerInboundDelivery{}, false
-	}
-	delivery := source.deliveries[source.next]
-	source.next++
-	return delivery, true
-}
-
-func TestStageQueuedDriverRequestsStopsAtLimit(t *testing.T) {
-	node, err := raftadapter.Open(raftadapter.Config{
-		NodeID: 1, PeerIDs: []raftadapter.NodeID{1, 2, 3}, Directory: t.TempDir(),
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer func() {
-		if err := node.Close(); err != nil {
-			t.Errorf("Close() = %v", err)
-		}
-	}()
-	runtime := &clusterRuntime{
-		node:     node,
-		requests: make(chan clusterDriverRequest, 4),
-		logger:   slog.New(slog.NewTextHandler(io.Discard, nil)),
-	}
-	reads := make(map[string]clusterReadWaiter)
-	var proposals []clusterProposalWaiter
-	for _, key := range []string{"r1", "r2", "r3"} {
-		runtime.requests <- clusterDriverRequest{
-			kind: clusterDriverRead, contextKey: key, context: context.Background(),
-			readResult: make(chan clusterReadResponse, 1),
-		}
-	}
-
-	if staged := runtime.stageQueuedDriverRequests(2, reads, &proposals); staged != 2 {
-		t.Fatalf("staged requests = %d, want 2", staged)
-	}
-	if len(reads) != 2 || reads["r1"].result == nil || reads["r2"].result == nil {
-		t.Fatalf("staged reads = %+v, want r1 and r2 only", reads)
-	}
-	if _, exists := reads["r3"]; exists {
-		t.Fatalf("staged reads unexpectedly include r3: %+v", reads)
-	}
-	if len(runtime.requests) != 1 {
-		t.Fatalf("queued requests after limit = %d, want 1", len(runtime.requests))
-	}
-
-	applyResult := make(chan clusterApplyResponse, 1)
-	runtime.requests <- clusterDriverRequest{
-		kind: clusterDriverProposal, data: []byte("p"), applyResult: applyResult,
-	}
-	if staged := runtime.stageQueuedDriverRequests(64, reads, &proposals); staged != 2 {
-		t.Fatalf("staged remaining requests = %d, want 2", staged)
-	}
-	if len(reads) != 3 || reads["r3"].result == nil {
-		t.Fatalf("staged reads after draining = %+v, want r1, r2, r3", reads)
-	}
-	if len(runtime.requests) != 0 {
-		t.Fatalf("queued requests after drain = %d, want 0", len(runtime.requests))
-	}
-	if response := <-applyResult; !errors.Is(response.err, raftadapter.ErrNotLeader) {
-		t.Fatalf("proposal error = %v, want ErrNotLeader", response.err)
-	}
-	if len(proposals) != 0 {
-		t.Fatalf("proposal waiters = %+v, want none", proposals)
-	}
-	if staged := runtime.stageQueuedDriverRequests(64, reads, &proposals); staged != 0 {
-		t.Fatalf("staged requests from empty queue = %d, want 0", staged)
-	}
-}
-
-func TestStageQueuedDriverWorkReservesInboundProgress(t *testing.T) {
-	node, err := raftadapter.Open(raftadapter.Config{
-		NodeID: 1, PeerIDs: []raftadapter.NodeID{1, 2, 3}, Directory: t.TempDir(),
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer func() {
-		if err := node.Close(); err != nil {
-			t.Errorf("Close() = %v", err)
-		}
-	}()
-	faultPath := filepath.Join(t.TempDir(), "fault-control.json")
-	if err := os.WriteFile(faultPath, []byte(`{"isolatePeers":[2]}`), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	inbound := &queuedInboundStageSource{deliveries: []tcpadapter.PeerInboundDelivery{
-		{Message: tcpadapter.PeerMessageDTO{From: 2, To: 1}},
-		{Message: tcpadapter.PeerMessageDTO{From: 2, To: 1}},
-	}}
-	runtime := &clusterRuntime{
-		node: node, requests: make(chan clusterDriverRequest, clusterDriverStageLimit),
-		inboundQueue: inbound, faults: newClusterFaultControl(faultPath, slog.New(slog.NewTextHandler(io.Discard, nil))),
-	}
-	for index := 0; index < clusterDriverStageLimit; index++ {
-		key := fmt.Sprintf("read-%02d", index)
-		runtime.requests <- clusterDriverRequest{
-			kind: clusterDriverRead, contextKey: key, context: context.Background(),
-			readResult: make(chan clusterReadResponse, 1),
-		}
-	}
-	reads := make(map[string]clusterReadWaiter)
-	var proposals []clusterProposalWaiter
-
-	if err := runtime.stageQueuedDriverWork(reads, &proposals); err != nil {
-		t.Fatal(err)
-	}
-	if inbound.next != 1 || len(reads) != clusterDriverStageLimit-1 || len(runtime.requests) != 1 {
-		t.Fatalf("first staged batch: inbound=%d reads=%d requests=%d, want 1, %d, 1",
-			inbound.next, len(reads), len(runtime.requests), clusterDriverStageLimit-1)
-	}
-	if inbound.next+len(reads) != clusterDriverStageLimit {
-		t.Fatalf("first staged work=%d, want shared limit %d", inbound.next+len(reads), clusterDriverStageLimit)
-	}
-
-	if err := runtime.stageQueuedDriverWork(reads, &proposals); err != nil {
-		t.Fatal(err)
-	}
-	if inbound.next != 2 || len(reads) != clusterDriverStageLimit || len(runtime.requests) != 0 {
-		t.Fatalf("second staged batch: inbound=%d reads=%d requests=%d, want 2, %d, 0",
-			inbound.next, len(reads), len(runtime.requests), clusterDriverStageLimit)
-	}
-}
-
 func TestFailPendingProposalsOnDriverExit(t *testing.T) {
 	driverErr := errors.New("raft driver failed")
 	stagedResult := make(chan clusterApplyResponse, 1)
@@ -860,8 +810,8 @@ func TestDriverRequestsRejectAfterExit(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
 
-	if _, err := runtime.submitProposal(ctx, []byte("proposal"), membership.CommandDTO{}); !errors.Is(err, membership.ErrQuorumUnavailable) {
-		t.Fatalf("submitProposal error = %v, want %v", err, membership.ErrQuorumUnavailable)
+	if _, err := runtime.beginCommit(ctx, membership.CommandDTO{}); !errors.Is(err, membership.ErrQuorumUnavailable) {
+		t.Fatalf("beginCommit error = %v, want %v", err, membership.ErrQuorumUnavailable)
 	}
 	if _, err := runtime.requestReadBarrier(ctx); !errors.Is(err, raftadapter.ErrFailed) {
 		t.Fatalf("requestReadBarrier error = %v, want %v", err, raftadapter.ErrFailed)
@@ -891,43 +841,6 @@ func TestCommitFailureLogSummaryIsRateLimitedByStageAndClass(t *testing.T) {
 	}
 	if _, emit := runtime.commitFailureLogSummary("read_barrier", "other", "durable_delivery", start.Add(time.Second)); !emit {
 		t.Fatal("different error class was suppressed")
-	}
-}
-
-func TestSubmitProposalLogsRawApplyFailureOnce(t *testing.T) {
-	var logs bytes.Buffer
-	runtime := &clusterRuntime{
-		logger:        slog.New(slog.NewTextHandler(&logs, nil)),
-		requests:      make(chan clusterDriverRequest),
-		driverStopped: make(chan struct{}),
-	}
-	applyErr := errors.New("apply storage cause")
-	result := make(chan error, 1)
-	go func() {
-		_, err := runtime.submitProposal(context.Background(), []byte("proposal"), membership.CommandDTO{})
-		result <- err
-	}()
-	var request clusterDriverRequest
-	select {
-	case request = <-runtime.requests:
-	case <-time.After(time.Second):
-		t.Fatal("submitProposal did not enqueue a request")
-	}
-	request.applyResult <- clusterApplyResponse{err: applyErr}
-	select {
-	case err := <-result:
-		if !errors.Is(err, membership.ErrQuorumUnavailable) {
-			t.Fatalf("submitProposal error = %v, want %v", err, membership.ErrQuorumUnavailable)
-		}
-	case <-time.After(time.Second):
-		t.Fatal("submitProposal did not return after apply response")
-	}
-	output := logs.String()
-	if got := strings.Count(output, "cluster command commit failed"); got != 1 {
-		t.Fatalf("commit diagnostic count = %d, want 1: %s", got, output)
-	}
-	if !strings.Contains(output, "commit_stage=proposal_apply") || !strings.Contains(output, applyErr.Error()) {
-		t.Fatalf("diagnostic omitted the apply stage or raw error: %s", output)
 	}
 }
 
@@ -1320,5 +1233,100 @@ func TestClusterMQTTListenersBindConfiguredEndpointsAndClosePartialOpen(t *testi
 		if err := listener.Close(); err != nil {
 			t.Fatal(err)
 		}
+	}
+}
+
+// Traceability: CLU-14; docs/specs/mqtt-protocol-and-session.md §3.1.
+func TestClusterCommitReadProofPreservesSubmissionOrderAndCancellation(t *testing.T) {
+	var nodes [3]*raftadapter.Node
+	for index := range nodes {
+		node, err := raftadapter.Open(raftadapter.Config{
+			NodeID: raftadapter.NodeID(index + 1), PeerIDs: []raftadapter.NodeID{1, 2, 3}, Directory: t.TempDir(),
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		nodes[index] = node
+		t.Cleanup(func() { node.Close() })
+	}
+	pump := func() [][]byte {
+		var commands [][]byte
+		for range 64 {
+			var messages []raftadapter.MessageDTO
+			active := false
+			for index, node := range nodes {
+				batch, err := processReadyForTest(t, node)
+				if err != nil {
+					t.Fatal(err)
+				}
+				active = active || !clusterBatchEmpty(batch)
+				messages = append(messages, batch.Messages...)
+				if index == 0 {
+					commands = append(commands, batch.Commands...)
+				}
+			}
+			if !active {
+				return commands
+			}
+			for _, message := range messages {
+				if _, err := nodes[message.To-1].Step(message); err != nil {
+					t.Fatal(err)
+				}
+			}
+		}
+		t.Fatal("Raft did not settle in 64 rounds")
+		return nil
+	}
+	pump()
+	node := nodes[0]
+	if err := node.Campaign(); err != nil {
+		t.Fatal(err)
+	}
+	pump()
+	runtime := &clusterRuntime{node: node, storage: newClusterStorageMonitor(time.Now, nil)}
+	makePending := func(key, payload string, ctx context.Context) *clusterPendingCommit {
+		return &clusterPendingCommit{
+			runtime: runtime, context: ctx, readContext: ctx, contextKey: key, data: []byte(payload),
+			staged: make(chan clusterCommitStage, 1), result: make(chan clusterApplyResponse, 1),
+		}
+	}
+	first := makePending("first", "first-change", context.Background())
+	second := makePending("second", "second-change", context.Background())
+	second.readConfirmed = true
+	cancelledCtx, cancel := context.WithCancel(context.Background())
+	cancelled := makePending("cancelled", "must-not-commit", cancelledCtx)
+	cancel()
+	runtime.pendingCommits = []*clusterPendingCommit{first, second, cancelled}
+	reads := map[string]clusterReadWaiter{"first": {ctx: context.Background(), commit: first}}
+	var proposals []clusterProposalWaiter
+	if runtime.resolveCommitReads(reads, &proposals) || len(proposals) != 0 {
+		t.Fatal("later fresh proof caused a proposal before the first proof")
+	}
+	select {
+	case stage := <-second.staged:
+		t.Fatalf("second change overtook the missing first proof: %+v", stage)
+	default:
+	}
+	applied := node.Status().AppliedIndex
+	runtime.projectionIndex.Store(applied)
+	deferred := runtime.completeReadStates([]raftadapter.ReadStateDTO{
+		{RequestContext: []byte("first"), Index: applied + 1},
+	}, reads)
+	if runtime.resolveCommitReads(reads, &proposals) || len(deferred) != 1 {
+		t.Fatal("read proof beyond local apply/projection permitted submission")
+	}
+	deferred[0].Index = applied
+	if remaining := runtime.completeReadStates(deferred, reads); len(remaining) != 0 {
+		t.Fatal("applied fresh proof remained pending")
+	}
+	if !runtime.resolveCommitReads(reads, &proposals) {
+		t.Fatal("completed fresh proofs did not submit changes")
+	}
+	if stage := <-cancelled.staged; !errors.Is(stage.err, context.Canceled) {
+		t.Fatalf("cancelled fresh proof result = %+v", stage)
+	}
+	commands := pump()
+	if len(commands) != 2 || string(commands[0]) != "first-change" || string(commands[1]) != "second-change" {
+		t.Fatalf("durably applied command order = %q, want first then second without cancelled command", commands)
 	}
 }

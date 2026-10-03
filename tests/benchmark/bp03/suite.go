@@ -163,7 +163,7 @@ func suiteCommand(ctx context.Context, args []string, stdout, stderr io.Writer) 
 	if err := writeBP03SuiteArtifacts(suiteDir, manifest, summary); err != nil {
 		return err
 	}
-	if err := environment.EnsureEMQXImage(ctx, suiteDir); err != nil {
+	if err := environment.EnsureEMQXImage(ctx, suiteDir, bp03EMQXImageReference); err != nil {
 		return finishBP03SuitePreparationFailure(stdout, suiteDir, manifest, err)
 	}
 	images, err := environment.BuildImages(ctx, environment.BuildOptions{

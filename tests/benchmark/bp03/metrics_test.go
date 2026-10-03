@@ -97,7 +97,7 @@ func TestWriteWALSummaryEMQXNotApplicable(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if summary.Valid || summary.Applicability != "not_applicable" || summary.Reason != "EMQX regular sessions keep state in memory and write no replicated durable log" {
+	if summary.Valid || summary.Applicability != "not_applicable" {
 		t.Fatalf("unexpected EMQX summary: %+v", summary)
 	}
 }

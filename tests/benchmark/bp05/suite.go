@@ -220,7 +220,7 @@ func suiteCommand(ctx context.Context, args []string, stdout, stderr io.Writer) 
 	if err := writeSuiteManifest(suiteDir, currentManifest); err != nil {
 		return finishSuitePreparationFailure(stdout, suiteDir, currentManifest, err)
 	}
-	if err := environment.EnsureEMQXImage(ctx, suiteDir); err != nil {
+	if err := environment.EnsureEMQXImage(ctx, suiteDir, environment.EMQXImageReference); err != nil {
 		return finishSuitePreparationFailure(stdout, suiteDir, currentManifest, err)
 	}
 

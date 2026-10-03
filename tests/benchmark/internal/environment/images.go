@@ -69,29 +69,37 @@ func buildImages(ctx context.Context, options BuildOptions) (ImageSet, error) {
 	return images, nil
 }
 
-// EnsureEMQXImage pulls only the pinned historical comparator and verifies its digest.
-func EnsureEMQXImage(ctx context.Context, artifactDir string) error {
+// EnsureEMQXImage pulls the selected immutable comparator and verifies its digest.
+func EnsureEMQXImage(ctx context.Context, artifactDir, imageReference string) error {
 	if ctx == nil {
 		ctx = context.Background()
 	}
 	if strings.TrimSpace(artifactDir) == "" {
 		return errors.New("artifact directory is required")
 	}
+	parts := strings.SplitN(imageReference, "@", 2)
+	if len(parts) != 2 || !strings.HasPrefix(parts[1], "sha256:") {
+		return errors.New("EMQX image must be pinned by digest")
+	}
 	if err := os.MkdirAll(artifactDir, 0o755); err != nil {
 		return fmt.Errorf("create artifact directory: %w", err)
 	}
-	output, err := commandOutput(ctx, "", "docker", "pull", EMQXImageReference)
+	output, err := commandOutput(ctx, "", "docker", "pull", imageReference)
 	if writeErr := os.WriteFile(filepath.Join(artifactDir, "docker-pull-emqx.log"), output, 0o644); writeErr != nil {
 		return fmt.Errorf("write EMQX pull log: %w", writeErr)
 	}
 	if err != nil {
 		return fmt.Errorf("pull exact EMQX image: %w", err)
 	}
-	digests, err := dockerRepoDigests(ctx, "", EMQXImageReference)
+	digests, err := dockerRepoDigests(ctx, "", imageReference)
 	if err != nil {
 		return err
 	}
-	want := "emqx/emqx@" + strings.SplitN(EMQXImageReference, "@", 2)[1]
+	repository := parts[0]
+	if tag := strings.LastIndex(repository, ":"); tag > strings.LastIndex(repository, "/") {
+		repository = repository[:tag]
+	}
+	want := repository + "@" + parts[1]
 	for _, digest := range digests {
 		if digest == want {
 			return nil

@@ -93,7 +93,7 @@ func TestDynamicMalformedCommittedWALFailsReplay(t *testing.T) {
 		for round := 0; round < 512; round++ {
 			var messages []MessageDTO
 			for _, nodeID := range []NodeID{1, 2, 3} {
-				batch, err := nodes[nodeID].ProcessReady()
+				batch, err := processReadyForTest(t, nodes[nodeID])
 				if err != nil {
 					t.Fatalf("node %d ProcessReady(): %v", nodeID, err)
 				}
@@ -103,7 +103,7 @@ func TestDynamicMalformedCommittedWALFailsReplay(t *testing.T) {
 				return
 			}
 			for _, message := range messages {
-				if err := nodes[message.To].Step(message); err != nil {
+				if _, err := nodes[message.To].Step(message); err != nil {
 					t.Fatalf("deliver %d -> %d: %v", message.From, message.To, err)
 				}
 			}
@@ -137,7 +137,7 @@ func TestDynamicMalformedCommittedWALFailsReplay(t *testing.T) {
 		Entries:   []*pb.Entry{{Index: uint64Ptr(index), Term: uint64Ptr(term), Type: pb.EntryConfChangeV2.Enum(), Data: mustMarshal(t, dynamicConfChange(addLearnerOperation, confChangeSingle(1, pb.ConfChangeAddLearnerNode)))}},
 		HardState: &pb.HardState{Term: uint64Ptr(term), Vote: uint64Ptr(store.hardState.GetVote()), Commit: uint64Ptr(index)},
 	}
-	if err := store.appendReady(ready); err != nil {
+	if err := appendReadyForTest(store, ready); err != nil {
 		t.Fatalf("persist malformed committed entry: %v", err)
 	}
 	if err := store.close(); err != nil {

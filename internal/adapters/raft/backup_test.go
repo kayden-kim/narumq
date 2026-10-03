@@ -169,7 +169,7 @@ func pumpBackupTestNodes(t *testing.T, nodes map[NodeID]*Node) {
 	for range 512 {
 		var messages []MessageDTO
 		for _, nodeID := range []NodeID{1, 2, 3} {
-			batch, err := nodes[nodeID].ProcessReady()
+			batch, err := processReadyForTest(t, nodes[nodeID])
 			if err != nil {
 				t.Fatalf("node %d ProcessReady(): %v", nodeID, err)
 			}
@@ -179,7 +179,7 @@ func pumpBackupTestNodes(t *testing.T, nodes map[NodeID]*Node) {
 			return
 		}
 		for _, message := range messages {
-			if err := nodes[message.To].Step(message); err != nil {
+			if _, err := nodes[message.To].Step(message); err != nil {
 				t.Fatalf("deliver %d -> %d: %v", message.From, message.To, err)
 			}
 		}

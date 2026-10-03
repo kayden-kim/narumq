@@ -14,6 +14,7 @@
 | 기준 동작 명세 | [Cluster session과 durable delivery](../specs/cluster-session-and-delivery.md) §1, §11 |
 | 관련 요구사항 | CLU-01~CLU-04, CLU-06~CLU-11, SEC-09~SEC-11, NFR-07~NFR-10 |
 | 호환성 범위 | Combined cluster runtime protocol `2.0`, state schema `1.0`; no N/N-1 claim |
+| 채택 범위 | 2026-10-02 사용자가 `제한된 수신 대기 채택`을 명시적으로 선택했다. Dynamic Raft inbound의 bounded 수신 대기만 채택하며 나머지 Draft·production 수용 상태는 바꾸지 않는다. |
 | 관련 시험 | Cluster spec §11 membership mapping; 현재 구현·시험 미완료 |
 
 ## 1. Membership identity와 version negotiation
@@ -253,9 +254,21 @@ Both endpoints compare every Raft-hello field to their committed registry and TL
 
 #### Raft message frames and bounds
 
-After the v2 hello, Raft frames use the same envelope shape as v1: `uint32 big-endian payload length | serialized Raft protobuf`. Payload is `1..1,048,576` bytes. Zero, oversized or truncated frames close the connection before payload allocation/dispatch. The payload's protobuf `From` and `To` must match authenticated transport identity and local node ID.
+After the v2 hello, Raft frames use the same envelope shape as v1: `uint32 big-endian payload length | serialized Raft protobuf`. Payload is `1..1,048,576` bytes. Zero or oversized lengths close the connection before payload allocation. Truncated frames close without dispatch. The payload's protobuf `From` and `To` must match authenticated transport identity and local node ID.
 
-Each active peer retains v1's independently bounded queue policy: outbound FIFO and inbound staging each at most 32 messages and 4 MiB framed bytes; an in-progress outbound write counts. A full queue rejects immediately and resets/reports only that peer. Reconciliation atomically swaps the committed peer-ID/address/certificate registry. A committed phase or operation-ID update for an unchanged immutable identity closes and re-authenticates the connection, preserves queued outbound Raft messages, discards inbound staging from the prior identity revision, and rejects read-loop frames captured under that revision. The v2 adapter exposes staged frames through a coalesced `InboundReady` signal and a `TakeInbound` lease; the cluster driver calls `Complete` after `Step`. Reconciliation blocks new leases, waits for any active lease to complete, then advances the identity revision and discards remaining old-revision staging before returning. An immutable-identity rebind or peer removal retires the peer and drains both queue accounting. Unknown peers are rejected. The 5-second per-frame I/O timeout and 100-ms retry interval are retained for v2; neither queue cap nor Raft entry inflight cap limits retained log size.
+Each active peer retains independently bounded outbound FIFO and inbound staging, each at most 32 messages and 4 MiB framed bytes; an in-progress outbound write counts. Outbound 포화는 즉시 `ErrPeerBackpressure`를 반환하고 기존 연결과 queue를 보존한다. Driver는 해당 peer만 Raft unreachable/snapshot-failure로 보고하며 다른 peer의 전송은 계속한다.
+
+Dynamic driver의 새 local ReadIndex 발행은 `DynamicTCPPeerTransport.OutboundCapacity(peerID)`가 반환하는 peer별 남은 `Messages`·framed-byte `Bytes` snapshot을 참고한다. `OutboundReady()`의 write 완료 알림은 여러 완료를 하나로 합칠 수 있으므로 알림 횟수를 credit로 쓰지 않고 항상 현재 용량을 다시 읽는다. 현재 write는 계속 outbound 사용량에 포함한다. 이 생성 제어는 wire format·상한·FIFO·`Send`의 즉시 거절 정책을 바꾸거나 unsent frame의 새 재시도를 추가하지 않는다. Driver는 blocked local request를 기다리는 동안 peer 응답·tick·Ready를 처리한다. `TestDynamicOutboundCapacityRemainsChargedUntilWireCompletion`은 실제 socket write가 끝나기 전 용량을 돌려주지 않고 완료 뒤 FIFO frame과 용량 회수·wake를 확인한다.
+
+사용자가 채택한 dynamic Raft inbound 정책은 queue 포화에서 연결을 즉시 닫는 대신 TCP 읽기를 멈추고 driver의 `Complete`로 공간이 생길 때까지 기다리는 것이다. Reader는 길이를 검증한 뒤 payload allocation 전에 count·framed-byte 공간을 예약하며, 읽는 중인 frame과 driver가 인수했지만 `Complete`하지 않은 frame도 32개·4 MiB 한도에 포함한다. 길이 prefix의 idle 대기는 기존 동작을 유지한다. 유효 prefix를 받은 뒤의 공간 대기와 payload 읽기는 같은 5초 deadline을 공유한다. Timeout·context 취소·identity revision 변경·연결 교체·shutdown에서는 대기를 해제하고 예약을 반환하며 이전 identity frame을 dispatch하지 않는다. Fixed-voter v1과 delivery-forwarding stream, command별 fresh proof·quorum-before-ACK은 바꾸지 않는다. 이 선택의 성능 효과는 고정 BP-03로 별도 검증하며 채택 자체를 병목 해소의 증거로 보지 않는다.
+
+시험 연결: `internal/adapters/tcp/peer_transport_flow_test.go`의 `TestDynamicRaftInboundBackpressureResumesFIFO`는 count·byte 포화, lease 완료 전 payload 차단과 완료 후 FIFO 재개를 확인한다. `TestDynamicRaftInboundWaitUnblocksOnLifecycleChange`는 취소·identity revision 변경·shutdown·연결 교체·writer failure에서 대기 해제를, `TestDynamicRaftInboundReservationReturnsOnTruncatedPayload`는 읽는 중인 예약과 truncated payload의 회수를, `TestDynamicRaftInboundCapacityDeadlineRejectsWithoutReservation`과 `TestDynamicRaftInboundInvalidLengthIsNeverStaged`는 timeout·잘못된 길이의 무예약·무dispatch를 확인한다. 실제 실행·한계는 [성능 검증 §3.4](../specs/performance-and-verification.md#34-bp-03-durable-delivery-smoke-관찰-경계)에 연결한다.
+
+`TestDynamicRaftInboundCancellationBeforeStagingReturnsReservation`는 payload 읽기 완료 직후 context가 취소된 경우에도 frame을 queue에 넣지 않고 예약을 반환하는 경계를 확인한다.
+
+`TestDynamicRaftResetUnblocksActiveCapacityWait`는 reader가 실제 공간 대기 select에 진입한 뒤 `ResetPeer`를 호출해 deadline을 기다리지 않고 종료하며 기존 staged count·bytes를 훼손하지 않는지 확인한다. `ResetPeer`는 연결을 무효화하는 같은 mutex 경계에서 capacity wake를 signal한다.
+
+`TestDynamicPeerReconcileAndQueueBounds`는 outbound 포화 뒤에도 연결에서 byte를 교환할 수 있고 identity rebind에서는 연결이 닫히는지 확인한다. Reconciliation atomically swaps the committed peer-ID/address/certificate registry. A committed phase or operation-ID update for an unchanged immutable identity closes and re-authenticates the connection, preserves queued outbound Raft messages, discards inbound staging from the prior identity revision, and rejects read-loop frames captured under that revision. The v2 adapter exposes staged frames through a coalesced `InboundReady` signal and a `TakeInbound` lease; the cluster driver calls `Complete` after `Step`. Reconciliation blocks new leases, waits for any active lease to complete, then advances the identity revision and discards remaining old-revision staging before returning. An immutable-identity rebind or peer removal retires the peer and drains both queue accounting. Unknown peers are rejected. The 5-second per-frame I/O timeout and 100-ms retry interval are retained for v2; neither queue cap nor Raft entry inflight cap limits retained log size.
 
 #### Delivery forwarding stream
 
@@ -414,5 +427,5 @@ The JSON and frame examples in §1 define canonical field semantics. Release par
 
 - Run package, generated-protobuf, mixed-binary process and repository local/architecture gates.
 - Define rollback-window operations and rollout-controller preflight separately; preflight is not implemented by this contract change.
-- Keep backup archive cross-release restore exact; it is a separate CLU-14 item.
+- Backup archive restore follows the [ADR-0021](../decisions/ADR-0021-backup-archive-release-window.md) release window; historical-source compatibility remains unverified.
 - Same-source synthetic builds do not establish wire compatibility between historical source revisions.

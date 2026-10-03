@@ -163,12 +163,12 @@ NaruMQ가 말하는 “메시지 유실 없음”은 MQTT hop별 조건으로 �
 | 범위 | 조건 | 제품 보장 |
 | --- | --- | --- |
 | publisher → broker, QoS 0 | 모든 연결 | 최선 노력. 유실 없음 보장 대상이 아니다. |
-| publisher → broker, QoS 1 | broker가 성공 PUBACK을 반환 | 설정된 replica와 write quorum이 WAL 영속화 기준을 충족한 뒤 메시지 소유권을 인수한다. |
+| publisher → broker, QoS 1 | broker가 성공 PUBACK을 반환 | Durable target 또는 retained 상태가 있으면 설정된 replica와 write quorum이 WAL 영속화 기준을 충족한 뒤 메시지 소유권을 인수한다. Durable target이 없으면 아래 `matching durable subscriber가 없음` 행을 따른다. |
 | publisher → broker, QoS 2 | broker가 성공 PUBREC을 반환 | QoS 2 수신 handshake와 메시지를 같은 내구성 경계까지 저장한 뒤 소유권을 인수한다. PUBCOMP까지 handshake를 복구할 수 있다. |
 | broker → durable subscriber, QoS 1 | persistent session, 미만료 메시지, 저장 quota와 quorum 유지 | offline queue가 메시지를 인수한 뒤 최소 한 번 전달한다. 중복될 수 있다. |
 | broker → durable subscriber, QoS 2 | 위 조건과 송신 QoS 2 handshake 복제 | MQTT protocol receiver에 중복 없이 전달하도록 handshake를 재개한다. 애플리케이션 처리를 정확히 한 번 보장하지 않는다. |
 | subscription의 최대 QoS가 더 낮음 | 모든 전달 | publisher QoS와 granted subscription QoS 중 낮은 수준으로 전달하며, 낮아진 QoS의 보장만 적용한다. |
-| matching durable subscriber가 없음 | publisher ACK 완료 | broker의 메시지 소유권 인수만 의미한다. 미래 subscriber 전달을 보장하지 않는다. |
+| matching durable subscriber가 없음 | Target 없는 QoS 1 PUBLISH 또는 QoS 1/2 Will의 delivery path | Quorum 확인 뒤 QoS 1 성공 PUBACK을 반환하고, Will의 QoS 0 lane은 barrier 뒤 처리한다. Delivery payload를 future delivery용 상태로 영속 저장하지 않으며 미래 subscriber 전달이나 장애 뒤 전달을 보장하지 않는다. QoS 2 client PUBLISH의 RECEIVE payload/handshake와 retained 값은 별도로 영속화한다. |
 | PUBACK 또는 성공 PUBREC 이전 publisher 장애 | QoS 1/2 | 클라이언트가 local outbox와 재전송을 책임진다. |
 | Clean Start 또는 Session Expiry 0 | 연결 종료 | session과 offline message를 보장하지 않는다. |
 | Session Expiry 또는 Message Expiry 경과 | 만료 이후 | session 또는 미전달 메시지를 제거할 수 있다. |
@@ -758,6 +758,7 @@ Phase 0은 기준과 도구를 확정하는 단계다. Phase 1부터 기능을 �
 13. 지원할 클라이언트 SDK와 최소 버전은 무엇인가?
 14. 실제 EMQX 대비 허용할 throughput, p99 latency와 자원 효율 비율은 얼마인가?
 15. 장기 benchmark에 사용할 고정 EMQX version과 edition은 무엇인가?
+    - 2026-10-01 사용자 요청의 적용 범위: BP-03 local smoke comparator는 EMQX 5.8.8 Enterprise 평가판의 3-node replicated Durable Sessions로 고정한다([성능 검증 §3.4](../specs/performance-and-verification.md#34-bp-03-durable-delivery-smoke-관찰-경계)). 이는 장기 production 기준선 또는 commercial license 결정이 아니며 BP-01/BP-05의 역사적 OSS comparator는 유지한다.
 16. `EKS_EC2_HA`에서 지원할 EKS minor version, EC2 instance family, EBS volume type·IOPS와 NLB target mode는 무엇인가?
 17. ECS adapter 검토를 시작할 실제 운영 수요와 ECS Task Protection·stop timeout·persistent volume의 합격 기준은 무엇인가?
 

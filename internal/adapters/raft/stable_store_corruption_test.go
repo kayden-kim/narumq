@@ -261,7 +261,7 @@ func TestStableStoreRecoveryAndSnapshotBranches(t *testing.T) {
 	}
 	term, commit := uint64(1), uint64(1)
 	entryIndex := uint64(1)
-	if err := store.appendReady(netraft.Ready{HardState: &pb.HardState{Term: &term, Commit: &commit}, Entries: []*pb.Entry{{Index: &entryIndex, Term: &term, Type: pb.EntryNormal.Enum(), Data: []byte("command")}}}); err != nil {
+	if err := appendReadyForTest(store, netraft.Ready{HardState: &pb.HardState{Term: &term, Commit: &commit}, Entries: []*pb.Entry{{Index: &entryIndex, Term: &term, Type: pb.EntryNormal.Enum(), Data: []byte("command")}}}); err != nil {
 		t.Fatal(err)
 	}
 	if err := store.createSnapshot(1, &pb.ConfState{Voters: []uint64{1, 2, 3}}, [][]byte{[]byte("command")}); err != nil {

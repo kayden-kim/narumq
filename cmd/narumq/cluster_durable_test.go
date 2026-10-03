@@ -10,6 +10,7 @@ import (
 
 	clockadapter "narumq/internal/adapters/clock"
 	memorydeliveryqueue "narumq/internal/adapters/memory/deliveryqueue"
+	raftadapter "narumq/internal/adapters/raft"
 	"narumq/internal/application/membership"
 	applicationdeliveryqueue "narumq/internal/application/ports/deliveryqueue"
 	"narumq/internal/domain/mqtt"
@@ -539,5 +540,148 @@ func TestClusterDurableQueueLifecycleRemovesMessages(t *testing.T) {
 		if len(sessionState.Messages) != 1 {
 			t.Fatalf("after complete %d: len(Messages)=%d, want 1", i, len(sessionState.Messages))
 		}
+	}
+}
+
+// Traceability: CLU-14; docs/specs/mqtt-protocol-and-session.md §3.2.
+func TestClusterDurableBatchRetriesCommittedSuffixWithSameIdentifiers(t *testing.T) {
+	seed, sessionID, stop := newClusterDurableTestRuntime(t)
+	defer stop()
+	_, first := seedClusterDurableDelivery(t, seed)
+	second, err := seed.CommitDelivery(context.Background(), membership.DeliveryChangeDTO{
+		TenantID: "tenant-a", ClientID: "publisher-a", Action: membership.DeliveryActionPublish,
+		ProposedAtUnixMillis: 1_700_000_000_002, Topic: "events/two", Payload: []byte("second"),
+		PublishQoS: 2, Targets: []membership.DeliveryTargetDTO{{ClientID: "client-a"}},
+	})
+	if err != nil || second.Outcome != membership.ApplyOutcomeApplied {
+		t.Fatalf("seed second delivery: result=%+v err=%v", second, err)
+	}
+	runtime := &clusterRuntime{
+		config: seed.config, machine: seed.machine, storage: seed.storage, logger: seed.logger,
+		requests: make(chan clusterDriverRequest),
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	driverDone := make(chan struct{})
+	go func() {
+		defer close(driverDone)
+		index := uint64(100)
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case request := <-runtime.requests:
+				pending := request.pending
+				pending.staged <- clusterCommitStage{context: pending.context}
+				command, decodeErr := decodeMembershipCommand(pending.data)
+				if decodeErr != nil {
+					pending.result <- clusterApplyResponse{err: decodeErr}
+					continue
+				}
+				index++
+				result, applyErr := runtime.machine.Apply(index, command)
+				if index == 101 {
+					// The first SEND committed, but its caller did not observe success.
+					applyErr = membership.ErrQuorumUnavailable
+				}
+				pending.result <- clusterApplyResponse{result: result, err: applyErr}
+			}
+		}
+	}()
+	defer func() { cancel(); <-driverDone }()
+	queue, err := memorydeliveryqueue.New(8)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := queue.Register(sessionID); err != nil {
+		t.Fatal(err)
+	}
+	now := time.UnixMilli(1_700_000_000_100)
+	sequences := []uint64{first.Sequence, second.Delivery.Enqueued[0].Sequence}
+	outbounds := make([]applicationdeliveryqueue.OutboundDTO, 2)
+	for index, sequence := range sequences {
+		if err := queue.TryEnqueue(applicationdeliveryqueue.DeliveryDTO{
+			SessionID: sessionID, Topic: "events/test", QoS: mqtt.QoSExactlyOnce,
+			DurableSequence: sequence, DurableEpoch: 1,
+		}, now); err != nil {
+			t.Fatal(err)
+		}
+		outbounds[index] = applicationdeliveryqueue.OutboundDTO{
+			SessionID: sessionID, PacketID: mqtt.PacketIdentifier(17 + index),
+			DurableSequence: sequence, DurableEpoch: 1,
+		}
+	}
+	decorator := &clusterDurableQueue{Queue: queue, runtime: runtime, clock: clockadapter.SystemClock{}}
+	if count, err := decorator.PromoteBatch(outbounds, now); count != 0 || !errors.Is(err, applicationdeliveryqueue.ErrRetryableUnavailable) {
+		t.Fatalf("ambiguous first SEND: prefix=%d err=%v", count, err)
+	}
+	for index, sequence := range sequences {
+		message, exists := runtime.machine.DeliveryMessage("tenant-a", "client-a", sequence)
+		if !exists || message.PacketID != uint32(outbounds[index].PacketID) || message.Phase != membership.DeliveryPhaseAwaitPubRec {
+			t.Fatalf("committed sequence %d: message=%+v exists=%t", sequence, message, exists)
+		}
+	}
+	if queued, err := queue.ListQueued(sessionID, now); err != nil || len(queued) != 2 {
+		t.Fatalf("unobserved prefix mutated local queue: queued=%+v err=%v", queued, err)
+	}
+	if count, err := decorator.PromoteBatch(outbounds, now); count != 2 || err != nil {
+		t.Fatalf("same-ID retry did not converge: prefix=%d err=%v", count, err)
+	}
+	for _, outbound := range outbounds {
+		if err := decorator.ReplaceOutbound(outbound); err != nil {
+			t.Fatal(err)
+		}
+		if err := decorator.CompleteOutbound(sessionID, outbound.PacketID); err != nil {
+			t.Fatal(err)
+		}
+	}
+	state, exists := runtime.machine.DeliverySession("tenant-a", "client-a")
+	if !exists || len(state.Messages) != 0 {
+		t.Fatalf("retry completion left committed deliveries: state=%+v exists=%t", state, exists)
+	}
+}
+
+// Traceability: CLU-07; docs/specs/cluster-session-and-delivery.md §4.2, §11.11.
+func TestClusterQuorumBarrierUsesReadIndexWithoutProposal(t *testing.T) {
+	runtime := &clusterRuntime{
+		requests:      make(chan clusterDriverRequest, 1),
+		driverStopped: make(chan struct{}),
+		storage:       newClusterStorageMonitor(func() time.Time { return time.Unix(1, 0) }, nil),
+	}
+
+	barrier, err := runtime.BeginQuorumBarrier(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := <-runtime.requests
+	if request.kind != clusterDriverRead || request.pending != nil || len(request.data) != 0 {
+		t.Fatalf("driver request = %+v, want proposal-free ReadIndex", request)
+	}
+	request.readResult <- clusterReadResponse{index: 9}
+	if err := barrier.Wait(); err != nil {
+		t.Fatalf("successful ReadIndex barrier: %v", err)
+	}
+
+	barrier, err = runtime.BeginQuorumBarrier(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	request = <-runtime.requests
+	request.readResult <- clusterReadResponse{err: raftadapter.ErrNotLeader}
+	if err := barrier.Wait(); !errors.Is(err, membership.ErrNotLeader) {
+		t.Fatalf("ReadIndex barrier error = %v, want %v", err, membership.ErrNotLeader)
+	}
+
+	stopped := make(chan struct{})
+	close(stopped)
+	stoppedRuntime := &clusterRuntime{
+		requests:      make(chan clusterDriverRequest, 1),
+		driverStopped: stopped,
+		storage:       newClusterStorageMonitor(func() time.Time { return time.Unix(1, 0) }, nil),
+	}
+	if _, err := stoppedRuntime.BeginQuorumBarrier(context.Background()); !errors.Is(err, membership.ErrQuorumUnavailable) {
+		t.Fatalf("stopped driver barrier error = %v, want %v", err, membership.ErrQuorumUnavailable)
+	}
+	if len(stoppedRuntime.requests) != 0 {
+		t.Fatalf("stopped runtime queued %d requests, want none", len(stoppedRuntime.requests))
 	}
 }

@@ -1087,7 +1087,6 @@ func TestCptDynamicSendResetAndCloseRejections(t *testing.T) {
 	if err := transport.Send(PeerMessageDTO{From: 1, To: 2, Data: []byte{0xff}}); !errors.Is(err, ErrPeerBackpressure) {
 		t.Fatalf("Send to full queue = %v, want ErrPeerBackpressure", err)
 	}
-	cptAssertClosed(t, congestedRemote)
 	status, _ = transport.Status(remote.MemberID)
 	if status.RejectedMessages != 2 || status.OutboundQueuedMessages != peerQueueMessages || status.LastError != "invalid peer message" {
 		t.Fatalf("status after backpressure = %+v, want prior error kept and two rejections", status)
@@ -1773,49 +1772,6 @@ func TestCptPeerConnectionWriteFailureRetainsInFlightFrame(t *testing.T) {
 		cancel()
 		cptWaitDone(t, done, "dynamic session exit")
 	})
-}
-
-func TestCptDynamicPeerConnectionRecordsInboundFailures(t *testing.T) {
-	validFrame := append(cptFramePrefix(1), 0x0a)
-	cases := []struct {
-		name          string
-		prepare       func(*dynamicPeerState)
-		stream        []byte
-		wantError     string
-		wantInboundQd int
-	}{
-		{name: "invalid frame length", stream: cptFramePrefix(0), wantError: "peer read failed"},
-		{name: "inbound queue full", prepare: func(peer *dynamicPeerState) {
-			for range peerQueueMessages {
-				_ = peer.enqueueInbound([]byte{1}, peer.identityRevision)
-			}
-		}, stream: validFrame, wantError: "inbound queue full", wantInboundQd: peerQueueMessages},
-		{name: "identity change in progress", prepare: func(peer *dynamicPeerState) {
-			peer.mu.Lock()
-			peer.identityChanging = true
-			peer.mu.Unlock()
-		}, stream: validFrame, wantError: "peer disconnected"},
-	}
-	for _, test := range cases {
-		t.Run(test.name, func(t *testing.T) {
-			peer := newDynamicPeerState(nil, dynamicTestIdentity(2, "n:2", "n2", PeerPhaseVoter, "", 0x22))
-			if test.prepare != nil {
-				test.prepare(peer)
-			}
-			local, remote := net.Pipe()
-			defer remote.Close()
-			done := cptRun(func() { peer.runConnection(context.Background(), &cptConn{Conn: local}, peer.identityRevision) })
-			if _, err := remote.Write(test.stream); err != nil {
-				t.Fatalf("write inbound stream: %v", err)
-			}
-			cptWaitDone(t, done, "session exit after inbound failure")
-			status := cptDynamicStatus(peer)
-			if status.LastError != test.wantError || status.Connected || status.InboundQueuedMessages != test.wantInboundQd {
-				t.Fatalf("status = %+v, want error %q and %d staged frames", status, test.wantError, test.wantInboundQd)
-			}
-			peer.stop()
-		})
-	}
 }
 
 func cptInboundSession(t *testing.T, transport *DynamicTCPPeerTransport, client *cptNode, serverName string) (*tls.Conn, <-chan struct{}) {

@@ -8,8 +8,8 @@
 | 관련 요구사항 | [PRD CLU-14](../requirements/PRD.md#92-클러스터와-세션), [PRD TEN-08](../requirements/PRD.md#93-멀티테넌시) (tenant별 offline quota는 미충족·후속) |
 | 관련 스펙·데이터 계약 | [Cluster §4.1·§10·§11.9](../specs/cluster-session-and-delivery.md), [Cluster backup v3](../contracts/cluster-backup-v3.md), [replicated-state-v1.proto](../contracts/replicated-state-v1.proto) |
 | 관련 아키텍처 | [Cluster architecture](../architectures/cluster-architecture.md), [Broker core boundaries](../explainers/broker-core-boundaries.md) |
-| 이 결정이 대체하는 이전 결정 기록(ADR) | 없음 |
-| 이 결정을 대체한 새 결정 기록(ADR) | [ADR-0012](ADR-0012-retained-replication-and-cluster-backup-v2.md)의 archive format v2만 대체한다. Retained replication 결정은 유지한다. |
+| 이 결정이 대체하는 이전 결정 기록(ADR) | [ADR-0012](ADR-0012-retained-replication-and-cluster-backup-v2.md)의 archive format v2만 대체한다. Retained replication 결정은 유지한다. |
+| 이 결정을 대체한 새 결정 기록(ADR) | [ADR-0021](ADR-0021-backup-archive-release-window.md)이 v3 restore의 exact-release 규칙만 대체한다. |
 
 ## 1. 결정
 

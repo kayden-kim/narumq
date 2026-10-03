@@ -359,9 +359,9 @@ Volume 복제와 NaruMQ quorum 복제는 같은 보장이 아니다. Durable ACK
 - Durable ACK: [Raft quorum과 durable ACK](raft-quorum-and-durable-ack.md), [ADR-0003](../decisions/ADR-0003-durable-ack-barrier.md)
 - 계획 drain과 Will: [안전한 노드 drain과 Will](safe-node-drain-and-will.md)
 
-Current Go implementation은 MQTT packet codec, delivery/session value-state, routing, publish/subscribe orchestration과 TCP ingress를 제공한다. Dynamic cluster는 QoS 0 retained/offline state와 QoS 1/2 durable target queue, publisher inbound QoS 2 state를 Raft에 commit한다. Limited process acceptance는 detached QoS 1/2 queue/reconnect, subscriber/publisher takeover, backup v3 restore, ACK 뒤 publisher-node process kill 및 quorum loss 중 성공 ACK 부재를 확인한다([Cluster §4.2·§11.11](../specs/cluster-session-and-delivery.md#42-durable-qos-1-2-delivery)).
+Current Go implementation은 MQTT packet codec, delivery/session value-state, routing, publish/subscribe orchestration과 TCP ingress를 제공한다. Dynamic cluster는 QoS 0 retained/offline state, QoS 1/2 durable target queue와 publisher inbound QoS 2 state를 Raft에 commit한다. Target 없는 QoS 1 client PUBLISH와 QoS 1/2 Will은 delivery command 대신 quorum ReadIndex barrier를 사용하지만, QoS 2 client PUBLISH의 RECEIVE state는 target과 무관하게 commit한다. Limited process acceptance는 detached QoS 1/2 queue/reconnect, subscriber/publisher takeover, backup v3 restore, ACK 뒤 publisher-node process kill 및 quorum loss 중 성공 ACK 부재를 확인한다([Cluster §4.2·§11.11](../specs/cluster-session-and-delivery.md#42-qos-12-durable-delivery)).
 
-이 evidence는 production WAL/fsync·EBS power-loss, BP-03, N/N-1, TEN-08 또는 전체 CLU-14 완료를 뜻하지 않는다. 위 protocol flow는 표준 동작과 제품 목표를 설명하며, 구현 범위와 실행 결과는 [Cluster spec](../specs/cluster-session-and-delivery.md) 및 [ADR-0015](../decisions/ADR-0015-cluster-durable-qos-delivery.md)의 acceptance mapping을 따른다.
+이 evidence는 production WAL/fsync·EBS power-loss, BP-03, N/N-1, TEN-08 또는 전체 CLU-14 완료를 뜻하지 않는다. 위 protocol flow는 표준 동작과 제품 목표를 설명하며, 구현 범위와 실행 결과는 [Cluster spec](../specs/cluster-session-and-delivery.md), [ADR-0015](../decisions/ADR-0015-cluster-durable-qos-delivery.md)와 target 없는 delivery command 경계를 정한 [ADR-0019](../decisions/ADR-0019-untargeted-durable-publish-quorum-barrier.md)를 따른다.
 
 ## 9. 확인 질문
 

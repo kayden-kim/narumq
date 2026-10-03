@@ -125,7 +125,14 @@ cmd/narumq
   `ClientCertificateDTO`를 만들어 application boundary로 전달한다. Raw certificate는
   TCP/application/domain 경계로 넘기지 않는다.
 - `adapters/tcp`: accepted SessionKey와 principal snapshot을 connection에 보관하고 모든
-  data-plane dispatch에 함께 전달한다. Username은 identity로 사용하지 않으며 log에 남기지 않는다.
+  data-plane dispatch에 함께 전달한다. Dynamic cluster는 CONNECT를 raw MQTT Client ID로
+  추적하고 tenant별 committed owner/epoch fence를 기록한다. bind 시 반환 ownership이 fence와
+  다르면 거절하며, takeover apply는 이미 bind된 이전 연결을 닫는다. Cleanup은
+  `DisconnectIfOwnershipEpoch`에서 연결이 획득한 epoch와 local map을 비교해 다르면 local
+  lifecycle·timer·delivery·Will 변경을 건너뛴다. 원격 takeover apply는 이전 node의 local map을
+  바꾸지 않으므로 takeover cleanup은 `DisconnectNormal`로 local lifecycle을 정리하고 Will을
+  억제한다. 이전 epoch의 DETACH·DISCARD 등 replicated session mutation은 committed
+  owner/epoch 검증에서 거절된다. Username은 identity로 사용하지 않으며 log에 남기지 않는다.
 - `adapters/memory/deliveryqueue`, `adapters/memory/retained`, `adapters/memory/sessionstore`는
   각각 SessionKey, `(tenant, topic)`, SessionKey를 key로 사용한다.
 
@@ -185,7 +192,29 @@ Dynamic cluster의 connected remote-owned QoS 0 delivery는 `publish.RemoteForwa
 
 ## Raft 영속성 경계
 
-Dynamic cluster 저장소는 `internal/adapters/raft/stable_store.go`가 소유한다. `openStableStoreMode`는 확정된 snapshot과 WAL을 읽은 뒤, 없는 `wal.bin`에 magic header를 쓴다. WAL file과 상위 directory는 신규 생성뿐 아니라 매번 open할 때 sync해 이전 open에서 directory sync가 실패했어도 재시도 뒤 WAL 이름을 신뢰하게 한다. `(*stableStore).appendReady`는 `HardState`, entries 또는 수신 snapshot이 있는 Ready만 checksummed WAL frame으로 기록하고 sync한 뒤 in-memory storage에 적용한다. 복구할 상태가 없는 Ready는 frame과 sync를 생략한다. Dynamic cluster driver는 호출을 유발한 request 또는 inbound frame을 이미 처리한 뒤, 대기 중인 work item을 최대 64개 추가로 staging한다. 대기 중인 inbound frame이 있으면 한 frame을 먼저 처리하고 나머지 공용 예산으로 request와 inbound frame을 추가 staging해 request backlog가 Raft progress를 굶기지 않게 한다. `cmd/narumq/cluster_runtime_test.go::TestStageQueuedDriverWorkReservesInboundProgress`는 요청 queue가 찬 각 staging 배치에서 수신 프레임 하나를 우선 staging하는지 확인한다. Snapshot 확정은 임시 파일을 기록·sync하고 rename한 뒤 directory를 sync한다. 파일 또는 directory sync 오류는 성공한 영속화로 취급하지 않고 Raft runtime에 반환한다.
+저장 scheduling은 [ADR-0020](../decisions/ADR-0020-asynchronous-raft-wal-group-commit.md)을 따른다. `node.go`의 `Open`은 공식 `AsyncStorageWrites=true` RawNode와 단일 `wal_worker.go`의 `WALAppendWorker`를 구성한다. `node_ready.go`의 `processReadyLocked`는 `MsgStorageAppend`를 bounded FIFO로 넘기고, worker 완료 뒤 `stable_store.go`의 `applyRecord`로 memory index를 갱신한다. Worker는 disk만 소유하며 RawNode와 application을 호출하지 않는다. `ProcessReady`는 fsync를 기다리지 않고 새 Ready와 완료를 처리한다. `StorageReady`는 합쳐진 알림이다. Local storage thread ID·메시지는 peer 경계를 통과하지 않는다.
+
+WAL worker는 이미 대기 중인 요청의 기존 CRC frame을 순서대로 기록한 뒤 한 번 sync한다(group commit: 여러 요청이 같은 sync 완료를 기다리는 방식). Count·byte와 snapshot barrier는 ADR-0020의 계약을 따른다. Persistent state가 없는 요청은 앞선 작업 뒤 완료하지만 새 frame·sync는 만들지 않는다. Commit-only HardState도 sync하며, 해당 저장 요청에 첨부된 정확한 Responses는 성공 완료 뒤에만 전달한다. `runClusterMode`가 연결한 `StorageActivityObserver`는 실제 worker I/O를 storage health monitor에 알린다. Ready 처리 시간은 이제 fsync 시간을 포함하지 않으므로 두 histogram 비율의 감소를 성능 개선으로 해석하지 않는다.
+
+Entry-bearing `MsgApp`도 local append 완료까지 같은 bounded 요청에서 보류한다. 공식 async의 leader 복제·저장 병행보다 엄격한 기존 crash-point 계약을 유지하기 위한 경계이며, heartbeat·tick을 함께 보류하지 않는다. Fresh-read readiness는 driver가 게시한 application 완료 상태를 검사한다. Read 결과는 해당 상태 게시 뒤 반환하므로 다음 Ready의 in-flight adapter index를 완료된 projection으로 오해하지 않는다.
+
+Apply 요청은 발행 시점의 append sequence까지 영속화된 뒤 반환한다. Runtime의 `applyBatch`가 typed application과 route projection을 갱신한 뒤 `CompleteApply(batch.ApplySequence)`로 library apply 완료를 확인한다. `Advance`와 8ms timed driver 수집은 제거한다. `stageQueuedDriverWork`는 공용 64개 예산 안에서 지금 대기 중인 inbound를 먼저 처리하며 새로운 도착을 기다리지 않는다. 이미 fresh proof를 완료한 FIFO command의 64개·64 KiB proposal batch는 유지한다. 적용·projection·outbound가 끝난 proposal은 이후 unrelated 저장 완료까지 기다리지 않고 반환한다.
+
+Incoming snapshot은 WAL worker의 단독 barrier 작업이다. Local typed snapshot은 pending WAL·apply가 없는 경계까지 `snapshotPending`으로 보존한다. Backup request도 driver 소유 목록에서 cancel·failure 또는 저장·apply가 끝날 때까지 기다리며 inbound FIFO를 막지 않는다. Drain의 fresh proof와 durable applied/projection index는 유지한다. `Close`는 신규 node 작업을 막고 worker를 join한 뒤 WAL을 닫는다. WAL open의 file·parent directory sync와 snapshot의 temp write·file sync·rename·directory sync는 그대로다.
+
+Close의 마지막 저장은 queue 밖에 보관된 append도 포함한다. Worker는 queued 작업 뒤 이를 기록하되 shutdown 완료를 새 응답으로 발행하지 않아 완료 channel 상한을 지킨다. 선행 terminal 오류로 미처리 작업이 남거나 마지막 sync가 실패하면 저장 실패를 Close에서 반환한다. 반복 Close는 이미 닫힌 파일을 다시 sync하지 않는다. 보류 entry-bearing peer 메시지는 한 번 marshal한 소유 bytes로 보관해 이후 Ready의 protobuf 수명에 의존하지 않는다.
+
+새 local ReadIndex는 `cluster_read_admission.go`가 peer별 전송 여유와 같은 Ready 앞의 발행량을 대조해 제어한다. Follower는 leader 방향의 공간을, leader는 quorum을 구성할 voter의 공간을 기준으로 삼는다. Heartbeat와 proof response의 두 frame 비용 및 두 control frame 여유를 유지하며, 여러 node가 leader queue를 함께 쓰는 비용은 현재 voter·learner 수로 나눈 발행 예산에 반영한다. 분모를 1–15로 제한하여 최소 한 요청은 발행할 수 있게 한다. 빈 3-voter cluster의 local proof 한도는 node별 5개다. 공간이 없으면 driver가 단일 FIFO request를 인수한 상태로 보관하고 request channel의 추가 인수를 멈춘다. `DynamicTCPPeerTransport.OutboundReady`의 write 완료 알림 또는 원래 context 취소에서 다시 판정하며 inbound와 tick은 계속 처리한다. `Node.Step`의 `StepResultDTO`는 decoded message가 ReadIndex request인지 알려 주므로 fan-out 앞에서 inbound 수집을 멈추되 replication response는 같은 staging 예산에서 모을 수 있다. 전송 뒤에는 `runtime.Gosched`로 transport writer에 실행 기회를 준다. Transport 용량은 예약이 아닌 snapshot이고 incoming remote 요청의 발생량까지 보장하지 않는다.
+
+PUBLISH의 local projection admission은 `clusterProjectionReady`가 소유한다. Ready drain 중인 요청은 `clusterDriverProjection`으로 driver queue에 들어가며, `handleDriverRequest`는 driver 소유 목록에 넣는다. 현재 commit index까지 apply/projection이 완료된 경계에서 `resolveProjectionRequests`가 health와 applied index를 검사해 응답한다. 이미 안정된 상태에서는 atomic snapshot으로 즉시 판정한다. 이 checkpoint는 quorum proof를 캐시하거나 새 ReadIndex를 추가하지 않는다. Storage health만 10ms마다 재확인하므로, ingress가 그 주기로 Ready의 짧은 종료 구간을 찾아야 하는 기아(처리 기회를 계속 놓치는 현상)를 피한다.
+
+Snapshot restore 또는 local member profile 적용은 `cluster_release_profile.go`의 release-profile gate를 즉시 무효화한다. 같은 이벤트가 controller를 깨워 두 fresh read barrier의 재확인을 시작하므로, 불필요한 500ms 주기 대기를 줄인다. 알림은 최대 한 개로 합치고 이전 revision의 결과는 gate를 열지 못한다. 재확인 전 fail-closed admission, quorum proof, WAL·ACK 경계는 그대로다.
+
+Durable TCP의 `server_phases.go`는 연결당 bounded FIFO lane 두 개로 RECEIVE/ADVANCE와 RELEASE/COMPLETE를 겹쳐 처리한다. 첫 lane의 PUBLISH는 `server_submission.go`에서 준비하고 application `BeginPublish`/`BeginReceiveQoS2`의 pending 값을 얻는다. `deliverystate.Committer.BeginDelivery`는 application 소유 port이며, Composition Root의 `clusterRuntime.beginCommit`이 준비된 변경을 driver에 대기시킨다. Driver는 변경마다 고유 ReadIndex proof를 확인하고 그 index까지 local projection을 적용한 뒤 입력 순서대로 proposal을 제출한다. TCP 완료 worker만 pending 값을 기다려 ACK를 만든다. WAL worker의 비동기 실행은 이 ACK 경계를 앞당기지 않는다. 같은 방향·PacketID의 입력 순서는 별도로 지키고 control packet은 앞선 lane 작업과 pending 완료를 모두 기다린다. `server.go`의 `deliveryMu`는 상태와 PacketID 예약만 보호하며 durable I/O 중에는 풀어 다른 교환이 진행할 수 있게 한다. Wire write는 기존 writer 하나가 계속 소유한다. 입력 제한, 재사용·종료 순서와 ACK 경계는 [MQTT spec §3.1](../specs/mqtt-protocol-and-session.md#31-수신-qos-상태)에 정의한다.
+
+Target 없는 QoS 1 client PUBLISH와 QoS 1/2 Will은 application port `deliverystate.PublishCommitter.BeginQuorumBarrier`를 통해 같은 cluster driver의 ReadIndex를 기다리며 Raft proposal을 만들지 않는다.
+
+송신 ACK의 ADVANCE·COMPLETE는 `deliveryqueue.Queue.BeginReplaceOutbound`·`BeginCompleteOutbound`로 준비한다. Cluster adapter는 proof·commit 뒤에만 local outbound state를 변경하고, TCP 완료 worker가 그 뒤 PUBREL 전송 또는 PacketID 해제를 허용한다. 송신 writer는 고정 크기 8개 배열로 FIFO batch를 준비한다. `PromoteBatch`는 모든 pending 결과를 회수하고 성공한 연속 prefix만 local queue에서 옮기며, 일부 성공 뒤의 오류도 호출자에게 전달한다. 뒤의 SEND가 먼저 commit된 경우를 위해 writer는 실패한 항목부터 모든 suffix PacketID를 재시도 또는 연결 정리까지 보존한다. Durable sequence가 없는 local 항목도 예약을 중복 사용하지 않는다. 상세 동작과 회귀 시험은 [MQTT §3](../specs/mqtt-protocol-and-session.md#3-publish와-내구성-ack)에 연결한다.
 
 `stable_store_fault_injection_test.go`는 신규 WAL 생성, 재-open, directory sync 실패 뒤 같은 directory 재시도 경계를 검증한다. 별도의 black-box harness인 `tests/chaos/cluster-storage-v1`은 sync 오류를 주입하고 제어된 전원 차단 뒤 sync되지 않은 FUSE 상태를 되돌린다. 이 로컬 시험은 선택한 영속화 순서를 검증하지만 production Linux filesystem, EBS 또는 실제 전원 손실의 내구성을 입증하지 않는다. 이는 ADR-0009의 미완료 gate다.
 

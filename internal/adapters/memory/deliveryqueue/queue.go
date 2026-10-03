@@ -146,6 +146,33 @@ func (queue *Queue) tryEnqueueBatchLocked(deliveries []deliveryqueue.DeliveryDTO
 // Peek returns the live FIFO head without removing it. Expired entries before
 // the head are purged; an empty registered queue returns ok=false without an error.
 // The returned payload is independent of stored state.
+// PeekBatch fills at most len(destination) owned FIFO values.
+func (queue *Queue) PeekBatch(sessionID routing.SessionID, now time.Time, destination []deliveryqueue.DeliveryDTO) (int, error) {
+	if queue == nil {
+		return 0, deliveryqueue.ErrUnavailable
+	}
+	if err := validateSessionID(sessionID); err != nil {
+		return 0, err
+	}
+	if len(destination) == 0 {
+		return 0, nil
+	}
+	queue.mu.Lock()
+	defer queue.mu.Unlock()
+	state, exists := queue.sessions[sessionID]
+	if !exists {
+		return 0, deliveryqueue.ErrUnavailable
+	}
+	state.queued = purgeExpired(state.queued, now)
+	count := min(len(state.queued), len(destination))
+	for i := range count {
+		item := state.queued[i]
+		item.Payload = cloneBytes(item.Payload)
+		destination[i] = item
+	}
+	return count, nil
+}
+
 func (queue *Queue) Peek(sessionID routing.SessionID, now time.Time) (deliveryqueue.DeliveryDTO, bool, error) {
 	if queue == nil {
 		return deliveryqueue.DeliveryDTO{}, false, deliveryqueue.ErrUnavailable
@@ -189,6 +216,58 @@ func (queue *Queue) CompleteHead(sessionID routing.SessionID) error {
 
 // PromoteHead atomically removes the live FIFO head and stores its outbound
 // QoS state. The head remains available when promotion cannot proceed.
+// PromoteBatch atomically moves a contiguous prefix of the queue to outbound state.
+func (queue *Queue) PromoteBatch(outbounds []deliveryqueue.OutboundDTO, now time.Time) (int, error) {
+	if len(outbounds) == 0 {
+		return 0, nil
+	}
+	if queue == nil {
+		return 0, deliveryqueue.ErrUnavailable
+	}
+	sessionID := outbounds[0].SessionID
+	if err := validateSessionID(sessionID); err != nil {
+		return 0, err
+	}
+	queue.mu.Lock()
+	defer queue.mu.Unlock()
+	state, exists := queue.sessions[sessionID]
+	if !exists {
+		return 0, deliveryqueue.ErrUnavailable
+	}
+	state.queued = purgeExpired(state.queued, now)
+	promoted := 0
+	for _, outbound := range outbounds {
+		if outbound.SessionID != sessionID || outbound.PacketID == 0 {
+			return promoted, deliveryqueue.ErrPacketIDConflict
+		}
+		if len(state.queued) == 0 {
+			return promoted, deliveryqueue.ErrUnavailable
+		}
+		head := state.queued[0]
+		if head.Expired(now) {
+			clear(state.queued[:1])
+			state.queued = state.queued[1:]
+			return promoted, deliveryqueue.ErrExpired
+		}
+		if _, exists := state.outbound[outbound.PacketID]; exists {
+			return promoted, deliveryqueue.ErrPacketIDConflict
+		}
+		if len(state.outbound) >= queue.capacity {
+			return promoted, deliveryqueue.ErrFull
+		}
+		if head.SessionID != sessionID {
+			return promoted, deliveryqueue.ErrUnavailable
+		}
+		clear(state.queued[:1])
+		state.queued = state.queued[1:]
+		outbound.DurableSequence = head.DurableSequence
+		outbound.DurableEpoch = head.DurableEpoch
+		state.outbound[outbound.PacketID] = outbound
+		promoted++
+	}
+	return promoted, nil
+}
+
 func (queue *Queue) PromoteHead(outbound deliveryqueue.OutboundDTO, now time.Time) error {
 	if queue == nil {
 		return deliveryqueue.ErrUnavailable
@@ -458,4 +537,18 @@ func cloneBytes(value []byte) []byte {
 	copyOfValue := make([]byte, len(value))
 	copy(copyOfValue, value)
 	return copyOfValue
+}
+
+func (queue *Queue) BeginReplaceOutbound(outbound deliveryqueue.OutboundDTO) (deliveryqueue.PendingTransition, error) {
+	if err := queue.ReplaceOutbound(outbound); err != nil {
+		return nil, err
+	}
+	return deliveryqueue.CompletedTransition{}, nil
+}
+
+func (queue *Queue) BeginCompleteOutbound(outbound deliveryqueue.OutboundDTO) (deliveryqueue.PendingTransition, error) {
+	if err := queue.CompleteOutbound(outbound.SessionID, outbound.PacketID); err != nil {
+		return nil, err
+	}
+	return deliveryqueue.CompletedTransition{}, nil
 }

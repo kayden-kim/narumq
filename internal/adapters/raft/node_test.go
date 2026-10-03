@@ -33,7 +33,7 @@ func TestNodeConfigAndLifecycle(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	batch, err := node.ProcessReady()
+	batch, err := processReadyForTest(t, node)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -60,7 +60,7 @@ func TestNodeConfigAndLifecycle(t *testing.T) {
 	if err := node.Tick(); !errors.Is(err, ErrClosed) {
 		t.Fatalf("Tick() after Close() = %v, want ErrClosed", err)
 	}
-	if _, err := node.ProcessReady(); !errors.Is(err, ErrClosed) {
+	if _, err := processReadyForTest(t, node); !errors.Is(err, ErrClosed) {
 		t.Fatalf("ProcessReady() after Close() = %v, want ErrClosed", err)
 	}
 }
@@ -71,13 +71,13 @@ func TestNodeMessageAndProposalValidation(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer node.Close()
-	if _, err := node.ProcessReady(); err != nil {
+	if _, err := processReadyForTest(t, node); err != nil {
 		t.Fatal(err)
 	}
 	if err := node.Propose([]byte("command")); !errors.Is(err, ErrNotLeader) {
 		t.Fatalf("Propose() on follower = %v, want ErrNotLeader", err)
 	}
-	if err := node.Step(MessageDTO{From: 2, To: 1, Data: []byte{0xff}}); !errors.Is(err, ErrInvalidMessage) {
+	if _, err := node.Step(MessageDTO{From: 2, To: 1, Data: []byte{0xff}}); !errors.Is(err, ErrInvalidMessage) {
 		t.Fatalf("Step() malformed payload = %v, want ErrInvalidMessage", err)
 	}
 	message := &pb.Message{Type: pb.MsgApp.Enum(), From: new(uint64(2)), To: new(uint64(3))}
@@ -85,7 +85,7 @@ func TestNodeMessageAndProposalValidation(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := node.Step(MessageDTO{From: 2, To: 1, Data: data}); !errors.Is(err, ErrInvalidMessage) {
+	if _, err := node.Step(MessageDTO{From: 2, To: 1, Data: data}); !errors.Is(err, ErrInvalidMessage) {
 		t.Fatalf("Step() metadata mismatch = %v, want ErrInvalidMessage", err)
 	}
 	if err := node.Propose(nil); !errors.Is(err, ErrNotLeader) {
@@ -100,7 +100,7 @@ func TestNodeMessageValidationAndFailureState(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := node.ProcessReady(); err != nil {
+	if _, err := processReadyForTest(t, node); err != nil {
 		t.Fatal(err)
 	}
 	for _, message := range []MessageDTO{
@@ -109,7 +109,7 @@ func TestNodeMessageValidationAndFailureState(t *testing.T) {
 		{From: 2, To: 2, Data: []byte{1}},
 		{From: 2, To: 1, Data: make([]byte, maxMessageSize+1)},
 	} {
-		if err := node.Step(message); !errors.Is(err, ErrInvalidMessage) {
+		if _, err := node.Step(message); !errors.Is(err, ErrInvalidMessage) {
 			t.Fatalf("Step(%#v) error = %v, want ErrInvalidMessage", message, err)
 		}
 	}
@@ -118,7 +118,7 @@ func TestNodeMessageValidationAndFailureState(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := node.Step(MessageDTO{From: 2, To: 1, Data: data}); err != nil && !errors.Is(err, ErrInvalidMessage) {
+	if _, err := node.Step(MessageDTO{From: 2, To: 1, Data: data}); err != nil && !errors.Is(err, ErrInvalidMessage) {
 		t.Fatalf("valid peer Step() error = %v", err)
 	}
 	if err := node.ForgetLeader(); err != nil {
@@ -140,7 +140,7 @@ func TestNodeReportPeerMessageFailureValidatesFixedVoter(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := node.ProcessReady(); err != nil {
+	if _, err := processReadyForTest(t, node); err != nil {
 		t.Fatal(err)
 	}
 	for _, peerID := range []NodeID{0, 1, 4} {
@@ -219,7 +219,7 @@ func TestNodeCommandResultsAreDeepCopies(t *testing.T) {
 		for range 512 {
 			progress := false
 			for _, nodeID := range []NodeID{1, 2, 3} {
-				batch, err := nodes[nodeID].ProcessReady()
+				batch, err := processReadyForTest(t, nodes[nodeID])
 				if err != nil {
 					t.Fatalf("node %d ProcessReady() = %v", nodeID, err)
 				}
@@ -235,7 +235,7 @@ func TestNodeCommandResultsAreDeepCopies(t *testing.T) {
 				pending := queue
 				queue = nil
 				for _, message := range pending {
-					if err := nodes[message.To].Step(message); err != nil {
+					if _, err := nodes[message.To].Step(message); err != nil {
 						t.Fatalf("deliver %d -> %d: %v", message.From, message.To, err)
 					}
 					progress = true
@@ -328,7 +328,7 @@ func TestWALBoundaryHookReportsNormalEntryStages(t *testing.T) {
 		for range 512 {
 			progress := false
 			for _, nodeID := range []NodeID{1, 2, 3} {
-				batch, err := nodes[nodeID].ProcessReady()
+				batch, err := processReadyForTest(t, nodes[nodeID])
 				if err != nil {
 					t.Fatalf("node %d ProcessReady() = %v", nodeID, err)
 				}
@@ -341,7 +341,7 @@ func TestWALBoundaryHookReportsNormalEntryStages(t *testing.T) {
 				pending := queue
 				queue = nil
 				for _, message := range pending {
-					if err := nodes[message.To].Step(message); err != nil {
+					if _, err := nodes[message.To].Step(message); err != nil {
 						t.Fatalf("deliver %d -> %d: %v", message.From, message.To, err)
 					}
 					progress = true
@@ -424,7 +424,7 @@ func TestWALSyncObserverReportsSuccessfulReadyFsyncs(t *testing.T) {
 		for range 512 {
 			progress := false
 			for _, nodeID := range []NodeID{1, 2, 3} {
-				batch, err := nodes[nodeID].ProcessReady()
+				batch, err := processReadyForTest(t, nodes[nodeID])
 				if err != nil {
 					t.Fatalf("node %d ProcessReady() = %v", nodeID, err)
 				}
@@ -437,7 +437,7 @@ func TestWALSyncObserverReportsSuccessfulReadyFsyncs(t *testing.T) {
 				pending := queue
 				queue = nil
 				for _, message := range pending {
-					if err := nodes[message.To].Step(message); err != nil {
+					if _, err := nodes[message.To].Step(message); err != nil {
 						t.Fatalf("deliver %d -> %d: %v", message.From, message.To, err)
 					}
 					progress = true
@@ -483,7 +483,7 @@ func TestWALSyncObserverReportsSuccessfulReadyFsyncs(t *testing.T) {
 		}
 		return originalOps.sync(file)
 	}
-	_, err := nodes[1].ProcessReady()
+	_, err := processReadyForTest(t, nodes[1])
 	filePersistenceOps = originalOps
 	if !errors.Is(err, ErrFailed) {
 		t.Fatalf("ProcessReady() error = %v, want ErrFailed", err)
@@ -532,7 +532,7 @@ func TestProcessReadySkipsWALFrameWithoutPersistentState(t *testing.T) {
 		for range 512 {
 			progress := false
 			for _, nodeID := range []NodeID{1, 2, 3} {
-				batch, err := nodes[nodeID].ProcessReady()
+				batch, err := processReadyForTest(t, nodes[nodeID])
 				if err != nil {
 					t.Fatalf("node %d ProcessReady() = %v", nodeID, err)
 				}
@@ -545,7 +545,7 @@ func TestProcessReadySkipsWALFrameWithoutPersistentState(t *testing.T) {
 				pending := queue
 				queue = nil
 				for _, message := range pending {
-					if err := nodes[message.To].Step(message); err != nil {
+					if _, err := nodes[message.To].Step(message); err != nil {
 						t.Fatalf("deliver %d -> %d: %v", message.From, message.To, err)
 					}
 					progress = true
@@ -579,7 +579,7 @@ func TestProcessReadySkipsWALFrameWithoutPersistentState(t *testing.T) {
 	if err := nodes[1].ReadIndex([]byte("barrier")); err != nil {
 		t.Fatal(err)
 	}
-	batch, err := nodes[1].ProcessReady()
+	batch, err := processReadyForTest(t, nodes[1])
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -598,24 +598,24 @@ func TestProcessReadySkipsWALFrameWithoutPersistentState(t *testing.T) {
 	}
 
 	for _, message := range batch.Messages {
-		if err := nodes[message.To].Step(message); err != nil {
+		if _, err := nodes[message.To].Step(message); err != nil {
 			t.Fatalf("deliver %d -> %d: %v", message.From, message.To, err)
 		}
 	}
 	var responses []MessageDTO
 	for _, nodeID := range []NodeID{2, 3} {
-		followerBatch, err := nodes[nodeID].ProcessReady()
+		followerBatch, err := processReadyForTest(t, nodes[nodeID])
 		if err != nil {
 			t.Fatalf("node %d ProcessReady() = %v", nodeID, err)
 		}
 		responses = append(responses, followerBatch.Messages...)
 	}
 	for _, message := range responses {
-		if err := nodes[message.To].Step(message); err != nil {
+		if _, err := nodes[message.To].Step(message); err != nil {
 			t.Fatalf("deliver %d -> %d: %v", message.From, message.To, err)
 		}
 	}
-	batch, err = nodes[1].ProcessReady()
+	batch, err = processReadyForTest(t, nodes[1])
 	if err != nil {
 		t.Fatal(err)
 	}
