@@ -137,8 +137,9 @@ Cluster mode에서 persistent session(MQTT 3.1.1 CleanSession=0 또는 MQTT 5 Cl
 6. **Ownership 연동:** Ownership `Release`가 apply되면 같은 key의 offline record도 지운다. Transfer/acquire는 record를 보존하며 새 owner의 CLAIM이 가져간다. 모든 offline record는 `record.epoch` 이상의 ownership row를 가져야 한다.
 7. **SessionPresent:** `CleanStart=0` CONNECT의 CLAIM이 `Found=true`이면 다른 node로 reconnect해도 CONNACK `SessionPresent=1`이고 message를 sequence FIFO로 전달한다. `CleanStart=1`이면 CLAIM으로 record를 지우고 message는 버린다.
 8. **Fallback:** DETACH가 quorum/compatibility/stale-epoch 이유로 실패하면 local queue를 그대로 둔다. CLAIM이 실패하면 CONNECT를 ownership-unavailable reason으로 거절하고 local session 변경을 rollback한다. 기존 local session이 없었던 시도는 새 delivery queue 등록과 tenant route binding도 제거한다. 기존 local session이 있으면 CLAIM 성공 전까지 기존 expiry/WILL timer를 유지하고, 실패 시 기존 timer와 session 상태를 보존한다. ENQUEUE 실패는 해당 대상만 `Saturated`(capacity) 또는 `Unavailable`(그 외)로 보고한다.
-9. **알려진 한계:** Feature 비활성 시 owner node가 연결 중에 crash하면 DETACH가 없어 이후 message는 capture되지 않는다. Feature 활성 시 replicated session metadata로 owner 재시작 뒤 expiry와 session 복구를 수행한다(§4.3). Detach 전환 중 local queue 조회와 제거 사이에 해당 node로 도착한 QoS 0 message는 유실될 수 있다. ENQUEUE는 대상 session마다 commit 1회다.
+9. **알려진 한계:** Feature 비활성 시 owner node가 연결 중에 crash하면 DETACH가 없어 이후 message는 capture되지 않는다. Feature 활성 시 replicated session metadata로 owner 재시작 뒤 expiry와 session 복구를 수행한다(§4.3). Detach 전환 중 owner node에서 publish된 QoS 0 message는 유실하지 않는다(11항). 다른 node에서 forward된 QoS 0 delivery는 전환 중이거나 local queue 제거 뒤 도착하면 §3.1의 at-most-once에 따라 유실될 수 있다. ENQUEUE는 대상 session마다 commit 1회다.
 10. **Schema와 profile gate:** Replicated-state schema는 `1.0`을 유지하고 unknown field를 거절한다. Offline command는 fresh read barrier 뒤 모든 non-retired member의 cluster protocol/state schema가 exact match이고 release가 같은 major의 인접 minor window 안에 있는지 확인한 뒤 제안한다.
+11. **Detach 전환 보호:** [ADR-0026](../decisions/ADR-0026-detach-transition-local-qos0-gate.md)에 따라 전환 중 owner-node local publish는 DETACH 결과를 기다린 뒤 다시 판정한다. 성공하면 offline ENQUEUE로 보내고 실패하면 유지된 local queue로 보낸다. 최대 대기는 10초이며 이를 넘기면 해당 대상을 `Unavailable`로 보고한다. 캡처한 message와 같은 publisher의 이후 message 순서는 FIFO다. Local queue 제거 직후 도착한 publish도 offline 경로를 한 번 재판정한다. 각 판정은 새 현재 시각으로 기존 absolute Message Expiry deadline을 검사한다. 대기 중 만료되면 ENQUEUE·forward·local enqueue를 실행하지 않고 전달 결과에도 넣지 않는다. Forward 경로는 기다리지 않는다. 기존 capacity·expiry·commit timeout 경계는 유지한다.
 
 ### 4.2 QoS 1/2 durable delivery
 
@@ -934,7 +935,7 @@ Process fixture 검증 중 JWT username/password flags, client ID allowlist, 여
 
 첫 local gate 이후 시험 helper를 보완했다: 비활성 판정을 `session-metadata` token의 포함 여부로 통일하고 다른 feature만 활성화된 경우를 검증했다. Delayed Will의 T0는 TCP close 직후이며 subscription 대기는 duplicate client도 거절한다. 보완 focused gate·process 시험과 일반·failpoint build를 묶은 명령은 exit 0(wall 42.38s)이었다. Production 코드는 이 보완에서 바꾸지 않았다.
 
-QoS 0 local queue capture는 이 recovery의 보호 범위가 아니다. `disconnectLocked`가 `ListQueued`로 읽은 QoS 0 message를 `DetachSession`으로 commit하기 전 process를 잃으면, session metadata에는 그 queue가 없어서 복원하지 못한다. [ADR-0013 §6](../decisions/ADR-0013-offline-queue-replication-and-cluster-backup-v3.md#6-결과)와 tasks의 열린 capture-race 항목을 유지한다. Production Linux/EBS, 이후 게시 release별 compatibility와 자동 failure detection도 이 local 수용 증거의 범위 밖이다.
+QoS 0 local queue capture는 이 recovery의 보호 범위가 아니다. `disconnectLocked`가 `BeginDetach`로 읽은 QoS 0 message를 `DetachSession`으로 commit하기 전 process를 잃으면, session metadata에는 그 queue가 없어서 복원하지 못한다. [ADR-0013 §6](../decisions/ADR-0013-offline-queue-replication-and-cluster-backup-v3.md#6-결과)와 tasks의 열린 capture-race 항목을 유지한다. Owner-node local publish의 detach 전환 race는 §11.25가 별도로 보호한다. Production Linux/EBS, 이후 게시 release별 compatibility와 자동 failure detection도 이 local 수용 증거의 범위 밖이다.
 
 보완 후 최종 local gate도 위와 같이 PASS였다. Gate 실행 중에는 시험 보완 결과와 QoS 0 capture 잔여 범위 문서를 갱신했고, 종료 뒤에는 실행 증거를 추가했다. 커밋 준비 중 delayed Will 시험에 `/health/ready` 200 대기를 추가하고 위 process 시험을 다시 통과했다. 이 마지막 변경은 integration 시험에만 적용했고 전체 local gate는 그 전에 실행한 증거다.
 
@@ -955,4 +956,53 @@ NARUMQ_RELEASE_COMPAT=1 GOMAXPROCS=4 go test ./tests/integration -run '^(TestDyn
 # F: repository gate
 GOMAXPROCS=4 go run ./tools/verify local
 ```
+
+### 11.25 Detach 전환 local QoS 0 보존 수용 매핑
+
+이 매핑은 [ADR-0026](../decisions/ADR-0026-detach-transition-local-qos0-gate.md)의 owner-node local publish 보호만 검증한다. 다른 node의 forward delivery와 연결 중 owner crash는 보호 범위 밖이다. 실행 증거는 실제 실행 뒤에만 기록한다.
+
+| Scenario | 관찰할 결과 | 시험 위치 | 실행 증거 |
+| --- | --- | --- | --- |
+| Local enqueue 전환과 실패 재개 | 전환 중 local item은 상태 변경 없이 거절하고 durable item은 받는다. 실패 뒤 기존 FIFO에 이어 enqueue한다. | `internal/adapters/memory/deliveryqueue.TestBeginDetachRejectsLocalEnqueueUntilFinish` | PASS: adapter 단계 0.371s·최종 focused 0.500s, race 3회 1.497s |
+| Commit 성공 뒤 제거와 대기자 해제 | 대기자는 nil로 끝나고 queue 조회·enqueue는 ErrUnavailable이다. | `internal/adapters/memory/deliveryqueue.TestFinishDetachCommittedRemovesAndWakesWaiters` | PASS: 위 focused·race; 제거 전에 AwaitDetach의 대기 진입을 확인한 보강 시험도 race 3회 1.447s |
+| Remove의 대기자 해제 | Remove가 전환 대기자를 깨운다. | `internal/adapters/memory/deliveryqueue.TestRemoveWakesDetachWaiters` | PASS: 위 focused·race 및 대기 진입 보강 시험 |
+| Publish 전환 재판정 | Commit 성공은 offline, 실패는 local로 전달한다. 제거 재판정·committer 부재·timeout 결과와 대기 중 expiry 직전·경계·이후를 확인한다. | `internal/application/publish.TestPublishLocalDetachTransition` | PASS: 기존 focused 0.550s·race 3회 1.490s. Expiry 보강 뒤 targeted 0.449s·race 3회 1.472s. 재전환의 두 번째 대기 금지와 제거 재판정 상한도 확인 |
+| Forward 비대기 | ErrDetaching을 ErrUnavailable로 바꾸고 기다리지 않는다. | `internal/application/publish.TestAcceptForwardedDetachingIsUnavailable` | PASS: 위 publish focused·race |
+| Disconnect 성공 | Pending QoS 0 capture 뒤 FinishDetach(true)를 실행한다. | `internal/application/connect.TestClusterDisconnectDetachesPendingQueueAndRemovesLocalCopy` | PASS: connect 단계 0.415s·focused 0.562s |
+| Disconnect 실패 | FinishDetach(false) 뒤 local queue를 유지한다. | `internal/application/connect.TestClusterDetachFailureKeepsLocalQueue` | PASS: 위 connect 시험 |
+| BeginDetach 실패 | DETACH와 FinishDetach를 호출하지 않는다. | `internal/application/connect.TestClusterDisconnectSkipsDetachWhenBeginDetachFails` | PASS: 위 connect 시험 |
+| 실제 queue 동시 publish | DETACH에는 race/1, 이후 offline ENQUEUE에는 race/2만 기록한다. Publish는 Delivered이며 local queue는 제거된다. | `cmd/narumq.TestClusterDetachCapturesConcurrentLocalQoS0Publish` | 수정 전 FAIL. 수정 후 PASS: targeted 0.253s·focused 13.747s·race 3회 1.261s |
+| Focused·race·build | 영향 package 시험, 세 번의 race 시험, 일반·failpoint 빌드를 통과한다. | 아래 실행 명령 | PASS: 최초 focused 여섯 package·wall 17.40s, race 세 package·wall 13.41s, 두 build exit 0·wall 8.96s. Expiry 보강 뒤 focused 여섯 package와 두 build도 exit 0·합계 wall 21.04s. 최종 승인 race 명령은 세 package 각 3회 PASS(memory queue 1.360s·publish 1.371s·cmd 1.210s, wall 6.39s) |
+| 기존 process 회귀 | Offline FIFO·SessionPresent·metadata 경로를 유지한다. | `tests/integration.TestClusterBackupRestoreProcessCrashAndResync`, `TestDynamicClusterPersistentSubscriptionReplayProcessAcceptance`, `TestDynamicClusterSessionMetadataProcessAcceptance` | PASS: expiry 보강 뒤 실제 broker process 세 시험 21.16s·14.45s·26.79s, package 41.418s·wall 43.77s. 보강 전 실행도 세 시험 PASS |
+| 전체 local gate | 프로젝트 local 검증을 통과한다. | `go run ./tools/verify local` | PASS: expiry 보강 뒤 최종 exit 0·local PASS, wall 246.01s·integration 208.341s. 보강 전 실행도 PASS(wall 272.53s·256.81s) |
+
+
+2026-10-04 실행 환경은 Windows/amd64, Go 1.26.5, 저장소 root `D:/Workspace/narumq`다. Process와 local gate의 `GOMAXPROCS`는 4다. 수정 전 race 시험은 port·adapter·fake와 시험만 추가하고 disconnect·publish 경로를 바꾸기 전에 실행했다. 결과는 FAIL이었다.
+
+```text
+# 수정 전 FAIL, 수정 후 PASS
+go test ./cmd/narumq -run '^TestClusterDetachCapturesConcurrentLocalQoS0Publish$' -count=1 -v
+# Focused
+go test ./internal/adapters/memory/deliveryqueue ./internal/application/connect ./internal/application/publish ./internal/application/subscribe ./internal/adapters/tcp ./cmd/narumq -count=1
+# Race 3회
+go test -race ./internal/adapters/memory/deliveryqueue ./internal/application/publish ./cmd/narumq -run 'Detach|LocalDetach|AcceptForwarded' -count=3
+# Build
+go build ./... && go build -tags narumq_failpoint ./...
+# 기존 실제 process 회귀
+GOMAXPROCS=4 go test ./tests/integration -run '^(TestClusterBackupRestoreProcessCrashAndResync|TestDynamicClusterPersistentSubscriptionReplayProcessAcceptance|TestDynamicClusterSessionMetadataProcessAcceptance)$' -parallel=2 -count=1 -v -timeout 20m
+# 전체 gate
+GOMAXPROCS=4 go run ./tools/verify local
+```
+
+위 환경 변수 표기는 명령의 실행 조건이다. Windows에서는 실행 process의 환경에 `GOMAXPROCS=4`를 설정했다. 첫 local gate는 traceability·architecture·네 fuzz target 각각 10,000회·package/integration·production race·coverage를 통과했다. 이후 대기자 시험은 queue 내부 channel을 검사하는 대신 `AwaitDetach`의 대기 진입을 확인한 뒤 제거하도록 보강했다. 이 시험은 별도 race 3회 PASS였으며 production 코드는 바꾸지 않았다. Connect 시험 작성 중 존재하지 않는 시각 helper 호출로 생긴 compile 오류는 기존 고정 시각 fixture로 고쳤다. 이 준비 오류를 수정 전 동작 실패 증거로 포함하지 않는다.
+
+대기 진입 시험과 기준 문서·코드 지도·모듈 설계 갱신 뒤 local gate도 PASS했다(exit 0, wall 256.81s·integration 215.200s). Traceability·architecture·네 fuzz target 각각 10,000회·package/integration·production race·coverage가 통과했다. 새 ADR·수용 매핑·모듈 절의 링크 15개는 대상 파일과 heading을 확인해 PASS했다. 이 결과는 아래 대기 중 expiry 보강 전의 증거다.
+
+대기 중 expiry 보강: 최초 시각을 재사용하던 구현은 deadline에 도달한 message와 deadline을 지난 message를 Delivered로 보고하여 새 경계 시험에서 FAIL했다. 각 candidate 판정이 새 현재 시각을 읽고 기존 absolute deadline을 검사하도록 수정했다. 만료된 후보는 전달 경로를 실행하지 않으며 Delivered·Saturated·Unavailable 어느 결과에도 넣지 않는다. Deadline은 연장하지 않는다.
+
+보강 뒤 publish·실제 queue race targeted 시험은 PASS(publish 0.449s·cmd 0.193s)였고 detach·forward race 3회도 PASS(publish 1.472s·cmd 1.259s)였다. 실제 memory queue로 `go run -race` smoke를 실행해 대기 999.999999ms에서는 Delivered=[sub]·queue item 1개, 1s와 2s에서는 Delivered=[]·queue item 0개를 확인했다. Queue는 최초 시각으로 조회해 만료 필터가 잘못된 enqueue를 숨기지 않게 했다. 임시 smoke source는 실행 뒤 제거했다.
+
+Expiry 보강 뒤 최종 focused 여섯 package는 모두 PASS였다(memory queue 0.452s·connect 0.505s·publish 0.473s·subscribe 0.461s·TCP 10.454s·cmd 11.811s). 일반·failpoint build도 exit 0이었고 이 묶음의 wall은 21.04s였다. 동일 process 회귀 명령은 세 시험 모두 PASS(package 41.418s·wall 43.77s)였다. 최종 `GOMAXPROCS=4 go run ./tools/verify local`은 exit 0·local PASS(wall 246.01s·integration 208.341s)였다. Traceability·architecture·네 fuzz target 각각 10,000회·package/integration·production race·coverage가 통과했다. 이 최종 gate 뒤에는 실행 증거만 기록했고 코드는 바꾸지 않았다.
+
+최종 Go 변경에 대해 위 승인된 세 package race 명령도 그대로 실행했다(`go test -race ./internal/adapters/memory/deliveryqueue ./internal/application/publish ./cmd/narumq -run 'Detach|LocalDetach|AcceptForwarded' -count=3`). 세 package 모두 PASS(memory queue 1.360s·publish 1.371s·cmd 1.210s, wall 6.39s)였다. 이 실행은 expiry 보강 뒤 publish·cmd 두 package race 결과와 구분한다. ADR-0026 §5의 race 증거는 이 최종 명령을 포함한다.
 

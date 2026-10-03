@@ -3,6 +3,7 @@ package connect
 import (
 	"context"
 	"errors"
+	"reflect"
 	"testing"
 	"time"
 
@@ -43,7 +44,7 @@ func (c *fakeOfflineCoordinator) ClaimOffline(_ context.Context, tenantID, clien
 	return c.claimResult, c.claimErr
 }
 
-// Traceability: CLU-14; docs/specs/cluster-session-and-delivery.md §4.1, §10, §11.9.
+// Traceability: CLU-14; docs/specs/cluster-session-and-delivery.md §4.1, §10, §11.9, §11.25.
 func TestClusterDisconnectDetachesPendingQueueAndRemovesLocalCopy(t *testing.T) {
 	now := time.Date(2026, time.January, 1, 10, 0, 0, 0, time.UTC)
 	clock := &fakeClock{now: now}
@@ -92,6 +93,9 @@ func TestClusterDisconnectDetachesPendingQueueAndRemovesLocalCopy(t *testing.T) 
 	if len(offline.detachCalls) != 1 {
 		t.Fatalf("detach calls = %d, want 1", len(offline.detachCalls))
 	}
+	if !reflect.DeepEqual(queue.detachFinishes, []bool{true}) {
+		t.Fatalf("detach results = %v, want [true]", queue.detachFinishes)
+	}
 	call := offline.detachCalls[0]
 	if call.TenantID != "default" || call.ClientID != "client-v5" || call.OwnerNodeID != 1 || call.Epoch != 5 {
 		t.Fatalf("detach call fields mismatch: %+v", call)
@@ -135,7 +139,7 @@ func TestClusterDisconnectDetachesPendingQueueAndRemovesLocalCopy(t *testing.T) 
 	}
 }
 
-// Traceability: CLU-14; docs/specs/cluster-session-and-delivery.md §4.1, §10, §11.9.
+// Traceability: CLU-14; docs/specs/cluster-session-and-delivery.md §4.1, §10, §11.9, §11.25.
 func TestClusterDetachFailureKeepsLocalQueue(t *testing.T) {
 	now := time.Date(2026, time.January, 1, 10, 0, 0, 0, time.UTC)
 	clock := &fakeClock{now: now}
@@ -176,10 +180,35 @@ func TestClusterDetachFailureKeepsLocalQueue(t *testing.T) {
 	if len(offline.detachCalls) != 1 {
 		t.Fatalf("detach calls = %d, want 1", len(offline.detachCalls))
 	}
+	if !reflect.DeepEqual(queue.detachFinishes, []bool{false}) || !queue.registered[resF.SessionID] {
+		t.Fatalf("failed detach results = %v, registered = %v", queue.detachFinishes, queue.registered[resF.SessionID])
+	}
 	// Local deliveries must NOT be removed on detach failure
 	queued, _ := queue.ListQueued(resF.SessionID, now)
 	if len(queued) != 1 || queued[0].Topic != "t/keep" {
 		t.Fatalf("local queue should be preserved on detach failure, got %+v", queued)
+	}
+}
+
+// Traceability: CLU-14; docs/specs/cluster-session-and-delivery.md §4.1, §11.25.
+func TestClusterDisconnectSkipsDetachWhenBeginDetachFails(t *testing.T) {
+	queue := newFakeDeliveryQueue()
+	offline := &fakeOfflineCoordinator{}
+	useCase, err := New(&fakeClock{now: time.Date(2026, time.January, 1, 10, 0, 0, 0, time.UTC)}, newFakeSessionRepository(), queue, routing.NewTable(), &fakeScheduler{}, &fakeWillPublisher{},
+		WithOwnershipCoordinator(&fakeOwnershipCoordinator{epoch: 1}, 1), WithOfflineCoordinator(offline))
+	if err != nil {
+		t.Fatal(err)
+	}
+	res, err := useCase.Connect(mqtt.Connect{Version: mqtt.ProtocolV5, ClientID: "begin-failure", SessionExpiryInterval: 60})
+	if err != nil || !res.Accepted {
+		t.Fatalf("Connect = %+v, %v", res, err)
+	}
+	queue.beginDetachErr = deliveryqueue.ErrUnavailable
+	if err := useCase.Disconnect(res.SessionID, session.DisconnectNormal); err != nil {
+		t.Fatal(err)
+	}
+	if len(offline.detachCalls) != 0 || len(queue.detachFinishes) != 0 || !queue.registered[res.SessionID] {
+		t.Fatalf("failed BeginDetach: calls = %v, finishes = %v, registered = %v", offline.detachCalls, queue.detachFinishes, queue.registered[res.SessionID])
 	}
 }
 

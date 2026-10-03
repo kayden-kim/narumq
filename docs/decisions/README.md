@@ -31,6 +31,7 @@
 | [ADR-0023](ADR-0023-raft-wal-compaction-and-snapshot-retention.md) | Accepted (local storage lifecycle; production Linux/EBS 제외) | Local snapshot마다 WAL을 영속 tail로 교체하고 최신 snapshot 하나를 보존하며 torn-write 근거가 있을 때만 마지막 CRC 오류를 절단한다. |
 | [ADR-0024](ADR-0024-joiner-voter-volume-loss-admission.md) | Accepted (local joiner volume-loss admission; production Linux/EBS 제외) | Seed runtime은 기존 VOTER를 승인하지 않고 fresh joiner는 VOTER 응답을 설치하지 않는다. 같은-volume 복구는 persisted identity로 재개하고 기록 손실은 새 ID로 교체한다. |
 | [ADR-0025](ADR-0025-replicated-session-metadata-and-owner-loss-recovery.md) | Accepted | `session-metadata` 복제와 owner crash 뒤 session expiry·Will 복구를 정한다. |
+| [ADR-0026](ADR-0026-detach-transition-local-qos0-gate.md) | Accepted (owner-node local QoS 0 publish 경로만; forward·connected owner crash 제외) | Detach 전환 중 owner-node local QoS 0 publish를 queue detaching 표시와 DETACH 완료 대기로 보존한다. |
 
 `Proposed` ADR은 검토 중인 제안이다. `Accepted` ADR은 각 기록에 명시한 범위 안에서 채택된 결정이다. `design target only`는 production runtime이나 acceptance 검증을 뜻하지 않는다.
 

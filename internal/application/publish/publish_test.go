@@ -1,6 +1,7 @@
 package publish
 
 import (
+	"context"
 	"errors"
 	"reflect"
 	"testing"
@@ -20,6 +21,8 @@ type recordingQueue struct {
 	errors     map[routing.SessionID]error
 	calls      []routing.SessionID
 	onEnqueue  func()
+	awaitCalls []routing.SessionID
+	awaitHook  func(routing.SessionID) error
 }
 
 // recordingQueue models the application delivery queue contract by copying retained payloads.
@@ -69,6 +72,17 @@ func (*recordingQueue) PromoteHead(applicationdeliveryqueue.OutboundDTO, time.Ti
 }
 func (*recordingQueue) ListQueued(routing.SessionID, time.Time) ([]applicationdeliveryqueue.DeliveryDTO, error) {
 	return nil, nil
+}
+func (*recordingQueue) BeginDetach(routing.SessionID, time.Time) ([]applicationdeliveryqueue.DeliveryDTO, error) {
+	return nil, nil
+}
+func (*recordingQueue) FinishDetach(routing.SessionID, bool) {}
+func (queue *recordingQueue) AwaitDetach(_ context.Context, sessionID routing.SessionID) error {
+	queue.awaitCalls = append(queue.awaitCalls, sessionID)
+	if queue.awaitHook != nil {
+		return queue.awaitHook(sessionID)
+	}
+	return nil
 }
 func (*recordingQueue) ListOutbound(routing.SessionID) ([]applicationdeliveryqueue.OutboundDTO, error) {
 	return nil, nil

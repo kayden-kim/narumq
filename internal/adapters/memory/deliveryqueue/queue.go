@@ -4,6 +4,7 @@ package deliveryqueue
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"narumq/internal/application/ports/deliveryqueue"
 	"narumq/internal/domain/mqtt"
@@ -21,8 +22,9 @@ var (
 // sessionState keeps queued FIFO deliveries and incomplete outbound exchanges
 // under one registered session boundary.
 type sessionState struct {
-	queued   []deliveryqueue.DeliveryDTO
-	outbound map[mqtt.PacketIdentifier]deliveryqueue.OutboundDTO
+	queued    []deliveryqueue.DeliveryDTO
+	outbound  map[mqtt.PacketIdentifier]deliveryqueue.OutboundDTO
+	detaching chan struct{}
 }
 
 // Queue stores independent bounded delivery state for registered sessions.
@@ -74,8 +76,16 @@ func (queue *Queue) Remove(sessionID routing.SessionID) {
 		return
 	}
 	queue.mu.Lock()
+	var detaching chan struct{}
+	if state := queue.sessions[sessionID]; state != nil {
+		detaching = state.detaching
+		state.detaching = nil
+	}
 	delete(queue.sessions, sessionID)
 	queue.mu.Unlock()
+	if detaching != nil {
+		close(detaching)
+	}
 }
 
 // TryEnqueue appends one owned copy or returns immediately when unavailable or
@@ -120,6 +130,13 @@ func (queue *Queue) tryEnqueueBatchLocked(deliveries []deliveryqueue.DeliveryDTO
 	state, exists := queue.sessions[sessionID]
 	if !exists {
 		return deliveryqueue.ErrUnavailable
+	}
+	if state.detaching != nil {
+		for _, item := range deliveries {
+			if item.DurableSequence == 0 {
+				return deliveryqueue.ErrDetaching
+			}
+		}
 	}
 	state.queued = purgeExpired(state.queued, now)
 	live := make([]deliveryqueue.DeliveryDTO, 0, len(deliveries))
@@ -424,6 +441,10 @@ func (queue *Queue) ListQueued(sessionID routing.SessionID, now time.Time) ([]de
 	if !exists {
 		return nil, deliveryqueue.ErrUnavailable
 	}
+	return listQueuedLocked(state, now), nil
+}
+
+func listQueuedLocked(state *sessionState, now time.Time) []deliveryqueue.DeliveryDTO {
 	result := make([]deliveryqueue.DeliveryDTO, 0, len(state.queued))
 	for _, item := range state.queued {
 		if item.Expired(now) {
@@ -433,7 +454,70 @@ func (queue *Queue) ListQueued(sessionID routing.SessionID, now time.Time) ([]de
 		copied.Payload = bytes.Clone(item.Payload)
 		result = append(result, copied)
 	}
-	return result, nil
+	return result
+}
+
+// BeginDetach atomically gates process-local enqueue and captures live FIFO copies.
+func (queue *Queue) BeginDetach(sessionID routing.SessionID, now time.Time) ([]deliveryqueue.DeliveryDTO, error) {
+	if err := validateSessionID(sessionID); err != nil {
+		return nil, err
+	}
+	if queue == nil {
+		return nil, deliveryqueue.ErrUnavailable
+	}
+	queue.mu.Lock()
+	defer queue.mu.Unlock()
+	state, exists := queue.sessions[sessionID]
+	if !exists {
+		return nil, deliveryqueue.ErrUnavailable
+	}
+	if state.detaching != nil {
+		return nil, deliveryqueue.ErrDetaching
+	}
+	state.detaching = make(chan struct{})
+	return listQueuedLocked(state, now), nil
+}
+
+// FinishDetach removes committed state or resumes enqueue after a failed detach.
+func (queue *Queue) FinishDetach(sessionID routing.SessionID, committed bool) {
+	if queue == nil {
+		return
+	}
+	queue.mu.Lock()
+	state := queue.sessions[sessionID]
+	if state == nil || state.detaching == nil {
+		queue.mu.Unlock()
+		return
+	}
+	detaching := state.detaching
+	state.detaching = nil
+	if committed {
+		delete(queue.sessions, sessionID)
+	}
+	queue.mu.Unlock()
+	close(detaching)
+}
+
+// AwaitDetach waits without holding the queue mutex.
+func (queue *Queue) AwaitDetach(ctx context.Context, sessionID routing.SessionID) error {
+	if queue == nil {
+		return nil
+	}
+	queue.mu.Lock()
+	var detaching chan struct{}
+	if state := queue.sessions[sessionID]; state != nil {
+		detaching = state.detaching
+	}
+	queue.mu.Unlock()
+	if detaching == nil {
+		return nil
+	}
+	select {
+	case <-detaching:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
 }
 
 // ListOutbound returns incomplete outbound state sorted by Packet Identifier.

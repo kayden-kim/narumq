@@ -51,6 +51,11 @@ func (*recordingQueue) PromoteHead(deliveryqueue.OutboundDTO, time.Time) error {
 func (*recordingQueue) ListQueued(routing.SessionID, time.Time) ([]deliveryqueue.DeliveryDTO, error) {
 	return nil, nil
 }
+func (*recordingQueue) BeginDetach(routing.SessionID, time.Time) ([]deliveryqueue.DeliveryDTO, error) {
+	return nil, nil
+}
+func (*recordingQueue) FinishDetach(routing.SessionID, bool)                 {}
+func (*recordingQueue) AwaitDetach(context.Context, routing.SessionID) error { return nil }
 func (*recordingQueue) ListOutbound(routing.SessionID) ([]deliveryqueue.OutboundDTO, error) {
 	return nil, nil
 }

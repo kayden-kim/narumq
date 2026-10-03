@@ -172,11 +172,12 @@ process-local boundary가 소유하며, process restart·durable storage·replic
 
 `application/ports/deliveryqueue.Queue`는 delivery를 만드는 publish·subscribe use case와
 전송을 수행하는 TCP adapter 사이의 복구 경계다. Queue adapter는 session별 FIFO queued
-entry와 Packet Identifier별 outbound QoS state를 함께 보관한다. Persistent disconnect는
-이 두 collection을 삭제하지 않으며, clean reset 또는 Session Expiry만 `Remove`를 통해
-전체 session state를 삭제한다. TCP connection은 active cache일 뿐이므로 reconnect 시
+entry와 Packet Identifier별 outbound QoS state를 함께 보관한다. Standalone persistent
+disconnect는 이 두 collection을 삭제하지 않는다. Clean reset 또는 Session Expiry는
+`Remove`로 전체 session state를 삭제한다. TCP connection은 active cache일 뿐이므로 reconnect 시
 queue boundary에서 outbound state를 다시 읽고, `CONNACK` 뒤에 복구 packet을 전송한다.
 Dynamic cluster의 connected remote-owned QoS 0 delivery는 `publish.RemoteForwarder` port를 통해 `clusterRuntime`으로 전달된다. Runtime은 local committed ownership을 읽고 별도 `NMQFWRD2` lane으로 owner node에 보낸다. Receiver는 ownership과 local queue 등록을 다시 확인한 뒤 `AcceptForwarded`로 enqueue한다. 이 volatile at-most-once 경로는 delivery queue의 node-local ownership이나 durable delivery guarantee를 바꾸지 않는다. Detached persistent session은 별도 offline commit 경로를 먼저 사용한다.
+Dynamic cluster persistent disconnect는 `BeginDetach`로 local enqueue를 차단하고 QoS 0 FIFO를 캡처한다. `DetachSession` 성공 뒤 `FinishDetach(true)`로 local queue를 제거한다. 실패는 `FinishDetach(false)`로 기존 queue를 재개한다. 같은 node의 publish는 queue lock 밖에서 한 번 기다린 뒤 offline·remote·local 순서로 다시 판정한다. Forward delivery는 기다리지 않는다. 세부 상태와 호출 순서는 [Cluster architecture의 detach 전환 절](cluster-architecture.md#detach-전환-local-publish-보호)을 따른다.
 
 ## 경계를 넘는 값
 

@@ -2,6 +2,7 @@
 package deliveryqueue
 
 import (
+	"context"
 	"errors"
 	"time"
 
@@ -15,6 +16,8 @@ var (
 	ErrFull = errors.New("delivery queue full")
 	// ErrUnavailable means that a session or requested delivery state is unavailable.
 	ErrUnavailable = errors.New("delivery queue unavailable")
+	// ErrDetaching means a session is committing its offline detach; process-local enqueue must wait or fail.
+	ErrDetaching = errors.New("delivery session detaching")
 	// ErrRetryableUnavailable means a durable promotion could not be confirmed because quorum was unavailable.
 	// The transition may have committed; callers must retry with the same Packet Identifier.
 	ErrRetryableUnavailable = errors.New("delivery transition temporarily unavailable")
@@ -97,6 +100,18 @@ type Queue interface {
 	PromoteBatch(outbound []OutboundDTO, now time.Time) (int, error)
 	PromoteHead(outbound OutboundDTO, now time.Time) error
 	ListQueued(sessionID routing.SessionID, now time.Time) ([]DeliveryDTO, error)
+	// BeginDetach marks a registered session as detaching and returns its unexpired
+	// queued FIFO copies. While detaching, enqueue of any item with DurableSequence == 0
+	// returns ErrDetaching and changes nothing; durable items are accepted as before.
+	// A missing session returns ErrUnavailable; an already detaching session returns ErrDetaching.
+	BeginDetach(sessionID routing.SessionID, now time.Time) ([]DeliveryDTO, error)
+	// FinishDetach ends BeginDetach. committed=true discards the session exactly like Remove;
+	// committed=false resumes normal enqueue and keeps all queued state. Both wake AwaitDetach.
+	// It is a no-op for a missing or non-detaching session.
+	FinishDetach(sessionID routing.SessionID, committed bool)
+	// AwaitDetach returns nil when the session is missing or not detaching, otherwise
+	// blocks until FinishDetach/Remove or ctx ends and then returns ctx.Err().
+	AwaitDetach(ctx context.Context, sessionID routing.SessionID) error
 	ListOutbound(sessionID routing.SessionID) ([]OutboundDTO, error)
 	ReplaceOutbound(outbound OutboundDTO) error
 	BeginReplaceOutbound(outbound OutboundDTO) (PendingTransition, error)

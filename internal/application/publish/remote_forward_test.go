@@ -221,3 +221,13 @@ func TestAcceptForwardedValidatesExpiryAndQoS(t *testing.T) {
 		t.Fatalf("forwarded receiver called offline=%d remote=%d times, want neither", len(offline.calls), len(forwarder.calls))
 	}
 }
+
+// Traceability: CLU-14; docs/specs/cluster-session-and-delivery.md §4.1, §11.25.
+func TestAcceptForwardedDetachingIsUnavailable(t *testing.T) {
+	queue := &recordingQueue{errors: map[routing.SessionID]error{"sub": deliveryqueue.ErrDetaching}}
+	useCase := newRemoteForwardTestUseCase(t, routing.NewTable(), queue)
+	err := useCase.AcceptForwarded(deliveryqueue.DeliveryDTO{SessionID: "sub", Topic: "events/one"}, testNow())
+	if !errors.Is(err, deliveryqueue.ErrUnavailable) || len(queue.awaitCalls) != 0 || len(queue.deliveries) != 0 {
+		t.Fatalf("forward during DETACH: error=%v awaits=%v deliveries=%v", err, queue.awaitCalls, queue.deliveries)
+	}
+}

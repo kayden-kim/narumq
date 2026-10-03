@@ -136,6 +136,22 @@ sequenceDiagram
 
 Ingress가 frame을 forwarding queue에 넣으면 전달 시도는 성공으로 처리하지만, receiver 확인 응답이나 재시도는 없다. 전달은 at-most-once(최대 한 번)이며 owner와 session이 일치하지 않거나 session이 등록되지 않으면 조용히 버린다. Owner queue가 가득 차면 subscriber connection을 닫는다. 이 경로는 QoS 1/2 forwarding이나 durable acknowledgement를 제공하지 않는다.
 
+### Detach 전환 local publish 보호
+
+Persistent subscriber의 disconnect 중 같은 node에서 publish한 message가 queue capture와 제거 사이에서 사라지지 않도록 전환 표시를 둔다. 예를 들어 local queue에 `race/1`이 있고 DETACH 중 `race/2`를 publish하면, 성공한 DETACH는 `race/1`을 가져가고 이후 offline ENQUEUE는 `race/2`를 기록한다. 동작과 대기 상한의 기준은 [Cluster §4.1·§11.25](../specs/cluster-session-and-delivery.md#1125-detach-전환-local-qos-0-보존-수용-매핑)와 [ADR-0026](../decisions/ADR-0026-detach-transition-local-qos0-gate.md)이다.
+
+| 파일·심볼 | 현재 역할 |
+| --- | --- |
+| `internal/application/ports/deliveryqueue/queue.go` `Queue` | `BeginDetach`, `FinishDetach`, `AwaitDetach`와 `ErrDetaching` 경계를 소유한다. 기존 `ListQueued` 읽기 API는 유지한다. |
+| `internal/adapters/memory/deliveryqueue/queue.go` `sessionState.detaching` | Nil이면 정상 상태다. Channel이 있으면 전환 중이다. Queue mutex 아래 capture와 표시를 함께 수행한다. Process-local batch는 purge 전에 거절하고 durable item은 기존 경로로 받는다. |
+| `internal/application/connect/connect.go` `disconnectLocked` | BeginDetach 복사본에서 local QoS 0만 추린다. DETACH 호출 뒤 FinishDetach를 실행한다. 성공은 queue 제거, 실패는 기존 queue 재개다. |
+| `internal/application/publish/publish.go` `deliverQoS0Candidate` | 각 판정에서 clock의 현재 시각으로 absolute expiry를 확인한다. 만료되지 않은 후보만 offline commit → remote forwarding → local enqueue 순서로 판정하고, 같은 시각을 proposal·enqueue에 전달한다. 전환 오류는 한 번 기다리고 제거 오류는 한 번 재판정한다. `AcceptForwarded`는 기다리지 않고 전환 오류를 Unavailable로 바꾼다. |
+
+`AwaitDetach`는 queue mutex 밖에서 channel 또는 context 종료를 기다린다. `FinishDetach`와 `Remove`는 lock 안에서 channel의 소유권을 가져오고 lock 밖에서 닫는다. 따라서 enqueue와 capture는 서로 엇갈리지 않으며, 기다리는 동안 다른 queue 작업은 mutex를 사용할 수 있다. Runtime의 `resolveAppliedProposals`는 local apply가 완료된 제안에만 결과를 전달하므로, 성공한 DETACH 뒤의 publish는 반영된 offline state를 다시 판정한다. 기존 runtime·durable queue 조립은 바꾸지 않는다.
+
+실제 memory queue 동시 시험은 `cmd/narumq/cluster_offline_detach_race_test.go`에 있다. Forward lane과 연결 중 owner crash의 queue 손실은 보호하지 않는다. Process 회귀와 local gate 결과는 §11.25에 기록한다.
+
+
 
 ## Durable publish 경로
 

@@ -1,6 +1,7 @@
 package deliveryqueue
 
 import (
+	"context"
 	"errors"
 	"reflect"
 	"sync"
@@ -35,6 +36,115 @@ func outboundFor(t *testing.T, sessionID routing.SessionID, packetID mqtt.Packet
 		State:     state,
 		ExpiresAt: expiresAt,
 	}
+}
+
+// Traceability: CLU-14; docs/specs/cluster-session-and-delivery.md §4.1, §11.25.
+func TestBeginDetachRejectsLocalEnqueueUntilFinish(t *testing.T) {
+	queue, err := New(4)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := queue.Register("s"); err != nil {
+		t.Fatal(err)
+	}
+	now := testNow()
+	a := applicationdeliveryqueue.DeliveryDTO{SessionID: "s", Topic: "a", Payload: []byte("original")}
+	b := applicationdeliveryqueue.DeliveryDTO{SessionID: "s", Topic: "b"}
+	durable := applicationdeliveryqueue.DeliveryDTO{SessionID: "s", Topic: "durable", QoS: mqtt.QoSAtLeastOnce, DurableSequence: 1, DurableEpoch: 1}
+	if err := queue.TryEnqueue(a, now); err != nil {
+		t.Fatal(err)
+	}
+	pending, err := queue.BeginDetach("s", now)
+	if err != nil || !reflect.DeepEqual(pending, []applicationdeliveryqueue.DeliveryDTO{a}) {
+		t.Fatalf("BeginDetach = %+v, %v", pending, err)
+	}
+	pending[0].Payload[0] = 'X'
+	if err := queue.TryEnqueue(b, now); !errors.Is(err, applicationdeliveryqueue.ErrDetaching) {
+		t.Fatalf("local enqueue = %v", err)
+	}
+	if err := queue.TryEnqueue(durable, now); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := queue.BeginDetach("s", now); !errors.Is(err, applicationdeliveryqueue.ErrDetaching) {
+		t.Fatalf("second BeginDetach = %v", err)
+	}
+	ctx, cancel := context.WithDeadline(context.Background(), time.Now().Add(-time.Second))
+	defer cancel()
+	if err := queue.AwaitDetach(ctx, "s"); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("expired wait = %v", err)
+	}
+	queue.FinishDetach("s", false)
+	if err := queue.AwaitDetach(ctx, "s"); err != nil {
+		t.Fatalf("finished wait = %v", err)
+	}
+	if err := queue.TryEnqueue(b, now); err != nil {
+		t.Fatal(err)
+	}
+	queued, err := queue.ListQueued("s", now)
+	if err != nil || !reflect.DeepEqual(queued, []applicationdeliveryqueue.DeliveryDTO{a, durable, b}) {
+		t.Fatalf("resumed FIFO = %+v, %v", queued, err)
+	}
+}
+
+// Traceability: CLU-14; docs/specs/cluster-session-and-delivery.md §4.1, §11.25.
+func TestFinishDetachCommittedRemovesAndWakesWaiters(t *testing.T) {
+	testDetachWaiterWake(t, true)
+}
+
+// Traceability: CLU-14; docs/specs/cluster-session-and-delivery.md §4.1, §11.25.
+func TestRemoveWakesDetachWaiters(t *testing.T) {
+	testDetachWaiterWake(t, false)
+}
+
+func testDetachWaiterWake(t *testing.T, finish bool) {
+	t.Helper()
+	queue, err := New(4)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := queue.Register("s"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := queue.BeginDetach("s", testNow()); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	result := make(chan error, 1)
+	// Done is evaluated only after AwaitDetach captures the active gate.
+	// This proves that the waiter started before session removal.
+	waitCtx := &detachWaitContext{Context: ctx, entered: make(chan struct{})}
+	go func() { result <- queue.AwaitDetach(waitCtx, "s") }()
+	select {
+	case <-waitCtx.entered:
+	case <-ctx.Done():
+		t.Fatal("AwaitDetach did not enter its wait")
+	}
+	if finish {
+		queue.FinishDetach("s", true)
+	} else {
+		queue.Remove("s")
+	}
+	if err := <-result; err != nil {
+		t.Fatalf("wait result = %v", err)
+	}
+	if _, err := queue.ListQueued("s", testNow()); !errors.Is(err, applicationdeliveryqueue.ErrUnavailable) {
+		t.Fatalf("removed ListQueued = %v", err)
+	}
+	if err := queue.TryEnqueue(applicationdeliveryqueue.DeliveryDTO{SessionID: "s", Topic: "b"}, testNow()); !errors.Is(err, applicationdeliveryqueue.ErrUnavailable) {
+		t.Fatalf("removed enqueue = %v", err)
+	}
+}
+
+type detachWaitContext struct {
+	context.Context
+	entered chan struct{}
+	once    sync.Once
+}
+
+func (ctx *detachWaitContext) Done() <-chan struct{} {
+	ctx.once.Do(func() { close(ctx.entered) })
+	return ctx.Context.Done()
 }
 
 // Traceability: PRD MQTT-11/TEST-04/05; docs/specs/mqtt-protocol-and-session.md §7.

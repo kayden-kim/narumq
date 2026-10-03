@@ -881,8 +881,8 @@ func (useCase *UseCase) disconnectLocked(sessionID routing.SessionID, reason ses
 			}
 		}
 		if useCase.offlineCoordinator != nil && hasEpoch && hasSessionKey {
-			pending, listErr := useCase.deliveries.ListQueued(sessionID, now)
-			if listErr == nil {
+			pending, beginErr := useCase.deliveries.BeginDetach(sessionID, now)
+			if beginErr == nil {
 				qosZeroPending := pending[:0]
 				for _, item := range pending {
 					if item.DurableSequence == 0 && item.QoS == mqtt.QoSAtMostOnce {
@@ -895,9 +895,7 @@ func (useCase *UseCase) disconnectLocked(sessionID routing.SessionID, reason ses
 					Epoch: epoch, SessionExpiresAt: expires, DetachedAt: now, Pending: qosZeroPending,
 				})
 				cancel()
-				if detachErr == nil {
-					useCase.deliveries.Remove(sessionID)
-				}
+				useCase.deliveries.FinishDetach(sessionID, detachErr == nil)
 			}
 		}
 	}

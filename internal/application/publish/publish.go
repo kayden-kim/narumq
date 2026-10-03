@@ -20,6 +20,8 @@ import (
 	"narumq/internal/domain/tenancy"
 )
 
+const localDetachWaitTimeout = 10 * time.Second
+
 var (
 	// ErrNilClock means that publication expiry cannot be evaluated.
 	ErrNilClock = errors.New("publish clock is nil")
@@ -463,7 +465,7 @@ func (useCase *UseCase) completePublication(
 	release bool,
 ) (ResultDTO, error) {
 	packet := prepared.packet
-	now, expiresAt, matches := prepared.now, prepared.expiresAt, prepared.matches
+	expiresAt, matches := prepared.expiresAt, prepared.matches
 	durable, expired := prepared.durable, prepared.expired
 	result := ResultDTO{
 		Delivered:   make([]routing.SessionID, 0, len(matches)),
@@ -533,20 +535,12 @@ func (useCase *UseCase) completePublication(
 				Retain:    candidate.Retain,
 				ExpiresAt: expiresAt,
 			}
-			var err error
-			handled := false
-			if useCase.offlineCommitter != nil {
-				handled, err = useCase.offlineCommitter.CommitOffline(context.Background(), delivery, now)
-			}
-			if !handled && useCase.remoteForwarder != nil {
-				handled, err = useCase.remoteForwarder.ForwardRemote(context.Background(), delivery)
-			}
-			if !handled {
-				err = useCase.queue.TryEnqueue(delivery, now)
-			}
+			err := useCase.deliverQoS0Candidate(delivery)
 			switch {
 			case err == nil:
 				result.Delivered = append(result.Delivered, candidate.SessionID)
+				break candidateLoop
+			case errors.Is(err, deliveryqueue.ErrExpired):
 				break candidateLoop
 			case errors.Is(err, deliveryqueue.ErrFull):
 				result.Saturated = append(result.Saturated, candidate.SessionID)
@@ -558,6 +552,49 @@ func (useCase *UseCase) completePublication(
 		}
 	}
 	return result, nil
+}
+
+// deliverQoS0Candidate routes one non-durable candidate through offline commit,
+// remote forwarding and the local queue. It waits once for a detaching local
+// session and re-checks once after a local queue was removed by a committed DETACH.
+func (useCase *UseCase) deliverQoS0Candidate(delivery deliveryqueue.DeliveryDTO) error {
+	waited, rechecked := false, false
+	for range 3 {
+		now := useCase.clock.Now()
+		if delivery.Expired(now) {
+			return deliveryqueue.ErrExpired
+		}
+		var err error
+		handled := false
+		if useCase.offlineCommitter != nil {
+			handled, err = useCase.offlineCommitter.CommitOffline(context.Background(), delivery, now)
+		}
+		if !handled && useCase.remoteForwarder != nil {
+			handled, err = useCase.remoteForwarder.ForwardRemote(context.Background(), delivery)
+		}
+		if !handled {
+			err = useCase.queue.TryEnqueue(delivery, now)
+		}
+		if !handled && errors.Is(err, deliveryqueue.ErrDetaching) {
+			if waited {
+				return deliveryqueue.ErrUnavailable
+			}
+			waited = true
+			ctx, cancel := context.WithTimeout(context.Background(), localDetachWaitTimeout)
+			waitErr := useCase.queue.AwaitDetach(ctx, delivery.SessionID)
+			cancel()
+			if waitErr != nil {
+				return deliveryqueue.ErrUnavailable
+			}
+			continue
+		}
+		if !handled && errors.Is(err, deliveryqueue.ErrUnavailable) && useCase.offlineCommitter != nil && !rechecked {
+			rechecked = true
+			continue
+		}
+		return err
+	}
+	return deliveryqueue.ErrUnavailable
 }
 
 func (useCase *UseCase) prepareDurableDelivery(
@@ -670,5 +707,9 @@ func (useCase *UseCase) AcceptForwarded(delivery deliveryqueue.DeliveryDTO, now 
 	if delivery.Expired(now) {
 		return nil
 	}
-	return useCase.queue.TryEnqueue(delivery, now)
+	err := useCase.queue.TryEnqueue(delivery, now)
+	if errors.Is(err, deliveryqueue.ErrDetaching) {
+		return deliveryqueue.ErrUnavailable
+	}
+	return err
 }

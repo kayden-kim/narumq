@@ -123,12 +123,13 @@ func (coordinator *fakeOwnershipCoordinator) AcquireOwnership(
 }
 
 type fakeDeliveryQueue struct {
-	registered    map[routing.SessionID]bool
-	registerErr   error
-	registers     []routing.SessionID
-	removes       []routing.SessionID
-	queued        map[routing.SessionID][]deliveryqueue.DeliveryDTO
-	listQueuedErr error
+	registered     map[routing.SessionID]bool
+	registerErr    error
+	registers      []routing.SessionID
+	removes        []routing.SessionID
+	queued         map[routing.SessionID][]deliveryqueue.DeliveryDTO
+	beginDetachErr error
+	detachFinishes []bool
 }
 
 func newFakeDeliveryQueue() *fakeDeliveryQueue {
@@ -176,11 +177,22 @@ func (*fakeDeliveryQueue) Peek(routing.SessionID, time.Time) (deliveryqueue.Deli
 func (*fakeDeliveryQueue) CompleteHead(routing.SessionID) error                   { return nil }
 func (*fakeDeliveryQueue) PromoteHead(deliveryqueue.OutboundDTO, time.Time) error { return nil }
 func (queue *fakeDeliveryQueue) ListQueued(sessionID routing.SessionID, _ time.Time) ([]deliveryqueue.DeliveryDTO, error) {
-	if queue.listQueuedErr != nil {
-		return nil, queue.listQueuedErr
+	return append([]deliveryqueue.DeliveryDTO(nil), queue.queued[sessionID]...), nil
+}
+func (queue *fakeDeliveryQueue) BeginDetach(sessionID routing.SessionID, _ time.Time) ([]deliveryqueue.DeliveryDTO, error) {
+	if queue.beginDetachErr != nil {
+		return nil, queue.beginDetachErr
 	}
 	return append([]deliveryqueue.DeliveryDTO(nil), queue.queued[sessionID]...), nil
 }
+func (queue *fakeDeliveryQueue) FinishDetach(sessionID routing.SessionID, committed bool) {
+	queue.detachFinishes = append(queue.detachFinishes, committed)
+	if committed {
+		delete(queue.registered, sessionID)
+		delete(queue.queued, sessionID)
+	}
+}
+func (*fakeDeliveryQueue) AwaitDetach(context.Context, routing.SessionID) error { return nil }
 func (*fakeDeliveryQueue) ListOutbound(routing.SessionID) ([]deliveryqueue.OutboundDTO, error) {
 	return nil, nil
 }
