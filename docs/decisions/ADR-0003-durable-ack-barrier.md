@@ -115,6 +115,9 @@ Fresh ReadIndex 발행 제어·origin별 예산 분할과 runner의 persistent Q
 
 2026-10-03 async WAL·release-profile wake 보완 뒤 고정 compare `bp03-20261002T193345.142241000Z-38956`와 독립 suite `bp03-suite-20261002T193711.351279300Z-4364`는 양쪽 valid·5/5 성공이었다. Local smoke의 ACK/WAL 수치와 중앙값·MAD는 [성능 §3.4](../specs/performance-and-verification.md#34-bp-03-durable-delivery-smoke-관찰-경계)에 기록했다. 이전 4/5 invalid suite에서 snapshot restore → release gate 무효화 → PUBLISH 거절 → EOF를 진단했고, 재확인 wake만 앞당겨 기존 fail-closed·fresh proof를 유지한다. 최종 5회에는 restore 표본이 없으므로 모든 EOF 해소를 입증하지 않는다. Group 크기별 production p99/p99.9·disk 비용과 Linux/EBS·physical power-loss 검증을 대체하지 않으며 ADR 상태는 `Proposed`다.
 
+별도 `local-ext4-v1` 수용은 실제 ext4 ENOSPC에서 healthy quorum의 ACK와 quorum-loss 성공 ACK 거절, 전체 broker SIGKILL 뒤 ACK된 payload·persistent session 복구를 확인한다. 실행 증거는 [Cluster §11.23](../specs/cluster-session-and-delivery.md#1123-local-ext4-filesystem-수용-매핑)에 연결한다. 기존 fresh proof·WAL sync·ACK 정책은 변경하지 않는다. OS cache가 유지되는 process crash이며 production Linux/EBS·physical power-loss 보장과 이 ADR 전체의 승인/수용 완료가 아니다.
+
+
 ## 10. 재검토 조건
 
 - Phase 0/2에서 production SLO를 충족하지 못한다.

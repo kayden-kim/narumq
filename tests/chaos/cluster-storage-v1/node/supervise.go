@@ -126,7 +126,7 @@ func runSupervise(args []string) error {
 	}()
 
 	signals := make(chan os.Signal, 1)
-	signal.Notify(signals, syscall.SIGTERM, syscall.SIGINT, syscall.SIGUSR1)
+	signal.Notify(signals, syscall.SIGTERM, syscall.SIGINT, syscall.SIGUSR1, syscall.SIGUSR2)
 	defer signal.Stop(signals)
 	mountDone := func() <-chan struct{} {
 		if mount == nil {
@@ -142,6 +142,21 @@ func runSupervise(args []string) error {
 	for {
 		select {
 		case received := <-signals:
+			if received == syscall.SIGUSR2 {
+				if brokerCommand == nil {
+					return errors.New("cannot crash a broker that is not running")
+				}
+				if err := brokerCommand.Process.Kill(); err != nil {
+					return fmt.Errorf("kill broker process: %w", err)
+				}
+				code := processExitCode(<-brokerExit)
+				brokerCommand = nil
+				brokerExit = nil
+				if err := writeJSON(map[string]any{"event": "broker-crash", "exitCode": code}); err != nil {
+					return err
+				}
+				continue
+			}
 			if received == syscall.SIGUSR1 {
 				if controller.status().PoweredOff {
 					if err := writeJSON(map[string]any{"event": "broker-restart-ignored", "reason": "powered-off"}); err != nil {

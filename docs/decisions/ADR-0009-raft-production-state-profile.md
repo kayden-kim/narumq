@@ -129,6 +129,9 @@ BP-03 구현 단위 검증: `go test ./internal/adapters/raft -count=1`과 `go t
 
 후속 안전성 수정은 transport의 outbound backpressure에서 정상 연결을 유지하고, driver의 inbound·request staging 총합 64를 지키며, batch SEND의 모든 suffix PacketID를 보존한다. 일부 SEND가 commit되었어도 호출자가 오류를 받는 경우를 실패로 숨기지 않고 동일 ID 재시도로 수렴시킨다. WAL의 commit-only HardState sync와 각 durable command의 fresh proof는 그대로 유지한다. 변경 후 실행 결과와 유효하지 않은 BP-03 진단 경계는 [성능 검증 §3.4](../specs/performance-and-verification.md#34-bp-03-durable-delivery-smoke-관찰-경계), [MQTT batch 수용 시험](../specs/mqtt-protocol-and-session.md#8-수용-시험)에 기록한다.
 
+사용자가 선택한 `local-ext4-v1`은 실제 ext4에서 ENOSPC·process crash 및 기존 WAL/snapshot/backup/volume-loss recovery 시험을 실행하는 로컬 profile이다. 실행 결과와 한계는 [Cluster §11.23](../specs/cluster-session-and-delivery.md#1123-local-ext4-filesystem-수용-매핑)에 연결한다. Host/kernel 공유, 인위적 recovery 입력과 유지된 OS cache를 가진 시험이므로 production filesystem/EBS·물리 전원 손실·backup retention/DR RPO/RTO gate는 닫지 않는다. 이 ADR의 design-target 채택 범위를 늘리지 않는다.
+
+
 ## 8. 재검토 조건
 
 - Supply-chain review 또는 persisted-state·wire N/N-1 시험에서 module pin의 유지가 부적절하다고 확인된다.

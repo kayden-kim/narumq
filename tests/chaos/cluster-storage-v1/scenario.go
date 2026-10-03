@@ -38,6 +38,9 @@ type storageFaultScenario struct {
 }
 
 func runStorageScenario(ctx context.Context, options scenarioRunOptions) (result scenarioSummary) {
+	if options.Profile == localExt4Profile && options.ScenarioID == "filesystem-recovery-boundaries" {
+		return runExt4RecoveryBoundaries(ctx, options)
+	}
 	result = scenarioSummary{ID: options.ScenarioID, Status: "failed"}
 	scenarioDirectory := filepath.Join(options.OutputDir, "scenarios", options.ScenarioID)
 	recorder, err := newEventRecorder(scenarioDirectory)
@@ -99,6 +102,11 @@ func (scenario *storageFaultScenario) run(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	if scenario.options.Profile == localExt4Profile {
+		if err := scenario.captureExt4Mounts(ctx); err != nil {
+			return err
+		}
+	}
 	if err := scenario.prepareDurableSubscriber(ctx, leader); err != nil {
 		return err
 	}
@@ -122,6 +130,8 @@ func (scenario *storageFaultScenario) run(ctx context.Context) error {
 		return scenario.runFollowerTornPowerLoss(ctx, leader, followers[0], followers[1])
 	case "cluster-power-loss":
 		return scenario.runClusterPowerLoss(ctx, leader, followers)
+	case "cluster-process-crash":
+		return scenario.runClusterProcessCrash(ctx, leader)
 	default:
 		return fmt.Errorf("unknown storage-fault scenario %q", scenario.options.ScenarioID)
 	}

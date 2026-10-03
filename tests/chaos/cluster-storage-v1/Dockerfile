@@ -12,3 +12,9 @@ FROM scratch AS chaos-node
 COPY --from=builder /out/narumq /narumq
 COPY --from=builder /out/narumq-chaosnode /narumq-chaosnode
 ENTRYPOINT ["/narumq-chaosnode"]
+
+FROM builder AS ext4-node
+COPY tests/chaos/cluster-storage-v1/ext4-entrypoint.sh /ext4-entrypoint.sh
+RUN cp /out/narumq /narumq && cp /out/narumq-chaosnode /narumq-chaosnode && chmod 0755 /ext4-entrypoint.sh && mkdir -p /var/lib/narumq
+WORKDIR /src
+ENTRYPOINT ["/ext4-entrypoint.sh"]

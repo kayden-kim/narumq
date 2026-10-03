@@ -734,6 +734,26 @@ Runner는 새 Docker network와 세 broker process에서 여섯 scenario를 순�
 
 이 Docker/FUSE chaos gate는 외부 dependency가 없어야 하는 `go test ./...`와 `go run ./tools/verify local`에서 제외된다. 두 검증의 PASS만으로 실제 disk-full·slow-I/O 증거를 대체하지 않으며 chaos command를 별도로 실행해야 한다.
 
+#### Local ext4 filesystem gate
+
+사용자가 선택한 `local-ext4-v1`은 FUSE를 거치지 않는 실제 ext4 검증 profile이다. Linux/amd64 Docker daemon, privileged container와 kernel의 ext4·loop device 지원, image build용 module network access가 필요하다. 각 broker의 시험 전용 Docker volume에 256 MiB image를 만들고 `data=ordered`로 mount한다. Recovery-boundary fixture는 별도 1 GiB image에서 실행한다. 시험 자원을 제외한 host block device나 기존 volume을 지정하지 않는다.
+
+저장소 root에서 실행한다. `--profile`을 생략하면 기존 `local-fuse-v1`의 여섯 scenario를 그대로 실행한다.
+
+```text
+go run ./tests/chaos/cluster-storage-v1 \
+  --profile local-ext4-v1 \
+  --run-id ext4-local \
+  --output .artifacts/chaos/cluster-storage-v1/ext4-local
+```
+
+네 scenario는 follower ENOSPC, quorum ENOSPC, 전체 broker process SIGKILL/restart, filesystem recovery boundaries다. 마지막 scenario는 `TMPDIR`를 ext4 위에 두고 기존 WAL·snapshot·backup·voter-volume 수용 시험을 실행한다. 필수 test와 package의 완료를 모두 확인하며 nested test의 skip·fail도 실패다. Manifest schema `2`와 summary에는 `profile`, `evidenceBoundary`를 기록한다. 실제 kernel·mount 옵션·loop device·image 크기·broker SHA-256은 scenario의 `filesystems`와 원시 event에 보존한다. 세 process의 SIGKILL exit code와 ACK/session/delivery는 별도 증거이며 readiness 200만으로 복구를 판정하지 않는다.
+
+정상 종료·실패·취소 때 시험 소유 자원을 정리한다. Loop device는 mount 뒤 autoclear로 표시해 container가 강제 종료돼도 마지막 mount가 사라지면 해제한다. Unmount·detach 확인이 없거나 Docker 정리가 실패하면 run도 실패한다. Privileged 권한은 host의 device 접근 범위를 넓히므로 폐기 가능한 개발/시험 환경에서만 실행한다.
+
+이 gate는 host/kernel을 공유하는 로컬 ext4의 process-crash·인위적 recovery 입력 증거다. 자연 발생 torn write, filesystem cache를 잃는 물리 전원 손실, 독립 host/AZ·EBS, backup retention·DR RPO/RTO 또는 production 지원 선언으로 사용하지 않는다. 실제 결과와 미완료 gate는 [Cluster §11.23](cluster-session-and-delivery.md#1123-local-ext4-filesystem-수용-매핑)에서 관리한다. `go run ./tools/verify local`과 별도로 실행해야 한다.
+
+
 Durable ACK extension unit test:
 
 ```text

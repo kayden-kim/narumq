@@ -33,7 +33,12 @@ func (realCommandRunner) Run(ctx context.Context, workingDirectory, name string,
 }
 
 func Run(ctx context.Context, options runOptions) (Summary, error) {
-	summary := Summary{RunID: options.RunID, Status: "failed", StartedAt: time.Now().UTC()}
+	profile, err := storageProfile(options.Profile)
+	if err != nil {
+		return Summary{}, err
+	}
+	options.Profile = profile
+	summary := Summary{RunID: options.RunID, Profile: profile, Boundary: profileBoundary(profile), Status: "failed", StartedAt: time.Now().UTC()}
 	if err := validateRunID(options.RunID); err != nil {
 		return summary, err
 	}
@@ -62,7 +67,8 @@ func Run(ctx context.Context, options runOptions) (Summary, error) {
 		return summary, fmt.Errorf("create Docker build log: %w", err)
 	}
 	manifestValue := manifest{
-		SchemaVersion: 1, RunID: options.RunID, Status: "running", StartedAt: summary.StartedAt,
+		SchemaVersion: 2, RunID: options.RunID, Status: "running", StartedAt: summary.StartedAt,
+		Profile: profile, Boundary: profileBoundary(profile),
 		Platform: platformMetadata{HostOS: runtime.GOOS, HostArch: runtime.GOARCH},
 		Command:  append([]string(nil), os.Args...),
 	}
@@ -105,7 +111,12 @@ func Run(ctx context.Context, options runOptions) (Summary, error) {
 	}
 
 	imageRef := chaosImageName + ":" + chaosImageTag
-	buildOutput, buildErr := options.Runner.Run(ctx, repoRoot, "docker", "build", "--platform", "linux/amd64", "--target", "chaos-node", "--tag", imageRef, "--file", chaosDockerfile, ".")
+	imageTarget := "chaos-node"
+	if profile == localExt4Profile {
+		imageRef += "-ext4"
+		imageTarget = "ext4-node"
+	}
+	buildOutput, buildErr := options.Runner.Run(ctx, repoRoot, "docker", "build", "--platform", "linux/amd64", "--target", imageTarget, "--tag", imageRef, "--file", chaosDockerfile, ".")
 	if err := os.WriteFile(buildLogPath, buildOutput, 0o600); err != nil {
 		return finish(fmt.Errorf("write Docker build log: %w", err))
 	}
@@ -130,11 +141,12 @@ func Run(ctx context.Context, options runOptions) (Summary, error) {
 	}
 
 	var scenarioErrors []error
-	for _, scenarioID := range storageFaultScenarios {
+	for _, scenarioID := range profileScenarios(profile) {
 		scenarioCtx, scenarioCancel := context.WithTimeout(ctx, scenarioRunTimeout)
 		result := runStorageScenario(scenarioCtx, scenarioRunOptions{
 			RunID: options.RunID, ScenarioID: scenarioID, RepoRoot: repoRoot,
-			OutputDir: outputDir, Image: imageRef, Runner: options.Runner,
+			Profile:   profile,
+			OutputDir: outputDir, Image: image.ID, Runner: options.Runner,
 		})
 		scenarioCancel()
 		summary.Scenarios = append(summary.Scenarios, result)
@@ -266,6 +278,7 @@ func writeJSONFile(path string, value any) error {
 
 type scenarioRunOptions struct {
 	RunID      string
+	Profile    string
 	ScenarioID string
 	RepoRoot   string
 	OutputDir  string
@@ -278,6 +291,7 @@ type scenarioDocker struct {
 	networkName     string
 	networkCreated  bool
 	containerNames  map[string]string
+	volumeNames     map[string]string
 	managementPorts map[string]string
 	mqttPorts       map[string]string
 	recorder        *eventRecorder
@@ -288,6 +302,7 @@ func newScenarioDocker(options scenarioRunOptions, recorder *eventRecorder) *sce
 	return &scenarioDocker{
 		options: options, networkName: prefix,
 		containerNames:  make(map[string]string, chaosNodeCount),
+		volumeNames:     make(map[string]string, chaosNodeCount),
 		managementPorts: make(map[string]string, chaosNodeCount),
 		mqttPorts:       make(map[string]string, chaosNodeCount), recorder: recorder,
 	}
@@ -320,7 +335,13 @@ func (scenario *scenarioDocker) startNodes(ctx context.Context, fixture *chaosFi
 			"--mount", fmt.Sprintf("type=bind,source=%s,destination=/config,readonly", filepath.ToSlash(node.ConfigDir)),
 			"--publish", "127.0.0.1::8080", "--publish", "127.0.0.1::1883",
 		}
-		if usesChaosFS(scenario.options.ScenarioID) {
+		if scenario.options.Profile == localExt4Profile {
+			volume, err := scenario.createExt4Volume(ctx, node.ID)
+			if err != nil {
+				return err
+			}
+			args = append(args, "--privileged", "--mount", "type=volume,source="+volume+",destination=/images")
+		} else if usesChaosFS(scenario.options.ScenarioID) {
 			args = append(args,
 				"--tmpfs", "/var/lib/narumq-backing:size=256m",
 				"--tmpfs", "/var/lib/narumq:size=1m",
@@ -335,7 +356,7 @@ func (scenario *scenarioDocker) startNodes(ctx context.Context, fixture *chaosFi
 			"--data-dir", "/var/lib/narumq/node", "--jwks-file", "/config/jwks.json",
 			"--jwks-listen", "127.0.0.1:18080", "--delay-file", "/run/narumq-chaos/io-delay",
 		)
-		if usesChaosFS(scenario.options.ScenarioID) {
+		if scenario.options.Profile != localExt4Profile && usesChaosFS(scenario.options.ScenarioID) {
 			args = append(args, "--chaosfs-backing", "/var/lib/narumq-backing", "--chaosfs-mount", "/var/lib/narumq")
 		}
 		output, err := scenario.options.Runner.Run(ctx, scenario.options.RepoRoot, "docker", args...)
@@ -480,6 +501,11 @@ func (scenario *scenarioDocker) cleanup(ctx context.Context) error {
 		if logsErr != nil {
 			cleanupErrors = append(cleanupErrors, fmt.Errorf("collect node %s logs: %w", nodeID, logsErr))
 		}
+		if scenario.options.Profile == localExt4Profile {
+			if err := validateExt4Cleanup(logs); err != nil {
+				cleanupErrors = append(cleanupErrors, fmt.Errorf("node %s ext4 cleanup: %w", nodeID, err))
+			}
+		}
 		if recordErr := scenario.recorder.record("control", nodeID, map[string]any{
 			"operation": "logs-collected", "bytes": len(logs), "error": errorString(logsErr),
 		}); recordErr != nil {
@@ -506,6 +532,9 @@ func (scenario *scenarioDocker) cleanup(ctx context.Context) error {
 		if err != nil {
 			cleanupErrors = append(cleanupErrors, fmt.Errorf("remove Docker network: %w (%s)", err, strings.TrimSpace(string(output))))
 		}
+	}
+	if err := scenario.removeExt4Volumes(ctx); err != nil {
+		cleanupErrors = append(cleanupErrors, err)
 	}
 	return errors.Join(cleanupErrors...)
 }

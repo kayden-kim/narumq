@@ -27,6 +27,7 @@ func runCLI(ctx context.Context, args []string, stdout, stderr io.Writer) error 
 	flags.SetOutput(stderr)
 	runID := flags.String("run-id", "", "path-safe storage-chaos evidence run identifier")
 	outputDir := flags.String("output", "", "empty evidence output directory")
+	profile := flags.String("profile", localFUSEProfile, "local-fuse-v1 or local-ext4-v1; neither proves production power-loss")
 	if err := flags.Parse(args); err != nil {
 		return err
 	}
@@ -49,7 +50,8 @@ func runCLI(ctx context.Context, args []string, stdout, stderr io.Writer) error 
 		*outputDir = filepath.Join(workingDirectory, *outputDir)
 	}
 	summary, runErr := Run(ctx, runOptions{
-		RunID: *runID, OutputDir: *outputDir, RepoRoot: repoRoot, Runner: realCommandRunner{},
+		Profile: *profile,
+		RunID:   *runID, OutputDir: *outputDir, RepoRoot: repoRoot, Runner: realCommandRunner{},
 	})
 	if summary.RunID != "" {
 		if err := json.NewEncoder(stdout).Encode(summary); err != nil {

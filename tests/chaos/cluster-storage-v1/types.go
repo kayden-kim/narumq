@@ -27,6 +27,7 @@ var storageFaultScenarios = []string{
 
 type runOptions struct {
 	RunID     string
+	Profile   string
 	OutputDir string
 	RepoRoot  string
 	Runner    commandRunner
@@ -36,6 +37,8 @@ type Summary struct {
 	RunID      string            `json:"runId"`
 	Status     string            `json:"status"`
 	StartedAt  time.Time         `json:"startedAt"`
+	Profile    string            `json:"profile"`
+	Boundary   string            `json:"evidenceBoundary"`
 	FinishedAt time.Time         `json:"finishedAt"`
 	Scenarios  []scenarioSummary `json:"scenarios"`
 	Error      string            `json:"error,omitempty"`
@@ -49,48 +52,51 @@ type scenarioSummary struct {
 }
 
 type scenarioEvidence struct {
-	LeaderNodeID                      string                      `json:"leaderNodeId,omitempty"`
-	RecoveryLeaderNodeID              string                      `json:"recoveryLeaderNodeId,omitempty"`
-	InFlightPublishTopic              string                      `json:"inFlightPublishTopic,omitempty"`
-	InFlightPublishAckOutcome         string                      `json:"inFlightPublishAckOutcome,omitempty"`
-	TargetNodeIDs                     []string                    `json:"targetNodeIds,omitempty"`
-	DiskFill                          *diskFillEvidence           `json:"diskFill,omitempty"`
-	DiskFills                         map[string]diskFillEvidence `json:"diskFills,omitempty"`
-	DetectionDurationMs               int64                       `json:"detectionDurationMs,omitempty"`
-	TargetReadiness                   *healthObservation          `json:"targetReadiness,omitempty"`
-	TargetLiveness                    *healthObservation          `json:"targetLiveness,omitempty"`
-	LeaderReadiness                   *healthObservation          `json:"leaderReadiness,omitempty"`
-	TargetReplicationHealth           string                      `json:"targetReplicationHealth,omitempty"`
-	TargetLastErrorCode               string                      `json:"targetLastErrorCode,omitempty"`
-	TargetStoragePressure             *bool                       `json:"targetStoragePressure,omitempty"`
-	ProgressAccepted                  int                         `json:"progressAccepted,omitempty"`
-	ProgressAttempts                  int                         `json:"progressAttempts,omitempty"`
-	MaxLeaderProbeLatencyMs           int64                       `json:"maxLeaderProbeLatencyMs,omitempty"`
-	QueueSamples                      int                         `json:"queueSamples,omitempty"`
-	MaxOutboundMessages               int                         `json:"maxOutboundMessages,omitempty"`
-	MaxOutboundBytes                  int                         `json:"maxOutboundBytes,omitempty"`
-	MaxRejectedMessages               uint64                      `json:"maxRejectedMessages,omitempty"`
-	QueueCapReached                   bool                        `json:"queueCapReached,omitempty"`
-	LeaderUnreachableTarget           bool                        `json:"leaderUnreachableTarget,omitempty"`
-	LeaderAppliedIndexStart           int64                       `json:"leaderAppliedIndexStart,omitempty"`
-	LeaderAppliedIndexEnd             int64                       `json:"leaderAppliedIndexEnd,omitempty"`
-	FollowerAppliedIndexEnd           int64                       `json:"followerAppliedIndexEnd,omitempty"`
-	HaltProbeAttempts                 int                         `json:"haltProbeAttempts,omitempty"`
-	HaltAccepted                      int                         `json:"haltAccepted,omitempty"`
-	QuorumAvailableDuring             *bool                       `json:"quorumAvailableDuring,omitempty"`
-	HaltDurationMs                    int64                       `json:"haltDurationMs,omitempty"`
-	AppliedIndexEnd                   int64                       `json:"appliedIndexEnd,omitempty"`
-	RecoveryDurationMs                int64                       `json:"recoveryDurationMs,omitempty"`
-	ConvergedAppliedIndex             int64                       `json:"convergedAppliedIndex,omitempty"`
-	UptimeBeforeRecoveryMs            int64                       `json:"uptimeBeforeRecoveryMs,omitempty"`
-	UptimeAfterRecoveryMs             int64                       `json:"uptimeAfterRecoveryMs,omitempty"`
-	IOProbeDurationMs                 int64                       `json:"ioProbeDurationMs,omitempty"`
-	DurableAck                        *durableAckEvidence         `json:"durableAck,omitempty"`
-	OriginalBaselineReconnectAccepted bool                        `json:"originalBaselineReconnectAccepted"`
-	PowerCuts                         map[string]powerCutEvidence `json:"powerCuts,omitempty"`
-	HeldWALFsyncs                     int                         `json:"heldWalFsyncs,omitempty"`
-	ReopenExitCode                    *int                        `json:"reopenExitCode,omitempty"`
-	ReopenFailClosed                  bool                        `json:"reopenFailClosed,omitempty"`
+	Filesystems                       map[string]ext4MountEvidence `json:"filesystems,omitempty"`
+	BrokerCrashExitCodes              map[string]int               `json:"brokerCrashExitCodes,omitempty"`
+	RecoveryTests                     []string                     `json:"recoveryTests,omitempty"`
+	LeaderNodeID                      string                       `json:"leaderNodeId,omitempty"`
+	RecoveryLeaderNodeID              string                       `json:"recoveryLeaderNodeId,omitempty"`
+	InFlightPublishTopic              string                       `json:"inFlightPublishTopic,omitempty"`
+	InFlightPublishAckOutcome         string                       `json:"inFlightPublishAckOutcome,omitempty"`
+	TargetNodeIDs                     []string                     `json:"targetNodeIds,omitempty"`
+	DiskFill                          *diskFillEvidence            `json:"diskFill,omitempty"`
+	DiskFills                         map[string]diskFillEvidence  `json:"diskFills,omitempty"`
+	DetectionDurationMs               int64                        `json:"detectionDurationMs,omitempty"`
+	TargetReadiness                   *healthObservation           `json:"targetReadiness,omitempty"`
+	TargetLiveness                    *healthObservation           `json:"targetLiveness,omitempty"`
+	LeaderReadiness                   *healthObservation           `json:"leaderReadiness,omitempty"`
+	TargetReplicationHealth           string                       `json:"targetReplicationHealth,omitempty"`
+	TargetLastErrorCode               string                       `json:"targetLastErrorCode,omitempty"`
+	TargetStoragePressure             *bool                        `json:"targetStoragePressure,omitempty"`
+	ProgressAccepted                  int                          `json:"progressAccepted,omitempty"`
+	ProgressAttempts                  int                          `json:"progressAttempts,omitempty"`
+	MaxLeaderProbeLatencyMs           int64                        `json:"maxLeaderProbeLatencyMs,omitempty"`
+	QueueSamples                      int                          `json:"queueSamples,omitempty"`
+	MaxOutboundMessages               int                          `json:"maxOutboundMessages,omitempty"`
+	MaxOutboundBytes                  int                          `json:"maxOutboundBytes,omitempty"`
+	MaxRejectedMessages               uint64                       `json:"maxRejectedMessages,omitempty"`
+	QueueCapReached                   bool                         `json:"queueCapReached,omitempty"`
+	LeaderUnreachableTarget           bool                         `json:"leaderUnreachableTarget,omitempty"`
+	LeaderAppliedIndexStart           int64                        `json:"leaderAppliedIndexStart,omitempty"`
+	LeaderAppliedIndexEnd             int64                        `json:"leaderAppliedIndexEnd,omitempty"`
+	FollowerAppliedIndexEnd           int64                        `json:"followerAppliedIndexEnd,omitempty"`
+	HaltProbeAttempts                 int                          `json:"haltProbeAttempts,omitempty"`
+	HaltAccepted                      int                          `json:"haltAccepted,omitempty"`
+	QuorumAvailableDuring             *bool                        `json:"quorumAvailableDuring,omitempty"`
+	HaltDurationMs                    int64                        `json:"haltDurationMs,omitempty"`
+	AppliedIndexEnd                   int64                        `json:"appliedIndexEnd,omitempty"`
+	RecoveryDurationMs                int64                        `json:"recoveryDurationMs,omitempty"`
+	ConvergedAppliedIndex             int64                        `json:"convergedAppliedIndex,omitempty"`
+	UptimeBeforeRecoveryMs            int64                        `json:"uptimeBeforeRecoveryMs,omitempty"`
+	UptimeAfterRecoveryMs             int64                        `json:"uptimeAfterRecoveryMs,omitempty"`
+	IOProbeDurationMs                 int64                        `json:"ioProbeDurationMs,omitempty"`
+	DurableAck                        *durableAckEvidence          `json:"durableAck,omitempty"`
+	OriginalBaselineReconnectAccepted bool                         `json:"originalBaselineReconnectAccepted"`
+	PowerCuts                         map[string]powerCutEvidence  `json:"powerCuts,omitempty"`
+	HeldWALFsyncs                     int                          `json:"heldWalFsyncs,omitempty"`
+	ReopenExitCode                    *int                         `json:"reopenExitCode,omitempty"`
+	ReopenFailClosed                  bool                         `json:"reopenFailClosed,omitempty"`
 }
 
 type durableAckEvidence struct {
@@ -136,6 +142,8 @@ type diskFillEvidence struct {
 type manifest struct {
 	SchemaVersion int                      `json:"schemaVersion"`
 	RunID         string                   `json:"runId"`
+	Profile       string                   `json:"profile"`
+	Boundary      string                   `json:"evidenceBoundary"`
 	Status        string                   `json:"status"`
 	StartedAt     time.Time                `json:"startedAt"`
 	FinishedAt    time.Time                `json:"finishedAt,omitempty"`
