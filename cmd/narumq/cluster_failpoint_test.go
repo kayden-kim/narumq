@@ -29,6 +29,8 @@ func TestClusterFailpointParse(t *testing.T) {
 		{"begin-remove-after-apply", failpointBeginRemoveAfterApply, false},
 		{"route-projection-rebuild-error", failpointRouteProjectionRebuild, false},
 		{"ownership-acquire-after-commit", failpointOwnershipAcquireAfterCommit, false},
+		{"offline-detach-before-commit", failpointOfflineDetachBeforeCommit, false},
+		{"offline-detach-after-commit", failpointOfflineDetachAfterCommit, false},
 		{"delivery-wal-before-write", failpointDeliveryWALBeforeWrite, false},
 		{"delivery-wal-before-sync", failpointDeliveryWALBeforeSync, false},
 		{"delivery-wal-after-sync", failpointDeliveryWALAfterSync, false},
@@ -127,6 +129,12 @@ func TestClusterFailpointMatchesOnlyItsBoundary(t *testing.T) {
 			}
 			if got := pt.matchesOwnershipAcquireAfterCommit(); got != (pt == failpointOwnershipAcquireAfterCommit) {
 				t.Errorf("matchesOwnershipAcquireAfterCommit() = %t, want %t", got, pt == failpointOwnershipAcquireAfterCommit)
+			}
+			if got := pt.matchesOfflineDetachBeforeCommit(); got != (pt == failpointOfflineDetachBeforeCommit) {
+				t.Errorf("matchesOfflineDetachBeforeCommit() = %t, want %t", got, pt == failpointOfflineDetachBeforeCommit)
+			}
+			if got := pt.matchesOfflineDetachAfterCommit(); got != (pt == failpointOfflineDetachAfterCommit) {
+				t.Errorf("matchesOfflineDetachAfterCommit() = %t, want %t", got, pt == failpointOfflineDetachAfterCommit)
 			}
 		})
 	}

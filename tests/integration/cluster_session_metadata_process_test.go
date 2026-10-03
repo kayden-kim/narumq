@@ -18,36 +18,7 @@ func TestDynamicClusterSessionMetadataProcessAcceptance(t *testing.T) {
 	fixture, nodes := clusterDurableProcessStart(t)
 	ctx := fixture.ctx
 
-	status, body, err := clusterMembershipProcessRequest(ctx, http.MethodPost,
-		nodes[0].managementURL()+"/api/v1/cluster/features/session-metadata", nil, clusterMembershipProcessAdmin, "")
-	if err != nil || status != http.StatusOK {
-		t.Fatalf("activate session-metadata status=%d body=%s err=%v", status, body, err)
-	}
-	clusterMembershipProcessWait(t, ctx, "session-metadata active on every node", func() (bool, string, error) {
-		for _, node := range nodes {
-			status, body, err := clusterMembershipProcessRequest(ctx, http.MethodGet,
-				node.managementURL()+"/api/v1/cluster/features", nil, clusterMembershipProcessAdmin, "")
-			if err != nil || status != http.StatusOK {
-				return false, fmt.Sprintf("%s feature status=%d body=%s err=%v", node.name, status, body, err), nil
-			}
-			var envelope struct {
-				Data struct {
-					ActiveFeatures []string `json:"activeFeatures"`
-				} `json:"data"`
-			}
-			if err := json.Unmarshal(body, &envelope); err != nil {
-				return false, "decode feature state: " + err.Error(), nil
-			}
-			found := false
-			for _, feature := range envelope.Data.ActiveFeatures {
-				found = found || feature == "session-metadata"
-			}
-			if !found {
-				return false, node.name + " has not applied session-metadata", nil
-			}
-		}
-		return true, "all nodes report session-metadata", nil
-	})
+	clusterSessionMetadataActivate(t, ctx, nodes)
 
 	observer := clusterDurableProcessConnect(t, fixture.mqttAddresses[0], fixture.accessToken, "meta-observer", true)
 	defer observer.Close()
@@ -160,6 +131,40 @@ func TestDynamicClusterSessionMetadataProcessAcceptance(t *testing.T) {
 		t.Fatalf("delayed recovered Will=%+v", delayedWill)
 	}
 	clusterSessionMetadataAssertNoPublish(t, observer, 3*time.Second)
+}
+
+func clusterSessionMetadataActivate(t *testing.T, ctx context.Context, nodes []*clusterMembershipProcess) {
+	t.Helper()
+	status, body, err := clusterMembershipProcessRequest(ctx, http.MethodPost,
+		nodes[0].managementURL()+"/api/v1/cluster/features/session-metadata", nil, clusterMembershipProcessAdmin, "")
+	if err != nil || status != http.StatusOK {
+		t.Fatalf("activate session-metadata status=%d body=%s err=%v", status, body, err)
+	}
+	clusterMembershipProcessWait(t, ctx, "session-metadata active on every node", func() (bool, string, error) {
+		for _, node := range nodes {
+			status, body, err := clusterMembershipProcessRequest(ctx, http.MethodGet,
+				node.managementURL()+"/api/v1/cluster/features", nil, clusterMembershipProcessAdmin, "")
+			if err != nil || status != http.StatusOK {
+				return false, fmt.Sprintf("%s feature status=%d body=%s err=%v", node.name, status, body, err), nil
+			}
+			var envelope struct {
+				Data struct {
+					ActiveFeatures []string `json:"activeFeatures"`
+				} `json:"data"`
+			}
+			if err := json.Unmarshal(body, &envelope); err != nil {
+				return false, "decode feature state: " + err.Error(), nil
+			}
+			found := false
+			for _, feature := range envelope.Data.ActiveFeatures {
+				found = found || feature == "session-metadata"
+			}
+			if !found {
+				return false, node.name + " has not applied session-metadata", nil
+			}
+		}
+		return true, "all nodes report session-metadata", nil
+	})
 }
 
 type clusterSessionMetadataWill struct {
@@ -337,18 +342,29 @@ func clusterSessionMetadataAssertNoPublish(t *testing.T, conn net.Conn, duration
 
 func clusterSessionMetadataGetClient(t *testing.T, ctx context.Context, node *clusterMembershipProcess, clientID string) clusterSessionMetadataClient {
 	t.Helper()
+	client, status, err := clusterSessionMetadataTryGetClient(ctx, node, clientID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if status != http.StatusOK {
+		t.Fatalf("GET client %s status=%d body=%s err=%v", clientID, status, "", err)
+	}
+	return client
+}
+
+func clusterSessionMetadataTryGetClient(ctx context.Context, node *clusterMembershipProcess, clientID string) (clusterSessionMetadataClient, int, error) {
 	status, body, err := clusterMembershipProcessRequest(ctx, http.MethodGet,
 		node.managementURL()+"/api/v1/clients/acceptance/"+clientID, nil, clusterMembershipProcessAdmin, "")
 	if err != nil || status != http.StatusOK {
-		t.Fatalf("GET client %s status=%d body=%s err=%v", clientID, status, body, err)
+		return clusterSessionMetadataClient{}, status, fmt.Errorf("GET client %s status=%d body=%s err=%v", clientID, status, body, err)
 	}
 	var envelope struct {
 		Data clusterSessionMetadataClient `json:"data"`
 	}
 	if err := json.Unmarshal(body, &envelope); err != nil {
-		t.Fatalf("decode client %s: %v body=%s", clientID, err, body)
+		return clusterSessionMetadataClient{}, status, fmt.Errorf("decode client %s: %v body=%s", clientID, err, body)
 	}
-	return envelope.Data
+	return envelope.Data, status, nil
 }
 
 func clusterSessionMetadataWaitForSubscriptions(t *testing.T, ctx context.Context, nodes []*clusterMembershipProcess) {

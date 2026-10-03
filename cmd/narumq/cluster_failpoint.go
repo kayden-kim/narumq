@@ -30,6 +30,8 @@ const (
 	failpointBeginRemoveAfterApply        clusterFailpoint = "begin-remove-after-apply"
 	failpointRouteProjectionRebuild       clusterFailpoint = "route-projection-rebuild-error"
 	failpointOwnershipAcquireAfterCommit  clusterFailpoint = "ownership-acquire-after-commit"
+	failpointOfflineDetachBeforeCommit    clusterFailpoint = "offline-detach-before-commit"
+	failpointOfflineDetachAfterCommit     clusterFailpoint = "offline-detach-after-commit"
 	failpointDeliveryWALBeforeWrite       clusterFailpoint = "delivery-wal-before-write"
 	failpointDeliveryWALBeforeSync        clusterFailpoint = "delivery-wal-before-sync"
 	failpointDeliveryWALAfterSync         clusterFailpoint = "delivery-wal-after-sync"
@@ -55,6 +57,8 @@ var validClusterFailpoints = []clusterFailpoint{
 	failpointBeginRemoveAfterApply,
 	failpointRouteProjectionRebuild,
 	failpointOwnershipAcquireAfterCommit,
+	failpointOfflineDetachBeforeCommit,
+	failpointOfflineDetachAfterCommit,
 	failpointDeliveryWALBeforeWrite,
 	failpointDeliveryWALBeforeSync,
 	failpointDeliveryWALAfterSync,
@@ -151,6 +155,14 @@ func (point clusterFailpoint) failsRouteProjection() bool {
 
 func (point clusterFailpoint) matchesOwnershipAcquireAfterCommit() bool {
 	return point == failpointOwnershipAcquireAfterCommit
+}
+
+func (point clusterFailpoint) matchesOfflineDetachBeforeCommit() bool {
+	return point == failpointOfflineDetachBeforeCommit
+}
+
+func (point clusterFailpoint) matchesOfflineDetachAfterCommit() bool {
+	return point == failpointOfflineDetachAfterCommit
 }
 
 func (point clusterFailpoint) delaysBootstrapProbe() bool {

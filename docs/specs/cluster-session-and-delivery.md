@@ -8,7 +8,7 @@
 | 관련 요구사항 | CLU-01~CLU-14, NFR-07~NFR-10, NFR-15 |
 | 근거 | [PRD 8장, 9.2절과 11.2절](../requirements/PRD.md) |
 | 관련 Architecture | [Cluster architecture](../architectures/cluster-architecture.md), [EKS on EC2 deployment](../architectures/eks-ec2-deployment.md) |
-| 관련 결정 | [ADR-0001](../decisions/ADR-0001-core-implementation-language.md), [ADR-0002](../decisions/ADR-0002-cluster-consensus-library.md), [ADR-0003](../decisions/ADR-0003-durable-ack-barrier.md), [ADR-0004](../decisions/ADR-0004-session-ownership-and-fencing.md), [ADR-0007](../decisions/ADR-0007-aws-production-deployment-platform.md), [ADR-0008](../decisions/ADR-0008-raft-peer-transport.md), [ADR-0009](../decisions/ADR-0009-raft-production-state-profile.md), [ADR-0011](../decisions/ADR-0011-cluster-backup-restore-v1.md) (historical v1 boundary), [ADR-0012](../decisions/ADR-0012-retained-replication-and-cluster-backup-v2.md) (retained scope), [ADR-0013](../decisions/ADR-0013-offline-queue-replication-and-cluster-backup-v3.md), [ADR-0014](../decisions/ADR-0014-cross-node-live-qos0-forwarding.md), [ADR-0015](../decisions/ADR-0015-cluster-durable-qos-delivery.md) (cluster QoS 1/2 durable delivery scope), [ADR-0017](../decisions/ADR-0017-tenant-storage-quota.md) (TEN-08 storage quota scope), [ADR-0018](../decisions/ADR-0018-release-compatibility-window.md) (N/N-1 release profile and feature activation), [ADR-0019](../decisions/ADR-0019-untargeted-durable-publish-quorum-barrier.md) (target 0 command 생략 범위) |
+| 관련 결정 | [ADR-0001](../decisions/ADR-0001-core-implementation-language.md), [ADR-0002](../decisions/ADR-0002-cluster-consensus-library.md), [ADR-0003](../decisions/ADR-0003-durable-ack-barrier.md), [ADR-0004](../decisions/ADR-0004-session-ownership-and-fencing.md), [ADR-0007](../decisions/ADR-0007-aws-production-deployment-platform.md), [ADR-0008](../decisions/ADR-0008-raft-peer-transport.md), [ADR-0009](../decisions/ADR-0009-raft-production-state-profile.md), [ADR-0011](../decisions/ADR-0011-cluster-backup-restore-v1.md) (historical v1 boundary), [ADR-0012](../decisions/ADR-0012-retained-replication-and-cluster-backup-v2.md) (retained scope), [ADR-0013](../decisions/ADR-0013-offline-queue-replication-and-cluster-backup-v3.md), [ADR-0014](../decisions/ADR-0014-cross-node-live-qos0-forwarding.md), [ADR-0015](../decisions/ADR-0015-cluster-durable-qos-delivery.md) (cluster QoS 1/2 durable delivery scope), [ADR-0017](../decisions/ADR-0017-tenant-storage-quota.md) (TEN-08 storage quota scope), [ADR-0018](../decisions/ADR-0018-release-compatibility-window.md) (N/N-1 release profile and feature activation), [ADR-0019](../decisions/ADR-0019-untargeted-durable-publish-quorum-barrier.md) (target 0 command 생략 범위), [ADR-0027](../decisions/ADR-0027-detach-forward-and-owner-crash-qos0-boundary.md) |
 | 관련 Contract | [Cluster release compatibility v1](../contracts/cluster-release-compatibility-v1.md), [Raft peer transport v1](../contracts/raft-peer-transport-v1.md), Draft [Cluster backup v3](../contracts/cluster-backup-v3.md), Superseded [Cluster backup v2](../contracts/cluster-backup-v2.md), Superseded [Cluster backup v1](../contracts/cluster-backup-v1.md) |
 | 해설 | [세션 소유권과 fencing](../explainers/session-ownership-and-fencing.md), [EKS 고가용성과 장애 도메인](../explainers/eks-ha-failure-domains.md) |
 
@@ -137,7 +137,7 @@ Cluster mode에서 persistent session(MQTT 3.1.1 CleanSession=0 또는 MQTT 5 Cl
 6. **Ownership 연동:** Ownership `Release`가 apply되면 같은 key의 offline record도 지운다. Transfer/acquire는 record를 보존하며 새 owner의 CLAIM이 가져간다. 모든 offline record는 `record.epoch` 이상의 ownership row를 가져야 한다.
 7. **SessionPresent:** `CleanStart=0` CONNECT의 CLAIM이 `Found=true`이면 다른 node로 reconnect해도 CONNACK `SessionPresent=1`이고 message를 sequence FIFO로 전달한다. `CleanStart=1`이면 CLAIM으로 record를 지우고 message는 버린다.
 8. **Fallback:** DETACH가 quorum/compatibility/stale-epoch 이유로 실패하면 local queue를 그대로 둔다. CLAIM이 실패하면 CONNECT를 ownership-unavailable reason으로 거절하고 local session 변경을 rollback한다. 기존 local session이 없었던 시도는 새 delivery queue 등록과 tenant route binding도 제거한다. 기존 local session이 있으면 CLAIM 성공 전까지 기존 expiry/WILL timer를 유지하고, 실패 시 기존 timer와 session 상태를 보존한다. ENQUEUE 실패는 해당 대상만 `Saturated`(capacity) 또는 `Unavailable`(그 외)로 보고한다.
-9. **알려진 한계:** Feature 비활성 시 owner node가 연결 중에 crash하면 DETACH가 없어 이후 message는 capture되지 않는다. Feature 활성 시 replicated session metadata로 owner 재시작 뒤 expiry와 session 복구를 수행한다(§4.3). Detach 전환 중 owner node에서 publish된 QoS 0 message는 유실하지 않는다(11항). 다른 node에서 forward된 QoS 0 delivery는 전환 중이거나 local queue 제거 뒤 도착하면 §3.1의 at-most-once에 따라 유실될 수 있다. ENQUEUE는 대상 session마다 commit 1회다.
+9. **알려진 한계:** Feature 비활성 시 owner node가 연결 중에 crash하면 DETACH가 없어 이후 message는 capture되지 않는다. Feature 활성 시 replicated session metadata로 owner 재시작 뒤 expiry와 session 복구를 수행한다(§4.3). Detach 전환 중 owner node에서 publish된 QoS 0 message는 유실하지 않는다(11항). 다른 node에서 forward된 QoS 0 delivery는 전환 중이거나 local queue 제거 뒤 도착하면 §3.1의 at-most-once에 따라 유실될 수 있다. 연결 중 owner가 offline DETACH commit 전에 끝나면 그 local queue는 복구하지 않는다. DETACH commit 뒤 crash하면 record와 이후 ENQUEUE를 보존한다. Feature 활성 시 owner 재시작 recovery가 빈 DETACH를 commit해 capture를 재개한다. 이미 전달한 message를 다시 보내지 않는다. 이 경계는 [ADR-0027](../decisions/ADR-0027-detach-forward-and-owner-crash-qos0-boundary.md)을 따른다. ENQUEUE는 대상 session마다 commit 1회다.
 10. **Schema와 profile gate:** Replicated-state schema는 `1.0`을 유지하고 unknown field를 거절한다. Offline command는 fresh read barrier 뒤 모든 non-retired member의 cluster protocol/state schema가 exact match이고 release가 같은 major의 인접 minor window 안에 있는지 확인한 뒤 제안한다.
 11. **Detach 전환 보호:** [ADR-0026](../decisions/ADR-0026-detach-transition-local-qos0-gate.md)에 따라 전환 중 owner-node local publish는 DETACH 결과를 기다린 뒤 다시 판정한다. 성공하면 offline ENQUEUE로 보내고 실패하면 유지된 local queue로 보낸다. 최대 대기는 10초이며 이를 넘기면 해당 대상을 `Unavailable`로 보고한다. 캡처한 message와 같은 publisher의 이후 message 순서는 FIFO다. Local queue 제거 직후 도착한 publish도 offline 경로를 한 번 재판정한다. 각 판정은 새 현재 시각으로 기존 absolute Message Expiry deadline을 검사한다. 대기 중 만료되면 ENQUEUE·forward·local enqueue를 실행하지 않고 전달 결과에도 넣지 않는다. Forward 경로는 기다리지 않는다. 기존 capacity·expiry·commit timeout 경계는 유지한다.
 
@@ -1005,4 +1005,48 @@ GOMAXPROCS=4 go run ./tools/verify local
 Expiry 보강 뒤 최종 focused 여섯 package는 모두 PASS였다(memory queue 0.452s·connect 0.505s·publish 0.473s·subscribe 0.461s·TCP 10.454s·cmd 11.811s). 일반·failpoint build도 exit 0이었고 이 묶음의 wall은 21.04s였다. 동일 process 회귀 명령은 세 시험 모두 PASS(package 41.418s·wall 43.77s)였다. 최종 `GOMAXPROCS=4 go run ./tools/verify local`은 exit 0·local PASS(wall 246.01s·integration 208.341s)였다. Traceability·architecture·네 fuzz target 각각 10,000회·package/integration·production race·coverage가 통과했다. 이 최종 gate 뒤에는 실행 증거만 기록했고 코드는 바꾸지 않았다.
 
 최종 Go 변경에 대해 위 승인된 세 package race 명령도 그대로 실행했다(`go test -race ./internal/adapters/memory/deliveryqueue ./internal/application/publish ./cmd/narumq -run 'Detach|LocalDetach|AcceptForwarded' -count=3`). 세 package 모두 PASS(memory queue 1.360s·publish 1.371s·cmd 1.210s, wall 6.39s)였다. 이 실행은 expiry 보강 뒤 publish·cmd 두 package race 결과와 구분한다. ADR-0026 §5의 race 증거는 이 최종 명령을 포함한다.
+
+### 11.26 Detach 전환 forward·연결 중 owner crash 유실 경계 수용 매핑
+
+이 매핑은 [ADR-0027](../decisions/ADR-0027-detach-forward-and-owner-crash-qos0-boundary.md)의 at-most-once 경계만 검증한다. Production storage와 CLU-14 전체 완료를 선언하지 않는다.
+
+| Scenario | 관찰할 결과 | 시험 위치 | 실행 증거 |
+| --- | --- | --- | --- |
+| Failpoint parse·경계 | 두 값이 parse되고 자기 경계에서만 일치한다. | `cmd/narumq.TestClusterFailpointParse`, `TestClusterFailpointMatchesOnlyItsBoundary` | PASS: package 0.165s; 두 build와 합계 wall 10.51s |
+| Forward 전환 중 비대기·유실 | DETACH가 막혀 있어도 두 frame 처리가 끝난다. 다른 session에는 전달하고 전환 중·뒤 forward는 DETACH와 ENQUEUE에 넣지 않는다. | `cmd/narumq.TestClusterForwardDuringDetachIsDroppedWithoutBlockingLane` | PASS: 새 시험·기존 local race targeted package 0.163s; DETACH=[race/1], ENQUEUE=0, other queue=race/other-during |
+| DETACH commit 전 owner crash | Exit 86·marker, outage count 0, recovery 뒤 capture 재개, SessionPresent=1, live 재전달·중복 없음, sentinel 수신 | `tests/integration.TestDynamicClusterDetachOwnerCrashProcessAcceptance/before-commit` | PASS: subtest 13.44s; outage count=0, recovery base=0, capture=1 |
+| DETACH commit 뒤 owner crash | Exit 86·marker, outage count 1 보존, outage → after-recovery FIFO, SessionPresent=1, 중복 없음, sentinel 수신 | `tests/integration.TestDynamicClusterDetachOwnerCrashProcessAcceptance/after-commit` | PASS: subtest 15.05s; outage count=1, recovery base=1, capture=2; 두 subtest 합계 28.49s·package 28.651s·wall 30.84s |
+| Focused·race·build | 영향 package, race 3회, 일반·failpoint build를 통과한다. | 아래 실행 명령 | PASS: focused 다섯 package(memory queue 0.386s·connect 0.400s·publish 0.399s·TCP 10.344s·cmd 13.988s)·wall 15.48s; race 3회(memory queue 1.367s·publish 1.384s·cmd 1.222s), targeted와 합계 wall 11.14s; 일반·failpoint build exit 0 |
+| 기존 process 회귀 | Session metadata·ownership takeover·backup restore 경로를 유지한다. | `TestDynamicClusterSessionMetadataProcessAcceptance`, `TestDynamicClusterMQTTConnectOwnershipTakeoverProcessAcceptance`, `TestClusterBackupRestoreProcessCrashAndResync` | PASS: metadata 29.11s·takeover 6.89s·backup 20.91s; package 29.279s·wall 30.49s |
+| 전체 local gate | 프로젝트 local 검증을 통과한다. | `go run ./tools/verify local` | PASS: exit 0·local PASS; integration 220.964s·wall 257.22s |
+
+2026-10-04 실행 환경은 Windows/amd64, Go 1.26.5, 저장소 root `D:/Workspace/narumq`다. Process와 local gate는 실행 process의 환경에 `GOMAXPROCS=4`를 설정했다. Docker는 사용하지 않았다.
+
+```text
+# 일반·failpoint build와 failpoint 경계
+go build ./... && go build -tags narumq_failpoint ./...
+go test ./cmd/narumq -run '^TestClusterFailpoint' -count=1 -v
+# Forward 경계와 기존 local publish 보호
+go test ./cmd/narumq -run '^(TestClusterForwardDuringDetachIsDroppedWithoutBlockingLane|TestClusterDetachCapturesConcurrentLocalQoS0Publish)$' -count=1 -v
+# Race 3회
+go test -race ./internal/adapters/memory/deliveryqueue ./internal/application/publish ./cmd/narumq -run 'Detach|LocalDetach|AcceptForwarded|ForwardDuringDetach' -count=3
+# 실제 owner crash 수용
+GOMAXPROCS=4 go test ./tests/integration -run '^TestDynamicClusterDetachOwnerCrashProcessAcceptance$' -count=1 -v -timeout 20m
+# Focused
+go test ./internal/adapters/memory/deliveryqueue ./internal/application/connect ./internal/application/publish ./internal/adapters/tcp ./cmd/narumq -count=1
+# 기존 실제 process 회귀
+GOMAXPROCS=4 go test ./tests/integration -run '^(TestDynamicClusterSessionMetadataProcessAcceptance|TestDynamicClusterMQTTConnectOwnershipTakeoverProcessAcceptance|TestClusterBackupRestoreProcessCrashAndResync)$' -parallel=2 -count=1 -v -timeout 20m
+# 전체 local gate
+GOMAXPROCS=4 go run ./tools/verify local
+```
+
+두 crash 시험은 각각 exit 86과 `narumq failpoint reached: offline-detach-before-commit` 또는 `narumq failpoint reached: offline-detach-after-commit` marker를 확인했다. 두 경계에서 metadata는 `Connected=true`, `NodeID="3"`이었다. 재시작 뒤에는 `Connected=false`와 expiry를 확인했다. Node 2 재접속은 `SessionPresent=1`이었고 이미 받은 `live`는 다시 오지 않았다. Commit 뒤 시험은 `outage` → `after-recovery`를 받았다. Commit 전 시험은 이번 실행에서 base=0으로 `after-recovery`만 받았다. 시험은 recovery queue 등록과 DETACH 사이에 지연된 peer frame이 도착하는 경우의 base=1도 허용한다.
+
+Crash 전 local queue 잔여의 유실 자체는 assert하지 않는다. QoS 0 socket write로 queue가 바로 비워질 수 있기 때문이다. Commit 전후의 위치는 marker, metadata와 owner 정지 중 offline count 차이로 확인한다. 이 증거는 연결 중 QoS 0 무손실이나 production storage 보존을 뜻하지 않는다.
+
+첫 process 실행은 시험 fixture에 `detach/crash/#` publish·subscribe 권한이 없어 SUBACK `0x87`에서 실패했다. Fixture에 시험 client ID와 해당 topic 권한을 추가한 뒤 위 두 subtest가 통과했다. 이 준비 실패는 production 동작 실패로 계산하지 않는다. Production recovery·forward 정책은 바꾸지 않았다.
+
+전체 local gate는 traceability·architecture·네 fuzz target 각각 10,000회·package/integration·production race·coverage를 통과했다. 이 gate 뒤에는 실행 증거와 완료 상태·코드 지도만 갱신했다.
+
+문서 링크는 ADR-0027·ADR-0026·결정 목록·tasks·코드 지도·cluster architecture의 상대 링크와 스펙의 새 ADR 링크 총 239개를 확인했다. 대상 파일과 heading anchor가 모두 존재했다. Accepted ADR 보존 규칙에 따라 ADR-0013의 기존 checklist 본문은 변경하지 않았다. 이 수용 범위의 완료 상태는 ADR-0027과 이 절, tasks에서 추적한다.
 

@@ -173,6 +173,11 @@ func newClusterMembershipProcessFixture(t *testing.T, nodeCount int, buildTags s
       "meta-resume",
       "meta-takeover",
       "meta-delayed",
+      "detach-crash",
+      "detach-crash-pub-live",
+      "detach-crash-pub-outage",
+      "detach-crash-pub-after",
+      "detach-crash-pub-sentinel",
       "ownership-takeover-client",
       "ownership-publisher-1",
       "ownership-publisher-3",
@@ -372,6 +377,18 @@ func newClusterMembershipProcessFixture(t *testing.T, nodeCount int, buildTags s
     "effect": "allow",
     "action": "will",
     "topicFilter": "meta/#"
+  }, {
+    "tenantId": "acceptance",
+    "role": "client",
+    "effect": "allow",
+    "action": "publish",
+    "topicFilter": "detach/crash/#"
+  }, {
+    "tenantId": "acceptance",
+    "role": "client",
+    "effect": "allow",
+    "action": "subscribe",
+    "topicFilter": "detach/crash/#"
   }, {
     "tenantId": "acceptance",
     "role": "client",

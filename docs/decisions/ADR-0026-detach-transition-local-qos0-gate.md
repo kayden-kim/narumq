@@ -9,7 +9,7 @@
 | 관련 스펙·데이터 계약 | [Cluster §4.1·§11.25](../specs/cluster-session-and-delivery.md) |
 | 관련 아키텍처 | [Project structure](../architectures/project-structure.md), [Cluster architecture](../architectures/cluster-architecture.md) |
 | 이 결정이 대체하는 이전 결정 기록(ADR) | [ADR-0013](ADR-0013-offline-queue-replication-and-cluster-backup-v3.md) §1 10항의 detach 전환 race 문장 중 owner-node local publish 경로만 |
-| 이 결정을 대체한 새 결정 기록(ADR) | 없음 |
+| 이 결정을 대체한 새 결정 기록(ADR) | [ADR-0027](ADR-0027-detach-forward-and-owner-crash-qos0-boundary.md) — §4 마지막 항목의 열린 수용 범위만 |
 
 ## 1. 결정
 

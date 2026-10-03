@@ -140,6 +140,8 @@ Ingress가 frame을 forwarding queue에 넣으면 전달 시도는 성공으로 
 
 Persistent subscriber의 disconnect 중 같은 node에서 publish한 message가 queue capture와 제거 사이에서 사라지지 않도록 전환 표시를 둔다. 예를 들어 local queue에 `race/1`이 있고 DETACH 중 `race/2`를 publish하면, 성공한 DETACH는 `race/1`을 가져가고 이후 offline ENQUEUE는 `race/2`를 기록한다. 동작과 대기 상한의 기준은 [Cluster §4.1·§11.25](../specs/cluster-session-and-delivery.md#1125-detach-전환-local-qos-0-보존-수용-매핑)와 [ADR-0026](../decisions/ADR-0026-detach-transition-local-qos0-gate.md)이다.
 
+[ADR-0027](../decisions/ADR-0027-detach-forward-and-owner-crash-qos0-boundary.md)의 forward 유실·비대기는 `cmd/narumq/cluster_offline_detach_race_test.go`의 package 시험에서 확인하며, owner crash 경계는 `tests/integration/cluster_detach_owner_crash_process_test.go`가 `cmd/narumq/cluster_offline.go` `DetachSession`의 proposal 직전 `offline-detach-before-commit`과 `Applied` 확인 직후 `offline-detach-after-commit` failpoint로 확인한다([Cluster §11.26](../specs/cluster-session-and-delivery.md#1126-detach-전환-forward연결-중-owner-crash-유실-경계-수용-매핑)).
+
 | 파일·심볼 | 현재 역할 |
 | --- | --- |
 | `internal/application/ports/deliveryqueue/queue.go` `Queue` | `BeginDetach`, `FinishDetach`, `AwaitDetach`와 `ErrDetaching` 경계를 소유한다. 기존 `ListQueued` 읽기 API는 유지한다. |

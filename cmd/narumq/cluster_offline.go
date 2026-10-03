@@ -67,6 +67,9 @@ func (runtime *clusterRuntime) DetachSession(ctx context.Context, request connec
 		return err
 	}
 
+	if runtime.failpoint.matchesOfflineDetachBeforeCommit() {
+		triggerClusterFailpoint(runtime.failpoint)
+	}
 	detachCtx, cancel := context.WithTimeout(ctx, clusterOfflineCommitTimeout)
 	res, err := runtime.Commit(detachCtx, membership.CommandDTO{
 		SchemaMajor: membership.SchemaMajor, SchemaMinor: membership.SchemaMinor,
@@ -88,6 +91,9 @@ func (runtime *clusterRuntime) DetachSession(ctx context.Context, request connec
 	}
 	if res.Outcome != membership.ApplyOutcomeApplied {
 		return fmt.Errorf("%w: %s", errClusterOfflineConflict, res.Conflict)
+	}
+	if runtime.failpoint.matchesOfflineDetachAfterCommit() {
+		triggerClusterFailpoint(runtime.failpoint)
 	}
 
 	// Commit any remaining messages one by one via ENQUEUE.

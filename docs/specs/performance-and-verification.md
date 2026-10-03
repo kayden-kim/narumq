@@ -675,6 +675,8 @@ snapshot-install-after-persist
 begin-remove-after-apply
 route-projection-rebuild-error
 ownership-acquire-after-commit
+offline-detach-before-commit
+offline-detach-after-commit
 delivery-wal-before-write
 delivery-wal-before-sync
 delivery-wal-after-sync
@@ -717,6 +719,7 @@ composition root decodes those entries and limits these crash points to durable
 of command configuration. Existing `filePersistenceOps` and `onReadyEvent` hooks
 remain in-package adapter seams. `ownership-acquire-after-commit` remains a
 composition-root boundary after quorum commit and before CONNECT local activation.
+`offline-detach-before-commit`과 `offline-detach-after-commit`은 `DetachSession`의 offline DETACH proposal 직전과 `Applied` 확인 직후의 composition-root 경계다.
 
 ### 7.4 Cluster storage chaos evidence
 
