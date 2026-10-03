@@ -382,16 +382,30 @@ func TestWALReaderHandlesTornAndCorruptFrames(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	validFrame := walFrame(validPayload, true)
+	largePayload, err := encodeWALRecord(walRecord{entries: []*pb.Entry{{Index: uint64Ptr(2), Type: pb.EntryNormal.Enum(), Data: bytes.Repeat([]byte{'x'}, 3000)}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	zeroSectorTail := append(bytes.Clone(validFrame), walFrame(largePayload, true)[len(walMagic):]...)
+	sectorStart := (len(validFrame) + 511) / 512 * 512
+	clear(zeroSectorTail[sectorStart : sectorStart+512])
 	cases := []struct {
-		name    string
-		data    []byte
-		wantErr bool
+		name        string
+		data        []byte
+		wantErr     bool
+		wantRecords int
+		wantSize    int64
 	}{
 		{name: "short magic", data: []byte("NMQ"), wantErr: true},
 		{name: "bad magic", data: []byte("BADWAL01"), wantErr: true},
 		{name: "torn header", data: append([]byte(walMagic), 1, 2, 3)},
 		{name: "torn payload", data: truncatedWALFrame(validPayload)},
-		{name: "tail checksum", data: walFrame(validPayload, false)},
+		{name: "tail checksum", data: walFrame(validPayload, false), wantErr: true},
+		{name: "zero-filled tail", data: append(bytes.Clone(validFrame), make([]byte, 1024)...), wantRecords: 1, wantSize: int64(len(validFrame))},
+		{name: "tail checksum with zero sector", data: zeroSectorTail, wantRecords: 1, wantSize: int64(len(validFrame))},
+		{name: "tail checksum before zero padding", data: append(walFrame(validPayload, false), make([]byte, 512)...), wantErr: true},
+		{name: "zero header before data", data: append(bytes.Clone(validFrame), 0, 0, 0, 0, 0, 0, 0, 0, 1), wantErr: true},
 		{name: "oversized frame", data: oversizedWALFrame(), wantErr: true},
 		{name: "decode frame", data: walFrame([]byte{1, 4, 0, 0}, true), wantErr: true},
 	}
@@ -401,12 +415,21 @@ func TestWALReaderHandlesTornAndCorruptFrames(t *testing.T) {
 			if err := os.WriteFile(path, testCase.data, 0o600); err != nil {
 				t.Fatal(err)
 			}
-			_, err := readWAL(path)
-			if testCase.wantErr && err == nil {
-				t.Fatal("readWAL unexpectedly succeeded")
+			records, err := readWAL(path)
+			if testCase.wantErr && !errors.Is(err, ErrCorruptWAL) {
+				t.Fatalf("readWAL error = %v, want ErrCorruptWAL", err)
 			}
 			if !testCase.wantErr && err != nil {
 				t.Fatalf("readWAL error = %v", err)
+			}
+			if testCase.wantSize != 0 {
+				stat, err := os.Stat(path)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if len(records) != testCase.wantRecords || stat.Size() != testCase.wantSize {
+					t.Fatalf("records=%d size=%d, want records=%d size=%d", len(records), stat.Size(), testCase.wantRecords, testCase.wantSize)
+				}
 			}
 		})
 	}

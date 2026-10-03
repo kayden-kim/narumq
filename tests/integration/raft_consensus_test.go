@@ -202,6 +202,42 @@ func assertCommands(t *testing.T, cluster *deterministicCluster, nodeIDs []rafta
 
 // Traceability: PRD CLU-01/02/06/07/09/10; ADR-0001 §7 gate 4; ADR-0002 §7; cluster spec §6/7/10/11.
 func TestRaftConsensusSpike(t *testing.T) {
+	t.Run("snapshot compaction replaces WAL and prunes older snapshots", func(t *testing.T) {
+		cluster := newDeterministicCluster(t)
+		cluster.campaign(1)
+		cluster.propose(1, []byte("alpha"))
+		if err := cluster.nodes[2].Snapshot(); err != nil {
+			t.Fatal(err)
+		}
+		path := filepath.Join(cluster.dirs[2], "wal.bin")
+		before := clusterWALLifecycleFileInfo(t, path)
+		cluster.propose(1, []byte("beta"))
+		if err := cluster.nodes[2].Snapshot(); err != nil {
+			t.Fatal(err)
+		}
+		files, err := filepath.Glob(filepath.Join(cluster.dirs[2], "snapshot-*.bin"))
+		want := fmt.Sprintf("snapshot-%020d.bin", cluster.nodes[2].Status().AppliedIndex)
+		if err != nil || len(files) != 1 || filepath.Base(files[0]) != want {
+			t.Errorf("snapshot files=%v error=%v, want only %s", files, err, want)
+		}
+		after := clusterWALLifecycleFileInfo(t, path)
+		if os.SameFile(before, after) {
+			t.Fatal("snapshot did not replace WAL")
+		}
+		cluster.propose(1, []byte("gamma"))
+		if err := cluster.nodes[2].Close(); err != nil {
+			t.Fatal(err)
+		}
+		reopened, err := raftadapter.Open(raftadapter.Config{NodeID: 2, PeerIDs: []raftadapter.NodeID{1, 2, 3}, Directory: cluster.dirs[2]})
+		if err != nil {
+			t.Fatal(err)
+		}
+		cluster.nodes[2] = reopened
+		assertCommands(t, cluster, []raftadapter.NodeID{2}, []string{"alpha", "beta", "gamma"})
+		if status := reopened.Status(); status.CommitIndex != status.AppliedIndex {
+			t.Fatalf("recovered status=%+v", status)
+		}
+	})
 	t.Run("leader failure preserves committed state", func(t *testing.T) {
 		cluster := newDeterministicCluster(t)
 		cluster.campaign(1)

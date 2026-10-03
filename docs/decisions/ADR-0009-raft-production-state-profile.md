@@ -10,7 +10,7 @@
 | 관련 아키텍처 | [Cluster architecture](../architectures/cluster-architecture.md) |
 | 관련 ADR | [ADR-0002](ADR-0002-cluster-consensus-library.md), [ADR-0003](ADR-0003-durable-ack-barrier.md), [ADR-0004](ADR-0004-session-ownership-and-fencing.md), [ADR-0008](ADR-0008-raft-peer-transport.md) |
 | 이 결정이 대체하는 이전 결정 기록(ADR) | 없음 |
-| 이 결정을 대체한 새 결정 기록(ADR) | [ADR-0020](ADR-0020-asynchronous-raft-wal-group-commit.md): §1.2의 synchronous Ready scheduling만 대체 |
+| 이 결정을 대체한 새 결정 기록(ADR) | [ADR-0020](ADR-0020-asynchronous-raft-wal-group-commit.md): §1.2의 synchronous Ready scheduling만 대체; [ADR-0023](ADR-0023-raft-wal-compaction-and-snapshot-retention.md): local WAL lifecycle·snapshot retention과 torn-tail 판정 구체화 |
 
 이 ADR은 아래 네 가지 설계 선택만 채택한다. 현재 runtime의 production readiness, production crash recovery·내구성, durable MQTT ACK 또는 release N/N-1 호환성을 승인하지 않는다. 상위 [ADR-0002](ADR-0002-cluster-consensus-library.md), [ADR-0003](ADR-0003-durable-ack-barrier.md), [ADR-0004](ADR-0004-session-ownership-and-fencing.md)는 계속 `Proposed`이며, cluster architecture와 [release compatibility contract](../contracts/cluster-release-compatibility-v1.md)는 각각 `Target / Draft`, `Draft`로 남는다.
 
@@ -43,7 +43,7 @@ Write, file sync, rename 또는 directory sync가 실패하면 해당 node는 fa
 
 `File.Sync`와 directory sync는 지원 대상인 Linux local filesystem/EBS에서 요구하는 primitive다. Snapshot finalization과 dynamic cluster metadata는 file/directory sync를 수행한다. 신규 WAL 생성은 header file sync 뒤 parent directory sync를 수행하며, 매번 WAL을 open할 때 file과 parent directory를 다시 sync한다. Focused unit test는 신규 생성, 기존 WAL 재-open 및 directory sync 실패 뒤 같은 directory에서 재시도하는 경계를 확인한다. 이는 구현 순서의 검증이지 production volume의 power-loss 보장이 아니다. v1 backup/restore는 ADR-0011 범위에서 구현·수용 시험했으나, scheduled backup이나 전체 disaster-recovery 보장을 뜻하지 않는다.
 
-기존 file-backed spike 패턴을 재사용하며 embedded database를 추가하지 않는다. `NMQWAL01`은 checksummed Ready frame을 WAL 파일에 sync하고, `NMQSNAP1`은 file `Sync`, atomic rename, 포함 directory `Sync`로 확정한다. 신규 WAL file의 directory sync는 구현·unit test 완료이며, 재-open도 file과 directory를 sync해 실패 뒤 retry에서 이름을 신뢰하지 않는다. Production WAL lifecycle·retention은 미완료다. `NMQSTATE1`은 fixed-voter 경로의 legacy opaque command-history snapshot이며, dynamic cluster는 Draft [`replicated-state-v1.proto`](../contracts/replicated-state-v1.proto)를 `records` codec으로 사용한다. 이 구현을 production format으로 승인하지 않으며 production volume/power-loss 검증도 남아 있다.
+기존 file-backed spike 패턴을 재사용하며 embedded database를 추가하지 않는다. `NMQWAL01`은 checksummed Ready frame을 WAL 파일에 sync하고, `NMQSNAP1`은 file `Sync`, atomic rename, 포함 directory `Sync`로 확정한다. 신규 WAL file의 directory sync는 구현·unit test 완료이며, 재-open도 file과 directory를 sync해 실패 뒤 retry에서 이름을 신뢰하지 않는다. Local WAL lifecycle·snapshot retention과 torn-tail 근거 판정은 [ADR-0023](ADR-0023-raft-wal-compaction-and-snapshot-retention.md)·[Cluster §11.22](../specs/cluster-session-and-delivery.md#1122-wal-compactionsnapshot-retentiontorn-tail-수용-매핑)의 구현·수용 시험으로 확인했다. Production Linux/EBS storage gate는 열린 상태다. `NMQSTATE1`은 fixed-voter 경로의 legacy opaque command-history snapshot이며, dynamic cluster는 Draft [`replicated-state-v1.proto`](../contracts/replicated-state-v1.proto)를 `records` codec으로 사용한다. 이 구현을 production format으로 승인하지 않으며 production volume/power-loss 검증도 남아 있다.
 
 ### 1.3 Replicated application command와 snapshot-state encoding
 
@@ -101,7 +101,7 @@ Generated protobuf와 deterministic serialization은 타입을 가진 applicatio
 
 ### 부정적 결과와 비용
 
-- Local snapshot finalization과 process crash/recovery는 시험했지만 production WAL lifecycle·retention 및 지원 filesystem/EBS의 power-loss 검증은 남는다.
+- Local snapshot finalization·WAL tail 교체·snapshot retention·torn-tail 판정과 process crash/recovery는 [Cluster §11.22](../specs/cluster-session-and-delivery.md#1122-wal-compactionsnapshot-retentiontorn-tail-수용-매핑)에서 시험했다. 지원 filesystem/EBS의 실제 power-loss 및 backup retention/RPO/RTO 검증은 남는다.
 - Deterministic protobuf serialization만으로 N/N-1 호환성이 생기지 않으며 별도 schema contract, migration과 compatibility 시험이 필요하다.
 - 단일 group은 처리량 확장 경계를 둔다. 확장 전 실측과 별도 migration 결정이 필요하다.
 - Version pin과 storage/encoding profile만으로 production runtime, MQTT readiness, durable ACK, full disaster-recovery 또는 full CLU-14 완료를 뜻하지 않는다.
@@ -109,7 +109,7 @@ Generated protobuf와 deterministic serialization은 타입을 가진 applicatio
 ### 후속 작업
 
 - Draft replicated-state contract의 migration limits, release compatibility vectors와 N/N-1 rules를 확정한다.
-- Local directory sync/snapshot-finalize crash 및 3-voter backup restore acceptance는 [Cluster §11.7](../specs/cluster-session-and-delivery.md#117-cluster-backuprestore와-snapshot-finalize-수용-매핑)에서 통과했다. WAL torn-tail, retention 및 production EBS/power-loss 검증은 미완료다.
+- Local directory sync/snapshot-finalize crash 및 3-voter backup restore acceptance는 [Cluster §11.7](../specs/cluster-session-and-delivery.md#117-cluster-backuprestore와-snapshot-finalize-수용-매핑)에서 통과했다. Local WAL lifecycle·snapshot retention·torn-tail 판정과 historical N-1 WAL rollback은 [§11.22](../specs/cluster-session-and-delivery.md#1122-wal-compactionsnapshot-retentiontorn-tail-수용-매핑)에서 통과했다. Production EBS/power-loss·volume loss·backup retention/RPO/RTO는 미완료다.
 
 ## 7. 검증
 

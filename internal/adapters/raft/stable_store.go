@@ -403,6 +403,13 @@ func openStableStoreMode(directory string, dynamic bool) (*stableStore, error) {
 	if err != nil {
 		return nil, err
 	}
+	if err := os.Remove(filepath.Join(directory, walCompactionName)); err != nil {
+		if !errors.Is(err, os.ErrNotExist) {
+			return nil, fmt.Errorf("remove stale WAL compaction file: %w", err)
+		}
+	} else if err := filePersistenceOps.syncDirectory(directory); err != nil {
+		return nil, fmt.Errorf("remove stale WAL compaction file: %w", err)
+	}
 	records, err := readWALMode(filepath.Join(directory, walName), dynamic)
 	if err != nil {
 		return nil, err
@@ -641,6 +648,13 @@ func (s *stableStore) applyRecord(record walRecord) error {
 	return nil
 }
 
+func walFrameHeader(payload []byte) [8]byte {
+	var header [8]byte
+	binary.BigEndian.PutUint32(header[:4], uint32(len(payload)))
+	binary.BigEndian.PutUint32(header[4:], crc32.Checksum(payload, crcTable))
+	return header
+}
+
 // writeWALFrame preserves the existing frame format without synchronizing it.
 // Only the WAL worker may call it; Responses require a subsequent successful sync.
 func (s *stableStore) writeWALFrame(record walRecord, normalEntries [][]byte) (int, error) {
@@ -655,9 +669,7 @@ func (s *stableStore) writeWALFrame(record walRecord, normalEntries [][]byte) (i
 	if len(payload) > frameLimit {
 		return 0, fmt.Errorf("WAL frame exceeds %d bytes", frameLimit)
 	}
-	var header [8]byte
-	binary.BigEndian.PutUint32(header[:4], uint32(len(payload)))
-	binary.BigEndian.PutUint32(header[4:], crc32.Checksum(payload, crcTable))
+	header := walFrameHeader(payload)
 	if s.walHook != nil && len(normalEntries) != 0 {
 		s.walHook(WALBoundaryDTO{Stage: WALBeforeWrite, Entries: normalEntries})
 	}
@@ -737,6 +749,12 @@ func (s *stableStore) createSnapshotPayload(index uint64, confState *pb.ConfStat
 	}
 	if err := s.memory.Compact(index); err != nil && !errors.Is(err, etcdraft.ErrCompacted) {
 		return fmt.Errorf("compact memory storage: %w", err)
+	}
+	if err := s.compactWAL(index); err != nil {
+		return err
+	}
+	if err := pruneSnapshotFiles(s.directory, index); err != nil {
+		return err
 	}
 	s.snapshotIndex = index
 	s.confState = cloneConfState(confState)
@@ -908,6 +926,19 @@ func readWALMode(path string, dynamic bool) ([]walRecord, error) {
 			return nil, fmt.Errorf("%w: read WAL frame header: %v", ErrCorruptWAL, err)
 		}
 		length := binary.BigEndian.Uint32(header[:4])
+		if length == 0 {
+			zero, err := walRangeZero(file, offset, fileSize)
+			if err != nil {
+				return nil, err
+			}
+			if !zero {
+				return nil, fmt.Errorf("%w: zero-length WAL frame", ErrCorruptWAL)
+			}
+			if err := truncateWAL(file, validOffset); err != nil {
+				return nil, err
+			}
+			break
+		}
 		frameLimit := uint32(maxWALFramePayload)
 		if dynamic {
 			frameLimit = maxDynamicWALFramePayload
@@ -928,7 +959,22 @@ func readWALMode(path string, dynamic bool) ([]walRecord, error) {
 		}
 		checksum := binary.BigEndian.Uint32(header[4:])
 		if crc32.Checksum(payload, crcTable) != checksum {
-			if frameEnd == fileSize {
+			final := frameEnd == fileSize
+			if !final {
+				var err error
+				final, err = walRangeZero(file, frameEnd, fileSize)
+				if err != nil {
+					return nil, err
+				}
+			}
+			if final {
+				zero, err := walFrameHasZeroSector(file, offset, frameEnd)
+				if err != nil {
+					return nil, err
+				}
+				if !zero {
+					return nil, fmt.Errorf("%w: final WAL frame checksum mismatch without torn-write evidence", ErrCorruptWAL)
+				}
 				if err := truncateWAL(file, validOffset); err != nil {
 					return nil, err
 				}
@@ -945,6 +991,48 @@ func readWALMode(path string, dynamic bool) ([]walRecord, error) {
 		offset = frameEnd
 	}
 	return records, nil
+}
+
+const walSectorSize = 512
+
+func walRangeZero(file *os.File, start, end int64) (bool, error) {
+	var buffer [64 * 1024]byte
+	for start < end {
+		size := min(int64(len(buffer)), end-start)
+		if _, err := file.ReadAt(buffer[:size], start); err != nil {
+			return false, fmt.Errorf("%w: read WAL tail: %v", ErrCorruptWAL, err)
+		}
+		for _, value := range buffer[:size] {
+			if value != 0 {
+				return false, nil
+			}
+		}
+		start += size
+	}
+	return true, nil
+}
+
+func walFrameHasZeroSector(file *os.File, start, end int64) (bool, error) {
+	var buffer [walSectorSize]byte
+	for start < end {
+		next := min((start/walSectorSize+1)*walSectorSize, end)
+		data := buffer[:next-start]
+		if _, err := file.ReadAt(data, start); err != nil {
+			return false, fmt.Errorf("%w: read WAL tail: %v", ErrCorruptWAL, err)
+		}
+		zero := true
+		for _, value := range data {
+			if value != 0 {
+				zero = false
+				break
+			}
+		}
+		if zero {
+			return true, nil
+		}
+		start = next
+	}
+	return false, nil
 }
 
 func truncateWAL(file *os.File, offset int64) error {

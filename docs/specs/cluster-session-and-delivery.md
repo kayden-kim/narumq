@@ -773,3 +773,52 @@ GOMAXPROCS=4 go run ./tools/verify local
 
 최종 local gate는 exit 0과 `local: PASS`였다. Opt-in historical·synthetic 시험의 증거는 위 별도 실행이며 일반 local suite의 skip을 acceptance로 계산하지 않는다. Gate 뒤 변경은 이 실행 증거 문서 기록뿐이다. CLU-14는 production Linux/EBS·retention/RPO/RTO가 남아 있어 열린 상태를 유지한다.
 
+### 11.22 WAL compaction·snapshot retention·torn-tail 수용 매핑
+
+[ADR-0023](../decisions/ADR-0023-raft-wal-compaction-and-snapshot-retention.md)은 local snapshot이 확정될 때 이전 기록의 저장 공간을 회수하는 규칙을 정한다. WAL은 재시작 시 재생하는 영속 기록이며, tail은 snapshot index 뒤의 기록이다. Snapshot 파일 확정 → 영속 tail과 최신 HardState로 WAL 교체 → 이전 snapshot 삭제 순서를 지킨다. 이미 저장된 미commit entry도 tail에 보존한다. 최신 finalized snapshot 하나만 남기며 오래된 snapshot temp도 삭제한다. 더 큰 index의 temp는 유지한다.
+
+Torn write는 끝나지 않은 마지막 쓰기다. Header보다 짧은 tail·부족한 payload는 절단한다. Zero-length header는 남은 영역 전체가 0일 때만 절단한다. 마지막 CRC 불일치 frame은 frame 자체의 파일 offset 기준 512-byte 구간(양 끝 부분 포함)에 전부 0인 구간이 있을 때만 절단한다. Frame 뒤의 zero padding만으로 손상 frame을 버리지 않는다. 근거 없는 마지막 CRC 오류, 중간 오류, decode 실패와 크기 한도 초과는 fail-closed다.
+
+2026-10-03 Windows 로컬 실행, 작업 위치 `D:/Workspace/narumq`. 아래 wall time은 Python `subprocess.run` 시작부터 종료까지다. Opt-in process 시험은 각각 별도로 실행했으며 skip을 PASS로 계산하지 않았다.
+
+| Scenario | 관찰할 결과 | 시험 위치·명령 | 실제 결과 |
+| --- | --- | --- | --- |
+| Snapshot 이후 WAL tail·append 재개 | Index 5 뒤에는 6–10, index 8 뒤에는 9–10과 commit 10만 보존; snapshot record 없음; snapshot 하나·temp 없음; entry 11 append 뒤 commands 1–11·applied 11 복구 | `internal/adapters/raft/wal_compaction_test.go` `TestStableStoreSnapshotCompactsWALToSnapshotTail`; 명령 A | 구현 전 FAIL (index 1 잔존); 구현 후 PASS. A 전체 wall 2.130s |
+| Frame 크기 경계 | 60 KiB entry 40개에서 snapshot 1 뒤 entry 2–40을 여러 bounded frame으로 저장; 재시작 뒤 commands 40개 정확히 복구 | 같은 파일 `TestStableStoreCompactionSplitsLargeTailIntoFrames`; A | 구현 전 FAIL (index 1 잔존); 구현 후 PASS |
+| Crash 상태 복구 | Stale WAL temp 제거, snapshot 확정 후 이전 WAL·교체 후 prune 전 상태에서 commands·applied·commit 10 보존; 다음 snapshot에서 하나만 남김 | 같은 파일 `TestStableStoreRecoversEveryCompactionCrashState`; A | 구현 전 stale temp·snapshot 3개 FAIL; 구현 후 세 subtest PASS |
+| Compaction 오류 복구 | Temp sync·rename·교체 후 directory sync 실패가 error 반환; close 안전; 다시 열면 commands 1–10·applied 10·temp 없음 | 같은 파일 `TestStableStoreCompactionFailureKeepsRecoverableState`; A | 구현 전 오류 미발생 FAIL; 구현 후 세 subtest PASS |
+| Torn-tail 근거와 corruption 거절 | Zero-filled tail·zero-sector frame은 valid prefix까지 절단, record 1개와 정확한 파일 크기; 근거 없는 CRC·zero padding만 있는 CRC·zero header 뒤 nonzero·middle corruption은 거절 | `stable_store_corruption_test.go` `TestWALReaderHandlesTornAndCorruptFrames`; A | 구현 전 tail checksum 허용·zero-filled tail decode FAIL; 구현 후 모든 case PASS. 기존 짧은 header tail 회귀 유지 |
+| Consensus snapshot·handle 교체 | Snapshot index=AppliedIndex 하나, WAL identity 교체; gamma append 후 alpha/beta/gamma와 CommitIndex=AppliedIndex 복구 | `tests/integration/raft_consensus_test.go` `TestRaftConsensusSpike` 새 subtest; B | 구현 전 FAIL (snapshot 3개·WAL 미교체), wall 2.929s; 구현 후 전체 PASS, wall 3.217s |
+| Worker와 handle 교체 race 회귀 | 기존 Raft package의 저장·snapshot·복구 경계 유지, race 오류 없음 | C | PASS, wall 9.425s |
+| 실제 3-node MQTT snapshot·restart | 두 snapshot 주기 뒤 node별 finalized 하나·old temp 없음·WAL 교체; 전체 재시작 뒤 retained payload 일치 | `tests/integration/cluster_wal_lifecycle_process_test.go` `TestDynamicClusterWALCompactionProcessAcceptance`; D | 구현 전 node 1 snapshot 3개 FAIL, wall 18.885s; 구현 후 PASS, wall 23.821s. 세 node 모두 snapshot index=2003, `wal.bin`=1745 bytes, replaced=true |
+| N/N-1와 historical rollback | 기존 release 시나리오 유지; HEAD가 교체한 WAL을 `58a95f8` N-1 binary가 읽는 scenario 5 통과 | `TestDynamicClusterReleaseCompatibilityProcessAcceptance`, `TestDynamicClusterHistoricalReleaseCompatibilityProcessAcceptance`; E | PASS, wall 178.297s; historical 91.77s, synthetic 85.10s. 지정 historical source 로그 확인 |
+| Durable ACK 장애 회귀 | 세 replica × QoS 1/2 kill·20 WAL/commit crash·follower/leader partition에서 기존 ACK·복구 assertions 유지 | `TestDynamicClusterDurableAckReplicaKillProcessAcceptance`, `TestDynamicClusterDurableAckCrashPointProcessAcceptance`, `TestDynamicClusterDurableAckPartitionProcessAcceptance`; F | 세 시험 PASS, wall 162.364s |
+| Docker/FUSE storage 회귀 | Disk-full·quorum-disk-full·slow-I/O·sync-error·follower torn power cut·cluster power cut 모두 복구·ACK 기준 유지 | `tests/chaos/cluster-storage-v1`; G | PASS 6/6, wall 243.765s; run `storage-walcompaction-20261003`, summary status=`passed` |
+| 전체 local gate | Traceability·architecture·fuzz·vet·package/integration·production package race·coverage, `local: PASS` | H | PASS, wall 319.100s; integration 284.860s. 이후 변경은 증거 문서뿐 |
+| Production storage와 backup retention | 실제 Linux/EBS 전원·volume 손실 및 승인된 retention·RPO/RTO | Production acceptance | 미실행: 실제 production 환경·정책은 이번 승인 범위 밖. CLU-14·ADR-0009와 `SPEC-TBD-09` gate 유지 |
+
+실행 명령:
+
+```text
+# A: 구현 전 FAIL, 구현 후 PASS
+go test ./internal/adapters/raft -run '^(TestStableStoreSnapshotCompactsWALToSnapshotTail|TestStableStoreCompactionSplitsLargeTailIntoFrames|TestStableStoreRecoversEveryCompactionCrashState|TestStableStoreCompactionFailureKeepsRecoverableState|TestWALReaderHandlesTornAndCorruptFrames)$' -count=1 -v
+# B: 구현 전 FAIL, 구현 후 PASS
+go test ./tests/integration -run '^TestRaftConsensusSpike$' -count=1 -v
+# C
+GOMAXPROCS=4 go test -race ./internal/adapters/raft -count=1
+# D: 구현 전 FAIL, 구현 후 PASS
+NARUMQ_WAL_LIFECYCLE=1 GOMAXPROCS=4 go test ./tests/integration -run '^TestDynamicClusterWALCompactionProcessAcceptance$' -count=1 -v -timeout 20m
+# E
+NARUMQ_RELEASE_COMPAT=1 GOMAXPROCS=4 go test ./tests/integration -run '^(TestDynamicClusterReleaseCompatibilityProcessAcceptance|TestDynamicClusterHistoricalReleaseCompatibilityProcessAcceptance)$' -count=1 -v -timeout 30m
+# F
+NARUMQ_DURABLE_ACK_FAULTS=1 GOMAXPROCS=4 go test ./tests/integration -run '^TestDynamicClusterDurableAck(ReplicaKill|CrashPoint|Partition)ProcessAcceptance$' -count=1 -v -timeout 30m
+# G
+GOMAXPROCS=2 go run ./tests/chaos/cluster-storage-v1 --run-id storage-walcompaction-20261003 --output .artifacts/chaos/cluster-storage-v1/storage-walcompaction-20261003
+# H
+GOMAXPROCS=4 go run ./tools/verify local
+```
+
+A의 구현 전 wall은 2.161s였다. Lifecycle만 구현한 중간 focused 네 시험은 PASS (2.124s)였으나 consensus identity assertion은 Windows `os.Stat`의 지연 file-ID 조회 때문에 FAIL (3.279s)했다. `File.Stat`으로 교체 전 handle의 identity를 즉시 확보하고 handle을 닫은 뒤 같은 `os.SameFile` 기준을 적용했다. 이 보완 뒤 consensus PASS (2.961s), torn-tail 구현 뒤 최종 B도 PASS했다. 초기 process 시험 작성 때 snapshot index parser의 `(uint64, error)` 계약을 boolean으로 취급한 compile 실패를 고쳤으며 이를 동작 실패 재현으로 계산하지 않는다.
+
+Docker artifact는 `.artifacts/chaos/cluster-storage-v1/storage-walcompaction-20261003/summary.json`이며 여섯 ID `follower-disk-full`, `quorum-disk-full`, `follower-slow-io`, `follower-sync-error`, `follower-torn-power-loss`, `cluster-power-loss` 모두 `passed`다. 이 simulation과 process restart는 실제 production Linux/EBS 내구성 증거가 아니다. WAL byte format·ACK 정책·worker idle 조건·수신 snapshot 경로는 변경하지 않았다.
+

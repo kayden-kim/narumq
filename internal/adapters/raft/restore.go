@@ -2,10 +2,8 @@ package raft
 
 import (
 	"bytes"
-	"encoding/binary"
 	"errors"
 	"fmt"
-	"hash/crc32"
 	"os"
 	"path/filepath"
 	"slices"
@@ -184,9 +182,7 @@ func createRestoreWAL(directory string, term, commitIndex uint64) error {
 	}
 	payload, encodeErr := encodeWALRecordMode(walRecord{hardState: &pb.HardState{Term: &term, Commit: &commitIndex}}, true)
 	if encodeErr == nil {
-		var header [8]byte
-		binary.BigEndian.PutUint32(header[:4], uint32(len(payload)))
-		binary.BigEndian.PutUint32(header[4:], crc32.Checksum(payload, crcTable))
+		header := walFrameHeader(payload)
 		if writeErr := writeAll(file, []byte(walMagic)); writeErr != nil {
 			encodeErr = writeErr
 		} else if writeErr := writeAll(file, header[:]); writeErr != nil {

@@ -28,6 +28,7 @@
 | [ADR-0020](ADR-0020-asynchronous-raft-wal-group-commit.md) | Accepted (비동기 저장 구조만; production storage·BP-03 제외) | 공식 Raft 저장 완료 메시지와 단일 bounded WAL writer의 group commit을 사용한다. |
 | [ADR-0021](ADR-0021-backup-archive-release-window.md) | Accepted (backup archive v3 restore release window only; historical-source wire·production storage 제외) | N/N-1 양방향 restore를 허용하고 미지원 active feature를 storage 변경 전에 거절한다. |
 | [ADR-0022](ADR-0022-bootstrap-volume-loss-guard.md) | Accepted (empty-directory bootstrap guard와 local process acceptance; production EBS 제외) | 빈 bootstrap directory는 모든 peer 진행 확인 뒤에만 시작하며 함께 시작한 peer는 Raft frame 수신 전까지 허용한다. |
+| [ADR-0023](ADR-0023-raft-wal-compaction-and-snapshot-retention.md) | Accepted (local storage lifecycle; production Linux/EBS 제외) | Local snapshot마다 WAL을 영속 tail로 교체하고 최신 snapshot 하나를 보존하며 torn-write 근거가 있을 때만 마지막 CRC 오류를 절단한다. |
 
 `Proposed` ADR은 검토 중인 제안이다. `Accepted` ADR은 각 기록에 명시한 범위 안에서 채택된 결정이다. `design target only`는 production runtime이나 acceptance 검증을 뜻하지 않는다.
 
