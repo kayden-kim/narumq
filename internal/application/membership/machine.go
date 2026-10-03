@@ -43,21 +43,24 @@ type StateMachine struct {
 	tenantQuotaByTenant map[string]TenantStorageQuotaDTO
 	activeFeatures      []string
 	nodeDrains          map[uint64]NodeDrainStateDTO
+	sessionMetadata     map[sessionKey]SessionMetadataStateDTO
+	sessionWillBytes    int
 }
 
 // NewStateMachine constructs an empty deterministic replicated-state machine.
 func NewStateMachine() *StateMachine {
 	return &StateMachine{
-		members:       make(map[uint64]MemberIdentityDTO),
-		operations:    make(map[string]operationState),
-		idempotency:   make(map[string]string),
-		ownerships:    make(map[sessionKey]OwnershipStateDTO),
-		subscriptions: make(map[subscriptionKey]SubscriptionStateDTO),
-		delivery:      make(map[sessionKey]DeliverySessionStateDTO),
-		retained:      make(map[retainedKey]RetainedStateDTO),
-		offline:       make(map[sessionKey]OfflineSessionStateDTO),
-		tenantUsage:   make(map[string]tenantStorageUsage),
-		nodeDrains:    make(map[uint64]NodeDrainStateDTO),
+		members:         make(map[uint64]MemberIdentityDTO),
+		operations:      make(map[string]operationState),
+		idempotency:     make(map[string]string),
+		ownerships:      make(map[sessionKey]OwnershipStateDTO),
+		subscriptions:   make(map[subscriptionKey]SubscriptionStateDTO),
+		delivery:        make(map[sessionKey]DeliverySessionStateDTO),
+		retained:        make(map[retainedKey]RetainedStateDTO),
+		offline:         make(map[sessionKey]OfflineSessionStateDTO),
+		tenantUsage:     make(map[string]tenantStorageUsage),
+		nodeDrains:      make(map[uint64]NodeDrainStateDTO),
+		sessionMetadata: make(map[sessionKey]SessionMetadataStateDTO),
 	}
 }
 
@@ -140,6 +143,8 @@ func (machine *StateMachine) Apply(index uint64, command CommandDTO) (ApplyResul
 		return machine.applyMemberProfile(index, *command.MemberProfile), nil
 	case command.FeatureActivation != nil:
 		return machine.applyFeatureActivation(index, *command.FeatureActivation), nil
+	case command.SessionMetadata != nil:
+		return machine.applySessionMetadata(index, *command.SessionMetadata), nil
 	default:
 		// validateCommand rejects an empty discriminated union before advancing.
 		return result, nil
@@ -400,13 +405,36 @@ func (machine *StateMachine) applyOwnership(index uint64, change OwnershipChange
 			return conflictResult(index, ConflictStaleEpoch)
 		}
 		delete(machine.ownerships, key)
+		machine.removeSessionMetadataLocked(key)
 		machine.removeDeliveryLocked(key)
 		machine.removeSubscriptionsLocked(key)
 		machine.removeOfflineLocked(key)
 		return result
 	}
+	var nextMetadata SessionMetadataStateDTO
+	if change.Session != nil {
+		if !slices.Contains(machine.activeFeatures, SessionMetadataFeature) {
+			return conflictResult(index, ConflictFeatureInactive)
+		}
+		nextMetadata = sessionMetadataFromConnect(key, change.Epoch, *change.Session)
+		oldBytes := 0
+		if old, ok := machine.sessionMetadata[key]; ok {
+			oldBytes = sessionWillBytes(old)
+		}
+		newBytes := sessionWillBytes(nextMetadata)
+		if newBytes > MaxSessionWillBytes-(machine.sessionWillBytes-oldBytes) {
+			return conflictResult(index, ConflictSessionMetadataCapacity)
+		}
+	}
 	state := OwnershipStateDTO{TenantID: change.TenantID, ClientID: change.ClientID, OwnerNodeID: change.OwnerNodeID, Epoch: change.Epoch, CommittedIndex: index}
 	machine.ownerships[key] = state
+	if change.Session != nil {
+		if old, ok := machine.sessionMetadata[key]; ok {
+			machine.sessionWillBytes -= sessionWillBytes(old)
+		}
+		machine.sessionMetadata[key] = cloneSessionMetadataStateDTO(nextMetadata)
+		machine.sessionWillBytes += sessionWillBytes(nextMetadata)
+	}
 	// Persistent subscriptions follow the committed owner epoch so their route
 	// projection cannot continue to target a fenced owner.
 	for subscriptionID, subscription := range machine.subscriptions {

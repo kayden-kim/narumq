@@ -4,6 +4,7 @@ import (
 	"errors"
 	"narumq/internal/domain/mqtt"
 	"narumq/internal/domain/tenancy"
+	"reflect"
 	"testing"
 	"time"
 )
@@ -435,5 +436,85 @@ func TestLifecycle_SessionKeyIsolation(t *testing.T) {
 	resumedA, present, err := Open(&closedA, connect, now.Add(time.Second), keyA)
 	if err != nil || !present || resumedA.SessionKey() != keyA {
 		t.Fatalf("same-tenant resume failed: %#v, %v", resumedA, err)
+	}
+}
+
+// Traceability: CLU-08; docs/specs/cluster-session-and-delivery.md §4.3, §11.24.
+func TestRestoreValidatesCommittedLifecycle(t *testing.T) {
+	tenant, _ := tenancy.NewTenantID("restore")
+	key, _ := tenancy.NewSessionKey(tenant, "client")
+	now := time.Unix(1000, 0)
+	base := RestoreInput{Key: key, Version: mqtt.ProtocolV5, Retention: RetentionFinite, ExpiryInterval: 7, Connected: true}
+	for _, test := range []struct {
+		name   string
+		mutate func(*RestoreInput)
+	}{
+		{"zero key", func(in *RestoreInput) { in.Key = tenancy.SessionKey{} }},
+		{"unsupported version", func(in *RestoreInput) { in.Version = 3 }},
+		{"unknown retention", func(in *RestoreInput) { in.Retention = 255 }},
+		{"connected deadline", func(in *RestoreInput) { in.ExpiresAt = now }},
+		{"disconnected immediate", func(in *RestoreInput) { in.Connected = false; in.Retention = RetentionImmediate }},
+		{"finite missing deadline", func(in *RestoreInput) { in.Connected = false }},
+		{"infinite deadline", func(in *RestoreInput) { in.Connected = false; in.Retention = RetentionInfinite; in.ExpiresAt = now }},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			input := base
+			test.mutate(&input)
+			if _, err := Restore(input); !errors.Is(err, ErrInvalidRestore) {
+				t.Fatalf("Restore error=%v, want ErrInvalidRestore", err)
+			}
+		})
+	}
+	will := &mqtt.Will{Topic: "restore/will", Payload: []byte("payload"), DelayInterval: 2}
+	for _, version := range []mqtt.ProtocolVersion{mqtt.ProtocolV311, mqtt.ProtocolV5} {
+		for _, interval := range []uint32{0, 7, ^uint32(0)} {
+			packet := mqtt.Connect{Version: version, ClientID: key.ClientID(), SessionExpiryInterval: interval, CleanStart: interval == 0, Will: will}
+			original, _, err := Open(nil, packet, now, key)
+			if err != nil {
+				t.Fatal(err)
+			}
+			restored, err := Restore(RestoreInput{Key: key, Version: version, Retention: original.Retention(), ExpiryInterval: original.ExpiryInterval(), Connected: true, Will: original.Will()})
+			if err != nil {
+				t.Fatal(err)
+			}
+			expected, err := original.Disconnect(now, DisconnectAbnormal)
+			if err != nil {
+				t.Fatal(err)
+			}
+			actual, err := restored.Disconnect(now, DisconnectAbnormal)
+			if err != nil || !reflect.DeepEqual(actual, expected) {
+				t.Fatalf("Disconnect version=%d interval=%d: got %#v err=%v, want %#v", version, interval, actual, err, expected)
+			}
+			if expected.SessionRemoved {
+				continue
+			}
+			deadline, _ := expected.Lifecycle.ExpiresAt()
+			closed, err := Restore(RestoreInput{Key: key, Version: version, Retention: original.Retention(), ExpiryInterval: original.ExpiryInterval(), ExpiresAt: deadline, Will: original.Will()})
+			if err != nil {
+				t.Fatal(err)
+			}
+			// Recover only the remaining Will, before either lifecycle claims it.
+			before := now.Add(time.Second)
+			_, _, gotExpired := closed.Expire(before)
+			_, _, wantExpired := expected.Lifecycle.Expire(before)
+			if gotExpired != wantExpired {
+				t.Fatal("restored early expiry differs")
+			}
+			if !deadline.IsZero() {
+				wantState, wantWill, wantExpired := expected.Lifecycle.Expire(deadline)
+				gotState, gotWill, gotExpired := closed.Expire(deadline)
+				if gotExpired != wantExpired || !reflect.DeepEqual(gotWill, wantWill) || gotState.Expired(deadline) != wantState.Expired(deadline) {
+					t.Fatalf("restored expiry differs: got will=%#v expired=%v, want will=%#v expired=%v", gotWill, gotExpired, wantWill, wantExpired)
+				}
+			}
+		}
+	}
+	restored, err := Restore(RestoreInput{Key: key, Version: mqtt.ProtocolV5, Retention: RetentionInfinite, Connected: true, Will: will})
+	if err != nil {
+		t.Fatal(err)
+	}
+	will.Payload[0] = 'X'
+	if string(restored.Will().Payload) != "payload" {
+		t.Fatal("restored Will aliases caller payload")
 	}
 }

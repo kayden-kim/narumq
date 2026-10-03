@@ -20,14 +20,14 @@ func TestResolveBuildIdentity(t *testing.T) {
 		wantFeatures []string
 		wantError    bool
 	}{
-		{name: "defaults", release: "0.0.0", wantRelease: "0.0.0"},
+		{name: "defaults", release: "0.0.0", wantRelease: "0.0.0", wantFeatures: []string{"session-metadata"}},
 		{
 			name: "sorts features", release: "1.2.3", features: "zeta,compatibility-probe,alpha",
-			wantRelease: "1.2.3", wantFeatures: []string{"alpha", "compatibility-probe", "zeta"},
+			wantRelease: "1.2.3", wantFeatures: []string{"alpha", "compatibility-probe", "session-metadata", "zeta"},
 		},
 		{name: "invalid release", release: "01.2.3", wantError: true},
 		{name: "empty feature token", release: "1.2.3", features: "alpha,,zeta", wantError: true},
-		{name: "duplicate feature", release: "1.2.3", features: "alpha,alpha", wantError: true},
+		{name: "duplicate feature", release: "1.2.3", features: "alpha,alpha,session-metadata", wantRelease: "1.2.3", wantFeatures: []string{"alpha", "session-metadata"}},
 		{name: "invalid feature", release: "1.2.3", features: "Bad", wantError: true},
 	}
 	for _, test := range tests {

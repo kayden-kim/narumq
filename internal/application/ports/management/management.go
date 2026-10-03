@@ -209,6 +209,12 @@ type HealthChecker interface {
 	CheckDrain(ctx context.Context) (HealthStatus, *string)
 }
 
+// ClusterSessionSource provides committed session metadata when available.
+// The bool is false when the caller should use its local session store instead.
+type ClusterSessionSource interface {
+	ClusterSessions() ([]ClientSessionDTO, bool)
+}
+
 // SessionSnapshotter provides access to session lifecycles for management inspection.
 type SessionSnapshotter interface {
 	Snapshot() []session.Lifecycle

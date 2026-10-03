@@ -75,7 +75,7 @@ QoS 1/2 publish 안의 effective-QoS-0 subscriber를 기존 lane에 남기면 �
 
 ### 후속 작업
 
-- [ ] Connected owner node crash 후 DETACH 부재로 남는 session queue와 expiry/capacity 영향을 평가한다.
+- [x] Connected owner node crash 후 DETACH 부재로 남는 session queue와 expiry/capacity 영향을 평가한다. [ADR-0025](ADR-0025-replicated-session-metadata-and-owner-loss-recovery.md)에서 replicated metadata, owner restart recovery와 expiry 회수를 결정했다.
 - [ ] BP-03 보완 근거를 실행하고 결과를 기록한다.
   - 고정 local compare 두 회차(`bp03-20260930T061549.390008900Z-28772`, `bp03-20260930T063854.898438300Z-34520`) 모두 NaruMQ workload가 invalid였다. node 3의 quorum-unavailable 경고와 workload schedule overload가 확인되어 유효한 ACK/WAL 결과로 채택하지 않았다([성능 검증 §3.4](../specs/performance-and-verification.md#34-bp-03-durable-delivery-smoke-관찰-경계)).
   - 고정 smoke profile 5회 suite `bp03-suite-20260930T064519.153992500Z-35844`도 NaruMQ 0/5 유효, EMQX 4/5 유효로 parent `valid=false`였다. NaruMQ의 매 회차 workload invalid와 빈 aggregate metric은 유효한 비교·ACK/WAL 수치가 아님을 뜻한다([성능 검증 §3.4](../specs/performance-and-verification.md#34-bp-03-durable-delivery-smoke-관찰-경계)).

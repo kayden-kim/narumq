@@ -84,6 +84,21 @@ func runClusterReleaseCompatibilityAcceptance(t *testing.T, fixture *clusterMemb
 	}
 	status, body := clusterReleaseCompatActivate(t, ctx, f1)
 	clusterReleaseCompatAssertActivationFailure(t, status, body, http.StatusConflict, "feature_not_supported_by_all_members")
+	// Traceability: CLU-08; docs/specs/cluster-session-and-delivery.md §4.3, §11.24.
+	// Historical members lack metadata support; the mixed cluster must keep its legacy wire path.
+	for _, member := range featureState.Members {
+		if slices.Contains(member.Features, "session-metadata") {
+			continue
+		}
+		metadataStatus, metadataBody, metadataErr := clusterMembershipProcessRequest(ctx, http.MethodPost,
+			f1.managementURL()+"/api/v1/cluster/features/session-metadata", nil, clusterMembershipProcessAdmin, "")
+		if metadataErr != nil {
+			t.Fatalf("activate metadata in historical mixed cluster: %v", metadataErr)
+		}
+		clusterReleaseCompatAssertActivationFailure(t, metadataStatus, metadataBody, http.StatusConflict, "feature_not_supported_by_all_members")
+		t.Log("historical mixed cluster rejected session-metadata activation")
+		break
+	}
 	oldID := runningIDs[0]
 	clusterReleaseCompatDurableRoundTrip(t, fixture, oldID, f1ID, "phase-2")
 

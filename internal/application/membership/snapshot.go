@@ -114,6 +114,13 @@ func (machine *StateMachine) Restore(snapshot SnapshotDTO) error {
 	for _, state := range copyOfSnapshot.NodeDrains {
 		nodeDrains[state.MemberID] = state
 	}
+	sessionMetadata := make(map[sessionKey]SessionMetadataStateDTO, len(copyOfSnapshot.SessionMetadata))
+	totalSessionWillBytes := 0
+	for _, state := range copyOfSnapshot.SessionMetadata {
+		cloned := cloneSessionMetadataStateDTO(state)
+		sessionMetadata[sessionKey{tenantID: state.TenantID, clientID: state.ClientID}] = cloned
+		totalSessionWillBytes += sessionWillBytes(cloned)
+	}
 	tenantQuota, tenantQuotaByTenant := installTenantQuotaProfile(copyOfSnapshot.TenantQuotaProfile)
 	machine.lastAppliedIndex = copyOfSnapshot.LastIncludedIndex
 	machine.members = members
@@ -126,6 +133,8 @@ func (machine *StateMachine) Restore(snapshot SnapshotDTO) error {
 	machine.offline = offline
 	machine.offlineBytes = offlineBytes
 	machine.nodeDrains = nodeDrains
+	machine.sessionMetadata = sessionMetadata
+	machine.sessionWillBytes = totalSessionWillBytes
 	machine.delivery = delivery
 	machine.deliveryEntries = deliveryEntries
 	machine.deliveryBytes = deliveryBytes
@@ -147,6 +156,7 @@ func (machine *StateMachine) snapshotLocked(lastIncludedIndex uint64) SnapshotDT
 		OfflineSessions:    make([]OfflineSessionStateDTO, 0, len(machine.offline)),
 		Retained:           make([]RetainedStateDTO, 0, len(machine.retained)),
 		NodeDrains:         make([]NodeDrainStateDTO, 0, len(machine.nodeDrains)),
+		SessionMetadata:    make([]SessionMetadataStateDTO, 0, len(machine.sessionMetadata)),
 		ActiveFeatures:     slices.Clone(machine.activeFeatures),
 		TenantQuotaProfile: cloneTenantQuotaProfile(machine.tenantQuota),
 	}
@@ -176,6 +186,9 @@ func (machine *StateMachine) snapshotLocked(lastIncludedIndex uint64) SnapshotDT
 	for _, state := range machine.nodeDrains {
 		snapshot.NodeDrains = append(snapshot.NodeDrains, state)
 	}
+	for _, state := range machine.sessionMetadata {
+		snapshot.SessionMetadata = append(snapshot.SessionMetadata, cloneSessionMetadataStateDTO(state))
+	}
 	sort.Slice(snapshot.Members, func(left, right int) bool { return snapshot.Members[left].MemberID < snapshot.Members[right].MemberID })
 	sort.Slice(snapshot.Ownerships, func(left, right int) bool {
 		return compareSession(snapshot.Ownerships[left].TenantID, snapshot.Ownerships[left].ClientID, snapshot.Ownerships[right].TenantID, snapshot.Ownerships[right].ClientID) < 0
@@ -198,6 +211,9 @@ func (machine *StateMachine) snapshotLocked(lastIncludedIndex uint64) SnapshotDT
 	sort.Slice(snapshot.NodeDrains, func(left, right int) bool {
 		return snapshot.NodeDrains[left].MemberID < snapshot.NodeDrains[right].MemberID
 	})
+	sort.Slice(snapshot.SessionMetadata, func(left, right int) bool {
+		return compareSession(snapshot.SessionMetadata[left].TenantID, snapshot.SessionMetadata[left].ClientID, snapshot.SessionMetadata[right].TenantID, snapshot.SessionMetadata[right].ClientID) < 0
+	})
 	for index := range snapshot.DeliverySessions {
 		sort.Slice(snapshot.DeliverySessions[index].Messages, func(left, right int) bool {
 			return snapshot.DeliverySessions[index].Messages[left].Sequence < snapshot.DeliverySessions[index].Messages[right].Sequence
@@ -210,7 +226,7 @@ func (machine *StateMachine) snapshotLocked(lastIncludedIndex uint64) SnapshotDT
 	for _, record := range snapshot.DeliverySessions {
 		deliveryEntries += len(record.Messages) + len(record.Inbound)
 	}
-	snapshot.ObjectCount = uint64(len(snapshot.Members) + len(snapshot.Ownerships) + len(snapshot.Subscriptions) + len(snapshot.DeliverySessions) + deliveryEntries + len(snapshot.MembershipHistory) + len(snapshot.Retained) + len(snapshot.OfflineSessions) + offlineMessagesCount + len(snapshot.NodeDrains) + len(snapshot.ActiveFeatures) + tenantQuotaObjectCount(snapshot.TenantQuotaProfile))
+	snapshot.ObjectCount = uint64(len(snapshot.Members) + len(snapshot.Ownerships) + len(snapshot.Subscriptions) + len(snapshot.DeliverySessions) + deliveryEntries + len(snapshot.MembershipHistory) + len(snapshot.Retained) + len(snapshot.OfflineSessions) + offlineMessagesCount + len(snapshot.NodeDrains) + len(snapshot.ActiveFeatures) + len(snapshot.SessionMetadata) + tenantQuotaObjectCount(snapshot.TenantQuotaProfile))
 	return snapshot
 }
 
@@ -339,6 +355,10 @@ func cloneSnapshot(snapshot SnapshotDTO) SnapshotDTO {
 	}
 	copyOfSnapshot.NodeDrains = append([]NodeDrainStateDTO(nil), snapshot.NodeDrains...)
 	copyOfSnapshot.ActiveFeatures = slices.Clone(snapshot.ActiveFeatures)
+	copyOfSnapshot.SessionMetadata = make([]SessionMetadataStateDTO, len(snapshot.SessionMetadata))
+	for index, state := range snapshot.SessionMetadata {
+		copyOfSnapshot.SessionMetadata[index] = cloneSessionMetadataStateDTO(state)
+	}
 	copyOfSnapshot.TenantQuotaProfile = cloneTenantQuotaProfile(snapshot.TenantQuotaProfile)
 	return copyOfSnapshot
 }
@@ -348,5 +368,5 @@ func sameSnapshotState(left, right SnapshotDTO) bool {
 		reflect.DeepEqual(left.Members, right.Members) && reflect.DeepEqual(left.Ownerships, right.Ownerships) && reflect.DeepEqual(left.Subscriptions, right.Subscriptions) &&
 		reflect.DeepEqual(left.DeliverySessions, right.DeliverySessions) && reflect.DeepEqual(left.MembershipHistory, right.MembershipHistory) &&
 		reflect.DeepEqual(left.Retained, right.Retained) && reflect.DeepEqual(left.OfflineSessions, right.OfflineSessions) && reflect.DeepEqual(left.NodeDrains, right.NodeDrains) &&
-		sameTenantQuotaProfile(left.TenantQuotaProfile, right.TenantQuotaProfile) && slices.Equal(left.ActiveFeatures, right.ActiveFeatures)
+		reflect.DeepEqual(left.SessionMetadata, right.SessionMetadata) && sameTenantQuotaProfile(left.TenantQuotaProfile, right.TenantQuotaProfile) && slices.Equal(left.ActiveFeatures, right.ActiveFeatures)
 }

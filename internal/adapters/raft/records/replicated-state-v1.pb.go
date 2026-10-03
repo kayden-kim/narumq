@@ -598,6 +598,162 @@ func (NodeDrainPhase) EnumDescriptor() ([]byte, []int) {
 	return file_docs_contracts_replicated_state_v1_proto_rawDescGZIP(), []int{9}
 }
 
+type SessionRetention int32
+
+const (
+	SessionRetention_SESSION_RETENTION_UNSPECIFIED SessionRetention = 0
+	SessionRetention_SESSION_RETENTION_IMMEDIATE   SessionRetention = 1
+	SessionRetention_SESSION_RETENTION_FINITE      SessionRetention = 2
+	SessionRetention_SESSION_RETENTION_INFINITE    SessionRetention = 3
+)
+
+// Enum value maps for SessionRetention.
+var (
+	SessionRetention_name = map[int32]string{
+		0: "SESSION_RETENTION_UNSPECIFIED",
+		1: "SESSION_RETENTION_IMMEDIATE",
+		2: "SESSION_RETENTION_FINITE",
+		3: "SESSION_RETENTION_INFINITE",
+	}
+	SessionRetention_value = map[string]int32{
+		"SESSION_RETENTION_UNSPECIFIED": 0,
+		"SESSION_RETENTION_IMMEDIATE":   1,
+		"SESSION_RETENTION_FINITE":      2,
+		"SESSION_RETENTION_INFINITE":    3,
+	}
+)
+
+func (x SessionRetention) Enum() *SessionRetention {
+	p := new(SessionRetention)
+	*p = x
+	return p
+}
+
+func (x SessionRetention) String() string {
+	return protoimpl.X.EnumStringOf(x.Descriptor(), protoreflect.EnumNumber(x))
+}
+
+func (SessionRetention) Descriptor() protoreflect.EnumDescriptor {
+	return file_docs_contracts_replicated_state_v1_proto_enumTypes[10].Descriptor()
+}
+
+func (SessionRetention) Type() protoreflect.EnumType {
+	return &file_docs_contracts_replicated_state_v1_proto_enumTypes[10]
+}
+
+func (x SessionRetention) Number() protoreflect.EnumNumber {
+	return protoreflect.EnumNumber(x)
+}
+
+// Deprecated: Use SessionRetention.Descriptor instead.
+func (SessionRetention) EnumDescriptor() ([]byte, []int) {
+	return file_docs_contracts_replicated_state_v1_proto_rawDescGZIP(), []int{10}
+}
+
+type SessionMetadataAction int32
+
+const (
+	SessionMetadataAction_SESSION_METADATA_ACTION_UNSPECIFIED SessionMetadataAction = 0
+	SessionMetadataAction_SESSION_METADATA_ACTION_DETACH      SessionMetadataAction = 1
+	SessionMetadataAction_SESSION_METADATA_ACTION_CLAIM_WILL  SessionMetadataAction = 2
+	SessionMetadataAction_SESSION_METADATA_ACTION_DISCARD     SessionMetadataAction = 3
+)
+
+// Enum value maps for SessionMetadataAction.
+var (
+	SessionMetadataAction_name = map[int32]string{
+		0: "SESSION_METADATA_ACTION_UNSPECIFIED",
+		1: "SESSION_METADATA_ACTION_DETACH",
+		2: "SESSION_METADATA_ACTION_CLAIM_WILL",
+		3: "SESSION_METADATA_ACTION_DISCARD",
+	}
+	SessionMetadataAction_value = map[string]int32{
+		"SESSION_METADATA_ACTION_UNSPECIFIED": 0,
+		"SESSION_METADATA_ACTION_DETACH":      1,
+		"SESSION_METADATA_ACTION_CLAIM_WILL":  2,
+		"SESSION_METADATA_ACTION_DISCARD":     3,
+	}
+)
+
+func (x SessionMetadataAction) Enum() *SessionMetadataAction {
+	p := new(SessionMetadataAction)
+	*p = x
+	return p
+}
+
+func (x SessionMetadataAction) String() string {
+	return protoimpl.X.EnumStringOf(x.Descriptor(), protoreflect.EnumNumber(x))
+}
+
+func (SessionMetadataAction) Descriptor() protoreflect.EnumDescriptor {
+	return file_docs_contracts_replicated_state_v1_proto_enumTypes[11].Descriptor()
+}
+
+func (SessionMetadataAction) Type() protoreflect.EnumType {
+	return &file_docs_contracts_replicated_state_v1_proto_enumTypes[11]
+}
+
+func (x SessionMetadataAction) Number() protoreflect.EnumNumber {
+	return protoreflect.EnumNumber(x)
+}
+
+// Deprecated: Use SessionMetadataAction.Descriptor instead.
+func (SessionMetadataAction) EnumDescriptor() ([]byte, []int) {
+	return file_docs_contracts_replicated_state_v1_proto_rawDescGZIP(), []int{11}
+}
+
+type SessionWillDisposition int32
+
+const (
+	SessionWillDisposition_SESSION_WILL_DISPOSITION_UNSPECIFIED SessionWillDisposition = 0
+	SessionWillDisposition_SESSION_WILL_DISPOSITION_DISCARD     SessionWillDisposition = 1
+	SessionWillDisposition_SESSION_WILL_DISPOSITION_CLAIM       SessionWillDisposition = 2
+	SessionWillDisposition_SESSION_WILL_DISPOSITION_SCHEDULE    SessionWillDisposition = 3
+)
+
+// Enum value maps for SessionWillDisposition.
+var (
+	SessionWillDisposition_name = map[int32]string{
+		0: "SESSION_WILL_DISPOSITION_UNSPECIFIED",
+		1: "SESSION_WILL_DISPOSITION_DISCARD",
+		2: "SESSION_WILL_DISPOSITION_CLAIM",
+		3: "SESSION_WILL_DISPOSITION_SCHEDULE",
+	}
+	SessionWillDisposition_value = map[string]int32{
+		"SESSION_WILL_DISPOSITION_UNSPECIFIED": 0,
+		"SESSION_WILL_DISPOSITION_DISCARD":     1,
+		"SESSION_WILL_DISPOSITION_CLAIM":       2,
+		"SESSION_WILL_DISPOSITION_SCHEDULE":    3,
+	}
+)
+
+func (x SessionWillDisposition) Enum() *SessionWillDisposition {
+	p := new(SessionWillDisposition)
+	*p = x
+	return p
+}
+
+func (x SessionWillDisposition) String() string {
+	return protoimpl.X.EnumStringOf(x.Descriptor(), protoreflect.EnumNumber(x))
+}
+
+func (SessionWillDisposition) Descriptor() protoreflect.EnumDescriptor {
+	return file_docs_contracts_replicated_state_v1_proto_enumTypes[12].Descriptor()
+}
+
+func (SessionWillDisposition) Type() protoreflect.EnumType {
+	return &file_docs_contracts_replicated_state_v1_proto_enumTypes[12]
+}
+
+func (x SessionWillDisposition) Number() protoreflect.EnumNumber {
+	return protoreflect.EnumNumber(x)
+}
+
+// Deprecated: Use SessionWillDisposition.Descriptor instead.
+func (SessionWillDisposition) EnumDescriptor() ([]byte, []int) {
+	return file_docs_contracts_replicated_state_v1_proto_rawDescGZIP(), []int{12}
+}
+
 type NodeDrainProgress struct {
 	state                    protoimpl.MessageState `protogen:"open.v1"`
 	ConnectionsInitial       uint64                 `protobuf:"varint,1,opt,name=connections_initial,json=connectionsInitial,proto3" json:"connections_initial,omitempty"`
@@ -986,6 +1142,466 @@ func (x *NodeDrainState) GetCommittedIndex() uint64 {
 	return 0
 }
 
+type SessionWill struct {
+	state                protoimpl.MessageState `protogen:"open.v1"`
+	Topic                string                 `protobuf:"bytes,1,opt,name=topic,proto3" json:"topic,omitempty"`
+	Payload              []byte                 `protobuf:"bytes,2,opt,name=payload,proto3" json:"payload,omitempty"`
+	Qos                  uint32                 `protobuf:"varint,3,opt,name=qos,proto3" json:"qos,omitempty"`
+	Retain               bool                   `protobuf:"varint,4,opt,name=retain,proto3" json:"retain,omitempty"`
+	DelayIntervalSeconds uint32                 `protobuf:"varint,5,opt,name=delay_interval_seconds,json=delayIntervalSeconds,proto3" json:"delay_interval_seconds,omitempty"`
+	unknownFields        protoimpl.UnknownFields
+	sizeCache            protoimpl.SizeCache
+}
+
+func (x *SessionWill) Reset() {
+	*x = SessionWill{}
+	mi := &file_docs_contracts_replicated_state_v1_proto_msgTypes[3]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *SessionWill) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*SessionWill) ProtoMessage() {}
+
+func (x *SessionWill) ProtoReflect() protoreflect.Message {
+	mi := &file_docs_contracts_replicated_state_v1_proto_msgTypes[3]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use SessionWill.ProtoReflect.Descriptor instead.
+func (*SessionWill) Descriptor() ([]byte, []int) {
+	return file_docs_contracts_replicated_state_v1_proto_rawDescGZIP(), []int{3}
+}
+
+func (x *SessionWill) GetTopic() string {
+	if x != nil {
+		return x.Topic
+	}
+	return ""
+}
+
+func (x *SessionWill) GetPayload() []byte {
+	if x != nil {
+		return x.Payload
+	}
+	return nil
+}
+
+func (x *SessionWill) GetQos() uint32 {
+	if x != nil {
+		return x.Qos
+	}
+	return 0
+}
+
+func (x *SessionWill) GetRetain() bool {
+	if x != nil {
+		return x.Retain
+	}
+	return false
+}
+
+func (x *SessionWill) GetDelayIntervalSeconds() uint32 {
+	if x != nil {
+		return x.DelayIntervalSeconds
+	}
+	return 0
+}
+
+type SessionPrincipal struct {
+	state               protoimpl.MessageState `protogen:"open.v1"`
+	Subject             string                 `protobuf:"bytes,1,opt,name=subject,proto3" json:"subject,omitempty"`
+	CredentialId        string                 `protobuf:"bytes,2,opt,name=credential_id,json=credentialId,proto3" json:"credential_id,omitempty"`
+	Roles               []string               `protobuf:"bytes,3,rep,name=roles,proto3" json:"roles,omitempty"`
+	ExpiresAtUnixMillis uint64                 `protobuf:"varint,4,opt,name=expires_at_unix_millis,json=expiresAtUnixMillis,proto3" json:"expires_at_unix_millis,omitempty"`
+	unknownFields       protoimpl.UnknownFields
+	sizeCache           protoimpl.SizeCache
+}
+
+func (x *SessionPrincipal) Reset() {
+	*x = SessionPrincipal{}
+	mi := &file_docs_contracts_replicated_state_v1_proto_msgTypes[4]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *SessionPrincipal) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*SessionPrincipal) ProtoMessage() {}
+
+func (x *SessionPrincipal) ProtoReflect() protoreflect.Message {
+	mi := &file_docs_contracts_replicated_state_v1_proto_msgTypes[4]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use SessionPrincipal.ProtoReflect.Descriptor instead.
+func (*SessionPrincipal) Descriptor() ([]byte, []int) {
+	return file_docs_contracts_replicated_state_v1_proto_rawDescGZIP(), []int{4}
+}
+
+func (x *SessionPrincipal) GetSubject() string {
+	if x != nil {
+		return x.Subject
+	}
+	return ""
+}
+
+func (x *SessionPrincipal) GetCredentialId() string {
+	if x != nil {
+		return x.CredentialId
+	}
+	return ""
+}
+
+func (x *SessionPrincipal) GetRoles() []string {
+	if x != nil {
+		return x.Roles
+	}
+	return nil
+}
+
+func (x *SessionPrincipal) GetExpiresAtUnixMillis() uint64 {
+	if x != nil {
+		return x.ExpiresAtUnixMillis
+	}
+	return 0
+}
+
+type SessionConnect struct {
+	state                 protoimpl.MessageState `protogen:"open.v1"`
+	ProtocolVersion       uint32                 `protobuf:"varint,1,opt,name=protocol_version,json=protocolVersion,proto3" json:"protocol_version,omitempty"`
+	Retention             SessionRetention       `protobuf:"varint,2,opt,name=retention,proto3,enum=narumq.cluster.v1.SessionRetention" json:"retention,omitempty"`
+	ExpiryIntervalSeconds uint32                 `protobuf:"varint,3,opt,name=expiry_interval_seconds,json=expiryIntervalSeconds,proto3" json:"expiry_interval_seconds,omitempty"`
+	Will                  *SessionWill           `protobuf:"bytes,4,opt,name=will,proto3" json:"will,omitempty"`
+	Principal             *SessionPrincipal      `protobuf:"bytes,5,opt,name=principal,proto3" json:"principal,omitempty"`
+	unknownFields         protoimpl.UnknownFields
+	sizeCache             protoimpl.SizeCache
+}
+
+func (x *SessionConnect) Reset() {
+	*x = SessionConnect{}
+	mi := &file_docs_contracts_replicated_state_v1_proto_msgTypes[5]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *SessionConnect) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*SessionConnect) ProtoMessage() {}
+
+func (x *SessionConnect) ProtoReflect() protoreflect.Message {
+	mi := &file_docs_contracts_replicated_state_v1_proto_msgTypes[5]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use SessionConnect.ProtoReflect.Descriptor instead.
+func (*SessionConnect) Descriptor() ([]byte, []int) {
+	return file_docs_contracts_replicated_state_v1_proto_rawDescGZIP(), []int{5}
+}
+
+func (x *SessionConnect) GetProtocolVersion() uint32 {
+	if x != nil {
+		return x.ProtocolVersion
+	}
+	return 0
+}
+
+func (x *SessionConnect) GetRetention() SessionRetention {
+	if x != nil {
+		return x.Retention
+	}
+	return SessionRetention_SESSION_RETENTION_UNSPECIFIED
+}
+
+func (x *SessionConnect) GetExpiryIntervalSeconds() uint32 {
+	if x != nil {
+		return x.ExpiryIntervalSeconds
+	}
+	return 0
+}
+
+func (x *SessionConnect) GetWill() *SessionWill {
+	if x != nil {
+		return x.Will
+	}
+	return nil
+}
+
+func (x *SessionConnect) GetPrincipal() *SessionPrincipal {
+	if x != nil {
+		return x.Principal
+	}
+	return nil
+}
+
+type SessionMetadataChange struct {
+	state                      protoimpl.MessageState `protogen:"open.v1"`
+	TenantId                   string                 `protobuf:"bytes,1,opt,name=tenant_id,json=tenantId,proto3" json:"tenant_id,omitempty"`
+	ClientId                   string                 `protobuf:"bytes,2,opt,name=client_id,json=clientId,proto3" json:"client_id,omitempty"`
+	OwnerNodeId                uint64                 `protobuf:"varint,3,opt,name=owner_node_id,json=ownerNodeId,proto3" json:"owner_node_id,omitempty"`
+	Epoch                      uint64                 `protobuf:"varint,4,opt,name=epoch,proto3" json:"epoch,omitempty"`
+	Action                     SessionMetadataAction  `protobuf:"varint,5,opt,name=action,proto3,enum=narumq.cluster.v1.SessionMetadataAction" json:"action,omitempty"`
+	WillDisposition            SessionWillDisposition `protobuf:"varint,6,opt,name=will_disposition,json=willDisposition,proto3,enum=narumq.cluster.v1.SessionWillDisposition" json:"will_disposition,omitempty"`
+	ProposedAtUnixMillis       uint64                 `protobuf:"varint,7,opt,name=proposed_at_unix_millis,json=proposedAtUnixMillis,proto3" json:"proposed_at_unix_millis,omitempty"`
+	SessionExpiresAtUnixMillis uint64                 `protobuf:"varint,8,opt,name=session_expires_at_unix_millis,json=sessionExpiresAtUnixMillis,proto3" json:"session_expires_at_unix_millis,omitempty"`
+	WillDueAtUnixMillis        uint64                 `protobuf:"varint,9,opt,name=will_due_at_unix_millis,json=willDueAtUnixMillis,proto3" json:"will_due_at_unix_millis,omitempty"`
+	unknownFields              protoimpl.UnknownFields
+	sizeCache                  protoimpl.SizeCache
+}
+
+func (x *SessionMetadataChange) Reset() {
+	*x = SessionMetadataChange{}
+	mi := &file_docs_contracts_replicated_state_v1_proto_msgTypes[6]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *SessionMetadataChange) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*SessionMetadataChange) ProtoMessage() {}
+
+func (x *SessionMetadataChange) ProtoReflect() protoreflect.Message {
+	mi := &file_docs_contracts_replicated_state_v1_proto_msgTypes[6]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use SessionMetadataChange.ProtoReflect.Descriptor instead.
+func (*SessionMetadataChange) Descriptor() ([]byte, []int) {
+	return file_docs_contracts_replicated_state_v1_proto_rawDescGZIP(), []int{6}
+}
+
+func (x *SessionMetadataChange) GetTenantId() string {
+	if x != nil {
+		return x.TenantId
+	}
+	return ""
+}
+
+func (x *SessionMetadataChange) GetClientId() string {
+	if x != nil {
+		return x.ClientId
+	}
+	return ""
+}
+
+func (x *SessionMetadataChange) GetOwnerNodeId() uint64 {
+	if x != nil {
+		return x.OwnerNodeId
+	}
+	return 0
+}
+
+func (x *SessionMetadataChange) GetEpoch() uint64 {
+	if x != nil {
+		return x.Epoch
+	}
+	return 0
+}
+
+func (x *SessionMetadataChange) GetAction() SessionMetadataAction {
+	if x != nil {
+		return x.Action
+	}
+	return SessionMetadataAction_SESSION_METADATA_ACTION_UNSPECIFIED
+}
+
+func (x *SessionMetadataChange) GetWillDisposition() SessionWillDisposition {
+	if x != nil {
+		return x.WillDisposition
+	}
+	return SessionWillDisposition_SESSION_WILL_DISPOSITION_UNSPECIFIED
+}
+
+func (x *SessionMetadataChange) GetProposedAtUnixMillis() uint64 {
+	if x != nil {
+		return x.ProposedAtUnixMillis
+	}
+	return 0
+}
+
+func (x *SessionMetadataChange) GetSessionExpiresAtUnixMillis() uint64 {
+	if x != nil {
+		return x.SessionExpiresAtUnixMillis
+	}
+	return 0
+}
+
+func (x *SessionMetadataChange) GetWillDueAtUnixMillis() uint64 {
+	if x != nil {
+		return x.WillDueAtUnixMillis
+	}
+	return 0
+}
+
+type SessionMetadataState struct {
+	state                      protoimpl.MessageState `protogen:"open.v1"`
+	TenantId                   string                 `protobuf:"bytes,1,opt,name=tenant_id,json=tenantId,proto3" json:"tenant_id,omitempty"`
+	ClientId                   string                 `protobuf:"bytes,2,opt,name=client_id,json=clientId,proto3" json:"client_id,omitempty"`
+	Epoch                      uint64                 `protobuf:"varint,3,opt,name=epoch,proto3" json:"epoch,omitempty"`
+	ProtocolVersion            uint32                 `protobuf:"varint,4,opt,name=protocol_version,json=protocolVersion,proto3" json:"protocol_version,omitempty"`
+	Retention                  SessionRetention       `protobuf:"varint,5,opt,name=retention,proto3,enum=narumq.cluster.v1.SessionRetention" json:"retention,omitempty"`
+	ExpiryIntervalSeconds      uint32                 `protobuf:"varint,6,opt,name=expiry_interval_seconds,json=expiryIntervalSeconds,proto3" json:"expiry_interval_seconds,omitempty"`
+	Connected                  bool                   `protobuf:"varint,7,opt,name=connected,proto3" json:"connected,omitempty"`
+	DetachedAtUnixMillis       uint64                 `protobuf:"varint,8,opt,name=detached_at_unix_millis,json=detachedAtUnixMillis,proto3" json:"detached_at_unix_millis,omitempty"`
+	SessionExpiresAtUnixMillis uint64                 `protobuf:"varint,9,opt,name=session_expires_at_unix_millis,json=sessionExpiresAtUnixMillis,proto3" json:"session_expires_at_unix_millis,omitempty"`
+	Will                       *SessionWill           `protobuf:"bytes,10,opt,name=will,proto3" json:"will,omitempty"`
+	WillDueAtUnixMillis        uint64                 `protobuf:"varint,11,opt,name=will_due_at_unix_millis,json=willDueAtUnixMillis,proto3" json:"will_due_at_unix_millis,omitempty"`
+	Principal                  *SessionPrincipal      `protobuf:"bytes,12,opt,name=principal,proto3" json:"principal,omitempty"`
+	unknownFields              protoimpl.UnknownFields
+	sizeCache                  protoimpl.SizeCache
+}
+
+func (x *SessionMetadataState) Reset() {
+	*x = SessionMetadataState{}
+	mi := &file_docs_contracts_replicated_state_v1_proto_msgTypes[7]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *SessionMetadataState) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*SessionMetadataState) ProtoMessage() {}
+
+func (x *SessionMetadataState) ProtoReflect() protoreflect.Message {
+	mi := &file_docs_contracts_replicated_state_v1_proto_msgTypes[7]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use SessionMetadataState.ProtoReflect.Descriptor instead.
+func (*SessionMetadataState) Descriptor() ([]byte, []int) {
+	return file_docs_contracts_replicated_state_v1_proto_rawDescGZIP(), []int{7}
+}
+
+func (x *SessionMetadataState) GetTenantId() string {
+	if x != nil {
+		return x.TenantId
+	}
+	return ""
+}
+
+func (x *SessionMetadataState) GetClientId() string {
+	if x != nil {
+		return x.ClientId
+	}
+	return ""
+}
+
+func (x *SessionMetadataState) GetEpoch() uint64 {
+	if x != nil {
+		return x.Epoch
+	}
+	return 0
+}
+
+func (x *SessionMetadataState) GetProtocolVersion() uint32 {
+	if x != nil {
+		return x.ProtocolVersion
+	}
+	return 0
+}
+
+func (x *SessionMetadataState) GetRetention() SessionRetention {
+	if x != nil {
+		return x.Retention
+	}
+	return SessionRetention_SESSION_RETENTION_UNSPECIFIED
+}
+
+func (x *SessionMetadataState) GetExpiryIntervalSeconds() uint32 {
+	if x != nil {
+		return x.ExpiryIntervalSeconds
+	}
+	return 0
+}
+
+func (x *SessionMetadataState) GetConnected() bool {
+	if x != nil {
+		return x.Connected
+	}
+	return false
+}
+
+func (x *SessionMetadataState) GetDetachedAtUnixMillis() uint64 {
+	if x != nil {
+		return x.DetachedAtUnixMillis
+	}
+	return 0
+}
+
+func (x *SessionMetadataState) GetSessionExpiresAtUnixMillis() uint64 {
+	if x != nil {
+		return x.SessionExpiresAtUnixMillis
+	}
+	return 0
+}
+
+func (x *SessionMetadataState) GetWill() *SessionWill {
+	if x != nil {
+		return x.Will
+	}
+	return nil
+}
+
+func (x *SessionMetadataState) GetWillDueAtUnixMillis() uint64 {
+	if x != nil {
+		return x.WillDueAtUnixMillis
+	}
+	return 0
+}
+
+func (x *SessionMetadataState) GetPrincipal() *SessionPrincipal {
+	if x != nil {
+		return x.Principal
+	}
+	return nil
+}
+
 // Every application log entry has exactly one typed payload. operation_id is a
 // canonical lower-case UUID and is stable across retry of the same operation.
 type CommandEnvelope struct {
@@ -1005,6 +1621,7 @@ type CommandEnvelope struct {
 	//	*CommandEnvelope_TenantQuota
 	//	*CommandEnvelope_MemberProfile
 	//	*CommandEnvelope_FeatureActivation
+	//	*CommandEnvelope_SessionMetadata
 	Payload       isCommandEnvelope_Payload `protobuf_oneof:"payload"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
@@ -1012,7 +1629,7 @@ type CommandEnvelope struct {
 
 func (x *CommandEnvelope) Reset() {
 	*x = CommandEnvelope{}
-	mi := &file_docs_contracts_replicated_state_v1_proto_msgTypes[3]
+	mi := &file_docs_contracts_replicated_state_v1_proto_msgTypes[8]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1024,7 +1641,7 @@ func (x *CommandEnvelope) String() string {
 func (*CommandEnvelope) ProtoMessage() {}
 
 func (x *CommandEnvelope) ProtoReflect() protoreflect.Message {
-	mi := &file_docs_contracts_replicated_state_v1_proto_msgTypes[3]
+	mi := &file_docs_contracts_replicated_state_v1_proto_msgTypes[8]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1037,7 +1654,7 @@ func (x *CommandEnvelope) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CommandEnvelope.ProtoReflect.Descriptor instead.
 func (*CommandEnvelope) Descriptor() ([]byte, []int) {
-	return file_docs_contracts_replicated_state_v1_proto_rawDescGZIP(), []int{3}
+	return file_docs_contracts_replicated_state_v1_proto_rawDescGZIP(), []int{8}
 }
 
 func (x *CommandEnvelope) GetSchemaMajor() uint32 {
@@ -1158,6 +1775,15 @@ func (x *CommandEnvelope) GetFeatureActivation() *FeatureActivation {
 	return nil
 }
 
+func (x *CommandEnvelope) GetSessionMetadata() *SessionMetadataChange {
+	if x != nil {
+		if x, ok := x.Payload.(*CommandEnvelope_SessionMetadata); ok {
+			return x.SessionMetadata
+		}
+	}
+	return nil
+}
+
 type isCommandEnvelope_Payload interface {
 	isCommandEnvelope_Payload()
 }
@@ -1202,6 +1828,10 @@ type CommandEnvelope_FeatureActivation struct {
 	FeatureActivation *FeatureActivation `protobuf:"bytes,20,opt,name=feature_activation,json=featureActivation,proto3,oneof"`
 }
 
+type CommandEnvelope_SessionMetadata struct {
+	SessionMetadata *SessionMetadataChange `protobuf:"bytes,21,opt,name=session_metadata,json=sessionMetadata,proto3,oneof"`
+}
+
 func (*CommandEnvelope_Membership) isCommandEnvelope_Payload() {}
 
 func (*CommandEnvelope_Ownership) isCommandEnvelope_Payload() {}
@@ -1221,6 +1851,8 @@ func (*CommandEnvelope_TenantQuota) isCommandEnvelope_Payload() {}
 func (*CommandEnvelope_MemberProfile) isCommandEnvelope_Payload() {}
 
 func (*CommandEnvelope_FeatureActivation) isCommandEnvelope_Payload() {}
+
+func (*CommandEnvelope_SessionMetadata) isCommandEnvelope_Payload() {}
 
 // Identity fields are committed before the candidate can send a Raft message.
 // Release version and features are mutable profile fields.
@@ -1245,7 +1877,7 @@ type MemberIdentity struct {
 
 func (x *MemberIdentity) Reset() {
 	*x = MemberIdentity{}
-	mi := &file_docs_contracts_replicated_state_v1_proto_msgTypes[4]
+	mi := &file_docs_contracts_replicated_state_v1_proto_msgTypes[9]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1257,7 +1889,7 @@ func (x *MemberIdentity) String() string {
 func (*MemberIdentity) ProtoMessage() {}
 
 func (x *MemberIdentity) ProtoReflect() protoreflect.Message {
-	mi := &file_docs_contracts_replicated_state_v1_proto_msgTypes[4]
+	mi := &file_docs_contracts_replicated_state_v1_proto_msgTypes[9]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1270,7 +1902,7 @@ func (x *MemberIdentity) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use MemberIdentity.ProtoReflect.Descriptor instead.
 func (*MemberIdentity) Descriptor() ([]byte, []int) {
-	return file_docs_contracts_replicated_state_v1_proto_rawDescGZIP(), []int{4}
+	return file_docs_contracts_replicated_state_v1_proto_rawDescGZIP(), []int{9}
 }
 
 func (x *MemberIdentity) GetMemberId() uint64 {
@@ -1384,7 +2016,7 @@ type MembershipRecord struct {
 
 func (x *MembershipRecord) Reset() {
 	*x = MembershipRecord{}
-	mi := &file_docs_contracts_replicated_state_v1_proto_msgTypes[5]
+	mi := &file_docs_contracts_replicated_state_v1_proto_msgTypes[10]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1396,7 +2028,7 @@ func (x *MembershipRecord) String() string {
 func (*MembershipRecord) ProtoMessage() {}
 
 func (x *MembershipRecord) ProtoReflect() protoreflect.Message {
-	mi := &file_docs_contracts_replicated_state_v1_proto_msgTypes[5]
+	mi := &file_docs_contracts_replicated_state_v1_proto_msgTypes[10]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1409,7 +2041,7 @@ func (x *MembershipRecord) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use MembershipRecord.ProtoReflect.Descriptor instead.
 func (*MembershipRecord) Descriptor() ([]byte, []int) {
-	return file_docs_contracts_replicated_state_v1_proto_rawDescGZIP(), []int{5}
+	return file_docs_contracts_replicated_state_v1_proto_rawDescGZIP(), []int{10}
 }
 
 func (x *MembershipRecord) GetOperationId() string {
@@ -1469,13 +2101,14 @@ type OwnershipChange struct {
 	OwnerNodeId   uint64                 `protobuf:"varint,4,opt,name=owner_node_id,json=ownerNodeId,proto3" json:"owner_node_id,omitempty"`
 	Epoch         uint64                 `protobuf:"varint,5,opt,name=epoch,proto3" json:"epoch,omitempty"`
 	Action        OwnershipAction        `protobuf:"varint,6,opt,name=action,proto3,enum=narumq.cluster.v1.OwnershipAction" json:"action,omitempty"`
+	Session       *SessionConnect        `protobuf:"bytes,7,opt,name=session,proto3" json:"session,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
 
 func (x *OwnershipChange) Reset() {
 	*x = OwnershipChange{}
-	mi := &file_docs_contracts_replicated_state_v1_proto_msgTypes[6]
+	mi := &file_docs_contracts_replicated_state_v1_proto_msgTypes[11]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1487,7 +2120,7 @@ func (x *OwnershipChange) String() string {
 func (*OwnershipChange) ProtoMessage() {}
 
 func (x *OwnershipChange) ProtoReflect() protoreflect.Message {
-	mi := &file_docs_contracts_replicated_state_v1_proto_msgTypes[6]
+	mi := &file_docs_contracts_replicated_state_v1_proto_msgTypes[11]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1500,7 +2133,7 @@ func (x *OwnershipChange) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use OwnershipChange.ProtoReflect.Descriptor instead.
 func (*OwnershipChange) Descriptor() ([]byte, []int) {
-	return file_docs_contracts_replicated_state_v1_proto_rawDescGZIP(), []int{6}
+	return file_docs_contracts_replicated_state_v1_proto_rawDescGZIP(), []int{11}
 }
 
 func (x *OwnershipChange) GetTenantId() string {
@@ -1545,6 +2178,13 @@ func (x *OwnershipChange) GetAction() OwnershipAction {
 	return OwnershipAction_OWNERSHIP_ACTION_UNSPECIFIED
 }
 
+func (x *OwnershipChange) GetSession() *SessionConnect {
+	if x != nil {
+		return x.Session
+	}
+	return nil
+}
+
 type OwnershipState struct {
 	state          protoimpl.MessageState `protogen:"open.v1"`
 	TenantId       string                 `protobuf:"bytes,1,opt,name=tenant_id,json=tenantId,proto3" json:"tenant_id,omitempty"`
@@ -1558,7 +2198,7 @@ type OwnershipState struct {
 
 func (x *OwnershipState) Reset() {
 	*x = OwnershipState{}
-	mi := &file_docs_contracts_replicated_state_v1_proto_msgTypes[7]
+	mi := &file_docs_contracts_replicated_state_v1_proto_msgTypes[12]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1570,7 +2210,7 @@ func (x *OwnershipState) String() string {
 func (*OwnershipState) ProtoMessage() {}
 
 func (x *OwnershipState) ProtoReflect() protoreflect.Message {
-	mi := &file_docs_contracts_replicated_state_v1_proto_msgTypes[7]
+	mi := &file_docs_contracts_replicated_state_v1_proto_msgTypes[12]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1583,7 +2223,7 @@ func (x *OwnershipState) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use OwnershipState.ProtoReflect.Descriptor instead.
 func (*OwnershipState) Descriptor() ([]byte, []int) {
-	return file_docs_contracts_replicated_state_v1_proto_rawDescGZIP(), []int{7}
+	return file_docs_contracts_replicated_state_v1_proto_rawDescGZIP(), []int{12}
 }
 
 func (x *OwnershipState) GetTenantId() string {
@@ -1639,7 +2279,7 @@ type SubscriptionChange struct {
 
 func (x *SubscriptionChange) Reset() {
 	*x = SubscriptionChange{}
-	mi := &file_docs_contracts_replicated_state_v1_proto_msgTypes[8]
+	mi := &file_docs_contracts_replicated_state_v1_proto_msgTypes[13]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1651,7 +2291,7 @@ func (x *SubscriptionChange) String() string {
 func (*SubscriptionChange) ProtoMessage() {}
 
 func (x *SubscriptionChange) ProtoReflect() protoreflect.Message {
-	mi := &file_docs_contracts_replicated_state_v1_proto_msgTypes[8]
+	mi := &file_docs_contracts_replicated_state_v1_proto_msgTypes[13]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1664,7 +2304,7 @@ func (x *SubscriptionChange) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SubscriptionChange.ProtoReflect.Descriptor instead.
 func (*SubscriptionChange) Descriptor() ([]byte, []int) {
-	return file_docs_contracts_replicated_state_v1_proto_rawDescGZIP(), []int{8}
+	return file_docs_contracts_replicated_state_v1_proto_rawDescGZIP(), []int{13}
 }
 
 func (x *SubscriptionChange) GetTenantId() string {
@@ -1747,7 +2387,7 @@ type DeliveryTarget struct {
 
 func (x *DeliveryTarget) Reset() {
 	*x = DeliveryTarget{}
-	mi := &file_docs_contracts_replicated_state_v1_proto_msgTypes[9]
+	mi := &file_docs_contracts_replicated_state_v1_proto_msgTypes[14]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1759,7 +2399,7 @@ func (x *DeliveryTarget) String() string {
 func (*DeliveryTarget) ProtoMessage() {}
 
 func (x *DeliveryTarget) ProtoReflect() protoreflect.Message {
-	mi := &file_docs_contracts_replicated_state_v1_proto_msgTypes[9]
+	mi := &file_docs_contracts_replicated_state_v1_proto_msgTypes[14]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1772,7 +2412,7 @@ func (x *DeliveryTarget) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DeliveryTarget.ProtoReflect.Descriptor instead.
 func (*DeliveryTarget) Descriptor() ([]byte, []int) {
-	return file_docs_contracts_replicated_state_v1_proto_rawDescGZIP(), []int{9}
+	return file_docs_contracts_replicated_state_v1_proto_rawDescGZIP(), []int{14}
 }
 
 func (x *DeliveryTarget) GetClientId() string {
@@ -1813,7 +2453,7 @@ type DeliveryChange struct {
 
 func (x *DeliveryChange) Reset() {
 	*x = DeliveryChange{}
-	mi := &file_docs_contracts_replicated_state_v1_proto_msgTypes[10]
+	mi := &file_docs_contracts_replicated_state_v1_proto_msgTypes[15]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1825,7 +2465,7 @@ func (x *DeliveryChange) String() string {
 func (*DeliveryChange) ProtoMessage() {}
 
 func (x *DeliveryChange) ProtoReflect() protoreflect.Message {
-	mi := &file_docs_contracts_replicated_state_v1_proto_msgTypes[10]
+	mi := &file_docs_contracts_replicated_state_v1_proto_msgTypes[15]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1838,7 +2478,7 @@ func (x *DeliveryChange) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DeliveryChange.ProtoReflect.Descriptor instead.
 func (*DeliveryChange) Descriptor() ([]byte, []int) {
-	return file_docs_contracts_replicated_state_v1_proto_rawDescGZIP(), []int{10}
+	return file_docs_contracts_replicated_state_v1_proto_rawDescGZIP(), []int{15}
 }
 
 func (x *DeliveryChange) GetTenantId() string {
@@ -1969,7 +2609,7 @@ type DeliveryMessage struct {
 
 func (x *DeliveryMessage) Reset() {
 	*x = DeliveryMessage{}
-	mi := &file_docs_contracts_replicated_state_v1_proto_msgTypes[11]
+	mi := &file_docs_contracts_replicated_state_v1_proto_msgTypes[16]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1981,7 +2621,7 @@ func (x *DeliveryMessage) String() string {
 func (*DeliveryMessage) ProtoMessage() {}
 
 func (x *DeliveryMessage) ProtoReflect() protoreflect.Message {
-	mi := &file_docs_contracts_replicated_state_v1_proto_msgTypes[11]
+	mi := &file_docs_contracts_replicated_state_v1_proto_msgTypes[16]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1994,7 +2634,7 @@ func (x *DeliveryMessage) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DeliveryMessage.ProtoReflect.Descriptor instead.
 func (*DeliveryMessage) Descriptor() ([]byte, []int) {
-	return file_docs_contracts_replicated_state_v1_proto_rawDescGZIP(), []int{11}
+	return file_docs_contracts_replicated_state_v1_proto_rawDescGZIP(), []int{16}
 }
 
 func (x *DeliveryMessage) GetSequence() uint64 {
@@ -2068,7 +2708,7 @@ type InboundMessage struct {
 
 func (x *InboundMessage) Reset() {
 	*x = InboundMessage{}
-	mi := &file_docs_contracts_replicated_state_v1_proto_msgTypes[12]
+	mi := &file_docs_contracts_replicated_state_v1_proto_msgTypes[17]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2080,7 +2720,7 @@ func (x *InboundMessage) String() string {
 func (*InboundMessage) ProtoMessage() {}
 
 func (x *InboundMessage) ProtoReflect() protoreflect.Message {
-	mi := &file_docs_contracts_replicated_state_v1_proto_msgTypes[12]
+	mi := &file_docs_contracts_replicated_state_v1_proto_msgTypes[17]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2093,7 +2733,7 @@ func (x *InboundMessage) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use InboundMessage.ProtoReflect.Descriptor instead.
 func (*InboundMessage) Descriptor() ([]byte, []int) {
-	return file_docs_contracts_replicated_state_v1_proto_rawDescGZIP(), []int{12}
+	return file_docs_contracts_replicated_state_v1_proto_rawDescGZIP(), []int{17}
 }
 
 func (x *InboundMessage) GetPacketId() uint32 {
@@ -2159,7 +2799,7 @@ type DeliverySessionState struct {
 
 func (x *DeliverySessionState) Reset() {
 	*x = DeliverySessionState{}
-	mi := &file_docs_contracts_replicated_state_v1_proto_msgTypes[13]
+	mi := &file_docs_contracts_replicated_state_v1_proto_msgTypes[18]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2171,7 +2811,7 @@ func (x *DeliverySessionState) String() string {
 func (*DeliverySessionState) ProtoMessage() {}
 
 func (x *DeliverySessionState) ProtoReflect() protoreflect.Message {
-	mi := &file_docs_contracts_replicated_state_v1_proto_msgTypes[13]
+	mi := &file_docs_contracts_replicated_state_v1_proto_msgTypes[18]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2184,7 +2824,7 @@ func (x *DeliverySessionState) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DeliverySessionState.ProtoReflect.Descriptor instead.
 func (*DeliverySessionState) Descriptor() ([]byte, []int) {
-	return file_docs_contracts_replicated_state_v1_proto_rawDescGZIP(), []int{13}
+	return file_docs_contracts_replicated_state_v1_proto_rawDescGZIP(), []int{18}
 }
 
 func (x *DeliverySessionState) GetTenantId() string {
@@ -2247,7 +2887,7 @@ type RetainedChange struct {
 
 func (x *RetainedChange) Reset() {
 	*x = RetainedChange{}
-	mi := &file_docs_contracts_replicated_state_v1_proto_msgTypes[14]
+	mi := &file_docs_contracts_replicated_state_v1_proto_msgTypes[19]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2259,7 +2899,7 @@ func (x *RetainedChange) String() string {
 func (*RetainedChange) ProtoMessage() {}
 
 func (x *RetainedChange) ProtoReflect() protoreflect.Message {
-	mi := &file_docs_contracts_replicated_state_v1_proto_msgTypes[14]
+	mi := &file_docs_contracts_replicated_state_v1_proto_msgTypes[19]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2272,7 +2912,7 @@ func (x *RetainedChange) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RetainedChange.ProtoReflect.Descriptor instead.
 func (*RetainedChange) Descriptor() ([]byte, []int) {
-	return file_docs_contracts_replicated_state_v1_proto_rawDescGZIP(), []int{14}
+	return file_docs_contracts_replicated_state_v1_proto_rawDescGZIP(), []int{19}
 }
 
 func (x *RetainedChange) GetTenantId() string {
@@ -2345,7 +2985,7 @@ type RetainedState struct {
 
 func (x *RetainedState) Reset() {
 	*x = RetainedState{}
-	mi := &file_docs_contracts_replicated_state_v1_proto_msgTypes[15]
+	mi := &file_docs_contracts_replicated_state_v1_proto_msgTypes[20]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2357,7 +2997,7 @@ func (x *RetainedState) String() string {
 func (*RetainedState) ProtoMessage() {}
 
 func (x *RetainedState) ProtoReflect() protoreflect.Message {
-	mi := &file_docs_contracts_replicated_state_v1_proto_msgTypes[15]
+	mi := &file_docs_contracts_replicated_state_v1_proto_msgTypes[20]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2370,7 +3010,7 @@ func (x *RetainedState) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RetainedState.ProtoReflect.Descriptor instead.
 func (*RetainedState) Descriptor() ([]byte, []int) {
-	return file_docs_contracts_replicated_state_v1_proto_rawDescGZIP(), []int{15}
+	return file_docs_contracts_replicated_state_v1_proto_rawDescGZIP(), []int{20}
 }
 
 func (x *RetainedState) GetTenantId() string {
@@ -2430,7 +3070,7 @@ type TenantStorageQuota struct {
 
 func (x *TenantStorageQuota) Reset() {
 	*x = TenantStorageQuota{}
-	mi := &file_docs_contracts_replicated_state_v1_proto_msgTypes[16]
+	mi := &file_docs_contracts_replicated_state_v1_proto_msgTypes[21]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2442,7 +3082,7 @@ func (x *TenantStorageQuota) String() string {
 func (*TenantStorageQuota) ProtoMessage() {}
 
 func (x *TenantStorageQuota) ProtoReflect() protoreflect.Message {
-	mi := &file_docs_contracts_replicated_state_v1_proto_msgTypes[16]
+	mi := &file_docs_contracts_replicated_state_v1_proto_msgTypes[21]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2455,7 +3095,7 @@ func (x *TenantStorageQuota) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use TenantStorageQuota.ProtoReflect.Descriptor instead.
 func (*TenantStorageQuota) Descriptor() ([]byte, []int) {
-	return file_docs_contracts_replicated_state_v1_proto_rawDescGZIP(), []int{16}
+	return file_docs_contracts_replicated_state_v1_proto_rawDescGZIP(), []int{21}
 }
 
 func (x *TenantStorageQuota) GetTenantId() string {
@@ -2504,7 +3144,7 @@ type TenantQuotaProfile struct {
 
 func (x *TenantQuotaProfile) Reset() {
 	*x = TenantQuotaProfile{}
-	mi := &file_docs_contracts_replicated_state_v1_proto_msgTypes[17]
+	mi := &file_docs_contracts_replicated_state_v1_proto_msgTypes[22]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2516,7 +3156,7 @@ func (x *TenantQuotaProfile) String() string {
 func (*TenantQuotaProfile) ProtoMessage() {}
 
 func (x *TenantQuotaProfile) ProtoReflect() protoreflect.Message {
-	mi := &file_docs_contracts_replicated_state_v1_proto_msgTypes[17]
+	mi := &file_docs_contracts_replicated_state_v1_proto_msgTypes[22]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2529,7 +3169,7 @@ func (x *TenantQuotaProfile) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use TenantQuotaProfile.ProtoReflect.Descriptor instead.
 func (*TenantQuotaProfile) Descriptor() ([]byte, []int) {
-	return file_docs_contracts_replicated_state_v1_proto_rawDescGZIP(), []int{17}
+	return file_docs_contracts_replicated_state_v1_proto_rawDescGZIP(), []int{22}
 }
 
 func (x *TenantQuotaProfile) GetVersion() uint64 {
@@ -2562,7 +3202,7 @@ type TenantQuotaChange struct {
 
 func (x *TenantQuotaChange) Reset() {
 	*x = TenantQuotaChange{}
-	mi := &file_docs_contracts_replicated_state_v1_proto_msgTypes[18]
+	mi := &file_docs_contracts_replicated_state_v1_proto_msgTypes[23]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2574,7 +3214,7 @@ func (x *TenantQuotaChange) String() string {
 func (*TenantQuotaChange) ProtoMessage() {}
 
 func (x *TenantQuotaChange) ProtoReflect() protoreflect.Message {
-	mi := &file_docs_contracts_replicated_state_v1_proto_msgTypes[18]
+	mi := &file_docs_contracts_replicated_state_v1_proto_msgTypes[23]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2587,7 +3227,7 @@ func (x *TenantQuotaChange) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use TenantQuotaChange.ProtoReflect.Descriptor instead.
 func (*TenantQuotaChange) Descriptor() ([]byte, []int) {
-	return file_docs_contracts_replicated_state_v1_proto_rawDescGZIP(), []int{18}
+	return file_docs_contracts_replicated_state_v1_proto_rawDescGZIP(), []int{23}
 }
 
 func (x *TenantQuotaChange) GetProfile() *TenantQuotaProfile {
@@ -2608,7 +3248,7 @@ type MemberProfileChange struct {
 
 func (x *MemberProfileChange) Reset() {
 	*x = MemberProfileChange{}
-	mi := &file_docs_contracts_replicated_state_v1_proto_msgTypes[19]
+	mi := &file_docs_contracts_replicated_state_v1_proto_msgTypes[24]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2620,7 +3260,7 @@ func (x *MemberProfileChange) String() string {
 func (*MemberProfileChange) ProtoMessage() {}
 
 func (x *MemberProfileChange) ProtoReflect() protoreflect.Message {
-	mi := &file_docs_contracts_replicated_state_v1_proto_msgTypes[19]
+	mi := &file_docs_contracts_replicated_state_v1_proto_msgTypes[24]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2633,7 +3273,7 @@ func (x *MemberProfileChange) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use MemberProfileChange.ProtoReflect.Descriptor instead.
 func (*MemberProfileChange) Descriptor() ([]byte, []int) {
-	return file_docs_contracts_replicated_state_v1_proto_rawDescGZIP(), []int{19}
+	return file_docs_contracts_replicated_state_v1_proto_rawDescGZIP(), []int{24}
 }
 
 func (x *MemberProfileChange) GetMemberId() uint64 {
@@ -2666,7 +3306,7 @@ type FeatureActivation struct {
 
 func (x *FeatureActivation) Reset() {
 	*x = FeatureActivation{}
-	mi := &file_docs_contracts_replicated_state_v1_proto_msgTypes[20]
+	mi := &file_docs_contracts_replicated_state_v1_proto_msgTypes[25]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2678,7 +3318,7 @@ func (x *FeatureActivation) String() string {
 func (*FeatureActivation) ProtoMessage() {}
 
 func (x *FeatureActivation) ProtoReflect() protoreflect.Message {
-	mi := &file_docs_contracts_replicated_state_v1_proto_msgTypes[20]
+	mi := &file_docs_contracts_replicated_state_v1_proto_msgTypes[25]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2691,7 +3331,7 @@ func (x *FeatureActivation) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use FeatureActivation.ProtoReflect.Descriptor instead.
 func (*FeatureActivation) Descriptor() ([]byte, []int) {
-	return file_docs_contracts_replicated_state_v1_proto_rawDescGZIP(), []int{20}
+	return file_docs_contracts_replicated_state_v1_proto_rawDescGZIP(), []int{25}
 }
 
 func (x *FeatureActivation) GetFeature() string {
@@ -2715,7 +3355,7 @@ type OfflineMessage struct {
 
 func (x *OfflineMessage) Reset() {
 	*x = OfflineMessage{}
-	mi := &file_docs_contracts_replicated_state_v1_proto_msgTypes[21]
+	mi := &file_docs_contracts_replicated_state_v1_proto_msgTypes[26]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2727,7 +3367,7 @@ func (x *OfflineMessage) String() string {
 func (*OfflineMessage) ProtoMessage() {}
 
 func (x *OfflineMessage) ProtoReflect() protoreflect.Message {
-	mi := &file_docs_contracts_replicated_state_v1_proto_msgTypes[21]
+	mi := &file_docs_contracts_replicated_state_v1_proto_msgTypes[26]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2740,7 +3380,7 @@ func (x *OfflineMessage) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use OfflineMessage.ProtoReflect.Descriptor instead.
 func (*OfflineMessage) Descriptor() ([]byte, []int) {
-	return file_docs_contracts_replicated_state_v1_proto_rawDescGZIP(), []int{21}
+	return file_docs_contracts_replicated_state_v1_proto_rawDescGZIP(), []int{26}
 }
 
 func (x *OfflineMessage) GetSequence() uint64 {
@@ -2801,7 +3441,7 @@ type OfflineChange struct {
 
 func (x *OfflineChange) Reset() {
 	*x = OfflineChange{}
-	mi := &file_docs_contracts_replicated_state_v1_proto_msgTypes[22]
+	mi := &file_docs_contracts_replicated_state_v1_proto_msgTypes[27]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2813,7 +3453,7 @@ func (x *OfflineChange) String() string {
 func (*OfflineChange) ProtoMessage() {}
 
 func (x *OfflineChange) ProtoReflect() protoreflect.Message {
-	mi := &file_docs_contracts_replicated_state_v1_proto_msgTypes[22]
+	mi := &file_docs_contracts_replicated_state_v1_proto_msgTypes[27]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2826,7 +3466,7 @@ func (x *OfflineChange) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use OfflineChange.ProtoReflect.Descriptor instead.
 func (*OfflineChange) Descriptor() ([]byte, []int) {
-	return file_docs_contracts_replicated_state_v1_proto_rawDescGZIP(), []int{22}
+	return file_docs_contracts_replicated_state_v1_proto_rawDescGZIP(), []int{27}
 }
 
 func (x *OfflineChange) GetTenantId() string {
@@ -2899,7 +3539,7 @@ type OfflineSessionState struct {
 
 func (x *OfflineSessionState) Reset() {
 	*x = OfflineSessionState{}
-	mi := &file_docs_contracts_replicated_state_v1_proto_msgTypes[23]
+	mi := &file_docs_contracts_replicated_state_v1_proto_msgTypes[28]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2911,7 +3551,7 @@ func (x *OfflineSessionState) String() string {
 func (*OfflineSessionState) ProtoMessage() {}
 
 func (x *OfflineSessionState) ProtoReflect() protoreflect.Message {
-	mi := &file_docs_contracts_replicated_state_v1_proto_msgTypes[23]
+	mi := &file_docs_contracts_replicated_state_v1_proto_msgTypes[28]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2924,7 +3564,7 @@ func (x *OfflineSessionState) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use OfflineSessionState.ProtoReflect.Descriptor instead.
 func (*OfflineSessionState) Descriptor() ([]byte, []int) {
-	return file_docs_contracts_replicated_state_v1_proto_rawDescGZIP(), []int{23}
+	return file_docs_contracts_replicated_state_v1_proto_rawDescGZIP(), []int{28}
 }
 
 func (x *OfflineSessionState) GetTenantId() string {
@@ -2986,7 +3626,7 @@ type SubscriptionState struct {
 
 func (x *SubscriptionState) Reset() {
 	*x = SubscriptionState{}
-	mi := &file_docs_contracts_replicated_state_v1_proto_msgTypes[24]
+	mi := &file_docs_contracts_replicated_state_v1_proto_msgTypes[29]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2998,7 +3638,7 @@ func (x *SubscriptionState) String() string {
 func (*SubscriptionState) ProtoMessage() {}
 
 func (x *SubscriptionState) ProtoReflect() protoreflect.Message {
-	mi := &file_docs_contracts_replicated_state_v1_proto_msgTypes[24]
+	mi := &file_docs_contracts_replicated_state_v1_proto_msgTypes[29]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3011,7 +3651,7 @@ func (x *SubscriptionState) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SubscriptionState.ProtoReflect.Descriptor instead.
 func (*SubscriptionState) Descriptor() ([]byte, []int) {
-	return file_docs_contracts_replicated_state_v1_proto_rawDescGZIP(), []int{24}
+	return file_docs_contracts_replicated_state_v1_proto_rawDescGZIP(), []int{29}
 }
 
 func (x *SubscriptionState) GetTenantId() string {
@@ -3089,13 +3729,14 @@ type ReplicatedStateSnapshot struct {
 	NodeDrains         []*NodeDrainState       `protobuf:"bytes,9,rep,name=node_drains,json=nodeDrains,proto3" json:"node_drains,omitempty"`
 	TenantQuotaProfile *TenantQuotaProfile     `protobuf:"bytes,10,opt,name=tenant_quota_profile,json=tenantQuotaProfile,proto3" json:"tenant_quota_profile,omitempty"`
 	ActiveFeatures     []string                `protobuf:"bytes,11,rep,name=active_features,json=activeFeatures,proto3" json:"active_features,omitempty"`
+	SessionMetadata    []*SessionMetadataState `protobuf:"bytes,12,rep,name=session_metadata,json=sessionMetadata,proto3" json:"session_metadata,omitempty"`
 	unknownFields      protoimpl.UnknownFields
 	sizeCache          protoimpl.SizeCache
 }
 
 func (x *ReplicatedStateSnapshot) Reset() {
 	*x = ReplicatedStateSnapshot{}
-	mi := &file_docs_contracts_replicated_state_v1_proto_msgTypes[25]
+	mi := &file_docs_contracts_replicated_state_v1_proto_msgTypes[30]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3107,7 +3748,7 @@ func (x *ReplicatedStateSnapshot) String() string {
 func (*ReplicatedStateSnapshot) ProtoMessage() {}
 
 func (x *ReplicatedStateSnapshot) ProtoReflect() protoreflect.Message {
-	mi := &file_docs_contracts_replicated_state_v1_proto_msgTypes[25]
+	mi := &file_docs_contracts_replicated_state_v1_proto_msgTypes[30]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3120,7 +3761,7 @@ func (x *ReplicatedStateSnapshot) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ReplicatedStateSnapshot.ProtoReflect.Descriptor instead.
 func (*ReplicatedStateSnapshot) Descriptor() ([]byte, []int) {
-	return file_docs_contracts_replicated_state_v1_proto_rawDescGZIP(), []int{25}
+	return file_docs_contracts_replicated_state_v1_proto_rawDescGZIP(), []int{30}
 }
 
 func (x *ReplicatedStateSnapshot) GetMembers() []*MemberIdentity {
@@ -3193,6 +3834,13 @@ func (x *ReplicatedStateSnapshot) GetActiveFeatures() []string {
 	return nil
 }
 
+func (x *ReplicatedStateSnapshot) GetSessionMetadata() []*SessionMetadataState {
+	if x != nil {
+		return x.SessionMetadata
+	}
+	return nil
+}
+
 type SnapshotEnvelope struct {
 	state             protoimpl.MessageState   `protogen:"open.v1"`
 	SchemaMajor       uint32                   `protobuf:"varint,1,opt,name=schema_major,json=schemaMajor,proto3" json:"schema_major,omitempty"`
@@ -3207,7 +3855,7 @@ type SnapshotEnvelope struct {
 
 func (x *SnapshotEnvelope) Reset() {
 	*x = SnapshotEnvelope{}
-	mi := &file_docs_contracts_replicated_state_v1_proto_msgTypes[26]
+	mi := &file_docs_contracts_replicated_state_v1_proto_msgTypes[31]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3219,7 +3867,7 @@ func (x *SnapshotEnvelope) String() string {
 func (*SnapshotEnvelope) ProtoMessage() {}
 
 func (x *SnapshotEnvelope) ProtoReflect() protoreflect.Message {
-	mi := &file_docs_contracts_replicated_state_v1_proto_msgTypes[26]
+	mi := &file_docs_contracts_replicated_state_v1_proto_msgTypes[31]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3232,7 +3880,7 @@ func (x *SnapshotEnvelope) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SnapshotEnvelope.ProtoReflect.Descriptor instead.
 func (*SnapshotEnvelope) Descriptor() ([]byte, []int) {
-	return file_docs_contracts_replicated_state_v1_proto_rawDescGZIP(), []int{26}
+	return file_docs_contracts_replicated_state_v1_proto_rawDescGZIP(), []int{31}
 }
 
 func (x *SnapshotEnvelope) GetSchemaMajor() uint32 {
@@ -3322,7 +3970,48 @@ const file_docs_contracts_replicated_state_v1_proto_rawDesc = "" +
 	"\bprogress\x18\f \x01(\v2$.narumq.cluster.v1.NodeDrainProgressR\bprogress\x12!\n" +
 	"\ffailure_code\x18\r \x01(\tR\vfailureCode\x12'\n" +
 	"\x0fblocking_reason\x18\x0e \x01(\tR\x0eblockingReason\x12'\n" +
-	"\x0fcommitted_index\x18\x0f \x01(\x04R\x0ecommittedIndex\"\xe7\x06\n" +
+	"\x0fcommitted_index\x18\x0f \x01(\x04R\x0ecommittedIndex\"\x9d\x01\n" +
+	"\vSessionWill\x12\x14\n" +
+	"\x05topic\x18\x01 \x01(\tR\x05topic\x12\x18\n" +
+	"\apayload\x18\x02 \x01(\fR\apayload\x12\x10\n" +
+	"\x03qos\x18\x03 \x01(\rR\x03qos\x12\x16\n" +
+	"\x06retain\x18\x04 \x01(\bR\x06retain\x124\n" +
+	"\x16delay_interval_seconds\x18\x05 \x01(\rR\x14delayIntervalSeconds\"\x9c\x01\n" +
+	"\x10SessionPrincipal\x12\x18\n" +
+	"\asubject\x18\x01 \x01(\tR\asubject\x12#\n" +
+	"\rcredential_id\x18\x02 \x01(\tR\fcredentialId\x12\x14\n" +
+	"\x05roles\x18\x03 \x03(\tR\x05roles\x123\n" +
+	"\x16expires_at_unix_millis\x18\x04 \x01(\x04R\x13expiresAtUnixMillis\"\xad\x02\n" +
+	"\x0eSessionConnect\x12)\n" +
+	"\x10protocol_version\x18\x01 \x01(\rR\x0fprotocolVersion\x12A\n" +
+	"\tretention\x18\x02 \x01(\x0e2#.narumq.cluster.v1.SessionRetentionR\tretention\x126\n" +
+	"\x17expiry_interval_seconds\x18\x03 \x01(\rR\x15expiryIntervalSeconds\x122\n" +
+	"\x04will\x18\x04 \x01(\v2\x1e.narumq.cluster.v1.SessionWillR\x04will\x12A\n" +
+	"\tprincipal\x18\x05 \x01(\v2#.narumq.cluster.v1.SessionPrincipalR\tprincipal\"\xd4\x03\n" +
+	"\x15SessionMetadataChange\x12\x1b\n" +
+	"\ttenant_id\x18\x01 \x01(\tR\btenantId\x12\x1b\n" +
+	"\tclient_id\x18\x02 \x01(\tR\bclientId\x12\"\n" +
+	"\rowner_node_id\x18\x03 \x01(\x04R\vownerNodeId\x12\x14\n" +
+	"\x05epoch\x18\x04 \x01(\x04R\x05epoch\x12@\n" +
+	"\x06action\x18\x05 \x01(\x0e2(.narumq.cluster.v1.SessionMetadataActionR\x06action\x12T\n" +
+	"\x10will_disposition\x18\x06 \x01(\x0e2).narumq.cluster.v1.SessionWillDispositionR\x0fwillDisposition\x125\n" +
+	"\x17proposed_at_unix_millis\x18\a \x01(\x04R\x14proposedAtUnixMillis\x12B\n" +
+	"\x1esession_expires_at_unix_millis\x18\b \x01(\x04R\x1asessionExpiresAtUnixMillis\x124\n" +
+	"\x17will_due_at_unix_millis\x18\t \x01(\x04R\x13willDueAtUnixMillis\"\xd2\x04\n" +
+	"\x14SessionMetadataState\x12\x1b\n" +
+	"\ttenant_id\x18\x01 \x01(\tR\btenantId\x12\x1b\n" +
+	"\tclient_id\x18\x02 \x01(\tR\bclientId\x12\x14\n" +
+	"\x05epoch\x18\x03 \x01(\x04R\x05epoch\x12)\n" +
+	"\x10protocol_version\x18\x04 \x01(\rR\x0fprotocolVersion\x12A\n" +
+	"\tretention\x18\x05 \x01(\x0e2#.narumq.cluster.v1.SessionRetentionR\tretention\x126\n" +
+	"\x17expiry_interval_seconds\x18\x06 \x01(\rR\x15expiryIntervalSeconds\x12\x1c\n" +
+	"\tconnected\x18\a \x01(\bR\tconnected\x125\n" +
+	"\x17detached_at_unix_millis\x18\b \x01(\x04R\x14detachedAtUnixMillis\x12B\n" +
+	"\x1esession_expires_at_unix_millis\x18\t \x01(\x04R\x1asessionExpiresAtUnixMillis\x122\n" +
+	"\x04will\x18\n" +
+	" \x01(\v2\x1e.narumq.cluster.v1.SessionWillR\x04will\x124\n" +
+	"\x17will_due_at_unix_millis\x18\v \x01(\x04R\x13willDueAtUnixMillis\x12A\n" +
+	"\tprincipal\x18\f \x01(\v2#.narumq.cluster.v1.SessionPrincipalR\tprincipal\"\xbe\a\n" +
 	"\x0fCommandEnvelope\x12!\n" +
 	"\fschema_major\x18\x01 \x01(\rR\vschemaMajor\x12!\n" +
 	"\fschema_minor\x18\x02 \x01(\rR\vschemaMinor\x12!\n" +
@@ -3340,7 +4029,8 @@ const file_docs_contracts_replicated_state_v1_proto_rawDesc = "" +
 	"node_drain\x18\x11 \x01(\v2\".narumq.cluster.v1.NodeDrainChangeH\x00R\tnodeDrain\x12I\n" +
 	"\ftenant_quota\x18\x12 \x01(\v2$.narumq.cluster.v1.TenantQuotaChangeH\x00R\vtenantQuota\x12O\n" +
 	"\x0emember_profile\x18\x13 \x01(\v2&.narumq.cluster.v1.MemberProfileChangeH\x00R\rmemberProfile\x12U\n" +
-	"\x12feature_activation\x18\x14 \x01(\v2$.narumq.cluster.v1.FeatureActivationH\x00R\x11featureActivationB\t\n" +
+	"\x12feature_activation\x18\x14 \x01(\v2$.narumq.cluster.v1.FeatureActivationH\x00R\x11featureActivation\x12U\n" +
+	"\x10session_metadata\x18\x15 \x01(\v2(.narumq.cluster.v1.SessionMetadataChangeH\x00R\x0fsessionMetadataB\t\n" +
 	"\apayloadJ\x04\b\r\x10\x0eR\n" +
 	"checkpoint\"\x94\x04\n" +
 	"\x0eMemberIdentity\x12\x1b\n" +
@@ -3366,14 +4056,15 @@ const file_docs_contracts_replicated_state_v1_proto_rawDesc = "" +
 	"\x06member\x18\x04 \x01(\v2!.narumq.cluster.v1.MemberIdentityR\x06member\x12(\n" +
 	"\x10target_member_id\x18\x05 \x01(\x04R\x0etargetMemberId\x129\n" +
 	"\x19expected_conf_state_index\x18\x06 \x01(\x04R\x16expectedConfStateIndex\x12'\n" +
-	"\x0fcommitted_index\x18\a \x01(\x04R\x0ecommittedIndex\"\xe8\x01\n" +
+	"\x0fcommitted_index\x18\a \x01(\x04R\x0ecommittedIndex\"\xa5\x02\n" +
 	"\x0fOwnershipChange\x12\x1b\n" +
 	"\ttenant_id\x18\x01 \x01(\tR\btenantId\x12\x1b\n" +
 	"\tclient_id\x18\x02 \x01(\tR\bclientId\x12%\n" +
 	"\x0eexpected_epoch\x18\x03 \x01(\x04R\rexpectedEpoch\x12\"\n" +
 	"\rowner_node_id\x18\x04 \x01(\x04R\vownerNodeId\x12\x14\n" +
 	"\x05epoch\x18\x05 \x01(\x04R\x05epoch\x12:\n" +
-	"\x06action\x18\x06 \x01(\x0e2\".narumq.cluster.v1.OwnershipActionR\x06action\"\xad\x01\n" +
+	"\x06action\x18\x06 \x01(\x0e2\".narumq.cluster.v1.OwnershipActionR\x06action\x12;\n" +
+	"\asession\x18\a \x01(\v2!.narumq.cluster.v1.SessionConnectR\asession\"\xad\x01\n" +
 	"\x0eOwnershipState\x12\x1b\n" +
 	"\ttenant_id\x18\x01 \x01(\tR\btenantId\x12\x1b\n" +
 	"\tclient_id\x18\x02 \x01(\tR\bclientId\x12\"\n" +
@@ -3504,7 +4195,7 @@ const file_docs_contracts_replicated_state_v1_proto_rawDesc = "" +
 	"\x03qos\x18\x06 \x01(\rR\x03qos\x12\x19\n" +
 	"\bno_local\x18\a \x01(\bR\anoLocal\x12.\n" +
 	"\x13retain_as_published\x18\b \x01(\bR\x11retainAsPublished\x12'\n" +
-	"\x0fretain_handling\x18\t \x01(\rR\x0eretainHandling\"\xf9\x05\n" +
+	"\x0fretain_handling\x18\t \x01(\rR\x0eretainHandling\"\xcd\x06\n" +
 	"\x17ReplicatedStateSnapshot\x12;\n" +
 	"\amembers\x18\x01 \x03(\v2!.narumq.cluster.v1.MemberIdentityR\amembers\x12A\n" +
 	"\n" +
@@ -3519,7 +4210,8 @@ const file_docs_contracts_replicated_state_v1_proto_rawDesc = "" +
 	"nodeDrains\x12W\n" +
 	"\x14tenant_quota_profile\x18\n" +
 	" \x01(\v2%.narumq.cluster.v1.TenantQuotaProfileR\x12tenantQuotaProfile\x12'\n" +
-	"\x0factive_features\x18\v \x03(\tR\x0eactiveFeaturesJ\x04\b\x04\x10\x05R\vcheckpoints\"\x85\x02\n" +
+	"\x0factive_features\x18\v \x03(\tR\x0eactiveFeatures\x12R\n" +
+	"\x10session_metadata\x18\f \x03(\v2'.narumq.cluster.v1.SessionMetadataStateR\x0fsessionMetadataJ\x04\b\x04\x10\x05R\vcheckpoints\"\x85\x02\n" +
 	"\x10SnapshotEnvelope\x12!\n" +
 	"\fschema_major\x18\x01 \x01(\rR\vschemaMajor\x12!\n" +
 	"\fschema_minor\x18\x02 \x01(\rR\vschemaMinor\x12.\n" +
@@ -3595,7 +4287,22 @@ const file_docs_contracts_replicated_state_v1_proto_rawDesc = "" +
 	"\"NODE_DRAIN_PHASE_VERIFYING_BARRIER\x10\x05\x12\x1e\n" +
 	"\x1aNODE_DRAIN_PHASE_COMPLETED\x10\x06\x12\x1b\n" +
 	"\x17NODE_DRAIN_PHASE_FAILED\x10\a\x12\x1e\n" +
-	"\x1aNODE_DRAIN_PHASE_CANCELLED\x10\bB/Z-narumq/internal/adapters/raft/records;recordsb\x06proto3"
+	"\x1aNODE_DRAIN_PHASE_CANCELLED\x10\b*\x94\x01\n" +
+	"\x10SessionRetention\x12!\n" +
+	"\x1dSESSION_RETENTION_UNSPECIFIED\x10\x00\x12\x1f\n" +
+	"\x1bSESSION_RETENTION_IMMEDIATE\x10\x01\x12\x1c\n" +
+	"\x18SESSION_RETENTION_FINITE\x10\x02\x12\x1e\n" +
+	"\x1aSESSION_RETENTION_INFINITE\x10\x03*\xb1\x01\n" +
+	"\x15SessionMetadataAction\x12'\n" +
+	"#SESSION_METADATA_ACTION_UNSPECIFIED\x10\x00\x12\"\n" +
+	"\x1eSESSION_METADATA_ACTION_DETACH\x10\x01\x12&\n" +
+	"\"SESSION_METADATA_ACTION_CLAIM_WILL\x10\x02\x12#\n" +
+	"\x1fSESSION_METADATA_ACTION_DISCARD\x10\x03*\xb3\x01\n" +
+	"\x16SessionWillDisposition\x12(\n" +
+	"$SESSION_WILL_DISPOSITION_UNSPECIFIED\x10\x00\x12$\n" +
+	" SESSION_WILL_DISPOSITION_DISCARD\x10\x01\x12\"\n" +
+	"\x1eSESSION_WILL_DISPOSITION_CLAIM\x10\x02\x12%\n" +
+	"!SESSION_WILL_DISPOSITION_SCHEDULE\x10\x03B/Z-narumq/internal/adapters/raft/records;recordsb\x06proto3"
 
 var (
 	file_docs_contracts_replicated_state_v1_proto_rawDescOnce sync.Once
@@ -3609,8 +4316,8 @@ func file_docs_contracts_replicated_state_v1_proto_rawDescGZIP() []byte {
 	return file_docs_contracts_replicated_state_v1_proto_rawDescData
 }
 
-var file_docs_contracts_replicated_state_v1_proto_enumTypes = make([]protoimpl.EnumInfo, 10)
-var file_docs_contracts_replicated_state_v1_proto_msgTypes = make([]protoimpl.MessageInfo, 27)
+var file_docs_contracts_replicated_state_v1_proto_enumTypes = make([]protoimpl.EnumInfo, 13)
+var file_docs_contracts_replicated_state_v1_proto_msgTypes = make([]protoimpl.MessageInfo, 32)
 var file_docs_contracts_replicated_state_v1_proto_goTypes = []any{
 	(MemberPhase)(0),                // 0: narumq.cluster.v1.MemberPhase
 	(MembershipAction)(0),           // 1: narumq.cluster.v1.MembershipAction
@@ -3622,82 +4329,101 @@ var file_docs_contracts_replicated_state_v1_proto_goTypes = []any{
 	(DeliveryPhase)(0),              // 7: narumq.cluster.v1.DeliveryPhase
 	(NodeDrainAction)(0),            // 8: narumq.cluster.v1.NodeDrainAction
 	(NodeDrainPhase)(0),             // 9: narumq.cluster.v1.NodeDrainPhase
-	(*NodeDrainProgress)(nil),       // 10: narumq.cluster.v1.NodeDrainProgress
-	(*NodeDrainChange)(nil),         // 11: narumq.cluster.v1.NodeDrainChange
-	(*NodeDrainState)(nil),          // 12: narumq.cluster.v1.NodeDrainState
-	(*CommandEnvelope)(nil),         // 13: narumq.cluster.v1.CommandEnvelope
-	(*MemberIdentity)(nil),          // 14: narumq.cluster.v1.MemberIdentity
-	(*MembershipRecord)(nil),        // 15: narumq.cluster.v1.MembershipRecord
-	(*OwnershipChange)(nil),         // 16: narumq.cluster.v1.OwnershipChange
-	(*OwnershipState)(nil),          // 17: narumq.cluster.v1.OwnershipState
-	(*SubscriptionChange)(nil),      // 18: narumq.cluster.v1.SubscriptionChange
-	(*DeliveryTarget)(nil),          // 19: narumq.cluster.v1.DeliveryTarget
-	(*DeliveryChange)(nil),          // 20: narumq.cluster.v1.DeliveryChange
-	(*DeliveryMessage)(nil),         // 21: narumq.cluster.v1.DeliveryMessage
-	(*InboundMessage)(nil),          // 22: narumq.cluster.v1.InboundMessage
-	(*DeliverySessionState)(nil),    // 23: narumq.cluster.v1.DeliverySessionState
-	(*RetainedChange)(nil),          // 24: narumq.cluster.v1.RetainedChange
-	(*RetainedState)(nil),           // 25: narumq.cluster.v1.RetainedState
-	(*TenantStorageQuota)(nil),      // 26: narumq.cluster.v1.TenantStorageQuota
-	(*TenantQuotaProfile)(nil),      // 27: narumq.cluster.v1.TenantQuotaProfile
-	(*TenantQuotaChange)(nil),       // 28: narumq.cluster.v1.TenantQuotaChange
-	(*MemberProfileChange)(nil),     // 29: narumq.cluster.v1.MemberProfileChange
-	(*FeatureActivation)(nil),       // 30: narumq.cluster.v1.FeatureActivation
-	(*OfflineMessage)(nil),          // 31: narumq.cluster.v1.OfflineMessage
-	(*OfflineChange)(nil),           // 32: narumq.cluster.v1.OfflineChange
-	(*OfflineSessionState)(nil),     // 33: narumq.cluster.v1.OfflineSessionState
-	(*SubscriptionState)(nil),       // 34: narumq.cluster.v1.SubscriptionState
-	(*ReplicatedStateSnapshot)(nil), // 35: narumq.cluster.v1.ReplicatedStateSnapshot
-	(*SnapshotEnvelope)(nil),        // 36: narumq.cluster.v1.SnapshotEnvelope
+	(SessionRetention)(0),           // 10: narumq.cluster.v1.SessionRetention
+	(SessionMetadataAction)(0),      // 11: narumq.cluster.v1.SessionMetadataAction
+	(SessionWillDisposition)(0),     // 12: narumq.cluster.v1.SessionWillDisposition
+	(*NodeDrainProgress)(nil),       // 13: narumq.cluster.v1.NodeDrainProgress
+	(*NodeDrainChange)(nil),         // 14: narumq.cluster.v1.NodeDrainChange
+	(*NodeDrainState)(nil),          // 15: narumq.cluster.v1.NodeDrainState
+	(*SessionWill)(nil),             // 16: narumq.cluster.v1.SessionWill
+	(*SessionPrincipal)(nil),        // 17: narumq.cluster.v1.SessionPrincipal
+	(*SessionConnect)(nil),          // 18: narumq.cluster.v1.SessionConnect
+	(*SessionMetadataChange)(nil),   // 19: narumq.cluster.v1.SessionMetadataChange
+	(*SessionMetadataState)(nil),    // 20: narumq.cluster.v1.SessionMetadataState
+	(*CommandEnvelope)(nil),         // 21: narumq.cluster.v1.CommandEnvelope
+	(*MemberIdentity)(nil),          // 22: narumq.cluster.v1.MemberIdentity
+	(*MembershipRecord)(nil),        // 23: narumq.cluster.v1.MembershipRecord
+	(*OwnershipChange)(nil),         // 24: narumq.cluster.v1.OwnershipChange
+	(*OwnershipState)(nil),          // 25: narumq.cluster.v1.OwnershipState
+	(*SubscriptionChange)(nil),      // 26: narumq.cluster.v1.SubscriptionChange
+	(*DeliveryTarget)(nil),          // 27: narumq.cluster.v1.DeliveryTarget
+	(*DeliveryChange)(nil),          // 28: narumq.cluster.v1.DeliveryChange
+	(*DeliveryMessage)(nil),         // 29: narumq.cluster.v1.DeliveryMessage
+	(*InboundMessage)(nil),          // 30: narumq.cluster.v1.InboundMessage
+	(*DeliverySessionState)(nil),    // 31: narumq.cluster.v1.DeliverySessionState
+	(*RetainedChange)(nil),          // 32: narumq.cluster.v1.RetainedChange
+	(*RetainedState)(nil),           // 33: narumq.cluster.v1.RetainedState
+	(*TenantStorageQuota)(nil),      // 34: narumq.cluster.v1.TenantStorageQuota
+	(*TenantQuotaProfile)(nil),      // 35: narumq.cluster.v1.TenantQuotaProfile
+	(*TenantQuotaChange)(nil),       // 36: narumq.cluster.v1.TenantQuotaChange
+	(*MemberProfileChange)(nil),     // 37: narumq.cluster.v1.MemberProfileChange
+	(*FeatureActivation)(nil),       // 38: narumq.cluster.v1.FeatureActivation
+	(*OfflineMessage)(nil),          // 39: narumq.cluster.v1.OfflineMessage
+	(*OfflineChange)(nil),           // 40: narumq.cluster.v1.OfflineChange
+	(*OfflineSessionState)(nil),     // 41: narumq.cluster.v1.OfflineSessionState
+	(*SubscriptionState)(nil),       // 42: narumq.cluster.v1.SubscriptionState
+	(*ReplicatedStateSnapshot)(nil), // 43: narumq.cluster.v1.ReplicatedStateSnapshot
+	(*SnapshotEnvelope)(nil),        // 44: narumq.cluster.v1.SnapshotEnvelope
 }
 var file_docs_contracts_replicated_state_v1_proto_depIdxs = []int32{
 	8,  // 0: narumq.cluster.v1.NodeDrainChange.action:type_name -> narumq.cluster.v1.NodeDrainAction
 	9,  // 1: narumq.cluster.v1.NodeDrainChange.phase:type_name -> narumq.cluster.v1.NodeDrainPhase
-	10, // 2: narumq.cluster.v1.NodeDrainChange.progress:type_name -> narumq.cluster.v1.NodeDrainProgress
+	13, // 2: narumq.cluster.v1.NodeDrainChange.progress:type_name -> narumq.cluster.v1.NodeDrainProgress
 	9,  // 3: narumq.cluster.v1.NodeDrainState.phase:type_name -> narumq.cluster.v1.NodeDrainPhase
-	10, // 4: narumq.cluster.v1.NodeDrainState.progress:type_name -> narumq.cluster.v1.NodeDrainProgress
-	15, // 5: narumq.cluster.v1.CommandEnvelope.membership:type_name -> narumq.cluster.v1.MembershipRecord
-	16, // 6: narumq.cluster.v1.CommandEnvelope.ownership:type_name -> narumq.cluster.v1.OwnershipChange
-	18, // 7: narumq.cluster.v1.CommandEnvelope.subscription:type_name -> narumq.cluster.v1.SubscriptionChange
-	20, // 8: narumq.cluster.v1.CommandEnvelope.delivery:type_name -> narumq.cluster.v1.DeliveryChange
-	24, // 9: narumq.cluster.v1.CommandEnvelope.retained:type_name -> narumq.cluster.v1.RetainedChange
-	32, // 10: narumq.cluster.v1.CommandEnvelope.offline:type_name -> narumq.cluster.v1.OfflineChange
-	11, // 11: narumq.cluster.v1.CommandEnvelope.node_drain:type_name -> narumq.cluster.v1.NodeDrainChange
-	28, // 12: narumq.cluster.v1.CommandEnvelope.tenant_quota:type_name -> narumq.cluster.v1.TenantQuotaChange
-	29, // 13: narumq.cluster.v1.CommandEnvelope.member_profile:type_name -> narumq.cluster.v1.MemberProfileChange
-	30, // 14: narumq.cluster.v1.CommandEnvelope.feature_activation:type_name -> narumq.cluster.v1.FeatureActivation
-	0,  // 15: narumq.cluster.v1.MemberIdentity.phase:type_name -> narumq.cluster.v1.MemberPhase
-	1,  // 16: narumq.cluster.v1.MembershipRecord.action:type_name -> narumq.cluster.v1.MembershipAction
-	14, // 17: narumq.cluster.v1.MembershipRecord.member:type_name -> narumq.cluster.v1.MemberIdentity
-	2,  // 18: narumq.cluster.v1.OwnershipChange.action:type_name -> narumq.cluster.v1.OwnershipAction
-	3,  // 19: narumq.cluster.v1.SubscriptionChange.action:type_name -> narumq.cluster.v1.SubscriptionAction
-	6,  // 20: narumq.cluster.v1.DeliveryChange.action:type_name -> narumq.cluster.v1.DeliveryAction
-	19, // 21: narumq.cluster.v1.DeliveryChange.targets:type_name -> narumq.cluster.v1.DeliveryTarget
-	7,  // 22: narumq.cluster.v1.DeliveryMessage.phase:type_name -> narumq.cluster.v1.DeliveryPhase
-	21, // 23: narumq.cluster.v1.DeliverySessionState.messages:type_name -> narumq.cluster.v1.DeliveryMessage
-	22, // 24: narumq.cluster.v1.DeliverySessionState.inbound:type_name -> narumq.cluster.v1.InboundMessage
-	4,  // 25: narumq.cluster.v1.RetainedChange.action:type_name -> narumq.cluster.v1.RetainedAction
-	26, // 26: narumq.cluster.v1.TenantQuotaProfile.default_quota:type_name -> narumq.cluster.v1.TenantStorageQuota
-	26, // 27: narumq.cluster.v1.TenantQuotaProfile.tenants:type_name -> narumq.cluster.v1.TenantStorageQuota
-	27, // 28: narumq.cluster.v1.TenantQuotaChange.profile:type_name -> narumq.cluster.v1.TenantQuotaProfile
-	5,  // 29: narumq.cluster.v1.OfflineChange.action:type_name -> narumq.cluster.v1.OfflineAction
-	31, // 30: narumq.cluster.v1.OfflineChange.messages:type_name -> narumq.cluster.v1.OfflineMessage
-	31, // 31: narumq.cluster.v1.OfflineSessionState.messages:type_name -> narumq.cluster.v1.OfflineMessage
-	14, // 32: narumq.cluster.v1.ReplicatedStateSnapshot.members:type_name -> narumq.cluster.v1.MemberIdentity
-	17, // 33: narumq.cluster.v1.ReplicatedStateSnapshot.ownerships:type_name -> narumq.cluster.v1.OwnershipState
-	34, // 34: narumq.cluster.v1.ReplicatedStateSnapshot.subscriptions:type_name -> narumq.cluster.v1.SubscriptionState
-	15, // 35: narumq.cluster.v1.ReplicatedStateSnapshot.membership_history:type_name -> narumq.cluster.v1.MembershipRecord
-	25, // 36: narumq.cluster.v1.ReplicatedStateSnapshot.retained:type_name -> narumq.cluster.v1.RetainedState
-	33, // 37: narumq.cluster.v1.ReplicatedStateSnapshot.offline_sessions:type_name -> narumq.cluster.v1.OfflineSessionState
-	23, // 38: narumq.cluster.v1.ReplicatedStateSnapshot.delivery_sessions:type_name -> narumq.cluster.v1.DeliverySessionState
-	12, // 39: narumq.cluster.v1.ReplicatedStateSnapshot.node_drains:type_name -> narumq.cluster.v1.NodeDrainState
-	27, // 40: narumq.cluster.v1.ReplicatedStateSnapshot.tenant_quota_profile:type_name -> narumq.cluster.v1.TenantQuotaProfile
-	35, // 41: narumq.cluster.v1.SnapshotEnvelope.state:type_name -> narumq.cluster.v1.ReplicatedStateSnapshot
-	42, // [42:42] is the sub-list for method output_type
-	42, // [42:42] is the sub-list for method input_type
-	42, // [42:42] is the sub-list for extension type_name
-	42, // [42:42] is the sub-list for extension extendee
-	0,  // [0:42] is the sub-list for field type_name
+	13, // 4: narumq.cluster.v1.NodeDrainState.progress:type_name -> narumq.cluster.v1.NodeDrainProgress
+	10, // 5: narumq.cluster.v1.SessionConnect.retention:type_name -> narumq.cluster.v1.SessionRetention
+	16, // 6: narumq.cluster.v1.SessionConnect.will:type_name -> narumq.cluster.v1.SessionWill
+	17, // 7: narumq.cluster.v1.SessionConnect.principal:type_name -> narumq.cluster.v1.SessionPrincipal
+	11, // 8: narumq.cluster.v1.SessionMetadataChange.action:type_name -> narumq.cluster.v1.SessionMetadataAction
+	12, // 9: narumq.cluster.v1.SessionMetadataChange.will_disposition:type_name -> narumq.cluster.v1.SessionWillDisposition
+	10, // 10: narumq.cluster.v1.SessionMetadataState.retention:type_name -> narumq.cluster.v1.SessionRetention
+	16, // 11: narumq.cluster.v1.SessionMetadataState.will:type_name -> narumq.cluster.v1.SessionWill
+	17, // 12: narumq.cluster.v1.SessionMetadataState.principal:type_name -> narumq.cluster.v1.SessionPrincipal
+	23, // 13: narumq.cluster.v1.CommandEnvelope.membership:type_name -> narumq.cluster.v1.MembershipRecord
+	24, // 14: narumq.cluster.v1.CommandEnvelope.ownership:type_name -> narumq.cluster.v1.OwnershipChange
+	26, // 15: narumq.cluster.v1.CommandEnvelope.subscription:type_name -> narumq.cluster.v1.SubscriptionChange
+	28, // 16: narumq.cluster.v1.CommandEnvelope.delivery:type_name -> narumq.cluster.v1.DeliveryChange
+	32, // 17: narumq.cluster.v1.CommandEnvelope.retained:type_name -> narumq.cluster.v1.RetainedChange
+	40, // 18: narumq.cluster.v1.CommandEnvelope.offline:type_name -> narumq.cluster.v1.OfflineChange
+	14, // 19: narumq.cluster.v1.CommandEnvelope.node_drain:type_name -> narumq.cluster.v1.NodeDrainChange
+	36, // 20: narumq.cluster.v1.CommandEnvelope.tenant_quota:type_name -> narumq.cluster.v1.TenantQuotaChange
+	37, // 21: narumq.cluster.v1.CommandEnvelope.member_profile:type_name -> narumq.cluster.v1.MemberProfileChange
+	38, // 22: narumq.cluster.v1.CommandEnvelope.feature_activation:type_name -> narumq.cluster.v1.FeatureActivation
+	19, // 23: narumq.cluster.v1.CommandEnvelope.session_metadata:type_name -> narumq.cluster.v1.SessionMetadataChange
+	0,  // 24: narumq.cluster.v1.MemberIdentity.phase:type_name -> narumq.cluster.v1.MemberPhase
+	1,  // 25: narumq.cluster.v1.MembershipRecord.action:type_name -> narumq.cluster.v1.MembershipAction
+	22, // 26: narumq.cluster.v1.MembershipRecord.member:type_name -> narumq.cluster.v1.MemberIdentity
+	2,  // 27: narumq.cluster.v1.OwnershipChange.action:type_name -> narumq.cluster.v1.OwnershipAction
+	18, // 28: narumq.cluster.v1.OwnershipChange.session:type_name -> narumq.cluster.v1.SessionConnect
+	3,  // 29: narumq.cluster.v1.SubscriptionChange.action:type_name -> narumq.cluster.v1.SubscriptionAction
+	6,  // 30: narumq.cluster.v1.DeliveryChange.action:type_name -> narumq.cluster.v1.DeliveryAction
+	27, // 31: narumq.cluster.v1.DeliveryChange.targets:type_name -> narumq.cluster.v1.DeliveryTarget
+	7,  // 32: narumq.cluster.v1.DeliveryMessage.phase:type_name -> narumq.cluster.v1.DeliveryPhase
+	29, // 33: narumq.cluster.v1.DeliverySessionState.messages:type_name -> narumq.cluster.v1.DeliveryMessage
+	30, // 34: narumq.cluster.v1.DeliverySessionState.inbound:type_name -> narumq.cluster.v1.InboundMessage
+	4,  // 35: narumq.cluster.v1.RetainedChange.action:type_name -> narumq.cluster.v1.RetainedAction
+	34, // 36: narumq.cluster.v1.TenantQuotaProfile.default_quota:type_name -> narumq.cluster.v1.TenantStorageQuota
+	34, // 37: narumq.cluster.v1.TenantQuotaProfile.tenants:type_name -> narumq.cluster.v1.TenantStorageQuota
+	35, // 38: narumq.cluster.v1.TenantQuotaChange.profile:type_name -> narumq.cluster.v1.TenantQuotaProfile
+	5,  // 39: narumq.cluster.v1.OfflineChange.action:type_name -> narumq.cluster.v1.OfflineAction
+	39, // 40: narumq.cluster.v1.OfflineChange.messages:type_name -> narumq.cluster.v1.OfflineMessage
+	39, // 41: narumq.cluster.v1.OfflineSessionState.messages:type_name -> narumq.cluster.v1.OfflineMessage
+	22, // 42: narumq.cluster.v1.ReplicatedStateSnapshot.members:type_name -> narumq.cluster.v1.MemberIdentity
+	25, // 43: narumq.cluster.v1.ReplicatedStateSnapshot.ownerships:type_name -> narumq.cluster.v1.OwnershipState
+	42, // 44: narumq.cluster.v1.ReplicatedStateSnapshot.subscriptions:type_name -> narumq.cluster.v1.SubscriptionState
+	23, // 45: narumq.cluster.v1.ReplicatedStateSnapshot.membership_history:type_name -> narumq.cluster.v1.MembershipRecord
+	33, // 46: narumq.cluster.v1.ReplicatedStateSnapshot.retained:type_name -> narumq.cluster.v1.RetainedState
+	41, // 47: narumq.cluster.v1.ReplicatedStateSnapshot.offline_sessions:type_name -> narumq.cluster.v1.OfflineSessionState
+	31, // 48: narumq.cluster.v1.ReplicatedStateSnapshot.delivery_sessions:type_name -> narumq.cluster.v1.DeliverySessionState
+	15, // 49: narumq.cluster.v1.ReplicatedStateSnapshot.node_drains:type_name -> narumq.cluster.v1.NodeDrainState
+	35, // 50: narumq.cluster.v1.ReplicatedStateSnapshot.tenant_quota_profile:type_name -> narumq.cluster.v1.TenantQuotaProfile
+	20, // 51: narumq.cluster.v1.ReplicatedStateSnapshot.session_metadata:type_name -> narumq.cluster.v1.SessionMetadataState
+	43, // 52: narumq.cluster.v1.SnapshotEnvelope.state:type_name -> narumq.cluster.v1.ReplicatedStateSnapshot
+	53, // [53:53] is the sub-list for method output_type
+	53, // [53:53] is the sub-list for method input_type
+	53, // [53:53] is the sub-list for extension type_name
+	53, // [53:53] is the sub-list for extension extendee
+	0,  // [0:53] is the sub-list for field type_name
 }
 
 func init() { file_docs_contracts_replicated_state_v1_proto_init() }
@@ -3705,7 +4431,7 @@ func file_docs_contracts_replicated_state_v1_proto_init() {
 	if File_docs_contracts_replicated_state_v1_proto != nil {
 		return
 	}
-	file_docs_contracts_replicated_state_v1_proto_msgTypes[3].OneofWrappers = []any{
+	file_docs_contracts_replicated_state_v1_proto_msgTypes[8].OneofWrappers = []any{
 		(*CommandEnvelope_Membership)(nil),
 		(*CommandEnvelope_Ownership)(nil),
 		(*CommandEnvelope_Subscription)(nil),
@@ -3716,14 +4442,15 @@ func file_docs_contracts_replicated_state_v1_proto_init() {
 		(*CommandEnvelope_TenantQuota)(nil),
 		(*CommandEnvelope_MemberProfile)(nil),
 		(*CommandEnvelope_FeatureActivation)(nil),
+		(*CommandEnvelope_SessionMetadata)(nil),
 	}
 	type x struct{}
 	out := protoimpl.TypeBuilder{
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_docs_contracts_replicated_state_v1_proto_rawDesc), len(file_docs_contracts_replicated_state_v1_proto_rawDesc)),
-			NumEnums:      10,
-			NumMessages:   27,
+			NumEnums:      13,
+			NumMessages:   32,
 			NumExtensions: 0,
 			NumServices:   0,
 		},

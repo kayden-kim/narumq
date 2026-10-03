@@ -57,6 +57,7 @@ type Service struct {
 	readinessReason *string
 
 	sessionStore      ports.SessionSnapshotter
+	clusterSessions   ports.ClusterSessionSource
 	routingTable      ports.SubscriptionSnapshotter
 	retainedRepo      ports.RetainedSnapshotter
 	connectionCounter ports.ConnectionCounter
@@ -106,6 +107,13 @@ func NewService(
 
 var _ ports.StateProvider = (*Service)(nil)
 var _ ports.HealthChecker = (*Service)(nil)
+
+// UseClusterSessionSource selects the committed cluster view for client queries.
+func (s *Service) UseClusterSessionSource(source ports.ClusterSessionSource) {
+	s.mu.Lock()
+	s.clusterSessions = source
+	s.mu.Unlock()
+}
 
 // SetNodeState updates the node's lifecycle state.
 func (s *Service) SetNodeState(state ports.NodeState, reason *string) {
@@ -304,6 +312,38 @@ func (s *Service) ListClients(ctx context.Context, filter ports.ClientFilter) ([
 		return nil, nil, ErrInvalidCursor
 	}
 
+	s.mu.RLock()
+	clusterSource := s.clusterSessions
+	s.mu.RUnlock()
+	if clusterSource != nil {
+		if rawClients, ok := clusterSource.ClusterSessions(); ok {
+			clients := make([]ports.ClientSessionDTO, 0, len(rawClients))
+			for _, client := range rawClients {
+				if filter.TenantID != "" && client.TenantID != filter.TenantID {
+					continue
+				}
+				if filter.ClientIDPrefix != "" && !strings.HasPrefix(client.ClientID, filter.ClientIDPrefix) {
+					continue
+				}
+				if filter.NodeID != "" && (client.NodeID == nil || *client.NodeID != filter.NodeID) {
+					continue
+				}
+				if filter.Protocol != "" && client.Protocol != filter.Protocol {
+					continue
+				}
+				clients = append(clients, client)
+			}
+			sort.Slice(clients, func(i, j int) bool {
+				if clients[i].ClientID != clients[j].ClientID {
+					return clients[i].ClientID < clients[j].ClientID
+				}
+				return clients[i].TenantID < clients[j].TenantID
+			})
+			paged, page := paginateSlice(clients, offset, limit)
+			return paged, page, nil
+		}
+	}
+
 	var rawSessions []session.Lifecycle
 	if s.sessionStore != nil {
 		rawSessions = s.sessionStore.Snapshot()
@@ -368,6 +408,25 @@ func (s *Service) ListClients(ctx context.Context, filter ports.ClientFilter) ([
 
 // GetClient returns a specific client session.
 func (s *Service) GetClient(ctx context.Context, tenantID string, clientID string) (*ports.ClientSessionDTO, error) {
+	s.mu.RLock()
+	clusterSource := s.clusterSessions
+	defaultTenantID := s.defaultTenantID.String()
+	s.mu.RUnlock()
+	if clusterSource != nil {
+		if clients, ok := clusterSource.ClusterSessions(); ok {
+			if tenantID == "" {
+				tenantID = defaultTenantID
+			}
+			for i := range clients {
+				if clients[i].TenantID == tenantID && clients[i].ClientID == clientID {
+					client := clients[i]
+					return &client, nil
+				}
+			}
+			return nil, ErrClientNotFound
+		}
+	}
+
 	if s.sessionStore == nil {
 		return nil, ErrClientNotFound
 	}

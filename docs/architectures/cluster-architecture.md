@@ -6,14 +6,14 @@ NaruMQ cluster는 세 broker node가 같은 replicated state machine에 참여�
 | --- | --- |
 | 관점 상태 | Target |
 | 문서 상태 | Draft |
-| 구현 증거 | 제한된 구현 증거: `internal/adapters/raft`, dynamic peer transport, `cmd/narumq -cluster-config`, QoS 0 `NMQFWRD2` forwarding과 cluster QoS 1/2 durable delivery가 있다. Broker-side `NodeDrain`/`SAFE_TO_STOP`은 `TestDynamicClusterNodeDrainProcessAcceptance`와 `TestDynamicClusterNodeDrainCancelTimeoutAndResumeProcessAcceptance`에서 PASS (combined test 25.916s; [Drain spec §10])다. Supported SDK 전체 redirect/Will 호환성, external rollout, production storage/EBS, BP-03과 N/N-1은 검증하지 않았다. |
+| 구현 증거 | 제한된 구현 증거: `internal/adapters/raft`, dynamic peer transport, `cmd/narumq -cluster-config`, QoS 0 `NMQFWRD2` forwarding과 cluster QoS 1/2 durable delivery가 있다. Broker-side `NodeDrain`/`SAFE_TO_STOP`은 `TestDynamicClusterNodeDrainProcessAcceptance`와 `TestDynamicClusterNodeDrainCancelTimeoutAndResumeProcessAcceptance`에서 PASS (combined 25.916s; [Drain spec §10])다. Session metadata owner-crash recovery process acceptance `TestDynamicClusterSessionMetadataProcessAcceptance`도 3-node PASS (29.40s; [Cluster spec §11.24](../specs/cluster-session-and-delivery.md#1124-session-metadata-복제와-owner-손실-복구-수용-매핑))다. 이 결과는 local process acceptance 범위이며 supported SDK 전체 redirect/Will 호환성, external rollout, production storage/EBS, BP-03과 N/N-1 gate를 통과했다는 뜻은 아니다. |
 | 범위 | Broker cluster의 runtime component와 상태 소유권 |
 | 관련 요구사항 | [PRD](../requirements/PRD.md) CLU-01~CLU-14, MQTT-02~05, NFR-07~NFR-10 |
 | 관련 스펙 | [Cluster session과 durable delivery](../specs/cluster-session-and-delivery.md), [Drain과 rolling update](../specs/drain-and-rolling-update.md), [MQTT protocol과 session](../specs/mqtt-protocol-and-session.md) |
 | 관련 결정 | [ADR-0002](../decisions/ADR-0002-cluster-consensus-library.md), [ADR-0003](../decisions/ADR-0003-durable-ack-barrier.md), [ADR-0004](../decisions/ADR-0004-session-ownership-and-fencing.md), [ADR-0008](../decisions/ADR-0008-raft-peer-transport.md), [ADR-0009](../decisions/ADR-0009-raft-production-state-profile.md) (Accepted, design target only), [ADR-0011](../decisions/ADR-0011-cluster-backup-restore-v1.md) (historical v1), [ADR-0012](../decisions/ADR-0012-retained-replication-and-cluster-backup-v2.md), [ADR-0013](../decisions/ADR-0013-offline-queue-replication-and-cluster-backup-v3.md), [ADR-0014](../decisions/ADR-0014-cross-node-live-qos0-forwarding.md) (live QoS 0 only), [ADR-0015](../decisions/ADR-0015-cluster-durable-qos-delivery.md) (limited QoS 1/2 durable delivery), [ADR-0016](../decisions/ADR-0016-node-drain-and-safe-to-stop.md) (broker drain scope only). ADR-0002~0004는 Proposed |
 | Tenant storage quota decision | [ADR-0017](../decisions/ADR-0017-tenant-storage-quota.md) (TEN-08 scope; production and mixed-version gates remain open) |
 | 관련 Contract | [Cluster release compatibility v1](../contracts/cluster-release-compatibility-v1.md), Active [Raft peer transport v1](../contracts/raft-peer-transport-v1.md), Draft [Raft membership v2](../contracts/raft-membership-v2.md), Draft [Replicated state v1](../contracts/replicated-state-v1.proto), Draft [Cluster backup v3](../contracts/cluster-backup-v3.md), Superseded [Cluster backup v2](../contracts/cluster-backup-v2.md), Superseded [Cluster backup v1](../contracts/cluster-backup-v1.md) |
-| 최종 확인일 | 2026-09-28 |
+| 최종 확인일 | 2026-10-03 |
 
 ## Runtime component view
 
@@ -88,7 +88,7 @@ Dynamic cluster mode는 tenant-scoped retained value와 detached persistent sess
 | 상태 | 권위 있는 위치 | Local copy의 역할 |
 | --- | --- | --- |
 | Membership과 configuration | Quorum-committed cluster state | Discovery·health cache |
-| Session owner와 epoch | Replicated state machine | 현재 connection의 빠른 판정 |
+| Session lifecycle metadata | Quorum-committed `SessionMetadataState` plus owner/epoch; snapshot and whole-state digest | Per-owner local lifecycle projection and deadline timers, rebuildable from committed metadata; timers are disposable and do not establish lifecycle state |
 | Persistent subscription | Replicated state | Node-local route projection 구성 |
 | QoS 1·2 inflight와 handshake | Replicated state | Packet 송수신 진행 |
 | Durable offline message | Replicated log·store | Owner의 delivery queue |
@@ -100,6 +100,11 @@ Dynamic cluster mode는 tenant-scoped retained value와 detached persistent sess
 | Metric·log buffer | Node local, 외부 observability로 export | System of record가 아니다. |
 
 Route metadata는 committed persistent subscription에서 계산하는 node-local disposable projection이다. Node는 routing readiness를 광고하기 전에 이를 rebuild해야 하며, projection은 ownership 또는 durable delivery progress의 권위가 아니고 drain barrier를 대신하지 않는다. Physical rebuild mechanics와 route-index partition placement는 미결정이다.
+Session lifecycle metadata는 별도의 authority가 아니라 membership replicated state machine의 `SessionMetadataState`다. `internal/application/membership/session_metadata.go`가 CONNECT metadata와 DETACH/CLAIM_WILL/DISCARD transition의 validation·apply, snapshot용 정렬 deep copy를 소유한다. 이 state는 ownership row의 `(tenant, client)` key에 연결되고, metadata epoch는 committed ownership epoch보다 클 수 없다. `internal/application/connect/session_metadata.go`는 복구 record를 domain lifecycle로 변환하고, local `session.Lifecycle`·principal·routes·delivery registration을 재구성한다. Local Will/expiry timers는 committed absolute due/expiry time에서 다시 계산되는 disposable scheduling state일 뿐 권위 있는 lifecycle이나 만료 근거가 아니다.
+
+`cmd/narumq/cluster_session_metadata.go`는 runtime composition boundary다. CONNECT acquire 전에 ownership read barrier를 거치고, feature `session-metadata`가 committed active일 때만 session DTO를 ownership command에 실어 ownership과 CONNECTED metadata를 한 apply로 설치한다. Metadata change commit은 inactive 상태도 replicated apply gate에 맡겨 판정하며, ownership owner/epoch fencing과 quorum commit 뒤 반환된 Will만 publish caller에 전달한다. `ClusterSessions`는 활성화 뒤 local committed metadata와 committed ownership/delivery rows에서 management DTO를 만든다. `management.Service`는 이 view를 사용해 어느 node에서도 동일한 committed session 목록을 조회하고, feature 비활성일 때는 local session store로 되돌아간다.
+
+`cmd/narumq/cluster_session_recovery.go`는 lifecycle controller다. Runtime은 이를 `serve`에서 시작하고 종료 때 join하며 snapshot restore 뒤 full scan을 요청한다. Apply loop는 metadata가 없는 ownership result만 비동기 queue에 넣는다. Controller는 readiness가 된 뒤 full scan과 변경 key를 처리하고, queue overflow는 다음 full scan으로 보완한다. Driver apply goroutine에서 connect use case를 직접 호출하지 않아 CONNECT의 commit 대기와 use-case mutex가 서로 막히지 않는다. 복구 대상은 feature active, committed metadata와 ownership이 모두 존재하고 local node가 현재 owner인 session뿐이다. 이전 epoch의 CONNECTED metadata는 정상 handoff로 처리해 Will을 억제하고, 현재 epoch의 CONNECTED metadata는 owner 재시작으로 보고 비정상 disconnect 규칙을 적용한다. DETACHED record는 저장된 절대 Will/expiry deadline을 재예약한다. DETACH·CLAIM_WILL·DISCARD 모두 owner/epoch가 fenced이며 Will은 claim/discard transition이 quorum commit된 결과만 발행되어 at-most-once가 된다. 상세 결정·외부 동작과 수용 시험은 [ADR-0025](../decisions/ADR-0025-replicated-session-metadata-and-owner-loss-recovery.md) 및 [Cluster spec §4.3·§11.24](../specs/cluster-session-and-delivery.md#1124-session-metadata-복제와-owner-손실-복구-수용-매핑)를 따른다.
 Committed profile은 `internal/application/membership/machine.go`에서 적용한다. `tenant_quota.go`가 version validation과 usage projection을 소유하고 retained/offline/delivery mutation이 기존 global capacity 다음에 positive delta를 검사한다. `snapshot.go`는 profile을 저장하고 restore 때 tenant usage를 다시 계산한다. `cmd/narumq/cluster_records.go`는 application DTO와 typed protobuf 사이를 변환하며 `internal/adapters/raft/records/codec.go`가 profile을 포함한 deterministic encoding, validation, snapshot digest와 object count를 소유한다. `cmd/narumq/cluster_config.go`는 `tenantQuotas`를 엄격히 읽고 `cluster_tenant_quota.go` controller는 committed version보다 높은 local profile을 quorum에 제안한다. Readiness는 quota profile의 quorum commit을 요구하며 local config 일치 여부로 admission을 막지 않는다. Admission은 committed profile을 따른다. Mismatch log와 gauge는 committed version이 local보다 높거나 같은 version의 내용이 다를 때만 설정한다. 상세 process 흐름과 수용 증거는 [Cluster spec §11.16](../specs/cluster-session-and-delivery.md#1116-tenant-storage-quota-수용-매핑)에 연결한다.
 
 ## Live QoS 0 delivery path
@@ -170,6 +175,47 @@ Publisher ingress node와 consensus leader는 같지 않을 수 있다. Runtime�
 동시 CONNECT, reconnect, drain과 rebalance는 같은 ownership primitive를 공유한다. 상태 전이와 오류 결과는 [Cluster session과 durable delivery 스펙](../specs/cluster-session-and-delivery.md)을 따른다.
 
 Durable delivery는 session 전체를 교체하는 final checkpoint 대신 SEND·ADVANCE·COMPLETE 등 각 QoS 전이를 먼저 commit한다. `-cluster-config`의 broker-side planned drain은 `NodeDrain` operation을 quorum에 저장하고 `cmd/narumq/cluster_drain.go`가 admission 차단, LB propagation delay, rate 제한 ownership transfer와 barrier를 조정한다. `internal/domain/nodedrain`은 phase와 blocker 규칙을 소유한다. `SAFE_TO_STOP` 뒤에도 process 종료나 Pod 삭제는 자동 승인되지 않는다. External rollout controller, Kubernetes lifecycle, BP-07과 N-1↔N은 별도 scope다. 정확한 operation contract와 수용 증거는 [Drain spec](../specs/drain-and-rolling-update.md) §10을 따른다.
+
+## Session metadata 복구 경로
+
+이 흐름은 replicated session lifecycle을 CONNECT ownership과 함께 기록하고, owner가 다시 READY가 된 뒤 local runtime projection과 timer를 재구성한다. 화살표는 호출·자료 전달 순서다.
+
+```mermaid
+sequenceDiagram
+    participant C as MQTT CONNECT
+    participant U as connect.UseCase
+    participant R as clusterRuntime
+    participant M as membership StateMachine
+    participant Q as Raft quorum
+    participant X as sessionRecovery controller
+    participant L as local lifecycle and timers
+    participant W as Will publisher
+
+    C->>U: authenticated session + protocol/Will/expiry
+    U->>R: AcquireSessionOwnership
+    R->>R: ownership read barrier; test active feature
+    R->>Q: ownership acquire/transfer + SessionConnect
+    Q->>M: commit and apply atomically
+    M-->>U: owner epoch
+    Note over M: SessionMetadataState is authoritative
+    X->>M: after READY, scan committed metadata/ownership
+    M-->>X: records owned by this node
+    X->>L: RecoverOwnedSession (outside Raft apply goroutine)
+    L->>R: DETACH / CLAIM_WILL / DISCARD
+    R->>Q: owner + epoch-fenced metadata command
+    Q->>M: commit transition
+    M-->>L: committed Will result or no Will
+    L->>W: publish only committed claimed Will
+    L->>L: rebuild local deadline timers from absolute deadlines
+```
+
+`UseCase.ConnectContext` asks for `AcquireSessionOwnership`; after a fresh ownership read, `clusterRuntime.AcquireSessionOwnership` includes CONNECT metadata only when `session-metadata` is active. The membership apply installs the new ownership epoch and CONNECTED metadata in the same command. Thus no committed state exposes new ownership with the previous pending Will. Before activation, this metadata payload is absent and the legacy ownership behavior remains.
+
+At startup the recovery controller waits for readiness, then scans committed session keys; later ownership apply notifications and snapshot-restore scans feed the same pending-work loop. A bounded notification queue is only a prompt: overflow requests a full scan. The controller verifies that the feature is active and the local node is the current owner before calling `RecoverOwnedSession`. It does not call the use case from the Raft apply goroutine, because CONNECT may hold the use-case mutex while waiting for commit.
+
+The membership record, keyed by tenant and client, is authoritative for lifecycle connection status, owner epoch, Will and absolute Will/session-expiry deadlines. The local domain lifecycle, routes, delivery registration and timers are rebuilt projections. A local timer firing alone cannot claim a Will or erase replicated state: its command must pass owner/epoch fencing and commit. A committed Will claim removes the pending Will before publish; a failed claim does not publish. A CONNECTED record at the same ownership epoch as the recovering owner follows abnormal-disconnect behavior. If metadata epoch is older than current ownership, recovery treats it as planned handoff, suppressing the Will. DETACHED metadata re-arms timers against its stored absolute deadlines, so restart does not restart the expiry or Will delay. Expiry metadata discard is committed before durable discard; stale ownership removes only the obsolete local projection without publishing a Will.
+
+After activation, `clusterRuntime.ClusterSessions` builds the Management API view from the node's committed session metadata and ownership/delivery state. The management service uses that cluster view for list and exact-client lookup regardless of ingress node. Before activation, or when the feature is inactive, it uses the existing local session store; sessions created before activation are not retroactively represented until reconnect. This path is distinct from storage-production durability: process acceptance does not establish production EBS/WAL guarantees.
 
 ## Control path
 

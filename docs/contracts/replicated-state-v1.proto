@@ -5,8 +5,9 @@ package narumq.cluster.v1;
 option go_package = "narumq/internal/adapters/raft/records;records";
 
 // Draft state schema 1.0 admits adjacent minor releases; retained, offline, delivery,
-// node drain, and tenant quota commands require compatible releases and exact protocol
-// and state schema versions across every active committed member.
+// node drain, tenant quota, and session metadata commands require compatible releases
+// and exact protocol and state schema versions across every active committed member.
+// Session metadata requires the active `session-metadata` feature.
 
 enum MemberPhase {
   MEMBER_PHASE_UNSPECIFIED = 0;
@@ -142,6 +143,77 @@ message NodeDrainState {
   uint64 committed_index = 15;
 }
 
+enum SessionRetention {
+  SESSION_RETENTION_UNSPECIFIED = 0;
+  SESSION_RETENTION_IMMEDIATE = 1;
+  SESSION_RETENTION_FINITE = 2;
+  SESSION_RETENTION_INFINITE = 3;
+}
+
+enum SessionMetadataAction {
+  SESSION_METADATA_ACTION_UNSPECIFIED = 0;
+  SESSION_METADATA_ACTION_DETACH = 1;
+  SESSION_METADATA_ACTION_CLAIM_WILL = 2;
+  SESSION_METADATA_ACTION_DISCARD = 3;
+}
+
+enum SessionWillDisposition {
+  SESSION_WILL_DISPOSITION_UNSPECIFIED = 0;
+  SESSION_WILL_DISPOSITION_DISCARD = 1;
+  SESSION_WILL_DISPOSITION_CLAIM = 2;
+  SESSION_WILL_DISPOSITION_SCHEDULE = 3;
+}
+
+message SessionWill {
+  string topic = 1;
+  bytes payload = 2;
+  uint32 qos = 3;
+  bool retain = 4;
+  uint32 delay_interval_seconds = 5;
+}
+
+message SessionPrincipal {
+  string subject = 1;
+  string credential_id = 2;
+  repeated string roles = 3;
+  uint64 expires_at_unix_millis = 4;
+}
+
+message SessionConnect {
+  uint32 protocol_version = 1;
+  SessionRetention retention = 2;
+  uint32 expiry_interval_seconds = 3;
+  SessionWill will = 4;
+  SessionPrincipal principal = 5;
+}
+
+message SessionMetadataChange {
+  string tenant_id = 1;
+  string client_id = 2;
+  uint64 owner_node_id = 3;
+  uint64 epoch = 4;
+  SessionMetadataAction action = 5;
+  SessionWillDisposition will_disposition = 6;
+  uint64 proposed_at_unix_millis = 7;
+  uint64 session_expires_at_unix_millis = 8;
+  uint64 will_due_at_unix_millis = 9;
+}
+
+message SessionMetadataState {
+  string tenant_id = 1;
+  string client_id = 2;
+  uint64 epoch = 3;
+  uint32 protocol_version = 4;
+  SessionRetention retention = 5;
+  uint32 expiry_interval_seconds = 6;
+  bool connected = 7;
+  uint64 detached_at_unix_millis = 8;
+  uint64 session_expires_at_unix_millis = 9;
+  SessionWill will = 10;
+  uint64 will_due_at_unix_millis = 11;
+  SessionPrincipal principal = 12;
+}
+
 // Every application log entry has exactly one typed payload. operation_id is a
 // canonical lower-case UUID and is stable across retry of the same operation.
 message CommandEnvelope {
@@ -159,6 +231,7 @@ message CommandEnvelope {
     TenantQuotaChange tenant_quota = 18;
     MemberProfileChange member_profile = 19;
     FeatureActivation feature_activation = 20;
+    SessionMetadataChange session_metadata = 21;
   }
   reserved 13;
   reserved "checkpoint";
@@ -205,6 +278,7 @@ message OwnershipChange {
   uint64 owner_node_id = 4;
   uint64 epoch = 5;
   OwnershipAction action = 6;
+  SessionConnect session = 7;
 }
 
 message OwnershipState {
@@ -392,8 +466,8 @@ message ReplicatedStateSnapshot {
   repeated NodeDrainState node_drains = 9;
   TenantQuotaProfile tenant_quota_profile = 10;
   repeated string active_features = 11;
+  repeated SessionMetadataState session_metadata = 12;
 }
-
 message SnapshotEnvelope {
   uint32 schema_major = 1;
   uint32 schema_minor = 2;

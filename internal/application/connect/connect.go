@@ -164,26 +164,27 @@ type clientTimers struct {
 }
 
 type UseCase struct {
-	mu                       sync.Mutex
-	clock                    applicationclock.Clock
-	authenticator            applicationauthentication.AuthenticationProvider
-	certificateAuthenticator applicationauthentication.ClientCertificateAuthenticationProvider
-	policy                   security.Policy
-	sessions                 SessionRepository
-	principals               map[routing.SessionID]security.Principal
-	sessionKeys              map[routing.SessionID]tenancy.SessionKey
-	deliveries               deliveryqueue.Queue
-	routes                   *routing.Table
-	scheduler                Scheduler
-	willPublisher            WillPublisher
-	activeTimers             map[string]*clientTimers
-	closed                   bool
-	metrics                  portsmetrics.MetricsRecorder
-	ownershipCoordinator     OwnershipCoordinator
-	ownerNodeID              uint64
-	offlineCoordinator       OfflineCoordinator
-	durableDeliveryCommitter deliverystate.Committer
-	ownershipEpochs          map[routing.SessionID]uint64
+	mu                         sync.Mutex
+	clock                      applicationclock.Clock
+	authenticator              applicationauthentication.AuthenticationProvider
+	certificateAuthenticator   applicationauthentication.ClientCertificateAuthenticationProvider
+	policy                     security.Policy
+	sessions                   SessionRepository
+	principals                 map[routing.SessionID]security.Principal
+	sessionKeys                map[routing.SessionID]tenancy.SessionKey
+	deliveries                 deliveryqueue.Queue
+	routes                     *routing.Table
+	scheduler                  Scheduler
+	willPublisher              WillPublisher
+	activeTimers               map[string]*clientTimers
+	closed                     bool
+	metrics                    portsmetrics.MetricsRecorder
+	ownershipCoordinator       OwnershipCoordinator
+	ownerNodeID                uint64
+	offlineCoordinator         OfflineCoordinator
+	durableDeliveryCommitter   deliverystate.Committer
+	sessionMetadataCoordinator SessionMetadataCoordinator
+	ownershipEpochs            map[routing.SessionID]uint64
 }
 
 // ClusterOwnershipConfigured reports whether a node-specific committed ownership barrier is installed.
@@ -627,7 +628,15 @@ func (useCase *UseCase) ConnectContext(ctx context.Context, request ConnectReque
 		ownershipTenantID = principal.TenantID().String()
 	}
 	if useCase.ownershipCoordinator != nil {
-		ownershipEpoch, err = useCase.ownershipCoordinator.AcquireOwnership(ctx, ownershipTenantID, packet.ClientID, useCase.ownerNodeID)
+		if coordinator, ok := useCase.ownershipCoordinator.(SessionOwnershipCoordinator); ok {
+			request := SessionOwnershipRequestDTO{
+				TenantID: ownershipTenantID, ClientID: packet.ClientID, OwnerNodeID: useCase.ownerNodeID,
+				Session: sessionConnectDTO(opened, principal),
+			}
+			ownershipEpoch, err = coordinator.AcquireSessionOwnership(ctx, request)
+		} else {
+			ownershipEpoch, err = useCase.ownershipCoordinator.AcquireOwnership(ctx, ownershipTenantID, packet.ClientID, useCase.ownerNodeID)
+		}
 		if err != nil || ownershipEpoch == 0 {
 			result.ConnAck.ReasonCode = ownershipUnavailableReason(packet.Version)
 			return result, nil
@@ -791,64 +800,70 @@ func (useCase *UseCase) disconnect(
 			return nil
 		}
 	}
-	timerKey := string(sessionID)
-	if timers, ok := useCase.activeTimers[timerKey]; ok {
-		if timers.willTimer != nil {
-			timers.willTimer.Stop()
-		}
-		if timers.expiryTimer != nil {
-			timers.expiryTimer.Stop()
-		}
-		delete(useCase.activeTimers, timerKey)
+	outcome, err := useCase.disconnectLocked(sessionID, reason)
+	useCase.mu.Unlock()
+	if err != nil {
+		return err
 	}
+	useCase.recordSessionGauge()
+	if outcome.will != nil {
+		if err := useCase.willPublisher.PublishWill(outcome.sessionID, outcome.sessionKey, *outcome.will); err != nil {
+			return errors.Join(outcome.transitionErr, err)
+		}
+	}
+	return outcome.transitionErr
+}
 
+type disconnectOutcome struct {
+	sessionID     routing.SessionID
+	sessionKey    tenancy.SessionKey
+	will          *mqtt.Will
+	transitionErr error
+}
+
+// disconnectLocked mutates local lifecycle state while the caller owns mu.
+func (useCase *UseCase) disconnectLocked(sessionID routing.SessionID, reason session.DisconnectReason) (disconnectOutcome, error) {
+	timerKey := string(sessionID)
+	outcome := disconnectOutcome{sessionID: sessionID}
+	useCase.stopSessionTimers(timerKey)
 	sessionKey, hasSessionKey := useCase.sessionKeys[sessionID]
 	if !hasSessionKey {
 		if principal, ok := useCase.principals[sessionID]; ok && principal.Subject() != "" {
 			sessionKey, _ = tenancy.NewSessionKey(principal.TenantID(), principal.ClientID())
 		}
 	}
+	outcome.sessionKey = sessionKey
 	state, found, err := useCase.loadSession(sessionKey, timerKey)
 	if err != nil {
-		useCase.mu.Unlock()
-		return err
+		return outcome, err
 	}
 	if !found {
-		useCase.mu.Unlock()
-		return ErrSessionNotFound
+		return outcome, ErrSessionNotFound
 	}
 	now := useCase.clock.Now()
 	result, err := state.Disconnect(now, reason)
 	if err != nil {
-		useCase.mu.Unlock()
-		return err
+		return outcome, err
 	}
 	epoch, hasEpoch := useCase.ownershipEpochs[sessionID]
-	var sessionExpiresAt time.Time
+	var expires time.Time
 	if result.ScheduleExpiry {
-		sessionExpiresAt = now.Add(result.ExpiryDuration)
+		expires = now.Add(result.ExpiryDuration)
 	}
-	var deliveryTransitionErr error
 	if result.SessionRemoved {
 		if useCase.durableDeliveryCommitter != nil {
 			if !hasSessionKey || !hasEpoch {
-				useCase.mu.Unlock()
-				return ErrDurableDeliveryRejected
+				return outcome, ErrDurableDeliveryRejected
 			}
 			if err := useCase.saveSession(sessionKey, timerKey, result.Lifecycle); err != nil {
-				useCase.mu.Unlock()
-				return err
+				return outcome, err
 			}
-			if err := useCase.commitDeliveryLifecycle(
-				context.Background(), sessionKey, epoch, membership.DeliveryActionDiscard, now, time.Time{},
-			); err != nil {
-				useCase.mu.Unlock()
-				return err
+			if err := useCase.commitDeliveryLifecycle(context.Background(), sessionKey, epoch, membership.DeliveryActionDiscard, now, time.Time{}); err != nil {
+				return outcome, err
 			}
 		}
 		if err := useCase.deleteSession(sessionKey, timerKey); err != nil {
-			useCase.mu.Unlock()
-			return err
+			return outcome, err
 		}
 		useCase.deliveries.Remove(sessionID)
 		if useCase.ownershipCoordinator == nil || useCase.durableDeliveryCommitter != nil {
@@ -856,21 +871,18 @@ func (useCase *UseCase) disconnect(
 		}
 	} else {
 		if err := useCase.saveSession(sessionKey, timerKey, result.Lifecycle); err != nil {
-			useCase.mu.Unlock()
-			return err
+			return outcome, err
 		}
 		if useCase.durableDeliveryCommitter != nil {
 			if !hasSessionKey || !hasEpoch {
-				deliveryTransitionErr = ErrDurableDeliveryRejected
+				outcome.transitionErr = ErrDurableDeliveryRejected
 			} else {
-				deliveryTransitionErr = useCase.commitDeliveryLifecycle(
-					context.Background(), sessionKey, epoch, membership.DeliveryActionDetach, now, sessionExpiresAt,
-				)
+				outcome.transitionErr = useCase.commitDeliveryLifecycle(context.Background(), sessionKey, epoch, membership.DeliveryActionDetach, now, expires)
 			}
 		}
 		if useCase.offlineCoordinator != nil && hasEpoch && hasSessionKey {
-			pending, err := useCase.deliveries.ListQueued(sessionID, now)
-			if err == nil {
+			pending, listErr := useCase.deliveries.ListQueued(sessionID, now)
+			if listErr == nil {
 				qosZeroPending := pending[:0]
 				for _, item := range pending {
 					if item.DurableSequence == 0 && item.QoS == mqtt.QoSAtMostOnce {
@@ -879,13 +891,8 @@ func (useCase *UseCase) disconnect(
 				}
 				detachCtx, cancel := context.WithTimeout(context.Background(), offlineDetachTimeout)
 				detachErr := useCase.offlineCoordinator.DetachSession(detachCtx, DetachRequestDTO{
-					TenantID:         sessionKey.TenantID().String(),
-					ClientID:         sessionKey.ClientID(),
-					OwnerNodeID:      useCase.ownerNodeID,
-					Epoch:            epoch,
-					SessionExpiresAt: sessionExpiresAt,
-					DetachedAt:       now,
-					Pending:          qosZeroPending,
+					TenantID: sessionKey.TenantID().String(), ClientID: sessionKey.ClientID(), OwnerNodeID: useCase.ownerNodeID,
+					Epoch: epoch, SessionExpiresAt: expires, DetachedAt: now, Pending: qosZeroPending,
 				})
 				cancel()
 				if detachErr == nil {
@@ -894,49 +901,71 @@ func (useCase *UseCase) disconnect(
 			}
 		}
 	}
-
+	will := result.Will
+	shouldPublish := result.PublishWillNow && will != nil
+	if shouldPublish && useCase.authenticator != nil {
+		principal, ok := useCase.principals[sessionID]
+		if !ok {
+			shouldPublish = false
+		} else {
+			topic, topicErr := tenancy.NewTopic(principal.TenantID(), will.Topic)
+			if topicErr != nil || useCase.policy.AuthorizeTopic(principal, security.ActionWill, topic) != nil {
+				shouldPublish = false
+			}
+		}
+	}
+	if coordinator := useCase.sessionMetadataCoordinator; coordinator != nil && hasEpoch && hasSessionKey {
+		action := membership.SessionMetadataActionDetach
+		if result.SessionRemoved {
+			action = membership.SessionMetadataActionDiscard
+		}
+		disposition := membership.SessionWillDispositionDiscard
+		due := uint64(0)
+		if shouldPublish {
+			disposition = membership.SessionWillDispositionClaim
+		} else if result.ScheduleWill {
+			disposition = membership.SessionWillDispositionSchedule
+			due = uint64(now.Add(result.WillDelay).UnixMilli())
+		}
+		expiresAt := uint64(0)
+		if !result.SessionRemoved && !expires.IsZero() {
+			expiresAt = uint64(expires.UnixMilli())
+		}
+		change := membership.SessionMetadataChangeDTO{
+			TenantID: sessionKey.TenantID().String(), ClientID: sessionKey.ClientID(), OwnerNodeID: useCase.ownerNodeID,
+			Epoch: epoch, Action: action, WillDisposition: disposition, ProposedAtUnixMillis: uint64(now.UnixMilli()),
+			SessionExpiresAtUnixMillis: expiresAt, WillDueAtUnixMillis: due,
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), sessionMetadataCommitTimeout)
+		committed, commitErr := coordinator.CommitSessionMetadata(ctx, change)
+		cancel()
+		if commitErr != nil {
+			outcome.transitionErr = errors.Join(outcome.transitionErr, commitErr)
+			shouldPublish = false
+		} else if committed.Replicated {
+			will = committed.Will
+			shouldPublish = will != nil
+		}
+	}
+	if result.SessionRemoved {
+		delete(useCase.principals, sessionID)
+		delete(useCase.sessionKeys, sessionID)
+		delete(useCase.ownershipEpochs, sessionID)
+	}
+	if shouldPublish {
+		outcome.will = will
+	}
 	if !result.SessionRemoved && (result.ScheduleWill || result.ScheduleExpiry) {
 		timers := &clientTimers{}
 		if result.ScheduleWill {
-			timers.willTimer = useCase.scheduler.AfterFunc(result.WillDelay, func() {
-				useCase.onWillTimerForTimer(sessionID, timers)
-			})
+			timers.willTimer = useCase.scheduler.AfterFunc(result.WillDelay, func() { useCase.onWillTimerForTimer(sessionID, timers) })
 		}
 		if result.ScheduleExpiry {
 			timers.expiryTimer = useCase.scheduleExpiryTimerLocked(sessionID, result.ExpiryDuration, timers)
 		}
 		useCase.activeTimers[timerKey] = timers
 	}
-
-	willToPublish := result.Will
-	shouldPublish := result.PublishWillNow && willToPublish != nil
-	if shouldPublish && useCase.authenticator != nil {
-		principal, ok := useCase.principals[sessionID]
-		if !ok {
-			shouldPublish = false
-		} else {
-			willTopic, err := tenancy.NewTopic(principal.TenantID(), willToPublish.Topic)
-			if err != nil || useCase.policy.AuthorizeTopic(principal, security.ActionWill, willTopic) != nil {
-				shouldPublish = false
-			}
-		}
-	}
-	if result.SessionRemoved {
-		delete(useCase.principals, sessionID)
-		delete(useCase.sessionKeys, sessionID)
-	}
-	if result.SessionRemoved {
-		delete(useCase.ownershipEpochs, sessionID)
-	}
-	useCase.mu.Unlock()
-	useCase.recordSessionGauge()
-
-	if shouldPublish {
-		if err := useCase.willPublisher.PublishWill(sessionID, sessionKey, *willToPublish); err != nil {
-			return errors.Join(deliveryTransitionErr, err)
-		}
-	}
-	return deliveryTransitionErr
+	return outcome, nil
 }
 
 func (useCase *UseCase) onWillTimer(sessionID routing.SessionID) {
@@ -957,9 +986,12 @@ func (useCase *UseCase) onWillTimerForTimer(sessionID routing.SessionID, expecte
 			delete(useCase.activeTimers, timerKey)
 		}
 	}
-	var sessionKey tenancy.SessionKey
-	if principal, ok := useCase.principals[sessionID]; ok && principal.Subject() != "" {
-		sessionKey, _ = tenancy.NewSessionKey(principal.TenantID(), principal.ClientID())
+	sessionKey, hasSessionKey := useCase.sessionKeys[sessionID]
+	if !hasSessionKey {
+		if principal, ok := useCase.principals[sessionID]; ok && principal.Subject() != "" {
+			sessionKey, _ = tenancy.NewSessionKey(principal.TenantID(), principal.ClientID())
+			hasSessionKey = sessionKey != (tenancy.SessionKey{})
+		}
 	}
 	state, found, err := useCase.loadSession(sessionKey, timerKey)
 	if err != nil || !found {
@@ -979,8 +1011,8 @@ func (useCase *UseCase) onWillTimerForTimer(sessionID routing.SessionID, expecte
 		useCase.mu.Unlock()
 		return
 	}
-	shouldPublish := true
-	if useCase.authenticator != nil {
+	shouldPublish := will != nil
+	if shouldPublish && useCase.authenticator != nil {
 		principal, ok := useCase.principals[sessionID]
 		if !ok {
 			shouldPublish = false
@@ -991,8 +1023,24 @@ func (useCase *UseCase) onWillTimerForTimer(sessionID routing.SessionID, expecte
 			}
 		}
 	}
+	if coordinator := useCase.sessionMetadataCoordinator; coordinator != nil && hasSessionKey {
+		if epoch, hasEpoch := useCase.ownershipEpochs[sessionID]; hasEpoch {
+			now := useCase.clock.Now()
+			ctx, cancel := context.WithTimeout(context.Background(), sessionMetadataCommitTimeout)
+			outcome, commitErr := coordinator.CommitSessionMetadata(ctx, membership.SessionMetadataChangeDTO{
+				TenantID: sessionKey.TenantID().String(), ClientID: sessionKey.ClientID(), OwnerNodeID: useCase.ownerNodeID,
+				Epoch: epoch, Action: membership.SessionMetadataActionClaimWill, ProposedAtUnixMillis: uint64(now.UnixMilli()),
+			})
+			cancel()
+			if commitErr != nil {
+				shouldPublish = false
+			} else if outcome.Replicated {
+				will = outcome.Will
+				shouldPublish = will != nil
+			}
+		}
+	}
 	useCase.mu.Unlock()
-
 	if shouldPublish {
 		_ = useCase.willPublisher.PublishWill(sessionID, sessionKey, *will)
 	}
@@ -1042,6 +1090,42 @@ func (useCase *UseCase) onExpiryTimerForTimer(sessionID routing.SessionID, expec
 	if !expired {
 		useCase.mu.Unlock()
 		return
+	}
+	if coordinator := useCase.sessionMetadataCoordinator; coordinator != nil {
+		epoch, hasEpoch := useCase.ownershipEpochs[sessionID]
+		if hasSessionKey && hasEpoch {
+			ctx, cancel := context.WithTimeout(context.Background(), sessionMetadataCommitTimeout)
+			metadataOutcome, metadataErr := coordinator.CommitSessionMetadata(ctx, membership.SessionMetadataChangeDTO{
+				TenantID: sessionKey.TenantID().String(), ClientID: sessionKey.ClientID(), OwnerNodeID: useCase.ownerNodeID,
+				Epoch: epoch, Action: membership.SessionMetadataActionDiscard, WillDisposition: membership.SessionWillDispositionClaim,
+				ProposedAtUnixMillis: uint64(now.UnixMilli()),
+			})
+			cancel()
+			if errors.Is(metadataErr, ErrSessionOwnershipStale) {
+				_ = useCase.deleteSession(sessionKey, timerKey)
+				useCase.deliveries.Remove(sessionID)
+				if useCase.ownershipCoordinator == nil || useCase.durableDeliveryCommitter != nil {
+					useCase.routes.RemoveSession(sessionID)
+				}
+				delete(useCase.principals, sessionID)
+				delete(useCase.sessionKeys, sessionID)
+				delete(useCase.ownershipEpochs, sessionID)
+				useCase.mu.Unlock()
+				return
+			}
+			if metadataErr != nil {
+				if !useCase.closed {
+					retryTimers := &clientTimers{}
+					retryTimers.expiryTimer = useCase.scheduleExpiryTimerLocked(sessionID, time.Second, retryTimers)
+					useCase.activeTimers[timerKey] = retryTimers
+				}
+				useCase.mu.Unlock()
+				return
+			}
+			if metadataOutcome.Replicated {
+				will = metadataOutcome.Will
+			}
+		}
 	}
 	if useCase.durableDeliveryCommitter != nil {
 		epoch, hasEpoch := useCase.ownershipEpochs[sessionID]

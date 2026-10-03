@@ -137,7 +137,7 @@ Cluster mode에서 persistent session(MQTT 3.1.1 CleanSession=0 또는 MQTT 5 Cl
 6. **Ownership 연동:** Ownership `Release`가 apply되면 같은 key의 offline record도 지운다. Transfer/acquire는 record를 보존하며 새 owner의 CLAIM이 가져간다. 모든 offline record는 `record.epoch` 이상의 ownership row를 가져야 한다.
 7. **SessionPresent:** `CleanStart=0` CONNECT의 CLAIM이 `Found=true`이면 다른 node로 reconnect해도 CONNACK `SessionPresent=1`이고 message를 sequence FIFO로 전달한다. `CleanStart=1`이면 CLAIM으로 record를 지우고 message는 버린다.
 8. **Fallback:** DETACH가 quorum/compatibility/stale-epoch 이유로 실패하면 local queue를 그대로 둔다. CLAIM이 실패하면 CONNECT를 ownership-unavailable reason으로 거절하고 local session 변경을 rollback한다. 기존 local session이 없었던 시도는 새 delivery queue 등록과 tenant route binding도 제거한다. 기존 local session이 있으면 CLAIM 성공 전까지 기존 expiry/WILL timer를 유지하고, 실패 시 기존 timer와 session 상태를 보존한다. ENQUEUE 실패는 해당 대상만 `Saturated`(capacity) 또는 `Unavailable`(그 외)로 보고한다.
-9. **알려진 한계:** Owner node가 연결 중에 crash하면 DETACH가 없어 이후 message는 capture되지 않는다. Detach 전환 중 local queue 조회와 제거 사이에 해당 node로 도착한 QoS 0 message는 유실될 수 있다. ENQUEUE는 대상 session마다 commit 1회다.
+9. **알려진 한계:** Feature 비활성 시 owner node가 연결 중에 crash하면 DETACH가 없어 이후 message는 capture되지 않는다. Feature 활성 시 replicated session metadata로 owner 재시작 뒤 expiry와 session 복구를 수행한다(§4.3). Detach 전환 중 local queue 조회와 제거 사이에 해당 node로 도착한 QoS 0 message는 유실될 수 있다. ENQUEUE는 대상 session마다 commit 1회다.
 10. **Schema와 profile gate:** Replicated-state schema는 `1.0`을 유지하고 unknown field를 거절한다. Offline command는 fresh read barrier 뒤 모든 non-retired member의 cluster protocol/state schema가 exact match이고 release가 같은 major의 인접 minor window 안에 있는지 확인한 뒤 제안한다.
 
 ### 4.2 QoS 1/2 durable delivery
@@ -162,12 +162,29 @@ QoS 2 publisher inbound record는 PUBREL 전 상태 또는 완료 tombstone을 �
 
 QoS 1/2 PUBLISH에서 effective QoS가 0인 subscriber는 durable queue가 아니라 기존 QoS 0 경로를 따른다. 이 at-most-once lane은 delivery commit 뒤 detached session이면 offline ENQUEUE, remote owner이면 `NMQFWRD2` forwarding, 그 밖에는 local queue를 사용한다. PUBACK/PUBCOMP 뒤 lane 실패 또는 ingress node crash로 전달이 유실될 수 있다. 이는 MQTT QoS 0 및 ADR-0013의 보장 범위와 같다.
 
-SUBSCRIBE 중 retained message 재생과 DETACH 실패 뒤 남은 local QoS 0 message는 node-local 예외이며 owner crash/takeover 시 복구되지 않는다. Local QoS 0 message는 durable queue 뒤 순서로 유지되고 capacity 초과분은 잘릴 수 있다. Connected session의 owner node가 crash하고 client가 돌아오지 않아 DETACH가 없으면 session expiry 갱신이 없을 수 있다. Record는 session당 64개까지 찬 뒤 이후 matching target은 `Saturated`로 건너뛰며 global quota도 고갈될 수 있다.
+SUBSCRIBE 중 retained message 재생과 DETACH 실패 뒤 남은 local QoS 0 message는 node-local 예외이며 owner crash/takeover 시 복구되지 않는다. Local QoS 0 message는 durable queue 뒤 순서로 유지되고 capacity 초과분은 잘릴 수 있다. Feature 비활성 시 connected session의 owner node가 crash하고 client가 돌아오지 않아 DETACH가 없으면 session expiry 갱신이 없을 수 있다. Feature 활성 시 owner restart recovery와 expiry 회수는 §4.3을 따른다. Record는 session당 64개까지 찬 뒤 이후 matching target은 `Saturated`로 건너뛰며 global quota도 고갈될 수 있다.
 
 이 범위는 ADR-0015가 정한 cluster QoS 1/2 durable delivery 동작이다. §11.11은 detached session queue 전달, QoS inflight takeover, QoS 2 Will reconnect/takeover 전달, backup restore, ACK 뒤 process kill 및 quorum-loss 거절을 확인한 unit/process evidence를 기록한다. Drain/`SAFE_TO_STOP`은 ADR-0015 범위에 포함되지 않으며 broker drain 동작과 process evidence는 [Drain spec §10](drain-and-rolling-update.md#10-broker-drain-수용-시험-매핑)에 별도로 기록한다. Production storage/EBS power-loss, BP-03, N-1 compatibility와 TEN-08 quota도 별도 gate다.
 Target 없는 QoS 1 client PUBLISH와 QoS 1/2 Will의 delivery command 생략 및 quorum barrier는 [ADR-0019](../decisions/ADR-0019-untargeted-durable-publish-quorum-barrier.md)가 ADR-0015 §1–8을 제한된 범위에서 대체한다.
 
+### 4.3 Session metadata 복제와 owner 손실 복구
+
+이 절은 `session-metadata` feature 활성화 뒤의 동작이다. 모든 build는 이 feature를 광고하지만 `FeatureActivation`이 commit되기 전에는 session metadata를 제안하거나 저장하지 않는다. 비활성 cluster는 기존 동작과 wire bytes를 유지한다. 활성화는 영구적이며 release-profile feature 규칙에 따른다.
+
+각 `(tenantId, clientId)`마다 committed `SessionMetadataState`를 두며 기록 epoch, MQTT protocol version(4 또는 5), retention(`IMMEDIATE`, `FINITE`, `INFINITE`), expiry interval, connected 상태, detached 시각, session 만료 시각, 남은 Will과 그 예정 시각, Will ACL 재검사용 principal(subject·credential ID·roles·만료)을 포함한다. Principal은 Will이 있을 때만 저장한다. Will과 principal의 cluster 전체 byte 합은 8 MiB(`MaxSessionWillBytes`) 이하이며 tenant storage quota에는 포함하지 않는다.
+
+1. **CONNECT와 ownership:** CONNECT는 session metadata를 포함한 ownership `Acquire`/`Transfer` 하나를 commit해 새 `CONNECTED` record를 ownership과 원자적으로 설치한다(별도 metadata commit은 없다). 새 record는 이전 record와 pending Will을 대체하므로 재접속 시 이전 Will을 취소한다. `Session`은 `Acquire` 및 `Transfer`에서만 허용한다. Feature가 비활성이면 metadata proposal은 `feature_inactive`로 거절한다.
+2. **유효성:** protocol version은 4 또는 5다. MQTT 3.1.1은 retention이 `IMMEDIATE` 또는 `INFINITE`, expiry interval 0, Will delay 0이어야 한다. MQTT 5는 `IMMEDIATE` iff interval 0, `INFINITE` iff interval `0xFFFFFFFF`, `FINITE` iff interval이 그 사이 값이다. Will topic은 유효하고 payload는 최대 65,535 bytes, QoS는 최대 2다. Principal은 Will이 없으면 허용되지 않으며, 있을 경우 subject·credential ID 각각 UTF-8 1..1,024 bytes, expiry 양수, roles 최대 64개, 각 role UTF-8 1..256 bytes이고 중복이 없어야 한다. 어긋난 session metadata는 `session_metadata_invalid`로 거절한다.
+3. **Fenced metadata commands:** `DETACH`, `CLAIM_WILL`, `DISCARD`는 committed current ownership의 owner/epoch가 정확히 일치해야 하며 아니면 `stale_epoch`이고 state를 바꾸지 않는다. 모든 change는 identity 및 owner·epoch·proposal 시각이 유효해야 한다. `DETACH` disposition은 `DISCARD`, `CLAIM`, `SCHEDULE` 중 하나다. `SCHEDULE`은 0이 아닌 `WillDueAt >= ProposedAt`을 요구하며 다른 disposition은 Will due를 0으로 둔다. Session expiry는 0 또는 `ProposedAt`보다 커야 한다. `CLAIM_WILL`은 disposition과 두 시각이 0/unspecified이고, `DISCARD`는 disposition `DISCARD`/`CLAIM` 및 두 시각 0이어야 한다. Valid command에 record가 없으면 `Applied, Found=false`다.
+4. **Apply와 Will disposition:** `DETACH`는 record epoch를 갱신하고 disconnected로 설정해 proposal 시각을 detached 시각으로, command의 session expiry를 만료 시각으로 저장한다. `DISCARD` disposition은 Will/principal을 버린다. `CLAIM`은 Will을 apply 결과로 반환한 뒤 Will/principal을 제거한다. `SCHEDULE`은 Will이 있으면 due 시각을 저장하며 Will이 없으면 due 0, principal 없음으로 만든다. `CLAIM_WILL`은 Will(없으면 nil)을 결과로 반환하고 Will/principal/due를 제거하되 connected 상태는 유지한다. `DISCARD` action은 record를 삭제하며 disposition `CLAIM`에서만 Will을 결과로 반환한다. 모든 transition은 global Will/principal bytes를 갱신한다. Bytes 한도 초과는 `session_metadata_capacity_exceeded`이며 실패 command는 기존 state를 보존한다.
+5. **State 및 snapshot invariant:** Connected record는 detached·session expiry·Will due 시각이 모두 0이어야 한다. Disconnected record는 detached 시각 양수, retention 비-`IMMEDIATE`여야 하며 `FINITE`는 expiry가 detached 시각보다 크고 `INFINITE`는 expiry 0이어야 한다. Will 존재와 양수 Will due는 동치다. Snapshot record는 `(tenantId, clientId)` 순으로 정렬·유일하고 ownership row가 있으며 record epoch는 ownership epoch 이하이어야 한다. Metadata가 하나라도 있으면 `session-metadata` active feature가 필요하다. Record 개수는 snapshot object count에 포함한다. 전체 byte 합은 각 record Will이 없으면 0, 있으면 `len(topic)+len(payload)+len(subject)+len(credentialId)+Σlen(roles)`로 계산한다.
+6. **Owner 재시작 recovery:** READY된 node는 자기 node가 owner인 metadata와 local 연결이 없는 session을 복구한다. Record epoch가 현재 ownership epoch와 같고 record가 `CONNECTED`이면 재시작 recovery 시각을 disconnect 시각으로 하는 비정상 종료로 처리한다. Will 규칙을 적용하고 expiry를 시작한다. Recovery 전에 local lifecycle이 connected이거나 이미 처리한 epoch 이상이면 건너뛴다.
+7. **Handoff:** 새 client CONNECT 없이 drain 또는 planned removal로 record가 successor에 이전되면, 이전 epoch의 `CONNECTED` record는 정상 종료처럼 처리한다. Will을 억제하고 successor recovery 시각부터 expiry를 시작한다. `DETACHED` record는 저장된 절대 Will due/session expiry 시각을 기준으로 timer를 다시 설정한다. Host를 영구히 잃은 owner의 session은 planned removal handoff 전까지 복구되지 않으며 그 handoff에서 Will은 발행하지 않는다.
+8. **Will at-most-once 및 만료 회수:** Will은 Will을 claim하는 command가 commit된 뒤에만 claim한 node에서 발행한다. Claim commit 실패(예: quorum 없음)면 발행하지 않는다. Owner-local expiry timer는 metadata `DISCARD`와 기존 durable delivery `DISCARD`를 commit한다. Metadata `DISCARD` 또는 ownership `Release`는 metadata record를 제거하며 만료 때 ownership row를 `Release`하지 않아 epoch ABA를 막는다. Offline record는 기존 lazy purge가 제거한다. Disconnect·지연 Will 처리마다 metadata commit 1회가 추가된다. Quorum 손실 중 Will은 발행되지 않는다.
+9. **조회와 backup:** 활성화 후 `/api/v1/clients` 및 `/api/v1/clients/{tenantId}/{clientId}`는 어느 node에서나 committed metadata를 반환한다. Backup에는 metadata를 typed snapshot과 whole-state digest에 포함하되 별도 kind summary를 추가하지 않는다. Archive format `3.0`을 유지한다. Feature 활성화 전에 연결된 session은 재접속 전까지 metadata가 없어 crash recovery나 cluster session 조회 대상이 아니다.
+
 ## 5. Publish commit과 delivery
+
 
 ```mermaid
 sequenceDiagram
@@ -227,6 +244,8 @@ partition이 복구되면 committed log가 기준이 된다. minority의 specula
 - 호환 matrix는 release artifact에 포함해야 한다.
 
 Retained, offline, durable delivery, node drain and tenant quota replication require a fresh read barrier and a profile gate across all non-retired members. Cluster ID, cluster protocol and state schema remain exact; releases must share a major and fit the one-minor compatibility window. Member release and features are mutable committed profiles. After restart, a node is not READY until its committed profile matches its build identity. Feature advertisement is carried by committed member profile, not peer hello. `FeatureActivation` commits only when every non-retired member advertises the feature. A build that does not support an active feature is not READY and reports `incompatible_state_schema: ...`; its profile update is rejected. Periodic profile reconciliation keeps the last synchronized state while the sequential `Members` and `ActiveFeatures` reads are pending, then applies the decision only after both complete. A read error, wait, mismatch/proposal, local committed profile change or snapshot restore closes the gate. A local committed profile change or snapshot restore increments the revision, so completion from a pre-change read cannot reopen readiness. Unsupported feature activation or restored unsupported feature state latches incompatibility before readiness can reopen.
+
+Session metadata는 `FeatureActivation`으로 `session-metadata`가 활성화된 뒤에만 제안한다. 비활성 상태에서는 session metadata payload를 포함하지 않는다.
 
 ## 9. Rebalance
 
@@ -600,6 +619,7 @@ TCP cleanup 시험의 범위: `TestOldConnectionCleanupCannotDisconnectReplaceme
 
 Epoch-conditional cleanup follow-up: focused regressions, affected package suites and race suites PASS; combined process acceptance PASS (35.480s). `GOMAXPROCS=4 go run ./tools/verify local` PASS (289.66s; integration 261.161s; traceability, fuzz, architecture, package suites, race and coverage).
 
+동시 CONNECT 실패 진단: 자연 경합의 cardinality 실패에는 node별 CONNACK과 PING probe의 결과·경과 시간·오류를 기록한다. Probe의 `SetDeadline`이 실패하면 즉시 오류로 끝낸다. `tests/integration.TestClusterFencingAliveDeadlineFailureStopsProbe`는 deadline 호출 1회, PING read/write 미실행, 경과 시간 기록을 확인한다. 예상과 다른 MQTT 5 `0x88` Server Unavailable 거절에서는 모든 broker의 process liveness, readiness와 cluster summary/leader를 기록한다.
 
 실행 명령:
 
@@ -882,4 +902,57 @@ Evidence parser의 누락·skip·실패·불완전 종료·잘못된 filesystem/
 Ext4 profile 추가와 immutable image ID 보완 뒤 기존 default FUSE profile도 최종 6/6 PASS했다. FUSE 여섯 scenario의 실행 명령·artifact·wall time은 기준 수용 절인 [§11.6의 최종 회귀 증거](#116-storage-fault-chaos-mapping)에 연결한다. Ext4와 FUSE 모두 production power-loss gate를 대신하지 않는다.
 
 최종 local gate는 `GOMAXPROCS=4 go run ./tools/verify local`에서 exit 0·PASS(wall 365.00s, integration 335.989s)였다. Traceability·architecture·네 fuzz target 각각 10,000회, package/integration·production race·coverage gate가 통과했고, 변경된 chaos runner package 시험도 PASS(0.881s)했다. 별도 최종 `go test -race ./tests/chaos/cluster-storage-v1 -count=1`도 PASS(1.584s)했다. 위 FUSE 결과 기록과 이 실행 증거 기록은 gate 실행 중·종료 뒤의 문서 변경이며 그 뒤 코드는 변경하지 않았다.
+
+### 11.24 Session metadata 복제와 owner 손실 복구 수용 매핑
+
+이 매핑은 [ADR-0025](../decisions/ADR-0025-replicated-session-metadata-and-owner-loss-recovery.md)의 feature gate, committed metadata lifecycle, owner restart·handoff recovery, management view 및 backup inclusion을 검증한다. `session-metadata` 비활성 상태에서 기존 동작과 wire bytes가 유지되는지 확인하며, 아래 실행 증거는 실제 실행 뒤에만 갱신한다. 행의 미실행 표기는 시험 통과를 뜻하지 않는다.
+
+| Scenario | 관찰할 결과 | 시험 위치 | 실행 증거 |
+| --- | --- | --- | --- |
+| Restore lifecycle validation | 유효하지 않은 복원 조합 7개를 거절하고 connected/disconnected lifecycle 복원 뒤 `Disconnect`·`Expire` 결과가 동일하다. | `internal/domain/session.TestRestoreValidatesCommittedLifecycle` | PASS: domain/session 전체 0.408s. 실제 복원 smoke: Will delay 2s·expiry 6s·만료 때 Will claim |
+| Feature gate, ownership atomicity, action disposition과 capacity | 비활성 metadata 제안이 `feature_inactive`이고 ownership 불변이다. CONNECT replacement는 pending Will을 취소하며 Session 없는 Transfer는 metadata를 보존한다. DETACH·CLAIM_WILL·DISCARD, stale epoch, retention 오류, bytes 한도와 Release capacity 회수를 확인한다. | `internal/application/membership/session_metadata_test.go` | PASS: membership 전체 0.480s |
+| Snapshot invariants and round-trip | Metadata bytes 재계산·정렬·deep copy가 유지되고 ownership 누락, epoch 역전, feature 미활성 및 state invariant 위반을 거절한다. | `internal/application/membership/session_metadata_test.go` | PASS: 위 package 실행. 실제 snapshot/restore smoke: object count 6·첫 Will claim payload `committed`·두 번째 claim nil |
+| Codec compatibility and validation | Command·snapshot 왕복, 정렬·count·invalid boundary를 확인한다. 비활성 empty snapshot reference vector 및 Session 없는 OwnershipChange bytes는 기존과 같다. | `internal/adapters/raft/records/session_metadata_codec_test.go` | PASS: records 전체 0.704s, DTO bridge를 포함한 cmd/narumq 전체 11.444s |
+| Build feature, DTO bridge, runtime commit gate | 기본 feature 광고, ldflags merge/deduplicate와 empty-token rejection을 확인한다. 비활성 runtime은 metadata commit을 replicate하지 않고 session 없는 ownership commit을 하며 활성 runtime은 record를 생성한다. 다른 feature만 활성화되어도 metadata는 비활성이다. | `cmd/narumq` build identity, record mapping 및 session metadata tests | PASS: cmd/narumq 전체 13.680s, 다른 feature 활성화 boundary를 추가한 focused gate 시험 0.181s. 비활성 metadata는 production `resolveCommitReads` gate를 직접 실행하며 나머지 commit은 기존 helper의 apply 경로 사용 |
+| Disconnect, Will claim, expiry and recovery transitions | Committed Claim Will만 발행하고 commit 실패 시 억제한다. Inactive fallback, Will timer CLAIM_WILL, expiry stale skip, 현재 epoch CONNECTED 비정상 recovery, 이전 epoch handoff Will 억제, DETACHED absolute timer resume와 idempotence를 확인한다. | `internal/application/connect/session_metadata_test.go`, `cmd/narumq/cluster_session_recovery_test.go` | PASS: 단계별 connect 0.374s·cmd 13.428s, controller cmd 14.204s·connect 0.421s; 최종 focused 실행도 PASS |
+| Cluster management view | Cluster source 사용 시 tenant/prefix/node/protocol filter, sort/pagination, exact GetClient lookup 및 `ok=false` local fallback을 확인한다. | `internal/application/management/service_test.go`, `cmd/narumq/cluster_session_metadata_test.go` | PASS: 단계별 management 0.391s·cmd 14.125s; 최종 focused 실행도 PASS |
+| Three-node owner crash, restart and expiry/capacity reclamation | Feature를 활성화하고 owner crash 뒤 다른 node에서 committed metadata를 조회한다. 재시작 뒤 crash Will은 한 번 발행되고 takeover Will은 억제되며 delivery state가 보존된다. Expiry 뒤 각 node의 조회가 404이고 재접속은 SessionPresent=0이다. | `tests/integration.TestDynamicClusterSessionMetadataProcessAcceptance` | PASS: READY 확인 보완 뒤 test 29.55s·package 29.734s·wall 32.39s. 20s expiry 상한과 첫 Will 뒤 추가 발행 부재 확인 |
+| Disconnect 없이 owner crash 중 delayed Will | TCP abrupt close 뒤 owner를 crash/restart한다. 저장된 absolute delay에 맞춰 Will이 한 번만 발행되고 중복이 없다. | `tests/integration.TestDynamicClusterSessionMetadataProcessAcceptance` | PASS: 위 동일 실행에서 TCP close 직후 T0 기준으로 T0+5.5s 이후·30s 이내 Will 및 이후 3s 중복 부재 확인. `/health/ready` 200을 기다린 뒤 양수인 무수신 관찰 구간을 검사하며 빈 관찰로 통과하지 않는다 |
+| Existing inactive-feature regressions | 기존 durable takeover, ACK/kill, backup/restore, QoS 2 Will, ownership takeover/concurrent connect/stale epoch, drain, backup restore/resync acceptance를 유지한다. | `tests/integration` existing process acceptance tests | PASS: 명령 D의 10개 acceptance 모두 통과, package 99.291s·wall 101.89s |
+| Mixed-release inactive wire compatibility | Build feature가 없어 활성화가 거절되는 historical release와 feature-inactive N/N-1 process compatibility를 확인한다. | `tests/integration` release compatibility acceptances | PASS: synthetic test 96.47s·package 96.660s·wall 99.64s; historical rolling 101.51s·archive 19.17s·package 120.880s·wall 122.72s. Historical 혼합 cluster는 `session-metadata` 활성화를 409로 거절 |
+| Full local gate | Repository local verification를 수행한다. | `go run ./tools/verify local` | PASS: 보완 후 최종 exit 0·local PASS, wall 410.77s·integration 374.142s; vet·traceability·architecture·네 fuzz target 각 10,000회·전체 package/integration·production race·coverage gate 통과. 첫 실행도 PASS(wall 474.76s·integration 400.354s) |
+
+구현 전 process 시험은 FAIL (6.180s, wall 8.86s)했다. `POST /api/v1/cluster/features/session-metadata`가 `409 feature_not_supported_by_all_members`를 반환했다. 첫 시험 작성의 CONNACK property parser 반환형 오류는 수정했으며 동작 실패 재현에 포함하지 않는다. 기준 문서 단계의 `go build ./...`와 `go build -tags narumq_failpoint ./...`는 PASS였다.
+
+Domain, membership, codec·DTO bridge 단계마다 관련 package 시험 뒤 `go build ./...`와 `go build -tags narumq_failpoint ./...`를 실행해 모두 exit 0을 확인했다. Domain·membership throwaway smoke는 실행 뒤 제거했다. 초기 membership capacity fixture의 payload당 65,535-byte 제한 위반과 Schedule due 누락, codec syntax 및 잘못된 invalid-wire·duplicate-key fixture는 검증 중 고쳤다.
+
+Runtime gate 단계의 cmd/narumq·connect 시험(13.680s·0.350s)과 일반·failpoint 빌드도 exit 0이었다. 단계별 빌드를 위해 connect port·DTO 선언을 runtime 단계에서 먼저 추가했고 lifecycle 동작은 다음 단계에서 구현했다. 이후 lifecycle·controller·management 단계도 각각 관련 시험과 일반·failpoint 빌드를 통과했다. 기존 configuration loader의 성공 값 전체 복사/default 비교 assertion은 제거하고 파일 부재·잘못된 JSON 거절 시험은 유지했다.
+
+최종 focused 명령 B는 여섯 package 모두 PASS였다: domain/session 0.537s, membership 0.584s, records 0.903s, connect 0.520s, management 0.481s, cmd/narumq 13.699s(wall 15.67s). New process 명령 C는 최초 PASS 29.40s 뒤, expiry 대기를 20s로 제한하고 첫 Will 뒤 무수신 검사를 강화한 최종 실행도 위와 같이 PASS였다.
+
+Process fixture 검증 중 JWT username/password flags, client ID allowlist, 여러 filter를 다루는 route projection 대기와 subscription QoS를 고쳤다. 비활성 회귀에서는 fixture 확장 중 빠진 기존 `durable-will/#` Will ACL 때문에 CONNACK Not Authorized가 발생했으며, 기존 ACL을 복원했다. 이 시험 준비 오류를 제품 동작 실패나 통과 증거로 포함하지 않는다.
+
+첫 local gate 이후 시험 helper를 보완했다: 비활성 판정을 `session-metadata` token의 포함 여부로 통일하고 다른 feature만 활성화된 경우를 검증했다. Delayed Will의 T0는 TCP close 직후이며 subscription 대기는 duplicate client도 거절한다. 보완 focused gate·process 시험과 일반·failpoint build를 묶은 명령은 exit 0(wall 42.38s)이었다. Production 코드는 이 보완에서 바꾸지 않았다.
+
+QoS 0 local queue capture는 이 recovery의 보호 범위가 아니다. `disconnectLocked`가 `ListQueued`로 읽은 QoS 0 message를 `DetachSession`으로 commit하기 전 process를 잃으면, session metadata에는 그 queue가 없어서 복원하지 못한다. [ADR-0013 §6](../decisions/ADR-0013-offline-queue-replication-and-cluster-backup-v3.md#6-결과)와 tasks의 열린 capture-race 항목을 유지한다. Production Linux/EBS, 이후 게시 release별 compatibility와 자동 failure detection도 이 local 수용 증거의 범위 밖이다.
+
+보완 후 최종 local gate도 위와 같이 PASS였다. Gate 실행 중에는 시험 보완 결과와 QoS 0 capture 잔여 범위 문서를 갱신했고, 종료 뒤에는 실행 증거를 추가했다. 커밋 준비 중 delayed Will 시험에 `/health/ready` 200 대기를 추가하고 위 process 시험을 다시 통과했다. 이 마지막 변경은 integration 시험에만 적용했고 전체 local gate는 그 전에 실행한 증거다.
+
+실행 명령:
+
+```text
+# A: 구현 전 FAIL 재현 (acceptance test 작성 뒤 수행)
+GOMAXPROCS=4 go test ./tests/integration -run '^TestDynamicClusterSessionMetadataProcessAcceptance$' -count=1 -v -timeout 20m
+# B: focused package tests
+go test ./internal/domain/session ./internal/application/membership ./internal/adapters/raft/records ./internal/application/connect ./internal/application/management ./cmd/narumq -count=1
+# C: session metadata process acceptance
+GOMAXPROCS=4 go test ./tests/integration -run '^TestDynamicClusterSessionMetadataProcessAcceptance$' -count=1 -v -timeout 20m
+# D: inactive-feature regressions
+GOMAXPROCS=4 go test ./tests/integration -run '^(TestDynamicClusterDurableQoSTakeoverProcessAcceptance|TestDynamicClusterDurableQoSAckThenKillProcessAcceptance|TestDynamicClusterDurableQoSBackupRestoreProcessAcceptance|TestDynamicClusterDurableQoS2WillProcessAcceptance|TestDynamicClusterMQTTConnectOwnershipTakeoverProcessAcceptance|TestDynamicClusterConcurrentConnectProcessAcceptance|TestDynamicClusterStaleEpochFencingProcessAcceptance|TestDynamicClusterNodeDrainProcessAcceptance|TestClusterBackupRestoreProcessCrashAndResync|TestDynamicClusterMembershipProcessAcceptance)$' -count=1 -v -timeout 40m
+# E: inactive feature release compatibility
+NARUMQ_RELEASE_COMPAT=1 GOMAXPROCS=4 go test ./tests/integration -run '^TestDynamicClusterReleaseCompatibilityProcessAcceptance$' -count=1 -v -timeout 20m
+NARUMQ_RELEASE_COMPAT=1 GOMAXPROCS=4 go test ./tests/integration -run '^(TestDynamicClusterHistoricalReleaseCompatibilityProcessAcceptance|TestClusterBackupRestoreHistoricalReleaseProcessAcceptance)$' -count=1 -v -timeout 30m
+# F: repository gate
+GOMAXPROCS=4 go run ./tools/verify local
+```
 

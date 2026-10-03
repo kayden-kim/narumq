@@ -166,6 +166,7 @@ Dynamic Raft inbound의 count·byte 한도에는 payload를 읽기 위해 예약
 - client 검색 Phase 1 filter는 `tenantId`, `clientIdPrefix`, `nodeId`, `protocol`이다. arbitrary regular expression, IP filter와 wildcard topic Metric 등록을 허용해서는 안 된다.
 - `subscriptions`와 `retained` 목록은 `tenantId`를 required query로 받아 tenant 범위를 명시해야 한다.
 - client identity, IP, inflight payload와 offline payload는 role에 따라 마스킹하거나 제외해야 한다.
+- Dynamic cluster에서 `session-metadata` feature를 활성화하면 `/api/v1/clients`와 `/api/v1/clients/{tenantId}/{clientId}`는 조회 node에 적용된 committed session metadata(합의로 저장된 연결·만료 정보)를 보여 준다. Owner node가 중단돼도 연결 상태·owner node·protocol·만료 예정 시각과 복제된 inflight/offline 개수를 조회할 수 있다. 장애를 timeout으로 추정하지 않으므로 `connected`는 owner 재시작 복구 또는 handoff가 commit될 때까지 이전 값을 유지한다. 활성화 전에 연결한 session은 다음 CONNECT 전까지 이 view에 표시되지 않는다. 비활성 cluster와 standalone은 기존 local session store를 사용한다([Cluster §4.3](cluster-session-and-delivery.md#43-session-metadata-복제와-owner-손실-복구)).
 - retained 목록은 payload를 기본 반환하지 않고 metadata만 반환해야 한다. Payload 조회가 필요하면 별도 권한과 size limit을 가져야 한다.
 
 ## 6. GitOps와 runtime 변경

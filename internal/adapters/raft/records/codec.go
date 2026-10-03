@@ -41,6 +41,11 @@ const (
 	maxTenantQuotaOfflineQueueMessages = maxOfflineMessages + maxDeliveryEntries
 	maxTenantQuotaOfflineQueueBytes    = maxOfflineBytes + maxDeliveryBytes
 	maxTenantQuotaStorageBytes         = maxTenantQuotaRetainedBytes + maxOfflineBytes + maxDeliveryBytes
+	maxSessionWillBytes                = 8 << 20
+	maxSessionWillPayloadBytes         = 65535
+	maxSessionPrincipalFieldBytes      = 1024
+	maxSessionPrincipalRoles           = 64
+	maxSessionPrincipalRoleBytes       = 256
 )
 
 // ErrCommandTooLarge means a command exceeds the replicated command size limit.
@@ -120,7 +125,7 @@ func MarshalSnapshot(state *ReplicatedStateSnapshot, lastIncludedIndex uint64) (
 			offlineMessagesCount += len(session.Messages)
 		}
 	}
-	count := uint64(len(ordered.Members) + len(ordered.Ownerships) + len(ordered.Subscriptions) + len(ordered.DeliverySessions) + deliveryObjectCount(ordered.DeliverySessions) + len(ordered.MembershipHistory) + len(ordered.Retained) + len(ordered.OfflineSessions) + offlineMessagesCount + len(ordered.NodeDrains) + len(ordered.ActiveFeatures) + tenantQuotaProfileObjectCount(ordered.TenantQuotaProfile))
+	count := uint64(len(ordered.Members) + len(ordered.Ownerships) + len(ordered.Subscriptions) + len(ordered.DeliverySessions) + deliveryObjectCount(ordered.DeliverySessions) + len(ordered.MembershipHistory) + len(ordered.Retained) + len(ordered.OfflineSessions) + offlineMessagesCount + len(ordered.NodeDrains) + len(ordered.ActiveFeatures) + tenantQuotaProfileObjectCount(ordered.TenantQuotaProfile) + len(ordered.SessionMetadata))
 	digest := sha256.Sum256(stateBytes)
 	envelope := &SnapshotEnvelope{SchemaMajor: 1, LastIncludedIndex: lastIncludedIndex, ObjectCount: count, Sha256: digest[:], State: ordered}
 	encoded, err := deterministic.Marshal(envelope)
@@ -166,7 +171,7 @@ func UnmarshalSnapshot(encoded []byte) (*SnapshotEnvelope, error) {
 			offlineMessagesCount += len(session.Messages)
 		}
 	}
-	count := uint64(len(envelope.State.Members) + len(envelope.State.Ownerships) + len(envelope.State.Subscriptions) + len(envelope.State.DeliverySessions) + deliveryObjectCount(envelope.State.DeliverySessions) + len(envelope.State.MembershipHistory) + len(envelope.State.Retained) + len(envelope.State.OfflineSessions) + offlineMessagesCount + len(envelope.State.NodeDrains) + len(envelope.State.ActiveFeatures) + tenantQuotaProfileObjectCount(envelope.State.TenantQuotaProfile))
+	count := uint64(len(envelope.State.Members) + len(envelope.State.Ownerships) + len(envelope.State.Subscriptions) + len(envelope.State.DeliverySessions) + deliveryObjectCount(envelope.State.DeliverySessions) + len(envelope.State.MembershipHistory) + len(envelope.State.Retained) + len(envelope.State.OfflineSessions) + offlineMessagesCount + len(envelope.State.NodeDrains) + len(envelope.State.ActiveFeatures) + tenantQuotaProfileObjectCount(envelope.State.TenantQuotaProfile) + len(envelope.State.SessionMetadata))
 	if envelope.ObjectCount != count {
 		return nil, errors.New("snapshot object count mismatch")
 	}
@@ -264,6 +269,11 @@ func validateCommand(c *CommandEnvelope) error {
 			return errors.New("feature_activation feature is invalid")
 		}
 		return nil
+	case *CommandEnvelope_SessionMetadata:
+		if payload.SessionMetadata == nil {
+			return errors.New("session metadata payload is required")
+		}
+		return validateSessionMetadataChange(payload.SessionMetadata)
 	default:
 		return errors.New("command must contain exactly one known payload")
 	}
@@ -482,6 +492,14 @@ func validateOwnership(o *OwnershipChange) error {
 	}
 	if o.Action < OwnershipAction_OWNERSHIP_ACTION_ACQUIRE || o.Action > OwnershipAction_OWNERSHIP_ACTION_RELEASE {
 		return errors.New("invalid ownership action")
+	}
+	if o.Session != nil {
+		if o.Action != OwnershipAction_OWNERSHIP_ACTION_ACQUIRE && o.Action != OwnershipAction_OWNERSHIP_ACTION_TRANSFER {
+			return errors.New("ownership session is only allowed for acquire or transfer")
+		}
+		if err := validateSessionConnect(o.Session); err != nil {
+			return err
+		}
 	}
 	return nil
 }
@@ -760,6 +778,190 @@ func tenantQuotaProfileObjectCount(profile *TenantQuotaProfile) int {
 	return 1 + len(profile.Tenants)
 }
 
+func validateSessionWill(will *SessionWill) error {
+	if will == nil {
+		return nil
+	}
+	if !validTopic(will.Topic) {
+		return errors.New("session will topic is invalid")
+	}
+	if len(will.Payload) > maxSessionWillPayloadBytes {
+		return errors.New("session will payload exceeds 65535 bytes")
+	}
+	if will.Qos > 2 {
+		return errors.New("session will QoS is out of range")
+	}
+	return nil
+}
+
+func validateSessionPrincipal(principal *SessionPrincipal, hasWill bool) error {
+	if principal == nil {
+		return nil
+	}
+	if !hasWill {
+		return errors.New("session principal requires a Will")
+	}
+	if !boundedUTF8(principal.Subject, 1, maxSessionPrincipalFieldBytes) ||
+		!boundedUTF8(principal.CredentialId, 1, maxSessionPrincipalFieldBytes) ||
+		principal.ExpiresAtUnixMillis == 0 {
+		return errors.New("session principal fields are invalid")
+	}
+	if len(principal.Roles) > maxSessionPrincipalRoles {
+		return errors.New("session principal exceeds role limit")
+	}
+	roles := make(map[string]struct{}, len(principal.Roles))
+	for _, role := range principal.Roles {
+		if !boundedUTF8(role, 1, maxSessionPrincipalRoleBytes) {
+			return errors.New("session principal role is invalid")
+		}
+		if _, exists := roles[role]; exists {
+			return errors.New("session principal roles are not unique")
+		}
+		roles[role] = struct{}{}
+	}
+	return nil
+}
+
+func validateSessionConnect(session *SessionConnect) error {
+	if session == nil {
+		return errors.New("session connect is required")
+	}
+	switch session.ProtocolVersion {
+	case 4:
+		if session.Retention != SessionRetention_SESSION_RETENTION_IMMEDIATE &&
+			session.Retention != SessionRetention_SESSION_RETENTION_INFINITE {
+			return errors.New("MQTT 3.1.1 session retention is invalid")
+		}
+		if session.ExpiryIntervalSeconds != 0 {
+			return errors.New("MQTT 3.1.1 expiry interval must be zero")
+		}
+		if session.Will != nil && session.Will.DelayIntervalSeconds != 0 {
+			return errors.New("MQTT 3.1.1 Will delay must be zero")
+		}
+	case 5:
+		switch session.Retention {
+		case SessionRetention_SESSION_RETENTION_IMMEDIATE:
+			if session.ExpiryIntervalSeconds != 0 {
+				return errors.New("immediate session expiry interval must be zero")
+			}
+		case SessionRetention_SESSION_RETENTION_FINITE:
+			if session.ExpiryIntervalSeconds == 0 || session.ExpiryIntervalSeconds == ^uint32(0) {
+				return errors.New("finite session expiry interval is out of range")
+			}
+		case SessionRetention_SESSION_RETENTION_INFINITE:
+			if session.ExpiryIntervalSeconds != ^uint32(0) {
+				return errors.New("infinite session expiry interval must be 0xFFFFFFFF")
+			}
+		default:
+			return errors.New("session retention is invalid")
+		}
+	default:
+		return errors.New("session protocol version must be 4 or 5")
+	}
+	if session.Retention < SessionRetention_SESSION_RETENTION_IMMEDIATE ||
+		session.Retention > SessionRetention_SESSION_RETENTION_INFINITE {
+		return errors.New("session retention is invalid")
+	}
+	if err := validateSessionWill(session.Will); err != nil {
+		return err
+	}
+	return validateSessionPrincipal(session.Principal, session.Will != nil)
+}
+
+func validateSessionMetadataChange(change *SessionMetadataChange) error {
+	if !boundedUTF8(change.TenantId, 1, 128) || !boundedUTF8(change.ClientId, 1, 256) {
+		return errors.New("session metadata tenant_id or client_id is out of bounds")
+	}
+	if change.OwnerNodeId == 0 || change.Epoch == 0 || change.ProposedAtUnixMillis == 0 {
+		return errors.New("session metadata owner, epoch and proposed_at must be positive")
+	}
+	switch change.Action {
+	case SessionMetadataAction_SESSION_METADATA_ACTION_DETACH:
+		switch change.WillDisposition {
+		case SessionWillDisposition_SESSION_WILL_DISPOSITION_DISCARD,
+			SessionWillDisposition_SESSION_WILL_DISPOSITION_CLAIM:
+			if change.WillDueAtUnixMillis != 0 {
+				return errors.New("session metadata non-scheduled Will due time must be zero")
+			}
+		case SessionWillDisposition_SESSION_WILL_DISPOSITION_SCHEDULE:
+			if change.WillDueAtUnixMillis == 0 || change.WillDueAtUnixMillis < change.ProposedAtUnixMillis {
+				return errors.New("session metadata scheduled Will due time is invalid")
+			}
+		default:
+			return errors.New("session metadata detach disposition is invalid")
+		}
+		if change.SessionExpiresAtUnixMillis != 0 && change.SessionExpiresAtUnixMillis <= change.ProposedAtUnixMillis {
+			return errors.New("session metadata expiry must be after proposed_at")
+		}
+	case SessionMetadataAction_SESSION_METADATA_ACTION_CLAIM_WILL:
+		if change.WillDisposition != SessionWillDisposition_SESSION_WILL_DISPOSITION_UNSPECIFIED ||
+			change.SessionExpiresAtUnixMillis != 0 || change.WillDueAtUnixMillis != 0 {
+			return errors.New("session metadata claim_will fields are invalid")
+		}
+	case SessionMetadataAction_SESSION_METADATA_ACTION_DISCARD:
+		if change.WillDisposition != SessionWillDisposition_SESSION_WILL_DISPOSITION_DISCARD &&
+			change.WillDisposition != SessionWillDisposition_SESSION_WILL_DISPOSITION_CLAIM {
+			return errors.New("session metadata discard disposition is invalid")
+		}
+		if change.SessionExpiresAtUnixMillis != 0 || change.WillDueAtUnixMillis != 0 {
+			return errors.New("session metadata discard timestamps must be zero")
+		}
+	default:
+		return errors.New("session metadata action is invalid")
+	}
+	return nil
+}
+
+func sessionWillBytes(state *SessionMetadataState) int {
+	if state == nil || state.Will == nil {
+		return 0
+	}
+	size := len(state.Will.Topic) + len(state.Will.Payload)
+	if state.Principal != nil {
+		size += len(state.Principal.Subject) + len(state.Principal.CredentialId)
+		for _, role := range state.Principal.Roles {
+			size += len(role)
+		}
+	}
+	return size
+}
+
+func validateSessionMetadataState(state *SessionMetadataState) error {
+	if state == nil || !boundedUTF8(state.TenantId, 1, 128) || !boundedUTF8(state.ClientId, 1, 256) || state.Epoch == 0 {
+		return errors.New("invalid session metadata identity or epoch")
+	}
+	connect := &SessionConnect{
+		ProtocolVersion: state.ProtocolVersion, Retention: state.Retention,
+		ExpiryIntervalSeconds: state.ExpiryIntervalSeconds, Will: state.Will, Principal: state.Principal,
+	}
+	if err := validateSessionConnect(connect); err != nil {
+		return err
+	}
+	if state.Connected {
+		if state.DetachedAtUnixMillis != 0 || state.SessionExpiresAtUnixMillis != 0 || state.WillDueAtUnixMillis != 0 {
+			return errors.New("connected session metadata has detached timestamps")
+		}
+		return nil
+	}
+	if state.DetachedAtUnixMillis == 0 || state.Retention == SessionRetention_SESSION_RETENTION_IMMEDIATE {
+		return errors.New("disconnected session metadata has invalid detach state")
+	}
+	switch state.Retention {
+	case SessionRetention_SESSION_RETENTION_FINITE:
+		if state.SessionExpiresAtUnixMillis <= state.DetachedAtUnixMillis {
+			return errors.New("finite disconnected session expiry must follow detach")
+		}
+	case SessionRetention_SESSION_RETENTION_INFINITE:
+		if state.SessionExpiresAtUnixMillis != 0 {
+			return errors.New("infinite disconnected session must not expire")
+		}
+	}
+	if (state.Will != nil) != (state.WillDueAtUnixMillis > 0) {
+		return errors.New("session metadata Will and due time must be paired")
+	}
+	return nil
+}
+
 func validateSnapshotState(s *ReplicatedStateSnapshot) error {
 	offlineMessagesCount := 0
 	for _, session := range s.OfflineSessions {
@@ -767,7 +969,7 @@ func validateSnapshotState(s *ReplicatedStateSnapshot) error {
 			offlineMessagesCount += len(session.Messages)
 		}
 	}
-	count := len(s.Members) + len(s.Ownerships) + len(s.Subscriptions) + len(s.DeliverySessions) + deliveryObjectCount(s.DeliverySessions) + len(s.MembershipHistory) + len(s.Retained) + len(s.OfflineSessions) + offlineMessagesCount + len(s.NodeDrains) + len(s.ActiveFeatures) + tenantQuotaProfileObjectCount(s.TenantQuotaProfile)
+	count := len(s.Members) + len(s.Ownerships) + len(s.Subscriptions) + len(s.DeliverySessions) + deliveryObjectCount(s.DeliverySessions) + len(s.MembershipHistory) + len(s.Retained) + len(s.OfflineSessions) + offlineMessagesCount + len(s.NodeDrains) + len(s.ActiveFeatures) + tenantQuotaProfileObjectCount(s.TenantQuotaProfile) + len(s.SessionMetadata)
 	if count > maxEntries {
 		return errors.New("snapshot exceeds 1,000,000 entries")
 	}
@@ -777,6 +979,44 @@ func validateSnapshotState(s *ReplicatedStateSnapshot) error {
 	if s.TenantQuotaProfile != nil {
 		if err := validateTenantQuotaProfile(s.TenantQuotaProfile); err != nil {
 			return err
+		}
+	}
+	featureActive := false
+	for _, feature := range s.ActiveFeatures {
+		if feature == "session-metadata" {
+			featureActive = true
+			break
+		}
+	}
+	if len(s.SessionMetadata) > 0 && !featureActive {
+		return errors.New("snapshot session metadata requires active session-metadata feature")
+	}
+	type sessionIdentity struct{ tenantID, clientID string }
+	ownershipEpochs := make(map[sessionIdentity]uint64, len(s.Ownerships))
+	for _, ownership := range s.Ownerships {
+		if ownership == nil {
+			continue
+		}
+		ownershipEpochs[sessionIdentity{ownership.TenantId, ownership.ClientId}] = ownership.Epoch
+	}
+	willBytes := 0
+	for _, metadata := range s.SessionMetadata {
+		if err := validateSessionMetadataState(metadata); err != nil {
+			return err
+		}
+		epoch, exists := ownershipEpochs[sessionIdentity{metadata.TenantId, metadata.ClientId}]
+		if !exists || metadata.Epoch > epoch {
+			return errors.New("snapshot session metadata ownership epoch is missing or stale")
+		}
+		willBytes += sessionWillBytes(metadata)
+		if willBytes > maxSessionWillBytes {
+			return errors.New("snapshot exceeds session Will byte limit")
+		}
+	}
+	for i := 1; i < len(s.SessionMetadata); i++ {
+		a, b := s.SessionMetadata[i-1], s.SessionMetadata[i]
+		if compare2(a.TenantId, a.ClientId, b.TenantId, b.ClientId) >= 0 {
+			return errors.New("snapshot session metadata is not uniquely sorted")
 		}
 	}
 	if len(s.Retained) > maxRetainedMessages {
@@ -1042,6 +1282,15 @@ func sortSnapshot(s *ReplicatedStateSnapshot) {
 			return session.Inbound[i].PacketId < session.Inbound[j].PacketId
 		})
 	}
+	sort.Slice(s.SessionMetadata, func(i, j int) bool {
+		if s.SessionMetadata[i] == nil {
+			return s.SessionMetadata[j] != nil
+		}
+		if s.SessionMetadata[j] == nil {
+			return false
+		}
+		return compare2(s.SessionMetadata[i].TenantId, s.SessionMetadata[i].ClientId, s.SessionMetadata[j].TenantId, s.SessionMetadata[j].ClientId) < 0
+	})
 }
 func rejectUnknown(m protoreflect.Message) error {
 	if len(m.GetUnknown()) != 0 {

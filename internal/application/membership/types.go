@@ -26,6 +26,92 @@ const (
 	MaxOfflineDetachMessageBytes = 768 << 10
 )
 
+// Session metadata capacity is cluster-wide and is not tenant storage quota.
+const (
+	SessionMetadataFeature        = "session-metadata"
+	MaxSessionWillBytes           = 8 << 20
+	MaxSessionWillPayloadBytes    = 65535
+	MaxSessionPrincipalFieldBytes = 1024
+	MaxSessionPrincipalRoles      = 64
+	MaxSessionPrincipalRoleBytes  = 256
+)
+
+// SessionRetention matches the replicated-state protocol enum.
+type SessionRetention uint32
+
+const (
+	SessionRetentionUnspecified SessionRetention = iota
+	SessionRetentionImmediate
+	SessionRetentionFinite
+	SessionRetentionInfinite
+)
+
+type SessionMetadataAction uint32
+
+const (
+	SessionMetadataActionUnspecified SessionMetadataAction = iota
+	SessionMetadataActionDetach
+	SessionMetadataActionClaimWill
+	SessionMetadataActionDiscard
+)
+
+type SessionWillDisposition uint32
+
+const (
+	SessionWillDispositionUnspecified SessionWillDisposition = iota
+	SessionWillDispositionDiscard
+	SessionWillDispositionClaim
+	SessionWillDispositionSchedule
+)
+
+type SessionWillDTO struct {
+	Topic                string
+	Payload              []byte
+	QoS                  uint32
+	Retain               bool
+	DelayIntervalSeconds uint32
+}
+
+type SessionPrincipalDTO struct {
+	Subject, CredentialID string
+	Roles                 []string
+	ExpiresAtUnixMillis   uint64
+}
+
+type SessionConnectDTO struct {
+	ProtocolVersion       uint32
+	Retention             SessionRetention
+	ExpiryIntervalSeconds uint32
+	Will                  *SessionWillDTO
+	Principal             *SessionPrincipalDTO
+}
+
+type SessionMetadataChangeDTO struct {
+	TenantID, ClientID                                                    string
+	OwnerNodeID, Epoch                                                    uint64
+	Action                                                                SessionMetadataAction
+	WillDisposition                                                       SessionWillDisposition
+	ProposedAtUnixMillis, SessionExpiresAtUnixMillis, WillDueAtUnixMillis uint64
+}
+
+type SessionMetadataStateDTO struct {
+	TenantID, ClientID                               string
+	Epoch                                            uint64
+	ProtocolVersion                                  uint32
+	Retention                                        SessionRetention
+	ExpiryIntervalSeconds                            uint32
+	Connected                                        bool
+	DetachedAtUnixMillis, SessionExpiresAtUnixMillis uint64
+	Will                                             *SessionWillDTO
+	WillDueAtUnixMillis                              uint64
+	Principal                                        *SessionPrincipalDTO
+}
+
+type SessionMetadataResultDTO struct {
+	Found bool
+	Will  *SessionWillDTO
+}
+
 // Durable delivery capacity is enforced deterministically at apply time.
 const (
 	MaxDeliveryMessagesPerSession = 64
@@ -253,6 +339,7 @@ type CommandDTO struct {
 	TenantQuota       *TenantQuotaChangeDTO
 	MemberProfile     *MemberProfileChangeDTO
 	FeatureActivation *FeatureActivationDTO
+	SessionMetadata   *SessionMetadataChangeDTO
 }
 
 // MemberIdentityDTO is a committed cluster member identity and lifecycle phase.
@@ -317,6 +404,7 @@ type OwnershipChangeDTO struct {
 	OwnerNodeID   uint64
 	Epoch         uint64
 	Action        OwnershipAction
+	Session       *SessionConnectDTO
 }
 
 // OwnershipStateDTO is the current committed owner of one tenant-scoped session.
@@ -489,20 +577,24 @@ const (
 	ConflictDrainNotCancellable      ApplyConflictCode = "drain_not_cancellable"
 	ConflictDeliverySessionMissing   ApplyConflictCode = "delivery_session_missing"
 	ConflictTenantQuotaStale         ApplyConflictCode = "tenant_quota_stale"
+	ConflictFeatureInactive          ApplyConflictCode = "feature_inactive"
+	ConflictSessionMetadataCapacity  ApplyConflictCode = "session_metadata_capacity_exceeded"
+	ConflictSessionMetadataInvalid   ApplyConflictCode = "session_metadata_invalid"
 )
 
 // ApplyResultDTO reports the deterministic result at a committed application index.
 type ApplyResultDTO struct {
-	Index        uint64
-	Outcome      ApplyOutcome
-	Conflict     ApplyConflictCode
-	Operation    *MembershipOperationDTO
-	Ownership    *OwnershipStateDTO
-	Subscription *SubscriptionStateDTO
-	Delivery     *DeliveryResultDTO
-	OfflineClaim *OfflineClaimDTO
-	NodeDrain    *NodeDrainStateDTO
-	TenantQuota  *TenantQuotaRejectionDTO
+	Index           uint64
+	Outcome         ApplyOutcome
+	Conflict        ApplyConflictCode
+	Operation       *MembershipOperationDTO
+	Ownership       *OwnershipStateDTO
+	Subscription    *SubscriptionStateDTO
+	Delivery        *DeliveryResultDTO
+	OfflineClaim    *OfflineClaimDTO
+	NodeDrain       *NodeDrainStateDTO
+	TenantQuota     *TenantQuotaRejectionDTO
+	SessionMetadata *SessionMetadataResultDTO
 }
 
 // MembershipOperationPhase is the management-facing current operation status.
@@ -604,4 +696,5 @@ type SnapshotDTO struct {
 	NodeDrains         []NodeDrainStateDTO
 	TenantQuotaProfile *TenantQuotaProfileDTO
 	ActiveFeatures     []string
+	SessionMetadata    []SessionMetadataStateDTO
 }

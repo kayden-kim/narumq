@@ -86,7 +86,8 @@ Backup v3는 새 kind를 required summary와 tenant digest에 넣어 restore가 
 
 - [ ] Production storage gate: [ADR-0009 §7](ADR-0009-raft-production-state-profile.md#7-검증)에서 Linux/EBS power-loss, WAL torn-tail, volume loss/reseed와 retention/RPO/RTO를 검증한다.
 - [ ] QoS 1/2 offline delivery와 durable ACK: [ADR-0003 §9](ADR-0003-durable-ack-barrier.md#9-검증)에서 state, ACK barrier와 replica failure acceptance를 완료한다.
-- [ ] Connected owner crash 중 capture와 detach transition race를 별도 acceptance로 평가한다.
+- [x] Connected owner crash 뒤 lifecycle metadata·Will·expiry 회수: [ADR-0025](ADR-0025-replicated-session-metadata-and-owner-loss-recovery.md)와 [Cluster §11.24](../specs/cluster-session-and-delivery.md#1124-session-metadata-복제와-owner-손실-복구-수용-매핑)에서 owner 재시작 복구를 결정·검증했다. 아래 QoS 0 local queue capture와는 다른 범위다.
+- [ ] Connected owner crash 중 QoS 0 local queue capture와 detach transition race의 별도 acceptance: `connect.disconnectLocked`는 `ListQueued`의 QoS 0 message를 `DetachSession`으로 commit한다. 그 commit 전 process가 잃은 local queue는 session metadata에 없으므로 ADR-0025 recovery가 복원하지 못한다. Lifecycle·Will 복구와 이미 committed된 durable state 보존을 이 capture race의 보호 증거로 쓰지 않는다.
 - [ ] N-1 archive compatibility와 승인된 migration/rollback 정책을 결정한다.
 - [ ] TEN-08의 tenant별 offline queue, retained bytes, storage quota와 초과 경보를 구현·검증한다. P0 요구사항이며 이 결정에서 충족하지 않는다.
 

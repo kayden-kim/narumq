@@ -233,6 +233,9 @@ func runClusterMode(ctx context.Context, config clusterConfigFile, logger *slog.
 	runtime.tenantQuotaController = &clusterTenantQuotaController{runtime: runtime}
 	runtime.releaseProfile = &clusterReleaseProfileController{runtime: runtime}
 	runtime.drain = &clusterDrainController{runtime: runtime}
+	runtime.sessionRecovery = &clusterSessionRecoveryController{
+		runtime: runtime, keys: make(chan clusterSessionRecoveryKey, clusterSessionRecoveryQueueCapacity),
+	}
 	runtime.retainedResyncRequired.Store(true)
 	if local, found := committedLocalIdentity(machine, config.NodeID, config.ReleaseVersion); found {
 		runtime.localIdentity = local
@@ -302,8 +305,8 @@ func runClusterMode(ctx context.Context, config clusterConfigFile, logger *slog.
 	willBridge := tcpadapter.NewWillBridge()
 	systemScheduler := clock.SystemScheduler{}
 	connectOptions := []connect.Option{
-		connect.WithMetrics(metricsRegistry),
 		connect.WithOwnershipCoordinator(runtime, config.NodeID),
+		connect.WithSessionMetadataCoordinator(runtime),
 		connect.WithOfflineCoordinator(runtime),
 		connect.WithDurableDeliveryCommitter(runtime),
 	}
@@ -382,6 +385,7 @@ func runClusterMode(ctx context.Context, config clusterConfigFile, logger *slog.
 	baseManagement := appmgmt.NewService(appmgmt.ServiceConfig{
 		ClusterID: config.ClusterID, NodeID: strconv.FormatUint(config.NodeID, 10), ReleaseVersion: config.ReleaseVersion,
 	}, sessions, runtime.routes, retainedRepository, metricsRegistry)
+	baseManagement.UseClusterSessionSource(runtime)
 	runtime.managementState = baseManagement
 	stateProvider := &clusterStateProvider{StateProvider: baseManagement, runtime: runtime}
 	healthChecker := &clusterHealthChecker{HealthChecker: baseManagement, runtime: runtime}
@@ -445,6 +449,7 @@ type clusterRuntime struct {
 	drain                   *clusterDrainController
 	tenantQuotaController   *clusterTenantQuotaController
 	releaseProfile          *clusterReleaseProfileController
+	sessionRecovery         *clusterSessionRecoveryController
 	tenantQuotaRejectionLog tenantQuotaRejectionReporter
 	connectUseCase          *connect.UseCase
 	metrics                 *adaptersmetrics.Registry
@@ -570,6 +575,7 @@ func (runtime *clusterRuntime) serve(parent context.Context, mqttServer *tcpadap
 	runtime.tenantQuotaController.start(ctx)
 	runtime.releaseProfile.start(ctx)
 	runtime.drain.start(ctx)
+	runtime.sessionRecovery.start(ctx)
 
 	var admissionDone chan error
 	if runtime.config.Role == "joiner" {
@@ -657,6 +663,7 @@ func (runtime *clusterRuntime) serve(parent context.Context, mqttServer *tcpadap
 		}
 	}
 	runtime.drain.stopAndWait()
+	runtime.sessionRecovery.stopAndWait()
 	runtime.tenantQuotaController.stopAndWait()
 	runtime.releaseProfile.stopAndWait()
 	runtime.managementState.SetNodeState(managementports.NodeStateSafeToStop, nil)
@@ -1216,6 +1223,7 @@ func (runtime *clusterRuntime) applyBatch(batch raftadapter.BatchDTO, proposals 
 			return fmt.Errorf("restore membership state machine: %w", err)
 		}
 		runtime.releaseProfile.observeSnapshotRestore()
+		runtime.sessionRecovery.requestFullScan()
 		runtime.retainedResyncRequired.Store(true)
 		runtime.lastSnapshotIndex = snapshot.LastIncludedIndex
 		runtime.initialized.Store(true)
@@ -1316,6 +1324,9 @@ func (runtime *clusterRuntime) applyBatch(batch raftadapter.BatchDTO, proposals 
 				}
 			}
 			runtime.removeStaleDurableAttachment(sessionID, *result.Ownership)
+			if result.Ownership.OwnerNodeID == runtime.config.NodeID && command.Ownership.Session == nil {
+				runtime.sessionRecovery.enqueue(command.Ownership.TenantID, command.Ownership.ClientID)
+			}
 		}
 		if command.Retained != nil && result.Outcome == membership.ApplyOutcomeApplied {
 			runtime.syncRetainedProjection(*command.Retained)
@@ -1507,6 +1518,9 @@ func (runtime *clusterRuntime) resolveCommitReads(reads map[string]clusterReadWa
 			stage.err, stage.barrierFailure = pending.readErr, true
 		} else if runtime.storage.view().health == clusterReplicationFailed {
 			stage.err, stage.barrierFailure = errClusterStorageUnhealthy, true
+		} else if clusterCommandRequiresSessionMetadata(pending.command) &&
+			!slices.Contains(runtime.machine.ActiveFeatures(), membership.SessionMetadataFeature) {
+			stage.err = errClusterSessionMetadataInactive
 		} else if (pending.command.Retained != nil || pending.command.Offline != nil ||
 			pending.command.Delivery != nil || pending.command.NodeDrain != nil || pending.command.TenantQuota != nil) &&
 			!clusterProfilesCompatible(runtime.machine.Members(), runtime.config) {
@@ -2685,8 +2699,11 @@ func (runtime *clusterRuntime) GetNodeDrain(ctx context.Context, memberID uint64
 	state, found := runtime.machine.GetNodeDrain(memberID)
 	return state, found, nil
 }
-
 func (runtime *clusterRuntime) AcquireOwnership(ctx context.Context, tenantID, clientID string, ownerNodeID uint64) (uint64, error) {
+	return runtime.acquireOwnership(ctx, tenantID, clientID, ownerNodeID, nil)
+}
+
+func (runtime *clusterRuntime) acquireOwnership(ctx context.Context, tenantID, clientID string, ownerNodeID uint64, session *membership.SessionConnectDTO) (uint64, error) {
 	if ownerNodeID != runtime.config.NodeID {
 		return 0, membership.ErrNotLeader
 	}
@@ -2714,7 +2731,7 @@ func (runtime *clusterRuntime) AcquireOwnership(ctx context.Context, tenantID, c
 		SchemaMajor: membership.SchemaMajor, SchemaMinor: membership.SchemaMinor, OperationID: operationID,
 		Ownership: &membership.OwnershipChangeDTO{
 			TenantID: tenantID, ClientID: clientID, ExpectedEpoch: expectedEpoch,
-			OwnerNodeID: ownerNodeID, Epoch: epoch, Action: action,
+			OwnerNodeID: ownerNodeID, Epoch: epoch, Action: action, Session: session,
 		},
 	})
 	if err != nil || result.Outcome != membership.ApplyOutcomeApplied || result.Ownership == nil {

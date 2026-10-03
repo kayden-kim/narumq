@@ -297,3 +297,123 @@ func TestService_SubscriptionsAndRetained(t *testing.T) {
 		t.Fatalf("unexpected tenant list: tenants=%+v, page=%+v", tenants, pageT)
 	}
 }
+
+type testClusterSessionSource struct {
+	sessions  []ports.ClientSessionDTO
+	available bool
+}
+
+func (source testClusterSessionSource) ClusterSessions() ([]ports.ClientSessionDTO, bool) {
+	return source.sessions, source.available
+}
+
+func TestService_ClusterSessionSourceQueries(t *testing.T) {
+	// Traceability: CLU-08; docs/specs/cluster-session-and-delivery.md §4.3, §11.24.
+	ctx := context.Background()
+	svc, _, _, _, _ := setupTestService(t)
+	node1, node2 := "1", "2"
+	svc.UseClusterSessionSource(testClusterSessionSource{
+		available: true,
+		sessions: []ports.ClientSessionDTO{
+			{TenantID: "tenant-a", ClientID: "shared", NodeID: &node2, Protocol: "MQTT_5_0", Connected: true, SessionPresent: true},
+			{TenantID: "default", ClientID: "shared", NodeID: &node1, Protocol: "MQTT_3_1_1", SessionPresent: true},
+			{TenantID: "tenant-b", ClientID: "zulu", NodeID: nil, Protocol: "MQTT_5_0", SessionPresent: true},
+			{TenantID: "tenant-a", ClientID: "alpha", NodeID: &node2, Protocol: "MQTT_3_1_1", SessionPresent: true},
+			{TenantID: "default", ClientID: "bravo", NodeID: &node1, Protocol: "MQTT_5_0", SessionPresent: true},
+		},
+	})
+
+	all, page, err := svc.ListClients(ctx, ports.ClientFilter{Limit: 2})
+	if err != nil {
+		t.Fatalf("ListClients cluster source: %v", err)
+	}
+	if len(all) != 2 || !page.HasMore || page.NextCursor == nil || all[0].ClientID != "alpha" || all[1].ClientID != "bravo" {
+		t.Fatalf("first sorted cluster page = %+v, page %+v", all, page)
+	}
+	second, secondPage, err := svc.ListClients(ctx, ports.ClientFilter{Limit: 2, Cursor: *page.NextCursor})
+	if err != nil {
+		t.Fatalf("ListClients second cluster page: %v", err)
+	}
+	if len(second) != 2 || !secondPage.HasMore || second[0].ClientID != "shared" || second[0].TenantID != "default" || second[1].ClientID != "shared" || second[1].TenantID != "tenant-a" {
+		t.Fatalf("equal ClientID rows must sort by tenant: clients=%+v page=%+v", second, secondPage)
+	}
+
+	filtered, _, err := svc.ListClients(ctx, ports.ClientFilter{TenantID: "tenant-a", NodeID: "2", Protocol: "MQTT_3_1_1"})
+	if err != nil {
+		t.Fatalf("ListClients combined cluster filters: %v", err)
+	}
+	if len(filtered) != 1 || filtered[0].ClientID != "alpha" {
+		t.Fatalf("combined cluster filters returned %+v", filtered)
+	}
+	nilNode, _, err := svc.ListClients(ctx, ports.ClientFilter{ClientIDPrefix: "z", NodeID: "2"})
+	if err != nil {
+		t.Fatalf("ListClients nil-node filter: %v", err)
+	}
+	if len(nilNode) != 0 {
+		t.Fatalf("nil NodeID matched a requested node: %+v", nilNode)
+	}
+	withoutNodeFilter, _, err := svc.ListClients(ctx, ports.ClientFilter{ClientIDPrefix: "z"})
+	if err != nil || len(withoutNodeFilter) != 1 || withoutNodeFilter[0].TenantID != "tenant-b" {
+		t.Fatalf("nil NodeID row without node filter = %+v, err %v", withoutNodeFilter, err)
+	}
+
+	if _, _, err := svc.ListClients(ctx, ports.ClientFilter{Cursor: "invalid-not-base64"}); err != ErrInvalidCursor {
+		t.Fatalf("invalid cluster cursor error = %v, want %v", err, ErrInvalidCursor)
+	}
+	if _, _, err := svc.ListClients(ctx, ports.ClientFilter{Limit: MaxPageLimit + 1}); err != ErrInvalidPageSize {
+		t.Fatalf("oversized cluster page error = %v, want %v", err, ErrInvalidPageSize)
+	}
+}
+
+func TestService_ClusterSessionSourceGetClient(t *testing.T) {
+	// Traceability: CLU-08; docs/specs/cluster-session-and-delivery.md §4.3, §11.24.
+	ctx := context.Background()
+	svc, store, _, _, _ := setupTestService(t)
+	// A local-only row must not leak through once the committed cluster view is available.
+	connect := mqtt.Connect{ClientID: "local-only", Version: mqtt.ProtocolV5, CleanStart: false, SessionExpiryInterval: 300}
+	local, _, err := session.Open(nil, connect, time.Now().UTC())
+	if err != nil {
+		t.Fatalf("open local session: %v", err)
+	}
+	if err := store.Save(local); err != nil {
+		t.Fatalf("save local session: %v", err)
+	}
+	node := "3"
+	svc.UseClusterSessionSource(testClusterSessionSource{
+		available: true,
+		sessions: []ports.ClientSessionDTO{
+			{TenantID: "default", ClientID: "visible", NodeID: &node, Protocol: "MQTT_5_0", SessionPresent: true},
+			{TenantID: "tenant-a", ClientID: "visible", NodeID: nil, Protocol: "MQTT_3_1_1", SessionPresent: true},
+		},
+	})
+
+	defaultClient, err := svc.GetClient(ctx, "", "visible")
+	if err != nil || defaultClient.TenantID != "default" || defaultClient.NodeID == nil || *defaultClient.NodeID != node {
+		t.Fatalf("default-tenant cluster GetClient = %+v, err %v", defaultClient, err)
+	}
+	exact, err := svc.GetClient(ctx, "tenant-a", "visible")
+	if err != nil || exact.TenantID != "tenant-a" || exact.NodeID != nil {
+		t.Fatalf("exact cluster GetClient = %+v, err %v", exact, err)
+	}
+	if _, err := svc.GetClient(ctx, "", "local-only"); err != ErrClientNotFound {
+		t.Fatalf("active cluster view fell back to local session: err %v", err)
+	}
+	if _, err := svc.GetClient(ctx, "tenant-missing", "visible"); err != ErrClientNotFound {
+		t.Fatalf("missing cluster tenant GetClient error = %v", err)
+	}
+
+	svc.UseClusterSessionSource(testClusterSessionSource{
+		available: false,
+		sessions: []ports.ClientSessionDTO{
+			{TenantID: "default", ClientID: "phantom", Protocol: "MQTT_5_0"},
+		},
+	})
+	fallback, _, err := svc.ListClients(ctx, ports.ClientFilter{})
+	if err != nil || len(fallback) != 1 || fallback[0].ClientID != "local-only" {
+		t.Fatalf("unavailable cluster view ListClients did not use local sessions: clients=%+v err=%v", fallback, err)
+	}
+	fallbackClient, err := svc.GetClient(ctx, "default", "local-only")
+	if err != nil || fallbackClient.ClientID != "local-only" {
+		t.Fatalf("unavailable cluster view GetClient did not use local session store: client=%+v err=%v", fallbackClient, err)
+	}
+}

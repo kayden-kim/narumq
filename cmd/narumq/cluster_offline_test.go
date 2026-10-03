@@ -6,6 +6,7 @@ import (
 	"errors"
 	"io"
 	"log/slog"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -54,6 +55,14 @@ func newTestClusterOfflineRuntime(t *testing.T, config clusterConfigFile) (*clus
 					req.readResult <- clusterReadResponse{index: applyIndex}
 				case clusterDriverCommit:
 					pending := req.pending
+					// Exercise the production post-read gate for inactive metadata.
+					if clusterCommandRequiresSessionMetadata(pending.command) && !slices.Contains(runtime.machine.ActiveFeatures(), membership.SessionMetadataFeature) {
+						pending.readConfirmed = true
+						runtime.pendingCommits = append(runtime.pendingCommits, pending)
+						var proposals []clusterProposalWaiter
+						runtime.resolveCommitReads(make(map[string]clusterReadWaiter), &proposals)
+						continue
+					}
 					pending.staged <- clusterCommitStage{context: pending.context}
 					cmd, err := decodeMembershipCommand(pending.data)
 					if err != nil {

@@ -42,10 +42,14 @@ func encodeMembershipCommand(command membership.CommandDTO) ([]byte, error) {
 		if err != nil {
 			return nil, err
 		}
+		connect, err := sessionConnectToRecord(command.Ownership.Session)
+		if err != nil {
+			return nil, err
+		}
 		wire.Payload = &records.CommandEnvelope_Ownership{Ownership: &records.OwnershipChange{
 			TenantId: command.Ownership.TenantID, ClientId: command.Ownership.ClientID,
 			ExpectedEpoch: command.Ownership.ExpectedEpoch, OwnerNodeId: command.Ownership.OwnerNodeID,
-			Epoch: command.Ownership.Epoch, Action: action,
+			Epoch: command.Ownership.Epoch, Action: action, Session: connect,
 		}}
 	}
 	if command.Subscription != nil {
@@ -151,6 +155,23 @@ func encodeMembershipCommand(command membership.CommandDTO) ([]byte, error) {
 			Feature: command.FeatureActivation.Feature,
 		}}
 	}
+	if command.SessionMetadata != nil {
+		payloadCount++
+		change := command.SessionMetadata
+		action, err := sessionMetadataActionToRecord(change.Action)
+		if err != nil {
+			return nil, err
+		}
+		disposition, err := sessionWillDispositionToRecord(change.WillDisposition)
+		if err != nil {
+			return nil, err
+		}
+		wire.Payload = &records.CommandEnvelope_SessionMetadata{SessionMetadata: &records.SessionMetadataChange{
+			TenantId: change.TenantID, ClientId: change.ClientID, OwnerNodeId: change.OwnerNodeID, Epoch: change.Epoch,
+			Action: action, WillDisposition: disposition, ProposedAtUnixMillis: change.ProposedAtUnixMillis,
+			SessionExpiresAtUnixMillis: change.SessionExpiresAtUnixMillis, WillDueAtUnixMillis: change.WillDueAtUnixMillis,
+		}}
+	}
 	if payloadCount != 1 {
 		return nil, errors.New("application command must contain exactly one payload")
 	}
@@ -188,10 +209,14 @@ func decodeMembershipCommand(data []byte) (membership.CommandDTO, error) {
 		if err != nil {
 			return membership.CommandDTO{}, err
 		}
+		session, err := sessionConnectFromRecord(value.GetSession())
+		if err != nil {
+			return membership.CommandDTO{}, err
+		}
 		command.Ownership = &membership.OwnershipChangeDTO{
 			TenantID: value.GetTenantId(), ClientID: value.GetClientId(),
 			ExpectedEpoch: value.GetExpectedEpoch(), OwnerNodeID: value.GetOwnerNodeId(),
-			Epoch: value.GetEpoch(), Action: action,
+			Epoch: value.GetEpoch(), Action: action, Session: session,
 		}
 	case *records.CommandEnvelope_Subscription:
 		value := payload.Subscription
@@ -290,6 +315,25 @@ func decodeMembershipCommand(data []byte) (membership.CommandDTO, error) {
 			return membership.CommandDTO{}, errors.New("feature activation payload is required")
 		}
 		command.FeatureActivation = &membership.FeatureActivationDTO{Feature: value.GetFeature()}
+	case *records.CommandEnvelope_SessionMetadata:
+		value := payload.SessionMetadata
+		if value == nil {
+			return membership.CommandDTO{}, errors.New("session metadata payload is required")
+		}
+		action, err := sessionMetadataActionFromRecord(value.GetAction())
+		if err != nil {
+			return membership.CommandDTO{}, err
+		}
+		disposition, err := sessionWillDispositionFromRecord(value.GetWillDisposition())
+		if err != nil {
+			return membership.CommandDTO{}, err
+		}
+		command.SessionMetadata = &membership.SessionMetadataChangeDTO{
+			TenantID: value.GetTenantId(), ClientID: value.GetClientId(), OwnerNodeID: value.GetOwnerNodeId(),
+			Epoch: value.GetEpoch(), Action: action, WillDisposition: disposition,
+			ProposedAtUnixMillis:       value.GetProposedAtUnixMillis(),
+			SessionExpiresAtUnixMillis: value.GetSessionExpiresAtUnixMillis(), WillDueAtUnixMillis: value.GetWillDueAtUnixMillis(),
+		}
 	default:
 		return membership.CommandDTO{}, errors.New("decoded command has no supported payload")
 	}
@@ -395,9 +439,16 @@ func encodeMembershipSnapshot(snapshot membership.SnapshotDTO) ([]byte, error) {
 		})
 	}
 	state.TenantQuotaProfile = tenantQuotaProfileToRecord(snapshot.TenantQuotaProfile)
+	for _, metadata := range snapshot.SessionMetadata {
+		value, conversionErr := sessionMetadataStateToRecord(metadata)
+		if conversionErr != nil {
+			return nil, conversionErr
+		}
+		state.SessionMetadata = append(state.SessionMetadata, value)
+	}
 	state.ActiveFeatures = slices.Clone(snapshot.ActiveFeatures)
 	quotaProfileObjectCount := membershipQuotaProfileObjectCount(snapshot.TenantQuotaProfile)
-	objectCount := uint64(len(snapshot.Members) + len(snapshot.Ownerships) + len(snapshot.Subscriptions) + len(snapshot.DeliverySessions) + deliveryEntriesCount + len(snapshot.MembershipHistory) + len(snapshot.Retained) + len(snapshot.OfflineSessions) + offlineMessagesCount + len(snapshot.NodeDrains) + len(snapshot.ActiveFeatures) + quotaProfileObjectCount)
+	objectCount := uint64(len(snapshot.Members) + len(snapshot.Ownerships) + len(snapshot.Subscriptions) + len(snapshot.DeliverySessions) + deliveryEntriesCount + len(snapshot.MembershipHistory) + len(snapshot.Retained) + len(snapshot.OfflineSessions) + offlineMessagesCount + len(snapshot.NodeDrains) + len(snapshot.ActiveFeatures) + len(snapshot.SessionMetadata) + quotaProfileObjectCount)
 	if snapshot.ObjectCount != objectCount {
 		return nil, errors.New("application snapshot object count does not match its contents")
 	}
@@ -516,6 +567,13 @@ func decodeMembershipSnapshot(data []byte) (membership.SnapshotDTO, error) {
 			Progress: nodeDrainProgressFromRecord(drain.GetProgress()), FailureCode: drain.GetFailureCode(),
 			BlockingReason: drain.GetBlockingReason(), CommittedIndex: drain.GetCommittedIndex(),
 		})
+	}
+	for _, metadata := range state.GetSessionMetadata() {
+		value, conversionErr := sessionMetadataStateFromRecord(metadata)
+		if conversionErr != nil {
+			return membership.SnapshotDTO{}, conversionErr
+		}
+		snapshot.SessionMetadata = append(snapshot.SessionMetadata, value)
 	}
 	snapshot.TenantQuotaProfile = tenantQuotaProfileFromRecord(state.GetTenantQuotaProfile())
 	return snapshot, nil
@@ -640,6 +698,193 @@ func memberIdentityFromRecord(member *records.MemberIdentity) (*membership.Membe
 		ClusterProtocolMajor: member.GetClusterProtocolMajor(), ClusterProtocolMinor: member.GetClusterProtocolMinor(),
 		StateSchemaMajor: member.GetStateSchemaMajor(), StateSchemaMinor: member.GetStateSchemaMinor(),
 		Phase: phase, OperationID: member.GetOperationId(),
+	}, nil
+}
+
+func sessionRetentionToRecord(value membership.SessionRetention) (records.SessionRetention, error) {
+	switch value {
+	case membership.SessionRetentionImmediate:
+		return records.SessionRetention_SESSION_RETENTION_IMMEDIATE, nil
+	case membership.SessionRetentionFinite:
+		return records.SessionRetention_SESSION_RETENTION_FINITE, nil
+	case membership.SessionRetentionInfinite:
+		return records.SessionRetention_SESSION_RETENTION_INFINITE, nil
+	default:
+		return 0, fmt.Errorf("unsupported session retention %d", value)
+	}
+}
+
+func sessionRetentionFromRecord(value records.SessionRetention) (membership.SessionRetention, error) {
+	switch value {
+	case records.SessionRetention_SESSION_RETENTION_IMMEDIATE:
+		return membership.SessionRetentionImmediate, nil
+	case records.SessionRetention_SESSION_RETENTION_FINITE:
+		return membership.SessionRetentionFinite, nil
+	case records.SessionRetention_SESSION_RETENTION_INFINITE:
+		return membership.SessionRetentionInfinite, nil
+	default:
+		return 0, fmt.Errorf("unsupported session retention %d", value)
+	}
+}
+
+func sessionMetadataActionToRecord(value membership.SessionMetadataAction) (records.SessionMetadataAction, error) {
+	switch value {
+	case membership.SessionMetadataActionDetach:
+		return records.SessionMetadataAction_SESSION_METADATA_ACTION_DETACH, nil
+	case membership.SessionMetadataActionClaimWill:
+		return records.SessionMetadataAction_SESSION_METADATA_ACTION_CLAIM_WILL, nil
+	case membership.SessionMetadataActionDiscard:
+		return records.SessionMetadataAction_SESSION_METADATA_ACTION_DISCARD, nil
+	default:
+		return 0, fmt.Errorf("unsupported session metadata action %d", value)
+	}
+}
+
+func sessionMetadataActionFromRecord(value records.SessionMetadataAction) (membership.SessionMetadataAction, error) {
+	switch value {
+	case records.SessionMetadataAction_SESSION_METADATA_ACTION_DETACH:
+		return membership.SessionMetadataActionDetach, nil
+	case records.SessionMetadataAction_SESSION_METADATA_ACTION_CLAIM_WILL:
+		return membership.SessionMetadataActionClaimWill, nil
+	case records.SessionMetadataAction_SESSION_METADATA_ACTION_DISCARD:
+		return membership.SessionMetadataActionDiscard, nil
+	default:
+		return 0, fmt.Errorf("unsupported session metadata action %d", value)
+	}
+}
+
+func sessionWillDispositionToRecord(value membership.SessionWillDisposition) (records.SessionWillDisposition, error) {
+	switch value {
+	case membership.SessionWillDispositionUnspecified:
+		return records.SessionWillDisposition_SESSION_WILL_DISPOSITION_UNSPECIFIED, nil
+	case membership.SessionWillDispositionDiscard:
+		return records.SessionWillDisposition_SESSION_WILL_DISPOSITION_DISCARD, nil
+	case membership.SessionWillDispositionClaim:
+		return records.SessionWillDisposition_SESSION_WILL_DISPOSITION_CLAIM, nil
+	case membership.SessionWillDispositionSchedule:
+		return records.SessionWillDisposition_SESSION_WILL_DISPOSITION_SCHEDULE, nil
+	default:
+		return 0, fmt.Errorf("unsupported session Will disposition %d", value)
+	}
+}
+
+func sessionWillDispositionFromRecord(value records.SessionWillDisposition) (membership.SessionWillDisposition, error) {
+	switch value {
+	case records.SessionWillDisposition_SESSION_WILL_DISPOSITION_UNSPECIFIED:
+		return membership.SessionWillDispositionUnspecified, nil
+	case records.SessionWillDisposition_SESSION_WILL_DISPOSITION_DISCARD:
+		return membership.SessionWillDispositionDiscard, nil
+	case records.SessionWillDisposition_SESSION_WILL_DISPOSITION_CLAIM:
+		return membership.SessionWillDispositionClaim, nil
+	case records.SessionWillDisposition_SESSION_WILL_DISPOSITION_SCHEDULE:
+		return membership.SessionWillDispositionSchedule, nil
+	default:
+		return 0, fmt.Errorf("unsupported session Will disposition %d", value)
+	}
+}
+
+func sessionWillToRecord(value *membership.SessionWillDTO) *records.SessionWill {
+	if value == nil {
+		return nil
+	}
+	return &records.SessionWill{
+		Topic: value.Topic, Payload: append([]byte(nil), value.Payload...), Qos: value.QoS,
+		Retain: value.Retain, DelayIntervalSeconds: value.DelayIntervalSeconds,
+	}
+}
+
+func sessionWillFromRecord(value *records.SessionWill) *membership.SessionWillDTO {
+	if value == nil {
+		return nil
+	}
+	return &membership.SessionWillDTO{
+		Topic: value.GetTopic(), Payload: append([]byte(nil), value.GetPayload()...), QoS: value.GetQos(),
+		Retain: value.GetRetain(), DelayIntervalSeconds: value.GetDelayIntervalSeconds(),
+	}
+}
+
+func sessionPrincipalToRecord(value *membership.SessionPrincipalDTO) *records.SessionPrincipal {
+	if value == nil {
+		return nil
+	}
+	return &records.SessionPrincipal{
+		Subject: value.Subject, CredentialId: value.CredentialID, Roles: slices.Clone(value.Roles),
+		ExpiresAtUnixMillis: value.ExpiresAtUnixMillis,
+	}
+}
+
+func sessionPrincipalFromRecord(value *records.SessionPrincipal) *membership.SessionPrincipalDTO {
+	if value == nil {
+		return nil
+	}
+	return &membership.SessionPrincipalDTO{
+		Subject: value.GetSubject(), CredentialID: value.GetCredentialId(),
+		Roles: slices.Clone(value.GetRoles()), ExpiresAtUnixMillis: value.GetExpiresAtUnixMillis(),
+	}
+}
+
+func sessionConnectToRecord(value *membership.SessionConnectDTO) (*records.SessionConnect, error) {
+	if value == nil {
+		return nil, nil
+	}
+	retention, err := sessionRetentionToRecord(value.Retention)
+	if err != nil {
+		return nil, err
+	}
+	return &records.SessionConnect{
+		ProtocolVersion: value.ProtocolVersion, Retention: retention,
+		ExpiryIntervalSeconds: value.ExpiryIntervalSeconds, Will: sessionWillToRecord(value.Will),
+		Principal: sessionPrincipalToRecord(value.Principal),
+	}, nil
+}
+
+func sessionConnectFromRecord(value *records.SessionConnect) (*membership.SessionConnectDTO, error) {
+	if value == nil {
+		return nil, nil
+	}
+	retention, err := sessionRetentionFromRecord(value.GetRetention())
+	if err != nil {
+		return nil, err
+	}
+	return &membership.SessionConnectDTO{
+		ProtocolVersion: value.GetProtocolVersion(), Retention: retention,
+		ExpiryIntervalSeconds: value.GetExpiryIntervalSeconds(), Will: sessionWillFromRecord(value.GetWill()),
+		Principal: sessionPrincipalFromRecord(value.GetPrincipal()),
+	}, nil
+}
+
+func sessionMetadataStateToRecord(value membership.SessionMetadataStateDTO) (*records.SessionMetadataState, error) {
+	retention, err := sessionRetentionToRecord(value.Retention)
+	if err != nil {
+		return nil, err
+	}
+	return &records.SessionMetadataState{
+		TenantId: value.TenantID, ClientId: value.ClientID, Epoch: value.Epoch,
+		ProtocolVersion: value.ProtocolVersion, Retention: retention,
+		ExpiryIntervalSeconds: value.ExpiryIntervalSeconds, Connected: value.Connected,
+		DetachedAtUnixMillis:       value.DetachedAtUnixMillis,
+		SessionExpiresAtUnixMillis: value.SessionExpiresAtUnixMillis,
+		Will:                       sessionWillToRecord(value.Will), WillDueAtUnixMillis: value.WillDueAtUnixMillis,
+		Principal: sessionPrincipalToRecord(value.Principal),
+	}, nil
+}
+
+func sessionMetadataStateFromRecord(value *records.SessionMetadataState) (membership.SessionMetadataStateDTO, error) {
+	if value == nil {
+		return membership.SessionMetadataStateDTO{}, errors.New("session metadata state is required")
+	}
+	retention, err := sessionRetentionFromRecord(value.GetRetention())
+	if err != nil {
+		return membership.SessionMetadataStateDTO{}, err
+	}
+	return membership.SessionMetadataStateDTO{
+		TenantID: value.GetTenantId(), ClientID: value.GetClientId(), Epoch: value.GetEpoch(),
+		ProtocolVersion: value.GetProtocolVersion(), Retention: retention,
+		ExpiryIntervalSeconds: value.GetExpiryIntervalSeconds(), Connected: value.GetConnected(),
+		DetachedAtUnixMillis:       value.GetDetachedAtUnixMillis(),
+		SessionExpiresAtUnixMillis: value.GetSessionExpiresAtUnixMillis(),
+		Will:                       sessionWillFromRecord(value.GetWill()), WillDueAtUnixMillis: value.GetWillDueAtUnixMillis(),
+		Principal: sessionPrincipalFromRecord(value.GetPrincipal()),
 	}, nil
 }
 

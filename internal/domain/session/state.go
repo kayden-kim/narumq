@@ -15,14 +15,17 @@ var (
 	ErrAlreadyConnected = errors.New("session is already connected")
 	// ErrNotConnected means that Disconnect was applied to a disconnected state.
 	ErrNotConnected = errors.New("session is not connected")
+	// ErrInvalidRestore means committed lifecycle metadata is inconsistent.
+	ErrInvalidRestore = errors.New("session restore input is invalid")
 )
 
-type retention byte
+// Retention determines how long a disconnected session survives.
+type Retention byte
 
 const (
-	retentionImmediate retention = iota
-	retentionInfinite
-	retentionFinite
+	RetentionImmediate Retention = iota
+	RetentionInfinite
+	RetentionFinite
 )
 
 // Lifecycle is a value-owned MQTT session connection and expiry state.
@@ -32,13 +35,43 @@ type Lifecycle struct {
 	version        mqtt.ProtocolVersion
 	connected      bool
 	expiryInterval uint32
-	retention      retention
+	retention      Retention
 	expiresAt      time.Time
 	hasExpiry      bool
 	discarded      bool
 	will           *mqtt.Will
 	willPublished  bool
 	willDiscarded  bool
+}
+
+// RestoreInput is committed lifecycle metadata recovered from replicated cluster state.
+type RestoreInput struct {
+	Key            tenancy.SessionKey
+	Version        mqtt.ProtocolVersion
+	Retention      Retention
+	ExpiryInterval uint32
+	Connected      bool
+	ExpiresAt      time.Time
+	Will           *mqtt.Will
+}
+
+// Restore rebuilds a lifecycle without reevaluating its committed expiry deadline.
+func Restore(input RestoreInput) (Lifecycle, error) {
+	if input.Key == (tenancy.SessionKey{}) ||
+		(input.Version != mqtt.ProtocolV311 && input.Version != mqtt.ProtocolV5) ||
+		input.Retention > RetentionFinite ||
+		(input.Connected && !input.ExpiresAt.IsZero()) ||
+		(!input.Connected && input.Retention == RetentionImmediate) ||
+		(!input.Connected && input.Retention == RetentionFinite && input.ExpiresAt.IsZero()) ||
+		(input.Retention == RetentionInfinite && !input.ExpiresAt.IsZero()) {
+		return Lifecycle{}, ErrInvalidRestore
+	}
+	return Lifecycle{
+		sessionKey: input.Key, clientID: input.Key.ClientID(), version: input.Version,
+		retention: input.Retention, expiryInterval: input.ExpiryInterval,
+		connected: input.Connected, expiresAt: input.ExpiresAt,
+		hasExpiry: !input.ExpiresAt.IsZero(), will: input.Will.Clone(),
+	}, nil
 }
 
 // DisconnectReason represents the trigger that closed an MQTT network connection.
@@ -120,16 +153,16 @@ func (state Lifecycle) Disconnect(now time.Time, reason DisconnectReason) (Disco
 
 	var result DisconnectResult
 	switch state.retention {
-	case retentionImmediate:
+	case RetentionImmediate:
 		state.discarded = true
 		result.SessionRemoved = true
-	case retentionFinite:
+	case RetentionFinite:
 		state.discarded = false
 		result.ScheduleExpiry = true
 		result.ExpiryDuration = time.Duration(state.expiryInterval) * time.Second
 		state.hasExpiry = true
 		state.expiresAt = now.Add(result.ExpiryDuration)
-	case retentionInfinite:
+	case RetentionInfinite:
 		state.discarded = false
 	default:
 		return DisconnectResult{}, ErrNotConnected
@@ -140,13 +173,13 @@ func (state Lifecycle) Disconnect(now time.Time, reason DisconnectReason) (Disco
 		if reason == DisconnectNormal {
 			state.willDiscarded = true
 		} else {
-			if state.version == mqtt.ProtocolV311 || state.will.DelayInterval == 0 || state.retention == retentionImmediate {
+			if state.version == mqtt.ProtocolV311 || state.will.DelayInterval == 0 || state.retention == RetentionImmediate {
 				state.willPublished = true
 				result.PublishWillNow = true
 				result.Will = state.will.Clone()
 			} else {
 				willDelay := time.Duration(state.will.DelayInterval) * time.Second
-				if state.retention == retentionFinite && result.ExpiryDuration < willDelay {
+				if state.retention == RetentionFinite && result.ExpiryDuration < willDelay {
 					willDelay = result.ExpiryDuration
 				}
 				result.ScheduleWill = true
@@ -241,6 +274,11 @@ func (state Lifecycle) ExpiryInterval() uint32 {
 	return state.expiryInterval
 }
 
+// Retention returns the session's disconnected retention policy.
+func (state Lifecycle) Retention() Retention {
+	return state.retention
+}
+
 // ExpiresAt returns the finite deadline after Disconnect, if one exists.
 func (state Lifecycle) ExpiresAt() (time.Time, bool) {
 	if state.connected || state.discarded || !state.hasExpiry {
@@ -260,18 +298,18 @@ func newLifecycle(connect mqtt.Connect) Lifecycle {
 		state.expiryInterval = connect.SessionExpiryInterval
 		switch connect.SessionExpiryInterval {
 		case 0:
-			state.retention = retentionImmediate
+			state.retention = RetentionImmediate
 		case ^uint32(0):
-			state.retention = retentionInfinite
+			state.retention = RetentionInfinite
 		default:
-			state.retention = retentionFinite
+			state.retention = RetentionFinite
 		}
 		return state
 	}
 	if connect.CleanStart {
-		state.retention = retentionImmediate
+		state.retention = RetentionImmediate
 	} else {
-		state.retention = retentionInfinite
+		state.retention = RetentionInfinite
 	}
 	return state
 }

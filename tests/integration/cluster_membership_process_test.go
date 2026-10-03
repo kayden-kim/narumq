@@ -150,6 +150,12 @@ func newClusterMembershipProcessFixture(t *testing.T, nodeCount int, buildTags s
       "durable-will-pub-1",
       "durable-will-pub-2",
       "durable-will-sentinel",
+      "meta-observer",
+      "meta-publisher",
+      "meta-crash",
+      "meta-resume",
+      "meta-takeover",
+      "meta-delayed",
       "ownership-takeover-client",
       "ownership-publisher-1",
       "ownership-publisher-3",
@@ -331,6 +337,24 @@ func newClusterMembershipProcessFixture(t *testing.T, nodeCount int, buildTags s
     "effect": "allow",
     "action": "will",
     "topicFilter": "durable-will/#"
+  }, {
+    "tenantId": "acceptance",
+    "role": "client",
+    "effect": "allow",
+    "action": "publish",
+    "topicFilter": "meta/#"
+  }, {
+    "tenantId": "acceptance",
+    "role": "client",
+    "effect": "allow",
+    "action": "subscribe",
+    "topicFilter": "meta/#"
+  }, {
+    "tenantId": "acceptance",
+    "role": "client",
+    "effect": "allow",
+    "action": "will",
+    "topicFilter": "meta/#"
   }, {
     "tenantId": "acceptance",
     "role": "client",

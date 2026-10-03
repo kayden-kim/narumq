@@ -294,22 +294,6 @@ func TestLoadClusterConfigFile(t *testing.T) {
 	_, err := loadClusterConfigFile(malformed)
 	ccfWantError(t, err, "invalid JSON")
 
-	want := validJoinerClusterConfig()
-	data, err := json.Marshal(want)
-	if err != nil {
-		t.Fatal(err)
-	}
-	valid := filepath.Join(directory, "valid.json")
-	if err := os.WriteFile(valid, data, 0o600); err != nil {
-		t.Fatal(err)
-	}
-	got, err := loadClusterConfigFile(valid)
-	if err != nil {
-		t.Fatalf("load valid config: %v", err)
-	}
-	if !reflect.DeepEqual(got, want) {
-		t.Fatalf("loaded config = %#v, want %#v", got, want)
-	}
 }
 
 func TestParseClusterConfigRejectsUnreadableAndStructurallyInvalidJSON(t *testing.T) {

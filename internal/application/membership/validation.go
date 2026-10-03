@@ -72,6 +72,9 @@ func validateCommand(command CommandDTO) error {
 	if command.FeatureActivation != nil {
 		payloadCount++
 	}
+	if command.SessionMetadata != nil {
+		payloadCount++
+	}
 	if payloadCount != 1 {
 		return ErrInvalidCommand
 	}
@@ -114,6 +117,10 @@ func validateCommand(command CommandDTO) error {
 		}
 	case command.FeatureActivation != nil:
 		if !release.ValidFeature(command.FeatureActivation.Feature) {
+			return ErrInvalidCommand
+		}
+	case command.SessionMetadata != nil:
+		if validateSessionMetadataChange(*command.SessionMetadata) != nil {
 			return ErrInvalidCommand
 		}
 	}
@@ -226,6 +233,11 @@ func validateMemberIdentity(member MemberIdentityDTO) error {
 func validateOwnershipChange(change OwnershipChangeDTO) error {
 	if !validSessionIdentity(change.TenantID, change.ClientID) || change.OwnerNodeID == 0 || change.Epoch == 0 || change.Action < OwnershipActionAcquire || change.Action > OwnershipActionRelease {
 		return ErrInvalidCommand
+	}
+	if change.Session != nil {
+		if (change.Action != OwnershipActionAcquire && change.Action != OwnershipActionTransfer) || validateSessionConnect(*change.Session) != nil {
+			return ErrInvalidCommand
+		}
 	}
 	return nil
 }
@@ -347,7 +359,7 @@ func validSnapshot(snapshot SnapshotDTO) error {
 	for _, session := range snapshot.DeliverySessions {
 		deliveryObjects += len(session.Messages) + len(session.Inbound)
 	}
-	count := len(snapshot.Members) + len(snapshot.Ownerships) + len(snapshot.Subscriptions) + deliveryObjects + len(snapshot.MembershipHistory) + len(snapshot.Retained) + len(snapshot.OfflineSessions) + offlineMessagesCount + len(snapshot.NodeDrains) + len(snapshot.ActiveFeatures) + tenantQuotaObjectCount(snapshot.TenantQuotaProfile)
+	count := len(snapshot.Members) + len(snapshot.Ownerships) + len(snapshot.Subscriptions) + deliveryObjects + len(snapshot.MembershipHistory) + len(snapshot.Retained) + len(snapshot.OfflineSessions) + offlineMessagesCount + len(snapshot.NodeDrains) + len(snapshot.ActiveFeatures) + len(snapshot.SessionMetadata) + tenantQuotaObjectCount(snapshot.TenantQuotaProfile)
 	if count > maxSnapshotEntries || snapshot.ObjectCount != uint64(count) || (count > 0 && snapshot.LastIncludedIndex == 0) || len(snapshot.Retained) > MaxRetainedMessages {
 		return ErrInvalidSnapshot
 	}
@@ -391,6 +403,31 @@ func validSnapshot(snapshot SnapshotDTO) error {
 			return ErrInvalidSnapshot
 		}
 		ownershipEpochs[sessionKey{tenantID: ownership.TenantID, clientID: ownership.ClientID}] = ownership.Epoch
+	}
+	sessionMetadataBytes := 0
+	for index, state := range snapshot.SessionMetadata {
+		key := sessionKey{tenantID: state.TenantID, clientID: state.ClientID}
+		ownerEpoch, hasOwner := ownershipEpochs[key]
+		if validateSessionMetadataState(state) != nil || (index > 0 && compareSession(snapshot.SessionMetadata[index-1].TenantID, snapshot.SessionMetadata[index-1].ClientID, state.TenantID, state.ClientID) >= 0) || !hasOwner || state.Epoch > ownerEpoch {
+			return ErrInvalidSnapshot
+		}
+		size := sessionWillBytes(state)
+		if size > MaxSessionWillBytes-sessionMetadataBytes {
+			return ErrInvalidSnapshot
+		}
+		sessionMetadataBytes += size
+	}
+	if len(snapshot.SessionMetadata) > 0 {
+		active := false
+		for _, feature := range snapshot.ActiveFeatures {
+			if feature == SessionMetadataFeature {
+				active = true
+				break
+			}
+		}
+		if !active {
+			return ErrInvalidSnapshot
+		}
 	}
 	for index, subscription := range snapshot.Subscriptions {
 		if !validSessionIdentity(subscription.TenantID, subscription.ClientID) || subscription.OwnerNodeID == 0 || subscription.Epoch == 0 || !validTopicFilter(subscription.Filter) || subscription.QoS > 2 || subscription.RetainHandling > 2 || (index > 0 && compareSubscription(snapshot.Subscriptions[index-1], subscription) >= 0) {
