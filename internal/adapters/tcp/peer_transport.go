@@ -1690,6 +1690,11 @@ func (transport *DynamicTCPPeerTransport) RequestSeedAdmission(
 	if err != nil || !response.Accepted {
 		return nil, fmt.Errorf("seed admission rejected")
 	}
+	// Older seeds may approve a stable voter. A fresh joiner has no durable
+	// history to justify installing that identity or entering its Raft streams.
+	if local.Phase == PeerPhaseStaged && response.Candidate.Phase == PeerPhaseVoter {
+		return nil, fmt.Errorf("fresh joiner cannot install voter seed identity")
+	}
 	// Address and release are not echoed by §1.5; they remain bound to the local request.
 	response.Candidate.Address = local.Address
 	response.Candidate.ReleaseVersion = local.ReleaseVersion

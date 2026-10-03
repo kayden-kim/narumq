@@ -2005,9 +2005,9 @@ func (runtime *clusterRuntime) admitPeer(ctx context.Context, candidate tcpadapt
 			return tcpadapter.SeedAdmissionResponseDTO{}, errors.New("learner candidate conflicts with committed Raft membership")
 		}
 	case tcpadapter.PeerPhaseVoter:
-		if candidateIdentity.OperationID != "" || !candidateIsVoter || candidateIsLearner {
-			return tcpadapter.SeedAdmissionResponseDTO{}, errors.New("voter candidate conflicts with committed Raft membership")
-		}
+		// A recovered voter resumes from local state without seed admission.
+		// Incumbent count alone admits a lost voter in a four-voter cluster.
+		return tcpadapter.SeedAdmissionResponseDTO{}, errors.New("voter must recover from persistent local state")
 	default:
 		return tcpadapter.SeedAdmissionResponseDTO{}, errors.New("candidate phase is not eligible for seed admission")
 	}

@@ -20,6 +20,7 @@
 4. join, 정상 leave와 재시작은 수동 데이터 수정 없이 재시도할 수 있어야 한다.
 5. 비인가 member와 지원하지 않는 cluster protocol version은 membership에 추가해서는 안 된다.
 6. data directory가 없거나 빈 bootstrap voter는 다른 bootstrap voter 모두에게 진행 여부를 확인한 뒤에만 Raft를 bootstrap한다. 어느 voter라도 term 1·commit 3을 넘었고 이 voter를 함께 시작한 peer로 허용하지 않으면 시작하지 않고 `cluster bootstrap refused` 오류로 종료한다. 확인 중에는 management·MQTT listener를 열지 않는다.
+7. 승격된 joiner voter가 영속 기록을 잃으면 같은 ID를 seed admission으로 다시 참여시키지 않는다. Seed runtime은 committed VOTER 후보를 거절하며 fresh STAGED client는 이전 seed의 VOTER 응답도 설치하지 않는다. 정상 same-volume 재시작은 persisted committed local identity로 재개한다([ADR-0024](../decisions/ADR-0024-joiner-voter-volume-loss-admission.md)).
 
 외부 cluster 조회는 최소한 node별 `nodeId`, lifecycle state, release version, member role, readiness, replication health와 마지막 오류를 제공해야 한다. `replicationHealth`는 조회 node 자신에 대해서는 local Raft storage 상태를, 원격 peer 행에 대해서는 조회 node에서 관찰한 peer 연결 상태를 나타내며 원격 peer의 storage 상태를 뜻하지 않는다. `lastErrorCode`는 내부 오류 원문 대신 안정된 오류 code를 제공한다. `replicationQueue`는 조회 node에서 해당 원격 peer로 보내는 outbound 대기열을 나타낸다. 정확한 field 형식은 [Management API v1 Contract](../contracts/management-api-v1.md)과 OpenAPI 문서를 따른다.
 
@@ -207,6 +208,7 @@ partition이 복구되면 committed log가 기준이 된다. minority의 specula
 2. 새 owner는 persistent session, subscription, inflight와 offline queue를 복구한 뒤 connection을 수용해야 한다.
 3. 단일 node 장애에서 durable ACK가 끝난 message의 RPO는 0이어야 한다.
 4. crash 중 snapshot 또는 log append가 중단돼도 마지막 유효 commit 이전 상태로 원자적으로 복구해야 한다.
+   - Joiner voter의 기록 손실은 3-voter·승격 직후 4-voter 상태 모두 seed 단계에서 재참여를 막고 새 ID로 교체한다. Joiner 초기 metadata/WAL·listener 생성은 허용되나 성공 MQTT admission과 Raft 참여는 허용하지 않는다. 정상 NOT_READY 거절과 Raft panic을 구분한다.
 5. 실제 disk full과 느린 I/O는 해당 node의 복제 상태, readiness와 commit 결과에 반영해야 한다. 저장 오류를 성공 commit으로 보고해서는 안 된다.
    - Local `replicationHealth`는 terminal Raft 실패 시 `FAILED`, WAL Ready 기록과 `fsync` 또는 snapshot 영속화 한 건이 1초 이상 걸리거나 진행 중인 시간이 1초에 도달하면 `DEGRADED`, 나머지는 `HEALTHY`다. 느린 작업이 끝난 뒤 10초 동안 다시 느린 영속화 작업이 없으면 `HEALTHY`로 돌아간다.
    - `DEGRADED`는 `/health/ready`를 503으로 만들고 liveness는 200으로 유지한다. `FAILED`는 `/health/ready`와 `/health/live`를 모두 503으로 만들며 readiness 원인은 `raft storage failed: no space left; restart required`, `raft storage failed: I/O error; restart required`, `raft node failed; restart required` 중 원인에 맞는 문자열이어야 한다. 느린 I/O readiness 원인은 `raft storage I/O is slow`다. `FAILED` node는 관리 HTTP 응답을 유지하고 MQTT 신규 연결을 거절하며, 저장 공간을 확보해도 process를 재시작하기 전에는 복구하지 않는다.
@@ -712,7 +714,7 @@ Skip은 acceptance가 아니다. 지정 historical baseline의 별도 증거는 
 
 ### 11.20 Voter volume 손실 보호와 재시드 수용 매핑
 
-[ADR-0022](../decisions/ADR-0022-bootstrap-volume-loss-guard.md)의 빈 directory bootstrap 보호와 새 ID 교체를 검증한다. 로컬 process 종료·volume 삭제는 production Linux/EBS 손실 시험을 대신하지 않는다.
+[ADR-0022](../decisions/ADR-0022-bootstrap-volume-loss-guard.md)의 빈 directory bootstrap 보호와 [ADR-0024](../decisions/ADR-0024-joiner-voter-volume-loss-admission.md)의 joiner voter seed 보호·새 ID 교체를 검증한다. 로컬 process 종료·volume 삭제는 production Linux/EBS 손실 시험을 대신하지 않는다. Bootstrap은 exit 1·listener 미개방·directory 미변경이고 joiner는 기존 NOT_READY·generic seed 거절 경로를 유지하므로 서로 다른 수용 기준이다.
 
 | Scenario | 관찰할 결과 | 시험 위치 | 실행 증거 |
 | --- | --- | --- | --- |
@@ -727,7 +729,14 @@ Skip은 acceptance가 아니다. 지정 historical baseline의 별도 증거는 
 | Durable ACK fault 회귀 | Replica kill·crash point·partition에서 기존 ACK 경계 유지 | `TestDynamicClusterDurableAckReplicaKillProcessAcceptance`, `TestDynamicClusterDurableAckCrashPointProcessAcceptance`, `TestDynamicClusterDurableAckPartitionProcessAcceptance` | PASS: 세 replica × QoS 1/2 kill, 20 crash 조합, 두 partition 시나리오; package 159.740s, wall 160.95s |
 | Docker storage chaos | 기존 여섯 storage 시나리오 모두 PASS | `tests/chaos/cluster-storage-v1` | PASS 6/6: `storage-bootprobe-20261003`, wall 243.96s; artifact `.artifacts/chaos/cluster-storage-v1/storage-bootprobe-20261003/` |
 | Repository local gate | `local: PASS` | `go run ./tools/verify local` | PASS: wall 336.41s, integration 300.618s; traceability·architecture·네 fuzz target 각 10,000회·package/integration·package race·coverage |
-| Joiner voter 빈 volume | 기존 seed admission이 빈 volume의 같은 ID 재참여를 거절 | `cmd/narumq/cluster_runtime.go` `admitPeer` 코드 근거만 | Process 미실행 |
+| Fresh joiner VOTER 응답 거절 | 실제 TLS에서 정합적인 VOTER 응답도 local STAGED identity·peer registry에 설치하지 않고 Raft 송신 차단 | `internal/adapters/tcp.TestDynamicSeedAdmissionRejectsFreshVoterIdentity` | Before FAIL: identity·세 peer 설치와 Raft send 허용, package 0.707s·wall 3.00s. After PASS: 기존 learner/catching-up/voter 진행과 함께 package 0.852s·wall 3.64s |
+| Joiner voter 4-voter 빈 volume | `{1,2,3,4}`에서 같은 ID 빈-volume 재시작은 seed 거절·NOT_READY·긍정 CONNACK 없음·panic 없음, survivor membership 불변 | `tests/integration.TestDynamicClusterJoinerVoterVolumeLossProcessAcceptance/four_voters_before_replacement` | Before FAIL: raw TLS seed 승인과 `tocommit(28) ... lastIndex(0)` heartbeat panic·exit 2 (11.46s). After PASS 24.06s: client guard를 거치지 않은 seed wire 거절과 3초 이상 startup/ready 503·정상 MQTT 거절·snapshot 부재 확인 |
+| Joiner voter 3-voter 빈 volume | `{1,2,4}`에서도 같은 보호, 정상 same-volume recovery 유지 | 같은 process 시험 `three_voters_after_replacement` | 기존 3-voter 기준 PASS 23.43s·package 23.585s·wall 25.80s. After PASS 23.32s. 최초 시험의 MQTT close-only 조건은 정상 negative CONNACK `0003`을 잘못 거절해 수정했으며 production 동작은 완화하지 않음 |
+| Joiner 새 ID 재시드 | 최종 `{1,2,5}`·retired 4, 새 node에서 retained·SessionPresent·offline 복구와 same-volume restart, retired ID stage 거절 | 같은 process 시험 두 subtest | PASS: 두 경우 retained `v1`, offline `kept`와 재시작 후 다른 메시지 `after-reseed`, `member_id_reserved` 확인. 전체 시험 47.39s·package 47.567s·wall 50.515s |
+| ADR-0024 membership 회귀 | 정상 joiner volume 복구·bootstrap 보호·learner/promotion/removal crash recovery 유지 | `TestDynamicClusterMembershipProcessAcceptance`, `TestDynamicClusterMembershipTransitionCrashRecovery`, `TestDynamicClusterMembershipRemovalHandoffWaitsForQuorum`, `TestDynamicClusterVoterVolumeLossProcessAcceptance`, `TestDynamicClusterBootstrapProbeAllowsLateCoBootstrapPeer` | PASS: 다섯 시험 package 80.351s·wall 81.816s |
+| ADR-0024 boundary race | 전체 TCP·composition runtime package에서 concurrency 위반 없음 | `go test -race ./internal/adapters/tcp ./cmd/narumq -count=1` | PASS: 각각 12.854s·16.482s, wall 24.575s |
+| ADR-0024 release 회귀 | Synthetic와 지정 historical baseline의 mixed release·snapshot·rollback 계약 유지 | `TestDynamicClusterReleaseCompatibilityProcessAcceptance`, `TestDynamicClusterHistoricalReleaseCompatibilityProcessAcceptance` | PASS: synthetic 85.25s, historical `58a95f801e1467379db2eb6f3454ae44e954418a` 90.99s, package 176.410s·wall 177.735s |
+| ADR-0024 repository local gate | `local: PASS` | `go run ./tools/verify local` | PASS: wall 377.424s·integration 342.977s; gofmt·vet·traceability·architecture·네 fuzz target 각 10,000회·전체 package/integration·production package race·coverage |
 | Production Linux/EBS volume loss | 실제 영속 volume 손실과 새 ID 복구 | Production acceptance | 미실행; CLU-14·ADR-0009 열린 gate 유지 |
 
 2026-10-03 Windows 로컬 실행 명령 (작업 위치 `D:/Workspace/narumq`):
@@ -747,6 +756,23 @@ GOMAXPROCS=4 go run ./tools/verify local
 위 env 표기는 실행 조건이며 Windows에서는 Python `subprocess.run`의 argv와 env dict로 전달했다. 단독 volume-loss 명령은 구현 전 실패 재현에 사용했고, 구현 후에는 두 process 시험을 묶은 명령으로 확인했다. 최초 transport 시험의 추가 certificate mismatch case는 client의 local SAN 검증에서 먼저 실패했다. 요청 ID만 configured peer로 가장하도록 fixture를 고쳐 실제 responder의 certificate 거절을 확인했으며 production 검증 정책은 완화하지 않았다.
 
 Docker 결과의 여섯 ID는 `follower-disk-full`, `quorum-disk-full`, `follower-slow-io`, `follower-sync-error`, `follower-torn-power-loss`, `cluster-power-loss`이고 모두 `passed`였다. Chaos runner 시작 순서는 변경하지 않았다. Local gate 뒤 변경은 이 증거 기록과 관련 문서 링크뿐이다. CLU-to-test 연결은 이 표에서 관리하며 MQTT/TEST traceability gate가 CLU token까지 검증한다는 뜻은 아니다.
+
+2026-10-03 ADR-0024 실행 명령 (`D:/Workspace/narumq`; regression·race·release·local은 `GOMAXPROCS=4`, release는 `NARUMQ_RELEASE_COMPAT=1`을 Python subprocess의 env로 전달):
+
+```text
+go test ./internal/adapters/tcp -run '^(TestDynamicSeedAdmissionRejectsFreshVoterIdentity|TestDynamicSeedAdmissionRequiresTLSBoundCommittedStage)$' -count=1 -v
+go test ./tests/integration -run '^TestDynamicClusterJoinerVoterVolumeLossProcessAcceptance$' -count=1 -v -timeout 20m
+go test ./tests/integration -run '^TestDynamicClusterJoinerVoterVolumeLossProcessAcceptance$/^three_voters_after_replacement$' -count=1 -v -timeout 20m
+go test ./tests/integration -run '^(TestDynamicClusterMembershipProcessAcceptance|TestDynamicClusterMembershipTransitionCrashRecovery|TestDynamicClusterMembershipRemovalHandoffWaitsForQuorum|TestDynamicClusterVoterVolumeLossProcessAcceptance|TestDynamicClusterBootstrapProbeAllowsLateCoBootstrapPeer)$' -count=1 -v -timeout 30m
+go test -race ./internal/adapters/tcp ./cmd/narumq -count=1
+go test ./tests/integration -run '^(TestDynamicClusterReleaseCompatibilityProcessAcceptance|TestDynamicClusterHistoricalReleaseCompatibilityProcessAcceptance)$' -count=1 -v -timeout 30m
+go run ./tools/verify local
+```
+
+최초 permanent process 실행은 package 27.502s·wall 29.766s·exit 1이었다. 4-voter에서 의도한 결함을 확인했다. 3-voter의 negative CONNACK도 정상 거절로 취급하도록 시험만 수정한 뒤, 3-voter baseline은 production 구현 변경 전에도 통과했다.
+
+Before/after와 회귀 원시 출력은 `.artifacts/planning/joiner-voter-admission-before.txt`, `joiner-volume-loss-process-before.txt`, `joiner-volume-loss-three-before.txt`, `joiner-tls-after.txt`, `joiner-process-after.txt`, `joiner-membership-regression.txt`, `joiner-race-release.txt`, `joiner-release-regression.txt`, `joiner-local-gate.txt`에 보존했다. 모든 lost-volume 삭제는 test fixture 안에서만 수행했다. Gate 뒤 변경은 이 증거와 문서 링크뿐이며 production Linux/EBS·새 게시 release별 matrix·Docker/FUSE storage chaos·opt-in durable ACK fault 재실행은 이번 admission-only 작업 범위에 포함하지 않았다.
+
 
 ### 11.21 Historical-source N-1↔N 호환성 수용 매핑
 

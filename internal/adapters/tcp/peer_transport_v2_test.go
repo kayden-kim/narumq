@@ -331,13 +331,11 @@ func TestDynamicSeedAdmissionRequiresTLSBoundCommittedStage(t *testing.T) {
 	for index := range voters {
 		voters[index].ReleaseVersion = "1.0.0"
 	}
-	var admissionCalls atomic.Int32
 	var responsePhase atomic.Uint32
 	responsePhase.Store(uint32(PeerPhaseStaged))
 	seed, err := NewDynamicTCPPeerTransport(DynamicPeerTransportConfig{
 		LocalIdentity: seedLocal, Listener: listener, ServerTLS: seedServerTLS, ClientTLS: seedClientTLS,
 		AdmissionHandler: func(_ context.Context, candidate PeerIdentityDTO) (SeedAdmissionResponseDTO, error) {
-			admissionCalls.Add(1)
 			if candidate.MemberID != 4 || candidate.DNSSAN != "node4.example" {
 				return SeedAdmissionResponseDTO{}, errors.New("no committed staged member")
 			}
@@ -410,8 +408,67 @@ func TestDynamicSeedAdmissionRequiresTLSBoundCommittedStage(t *testing.T) {
 	if _, err := candidate5Transport.RequestSeedAdmission(context.Background(), listener.Addr().String(), "seed.example"); err == nil {
 		t.Fatal("candidate without a committed stage was admitted")
 	}
-	if got := admissionCalls.Load(); got != 5 {
-		t.Fatalf("admission callback calls = %d, want 5", got)
+}
+
+// Traceability: CLU-02/CLU-07/CLU-14; ADR-0024; cluster spec §11.20.
+func TestDynamicSeedAdmissionRejectsFreshVoterIdentity(t *testing.T) {
+	seedServerTLS, seedClientTLS := testPeerTLSConfigs(t, "seed.example")
+	candidateServerTLS, candidateClientTLS := testPeerTLSConfigs(t, "node4.example")
+	seedServerTLS.ClientCAs.AddCert(candidateServerTLS.Certificates[0].Leaf)
+	candidateClientTLS.RootCAs.AddCert(seedServerTLS.Certificates[0].Leaf)
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	seedIdentity := identityForTestCertificate(1, "127.0.0.1:19001", "seed.example", PeerPhaseVoter, "", "1.0.0", seedServerTLS.Certificates[0])
+	voters := []PeerIdentityDTO{
+		seedIdentity,
+		dynamicTestIdentity(2, "127.0.0.1:19002", "node2.example", PeerPhaseVoter, "", 0x12),
+		dynamicTestIdentity(3, "127.0.0.1:19003", "node3.example", PeerPhaseVoter, "", 0x13),
+	}
+	for index := range voters {
+		voters[index].ReleaseVersion = "1.0.0"
+	}
+	seed, err := NewDynamicTCPPeerTransport(DynamicPeerTransportConfig{
+		LocalIdentity: seedIdentity, Listener: listener, ServerTLS: seedServerTLS, ClientTLS: seedClientTLS,
+		AdmissionHandler: func(_ context.Context, candidate PeerIdentityDTO) (SeedAdmissionResponseDTO, error) {
+			candidate.Phase = PeerPhaseVoter
+			candidate.OperationID = ""
+			return SeedAdmissionResponseDTO{Accepted: true, Candidate: candidate, CurrentVoters: voters}, nil
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	serveResult := make(chan error, 1)
+	go func() { serveResult <- seed.Serve(ctx) }()
+	defer func() {
+		cancel()
+		select {
+		case <-serveResult:
+		case <-time.After(time.Second):
+			t.Error("seed transport did not stop")
+		}
+		_ = seed.Close()
+	}()
+
+	candidate := identityForTestCertificate(4, "127.0.0.1:19004", "node4.example", PeerPhaseStaged, "", "1.0.0", candidateServerTLS.Certificates[0])
+	transport := newAdmissionCandidateTransport(t, candidate, candidateServerTLS, candidateClientTLS)
+	defer transport.Close()
+	if endpoints, err := transport.RequestSeedAdmission(ctx, listener.Addr().String(), "seed.example"); err == nil {
+		t.Errorf("fresh joiner accepted VOTER identity with endpoints %+v", endpoints)
+	}
+	if local := transport.LocalIdentity(); !samePeerIdentity(local, candidate) {
+		t.Errorf("rejected seed changed local identity: got %+v, want %+v", local, candidate)
+	}
+	for _, voter := range voters {
+		if status, err := transport.Status(voter.MemberID); err == nil {
+			t.Errorf("rejected seed installed voter %d: %+v", voter.MemberID, status)
+		}
+	}
+	if err := transport.Send(PeerMessageDTO{From: candidate.MemberID, To: seedIdentity.MemberID, Data: []byte{1}}); !errors.Is(err, ErrInvalidPeerMessage) {
+		t.Errorf("fresh joiner Raft send error=%v, want ErrInvalidPeerMessage", err)
 	}
 }
 

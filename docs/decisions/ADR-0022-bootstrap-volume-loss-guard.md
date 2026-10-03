@@ -10,7 +10,7 @@
 | 관련 아키텍처 | [Cluster architecture](../architectures/cluster-architecture.md) |
 | 관련 ADR | [ADR-0010](ADR-0010-dynamic-cluster-membership.md) |
 | 이 결정이 대체하는 이전 결정 기록(ADR) | 없음 |
-| 이 결정을 대체한 새 결정 기록(ADR) | 없음 |
+| 이 결정을 대체한 새 결정 기록(ADR) | [ADR-0024](ADR-0024-joiner-voter-volume-loss-admission.md): §6의 joiner voter 보호 설명만 구체화 |
 
 ## 1. 결정
 
@@ -55,7 +55,7 @@ Volume을 잃은 voter는 같은 ID와 config로 빈 directory에서 시작할 �
 - 빈 directory bootstrap은 세 peer가 모두 probe를 지원하고 동시에 시작해야 끝난다. Kubernetes StatefulSet은 `podManagementPolicy: Parallel`이 필요하다.
 - Probe 중에는 management·MQTT listener가 없다.
 - Probe를 모르는 이전 binary peer는 응답하지 않아 대기한다.
-- Joiner voter의 빈 volume은 기존 seed admission이 막는다. `cmd/narumq/cluster_runtime.go`의 `admitPeer`는 후보를 뺀 incumbent voter 3개를 요구한다. 이 경우는 process 미검증이다.
+- 기존 seed admission의 후보 제외 incumbent voter 3개 조건은 steady 3-voter 상태에서만 손실 joiner voter를 막는다. 승격 후 4-voter 상태에서는 이 조건을 통과하며 실제 빈-volume 재시작이 heartbeat panic으로 끝났다. [ADR-0024](ADR-0024-joiner-voter-volume-loss-admission.md)는 server의 committed VOTER seed 거절과 client의 fresh STAGED→VOTER 설치 차단을 정한다. Bootstrap probe 규칙은 변경하지 않는다.
 
 ### 후속 작업
 

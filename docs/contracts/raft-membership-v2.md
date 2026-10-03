@@ -14,7 +14,7 @@
 | 기준 동작 명세 | [Cluster session과 durable delivery](../specs/cluster-session-and-delivery.md) §1, §11 |
 | 관련 요구사항 | CLU-01~CLU-04, CLU-06~CLU-11, SEC-09~SEC-11, NFR-07~NFR-10 |
 | 호환성 범위 | Combined cluster runtime protocol `2.0`, state schema `1.0`; no N/N-1 claim |
-| 채택 범위 | 2026-10-02 사용자가 `제한된 수신 대기 채택`을 명시적으로 선택했다. Dynamic Raft inbound의 bounded 수신 대기만 채택하며 나머지 Draft·production 수용 상태는 바꾸지 않는다. |
+| 채택 범위 | 2026-10-02 사용자가 dynamic Raft inbound의 bounded 수신 대기를 채택했다. [ADR-0024](../decisions/ADR-0024-joiner-voter-volume-loss-admission.md)는 joiner voter volume-loss admission 보호를 추가로 채택한다. 이 두 범위 밖의 Draft·production 수용 상태는 바꾸지 않는다. |
 | 관련 시험 | Cluster spec §11 membership mapping; 현재 구현·시험 미완료 |
 
 ## 1. Membership identity와 version negotiation
@@ -198,6 +198,8 @@ An empty or missing directory with `role="bootstrap"` first completes the `NMQBO
 
 Joiner requires `role="joiner"`, one or more configured canonical DNS `seedAddresses` (`host:port`, never an IP literal), an already-issued positive `nodeId`, empty `bootstrapMembers`, its local `advertisedAddress`/DNS SAN/certificate fingerprint, and a new/empty directory. It must not call `RawNode.Bootstrap`; it first performs seed admission and proves an exactly matching committed `STAGED` record. `seedAddresses` are discovery/bootstrap contacts, not an authority to add peers.
 
+같은 volume의 joiner 재시작은 persisted snapshot/WAL에서 committed local identity를 복구한다. 복구된 `LEARNER`·`CATCHING_UP`·`VOTER`는 기존 seed loop에서 새 identity 승인 없이 재개한다. 기존 voter가 그 기록을 잃으면 같은 ID를 새 joiner로 승인하지 않으며 새 ID로 교체한다. Seed runtime은 committed `VOTER` 후보를 voter 수와 무관하게 거절한다([ADR-0024](../decisions/ADR-0024-joiner-voter-volume-loss-admission.md)).
+
 All modes require `peerTLS` cert/key/CA, local certificate DNS SAN and fingerprint equality, explicit `management.clusterAdminTokenFile`, build release and feature identity, protocol/schema versions, persistent `directory`, and MQTT TLS/security configuration if an MQTT listener is enabled. The removed JSON key `releaseVersion` is an unknown field and rejects startup. Admin token contents are read as a secret file and never logged or returned. Standalone runtime does not load this mode and is unchanged.
 
 #### Persistent local identity metadata
@@ -231,7 +233,7 @@ Request payload fields, in exact order:
 | State schema | uint16 major + uint16 minor | exact supported version |
 
 Accepted response bytes are also length-prefixed `NMQJOIN2` frames (uint32 big-endian, maximum 64 KiB). Payload fields in order: 8-byte magic; uint16 major/minor (`2,0`); uint8 status (`1` accepted, `0` rejected); for accepted only, uint16 cluster-ID length+bytes; uint16 operation-ID length and bytes (empty only for stable `VOTER`, otherwise canonical 36-byte UUID); uint64 candidate member ID; 32-byte candidate certificate fingerprint; uint16 candidate DNS SAN length+bytes; uint8 committed candidate phase (`STAGED=1`, `LEARNER=2`, `CATCHING_UP=3`, or `VOTER=4`); uint16 state-schema major/minor; uint16 endpoint count (exactly the three incumbent voters, excluding the candidate); then each endpoint sorted by ascending member ID as uint64 ID, uint16 address length+bytes, uint16 DNS SAN length+bytes, 32-byte certificate fingerprint, and uint8 phase (`VOTER=4`).
-The joiner repeats the idempotent admission request while its response is `STAGED`; it must not open a Raft stream in that phase. Once a seed reports a committed `LEARNER`, `CATCHING_UP`, or `VOTER` identity, the joiner applies that identity to its local transport and reconciles the three incumbent peers. This lets the joiner learn the committed configuration/log without accepting a Raft hello for an uncommitted learner. A seed admission response is phase-aware but does not itself commit membership.
+The joiner repeats the idempotent admission request while its response is `STAGED`; it must not open a Raft stream in that phase. Once a seed reports a committed `LEARNER` or `CATCHING_UP` identity, the joiner applies that identity to its local transport and reconciles the three incumbent peers. Current seed runtime rejects committed `VOTER` candidates. The unchanged wire decoder can still represent a `VOTER` response from an older seed, but a local `STAGED` transport rejects it before identity or peer installation. An already admitted learner/catching-up transport may interpret the existing phase progression; this is not fresh voter admission or proof of recovered durable history. A seed response does not itself commit membership.
 
 #### Empty-directory bootstrap probe
 
