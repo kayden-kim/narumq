@@ -26,6 +26,10 @@ func TestDynamicClusterReleaseCompatibilityProcessAcceptance(t *testing.T) {
 	binN2 := fixture.buildBinary(t, "narumq-1.0.0", "-X main.buildReleaseVersion=1.0.0")
 	binN1 := fixture.buildBinary(t, "narumq-1.1.0", "-X main.buildReleaseVersion=1.1.0")
 	binN := fixture.buildBinary(t, "narumq-1.2.0", "-X main.buildReleaseVersion=1.2.0 -X main.buildFeatures=compatibility-probe")
+	runClusterReleaseCompatibilityAcceptance(t, fixture, binN2, binN1, binN)
+}
+
+func runClusterReleaseCompatibilityAcceptance(t *testing.T, fixture *clusterMembershipProcessFixture, binN2, binN1, binN string) {
 	ctx := fixture.ctx
 	configs := []string{fixture.bootstrapConfig(1), fixture.bootstrapConfig(2), fixture.bootstrapConfig(3)}
 	processes := make([]*clusterMembershipProcess, 3)
@@ -40,6 +44,7 @@ func TestDynamicClusterReleaseCompatibilityProcessAcceptance(t *testing.T) {
 	}
 	clusterMembershipProcessWaitForBootstrapRelease(t, ctx, processes, "1.1.0")
 	clusterReleaseCompatWaitVersions(t, ctx, processes[0], map[string]string{"1": "1.1.0", "2": "1.1.0", "3": "1.1.0"})
+	t.Log(`N-1 bootstrap committed versions {"1":"1.1.0","2":"1.1.0","3":"1.1.0"}`)
 	subscriber := clusterDurableProcessConnect(t, fixture.mqttAddresses[0], fixture.accessToken, "compat-sub", false)
 	clusterDurableProcessSubscribe(t, subscriber, 1, "compat/durable", 1)
 	clusterMembershipProcessWaitForRouteProjection(t, ctx, processes, "compat/durable")
@@ -284,6 +289,7 @@ func TestDynamicClusterReleaseCompatibilityProcessAcceptance(t *testing.T) {
 	if observations < 9 {
 		t.Fatalf("observed N-2 rejection %d times in ten seconds, want at least 9", observations)
 	}
+	t.Logf("N-2 rejection observed %d times with unchanged committed N profile", observations)
 	processes[n2ID-1] = clusterReleaseCompatRestart(t, fixture, processes, n2ID, binN, configs[n2ID-1])
 	clusterReleaseCompatWaitVersions(t, ctx, processes[n2ID-1], map[string]string{"1": "1.2.0", "2": "1.2.0", "3": "1.2.0"})
 
@@ -315,6 +321,7 @@ func TestDynamicClusterReleaseCompatibilityProcessAcceptance(t *testing.T) {
 	if !strings.HasPrefix(incompatibleReason, "incompatible_state_schema: ") {
 		t.Fatalf("N-1 rollback readiness reason = %q, want incompatible_state_schema prefix", incompatibleReason)
 	}
+	t.Logf("N-1 rollback readiness reason = %q", incompatibleReason)
 	liveStatus, liveBody, liveErr := clusterMembershipProcessRequest(ctx, http.MethodGet, rolledBack.managementURL()+"/health/live", nil, "", "")
 	if liveErr != nil || liveStatus != http.StatusOK {
 		t.Fatalf("N-1 rollback liveness=(%d,%s,%v), want 200 while incompatible readiness is 503", liveStatus, liveBody, liveErr)

@@ -1,6 +1,6 @@
 # Cluster release compatibility v1 Contract
 
-이 문서는 release N과 직전 지원 release N-1 node가 rolling upgrade·rollback 중 지켜야 할 cluster 호환성 범위를 정의한다. 승인된 [ADR-0018](../decisions/ADR-0018-release-compatibility-window.md)에 따라 release는 같은 major의 인접 minor끼리만 혼합 운영한다. 실제 historical source가 없으므로 수용 시험은 동일 source를 release identity가 다른 binary로 build하며, source 간 wire 차이를 증명하지 않는다.
+이 문서는 release N과 직전 지원 release N-1 node가 rolling upgrade·rollback 중 지켜야 할 cluster 호환성 범위를 정의한다. 승인된 [ADR-0018](../decisions/ADR-0018-release-compatibility-window.md)에 따라 release는 같은 major의 인접 minor끼리만 혼합 운영한다. Same-source synthetic 시험과 구분해 `58a95f8` historical baseline으로 [Cluster §11.21](../specs/cluster-session-and-delivery.md#1121-historical-source-n-1n-호환성-수용-매핑)에서 별도 검증한다.
 이 Draft contract는 Cluster RPC, replicated state와 snapshot의 release 간 동작을 다루며 acceptance matrix가 통과되기 전까지 검증된 호환성으로 표시하지 않는다. 이는 fixed-voter wire만 정의하는 Active [Raft peer transport v1](raft-peer-transport-v1.md)과 별도 경계다.
 
 | 항목 | 값 |
@@ -82,7 +82,7 @@ Release version과 feature set은 mutable committed member profile이다. Restar
 
 ## 6. Release matrix
 
-아래 matrix의 실제 수용 시험은 동일 source를 서로 다른 `-ldflags` build identity로 build한다. 이는 gate·activation·rollback mechanics를 증명하지만 서로 다른 historical source 사이의 wire compatibility 증거는 아니다. 실행 결과와 범위는 Cluster spec §11.17에 기록한다.
+아래 synthetic matrix는 동일 source를 서로 다른 `-ldflags` build identity로 build한다. 이는 gate·activation·rollback mechanics의 증거이며 실행 결과는 Cluster spec §11.17에 기록한다. `58a95f8` historical baseline으로 §11.21에서 별도 검증한다.
 
 | Current | Peer | Upgrade | Rollback | Leader 양방향 | Snapshot 양방향 | Test | 실행 증거 | 상태 |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
@@ -90,7 +90,12 @@ Release version과 feature set은 mutable committed member profile이다. Restar
 | N | N-1 | 필수 | 필수 | 필수 | 필수 | `TestDynamicClusterReleaseCompatibilityProcessAcceptance`, scenarios 2–5 | [Cluster spec §11.17](../specs/cluster-session-and-delivery.md#1117-n-1n-rolling-upgraderollback-수용-매핑), strict installed snapshots in both release directions (105.695s) | PASS (synthetic builds) |
 | N | N-2 | 비지원 | 비지원 | 비지원 | 비지원 | 같은 process acceptance의 N-2 rejection scenario | [Cluster spec §11.17](../specs/cluster-session-and-delivery.md#1117-n-1n-rolling-upgraderollback-수용-매핑), same run (105.695s) | PASS (명시적 거절) |
 
-모든 matrix 행이 same-source synthetic release build acceptance에서 PASS했다. Historical source 간 호환성은 이 증거에 포함되지 않는다.
+모든 synthetic matrix 행이 PASS했다. 서로 다른 source의 결과는 아래 historical matrix와 [Cluster §11.21](../specs/cluster-session-and-delivery.md#1121-historical-source-n-1n-호환성-수용-매핑)에서 구분한다. 지정 baseline은 게시된 release가 아니며 이후 게시 release의 호환성을 대신 보증하지 않는다.
+
+| Current·Peer | Source | 검증 범위 | 시험 위치 | 실행 증거·상태 |
+| --- | --- | --- | --- | --- |
+| N·N-1 | N=`HEAD`, N-1=`58a95f8`@`1.1.0` | Rolling upgrade·rollback, leader·snapshot 양방향, drain, feature activation 차단과 미지원 rollback 거절 | `TestDynamicClusterHistoricalReleaseCompatibilityProcessAcceptance` | [Cluster §11.21](../specs/cluster-session-and-delivery.md#1121-historical-source-n-1n-호환성-수용-매핑): PASS (91.38s; historical 두 시험 wall 110.81s) |
+| N·N-2 | N=`HEAD`, N-2=`58a95f8`@`1.0.0` | 비지원 release 명시적 거절 | 같은 historical process acceptance | 같은 §11.21 실행: PASS (10회 readiness 503, committed N profile 유지) |
 
 ## 7. Breaking change
 
@@ -108,6 +113,6 @@ Major 변경은 in-place mixed upgrade로 처리하지 않는다. 별도 migrati
 
 - 남음: rollback window가 끝났다고 운영자가 판정하는 정책과 irreversible feature activation 승인 절차.
 - 남음: [ADR-0006](../decisions/ADR-0006-external-rollout-controller.md)의 rollout controller preflight. 이 ADR-0018 범위는 Pod 교체 전 preflight 구현을 포함하지 않는다.
-- 해결 범위: [ADR-0021](../decisions/ADR-0021-backup-archive-release-window.md)의 backup archive N/N-1 restore 정책. Synthetic build process acceptance 실행 증거는 [Cluster §11.19](../specs/cluster-session-and-delivery.md#1119-backup-archive-nn-1-restore-수용-매핑)에 기록한다. Historical-source compatibility는 별도다.
-- 남음: 실제 과거 source revision 사이의 wire/state compatibility. 현재 과거 source가 없으므로 동일 source의 synthetic build로 증명하지 않는다.
-- 해결: same-source synthetic process acceptance의 N/N 양 peer 역할 snapshot transfer, N/N-1 upgrade·rollback·양방향 installed snapshot 및 N-2 명시적 거절 matrix가 PASS했다. Historical source 간 wire/state compatibility와 rollback-window 운영 정책은 미결정으로 남는다.
+- 해결 범위: [ADR-0021](../decisions/ADR-0021-backup-archive-release-window.md)의 backup archive N/N-1 restore 정책. Synthetic 증거는 [Cluster §11.19](../specs/cluster-session-and-delivery.md#1119-backup-archive-nn-1-restore-수용-매핑), historical baseline의 upgrade restore와 pre-ADR-0021 consumer 거절 제약은 [§11.21](../specs/cluster-session-and-delivery.md#1121-historical-source-n-1n-호환성-수용-매핑)에서 관리한다.
+- `58a95f8` baseline은 §11.21에서 검증했다. 이후 실제 게시 release 사이의 wire/state matrix는 release마다 추가한다.
+- 해결: same-source synthetic 및 지정 historical baseline의 rolling·양방향 installed snapshot·N-2 거절 수용이 PASS했다. Rollback-window 운영 정책과 실제 게시 release별 검증은 별도다.

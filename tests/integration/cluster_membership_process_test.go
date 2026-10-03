@@ -522,11 +522,16 @@ func clusterMembershipProcessBuild(t *testing.T, repoRoot, binaryPath, buildTags
 
 func (f *clusterMembershipProcessFixture) buildBinary(t *testing.T, name, ldflags string) string {
 	t.Helper()
+	return f.buildBinaryFrom(t, f.repoRoot, name, ldflags)
+}
+
+func (f *clusterMembershipProcessFixture) buildBinaryFrom(t *testing.T, sourceDir, name, ldflags string) string {
+	t.Helper()
 	binaryPath := filepath.Join(f.tempDir, name)
 	if runtime.GOOS == "windows" {
 		binaryPath += ".exe"
 	}
-	clusterMembershipProcessBuild(t, f.repoRoot, binaryPath, "", ldflags)
+	clusterMembershipProcessBuild(t, sourceDir, binaryPath, "", ldflags)
 	return binaryPath
 }
 func (f *clusterMembershipProcessFixture) bootstrapConfig(memberID uint64) string {

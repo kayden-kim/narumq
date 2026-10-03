@@ -26,6 +26,88 @@ func TestClusterBackupRestoreReleaseWindowProcessAcceptance(t *testing.T) {
 	binN := fixture.buildBinary(t, "restore-1.2.0", "-X main.buildReleaseVersion=1.2.0 -X main.buildFeatures=compatibility-probe")
 	ctx := fixture.ctx
 	configs := []string{fixture.bootstrapConfig(1), fixture.bootstrapConfig(2), fixture.bootstrapConfig(3)}
+	processes := clusterBackupReleaseUpgradeFromN1(t, fixture, configs, binN1, binN)
+	archiveBPath := clusterBackupReleaseCaptureArchiveB(t, fixture, processes)
+
+	status, body := clusterReleaseCompatActivate(t, ctx, processes[0])
+	if status != http.StatusOK {
+		t.Fatalf("activate feature status=%d body=%s", status, body)
+	}
+	status, features, body, err := clusterReleaseCompatFeatures(ctx, processes[0])
+	if err != nil || status != http.StatusOK || !slices.Equal(features.ActiveFeatures, []string{"compatibility-probe"}) {
+		t.Fatalf("active features status=%d state=%+v body=%s error=%v", status, features, body, err)
+	}
+	_, leaderURL := clusterMembershipProcessFindLeader(t, ctx, processes, 3)
+	archiveCBytes, _, _, err := clusterBackupRestoreProcessCaptureBackup(t, ctx, leaderURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	archiveCPath := filepath.Join(fixture.tempDir, "archive-c.nrbak")
+	clusterMembershipProcessWriteFile(t, archiveCPath, archiveCBytes, 0o600)
+	for _, process := range processes {
+		if err := process.stop(5 * time.Second); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	for _, rejection := range []struct {
+		label   string
+		binary  string
+		markers []string
+	}{
+		{"rejected-feature", binN1, []string{"backup active feature", "compatibility-probe", "is not supported by this release"}},
+		{"rejected-window", binN2, []string{"outside the supported release window"}},
+	} {
+		rejectedConfigs := clusterBackupReleaseRestoreConfigs(t, fixture, configs, rejection.label)
+		output, err := clusterBackupReleaseRestore(ctx, rejection.binary, fixture.repoRoot, rejectedConfigs[0], archiveCPath)
+		if err == nil {
+			t.Fatalf("%s restore succeeded", rejection.label)
+		}
+		for _, marker := range rejection.markers {
+			if !strings.Contains(string(output), marker) {
+				t.Fatalf("%s restore error=%v output=%s, want %q", rejection.label, err, output, marker)
+			}
+		}
+		target := filepath.Join(fixture.tempDir, rejection.label+"-node-1-data")
+		if _, err := os.Stat(target); !os.IsNotExist(err) {
+			t.Fatalf("%s target stat = %v, want not-exist", rejection.label, err)
+		}
+		t.Logf("%s: non-zero exit and target directory absent; %s", rejection.label, output)
+	}
+
+	downgradeConfigs := clusterBackupReleaseRestoreConfigs(t, fixture, configs, "downgrade")
+	for index, configPath := range downgradeConfigs {
+		output, err := clusterBackupReleaseRestore(ctx, binN1, fixture.repoRoot, configPath, archiveBPath)
+		if err != nil {
+			t.Fatalf("downgrade restore node %d: %v\n%s", index+1, err, output)
+		}
+		process, err := fixture.harness.startBinary(binN1, fmt.Sprintf("archive downgrade node %d", index+1), configPath, fixture.managementAddresses[index])
+		if err != nil {
+			t.Fatal(err)
+		}
+		processes[index] = process
+	}
+	clusterBackupRestoreProcessWaitForCluster(t, ctx, processes, 3)
+	clusterReleaseCompatWaitVersions(t, ctx, processes[0], map[string]string{"1": "1.1.0", "2": "1.1.0", "3": "1.1.0"})
+	retained := clusterMembershipProcessOpenCleanSubscribedSession(t, fixture.mqttAddresses[2], fixture.accessToken, "archive-downgrade-retained", "archive/retained")
+	gotRetained := clusterMembershipProcessReadRetained(t, retained, 1)
+	_ = retained.Close()
+	clusterBackupRestoreProcessAssertRetained(t, "downgrade", gotRetained, map[string]string{"archive/retained": "v1"})
+	reconnected, present := clusterMembershipProcessReconnectSession(t, fixture.mqttAddresses[2], fixture.accessToken, "archive-offline-sub")
+	if !present {
+		t.Fatal("downgrade restore lost SessionPresent")
+	}
+	gotOffline := clusterMembershipProcessReadPublishes(t, reconnected, 1)
+	_ = reconnected.Close()
+	if !reflect.DeepEqual(gotOffline, [][2]string{{"archive/offline/2", "two"}}) {
+		t.Fatalf("downgrade offline publishes = %v", gotOffline)
+	}
+	t.Log("N -> N-1: committed profiles, retained v1, SessionPresent and offline two restored")
+}
+
+func clusterBackupReleaseUpgradeFromN1(t *testing.T, fixture *clusterMembershipProcessFixture, configs []string, binN1, binN string) []*clusterMembershipProcess {
+	t.Helper()
+	ctx := fixture.ctx
 	processes := make([]*clusterMembershipProcess, 3)
 	for index, configPath := range configs {
 		process, err := fixture.harness.startBinary(binN1, fmt.Sprintf("archive source node %d", index+1), configPath, fixture.managementAddresses[index])
@@ -82,8 +164,13 @@ func TestClusterBackupRestoreReleaseWindowProcessAcceptance(t *testing.T) {
 		t.Fatalf("upgrade offline publishes = %v", gotOffline)
 	}
 	t.Log("N-1 -> N: committed profiles, retained v1, SessionPresent and offline one restored")
+	return processes
+}
 
-	_, leaderURL = clusterMembershipProcessFindLeader(t, ctx, processes, 3)
+func clusterBackupReleaseCaptureArchiveB(t *testing.T, fixture *clusterMembershipProcessFixture, processes []*clusterMembershipProcess) string {
+	t.Helper()
+	ctx := fixture.ctx
+	_, leaderURL := clusterMembershipProcessFindLeader(t, ctx, processes, 3)
 	_, _, _ = clusterBackupRestoreProcessWaitForOfflineCount(t, ctx, leaderURL, 1)
 	clusterMembershipProcessPublish(t, fixture.mqttAddresses[1], fixture.accessToken, "archive-offline-pub", "archive/offline/2", []byte("two"))
 	archiveBBytes, archiveB, _ := clusterBackupRestoreProcessWaitForOfflineCount(t, ctx, leaderURL, 2)
@@ -92,80 +179,7 @@ func TestClusterBackupRestoreReleaseWindowProcessAcceptance(t *testing.T) {
 	}
 	archiveBPath := filepath.Join(fixture.tempDir, "archive-b.nrbak")
 	clusterMembershipProcessWriteFile(t, archiveBPath, archiveBBytes, 0o600)
-	status, body := clusterReleaseCompatActivate(t, ctx, processes[0])
-	if status != http.StatusOK {
-		t.Fatalf("activate feature status=%d body=%s", status, body)
-	}
-	status, features, body, err := clusterReleaseCompatFeatures(ctx, processes[0])
-	if err != nil || status != http.StatusOK || !slices.Equal(features.ActiveFeatures, []string{"compatibility-probe"}) {
-		t.Fatalf("active features status=%d state=%+v body=%s error=%v", status, features, body, err)
-	}
-	_, leaderURL = clusterMembershipProcessFindLeader(t, ctx, processes, 3)
-	archiveCBytes, _, _, err := clusterBackupRestoreProcessCaptureBackup(t, ctx, leaderURL)
-	if err != nil {
-		t.Fatal(err)
-	}
-	archiveCPath := filepath.Join(fixture.tempDir, "archive-c.nrbak")
-	clusterMembershipProcessWriteFile(t, archiveCPath, archiveCBytes, 0o600)
-	for _, process := range processes {
-		if err := process.stop(5 * time.Second); err != nil {
-			t.Fatal(err)
-		}
-	}
-
-	for _, rejection := range []struct {
-		label   string
-		binary  string
-		markers []string
-	}{
-		{"rejected-feature", binN1, []string{"backup active feature", "compatibility-probe", "is not supported by this release"}},
-		{"rejected-window", binN2, []string{"outside the supported release window"}},
-	} {
-		rejectedConfigs := clusterBackupReleaseRestoreConfigs(t, fixture, configs, rejection.label)
-		output, err := clusterBackupReleaseRestore(ctx, rejection.binary, fixture.repoRoot, rejectedConfigs[0], archiveCPath)
-		if err == nil {
-			t.Fatalf("%s restore succeeded", rejection.label)
-		}
-		for _, marker := range rejection.markers {
-			if !strings.Contains(string(output), marker) {
-				t.Fatalf("%s restore error=%v output=%s, want %q", rejection.label, err, output, marker)
-			}
-		}
-		target := filepath.Join(fixture.tempDir, rejection.label+"-node-1-data")
-		if _, err := os.Stat(target); !os.IsNotExist(err) {
-			t.Fatalf("%s target stat = %v, want not-exist", rejection.label, err)
-		}
-		t.Logf("%s: non-zero exit and target directory absent; %s", rejection.label, output)
-	}
-
-	downgradeConfigs := clusterBackupReleaseRestoreConfigs(t, fixture, configs, "downgrade")
-	for index, configPath := range downgradeConfigs {
-		output, err := clusterBackupReleaseRestore(ctx, binN1, fixture.repoRoot, configPath, archiveBPath)
-		if err != nil {
-			t.Fatalf("downgrade restore node %d: %v\n%s", index+1, err, output)
-		}
-		process, err := fixture.harness.startBinary(binN1, fmt.Sprintf("archive downgrade node %d", index+1), configPath, fixture.managementAddresses[index])
-		if err != nil {
-			t.Fatal(err)
-		}
-		processes[index] = process
-	}
-	clusterBackupRestoreProcessWaitForCluster(t, ctx, processes, 3)
-	clusterReleaseCompatWaitVersions(t, ctx, processes[0], map[string]string{"1": "1.1.0", "2": "1.1.0", "3": "1.1.0"})
-	retained = clusterMembershipProcessOpenCleanSubscribedSession(t, fixture.mqttAddresses[2], fixture.accessToken, "archive-downgrade-retained", "archive/retained")
-	gotRetained = clusterMembershipProcessReadRetained(t, retained, 1)
-	_ = retained.Close()
-	clusterBackupRestoreProcessAssertRetained(t, "downgrade", gotRetained, map[string]string{"archive/retained": "v1"})
-	reconnected, present = clusterMembershipProcessReconnectSession(t, fixture.mqttAddresses[2], fixture.accessToken, "archive-offline-sub")
-	if !present {
-		t.Fatal("downgrade restore lost SessionPresent")
-	}
-	gotOffline = clusterMembershipProcessReadPublishes(t, reconnected, 1)
-	_ = reconnected.Close()
-	if !reflect.DeepEqual(gotOffline, [][2]string{{"archive/offline/2", "two"}}) {
-		t.Fatalf("downgrade offline publishes = %v", gotOffline)
-	}
-	t.Log("N -> N-1: committed profiles, retained v1, SessionPresent and offline two restored")
+	return archiveBPath
 }
 
 func clusterBackupReleaseRestoreConfigs(t *testing.T, fixture *clusterMembershipProcessFixture, bootstrapConfigPaths []string, label string) []string {

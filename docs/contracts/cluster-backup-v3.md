@@ -86,7 +86,8 @@ QoS 1/2 delivery session은 `ReplicatedStateSnapshot.delivery_sessions`에 저�
 - Restore는 cross-cluster migration, voter 재구성, learner 복원을 지원하지 않는다. 현재 bootstrap voter ID와 member identity를 바꾸지 않는다.
 - Retained, offline, delivery field 추가는 unknown field를 거절하는 schema `1.0`의 replicated-state wire format 변경이다. 같은 schema 번호만으로 release 호환을 추정하지 않는다. Archive·typed snapshot·committed tail·boundary summary를 기존 strict codec로 검증하며 알 수 없는 field·command·summary는 target storage 변경 전에 거절한다. Release window나 inactive feature가 decode 실패를 허용하지 않는다.
 - N archive를 N-1에서 restore할 수 있다. 단 N-1이 모르는 active feature가 있으면 거절한다. N-2 이하·다른 major는 거절한다. Rolling rollback은 [ADR-0018](../decisions/ADR-0018-release-compatibility-window.md), archive restore는 [ADR-0021](../decisions/ADR-0021-backup-archive-release-window.md)을 따른다.
-- Production Linux/EBS power-loss, WAL torn-tail, volume loss, retention/RPO/RTO, BP-03 및 historical-source compatibility는 이 archive contract로 완료되지 않는다. PRD TEN-08 tenant storage quota는 [ADR-0017](../decisions/ADR-0017-tenant-storage-quota.md)과 [Cluster §11.16](../specs/cluster-session-and-delivery.md#1116-tenant-storage-quota-수용-매핑)에서 별도로 제공·검증한다.
+- ADR-0021 이전 restore build(`58a95f8` 포함)는 producer release exact 일치만 허용한다. 더 새 release의 archive를 그 build로 restore하면 `backup release or schema does not match cluster config`로 target 생성 전에 거절한다. N→N-1 archive restore는 N-1 build가 ADR-0021 이후일 때만 지원한다. 지정 historical baseline의 실행 증거는 [Cluster §11.21](../specs/cluster-session-and-delivery.md#1121-historical-source-n-1n-호환성-수용-매핑)에 있다.
+- Production Linux/EBS power-loss, WAL torn-tail, volume loss, retention/RPO/RTO와 BP-03는 이 archive contract로 완료되지 않는다. 지정 historical baseline 검증은 §11.21로 한정하며 이후 게시 release별 matrix는 별도다. PRD TEN-08 tenant storage quota는 [ADR-0017](../decisions/ADR-0017-tenant-storage-quota.md)과 [Cluster §11.16](../specs/cluster-session-and-delivery.md#1116-tenant-storage-quota-수용-매핑)에서 별도로 제공·검증한다.
 
 ### Archive producer/consumer release matrix
 
@@ -105,6 +106,6 @@ QoS 1/2 delivery session은 `ReplicatedStateSnapshot.delivery_sessions`에 저�
 
 - Production-like Linux filesystem/EBS power-loss, WAL torn-tail 및 volume-loss/reseed acceptance.
 - `SPEC-TBD-09` retention 및 disaster-recovery RPO/RTO 목표.
-- 실제 과거 source revision 사이의 archive producer/consumer compatibility matrix. 승인된 N/N-1 restore 정책과 synthetic build acceptance는 [Cluster §11.19](../specs/cluster-session-and-delivery.md#1119-backup-archive-nn-1-restore-수용-매핑)에서 관리한다.
+- 지정 `58a95f8` historical producer/consumer 검증은 [Cluster §11.21](../specs/cluster-session-and-delivery.md#1121-historical-source-n-1n-호환성-수용-매핑)에서 관리한다. 이후 실제 게시 release 사이의 matrix는 release마다 추가한다. Synthetic build acceptance는 [Cluster §11.19](../specs/cluster-session-and-delivery.md#1119-backup-archive-nn-1-restore-수용-매핑)와 구분한다.
 - PRD TEN-08 tenant 저장 quota와 초과 경보는 [ADR-0017](../decisions/ADR-0017-tenant-storage-quota.md) 및 Cluster §11.16에서 관리한다.
-- Durable delivery-session backup/restore process acceptance는 Cluster §11.11에서 `inflight` summary와 restored state를 포함해 통과했다. Production storage/EBS acceptance와 historical-source compatibility는 별도 미완료 항목이다.
+- Durable delivery-session backup/restore process acceptance는 Cluster §11.11에서 `inflight` summary와 restored state를 포함해 통과했다. Production storage/EBS와 이후 실제 게시 release 사이의 compatibility는 별도 미완료 항목이다.

@@ -707,7 +707,7 @@ GOMAXPROCS=4 go run ./tools/verify local
 
 Exact protocol/schema 경계 시험 추가 뒤 focused restore suite PASS (2.71s wall), full local gate PASS (273.91s wall; integration 244.056s). Production 코드는 추가 변경하지 않았다. Local traceability gate는 MQTT/TEST requirement와 MQTT statement matrix를 검사하며 `CLU-*` token은 검증하지 않는다. CLU-11/CLU-14와 시험·실행 증거의 연결은 이 §11.19 표가 기준이다.
 
-Skip은 acceptance가 아니다. Historical-source matrix, Linux/EBS와 `SPEC-TBD-09` retention/RPO/RTO는 열린 gate로 남는다.
+Skip은 acceptance가 아니다. 지정 historical baseline의 별도 증거는 §11.21에 있다. 이후 게시 release별 matrix, Linux/EBS와 `SPEC-TBD-09` retention/RPO/RTO는 열린 gate로 남는다.
 
 
 ### 11.20 Voter volume 손실 보호와 재시드 수용 매핑
@@ -747,3 +747,29 @@ GOMAXPROCS=4 go run ./tools/verify local
 위 env 표기는 실행 조건이며 Windows에서는 Python `subprocess.run`의 argv와 env dict로 전달했다. 단독 volume-loss 명령은 구현 전 실패 재현에 사용했고, 구현 후에는 두 process 시험을 묶은 명령으로 확인했다. 최초 transport 시험의 추가 certificate mismatch case는 client의 local SAN 검증에서 먼저 실패했다. 요청 ID만 configured peer로 가장하도록 fixture를 고쳐 실제 responder의 certificate 거절을 확인했으며 production 검증 정책은 완화하지 않았다.
 
 Docker 결과의 여섯 ID는 `follower-disk-full`, `quorum-disk-full`, `follower-slow-io`, `follower-sync-error`, `follower-torn-power-loss`, `cluster-power-loss`이고 모두 `passed`였다. Chaos runner 시작 순서는 변경하지 않았다. Local gate 뒤 변경은 이 증거 기록과 관련 문서 링크뿐이다. CLU-to-test 연결은 이 표에서 관리하며 MQTT/TEST traceability gate가 CLU token까지 검증한다는 뜻은 아니다.
+
+### 11.21 Historical-source N-1↔N 호환성 수용 매핑
+
+N-1·N-2 source는 commit `58a95f801e1467379db2eb6f3454ae44e954418a`다. 게시된 release가 아니라 사용자가 지정한 historical baseline(과거 source 기준점)이다. 이 source를 `git archive`로 추출하고 release identity `1.1.0`·`1.0.0`으로 build한다. N은 HEAD를 `1.2.0`과 feature `compatibility-probe`로 build한다. Production storage는 이 검증 범위에 포함하지 않는다.
+
+| Scenario | 관찰할 결과 | 시험 위치 | 실행 증거 |
+| --- | --- | --- | --- |
+| Provenance·build | 지정 commit을 정확히 해석·추출하고 과거 source와 HEAD에서 각각 binary를 build | `tests/integration.TestDynamicClusterHistoricalReleaseCompatibilityProcessAcceptance`, `TestClusterBackupRestoreHistoricalReleaseProcessAcceptance` | PASS: 두 시험 모두 `historical N-1 source 58a95f801e1467379db2eb6f3454ae44e954418a` 로그; historical package 108.681s, wall 110.81s |
+| §11.17 시나리오 1–7 historical 재실행 | N-1 bootstrap profile, rolling upgrade·rollback, 양방향 installed snapshot, drain, N-2 거절 9회 이상, feature activation 차단과 미지원 rollback readiness 거절 | `tests/integration.TestDynamicClusterHistoricalReleaseCompatibilityProcessAcceptance` | PASS: 91.38s; bootstrap `{"1":"1.1.0","2":"1.1.0","3":"1.1.0"}`, N-2 거절 10회, rollback reason `incompatible_state_schema: committed cluster features are not supported by this release` |
+| Historical N-1 archive를 HEAD로 restore | Retained `v1`, `SessionPresent=true`, offline `archive/offline/1`=`one` 복구 | `tests/integration.TestClusterBackupRestoreHistoricalReleaseProcessAcceptance` | PASS: 17.14s; committed profile의 N 수렴과 세 MQTT 상태 assertion 통과 |
+| HEAD archive를 historical N-1이 fail-closed로 거절 | `backup release or schema does not match cluster config`, non-zero exit와 target directory 미생성 | 같은 historical archive 시험 | PASS: 같은 17.14s 실행; 지정 오류 출력과 `os.Stat`의 not-exist 확인 |
+| Synthetic 회귀 | 기존 same-source rolling·archive 시나리오 유지 | `TestDynamicClusterReleaseCompatibilityProcessAcceptance`, `TestClusterBackupRestoreReleaseWindowProcessAcceptance` | PASS: rolling 83.61s, archive 23.68s; package 107.447s, wall 109.59s |
+| Repository local gate | `local: PASS` | `GOMAXPROCS=4 go run ./tools/verify local` | PASS: wall 322.76s, integration 286.705s; traceability·architecture·네 fuzz target 각 10,000회·vet·package/integration·production package race·coverage |
+
+Full git history와 PATH의 `git`이 필요하다. Revision을 찾지 못하면 skip하지 않고 실패한다. ADR-0021 이전 historical N-1 consumer는 producer release exact 일치만 허용하므로 HEAD archive의 N→N-1 restore 성공은 이 baseline의 지원 범위가 아니다. Target 생성 전 거절을 수용 기준으로 확인한다. 이후 실제 게시 release 사이의 matrix는 release마다 추가한다.
+
+2026-10-03 실행에서 N source의 HEAD는 `fbe5edebfe944921bdd95e56b6d74e7dc4d1a3ae`였다. 변경한 시험 harness는 현재 working tree에서 실행했다. Broker runtime은 변경하지 않았고 historical source나 기존 수용 assertion도 완화하지 않았다. Historical 추출·build helper smoke는 PASS(wall 7.15s); 임시 smoke 파일은 제거했다. 별도 opt-in 시험은 아래 순서대로 실행했으며 Windows에서 환경 변수와 argv는 Python `subprocess.run`으로 전달했다.
+
+```text
+NARUMQ_RELEASE_COMPAT=1 GOMAXPROCS=4 go test ./tests/integration -run '^(TestDynamicClusterReleaseCompatibilityProcessAcceptance|TestClusterBackupRestoreReleaseWindowProcessAcceptance)$' -count=1 -v -timeout 30m
+NARUMQ_RELEASE_COMPAT=1 GOMAXPROCS=4 go test ./tests/integration -run '^(TestDynamicClusterHistoricalReleaseCompatibilityProcessAcceptance|TestClusterBackupRestoreHistoricalReleaseProcessAcceptance)$' -count=1 -v -timeout 30m
+GOMAXPROCS=4 go run ./tools/verify local
+```
+
+최종 local gate는 exit 0과 `local: PASS`였다. Opt-in historical·synthetic 시험의 증거는 위 별도 실행이며 일반 local suite의 skip을 acceptance로 계산하지 않는다. Gate 뒤 변경은 이 실행 증거 문서 기록뿐이다. CLU-14는 production Linux/EBS·retention/RPO/RTO가 남아 있어 열린 상태를 유지한다.
+

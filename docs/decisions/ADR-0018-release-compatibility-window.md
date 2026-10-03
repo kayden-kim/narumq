@@ -75,6 +75,7 @@ Dynamic cluster는 같은 major의 인접 minor release만 혼합 운영한다. 
 | Committed profile sync와 양방향 snapshot | Mixed-binary process acceptance | N-1 leader→N follower 및 N leader→N-1 follower snapshot 뒤 READY와 동일 retained state | `tests/integration.TestDynamicClusterReleaseCompatibilityProcessAcceptance` |
 | Feature activation과 rollback block | Mixed-binary process acceptance | 미지원 member 존재 시 409, 전체 광고 후 activation 200, N-1 rollback node 503 | 같은 process acceptance |
 | Synthetic evidence 범위 제한 | Test binary identity 구성 및 결과 문서 | 세 binary가 같은 source이며 limitation이 문서에 명시됨 | [Cluster spec §11.17](../specs/cluster-session-and-delivery.md#1117-n-1n-rolling-upgraderollback-수용-매핑) |
+| Historical-source N-1과 rolling 호환 | 지정 과거 source와 HEAD binary의 process acceptance | 양방향 upgrade·rollback·installed snapshot, drain, feature gate 및 N-2 거절 | [Cluster spec §11.21](../specs/cluster-session-and-delivery.md#1121-historical-source-n-1n-호환성-수용-매핑) |
 
 ## 8. 재검토 조건
 
