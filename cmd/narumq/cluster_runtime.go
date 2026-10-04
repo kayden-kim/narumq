@@ -375,7 +375,7 @@ func runClusterMode(ctx context.Context, config clusterConfigFile, logger *slog.
 		willBridge.Bind(mqttServer)
 	}
 
-	membershipService, err := membership.NewService(runtime)
+	membershipService, err := membership.NewService(runtime, config.replicationProfile())
 	if err != nil {
 		return fmt.Errorf("create membership service: %w", err)
 	}
@@ -1720,10 +1720,15 @@ func (runtime *clusterRuntime) advanceMembership() error {
 			for _, id := range status.VoterIDs {
 				voterIDs = append(voterIDs, uint64(id))
 			}
-			plan := membership.PlanRemovalHandoff(
-				operation.MemberID, voterIDs,
-				runtime.machine.Ownerships(), runtime.machine.Subscriptions(),
-			)
+			var plan membership.RemovalHandoffPlanDTO
+			if !membership.RemovalKeepsReplicationFactor(operation.MemberID, voterIDs, runtime.config.replicationProfile()) {
+				plan = membership.RemovalHandoffPlanDTO{Block: membership.RemovalHandoffBlockReplicationFactor}
+			} else {
+				plan = membership.PlanRemovalHandoff(
+					operation.MemberID, voterIDs,
+					runtime.machine.Ownerships(), runtime.machine.Subscriptions(),
+				)
+			}
 			if plan.Block != "" {
 				logKey := operation.OperationID + ":" + string(plan.Block)
 				if logKey != runtime.removalBlockLogged {
@@ -3294,6 +3299,9 @@ func (provider *clusterStateProvider) GetClusterSummary(ctx context.Context) man
 	summary.ReleaseVersion = provider.runtime.config.ReleaseVersion
 	summary.MemberCount = activeMembers
 	summary.QuorumSize = len(status.VoterIDs)/2 + 1
+	profile := provider.runtime.config.replicationProfile()
+	summary.ReplicationFactor = profile.Factor
+	summary.WriteQuorum = profile.WriteQuorum
 	summary.QuorumAvailable = provider.runtime.hasFreshProof()
 	summary.NodesByState = managementports.NodesByStateDTO{
 		Joining: joining, Ready: ready, Draining: draining, SafeToStop: safeToStop,

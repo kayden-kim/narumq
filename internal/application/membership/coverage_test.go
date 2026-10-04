@@ -1045,7 +1045,7 @@ func (port *cmaPort) GetOwnership(ctx context.Context, tenantID, clientID string
 func cmaNewPortService(t *testing.T, machine *StateMachine) (*Service, *cmaPort) {
 	t.Helper()
 	port := &cmaPort{stateMachinePort: &stateMachinePort{machine: machine, nextIndex: machine.LastAppliedIndex()}}
-	service, err := NewService(port)
+	service, err := NewService(port, StandardReplicationProfile)
 	if err != nil {
 		t.Fatalf("new service: %v", err)
 	}
@@ -1058,6 +1058,16 @@ func cmaBootstrappedService(t *testing.T) (*Service, *cmaPort) {
 	if err := machine.InitializeBootstrap(1, testVoters()); err != nil {
 		t.Fatalf("initialize bootstrap: %v", err)
 	}
+	return cmaNewPortService(t, machine)
+}
+
+func cmaFourVoterService(t *testing.T) (*Service, *cmaPort) {
+	t.Helper()
+	machine := NewStateMachine()
+	if err := machine.InitializeBootstrap(1, testVoters()); err != nil {
+		t.Fatalf("initialize bootstrap: %v", err)
+	}
+	promoteVoterForTest(t, machine, machine.LastAppliedIndex()+1, 4)
 	return cmaNewPortService(t, machine)
 }
 
@@ -1081,7 +1091,7 @@ func cmaCanceledContext() context.Context {
 }
 
 func TestCMANewServiceRequiresPort(t *testing.T) {
-	service, err := NewService(nil)
+	service, err := NewService(nil, StandardReplicationProfile)
 	if err == nil || service != nil {
 		t.Fatalf("NewService(nil) = (%v, %v), want rejection", service, err)
 	}
@@ -1162,8 +1172,8 @@ func TestCMAServiceMapsCommittedMembershipConflicts(t *testing.T) {
 		}
 	})
 	t.Run("removal while a join is in progress", func(t *testing.T) {
-		service, port := cmaBootstrappedService(t)
-		if _, err := service.StageJoin(context.Background(), StageJoinRequestDTO{IdempotencyKey: "join-4", Member: testMember(4, MemberPhaseUnspecified, "")}); err != nil {
+		service, port := cmaFourVoterService(t)
+		if _, err := service.StageJoin(context.Background(), StageJoinRequestDTO{IdempotencyKey: "join-5", Member: testMember(5, MemberPhaseUnspecified, "")}); err != nil {
 			t.Fatalf("stage: %v", err)
 		}
 		_, err := service.StartPlannedRemoval(context.Background(), 3, "remove-3", 1)
@@ -1220,7 +1230,7 @@ func TestCMAServiceStartPlannedRemovalRejections(t *testing.T) {
 		}
 	})
 	t.Run("key bound to another member removal", func(t *testing.T) {
-		service, port := cmaBootstrappedService(t)
+		service, port := cmaFourVoterService(t)
 		if _, err := service.StartPlannedRemoval(context.Background(), 3, "remove-key", 1); err != nil {
 			t.Fatalf("start removal: %v", err)
 		}

@@ -222,6 +222,8 @@ func (contractStateProvider) GetClusterSummary(context.Context) ports.ClusterSum
 		ReleaseVersion:    "1.0.0",
 		MemberCount:       1,
 		QuorumSize:        1,
+		ReplicationFactor: 1,
+		WriteQuorum:       1,
 		QuorumAvailable:   true,
 		LeaderNodeID:      &leader,
 		NodesByState:      ports.NodesByStateDTO{Ready: 1},

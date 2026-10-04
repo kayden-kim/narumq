@@ -3,7 +3,7 @@
   "jsonSchemaDialect": "https://json-schema.org/draft/2020-12/schema",
   "info": {
     "title": "NaruMQ Management API",
-    "version": "1.5.0",
+    "version": "1.6.0",
     "description": "Query, observability, authenticated cluster membership and feature activation, broker node drain, and cluster-backup operations. OIDC/JWT claim semantics, rate limiting, audit and dashboard APIs are deferred."
   },
   "servers": [
@@ -290,7 +290,7 @@
           "404": { "$ref": "#/components/responses/NotFound" },
           "405": { "$ref": "#/components/responses/MethodNotAllowed" },
           "409": {
-            "description": "Identity, idempotency key, or membership operation conflict.",
+            "description": "Identity, idempotency key, membership operation conflict, or replication_factor_unsatisfied when removal would leave fewer voters than replicationFactor.",
             "headers": { "X-Request-Id": { "$ref": "#/components/headers/XRequestId" } },
             "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorResponse" } } }
           },
@@ -733,6 +733,8 @@
                     "releaseVersion": "1.0.0",
                     "memberCount": 1,
                     "quorumSize": 1,
+                    "replicationFactor": 1,
+                    "writeQuorum": 1,
                     "quorumAvailable": true,
                     "leaderNodeId": "node-1",
                     "nodesByState": { "joining": 0, "ready": 1, "draining": 0, "safeToStop": 0 },
@@ -1315,6 +1317,8 @@
           "releaseVersion": { "type": "string", "minLength": 1, "maxLength": 64 },
           "memberCount": { "type": "integer", "minimum": 0 },
           "quorumSize": { "type": "integer", "minimum": 1 },
+          "replicationFactor": { "type": "integer", "minimum": 1 },
+          "writeQuorum": { "type": "integer", "minimum": 1 },
           "quorumAvailable": { "type": "boolean" },
           "leaderNodeId": { "type": ["string", "null"], "minLength": 1, "maxLength": 128 },
           "nodesByState": {

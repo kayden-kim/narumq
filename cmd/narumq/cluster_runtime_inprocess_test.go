@@ -29,6 +29,7 @@ import (
 	"narumq/internal/adapters/raft/records"
 )
 
+// Traceability: CLU-09; docs/specs/cluster-session-and-delivery.md §4.4, §11.27.
 func TestRunClusterModeInProcess(t *testing.T) {
 	directory := t.TempDir()
 	caCert, caKey, caPEM := newClusterRuntimeTestCA(t)
@@ -181,7 +182,22 @@ func TestRunClusterModeInProcess(t *testing.T) {
 	if err != nil {
 		t.Fatalf("query in-process cluster summary: %v", err)
 	}
+	var summary struct {
+		Data struct {
+			ReplicationFactor int `json:"replicationFactor"`
+			WriteQuorum       int `json:"writeQuorum"`
+			MemberCount       int `json:"memberCount"`
+			QuorumSize        int `json:"quorumSize"`
+		} `json:"data"`
+	}
+	decodeErr := json.NewDecoder(response.Body).Decode(&summary)
 	_ = response.Body.Close()
+	if decodeErr != nil {
+		t.Fatalf("decode cluster summary: %v", decodeErr)
+	}
+	if summary.Data.ReplicationFactor != 3 || summary.Data.WriteQuorum != 2 {
+		t.Errorf("cluster replication profile = %d/%d, want 3/2", summary.Data.ReplicationFactor, summary.Data.WriteQuorum)
+	}
 	if response.StatusCode != http.StatusOK {
 		t.Fatalf("cluster summary status = %d, want 200", response.StatusCode)
 	}
@@ -225,6 +241,45 @@ func TestRunClusterModeInProcess(t *testing.T) {
 		MQTT: clusterMQTT{SecurityConfigFile: securityPath},
 	}
 	leaderAddress := clusterRuntimeTestLeader(t, ctx, client, managementAddresses)
+	blockedRemoval, err := clusterRuntimeTestDoRequest(ctx, client, http.MethodDelete,
+		"http://"+leaderAddress+"/api/v1/cluster/members/3", nil)
+	if err != nil {
+		t.Fatalf("remove member from three-voter cluster: %v", err)
+	}
+	var removalError struct {
+		Error struct {
+			Code      string `json:"code"`
+			Retryable bool   `json:"retryable"`
+		} `json:"error"`
+	}
+	decodeErr = json.NewDecoder(blockedRemoval.Body).Decode(&removalError)
+	_ = blockedRemoval.Body.Close()
+	if decodeErr != nil {
+		t.Fatalf("decode blocked removal: %v", decodeErr)
+	}
+	if blockedRemoval.StatusCode != http.StatusConflict || removalError.Error.Code != "replication_factor_unsatisfied" || removalError.Error.Retryable {
+		t.Fatalf("three-voter removal status=%d code=%q retryable=%t, want 409 replication_factor_unsatisfied false",
+			blockedRemoval.StatusCode, removalError.Error.Code, removalError.Error.Retryable)
+	}
+	request, err = http.NewRequestWithContext(ctx, http.MethodGet, "http://"+leaderAddress+"/api/v1/cluster", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	request.Header.Set("Authorization", "Bearer admin-token")
+	response, err = client.Do(request)
+	if err != nil {
+		t.Fatalf("query cluster after blocked removal: %v", err)
+	}
+	decodeErr = json.NewDecoder(response.Body).Decode(&summary)
+	_ = response.Body.Close()
+	if decodeErr != nil {
+		t.Fatalf("decode cluster after blocked removal: %v", decodeErr)
+	}
+	if response.StatusCode != http.StatusOK || summary.Data.MemberCount != 3 || summary.Data.QuorumSize != 2 {
+		t.Fatalf("cluster after blocked removal status=%d members=%d quorum=%d, want 200 3 2",
+			response.StatusCode, summary.Data.MemberCount, summary.Data.QuorumSize)
+	}
+	t.Log("three-voter removal: 409 replication_factor_unsatisfied retryable=false; summary: profile=3/2 members=3 quorum=2")
 	stageBody, err := json.Marshal(struct {
 		MemberID             uint64 `json:"memberId"`
 		Address              string `json:"address"`
@@ -297,6 +352,7 @@ func TestRunClusterModeInProcess(t *testing.T) {
 	allAddresses := append(managementAddresses, joinerManagementAddress)
 	clusterRuntimeTestWaitOperation(t, ctx, client, allAddresses, removeOperationID, "SUCCEEDED")
 	clusterRuntimeTestWaitRemovalReady(t, client, allAddresses, 2)
+	t.Log("four-to-three voter replacement: removal 202 -> SUCCEEDED; remaining voters ready")
 }
 
 func clusterRuntimeTestAssertNodeListing(t *testing.T, ctx context.Context, client *http.Client, address string) {

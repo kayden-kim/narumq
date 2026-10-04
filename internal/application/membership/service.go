@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"errors"
+	"fmt"
 	"slices"
 	"sort"
 
@@ -42,20 +43,21 @@ type StageJoinRequestDTO struct {
 type ServiceErrorCode string
 
 const (
-	ServiceErrorInvalidRequest           ServiceErrorCode = "invalid_request"
-	ServiceErrorResourceNotFound         ServiceErrorCode = "resource_not_found"
-	ServiceErrorMemberIDReserved         ServiceErrorCode = "member_id_reserved"
-	ServiceErrorMemberIdentityConflict   ServiceErrorCode = "member_identity_conflict"
-	ServiceErrorIdempotencyConflict      ServiceErrorCode = "idempotency_conflict"
-	ServiceErrorMembershipInProgress     ServiceErrorCode = "membership_change_in_progress"
-	ServiceErrorOperationConflict        ServiceErrorCode = "operation_conflict"
-	ServiceErrorNotLeader                ServiceErrorCode = "not_leader"
-	ServiceErrorQuorumUnavailable        ServiceErrorCode = "quorum_unavailable"
-	ServiceErrorCompatibilityUnsupported ServiceErrorCode = "compatibility_unsupported"
-	ServiceErrorFeatureUnsupported       ServiceErrorCode = "feature_not_supported_by_all_members"
-	ServiceErrorInvalidNodeTransition    ServiceErrorCode = "invalid_node_transition"
-	ServiceErrorDrainNotCancellable      ServiceErrorCode = "drain_not_cancellable"
-	ServiceErrorNodeDrainInProgress      ServiceErrorCode = "node_drain_in_progress"
+	ServiceErrorInvalidRequest               ServiceErrorCode = "invalid_request"
+	ServiceErrorResourceNotFound             ServiceErrorCode = "resource_not_found"
+	ServiceErrorMemberIDReserved             ServiceErrorCode = "member_id_reserved"
+	ServiceErrorMemberIdentityConflict       ServiceErrorCode = "member_identity_conflict"
+	ServiceErrorIdempotencyConflict          ServiceErrorCode = "idempotency_conflict"
+	ServiceErrorMembershipInProgress         ServiceErrorCode = "membership_change_in_progress"
+	ServiceErrorReplicationFactorUnsatisfied ServiceErrorCode = "replication_factor_unsatisfied"
+	ServiceErrorOperationConflict            ServiceErrorCode = "operation_conflict"
+	ServiceErrorNotLeader                    ServiceErrorCode = "not_leader"
+	ServiceErrorQuorumUnavailable            ServiceErrorCode = "quorum_unavailable"
+	ServiceErrorCompatibilityUnsupported     ServiceErrorCode = "compatibility_unsupported"
+	ServiceErrorFeatureUnsupported           ServiceErrorCode = "feature_not_supported_by_all_members"
+	ServiceErrorInvalidNodeTransition        ServiceErrorCode = "invalid_node_transition"
+	ServiceErrorDrainNotCancellable          ServiceErrorCode = "drain_not_cancellable"
+	ServiceErrorNodeDrainInProgress          ServiceErrorCode = "node_drain_in_progress"
 )
 
 // ServiceError exposes a stable sanitized message and retry classification without
@@ -78,15 +80,19 @@ func (serviceError *ServiceError) Error() string {
 
 // Service stages join and planned-removal operations and reads committed operation status.
 type Service struct {
-	port CommandPort
+	port        CommandPort
+	replication ReplicationProfileDTO
 }
 
 // NewService constructs a membership use case service with its application-owned port.
-func NewService(port CommandPort) (*Service, error) {
+func NewService(port CommandPort, replication ReplicationProfileDTO) (*Service, error) {
 	if port == nil {
 		return nil, errors.New("membership command port is required")
 	}
-	return &Service{port: port}, nil
+	if err := ValidateReplicationProfile(replication); err != nil {
+		return nil, fmt.Errorf("membership service: %w", err)
+	}
+	return &Service{port: port, replication: replication}, nil
 }
 
 // StageJoin commits a candidate identity before returning its operation status.
@@ -182,6 +188,15 @@ func (service *Service) StartPlannedRemoval(ctx context.Context, memberID uint64
 	}
 	if member.Phase != MemberPhaseVoter {
 		return MembershipOperationDTO{}, newServiceError(ServiceErrorOperationConflict, false)
+	}
+	voterIDs := make([]uint64, 0, len(members))
+	for _, candidate := range members {
+		if candidate.Phase == MemberPhaseVoter {
+			voterIDs = append(voterIDs, candidate.MemberID)
+		}
+	}
+	if !RemovalKeepsReplicationFactor(memberID, voterIDs, service.replication) {
+		return MembershipOperationDTO{}, newServiceError(ServiceErrorReplicationFactorUnsatisfied, false)
 	}
 	operationID, err := newOperationID()
 	if err != nil {
@@ -345,6 +360,8 @@ func newServiceError(code ServiceErrorCode, retryable bool) *ServiceError {
 		message = "idempotency key was used with different content"
 	case ServiceErrorMembershipInProgress:
 		message = "another membership change is in progress"
+	case ServiceErrorReplicationFactorUnsatisfied:
+		message = "member removal would leave fewer voters than the replication factor"
 	case ServiceErrorOperationConflict:
 		message = "membership operation conflicts with committed state"
 	case ServiceErrorNotLeader:

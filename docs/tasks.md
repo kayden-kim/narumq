@@ -41,7 +41,6 @@
 
 ### 1.3 Cluster 기능과 알려진 구현 한계
 
-- [ ] **부분 구현 · 결정 필요** — Replication factor와 write quorum 설정(CLU-09): [PRD §9.2](requirements/PRD.md#92-클러스터와-세션)와 [Cluster §4](specs/cluster-session-and-delivery.md#4-replicated-state)는 설정 가능한 replica·write quorum을 요구하지만, [ADR-0009 §1.4](decisions/ADR-0009-raft-production-state-profile.md#14-consensus-group-partition-profile)는 고정 voter `{1,2,3}`의 단일 group profile을 채택했다. 현재 dynamic membership은 voter 수를 바꿀 수 있으나 commit은 Raft 과반수를 따르며 `cmd/narumq/cluster_config.go`에는 별도 replication factor/write quorum 설정이 없다. 이 요구와 채택된 profile의 설계 차이를 먼저 결정 기록으로 해소한다. Voter 수 변경만으로 별도 설정 요구를 충족했다고 표시하거나 Raft 과반수보다 약한 ACK를 도입하지 않는다. 확정한 지원 설정·거절 조건에 따라 replica 조건이 부족할 때 성공 durable ACK가 없는지 시험한다.
 - [ ] **부분 구현 · 결정 필요** — Publish backpressure와 포화 target 처리(CLU-12): storage health와 bounded peer queue 제어는 있지만, [ADR-0015 §5·§6](decisions/ADR-0015-cluster-durable-qos-delivery.md#5-대안)은 포화 target을 `Saturated`로 건너뛰고 publisher 성공을 허용하는 차이를 명시한다. [Cluster §4](specs/cluster-session-and-delivery.md#4-replicated-state)의 replication lag·disk pressure 기반 admission과 PRD의 drop보다 publish 제한 우선 기준에 대해 남은 범위를 정한다. 현재 승인된 포화 처리 의미를 조용히 바꾸지 않고, 기준·계측·admission 동작을 결정한 뒤 포화와 회복 시험을 연결한다.
 - [ ] **미구현 · P1** — 연결·session rebalance(CLU-13): [Cluster §9](specs/cluster-session-and-delivery.md#9-rebalance)와 [PRD §9.2](requirements/PRD.md#92-클러스터와-세션)를 따른다. 현재 planned removal/drain의 ownership 인계는 있지만 증설 뒤 부하 편차를 줄이는 rebalance는 없다. 편차 기준과 이동 속도를 정하고, 증설 뒤 연결 수 수렴·새 epoch fencing·committed delivery state의 ATTACH 재개를 검증한다. P0 수용 범위와 분리한다.
 
@@ -68,6 +67,7 @@
 - [x] 고정 voter `{1,2,3}` production peer transport(mTLS 인증, framing, bounded queue, Raft 재생성): [ADR-0002 §7](decisions/ADR-0002-cluster-consensus-library.md#7-검증) 항목 5, [§11.3](specs/cluster-session-and-delivery.md#113-phase-0-gate-4-production-peer-transport-mapping). [ADR-0008](decisions/ADR-0008-raft-peer-transport.md) 범위에 한정한다.
 - [x] Raft production profile 설계 결정과 module checksum 확인: [ADR-0009](decisions/ADR-0009-raft-production-state-profile.md), [§11.4](specs/cluster-session-and-delivery.md#114-adr-0009-design-target과-module-checksum-증거). 설계 목표만 채택했으며 runtime 수용은 아니다.
 - [x] Dynamic membership join·leave, 변경 중 crash/restart 수렴, quorum 확인 전 MQTT readiness 거절: [§11.5](specs/cluster-session-and-delivery.md#115-dynamic-membershiprestart-convergencemqtt-readiness-mapping).
+- [x] Replication factor·write quorum profile(CLU-09): [ADR-0029](decisions/ADR-0029-replication-factor-write-quorum-profile.md), [§4.4](specs/cluster-session-and-delivery.md#44-replication-factor와-write-quorum-profile), [§11.27](specs/cluster-session-and-delivery.md#1127-replication-factorwrite-quorum-profile-수용-매핑). 지원 profile은 3/2 하나이며 mixed N-1/N removal 보호와 경합 시 REMOVING 대기는 결정한 한계다. Config·membership·HTTP·runtime·contract·process·partition·전체 local gate PASS.
 
 ### 2.2 Storage 장애와 local 복구
 

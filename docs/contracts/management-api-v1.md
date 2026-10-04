@@ -6,7 +6,7 @@ path, parameter, response schema와 media type은
 
 | 항목 | 값 |
 | --- | --- |
-| 이름과 version | `narumq-management-api` 1.5.0 |
+| 이름과 version | `narumq-management-api` 1.6.0 |
 | 상태 | Active |
 | Producer | NaruMQ broker management API |
 | Consumer | Dashboard·operator·monitoring integration의 query client |
@@ -46,6 +46,8 @@ path, parameter, response schema와 media type은
 | GET | `/api/v1/tenants` | tenant list |
 
 Version 1.5.0은 cluster feature 조회와 activation을 active contract에 추가한다. 조회는 `ReadOnly`, activation은 `ClusterAdmin`을 요구하며 dynamic cluster mode에서 제공된다. 이 catalog에 없는 path를 client가 호출할 수 있다는 계약은 없다.
+
+Version 1.6.0은 `GET /api/v1/cluster` 응답에 optional `replicationFactor`, `writeQuorum`을 추가한다. Dynamic cluster는 3/2, standalone은 1/1을 반환한다.
 
 ## 2. Authentication과 authorization
 

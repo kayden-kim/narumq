@@ -53,6 +53,8 @@ type ClusterSummaryDTO struct {
 	ReleaseVersion    string          `json:"releaseVersion"`
 	MemberCount       int             `json:"memberCount"`
 	QuorumSize        int             `json:"quorumSize"`
+	ReplicationFactor int             `json:"replicationFactor"`
+	WriteQuorum       int             `json:"writeQuorum"`
 	QuorumAvailable   bool            `json:"quorumAvailable"`
 	LeaderNodeID      *string         `json:"leaderNodeId"`
 	NodesByState      NodesByStateDTO `json:"nodesByState"`

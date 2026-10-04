@@ -34,6 +34,7 @@
 | [ADR-0026](ADR-0026-detach-transition-local-qos0-gate.md) | Accepted (owner-node local QoS 0 publish 경로만; forward·connected owner crash 제외) | Detach 전환 중 owner-node local QoS 0 publish를 queue detaching 표시와 DETACH 완료 대기로 보존한다. |
 | [ADR-0027](ADR-0027-detach-forward-and-owner-crash-qos0-boundary.md) | Accepted | Detach 전환 중 forward QoS 0과 DETACH commit 전 owner crash의 local queue 유실을 at-most-once 경계로 확정한다. |
 | [ADR-0028](ADR-0028-planned-handoff-will-and-reason-metric.md) | Accepted | 계획 인계에 표준 Will 규칙을 적용하고 최종 결과를 고정한 6개 사유로 집계한다. |
+| [ADR-0029](ADR-0029-replication-factor-write-quorum-profile.md) | Accepted | Replication factor·write quorum은 3/2만 지원하고 removal 전 최소 voter 수를 검사한다. |
 
 `Proposed` ADR은 검토 중인 제안이다. `Accepted` ADR은 각 기록에 명시한 범위 안에서 채택된 결정이다. `design target only`는 production runtime이나 acceptance 검증을 뜻하지 않는다.
 

@@ -56,6 +56,29 @@ func applyMustSucceed(t *testing.T, machine *StateMachine, index uint64, command
 	return result
 }
 
+func promoteVoterForTest(t *testing.T, machine *StateMachine, index uint64, memberID uint64) uint64 {
+	t.Helper()
+	operationID := fmt.Sprintf("00000000-0000-4000-8000-%012d", memberID)
+	key := fmt.Sprintf("join-%d", memberID)
+	stage := stageRecord(operationID, key, memberID)
+	applyMustSucceed(t, machine, index, testCommand(operationID, &stage))
+	learner, err := machine.ApplyConfiguration(index+1, operationID, ConfigurationActionAddLearner, memberID)
+	if err != nil || learner.Outcome != ApplyOutcomeApplied {
+		t.Fatalf("add learner: result=%+v err=%v", learner, err)
+	}
+	member := testMember(memberID, MemberPhaseCatchingUp, operationID)
+	catchingUp := MembershipRecordDTO{
+		OperationID: operationID, Action: MembershipActionAddLearner,
+		IdempotencyKey: key, Member: &member,
+	}
+	applyMustSucceed(t, machine, index+2, testCommand(operationID, &catchingUp))
+	promoted, err := machine.ApplyConfiguration(index+3, operationID, ConfigurationActionPromoteVoter, memberID)
+	if err != nil || promoted.Outcome != ApplyOutcomeApplied || promoted.Operation.Phase != OperationPhaseSucceeded {
+		t.Fatalf("promote voter: result=%+v err=%v", promoted, err)
+	}
+	return index + 4
+}
+
 func TestStateMachineInitializeBootstrapRequiresThreeCanonicalVoters(t *testing.T) {
 	machine := NewStateMachine()
 	voters := testVoters()

@@ -5,6 +5,8 @@ import (
 	"slices"
 	"strings"
 	"testing"
+
+	"narumq/internal/application/membership"
 )
 
 func validBootstrapClusterConfig() clusterConfigFile {
@@ -236,6 +238,51 @@ func TestParseClusterConfigRejectsMalformedTenantQuotaJSON(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			if _, err := parseClusterConfig(strings.NewReader(test.json)); err == nil {
 				t.Fatal("parseClusterConfig accepted malformed tenant quota JSON")
+			}
+		})
+	}
+}
+
+// Traceability: CLU-09; ADR-0029; docs/specs/cluster-session-and-delivery.md §4.4, §11.27.
+func TestParseClusterConfigReplicationProfile(t *testing.T) {
+	for _, base := range []clusterConfigFile{validBootstrapClusterConfig(), validJoinerClusterConfig()} {
+		t.Run(base.Role, func(t *testing.T) {
+			for _, test := range []struct {
+				name    string
+				profile *clusterReplicationConfig
+				raw     string
+				wantErr string
+			}{
+				{name: "omitted"},
+				{name: "standard", profile: &clusterReplicationConfig{Factor: 3, WriteQuorum: 2}},
+				{name: "five-three", profile: &clusterReplicationConfig{Factor: 5, WriteQuorum: 3}, wantErr: "replication is invalid: replication profile must be factor 3 and writeQuorum 2"},
+				{name: "three-three", profile: &clusterReplicationConfig{Factor: 3, WriteQuorum: 3}, wantErr: "replication is invalid: replication profile must be factor 3 and writeQuorum 2"},
+				{name: "three-one", profile: &clusterReplicationConfig{Factor: 3, WriteQuorum: 1}, wantErr: "replication is invalid: replication profile must be factor 3 and writeQuorum 2"},
+				{name: "zero", profile: &clusterReplicationConfig{}, wantErr: "replication is invalid: replication profile must be factor 3 and writeQuorum 2"},
+				{name: "missing quorum", raw: `{"factor":3}`, wantErr: `cluster config is missing required field "writeQuorum"`},
+				{name: "unknown key", raw: `{"factor":3,"writeQuorum":2,"x":1}`, wantErr: "cluster config has invalid JSON or field types"},
+			} {
+				t.Run(test.name, func(t *testing.T) {
+					config := base
+					config.Replication = test.profile
+					data := string(mustMarshalClusterConfig(t, config))
+					if test.raw != "" {
+						data = strings.TrimSuffix(data, "}") + `,"replication":` + test.raw + "}"
+					}
+					parsed, err := parseClusterConfig(strings.NewReader(data))
+					if test.wantErr != "" {
+						if err == nil || err.Error() != test.wantErr {
+							t.Fatalf("parse error=%v, want %q", err, test.wantErr)
+						}
+						return
+					}
+					if err != nil || parsed.replicationProfile() != membership.StandardReplicationProfile {
+						t.Fatalf("parsed profile=%+v error=%v", parsed.replicationProfile(), err)
+					}
+					if (parsed.Replication == nil) != (test.profile == nil) {
+						t.Fatalf("parsed replication=%+v, input=%+v", parsed.Replication, test.profile)
+					}
+				})
 			}
 		})
 	}

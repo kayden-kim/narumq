@@ -13,7 +13,7 @@ NaruMQ cluster는 세 broker node가 같은 replicated state machine에 참여�
 | 관련 결정 | [ADR-0002](../decisions/ADR-0002-cluster-consensus-library.md), [ADR-0003](../decisions/ADR-0003-durable-ack-barrier.md), [ADR-0004](../decisions/ADR-0004-session-ownership-and-fencing.md), [ADR-0008](../decisions/ADR-0008-raft-peer-transport.md), [ADR-0009](../decisions/ADR-0009-raft-production-state-profile.md) (Accepted, design target only), [ADR-0011](../decisions/ADR-0011-cluster-backup-restore-v1.md) (historical v1), [ADR-0012](../decisions/ADR-0012-retained-replication-and-cluster-backup-v2.md), [ADR-0013](../decisions/ADR-0013-offline-queue-replication-and-cluster-backup-v3.md), [ADR-0014](../decisions/ADR-0014-cross-node-live-qos0-forwarding.md) (live QoS 0 only), [ADR-0015](../decisions/ADR-0015-cluster-durable-qos-delivery.md) (limited QoS 1/2 durable delivery), [ADR-0016](../decisions/ADR-0016-node-drain-and-safe-to-stop.md) (broker drain scope only). ADR-0002~0004는 Proposed |
 | Tenant storage quota decision | [ADR-0017](../decisions/ADR-0017-tenant-storage-quota.md) (TEN-08 scope; production and mixed-version gates remain open) |
 | 관련 Contract | [Cluster release compatibility v1](../contracts/cluster-release-compatibility-v1.md), Active [Raft peer transport v1](../contracts/raft-peer-transport-v1.md), Draft [Raft membership v2](../contracts/raft-membership-v2.md), Draft [Replicated state v1](../contracts/replicated-state-v1.proto), Draft [Cluster backup v3](../contracts/cluster-backup-v3.md), Superseded [Cluster backup v2](../contracts/cluster-backup-v2.md), Superseded [Cluster backup v1](../contracts/cluster-backup-v1.md) |
-| 최종 확인일 | 2026-10-03 |
+| 최종 확인일 | 2026-10-04 |
 
 ## Runtime component view
 
@@ -82,6 +82,16 @@ Local snapshot 저장 공간 회수는 `stable_store.go` `createSnapshotPayload`
 `POST /api/v1/cluster/backups`는 ClusterAdmin 전용으로 fresh quorum barrier 뒤 typed snapshot과 committed tail을 담은 archive v3(`NMQBKUP3`)를 반환한다. `-cluster-restore`는 그 archive를 오프라인에서 검사·seed하고 종료한다. Current restore는 같은 cluster ID와 정확한 3 bootstrap voter identity를 요구하며 archive에 learner가 있으면 거절한다. Archive v1과 v2는 읽지 않고 거절한다. 구현 위치는 [`cluster_backup.go`](../../cmd/narumq/cluster_backup.go), [`cluster_backup_restore.go`](../../cmd/narumq/cluster_backup_restore.go), [backup archive codec](../../internal/adapters/raft/records/backup.go), [Cluster backup v3 contract](../contracts/cluster-backup-v3.md)이고 process acceptance는 [Cluster §11.7](../specs/cluster-session-and-delivery.md#117-cluster-backuprestore와-snapshot-finalize-수용-매핑), [§11.8](../specs/cluster-session-and-delivery.md#118-retained-replication과-backup-v2-수용-매핑) 및 [§11.9](../specs/cluster-session-and-delivery.md#119-offline-queue-replication과-backup-v3-수용-매핑)에 있다.
 
 Dynamic cluster mode는 tenant-scoped retained value와 detached persistent session의 QoS 0 offline queue를 Raft에 commit한다. ADR-0015는 QoS 1/2 durable target queue와 publisher QoS 2 inbound state를 session별 replicated state로 추가하며, §11.11 process acceptance는 detached QoS 1/2 전달, owner takeover, backup v3 restore, ACK 뒤 publisher-node process kill 및 quorum loss 중 성공 ACK 부재를 확인했다. Connected QoS 0 delivery는 authenticated `NMQFWRD2` lane으로 committed owner에게 전달하며 Raft state에 쓰지 않는다. QoS 0 offline/retained, live forwarding, durable QoS 1/2 및 broker-side drain/`SAFE_TO_STOP` evidence는 각각 §11.8–§11.11과 [Drain spec §10](../specs/drain-and-rolling-update.md#10-broker-drain-수용-시험-매핑)을 참조한다. Production EBS power-loss, WAL/fsync crash gate, BP-03, N/N-1, TEN-08, supported SDK redirect/Will compatibility와 external rollout은 검증되지 않았다. ADR-0002·0003·0004가 Proposed인 동안 전체 view도 production 또는 Verified 상태가 아니다.
+
+### Replication profile과 planned removal 보호
+
+`cmd/narumq/cluster_config.go`는 선택 객체 `replication`을 엄격하게 읽는다. `replicationProfile`은 생략값을 3/2로 변환한다. `internal/application/membership/replication_profile.go`는 지원 profile 검증과 대상 외의 voter 수 판정을 소유한다. `runClusterMode`가 이 값을 `membership.NewService`에 주입하므로 application은 config JSON이나 Raft adapter에 의존하지 않는다.
+
+Removal 요청은 HTTP `membership_handlers.go`에서 `Service.StartPlannedRemoval`로 들어간다. Service는 기존 idempotency replay·member 존재·phase 판정 뒤 committed `VOTER` ID를 검사한다. `LEAVING`은 세지 않는다. 남은 voter가 부족하면 command를 만들기 전에 거절한다. HTTP adapter는 이 application 오류를 non-retryable 409로 변환한다.
+
+Leader driver의 `clusterRuntime.advanceMembership`은 `OperationPhaseRemoving`에서 현재 `node.Status().VoterIDs`로 다시 검사한다. 부족하면 기존 `removalBlockLogged` 중복 억제와 `reason=replication_factor_unsatisfied` 경고를 사용하고 transfer·ConfChange를 제안하지 않는다. 대상이 이미 voter 집합에서 빠졌으면 전체 voter 수로 판정한다. Local leader가 제거 대상일 때의 leadership transfer는 기존 순서를 유지한다. Drain이 공유하는 `PlanRemovalHandoff`와 committed apply 규칙은 바꾸지 않는다.
+
+Management query는 `clusterStateProvider.GetClusterSummary`에서 같은 config profile을 읽는다. Standalone `management.Service.GetClusterSummary`는 1/1을 만든다. Profile은 process config 값이며 replicated state에 새로 저장하지 않는다. 지원값이 하나라 node별 값이 다를 수 없으며, 다른 profile과 mixed-release 한계는 [ADR-0029](../decisions/ADR-0029-replication-factor-write-quorum-profile.md)를 따른다. 동작·실행 증거는 [Cluster §4.4·§11.27](../specs/cluster-session-and-delivery.md#1127-replication-factorwrite-quorum-profile-수용-매핑)이 기준이다.
 
 ## 상태 소유권
 

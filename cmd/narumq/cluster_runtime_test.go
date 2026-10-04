@@ -1330,3 +1330,99 @@ func TestClusterCommitReadProofPreservesSubmissionOrderAndCancellation(t *testin
 		t.Fatalf("durably applied command order = %q, want first then second without cancelled command", commands)
 	}
 }
+
+// Traceability: CLU-09; docs/specs/cluster-session-and-delivery.md §4.4, §11.27.
+func TestClusterMembershipRemovalWaitsForReplicationFactor(t *testing.T) {
+	for _, ownsSession := range []bool{false, true} {
+		name := "without-session"
+		if ownsSession {
+			name = "with-session"
+		}
+		t.Run(name, func(t *testing.T) {
+			runtimes := newReadAdmissionTestCluster(t)
+			runtime := runtimes[0]
+			if status := runtime.node.Status(); status.Role != raftadapter.RoleLeader {
+				t.Fatalf("fixture has no leader: %+v", status)
+			}
+			runtime.machine = retainedTestMachine(t, runtime.config, runtime.config.ReleaseVersion)
+			runtime.initialized.Store(true)
+			runtime.handoffProposed = make(map[string]uint64)
+			index := runtime.machine.LastAppliedIndex() + 1
+			if ownsSession {
+				result, err := runtime.machine.Apply(index, membership.CommandDTO{
+					SchemaMajor: membership.SchemaMajor,
+					OperationID: "00000000-0000-4000-8000-000000000010",
+					Ownership: &membership.OwnershipChangeDTO{
+						TenantID: "tenant-a", ClientID: "client-a",
+						OwnerNodeID: 3, Epoch: 1, Action: membership.OwnershipActionAcquire,
+					},
+				})
+				if err != nil || result.Outcome != membership.ApplyOutcomeApplied {
+					t.Fatalf("acquire leaving member session: result=%+v err=%v", result, err)
+				}
+				index++
+			}
+			// Model a committed BeginRemove from an older proposer or a race after the service check.
+			const operationID = "00000000-0000-4000-8000-000000000006"
+			member := runtime.machine.Members()[2]
+			member.Phase = membership.MemberPhaseLeaving
+			member.OperationID = operationID
+			result, err := runtime.machine.Apply(index, membership.CommandDTO{
+				SchemaMajor: membership.SchemaMajor, OperationID: operationID,
+				Membership: &membership.MembershipRecordDTO{
+					OperationID: operationID, Action: membership.MembershipActionBeginRemove,
+					IdempotencyKey: "remove-3", Member: &member, TargetMemberID: 3,
+				},
+			})
+			if err != nil || result.Outcome != membership.ApplyOutcomeApplied {
+				t.Fatalf("commit removal before leader recheck: result=%+v err=%v", result, err)
+			}
+			commitIndex := runtime.node.Status().CommitIndex
+			for range 2 {
+				if err := runtime.advanceMembership(); err != nil {
+					t.Fatalf("advance blocked removal: %v", err)
+				}
+			}
+			// Deliver real Raft output so a wrongly proposed transfer or ConfChange becomes observable.
+			for round := 0; ; round++ {
+				if round == 64 {
+					t.Fatal("Raft did not settle after removal recheck")
+				}
+				var messages []raftadapter.MessageDTO
+				for _, peer := range runtimes {
+					batch, err := processReadyForTest(t, peer.node)
+					if err != nil {
+						t.Fatal(err)
+					}
+					if len(batch.Commands) != 0 || len(batch.ConfigurationChanges) != 0 {
+						t.Fatalf("blocked removal committed transfer or configuration: %+v", batch)
+					}
+					messages = append(messages, batch.Messages...)
+				}
+				if len(messages) == 0 {
+					break
+				}
+				for _, message := range messages {
+					if _, err := runtimes[message.To-1].node.Step(message); err != nil {
+						t.Fatal(err)
+					}
+				}
+			}
+			operation, exists := runtime.machine.GetOperation(operationID)
+			if !exists || operation.Phase != membership.OperationPhaseRemoving {
+				t.Fatalf("blocked removal operation=%+v exists=%t", operation, exists)
+			}
+			status := runtime.node.Status()
+			if status.CommitIndex != commitIndex || !reflect.DeepEqual(status.VoterIDs, []raftadapter.NodeID{1, 2, 3}) {
+				t.Fatalf("blocked removal changed Raft state: %+v, prior commit=%d", status, commitIndex)
+			}
+			if ownsSession {
+				owner, exists := runtime.machine.GetOwnership("tenant-a", "client-a")
+				if !exists || owner.OwnerNodeID != 3 || owner.Epoch != 1 {
+					t.Fatalf("blocked removal changed session ownership: %+v exists=%t", owner, exists)
+				}
+			}
+			t.Log("leader recheck: REMOVING retained, three voters unchanged, no transfer or ConfChange committed")
+		})
+	}
+}

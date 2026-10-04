@@ -74,10 +74,18 @@ func newServiceFixture(t *testing.T) (*Service, *stateMachinePort) {
 		t.Fatalf("initialize bootstrap: %v", err)
 	}
 	port := &stateMachinePort{machine: machine, nextIndex: 1}
-	service, err := NewService(port)
+	service, err := NewService(port, StandardReplicationProfile)
 	if err != nil {
 		t.Fatalf("new service: %v", err)
 	}
+	return service, port
+}
+
+func newFourVoterServiceFixture(t *testing.T) (*Service, *stateMachinePort) {
+	t.Helper()
+	service, port := newServiceFixture(t)
+	promoteVoterForTest(t, port.machine, port.machine.LastAppliedIndex()+1, 4)
+	port.nextIndex = port.machine.LastAppliedIndex()
 	return service, port
 }
 
@@ -148,12 +156,12 @@ func TestServiceRejectsUnsupportedIdentityAndUncommittedPortResult(t *testing.T)
 }
 
 func TestServicePlannedRemovalRetriesCommittedOperation(t *testing.T) {
-	service, port := newServiceFixture(t)
+	service, port := newFourVoterServiceFixture(t)
 	first, err := service.StartPlannedRemoval(context.Background(), 3, "remove-key", 17)
 	if err != nil {
 		t.Fatalf("start removal: %v", err)
 	}
-	if first.Phase != OperationPhaseRemoving || first.MemberID != 3 || first.CommittedIndex != 2 || first.Record.ExpectedConfStateIndex != 17 {
+	if first.Phase != OperationPhaseRemoving || first.MemberID != 3 || first.CommittedIndex != port.machine.LastAppliedIndex() || first.Record.ExpectedConfStateIndex != 17 {
 		t.Fatalf("removal result = %+v", first)
 	}
 	retry, err := service.StartPlannedRemoval(context.Background(), 3, "remove-key", 17)
@@ -172,11 +180,11 @@ func TestServicePlannedRemovalRetriesCommittedOperation(t *testing.T) {
 		}
 	}
 
-	removed, err := port.machine.ApplyConfiguration(5, first.OperationID, ConfigurationActionRemoveMember, 3)
+	removed, err := port.machine.ApplyConfiguration(port.nextIndex+1, first.OperationID, ConfigurationActionRemoveMember, 3)
 	if err != nil || removed.Outcome != ApplyOutcomeApplied {
 		t.Fatalf("complete removal: result=%+v err=%v", removed, err)
 	}
-	port.nextIndex = 5
+	port.nextIndex = port.machine.LastAppliedIndex()
 	retryAfterRetirement, err := service.StartPlannedRemoval(context.Background(), 3, "remove-key", 17)
 	if err != nil || retryAfterRetirement.OperationID != first.OperationID || !retryAfterRetirement.Replayed {
 		t.Fatalf("retry after retirement=(%+v, %v)", retryAfterRetirement, err)
@@ -184,7 +192,7 @@ func TestServicePlannedRemovalRetriesCommittedOperation(t *testing.T) {
 }
 
 func TestServiceRedactsPortCauseAndHonorsCanceledContext(t *testing.T) {
-	service, port := newServiceFixture(t)
+	service, port := newFourVoterServiceFixture(t)
 	port.commitError = errors.New("private adapter cause")
 	_, err := service.StartPlannedRemoval(context.Background(), 3, "remove-key", 1)
 	var serviceError *ServiceError
@@ -199,9 +207,9 @@ func TestServiceRedactsPortCauseAndHonorsCanceledContext(t *testing.T) {
 }
 
 func TestServicePreservesNotLeaderPortClassification(t *testing.T) {
-	service, port := newServiceFixture(t)
+	service, port := newFourVoterServiceFixture(t)
 	port.commitError = ErrNotLeader
-	request := StageJoinRequestDTO{IdempotencyKey: "join-key", Member: testMember(4, MemberPhaseStaged, "")}
+	request := StageJoinRequestDTO{IdempotencyKey: "join-key", Member: testMember(5, MemberPhaseStaged, "")}
 	_, err := service.StageJoin(context.Background(), request)
 	var serviceError *ServiceError
 	if !errors.As(err, &serviceError) || !errors.Is(err, ErrNotLeader) || serviceError.Code != ServiceErrorNotLeader || !serviceError.Retryable {
@@ -242,7 +250,7 @@ func TestServiceClusterFeaturesReturnsSortedNonRetiredProfiles(t *testing.T) {
 		t.Fatalf("restore retired member: %v", err)
 	}
 	port := &reverseMembersPort{stateMachinePort: &stateMachinePort{machine: machine}}
-	service, err := NewService(port)
+	service, err := NewService(port, StandardReplicationProfile)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -264,7 +272,7 @@ func TestServiceClusterFeaturesReturnsSortedNonRetiredProfiles(t *testing.T) {
 func TestServiceActivateFeatureCommitsAndMapsUnsupportedMembers(t *testing.T) {
 	machine := releaseProfileMachine(t, "1.2.0", []string{"compatibility-probe"})
 	port := &stateMachinePort{machine: machine, nextIndex: 1}
-	service, err := NewService(port)
+	service, err := NewService(port, StandardReplicationProfile)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -285,7 +293,7 @@ func TestServiceActivateFeatureCommitsAndMapsUnsupportedMembers(t *testing.T) {
 		t.Fatalf("remove member feature profile = %+v", result)
 	}
 	unsupportedPort := &stateMachinePort{machine: unsupportedMachine, nextIndex: 2}
-	unsupportedService, err := NewService(unsupportedPort)
+	unsupportedService, err := NewService(unsupportedPort, StandardReplicationProfile)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -293,5 +301,33 @@ func TestServiceActivateFeatureCommitsAndMapsUnsupportedMembers(t *testing.T) {
 	var serviceError *ServiceError
 	if !errors.As(err, &serviceError) || serviceError.Code != ServiceErrorFeatureUnsupported || serviceError.Retryable || unsupportedPort.commitCalls != 1 {
 		t.Fatalf("unsupported activation error=%v commits=%d", err, unsupportedPort.commitCalls)
+	}
+}
+
+// Traceability: CLU-09; docs/specs/cluster-session-and-delivery.md §4.4, §11.27.
+func TestServicePlannedRemovalRequiresReplicationFactor(t *testing.T) {
+	service, port := newServiceFixture(t)
+	_, err := service.StartPlannedRemoval(context.Background(), 3, "remove-3", 1)
+	var serviceError *ServiceError
+	if !errors.As(err, &serviceError) || serviceError.Code != ServiceErrorReplicationFactorUnsatisfied || serviceError.Retryable {
+		t.Fatalf("three-voter removal error=%v, want non-retryable replication factor conflict", err)
+	}
+	if port.commitCalls != 0 || len(port.machine.Operations()) != 0 || cmaMemberByID(t, port.machine, 3).Phase != MemberPhaseVoter {
+		t.Fatalf("blocked removal changed state: commits=%d operations=%+v members=%+v",
+			port.commitCalls, port.machine.Operations(), port.machine.Members())
+	}
+	service, port = newFourVoterServiceFixture(t)
+	operation, err := service.StartPlannedRemoval(context.Background(), 3, "remove-3", 1)
+	if err != nil || operation.Phase != OperationPhaseRemoving || cmaMemberByID(t, port.machine, 3).Phase != MemberPhaseLeaving {
+		t.Fatalf("four-voter removal operation=%+v error=%v", operation, err)
+	}
+}
+
+// Traceability: CLU-09; docs/specs/cluster-session-and-delivery.md §4.4, §11.27.
+func TestServiceRejectsUnsupportedReplicationProfile(t *testing.T) {
+	_, port := newServiceFixture(t)
+	service, err := NewService(port, ReplicationProfileDTO{Factor: 5, WriteQuorum: 3})
+	if service != nil || !errors.Is(err, ErrUnsupportedReplicationProfile) {
+		t.Fatalf("unsupported profile service=%v error=%v", service, err)
 	}
 }

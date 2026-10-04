@@ -317,6 +317,7 @@ func writeMembershipServiceError(w http.ResponseWriter, r *http.Request, err err
 		membership.ServiceErrorMemberIdentityConflict,
 		membership.ServiceErrorIdempotencyConflict,
 		membership.ServiceErrorMembershipInProgress,
+		membership.ServiceErrorReplicationFactorUnsatisfied,
 		membership.ServiceErrorOperationConflict,
 		membership.ServiceErrorNotLeader,
 		membership.ServiceErrorInvalidNodeTransition,

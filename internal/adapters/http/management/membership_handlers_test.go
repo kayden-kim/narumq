@@ -227,3 +227,24 @@ func TestMembershipHTTPMapsNotLeaderSeparatelyFromQuorum(t *testing.T) {
 		t.Fatalf("not-leader error envelope=%+v", envelope.Error)
 	}
 }
+
+// Traceability: CLU-09; docs/specs/cluster-session-and-delivery.md §4.4, §11.27.
+func TestMembershipHTTPMapsReplicationFactorUnsatisfiedToConflict(t *testing.T) {
+	stub := &membershipServiceStub{removeError: &membership.ServiceError{
+		Code:    membership.ServiceErrorReplicationFactorUnsatisfied,
+		Message: "member removal would leave fewer voters than the replication factor",
+	}}
+	handler := newMembershipHTTPTestHandler(stub, RoleClusterAdmin)
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, membershipRequest(http.MethodDelete, "/api/v1/cluster/members/3", "", RoleClusterAdmin))
+	if response.Code != http.StatusConflict {
+		t.Fatalf("replication factor status=%d body=%s", response.Code, response.Body.String())
+	}
+	var envelope ErrorResponse
+	if err := json.Unmarshal(response.Body.Bytes(), &envelope); err != nil {
+		t.Fatal(err)
+	}
+	if envelope.Error.Code != "replication_factor_unsatisfied" || envelope.Error.Retryable {
+		t.Fatalf("replication factor error envelope=%+v", envelope.Error)
+	}
+}

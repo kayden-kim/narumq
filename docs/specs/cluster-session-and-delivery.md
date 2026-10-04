@@ -120,7 +120,7 @@ Receiver는 자기 local committed ownership이 해당 session의 owner라고 �
 | session metadata | expiry, Will, owner epoch와 client protocol 정보를 복구한다. |
 | ownership·route metadata | stale owner를 fence하고 routing을 다시 구성한다. |
 
-replica 수가 configured write quorum보다 적으면 durable write를 성공 처리해서는 안 된다. replication lag 또는 disk pressure가 한도를 넘으면 publish admission을 늦추거나 거절해야 하며, 이미 성공 ACK한 durable state를 임의로 drop해서는 안 된다.
+replica 수가 configured write quorum보다 적으면 durable write를 성공 처리해서는 안 된다. replication lag 또는 disk pressure가 한도를 넘으면 publish admission을 늦추거나 거절해야 하며, 이미 성공 ACK한 durable state를 임의로 drop해서는 안 된다. (§4.4)
 
 ### 4.1 Offline message capture와 전달
 
@@ -183,6 +183,16 @@ Target 없는 QoS 1 client PUBLISH와 QoS 1/2 Will의 delivery command 생략 �
 7. **Handoff:** 새 client CONNECT 없이 drain 또는 planned removal로 record가 successor에 이전되면, 이전 epoch의 `CONNECTED` record에 서버 주도 비정상 종료 규칙을 적용한다. MQTT 3.1.1·Will Delay 0·retention `IMMEDIATE`이면 즉시 claim·발행한다. 나머지는 successor recovery 시각부터 Will Delay로 예약하며 session expiry로 제한한다. Expiry도 recovery 시각부터 시작한다. `DETACHED` record는 저장된 절대 Will due/session expiry 시각을 기준으로 timer를 다시 설정한다. Host를 영구히 잃은 owner의 session은 planned removal handoff 전까지 복구되지 않으며 그 handoff에서 같은 규칙으로 Will을 발행한다. [ADR-0028](../decisions/ADR-0028-planned-handoff-will-and-reason-metric.md)을 따른다.
 8. **Will at-most-once 및 만료 회수:** Will은 Will을 claim하는 command가 commit된 뒤에만 claim한 node에서 발행한다. Claim commit 실패(예: quorum 없음)면 발행하지 않는다. Owner-local expiry timer는 metadata `DISCARD`와 기존 durable delivery `DISCARD`를 commit한다. Metadata `DISCARD` 또는 ownership `Release`는 metadata record를 제거하며 만료 때 ownership row를 `Release`하지 않아 epoch ABA를 막는다. Offline record는 기존 lazy purge가 제거한다. Disconnect·지연 Will 처리마다 metadata commit 1회가 추가된다. Quorum 손실 중 Will은 발행되지 않는다.
 9. **조회와 backup:** 활성화 후 `/api/v1/clients` 및 `/api/v1/clients/{tenantId}/{clientId}`는 어느 node에서나 committed metadata를 반환한다. Backup에는 metadata를 typed snapshot과 whole-state digest에 포함하되 별도 kind summary를 추가하지 않는다. Archive format `3.0`을 유지한다. Feature 활성화 전에 연결된 session은 재접속 전까지 metadata가 없어 crash recovery나 cluster session 조회 대상이 아니다.
+
+### 4.4 Replication factor와 write quorum profile
+
+[ADR-0029](../decisions/ADR-0029-replication-factor-write-quorum-profile.md)에 따라 지원 profile은 replication factor 3 / write quorum 2 하나다. Replication factor는 유지할 최소 voter 수다. Write quorum은 durable write 성공에 필요한 최소 영속 replica 수다.
+
+Cluster config의 선택 객체 `replication`을 생략하면 3/2다. 객체가 있으면 정수 key `factor`와 `writeQuorum`이 모두 있어야 한다. 3/2 외의 값, 누락 key와 unknown key는 startup에서 거절한다. Durable write는 기존 Raft 과반수 commit 뒤에만 성공한다. Voter가 3 이상이면 과반수도 2 이상이므로 write quorum을 충족한다.
+
+Planned removal은 대상 외의 committed `VOTER`가 3 미만이면 non-retryable `409 replication_factor_unsatisfied`를 반환한다. 이 요청은 commit하지 않고 member와 operation을 바꾸지 않는다. Leader는 실제 Raft voter 집합도 다시 검사한다. 경합으로 남은 voter가 부족하면 session transfer와 removal ConfChange를 제안하지 않고 operation을 `REMOVING`에 둔다. 새 voter를 먼저 추가한 4→3 교체는 허용한다. Drain은 voter를 제거하지 않으므로 이 보호의 대상이 아니다.
+
+`GET /api/v1/cluster`는 dynamic cluster의 `replicationFactor=3`, `writeQuorum=2`를 반환한다. Standalone은 1/1을 반환한다. Replicated schema·wire·apply 의미는 바꾸지 않는다. Mixed N-1/N removal 보호와 경합 operation의 자동 해제 부재는 ADR-0029 §1 항목 7의 결정한 한계다.
 
 ## 5. Publish commit과 delivery
 
@@ -1049,4 +1059,59 @@ Crash 전 local queue 잔여의 유실 자체는 assert하지 않는다. QoS 0 s
 전체 local gate는 traceability·architecture·네 fuzz target 각각 10,000회·package/integration·production race·coverage를 통과했다. 이 gate 뒤에는 실행 증거와 완료 상태·코드 지도만 갱신했다.
 
 문서 링크는 ADR-0027·ADR-0026·결정 목록·tasks·코드 지도·cluster architecture의 상대 링크와 스펙의 새 ADR 링크 총 239개를 확인했다. 대상 파일과 heading anchor가 모두 존재했다. Accepted ADR 보존 규칙에 따라 ADR-0013의 기존 checklist 본문은 변경하지 않았다. 이 수용 범위의 완료 상태는 ADR-0027과 이 절, tasks에서 추적한다.
+
+
+### 11.27 Replication factor·write quorum profile 수용 매핑
+
+이 매핑은 [ADR-0029](../decisions/ADR-0029-replication-factor-write-quorum-profile.md)의 3/2 profile을 검증한다. Production Linux/EBS storage 수용은 별도다.
+
+| 시나리오 | 관찰할 결과 | 시험 위치 | 실행 증거 |
+| --- | --- | --- | --- |
+| Config profile | 생략=3/2, 3/2 허용, 그 밖의 값·누락 key·unknown key는 startup 거절 | `cmd/narumq.TestParseClusterConfigReplicationProfile` | PASS: bootstrap·joiner 각각 8 case, 아래 config·runtime 명령; package 9.068s |
+| 남은 voter 경계 | 4→3 허용, 3→2 거절, 이미 제거된 대상은 막지 않음 | `internal/application/membership.TestRemovalKeepsReplicationFactorBoundaries` | PASS: 아래 focused 명령; membership 0.686s |
+| Removal 사전 확인 | 3 voter에서 `replication_factor_unsatisfied`, commit 없음 | `internal/application/membership.TestServicePlannedRemovalRequiresReplicationFactor` | PASS: 아래 focused 명령; membership 0.686s |
+| HTTP 결과 | 409, non-retryable | `internal/adapters/http/management.TestMembershipHTTPMapsReplicationFactorUnsatisfiedToConflict` | PASS: 아래 focused 명령; HTTP management 0.558s |
+| Runtime·API | summary 3/2, 3-voter removal 409, 4→3 removal 성공 | `cmd/narumq.TestRunClusterModeInProcess` | PASS: 아래 config·runtime 명령; test 8.89s, package 9.068s |
+| Leader removal 재검사 | Committed BeginRemove 뒤에도 남은 voter가 부족하면 transfer·ConfChange가 없고 operation은 REMOVING에 남는다. | `cmd/narumq.TestClusterMembershipRemovalWaitsForReplicationFactor` | PASS: session 없음·있음 두 case, 아래 보강 명령; test 0.20s·package 9.282s |
+| Write quorum 미달 | quorum 손실·partition 중 성공 durable ACK 없음 | `tests/integration.TestDynamicClusterDurableQoSAckThenKillProcessAcceptance`, `TestDynamicClusterDurableAckPartitionProcessAcceptance` | PASS: kill/quorum 16.17s; partition 26.75s·package 26.936s; 아래 process·partition 명령 |
+| Contract | `ClusterData` 1.6.0 field와 example 검증 | `tests/contracts/management-api-v1` | PASS: 아래 focused 명령; contract 0.976s |
+| 4→3 교체·장애 회귀 | Membership 교체, volume-loss 새 ID 복구, quorum 대기와 transition crash recovery를 유지한다. | `tests/integration.TestDynamicClusterMembershipProcessAcceptance`, `TestDynamicClusterJoinerVoterVolumeLossProcessAcceptance`, `TestDynamicClusterMembershipRemovalHandoffWaitsForQuorum`, `TestDynamicClusterMembershipTransitionCrashRecovery` | PASS: 각각 22.57s·47.35s·32.51s·57.44s; 아래 process 명령, package 57.636s·wall 60.41s |
+| 전체 local gate | Historical N-1 호환 시험을 포함한 local 검증을 통과한다. | `go run ./tools/verify local` | PASS: 최초 exit 0·integration 254.586s·wall 305.38s; leader 재검사 회귀 보강 뒤 최종 exit 0·integration 252.007s·wall 288.05s |
+
+2026-10-04 실행 환경은 Windows/amd64, Go 1.26.5, 저장소 root `D:/Workspace/narumq`다. Partition 시험과 local gate는 실행 process의 환경에 `GOMAXPROCS=4`를 설정했다. Partition 시험에는 `NARUMQ_DURABLE_ACK_FAULTS=1`도 설정했다. 아래 환경값 표기는 POSIX 형식이며 Windows에서는 해당 process 환경에 같은 값을 넣어 실행했다.
+
+```text
+# 구현 전 실패 재현 및 구현 후 동작 관찰
+go test ./cmd/narumq -run '^TestRunClusterModeInProcess$' -count=1 -v
+# 일반·failpoint build: 각 구현 단계에서 exit 0
+go build ./... && go build -tags narumq_failpoint ./...
+# Focused
+go test ./internal/application/membership/... ./internal/application/management/... ./internal/adapters/http/management/... ./tests/contracts/... -count=1
+# Config·runtime
+go test ./cmd/narumq -run '^(TestParseClusterConfig|TestRunClusterModeInProcess)' -count=1 -v
+# 실제 process 회귀
+go test ./tests/integration -run '^(TestDynamicClusterDurableQoSAckThenKillProcessAcceptance|TestDynamicClusterMembershipProcessAcceptance|TestDynamicClusterJoinerVoterVolumeLossProcessAcceptance|TestDynamicClusterMembershipRemovalHandoffWaitsForQuorum|TestDynamicClusterMembershipTransitionCrashRecovery)$' -count=1 -v -timeout 20m
+# Partition ACK 거절
+GOMAXPROCS=4 NARUMQ_DURABLE_ACK_FAULTS=1 go test ./tests/integration -run '^TestDynamicClusterDurableAckPartitionProcessAcceptance$' -count=1 -v -timeout 20m
+# 전체 local gate
+GOMAXPROCS=4 go run ./tools/verify local
+```
+
+구현 전 in-process 시험은 profile 0/0과 3-voter removal 202를 관찰하여 FAIL했다(test 2.65s·package 2.846s). 구현 뒤 같은 시험은 non-retryable `409 replication_factor_unsatisfied`, profile 3/2, memberCount 3·quorumSize 2를 확인했다. 같은 idempotency key로 새 voter 추가 뒤 removal을 다시 요청하여 202와 `SUCCEEDED`를 확인했다. 단독 smoke와 focused 명령의 runtime 시험은 각각 8.89s로 PASS했다.
+
+Partition의 follower-isolated·leader-isolated 두 subtest는 각각 10.29s·10.19s로 PASS했다. Isolated 쪽 QoS 1 PUBACK과 QoS 2 PUBREC은 없었고 majority 쪽 handshake는 성공했다. 복구 뒤 QoS 2 재시도와 distinct message 전달도 확인했다. Quorum 손실 중 removal의 기존 503 기대도 process 회귀에서 유지됐다.
+
+전체 local gate는 traceability·architecture·네 fuzz target 각각 10,000회·package/integration·production race·coverage를 통과했다. 최초 gate 이후 추가한 leader 재검사 회귀와 최종 gate 결과는 아래에 구분해 기록했다. 승인된 수용 명령은 모두 실행했으며 production Linux/EBS 검증은 이번 완료 범위에 포함하지 않는다.
+
+최종 문서 갱신 뒤 `go run ./tools/verify traceability`도 PASS했다. 새 ADR과 profile 수용 매핑으로 연결한 상대 링크 21개의 대상 파일·heading anchor를 확인했다. 누락은 없었다.
+
+Leader 재검사 회귀를 추가했다. `TestClusterMembershipRemovalWaitsForReplicationFactor`는 실제 dynamic Raft leader와 3 voter를 만든 뒤 Service를 거치지 않고 BeginRemove를 application state에 적용한다. 이는 구버전 proposer 또는 service 사전 확인 이후 경합으로 removal이 이미 commit된 상태를 모형화한다. 대상에 session이 없는 경우와 있는 경우를 나눈다. Driver를 두 번 호출하고 실제 Raft message를 전달한 뒤 transfer·ConfChange가 commit되지 않았고 voter 집합 `{1,2,3}`, 기존 ownership·epoch와 `REMOVING` operation이 유지됨을 확인했다.
+
+```text
+go test ./cmd/narumq -run '^(TestClusterMembershipRemovalWaitsForReplicationFactor|TestRunClusterModeInProcess)$' -count=1 -v
+go build ./... && go build -tags narumq_failpoint ./...
+GOMAXPROCS=4 go run ./tools/verify local
+```
+
+보강 묶음의 runtime smoke는 8.89s, leader 재검사는 0.20s로 PASS했다(package 9.282s). 이어 실행한 일반·failpoint build는 모두 exit 0이었다(시험·두 build 합계 wall 16.98s). 최종 local gate도 PASS(wall 288.05s)했다. 제품 코드와 기존 ACK 정책은 보강 과정에서 바꾸지 않았다. 최종 gate 뒤에는 실행 증거와 ADR의 계층 설명만 갱신했으며 `go run ./tools/verify traceability`도 다시 PASS했다.
 

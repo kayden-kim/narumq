@@ -217,6 +217,8 @@ func (s *Service) GetClusterSummary(ctx context.Context) ports.ClusterSummaryDTO
 		ReleaseVersion:    s.releaseVersion,
 		MemberCount:       1,
 		QuorumSize:        1,
+		ReplicationFactor: 1,
+		WriteQuorum:       1,
 		QuorumAvailable:   state == ports.NodeStateReady,
 		LeaderNodeID:      &leaderID,
 		NodesByState:      nodesByState,

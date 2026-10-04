@@ -7,6 +7,7 @@ const (
 	RemovalHandoffBlockNoSuccessor        RemovalHandoffBlock = "no_successor_voter"
 	RemovalHandoffBlockEpochExhausted     RemovalHandoffBlock = "ownership_epoch_exhausted"
 	RemovalHandoffBlockOrphanSubscription RemovalHandoffBlock = "orphan_subscription"
+	RemovalHandoffBlockReplicationFactor  RemovalHandoffBlock = "replication_factor_unsatisfied"
 )
 
 type RemovalHandoffPlanDTO struct {

@@ -38,6 +38,21 @@ type clusterConfigFile struct {
 	Management           clusterManagement                `json:"management"`
 	MQTT                 clusterMQTT                      `json:"mqtt"`
 	TenantQuotas         *clusterTenantQuotaProfileConfig `json:"tenantQuotas,omitempty"`
+	Replication          *clusterReplicationConfig        `json:"replication,omitempty"`
+}
+
+type clusterReplicationConfig struct {
+	Factor      int `json:"factor"`
+	WriteQuorum int `json:"writeQuorum"`
+}
+
+func (config clusterConfigFile) replicationProfile() membership.ReplicationProfileDTO {
+	if config.Replication == nil {
+		return membership.StandardReplicationProfile
+	}
+	return membership.ReplicationProfileDTO{
+		Factor: config.Replication.Factor, WriteQuorum: config.Replication.WriteQuorum,
+	}
 }
 
 type clusterTenantQuotaProfileConfig struct {
@@ -223,7 +238,7 @@ func checkClusterJSON(reader io.Reader) error {
 
 func expectedClusterJSONType(path string) string {
 	switch path {
-	case "", "peerTLS", "management", "mqtt", "tenantQuotas", "tenantQuotas.default":
+	case "", "peerTLS", "management", "mqtt", "tenantQuotas", "tenantQuotas.default", "replication":
 		return "object"
 	case "bootstrapMembers", "seedAddresses", "tenantQuotas.tenants":
 		return "array"
@@ -247,6 +262,8 @@ func expectClusterKeys(path string, seen map[string]struct{}) error {
 		required = []string{"listenAddress", "clusterAdminTokenFile"}
 	case "mqtt":
 		required = []string{"tcpListenAddress", "tlsListenAddress", "securityConfigFile"}
+	case "replication":
+		required = []string{"factor", "writeQuorum"}
 	case "tenantQuotas":
 		required = []string{"version", "default", "tenants"}
 	case "tenantQuotas.default":
@@ -318,6 +335,11 @@ func validateClusterConfig(config clusterConfigFile) error {
 		}
 		if err := membership.ValidateTenantQuotaProfile(config.TenantQuotas.membershipProfile()); err != nil {
 			return fmt.Errorf("tenantQuotas is invalid: %w", err)
+		}
+	}
+	if config.Replication != nil {
+		if err := membership.ValidateReplicationProfile(config.replicationProfile()); err != nil {
+			return fmt.Errorf("replication is invalid: %w", err)
 		}
 	}
 	if config.Role == "bootstrap" {

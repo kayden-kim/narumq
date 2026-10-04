@@ -14,7 +14,7 @@
 | 기준 동작 명세 | [Cluster session과 durable delivery](../specs/cluster-session-and-delivery.md) §1, §11 |
 | 관련 요구사항 | CLU-01~CLU-04, CLU-06~CLU-11, SEC-09~SEC-11, NFR-07~NFR-10 |
 | 호환성 범위 | Combined cluster runtime protocol `2.0`, state schema `1.0`; no N/N-1 claim |
-| 채택 범위 | 2026-10-02 사용자가 dynamic Raft inbound의 bounded 수신 대기를 채택했다. [ADR-0024](../decisions/ADR-0024-joiner-voter-volume-loss-admission.md)는 joiner voter volume-loss admission 보호를 추가로 채택한다. 이 두 범위 밖의 Draft·production 수용 상태는 바꾸지 않는다. |
+| 채택 범위 | 2026-10-02 사용자가 dynamic Raft inbound의 bounded 수신 대기를 채택했다. [ADR-0024](../decisions/ADR-0024-joiner-voter-volume-loss-admission.md)는 joiner voter volume-loss admission 보호를 추가로 채택한다. [ADR-0029](../decisions/ADR-0029-replication-factor-write-quorum-profile.md)는 3/2 replication profile과 removal 보호를 채택한다. 이 범위 밖의 Draft·production 수용 상태는 바꾸지 않는다. |
 | 관련 시험 | Cluster spec §11 membership mapping; 현재 구현·시험 미완료 |
 
 ## 1. Membership identity와 version negotiation
@@ -133,6 +133,7 @@ Active voter의 planned leave operation을 시작한다. `memberId`는 canonical
 | 409 | `member_identity_conflict` | 같은 ID/key에 저장된 identity와 request가 다름 | false |
 | 409 | `idempotency_conflict` | 같은 key가 다른 canonical request에 이미 사용됨 | false |
 | 409 | `membership_change_in_progress` | 다른 membership operation이 terminal phase가 아님 | true |
+| 409 | `replication_factor_unsatisfied` | removal would leave fewer voters than replicationFactor | false |
 | 409 | `not_leader` | mutation endpoint가 current leader가 아님 | true |
 | 409 | `feature_not_supported_by_all_members` | Feature activation 시 non-retired member 중 feature를 광고하지 않는 member가 있음 | false |
 | 422 | `compatibility_unsupported` | release, cluster protocol 또는 schema 조합 미지원 | false |
@@ -162,6 +163,7 @@ No-leader/quorum mutation은 어떤 stage/configuration entry도 남기지 않�
 | `peerTLS` | object | required `certFile`, `keyFile`, `caFile`; cert/key match and CA must verify all peers |
 | `management` | object | required `listenAddress`, `clusterAdminTokenFile`; token is opaque secret input |
 | `mqtt` | object | required `tcpListenAddress`, `tlsListenAddress`, `securityConfigFile`; empty address disables that listener |
+| `replication` | object (optional) | omitted = factor 3, writeQuorum 2; when present requires exactly {factor:int, writeQuorum:int} and only 3/2 is accepted |
 
 Each `bootstrapMembers` element has exactly `{memberId:uint64,address:string,dnsSan:string,certificateSha256:string}` with the same identity constraints as §1.1. All three bootstrap configs use bytewise-canonical sorting by `memberId` and the same set. A member's own certificate fingerprint and SAN must match its entry. All bootstrap nodes must use the same build release and feature set. `seedAddresses` address the peer admission listener, not an arbitrary discovery authority; each host is a lowercase DNS name used for the TLS server name and must match the contacted seed certificate SAN. ClusterAdmin token contents are read from the referenced file; the raw token is not part of JSON or logs.
 
@@ -433,6 +435,7 @@ F4 C8 99 6F B9 24 27 AE 41 E4 64 9B 93 4C A4 95
 | `member_identity_conflict` | ID bound to other identity | no | none |
 | `idempotency_conflict` | key reused with another body | no | none |
 | `membership_change_in_progress` | another transition is active | yes after existing transition ends | none |
+| `replication_factor_unsatisfied` | removal would leave fewer voters than replicationFactor | no | none |
 | `not_leader` | mutation reaches non-leader endpoint | yes after leader discovery | none |
 | `quorum_unavailable` | stage/phase cannot commit | yes after quorum recovery | no uncommitted record acknowledged |
 | `compatibility_unsupported` | release is outside the same-major one-minor window, or protocol/schema is not exact `2.0`/`1.0` | no | none |
