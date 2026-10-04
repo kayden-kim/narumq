@@ -36,6 +36,7 @@
 | [ADR-0028](ADR-0028-planned-handoff-will-and-reason-metric.md) | Accepted | 계획 인계에 표준 Will 규칙을 적용하고 최종 결과를 고정한 6개 사유로 집계한다. |
 | [ADR-0029](ADR-0029-replication-factor-write-quorum-profile.md) | Accepted | Replication factor·write quorum은 3/2만 지원하고 removal 전 최소 voter 수를 검사한다. |
 | [ADR-0030](ADR-0030-publish-backpressure-admission.md) | Accepted | 새 durable publish에 전역·tenant capacity, ingress commit backlog와 local disk admission을 적용한다. |
+| [ADR-0031](ADR-0031-replicated-state-schema-strict-evolution.md) | Accepted | Replicated-state schema `1.0`의 strict decode, feature activation 뒤 새 형식 기록과 baseline guard를 확정한다. |
 
 `Proposed` ADR은 검토 중인 제안이다. `Accepted` ADR은 각 기록에 명시한 범위 안에서 채택된 결정이다. `design target only`는 production runtime이나 acceptance 검증을 뜻하지 않는다.
 

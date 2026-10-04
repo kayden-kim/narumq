@@ -293,6 +293,7 @@ partition이 복구되면 committed log가 기준이 된다. minority의 specula
 ## 8. Mixed-version compatibility
 
 - Dynamic cluster release compatibility follows the [release compatibility contract](../contracts/cluster-release-compatibility-v1.md): same major and minor distance at most one; patch does not affect the compatibility decision. N-1 and N must safely interoperate for cluster wire, persisted state, snapshot and management behavior.
+- Replicated state는 strict decode다. 새 field·command는 feature activation 뒤에만 기록하며 activation이 해당 feature의 rollback window를 끝낸다([Replicated-state v1 §3](../contracts/replicated-state-v1.md#3-호환성-규칙)).
 - Rollback window가 끝나기 전에는 N-1이 해석하지 못하는 persisted state를 기록하는 irreversible migration을 해서는 안 된다. Window 종료 판단과 migration 승인 절차는 [release compatibility contract §8](../contracts/cluster-release-compatibility-v1.md#8-blocker와-제외-범위)의 미결정 정책을 따른다.
 - N에서 N-1로 rollback할 때 이미 기록된 상태를 손상하거나 silent downgrade해서는 안 된다.
 - 호환할 수 없는 변경은 rolling update를 시작하기 전에 preflight에서 거절해야 한다.
@@ -1220,4 +1221,44 @@ BP-03 run `bp03-20261004T072411.781053400Z-42588`의 NaruMQ·EMQX `success`·`va
 최종 문서 갱신 뒤 `go run ./tools/verify traceability`는 PASS(wall 0.98s)했다. 코드 지도·module 설계·task 목록·ADR index·ADR-0030·cluster spec의 새 backpressure 링크 13개에서 대상 파일과 heading anchor를 확인했다. 누락은 없었다. `docs/tasks.md`는 합의한 CLU-12 범위를 완료로 옮겼으며 production storage의 열린 gate는 유지했다.
 
 실행 증거는 실행한 뒤 이 절에만 기록한다. Production Linux/EBS storage gate는 이 수용과 별개다.
+
+### 11.29 Replicated-state v1 계약 수용 매핑
+
+이 매핑은 [ADR-0031](../decisions/ADR-0031-replicated-state-schema-strict-evolution.md)과 [Replicated-state v1](../contracts/replicated-state-v1.md)의 strict decode·feature gate·기준 bytes를 검증한다. 게시 release별 process matrix와 production storage는 별도 gate다.
+
+| 시나리오 | 시험 위치·명령 | 수용 기준 | 실행 결과 |
+| --- | --- | --- | --- |
+| Vector producer/consumer | `internal/adapters/raft/records/state_vectors_test.go` `TestReplicatedStateContractVectors` | Producer 6개 bytes·semantic 일치; reject 6개 schema 분류 | PASS — vector 최초 실행 package 0.641s, wall 3.08s |
+| 거절 분류 | `codec_coverage_test.go`의 `TestCrrMarshalCommandRejectsInvalidEnvelope`, `TestCrrMarshalSnapshotRejectsInvalidState`, `TestCrrUnmarshalSnapshotRejectsInvalidEnvelope` | Unknown·schema·미지원 payload는 sentinel; 손상·값 오류는 미분류 | PASS — records/cmd focused 전체 wall 16.32s |
+| Baseline 보존 | `baseline_schema_test.go` `TestReplicatedStateSchemaPreservesBaseline`, `TestProducerVectorsDecodeWithBaselineSchema` | 기존 message·field·enum·reserved 보존, 새 field 번호 증가; vector 6개 baseline unknown 없음 | PASS — guard 최종 focused 실행 wall 2.30s |
+| Inactive-feature producer guard | `cmd/narumq/cluster_records_baseline_test.go` `TestInactiveFeatureRecordsDecodeWithBaselineSchema` | 실제 DTO bridge bytes가 baseline unknown 없이 decode; 실패 위치 보고 | PASS — guard 최종 focused 실행; 실패 주입 관찰은 아래 기록 |
+| Release compat 회귀 4개 | 아래 `NARUMQ_RELEASE_COMPAT=1` process 명령 | Rolling upgrade·activation 전 rollback·양방향 snapshot·archive 유지 | PASS — 4/4, package 227.578s, wall 229.03s |
+| 전체 local gate | `GOMAXPROCS=4 go run ./tools/verify local` | Architecture·traceability·race·coverage 포함 모두 PASS | PASS — wall 295.59s, integration 250.665s |
+
+2026-10-04 Windows local, repository root에서 실행했다. 새 시험 4개와 bridge round-trip이 PASS했다. 실패 주입에서는 bridge가 encode한 ownership의 `OwnershipChange` 끝에 field 15 varint 1 (`78 01`)을 추가하고 deterministic encode했다. Guard의 `command_1`은 `narumq.cluster.v1.CommandEnvelope.ownership -> narumq.cluster.v1.OwnershipChange`를 출력하며 FAIL했다(wall 3.39s). 주입 코드를 제거한 뒤 새 시험 4개가 PASS했다(records 0.546s, cmd 0.213s; wall 2.30s). Generator와 실패 주입 코드는 제거했다.
+
+Fixture 보정: 기존 membership §1.7의 `delivery_publish`는 target이 없었다. 현재 validator가 요구하는 target client `c` 하나를 추가했다. 이 vector는 62 byte에서 67 byte가 됐다. 나머지 producer vector는 stage join 187, ownership 54, subscription add/remove 각각 59, empty snapshot 40 byte로 기존 기준과 같다. 기준 hex는 testdata에 보관한다. `command_ownership_unknown_field`는 `errors.Is(err, ErrIncompatibleStateSchema)`를 만족하고 `incompatible_state_schema: protobuf contains unknown fields`를 포함했다.
+
+```text
+go build ./... && go build -tags narumq_failpoint ./...
+go test ./internal/adapters/raft/records ./cmd/narumq -count=1
+go run ./tools/verify traceability
+NARUMQ_RELEASE_COMPAT=1 GOMAXPROCS=4 go test ./tests/integration -run '^(TestDynamicClusterReleaseCompatibilityProcessAcceptance|TestDynamicClusterHistoricalReleaseCompatibilityProcessAcceptance|TestClusterBackupRestoreReleaseWindowProcessAcceptance|TestClusterBackupRestoreHistoricalReleaseProcessAcceptance)$' -count=1 -v -timeout 30m
+GOMAXPROCS=4 go run ./tools/verify local
+```
+
+Windows local gate는 `cmd /c "set GOMAXPROCS=4&&go run ./tools/verify local"`로 실행했다. Release 시험의 첫 `cmd /c` 실행은 regex quoting 때문에 `no tests to run`이었다(wall 3.11s). 이 실행은 수용 증거로 쓰지 않았다. Python `subprocess.run`에 위 정확한 regex를 단일 인자로 전달하고 environment에 `NARUMQ_RELEASE_COMPAT=1`, `GOMAXPROCS=4`를 넣어 다시 실행했다. 아래 결과는 이 4개 시험이 실제 실행된 결과다.
+
+Build·focused·traceability는 모두 PASS했다(wall 25.20s; records 0.905s, cmd 14.135s). 일반 build와 `narumq_failpoint` build를 모두 실행했다. Vector 8개를 읽는 일회용 `go run` smoke도 PASS했다(wall 2.00s). 정상 ownership·empty snapshot은 성공했고, command·snapshot reject 6개는 schema sentinel로 분류됐다. Smoke source는 제거했다.
+
+| Release 시험 | 실행 시간 | 관찰 결과 |
+| --- | --- | --- |
+| `TestClusterBackupRestoreReleaseWindowProcessAcceptance` | 26.52s | Synthetic N-1→N·N→N-1에서 retained·offline·SessionPresent 복구; 미지원 feature·window 거절 시 대상 directory 없음 |
+| `TestDynamicClusterHistoricalReleaseCompatibilityProcessAcceptance` | 97.90s | Baseline `58a95f801e1467379db2eb6f3454ae44e954418a`; mixed cluster의 session-metadata activation 차단; rolling·snapshot·rollback 경계 유지; N-2 readiness 10회 거절 |
+| `TestClusterBackupRestoreHistoricalReleaseProcessAcceptance` | 16.92s | Historical N-1→N 복구; N→historical N-1은 pre-ADR-0021 정책대로 거절, 대상 directory 없음 |
+| `TestDynamicClusterReleaseCompatibilityProcessAcceptance` | 86.04s | Synthetic rolling·양방향 snapshot 유지; activation 뒤 N-1 readiness reason은 `incompatible_state_schema: committed cluster features are not supported by this release` |
+
+Release 로그는 `.artifacts/verification/replicated-state-v1-release.log`에 보존했다. 전체 local gate는 architecture·traceability, 네 fuzz target 각각 10,000회, package/integration, production race와 coverage를 모두 통과하고 `local: PASS`를 출력했다. 이 실행은 production Linux/EBS나 실제 게시 release의 호환성을 검증하지 않는다.
+
+완료 기록을 반영한 뒤 `go run ./tools/verify traceability`는 PASS했다(wall 0.94s). 새 ADR·contract의 상대 링크 31개도 대상 파일과 heading anchor를 확인해 모두 통과했다. 저장소 전체에서 이전 `raft-membership-v2.md#16-`·`#17-` 링크는 발견되지 않았다.
 

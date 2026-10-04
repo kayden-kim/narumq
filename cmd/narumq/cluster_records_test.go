@@ -13,7 +13,7 @@ const (
 	bridgeOperation4 = "00000000-0000-4000-8000-000000000004"
 )
 
-func TestMembershipRecordBridgeRoundTripsTypedCommands(t *testing.T) {
+func bridgeTypedCommandFixtures() []membership.CommandDTO {
 	member := membership.MemberIdentityDTO{
 		MemberID: 4, ClusterID: "cluster", Address: "node4.example:19004", DNSSAN: "node4.example",
 		CertificateSHA256: bytes.Repeat([]byte{0x11}, 32), ReleaseVersion: "1.0.0",
@@ -21,7 +21,7 @@ func TestMembershipRecordBridgeRoundTripsTypedCommands(t *testing.T) {
 		Phase: membership.MemberPhaseStaged, OperationID: bridgeOperation4,
 		Features: []string{"compatibility-probe"},
 	}
-	commands := []membership.CommandDTO{
+	return []membership.CommandDTO{
 		{
 			SchemaMajor: membership.SchemaMajor, OperationID: bridgeOperation4,
 			Membership: &membership.MembershipRecordDTO{
@@ -109,6 +109,10 @@ func TestMembershipRecordBridgeRoundTripsTypedCommands(t *testing.T) {
 			FeatureActivation: &membership.FeatureActivationDTO{Feature: "compatibility-probe"},
 		},
 	}
+}
+
+func TestMembershipRecordBridgeRoundTripsTypedCommands(t *testing.T) {
+	commands := bridgeTypedCommandFixtures()
 
 	for index, command := range commands {
 		wire, err := encodeMembershipCommand(command)
@@ -137,7 +141,7 @@ func TestMembershipRecordBridgeRoundTripsTypedCommands(t *testing.T) {
 	}
 }
 
-func TestMembershipRecordBridgePreservesSnapshotIndexesAndDigest(t *testing.T) {
+func bridgeSnapshotFixture() membership.SnapshotDTO {
 	member := membership.MemberIdentityDTO{
 		MemberID: 4, ClusterID: "cluster", Address: "node4.example:19004", DNSSAN: "node4.example",
 		CertificateSHA256: bytes.Repeat([]byte{0x11}, 32), ReleaseVersion: "1.0.0",
@@ -145,7 +149,7 @@ func TestMembershipRecordBridgePreservesSnapshotIndexesAndDigest(t *testing.T) {
 		Phase: membership.MemberPhaseStaged, OperationID: bridgeOperation4,
 		Features: []string{"compatibility-probe"},
 	}
-	snapshot := membership.SnapshotDTO{
+	return membership.SnapshotDTO{
 		SchemaMajor: membership.SchemaMajor, SchemaMinor: membership.SchemaMinor, LastIncludedIndex: 10,
 		Members: []membership.MemberIdentityDTO{member}, ActiveFeatures: []string{"compatibility-probe"},
 		Ownerships:    []membership.OwnershipStateDTO{{TenantID: "tenant", ClientID: "client", OwnerNodeID: 1, Epoch: 1, CommittedIndex: 8}},
@@ -183,6 +187,10 @@ func TestMembershipRecordBridgePreservesSnapshotIndexesAndDigest(t *testing.T) {
 		},
 		ObjectCount: 13,
 	}
+}
+
+func TestMembershipRecordBridgePreservesSnapshotIndexesAndDigest(t *testing.T) {
+	snapshot := bridgeSnapshotFixture()
 	wire, err := encodeMembershipSnapshot(snapshot)
 	if err != nil {
 		t.Fatalf("encode snapshot: %v", err)

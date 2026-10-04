@@ -276,7 +276,7 @@ flowchart LR
 | `internal/adapters/tls` | TLS 1.2+ listener, AEAD cipher allowlist, mTLS trust anchor와 verified certificate DTO 추출 | `application/ports/authentication`과 표준 library |
 | `internal/adapters/clock` | system clock와 scheduler를 공용 application port에 제공 | `application/ports/clock`, 표준 library |
 | `internal/adapters/raft` | etcd/raft DTO, 영속 WAL/snapshot 파일, Raft backup/restore seed와 persistence boundary; replicated-state protobuf의 의미는 해석하지 않는다. | `go.etcd.io/raft/v3`, 표준 library |
-| `internal/adapters/raft/records` | 버전이 있는 replicated-state/backup protobuf binding, deterministic encoding, archive framing, checksum과 summary validation | `google.golang.org/protobuf`, 표준 library |
+| `internal/adapters/raft/records` | 버전이 있는 replicated-state/backup protobuf binding, deterministic encoding, archive framing, checksum과 summary validation; `testdata/replicated-state-v1` contract vector와 baseline descriptor | `google.golang.org/protobuf`, 표준 library |
 | `internal/adapters/runtimemetrics` | Go process runtime metrics 표본을 JSONL로 수집 | 표준 library만 |
 
 Application은 concrete adapter를 import하지 않는다. Queue, clock, authentication과 session repository

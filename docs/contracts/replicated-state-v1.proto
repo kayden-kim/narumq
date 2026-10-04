@@ -4,10 +4,9 @@ package narumq.cluster.v1;
 
 option go_package = "narumq/internal/adapters/raft/records;records";
 
-// Draft state schema 1.0 admits adjacent minor releases; retained, offline, delivery,
-// node drain, tenant quota, and session metadata commands require compatible releases
-// and exact protocol and state schema versions across every active committed member.
-// Session metadata requires the active `session-metadata` feature.
+// State schema 1.0 is fixed and strict: consumers reject unknown fields, payloads and
+// versions. Additive changes follow replicated-state-v1.md §3 and are written only after
+// their feature activation. Session metadata requires the active `session-metadata` feature.
 
 enum MemberPhase {
   MEMBER_PHASE_UNSPECIFIED = 0;

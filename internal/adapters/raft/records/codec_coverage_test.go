@@ -3,6 +3,7 @@ package records
 import (
 	"bytes"
 	"crypto/sha256"
+	"errors"
 	"slices"
 	"strings"
 	"testing"
@@ -199,28 +200,32 @@ func TestCrrMarshalCommandRejectsInvalidEnvelope(t *testing.T) {
 	topUnknown.ProtoReflect().SetUnknown(crrUnknownField)
 
 	cases := []struct {
-		name    string
-		command *CommandEnvelope
-		want    string
+		name       string
+		command    *CommandEnvelope
+		want       string
+		classified bool
 	}{
-		{"top_level_unknown", topUnknown, "unknown fields"},
-		{"nested_unknown", crrCommand(&CommandEnvelope_Ownership{Ownership: nestedUnknown}), "unknown fields"},
-		{"delivery_target_unknown", deepUnknown, "unknown fields"},
-		{"schema_major_zero", &CommandEnvelope{OperationId: op1, Payload: &CommandEnvelope_Ownership{Ownership: crrOwnership()}}, "unsupported command schema"},
-		{"schema_major_two", &CommandEnvelope{SchemaMajor: 2, OperationId: op1, Payload: &CommandEnvelope_Ownership{Ownership: crrOwnership()}}, "unsupported command schema"},
-		{"empty_operation_id", &CommandEnvelope{SchemaMajor: 1, Payload: &CommandEnvelope_Ownership{Ownership: crrOwnership()}}, "operation_id must be a canonical"},
-		{"misplaced_dash", &CommandEnvelope{SchemaMajor: 1, OperationId: "000000000-000-4000-8000-000000000001", Payload: &CommandEnvelope_Ownership{Ownership: crrOwnership()}}, "operation_id must be a canonical"},
-		{"non_hex", &CommandEnvelope{SchemaMajor: 1, OperationId: "00000000-0000-4000-8000-00000000000g", Payload: &CommandEnvelope_Ownership{Ownership: crrOwnership()}}, "operation_id must be a canonical"},
-		{"no_payload", &CommandEnvelope{SchemaMajor: 1, OperationId: op1}, "exactly one known payload"},
-		{"nil_membership", crrCommand(&CommandEnvelope_Membership{}), "membership payload is required"},
-		{"nil_ownership", crrCommand(&CommandEnvelope_Ownership{}), "ownership payload is required"},
-		{"nil_subscription", crrCommand(&CommandEnvelope_Subscription{}), "subscription payload is required"},
-		{"nil_delivery", crrCommand(&CommandEnvelope_Delivery{}), "delivery payload is required"},
+		{"top_level_unknown", topUnknown, "unknown fields", true},
+		{"nested_unknown", crrCommand(&CommandEnvelope_Ownership{Ownership: nestedUnknown}), "unknown fields", true},
+		{"delivery_target_unknown", deepUnknown, "unknown fields", true},
+		{"schema_major_zero", &CommandEnvelope{OperationId: op1, Payload: &CommandEnvelope_Ownership{Ownership: crrOwnership()}}, "unsupported command schema", true},
+		{"schema_major_two", &CommandEnvelope{SchemaMajor: 2, OperationId: op1, Payload: &CommandEnvelope_Ownership{Ownership: crrOwnership()}}, "unsupported command schema", true},
+		{"empty_operation_id", &CommandEnvelope{SchemaMajor: 1, Payload: &CommandEnvelope_Ownership{Ownership: crrOwnership()}}, "operation_id must be a canonical", false},
+		{"misplaced_dash", &CommandEnvelope{SchemaMajor: 1, OperationId: "000000000-000-4000-8000-000000000001", Payload: &CommandEnvelope_Ownership{Ownership: crrOwnership()}}, "operation_id must be a canonical", false},
+		{"non_hex", &CommandEnvelope{SchemaMajor: 1, OperationId: "00000000-0000-4000-8000-00000000000g", Payload: &CommandEnvelope_Ownership{Ownership: crrOwnership()}}, "operation_id must be a canonical", false},
+		{"no_payload", &CommandEnvelope{SchemaMajor: 1, OperationId: op1}, "exactly one known payload", true},
+		{"nil_membership", crrCommand(&CommandEnvelope_Membership{}), "membership payload is required", false},
+		{"nil_ownership", crrCommand(&CommandEnvelope_Ownership{}), "ownership payload is required", false},
+		{"nil_subscription", crrCommand(&CommandEnvelope_Subscription{}), "subscription payload is required", false},
+		{"nil_delivery", crrCommand(&CommandEnvelope_Delivery{}), "delivery payload is required", false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			_, err := MarshalCommand(tc.command)
 			crrWantErr(t, err, tc.want)
+			if errors.Is(err, ErrIncompatibleStateSchema) != tc.classified {
+				t.Fatalf("schema classification = %v, want %v: %v", errors.Is(err, ErrIncompatibleStateSchema), tc.classified, err)
+			}
 		})
 	}
 }
@@ -719,44 +724,48 @@ func TestCrrMarshalSnapshotRejectsInvalidState(t *testing.T) {
 	invalidInbound.Inbound[0].Released, invalidInbound.Inbound[0].ReleasedIndex = true, 3
 
 	cases := []struct {
-		name  string
-		state *ReplicatedStateSnapshot
-		want  string
+		name       string
+		state      *ReplicatedStateSnapshot
+		want       string
+		classified bool
 	}{
-		{"state_unknown", topUnknown, "unknown fields"},
-		{"member_unknown", &ReplicatedStateSnapshot{Members: []*MemberIdentity{withUnknownMember}}, "unknown fields"},
-		{"history_member_unknown", &ReplicatedStateSnapshot{MembershipHistory: []*MembershipRecord{withUnknownHistory}}, "unknown fields"},
-		{"invalid_member", &ReplicatedStateSnapshot{Members: []*MemberIdentity{crrVoter(0)}}, "member_id must be positive"},
-		{"active_features_unsorted", &ReplicatedStateSnapshot{ActiveFeatures: []string{"zeta", "alpha"}}, "active_features"},
-		{"ownership_empty_tenant", ownership(func(o *OwnershipState) { o.TenantId = "" }), "invalid snapshot ownership"},
-		{"ownership_long_client", ownership(func(o *OwnershipState) { o.ClientId = strings.Repeat("c", 257) }), "invalid snapshot ownership"},
-		{"ownership_zero_owner", ownership(func(o *OwnershipState) { o.OwnerNodeId = 0 }), "invalid snapshot ownership"},
-		{"ownership_zero_epoch", ownership(func(o *OwnershipState) { o.Epoch = 0 }), "invalid snapshot ownership"},
-		{"subscription_long_tenant", subscription(func(s *SubscriptionState) { s.TenantId = strings.Repeat("t", 129) }), "invalid snapshot subscription"},
-		{"subscription_empty_client", subscription(func(s *SubscriptionState) { s.ClientId = "" }), "invalid snapshot subscription"},
-		{"subscription_zero_owner", subscription(func(s *SubscriptionState) { s.OwnerNodeId = 0 }), "invalid snapshot subscription"},
-		{"subscription_zero_epoch", subscription(func(s *SubscriptionState) { s.Epoch = 0 }), "invalid snapshot subscription"},
-		{"subscription_bad_filter", subscription(func(s *SubscriptionState) { s.Filter = "#/a" }), "invalid snapshot subscription"},
-		{"subscription_qos", subscription(func(s *SubscriptionState) { s.Qos = 3 }), "invalid snapshot subscription"},
-		{"subscription_retain_handling", subscription(func(s *SubscriptionState) { s.RetainHandling = 3 }), "invalid snapshot subscription"},
+		{"state_unknown", topUnknown, "unknown fields", true},
+		{"member_unknown", &ReplicatedStateSnapshot{Members: []*MemberIdentity{withUnknownMember}}, "unknown fields", true},
+		{"history_member_unknown", &ReplicatedStateSnapshot{MembershipHistory: []*MembershipRecord{withUnknownHistory}}, "unknown fields", true},
+		{"invalid_member", &ReplicatedStateSnapshot{Members: []*MemberIdentity{crrVoter(0)}}, "member_id must be positive", false},
+		{"active_features_unsorted", &ReplicatedStateSnapshot{ActiveFeatures: []string{"zeta", "alpha"}}, "active_features", false},
+		{"ownership_empty_tenant", ownership(func(o *OwnershipState) { o.TenantId = "" }), "invalid snapshot ownership", false},
+		{"ownership_long_client", ownership(func(o *OwnershipState) { o.ClientId = strings.Repeat("c", 257) }), "invalid snapshot ownership", false},
+		{"ownership_zero_owner", ownership(func(o *OwnershipState) { o.OwnerNodeId = 0 }), "invalid snapshot ownership", false},
+		{"ownership_zero_epoch", ownership(func(o *OwnershipState) { o.Epoch = 0 }), "invalid snapshot ownership", false},
+		{"subscription_long_tenant", subscription(func(s *SubscriptionState) { s.TenantId = strings.Repeat("t", 129) }), "invalid snapshot subscription", false},
+		{"subscription_empty_client", subscription(func(s *SubscriptionState) { s.ClientId = "" }), "invalid snapshot subscription", false},
+		{"subscription_zero_owner", subscription(func(s *SubscriptionState) { s.OwnerNodeId = 0 }), "invalid snapshot subscription", false},
+		{"subscription_zero_epoch", subscription(func(s *SubscriptionState) { s.Epoch = 0 }), "invalid snapshot subscription", false},
+		{"subscription_bad_filter", subscription(func(s *SubscriptionState) { s.Filter = "#/a" }), "invalid snapshot subscription", false},
+		{"subscription_qos", subscription(func(s *SubscriptionState) { s.Qos = 3 }), "invalid snapshot subscription", false},
+		{"subscription_retain_handling", subscription(func(s *SubscriptionState) { s.RetainHandling = 3 }), "invalid snapshot subscription", false},
 		{"duplicate_subscription", &ReplicatedStateSnapshot{Subscriptions: []*SubscriptionState{
 			{TenantId: "t", ClientId: "c", OwnerNodeId: 1, Epoch: 1, Filter: "a"},
 			{TenantId: "t", ClientId: "c", OwnerNodeId: 2, Epoch: 2, Filter: "a"},
-		}}, "snapshot subscriptions are not uniquely sorted"},
-		{"delivery_message_unknown", &ReplicatedStateSnapshot{DeliverySessions: []*DeliverySessionState{withUnknownDelivery}}, "unknown fields"},
-		{"invalid_delivery_identity", &ReplicatedStateSnapshot{DeliverySessions: []*DeliverySessionState{invalidDeliveryIdentity}}, "invalid snapshot delivery session identity or sequence"},
-		{"invalid_delivery_phase", &ReplicatedStateSnapshot{DeliverySessions: []*DeliverySessionState{invalidDeliveryPhase}}, "delivery phase conflicts with QoS"},
-		{"invalid_inbound_release_state", &ReplicatedStateSnapshot{DeliverySessions: []*DeliverySessionState{invalidInbound}}, "invalid snapshot inbound release state"},
-		{"duplicate_delivery_session", &ReplicatedStateSnapshot{DeliverySessions: []*DeliverySessionState{crrDeliverySession("t", "c"), crrDeliverySession("t", "c")}}, "snapshot delivery sessions are not uniquely sorted"},
-		{"history_bad_operation", &ReplicatedStateSnapshot{MembershipHistory: []*MembershipRecord{badHistoryOperation}}, "membership operation_id must be a canonical"},
-		{"history_invalid_action", &ReplicatedStateSnapshot{MembershipHistory: []*MembershipRecord{invalidHistory}}, "invalid membership action"},
-		{"history_uncommitted", &ReplicatedStateSnapshot{MembershipHistory: []*MembershipRecord{crrHistory(op1, 0)}}, "committed_index must be positive"},
-		{"duplicate_history", &ReplicatedStateSnapshot{MembershipHistory: []*MembershipRecord{crrHistory(op1, 1), crrHistory(op1, 1)}}, "snapshot membership history is not uniquely sorted"},
+		}}, "snapshot subscriptions are not uniquely sorted", false},
+		{"delivery_message_unknown", &ReplicatedStateSnapshot{DeliverySessions: []*DeliverySessionState{withUnknownDelivery}}, "unknown fields", true},
+		{"invalid_delivery_identity", &ReplicatedStateSnapshot{DeliverySessions: []*DeliverySessionState{invalidDeliveryIdentity}}, "invalid snapshot delivery session identity or sequence", false},
+		{"invalid_delivery_phase", &ReplicatedStateSnapshot{DeliverySessions: []*DeliverySessionState{invalidDeliveryPhase}}, "delivery phase conflicts with QoS", false},
+		{"invalid_inbound_release_state", &ReplicatedStateSnapshot{DeliverySessions: []*DeliverySessionState{invalidInbound}}, "invalid snapshot inbound release state", false},
+		{"duplicate_delivery_session", &ReplicatedStateSnapshot{DeliverySessions: []*DeliverySessionState{crrDeliverySession("t", "c"), crrDeliverySession("t", "c")}}, "snapshot delivery sessions are not uniquely sorted", false},
+		{"history_bad_operation", &ReplicatedStateSnapshot{MembershipHistory: []*MembershipRecord{badHistoryOperation}}, "membership operation_id must be a canonical", false},
+		{"history_invalid_action", &ReplicatedStateSnapshot{MembershipHistory: []*MembershipRecord{invalidHistory}}, "invalid membership action", false},
+		{"history_uncommitted", &ReplicatedStateSnapshot{MembershipHistory: []*MembershipRecord{crrHistory(op1, 0)}}, "committed_index must be positive", false},
+		{"duplicate_history", &ReplicatedStateSnapshot{MembershipHistory: []*MembershipRecord{crrHistory(op1, 1), crrHistory(op1, 1)}}, "snapshot membership history is not uniquely sorted", false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			wire, err := MarshalSnapshot(tc.state, 10)
 			crrWantErr(t, err, tc.want)
+			if errors.Is(err, ErrIncompatibleStateSchema) != tc.classified {
+				t.Fatalf("schema classification = %v, want %v: %v", errors.Is(err, ErrIncompatibleStateSchema), tc.classified, err)
+			}
 			if wire != nil {
 				t.Fatal("rejected snapshot returned bytes")
 			}
@@ -784,24 +793,28 @@ func TestCrrUnmarshalSnapshotRejectsInvalidEnvelope(t *testing.T) {
 		return wire
 	}
 	cases := []struct {
-		name string
-		wire []byte
-		want string
+		name       string
+		wire       []byte
+		want       string
+		classified bool
 	}{
-		{"malformed", []byte{0xff}, "unmarshal snapshot"},
-		{"truncated", valid[:len(valid)-1], "unmarshal snapshot"},
-		{"schema_minor", reencode(t, func(e *SnapshotEnvelope) { e.SchemaMinor = 1 }), "unsupported snapshot schema"},
-		{"schema_major_zero", reencode(t, func(e *SnapshotEnvelope) { e.SchemaMajor = 0 }), "unsupported snapshot schema"},
-		{"missing_state", reencode(t, func(e *SnapshotEnvelope) { e.State = nil }), "snapshot state is required"},
-		{"short_digest", reencode(t, func(e *SnapshotEnvelope) { e.Sha256 = e.Sha256[:31] }), "SHA-256 must be 32 bytes"},
-		{"invalid_state", reencode(t, func(e *SnapshotEnvelope) { e.State.Ownerships[0].Epoch = 0 }), "invalid snapshot ownership"},
-		{"explicit_default_field", append(append([]byte(nil), valid...), 0x10, 0x00), "not canonical"},
-		{"state_before_header", append(append([]byte(nil), valid[2:]...), valid[:2]...), "not canonical"},
+		{"malformed", []byte{0xff}, "unmarshal snapshot", false},
+		{"truncated", valid[:len(valid)-1], "unmarshal snapshot", false},
+		{"schema_minor", reencode(t, func(e *SnapshotEnvelope) { e.SchemaMinor = 1 }), "unsupported snapshot schema", true},
+		{"schema_major_zero", reencode(t, func(e *SnapshotEnvelope) { e.SchemaMajor = 0 }), "unsupported snapshot schema", true},
+		{"missing_state", reencode(t, func(e *SnapshotEnvelope) { e.State = nil }), "snapshot state is required", false},
+		{"short_digest", reencode(t, func(e *SnapshotEnvelope) { e.Sha256 = e.Sha256[:31] }), "SHA-256 must be 32 bytes", false},
+		{"invalid_state", reencode(t, func(e *SnapshotEnvelope) { e.State.Ownerships[0].Epoch = 0 }), "invalid snapshot ownership", false},
+		{"explicit_default_field", append(append([]byte(nil), valid...), 0x10, 0x00), "not canonical", false},
+		{"state_before_header", append(append([]byte(nil), valid[2:]...), valid[:2]...), "not canonical", false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			envelope, err := UnmarshalSnapshot(tc.wire)
 			crrWantErr(t, err, tc.want)
+			if errors.Is(err, ErrIncompatibleStateSchema) != tc.classified {
+				t.Fatalf("schema classification = %v, want %v: %v", errors.Is(err, ErrIncompatibleStateSchema), tc.classified, err)
+			}
 			if envelope != nil {
 				t.Fatal("rejected snapshot returned a value")
 			}

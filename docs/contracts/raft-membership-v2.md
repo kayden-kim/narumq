@@ -330,100 +330,7 @@ The forwarding stream does not alter `NMQRAFT2` hello or Raft message frame byte
 
 ### 1.6 Replicated records and snapshot
 
-`CommandEnvelope` uses protobuf `proto3` schema major/minor and exactly one payload. It supports `MembershipRecord`, `OwnershipChange`, `SubscriptionChange`, `DeliveryChange`, `RetainedChange`, `OfflineChange`, `MemberProfileChange`, `FeatureActivation` and `SessionMetadataChange`. `MemberProfileChange` carries `member_id`, canonical `release_version` and sorted `features`; it updates only mutable build profile fields. `FeatureActivation` carries an opaque feature token and is applied only when every non-retired member advertises it. `MemberIdentity` carries the committed release/features profile; `ReplicatedStateSnapshot.active_features` is a sorted feature set. Session metadata behavior and invariants are defined in [ADR-0025](../decisions/ADR-0025-replicated-session-metadata-and-owner-loss-recovery.md) and [Cluster §4.3](../specs/cluster-session-and-delivery.md#43-session-metadata-복제와-owner-손실-복구); acceptance mapping and execution evidence are in [Cluster §11.24](../specs/cluster-session-and-delivery.md#1124-session-metadata-복제와-owner-손실-복구-수용-매핑).
-`OwnershipChange.session` is optional and carries the session metadata for a CONNECT acquisition or transfer. When present, it is valid only with `ACQUIRE` or `TRANSFER`; ownership and its new `CONNECTED` metadata record apply atomically in the same committed command, replacing any prior record and pending Will. It MUST be omitted when `session-metadata` is inactive. `SessionMetadataChange` carries the fenced `DETACH`, `CLAIM_WILL` or `DISCARD` transition; the feature MUST be active for metadata-bearing proposals and records. Every build advertises `session-metadata`, but no metadata payload is proposed or stored until its committed `FeatureActivation`; inactive clusters retain existing behavior and wire bytes.
-
-Each snapshot `membership_history` record stores the exact `committed_index` of its committed transition. The command payload must leave that field zero because the Raft entry index is unknown when proposed; the application records the actual index while applying the committed entry. Snapshot validation requires `0 < committed_index <= last_included_index`. Restored operation status reports the latest transition's persisted index, never the snapshot boundary.
-
-Snapshot의 `lastIncludedIndex`는 Raft가 적용한 마지막 index와 일치해야 한다. 리더 선출로 생긴 빈 Raft entry처럼 application event가 없는 commit도 typed state의 적용 index를 전진시키되 member·operation 내용은 바꾸지 않는다. 그래야 learner 추가 직후 저장한 snapshot의 `ConfState`와 typed snapshot index가 같고, 새 learner가 해당 snapshot에서 복구할 수 있다.
-
-`DeliverySessionState` is the replicated per-session aggregate keyed by `(tenantId, clientId)`. It contains the monotonically increasing `next_sequence`, ordered `DeliveryMessage` entries and packet-ID-ordered `InboundMessage` entries. A delivery message stores topic, binary payload, effective QoS, retain, expiry, packet ID and delivery phase; packet ID zero denotes `QUEUED`. Inbound state stores the publisher-side QoS 2 payload before PUBREL and a payload-free tombstone after RELEASE. ATTACH/DETACH/DISCARD and SEND/ADVANCE/COMPLETE commands mutate this aggregate using exact owner/epoch fencing. Stale commands consume their committed ordering position but do not mutate the aggregate.
-
-`SnapshotEnvelope` contains schema major/minor, `lastIncludedIndex`, `objectCount`, SHA-256 and typed `ReplicatedStateSnapshot`. `objectCount` counts repeated entries across members, their feature values, ownerships, subscriptions, delivery sessions and their messages/inbound entries, membership history, retained values, offline sessions and their queued messages, active feature values, and session metadata records. Digest input is the deterministic protobuf serialization of `ReplicatedStateSnapshot` without the envelope. Any unknown field, unknown required enum/action, duplicate singular field, duplicate oneof, malformed UTF-8, noncanonical byte sequence, unsupported version, count mismatch or digest mismatch fails apply/recovery/readiness closed. Release compatibility does not relax this strict unknown-field codec.
-
-### 1.7 Limits, ordering and canonical bytes
-
-| Scope | Limit / rule |
-| --- | --- |
-| `CommandEnvelope` | maximum 1 MiB serialized bytes |
-| `SnapshotEnvelope` | maximum 64 MiB serialized bytes |
-| Cluster ID | 1..200 UTF-8 bytes |
-| Address | 1..255 UTF-8 bytes, valid host:port |
-| DNS SAN | 1..253 ASCII DNS bytes |
-| release version | canonical `MAJOR.MINOR.PATCH`, each component a no-leading-zero `uint32` decimal; at most 64 ASCII bytes |
-| idempotency key | 1..128 printable ASCII bytes, no spaces |
-| tenant ID | 1..128 UTF-8 bytes |
-| client ID | 1..256 UTF-8 bytes |
-| topic/filter | 1..65,535 valid MQTT UTF-8 bytes; filter validated by MQTT filter rules |
-| certificate fingerprint | exactly 32 bytes in protobuf; lowercase 64-hex at HTTP JSON boundary |
-| Durable delivery QoS and packet ID | `DeliveryMessage.qos` is 1 or 2; packet ID is zero exactly for `QUEUED` and nonzero for inflight; phase must agree with QoS |
-| Inbound QoS 2 state | packet ID is `1..65535`; unreleased entries retain payload, released tombstones have empty payload and a valid `released_index` |
-| Subscription QoS / retain handling | QoS `0..2`; retain handling `0..2` |
-| Durable delivery limits | at most 64 messages and 64 inbound entries per session; at most 4,096 entries and 16 MiB across the cluster; at most 1,024 targets per publish |
-| Message expiry | unsigned Unix milliseconds; `0` means no expiry |
-| MQTT publish payload | at most 1,000,000 bytes and enclosing command still <=1 MiB |
-| Snapshot entries | at most 1,000,000 overall, including nested delivery messages/inbound entries and offline messages; at most 4,096 session metadata records; 64 MiB serialized snapshot bound applies first |
-| Session metadata state | At most 8 MiB combined Will and principal bytes across the cluster, where each record contributes topic + payload + principal subject + credential ID + role bytes; no tenant storage quota charge |
-| Session metadata Will | Valid MQTT topic of `1..65,535` UTF-8 bytes, payload at most 65,535 bytes, QoS `0..2`; principal only with a Will |
-| Session metadata principal | Subject and credential ID each valid UTF-8 `1..1,024` bytes; expiry positive; at most 64 unique roles, each valid UTF-8 `1..256` bytes |
-| Session metadata snapshot key | Records sorted and unique by bytewise UTF-8 `(tenant_id, client_id)`; each record has an ownership row and `record.epoch <= ownership.epoch`; any record requires active `session-metadata` |
-
-Deterministic protobuf serialization is mandatory. Proto3 default-valued scalar fields are omitted; fields use ascending field-number order. Repeated `members` sort by `member_id`; each member's `features` sort lexically with no duplicates; `active_features` sort lexically with no duplicates; `ownerships` by bytewise UTF-8 `(tenant_id, client_id)`; `subscriptions` by bytewise `(tenant_id, client_id, filter)`; `delivery_sessions` by bytewise `(tenant_id, client_id)`; `membership_history` by bytewise `operation_id`; each delivery session's `messages` sort by ascending sequence and `inbound` by ascending nonzero packet ID. Duplicate canonical keys are invalid. A consumer verifies canonical bytes by parsing, enforcing duplicate/unknown-field rejection, deterministic re-serialization and byte equality. Removed field numbers and enum values are reserved permanently.
-
-The following reference vectors use schema `1.0`, proto3 deterministic field ordering, omitted scalar defaults, and the fixture values stated in each name. Hex bytes are grouped only for readability; concatenation is the exact encoding. They are contract fixtures, not yet producer/consumer test evidence.
-| Fixture | Semantic values |
-| --- | --- |
-| `stage_join` | operation `00000000-0000-4000-8000-000000000004`; key `k1`; member 4; cluster `c`; address `n:1`; DNS `n`; 32 bytes `0x11`; release `1.0.0`; protocol `2.0`; state schema `1.0` |
-| `ownership_acquire` | operation `00000000-0000-4000-8000-000000000001`; tenant `t`; client `c`; expected epoch 0; owner 1; epoch 1; action `ACQUIRE` |
-| `subscription_add` / `subscription_remove` | same operation/tenant/client/owner/epoch as ownership; filter `#`; QoS 1; actions 1/2 |
-| `delivery_publish` | operation/tenant/client as ownership; `PUBLISH`, proposed time 1, topic `a`, payload `x`, publish QoS 1 |
-| `empty_snapshot` | envelope schema `1.0`, index 1, object count 0, empty typed state; state digest is SHA-256 of empty bytes |
-
-```text
-stage_join (187 bytes)
-08 01 1A 24 30 30 30 30 30 30 30 30 2D 30 30 30
-30 2D 34 30 30 30 2D 38 30 30 30 2D 30 30 30 30
-30 30 30 30 30 30 30 34 52 90 01 0A 24 30 30 30
-30 30 30 30 30 2D 30 30 30 30 2D 34 30 30 30 2D
-38 30 30 30 2D 30 30 30 30 30 30 30 30 30 30 30
-34 10 01 1A 02 6B 31 22 62 08 04 12 01 63 1A 03
-6E 3A 31 22 01 6E 2A 20 11 11 11 11 11 11 11 11
-11 11 11 11 11 11 11 11 11 11 11 11 11 11 11 11
-11 11 11 11 11 11 11 11 32 05 31 2E 30 2E 30 38
-02 48 01 58 01 62 24 30 30 30 30 30 30 30 30 2D
-30 30 30 30 2D 34 30 30 30 2D 38 30 30 30 2D 30
-30 30 30 30 30 30 30 30 30 30 34
-
-ownership_acquire (54 bytes)
-08 01 1A 24 30 30 30 30 30 30 30 30 2D 30 30 30
-30 2D 34 30 30 30 2D 38 30 30 30 2D 30 30 30 30
-30 30 30 30 30 30 30 31 5A 0C 0A 01 74 12 01 63
-20 01 28 01 30 01
-
-subscription_add (59 bytes)
-08 01 1A 24 30 30 30 30 30 30 30 30 2D 30 30 30
-30 2D 34 30 30 30 2D 38 30 30 30 2D 30 30 30 30
-30 30 30 30 30 30 30 31 62 11 0A 01 74 12 01 63
-18 01 20 01 2A 01 23 30 01 50 01
-
-subscription_remove (59 bytes)
-08 01 1A 24 30 30 30 30 30 30 30 30 2D 30 30 30
-30 2D 34 30 30 30 2D 38 30 30 30 2D 30 30 30 30
-30 30 30 30 30 30 30 31 62 11 0A 01 74 12 01 63
-18 01 20 01 2A 01 23 30 01 50 02
-
-delivery_publish (62 bytes)
-08 01 1A 24 30 30 30 30 30 30 30 30 2D 30 30 30 30
-2D 34 30 30 30 2D 38 30 30 30 2D 30 30 30 30 30 30
-30 30 30 30 30 31 82 01 13 0A 01 74 12 01 63 28 01
-30 01 3A 01 61 42 01 78 80 01 01
-
-
-empty_snapshot (40 bytes)
-08 01 18 01 2A 20 E3 B0 C4 42 98 FC 1C 14 9A FB
-F4 C8 99 6F B9 24 27 AE 41 E4 64 9B 93 4C A4 95
-99 1B 78 52 B8 55 32 00
-```
+Command·snapshot의 형식, 크기 제한, 정렬과 canonical bytes는 [Replicated-state v1 §1](replicated-state-v1.md#1-형식과-의미)을 따른다. 이 계약은 membership identity·전이·transport 경계를 정의한다.
 
 ## 2. Errors
 
@@ -441,7 +348,7 @@ F4 C8 99 6F B9 24 27 AE 41 E4 64 9B 93 4C A4 95
 | `compatibility_unsupported` | release is outside the same-major one-minor window, or protocol/schema is not exact `2.0`/`1.0` | no | none |
 | `feature_not_supported_by_all_members` | active feature is not advertised by every non-retired member | no | no activation applied |
 | `peer_identity_rejected` | TLS/hello identity mismatch | no until operator fixes identity | no Raft frame reaches `Step` |
-| `incompatible_state_schema` | unknown/invalid typed record, schema or snapshot | no | no READY; corrupted state is not rewritten |
+| `incompatible_state_schema` | [Replicated-state v1 §2](replicated-state-v1.md#2-오류)의 schema 거절 조건 | no | 해당 계약의 fail-closed apply·recovery 경로; no READY |
 | `feature_inactive` | Session metadata payload proposed before committed `session-metadata` activation | no | no metadata or ownership mutation |
 | `session_metadata_capacity_exceeded` | Cluster-wide Will/principal bytes exceed 8 MiB | no | no metadata or ownership mutation |
 | `session_metadata_invalid` | Session metadata payload or state violates its defined constraints | no | no metadata or ownership mutation |
@@ -450,7 +357,7 @@ F4 C8 99 6F B9 24 27 AE 41 E4 64 9B 93 4C A4 95
 
 - Membership v2 never changes `raft-peer-transport-v1` or v1 `NMQRAFT1` bytes.
 - `NMQSTATE1` is not a replicated-state v1 encoding and receives no implicit migration or conversion.
-- Unknown fields are rejected by the strict replicated-state schema `1.0` codec. Release compatibility does not make unknown fields acceptable. Session metadata wire payloads and snapshot records are used only after `session-metadata` is committed active on every non-retired member; before activation, metadata is neither proposed nor stored, preserving existing inactive-cluster behavior and wire bytes.
+- Replicated-state decoding은 strict다. [Replicated-state v1 §3](replicated-state-v1.md#3-호환성-규칙)을 따른다. Session metadata는 `session-metadata`가 commit된 뒤에만 제안·저장한다.
 - Feature activation is committed only when every non-retired member advertises the feature; an unsupported active feature prevents readiness.
 - Field numbers and enum values are never reused. A breaking wire/state change requires a new contract major and explicit migration/recovery plan.
 - No v2 peer data is admitted before TLS, handshake identity and committed stage/configuration checks complete.

@@ -10,7 +10,7 @@
 | 관련 스펙 | [MQTT protocol과 session](../specs/mqtt-protocol-and-session.md), [Cluster session과 durable delivery](../specs/cluster-session-and-delivery.md) |
 | 관련 Architecture | [Cluster architecture](../architectures/cluster-architecture.md), [EKS on EC2 deployment](../architectures/eks-ec2-deployment.md) |
 | 관련 결정 | [ADR-0002](ADR-0002-cluster-consensus-library.md), [ADR-0015](ADR-0015-cluster-durable-qos-delivery.md), [ADR-0019](ADR-0019-untargeted-durable-publish-quorum-barrier.md) |
-| 관련 Contract | Replicated state encoding v1의 Draft schema [`replicated-state-v1.proto`](../contracts/replicated-state-v1.proto)와 generated codec은 구현됐지만, 검토된 contract의 크기 제한·마이그레이션 규칙·릴리스 호환성은 미완료다. 이 ADR의 durable ACK 수용 기준은 별도로 검증한다. |
+| 관련 Contract | Active [Replicated-state v1](../contracts/replicated-state-v1.md)이 크기 제한·migration·strict decode·feature gate를 정의한다([ADR-0031](ADR-0031-replicated-state-schema-strict-evolution.md)). 이 ADR의 durable ACK 수용 기준과 production storage gate는 별도로 검증한다. |
 | 관련 해설 | [MQTT 전달 보장과 QoS·Session·Will protocol 흐름](../explainers/mqtt-delivery-guarantees-and-protocol-flows.md), [EKS 고가용성과 장애 도메인](../explainers/eks-ha-failure-domains.md) |
 
 ## 1. 결정

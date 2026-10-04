@@ -26,7 +26,7 @@
 
 ### 1.2 Release와 rollout gate
 
-- [ ] **미검증** — 게시 release별 historical-source N-1↔N 호환성: 실제 release를 게시할 때마다 직전 게시 release와의 rolling upgrade·rollback·archive restore를 [§11.21](specs/cluster-session-and-delivery.md#1121-historical-source-n-1n-호환성-수용-매핑) 방식으로 추가한다. 지정 baseline `58a95f8`만 통과했으며 현재 게시 release tag는 없다.
+- [ ] **미검증** — 게시 release별 historical-source N-1↔N 호환성: 실제 release를 게시할 때마다 직전 게시 release와의 rolling upgrade·rollback·archive restore를 [§11.21](specs/cluster-session-and-delivery.md#1121-historical-source-n-1n-호환성-수용-매핑) 방식으로 추가한다. 이때 [Replicated-state v1 §5](contracts/replicated-state-v1.md#5-예제와-계약-테스트contract-test)의 baseline descriptor를 게시 release의 descriptor로 갱신한다. 지정 baseline `58a95f8`만 통과했으며 현재 게시 release tag는 없다.
 - [ ] **보류 · 미구현** — External rollout controller: [ADR-0006](decisions/ADR-0006-external-rollout-controller.md)(Proposed)의 `SAFE_TO_STOP` 기반 Pod 삭제 승인을 구현·시험한다. Custom resource와 reconciliation 계약, version preflight, 실패·timeout·unknown barrier에서 현재와 다음 node의 교체 중단을 포함한다([Release contract §8](contracts/cluster-release-compatibility-v1.md#8-blocker와-제외-범위)). Broker 쪽 drain은 완료했다([Drain spec §10](specs/drain-and-rolling-update.md#10-broker-drain-수용-시험-매핑)).
   - 보류 사유: Kubernetes 실행 환경이 필요한 인프라 시험이다.
   - 해제 조건: 인프라 시험 재개 결정.
@@ -36,7 +36,6 @@
   - 원인: Paho `Properties.Unpack`이 중복 Server Reference를 검사하지 않고 마지막 값으로 덮어쓴다. Callback에는 중복 정보가 남지 않는다([Client contract §6.2](contracts/mqtt-client-compatibility-v1.md#62-drain-compatibility-suite)).
   - 결정: 공식 SDK만 유지한다. 직접 패치한 SDK와 raw socket 검사는 도입하지 않는다.
   - 해제 조건: 이 결함을 고친 공식 SDK release의 version 변경을 검토한 뒤 drain 10개와 Phase 1 26개 case를 모두 통과한다. 조사 시점에는 수정된 공식 release가 없어 SDK 수정과 새 version 회귀는 실행하지 않았다.
-- [ ] **결정 필요** — Replicated-state 계약과 schema migration: [ADR-0009 §1.3](decisions/ADR-0009-raft-production-state-profile.md#13-replicated-application-command와-snapshot-state-encoding)의 공식 크기 제한, migration 규칙과 release compatibility vectors를 확정한다. 현재 [protobuf schema](contracts/replicated-state-v1.proto)와 codec은 구현됐지만 Draft이며 unknown field를 거절한다. [Release contract §2·§5](contracts/cluster-release-compatibility-v1.md#2-compatibility-축)의 optional field 처리·persisted record·양방향 snapshot 규칙과의 관계를 정리하고 producer/consumer 시험을 연결한다. Synthetic·지정 baseline 통과만으로 미래 schema 변경의 호환성을 완료로 표시하지 않는다.
 - [ ] **결정 필요** — Rollback window 종료와 irreversible feature activation 승인: [Release contract §8](contracts/cluster-release-compatibility-v1.md#8-blocker와-제외-범위)에 남은 운영자 판정 정책과 승인 절차를 정한다. 현재 feature 광고·activation·미지원 build readiness 차단은 구현됐지만, rollback 가능 기간을 끝내는 운영 정책은 별도다. 확정한 절차와 [Cluster §8](specs/cluster-session-and-delivery.md#8-mixed-version-compatibility)의 irreversible migration 금지를 연결해 검증한다.
 
 ### 1.3 Cluster 기능과 알려진 구현 한계
@@ -56,7 +55,7 @@
 [Cluster architecture의 미결정 사항](architectures/cluster-architecture.md#미결정-사항)은 과거 target과 현재 구현을 함께 언급한다. 아래 경계는 새 기능의 구현 승인이 아니며, 현재 지원 범위를 넓힐 때 먼저 결정해야 할 사항이다.
 
 - Route-index 물리적 배치와 rebuild 방식: 현재 node-local projection rebuild는 §2.4의 수용 범위에서 완료했다. Architecture의 물리적 배치 질문을 기존 rebuild 미구현으로 다시 열지 않는다. 별도 분산 배치나 rebuild 방식 변경이 필요하면 [ADR-0009 §1.4](decisions/ADR-0009-raft-production-state-profile.md#14-consensus-group-partition-profile)의 단일 group·node-local projection과의 관계, ordering과 routing readiness를 먼저 확정한다.
-- Active peer transport 밖 RPC encoding: 현재 [Raft membership v2](contracts/raft-membership-v2.md)와 live QoS 0 forwarding은 구현·수용 범위가 있다. 그 밖의 RPC를 도입할 때 producer/consumer, message 형식·한도·인증·version 호환 계약을 먼저 정한다. Architecture의 일반적인 encoding 질문만으로 현재 경로 전체를 미구현으로 표시하지 않는다. Persisted schema의 미결정 계약은 §1.2에서 추적한다.
+- Active peer transport 밖 RPC encoding: 현재 [Raft membership v2](contracts/raft-membership-v2.md)와 live QoS 0 forwarding은 구현·수용 범위가 있다. 그 밖의 RPC를 도입할 때 producer/consumer, message 형식·한도·인증·version 호환 계약을 먼저 정한다. Architecture의 일반적인 encoding 질문만으로 현재 경로 전체를 미구현으로 표시하지 않는다. Persisted schema 계약은 §2.6에서 완료했으며 미래 major migration은 별도 계약을 먼저 정한다.
 - Cross-cluster migration과 3-bootstrap-voter identity 제한 밖 restore: [Cluster §10](specs/cluster-session-and-delivery.md#10-snapshot-backup과-restore)의 현재 비지원 범위다. V1/v2 archive, learner를 포함한 archive와 voter-set 변경도 현재 restore로 지원하지 않는다. 별도 migration·identity 계약의 채택 없이 자동으로 구현 백로그에 넣거나 CLU-14의 현 수용 범위로 포함하지 않는다. Retained·offline·durable delivery backup 자체는 §2.3·§2.4에서 완료 범위를 확인한다.
 
 ## 2. 완료한 범위
@@ -106,5 +105,6 @@
 
 - [x] N-1↔N rolling upgrade·rollback(같은 source의 synthetic build): [ADR-0018](decisions/ADR-0018-release-compatibility-window.md), [Cluster §8](specs/cluster-session-and-delivery.md#8-mixed-version-compatibility), [§11.17](specs/cluster-session-and-delivery.md#1117-n-1n-rolling-upgraderollback-수용-매핑).
 - [x] 지정 historical baseline `58a95f8`의 N-1↔N rolling·archive: [§11.21](specs/cluster-session-and-delivery.md#1121-historical-source-n-1n-호환성-수용-매핑). N archive를 historical N-1에서 restore하면 pre-ADR-0021 제약 때문에 fail-closed로 거절한다.
+- [x] Replicated-state v1 계약과 strict schema evolution: [ADR-0031](decisions/ADR-0031-replicated-state-schema-strict-evolution.md), Active [Replicated-state v1](contracts/replicated-state-v1.md), [§11.29](specs/cluster-session-and-delivery.md#1129-replicated-state-v1-계약-수용-매핑). 공식 한도·strict decode·feature gate·vector와 baseline guard를 확정했다. Activation 뒤 해당 feature를 지원하지 않는 N-1로 rollback할 수 없다. 게시 release별 baseline 갱신과 process matrix는 §1.2 release 항목에 남긴다.
 
 항목을 마치면 해당 [수용 시험 매핑](specs/cluster-session-and-delivery.md#11-수용-시험)에 시험 위치와 실행 결과를 연결하고, 영향받은 결정·구조 문서의 범위와 상태를 갱신한 뒤 이 목록의 상태를 바꾼다. 실행하지 않은 시험이나 미승인 `Proposed` 결정을 완료로 표시하지 않는다.

@@ -51,6 +51,9 @@ const (
 // ErrCommandTooLarge means a command exceeds the replicated command size limit.
 var ErrCommandTooLarge = errors.New("command exceeds 1 MiB limit")
 
+// ErrIncompatibleStateSchema classifies replicated-state bytes this build must not interpret.
+var ErrIncompatibleStateSchema = errors.New("incompatible_state_schema")
+
 var deterministic = proto.MarshalOptions{Deterministic: true}
 
 // MarshalCommand validates and deterministically encodes a v1 command without modifying it.
@@ -151,7 +154,7 @@ func UnmarshalSnapshot(encoded []byte) (*SnapshotEnvelope, error) {
 		return nil, err
 	}
 	if envelope.SchemaMajor != 1 || envelope.SchemaMinor != 0 {
-		return nil, errors.New("unsupported snapshot schema")
+		return nil, fmt.Errorf("%w: unsupported snapshot schema", ErrIncompatibleStateSchema)
 	}
 	if envelope.State == nil {
 		return nil, errors.New("snapshot state is required")
@@ -195,7 +198,7 @@ func UnmarshalSnapshot(encoded []byte) (*SnapshotEnvelope, error) {
 
 func validateCommand(c *CommandEnvelope) error {
 	if c.SchemaMajor != 1 || c.SchemaMinor != 0 {
-		return errors.New("unsupported command schema")
+		return fmt.Errorf("%w: unsupported command schema", ErrIncompatibleStateSchema)
 	}
 	if !validUUID(c.OperationId) {
 		return errors.New("command operation_id must be a canonical lowercase UUID")
@@ -275,7 +278,7 @@ func validateCommand(c *CommandEnvelope) error {
 		}
 		return validateSessionMetadataChange(payload.SessionMetadata)
 	default:
-		return errors.New("command must contain exactly one known payload")
+		return fmt.Errorf("%w: command must contain exactly one known payload", ErrIncompatibleStateSchema)
 	}
 }
 
@@ -1294,7 +1297,7 @@ func sortSnapshot(s *ReplicatedStateSnapshot) {
 }
 func rejectUnknown(m protoreflect.Message) error {
 	if len(m.GetUnknown()) != 0 {
-		return errors.New("protobuf contains unknown fields")
+		return fmt.Errorf("%w: protobuf contains unknown fields", ErrIncompatibleStateSchema)
 	}
 	fields := m.Descriptor().Fields()
 	for i := 0; i < fields.Len(); i++ {

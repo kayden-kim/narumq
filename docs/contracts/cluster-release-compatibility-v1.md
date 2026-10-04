@@ -14,7 +14,7 @@
 | 기준 spec | [Cluster session과 durable delivery](../specs/cluster-session-and-delivery.md), [Drain과 rolling update](../specs/drain-and-rolling-update.md) |
 | 관련 Architecture | [Cluster architecture](../architectures/cluster-architecture.md), [EKS on EC2 deployment](../architectures/eks-ec2-deployment.md) |
 | 관련 requirement | CLU-11, NFR-15, DEP-18 |
-| 관련 결정 | [ADR-0002](../decisions/ADR-0002-cluster-consensus-library.md), [ADR-0006](../decisions/ADR-0006-external-rollout-controller.md), [ADR-0009](../decisions/ADR-0009-raft-production-state-profile.md), [ADR-0018](../decisions/ADR-0018-release-compatibility-window.md) |
+| 관련 결정 | [ADR-0002](../decisions/ADR-0002-cluster-consensus-library.md), [ADR-0006](../decisions/ADR-0006-external-rollout-controller.md), [ADR-0009](../decisions/ADR-0009-raft-production-state-profile.md), [ADR-0018](../decisions/ADR-0018-release-compatibility-window.md), [ADR-0031](../decisions/ADR-0031-replicated-state-schema-strict-evolution.md) |
 | 검증 | `tests/integration/cluster_release_compat_process_test.go`; [Cluster spec §11.17](../specs/cluster-session-and-delivery.md#1117-n-1n-rolling-upgraderollback-수용-매핑) process acceptance PASS (105.55s; package 105.695s); release-profile controller transitions PASS, including compatible snapshot invalidation and unsupported restored-feature latching; repository-wide instrumented `go test ./...` PASS (40 packages, 6 without tests; 288.23s); `GOMAXPROCS=4 go run ./tools/verify local` PASS (292.39s). |
 
 ## 1. 지원 범위
@@ -35,9 +35,9 @@ N-2 이하와의 mixed cluster는 지원하지 않는다. Rollout preflight는 �
 | 축 | 같은 major에서 지켜야 할 규칙 |
 | --- | --- |
 | Cluster RPC | N과 N-1이 서로 필수 message를 decode하고 모르는 optional field를 무시한다. |
-| Replicated command | N은 N-1이 이해하지 못하는 command를 mixed cluster에서 propose하지 않는다. |
-| Persisted record | N이 쓴 record를 rollback한 N-1이 읽거나 명시적으로 feature-gated 상태로 남긴다. |
-| Snapshot | Sender·receiver 양방향으로 schema와 checksum을 검증한다. |
+| Replicated command | N은 N-1이 이해하지 못하는 command·field를 feature activation 전에 propose하지 않는다. |
+| Persisted record | Activation 전 N은 baseline schema에 없는 field·record를 쓰지 않는다. Activation 뒤 해당 feature의 새 기록은 N-1이 읽지 못하며 그 feature의 rollback window가 끝난다. |
+| Snapshot | Sender·receiver 양방향으로 schema와 checksum을 검증한다. 모르는 field·collection은 거절한다. |
 | Backup archive | Producer·voter release가 restore build와 window 안이고 restore build가 모든 active feature를 지원할 때만 restore한다. Protocol/schema exact·strict codec 검증은 유지한다 ([ADR-0021](../decisions/ADR-0021-backup-archive-release-window.md)). |
 | Membership | Node ID와 member generation의 의미를 바꾸지 않는다. |
 | Management API | Rollout controller가 사용하는 v1 field와 error code를 유지한다. |
@@ -64,7 +64,7 @@ Release version과 feature set은 mutable committed member profile이다. Restar
 - 새 feature는 mixed cluster에서 기본 비활성화한다.
 - `FeatureActivation`은 모든 non-retired member(Staged 포함)가 feature를 광고할 때만 persistent feature state에 commit한다. Active feature 재요청은 성공 no-op이며, 조건을 충족하지 못하면 non-retryable conflict `feature_not_supported_by_all_members`를 반환한다.
 - Activation은 quorum에 commit된 cluster setting으로 기록한다.
-- Activation 뒤 N-1이 읽을 수 없는 state를 쓰면 rollback 가능 상태를 끝낸 것으로 표시해야 한다.
+- Feature activation이 그 feature의 rollback window를 끝낸다.
 - Rollback window 안에는 irreversible migration을 실행해서는 안 된다.
 
 ## 5. Readiness와 persisted state
@@ -74,8 +74,8 @@ Release version과 feature set은 mutable committed member profile이다. Restar
 - Feature token은 `^[a-z][a-z0-9-]{0,62}$` 형식이며 build당 최대 16개다. Committed feature set과 active feature set은 정렬되고 중복이 없어야 한다.
 - 새 feature는 mixed cluster에서 inactive로 시작한다. `FeatureActivation`은 모든 non-retired member(Staged 포함)가 feature를 광고할 때만 commit할 수 있다. 그렇지 않으면 HTTP `409 feature_not_supported_by_all_members`를 반환한다.
 - 활성화된 feature를 지원하지 않는 build는 `incompatible_state_schema: ...` readiness reason으로 READY를 거절한다. 해당 node가 제안하는 profile update도 `active_feature_missing` conflict로 거절한다.
-- 모든 record는 schema major/minor와 record type을 식별할 수 있어야 한다. Consumer는 같은 major의 모르는 optional field를 보존하거나 무시하되 기존 의미를 바꾸지 않는다.
-- 모르는 required record type이나 major를 만나면 READY가 되지 않고 `incompatible_state_schema`를 보고한다.
+- 모든 record는 schema major/minor와 record type을 식별할 수 있어야 한다. Consumer는 같은 major라도 모르는 field와 record type을 거절한다([Replicated-state v1 §3](replicated-state-v1.md#3-호환성-규칙)).
+- 모르는 field·record type·schema를 만나면 apply·복구를 중단하고 오류에 `incompatible_state_schema`를 남기며 READY가 되지 않는다.
 - Snapshot manifest는 producer release, schema version, last included index, object count와 checksum을 포함해야 한다.
 - Snapshot restore 뒤 object count와 checksum이 맞지 않으면 apply하지 않는다.
 - Snapshot restore와 committed local profile 변경은 release-profile gate를 즉시 닫는다. 이때 controller에 알림을 보내 다음 500ms 주기를 기다리지 않고 기존 `Members`·`ActiveFeatures` fresh read barrier로 재확인을 시작한다. 알림은 대기 중 최대 한 개로 합치며, 적용 전 revision의 조회 결과는 gate를 다시 열 수 없다. 재확인 오류·profile 불일치·지원하지 않는 active feature에서는 계속 닫힌다. PUBLISH를 별도로 재시도하거나 admission 대기를 늘리지 않는다.
