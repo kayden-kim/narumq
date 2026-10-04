@@ -11,3 +11,4 @@
 | [고정 voter Raft peer-only 프로세스 실행](fixed-voter-raft-peer-only.md) | Draft | MQTT listener가 없는 고정 3-voter peer transport/Raft election의 개발용 실행 절차 |
 | [동적 클러스터 멤버십 변경](dynamic-cluster-membership.md) | Draft | 3-node cluster에서 node를 추가·교체·제거하는 운영 절차 |
 | [Cluster backup 복원](cluster-backup-restore.md) | Draft | 3-voter identity를 유지하며 backup archive를 오프라인 restore하고 readiness/resync를 확인한다. |
+| [Cluster feature activation 승인](cluster-feature-activation.md) | Verified (Windows local 절차 범위) | 운영 체크리스트·외부 승인 기록을 만든 뒤 PowerShell로 feature 하나를 활성화하고 commit·rollback 경계를 확인한다. Production 승인이 아니다. |

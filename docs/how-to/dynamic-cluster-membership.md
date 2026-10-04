@@ -18,7 +18,7 @@
 
 ## 2. 전제 조건
 
-- [ ] 모든 node가 cluster protocol `2.0`, state schema `1.0`을 지원해야 한다. Retained command는 fresh read barrier 뒤 모든 non-retired committed member의 정확한 release/protocol/schema가 일치할 때만 허용되며, mixed-release retained operation과 rolling downgrade는 지원하지 않는다.
+- [ ] 모든 node가 cluster protocol `2.0`, state schema `1.0`을 지원해야 한다. Retained command는 fresh read barrier와 모든 non-retired committed member의 profile gate를 따른다. Release는 [Release contract](../contracts/cluster-release-compatibility-v1.md#3-version-handshake)의 same-major 인접 minor window를 허용하며 protocol/schema는 exact 비교를 유지한다.
 - [ ] 세 bootstrap node의 `clusterId`, sorted `bootstrapMembers`, member ID, endpoint, DNS SAN(인증서에 기록된 허용 host 이름), certificate SHA-256 fingerprint가 서로 일치한다.
 - [ ] 각 node의 TLS 1.3 peer certificate가 공통 CA(인증서 발급 기관)에서 검증되고, local DNS SAN과 fingerprint가 구성값에 일치한다.
 - [ ] Joiner는 운영자가 승인한 미사용 positive `nodeId`, 자체 인증서와 새 데이터 디렉터리를 갖는다. retired ID를 재사용하지 않는다.
@@ -129,7 +129,7 @@ go test ./tests/integration -run '^(TestClusterBackupRestoreProcessCrashAndResyn
 1. `STAGED` 이후 operation이 진행되지 않으면 동일 key와 동일 request만 재시도하고 원인을 확인한다. 새로운 stage key, 수동 tombstone 삭제, ID 재사용, 데이터 디렉터리 초기화는 복구 방법이 아니다.
 2. Joiner가 learner가 된 뒤 응답을 잃었으면 같은 persistent directory로 재시작하고 동일 operation을 조회한다. Heartbeat timeout이나 process 종료만으로 learner/voter를 자동 삭제하지 않는다.
 3. Planned removal은 successor ownership transfer가 commit된 뒤에만 허용된다. Durable delivery aggregate는 별도 checkpoint command 없이 새 owner가 다음 CONNECT에서 ATTACH로 재개한다. Quorum이나 successor transfer가 확인되지 않으면 `DELETE /api/v1/cluster/members/{memberId}`를 호출하지 말고 기존 voter를 유지한다. Active session handoff와 quorum loss 복구 acceptance는 `TestDynamicClusterMembershipRemovalHandoffWaitsForQuorum`로 검증했다.
-4. Restore 절차인 [Cluster backup/restore](cluster-backup-restore.md)는 v3 archive에 retained, offline 및 durable delivery state를 포함한다. Production volume power-loss는 검증하지 않으며, 이전 v1/v2 archive 또는 binary로 downgrade하는 경로는 지원하지 않는다.
+4. Restore 절차인 [Cluster backup/restore](cluster-backup-restore.md)는 v3 archive에 retained, offline 및 durable delivery state를 포함한다. Release window·active feature·동일 identity 복원은 최신 [Backup v3 §2·§4](../contracts/cluster-backup-v3.md#4-호환성-규칙)를 따른다. [Feature activation 승인](cluster-feature-activation.md) 뒤에는 해당 feature를 지원하지 않는 build로 rollback하지 않는다. Activation 전 backup 복원은 이후 commit 손실이 가능한 별도 disaster recovery다. Production volume power-loss는 이 절차에서 검증하지 않으며, 이전 v1/v2 archive 또는 binary로의 직접 downgrade 경로는 지원하지 않는다.
 
 ## 7. 해결되지 않을 때 전달할 대상
 

@@ -14,7 +14,7 @@
 | 기준 spec | [Cluster session과 durable delivery](../specs/cluster-session-and-delivery.md), [Drain과 rolling update](../specs/drain-and-rolling-update.md) |
 | 관련 Architecture | [Cluster architecture](../architectures/cluster-architecture.md), [EKS on EC2 deployment](../architectures/eks-ec2-deployment.md) |
 | 관련 requirement | CLU-11, NFR-15, DEP-18 |
-| 관련 결정 | [ADR-0002](../decisions/ADR-0002-cluster-consensus-library.md), [ADR-0006](../decisions/ADR-0006-external-rollout-controller.md), [ADR-0009](../decisions/ADR-0009-raft-production-state-profile.md), [ADR-0018](../decisions/ADR-0018-release-compatibility-window.md), [ADR-0031](../decisions/ADR-0031-replicated-state-schema-strict-evolution.md) |
+| 관련 결정 | [ADR-0002](../decisions/ADR-0002-cluster-consensus-library.md), [ADR-0006](../decisions/ADR-0006-external-rollout-controller.md), [ADR-0009](../decisions/ADR-0009-raft-production-state-profile.md), [ADR-0018](../decisions/ADR-0018-release-compatibility-window.md), [ADR-0031](../decisions/ADR-0031-replicated-state-schema-strict-evolution.md), [ADR-0032](../decisions/ADR-0032-feature-activation-approval-policy.md) |
 | 검증 | `tests/integration/cluster_release_compat_process_test.go`; [Cluster spec §11.17](../specs/cluster-session-and-delivery.md#1117-n-1n-rolling-upgraderollback-수용-매핑) process acceptance PASS (105.55s; package 105.695s); release-profile controller transitions PASS, including compatible snapshot invalidation and unsupported restored-feature latching; repository-wide instrumented `go test ./...` PASS (40 packages, 6 without tests; 288.23s); `GOMAXPROCS=4 go run ./tools/verify local` PASS (292.39s). |
 
 ## 1. 지원 범위
@@ -67,6 +67,23 @@ Release version과 feature set은 mutable committed member profile이다. Restar
 - Feature activation이 그 feature의 rollback window를 끝낸다.
 - Rollback window 안에는 irreversible migration을 실행해서는 안 된다.
 
+### 4.1 운영 승인과 rollback window 종료
+
+이 절은 [ADR-0032](../decisions/ADR-0032-feature-activation-approval-policy.md)에서 채택한 운영 정책의 단일 기준이다. 기존 API·권한·replicated schema와 commit/readiness 규칙은 유지한다. 승인 기록은 외부 ticket 또는 배포 기록이며 runtime이 검사하지 않는다. 실행 절차는 [Feature activation 가이드](../how-to/cluster-feature-activation.md)를 따른다.
+
+1. 승인 책임자는 해당 배포의 release 담당자다. 실행자는 기존 `ClusterAdmin` 권한을 가진 운영자다. 같은 사람이 두 책임을 맡을 수 있다. 새 이중 승인 제도를 요구하지 않는다.
+2. 승인 대상은 cluster ID와 feature token 한 개다. 여러 feature를 묶거나 새 feature를 자동 활성화하지 않는다. Token은 `^[a-z][a-z0-9-]{0,62}$` 형식이다. `compatibility-probe`는 시험용이며 운영 기능이 아니다.
+3. 예정한 binary 교체·membership 변경·drain을 끝낸 뒤 승인해야 한다. 알려진 membership operation의 완료를 배포 기록과 기존 operation GET으로 확인해야 한다. Cluster summary는 `quorumAvailable=true`, `underReplicated=0`이어야 한다. 운용 member 각각의 실제 관리 endpoint에서 readiness 200을 확인해야 한다. 같은 endpoint의 local node 조회에서 `storagePressure=false`와 제공되는 local `replicationHealth=HEALTHY`를 확인해야 한다. 필요한 값이 missing·unknown이거나 조회가 실패하면 승인하지 않는다. 원격 node 행의 `HEALTHY`는 원격 disk health 증거가 아니다.
+4. `GET /api/v1/cluster/features`가 반환한 모든 non-retired member ID·`releaseVersion`·`features`를 승인 배포 목록과 대조해야 한다. Staged member도 대상이다. 누락·예상 밖 member·미지원 feature·승인하지 않은 build가 있으면 중단한다. Release 집합은 기존 same-major 인접 minor window 안이어야 한다. 모든 member의 release나 patch가 반드시 같아야 한다는 조건은 요구하지 않는다.
+5. Target/rollback build 조합의 release matrix와 해당 feature 기능 시험 증거를 확인해야 한다. 게시 release에는 해당 release의 matrix가 있어야 한다. Synthetic·지정 historical baseline 증거를 미래 게시 release의 증거로 쓰지 않는다. 고정 24/48시간 안정화 기간이나 미합의 SLO 수치를 만들지 않는다. 진행 중인 배포 결함이 있으면 승인하지 않는다.
+6. 승인 전에 유효한 commit-boundary backup, 이를 읽는 지원 build, 동일 identity restore 구성과 복구 시험 증거를 확보해야 한다. 허용 범위는 [Backup v3 §2](cluster-backup-v3.md#2-producer와-consumer-동작)·[§4](cluster-backup-v3.md#4-호환성-규칙)다. Learner 포함이나 세 bootstrap voter identity 조건 위반 등으로 지원 복구 경로가 없으면 승인을 보류한다. Production storage·retention/RPO/RTO 보류를 이 체크리스트로 해제하지 않는다.
+7. 승인 책임자는 “이 feature를 지원하지 않는 이전 build로의 무손실 in-place rollback을 포기한다”는 결정을 기록해야 한다. 승인 자체는 window를 닫지 않는다. 해당 `FeatureActivation`의 **commit 순간**이 종료 기준이다. 배포 완료·clock 경과·승인 시각으로 종료를 판정하지 않는다.
+8. 승인은 확인한 member/release/activeFeatures 집합과 feature token에만 유효하다. POST 직전에 재조회해야 한다. 집합이나 배포 상태가 바뀌면 재확인·재승인해야 한다. 조회와 commit 사이의 경쟁은 기존 apply의 전체 member 광고 검증으로 처리한다. 사전 확인과 commit은 원자적이지 않다. Feature 조회도 Members와 ActiveFeatures의 두 조회이며 atomic snapshot이 아니다.
+9. HTTP 200과 응답 `data.activeFeatures`의 해당 token, 또는 성공한 GET의 해당 token으로 commit을 확인한다. Feature API는 phase·Raft index·정확한 commit 시각을 반환하지 않는다. 승인 시각·요청 시각·최초 commit 관찰 시각을 UTC로 각각 기록해야 한다. 관찰 시각을 정확한 commit 시각으로 쓰지 않는다.
+10. POST timeout·연결 종료·500·503·검증할 수 없는 성공 응답은 **commit 결과 불명**이다. `ActivateFeature`는 commit 뒤 상태를 다시 조회하므로 오류 응답도 미commit 증명이 아니다. GET에서 token이 없다는 한 번의 관찰도 pending proposal 부재를 보증하지 않는다. 불명 상태에서는 rollback하지 않는다. Quorum 복구 뒤 기존 승인이 여전히 유효한지 확인하고 같은 token의 idempotent POST를 재실행한다. 승인 대상이 바뀌었다면 재확인·재승인하되 불명 요청을 실패로 처리하지 않는다. 불명 상태에서 새 target/feature는 승인하지 않는다. 200+token 또는 성공 GET+token이면 종료를 확인한다. 확인할 수 없으면 담당자에게 이관한다.
+11. 처음 요청의 `409 feature_not_supported_by_all_members`는 이번 요청의 미활성화다. 배포를 수정한 뒤 새 승인을 받아야 한다. 이전 결과 불명 요청이 있으면 현재 409만으로 이전 요청까지 실패했다고 판단하지 않는다. 400·401·403이면 입력·권한을 수정한다. `not_leader`이면 현재 leader endpoint를 확인한다.
+12. Activation 뒤에는 feature를 지원하는 build로 전진 수정하거나 같은 volume에 지원 build를 다시 배포한다. Active feature·snapshot field·WAL·metadata를 지워 downgrade하지 않는다. Activation 전 backup 복원은 backup 이후 commit 손실을 수반할 수 있는 disaster recovery다. 무손실 rollback이 아니며 별도 장애 복구 승인이 필요하다.
+
 ## 5. Readiness와 persisted state
 
 - 모든 node는 running build의 release/features와 committed member profile이 일치하기 전 READY가 되어서는 안 된다.
@@ -111,8 +128,8 @@ Major 변경은 in-place mixed upgrade로 처리하지 않는다. 별도 migrati
 
 ## 8. Blocker와 제외 범위
 
-- 남음: rollback window가 끝났다고 운영자가 판정하는 정책과 irreversible feature activation 승인 절차.
+- 해결: 운영 체크리스트·외부 승인 기록과 commit 기준의 rollback window 종료 정책을 [§4.1](#41-운영-승인과-rollback-window-종료)에서 확정했다. API가 승인 evidence를 강제하지 않는다. 수용 범위는 [Cluster §11.30](../specs/cluster-session-and-delivery.md#1130-feature-activation-운영-승인-수용-매핑)에서 관리한다.
 - 남음: [ADR-0006](../decisions/ADR-0006-external-rollout-controller.md)의 rollout controller preflight. 이 ADR-0018 범위는 Pod 교체 전 preflight 구현을 포함하지 않는다.
 - 해결 범위: [ADR-0021](../decisions/ADR-0021-backup-archive-release-window.md)의 backup archive N/N-1 restore 정책. Synthetic 증거는 [Cluster §11.19](../specs/cluster-session-and-delivery.md#1119-backup-archive-nn-1-restore-수용-매핑), historical baseline의 upgrade restore와 pre-ADR-0021 consumer 거절 제약은 [§11.21](../specs/cluster-session-and-delivery.md#1121-historical-source-n-1n-호환성-수용-매핑)에서 관리한다.
 - `58a95f8` baseline은 §11.21에서 검증했다. 이후 실제 게시 release 사이의 wire/state matrix는 release마다 추가한다.
-- 해결: same-source synthetic 및 지정 historical baseline의 rolling·양방향 installed snapshot·N-2 거절 수용이 PASS했다. Rollback-window 운영 정책과 실제 게시 release별 검증은 별도다.
+- 해결: same-source synthetic 및 지정 historical baseline의 rolling·양방향 installed snapshot·N-2 거절 수용이 PASS했다. 실제 게시 release별 검증은 별도다.

@@ -294,7 +294,7 @@ partition이 복구되면 committed log가 기준이 된다. minority의 specula
 
 - Dynamic cluster release compatibility follows the [release compatibility contract](../contracts/cluster-release-compatibility-v1.md): same major and minor distance at most one; patch does not affect the compatibility decision. N-1 and N must safely interoperate for cluster wire, persisted state, snapshot and management behavior.
 - Replicated state는 strict decode다. 새 field·command는 feature activation 뒤에만 기록하며 activation이 해당 feature의 rollback window를 끝낸다([Replicated-state v1 §3](../contracts/replicated-state-v1.md#3-호환성-규칙)).
-- Rollback window가 끝나기 전에는 N-1이 해석하지 못하는 persisted state를 기록하는 irreversible migration을 해서는 안 된다. Window 종료 판단과 migration 승인 절차는 [release compatibility contract §8](../contracts/cluster-release-compatibility-v1.md#8-blocker와-제외-범위)의 미결정 정책을 따른다.
+- Rollback window가 끝나기 전에는 N-1이 해석하지 못하는 persisted state를 기록하는 irreversible migration을 해서는 안 된다. Window 종료 판단과 activation 승인 절차는 [Release contract §4.1](../contracts/cluster-release-compatibility-v1.md#41-운영-승인과-rollback-window-종료)을 따른다.
 - N에서 N-1로 rollback할 때 이미 기록된 상태를 손상하거나 silent downgrade해서는 안 된다.
 - 호환할 수 없는 변경은 rolling update를 시작하기 전에 preflight에서 거절해야 한다.
 - 호환 matrix는 release artifact에 포함해야 한다.
@@ -1261,4 +1261,72 @@ Build·focused·traceability는 모두 PASS했다(wall 25.20s; records 0.905s, c
 Release 로그는 `.artifacts/verification/replicated-state-v1-release.log`에 보존했다. 전체 local gate는 architecture·traceability, 네 fuzz target 각각 10,000회, package/integration, production race와 coverage를 모두 통과하고 `local: PASS`를 출력했다. 이 실행은 production Linux/EBS나 실제 게시 release의 호환성을 검증하지 않는다.
 
 완료 기록을 반영한 뒤 `go run ./tools/verify traceability`는 PASS했다(wall 0.94s). 새 ADR·contract의 상대 링크 31개도 대상 파일과 heading anchor를 확인해 모두 통과했다. 저장소 전체에서 이전 `raft-membership-v2.md#16-`·`#17-` 링크는 발견되지 않았다.
+
+### 11.30 Feature activation 운영 승인 수용 매핑
+
+이 매핑은 [ADR-0032](../decisions/ADR-0032-feature-activation-approval-policy.md)와 [Release contract §4.1](../contracts/cluster-release-compatibility-v1.md#41-운영-승인과-rollback-window-종료)의 운영 정책을 검증한다. [PowerShell 절차](../how-to/cluster-feature-activation.md)의 실제 명령 smoke와 기존 runtime 시험을 수동 정책 판정과 구분한다. API는 외부 승인 기록을 검사하지 않는다. Production storage·retention/RPO/RTO, rollout controller와 미래 게시 release별 matrix는 완료 범위 밖이다.
+
+#### 수동 정책 판정
+
+2026-10-04 승인된 입력/행동 표를 ADR·contract·guide와 대조했다. 아래 PASS는 문서 정책 검토다. Runtime이 승인 기록을 강제하거나 결과 불명 proposal을 취소한다는 증거가 아니다.
+
+| 입력 | 요구 행동 | 기준·절차 | 판정 |
+| --- | --- | --- | --- |
+| Feature 광고가 한 member에 없음 | 승인·POST 보류 | Contract §4.1 항목 4, guide §3 단계 3·§5 | PASS |
+| 승인 완료, 아직 POST 전 | Window는 종료되지 않음 | Contract 항목 7, guide §3 단계 5·§6 항목 1 | PASS |
+| 승인 뒤 member/build 집합 변화 | 기존 승인 무효, 재확인·재승인 | Contract 항목 8, guide §3 단계 6 | PASS |
+| POST timeout 뒤 GET에 token 없음 | 결과 불명, rollback 금지 | Contract 항목 10, guide §3 단계 7·§6 항목 2 | PASS |
+| POST 오류 뒤 성공 GET에 token 있음 | Commit 확인, window 종료 | Contract 항목 9–10, guide §6 항목 2 | PASS |
+| 현재 409지만 이전 결과 불명 POST 존재 | 이전 요청까지 실패했다고 판정하지 않음 | Contract 항목 11, guide §5 | PASS |
+| HTTP 200+active token, 이후 동일 token replay | Window 닫힘 유지 | Contract §4·§4.1 항목 9, guide §1·§3 단계 6 | PASS |
+| Activation 뒤 이전 미지원 build 복구 요청 | 지원 build로 전진 복구; 이전 backup restore는 별도 DR와 데이터 손실 경계 | Contract 항목 12, guide §6 항목 3–4 | PASS |
+
+#### Runtime·명령 수용
+
+| 시나리오 | 시험 위치·명령 | 수용 기준 | 실행 결과 |
+| --- | --- | --- | --- |
+| Non-retired 전체 광고·profile 변경 | `TestFeatureActivationRequiresAllNonRetiredMembers`, `TestMemberProfileChangeCompatibilityAndActiveFeatures` | Staged 미지원 차단, Retired 제외, active feature profile 보호 | PASS — membership package 0.728s |
+| HTTP 권한·token·409와 OpenAPI | `TestClusterFeatureHTTPActivateAndMapUnsupportedConflict`, `TestClusterFeatureHTTPRejectsInvalidFeatureAndReadOnlyActivation`, `TestClusterFeatureHandlerResponsesMatchOpenAPI`; 아래 focused 명령 | 기존 API·권한·응답 계약 유지 | PASS — HTTP 0.579s·contract 1.009s, focused wall 3.44s |
+| 실제 PowerShell·curl·jq 명령 | 일회용 `TestFeatureActivationApprovalRunbookSmoke` | Summary·features·각 node local health·readiness 200, 광고 filter exit 0, IDs 1/2/3·release 1.2.0·초기 active 빈 집합 | PASS — test 26.06s·package 26.297s·wall 29.05s |
+| Activation·replay·재조회 | 같은 일회용 smoke | Body 없는 POST 200, active filter exit 0, replay/GET activeFeatures 정확히 compatibility-probe 하나, 세 readiness 200 | PASS — 같은 실제 process smoke |
+| Synthetic·historical release/backup | 아래 정확한 process 시험 네 개 | Rolling·activation 전 rollback·snapshot, 미지원 member 409, activation/replay 200, 미지원 N-1 READY 503·지원 N 회복, 미지원 archive 거절·target 미생성 | PASS — 4/4, package 224.438s·wall 225.96s; skip·no tests 없음 |
+| Traceability·문서 링크 | `go run ./tools/verify traceability`, 변경 문서 상대 링크·heading 확인 | Compliance matrix와 연결 대상 유효 | PASS — traceability exit 0·wall 0.83s; 문서 11개의 상대 링크 336개 유효 |
+
+실행 위치는 repository root다. 아래는 이 작업에서 실행한 명령이다. 일회용 smoke 시험은 실행 증거를 남긴 뒤 제거했으므로 현재 저장소에서 그대로 재실행할 수 없다. `no tests to run`이나 skip은 PASS로 쓰지 않는다. Windows process 시험은 Python `subprocess.run`의 argv에 regex를 한 인자로 전달하고 child environment에 `NARUMQ_RELEASE_COMPAT=1`, `GOMAXPROCS=4`를 설정했다.
+
+```text
+go test ./internal/application/membership ./internal/adapters/http/management ./tests/contracts/management-api-v1 -count=1
+go test ./tests/integration -run '^TestFeatureActivationApprovalRunbookSmoke$' -count=1 -v -timeout 10m
+go test ./tests/integration -run '^(TestDynamicClusterReleaseCompatibilityProcessAcceptance|TestDynamicClusterHistoricalReleaseCompatibilityProcessAcceptance|TestClusterBackupRestoreReleaseWindowProcessAcceptance|TestClusterBackupRestoreHistoricalReleaseProcessAcceptance)$' -count=1 -v -timeout 30m
+go run ./tools/verify traceability
+```
+
+PowerShell 문법 사전 확인: 가이드의 PowerShell code block 10개를 PowerShell 5.1 parser로 확인해 exit 0이었다. 이 사전 확인 때는 실제 API command smoke를 미실행으로 기록했다. 이후 실제 실행 결과는 아래 기록과 같다. 현재 process PATH에는 jq가 없었다. 설치된 WinGet `jqlang.jq` directory를 검증 process PATH에만 추가해 `jq-1.8.2` 실행을 확인했다. 계획에서 확인한 jaq 2.3.0과 달라 실제 도구 버전을 기록한다. Filter는 jq-compatible 문법을 유지한다. 시스템 PATH나 설정은 바꾸지 않았다.
+
+명령 smoke의 비밀 없는 artifact는 `.artifacts/verification/feature-activation-approval/`에 보존한다. Secret config와 임시 script/test는 완료 전에 제거한다. 외부 ticket 승인·Windows production ACL·불명 요청 취소 여부와 실제 운영 feature activation은 미실행이며 local smoke의 보증 범위가 아니다. API·호출·state가 같으므로 코드 지도와 module 설계는 변경하지 않는다.
+
+실제 명령 smoke는 2026-10-04T09:22:10.585870Z에 시작했다. Windows/amd64, PowerShell 5.1.26100.9444, curl.exe 8.21.0, jq 1.8.2, Go 1.26.5와 `GOMAXPROCS=4`를 사용했다. 임시 mTLS 3-node fixture의 `process-acceptance-cluster`에서 member ID 1/2/3의 release 1.2.0과 두 광고 token `compatibility-probe`, `session-metadata`를 확인했다. 초기 activeFeatures는 빈 집합이었다. Summary의 quorumAvailable=true·underReplicated=0, 각 endpoint의 local ready=true·storagePressure=false·replicationHealth=HEALTHY를 확인했다. POST 직전 같은 조회를 다시 실행했다.
+
+총 HTTP 요청 22개(GET 20·POST 2)는 모두 200, curl exit 0이었다. JSON filter 13개도 모두 exit 0이었다. Feature POST에는 body·approval header·Idempotency-Key를 보내지 않았다. Activation 요청은 09:22:35.8580227Z, 최초 commit 응답 관찰은 09:22:35.9205415Z였다. Request ID는 `req_c8306992808623b7378febe5`다. 이 관찰 시각은 정확한 commit 시각이 아니다. Replay와 이후 GET도 activeFeatures를 정확히 `["compatibility-probe"]`로 유지했다. 세 readiness를 다시 확인했다. 운영 `session-metadata`는 활성화하지 않았다. 외부 승인 시각은 운영 승인을 실행하지 않았으므로 만들지 않았다.
+
+가이드의 request 함수를 그대로 추출해 임시 PowerShell script에서 실행했다. `-ExecutionPolicy Bypass`는 그 검증 process에만 적용했다. URL·method·file path·feature·검사 종류는 별도 인자로 전달했다. Script와 CURL_CONFIG는 `t.TempDir()`에만 두었고 harness cleanup으로 모든 broker를 종료했다. 일회용 Go smoke 파일은 PASS 뒤 제거했다. Fixture에는 membership operation·binary 교체·drain이 없어 해당 완료 판정은 문서 검토와 기존 수용 시험으로 구분한다. Membership operation GET은 이번 shell smoke에서 미실행이다.
+
+가이드의 증거 directory ACL 명령도 별도 Windows local 임시 directory에서 실행했다(09:23:26.364943Z, exit 0·wall 0.57s). 권한 상속이 꺼지고 현재 사용자만 FullControl을 가진 것을 확인했다. 함께 조회한 파일은 credential 없는 시험 입력이다. 실제 secret manager 파일 ACL이나 production ACL을 검증한 증거는 아니다. 임시 directory는 실행 뒤 제거했다. Body·header·request ID·UTC 시각·filter 출력·도구 버전과 focused/smoke 로그는 `.artifacts/verification/feature-activation-approval/`에 남겼다. Secret config·임시 script는 보존하지 않았다.
+
+Release/backup 회귀는 2026-10-04T09:25:00.397383Z에 시작했다. 위 정확한 regex를 Python `subprocess.run`의 단일 인자로 전달했다. Child environment는 `NARUMQ_RELEASE_COMPAT=1`, `GOMAXPROCS=4`였다. 네 시험이 실제 실행되어 모두 PASS했고 skip과 `no tests to run`은 없었다.
+
+| 실제 시험 | 실행 시간 | 확인한 경계 |
+| --- | --- | --- |
+| `TestClusterBackupRestoreReleaseWindowProcessAcceptance` | 25.72s | Synthetic N-1→N·N→N-1의 retained·offline·SessionPresent 복원. 미지원 compatibility-probe와 window 밖 producer는 non-zero exit, target directory 없음 |
+| `TestDynamicClusterHistoricalReleaseCompatibilityProcessAcceptance` | 96.12s | Baseline `58a95f801e1467379db2eb6f3454ae44e954418a`. Mixed session-metadata activation 차단, rolling·양방향 installed snapshot·activation 전 rollback. N-2 readiness 거절 10회 |
+| `TestClusterBackupRestoreHistoricalReleaseProcessAcceptance` | 16.78s | Historical N-1→N 복원. HEAD→historical N-1은 pre-ADR-0021 exact 정책대로 `backup release or schema does not match cluster config`로 거절, target directory 없음 |
+| `TestDynamicClusterReleaseCompatibilityProcessAcceptance` | 85.64s | Synthetic rolling·양방향 installed snapshot, activation 전 rollback 유지. Activation 뒤 미지원 N-1 readiness reason은 `incompatible_state_schema: committed cluster features are not supported by this release` |
+
+두 rolling 시험의 기존 scenario 7은 실제 activation/replay HTTP 200과 active token 하나, N-1 readiness 503, 지원 N 재배포 뒤 READY·active token 보존을 검사하며 통과했다. 미지원 member의 409는 기존 activation failure assertion에서 확인했다. 이 값들은 PASS한 runtime assertion의 증거이며 로그가 제공하지 않는 commit index나 정확한 commit 시각을 추가하지 않는다. 전체 실행 출력은 `.artifacts/verification/feature-activation-approval/release-matrix.log`에 보존했다.
+
+Synthetic build와 지정 historical baseline은 mechanics와 해당 source 조합만 검증한다. 게시 release tag가 없는 현재 결과를 미래 게시 release의 matrix로 쓰지 않는다. Production Linux/EBS·retention/RPO/RTO와 external rollout controller는 열린 gate로 유지한다.
+
+완료 문서 반영 뒤 2026-10-04T09:30:39.833958Z의 `go run ./tools/verify traceability`는 exit 0·`traceability: PASS`였다(wall 0.83s). 새 문서와 변경한 contract·ADR·guide·목록·tasks·spec 총 11개에서 상대 링크 335개의 대상 파일 또는 directory와 heading anchor를 확인했다. 완료 증거에 추가한 tasks §2.6 링크도 별도 확인해 총 336개가 통과했다. 누락은 없었다. 결과는 `.artifacts/verification/feature-activation-approval/relative-links.json`과 `traceability.log`에 보존했다. Directory 링크를 파일만 허용한 첫 link checker는 기존 testdata directory 링크를 잘못 보고했다. Directory도 유효 대상으로 처리한 최종 확인에서 통과했다. 문서 링크의 결함은 아니었다.
+
+수동 정책 판정·실제 shell smoke·기존 runtime 수용이 모두 일치하여 [tasks §2.6](../tasks.md#26-release-호환성)의 운영 승인 정책만 완료로 옮겼다. 코드·API·권한·replicated schema는 변경하지 않았다. 전체 local gate는 이 문서 정책 변경의 추가 완료 요구로 실행하지 않았다. Production 실행·secret manager ACL·외부 승인 강제와 미래 게시 release별 matrix는 검증하지 않은 범위로 유지한다.
 

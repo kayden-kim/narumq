@@ -78,7 +78,7 @@ Deterministic serialization은 같은 값에서 같은 bytes를 만드는 규칙
 - Schema는 `1.0`으로 고정한다. 추가 변경에 minor를 올리지 않는다. Major 변경은 [Release contract §7](cluster-release-compatibility-v1.md#7-breaking-change)의 breaking change다.
 - 새 field 번호는 해당 message의 기존 최대 번호보다 커야 한다. 번호·enum 값·reserved 이름은 재사용하지 않는다. 기존 field의 번호·type·cardinality·의미는 바꾸지 않는다. Proto3 기본값은 기존 동작을 뜻해야 한다.
 - 새 field·payload·collection·enum 값은 해당 feature token의 `FeatureActivation`이 commit된 뒤에만 propose하거나 저장한다. Activation 전 bytes는 baseline schema로 unknown 없이 decode되어야 한다.
-- Feature activation이 그 feature의 rollback window를 끝낸다. Activation 뒤 해당 feature를 지원하지 않는 N-1은 READY가 되지 않는다. 새 field를 만나면 fail-closed다. 운영자의 window 종료 판정·승인 절차는 [tasks §1.2](../tasks.md#12-release와-rollout-gate)의 별도 항목이다.
+- Feature activation이 그 feature의 rollback window를 끝낸다. Activation 뒤 해당 feature를 지원하지 않는 N-1은 READY가 되지 않는다. 새 field를 만나면 fail-closed다. 운영자의 window 종료 판정·승인 절차는 [Release contract §4.1](cluster-release-compatibility-v1.md#41-운영-승인과-rollback-window-종료)을 따른다.
 
 ## 4. 버전과 지원 단계
 
@@ -117,4 +117,4 @@ Repository root에서 `go test ./internal/adapters/raft/records ./cmd/narumq -co
 
 ## 6. 범위 밖 gate
 
-게시 release별 baseline 갱신과 process matrix, 운영자의 rollback window 종료·feature activation 승인 정책, production Linux/EBS storage 수용은 [tasks](../tasks.md)의 별도 작업이다.
+게시 release별 baseline 갱신과 process matrix, production Linux/EBS storage 수용은 [tasks](../tasks.md)의 별도 작업이다. 운영 승인 정책의 수용 범위는 [Cluster §11.30](../specs/cluster-session-and-delivery.md#1130-feature-activation-운영-승인-수용-매핑)에서 관리한다.

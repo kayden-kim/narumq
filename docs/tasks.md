@@ -36,7 +36,6 @@
   - 원인: Paho `Properties.Unpack`이 중복 Server Reference를 검사하지 않고 마지막 값으로 덮어쓴다. Callback에는 중복 정보가 남지 않는다([Client contract §6.2](contracts/mqtt-client-compatibility-v1.md#62-drain-compatibility-suite)).
   - 결정: 공식 SDK만 유지한다. 직접 패치한 SDK와 raw socket 검사는 도입하지 않는다.
   - 해제 조건: 이 결함을 고친 공식 SDK release의 version 변경을 검토한 뒤 drain 10개와 Phase 1 26개 case를 모두 통과한다. 조사 시점에는 수정된 공식 release가 없어 SDK 수정과 새 version 회귀는 실행하지 않았다.
-- [ ] **결정 필요** — Rollback window 종료와 irreversible feature activation 승인: [Release contract §8](contracts/cluster-release-compatibility-v1.md#8-blocker와-제외-범위)에 남은 운영자 판정 정책과 승인 절차를 정한다. 현재 feature 광고·activation·미지원 build readiness 차단은 구현됐지만, rollback 가능 기간을 끝내는 운영 정책은 별도다. 확정한 절차와 [Cluster §8](specs/cluster-session-and-delivery.md#8-mixed-version-compatibility)의 irreversible migration 금지를 연결해 검증한다.
 
 ### 1.3 Cluster 기능과 알려진 구현 한계
 
@@ -106,5 +105,6 @@
 - [x] N-1↔N rolling upgrade·rollback(같은 source의 synthetic build): [ADR-0018](decisions/ADR-0018-release-compatibility-window.md), [Cluster §8](specs/cluster-session-and-delivery.md#8-mixed-version-compatibility), [§11.17](specs/cluster-session-and-delivery.md#1117-n-1n-rolling-upgraderollback-수용-매핑).
 - [x] 지정 historical baseline `58a95f8`의 N-1↔N rolling·archive: [§11.21](specs/cluster-session-and-delivery.md#1121-historical-source-n-1n-호환성-수용-매핑). N archive를 historical N-1에서 restore하면 pre-ADR-0021 제약 때문에 fail-closed로 거절한다.
 - [x] Replicated-state v1 계약과 strict schema evolution: [ADR-0031](decisions/ADR-0031-replicated-state-schema-strict-evolution.md), Active [Replicated-state v1](contracts/replicated-state-v1.md), [§11.29](specs/cluster-session-and-delivery.md#1129-replicated-state-v1-계약-수용-매핑). 공식 한도·strict decode·feature gate·vector와 baseline guard를 확정했다. Activation 뒤 해당 feature를 지원하지 않는 N-1로 rollback할 수 없다. 게시 release별 baseline 갱신과 process matrix는 §1.2 release 항목에 남긴다.
+- [x] Rollback window 종료와 irreversible feature activation 승인: [ADR-0032](decisions/ADR-0032-feature-activation-approval-policy.md), [Release contract §4.1](contracts/cluster-release-compatibility-v1.md#41-운영-승인과-rollback-window-종료), [Cluster §11.30](specs/cluster-session-and-delivery.md#1130-feature-activation-운영-승인-수용-매핑). 운영 체크리스트·승인 기록으로 정책을 확정했다. API에서 승인 evidence를 강제하지 않는다. 수동 정책 판정·Windows local 실제 명령 smoke·기존 runtime와 synthetic/historical release·backup 시험이 통과했다. Production activation 승인, external rollout controller와 게시 release별 matrix·production storage gate는 이번 완료 범위 밖이다.
 
 항목을 마치면 해당 [수용 시험 매핑](specs/cluster-session-and-delivery.md#11-수용-시험)에 시험 위치와 실행 결과를 연결하고, 영향받은 결정·구조 문서의 범위와 상태를 갱신한 뒤 이 목록의 상태를 바꾼다. 실행하지 않은 시험이나 미승인 `Proposed` 결정을 완료로 표시하지 않는다.

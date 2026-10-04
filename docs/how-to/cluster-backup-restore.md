@@ -18,16 +18,16 @@
 - Restore는 현재 voter 세 개만 지원한다. Archive에 learner ID가 있으면 거절한다. 다른 cluster ID로 이동하거나 node ID/address/DNS SAN/certificate fingerprint를 바꾸는 작업이 아니다. v1(`NMQBKUP1`) 및 v2(`NMQBKUP2`) archive는 current restore에서 명시적으로 거절한다.
 - Cutover와 업그레이드 전 drain: 새 build로 cluster를 업그레이드할 때 이전 build의 node-local queue는 복제되지 않으므로, 업그레이드 전에 persistent subscriber를 재접속시켜 대기 큐를 drain해야 한다. Drain하지 않은 기존 node-local 큐는 프로세스 종료와 함께 유실될 수 있다.
 - Archive에는 고객 식별자, retained payload와 session 정보가 들어갈 수 있다. 인증된 암호화 저장소에 보관하고 access를 제한한다.
-- Backup 요청은 쓰기를 중지하지 않는다. Fresh quorum barrier가 유효하지 않으면 retryable `503`을 반환한다. Retained, offline 및 durable delivery operation에는 정확한 release/protocol/schema member profile 확인이 적용되므로 mixed-release writes는 지원하지 않는다.
+- Backup 요청은 쓰기를 중지하지 않는다. Fresh quorum barrier가 유효하지 않으면 retryable `503`을 반환한다. Retained, offline 및 durable delivery operation은 [Release contract](../contracts/cluster-release-compatibility-v1.md#5-readiness와-persisted-state)의 fresh read·committed profile gate를 따른다. Release는 same-major 인접 minor window를 허용하며 protocol/schema는 exact 비교를 유지한다.
 
 ## 2. 전제 조건
 
 - [ ] Management API에 ClusterAdmin 권한으로 접근하며 token은 명령 history, 로그 또는 티켓에 남기지 않는다.
 - [ ] Cluster API와 node 목록을 읽어 현재 voter ID 세 개, quorum 및 readiness를 확인했다. Membership learner가 있는 동안에는 restore가 지원되지 않는다.
-- [ ] 모든 retained operation member가 정확히 같은 release, cluster protocol과 state schema를 사용한다. Mixed-release retained writes와 rolling downgrade는 지원하지 않는다.
+- [ ] 모든 non-retired member의 release가 [Release contract](../contracts/cluster-release-compatibility-v1.md#3-version-handshake)의 same-major 인접 minor window 안이고 cluster protocol `2.0`과 state schema `1.0`이 일치한다. [Feature activation 승인](cluster-feature-activation.md) 뒤에는 해당 feature를 지원하지 않는 build로 rollback하지 않는다.
 - [ ] Archive, response headers와 restore config를 민감한 운영 자료로 보호한다.
 - [ ] 복원 대상은 모두 중지되어 있다. 각 voter에 새롭고 별도인 빈 data directory를 준비했다. 기존 운영 volume이나 다른 node의 data directory를 재사용하지 않는다.
-- [ ] 각 restore config는 `role=bootstrap`이며 archive의 cluster ID, release, cluster protocol, state schema, voter IDs, address, DNS SAN과 certificate SHA-256 fingerprint에 정확히 일치한다. Config의 local `nodeId`는 그 세 voter 중 하나다.
+- [ ] 각 restore config는 `role=bootstrap`이며 archive의 cluster ID, cluster protocol, state schema, voter IDs, address, DNS SAN과 certificate SHA-256 fingerprint에 정확히 일치한다. Config의 local `nodeId`는 그 세 voter 중 하나다. Restore build의 release window·active feature 지원과 historical consumer 제한은 [Backup v3 §2·§4](../contracts/cluster-backup-v3.md#4-호환성-규칙)를 따른다. Config에 build release를 별도로 넣지 않는다.
 - [ ] 모든 voter와 management endpoint에 접근 가능한 Linux/Bash 호환 관리 환경을 사용한다. EBS power-loss 보장이 필요한 운영 복구라면 이 Draft 절차만으로 승인하지 않는다.
 - [ ] 업그레이드 전 절차: 이전 release cluster를 중지하기 전에 persistent subscriber를 재접속시켜 남아 있는 node-local queue를 drain하도록 유도했다(ADR-0013 cutover 정책).
 
@@ -62,6 +62,8 @@
 3. **세 target node의 복구 config를 각각 확인한다.**
 
    Config는 같은 cluster ID, 같은 세 정렬된 bootstrap voter ID와 동일 peer identity를 사용해야 한다. `nodeId`와 `directory`만 해당 target voter의 값으로 다르며 각 directory는 비어 있어야 한다. Archive source도 현재 voter여야 한다. Voter set, endpoint, DNS SAN 또는 인증서 fingerprint를 변경한 복구는 이 절차의 범위가 아니다.
+
+   Restore build는 archive producer·모든 voter와 지원 release window 안이어야 하며 모든 active feature를 지원해야 한다. ADR-0021 이전 historical consumer의 exact-release 제한은 [Backup v3 §4](../contracts/cluster-backup-v3.md#4-호환성-규칙)를 따른다.
 
 4. **각 voter의 빈 directory에 같은 archive를 오프라인 restore한다.**
 
@@ -109,7 +111,7 @@
 
 - Backup endpoint가 `503 cluster_backup_unavailable`을 반환하거나 response가 HTTP 200/octet-stream이 아니다.
 - Archive checksum, format, commit boundary 또는 state summary 검증이 실패한다.
-- Restore config의 cluster ID, version, schema, 세 voter ID, address, SAN, certificate fingerprint 중 하나라도 archive와 다르다.
+- Restore config의 cluster ID, protocol/schema, 세 voter ID, address, SAN, certificate fingerprint가 archive와 다르거나 restore build가 release window·active feature 지원 조건을 충족하지 못한다.
 - Archive에 learner ID가 있거나 voter 수가 정확히 세 개가 아니다.
 - Restore command가 non-zero로 끝난다. 해당 voter process를 시작하지 않고 원인과 marker 상태를 확인한다.
 - 세 voter가 quorum을 만들지 못하거나 `/health/ready`가 200이 아니다. MQTT traffic을 허용하지 않는다.

@@ -17,7 +17,7 @@
 2. Schema 거절 오류는 `incompatible_state_schema`로 분류한다. 기존 fail-closed 경로는 바꾸지 않는다. Committed apply에서는 Raft driver가 중단되고 process가 끝난다. Startup recovery에서는 시작이 실패한다. 값 범위·정렬·count·digest 등 손상과 비정규 bytes 오류는 이 분류에 넣지 않는다. Enum validator의 기존 오류도 유지한다.
 3. Schema 번호는 `1.0`으로 고정한다. 추가 변경마다 minor를 올리지 않는다. Major 변경은 [Release contract §7](../contracts/cluster-release-compatibility-v1.md#7-breaking-change)의 breaking change다.
 4. 새 field 번호는 해당 message의 기존 최대 번호보다 커야 한다. 번호·enum 값·reserved 이름은 재사용하지 않는다. 기존 field의 번호·type·cardinality(단일 값인지 목록인지)·의미를 바꾸지 않는다. Proto3 기본값은 기존 동작을 뜻해야 한다. 새 field·payload·collection·enum 값은 해당 feature token의 `FeatureActivation`이 commit된 뒤에만 propose하거나 저장한다. Activation 전 bytes는 baseline schema로 unknown 없이 decode되어야 한다.
-5. Feature activation이 그 feature의 rollback window를 끝낸다. Activation 뒤 해당 feature를 지원하지 않는 N-1은 READY가 되지 않는다. 새 field를 만나면 fail-closed다. 운영자의 window 종료 판정과 activation 승인 정책은 [tasks §1.2](../tasks.md#12-release와-rollout-gate)에 남긴다.
+5. Feature activation이 그 feature의 rollback window를 끝낸다. Activation 뒤 해당 feature를 지원하지 않는 N-1은 READY가 되지 않는다. 새 field를 만나면 fail-closed다. 운영자의 window 종료 판정과 activation 승인 정책은 [Release contract §4.1](../contracts/cluster-release-compatibility-v1.md#41-운영-승인과-rollback-window-종료)을 따른다.
 6. 기존 membership contract의 크기 제한을 [Replicated-state v1 §1](../contracts/replicated-state-v1.md#1-형식과-의미)로 옮겨 공식 한도로 채택한다. `CommandEnvelope` 1 MiB는 Raft의 `maxDynamicCommandSize`와 같다. 한도 변경에는 contract 변경과 vector 추가가 필요하다.
 7. 기준 bytes와 baseline descriptor는 `internal/adapters/raft/records/testdata/replicated-state-v1/`에 둔다. 이번 baseline은 현재 schema descriptor다. 실제 release를 게시할 때만 해당 release의 descriptor로 교체한다. 게시 release별 process matrix는 tasks §1.2의 별도 작업이다.
 
