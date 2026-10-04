@@ -26,6 +26,7 @@ import (
 
 	adaptersmetrics "narumq/internal/adapters/metrics"
 	appmembership "narumq/internal/application/membership"
+	"narumq/internal/domain/connrebalance"
 	"narumq/internal/domain/nodedrain"
 
 	ports "narumq/internal/application/ports/management"
@@ -93,6 +94,24 @@ func drainOperationFixtures() []operationFixture {
 		{
 			method: http.MethodDelete, path: "/api/v1/nodes/{nodeId}/drain", operationID: "cancelNodeDrain",
 			target: "/api/v1/nodes/3/drain", idempotencyKey: "contract-drain-cancel", expectedStatus: http.StatusOK,
+		},
+	}
+}
+func connectionRebalanceOperationFixtures() []operationFixture {
+	return []operationFixture{
+		{
+			method: http.MethodPost, path: "/api/v1/cluster/rebalance", operationID: "startConnectionRebalance",
+			target:         "/api/v1/cluster/rebalance",
+			body:           `{"serverReference":"lb.example:1883","maxDeviationConnections":1,"connectionRatePerSecond":5,"loadBalancerPropagationDelayMs":500,"timeoutMs":120000}`,
+			idempotencyKey: "contract-rebalance-start", expectedStatus: http.StatusAccepted,
+		},
+		{
+			method: http.MethodGet, path: "/api/v1/cluster/rebalance", operationID: "getConnectionRebalance",
+			target: "/api/v1/cluster/rebalance", expectedStatus: http.StatusOK,
+		},
+		{
+			method: http.MethodDelete, path: "/api/v1/cluster/rebalance", operationID: "cancelConnectionRebalance",
+			target: "/api/v1/cluster/rebalance", idempotencyKey: "contract-rebalance-cancel", expectedStatus: http.StatusOK,
 		},
 	}
 }
@@ -365,6 +384,10 @@ func contractHandler(cfg managementhttp.ServerConfig) http.Handler {
 	)
 }
 func clusterManagementContractHandler() http.Handler {
+	return clusterManagementContractHandlerWithRebalance(contractRebalanceService{})
+}
+
+func clusterManagementContractHandlerWithRebalance(rebalanceService managementhttp.ConnectionRebalanceUseCase) http.Handler {
 	return managementhttp.NewRouterWithMembership(
 		managementhttp.ServerConfig{},
 		contractStateProvider{},
@@ -372,9 +395,9 @@ func clusterManagementContractHandler() http.Handler {
 		adaptersmetrics.NewRegistry(),
 		contractMembershipService{},
 		contractDrainService{},
+		rebalanceService,
 		contractBackupProvider{},
 	)
-
 }
 
 type contractBackupProvider struct{}
@@ -461,10 +484,80 @@ func (contractDrainService) CancelNodeDrain(_ context.Context, memberID uint64) 
 	}}, nil
 }
 
+type contractRebalanceService struct {
+	phase                  connrebalance.Phase
+	replayed               bool
+	withoutServerReference bool
+}
+
+func (service contractRebalanceService) StartConnectionRebalance(_ context.Context, request appmembership.StartConnectionRebalanceRequestDTO) (appmembership.ConnectionRebalanceOperationDTO, error) {
+	phase := service.phase
+	if !phase.Valid() {
+		phase = connrebalance.PhaseRunning
+	}
+	operation := contractRebalanceOperation(request.IdempotencyKey, phase, service.replayed)
+	if service.withoutServerReference {
+		operation.State.ServerReference = ""
+	}
+	return operation, nil
+}
+
+func (service contractRebalanceService) GetConnectionRebalance(context.Context) (appmembership.ConnectionRebalanceOperationDTO, error) {
+	phase := service.phase
+	if !phase.Valid() {
+		phase = connrebalance.PhaseCompleted
+	}
+	operation := contractRebalanceOperation("contract-rebalance-start", phase, false)
+	if service.withoutServerReference {
+		operation.State.ServerReference = ""
+	}
+	return operation, nil
+}
+
+func (service contractRebalanceService) CancelConnectionRebalance(context.Context) (appmembership.ConnectionRebalanceOperationDTO, error) {
+	phase := service.phase
+	if !phase.Valid() {
+		phase = connrebalance.PhaseCancelled
+	}
+	operation := contractRebalanceOperation("contract-rebalance-start", phase, false)
+	if service.withoutServerReference {
+		operation.State.ServerReference = ""
+	}
+	return operation, nil
+}
+
+func contractRebalanceOperation(idempotencyKey string, phase connrebalance.Phase, replayed bool) appmembership.ConnectionRebalanceOperationDTO {
+	finishedAt := uint64(0)
+	failureCode := ""
+	participants := []appmembership.ConnectionRebalanceReportDTO{
+		{NodeID: 1, Connections: 12, SessionsTransferred: 5, Shedding: phase == connrebalance.PhaseRunning, ReportedAtUnixMillis: 2000},
+		{NodeID: 2, Connections: 7, ReportedAtUnixMillis: 2000},
+		{NodeID: 3},
+	}
+	if phase.Terminal() {
+		finishedAt = 3000
+	}
+	if phase == connrebalance.PhaseFailed {
+		failureCode = "rebalance_timeout"
+	}
+	return appmembership.ConnectionRebalanceOperationDTO{
+		State: appmembership.ConnectionRebalanceStateDTO{
+			RebalanceOperationID: "00000000-0000-4000-8000-000000000006",
+			IdempotencyKey:       idempotencyKey, Phase: phase, ServerReference: "lb.example:1883",
+			MaxDeviationConnections: 1, ConnectionRatePerSecond: 5,
+			LoadBalancerPropagationDelayMillis: 500, TimeoutMillis: 120000,
+			StartedAtUnixMillis: 1000, DeadlineAtUnixMillis: 121000, FinishedAtUnixMillis: finishedAt,
+			Participants: participants, FailureCode: failureCode,
+		},
+		Replayed: replayed,
+	}
+}
+
 func expectedOperationSet() []string {
 	fixtures := append(managementOperationFixtures(), membershipOperationFixtures()...)
 	fixtures = append(fixtures, backupOperationFixtures()...)
 	fixtures = append(fixtures, drainOperationFixtures()...)
+	fixtures = append(fixtures, connectionRebalanceOperationFixtures()...)
 	fixtures = append(fixtures, featureOperationFixtures()...)
 	operations := make([]string, 0, len(fixtures))
 	for _, fixture := range fixtures {
@@ -580,6 +673,53 @@ func TestDrainHandlerResponsesMatchOpenAPI(t *testing.T) {
 			handler.ServeHTTP(recorder, req)
 			if recorder.Code != fixture.expectedStatus {
 				t.Fatalf("status = %d, want %d: %s", recorder.Code, fixture.expectedStatus, recorder.Body.String())
+			}
+			validateResponse(t, input, options, recorder)
+		})
+	}
+}
+
+func TestRebalanceHandlerResponsesMatchOpenAPI(t *testing.T) {
+	_, router := loadManagementContract(t)
+	fixtures := connectionRebalanceOperationFixtures()
+	cases := []struct {
+		name                   string
+		index                  int
+		phase                  connrebalance.Phase
+		replayed               bool
+		withoutServerReference bool
+		status                 int
+	}{
+		{name: "start running", index: 0},
+		{name: "start replay", index: 0, replayed: true, status: http.StatusOK},
+		{name: "get running with no server reference", index: 1, phase: connrebalance.PhaseRunning, withoutServerReference: true},
+		{name: "get completed", index: 1, phase: connrebalance.PhaseCompleted},
+		{name: "get failed", index: 1, phase: connrebalance.PhaseFailed},
+		{name: "get cancelled", index: 1, phase: connrebalance.PhaseCancelled},
+		{name: "cancel cancelled", index: 2},
+	}
+	for _, testCase := range cases {
+		t.Run(testCase.name, func(t *testing.T) {
+			fixture := fixtures[testCase.index]
+			req := newContractRequest(fixture)
+			input, options := findContractRoute(t, router, req)
+			if input.Route.Operation.OperationID != fixture.operationID {
+				t.Fatalf("runtime fixture matched operation %q, want %q", input.Route.Operation.OperationID, fixture.operationID)
+			}
+			if err := openapi3filter.ValidateRequest(context.Background(), input); err != nil {
+				t.Fatalf("validate representative request: %v", err)
+			}
+			handler := clusterManagementContractHandlerWithRebalance(contractRebalanceService{
+				phase: testCase.phase, replayed: testCase.replayed, withoutServerReference: testCase.withoutServerReference,
+			})
+			recorder := httptest.NewRecorder()
+			handler.ServeHTTP(recorder, req)
+			status := testCase.status
+			if status == 0 {
+				status = fixture.expectedStatus
+			}
+			if recorder.Code != status {
+				t.Fatalf("status = %d, want %d: %s", recorder.Code, status, recorder.Body.String())
 			}
 			validateResponse(t, input, options, recorder)
 		})

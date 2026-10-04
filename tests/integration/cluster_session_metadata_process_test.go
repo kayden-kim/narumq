@@ -135,12 +135,17 @@ func TestDynamicClusterSessionMetadataProcessAcceptance(t *testing.T) {
 
 func clusterSessionMetadataActivate(t *testing.T, ctx context.Context, nodes []*clusterMembershipProcess) {
 	t.Helper()
+	clusterProcessActivateFeature(t, ctx, nodes, "session-metadata")
+}
+
+func clusterProcessActivateFeature(t *testing.T, ctx context.Context, nodes []*clusterMembershipProcess, feature string) {
+	t.Helper()
 	status, body, err := clusterMembershipProcessRequest(ctx, http.MethodPost,
-		nodes[0].managementURL()+"/api/v1/cluster/features/session-metadata", nil, clusterMembershipProcessAdmin, "")
+		nodes[0].managementURL()+"/api/v1/cluster/features/"+feature, nil, clusterMembershipProcessAdmin, "")
 	if err != nil || status != http.StatusOK {
-		t.Fatalf("activate session-metadata status=%d body=%s err=%v", status, body, err)
+		t.Fatalf("activate %s status=%d body=%s err=%v", feature, status, body, err)
 	}
-	clusterMembershipProcessWait(t, ctx, "session-metadata active on every node", func() (bool, string, error) {
+	clusterMembershipProcessWait(t, ctx, feature+" active on every node", func() (bool, string, error) {
 		for _, node := range nodes {
 			status, body, err := clusterMembershipProcessRequest(ctx, http.MethodGet,
 				node.managementURL()+"/api/v1/cluster/features", nil, clusterMembershipProcessAdmin, "")
@@ -156,14 +161,14 @@ func clusterSessionMetadataActivate(t *testing.T, ctx context.Context, nodes []*
 				return false, "decode feature state: " + err.Error(), nil
 			}
 			found := false
-			for _, feature := range envelope.Data.ActiveFeatures {
-				found = found || feature == "session-metadata"
+			for _, active := range envelope.Data.ActiveFeatures {
+				found = found || active == feature
 			}
 			if !found {
-				return false, node.name + " has not applied session-metadata", nil
+				return false, node.name + " has not applied " + feature, nil
 			}
 		}
-		return true, "all nodes report session-metadata", nil
+		return true, "all nodes report " + feature, nil
 	})
 }
 

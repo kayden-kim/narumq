@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"math"
-	"sort"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -236,7 +235,7 @@ func (controller *clusterDrainController) run(ctx context.Context, operationID s
 				return
 			}
 		case nodedrain.PhaseVerifyingSessionState:
-			connected := controller.connectedOtherVoters()
+			connected := controller.runtime.connectedOtherVoters()
 			if len(connected) == 0 {
 				controller.setLastBlock(nodedrain.BlockerNoSuccessorVoter)
 				if !waitDrain(ctx, drainRetryInterval) {
@@ -264,7 +263,7 @@ func (controller *clusterDrainController) run(ctx context.Context, operationID s
 				continue
 			}
 		case nodedrain.PhaseTransferringSessions:
-			connected := controller.connectedOtherVoters()
+			connected := controller.runtime.connectedOtherVoters()
 			voters := make([]uint64, 0, len(connected)+1)
 			voters = append(voters, controller.runtime.config.NodeID)
 			voters = append(voters, connected...)
@@ -530,25 +529,6 @@ func (controller *clusterDrainController) clearCompleted(ctx context.Context, op
 	}
 }
 
-func (controller *clusterDrainController) connectedOtherVoters() []uint64 {
-	if controller.runtime.node == nil || controller.runtime.transport == nil {
-		return nil
-	}
-	status := controller.runtime.node.Status()
-	connected := make([]uint64, 0, len(status.VoterIDs))
-	for _, voterID := range status.VoterIDs {
-		if uint64(voterID) == controller.runtime.config.NodeID {
-			continue
-		}
-		peerStatus, err := controller.runtime.transport.Status(uint64(voterID))
-		if err == nil && peerStatus.Connected {
-			connected = append(connected, uint64(voterID))
-		}
-	}
-	sort.Slice(connected, func(left, right int) bool { return connected[left] < connected[right] })
-	return connected
-}
-
 func (controller *clusterDrainController) activeConnections() int {
 	if controller.runtime.mqttServer == nil {
 		return 0
@@ -593,7 +573,7 @@ func (controller *clusterDrainController) barrierInput() nodedrain.BarrierInput 
 		AdmissionClosed: controller.admissionClosed.Load(), ReadinessFailing: readinessFailing,
 		ActiveConnections: controller.activeConnections(), OwnedSessions: ownedSessions,
 		OwnedSubscriptions: ownedSubscriptions, PendingWAL: pendingWAL,
-		VoterCount: len(status.VoterIDs), ConnectedOtherVoters: len(controller.connectedOtherVoters()),
+		VoterCount: len(status.VoterIDs), ConnectedOtherVoters: len(controller.runtime.connectedOtherVoters()),
 		LocalLeader:         uint64(status.LeaderID) == controller.runtime.config.NodeID,
 		PendingLocalCommits: int(controller.runtime.localCommits.Load()), PendingWills: pendingWills,
 	}

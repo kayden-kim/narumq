@@ -6,7 +6,8 @@ option go_package = "narumq/internal/adapters/raft/records;records";
 
 // State schema 1.0 is fixed and strict: consumers reject unknown fields, payloads and
 // versions. Additive changes follow replicated-state-v1.md §3 and are written only after
-// their feature activation. Session metadata requires the active `session-metadata` feature.
+// Session metadata requires the active `session-metadata` feature. Connection rebalance
+// requires the active `connection-rebalance` feature.
 
 enum MemberPhase {
   MEMBER_PHASE_UNSPECIFIED = 0;
@@ -213,6 +214,64 @@ message SessionMetadataState {
   SessionPrincipal principal = 12;
 }
 
+enum ConnectionRebalanceAction {
+  CONNECTION_REBALANCE_ACTION_UNSPECIFIED = 0;
+  CONNECTION_REBALANCE_ACTION_START = 1;
+  CONNECTION_REBALANCE_ACTION_REPORT = 2;
+  CONNECTION_REBALANCE_ACTION_FAIL = 3;
+  CONNECTION_REBALANCE_ACTION_CANCEL = 4;
+}
+
+enum ConnectionRebalancePhase {
+  CONNECTION_REBALANCE_PHASE_UNSPECIFIED = 0;
+  CONNECTION_REBALANCE_PHASE_RUNNING = 1;
+  CONNECTION_REBALANCE_PHASE_COMPLETED = 2;
+  CONNECTION_REBALANCE_PHASE_FAILED = 3;
+  CONNECTION_REBALANCE_PHASE_CANCELLED = 4;
+}
+
+message ConnectionRebalanceReport {
+  uint64 node_id = 1;
+  uint64 connections = 2;
+  uint64 sessions_transferred = 3;
+  bool shedding = 4;
+  uint64 reported_at_unix_millis = 5;
+}
+
+message ConnectionRebalanceChange {
+  ConnectionRebalanceAction action = 1;
+  string rebalance_operation_id = 2;
+  string idempotency_key = 3;
+  string server_reference = 4;
+  uint64 max_deviation_connections = 5;
+  uint32 connection_rate_per_second = 6;
+  uint64 load_balancer_propagation_delay_millis = 7;
+  uint64 timeout_millis = 8;
+  uint64 node_id = 9;
+  uint64 connections = 10;
+  uint64 sessions_transferred = 11;
+  bool shedding = 12;
+  string failure_code = 13;
+  uint64 proposed_at_unix_millis = 14;
+}
+
+message ConnectionRebalanceState {
+  string rebalance_operation_id = 1;
+  string idempotency_key = 2;
+  ConnectionRebalancePhase phase = 3;
+  string server_reference = 4;
+  uint64 max_deviation_connections = 5;
+  uint32 connection_rate_per_second = 6;
+  uint64 load_balancer_propagation_delay_millis = 7;
+  uint64 timeout_millis = 8;
+  uint64 started_at_unix_millis = 9;
+  uint64 deadline_at_unix_millis = 10;
+  uint64 finished_at_unix_millis = 11;
+  repeated ConnectionRebalanceReport participants = 12;
+  string failure_code = 13;
+  uint64 committed_index = 14;
+}
+
 // Every application log entry has exactly one typed payload. operation_id is a
 // canonical lower-case UUID and is stable across retry of the same operation.
 message CommandEnvelope {
@@ -231,6 +290,7 @@ message CommandEnvelope {
     MemberProfileChange member_profile = 19;
     FeatureActivation feature_activation = 20;
     SessionMetadataChange session_metadata = 21;
+    ConnectionRebalanceChange connection_rebalance = 22;
   }
   reserved 13;
   reserved "checkpoint";
@@ -466,6 +526,7 @@ message ReplicatedStateSnapshot {
   TenantQuotaProfile tenant_quota_profile = 10;
   repeated string active_features = 11;
   repeated SessionMetadataState session_metadata = 12;
+  ConnectionRebalanceState connection_rebalance = 13;
 }
 message SnapshotEnvelope {
   uint32 schema_major = 1;

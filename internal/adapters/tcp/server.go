@@ -506,6 +506,21 @@ func (server *Server) ActiveConnectionCount() int {
 	return len(server.active)
 }
 
+// ConnectedSessionIDs returns sorted CONNECT-bound sessions, excluding pending sockets.
+func (server *Server) ConnectedSessionIDs() []routing.SessionID {
+	if server == nil {
+		return nil
+	}
+	server.mu.Lock()
+	ids := make([]routing.SessionID, 0, len(server.bySession))
+	for id := range server.bySession {
+		ids = append(ids, id)
+	}
+	server.mu.Unlock()
+	sort.Slice(ids, func(left, right int) bool { return ids[left] < ids[right] })
+	return ids
+}
+
 func (server *Server) stopAll() {
 	server.stopOnce.Do(func() {
 		server.mu.Lock()

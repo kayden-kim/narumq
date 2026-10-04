@@ -29,10 +29,10 @@ func NewRouter(
 	healthChecker ports.HealthChecker,
 	metricsReg portsmetrics.MetricsRenderer,
 ) http.Handler {
-	return newRouter(cfg, stateProvider, healthChecker, metricsReg, nil, nil, nil)
+	return newRouter(cfg, stateProvider, healthChecker, metricsReg, nil, nil, nil, nil)
 }
 
-// NewRouterWithMembership constructs a router with membership, cluster-feature, node-drain, and cluster-backup routes.
+// NewRouterWithMembership constructs a router with membership, node drain, connection rebalance, and backup routes.
 func NewRouterWithMembership(
 	cfg ServerConfig,
 	stateProvider ports.StateProvider,
@@ -40,9 +40,10 @@ func NewRouterWithMembership(
 	metricsReg portsmetrics.MetricsRenderer,
 	membershipService MembershipUseCase,
 	drainService NodeDrainUseCase,
+	rebalanceService ConnectionRebalanceUseCase,
 	backupProvider ports.ClusterBackupProvider,
 ) http.Handler {
-	return newRouter(cfg, stateProvider, healthChecker, metricsReg, membershipService, drainService, backupProvider)
+	return newRouter(cfg, stateProvider, healthChecker, metricsReg, membershipService, drainService, rebalanceService, backupProvider)
 }
 
 func newRouter(
@@ -52,6 +53,7 @@ func newRouter(
 	metricsReg portsmetrics.MetricsRenderer,
 	membershipService MembershipUseCase,
 	drainService NodeDrainUseCase,
+	rebalanceService ConnectionRebalanceUseCase,
 	backupProvider ports.ClusterBackupProvider,
 ) http.Handler {
 
@@ -134,6 +136,23 @@ func newRouter(
 			}
 		})
 	}
+	if rebalanceService != nil {
+		rebalanceH := &connectionRebalanceHandler{service: rebalanceService}
+		mux.HandleFunc("/api/v1/cluster/rebalance", func(w http.ResponseWriter, r *http.Request) {
+			switch r.Method {
+			case http.MethodPost:
+				auth.RequireRole(RoleOperator, rebalanceH.Start)(w, r)
+			case http.MethodGet:
+				auth.RequireRole(RoleReadOnly, rebalanceH.Get)(w, r)
+			case http.MethodDelete:
+				auth.RequireRole(RoleOperator, rebalanceH.Cancel)(w, r)
+			default:
+				auth.RequireRole(RoleReadOnly, func(w http.ResponseWriter, r *http.Request) {
+					WriteError(w, r, http.StatusMethodNotAllowed, "method_not_allowed", "method not allowed", false, nil)
+				})(w, r)
+			}
+		})
+	}
 	if backupProvider != nil {
 		backupH := &clusterBackupHandler{provider: backupProvider}
 		mux.HandleFunc("/api/v1/cluster/backups", auth.RequireRole(RoleClusterAdmin, backupH.CreateBackup))
@@ -160,10 +179,10 @@ func NewServer(
 	healthChecker ports.HealthChecker,
 	metricsReg portsmetrics.MetricsRenderer,
 ) *http.Server {
-	return newServer(cfg, stateProvider, healthChecker, metricsReg, nil, nil, nil)
+	return newServer(cfg, stateProvider, healthChecker, metricsReg, nil, nil, nil, nil)
 }
 
-// NewServerWithMembership creates a management server with membership, node drain, and cluster-backup routes.
+// NewServerWithMembership creates a management server with membership, node drain, connection rebalance, and backup routes.
 func NewServerWithMembership(
 	cfg ServerConfig,
 	stateProvider ports.StateProvider,
@@ -171,9 +190,10 @@ func NewServerWithMembership(
 	metricsReg portsmetrics.MetricsRenderer,
 	membershipService MembershipUseCase,
 	drainService NodeDrainUseCase,
+	rebalanceService ConnectionRebalanceUseCase,
 	backupProvider ports.ClusterBackupProvider,
 ) *http.Server {
-	return newServer(cfg, stateProvider, healthChecker, metricsReg, membershipService, drainService, backupProvider)
+	return newServer(cfg, stateProvider, healthChecker, metricsReg, membershipService, drainService, rebalanceService, backupProvider)
 }
 
 func newServer(
@@ -183,6 +203,7 @@ func newServer(
 	metricsReg portsmetrics.MetricsRenderer,
 	membershipService MembershipUseCase,
 	drainService NodeDrainUseCase,
+	rebalanceService ConnectionRebalanceUseCase,
 	backupProvider ports.ClusterBackupProvider,
 ) *http.Server {
 
@@ -200,7 +221,7 @@ func newServer(
 		wTimeout = 10 * time.Second
 	}
 
-	handler := newRouter(cfg, stateProvider, healthChecker, metricsReg, membershipService, drainService, backupProvider)
+	handler := newRouter(cfg, stateProvider, healthChecker, metricsReg, membershipService, drainService, rebalanceService, backupProvider)
 
 	return &http.Server{
 		Addr:         addr,

@@ -19,9 +19,11 @@
 
 ## 1. 형식과 의미
 
-`CommandEnvelope`는 protobuf `proto3` schema major/minor와 payload 한 개를 담는다. `MembershipRecord`, `OwnershipChange`, `SubscriptionChange`, `DeliveryChange`, `RetainedChange`, `OfflineChange`, `NodeDrainChange`, `TenantQuotaChange`, `MemberProfileChange`, `FeatureActivation`, `SessionMetadataChange`를 지원한다. `MemberProfileChange`는 `member_id`, canonical `release_version`과 정렬된 `features`를 담는다. 변경 가능한 build profile field만 갱신한다. `FeatureActivation`은 feature token을 담고 모든 non-retired member가 광고할 때만 적용한다. `MemberIdentity`는 commit된 release/features profile을 담는다. `ReplicatedStateSnapshot.active_features`는 정렬된 feature 집합이다.
+`CommandEnvelope`는 protobuf `proto3` schema major/minor와 payload 한 개를 담는다. `MembershipRecord`, `OwnershipChange`, `SubscriptionChange`, `DeliveryChange`, `RetainedChange`, `OfflineChange`, `NodeDrainChange`, `TenantQuotaChange`, `MemberProfileChange`, `FeatureActivation`, `SessionMetadataChange`, `ConnectionRebalanceChange`를 지원한다. `MemberProfileChange`는 `member_id`, canonical `release_version`과 정렬된 `features`를 담는다. 변경 가능한 build profile field만 갱신한다. `FeatureActivation`은 feature token을 담고 모든 non-retired member가 광고할 때만 적용한다. `MemberIdentity`는 commit된 release/features profile을 담는다. `ReplicatedStateSnapshot.active_features`는 정렬된 feature 집합이다.
 
 Session metadata의 동작과 불변 조건은 [ADR-0025](../decisions/ADR-0025-replicated-session-metadata-and-owner-loss-recovery.md)와 [Cluster §4.3](../specs/cluster-session-and-delivery.md#43-session-metadata-복제와-owner-손실-복구)를 따른다. 실행 증거는 [§11.24](../specs/cluster-session-and-delivery.md#1124-session-metadata-복제와-owner-손실-복구-수용-매핑)에 있다. 선택 field `OwnershipChange.session`은 CONNECT acquisition 또는 transfer의 metadata를 담는다. `ACQUIRE`·`TRANSFER`에서만 유효하다. Ownership과 새 `CONNECTED` metadata를 같은 command에서 원자적으로 적용하고 이전 record와 pending Will을 대체한다. `session-metadata` 비활성 상태에서는 이 field를 생략해야 한다. `SessionMetadataChange`는 owner/epoch fencing을 적용하는 `DETACH`·`CLAIM_WILL`·`DISCARD` 전이다. Metadata를 담은 proposal과 record는 feature activation 뒤에만 쓴다. Build는 `session-metadata`를 광고하지만 activation 전에는 metadata payload를 제안하거나 저장하지 않는다. 비활성 cluster의 기존 동작과 bytes를 유지한다.
+
+`ConnectionRebalanceChange`는 `START`·`REPORT`·`FAIL`·`CANCEL`을 담는다. Command oneof 번호는 22, snapshot의 `connection_rebalance` 번호는 13이다. Active `connection-rebalance` feature 뒤에만 기록해야 한다. Snapshot의 connection rebalance record는 0개 또는 1개이며 `objectCount`에 1개로 센다. Participant는 NodeID 오름차순이다. 동작은 [ADR-0033](../decisions/ADR-0033-connection-rebalance-operation.md)과 [Cluster §9](../specs/cluster-session-and-delivery.md#9-rebalance)를 따른다.
 
 Snapshot의 `membership_history`는 각 전이가 commit된 정확한 `committed_index`를 저장한다. 제안 시에는 Raft entry index를 모르므로 command payload의 이 field는 0이어야 한다. Application은 apply 때 실제 index를 기록한다. Snapshot은 `0 < committed_index <= last_included_index`를 검증한다. 복구한 operation status는 snapshot 경계가 아니라 마지막 전이의 index를 보고한다.
 
@@ -57,6 +59,10 @@ Snapshot의 `lastIncludedIndex`는 Raft가 적용한 마지막 index와 같아�
 | Session metadata Will | 유효한 MQTT topic 1..65,535 byte; payload 최대 65,535 byte; QoS 0..2; principal은 Will이 있을 때만 허용 |
 | Session metadata principal | Subject·credential ID는 유효한 UTF-8 각각 1..1,024 byte; expiry 양수; 고유 role 최대 64개, 각각 UTF-8 1..256 byte |
 | Session metadata snapshot key | UTF-8 bytewise `(tenant_id, client_id)`로 정렬·고유; ownership row 필수; `record.epoch <= ownership.epoch`; active `session-metadata` 필수 |
+| Connection rebalance `maxDeviationConnections` | `1..1_000_000` |
+| Connection rebalance `connections` | `0..4_294_967_295` |
+| Connection rebalance `failure_code` | `1..64` byte ASCII token; FAILED에서만 허용 |
+| Connection rebalance snapshot | Record 0개 또는 1개; active `connection-rebalance` 필수; participant 최소 2개, NodeID 순증가 |
 
 한도를 바꾸려면 이 contract를 변경하고 vector를 추가해야 한다.
 
@@ -98,10 +104,10 @@ Deterministic serialization은 같은 값에서 같은 bytes를 만드는 규칙
 | `delivery_publish` | Producer command | Ownership과 같은 operation·tenant·client, PUBLISH, proposed time 1, topic `a`, payload `x`, QoS 1, target client `c` |
 | `empty_snapshot` | Producer snapshot | Schema `1.0`, index 1, count 0, 빈 state, 빈 bytes의 SHA-256 |
 | `command_ownership_unknown_field` | Reject | OwnershipChange 끝의 field 15 varint 1 (`78 01`), 길이 prefix 보정 |
-| `command_unknown_payload` | Reject | Schema major 1·ownership operation 뒤 field 22 빈 bytes (`b2 01 00`) |
+| `command_unknown_payload` | Reject | Schema major 1·ownership operation 뒤 field 23 빈 bytes (`ba 01 00`) |
 | `command_schema_minor_1` | Reject | Ownership command의 schema minor 1 |
 | `snapshot_record_unknown_field` | Reject | Index 3, ownership `{t,c,owner 1,epoch 1,committed 1}` 끝의 `78 01`; raw state로 digest·count 계산 |
-| `snapshot_unknown_collection` | Reject | 빈 state의 field 13 빈 bytes (`6a 00`); raw state digest, count 0 |
+| `snapshot_unknown_collection` | Reject | 빈 state의 field 14 빈 bytes (`72 00`); raw state digest `96229c0a…`, count 0 |
 | `snapshot_schema_minor_1` | Reject | Empty snapshot의 schema minor 1 |
 
 `baseline-schema-1.0.binpb`는 마지막으로 호환을 약속한 schema descriptor다. 이번에는 현재 schema로 만든다. 실제 release를 게시할 때만 그 release의 deterministic descriptor로 교체한다. Proto 파일에는 import가 없다. 게시 release별 process matrix는 tasks §1.2의 별도 gate다.

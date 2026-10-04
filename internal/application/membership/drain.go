@@ -17,6 +17,9 @@ func (machine *StateMachine) applyNodeDrain(index uint64, change NodeDrainChange
 		if member.Phase != MemberPhaseVoter {
 			return conflictResult(index, ConflictPhase)
 		}
+		if machine.connectionRebalance != nil && machine.connectionRebalance.Phase.Active() {
+			return conflictResult(index, ConflictConnectionRebalanceInProgress)
+		}
 		if exists && current.Phase.Active() {
 			return conflictResult(index, ConflictNodeDrainActive)
 		}

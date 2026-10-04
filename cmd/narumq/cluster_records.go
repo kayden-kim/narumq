@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
+	"narumq/internal/domain/connrebalance"
 	"narumq/internal/domain/nodedrain"
 	"slices"
 
@@ -134,6 +135,24 @@ func encodeMembershipCommand(command membership.CommandDTO) ([]byte, error) {
 			Progress:    nodeDrainProgressToRecord(command.NodeDrain.Progress),
 			FailureCode: command.NodeDrain.FailureCode, BlockingReason: command.NodeDrain.BlockingReason,
 			ProposedAtUnixMillis: command.NodeDrain.ProposedAtUnixMillis,
+		}}
+	}
+	if command.ConnectionRebalance != nil {
+		payloadCount++
+		action, err := rebalanceActionToRecord(command.ConnectionRebalance.Action)
+		if err != nil {
+			return nil, err
+		}
+		wire.Payload = &records.CommandEnvelope_ConnectionRebalance{ConnectionRebalance: &records.ConnectionRebalanceChange{
+			Action: action, RebalanceOperationId: command.ConnectionRebalance.RebalanceOperationID,
+			IdempotencyKey: command.ConnectionRebalance.IdempotencyKey, ServerReference: command.ConnectionRebalance.ServerReference,
+			MaxDeviationConnections:            command.ConnectionRebalance.MaxDeviationConnections,
+			ConnectionRatePerSecond:            command.ConnectionRebalance.ConnectionRatePerSecond,
+			LoadBalancerPropagationDelayMillis: command.ConnectionRebalance.LoadBalancerPropagationDelayMillis,
+			TimeoutMillis:                      command.ConnectionRebalance.TimeoutMillis, NodeId: command.ConnectionRebalance.NodeID,
+			Connections: command.ConnectionRebalance.Connections, SessionsTransferred: command.ConnectionRebalance.SessionsTransferred,
+			Shedding: command.ConnectionRebalance.Shedding, FailureCode: command.ConnectionRebalance.FailureCode,
+			ProposedAtUnixMillis: command.ConnectionRebalance.ProposedAtUnixMillis,
 		}}
 	}
 	if command.TenantQuota != nil {
@@ -294,6 +313,20 @@ func decodeMembershipCommand(data []byte) (membership.CommandDTO, error) {
 			FailureCode: value.GetFailureCode(), BlockingReason: value.GetBlockingReason(),
 			ProposedAtUnixMillis: value.GetProposedAtUnixMillis(),
 		}
+	case *records.CommandEnvelope_ConnectionRebalance:
+		value := payload.ConnectionRebalance
+		action, err := rebalanceActionFromRecord(value.GetAction())
+		if err != nil {
+			return membership.CommandDTO{}, err
+		}
+		command.ConnectionRebalance = &membership.ConnectionRebalanceChangeDTO{
+			Action: action, RebalanceOperationID: value.GetRebalanceOperationId(),
+			IdempotencyKey: value.GetIdempotencyKey(), ServerReference: value.GetServerReference(),
+			MaxDeviationConnections: value.GetMaxDeviationConnections(), ConnectionRatePerSecond: value.GetConnectionRatePerSecond(),
+			LoadBalancerPropagationDelayMillis: value.GetLoadBalancerPropagationDelayMillis(), TimeoutMillis: value.GetTimeoutMillis(),
+			NodeID: value.GetNodeId(), Connections: value.GetConnections(), SessionsTransferred: value.GetSessionsTransferred(),
+			Shedding: value.GetShedding(), FailureCode: value.GetFailureCode(), ProposedAtUnixMillis: value.GetProposedAtUnixMillis(),
+		}
 	case *records.CommandEnvelope_TenantQuota:
 		profile := tenantQuotaProfileFromRecord(payload.TenantQuota.GetProfile())
 		if profile == nil {
@@ -438,6 +471,13 @@ func encodeMembershipSnapshot(snapshot membership.SnapshotDTO) ([]byte, error) {
 			BlockingReason: drain.BlockingReason, CommittedIndex: drain.CommittedIndex,
 		})
 	}
+	if snapshot.ConnectionRebalance != nil {
+		value, conversionErr := rebalanceStateToRecord(*snapshot.ConnectionRebalance)
+		if conversionErr != nil {
+			return nil, conversionErr
+		}
+		state.ConnectionRebalance = value
+	}
 	state.TenantQuotaProfile = tenantQuotaProfileToRecord(snapshot.TenantQuotaProfile)
 	for _, metadata := range snapshot.SessionMetadata {
 		value, conversionErr := sessionMetadataStateToRecord(metadata)
@@ -448,7 +488,7 @@ func encodeMembershipSnapshot(snapshot membership.SnapshotDTO) ([]byte, error) {
 	}
 	state.ActiveFeatures = slices.Clone(snapshot.ActiveFeatures)
 	quotaProfileObjectCount := membershipQuotaProfileObjectCount(snapshot.TenantQuotaProfile)
-	objectCount := uint64(len(snapshot.Members) + len(snapshot.Ownerships) + len(snapshot.Subscriptions) + len(snapshot.DeliverySessions) + deliveryEntriesCount + len(snapshot.MembershipHistory) + len(snapshot.Retained) + len(snapshot.OfflineSessions) + offlineMessagesCount + len(snapshot.NodeDrains) + len(snapshot.ActiveFeatures) + len(snapshot.SessionMetadata) + quotaProfileObjectCount)
+	objectCount := uint64(len(snapshot.Members) + len(snapshot.Ownerships) + len(snapshot.Subscriptions) + len(snapshot.DeliverySessions) + deliveryEntriesCount + len(snapshot.MembershipHistory) + len(snapshot.Retained) + len(snapshot.OfflineSessions) + offlineMessagesCount + len(snapshot.NodeDrains) + len(snapshot.ActiveFeatures) + len(snapshot.SessionMetadata) + quotaProfileObjectCount + rebalanceStateObjectCount(snapshot.ConnectionRebalance))
 	if snapshot.ObjectCount != objectCount {
 		return nil, errors.New("application snapshot object count does not match its contents")
 	}
@@ -567,6 +607,13 @@ func decodeMembershipSnapshot(data []byte) (membership.SnapshotDTO, error) {
 			Progress: nodeDrainProgressFromRecord(drain.GetProgress()), FailureCode: drain.GetFailureCode(),
 			BlockingReason: drain.GetBlockingReason(), CommittedIndex: drain.GetCommittedIndex(),
 		})
+	}
+	if state.GetConnectionRebalance() != nil {
+		value, conversionErr := rebalanceStateFromRecord(state.GetConnectionRebalance())
+		if conversionErr != nil {
+			return membership.SnapshotDTO{}, conversionErr
+		}
+		snapshot.ConnectionRebalance = &value
 	}
 	for _, metadata := range state.GetSessionMetadata() {
 		value, conversionErr := sessionMetadataStateFromRecord(metadata)
@@ -1080,6 +1127,75 @@ func deliverySessionFromRecord(session *records.DeliverySessionState) (membershi
 		})
 	}
 	return value, nil
+}
+func rebalanceActionToRecord(action membership.ConnectionRebalanceAction) (records.ConnectionRebalanceAction, error) {
+	if action < membership.ConnectionRebalanceActionStart || action > membership.ConnectionRebalanceActionCancel {
+		return 0, fmt.Errorf("unsupported connection rebalance action %d", action)
+	}
+	return records.ConnectionRebalanceAction(action), nil
+}
+
+func rebalanceActionFromRecord(action records.ConnectionRebalanceAction) (membership.ConnectionRebalanceAction, error) {
+	if action < records.ConnectionRebalanceAction_CONNECTION_REBALANCE_ACTION_START ||
+		action > records.ConnectionRebalanceAction_CONNECTION_REBALANCE_ACTION_CANCEL {
+		return 0, fmt.Errorf("unsupported connection rebalance action %d", action)
+	}
+	return membership.ConnectionRebalanceAction(action), nil
+}
+func rebalanceStateToRecord(state membership.ConnectionRebalanceStateDTO) (*records.ConnectionRebalanceState, error) {
+	if !state.Phase.Valid() {
+		return nil, fmt.Errorf("unsupported connection rebalance phase %d", state.Phase)
+	}
+	participants := make([]*records.ConnectionRebalanceReport, 0, len(state.Participants))
+	for _, participant := range state.Participants {
+		participants = append(participants, &records.ConnectionRebalanceReport{
+			NodeId: participant.NodeID, Connections: participant.Connections,
+			SessionsTransferred: participant.SessionsTransferred, Shedding: participant.Shedding,
+			ReportedAtUnixMillis: participant.ReportedAtUnixMillis,
+		})
+	}
+	return &records.ConnectionRebalanceState{
+		RebalanceOperationId: state.RebalanceOperationID, IdempotencyKey: state.IdempotencyKey,
+		Phase: records.ConnectionRebalancePhase(state.Phase), ServerReference: state.ServerReference,
+		MaxDeviationConnections: state.MaxDeviationConnections, ConnectionRatePerSecond: state.ConnectionRatePerSecond,
+		LoadBalancerPropagationDelayMillis: state.LoadBalancerPropagationDelayMillis, TimeoutMillis: state.TimeoutMillis,
+		StartedAtUnixMillis: state.StartedAtUnixMillis, DeadlineAtUnixMillis: state.DeadlineAtUnixMillis,
+		FinishedAtUnixMillis: state.FinishedAtUnixMillis, Participants: participants,
+		FailureCode: state.FailureCode, CommittedIndex: state.CommittedIndex,
+	}, nil
+}
+func rebalanceStateFromRecord(state *records.ConnectionRebalanceState) (membership.ConnectionRebalanceStateDTO, error) {
+	if state == nil {
+		return membership.ConnectionRebalanceStateDTO{}, errors.New("connection rebalance state is required")
+	}
+	phase := connrebalance.Phase(state.GetPhase())
+	if !phase.Valid() {
+		return membership.ConnectionRebalanceStateDTO{}, fmt.Errorf("unsupported connection rebalance phase %d", phase)
+	}
+	value := membership.ConnectionRebalanceStateDTO{
+		RebalanceOperationID: state.GetRebalanceOperationId(), IdempotencyKey: state.GetIdempotencyKey(), Phase: phase,
+		ServerReference: state.GetServerReference(), MaxDeviationConnections: state.GetMaxDeviationConnections(),
+		ConnectionRatePerSecond:            state.GetConnectionRatePerSecond(),
+		LoadBalancerPropagationDelayMillis: state.GetLoadBalancerPropagationDelayMillis(), TimeoutMillis: state.GetTimeoutMillis(),
+		StartedAtUnixMillis: state.GetStartedAtUnixMillis(), DeadlineAtUnixMillis: state.GetDeadlineAtUnixMillis(),
+		FinishedAtUnixMillis: state.GetFinishedAtUnixMillis(), FailureCode: state.GetFailureCode(),
+		CommittedIndex: state.GetCommittedIndex(),
+	}
+	for _, participant := range state.GetParticipants() {
+		value.Participants = append(value.Participants, membership.ConnectionRebalanceReportDTO{
+			NodeID: participant.GetNodeId(), Connections: participant.GetConnections(),
+			SessionsTransferred: participant.GetSessionsTransferred(), Shedding: participant.GetShedding(),
+			ReportedAtUnixMillis: participant.GetReportedAtUnixMillis(),
+		})
+	}
+	return value, nil
+}
+
+func rebalanceStateObjectCount(state *membership.ConnectionRebalanceStateDTO) int {
+	if state == nil {
+		return 0
+	}
+	return 1
 }
 func nodeDrainActionToRecord(action membership.NodeDrainAction) (records.NodeDrainAction, error) {
 	if action < membership.NodeDrainActionStart || action > membership.NodeDrainActionClear {

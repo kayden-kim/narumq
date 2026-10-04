@@ -117,6 +117,8 @@ func (service *DrainService) StartNodeDrain(ctx context.Context, request StartNo
 				return service.replayOrConflict(latest, request)
 			}
 			return NodeDrainOperationDTO{}, newServiceError(ServiceErrorOperationConflict, false)
+		case ConflictConnectionRebalanceInProgress:
+			return NodeDrainOperationDTO{}, newServiceError(ServiceErrorConnectionRebalanceInProgress, true)
 		case ConflictNodeDrainInProgress:
 			return NodeDrainOperationDTO{}, newServiceError(ServiceErrorNodeDrainInProgress, true)
 		case ConflictMembershipInProgress:

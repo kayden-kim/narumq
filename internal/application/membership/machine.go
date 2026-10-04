@@ -43,6 +43,7 @@ type StateMachine struct {
 	tenantQuotaByTenant map[string]TenantStorageQuotaDTO
 	activeFeatures      []string
 	nodeDrains          map[uint64]NodeDrainStateDTO
+	connectionRebalance *ConnectionRebalanceStateDTO
 	sessionMetadata     map[sessionKey]SessionMetadataStateDTO
 	sessionWillBytes    int
 }
@@ -145,6 +146,8 @@ func (machine *StateMachine) Apply(index uint64, command CommandDTO) (ApplyResul
 		return machine.applyFeatureActivation(index, *command.FeatureActivation), nil
 	case command.SessionMetadata != nil:
 		return machine.applySessionMetadata(index, *command.SessionMetadata), nil
+	case command.ConnectionRebalance != nil:
+		return machine.applyConnectionRebalance(index, *command.ConnectionRebalance), nil
 	default:
 		// validateCommand rejects an empty discriminated union before advancing.
 		return result, nil

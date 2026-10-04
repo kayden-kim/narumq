@@ -239,6 +239,7 @@ func runClusterMode(ctx context.Context, config clusterConfigFile, logger *slog.
 	}
 	runtime.releaseProfile = &clusterReleaseProfileController{runtime: runtime}
 	runtime.drain = &clusterDrainController{runtime: runtime}
+	runtime.rebalance = &clusterRebalanceController{runtime: runtime}
 	runtime.sessionRecovery = &clusterSessionRecoveryController{
 		runtime: runtime, keys: make(chan clusterSessionRecoveryKey, clusterSessionRecoveryQueueCapacity),
 	}
@@ -365,7 +366,7 @@ func runClusterMode(ctx context.Context, config clusterConfigFile, logger *slog.
 			ControlQueueCapacity: clusterDefaultControlQueueCapacity, ClientCertificateExtractor: tlsadapter.ExtractVerifiedClientCertificateDTO,
 			Policy: tcpPolicy, Metrics: metricsRegistry, ClusterMode: true,
 			LocalMemberID: config.NodeID, ClusterReady: runtime.clusterReady,
-			ClusterAdmissionOpen:   runtime.drain.admissionOpen,
+			ClusterAdmissionOpen:   runtime.clusterAdmissionOpen,
 			ClusterProjectionReady: runtime.clusterProjectionReady,
 		}, decoder, encoder, connections, subscriptions, publications, deliveries, logger)
 		if err != nil {
@@ -390,6 +391,10 @@ func runClusterMode(ctx context.Context, config clusterConfigFile, logger *slog.
 	if err != nil {
 		return fmt.Errorf("create node drain service: %w", err)
 	}
+	rebalanceService, err := membership.NewRebalanceService(runtime, systemClock)
+	if err != nil {
+		return fmt.Errorf("create connection rebalance service: %w", err)
+	}
 	baseManagement := appmgmt.NewService(appmgmt.ServiceConfig{
 		ClusterID: config.ClusterID, NodeID: strconv.FormatUint(config.NodeID, 10), ReleaseVersion: config.ReleaseVersion,
 	}, sessions, runtime.routes, retainedRepository, metricsRegistry)
@@ -408,7 +413,7 @@ func runClusterMode(ctx context.Context, config clusterConfigFile, logger *slog.
 	managementServer := adaptershttp.NewServerWithMembership(adaptershttp.ServerConfig{
 		ListenAddr: managementListener.Addr().String(), AuthToken: adminToken,
 		AuthTokenRole: adaptershttp.RoleClusterAdmin, AllowAnonymousProbes: true,
-	}, stateProvider, healthChecker, metricsRegistry, membershipService, drainService, runtime)
+	}, stateProvider, healthChecker, metricsRegistry, membershipService, drainService, rebalanceService, runtime)
 	return runtime.serve(ctx, mqttServer, managementServer, managementListener)
 }
 
@@ -455,6 +460,7 @@ type clusterRuntime struct {
 	durableAttachments      map[routing.SessionID]clusterDurableAttachment
 	storage                 *clusterStorageMonitor
 	drain                   *clusterDrainController
+	rebalance               *clusterRebalanceController
 	tenantQuotaController   *clusterTenantQuotaController
 	publishPressure         *clusterPublishPressureController
 	releaseProfile          *clusterReleaseProfileController
@@ -585,6 +591,7 @@ func (runtime *clusterRuntime) serve(parent context.Context, mqttServer *tcpadap
 	runtime.publishPressure.start(ctx)
 	runtime.releaseProfile.start(ctx)
 	runtime.drain.start(ctx)
+	runtime.rebalance.start(ctx)
 	runtime.sessionRecovery.start(ctx)
 
 	var admissionDone chan error
@@ -673,6 +680,7 @@ func (runtime *clusterRuntime) serve(parent context.Context, mqttServer *tcpadap
 		}
 	}
 	runtime.drain.stopAndWait()
+	runtime.rebalance.stopAndWait()
 	runtime.sessionRecovery.stopAndWait()
 	runtime.tenantQuotaController.stopAndWait()
 	runtime.publishPressure.stopAndWait()
@@ -1328,8 +1336,10 @@ func (runtime *clusterRuntime) applyBatch(batch raftadapter.BatchDTO, proposals 
 			}
 			if runtime.mqttServer != nil {
 				runtime.mqttServer.RecordCommittedOwnership(*result.Ownership)
-				if runtime.drain != nil && runtime.drain.admissionClosed.Load() && result.Ownership.OwnerNodeID != runtime.config.NodeID {
+				if runtime.drain != nil && !runtime.drain.admissionOpen() && result.Ownership.OwnerNodeID != runtime.config.NodeID {
 					runtime.mqttServer.CloseSessionForDrain(sessionID, runtime.drain.currentServerReference())
+				} else if runtime.rebalance != nil && !runtime.rebalance.admissionOpen() && result.Ownership.OwnerNodeID != runtime.config.NodeID {
+					runtime.mqttServer.CloseSessionForDrain(sessionID, runtime.rebalance.currentServerReference())
 				} else {
 					runtime.mqttServer.CloseSessionForTakeover(sessionID)
 				}
@@ -1369,6 +1379,9 @@ func (runtime *clusterRuntime) applyBatch(batch raftadapter.BatchDTO, proposals 
 	}
 	if runtime.drain != nil {
 		runtime.drain.sync()
+	}
+	if runtime.rebalance != nil {
+		runtime.rebalance.sync()
 	}
 	return runtime.reconcileCommittedPeers()
 }
@@ -1532,8 +1545,12 @@ func (runtime *clusterRuntime) resolveCommitReads(reads map[string]clusterReadWa
 		} else if clusterCommandRequiresSessionMetadata(pending.command) &&
 			!slices.Contains(runtime.machine.ActiveFeatures(), membership.SessionMetadataFeature) {
 			stage.err = errClusterSessionMetadataInactive
+		} else if pending.command.ConnectionRebalance != nil &&
+			!slices.Contains(runtime.machine.ActiveFeatures(), membership.ConnectionRebalanceFeature) {
+			stage.err = errClusterConnectionRebalanceInactive
 		} else if (pending.command.Retained != nil || pending.command.Offline != nil ||
-			pending.command.Delivery != nil || pending.command.NodeDrain != nil || pending.command.TenantQuota != nil) &&
+			pending.command.Delivery != nil || pending.command.NodeDrain != nil || pending.command.TenantQuota != nil ||
+			pending.command.ConnectionRebalance != nil) &&
 			!clusterProfilesCompatible(runtime.machine.Members(), runtime.config) {
 			stage.err = errClusterProfileCompatibility
 		} else {
@@ -2719,6 +2736,14 @@ func (runtime *clusterRuntime) GetNodeDrain(ctx context.Context, memberID uint64
 	state, found := runtime.machine.GetNodeDrain(memberID)
 	return state, found, nil
 }
+
+func (runtime *clusterRuntime) GetConnectionRebalance(ctx context.Context) (membership.ConnectionRebalanceStateDTO, bool, error) {
+	if err := runtime.readBarrier(ctx); err != nil {
+		return membership.ConnectionRebalanceStateDTO{}, false, classifyClusterPortError(err)
+	}
+	state, found := runtime.machine.ConnectionRebalance()
+	return state, found, nil
+}
 func (runtime *clusterRuntime) AcquireOwnership(ctx context.Context, tenantID, clientID string, ownerNodeID uint64) (uint64, error) {
 	epoch, _, err := runtime.acquireOwnership(ctx, tenantID, clientID, ownerNodeID, nil)
 	return epoch, err
@@ -3227,6 +3252,10 @@ func (checker *clusterHealthChecker) CheckReadiness(ctx context.Context) (manage
 	}
 	if checker.runtime.drain != nil && !checker.runtime.drain.admissionOpen() {
 		reason := "node drain record is active"
+		return managementports.HealthStatusNotReady, &reason
+	}
+	if checker.runtime.rebalance != nil && !checker.runtime.rebalance.admissionOpen() {
+		reason := "connection rebalance shedding"
 		return managementports.HealthStatusNotReady, &reason
 	}
 	if checker.runtime.managementState.NodeState() == managementports.NodeStateDraining ||

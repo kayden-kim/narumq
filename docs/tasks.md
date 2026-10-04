@@ -39,7 +39,7 @@
 
 ### 1.3 Cluster 기능과 알려진 구현 한계
 
-- [ ] **미구현 · P1** — 연결·session rebalance(CLU-13): [Cluster §9](specs/cluster-session-and-delivery.md#9-rebalance)와 [PRD §9.2](requirements/PRD.md#92-클러스터와-세션)를 따른다. 현재 planned removal/drain의 ownership 인계는 있지만 증설 뒤 부하 편차를 줄이는 rebalance는 없다. 편차 기준과 이동 속도를 정하고, 증설 뒤 연결 수 수렴·새 epoch fencing·committed delivery state의 ATTACH 재개를 검증한다. P0 수용 범위와 분리한다.
+이 절의 연결·session rebalance(CLU-13)는 §2.4의 수동 일회성 operation 범위에서 완료했다. 별도 production 성능 수용은 완료 범위에 포함하지 않는다.
 
 ### 1.4 Drain 정책·관측과 production 배포
 
@@ -94,6 +94,7 @@
 - [x] 계획 drain·planned removal의 표준 Will 처리와 사유별 metric(DEP-07·DEP-12): [ADR-0028](decisions/ADR-0028-planned-handoff-will-and-reason-metric.md), [Drain §5·§10](specs/drain-and-rolling-update.md#10-broker-drain-수용-시험-매핑). `session-metadata` 활성 상태에서 후계 recovery와 recovery 전 재접속에 표준 Will 규칙을 적용한다. 고정 6개 reason을 집계하며 3-node 연속 rolling에서 `unexpected_supported_client=0`, 재접속 억제 합계 3을 확인했다. 비활성 cluster·N-1 후계의 기존 억제와 복원 timer의 `unplanned_failure` 분류는 결정한 한계다. External rollout·연속 100회 rolling·SDK gate는 §1.2에 남긴다.
 - [x] Detach 전환 중 forward QoS 0과 DETACH commit 전 owner crash의 유실 경계: [ADR-0027](decisions/ADR-0027-detach-forward-and-owner-crash-qos0-boundary.md), [§11.26](specs/cluster-session-and-delivery.md#1126-detach-전환-forward연결-중-owner-crash-유실-경계-수용-매핑). 보호는 DETACH commit부터이며 그 전의 local queue와 전환 중 forward는 at-most-once로 유실될 수 있다.
 - [x] Publish backpressure admission(CLU-12): [ADR-0030](decisions/ADR-0030-publish-backpressure-admission.md), [Cluster §4.5](specs/cluster-session-and-delivery.md#45-publish-backpressure-admission), [§11.28](specs/cluster-session-and-delivery.md#1128-publish-backpressure-수용-매핑). Local commit lag·disk pressure와 전역·tenant delivery capacity를 새 저장 전에 검사한다. MQTT 5는 `0x97`, MQTT 3.1.1은 종료로 거절한다. Unit·실제 process 포화/회복·기존 process/fault 회귀·전체 local gate·FUSE·ext4·BP-03 smoke를 통과했다. Session 포화와 apply 경합의 `Saturated`, RELEASE·Will 진행, 다른 node의 disk 압력 비전파는 결정한 한계다. Production storage는 §1.1에 남긴다.
+- [x] 연결·session rebalance(CLU-13, P1): [ADR-0033](decisions/ADR-0033-connection-rebalance-operation.md), [Cluster §9](specs/cluster-session-and-delivery.md#9-rebalance), [§11.31](specs/cluster-session-and-delivery.md#1131-연결-rebalance-수용-매핑). `connection-rebalance` 활성화 뒤 수동 일회성 operation으로 연결 수를 복제 보고하고 절대 편차 안으로 수렴한다. 취소·readiness·MQTT redirect·새 epoch ATTACH와 QoS 1 재개·drain 회귀·전체 local gate를 통과했다. START 때 participant 고정, LB 재접속 경로 비통제와 production 성능 미검증은 범위의 한계다.
 
 ### 2.5 Durable ACK와 성능 smoke
 

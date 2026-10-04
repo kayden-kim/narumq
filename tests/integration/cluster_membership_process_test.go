@@ -258,6 +258,11 @@ func newClusterMembershipProcessFixture(t *testing.T, nodeCount int, buildTags s
       "drain-will-expire",
       "drain-will-safe",
       "drain-will-normal",
+      "rb-v5-00", "rb-v5-01", "rb-v5-02", "rb-v5-03",
+      "rb-v5-04", "rb-v5-05", "rb-v5-06", "rb-v5-07",
+      "rb-v5-08", "rb-v5-09", "rb-v5-10", "rb-v5-11",
+      "rb-v5-12", "rb-v5-13", "rb-v5-14", "rb-v5-15",
+      "rb-v3-00", "rb-v3-01", "rb-pub", "rb-probe", "rb-rejected",
       "archive-downgrade-retained"
     ],
     "roles": ["client"]
@@ -478,6 +483,18 @@ func newClusterMembershipProcessFixture(t *testing.T, nodeCount int, buildTags s
     "effect": "allow",
     "action": "subscribe",
     "topicFilter": "drain/#"
+  }, {
+    "tenantId": "acceptance",
+    "role": "client",
+    "effect": "allow",
+    "action": "publish",
+    "topicFilter": "rebalance/#"
+  }, {
+    "tenantId": "acceptance",
+    "role": "client",
+    "effect": "allow",
+    "action": "subscribe",
+    "topicFilter": "rebalance/#"
   }, {
     "tenantId": "acceptance",
     "role": "client",

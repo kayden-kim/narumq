@@ -68,7 +68,7 @@ func (stub *membershipServiceStub) ActivateFeature(_ context.Context, feature st
 func newMembershipHTTPTestHandler(service MembershipUseCase, role Role) http.Handler {
 	return NewRouterWithMembership(
 		ServerConfig{AuthToken: "cluster-secret", AuthTokenRole: role},
-		&mockStateProvider{}, nil, nil, service, nil, nil,
+		&mockStateProvider{}, nil, nil, service, nil, nil, nil,
 	)
 }
 

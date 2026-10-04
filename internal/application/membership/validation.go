@@ -75,6 +75,9 @@ func validateCommand(command CommandDTO) error {
 	if command.SessionMetadata != nil {
 		payloadCount++
 	}
+	if command.ConnectionRebalance != nil {
+		payloadCount++
+	}
 	if payloadCount != 1 {
 		return ErrInvalidCommand
 	}
@@ -121,6 +124,10 @@ func validateCommand(command CommandDTO) error {
 		}
 	case command.SessionMetadata != nil:
 		if validateSessionMetadataChange(*command.SessionMetadata) != nil {
+			return ErrInvalidCommand
+		}
+	case command.ConnectionRebalance != nil:
+		if validateConnectionRebalanceChange(*command.ConnectionRebalance) != nil {
 			return ErrInvalidCommand
 		}
 	}
@@ -360,6 +367,9 @@ func validSnapshot(snapshot SnapshotDTO) error {
 		deliveryObjects += len(session.Messages) + len(session.Inbound)
 	}
 	count := len(snapshot.Members) + len(snapshot.Ownerships) + len(snapshot.Subscriptions) + deliveryObjects + len(snapshot.MembershipHistory) + len(snapshot.Retained) + len(snapshot.OfflineSessions) + offlineMessagesCount + len(snapshot.NodeDrains) + len(snapshot.ActiveFeatures) + len(snapshot.SessionMetadata) + tenantQuotaObjectCount(snapshot.TenantQuotaProfile)
+	if snapshot.ConnectionRebalance != nil {
+		count++
+	}
 	if count > maxSnapshotEntries || snapshot.ObjectCount != uint64(count) || (count > 0 && snapshot.LastIncludedIndex == 0) || len(snapshot.Retained) > MaxRetainedMessages {
 		return ErrInvalidSnapshot
 	}
@@ -395,6 +405,21 @@ func validSnapshot(snapshot SnapshotDTO) error {
 			if activeDrains > 1 {
 				return ErrInvalidSnapshot
 			}
+		}
+	}
+	if snapshot.ConnectionRebalance != nil {
+		if validateConnectionRebalanceState(*snapshot.ConnectionRebalance) != nil || snapshot.ConnectionRebalance.CommittedIndex > snapshot.LastIncludedIndex {
+			return ErrInvalidSnapshot
+		}
+		active := false
+		for _, feature := range snapshot.ActiveFeatures {
+			if feature == ConnectionRebalanceFeature {
+				active = true
+				break
+			}
+		}
+		if !active {
+			return ErrInvalidSnapshot
 		}
 	}
 	ownershipEpochs := make(map[sessionKey]uint64, len(snapshot.Ownerships))

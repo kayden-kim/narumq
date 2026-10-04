@@ -754,6 +754,116 @@ func (SessionWillDisposition) EnumDescriptor() ([]byte, []int) {
 	return file_docs_contracts_replicated_state_v1_proto_rawDescGZIP(), []int{12}
 }
 
+type ConnectionRebalanceAction int32
+
+const (
+	ConnectionRebalanceAction_CONNECTION_REBALANCE_ACTION_UNSPECIFIED ConnectionRebalanceAction = 0
+	ConnectionRebalanceAction_CONNECTION_REBALANCE_ACTION_START       ConnectionRebalanceAction = 1
+	ConnectionRebalanceAction_CONNECTION_REBALANCE_ACTION_REPORT      ConnectionRebalanceAction = 2
+	ConnectionRebalanceAction_CONNECTION_REBALANCE_ACTION_FAIL        ConnectionRebalanceAction = 3
+	ConnectionRebalanceAction_CONNECTION_REBALANCE_ACTION_CANCEL      ConnectionRebalanceAction = 4
+)
+
+// Enum value maps for ConnectionRebalanceAction.
+var (
+	ConnectionRebalanceAction_name = map[int32]string{
+		0: "CONNECTION_REBALANCE_ACTION_UNSPECIFIED",
+		1: "CONNECTION_REBALANCE_ACTION_START",
+		2: "CONNECTION_REBALANCE_ACTION_REPORT",
+		3: "CONNECTION_REBALANCE_ACTION_FAIL",
+		4: "CONNECTION_REBALANCE_ACTION_CANCEL",
+	}
+	ConnectionRebalanceAction_value = map[string]int32{
+		"CONNECTION_REBALANCE_ACTION_UNSPECIFIED": 0,
+		"CONNECTION_REBALANCE_ACTION_START":       1,
+		"CONNECTION_REBALANCE_ACTION_REPORT":      2,
+		"CONNECTION_REBALANCE_ACTION_FAIL":        3,
+		"CONNECTION_REBALANCE_ACTION_CANCEL":      4,
+	}
+)
+
+func (x ConnectionRebalanceAction) Enum() *ConnectionRebalanceAction {
+	p := new(ConnectionRebalanceAction)
+	*p = x
+	return p
+}
+
+func (x ConnectionRebalanceAction) String() string {
+	return protoimpl.X.EnumStringOf(x.Descriptor(), protoreflect.EnumNumber(x))
+}
+
+func (ConnectionRebalanceAction) Descriptor() protoreflect.EnumDescriptor {
+	return file_docs_contracts_replicated_state_v1_proto_enumTypes[13].Descriptor()
+}
+
+func (ConnectionRebalanceAction) Type() protoreflect.EnumType {
+	return &file_docs_contracts_replicated_state_v1_proto_enumTypes[13]
+}
+
+func (x ConnectionRebalanceAction) Number() protoreflect.EnumNumber {
+	return protoreflect.EnumNumber(x)
+}
+
+// Deprecated: Use ConnectionRebalanceAction.Descriptor instead.
+func (ConnectionRebalanceAction) EnumDescriptor() ([]byte, []int) {
+	return file_docs_contracts_replicated_state_v1_proto_rawDescGZIP(), []int{13}
+}
+
+type ConnectionRebalancePhase int32
+
+const (
+	ConnectionRebalancePhase_CONNECTION_REBALANCE_PHASE_UNSPECIFIED ConnectionRebalancePhase = 0
+	ConnectionRebalancePhase_CONNECTION_REBALANCE_PHASE_RUNNING     ConnectionRebalancePhase = 1
+	ConnectionRebalancePhase_CONNECTION_REBALANCE_PHASE_COMPLETED   ConnectionRebalancePhase = 2
+	ConnectionRebalancePhase_CONNECTION_REBALANCE_PHASE_FAILED      ConnectionRebalancePhase = 3
+	ConnectionRebalancePhase_CONNECTION_REBALANCE_PHASE_CANCELLED   ConnectionRebalancePhase = 4
+)
+
+// Enum value maps for ConnectionRebalancePhase.
+var (
+	ConnectionRebalancePhase_name = map[int32]string{
+		0: "CONNECTION_REBALANCE_PHASE_UNSPECIFIED",
+		1: "CONNECTION_REBALANCE_PHASE_RUNNING",
+		2: "CONNECTION_REBALANCE_PHASE_COMPLETED",
+		3: "CONNECTION_REBALANCE_PHASE_FAILED",
+		4: "CONNECTION_REBALANCE_PHASE_CANCELLED",
+	}
+	ConnectionRebalancePhase_value = map[string]int32{
+		"CONNECTION_REBALANCE_PHASE_UNSPECIFIED": 0,
+		"CONNECTION_REBALANCE_PHASE_RUNNING":     1,
+		"CONNECTION_REBALANCE_PHASE_COMPLETED":   2,
+		"CONNECTION_REBALANCE_PHASE_FAILED":      3,
+		"CONNECTION_REBALANCE_PHASE_CANCELLED":   4,
+	}
+)
+
+func (x ConnectionRebalancePhase) Enum() *ConnectionRebalancePhase {
+	p := new(ConnectionRebalancePhase)
+	*p = x
+	return p
+}
+
+func (x ConnectionRebalancePhase) String() string {
+	return protoimpl.X.EnumStringOf(x.Descriptor(), protoreflect.EnumNumber(x))
+}
+
+func (ConnectionRebalancePhase) Descriptor() protoreflect.EnumDescriptor {
+	return file_docs_contracts_replicated_state_v1_proto_enumTypes[14].Descriptor()
+}
+
+func (ConnectionRebalancePhase) Type() protoreflect.EnumType {
+	return &file_docs_contracts_replicated_state_v1_proto_enumTypes[14]
+}
+
+func (x ConnectionRebalancePhase) Number() protoreflect.EnumNumber {
+	return protoreflect.EnumNumber(x)
+}
+
+// Deprecated: Use ConnectionRebalancePhase.Descriptor instead.
+func (ConnectionRebalancePhase) EnumDescriptor() ([]byte, []int) {
+	return file_docs_contracts_replicated_state_v1_proto_rawDescGZIP(), []int{14}
+}
+
 type NodeDrainProgress struct {
 	state                    protoimpl.MessageState `protogen:"open.v1"`
 	ConnectionsInitial       uint64                 `protobuf:"varint,1,opt,name=connections_initial,json=connectionsInitial,proto3" json:"connections_initial,omitempty"`
@@ -1602,6 +1712,378 @@ func (x *SessionMetadataState) GetPrincipal() *SessionPrincipal {
 	return nil
 }
 
+type ConnectionRebalanceReport struct {
+	state                protoimpl.MessageState `protogen:"open.v1"`
+	NodeId               uint64                 `protobuf:"varint,1,opt,name=node_id,json=nodeId,proto3" json:"node_id,omitempty"`
+	Connections          uint64                 `protobuf:"varint,2,opt,name=connections,proto3" json:"connections,omitempty"`
+	SessionsTransferred  uint64                 `protobuf:"varint,3,opt,name=sessions_transferred,json=sessionsTransferred,proto3" json:"sessions_transferred,omitempty"`
+	Shedding             bool                   `protobuf:"varint,4,opt,name=shedding,proto3" json:"shedding,omitempty"`
+	ReportedAtUnixMillis uint64                 `protobuf:"varint,5,opt,name=reported_at_unix_millis,json=reportedAtUnixMillis,proto3" json:"reported_at_unix_millis,omitempty"`
+	unknownFields        protoimpl.UnknownFields
+	sizeCache            protoimpl.SizeCache
+}
+
+func (x *ConnectionRebalanceReport) Reset() {
+	*x = ConnectionRebalanceReport{}
+	mi := &file_docs_contracts_replicated_state_v1_proto_msgTypes[8]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ConnectionRebalanceReport) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ConnectionRebalanceReport) ProtoMessage() {}
+
+func (x *ConnectionRebalanceReport) ProtoReflect() protoreflect.Message {
+	mi := &file_docs_contracts_replicated_state_v1_proto_msgTypes[8]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ConnectionRebalanceReport.ProtoReflect.Descriptor instead.
+func (*ConnectionRebalanceReport) Descriptor() ([]byte, []int) {
+	return file_docs_contracts_replicated_state_v1_proto_rawDescGZIP(), []int{8}
+}
+
+func (x *ConnectionRebalanceReport) GetNodeId() uint64 {
+	if x != nil {
+		return x.NodeId
+	}
+	return 0
+}
+
+func (x *ConnectionRebalanceReport) GetConnections() uint64 {
+	if x != nil {
+		return x.Connections
+	}
+	return 0
+}
+
+func (x *ConnectionRebalanceReport) GetSessionsTransferred() uint64 {
+	if x != nil {
+		return x.SessionsTransferred
+	}
+	return 0
+}
+
+func (x *ConnectionRebalanceReport) GetShedding() bool {
+	if x != nil {
+		return x.Shedding
+	}
+	return false
+}
+
+func (x *ConnectionRebalanceReport) GetReportedAtUnixMillis() uint64 {
+	if x != nil {
+		return x.ReportedAtUnixMillis
+	}
+	return 0
+}
+
+type ConnectionRebalanceChange struct {
+	state                              protoimpl.MessageState    `protogen:"open.v1"`
+	Action                             ConnectionRebalanceAction `protobuf:"varint,1,opt,name=action,proto3,enum=narumq.cluster.v1.ConnectionRebalanceAction" json:"action,omitempty"`
+	RebalanceOperationId               string                    `protobuf:"bytes,2,opt,name=rebalance_operation_id,json=rebalanceOperationId,proto3" json:"rebalance_operation_id,omitempty"`
+	IdempotencyKey                     string                    `protobuf:"bytes,3,opt,name=idempotency_key,json=idempotencyKey,proto3" json:"idempotency_key,omitempty"`
+	ServerReference                    string                    `protobuf:"bytes,4,opt,name=server_reference,json=serverReference,proto3" json:"server_reference,omitempty"`
+	MaxDeviationConnections            uint64                    `protobuf:"varint,5,opt,name=max_deviation_connections,json=maxDeviationConnections,proto3" json:"max_deviation_connections,omitempty"`
+	ConnectionRatePerSecond            uint32                    `protobuf:"varint,6,opt,name=connection_rate_per_second,json=connectionRatePerSecond,proto3" json:"connection_rate_per_second,omitempty"`
+	LoadBalancerPropagationDelayMillis uint64                    `protobuf:"varint,7,opt,name=load_balancer_propagation_delay_millis,json=loadBalancerPropagationDelayMillis,proto3" json:"load_balancer_propagation_delay_millis,omitempty"`
+	TimeoutMillis                      uint64                    `protobuf:"varint,8,opt,name=timeout_millis,json=timeoutMillis,proto3" json:"timeout_millis,omitempty"`
+	NodeId                             uint64                    `protobuf:"varint,9,opt,name=node_id,json=nodeId,proto3" json:"node_id,omitempty"`
+	Connections                        uint64                    `protobuf:"varint,10,opt,name=connections,proto3" json:"connections,omitempty"`
+	SessionsTransferred                uint64                    `protobuf:"varint,11,opt,name=sessions_transferred,json=sessionsTransferred,proto3" json:"sessions_transferred,omitempty"`
+	Shedding                           bool                      `protobuf:"varint,12,opt,name=shedding,proto3" json:"shedding,omitempty"`
+	FailureCode                        string                    `protobuf:"bytes,13,opt,name=failure_code,json=failureCode,proto3" json:"failure_code,omitempty"`
+	ProposedAtUnixMillis               uint64                    `protobuf:"varint,14,opt,name=proposed_at_unix_millis,json=proposedAtUnixMillis,proto3" json:"proposed_at_unix_millis,omitempty"`
+	unknownFields                      protoimpl.UnknownFields
+	sizeCache                          protoimpl.SizeCache
+}
+
+func (x *ConnectionRebalanceChange) Reset() {
+	*x = ConnectionRebalanceChange{}
+	mi := &file_docs_contracts_replicated_state_v1_proto_msgTypes[9]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ConnectionRebalanceChange) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ConnectionRebalanceChange) ProtoMessage() {}
+
+func (x *ConnectionRebalanceChange) ProtoReflect() protoreflect.Message {
+	mi := &file_docs_contracts_replicated_state_v1_proto_msgTypes[9]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ConnectionRebalanceChange.ProtoReflect.Descriptor instead.
+func (*ConnectionRebalanceChange) Descriptor() ([]byte, []int) {
+	return file_docs_contracts_replicated_state_v1_proto_rawDescGZIP(), []int{9}
+}
+
+func (x *ConnectionRebalanceChange) GetAction() ConnectionRebalanceAction {
+	if x != nil {
+		return x.Action
+	}
+	return ConnectionRebalanceAction_CONNECTION_REBALANCE_ACTION_UNSPECIFIED
+}
+
+func (x *ConnectionRebalanceChange) GetRebalanceOperationId() string {
+	if x != nil {
+		return x.RebalanceOperationId
+	}
+	return ""
+}
+
+func (x *ConnectionRebalanceChange) GetIdempotencyKey() string {
+	if x != nil {
+		return x.IdempotencyKey
+	}
+	return ""
+}
+
+func (x *ConnectionRebalanceChange) GetServerReference() string {
+	if x != nil {
+		return x.ServerReference
+	}
+	return ""
+}
+
+func (x *ConnectionRebalanceChange) GetMaxDeviationConnections() uint64 {
+	if x != nil {
+		return x.MaxDeviationConnections
+	}
+	return 0
+}
+
+func (x *ConnectionRebalanceChange) GetConnectionRatePerSecond() uint32 {
+	if x != nil {
+		return x.ConnectionRatePerSecond
+	}
+	return 0
+}
+
+func (x *ConnectionRebalanceChange) GetLoadBalancerPropagationDelayMillis() uint64 {
+	if x != nil {
+		return x.LoadBalancerPropagationDelayMillis
+	}
+	return 0
+}
+
+func (x *ConnectionRebalanceChange) GetTimeoutMillis() uint64 {
+	if x != nil {
+		return x.TimeoutMillis
+	}
+	return 0
+}
+
+func (x *ConnectionRebalanceChange) GetNodeId() uint64 {
+	if x != nil {
+		return x.NodeId
+	}
+	return 0
+}
+
+func (x *ConnectionRebalanceChange) GetConnections() uint64 {
+	if x != nil {
+		return x.Connections
+	}
+	return 0
+}
+
+func (x *ConnectionRebalanceChange) GetSessionsTransferred() uint64 {
+	if x != nil {
+		return x.SessionsTransferred
+	}
+	return 0
+}
+
+func (x *ConnectionRebalanceChange) GetShedding() bool {
+	if x != nil {
+		return x.Shedding
+	}
+	return false
+}
+
+func (x *ConnectionRebalanceChange) GetFailureCode() string {
+	if x != nil {
+		return x.FailureCode
+	}
+	return ""
+}
+
+func (x *ConnectionRebalanceChange) GetProposedAtUnixMillis() uint64 {
+	if x != nil {
+		return x.ProposedAtUnixMillis
+	}
+	return 0
+}
+
+type ConnectionRebalanceState struct {
+	state                              protoimpl.MessageState       `protogen:"open.v1"`
+	RebalanceOperationId               string                       `protobuf:"bytes,1,opt,name=rebalance_operation_id,json=rebalanceOperationId,proto3" json:"rebalance_operation_id,omitempty"`
+	IdempotencyKey                     string                       `protobuf:"bytes,2,opt,name=idempotency_key,json=idempotencyKey,proto3" json:"idempotency_key,omitempty"`
+	Phase                              ConnectionRebalancePhase     `protobuf:"varint,3,opt,name=phase,proto3,enum=narumq.cluster.v1.ConnectionRebalancePhase" json:"phase,omitempty"`
+	ServerReference                    string                       `protobuf:"bytes,4,opt,name=server_reference,json=serverReference,proto3" json:"server_reference,omitempty"`
+	MaxDeviationConnections            uint64                       `protobuf:"varint,5,opt,name=max_deviation_connections,json=maxDeviationConnections,proto3" json:"max_deviation_connections,omitempty"`
+	ConnectionRatePerSecond            uint32                       `protobuf:"varint,6,opt,name=connection_rate_per_second,json=connectionRatePerSecond,proto3" json:"connection_rate_per_second,omitempty"`
+	LoadBalancerPropagationDelayMillis uint64                       `protobuf:"varint,7,opt,name=load_balancer_propagation_delay_millis,json=loadBalancerPropagationDelayMillis,proto3" json:"load_balancer_propagation_delay_millis,omitempty"`
+	TimeoutMillis                      uint64                       `protobuf:"varint,8,opt,name=timeout_millis,json=timeoutMillis,proto3" json:"timeout_millis,omitempty"`
+	StartedAtUnixMillis                uint64                       `protobuf:"varint,9,opt,name=started_at_unix_millis,json=startedAtUnixMillis,proto3" json:"started_at_unix_millis,omitempty"`
+	DeadlineAtUnixMillis               uint64                       `protobuf:"varint,10,opt,name=deadline_at_unix_millis,json=deadlineAtUnixMillis,proto3" json:"deadline_at_unix_millis,omitempty"`
+	FinishedAtUnixMillis               uint64                       `protobuf:"varint,11,opt,name=finished_at_unix_millis,json=finishedAtUnixMillis,proto3" json:"finished_at_unix_millis,omitempty"`
+	Participants                       []*ConnectionRebalanceReport `protobuf:"bytes,12,rep,name=participants,proto3" json:"participants,omitempty"`
+	FailureCode                        string                       `protobuf:"bytes,13,opt,name=failure_code,json=failureCode,proto3" json:"failure_code,omitempty"`
+	CommittedIndex                     uint64                       `protobuf:"varint,14,opt,name=committed_index,json=committedIndex,proto3" json:"committed_index,omitempty"`
+	unknownFields                      protoimpl.UnknownFields
+	sizeCache                          protoimpl.SizeCache
+}
+
+func (x *ConnectionRebalanceState) Reset() {
+	*x = ConnectionRebalanceState{}
+	mi := &file_docs_contracts_replicated_state_v1_proto_msgTypes[10]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ConnectionRebalanceState) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ConnectionRebalanceState) ProtoMessage() {}
+
+func (x *ConnectionRebalanceState) ProtoReflect() protoreflect.Message {
+	mi := &file_docs_contracts_replicated_state_v1_proto_msgTypes[10]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ConnectionRebalanceState.ProtoReflect.Descriptor instead.
+func (*ConnectionRebalanceState) Descriptor() ([]byte, []int) {
+	return file_docs_contracts_replicated_state_v1_proto_rawDescGZIP(), []int{10}
+}
+
+func (x *ConnectionRebalanceState) GetRebalanceOperationId() string {
+	if x != nil {
+		return x.RebalanceOperationId
+	}
+	return ""
+}
+
+func (x *ConnectionRebalanceState) GetIdempotencyKey() string {
+	if x != nil {
+		return x.IdempotencyKey
+	}
+	return ""
+}
+
+func (x *ConnectionRebalanceState) GetPhase() ConnectionRebalancePhase {
+	if x != nil {
+		return x.Phase
+	}
+	return ConnectionRebalancePhase_CONNECTION_REBALANCE_PHASE_UNSPECIFIED
+}
+
+func (x *ConnectionRebalanceState) GetServerReference() string {
+	if x != nil {
+		return x.ServerReference
+	}
+	return ""
+}
+
+func (x *ConnectionRebalanceState) GetMaxDeviationConnections() uint64 {
+	if x != nil {
+		return x.MaxDeviationConnections
+	}
+	return 0
+}
+
+func (x *ConnectionRebalanceState) GetConnectionRatePerSecond() uint32 {
+	if x != nil {
+		return x.ConnectionRatePerSecond
+	}
+	return 0
+}
+
+func (x *ConnectionRebalanceState) GetLoadBalancerPropagationDelayMillis() uint64 {
+	if x != nil {
+		return x.LoadBalancerPropagationDelayMillis
+	}
+	return 0
+}
+
+func (x *ConnectionRebalanceState) GetTimeoutMillis() uint64 {
+	if x != nil {
+		return x.TimeoutMillis
+	}
+	return 0
+}
+
+func (x *ConnectionRebalanceState) GetStartedAtUnixMillis() uint64 {
+	if x != nil {
+		return x.StartedAtUnixMillis
+	}
+	return 0
+}
+
+func (x *ConnectionRebalanceState) GetDeadlineAtUnixMillis() uint64 {
+	if x != nil {
+		return x.DeadlineAtUnixMillis
+	}
+	return 0
+}
+
+func (x *ConnectionRebalanceState) GetFinishedAtUnixMillis() uint64 {
+	if x != nil {
+		return x.FinishedAtUnixMillis
+	}
+	return 0
+}
+
+func (x *ConnectionRebalanceState) GetParticipants() []*ConnectionRebalanceReport {
+	if x != nil {
+		return x.Participants
+	}
+	return nil
+}
+
+func (x *ConnectionRebalanceState) GetFailureCode() string {
+	if x != nil {
+		return x.FailureCode
+	}
+	return ""
+}
+
+func (x *ConnectionRebalanceState) GetCommittedIndex() uint64 {
+	if x != nil {
+		return x.CommittedIndex
+	}
+	return 0
+}
+
 // Every application log entry has exactly one typed payload. operation_id is a
 // canonical lower-case UUID and is stable across retry of the same operation.
 type CommandEnvelope struct {
@@ -1622,6 +2104,7 @@ type CommandEnvelope struct {
 	//	*CommandEnvelope_MemberProfile
 	//	*CommandEnvelope_FeatureActivation
 	//	*CommandEnvelope_SessionMetadata
+	//	*CommandEnvelope_ConnectionRebalance
 	Payload       isCommandEnvelope_Payload `protobuf_oneof:"payload"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
@@ -1629,7 +2112,7 @@ type CommandEnvelope struct {
 
 func (x *CommandEnvelope) Reset() {
 	*x = CommandEnvelope{}
-	mi := &file_docs_contracts_replicated_state_v1_proto_msgTypes[8]
+	mi := &file_docs_contracts_replicated_state_v1_proto_msgTypes[11]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1641,7 +2124,7 @@ func (x *CommandEnvelope) String() string {
 func (*CommandEnvelope) ProtoMessage() {}
 
 func (x *CommandEnvelope) ProtoReflect() protoreflect.Message {
-	mi := &file_docs_contracts_replicated_state_v1_proto_msgTypes[8]
+	mi := &file_docs_contracts_replicated_state_v1_proto_msgTypes[11]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1654,7 +2137,7 @@ func (x *CommandEnvelope) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CommandEnvelope.ProtoReflect.Descriptor instead.
 func (*CommandEnvelope) Descriptor() ([]byte, []int) {
-	return file_docs_contracts_replicated_state_v1_proto_rawDescGZIP(), []int{8}
+	return file_docs_contracts_replicated_state_v1_proto_rawDescGZIP(), []int{11}
 }
 
 func (x *CommandEnvelope) GetSchemaMajor() uint32 {
@@ -1784,6 +2267,15 @@ func (x *CommandEnvelope) GetSessionMetadata() *SessionMetadataChange {
 	return nil
 }
 
+func (x *CommandEnvelope) GetConnectionRebalance() *ConnectionRebalanceChange {
+	if x != nil {
+		if x, ok := x.Payload.(*CommandEnvelope_ConnectionRebalance); ok {
+			return x.ConnectionRebalance
+		}
+	}
+	return nil
+}
+
 type isCommandEnvelope_Payload interface {
 	isCommandEnvelope_Payload()
 }
@@ -1832,6 +2324,10 @@ type CommandEnvelope_SessionMetadata struct {
 	SessionMetadata *SessionMetadataChange `protobuf:"bytes,21,opt,name=session_metadata,json=sessionMetadata,proto3,oneof"`
 }
 
+type CommandEnvelope_ConnectionRebalance struct {
+	ConnectionRebalance *ConnectionRebalanceChange `protobuf:"bytes,22,opt,name=connection_rebalance,json=connectionRebalance,proto3,oneof"`
+}
+
 func (*CommandEnvelope_Membership) isCommandEnvelope_Payload() {}
 
 func (*CommandEnvelope_Ownership) isCommandEnvelope_Payload() {}
@@ -1853,6 +2349,8 @@ func (*CommandEnvelope_MemberProfile) isCommandEnvelope_Payload() {}
 func (*CommandEnvelope_FeatureActivation) isCommandEnvelope_Payload() {}
 
 func (*CommandEnvelope_SessionMetadata) isCommandEnvelope_Payload() {}
+
+func (*CommandEnvelope_ConnectionRebalance) isCommandEnvelope_Payload() {}
 
 // Identity fields are committed before the candidate can send a Raft message.
 // Release version and features are mutable profile fields.
@@ -1877,7 +2375,7 @@ type MemberIdentity struct {
 
 func (x *MemberIdentity) Reset() {
 	*x = MemberIdentity{}
-	mi := &file_docs_contracts_replicated_state_v1_proto_msgTypes[9]
+	mi := &file_docs_contracts_replicated_state_v1_proto_msgTypes[12]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1889,7 +2387,7 @@ func (x *MemberIdentity) String() string {
 func (*MemberIdentity) ProtoMessage() {}
 
 func (x *MemberIdentity) ProtoReflect() protoreflect.Message {
-	mi := &file_docs_contracts_replicated_state_v1_proto_msgTypes[9]
+	mi := &file_docs_contracts_replicated_state_v1_proto_msgTypes[12]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1902,7 +2400,7 @@ func (x *MemberIdentity) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use MemberIdentity.ProtoReflect.Descriptor instead.
 func (*MemberIdentity) Descriptor() ([]byte, []int) {
-	return file_docs_contracts_replicated_state_v1_proto_rawDescGZIP(), []int{9}
+	return file_docs_contracts_replicated_state_v1_proto_rawDescGZIP(), []int{12}
 }
 
 func (x *MemberIdentity) GetMemberId() uint64 {
@@ -2016,7 +2514,7 @@ type MembershipRecord struct {
 
 func (x *MembershipRecord) Reset() {
 	*x = MembershipRecord{}
-	mi := &file_docs_contracts_replicated_state_v1_proto_msgTypes[10]
+	mi := &file_docs_contracts_replicated_state_v1_proto_msgTypes[13]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2028,7 +2526,7 @@ func (x *MembershipRecord) String() string {
 func (*MembershipRecord) ProtoMessage() {}
 
 func (x *MembershipRecord) ProtoReflect() protoreflect.Message {
-	mi := &file_docs_contracts_replicated_state_v1_proto_msgTypes[10]
+	mi := &file_docs_contracts_replicated_state_v1_proto_msgTypes[13]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2041,7 +2539,7 @@ func (x *MembershipRecord) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use MembershipRecord.ProtoReflect.Descriptor instead.
 func (*MembershipRecord) Descriptor() ([]byte, []int) {
-	return file_docs_contracts_replicated_state_v1_proto_rawDescGZIP(), []int{10}
+	return file_docs_contracts_replicated_state_v1_proto_rawDescGZIP(), []int{13}
 }
 
 func (x *MembershipRecord) GetOperationId() string {
@@ -2108,7 +2606,7 @@ type OwnershipChange struct {
 
 func (x *OwnershipChange) Reset() {
 	*x = OwnershipChange{}
-	mi := &file_docs_contracts_replicated_state_v1_proto_msgTypes[11]
+	mi := &file_docs_contracts_replicated_state_v1_proto_msgTypes[14]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2120,7 +2618,7 @@ func (x *OwnershipChange) String() string {
 func (*OwnershipChange) ProtoMessage() {}
 
 func (x *OwnershipChange) ProtoReflect() protoreflect.Message {
-	mi := &file_docs_contracts_replicated_state_v1_proto_msgTypes[11]
+	mi := &file_docs_contracts_replicated_state_v1_proto_msgTypes[14]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2133,7 +2631,7 @@ func (x *OwnershipChange) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use OwnershipChange.ProtoReflect.Descriptor instead.
 func (*OwnershipChange) Descriptor() ([]byte, []int) {
-	return file_docs_contracts_replicated_state_v1_proto_rawDescGZIP(), []int{11}
+	return file_docs_contracts_replicated_state_v1_proto_rawDescGZIP(), []int{14}
 }
 
 func (x *OwnershipChange) GetTenantId() string {
@@ -2198,7 +2696,7 @@ type OwnershipState struct {
 
 func (x *OwnershipState) Reset() {
 	*x = OwnershipState{}
-	mi := &file_docs_contracts_replicated_state_v1_proto_msgTypes[12]
+	mi := &file_docs_contracts_replicated_state_v1_proto_msgTypes[15]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2210,7 +2708,7 @@ func (x *OwnershipState) String() string {
 func (*OwnershipState) ProtoMessage() {}
 
 func (x *OwnershipState) ProtoReflect() protoreflect.Message {
-	mi := &file_docs_contracts_replicated_state_v1_proto_msgTypes[12]
+	mi := &file_docs_contracts_replicated_state_v1_proto_msgTypes[15]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2223,7 +2721,7 @@ func (x *OwnershipState) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use OwnershipState.ProtoReflect.Descriptor instead.
 func (*OwnershipState) Descriptor() ([]byte, []int) {
-	return file_docs_contracts_replicated_state_v1_proto_rawDescGZIP(), []int{12}
+	return file_docs_contracts_replicated_state_v1_proto_rawDescGZIP(), []int{15}
 }
 
 func (x *OwnershipState) GetTenantId() string {
@@ -2279,7 +2777,7 @@ type SubscriptionChange struct {
 
 func (x *SubscriptionChange) Reset() {
 	*x = SubscriptionChange{}
-	mi := &file_docs_contracts_replicated_state_v1_proto_msgTypes[13]
+	mi := &file_docs_contracts_replicated_state_v1_proto_msgTypes[16]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2291,7 +2789,7 @@ func (x *SubscriptionChange) String() string {
 func (*SubscriptionChange) ProtoMessage() {}
 
 func (x *SubscriptionChange) ProtoReflect() protoreflect.Message {
-	mi := &file_docs_contracts_replicated_state_v1_proto_msgTypes[13]
+	mi := &file_docs_contracts_replicated_state_v1_proto_msgTypes[16]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2304,7 +2802,7 @@ func (x *SubscriptionChange) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SubscriptionChange.ProtoReflect.Descriptor instead.
 func (*SubscriptionChange) Descriptor() ([]byte, []int) {
-	return file_docs_contracts_replicated_state_v1_proto_rawDescGZIP(), []int{13}
+	return file_docs_contracts_replicated_state_v1_proto_rawDescGZIP(), []int{16}
 }
 
 func (x *SubscriptionChange) GetTenantId() string {
@@ -2387,7 +2885,7 @@ type DeliveryTarget struct {
 
 func (x *DeliveryTarget) Reset() {
 	*x = DeliveryTarget{}
-	mi := &file_docs_contracts_replicated_state_v1_proto_msgTypes[14]
+	mi := &file_docs_contracts_replicated_state_v1_proto_msgTypes[17]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2399,7 +2897,7 @@ func (x *DeliveryTarget) String() string {
 func (*DeliveryTarget) ProtoMessage() {}
 
 func (x *DeliveryTarget) ProtoReflect() protoreflect.Message {
-	mi := &file_docs_contracts_replicated_state_v1_proto_msgTypes[14]
+	mi := &file_docs_contracts_replicated_state_v1_proto_msgTypes[17]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2412,7 +2910,7 @@ func (x *DeliveryTarget) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DeliveryTarget.ProtoReflect.Descriptor instead.
 func (*DeliveryTarget) Descriptor() ([]byte, []int) {
-	return file_docs_contracts_replicated_state_v1_proto_rawDescGZIP(), []int{14}
+	return file_docs_contracts_replicated_state_v1_proto_rawDescGZIP(), []int{17}
 }
 
 func (x *DeliveryTarget) GetClientId() string {
@@ -2453,7 +2951,7 @@ type DeliveryChange struct {
 
 func (x *DeliveryChange) Reset() {
 	*x = DeliveryChange{}
-	mi := &file_docs_contracts_replicated_state_v1_proto_msgTypes[15]
+	mi := &file_docs_contracts_replicated_state_v1_proto_msgTypes[18]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2465,7 +2963,7 @@ func (x *DeliveryChange) String() string {
 func (*DeliveryChange) ProtoMessage() {}
 
 func (x *DeliveryChange) ProtoReflect() protoreflect.Message {
-	mi := &file_docs_contracts_replicated_state_v1_proto_msgTypes[15]
+	mi := &file_docs_contracts_replicated_state_v1_proto_msgTypes[18]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2478,7 +2976,7 @@ func (x *DeliveryChange) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DeliveryChange.ProtoReflect.Descriptor instead.
 func (*DeliveryChange) Descriptor() ([]byte, []int) {
-	return file_docs_contracts_replicated_state_v1_proto_rawDescGZIP(), []int{15}
+	return file_docs_contracts_replicated_state_v1_proto_rawDescGZIP(), []int{18}
 }
 
 func (x *DeliveryChange) GetTenantId() string {
@@ -2609,7 +3107,7 @@ type DeliveryMessage struct {
 
 func (x *DeliveryMessage) Reset() {
 	*x = DeliveryMessage{}
-	mi := &file_docs_contracts_replicated_state_v1_proto_msgTypes[16]
+	mi := &file_docs_contracts_replicated_state_v1_proto_msgTypes[19]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2621,7 +3119,7 @@ func (x *DeliveryMessage) String() string {
 func (*DeliveryMessage) ProtoMessage() {}
 
 func (x *DeliveryMessage) ProtoReflect() protoreflect.Message {
-	mi := &file_docs_contracts_replicated_state_v1_proto_msgTypes[16]
+	mi := &file_docs_contracts_replicated_state_v1_proto_msgTypes[19]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2634,7 +3132,7 @@ func (x *DeliveryMessage) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DeliveryMessage.ProtoReflect.Descriptor instead.
 func (*DeliveryMessage) Descriptor() ([]byte, []int) {
-	return file_docs_contracts_replicated_state_v1_proto_rawDescGZIP(), []int{16}
+	return file_docs_contracts_replicated_state_v1_proto_rawDescGZIP(), []int{19}
 }
 
 func (x *DeliveryMessage) GetSequence() uint64 {
@@ -2708,7 +3206,7 @@ type InboundMessage struct {
 
 func (x *InboundMessage) Reset() {
 	*x = InboundMessage{}
-	mi := &file_docs_contracts_replicated_state_v1_proto_msgTypes[17]
+	mi := &file_docs_contracts_replicated_state_v1_proto_msgTypes[20]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2720,7 +3218,7 @@ func (x *InboundMessage) String() string {
 func (*InboundMessage) ProtoMessage() {}
 
 func (x *InboundMessage) ProtoReflect() protoreflect.Message {
-	mi := &file_docs_contracts_replicated_state_v1_proto_msgTypes[17]
+	mi := &file_docs_contracts_replicated_state_v1_proto_msgTypes[20]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2733,7 +3231,7 @@ func (x *InboundMessage) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use InboundMessage.ProtoReflect.Descriptor instead.
 func (*InboundMessage) Descriptor() ([]byte, []int) {
-	return file_docs_contracts_replicated_state_v1_proto_rawDescGZIP(), []int{17}
+	return file_docs_contracts_replicated_state_v1_proto_rawDescGZIP(), []int{20}
 }
 
 func (x *InboundMessage) GetPacketId() uint32 {
@@ -2799,7 +3297,7 @@ type DeliverySessionState struct {
 
 func (x *DeliverySessionState) Reset() {
 	*x = DeliverySessionState{}
-	mi := &file_docs_contracts_replicated_state_v1_proto_msgTypes[18]
+	mi := &file_docs_contracts_replicated_state_v1_proto_msgTypes[21]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2811,7 +3309,7 @@ func (x *DeliverySessionState) String() string {
 func (*DeliverySessionState) ProtoMessage() {}
 
 func (x *DeliverySessionState) ProtoReflect() protoreflect.Message {
-	mi := &file_docs_contracts_replicated_state_v1_proto_msgTypes[18]
+	mi := &file_docs_contracts_replicated_state_v1_proto_msgTypes[21]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2824,7 +3322,7 @@ func (x *DeliverySessionState) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DeliverySessionState.ProtoReflect.Descriptor instead.
 func (*DeliverySessionState) Descriptor() ([]byte, []int) {
-	return file_docs_contracts_replicated_state_v1_proto_rawDescGZIP(), []int{18}
+	return file_docs_contracts_replicated_state_v1_proto_rawDescGZIP(), []int{21}
 }
 
 func (x *DeliverySessionState) GetTenantId() string {
@@ -2887,7 +3385,7 @@ type RetainedChange struct {
 
 func (x *RetainedChange) Reset() {
 	*x = RetainedChange{}
-	mi := &file_docs_contracts_replicated_state_v1_proto_msgTypes[19]
+	mi := &file_docs_contracts_replicated_state_v1_proto_msgTypes[22]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2899,7 +3397,7 @@ func (x *RetainedChange) String() string {
 func (*RetainedChange) ProtoMessage() {}
 
 func (x *RetainedChange) ProtoReflect() protoreflect.Message {
-	mi := &file_docs_contracts_replicated_state_v1_proto_msgTypes[19]
+	mi := &file_docs_contracts_replicated_state_v1_proto_msgTypes[22]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2912,7 +3410,7 @@ func (x *RetainedChange) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RetainedChange.ProtoReflect.Descriptor instead.
 func (*RetainedChange) Descriptor() ([]byte, []int) {
-	return file_docs_contracts_replicated_state_v1_proto_rawDescGZIP(), []int{19}
+	return file_docs_contracts_replicated_state_v1_proto_rawDescGZIP(), []int{22}
 }
 
 func (x *RetainedChange) GetTenantId() string {
@@ -2985,7 +3483,7 @@ type RetainedState struct {
 
 func (x *RetainedState) Reset() {
 	*x = RetainedState{}
-	mi := &file_docs_contracts_replicated_state_v1_proto_msgTypes[20]
+	mi := &file_docs_contracts_replicated_state_v1_proto_msgTypes[23]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2997,7 +3495,7 @@ func (x *RetainedState) String() string {
 func (*RetainedState) ProtoMessage() {}
 
 func (x *RetainedState) ProtoReflect() protoreflect.Message {
-	mi := &file_docs_contracts_replicated_state_v1_proto_msgTypes[20]
+	mi := &file_docs_contracts_replicated_state_v1_proto_msgTypes[23]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3010,7 +3508,7 @@ func (x *RetainedState) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RetainedState.ProtoReflect.Descriptor instead.
 func (*RetainedState) Descriptor() ([]byte, []int) {
-	return file_docs_contracts_replicated_state_v1_proto_rawDescGZIP(), []int{20}
+	return file_docs_contracts_replicated_state_v1_proto_rawDescGZIP(), []int{23}
 }
 
 func (x *RetainedState) GetTenantId() string {
@@ -3070,7 +3568,7 @@ type TenantStorageQuota struct {
 
 func (x *TenantStorageQuota) Reset() {
 	*x = TenantStorageQuota{}
-	mi := &file_docs_contracts_replicated_state_v1_proto_msgTypes[21]
+	mi := &file_docs_contracts_replicated_state_v1_proto_msgTypes[24]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3082,7 +3580,7 @@ func (x *TenantStorageQuota) String() string {
 func (*TenantStorageQuota) ProtoMessage() {}
 
 func (x *TenantStorageQuota) ProtoReflect() protoreflect.Message {
-	mi := &file_docs_contracts_replicated_state_v1_proto_msgTypes[21]
+	mi := &file_docs_contracts_replicated_state_v1_proto_msgTypes[24]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3095,7 +3593,7 @@ func (x *TenantStorageQuota) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use TenantStorageQuota.ProtoReflect.Descriptor instead.
 func (*TenantStorageQuota) Descriptor() ([]byte, []int) {
-	return file_docs_contracts_replicated_state_v1_proto_rawDescGZIP(), []int{21}
+	return file_docs_contracts_replicated_state_v1_proto_rawDescGZIP(), []int{24}
 }
 
 func (x *TenantStorageQuota) GetTenantId() string {
@@ -3144,7 +3642,7 @@ type TenantQuotaProfile struct {
 
 func (x *TenantQuotaProfile) Reset() {
 	*x = TenantQuotaProfile{}
-	mi := &file_docs_contracts_replicated_state_v1_proto_msgTypes[22]
+	mi := &file_docs_contracts_replicated_state_v1_proto_msgTypes[25]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3156,7 +3654,7 @@ func (x *TenantQuotaProfile) String() string {
 func (*TenantQuotaProfile) ProtoMessage() {}
 
 func (x *TenantQuotaProfile) ProtoReflect() protoreflect.Message {
-	mi := &file_docs_contracts_replicated_state_v1_proto_msgTypes[22]
+	mi := &file_docs_contracts_replicated_state_v1_proto_msgTypes[25]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3169,7 +3667,7 @@ func (x *TenantQuotaProfile) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use TenantQuotaProfile.ProtoReflect.Descriptor instead.
 func (*TenantQuotaProfile) Descriptor() ([]byte, []int) {
-	return file_docs_contracts_replicated_state_v1_proto_rawDescGZIP(), []int{22}
+	return file_docs_contracts_replicated_state_v1_proto_rawDescGZIP(), []int{25}
 }
 
 func (x *TenantQuotaProfile) GetVersion() uint64 {
@@ -3202,7 +3700,7 @@ type TenantQuotaChange struct {
 
 func (x *TenantQuotaChange) Reset() {
 	*x = TenantQuotaChange{}
-	mi := &file_docs_contracts_replicated_state_v1_proto_msgTypes[23]
+	mi := &file_docs_contracts_replicated_state_v1_proto_msgTypes[26]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3214,7 +3712,7 @@ func (x *TenantQuotaChange) String() string {
 func (*TenantQuotaChange) ProtoMessage() {}
 
 func (x *TenantQuotaChange) ProtoReflect() protoreflect.Message {
-	mi := &file_docs_contracts_replicated_state_v1_proto_msgTypes[23]
+	mi := &file_docs_contracts_replicated_state_v1_proto_msgTypes[26]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3227,7 +3725,7 @@ func (x *TenantQuotaChange) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use TenantQuotaChange.ProtoReflect.Descriptor instead.
 func (*TenantQuotaChange) Descriptor() ([]byte, []int) {
-	return file_docs_contracts_replicated_state_v1_proto_rawDescGZIP(), []int{23}
+	return file_docs_contracts_replicated_state_v1_proto_rawDescGZIP(), []int{26}
 }
 
 func (x *TenantQuotaChange) GetProfile() *TenantQuotaProfile {
@@ -3248,7 +3746,7 @@ type MemberProfileChange struct {
 
 func (x *MemberProfileChange) Reset() {
 	*x = MemberProfileChange{}
-	mi := &file_docs_contracts_replicated_state_v1_proto_msgTypes[24]
+	mi := &file_docs_contracts_replicated_state_v1_proto_msgTypes[27]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3260,7 +3758,7 @@ func (x *MemberProfileChange) String() string {
 func (*MemberProfileChange) ProtoMessage() {}
 
 func (x *MemberProfileChange) ProtoReflect() protoreflect.Message {
-	mi := &file_docs_contracts_replicated_state_v1_proto_msgTypes[24]
+	mi := &file_docs_contracts_replicated_state_v1_proto_msgTypes[27]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3273,7 +3771,7 @@ func (x *MemberProfileChange) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use MemberProfileChange.ProtoReflect.Descriptor instead.
 func (*MemberProfileChange) Descriptor() ([]byte, []int) {
-	return file_docs_contracts_replicated_state_v1_proto_rawDescGZIP(), []int{24}
+	return file_docs_contracts_replicated_state_v1_proto_rawDescGZIP(), []int{27}
 }
 
 func (x *MemberProfileChange) GetMemberId() uint64 {
@@ -3306,7 +3804,7 @@ type FeatureActivation struct {
 
 func (x *FeatureActivation) Reset() {
 	*x = FeatureActivation{}
-	mi := &file_docs_contracts_replicated_state_v1_proto_msgTypes[25]
+	mi := &file_docs_contracts_replicated_state_v1_proto_msgTypes[28]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3318,7 +3816,7 @@ func (x *FeatureActivation) String() string {
 func (*FeatureActivation) ProtoMessage() {}
 
 func (x *FeatureActivation) ProtoReflect() protoreflect.Message {
-	mi := &file_docs_contracts_replicated_state_v1_proto_msgTypes[25]
+	mi := &file_docs_contracts_replicated_state_v1_proto_msgTypes[28]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3331,7 +3829,7 @@ func (x *FeatureActivation) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use FeatureActivation.ProtoReflect.Descriptor instead.
 func (*FeatureActivation) Descriptor() ([]byte, []int) {
-	return file_docs_contracts_replicated_state_v1_proto_rawDescGZIP(), []int{25}
+	return file_docs_contracts_replicated_state_v1_proto_rawDescGZIP(), []int{28}
 }
 
 func (x *FeatureActivation) GetFeature() string {
@@ -3355,7 +3853,7 @@ type OfflineMessage struct {
 
 func (x *OfflineMessage) Reset() {
 	*x = OfflineMessage{}
-	mi := &file_docs_contracts_replicated_state_v1_proto_msgTypes[26]
+	mi := &file_docs_contracts_replicated_state_v1_proto_msgTypes[29]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3367,7 +3865,7 @@ func (x *OfflineMessage) String() string {
 func (*OfflineMessage) ProtoMessage() {}
 
 func (x *OfflineMessage) ProtoReflect() protoreflect.Message {
-	mi := &file_docs_contracts_replicated_state_v1_proto_msgTypes[26]
+	mi := &file_docs_contracts_replicated_state_v1_proto_msgTypes[29]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3380,7 +3878,7 @@ func (x *OfflineMessage) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use OfflineMessage.ProtoReflect.Descriptor instead.
 func (*OfflineMessage) Descriptor() ([]byte, []int) {
-	return file_docs_contracts_replicated_state_v1_proto_rawDescGZIP(), []int{26}
+	return file_docs_contracts_replicated_state_v1_proto_rawDescGZIP(), []int{29}
 }
 
 func (x *OfflineMessage) GetSequence() uint64 {
@@ -3441,7 +3939,7 @@ type OfflineChange struct {
 
 func (x *OfflineChange) Reset() {
 	*x = OfflineChange{}
-	mi := &file_docs_contracts_replicated_state_v1_proto_msgTypes[27]
+	mi := &file_docs_contracts_replicated_state_v1_proto_msgTypes[30]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3453,7 +3951,7 @@ func (x *OfflineChange) String() string {
 func (*OfflineChange) ProtoMessage() {}
 
 func (x *OfflineChange) ProtoReflect() protoreflect.Message {
-	mi := &file_docs_contracts_replicated_state_v1_proto_msgTypes[27]
+	mi := &file_docs_contracts_replicated_state_v1_proto_msgTypes[30]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3466,7 +3964,7 @@ func (x *OfflineChange) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use OfflineChange.ProtoReflect.Descriptor instead.
 func (*OfflineChange) Descriptor() ([]byte, []int) {
-	return file_docs_contracts_replicated_state_v1_proto_rawDescGZIP(), []int{27}
+	return file_docs_contracts_replicated_state_v1_proto_rawDescGZIP(), []int{30}
 }
 
 func (x *OfflineChange) GetTenantId() string {
@@ -3539,7 +4037,7 @@ type OfflineSessionState struct {
 
 func (x *OfflineSessionState) Reset() {
 	*x = OfflineSessionState{}
-	mi := &file_docs_contracts_replicated_state_v1_proto_msgTypes[28]
+	mi := &file_docs_contracts_replicated_state_v1_proto_msgTypes[31]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3551,7 +4049,7 @@ func (x *OfflineSessionState) String() string {
 func (*OfflineSessionState) ProtoMessage() {}
 
 func (x *OfflineSessionState) ProtoReflect() protoreflect.Message {
-	mi := &file_docs_contracts_replicated_state_v1_proto_msgTypes[28]
+	mi := &file_docs_contracts_replicated_state_v1_proto_msgTypes[31]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3564,7 +4062,7 @@ func (x *OfflineSessionState) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use OfflineSessionState.ProtoReflect.Descriptor instead.
 func (*OfflineSessionState) Descriptor() ([]byte, []int) {
-	return file_docs_contracts_replicated_state_v1_proto_rawDescGZIP(), []int{28}
+	return file_docs_contracts_replicated_state_v1_proto_rawDescGZIP(), []int{31}
 }
 
 func (x *OfflineSessionState) GetTenantId() string {
@@ -3626,7 +4124,7 @@ type SubscriptionState struct {
 
 func (x *SubscriptionState) Reset() {
 	*x = SubscriptionState{}
-	mi := &file_docs_contracts_replicated_state_v1_proto_msgTypes[29]
+	mi := &file_docs_contracts_replicated_state_v1_proto_msgTypes[32]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3638,7 +4136,7 @@ func (x *SubscriptionState) String() string {
 func (*SubscriptionState) ProtoMessage() {}
 
 func (x *SubscriptionState) ProtoReflect() protoreflect.Message {
-	mi := &file_docs_contracts_replicated_state_v1_proto_msgTypes[29]
+	mi := &file_docs_contracts_replicated_state_v1_proto_msgTypes[32]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3651,7 +4149,7 @@ func (x *SubscriptionState) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SubscriptionState.ProtoReflect.Descriptor instead.
 func (*SubscriptionState) Descriptor() ([]byte, []int) {
-	return file_docs_contracts_replicated_state_v1_proto_rawDescGZIP(), []int{29}
+	return file_docs_contracts_replicated_state_v1_proto_rawDescGZIP(), []int{32}
 }
 
 func (x *SubscriptionState) GetTenantId() string {
@@ -3718,25 +4216,26 @@ func (x *SubscriptionState) GetRetainHandling() uint32 {
 }
 
 type ReplicatedStateSnapshot struct {
-	state              protoimpl.MessageState  `protogen:"open.v1"`
-	Members            []*MemberIdentity       `protobuf:"bytes,1,rep,name=members,proto3" json:"members,omitempty"`
-	Ownerships         []*OwnershipState       `protobuf:"bytes,2,rep,name=ownerships,proto3" json:"ownerships,omitempty"`
-	Subscriptions      []*SubscriptionState    `protobuf:"bytes,3,rep,name=subscriptions,proto3" json:"subscriptions,omitempty"`
-	MembershipHistory  []*MembershipRecord     `protobuf:"bytes,5,rep,name=membership_history,json=membershipHistory,proto3" json:"membership_history,omitempty"`
-	Retained           []*RetainedState        `protobuf:"bytes,6,rep,name=retained,proto3" json:"retained,omitempty"`
-	OfflineSessions    []*OfflineSessionState  `protobuf:"bytes,7,rep,name=offline_sessions,json=offlineSessions,proto3" json:"offline_sessions,omitempty"`
-	DeliverySessions   []*DeliverySessionState `protobuf:"bytes,8,rep,name=delivery_sessions,json=deliverySessions,proto3" json:"delivery_sessions,omitempty"`
-	NodeDrains         []*NodeDrainState       `protobuf:"bytes,9,rep,name=node_drains,json=nodeDrains,proto3" json:"node_drains,omitempty"`
-	TenantQuotaProfile *TenantQuotaProfile     `protobuf:"bytes,10,opt,name=tenant_quota_profile,json=tenantQuotaProfile,proto3" json:"tenant_quota_profile,omitempty"`
-	ActiveFeatures     []string                `protobuf:"bytes,11,rep,name=active_features,json=activeFeatures,proto3" json:"active_features,omitempty"`
-	SessionMetadata    []*SessionMetadataState `protobuf:"bytes,12,rep,name=session_metadata,json=sessionMetadata,proto3" json:"session_metadata,omitempty"`
-	unknownFields      protoimpl.UnknownFields
-	sizeCache          protoimpl.SizeCache
+	state               protoimpl.MessageState    `protogen:"open.v1"`
+	Members             []*MemberIdentity         `protobuf:"bytes,1,rep,name=members,proto3" json:"members,omitempty"`
+	Ownerships          []*OwnershipState         `protobuf:"bytes,2,rep,name=ownerships,proto3" json:"ownerships,omitempty"`
+	Subscriptions       []*SubscriptionState      `protobuf:"bytes,3,rep,name=subscriptions,proto3" json:"subscriptions,omitempty"`
+	MembershipHistory   []*MembershipRecord       `protobuf:"bytes,5,rep,name=membership_history,json=membershipHistory,proto3" json:"membership_history,omitempty"`
+	Retained            []*RetainedState          `protobuf:"bytes,6,rep,name=retained,proto3" json:"retained,omitempty"`
+	OfflineSessions     []*OfflineSessionState    `protobuf:"bytes,7,rep,name=offline_sessions,json=offlineSessions,proto3" json:"offline_sessions,omitempty"`
+	DeliverySessions    []*DeliverySessionState   `protobuf:"bytes,8,rep,name=delivery_sessions,json=deliverySessions,proto3" json:"delivery_sessions,omitempty"`
+	NodeDrains          []*NodeDrainState         `protobuf:"bytes,9,rep,name=node_drains,json=nodeDrains,proto3" json:"node_drains,omitempty"`
+	TenantQuotaProfile  *TenantQuotaProfile       `protobuf:"bytes,10,opt,name=tenant_quota_profile,json=tenantQuotaProfile,proto3" json:"tenant_quota_profile,omitempty"`
+	ActiveFeatures      []string                  `protobuf:"bytes,11,rep,name=active_features,json=activeFeatures,proto3" json:"active_features,omitempty"`
+	SessionMetadata     []*SessionMetadataState   `protobuf:"bytes,12,rep,name=session_metadata,json=sessionMetadata,proto3" json:"session_metadata,omitempty"`
+	ConnectionRebalance *ConnectionRebalanceState `protobuf:"bytes,13,opt,name=connection_rebalance,json=connectionRebalance,proto3" json:"connection_rebalance,omitempty"`
+	unknownFields       protoimpl.UnknownFields
+	sizeCache           protoimpl.SizeCache
 }
 
 func (x *ReplicatedStateSnapshot) Reset() {
 	*x = ReplicatedStateSnapshot{}
-	mi := &file_docs_contracts_replicated_state_v1_proto_msgTypes[30]
+	mi := &file_docs_contracts_replicated_state_v1_proto_msgTypes[33]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3748,7 +4247,7 @@ func (x *ReplicatedStateSnapshot) String() string {
 func (*ReplicatedStateSnapshot) ProtoMessage() {}
 
 func (x *ReplicatedStateSnapshot) ProtoReflect() protoreflect.Message {
-	mi := &file_docs_contracts_replicated_state_v1_proto_msgTypes[30]
+	mi := &file_docs_contracts_replicated_state_v1_proto_msgTypes[33]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3761,7 +4260,7 @@ func (x *ReplicatedStateSnapshot) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ReplicatedStateSnapshot.ProtoReflect.Descriptor instead.
 func (*ReplicatedStateSnapshot) Descriptor() ([]byte, []int) {
-	return file_docs_contracts_replicated_state_v1_proto_rawDescGZIP(), []int{30}
+	return file_docs_contracts_replicated_state_v1_proto_rawDescGZIP(), []int{33}
 }
 
 func (x *ReplicatedStateSnapshot) GetMembers() []*MemberIdentity {
@@ -3841,6 +4340,13 @@ func (x *ReplicatedStateSnapshot) GetSessionMetadata() []*SessionMetadataState {
 	return nil
 }
 
+func (x *ReplicatedStateSnapshot) GetConnectionRebalance() *ConnectionRebalanceState {
+	if x != nil {
+		return x.ConnectionRebalance
+	}
+	return nil
+}
+
 type SnapshotEnvelope struct {
 	state             protoimpl.MessageState   `protogen:"open.v1"`
 	SchemaMajor       uint32                   `protobuf:"varint,1,opt,name=schema_major,json=schemaMajor,proto3" json:"schema_major,omitempty"`
@@ -3855,7 +4361,7 @@ type SnapshotEnvelope struct {
 
 func (x *SnapshotEnvelope) Reset() {
 	*x = SnapshotEnvelope{}
-	mi := &file_docs_contracts_replicated_state_v1_proto_msgTypes[31]
+	mi := &file_docs_contracts_replicated_state_v1_proto_msgTypes[34]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3867,7 +4373,7 @@ func (x *SnapshotEnvelope) String() string {
 func (*SnapshotEnvelope) ProtoMessage() {}
 
 func (x *SnapshotEnvelope) ProtoReflect() protoreflect.Message {
-	mi := &file_docs_contracts_replicated_state_v1_proto_msgTypes[31]
+	mi := &file_docs_contracts_replicated_state_v1_proto_msgTypes[34]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3880,7 +4386,7 @@ func (x *SnapshotEnvelope) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SnapshotEnvelope.ProtoReflect.Descriptor instead.
 func (*SnapshotEnvelope) Descriptor() ([]byte, []int) {
-	return file_docs_contracts_replicated_state_v1_proto_rawDescGZIP(), []int{31}
+	return file_docs_contracts_replicated_state_v1_proto_rawDescGZIP(), []int{34}
 }
 
 func (x *SnapshotEnvelope) GetSchemaMajor() uint32 {
@@ -4011,7 +4517,45 @@ const file_docs_contracts_replicated_state_v1_proto_rawDesc = "" +
 	"\x04will\x18\n" +
 	" \x01(\v2\x1e.narumq.cluster.v1.SessionWillR\x04will\x124\n" +
 	"\x17will_due_at_unix_millis\x18\v \x01(\x04R\x13willDueAtUnixMillis\x12A\n" +
-	"\tprincipal\x18\f \x01(\v2#.narumq.cluster.v1.SessionPrincipalR\tprincipal\"\xbe\a\n" +
+	"\tprincipal\x18\f \x01(\v2#.narumq.cluster.v1.SessionPrincipalR\tprincipal\"\xdc\x01\n" +
+	"\x19ConnectionRebalanceReport\x12\x17\n" +
+	"\anode_id\x18\x01 \x01(\x04R\x06nodeId\x12 \n" +
+	"\vconnections\x18\x02 \x01(\x04R\vconnections\x121\n" +
+	"\x14sessions_transferred\x18\x03 \x01(\x04R\x13sessionsTransferred\x12\x1a\n" +
+	"\bshedding\x18\x04 \x01(\bR\bshedding\x125\n" +
+	"\x17reported_at_unix_millis\x18\x05 \x01(\x04R\x14reportedAtUnixMillis\"\xc3\x05\n" +
+	"\x19ConnectionRebalanceChange\x12D\n" +
+	"\x06action\x18\x01 \x01(\x0e2,.narumq.cluster.v1.ConnectionRebalanceActionR\x06action\x124\n" +
+	"\x16rebalance_operation_id\x18\x02 \x01(\tR\x14rebalanceOperationId\x12'\n" +
+	"\x0fidempotency_key\x18\x03 \x01(\tR\x0eidempotencyKey\x12)\n" +
+	"\x10server_reference\x18\x04 \x01(\tR\x0fserverReference\x12:\n" +
+	"\x19max_deviation_connections\x18\x05 \x01(\x04R\x17maxDeviationConnections\x12;\n" +
+	"\x1aconnection_rate_per_second\x18\x06 \x01(\rR\x17connectionRatePerSecond\x12R\n" +
+	"&load_balancer_propagation_delay_millis\x18\a \x01(\x04R\"loadBalancerPropagationDelayMillis\x12%\n" +
+	"\x0etimeout_millis\x18\b \x01(\x04R\rtimeoutMillis\x12\x17\n" +
+	"\anode_id\x18\t \x01(\x04R\x06nodeId\x12 \n" +
+	"\vconnections\x18\n" +
+	" \x01(\x04R\vconnections\x121\n" +
+	"\x14sessions_transferred\x18\v \x01(\x04R\x13sessionsTransferred\x12\x1a\n" +
+	"\bshedding\x18\f \x01(\bR\bshedding\x12!\n" +
+	"\ffailure_code\x18\r \x01(\tR\vfailureCode\x125\n" +
+	"\x17proposed_at_unix_millis\x18\x0e \x01(\x04R\x14proposedAtUnixMillis\"\x9c\x06\n" +
+	"\x18ConnectionRebalanceState\x124\n" +
+	"\x16rebalance_operation_id\x18\x01 \x01(\tR\x14rebalanceOperationId\x12'\n" +
+	"\x0fidempotency_key\x18\x02 \x01(\tR\x0eidempotencyKey\x12A\n" +
+	"\x05phase\x18\x03 \x01(\x0e2+.narumq.cluster.v1.ConnectionRebalancePhaseR\x05phase\x12)\n" +
+	"\x10server_reference\x18\x04 \x01(\tR\x0fserverReference\x12:\n" +
+	"\x19max_deviation_connections\x18\x05 \x01(\x04R\x17maxDeviationConnections\x12;\n" +
+	"\x1aconnection_rate_per_second\x18\x06 \x01(\rR\x17connectionRatePerSecond\x12R\n" +
+	"&load_balancer_propagation_delay_millis\x18\a \x01(\x04R\"loadBalancerPropagationDelayMillis\x12%\n" +
+	"\x0etimeout_millis\x18\b \x01(\x04R\rtimeoutMillis\x123\n" +
+	"\x16started_at_unix_millis\x18\t \x01(\x04R\x13startedAtUnixMillis\x125\n" +
+	"\x17deadline_at_unix_millis\x18\n" +
+	" \x01(\x04R\x14deadlineAtUnixMillis\x125\n" +
+	"\x17finished_at_unix_millis\x18\v \x01(\x04R\x14finishedAtUnixMillis\x12P\n" +
+	"\fparticipants\x18\f \x03(\v2,.narumq.cluster.v1.ConnectionRebalanceReportR\fparticipants\x12!\n" +
+	"\ffailure_code\x18\r \x01(\tR\vfailureCode\x12'\n" +
+	"\x0fcommitted_index\x18\x0e \x01(\x04R\x0ecommittedIndex\"\xa1\b\n" +
 	"\x0fCommandEnvelope\x12!\n" +
 	"\fschema_major\x18\x01 \x01(\rR\vschemaMajor\x12!\n" +
 	"\fschema_minor\x18\x02 \x01(\rR\vschemaMinor\x12!\n" +
@@ -4030,7 +4574,8 @@ const file_docs_contracts_replicated_state_v1_proto_rawDesc = "" +
 	"\ftenant_quota\x18\x12 \x01(\v2$.narumq.cluster.v1.TenantQuotaChangeH\x00R\vtenantQuota\x12O\n" +
 	"\x0emember_profile\x18\x13 \x01(\v2&.narumq.cluster.v1.MemberProfileChangeH\x00R\rmemberProfile\x12U\n" +
 	"\x12feature_activation\x18\x14 \x01(\v2$.narumq.cluster.v1.FeatureActivationH\x00R\x11featureActivation\x12U\n" +
-	"\x10session_metadata\x18\x15 \x01(\v2(.narumq.cluster.v1.SessionMetadataChangeH\x00R\x0fsessionMetadataB\t\n" +
+	"\x10session_metadata\x18\x15 \x01(\v2(.narumq.cluster.v1.SessionMetadataChangeH\x00R\x0fsessionMetadata\x12a\n" +
+	"\x14connection_rebalance\x18\x16 \x01(\v2,.narumq.cluster.v1.ConnectionRebalanceChangeH\x00R\x13connectionRebalanceB\t\n" +
 	"\apayloadJ\x04\b\r\x10\x0eR\n" +
 	"checkpoint\"\x94\x04\n" +
 	"\x0eMemberIdentity\x12\x1b\n" +
@@ -4195,7 +4740,7 @@ const file_docs_contracts_replicated_state_v1_proto_rawDesc = "" +
 	"\x03qos\x18\x06 \x01(\rR\x03qos\x12\x19\n" +
 	"\bno_local\x18\a \x01(\bR\anoLocal\x12.\n" +
 	"\x13retain_as_published\x18\b \x01(\bR\x11retainAsPublished\x12'\n" +
-	"\x0fretain_handling\x18\t \x01(\rR\x0eretainHandling\"\xcd\x06\n" +
+	"\x0fretain_handling\x18\t \x01(\rR\x0eretainHandling\"\xad\a\n" +
 	"\x17ReplicatedStateSnapshot\x12;\n" +
 	"\amembers\x18\x01 \x03(\v2!.narumq.cluster.v1.MemberIdentityR\amembers\x12A\n" +
 	"\n" +
@@ -4211,7 +4756,8 @@ const file_docs_contracts_replicated_state_v1_proto_rawDesc = "" +
 	"\x14tenant_quota_profile\x18\n" +
 	" \x01(\v2%.narumq.cluster.v1.TenantQuotaProfileR\x12tenantQuotaProfile\x12'\n" +
 	"\x0factive_features\x18\v \x03(\tR\x0eactiveFeatures\x12R\n" +
-	"\x10session_metadata\x18\f \x03(\v2'.narumq.cluster.v1.SessionMetadataStateR\x0fsessionMetadataJ\x04\b\x04\x10\x05R\vcheckpoints\"\x85\x02\n" +
+	"\x10session_metadata\x18\f \x03(\v2'.narumq.cluster.v1.SessionMetadataStateR\x0fsessionMetadata\x12^\n" +
+	"\x14connection_rebalance\x18\r \x01(\v2+.narumq.cluster.v1.ConnectionRebalanceStateR\x13connectionRebalanceJ\x04\b\x04\x10\x05R\vcheckpoints\"\x85\x02\n" +
 	"\x10SnapshotEnvelope\x12!\n" +
 	"\fschema_major\x18\x01 \x01(\rR\vschemaMajor\x12!\n" +
 	"\fschema_minor\x18\x02 \x01(\rR\vschemaMinor\x12.\n" +
@@ -4302,7 +4848,19 @@ const file_docs_contracts_replicated_state_v1_proto_rawDesc = "" +
 	"$SESSION_WILL_DISPOSITION_UNSPECIFIED\x10\x00\x12$\n" +
 	" SESSION_WILL_DISPOSITION_DISCARD\x10\x01\x12\"\n" +
 	"\x1eSESSION_WILL_DISPOSITION_CLAIM\x10\x02\x12%\n" +
-	"!SESSION_WILL_DISPOSITION_SCHEDULE\x10\x03B/Z-narumq/internal/adapters/raft/records;recordsb\x06proto3"
+	"!SESSION_WILL_DISPOSITION_SCHEDULE\x10\x03*\xe5\x01\n" +
+	"\x19ConnectionRebalanceAction\x12+\n" +
+	"'CONNECTION_REBALANCE_ACTION_UNSPECIFIED\x10\x00\x12%\n" +
+	"!CONNECTION_REBALANCE_ACTION_START\x10\x01\x12&\n" +
+	"\"CONNECTION_REBALANCE_ACTION_REPORT\x10\x02\x12$\n" +
+	" CONNECTION_REBALANCE_ACTION_FAIL\x10\x03\x12&\n" +
+	"\"CONNECTION_REBALANCE_ACTION_CANCEL\x10\x04*\xe9\x01\n" +
+	"\x18ConnectionRebalancePhase\x12*\n" +
+	"&CONNECTION_REBALANCE_PHASE_UNSPECIFIED\x10\x00\x12&\n" +
+	"\"CONNECTION_REBALANCE_PHASE_RUNNING\x10\x01\x12(\n" +
+	"$CONNECTION_REBALANCE_PHASE_COMPLETED\x10\x02\x12%\n" +
+	"!CONNECTION_REBALANCE_PHASE_FAILED\x10\x03\x12(\n" +
+	"$CONNECTION_REBALANCE_PHASE_CANCELLED\x10\x04B/Z-narumq/internal/adapters/raft/records;recordsb\x06proto3"
 
 var (
 	file_docs_contracts_replicated_state_v1_proto_rawDescOnce sync.Once
@@ -4316,114 +4874,124 @@ func file_docs_contracts_replicated_state_v1_proto_rawDescGZIP() []byte {
 	return file_docs_contracts_replicated_state_v1_proto_rawDescData
 }
 
-var file_docs_contracts_replicated_state_v1_proto_enumTypes = make([]protoimpl.EnumInfo, 13)
-var file_docs_contracts_replicated_state_v1_proto_msgTypes = make([]protoimpl.MessageInfo, 32)
+var file_docs_contracts_replicated_state_v1_proto_enumTypes = make([]protoimpl.EnumInfo, 15)
+var file_docs_contracts_replicated_state_v1_proto_msgTypes = make([]protoimpl.MessageInfo, 35)
 var file_docs_contracts_replicated_state_v1_proto_goTypes = []any{
-	(MemberPhase)(0),                // 0: narumq.cluster.v1.MemberPhase
-	(MembershipAction)(0),           // 1: narumq.cluster.v1.MembershipAction
-	(OwnershipAction)(0),            // 2: narumq.cluster.v1.OwnershipAction
-	(SubscriptionAction)(0),         // 3: narumq.cluster.v1.SubscriptionAction
-	(RetainedAction)(0),             // 4: narumq.cluster.v1.RetainedAction
-	(OfflineAction)(0),              // 5: narumq.cluster.v1.OfflineAction
-	(DeliveryAction)(0),             // 6: narumq.cluster.v1.DeliveryAction
-	(DeliveryPhase)(0),              // 7: narumq.cluster.v1.DeliveryPhase
-	(NodeDrainAction)(0),            // 8: narumq.cluster.v1.NodeDrainAction
-	(NodeDrainPhase)(0),             // 9: narumq.cluster.v1.NodeDrainPhase
-	(SessionRetention)(0),           // 10: narumq.cluster.v1.SessionRetention
-	(SessionMetadataAction)(0),      // 11: narumq.cluster.v1.SessionMetadataAction
-	(SessionWillDisposition)(0),     // 12: narumq.cluster.v1.SessionWillDisposition
-	(*NodeDrainProgress)(nil),       // 13: narumq.cluster.v1.NodeDrainProgress
-	(*NodeDrainChange)(nil),         // 14: narumq.cluster.v1.NodeDrainChange
-	(*NodeDrainState)(nil),          // 15: narumq.cluster.v1.NodeDrainState
-	(*SessionWill)(nil),             // 16: narumq.cluster.v1.SessionWill
-	(*SessionPrincipal)(nil),        // 17: narumq.cluster.v1.SessionPrincipal
-	(*SessionConnect)(nil),          // 18: narumq.cluster.v1.SessionConnect
-	(*SessionMetadataChange)(nil),   // 19: narumq.cluster.v1.SessionMetadataChange
-	(*SessionMetadataState)(nil),    // 20: narumq.cluster.v1.SessionMetadataState
-	(*CommandEnvelope)(nil),         // 21: narumq.cluster.v1.CommandEnvelope
-	(*MemberIdentity)(nil),          // 22: narumq.cluster.v1.MemberIdentity
-	(*MembershipRecord)(nil),        // 23: narumq.cluster.v1.MembershipRecord
-	(*OwnershipChange)(nil),         // 24: narumq.cluster.v1.OwnershipChange
-	(*OwnershipState)(nil),          // 25: narumq.cluster.v1.OwnershipState
-	(*SubscriptionChange)(nil),      // 26: narumq.cluster.v1.SubscriptionChange
-	(*DeliveryTarget)(nil),          // 27: narumq.cluster.v1.DeliveryTarget
-	(*DeliveryChange)(nil),          // 28: narumq.cluster.v1.DeliveryChange
-	(*DeliveryMessage)(nil),         // 29: narumq.cluster.v1.DeliveryMessage
-	(*InboundMessage)(nil),          // 30: narumq.cluster.v1.InboundMessage
-	(*DeliverySessionState)(nil),    // 31: narumq.cluster.v1.DeliverySessionState
-	(*RetainedChange)(nil),          // 32: narumq.cluster.v1.RetainedChange
-	(*RetainedState)(nil),           // 33: narumq.cluster.v1.RetainedState
-	(*TenantStorageQuota)(nil),      // 34: narumq.cluster.v1.TenantStorageQuota
-	(*TenantQuotaProfile)(nil),      // 35: narumq.cluster.v1.TenantQuotaProfile
-	(*TenantQuotaChange)(nil),       // 36: narumq.cluster.v1.TenantQuotaChange
-	(*MemberProfileChange)(nil),     // 37: narumq.cluster.v1.MemberProfileChange
-	(*FeatureActivation)(nil),       // 38: narumq.cluster.v1.FeatureActivation
-	(*OfflineMessage)(nil),          // 39: narumq.cluster.v1.OfflineMessage
-	(*OfflineChange)(nil),           // 40: narumq.cluster.v1.OfflineChange
-	(*OfflineSessionState)(nil),     // 41: narumq.cluster.v1.OfflineSessionState
-	(*SubscriptionState)(nil),       // 42: narumq.cluster.v1.SubscriptionState
-	(*ReplicatedStateSnapshot)(nil), // 43: narumq.cluster.v1.ReplicatedStateSnapshot
-	(*SnapshotEnvelope)(nil),        // 44: narumq.cluster.v1.SnapshotEnvelope
+	(MemberPhase)(0),                  // 0: narumq.cluster.v1.MemberPhase
+	(MembershipAction)(0),             // 1: narumq.cluster.v1.MembershipAction
+	(OwnershipAction)(0),              // 2: narumq.cluster.v1.OwnershipAction
+	(SubscriptionAction)(0),           // 3: narumq.cluster.v1.SubscriptionAction
+	(RetainedAction)(0),               // 4: narumq.cluster.v1.RetainedAction
+	(OfflineAction)(0),                // 5: narumq.cluster.v1.OfflineAction
+	(DeliveryAction)(0),               // 6: narumq.cluster.v1.DeliveryAction
+	(DeliveryPhase)(0),                // 7: narumq.cluster.v1.DeliveryPhase
+	(NodeDrainAction)(0),              // 8: narumq.cluster.v1.NodeDrainAction
+	(NodeDrainPhase)(0),               // 9: narumq.cluster.v1.NodeDrainPhase
+	(SessionRetention)(0),             // 10: narumq.cluster.v1.SessionRetention
+	(SessionMetadataAction)(0),        // 11: narumq.cluster.v1.SessionMetadataAction
+	(SessionWillDisposition)(0),       // 12: narumq.cluster.v1.SessionWillDisposition
+	(ConnectionRebalanceAction)(0),    // 13: narumq.cluster.v1.ConnectionRebalanceAction
+	(ConnectionRebalancePhase)(0),     // 14: narumq.cluster.v1.ConnectionRebalancePhase
+	(*NodeDrainProgress)(nil),         // 15: narumq.cluster.v1.NodeDrainProgress
+	(*NodeDrainChange)(nil),           // 16: narumq.cluster.v1.NodeDrainChange
+	(*NodeDrainState)(nil),            // 17: narumq.cluster.v1.NodeDrainState
+	(*SessionWill)(nil),               // 18: narumq.cluster.v1.SessionWill
+	(*SessionPrincipal)(nil),          // 19: narumq.cluster.v1.SessionPrincipal
+	(*SessionConnect)(nil),            // 20: narumq.cluster.v1.SessionConnect
+	(*SessionMetadataChange)(nil),     // 21: narumq.cluster.v1.SessionMetadataChange
+	(*SessionMetadataState)(nil),      // 22: narumq.cluster.v1.SessionMetadataState
+	(*ConnectionRebalanceReport)(nil), // 23: narumq.cluster.v1.ConnectionRebalanceReport
+	(*ConnectionRebalanceChange)(nil), // 24: narumq.cluster.v1.ConnectionRebalanceChange
+	(*ConnectionRebalanceState)(nil),  // 25: narumq.cluster.v1.ConnectionRebalanceState
+	(*CommandEnvelope)(nil),           // 26: narumq.cluster.v1.CommandEnvelope
+	(*MemberIdentity)(nil),            // 27: narumq.cluster.v1.MemberIdentity
+	(*MembershipRecord)(nil),          // 28: narumq.cluster.v1.MembershipRecord
+	(*OwnershipChange)(nil),           // 29: narumq.cluster.v1.OwnershipChange
+	(*OwnershipState)(nil),            // 30: narumq.cluster.v1.OwnershipState
+	(*SubscriptionChange)(nil),        // 31: narumq.cluster.v1.SubscriptionChange
+	(*DeliveryTarget)(nil),            // 32: narumq.cluster.v1.DeliveryTarget
+	(*DeliveryChange)(nil),            // 33: narumq.cluster.v1.DeliveryChange
+	(*DeliveryMessage)(nil),           // 34: narumq.cluster.v1.DeliveryMessage
+	(*InboundMessage)(nil),            // 35: narumq.cluster.v1.InboundMessage
+	(*DeliverySessionState)(nil),      // 36: narumq.cluster.v1.DeliverySessionState
+	(*RetainedChange)(nil),            // 37: narumq.cluster.v1.RetainedChange
+	(*RetainedState)(nil),             // 38: narumq.cluster.v1.RetainedState
+	(*TenantStorageQuota)(nil),        // 39: narumq.cluster.v1.TenantStorageQuota
+	(*TenantQuotaProfile)(nil),        // 40: narumq.cluster.v1.TenantQuotaProfile
+	(*TenantQuotaChange)(nil),         // 41: narumq.cluster.v1.TenantQuotaChange
+	(*MemberProfileChange)(nil),       // 42: narumq.cluster.v1.MemberProfileChange
+	(*FeatureActivation)(nil),         // 43: narumq.cluster.v1.FeatureActivation
+	(*OfflineMessage)(nil),            // 44: narumq.cluster.v1.OfflineMessage
+	(*OfflineChange)(nil),             // 45: narumq.cluster.v1.OfflineChange
+	(*OfflineSessionState)(nil),       // 46: narumq.cluster.v1.OfflineSessionState
+	(*SubscriptionState)(nil),         // 47: narumq.cluster.v1.SubscriptionState
+	(*ReplicatedStateSnapshot)(nil),   // 48: narumq.cluster.v1.ReplicatedStateSnapshot
+	(*SnapshotEnvelope)(nil),          // 49: narumq.cluster.v1.SnapshotEnvelope
 }
 var file_docs_contracts_replicated_state_v1_proto_depIdxs = []int32{
 	8,  // 0: narumq.cluster.v1.NodeDrainChange.action:type_name -> narumq.cluster.v1.NodeDrainAction
 	9,  // 1: narumq.cluster.v1.NodeDrainChange.phase:type_name -> narumq.cluster.v1.NodeDrainPhase
-	13, // 2: narumq.cluster.v1.NodeDrainChange.progress:type_name -> narumq.cluster.v1.NodeDrainProgress
+	15, // 2: narumq.cluster.v1.NodeDrainChange.progress:type_name -> narumq.cluster.v1.NodeDrainProgress
 	9,  // 3: narumq.cluster.v1.NodeDrainState.phase:type_name -> narumq.cluster.v1.NodeDrainPhase
-	13, // 4: narumq.cluster.v1.NodeDrainState.progress:type_name -> narumq.cluster.v1.NodeDrainProgress
+	15, // 4: narumq.cluster.v1.NodeDrainState.progress:type_name -> narumq.cluster.v1.NodeDrainProgress
 	10, // 5: narumq.cluster.v1.SessionConnect.retention:type_name -> narumq.cluster.v1.SessionRetention
-	16, // 6: narumq.cluster.v1.SessionConnect.will:type_name -> narumq.cluster.v1.SessionWill
-	17, // 7: narumq.cluster.v1.SessionConnect.principal:type_name -> narumq.cluster.v1.SessionPrincipal
+	18, // 6: narumq.cluster.v1.SessionConnect.will:type_name -> narumq.cluster.v1.SessionWill
+	19, // 7: narumq.cluster.v1.SessionConnect.principal:type_name -> narumq.cluster.v1.SessionPrincipal
 	11, // 8: narumq.cluster.v1.SessionMetadataChange.action:type_name -> narumq.cluster.v1.SessionMetadataAction
 	12, // 9: narumq.cluster.v1.SessionMetadataChange.will_disposition:type_name -> narumq.cluster.v1.SessionWillDisposition
 	10, // 10: narumq.cluster.v1.SessionMetadataState.retention:type_name -> narumq.cluster.v1.SessionRetention
-	16, // 11: narumq.cluster.v1.SessionMetadataState.will:type_name -> narumq.cluster.v1.SessionWill
-	17, // 12: narumq.cluster.v1.SessionMetadataState.principal:type_name -> narumq.cluster.v1.SessionPrincipal
-	23, // 13: narumq.cluster.v1.CommandEnvelope.membership:type_name -> narumq.cluster.v1.MembershipRecord
-	24, // 14: narumq.cluster.v1.CommandEnvelope.ownership:type_name -> narumq.cluster.v1.OwnershipChange
-	26, // 15: narumq.cluster.v1.CommandEnvelope.subscription:type_name -> narumq.cluster.v1.SubscriptionChange
-	28, // 16: narumq.cluster.v1.CommandEnvelope.delivery:type_name -> narumq.cluster.v1.DeliveryChange
-	32, // 17: narumq.cluster.v1.CommandEnvelope.retained:type_name -> narumq.cluster.v1.RetainedChange
-	40, // 18: narumq.cluster.v1.CommandEnvelope.offline:type_name -> narumq.cluster.v1.OfflineChange
-	14, // 19: narumq.cluster.v1.CommandEnvelope.node_drain:type_name -> narumq.cluster.v1.NodeDrainChange
-	36, // 20: narumq.cluster.v1.CommandEnvelope.tenant_quota:type_name -> narumq.cluster.v1.TenantQuotaChange
-	37, // 21: narumq.cluster.v1.CommandEnvelope.member_profile:type_name -> narumq.cluster.v1.MemberProfileChange
-	38, // 22: narumq.cluster.v1.CommandEnvelope.feature_activation:type_name -> narumq.cluster.v1.FeatureActivation
-	19, // 23: narumq.cluster.v1.CommandEnvelope.session_metadata:type_name -> narumq.cluster.v1.SessionMetadataChange
-	0,  // 24: narumq.cluster.v1.MemberIdentity.phase:type_name -> narumq.cluster.v1.MemberPhase
-	1,  // 25: narumq.cluster.v1.MembershipRecord.action:type_name -> narumq.cluster.v1.MembershipAction
-	22, // 26: narumq.cluster.v1.MembershipRecord.member:type_name -> narumq.cluster.v1.MemberIdentity
-	2,  // 27: narumq.cluster.v1.OwnershipChange.action:type_name -> narumq.cluster.v1.OwnershipAction
-	18, // 28: narumq.cluster.v1.OwnershipChange.session:type_name -> narumq.cluster.v1.SessionConnect
-	3,  // 29: narumq.cluster.v1.SubscriptionChange.action:type_name -> narumq.cluster.v1.SubscriptionAction
-	6,  // 30: narumq.cluster.v1.DeliveryChange.action:type_name -> narumq.cluster.v1.DeliveryAction
-	27, // 31: narumq.cluster.v1.DeliveryChange.targets:type_name -> narumq.cluster.v1.DeliveryTarget
-	7,  // 32: narumq.cluster.v1.DeliveryMessage.phase:type_name -> narumq.cluster.v1.DeliveryPhase
-	29, // 33: narumq.cluster.v1.DeliverySessionState.messages:type_name -> narumq.cluster.v1.DeliveryMessage
-	30, // 34: narumq.cluster.v1.DeliverySessionState.inbound:type_name -> narumq.cluster.v1.InboundMessage
-	4,  // 35: narumq.cluster.v1.RetainedChange.action:type_name -> narumq.cluster.v1.RetainedAction
-	34, // 36: narumq.cluster.v1.TenantQuotaProfile.default_quota:type_name -> narumq.cluster.v1.TenantStorageQuota
-	34, // 37: narumq.cluster.v1.TenantQuotaProfile.tenants:type_name -> narumq.cluster.v1.TenantStorageQuota
-	35, // 38: narumq.cluster.v1.TenantQuotaChange.profile:type_name -> narumq.cluster.v1.TenantQuotaProfile
-	5,  // 39: narumq.cluster.v1.OfflineChange.action:type_name -> narumq.cluster.v1.OfflineAction
-	39, // 40: narumq.cluster.v1.OfflineChange.messages:type_name -> narumq.cluster.v1.OfflineMessage
-	39, // 41: narumq.cluster.v1.OfflineSessionState.messages:type_name -> narumq.cluster.v1.OfflineMessage
-	22, // 42: narumq.cluster.v1.ReplicatedStateSnapshot.members:type_name -> narumq.cluster.v1.MemberIdentity
-	25, // 43: narumq.cluster.v1.ReplicatedStateSnapshot.ownerships:type_name -> narumq.cluster.v1.OwnershipState
-	42, // 44: narumq.cluster.v1.ReplicatedStateSnapshot.subscriptions:type_name -> narumq.cluster.v1.SubscriptionState
-	23, // 45: narumq.cluster.v1.ReplicatedStateSnapshot.membership_history:type_name -> narumq.cluster.v1.MembershipRecord
-	33, // 46: narumq.cluster.v1.ReplicatedStateSnapshot.retained:type_name -> narumq.cluster.v1.RetainedState
-	41, // 47: narumq.cluster.v1.ReplicatedStateSnapshot.offline_sessions:type_name -> narumq.cluster.v1.OfflineSessionState
-	31, // 48: narumq.cluster.v1.ReplicatedStateSnapshot.delivery_sessions:type_name -> narumq.cluster.v1.DeliverySessionState
-	15, // 49: narumq.cluster.v1.ReplicatedStateSnapshot.node_drains:type_name -> narumq.cluster.v1.NodeDrainState
-	35, // 50: narumq.cluster.v1.ReplicatedStateSnapshot.tenant_quota_profile:type_name -> narumq.cluster.v1.TenantQuotaProfile
-	20, // 51: narumq.cluster.v1.ReplicatedStateSnapshot.session_metadata:type_name -> narumq.cluster.v1.SessionMetadataState
-	43, // 52: narumq.cluster.v1.SnapshotEnvelope.state:type_name -> narumq.cluster.v1.ReplicatedStateSnapshot
-	53, // [53:53] is the sub-list for method output_type
-	53, // [53:53] is the sub-list for method input_type
-	53, // [53:53] is the sub-list for extension type_name
-	53, // [53:53] is the sub-list for extension extendee
-	0,  // [0:53] is the sub-list for field type_name
+	18, // 11: narumq.cluster.v1.SessionMetadataState.will:type_name -> narumq.cluster.v1.SessionWill
+	19, // 12: narumq.cluster.v1.SessionMetadataState.principal:type_name -> narumq.cluster.v1.SessionPrincipal
+	13, // 13: narumq.cluster.v1.ConnectionRebalanceChange.action:type_name -> narumq.cluster.v1.ConnectionRebalanceAction
+	14, // 14: narumq.cluster.v1.ConnectionRebalanceState.phase:type_name -> narumq.cluster.v1.ConnectionRebalancePhase
+	23, // 15: narumq.cluster.v1.ConnectionRebalanceState.participants:type_name -> narumq.cluster.v1.ConnectionRebalanceReport
+	28, // 16: narumq.cluster.v1.CommandEnvelope.membership:type_name -> narumq.cluster.v1.MembershipRecord
+	29, // 17: narumq.cluster.v1.CommandEnvelope.ownership:type_name -> narumq.cluster.v1.OwnershipChange
+	31, // 18: narumq.cluster.v1.CommandEnvelope.subscription:type_name -> narumq.cluster.v1.SubscriptionChange
+	33, // 19: narumq.cluster.v1.CommandEnvelope.delivery:type_name -> narumq.cluster.v1.DeliveryChange
+	37, // 20: narumq.cluster.v1.CommandEnvelope.retained:type_name -> narumq.cluster.v1.RetainedChange
+	45, // 21: narumq.cluster.v1.CommandEnvelope.offline:type_name -> narumq.cluster.v1.OfflineChange
+	16, // 22: narumq.cluster.v1.CommandEnvelope.node_drain:type_name -> narumq.cluster.v1.NodeDrainChange
+	41, // 23: narumq.cluster.v1.CommandEnvelope.tenant_quota:type_name -> narumq.cluster.v1.TenantQuotaChange
+	42, // 24: narumq.cluster.v1.CommandEnvelope.member_profile:type_name -> narumq.cluster.v1.MemberProfileChange
+	43, // 25: narumq.cluster.v1.CommandEnvelope.feature_activation:type_name -> narumq.cluster.v1.FeatureActivation
+	21, // 26: narumq.cluster.v1.CommandEnvelope.session_metadata:type_name -> narumq.cluster.v1.SessionMetadataChange
+	24, // 27: narumq.cluster.v1.CommandEnvelope.connection_rebalance:type_name -> narumq.cluster.v1.ConnectionRebalanceChange
+	0,  // 28: narumq.cluster.v1.MemberIdentity.phase:type_name -> narumq.cluster.v1.MemberPhase
+	1,  // 29: narumq.cluster.v1.MembershipRecord.action:type_name -> narumq.cluster.v1.MembershipAction
+	27, // 30: narumq.cluster.v1.MembershipRecord.member:type_name -> narumq.cluster.v1.MemberIdentity
+	2,  // 31: narumq.cluster.v1.OwnershipChange.action:type_name -> narumq.cluster.v1.OwnershipAction
+	20, // 32: narumq.cluster.v1.OwnershipChange.session:type_name -> narumq.cluster.v1.SessionConnect
+	3,  // 33: narumq.cluster.v1.SubscriptionChange.action:type_name -> narumq.cluster.v1.SubscriptionAction
+	6,  // 34: narumq.cluster.v1.DeliveryChange.action:type_name -> narumq.cluster.v1.DeliveryAction
+	32, // 35: narumq.cluster.v1.DeliveryChange.targets:type_name -> narumq.cluster.v1.DeliveryTarget
+	7,  // 36: narumq.cluster.v1.DeliveryMessage.phase:type_name -> narumq.cluster.v1.DeliveryPhase
+	34, // 37: narumq.cluster.v1.DeliverySessionState.messages:type_name -> narumq.cluster.v1.DeliveryMessage
+	35, // 38: narumq.cluster.v1.DeliverySessionState.inbound:type_name -> narumq.cluster.v1.InboundMessage
+	4,  // 39: narumq.cluster.v1.RetainedChange.action:type_name -> narumq.cluster.v1.RetainedAction
+	39, // 40: narumq.cluster.v1.TenantQuotaProfile.default_quota:type_name -> narumq.cluster.v1.TenantStorageQuota
+	39, // 41: narumq.cluster.v1.TenantQuotaProfile.tenants:type_name -> narumq.cluster.v1.TenantStorageQuota
+	40, // 42: narumq.cluster.v1.TenantQuotaChange.profile:type_name -> narumq.cluster.v1.TenantQuotaProfile
+	5,  // 43: narumq.cluster.v1.OfflineChange.action:type_name -> narumq.cluster.v1.OfflineAction
+	44, // 44: narumq.cluster.v1.OfflineChange.messages:type_name -> narumq.cluster.v1.OfflineMessage
+	44, // 45: narumq.cluster.v1.OfflineSessionState.messages:type_name -> narumq.cluster.v1.OfflineMessage
+	27, // 46: narumq.cluster.v1.ReplicatedStateSnapshot.members:type_name -> narumq.cluster.v1.MemberIdentity
+	30, // 47: narumq.cluster.v1.ReplicatedStateSnapshot.ownerships:type_name -> narumq.cluster.v1.OwnershipState
+	47, // 48: narumq.cluster.v1.ReplicatedStateSnapshot.subscriptions:type_name -> narumq.cluster.v1.SubscriptionState
+	28, // 49: narumq.cluster.v1.ReplicatedStateSnapshot.membership_history:type_name -> narumq.cluster.v1.MembershipRecord
+	38, // 50: narumq.cluster.v1.ReplicatedStateSnapshot.retained:type_name -> narumq.cluster.v1.RetainedState
+	46, // 51: narumq.cluster.v1.ReplicatedStateSnapshot.offline_sessions:type_name -> narumq.cluster.v1.OfflineSessionState
+	36, // 52: narumq.cluster.v1.ReplicatedStateSnapshot.delivery_sessions:type_name -> narumq.cluster.v1.DeliverySessionState
+	17, // 53: narumq.cluster.v1.ReplicatedStateSnapshot.node_drains:type_name -> narumq.cluster.v1.NodeDrainState
+	40, // 54: narumq.cluster.v1.ReplicatedStateSnapshot.tenant_quota_profile:type_name -> narumq.cluster.v1.TenantQuotaProfile
+	22, // 55: narumq.cluster.v1.ReplicatedStateSnapshot.session_metadata:type_name -> narumq.cluster.v1.SessionMetadataState
+	25, // 56: narumq.cluster.v1.ReplicatedStateSnapshot.connection_rebalance:type_name -> narumq.cluster.v1.ConnectionRebalanceState
+	48, // 57: narumq.cluster.v1.SnapshotEnvelope.state:type_name -> narumq.cluster.v1.ReplicatedStateSnapshot
+	58, // [58:58] is the sub-list for method output_type
+	58, // [58:58] is the sub-list for method input_type
+	58, // [58:58] is the sub-list for extension type_name
+	58, // [58:58] is the sub-list for extension extendee
+	0,  // [0:58] is the sub-list for field type_name
 }
 
 func init() { file_docs_contracts_replicated_state_v1_proto_init() }
@@ -4431,7 +4999,7 @@ func file_docs_contracts_replicated_state_v1_proto_init() {
 	if File_docs_contracts_replicated_state_v1_proto != nil {
 		return
 	}
-	file_docs_contracts_replicated_state_v1_proto_msgTypes[8].OneofWrappers = []any{
+	file_docs_contracts_replicated_state_v1_proto_msgTypes[11].OneofWrappers = []any{
 		(*CommandEnvelope_Membership)(nil),
 		(*CommandEnvelope_Ownership)(nil),
 		(*CommandEnvelope_Subscription)(nil),
@@ -4443,14 +5011,15 @@ func file_docs_contracts_replicated_state_v1_proto_init() {
 		(*CommandEnvelope_MemberProfile)(nil),
 		(*CommandEnvelope_FeatureActivation)(nil),
 		(*CommandEnvelope_SessionMetadata)(nil),
+		(*CommandEnvelope_ConnectionRebalance)(nil),
 	}
 	type x struct{}
 	out := protoimpl.TypeBuilder{
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_docs_contracts_replicated_state_v1_proto_rawDesc), len(file_docs_contracts_replicated_state_v1_proto_rawDesc)),
-			NumEnums:      13,
-			NumMessages:   32,
+			NumEnums:      15,
+			NumMessages:   35,
 			NumExtensions: 0,
 			NumServices:   0,
 		},

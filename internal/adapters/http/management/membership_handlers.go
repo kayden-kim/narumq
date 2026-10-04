@@ -323,6 +323,9 @@ func writeMembershipServiceError(w http.ResponseWriter, r *http.Request, err err
 		membership.ServiceErrorInvalidNodeTransition,
 		membership.ServiceErrorDrainNotCancellable,
 		membership.ServiceErrorNodeDrainInProgress,
+		membership.ServiceErrorConnectionRebalanceInProgress,
+		membership.ServiceErrorRebalanceNotCancellable,
+		membership.ServiceErrorFeatureInactive,
 		membership.ServiceErrorFeatureUnsupported:
 		status = http.StatusConflict
 	case membership.ServiceErrorCompatibilityUnsupported:

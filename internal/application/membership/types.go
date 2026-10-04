@@ -1,7 +1,10 @@
 // Package membership owns committed cluster membership and replicated session state.
 package membership
 
-import "narumq/internal/domain/nodedrain"
+import (
+	"narumq/internal/domain/connrebalance"
+	"narumq/internal/domain/nodedrain"
+)
 
 // SchemaMajor and SchemaMinor identify the supported replicated-state contract.
 const (
@@ -27,7 +30,10 @@ const (
 )
 
 // Session metadata capacity is cluster-wide and is not tenant storage quota.
+// Connection rebalance and session metadata are separately activated replicated features.
 const (
+	// ConnectionRebalanceFeature identifies the replicated connection rebalance feature.
+	ConnectionRebalanceFeature    = "connection-rebalance"
 	SessionMetadataFeature        = "session-metadata"
 	MaxSessionWillBytes           = 8 << 20
 	MaxSessionWillPayloadBytes    = 65535
@@ -332,24 +338,94 @@ const (
 	NodeDrainActionClear
 )
 
+// ConnectionRebalanceAction identifies a replicated connection rebalance transition.
+type ConnectionRebalanceAction uint32
+
+const (
+	// ConnectionRebalanceActionUnspecified is not a valid transition.
+	ConnectionRebalanceActionUnspecified ConnectionRebalanceAction = iota
+	// ConnectionRebalanceActionStart begins a cluster-wide rebalance operation.
+	ConnectionRebalanceActionStart
+	// ConnectionRebalanceActionReport replaces a participant's latest report.
+	ConnectionRebalanceActionReport
+	// ConnectionRebalanceActionFail terminates the operation as failed.
+	ConnectionRebalanceActionFail
+	// ConnectionRebalanceActionCancel cancels a running operation.
+	ConnectionRebalanceActionCancel
+)
+
+// ConnectionRebalanceReportDTO is a voter's latest committed connection report.
+type ConnectionRebalanceReportDTO struct {
+	NodeID, Connections, SessionsTransferred uint64
+	Shedding                                 bool
+	ReportedAtUnixMillis                     uint64
+}
+
+// ConnectionRebalanceChangeDTO carries one deterministic rebalance transition.
+type ConnectionRebalanceChangeDTO struct {
+	Action                                   ConnectionRebalanceAction
+	RebalanceOperationID, IdempotencyKey     string
+	ServerReference                          string
+	MaxDeviationConnections                  uint64
+	ConnectionRatePerSecond                  uint32
+	LoadBalancerPropagationDelayMillis       uint64
+	TimeoutMillis                            uint64
+	NodeID, Connections, SessionsTransferred uint64
+	Shedding                                 bool
+	FailureCode                              string
+	ProposedAtUnixMillis                     uint64
+}
+
+// ConnectionRebalanceStateDTO is the committed cluster rebalance state.
+type ConnectionRebalanceStateDTO struct {
+	RebalanceOperationID, IdempotencyKey      string
+	Phase                                     connrebalance.Phase
+	ServerReference                           string
+	MaxDeviationConnections                   uint64
+	ConnectionRatePerSecond                   uint32
+	LoadBalancerPropagationDelayMillis        uint64
+	TimeoutMillis                             uint64
+	StartedAtUnixMillis, DeadlineAtUnixMillis uint64
+	FinishedAtUnixMillis                      uint64
+	Participants                              []ConnectionRebalanceReportDTO
+	FailureCode                               string
+	CommittedIndex                            uint64
+}
+
+// StartConnectionRebalanceRequestDTO contains operator-supplied operation parameters.
+type StartConnectionRebalanceRequestDTO struct {
+	IdempotencyKey, ServerReference    string
+	MaxDeviationConnections            uint64
+	ConnectionRatePerSecond            uint32
+	LoadBalancerPropagationDelayMillis uint64
+	TimeoutMillis                      uint64
+}
+
+// ConnectionRebalanceOperationDTO combines committed state with retry classification.
+type ConnectionRebalanceOperationDTO struct {
+	State    ConnectionRebalanceStateDTO
+	Replayed bool
+}
+
 // CommandDTO is an application-owned discriminated union for one committed command.
 // Exactly one payload must be non-nil. Its fields intentionally mirror the v1
 // replicated-state contract without importing adapter or generated wire types.
 type CommandDTO struct {
-	SchemaMajor       uint32
-	SchemaMinor       uint32
-	OperationID       string
-	Membership        *MembershipRecordDTO
-	Ownership         *OwnershipChangeDTO
-	Subscription      *SubscriptionChangeDTO
-	Delivery          *DeliveryChangeDTO
-	Retained          *RetainedChangeDTO
-	Offline           *OfflineChangeDTO
-	NodeDrain         *NodeDrainChangeDTO
-	TenantQuota       *TenantQuotaChangeDTO
-	MemberProfile     *MemberProfileChangeDTO
-	FeatureActivation *FeatureActivationDTO
-	SessionMetadata   *SessionMetadataChangeDTO
+	SchemaMajor         uint32
+	SchemaMinor         uint32
+	OperationID         string
+	Membership          *MembershipRecordDTO
+	Ownership           *OwnershipChangeDTO
+	Subscription        *SubscriptionChangeDTO
+	Delivery            *DeliveryChangeDTO
+	Retained            *RetainedChangeDTO
+	Offline             *OfflineChangeDTO
+	NodeDrain           *NodeDrainChangeDTO
+	TenantQuota         *TenantQuotaChangeDTO
+	MemberProfile       *MemberProfileChangeDTO
+	FeatureActivation   *FeatureActivationDTO
+	SessionMetadata     *SessionMetadataChangeDTO
+	ConnectionRebalance *ConnectionRebalanceChangeDTO
 }
 
 // MemberIdentityDTO is a committed cluster member identity and lifecycle phase.
@@ -561,51 +637,54 @@ const (
 type ApplyConflictCode string
 
 const (
-	ConflictNone                     ApplyConflictCode = ""
-	ConflictMemberIDReserved         ApplyConflictCode = "member_id_reserved"
-	ConflictMemberIdentity           ApplyConflictCode = "member_identity_conflict"
-	ConflictIdempotency              ApplyConflictCode = "idempotency_conflict"
-	ConflictOperationID              ApplyConflictCode = "operation_id_conflict"
-	ConflictMembershipInProgress     ApplyConflictCode = "membership_change_in_progress"
-	ConflictOperationNotFound        ApplyConflictCode = "operation_not_found"
-	ConflictPhase                    ApplyConflictCode = "phase_conflict"
-	ConflictConfigurationMismatch    ApplyConflictCode = "configuration_mismatch"
-	ConflictStaleEpoch               ApplyConflictCode = "stale_epoch"
-	ConflictOwnershipMissing         ApplyConflictCode = "ownership_missing"
-	ConflictMemberNotFound           ApplyConflictCode = "member_not_found"
-	ConflictCompatibilityUnsupported ApplyConflictCode = "compatibility_unsupported"
-	ConflictActiveFeatureMissing     ApplyConflictCode = "active_feature_missing"
-	ConflictFeatureUnsupported       ApplyConflictCode = "feature_not_supported_by_all_members"
-	ConflictRetainedCapacity         ApplyConflictCode = "retained_capacity_exceeded"
-	ConflictOfflineCapacity          ApplyConflictCode = "offline_capacity_exceeded"
-	ConflictOfflineSessionMissing    ApplyConflictCode = "offline_session_missing"
-	ConflictDeliveryCapacity         ApplyConflictCode = "delivery_capacity_exceeded"
-	ConflictDeliveryMissing          ApplyConflictCode = "delivery_missing"
-	ConflictDeliveryPacketID         ApplyConflictCode = "delivery_packet_id_conflict"
-	ConflictNodeDrainActive          ApplyConflictCode = "node_drain_active"
-	ConflictNodeDrainInProgress      ApplyConflictCode = "node_drain_in_progress"
-	ConflictDrainNotCancellable      ApplyConflictCode = "drain_not_cancellable"
-	ConflictDeliverySessionMissing   ApplyConflictCode = "delivery_session_missing"
-	ConflictTenantQuotaStale         ApplyConflictCode = "tenant_quota_stale"
-	ConflictFeatureInactive          ApplyConflictCode = "feature_inactive"
-	ConflictSessionMetadataCapacity  ApplyConflictCode = "session_metadata_capacity_exceeded"
-	ConflictSessionMetadataInvalid   ApplyConflictCode = "session_metadata_invalid"
+	ConflictNone                          ApplyConflictCode = ""
+	ConflictMemberIDReserved              ApplyConflictCode = "member_id_reserved"
+	ConflictMemberIdentity                ApplyConflictCode = "member_identity_conflict"
+	ConflictIdempotency                   ApplyConflictCode = "idempotency_conflict"
+	ConflictOperationID                   ApplyConflictCode = "operation_id_conflict"
+	ConflictMembershipInProgress          ApplyConflictCode = "membership_change_in_progress"
+	ConflictOperationNotFound             ApplyConflictCode = "operation_not_found"
+	ConflictPhase                         ApplyConflictCode = "phase_conflict"
+	ConflictConfigurationMismatch         ApplyConflictCode = "configuration_mismatch"
+	ConflictStaleEpoch                    ApplyConflictCode = "stale_epoch"
+	ConflictOwnershipMissing              ApplyConflictCode = "ownership_missing"
+	ConflictMemberNotFound                ApplyConflictCode = "member_not_found"
+	ConflictCompatibilityUnsupported      ApplyConflictCode = "compatibility_unsupported"
+	ConflictActiveFeatureMissing          ApplyConflictCode = "active_feature_missing"
+	ConflictFeatureUnsupported            ApplyConflictCode = "feature_not_supported_by_all_members"
+	ConflictRetainedCapacity              ApplyConflictCode = "retained_capacity_exceeded"
+	ConflictOfflineCapacity               ApplyConflictCode = "offline_capacity_exceeded"
+	ConflictOfflineSessionMissing         ApplyConflictCode = "offline_session_missing"
+	ConflictDeliveryCapacity              ApplyConflictCode = "delivery_capacity_exceeded"
+	ConflictDeliveryMissing               ApplyConflictCode = "delivery_missing"
+	ConflictDeliveryPacketID              ApplyConflictCode = "delivery_packet_id_conflict"
+	ConflictNodeDrainActive               ApplyConflictCode = "node_drain_active"
+	ConflictNodeDrainInProgress           ApplyConflictCode = "node_drain_in_progress"
+	ConflictDrainNotCancellable           ApplyConflictCode = "drain_not_cancellable"
+	ConflictDeliverySessionMissing        ApplyConflictCode = "delivery_session_missing"
+	ConflictTenantQuotaStale              ApplyConflictCode = "tenant_quota_stale"
+	ConflictFeatureInactive               ApplyConflictCode = "feature_inactive"
+	ConflictSessionMetadataCapacity       ApplyConflictCode = "session_metadata_capacity_exceeded"
+	ConflictSessionMetadataInvalid        ApplyConflictCode = "session_metadata_invalid"
+	ConflictConnectionRebalanceInProgress ApplyConflictCode = "connection_rebalance_in_progress"
+	ConflictRebalanceNotCancellable       ApplyConflictCode = "rebalance_not_cancellable"
 )
 
 // ApplyResultDTO reports the deterministic result at a committed application index.
 type ApplyResultDTO struct {
-	Index           uint64
-	Outcome         ApplyOutcome
-	Conflict        ApplyConflictCode
-	Operation       *MembershipOperationDTO
-	Ownership       *OwnershipStateDTO
-	Subscription    *SubscriptionStateDTO
-	Delivery        *DeliveryResultDTO
-	OfflineClaim    *OfflineClaimDTO
-	NodeDrain       *NodeDrainStateDTO
-	TenantQuota     *TenantQuotaRejectionDTO
-	SessionMetadata *SessionMetadataResultDTO
-	SupersededWill  *SupersededWillDTO
+	Index               uint64
+	Outcome             ApplyOutcome
+	Conflict            ApplyConflictCode
+	Operation           *MembershipOperationDTO
+	Ownership           *OwnershipStateDTO
+	Subscription        *SubscriptionStateDTO
+	Delivery            *DeliveryResultDTO
+	OfflineClaim        *OfflineClaimDTO
+	NodeDrain           *NodeDrainStateDTO
+	TenantQuota         *TenantQuotaRejectionDTO
+	SessionMetadata     *SessionMetadataResultDTO
+	ConnectionRebalance *ConnectionRebalanceStateDTO
+	SupersededWill      *SupersededWillDTO
 }
 
 // MembershipOperationPhase is the management-facing current operation status.
@@ -692,20 +771,21 @@ type NodeDrainOperationDTO struct {
 // Digest is opaque adapter-verified envelope data; an empty Digest asks the adapter
 // to compute the contract's deterministic protobuf state digest when encoding.
 type SnapshotDTO struct {
-	SchemaMajor        uint32
-	SchemaMinor        uint32
-	LastIncludedIndex  uint64
-	ObjectCount        uint64
-	Digest             []byte
-	Members            []MemberIdentityDTO
-	Ownerships         []OwnershipStateDTO
-	Subscriptions      []SubscriptionStateDTO
-	DeliverySessions   []DeliverySessionStateDTO
-	MembershipHistory  []MembershipRecordDTO
-	Retained           []RetainedStateDTO
-	OfflineSessions    []OfflineSessionStateDTO
-	NodeDrains         []NodeDrainStateDTO
-	TenantQuotaProfile *TenantQuotaProfileDTO
-	ActiveFeatures     []string
-	SessionMetadata    []SessionMetadataStateDTO
+	SchemaMajor         uint32
+	SchemaMinor         uint32
+	LastIncludedIndex   uint64
+	ObjectCount         uint64
+	Digest              []byte
+	Members             []MemberIdentityDTO
+	Ownerships          []OwnershipStateDTO
+	Subscriptions       []SubscriptionStateDTO
+	DeliverySessions    []DeliverySessionStateDTO
+	MembershipHistory   []MembershipRecordDTO
+	Retained            []RetainedStateDTO
+	OfflineSessions     []OfflineSessionStateDTO
+	NodeDrains          []NodeDrainStateDTO
+	TenantQuotaProfile  *TenantQuotaProfileDTO
+	ActiveFeatures      []string
+	SessionMetadata     []SessionMetadataStateDTO
+	ConnectionRebalance *ConnectionRebalanceStateDTO
 }

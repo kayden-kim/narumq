@@ -222,6 +222,27 @@ Capacity 검사는 저장을 예약하지 않는다. 따라서 동시에 수용�
 
 Durable delivery는 session 전체를 교체하는 final checkpoint 대신 SEND·ADVANCE·COMPLETE 등 각 QoS 전이를 먼저 commit한다. `-cluster-config`의 broker-side planned drain은 `NodeDrain` operation을 quorum에 저장하고 `cmd/narumq/cluster_drain.go`가 admission 차단, LB propagation delay, rate 제한 ownership transfer와 barrier를 조정한다. `internal/domain/nodedrain`은 phase와 blocker 규칙을 소유한다. `SAFE_TO_STOP` 뒤에도 process 종료나 Pod 삭제는 자동 승인되지 않는다. External rollout controller, Kubernetes lifecycle, BP-07과 N-1↔N은 별도 scope다. 정확한 operation contract와 수용 증거는 [Drain spec](../specs/drain-and-rolling-update.md) §10을 따른다.
 
+## 연결 rebalance 실행 경로
+
+이 절은 [ADR-0033](../decisions/ADR-0033-connection-rebalance-operation.md)을 구현한 현재 모듈을 설명한다. 전체 문서의 Draft 상태와 별개로 이 경로는 실제 구현에 연결되어 있다. 동작 기준과 실행 증거는 [Cluster §9·§11.31](../specs/cluster-session-and-delivery.md#1131-연결-rebalance-수용-매핑)을 따른다.
+
+| 파일·심볼 | 책임 |
+| --- | --- |
+| HTTP `rebalance_handlers.go` → `membership.RebalanceService` | 엄격한 JSON·권한 검사를 거친 START·조회·CANCEL 요청을 application port에 전달한다. 같은 key의 같은 parameter는 phase와 무관하게 replay한다. |
+| Membership `rebalance.go`·`rebalance_validation.go` | 복제된 operation과 participant 보고를 소유한다. START 때 VOTER를 고정하고 REPORT apply에서 수렴을 판정한다. Drain과 rebalance 시작을 서로 배제한다. |
+| `domain/connrebalance/rebalance.go` | 값만 받아 수렴식과 local Idle → WaitingForLB → Transferring → Settling 전이를 계산한다. I/O를 하지 않는다. |
+| `cmd/narumq/cluster_rebalance.go` `sync`·`run` | Local 연결 수를 보고하고 admission·LB 대기·rate 제한 TRANSFER를 실행한다. 현재 operation ID로 worker의 admission 변경과 종료 정리를 보호한다. |
+| `tcp.Server.ConnectedSessionIDs` | CONNECT로 묶인 session ID의 정렬된 복사본을 반환한다. 아직 CONNECT하지 않은 socket은 제외한다. |
+| Membership `rebalance_handoff.go` | 연결된 다른 participant 중 최저 연결 수 node를 고르고 local owner의 epoch+1 TRANSFER를 만든다. |
+| Runtime `applyBatch`·`clusterAdmissionOpen`·`CheckReadiness` | Drain과 rebalance admission의 AND, remote owner 변경 뒤 redirect, shedding readiness를 연결한다. |
+| `cluster_records.go`·records codec·membership snapshot | DTO를 wire로 바꾸고 feature·count·strict decode를 검사한다. Operation과 보고는 복구 가능한 snapshot에 저장한다. |
+
+예를 들어 12/7/0 연결에서 편차 1을 쓰면 fairShare는 7, ceiling은 8이다. Node 1 controller는 admission을 닫고 목표 7을 유지한다. 첫 TRANSFER 전에 fresh read barrier와 local projection 준비를 확인한다. `PlanRebalanceTransfer`의 command가 commit되면 `applyBatch`가 MQTT 5 `CloseSessionForDrain`을 호출한다. Client가 새 node에 재접속하면 기존 ownership·ATTACH 경로로 delivery state를 재개한다. 실제 process 시험에서는 연결 5개가 node 3으로 재접속해 7/7/5가 됐다.
+
+`runClusterMode`가 controller를 조립한다. `serve`가 driver와 함께 시작하고 context 종료 뒤 `stopAndWait`로 join한다. Committed apply와 snapshot 복구 뒤 `sync`가 Running participant의 worker를 시작한다. Local `shed`, 다음 이전 시각과 시도한 session 집합은 worker memory에만 있다. 재시작하면 이를 다시 계산하며 보고된 `SessionsTransferred`는 복구한다. `mu`는 operation ID와 reference를 보호하고 atomic bool은 admission을 제공한다. Terminal 상태나 비참여 node의 admission은 열린다.
+
+수렴의 권위는 replicated REPORT apply다. Local shedding 상태는 실행 제어값이며 완료의 별도 권위가 아니다. Participant 변경과 client의 LB 배치는 controller가 소유하지 않는다. 이 한계 때문에 node 손실·잘못된 재접속 배치는 timeout으로 끝날 수 있다.
+
 ## Session metadata 복구 경로
 
 이 흐름은 replicated session lifecycle을 CONNECT ownership과 함께 기록하고, owner가 다시 READY가 된 뒤 local runtime projection과 timer를 재구성한다. 화살표는 호출·자료 전달 순서다.
@@ -272,6 +293,7 @@ After activation, `clusterRuntime.ClusterSessions` builds the Management API vie
 | Join·leave | Member 후보를 검증하고 cluster membership을 변경 | Quorum commit |
 | Readiness | Local sync, quorum, committed persistent-subscription에서 rebuild한 route projection과 replica 준비 상태를 집계 | Spec의 probe 조건 |
 | Drain | Connection admission을 닫고 ownership을 이전 | `SAFE_TO_STOP` barrier |
+| Connection rebalance | 연결 수를 보고하고 과부하 node의 admission·rate 제한 ownership 이전을 조정 | Replicated participant REPORT의 수렴 판정 |
 | Snapshot·restore | Committed index 기준으로 state를 압축·복구 | Checksum과 schema compatibility |
 | Mixed-version rollout | N-1↔N wire·state 호환성을 유지 | Release compatibility contract |
 

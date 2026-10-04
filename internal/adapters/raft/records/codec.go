@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"math"
 	"net"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -46,6 +47,9 @@ const (
 	maxSessionPrincipalFieldBytes      = 1024
 	maxSessionPrincipalRoles           = 64
 	maxSessionPrincipalRoleBytes       = 256
+	minRebalanceDeviation              = uint64(1)
+	maxRebalanceDeviation              = uint64(1_000_000)
+	maxRebalanceConnections            = uint64(4_294_967_295)
 )
 
 // ErrCommandTooLarge means a command exceeds the replicated command size limit.
@@ -128,7 +132,7 @@ func MarshalSnapshot(state *ReplicatedStateSnapshot, lastIncludedIndex uint64) (
 			offlineMessagesCount += len(session.Messages)
 		}
 	}
-	count := uint64(len(ordered.Members) + len(ordered.Ownerships) + len(ordered.Subscriptions) + len(ordered.DeliverySessions) + deliveryObjectCount(ordered.DeliverySessions) + len(ordered.MembershipHistory) + len(ordered.Retained) + len(ordered.OfflineSessions) + offlineMessagesCount + len(ordered.NodeDrains) + len(ordered.ActiveFeatures) + tenantQuotaProfileObjectCount(ordered.TenantQuotaProfile) + len(ordered.SessionMetadata))
+	count := uint64(len(ordered.Members) + len(ordered.Ownerships) + len(ordered.Subscriptions) + len(ordered.DeliverySessions) + deliveryObjectCount(ordered.DeliverySessions) + len(ordered.MembershipHistory) + len(ordered.Retained) + len(ordered.OfflineSessions) + offlineMessagesCount + len(ordered.NodeDrains) + len(ordered.ActiveFeatures) + tenantQuotaProfileObjectCount(ordered.TenantQuotaProfile) + len(ordered.SessionMetadata) + connectionRebalanceObjectCount(ordered.ConnectionRebalance))
 	digest := sha256.Sum256(stateBytes)
 	envelope := &SnapshotEnvelope{SchemaMajor: 1, LastIncludedIndex: lastIncludedIndex, ObjectCount: count, Sha256: digest[:], State: ordered}
 	encoded, err := deterministic.Marshal(envelope)
@@ -174,7 +178,7 @@ func UnmarshalSnapshot(encoded []byte) (*SnapshotEnvelope, error) {
 			offlineMessagesCount += len(session.Messages)
 		}
 	}
-	count := uint64(len(envelope.State.Members) + len(envelope.State.Ownerships) + len(envelope.State.Subscriptions) + len(envelope.State.DeliverySessions) + deliveryObjectCount(envelope.State.DeliverySessions) + len(envelope.State.MembershipHistory) + len(envelope.State.Retained) + len(envelope.State.OfflineSessions) + offlineMessagesCount + len(envelope.State.NodeDrains) + len(envelope.State.ActiveFeatures) + tenantQuotaProfileObjectCount(envelope.State.TenantQuotaProfile) + len(envelope.State.SessionMetadata))
+	count := uint64(len(envelope.State.Members) + len(envelope.State.Ownerships) + len(envelope.State.Subscriptions) + len(envelope.State.DeliverySessions) + deliveryObjectCount(envelope.State.DeliverySessions) + len(envelope.State.MembershipHistory) + len(envelope.State.Retained) + len(envelope.State.OfflineSessions) + offlineMessagesCount + len(envelope.State.NodeDrains) + len(envelope.State.ActiveFeatures) + tenantQuotaProfileObjectCount(envelope.State.TenantQuotaProfile) + len(envelope.State.SessionMetadata) + connectionRebalanceObjectCount(envelope.State.ConnectionRebalance))
 	if envelope.ObjectCount != count {
 		return nil, errors.New("snapshot object count mismatch")
 	}
@@ -245,6 +249,11 @@ func validateCommand(c *CommandEnvelope) error {
 			return errors.New("node drain payload is required")
 		}
 		return validateNodeDrainChange(payload.NodeDrain)
+	case *CommandEnvelope_ConnectionRebalance:
+		if payload.ConnectionRebalance == nil {
+			return errors.New("connection rebalance payload is required")
+		}
+		return validateConnectionRebalanceChange(payload.ConnectionRebalance)
 	case *CommandEnvelope_TenantQuota:
 		if payload.TenantQuota == nil {
 			return errors.New("tenant quota payload is required")
@@ -400,6 +409,72 @@ func validateNodeDrainChange(change *NodeDrainChange) error {
 	if change.Progress != nil && !progressZero &&
 		change.Action != NodeDrainAction_NODE_DRAIN_ACTION_ADVANCE && change.Action != NodeDrainAction_NODE_DRAIN_ACTION_COMPLETE && change.Action != NodeDrainAction_NODE_DRAIN_ACTION_FAIL {
 		return errors.New("node drain action does not accept progress")
+	}
+	return nil
+}
+
+func validateConnectionRebalanceChange(change *ConnectionRebalanceChange) error {
+	if change == nil || !validUUID(change.RebalanceOperationId) || change.ProposedAtUnixMillis == 0 {
+		return errors.New("invalid connection rebalance identity or proposal time")
+	}
+	parametersZero := change.IdempotencyKey == "" && change.ServerReference == "" &&
+		change.MaxDeviationConnections == 0 && change.ConnectionRatePerSecond == 0 &&
+		change.LoadBalancerPropagationDelayMillis == 0 && change.TimeoutMillis == 0
+	reportZero := change.NodeId == 0 && change.Connections == 0 &&
+		change.SessionsTransferred == 0 && !change.Shedding
+	failureZero := change.FailureCode == ""
+	switch change.Action {
+	case ConnectionRebalanceAction_CONNECTION_REBALANCE_ACTION_START:
+		if !printableKey(change.IdempotencyKey) ||
+			change.MaxDeviationConnections < minRebalanceDeviation || change.MaxDeviationConnections > maxRebalanceDeviation ||
+			!validNodeDrainParameters(change.ServerReference, change.ConnectionRatePerSecond, change.LoadBalancerPropagationDelayMillis, change.TimeoutMillis) ||
+			change.ProposedAtUnixMillis > math.MaxUint64-change.TimeoutMillis || !reportZero || !failureZero {
+			return errors.New("invalid connection rebalance start")
+		}
+	case ConnectionRebalanceAction_CONNECTION_REBALANCE_ACTION_REPORT:
+		if !parametersZero || !failureZero || change.NodeId == 0 || change.Connections > maxRebalanceConnections {
+			return errors.New("invalid connection rebalance report")
+		}
+	case ConnectionRebalanceAction_CONNECTION_REBALANCE_ACTION_FAIL:
+		if !parametersZero || !reportZero || !validDrainFailureToken(change.FailureCode, false) {
+			return errors.New("invalid connection rebalance failure")
+		}
+	case ConnectionRebalanceAction_CONNECTION_REBALANCE_ACTION_CANCEL:
+		if !parametersZero || !reportZero || !failureZero {
+			return errors.New("invalid connection rebalance cancellation")
+		}
+	default:
+		return errors.New("invalid connection rebalance action")
+	}
+	return nil
+}
+
+func validateConnectionRebalanceState(state *ConnectionRebalanceState) error {
+	if state == nil || !validUUID(state.RebalanceOperationId) || !printableKey(state.IdempotencyKey) ||
+		state.Phase < ConnectionRebalancePhase_CONNECTION_REBALANCE_PHASE_RUNNING ||
+		state.Phase > ConnectionRebalancePhase_CONNECTION_REBALANCE_PHASE_CANCELLED ||
+		state.StartedAtUnixMillis == 0 || state.DeadlineAtUnixMillis <= state.StartedAtUnixMillis ||
+		state.DeadlineAtUnixMillis-state.StartedAtUnixMillis != state.TimeoutMillis ||
+		state.MaxDeviationConnections < minRebalanceDeviation || state.MaxDeviationConnections > maxRebalanceDeviation ||
+		!validNodeDrainParameters(state.ServerReference, state.ConnectionRatePerSecond, state.LoadBalancerPropagationDelayMillis, state.TimeoutMillis) ||
+		state.CommittedIndex == 0 || len(state.Participants) < 2 {
+		return errors.New("invalid snapshot connection rebalance state")
+	}
+	if state.FinishedAtUnixMillis != 0 &&
+		state.Phase != ConnectionRebalancePhase_CONNECTION_REBALANCE_PHASE_COMPLETED &&
+		state.Phase != ConnectionRebalancePhase_CONNECTION_REBALANCE_PHASE_FAILED &&
+		state.Phase != ConnectionRebalancePhase_CONNECTION_REBALANCE_PHASE_CANCELLED {
+		return errors.New("snapshot connection rebalance finish time requires terminal phase")
+	}
+	if state.FailureCode != "" && (state.Phase != ConnectionRebalancePhase_CONNECTION_REBALANCE_PHASE_FAILED ||
+		!validDrainFailureToken(state.FailureCode, false)) {
+		return errors.New("snapshot connection rebalance failure code requires FAILED phase")
+	}
+	for i, participant := range state.Participants {
+		if participant == nil || participant.NodeId == 0 || participant.Connections > maxRebalanceConnections ||
+			(i > 0 && state.Participants[i-1].NodeId >= participant.NodeId) {
+			return errors.New("snapshot connection rebalance participants are invalid or unsorted")
+		}
 	}
 	return nil
 }
@@ -781,6 +856,13 @@ func tenantQuotaProfileObjectCount(profile *TenantQuotaProfile) int {
 	return 1 + len(profile.Tenants)
 }
 
+func connectionRebalanceObjectCount(state *ConnectionRebalanceState) int {
+	if state == nil {
+		return 0
+	}
+	return 1
+}
+
 func validateSessionWill(will *SessionWill) error {
 	if will == nil {
 		return nil
@@ -972,7 +1054,7 @@ func validateSnapshotState(s *ReplicatedStateSnapshot) error {
 			offlineMessagesCount += len(session.Messages)
 		}
 	}
-	count := len(s.Members) + len(s.Ownerships) + len(s.Subscriptions) + len(s.DeliverySessions) + deliveryObjectCount(s.DeliverySessions) + len(s.MembershipHistory) + len(s.Retained) + len(s.OfflineSessions) + offlineMessagesCount + len(s.NodeDrains) + len(s.ActiveFeatures) + tenantQuotaProfileObjectCount(s.TenantQuotaProfile) + len(s.SessionMetadata)
+	count := len(s.Members) + len(s.Ownerships) + len(s.Subscriptions) + len(s.DeliverySessions) + deliveryObjectCount(s.DeliverySessions) + len(s.MembershipHistory) + len(s.Retained) + len(s.OfflineSessions) + offlineMessagesCount + len(s.NodeDrains) + len(s.ActiveFeatures) + tenantQuotaProfileObjectCount(s.TenantQuotaProfile) + len(s.SessionMetadata) + connectionRebalanceObjectCount(s.ConnectionRebalance)
 	if count > maxEntries {
 		return errors.New("snapshot exceeds 1,000,000 entries")
 	}
@@ -993,6 +1075,14 @@ func validateSnapshotState(s *ReplicatedStateSnapshot) error {
 	}
 	if len(s.SessionMetadata) > 0 && !featureActive {
 		return errors.New("snapshot session metadata requires active session-metadata feature")
+	}
+	if s.ConnectionRebalance != nil {
+		if !slices.Contains(s.ActiveFeatures, "connection-rebalance") {
+			return errors.New("snapshot connection rebalance requires active connection-rebalance feature")
+		}
+		if err := validateConnectionRebalanceState(s.ConnectionRebalance); err != nil {
+			return err
+		}
 	}
 	type sessionIdentity struct{ tenantID, clientID string }
 	ownershipEpochs := make(map[sessionIdentity]uint64, len(s.Ownerships))
@@ -1176,6 +1266,9 @@ func validateSnapshotMembershipIndexes(s *ReplicatedStateSnapshot, lastIncludedI
 		if state.CommittedIndex > lastIncludedIndex {
 			return errors.New("node drain committed_index exceeds last_included_index")
 		}
+	}
+	if s.ConnectionRebalance != nil && s.ConnectionRebalance.CommittedIndex > lastIncludedIndex {
+		return errors.New("connection rebalance committed_index exceeds last_included_index")
 	}
 	for _, session := range s.DeliverySessions {
 		for _, inbound := range session.Inbound {

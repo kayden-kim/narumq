@@ -38,6 +38,7 @@
 | [ADR-0030](ADR-0030-publish-backpressure-admission.md) | Accepted | 새 durable publish에 전역·tenant capacity, ingress commit backlog와 local disk admission을 적용한다. |
 | [ADR-0031](ADR-0031-replicated-state-schema-strict-evolution.md) | Accepted | Replicated-state schema `1.0`의 strict decode, feature activation 뒤 새 형식 기록과 baseline guard를 확정한다. |
 | [ADR-0032](ADR-0032-feature-activation-approval-policy.md) | Accepted | 운영 체크리스트·외부 승인 기록으로 feature activation을 승인하며 commit이 rollback window를 끝낸다. API는 승인 evidence를 강제하지 않는다. |
+| [ADR-0033](ADR-0033-connection-rebalance-operation.md) | Accepted | 수동 일회성 연결 rebalance를 복제하고 participant 보고로 수렴을 판정한다. |
 
 `Proposed` ADR은 검토 중인 제안이다. `Accepted` ADR은 각 기록에 명시한 범위 안에서 채택된 결정이다. `design target only`는 production runtime이나 acceptance 검증을 뜻하지 않는다.
 

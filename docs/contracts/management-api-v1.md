@@ -6,7 +6,7 @@ path, parameter, response schema와 media type은
 
 | 항목 | 값 |
 | --- | --- |
-| 이름과 version | `narumq-management-api` 1.6.0 |
+| 이름과 version | `narumq-management-api` 1.7.0 |
 | 상태 | Active |
 | Producer | NaruMQ broker management API |
 | Consumer | Dashboard·operator·monitoring integration의 query client |
@@ -39,7 +39,9 @@ path, parameter, response schema와 media type은
 | POST | `/api/v1/nodes/{nodeId}/drain` | broker drain 시작 또는 기존 operation 재생 |
 | GET | `/api/v1/nodes/{nodeId}/drain` | committed drain operation 조회 |
 | DELETE | `/api/v1/nodes/{nodeId}/drain` | 취소 가능한 drain operation 취소 |
-| GET | `/api/v1/clients` | client session list |
+| POST | `/api/v1/cluster/rebalance` | cluster connection rebalance 시작 또는 replay |
+| GET | `/api/v1/cluster/rebalance` | committed cluster connection rebalance 조회 |
+| DELETE | `/api/v1/cluster/rebalance` | 실행 중인 rebalance 취소 |
 | GET | `/api/v1/clients/{tenantId}/{clientId}` | client session detail |
 | GET | `/api/v1/subscriptions` | subscription list |
 | GET | `/api/v1/retained` | retained metadata list |
@@ -48,6 +50,8 @@ path, parameter, response schema와 media type은
 Version 1.5.0은 cluster feature 조회와 activation을 active contract에 추가한다. 조회는 `ReadOnly`, activation은 `ClusterAdmin`을 요구하며 dynamic cluster mode에서 제공된다. 이 catalog에 없는 path를 client가 호출할 수 있다는 계약은 없다.
 
 Version 1.6.0은 `GET /api/v1/cluster` 응답에 optional `replicationFactor`, `writeQuorum`을 추가한다. Dynamic cluster는 3/2, standalone은 1/1을 반환한다.
+Version 1.7.0은 `POST/GET/DELETE /api/v1/cluster/rebalance`를 추가한다. Operation은 Operator가 시작·취소하고 ReadOnly가 조회하며, 연결 수 보고와 수렴은 committed cluster operation으로 조정된다. Request의 `maxDeviationConnections`, `connectionRatePerSecond`, `loadBalancerPropagationDelayMs`, `timeoutMs`는 필수다.
+
 
 ## 2. Authentication과 authorization
 
@@ -125,5 +129,6 @@ method에 사용한다. 내부 오류와 credential은 response에 노출하지 
 - Version 1.3.0은 `POST /api/v1/cluster/backups`를 추가했다. ClusterAdmin 전용이며 fresh quorum barrier에서 캡처한 typed snapshot과 committed tail을 binary archive로 반환한다.
 - Version 1.4.0은 `/api/v1/nodes/{nodeId}/drain`의 POST/GET/DELETE를 추가한다. Drain request parameter bounds와 replay semantics는 [Drain spec](../specs/drain-and-rolling-update.md)을 따른다.
 - Version 1.5.0은 `GET /api/v1/cluster/features`와 `POST /api/v1/cluster/features/{feature}`를 추가한다. 성공 response는 `activeFeatures`와 member별 `nodeId`, `releaseVersion`, `features`를 data envelope로 반환하며, 미지원 feature activation은 non-retryable `409 feature_not_supported_by_all_members`다.
+- Version 1.7.0은 `POST/GET/DELETE /api/v1/cluster/rebalance`를 추가한다. Request parameter bounds와 operation response schema는 OpenAPI artifact가 기준이다.
 - Future catalog의 다른 mutation endpoint, OIDC/JWT, API rate limiting, audit event와 dashboard는 현재 Active contract가 아니다. 이 기능을 구현할 때는 별도 범위와 contract revision을 정한다.
 - Breaking change는 `/api/v2`와 별도 OpenAPI artifact로 제공한다.

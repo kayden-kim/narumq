@@ -305,7 +305,15 @@ Session metadata는 `FeatureActivation`으로 `session-metadata`가 활성화된
 
 ## 9. Rebalance
 
-P1 rebalance는 아직 구현되지 않았다. 활성화될 때 rebalance는 ownership fencing과 이미 복제된 delivery state를 보존해 successor가 새 epoch의 ATTACH로 재개하도록 해야 한다. QoS 전송·진행 상태는 wire effect보다 먼저 replicated command로 commit되며, rebalance를 위해 별도의 checkpoint authority를 두지 않는다.
+[ADR-0033](../decisions/ADR-0033-connection-rebalance-operation.md)에 따라 `connection-rebalance` feature 활성화 뒤 운영자가 `POST /api/v1/cluster/rebalance`로 일회성 operation을 시작해야 한다. `maxDeviationConnections`는 절대 연결 수 `1..1_000_000`이며 rate·LB 전파 대기·timeout과 함께 필수다. 제품 기본값은 없다. GET은 committed 상태를 조회하고 DELETE는 Running operation을 취소해야 한다.
+
+Participant는 START 시점 VOTER로 고정하며 최소 2개여야 한다. 각 participant는 CONNECT로 묶인 자기 연결 수를 보고해야 한다. `fairShare = ceil(total/n)`, `ceiling = fairShare + maxDeviationConnections`다. 모든 보고가 fresh이고 모든 연결 수가 ceiling 이하이며 shedding 중인 node가 없으면 COMPLETED로 commit해야 한다. 미보고 또는 나이가 15초를 넘는 보고는 stale이다. 같은 값도 5초마다 다시 보고해야 한다.
+
+Fresh 보고에서 local 연결 수가 ceiling을 초과하면 신규 CONNECT admission과 readiness를 닫아야 한다. Readiness reason은 `connection rebalance shedding`이다. 설정한 LB 전파 대기 뒤 fairShare까지 rate 제한 TRANSFER를 수행해야 한다. 이전 뒤 5초간 재접속을 기다리고 admission을 열어야 한다. MQTT 5는 `DISCONNECT 0x9C`와 선택 Server Reference로 종료하고 MQTT 3.1.1은 packet 없이 닫아야 한다.
+
+Running rebalance와 active drain은 apply에서 서로 배제해야 한다. Timeout은 `FAILED`와 `rebalance_timeout`으로 commit해야 한다. 취소는 `CANCELLED`로 commit하며 이미 이전한 epoch를 되돌리지 않는다. Completed·Failed의 취소는 `409 rebalance_not_cancellable`이다. Terminal 상태에서 rebalance admission은 열어야 한다. Participant 손실·제거는 stale 보고로 timeout이 될 수 있다. Client가 LB를 통해 재접속할 node는 broker가 통제하지 않는다.
+
+Rebalance는 ownership fencing과 이미 복제된 delivery state를 보존해 successor가 새 epoch의 ATTACH로 재개하도록 해야 한다. QoS 전송·진행 상태는 wire effect보다 먼저 replicated command로 commit되며, rebalance를 위해 별도의 checkpoint authority를 두지 않는다.
 
 ## 10. Snapshot, backup과 restore
 
@@ -1329,4 +1337,30 @@ Synthetic build와 지정 historical baseline은 mechanics와 해당 source 조�
 완료 문서 반영 뒤 2026-10-04T09:30:39.833958Z의 `go run ./tools/verify traceability`는 exit 0·`traceability: PASS`였다(wall 0.83s). 새 문서와 변경한 contract·ADR·guide·목록·tasks·spec 총 11개에서 상대 링크 335개의 대상 파일 또는 directory와 heading anchor를 확인했다. 완료 증거에 추가한 tasks §2.6 링크도 별도 확인해 총 336개가 통과했다. 누락은 없었다. 결과는 `.artifacts/verification/feature-activation-approval/relative-links.json`과 `traceability.log`에 보존했다. Directory 링크를 파일만 허용한 첫 link checker는 기존 testdata directory 링크를 잘못 보고했다. Directory도 유효 대상으로 처리한 최종 확인에서 통과했다. 문서 링크의 결함은 아니었다.
 
 수동 정책 판정·실제 shell smoke·기존 runtime 수용이 모두 일치하여 [tasks §2.6](../tasks.md#26-release-호환성)의 운영 승인 정책만 완료로 옮겼다. 코드·API·권한·replicated schema는 변경하지 않았다. 전체 local gate는 이 문서 정책 변경의 추가 완료 요구로 실행하지 않았다. Production 실행·secret manager ACL·외부 승인 강제와 미래 게시 release별 matrix는 검증하지 않은 범위로 유지한다.
+
+### 11.31 연결 rebalance 수용 매핑
+
+기준은 [ADR-0033](../decisions/ADR-0033-connection-rebalance-operation.md)과 §9다. Production 부하 성능과 LB의 재접속 배치 보장은 이 local 수용 범위 밖이다.
+
+| 시나리오 | 시험 위치·명령 | 수용 기준 | 실행 결과 |
+| --- | --- | --- | --- |
+| 수렴식·fresh·local shed 전이 | `internal/domain/connrebalance` | 편차·stale·shedding·LB 대기·settle 경계 일치 | PASS; 아래 focused 7-package 명령 |
+| 복제 상태·상호 배제·snapshot·feature | `internal/application/membership`, `internal/adapters/raft/records`, `cmd/narumq` | 결정적 전이·깊은 복사·feature 없는 snapshot 거절·baseline 유지 | PASS; 같은 focused 명령. `TestReplicatedStateSchemaPreservesBaseline` 포함 |
+| API·OpenAPI·TCP 연결 계수 | `internal/adapters/http/management`, `tests/contracts/management-api-v1`, `internal/adapters/tcp` | 필수 입력·권한·오류·CONNECT 전 socket 제외 | PASS; 같은 focused 명령. `TestManagementOperationSetMatchesOpenAPI` 포함 |
+| 실제 3-node 취소·수렴·session 재개 | `go test ./tests/integration -run '^TestDynamicClusterConnectionRebalance' -count=1 -v -timeout 20m` | 12/7/0에서 ceiling 이하, MQTT redirect·Session Present·QoS 1 재개, 취소 뒤 READY | PASS; case 15.40s, package 15.587s. 최종 7/7/5, fairShare 7, ceiling 8, node 1 session 5개 이전, node 2 이전 0개 |
+| 기존 drain 회귀 | `go test ./tests/integration -run '^TestDynamicClusterNodeDrain' -count=1 -v -timeout 20m` | 기존 admission·인계·barrier 유지 | PASS; 두 case 13.37s·22.95s, package 23.137s |
+| 전체 local gate | `GOMAXPROCS=4 go run ./tools/verify local` | `local: PASS`, 기준값 유지 | PASS; wall 315.85s, integration 261.824s. Traceability·architecture·vet·전체 package/integration·production package race·4개 fuzz 각 10,000회·coverage 통과 |
+
+2026-10-04 Windows local working tree에서 실행했다. Focused 명령은 다음과 같다.
+
+```text
+go build ./...
+go test ./internal/domain/connrebalance ./internal/application/membership ./internal/adapters/raft/records ./internal/adapters/http/management ./internal/adapters/tcp ./cmd/narumq ./tests/contracts/management-api-v1 -count=1
+```
+
+Process 시험은 취소 후 CONNACK `0x88` 해제, 같은 key replay·다른 parameter 충돌, drain 시작 상호 배제, MQTT 5 Server Reference, 재접속 전 QoS 1 commit과 새 epoch ATTACH 전달, 완료 후 취소 거절을 확인했다. 첫 실행은 fixture의 새 client ID·ACL 누락으로 CONNECT `0x87`에서 실패했다. 허용 목록을 보완한 뒤에는 local shed 변수를 `:=`로 매 tick 새로 선언하는 결함 때문에 12/7/0에서 이전이 진행되지 않았다. 이를 대입 `=`로 고친 뒤 위 수용 기준을 모두 통과했다. 시험 기준과 timeout은 완화하지 않았다.
+
+새 wire field와 충돌하던 unknown-field 거절 vector는 실제 미정의 command 23·snapshot 14로 이동했다. 기존 schema baseline descriptor는 바꾸지 않았다. Production 부하·실제 LB 배치·게시 release 사이의 활성 feature 호환 시험은 미실행이며 기존 별도 gate를 유지한다.
+
+전체 gate는 Windows에서 `cmd /c "set GOMAXPROCS=4&& go run ./tools/verify local"`로 실행했다. Exit 0과 `local: PASS`를 확인했다. Coverage 산출물은 `.artifacts/verification/coverage.out`과 `coverage-summary.json`이다. Gate 뒤 변경은 실행 증거·코드 지도·작업 목록 문서와 unknown-payload vector의 줄 배치 정리뿐이다. 줄 배치 정리 뒤 `go test ./internal/adapters/raft/records -run '^TestReplicatedStateContractVectors$' -count=1`과 `go run ./tools/verify traceability`도 PASS했다.
 

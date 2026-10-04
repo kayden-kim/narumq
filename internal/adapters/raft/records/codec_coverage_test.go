@@ -161,6 +161,11 @@ func TestCrrCommandRoundTripPreservesEveryRecordKind(t *testing.T) {
 		"unsubscribe":      crrCommand(&CommandEnvelope_Subscription{Subscription: remove}),
 		"delivery_publish": crrDeliveryCommand(publish),
 		"delivery_receive": crrDeliveryCommand(receive),
+		"connection_rebalance_start": crrCommand(&CommandEnvelope_ConnectionRebalance{ConnectionRebalance: &ConnectionRebalanceChange{
+			Action: ConnectionRebalanceAction_CONNECTION_REBALANCE_ACTION_START, RebalanceOperationId: op1, IdempotencyKey: "rb-1",
+			ServerReference: "lb.example:1883", MaxDeviationConnections: 1, ConnectionRatePerSecond: 2,
+			LoadBalancerPropagationDelayMillis: 250, TimeoutMillis: 2000, ProposedAtUnixMillis: 100,
+		}}),
 	}
 	for name, command := range cases {
 		t.Run(name, func(t *testing.T) {
