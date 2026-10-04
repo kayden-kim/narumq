@@ -34,7 +34,7 @@ stateDiagram-v2
 
 정의하지 않은 상태 전이는 `409 invalid_node_transition`으로 거절하고 현재 state를 반환해야 한다. 모든 전이는 Metric과 구조화 로그에 남겨야 한다.
 
-`-cluster-config` runtime은 committed voter를 대상으로 drain operation을 복제하고, 신규 MQTT CONNECT를 차단하며, 설정된 LB 전파 대기 뒤 rate 제한 ownership 인계를 수행한다. 모든 barrier를 통과하면 `SAFE_TO_STOP`을 replicated state에 commit하고 readiness는 실패로 유지한다. 이 broker 동작은 standalone mode에 제공되지 않는다. QoS 1/2 progress는 protocol wire effect보다 먼저 개별 replicated transition으로 commit되며 별도 replace-all checkpoint는 없다. External rollout controller, Kubernetes/EKS `preStop`, BP-07, N-1↔N 및 Will reason 분류 metric은 별도 scope다.
+`-cluster-config` runtime은 committed voter를 대상으로 drain operation을 복제하고, 신규 MQTT CONNECT를 차단하며, 설정된 LB 전파 대기 뒤 rate 제한 ownership 인계를 수행한다. 모든 barrier를 통과하면 `SAFE_TO_STOP`을 replicated state에 commit하고 readiness는 실패로 유지한다. 이 broker 동작은 standalone mode에 제공되지 않는다. QoS 1/2 progress는 protocol wire effect보다 먼저 개별 replicated transition으로 commit되며 별도 replace-all checkpoint는 없다. External rollout controller, Kubernetes/EKS `preStop`, BP-07 및 N-1↔N은 별도 scope다.
 
 Recovering 또는 joining node는 committed persistent subscription에서 node-local route projection을 rebuild하고 local sync·quorum 조건을 충족한 뒤에만 `READY`를 광고할 수 있다.
 
@@ -107,7 +107,7 @@ Timeout은 operation을 `FAILED`로 만들 뿐 Pod 삭제를 승인하지 않는
 | --- | --- | --- | --- |
 | MQTT 5, Server Reference 지원 | session state가 successor에서 복구 가능한 뒤 `DISCONNECT 0x9C`와 Server Reference 전송 | 같은 tenant·clientId로 임시 endpoint 또는 공통 LB에 재접속 | 충분한 Will Delay 안에 재접속하면 억제 |
 | MQTT 5, Server Reference 미지원 | `0x9C`와 configured 공통 endpoint를 제공하거나 연결 종료 | 공통 LB 재접속, backoff+jitter | Will Delay 계약에 따름 |
-| MQTT 3.1.1 | committed session state를 보존한 뒤 connection 종료 | 공통 LB에 같은 session key로 재접속 | Will이 설정돼 있으면 표준에 따라 발행될 수 있음 |
+| MQTT 3.1.1 | committed session state를 보존한 뒤 connection 종료 | 공통 LB에 같은 session key로 재접속 | Will이 설정돼 있으면 서버 종료로 발행한다(`expected_mqtt311_server_disconnect`) |
 | 협력형 client | 서버 신호 뒤 client가 정상 DISCONNECT하도록 별도 application 협력 | 정상 DISCONNECT 후 재접속 | 정상 DISCONNECT면 억제 |
 
 `0x9C`는 임시 이동이다. 영구 endpoint 변경을 뜻하는 `0x9D`로 바꿔 보내서는 안 된다. Server Reference 형식은 지원 SDK compatibility matrix에서 고정해야 한다.
@@ -116,19 +116,24 @@ Timeout은 operation을 `FAILED`로 만들 뿐 Pod 삭제를 승인하지 않는
 
 ## 5. Will 판정과 관측
 
-계획 drain에서 Will은 다음 reason으로 분류해야 한다.
+`narumq_will_outcomes_total{reason}`은 Will의 최종 결과를 아래 6개 사유로 집계한다. [ADR-0028](../decisions/ADR-0028-planned-handoff-will-and-reason-metric.md)을 따른다.
 
-| reason | 의미 |
-| --- | --- |
-| `suppressed_normal_disconnect` | client가 정상 DISCONNECT를 보냄 |
-| `suppressed_reconnected_within_delay` | MQTT 5 client가 Will Delay 안에 session 재개 |
-| `expected_mqtt311_server_disconnect` | MQTT 3.1.1 server 주도 종료로 표준상 발행 가능 |
-| `expected_zero_or_expired_will_delay` | Will Delay가 0이거나 재접속 전에 만료 |
-| `unexpected_supported_client` | CLIENT-01~CLIENT-09 계약을 충족했지만 계획 drain 때문에 예상 밖 발행 |
-| `unplanned_failure` | crash, network loss 등 계획되지 않은 종료 |
+| 상황 | 집계 node | reason |
+| --- | --- | --- |
+| 정상 `DISCONNECT 0x00`, pending Will 있음, metadata commit 성공 또는 local-only | owner | `suppressed_normal_disconnect` |
+| 같은 node 재접속이 예약 Will 취소, superseded 정보 없음 | 재접속 node | `suppressed_reconnected_within_delay` |
+| Acquire가 예약 Will 또는 계획 인계 MQTT 5 delay>0 persistent Will을 대체 | 재접속 node | `suppressed_reconnected_within_delay` |
+| 계획 인계 MQTT 3.1.1 즉시 발행 | 후계 또는 재접속 node | `expected_mqtt311_server_disconnect` |
+| 계획 인계 MQTT 5 delay 0 또는 retention `IMMEDIATE` 즉시 발행 | 후계 또는 재접속 node | `expected_zero_or_expired_will_delay` |
+| 계획 인계 예약 Will을 timer·expiry로 발행 | 예약 node | `expected_zero_or_expired_will_delay` |
+| 계획 인계 MQTT 5 delay>0·retention≠`IMMEDIATE`인데 즉시 발행 | 후계 node | `unexpected_supported_client` |
+| 비정상 close·keepalive·owner crash recovery 또는 복원한 예약 Will 발행 | 발행 node | `unplanned_failure` |
 
-release gate에서 0을 요구하는 값은 `unexpected_supported_client`다. 예상 Will을 전체 성공률에 섞어 숨기거나 예상 Will을 제품 결함으로 오분류해서는 안 된다.
-Broker ownership 인계 시 이전 연결은 takeover close로 종료되어 Will을 억제한다. Will reason별 분류와 DEP-12 metric은 이 broker drain scope에 포함되지 않으며 rollout acceptance에서 별도로 검증해야 한다.
+계획 인계는 서버가 시작한 비정상 종료다. MQTT 3.1.1, Will Delay 0 또는 retention `IMMEDIATE`이면 즉시 claim·발행한다. 나머지는 후계 recovery 시각부터 Will Delay로 예약하며 session expiry로 제한한다. 이전 owner는 `DisconnectTakeover`로 local Will을 버리고 집계하지 않는다. Recovery 전 재접속도 committed ownership apply의 대체 결과로 같은 규칙을 적용한다.
+
+Will 하나는 결과를 확정한 node에서 정확히 한 번 집계한다. Client `DISCONNECT 0x04`, takeover close, ACL 거절·metadata commit 실패로 발행하지 않은 Will은 집계하지 않는다. Feature 비활성 drain은 기존처럼 Will을 버리고 집계하지 않는다. 계획/비계획 출처는 복제하지 않으므로 재시작·detached 이전 뒤 복원한 예약 Will은 `unplanned_failure`다. Mixed N-1/N의 N-1 후계는 기존 억제를 유지한다.
+
+Release gate는 `unexpected_supported_client`가 0이어야 한다. 이 사유는 위 표의 broker 규칙 위반만 탐지한다. Client 쪽 증거는 SDK drain suite로 확인한다. 예상 Will을 성공률에 섞어 숨기거나 제품 결함으로 오분류해서는 안 된다.
 
 ## 6. Safe-to-stop barrier
 
@@ -229,7 +234,35 @@ Process crash 또는 host loss에서는 planned drain과 barrier가 실행되지
 | SDK callback adapter의 redirect·session resume·Will 억제 | `tests/compatibility/mqtt-clients-v1 --suite drain`: Paho Go MQTT 5 `v0.23.0`과 Python `2.1.0`이 test-only readiness LB의 node3에서 node2로 이동한다. 후속 QoS 1 전달, Will Delay 뒤 no-Will과 drain `SAFE_TO_STOP`을 확인한다. | `drain-paho-go-python-will-acl-final`의 cluster case 2/2 PASS. 재접속 Go 89ms, Python 약 99.071ms. 전체 suite 9/10이며 artifact는 `.artifacts/compatibility/mqtt-clients-v1/drain-paho-go-python-will-acl-final/`에 있다. |
 | Malformed server DISCONNECT 4종과 configured endpoint fallback | 같은 drain suite의 SDK별 truncated·disallowed·duplicate·invalid-reference case. Main CONNECT 두 번, vector 한 번과 trap 접속 부재를 요구한다. Profile·결과·trace 경계는 `drain_profile_test.go`, `drain_result_test.go`, `drain_trace_test.go`로 검증한다. | Python 4/4 PASS, Go 3/4 PASS. `go-mqtt5-malformed-duplicate-server-reference`는 `serverReferenceAccepted=true`, `trap_accept=1`로 FAIL. `go test ./tests/compatibility/mqtt-clients-v1 -count=1` PASS. 판정 규칙은 [Client contract §6.2](../contracts/mqtt-client-compatibility-v1.md#62-drain-compatibility-suite)에 있다. |
 | SDK drain 구현 뒤 전체 local 회귀 | `GOMAXPROCS=4 go run ./tools/verify local`, nested Go module의 `go vet ./... && go build ./...`, Phase 1 Docker suite | Local PASS(280.08s; integration 234.376s). Traceability·architecture·4개 fuzz target 각각 10,000회·전체 unit/integration·production package race·coverage PASS. Nested vet/build PASS. `phase1-drain-adapters-final` 26/26 PASS(132.67s). Local gate는 SDK Docker suite를 대신하지 않는다. |
+| 계획 인계 domain·대체 Will·집계 규칙 | `TestLifecycle_TakeoverAndPlannedHandoffWillRules`, `TestApplyOwnershipReportsSupersededWill`, `TestWillOutcomeClassifiers`, `TestDisconnectRecordsWillOutcome`, `TestConnectSupersededWillOutcome`, `TestRecoverOwnedPreviousEpochAppliesPlannedHandoffWillRules`, `TestRegistryRendersWillOutcomes`, runtime recovery 및 기존 TCP 시험 | 2026-10-04 PASS: `go build ./...`를 각 구현 단계 뒤 통과했다. `go test ./internal/domain/session ./internal/application/membership ./internal/application/connect ./internal/adapters/metrics ./internal/adapters/tcp ./cmd/narumq -count=1` PASS(각 0.600/0.731/0.649/0.583/11.352/15.383s). |
+| Session metadata 활성 3-node 연속 rolling의 표준 Will·사유 | `TestDynamicClusterDrainWillReasonProcessAcceptance`: node 3→1→2 drain, reference 재접속, session resume, observer 수신과 node restart를 확인한다. | 2026-10-04 PASS: `GOMAXPROCS=4 go test ./tests/integration -run '^TestDynamicClusterDrainWillReasonProcessAcceptance$' -count=1 -v -timeout 20m`; test 49.06s, package 49.253s. Observer는 v311·zero·expire payload만 받았다. Safe delay 8초 뒤와 normal Will 무수신을 확인했다. 아래 delta 표 참조. |
+| ADR-0028 영향 process 회귀 | Drain·cancel/timeout/resume, session metadata owner crash, removal handoff quorum, QoS 2 Will, CONNECT ownership takeover | 2026-10-04 PASS: 아래 회귀 명령의 6개 시험 모두 통과했다. Package 39.569s; 각 drain 13.54s, cancel 24.11s, metadata 26.79s, removal 32.66s, QoS 2 Will 12.60s, takeover 9.49s. |
+| ADR-0028 전체 local gate | `GOMAXPROCS=4 go run ./tools/verify local` | 2026-10-04 PASS; wall 298.08s, integration 243.252s. Gofmt·vet·traceability·architecture·전체 unit/integration·production race·4개 fuzz 각 10,000회·coverage PASS. Production line 86.07%, function 97.51% (`.artifacts/verification/coverage-summary.json`). 첫 실행은 새 domain 시험의 MQTT requirement metadata 누락으로 중단했으며 comment·compliance mapping을 고친 뒤 통과했다. |
+| Recovery 전 재접속의 이전 Will ACL 재검사 | `TestConnectSupersededWillAuthorization`: 새 CONNECT에는 Will을 넣지 않는다. 이전 principal·Will topic이 허용되면 한 번 발행·집계한다. 이전 topic이 거절되거나 principal이 없으면 새 CONNECT는 성공하지만 이전 Will 발행·집계는 모두 없다. | 2026-10-04 PASS: `go test ./internal/application/connect -run '^TestConnectSupersededWillAuthorization$' -count=1 -v`의 3개 case 모두 PASS. 최초 package 0.422s; 새 CONNECT의 Will을 제거한 뒤에도 0.406s PASS. |
+| ACL 경계 시험 추가 뒤 local gate | 위 focused 명령 뒤 `GOMAXPROCS=4 go run ./tools/verify local` | 2026-10-04 PASS; 두 명령 합계 wall 286.02s, integration 246.431s. Gofmt·vet·traceability·architecture·전체 unit/integration·production race·4개 fuzz 각 10,000회·coverage PASS. 이 실행의 production line 86.20%, function 97.51%. 아래 시험 입력·요구사항 연결 정리 전 실행이다. |
+| ACL 시험 입력과 요구사항 연결 정리 | 새 CONNECT의 Will을 제거해 이전 Will의 ACL 검사만 확인한다. Traceability를 `SEC-06`, `MQTT-01/TEST-04`, `MQTT-3.1.2-8`에 연결하고 compliance matrix에 시험을 추가한다. | 2026-10-04 PASS: 위 focused 명령 뒤 `go run ./tools/verify traceability`; 3개 case와 traceability PASS, 두 명령 합계 wall 2.99s. 제품 코드는 바꾸지 않았으므로 전체 local gate는 다시 실행하지 않았다. |
 
 
 
-Broker process test는 Server Reference packet을 확인한다. SDK drain suite는 자동 추종이 아닌 callback adapter의 1회 임시 redirect·session resume·Will 억제를 두 MQTT 5 SDK에서 확인했다. Go의 중복 Server Reference 처리는 실패했으므로 전체 SDK gate는 열려 있다. Test-only readiness LB와 시간 값은 실제 NLB·운영 rollout timing을 증명하지 않는다. MQTT 3.1.1/Will policy와 DEP-12 reason metric, external rollout deletion gate, Kubernetes `preStop`, `SPEC-TBD-04` product defaults, BP-07, N-1↔N, EKS/EBS power-loss·restore 및 MQTT 3.1.0 migration은 별도 release blocker다.
+Broker process test는 Server Reference packet을 확인한다. SDK drain suite는 callback adapter의 1회 임시 redirect·session resume·Will 억제를 두 MQTT 5 SDK에서 확인했다. Go의 중복 Server Reference 처리는 실패했으므로 전체 SDK gate는 열려 있다. 표준 계획 인계 Will과 DEP-12 metric은 ADR-0028 수용 범위다. Test-only LB와 시간 값은 실제 NLB·운영 timing을 증명하지 않는다. External rollout deletion gate, Kubernetes `preStop`, `SPEC-TBD-04` product defaults, 연속 100회 rolling·BP-07, N-1↔N, EKS/EBS power-loss·restore 및 MQTT 3.1.0 migration은 열린 gate로 유지한다.
+
+### ADR-0028 연속 rolling 관측
+
+아래 값은 각 round의 전후 모든 node counter 합 차이다. Node restart로 counter가 0으로 돌아가기 전에 차이를 기록했다.
+
+| reason | Round 1 (node 3) | Round 2 (node 1) | Round 3 (node 2) | 합계 |
+| --- | --- | --- | --- | --- |
+| `suppressed_normal_disconnect` | 1 | 0 | 0 | 1 |
+| `suppressed_reconnected_within_delay` | 1 | 1 | 1 | 3 |
+| `expected_mqtt311_server_disconnect` | 1 | 0 | 0 | 1 |
+| `expected_zero_or_expired_will_delay` | 2 | 0 | 0 | 2 |
+| `unexpected_supported_client` | 0 | 0 | 0 | 0 |
+| `unplanned_failure` | 0 | 0 | 0 | 0 |
+
+회귀 명령은 저장소 root에서 실행했다.
+
+```sh
+GOMAXPROCS=4 go test ./tests/integration -run '^(TestDynamicClusterNodeDrainProcessAcceptance|TestDynamicClusterNodeDrainCancelTimeoutAndResumeProcessAcceptance|TestDynamicClusterSessionMetadataProcessAcceptance|TestDynamicClusterMembershipRemovalHandoffWaitsForQuorum|TestDynamicClusterDurableQoS2WillProcessAcceptance|TestDynamicClusterMQTTConnectOwnershipTakeoverProcessAcceptance)$' -count=1 -v -timeout 30m
+```
+
+SDK Docker drain suite는 이번 변경에서 다시 실행하지 않았다. `tests/compatibility`에서 `session-metadata` 문자열이 없음을 확인했다. Feature 비활성 drain은 기존 억제를 유지하므로 이 suite의 동작은 바뀌지 않는다. 기존 SDK 9/10 결과와 external rollout 증거 미완료 상태를 유지한다.

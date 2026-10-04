@@ -181,6 +181,10 @@
       ],
       "tests": [
         {
+          "name": "TestConnectSupersededWillAuthorization",
+          "package": "narumq/internal/application/connect"
+        },
+        {
           "name": "TestConnect_SessionExpiryBeforeWillDelayPublishesWill",
           "package": "narumq/internal/application/connect"
         },
@@ -190,6 +194,10 @@
         },
         {
           "name": "TestLifecycle_ExpireClaimsPendingWill",
+          "package": "narumq/internal/domain/session"
+        },
+        {
+          "name": "TestLifecycle_TakeoverAndPlannedHandoffWillRules",
           "package": "narumq/internal/domain/session"
         },
         {

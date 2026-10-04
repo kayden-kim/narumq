@@ -27,15 +27,15 @@ func clusterCommandRequiresSessionMetadata(command membership.CommandDTO) bool {
 
 // AcquireSessionOwnership attaches CONNECT metadata only after a fresh read
 // confirms that the cluster has activated session metadata.
-func (runtime *clusterRuntime) AcquireSessionOwnership(ctx context.Context, request connect.SessionOwnershipRequestDTO) (uint64, error) {
+func (runtime *clusterRuntime) AcquireSessionOwnership(ctx context.Context, request connect.SessionOwnershipRequestDTO) (connect.SessionOwnershipResultDTO, error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
 	if request.OwnerNodeID != runtime.config.NodeID {
-		return 0, membership.ErrNotLeader
+		return connect.SessionOwnershipResultDTO{}, membership.ErrNotLeader
 	}
 	if _, _, err := runtime.GetOwnership(ctx, request.TenantID, request.ClientID); err != nil {
-		return 0, err
+		return connect.SessionOwnershipResultDTO{}, err
 	}
 
 	var session *membership.SessionConnectDTO
@@ -43,7 +43,8 @@ func (runtime *clusterRuntime) AcquireSessionOwnership(ctx context.Context, requ
 		value := request.Session
 		session = &value
 	}
-	return runtime.acquireOwnership(ctx, request.TenantID, request.ClientID, request.OwnerNodeID, session)
+	epoch, superseded, err := runtime.acquireOwnership(ctx, request.TenantID, request.ClientID, request.OwnerNodeID, session)
+	return connect.SessionOwnershipResultDTO{Epoch: epoch, SupersededWill: superseded}, err
 }
 
 // CommitSessionMetadata commits a fenced metadata transition and reports only

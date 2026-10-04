@@ -648,7 +648,7 @@ func (connection *connection) cleanup() {
 			connection.server.unbindSession(connection.sessionID, connection)
 			disconnectReason := connection.disconnectReason
 			if connection.takeover.Load() {
-				disconnectReason = session.DisconnectNormal
+				disconnectReason = session.DisconnectTakeover
 			}
 			if err := connection.server.connections.DisconnectIfOwnershipEpoch(
 				connection.sessionID, disconnectReason, connection.ownership.Epoch,
@@ -838,7 +838,7 @@ func (connection *connection) activate(packet mqtt.Connect) error {
 		connection.accepted = false
 		reason := session.DisconnectAbnormal
 		if connection.takeover.Load() {
-			reason = session.DisconnectNormal
+			reason = session.DisconnectTakeover
 		}
 		_ = connection.server.connections.DisconnectIfOwnershipEpoch(
 			connection.sessionID, reason, connection.ownership.Epoch,

@@ -9,7 +9,7 @@
 | 관련 스펙·데이터 계약 | [Cluster §4.3·§11.24](../specs/cluster-session-and-delivery.md), [replicated-state-v1.proto](../contracts/replicated-state-v1.proto) |
 | 관련 아키텍처 | [Cluster architecture](../architectures/cluster-architecture.md) |
 | 이 결정이 대체하는 이전 결정 기록(ADR) | 없음 |
-| 이 결정을 대체한 새 결정 기록(ADR) | 없음 |
+| 이 결정을 대체한 새 결정 기록(ADR) | [ADR-0028](ADR-0028-planned-handoff-will-and-reason-metric.md) (부분) |
 
 ## 1. 결정
 

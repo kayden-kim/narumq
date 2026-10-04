@@ -13,7 +13,7 @@ Broker core는 MQTT, session, routing, delivery, tenancy와 cluster lifecycle �
 | 관련 Architecture | [Project structure](project-structure.md) |
 | 관련 Convention | [Go coding conventions](../conventions/go-coding-conventions.md) |
 | 관련 해설 | [Broker core의 계층 경계](../explainers/broker-core-boundaries.md), [Go 동시성과 backpressure](../explainers/go-concurrency-and-backpressure.md) |
-| 최종 확인일 | 2026-09-20 |
+| 최종 확인일 | 2026-10-04 |
 
 ## Source dependency view
 
@@ -130,8 +130,8 @@ cmd/narumq
   다르면 거절하며, takeover apply는 이미 bind된 이전 연결을 닫는다. Cleanup은
   `DisconnectIfOwnershipEpoch`에서 연결이 획득한 epoch와 local map을 비교해 다르면 local
   lifecycle·timer·delivery·Will 변경을 건너뛴다. 원격 takeover apply는 이전 node의 local map을
-  바꾸지 않으므로 takeover cleanup은 `DisconnectNormal`로 local lifecycle을 정리하고 Will을
-  억제한다. 이전 epoch의 DETACH·DISCARD 등 replicated session mutation은 committed
+  바꾸지 않으므로 takeover cleanup은 `DisconnectTakeover`로 local lifecycle을 정리하고 Will을
+  억제하며 집계하지 않는다. 후계의 표준 판단은 [ADR-0028](../decisions/ADR-0028-planned-handoff-will-and-reason-metric.md)을 따른다. 이전 epoch의 DETACH·DISCARD 등 replicated session mutation은 committed
   owner/epoch 검증에서 거절된다. Username은 identity로 사용하지 않으며 log에 남기지 않는다.
 - `adapters/memory/deliveryqueue`, `adapters/memory/retained`, `adapters/memory/sessionstore`는
   각각 SessionKey, `(tenant, topic)`, SessionKey를 key로 사용한다.

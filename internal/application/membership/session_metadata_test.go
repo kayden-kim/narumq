@@ -579,3 +579,67 @@ func cloneSessionConnectForTest(input SessionConnectDTO) SessionConnectDTO {
 	}
 	return copy
 }
+
+// Traceability: DEP-07/DEP-12; docs/specs/cluster-session-and-delivery.md §4.3.
+func TestApplyOwnershipReportsSupersededWill(t *testing.T) {
+	for _, kind := range []string{"planned", "scheduled", "live", "no will", "claimed"} {
+		t.Run(kind, func(t *testing.T) {
+			machine := activeSessionMetadataMachine(t)
+			initial := sessionConnect()
+			if kind == "no will" {
+				initial.Will, initial.Principal = nil, nil
+			}
+			applyMustSucceed(t, machine, 3, sessionOwnershipCommand(3, "alpha", "client", 1, 1, initial))
+			epoch := uint64(1)
+			if kind == "planned" {
+				change := sessionOwnershipCommand(4, "alpha", "client", 2, 2, nil)
+				change.Ownership.Action, change.Ownership.ExpectedEpoch = OwnershipActionTransfer, 1
+				applyMustSucceed(t, machine, 4, change)
+				epoch = 2
+			} else if kind == "scheduled" || kind == "claimed" {
+				disposition := SessionWillDispositionClaim
+				due := uint64(0)
+				if kind == "scheduled" {
+					disposition, due = SessionWillDispositionSchedule, 200
+				}
+				applyMustSucceed(t, machine, 4, metadataCommand(4, SessionMetadataChangeDTO{
+					TenantID: "alpha", ClientID: "client", OwnerNodeID: 1, Epoch: 1, Action: SessionMetadataActionDetach,
+					WillDisposition: disposition, ProposedAtUnixMillis: 100, WillDueAtUnixMillis: due,
+				}))
+			}
+			old, _ := machine.GetSessionMetadata("alpha", "client")
+			change := sessionOwnershipCommand(5, "alpha", "client", epoch+1, epoch, sessionConnect())
+			change.Ownership.OwnerNodeID = oldOwnerForSupersededTest(kind)
+			change.Ownership.ExpectedEpoch = epoch
+			change.Ownership.Epoch = epoch + 1
+			result := applyMustSucceed(t, machine, 5, change)
+			want := kind == "planned" || kind == "scheduled"
+			if (result.SupersededWill != nil) != want {
+				t.Fatalf("superseded=%+v", result.SupersededWill)
+			}
+			if !want {
+				return
+			}
+			got := result.SupersededWill
+			if got.PlannedHandoff != (kind == "planned") || !reflect.DeepEqual(&got.Will, old.Will) || !reflect.DeepEqual(got.Principal, old.Principal) || got.ProtocolVersion != old.ProtocolVersion || got.Retention != old.Retention {
+				t.Fatalf("superseded=%+v old=%+v", got, old)
+			}
+			got.Will.Payload[0] ^= 1
+			got.Principal.Roles[0] = "changed"
+			if reflect.DeepEqual(got.Will.Payload, old.Will.Payload) || reflect.DeepEqual(got.Principal.Roles, old.Principal.Roles) {
+				t.Fatal("result shares replaced record slices")
+			}
+			current, _ := machine.GetSessionMetadata("alpha", "client")
+			if !reflect.DeepEqual(current.Will, initial.Will) || !reflect.DeepEqual(current.Principal, initial.Principal) {
+				t.Fatal("result mutation changed committed replacement")
+			}
+		})
+	}
+}
+
+func oldOwnerForSupersededTest(kind string) uint64 {
+	if kind == "planned" {
+		return 2
+	}
+	return 1
+}

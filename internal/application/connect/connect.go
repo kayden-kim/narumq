@@ -161,6 +161,7 @@ func WithDurableDeliveryCommitter(committer deliverystate.Committer) Option {
 type clientTimers struct {
 	willTimer   Timer
 	expiryTimer Timer
+	willOrigin  willOrigin
 }
 
 type UseCase struct {
@@ -179,6 +180,7 @@ type UseCase struct {
 	activeTimers               map[string]*clientTimers
 	closed                     bool
 	metrics                    portsmetrics.MetricsRecorder
+	willOutcomes               portsmetrics.WillOutcomeRecorder
 	ownershipCoordinator       OwnershipCoordinator
 	ownerNodeID                uint64
 	offlineCoordinator         OfflineCoordinator
@@ -598,10 +600,21 @@ func (useCase *UseCase) ConnectContext(ctx context.Context, request ConnectReque
 	}
 
 	useCase.mu.Lock()
-	defer useCase.mu.Unlock()
+	var supersededPublish *mqtt.Will
+	var superseded *membership.SupersededWillDTO
+	defer func() {
+		useCase.mu.Unlock()
+		if supersededPublish != nil {
+			_ = useCase.willPublisher.PublishWill(sessionID, sessionKey, *supersededPublish)
+		}
+	}()
 
 	timerKey := string(sessionID)
+	localWillPending := useCase.activeTimers[timerKey] != nil && useCase.activeTimers[timerKey].willTimer != nil
 	if useCase.ownershipCoordinator == nil {
+		if localWillPending {
+			useCase.recordWillOutcome(portsmetrics.WillOutcomeSuppressedReconnectedWithinDelay)
+		}
 		useCase.stopSessionTimers(timerKey)
 	}
 
@@ -633,13 +646,18 @@ func (useCase *UseCase) ConnectContext(ctx context.Context, request ConnectReque
 				TenantID: ownershipTenantID, ClientID: packet.ClientID, OwnerNodeID: useCase.ownerNodeID,
 				Session: sessionConnectDTO(opened, principal),
 			}
-			ownershipEpoch, err = coordinator.AcquireSessionOwnership(ctx, request)
+			acquired, acquireErr := coordinator.AcquireSessionOwnership(ctx, request)
+			ownershipEpoch, err = acquired.Epoch, acquireErr
+			superseded = acquired.SupersededWill
 		} else {
 			ownershipEpoch, err = useCase.ownershipCoordinator.AcquireOwnership(ctx, ownershipTenantID, packet.ClientID, useCase.ownerNodeID)
 		}
 		if err != nil || ownershipEpoch == 0 {
 			result.ConnAck.ReasonCode = ownershipUnavailableReason(packet.Version)
 			return result, nil
+		}
+		if superseded != nil {
+			supersededPublish = useCase.resolveSupersededWillLocked(sessionKey, superseded)
 		}
 	}
 	if ownershipEpoch != 0 {
@@ -706,6 +724,9 @@ func (useCase *UseCase) ConnectContext(ctx context.Context, request ConnectReque
 		}
 	}
 	if useCase.ownershipCoordinator != nil && useCase.offlineCoordinator == nil {
+		if localWillPending && superseded == nil {
+			useCase.recordWillOutcome(portsmetrics.WillOutcomeSuppressedReconnectedWithinDelay)
+		}
 		useCase.stopSessionTimers(timerKey)
 	}
 	if useCase.offlineCoordinator != nil && ownershipEpoch != 0 {
@@ -732,6 +753,9 @@ func (useCase *UseCase) ConnectContext(ctx context.Context, request ConnectReque
 			return result, nil
 		}
 		// Keep prior timers armed until CLAIM succeeds; callbacks wait on useCase.mu.
+		if localWillPending && superseded == nil {
+			useCase.recordWillOutcome(portsmetrics.WillOutcomeSuppressedReconnectedWithinDelay)
+		}
 		useCase.stopSessionTimers(timerKey)
 		offlinePresent = claim.Found
 		if claim.Found && !packet.CleanStart {
@@ -841,6 +865,8 @@ func (useCase *UseCase) disconnectLocked(sessionID routing.SessionID, reason ses
 		return outcome, ErrSessionNotFound
 	}
 	now := useCase.clock.Now()
+	hadPendingWill := state.HasPendingWill()
+	origin := willOriginFor(reason)
 	result, err := state.Disconnect(now, reason)
 	if err != nil {
 		return outcome, err
@@ -912,6 +938,7 @@ func (useCase *UseCase) disconnectLocked(sessionID routing.SessionID, reason ses
 			}
 		}
 	}
+	metadataCommitFailed := false
 	if coordinator := useCase.sessionMetadataCoordinator; coordinator != nil && hasEpoch && hasSessionKey {
 		action := membership.SessionMetadataActionDetach
 		if result.SessionRemoved {
@@ -938,12 +965,19 @@ func (useCase *UseCase) disconnectLocked(sessionID routing.SessionID, reason ses
 		committed, commitErr := coordinator.CommitSessionMetadata(ctx, change)
 		cancel()
 		if commitErr != nil {
+			metadataCommitFailed = true
 			outcome.transitionErr = errors.Join(outcome.transitionErr, commitErr)
 			shouldPublish = false
 		} else if committed.Replicated {
 			will = committed.Will
 			shouldPublish = will != nil
 		}
+	}
+	if reason == session.DisconnectNormal && hadPendingWill && !metadataCommitFailed {
+		useCase.recordWillOutcome(portsmetrics.WillOutcomeSuppressedNormalDisconnect)
+	}
+	if shouldPublish {
+		useCase.recordWillOutcome(immediateWillReason(origin, result.Lifecycle.Version(), will.DelayInterval, result.Lifecycle.Retention() == session.RetentionImmediate))
 	}
 	if result.SessionRemoved {
 		delete(useCase.principals, sessionID)
@@ -954,7 +988,7 @@ func (useCase *UseCase) disconnectLocked(sessionID routing.SessionID, reason ses
 		outcome.will = will
 	}
 	if !result.SessionRemoved && (result.ScheduleWill || result.ScheduleExpiry) {
-		timers := &clientTimers{}
+		timers := &clientTimers{willOrigin: origin}
 		if result.ScheduleWill {
 			timers.willTimer = useCase.scheduler.AfterFunc(result.WillDelay, func() { useCase.onWillTimerForTimer(sessionID, timers) })
 		}
@@ -977,6 +1011,10 @@ func (useCase *UseCase) onWillTimerForTimer(sessionID routing.SessionID, expecte
 	if expected != nil && (!ok || timers != expected) {
 		useCase.mu.Unlock()
 		return
+	}
+	origin := willOriginUnplanned
+	if ok {
+		origin = timers.willOrigin
 	}
 	if ok {
 		timers.willTimer = nil
@@ -1040,6 +1078,7 @@ func (useCase *UseCase) onWillTimerForTimer(sessionID routing.SessionID, expecte
 	}
 	useCase.mu.Unlock()
 	if shouldPublish {
+		useCase.recordWillOutcome(delayedWillReason(origin))
 		_ = useCase.willPublisher.PublishWill(sessionID, sessionKey, *will)
 	}
 }
@@ -1061,6 +1100,10 @@ func (useCase *UseCase) onExpiryTimerForTimer(sessionID routing.SessionID, expec
 	if expected != nil && (!ok || timers != expected) {
 		useCase.mu.Unlock()
 		return
+	}
+	origin := willOriginUnplanned
+	if ok {
+		origin = timers.willOrigin
 	}
 	if ok {
 		if timers.willTimer != nil {
@@ -1113,7 +1156,7 @@ func (useCase *UseCase) onExpiryTimerForTimer(sessionID routing.SessionID, expec
 			}
 			if metadataErr != nil {
 				if !useCase.closed {
-					retryTimers := &clientTimers{}
+					retryTimers := &clientTimers{willOrigin: origin}
 					retryTimers.expiryTimer = useCase.scheduleExpiryTimerLocked(sessionID, time.Second, retryTimers)
 					useCase.activeTimers[timerKey] = retryTimers
 				}
@@ -1131,7 +1174,7 @@ func (useCase *UseCase) onExpiryTimerForTimer(sessionID routing.SessionID, expec
 			context.Background(), sessionKey, epoch, membership.DeliveryActionDiscard, now, time.Time{},
 		) != nil {
 			if !useCase.closed {
-				retryTimers := &clientTimers{}
+				retryTimers := &clientTimers{willOrigin: origin}
 				retryTimers.expiryTimer = useCase.scheduleExpiryTimerLocked(sessionID, time.Second, retryTimers)
 				useCase.activeTimers[timerKey] = retryTimers
 			}
@@ -1141,7 +1184,7 @@ func (useCase *UseCase) onExpiryTimerForTimer(sessionID routing.SessionID, expec
 	}
 	if err := useCase.deleteSession(sessionKey, timerKey); err != nil {
 		if !useCase.closed {
-			retryTimers := &clientTimers{}
+			retryTimers := &clientTimers{willOrigin: origin}
 			retryTimers.expiryTimer = useCase.scheduleExpiryTimerLocked(sessionID, time.Second, retryTimers)
 			useCase.activeTimers[timerKey] = retryTimers
 		}
@@ -1170,6 +1213,7 @@ func (useCase *UseCase) onExpiryTimerForTimer(sessionID routing.SessionID, expec
 	useCase.mu.Unlock()
 
 	if shouldPublish {
+		useCase.recordWillOutcome(delayedWillReason(origin))
 		_ = useCase.willPublisher.PublishWill(sessionID, sessionKey, *will)
 	}
 }

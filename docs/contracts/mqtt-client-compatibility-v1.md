@@ -238,7 +238,7 @@ go run ./tests/compatibility/mqtt-clients-v1 --suite drain \
 ## 8. Draft blocker
 
 - `SPEC-TBD-04`: rollout·reconnect 시간과 production backoff 수치
-- `DEP-06`~`DEP-12`: test-only SDK drain 범위 밖의 MQTT 3.1.1/Will 판정, reason별 broker 계측과 external rollout gate의 end-to-end evidence
+- `DEP-06`~`DEP-12`: external rollout gate의 end-to-end evidence. Broker의 표준 Will 처리와 reason 계측은 [ADR-0028](../decisions/ADR-0028-planned-handoff-will-and-reason-metric.md)을 따르며 수용 증거는 [Drain §10](../specs/drain-and-rolling-update.md#10-broker-drain-수용-시험-매핑)에 둔다.
 - `MQTT5_DRAIN_SAFE`: `SPEC-TBD-04` 운영 수치, rollout timing과 matrix에 `blocked`로 남은 Go malformed DISCONNECT 열
 - SDK별 automated compatibility harness의 Phase 1 artifact가 없는 후보는 `unverified`
 - MQTT 3.1.0 90일 관찰과 legacy 격리 완료 전까지 migration evidence가 blocked

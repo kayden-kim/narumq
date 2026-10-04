@@ -307,6 +307,7 @@ func runClusterMode(ctx context.Context, config clusterConfigFile, logger *slog.
 	connectOptions := []connect.Option{
 		connect.WithOwnershipCoordinator(runtime, config.NodeID),
 		connect.WithSessionMetadataCoordinator(runtime),
+		connect.WithWillOutcomeRecorder(metricsRegistry),
 		connect.WithOfflineCoordinator(runtime),
 		connect.WithDurableDeliveryCommitter(runtime),
 	}
@@ -2700,23 +2701,24 @@ func (runtime *clusterRuntime) GetNodeDrain(ctx context.Context, memberID uint64
 	return state, found, nil
 }
 func (runtime *clusterRuntime) AcquireOwnership(ctx context.Context, tenantID, clientID string, ownerNodeID uint64) (uint64, error) {
-	return runtime.acquireOwnership(ctx, tenantID, clientID, ownerNodeID, nil)
+	epoch, _, err := runtime.acquireOwnership(ctx, tenantID, clientID, ownerNodeID, nil)
+	return epoch, err
 }
 
-func (runtime *clusterRuntime) acquireOwnership(ctx context.Context, tenantID, clientID string, ownerNodeID uint64, session *membership.SessionConnectDTO) (uint64, error) {
+func (runtime *clusterRuntime) acquireOwnership(ctx context.Context, tenantID, clientID string, ownerNodeID uint64, session *membership.SessionConnectDTO) (uint64, *membership.SupersededWillDTO, error) {
 	if ownerNodeID != runtime.config.NodeID {
-		return 0, membership.ErrNotLeader
+		return 0, nil, membership.ErrNotLeader
 	}
 	ownership, found, err := runtime.GetOwnership(ctx, tenantID, clientID)
 	if err != nil {
-		return 0, err
+		return 0, nil, err
 	}
 	var expectedEpoch, epoch uint64
 	action := membership.OwnershipActionAcquire
 	epoch = 1
 	if found {
 		if ownership.Epoch == ^uint64(0) {
-			return 0, membership.ErrQuorumUnavailable
+			return 0, nil, membership.ErrQuorumUnavailable
 		}
 		expectedEpoch, epoch = ownership.Epoch, ownership.Epoch+1
 		if ownership.OwnerNodeID != ownerNodeID {
@@ -2725,7 +2727,7 @@ func (runtime *clusterRuntime) acquireOwnership(ctx context.Context, tenantID, c
 	}
 	operationID, err := newClusterOperationID()
 	if err != nil {
-		return 0, membership.ErrQuorumUnavailable
+		return 0, nil, membership.ErrQuorumUnavailable
 	}
 	result, err := runtime.Commit(ctx, membership.CommandDTO{
 		SchemaMajor: membership.SchemaMajor, SchemaMinor: membership.SchemaMinor, OperationID: operationID,
@@ -2735,12 +2737,12 @@ func (runtime *clusterRuntime) acquireOwnership(ctx context.Context, tenantID, c
 		},
 	})
 	if err != nil || result.Outcome != membership.ApplyOutcomeApplied || result.Ownership == nil {
-		return 0, membership.ErrQuorumUnavailable
+		return 0, nil, membership.ErrQuorumUnavailable
 	}
 	if runtime.failpoint.matchesOwnershipAcquireAfterCommit() {
 		triggerClusterFailpoint(runtime.failpoint)
 	}
-	return result.Ownership.Epoch, nil
+	return result.Ownership.Epoch, result.SupersededWill, nil
 }
 
 func (runtime *clusterRuntime) CommitSubscription(ctx context.Context, tenantID, clientID string, ownerNodeID, epoch uint64, filter string, qos uint32, noLocal, retainAsPublished bool, retainHandling, action uint32) error {

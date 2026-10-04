@@ -241,6 +241,14 @@ func newClusterMembershipProcessFixture(t *testing.T, nodeCount int, buildTags s
       "archive-offline-sub",
       "archive-offline-pub",
       "archive-upgrade-retained",
+      "drain-will-observer-1",
+      "drain-will-observer-2",
+      "drain-will-observer-3",
+      "drain-will-v311",
+      "drain-will-zero",
+      "drain-will-expire",
+      "drain-will-safe",
+      "drain-will-normal",
       "archive-downgrade-retained"
     ],
     "roles": ["client"]
@@ -377,6 +385,24 @@ func newClusterMembershipProcessFixture(t *testing.T, nodeCount int, buildTags s
     "effect": "allow",
     "action": "will",
     "topicFilter": "meta/#"
+  }, {
+    "tenantId": "acceptance",
+    "role": "client",
+    "effect": "allow",
+    "action": "publish",
+    "topicFilter": "drain-will/#"
+  }, {
+    "tenantId": "acceptance",
+    "role": "client",
+    "effect": "allow",
+    "action": "subscribe",
+    "topicFilter": "drain-will/#"
+  }, {
+    "tenantId": "acceptance",
+    "role": "client",
+    "effect": "allow",
+    "action": "will",
+    "topicFilter": "drain-will/#"
   }, {
     "tenantId": "acceptance",
     "role": "client",

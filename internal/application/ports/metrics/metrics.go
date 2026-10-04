@@ -36,6 +36,21 @@ const (
 	AuthMethodJWT       = "jwt"
 )
 
+// Will outcome reasons (fixed cardinality).
+const (
+	WillOutcomeSuppressedNormalDisconnect       = "suppressed_normal_disconnect"
+	WillOutcomeSuppressedReconnectedWithinDelay = "suppressed_reconnected_within_delay"
+	WillOutcomeExpectedMQTT311ServerDisconnect  = "expected_mqtt311_server_disconnect"
+	WillOutcomeExpectedZeroOrExpiredWillDelay   = "expected_zero_or_expired_will_delay"
+	WillOutcomeUnexpectedSupportedClient        = "unexpected_supported_client"
+	WillOutcomeUnplannedFailure                 = "unplanned_failure"
+)
+
+// WillOutcomeRecorder records a registered Will's final outcome.
+type WillOutcomeRecorder interface {
+	WillOutcome(reason string)
+}
+
 // MetricsRecorder records operational metrics for NaruMQ broker.
 // Implementations must strictly enforce label cardinality limits:
 // client identifiers, IPs, arbitrary topics, or tokens must NEVER be used as metric labels.

@@ -15,7 +15,7 @@ import (
 
 // SessionOwnershipCoordinator installs CONNECT metadata with committed ownership.
 type SessionOwnershipCoordinator interface {
-	AcquireSessionOwnership(ctx context.Context, request SessionOwnershipRequestDTO) (uint64, error)
+	AcquireSessionOwnership(ctx context.Context, request SessionOwnershipRequestDTO) (SessionOwnershipResultDTO, error)
 }
 
 // SessionOwnershipRequestDTO carries the lifecycle for an ownership acquisition.
@@ -23,6 +23,12 @@ type SessionOwnershipRequestDTO struct {
 	TenantID, ClientID string
 	OwnerNodeID        uint64
 	Session            membership.SessionConnectDTO
+}
+
+// SessionOwnershipResultDTO carries committed ownership and any replaced pending Will.
+type SessionOwnershipResultDTO struct {
+	Epoch          uint64
+	SupersededWill *membership.SupersededWillDTO
 }
 
 // SessionMetadataCoordinator fences and commits lifecycle and Will decisions.
@@ -204,7 +210,7 @@ func (useCase *UseCase) RecoverOwnedSession(ctx context.Context, recovered Recov
 		_ = useCase.routes.BindSessionTenant(sessionID, tenant)
 		reason := session.DisconnectAbnormal
 		if metadata.Epoch < recovered.OwnershipEpoch {
-			reason = session.DisconnectNormal
+			reason = session.DisconnectPlannedHandoff
 		}
 		outcome, transitionErr := useCase.disconnectLocked(sessionID, reason)
 		if transitionErr != nil || outcome.transitionErr != nil {

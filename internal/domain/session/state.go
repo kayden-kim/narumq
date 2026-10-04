@@ -87,6 +87,12 @@ const (
 	// DisconnectAbnormal indicates unexpected connection loss, I/O error, or error code.
 	// Will message must be published (MQTT-3.1.2-8).
 	DisconnectAbnormal
+	// DisconnectTakeover discards the local Will after committed ownership moves.
+	// The new owner decides its outcome; see ADR-0028.
+	DisconnectTakeover
+	// DisconnectPlannedHandoff applies server-initiated drain/removal Will rules
+	// at the successor: publish or schedule the Will (MQTT-3.1.2-8).
+	DisconnectPlannedHandoff
 )
 
 // DisconnectResult describes the state changes and scheduled actions resulting from Disconnect.
@@ -170,7 +176,7 @@ func (state Lifecycle) Disconnect(now time.Time, reason DisconnectReason) (Disco
 
 	hasWill := state.will != nil && !state.willPublished && !state.willDiscarded
 	if hasWill {
-		if reason == DisconnectNormal {
+		if reason == DisconnectNormal || reason == DisconnectTakeover {
 			state.willDiscarded = true
 		} else {
 			if state.version == mqtt.ProtocolV311 || state.will.DelayInterval == 0 || state.retention == RetentionImmediate {
@@ -220,6 +226,11 @@ func (state Lifecycle) Expire(now time.Time) (Lifecycle, *mqtt.Will, bool) {
 // Will returns a copy of the will message stored in the session, or nil if none.
 func (state Lifecycle) Will() *mqtt.Will {
 	return state.will.Clone()
+}
+
+// HasPendingWill reports whether a Will remains unpublished and undiscarded.
+func (state Lifecycle) HasPendingWill() bool {
+	return state.will != nil && !state.willPublished && !state.willDiscarded
 }
 
 // WillPublished reports whether the will message was published.

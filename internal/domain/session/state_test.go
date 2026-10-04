@@ -518,3 +518,43 @@ func TestRestoreValidatesCommittedLifecycle(t *testing.T) {
 		t.Fatal("restored Will aliases caller payload")
 	}
 }
+
+// Traceability: PRD MQTT-01/TEST-04; DEP-07/DEP-12; MQTT-3.1.2-8; docs/specs/drain-and-rolling-update.md §5.
+func TestLifecycle_TakeoverAndPlannedHandoffWillRules(t *testing.T) {
+	for _, test := range []struct {
+		name                       string
+		reason                     DisconnectReason
+		version                    mqtt.ProtocolVersion
+		delay, expiry              uint32
+		publish, schedule, discard bool
+		wantDelay                  time.Duration
+	}{
+		{"takeover", DisconnectTakeover, mqtt.ProtocolV5, 10, 60, false, false, true, 0},
+		{"mqtt311", DisconnectPlannedHandoff, mqtt.ProtocolV311, 0, 0, true, false, false, 0},
+		{"zero", DisconnectPlannedHandoff, mqtt.ProtocolV5, 0, 60, true, false, false, 0},
+		{"delayed", DisconnectPlannedHandoff, mqtt.ProtocolV5, 10, 60, false, true, false, 10 * time.Second},
+		{"immediate retention", DisconnectPlannedHandoff, mqtt.ProtocolV5, 10, 0, true, false, false, 0},
+		{"clamped", DisconnectPlannedHandoff, mqtt.ProtocolV5, 10, 3, false, true, false, 3 * time.Second},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			now := time.Unix(1, 0)
+			state, _, err := Open(nil, mqtt.Connect{Version: test.version, ClientID: "client", SessionExpiryInterval: test.expiry, Will: &mqtt.Will{Topic: "status/will", DelayInterval: test.delay}}, now)
+			if err != nil || !state.HasPendingWill() {
+				t.Fatalf("pending Will before disconnect: %v", err)
+			}
+			result, err := state.Disconnect(now, test.reason)
+			if err != nil || result.PublishWillNow != test.publish || result.ScheduleWill != test.schedule || result.WillDelay != test.wantDelay || result.Lifecycle.WillDiscarded() != test.discard {
+				t.Fatalf("Disconnect() = %+v, %v", result, err)
+			}
+			if result.Lifecycle.HasPendingWill() != test.schedule {
+				t.Fatal("pending Will state differs from scheduled outcome")
+			}
+			if test.schedule {
+				claimed, _, ok := result.Lifecycle.ClaimWill()
+				if !ok || claimed.HasPendingWill() {
+					t.Fatal("claim left pending Will")
+				}
+			}
+		})
+	}
+}

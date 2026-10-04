@@ -425,6 +425,19 @@ func (machine *StateMachine) applyOwnership(index uint64, change OwnershipChange
 		if newBytes > MaxSessionWillBytes-(machine.sessionWillBytes-oldBytes) {
 			return conflictResult(index, ConflictSessionMetadataCapacity)
 		}
+		if old, ok := machine.sessionMetadata[key]; ok && old.Will != nil {
+			planned := old.Connected && exists && old.Epoch < current.Epoch
+			scheduled := !old.Connected && old.WillDueAtUnixMillis != 0
+			if planned || scheduled {
+				result.SupersededWill = &SupersededWillDTO{
+					Will:            *cloneSessionWillDTO(old.Will),
+					Principal:       cloneSessionPrincipalDTO(old.Principal),
+					ProtocolVersion: old.ProtocolVersion,
+					Retention:       old.Retention,
+					PlannedHandoff:  planned,
+				}
+			}
+		}
 	}
 	state := OwnershipStateDTO{TenantID: change.TenantID, ClientID: change.ClientID, OwnerNodeID: change.OwnerNodeID, Epoch: change.Epoch, CommittedIndex: index}
 	machine.ownerships[key] = state

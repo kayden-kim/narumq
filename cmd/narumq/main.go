@@ -290,6 +290,7 @@ func runWithContext(ctx context.Context, args []string, logger *slog.Logger) err
 		tcpConfigPolicy security.Policy
 	)
 	connectOpts = append(connectOpts, connect.WithMetrics(metricsRegistry))
+	connectOpts = append(connectOpts, connect.WithWillOutcomeRecorder(metricsRegistry))
 	subscribeOpts = append(subscribeOpts, subscribe.WithMetrics(metricsRegistry))
 	publishOpts = append(publishOpts, publish.WithMetrics(metricsRegistry))
 	if securityBundle != nil {

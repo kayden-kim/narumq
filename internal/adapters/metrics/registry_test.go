@@ -359,3 +359,28 @@ func TestRegistryNormalizesUnboundedLabels(t *testing.T) {
 		t.Fatalf("unknown packet type was not normalized: %s", output)
 	}
 }
+
+func TestRegistryRendersWillOutcomes(t *testing.T) {
+	registry := NewRegistry()
+	for _, openMetrics := range []bool{false, true} {
+		text := string(registry.Render(openMetrics))
+		for _, reason := range willOutcomeReasons {
+			if !strings.Contains(text, fmt.Sprintf("narumq_will_outcomes_total{reason=\"%s\"} 0\n", reason)) {
+				t.Fatalf("missing zero series for %s", reason)
+			}
+		}
+	}
+	for _, reason := range willOutcomeReasons {
+		registry.WillOutcome(reason)
+	}
+	registry.WillOutcome("bogus")
+	text := string(registry.Render(false))
+	for _, reason := range willOutcomeReasons {
+		if !strings.Contains(text, fmt.Sprintf("narumq_will_outcomes_total{reason=\"%s\"} 1\n", reason)) {
+			t.Fatalf("missing count for %s", reason)
+		}
+	}
+	if strings.Contains(text, "bogus") {
+		t.Fatal("unknown reason created a series")
+	}
+}

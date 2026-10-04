@@ -78,6 +78,16 @@ type SessionPrincipalDTO struct {
 	ExpiresAtUnixMillis   uint64
 }
 
+// SupersededWillDTO reports an unpublished Will replaced by a CONNECT ownership change.
+type SupersededWillDTO struct {
+	Will            SessionWillDTO
+	Principal       *SessionPrincipalDTO
+	ProtocolVersion uint32
+	Retention       SessionRetention
+	// PlannedHandoff means the replaced CONNECTED record predates committed ownership.
+	PlannedHandoff bool
+}
+
 type SessionConnectDTO struct {
 	ProtocolVersion       uint32
 	Retention             SessionRetention
@@ -595,6 +605,7 @@ type ApplyResultDTO struct {
 	NodeDrain       *NodeDrainStateDTO
 	TenantQuota     *TenantQuotaRejectionDTO
 	SessionMetadata *SessionMetadataResultDTO
+	SupersededWill  *SupersededWillDTO
 }
 
 // MembershipOperationPhase is the management-facing current operation status.

@@ -57,8 +57,8 @@ func TestClusterSessionMetadataCommitRequiresActiveFeature(t *testing.T) {
 		t.Fatal("inactive ownership acquisition installed session metadata")
 	}
 	ownership, found, err := runtime.GetOwnership(ctx, request.TenantID, request.ClientID)
-	if err != nil || !found || ownership.Epoch != inactiveEpoch || ownership.OwnerNodeID != runtime.config.NodeID {
-		t.Fatalf("inactive acquisition ownership = (%+v, %v, %v), epoch=%d", ownership, found, err, inactiveEpoch)
+	if err != nil || !found || ownership.Epoch != inactiveEpoch.Epoch || ownership.OwnerNodeID != runtime.config.NodeID {
+		t.Fatalf("inactive acquisition ownership = (%+v, %v, %v), epoch=%d", ownership, found, err, inactiveEpoch.Epoch)
 	}
 
 	for _, member := range runtime.machine.Members() {
@@ -76,13 +76,13 @@ func TestClusterSessionMetadataCommitRequiresActiveFeature(t *testing.T) {
 		t.Fatalf("active AcquireSessionOwnership() error = %v", err)
 	}
 	state, found := runtime.machine.GetSessionMetadata(request.TenantID, request.ClientID)
-	if !found || state.Epoch != activeEpoch || !state.Connected || state.Will == nil {
-		t.Fatalf("active ownership acquisition metadata = (%+v, %v), want connected metadata at epoch %d", state, found, activeEpoch)
+	if !found || state.Epoch != activeEpoch.Epoch || !state.Connected || state.Will == nil {
+		t.Fatalf("active ownership acquisition metadata = (%+v, %v), want connected metadata at epoch %d", state, found, activeEpoch.Epoch)
 	}
 
 	_, err = runtime.CommitSessionMetadata(ctx, membership.SessionMetadataChangeDTO{
 		TenantID: request.TenantID, ClientID: request.ClientID, OwnerNodeID: runtime.config.NodeID,
-		Epoch: inactiveEpoch, Action: membership.SessionMetadataActionClaimWill, ProposedAtUnixMillis: 2,
+		Epoch: inactiveEpoch.Epoch, Action: membership.SessionMetadataActionClaimWill, ProposedAtUnixMillis: 2,
 	})
 	if !errors.Is(err, connect.ErrSessionOwnershipStale) {
 		t.Fatalf("stale CommitSessionMetadata() error = %v, want ErrSessionOwnershipStale", err)
@@ -90,7 +90,7 @@ func TestClusterSessionMetadataCommitRequiresActiveFeature(t *testing.T) {
 
 	claimed, err := runtime.CommitSessionMetadata(ctx, membership.SessionMetadataChangeDTO{
 		TenantID: request.TenantID, ClientID: request.ClientID, OwnerNodeID: runtime.config.NodeID,
-		Epoch: activeEpoch, Action: membership.SessionMetadataActionDetach,
+		Epoch: activeEpoch.Epoch, Action: membership.SessionMetadataActionDetach,
 		WillDisposition: membership.SessionWillDispositionClaim, ProposedAtUnixMillis: 3,
 	})
 	if err != nil || !claimed.Replicated || claimed.Will == nil {
@@ -103,7 +103,7 @@ func TestClusterSessionMetadataCommitRequiresActiveFeature(t *testing.T) {
 
 	repeated, err := runtime.CommitSessionMetadata(ctx, membership.SessionMetadataChangeDTO{
 		TenantID: request.TenantID, ClientID: request.ClientID, OwnerNodeID: runtime.config.NodeID,
-		Epoch: activeEpoch, Action: membership.SessionMetadataActionClaimWill, ProposedAtUnixMillis: 4,
+		Epoch: activeEpoch.Epoch, Action: membership.SessionMetadataActionClaimWill, ProposedAtUnixMillis: 4,
 	})
 	if err != nil || !repeated.Replicated || repeated.Will != nil {
 		t.Fatalf("repeated committed Will claim = (%+v, %v), want replicated empty result", repeated, err)

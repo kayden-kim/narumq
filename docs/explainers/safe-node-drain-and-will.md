@@ -116,6 +116,10 @@ Will은 연결이 비정상적으로 끝났음을 다른 subscriber에게 알리
 
 MQTT 3.1.1에는 Will Delay와 server redirect가 없다. 따라서 Will을 사용하는 3.1.1 클라이언트에 server 주도 drain과 no-Will을 동시에 보장할 수 없다. No-Will이 필요하면 클라이언트가 정상 DISCONNECT에 협력하거나 MQTT 5와 충분한 Will Delay를 사용해야 한다.
 
+NaruMQ의 `session-metadata` 활성 cluster에서는 이전 owner와 후계를 나눠 처리한다. 이전 연결의 TCP cleanup은 `DisconnectTakeover`로 local Will만 버린다. 후계의 `RecoverOwnedSession`은 이전 epoch record에 표준 Will 규칙을 적용한다. 예를 들어 MQTT 5·expiry 60초·Will Delay 5초이면 후계 recovery부터 5초를 예약한다. 그 안에 같은 session으로 재접속하면 Will을 취소한다.
+
+Recovery 전에 재접속해도 ownership apply가 대체한 Will을 결과로 반환하므로 판단을 놓치지 않는다. MQTT 3.1.1이나 delay 0이면 재접속 node가 이전 Will을 발행한다. 최종 결과는 `narumq_will_outcomes_total{reason}`의 6개 사유로 집계한다. 비활성 cluster는 기존 억제를 유지한다. 예약 출처를 복제하지 않으므로 재시작 뒤 복원한 예약 Will은 `unplanned_failure`다. 기준은 [ADR-0028](../decisions/ADR-0028-planned-handoff-will-and-reason-metric.md), 코드 흐름은 [Session metadata 복구 경로](../architectures/cluster-architecture.md#session-metadata-복구-경로)에 있다.
+
 ## Reconnect storm 제어의 trade-off
 
 한 노드의 모든 연결을 동시에 닫으면 남은 노드와 인증 backend에 부하가 집중된다.

@@ -9,7 +9,7 @@
 | 관련 스펙·데이터 계약 | [Drain과 rolling update §1~§6·§10](../specs/drain-and-rolling-update.md), [Management API v1](../contracts/management-api-v1.md), [replicated-state-v1.proto](../contracts/replicated-state-v1.proto), [Cluster backup v3](../contracts/cluster-backup-v3.md), [MQTT client compatibility v1](../contracts/mqtt-client-compatibility-v1.md) |
 | 관련 아키텍처 | [Cluster architecture](../architectures/cluster-architecture.md), [Project structure](../architectures/project-structure.md), [Broker core boundaries](../explainers/broker-core-boundaries.md) |
 | 이 결정이 대체하는 이전 결정 기록(ADR) | 없음 |
-| 이 결정을 대체한 새 결정 기록(ADR) | 없음 |
+| 이 결정을 대체한 새 결정 기록(ADR) | [ADR-0028](ADR-0028-planned-handoff-will-and-reason-metric.md) (부분) |
 
 ## 1. 결정
 

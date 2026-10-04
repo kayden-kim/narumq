@@ -33,6 +33,15 @@ type tenantQuotaMetricEntry struct {
 
 var prometheusLabelEscaper = strings.NewReplacer("\\", "\\\\", "\"", "\\\"", "\n", "\\n")
 
+var willOutcomeReasons = [...]string{
+	ports.WillOutcomeSuppressedNormalDisconnect,
+	ports.WillOutcomeSuppressedReconnectedWithinDelay,
+	ports.WillOutcomeExpectedMQTT311ServerDisconnect,
+	ports.WillOutcomeExpectedZeroOrExpiredWillDelay,
+	ports.WillOutcomeUnexpectedSupportedClient,
+	ports.WillOutcomeUnplannedFailure,
+}
+
 // Default histogram buckets for publish latency in seconds.
 var defaultPublishLatencyBuckets = []float64{
 	0.0005, 0.001, 0.0025, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5,
@@ -119,6 +128,7 @@ type Registry struct {
 	authAttemptsTotal           map[string]*atomic.Int64 // key: method,result,reason
 	connectRejectedTotal        atomic.Int64
 	nodeDrainTransitions        map[string]*atomic.Int64
+	willOutcomes                [len(willOutcomeReasons)]atomic.Int64
 	tenantQuotaRejections       map[tenantQuotaMetricKey]*atomic.Int64
 	tenantQuotaTenants          map[string]struct{}
 	tenantQuotaProfileCommitted atomic.Int64
@@ -150,6 +160,7 @@ func NewRegistry() *Registry {
 }
 
 var _ ports.MetricsRecorder = (*Registry)(nil)
+var _ ports.WillOutcomeRecorder = (*Registry)(nil)
 
 func (r *Registry) getCounter(m map[string]*atomic.Int64, key string) *atomic.Int64 {
 	r.mu.RLock()
@@ -300,6 +311,16 @@ func (r *Registry) NodeDrainTransition(phase string) {
 		return
 	}
 	r.getCounter(r.nodeDrainTransitions, fmt.Sprintf(`phase="%s"`, phase)).Add(1)
+}
+
+// WillOutcome increments only a known final Will outcome.
+func (r *Registry) WillOutcome(reason string) {
+	for index, known := range willOutcomeReasons {
+		if reason == known {
+			r.willOutcomes[index].Add(1)
+			return
+		}
+	}
 }
 
 // RecordTenantQuotaRejection increments a bounded tenant-and-dimension counter and returns its rendered tenant label.
@@ -462,6 +483,11 @@ func (r *Registry) Render(isOpenMetrics bool) []byte {
 	fmt.Fprintf(&buf, "# HELP narumq_node_drain_transitions_total Committed node drain phase transitions observed for the local node.\n")
 	fmt.Fprintf(&buf, "# TYPE narumq_node_drain_transitions_total counter\n")
 	r.renderCounterMap(&buf, "narumq_node_drain_transitions_total", r.nodeDrainTransitions)
+	fmt.Fprintf(&buf, "# HELP narumq_will_outcomes_total Final outcomes of registered MQTT Will messages by reason.\n")
+	fmt.Fprintf(&buf, "# TYPE narumq_will_outcomes_total counter\n")
+	for index, reason := range willOutcomeReasons {
+		fmt.Fprintf(&buf, "narumq_will_outcomes_total{reason=\"%s\"} %d\n", reason, r.willOutcomes[index].Load())
+	}
 	fmt.Fprintf(&buf, "# HELP narumq_tenant_quota_profile_committed Whether a tenant quota profile is committed locally.\n")
 	fmt.Fprintf(&buf, "# TYPE narumq_tenant_quota_profile_committed gauge\n")
 	fmt.Fprintf(&buf, "narumq_tenant_quota_profile_committed %d\n", r.tenantQuotaProfileCommitted.Load())

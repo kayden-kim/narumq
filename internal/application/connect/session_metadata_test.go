@@ -234,27 +234,59 @@ func TestRecoverOwnedConnectedSessionDisconnectsAndCommitsWill(t *testing.T) {
 	}
 }
 
-func TestRecoverOwnedPreviousEpochSuppressesWill(t *testing.T) {
-	// Traceability: CLU-08; docs/specs/cluster-session-and-delivery.md §4.3, §11.24.
-	now := time.Date(2026, 10, 3, 12, 0, 0, 0, time.UTC)
-	coordinator := &fakeSessionMetadataCoordinator{outcomes: []SessionMetadataOutcomeDTO{{Replicated: true}}}
-	useCase, _, repository, _, _, _, publisher := newUseCase(t, now)
-	configureSessionMetadata(useCase, coordinator, 12)
-	recovered := recoveredMetadata("previous", 11, true, now)
-	recovered.OwnershipEpoch = 12
-	recovered.Metadata.Will = metadataWillDTO(metadataWill("recovered/previous", 0))
-	if err := useCase.RecoverOwnedSession(context.Background(), recovered); err != nil {
-		t.Fatal(err)
-	}
-	state, found := repository.states["previous"]
-	if !found || state.Connected() || state.Will() == nil || !state.WillDiscarded() {
-		t.Fatalf("previous epoch lifecycle = %#v found=%v; want detached with Will discarded", state, found)
-	}
-	if len(coordinator.calls) != 1 || coordinator.calls[0].change.WillDisposition != membership.SessionWillDispositionDiscard {
-		t.Fatalf("recovery metadata commits = %#v, want DETACH/DISCARD", coordinator.calls)
-	}
-	if len(publisher.published) != 0 {
-		t.Fatalf("published previous-owner Will: %#v", publisher.published)
+func TestRecoverOwnedPreviousEpochAppliesPlannedHandoffWillRules(t *testing.T) {
+	// Traceability: DEP-07/DEP-12; docs/specs/drain-and-rolling-update.md §5.
+	for _, test := range []struct {
+		name    string
+		version uint32
+		delay   uint32
+		reason  string
+	}{
+		{"zero", 5, 0, "expected_zero_or_expired_will_delay"},
+		{"delayed", 5, 5, "expected_zero_or_expired_will_delay"},
+		{"mqtt311", 4, 0, "expected_mqtt311_server_disconnect"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			now := time.Unix(100, 0)
+			will := metadataWill("recovered/previous", test.delay)
+			outcomes := []SessionMetadataOutcomeDTO{{Replicated: true, Will: will}}
+			if test.delay != 0 {
+				outcomes = []SessionMetadataOutcomeDTO{{Replicated: true}, {Replicated: true, Will: will}}
+			}
+			coordinator := &fakeSessionMetadataCoordinator{outcomes: outcomes}
+			useCase, _, _, _, _, scheduler, publisher := newUseCase(t, now)
+			configureSessionMetadata(useCase, coordinator, 12)
+			recorder := &fakeWillOutcomes{}
+			WithWillOutcomeRecorder(recorder)(useCase)
+			recovered := recoveredMetadata("previous", 11, true, now)
+			recovered.OwnershipEpoch = 12
+			recovered.Metadata.ProtocolVersion = test.version
+			recovered.Metadata.Will = metadataWillDTO(will)
+			if test.version == 4 {
+				recovered.Metadata.Retention = membership.SessionRetentionInfinite
+				recovered.Metadata.ExpiryIntervalSeconds = 0
+			}
+			if err := useCase.RecoverOwnedSession(context.Background(), recovered); err != nil {
+				t.Fatal(err)
+			}
+			wantDisposition := membership.SessionWillDispositionClaim
+			if test.delay != 0 {
+				wantDisposition = membership.SessionWillDispositionSchedule
+				if len(publisher.published) != 0 || scheduler.timers[0].delay != 5*time.Second {
+					t.Fatal("delayed recovery published immediately or used wrong delay")
+				}
+				scheduler.timers[0].callback()
+			}
+			if coordinator.calls[0].change.WillDisposition != wantDisposition || len(publisher.published) != 1 || len(recorder.reasons) != 1 || recorder.reasons[0] != test.reason {
+				t.Fatalf("calls=%+v publishes=%+v reasons=%v", coordinator.calls, publisher.published, recorder.reasons)
+			}
+			if err := useCase.RecoverOwnedSession(context.Background(), recovered); err != nil {
+				t.Fatal(err)
+			}
+			if len(publisher.published) != 1 || len(recorder.reasons) != 1 {
+				t.Fatal("recovery repeated final outcome")
+			}
+		})
 	}
 }
 
