@@ -820,8 +820,10 @@ go run ./tools/verify ci --base <merge-base>
 delivery, nodedrain, session mutation command가 추가된다. Coverage profile을 사용하는 마지막
 coverage 판정만 병렬 단계가 끝난 뒤 실행한다. 나머지 독립 command는 동시에 실행하며,
 하나가 실패하면 나머지 process를 취소한다. 전체 test suite와 atomic coverage profile은
-두 runner 모두 한 번의 `go test ./...`로 수행하며, test parallel limit은 2다. 기본 gate의
-격리된 cluster process acceptance test는 `t.Parallel()`로 이 상한을 함께 사용한다.
+두 runner 모두 한 번의 `go test ./...`로 수행한다. Test parallel limit은 `local` 8,
+`ci` 2다. Local은 fixture가 격리된 cluster process 시험의 대기 시간을 겹쳐 실행한다.
+CI는 mutation command도 함께 실행하므로 기존 상한을 유지한다. 기본 gate의
+cluster process acceptance test는 `t.Parallel()`로 각 runner의 상한을 함께 사용한다.
 각 시험의 data directory·인증서·포트·failpoint control은 독립적으로 유지한다.
 장애 관찰 시간과 assertion은 줄이지 않는다. Opt-in 장애·release·WAL lifecycle 시험의
 실행 조건과 순서는 유지한다.
@@ -838,7 +840,7 @@ race detector가 해당 broker process를 검사하지 않는다.
 ```text
 go vet ./...
 go run ./tools/verify traceability
-go test ./... -parallel=2 -count=1 -covermode=atomic -coverpkg=./cmd/...,./internal/... -coverprofile=.artifacts/verification/coverage.out
+go test ./... -parallel=8 -count=1 -covermode=atomic -coverpkg=./cmd/...,./internal/... -coverprofile=.artifacts/verification/coverage.out
 go test -race ./cmd/... ./internal/... -count=1
 4 bounded fuzz campaigns (concurrent, each -parallel=1)
 CI only: delivery + nodedrain + session mutation (concurrent, each workers=1, test-cpu=1)
@@ -909,6 +911,56 @@ Production line coverage는 85.98%, function coverage는 97.41%였다.
 출력은 `.artifacts/verification/gate-speed-local.log`와 기존 coverage artifact에 보존했다.
 CI 전용 mutation과 opt-in 외부 수용 시험은 이번 실행에서 수행하지 않았다.
 위 실행 기록을 덧붙인 문서는 gate 종료 뒤 편집했으며 상대 링크를 별도로 확인했다.
+
+### 8.2 2026-10-04 local 시험 동시 실행 상한 조정
+
+`verify local`의 최상위 병렬 test 상한을 2에서 4로 늘린다. 시험 선택·횟수·장애 관찰 시간과 assertion은 바꾸지 않는다. 전체 suite의 `-count=1`, atomic coverage, production package race, 네 fuzz target의 quota와 coverage policy를 유지한다. CI의 추가 mutation과 resource 경합을 피하려고 `verify ci`는 기존 상한 2를 유지한다.
+
+변경 전 CLU-13 local gate는 315.85s였으며 integration package는 261.824s였다. 이는 다른 검증 command를 이미 동시에 실행해도 integration이 전체 시간을 제한한다는 근거다. Broker binary는 이미 build tag별 한 번만 빌드하므로 새 cache는 추가하지 않는다. 시험의 data directory·인증서·포트 lease·failpoint control 격리를 재사용한다.
+
+실행 시간 비교는 같은 Windows/amd64·Go 1.26.5·`GOMAXPROCS=4`에서 integration 전체를 `-parallel=2`와 `-parallel=4`로 실행한다. 성공·skip 목록과 공유 binary build 횟수를 함께 대조한다. 이후 실제 `verify local` PASS를 확인한다. 이 조정은 CPU·storage 자원이 다른 모든 host에서 같은 개선율을 보장하지 않는다.
+
+다음 명령을 순서대로 실행했으며 두 실행 모두 PASS였다.
+
+```text
+go test ./tests/integration -parallel=2 -count=1 -json -covermode=atomic -coverpkg=./cmd/...,./internal/...
+go test ./tests/integration -parallel=4 -count=1 -json -covermode=atomic -coverpkg=./cmd/...,./internal/...
+```
+
+| 확인 항목 | 변경 전: 상한 2 | 변경 후: 상한 4 |
+| --- | --- | --- |
+| Integration package 시간 | 254.498s | 147.265s |
+| 명령 전체 시간 | 260.33s | 149.54s |
+| 성공한 최상위 시험 | 55개 | 같은 55개 |
+| 성공한 시험·하위 시험 목록 | 106개 | 같은 106개 |
+| Skip 목록 | 8개 | 같은 8개 |
+| 관측한 최상위 시험 동시 실행 수 | 최대 2개 | 최대 4개 |
+| 공유 broker build | 일반·failpoint 총 2건 | 같은 2건 |
+
+Integration package 시간은 107.233s, 약 42.1% 줄었다. JSON event의 성공·skip 이름 목록을 대조했다. 원시 출력은 `.artifacts/verification/local-speed-20261004-before.log`와 `local-speed-20261004-after.log`에 남겼다. 목록·시간·동시 실행 수는 `local-speed-20261004-comparison.json`에 보존했다. 각 상한을 한 번씩 비교한 관측값이며 모든 host의 개선율로 일반화하지 않는다.
+
+상한 4 runner의 `cmd /c "set GOMAXPROCS=4&& go run ./tools/verify local"`도 exit 0, `local: PASS`였다. 전체 시간은 208.06s, integration package는 166.484s였다. 직전 CLU-13 gate의 315.85s와 비교하면 107.79s, 약 34.1% 줄었다. 전체 gate의 기준 실행은 앞서 수행한 [Cluster §11.31](cluster-session-and-delivery.md#1131-연결-rebalance-수용-매핑)이며, integration 비교처럼 연속 실행한 별도 기준 측정은 아니다.
+
+Gofmt·vet·traceability·architecture·전체 package/integration·production package race·네 fuzz target 각 10,000회·coverage가 통과했다. Production line coverage는 85.66%, function coverage는 97.31%였다. `go build ./...`와 `go test ./tools/verify -count=1`도 PASS였다. Coverage policy는 변경하지 않았다. CI 전용 mutation과 기존 opt-in 외부 수용 시험은 실행하지 않았다. Branch coverage는 기존 도구 미설정 사유로 `not_evaluated`를 유지한다.
+
+### 8.3 2026-10-04 local 상한 8 적용
+
+사용자 결정으로 `verify local`의 동시 시험 상한을 4에서 8로 늘린다. CI는 2를 유지한다. 검증 command 수·시험 선택·횟수·timeout·장애 관찰 시간·assertion·coverage policy·race·fuzz quota는 바꾸지 않는다.
+
+같은 Windows/amd64·Go 1.26.5·`GOMAXPROCS=4`에서 상한 8의 integration 전체를 먼저 실행했다. Package 97.517s, wall 99.64s, PASS였다. 상한 4의 147.265s보다 49.748s, 약 33.8% 짧았다. 성공한 시험·하위 시험 106개와 skip 8개 이름 목록은 같았다. 최상위 동시 실행 수는 최대 8개였고 공유 broker build는 2건이었다. 증거는 `.artifacts/verification/local-speed-20261004-parallel8.log`와 `local-speed-20261004-parallel8.json`이다.
+
+이 실행은 한 번의 integration 관측이다. Crash/recovery 시험 하나는 상한 4의 53.06s보다 긴 63.61s였으므로 개별 시험의 속도가 모두 좋아진다고 판단하지 않는다. 기본값 적용 검증에서는 상한 8 integration을 반복하고, 실제 `verify local`의 다른 command와 함께 실행한 결과도 확인한다.
+
+기본값 적용 뒤 `GOMAXPROCS=4`에서 `go test ./tests/integration -parallel=8 -count=2 -json -covermode=atomic -coverpkg=./cmd/...,./internal/...`를 실행했다. Package 189.973s, wall 191.99s, PASS였다. 성공한 시험·하위 시험 212개는 기존 106개를 각각 두 번 통과한 목록과 같았다. Skip 16개도 기존 8개를 두 번 실행한 목록과 같았다. 실패는 없었고 동시 실행 수는 최대 8개였다. 공유 broker build는 command 전체에서 2건이었다. Crash/recovery 시험은 두 회 각각 56.15s·57.92s였다.
+
+반복 실행 원문과 목록 대조 결과는 `.artifacts/verification/local-speed-20261004-parallel8-repeat.log`와 `local-speed-20261004-parallel8-repeat.json`에 남겼다. `-count=2`는 한 test process에서 반복하며 각 fixture의 상태는 새로 만든다. 반복 안정성 증거로 쓰되 서로 다른 binary build를 쓰는 독립 성능 반복 측정으로 해석하지 않는다.
+
+상한 8을 적용한 `cmd /c "set GOMAXPROCS=4&& go run ./tools/verify local"`도 exit 0, `local: PASS`였다. 전체 시간은 164.66s, integration package는 126.118s였다. 앞선 상한 4 gate의 208.06s보다 43.40s, 약 20.9% 짧았다. 두 전체 gate는 각각 한 번의 실행이며 다른 host에서 같은 개선율을 보장하지 않는다.
+
+Gofmt·vet·traceability·architecture·전체 package/integration·production package race·네 fuzz target 각각 10,000회·coverage를 통과했다. Production line coverage는 85.80%, function coverage는 97.37%였다. `go build ./...`와 `go test ./tools/verify -count=1`도 PASS였다. CI 전용 mutation과 기존 opt-in 외부 수용 시험은 실행하지 않았으며 기준값은 유지했다.
+
+전체 gate 출력은 `.artifacts/verification/local-speed-20261004-parallel8-local.log`에, 이 실행의 coverage 요약은 `local-speed-20261004-parallel8-coverage.json`에 보존했다. 기본 coverage profile과 요약은 기존 경로를 사용한다. 실행 시간과 반복 목록 대조 결과는 `local-speed-20261004-parallel8-repeat.json`에도 기록했다.
+
 
 ## 9. Architecture verification
 

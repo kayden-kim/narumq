@@ -203,7 +203,7 @@ Integration process 시험의 호출 흐름은 `tests/integration/cluster_member
 `TestMain`은 실행 전체의 임시 directory를 만들고 마지막에 삭제한다.
 `newClusterMembershipProcessFixture`는 build tag별 공유 실행 파일을 받지만 data directory,
 인증서와 주소 lease는 시험마다 만든다. 기본 cluster process 시험은 `t.Parallel()`로 실행하며
-`tools/verify/runner.go`의 `-parallel=2`가 동시에 실행할 시험 수를 제한한다.
+`tools/verify/runner.go`가 동시에 실행할 시험 수를 `local` 8개, `ci` 2개로 제한한다.
 `buildBinaryFrom`의 release/historical source 빌드는 fixture에 별도로 둔다.
 검증 범위와 실행 조건은 [성능 및 검증 §8](../specs/performance-and-verification.md#8-coverage와-test-quality-gate)을 따른다.
 

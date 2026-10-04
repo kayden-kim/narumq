@@ -76,7 +76,11 @@ func runVerification(ctx context.Context, root string, options verificationOptio
 		{Name: "go", Args: []string{"run", "./tools/verify", "traceability"}},
 		{Name: "go", Args: []string{"run", "./tools/verify", "architecture"}},
 	}
-	coverageArgs := []string{"test", "./...", "-parallel=2", "-count=1", "-covermode=atomic", "-coverpkg=./cmd/...,./internal/...", "-coverprofile=.artifacts/verification/coverage.out"}
+	testParallelLimit := "-parallel=8"
+	if options.CI {
+		testParallelLimit = "-parallel=2"
+	}
+	coverageArgs := []string{"test", "./...", testParallelLimit, "-count=1", "-covermode=atomic", "-coverpkg=./cmd/...,./internal/...", "-coverprofile=.artifacts/verification/coverage.out"}
 	parallelCommands := append([]commandSpec{}, preflightCommands...)
 	parallelCommands = append(parallelCommands,
 		commandSpec{Name: "go", Args: coverageArgs},
