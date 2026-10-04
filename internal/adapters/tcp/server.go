@@ -1025,7 +1025,7 @@ func (connection *connection) dispatchPublishAt(packet mqtt.Publish, receivedAt 
 	if packet.QoS == mqtt.QoSAtMostOnce {
 		result, err := connection.server.publications.Publish(connection.sessionID, packet, receivedAt)
 		if err != nil {
-			if errors.Is(err, applicationretained.ErrFull) {
+			if errors.Is(err, applicationretained.ErrFull) || errors.Is(err, publish.ErrPublishBackpressure) {
 				if connection.version == mqtt.ProtocolV5 {
 					if err := connection.enqueueAndWait(&mqtt.Disconnect{Version: connection.version, ReasonCode: 0x97}); err != nil {
 						return err
@@ -1081,7 +1081,7 @@ func (connection *connection) dispatchPublishAt(packet mqtt.Publish, receivedAt 
 		connection.deliveryMu.Lock()
 		if err != nil {
 			connection.deliveryMu.Unlock()
-			if errors.Is(err, applicationretained.ErrFull) || errors.Is(err, publish.ErrDurableDeliveryCapacity) {
+			if errors.Is(err, applicationretained.ErrFull) || errors.Is(err, publish.ErrDurableDeliveryCapacity) || errors.Is(err, publish.ErrPublishBackpressure) {
 				if connection.version == mqtt.ProtocolV5 {
 					return connection.enqueueControl(&mqtt.PubAck{
 						Version:    connection.version,
@@ -1151,7 +1151,7 @@ func (connection *connection) dispatchPublishAt(packet mqtt.Publish, receivedAt 
 			connection.deliveryMu.Lock()
 			if err != nil {
 				connection.deliveryMu.Unlock()
-				if errors.Is(err, publish.ErrDurableDeliveryCapacity) {
+				if errors.Is(err, publish.ErrDurableDeliveryCapacity) || errors.Is(err, publish.ErrPublishBackpressure) {
 					if connection.version == mqtt.ProtocolV5 {
 						return connection.enqueueControl(&mqtt.PubRec{
 							Version: connection.version, PacketID: packet.PacketID, ReasonCode: 0x97,

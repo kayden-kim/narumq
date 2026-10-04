@@ -85,7 +85,7 @@ func (connection *connection) completeInboundPublish(submitted submittedPhaseWor
 	if errors.Is(err, security.ErrNotAuthorized) {
 		return connection.rejectUnauthorizedPublish(*packet)
 	}
-	if errors.Is(err, publish.ErrDurableDeliveryCapacity) {
+	if errors.Is(err, publish.ErrDurableDeliveryCapacity) || errors.Is(err, publish.ErrPublishBackpressure) {
 		if connection.version != mqtt.ProtocolV5 {
 			connection.requestClose()
 			return nil

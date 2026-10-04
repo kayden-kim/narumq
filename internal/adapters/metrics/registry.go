@@ -123,17 +123,24 @@ type Registry struct {
 	retainedMessages    atomic.Int64
 	retainedBytes       atomic.Int64
 
-	packetsReceivedTotal        map[string]*atomic.Int64 // key: packetType
-	packetsSentTotal            map[string]*atomic.Int64 // key: packetType
-	authAttemptsTotal           map[string]*atomic.Int64 // key: method,result,reason
-	connectRejectedTotal        atomic.Int64
-	nodeDrainTransitions        map[string]*atomic.Int64
-	willOutcomes                [len(willOutcomeReasons)]atomic.Int64
-	tenantQuotaRejections       map[tenantQuotaMetricKey]*atomic.Int64
-	tenantQuotaTenants          map[string]struct{}
-	tenantQuotaProfileCommitted atomic.Int64
-	tenantQuotaProfileVersion   atomic.Uint64
-	tenantQuotaConfigMismatch   atomic.Int64
+	packetsReceivedTotal          map[string]*atomic.Int64 // key: packetType
+	packetsSentTotal              map[string]*atomic.Int64 // key: packetType
+	authAttemptsTotal             map[string]*atomic.Int64 // key: method,result,reason
+	connectRejectedTotal          atomic.Int64
+	nodeDrainTransitions          map[string]*atomic.Int64
+	willOutcomes                  [len(willOutcomeReasons)]atomic.Int64
+	tenantQuotaRejections         map[tenantQuotaMetricKey]*atomic.Int64
+	tenantQuotaTenants            map[string]struct{}
+	tenantQuotaProfileCommitted   atomic.Int64
+	tenantQuotaProfileVersion     atomic.Uint64
+	tenantQuotaConfigMismatch     atomic.Int64
+	publishBackpressureRejections [len(publishBackpressureReasons)]atomic.Uint64
+	publishBackpressureActive     [2]atomic.Bool
+	storageFreeBytes              atomic.Uint64
+	storageFreeBytesSet           atomic.Bool
+	commitBacklogOldest           atomic.Int64
+	durableDeliverySaturated      atomic.Uint64
+	peerReplicationLag            []peerReplicationLagEntry
 
 	publishLatency  *Histogram
 	walSyncDuration *Histogram
@@ -500,6 +507,7 @@ func (r *Registry) Render(isOpenMetrics bool) []byte {
 	fmt.Fprintf(&buf, "# HELP narumq_tenant_quota_rejections_total Committed storage mutations rejected by tenant quota dimension.\n")
 	fmt.Fprintf(&buf, "# TYPE narumq_tenant_quota_rejections_total counter\n")
 	r.renderTenantQuotaRejections(&buf)
+	r.renderPublishBackpressure(&buf)
 
 	// 11. narumq_publish_latency_seconds
 	fmt.Fprintf(&buf, "# HELP narumq_publish_latency_seconds Latency of publish processing in seconds.\n")

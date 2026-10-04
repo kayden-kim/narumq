@@ -127,6 +127,7 @@ type UseCase struct {
 	retained                 retained.Repository
 	retainedCommitter        RetainedCommitter
 	durableDeliveryCommitter deliverystate.PublishCommitter
+	admission                Admission
 	policy                   security.Policy
 	offlineCommitter         OfflineCommitter
 	remoteForwarder          RemoteForwarder
@@ -257,6 +258,26 @@ func (useCase *UseCase) BeginReceiveQoS2(
 		}
 		expiresMillis = uint64(millis)
 	}
+	if useCase.admission != nil {
+		if err := useCase.admission.CheckPressure(); err != nil {
+			return PendingReceive{}, err
+		}
+		if expiresAt.IsZero() || now.Before(expiresAt) {
+			matches, err := useCase.routes.Match(publisherSessionID, packet.Topic, packet.QoS, packet.Retain)
+			if err != nil {
+				return PendingReceive{}, err
+			}
+			change, targets, err := useCase.prepareDurableDelivery(publisherSessionID, nil, packet, expiresAt, now, matches, nil)
+			if err != nil {
+				return PendingReceive{}, err
+			}
+			if len(targets) > 0 {
+				if err := useCase.admission.CheckDeliveryCapacity(change); err != nil {
+					return PendingReceive{}, err
+				}
+			}
+		}
+	}
 	pending, err := useCase.durableDeliveryCommitter.BeginDelivery(context.Background(), membership.DeliveryChangeDTO{
 		TenantID:             publisherKey.TenantID().String(),
 		ClientID:             publisherKey.ClientID(),
@@ -339,6 +360,15 @@ func (useCase *UseCase) publish(
 			useCase.metrics.ObservePublishDuration(time.Since(start))
 		}()
 	}
+	checkAdmission := release == nil && trustedPublisherKey == nil && useCase.admission != nil
+	if checkAdmission {
+		grows := (useCase.durableDeliveryCommitter != nil && packet.QoS > mqtt.QoSAtMostOnce) || (packet.Retain && len(packet.Payload) > 0)
+		if grows {
+			if err := useCase.admission.CheckPressure(); err != nil {
+				return ResultDTO{}, err
+			}
+		}
+	}
 	prepared, err := useCase.preparePublication(publisherSessionID, packet, receivedAt, trustedPublisherKey, principal...)
 	if err != nil {
 		return ResultDTO{}, err
@@ -347,6 +377,11 @@ func (useCase *UseCase) publish(
 		change, targets, err := useCase.prepareDurableDelivery(publisherSessionID, trustedPublisherKey, packet, prepared.expiresAt, prepared.now, prepared.matches, release)
 		if err != nil {
 			return ResultDTO{}, err
+		}
+		if checkAdmission && len(targets) > 0 {
+			if err := useCase.admission.CheckDeliveryCapacity(change); err != nil {
+				return ResultDTO{}, err
+			}
 		}
 		var deliveryResult membership.DeliveryResultDTO
 		if needsDeliveryCommand(release, targets) {

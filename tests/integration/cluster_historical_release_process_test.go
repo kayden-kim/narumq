@@ -21,6 +21,7 @@ func TestDynamicClusterHistoricalReleaseCompatibilityProcessAcceptance(t *testin
 		t.Skip("set NARUMQ_RELEASE_COMPAT=1 to run historical-source release compatibility acceptance")
 	}
 	fixture := newClusterMembershipProcessFixture(t, 3, "")
+	fixture.omitPublishBackpressure = true
 	source := clusterHistoricalReleaseSource(t, fixture)
 	binN2 := fixture.buildBinaryFrom(t, source, "historical-1.0.0", "-X main.buildReleaseVersion=1.0.0")
 	binN1 := fixture.buildBinaryFrom(t, source, "historical-1.1.0", "-X main.buildReleaseVersion=1.1.0")
@@ -34,6 +35,7 @@ func TestClusterBackupRestoreHistoricalReleaseProcessAcceptance(t *testing.T) {
 		t.Skip("set NARUMQ_RELEASE_COMPAT=1 to run historical-source backup archive acceptance")
 	}
 	fixture := newClusterMembershipProcessFixture(t, 3, "")
+	fixture.omitPublishBackpressure = true
 	source := clusterHistoricalReleaseSource(t, fixture)
 	binN1 := fixture.buildBinaryFrom(t, source, "historical-restore-1.1.0", "-X main.buildReleaseVersion=1.1.0")
 	binN := fixture.buildBinary(t, "head-restore-1.2.0", "-X main.buildReleaseVersion=1.2.0 -X main.buildFeatures=compatibility-probe")

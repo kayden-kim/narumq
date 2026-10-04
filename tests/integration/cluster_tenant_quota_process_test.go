@@ -79,7 +79,8 @@ func TestDynamicClusterTenantStorageQuotaProcessAcceptance(t *testing.T) {
 
 	publisher := clusterDurableProcessConnect(t, fixture.mqttAddresses[1], fixture.accessToken, "durable-takeover-pub", true)
 	clusterTenantQuotaProcessPublishAndAck(t, publisher, "durable-takeover/quota/v1-one", 10, "v1-one")
-	clusterTenantQuotaProcessPublishAndAck(t, publisher, "durable-takeover/quota/v1-two", 11, "v1-two")
+	clusterDurableProcessPublish(t, publisher, "durable-takeover/quota/v1-two", 1, 11, "v1-two")
+	clusterMembershipProcessAssertConnectionClosed(t, publisher, 5*time.Second)
 	v1Reject := `narumq_tenant_quota_rejections_total{tenant="acceptance",dimension="offline_queue_messages"} 1`
 	clusterTenantQuotaProcessWaitForMetric(t, ctx, nodes[1], v1Reject)
 	if metrics := clusterTenantQuotaProcessMetrics(t, ctx, nodes[2]); strings.Contains(metrics, `dimension="offline_queue_messages"`) {
@@ -120,7 +121,8 @@ func TestDynamicClusterTenantStorageQuotaProcessAcceptance(t *testing.T) {
 	publisher = clusterDurableProcessConnect(t, fixture.mqttAddresses[2], fixture.accessToken, "durable-takeover-pub", true)
 	clusterTenantQuotaProcessPublishAndAck(t, publisher, "durable-takeover/quota/v2-one", 20, "v2-one")
 	clusterTenantQuotaProcessPublishAndAck(t, publisher, "durable-takeover/quota/v2-two", 21, "v2-two")
-	clusterTenantQuotaProcessPublishAndAck(t, publisher, "durable-takeover/quota/v2-three", 22, "v2-three")
+	clusterDurableProcessPublish(t, publisher, "durable-takeover/quota/v2-three", 1, 22, "v2-three")
+	clusterMembershipProcessAssertConnectionClosed(t, publisher, 5*time.Second)
 	v2Reject := `narumq_tenant_quota_rejections_total{tenant="acceptance",dimension="offline_queue_messages"} 1`
 	clusterTenantQuotaProcessWaitForMetric(t, ctx, nodes[2], v2Reject)
 	_ = publisher.Close()
@@ -149,7 +151,8 @@ func TestDynamicClusterTenantStorageQuotaProcessAcceptance(t *testing.T) {
 	}
 
 	publisher = clusterDurableProcessConnect(t, fixture.mqttAddresses[2], fixture.accessToken, "durable-takeover-pub", true)
-	clusterTenantQuotaProcessPublishAndAck(t, publisher, "durable-takeover/quota/v2-four", 23, "v2-four")
+	clusterDurableProcessPublish(t, publisher, "durable-takeover/quota/v2-four", 1, 23, "v2-four")
+	clusterMembershipProcessAssertConnectionClosed(t, publisher, 5*time.Second)
 	v2RestartReject := `narumq_tenant_quota_rejections_total{tenant="acceptance",dimension="offline_queue_messages"} 1`
 	clusterTenantQuotaProcessWaitForMetric(t, ctx, nodes[2], v2RestartReject)
 	_ = publisher.Close()

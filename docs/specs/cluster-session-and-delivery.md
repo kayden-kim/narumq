@@ -120,7 +120,7 @@ Receiver는 자기 local committed ownership이 해당 session의 owner라고 �
 | session metadata | expiry, Will, owner epoch와 client protocol 정보를 복구한다. |
 | ownership·route metadata | stale owner를 fence하고 routing을 다시 구성한다. |
 
-replica 수가 configured write quorum보다 적으면 durable write를 성공 처리해서는 안 된다. replication lag 또는 disk pressure가 한도를 넘으면 publish admission을 늦추거나 거절해야 하며, 이미 성공 ACK한 durable state를 임의로 drop해서는 안 된다. (§4.4)
+replica 수가 configured write quorum보다 적으면 durable write를 성공 처리해서는 안 된다. replication lag 또는 disk pressure가 한도를 넘으면 publish admission을 늦추거나 거절해야 하며, 이미 성공 ACK한 durable state를 임의로 drop해서는 안 된다. (§4.4, §4.5)
 
 ### 4.1 Offline message capture와 전달
 
@@ -194,6 +194,49 @@ Planned removal은 대상 외의 committed `VOTER`가 3 미만이면 non-retryab
 
 `GET /api/v1/cluster`는 dynamic cluster의 `replicationFactor=3`, `writeQuorum=2`를 반환한다. Standalone은 1/1을 반환한다. Replicated schema·wire·apply 의미는 바꾸지 않는다. Mixed N-1/N removal 보호와 경합 operation의 자동 해제 부재는 ADR-0029 §1 항목 7의 결정한 한계다.
 
+### 4.5 Publish backpressure admission
+
+[ADR-0030](../decisions/ADR-0030-publish-backpressure-admission.md)을 따른다. Admission은 새 durable 저장을 제안하기 전에 압력과 저장 한도를 검사한다. Replicated apply 결과는 바꾸지 않는다.
+
+- 대상은 QoS 1 client PUBLISH의 phased·inline 경로, QoS 2 첫 수신, payload가 있는 retained QoS 0이다. Retained QoS 1도 포함한다.
+- QoS 2 RELEASE(PUBREL), 서버 Will, non-retained QoS 0의 live·offline·forward, 빈 payload의 retained 삭제와 SEND/ADVANCE/COMPLETE/ATTACH/DETACH/DISCARD는 제외한다.
+- 검사 순서는 disk → commit lag → retained commit·route match → delivery capacity다. QoS 1 retained commit 뒤 capacity 거절은 retained mutation을 되돌리지 않는다. QoS 2 첫 수신은 retained를 commit하지 않고 route match와 capacity를 검사한다.
+- Capacity는 local committed view에서 eligible target의 합계를 계산한다. 전역 delivery 4,096 entry·16 MiB와 tenant quota 초과는 ingress에서 publish를 거절한다. Session당 64개 및 sequence 소진 target은 기존 `Saturated` 처리다. Record를 만들거나 만료 purge를 미리 수행하지 않는다. 만료 message 때문에 보수적으로 거절할 수 있다. Apply 시점 경합과 RELEASE 시점 포화는 기존 결과를 유지한다.
+- Commit backlog는 이 node의 `BeginDelivery`로 제출한 미완료 command만 추적한다. 가장 오래된 command 나이가 `maxCommitLagMillis` 이상이면 거절한다. 이 경로는 기존 5초 timeout을 따른다. 다른 `Commit` 경로는 추적하지 않는다. Leader의 follower별 지연은 metric으로만 보고한다.
+- Disk는 local data directory filesystem을 시작 때와 1초마다 측정한다. `free < minFreeBytes`이면 진입한다. `free >= minFreeBytes + minFreeBytes/8`이면 해제한다. `minFreeBytes=0`이면 disk admission만 끄고 gauge는 유지한다. 측정 오류는 이전 상태를 유지한다. 초기 상태는 압력 없음이다. 연속 오류는 Warn을 한 번만 남긴다. ENOSPC는 기존 `FAILED` 처리다.
+
+| 요청 | MQTT 5 거절 | MQTT 3.1.1 거절 |
+| --- | --- | --- |
+| QoS 1 PUBLISH | PUBACK `0x97`, 연결 유지 | 연결 종료 |
+| QoS 2 첫 PUBLISH | PUBREC `0x97` | 연결 종료 |
+| payload가 있는 retained QoS 0 | DISCONNECT `0x97` 뒤 종료 | 연결 종료 |
+
+PUBACK에 `0x89`를 쓰지 않는다. PUBCOMP에 `0x97`이 없으므로 RELEASE를 막지 않는다.
+
+Cluster config에 다음 선택 object를 넣을 수 있다. 생략하면 아래 기본값을 사용한다. Object가 있으면 두 key가 모두 있어야 한다. Unknown key는 거절한다. `minFreeBytes`는 0–`1<<50`, `maxCommitLagMillis`는 100–10000 범위다.
+
+```json
+{
+  "publishBackpressure": {
+    "minFreeBytes": 1073741824,
+    "maxCommitLagMillis": 1000
+  }
+}
+```
+
+이 key는 이전 binary가 unknown field로 거절한다. Config는 binary와 함께 배포해야 한다. Wire·schema·apply가 같으므로 feature gate는 추가하지 않는다.
+
+| Metric | 값과 label |
+| --- | --- |
+| `narumq_publish_backpressure_rejections_total{reason}` | `commit_lag`, `disk_free`, `delivery_capacity`, `tenant_quota` counter를 항상 출력한다. |
+| `narumq_publish_backpressure_active{reason}` | `commit_lag`, `disk_free`의 0/1 gauge를 항상 출력한다. |
+| `narumq_storage_free_bytes` | 첫 측정 성공 뒤 local 여유 공간을 출력한다. |
+| `narumq_cluster_commit_backlog_oldest_seconds` | 미완료 command의 최대 나이를 초 단위 소수점 여섯 자리로 출력한다. |
+| `narumq_durable_delivery_saturated_targets_total` | Apply의 포화 target 수를 누적한다. |
+| `narumq_raft_peer_replication_lag_entries{peer}` | Leader에서 non-retired peer별 `max(CommitIndex-match, 0)`를 출력한다. Follower에서는 series가 없다. |
+
+Tenant quota 거절은 기존 `narumq_tenant_quota_rejections_total{tenant,dimension}`에도 기록한다. 거절 Warn은 reason별 10초에 한 번이다. 압력 진입은 Warn, 해제는 Info다. Readiness·lifecycle·`replicationHealth`·`lastErrorCode`는 바꾸지 않는다. Local disk 압력만 `storagePressure`에 추가한다. 다른 voter volume의 압력은 전파하지 않는다.
+
 ## 5. Publish commit과 delivery
 
 
@@ -241,6 +284,7 @@ partition이 복구되면 committed log가 기준이 된다. minority의 specula
    - Local `replicationHealth`는 terminal Raft 실패 시 `FAILED`, WAL Ready 기록과 `fsync` 또는 snapshot 영속화 한 건이 1초 이상 걸리거나 진행 중인 시간이 1초에 도달하면 `DEGRADED`, 나머지는 `HEALTHY`다. 느린 작업이 끝난 뒤 10초 동안 다시 느린 영속화 작업이 없으면 `HEALTHY`로 돌아간다.
    - `DEGRADED`는 `/health/ready`를 503으로 만들고 liveness는 200으로 유지한다. `FAILED`는 `/health/ready`와 `/health/live`를 모두 503으로 만들며 readiness 원인은 `raft storage failed: no space left; restart required`, `raft storage failed: I/O error; restart required`, `raft node failed; restart required` 중 원인에 맞는 문자열이어야 한다. 느린 I/O readiness 원인은 `raft storage I/O is slow`다. `FAILED` node는 관리 HTTP 응답을 유지하고 MQTT 신규 연결을 거절하며, 저장 공간을 확보해도 process를 재시작하기 전에는 복구하지 않는다.
    - Storage health는 membership lifecycle `state`를 바꾸지 않는다. local `DEGRADED` 또는 `FAILED` node의 summary는 `ready=false`, 해당 readiness 원인과 `storagePressure`를 보고해야 한다.
+   - Local data directory 여유 공간이 `publishBackpressure.minFreeBytes` 미만일 때도 `storagePressure=true`다. 해제는 기준값의 1/8 hysteresis를 따른다(§4.5). Readiness와 `replicationHealth`는 바꾸지 않는다.
    - `FAILED` node는 새로운 commit을 성공으로 반환해서는 안 된다. Quorum이 남아 있는 healthy node는 진행할 수 있고, quorum이 없으면 commit을 거절해야 한다. `DEGRADED`는 commit을 계속 시도할 수 있다.
    - `lastErrorCode`는 내부 오류 문자열 대신 `storage_no_space`, `storage_io_error`, `storage_slow`, `raft_node_failed`, `peer_disconnected`, `peer_queue_full`, `peer_invalid_message`, `peer_transport_error` 중 안정된 code만 제공한다. local slow-I/O code는 상태가 회복된 뒤에도 최근 원인으로 남는다.
    - 원격 node 행의 `replicationHealth`는 조회 node에서 관찰한 peer 연결 상태다. 연결되어 있으면 `HEALTHY`, 끊겼으면 `UNREACHABLE`이며, `lastErrorCode`는 연결 상태와 별개로 마지막 알려진 transport 오류를 안정된 code로 나타낸다. 이 값은 원격 node의 Raft 또는 storage health를 의미하지 않는다. `replicationQueue`는 조회 node에서 해당 peer로 보내는 outbound message 수, byte 수와 거절 수를 나타내며 실제 transport 제한을 넘지 않아야 한다. 원시 transport 오류 문자열은 API 응답에 포함하지 않는다.
@@ -406,6 +450,8 @@ Readiness 판정을 유지한 거절 계측 뒤 `GOMAXPROCS=2 go run ./tests/cha
 Fresh ReadIndex 발행 제어와 origin별 예산 분할 뒤 `GOMAXPROCS=2 go run ./tests/chaos/cluster-storage-v1 --run-id storage-readcredit-20261002 --output .artifacts/chaos/cluster-storage-v1/storage-readcredit-20261002`는 exit 0, **6/6 PASS**(248.43s wall)였다. Slow-I/O는 healthy quorum progress 55/55, recovery 12.198s, index 373 수렴과 최종 ACKed delivery를 완료했다. 모든 scenario의 `missingAcked`·`duplicates`는 비어 있었다. Quorum disk-full 중 성공 ACK는 없고 복구 뒤 persistent QoS 2 `SessionPresent=true`를 확인했다. Sync-error의 reopen은 exit 1로 fail-closed됐으며 follower torn cut·동시 cluster cut도 복구 검증을 통과했다. Queue cap·readiness·fresh proof·ACK·fsync 계약은 그대로다. Artifact는 `.artifacts/chaos/cluster-storage-v1/storage-readcredit-20261002/summary.json`에 보존했다.
 
 2026-10-03 immutable image ID 보완 뒤 최종 FUSE 회귀: `go run ./tests/chaos/cluster-storage-v1 --run-id fuse-ext4-final-20261003 --output .artifacts/chaos/cluster-storage-v1/fuse-ext4-final-20261003`는 exit 0, **6/6 PASS**(241.99s wall)였다. 위 여섯 scenario의 최신 전체 회귀 증거이며, profile은 기존 `local-fuse-v1`이다. 실행 증거는 `.artifacts/chaos/cluster-storage-v1/fuse-ext4-final-20261003/summary.json`, manifest와 scenario별 `events.jsonl`·node log에 보존했다. Immutable image ID는 검사한 동일 Docker image를 후속 container가 사용하게 하는 변경이다. 별도 ext4 profile의 수용은 [§11.23](#1123-local-ext4-filesystem-수용-매핑)에 기록한다. 이 FUSE 결과는 production filesystem/EBS 또는 실제 전원 손실 증거가 아니다.
+
+Publish admission의 여유 공간 압력 scenario `follower-disk-pressure`가 기본 `local-fuse-v1`에 추가됐다. 현재 전체 runner는 일곱 scenario를 실행한다. 기존 여섯 scenario와 새 scenario의 재검증 증거는 [§11.28](#1128-publish-backpressure-수용-매핑)에 기록한다. 위의 historical 실행 결과는 바꾸지 않는다.
 
 Harness는 certificate, JWT와 token을 임시 fixture directory에만 두고 `.artifacts/chaos/cluster-storage-v1/<run-id>/`에는 manifest, probe/control event, summary, image metadata와 node log만 보존한다. Historical `storage-fault-20260925d`는 disk-full·slow-I/O replication health, readiness, commit progress/halt, bounded transport queue와 MQTT admission만 확인했다. `storage-fault-durable-20260927d`는 durable ACK extension의 최초 세 scenario 증거다. `storage-power-loss-20260930g`는 disk/quorum/slow-I/O와 file `fsync` failure, fail-closed reopen, held WAL fsync, torn-tail rollback, simultaneous three-node cut 및 delivery recovery를 Docker/FUSE에서 확인했다. 이 evidence는 실제 power loss, production filesystem/EBS, N/N-1 compatibility를 증명하지 않는다. 별도 backup acceptance는 §11.7~§11.11에 기록한다.
 
@@ -1114,4 +1160,64 @@ GOMAXPROCS=4 go run ./tools/verify local
 ```
 
 보강 묶음의 runtime smoke는 8.89s, leader 재검사는 0.20s로 PASS했다(package 9.282s). 이어 실행한 일반·failpoint build는 모두 exit 0이었다(시험·두 build 합계 wall 16.98s). 최종 local gate도 PASS(wall 288.05s)했다. 제품 코드와 기존 ACK 정책은 보강 과정에서 바꾸지 않았다. 최종 gate 뒤에는 실행 증거와 ADR의 계층 설명만 갱신했으며 `go run ./tools/verify traceability`도 다시 PASS했다.
+
+### 11.28 Publish backpressure 수용 매핑
+
+| 시나리오 | 시험 위치·명령 | 수용 기준 | 실행 결과 |
+| --- | --- | --- | --- |
+| Read-only capacity와 apply 불변 | `internal/application/membership/delivery_capacity_test.go` `TestDeliveryPublishCapacity`, 기존 `delivery_test.go` | 전역 entry·bytes·tenant 초과 구분, eligible 합계, session 포화, 상태 무변경 | PASS — focused package 묶음 |
+| 새 저장 gate와 제외 경로 | `internal/application/publish/admission_test.go` `TestPublishAdmissionGatesNewDurableState` | 압력·capacity 거절 전 commit 없음, RELEASE·Will·비내구 경로 유지 | PASS — focused package 묶음 |
+| TCP adapter 응답 | `internal/adapters/tcp` `TestTCPPublishBackpressureReasonCodes` | MQTT 5 `0x97`, QoS 1/2 연결 유지, MQTT 3.1.1 종료 | PASS — `net.Pipe`에서 실제 MQTT packet 교환 |
+| Backlog 나이·disk 진입과 해제·quota 경보 | `cmd/narumq/cluster_publish_pressure_test.go`의 `TestClusterCommitBacklogOldestAge`, `TestClusterPublishPressureDiskHysteresis`, `TestClusterPublishPressureCommitLag`, `TestClusterPublishPressureCapacityReportsTenantQuota` | Entry 제거 후 회복, 1/8 hysteresis, 연속 오류 Warn 1회, counter 기록 | PASS — focused package 묶음 |
+| Strict config·metric·filesystem | `cmd/narumq/cluster_config_test.go`, `internal/adapters/metrics/registry_backpressure_test.go`, `internal/adapters/diskspace/diskspace_test.go` `TestFreeBytes` | 범위·누락·unknown 거절, 정확한 sample과 peer 교체, 실제 filesystem 조회 | PASS — Windows local filesystem 포함 |
+| Commit lag와 disk 포화·회복 | `tests/integration/cluster_publish_backpressure_process_test.go` `TestDynamicClusterPublishBackpressureProcessAcceptance` | 두 subtest, 거절 topic 미전달, healthy node 성공, 회복 뒤 재시도, 정확한 topic 집합 | PASS — 10.83s, lag 1.37s·disk 1.85s |
+| 기존 quota·matrix·fencing·durable ACK | 아래 process 회귀와 `NARUMQ_DURABLE_ACK_FAULTS=1` durable ACK faults | 기존 저장·ACK·owner 경계 보존 | PASS — 회귀 22.846s·faults 160.473s |
+| 전체 local gate | `GOMAXPROCS=4 go run ./tools/verify local` | Architecture·traceability·race·coverage 포함 모두 PASS | PASS — wall 324.30s |
+| 실제 follower disk 압력 | `tests/chaos/cluster-storage-v1` `follower-disk-pressure` 포함 기본 profile | 7/7 PASS, 거절 topic이 `UnackedDuringFault`에 있고 `missingAcked`·`duplicates` 없음 | PASS — `backpressure-20261004`, wall 279.46s |
+| 작은 ext4 volume fixture | `local-ext4-v1` profile | 4/4 PASS | PASS — `ext4-backpressure-20261004`, wall 359.39s |
+| Hot path | BP-03 `compare --profile tests/benchmark/bp03/testdata/smoke.json` | NaruMQ valid, rejected ACK·gap·duplicate 0 | PASS — `bp03-20261004T072411.781053400Z-42588`, wall 229.04s |
+
+2026-10-04 Windows local 실행 명령은 repository root 기준이다. 일반·failpoint build와 7개 focused package가 모두 통과했다(wall 24.06s). 새 process acceptance는 앞선 일반 build와 함께 wall 18.09s였다. 실제 subscriber에서 `bp/lag/held`, `bp/lag/other`, `bp/lag/retry`, `bp/disk/after`, `bp/sentinel`을 각각 한 번 확인했다. Non-retained QoS 0 `bp/disk/live`도 한 번 받았다. 거절한 topic은 전달되지 않았다.
+
+```text
+go build ./... && go build -tags narumq_failpoint ./...
+go test ./internal/application/membership ./internal/application/publish ./internal/adapters/metrics ./internal/adapters/diskspace ./cmd/narumq ./internal/adapters/tcp ./tests/chaos/cluster-storage-v1 -count=1
+go test ./tests/integration -run '^TestDynamicClusterPublishBackpressureProcessAcceptance$' -count=1 -v -timeout 20m
+GOMAXPROCS=4 go test ./tests/integration -run '^(TestDynamicClusterTenantStorageQuotaProcessAcceptance|TestDynamicClusterCrossNodeDeliveryMatrixProcessAcceptance|TestDynamicClusterConcurrentConnectProcessAcceptance|TestDynamicClusterStaleEpochFencingProcessAcceptance)$' -count=1 -v -timeout 20m
+GOMAXPROCS=4 NARUMQ_DURABLE_ACK_FAULTS=1 go test ./tests/integration -run 'TestDynamicClusterDurableAck.*ProcessAcceptance' -count=1 -v -timeout 20m
+```
+
+Windows에서는 두 환경 변수를 `cmd /c "set GOMAXPROCS=4&&..."`, `cmd /c "set GOMAXPROCS=4&&set NARUMQ_DURABLE_ACK_FAULTS=1&&..."`로 전달했다. Process 회귀 4개는 PASS(wall 24.75s)했다. Durable ACK faults는 replica kill, WAL·commit crash point 20개, follower/leader partition 2개가 모두 PASS(wall 162.34s)했다. 미관측 ACK의 결과를 성공으로 간주하지 않았으며, 복구 뒤 기존 QoS 2 재개 동작을 유지했다.
+
+```text
+GOMAXPROCS=4 go run ./tools/verify local
+```
+
+전체 local gate는 traceability·architecture·네 fuzz target 각각 10,000회·package/integration·production race·coverage를 모두 통과했다. Integration package는 261.012s였다. 새 process acceptance도 이 실행의 대상에 포함된다. Linux 전용 filesystem 조회와 bounded disk fill은 뒤의 Docker 실행에서 확인한다.
+
+```text
+go run ./tests/chaos/cluster-storage-v1 --run-id backpressure-20261004 --output .artifacts/chaos/cluster-storage-v1/backpressure-20261004
+```
+
+Docker/FUSE `local-fuse-v1`은 7/7 PASS했다. 새 `follower-disk-pressure`에서 leader 1·target follower 2를 확인했다. `fill-disk --leave-bytes 4194304`는 62,902,272 bytes를 쓰고 여유 공간 4,194,304 bytes에서 멈췄다. 압력 감지는 1,003ms였다. Target은 readiness HTTP 200·`HEALTHY`·storage pressure true를 유지했다. MQTT 3.1.1 target publish는 2초 안에 연결 종료로 거절했다. Leader와 healthy follower의 QoS 1은 ACK되었고 ballast 제거 뒤 target도 ACK했다. `durableAck.unackedDuringFault`에는 `chaos/durable/follower-disk-pressure/target/rejected`만 있다. `missingAcked`, `duplicates`, `ackOutcomeUnknownDuringFault`는 모두 비어 있다.
+
+Evidence는 `.artifacts/chaos/cluster-storage-v1/backpressure-20261004/summary.json`과 같은 directory의 scenario별 기록에 남겼다. 이는 local tmpfs/FUSE 장애·power-cut simulation 증거이며 production 전원 손실 보장이 아니다.
+
+```text
+go run ./tests/chaos/cluster-storage-v1 --profile local-ext4-v1 --run-id ext4-backpressure-20261004 --output .artifacts/chaos/cluster-storage-v1/ext4-backpressure-20261004
+```
+
+Local ext4는 `follower-disk-full`, `quorum-disk-full`, `cluster-process-crash`, `filesystem-recovery-boundaries` 4/4 PASS했다. 각 node에서 256 MiB ext4·`rw,relatime,data=ordered`·Linux kernel `6.6.87.2-microsoft-standard-WSL2`를 기록했다. Durable ACK를 확인하는 앞의 세 scenario에서 `missingAcked`·`duplicates`는 모두 비어 있다. 마지막 scenario는 기존 recovery 입력의 실패 경계를 검사하며 durable ACK 집계 대상이 아니다. Summary와 mount·broker checksum evidence는 `.artifacts/chaos/cluster-storage-v1/ext4-backpressure-20261004/`에 있다. 이 결과는 공유 host의 process crash·recovery 입력 증거이며 EBS나 OS cache 손실 증거가 아니다.
+
+```text
+go run ./tests/benchmark/bp03 compare --profile tests/benchmark/bp03/testdata/smoke.json
+```
+
+BP-03 run `bp03-20261004T072411.781053400Z-42588`의 NaruMQ·EMQX `success`·`valid`는 모두 true다. NaruMQ의 세 측정 단계는 QoS별 각각 120·240·600건을 송신·ACK·전달했다. 모든 단계의 `ackRejected`, `ackTimeouts`, `gap`, `duplicate`는 0이고 generator overload는 false다. Offline QoS별 64건도 모두 ACK·전달됐으며 gap·duplicate는 0, 재연결 4개 session은 모두 `SessionPresent=true`였다. Protocol error와 session missing도 0이다. Artifact는 `.artifacts/benchmark/bp03/bp03-20261004T072411.781053400Z-42588/`에 보존했다.
+
+이 compare는 고정 smoke profile의 단일 실행이다. `releaseGating=false`를 유지하며 production 성능·NaruMQ 우위·EMQX와 ACK/storage/security 계약의 등가를 판정하지 않는다. 이번 변경은 기존 `Saturated` apply·RELEASE/Will 진행·fsync 이전 성공 ACK 금지·replicated-state/wire schema를 바꾸지 않았다.
+
+최종 문서 갱신 뒤 `go run ./tools/verify traceability`는 PASS(wall 0.98s)했다. 코드 지도·module 설계·task 목록·ADR index·ADR-0030·cluster spec의 새 backpressure 링크 13개에서 대상 파일과 heading anchor를 확인했다. 누락은 없었다. `docs/tasks.md`는 합의한 CLU-12 범위를 완료로 옮겼으며 production storage의 열린 gate는 유지했다.
+
+실행 증거는 실행한 뒤 이 절에만 기록한다. Production Linux/EBS storage gate는 이 수용과 별개다.
 

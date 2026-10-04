@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"container/list"
 	"context"
 	"crypto/rand"
 	"crypto/sha256"
@@ -27,6 +28,7 @@ import (
 
 	authenticationadapter "narumq/internal/adapters/authentication"
 	"narumq/internal/adapters/clock"
+	"narumq/internal/adapters/diskspace"
 	adaptershttp "narumq/internal/adapters/http/management"
 	"narumq/internal/adapters/memory/deliveryqueue"
 	memoryretained "narumq/internal/adapters/memory/retained"
@@ -231,6 +233,10 @@ func runClusterMode(ctx context.Context, config clusterConfigFile, logger *slog.
 		handoffProposed:    make(map[string]uint64),
 	}
 	runtime.tenantQuotaController = &clusterTenantQuotaController{runtime: runtime}
+	minFree, maxLag := config.publishBackpressure()
+	runtime.publishPressure = &clusterPublishPressureController{
+		runtime: runtime, minFreeBytes: minFree, maxCommitLag: maxLag, freeBytes: diskspace.FreeBytes,
+	}
 	runtime.releaseProfile = &clusterReleaseProfileController{runtime: runtime}
 	runtime.drain = &clusterDrainController{runtime: runtime}
 	runtime.sessionRecovery = &clusterSessionRecoveryController{
@@ -319,6 +325,7 @@ func runClusterMode(ctx context.Context, config clusterConfigFile, logger *slog.
 		publish.WithMetrics(metricsRegistry), publish.WithRetainedCommitter(runtime),
 		publish.WithOfflineCommitter(runtime), publish.WithRemoteForwarder(runtime),
 		publish.WithDurableDeliveryCommitter(runtime),
+		publish.WithAdmission(runtime.publishPressure),
 	}
 	var tcpPolicy security.Policy
 	if securityBundle != nil {
@@ -449,6 +456,7 @@ type clusterRuntime struct {
 	storage                 *clusterStorageMonitor
 	drain                   *clusterDrainController
 	tenantQuotaController   *clusterTenantQuotaController
+	publishPressure         *clusterPublishPressureController
 	releaseProfile          *clusterReleaseProfileController
 	sessionRecovery         *clusterSessionRecoveryController
 	tenantQuotaRejectionLog tenantQuotaRejectionReporter
@@ -574,6 +582,7 @@ func (runtime *clusterRuntime) serve(parent context.Context, mqttServer *tcpadap
 	driverDone := make(chan error, 1)
 	go func() { driverDone <- runtime.runDriver(ctx) }()
 	runtime.tenantQuotaController.start(ctx)
+	runtime.publishPressure.start(ctx)
 	runtime.releaseProfile.start(ctx)
 	runtime.drain.start(ctx)
 	runtime.sessionRecovery.start(ctx)
@@ -666,6 +675,7 @@ func (runtime *clusterRuntime) serve(parent context.Context, mqttServer *tcpadap
 	runtime.drain.stopAndWait()
 	runtime.sessionRecovery.stopAndWait()
 	runtime.tenantQuotaController.stopAndWait()
+	runtime.publishPressure.stopAndWait()
 	runtime.releaseProfile.stopAndWait()
 	runtime.managementState.SetNodeState(managementports.NodeStateSafeToStop, nil)
 	return errors.Join(results...)
@@ -2340,6 +2350,7 @@ type clusterPendingCommit struct {
 	readContext    context.Context
 	readCancel     context.CancelFunc
 	deliveryCancel context.CancelFunc
+	backlogEntry   *list.Element
 	contextKey     string
 	command        membership.CommandDTO
 	data           []byte
@@ -2379,6 +2390,7 @@ func (pending *clusterPendingCommit) awaitCommitStage() clusterCommitStage {
 
 func (pending *clusterPendingCommit) Wait() (membership.ApplyResultDTO, error) {
 	defer pending.runtime.localCommits.Add(-1)
+	defer pending.runtime.removeCommitBacklog(pending.backlogEntry)
 	if pending.deliveryCancel != nil {
 		defer pending.deliveryCancel()
 	}
@@ -2413,12 +2425,14 @@ func (pending *clusterPendingCommit) Wait() (membership.ApplyResultDTO, error) {
 		pending.runtime.faults.reportHeldResult(label, result, err)
 		if err == nil {
 			pending.runtime.reportTenantQuotaRejection(result.TenantQuota)
+			pending.runtime.reportDeliverySaturation(result)
 		}
 		return result, err
 	}
 	result, err := pending.runtime.waitProposal(stage.context, pending.result, pending.command)
 	if err == nil {
 		pending.runtime.reportTenantQuotaRejection(result.TenantQuota)
+		pending.runtime.reportDeliverySaturation(result)
 	}
 	return result, err
 }
@@ -3404,7 +3418,7 @@ func (provider *clusterStateProvider) nodeSummary(ctx context.Context, member me
 			code := view.lastErrorCode
 			lastErrorCode = &code
 		}
-		storagePressure = view.storagePressure
+		storagePressure = view.storagePressure || provider.runtime.publishPressure.diskPressureActive()
 	} else {
 		message := "remote readiness is not available from this node"
 		if drain, exists := provider.runtime.machine.GetNodeDrain(member.MemberID); exists && drain.Phase.Active() {

@@ -132,6 +132,8 @@ func (scenario *storageFaultScenario) run(ctx context.Context) error {
 		return scenario.runClusterPowerLoss(ctx, leader, followers)
 	case "cluster-process-crash":
 		return scenario.runClusterProcessCrash(ctx, leader)
+	case "follower-disk-pressure":
+		return scenario.runFollowerDiskPressure(ctx, leader, followers[0], followers[1])
 	default:
 		return fmt.Errorf("unknown storage-fault scenario %q", scenario.options.ScenarioID)
 	}
@@ -357,6 +359,99 @@ func (scenario *storageFaultScenario) fillDisk(ctx context.Context, nodeID strin
 		scenario.evidence.DiskFill = &evidence
 	}
 	return evidence, scenario.recorder.record("disk", nodeID, evidence)
+}
+
+func (scenario *storageFaultScenario) fillDiskLeaving(ctx context.Context, nodeID string, leave uint64) (diskFillEvidence, error) {
+	output, err := scenario.docker.execNode(ctx, nodeID, "fill-disk", "--path", "/var/lib/narumq/chaos-ballast.bin", "--leave-bytes", fmt.Sprint(leave))
+	if err != nil {
+		return diskFillEvidence{}, err
+	}
+	var evidence diskFillEvidence
+	if err := json.Unmarshal(output, &evidence); err != nil {
+		return diskFillEvidence{}, fmt.Errorf("decode fill-disk result: %w", err)
+	}
+	if evidence.StoppedBy != "leave-bytes" || evidence.FreeBytesAfter >= 8<<20 {
+		return diskFillEvidence{}, fmt.Errorf("node %s did not reach disk pressure: %+v", nodeID, evidence)
+	}
+	scenario.evidence.DiskFill = &evidence
+	return evidence, scenario.recorder.record("disk", nodeID, evidence)
+}
+
+func (scenario *storageFaultScenario) runFollowerDiskPressure(ctx context.Context, leader, target, healthy string) error {
+	scenario.evidence.TargetNodeIDs = []string{target}
+	if _, err := scenario.fillDiskLeaving(ctx, target, 4<<20); err != nil {
+		return err
+	}
+	start := time.Now()
+	if err := waitFor(ctx, 10*time.Second, probeInterval, func() (bool, error) {
+		node, err := scenario.node(ctx, target, target)
+		if err != nil {
+			return false, err
+		}
+		return node.StoragePressure && node.ReplicationHealth == "HEALTHY" && node.Ready, nil
+	}); err != nil {
+		return fmt.Errorf("wait follower disk pressure: %w", err)
+	}
+	scenario.evidence.DetectionDurationMs = time.Since(start).Milliseconds()
+	ready, err := scenario.health(ctx, target, "/health/ready")
+	if err != nil {
+		return err
+	}
+	if ready.HTTPStatus != http.StatusOK {
+		return fmt.Errorf("disk pressure changed readiness: HTTP %d", ready.HTTPStatus)
+	}
+	scenario.evidence.TargetReadiness = &ready
+	scenario.evidence.TargetReplicationHealth = "HEALTHY"
+	pressure := true
+	scenario.evidence.TargetStoragePressure = &pressure
+	prefix := "chaos/durable/follower-disk-pressure/"
+	if err := scenario.publishDiskPressureRejected(ctx, target, prefix+"target/rejected"); err != nil {
+		return err
+	}
+	if err := scenario.durablePublish(ctx, leader, "chaos-durable-pub-1", prefix+"leader/during", 1, "during-fault", true); err != nil {
+		return err
+	}
+	if err := scenario.durablePublish(ctx, healthy, "chaos-durable-pub-2", prefix+"healthy/during", 1, "during-fault", true); err != nil {
+		return err
+	}
+	if _, err := scenario.docker.execNode(ctx, target, "free-disk", "--path", "/var/lib/narumq/chaos-ballast.bin"); err != nil {
+		return err
+	}
+	if err := waitFor(ctx, 10*time.Second, probeInterval, func() (bool, error) {
+		node, err := scenario.node(ctx, target, target)
+		if err != nil {
+			return false, err
+		}
+		return !node.StoragePressure, nil
+	}); err != nil {
+		return fmt.Errorf("wait follower pressure recovery: %w", err)
+	}
+	if err := scenario.durablePublish(ctx, target, "chaos-durable-pub-3", prefix+"target/after", 1, "after-recovery", true); err != nil {
+		return err
+	}
+	return scenario.verifyDurableDelivery(ctx, leader, []string{prefix + "leader/during", prefix + "healthy/during", prefix + "target/after"}, nil)
+}
+
+func (scenario *storageFaultScenario) publishDiskPressureRejected(ctx context.Context, nodeID, topic string) error {
+	client, _, err := dialDurableClient(ctx, "127.0.0.1:"+scenario.docker.mqttPorts[nodeID], scenario.fixture.AccessToken, "chaos-pressure-reject", true)
+	if err != nil {
+		return err
+	}
+	defer client.close()
+	packetID, err := client.publish(ctx, topic, []byte(topic), 1)
+	if err != nil {
+		return err
+	}
+	ackCtx, cancel := context.WithTimeout(ctx, durableAckTimeout)
+	outcome, ackErr := client.awaitAck(ackCtx, packetID, 1)
+	cancel()
+	if err := scenario.recordDurableAck(nodeID, "chaos-pressure-reject", topic, 1, "during-fault", outcome, ackErr); err != nil {
+		return err
+	}
+	if outcome != durableClosed {
+		return fmt.Errorf("disk-pressure publish outcome %q, want closed within %s: %v", outcome, durableAckTimeout, ackErr)
+	}
+	return nil
 }
 
 func (scenario *storageFaultScenario) inspectFailedFollower(ctx context.Context, nodeID, expectedCode, expectedMessage string) error {

@@ -23,6 +23,7 @@ var storageFaultScenarios = []string{
 	"follower-sync-error",
 	"follower-torn-power-loss",
 	"cluster-power-loss",
+	"follower-disk-pressure",
 }
 
 type runOptions struct {

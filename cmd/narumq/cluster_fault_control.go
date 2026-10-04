@@ -15,6 +15,7 @@ type clusterFaultControlFile struct {
 	Crash        string   `json:"crash"`
 	IsolatePeers []uint64 `json:"isolatePeers"`
 	HoldCommands []string `json:"holdCommands"`
+	FreeBytes    *uint64  `json:"freeBytes"`
 }
 
 type clusterHeldCommandKind string
@@ -72,6 +73,14 @@ func (c *clusterFaultControl) read() (clusterFaultControlFile, clusterFailpoint,
 		}
 	}
 	return control, point, true
+}
+
+func (c *clusterFaultControl) freeBytesOverride() (uint64, bool) {
+	control, _, ok := c.read()
+	if !ok || control.FreeBytes == nil {
+		return 0, false
+	}
+	return *control.FreeBytes, true
 }
 
 func (c *clusterFaultControl) crash() clusterFailpoint {

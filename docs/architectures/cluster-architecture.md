@@ -192,6 +192,24 @@ sequenceDiagram
 
 Publisher ingress node와 consensus leader는 같지 않을 수 있다. Runtime은 Raft peer transport를 통해 proposal을 leader로 전달하고 commit 결과를 ingress에 돌려준다. MQTT policy는 Raft·transport 자료형에 종속되면 안 된다.
 
+### Publish backpressure의 책임과 lifecycle
+
+새 저장을 받을 여유가 없으면 publish ingress에서 실패를 반환한다. 예를 들어 local data directory 여유 공간이 기준보다 작을 때 QoS 1 client PUBLISH는 PUBACK `0x97`을 받는다. Readiness와 이미 승인한 QoS 진행은 유지한다. 동작 기준과 한계는 [ADR-0030](../decisions/ADR-0030-publish-backpressure-admission.md)·[Cluster §4.5](../specs/cluster-session-and-delivery.md#45-publish-backpressure-admission)에 있다.
+
+| 파일·심볼 | 역할 |
+| --- | --- |
+| `internal/application/publish/admission.go` `Admission` | Application이 pressure·delivery capacity 조회 port와 sentinel을 소유한다. Raft와 filesystem 타입을 알지 않는다. |
+| `publish.go` `publish`·`BeginReceiveQoS2`, `submission.go` `beginPublish` | 새 client 저장에서 pressure를 먼저 검사한다. Route match 뒤 delivery 후보를 capacity 검사에 넘긴다. RELEASE와 trusted Will은 이 검사를 건너뛴다. |
+| `internal/application/membership/delivery_capacity.go` `DeliveryPublishCapacity` | Read lock 아래 전역·tenant 사용량과 target 합계를 검사한다. Fast path가 부족할 때만 committed ownership·subscription과 session 포화를 확인한다. `delivery.go`의 apply와 eligibility helper를 공유한다. |
+| `cmd/narumq/cluster_publish_pressure.go` `clusterPublishPressureController` | Disk 측정·hysteresis·backlog 나이와 admission 결과를 소유한다. 거절 counter, rate-limited log, sampled gauge와 leader의 peer lag를 기록한다. |
+| `internal/adapters/diskspace` `FreeBytes` | Windows·Unix filesystem API에서 일반 사용자에게 남은 byte 수를 반환한다. `cmd/narumq`가 third-party API를 직접 import하지 않는다. |
+| `cluster_durable.go` `BeginDelivery`, `cluster_runtime.go` `clusterPendingCommit.Wait` | 제출 직전 backlog entry를 등록한다. Begin 오류 또는 Wait 종료에서 같은 entry를 제거한다. 다른 Commit은 추적하지 않는다. |
+| `internal/adapters/metrics/registry_backpressure.go`, TCP `server.go`·`server_submission.go` | Metrics는 고정 reason과 peer별 관측값을 출력한다. TCP는 두 admission 오류를 기존 capacity 실패 응답으로 바꾼다. |
+
+`runClusterMode`는 config 기본값을 해석하고 controller를 만든다. `publish.WithAdmission`으로 use case에 주입한다. `serve`는 MQTT listener 시작 전에 동기 측정을 한 번 실행하고 1초 ticker를 시작한다. Context 종료 뒤 `stopAndWait`가 ticker goroutine을 join한다. `diskPressure`, `lagActive`, `sampleErr`는 node-local 관측 상태이며 복제하지 않는다. Backlog list와 거절 log 시각 map은 각각 mutex로 보호한다.
+
+Capacity 검사는 저장을 예약하지 않는다. 따라서 동시에 수용한 command가 apply 때 경합할 수 있다. 기존 apply는 session 포화와 RELEASE 시점 포화를 `Saturated`로 처리하며 runtime이 그 수를 집계한다. Local management summary는 기존 storage pressure에 disk admission 상태를 OR로 더한다. 다른 node의 disk 압력은 이 값에 포함하지 않는다. 실행 증거는 [Cluster §11.28](../specs/cluster-session-and-delivery.md#1128-publish-backpressure-수용-매핑)에서 확인한다.
+
 ## Session ownership 경로
 
 1. Connection을 수용한 node가 인증된 `(tenantId, clientId)`를 만든다.

@@ -10,6 +10,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"time"
 	"unicode/utf8"
 
 	"narumq/internal/application/membership"
@@ -25,20 +26,38 @@ type clusterConfigFile struct {
 	AdvertisedAddress string `json:"advertisedAddress"`
 	LocalDNSName      string `json:"localDnsName"`
 	// ReleaseVersion and Features are resolved from build identity, never from JSON.
-	ReleaseVersion       string                           `json:"-"`
-	Features             []string                         `json:"-"`
-	ClusterProtocolMajor uint32                           `json:"clusterProtocolMajor"`
-	ClusterProtocolMinor uint32                           `json:"clusterProtocolMinor"`
-	StateSchemaMajor     uint32                           `json:"stateSchemaMajor"`
-	StateSchemaMinor     uint32                           `json:"stateSchemaMinor"`
-	Role                 string                           `json:"role"`
-	BootstrapMembers     []clusterBootstrapMember         `json:"bootstrapMembers"`
-	SeedAddresses        []string                         `json:"seedAddresses"`
-	PeerTLS              clusterPeerTLS                   `json:"peerTLS"`
-	Management           clusterManagement                `json:"management"`
-	MQTT                 clusterMQTT                      `json:"mqtt"`
-	TenantQuotas         *clusterTenantQuotaProfileConfig `json:"tenantQuotas,omitempty"`
-	Replication          *clusterReplicationConfig        `json:"replication,omitempty"`
+	ReleaseVersion       string                            `json:"-"`
+	Features             []string                          `json:"-"`
+	ClusterProtocolMajor uint32                            `json:"clusterProtocolMajor"`
+	ClusterProtocolMinor uint32                            `json:"clusterProtocolMinor"`
+	StateSchemaMajor     uint32                            `json:"stateSchemaMajor"`
+	StateSchemaMinor     uint32                            `json:"stateSchemaMinor"`
+	Role                 string                            `json:"role"`
+	BootstrapMembers     []clusterBootstrapMember          `json:"bootstrapMembers"`
+	SeedAddresses        []string                          `json:"seedAddresses"`
+	PeerTLS              clusterPeerTLS                    `json:"peerTLS"`
+	Management           clusterManagement                 `json:"management"`
+	MQTT                 clusterMQTT                       `json:"mqtt"`
+	TenantQuotas         *clusterTenantQuotaProfileConfig  `json:"tenantQuotas,omitempty"`
+	Replication          *clusterReplicationConfig         `json:"replication,omitempty"`
+	PublishBackpressure  *clusterPublishBackpressureConfig `json:"publishBackpressure,omitempty"`
+}
+
+const (
+	clusterDefaultMinFreeBytes = 1 << 30
+	clusterDefaultMaxCommitLag = time.Second
+)
+
+type clusterPublishBackpressureConfig struct {
+	MinFreeBytes       uint64 `json:"minFreeBytes"`
+	MaxCommitLagMillis uint64 `json:"maxCommitLagMillis"`
+}
+
+func (config clusterConfigFile) publishBackpressure() (minFreeBytes uint64, maxCommitLag time.Duration) {
+	if config.PublishBackpressure == nil {
+		return clusterDefaultMinFreeBytes, clusterDefaultMaxCommitLag
+	}
+	return config.PublishBackpressure.MinFreeBytes, time.Duration(config.PublishBackpressure.MaxCommitLagMillis) * time.Millisecond
 }
 
 type clusterReplicationConfig struct {
@@ -238,7 +257,7 @@ func checkClusterJSON(reader io.Reader) error {
 
 func expectedClusterJSONType(path string) string {
 	switch path {
-	case "", "peerTLS", "management", "mqtt", "tenantQuotas", "tenantQuotas.default", "replication":
+	case "", "peerTLS", "management", "mqtt", "tenantQuotas", "tenantQuotas.default", "replication", "publishBackpressure":
 		return "object"
 	case "bootstrapMembers", "seedAddresses", "tenantQuotas.tenants":
 		return "array"
@@ -264,6 +283,8 @@ func expectClusterKeys(path string, seen map[string]struct{}) error {
 		required = []string{"tcpListenAddress", "tlsListenAddress", "securityConfigFile"}
 	case "replication":
 		required = []string{"factor", "writeQuorum"}
+	case "publishBackpressure":
+		required = []string{"minFreeBytes", "maxCommitLagMillis"}
 	case "tenantQuotas":
 		required = []string{"version", "default", "tenants"}
 	case "tenantQuotas.default":
@@ -340,6 +361,14 @@ func validateClusterConfig(config clusterConfigFile) error {
 	if config.Replication != nil {
 		if err := membership.ValidateReplicationProfile(config.replicationProfile()); err != nil {
 			return fmt.Errorf("replication is invalid: %w", err)
+		}
+	}
+	if pressure := config.PublishBackpressure; pressure != nil {
+		if pressure.MinFreeBytes > 1<<50 {
+			return errors.New("publishBackpressure minFreeBytes must be at most 1125899906842624")
+		}
+		if pressure.MaxCommitLagMillis < 100 || pressure.MaxCommitLagMillis > 10000 {
+			return errors.New("publishBackpressure maxCommitLagMillis must be between 100 and 10000")
 		}
 	}
 	if config.Role == "bootstrap" {

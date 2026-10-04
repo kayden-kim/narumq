@@ -70,20 +70,21 @@ func TestMain(m *testing.M) {
 }
 
 type clusterMembershipProcessFixture struct {
-	tempDir             string
-	repoRoot            string
-	binary              string
-	ctx                 context.Context
-	harness             *clusterMembershipProcessHarness
-	caPath              string
-	certificates        []clusterMembershipProcessCertificate
-	peerAddresses       []string
-	managementAddresses []string
-	mqttAddresses       []string
-	tokenPath           string
-	securityPath        string
-	accessToken         string
-	bootstrapMembers    []clusterMembershipProcessMember
+	tempDir                 string
+	repoRoot                string
+	binary                  string
+	ctx                     context.Context
+	harness                 *clusterMembershipProcessHarness
+	caPath                  string
+	certificates            []clusterMembershipProcessCertificate
+	peerAddresses           []string
+	managementAddresses     []string
+	mqttAddresses           []string
+	tokenPath               string
+	securityPath            string
+	accessToken             string
+	bootstrapMembers        []clusterMembershipProcessMember
+	omitPublishBackpressure bool
 }
 
 func newClusterMembershipProcessFixture(t *testing.T, nodeCount int, buildTags string) *clusterMembershipProcessFixture {
@@ -137,6 +138,14 @@ func newClusterMembershipProcessFixture(t *testing.T, nodeCount int, buildTags s
     "credentialId": "mqtt-process-client-credential",
     "allowedClientIds": [
       "ready-connection-client",
+      "bp-sub",
+      "bp-held",
+      "bp-rejected",
+      "bp-closed",
+      "bp-other",
+      "bp-disk",
+      "bp-live",
+      "bp-sentinel",
       "handoff-client",
       "retained-publisher",
       "retained-subscriber-source",
@@ -553,6 +562,18 @@ func newClusterMembershipProcessFixture(t *testing.T, nodeCount int, buildTags s
     "effect": "allow",
     "action": "subscribe",
     "topicFilter": "compat/#"
+  }, {
+    "tenantId": "acceptance",
+    "role": "client",
+    "effect": "allow",
+    "action": "publish",
+    "topicFilter": "bp/#"
+  }, {
+    "tenantId": "acceptance",
+    "role": "client",
+    "effect": "allow",
+    "action": "subscribe",
+    "topicFilter": "bp/#"
   }]
 }`, jwksURL))
 	clusterMembershipProcessWriteFile(t, securityPath, securityConfig, 0o600)
@@ -653,6 +674,9 @@ func (f *clusterMembershipProcessFixture) bootstrapConfig(memberID uint64) strin
 		Management: clusterMembershipProcessManagement{ListenAddress: f.managementAddresses[index], ClusterAdminTokenFile: f.tokenPath},
 		MQTT:       clusterMembershipProcessMQTT{TCPListenAddress: f.mqttAddresses[index], TLSListenAddress: "", SecurityConfigFile: f.securityPath},
 	}
+	if !f.omitPublishBackpressure {
+		config.PublishBackpressure = &clusterMembershipProcessPublishBackpressure{MinFreeBytes: 16 << 20, MaxCommitLagMillis: 1000}
+	}
 	clusterMembershipProcessWriteFile(f.harness.t, config.PeerTLS.CertFile, f.certificates[index].certPEM, 0o600)
 	clusterMembershipProcessWriteFile(f.harness.t, config.PeerTLS.KeyFile, f.certificates[index].keyPEM, 0o600)
 	configPath := filepath.Join(f.tempDir, fmt.Sprintf("node-%d.json", memberID))
@@ -680,6 +704,9 @@ func (f *clusterMembershipProcessFixture) joinerConfig(memberID uint64, seedIDs 
 		},
 		Management: clusterMembershipProcessManagement{ListenAddress: f.managementAddresses[index], ClusterAdminTokenFile: f.tokenPath},
 		MQTT:       clusterMembershipProcessMQTT{TCPListenAddress: f.mqttAddresses[index], TLSListenAddress: "", SecurityConfigFile: f.securityPath},
+	}
+	if !f.omitPublishBackpressure {
+		config.PublishBackpressure = &clusterMembershipProcessPublishBackpressure{MinFreeBytes: 16 << 20, MaxCommitLagMillis: 1000}
 	}
 	clusterMembershipProcessWriteFile(f.harness.t, config.PeerTLS.CertFile, f.certificates[index].certPEM, 0o600)
 	clusterMembershipProcessWriteFile(f.harness.t, config.PeerTLS.KeyFile, f.certificates[index].keyPEM, 0o600)
@@ -1320,24 +1347,30 @@ func (logs *clusterMembershipProcessLog) String() string {
 }
 
 type clusterMembershipProcessConfig struct {
-	Mode                 string                                      `json:"mode"`
-	ClusterID            string                                      `json:"clusterId"`
-	NodeID               uint64                                      `json:"nodeId"`
-	Directory            string                                      `json:"directory"`
-	ListenAddress        string                                      `json:"listenAddress"`
-	AdvertisedAddress    string                                      `json:"advertisedAddress"`
-	LocalDNSName         string                                      `json:"localDnsName"`
-	ClusterProtocolMajor uint32                                      `json:"clusterProtocolMajor"`
-	ClusterProtocolMinor uint32                                      `json:"clusterProtocolMinor"`
-	StateSchemaMajor     uint32                                      `json:"stateSchemaMajor"`
-	StateSchemaMinor     uint32                                      `json:"stateSchemaMinor"`
-	Role                 string                                      `json:"role"`
-	BootstrapMembers     []clusterMembershipProcessMember            `json:"bootstrapMembers"`
-	SeedAddresses        []string                                    `json:"seedAddresses"`
-	PeerTLS              clusterMembershipProcessTLS                 `json:"peerTLS"`
-	Management           clusterMembershipProcessManagement          `json:"management"`
-	MQTT                 clusterMembershipProcessMQTT                `json:"mqtt"`
-	TenantQuotas         *clusterMembershipProcessTenantQuotaProfile `json:"tenantQuotas,omitempty"`
+	Mode                 string                                       `json:"mode"`
+	ClusterID            string                                       `json:"clusterId"`
+	NodeID               uint64                                       `json:"nodeId"`
+	Directory            string                                       `json:"directory"`
+	ListenAddress        string                                       `json:"listenAddress"`
+	AdvertisedAddress    string                                       `json:"advertisedAddress"`
+	LocalDNSName         string                                       `json:"localDnsName"`
+	ClusterProtocolMajor uint32                                       `json:"clusterProtocolMajor"`
+	ClusterProtocolMinor uint32                                       `json:"clusterProtocolMinor"`
+	StateSchemaMajor     uint32                                       `json:"stateSchemaMajor"`
+	StateSchemaMinor     uint32                                       `json:"stateSchemaMinor"`
+	Role                 string                                       `json:"role"`
+	BootstrapMembers     []clusterMembershipProcessMember             `json:"bootstrapMembers"`
+	SeedAddresses        []string                                     `json:"seedAddresses"`
+	PeerTLS              clusterMembershipProcessTLS                  `json:"peerTLS"`
+	Management           clusterMembershipProcessManagement           `json:"management"`
+	MQTT                 clusterMembershipProcessMQTT                 `json:"mqtt"`
+	TenantQuotas         *clusterMembershipProcessTenantQuotaProfile  `json:"tenantQuotas,omitempty"`
+	PublishBackpressure  *clusterMembershipProcessPublishBackpressure `json:"publishBackpressure,omitempty"`
+}
+
+type clusterMembershipProcessPublishBackpressure struct {
+	MinFreeBytes       uint64 `json:"minFreeBytes"`
+	MaxCommitLagMillis uint64 `json:"maxCommitLagMillis"`
 }
 
 type clusterMembershipProcessTenantQuotaProfile struct {

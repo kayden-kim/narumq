@@ -248,32 +248,10 @@ func deliveryMessageBySequence(messages []DeliveryMessageDTO, sequence uint64) i
 func (machine *StateMachine) enqueueDeliveryTargetsLocked(tenantID, topic string, payload []byte, publishQoS uint32, retain bool, expiry uint64, targets []DeliveryTargetDTO) (enqueued []DeliveryEnqueuedDTO, saturated, skipped []string, quotaRejection *TenantQuotaRejectionDTO) {
 	for _, target := range targets {
 		key := sessionKey{tenantID: tenantID, clientID: target.ClientID}
-		owner, exists := machine.ownerships[key]
-		if !exists {
+		qos, eligible := machine.deliveryTargetQoSLocked(key, topic, publishQoS)
+		if !eligible {
 			skipped = append(skipped, target.ClientID)
 			continue
-		}
-		maxQoS := uint32(0)
-		for _, subscription := range machine.subscriptions {
-			if subscription.TenantID != key.tenantID || subscription.ClientID != key.clientID || subscription.OwnerNodeID != owner.OwnerNodeID || subscription.Epoch != owner.Epoch || subscription.QoS == 0 {
-				continue
-			}
-			_, filter, _, err := routing.ParseSharedFilter(subscription.Filter)
-			if err != nil {
-				continue
-			}
-			matched, err := routing.TopicMatchesFilter(topic, filter)
-			if err == nil && matched && subscription.QoS > maxQoS {
-				maxQoS = subscription.QoS
-			}
-		}
-		if maxQoS == 0 {
-			skipped = append(skipped, target.ClientID)
-			continue
-		}
-		qos := publishQoS
-		if maxQoS < qos {
-			qos = maxQoS
 		}
 		record, exists := machine.delivery[key]
 		if !exists {
@@ -305,6 +283,35 @@ func (machine *StateMachine) enqueueDeliveryTargetsLocked(tenantID, topic string
 		enqueued = append(enqueued, DeliveryEnqueuedDTO{ClientID: target.ClientID, Sequence: message.Sequence})
 	}
 	return
+}
+
+func (machine *StateMachine) deliveryTargetQoSLocked(key sessionKey, topic string, publishQoS uint32) (qos uint32, eligible bool) {
+	owner, exists := machine.ownerships[key]
+	if !exists {
+		return 0, false
+	}
+	maxQoS := uint32(0)
+	for _, subscription := range machine.subscriptions {
+		if subscription.TenantID != key.tenantID || subscription.ClientID != key.clientID || subscription.OwnerNodeID != owner.OwnerNodeID || subscription.Epoch != owner.Epoch || subscription.QoS == 0 {
+			continue
+		}
+		_, filter, _, err := routing.ParseSharedFilter(subscription.Filter)
+		if err != nil {
+			continue
+		}
+		matched, err := routing.TopicMatchesFilter(topic, filter)
+		if err == nil && matched && subscription.QoS > maxQoS {
+			maxQoS = subscription.QoS
+		}
+	}
+	if maxQoS == 0 {
+		return 0, false
+	}
+	qos = publishQoS
+	if maxQoS < qos {
+		qos = maxQoS
+	}
+	return qos, true
 }
 
 func (machine *StateMachine) ensureDeliveryRecordLocked(key sessionKey) {

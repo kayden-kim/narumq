@@ -26,6 +26,7 @@ type fillDiskResult struct {
 func runFillDisk(args []string) error {
 	flags := newFlagSet("fill-disk")
 	path := flags.String("path", "", "file path to fill until ENOSPC")
+	leave := flags.Uint64("leave-bytes", 0, "filesystem bytes to leave available instead of reaching ENOSPC")
 	if err := parseFlags(flags, args); err != nil {
 		return err
 	}
@@ -40,6 +41,49 @@ func runFillDisk(args []string) error {
 		return fmt.Errorf("create ballast file: %w", err)
 	}
 
+	if *leave > 0 {
+		free, err := freeBytes(filepath.Dir(*path))
+		if err != nil {
+			_ = file.Close()
+			return err
+		}
+		if free <= *leave {
+			_ = file.Close()
+			return errors.New("filesystem free bytes must exceed --leave-bytes")
+		}
+		remaining := (free - *leave) / 4096 * 4096
+		block := make([]byte, 1<<20)
+		var written uint64
+		for remaining > 0 {
+			size := uint64(len(block))
+			if remaining < size {
+				size = 4096
+			}
+			n, err := file.Write(block[:int(size)])
+			written += uint64(n)
+			if err != nil {
+				_ = file.Close()
+				return fmt.Errorf("fill ballast leaving space: %w", err)
+			}
+			if n != int(size) {
+				_ = file.Close()
+				return io.ErrShortWrite
+			}
+			remaining -= size
+		}
+		if err := file.Sync(); err != nil {
+			_ = file.Close()
+			return fmt.Errorf("sync ballast file: %w", err)
+		}
+		if err := file.Close(); err != nil {
+			return fmt.Errorf("close ballast file: %w", err)
+		}
+		free, err = freeBytes(filepath.Dir(*path))
+		if err != nil {
+			return err
+		}
+		return writeJSON(fillDiskResult{Path: *path, BytesWritten: written, FreeBytesAfter: free, StoppedBy: "leave-bytes"})
+	}
 	var bytesWritten uint64
 	largeWritten, full, err := writeUntilFull(file, make([]byte, 1<<20))
 	bytesWritten += largeWritten

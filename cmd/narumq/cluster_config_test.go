@@ -5,6 +5,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"narumq/internal/application/membership"
 )
@@ -283,6 +284,47 @@ func TestParseClusterConfigReplicationProfile(t *testing.T) {
 						t.Fatalf("parsed replication=%+v, input=%+v", parsed.Replication, test.profile)
 					}
 				})
+			}
+		})
+	}
+}
+
+// Traceability: CLU-12; docs/specs/cluster-session-and-delivery.md §4.5, §11.28.
+func TestParseClusterConfigPublishBackpressure(t *testing.T) {
+	base := string(mustMarshalClusterConfig(t, validBootstrapClusterConfig()))
+	for _, tc := range []struct {
+		name, object, wantError string
+		minFree                 uint64
+		maxLag                  time.Duration
+	}{
+		{name: "omitted", minFree: 1 << 30, maxLag: time.Second},
+		{name: "minimum", object: `{"minFreeBytes":0,"maxCommitLagMillis":100}`, maxLag: 100 * time.Millisecond},
+		{name: "maximum", object: `{"minFreeBytes":1125899906842624,"maxCommitLagMillis":10000}`, minFree: 1 << 50, maxLag: 10 * time.Second},
+		{name: "missing free", object: `{"maxCommitLagMillis":1000}`, wantError: `cluster config is missing required field "minFreeBytes"`},
+		{name: "missing lag", object: `{"minFreeBytes":0}`, wantError: `cluster config is missing required field "maxCommitLagMillis"`},
+		{name: "free too large", object: `{"minFreeBytes":1125899906842625,"maxCommitLagMillis":1000}`, wantError: "publishBackpressure minFreeBytes must be at most 1125899906842624"},
+		{name: "lag too small", object: `{"minFreeBytes":0,"maxCommitLagMillis":99}`, wantError: "publishBackpressure maxCommitLagMillis must be between 100 and 10000"},
+		{name: "lag too large", object: `{"minFreeBytes":0,"maxCommitLagMillis":10001}`, wantError: "publishBackpressure maxCommitLagMillis must be between 100 and 10000"},
+		{name: "unknown", object: `{"minFreeBytes":0,"maxCommitLagMillis":1000,"unknown":1}`, wantError: "cluster config has invalid JSON or field types"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			input := base
+			if tc.object != "" {
+				input = strings.TrimSuffix(base, "}") + `,"publishBackpressure":` + tc.object + "}"
+			}
+			parsed, err := parseClusterConfig(strings.NewReader(input))
+			if tc.wantError != "" {
+				if err == nil || err.Error() != tc.wantError {
+					t.Fatalf("error=%v; want %q", err, tc.wantError)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			minFree, maxLag := parsed.publishBackpressure()
+			if minFree != tc.minFree || maxLag != tc.maxLag {
+				t.Fatalf("pressure=(%d,%s)", minFree, maxLag)
 			}
 		})
 	}

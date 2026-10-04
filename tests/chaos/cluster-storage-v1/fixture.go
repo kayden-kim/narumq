@@ -37,23 +37,29 @@ type nodeFixture struct {
 }
 
 type chaosClusterConfig struct {
-	Mode                 string                `json:"mode"`
-	ClusterID            string                `json:"clusterId"`
-	NodeID               uint64                `json:"nodeId"`
-	Directory            string                `json:"directory"`
-	ListenAddress        string                `json:"listenAddress"`
-	AdvertisedAddress    string                `json:"advertisedAddress"`
-	LocalDNSName         string                `json:"localDnsName"`
-	ClusterProtocolMajor uint32                `json:"clusterProtocolMajor"`
-	ClusterProtocolMinor uint32                `json:"clusterProtocolMinor"`
-	StateSchemaMajor     uint32                `json:"stateSchemaMajor"`
-	StateSchemaMinor     uint32                `json:"stateSchemaMinor"`
-	Role                 string                `json:"role"`
-	BootstrapMembers     []chaosClusterMember  `json:"bootstrapMembers"`
-	SeedAddresses        []string              `json:"seedAddresses"`
-	PeerTLS              chaosPeerTLSConfig    `json:"peerTLS"`
-	Management           chaosManagementConfig `json:"management"`
-	MQTT                 chaosMQTTConfig       `json:"mqtt"`
+	Mode                 string                          `json:"mode"`
+	ClusterID            string                          `json:"clusterId"`
+	NodeID               uint64                          `json:"nodeId"`
+	Directory            string                          `json:"directory"`
+	ListenAddress        string                          `json:"listenAddress"`
+	AdvertisedAddress    string                          `json:"advertisedAddress"`
+	LocalDNSName         string                          `json:"localDnsName"`
+	ClusterProtocolMajor uint32                          `json:"clusterProtocolMajor"`
+	ClusterProtocolMinor uint32                          `json:"clusterProtocolMinor"`
+	StateSchemaMajor     uint32                          `json:"stateSchemaMajor"`
+	StateSchemaMinor     uint32                          `json:"stateSchemaMinor"`
+	Role                 string                          `json:"role"`
+	BootstrapMembers     []chaosClusterMember            `json:"bootstrapMembers"`
+	SeedAddresses        []string                        `json:"seedAddresses"`
+	PeerTLS              chaosPeerTLSConfig              `json:"peerTLS"`
+	Management           chaosManagementConfig           `json:"management"`
+	MQTT                 chaosMQTTConfig                 `json:"mqtt"`
+	PublishBackpressure  *chaosPublishBackpressureConfig `json:"publishBackpressure"`
+}
+
+type chaosPublishBackpressureConfig struct {
+	MinFreeBytes       uint64 `json:"minFreeBytes"`
+	MaxCommitLagMillis uint64 `json:"maxCommitLagMillis"`
 }
 
 type chaosClusterMember struct {
@@ -207,7 +213,7 @@ func createChaosFixture() (*chaosFixture, error) {
 		}
 		allowedClientIDs = append(allowedClientIDs,
 			"chaos-durable-sub", "chaos-durable-pub-1", "chaos-durable-pub-2", "chaos-durable-pub-3",
-			"chaos-durable-halt-1", "chaos-durable-halt-2", "chaos-durable-sentinel")
+			"chaos-durable-halt-1", "chaos-durable-halt-2", "chaos-durable-sentinel", "chaos-pressure-reject")
 		security := mqttSecurityConfig{
 			JWT: mqttJWTConfig{
 				Issuer: "https://issuer.example", Audience: "narumq", Algorithms: []string{"RS256"},
@@ -239,9 +245,10 @@ func createChaosFixture() (*chaosFixture, error) {
 			ClusterProtocolMajor: 2, ClusterProtocolMinor: 0,
 			StateSchemaMajor: 1, StateSchemaMinor: 0, Role: "bootstrap",
 			BootstrapMembers: members, SeedAddresses: []string{},
-			PeerTLS:    chaosPeerTLSConfig{CertFile: "/config/node.pem", KeyFile: "/config/node-key.pem", CAFile: "/config/ca.pem"},
-			Management: chaosManagementConfig{ListenAddress: "0.0.0.0:8080", ClusterAdminTokenFile: "/config/admin.token"},
-			MQTT:       chaosMQTTConfig{TCPListenAddress: "0.0.0.0:1883", TLSListenAddress: "", SecurityConfigFile: "/config/mqtt-security.json"},
+			PeerTLS:             chaosPeerTLSConfig{CertFile: "/config/node.pem", KeyFile: "/config/node-key.pem", CAFile: "/config/ca.pem"},
+			Management:          chaosManagementConfig{ListenAddress: "0.0.0.0:8080", ClusterAdminTokenFile: "/config/admin.token"},
+			MQTT:                chaosMQTTConfig{TCPListenAddress: "0.0.0.0:1883", TLSListenAddress: "", SecurityConfigFile: "/config/mqtt-security.json"},
+			PublishBackpressure: &chaosPublishBackpressureConfig{MinFreeBytes: 8 << 20, MaxCommitLagMillis: 1000},
 		}
 		configJSON, err := json.Marshal(config)
 		if err != nil {

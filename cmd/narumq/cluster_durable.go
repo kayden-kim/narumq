@@ -87,11 +87,13 @@ func (runtime *clusterRuntime) BeginDelivery(
 		cancel()
 		return nil, err
 	}
+	entry := runtime.addCommitBacklog(time.Now())
 	pending, err := runtime.beginCommit(commitCtx, membership.CommandDTO{
 		SchemaMajor: membership.SchemaMajor, SchemaMinor: membership.SchemaMinor,
 		OperationID: operationID, Delivery: &change,
 	})
 	if err != nil {
+		runtime.removeCommitBacklog(entry)
 		cancel()
 		if errors.Is(err, records.ErrCommandTooLarge) {
 			return nil, applicationdeliveryqueue.ErrFull
@@ -99,6 +101,7 @@ func (runtime *clusterRuntime) BeginDelivery(
 		return nil, err
 	}
 	pending.deliveryCancel = cancel
+	pending.backlogEntry = entry
 	return pending, nil
 }
 

@@ -92,6 +92,11 @@ func (useCase *UseCase) beginPublish(
 			useCase.metrics.ObservePublishDuration(time.Since(started))
 		}
 	}()
+	if release == nil && useCase.admission != nil {
+		if err := useCase.admission.CheckPressure(); err != nil {
+			return PendingPublish{}, err
+		}
+	}
 	prepared, err := useCase.preparePublication(publisherSessionID, packet, receivedAt, nil, principal...)
 	if err != nil {
 		return PendingPublish{}, err
@@ -99,6 +104,11 @@ func (useCase *UseCase) beginPublish(
 	change, targets, err := useCase.prepareDurableDelivery(publisherSessionID, nil, packet, prepared.expiresAt, prepared.now, prepared.matches, release)
 	if err != nil {
 		return PendingPublish{}, err
+	}
+	if release == nil && useCase.admission != nil && len(targets) > 0 {
+		if err := useCase.admission.CheckDeliveryCapacity(change); err != nil {
+			return PendingPublish{}, err
+		}
 	}
 	if !needsDeliveryCommand(release, targets) {
 		barrier, err := useCase.durableDeliveryCommitter.BeginQuorumBarrier(context.Background())
