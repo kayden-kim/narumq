@@ -16,6 +16,7 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+import ipaddress
 
 import paho.mqtt.client as mqtt
 from paho.mqtt.properties import Properties
@@ -561,6 +562,336 @@ def write_result(output: str, value: dict[str, Any]) -> None:
     path.write_text(json.dumps(value, sort_keys=True, separators=(",", ":")) + "\n", encoding="utf-8")
 
 
+def validServerReference(ref: Any) -> bool:
+    if not isinstance(ref, str) or any(ch.isspace() or ch in ",/?#@[]" for ch in ref):
+        return False
+    if ":" not in ref:
+        return False
+    host, port = ref.rsplit(":", 1)
+    if not port or any(ch not in "0123456789" for ch in port):
+        return False
+    if not 1 <= int(port) <= 65535 or len(host) > 253:
+        return False
+    try:
+        ipaddress.ip_address(host)
+        return False
+    except ValueError:
+        pass
+    for label in host.split("."):
+        if not 1 <= len(label) <= 63 or label.startswith("-") or label.endswith("-"):
+            return False
+        if any(ch not in "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-" for ch in label):
+            return False
+    return True
+
+
+def load_drain_profile(path: str) -> dict[str, Any]:
+    with open(path, encoding="utf-8") as stream:
+        p = json.load(stream, object_pairs_hook=strict_object_pairs)
+    timing = {
+        "schemaVersion": 1, "connectTimeoutMillis": 10000, "operationTimeoutMillis": 45000,
+        "sessionExpirySeconds": 60, "willDelaySeconds": 5, "reconnectWithinMillis": 2000,
+        "reconnectBaseMillis": 100, "reconnectCapMillis": 2000, "maxReconnectAttempts": 5,
+        "jitterSeed": 20260921,
+    }
+    if not isinstance(p, dict) or set(p) != set(timing) | {"cluster", "fakeServer", "clientIds", "expectedCases"}:
+        raise ProfileError("invalid drain profile keys")
+    for key, value in timing.items():
+        if type(p[key]) is not int or p[key] != value:
+            raise ProfileError(f"invalid drain timing {key}")
+    nested = {
+        "cluster": {"commonEndpoint", "serverReference", "observerEndpoint", "drainNodeId",
+                    "connectionRatePerSecond", "loadBalancerPropagationDelayMillis", "drainTimeoutMillis"},
+        "fakeServer": {"endpoint", "trapEndpoint"},
+        "clientIds": {"client", "observer", "publisher"},
+    }
+    for key, keys in nested.items():
+        if not isinstance(p[key], dict) or set(p[key]) != keys:
+            raise ProfileError(f"invalid drain {key} keys")
+    if not isinstance(p["expectedCases"], list):
+        raise ProfileError("invalid drain case array")
+    for case in p["expectedCases"]:
+        if set(case) != {"caseId", "protocol", "profile", "kind", "vector", "expectedResults"}:
+            raise ProfileError("invalid drain case keys")
+        for role in case["expectedResults"]:
+            if set(role) != {"sdk", "role", "requiredObservations"}:
+                raise ProfileError("invalid drain result keys")
+    return p
+
+
+class DrainSafeClient:
+    """Owns the manual SDK loop and preserves the first disconnect classification."""
+
+    def __init__(self, endpoint: str, client_id: str, profile: dict[str, Any],
+                 credentials: dict[str, str], will: tuple[str, bytes] | None = None):
+        self.permanent_endpoint = endpoint
+        self.client_id = client_id
+        self.profile = profile
+        self.credentials = credentials
+        self.will = will
+        self.stop = threading.Event()
+        self.up: queue.Queue[dict[str, Any]] = queue.Queue()
+        self.messages: queue.Queue[Any] = queue.Queue()
+        self.disconnected = threading.Event()
+        self.decision: dict[str, Any] | None = None
+        self.failure: Exception | None = None
+        self.client: mqtt.Client | None = None
+        self.current_down = threading.Event()
+        self.ack_lock = threading.Lock()
+        self.subscribe_acks: dict[int, Any] = {}
+        self.random = random.Random(profile["jitterSeed"])
+        self.thread = threading.Thread(target=self._run, name=f"drain-{client_id}")
+        self.thread.start()
+
+    def _classify(self, surface: str, reason: int | None = None, reference: Any = None,
+                  error: str | None = None) -> None:
+        if self.decision is None:
+            self.decision = {
+                "disconnectSurface": surface,
+                "serverReferenceAccepted": surface == "server_disconnect" and reason == 156 and validServerReference(reference),
+                "serverReference": reference,
+                "at": time.monotonic(),
+            }
+            if reason is not None:
+                self.decision["disconnectReasonCode"] = reason
+            if error is not None:
+                self.decision["sdkError"] = error
+            self.disconnected.set()
+
+    def _on_disconnect(self, _client: mqtt.Client, _userdata: Any, flags: Any,
+                       reason: Any, properties: Any) -> None:
+        if not self.stop.is_set():
+            if flags.is_disconnect_packet_from_server:
+                self._classify("server_disconnect", reason.value, getattr(properties, "ServerReference", None))
+            else:
+                self._classify("connection_lost", reason.value)
+        self.current_down.set()
+
+    def _on_subscribe(self, _client: mqtt.Client, _userdata: Any, mid: int, reasons: Any, _properties: Any) -> None:
+        with self.ack_lock:
+            self.subscribe_acks[mid] = reasons
+
+    def _connect(self, target: str, initial: bool) -> None:
+        self.current_down.clear()
+        connected = threading.Event()
+        error: list[str] = []
+        host, port = target.rsplit(":", 1)
+        client = mqtt.Client(callback_api_version=mqtt.CallbackAPIVersion.VERSION2,
+                             client_id=self.client_id, protocol=mqtt.MQTTv5, reconnect_on_failure=False)
+        self.client = client
+        client.username_pw_set(self.credentials["username"], self.credentials["password"])
+        if self.will is not None:
+            properties = Properties(PacketTypes.WILLMESSAGE)
+            properties.WillDelayInterval = self.profile["willDelaySeconds"]
+            client.will_set(self.will[0], self.will[1], qos=0, properties=properties)
+        def on_connect(_client: mqtt.Client, _userdata: Any, flags: Any, reason: Any, _properties: Any) -> None:
+            if reason.is_failure:
+                error.append(str(reason))
+            else:
+                self.up.put({"endpoint": target, "sessionPresent": session_present(flags), "at": time.monotonic()})
+            connected.set()
+        client.on_connect = on_connect
+        client.on_disconnect = self._on_disconnect
+        client.on_subscribe = self._on_subscribe
+        client.on_message = lambda _client, _userdata, message: self.messages.put(message)
+        properties = Properties(PacketTypes.CONNECT)
+        properties.SessionExpiryInterval = self.profile["sessionExpirySeconds"]
+        client.connect_timeout = self.profile["connectTimeoutMillis"] / 1000
+        rc = client.connect(host, int(port), keepalive=5, clean_start=initial, properties=properties)
+        if rc != mqtt.MQTT_ERR_SUCCESS:
+            raise RuntimeError(f"CONNECT returned {rc}")
+        deadline = time.monotonic() + self.profile["connectTimeoutMillis"] / 1000
+        while not connected.is_set() and not self.stop.is_set():
+            if time.monotonic() >= deadline or self.current_down.is_set():
+                raise RuntimeError("connection closed or timed out before CONNACK")
+            rc = client.loop(timeout=0.1)
+            if rc != mqtt.MQTT_ERR_SUCCESS:
+                raise RuntimeError(f"CONNACK loop returned {rc}; rejection={error}")
+        if error:
+            raise RuntimeError(error[0])
+
+    def _close_socket(self) -> None:
+        if self.client is not None:
+            sock = self.client.socket()
+            if sock is not None:
+                sock.close()
+
+    def _run(self) -> None:
+        try:
+            self._connect(self.permanent_endpoint, True)
+            attempts = 0
+            while not self.stop.is_set():
+                try:
+                    rc = self.client.loop(timeout=0.1)
+                    if rc != mqtt.MQTT_ERR_SUCCESS or self.current_down.is_set():
+                        self._classify("connection_lost")
+                    else:
+                        continue
+                except Exception as exc:
+                    self._classify("sdk_exception", error=repr(exc))
+                self._close_socket()
+                while not self.stop.is_set():
+                    if attempts >= self.profile["maxReconnectAttempts"]:
+                        raise RuntimeError("maximum reconnect attempts exceeded")
+                    upper = min(self.profile["reconnectCapMillis"], self.profile["reconnectBaseMillis"] * 2 ** attempts)
+                    if self.stop.wait(self.random.uniform(0, upper) / 1000):
+                        return
+                    target = self.permanent_endpoint
+                    if attempts == 0 and self.decision and self.decision["serverReferenceAccepted"]:
+                        target = self.decision["serverReference"]
+                    attempts += 1
+                    try:
+                        self._connect(target, False)
+                        break
+                    except Exception:
+                        self._close_socket()
+        except Exception as exc:
+            self.failure = exc
+        finally:
+            if self.stop.is_set() and self.client is not None:
+                try:
+                    self.client.disconnect()
+                    self.client.loop_write()
+                except Exception:
+                    pass
+            self._close_socket()
+
+    def await_up(self, deadline: float) -> dict[str, Any]:
+        while time.monotonic() < deadline:
+            try:
+                return self.up.get(timeout=0.05)
+            except queue.Empty:
+                if self.failure is not None:
+                    raise self.failure
+        raise RuntimeError("timed out waiting for drain CONNACK")
+
+    def subscribe(self, topic: str, qos: int, deadline: float) -> None:
+        rc, mid = self.client.subscribe(topic, qos)
+        if rc != mqtt.MQTT_ERR_SUCCESS:
+            raise RuntimeError(f"SUBSCRIBE returned {rc}")
+        while time.monotonic() < deadline:
+            with self.ack_lock:
+                reasons = self.subscribe_acks.get(mid)
+            if reasons is not None:
+                if any(reason.is_failure for reason in reasons):
+                    raise RuntimeError(f"SUBACK rejected: {reasons}")
+                return
+            if self.failure is not None:
+                raise self.failure
+            time.sleep(0.01)
+        raise RuntimeError("timed out waiting for drain SUBACK")
+
+    def close(self) -> None:
+        self.stop.set()
+        self.thread.join(timeout=self.profile["connectTimeoutMillis"] / 1000 + 1)
+        if self.thread.is_alive():
+            self._close_socket()
+            self.thread.join(timeout=2)
+        if self.thread.is_alive():
+            raise RuntimeError("drain SDK loop did not terminate")
+
+
+def execute_drain(args: Any, case: dict[str, Any], p: dict[str, Any],
+                  credentials: dict[str, str], observations: dict[str, Any]) -> None:
+    deadline = time.monotonic() + p["operationTimeoutMillis"] / 1000
+    clients: list[DrainSafeClient] = []
+    topic = f"compat/drain/{args.case}/message"
+    will_topic = f"compat/drain/{args.case}/will"
+    payload = f"drain-message/{args.case}".encode()
+    cluster = case["kind"] == "cluster_drain"
+    observations["permanentEndpoint"] = args.address
+    try:
+        if cluster:
+            observer = DrainSafeClient(p["cluster"]["observerEndpoint"], p["clientIds"]["observer"], p, credentials)
+            clients.append(observer)
+            observer.await_up(deadline)
+            observer.subscribe(will_topic, 0, deadline)
+        client = DrainSafeClient(args.address, p["clientIds"]["client"], p, credentials,
+                                 (will_topic, f"drain-will/{args.case}".encode()) if cluster else None)
+        clients.append(client)
+        client.await_up(deadline)
+        if cluster:
+            client.subscribe(topic, 1, deadline)
+            ready = {"schemaVersion": 1, "caseId": args.case, "sdk": "python", "role": "client", "protocol": "mqtt5", "ready": True}
+            target = Path(args.output, "drain-ready.json")
+            temporary = target.with_suffix(".tmp")
+            temporary.write_text(json.dumps(ready) + "\n", encoding="utf-8")
+            temporary.replace(target)
+        while not client.disconnected.wait(0.05):
+            if client.failure is not None:
+                raise client.failure
+            if time.monotonic() >= deadline:
+                raise RuntimeError("timed out waiting for drain disconnect")
+        decision = client.decision
+        observations.update({key: value for key, value in decision.items() if key != "at" and value is not None})
+        if not cluster:
+            observations["vector"] = case["vector"]
+        ack = client.await_up(deadline)
+        observations["reconnectEndpoint"] = ack["endpoint"]
+        if not cluster:
+            time.sleep(0.5)
+            return
+        observations["reconnectElapsedMillis"] = (ack["at"] - decision["at"]) * 1000
+        observations["sessionPresent"] = ack["sessionPresent"]
+        publisher = DrainSafeClient(p["cluster"]["observerEndpoint"], p["clientIds"]["publisher"], p, credentials)
+        clients.append(publisher)
+        publisher.await_up(deadline)
+        published = publisher.client.publish(topic, payload, qos=1)
+        published.wait_for_publish(timeout=max(0.01, deadline - time.monotonic()))
+        if not published.is_published():
+            raise RuntimeError("drain publish ACK missing")
+        while time.monotonic() < deadline:
+            try:
+                message = client.messages.get(timeout=0.05)
+                if message.topic == topic and message.payload == payload:
+                    observations["postRedirectDelivery"] = True
+                    break
+            except queue.Empty:
+                pass
+        else:
+            raise RuntimeError("post-redirect payload missing")
+        will_deadline = decision["at"] + p["willDelaySeconds"] + 1
+        observations["willReceived"] = False
+        while True:
+            remaining = will_deadline - time.monotonic()
+            try:
+                message = observer.messages.get(timeout=max(0, remaining))
+                if message.topic == will_topic:
+                    observations["willReceived"] = True
+                    raise RuntimeError("unexpected drain Will")
+            except queue.Empty:
+                break
+        observations["willClassification"] = "suppressed_reconnected_within_delay"
+    finally:
+        for client in reversed(clients):
+            client.close()
+
+
+def drain_main(args: Any) -> int:
+    started = now()
+    value = {"schemaVersion": 1, "caseId": args.case, "sdk": "python", "sdkVersion": SDK_VERSION,
+             "protocol": "mqtt5", "profile": "MQTT5_DRAIN_SAFE", "role": args.role,
+             "status": "failed", "startedAt": started, "finishedAt": started, "observations": {}}
+    try:
+        p = load_drain_profile(args.profile)
+        case, _expected = find_case(p, args.case, args.role)
+        with open("/input/credentials.json", encoding="utf-8") as stream:
+            credentials = json.load(stream, object_pairs_hook=strict_object_pairs)
+        if set(credentials) != {"username", "password"} or any(type(v) is not str for v in credentials.values()):
+            raise ProfileError("invalid drain credentials")
+        execute_drain(args, case, p, credentials, value["observations"])
+        value["status"] = "passed"
+    except Exception as exc:
+        value["error"] = str(exc)
+    value["finishedAt"] = now()
+    try:
+        write_result(args.output, value)
+    except Exception as exc:
+        print(f"unable to write result: {exc}", file=sys.stderr)
+        return 1
+    return 0 if value["status"] == "passed" else 1
+
+
 def main(argv: list[str]) -> int:
     parser = argparse.ArgumentParser(allow_abbrev=False)
     parser.add_argument("--case", required=True)
@@ -568,7 +899,10 @@ def main(argv: list[str]) -> int:
     parser.add_argument("--address", required=True)
     parser.add_argument("--profile", required=True)
     parser.add_argument("--output", required=True)
+    parser.add_argument("--suite", required=True, choices=["phase1", "drain"])
     args = parser.parse_args(argv)
+    if args.suite == "drain":
+        return drain_main(args)
     started = now()
     profile: dict[str, Any] | None = None
     case: dict[str, Any] | None = None

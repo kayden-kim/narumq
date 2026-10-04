@@ -1,0 +1,242 @@
+{
+  "schemaVersion": 1,
+  "connectTimeoutMillis": 10000,
+  "operationTimeoutMillis": 45000,
+  "sessionExpirySeconds": 60,
+  "willDelaySeconds": 5,
+  "reconnectWithinMillis": 2000,
+  "reconnectBaseMillis": 100,
+  "reconnectCapMillis": 2000,
+  "maxReconnectAttempts": 5,
+  "jitterSeed": 20260921,
+  "cluster": {
+    "commonEndpoint": "lb.compat.test:1883",
+    "serverReference": "node2.compat.test:1883",
+    "observerEndpoint": "node1.compat.test:1883",
+    "drainNodeId": 3,
+    "connectionRatePerSecond": 10,
+    "loadBalancerPropagationDelayMillis": 1000,
+    "drainTimeoutMillis": 60000
+  },
+  "fakeServer": {
+    "endpoint": "localhost:1883",
+    "trapEndpoint": "localhost:1886"
+  },
+  "clientIds": {
+    "client": "compat-drain-client",
+    "observer": "compat-drain-observer",
+    "publisher": "compat-drain-publisher"
+  },
+  "expectedCases": [
+    {
+      "caseId": "go-mqtt5-drain-redirect",
+      "protocol": "mqtt5",
+      "profile": "MQTT5_DRAIN_SAFE",
+      "kind": "cluster_drain",
+      "vector": "",
+      "expectedResults": [
+        {
+          "sdk": "go",
+          "role": "client",
+          "requiredObservations": [
+            "disconnectReasonCode",
+            "serverReference",
+            "serverReferenceAccepted",
+            "reconnectEndpoint",
+            "reconnectElapsedMillis",
+            "sessionPresent",
+            "postRedirectDelivery",
+            "willReceived",
+            "willClassification",
+            "permanentEndpoint"
+          ]
+        }
+      ]
+    },
+    {
+      "caseId": "go-mqtt5-malformed-truncated-property",
+      "protocol": "mqtt5",
+      "profile": "MQTT5_DRAIN_SAFE",
+      "kind": "malformed_disconnect",
+      "vector": "truncated_property",
+      "expectedResults": [
+        {
+          "sdk": "go",
+          "role": "client",
+          "requiredObservations": [
+            "vector",
+            "disconnectSurface",
+            "serverReferenceAccepted",
+            "reconnectEndpoint",
+            "permanentEndpoint"
+          ]
+        }
+      ]
+    },
+    {
+      "caseId": "go-mqtt5-malformed-disallowed-property",
+      "protocol": "mqtt5",
+      "profile": "MQTT5_DRAIN_SAFE",
+      "kind": "malformed_disconnect",
+      "vector": "disallowed_property",
+      "expectedResults": [
+        {
+          "sdk": "go",
+          "role": "client",
+          "requiredObservations": [
+            "vector",
+            "disconnectSurface",
+            "serverReferenceAccepted",
+            "reconnectEndpoint",
+            "permanentEndpoint"
+          ]
+        }
+      ]
+    },
+    {
+      "caseId": "go-mqtt5-malformed-duplicate-server-reference",
+      "protocol": "mqtt5",
+      "profile": "MQTT5_DRAIN_SAFE",
+      "kind": "malformed_disconnect",
+      "vector": "duplicate_server_reference",
+      "expectedResults": [
+        {
+          "sdk": "go",
+          "role": "client",
+          "requiredObservations": [
+            "vector",
+            "disconnectSurface",
+            "serverReferenceAccepted",
+            "reconnectEndpoint",
+            "permanentEndpoint"
+          ]
+        }
+      ]
+    },
+    {
+      "caseId": "go-mqtt5-malformed-invalid-server-reference",
+      "protocol": "mqtt5",
+      "profile": "MQTT5_DRAIN_SAFE",
+      "kind": "malformed_disconnect",
+      "vector": "invalid_server_reference_format",
+      "expectedResults": [
+        {
+          "sdk": "go",
+          "role": "client",
+          "requiredObservations": [
+            "vector",
+            "disconnectSurface",
+            "serverReferenceAccepted",
+            "reconnectEndpoint",
+            "permanentEndpoint"
+          ]
+        }
+      ]
+    },
+    {
+      "caseId": "python-mqtt5-drain-redirect",
+      "protocol": "mqtt5",
+      "profile": "MQTT5_DRAIN_SAFE",
+      "kind": "cluster_drain",
+      "vector": "",
+      "expectedResults": [
+        {
+          "sdk": "python",
+          "role": "client",
+          "requiredObservations": [
+            "disconnectReasonCode",
+            "serverReference",
+            "serverReferenceAccepted",
+            "reconnectEndpoint",
+            "reconnectElapsedMillis",
+            "sessionPresent",
+            "postRedirectDelivery",
+            "willReceived",
+            "willClassification",
+            "permanentEndpoint"
+          ]
+        }
+      ]
+    },
+    {
+      "caseId": "python-mqtt5-malformed-truncated-property",
+      "protocol": "mqtt5",
+      "profile": "MQTT5_DRAIN_SAFE",
+      "kind": "malformed_disconnect",
+      "vector": "truncated_property",
+      "expectedResults": [
+        {
+          "sdk": "python",
+          "role": "client",
+          "requiredObservations": [
+            "vector",
+            "disconnectSurface",
+            "serverReferenceAccepted",
+            "reconnectEndpoint",
+            "permanentEndpoint"
+          ]
+        }
+      ]
+    },
+    {
+      "caseId": "python-mqtt5-malformed-disallowed-property",
+      "protocol": "mqtt5",
+      "profile": "MQTT5_DRAIN_SAFE",
+      "kind": "malformed_disconnect",
+      "vector": "disallowed_property",
+      "expectedResults": [
+        {
+          "sdk": "python",
+          "role": "client",
+          "requiredObservations": [
+            "vector",
+            "disconnectSurface",
+            "serverReferenceAccepted",
+            "reconnectEndpoint",
+            "permanentEndpoint"
+          ]
+        }
+      ]
+    },
+    {
+      "caseId": "python-mqtt5-malformed-duplicate-server-reference",
+      "protocol": "mqtt5",
+      "profile": "MQTT5_DRAIN_SAFE",
+      "kind": "malformed_disconnect",
+      "vector": "duplicate_server_reference",
+      "expectedResults": [
+        {
+          "sdk": "python",
+          "role": "client",
+          "requiredObservations": [
+            "vector",
+            "disconnectSurface",
+            "serverReferenceAccepted",
+            "reconnectEndpoint",
+            "permanentEndpoint"
+          ]
+        }
+      ]
+    },
+    {
+      "caseId": "python-mqtt5-malformed-invalid-server-reference",
+      "protocol": "mqtt5",
+      "profile": "MQTT5_DRAIN_SAFE",
+      "kind": "malformed_disconnect",
+      "vector": "invalid_server_reference_format",
+      "expectedResults": [
+        {
+          "sdk": "python",
+          "role": "client",
+          "requiredObservations": [
+            "vector",
+            "disconnectSurface",
+            "serverReferenceAccepted",
+            "reconnectEndpoint",
+            "permanentEndpoint"
+          ]
+        }
+      ]
+    }
+  ]
+}

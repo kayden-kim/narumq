@@ -571,7 +571,7 @@ Phase 0에서 profile별 최소 throughput, 최대 p99·p99.9, connection당 mem
 | chaos | process/host loss, packet loss·latency·partition, disk full·slow I/O | production-like cluster |
 | benchmark | 성능·용량·회귀와 EMQX 비교 | 격리된 benchmark environment |
 
-### 7.1 Phase 1 MQTT client compatibility evidence
+### 7.1 MQTT client compatibility evidence
 
 Phase 1 SDK interoperability는 일반 unit test와 분리된 Docker/E2E evidence gate다. 저장소 root에서 Go `1.26.5`와 Linux/amd64 container를 실행할 수 있는 Docker daemon을 준비한 뒤 다음 command를 사용한다.
 
@@ -585,9 +585,27 @@ Command는 checked-in `tests/compatibility/mqtt-clients-v1/profile.json`을 stri
 
 성공 artifact는 `.artifacts/compatibility/mqtt-clients-v1/<run-id>/` 아래 `manifest.json`, `summary.json`, `cases.jsonl`, build log, image inspect metadata를 보존한다. 각 case는 broker log와 inspect, client stdout/stderr와 result JSON을 보존하고, QoS retransmission case는 proxy trace를 추가한다. Artifact에는 payload body, credential, raw certificate, 외부에서 주어진 Client ID와 secret을 기록해서는 안 된다.
 
-Phase 1 compatibility acceptance는 Go 10개, Python 10개, cross-SDK QoS 1 4개와 MQTT 3.1.0 거부 2개, 총 26개 expected case를 검사한다. 이 Docker 명령은 `MQTT5_DRAIN_SAFE`, malformed server DISCONNECT 또는 Server Reference 자동 추종을 실행하지 않는다. Broker의 `DISCONNECT 0x9C`/Server Reference process acceptance는 [Drain spec §10](drain-and-rolling-update.md#10-broker-drain-수용-시험-매핑)에 별도로 기록하며, supported SDK 전체의 redirect/Will 호환성을 증명하지 않는다. 따라서 DEP-06/07/12와 `SPEC-TBD-04`는 release blocker로 남는다.
+Phase 1 compatibility acceptance는 Go 10개, Python 10개, cross-SDK QoS 1 4개와 MQTT 3.1.0 거부 2개, 총 26개 expected case를 검사한다. `--suite phase1`이 기본값이다. 이 suite는 `MQTT5_DRAIN_SAFE`나 malformed server DISCONNECT를 실행하지 않는다. Broker의 Server Reference packet과 SDK callback adapter의 redirect·Will 결과는 [Drain spec §10](drain-and-rolling-update.md#10-broker-drain-수용-시험-매핑)에 따로 연결한다.
 
 이 Docker/E2E gate는 외부 dependency가 없어야 하는 `go test ./...`와 `go run ./tools/verify local`에 포함되지 않는다. 후자의 검증은 nested SDK module을 다운로드하거나 Docker를 시작하지 않아야 하며, compatibility command는 release evidence가 필요한 환경에서 명시적으로 실행한다.
+
+Drain compatibility는 같은 실행 환경에서 별도로 실행한다. Run ID와 output은 기존 artifact와 겹치지 않아야 한다.
+
+```text
+go run ./tests/compatibility/mqtt-clients-v1 --suite drain \
+  --run-id drain-paho-go-python-will-acl-final \
+  --output .artifacts/compatibility/mqtt-clients-v1/drain-paho-go-python-will-acl-final
+```
+
+`drain-profile.json`은 두 SDK의 cluster drain 2개와 malformed DISCONNECT 8개를 고정한다. Cluster case는 새 3-node broker, JWT/JWKS 인증과 시험 전용 readiness LB를 사용한다. Malformed case는 fake server와 trap listener를 사용한다. Operation 45s, Will Delay 5s, 재접속 2s, LB 전파 대기 1000ms, rate 10/s와 drain timeout 60s는 test-only 값이다.
+
+Artifact는 같은 run directory의 `manifest.json`, `summary.json`, `cases.jsonl`, build log와 image inspect에 기록한다. Cluster case는 `client/result.json`, client log, `lb/lb-trace.jsonl`, `drain-operation.json`, node별 log·inspect를 추가한다. Malformed case는 `fakeserver/fakeserver-trace.jsonl`을 추가한다. Credential과 private key는 임시 fixture에만 저장하고 case 종료 뒤 지운다.
+
+최종 drain run은 9/10이다. 두 redirect case와 Python malformed 4개는 통과했다. Go의 중복 Server Reference case만 trap 접속으로 실패했다. 이 결과는 §7.1의 Docker 검증 범위이며 전체 SDK 지원 승인이 아니다. 상세 판정은 [Client contract §6.2](../contracts/mqtt-client-compatibility-v1.md#62-drain-compatibility-suite), 열린 작업은 [Cluster 잔여 작업 §1.2](../tasks.md#12-release와-rollout-gate)를 따른다.
+
+`--suite drain`도 `go test ./...`와 `tools/verify local`에 포함하지 않는다. Root module의 순수 profile·result·trace unit test는 local gate에 포함한다. Nested SDK module의 build·vet와 실제 Docker suite는 별도로 실행해야 한다.
+
+이 구현 뒤 실행한 전체 local gate는 PASS(280.08s)다. Compatibility root package unit test를 포함한다. Nested Go module의 `go vet ./... && go build ./...`도 PASS했다. Phase 1의 최종 adapter 회귀 `phase1-drain-adapters-final`은 26/26 PASS(132.67s)이며 같은 compatibility artifact root 아래에 보존했다. SDK drain의 9/10은 local gate 실패가 아니라 별도 호환성 gate의 실패다.
 
 ### 7.2 Phase 0 mutation·fuzz gate
 

@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"reflect"
 	"sort"
 	"strings"
 	"time"
@@ -75,6 +76,24 @@ func DecodeResult(data []byte) (Result, error) {
 
 // Validate checks one result against the expected role and case contract.
 func (r Result) Validate(expected ExpectedCase, expectedRole ExpectedResult) error {
+	if err := r.validateEnvelope(expected, expectedRole); err != nil {
+		return err
+	}
+	if r.Status == "passed" {
+		for _, observation := range expectedRole.RequiredObservations {
+			value, ok := r.Observations[observation]
+			if !ok {
+				return fmt.Errorf("result %s is missing observation %q", r.CaseID, observation)
+			}
+			if err := validateObservation(r.CaseID, observation, value); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+func (r Result) validateEnvelope(expected ExpectedCase, expectedRole ExpectedResult) error {
 	if r.SchemaVersion != resultSchemaVersion {
 		return fmt.Errorf("result %s has unsupported schema version %d", r.CaseID, r.SchemaVersion)
 	}
@@ -115,17 +134,6 @@ func (r Result) Validate(expected ExpectedCase, expectedRole ExpectedResult) err
 	}
 	if r.Status == "failed" && strings.TrimSpace(r.Error) == "" {
 		return fmt.Errorf("failed result %s is missing error", r.CaseID)
-	}
-	if r.Status == "passed" {
-		for _, observation := range expectedRole.RequiredObservations {
-			value, ok := r.Observations[observation]
-			if !ok {
-				return fmt.Errorf("result %s is missing observation %q", r.CaseID, observation)
-			}
-			if err := validateObservation(r.CaseID, observation, value); err != nil {
-				return err
-			}
-		}
 	}
 	return nil
 }
@@ -216,33 +224,39 @@ func numericObservation(value any) (float64, bool) {
 
 // ValidateCaseResults validates all role results for one expected case.
 func ValidateCaseResults(expected ExpectedCase, results []Result) error {
-	if len(results) != len(expected.ExpectedResults) {
-		return fmt.Errorf("case %s has %d results, want %d", expected.CaseID, len(results), len(expected.ExpectedResults))
+	return validateRoleResults(expected.CaseID, expected.ExpectedResults, results, func(r Result, role ExpectedResult) error {
+		return r.Validate(expected, role)
+	})
+}
+
+func validateRoleResults(caseID string, roles []ExpectedResult, results []Result, validate func(Result, ExpectedResult) error) error {
+	if len(results) != len(roles) {
+		return fmt.Errorf("case %s has %d results, want %d", caseID, len(results), len(roles))
 	}
-	expectedByRole := make(map[string]ExpectedResult, len(expected.ExpectedResults))
-	for _, role := range expected.ExpectedResults {
+	expectedByRole := make(map[string]ExpectedResult, len(roles))
+	for _, role := range roles {
 		expectedByRole[role.Role] = role
 	}
 	seenRoles := make(map[string]struct{}, len(results))
 	for _, result := range results {
 		if _, ok := seenRoles[result.Role]; ok {
-			return fmt.Errorf("case %s has duplicate role %q", expected.CaseID, result.Role)
+			return fmt.Errorf("case %s has duplicate role %q", caseID, result.Role)
 		}
 		role, ok := expectedByRole[result.Role]
 		if !ok {
-			return fmt.Errorf("case %s has unexpected role %q", expected.CaseID, result.Role)
+			return fmt.Errorf("case %s has unexpected role %q", caseID, result.Role)
 		}
 		seenRoles[result.Role] = struct{}{}
-		if err := result.Validate(expected, role); err != nil {
+		if err := validate(result, role); err != nil {
 			return err
 		}
 		if result.Status != "passed" {
-			return fmt.Errorf("case %s role %q failed: %s", expected.CaseID, result.Role, result.Error)
+			return fmt.Errorf("case %s role %q failed: %s", caseID, result.Role, result.Error)
 		}
 	}
 	for role := range expectedByRole {
 		if _, ok := seenRoles[role]; !ok {
-			return fmt.Errorf("case %s is missing role %q", expected.CaseID, role)
+			return fmt.Errorf("case %s is missing role %q", caseID, role)
 		}
 	}
 	return nil
@@ -250,27 +264,39 @@ func ValidateCaseResults(expected ExpectedCase, results []Result) error {
 
 // AggregateSummary creates the run verdict while preserving all case failures.
 func AggregateSummary(runID string, profile Profile, results map[string][]Result, unexpected []string, startedAt, finishedAt string) Summary {
+	ids := make([]string, 0, len(profile.ExpectedCases))
+	expected := make(map[string]ExpectedCase, len(profile.ExpectedCases))
+	for _, c := range profile.ExpectedCases {
+		ids = append(ids, c.CaseID)
+		expected[c.CaseID] = c
+	}
+	return aggregateSummary(runID, ids, results, unexpected, startedAt, finishedAt, func(id string, results []Result) error {
+		return ValidateCaseResults(expected[id], results)
+	})
+}
+
+func aggregateSummary(runID string, caseIDs []string, results map[string][]Result, unexpected []string, startedAt, finishedAt string, validate func(string, []Result) error) Summary {
 	summary := Summary{
 		SchemaVersion:   resultSchemaVersion,
 		RunID:           runID,
 		Status:          "failed",
-		ExpectedCases:   len(profile.ExpectedCases),
+		ExpectedCases:   len(caseIDs),
 		MissingCases:    make([]string, 0),
 		UnexpectedCases: append([]string(nil), unexpected...),
-		CaseSummaries:   make([]CaseSummary, 0, len(profile.ExpectedCases)),
+		CaseSummaries:   make([]CaseSummary, 0, len(caseIDs)),
 		StartedAt:       startedAt,
 		FinishedAt:      finishedAt,
 	}
-	for _, expected := range profile.ExpectedCases {
-		caseResults, ok := results[expected.CaseID]
+	for _, caseID := range caseIDs {
+		caseResults, ok := results[caseID]
 		if !ok {
-			summary.MissingCases = append(summary.MissingCases, expected.CaseID)
+			summary.MissingCases = append(summary.MissingCases, caseID)
 			summary.FailedCases++
-			summary.CaseSummaries = append(summary.CaseSummaries, CaseSummary{CaseID: expected.CaseID, Status: "missing"})
+			summary.CaseSummaries = append(summary.CaseSummaries, CaseSummary{CaseID: caseID, Status: "missing"})
 			continue
 		}
-		caseSummary := CaseSummary{CaseID: expected.CaseID, ResultCount: len(caseResults), Status: "failed"}
-		if err := ValidateCaseResults(expected, caseResults); err != nil {
+		caseSummary := CaseSummary{CaseID: caseID, ResultCount: len(caseResults), Status: "failed"}
+		if err := validate(caseID, caseResults); err != nil {
 			caseSummary.Error = err.Error()
 		} else {
 			caseSummary.Status = "passed"
@@ -290,4 +316,60 @@ func AggregateSummary(runID string, profile Profile, results map[string][]Result
 	sort.Strings(summary.UnexpectedCases)
 	sort.Slice(summary.CaseSummaries, func(i, j int) bool { return summary.CaseSummaries[i].CaseID < summary.CaseSummaries[j].CaseID })
 	return summary
+}
+
+// ValidateDrain checks the SDK envelope and the drain-specific observations.
+func (r Result) ValidateDrain(p DrainProfile, c DrainExpectedCase, role ExpectedResult) error {
+	if err := r.validateEnvelope(c.asExpectedCase(), role); err != nil {
+		return err
+	}
+	if r.Status != "passed" {
+		return nil
+	}
+	for _, name := range role.RequiredObservations {
+		if _, ok := r.Observations[name]; !ok {
+			return fmt.Errorf("result %s is missing observation %q", r.CaseID, name)
+		}
+	}
+	exact := map[string]any{"permanentEndpoint": p.FakeServer.Endpoint, "reconnectEndpoint": p.FakeServer.Endpoint, "serverReferenceAccepted": false, "vector": c.Vector}
+	switch c.Kind {
+	case "cluster_drain":
+		exact = map[string]any{"disconnectReasonCode": float64(156), "serverReference": p.Cluster.ServerReference, "serverReferenceAccepted": true, "reconnectEndpoint": p.Cluster.ServerReference, "sessionPresent": true, "postRedirectDelivery": true, "willReceived": false, "willClassification": "suppressed_reconnected_within_delay", "permanentEndpoint": p.Cluster.CommonEndpoint}
+		elapsed, ok := numericObservation(r.Observations["reconnectElapsedMillis"])
+		if !ok || !(elapsed >= 0 && elapsed <= float64(p.ReconnectWithinMillis)) {
+			return fmt.Errorf("result %s reconnectElapsedMillis exceeds drain bound", r.CaseID)
+		}
+	case "malformed_disconnect":
+		switch r.Observations["disconnectSurface"] {
+		case "server_disconnect", "client_error", "sdk_exception", "connection_lost":
+		default:
+			return fmt.Errorf("result %s has invalid disconnectSurface", r.CaseID)
+		}
+	default:
+		return fmt.Errorf("unsupported drain kind %q", c.Kind)
+	}
+	for name, want := range exact {
+		got := r.Observations[name]
+		// DecodeResult returns only scalar values for these observations.
+		if !reflect.DeepEqual(got, want) {
+			return fmt.Errorf("result %s observation %s = %v, want %v", r.CaseID, name, got, want)
+		}
+	}
+	return nil
+}
+
+// ValidateDrainCaseResults requires exactly one passing result per drain role.
+func ValidateDrainCaseResults(p DrainProfile, c DrainExpectedCase, results []Result) error {
+	return validateRoleResults(c.CaseID, c.ExpectedResults, results, func(r Result, role ExpectedResult) error { return r.ValidateDrain(p, c, role) })
+}
+
+// AggregateDrainSummary preserves every drain case verdict.
+func AggregateDrainSummary(runID string, p DrainProfile, results map[string][]Result, unexpected []string, startedAt, finishedAt string) Summary {
+	ids := make([]string, 0, len(p.ExpectedCases))
+	expected := make(map[string]DrainExpectedCase, len(p.ExpectedCases))
+	for _, c := range p.ExpectedCases {
+		ids = append(ids, c.CaseID)
+		expected[c.CaseID] = c
+	}
+	return aggregateSummary(runID, ids, results, unexpected, startedAt, finishedAt, func(id string, results []Result) error { return ValidateDrainCaseResults(p, expected[id], results) })
 }

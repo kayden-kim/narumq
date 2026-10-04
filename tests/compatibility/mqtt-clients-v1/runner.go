@@ -124,7 +124,7 @@ type runManifest struct {
 	StartedAt     string                   `json:"startedAt"`
 	FinishedAt    string                   `json:"finishedAt,omitempty"`
 	Platform      platformManifest         `json:"platform"`
-	Profile       Profile                  `json:"profile"`
+	Profile       any                      `json:"profile"`
 	Images        map[string]imageMetadata `json:"images,omitempty"`
 	Command       []string                 `json:"command,omitempty"`
 	Error         string                   `json:"error,omitempty"`
@@ -153,7 +153,9 @@ type compatibilityRun struct {
 	imageMetadata map[string]imageMetadata
 	containerMu   sync.Mutex
 	containers    []string
+	networks      []string
 	firstFailure  error
+	caseFailures  map[string]error
 	results       map[string][]Result
 	unexpected    []string
 	startedAt     time.Time
@@ -161,6 +163,38 @@ type compatibilityRun struct {
 
 // Run executes one complete compatibility evidence run and writes its summary.
 func Run(ctx context.Context, options runOptions) (Summary, error) {
+	profile, _, err := LoadProfile(options.ProfilePath)
+	if err != nil {
+		return Summary{}, err
+	}
+	ids := make([]string, 0, len(profile.ExpectedCases))
+	for _, expected := range profile.ExpectedCases {
+		ids = append(ids, expected.CaseID)
+	}
+	return runSuite(ctx, options, suiteSpec{
+		profile: profile, caseIDs: ids,
+		runCase: func(ctx context.Context, run *compatibilityRun, caseID string) error {
+			for _, expected := range profile.ExpectedCases {
+				if expected.CaseID == caseID {
+					return run.runCase(ctx, expected)
+				}
+			}
+			return fmt.Errorf("unknown case %q", caseID)
+		},
+		summarize: func(run *compatibilityRun, startedAt, finishedAt string) Summary {
+			return AggregateSummary(options.RunID, profile, run.results, run.unexpected, startedAt, finishedAt)
+		},
+	})
+}
+
+type suiteSpec struct {
+	profile   any
+	caseIDs   []string
+	runCase   func(context.Context, *compatibilityRun, string) error
+	summarize func(run *compatibilityRun, startedAt, finishedAt string) Summary
+}
+
+func runSuite(ctx context.Context, options runOptions, suite suiteSpec) (Summary, error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -179,25 +213,24 @@ func Run(ctx context.Context, options runOptions) (Summary, error) {
 	if options.ProfilePath == "" {
 		return Summary{}, errors.New("profile path is required")
 	}
-	profile, _, err := LoadProfile(options.ProfilePath)
-	if err != nil {
-		return Summary{}, err
-	}
 	if options.RepoRoot == "" {
 		options.RepoRoot = findRepoRoot(options.ProfilePath)
 	}
 	startedAt := options.Now().UTC()
 	run := &compatibilityRun{
-		options: options, profile: profile,
+		options:   options,
 		outputDir: options.OutputDir, images: make(map[string]string),
 		imageMetadata: make(map[string]imageMetadata), results: make(map[string][]Result), startedAt: startedAt,
 	}
+	if profile, ok := suite.profile.(Profile); ok {
+		run.profile = profile
+	}
 	manifest := runManifest{
 		SchemaVersion: 1, RunID: options.RunID, Status: "running", StartedAt: startedAt.Format(time.RFC3339Nano),
-		Platform: platformManifest{HostOS: runtime.GOOS, HostArch: runtime.GOARCH}, Profile: profile,
+		Platform: platformManifest{HostOS: runtime.GOOS, HostArch: runtime.GOARCH}, Profile: suite.profile,
 		Command: append([]string(nil), os.Args...),
 	}
-	if err := writeJSON(filepath.Join(options.OutputDir, "profile.json"), profile); err != nil {
+	if err := writeJSON(filepath.Join(options.OutputDir, "profile.json"), suite.profile); err != nil {
 		return Summary{}, fmt.Errorf("write profile artifact: %w", err)
 	}
 	if err := writeJSON(filepath.Join(options.OutputDir, "manifest.json"), manifest); err != nil {
@@ -217,16 +250,18 @@ func Run(ctx context.Context, options runOptions) (Summary, error) {
 	}()
 
 	failure := run.prepare(ctx, &manifest)
+	run.caseFailures = make(map[string]error, len(suite.caseIDs))
 	if failure == nil {
-		for _, expected := range profile.ExpectedCases {
+		for _, caseID := range suite.caseIDs {
 			caseStart := options.Now().UTC()
-			caseErr := run.runCase(ctx, expected)
+			caseErr := suite.runCase(ctx, run, caseID)
 			caseStatus := "passed"
 			if caseErr != nil {
 				caseStatus = "failed"
+				run.caseFailures[caseID] = caseErr
 				run.rememberFailure(caseErr)
 			}
-			event := caseEvent{CaseID: expected.CaseID, Status: caseStatus, StartedAt: caseStart.Format(time.RFC3339Nano), FinishedAt: options.Now().UTC().Format(time.RFC3339Nano)}
+			event := caseEvent{CaseID: caseID, Status: caseStatus, StartedAt: caseStart.Format(time.RFC3339Nano), FinishedAt: options.Now().UTC().Format(time.RFC3339Nano)}
 			if caseErr != nil {
 				event.Error = caseErr.Error()
 			}
@@ -250,9 +285,22 @@ func Run(ctx context.Context, options runOptions) (Summary, error) {
 	if err := writeJSON(filepath.Join(options.OutputDir, "manifest.json"), manifest); err != nil {
 		run.rememberFailure(fmt.Errorf("write final manifest: %w", err))
 	}
-	summary := AggregateSummary(options.RunID, profile, run.results, run.unexpected, startedAt.Format(time.RFC3339Nano), finishedAt.Format(time.RFC3339Nano))
+	summary := suite.summarize(run, startedAt.Format(time.RFC3339Nano), finishedAt.Format(time.RFC3339Nano))
+	for index := range summary.CaseSummaries {
+		item := &summary.CaseSummaries[index]
+		if failure := run.caseFailures[item.CaseID]; failure != nil {
+			if item.Status == "passed" {
+				item.Status = "failed"
+				summary.PassedCases--
+				summary.FailedCases++
+			}
+			item.Error = failure.Error()
+			summary.Status = "failed"
+		}
+	}
 	if run.firstFailure != nil && summary.Error == "" {
 		summary.Error = run.firstFailure.Error()
+		summary.Status = "failed"
 	}
 	if err := writeJSON(filepath.Join(options.OutputDir, "summary.json"), summary); err != nil {
 		return summary, fmt.Errorf("write summary artifact: %w", err)
@@ -487,7 +535,7 @@ func (run *compatibilityRun) runClient(ctx context.Context, expected ExpectedCas
 		proxyDir := filepath.Join(filepath.Dir(roleDir), "proxy")
 		args = append(args, "--mount", "type=bind,source="+hostPath(proxyDir)+",destination=/proxy-output,readonly")
 	}
-	args = append(args, image, "--case", expected.CaseID, "--role", role.Role, "--address", address, "--profile", "/input/profile.json", "--output", "/output")
+	args = append(args, image, "--suite", "phase1", "--case", expected.CaseID, "--role", role.Role, "--address", address, "--profile", "/input/profile.json", "--output", "/output")
 	return run.command(ctx, "docker", args...)
 }
 
@@ -563,12 +611,22 @@ func (run *compatibilityRun) registerContainer(name string) {
 	run.containers = append(run.containers, name)
 }
 
+func (run *compatibilityRun) registerNetwork(name string) {
+	run.containerMu.Lock()
+	defer run.containerMu.Unlock()
+	run.networks = append(run.networks, name)
+}
+
 func (run *compatibilityRun) cleanup(ctx context.Context) {
 	run.containerMu.Lock()
 	containers := append([]string(nil), run.containers...)
+	networks := append([]string(nil), run.networks...)
 	run.containerMu.Unlock()
 	for index := len(containers) - 1; index >= 0; index-- {
 		_, _ = run.options.Runner.Run(ctx, run.options.RepoRoot, "docker", "rm", "--force", containers[index])
+	}
+	for index := len(networks) - 1; index >= 0; index-- {
+		_, _ = run.options.Runner.Run(ctx, run.options.RepoRoot, "docker", "network", "rm", networks[index])
 	}
 }
 

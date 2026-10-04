@@ -215,7 +215,7 @@ Process crash 또는 host loss에서는 planned drain과 barrier가 실행되지
 
 ## 10. Broker drain 수용 시험 매핑
 
-아래 evidence는 dynamic cluster의 broker-side drain과 `SAFE_TO_STOP` scope를 검증한다. Release-wide rollout, SDK compatibility 또는 production storage 승인으로 확대 해석하지 않는다.
+아래 evidence는 dynamic cluster의 broker-side drain과 `SAFE_TO_STOP`, 그리고 시험 전용 SDK drain 호환성을 검증한다. Release-wide rollout이나 production storage 승인으로 확대 해석하지 않는다.
 
 | Scenario | Acceptance test | 실행 증거 |
 | --- | --- | --- |
@@ -226,7 +226,10 @@ Process crash 또는 host loss에서는 planned drain과 barrier가 실행되지
 | Full local verification | `GOMAXPROCS=4 go run ./tools/verify local` | PASS; 204.42s. Unit/integration, race, bounded fuzz, architecture, traceability and coverage gates passed. |
 | NodeDrain core coverage ratchet | `go run ./tools/verify coverage --profile .artifacts/verification/coverage.out --policy tests/verification/coverage-policy.json --report .artifacts/verification/coverage-summary.json` | PASS; 100/102 executable lines (98.04%) and 13/13 functions (100%). |
 | NodeDrain mutation gate | `go tool gremlins unleash --config=tests/verification/gremlins.yaml --output=.artifacts/verification/mutation-nodedrain.json internal/domain/nodedrain` | PASS; KILLED=64, LIVED=0, NOT_COVERED=0, efficacy=100%, mutant coverage=100%; 76s. |
+| SDK callback adapter의 redirect·session resume·Will 억제 | `tests/compatibility/mqtt-clients-v1 --suite drain`: Paho Go MQTT 5 `v0.23.0`과 Python `2.1.0`이 test-only readiness LB의 node3에서 node2로 이동한다. 후속 QoS 1 전달, Will Delay 뒤 no-Will과 drain `SAFE_TO_STOP`을 확인한다. | `drain-paho-go-python-will-acl-final`의 cluster case 2/2 PASS. 재접속 Go 89ms, Python 약 99.071ms. 전체 suite 9/10이며 artifact는 `.artifacts/compatibility/mqtt-clients-v1/drain-paho-go-python-will-acl-final/`에 있다. |
+| Malformed server DISCONNECT 4종과 configured endpoint fallback | 같은 drain suite의 SDK별 truncated·disallowed·duplicate·invalid-reference case. Main CONNECT 두 번, vector 한 번과 trap 접속 부재를 요구한다. Profile·결과·trace 경계는 `drain_profile_test.go`, `drain_result_test.go`, `drain_trace_test.go`로 검증한다. | Python 4/4 PASS, Go 3/4 PASS. `go-mqtt5-malformed-duplicate-server-reference`는 `serverReferenceAccepted=true`, `trap_accept=1`로 FAIL. `go test ./tests/compatibility/mqtt-clients-v1 -count=1` PASS. 판정 규칙은 [Client contract §6.2](../contracts/mqtt-client-compatibility-v1.md#62-drain-compatibility-suite)에 있다. |
+| SDK drain 구현 뒤 전체 local 회귀 | `GOMAXPROCS=4 go run ./tools/verify local`, nested Go module의 `go vet ./... && go build ./...`, Phase 1 Docker suite | Local PASS(280.08s; integration 234.376s). Traceability·architecture·4개 fuzz target 각각 10,000회·전체 unit/integration·production package race·coverage PASS. Nested vet/build PASS. `phase1-drain-adapters-final` 26/26 PASS(132.67s). Local gate는 SDK Docker suite를 대신하지 않는다. |
 
 
 
-Broker process test는 Server Reference packet을 확인하지만 지원 SDK 전체의 자동 redirect를 시험하지 않는다. MQTT 3.1.1/Will policy와 DEP-12 reason metric, external rollout deletion gate, Kubernetes `preStop`, `SPEC-TBD-04` product defaults, BP-07, N-1↔N, EKS/EBS power-loss·restore 및 MQTT 3.1.0 migration은 별도 release blocker다.
+Broker process test는 Server Reference packet을 확인한다. SDK drain suite는 자동 추종이 아닌 callback adapter의 1회 임시 redirect·session resume·Will 억제를 두 MQTT 5 SDK에서 확인했다. Go의 중복 Server Reference 처리는 실패했으므로 전체 SDK gate는 열려 있다. Test-only readiness LB와 시간 값은 실제 NLB·운영 rollout timing을 증명하지 않는다. MQTT 3.1.1/Will policy와 DEP-12 reason metric, external rollout deletion gate, Kubernetes `preStop`, `SPEC-TBD-04` product defaults, BP-07, N-1↔N, EKS/EBS power-loss·restore 및 MQTT 3.1.0 migration은 별도 release blocker다.

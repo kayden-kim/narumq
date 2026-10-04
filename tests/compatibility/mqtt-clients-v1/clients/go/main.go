@@ -10,9 +10,16 @@ import (
 
 func main() {
 	var err error
-	if filepath.Base(os.Args[0]) == "proxy" {
+	switch filepath.Base(os.Args[0]) {
+	case "proxy":
 		err = runProxyCLI(os.Args[1:])
-	} else {
+	case "jwks":
+		err = runJWKSCLI(os.Args[1:])
+	case "lb":
+		err = runLBCLI(os.Args[1:])
+	case "fakeserver":
+		err = runFakeServerCLI(os.Args[1:])
+	default:
 		err = runClientCLI(os.Args[1:])
 	}
 	if err != nil {
@@ -28,6 +35,7 @@ func runClientCLI(args []string) error {
 	address := flags.String("address", "", "MQTT broker address")
 	profilePath := flags.String("profile", "", "strict compatibility profile path")
 	output := flags.String("output", "", "existing empty role output directory")
+	suite := flags.String("suite", "", "required compatibility suite: phase1 or drain")
 	if err := flags.Parse(args); err != nil {
 		return err
 	}
@@ -37,8 +45,14 @@ func runClientCLI(args []string) error {
 	if *caseID == "" || *role == "" || *address == "" || *profilePath == "" || *output == "" {
 		return fmt.Errorf("--case, --role, --address, --profile and --output are required")
 	}
+	if *suite != "phase1" && *suite != "drain" {
+		return fmt.Errorf("unsupported suite %q", *suite)
+	}
 	if _, _, err := splitAddress(*address); err != nil {
 		return err
+	}
+	if *suite == "drain" {
+		return runDrainDriver(driverOptions{caseID: *caseID, role: *role, address: *address, profilePath: *profilePath, output: *output})
 	}
 	return runDriver(driverOptions{caseID: *caseID, role: *role, address: *address, profilePath: *profilePath, output: *output}, func(ctx context.Context, item profileCase, expected profileRole, f fixture, p profile, address string) (map[string]any, error) {
 		if item.Protocol == "mqtt311" || item.Protocol == "mqtt31" {

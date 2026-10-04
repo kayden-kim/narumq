@@ -27,11 +27,15 @@ func runCLI(ctx context.Context, args []string, stdout, stderr io.Writer) error 
 	flags.SetOutput(stderr)
 	runID := flags.String("run-id", "", "non-empty path-safe evidence run identifier")
 	outputDir := flags.String("output", "", "empty evidence output directory")
+	suite := flags.String("suite", "phase1", "compatibility suite: phase1 or drain")
 	if err := flags.Parse(args); err != nil {
 		return err
 	}
 	if flags.NArg() != 0 {
 		return fmt.Errorf("unexpected arguments: %v", flags.Args())
+	}
+	if *suite != "phase1" && *suite != "drain" {
+		return fmt.Errorf("unsupported suite %q", *suite)
 	}
 	if *runID == "" || *outputDir == "" {
 		return errors.New("--run-id and --output are required")
@@ -41,6 +45,9 @@ func runCLI(ctx context.Context, args []string, stdout, stderr io.Writer) error 
 		return fmt.Errorf("get working directory: %w", err)
 	}
 	profilePath := filepath.Join(workingDirectory, "tests", "compatibility", "mqtt-clients-v1", "profile.json")
+	if *suite == "drain" {
+		profilePath = filepath.Join(workingDirectory, "tests", "compatibility", "mqtt-clients-v1", "drain-profile.json")
+	}
 	repoRoot := findRepoRoot(profilePath)
 	if repoRoot == "." {
 		return errors.New("repository root with go.mod was not found")
@@ -48,7 +55,11 @@ func runCLI(ctx context.Context, args []string, stdout, stderr io.Writer) error 
 	if !filepath.IsAbs(*outputDir) {
 		*outputDir = filepath.Join(workingDirectory, *outputDir)
 	}
-	summary, runErr := Run(ctx, runOptions{
+	execute := Run
+	if *suite == "drain" {
+		execute = RunDrain
+	}
+	summary, runErr := execute(ctx, runOptions{
 		RunID: *runID, OutputDir: *outputDir, ProfilePath: profilePath, RepoRoot: repoRoot,
 		Runner: realCommandRunner{},
 	})
