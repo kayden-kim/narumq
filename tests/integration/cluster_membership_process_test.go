@@ -137,6 +137,11 @@ func newClusterMembershipProcessFixture(t *testing.T, nodeCount int, buildTags s
     "tenantId": "acceptance",
     "credentialId": "mqtt-process-client-credential",
     "allowedClientIds": [
+      "tl-sub-1",
+      "tl-sub-2",
+      "tl-sub-3",
+      "tl-conn-1",
+      "tl-conn-2",
       "ready-connection-client",
       "bp-sub",
       "bp-held",

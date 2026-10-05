@@ -270,9 +270,13 @@ func encodeTestPacket(t *testing.T, packet mqtt.Packet) []byte {
 	return encoded
 }
 
-func readTestFrame(t *testing.T, connection net.Conn) []byte {
+func readTestFrame(t *testing.T, connection net.Conn, timeout ...time.Duration) []byte {
 	t.Helper()
-	if err := connection.SetReadDeadline(time.Now().Add(time.Second)); err != nil {
+	wait := time.Second
+	if len(timeout) > 0 {
+		wait = timeout[0]
+	}
+	if err := connection.SetReadDeadline(time.Now().Add(wait)); err != nil {
 		t.Fatal(err)
 	}
 	var header [1]byte

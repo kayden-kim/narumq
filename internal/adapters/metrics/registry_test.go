@@ -384,3 +384,91 @@ func TestRegistryRendersWillOutcomes(t *testing.T) {
 		t.Fatal("unknown reason created a series")
 	}
 }
+
+// Traceability: PRD MQTT-09/MQTT-11; docs/specs/mqtt-protocol-and-session.md §7.1.
+func TestRegistryRendersListenerAdmissionRejections(t *testing.T) {
+	registry := NewRegistry()
+	for _, openMetrics := range []bool{false, true} {
+		text := string(registry.Render(openMetrics))
+		want := "narumq_mqtt_listener_admission_rejected_total{transport=\"tcp\",reason=\"max_connections\"} 0\n" +
+			"narumq_mqtt_listener_admission_rejected_total{transport=\"tcp\",reason=\"connection_rate\"} 0\n" +
+			"narumq_mqtt_listener_admission_rejected_total{transport=\"tls\",reason=\"max_connections\"} 0\n" +
+			"narumq_mqtt_listener_admission_rejected_total{transport=\"tls\",reason=\"connection_rate\"} 0\n"
+		if !strings.Contains(text, want) {
+			t.Fatalf("missing ordered zero series: %s", text)
+		}
+	}
+	registry.ListenerAdmissionRejected(ports.TransportTCP, ports.ListenerAdmissionReasonMaxConnections)
+	registry.ListenerAdmissionRejected(ports.TransportTCP, ports.ListenerAdmissionReasonMaxConnections)
+	registry.ListenerAdmissionRejected(ports.TransportTLS, ports.ListenerAdmissionReasonConnectionRate)
+	registry.ListenerAdmissionRejected("ws", ports.ListenerAdmissionReasonMaxConnections)
+	registry.ListenerAdmissionRejected(ports.TransportTCP, "other")
+	want := "narumq_mqtt_listener_admission_rejected_total{transport=\"tcp\",reason=\"max_connections\"} 2\n" +
+		"narumq_mqtt_listener_admission_rejected_total{transport=\"tcp\",reason=\"connection_rate\"} 0\n" +
+		"narumq_mqtt_listener_admission_rejected_total{transport=\"tls\",reason=\"max_connections\"} 0\n" +
+		"narumq_mqtt_listener_admission_rejected_total{transport=\"tls\",reason=\"connection_rate\"} 1\n"
+	for _, openMetrics := range []bool{false, true} {
+		text := string(registry.Render(openMetrics))
+		if !strings.Contains(text, want) || strings.Contains(text, `reason="other"`) {
+			t.Fatalf("unexpected admission series: %s", text)
+		}
+	}
+}
+
+// Traceability: TEN-06, TEN-07; docs/specs/tenancy-and-security.md §5.2.
+func TestRegistryTenantLimitRejectionsShareBoundedTenantLabels(t *testing.T) {
+	registry := NewRegistry()
+	for index := range maxTenantQuotaMetricTenants {
+		tenantID := fmt.Sprintf("limit-tenant-%04d", index)
+		if got := registry.RecordTenantQuotaRejection(tenantID, "retained_bytes"); got != tenantID {
+			t.Fatalf("quota label = %q, want %q", got, tenantID)
+		}
+	}
+	if got := registry.RecordTenantLimitRejection("unseen-limit-tenant", "connections"); got != tenantQuotaOverflowLabel {
+		t.Fatalf("limit label = %q, want shared overflow label", got)
+	}
+	if got := registry.RecordTenantLimitRejection("invalid", "connections"); got != tenantQuotaOverflowLabel {
+		t.Fatalf("invalid tenant label = %q, want overflow label", got)
+	}
+	if got := registry.RecordTenantLimitRejection("invalid", "sessions"); got != tenantQuotaOverflowLabel {
+		t.Fatalf("second invalid tenant label = %q, want overflow label", got)
+	}
+	if got := registry.RecordTenantLimitRejection("tenant-a", "unknown"); got != "" {
+		t.Fatalf("unknown dimension label = %q, want empty", got)
+	}
+
+	output := string(registry.Render(false))
+	if !strings.Contains(output, "# HELP narumq_tenant_limit_rejections_total Requests rejected by tenant connection, session, subscription, payload, or rate limits.\n") ||
+		!strings.Contains(output, "# TYPE narumq_tenant_limit_rejections_total counter\n") ||
+		!strings.Contains(output, "narumq_tenant_limit_rejections_total{tenant=\"_overflow\",dimension=\"connections\"} 2\n") ||
+		!strings.Contains(output, "narumq_tenant_limit_rejections_total{tenant=\"_overflow\",dimension=\"sessions\"} 1\n") {
+		t.Fatalf("tenant limit metric metadata or overflow series missing:\n%s", output)
+	}
+	first := strings.Index(output, `narumq_tenant_limit_rejections_total{tenant="_overflow",dimension="connections"}`)
+	second := strings.Index(output, `narumq_tenant_limit_rejections_total{tenant="_overflow",dimension="sessions"}`)
+	if first >= 0 && second >= 0 && first >= second {
+		t.Fatal("tenant limit series are not sorted by dimension")
+	}
+	if len(registry.tenantQuotaTenants) != maxTenantQuotaMetricTenants {
+		t.Fatalf("bounded tenant label set size = %d, want %d", len(registry.tenantQuotaTenants), maxTenantQuotaMetricTenants)
+	}
+}
+
+// Traceability: TEN-06, TEN-07; docs/specs/tenancy-and-security.md §5.2.
+func TestRegistryTenantLimitMetricDimensionAllowlist(t *testing.T) {
+	registry := NewRegistry()
+	for _, dimension := range []string{"connections", "sessions", "subscriptions", "message_rate", "byte_rate", "payload_size"} {
+		if got := registry.RecordTenantLimitRejection("tenant-a", dimension); got != "tenant-a" {
+			t.Errorf("dimension %q returned tenant label %q", dimension, got)
+		}
+	}
+	if got := registry.RecordTenantLimitRejection("tenant-a", "unknown"); got != "" {
+		t.Fatalf("unknown dimension label = %q, want empty", got)
+	}
+	output := string(registry.Render(false))
+	for _, dimension := range []string{"connections", "sessions", "subscriptions", "message_rate", "byte_rate", "payload_size"} {
+		if !strings.Contains(output, `narumq_tenant_limit_rejections_total{tenant="tenant-a",dimension="`+dimension+`"} 1`) {
+			t.Errorf("missing tenant limit dimension %q:\n%s", dimension, output)
+		}
+	}
+}

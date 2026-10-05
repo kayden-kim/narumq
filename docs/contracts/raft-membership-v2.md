@@ -162,7 +162,7 @@ No-leader/quorum mutation은 어떤 stage/configuration entry도 남기지 않�
 | `seedAddresses` | array of strings | empty for bootstrap; `1..16` unique canonical DNS `host:port` addresses for joiner; IP literals are rejected so TLS SNI is bound to a DNS name |
 | `peerTLS` | object | required `certFile`, `keyFile`, `caFile`; cert/key match and CA must verify all peers |
 | `management` | object | required `listenAddress`, `clusterAdminTokenFile`; token is opaque secret input |
-| `mqtt` | object | required `tcpListenAddress`, `tlsListenAddress`, `securityConfigFile`; empty address disables that listener |
+| `mqtt` | object | required `tcpListenAddress`, `tlsListenAddress`, `securityConfigFile`; empty address disables that listener. 선택 정수 필드 `tcpMaxConnections`, `tcpConnectionRate`, `tlsMaxConnections`, `tlsConnectionRate`는 0~1000000이며 생략 = 0 = 제한 없음. 해당 listener 주소가 비어 있으면 그 listener의 두 값은 0이어야 한다. |
 | `replication` | object (optional) | omitted = factor 3, writeQuorum 2; when present requires exactly {factor:int, writeQuorum:int} and only 3/2 is accepted |
 
 Each `bootstrapMembers` element has exactly `{memberId:uint64,address:string,dnsSan:string,certificateSha256:string}` with the same identity constraints as §1.1. All three bootstrap configs use bytewise-canonical sorting by `memberId` and the same set. A member's own certificate fingerprint and SAN must match its entry. All bootstrap nodes must use the same build release and feature set. `seedAddresses` address the peer admission listener, not an arbitrary discovery authority; each host is a lowercase DNS name used for the TLS server name and must match the contacted seed certificate SAN. ClusterAdmin token contents are read from the referenced file; the raw token is not part of JSON or logs.

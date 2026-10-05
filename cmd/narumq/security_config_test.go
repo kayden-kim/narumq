@@ -3,6 +3,9 @@ package main
 import (
 	"strings"
 	"testing"
+	"time"
+
+	"narumq/internal/domain/tenancy"
 )
 
 const validSecurityJSON = `{
@@ -373,6 +376,70 @@ func TestParseSecurityConfig_MTLSValidation(t *testing.T) {
 			}
 			if !strings.Contains(err.Error(), tc.errContains) {
 				t.Fatalf("error = %v, want substring %q", err, tc.errContains)
+			}
+		})
+	}
+}
+func tenantLimitsSecurityJSON(value string) string {
+	return strings.Replace(validSecurityJSON, `  "acl": [`, `  "tenantLimits": `+value+`,
+  "acl": [`, 1)
+}
+
+// Traceability: TEN-06, TEN-07; docs/specs/tenancy-and-security.md §5.2.
+func TestParseSecurityConfig_TenantLimitsInheritance(t *testing.T) {
+	input := tenantLimitsSecurityJSON(`{"default":{"maxConnections":10,"maxSessions":20,"maxSubscriptions":30,"messagesPerSecond":40,"bytesPerSecond":50,"maxPayloadBytes":60},"tenants":[{"tenantId":"tenant-a","maxConnections":0,"messagesPerSecond":7}]}`)
+	bundle, err := parseSecurityConfig(strings.NewReader(input))
+	if err != nil {
+		t.Fatalf("parseSecurityConfig() error = %v", err)
+	}
+	if bundle.TenantLimits == nil {
+		t.Fatal("TenantLimits = nil")
+	}
+	if bundle.TenantLimits.MaxWait != time.Second {
+		t.Fatalf("MaxWait = %s, want 1s", bundle.TenantLimits.MaxWait)
+	}
+	tenantID, err := tenancy.NewTenantID("tenant-a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := bundle.TenantLimits.LimitsFor(tenantID)
+	if got.MaxConnections != 0 || got.MaxSessions != 20 || got.MaxSubscriptions != 30 ||
+		got.MessagesPerSecond != 7 || got.BytesPerSecond != 50 || got.MaxPayloadBytes != 60 {
+		t.Fatalf("tenant-a limits = %+v, want inherited values with explicit zero and override", got)
+	}
+	if got := bundle.TenantLimits.LimitsFor(tenancy.TenantID{}); got.MaxConnections != 10 || got.MessagesPerSecond != 40 {
+		t.Fatalf("default limits = %+v", got)
+	}
+}
+
+// Traceability: TEN-06, TEN-07; docs/specs/tenancy-and-security.md §5.2.
+func TestParseSecurityConfig_TenantLimitsRejectInvalidProfiles(t *testing.T) {
+	tooMany := `{"tenants":[` + strings.TrimSuffix(strings.Repeat(`{"tenantId":"tenant-a"},`, 4097), ",") + `]}`
+	cases := []struct {
+		name, value string
+	}{
+		{"unknown field", `{"unexpected":1}`},
+		{"unknown default field", `{"default":{"unexpected":1}}`},
+		{"unknown override field", `{"tenants":[{"tenantId":"tenant-a","unexpected":1}]}`},
+		{"missing tenant id", `{"tenants":[{}]}`},
+		{"session out of range", `{"default":{"maxSessions":1000001}}`},
+		{"subscription out of range", `{"default":{"maxSubscriptions":1000001}}`},
+		{"message rate out of range", `{"tenants":[{"tenantId":"tenant-a","messagesPerSecond":1000001}]}`},
+		{"invalid tenant id", `{"tenants":[{"tenantId":"bad\u0000tenant"}]}`},
+		{"duplicate tenant", `{"tenants":[{"tenantId":"tenant-a"},{"tenantId":"tenant-a"}]}`},
+		{"count out of range", `{"default":{"maxConnections":1000001}}`},
+		{"byte rate out of range", `{"default":{"bytesPerSecond":1099511627777}}`},
+		{"payload out of range", `{"default":{"maxPayloadBytes":268435456}}`},
+		{"negative value", `{"default":{"messagesPerSecond":-1}}`},
+		{"wait too large", `{"maxWait":"11s"}`},
+		{"negative wait", `{"maxWait":"-1s"}`},
+		{"malformed wait", `{"maxWait":"abc"}`},
+		{"too many tenants", tooMany},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if _, err := parseSecurityConfig(strings.NewReader(tenantLimitsSecurityJSON(tc.value))); err == nil {
+				t.Fatal("expected tenantLimits validation error")
 			}
 		})
 	}

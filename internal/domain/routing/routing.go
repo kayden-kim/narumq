@@ -199,6 +199,30 @@ func (table *Table) SessionTenant(sessionID SessionID) tenancy.TenantID {
 	return table.sessionTenants[sessionID]
 }
 
+// TenantSubscriptionCount returns the number of shared and non-shared subscriptions bound to tenantID.
+func (table *Table) TenantSubscriptionCount(tenantID tenancy.TenantID) int {
+	if table == nil {
+		return 0
+	}
+	table.mu.RLock()
+	defer table.mu.RUnlock()
+
+	count := 0
+	for sessionID, subscriptions := range table.subscriptions {
+		if table.sessionTenants[sessionID] == tenantID {
+			count += len(subscriptions)
+		}
+	}
+	for _, subscriptions := range table.shared {
+		for sessionID := range subscriptions {
+			if table.sessionTenants[sessionID] == tenantID {
+				count++
+			}
+		}
+	}
+	return count
+}
+
 // Subscribe adds or replaces one non-shared subscription for sessionID.
 func (table *Table) Subscribe(sessionID SessionID, subscription mqtt.Subscription) (replaced bool, err error) {
 	if err := ValidateSessionID(sessionID); err != nil {

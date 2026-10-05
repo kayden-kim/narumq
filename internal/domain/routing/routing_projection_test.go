@@ -161,3 +161,53 @@ func TestReplaceProjectionWithSessionsBindsUnsubscribedOwners(t *testing.T) {
 		t.Fatalf("committed owner matched cross-tenant routes: %+v", matches)
 	}
 }
+
+// Traceability: TEN-06, TEN-07; docs/specs/tenancy-and-security.md §5.2.
+func TestTenantSubscriptionCountIncludesSharedAndProjectedSubscriptions(t *testing.T) {
+	var nilTable *Table
+	if got := nilTable.TenantSubscriptionCount(tenancy.TenantID{}); got != 0 {
+		t.Fatalf("nil TenantSubscriptionCount() = %d, want 0", got)
+	}
+
+	table := NewTable()
+	tenantA, err := tenancy.NewTenantID("tenant-a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	tenantB, err := tenancy.NewTenantID("tenant-b")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := table.TenantSubscriptionCount(tenantA); got != 0 {
+		t.Fatalf("empty TenantSubscriptionCount() = %d, want 0", got)
+	}
+
+	projection := []ProjectionSubscription{
+		{TenantID: tenantA, SessionID: "non-shared-a", Subscription: mqtt.Subscription{Filter: "events/#"}},
+		{TenantID: tenantA, SessionID: "shared-a", Subscription: mqtt.Subscription{Filter: "$share/workers/events/+"}},
+		{TenantID: tenantA, SessionID: "shared-b", Subscription: mqtt.Subscription{Filter: "$share/workers/events/+"}},
+		{TenantID: tenantB, SessionID: "non-shared-b", Subscription: mqtt.Subscription{Filter: "events/#"}},
+	}
+	if err := table.ReplaceProjectionWithSessions(nil, projection); err != nil {
+		t.Fatalf("ReplaceProjectionWithSessions(): %v", err)
+	}
+	if got := table.TenantSubscriptionCount(tenantA); got != 3 {
+		t.Fatalf("tenant-a TenantSubscriptionCount() = %d, want 3", got)
+	}
+	if got := table.TenantSubscriptionCount(tenantB); got != 1 {
+		t.Fatalf("tenant-b TenantSubscriptionCount() = %d, want 1", got)
+	}
+	if got := table.TenantSubscriptionCount(tenancy.TenantID{}); got != 0 {
+		t.Fatalf("unbound TenantSubscriptionCount() = %d, want 0", got)
+	}
+
+	if err := table.ReplaceProjectionWithSessions(nil, nil); err != nil {
+		t.Fatalf("ReplaceProjectionWithSessions(empty): %v", err)
+	}
+	if got := table.TenantSubscriptionCount(tenantA); got != 0 {
+		t.Fatalf("TenantSubscriptionCount() after empty projection = %d, want 0", got)
+	}
+	if got := table.TenantSubscriptionCount(tenantB); got != 0 {
+		t.Fatalf("tenant-b TenantSubscriptionCount() after empty projection = %d, want 0", got)
+	}
+}

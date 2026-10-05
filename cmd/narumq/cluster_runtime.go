@@ -41,6 +41,7 @@ import (
 	appmgmt "narumq/internal/application/management"
 	"narumq/internal/application/membership"
 	managementports "narumq/internal/application/ports/management"
+	portsmetrics "narumq/internal/application/ports/metrics"
 	"narumq/internal/application/publish"
 	"narumq/internal/application/subscribe"
 	"narumq/internal/domain/mqtt"
@@ -296,7 +297,7 @@ func runClusterMode(ctx context.Context, config clusterConfigFile, logger *slog.
 	if err != nil {
 		return err
 	}
-	mqttListeners, err := clusterMQTTListeners(config)
+	mqttListeners, err := clusterMQTTListeners(config, metricsRegistry)
 	if err != nil {
 		return err
 	}
@@ -335,11 +336,19 @@ func runClusterMode(ctx context.Context, config clusterConfigFile, logger *slog.
 		publish.WithAdmission(runtime.publishPressure),
 	}
 	var tcpPolicy security.Policy
+	tenantLimits, err := newTenantLimitService(securityBundle, metricsRegistry, logger)
+	if err != nil {
+		return fmt.Errorf("create tenant limits: %w", err)
+	}
 	if securityBundle != nil {
 		connectOptions = append(connectOptions, connect.WithSecurity(jwtProvider, mtlsProvider, securityBundle.Policy))
 		subscribeOptions = append(subscribeOptions, subscribe.WithPolicy(securityBundle.Policy))
 		publishOptions = append(publishOptions, publish.WithPolicy(securityBundle.Policy))
 		tcpPolicy = securityBundle.Policy
+		if tenantLimits != nil {
+			connectOptions = append(connectOptions, connect.WithTenantLimits(tenantLimits, sessions))
+			subscribeOptions = append(subscribeOptions, subscribe.WithTenantLimits(tenantLimits))
+		}
 	}
 	connections, err := connect.New(systemClock, sessions, deliveries, runtime.routes, systemScheduler, willBridge, connectOptions...)
 	if err != nil {
@@ -372,6 +381,7 @@ func runClusterMode(ctx context.Context, config clusterConfigFile, logger *slog.
 			ControlQueueCapacity: clusterDefaultControlQueueCapacity, ClientCertificateExtractor: tlsadapter.ExtractVerifiedClientCertificateDTO,
 			ReceiveMaximum: clusterDefaultReceiveMaximum, PacketReadTimeout: clusterDefaultPacketReadTimeout,
 			Policy: tcpPolicy, Metrics: metricsRegistry, ClusterMode: true,
+			TenantLimits:  tenantLimits,
 			LocalMemberID: config.NodeID, ClusterReady: runtime.clusterReady,
 			ClusterAdmissionOpen:   runtime.clusterAdmissionOpen,
 			ClusterProjectionReady: runtime.clusterProjectionReady,
@@ -3208,10 +3218,10 @@ func isUnconfiguredRemotePeer(status raftadapter.StatusDTO, localID uint64, peer
 		!containsNodeID(status.LearnerIDs, uint64(peerID))
 }
 
-func clusterMQTTListeners(config clusterConfigFile) ([]net.Listener, error) {
+func clusterMQTTListeners(config clusterConfigFile, recorder portsmetrics.ListenerAdmissionRecorder) ([]net.Listener, error) {
 	var listeners []net.Listener
 	if config.MQTT.TCPListenAddress != "" {
-		listener, err := net.Listen("tcp", config.MQTT.TCPListenAddress)
+		listener, err := openMQTTListener(config.MQTT.TCPListenAddress, nil, config.MQTT.TCPMaxConnections, config.MQTT.TCPConnectionRate, recorder)
 		if err != nil {
 			return nil, fmt.Errorf("listen for cluster MQTT TCP on %q: %w", config.MQTT.TCPListenAddress, err)
 		}
@@ -3227,7 +3237,7 @@ func clusterMQTTListeners(config clusterConfigFile) ([]net.Listener, error) {
 			}
 			return nil, fmt.Errorf("configure cluster MQTT TLS: %w", err)
 		}
-		listener, err := tlsadapter.Listen("tcp", config.MQTT.TLSListenAddress, tlsConfig)
+		listener, err := openMQTTListener(config.MQTT.TLSListenAddress, tlsConfig, config.MQTT.TLSMaxConnections, config.MQTT.TLSConnectionRate, recorder)
 		if err != nil {
 			for _, opened := range listeners {
 				_ = opened.Close()

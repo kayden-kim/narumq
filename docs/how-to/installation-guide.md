@@ -111,6 +111,20 @@ TLS 암호화 통신과 JWT(JSON Web Token) 또는 mTLS(Mutual TLS, 상호 인�
          "roles": ["sensor"]
        }
      ],
+     "tenantLimits": {
+       "maxWait": "1s",
+       "default": {
+         "maxConnections": 1000,
+         "maxSessions": 2000,
+         "maxSubscriptions": 10000,
+         "messagesPerSecond": 500,
+         "bytesPerSecond": 1048576,
+         "maxPayloadBytes": 262144
+       },
+       "tenants": [
+         { "tenantId": "tenant-iot", "maxConnections": 10, "messagesPerSecond": 0 }
+       ]
+     },
      "acl": [
        {
          "tenantId": "tenant-iot",
@@ -122,6 +136,12 @@ TLS 암호화 통신과 JWT(JSON Web Token) 또는 mTLS(Mutual TLS, 상호 인�
      ]
    }
    ```
+
+   `tenantLimits`는 선택 설정이다. 위 수치는 실행 예시이며 제품 기본 보장이 아니다.
+   배포할 한도를 직접 정한다. Tenant override에서 생략한 값은 `default`를 상속하고,
+   명시한 0은 해당 제한을 끈다. 연결·session·rate는 node별로 집계한다.
+   Cluster에서도 같은 security config schema를 사용한다. 설정 범위와 초과 응답은
+   [Tenant 스펙 §5.2](../specs/tenancy-and-security.md#52-연결-상태와-traffic-한도)를 따른다.
 
 2. TLS 인증서와 키를 지정하여 프로세스를 시작한다. 관리 리스너(`-http-listen`)는 로컬 루프백(`127.0.0.1`) 전용으로 바인딩되며, 명령줄에 인증 토큰 등 비밀 값을 노출하지 않고 로컬 익명 헬스 프로브(`/health/ready`) 및 메트릭(`/metrics`) 엔드포인트를 통해 상태를 안전하게 검증한다.
    ```sh
@@ -140,6 +160,29 @@ TLS 암호화 통신과 JWT(JSON Web Token) 또는 mTLS(Mutual TLS, 상호 인�
 분산 합의 기반의 클러스터 기능은 현재 Phase 2 개발 및 검증 진행 중인 단계입니다. 프로덕션 HA 운영 배포물이 아니며, 개발용 피어 실행 및 동적 멤버십 변경 시험 절차는 다음 문서를 참조한다.
 - [고정 voter Raft peer-only 실행 가이드](fixed-voter-raft-peer-only.md)
 - [동적 클러스터 멤버십 변경 가이드](dynamic-cluster-membership.md)
+
+#### Listener 연결 한도 설정
+
+TCP와 TLS의 최대 연결 수와 초당 신규 연결 수는 따로 지정할 수 있다.
+설정 범위와 초과 처리의 기준은 [MQTT 스펙 §7.1](../specs/mqtt-protocol-and-session.md#71-현재-상한과-기본값)을 따른다.
+
+| Listener | 최대 연결 수 flag | 초당 신규 연결 수 flag |
+| --- | --- | --- |
+| TCP | `-tcp-max-connections` | `-tcp-connection-rate` |
+| TLS | `-tls-max-connections` | `-tls-connection-rate` |
+
+예를 들어 방식 A 명령에 `-tcp-max-connections 100 -tcp-connection-rate 20`을
+추가하면 TCP listener에 두 한도를 적용한다. 해당 listener를 끄려면 주소를
+비우고 그 listener의 두 한도도 0으로 설정한다.
+
+Cluster mode에서는 flag를 함께 지정하지 않는다. Cluster JSON의 `mqtt`에
+`tcpMaxConnections`, `tcpConnectionRate`, `tlsMaxConnections`, `tlsConnectionRate`를
+넣는다. 필드 형식은 [cluster config 계약](../contracts/raft-membership-v2.md#14-combined-cluster-configuration)을 따른다.
+
+초과 연결이 닫히면 `/metrics`의
+`narumq_mqtt_listener_admission_rejected_total{transport,reason}`를 확인한다.
+`transport`로 listener 종류를, `reason`으로 연결 수와 rate 초과를 구분한다.
+거절한 socket에는 CONNACK을 보내지 않으며 거절 로그도 남기지 않는다.
 
 ### 4단계: 브로커 상태 및 엔드포인트 동작 확인
 

@@ -256,6 +256,8 @@ Packet Size는 fixed header를 포함한 전체 packet byte 수의 상한이다.
 | Inbound Receive Maximum(PUBACK·PUBCOMP·PUBREC≥0x80을 아직 쓰지 않은 QoS 1/2 PUBLISH 수) | `-receive-maximum` | 64 / 64 | DISCONNECT 0x93 후 종료 | 종료 |
 | 시작된 packet 완성 시간(CONNECT 뒤) | `-packet-read-timeout` | 30s / 30s | 응답 없이 종료 | 응답 없이 종료 |
 | CONNECT 완료 시간 | `-connect-timeout` | 10s / 10s | 응답 없이 종료 | 응답 없이 종료 |
+| listener 동시 연결 수 | `-tcp-max-connections`, `-tls-max-connections` | 0 / 0(제한 없음) | TCP accept 직후 응답 없이 종료(TLS handshake·CONNECT 전) | 같음 |
+| listener connection rate(초당 신규 연결) | `-tcp-connection-rate`, `-tls-connection-rate` | 0 / 0(제한 없음) | TCP accept 직후 응답 없이 종료(TLS handshake·CONNECT 전) | 같음 |
 | Socket write 시간 | `-write-timeout` | 5s / 5s | 종료 | 종료 |
 | 연결별 control queue | `-control-queue-capacity` | 16 / 256 | 종료 | 종료 |
 | Session별 delivery queue | `-delivery-queue-capacity` | 64 / 256 | 기존 §3 backpressure 규칙 | 기존 규칙 |
@@ -279,8 +281,30 @@ CONNACK 없이 닫는다. Cluster durable phase lane이 늦게 발견한 protoco
 미완료 exchange는 Receive Maximum으로 제한한다. MQTT 3.1.1에서도 초과 시
 종료한다. Read backpressure는 미완료 QoS 2의 PUBREL 수신을 막을 수 있어 쓰지 않는다.
 
-Message rate는 TEN-07에서 추적한다. Listener 최대 연결 수와 connection rate는
-이번 완료 범위에서 제외한다. 잔여 작업은 [TODO](../TODO.md)에서 추적한다.
+Tenant 한도는 [Tenant §5.2](tenancy-and-security.md#52-연결-상태와-traffic-한도)를 따른다.
+이 rate 대기는 위 문단의 read backpressure 금지에 대한 유일한 예외다.
+대기는 최대 `maxWait`로 제한하며 `maxWait`는 10초 이하여야 한다.
+
+Listener 연결 한도는 TCP와 TLS에 독립 적용한다. 연결 수는 listener가 허용한 뒤
+아직 `Close`되지 않은 socket 수다. CONNECT 전 socket도 포함한다. 첫 `Close`에서만
+연결 수를 한 번 줄인다. 최대 연결 수를 먼저 검사하고, 그다음 connection rate를 검사한다.
+
+Connection rate는 token bucket으로 적용한다. Token은 새 socket을 허용할 수 있는
+수량이다. Bucket 용량과 초당 보충량은 설정한 rate와 같다. 시작할 때 bucket은
+가득 차 있다. 허용한 socket만 token 1개를 쓰며 거절한 socket은 쓰지 않는다.
+Clock이 뒤로 가면 token을 보충하지 않는다.
+
+네 설정의 허용 범위는 0~1000000이다. 0은 해당 제한을 끈다. 두 값이 모두 0이면
+admission wrapper를 만들지 않는다. Cluster config의 선택 필드는
+`mqtt.tcpMaxConnections`, `mqtt.tcpConnectionRate`, `mqtt.tlsMaxConnections`,
+`mqtt.tlsConnectionRate`다. 생략하면 0이며 listener 주소가 비어 있으면 해당 값도
+0이어야 한다. 정확한 형식은 [cluster config 계약](../contracts/raft-membership-v2.md#14-combined-cluster-configuration)을 따른다.
+
+초과한 socket은 TCP accept 직후 닫는다. TLS admission은 TLS wrapper 안쪽의 raw
+TCP listener에 적용한다. Server는 계속 `*tls.Conn`을 받는다. TLS handshake,
+CONNECT 읽기와 연결 goroutine을 만들기 전에 거절하므로 CONNACK은 보내지 않는다.
+이 방식은 폭주 때 handshake와 goroutine 비용을 막는다. 거절 로그는 남기지 않고
+`narumq_mqtt_listener_admission_rejected_total{transport,reason}`만 올린다.
 
 Memory delivery queue는 만료되지 않은 persistent session의 queued·in-flight
 delivery를 reconnect까지 보존한다. Clean start/session expiry와 message expiry
@@ -366,3 +390,46 @@ focused 시험은 2.139s에 통과했다. TCP 전체 시험과 race 시험도 �
 관찰한 실행이 있었다. Sampler는 같은 timestamp의 기록을 생략하므로 시험은
 완성된 초기 JSONL과 다음 clock tick을 확인한 뒤 취소하도록 고쳤다. 제품의
 sampler 동작은 바꾸지 않았다. 이 시험은 별도 30회 반복에서 PASS했다.
+
+### 8.2 Listener 연결 수·connection rate 수용 매핑
+
+2026-10-05 Windows/amd64 local 실행이다. TCP admission race 시험은 1.936s,
+TLS·Metric 전체 시험은 각각 1.212s·0.834s에 통과했다. Command 전체 시험은
+14.556s, listener admission·TLS integration focused 시험은 0.461s에 통과했다.
+
+1단계의 문서 변경 뒤 `go build ./...`와 기존 TLS·Metric·TCP·command·integration
+전체 package 시험이 통과했다(wall 88.37s, integration 71.669s).
+2단계 Metric 변경 뒤 누적 build와 TLS·Metric 전체 시험이 통과했다(wall 8.92s).
+3단계 TLS API 전환 뒤 누적 build, TLS·Metric 전체 시험, command listener 시험과
+TLS integration 시험이 통과했다(wall 14.74s). 이후 단계의 실행 증거는 아래 표를 따른다.
+
+계획의 smoke CONNECT는 빈 Client ID로 기존 CONNACK `0x02` 거절을 받았다.
+Admission 시험에서는 Client ID `a`를 넣은
+`10 0D 00 04 4D 51 54 54 04 02 00 3C 00 01 61`을 사용했다.
+제품의 Client ID 처리 규칙은 바꾸지 않았다.
+
+| Scenario | 관찰할 결과 | 시험 위치 | 실행 증거 |
+| --- | --- | --- | --- |
+| 설정 검증 | nil 의존성, 잘못된 transport와 범위·무제한 wrapper 거절 | `internal/adapters/tcp/listener_admission_test.go::TestNewAdmissionListenerValidatesConfig` | PASS, TCP race 1.936s |
+| 동시 연결 수와 반환 | CONNECT 전 socket 포함, 초과 종료, 중복 Close는 한 번만 반환 | `internal/adapters/tcp/listener_admission_test.go::TestAdmissionListenerClosesSocketsAboveMaximumUntilRelease` | PASS, TCP race 포함 |
+| Rate 보충과 burst | 초기 rate개 허용, 시간만큼 보충, burst 상한과 역행 clock 유지 | `internal/adapters/tcp/listener_admission_test.go::TestAdmissionListenerRefillsConnectionRateFromClock` | PASS, rate=2·500ms 보충·10s burst 상한·역행 clock |
+| 검사 순서 | 최대 연결 수 우선, 거절 socket은 token을 쓰지 않음 | `internal/adapters/tcp/listener_admission_test.go::TestAdmissionListenerChecksMaximumBeforeRate` | PASS, 3개 최대 연결 수 거절 뒤 같은 clock에서 다음 연결 허용 |
+| Accept 오류 | inner listener 오류를 그대로 반환 | `internal/adapters/tcp/listener_admission_test.go::TestAdmissionListenerReturnsInnerAcceptError` | PASS, `net.ErrClosed` 유지 |
+| 거절 Metric | 고정 4개 series, 알 수 없는 label 무시 | `internal/adapters/metrics/registry_test.go::TestRegistryRendersListenerAdmissionRejections` | PASS, Prometheus·OpenMetrics 순서와 값 2/0/0/1 |
+| MQTT 연결 수·독립성 | 양 protocol 초과 종료, slot 회수, 다른 listener는 계속 허용 | `tests/integration/mqtt_resource_limits_test.go::TestMQTTListenerAdmissionClosesConnectionsAboveMaximum` | PASS, integration focused 0.461s |
+| MQTT rate | 초과 종료, 1초 보충 뒤 CONNACK 성공 | `tests/integration/mqtt_resource_limits_test.go::TestMQTTListenerAdmissionClosesConnectionsAboveRate` | PASS, 실제 socket과 Metric count=1 |
+| TLS 적용 순서 | Server는 `*tls.Conn`, raw TCP 초과 socket은 handshake 전 종료 | `cmd/narumq/mqtt_listener_test.go::TestOpenMQTTListenerAppliesAdmissionInsideTLS`; `tests/integration/mqtt_tls_test.go` | PASS, 실제 TLS handshake·raw TCP 종료·TLS Metric count=1 |
+| Standalone·cluster 설정 | 범위, disabled listener, 소수 JSON 거절과 listener binding | `cmd/narumq/main_test.go::TestRunWithContextRejectsConstructionBounds`; `cmd_config_coverage_test.go`; `cluster_runtime_test.go` | PASS, command 전체 14.556s |
+| Traceability | 요구사항과 시험 연결 | `go run ./tools/verify traceability` | PASS, wall 1.77s |
+| 실제 binary | 연결 수·rate 초과 종료, 회수, 범위 오류 | binary admission smoke | PASS, 0.993s. 양 한도 거절 read=0 byte·non-timeout error, 각 Metric=1, 회수 후 CONNACK `20 02 00 00`, 1000001 범위 오류. Throwaway 파일·binary 삭제 |
+| 실제 SDK 회귀 | 기본값 0에서 기존 MQTT handshake 유지 | `go run ./tests/compatibility/mqtt-clients-v1 --run-id phase1-listener-admission-isolated --output .artifacts/compatibility/mqtt-clients-v1/phase1-listener-admission-isolated` | 별도 전체 실행 PASS 26/26, 138.59s. 첫 실행(`phase1-listener-admission`)은 FAIL 25/26, 238.35s이며 `go-mqtt311-persistent-resume`이 `identifier rejected`로 거절됐다. 두 실행 artifact 모두 보존 |
+| 전체 local gate | build·전체 시험·race·fuzz·coverage 통과 | `GOMAXPROCS=4 go run ./tools/verify local`; 단계별 `go build ./...` | PASS, 230.91s. Gofmt·vet·traceability·architecture·전체 package·production race·5개 fuzz 각 10000회. Line coverage 85.82%, function coverage 97.29%. `.artifacts/verification/coverage-summary.json`·`coverage.out`에 보존 |
+| Mutation gate | delivery·nodedrain·session efficacy와 mutant coverage 각각 80% 이상 | `tools/verify/runner.go`의 CI mutation command 3개를 별도 실행 | 모두 PASS. Killed 27/64/56, Lived·Not covered·Timed out 모두 0. 세 package efficacy·mutator coverage 모두 100%. Wall 296.54s/375.54s/386.70s. `.artifacts/verification/mutation-delivery.json`·`mutation-nodedrain.json`·`mutation-session.json`에 보존 |
+
+Local gate는 mutation을 실행하지 않는다. 계획의 mutation 확인은 기존 CI 명령을
+별도로 실행하며, 그 결과는 위 Mutation gate 행에 기록한다.
+
+첫 SDK 실행은 local·mutation 검증과 동시에 수행했다. 두 번째는 이 검증들이
+끝난 뒤 같은 코드와 같은 26개 시나리오로 수행했다. 첫 실패의 원인은 확정하지
+않았다. 기본값 0에서는 admission wrapper를 만들지 않는다. SDK나 제품의
+session 처리에 재시도·대기·오류 무시를 추가하지 않았다.

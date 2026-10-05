@@ -15,6 +15,7 @@ import (
 	"narumq/internal/application/ports/deliveryqueue"
 	"narumq/internal/application/ports/deliverystate"
 	portsmetrics "narumq/internal/application/ports/metrics"
+	"narumq/internal/application/tenantlimit"
 	"narumq/internal/domain/delivery"
 	"narumq/internal/domain/mqtt"
 	"narumq/internal/domain/routing"
@@ -40,6 +41,8 @@ var (
 	ErrSessionNotFound = errors.New("connect session not found")
 	// ErrDurableDeliveryRejected means a committed delivery transition could not be applied.
 	ErrDurableDeliveryRejected = errors.New("connect durable delivery transition rejected")
+	// ErrNilTenantSessionCounter means configured tenant limits cannot count lifecycles.
+	ErrNilTenantSessionCounter = errors.New("connect tenant session counter is nil")
 )
 
 // Timer allows cancelling a scheduled callback.
@@ -62,6 +65,11 @@ type SessionRepository interface {
 	Load(clientID string) (session.Lifecycle, bool, error)
 	Save(state session.Lifecycle) error
 	Delete(clientID string) error
+}
+
+// TenantSessionCounter reports the session and connected lifecycle counts for one tenant.
+type TenantSessionCounter interface {
+	TenantSessionCounts(tenancy.TenantID) (sessions, connected int)
 }
 
 // OwnershipCoordinator is the application-facing committed ownership boundary.
@@ -99,6 +107,14 @@ func WithSecurity(
 		useCase.authenticator = jwtProvider
 		useCase.certificateAuthenticator = mtlsProvider
 		useCase.policy = policy
+	}
+}
+
+// WithTenantLimits configures tenant admission before ownership and state changes.
+func WithTenantLimits(limits *tenantlimit.Service, counter TenantSessionCounter) Option {
+	return func(useCase *UseCase) {
+		useCase.tenantLimits = limits
+		useCase.tenantCounter = counter
 	}
 }
 
@@ -171,6 +187,8 @@ type UseCase struct {
 	certificateAuthenticator   applicationauthentication.ClientCertificateAuthenticationProvider
 	policy                     security.Policy
 	sessions                   SessionRepository
+	tenantLimits               *tenantlimit.Service
+	tenantCounter              TenantSessionCounter
 	principals                 map[routing.SessionID]security.Principal
 	sessionKeys                map[routing.SessionID]tenancy.SessionKey
 	deliveries                 deliveryqueue.Queue
@@ -273,6 +291,9 @@ func New(
 
 	if useCase.durableDeliveryCommitter != nil && (useCase.ownershipCoordinator == nil || useCase.ownerNodeID == 0) {
 		return nil, ErrDurableDeliveryRejected
+	}
+	if useCase.tenantLimits != nil && useCase.tenantCounter == nil {
+		return nil, ErrNilTenantSessionCounter
 	}
 	return useCase, nil
 }
@@ -611,12 +632,6 @@ func (useCase *UseCase) ConnectContext(ctx context.Context, request ConnectReque
 
 	timerKey := string(sessionID)
 	localWillPending := useCase.activeTimers[timerKey] != nil && useCase.activeTimers[timerKey].willTimer != nil
-	if useCase.ownershipCoordinator == nil {
-		if localWillPending {
-			useCase.recordWillOutcome(portsmetrics.WillOutcomeSuppressedReconnectedWithinDelay)
-		}
-		useCase.stopSessionTimers(timerKey)
-	}
 
 	now := useCase.clock.Now()
 	existing, found, err := useCase.loadSession(sessionKey, timerKey)
@@ -634,6 +649,27 @@ func (useCase *UseCase) ConnectContext(ctx context.Context, request ConnectReque
 			return result, nil
 		}
 		return ResultDTO{}, err
+	}
+	if useCase.tenantLimits != nil && principal.Subject() != "" {
+		tenantID := principal.TenantID()
+		limits := useCase.tenantLimits.Limits(tenantID)
+		sessions, connected := useCase.tenantCounter.TenantSessionCounts(tenantID)
+		if limits.MaxConnections > 0 && !(found && existing.Connected()) && uint64(connected) >= limits.MaxConnections {
+			useCase.tenantLimits.Reject(tenantID, tenantlimit.DimensionConnections)
+			result.ConnAck.ReasonCode = quotaExceededReason(packet.Version)
+			return result, nil
+		}
+		if limits.MaxSessions > 0 && !found && uint64(sessions) >= limits.MaxSessions {
+			useCase.tenantLimits.Reject(tenantID, tenantlimit.DimensionSessions)
+			result.ConnAck.ReasonCode = quotaExceededReason(packet.Version)
+			return result, nil
+		}
+	}
+	if useCase.ownershipCoordinator == nil {
+		if localWillPending {
+			useCase.recordWillOutcome(portsmetrics.WillOutcomeSuppressedReconnectedWithinDelay)
+		}
+		useCase.stopSessionTimers(timerKey)
 	}
 	var ownershipEpoch uint64
 	ownershipTenantID := "default"
@@ -1277,6 +1313,13 @@ func notAuthorizedReason(version mqtt.ProtocolVersion) byte {
 func ownershipUnavailableReason(version mqtt.ProtocolVersion) byte {
 	if version == mqtt.ProtocolV5 {
 		return 0x88
+	}
+	return 0x03
+}
+
+func quotaExceededReason(version mqtt.ProtocolVersion) byte {
+	if version == mqtt.ProtocolV5 {
+		return 0x97
 	}
 	return 0x03
 }

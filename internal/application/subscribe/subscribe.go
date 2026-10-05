@@ -6,11 +6,13 @@ import (
 	"context"
 	"errors"
 	"sort"
+	"sync"
 	"time"
 
 	"narumq/internal/application/ports/deliveryqueue"
 	portsmetrics "narumq/internal/application/ports/metrics"
 	"narumq/internal/application/ports/retained"
+	"narumq/internal/application/tenantlimit"
 	"narumq/internal/domain/mqtt"
 	"narumq/internal/domain/routing"
 	"narumq/internal/domain/security"
@@ -50,6 +52,13 @@ func WithMetrics(metrics portsmetrics.MetricsRecorder) Option {
 	}
 }
 
+// WithTenantLimits configures tenant subscription admission before commit.
+func WithTenantLimits(limits *tenantlimit.Service) Option {
+	return func(useCase *UseCase) {
+		useCase.tenantLimits = limits
+	}
+}
+
 // SessionOwnership identifies the fenced owner allowed to mutate cluster session state.
 type SessionOwnership struct {
 	TenantID    string
@@ -80,12 +89,16 @@ func WithCommitter(committer SubscriptionCommitter) Option {
 // UseCase applies subscription commands to one routing table and replays
 // retained values through the application-owned delivery queue.
 type UseCase struct {
-	routes    *routing.Table
-	queue     deliveryqueue.Queue
-	retained  retained.Repository
-	policy    security.Policy
-	metrics   portsmetrics.MetricsRecorder
-	committer SubscriptionCommitter
+	routes       *routing.Table
+	queue        deliveryqueue.Queue
+	retained     retained.Repository
+	policy       security.Policy
+	metrics      portsmetrics.MetricsRecorder
+	committer    SubscriptionCommitter
+	tenantLimits *tenantlimit.Service
+	// tenantSubscriptionMu keeps local quota checks and route mutations ordered.
+	// Remote committed projections remain outside this admission lock.
+	tenantSubscriptionMu sync.Mutex
 }
 
 // New creates a subscription use case over routes, queue, and retained state.
@@ -127,6 +140,10 @@ func (useCase *UseCase) SubscribeCommitted(
 	ownership SessionOwnership,
 	principal ...security.Principal,
 ) (ResultDTO, error) {
+	if len(principal) > 0 && principal[0].Subject() != "" && useCase.tenantLimits.Limits(principal[0].TenantID()).MaxSubscriptions > 0 {
+		useCase.tenantSubscriptionMu.Lock()
+		defer useCase.tenantSubscriptionMu.Unlock()
+	}
 	result := ResultDTO{
 		Ack: mqtt.SubAck{Version: packet.Version, PacketID: packet.PacketID, ReasonCodes: make([]byte, 0, len(packet.Subscriptions))},
 	}
@@ -153,6 +170,10 @@ func (useCase *UseCase) UnsubscribeCommitted(
 	var activePrincipal security.Principal
 	if len(principal) > 0 {
 		activePrincipal = principal[0]
+	}
+	if activePrincipal.Subject() != "" && useCase.tenantLimits.Limits(activePrincipal.TenantID()).MaxSubscriptions > 0 {
+		useCase.tenantSubscriptionMu.Lock()
+		defer useCase.tenantSubscriptionMu.Unlock()
 	}
 	if packet.Version != mqtt.ProtocolV311 {
 		ack.ReasonCodes = make([]byte, 0, len(packet.Filters))
@@ -229,6 +250,14 @@ func (useCase *UseCase) subscribeOne(
 	}
 	// Capture the prior state before a cluster commit can project this route locally.
 	_, existed := useCase.routes.Lookup(sessionID, subscription.Filter)
+	if !existed && useCase.tenantLimits != nil && len(principal) > 0 && principal[0].Subject() != "" {
+		tenantID := principal[0].TenantID()
+		max := useCase.tenantLimits.Limits(tenantID).MaxSubscriptions
+		if max > 0 && uint64(useCase.routes.TenantSubscriptionCount(tenantID)) >= max {
+			useCase.tenantLimits.Reject(tenantID, tenantlimit.DimensionSubscriptions)
+			return quotaExceededSubscriptionReason(version), 0, nil
+		}
+	}
 	if err := useCase.commitSubscription(
 		ctx, ownership, subscription.Filter, uint32(subscription.QoS),
 		subscription.NoLocal, subscription.RetainAsPublished, uint32(subscription.RetainHandling),
@@ -350,6 +379,13 @@ func invalidSubscriptionReason(version mqtt.ProtocolVersion) byte {
 }
 
 func replayFullReason(version mqtt.ProtocolVersion) byte {
+	if version == mqtt.ProtocolV5 {
+		return 0x97
+	}
+	return 0x80
+}
+
+func quotaExceededSubscriptionReason(version mqtt.ProtocolVersion) byte {
 	if version == mqtt.ProtocolV5 {
 		return 0x97
 	}

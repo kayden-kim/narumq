@@ -20,16 +20,54 @@ var (
 // MemorySessionRepository stores lifecycle values behind a mutex. Lifecycle is
 // a value type, so Load and Save do not share mutable aggregate storage.
 type MemorySessionRepository struct {
-	mu          sync.Mutex
-	sessions    map[string]session.Lifecycle
-	sessionsKey map[tenancy.SessionKey]session.Lifecycle
+	mu           sync.Mutex
+	sessions     map[string]session.Lifecycle
+	sessionsKey  map[tenancy.SessionKey]session.Lifecycle
+	tenantCounts map[tenancy.TenantID]tenantSessionCount
+}
+
+type tenantSessionCount struct {
+	sessions  int
+	connected int
+}
+
+func (repository *MemorySessionRepository) adjustTenantSessionCountLocked(
+	tenantID tenancy.TenantID,
+	state session.Lifecycle,
+	delta int,
+) {
+	if repository.tenantCounts == nil {
+		repository.tenantCounts = make(map[tenancy.TenantID]tenantSessionCount)
+	}
+	count := repository.tenantCounts[tenantID]
+	count.sessions += delta
+	if state.Connected() {
+		count.connected += delta
+	}
+	if count.sessions == 0 {
+		delete(repository.tenantCounts, tenantID)
+		return
+	}
+	repository.tenantCounts[tenantID] = count
+}
+
+// TenantSessionCounts returns the stored and connected lifecycle counts for tenantID.
+func (repository *MemorySessionRepository) TenantSessionCounts(tenantID tenancy.TenantID) (sessions, connected int) {
+	if repository == nil {
+		return 0, 0
+	}
+	repository.mu.Lock()
+	defer repository.mu.Unlock()
+	count := repository.tenantCounts[tenantID]
+	return count.sessions, count.connected
 }
 
 // New creates an empty in-memory session repository.
 func New() *MemorySessionRepository {
 	return &MemorySessionRepository{
-		sessions:    make(map[string]session.Lifecycle),
-		sessionsKey: make(map[tenancy.SessionKey]session.Lifecycle),
+		sessions:     make(map[string]session.Lifecycle),
+		sessionsKey:  make(map[tenancy.SessionKey]session.Lifecycle),
+		tenantCounts: make(map[tenancy.TenantID]tenantSessionCount),
 	}
 }
 
@@ -79,8 +117,12 @@ func (repository *MemorySessionRepository) Save(state session.Lifecycle) error {
 		repository.sessionsKey = make(map[tenancy.SessionKey]session.Lifecycle)
 	}
 	repository.sessions[clientID] = state
-	if state.SessionKey() != (tenancy.SessionKey{}) {
-		repository.sessionsKey[state.SessionKey()] = state
+	if key := state.SessionKey(); key != (tenancy.SessionKey{}) {
+		if previous, found := repository.sessionsKey[key]; found {
+			repository.adjustTenantSessionCountLocked(key.TenantID(), previous, -1)
+		}
+		repository.sessionsKey[key] = state
+		repository.adjustTenantSessionCountLocked(key.TenantID(), state, 1)
 	}
 	return nil
 }
@@ -101,7 +143,11 @@ func (repository *MemorySessionRepository) SaveKey(key tenancy.SessionKey, state
 	if repository.sessionsKey == nil {
 		repository.sessionsKey = make(map[tenancy.SessionKey]session.Lifecycle)
 	}
+	if previous, found := repository.sessionsKey[key]; found {
+		repository.adjustTenantSessionCountLocked(key.TenantID(), previous, -1)
+	}
 	repository.sessionsKey[key] = state
+	repository.adjustTenantSessionCountLocked(key.TenantID(), state, 1)
 	repository.sessions[key.ClientID()] = state
 	return nil
 }
@@ -130,6 +176,9 @@ func (repository *MemorySessionRepository) DeleteKey(key tenancy.SessionKey) err
 	}
 	repository.mu.Lock()
 	defer repository.mu.Unlock()
+	if previous, found := repository.sessionsKey[key]; found {
+		repository.adjustTenantSessionCountLocked(key.TenantID(), previous, -1)
+	}
 	delete(repository.sessionsKey, key)
 	delete(repository.sessions, key.ClientID())
 	return nil

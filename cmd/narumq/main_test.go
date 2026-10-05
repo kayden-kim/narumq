@@ -234,6 +234,9 @@ func TestRunWithContextRejectsConstructionBounds(t *testing.T) {
 		{name: "negative interval", args: []string{"-runtime-metrics-output", "out.jsonl", "-runtime-metrics-interval", "-1s"}, want: "greater than zero"},
 		{name: "unmatched metrics flags output only", args: []string{"-runtime-metrics-output", "out.jsonl"}, want: "must be provided together"},
 		{name: "unmatched metrics flags interval only", args: []string{"-runtime-metrics-interval", "1s"}, want: "must be provided together"},
+		{name: "negative TCP connection maximum", args: []string{"-tcp-listen", "127.0.0.1:0", "-allow-insecure-anonymous-mqtt", "-tcp-max-connections", "-1"}, want: "-tcp-max-connections must be between 0 and 1000000"},
+		{name: "excess TLS connection rate", args: []string{"-tls-listen", "127.0.0.1:0", "-security-config", "unused.json", "-tls-connection-rate", "1000001"}, want: "-tls-connection-rate must be between 0 and 1000000"},
+		{name: "TCP limits require TCP listener", args: []string{"-tls-listen", "127.0.0.1:0", "-security-config", "unused.json", "-tcp-max-connections", "1"}, want: "-tcp-max-connections and -tcp-connection-rate require -tcp-listen"},
 	}
 	for _, testCase := range cases {
 		t.Run(testCase.name, func(t *testing.T) {

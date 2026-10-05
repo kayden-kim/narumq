@@ -139,8 +139,65 @@ cmd/narumq
 성공 경계는 JWT 또는 mTLS로 인증된 CONNECT 뒤 QoS 0·1·2 PUBLISH handshake,
 ordered SUBACK/UNSUBACK와 Will 등록·지연 publication이다. ACL 거절은 mutation 전에
 반환하며 MQTT 5 PUBLISH는 QoS에 따라 DISCONNECT/PUBACK/PUBREC `0x87`,
-MQTT 3.1.1은 연결 종료를 사용한다. Metrics, quota/blocklist, management API,
-audit sink과 기존 연결 token reauthentication은 이 slice에서 지원하지 않는다.
+MQTT 3.1.1은 연결 종료를 사용한다. Tenant 연결·session·subscription·traffic 한도와
+거절 metric은 아래 내부 설계에 따라 지원한다. Blocklist, audit sink과 기존 연결
+token reauthentication은 이 slice에서 지원하지 않는다. 관리 API의 범위는 별도 스펙을 따른다.
+
+## Tenant 연결·traffic 한도 내부 설계
+
+`cmd/narumq/security_config.go`는 생략과 명시한 0을 구분해 tenant override를 해석한다.
+`tenant_limits.go`의 `newTenantLimitService`가 `clock.SystemClock`, profile과 reporter를
+조립한다. `main.go`와 `cluster_runtime.go`는 같은 service를 CONNECT, SUBSCRIBE와
+TCP `Config.TenantLimits`에 주입한다. 외부 동작과 집계 범위는
+[Tenant §5.2](../specs/tenancy-and-security.md#52-연결-상태와-traffic-한도),
+선택 근거는 [ADR-0034](../decisions/ADR-0034-node-local-tenant-connection-and-traffic-limits.md)를 따른다.
+
+| 파일·심볼 | 소유하는 상태와 처리 |
+| --- | --- |
+| `internal/application/tenantlimit/tenantlimit.go` `Service` | 변경되지 않는 resolved profile과 tenant별 traffic bucket을 소유한다. Bucket의 message·byte token과 마지막 보충 시각은 mutex로 보호한다. Payload 제한을 먼저 검사하고 rate 대기 시간 또는 거절 차원을 반환한다. Reporter는 mutex를 푼 뒤 호출한다. |
+| `internal/adapters/memory/sessionstore/store.go` `TenantSessionCounts` | `sessionsKey` 변경과 같은 mutex 안에서 session·connected count를 갱신한다. Detached lifecycle도 session 수에 포함한다. 마지막 lifecycle 삭제 때 tenant count entry를 지운다. |
+| `internal/domain/routing/routing.go` `TenantSubscriptionCount` | Read lock 안에서 tenant에 bind된 shared·non-shared subscription을 센다. 별도 index는 두지 않는다. Cluster는 현재 committed projection을 읽는다. |
+| `internal/application/connect/connect.go` `ConnectContext` | Use case mutex 안에서 `session.Open` 성공 뒤 count를 검사한다. 거절하면 ownership·repository·route·queue·timer를 바꾸지 않는다. 허용한 뒤 기존 standalone timer를 취소한다. |
+| `internal/application/subscribe/subscribe.go` `SubscribeCommitted` / `UnsubscribeCommitted` / `subscribeOne` | `tenantSubscriptionMu`는 subscription 한도가 설정된 인증 요청의 판정·commit·retained replay·route 변경을 직렬화한다. Replace와 remove도 같은 mutex를 사용하므로 freed slot이 오래된 replacement에 다시 점유되지 않는다. Filter별 ACL 뒤 새 filter만 한도를 검사하고, 거절한 filter는 commit·replay하지 않는다. 한도가 없으면 이 mutex를 사용하지 않는다. Remote projection apply는 이 mutex 밖에서 진행하므로 다른 node의 경쟁은 근사다. |
+| `internal/adapters/tcp/server.go` `readLoop` / `server_tenant_limits.go` `admitTenantPublish` | Receive Maximum의 새 Packet ID 예약 여부로 과금을 결정한다. Inline dispatch와 cluster phase lane에 넘기기 전에 payload·rate를 검사한다. 대기는 timer가 수행하며 connection의 `stop`이 대기를 끝낸다. 다음 packet은 대기 뒤 읽는다. |
+| `cmd/narumq/tenant_limits.go` `tenantLimitRejectionReporter` / `internal/adapters/metrics/registry.go` | Application의 `Reporter` port를 구현한다. 저장 quota와 tenant label 집합을 공유해 counter를 기록하고 tenant·dimension별 Warn을 제한한다. |
+
+예를 들어 `maxPayloadBytes=16`인 인증된 tenant가 17-byte QoS 1 PUBLISH를 보내면
+TCP reader가 dispatch 전에 이를 거절한다. Payload는 route나 저장 상태에 들어가지 않는다.
+Writer가 PUBACK `0x97`을 쓴 뒤 기존 `releaseInboundQuota`가 Receive Maximum 예약을 해제한다.
+Service는 프로세스 수명 동안 bucket을 보관하며, 종료 시 별도 goroutine을 정리할 필요가 없다.
+
+## MQTT listener admission 내부 설계
+
+`cmd/narumq/mqtt_listener.go`의 `openMQTTListener`가 listener 조립을 소유한다.
+Standalone은 `main.go`, cluster는 `cluster_runtime.go`의 `clusterMQTTListeners`에서
+이 helper를 호출한다. 입력은 주소, TLS config, 두 한도와
+`ports/metrics.ListenerAdmissionRecorder`다. 기본값과 외부 동작은
+[MQTT §7.1](../specs/mqtt-protocol-and-session.md#71-현재-상한과-기본값),
+JSON 형식은 [cluster config 계약](../contracts/raft-membership-v2.md#14-combined-cluster-configuration)을 따른다.
+
+Helper는 raw TCP listener를 연다. 두 한도 중 하나라도 켜져 있으면
+`internal/adapters/tcp/listener_admission.go`의 `NewAdmissionListener`로 감싼다.
+TLS가 켜져 있으면 마지막에 `internal/adapters/tls/listener.go`의 `NewListener`로
+감싼다. 중간 생성이 실패하면 이미 연 listener를 닫는다. 두 한도가 모두 0이면
+admission wrapper를 만들지 않는다.
+
+`admissionListener`는 mutex로 `active`, `tokens`, `refilled`를 보호한다.
+`Accept`는 raw socket을 받은 뒤 `admit`를 호출한다. 거절이면 socket을 닫고
+선택적으로 Metric을 기록한 뒤 다음 socket을 기다린다. Inner `Accept` 오류는
+그대로 반환한다. 허용이면 `admittedConn`을 반환한다. 이 wrapper의 `Close`는
+inner socket을 닫고 `sync.Once`로 연결 수를 한 번 줄인다.
+
+예를 들어 최대 연결 수가 1이면 첫 socket은 CONNECT를 보내기 전에도 slot을
+사용한다. 두 번째 socket은 Server의 `startListener`에 도달하지 않고 닫힌다.
+첫 연결이 종료되면 `server.go`의 `requestClose`가 socket의 `Close`를 호출한다.
+TLS도 raw socket의 `Close`까지 전달하므로 같은 slot 반환을 따른다.
+
+TLS를 바깥에서 감싸면 Server의 입력은 계속 `*tls.Conn`이다. 따라서 기존
+transport 판별과 verified client certificate 추출을 바꾸지 않는다. Clock은
+composition root에서 `clock.SystemClock`으로 제공한다. Metric port의 구현은
+`internal/adapters/metrics/registry.go`의 `Registry`다. 이 두 의존성은 adapter에서
+application-owned port를 향하며 domain에는 socket이나 limiter 의존성을 추가하지 않는다.
 
 ## Application-owned port
 

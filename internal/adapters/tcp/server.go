@@ -23,6 +23,7 @@ import (
 	applicationretained "narumq/internal/application/ports/retained"
 	"narumq/internal/application/publish"
 	"narumq/internal/application/subscribe"
+	"narumq/internal/application/tenantlimit"
 	"narumq/internal/domain/delivery"
 	"narumq/internal/domain/mqtt"
 	"narumq/internal/domain/routing"
@@ -78,6 +79,7 @@ type Config struct {
 	ReceiveMaximum uint16
 	// PacketReadTimeout bounds one started packet after CONNECT.
 	PacketReadTimeout          time.Duration
+	TenantLimits               *tenantlimit.Service
 	ClientCertificateExtractor func(net.Conn) (applicationauthentication.ClientCertificateDTO, bool)
 	Policy                     security.Policy
 	Metrics                    portsmetrics.MetricsRecorder
@@ -662,17 +664,17 @@ func disconnectReasonFor(err error) (byte, bool) {
 }
 
 // admitInboundPublish reserves quota once for each still-unacknowledged ID.
-func (connection *connection) admitInboundPublish(packetID mqtt.PacketIdentifier) bool {
+func (connection *connection) admitInboundPublish(packetID mqtt.PacketIdentifier) (admitted, fresh bool) {
 	connection.receiveMu.Lock()
 	defer connection.receiveMu.Unlock()
 	if _, exists := connection.receiving[packetID]; exists {
-		return true
+		return true, false
 	}
 	if len(connection.receiving) >= int(connection.server.config.ReceiveMaximum) {
-		return false
+		return false, false
 	}
 	connection.receiving[packetID] = struct{}{}
-	return true
+	return true, true
 }
 
 // releaseInboundQuota returns quota only after its final ACK is on the wire.
@@ -801,17 +803,33 @@ func (connection *connection) readLoop() error {
 				connection.established = true
 				version = connection.version
 			} else {
-				if publish, ok := packet.(*mqtt.Publish); ok && publish.QoS != mqtt.QoSAtMostOnce && publish.PacketID != 0 && !connection.admitInboundPublish(publish.PacketID) {
-					return ErrReceiveMaximumExceeded
+				publish, isPublish := packet.(*mqtt.Publish)
+				fresh := true
+				if isPublish && publish.QoS != mqtt.QoSAtMostOnce && publish.PacketID != 0 {
+					admitted, isNew := connection.admitInboundPublish(publish.PacketID)
+					if !admitted {
+						return ErrReceiveMaximumExceeded
+					}
+					fresh = isNew
 				}
-				var dispatchErr error
-				if connection.phases != nil {
-					dispatchErr = connection.dispatchPhased(packet, consumed)
-				} else {
-					dispatchErr = connection.dispatch(packet)
+				admitted := true
+				if isPublish && fresh {
+					var err error
+					admitted, err = connection.admitTenantPublish(publish)
+					if err != nil {
+						return err
+					}
 				}
-				if dispatchErr != nil {
-					return fmt.Errorf("dispatch MQTT %s: %w", packetTypeName(packet), dispatchErr)
+				if admitted {
+					var dispatchErr error
+					if connection.phases != nil {
+						dispatchErr = connection.dispatchPhased(packet, consumed)
+					} else {
+						dispatchErr = connection.dispatch(packet)
+					}
+					if dispatchErr != nil {
+						return fmt.Errorf("dispatch MQTT %s: %w", packetTypeName(packet), dispatchErr)
+					}
 				}
 			}
 			if connection.isStopping() {

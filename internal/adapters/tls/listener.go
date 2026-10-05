@@ -11,18 +11,20 @@ import (
 // ErrNilConfig is returned when attempting to listen with a nil TLS configuration.
 var ErrNilConfig = errors.New("tls config is nil")
 
+// ErrNilListener is returned when the inner network listener is nil.
+var ErrNilListener = errors.New("tls inner listener is nil")
+
 type tlsConnectionState interface {
 	ConnectionState() tls.ConnectionState
 }
 
-// Listen creates a TLS listener wrapping a standard network listener.
-func Listen(network, address string, tlsConfig *tls.Config) (net.Listener, error) {
+// NewListener wraps an already bound listener with TLS; handshakes run on first I/O.
+func NewListener(inner net.Listener, tlsConfig *tls.Config) (net.Listener, error) {
 	if tlsConfig == nil {
 		return nil, ErrNilConfig
 	}
-	inner, err := net.Listen(network, address)
-	if err != nil {
-		return nil, err
+	if inner == nil {
+		return nil, ErrNilListener
 	}
 	return tls.NewListener(inner, tlsConfig), nil
 }

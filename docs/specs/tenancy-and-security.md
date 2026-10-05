@@ -5,7 +5,7 @@
 | 항목 | 값 |
 | --- | --- |
 | 상태 | Active (Phase 1 security and tenant isolation slice) |
-| 적용 범위 | Phase 1에서 TEN-01~TEN-05, SEC-02~SEC-04, SEC-06과 SEC-08의 JWKS fail-closed 동작을 구현한다. Dynamic cluster의 tenant별 저장 quota(TEN-08)는 [ADR-0017](../decisions/ADR-0017-tenant-storage-quota.md) 범위에서 제공한다. Traffic·connection quota와 blocklist, management API, audit sink, 기존 연결 재인증은 후속 범위다. Metrics는 인증 성공·실패와 session gauge 및 ADR-0017의 quota 경보를 포함하며, 상세 observability 정책은 후속 범위다. |
+| 적용 범위 | Phase 1에서 TEN-01~TEN-05, SEC-02~SEC-04, SEC-06과 SEC-08의 JWKS fail-closed 동작을 구현한다. Dynamic cluster의 tenant별 저장 quota(TEN-08)는 [ADR-0017](../decisions/ADR-0017-tenant-storage-quota.md) 범위에서 제공한다. TEN-06·TEN-07의 node-local 연결·session·subscription·PUBLISH traffic 한도는 §5.2를 따른다. Blocklist, management API, audit sink, 기존 연결 재인증은 후속 범위다. Metrics는 인증 성공·실패, session gauge, 저장 quota 및 tenant 한도 거절을 포함하며, 상세 observability 정책은 후속 범위다. |
 | 근거 | [PRD 9.3절, 9.4절과 11.4절](../requirements/PRD.md), [RFC 8725](https://www.rfc-editor.org/rfc/rfc8725.html) |
 | 관련 spec | [MQTT protocol과 session](mqtt-protocol-and-session.md), [Management API](management-api-and-observability.md) |
 | 관련 Architecture | [Security boundaries](../architectures/security-boundaries.md), [System overview](../architectures/system-overview.md) |
@@ -89,7 +89,8 @@ queue, retained message와 Will을 변경하지 않는다.
 
 TLS listener(`-tcp-listen` 또는 `-tls-listen`)를 여는 Broker 시작에는 `-security-config <path>`가
 필수다. 파일은 알 수 없는 field와 두 번째 JSON value를 거절하는 strict decoder로 한 JSON value만
-읽는다. duration은 양수인 Go duration string이어야 한다. 이 설정의 decode와 JWT/JWKS·mTLS
+읽는다. JWT 설정의 duration은 양수인 Go duration string이어야 한다.
+`tenantLimits.maxWait`는 §5.2의 `0s`~`10s`를 따른다. 이 설정의 decode와 JWT/JWKS·mTLS
 provider 생성은 listener socket을 열기 전에 끝나야 하며, 누락·충돌·오류가 있으면 시작을
 실패시킨다. TLS listener의 `request|require` client authentication은 최소 하나의
 `mtlsIdentities` binding을 요구하고, binding이 있으면 `client-auth none`을 사용할 수 없다.
@@ -154,7 +155,7 @@ TLS listener와 함께 주는 경우도 거절한다. 이 예외는 production s
 zero entry와 match하면 unmapped, 둘 이상의 entry와 match하면 ambiguous다. `NotAfter`는
 새 principal의 만료 시각으로 사용하며 trust chain·certificate validity·client-auth EKU는
 TLS handshake에서 먼저 검증한다. URI SAN/SPIFFE·fingerprint selector, revocation·rotation,
-기존 연결 종료·reauthentication, quota·blocklist·audit과 cluster-peer mTLS는 이 slice에
+기존 연결 종료·reauthentication, blocklist·audit과 cluster-peer mTLS는 이 인증 mapping slice에
 포함하지 않는다.
 
 이 slice는 issuer와 audience를 각각 정확히 하나만 허용한다. algorithms, JWT identities,
@@ -266,6 +267,64 @@ Dynamic cluster는 tenant별 retained bytes, offline queue와 저장 총량을 �
 Profile은 더 높은 version의 Raft command가 commit된 뒤 모든 replica에 적용된다. 설정에 tenant 항목이 없으면 `default`를 사용한다. `tenantQuotas`를 생략하면 각 dimension의 cluster-wide 최대값인 version 0 built-in profile이 사용된다. 새 저장이 quota를 넘으면 retained/offline mutation은 기존 capacity 결과로 거절한다. Durable delivery는 [Cluster §4.5](cluster-session-and-delivery.md#45-publish-backpressure-admission)의 ingress 사전 판정에서 전역·tenant 한도 초과 publish를 거절한다. MQTT 5는 `0x97`, MQTT 3.1.1은 연결 종료를 반환한다. Tenant 초과는 `narumq_tenant_quota_rejections_total`에 기록한다. Apply 시점 경합은 기존 `Saturated` 처리다. Session당 한도와 RELEASE 시점 포화도 target을 건너뛰는 기존 동작을 유지한다.
 
 Proposer node는 `narumq_tenant_quota_rejections_total{tenant,dimension}` counter를 올리고 같은 tenant·dimension 경보 log를 10초 rate-limit한다. Tenant label은 최대 1,024개까지 보존하고 나머지는 `_overflow` label로 집계한다. Profile commit 여부, version과 local config mismatch는 각각 `narumq_tenant_quota_profile_committed`, `narumq_tenant_quota_profile_version`, `narumq_tenant_quota_config_mismatch`로 노출한다. Committed profile이 복구되기 전에는 cluster MQTT readiness를 허용하지 않는다.
+### 5.2 연결 상태와 traffic 한도
+
+`-security-config` JSON에 선택 object `tenantLimits`를 둔다. Standalone과 cluster가 같은 schema를 사용한다. `tenantLimits`를 생략하면 tenant 한도가 없다.
+
+```json
+"tenantLimits": {
+  "maxWait": "1s",
+  "default": {
+    "maxConnections": 1000, "maxSessions": 2000, "maxSubscriptions": 10000,
+    "messagesPerSecond": 500, "bytesPerSecond": 1048576, "maxPayloadBytes": 262144
+  },
+  "tenants": [ { "tenantId": "acme", "maxConnections": 10, "messagesPerSecond": 0 } ]
+}
+```
+
+- **default.** 모든 field는 선택이다. 생략하거나 0이면 그 차원은 제한하지 않는다.
+- **tenants[].** `tenantId`는 필수이고 `tenancy.NewTenantID`로 검증한다. 같은 tenant가 두 번 나오면 거절한다. 최대 4,096개다. 생략한 field는 `default` 값을 상속한다. 명시한 0은 그 tenant에서 제한을 끈다.
+- **허용 범위.**
+  - `maxConnections`, `maxSessions`, `maxSubscriptions`, `messagesPerSecond`: 0~1,000,000.
+  - `bytesPerSecond`: 0~1,099,511,627,776(1<<40).
+  - `maxPayloadBytes`: 0~268,435,455.
+  - `maxWait`: Go duration, `0s`~`10s`. 생략하면 `1s`다. `0s`는 대기 없이 바로 거절한다.
+  - 알 수 없는 field, 범위 밖 값, 음수, 잘못된 duration은 startup에서 거절한다.
+
+한도는 인증된 principal(`principal.Subject() != ""`)에만 적용한다. Security config가 없는 loopback 개발 모드와 anonymous session에는 한도가 없다.
+
+| 차원 (`dimension`) | 집계 대상 | 검사 시점 | 초과 응답 MQTT 5 / 3.1.1 |
+| --- | --- | --- | --- |
+| `connections` | 이 node session repository에서 `Connected()==true`인 tenant lifecycle 수 | CONNECT에서 `session.Open` 성공 뒤, ownership 획득 전. 기존 lifecycle이 이미 연결 중이면 증가로 보지 않는다. | CONNACK `0x97` / CONNACK `0x03`. State를 바꾸지 않는다. |
+| `sessions` | 이 node session repository의 tenant lifecycle 수(연결 중 + detached) | 같은 시점. 기존 lifecycle이 없을 때만(`!found`) 검사한다. Resume과 clean start 대체는 새 session이 아니다. | 같음 |
+| `subscriptions` | Route table에서 tenant에 bind된 session의 shared·non-shared subscription 수. Cluster에서는 committed projection 전체다. | SUBSCRIBE filter마다 ACL 검사 뒤, commit 전. 같은 session에 같은 filter가 이미 있으면(replace) 검사하지 않는다. | 해당 filter의 SUBACK `0x97` / `0x80`. 다른 filter는 독립 처리한다. |
+| `payload_size` | PUBLISH payload byte 길이 | TCP `readLoop`에서 decode 직후, dispatch 전. 대기 없음. | QoS 1 PUBACK `0x97`, QoS 2 PUBREC `0x97`, QoS 0 DISCONNECT `0x97` 뒤 종료 / 종료 |
+| `message_rate` | Tenant의 초당 PUBLISH 수 (node별 token bucket) | 같은 위치. 최대 `maxWait`까지 대기한다. | QoS 1 PUBACK `0x97`, QoS 2 PUBREC `0x97`, QoS 0 DISCONNECT `0x96` 뒤 종료 / 종료 |
+| `byte_rate` | Tenant의 초당 payload byte (node별 token bucket) | 같은 위치 | `message_rate`와 같음 |
+
+연결, session, rate는 node별로 센다. Subscription은 각 node의 route table에 있는 tenant 전체 수로 판정한다. Standalone에서는 해당 node의 수이고, cluster에서는 committed projection 기준 cluster 전체 수다. 같은 node의 제한 대상 SUBSCRIBE·UNSUBSCRIBE는 판정부터 commit과 route 변경까지 직렬화한다. Replacement와 removal이 경쟁해도 local 한도를 넘기지 않는다. 다른 node에서 동시에 SUBSCRIBE하면 projection 반영 시점 때문에 잠시 한도를 넘을 수 있다. Replicated schema, feature gate, Raft command는 바꾸지 않는다.
+
+#### 검사 순서와 과금
+
+- **검사 순서.**
+  - CONNECT: `connections` → `sessions`.
+  - PUBLISH: Receive Maximum → `payload_size` → rate. 그 뒤 기존 ACL·cluster·backpressure 검사가 이어진다. 따라서 ACL로 거절될 PUBLISH도 rate token을 쓴다.
+- **과금 대상.** 새 PUBLISH만 과금한다. QoS 0은 항상 새 PUBLISH다. QoS 1/2는 `admitInboundPublish`가 처음 예약한 Packet ID일 때만 과금한다. 미완료 ID의 재전송은 과금하지 않는다. PUBREL, 서버 Will, retained 재전송, cluster forward는 과금하지 않는다.
+
+#### Token bucket과 대기
+
+- **Token bucket.** 용량과 초당 보충량은 설정 rate와 같다. 시작할 때 bucket은 가득 차 있다. Clock이 뒤로 가면 보충하지 않는다.
+  - 예약하면 token에서 message 1개와 payload byte를 뺀다. Token은 음수가 될 수 있다. 이 음수가 대기열 역할을 한다.
+  - 대기 시간은 `max(부족 message/messagesPerSecond, 부족 byte/bytesPerSecond)`다.
+  - 대기 시간이 `maxWait`를 넘으면 token을 빼지 않고 거절한다. 두 차원이 모두 넘으면 `message_rate`를 보고한다.
+- **대기.** Rate 초과 시 해당 연결의 읽기를 최대 `maxWait`(기본 1s, 최대 10s)만큼 멈추고 token을 기다린다. 대기 중에는 연결의 다음 packet을 읽지 않으므로 TCP 수준 backpressure가 생긴다. 연결이 닫히면 대기를 즉시 끝낸다. Token이 충분하지 않으면 거절한다.
+
+#### Metric과 log
+
+- Counter `narumq_tenant_limit_rejections_total{tenant,dimension}`을 둔다. `dimension`은 위 6개 값만 허용한다.
+- `tenant` label은 기존 저장 quota metric과 같은 1,024개 tenant 집합을 공유한다. 집합을 넘으면 `_overflow`로 모은다.
+- 거절마다 counter를 올린다. Warn log `tenant limit rejected a request`(`tenant`, `dimension`)는 tenant·dimension마다 10초에 한 번만 남긴다.
+
 
 ## 6. 관리 plane RBAC
 
@@ -322,8 +381,58 @@ audit event에는 password, bearer token, session cookie, private key와 원문 
 | TEN-03 | 같은 외부 topic과 filter가 tenant별 typed value로 격리되며 retained·shared·Will에도 같은 binding이 적용된다. | `internal/domain/tenancy`, `internal/domain/routing`, `tests/integration/mqtt_ingress_test.go`의 `TestMQTTSecurity` |
 | TEN-04 | ACL은 tenant-local canonical typed value를 기준으로 평가하고 내부 prefix injection이나 이중 encoding으로 우회할 수 없다. | `internal/domain/security` policy 시험, `tests/integration/mqtt_ingress_test.go`의 `TestMQTTSecurity` |
 | TEN-05 | system topic, retained, shared subscription, Will과 session이 tenant 경계를 넘지 않는다. | tenancy/routing/session 시험, `tests/integration/mqtt_ingress_test.go`의 `TestMQTTSecurity` |
+| TEN-06 | Tenant별 연결·session 제한은 node별로, subscription 제한은 route table의 tenant 수로 적용한다. 한 tenant의 초과는 다른 tenant를 거절하지 않으며, 초과 응답과 state 무변경을 확인한다. 같은 node의 동시 add와 replace/remove는 직렬화한다. | `internal/application/connect`, `internal/application/subscribe`의 `TestSubscribeTenantQuotaSerializesLocalAdmission`, `TestSubscribeTenantQuotaSerializesReplacementAndRemoval`, `internal/adapters/memory/sessionstore`, `internal/domain/routing`, `tests/integration/mqtt_tenant_limits_test.go` (`TestMQTTTenantLimits`), `tests/integration/cluster_tenant_limits_process_test.go` (`TestDynamicClusterTenantLimitsProcessAcceptance`) |
+| TEN-07 | Tenant별 payload 크기·message rate·byte rate를 제한한다. Rate 초과는 최대 `maxWait`까지 대기하고, MQTT 응답과 다른 tenant의 독립성을 확인한다. | `internal/application/tenantlimit`, `internal/adapters/tcp/server_tenant_limits_test.go`, `internal/adapters/metrics`, `cmd/narumq/security_config_test.go`, `cmd/narumq/tenant_limits_test.go`, `tests/integration/mqtt_tenant_limits_test.go` (`TestMQTTTenantLimits`) |
 
-이 변경은 mTLS client principal mapping과 SEC-03/SEC-04의 certificate-to-tenant acceptance를
-완료로 표시한다. security metrics의 상세 정책, revocation·rotation, quota, blocklist,
-management API, audit sink, reload과 기존 연결 token reauthentication은 완료로 표시하지
-않는다. 위 표 밖의 SEC-05, SEC-07, SEC-10~SEC-12와 TEN-06~TEN-10은 후속 acceptance scope다.
+SEC-03/SEC-04의 certificate-to-tenant acceptance와 TEN-06·TEN-07의 §5.2 범위를 구현했다. TEN-08 저장 quota는 §5.1과 ADR-0017의 채택 범위를 따른다. TEN-09의 noisy-neighbor p99 기준과 TEN-10은 이번 수용 범위에 포함하지 않는다.
+
+Security metrics의 나머지 정책, revocation·rotation, blocklist, management API, audit sink, reload과 기존 연결 token reauthentication은 완료로 표시하지 않는다. 위 표 밖의 SEC-05, SEC-07, SEC-10~SEC-12와 TEN-08~TEN-10의 미채택 범위는 후속 acceptance scope다. TEN-08의 §5.1·ADR-0017 채택 범위는 다시 미구현으로 열지 않는다.
+
+### 9.1 TEN-06·TEN-07 실행 증거
+
+2026-10-05 저장소 루트에서 Windows x64와 Go 1.26.5로 실행했다. 아래 시간은 해당 명령 묶음의 wall time이며, 하위 시험 시간은 Go 출력값이다.
+
+| 검증 | 명령 | 결과·시간 |
+| --- | --- | --- |
+| 빌드·vet와 두 수용 시험 | 수용 명령 A(아래) | PASS, 19.90s. MQTT 5 하위 시험 6개 PASS(1.66s). 실제 binary 3-node 시험 PASS(6.35s). |
+| 변경 package 회귀 | `go test ./internal/application/tenantlimit ./internal/adapters/memory/sessionstore ./internal/domain/routing ./internal/application/connect ./internal/application/subscribe ./internal/adapters/tcp ./internal/adapters/metrics ./cmd/narumq -count=1` | PASS, 19.01s. 8개 package가 통과했다. |
+| 기존 보안·listener·저장 quota 회귀 | 회귀 명령 B(아래) | PASS, 15.02s. 보안 4개 하위 시험, listener 2개 시험, 실제 binary 저장 quota 시험이 통과했다. |
+| 전체 local gate 첫 실행 | `GOMAXPROCS=4 go run ./tools/verify local` | FAIL, 191.83s. `tests/benchmark/internal/environment`의 `TestRunClusterTargetKeepsPublishedOwnerPortAcrossBrokerRestart`에서 stats sampler가 `exit status 1`로 종료했다. Integration(108.732s), race, fuzz, traceability와 architecture는 통과했다. Coverage 판정 단계에는 도달하지 못했다. |
+| Benchmark restart sampler 단독 확인 | `GOMAXPROCS=4 go test ./tests/benchmark/internal/environment -run '^TestRunClusterTargetKeepsPublishedOwnerPortAcrossBrokerRestart$' -count=1 -v` | PASS, 16.52s(시험 14.11s). 해당 코드를 바꾸지 않았다. 단독 통과만으로 첫 실패의 원인을 확정하지 않는다. |
+| 전체 local gate 두 번째 실행 | `GOMAXPROCS=4 go run ./tools/verify local` | FAIL, 147.56s. 새 `TestConnectTenantQuotaPreservesDetachedTimers`가 unordered snapshot 두 개를 순서대로 비교해 실패했다. Lifecycle을 `SessionKey`로 조회해 비교하도록 시험을 고쳤다. Broker 코드는 바꾸지 않았다. Benchmark 환경 package와 integration(99.278s)은 통과했다. |
+| Timer 시험 100회와 직렬화 보완 전 전체 local gate | `gofmt -w internal/application/connect/tenant_limits_test.go && go test ./internal/application/connect -run '^TestConnectTenantQuotaPreservesDetachedTimers$' -count=100 && GOMAXPROCS=4 go run ./tools/verify local` | PASS, 묶음 전체 184.96s. Timer 시험 100회 PASS(0.520s). Unit, integration, race, fuzz, vet, traceability, architecture와 coverage gate가 모두 통과했다. |
+| Local subscription 경쟁 재현(수정 전) | `go test ./internal/application/subscribe -run '^TestSubscribeTenantQuotaSerializes' -count=1 -v` | FAIL, 5.12s(시험 package 0.561s). 한도 1에서 두 add가 모두 성공했다. 대기 중인 replacement가 완료된 remove를 덮어썼다. |
+| 직렬화 보완 뒤 build·회귀·race·수용 시험 | 직렬화 명령 C(아래) | PASS, 묶음 전체 43.00s. 경쟁 회귀 2개 PASS(2.509s), subscribe race PASS(3.612s), MQTT 5 수용 시험 6개 PASS(1.63s), 실제 binary 3-node 시험 PASS(6.87s). |
+| 직렬화 보완 뒤 최종 전체 local gate | `GOMAXPROCS=4 go run ./tools/verify local` | PASS, 171.69s. Unit, integration(98.231s), race, fuzz, vet, traceability, architecture와 coverage gate가 모두 통과했다. |
+
+최종 coverage 증거는 `.artifacts/verification/coverage.out`과 `.artifacts/verification/coverage-summary.json`이다. 전체 line coverage는 85.97%, function coverage는 97.40%이며 core package 기준도 통과했다. Threshold는 바꾸지 않았다. Branch coverage는 승인된 instrumentation 도구가 설정되지 않아 `not_evaluated`다. 이번 결과는 local 실행 증거이며 CI·release의 branch coverage gate를 대신하지 않는다.
+
+수용 명령 A:
+
+```sh
+go build ./... && go vet ./... && GOMAXPROCS=4 go test ./tests/integration -run '^(TestMQTTTenantLimits|TestDynamicClusterTenantLimitsProcessAcceptance)$' -count=1 -v -timeout 20m
+```
+
+회귀 명령 B:
+
+```sh
+GOMAXPROCS=4 go test ./tests/integration -run '^(TestMQTTSecurity|TestMQTTListenerAdmission.*|TestDynamicClusterTenantStorageQuotaProcessAcceptance)$' -count=1 -v -timeout 20m
+```
+
+직렬화 명령 C:
+
+```sh
+gofmt -w internal/application/subscribe/subscribe.go internal/application/subscribe/tenant_limits_test.go &&
+go build ./... &&
+go test ./internal/application/subscribe -run '^TestSubscribeTenantQuotaSerializes' -count=1 -v &&
+go test -race ./internal/application/subscribe -count=1 &&
+GOMAXPROCS=4 go test ./tests/integration -run '^(TestMQTTTenantLimits|TestDynamicClusterTenantLimitsProcessAcceptance)$' -count=1 -v -timeout 20m
+```
+
+MQTT 5 시험은 연결 상한 2, session 상한 3, subscription 상한 2를 확인했다. 17-byte payload는 상한 16을 넘어 PUBACK `0x97`로 거절되며 subscriber에 전달되지 않았다. Rate 시험은 실제 clock과 여러 연결의 tenant 공통 bucket을 사용했다. Rate 2/s와 `maxWait=1s`에서 burst 2건 뒤의 성공 ACK는 400ms 이상 늦었고, 추가 3건 중 1건은 `0x97`로 거절됐다. Tenant-b의 override 0은 tenant-a의 한도와 독립적으로 동작했다.
+
+별도 TCP 시험은 고정된 policy clock과 실제 timer로 같은 연결의 세 번째 ACK 지연과 다섯 번째 `0x97`을 확인한다. QoS별 MQTT 5·3.1.1 응답, pending QoS 2 DUP의 과금 제외, shutdown 중 대기 취소, Receive Maximum 우선순위와 거절 ACK 뒤 슬롯 회수를 함께 확인한다.
+
+실제 binary 시험은 committed subscription projection을 세 node에서 확인한 뒤 node3의 SUBACK `0x80`을 확인했다. Node1에서 CONNACK `0x03`으로 거절된 client가 node2에서는 연결됐다. 각 거절 node의 `/metrics` counter가 1이었다.
+
+초기 수용 시험 실행은 신규 시험 코드의 type 오류와 process helper의 CONNECT credential flag 오류로 실패했다. 시험 코드를 고친 뒤 위 명령 묶음이 통과했다. 실패를 broker 동작의 통과 증거로 계산하지 않는다.

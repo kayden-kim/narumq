@@ -1172,7 +1172,7 @@ func TestClusterSnapshotAndWALTailReplayRestoresSessionAggregateAndRouteProjecti
 
 // Traceability: MQTT-01; docs/specs/mqtt-protocol-and-session.md §1.
 func TestClusterMQTTListenersBindConfiguredEndpointsAndClosePartialOpen(t *testing.T) {
-	listeners, err := clusterMQTTListeners(clusterConfigFile{})
+	listeners, err := clusterMQTTListeners(clusterConfigFile{}, nil)
 	if err != nil || len(listeners) != 0 {
 		t.Fatalf("empty cluster MQTT listeners=%v err=%v", listeners, err)
 	}
@@ -1182,7 +1182,7 @@ func TestClusterMQTTListenersBindConfiguredEndpointsAndClosePartialOpen(t *testi
 		MQTT:    clusterMQTT{TCPListenAddress: tcpAddress, TLSListenAddress: clusterRuntimeTestFreeAddress(t)},
 		PeerTLS: clusterPeerTLS{CertFile: filepath.Join(t.TempDir(), "missing.crt"), KeyFile: filepath.Join(t.TempDir(), "missing.key")},
 	}
-	if listeners, err := clusterMQTTListeners(invalidTLS); err == nil || listeners != nil {
+	if listeners, err := clusterMQTTListeners(invalidTLS, nil); err == nil || listeners != nil {
 		t.Fatalf("invalid TLS listener result=%v err=%v, want closed partial TCP listener and error", listeners, err)
 	}
 	rebound, err := net.Listen("tcp", tcpAddress)
@@ -1210,7 +1210,7 @@ func TestClusterMQTTListenersBindConfiguredEndpointsAndClosePartialOpen(t *testi
 		},
 		PeerTLS: clusterPeerTLS{CertFile: certPath, KeyFile: keyPath},
 	}
-	listeners, err = clusterMQTTListeners(config)
+	listeners, err = clusterMQTTListeners(config, nil)
 	if err != nil || len(listeners) != 2 {
 		t.Fatalf("configured TCP/TLS listeners=%v err=%v, want two bound listeners", listeners, err)
 	}

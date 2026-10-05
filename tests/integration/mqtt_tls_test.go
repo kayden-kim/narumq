@@ -234,8 +234,13 @@ func newTLSFixture(t *testing.T, opts tlsFixtureOptions) *tlsFixture {
 		t.Fatalf("build TLS config: %v", err)
 	}
 
-	tlsListener, err := tlsadapter.Listen("tcp", "127.0.0.1:0", tlsCfg)
+	inner, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
+		t.Fatalf("listen TCP for TLS: %v", err)
+	}
+	tlsListener, err := tlsadapter.NewListener(inner, tlsCfg)
+	if err != nil {
+		_ = inner.Close()
 		t.Fatalf("listen TLS: %v", err)
 	}
 

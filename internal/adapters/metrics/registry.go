@@ -42,6 +42,9 @@ var willOutcomeReasons = [...]string{
 	ports.WillOutcomeUnplannedFailure,
 }
 
+var listenerAdmissionTransports = [...]string{ports.TransportTCP, ports.TransportTLS}
+var listenerAdmissionReasons = [...]string{ports.ListenerAdmissionReasonMaxConnections, ports.ListenerAdmissionReasonConnectionRate}
+
 // Default histogram buckets for publish latency in seconds.
 var defaultPublishLatencyBuckets = []float64{
 	0.0005, 0.001, 0.0025, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5,
@@ -129,7 +132,9 @@ type Registry struct {
 	connectRejectedTotal          atomic.Int64
 	nodeDrainTransitions          map[string]*atomic.Int64
 	willOutcomes                  [len(willOutcomeReasons)]atomic.Int64
+	listenerAdmissionRejections   [len(listenerAdmissionTransports)][len(listenerAdmissionReasons)]atomic.Int64
 	tenantQuotaRejections         map[tenantQuotaMetricKey]*atomic.Int64
+	tenantLimitRejections         map[tenantQuotaMetricKey]*atomic.Int64
 	tenantQuotaTenants            map[string]struct{}
 	tenantQuotaProfileCommitted   atomic.Int64
 	tenantQuotaProfileVersion     atomic.Uint64
@@ -158,6 +163,7 @@ func NewRegistry() *Registry {
 		authAttemptsTotal:     make(map[string]*atomic.Int64),
 		nodeDrainTransitions:  make(map[string]*atomic.Int64),
 		tenantQuotaRejections: make(map[tenantQuotaMetricKey]*atomic.Int64),
+		tenantLimitRejections: make(map[tenantQuotaMetricKey]*atomic.Int64),
 		tenantQuotaTenants:    make(map[string]struct{}),
 		publishLatency:        NewHistogram(defaultPublishLatencyBuckets),
 		walSyncDuration:       NewHistogram(defaultWALSyncDurationBuckets),
@@ -168,6 +174,7 @@ func NewRegistry() *Registry {
 
 var _ ports.MetricsRecorder = (*Registry)(nil)
 var _ ports.WillOutcomeRecorder = (*Registry)(nil)
+var _ ports.ListenerAdmissionRecorder = (*Registry)(nil)
 
 func (r *Registry) getCounter(m map[string]*atomic.Int64, key string) *atomic.Int64 {
 	r.mu.RLock()
@@ -330,6 +337,22 @@ func (r *Registry) WillOutcome(reason string) {
 	}
 }
 
+// ListenerAdmissionRejected increments only a known transport and admission reason.
+func (r *Registry) ListenerAdmissionRejected(transport string, reason string) {
+	for transportIndex, knownTransport := range listenerAdmissionTransports {
+		if transport != knownTransport {
+			continue
+		}
+		for reasonIndex, knownReason := range listenerAdmissionReasons {
+			if reason == knownReason {
+				r.listenerAdmissionRejections[transportIndex][reasonIndex].Add(1)
+				return
+			}
+		}
+		return
+	}
+}
+
 // RecordTenantQuotaRejection increments a bounded tenant-and-dimension counter and returns its rendered tenant label.
 func (r *Registry) RecordTenantQuotaRejection(tenantID, dimension string) string {
 	switch dimension {
@@ -337,11 +360,37 @@ func (r *Registry) RecordTenantQuotaRejection(tenantID, dimension string) string
 	default:
 		return ""
 	}
+	return r.recordTenantRejection(r.tenantQuotaRejections, tenantID, dimension)
+}
+
+// RecordTenantLimitRejection increments a bounded tenant limit rejection counter and returns its rendered tenant label.
+func (r *Registry) RecordTenantLimitRejection(tenantID, dimension string) string {
+	switch dimension {
+	case "connections", "sessions", "subscriptions", "message_rate", "byte_rate", "payload_size":
+	default:
+		return ""
+	}
+	return r.recordTenantRejection(r.tenantLimitRejections, tenantID, dimension)
+}
+
+func (r *Registry) recordTenantRejection(counters map[tenantQuotaMetricKey]*atomic.Int64, tenantID, dimension string) string {
+	r.mu.Lock()
+	tenantID = r.boundedTenantLabelLocked(tenantID)
+	key := tenantQuotaMetricKey{tenantID: tenantID, dimension: dimension}
+	counter := counters[key]
+	if counter == nil {
+		counter = &atomic.Int64{}
+		counters[key] = counter
+	}
+	counter.Add(1)
+	r.mu.Unlock()
+	return tenantID
+}
+
+func (r *Registry) boundedTenantLabelLocked(tenantID string) string {
 	if _, err := tenancy.NewTenantID(tenantID); err != nil || strings.IndexFunc(tenantID, unicode.IsControl) >= 0 {
 		tenantID = tenantQuotaOverflowLabel
 	}
-
-	r.mu.Lock()
 	if _, exists := r.tenantQuotaTenants[tenantID]; !exists {
 		if len(r.tenantQuotaTenants) >= maxTenantQuotaMetricTenants {
 			tenantID = tenantQuotaOverflowLabel
@@ -349,14 +398,6 @@ func (r *Registry) RecordTenantQuotaRejection(tenantID, dimension string) string
 			r.tenantQuotaTenants[tenantID] = struct{}{}
 		}
 	}
-	key := tenantQuotaMetricKey{tenantID: tenantID, dimension: dimension}
-	counter := r.tenantQuotaRejections[key]
-	if counter == nil {
-		counter = &atomic.Int64{}
-		r.tenantQuotaRejections[key] = counter
-	}
-	counter.Add(1)
-	r.mu.Unlock()
 	return tenantID
 }
 
@@ -495,6 +536,13 @@ func (r *Registry) Render(isOpenMetrics bool) []byte {
 	for index, reason := range willOutcomeReasons {
 		fmt.Fprintf(&buf, "narumq_will_outcomes_total{reason=\"%s\"} %d\n", reason, r.willOutcomes[index].Load())
 	}
+	fmt.Fprintf(&buf, "# HELP narumq_mqtt_listener_admission_rejected_total MQTT listener sockets closed by admission limits before CONNECT.\n")
+	fmt.Fprintf(&buf, "# TYPE narumq_mqtt_listener_admission_rejected_total counter\n")
+	for transportIndex, transport := range listenerAdmissionTransports {
+		for reasonIndex, reason := range listenerAdmissionReasons {
+			fmt.Fprintf(&buf, "narumq_mqtt_listener_admission_rejected_total{transport=\"%s\",reason=\"%s\"} %d\n", transport, reason, r.listenerAdmissionRejections[transportIndex][reasonIndex].Load())
+		}
+	}
 	fmt.Fprintf(&buf, "# HELP narumq_tenant_quota_profile_committed Whether a tenant quota profile is committed locally.\n")
 	fmt.Fprintf(&buf, "# TYPE narumq_tenant_quota_profile_committed gauge\n")
 	fmt.Fprintf(&buf, "narumq_tenant_quota_profile_committed %d\n", r.tenantQuotaProfileCommitted.Load())
@@ -507,6 +555,9 @@ func (r *Registry) Render(isOpenMetrics bool) []byte {
 	fmt.Fprintf(&buf, "# HELP narumq_tenant_quota_rejections_total Committed storage mutations rejected by tenant quota dimension.\n")
 	fmt.Fprintf(&buf, "# TYPE narumq_tenant_quota_rejections_total counter\n")
 	r.renderTenantQuotaRejections(&buf)
+	fmt.Fprintf(&buf, "# HELP narumq_tenant_limit_rejections_total Requests rejected by tenant connection, session, subscription, payload, or rate limits.\n")
+	fmt.Fprintf(&buf, "# TYPE narumq_tenant_limit_rejections_total counter\n")
+	r.renderTenantLimitRejections(&buf)
 	r.renderPublishBackpressure(&buf)
 
 	// 11. narumq_publish_latency_seconds
@@ -580,6 +631,24 @@ func (r *Registry) renderTenantQuotaRejections(buf *bytes.Buffer) {
 	})
 	for _, entry := range entries {
 		fmt.Fprintf(buf, "narumq_tenant_quota_rejections_total{tenant=\"%s\",dimension=\"%s\"} %d\n",
+			prometheusLabelEscaper.Replace(entry.tenantID), prometheusLabelEscaper.Replace(entry.dimension), entry.count)
+	}
+}
+func (r *Registry) renderTenantLimitRejections(buf *bytes.Buffer) {
+	r.mu.RLock()
+	entries := make([]tenantQuotaMetricEntry, 0, len(r.tenantLimitRejections))
+	for key, counter := range r.tenantLimitRejections {
+		entries = append(entries, tenantQuotaMetricEntry{tenantID: key.tenantID, dimension: key.dimension, count: counter.Load()})
+	}
+	r.mu.RUnlock()
+	sort.Slice(entries, func(left, right int) bool {
+		if entries[left].tenantID != entries[right].tenantID {
+			return entries[left].tenantID < entries[right].tenantID
+		}
+		return entries[left].dimension < entries[right].dimension
+	})
+	for _, entry := range entries {
+		fmt.Fprintf(buf, "narumq_tenant_limit_rejections_total{tenant=\"%s\",dimension=\"%s\"} %d\n",
 			prometheusLabelEscaper.Replace(entry.tenantID), prometheusLabelEscaper.Replace(entry.dimension), entry.count)
 	}
 }

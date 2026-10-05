@@ -66,6 +66,10 @@ func runWithContext(ctx context.Context, args []string, logger *slog.Logger) err
 	tlsCA := flagSet.String("tls-ca", "", "client CA certificate PEM file")
 	tlsClientAuth := flagSet.String("tls-client-auth", "none", "client authentication policy (none, request, require)")
 	tlsMinVersion := flagSet.String("tls-min-version", "1.2", "minimum TLS version (1.2, 1.3)")
+	tcpMaxConnections := flagSet.Int("tcp-max-connections", 0, "maximum concurrent connections on the TCP listener (0 disables)")
+	tcpConnectionRate := flagSet.Int("tcp-connection-rate", 0, "maximum new connections per second on the TCP listener (0 disables)")
+	tlsMaxConnections := flagSet.Int("tls-max-connections", 0, "maximum concurrent connections on the TLS listener (0 disables)")
+	tlsConnectionRate := flagSet.Int("tls-connection-rate", 0, "maximum new connections per second on the TLS listener (0 disables)")
 	maxPacketSize := flagSet.Int("max-packet-size", 1048576, "maximum MQTT Remaining Length")
 	receiveMaximum := flagSet.Int("receive-maximum", 64, "MQTT Receive Maximum advertised to clients and enforced per connection")
 	packetReadTimeout := flagSet.Duration("packet-read-timeout", 30*time.Second, "maximum time to receive one started MQTT packet after CONNECT")
@@ -172,6 +176,9 @@ func runWithContext(ctx context.Context, args []string, logger *slog.Logger) err
 	if mqttRequested && *securityConfigFile == "" && !*allowInsecureAnonymousMQTT {
 		return errors.New("-security-config is required when an MQTT listener is enabled")
 	}
+	if err := validateListenerAdmissionFlags(*tcpListen, *tlsListen, *tcpMaxConnections, *tcpConnectionRate, *tlsMaxConnections, *tlsConnectionRate); err != nil {
+		return err
+	}
 	if *tcpListen == "" && *tlsListen == "" && *httpListen == "" {
 		if metricsRequested {
 			return errors.New("-tcp-listen, -tls-listen, or -http-listen is required when runtime metrics collection is enabled")
@@ -218,6 +225,7 @@ func runWithContext(ctx context.Context, args []string, logger *slog.Logger) err
 			return err
 		}
 	}
+	metricsRegistry := adaptersmetrics.NewRegistry()
 	var (
 		listeners          []net.Listener
 		tcpListener        net.Listener
@@ -235,7 +243,7 @@ func runWithContext(ctx context.Context, args []string, logger *slog.Logger) err
 			return err
 		}
 		var err error
-		tcpListener, err = net.Listen("tcp", *tcpListen)
+		tcpListener, err = openMQTTListener(*tcpListen, nil, *tcpMaxConnections, *tcpConnectionRate, metricsRegistry)
 		if err != nil {
 			return fmt.Errorf("listen on %q: %w", *tcpListen, err)
 		}
@@ -254,7 +262,7 @@ func runWithContext(ctx context.Context, args []string, logger *slog.Logger) err
 			return fmt.Errorf("configure TLS: %w", err)
 		}
 		var errListen error
-		tlsListener, errListen = tlsadapter.Listen("tcp", *tlsListen, tlsConfig)
+		tlsListener, errListen = openMQTTListener(*tlsListen, tlsConfig, *tlsMaxConnections, *tlsConnectionRate, metricsRegistry)
 		if errListen != nil {
 			return fmt.Errorf("listen TLS on %q: %w", *tlsListen, errListen)
 		}
@@ -272,7 +280,6 @@ func runWithContext(ctx context.Context, args []string, logger *slog.Logger) err
 		defer managementListener.Close()
 	}
 	routes := routing.NewTable()
-	metricsRegistry := adaptersmetrics.NewRegistry()
 	deliveries, err := deliveryqueue.New(*deliveryQueueCapacity)
 	if err != nil {
 		return fmt.Errorf("create delivery queue: %w", err)
@@ -295,11 +302,19 @@ func runWithContext(ctx context.Context, args []string, logger *slog.Logger) err
 	connectOpts = append(connectOpts, connect.WithWillOutcomeRecorder(metricsRegistry))
 	subscribeOpts = append(subscribeOpts, subscribe.WithMetrics(metricsRegistry))
 	publishOpts = append(publishOpts, publish.WithMetrics(metricsRegistry))
+	tenantLimits, err := newTenantLimitService(securityBundle, metricsRegistry, logger)
+	if err != nil {
+		return fmt.Errorf("create tenant limits: %w", err)
+	}
 	if securityBundle != nil {
 		connectOpts = append(connectOpts, connect.WithSecurity(jwtProvider, mtlsProvider, securityBundle.Policy))
 		subscribeOpts = append(subscribeOpts, subscribe.WithPolicy(securityBundle.Policy))
 		publishOpts = append(publishOpts, publish.WithPolicy(securityBundle.Policy))
 		tcpConfigPolicy = securityBundle.Policy
+		if tenantLimits != nil {
+			connectOpts = append(connectOpts, connect.WithTenantLimits(tenantLimits, sessions))
+			subscribeOpts = append(subscribeOpts, subscribe.WithTenantLimits(tenantLimits))
+		}
 	}
 
 	connections, err := connect.New(systemClock, sessions, deliveries, routes, systemScheduler, willBridge, connectOpts...)
@@ -340,6 +355,7 @@ func runWithContext(ctx context.Context, args []string, logger *slog.Logger) err
 				ClientCertificateExtractor: tlsadapter.ExtractVerifiedClientCertificateDTO,
 				Policy:                     tcpConfigPolicy,
 				Metrics:                    metricsRegistry,
+				TenantLimits:               tenantLimits,
 			},
 			decoder,
 			encoder,

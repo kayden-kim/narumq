@@ -19,38 +19,21 @@ func (m mockTLSConn) ConnectionState() tls.ConnectionState {
 	return m.state
 }
 
-func TestListen_NilConfig(t *testing.T) {
-	listener, err := Listen("tcp", "127.0.0.1:0", nil)
+func TestNewListenerValidatesDependencies(t *testing.T) {
+	listener, err := NewListener(nil, nil)
 	if !errors.Is(err, ErrNilConfig) {
 		t.Fatalf("expected ErrNilConfig, got %v", err)
 	}
 	if listener != nil {
 		listener.Close()
 	}
-}
-
-func TestListen_InvalidAddress(t *testing.T) {
-	tempDir := t.TempDir()
-	ca := generateCA(t, "Root CA")
-	server := generateServerCert(t, ca, "localhost", []string{"127.0.0.1"})
-	certPath := writeTempFile(t, tempDir, "server.crt", server.certPEM)
-	keyPath := writeTempFile(t, tempDir, "server.key", server.keyPEM)
-
-	cfg, err := BuildTLSConfig(Config{CertFile: certPath, KeyFile: keyPath})
-	if err != nil {
-		t.Fatalf("BuildTLSConfig error: %v", err)
-	}
-
-	listener, err := Listen("tcp", "999.999.999.999:99999", cfg)
-	if err == nil {
-		if listener != nil {
-			listener.Close()
-		}
-		t.Fatal("expected listen error for invalid address, got nil")
+	listener, err = NewListener(nil, &tls.Config{MinVersion: tls.VersionTLS12})
+	if !errors.Is(err, ErrNilListener) || listener != nil {
+		t.Fatalf("expected nil listener and ErrNilListener, got %v, %v", listener, err)
 	}
 }
 
-func TestListen_SuccessAndHandshake(t *testing.T) {
+func TestNewListenerSuccessAndHandshake(t *testing.T) {
 	tempDir := t.TempDir()
 	ca := generateCA(t, "Root CA")
 	server := generateServerCert(t, ca, "localhost", []string{"127.0.0.1"})
@@ -65,9 +48,14 @@ func TestListen_SuccessAndHandshake(t *testing.T) {
 		t.Fatalf("BuildTLSConfig error: %v", err)
 	}
 
-	listener, err := Listen("tcp", "127.0.0.1:0", tlsConfig)
+	inner, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
-		t.Fatalf("Listen error: %v", err)
+		t.Fatalf("net.Listen error: %v", err)
+	}
+	defer inner.Close()
+	listener, err := NewListener(inner, tlsConfig)
+	if err != nil {
+		t.Fatalf("NewListener error: %v", err)
 	}
 	defer listener.Close()
 

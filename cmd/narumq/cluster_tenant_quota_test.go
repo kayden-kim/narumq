@@ -68,16 +68,16 @@ func TestClusterTenantQuotaControllerLogsCommittedMismatchOnce(t *testing.T) {
 func TestTenantQuotaRejectionReporterRateLimitsByTenantAndDimension(t *testing.T) {
 	var reporter tenantQuotaRejectionReporter
 	now := time.Unix(1_000, 0)
-	if !reporter.shouldLog("tenant-a", membership.TenantQuotaRetainedBytes, now) {
+	if !reporter.shouldLog("tenant-a", string(membership.TenantQuotaRetainedBytes), now) {
 		t.Fatal("first rejection was suppressed")
 	}
-	if reporter.shouldLog("tenant-a", membership.TenantQuotaRetainedBytes, now.Add(9*time.Second)) {
+	if reporter.shouldLog("tenant-a", string(membership.TenantQuotaRetainedBytes), now.Add(9*time.Second)) {
 		t.Fatal("rejection inside the 10-second window was not rate-limited")
 	}
-	if !reporter.shouldLog("tenant-a", membership.TenantQuotaOfflineQueueBytes, now.Add(time.Second)) {
+	if !reporter.shouldLog("tenant-a", string(membership.TenantQuotaOfflineQueueBytes), now.Add(time.Second)) {
 		t.Fatal("different quota dimension was incorrectly rate-limited")
 	}
-	if !reporter.shouldLog("tenant-a", membership.TenantQuotaRetainedBytes, now.Add(10*time.Second)) {
+	if !reporter.shouldLog("tenant-a", string(membership.TenantQuotaRetainedBytes), now.Add(10*time.Second)) {
 		t.Fatal("rejection at the end of the 10-second window was rate-limited")
 	}
 }

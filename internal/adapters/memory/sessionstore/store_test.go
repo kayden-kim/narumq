@@ -117,3 +117,129 @@ func TestMemorySessionRepository_SessionKeyMultiTenant(t *testing.T) {
 		t.Fatalf("LoadKey(keyB) unexpectedly affected: (%#v, %v, %v)", loadedB, foundB, err)
 	}
 }
+
+// Traceability: TEN-06, TEN-07; docs/specs/tenancy-and-security.md §5.2.
+func TestTenantSessionCountsTrackLifecycleChanges(t *testing.T) {
+	repository := New()
+	tenantA, err := tenancy.NewTenantID("tenant-a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	tenantB, err := tenancy.NewTenantID("tenant-b")
+	if err != nil {
+		t.Fatal(err)
+	}
+	keyA, err := tenancy.NewSessionKey(tenantA, "client-a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	keyB, err := tenancy.NewSessionKey(tenantA, "client-b")
+	if err != nil {
+		t.Fatal(err)
+	}
+	keyOtherTenant, err := tenancy.NewSessionKey(tenantB, "client-a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertCounts := func(tenantID tenancy.TenantID, wantSessions, wantConnected int) {
+		t.Helper()
+		sessions, connected := repository.TenantSessionCounts(tenantID)
+		if sessions != wantSessions || connected != wantConnected {
+			t.Fatalf("TenantSessionCounts(%q) = (%d, %d), want (%d, %d)", tenantID.String(), sessions, connected, wantSessions, wantConnected)
+		}
+	}
+	assertCounts(tenantA, 0, 0)
+	assertCounts(tenantB, 0, 0)
+
+	now := time.Unix(100, 0)
+	stateA, _, err := session.Open(nil, mqtt.Connect{Version: mqtt.ProtocolV5, ClientID: keyA.ClientID(), SessionExpiryInterval: 10}, now, keyA)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := repository.Save(stateA); err != nil {
+		t.Fatal(err)
+	}
+	assertCounts(tenantA, 1, 1)
+
+	disconnected, err := stateA.Disconnect(now, session.DisconnectNormal)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := repository.Save(disconnected.Lifecycle); err != nil {
+		t.Fatal(err)
+	}
+	assertCounts(tenantA, 1, 0)
+
+	reconnected, _, err := session.Open(&disconnected.Lifecycle, mqtt.Connect{Version: mqtt.ProtocolV5, ClientID: keyA.ClientID(), SessionExpiryInterval: 10}, now.Add(time.Second), keyA)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := repository.SaveKey(keyA, reconnected); err != nil {
+		t.Fatal(err)
+	}
+	assertCounts(tenantA, 1, 1)
+
+	stateB, _, err := session.Open(nil, mqtt.Connect{Version: mqtt.ProtocolV5, ClientID: keyB.ClientID(), SessionExpiryInterval: 10}, now, keyB)
+	if err != nil {
+		t.Fatal(err)
+	}
+	detachedB, err := stateB.Disconnect(now, session.DisconnectNormal)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := repository.SaveKey(keyB, detachedB.Lifecycle); err != nil {
+		t.Fatal(err)
+	}
+
+	otherTenantState, _, err := session.Open(nil, mqtt.Connect{Version: mqtt.ProtocolV5, ClientID: keyOtherTenant.ClientID(), SessionExpiryInterval: 10}, now, keyOtherTenant)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := repository.SaveKey(keyOtherTenant, otherTenantState); err != nil {
+		t.Fatal(err)
+	}
+	assertCounts(tenantA, 2, 1)
+	assertCounts(tenantB, 1, 1)
+
+	if err := repository.Delete(keyA.ClientID()); err != nil {
+		t.Fatal(err)
+	}
+	assertCounts(tenantA, 2, 1)
+	if err := repository.DeleteKey(keyA); err != nil {
+		t.Fatal(err)
+	}
+	assertCounts(tenantA, 1, 0)
+	if err := repository.DeleteKey(keyA); err != nil {
+		t.Fatal(err)
+	}
+	assertCounts(tenantA, 1, 0)
+	if err := repository.DeleteKey(keyB); err != nil {
+		t.Fatal(err)
+	}
+	assertCounts(tenantA, 0, 0)
+	assertCounts(tenantB, 1, 1)
+	if err := repository.DeleteKey(keyOtherTenant); err != nil {
+		t.Fatal(err)
+	}
+	assertCounts(tenantB, 0, 0)
+}
+
+// Traceability: TEN-06, TEN-07; docs/specs/tenancy-and-security.md §5.2.
+func TestTenantSessionCountsNilAndUnkeyedRepository(t *testing.T) {
+	var nilRepository *MemorySessionRepository
+	if sessions, connected := nilRepository.TenantSessionCounts(tenancy.TenantID{}); sessions != 0 || connected != 0 {
+		t.Fatalf("nil TenantSessionCounts() = (%d, %d), want (0, 0)", sessions, connected)
+	}
+
+	repository := New()
+	state, _, err := session.Open(nil, mqtt.Connect{Version: mqtt.ProtocolV5, ClientID: "unkeyed"}, time.Unix(100, 0))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := repository.Save(state); err != nil {
+		t.Fatal(err)
+	}
+	if sessions, connected := repository.TenantSessionCounts(tenancy.TenantID{}); sessions != 0 || connected != 0 {
+		t.Fatalf("unkeyed TenantSessionCounts() = (%d, %d), want (0, 0)", sessions, connected)
+	}
+}

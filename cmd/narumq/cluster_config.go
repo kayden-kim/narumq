@@ -138,6 +138,10 @@ type clusterMQTT struct {
 	TCPListenAddress   string `json:"tcpListenAddress"`
 	TLSListenAddress   string `json:"tlsListenAddress"`
 	SecurityConfigFile string `json:"securityConfigFile"`
+	TCPMaxConnections  int    `json:"tcpMaxConnections"`
+	TCPConnectionRate  int    `json:"tcpConnectionRate"`
+	TLSMaxConnections  int    `json:"tlsMaxConnections"`
+	TLSConnectionRate  int    `json:"tlsConnectionRate"`
 }
 
 func loadClusterConfigFile(path string) (clusterConfigFile, error) {
@@ -349,6 +353,18 @@ func validateClusterConfig(config clusterConfigFile) error {
 	}
 	if !validRequiredPath(config.MQTT.SecurityConfigFile) {
 		return errors.New("mqtt securityConfigFile is required")
+	}
+	if config.MQTT.TCPMaxConnections < 0 || config.MQTT.TCPMaxConnections > 1_000_000 ||
+		config.MQTT.TCPConnectionRate < 0 || config.MQTT.TCPConnectionRate > 1_000_000 ||
+		config.MQTT.TLSMaxConnections < 0 || config.MQTT.TLSMaxConnections > 1_000_000 ||
+		config.MQTT.TLSConnectionRate < 0 || config.MQTT.TLSConnectionRate > 1_000_000 {
+		return errors.New("mqtt connection limits must be between 0 and 1000000")
+	}
+	if config.MQTT.TCPListenAddress == "" && (config.MQTT.TCPMaxConnections != 0 || config.MQTT.TCPConnectionRate != 0) {
+		return errors.New("mqtt tcp connection limits require tcpListenAddress")
+	}
+	if config.MQTT.TLSListenAddress == "" && (config.MQTT.TLSMaxConnections != 0 || config.MQTT.TLSConnectionRate != 0) {
+		return errors.New("mqtt tls connection limits require tlsListenAddress")
 	}
 	if config.TenantQuotas != nil {
 		if config.TenantQuotas.Version == 0 {

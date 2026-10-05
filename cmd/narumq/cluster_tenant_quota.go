@@ -121,7 +121,7 @@ func (controller *clusterTenantQuotaController) setMismatch(mismatch bool, confi
 
 type tenantQuotaRejectionLogKey struct {
 	tenantID  string
-	dimension membership.TenantQuotaDimension
+	dimension string
 }
 
 type tenantQuotaRejectionReporter struct {
@@ -129,7 +129,7 @@ type tenantQuotaRejectionReporter struct {
 	lastLog map[tenantQuotaRejectionLogKey]time.Time
 }
 
-func (reporter *tenantQuotaRejectionReporter) shouldLog(tenantID string, dimension membership.TenantQuotaDimension, now time.Time) bool {
+func (reporter *tenantQuotaRejectionReporter) shouldLog(tenantID string, dimension string, now time.Time) bool {
 	reporter.mu.Lock()
 	defer reporter.mu.Unlock()
 	if reporter.lastLog == nil {
@@ -154,7 +154,7 @@ func (runtime *clusterRuntime) reportTenantQuotaRejection(rejection *membership.
 			return
 		}
 	}
-	if !runtime.tenantQuotaRejectionLog.shouldLog(label, rejection.Dimension, time.Now()) || runtime.logger == nil {
+	if !runtime.tenantQuotaRejectionLog.shouldLog(label, string(rejection.Dimension), time.Now()) || runtime.logger == nil {
 		return
 	}
 	runtime.logger.Warn("tenant storage quota rejected a committed mutation",

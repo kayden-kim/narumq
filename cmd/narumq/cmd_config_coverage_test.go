@@ -328,6 +328,7 @@ func TestParseClusterConfigRejectsUnreadableAndStructurallyInvalidJSON(t *testin
 		{name: "missing management key", input: strings.Replace(valid, `"listenAddress":"127.0.0.1:18080",`, "", 1), want: `missing required field "listenAddress"`},
 		{name: "missing mqtt key", input: strings.Replace(valid, `"tcpListenAddress":"",`, "", 1), want: `missing required field "tcpListenAddress"`},
 		{name: "wrong scalar type", input: strings.Replace(valid, `"nodeId":1`, `"nodeId":"1"`, 1), want: "invalid JSON or field types"},
+		{name: "fractional connection limit", input: strings.Replace(valid, `"tcpMaxConnections":0`, `"tcpMaxConnections":1.5`, 1), want: "invalid JSON or field types"},
 	}
 	for _, test := range cases {
 		t.Run(test.name, func(t *testing.T) {
@@ -356,6 +357,15 @@ func TestValidateClusterConfigReportsFirstInvalidField(t *testing.T) {
 		{name: "mqtt TCP invalid", edit: func(c *clusterConfigFile) { c.MQTT.TCPListenAddress = "127.0.0.1:70000" }, want: "mqtt listener addresses"},
 		{name: "mqtt TLS invalid", edit: func(c *clusterConfigFile) { c.MQTT.TLSListenAddress = "tls.example" }, want: "mqtt listener addresses"},
 		{name: "missing security file", edit: func(c *clusterConfigFile) { c.MQTT.SecurityConfigFile = "" }, want: "mqtt securityConfigFile is required"},
+		{name: "mqtt connection limit range", edit: func(c *clusterConfigFile) { c.MQTT.TCPMaxConnections = 1_000_001 }, want: "mqtt connection limits must be between 0 and 1000000"},
+		{name: "mqtt TCP limits require listener", edit: func(c *clusterConfigFile) {
+			c.MQTT.TCPListenAddress = ""
+			c.MQTT.TCPConnectionRate = 5
+		}, want: "mqtt tcp connection limits require tcpListenAddress"},
+		{name: "mqtt TLS limits require listener", edit: func(c *clusterConfigFile) {
+			c.MQTT.TLSListenAddress = ""
+			c.MQTT.TLSMaxConnections = 1
+		}, want: "mqtt tls connection limits require tlsListenAddress"},
 		{name: "two bootstrap members", edit: func(c *clusterConfigFile) { c.BootstrapMembers = c.BootstrapMembers[:2] }, want: "exactly three members"},
 		{name: "zero member ID", edit: func(c *clusterConfigFile) { c.BootstrapMembers[0].MemberID = 0 }, want: "uniquely sorted by positive memberId"},
 		{name: "member wildcard address", edit: func(c *clusterConfigFile) { c.BootstrapMembers[1].Address = "0.0.0.0:19002" }, want: "bootstrap member identity is invalid"},

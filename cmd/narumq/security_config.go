@@ -13,6 +13,7 @@ import (
 	"time"
 
 	authenticationadapter "narumq/internal/adapters/authentication"
+	"narumq/internal/application/tenantlimit"
 	"narumq/internal/domain/security"
 	"narumq/internal/domain/tenancy"
 )
@@ -22,6 +23,32 @@ type rawSecurityConfig struct {
 	Identities     []rawIdentityConfig     `json:"identities"`
 	MTLSIdentities []rawMTLSIdentityConfig `json:"mtlsIdentities"`
 	ACL            []rawACLRuleConfig      `json:"acl"`
+	TenantLimits   *rawTenantLimitsConfig  `json:"tenantLimits"`
+}
+
+type rawTenantLimitValues struct {
+	MaxConnections    *uint64 `json:"maxConnections"`
+	MaxSessions       *uint64 `json:"maxSessions"`
+	MaxSubscriptions  *uint64 `json:"maxSubscriptions"`
+	MessagesPerSecond *uint64 `json:"messagesPerSecond"`
+	BytesPerSecond    *uint64 `json:"bytesPerSecond"`
+	MaxPayloadBytes   *uint64 `json:"maxPayloadBytes"`
+}
+
+type rawTenantLimitsConfig struct {
+	MaxWait *string                  `json:"maxWait"`
+	Default rawTenantLimitValues     `json:"default"`
+	Tenants []rawTenantLimitOverride `json:"tenants"`
+}
+
+type rawTenantLimitOverride struct {
+	TenantID          string  `json:"tenantId"`
+	MaxConnections    *uint64 `json:"maxConnections"`
+	MaxSessions       *uint64 `json:"maxSessions"`
+	MaxSubscriptions  *uint64 `json:"maxSubscriptions"`
+	MessagesPerSecond *uint64 `json:"messagesPerSecond"`
+	BytesPerSecond    *uint64 `json:"bytesPerSecond"`
+	MaxPayloadBytes   *uint64 `json:"maxPayloadBytes"`
 }
 
 type rawJWTConfig struct {
@@ -62,11 +89,12 @@ type rawACLRuleConfig struct {
 	TopicFilter string `json:"topicFilter"`
 }
 
-// SecurityBundle encapsulates validated authentication methods and authorization policy.
+// SecurityBundle encapsulates validated authentication methods, policy and optional tenant limits.
 type SecurityBundle struct {
 	JWTConfig    *authenticationadapter.Config
 	MTLSBindings []authenticationadapter.ClientCertificateIdentityBinding
 	Policy       security.Policy
+	TenantLimits *tenantlimit.Profile
 }
 
 // loadSecurityConfigFile reads and strictly decodes a JSON security configuration file.
@@ -106,11 +134,81 @@ func parseSecurityConfig(reader io.Reader) (*SecurityBundle, error) {
 		return nil, err
 	}
 
+	tenantLimits, err := validateTenantLimits(raw.TenantLimits)
+	if err != nil {
+		return nil, err
+	}
+
 	return &SecurityBundle{
 		JWTConfig:    jwtConfig,
 		MTLSBindings: mtlsBindings,
 		Policy:       policy,
+		TenantLimits: tenantLimits,
 	}, nil
+}
+
+func validateTenantLimits(raw *rawTenantLimitsConfig) (*tenantlimit.Profile, error) {
+	if raw == nil {
+		return nil, nil
+	}
+	if len(raw.Tenants) > tenantlimit.MaxTenantOverrides {
+		return nil, fmt.Errorf("invalid tenantLimits: too many tenant overrides")
+	}
+	profile := &tenantlimit.Profile{MaxWait: tenantlimit.DefaultMaxWait, Default: resolveTenantLimitValues(raw.Default), Tenants: make(map[tenancy.TenantID]tenantlimit.Limits, len(raw.Tenants))}
+	if raw.MaxWait != nil {
+		maxWait, err := time.ParseDuration(*raw.MaxWait)
+		if err != nil {
+			return nil, fmt.Errorf("invalid tenantLimits: maxWait: %w", err)
+		}
+		profile.MaxWait = maxWait
+	}
+	for _, override := range raw.Tenants {
+		tenantID, err := tenancy.NewTenantID(override.TenantID)
+		if err != nil {
+			return nil, fmt.Errorf("invalid tenantLimits: tenantId: %w", err)
+		}
+		if _, exists := profile.Tenants[tenantID]; exists {
+			return nil, fmt.Errorf("invalid tenantLimits: duplicate tenantId %q", override.TenantID)
+		}
+		limits := profile.Default
+		applyTenantLimitValues(&limits, rawTenantLimitValues{
+			MaxConnections: override.MaxConnections, MaxSessions: override.MaxSessions,
+			MaxSubscriptions: override.MaxSubscriptions, MessagesPerSecond: override.MessagesPerSecond,
+			BytesPerSecond: override.BytesPerSecond, MaxPayloadBytes: override.MaxPayloadBytes,
+		})
+		profile.Tenants[tenantID] = limits
+	}
+	if err := tenantlimit.ValidateProfile(*profile); err != nil {
+		return nil, fmt.Errorf("invalid tenantLimits: %w", err)
+	}
+	return profile, nil
+}
+
+func resolveTenantLimitValues(raw rawTenantLimitValues) tenantlimit.Limits {
+	var limits tenantlimit.Limits
+	applyTenantLimitValues(&limits, raw)
+	return limits
+}
+
+func applyTenantLimitValues(limits *tenantlimit.Limits, raw rawTenantLimitValues) {
+	if raw.MaxConnections != nil {
+		limits.MaxConnections = *raw.MaxConnections
+	}
+	if raw.MaxSessions != nil {
+		limits.MaxSessions = *raw.MaxSessions
+	}
+	if raw.MaxSubscriptions != nil {
+		limits.MaxSubscriptions = *raw.MaxSubscriptions
+	}
+	if raw.MessagesPerSecond != nil {
+		limits.MessagesPerSecond = *raw.MessagesPerSecond
+	}
+	if raw.BytesPerSecond != nil {
+		limits.BytesPerSecond = *raw.BytesPerSecond
+	}
+	if raw.MaxPayloadBytes != nil {
+		limits.MaxPayloadBytes = *raw.MaxPayloadBytes
+	}
 }
 
 func validateAuthenticationConfig(

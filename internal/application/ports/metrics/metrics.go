@@ -51,6 +51,17 @@ type WillOutcomeRecorder interface {
 	WillOutcome(reason string)
 }
 
+// Listener admission rejection reasons (fixed cardinality).
+const (
+	ListenerAdmissionReasonMaxConnections = "max_connections"
+	ListenerAdmissionReasonConnectionRate = "connection_rate"
+)
+
+// ListenerAdmissionRecorder records sockets closed by listener admission limits before MQTT CONNECT.
+type ListenerAdmissionRecorder interface {
+	ListenerAdmissionRejected(transport string, reason string)
+}
+
 // MetricsRecorder records operational metrics for NaruMQ broker.
 // Implementations must strictly enforce label cardinality limits:
 // client identifiers, IPs, arbitrary topics, or tokens must NEVER be used as metric labels.

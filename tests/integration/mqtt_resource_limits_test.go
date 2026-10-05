@@ -3,13 +3,18 @@ package integration
 import (
 	"bytes"
 	"fmt"
+	"io"
 	"net"
 	"runtime"
 	"runtime/pprof"
+	"strings"
 	"testing"
 	"time"
 
+	"narumq/internal/adapters/clock"
+	metricsadapter "narumq/internal/adapters/metrics"
 	tcpadapter "narumq/internal/adapters/tcp"
+	portsmetrics "narumq/internal/application/ports/metrics"
 	"narumq/internal/domain/mqtt"
 )
 
@@ -135,9 +140,9 @@ func requireResourceClosed(t *testing.T, socket net.Conn, timeout time.Duration)
 		t.Fatal(err)
 	}
 	var value [1]byte
-	_, err := socket.Read(value[:])
-	if err == nil {
-		t.Fatal("connection remained open or sent unexpected bytes")
+	n, err := socket.Read(value[:])
+	if n != 0 || err == nil {
+		t.Fatalf("connection remained open or sent unexpected bytes: n=%d err=%v", n, err)
 	}
 	if network, ok := err.(net.Error); ok && network.Timeout() {
 		t.Fatalf("connection did not close: %v", err)
@@ -308,5 +313,106 @@ func TestMQTTResourceLimitsReleaseConnectionsGoroutinesAndMemory(t *testing.T) {
 	t.Logf("cleanup goroutines: baseline=%d final=%d; heap: baseline=%d final=%d", baselineGoroutines, runtime.NumGoroutine(), baseline.HeapAlloc, measured.HeapAlloc)
 	if measured.HeapAlloc > baseline.HeapAlloc+16<<20 {
 		t.Fatalf("cleanup heap %d exceeds baseline %d + 16 MiB", measured.HeapAlloc, baseline.HeapAlloc)
+	}
+}
+
+// Traceability: PRD MQTT-09/MQTT-11; docs/specs/mqtt-protocol-and-session.md §7.1.
+func TestMQTTListenerAdmissionClosesConnectionsAboveMaximum(t *testing.T) {
+	t.Parallel()
+	registry := metricsadapter.NewRegistry()
+	fixture := newIngressFixtureWithAdmission(t, tcpadapter.ListenerAdmissionConfig{
+		Transport: portsmetrics.TransportTCP, MaxConnections: 1,
+		Clock: clock.SystemClock{}, Recorder: registry,
+	})
+	defer fixture.close(t)
+	first, _ := connectResourceClient(t, fixture, mqtt.Connect{Version: mqtt.ProtocolV5, ClientID: "maximum-first", CleanStart: true})
+
+	secondListener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer secondListener.Close()
+	if err := fixture.server.AddListener(secondListener); err != nil {
+		t.Fatal(err)
+	}
+	independent, err := net.DialTimeout("tcp", secondListener.Addr().String(), time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer independent.Close()
+	writePacket(t, independent, fixture.encoder, &mqtt.Connect{Version: mqtt.ProtocolV5, ClientID: "independent", CleanStart: true})
+	if ack := readPacket(t, independent, fixture.decoder, mqtt.ProtocolV5).(*mqtt.ConnAck); ack.ReasonCode != 0 {
+		t.Fatalf("independent listener CONNACK = %#v", ack)
+	}
+
+	for _, version := range []mqtt.ProtocolVersion{mqtt.ProtocolV5, mqtt.ProtocolV311} {
+		socket := fixture.dial(t)
+		wire, err := fixture.encoder.Append(nil, &mqtt.Connect{Version: version, ClientID: "maximum-rejected", CleanStart: true})
+		if err != nil {
+			t.Fatal(err)
+		}
+		// Admission can close the raw socket before this write reaches the server.
+		_, _ = socket.Write(wire)
+		requireResourceClosed(t, socket, 2*time.Second)
+		socket.Close()
+	}
+	first.Close()
+	// Server cleanup closes the admitted socket asynchronously. Retry only until
+	// the slot becomes available, keeping the wire CONNACK as the success proof.
+	deadline := time.Now().Add(2 * time.Second)
+	wire, err := fixture.encoder.Append(nil, &mqtt.Connect{Version: mqtt.ProtocolV311, ClientID: "maximum-released", CleanStart: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	rejectionCount := 2
+	for {
+		socket := fixture.dial(t)
+		_ = socket.SetDeadline(deadline)
+		_, writeErr := socket.Write(wire)
+		var ack [4]byte
+		_, readErr := io.ReadFull(socket, ack[:])
+		socket.Close()
+		if writeErr == nil && readErr == nil {
+			if ack != [4]byte{0x20, 0x02, 0x00, 0x00} {
+				t.Fatalf("released slot CONNACK = % X", ack)
+			}
+			break
+		}
+		rejectionCount++
+		if time.Now().After(deadline) {
+			t.Fatalf("slot was not released: write=%v read=%v", writeErr, readErr)
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	wantMetric := fmt.Sprintf("narumq_mqtt_listener_admission_rejected_total{transport=\"tcp\",reason=\"max_connections\"} %d\n", rejectionCount)
+	if !strings.Contains(string(registry.Render(false)), wantMetric) {
+		t.Fatalf("missing maximum rejection count %d", rejectionCount)
+	}
+}
+
+// Traceability: PRD MQTT-09/MQTT-11; docs/specs/mqtt-protocol-and-session.md §7.1.
+func TestMQTTListenerAdmissionClosesConnectionsAboveRate(t *testing.T) {
+	t.Parallel()
+	testClock := &ingressClock{now: time.Date(2026, time.January, 1, 0, 0, 0, 0, time.UTC)}
+	registry := metricsadapter.NewRegistry()
+	fixture := newIngressFixtureWithAdmission(t, tcpadapter.ListenerAdmissionConfig{
+		Transport: portsmetrics.TransportTCP, ConnectionRate: 1, Clock: testClock, Recorder: registry,
+	})
+	defer fixture.close(t)
+	_, _ = connectResourceClient(t, fixture, mqtt.Connect{Version: mqtt.ProtocolV5, ClientID: "rate-first", CleanStart: true})
+	socket := fixture.dial(t)
+	defer socket.Close()
+	wire, err := fixture.encoder.Append(nil, &mqtt.Connect{Version: mqtt.ProtocolV311, ClientID: "rate-rejected", CleanStart: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, _ = socket.Write(wire)
+	requireResourceClosed(t, socket, 2*time.Second)
+	// Close precedes recording in Accept; the successful third CONNECT orders
+	// observation after the rejected socket's Metric update.
+	testClock.Advance(time.Second)
+	_, _ = connectResourceClient(t, fixture, mqtt.Connect{Version: mqtt.ProtocolV311, ClientID: "rate-refilled", CleanStart: true})
+	if !strings.Contains(string(registry.Render(false)), "narumq_mqtt_listener_admission_rejected_total{transport=\"tcp\",reason=\"connection_rate\"} 1\n") {
+		t.Fatal("rate rejection metric did not count the closed socket")
 	}
 }

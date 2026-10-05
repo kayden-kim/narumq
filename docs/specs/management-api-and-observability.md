@@ -207,7 +207,21 @@ Dynamic cluster의 readiness 거절은 `cluster readiness rejected` 구조화 �
 
 최소 범주는 connection/session/subscription, message·packet·ACK, latency, cluster·replication, storage, auth·ACL, drain과 process resource다. `narumq_node_drain_transitions_total{phase}`는 committed node drain 상태를 phase별로 집계하며, label은 8개 유효 drain phase만 허용한다. Dynamic cluster의 저장 quota는 `narumq_tenant_quota_rejections_total{tenant,dimension}` counter와 `narumq_tenant_quota_profile_committed`, `narumq_tenant_quota_profile_version`, `narumq_tenant_quota_config_mismatch` gauge를 제공한다. `tenant`는 처음 본 값 1,024개까지만 그대로 보존하고 나머지는 `_overflow`로 합친다. `dimension`은 `retained_bytes`, `offline_queue_messages`, `offline_queue_bytes`, `storage_bytes`만 허용한다. 기존 Metric 이름과 histogram bucket은 `SPEC-TBD-07`에서 확정한다. |
 
+`narumq_tenant_limit_rejections_total{tenant,dimension}` counter는 tenant 연결·traffic
+한도 거절마다 증가한다. `dimension`은 `connections`, `sessions`, `subscriptions`,
+`message_rate`, `byte_rate`, `payload_size`만 허용한다. `tenant` label은 저장 quota
+metric과 처음 본 tenant 1,024개의 집합을 공유한다. 나머지는 `_overflow`로 합친다.
+Warn log `tenant limit rejected a request`는 tenant·dimension마다 10초에 한 번만 남긴다.
+동작은 [Tenant §5.2](tenancy-and-security.md#52-연결-상태와-traffic-한도)를 따른다.
+
 `narumq_will_outcomes_total{reason}` counter는 [Drain §5](drain-and-rolling-update.md#5-will-판정과-관측)의 6개 reason만 허용한다. 모든 mode에서 6개 series를 0부터 항상 같은 순서로 render한다. 알 수 없는 reason은 무시하며 임의 label을 추가하지 않는다.
+
+`narumq_mqtt_listener_admission_rejected_total{transport,reason}` counter는 CONNECT 전에
+listener 한도로 닫은 socket을 센다. `transport`는 `tcp`, `tls`만 허용한다.
+`reason`은 `max_connections`, `connection_rate`만 허용한다. 모든 mode에서 4개
+series를 0부터 같은 순서로 render한다. Transport 순서는 `tcp`, `tls`이며 각
+transport 안의 reason 순서는 `max_connections`, `connection_rate`다. 알 수 없는
+값은 무시한다.
 
 기본 label에 원문 `clientId`, username, IP, 임의 topic, request ID와 token claim을 넣어서는 안 된다. 제한된 exact topic Metric은 P1 opt-in resource로 제공하며 tenant, 최대 등록 수와 TTL을 적용해야 한다.
 

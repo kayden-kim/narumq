@@ -85,19 +85,32 @@ func newIngressFixtureWithDeliveryCapacity(t *testing.T, deliveryCapacity int) *
 
 func newIngressFixtureWithCapacities(t *testing.T, deliveryCapacity, retainedMessageCapacity, retainedByteCapacity int, clockSource applicationclock.Clock) *ingressFixture {
 	t.Helper()
-	return newIngressFixtureWith(t, deliveryCapacity, retainedMessageCapacity, retainedByteCapacity, clockSource, nil)
+	return newIngressFixtureWith(t, deliveryCapacity, retainedMessageCapacity, retainedByteCapacity, clockSource, nil, nil)
 }
 
 func newIngressFixtureWithTCPConfig(t *testing.T, deliveryCapacity int, configure func(*tcpadapter.Config)) *ingressFixture {
 	t.Helper()
-	return newIngressFixtureWith(t, deliveryCapacity, 1024, 1<<20, clock.SystemClock{}, configure)
+	return newIngressFixtureWith(t, deliveryCapacity, 1024, 1<<20, clock.SystemClock{}, configure, nil)
 }
 
-func newIngressFixtureWith(t *testing.T, deliveryCapacity, retainedMessageCapacity, retainedByteCapacity int, clockSource applicationclock.Clock, configure func(*tcpadapter.Config)) *ingressFixture {
+func newIngressFixtureWithAdmission(t *testing.T, admission tcpadapter.ListenerAdmissionConfig) *ingressFixture {
+	t.Helper()
+	return newIngressFixtureWith(t, 64, 1024, 1<<20, admission.Clock, nil, &admission)
+}
+
+func newIngressFixtureWith(t *testing.T, deliveryCapacity, retainedMessageCapacity, retainedByteCapacity int, clockSource applicationclock.Clock, configure func(*tcpadapter.Config), admission *tcpadapter.ListenerAdmissionConfig) *ingressFixture {
 	t.Helper()
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
+	}
+	if admission != nil {
+		inner := listener
+		listener, err = tcpadapter.NewAdmissionListener(inner, *admission)
+		if err != nil {
+			_ = inner.Close()
+			t.Fatal(err)
+		}
 	}
 	routes := routing.NewTable()
 	deliveries, err := deliveryqueue.New(deliveryCapacity)
