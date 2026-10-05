@@ -947,9 +947,9 @@ Suite는 두 target valid인 compare 뒤 실행한다. 새 cluster로 5회 반�
 
 두 실행 모두 두 target의 failure·resource summary는 valid다. 세 round의 SIGKILL·10초 N-1 유지·같은 container 시작·rejoin·resync를 완료했다. Runner의 모든 round는 `recovered=true`이고 RTO 30초 한도 안이다. 이 조건만으로 workload 전체를 valid로 보지 않는다.
 
-Artifact root는 `.artifacts/benchmark/bp06/<위 run ID>/`다. Manifest의 baseline은 `5f6809cc75374a12044921c0f1ed2071cdaf58b3`, `dirty=true`다. 미커밋 변경을 포함한 실행이며 새 확인 commit이나 CI 링크는 없다. Runner image ID는 첫 실행 `sha256:170a842a70aa900ba303ff5d07e2468abad2123e8e9d192b656ab2f2aa0d8822`, 재실행 `sha256:7cf4a63a2cc1f5fa5c8967f1b4009b68824ec1a7ac9ecae3f5ef7d19e3623757`이다. EMQX는 위에 고정한 Enterprise 5.8.8 digest를 유지했다. 두 실행 사이 harness·product·profile·판정 규칙은 바꾸지 않았다.
+Artifact root는 `.artifacts/benchmark/bp06/<위 run ID>/`다. Manifest의 baseline은 `5f6809cc75374a12044921c0f1ed2071cdaf58b3`, `dirty=true`다. 실행 당시에는 미커밋 변경을 포함했으므로 manifest의 baseline·dirty 값은 그대로 보존한다. Runner image ID는 첫 실행 `sha256:170a842a70aa900ba303ff5d07e2468abad2123e8e9d192b656ab2f2aa0d8822`, 재실행 `sha256:7cf4a63a2cc1f5fa5c8967f1b4009b68824ec1a7ac9ecae3f5ef7d19e3623757`이다. EMQX는 위에 고정한 Enterprise 5.8.8 digest를 유지했다. 두 실행 사이 harness·product·profile·판정 규칙은 바꾸지 않았다.
 
-Evidence 단계는 미완료다. Local 실행 결과와 raw artifact는 기록했지만 `AGENTS.md`가 요구하는 CI 실행 링크 또는 확인 커밋 연결은 남아 있다. 위 baseline은 실행에 포함된 미커밋 변경을 확인하는 커밋이 아니다.
+실행 증거의 확인 커밋은 `2811f6cf8104606aa8ea37cb0894b4d641fcec92`(`feat(benchmark): add BP-06 failure recovery smoke harness`)다. 이 커밋은 위 compare 두 번과 아래 local gate에서 검증한 변경을 포함한다. 시험은 커밋 전에 실행했으며 커밋 뒤에 다시 실행하지 않았다. CI 실행 링크는 없다. 확인 커밋 연결 요건은 충족했지만 비교 수용·5회 suite는 미완료다.
 
 아래는 round별 관찰값이다. 시간 단위는 ms다. 값은 소수점 셋째 자리로 반올림했다. `첫 실행`은 위 첫 run, `재실행`은 위 두 번째 run이다. Invalid target의 값은 진단용이며 성능 우열이나 출시 통과 근거로 쓰지 않는다.
 
