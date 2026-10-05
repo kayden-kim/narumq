@@ -99,6 +99,7 @@ func newRuntimeMetricsTestServer(t *testing.T) (net.Listener, *tcpadapter.Server
 			ConnectTimeout:       time.Second,
 			WriteTimeout:         time.Second,
 			ControlQueueCapacity: 2,
+			ReceiveMaximum:       64, PacketReadTimeout: 10 * time.Second,
 		},
 		decoder,
 		encoder,

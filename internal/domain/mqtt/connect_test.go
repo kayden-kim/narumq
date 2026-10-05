@@ -406,3 +406,37 @@ func TestConnectEncoderLeavesDestinationUnchangedOnError_MQTT313(t *testing.T) {
 		t.Fatalf("destination changed after encoder error: %v -> %v", before, destination)
 	}
 }
+
+// Traceability: PRD MQTT-11/MQTT-12/TEST-04/05.
+func TestConnectResourceLimitProperties(t *testing.T) {
+	encoder, _ := NewEncoder(maxRemainingLength)
+	decoder, _ := NewDecoder(maxRemainingLength)
+	for _, input := range []Connect{
+		{Version: ProtocolV5, ClientID: "limits", ReceiveMaximum: 1},
+		{Version: ProtocolV5, ClientID: "limits", MaximumPacketSize: 128},
+		{Version: ProtocolV5, ClientID: "limits", SessionExpiryInterval: 60, ReceiveMaximum: 65535, MaximumPacketSize: ^uint32(0)},
+	} {
+		wire := testEncode(t, encoder, input)
+		packet, _, err := decoder.Decode(wire, ProtocolUnknown)
+		if err != nil || !reflect.DeepEqual(packet, &input) {
+			t.Fatalf("round trip = (%#v, %v), want %#v", packet, err, input)
+		}
+		input.Version = ProtocolV311
+		if _, err := encoder.Append(nil, input); !errors.Is(err, ErrMalformedPacket) {
+			t.Fatalf("v311 resource properties error = %v", err)
+		}
+	}
+	for _, properties := range [][]byte{
+		{0x21, 0, 0}, {0x27, 0, 0, 0, 0},
+		{0x21, 0}, {0x27, 0, 0, 1},
+		{0x21, 0, 1, 0x21, 0, 2},
+		{0x27, 0, 0, 0, 1, 0x27, 0, 0, 0, 2},
+	} {
+		body := []byte{0, 4, 'M', 'Q', 'T', 'T', 5, 2, 0, 0, byte(len(properties))}
+		body = append(body, properties...)
+		body = append(body, 0, 1, 'c')
+		if _, _, err := decoder.Decode(testFrame(0x10, body), ProtocolUnknown); !errors.Is(err, ErrMalformedPacket) {
+			t.Fatalf("properties %x error = %v", properties, err)
+		}
+	}
+}

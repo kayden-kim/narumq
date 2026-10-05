@@ -145,6 +145,22 @@
       ]
     },
     {
+      "id": "MQTT-3.1.2-24",
+      "requirementIds": ["MQTT-11", "TEST-04", "TEST-05"],
+      "tests": [
+        {"name": "TestWriteDeliveriesDiscardsPublishAboveClientMaximumPacketSize", "package": "narumq/internal/adapters/tcp"},
+        {"name": "TestMQTTOutboundDiscardsPacketsAboveClientMaximumPacketSize", "package": "narumq/tests/integration"}
+      ]
+    },
+    {
+      "id": "MQTT-3.1.2-25",
+      "requirementIds": ["MQTT-11", "TEST-04", "TEST-05"],
+      "tests": [
+        {"name": "TestWriteDeliveriesDiscardsPublishAboveClientMaximumPacketSize", "package": "narumq/internal/adapters/tcp"},
+        {"name": "TestMQTTOutboundDiscardsPacketsAboveClientMaximumPacketSize", "package": "narumq/tests/integration"}
+      ]
+    },
+    {
       "id": "MQTT-3.1.2-3",
       "requirementIds": [
         "MQTT-03",
@@ -741,6 +757,22 @@
       ]
     },
     {
+      "id": "MQTT-3.3.4-10",
+      "requirementIds": ["MQTT-11", "TEST-04", "TEST-05"],
+      "tests": [
+        {"name": "TestWriteRecoveredDeliveriesHonorsClientReceiveMaximum", "package": "narumq/internal/adapters/tcp"}
+      ]
+    },
+    {
+      "id": "MQTT-3.3.4-9",
+      "requirementIds": ["MQTT-11", "TEST-04", "TEST-05"],
+      "tests": [
+        {"name": "TestWriteDeliveriesHonorsClientReceiveMaximum", "package": "narumq/internal/adapters/tcp"},
+        {"name": "TestWriteRecoveredDeliveriesHonorsClientReceiveMaximum", "package": "narumq/internal/adapters/tcp"},
+        {"name": "TestMQTTOutboundHonorsClientReceiveMaximum", "package": "narumq/tests/integration"}
+      ]
+    },
+    {
       "id": "MQTT-3.4.2-1",
       "requirementIds": [
         "MQTT-02",
@@ -1021,6 +1053,13 @@
           "name": "TestSubscriptionPacketsRoundTrip_MQTT311_MQTT5",
           "package": "narumq/internal/domain/mqtt"
         }
+      ]
+    },
+    {
+      "id": "MQTT-4.13.1-1",
+      "requirementIds": ["MQTT-11", "MQTT-12", "TEST-04", "TEST-05"],
+      "tests": [
+        {"name": "TestTCPProtocolErrorsAfterConnectDisconnectWithReason", "package": "narumq/internal/adapters/tcp"}
       ]
     },
     {

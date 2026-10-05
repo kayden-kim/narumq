@@ -51,6 +51,11 @@ func variableByteIntegerSize(value int) int {
 	}
 }
 
+// PacketSize returns total packet bytes for a valid MQTT Remaining Length.
+func PacketSize(remainingLength int) int {
+	return 1 + variableByteIntegerSize(remainingLength) + remainingLength
+}
+
 // appendVariableByteInteger appends a canonical MQTT variable byte integer.
 func appendVariableByteInteger(dst []byte, value int) []byte {
 	for {

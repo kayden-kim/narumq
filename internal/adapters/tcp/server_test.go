@@ -253,6 +253,7 @@ func defaultAdapterConfig() Config {
 		ConnectTimeout:       250 * time.Millisecond,
 		WriteTimeout:         100 * time.Millisecond,
 		ControlQueueCapacity: 4,
+		ReceiveMaximum:       64, PacketReadTimeout: 5 * time.Second,
 	}
 }
 

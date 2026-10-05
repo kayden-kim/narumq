@@ -2,6 +2,7 @@ package main
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -115,8 +116,16 @@ func TestRunFlushesRuntimeMetricsOnCancellation(t *testing.T) {
 
 	deadline := time.Now().Add(2 * time.Second)
 	for {
-		if info, err := os.Stat(output); err == nil && info.Size() > 0 {
-			break
+		if data, err := os.ReadFile(output); err == nil && len(data) > 0 {
+			first, _, complete := bytes.Cut(data, []byte{'\n'})
+			var initial struct {
+				CollectedAt time.Time `json:"collectedAt"`
+			}
+			// Wait for a complete initial record and a later clock tick. The
+			// sampler intentionally suppresses equal timestamps on Windows.
+			if err := json.Unmarshal(first, &initial); complete && err == nil && !initial.CollectedAt.IsZero() && time.Now().After(initial.CollectedAt) {
+				break
+			}
 		}
 		if time.Now().After(deadline) {
 			t.Fatal("runtime metrics output did not receive an initial sample")

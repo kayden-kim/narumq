@@ -13,7 +13,7 @@ Broker core는 MQTT, session, routing, delivery, tenancy와 cluster lifecycle �
 | 관련 Architecture | [Project structure](project-structure.md) |
 | 관련 Convention | [Go coding conventions](../conventions/go-coding-conventions.md) |
 | 관련 해설 | [Broker core의 계층 경계](../explainers/broker-core-boundaries.md), [Go 동시성과 backpressure](../explainers/go-concurrency-and-backpressure.md) |
-| 최종 확인일 | 2026-10-04 |
+| 최종 확인일 | 2026-10-05 |
 
 ## Source dependency view
 
@@ -178,6 +178,19 @@ disconnect는 이 두 collection을 삭제하지 않는다. Clean reset 또는 S
 queue boundary에서 outbound state를 다시 읽고, `CONNACK` 뒤에 복구 packet을 전송한다.
 Dynamic cluster의 connected remote-owned QoS 0 delivery는 `publish.RemoteForwarder` port를 통해 `clusterRuntime`으로 전달된다. Runtime은 local committed ownership을 읽고 별도 `NMQFWRD2` lane으로 owner node에 보낸다. Receiver는 ownership과 local queue 등록을 다시 확인한 뒤 `AcceptForwarded`로 enqueue한다. 이 volatile at-most-once 경로는 delivery queue의 node-local ownership이나 durable delivery guarantee를 바꾸지 않는다. Detached persistent session은 별도 offline commit 경로를 먼저 사용한다.
 Dynamic cluster persistent disconnect는 `BeginDetach`로 local enqueue를 차단하고 QoS 0 FIFO를 캡처한다. `DetachSession` 성공 뒤 `FinishDetach(true)`로 local queue를 제거한다. 실패는 `FinishDetach(false)`로 기존 queue를 재개한다. 같은 node의 publish는 queue lock 밖에서 한 번 기다린 뒤 offline·remote·local 순서로 다시 판정한다. Forward delivery는 기다리지 않는다. 세부 상태와 호출 순서는 [Cluster architecture의 detach 전환 절](cluster-architecture.md#detach-전환-local-publish-보호)을 따른다.
+
+### MQTT 연결별 resource limit
+
+외부 동작과 기본값은 [MQTT §7.1](../specs/mqtt-protocol-and-session.md#71-현재-상한과-기본값)이 기준이다. Domain codec은 CONNECT·CONNACK의 두 한도 property를 검증한다. `PacketSize`·`PublishPacketSize`는 전송할 크기를 할당 없이 계산한다. Socket과 deadline은 TCP adapter만 소유한다.
+
+`server.go`의 `readLoop`는 `frame_reader.go`의 `frameReader`로 byte를 모은다. 연결을 만들 때 작은 buffer를 할당한다. 받은 byte가 buffer를 채운 뒤에만 늘린다. 완성 packet을 소비해 남은 byte가 없으면 초기 크기로 반환한다. CONNECT 절대 deadline은 유지한다. CONNECT 뒤에는 KeepAlive deadline과 미완성 packet의 첫 수신 시각을 별도로 보관하고, 둘 가운데 이른 deadline을 socket에 설정한다. 추가 byte만 받았을 때 packet 완성 deadline을 연장하지 않는다.
+
+Reader는 QoS 1/2 PUBLISH를 dispatch하기 전에 `receiving` map에 Packet Identifier를 예약한다. `receiveMu`가 reader와 writer의 접근을 보호한다. 최종 ACK(PUBACK·PUBCOMP·실패 PUBREC)는 `writePacket`에서 같은 mutex를 잡은 채 socket에 쓰고 quota를 반환한다. 이 경계는 ACK를 읽은 client가 즉시 다음 PUBLISH를 보낼 때 이전 quota를 보는 경합을 막는다. Write가 실패하면 quota를 반환하지 않는다. 기존 write timeout이 대기를 제한한다. Cleanup은 map을 비운다. 미완료 QoS 2의 정상 PUBREC과 같은 ID의 DUP는 quota를 반환하거나 추가하지 않는다.
+
+`activate`는 client 한도를 CONNACK 전에 connection에 보관한다. Writer는 QoS 1/2 promotion 전에 남은 client quota를 계산한다. ACK 완료의 기존 delivery wake가 보류한 전송을 다시 시작한다. 복구 항목은 `outbound`와 `recovered`에 함께 남으며 새 delivery보다 먼저 처리한다. 복구 PUBREL은 PUBLISH quota가 없어도 보낸다.
+
+Client packet 한도를 넘는 QoS 0은 queue head에서 완료한다. QoS 1/2는 기존 `PromoteBatch` 뒤 `CompleteOutbound`로 완료하고 Packet Identifier를 반환한다. Cluster도 기존 SEND·COMPLETE commit 경계를 사용한다. 복구 PUBLISH도 같은 크기 판정으로 완료한다. 다른 packet의 초과는 `writePacket`에서 전송 전에 거절한다. Reader 오류의 MQTT 5 DISCONNECT reason은 `disconnectReasonFor`가 고른다. Durable phase lane에서 뒤늦게 발견한 오류의 기존 종료 경로는 바꾸지 않는다.
+
 
 ## 경계를 넘는 값
 

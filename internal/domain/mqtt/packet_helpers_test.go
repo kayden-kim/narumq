@@ -72,7 +72,7 @@ func requireSemanticEqual(t *testing.T, want Packet, got Packet) {
 	switch wantValue := want.(type) {
 	case *Connect:
 		gotValue, ok := got.(*Connect)
-		if !ok || wantValue.Version != gotValue.Version || wantValue.CleanStart != gotValue.CleanStart || wantValue.SessionExpiryInterval != gotValue.SessionExpiryInterval || wantValue.KeepAlive != gotValue.KeepAlive || wantValue.ClientID != gotValue.ClientID || wantValue.HasUsername != gotValue.HasUsername || wantValue.Username != gotValue.Username || wantValue.HasPassword != gotValue.HasPassword || !bytes.Equal(wantValue.Password, gotValue.Password) || !willsEqual(wantValue.Will, gotValue.Will) {
+		if !ok || wantValue.Version != gotValue.Version || wantValue.CleanStart != gotValue.CleanStart || wantValue.SessionExpiryInterval != gotValue.SessionExpiryInterval || wantValue.ReceiveMaximum != gotValue.ReceiveMaximum || wantValue.MaximumPacketSize != gotValue.MaximumPacketSize || wantValue.KeepAlive != gotValue.KeepAlive || wantValue.ClientID != gotValue.ClientID || wantValue.HasUsername != gotValue.HasUsername || wantValue.Username != gotValue.Username || wantValue.HasPassword != gotValue.HasPassword || !bytes.Equal(wantValue.Password, gotValue.Password) || !willsEqual(wantValue.Will, gotValue.Will) {
 			t.Fatalf("CONNECT mismatch:\nwant %#v\ngot  %#v", wantValue, got)
 		}
 	case *ConnAck:

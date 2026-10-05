@@ -83,6 +83,7 @@ func newRunnerIngressFixture(t *testing.T) *runnerIngressFixture {
 			ConnectTimeout:       time.Second,
 			WriteTimeout:         time.Second,
 			ControlQueueCapacity: 16,
+			ReceiveMaximum:       64, PacketReadTimeout: 10 * time.Second,
 		},
 		decoder,
 		encoder,

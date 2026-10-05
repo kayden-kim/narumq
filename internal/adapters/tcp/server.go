@@ -58,6 +58,10 @@ var (
 	ErrProtocol = errors.New("MQTT protocol error")
 	// ErrClusterNotReady means that replicated state cannot safely accept a mutation.
 	ErrClusterNotReady = errors.New("cluster is not ready")
+	// ErrReceiveMaximumExceeded means inbound QoS 1/2 quota is exhausted.
+	ErrReceiveMaximumExceeded = errors.New("MQTT Receive Maximum exceeded")
+	// ErrClientPacketTooLarge means the negotiated outbound packet limit is exceeded.
+	ErrClientPacketTooLarge = errors.New("MQTT packet exceeds the client Maximum Packet Size")
 )
 
 const deliveryRetryInterval = 100 * time.Millisecond
@@ -65,11 +69,15 @@ const deliveryRetryInterval = 100 * time.Millisecond
 // Config bounds packet memory, handshake waiting, socket writes and per-connection
 // control output. Delivery queue capacity is owned by the injected queue.
 type Config struct {
-	Clock                      applicationclock.Clock
-	MaxPacketSize              int
-	ConnectTimeout             time.Duration
-	WriteTimeout               time.Duration
-	ControlQueueCapacity       int
+	Clock                applicationclock.Clock
+	MaxPacketSize        int
+	ConnectTimeout       time.Duration
+	WriteTimeout         time.Duration
+	ControlQueueCapacity int
+	// ReceiveMaximum advertises and caps unacknowledged inbound QoS 1/2 PUBLISH.
+	ReceiveMaximum uint16
+	// PacketReadTimeout bounds one started packet after CONNECT.
+	PacketReadTimeout          time.Duration
 	ClientCertificateExtractor func(net.Conn) (applicationauthentication.ClientCertificateDTO, bool)
 	Policy                     security.Policy
 	Metrics                    portsmetrics.MetricsRecorder
@@ -152,7 +160,10 @@ func NewServer(
 	if config.Clock == nil {
 		return nil, ErrNilClock
 	}
-	if config.MaxPacketSize <= 0 || config.ConnectTimeout <= 0 || config.WriteTimeout <= 0 || config.ControlQueueCapacity <= 0 {
+	if _, err := mqtt.NewDecoder(config.MaxPacketSize); err != nil {
+		return nil, ErrInvalidConfig
+	}
+	if config.ConnectTimeout <= 0 || config.WriteTimeout <= 0 || config.ControlQueueCapacity <= 0 || config.ReceiveMaximum == 0 || config.PacketReadTimeout <= 0 {
 		return nil, ErrInvalidConfig
 	}
 	if config.ClusterMode && (config.LocalMemberID == 0 ||
@@ -293,6 +304,7 @@ func newConnection(server *Server, socket net.Conn) *connection {
 		writerDone:       make(chan struct{}),
 		disconnectReason: session.DisconnectAbnormal,
 		inbound:          make(map[mqtt.PacketIdentifier]inboundState),
+		receiving:        make(map[mqtt.PacketIdentifier]struct{}),
 		outbound:         make(map[mqtt.PacketIdentifier]deliveryqueue.OutboundDTO),
 		packetIDs:        newPacketIDAllocator(),
 	}
@@ -582,6 +594,12 @@ type connection struct {
 	connectingClientID string
 	connectingTracked  bool
 	takeover           atomic.Bool
+	// established is owned by the reader and becomes true after successful CONNACK.
+	established             bool
+	clientReceiveMaximum    uint16
+	clientMaximumPacketSize uint32
+	receiveMu               sync.Mutex
+	receiving               map[mqtt.PacketIdentifier]struct{}
 
 	deliveryMu        sync.Mutex
 	cleaned           bool
@@ -612,6 +630,11 @@ func (connection *connection) run() {
 		if !expectedClose {
 			connection.server.logger.Warn("MQTT connection handling failed", "error", err.Error())
 		}
+		if connection.established && connection.version == mqtt.ProtocolV5 {
+			if reason, ok := disconnectReasonFor(err); ok {
+				_ = connection.enqueueAndWait(&mqtt.Disconnect{Version: mqtt.ProtocolV5, ReasonCode: reason})
+			}
+		}
 	}
 	connection.requestClose()
 	if connection.phases != nil {
@@ -620,6 +643,57 @@ func (connection *connection) run() {
 	<-connection.writerDone
 	connection.cleanup()
 	connection.server.removeActive(connection)
+}
+
+// disconnectReasonFor maps reader failures to MQTT 5 DISCONNECT reasons.
+func disconnectReasonFor(err error) (byte, bool) {
+	switch {
+	case errors.Is(err, mqtt.ErrPacketTooLarge):
+		return 0x95, true
+	case errors.Is(err, ErrReceiveMaximumExceeded):
+		return 0x93, true
+	case errors.Is(err, mqtt.ErrMalformedPacket):
+		return 0x81, true
+	case errors.Is(err, ErrProtocol):
+		return 0x82, true
+	default:
+		return 0, false
+	}
+}
+
+// admitInboundPublish reserves quota once for each still-unacknowledged ID.
+func (connection *connection) admitInboundPublish(packetID mqtt.PacketIdentifier) bool {
+	connection.receiveMu.Lock()
+	defer connection.receiveMu.Unlock()
+	if _, exists := connection.receiving[packetID]; exists {
+		return true
+	}
+	if len(connection.receiving) >= int(connection.server.config.ReceiveMaximum) {
+		return false
+	}
+	connection.receiving[packetID] = struct{}{}
+	return true
+}
+
+// releaseInboundQuota returns quota only after its final ACK is on the wire.
+// The writer holds receiveMu across the final ACK write and quota release so a
+// client that immediately sends another PUBLISH cannot observe stale quota.
+func (connection *connection) releaseInboundQuota(packet mqtt.Packet) {
+	var packetID mqtt.PacketIdentifier
+	switch packet := packet.(type) {
+	case *mqtt.PubAck:
+		packetID = packet.PacketID
+	case *mqtt.PubComp:
+		packetID = packet.PacketID
+	case *mqtt.PubRec:
+		if packet.ReasonCode < 0x80 {
+			return
+		}
+		packetID = packet.PacketID
+	default:
+		return
+	}
+	delete(connection.receiving, packetID)
 }
 
 func (connection *connection) requestClose() {
@@ -648,6 +722,9 @@ func (connection *connection) cleanup() {
 		clear(connection.inbound)
 		clear(connection.outbound)
 		connection.deliveryMu.Unlock()
+		connection.receiveMu.Lock()
+		clear(connection.receiving)
+		connection.receiveMu.Unlock()
 		if connection.accepted {
 			proto := portsmetrics.ProtocolMQTT50
 			if connection.version == mqtt.ProtocolV311 {
@@ -675,25 +752,22 @@ func (connection *connection) cleanup() {
 }
 
 func (connection *connection) readLoop() error {
-	input := make([]byte, connection.server.config.MaxPacketSize+5)
+	reader := newFrameReader(connection.server.config.MaxPacketSize)
 	if err := connection.socket.SetReadDeadline(time.Now().Add(connection.server.config.ConnectTimeout)); err != nil {
 		return err
 	}
-	buffered := 0
 	connected := false
 	version := mqtt.ProtocolUnknown
+	var keepAliveDeadline, partialStarted time.Time
 	for {
-		if buffered == len(input) {
-			return mqtt.ErrPacketTooLarge
+		if err := reader.grow(); err != nil {
+			return err
 		}
-		readCount, readErr := connection.socket.Read(input[buffered:])
-		buffered += readCount
-		for buffered > 0 {
-			packet, consumed, err := connection.server.decoder.Decode(input[:buffered], version)
+		_, readErr := reader.readFrom(connection.socket)
+		consumedAny := false
+		for reader.buffered > 0 {
+			packet, consumed, err := connection.server.decoder.Decode(reader.pending(), version)
 			if errors.Is(err, mqtt.ErrIncompletePacket) {
-				if buffered == len(input) {
-					return mqtt.ErrPacketTooLarge
-				}
 				break
 			}
 			if err != nil {
@@ -704,14 +778,14 @@ func (connection *connection) readLoop() error {
 				}
 				return err
 			}
-			if consumed <= 0 || consumed > buffered {
+			if consumed <= 0 || consumed > reader.buffered {
 				return mqtt.ErrMalformedPacket
 			}
 			if metrics := connection.metrics(); metrics != nil {
 				metrics.PacketReceived(packetTypeName(packet))
 			}
-			copy(input, input[consumed:buffered])
-			buffered -= consumed
+			reader.consume(consumed)
+			consumedAny = true
 			if !connected {
 				connectPacket, ok := packet.(*mqtt.Connect)
 				if !ok {
@@ -724,8 +798,12 @@ func (connection *connection) readLoop() error {
 					return nil
 				}
 				connected = true
+				connection.established = true
 				version = connection.version
 			} else {
+				if publish, ok := packet.(*mqtt.Publish); ok && publish.QoS != mqtt.QoSAtMostOnce && publish.PacketID != 0 && !connection.admitInboundPublish(publish.PacketID) {
+					return ErrReceiveMaximumExceeded
+				}
 				var dispatchErr error
 				if connection.phases != nil {
 					dispatchErr = connection.dispatchPhased(packet, consumed)
@@ -739,11 +817,25 @@ func (connection *connection) readLoop() error {
 			if connection.isStopping() {
 				return nil
 			}
-			if err := connection.refreshReadDeadline(); err != nil {
-				return err
+			if connection.keepAlive != 0 {
+				keepAliveDeadline = time.Now().Add(time.Duration(connection.keepAlive) * time.Second * 3 / 2)
 			}
-			if buffered == 0 {
-				break
+		}
+		if connected {
+			deadline := keepAliveDeadline
+			if reader.buffered > 0 {
+				if consumedAny || partialStarted.IsZero() {
+					partialStarted = time.Now()
+				}
+				partialDeadline := partialStarted.Add(connection.server.config.PacketReadTimeout)
+				if deadline.IsZero() || partialDeadline.Before(deadline) {
+					deadline = partialDeadline
+				}
+			} else {
+				partialStarted = time.Time{}
+			}
+			if err := connection.socket.SetReadDeadline(deadline); err != nil {
+				return err
 			}
 		}
 		if readErr != nil {
@@ -791,7 +883,8 @@ func (connection *connection) handleUnsupportedVersion(err error) bool {
 }
 
 func (connection *connection) activate(packet mqtt.Connect) error {
-
+	connection.clientReceiveMaximum = packet.ReceiveMaximum
+	connection.clientMaximumPacketSize = packet.MaximumPacketSize
 	if connection.server.config.ClusterMode &&
 		(!connection.server.config.ClusterAdmissionOpen() || !connection.server.clusterReady()) {
 		reasonCode := byte(0x03)
@@ -888,7 +981,12 @@ func (connection *connection) activate(packet mqtt.Connect) error {
 	if metrics := connection.metrics(); metrics != nil {
 		metrics.ConnectionOpened(proto, transport)
 	}
-	if err := connection.enqueueAndWait(&result.ConnAck); err != nil {
+	connAck := result.ConnAck
+	if packet.Version == mqtt.ProtocolV5 {
+		connAck.ReceiveMaximum = connection.server.config.ReceiveMaximum
+		connAck.MaximumPacketSize = uint32(mqtt.PacketSize(connection.server.config.MaxPacketSize))
+	}
+	if err := connection.enqueueAndWait(&connAck); err != nil {
 		return err
 	}
 	connection.deliveryBlocked.Store(false)
@@ -1537,14 +1635,6 @@ func (connection *connection) wakeDelivery() {
 	}
 }
 
-func (connection *connection) refreshReadDeadline() error {
-	if connection.keepAlive == 0 {
-		return connection.socket.SetReadDeadline(time.Time{})
-	}
-	interval := time.Duration(connection.keepAlive) * time.Second * 3 / 2
-	return connection.socket.SetReadDeadline(time.Now().Add(interval))
-}
-
 func (connection *connection) writerLoop() {
 	defer close(connection.writerDone)
 	defer connection.failQueuedControls()
@@ -1720,6 +1810,12 @@ func (connection *connection) writeDeliveries() error {
 				HasMessageExpiryInterval: connection.version == mqtt.ProtocolV5 && hasExpiry,
 				MessageExpiryInterval:    remainingExpiryInterval,
 			}
+			if connection.exceedsClientPacketSize(mqtt.PublishPacketSize(packet)) {
+				if err := connection.server.deliveries.CompleteHead(connection.sessionID); err != nil {
+					return err
+				}
+				continue
+			}
 			if err := connection.writePacket(&packet); err != nil {
 				return err
 			}
@@ -1739,6 +1835,24 @@ func (connection *connection) writeDeliveries() error {
 			}
 			numDurable++
 		}
+		discardHead := false
+		for index, candidate := range batch[:numDurable] {
+			interval, hasExpiry := candidate.RemainingExpiryInterval(now)
+			packet := mqtt.Publish{
+				Version: connection.version, Topic: candidate.Topic, Payload: candidate.Payload,
+				Retain: candidate.Retain, QoS: candidate.QoS,
+				HasMessageExpiryInterval: connection.version == mqtt.ProtocolV5 && hasExpiry,
+				MessageExpiryInterval:    interval,
+			}
+			if connection.exceedsClientPacketSize(mqtt.PublishPacketSize(packet)) {
+				numDurable = index
+				if index == 0 {
+					numDurable = 1
+					discardHead = true
+				}
+				break
+			}
+		}
 
 		connection.deliveryMu.Lock()
 		for index, promotion := range connection.pendingPromotions {
@@ -1757,6 +1871,12 @@ func (connection *connection) writeDeliveries() error {
 				connection.pendingPromotions[index] = pendingDeliveryPromotion{}
 			}
 		}
+		available := connection.outboundReceiveMaximum() - len(connection.outbound)
+		if available <= 0 {
+			connection.deliveryMu.Unlock()
+			return nil
+		}
+		numDurable = min(numDurable, available)
 		var allocatedStorage [8]mqtt.PacketIdentifier
 		var outboundStorage [8]deliveryqueue.OutboundDTO
 		var packetStorage [8]mqtt.Packet
@@ -1835,7 +1955,9 @@ func (connection *connection) writeDeliveries() error {
 			return ErrConnectionClosed
 		}
 		for i := range promoted {
-			connection.outbound[outbounds[i].PacketID] = outbounds[i]
+			if !discardHead {
+				connection.outbound[outbounds[i].PacketID] = outbounds[i]
+			}
 		}
 		clear(connection.pendingPromotions[:])
 		for i := promoted; i < len(outbounds); i++ {
@@ -1845,10 +1967,21 @@ func (connection *connection) writeDeliveries() error {
 			}
 		}
 		connection.deliveryMu.Unlock()
+		if discardHead && promoted == 1 {
+			pid := outbounds[0].PacketID
+			if completeErr := connection.server.deliveries.CompleteOutbound(connection.sessionID, pid); completeErr != nil {
+				return completeErr
+			}
+			connection.deliveryMu.Lock()
+			connection.packetIDs.release(pid)
+			connection.deliveryMu.Unlock()
+		}
 
 		for i := range promoted {
-			if err := connection.writePacket(toSendPackets[i]); err != nil {
-				return err
+			if !discardHead {
+				if err := connection.writePacket(toSendPackets[i]); err != nil {
+					return err
+				}
 			}
 		}
 		if err != nil {
@@ -1870,7 +2003,21 @@ func (connection *connection) writeRecoveredDeliveries() error {
 	connection.deliveryMu.Lock()
 	recovered := connection.recovered
 	connection.recovered = nil
+	unsentPublishes := 0
+	for _, outbound := range recovered {
+		action, err := outbound.State.Resume()
+		if err != nil {
+			connection.deliveryMu.Unlock()
+			return err
+		}
+		if _, ok := action.Send.(*mqtt.Publish); ok {
+			unsentPublishes++
+		}
+	}
+	budget := connection.outboundReceiveMaximum() - (len(connection.outbound) - unsentPublishes)
 	connection.deliveryMu.Unlock()
+	// Reuse the detached backing array; consumed entries no longer need it.
+	deferred := recovered[:0]
 	for _, outbound := range recovered {
 		action, err := outbound.State.Resume()
 		if err != nil {
@@ -1894,6 +2041,21 @@ func (connection *connection) writeRecoveredDeliveries() error {
 			remainingExpiryInterval, hasExpiry := (deliveryqueue.DeliveryDTO{ExpiresAt: outbound.ExpiresAt}).RemainingExpiryInterval(now)
 			packet.HasMessageExpiryInterval = connection.version == mqtt.ProtocolV5 && hasExpiry
 			packet.MessageExpiryInterval = remainingExpiryInterval
+			if connection.exceedsClientPacketSize(mqtt.PublishPacketSize(*packet)) {
+				if err := connection.server.deliveries.CompleteOutbound(connection.sessionID, outbound.PacketID); err != nil {
+					return err
+				}
+				connection.deliveryMu.Lock()
+				delete(connection.outbound, outbound.PacketID)
+				connection.packetIDs.release(outbound.PacketID)
+				connection.deliveryMu.Unlock()
+				continue
+			}
+			if budget <= 0 {
+				deferred = append(deferred, outbound)
+				continue
+			}
+			budget--
 			if err := connection.writePacket(packet); err != nil {
 				return err
 			}
@@ -1906,7 +2068,23 @@ func (connection *connection) writeRecoveredDeliveries() error {
 			return ErrProtocol
 		}
 	}
+	if len(deferred) > 0 {
+		connection.deliveryMu.Lock()
+		connection.recovered = deferred
+		connection.deliveryMu.Unlock()
+	}
 	return nil
+}
+
+func (connection *connection) outboundReceiveMaximum() int {
+	if connection.clientReceiveMaximum == 0 {
+		return 65535
+	}
+	return int(connection.clientReceiveMaximum)
+}
+
+func (connection *connection) exceedsClientPacketSize(size int) bool {
+	return connection.clientMaximumPacketSize != 0 && uint64(size) > uint64(connection.clientMaximumPacketSize)
 }
 
 func (connection *connection) writePacket(packet mqtt.Packet) error {
@@ -1914,8 +2092,21 @@ func (connection *connection) writePacket(packet mqtt.Packet) error {
 	if err != nil {
 		return err
 	}
+	if connection.exceedsClientPacketSize(len(encoded)) {
+		return ErrClientPacketTooLarge
+	}
 	if err := connection.socket.SetWriteDeadline(time.Now().Add(connection.server.config.WriteTimeout)); err != nil {
 		return err
+	}
+	switch ack := packet.(type) {
+	case *mqtt.PubAck, *mqtt.PubComp:
+		connection.receiveMu.Lock()
+		defer connection.receiveMu.Unlock()
+	case *mqtt.PubRec:
+		if ack.ReasonCode >= 0x80 {
+			connection.receiveMu.Lock()
+			defer connection.receiveMu.Unlock()
+		}
 	}
 	for len(encoded) > 0 {
 		written, err := connection.socket.Write(encoded)
@@ -1929,6 +2120,7 @@ func (connection *connection) writePacket(packet mqtt.Packet) error {
 			return io.ErrShortWrite
 		}
 	}
+	connection.releaseInboundQuota(packet)
 	if metrics := connection.metrics(); metrics != nil {
 		metrics.PacketSent(packetTypeName(packet))
 	}

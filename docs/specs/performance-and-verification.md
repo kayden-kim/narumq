@@ -957,8 +957,8 @@ package의 실패를 상쇄하지 않는다. Equivalent mutant를 별도로 제�
 관찰 가능한 계약이 누락되어 `LIVED`가 발생하면 해당 package의 기존 state test에
 정상·오류·경계 전이 assertion을 보강한다.
 
-TEST-13의 표준 fuzz campaign은 다음 네 target을 각각 별도 process로 실행한다.
-Local/CI runner는 네 process를 동시에 시작하되 각 process의 `-parallel=1`과
+TEST-13의 표준 fuzz campaign은 다음 다섯 target을 각각 별도 process로 실행한다.
+Local/CI runner는 다섯 process를 동시에 시작하되 각 process의 `-parallel=1`과
 `-fuzztime=10000x` 고정 quota를 유지한다.
 
 ```text
@@ -966,10 +966,11 @@ go test ./internal/domain/mqtt -run=^$ -fuzz=^FuzzDecoder$ -fuzztime=10000x -par
 go test ./internal/domain/mqtt -run=^$ -fuzz=^FuzzCodecRoundTrip$ -fuzztime=10000x -parallel=1
 go test ./internal/domain/routing -run=^$ -fuzz=^FuzzTopicMatching$ -fuzztime=10000x -parallel=1
 go test ./internal/domain/session -run=^$ -fuzz=^FuzzLifecycleTransitions$ -fuzztime=10000x -parallel=1
+go test ./internal/adapters/tcp -run=^$ -fuzz=^FuzzConnectionInput$ -fuzztime=10000x -parallel=1
 ```
 
 Go fuzz가 생성하는 입력의 발견 순서는 deterministic하지 않다. 따라서 gate의 반복
-계약은 입력 순서가 아니라 네 target의 고정 quota와 실패 입력의 보존이다. 실패가
+계약은 입력 순서가 아니라 다섯 target의 고정 quota와 실패 입력의 보존이다. 실패가
 발견되면 해당 package의 `testdata/fuzz/<Target>/` corpus로 승격해 ordinary test와
 후속 fuzz 실행에서 재현한다.
 

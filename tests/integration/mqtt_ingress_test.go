@@ -85,6 +85,16 @@ func newIngressFixtureWithDeliveryCapacity(t *testing.T, deliveryCapacity int) *
 
 func newIngressFixtureWithCapacities(t *testing.T, deliveryCapacity, retainedMessageCapacity, retainedByteCapacity int, clockSource applicationclock.Clock) *ingressFixture {
 	t.Helper()
+	return newIngressFixtureWith(t, deliveryCapacity, retainedMessageCapacity, retainedByteCapacity, clockSource, nil)
+}
+
+func newIngressFixtureWithTCPConfig(t *testing.T, deliveryCapacity int, configure func(*tcpadapter.Config)) *ingressFixture {
+	t.Helper()
+	return newIngressFixtureWith(t, deliveryCapacity, 1024, 1<<20, clock.SystemClock{}, configure)
+}
+
+func newIngressFixtureWith(t *testing.T, deliveryCapacity, retainedMessageCapacity, retainedByteCapacity int, clockSource applicationclock.Clock, configure func(*tcpadapter.Config)) *ingressFixture {
+	t.Helper()
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
@@ -117,25 +127,27 @@ func newIngressFixtureWithCapacities(t *testing.T, deliveryCapacity, retainedMes
 		listener.Close()
 		t.Fatal(err)
 	}
-	decoder, err := mqtt.NewDecoder(1048576)
+	config := tcpadapter.Config{
+		MaxPacketSize: 1048576, Clock: clockSource,
+		ConnectTimeout: time.Second, WriteTimeout: time.Second,
+		ControlQueueCapacity: 16, ReceiveMaximum: 64, PacketReadTimeout: 10 * time.Second,
+	}
+	if configure != nil {
+		configure(&config)
+	}
+	decoder, err := mqtt.NewDecoder(config.MaxPacketSize)
 	if err != nil {
 		listener.Close()
 		t.Fatal(err)
 	}
-	encoder, err := mqtt.NewEncoder(1048576)
+	encoder, err := mqtt.NewEncoder(config.MaxPacketSize)
 	if err != nil {
 		listener.Close()
 		t.Fatal(err)
 	}
 	server, err := tcpadapter.NewServer(
 		listener,
-		tcpadapter.Config{
-			MaxPacketSize:        1048576,
-			Clock:                clockSource,
-			ConnectTimeout:       time.Second,
-			WriteTimeout:         time.Second,
-			ControlQueueCapacity: 16,
-		},
+		config,
 		decoder,
 		encoder,
 		connections,
@@ -2012,7 +2024,8 @@ func TestMQTTSecurity(t *testing.T) {
 			ConnectTimeout:       2 * time.Second,
 			WriteTimeout:         2 * time.Second,
 			ControlQueueCapacity: 16,
-			Policy:               policy,
+			ReceiveMaximum:       64, PacketReadTimeout: 10 * time.Second,
+			Policy: policy,
 		},
 		decoder,
 		encoder,

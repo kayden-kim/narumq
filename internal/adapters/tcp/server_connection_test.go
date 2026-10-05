@@ -16,6 +16,7 @@ import (
 	"narumq/internal/domain/session"
 )
 
+// Traceability: PRD MQTT-11/MQTT-12/TEST-04/05; docs/specs/mqtt-protocol-and-session.md §7.1.
 func TestNewServerValidatesEveryDependencyAndBound(t *testing.T) {
 	runtime := newAdapterTestRuntime(t, 2, defaultAdapterConfig())
 	defer runtime.stop(t)
@@ -48,6 +49,16 @@ func TestNewServerValidatesEveryDependencyAndBound(t *testing.T) {
 		}, want: ErrNilClock},
 		{name: "config", make: func() (*Server, error) {
 			return NewServer(runtime.listener, Config{Clock: valid.config.Clock}, valid.decoder, valid.encoder, valid.connections, valid.subscriptions, valid.publications, valid.deliveries, nil)
+		}, want: ErrInvalidConfig},
+		{name: "remaining length above protocol maximum", make: func() (*Server, error) {
+			config := valid.config
+			config.MaxPacketSize = 1 << 28
+			return NewServer(runtime.listener, config, valid.decoder, valid.encoder, valid.connections, valid.subscriptions, valid.publications, valid.deliveries, nil)
+		}, want: ErrInvalidConfig},
+		{name: "packet buffer integer overflow", make: func() (*Server, error) {
+			config := valid.config
+			config.MaxPacketSize = int(^uint(0) >> 1)
+			return NewServer(runtime.listener, config, valid.decoder, valid.encoder, valid.connections, valid.subscriptions, valid.publications, valid.deliveries, nil)
 		}, want: ErrInvalidConfig},
 	}
 	for _, testCase := range cases {

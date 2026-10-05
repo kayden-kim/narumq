@@ -120,7 +120,7 @@ func fuzzPacketsEqual(left Packet, right Packet) bool {
 		if !ok {
 			return false
 		}
-		return leftValue.Version == rightValue.Version && leftValue.CleanStart == rightValue.CleanStart && leftValue.SessionExpiryInterval == rightValue.SessionExpiryInterval && leftValue.KeepAlive == rightValue.KeepAlive && leftValue.ClientID == rightValue.ClientID && leftValue.HasUsername == rightValue.HasUsername && leftValue.Username == rightValue.Username && leftValue.HasPassword == rightValue.HasPassword && bytes.Equal(leftValue.Password, rightValue.Password) && fuzzWillsEqual(leftValue.Will, rightValue.Will)
+		return leftValue.Version == rightValue.Version && leftValue.CleanStart == rightValue.CleanStart && leftValue.SessionExpiryInterval == rightValue.SessionExpiryInterval && leftValue.ReceiveMaximum == rightValue.ReceiveMaximum && leftValue.MaximumPacketSize == rightValue.MaximumPacketSize && leftValue.KeepAlive == rightValue.KeepAlive && leftValue.ClientID == rightValue.ClientID && leftValue.HasUsername == rightValue.HasUsername && leftValue.Username == rightValue.Username && leftValue.HasPassword == rightValue.HasPassword && bytes.Equal(leftValue.Password, rightValue.Password) && fuzzWillsEqual(leftValue.Will, rightValue.Will)
 	case *ConnAck:
 		rightValue, ok := right.(*ConnAck)
 		return ok && *leftValue == *rightValue

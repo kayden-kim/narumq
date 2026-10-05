@@ -338,11 +338,12 @@ func newTLSFixture(t *testing.T, opts tlsFixtureOptions) *tlsFixture {
 	server, err := tcpadapter.NewServer(
 		primaryListener,
 		tcpadapter.Config{
-			MaxPacketSize:              1048576,
-			Clock:                      systemClock,
-			ConnectTimeout:             time.Second,
-			WriteTimeout:               time.Second,
-			ControlQueueCapacity:       16,
+			MaxPacketSize:        1048576,
+			Clock:                systemClock,
+			ConnectTimeout:       time.Second,
+			WriteTimeout:         time.Second,
+			ControlQueueCapacity: 16,
+			ReceiveMaximum:       64, PacketReadTimeout: 10 * time.Second,
 			ClientCertificateExtractor: tlsadapter.ExtractVerifiedClientCertificateDTO,
 		},
 		decoder,

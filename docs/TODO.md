@@ -63,7 +63,8 @@ PRD는 `Draft` 상태이므로 이 목록은 요구사항을 구현 기준으로
 
 ### 1.6 MQTT protocol과 client 호환성
 
-- [ ] **미검증 — MQTT resource limit·비정상 입력(MQTT-11·MQTT-12)**: [MQTT 스펙 §7·§8](specs/mqtt-protocol-and-session.md)의 packet size, Receive Maximum, inflight·queue 상한, parser fuzzing과 slowloris 요구를 수용 시험에 연결한다. 제한 초과 시 protocol별 거절·종료 동작과 memory·goroutine 누수가 없음을 실행 증거로 확인한다. 현재 구현된 TCP adapter의 일부 상한만으로 전체 기준을 완료 처리하지 않는다.
+- [x] **완료 — MQTT resource limit·비정상 입력(MQTT-11·MQTT-12)**: [MQTT 스펙 §7.1·§8.1](specs/mqtt-protocol-and-session.md#71-현재-상한과-기본값)에 설정·wire 계약과 수용 증거를 연결했다. Server Receive Maximum 기본 64, packet read timeout 기본 30s, 작은 수신 buffer, client Receive Maximum·Maximum Packet Size, control·delivery queue 상한, 오류별 종료와 자원 회수를 검증했다. 2026-10-05 전체 local gate PASS (147.22s), TCP stream fuzz 10000x, SDK 26/26과 실제 binary smoke PASS. Listener 최대 연결 수·connection rate는 다음 항목으로 분리했다. Tenant message rate는 TEN-07 범위다.
+- [ ] **미구현 — listener 최대 연결 수·connection rate(MQTT-11 인접, spec §1 2항·§7 4행)**: listener별 최대 연결 수와 connection rate 초과 시 CONNACK 0x9F/0x03 또는 handshake 전 종료를 구현·시험한다. 2026-10-05 결정으로 MQTT-11·MQTT-12 완료 범위에서 제외했다.
 - [ ] **미검증 — MQTT 3.1.0 production 전환(MQTT-13)**: [PRD §9.1](requirements/PRD.md#91-mqtt-프로토콜)의 90일 이상 client 사용량 조사, 오래된 firmware·외부 장비 소유자 확인, 3.1.1 이상 전환 또는 별도 gateway 격리와 canary 거절 Metric 감시를 완료한다. Wire-level 거절 구현·시험은 완료된 범위이며 이 항목은 production migration gate다.
 - [ ] **결정 필요 — WebSocket/WSS 필요성(MQTT-10)**: [PRD §18 질문 6](requirements/PRD.md#18-미결정-사항)에서 사용 현황을 확인한다. 사용 필요가 승인되면 WebSocket/WSS listener와 TCP와 같은 MQTT packet·session 동작을 구현·검증한다. 필요가 확인되지 않으면 PRD의 P1 범위를 갱신하기 전까지 구현하지 않는다.
 

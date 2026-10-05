@@ -366,7 +366,7 @@ Coverage policy 판정은 전체 test command가 만든 profile을 기다린 뒤
 → architecture
 → go test ./... -parallel=2 -count=1 -covermode=atomic -coverpkg=./cmd/...,./internal/... -coverprofile=.artifacts/verification/coverage.out
 → go test -race ./cmd/... ./internal/... -count=1
-→ 4 bounded fuzz campaigns (각 -parallel=1)
+→ 5 bounded fuzz campaigns (각 -parallel=1)
 → coverage policy
 
 CI 전용:
@@ -378,7 +378,7 @@ CI 전용:
 Mutation command는 CI gate에서만 자동 실행한다. Local 개발 gate는 mutation을 제외하고
 전체 package suite, race, fuzz와 coverage 검증을 유지한다.
 
-네 fuzz campaign은 각각 별도 process와 single worker로 실행한다.
+다섯 fuzz campaign은 각각 별도 process와 single worker로 실행한다.
 개별 fuzz failure는 다음 exact command로 재현할 수 있다.
 
 ```text
@@ -386,6 +386,7 @@ go test ./internal/domain/mqtt -run=^$ -fuzz=^FuzzDecoder$ -fuzztime=10000x -par
 go test ./internal/domain/mqtt -run=^$ -fuzz=^FuzzCodecRoundTrip$ -fuzztime=10000x -parallel=1
 go test ./internal/domain/routing -run=^$ -fuzz=^FuzzTopicMatching$ -fuzztime=10000x -parallel=1
 go test ./internal/domain/session -run=^$ -fuzz=^FuzzLifecycleTransitions$ -fuzztime=10000x -parallel=1
+go test ./internal/adapters/tcp -run=^$ -fuzz=^FuzzConnectionInput$ -fuzztime=10000x -parallel=1
 ```
 
 Package별 mutation failure는 다음 exact command로 재현하며, 결과는 각 JSON path에

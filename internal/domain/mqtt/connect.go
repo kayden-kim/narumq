@@ -10,6 +10,10 @@ type Connect struct {
 	CleanStart bool
 	// SessionExpiryInterval controls MQTT 5 session retention after disconnect.
 	SessionExpiryInterval uint32
+	// ReceiveMaximum caps MQTT 5 outbound QoS 1/2; zero means the default 65535.
+	ReceiveMaximum uint16
+	// MaximumPacketSize caps total MQTT 5 outbound packet bytes; zero means no limit.
+	MaximumPacketSize uint32
 	// KeepAlive is the connection keep-alive interval in seconds.
 	KeepAlive uint16
 	// ClientID identifies the connecting client.
@@ -101,9 +105,9 @@ func decodeConnect(body []byte, requestedVersion ProtocolVersion) (Packet, error
 
 	keepAlive := binary.BigEndian.Uint16(body[position : position+2])
 	position += 2
-	var sessionExpiryInterval uint32
+	var properties connectProperties
 	if version == ProtocolV5 {
-		sessionExpiryInterval, err = decodeConnectProperties(body, &position)
+		properties, err = decodeConnectProperties(body, &position)
 		if err != nil {
 			return nil, err
 		}
@@ -165,7 +169,9 @@ func decodeConnect(body []byte, requestedVersion ProtocolVersion) (Packet, error
 	return &Connect{
 		Version:               version,
 		CleanStart:            cleanStart,
-		SessionExpiryInterval: sessionExpiryInterval,
+		SessionExpiryInterval: properties.sessionExpiryInterval,
+		ReceiveMaximum:        properties.receiveMaximum,
+		MaximumPacketSize:     properties.maximumPacketSize,
 		KeepAlive:             keepAlive,
 		ClientID:              clientID,
 		HasUsername:           hasUsername,
@@ -228,13 +234,28 @@ func encodeConnect(connect Connect, maxPacketSize int) ([]byte, error) {
 	binary.BigEndian.PutUint16(keepAlive[:], connect.KeepAlive)
 	body = append(body, keepAlive[:]...)
 	if connect.Version == ProtocolV5 {
-		if connect.SessionExpiryInterval == 0 {
-			body = append(body, 0)
-		} else {
-			body = append(body, 5, 0x11)
-			var sessionExpiryInterval [4]byte
-			binary.BigEndian.PutUint32(sessionExpiryInterval[:], connect.SessionExpiryInterval)
-			body = append(body, sessionExpiryInterval[:]...)
+		length := 0
+		if connect.SessionExpiryInterval != 0 {
+			length += 5
+		}
+		if connect.ReceiveMaximum != 0 {
+			length += 3
+		}
+		if connect.MaximumPacketSize != 0 {
+			length += 5
+		}
+		body = append(body, byte(length))
+		if connect.SessionExpiryInterval != 0 {
+			body = append(body, 0x11)
+			body = binary.BigEndian.AppendUint32(body, connect.SessionExpiryInterval)
+		}
+		if connect.ReceiveMaximum != 0 {
+			body = append(body, 0x21)
+			body = binary.BigEndian.AppendUint16(body, connect.ReceiveMaximum)
+		}
+		if connect.MaximumPacketSize != 0 {
+			body = append(body, 0x27)
+			body = binary.BigEndian.AppendUint32(body, connect.MaximumPacketSize)
 		}
 	}
 	body = appendUTF8Field(body, connect.ClientID)
@@ -265,7 +286,7 @@ func validateConnect(connect Connect) (int, error) {
 	if connect.Version != ProtocolV311 && connect.Version != ProtocolV5 {
 		return 0, ErrUnsupportedProtocolVersion
 	}
-	if connect.Version == ProtocolV311 && connect.SessionExpiryInterval != 0 {
+	if connect.Version == ProtocolV311 && (connect.SessionExpiryInterval != 0 || connect.ReceiveMaximum != 0 || connect.MaximumPacketSize != 0) {
 		return 0, ErrMalformedPacket
 	}
 	if !validMQTTUTF8(connect.ClientID) || len(connect.ClientID) > 65535 {
@@ -304,6 +325,12 @@ func validateConnect(connect Connect) (int, error) {
 	if connect.Version == ProtocolV5 {
 		bodySize++
 		if connect.SessionExpiryInterval != 0 {
+			bodySize += 5
+		}
+		if connect.ReceiveMaximum != 0 {
+			bodySize += 3
+		}
+		if connect.MaximumPacketSize != 0 {
 			bodySize += 5
 		}
 	}
@@ -367,36 +394,59 @@ func skipProperties(body []byte, position *int) error {
 	}
 	return nil
 }
-func decodeConnectProperties(body []byte, position *int) (uint32, error) {
+
+type connectProperties struct {
+	sessionExpiryInterval uint32
+	receiveMaximum        uint16
+	maximumPacketSize     uint32
+}
+
+func decodeConnectProperties(body []byte, position *int) (connectProperties, error) {
+	var properties connectProperties
 	length, consumed, err := decodeVariableByteInteger(body[*position:])
 	if err != nil {
-		return 0, ErrMalformedPacket
+		return properties, ErrMalformedPacket
 	}
 	*position += consumed
 	if length > len(body)-*position {
-		return 0, ErrMalformedPacket
+		return properties, ErrMalformedPacket
 	}
 	end := *position + length
-	var (
-		sessionExpiryInterval uint32
-		seenSessionExpiry     bool
-	)
+	seenSessionExpiry := false
 	for *position < end {
 		propertyIdentifier := body[*position]
 		*position++
 		switch propertyIdentifier {
 		case 0x11:
 			if seenSessionExpiry || end-*position < 4 {
-				return 0, ErrMalformedPacket
+				return properties, ErrMalformedPacket
 			}
-			sessionExpiryInterval = binary.BigEndian.Uint32(body[*position : *position+4])
+			properties.sessionExpiryInterval = binary.BigEndian.Uint32(body[*position : *position+4])
 			*position += 4
 			seenSessionExpiry = true
+		case 0x21:
+			if properties.receiveMaximum != 0 || end-*position < 2 {
+				return properties, ErrMalformedPacket
+			}
+			properties.receiveMaximum = binary.BigEndian.Uint16(body[*position : *position+2])
+			*position += 2
+			if properties.receiveMaximum == 0 {
+				return properties, ErrMalformedPacket
+			}
+		case 0x27:
+			if properties.maximumPacketSize != 0 || end-*position < 4 {
+				return properties, ErrMalformedPacket
+			}
+			properties.maximumPacketSize = binary.BigEndian.Uint32(body[*position : *position+4])
+			*position += 4
+			if properties.maximumPacketSize == 0 {
+				return properties, ErrMalformedPacket
+			}
 		default:
-			return 0, ErrUnsupportedProperty
+			return properties, ErrUnsupportedProperty
 		}
 	}
-	return sessionExpiryInterval, nil
+	return properties, nil
 }
 
 func decodeWillProperties(body []byte, position *int) (uint32, error) {

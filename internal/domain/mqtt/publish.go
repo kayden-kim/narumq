@@ -113,16 +113,7 @@ func encodePublish(publish Publish, maxPacketSize int) ([]byte, error) {
 	if publish.Version == ProtocolV311 && publish.HasMessageExpiryInterval {
 		return nil, ErrMalformedPacket
 	}
-	bodySize := 2 + len(publish.Topic) + len(publish.Payload)
-	if publish.QoS != QoSAtMostOnce {
-		bodySize += 2
-	}
-	if publish.Version == ProtocolV5 {
-		bodySize++
-		if publish.HasMessageExpiryInterval {
-			bodySize += 5
-		}
-	}
+	bodySize := publishBodySize(publish)
 	if bodySize > maxPacketSize {
 		return nil, ErrPacketTooLarge
 	}
@@ -145,4 +136,23 @@ func encodePublish(publish Publish, maxPacketSize int) ([]byte, error) {
 	}
 	body = append(body, publish.Payload...)
 	return body, nil
+}
+
+func publishBodySize(publish Publish) int {
+	bodySize := 2 + len(publish.Topic) + len(publish.Payload)
+	if publish.QoS != QoSAtMostOnce {
+		bodySize += 2
+	}
+	if publish.Version == ProtocolV5 {
+		bodySize++
+		if publish.HasMessageExpiryInterval {
+			bodySize += 5
+		}
+	}
+	return bodySize
+}
+
+// PublishPacketSize returns the encoded size of a valid PUBLISH without allocating.
+func PublishPacketSize(publish Publish) int {
+	return PacketSize(publishBodySize(publish))
 }

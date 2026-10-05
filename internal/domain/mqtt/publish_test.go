@@ -274,3 +274,27 @@ func TestPublishEncoderLeavesDestinationUnchangedOnErrorAndHonorsLimit(t *testin
 		t.Fatalf("Append() DUP error = %v, want ErrMalformedPacket", err)
 	}
 }
+
+// Traceability: PRD MQTT-11/TEST-04/05.
+func TestPublishPacketSizeAtRemainingLengthBoundaries(t *testing.T) {
+	encoder, _ := NewEncoder(maxRemainingLength)
+	for _, version := range []ProtocolVersion{ProtocolV311, ProtocolV5} {
+		for _, qos := range []QoS{QoSAtMostOnce, QoSAtLeastOnce, QoSExactlyOnce} {
+			for _, expiry := range []bool{false, true} {
+				if version == ProtocolV311 && expiry {
+					continue
+				}
+				for _, size := range []int{0, 120, 127, 128, 16380, 16384} {
+					input := Publish{Version: version, QoS: qos, Topic: "size", Payload: make([]byte, size), HasMessageExpiryInterval: expiry, MessageExpiryInterval: 60}
+					if qos != QoSAtMostOnce {
+						input.PacketID = 1
+					}
+					wire := testEncode(t, encoder, input)
+					if got := PublishPacketSize(input); got != len(wire) {
+						t.Fatalf("v%d qos%d expiry%v payload%d: size %d, wire %d", version, qos, expiry, size, got, len(wire))
+					}
+				}
+			}
+		}
+	}
+}

@@ -57,6 +57,8 @@ const (
 	clusterTickInterval                    = 100 * time.Millisecond
 	clusterSnapshotInterval                = 1000
 	clusterDefaultPacketSize               = 1 << 20
+	clusterDefaultReceiveMaximum           = 64
+	clusterDefaultPacketReadTimeout        = 30 * time.Second
 	clusterHeldProposalTimeout             = 10 * time.Second
 	clusterDriverStageLimit                = 64
 	clusterDefaultControlQueueCapacity     = 256
@@ -368,6 +370,7 @@ func runClusterMode(ctx context.Context, config clusterConfigFile, logger *slog.
 			Clock: systemClock, MaxPacketSize: clusterDefaultPacketSize,
 			ConnectTimeout: 10 * time.Second, WriteTimeout: 5 * time.Second,
 			ControlQueueCapacity: clusterDefaultControlQueueCapacity, ClientCertificateExtractor: tlsadapter.ExtractVerifiedClientCertificateDTO,
+			ReceiveMaximum: clusterDefaultReceiveMaximum, PacketReadTimeout: clusterDefaultPacketReadTimeout,
 			Policy: tcpPolicy, Metrics: metricsRegistry, ClusterMode: true,
 			LocalMemberID: config.NodeID, ClusterReady: runtime.clusterReady,
 			ClusterAdmissionOpen:   runtime.clusterAdmissionOpen,

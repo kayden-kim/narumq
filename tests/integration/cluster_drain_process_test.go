@@ -12,6 +12,8 @@ import (
 	"sort"
 	"testing"
 	"time"
+
+	"narumq/internal/domain/mqtt"
 )
 
 // Traceability: DEP-06/DEP-12; docs/specs/drain-and-rolling-update.md §2.1, §2.2, §2.3, §3, §4, §6, §10.
@@ -588,12 +590,23 @@ func clusterDrainProcessConnectV5(address, accessToken, clientID string, cleanSt
 		_ = connection.Close()
 		return nil, false, 0, fmt.Errorf("read MQTT 5 CONNACK: %w", err)
 	}
-	if kind != 2 || len(response) < 3 || response[2] != 0 {
+	if kind != 2 {
 		_ = connection.Close()
 		return nil, false, 0, fmt.Errorf("invalid MQTT 5 CONNACK type=%d body=%x", kind, response)
 	}
+	decoder, err := mqtt.NewDecoder(1 << 20)
+	if err != nil {
+		_ = connection.Close()
+		return nil, false, 0, err
+	}
+	packet, _, err := decoder.Decode(clusterMembershipProcessEncodeMQTTPacket(0x20, response), mqtt.ProtocolV5)
+	if err != nil {
+		_ = connection.Close()
+		return nil, false, 0, fmt.Errorf("decode MQTT 5 CONNACK: %w", err)
+	}
+	connAck := packet.(*mqtt.ConnAck)
 	_ = connection.SetDeadline(time.Time{})
-	return connection, response[0]&1 != 0, response[1], nil
+	return connection, connAck.SessionPresent, connAck.ReasonCode, nil
 }
 
 func clusterDrainProcessSubscribeV5(t *testing.T, connection net.Conn, packetID uint16, filter string, qos byte) {

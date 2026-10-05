@@ -106,7 +106,7 @@ NaruMQ는 **클린 아키텍처(Clean Architecture / Ports and Adapters)** 패�
 
 ### 4단계: 바운디드 퍼즈 캠페인(Bounded Fuzz Campaigns) 실행
 
-NaruMQ는 중요한 상태 머신과 파서의 불변식을 보장하기 위해 4개의 핵심 퍼즈 타깃에 대해 고정 작업량(`-fuzztime=10000x`, `-parallel=1`)의 퍼즈 테스트를 필수 관문으로 운영한다.
+NaruMQ는 중요한 상태 머신과 파서의 불변식을 보장하기 위해 5개의 핵심 퍼즈 타깃에 대해 고정 작업량(`-fuzztime=10000x`, `-parallel=1`)의 퍼즈 테스트를 필수 관문으로 운영한다.
 
 ```sh
 # 1. MQTT 디코더 퍼즈
@@ -120,6 +120,9 @@ go test ./internal/domain/routing -run=^$ -fuzz=^FuzzTopicMatching$ -fuzztime=10
 
 # 4. 세션 라이프사이클 상태 전이 퍼즈
 go test ./internal/domain/session -run=^$ -fuzz=^FuzzLifecycleTransitions$ -fuzztime=10000x -parallel=1
+
+# 5. TCP 연결 입력과 자원 회수 퍼즈
+go test ./internal/adapters/tcp -run=^$ -fuzz=^FuzzConnectionInput$ -fuzztime=10000x -parallel=1
 ```
 
 기대 결과: 각 명령이 실패 입력(crash corpus) 없이 정상 종료된다.

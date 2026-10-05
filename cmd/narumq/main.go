@@ -67,6 +67,8 @@ func runWithContext(ctx context.Context, args []string, logger *slog.Logger) err
 	tlsClientAuth := flagSet.String("tls-client-auth", "none", "client authentication policy (none, request, require)")
 	tlsMinVersion := flagSet.String("tls-min-version", "1.2", "minimum TLS version (1.2, 1.3)")
 	maxPacketSize := flagSet.Int("max-packet-size", 1048576, "maximum MQTT Remaining Length")
+	receiveMaximum := flagSet.Int("receive-maximum", 64, "MQTT Receive Maximum advertised to clients and enforced per connection")
+	packetReadTimeout := flagSet.Duration("packet-read-timeout", 30*time.Second, "maximum time to receive one started MQTT packet after CONNECT")
 	connectTimeout := flagSet.Duration("connect-timeout", 10*time.Second, "CONNECT handshake timeout")
 	writeTimeout := flagSet.Duration("write-timeout", 5*time.Second, "socket write timeout")
 	deliveryQueueCapacity := flagSet.Int("delivery-queue-capacity", 64, "per-session delivery queue capacity")
@@ -314,6 +316,9 @@ func runWithContext(ctx context.Context, args []string, logger *slog.Logger) err
 	}
 	var server *tcpadapter.Server
 	if len(listeners) > 0 {
+		if *receiveMaximum < 1 || *receiveMaximum > 65535 {
+			return errors.New("-receive-maximum must be between 1 and 65535")
+		}
 		decoder, err := mqtt.NewDecoder(*maxPacketSize)
 		if err != nil {
 			return fmt.Errorf("create MQTT decoder: %w", err)
@@ -330,6 +335,8 @@ func runWithContext(ctx context.Context, args []string, logger *slog.Logger) err
 				ConnectTimeout:             *connectTimeout,
 				WriteTimeout:               *writeTimeout,
 				ControlQueueCapacity:       *controlQueueCapacity,
+				ReceiveMaximum:             uint16(*receiveMaximum),
+				PacketReadTimeout:          *packetReadTimeout,
 				ClientCertificateExtractor: tlsadapter.ExtractVerifiedClientCertificateDTO,
 				Policy:                     tcpConfigPolicy,
 				Metrics:                    metricsRegistry,

@@ -11,6 +11,8 @@
 | 관련 Contract | [MQTT client compatibility v1](../contracts/mqtt-client-compatibility-v1.md) |
 | 해설 | [MQTT 전달 보장과 QoS·Session·Will protocol 흐름](../explainers/mqtt-delivery-guarantees-and-protocol-flows.md) |
 
+2026-10-05 승인된 resource limit 구현 범위는 §1의 packet 완성 시간과 §7.1·§8.1이다. 나머지 Draft 범위의 채택 상태는 바꾸지 않는다.
+
 ## 현재 구현 상태: standalone QoS 1/2와 dynamic cluster의 제한된 durable QoS 1/2 delivery
 
 Standalone runtime은 MQTT 3.1.1/5.0 client의 `CONNECT → SUBSCRIBE/PUBLISH → PING/DISCONNECT`와 process-local session delivery를 제공한다. 기본 standalone startup은 `-security-config` secure mode로 JWT/JWKS 또는 verified client certificate mTLS authentication과 tenant-aware ACL을 적용한다. mTLS는 handshake가 검증한 client certificate의 `commonName`, `dnsSan`, `emailSan` selector를 strict identity binding으로 바꾸며 configured Client ID가 허용 목록과 일치해야 한다. 인증·tenant 경계 없는 plaintext ingress는 `-allow-insecure-anonymous-mqtt`를 지정한 literal loopback `-tcp-listen` development·benchmark 예외에서만 허용하며 TLS listener에는 적용하지 않는다.
@@ -20,6 +22,9 @@ Dynamic cluster는 별도 `-cluster-config` composition root다. QoS 0 retained 
 - `internal/domain/mqtt`는 CONNECT/CONNACK, QoS 0·1·2 PUBLISH, PUBACK/PUBREC/PUBREL/PUBCOMP,
   SUBSCRIBE 계열과 PINGREQ/PINGRESP/DISCONNECT를 decode·encode한다. PING packet은
   Remaining Length 0만 허용하고 MQTT 5 DISCONNECT는 property-free allowlist만 지원한다.
+- MQTT 5 CONNECT는 Session Expiry Interval(0x11), Receive Maximum(0x21),
+  Maximum Packet Size(0x27)를 받는다. 성공 CONNACK은 server Receive Maximum과
+  Maximum Packet Size를 알린다.
 - `internal/domain/routing`은 non-shared 및 `$share/{ShareName}/{filter}` 공유 구독,
   `+`·`#` filter, `$` system topic 경계, session별 중복 제거와 overlap 최대 granted QoS를
   결정한다. 공유 구독은 그룹 내 가입자를 Round-Robin으로 primary에 선택하고, 선택된
@@ -61,6 +66,9 @@ state를 유지한다.
 3. 평문 TCP listener는 기본 설정에서 비활성화해야 한다. MQTT listener를 활성화할 때는 [security spec](tenancy-and-security.md)의 `-security-config` secure mode를 선택해야 하며, 유일한 예외는 `-tcp-listen`의 literal loopback bind와 `-allow-insecure-anonymous-mqtt`를 함께 지정하는 development·benchmark mode다. 두 mode를 함께 지정하거나 TLS listener에 예외 mode를 적용해서는 안 된다.
 4. WebSocket과 WSS는 P1 선택 기능이다. 활성화하면 MQTT packet과 session 의미가 TCP listener와 같아야 한다.
 5. connection은 설정된 CONNECT timeout 안에 유효한 CONNECT를 보내야 한다. timeout 또는 malformed packet이면 session을 만들지 않고 연결을 닫아야 한다.
+   CONNECT 뒤 첫 byte가 도착한 packet은 `-packet-read-timeout`(기본 30s) 안에
+   완성되어야 한다. 시간을 넘기면 응답 없이 연결을 닫는다. KeepAlive=0이고
+   미완성 byte가 없는 유휴 연결은 유지한다.
 6. development profile의 평문 `-tcp-listen`은 `127.0.0.0/8` 또는 `::1` literal
    loopback만 허용한다. 이 listener는 `-allow-insecure-anonymous-mqtt`를 명시한 경우에만
    anonymous MQTT를 허용한다. TLS listener는 `-tls-listen`으로 별도 활성화하며,
@@ -237,16 +245,51 @@ Will publish에도 tenant 격리, ACL, payload·rate quota, retained와 delivery
 
 모든 connection queue와 inflight collection에는 설정된 상한이 있어야 한다. 제한에 도달했을 때 무제한 할당으로 진행해서는 안 된다.
 
-현재 TCP adapter는 위 표의 packet·queue 상한을 적용해 oversize/malformed 입력,
-keepalive timeout, bounded control queue 포화와 blocked write timeout에서 연결을 닫는다.
-memory delivery queue는 만료되지 않은 persistent session의 queued·in-flight delivery를
-reconnect까지 보존하며, clean start/session expiry와 expiry deadline에 도달한 state만
-제거한다. process restart와 replication 뒤 recovery는 이 slice의 범위가 아니다.
+### 7.1 현재 상한과 기본값
+
+Receive Maximum은 ACK가 끝나지 않은 QoS 1/2 PUBLISH 수의 상한이다. Maximum
+Packet Size는 fixed header를 포함한 전체 packet byte 수의 상한이다.
+
+| 상한 | 설정(standalone) | 기본값 standalone / cluster | 초과 시 MQTT 5 | 초과 시 MQTT 3.1.1 |
+| --- | --- | --- | --- | --- |
+| Remaining Length | `-max-packet-size` | 1048576 / 1048576 | CONNECT 뒤 DISCONNECT 0x95 후 종료. CONNECT 전 응답 없이 종료 | 종료 |
+| Inbound Receive Maximum(PUBACK·PUBCOMP·PUBREC≥0x80을 아직 쓰지 않은 QoS 1/2 PUBLISH 수) | `-receive-maximum` | 64 / 64 | DISCONNECT 0x93 후 종료 | 종료 |
+| 시작된 packet 완성 시간(CONNECT 뒤) | `-packet-read-timeout` | 30s / 30s | 응답 없이 종료 | 응답 없이 종료 |
+| CONNECT 완료 시간 | `-connect-timeout` | 10s / 10s | 응답 없이 종료 | 응답 없이 종료 |
+| Socket write 시간 | `-write-timeout` | 5s / 5s | 종료 | 종료 |
+| 연결별 control queue | `-control-queue-capacity` | 16 / 256 | 종료 | 종료 |
+| Session별 delivery queue | `-delivery-queue-capacity` | 64 / 256 | 기존 §3 backpressure 규칙 | 기존 규칙 |
+| 연결별 수신 buffer | 없음 | 4 KiB에서 시작해 받은 byte가 차면 2배씩 늘림(최대 Remaining Length+5), 비면 4 KiB로 반환 | — | — |
+| Malformed packet·invalid UTF-8(CONNECT 뒤) | 없음 | — | DISCONNECT 0x81 후 종료 | 종료 |
+| Protocol error(CONNECT 뒤 두 번째 CONNECT 등, reader가 발견한 경우) | 없음 | — | DISCONNECT 0x82 후 종료 | 종료 |
+| Client Receive Maximum(outbound) | client CONNECT 0x21 | 없으면 65535 | 미확인 QoS 1/2 PUBLISH가 값에 도달하면 새 PUBLISH를 보류한다. PUBREL·PUBACK 등 다른 packet은 지연하지 않는다 | 해당 없음 |
+| Client Maximum Packet Size(outbound) | client CONNECT 0x27 | 없으면 제한 없음 | 넘는 PUBLISH는 보내지 않고 전송 완료로 처리한다. QoS 1/2는 promote 후 즉시 complete한다. 다른 packet이 넘으면 보내지 않고 종료한다 | 해당 없음 |
+
+`MaxPacketSize` 설정 범위는 MQTT Remaining Length 규칙에 따라 1~268435455다.
+TCP `NewServer`도 codec의 같은 규칙을 적용한다. 범위를 벗어나면
+`ErrInvalidConfig`로 거절한다. 이 검사는 수신 buffer 크기와 CONNACK 한도를
+계산하기 전에 끝나야 한다.
+
+CONNECT 단계의 malformed·oversize는 protocol version을 신뢰할 수 없으므로
+CONNACK 없이 닫는다. Cluster durable phase lane이 늦게 발견한 protocol 오류도
+기존처럼 DISCONNECT 없이 닫는다.
+
+완료된 inbound exchange 기록은 DUP 판정을 위해 같은 Packet Identifier를 다시
+사용하기 전까지 남는다. 이 기록은 Packet Identifier 공간(65535)으로 제한한다.
+미완료 exchange는 Receive Maximum으로 제한한다. MQTT 3.1.1에서도 초과 시
+종료한다. Read backpressure는 미완료 QoS 2의 PUBREL 수신을 막을 수 있어 쓰지 않는다.
+
+Message rate는 TEN-07에서 추적한다. Listener 최대 연결 수와 connection rate는
+이번 완료 범위에서 제외한다. 잔여 작업은 [TODO](../TODO.md)에서 추적한다.
+
+Memory delivery queue는 만료되지 않은 persistent session의 queued·in-flight
+delivery를 reconnect까지 보존한다. Clean start/session expiry와 message expiry
+deadline에 도달한 state만 제거한다. Cluster recovery 범위는 §4와 cluster spec을 따른다.
 
 ## 8. 수용 시험
 
 - MQTT 3.1.1/5.0 compliance matrix가 지원한다고 선언한 모든 normative statement를 자동 test와 연결한다.
-- 현재 Phase 1 matrix는 [`tests/conformance/mqtt-compliance-v1.json`](../../tests/conformance/mqtt-compliance-v1.json)이며, 48개 statement와 MQTT/TEST requirement 및 test function을 함께 기록한다.
+- 현재 Phase 1 matrix는 [`tests/conformance/mqtt-compliance-v1.json`](../../tests/conformance/mqtt-compliance-v1.json)이며, 61개 statement와 MQTT/TEST requirement 및 test function을 함께 기록한다.
 - `go run ./tools/verify traceability`가 matrix → source와 source → matrix를 모두 검사한다. matrix에만 있거나 source에만 있는 statement, 또는 requirement union이 다른 연결은 합격으로 처리하지 않는다.
 - QoS별 정상, DUP, reconnect, owner crash와 Message Expiry 시나리오를 검증한다.
 - `MQIsdp` level 3은 응답 없이 닫고, `MQTT` level 3은 MQTT 3.1.1 CONNACK `0x01` 뒤 닫으며, 두 경우 모두 session을 만들지 않아야 한다.
@@ -283,3 +326,43 @@ reconnect까지 보존하며, clean start/session expiry와 expiry deadline에 �
   comment를 가져야 하며 MQTT 3.1.1에는 이 property를 적용하지 않는다.
 - 이 matrix와 gate는 전체 MQTT 표준 적합성 선언이 아니다. ACL·tenant와 durable
   cluster replication은 후속 범위로 남아 있다.
+
+### 8.1 Resource limit·비정상 입력 수용 매핑
+
+2026-10-05 Windows local 실행 결과다. TCP focused 시험은 2.318s, integration
+focused 시험은 2.139s에 통과했다. TCP 전체 시험과 race 시험도 통과했다.
+
+| Scenario | 관찰할 결과 | 시험 위치 | 실행 증거 |
+| --- | --- | --- | --- |
+| Server 한도 광고 | MQTT 5 CONNACK에 두 상한. MQTT 3.1.1 body는 2 byte | `internal/adapters/tcp/server_limits_test.go::TestTCPConnAckAdvertisesServerLimits` | PASS, TCP focused 2.318s |
+| Reader protocol 오류 | MQTT 5는 0x95·0x81·0x82·0x93 후 종료. MQTT 3.1.1은 응답 없이 종료 | `internal/adapters/tcp/server_limits_test.go::TestTCPProtocolErrorsAfterConnectDisconnectWithReason` | PASS, 양 version·네 오류 |
+| Inbound quota 반환과 DUP | ACK 후 새 PUBLISH 수용. 미완료 ID 재전송은 quota를 추가하지 않음 | `internal/adapters/tcp/server_limits_test.go::TestTCPReceiveMaximumQuotaReturnsAfterAcknowledgement` | PASS, TCP race 포함 |
+| Packet 완성 시간 | 부분 packet은 timeout. KeepAlive=0 유휴 연결은 유지 | `internal/adapters/tcp/server_limits_test.go::TestTCPPartialPacketAfterConnectTimesOut` | PASS, 양 version·200ms timeout·600ms 유휴 |
+| 수신 buffer 상한 | 작은 초기 buffer, 단계별 증가, 소비 후 반환 | `internal/adapters/tcp/frame_reader_test.go::TestFrameReaderStartsSmallGrowsByDoublingAndReleases` | PASS |
+| Control queue 상한 | 용량 1에서 PINGREQ가 쌓이면 연결 종료 | `internal/adapters/tcp/server_test.go::TestTCPControlQueueFullClosesConnection` | PASS, TCP queue focused 0.742s |
+| Delivery queue 상한 | 읽지 않는 subscriber의 queue가 차면 해당 session 종료. Publisher는 PINGRESP 수신 | `internal/adapters/tcp/server_test.go::TestTCPDeliveryQueueSaturationClosesSubscriber` | PASS, TCP queue focused 0.742s |
+| Queued·in-flight 용량과 FIFO | Queue가 차면 enqueue·promote는 `ErrFull`. 실패한 promote는 head를 보존. 앞선 delivery는 FIFO로 유지 | `internal/adapters/memory/deliveryqueue/queue_test.go::TestQueueFIFOAndPayloadOwnership`, `TestQueueOutboundCapacityLeavesHeadOnFailure` | PASS, memory queue focused 0.447s |
+| Packet 설정 상한 | MQTT 최대값+1과 `int` 최대값은 `NewServer`에서 `ErrInvalidConfig` | `internal/adapters/tcp/server_connection_test.go::TestNewServerValidatesEveryDependencyAndBound` | 두 case 모두 수정 전 FAIL, 수정 후 PASS |
+| 유효한 최대 packet 설정 | Remaining Length 268435455에서 실제 MQTT 5 연결과 PING 성공 | 실제 binary boundary smoke | PASS. CONNACK Receive Maximum=2, Maximum Packet Size=268435460, PINGRESP 수신 |
+| Client Receive Maximum | ACK 후 다음 PUBLISH 전달. 복구 PUBREL은 지연하지 않음 | `internal/adapters/tcp/server_limits_test.go::TestWriteDeliveriesHonorsClientReceiveMaximum`, `TestWriteRecoveredDeliveriesHonorsClientReceiveMaximum`; `tests/integration/mqtt_resource_limits_test.go::TestMQTTOutboundHonorsClientReceiveMaximum` | PASS, 실제 socket과 복구 상태 |
+| Client Maximum Packet Size | 큰 PUBLISH는 전송 완료로 제거. 작은 PUBLISH는 순서대로 전달 | `internal/adapters/tcp/server_limits_test.go::TestWriteDeliveriesDiscardsPublishAboveClientMaximumPacketSize`; `tests/integration/mqtt_resource_limits_test.go::TestMQTTOutboundDiscardsPacketsAboveClientMaximumPacketSize` | PASS, promote→complete와 persistent reconnect |
+| 비 PUBLISH packet 한도 | 성공·거절 CONNACK도 client 한도를 넘으면 전송하지 않고 종료 | `internal/adapters/tcp/server_limits_test.go::TestTCPConnAckAboveClientMaximumPacketSizeClosesWithoutSending` | PASS, client Maximum Packet Size=1 |
+| Stream fuzz | 비정상 입력 후 연결 goroutine 종료 | `internal/adapters/tcp/server_fuzz_test.go::FuzzConnectionInput` | PASS, 10000x·single worker, 12.434s |
+| Slowloris·느린 reader·반복 오류 | CONNECT 전 64개 소켓에서 heap 증가 16 MiB 미만. 종료 후 connection·goroutine·heap 회수 | `tests/integration/mqtt_resource_limits_test.go::TestMQTTResourceLimitsReleaseConnectionsGoroutinesAndMemory` | PASS 0.91s. Heap 증가 484216 byte. Goroutine 7→7. Heap 628072→787320 byte |
+| Traceability·binary | 실제 flag·wire 동작과 추적 매핑 확인 | `go run ./tools/verify traceability`; binary smoke | PASS. CONNACK 2/1048580, DISCONNECT 0x93, 부분 packet 2.0083697s 후 종료. `-receive-maximum 0`은 지정 오류로 종료 |
+| 실제 SDK 회귀 | Paho Go/Python의 CONNACK·기존 handshake 호환 | `go run ./tests/compatibility/mqtt-clients-v1 --run-id phase1-resource-limits --output .artifacts/compatibility/mqtt-clients-v1/phase1-resource-limits` | PASS 26/26, 180.65s. `.artifacts/compatibility/mqtt-clients-v1/phase1-resource-limits`에 결과 보존 |
+| 전체 local gate | 전체 package·race·다섯 fuzz·coverage 통과 | `GOMAXPROCS=4 go run ./tools/verify local` | 설정 상한 수정 후 PASS, 147.22s. Traceability·architecture·coverage 포함. TCP stream fuzz 10000x, 20.068s |
+
+변경 전 임시 socket 실험은 CONNECT 전 부분 입력 64개에서 heap 증가
+66884496 byte로 16 MiB 기준을 넘었다. 변경 후 같은 실험은 515944 byte로
+통과했다. 임시 시험과 binary smoke client는 확인 뒤 제거했다. Listener 최대
+연결 수·connection rate와 tenant message rate의 완료 증거는 아니다.
+
+전체 회귀에서 발견한 기존 MQTT 5 cluster CONNACK helper의 property-free
+가정은 `tests/integration/cluster_drain_process_test.go`에서 domain decoder로
+바꿨다. Property가 있는 성공 CONNACK도 검증한 뒤 session 결과를 읽는다.
+
+완료 검증 중 `TestRunFlushesRuntimeMetricsOnCancellation`이 초기 기록 하나만
+관찰한 실행이 있었다. Sampler는 같은 timestamp의 기록을 생략하므로 시험은
+완성된 초기 JSONL과 다음 clock tick을 확인한 뒤 취소하도록 고쳤다. 제품의
+sampler 동작은 바꾸지 않았다. 이 시험은 별도 30회 반복에서 PASS했다.
