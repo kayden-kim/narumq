@@ -1,10 +1,12 @@
 package environment
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestReadStatsParsesDecimalAndBinaryUnits(t *testing.T) {
@@ -45,5 +47,68 @@ func TestReadStatsRejectsUnknownNegativeAndMalformedUnits(t *testing.T) {
 func TestParseByteQuantityRejectsOverflow(t *testing.T) {
 	if _, err := parseByteQuantity("999999999999999999999GB"); err == nil {
 		t.Fatal("parseByteQuantity() accepted int64 overflow")
+	}
+}
+
+func TestStatsSamplerRecordsBrokerRestartedBeforeInspect(t *testing.T) {
+	fakeDocker := installFakeDocker(t)
+	t.Setenv(fakeDockerStartAfterStoppedStatsEnv, "1")
+	const container = "bp07-race-broker"
+	if err := writeFakeDockerRunning(container, false); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(t.TempDir(), "broker-stats.jsonl")
+	stop, done := startStatsSampler(context.Background(), container, path, true)
+	defer stop()
+
+	deadline := time.NewTimer(10 * time.Second)
+	defer deadline.Stop()
+	ticker := time.NewTicker(100 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		samples, err := ReadStats(path)
+		if err == nil && len(samples) > 0 {
+			if samples[0].Container != container || samples[0].CPUPercent != 1 ||
+				samples[0].MemoryUsageBytes != 1<<20 || samples[0].MemoryLimitBytes != 2<<30 {
+				t.Fatalf("restarted broker sample = %#v", samples[0])
+			}
+			break
+		}
+		select {
+		case err := <-done:
+			t.Fatalf("sampler failed after restart race: %v", err)
+		case <-deadline.C:
+			t.Fatalf("restarted broker sample did not arrive: %v", err)
+		case <-ticker.C:
+		}
+	}
+
+	stop()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("stop sampler after restart race: %v", err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("sampler did not stop after restart race")
+	}
+
+	calls := readFakeDockerCalls(t, fakeDocker.callsPath)
+	wantCalls := []string{
+		"stats --no-stream --format {{json .}} " + container,
+		"inspect --format {{.State.Running}} " + container,
+		"stats --no-stream --format {{json .}} " + container,
+	}
+	nextCall := 0
+	for _, call := range calls {
+		if strings.Join(call, " ") == wantCalls[nextCall] {
+			nextCall++
+			if nextCall == len(wantCalls) {
+				break
+			}
+		}
+	}
+	if nextCall != len(wantCalls) {
+		t.Fatalf("restart race calls = %#v, want stats, inspect running, stats", calls)
 	}
 }

@@ -62,11 +62,24 @@ func TestMain(m *testing.M) {
 	}
 	clusterMembershipProcessBinaries.directory = directory
 	code := m.Run()
-	if err := os.RemoveAll(directory); err != nil {
+	if err := removeIntegrationBinaryDirectory(directory); err != nil {
 		fmt.Fprintf(os.Stderr, "remove integration binary directory: %v\n", err)
 		code = 1
 	}
 	os.Exit(code)
+}
+
+// removeIntegrationBinaryDirectory retries because Windows can keep an exited
+// child's executable image locked briefly after Wait returns.
+func removeIntegrationBinaryDirectory(directory string) error {
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		err := os.RemoveAll(directory)
+		if err == nil || time.Now().After(deadline) {
+			return err
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
 }
 
 type clusterMembershipProcessFixture struct {

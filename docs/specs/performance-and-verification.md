@@ -1356,8 +1356,77 @@ go run ./tools/verify coverage --profile .artifacts/verification/coverage.out --
 진단 요약은 `passed: true`이며 core 9개가 모두 line/function 95/95 이상이다.
 전체 gate가 반복 실패했으므로 새 4개 package의 ratchet은 임시 95/95를 유지한다.
 측정값 ratchet 고정과 Run B는 실행하지 않았다. Run A·B의 전체 gate PASS와 반복 측정 안정성은 아직 확인해야 한다.
+이후 [§8.5](#85-2026-10-05-local-gate-안정화와-test-07-ratchet-확정)에서 Run A·B 통과를 확인하고 새 4개 package의 ratchet을 확정했다.
 Branch coverage는 도구 미설정 사유로 `not_evaluated`다.
 이 기록은 CI 증거가 아니며 CI 전용 mutation, diff coverage와 외부 opt-in 수용 시험도 실행하지 않았다.
+
+### 8.5 2026-10-05 local gate 안정화와 TEST-07 ratchet 확정
+
+[§8.4](#84-2026-10-05-test-07-core-package-범위-정합)의 세 실패 경로를 수정했다.
+제품의 MQTT deadline, assertion, coverage floor와 전체 production ratchet은 바꾸지 않았다.
+
+| 실패 경로 | 원인과 수정 |
+| --- | --- |
+| `TestCommittedTakeoverFencesConnectBeforeSessionBinding` | Current runtime을 stale 단계 전에 만들면 accept부터 시작한 250ms CONNECT deadline이 먼저 끝날 수 있었다. `server_connection_test.go`에서 stale 검증 뒤로 current runtime 생성을 옮겼다. Production `server.go`와 timeout은 그대로 뒀다. |
+| BP-07 broker stats sampler | Stats가 중단 상태에서 실패한 뒤 inspect 전에 재시작이 끝나면 inspect는 running을 반환한다. `stats.go`의 `skipSampleError`는 이때 표본을 즉시 한 번 다시 얻는다. 다시 실패하면 두 오류를 합쳐 실패한다. 이 처리는 재시작이 허용된 broker sampler에만 적용한다. |
+| Integration binary directory 삭제 | Windows는 `Wait` 뒤에도 종료된 child의 실행 파일을 잠시 잠글 수 있다. `TestMain`이 `removeIntegrationBinaryDirectory`로 100ms 간격, 최대 10초 삭제를 재시도한다. 끝까지 실패하면 오류 메시지와 종료 코드 1을 유지한다. |
+
+단계별 검증은 Windows/amd64·Go 1.26.5에서 다음 순서로 수행했다.
+
+| 단계 | 실행과 결과 |
+| --- | --- |
+| 1 — 수정 전 재현 | Stale 검증 뒤 300ms sleep을 임시로 넣고 takeover 시험을 `-count=1`로 실행했다. `write packets: io: read/write on closed pipe`로 FAIL했다. |
+| 1 — 수정 뒤 재현 | 같은 위치의 sleep 뒤에서 current runtime을 생성하자 같은 시험이 PASS했다. Sleep을 제거했다. |
+| 1 — 반복·race | `go test ./internal/adapters/tcp -count=3` PASS(package 42.773s). `go test -race ./internal/adapters/tcp -run TestCommittedTakeoverFencesConnectBeforeSessionBinding -count=50` PASS(package 2.069s). |
+| 2 — 수정 전 재현 | Fake Docker가 stopped stats 오류 직전에 running으로 전환하도록 했다. `TestStatsSamplerRecordsBrokerRestartedBeforeInspect -count=1`이 `sampler failed after restart race: exit status 1`로 FAIL했다. |
+| 2 — 수정 뒤 회귀 | 같은 시험이 PASS(package 3.006s). 재시작 뒤 표본 값, 정상 stop, `stats → inspect → stats` 호출 순서를 확인했다. |
+| 2 — package 전체 | `go test ./tests/benchmark/internal/environment -count=1` PASS(package 21.761s). 기존 restart 시험의 `stoppedSampleChecked`도 통과했다. |
+| 3 — 실제 process | `go test ./tests/integration -count=1 -parallel=8` PASS(package 90.115s, wall 96.60s). `remove integration binary directory` 오류는 없었다. 이 실행은 삭제 재시도가 실제로 발생했다는 증거는 아니다. |
+| 3 — 완료 검증 | `go build ./...`, `go vet ./...`, `go test ./tools/verify -count=1`을 연속 실행해 모두 PASS했다(합계 wall 16.37s, verify package 0.668s). |
+
+이후 저장소 root에서 다음 명령을 연속 두 번 실행했다.
+
+```text
+cmd /d /c "set GOMAXPROCS=4&& go run ./tools/verify local"
+```
+
+| 실행 | Wall time | Integration package | Production line | Production function | 종료 코드·결과 |
+| --- | --- | --- | --- | --- | --- |
+| Run A | 159.90s | 92.014s | 85.91% | 97.27% | 0, `local: PASS` |
+| Run B | 156.32s | 103.442s | 86.02% | 97.40% | 0, `local: PASS` |
+
+두 실행에서 gofmt·vet·traceability·architecture·전체 package/integration·production package race·coverage를 통과했다.
+실제 runner의 다섯 fuzz target(`FuzzDecoder`, `FuzzCodecRoundTrip`, `FuzzTopicMatching`, `FuzzLifecycleTransitions`, `FuzzConnectionInput`)도 각각 10,000회 통과했다.
+
+승인된 측정 규칙에 따라 `coverage-policy.json`의 새 core 4개 ratchet만 바꿨다.
+각 값은 Run A·B의 line/function 측정값 중 작은 값이다. 네 package는 두 실행에서 같은 값을 보였다.
+기존 5개 core ratchet, `coreFloor`·`overallFloor`·`diffFloor`와 전체 production ratchet은 유지했다.
+PRD TEST-06~TEST-09의 coverage 요구 기준은 변경하지 않았다.
+
+| Package | Run A line/function | Run B line/function | 확정 ratchet line/function |
+| --- | --- | --- | --- |
+| `domain/connrebalance` | 100.00% / 100.00% | 100.00% / 100.00% | 100.00 / 100.00 |
+| `domain/release` | 100.00% / 100.00% | 100.00% / 100.00% | 100.00 / 100.00 |
+| `domain/security` | 96.17% / 100.00% | 96.17% / 100.00% | 96.17 / 100.00 |
+| `domain/tenancy` | 99.41% / 100.00% | 99.41% / 100.00% | 99.41 / 100.00 |
+
+바뀐 policy로 Run B의 profile을 다시 판정했다.
+
+```text
+go run ./tools/verify coverage --profile .artifacts/verification/coverage.out --policy tests/verification/coverage-policy.json --report .artifacts/verification/coverage-summary.json
+```
+
+종료 코드 0, wall 6.53s, `coverage: PASS`였다.
+전체 gate 로그는 `.artifacts/verification/test07-run-a.log`와 `test07-run-b.log`에 보존했다.
+실행 시간과 종료 코드는 `test07-run-a-execution.json`·`test07-run-b-execution.json`에 남겼다.
+원래 policy로 판정한 각 실행의 coverage 요약은 `test07-run-a-summary.json`·`test07-run-b-summary.json`에 보존했다.
+기본 `coverage-summary.json`은 확정 ratchet으로 다시 판정한 Run B 결과다.
+
+코드 지도의 stats 오류 처리와 integration binary 정리 흐름도 실제 코드에 맞췄다.
+이는 local gate 안정화 증거이며 CI 또는 외부 Docker benchmark 수용 증거는 아니다.
+Branch coverage는 도구 미설정 사유로 `not_evaluated`를 유지한다.
+CI 전용 mutation·diff coverage와 기존 외부 opt-in 수용 시험은 실행하지 않았다.
+TEST-06~TEST-10 TODO는 branch coverage 도구 채택과 CI 플랫폼의 필수 status 증거가 남아 있으므로 열린 상태를 유지한다.
 
 ## 9. Architecture verification
 

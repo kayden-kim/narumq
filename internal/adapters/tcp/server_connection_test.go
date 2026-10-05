@@ -189,8 +189,6 @@ func TestCommittedTakeoverFencesConnectBeforeSessionBinding(t *testing.T) {
 
 	staleRuntime := newAdapterTestRuntime(t, 2, clusterConfig(1))
 	defer staleRuntime.stop(t)
-	currentRuntime := newAdapterTestRuntime(t, 2, clusterConfig(2))
-	defer currentRuntime.stop(t)
 
 	started := make(chan struct{})
 	release := make(chan struct{})
@@ -248,6 +246,9 @@ func TestCommittedTakeoverFencesConnectBeforeSessionBinding(t *testing.T) {
 	if _, found, err := staleRuntime.repo.Load(clientID); err != nil || found {
 		t.Fatalf("rejected stale CONNECT local session = found %v, err %v; want cleanup", found, err)
 	}
+
+	currentRuntime := newAdapterTestRuntime(t, 2, clusterConfig(2))
+	defer currentRuntime.stop(t)
 
 	currentRuntime.cluster.mu.Lock()
 	currentRuntime.cluster.ownershipEpoch = 2

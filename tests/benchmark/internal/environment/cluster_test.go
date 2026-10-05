@@ -18,11 +18,12 @@ import (
 )
 
 const (
-	fakeDockerModeEnv      = "NARUMQ_ENVIRONMENT_FAKE_DOCKER"
-	fakeDockerStateEnv     = "NARUMQ_ENVIRONMENT_FAKE_DOCKER_STATE"
-	fakeDockerCallsEnv     = "NARUMQ_ENVIRONMENT_FAKE_DOCKER_CALLS"
-	fakeDockerReleaseEnv   = "NARUMQ_ENVIRONMENT_FAKE_DOCKER_RELEASE"
-	fakeDockerEmptyPortEnv = "NARUMQ_ENVIRONMENT_FAKE_DOCKER_EMPTY_PORT"
+	fakeDockerModeEnv                   = "NARUMQ_ENVIRONMENT_FAKE_DOCKER"
+	fakeDockerStateEnv                  = "NARUMQ_ENVIRONMENT_FAKE_DOCKER_STATE"
+	fakeDockerCallsEnv                  = "NARUMQ_ENVIRONMENT_FAKE_DOCKER_CALLS"
+	fakeDockerReleaseEnv                = "NARUMQ_ENVIRONMENT_FAKE_DOCKER_RELEASE"
+	fakeDockerEmptyPortEnv              = "NARUMQ_ENVIRONMENT_FAKE_DOCKER_EMPTY_PORT"
+	fakeDockerStartAfterStoppedStatsEnv = "NARUMQ_ENVIRONMENT_FAKE_DOCKER_START_AFTER_STOPPED_STATS"
 )
 
 var fakeDockerBinary struct {
@@ -254,6 +255,7 @@ func installFakeDocker(t *testing.T) fakeDockerPaths {
 	t.Setenv(fakeDockerCallsEnv, callsPath)
 	t.Setenv(fakeDockerReleaseEnv, releasePath)
 	t.Setenv(fakeDockerEmptyPortEnv, "")
+	t.Setenv(fakeDockerStartAfterStoppedStatsEnv, "")
 	return fakeDockerPaths{callsPath: callsPath, releasePath: releasePath}
 }
 
@@ -329,6 +331,11 @@ func runFakeDocker(args []string) int {
 	case "stats":
 		container := args[len(args)-1]
 		if !fakeDockerIsRunning(container) {
+			if os.Getenv(fakeDockerStartAfterStoppedStatsEnv) == "1" {
+				if err := writeFakeDockerRunning(container, true); err != nil {
+					return fakeDockerError(err.Error())
+				}
+			}
 			return fakeDockerError("container is stopped")
 		}
 		fmt.Println(`{"CPUPerc":"1.0%","MemUsage":"1MiB / 2GiB","NetIO":"2kB / 2kB","BlockIO":"0B / 0B"}`)

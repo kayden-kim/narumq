@@ -18,15 +18,15 @@
   "ratchet": {
     "overall": {"line": 85, "function": 90},
     "core": {
-      "narumq/internal/domain/connrebalance": {"line": 95, "function": 95},
+      "narumq/internal/domain/connrebalance": {"line": 100, "function": 100},
       "narumq/internal/domain/delivery": {"line": 100, "function": 100},
       "narumq/internal/domain/mqtt": {"line": 96.24, "function": 100},
       "narumq/internal/domain/nodedrain": {"line": 98.04, "function": 100},
-      "narumq/internal/domain/release": {"line": 95, "function": 95},
+      "narumq/internal/domain/release": {"line": 100, "function": 100},
       "narumq/internal/domain/routing": {"line": 97.52, "function": 100},
-      "narumq/internal/domain/security": {"line": 95, "function": 95},
+      "narumq/internal/domain/security": {"line": 96.17, "function": 100},
       "narumq/internal/domain/session": {"line": 97.4, "function": 100},
-      "narumq/internal/domain/tenancy": {"line": 95, "function": 95}
+      "narumq/internal/domain/tenancy": {"line": 99.41, "function": 100}
     }
   }
 }

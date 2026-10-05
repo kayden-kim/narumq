@@ -261,7 +261,11 @@ func startStatsSampler(ctx context.Context, containerName, outputPath string, sk
 			if stopped {
 				return true, nil
 			}
-			return false, sampleErr
+			// The broker can finish a planned restart between the failed stats call and inspect.
+			if retryErr := writeSample(); retryErr != nil {
+				return false, errors.Join(sampleErr, retryErr)
+			}
+			return true, nil
 		}
 		if sampleErr := writeSample(); sampleErr != nil {
 			skip, err := skipSampleError(sampleErr)
