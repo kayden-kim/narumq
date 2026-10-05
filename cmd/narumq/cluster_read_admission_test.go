@@ -1,7 +1,9 @@
 package main
 
 import (
+	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -13,6 +15,7 @@ import (
 
 	raftadapter "narumq/internal/adapters/raft"
 	tcpadapter "narumq/internal/adapters/tcp"
+	"narumq/internal/application/membership"
 )
 
 func newReadAdmissionTestCluster(t *testing.T) [3]*clusterRuntime {
@@ -539,4 +542,195 @@ func TestClusterReissuedReadRejectsPreviousQuorumProof(t *testing.T) {
 		}
 	}
 	t.Fatal("replacement fresh proof did not complete on the new leader")
+}
+
+// Traceability: CLU-07; docs/specs/cluster-session-and-delivery.md §4.2, §11.11.
+func TestClusterDurableCommitCallerTimeoutLateReplayAppliesOnceWithoutSuccess(t *testing.T) {
+	runtimes := newReadAdmissionTestCluster(t)
+	ingress := runtimes[1]
+	ingress.storage = newClusterStorageMonitor(time.Now, nil)
+	ingress.machine = retainedTestMachine(t, ingress.config, ingress.config.ReleaseVersion)
+	var reads [3]map[string]clusterReadWaiter
+	var proposals [3][]clusterProposalWaiter
+	for index := range reads {
+		reads[index] = make(map[string]clusterReadWaiter)
+	}
+	type waitOutcome struct {
+		result membership.ApplyResultDTO
+		err    error
+		at     time.Time
+	}
+	begin := func(ctx context.Context, fill byte) (*clusterPendingCommit, <-chan waitOutcome) {
+		t.Helper()
+		pending, err := ingress.BeginDelivery(ctx, membership.DeliveryChangeDTO{
+			TenantID: "tenant-a", ClientID: "publisher-a", Action: membership.DeliveryActionPublish,
+			ProposedAtUnixMillis: 1_700_000_000_000 + uint64(fill),
+			Topic:                "events/late", Payload: bytes.Repeat([]byte{fill}, 40_000), PublishQoS: 1,
+			Targets: []membership.DeliveryTargetDTO{{ClientID: "client-a"}},
+		})
+		if err != nil {
+			t.Fatalf("begin durable publish %c: %v", fill, err)
+		}
+		commit, ok := pending.(*clusterPendingCommit)
+		if !ok {
+			t.Fatalf("durable publish %c returned pending type %T", fill, pending)
+		}
+		outcomes := make(chan waitOutcome, 1)
+		go func() {
+			result, err := commit.Wait()
+			outcomes <- waitOutcome{result: result, err: err, at: time.Now()}
+		}()
+		return commit, outcomes
+	}
+	callerCtx, cancel := context.WithTimeout(context.Background(), 1500*time.Millisecond)
+	defer cancel()
+	timedOut, timedOutWait := begin(callerCtx, 'a')
+	later, laterWait := begin(context.Background(), 'b')
+
+	// Confirm both fresh proofs without submitting either command yet.
+	for round := 0; round < 64 && (!timedOut.readConfirmed || !later.readConfirmed); round++ {
+		var messages []raftadapter.MessageDTO
+		for index, runtime := range runtimes {
+			if err := runtime.stageQueuedDriverWork(reads[index], &proposals[index], nil); err != nil {
+				t.Fatal(err)
+			}
+			batch, err := processReadyForTest(t, runtime.node)
+			if err != nil {
+				t.Fatal(err)
+			}
+			runtime.projectionIndex.Store(runtime.node.Status().AppliedIndex)
+			runtime.completeReadStates(batch.ReadStates, reads[index])
+			messages = append(messages, batch.Messages...)
+		}
+		for _, message := range messages {
+			if _, err := runtimes[message.To-1].node.Step(message); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	if !timedOut.readConfirmed || timedOut.readErr != nil || !later.readConfirmed || later.readErr != nil {
+		t.Fatalf("fresh proofs did not complete before submission: first=%t/%v later=%t/%v",
+			timedOut.readConfirmed, timedOut.readErr, later.readConfirmed, later.readErr)
+	}
+	if err := ingress.node.ForgetLeader(); err != nil {
+		t.Fatal(err)
+	}
+	if ingress.node.Status().LeaderID != 0 {
+		t.Fatal("ingress did not forget its leader before proposal submission")
+	}
+	// Each encoded command exceeds half the batch budget, forcing two
+	// separate submissions into the adapter's pre-append rejection FIFO.
+	if !ingress.resolveCommitReads(reads[1], &proposals[1]) {
+		t.Fatal("fresh-proof commands were not accepted for deferred submission")
+	}
+	if len(proposals[1]) != 2 || !bytes.Equal(proposals[1][0].data, timedOut.data) ||
+		!bytes.Equal(proposals[1][1].data, later.data) {
+		t.Fatal("deferred proposal waiters lost submission order")
+	}
+	if !ingress.node.StoragePending() {
+		t.Fatal("adapter did not retain the leaderless proposals as pending storage")
+	}
+
+	var timeoutOutcome waitOutcome
+	select {
+	case timeoutOutcome = <-timedOutWait:
+	case <-time.After(5 * time.Second):
+		t.Fatal("original Wait did not return after its caller deadline")
+	}
+	deadline, ok := timedOut.context.Deadline()
+	if !ok || timeoutOutcome.at.Before(deadline) || !errors.Is(timeoutOutcome.err, membership.ErrQuorumUnavailable) {
+		t.Fatalf("original Wait must fail at its caller deadline: outcome=%+v deadline=%v", timeoutOutcome, deadline)
+	}
+	select {
+	case outcome := <-laterWait:
+		t.Fatalf("later Wait completed before leader recovery: %+v", outcome)
+	default:
+	}
+
+	var applied [3][][]byte
+	for range 64 {
+		// Once all replicas apply, stop ticking and consume the remaining
+		// peer responses before checking the storage checkpoint.
+		if len(applied[0]) < 2 || len(applied[1]) < 2 || len(applied[2]) < 2 {
+			if err := runtimes[0].node.Tick(); err != nil {
+				t.Fatal(err)
+			}
+		}
+		var messages []raftadapter.MessageDTO
+		for index, runtime := range runtimes {
+			// StoragePending includes the FIFO. Do not wait for it to empty
+			// until an incoming heartbeat restores the ingress leader.
+			if index == 1 && runtime.node.Status().LeaderID == 0 {
+				continue
+			}
+			batch, err := processReadyForTest(t, runtime.node)
+			if err != nil {
+				t.Fatal(err)
+			}
+			runtime.projectionIndex.Store(runtime.node.Status().AppliedIndex)
+			applied[index] = append(applied[index], batch.Commands...)
+			if index == 1 {
+				for _, command := range batch.Commands {
+					ingress.stageProposalResult(command, membership.ApplyResultDTO{Outcome: membership.ApplyOutcomeApplied}, &proposals[1])
+				}
+				ingress.resolveAppliedProposals(&proposals[1])
+			}
+			messages = append(messages, batch.Messages...)
+		}
+		for _, message := range messages {
+			if _, err := runtimes[message.To-1].node.Step(message); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if len(messages) == 0 && len(applied[0]) >= 2 && len(applied[1]) >= 2 && len(applied[2]) >= 2 {
+			break
+		}
+	}
+	select {
+	case outcome := <-laterWait:
+		if outcome.err != nil || outcome.result.Outcome != membership.ApplyOutcomeApplied {
+			t.Fatalf("later Wait did not succeed after FIFO replay: %+v", outcome)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("later Wait did not complete after FIFO replay")
+	}
+	for index, commands := range applied {
+		if len(commands) != 2 || !bytes.Equal(commands[0], timedOut.data) || !bytes.Equal(commands[1], later.data) {
+			t.Fatalf("node %d did not apply exactly the original two commands in FIFO order: count=%d", index+1, len(commands))
+		}
+	}
+	select {
+	case response := <-timedOut.result:
+		if response.err != nil || response.result.Outcome != membership.ApplyOutcomeApplied {
+			t.Fatalf("abandoned waiter did not receive its buffered late apply result: %+v", response)
+		}
+	default:
+		t.Fatal("late apply result was not buffered after the original Wait returned an error")
+	}
+	if len(proposals[1]) != 0 || ingress.node.StoragePending() {
+		t.Fatalf("FIFO replay left pending work: waiters=%d storage=%t", len(proposals[1]), ingress.node.StoragePending())
+	}
+	// Further heartbeat turns must not re-propose an already accepted command.
+	for range 8 {
+		if err := runtimes[0].node.Tick(); err != nil {
+			t.Fatal(err)
+		}
+		var messages []raftadapter.MessageDTO
+		for index, runtime := range runtimes {
+			batch, err := processReadyForTest(t, runtime.node)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(batch.Commands) != 0 {
+				t.Fatalf("node %d applied duplicate commands after FIFO drained: count=%d", index+1, len(batch.Commands))
+			}
+			messages = append(messages, batch.Messages...)
+		}
+		for _, message := range messages {
+			if _, err := runtimes[message.To-1].node.Step(message); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	t.Log("caller Wait returned ErrQuorumUnavailable after deadline; all three nodes applied a×40000 then b×40000 once; late result stayed buffered")
 }
