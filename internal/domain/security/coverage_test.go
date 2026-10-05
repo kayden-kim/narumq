@@ -87,3 +87,54 @@ func TestCmmPolicyIgnoresRulesForRolesThePrincipalLacks(t *testing.T) {
 		t.Fatalf("role-less AuthorizeFilter() error = %v, want %v", err, ErrNotAuthorized)
 	}
 }
+
+func TestCmmPolicyHandlesCorruptedRuleFilters(t *testing.T) {
+	tenant, principal := newSecurityFixture(t)
+	otherTenant, err := tenancy.NewTenantID("tenant-b")
+	if err != nil {
+		t.Fatal(err)
+	}
+	foreignFilter, err := tenancy.NewTopicFilter(otherTenant, "sensors/#")
+	if err != nil {
+		t.Fatal(err)
+	}
+	topic, err := tenancy.NewTopic(tenant, "sensors/room")
+	if err != nil {
+		t.Fatal(err)
+	}
+	filter, err := tenancy.NewTopicFilter(tenant, "sensors/+")
+	if err != nil {
+		t.Fatal(err)
+	}
+	allowPublish := newSecurityRule(t, tenant, "publisher", EffectAllow, ActionPublish, "sensors/#")
+	allowSubscribe := newSecurityRule(t, tenant, "publisher", EffectAllow, ActionSubscribe, "sensors/#")
+	foreignDenyPublish := Rule{tenantID: tenant, role: "publisher", effect: EffectDeny, action: ActionPublish, topicFilter: foreignFilter}
+	foreignDenySubscribe := Rule{tenantID: tenant, role: "publisher", effect: EffectDeny, action: ActionSubscribe, topicFilter: foreignFilter}
+	zeroFilterPublish := Rule{tenantID: tenant, role: "publisher", effect: EffectAllow, action: ActionPublish}
+	zeroFilterSubscribe := Rule{tenantID: tenant, role: "publisher", effect: EffectAllow, action: ActionSubscribe}
+
+	t.Run("publish skips rule filter from another tenant", func(t *testing.T) {
+		policy := Policy{rules: []Rule{foreignDenyPublish, allowPublish}}
+		if err := policy.AuthorizeTopic(principal, ActionPublish, topic); err != nil {
+			t.Fatalf("AuthorizeTopic() error = %v, want %v", err, nil)
+		}
+	})
+	t.Run("subscribe skips rule filter from another tenant", func(t *testing.T) {
+		policy := Policy{rules: []Rule{foreignDenySubscribe, allowSubscribe}}
+		if err := policy.AuthorizeFilter(principal, ActionSubscribe, filter); err != nil {
+			t.Fatalf("AuthorizeFilter() error = %v, want %v", err, nil)
+		}
+	})
+	t.Run("publish fails closed on invalid rule filter", func(t *testing.T) {
+		policy := Policy{rules: []Rule{zeroFilterPublish, allowPublish}}
+		if err := policy.AuthorizeTopic(principal, ActionPublish, topic); !errors.Is(err, ErrNotAuthorized) {
+			t.Fatalf("AuthorizeTopic() error = %v, want %v", err, ErrNotAuthorized)
+		}
+	})
+	t.Run("subscribe fails closed on invalid rule filter", func(t *testing.T) {
+		policy := Policy{rules: []Rule{zeroFilterSubscribe, allowSubscribe}}
+		if err := policy.AuthorizeFilter(principal, ActionSubscribe, filter); !errors.Is(err, ErrNotAuthorized) {
+			t.Fatalf("AuthorizeFilter() error = %v, want %v", err, ErrNotAuthorized)
+		}
+	})
+}

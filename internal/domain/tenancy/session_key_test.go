@@ -62,6 +62,8 @@ func TestParseSessionKeyRoutingIDRejectsMalformedIDs(t *testing.T) {
 		{name: "empty", routingID: ""},
 		{name: "raw client ID", routingID: "client"},
 		{name: "missing fields", routingID: "\xff"},
+		{name: "empty tenant length", routingID: "\xff:t1:c"},
+		{name: "missing tenant length separator", routingID: "\xff1t"},
 		{name: "missing client length", routingID: "\xff1:t"},
 		{name: "empty client ID", routingID: "\xff1:t1:"},
 		{name: "trailing bytes", routingID: "\xff1:t1:c!"},

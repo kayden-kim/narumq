@@ -44,6 +44,7 @@ func TestParseRejectsNonCanonicalVersions(t *testing.T) {
 		"",
 		strings.Repeat("1", 65),
 		"1..3",
+		"1.x.3",
 		"1.2.",
 		"-1.2.3",
 		"1.2.٣",
@@ -83,7 +84,7 @@ func TestCompatibleReleaseWindow(t *testing.T) {
 	}
 
 	if !CompatibleStrings("1.1.0", "1.2.9") || CompatibleStrings("1.0.0", "1.2.0") ||
-		CompatibleStrings("v1.1.0", "1.2.0") {
+		CompatibleStrings("v1.1.0", "1.2.0") || CompatibleStrings("1.2.0", "1.2") {
 		t.Fatal("CompatibleStrings returned an incorrect release-window result")
 	}
 }

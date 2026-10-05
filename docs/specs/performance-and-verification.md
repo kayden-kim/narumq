@@ -1116,7 +1116,7 @@ Mounted FUSE acceptance는 `/dev/fuse`, `CAP_SYS_ADMIN`, `apparmor=unconfined`�
 ## 8. Coverage와 test quality gate
 
 - 전체 production code는 line 85% 이상, function 90% 이상, branch 85% 이상이어야 한다.
-- protocol, session, routing, delivery, tenancy, security, cluster lifecycle과 node drain domain은 line/function 95% 이상, branch 90% 이상이어야 한다.
+- TEST-07 핵심 모듈은 domain 계층 package로 판정한다. 대응은 protocol=`internal/domain/mqtt`, session=`internal/domain/session`, routing=`internal/domain/routing`, delivery=`internal/domain/delivery`, tenancy=`internal/domain/tenancy`, security=`internal/domain/security`, cluster lifecycle=`internal/domain/nodedrain`·`internal/domain/release`·`internal/domain/connrebalance`이다. 이 package들은 line/function 95% 이상, branch 90% 이상이어야 한다. Application·adapter·`cmd` package는 TEST-06 전체 기준으로 판정한다. 목록 원본은 [`coverage-policy.json`](../../tests/verification/coverage-policy.json)의 `corePackages`다.
 - PR 변경 code는 line/branch diff coverage 95% 이상이어야 한다.
 - 전체 production line coverage 기준은 85%, function coverage 기준은 90%다. Core와 diff는 각각 별도 higher threshold를 유지한다.
 - Generated source is excluded only when it is under `cmd/` or `internal/`, ends in `.pb.go`, and begins with the standard `// Code generated … DO NOT EDIT.` marker. Other unknown files in a coverage profile fail verification.
@@ -1275,6 +1275,89 @@ Gofmt·vet·traceability·architecture·전체 package/integration·production p
 
 전체 gate 출력은 `.artifacts/verification/local-speed-20261004-parallel8-local.log`에, 이 실행의 coverage 요약은 `local-speed-20261004-parallel8-coverage.json`에 보존했다. 기본 coverage profile과 요약은 기존 경로를 사용한다. 실행 시간과 반복 목록 대조 결과는 `local-speed-20261004-parallel8-repeat.json`에도 기록했다.
 
+
+### 8.4 2026-10-05 TEST-07 core package 범위 정합
+
+`coverage-policy.json`의 core 범위를 domain 5개에서 9개로 넓혔다.
+기존 core는 `delivery`, `mqtt`, `nodedrain`, `routing`, `session`이었다.
+누락된 `connrebalance`, `release`, `security`, `tenancy`를 추가했다.
+사용자 결정에 따라 `application/membership`은 core에 넣지 않고 TEST-06 전체 기준으로 판정한다.
+Production code와 `coreFloor`·`overallFloor`·`diffFloor`는 바꾸지 않았다.
+기존 5개 core의 ratchet도 유지했다. Ratchet은 coverage 하락을 막는 package별 기준값이다.
+
+시험을 추가하기 전에 기존 profile로 넓힌 policy를 판정했다.
+
+```text
+go run ./tools/verify coverage --profile .artifacts/verification/coverage.out --policy tests/verification/coverage-policy.json --report .artifacts/verification/test07-before-summary.json
+```
+
+종료 코드 1, wall 8.06s였다. Core 실패는 다음 한 건이었다.
+임시 `test07-before-summary.json`은 확인 뒤 삭제했다.
+
+```text
+coverage: coverage gate failed:
+narumq/internal/domain/security line coverage 92.90% is below 95.00%
+```
+
+추가한 시험은 다음과 같다.
+
+- `internal/domain/security/coverage_test.go`의 `TestCmmPolicyHandlesCorruptedRuleFilters`: 내부에서 손상한 rule의 filter가 다른 tenant에 속하면 건너뛴다. Zero-value filter면 뒤에 유효한 allow rule이 있어도 인가를 거절한다. Publish와 subscribe를 각각 확인한다.
+- `internal/domain/tenancy/session_key_test.go`의 `TestParseSessionKeyRoutingIDRejectsMalformedIDs`: tenant 길이가 비어 있거나 길이 구분자가 없는 입력을 `ErrInvalidSessionKey`로 거절한다.
+- `internal/domain/release/release_test.go`: `TestParseRejectsNonCanonicalVersions`가 `"1.x.3"`을 거절한다. `TestCompatibleReleaseWindow`가 오른쪽 version `"1.2"`의 parse 실패를 비호환으로 판정한다.
+
+다음 두 명령은 PASS였다. 첫 명령은 4개 package가 모두 `ok`였으며 wall 4.48s였다.
+둘째 명령은 새 security 하위 시험 4개가 모두 PASS였으며 wall 4.45s였다.
+
+```text
+go test ./internal/domain/security ./internal/domain/tenancy ./internal/domain/release ./internal/domain/connrebalance -count=1
+go test ./internal/domain/security -run TestCmmPolicyHandlesCorruptedRuleFilters -v -count=1
+```
+
+다음 미실행 line은 도달 불가로 남겼다.
+`security.go` 68–69는 다른 package에서 private field를 손상할 수 없는 `tenancy.TopicFilter`의 생성자 검증 때문에 도달할 수 없다.
+266–267·269는 같은 유효성·tenant 검사를 앞선 `FiltersIntersect`가 이미 통과해야 하므로 도달할 수 없다.
+289–290은 `NewPolicy`가 `tenantIDValid()`를 먼저 검사하므로 도달할 수 없다.
+`tenancy.go` 291–292는 앞선 `ValidateTopicFilter`가 같은 입력의 `ParseSharedFilter` 오류를 이미 거절하므로 도달할 수 없다.
+
+Windows/amd64·Go 1.26.5에서 `go run ./tools/verify local`을 실행했다.
+변경 범위 밖의 시험 실패 뒤 같은 명령을 한 번 재실행했으나 다시 실패했다.
+
+| 실행 | Wall time | 종료 코드 | 결과 |
+| --- | --- | --- | --- |
+| Run A 첫 시도 | 153.66s | 1 | TCP·benchmark 환경 시험 실패, integration binary 삭제 실패 |
+| Run A 재시도 | 143.34s | 1 | 같은 TCP·benchmark 환경 시험 실패; integration package는 `ok` |
+
+두 실행 모두 `TestCommittedTakeoverFencesConnectBeforeSessionBinding`이 `server_connection_test.go:260: write packets: io: read/write on closed pipe`로 실패했다.
+`TestRunClusterTargetKeepsPublishedOwnerPortAcrossBrokerRestart`도 두 실행 모두 `cluster_test.go:77: RunClusterTarget() failed: stats sampler bp07-restart-test-narumq-node1 failed: exit status 1`로 실패했다.
+첫 시도에서 integration 시험 본문은 PASS였으나 `narumq-1.exe` 삭제가 `Access is denied.`로 실패했다.
+두 실행 모두 `local: verification stopped during parallel checks`로 끝났으며 `local: PASS`는 확인하지 못했다.
+실패 원인은 이 작업에서 확정하거나 수정하지 않았다.
+
+재시도의 profile로 coverage만 별도 판정했다. 다음 명령은 종료 코드 0, wall 8.79s, `coverage: PASS`였다.
+이 결과는 실패한 전체 suite의 진단값이며 local gate 통과 증거가 아니다.
+
+```text
+go run ./tools/verify coverage --profile .artifacts/verification/coverage.out --policy tests/verification/coverage-policy.json --report .artifacts/verification/test07-diagnostic-summary.json
+```
+
+| 범위 | Line coverage | Function coverage |
+| --- | --- | --- |
+| 전체 production | 86.00% | 97.40% |
+| `domain/connrebalance` | 100.00% | 100.00% |
+| `domain/delivery` | 100.00% | 100.00% |
+| `domain/mqtt` | 99.37% | 100.00% |
+| `domain/nodedrain` | 98.04% | 100.00% |
+| `domain/release` | 100.00% | 100.00% |
+| `domain/routing` | 97.79% | 100.00% |
+| `domain/security` | 96.17% (176/183) | 100.00% |
+| `domain/session` | 99.16% | 100.00% |
+| `domain/tenancy` | 99.41% (335/337) | 100.00% |
+
+진단 요약은 `passed: true`이며 core 9개가 모두 line/function 95/95 이상이다.
+전체 gate가 반복 실패했으므로 새 4개 package의 ratchet은 임시 95/95를 유지한다.
+측정값 ratchet 고정과 Run B는 실행하지 않았다. Run A·B의 전체 gate PASS와 반복 측정 안정성은 아직 확인해야 한다.
+Branch coverage는 도구 미설정 사유로 `not_evaluated`다.
+이 기록은 CI 증거가 아니며 CI 전용 mutation, diff coverage와 외부 opt-in 수용 시험도 실행하지 않았다.
 
 ## 9. Architecture verification
 
