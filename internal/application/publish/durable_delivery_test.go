@@ -565,3 +565,45 @@ func TestReceiveQoS2RejectsUnauthorizedPublisherBeforeCommit(t *testing.T) {
 		t.Fatalf("unauthorized RECEIVE mutated state: commits=%+v deliveries=%+v", committer.changes, queue.attempts)
 	}
 }
+
+// Traceability: PRD MQTT-04/CLU-08; docs/specs/cluster-session-and-delivery.md §4.2, §11.32.
+func TestPublishDurableRetainedCommitFailureStopsDeliveryCommit(t *testing.T) {
+	errRetainedCommit := errors.New("retained quorum unavailable")
+	for _, tc := range []struct {
+		name string
+		qos  mqtt.QoS
+	}{
+		{name: "qos1-publish", qos: mqtt.QoSAtLeastOnce},
+		{name: "qos2-release", qos: mqtt.QoSExactlyOnce},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			useCase, queue, committer, now := durablePublishFixture(t,
+				membership.DeliveryResultDTO{Enqueued: []membership.DeliveryEnqueuedDTO{{ClientID: "durable-sub", Sequence: 1}}}, nil)
+			retained := &recordingRetainedCommitter{err: errRetainedCommit}
+			useCase.retainedCommitter = retained
+			packet := mqtt.Publish{
+				Version: mqtt.ProtocolV5, Topic: "events/retained", Payload: []byte("value"),
+				QoS: tc.qos, PacketID: 17, Retain: true,
+			}
+			var err error
+			if tc.qos == mqtt.QoSExactlyOnce {
+				_, err = useCase.PublishQoS2Release(mustPublishSessionID(t, "publisher"), 4, 9, packet, now)
+			} else {
+				_, err = useCase.Publish(mustPublishSessionID(t, "publisher"), packet, now)
+			}
+			if !errors.Is(err, errRetainedCommit) {
+				t.Fatalf("retained publish error = %v, want %v", err, errRetainedCommit)
+			}
+			if len(retained.changes) != 1 {
+				t.Fatalf("retained commits = %+v, want one failed replace", retained.changes)
+			}
+			if change := retained.changes[0]; change.Message.QoS != tc.qos || change.Delete {
+				t.Fatalf("retained change = %+v, want replace with QoS %d", change, tc.qos)
+			}
+			if len(committer.changes) != 0 || committer.barriers != 0 || len(queue.attempts) != 0 {
+				t.Fatalf("failed retained commit caused delivery: changes=%+v barriers=%d fanout=%+v",
+					committer.changes, committer.barriers, queue.attempts)
+			}
+		})
+	}
+}

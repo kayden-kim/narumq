@@ -63,7 +63,6 @@ PRD는 `Draft` 상태이므로 이 목록은 요구사항을 구현 기준으로
 
 ### 1.6 MQTT protocol과 client 호환성
 
-- [ ] **미검증 — QoS 1/2 retained 수용 시험(MQTT-04)**: [MQTT 스펙 §5](specs/mqtt-protocol-and-session.md#5-retained-message)는 cluster retained 수용 시험이 QoS 0을 대상으로 했고 QoS 1/2 `Retain=true`는 별도 시험하지 않았다고 기록한다. [Cluster §11.11](specs/cluster-session-and-delivery.md#1111-qos-12-durable-delivery-수용-매핑)의 기존 durable delivery 시험과 구분해 QoS 1/2 retained 상태의 commit, replay·expiry, 실패 시 live fan-out 차단을 수용 시험으로 확인한다. §2.3의 QoS 0 retained 완료 기록은 이 시험을 대신하지 않는다.
 - [ ] **미검증 — MQTT resource limit·비정상 입력(MQTT-11·MQTT-12)**: [MQTT 스펙 §7·§8](specs/mqtt-protocol-and-session.md)의 packet size, Receive Maximum, inflight·queue 상한, parser fuzzing과 slowloris 요구를 수용 시험에 연결한다. 제한 초과 시 protocol별 거절·종료 동작과 memory·goroutine 누수가 없음을 실행 증거로 확인한다. 현재 구현된 TCP adapter의 일부 상한만으로 전체 기준을 완료 처리하지 않는다.
 - [ ] **미검증 — MQTT 3.1.0 production 전환(MQTT-13)**: [PRD §9.1](requirements/PRD.md#91-mqtt-프로토콜)의 90일 이상 client 사용량 조사, 오래된 firmware·외부 장비 소유자 확인, 3.1.1 이상 전환 또는 별도 gateway 격리와 canary 거절 Metric 감시를 완료한다. Wire-level 거절 구현·시험은 완료된 범위이며 이 항목은 production migration gate다.
 - [ ] **결정 필요 — WebSocket/WSS 필요성(MQTT-10)**: [PRD §18 질문 6](requirements/PRD.md#18-미결정-사항)에서 사용 현황을 확인한다. 사용 필요가 승인되면 WebSocket/WSS listener와 TCP와 같은 MQTT packet·session 동작을 구현·검증한다. 필요가 확인되지 않으면 PRD의 P1 범위를 갱신하기 전까지 구현하지 않는다.
@@ -111,6 +110,11 @@ PRD [§16 선택적 adapter](requirements/PRD.md#16-단계별-제공-범위)의 
 
 - [x] Backup v1 commit 경계·offline restore·snapshot finalize crash: [ADR-0011](decisions/ADR-0011-cluster-backup-restore-v1.md), [§11.7](specs/cluster-session-and-delivery.md#117-cluster-backuprestore와-snapshot-finalize-수용-매핑). v1 archive는 v2 전환 뒤 읽지 않는다.
 - [x] Tenant-scoped retained 복제와 backup v2: [ADR-0012](decisions/ADR-0012-retained-replication-and-cluster-backup-v2.md), [§11.8](specs/cluster-session-and-delivery.md#118-retained-replication과-backup-v2-수용-매핑).
+- [x] QoS 1/2 retained 수용(MQTT-04·CLU-08): [MQTT §5](specs/mqtt-protocol-and-session.md#5-retained-message), [Cluster §11.32](specs/cluster-session-and-delivery.md#1132-qos-12-retained-수용-매핑).
+  - Commit 뒤 성공 ACK, cross-node replay와 QoS 하향, replace·delete, MQTT 5 expiry, 단일 node 손실 뒤 replay를 확인했다.
+  - Quorum 손실 중 성공 ACK·live fan-out 부재와 QoS 2 PUBREL 재시도를 확인했다.
+  - Timeout된 QoS 1 retained mutation은 복구 뒤 늦게 commit될 수 있다. 이는 §4.2의 결정한 경계다.
+  - QoS 1/2 retained Will과 production storage는 범위 밖이다.
 - [x] Detached persistent session의 QoS 0 offline 복제와 backup v3: [ADR-0013](decisions/ADR-0013-offline-queue-replication-and-cluster-backup-v3.md), [§11.9](specs/cluster-session-and-delivery.md#119-offline-queue-replication과-backup-v3-수용-매핑).
 - [x] Archive N/N-1 restore(같은 source의 synthetic build): [ADR-0021](decisions/ADR-0021-backup-archive-release-window.md), [§11.19](specs/cluster-session-and-delivery.md#1119-backup-archive-nn-1-restore-수용-매핑).
 - [x] Tenant storage quota(PRD TEN-08 범위): [ADR-0017](decisions/ADR-0017-tenant-storage-quota.md), [§11.16](specs/cluster-session-and-delivery.md#1116-tenant-storage-quota-수용-매핑).

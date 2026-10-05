@@ -12,7 +12,7 @@ NaruMQ source tree는 MQTT·session·routing·delivery·tenancy·security·clust
 | 관련 결정 | [ADR-0001](../decisions/ADR-0001-core-implementation-language.md) Accepted |
 | 관련 Architecture | [Broker core architecture](broker-core.md), [EKS on EC2 deployment](eks-ec2-deployment.md) |
 | 관련 Convention | [Go coding conventions](../conventions/go-coding-conventions.md) |
-| 최종 확인일 | 2026-10-04 |
+| 최종 확인일 | 2026-10-05 |
 
 ## 코드 지도: 실행 모드와 MQTT CONNECT 대표 흐름
 
@@ -210,6 +210,8 @@ Integration process 시험의 호출 흐름은 `tests/integration/cluster_member
 `tools/verify/runner.go`가 동시에 실행할 시험 수를 `local` 8개, `ci` 2개로 제한한다.
 `buildBinaryFrom`의 release/historical source 빌드는 fixture에 별도로 둔다.
 검증 범위와 실행 조건은 [성능 및 검증 §8](../specs/performance-and-verification.md#8-coverage와-test-quality-gate)을 따른다.
+
+QoS 1/2 retained 수용 시험의 진입점은 `tests/integration/cluster_retained_qos_process_test.go`의 `TestDynamicClusterRetainedQoS12ProcessAcceptance`다. 기존 `clusterDurableProcessStart`가 broker 3개를 시작한다. 시험은 MQTT socket으로 발행·ACK·replay를 확인하고 `clusterRetainedQoSWaitForState`로 각 node의 retained 관리 API를 대조한다. `clusterRetainedQoSReplay`는 여러 PUBLISH와 PUBREL의 교차 수신을 Packet ID별로 처리한다. Unit 진입점 `internal/application/publish/durable_delivery_test.go::TestPublishDurableRetainedCommitFailureStopsDeliveryCommit`는 retained commit 오류 뒤 delivery commit·fan-out 차단을 확인한다. 실행 증거는 [Cluster §11.32](../specs/cluster-session-and-delivery.md#1132-qos-12-retained-수용-매핑)에 있다. 제품의 호출 경로·상태·데이터 형식은 바꾸지 않았다.
 
 ## Directory naming
 

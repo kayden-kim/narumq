@@ -507,7 +507,7 @@ go test ./tests/integration -parallel=2 -run '^(TestClusterBackupRestoreProcessC
 
 ### 11.8 Retained replication과 backup v2 수용 매핑
 
-Retained key는 `(tenantId, exact Topic Name)`이다. Cluster MQTT ingress의 현재 범위는 QoS 0 PUBLISH다. Retained mutation은 Raft commit 뒤 다른 node의 replay projection에 반영되고, v2 snapshot/archive는 같은 committed retained state와 kind summary를 보존한다. Offline queue와 durable QoS 1/2 ACK는 이 acceptance 범위가 아니다.
+Retained key는 `(tenantId, exact Topic Name)`이다. 이 매핑의 cluster MQTT ingress 범위는 QoS 0 PUBLISH다. QoS 1/2 retained PUBLISH는 [§11.32](#1132-qos-12-retained-수용-매핑)에서 확인한다. Retained mutation은 Raft commit 뒤 다른 node의 replay projection에 반영되고, v2 snapshot/archive는 같은 committed retained state와 kind summary를 보존한다. Offline queue와 durable QoS 1/2 ACK는 이 acceptance 범위가 아니다.
 
 | Scenario | 관찰할 결과 | 시험 위치 | 실행 증거 |
 | --- | --- | --- | --- |
@@ -1382,4 +1382,37 @@ Process 시험은 취소 후 CONNACK `0x88` 해제, 같은 key replay·다른 pa
 새 wire field와 충돌하던 unknown-field 거절 vector는 실제 미정의 command 23·snapshot 14로 이동했다. 기존 schema baseline descriptor는 바꾸지 않았다. Production 부하·실제 LB 배치·게시 release 사이의 활성 feature 호환 시험은 미실행이며 기존 별도 gate를 유지한다.
 
 전체 gate는 Windows에서 `cmd /c "set GOMAXPROCS=4&& go run ./tools/verify local"`로 실행했다. Exit 0과 `local: PASS`를 확인했다. Coverage 산출물은 `.artifacts/verification/coverage.out`과 `coverage-summary.json`이다. Gate 뒤 변경은 실행 증거·코드 지도·작업 목록 문서와 unknown-payload vector의 줄 배치 정리뿐이다. 줄 배치 정리 뒤 `go test ./internal/adapters/raft/records -run '^TestReplicatedStateContractVectors$' -count=1`과 `go run ./tools/verify traceability`도 PASS했다.
+
+### 11.32 QoS 1/2 retained 수용 매핑
+
+기준은 [MQTT §5](mqtt-protocol-and-session.md#5-retained-message), §4.2의 commit·ACK 순서와 §6의 partition·quorum loss 경계다. QoS 1/2 retained Will, retained capacity·backpressure(§11.28), production storage는 이 수용 범위 밖이다.
+
+| 시나리오 | 시험 위치·명령 | 수용 기준 | 실행 결과 |
+| --- | --- | --- | --- |
+| Commit 실패 시 delivery·fan-out 차단 | `internal/application/publish/durable_delivery_test.go::TestPublishDurableRetainedCommitFailureStopsDeliveryCommit`; 아래 unit 명령 | QoS 1 PUBLISH와 QoS 2 RELEASE 모두 입력 QoS로 retained replace를 시도한다. 오류 뒤 delivery command·quorum barrier·local fan-out이 없다. | PASS; 두 subtest 0.00s, package 0.407s. `go build ./...`도 PASS |
+| QoS 1/2 commit·ACK·cross-node replay·QoS 하향 | `tests/integration/cluster_retained_qos_process_test.go::TestDynamicClusterRetainedQoS12ProcessAcceptance` 단계 2–3; 아래 process 명령 | ACK 뒤 모든 node의 저장 QoS·payload bytes가 일치한다. 새 subscriber는 topic 순서로 `min(stored, granted)` QoS와 RETAIN=true인 최신 값을 한 번씩 받는다. | PASS; 단일 실행 case 32.34s, package 32.568s. 반복 3회 case 33.26s·30.02s·30.42s, package 93.913s |
+| Replace·delete | 같은 process 시험 단계 4 | QoS 2 replace는 payload와 저장 QoS를 바꾼다. QoS 1 빈 payload는 retained 값을 삭제하고 live로 전달된다. 삭제한 값은 replay되지 않는다. | PASS; 위 단일 실행과 반복 3회 |
+| MQTT 5 Message Expiry | 같은 process 시험 단계 5 | QoS 1/2 값은 8초 만료 전에 MQTT 3.1.1 subscriber에 replay된다. 만료 뒤 모든 node의 조회와 replay에서 제외된다. | PASS; 위 단일 실행과 반복 3회. Expiry window를 늘리지 않았다. |
+| 단일 node 손실 뒤 replay(CLU-08) | 같은 process 시험 단계 6 | Publisher voter를 crash한 뒤 다른 node가 ACK된 최신 retained payload와 QoS를 replay한다. | PASS; 위 단일 실행과 반복 3회 |
+| Quorum 손실 중 성공 ACK·live fan-out 부재와 QoS 2 PUBREL 재시도 | 같은 process 시험 단계 7–11 | QoS 1 PUBACK·QoS 2 PUBCOMP 성공을 차단한다. PUBREL 전후 실패한 입력은 live로 전달되지 않는다. Quorum 복구 뒤 persistent session을 재개하고 원래 Packet ID의 PUBREL로 pending 값을 한 번 전달·replay한다. Timeout된 QoS 1 retained는 §4.2에 따라 늦게 commit될 수 있으나 원래 호출의 성공 ACK나 live fan-out은 허용하지 않는다. | PASS; 네 실행 모두 `liveOpen=true`, `lateFailCommit=false`. 닫힌 live 연결의 재접속 분기와 늦은 `fail` commit 분기는 이번 실행에서 관찰하지 않았다. |
+| 기존 retained·durable 회귀 | 아래 회귀 명령 | Cross-node delivery matrix, retained backup·restore·crash·resync, ACK-then-kill·quorum loss가 유지된다. | PASS; matrix 21.12s, backup 13.65s, ACK-then-kill 11.52s, package 21.370s, wall 23.07s |
+| 전체 local gate | `GOMAXPROCS=4 go run ./tools/verify local` | `local: PASS`, 기존 기준값 유지 | PASS; wall 142.15s, integration package 88.853s. Gofmt·vet·traceability·architecture·전체 package/integration·production package race·네 fuzz target 각 10,000회·coverage 통과 |
+
+2026-10-05 Windows local working tree에서 실행했다. Unit 시험은 기존 fixture와 retained committer를 재사용한다. Process 시험은 실제 broker 3개와 MQTT socket, retained 관리 API를 사용한다. 제품 코드는 바꾸지 않았다.
+
+```text
+go build ./...
+go test ./internal/application/publish -run '^TestPublishDurableRetainedCommitFailureStopsDeliveryCommit$' -count=1 -v
+GOMAXPROCS=4 go test ./tests/integration -run '^TestDynamicClusterRetainedQoS12ProcessAcceptance$' -count=1 -v -timeout 20m
+GOMAXPROCS=4 go test ./tests/integration -run '^TestDynamicClusterRetainedQoS12ProcessAcceptance$' -count=3 -v -timeout 20m
+GOMAXPROCS=4 go test ./tests/integration -run '^(TestDynamicClusterCrossNodeDeliveryMatrixProcessAcceptance|TestClusterBackupRestoreProcessCrashAndResync|TestDynamicClusterDurableQoSAckThenKillProcessAcceptance)$' -count=1 -v -timeout 20m
+go run ./tools/verify traceability
+GOMAXPROCS=4 go run ./tools/verify local
+```
+
+첫 process 실행은 QoS 2 live PUBLISH에 PUBREC을 보낸 뒤 다음 PUBLISH를 PUBREL로 읽으려 하여 실패했다(case 8.56s). 오류 로그에는 `kind=3`, topic `retained/qos12/two`, Packet ID 4가 기록되었다. Flags는 기록되지 않아 이 로그만으로 다음 PUBLISH의 QoS를 판단하지 않는다. 기존 `clusterMatrixAck`는 다음 packet이 PUBREL이라고 가정한다. 실제 writer는 여러 PUBLISH를 연속 전송할 수 있다(`internal/adapters/tcp/server.go::writeDeliveries`). Live 입력은 한 건씩 발행·확인하도록 시험을 고쳤다. Replay helper는 PUBLISH 순서를 보존하고 Packet ID별 PUBREL을 확인한 뒤 PUBCOMP를 보낸다. 미완료 QoS 2 exchange가 남으면 timeout을 정상 종료로 처리하지 않는다. 이 변경은 ACK 조건이나 수용 기준을 완화하지 않는다.
+
+MQTT §5의 과거 “현재 QoS 0” 문장은 같은 절의 입력 QoS 저장 규범, §4.5와 기존 §11.15의 실행 증거에 따라 오래된 상태 설명으로 판단했다. 규범과 제품 동작은 바꾸지 않았다.
+
+전체 gate는 Windows에서 `cmd /d /c "set GOMAXPROCS=4&& go run ./tools/verify local"`로 실행했다. Exit 0과 `local: PASS`를 확인했다. Coverage 산출물은 `.artifacts/verification/coverage.out`과 `coverage-summary.json`이다. Gate 뒤에는 실행 증거, 첫 실패의 packet 설명과 코드 지도 확인일만 갱신했다. 이 문서 정정 뒤 traceability도 PASS했다. CI 전용 mutation, QoS 1/2 retained Will과 production storage 검증은 실행하지 않았다.
 

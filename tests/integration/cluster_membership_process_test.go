@@ -263,7 +263,20 @@ func newClusterMembershipProcessFixture(t *testing.T, nodeCount int, buildTags s
       "rb-v5-08", "rb-v5-09", "rb-v5-10", "rb-v5-11",
       "rb-v5-12", "rb-v5-13", "rb-v5-14", "rb-v5-15",
       "rb-v3-00", "rb-v3-01", "rb-pub", "rb-probe", "rb-rejected",
-      "archive-downgrade-retained"
+      "archive-downgrade-retained",
+      "retained-qos12-live",
+      "retained-qos12-pub",
+      "retained-qos12-pub-v5",
+      "retained-qos12-nq-1",
+      "retained-qos12-nq-2",
+      "retained-qos12-replay-1",
+      "retained-qos12-replay-2",
+      "retained-qos12-replay-3",
+      "retained-qos12-replay-4",
+      "retained-qos12-replay-5",
+      "retained-qos12-replay-6",
+      "retained-qos12-replay-7",
+      "retained-qos12-replay-8"
     ],
     "roles": ["client"]
   }],
