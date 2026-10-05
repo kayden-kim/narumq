@@ -2,7 +2,9 @@ package main
 
 import (
 	"context"
+	"encoding/binary"
 
+	adaptersmetrics "narumq/internal/adapters/metrics"
 	raftadapter "narumq/internal/adapters/raft"
 )
 
@@ -11,6 +13,7 @@ const (
 	clusterReadIndexReserve    = 2
 	clusterReadIndexFrames     = 2 // Heartbeat and proof response compete in the same peer FIFO.
 	clusterReadIndexLimit      = (32 - clusterReadIndexReserve) / clusterReadIndexFrames
+	clusterReadProofHeader     = 16 // Origin node ID and per-emission nonce.
 )
 
 // readIndexCapacity accounts for writes already queued and reads not flushed in a Ready yet.
@@ -19,7 +22,13 @@ func (runtime *clusterRuntime) readIndexCapacity(outstanding int) int {
 	if runtime.transport == nil {
 		return clusterDriverStageLimit
 	}
-	status := runtime.node.Status()
+	return runtime.readIndexCapacityForStatus(runtime.node.Status(), outstanding)
+}
+
+func (runtime *clusterRuntime) readIndexCapacityForStatus(status raftadapter.StatusDTO, outstanding int) int {
+	if runtime.transport == nil {
+		return clusterDriverStageLimit
+	}
 	// Independent origins fan out into the same leader-side peer queues.
 	sources := min(clusterReadIndexLimit, max(1, len(status.VoterIDs)+len(status.LearnerIDs)))
 	available := clusterReadIndexLimit/sources - outstanding
@@ -37,7 +46,7 @@ func (runtime *clusterRuntime) readIndexCapacity(outstanding int) int {
 	}
 	if status.Role != raftadapter.RoleLeader {
 		if status.LeaderID == 0 {
-			return available // Preserve the existing no-leader ReadIndex deadline behavior.
+			return 0 // Keep the original FIFO request until Raft knows where to send it.
 		}
 		return peerCapacity(status.LeaderID)
 	}
@@ -58,6 +67,25 @@ func (runtime *clusterRuntime) readIndexCapacity(outstanding int) int {
 		}
 	}
 	return 0
+}
+
+// forwardedProposalCapacity keeps deferred replay inside the actual peer FIFO budget.
+// It runs under Node's lock and must not call Node or wait for transport progress.
+func (runtime *clusterRuntime) forwardedProposalCapacity(peerID raftadapter.NodeID) (int, int) {
+	if runtime == nil || runtime.transport == nil {
+		return 0, 0
+	}
+	for _, isolatedPeerID := range runtime.forwardedProposalIsolations {
+		if isolatedPeerID == uint64(peerID) {
+			return 0, 0
+		}
+	}
+	capacity, err := runtime.transport.OutboundCapacity(uint64(peerID))
+	if err != nil {
+		return 0, 0
+	}
+	return max(0, capacity.Messages-clusterReadIndexReserve),
+		max(0, capacity.Bytes-clusterReadIndexReserve*clusterReadIndexFrameBytes)
 }
 
 func driverRequestContext(request clusterDriverRequest) context.Context {
@@ -99,4 +127,67 @@ func (runtime *clusterRuntime) driverRequestChannel() <-chan clusterDriverReques
 		return nil
 	}
 	return runtime.requests
+}
+
+// The caller key stays stable for cancellation; only the wire proof changes.
+func (runtime *clusterRuntime) issueReadProof(key string, waiter *clusterReadWaiter, status raftadapter.StatusDTO) error {
+	var wire [128]byte
+	if len(key) > len(wire)-clusterReadProofHeader {
+		return raftadapter.ErrInvalidMessage
+	}
+	nonce := runtime.sequence.Add(1)
+	binary.BigEndian.PutUint64(wire[:8], uint64(status.NodeID))
+	binary.BigEndian.PutUint64(wire[8:clusterReadProofHeader], nonce)
+	copy(wire[clusterReadProofHeader:], key)
+	if err := runtime.node.ReadIndex(wire[:clusterReadProofHeader+len(key)]); err != nil {
+		return err
+	}
+	waiter.proofSequence = nonce
+	waiter.leadership = raftLeadership{leader: status.LeaderID, term: status.Term, role: status.Role}
+	return nil
+}
+
+// A Raft leadership reset may discard an issued read without reporting an
+// error. Re-issue only this read-only proof, with a new nonce and old deadline.
+func (runtime *clusterRuntime) refreshReadWaiters(reads map[string]clusterReadWaiter) {
+	if len(reads) == 0 {
+		return
+	}
+	status := runtime.node.Status()
+	leadership := raftLeadership{leader: status.LeaderID, term: status.Term, role: status.Role}
+	outstanding := 0
+	for key, waiter := range reads {
+		if waiter.leadership != leadership {
+			waiter.proofSequence = 0
+			waiter.leadership = leadership
+			reads[key] = waiter
+		}
+		if waiter.proofSequence != 0 {
+			outstanding++
+		}
+	}
+	if status.LeaderID == 0 {
+		return
+	}
+	for key, waiter := range reads {
+		if waiter.proofSequence != 0 || (waiter.ctx != nil && waiter.ctx.Err() != nil) {
+			continue
+		}
+		if runtime.readIndexCapacityForStatus(status, outstanding) == 0 {
+			return
+		}
+		if err := runtime.issueReadProof(key, &waiter, status); err != nil {
+			delete(reads, key)
+			if waiter.commit != nil {
+				runtime.finishCommitRead(waiter.commit, err)
+			} else {
+				runtime.observeRaftStage(adaptersmetrics.RaftReadIndex, waiter.startedAt)
+				waiter.result <- clusterReadResponse{err: err}
+			}
+			continue
+		}
+		reads[key] = waiter
+		runtime.readIndexStaged++
+		outstanding++
+	}
 }

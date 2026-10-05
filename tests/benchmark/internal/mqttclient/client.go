@@ -2,12 +2,14 @@ package mqttclient
 
 import (
 	"context"
+	"encoding/binary"
 	"errors"
 	"fmt"
 	"io"
 	"net"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	"narumq/internal/domain/mqtt"
 )
@@ -17,16 +19,19 @@ const (
 	DefaultHandshakeTimeout = 30 * time.Second
 )
 
-// ConnectOptions configures an MQTT 5 CONNECT with caller-selected Clean Start, Session Expiry and credentials.
+// ConnectOptions configures an MQTT CONNECT with caller-selected protocol, session, credentials, and Will.
 type ConnectOptions struct {
-	Address               string
-	ClientID              string
+	Address  string
+	ClientID string
+	// ProtocolVersion selects MQTT 3.1.1 or 5.0; zero defaults to MQTT 5.0.
+	ProtocolVersion       mqtt.ProtocolVersion
 	KeepAlive             uint16
 	HandshakeTimeout      time.Duration
 	CleanStart            bool
 	SessionExpiryInterval uint32
 	Username              string
 	Password              []byte
+	Will                  *mqtt.Will
 }
 
 // ConnectTiming records the wall-clock points used by a connection attempt.
@@ -42,6 +47,7 @@ type Client struct {
 	connection       net.Conn
 	encoder          *mqtt.Encoder
 	decoder          *mqtt.Decoder
+	protocolVersion  mqtt.ProtocolVersion
 	handshakeTimeout time.Duration
 	writeMu          sync.Mutex
 	readMu           sync.Mutex
@@ -49,7 +55,7 @@ type Client struct {
 	closeErr         error
 }
 
-// Connect performs an MQTT 5 CONNECT with caller-selected Clean Start, Session Expiry and credentials.
+// Connect performs an MQTT CONNECT with caller-selected protocol, session, credentials, and Will.
 func Connect(ctx context.Context, options ConnectOptions) (*Client, ConnectTiming, error) {
 	if ctx == nil {
 		ctx = context.Background()
@@ -59,6 +65,13 @@ func Connect(ctx context.Context, options ConnectOptions) (*Client, ConnectTimin
 	}
 	if options.ClientID == "" {
 		return nil, ConnectTiming{}, errors.New("MQTT client ID is required")
+	}
+	protocolVersion := options.ProtocolVersion
+	if protocolVersion == mqtt.ProtocolUnknown {
+		protocolVersion = mqtt.ProtocolV5
+	}
+	if protocolVersion != mqtt.ProtocolV311 && protocolVersion != mqtt.ProtocolV5 {
+		return nil, ConnectTiming{}, mqtt.ErrUnsupportedProtocolVersion
 	}
 	handshakeTimeout := options.HandshakeTimeout
 	if handshakeTimeout <= 0 {
@@ -78,9 +91,15 @@ func Connect(ctx context.Context, options ConnectOptions) (*Client, ConnectTimin
 	if err != nil {
 		return nil, ConnectTiming{}, err
 	}
-	client := &Client{connection: connection, encoder: encoder, decoder: decoder, handshakeTimeout: handshakeTimeout}
+	client := &Client{
+		connection:       connection,
+		encoder:          encoder,
+		decoder:          decoder,
+		protocolVersion:  protocolVersion,
+		handshakeTimeout: handshakeTimeout,
+	}
 	packet := &mqtt.Connect{
-		Version:               mqtt.ProtocolV5,
+		Version:               protocolVersion,
 		CleanStart:            options.CleanStart,
 		SessionExpiryInterval: options.SessionExpiryInterval,
 		KeepAlive:             options.KeepAlive,
@@ -89,6 +108,7 @@ func Connect(ctx context.Context, options ConnectOptions) (*Client, ConnectTimin
 		Username:              options.Username,
 		HasPassword:           len(options.Password) > 0,
 		Password:              options.Password,
+		Will:                  options.Will,
 	}
 	if err := client.Write(packet, handshakeTimeout); err != nil {
 		_ = client.Close()
@@ -99,7 +119,7 @@ func Connect(ctx context.Context, options ConnectOptions) (*Client, ConnectTimin
 		_ = client.Close()
 		return nil, ConnectTiming{}, err
 	}
-	if connAck.Version != mqtt.ProtocolV5 || (options.CleanStart && connAck.SessionPresent) || connAck.ReasonCode != 0 {
+	if connAck.Version != protocolVersion || (options.CleanStart && connAck.SessionPresent) || connAck.ReasonCode != 0 {
 		_ = client.Close()
 		return nil, ConnectTiming{}, fmt.Errorf("unexpected CONNACK %#v", connAck)
 	}
@@ -158,9 +178,12 @@ func (client *Client) Read(timeout time.Duration) (mqtt.Packet, error) {
 	return client.readPacket(timeout)
 }
 
-// Disconnect sends a normal MQTT 5 DISCONNECT packet.
+// Disconnect sends a normal DISCONNECT packet for the negotiated protocol.
 func (client *Client) Disconnect(timeout time.Duration) error {
-	return client.Write(&mqtt.Disconnect{Version: mqtt.ProtocolV5}, timeout)
+	if client == nil {
+		return errors.New("MQTT client is closed")
+	}
+	return client.Write(&mqtt.Disconnect{Version: client.protocolVersion}, timeout)
 }
 
 // Close closes the underlying TCP connection and is safe to call repeatedly.
@@ -189,7 +212,10 @@ func (client *Client) readPacket(timeout time.Duration) (mqtt.Packet, error) {
 	if err != nil {
 		return nil, err
 	}
-	packet, consumed, err := client.decoder.Decode(frame.wire, mqtt.ProtocolV5)
+	if client.protocolVersion == mqtt.ProtocolV5 && frame.header == 0xE0 {
+		return client.readServerDisconnect(frame)
+	}
+	packet, consumed, err := client.decoder.Decode(frame.wire, client.protocolVersion)
 	if err != nil {
 		return nil, err
 	}
@@ -204,11 +230,21 @@ func (client *Client) readConnAck(timeout time.Duration) (*mqtt.ConnAck, error) 
 	if err != nil {
 		return nil, err
 	}
-	if frame.header != 0x20 || len(frame.body) < 2 {
+	if frame.header != 0x20 || len(frame.body) < 2 || frame.body[0]&0xFE != 0 {
 		return nil, mqtt.ErrMalformedPacket
 	}
-	if frame.body[0]&0xFE != 0 {
-		return nil, mqtt.ErrMalformedPacket
+	if client.protocolVersion == mqtt.ProtocolV311 {
+		if len(frame.body) != 2 {
+			return nil, mqtt.ErrMalformedPacket
+		}
+		return &mqtt.ConnAck{
+			Version:        mqtt.ProtocolV311,
+			SessionPresent: frame.body[0]&0x01 != 0,
+			ReasonCode:     frame.body[1],
+		}, nil
+	}
+	if client.protocolVersion != mqtt.ProtocolV5 {
+		return nil, mqtt.ErrUnsupportedProtocolVersion
 	}
 	if len(frame.body) < 3 {
 		return nil, mqtt.ErrMalformedPacket
@@ -222,6 +258,117 @@ func (client *Client) readConnAck(timeout time.Duration) (*mqtt.ConnAck, error) 
 		SessionPresent: frame.body[0]&0x01 != 0,
 		ReasonCode:     frame.body[1],
 	}, nil
+}
+
+func (client *Client) readServerDisconnect(frame wireFrame) (mqtt.Packet, error) {
+	if len(frame.body) == 0 {
+		packet, _, err := client.decoder.Decode(frame.wire, mqtt.ProtocolV5)
+		return packet, err
+	}
+	reasonFrame := [3]byte{0xE0, 0x01, frame.body[0]}
+	if _, _, err := client.decoder.Decode(reasonFrame[:], mqtt.ProtocolV5); err != nil {
+		return nil, err
+	}
+	if len(frame.body) == 1 {
+		packet, _, err := client.decoder.Decode(frame.wire, mqtt.ProtocolV5)
+		return packet, err
+	}
+	propertyLength, consumed, err := decodeWireVariableByteInteger(frame.body[1:])
+	if err != nil {
+		return nil, mqtt.ErrMalformedPacket
+	}
+	propertiesStart := 1 + consumed
+	if propertyLength != len(frame.body)-propertiesStart {
+		return nil, mqtt.ErrMalformedPacket
+	}
+	if propertyLength == 0 {
+		packet, _, err := client.decoder.Decode(frame.wire, mqtt.ProtocolV5)
+		return packet, err
+	}
+
+	properties := frame.body[propertiesStart:]
+	position := 0
+	serverReference := ""
+	hasSessionExpiry := false
+	hasReasonString := false
+	hasServerReference := false
+	for position < len(properties) {
+		property := properties[position]
+		position++
+		switch property {
+		case 0x11: // Session Expiry Interval
+			if hasSessionExpiry || len(properties)-position < 4 {
+				return nil, mqtt.ErrMalformedPacket
+			}
+			hasSessionExpiry = true
+			position += 4
+		case 0x1C: // Server Reference
+			if hasServerReference {
+				return nil, mqtt.ErrMalformedPacket
+			}
+			value, err := readServerDisconnectUTF8Field(properties, &position)
+			if err != nil {
+				return nil, err
+			}
+			serverReference = string(value)
+			hasServerReference = true
+		case 0x1F: // Reason String
+			if hasReasonString {
+				return nil, mqtt.ErrMalformedPacket
+			}
+			if _, err := readServerDisconnectUTF8Field(properties, &position); err != nil {
+				return nil, err
+			}
+			hasReasonString = true
+		case 0x26: // User Property
+			if _, err := readServerDisconnectUTF8Field(properties, &position); err != nil {
+				return nil, err
+			}
+			if _, err := readServerDisconnectUTF8Field(properties, &position); err != nil {
+				return nil, err
+			}
+		default:
+			return nil, mqtt.ErrMalformedPacket
+		}
+	}
+	return &mqtt.Disconnect{
+		Version:         mqtt.ProtocolV5,
+		ReasonCode:      frame.body[0],
+		ServerReference: serverReference,
+	}, nil
+}
+
+func readServerDisconnectUTF8Field(body []byte, position *int) ([]byte, error) {
+	if len(body)-*position < 2 {
+		return nil, mqtt.ErrMalformedPacket
+	}
+	length := int(binary.BigEndian.Uint16(body[*position : *position+2]))
+	*position += 2
+	if length > len(body)-*position {
+		return nil, mqtt.ErrMalformedPacket
+	}
+	value := body[*position : *position+length]
+	*position += length
+	if !validServerDisconnectUTF8(value) {
+		return nil, mqtt.ErrMalformedPacket
+	}
+	return value, nil
+}
+
+func validServerDisconnectUTF8(value []byte) bool {
+	if !utf8.Valid(value) {
+		return false
+	}
+	for len(value) > 0 {
+		codePoint, size := utf8.DecodeRune(value)
+		if codePoint == 0 || (codePoint >= 0xD800 && codePoint <= 0xDFFF) ||
+			(codePoint >= 0xFDD0 && codePoint <= 0xFDEF) ||
+			codePoint&0xFFFF == 0xFFFE || codePoint&0xFFFF == 0xFFFF {
+			return false
+		}
+		value = value[size:]
+	}
+	return true
 }
 
 func readWireFrame(connection net.Conn, firstByteTimeout, frameTimeout time.Duration) (wireFrame, error) {

@@ -682,7 +682,7 @@ func TestNewClusterOperationID(t *testing.T) {
 	}
 }
 
-func TestResolveProposalAndCompleteReadStates(t *testing.T) {
+func TestProposalResultWaitsForProjectionCompletion(t *testing.T) {
 	node, err := raftadapter.Open(raftadapter.Config{
 		NodeID: 1, PeerIDs: []raftadapter.NodeID{1, 2, 3}, Directory: t.TempDir(),
 	})
@@ -722,21 +722,6 @@ func TestResolveProposalAndCompleteReadStates(t *testing.T) {
 		t.Fatalf("got result index = %d", gotRes.result.Index)
 	}
 
-	readResult := make(chan clusterReadResponse, 1)
-	reads := map[string]clusterReadWaiter{
-		"k1": {result: readResult},
-	}
-	readStates := []raftadapter.ReadStateDTO{
-		{RequestContext: []byte("k1"), Index: 0},
-	}
-	deferred := runtime.completeReadStates(readStates, reads)
-	if len(deferred) != 0 || len(reads) != 0 {
-		t.Fatalf("deferred=%+v reads=%+v", deferred, reads)
-	}
-	resp := <-readResult
-	if resp.index != 0 {
-		t.Fatalf("resp index = %d", resp.index)
-	}
 }
 
 func TestFailPendingProposalsOnDriverExit(t *testing.T) {
@@ -1249,6 +1234,7 @@ func TestClusterCommitReadProofPreservesSubmissionOrderAndCancellation(t *testin
 		nodes[index] = node
 		t.Cleanup(func() { node.Close() })
 	}
+	var proofStates []raftadapter.ReadStateDTO
 	pump := func() [][]byte {
 		var commands [][]byte
 		for range 64 {
@@ -1262,6 +1248,7 @@ func TestClusterCommitReadProofPreservesSubmissionOrderAndCancellation(t *testin
 				active = active || !clusterBatchEmpty(batch)
 				messages = append(messages, batch.Messages...)
 				if index == 0 {
+					proofStates = append(proofStates, batch.ReadStates...)
 					commands = append(commands, batch.Commands...)
 				}
 			}
@@ -1297,7 +1284,11 @@ func TestClusterCommitReadProofPreservesSubmissionOrderAndCancellation(t *testin
 	cancelled := makePending("cancelled", "must-not-commit", cancelledCtx)
 	cancel()
 	runtime.pendingCommits = []*clusterPendingCommit{first, second, cancelled}
-	reads := map[string]clusterReadWaiter{"first": {ctx: context.Background(), commit: first}}
+	firstWaiter := clusterReadWaiter{ctx: context.Background(), commit: first}
+	if err := runtime.issueReadProof("first", &firstWaiter, node.Status()); err != nil {
+		t.Fatal(err)
+	}
+	reads := map[string]clusterReadWaiter{"first": firstWaiter}
 	var proposals []clusterProposalWaiter
 	if runtime.resolveCommitReads(reads, &proposals) || len(proposals) != 0 {
 		t.Fatal("later fresh proof caused a proposal before the first proof")
@@ -1308,14 +1299,13 @@ func TestClusterCommitReadProofPreservesSubmissionOrderAndCancellation(t *testin
 	default:
 	}
 	applied := node.Status().AppliedIndex
-	runtime.projectionIndex.Store(applied)
-	deferred := runtime.completeReadStates([]raftadapter.ReadStateDTO{
-		{RequestContext: []byte("first"), Index: applied + 1},
-	}, reads)
+	pump()
+	runtime.projectionIndex.Store(applied - 1)
+	deferred := runtime.completeReadStates(proofStates, reads)
 	if runtime.resolveCommitReads(reads, &proposals) || len(deferred) != 1 {
 		t.Fatal("read proof beyond local apply/projection permitted submission")
 	}
-	deferred[0].Index = applied
+	runtime.projectionIndex.Store(applied)
 	if remaining := runtime.completeReadStates(deferred, reads); len(remaining) != 0 {
 		t.Fatal("applied fresh proof remained pending")
 	}

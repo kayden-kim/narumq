@@ -68,7 +68,7 @@ func RunTarget(ctx context.Context, options TargetOptions) (TargetResult, error)
 		return finishTargetFailure(result, err), nil
 	}
 
-	statsCancel, statsDone := startStatsSampler(ctx, containerName, result.BrokerStatsPath)
+	statsCancel, statsDone := startStatsSampler(ctx, containerName, result.BrokerStatsPath, false)
 	statsStopped := false
 	stopStats := func() error {
 		if statsStopped {

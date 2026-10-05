@@ -21,12 +21,12 @@ type storageApplyRequest struct {
 // coalesce: ProcessReady must drain available work, not count notifications.
 func (n *Node) StorageReady() <-chan struct{} { return n.writer.ready }
 
-// StoragePending includes accepted work, consumer apply and unaccepted Ready.
-// A completed ProcessReady call alone is not a durable/application checkpoint.
+// StoragePending includes accepted work, deferred proposals, consumer apply and
+// unaccepted Ready. ProcessReady alone is not a durable/application checkpoint.
 func (n *Node) StoragePending() bool {
 	n.mu.Lock()
 	defer n.mu.Unlock()
-	return n.appendPending != 0 || n.heldAppend != nil || len(n.applyQueue) != 0 || n.applying != nil || n.raw.HasReady()
+	return n.deferredProposalCount != 0 || n.appendPending != 0 || n.heldAppend != nil || len(n.applyQueue) != 0 || n.applying != nil || n.raw.HasReady()
 }
 
 func (n *Node) storageSaturated() bool {
@@ -100,6 +100,15 @@ completions:
 	if n.heldAppend != nil && n.enqueueAppend(n.heldAppend) {
 		n.heldAppend = nil
 		batch.Progress = true
+	}
+	// Keep existing storage and peer responses ahead of newly forwarded work.
+	if !batch.Progress && n.appendPending == 0 && n.heldAppend == nil &&
+		len(n.applyQueue) == 0 && !n.raw.HasReady() {
+		progress, err := n.flushDeferredProposals()
+		if err != nil {
+			return BatchDTO{}, n.fail(err)
+		}
+		batch.Progress = progress
 	}
 	if n.heldAppend == nil && !n.storageSaturated() && len(n.applyQueue) < walAppendCapacity && n.raw.HasReady() {
 		ready := n.raw.Ready()

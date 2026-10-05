@@ -179,6 +179,7 @@ func runClusterMode(ctx context.Context, config clusterConfigFile, logger *slog.
 		}
 	}
 
+	var runtime *clusterRuntime
 	metricsRegistry := adaptersmetrics.NewRegistry()
 	storageMonitor := newClusterStorageMonitor(time.Now, logger)
 	node, err := raftadapter.Open(raftadapter.Config{
@@ -186,6 +187,9 @@ func runClusterMode(ctx context.Context, config clusterConfigFile, logger *slog.
 		DynamicMembership: true, ClusterID: config.ClusterID,
 		CertificateSHA256: localFingerprint, BootstrapVoterIDs: bootstrapIDs,
 		PersistenceBoundaryHook: persistenceHook, WALBoundaryHook: walBoundaryHook,
+		ForwardedProposalCapacity: func(peerID raftadapter.NodeID) (int, int) {
+			return runtime.forwardedProposalCapacity(peerID)
+		},
 		WALSyncObserver: func(sync raftadapter.WALSyncDTO) {
 			metricsRegistry.ObserveWALSync(sync.Duration, sync.Entries, sync.FrameBytes)
 		},
@@ -218,7 +222,7 @@ func runClusterMode(ctx context.Context, config clusterConfigFile, logger *slog.
 	if err != nil {
 		return fmt.Errorf("create retained repository: %w", err)
 	}
-	runtime := &clusterRuntime{
+	runtime = &clusterRuntime{
 		config: config, logger: logger, node: node, machine: machine,
 		retained: retainedRepository,
 		storage:  storageMonitor,
@@ -479,6 +483,7 @@ type clusterRuntime struct {
 	deferredRequest             clusterDriverRequest
 	hasDeferredRequest          bool
 	readIndexStaged             int
+	forwardedProposalIsolations []uint64 // Driver-owned fault snapshot for the callback under Node's lock.
 	driverStopped               chan struct{}
 	driverStopOnce              sync.Once
 	sequence                    atomic.Uint64
@@ -562,10 +567,12 @@ type clusterBackupImageResponse struct {
 }
 
 type clusterReadWaiter struct {
-	ctx       context.Context
-	startedAt time.Time
-	result    chan clusterReadResponse
-	commit    *clusterPendingCommit
+	ctx           context.Context
+	startedAt     time.Time
+	result        chan clusterReadResponse
+	commit        *clusterPendingCommit
+	leadership    raftLeadership
+	proofSequence uint64
 }
 
 type clusterProposalWaiter struct {
@@ -851,6 +858,12 @@ func (runtime *clusterRuntime) runDriver(ctx context.Context) (driverErr error) 
 				}
 			default:
 			}
+			runtime.refreshReadWaiters(reads)
+			// Read injected fault files before Node owns its mutex.
+			if runtime.faults.enabled() {
+				control, _, _ := runtime.faults.read()
+				runtime.forwardedProposalIsolations = control.IsolatePeers
+			}
 			readyStarted := time.Now()
 			batch, err := runtime.node.ProcessReady()
 			runtime.observeRaftStage(adaptersmetrics.RaftReady, readyStarted)
@@ -1031,12 +1044,13 @@ func (runtime *clusterRuntime) handleDriverRequest(
 			return
 		}
 		startedAt := time.Now()
-		if err := runtime.node.ReadIndex([]byte(request.contextKey)); err != nil {
+		waiter := clusterReadWaiter{ctx: request.context, result: request.readResult, startedAt: startedAt}
+		if err := runtime.issueReadProof(request.contextKey, &waiter, runtime.node.Status()); err != nil {
 			runtime.observeRaftStage(adaptersmetrics.RaftReadIndex, startedAt)
 			request.readResult <- clusterReadResponse{err: err}
 			return
 		}
-		reads[request.contextKey] = clusterReadWaiter{ctx: request.context, result: request.readResult, startedAt: startedAt}
+		reads[request.contextKey] = waiter
 	case clusterDriverCommit:
 		pending := request.pending
 		runtime.observeRaftStage(adaptersmetrics.RaftCommitQueue, request.queuedAt)
@@ -1046,11 +1060,12 @@ func (runtime *clusterRuntime) handleDriverRequest(
 			runtime.finishCommitRead(pending, err)
 			return
 		}
-		if err := runtime.node.ReadIndex([]byte(pending.contextKey)); err != nil {
+		waiter := clusterReadWaiter{ctx: pending.readContext, commit: pending}
+		if err := runtime.issueReadProof(pending.contextKey, &waiter, runtime.node.Status()); err != nil {
 			runtime.finishCommitRead(pending, err)
 			return
 		}
-		reads[pending.contextKey] = clusterReadWaiter{ctx: pending.readContext, commit: pending}
+		reads[pending.contextKey] = waiter
 	case clusterDriverProposal:
 		startedAt := time.Now()
 		if err := runtime.node.ProposeForwarded(request.data); err != nil {
@@ -1121,8 +1136,8 @@ func (runtime *clusterRuntime) stepInboundDelivery(delivery tcpadapter.PeerInbou
 	delivery.Complete()
 	if err != nil {
 		if errors.Is(err, raftadapter.ErrBackpressure) {
-			// Append/snapshot replication retries; a rejected forwarded proposal
-			// has no retry guarantee and its original caller may time out unacked.
+			// Replication retries; a forwarded proposal rejected by the full
+			// admission budget can still time out at its original caller unacked.
 			return raftadapter.StepResultDTO{}, nil
 		}
 		if errors.Is(err, raftadapter.ErrInvalidMessage) {
@@ -1205,6 +1220,7 @@ func (runtime *clusterRuntime) stageQueuedDriverWork(
 	if err != nil {
 		return err
 	}
+	runtime.refreshReadWaiters(reads)
 	remaining := clusterDriverStageLimit - staged
 	requests, _ := runtime.stageQueuedDriverRequests(remaining, reads, proposals)
 	_, _, err = runtime.stageQueuedInbound(remaining - requests)
@@ -1489,9 +1505,14 @@ func (runtime *clusterRuntime) completeReadStates(states []raftadapter.ReadState
 	remaining := states[:0]
 	status := runtime.node.Status()
 	for _, state := range states {
-		key := string(state.RequestContext)
+		if len(state.RequestContext) <= clusterReadProofHeader ||
+			binary.BigEndian.Uint64(state.RequestContext[:8]) != uint64(status.NodeID) {
+			continue
+		}
+		key := string(state.RequestContext[clusterReadProofHeader:])
 		waiter, exists := waiters[key]
-		if !exists {
+		if !exists || waiter.proofSequence == 0 ||
+			binary.BigEndian.Uint64(state.RequestContext[8:clusterReadProofHeader]) != waiter.proofSequence {
 			continue
 		}
 		if waiter.ctx != nil && waiter.ctx.Err() != nil {

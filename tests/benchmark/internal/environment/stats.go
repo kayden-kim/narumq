@@ -194,7 +194,7 @@ func parseByteQuantity(value string) (int64, error) {
 	return 0, fmt.Errorf("unknown byte unit in %q", value)
 }
 
-func startStatsSampler(ctx context.Context, containerName, outputPath string) (func(), <-chan error) {
+func startStatsSampler(ctx context.Context, containerName, outputPath string, skipWhenStopped bool) (func(), <-chan error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -247,13 +247,36 @@ func startStatsSampler(ctx context.Context, containerName, outputPath string) (f
 			}
 			return writer.Flush()
 		}
-		if err := writeSample(); err != nil {
+		skipSampleError := func(sampleErr error) (bool, error) {
+			if isStopped() {
+				return true, nil
+			}
+			if !skipWhenStopped {
+				return false, sampleErr
+			}
+			stopped, inspectErr := containerStopped(samplerContext, containerName)
+			if inspectErr != nil {
+				return false, errors.Join(sampleErr, inspectErr)
+			}
+			if stopped {
+				return true, nil
+			}
+			return false, sampleErr
+		}
+		if sampleErr := writeSample(); sampleErr != nil {
+			skip, err := skipSampleError(sampleErr)
+			if err != nil {
+				done <- err
+				return
+			}
+			if !skip {
+				done <- sampleErr
+				return
+			}
 			if isStopped() {
 				done <- nil
-			} else {
-				done <- err
+				return
 			}
-			return
 		}
 		ticker := time.NewTicker(DefaultStatsSamplePeriod)
 		defer ticker.Stop()
@@ -267,18 +290,37 @@ func startStatsSampler(ctx context.Context, containerName, outputPath string) (f
 				}
 				return
 			case <-ticker.C:
-				if err := writeSample(); err != nil {
+				if sampleErr := writeSample(); sampleErr != nil {
+					skip, err := skipSampleError(sampleErr)
+					if err != nil {
+						done <- err
+						return
+					}
+					if !skip {
+						done <- sampleErr
+						return
+					}
 					if isStopped() {
 						done <- nil
-					} else {
-						done <- err
+						return
 					}
-					return
 				}
 			}
 		}
 	}()
 	return stop, done
+}
+
+func containerStopped(ctx context.Context, containerName string) (bool, error) {
+	output, err := commandOutput(ctx, "", "docker", "inspect", "--format", "{{.State.Running}}", containerName)
+	if err != nil {
+		return false, fmt.Errorf("inspect container %s state: %w", containerName, err)
+	}
+	running, err := strconv.ParseBool(strings.TrimSpace(string(output)))
+	if err != nil {
+		return false, fmt.Errorf("parse container %s running state: %w", containerName, err)
+	}
+	return !running, nil
 }
 
 func appendBrokerStatsSample(ctx context.Context, containerName, outputPath string) error {

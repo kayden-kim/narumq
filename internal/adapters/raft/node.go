@@ -103,6 +103,10 @@ type Config struct {
 	// StorageActivityObserver brackets each worker I/O batch (true, then false).
 	// It may run concurrently with health readers and must not call Node.
 	StorageActivityObserver func(bool)
+	// ForwardedProposalCapacity reports downstream credits without blocking.
+	// It runs under Node's mutex and must not call Node. Nil permits a
+	// transport-free Batch consumer to consume the bounded output directly.
+	ForwardedProposalCapacity func(NodeID) (messages, bytes int)
 }
 
 // WALBoundaryStage identifies one step of appending a Ready frame to wal.bin.
@@ -248,24 +252,29 @@ type Node struct {
 	closed  bool
 	failure error
 
-	writer               *WALAppendWorker
-	appendPending        int
-	appendBytes          int
-	appendSequence       uint64
-	durableSequence      uint64
-	heldAppend           *walAppendRequest
-	applyQueue           []storageApplyRequest
-	applying             *storageApplyRequest
-	applySequence        uint64
-	readyInputBytes      int
-	bootstrapped         bool
-	confState            *pb.ConfState
-	appliedIndex         uint64
-	appliedCommands      [][]byte
-	commandIndexes       []uint64
-	configurationChanges []CommittedConfigurationDTO
-	stateSnapshot        []byte
-	confChangePending    bool
+	writer                    *WALAppendWorker
+	appendPending             int
+	appendBytes               int
+	appendSequence            uint64
+	durableSequence           uint64
+	heldAppend                *walAppendRequest
+	applyQueue                []storageApplyRequest
+	applying                  *storageApplyRequest
+	applySequence             uint64
+	readyInputBytes           int
+	deferredProposals         [64]deferredProposal
+	deferredProposalHead      int
+	deferredProposalCount     int
+	deferredProposalBytes     int
+	forwardedProposalCapacity func(NodeID) (int, int)
+	bootstrapped              bool
+	confState                 *pb.ConfState
+	appliedIndex              uint64
+	appliedCommands           [][]byte
+	commandIndexes            []uint64
+	configurationChanges      []CommittedConfigurationDTO
+	stateSnapshot             []byte
+	confChangePending         bool
 }
 
 // Open opens a fixed-voter peer-only node or a v2 dynamic cluster member.
@@ -384,17 +393,18 @@ func Open(config Config) (*Node, error) {
 		}
 	}
 	node := &Node{
-		id:                   config.NodeID,
-		peerIDs:              slices.Clone(peerIDs),
-		dynamic:              config.DynamicMembership,
-		store:                store,
-		raw:                  raw,
-		confState:            cloneConfState(initialConfState),
-		appliedIndex:         store.appliedIndex,
-		appliedCommands:      cloneCommands(store.commands),
-		commandIndexes:       slices.Clone(store.commandIndexes),
-		configurationChanges: slices.Clone(store.configurationChanges),
-		stateSnapshot:        bytes.Clone(store.snapshotData),
+		id:                        config.NodeID,
+		peerIDs:                   slices.Clone(peerIDs),
+		dynamic:                   config.DynamicMembership,
+		store:                     store,
+		raw:                       raw,
+		confState:                 cloneConfState(initialConfState),
+		appliedIndex:              store.appliedIndex,
+		appliedCommands:           cloneCommands(store.commands),
+		commandIndexes:            slices.Clone(store.commandIndexes),
+		configurationChanges:      slices.Clone(store.configurationChanges),
+		stateSnapshot:             bytes.Clone(store.snapshotData),
+		forwardedProposalCapacity: config.ForwardedProposalCapacity,
 	}
 	for _, change := range store.confChanges {
 		node.confState = cloneConfState(raw.ApplyConfChange(change))
@@ -467,7 +477,8 @@ func (n *Node) Propose(data []byte) error {
 	return n.propose(data, false)
 }
 
-// ProposeForwarded submits a copied command locally and lets Raft forward it when this node is a follower.
+// ProposeForwarded submits a copied command, retaining only known pre-append
+// rejections in the dynamic profile until Raft can forward or append it.
 func (n *Node) ProposeForwarded(data []byte) error {
 	return n.propose(data, true)
 }
@@ -484,7 +495,8 @@ func (n *Node) ProposeBatchForwarded(commands [][]byte) error {
 		return err
 	}
 	status := n.raw.BasicStatus()
-	if status.RaftState != etcdraft.StateLeader && status.Lead == etcdraft.None {
+	deferEligible := n.canDeferProposal()
+	if status.RaftState != etcdraft.StateLeader && status.Lead == etcdraft.None && !deferEligible {
 		return ErrNotLeader
 	}
 	if len(commands) == 0 {
@@ -512,19 +524,27 @@ func (n *Node) ProposeBatchForwarded(commands [][]byte) error {
 	if proto.Size(message)+32 > maxMessageSize {
 		return ErrProposalTooLarge
 	}
-	if n.storageSaturated() || n.readyInputBytes+proto.Size(message) > maxWALFramePayload-1024 {
+	size := proto.Size(message)
+	if n.storageSaturated() || n.readyInputBytes+n.deferredProposalBytes+size > maxWALFramePayload-1024 ||
+		(deferEligible && n.deferredProposalCount == len(n.deferredProposals)) {
 		return ErrBackpressure
 	}
 	for _, entry := range entries {
 		entry.Data = bytes.Clone(entry.Data)
 	}
+	if deferEligible && n.deferredProposalCount != 0 {
+		return n.deferProposal(message, size)
+	}
 	if err := n.raw.Step(message); err != nil {
 		if errors.Is(err, etcdraft.ErrProposalDropped) {
+			if deferEligible {
+				return n.deferProposal(message, size)
+			}
 			return fmt.Errorf("%w: %v", ErrBackpressure, err)
 		}
 		return err
 	}
-	n.readyInputBytes += proto.Size(message)
+	n.readyInputBytes += size
 	return nil
 }
 
@@ -535,7 +555,8 @@ func (n *Node) propose(data []byte, forwardToLeader bool) error {
 		return err
 	}
 	status := n.raw.BasicStatus()
-	if status.RaftState != etcdraft.StateLeader && (!forwardToLeader || status.Lead == etcdraft.None) {
+	deferEligible := forwardToLeader && n.canDeferProposal()
+	if status.RaftState != etcdraft.StateLeader && (!forwardToLeader || (status.Lead == etcdraft.None && !deferEligible)) {
 		return ErrNotLeader
 	}
 	if len(data) == 0 {
@@ -548,12 +569,21 @@ func (n *Node) propose(data []byte, forwardToLeader bool) error {
 	if len(data) > limit {
 		return ErrProposalTooLarge
 	}
-	if n.storageSaturated() || n.readyInputBytes+len(data)+32 > maxWALFramePayload-1024 {
+	if n.storageSaturated() || n.readyInputBytes+n.deferredProposalBytes+len(data)+32 > maxWALFramePayload-1024 ||
+		(deferEligible && n.deferredProposalCount == len(n.deferredProposals)) {
 		return ErrBackpressure
 	}
 	command := bytes.Clone(data)
+	if deferEligible && n.deferredProposalCount != 0 {
+		return n.deferProposal(&pb.Message{Type: pb.MsgProp.Enum(), From: new(uint64(n.id)),
+			Entries: []*pb.Entry{{Data: command}}}, len(command)+32)
+	}
 	if err := n.raw.Propose(command); err != nil {
 		if errors.Is(err, etcdraft.ErrProposalDropped) {
+			if deferEligible {
+				return n.deferProposal(&pb.Message{Type: pb.MsgProp.Enum(), From: new(uint64(n.id)),
+					Entries: []*pb.Entry{{Data: command}}}, len(command)+32)
+			}
 			return fmt.Errorf("%w: %v", ErrBackpressure, err)
 		}
 		return err
@@ -699,15 +729,30 @@ func (n *Node) Step(message MessageDTO) (StepResultDTO, error) {
 		decoded.GetType() == pb.MsgStorageApply || decoded.GetType() == pb.MsgStorageApplyResp {
 		return StepResultDTO{}, ErrInvalidMessage
 	}
-	if decoded.GetType() == pb.MsgProp || decoded.GetType() == pb.MsgApp || decoded.GetType() == pb.MsgSnap {
+	budgeted := decoded.GetType() == pb.MsgProp || decoded.GetType() == pb.MsgApp || decoded.GetType() == pb.MsgSnap
+	if budgeted {
 		if n.storageSaturated() || (decoded.GetType() != pb.MsgSnap &&
-			n.readyInputBytes+len(message.Data) > maxWALFramePayload-1024) {
+			n.readyInputBytes+n.deferredProposalBytes+len(message.Data) > maxWALFramePayload-1024) {
 			return StepResultDTO{}, ErrBackpressure
 		}
-		n.readyInputBytes += len(message.Data)
+	}
+	deferEligible := decoded.GetType() == pb.MsgProp && n.canDeferProposal() &&
+		containsMember(n.confState, message.From) && containsMember(n.confState, NodeID(decoded.GetFrom())) &&
+		normalProposal(&decoded)
+	if deferEligible && n.deferredProposalCount != 0 {
+		return StepResultDTO{}, n.deferProposal(&decoded, len(message.Data))
 	}
 	if err := n.raw.Step(&decoded); err != nil {
+		if errors.Is(err, etcdraft.ErrProposalDropped) {
+			if deferEligible {
+				return StepResultDTO{}, n.deferProposal(&decoded, len(message.Data))
+			}
+			return StepResultDTO{}, fmt.Errorf("%w: %v", ErrBackpressure, err)
+		}
 		return StepResultDTO{}, fmt.Errorf("%w: %v", ErrInvalidMessage, err)
+	}
+	if budgeted {
+		n.readyInputBytes += len(message.Data)
 	}
 	proposal := decoded.GetType() == pb.MsgProp && n.raw.BasicStatus().RaftState == etcdraft.StateLeader
 	return StepResultDTO{Proposal: proposal, ReadIndexRequest: decoded.GetType() == pb.MsgReadIndex}, nil
@@ -858,6 +903,7 @@ func (n *Node) Close() error {
 	n.mu.Lock()
 	if !n.closed {
 		n.closed = true
+		n.clearDeferredProposals()
 		n.writer.finalAppend = n.heldAppend
 		close(n.writer.requests)
 	}

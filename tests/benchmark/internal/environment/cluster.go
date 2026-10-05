@@ -20,6 +20,9 @@ type ClusterNodeSpec struct {
 	BrokerArgs, BrokerEnv          []string
 	DataDestination                string
 	LogDestination, ReadyLogMarker string
+
+	// PublishedPorts exposes requested container ports on the owner's loopback mapping.
+	PublishedPorts []string
 }
 
 // ClusterTargetOptions describes a three-node broker cluster and its runner.
@@ -36,12 +39,21 @@ type ClusterTargetOptions struct {
 	RunnerArgs                                                 []string
 	Timeout, StartupTimeout                                    time.Duration
 	EMQXReadyCondition, EMQXSnapshotExpression                 string
+
+	// Controller runs beside the runner and reports lifecycle failures.
+	Controller func(context.Context, []ClusterNodeResult) error
+
+	// AllowBrokerRestart permits stopped broker stats samples to be skipped.
+	AllowBrokerRestart bool
 }
 
 // ClusterNodeResult contains per-node container names and artifact paths.
 type ClusterNodeResult struct {
 	Name, BrokerContainer, NetworkOwnerContainer                           string
 	BrokerStatsPath, NetworkStatsPath, BrokerLogPath, ContainerInspectPath string
+
+	// PublishedPorts maps requested container ports to their host addresses.
+	PublishedPorts map[string]string
 }
 
 // ClusterTargetResult is the environment-owned result for one cluster target.
@@ -103,7 +115,7 @@ func RunClusterTarget(ctx context.Context, options ClusterTargetOptions) (Cluste
 		if err := os.MkdirAll(nodeDir, 0o755); err != nil {
 			return fail(fmt.Errorf("create node artifact directory: %w", err))
 		}
-		result.Nodes[i] = ClusterNodeResult{Name: node.Name, BrokerContainer: name, NetworkOwnerContainer: owner, BrokerStatsPath: filepath.Join(nodeDir, "broker-stats.jsonl"), NetworkStatsPath: filepath.Join(nodeDir, "network-stats.jsonl"), BrokerLogPath: filepath.Join(nodeDir, "broker.log"), ContainerInspectPath: filepath.Join(nodeDir, "container-inspect.json")}
+		result.Nodes[i] = ClusterNodeResult{Name: node.Name, BrokerContainer: name, NetworkOwnerContainer: owner, BrokerStatsPath: filepath.Join(nodeDir, "broker-stats.jsonl"), NetworkStatsPath: filepath.Join(nodeDir, "network-stats.jsonl"), BrokerLogPath: filepath.Join(nodeDir, "broker.log"), ContainerInspectPath: filepath.Join(nodeDir, "container-inspect.json"), PublishedPorts: make(map[string]string, len(node.PublishedPorts))}
 		for _, volume := range clusterNodeVolumes(prefix, node) {
 			output, err := commandOutput(ctx, "", "docker", "volume", "create", volume)
 			if err != nil {
@@ -137,6 +149,13 @@ func RunClusterTarget(ctx context.Context, options ClusterTargetOptions) (Cluste
 		}
 	}
 	for i, node := range options.Nodes {
+		publishedPorts, err := resolveClusterPublishedPorts(ctx, result.Nodes[i].NetworkOwnerContainer, node.PublishedPorts)
+		if err != nil {
+			return fail(fmt.Errorf("resolve %s published ports: %w", node.Name, err))
+		}
+		result.Nodes[i].PublishedPorts = publishedPorts
+	}
+	for i, node := range options.Nodes {
 		if node.ReadyLogMarker != "" {
 			if err := waitForBrokerReady(ctx, result.Nodes[i].BrokerContainer, node.ReadyLogMarker, options.StartupTimeout); err != nil {
 				return fail(err)
@@ -144,7 +163,7 @@ func RunClusterTarget(ctx context.Context, options ClusterTargetOptions) (Cluste
 		}
 	}
 	if options.Target == "emqx" {
-		if err := waitForEMQXClusterReady(ctx, options, result.Nodes); err != nil {
+		if err := WaitForEMQXClusterReady(ctx, options, result.Nodes); err != nil {
 			return fail(err)
 		}
 		if options.EMQXSnapshotExpression != "" {
@@ -177,17 +196,18 @@ func RunClusterTarget(ctx context.Context, options ClusterTargetOptions) (Cluste
 	samplers := make([]sampler, 0, len(result.Nodes)*2)
 	for _, node := range result.Nodes {
 		items := []struct {
-			container string
-			path      string
+			container       string
+			path            string
+			skipWhenStopped bool
 		}{
-			{container: node.BrokerContainer, path: node.BrokerStatsPath},
+			{container: node.BrokerContainer, path: node.BrokerStatsPath, skipWhenStopped: options.AllowBrokerRestart},
 			{container: node.NetworkOwnerContainer, path: node.NetworkStatsPath},
 		}
 		for _, item := range items {
 			if err := os.MkdirAll(filepath.Dir(item.path), 0o755); err != nil {
 				return fail(fmt.Errorf("create stats directory: %w", err))
 			}
-			cancel, done := startStatsSampler(ctx, item.container, item.path)
+			cancel, done := startStatsSampler(ctx, item.container, item.path, item.skipWhenStopped)
 			samplers = append(samplers, sampler{
 				cancel: cancel, done: done, container: item.container, path: item.path,
 			})
@@ -219,6 +239,14 @@ func RunClusterTarget(ctx context.Context, options ClusterTargetOptions) (Cluste
 	runnerName := prefix + "-runner"
 	containers = append(containers, runnerName)
 	runCtx, cancelRun := context.WithTimeout(ctx, options.Timeout)
+	controllerCtx, cancelCtrl := context.WithCancel(runCtx)
+	var controllerDone chan error
+	if options.Controller != nil {
+		controllerDone = make(chan error, 1)
+		go func() {
+			controllerDone <- options.Controller(controllerCtx, result.Nodes)
+		}()
+	}
 	runnerArgs := []string{
 		"run", "--rm", "--name", runnerName, "--network", prefix,
 		"--cpus", formatCPU(options.GeneratorCPUs),
@@ -231,6 +259,12 @@ func RunClusterTarget(ctx context.Context, options ClusterTargetOptions) (Cluste
 	}
 	runnerArgs = append(runnerArgs, options.RunnerArgs...)
 	runnerOutput, runnerErr := commandOutput(runCtx, "", "docker", runnerArgs...)
+	cancelCtrl()
+	if controllerDone != nil {
+		if controllerErr := <-controllerDone; controllerErr != nil && !errors.Is(controllerErr, context.Canceled) {
+			result = finishClusterFailure(result, fmt.Errorf("cluster controller failed: %w", controllerErr))
+		}
+	}
 	cancelRun()
 	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer shutdownCancel()
@@ -274,9 +308,8 @@ func RunClusterTarget(ctx context.Context, options ClusterTargetOptions) (Cluste
 	return result, nil
 }
 
-// Static discovery can restart authorization after the first boot log.
-// Probe the installed hook and complete membership before starting MQTT clients.
-func waitForEMQXClusterReady(ctx context.Context, options ClusterTargetOptions, nodes []ClusterNodeResult) error {
+// WaitForEMQXClusterReady waits for membership and authorization readiness on every node.
+func WaitForEMQXClusterReady(ctx context.Context, options ClusterTargetOptions, nodes []ClusterNodeResult) error {
 	names := make([]string, len(options.Nodes))
 	for i, node := range options.Nodes {
 		names[i] = strconv.Quote("emqx@" + node.DNSName)
@@ -317,6 +350,33 @@ func waitForEMQXClusterReady(ctx context.Context, options ClusterTargetOptions, 
 	}
 }
 
+// RestartClusterBroker stops and starts a broker container, then waits for it to run.
+func RestartClusterBroker(ctx context.Context, container string, stopTimeout, startupTimeout time.Duration) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if strings.TrimSpace(container) == "" {
+		return errors.New("broker container is required")
+	}
+	if stopTimeout <= 0 || startupTimeout <= 0 {
+		return errors.New("broker stop and startup timeouts must be greater than zero")
+	}
+	stopSeconds := stopTimeout / time.Second
+	if stopTimeout%time.Second != 0 {
+		stopSeconds++
+	}
+	if _, err := commandOutput(ctx, "", "docker", "stop", "--time", strconv.FormatInt(int64(stopSeconds), 10), container); err != nil {
+		return fmt.Errorf("stop broker %s: %w", container, err)
+	}
+	if _, err := commandOutput(ctx, "", "docker", "start", container); err != nil {
+		return fmt.Errorf("start broker %s: %w", container, err)
+	}
+	if err := waitForContainerRunning(ctx, container, startupTimeout); err != nil {
+		return fmt.Errorf("wait for broker %s restart: %w", container, err)
+	}
+	return nil
+}
+
 func validateClusterTargetOptions(o ClusterTargetOptions) error {
 	required := []struct {
 		label string
@@ -339,7 +399,7 @@ func validateClusterTargetOptions(o ClusterTargetOptions) error {
 	if o.Target != "narumq" && o.Target != "emqx" {
 		return fmt.Errorf("unsupported benchmark target %q", o.Target)
 	}
-	if o.RunnerTarget != "bp03-runner" {
+	if o.RunnerTarget != "bp03-runner" && o.RunnerTarget != "bp07-runner" {
 		return fmt.Errorf("unsupported runner target %q", o.RunnerTarget)
 	}
 	if len(o.Nodes) != 3 {
@@ -385,9 +445,29 @@ func buildClusterNetworkOwnerArgs(options ClusterTargetOptions, node ClusterNode
 		"--network", prefix, "--network-alias", node.DNSName, "--hostname", node.DNSName,
 		"--cpus", "0.25", "--memory", "67108864b", "--read-only", "--tmpfs", "/tmp:size=16m",
 		"--mount", "type=bind,source=" + options.NetworkOwnerConfigDirectory + ",destination=/config,readonly",
-		options.RunnerReference,
 	}
+	for _, port := range node.PublishedPorts {
+		args = append(args, "--publish", "127.0.0.1::"+port)
+	}
+	args = append(args, options.RunnerReference)
 	return append(args, options.NetworkOwnerArgs...)
+}
+
+func resolveClusterPublishedPorts(ctx context.Context, owner string, ports []string) (map[string]string, error) {
+	publishedPorts := make(map[string]string, len(ports))
+	for _, port := range ports {
+		output, err := commandOutput(ctx, "", "docker", "port", owner, port)
+		if err != nil {
+			return nil, fmt.Errorf("resolve published port %s on %s: %w", port, owner, err)
+		}
+		firstLine := strings.SplitN(string(output), "\n", 2)[0]
+		address := strings.TrimSpace(firstLine)
+		if address == "" {
+			return nil, fmt.Errorf("published port %s on %s has no address", port, owner)
+		}
+		publishedPorts[port] = address
+	}
+	return publishedPorts, nil
 }
 
 func clusterNodeVolumes(prefix string, node ClusterNodeSpec) []string {

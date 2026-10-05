@@ -84,6 +84,85 @@ func TestConnectResumesSessionWithSelectedOptions(t *testing.T) {
 	}
 }
 
+func TestConnectV311WithWillReadsTwoByteConnAck(t *testing.T) {
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer listener.Close()
+
+	serverErr := make(chan error, 1)
+	go func() {
+		connection, err := listener.Accept()
+		if err != nil {
+			serverErr <- err
+			return
+		}
+		defer connection.Close()
+		frame, err := readWireFrame(connection, time.Second, time.Second)
+		if err != nil {
+			serverErr <- err
+			return
+		}
+		decoder, err := mqtt.NewDecoder(MaxPacketSize)
+		if err != nil {
+			serverErr <- err
+			return
+		}
+		packet, consumed, err := decoder.Decode(frame.wire, mqtt.ProtocolV311)
+		if err != nil {
+			serverErr <- err
+			return
+		}
+		connect, ok := packet.(*mqtt.Connect)
+		if !ok || consumed != len(frame.wire) || connect.Version != mqtt.ProtocolV311 ||
+			connect.CleanStart || connect.Will == nil || connect.Will.QoS != byte(mqtt.QoSAtLeastOnce) ||
+			connect.Will.Retain || connect.Will.Topic != "bp07/will/v311" || string(connect.Will.Payload) != "will" {
+			serverErr <- fmt.Errorf("decoded CONNECT = %#v, want MQTT 3.1.1 persistent Will CONNECT", packet)
+			return
+		}
+		if _, err := connection.Write([]byte{0x20, 0x02, 0x00, 0x00}); err != nil {
+			serverErr <- err
+			return
+		}
+		frame, err = readWireFrame(connection, time.Second, time.Second)
+		if err != nil {
+			serverErr <- err
+			return
+		}
+		if frame.header != 0xE0 || len(frame.body) != 0 {
+			serverErr <- fmt.Errorf("DISCONNECT header/body = %#x/%x, want MQTT 3.1.1 empty body", frame.header, frame.body)
+			return
+		}
+		serverErr <- nil
+	}()
+
+	client, _, err := Connect(context.Background(), ConnectOptions{
+		Address:          listener.Addr().String(),
+		ClientID:         "will-v311-client",
+		ProtocolVersion:  mqtt.ProtocolV311,
+		HandshakeTimeout: time.Second,
+		Will: &mqtt.Will{
+			QoS:     byte(mqtt.QoSAtLeastOnce),
+			Topic:   "bp07/will/v311",
+			Payload: []byte("will"),
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+	if client.protocolVersion != mqtt.ProtocolV311 {
+		t.Fatalf("client protocol version = %d, want MQTT 3.1.1", client.protocolVersion)
+	}
+	if err := client.Disconnect(time.Second); err != nil {
+		t.Fatal(err)
+	}
+	if err := <-serverErr; err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestConnectRejectsSessionPresentForCleanStart(t *testing.T) {
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
@@ -138,13 +217,123 @@ func TestReadConnAckAcceptsBrokerProperties(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	client := &Client{connection: reader, decoder: decoder, handshakeTimeout: time.Second}
+	client := &Client{connection: reader, decoder: decoder, protocolVersion: mqtt.ProtocolV5, handshakeTimeout: time.Second}
 	connAck, err := client.readConnAck(time.Second)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if connAck.Version != mqtt.ProtocolV5 || connAck.SessionPresent || connAck.ReasonCode != 0 {
 		t.Fatalf("readConnAck() = %#v, want successful MQTT 5 CONNACK", connAck)
+	}
+}
+
+func TestReadServerDisconnectWithReference(t *testing.T) {
+	serverReference := []byte("lb.bp07.test:1883")
+	reasonString := []byte("server moved")
+	properties := []byte{
+		0x11, 0x00, 0x00, 0x00, 0x01,
+		0x1C, 0x00, byte(len(serverReference)),
+	}
+	properties = append(properties, serverReference...)
+	properties = append(properties, 0x1F, 0x00, byte(len(reasonString)))
+	properties = append(properties, reasonString...)
+	properties = append(properties, 0x26, 0x00, 0x04, 'z', 'o', 'n', 'e', 0x00, 0x04, 'b', 'l', 'u', 'e')
+	body := []byte{0x9C, byte(len(properties))}
+	body = append(body, properties...)
+	validWire := []byte{0xE0, byte(len(body))}
+	validWire = append(validWire, body...)
+
+	tests := []struct {
+		name          string
+		wire          []byte
+		wantReference string
+		wantReason    byte
+		wantError     error
+	}{
+		{
+			name:          "reference with reason string",
+			wire:          validWire,
+			wantReference: string(serverReference),
+			wantReason:    0x9C,
+		},
+		{
+			name:      "duplicate server reference",
+			wire:      []byte{0xE0, 0x0A, 0x9C, 0x08, 0x1C, 0x00, 0x01, 'a', 0x1C, 0x00, 0x01, 'b'},
+			wantError: mqtt.ErrMalformedPacket,
+		},
+		{
+			name:      "truncated server reference",
+			wire:      []byte{0xE0, 0x06, 0x9C, 0x04, 0x1C, 0x00, 0x02, 'a'},
+			wantError: mqtt.ErrMalformedPacket,
+		},
+		{
+			name:      "unknown property",
+			wire:      []byte{0xE0, 0x04, 0x9C, 0x02, 0x2B, 0x00},
+			wantError: mqtt.ErrMalformedPacket,
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			listener, err := net.Listen("tcp", "127.0.0.1:0")
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer listener.Close()
+
+			serverErr := make(chan error, 1)
+			serverRelease := make(chan struct{})
+			defer close(serverRelease)
+			go func() {
+				connection, err := listener.Accept()
+				if err != nil {
+					serverErr <- err
+					return
+				}
+				defer connection.Close()
+				if _, err := readWireFrame(connection, time.Second, time.Second); err != nil {
+					serverErr <- err
+					return
+				}
+				if _, err := connection.Write([]byte{0x20, 0x03, 0x00, 0x00, 0x00}); err != nil {
+					serverErr <- err
+					return
+				}
+				if _, err := connection.Write(test.wire); err != nil {
+					serverErr <- err
+					return
+				}
+				serverErr <- nil
+				<-serverRelease
+			}()
+
+			client, _, err := Connect(context.Background(), ConnectOptions{
+				Address:          listener.Addr().String(),
+				ClientID:         "server-disconnect-client",
+				HandshakeTimeout: time.Second,
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer client.Close()
+			packet, err := client.Read(time.Second)
+			if test.wantError != nil {
+				if err != test.wantError {
+					t.Fatalf("Read() error = %v, want %v", err, test.wantError)
+				}
+			} else {
+				if err != nil {
+					t.Fatal(err)
+				}
+				disconnect, ok := packet.(*mqtt.Disconnect)
+				if !ok || disconnect.Version != mqtt.ProtocolV5 || disconnect.ReasonCode != test.wantReason ||
+					disconnect.ServerReference != test.wantReference {
+					t.Fatalf("Read() packet = %#v, want server reference %q and reason %#x", packet, test.wantReference, test.wantReason)
+				}
+			}
+			if err := <-serverErr; err != nil {
+				t.Fatal(err)
+			}
+		})
 	}
 }
 

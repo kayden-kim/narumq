@@ -8,10 +8,10 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
-	"strings"
 	"sync"
 	"syscall"
 	"testing"
+	"time"
 
 	pb "go.etcd.io/raft/v3/raftpb"
 	"google.golang.org/protobuf/proto"
@@ -602,10 +602,8 @@ func TestDynamicStepAllowsOnlyAuthenticatedForwardedRequests(t *testing.T) {
 		origin   uint64
 		kind     pb.MessageType
 		rejected bool
-		dropped  bool
 	}{
 		{name: "forwarded read index", sender: 3, origin: 2, kind: pb.MsgReadIndex},
-		{name: "forwarded proposal without leader is dropped by Raft", sender: 3, origin: 2, kind: pb.MsgProp, dropped: true},
 		{name: "forwarded leader transfer", sender: 3, origin: 2, kind: pb.MsgTransferLeader},
 		{name: "replication cannot spoof", sender: 3, origin: 2, kind: pb.MsgApp, rejected: true},
 		{name: "unknown relay cannot forward", sender: 4, origin: 2, kind: pb.MsgReadIndex, rejected: true},
@@ -617,11 +615,7 @@ func TestDynamicStepAllowsOnlyAuthenticatedForwardedRequests(t *testing.T) {
 				t.Fatal(err)
 			}
 			_, err = node.Step(MessageDTO{From: test.sender, To: 1, Data: data})
-			if test.dropped {
-				if err == nil || !strings.Contains(err.Error(), "proposal dropped") {
-					t.Fatalf("Step forwarded %s = %v, want Raft proposal dropped", test.kind, err)
-				}
-			} else if test.rejected {
+			if test.rejected {
 				if !errors.Is(err, ErrInvalidMessage) {
 					t.Fatalf("Step forwarded %s = %v, want ErrInvalidMessage", test.kind, err)
 				}
@@ -739,4 +733,343 @@ func TestDynamicFollowerForwardsApplicationProposal(t *testing.T) {
 			}
 		}
 	}
+}
+
+func openDynamicTestNodes(t *testing.T) map[NodeID]*Node {
+	t.Helper()
+	return openDynamicTestNodesWithCapacity(t, nil)
+}
+
+func openDynamicTestNodesWithCapacity(t *testing.T, capacity func(NodeID) (int, int)) map[NodeID]*Node {
+	t.Helper()
+	root := t.TempDir()
+	nodes := make(map[NodeID]*Node, 3)
+	for _, nodeID := range []NodeID{1, 2, 3} {
+		config := dynamicTestConfig(nodeID, filepath.Join(root, fmt.Sprintf("node-%d", nodeID)))
+		config.ForwardedProposalCapacity = capacity
+		node, err := Open(config)
+		if err != nil {
+			t.Fatalf("open node %d: %v", nodeID, err)
+		}
+		nodes[nodeID] = node
+	}
+	t.Cleanup(func() {
+		for _, node := range nodes {
+			if err := node.Close(); err != nil {
+				t.Errorf("close node: %v", err)
+			}
+		}
+	})
+	return nodes
+}
+
+func pumpDynamicNodesUntil(t *testing.T, nodes map[NodeID]*Node, done func() bool) {
+	t.Helper()
+	timeout := time.NewTimer(10 * time.Second)
+	defer timeout.Stop()
+	for {
+		select {
+		case <-timeout.C:
+			t.Fatal("Raft pump timed out")
+		default:
+		}
+		var messages []MessageDTO
+		progress := false
+		for _, nodeID := range []NodeID{1, 2, 3} {
+			batch, err := nodes[nodeID].ProcessReady()
+			if err != nil {
+				t.Fatalf("node %d ProcessReady(): %v", nodeID, err)
+			}
+			progress = progress || batch.Progress
+			messages = append(messages, batch.Messages...)
+			if err := nodes[nodeID].CompleteApply(batch.ApplySequence); err != nil {
+				t.Fatalf("node %d CompleteApply(): %v", nodeID, err)
+			}
+		}
+		for _, message := range messages {
+			if _, err := nodes[message.To].Step(message); err != nil {
+				t.Fatalf("deliver %d -> %d: %v", message.From, message.To, err)
+			}
+		}
+		if done() {
+			return
+		}
+		if len(messages) != 0 || progress {
+			continue
+		}
+		select {
+		case <-nodes[1].StorageReady():
+		case <-nodes[2].StorageReady():
+		case <-nodes[3].StorageReady():
+		case <-timeout.C:
+			t.Fatal("Raft pump timed out waiting for storage or protocol progress")
+		}
+	}
+}
+
+func dynamicAppliedCommandsMatch(nodes map[NodeID]*Node, want [][]byte) bool {
+	for _, nodeID := range []NodeID{1, 2, 3} {
+		got := nodes[nodeID].AppliedCommands()
+		if len(got) != len(want) {
+			return false
+		}
+		for index := range want {
+			if !bytes.Equal(got[index], want[index]) {
+				return false
+			}
+		}
+	}
+	return true
+}
+
+func TestDynamicRejectedProposalsReplayAfterLeadershipTransfer(t *testing.T) {
+	nodes := openDynamicTestNodes(t)
+	pumpDynamicNodesUntil(t, nodes, func() bool {
+		for _, nodeID := range []NodeID{1, 2, 3} {
+			if !nodes[nodeID].Status().Bootstrapped || nodes[nodeID].StoragePending() {
+				return false
+			}
+		}
+		return true
+	})
+
+	unknownLeaderCommand := []byte("forwarded-before-leader-known")
+	unknownLeaderFrame := mustMarshal(t, &pb.Message{
+		Type: pb.MsgProp.Enum(), From: uint64Ptr(3), To: uint64Ptr(1),
+		Entries: []*pb.Entry{{Data: unknownLeaderCommand}},
+	})
+	if _, err := nodes[1].Step(MessageDTO{From: 3, To: 1, Data: unknownLeaderFrame}); err != nil {
+		t.Fatalf("stage forwarded proposal without a known leader: %v", err)
+	}
+	want := [][]byte{unknownLeaderCommand}
+	if !nodes[1].StoragePending() {
+		t.Fatal("queued proposal without a known leader is not reported as pending")
+	}
+	if err := nodes[1].Campaign(); err != nil {
+		t.Fatalf("campaign node 1: %v", err)
+	}
+	pumpDynamicNodesUntil(t, nodes, func() bool {
+		if nodes[1].Status().Role != RoleLeader || !dynamicAppliedCommandsMatch(nodes, want) {
+			return false
+		}
+		for _, nodeID := range []NodeID{1, 2, 3} {
+			if nodes[nodeID].StoragePending() {
+				return false
+			}
+		}
+		return true
+	})
+
+	acceptedCommand := []byte("accepted-before-transfer")
+	if err := nodes[1].ProposeForwarded(acceptedCommand); err != nil {
+		t.Fatalf("accept proposal before leadership transfer: %v", err)
+	}
+	if err := nodes[1].TransferLeadership(2); err != nil {
+		t.Fatalf("transfer leadership from node 1 to node 2: %v", err)
+	}
+	localCommand := []byte("forwarded-local")
+	if err := nodes[1].ProposeForwarded(localCommand); err != nil {
+		t.Fatalf("stage local forwarded proposal during transfer: %v", err)
+	}
+	batchCommands := [][]byte{[]byte("batch-first"), []byte("batch-second")}
+	if err := nodes[1].ProposeBatchForwarded(batchCommands); err != nil {
+		t.Fatalf("stage forwarded batch during transfer: %v", err)
+	}
+	inboundCommand := []byte("inbound-forwarded")
+	inboundFrame := mustMarshal(t, &pb.Message{
+		Type: pb.MsgProp.Enum(), From: uint64Ptr(3), To: uint64Ptr(1),
+		Entries: []*pb.Entry{{Data: inboundCommand}},
+	})
+	if _, err := nodes[1].Step(MessageDTO{From: 3, To: 1, Data: inboundFrame}); err != nil {
+		t.Fatalf("stage authenticated inbound proposal during transfer: %v", err)
+	}
+	if !nodes[1].StoragePending() {
+		t.Fatal("queued proposals during leadership transfer are not reported as pending")
+	}
+	invalidIdentity := mustMarshal(t, &pb.Message{
+		Type: pb.MsgProp.Enum(), From: uint64Ptr(3), To: uint64Ptr(1),
+		Entries: []*pb.Entry{{Data: []byte("invalid-identity")}},
+	})
+	if _, err := nodes[1].Step(MessageDTO{From: 4, To: 1, Data: invalidIdentity}); !errors.Is(err, ErrInvalidMessage) {
+		t.Fatalf("proposal from invalid identity = %v, want ErrInvalidMessage", err)
+	}
+	if _, err := nodes[1].Step(MessageDTO{From: 3, To: 1, Data: []byte{0xff}}); !errors.Is(err, ErrInvalidMessage) {
+		t.Fatalf("malformed inbound frame = %v, want ErrInvalidMessage", err)
+	}
+
+	want = [][]byte{
+		unknownLeaderCommand, acceptedCommand, []byte("forwarded-local"),
+		[]byte("batch-first"), []byte("batch-second"), inboundCommand,
+	}
+	pumpDynamicNodesUntil(t, nodes, func() bool {
+		if nodes[2].Status().Role != RoleLeader || nodes[1].Status().Role != RoleFollower || !dynamicAppliedCommandsMatch(nodes, want) {
+			return false
+		}
+		for _, nodeID := range []NodeID{1, 2, 3} {
+			if nodes[nodeID].StoragePending() {
+				return false
+			}
+		}
+		return true
+	})
+	if err := nodes[1].Propose([]byte("leader-only-on-follower")); !errors.Is(err, ErrNotLeader) {
+		t.Fatalf("leader-only proposal on follower = %v, want ErrNotLeader", err)
+	}
+}
+
+func TestDynamicRejectedProposalStagingHasItemAndByteBounds(t *testing.T) {
+	nodes := openDynamicTestNodes(t)
+	pumpDynamicNodesUntil(t, nodes, func() bool {
+		for _, nodeID := range []NodeID{1, 2, 3} {
+			if !nodes[nodeID].Status().Bootstrapped || nodes[nodeID].StoragePending() {
+				return false
+			}
+		}
+		return true
+	})
+	if err := nodes[1].Campaign(); err != nil {
+		t.Fatalf("campaign node 1: %v", err)
+	}
+	pumpDynamicNodesUntil(t, nodes, func() bool {
+		if nodes[1].Status().Role != RoleLeader {
+			return false
+		}
+		for _, nodeID := range []NodeID{1, 2, 3} {
+			if nodes[nodeID].StoragePending() {
+				return false
+			}
+		}
+		return true
+	})
+
+	if err := nodes[1].TransferLeadership(2); err != nil {
+		t.Fatalf("transfer leadership from node 1 to node 2: %v", err)
+	}
+	var want [][]byte
+	for index := range 64 {
+		command := []byte(fmt.Sprintf("queued-%02d", index))
+		if err := nodes[1].ProposeForwarded(command); err != nil {
+			t.Fatalf("stage proposal %d within item limit: %v", index, err)
+		}
+		want = append(want, command)
+	}
+	if err := nodes[1].ProposeForwarded([]byte("over-item-limit")); !errors.Is(err, ErrBackpressure) {
+		t.Fatalf("proposal beyond 64-message limit = %v, want ErrBackpressure", err)
+	}
+	if !nodes[1].StoragePending() {
+		t.Fatal("item-bounded queued proposals are not reported as pending")
+	}
+	pumpDynamicNodesUntil(t, nodes, func() bool {
+		if nodes[2].Status().Role != RoleLeader || nodes[1].Status().Role != RoleFollower || !dynamicAppliedCommandsMatch(nodes, want) {
+			return false
+		}
+		for _, nodeID := range []NodeID{1, 2, 3} {
+			if nodes[nodeID].StoragePending() {
+				return false
+			}
+		}
+		return true
+	})
+
+	if err := nodes[2].TransferLeadership(1); err != nil {
+		t.Fatalf("prepare byte-bound scenario on node 1: %v", err)
+	}
+	pumpDynamicNodesUntil(t, nodes, func() bool {
+		return nodes[1].Status().Role == RoleLeader && !nodes[1].StoragePending() &&
+			!nodes[2].StoragePending() && !nodes[3].StoragePending()
+	})
+	if err := nodes[1].TransferLeadership(2); err != nil {
+		t.Fatalf("transfer leadership from node 1 to node 2 for byte-bound check: %v", err)
+	}
+	largeCommand := bytes.Repeat([]byte{'x'}, maxDynamicCommandSize-512)
+	if err := nodes[1].ProposeForwarded(largeCommand); err != nil {
+		t.Fatalf("stage proposal within byte limit: %v", err)
+	}
+	if err := nodes[1].ProposeForwarded(largeCommand); !errors.Is(err, ErrBackpressure) {
+		t.Fatalf("proposal beyond byte limit = %v, want ErrBackpressure", err)
+	}
+	if !nodes[1].StoragePending() {
+		t.Fatal("byte-bounded queued proposal is not reported as pending")
+	}
+	want = append(want, largeCommand)
+	pumpDynamicNodesUntil(t, nodes, func() bool {
+		if nodes[2].Status().Role != RoleLeader || nodes[1].Status().Role != RoleFollower || !dynamicAppliedCommandsMatch(nodes, want) {
+			return false
+		}
+		for _, nodeID := range []NodeID{1, 2, 3} {
+			if nodes[nodeID].StoragePending() {
+				return false
+			}
+		}
+		return true
+	})
+}
+
+func TestDynamicDeferredProposalsRespectDownstreamCredits(t *testing.T) {
+	messages, availableBytes := 0, 0
+	nodes := openDynamicTestNodesWithCapacity(t, func(NodeID) (int, int) {
+		return messages, availableBytes
+	})
+	pumpDynamicNodesUntil(t, nodes, func() bool {
+		return nodes[1].Status().Bootstrapped && nodes[2].Status().Bootstrapped &&
+			nodes[3].Status().Bootstrapped && !nodes[1].StoragePending() &&
+			!nodes[2].StoragePending() && !nodes[3].StoragePending()
+	})
+	if err := nodes[1].Campaign(); err != nil {
+		t.Fatal(err)
+	}
+	pumpDynamicNodesUntil(t, nodes, func() bool {
+		return nodes[1].Status().Role == RoleLeader && !nodes[1].StoragePending() &&
+			!nodes[2].StoragePending() && !nodes[3].StoragePending()
+	})
+	if err := nodes[1].TransferLeadership(2); err != nil {
+		t.Fatal(err)
+	}
+	first, second := []byte("credit-first"), bytes.Repeat([]byte{'y'}, 4096)
+	for _, command := range [][]byte{first, second} {
+		if err := nodes[1].ProposeForwarded(command); err != nil {
+			t.Fatal(err)
+		}
+	}
+	pumpDynamicNodesUntil(t, nodes, func() bool {
+		return nodes[2].Status().Role == RoleLeader && nodes[1].Status().Role == RoleFollower &&
+			nodes[3].Status().LeaderID == 2 && !nodes[2].StoragePending() && !nodes[3].StoragePending()
+	})
+	if !dynamicAppliedCommandsMatch(nodes, nil) || !nodes[1].StoragePending() {
+		t.Fatal("zero downstream credits did not preserve the uncommitted FIFO")
+	}
+	messages, availableBytes = 1, 128
+	pumpDynamicNodesUntil(t, nodes, func() bool {
+		return dynamicAppliedCommandsMatch(nodes, [][]byte{first}) &&
+			!nodes[2].StoragePending() && !nodes[3].StoragePending()
+	})
+	if !nodes[1].StoragePending() {
+		t.Fatal("byte-blocked second proposal disappeared after the first committed")
+	}
+	messages, availableBytes = 0, maxMessageSize
+	batch, err := nodes[1].ProcessReady()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := nodes[1].CompleteApply(batch.ApplySequence); err != nil {
+		t.Fatal(err)
+	}
+	for _, frame := range batch.Messages {
+		var decoded pb.Message
+		if err := proto.Unmarshal(frame.Data, &decoded); err != nil {
+			t.Fatal(err)
+		}
+		if decoded.GetType() == pb.MsgProp {
+			t.Fatal("zero message credits forwarded a queued proposal")
+		}
+		if _, err := nodes[frame.To].Step(frame); err != nil {
+			t.Fatal(err)
+		}
+	}
+	messages = 1
+	pumpDynamicNodesUntil(t, nodes, func() bool {
+		return nodes[2].Status().Role == RoleLeader && nodes[1].Status().Role == RoleFollower &&
+			dynamicAppliedCommandsMatch(nodes, [][]byte{first, second}) &&
+			!nodes[1].StoragePending() && !nodes[2].StoragePending() && !nodes[3].StoragePending()
+	})
 }

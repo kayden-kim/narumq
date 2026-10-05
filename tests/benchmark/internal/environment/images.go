@@ -30,7 +30,7 @@ func buildImages(ctx context.Context, options BuildOptions) (ImageSet, error) {
 	if runnerTarget == "" {
 		runnerTarget = options.BenchmarkID + "-runner"
 	}
-	if runnerTarget != "bp01-runner" && runnerTarget != "bp05-runner" && runnerTarget != "bp03-runner" {
+	if runnerTarget != "bp01-runner" && runnerTarget != "bp05-runner" && runnerTarget != "bp03-runner" && runnerTarget != "bp07-runner" {
 		return ImageSet{}, fmt.Errorf("unsupported runner target %q", runnerTarget)
 	}
 	if err := os.MkdirAll(options.ArtifactDir, 0o755); err != nil {
