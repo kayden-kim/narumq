@@ -26,7 +26,7 @@ NaruMQ는 현재 단계별 로드맵에 따라 개발이 진행 중인 오픈소
 | --- | --- | --- |
 | **개발 단계** | Phase 1 완료 / Phase 2 진행 중 | **Phase 1 단일 노드 보안 및 테넌트 격리** 슬라이스가 구현·검증되었으며, 분산 합의 및 복제 상태 머신은 **Phase 2 진행 중** 상태입니다. |
 | **독립 실행 (Standalone CLI)** | 소스 빌드 실행 지원 | 루프백 개발 익명 모드 또는 TLS + strict 보안 설정(`-security-config`)으로 기동합니다. **주의:** 현재 standalone 리스너(`cmd/narumq/main.go`)는 인메모리 세션·큐·retained 저장소를 사용하며 기동 로그에 `"qos0_only": true`를 남깁니다. 영속적 세션 복구나 분산 QoS 1/2 내구성(Durable ACK)은 standalone 프로세스의 제공 범위가 아닙니다. |
-| **클러스터 런타임** | 스파이크 및 시험 모드 | [클러스터 아키텍처](docs/architectures/cluster-architecture.md)는 현재 **Target / Draft** 상태입니다. 고정 voter Raft 피어 전송/리더 선출(`-raft-peer-config`), 동적 클러스터 런타임(`-cluster-config`), 오프라인 v3 백업 복원(`-cluster-restore`)이 개발용 절차로 제공됩니다. **주의:** 분산 세션 소유권 복제, 프로덕션 스토리지 내구성(EBS/WAL fsync, power-loss), 분산 QoS 1/2 durable ACK는 [잔여 과제(`docs/tasks.md`)](docs/tasks.md)로 열려 있는 미구현 과제입니다. Phase 2 진행 상태가 이러한 광범위한 고가용성 운영 기능의 완성을 뜻하지 않습니다. |
+| **클러스터 런타임** | 스파이크 및 시험 모드 | [클러스터 아키텍처](docs/architectures/cluster-architecture.md)는 현재 **Target / Draft** 상태입니다. 고정 voter Raft 피어 전송/리더 선출(`-raft-peer-config`), 동적 클러스터 런타임(`-cluster-config`), 오프라인 v3 백업 복원(`-cluster-restore`)이 개발용 절차로 제공됩니다. **주의:** 분산 세션·durable ACK의 검증 범위와 프로덕션 스토리지·복구·출시 gate 잔여는 [PRD 구현 잔여 작업(`docs/TODO.md`)](docs/TODO.md)에서 상태별로 추적합니다. Phase 2 진행 상태가 프로덕션 고가용성 운영 기능의 완성을 뜻하지 않습니다. |
 | **관리 API 및 관측성** | Phase 1 Read-only Query | `/api/v1/cluster`, `/api/v1/nodes`, `/api/v1/clients` 등 읽기 전용 쿼리 프로필, K8s 프로브(`/health/live`, `/health/ready`), Prometheus `/metrics` 엔드포인트를 제공합니다. |
 | **배포 및 패키징** | 소스 빌드 기반 지원 | 공식 배포 패키지(rpm/deb/helm 등)나 프로덕션 HA 인스톨러는 제공하지 않습니다. 무중단 롤링 업데이트 스펙([Drain과 rolling update 스펙](docs/specs/drain-and-rolling-update.md))은 현재 **Draft** 상태입니다. |
 

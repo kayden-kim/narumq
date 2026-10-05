@@ -123,4 +123,4 @@ Repository root에서 `go test ./internal/adapters/raft/records ./cmd/narumq -co
 
 ## 6. 범위 밖 gate
 
-게시 release별 baseline 갱신과 process matrix, production Linux/EBS storage 수용은 [tasks](../tasks.md)의 별도 작업이다. 운영 승인 정책의 수용 범위는 [Cluster §11.30](../specs/cluster-session-and-delivery.md#1130-feature-activation-운영-승인-수용-매핑)에서 관리한다.
+게시 release별 baseline 갱신과 process matrix, production Linux/EBS storage 수용은 [PRD 구현 잔여 작업](../TODO.md)의 별도 작업이다. 운영 승인 정책의 수용 범위는 [Cluster §11.30](../specs/cluster-session-and-delivery.md#1130-feature-activation-운영-승인-수용-매핑)에서 관리한다.

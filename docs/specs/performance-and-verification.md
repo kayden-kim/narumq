@@ -693,7 +693,7 @@ EMQX gap은 `v5-q1` 2건과 `v311-q1` 2건이다. Publisher가 ACK를 받은 seq
 - Fake Docker는 coverage 없는 별도 helper binary를 한 번 빌드해 재사용하도록 고쳤다. 일반 benchmark 시험과 coverage 조건의 environment 시험이 모두 PASS했다. Integration 코드는 변경하지 않았다.
 - 수정 뒤 `GOMAXPROCS=4 go run ./tools/verify local`: 138.38s, PASS. Traceability, fuzz, architecture, race, 전체 시험과 coverage gate를 통과했다. Windows에서는 `cmd /d /c "set GOMAXPROCS=4&& go run ./tools/verify local"`로 실행했다.
 
-5회 suite는 실행하지 않았다. 두 target valid 조건을 충족하지 못했기 때문이다. Median·MAD와 반복 실행 통과를 주장하지 않는다. NaruMQ workload 수용은 미충족이며 production broker의 오류 경로 수정은 이번 benchmark 구현 범위에서 수행하지 않았다. Retained, 최대 traffic 연속 100회 rolling, 실제 NLB·Linux/EBS와 수치형 release gate도 미실행이다. `docs/tasks.md`의 BP-07 상태는 `미검증`으로 유지한다.
+5회 suite는 실행하지 않았다. 두 target valid 조건을 충족하지 못했기 때문이다. Median·MAD와 반복 실행 통과를 주장하지 않는다. NaruMQ workload 수용은 미충족이며 production broker의 오류 경로 수정은 이번 benchmark 구현 범위에서 수행하지 않았다. Retained, 최대 traffic 연속 100회 rolling, 실제 NLB·Linux/EBS와 수치형 release gate도 미실행이다. `docs/TODO.md`의 BP-07 상태는 `미검증`으로 유지한다.
 
 #### Broker 오류 경로 수정 범위 확장
 
@@ -769,7 +769,7 @@ Suite 완료 뒤 저장소 root에서 `cmd /d /c "set GOMAXPROCS=4&& go run ./to
 
 새 wire proof 계약으로 바뀐 시험도 같은 변경에 갱신했다. 단순 read-result echo 부분은 제거했다. Commit FIFO·취소 시험은 실제 Raft quorum에서 받은 ReadState를 사용한다. Local projection이 proof index보다 뒤처지면 제출하지 않고 projection 복귀 뒤 입력 순서대로 commit하는지 확인한다. Runtime의 성공 ACK·WAL fsync·quorum 조건은 완화하지 않았다. 다만 `clusterPendingCommit.Wait`의 caller timeout 뒤 FIFO 요청이 재생되는 경로는 통합 시험으로 확인하지 않았다. Timeout 뒤 성공 응답이 없는지와 command가 한 번만 적용되는지는 미검증이다.
 
-Local BP-07 smoke harness·broker 결함 수정·5회 교차 비교·local gate의 실행 검증은 위 결과를 충족했다. 이 실행에 사용한 BP-07 소스·시험 변경은 확인 커밋 `fca37620e053a121987c37dd20483fa4f584469f`에 기록했다. 위 compare·suite run ID와 local gate 결과를 이 커밋에 연결한다. 원래 manifest의 baseline commit과 `dirty=true`는 실행 당시 기록으로 유지한다. 이 연결은 커밋 뒤 재실행이나 CI 통과를 뜻하지 않는다. `docs/tasks.md`의 BP-07 항목은 `SPEC-TBD-08` 수치가 미결정이므로 `미검증`으로 유지한다. Caller timeout 뒤 late commit·적용 횟수·성공 ACK 경계도 별도의 미검증 항목으로 남긴다.
+Local BP-07 smoke harness·broker 결함 수정·5회 교차 비교·local gate의 실행 검증은 위 결과를 충족했다. 이 실행에 사용한 BP-07 소스·시험 변경은 확인 커밋 `fca37620e053a121987c37dd20483fa4f584469f`에 기록했다. 위 compare·suite run ID와 local gate 결과를 이 커밋에 연결한다. 원래 manifest의 baseline commit과 `dirty=true`는 실행 당시 기록으로 유지한다. 이 연결은 커밋 뒤 재실행이나 CI 통과를 뜻하지 않는다. `docs/TODO.md`의 BP-07 항목은 `SPEC-TBD-08` 수치가 미결정이므로 `미검증`으로 유지한다. Caller timeout 뒤 late commit·적용 횟수·성공 ACK 경계도 별도의 미검증 항목으로 남긴다.
 
 ## 4. 필수 benchmark profile
 
@@ -914,7 +914,7 @@ go run ./tests/compatibility/mqtt-clients-v1 --suite drain \
 
 Artifact는 같은 run directory의 `manifest.json`, `summary.json`, `cases.jsonl`, build log와 image inspect에 기록한다. Cluster case는 `client/result.json`, client log, `lb/lb-trace.jsonl`, `drain-operation.json`, node별 log·inspect를 추가한다. Malformed case는 `fakeserver/fakeserver-trace.jsonl`을 추가한다. Credential과 private key는 임시 fixture에만 저장하고 case 종료 뒤 지운다.
 
-최종 drain run은 9/10이다. 두 redirect case와 Python malformed 4개는 통과했다. Go의 중복 Server Reference case만 trap 접속으로 실패했다. 이 결과는 §7.1의 Docker 검증 범위이며 전체 SDK 지원 승인이 아니다. 상세 판정은 [Client contract §6.2](../contracts/mqtt-client-compatibility-v1.md#62-drain-compatibility-suite), 열린 작업은 [Cluster 잔여 작업 §1.2](../tasks.md#12-release와-rollout-gate)를 따른다.
+최종 drain run은 9/10이다. 두 redirect case와 Python malformed 4개는 통과했다. Go의 중복 Server Reference case만 trap 접속으로 실패했다. 이 결과는 §7.1의 Docker 검증 범위이며 전체 SDK 지원 승인이 아니다. 상세 판정은 [Client contract §6.2](../contracts/mqtt-client-compatibility-v1.md#62-drain-compatibility-suite), 열린 작업은 [PRD 구현 잔여 작업 §1.2](../TODO.md#12-release와-rollout-gate)를 따른다.
 
 `--suite drain`도 `go test ./...`와 `tools/verify local`에 포함하지 않는다. Root module의 순수 profile·result·trace unit test는 local gate에 포함한다. Nested SDK module의 build·vet와 실제 Docker suite는 별도로 실행해야 한다.
 

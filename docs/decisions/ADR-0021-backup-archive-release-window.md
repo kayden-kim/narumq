@@ -60,7 +60,7 @@ Same-source synthetic build는 restore 방향, release profile commit, retained�
 
 ### 후속 작업
 
-- ADR-0013의 N-1 archive 정책 후속은 이 결정으로 대체한다. 실행 증거와 완료 범위는 [Cluster §11.19](../specs/cluster-session-and-delivery.md#1119-backup-archive-nn-1-restore-수용-매핑)와 [잔여 작업](../tasks.md)에 기록한다.
+- ADR-0013의 N-1 archive 정책 후속은 이 결정으로 대체한다. 실행 증거와 완료 범위는 [Cluster §11.19](../specs/cluster-session-and-delivery.md#1119-backup-archive-nn-1-restore-수용-매핑)와 [PRD 구현 잔여 작업](../TODO.md)에 기록한다.
 - Historical-source compatibility, production Linux/EBS, `SPEC-TBD-09` retention 및 RPO/RTO는 별도로 검증한다.
 
 ## 7. 검증

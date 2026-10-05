@@ -1,6 +1,8 @@
-# Cluster 잔여 작업
+# PRD 구현 잔여 작업
 
-이 문서는 cluster [수용 시험](specs/cluster-session-and-delivery.md#11-수용-시험)과 관련 결정 기록(ADR)에서 아직 닫히지 않은 작업을 상태별로 모은 목록이다. 프로젝트 전체 백로그는 아니다. 동작과 완료 판정의 기준은 각 항목에 링크한 스펙·ADR이다. 시험 명령, 실행 시간, run ID 같은 실행 증거는 링크한 수용 매핑에만 기록하고 이 목록에는 반복하지 않는다.
+이 문서는 [PRD](requirements/PRD.md)의 구현·수용 시험·선행 결정 잔여 작업을 요구사항 ID 기준으로 추적한다. 범위는 MQTT·클라이언트 호환성, cluster/session, tenancy/security, management/observability, deployment, performance와 verification 전반이다. 기존 cluster backlog는 상태와 근거를 보존해 포함한다.
+
+PRD는 `Draft` 상태이므로 이 목록은 요구사항을 구현 기준으로 채택했다는 뜻이 아니다. 구현 범위와 완료 판정은 채택된 스펙·계약·ADR 및 연결된 수용 시험을 따른다. 시험 명령, 실행 시간, run ID 같은 증거는 각 기준 문서의 수용 매핑에 기록하고 이 목록에는 반복하지 않는다.
 
 | 표기 | 뜻 |
 | --- | --- |
@@ -48,7 +50,7 @@
 - [ ] **결정 필요** — Drain·reconnect 운영값(`SPEC-TBD-04`): [ADR-0016 §6](decisions/ADR-0016-node-drain-and-safe-to-stop.md#6-결과)과 [MQTT client contract §4](contracts/mqtt-client-compatibility-v1.md#4-session과-expiry)의 connection rate, LB 전파 대기, timeout, reconnect/backoff·Will safety margin과 최악 termination grace를 확정한다. 현재 drain API는 rate/delay/timeout을 호출자가 지정하며 제품 기본값이 없다. Phase 1 test-only 값을 production 기본값으로 쓰지 않는다. 확정한 값은 SDK 시험과 배포 admission의 기준으로 연결한다.
 - [ ] **보류 · 미구현** — Kubernetes 종료 연동과 `EKS_EC2_HA` 배포 artifact(DEP-13~DEP-23): [Drain spec §7·§7.1](specs/drain-and-rolling-update.md#7-external-rollout-gate와-kuberneteseks), [ADR-0007 §7](decisions/ADR-0007-aws-production-deployment-platform.md#7-검증)과 [EKS architecture](architectures/eks-ec2-deployment.md)의 목표 범위다. `preStop`의 idempotent drain 호출·결과 기록, grace period 검증, PDB·3-AZ placement·교체 동시성, stable node identity와 EBS 결합, NLB target lifecycle 및 profile별 지원 상태를 배포 artifact에 연결한다. Controller 구현은 §1.2, storage 전원·volume 시험은 §1.1에서 추적한다.
   - 보류 사유: 인프라 시험 보류 중이며 ADR-0006/0007은 Proposed, EKS architecture는 Target/Draft이고 구현 증거가 없다.
-  - 해제 조건: 인프라 작업 재개와 배포 결정 채택, [PRD §18](requirements/PRD.md#18-미결정-사항) 질문 16의 profile 확정 및 실행 환경 확보.
+  - 해제 조건: 인프라 작업 재개와 배포 결정 채택, [PRD §18](requirements/PRD.md#18-미결정-사항) 질문 10·16의 profile 확정 및 실행 환경 확보.
   - 완료 확인: hook 중복·실패·grace 부족, NLB 전파 중 신규 연결, Pod·EC2·단일 AZ 손실, EBS 재연결과 연속 rolling upgrade·rollback을 실제 profile에서 검증한다. Broker process의 `SAFE_TO_STOP` 통과로 대신하지 않는다.
 
 ### 1.5 설계 미결정과 비지원 범위
@@ -59,7 +61,37 @@
 - Active peer transport 밖 RPC encoding: 현재 [Raft membership v2](contracts/raft-membership-v2.md)와 live QoS 0 forwarding은 구현·수용 범위가 있다. 그 밖의 RPC를 도입할 때 producer/consumer, message 형식·한도·인증·version 호환 계약을 먼저 정한다. Architecture의 일반적인 encoding 질문만으로 현재 경로 전체를 미구현으로 표시하지 않는다. Persisted schema 계약은 §2.6에서 완료했으며 미래 major migration은 별도 계약을 먼저 정한다.
 - Cross-cluster migration과 3-bootstrap-voter identity 제한 밖 restore: [Cluster §10](specs/cluster-session-and-delivery.md#10-snapshot-backup과-restore)의 현재 비지원 범위다. V1/v2 archive, learner를 포함한 archive와 voter-set 변경도 현재 restore로 지원하지 않는다. 별도 migration·identity 계약의 채택 없이 자동으로 구현 백로그에 넣거나 CLU-14의 현 수용 범위로 포함하지 않는다. Retained·offline·durable delivery backup 자체는 §2.3·§2.4에서 완료 범위를 확인한다.
 
-## 2. 완료한 범위
+### 1.6 MQTT protocol과 client 호환성
+
+- [ ] **미검증 — QoS 1/2 retained 수용 시험(MQTT-04)**: [MQTT 스펙 §5](specs/mqtt-protocol-and-session.md#5-retained-message)는 cluster retained 수용 시험이 QoS 0을 대상으로 했고 QoS 1/2 `Retain=true`는 별도 시험하지 않았다고 기록한다. [Cluster §11.11](specs/cluster-session-and-delivery.md#1111-qos-12-durable-delivery-수용-매핑)의 기존 durable delivery 시험과 구분해 QoS 1/2 retained 상태의 commit, replay·expiry, 실패 시 live fan-out 차단을 수용 시험으로 확인한다. §2.3의 QoS 0 retained 완료 기록은 이 시험을 대신하지 않는다.
+- [ ] **미검증 — MQTT resource limit·비정상 입력(MQTT-11·MQTT-12)**: [MQTT 스펙 §7·§8](specs/mqtt-protocol-and-session.md)의 packet size, Receive Maximum, inflight·queue 상한, parser fuzzing과 slowloris 요구를 수용 시험에 연결한다. 제한 초과 시 protocol별 거절·종료 동작과 memory·goroutine 누수가 없음을 실행 증거로 확인한다. 현재 구현된 TCP adapter의 일부 상한만으로 전체 기준을 완료 처리하지 않는다.
+- [ ] **미검증 — MQTT 3.1.0 production 전환(MQTT-13)**: [PRD §9.1](requirements/PRD.md#91-mqtt-프로토콜)의 90일 이상 client 사용량 조사, 오래된 firmware·외부 장비 소유자 확인, 3.1.1 이상 전환 또는 별도 gateway 격리와 canary 거절 Metric 감시를 완료한다. Wire-level 거절 구현·시험은 완료된 범위이며 이 항목은 production migration gate다.
+- [ ] **결정 필요 — WebSocket/WSS 필요성(MQTT-10)**: [PRD §18 질문 6](requirements/PRD.md#18-미결정-사항)에서 사용 현황을 확인한다. 사용 필요가 승인되면 WebSocket/WSS listener와 TCP와 같은 MQTT packet·session 동작을 구현·검증한다. 필요가 확인되지 않으면 PRD의 P1 범위를 갱신하기 전까지 구현하지 않는다.
+
+### 1.7 Tenant·security와 감사
+
+- [ ] **결정 필요 · 미구현 — P0 tenant 제한(TEN-06·TEN-07·TEN-09)**: [Tenant와 security 스펙](specs/tenancy-and-security.md)은 connection/session/subscription quota, message·byte rate·payload size 제한 및 noisy-neighbor 수용을 후속 범위로 둔다. PRD는 이를 P0으로 분류한다. P0 유지 여부와 구현 순서를 확정한다. P0를 유지하면 tenant별 제한, 초과 격리와 p99 영향 기준을 채택 문서로 정하고 자동 수용 시험을 통과한다. 보류하면 승인된 PRD 변경으로 우선순위와 출시 gate를 함께 조정한다. TEN-08 storage quota는 ADR-0017의 채택 범위로 제공되므로 이 항목에 다시 넣지 않는다.
+- [ ] **결정 필요 · 미구현 — security 후속 요구사항(SEC-05·SEC-07·SEC-10·SEC-12)**: [Tenant와 security 스펙 §9](specs/tenancy-and-security.md#9-수용-시험과-범위)는 password 방식, credential 회전·폐기, Management API·Dashboard 권한과 blocklist를 후속 acceptance로 분류한다. PRD의 P0/P1 상태와 실제 채택 범위를 맞춘다. 범위를 채택하면 password 사용 여부와 salted hash, 전 node credential 전파·기존 연결 재인증, 관리 화면까지 포함한 역할 경계와 client·IP 차단을 정책·시험으로 확정한다. 범위를 미루면 PRD의 우선순위와 출시 gate를 승인된 변경으로 갱신한다.
+- [ ] **결정 필요 · 미구현 — 감사 이벤트(SEC-11·NFR-17·API-08)**: [Audit event v1 계약](contracts/audit-event-v1.md)은 `Draft`이며 계약 시험이 미구현이다. 보존 기간, 접근 권한, 위변조 방지 backend와 장애 정책을 먼저 확정한다. 채택 뒤 성공·거절·실패 이벤트의 actor/action/target/result/time/request ID, 비밀정보 제외, 생성·저장·조회와 idempotency 연결을 계약·통합 시험으로 확인한다.
+- [ ] **미검증 — 보안 출시 gate(NFR-19)**: [PRD §11.4·§15.4](requirements/PRD.md)의 threat model과 tenant-isolation penetration test를 release 전에 수행한다. 신뢰 경계·공격 사례를 승인된 threat model에 기록하고, penetration test의 결과와 해결 또는 위험 승인 기록을 남긴다.
+
+### 1.8 Management API·observability와 Dashboard
+
+- [ ] **결정 필요 — Management API 정책(API-05·API-09)**: [Management API와 observability 스펙](specs/management-api-and-observability.md)은 API-05의 rate limit과 API-09의 GitOps/runtime source-of-truth·reconciliation 동작을 deferred로 둔다. PRD는 두 요구사항을 P0으로 분류한다. 우선순위와 active contract 범위를 먼저 맞춘다. 채택하면 API rate limit과 설정 충돌·reconciliation 상태를 구현하고 권한·경계·재시도 수용 시험을 통과한다.
+- [ ] **미구현 — P0 운영 Dashboard(UI-01~UI-05·UI-10)**: [PRD §9.6](requirements/PRD.md#96-대시보드)는 cluster topology, quorum·replica 경보, traffic, node별 부하·drain과 외부 TSDB 사용을 요구한다. [Management API 스펙 §8](specs/management-api-and-observability.md#8-dashboard-계약)은 목표 동작을 정의하지만 active Dashboard 구현은 없다. UI 기술·배포 경계를 결정하고 active API와 외부 TSDB를 연결한다. 주요 node·quorum·traffic·drain 상태의 표시와 운영 시나리오를 수용 시험으로 확인한다.
+- [ ] **결정 필요 — P1 관리 화면·exact-topic Metric(UI-06~UI-09·API-07·TEN-10)**: client 검색·상세, disconnect/redirect, retained·exact-topic Metric과 delegated tenant role은 active query/API 계약 또는 후속 acceptance에 걸쳐 있다. 요구 우선순위, tenant 권한, API 계약과 UI 제공 순서를 확정한다. 채택한 범위만 구현하고 권한·마스킹·pagination·idempotency·감사 기준을 시험한다. 아직 deferred인 API를 호출하는 화면은 구현된 제품 동작으로 표시하지 않는다.
+
+### 1.9 Performance·test와 공통 출시 gate
+
+- [ ] **결정 필요 — production workload와 성능 합격선(NFR-01~NFR-06·PERF-01~PERF-12)**: [PRD §18 질문 1~5·7~10·13~15](requirements/PRD.md#18-미결정-사항)과 [Performance와 verification 스펙](specs/performance-and-verification.md)의 `B_conn`, `B_pub`, `B_sub`, payload·topic 분포, tenant 부하, failure-domain profile, 고정 EMQX release/edition과 수치형 합격 기준을 확정한다. `SPEC-TBD-08`은 §1.2의 BP-07 release gate와도 연결되며, BP-03 smoke 완료는 전체 workload/SLO 결정을 대신하지 않는다.
+- [ ] **미검증 — 미수용 benchmark profile(PERF-01·PERF-05~PERF-07·PERF-10~PERF-12·NFR-06)**: [Performance와 verification 스펙 §§4~6](specs/performance-and-verification.md)의 동등 조건, 5회 독립 반복, N-1·failure recovery와 release regression 기준으로 BP-02 Production Mix, BP-04 Subscription Stress, BP-06 Failure Recovery의 유효한 비교·raw evidence를 보관한다. BP-03과 BP-07은 각각 §2.5와 §1.2의 기존 항목에서 추적해 중복하지 않는다. Smoke artifact의 `releaseGating=false`는 release acceptance로 계산하지 않는다.
+- [ ] **미검증 — coverage와 CI merge gate(TEST-06~TEST-10)**: 현재 CI 증거에서 전체 line/function/branch 85/90/85%, 핵심 모듈 95/95/90%, 변경 코드 line/branch 95% 기준을 확인한다. 테스트 실패·coverage 하락·미매핑 P0 요구사항·미매핑 MQTT normative statement가 필수 CI 상태를 실패시키는지도 확인한다. 도구가 동작한다는 사실만으로 최근 release gate 통과로 기록하지 않는다.
+- [ ] **미검증 — mutation·fuzz·race·flaky gate(TEST-12~TEST-15)**: critical state machine mutation score, packet/topic/session property·fuzz, race detector와 flaky-test owner·해결 기한 기준을 각 필수 CI 실행 증거와 연결한다. 격리된 flaky test가 있으면 owner와 해소 기한이 있어야 한다.
+
+PRD [§16 선택적 adapter](requirements/PRD.md#16-단계별-제공-범위)의 HTTP webhook·MQTT bridge·Kafka와 DEP-24 ECS는 사용량·필요성 및 별도 수용 기준이 승인되기 전까지 조건부 후속 범위로 둔다. 이를 미구현 결함이나 완료된 기능으로 기록하지 않는다. MQTT-10과 API-07은 각각 §1.6·§1.8에서 따로 추적한다.
+
+## 2. 기존 cluster 수용 완료 기록
+이 절은 기존 cluster 전용 목록의 완료 증거를 보존한다. 다른 PRD 영역까지 완료됐다는 뜻은 아니다.
 
 ### 2.1 합의·transport·membership
 
@@ -110,4 +142,4 @@
 - [x] Replicated-state v1 계약과 strict schema evolution: [ADR-0031](decisions/ADR-0031-replicated-state-schema-strict-evolution.md), Active [Replicated-state v1](contracts/replicated-state-v1.md), [§11.29](specs/cluster-session-and-delivery.md#1129-replicated-state-v1-계약-수용-매핑). 공식 한도·strict decode·feature gate·vector와 baseline guard를 확정했다. Activation 뒤 해당 feature를 지원하지 않는 N-1로 rollback할 수 없다. 게시 release별 baseline 갱신과 process matrix는 §1.2 release 항목에 남긴다.
 - [x] Rollback window 종료와 irreversible feature activation 승인: [ADR-0032](decisions/ADR-0032-feature-activation-approval-policy.md), [Release contract §4.1](contracts/cluster-release-compatibility-v1.md#41-운영-승인과-rollback-window-종료), [Cluster §11.30](specs/cluster-session-and-delivery.md#1130-feature-activation-운영-승인-수용-매핑). 운영 체크리스트·승인 기록으로 정책을 확정했다. API에서 승인 evidence를 강제하지 않는다. 수동 정책 판정·Windows local 실제 명령 smoke·기존 runtime와 synthetic/historical release·backup 시험이 통과했다. Production activation 승인, external rollout controller와 게시 release별 matrix·production storage gate는 이번 완료 범위 밖이다.
 
-항목을 마치면 해당 [수용 시험 매핑](specs/cluster-session-and-delivery.md#11-수용-시험)에 시험 위치와 실행 결과를 연결하고, 영향받은 결정·구조 문서의 범위와 상태를 갱신한 뒤 이 목록의 상태를 바꾼다. 실행하지 않은 시험이나 미승인 `Proposed` 결정을 완료로 표시하지 않는다.
+항목을 마치면 해당 PRD 요구사항·수용 시험 매핑에 시험 위치와 실행 결과를 연결하고, 영향받은 스펙·계약·ADR·구조 문서의 범위와 상태를 갱신한 뒤 이 목록의 상태를 바꾼다. 실행하지 않은 시험이나 미승인 `Draft`·`Proposed` 내용을 완료로 표시하지 않는다.

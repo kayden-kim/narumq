@@ -65,7 +65,7 @@ Dynamic cluster는 같은 major의 인접 minor release만 혼합 운영한다. 
 
 - [Cluster release compatibility v1](../contracts/cluster-release-compatibility-v1.md)과 [Raft membership v2](../contracts/raft-membership-v2.md)의 교환·호환 규칙을 갱신한다.
 - [Cluster spec §11.17](../specs/cluster-session-and-delivery.md#1117-n-1n-rolling-upgraderollback-수용-매핑)에 process acceptance를 연결한다.
-- Pass한 acceptance 뒤에만 [docs/tasks.md](../tasks.md)의 N-1↔N 항목을 닫는다.
+- Pass한 acceptance 뒤에만 [TODO.md](../TODO.md)의 N-1↔N 항목을 닫는다.
 
 ## 7. 검증
 
