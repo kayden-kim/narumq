@@ -97,12 +97,13 @@ memoryBytesPerIdleConnection =
 
 ### 3.3 PERF-07 반복 suite 측정 계약
 
-BP-01, BP-03, BP-05와 BP-07의 `compare`는 각각 한 번의 독립 실행을 기록하고, 반복 측정은 각 benchmark package의 `suite` 명령이 소유한다. suite는 다음 명령 형식을 사용한다.
+BP-01, BP-03, BP-05, BP-06와 BP-07의 `compare`는 각각 한 번의 독립 실행을 기록하고, 반복 측정은 각 benchmark package의 `suite` 명령이 소유한다. suite는 다음 명령 형식을 사용한다.
 
 ```text
 go run ./tests/benchmark/bp01 suite --profile <path> [--output <root>] [--repetitions <n>]
 go run ./tests/benchmark/bp03 suite --profile <path> [--output <root>] [--repetitions <n>]
 go run ./tests/benchmark/bp05 suite --profile <path> [--output <root>] [--repetitions <n>]
+go run ./tests/benchmark/bp06 suite --profile <path> [--output <root>] [--repetitions <n>]
 go run ./tests/benchmark/bp07 suite --profile <path> [--output <root>] [--repetitions <n>]
 ```
 
@@ -129,7 +130,7 @@ suite directory는 `.artifacts/benchmark/<benchmark>/<suite-id>/`이며 `profile
 
 image build/pull 또는 suite manifest 갱신처럼 실행 추적 자체가 불가능한 준비·기록 실패는 즉시 suite를 끝내고 빈 target `metrics`와 해당 이유를 기록한다. 회차의 target 실행, comparison, 필수 metric sample 또는 runtime applicability 실패는 추적 가능한 범위에서 후속 회차를 계속 보존하되 suite 전체를 invalid로 표시한다. 이 경우 parent summary의 모든 target `metrics`는 비우고 실패 이유와 child raw artifact만 남긴다. 단, NaruMQ runtime의 GC CPU metric이 한 회차라도 unavailable이면 이는 유효한 unavailable 상태로 기록하며 suite invalid 사유로 삼지 않고, 세 CPU metric만 생략한다. 모든 suite artifact와 smoke 반복 결과는 `releaseGating=false`를 유지하며 production profile, Gate 8 통과, NaruMQ 우위를 판정하지 않는다.
 
-반복 순서와 중앙값·MAD 계산은 `tests/benchmark/internal/suiteartifact`가 소유한다. BP-01, BP-03, BP-05와 BP-07 package는 metric 선택, parent·child artifact schema와 Docker 실행을 각각 소유한다.
+반복 순서와 중앙값·MAD 계산은 `tests/benchmark/internal/suiteartifact`가 소유한다. BP-01, BP-03, BP-05, BP-06와 BP-07 package는 metric 선택, parent·child artifact schema와 Docker 실행을 각각 소유한다.
 
 ### 3.4 BP-03 Durable Delivery smoke 관찰 경계
 
@@ -770,6 +771,230 @@ Suite 완료 뒤 저장소 root에서 `cmd /d /c "set GOMAXPROCS=4&& go run ./to
 새 wire proof 계약으로 바뀐 시험도 같은 변경에 갱신했다. 단순 read-result echo 부분은 제거했다. Commit FIFO·취소 시험은 실제 Raft quorum에서 받은 ReadState를 사용한다. Local projection이 proof index보다 뒤처지면 제출하지 않고 projection 복귀 뒤 입력 순서대로 commit하는지 확인한다. Runtime의 성공 ACK·WAL fsync·quorum 조건은 완화하지 않았다. 이후 `clusterPendingCommit.Wait`의 caller timeout 뒤 FIFO 재생·Raft apply batch의 command별 1회 출력·성공 응답 없음은 in-process 3-node runtime + 실제 dynamic Raft adapter 시험과 TCP 오류 시험을 함께 실행해 확인했다. 직접 연결한 proposal 완료와 membership state machine 실행을 구분한 범위, 실행 증거와 MQTT process 수준 경합 재현 제외는 [Cluster §11.11의 Caller timeout 뒤 late commit 행](cluster-session-and-delivery.md#1111-qos-12-durable-delivery-수용-매핑)에 기록한다.
 
 Local BP-07 smoke harness·broker 결함 수정·5회 교차 비교·local gate의 실행 검증은 위 결과를 충족했다. 이 실행에 사용한 BP-07 소스·시험 변경은 확인 커밋 `fca37620e053a121987c37dd20483fa4f584469f`에 기록했다. 위 compare·suite run ID와 local gate 결과를 이 커밋에 연결한다. 원래 manifest의 baseline commit과 `dirty=true`는 실행 당시 기록으로 유지한다. 이 연결은 커밋 뒤 재실행이나 CI 통과를 뜻하지 않는다. `docs/TODO.md`의 BP-07 항목은 `SPEC-TBD-08` 수치가 미결정이므로 `미검증`으로 유지한다. Caller timeout 뒤 late commit·적용 횟수·성공 ACK 경계의 별도 검증은 [Cluster §11.11](cluster-session-and-delivery.md#1111-qos-12-durable-delivery-수용-매핑)에 연결한다. 이 후속 검증을 위 확인 커밋이나 BP-07 compare·suite의 실행 증거로 포함하지 않는다.
+
+### 3.6 BP-06 Failure Recovery smoke 관찰 경계
+
+이 절의 local smoke 설계는 2026-10-06 승인된 BP-06 계획을 구현 기준으로 채택한다. BP-06은 3-node cluster에서 broker 하나를 drain 없이 `SIGKILL`하고, N-1 상태를 유지한 뒤 같은 container와 volume으로 재시작하는 시험이다. 모든 artifact는 `releaseGating=false`다. `SPEC-TBD-08` 수치는 미확정이다. 이 smoke로 BP-06 release gate를 닫지 않는다. 관련 요구사항은 PRD PERF-01·PERF-05~PERF-07·PERF-10과 NFR-07이다.
+
+#### Topology와 비교 경계
+
+- BP-07과 같은 Docker bridge topology를 쓴다. Node별 network owner의 namespace를 broker와 공유하고 data는 named volume에 둔다. DNS는 `node{1,2,3}.bp06.test`다.
+- NaruMQ는 `clusterId=narumq-bp06`, tenant `bp06`, subject `bp06-client`, ACL prefix `bp06/#`, JWKS `kid=bp06-key`를 쓴다. Host management 주소는 owner의 published `8080` port에서 얻는다.
+- EMQX는 `emqx/emqx-enterprise:5.8.8@sha256:d166efa91eae706ffbfca3f47e36fae0fd441507a8a57bda622da09e4a019c14`를 쓴다. BP-07의 Durable Sessions·JWT env와 readiness 조건을 유지한다. Cookie는 `bp06-<runID>-emqx-cookie`다. Evaluation license의 25 concurrent sessions 한도 안에서 workload client는 19개 이하로 제한한다.
+- 두 target의 CPU·memory limit, client 구현, seed, payload와 schedule은 같다. Readiness dialer는 준비된 node 사이에서 round-robin으로 연결한다. NaruMQ의 `GET http://nodeN.bp06.test:8080/health/ready`는 Bearer token을 사용한다. EMQX의 `GET http://nodeN.bp06.test:18083/api/v5/load_rebalance/availability_check`는 인증 없이 호출한다. HTTP 200만 ready다.
+- Will은 필수 결과에서 제외한다. Crash 시 Will 동작은 session-metadata 활성화 조건에 묶여 있으며 이번 범위에서 판정하지 않는다.
+- Local Docker volume은 production Linux/EBS, 전원 손실, 실제 NLB와 승인된 RPO/RTO를 입증하지 않는다.
+
+`rtoDirectlyComparable=false`이며 다음 네 차원을 `nonEquivalent`로 남긴다. 직접적인 우열을 판정하지 않는다.
+
+| 차원 | 결과에 기록하는 이유 |
+| --- | --- |
+| `durability` | BP-03의 durability reason을 그대로 쓴다. ACK·fsync·session 저장 계약의 등가는 검증하지 않는다. |
+| `authentication` | BP-03의 authentication reason을 그대로 쓴다. Tenant/client-ID binding과 peer mTLS의 등가는 검증하지 않는다. |
+| `resyncCondition` | NaruMQ resync completes when the leader match index for the restarted voter reaches the leader applied index observed after restart; EMQX resync completes when the pinned cluster readiness condition passes |
+| `sessionRecovery` | NaruMQ restores persistent sessions from replicated session metadata; EMQX resumes durable sessions from builtin_raft storage; equivalence is not proven |
+
+#### 고정 smoke profile
+
+`tests/benchmark/bp06/testdata/smoke.json`의 모든 필드를 요구한다. Unknown field와 trailing JSON은 거절한다. 아래 범위는 시험 도구의 안전 한계이며 운영 기본값이나 SLO가 아니다.
+
+| 필드 | Smoke 값 | 범위·규칙 |
+| --- | --- | --- |
+| `profileId` | `bp06-smoke-v1` | 비어 있지 않음 |
+| `purpose` | `smoke` | 이 값만 허용 |
+| `seed` | `6` | uint64 |
+| `payloadBytes` | `128` | 16–65536 |
+| `publishRatePerStreamPerSecond` | `10` | 1–100 |
+| `maxInflightPerPublisher` | `8` | 1–32 |
+| `ackTimeoutMillis` | `10000` | 1000–60000 |
+| `sessionExpirySeconds` | `300` | 60–86400, `*1000 > reconnectTimeoutMillis + downMillis` |
+| `keepAliveSeconds` | `30` | 5–300 |
+| `idleClients` | `7` | 0–11, 전체 client `8+idleClients` ≤ 19 |
+| `warmupMillis` | `5000` | 1000–600000 |
+| `steadyMillis` | `5000` | 2000–600000 |
+| `killOrder` | `[3,1,2]` | {1,2,3}의 순열 |
+| `cycles` | `1` | 1–10 |
+| `markerAckTimeoutMillis` | `5000` | 1000–60000 |
+| `killTimeoutMillis` | `10000` | 1000–60000 |
+| `downMillis` | `10000` | 1000–600000 |
+| `readyTimeoutMillis` | `180000` | 1000–600000 |
+| `resyncTimeoutMillis` | `180000` | 1000–600000, `>= readyTimeoutMillis` |
+| `interRoundSettleMillis` | `3000` | 2000–600000 |
+| `reconnectTimeoutMillis` | `30000` | 1000–600000 |
+| `recoveryTimeoutMillis` | `30000` | 1000–600000, `>= reconnectTimeoutMillis` |
+| `healthPollMillis` | `250` | 50–5000 |
+| `settleMillis` | `15000` | 1000–600000 |
+| `maxMessages` | `16384` | 1–1000000, `>= 4*rate*(warmupMillis+steadyMillis)/1000` |
+| `brokerCPUs` / `brokerMemoryBytes` | `1` / `1073741824` | 유한한 양수 |
+| `generatorCPUs` / `generatorMemoryBytes` | `2` / `536870912` | 유한한 양수 |
+
+Round 수는 `3*cycles`다. 전체 timeout은 `180s + warmupMillis + steadyMillis + rounds*(markerAckTimeoutMillis + killTimeoutMillis + downMillis + readyTimeoutMillis + resyncTimeoutMillis + interRoundSettleMillis) + settleMillis`다.
+
+#### Workload와 재접속
+
+기본 profile은 15 client다. Setup은 다음 표 순서를 따른다.
+
+| Client ID | Protocol·역할 | Session·구독 |
+| --- | --- | --- |
+| `bp06-pub-v5-q0/q1/q2` | MQTT 5 publisher | CleanStart=true, expiry 0; `bp06/stream/<stream>` |
+| `bp06-pub-v311-q1` | MQTT 3.1.1 publisher | CleanSession=true |
+| `bp06-sub-v5-q0/q1/q2` | MQTT 5 subscriber | 처음 CleanStart=true + profile expiry, 이후 false; 구독 QoS=stream QoS |
+| `bp06-sub-v311-q1` | MQTT 3.1.1 subscriber | CleanSession=false, QoS 1 |
+| `bp06-idle-01`..`bp06-idle-NN` | MQTT 5 idle | persistent |
+
+NaruMQ allowed client ID는 위 client와 cross-node probe만 포함한다. ACL action은 `subscribe`, `publish`만 허용한다. EMQX ACL은 username `jwt`에 `bp06/#` 전체 action을 허용하고 나머지는 거절한다.
+
+Stream index와 deterministic payload, 절대 시각 publish schedule, inflight 한도와 interrupted 처리는 §3.5와 같다. 연결 종료 중 미완료 교환은 gap에서 제외한다. QoS 1 성공은 PUBACK, QoS 2 성공은 PUBCOMP다. 연결 중 ACK deadline 초과는 `ackTimeouts`다. 연결과 inflight 여유가 있는데 schedule lag가 한 interval 이상이면 overload다.
+
+Persistent 재접속은 `SessionPresent=true`여야 한다. Subscriber QoS 2 상태는 session에 보존한다. 재접속 backoff는 100ms부터 두 배씩 늘려 2000ms로 제한한다. Full jitter PCG seed는 `(seed, clientIndex)`다. 종료부터 `reconnectTimeoutMillis` 안에 재접속해야 한다. CONNACK 거절은 `connectRejections`로 센다. Server Reference가 있는 DISCONNECT는 protocol error다. Reference 없는 DISCONNECT·EOF·reset은 같은 dialer로 재접속하고 원래 reason을 기록한다.
+
+#### 관찰 순서와 장애 주입
+
+Host controller와 runner는 target의 `control/` 파일로 통신한다. BP-07의 atomic JSON과 Windows rename 대기 규칙을 유지한다. Runner phase는 `readiness`, `setup`, `warmup`, `failure`, `settle`, `final_check`, `cleanup` 순서다. Readiness에서 NaruMQ session-metadata feature를 POST로 활성화하고 GET으로 확인한다. Persistent owner crash 복구에 필요하다.
+
+1. Controller는 `control/workload-ready.json`의 `connections == profile.clients()`를 확인한다.
+2. Round 0의 `steady` event 동안 `steadyMillis`를 기다린다.
+3. `killOrder`를 `cycles`번 반복한다. Round마다 세 node ready를 확인하는 `prepare`를 실행한다.
+4. `{round,node,state:"killing",writtenAt}` marker를 쓴다. Runner는 100ms poll로 marker를 읽는다. 현재 round는 앞으로만 이동한다. 첫 관찰의 runner 시각으로 `{round,state:"killing",observedAt}` ack를 쓴다.
+5. Controller는 ack의 round·state가 맞을 때까지 50ms 간격으로 `markerAckTimeoutMillis` 동안 기다린다. 기한 초과 오류는 `runner did not acknowledge round NN killing marker`다.
+6. `docker kill --signal KILL <broker>`를 실행하고 Docker가 정지를 보고할 때까지 기다린다. `killMillis`는 호출 직전부터 반환까지다. Container와 volume은 유지한다.
+7. Marker를 `down`으로 쓰고 `downMillis` 동안 기다린다. Runner는 첫 `down` 관찰 시각도 기록한다.
+8. Marker를 `restarting`으로 쓰고 같은 container를 시작한다. 시작 호출 직전이 `restartStartedAt`이다.
+9. 대상 node의 `rejoin_ready`를 `restartStartedAt + readyTimeoutMillis` 안에서 확인한다. 이어 `resync`를 `restartStartedAt + resyncTimeoutMillis` 안에서 확인한다.
+10. Marker를 `ready`로 쓰고 `interRoundSettleMillis` 동안 기다린다.
+11. 성공·실패 모두 `failure-summary.json`과 `{status,reason,writtenAt}` 형식의 `control/failure-complete.json`을 쓴다. 미완료 round도 진단용으로 남긴다.
+
+각 step은 `failure.jsonl`에 `round,node,step,startedAt,finishedAt,outcome,detail`을 쓴다. Host UTC RFC3339Nano 시각과 host monotonic 경과 시간을 사용한다. Disconnect는 현재 marker와 node가 같고 state가 `killing|down`일 때만 계획된 장애다. 나머지는 unplanned다.
+
+#### RTO·rejoin·resync 정의
+
+RTO는 장애 뒤 재접속과 모든 stream 처리가 돌아오는 데 걸린 시간이다. Runner의 단일 clock에서 다음처럼 계산한다.
+
+1. `injectionAt`은 round에 귀속된 disconnect 중 가장 이른 시각이다. `injectionSource="disconnect"`로 기록한다. 없으면 첫 `downObservedAt`과 `"marker"`를 쓴다. 둘 다 없으면 `failure injection was not observed for round NN`로 실패한다.
+2. 귀속 disconnect마다 해당 client의 다음 성공 reconnect 시각을 찾는다. 하나라도 없으면 `Recovered=false`다.
+3. Stream마다 `sentAt >= injectionAt`인 message 중 첫 성공을 찾는다. QoS 1은 최소 `ackAt`, QoS 2는 최소 `completeAt`, QoS 0은 최소 `firstReceivedAt`이다. 하나라도 없으면 `Recovered=false`다.
+4. `recoveredAt`은 2와 3의 최댓값이다. `rtoMillis=recoveredAt-injectionAt`이다. `reconnectMaxMillis`와 stream별 `streamFirstSuccessMillis`도 남긴다.
+
+`rejoinReadyMillis`와 `resyncMillis`는 host clock에서 `restartStartedAt`부터 각 성공까지다. NaruMQ의 prepare는 세 node `/health/ready`, rejoin은 대상 node의 HTTP 200을 확인한다.
+
+NaruMQ resync는 query 없는 `GET /api/v1/nodes`와 Bearer admin token을 사용한다. 가장 낮은 번호의 생존 node에서 LEADER의 10진수 `nodeId`를 찾는다. HTTP 200이 아니거나 leader가 없거나 `page.hasMore=true`면 다음 poll에서 다시 시도한다. 처음 leader를 찾으면 leader 주소의 응답에서 자신의 `lastAppliedIndex`를 watermark `W`로 한 번만 기록한다. 대상 voter의 `lastAppliedIndex >= W`와 `replicationHealth=="HEALTHY"`를 요구한다. 대상이 leader면 자신의 index 조건만 확인한다. Leader가 바뀌면 leader를 다시 찾되 W는 유지한다. 마지막으로 세 node readiness를 확인한다. 원격 `lastAppliedIndex`는 `cmd/narumq/cluster_runtime.go`의 `nodeSummary`가 보고하는 leader의 peer match index다. Product 코드는 바꾸지 않는다.
+
+EMQX prepare·resync는 pinned readiness 조건을 포함한 `WaitForEMQXClusterReady`를 쓴다. Rejoin은 대상 container에서 `emqx eval "emqx:is_running()."`의 exit 0과 trim한 출력 `true`를 요구한다. Poll 간격은 `healthPollMillis`이며 raw 출력은 저장하지 않는다.
+
+#### 유효성
+
+Workload는 다음 조건을 모두 만족해야 valid다.
+
+- 모든 phase가 성공하고 failure completion은 success다.
+- Unplanned disconnect, protocol error, ACK timeout과 overload가 0이다. Message capacity를 넘지 않는다.
+- 끊긴 client가 모두 reconnect deadline 안에 재접속한다. Persistent 재접속의 SessionPresent는 true다.
+- ACKed QoS 1/2 gap이 0이다. Interrupted는 제외한다. QoS 2 duplicate도 0이다.
+- 모든 round가 `Recovered=true`이고 `rtoMillis <= recoveryTimeoutMillis`다.
+- `final_check`에서 모든 client가 연결돼 있다.
+
+QoS 1 duplicate, QoS 0 `sent - unique received`, reorder는 기록만 한다. Failure valid는 모든 controller step의 성공을 요구한다.
+
+Resource steady window는 `failure.jsonl`의 `steady` event `[startedAt,finishedAt]`다. Round window는 `[killStartedAt,settleFinishedAt]`다. Stats `collectedAt`과 같은 host clock을 쓴다. Node·window마다 실행 중 표본(`memoryUsageBytes > 0`)만 사용한다. `samples`, `cpuPercentMedian`, `cpuPercentMax`, `memoryBytesMax`, reset-aware `blockWriteBytes`를 기록한다.
+
+Round의 `cpuPeakPercent`와 `memoryPeakBytes`는 세 node의 최대값이다. 각 peak를 기록한 node의 steady CPU median·memory max를 빼서 `cpuPeakDeltaPercent`, `memoryPeakDeltaBytes`를 만든다. Network는 첫 kill부터 마지막 settle까지 owner Rx·Tx delta의 합이다. 모두 0이면 `networkStatsAvailable=false`이며 invalid 사유는 아니다.
+
+Steady는 세 node 모두 표본 2개 이상이어야 한다. Round의 생존 node는 2개 이상, 대상 node는 `restartFinishedAt` 이후 표본 1개 이상이어야 한다. Event 파일이나 window가 없으면 resource invalid다. Target valid는 environment success와 workload·failure·resource valid의 논리곱이다.
+
+NaruMQ 또는 EMQX의 broker 동작으로 compare가 invalid면 같은 profile로 한 번 더 실행한다. 두 번 재현되면 규칙과 product 코드를 바꾸지 않고 실행 증거와 별도 수정·comparator 결정 대상을 보고한다. NaruMQ peer match index가 재시작 뒤 계속 0이어서 resync가 기한을 넘으면 정의를 바꾸지 않고 멈춘다.
+
+#### 명령과 artifact
+
+저장소 root에서 Docker Desktop Linux/amd64와 image pull network를 준비한다. 시작 전 `docker ps -a --filter name=bp0` 결과가 비어 있어야 한다.
+
+```text
+go run ./tests/benchmark/bp06 compare --profile tests/benchmark/bp06/testdata/smoke.json
+go run ./tests/benchmark/bp06 suite --profile tests/benchmark/bp06/testdata/smoke.json
+```
+
+Compare는 `.artifacts/benchmark/bp06/<run-id>/`에 profile, manifest, comparison과 summary를 남긴다. Target별 artifact는 다음과 같다.
+
+- `phases.jsonl`, `health.jsonl`, `connections.jsonl`, `messages.jsonl`, `workload-summary.json`
+- `failure.jsonl`, `failure-summary.json`, `resource-summary.json`
+- `control/workload-ready.json`, `control/round-NN.json`, `control/round-NN-ack.json`, `control/failure-complete.json`
+- Node별 broker·owner stats, broker log·inspect, EMQX durability snapshot, runner log
+
+Failure summary는 steady 시각, round별 kill·실제 down·rejoin·resync 시간, kill·restart·settle 시각과 NaruMQ `leaderNode,watermarkAppliedIndex,targetMatchIndex`를 기록한다. Workload round는 recovery 결과를 기록한다.
+
+Suite는 두 target valid인 compare 뒤 실행한다. 새 cluster로 5회 반복하고 target 순서를 교차한다. Round별 metric은 `rto_millis`, `rejoin_ready_millis`, `resync_millis`, `reconnect_latency_max_millis`(ms), `recovery_cpu_peak_percent`(percent), `recovery_memory_peak_bytes`(bytes)다. 전체 metric은 `reconnects_total`(connections), `qos1_duplicates_total`, `qos0_lost_total`(messages)다. Parent는 median·MAD를 기록한다. Child invalid면 parent metric을 비운다. 각 실행 뒤 BP-06 container와 volume 목록이 비어 있는지 확인한다.
+
+수용 시험은 다음 위치에 연결한다. 실제 broker의 결과는 단위 시험과 구분해 아래에 기록한다.
+
+| 검증 범위 | 시험 위치 |
+| --- | --- |
+| SIGKILL·inspect·start 순서, container 유지, 입력 거절 | `tests/benchmark/internal/environment/cluster_test.go`의 `TestKillAndStartClusterBrokerKeepContainer` |
+| 필수 입력, hash, timeout·expiry·capacity 교차 조건 | `tests/benchmark/bp06/profile_test.go` |
+| Workload client·인증·ACL 경계, Will identity 제외 | `tests/benchmark/bp06/fixture_test.go` |
+| 준비된 node 선택과 health 변화 | `tests/benchmark/bp06/dialer_test.go` |
+| Marker ack·과거 round 거절·계획된 종료 귀속·persistent 재접속·Server Reference 거절 | `tests/benchmark/bp06/session_test.go` |
+| 최초 장애·marker fallback·stream 성공·RTO 한도·interrupted·duplicate | `tests/benchmark/bp06/aggregate_test.go` |
+| Leader 재탐색·고정 watermark·target match/health·pagination·deadline·control artifact | `tests/benchmark/bp06/failure_test.go` |
+| Steady·round window·생존 node와 재시작 뒤 표본·peak baseline·counter reset | `tests/benchmark/bp06/resource_test.go` |
+| Metric key·unit·round 누락/중복·invalid child·median·MAD | `tests/benchmark/bp06/suite_test.go` |
+
+#### Local execution evidence
+
+2026-10-05 Windows/amd64, Go 1.26.5와 Docker Desktop Linux/amd64에서 실행했다. 아래 경로는 저장소 root 기준이다. 실행 명령은 두 번 모두 `go run ./tests/benchmark/bp06 compare --profile tests/benchmark/bp06/testdata/smoke.json`이다. Profile SHA-256은 `e8e4aa2e5df1a3e55ad901acff5a4505cdb1acf4699ff061f1a2bfc51754054d`다. Client 15개, payload 128 byte, stream별 10건/s, kill 순서 3·1·2와 resource limit을 유지했다.
+
+| Run ID | Wall time | NaruMQ target | EMQX target | Compare |
+| --- | ---: | --- | --- | --- |
+| `bp06-20261005T160648.548694400Z-91948` | 381.28s | invalid | invalid | exit 1, invalid |
+| `bp06-20261005T161350.676679500Z-95264` | 348.10s | valid | invalid | exit 1, invalid |
+
+두 실행 모두 두 target의 failure·resource summary는 valid다. 세 round의 SIGKILL·10초 N-1 유지·같은 container 시작·rejoin·resync를 완료했다. Runner의 모든 round는 `recovered=true`이고 RTO 30초 한도 안이다. 이 조건만으로 workload 전체를 valid로 보지 않는다.
+
+Artifact root는 `.artifacts/benchmark/bp06/<위 run ID>/`다. Manifest의 baseline은 `5f6809cc75374a12044921c0f1ed2071cdaf58b3`, `dirty=true`다. 미커밋 변경을 포함한 실행이며 새 확인 commit이나 CI 링크는 없다. Runner image ID는 첫 실행 `sha256:170a842a70aa900ba303ff5d07e2468abad2123e8e9d192b656ab2f2aa0d8822`, 재실행 `sha256:7cf4a63a2cc1f5fa5c8967f1b4009b68824ec1a7ac9ecae3f5ef7d19e3623757`이다. EMQX는 위에 고정한 Enterprise 5.8.8 digest를 유지했다. 두 실행 사이 harness·product·profile·판정 규칙은 바꾸지 않았다.
+
+Evidence 단계는 미완료다. Local 실행 결과와 raw artifact는 기록했지만 `AGENTS.md`가 요구하는 CI 실행 링크 또는 확인 커밋 연결은 남아 있다. 위 baseline은 실행에 포함된 미커밋 변경을 확인하는 커밋이 아니다.
+
+아래는 round별 관찰값이다. 시간 단위는 ms다. 값은 소수점 셋째 자리로 반올림했다. `첫 실행`은 위 첫 run, `재실행`은 위 두 번째 run이다. Invalid target의 값은 진단용이며 성능 우열이나 출시 통과 근거로 쓰지 않는다.
+
+| 실행 | Target | Round·node | RTO | Rejoin ready | Resync | CPU peak % | Memory peak byte |
+| --- | --- | --- | ---: | ---: | ---: | ---: | ---: |
+| 첫 실행 | NaruMQ | 1·3 | 5075.563 | 724.599 | 738.200 | 34.98 | 9998172 |
+| 첫 실행 | NaruMQ | 2·1 | 1262.563 | 658.593 | 672.610 | 35.62 | 10485760 |
+| 첫 실행 | NaruMQ | 3·2 | 578.418 | 886.119 | 909.938 | 38.52 | 10178527 |
+| 첫 실행 | EMQX | 1·3 | 166.451 | 24836.315 | 30334.678 | 106.63 | 493145293 |
+| 첫 실행 | EMQX | 2·1 | 254.365 | 23289.674 | 29109.679 | 101.68 | 361024717 |
+| 첫 실행 | EMQX | 3·2 | 10083.366 | 22533.685 | 28018.542 | 104.10 | 360290714 |
+| 재실행 | NaruMQ | 1·3 | 1817.284 | 706.196 | 721.367 | 35.56 | 10051650 |
+| 재실행 | NaruMQ | 2·1 | 1762.151 | 735.205 | 746.914 | 32.92 | 10664018 |
+| 재실행 | NaruMQ | 3·2 | 500.305 | 1071.144 | 1115.766 | 39.67 | 10506732 |
+| 재실행 | EMQX | 1·3 | 165.685 | 23015.054 | 28217.923 | 104.67 | 383254528 |
+| 재실행 | EMQX | 2·1 | 116.867 | 21669.785 | 27309.160 | 104.71 | 392796570 |
+| 재실행 | EMQX | 3·2 | 10067.794 | 21084.877 | 26502.364 | 104.95 | 350119526 |
+
+대표 수용 관찰인 재실행 NaruMQ round 2는 node1 kill, `killMillis=689.9751`, `resyncMillis=746.9135`, `recovery.recovered=true`, `rtoMillis=1762.151251`이다. 전체 gap·QoS 2 duplicate는 0이다. 각 round의 leader와 watermark·target match index는 `narumq/failure-summary.json`에 남는다.
+
+| Workload 관찰 | 첫 NaruMQ | 첫 EMQX | 재실행 NaruMQ | 재실행 EMQX |
+| --- | ---: | ---: | ---: | ---: |
+| QoS 1/2 gap | 0 | 9 | 0 | 7 |
+| QoS 1 duplicate(기록만) | 1 | 71 | 0 | 68 |
+| QoS 2 duplicate | 0 | 19 | 0 | 27 |
+| QoS 0 lost(기록만) | 1 | 5 | 0 | 2 |
+| 계획 밖 disconnect | 1 | 0 | 0 | 0 |
+| Protocol error / ACK timeout / overload | 0 / 0 / 0 | 0 / 0 / 0 | 0 / 0 / 0 | 0 / 0 / 0 |
+| Persistent SessionPresent 실패 | 0 | 0 | 0 | 0 |
+
+첫 NaruMQ 실행은 QoS 2 sequence 127–156의 `0x97` 거절 30건도 기록했다. 계획 밖 종료는 round 1의 kill 대상 node3이 아닌 node1에서 `bp06-pub-v311-q1`이 받은 `2026-10-05T16:07:49.10247739Z` EOF다. 같은 구간의 node1·node2 log에는 `commit_lag` backpressure가 있다. 종료와 backpressure의 근본 원인이나 인과관계는 확정하지 않았다. 재실행은 이 거절·계획 밖 종료 없이 NaruMQ target valid였다. 두 번 연속 통과한 것으로 보고하지 않는다.
+
+EMQX는 두 실행 모두 ACKed gap과 QoS 2 duplicate 때문에 invalid다. 각각 `runner.log`의 `settle: context deadline exceeded`로 끝났다. 첫 QoS 2 duplicate는 sequence 1176–1194, 재실행은 662–688이다. Raw `messages.jsonl`·`connections.jsonl`과 node별 broker log를 보존했다. Collector 판정과 comparator의 session 복구 경로 사이 근본 원인은 아직 확정하지 않았다. 같은 profile로 두 번 재현했으므로 승인된 contingency에 따라 실행을 멈췄다. Comparator 조사·수정 또는 비교 대상 결정이 남는다. Product 코드나 validity 규칙은 완화하지 않았다.
+
+구현·검증은 다음과 같이 실행했다.
+
+- RTO 시험을 먼저 추가한 `go test ./tests/benchmark/bp06 -run '^TestRecoveryRTO' -count=1`: 컴파일 FAIL. 새 `plannedDisconnect`·`computeRecovery`와 BP-06 profile 필드가 없었다.
+- Shared environment `go test ./tests/benchmark/internal/environment -count=1`: PASS.
+- 통합 중 resync 시험의 닫는 괄호와 누락된 leader lookup helper를 고쳤다. 수정 뒤 `go build ./...`, `go vet ./tests/benchmark/...`, `go test ./tests/benchmark/... -count=1`: PASS(38.26s wall).
+- `go test ./tests/benchmark/bp06 -run 'Recovery|Attribution|Resync|MarkerAck|Resource' -v -count=1`: PASS(3.79s wall). 고정 watermark·leader 변경, 재시작 node가 leader인 경우, pagination·deadline, marker ack, 최초 장애·fallback·RTO·표본 부족을 확인했다.
+- 실제 compare 두 번으로 Docker runner image build, MQTT workload, 관리 API resync, resource window와 artifact 수집 경로를 실행했다. 재실행 NaruMQ는 readiness부터 final_check·cleanup까지 valid였다.
+- 각 compare 뒤 `docker ps -a --filter name=bp06- --format "{{.Names}}"`와 `docker volume ls --filter name=bp06- --format "{{.Name}}"` 출력은 모두 비어 있었다.
+- 저장소 root에서 `cmd /d /c "set GOMAXPROCS=4&& go run ./tools/verify local"`: PASS(143.59s wall). 출력에서 `traceability`, `architecture`, `coverage`, `local` PASS를 확인했다. 전체 시험, production race 시험과 fuzz 실행을 포함한다. BP-06 시험은 coverage 실행에서 3.228s로 통과했다.
+
+두 target valid인 compare 선행 조건을 충족하지 못했으므로 5회 suite는 미실행이다. Suite ID·median·MAD와 반복 수용을 주장하지 않는다. BP-06 local smoke acceptance는 미완료다. `SPEC-TBD-08`, BP-02·BP-04와 release regression도 남으며 TODO 체크는 `[ ]`로 유지한다.
 
 ## 4. 필수 benchmark profile
 

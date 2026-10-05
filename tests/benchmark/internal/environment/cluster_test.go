@@ -170,6 +170,10 @@ func TestBP07RunnerTargetValidation(t *testing.T) {
 	if err := validateClusterTargetOptions(cluster); err != nil {
 		t.Fatalf("validateClusterTargetOptions(bp07-runner) error = %v", err)
 	}
+	cluster.RunnerTarget = "bp06-runner"
+	if err := validateClusterTargetOptions(cluster); err != nil {
+		t.Fatalf("validateClusterTargetOptions(bp06-runner) error = %v", err)
+	}
 	cluster.RunnerTarget = "bp99-runner"
 	if err := validateClusterTargetOptions(cluster); err == nil {
 		t.Fatal("validateClusterTargetOptions() accepted unsupported runner target")
@@ -179,6 +183,60 @@ func TestBP07RunnerTargetValidation(t *testing.T) {
 	single.RunnerTarget = "bp07-runner"
 	if err := validateTargetOptions(single); err == nil {
 		t.Fatal("validateTargetOptions() accepted bp07-runner")
+	}
+}
+
+func TestKillAndStartClusterBrokerKeepContainer(t *testing.T) {
+	fakeDocker := installFakeDocker(t)
+	const container = "bp06-kill-broker"
+	if err := writeFakeDockerRunning(container, true); err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	if err := KillClusterBroker(ctx, container, 5*time.Second); err != nil {
+		t.Fatal(err)
+	}
+	if fakeDockerIsRunning(container) {
+		t.Fatal("broker is still running after SIGKILL")
+	}
+	if err := StartClusterBroker(ctx, container, 5*time.Second); err != nil {
+		t.Fatal(err)
+	}
+	if !fakeDockerIsRunning(container) {
+		t.Fatal("broker did not restart")
+	}
+	expected := [][]string{
+		{"kill", "--signal", "KILL", container},
+		{"inspect", "--format", "{{.State.Running}}", container},
+		{"start", container},
+	}
+	next := 0
+	for _, call := range readFakeDockerCalls(t, fakeDocker.callsPath) {
+		if call[0] == "rm" || call[0] == "stop" {
+			t.Fatalf("kill/start removed or gracefully stopped the broker: %v", call)
+		}
+		if next < len(expected) && strings.Join(call, "\x00") == strings.Join(expected[next], "\x00") {
+			next++
+		}
+	}
+	if next != len(expected) {
+		t.Fatalf("kill/inspect/start sequence incomplete: %d of %d", next, len(expected))
+	}
+	for _, operation := range []struct {
+		name string
+		run  func(context.Context, string, time.Duration) error
+	}{
+		{"kill", KillClusterBroker},
+		{"start", StartClusterBroker},
+	} {
+		t.Run(operation.name, func(t *testing.T) {
+			if err := operation.run(ctx, "", time.Second); err == nil {
+				t.Fatal("accepted empty container")
+			}
+			if err := operation.run(ctx, container, 0); err == nil {
+				t.Fatal("accepted zero timeout")
+			}
+		})
 	}
 }
 
@@ -342,6 +400,14 @@ func runFakeDocker(args []string) int {
 		return 0
 	case "logs":
 		fmt.Println("MQTT TCP listener started")
+		return 0
+	case "kill":
+		if len(args) != 4 || args[1] != "--signal" || args[2] != "KILL" {
+			return fakeDockerError("unexpected kill arguments")
+		}
+		if err := writeFakeDockerRunning(args[3], false); err != nil {
+			return fakeDockerError(err.Error())
+		}
 		return 0
 	case "stop":
 		if len(args) >= 4 {

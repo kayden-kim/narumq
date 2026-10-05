@@ -368,6 +368,20 @@ func RestartClusterBroker(ctx context.Context, container string, stopTimeout, st
 	if _, err := commandOutput(ctx, "", "docker", "stop", "--time", strconv.FormatInt(int64(stopSeconds), 10), container); err != nil {
 		return fmt.Errorf("stop broker %s: %w", container, err)
 	}
+	return StartClusterBroker(ctx, container, startupTimeout)
+}
+
+// StartClusterBroker starts an existing stopped broker container and waits for it to run.
+func StartClusterBroker(ctx context.Context, container string, startupTimeout time.Duration) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if strings.TrimSpace(container) == "" {
+		return errors.New("broker container is required")
+	}
+	if startupTimeout <= 0 {
+		return errors.New("broker startup timeout must be greater than zero")
+	}
 	if _, err := commandOutput(ctx, "", "docker", "start", container); err != nil {
 		return fmt.Errorf("start broker %s: %w", container, err)
 	}
@@ -375,6 +389,41 @@ func RestartClusterBroker(ctx context.Context, container string, stopTimeout, st
 		return fmt.Errorf("wait for broker %s restart: %w", container, err)
 	}
 	return nil
+}
+
+// KillClusterBroker sends SIGKILL to a running broker container and waits until Docker reports it stopped.
+// The container and its named volumes are kept for a later StartClusterBroker call.
+func KillClusterBroker(ctx context.Context, container string, stopTimeout time.Duration) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if strings.TrimSpace(container) == "" {
+		return errors.New("broker container is required")
+	}
+	if stopTimeout <= 0 {
+		return errors.New("broker stop timeout must be greater than zero")
+	}
+	if _, err := commandOutput(ctx, "", "docker", "kill", "--signal", "KILL", container); err != nil {
+		return fmt.Errorf("kill broker %s: %w", container, err)
+	}
+	stopCtx, cancel := context.WithTimeout(ctx, stopTimeout)
+	defer cancel()
+	ticker := time.NewTicker(100 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		stopped, err := containerStopped(stopCtx, container)
+		if err != nil {
+			return err
+		}
+		if stopped {
+			return nil
+		}
+		select {
+		case <-stopCtx.Done():
+			return fmt.Errorf("wait for broker %s to stop: %w", container, stopCtx.Err())
+		case <-ticker.C:
+		}
+	}
 }
 
 func validateClusterTargetOptions(o ClusterTargetOptions) error {
@@ -399,7 +448,7 @@ func validateClusterTargetOptions(o ClusterTargetOptions) error {
 	if o.Target != "narumq" && o.Target != "emqx" {
 		return fmt.Errorf("unsupported benchmark target %q", o.Target)
 	}
-	if o.RunnerTarget != "bp03-runner" && o.RunnerTarget != "bp07-runner" {
+	if o.RunnerTarget != "bp03-runner" && o.RunnerTarget != "bp06-runner" && o.RunnerTarget != "bp07-runner" {
 		return fmt.Errorf("unsupported runner target %q", o.RunnerTarget)
 	}
 	if len(o.Nodes) != 3 {
