@@ -519,6 +519,10 @@ type clusterRuntime struct {
 	leadershipTransferTo        raftadapter.NodeID
 	leadershipTransferTerm      uint64
 	leadershipTransferTicks     int
+	recoveryProofKey            string
+	recoveryProofWait           bool
+	recoveryProofReady          bool
+	recoveryLeadership          raftLeadership
 
 	localMu            sync.Mutex
 	localIdentity      tcpadapter.PeerIdentityDTO
@@ -589,6 +593,11 @@ type clusterReadWaiter struct {
 }
 
 type clusterProposalWaiter struct {
+	context      context.Context
+	requestID    string
+	proofIndex   uint64
+	leadership   raftLeadership
+	command      membership.CommandDTO
 	data         []byte
 	startedAt    time.Time
 	result       chan clusterApplyResponse
@@ -816,7 +825,7 @@ func (runtime *clusterRuntime) runDriver(ctx context.Context) (driverErr error) 
 				delete(reads, key)
 				if waiter.commit != nil {
 					runtime.finishCommitRead(waiter.commit, waiter.ctx.Err())
-				} else {
+				} else if waiter.result != nil {
 					runtime.observeRaftStage(adaptersmetrics.RaftReadIndex, waiter.startedAt)
 					waiter.result <- clusterReadResponse{err: waiter.ctx.Err()}
 				}
@@ -839,6 +848,7 @@ func (runtime *clusterRuntime) runDriver(ctx context.Context) (driverErr error) 
 			runtime.autoCatchupPending = ""
 			clear(runtime.handoffProposed)
 			runtime.removalBlockLogged = ""
+			// Command recovery is observed on every Ready cycle, not only maintenance ticks.
 		}
 		if err := runtime.advanceMembership(); err != nil {
 			return false, err
@@ -900,6 +910,10 @@ func (runtime *clusterRuntime) runDriver(ctx context.Context) (driverErr error) 
 				}
 				deferredReads = runtime.completeReadStates(deferredReads, reads)
 				runtime.resolveProjectionRequests(nil, status.AppliedIndex >= status.CommitIndex)
+				recovered, err := runtime.recoverProposals(ctx, reads, &proposals)
+				if err != nil {
+					return err
+				}
 				runtime.resolveBackupRequests(nil)
 				if runtime.node.StoragePending() {
 					return nil // Resume on storage completion without blocking peer/tick work.
@@ -912,7 +926,7 @@ func (runtime *clusterRuntime) runDriver(ctx context.Context) (driverErr error) 
 					return err
 				}
 				proposed := runtime.resolveCommitReads(reads, &proposals)
-				if maintained || proposed || runtime.hasDeferredRequest {
+				if maintained || proposed || recovered || runtime.hasDeferredRequest {
 					beforeReads, beforeProposals := len(reads), len(proposals)
 					if err := runtime.stageQueuedDriverWork(reads, &proposals, ctx.Done()); err != nil {
 						return err
@@ -1098,8 +1112,29 @@ func (runtime *clusterRuntime) handleDriverRequest(
 			runtime.observeCommitLeadership()
 			runtime.markCommitProposed(backlogEntry)
 		}
+		var reqID string
+		var proofIdx uint64
+		var reqCmd membership.CommandDTO
+		if request.pending != nil {
+			reqID = request.pending.requestID
+			proofIdx = request.pending.readProofIndex
+			reqCmd = request.pending.command
+		} else if cmd, err := decodeMembershipCommand(request.data); err == nil {
+			reqCmd = cmd
+			if cmd.Proposal != nil {
+				reqID = cmd.Proposal.RequestID
+				proofIdx = cmd.Proposal.ProofIndex
+			}
+		}
 		*proposals = append(*proposals, clusterProposalWaiter{
-			data: request.data, result: request.applyResult, startedAt: startedAt, backlogEntry: backlogEntry,
+			context:      request.context,
+			requestID:    reqID,
+			proofIndex:   proofIdx,
+			command:      reqCmd,
+			data:         request.data,
+			result:       request.applyResult,
+			startedAt:    startedAt,
+			backlogEntry: backlogEntry,
 		})
 	case clusterDriverBackup:
 		if request.context != nil && request.context.Err() != nil {
@@ -1115,7 +1150,7 @@ func (runtime *clusterRuntime) handleDriverRequest(
 			delete(reads, request.contextKey)
 			if waiter.commit != nil {
 				runtime.finishCommitRead(waiter.commit, context.Canceled)
-			} else {
+			} else if waiter.result != nil {
 				waiter.result <- clusterReadResponse{err: context.Canceled}
 			}
 		}
@@ -1341,6 +1376,10 @@ func (runtime *clusterRuntime) applyBatch(batch raftadapter.BatchDTO, proposals 
 		if err != nil {
 			return fmt.Errorf("apply committed command at raft index %d: %w", event.index, err)
 		}
+		if result.Replayed {
+			runtime.stageProposalResult(event.command, result, proposals)
+			continue
+		}
 		runtime.releaseProfile.observeAppliedCommand(command, result)
 		if deliveryAckCommand && runtime.deliveryCrashArmed(failpointDeliveryCommitAfterApply) {
 			triggerClusterFailpoint(failpointDeliveryCommitAfterApply)
@@ -1553,7 +1592,7 @@ func (runtime *clusterRuntime) completeReadStates(states []raftadapter.ReadState
 			delete(waiters, key)
 			if waiter.commit != nil {
 				runtime.finishCommitRead(waiter.commit, waiter.ctx.Err())
-			} else {
+			} else if waiter.result != nil {
 				runtime.observeRaftStage(adaptersmetrics.RaftReadIndex, waiter.startedAt)
 				waiter.result <- clusterReadResponse{err: waiter.ctx.Err()}
 			}
@@ -1564,11 +1603,19 @@ func (runtime *clusterRuntime) completeReadStates(states []raftadapter.ReadState
 			continue
 		}
 		delete(waiters, key)
+		if key == runtime.recoveryProofKey {
+			runtime.recoveryProofWait = false
+			runtime.recoveryProofKey = ""
+			runtime.recoveryProofReady = true
+		}
 		if waiter.commit != nil {
+			waiter.commit.readProofIndex = state.Index
 			runtime.finishCommitRead(waiter.commit, nil)
 		} else {
 			runtime.observeRaftStage(adaptersmetrics.RaftReadIndex, waiter.startedAt)
-			waiter.result <- clusterReadResponse{index: state.Index}
+			if waiter.result != nil {
+				waiter.result <- clusterReadResponse{index: state.Index}
+			}
 		}
 	}
 	return remaining
@@ -1614,15 +1661,28 @@ func (runtime *clusterRuntime) resolveCommitReads(reads map[string]clusterReadWa
 				stage.held = kind != "" && runtime.faults.holds(kind)
 			}
 			if !stage.held {
-				entryBytes := len(pending.data) + 32
-				if batchCount == len(batch) || (batchCount != 0 && batchBytes+entryBytes > clusterProposalBatchBytes) {
-					proposed = runtime.submitCommitBatch(batch[:batchCount], proposals) || proposed
-					clear(batch[:batchCount])
-					batchCount, batchBytes = 0, 0
+				if runtime.machine != nil && slices.Contains(runtime.machine.ActiveFeatures(), membership.ProposalRecoveryFeature) && pending.command.Proposal == nil {
+					floor := runtime.safeRetirementFloor(pending.readProofIndex, *proposals, batch[:batchCount]...)
+					count, total, retired := runtime.machine.ProposalAdmission(runtime.config.NodeID, floor)
+					if pending.readProofIndex <= retired || count+len(*proposals)+batchCount >= membership.MaxProposalReceiptsPerOrigin || total+len(*proposals)+batchCount >= membership.MaxProposalReceipts {
+						if runtime.machine.LastAppliedIndex() > pending.readProofIndex {
+							runtime.refreshPendingProposalProof(pending, reads)
+						}
+						break
+					}
+					stage.err = runtime.prepareProposal(pending, floor)
 				}
-				batch[batchCount] = pending
-				batchCount++
-				batchBytes += entryBytes
+				if stage.err == nil {
+					entryBytes := len(pending.data) + 32
+					if batchCount == len(batch) || (batchCount != 0 && batchBytes+entryBytes > clusterProposalBatchBytes) {
+						proposed = runtime.submitCommitBatch(batch[:batchCount], proposals) || proposed
+						clear(batch[:batchCount])
+						batchCount, batchBytes = 0, 0
+					}
+					batch[batchCount] = pending
+					batchCount++
+					batchBytes += entryBytes
+				}
 			}
 		}
 		if stage.err != nil {
@@ -2439,6 +2499,8 @@ type clusterPendingCommit struct {
 	contextKey     string
 	command        membership.CommandDTO
 	data           []byte
+	requestID      string
+	readProofIndex uint64
 	staged         chan clusterCommitStage
 	result         chan clusterApplyResponse
 	// Driver-owned; Wait only receives the immutable stage through staged.
@@ -2553,6 +2615,10 @@ func (runtime *clusterRuntime) beginCommit(ctx context.Context, command membersh
 		runtime.logCommitFailure("storage_failed", ctx, command, membership.ErrQuorumUnavailable)
 		return nil, membership.ErrQuorumUnavailable
 	}
+	requestID := ""
+	if command.Proposal != nil && command.Proposal.RequestID != "" {
+		requestID = command.Proposal.RequestID
+	}
 	data, err := encodeMembershipCommand(command)
 	if err != nil {
 		return nil, err
@@ -2565,7 +2631,7 @@ func (runtime *clusterRuntime) beginCommit(ctx context.Context, command membersh
 	binary.BigEndian.PutUint64(raw[:], runtime.sequence.Add(1))
 	pending := &clusterPendingCommit{
 		runtime: runtime, context: ctx, readContext: readContext, readCancel: readCancel,
-		contextKey: string(raw[:]), command: command, data: data,
+		contextKey: string(raw[:]), command: command, data: data, requestID: requestID,
 		staged: make(chan clusterCommitStage, 1), result: make(chan clusterApplyResponse, 1),
 		backlogEntry: backlogEntry,
 	}

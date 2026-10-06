@@ -23,29 +23,32 @@ type operationState struct {
 
 // StateMachine applies committed replicated state in strictly increasing order.
 type StateMachine struct {
-	mu                  sync.RWMutex
-	lastAppliedIndex    uint64
-	members             map[uint64]MemberIdentityDTO
-	operations          map[string]operationState
-	idempotency         map[string]string
-	ownerships          map[sessionKey]OwnershipStateDTO
-	subscriptions       map[subscriptionKey]SubscriptionStateDTO
-	delivery            map[sessionKey]DeliverySessionStateDTO
-	deliveryEntries     int
-	deliveryBytes       int
-	retained            map[retainedKey]RetainedStateDTO
-	retainedBytes       int
-	offline             map[sessionKey]OfflineSessionStateDTO
-	offlineMessages     int
-	offlineBytes        int
-	tenantUsage         map[string]tenantStorageUsage
-	tenantQuota         *TenantQuotaProfileDTO
-	tenantQuotaByTenant map[string]TenantStorageQuotaDTO
-	activeFeatures      []string
-	nodeDrains          map[uint64]NodeDrainStateDTO
-	connectionRebalance *ConnectionRebalanceStateDTO
-	sessionMetadata     map[sessionKey]SessionMetadataStateDTO
-	sessionWillBytes    int
+	mu                   sync.RWMutex
+	lastAppliedIndex     uint64
+	members              map[uint64]MemberIdentityDTO
+	operations           map[string]operationState
+	idempotency          map[string]string
+	ownerships           map[sessionKey]OwnershipStateDTO
+	subscriptions        map[subscriptionKey]SubscriptionStateDTO
+	delivery             map[sessionKey]DeliverySessionStateDTO
+	deliveryEntries      int
+	deliveryBytes        int
+	retained             map[retainedKey]RetainedStateDTO
+	retainedBytes        int
+	offline              map[sessionKey]OfflineSessionStateDTO
+	offlineMessages      int
+	offlineBytes         int
+	tenantUsage          map[string]tenantStorageUsage
+	tenantQuota          *TenantQuotaProfileDTO
+	tenantQuotaByTenant  map[string]TenantStorageQuotaDTO
+	activeFeatures       []string
+	nodeDrains           map[uint64]NodeDrainStateDTO
+	connectionRebalance  *ConnectionRebalanceStateDTO
+	sessionMetadata      map[sessionKey]SessionMetadataStateDTO
+	sessionWillBytes     int
+	proposalOrigins      map[uint64]*proposalOriginState
+	proposalReceiptCount int
+	proposalResultBytes  int
 }
 
 // NewStateMachine constructs an empty deterministic replicated-state machine.
@@ -118,10 +121,17 @@ func (machine *StateMachine) Apply(index uint64, command CommandDTO) (ApplyResul
 	if index == 0 || index <= machine.lastAppliedIndex {
 		return ApplyResultDTO{}, ErrInvalidIndex
 	}
-	if validateCommand(command) != nil {
+	if validateCommand(command) != nil || (command.Proposal != nil && command.Proposal.ProofIndex >= index) {
 		return ApplyResultDTO{}, ErrInvalidCommand
 	}
 	machine.lastAppliedIndex = index
+	if command.Proposal != nil {
+		return machine.applyProposal(index, command)
+	}
+	return machine.applyCommandLocked(index, command)
+}
+
+func (machine *StateMachine) applyCommandLocked(index uint64, command CommandDTO) (ApplyResultDTO, error) {
 	result := ApplyResultDTO{Index: index, Outcome: ApplyOutcomeApplied}
 	switch {
 	case command.Membership != nil:

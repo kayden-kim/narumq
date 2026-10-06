@@ -235,7 +235,10 @@ func executeBP06(ctx context.Context, profile Profile, target string, nodes, man
 			return err
 		}
 		if target == "narumq" {
-			if err := activateSessionMetadata(readyCtx, management[0], creds.ManagementToken); err != nil {
+			if err := activateClusterFeature(readyCtx, management[0], creds.ManagementToken, "session-metadata"); err != nil {
+				return err
+			}
+			if err := activateClusterFeature(readyCtx, management[0], creds.ManagementToken, "proposal-recovery"); err != nil {
 				return err
 			}
 		}
@@ -409,9 +412,9 @@ func writeAtomicJSON(path string, value any) error {
 	}
 }
 
-func activateSessionMetadata(ctx context.Context, address, token string) error {
+func activateClusterFeature(ctx context.Context, address, token, feature string) error {
 	client := &http.Client{Timeout: 5 * time.Second}
-	request, err := http.NewRequestWithContext(ctx, http.MethodPost, "http://"+address+"/api/v1/cluster/features/session-metadata", nil)
+	request, err := http.NewRequestWithContext(ctx, http.MethodPost, "http://"+address+"/api/v1/cluster/features/"+feature, nil)
 	if err != nil {
 		return err
 	}
@@ -426,7 +429,7 @@ func activateSessionMetadata(ctx context.Context, address, token string) error {
 		return readErr
 	}
 	if response.StatusCode != http.StatusOK {
-		return fmt.Errorf("activate session metadata: HTTP %d", response.StatusCode)
+		return fmt.Errorf("activate %s: HTTP %d", feature, response.StatusCode)
 	}
 	request, err = http.NewRequestWithContext(ctx, http.MethodGet, "http://"+address+"/api/v1/cluster/features", nil)
 	if err != nil {
@@ -449,12 +452,12 @@ func activateSessionMetadata(ctx context.Context, address, token string) error {
 	if response.StatusCode != http.StatusOK {
 		return fmt.Errorf("read cluster features: HTTP %d", response.StatusCode)
 	}
-	for _, feature := range body.Data.ActiveFeatures {
-		if feature == "session-metadata" {
+	for _, active := range body.Data.ActiveFeatures {
+		if active == feature {
 			return nil
 		}
 	}
-	return errors.New("session-metadata was not active after activation")
+	return fmt.Errorf("%s was not active after activation", feature)
 }
 
 func waitForContext(ctx context.Context, duration time.Duration) error {

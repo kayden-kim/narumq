@@ -127,6 +127,7 @@ func (machine *StateMachine) Restore(snapshot SnapshotDTO) error {
 		connectionRebalance = &state
 	}
 	tenantQuota, tenantQuotaByTenant := installTenantQuotaProfile(copyOfSnapshot.TenantQuotaProfile)
+	proposalOrigins, proposalCount, proposalBytes := restoreProposalOrigins(copyOfSnapshot.ProposalOrigins)
 	machine.lastAppliedIndex = copyOfSnapshot.LastIncludedIndex
 	machine.members = members
 	machine.operations = operations
@@ -146,6 +147,9 @@ func (machine *StateMachine) Restore(snapshot SnapshotDTO) error {
 	machine.tenantUsage = tenantUsage
 	machine.tenantQuota = tenantQuota
 	machine.tenantQuotaByTenant = tenantQuotaByTenant
+	machine.proposalOrigins = proposalOrigins
+	machine.proposalReceiptCount = proposalCount
+	machine.proposalResultBytes = proposalBytes
 	machine.connectionRebalance = connectionRebalance
 	machine.activeFeatures = slices.Clone(copyOfSnapshot.ActiveFeatures)
 	return nil
@@ -166,6 +170,7 @@ func (machine *StateMachine) snapshotLocked(lastIncludedIndex uint64) SnapshotDT
 		ConnectionRebalance: cloneConnectionRebalanceStatePointer(machine.connectionRebalance),
 		ActiveFeatures:      slices.Clone(machine.activeFeatures),
 		TenantQuotaProfile:  cloneTenantQuotaProfile(machine.tenantQuota),
+		ProposalOrigins:     machine.proposalSnapshotLocked(),
 	}
 	for _, member := range machine.members {
 		snapshot.Members = append(snapshot.Members, cloneMember(member))
@@ -233,7 +238,7 @@ func (machine *StateMachine) snapshotLocked(lastIncludedIndex uint64) SnapshotDT
 	for _, record := range snapshot.DeliverySessions {
 		deliveryEntries += len(record.Messages) + len(record.Inbound)
 	}
-	snapshot.ObjectCount = uint64(len(snapshot.Members) + len(snapshot.Ownerships) + len(snapshot.Subscriptions) + len(snapshot.DeliverySessions) + deliveryEntries + len(snapshot.MembershipHistory) + len(snapshot.Retained) + len(snapshot.OfflineSessions) + offlineMessagesCount + len(snapshot.NodeDrains) + len(snapshot.ActiveFeatures) + len(snapshot.SessionMetadata) + tenantQuotaObjectCount(snapshot.TenantQuotaProfile))
+	snapshot.ObjectCount = uint64(len(snapshot.Members) + len(snapshot.Ownerships) + len(snapshot.Subscriptions) + len(snapshot.DeliverySessions) + deliveryEntries + len(snapshot.MembershipHistory) + len(snapshot.Retained) + len(snapshot.OfflineSessions) + offlineMessagesCount + len(snapshot.NodeDrains) + len(snapshot.ActiveFeatures) + len(snapshot.SessionMetadata) + tenantQuotaObjectCount(snapshot.TenantQuotaProfile) + proposalObjectCount(snapshot.ProposalOrigins))
 	if snapshot.ConnectionRebalance != nil {
 		snapshot.ObjectCount++
 	}
@@ -371,6 +376,7 @@ func cloneSnapshot(snapshot SnapshotDTO) SnapshotDTO {
 		copyOfSnapshot.SessionMetadata[index] = cloneSessionMetadataStateDTO(state)
 	}
 	copyOfSnapshot.TenantQuotaProfile = cloneTenantQuotaProfile(snapshot.TenantQuotaProfile)
+	copyOfSnapshot.ProposalOrigins = cloneProposalOrigins(snapshot.ProposalOrigins)
 	return copyOfSnapshot
 }
 
@@ -379,5 +385,5 @@ func sameSnapshotState(left, right SnapshotDTO) bool {
 		reflect.DeepEqual(left.Members, right.Members) && reflect.DeepEqual(left.Ownerships, right.Ownerships) && reflect.DeepEqual(left.Subscriptions, right.Subscriptions) &&
 		reflect.DeepEqual(left.DeliverySessions, right.DeliverySessions) && reflect.DeepEqual(left.MembershipHistory, right.MembershipHistory) &&
 		reflect.DeepEqual(left.Retained, right.Retained) && reflect.DeepEqual(left.OfflineSessions, right.OfflineSessions) && reflect.DeepEqual(left.NodeDrains, right.NodeDrains) &&
-		reflect.DeepEqual(left.SessionMetadata, right.SessionMetadata) && reflect.DeepEqual(left.ConnectionRebalance, right.ConnectionRebalance) && sameTenantQuotaProfile(left.TenantQuotaProfile, right.TenantQuotaProfile) && slices.Equal(left.ActiveFeatures, right.ActiveFeatures)
+		reflect.DeepEqual(left.SessionMetadata, right.SessionMetadata) && reflect.DeepEqual(left.ConnectionRebalance, right.ConnectionRebalance) && reflect.DeepEqual(left.ProposalOrigins, right.ProposalOrigins) && sameTenantQuotaProfile(left.TenantQuotaProfile, right.TenantQuotaProfile) && slices.Equal(left.ActiveFeatures, right.ActiveFeatures)
 }

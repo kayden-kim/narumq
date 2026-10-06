@@ -41,6 +41,9 @@ func validateCommand(command CommandDTO) error {
 	if command.SchemaMajor != SchemaMajor || command.SchemaMinor != SchemaMinor || !validUUID(command.OperationID) {
 		return ErrInvalidCommand
 	}
+	if command.Proposal != nil && !validProposalIdentity(command.Proposal) {
+		return ErrInvalidCommand
+	}
 	payloadCount := 0
 	if command.Membership != nil {
 		payloadCount++
@@ -366,11 +369,14 @@ func validSnapshot(snapshot SnapshotDTO) error {
 	for _, session := range snapshot.DeliverySessions {
 		deliveryObjects += len(session.Messages) + len(session.Inbound)
 	}
-	count := len(snapshot.Members) + len(snapshot.Ownerships) + len(snapshot.Subscriptions) + deliveryObjects + len(snapshot.MembershipHistory) + len(snapshot.Retained) + len(snapshot.OfflineSessions) + offlineMessagesCount + len(snapshot.NodeDrains) + len(snapshot.ActiveFeatures) + len(snapshot.SessionMetadata) + tenantQuotaObjectCount(snapshot.TenantQuotaProfile)
+	count := len(snapshot.Members) + len(snapshot.Ownerships) + len(snapshot.Subscriptions) + deliveryObjects + len(snapshot.MembershipHistory) + len(snapshot.Retained) + len(snapshot.OfflineSessions) + offlineMessagesCount + len(snapshot.NodeDrains) + len(snapshot.ActiveFeatures) + len(snapshot.SessionMetadata) + tenantQuotaObjectCount(snapshot.TenantQuotaProfile) + proposalObjectCount(snapshot.ProposalOrigins)
 	if snapshot.ConnectionRebalance != nil {
 		count++
 	}
 	if count > maxSnapshotEntries || snapshot.ObjectCount != uint64(count) || (count > 0 && snapshot.LastIncludedIndex == 0) || len(snapshot.Retained) > MaxRetainedMessages {
+		return ErrInvalidSnapshot
+	}
+	if validateProposalSnapshot(snapshot) != nil {
 		return ErrInvalidSnapshot
 	}
 	nodeDrainMembers := make(map[uint64]MemberPhase, len(snapshot.Members))

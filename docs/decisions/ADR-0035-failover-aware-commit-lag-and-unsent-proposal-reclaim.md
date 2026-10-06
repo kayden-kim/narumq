@@ -9,7 +9,7 @@
 | 관련 스펙 | [Cluster §4.2](../specs/cluster-session-and-delivery.md#42-qos-12-durable-delivery), [§4.5](../specs/cluster-session-and-delivery.md#45-publish-backpressure-admission), [§11.28](../specs/cluster-session-and-delivery.md#1128-publish-backpressure-수용-매핑) |
 | 관련 아키텍처 | [Cluster architecture](../architectures/cluster-architecture.md), [Project structure](../architectures/project-structure.md) |
 | 대체 범위 | [ADR-0030](ADR-0030-publish-backpressure-admission.md) §1 5항의 backlog 나이 정의와 `narumq_cluster_commit_backlog_oldest_seconds` 정의만 대체한다. |
-| 대체한 새 결정 | 없음 |
+| 대체한 새 결정 | [ADR-0036](ADR-0036-replicated-proposal-receipts-and-safe-reproposal.md)이 `proposal-recovery` 활성화 뒤 이미 전송한 application proposal의 재제안 금지만 대체한다. |
 
 ## 1. 결정
 

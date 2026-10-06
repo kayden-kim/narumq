@@ -70,6 +70,15 @@ Snapshot의 `lastIncludedIndex`는 Raft가 적용한 마지막 index와 같아�
 
 Deterministic serialization은 같은 값에서 같은 bytes를 만드는 규칙이다. 이를 반드시 사용한다. Proto3 기본값 scalar는 생략하고 field 번호 오름차순으로 encode한다. `members`는 `member_id`, member의 `features`와 `active_features`는 사전순으로 정렬한다. Feature 중복은 거절한다. `ownerships`·`delivery_sessions`는 UTF-8 bytewise `(tenant_id, client_id)`, `subscriptions`는 `(tenant_id, client_id, filter)`, `membership_history`는 `operation_id`로 정렬한다. Session 안의 messages는 sequence 오름차순, inbound는 양수 packet ID 오름차순이다. Canonical key 중복은 거절한다. Consumer는 parse·duplicate/unknown 검증·deterministic 재직렬화 뒤 bytes가 같은지 확인한다. 삭제한 field 번호와 enum 값은 영구 reserved로 남긴다.
 
+### Proposal recovery 형식
+
+`proposal-recovery` 활성화 뒤 `CommandEnvelope.proposal`(field 24)을 기록할 수 있다. Field 23은 기존 unknown-field 거절 vector의 의미를 유지하도록 reserved로 남긴다. Proposal은 origin NodeID, 최초 fresh proof index, retirement floor, 별도 canonical UUID `request_id`와 proposal field를 제외한 canonical command bytes의 SHA-256을 담는다. 활성화 전에는 이 field를 생략한다. 여러 전이가 공유하는 논리 OperationID와 재시도의 RequestID는 [ADR-0037](../decisions/ADR-0037-proposal-request-identity.md)에 따라 분리한다.
+
+`ReplicatedStateSnapshot.proposal_origins`(field 15)는 NodeID 순서의 origin 상태다. Field 14는 reserved로 남긴다. Origin은 단조 증가 retirement floor와 RequestID 순서의 receipt를 담는다. `rejected_through`·`rejected_index`는 count 한도로 거절한 proof 경계와 그 판정의 적용 위치다. 둘 다 0이거나, 양수 `rejected_through < rejected_index <= last_included_index`여야 한다. 이미 저장한 receipt는 이 fence보다 먼저 조회한다. Receipt는 RequestID, 최초 proof index, command digest와 최초 apply 결과를 보존한다. Result의 index는 최초 적용 위치이며 snapshot 경계 이하이어야 한다. 중복 적용 표시는 transient 결과이며 receipt에 저장하지 않는다. Membership 결과의 MemberID·Phase는 원래 operation view의 값이다. Action으로 추정하지 않는다.
+
+Origin과 receipt는 각각 `objectCount`에 1개로 센다. Result 안의 값은 receipt의 일부이며 별도 object로 세지 않는다. Node별 receipt 최대 1024개, 전체 최대 4096개, 결과의 논리적 저장량 전체 최대 32 MiB다. `ProposalResultStorageBytes`가 고정 record 공간, 문자열, slice element와 payload 길이를 합산한다. 아직 쓰지 않은 slot마다 512 byte를 conflict 저장 공간으로 남긴다. Wire result bytes도 32 MiB를 넘을 수 없다. Payload를 포함한 결과는 snapshot의 64 MiB 한도에도 포함한다. Receipt의 삭제·stale frame 차단·재제안은 [ADR-0036](../decisions/ADR-0036-replicated-proposal-receipts-and-safe-reproposal.md)과 [ADR-0038](../decisions/ADR-0038-proposal-receipt-capacity-fences.md)을 따른다.
+
+
 ## 2. 오류
 
 | 오류 코드 | 조건 | 재시도 가능 | 상태 변경 |

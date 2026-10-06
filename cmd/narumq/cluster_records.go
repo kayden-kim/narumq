@@ -19,6 +19,7 @@ func encodeMembershipCommand(command membership.CommandDTO) ([]byte, error) {
 		OperationId: command.OperationID,
 	}
 	payloadCount := 0
+	// Proposal identity is populated after all payload fields are set so its canonical digest matches.
 	if command.Membership != nil {
 		payloadCount++
 		member, err := memberIdentityToRecord(command.Membership.Member)
@@ -194,6 +195,14 @@ func encodeMembershipCommand(command membership.CommandDTO) ([]byte, error) {
 	if payloadCount != 1 {
 		return nil, errors.New("application command must contain exactly one payload")
 	}
+	if command.Proposal != nil {
+		wire.Proposal = proposalIdentityToRecord(command.Proposal)
+		digest, err := computeProposalDigest(wire)
+		if err != nil {
+			return nil, err
+		}
+		wire.Proposal.CommandDigest = digest
+	}
 	return records.MarshalCommand(wire)
 }
 
@@ -205,6 +214,7 @@ func decodeMembershipCommand(data []byte) (membership.CommandDTO, error) {
 	command := membership.CommandDTO{
 		SchemaMajor: wire.GetSchemaMajor(), SchemaMinor: wire.GetSchemaMinor(), OperationID: wire.GetOperationId(),
 	}
+	command.Proposal = proposalIdentityFromRecord(wire.GetProposal())
 	switch payload := wire.GetPayload().(type) {
 	case *records.CommandEnvelope_Membership:
 		record := payload.Membership
@@ -489,6 +499,12 @@ func encodeMembershipSnapshot(snapshot membership.SnapshotDTO) ([]byte, error) {
 	state.ActiveFeatures = slices.Clone(snapshot.ActiveFeatures)
 	quotaProfileObjectCount := membershipQuotaProfileObjectCount(snapshot.TenantQuotaProfile)
 	objectCount := uint64(len(snapshot.Members) + len(snapshot.Ownerships) + len(snapshot.Subscriptions) + len(snapshot.DeliverySessions) + deliveryEntriesCount + len(snapshot.MembershipHistory) + len(snapshot.Retained) + len(snapshot.OfflineSessions) + offlineMessagesCount + len(snapshot.NodeDrains) + len(snapshot.ActiveFeatures) + len(snapshot.SessionMetadata) + quotaProfileObjectCount + rebalanceStateObjectCount(snapshot.ConnectionRebalance))
+	origins, conversionErr := proposalOriginsToRecords(snapshot.ProposalOrigins)
+	if conversionErr != nil {
+		return nil, conversionErr
+	}
+	state.ProposalOrigins = origins
+	objectCount += uint64(proposalSnapshotObjectCount(snapshot.ProposalOrigins))
 	if snapshot.ObjectCount != objectCount {
 		return nil, errors.New("application snapshot object count does not match its contents")
 	}
@@ -623,6 +639,11 @@ func decodeMembershipSnapshot(data []byte) (membership.SnapshotDTO, error) {
 		snapshot.SessionMetadata = append(snapshot.SessionMetadata, value)
 	}
 	snapshot.TenantQuotaProfile = tenantQuotaProfileFromRecord(state.GetTenantQuotaProfile())
+	origins, conversionErr := proposalOriginsFromRecords(state.GetProposalOrigins())
+	if conversionErr != nil {
+		return membership.SnapshotDTO{}, conversionErr
+	}
+	snapshot.ProposalOrigins = origins
 	return snapshot, nil
 }
 func tenantQuotaProfileToRecord(profile *membership.TenantQuotaProfileDTO) *records.TenantQuotaProfile {

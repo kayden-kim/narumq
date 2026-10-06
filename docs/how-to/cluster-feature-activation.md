@@ -33,6 +33,8 @@
 
 실행 위치는 신뢰된 Windows 관리 host다. 아래 입력은 실제 승인 배포 값으로 설정한다. `$ManagementUrl`은 현재 leader 관리 주소다. 원격 연결은 승인된 TLS 보호 경로를 사용한다. `$Feature`는 token 한 개다. `$EvidenceDir`와 `$CurlConfig`는 절대 경로다. 비밀 파일 내용은 출력하지 않는다. Node별 URL은 승인 배포 목록에서 얻는다.
 
+안전한 proposal 복구를 켤 때는 `$Feature = 'proposal-recovery'`를 사용한다. 아래 승인·backup·member 확인 절차는 그대로 따른다. 활성화 뒤에는 새 receipt와 fence를 읽지 못하는 build로 rollback하지 않는다. BP-06 runner의 자동 활성화는 폐기 가능한 시험 cluster 전용이며 이 운영 절차를 대신하지 않는다.
+
 ```powershell
 $ManagementUrl = 'https://leader.example.invalid'
 $Feature = 'session-metadata'

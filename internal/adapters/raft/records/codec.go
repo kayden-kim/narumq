@@ -122,6 +122,9 @@ func MarshalSnapshot(state *ReplicatedStateSnapshot, lastIncludedIndex uint64) (
 	if err := validateSnapshotMembershipIndexes(ordered, lastIncludedIndex); err != nil {
 		return nil, err
 	}
+	if err := validateProposalOrigins(ordered, lastIncludedIndex); err != nil {
+		return nil, err
+	}
 	stateBytes, err := deterministic.Marshal(ordered)
 	if err != nil {
 		return nil, fmt.Errorf("marshal snapshot state: %w", err)
@@ -132,7 +135,7 @@ func MarshalSnapshot(state *ReplicatedStateSnapshot, lastIncludedIndex uint64) (
 			offlineMessagesCount += len(session.Messages)
 		}
 	}
-	count := uint64(len(ordered.Members) + len(ordered.Ownerships) + len(ordered.Subscriptions) + len(ordered.DeliverySessions) + deliveryObjectCount(ordered.DeliverySessions) + len(ordered.MembershipHistory) + len(ordered.Retained) + len(ordered.OfflineSessions) + offlineMessagesCount + len(ordered.NodeDrains) + len(ordered.ActiveFeatures) + tenantQuotaProfileObjectCount(ordered.TenantQuotaProfile) + len(ordered.SessionMetadata) + connectionRebalanceObjectCount(ordered.ConnectionRebalance))
+	count := uint64(len(ordered.Members) + len(ordered.Ownerships) + len(ordered.Subscriptions) + len(ordered.DeliverySessions) + deliveryObjectCount(ordered.DeliverySessions) + len(ordered.MembershipHistory) + len(ordered.Retained) + len(ordered.OfflineSessions) + offlineMessagesCount + len(ordered.NodeDrains) + len(ordered.ActiveFeatures) + tenantQuotaProfileObjectCount(ordered.TenantQuotaProfile) + len(ordered.SessionMetadata) + connectionRebalanceObjectCount(ordered.ConnectionRebalance) + proposalOriginsObjectCount(ordered.ProposalOrigins))
 	digest := sha256.Sum256(stateBytes)
 	envelope := &SnapshotEnvelope{SchemaMajor: 1, LastIncludedIndex: lastIncludedIndex, ObjectCount: count, Sha256: digest[:], State: ordered}
 	encoded, err := deterministic.Marshal(envelope)
@@ -172,13 +175,16 @@ func UnmarshalSnapshot(encoded []byte) (*SnapshotEnvelope, error) {
 	if err := validateSnapshotMembershipIndexes(envelope.State, envelope.LastIncludedIndex); err != nil {
 		return nil, err
 	}
+	if err := validateProposalOrigins(envelope.State, envelope.LastIncludedIndex); err != nil {
+		return nil, err
+	}
 	offlineMessagesCount := 0
 	for _, session := range envelope.State.OfflineSessions {
 		if session != nil {
 			offlineMessagesCount += len(session.Messages)
 		}
 	}
-	count := uint64(len(envelope.State.Members) + len(envelope.State.Ownerships) + len(envelope.State.Subscriptions) + len(envelope.State.DeliverySessions) + deliveryObjectCount(envelope.State.DeliverySessions) + len(envelope.State.MembershipHistory) + len(envelope.State.Retained) + len(envelope.State.OfflineSessions) + offlineMessagesCount + len(envelope.State.NodeDrains) + len(envelope.State.ActiveFeatures) + tenantQuotaProfileObjectCount(envelope.State.TenantQuotaProfile) + len(envelope.State.SessionMetadata) + connectionRebalanceObjectCount(envelope.State.ConnectionRebalance))
+	count := uint64(len(envelope.State.Members) + len(envelope.State.Ownerships) + len(envelope.State.Subscriptions) + len(envelope.State.DeliverySessions) + deliveryObjectCount(envelope.State.DeliverySessions) + len(envelope.State.MembershipHistory) + len(envelope.State.Retained) + len(envelope.State.OfflineSessions) + offlineMessagesCount + len(envelope.State.NodeDrains) + len(envelope.State.ActiveFeatures) + tenantQuotaProfileObjectCount(envelope.State.TenantQuotaProfile) + len(envelope.State.SessionMetadata) + connectionRebalanceObjectCount(envelope.State.ConnectionRebalance) + proposalOriginsObjectCount(envelope.State.ProposalOrigins))
 	if envelope.ObjectCount != count {
 		return nil, errors.New("snapshot object count mismatch")
 	}
@@ -206,6 +212,9 @@ func validateCommand(c *CommandEnvelope) error {
 	}
 	if !validUUID(c.OperationId) {
 		return errors.New("command operation_id must be a canonical lowercase UUID")
+	}
+	if err := validateProposalIdentity(c); err != nil {
+		return err
 	}
 	switch payload := c.Payload.(type) {
 	case *CommandEnvelope_Membership:
@@ -1387,6 +1396,7 @@ func sortSnapshot(s *ReplicatedStateSnapshot) {
 		}
 		return compare2(s.SessionMetadata[i].TenantId, s.SessionMetadata[i].ClientId, s.SessionMetadata[j].TenantId, s.SessionMetadata[j].ClientId) < 0
 	})
+	sortProposalOrigins(s.ProposalOrigins)
 }
 func rejectUnknown(m protoreflect.Message) error {
 	if len(m.GetUnknown()) != 0 {

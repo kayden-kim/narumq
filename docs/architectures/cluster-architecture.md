@@ -213,9 +213,24 @@ Driver는 Ready 처리 전에 leadership을 관찰한다. Proposal batch 제출 
 
 Backlog의 수명은 결과를 읽는 caller가 아니라 commit 완료 경계에 맞춘다. `submitCommitBatch`는 entry 참조를 proposal waiter에 넘긴다. `resolveAppliedProposals`는 projection 완료 뒤 entry를 제거하고 결과를 buffered channel에 전달한다. TCP phase worker나 SEND batch가 앞선 요청을 기다리더라도 이미 완료된 요청은 새 PUBLISH를 거절하지 않는다. Caller의 timeout과 늦은 결과 보관은 기존 경계를 유지한다.
 
-Driver에 전달한 entry의 완료는 driver가 소유한다. Caller가 먼저 timeout으로 끝나도 수락된 proposal은 뒤늦게 apply될 수 있다. 이 경우 entry를 유지하며 늦은 projection 완료 뒤 제거한다. 이전 generation의 entry는 보관 여부와 무관하게 ADR-0035의 나이 계산에서 제외한다. Test-only held command도 제출 때 같은 entry를 waiter로 전달한다.
+Driver에 전달한 entry의 완료는 driver가 소유한다. Caller가 먼저 timeout으로 끝나도 수락된 proposal은 뒤늦게 apply될 수 있다. `proposal-recovery` 비활성 경로는 entry를 늦은 projection 완료까지 유지한다. 활성 경로는 driver가 만료된 waiter를 오류로 확정하고 entry를 제거한다. 이 요청은 이후 재제안하지 않는다. 늦은 original frame은 복제 receipt와 fence로 판정하며 원래 caller에게 성공 ACK를 보내지 않는다. 이전 generation의 entry는 ADR-0035의 나이 계산에서 제외한다. Test-only held command도 제출 때 같은 entry를 waiter로 전달한다.
 
 Capacity 검사는 저장을 예약하지 않는다. 따라서 동시에 수용한 command가 apply 때 경합할 수 있다. 기존 apply는 session 포화와 RELEASE 시점 포화를 `Saturated`로 처리하며 runtime이 그 수를 집계한다. Local management summary는 기존 storage pressure에 disk admission 상태를 OR로 더한다. 다른 node의 disk 압력은 이 값에 포함하지 않는다. 실행 증거는 [Cluster §11.28](../specs/cluster-session-and-delivery.md#1128-publish-backpressure-수용-매핑)에서 확인한다.
+
+### 안전한 proposal 복구의 현재 구현
+
+이 경로는 [ADR-0036](../decisions/ADR-0036-replicated-proposal-receipts-and-safe-reproposal.md)·[ADR-0037](../decisions/ADR-0037-proposal-request-identity.md)·[ADR-0038](../decisions/ADR-0038-proposal-receipt-capacity-fences.md)을 구현한다. 예를 들어 QoS 1 PUBLISH를 이전 leader가 받은 뒤 손실되어도, 살아 있는 ingress는 원래 5초 deadline 안에서 같은 요청을 새 leader에 다시 제안할 수 있다. 같은 요청이 두 번 commit되면 두 번째 적용은 처음 결과만 반환한다.
+
+| 파일·심볼 | 현재 책임 |
+| --- | --- |
+| `cluster_runtime.go` `resolveCommitReads` | 최초 fresh proof를 보관한다. Receipt 한도 전에 FIFO head를 기다리며 원래 deadline을 유지한다. 오래된 proof는 새 nonce로 갱신한다. 한 driver turn에서 이미 staging한 command도 retirement floor 계산에 포함한다. |
+| `cluster_proposal_recovery.go` `prepareProposal` | 이미 소유한 canonical bytes에서 payload를 복원한다. 새 RequestID, origin NodeID, 최초 proof와 SHA-256을 붙인다. Caller가 이후 slice를 바꿔도 재제안 bytes는 바뀌지 않는다. |
+| 같은 파일의 `recoverProposals` | Leader·term·role generation이 바뀌면 별도의 새 ReadIndex를 요청한다. Local apply와 projection 뒤 아직 살아 있는 요청을 FIFO로 제출한다. 이미 수락한 bytes를 같은 generation에서 반복하지 않는다. Backpressure로 수락하지 못한 batch만 같은 proof 아래 계속 기다린다. 복원된 receipt로 완료된 요청과 만료된 caller도 driver가 정리한다. |
+| `internal/application/membership/proposal_receipts.go` | Origin과 RequestID별 최초 결과를 보관한다. 같은 digest는 state mutation 없이 처음 결과를 반환한다. 다른 digest, retired proof와 capacity fence는 conflict다. 가변 길이 결과를 mutation 전에 예약하며 bounded count·byte 예산을 지킨다. |
+| `internal/adapters/raft/records/proposal_codec.go`, `cluster_records_proposal.go` | Adapter는 canonical command digest와 wire 제약을 검사한다. Composition root는 protobuf와 application DTO를 변환한다. Application은 protobuf·SHA-256 구현을 import하지 않는다. |
+| `cluster_runtime.go` `applyBatch`·`resolveAppliedProposals` | `Replayed` 결과의 ownership close·Will·notification을 반복하지 않는다. Projection 완료 뒤 원래 buffered result channel에 결과를 보낸다. 만료된 caller의 ACK는 허용하지 않는다. |
+
+Receipt와 두 fence는 application state다. Snapshot, Raft replay와 backup restore가 보존한다. ReadIndex nonce, 재제안 generation과 waiter는 driver-local 값이다. 재시작한 node는 이전 process의 caller를 되살리지 않는다. ConfChangeV2는 이 application 재제안 경로에 넣지 않는다. 새 형식과 한도의 기준은 [Replicated-state contract](../contracts/replicated-state-v1.md#proposal-recovery-형식)이며 실행 증거는 [Cluster §11.33](../specs/cluster-session-and-delivery.md#1133-안전한-proposal-복구-수용-매핑)에 연결한다.
 
 ## Session ownership 경로
 

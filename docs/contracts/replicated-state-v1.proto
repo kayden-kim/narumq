@@ -294,6 +294,8 @@ message CommandEnvelope {
   }
   reserved 13;
   reserved "checkpoint";
+  reserved 23;
+  ProposalIdentity proposal = 24;
 
 }
 
@@ -527,6 +529,8 @@ message ReplicatedStateSnapshot {
   repeated string active_features = 11;
   repeated SessionMetadataState session_metadata = 12;
   ConnectionRebalanceState connection_rebalance = 13;
+  reserved 14;
+  repeated ProposalOriginState proposal_origins = 15;
 }
 message SnapshotEnvelope {
   uint32 schema_major = 1;
@@ -535,4 +539,84 @@ message SnapshotEnvelope {
   uint64 object_count = 4;
   bytes sha256 = 5;
   ReplicatedStateSnapshot state = 6;
+}
+
+message ProposalIdentity {
+  uint64 origin_node_id = 1;
+  uint64 proof_index = 2;
+  uint64 retired_through = 3;
+  bytes command_digest = 4;
+  string request_id = 5;
+}
+
+message ProposalOriginState {
+  uint64 origin_node_id = 1;
+  uint64 retired_through = 2;
+  repeated ProposalReceipt receipts = 3;
+  uint64 rejected_through = 4;
+  uint64 rejected_index = 5;
+}
+
+message ProposalReceipt {
+  string request_id = 1;
+  uint64 proof_index = 2;
+  bytes command_digest = 3;
+  ProposalResult result = 4;
+}
+
+message ProposalResult {
+  uint64 index = 1;
+  uint32 outcome = 2;
+  string conflict = 3;
+  MembershipRecord operation = 4;
+  bool operation_replayed = 5;
+  OwnershipState ownership = 6;
+  SubscriptionState subscription = 7;
+  ProposalDeliveryResult delivery = 8;
+  ProposalOfflineClaim offline_claim = 9;
+  NodeDrainState node_drain = 10;
+  ProposalTenantQuotaRejection tenant_quota = 11;
+  ProposalSessionMetadataResult session_metadata = 12;
+  ConnectionRebalanceState connection_rebalance = 13;
+  ProposalSupersededWill superseded_will = 14;
+  uint64 operation_member_id = 15;
+  string operation_phase = 16;
+}
+
+message ProposalDeliveryResult {
+  bool found = 1;
+  bool released = 2;
+  repeated ProposalDeliveryEnqueued enqueued = 3;
+  repeated string saturated = 4;
+  repeated string skipped = 5;
+  DeliverySessionState session = 6;
+}
+
+message ProposalDeliveryEnqueued {
+  string client_id = 1;
+  uint64 sequence = 2;
+}
+
+message ProposalOfflineClaim {
+  bool found = 1;
+  repeated OfflineMessage messages = 2;
+}
+
+message ProposalTenantQuotaRejection {
+  string tenant_id = 1;
+  string dimension = 2;
+  uint64 profile_version = 3;
+}
+
+message ProposalSessionMetadataResult {
+  bool found = 1;
+  SessionWill will = 2;
+}
+
+message ProposalSupersededWill {
+  SessionWill will = 1;
+  SessionPrincipal principal = 2;
+  uint32 protocol_version = 3;
+  SessionRetention retention = 4;
+  bool planned_handoff = 5;
 }

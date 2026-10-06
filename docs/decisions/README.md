@@ -41,6 +41,9 @@
 | [ADR-0033](ADR-0033-connection-rebalance-operation.md) | Accepted | 수동 일회성 연결 rebalance를 복제하고 participant 보고로 수렴을 판정한다. |
 | [ADR-0034](ADR-0034-node-local-tenant-connection-and-traffic-limits.md) | Accepted (승인된 작업 계획; TEN-06·TEN-07 node-local scope) | 인증된 tenant의 node별 연결·session·traffic 한도와 route projection의 subscription 한도를 적용한다. |
 | [ADR-0035](ADR-0035-failover-aware-commit-lag-and-unsent-proposal-reclaim.md) | Accepted | 도달 가능한 leader와 제출 generation으로 commit lag를 계산하고 write 전 forwarded proposal만 회수한다. |
+| [ADR-0036](ADR-0036-replicated-proposal-receipts-and-safe-reproposal.md) | Accepted | 활성화된 `proposal-recovery`의 bounded 복제 receipt와 origin별 retirement floor로 이미 전송한 application command도 안전하게 재제안한다. |
+| [ADR-0037](ADR-0037-proposal-request-identity.md) | Accepted | Proposal 재제안의 RequestID를 여러 전이가 공유하는 논리 OperationID와 분리한다. |
+| [ADR-0038](ADR-0038-proposal-receipt-capacity-fences.md) | Accepted | Receipt count 거절을 origin별 fence로 보존하고 가변 길이 결과를 mutation 전에 예약한다. |
 
 `Proposed` ADR은 검토 중인 제안이다. `Accepted` ADR은 각 기록에 명시한 범위 안에서 채택된 결정이다. `design target only`는 production runtime이나 acceptance 검증을 뜻하지 않는다.
 

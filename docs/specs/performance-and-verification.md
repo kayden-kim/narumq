@@ -1174,6 +1174,50 @@ BP-06 smoke 수용은 미완료다. 최종 compare는 valid지만 suite는 0/5�
 
 최종 source·시험·결과 문서의 확인 커밋은 `90aa3b9515f9c22670b0c4a82160b2d3a80593e4` (`fix(cluster): retire commit backlog at driver completion`)이다. 최종 build·vet·focused·race·process·local gate와 최종 compare·suite는 커밋 전에 같은 source·시험으로 실행했다. 이후 source와 시험은 바꾸지 않았다. 결과 문서와 TODO 갱신 뒤 `go run ./tools/verify traceability`도 PASS였다. 커밋 뒤에는 이 해시를 연결하는 문서만 갱신했다. Manifest의 원래 baseline·`dirty=true`와 invalid suite 판정은 유지한다. CI 실행 링크는 없으며 smoke 결과를 release gate로 해석하지 않는다.
 
+#### 2026-10-06 승인된 안전한 재제안과 EMQX 고정 유지
+
+사용자는 남은 invalid 원인을 조사한 뒤 NaruMQ의 안전한 자동 재제안을 선택했다. EMQX는 5.8.8을 유지하기로 했다. [ADR-0036](../decisions/ADR-0036-replicated-proposal-receipts-and-safe-reproposal.md)·[ADR-0037](../decisions/ADR-0037-proposal-request-identity.md)·[ADR-0038](../decisions/ADR-0038-proposal-receipt-capacity-fences.md)은 이 변경의 기준이다. 이미 전송한 application command의 재제안 금지만 feature 활성화 뒤 대체했다. 원래 5초 caller deadline·durable ACK·workload·resource limit·validity·EMQX 예외 범위는 유지했다. BP-06 runner는 독립 NaruMQ 시험 cluster에서 `proposal-recovery`를 활성화한다.
+
+NaruMQ의 직접 진단 증거는 `.artifacts/benchmark/bp06-diagnostics/bp06-trace-20261006T034857.756314900Z/operation-traces.json`이다. Operation `a8ffafbd-3fbd-4104-b842-51cda777e6d3`은 `03:49:44.915`에 시작했다. 이전 leader1·term3이 `03:49:44.917`에 받았고 `03:49:44.924089`에 WAL을 sync했지만 apply 기록은 없었다. Caller deadline은 `03:49:49.915`였다. 이 증거는 이전 suite의 모든 disconnect를 operation 단위로 입증하지는 않는다.
+
+EMQX의 suite 003·004에는 `emqx_persistent_session_ds_replay_inconsistency`가 기록됐다. Suite 003의 sequence 1·2는 첫 수신 약 70초 뒤 다시 수신됐다. Node2 log는 기존 batch의 iterator end와 다시 읽은 결과의 end가 다르다고 경고했다. 고정 [EMQX 5.8.8 source](https://github.com/emqx/emqx/blob/v5.8.8/apps/emqx/src/emqx_persistent_session_ds.erl)의 `replay_batch`는 이 경고 뒤에도 원래 packet sequence로 enqueue한다. 실제 replay 문제이며 runner의 예외 window 안으로 옮기지 않았다. 관련 raw evidence는 앞 절의 `bp06-suite-20261006T133044.622538400Z-139472`에 보존했다.
+
+중간 실제 compare `bp06-20261006T160249.119795500Z-148944`는 exit 0, 두 target valid였다(wall 383.04s). Artifact root는 `.artifacts/benchmark/bp06/bp06-20261006T160249.119795500Z-148944/`다. 기존 profile SHA-256 `e8e4aa2e5df1a3e55ad901acff5a4505cdb1acf4699ff061f1a2bfc51754054d`를 유지했다. Manifest는 baseline `841a5cb5a6e8a5d41cd1cb02168252cd090081d6`, `dirty=true`, `releaseGating=false`다. 확인 커밋이나 CI 실행 링크는 아니다.
+
+| Target | Gap / exempt gap | QoS 2 duplicate / exempt duplicate | 계획 밖 disconnect·protocol error·overload | Round별 RTO |
+| --- | --- | --- | --- | --- |
+| NaruMQ | 0 / 0 | 0 / 0 | 모두 0 | 1202.419ms·591.304ms·2142.518ms |
+| EMQX 5.8.8 | 13 / 13 | 19 / 19 | 모두 0 | 128.880ms·9714.368ms·10058.713ms |
+
+NaruMQ node2의 `16:03:52.896194039Z` log에는 fresh proof 뒤 command 1개 재제안이 기록됐다. `commit_lag`·proposal quorum failure log는 없었다. 두 target의 ACK·storage·crash durability 계약은 여전히 동등하지 않으며 RTO를 직접 성능 우열로 비교하지 않는다. 이 compare 뒤 capacity credit의 오래된 proof 갱신, 한 turn의 staged proof 보호, 복원된 receipt 조회와 만료 waiter 정리를 보완했다. 따라서 이 실행은 최종 source의 5회 suite 증거가 아니다. 최종 source의 행동 시험 위치와 disk restore 증거는 [Cluster §11.33](cluster-session-and-delivery.md#1133-안전한-proposal-복구-수용-매핑)에 연결한다.
+
+최종 source로 다음 5회 suite를 한 번 실행했다. 실행 중 source와 시험을 바꾸지 않았다.
+
+```text
+go run ./tests/benchmark/bp06 suite --profile tests/benchmark/bp06/testdata/smoke.json --repetitions 5
+```
+
+Suite `bp06-suite-20261006T163812.777212000Z-92296`는 exit 0, parent `valid=true`, completed/successful repetitions `5/5`였다(wall 1691.19s). 두 target 모두 5회 valid였으며 `failureReasons=[]`였다. Artifact는 `.artifacts/benchmark/bp06/bp06-suite-20261006T163812.777212000Z-92296/`에 보존했다. Profile hash와 baseline·dirty는 위 compare와 같다. Target 순서는 `NaruMQ/EMQX`, `EMQX/NaruMQ`를 번갈아 사용했다. NaruMQ image ID는 `sha256:f93919cd8bd5ef832892d0636057e4e5d1136e217c5b496c24d299cfed92bfa1`, runner image ID는 `sha256:a67e3c890cb61ae547bf3540dde7f8f6dca0dd02c27da5412ec4b66ce013a768`이다.
+
+| 반복 | NaruMQ / EMQX | NaruMQ gap·QoS 2 duplicate·계획 밖 disconnect·protocol error·overload | NaruMQ QoS 1 duplicate | EMQX gap / exempt gap | EMQX QoS 2 duplicate / exempt duplicate |
+| --- | --- | --- | ---: | --- | --- |
+| `001` | valid / valid | 모두 0 | 0 | 1 / 1 | 40 / 40 |
+| `002` | valid / valid | 모두 0 | 0 | 5 / 5 | 50 / 50 |
+| `003` | valid / valid | 모두 0 | 0 | 5 / 5 | 60 / 60 |
+| `004` | valid / valid | 모두 0 | 1 | 5 / 5 | 41 / 41 |
+| `005` | valid / valid | 모두 0 | 0 | 5 / 5 | 60 / 60 |
+
+QoS 1 duplicate는 기존 at-least-once 기록 전용 판정을 유지했다. EMQX의 gap 총 21건과 QoS 2 duplicate 총 251건은 모두 기존 예외 범위 안이었다. 예외를 넓히지 않았고 NaruMQ에는 예외를 적용하지 않았다. EMQX는 그대로 5.8.8이다. 이번 실행의 5/5는 이전 예외 밖 sequence 1·2 재발이 없었다는 뜻이며 EMQX 구현 결함의 수정이나 무누락·무중복 보장을 뜻하지 않는다.
+
+NaruMQ 재제안 log는 4회였고 각 log의 `commands=1`이었다. `002/node3`의 `16:49:13.509830848Z`, `004/node1`의 `16:59:43.298134089Z`, `004/node2`의 `16:59:43.30397919Z`·`16:59:58.437822588Z`다. `cluster command commit failed`, MQTT dispatch의 `quorum unavailable`, `commit_lag`는 없었다. 일부 재시작 구간의 release-profile 확인 warning에는 `quorum unavailable`가 남았으므로 모든 quorum 관련 log가 0이었다고 표현하지 않는다. EMQX의 replay inconsistency warning은 QoS 1 subscriber에서 여전히 관찰됐다.
+
+NaruMQ round별 RTO median/MAD는 `1199.148/605.695ms`, `1449.675/101.219ms`, `1796.920/115.220ms`다. 표본 수는 round마다 5다. 이는 고정 smoke의 복구 관찰값이며 production SLO나 EMQX와 같은 ACK·storage 계약의 성능 비교가 아니다.
+
+최종 source의 suite 전에 저장소 root에서 `cmd /d /c "set GOMAXPROCS=4&& go run ./tools/verify local"`을 실행했다. `local: PASS`(172.02s wall)였다. Package·integration(94.769s)·production race, fuzz, architecture, traceability와 coverage를 통과했다. 전체 line coverage는 `85.41%`, function coverage는 `97.48%`다. 결과는 `.artifacts/verification/coverage.out`과 `coverage-summary.json`에 있다. 앞선 중간 local 실행에는 coverage 미달과 `ConcurrentConnect` EOF 실패가 있었으며 최종 검증에서 기준이나 timeout을 완화하지 않았다. EOF 원인은 확정하지 않았다.
+
+Suite 뒤 BP-06 container·volume 조회 출력은 모두 비어 있었다. 이 실행으로 BP-06 local smoke의 유효한 5회 비교를 충족했다. `releaseGating=false`는 유지한다. `SPEC-TBD-08`, production storage, 게시 release matrix와 CI 전용 검증은 미완료다. EMQX 5.8.8의 예외 밖 replay가 다시 발생할 가능성도 남는다. 새 결과 문서와 TODO는 suite 뒤 갱신했으며 source와 시험은 바꾸지 않았다.
+
+
 ## 4. 필수 benchmark profile
 
 | ID | 고정 조건 | 필수 결과 |

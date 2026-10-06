@@ -149,7 +149,7 @@ Client QoS 1/2 PUBLISH ingress admission은 local projection readiness만 먼저
 
 리더를 아직 모르는 동안에는 새 ReadIndex를 Raft에 넘기지 않는다. Driver가 기존 미발행 FIFO head로 보관하며 inbound·tick 처리는 계속한다. 리더를 다시 알게 되면 같은 요청을 발행한다. 원래 context와 deadline을 유지하며 proof를 공유하거나 성공으로 간주하지 않는다.
 
-발행한 read가 완료되기 전에 leader·term·role이 바뀌면 driver는 미완료 proof를 다시 발행 대상으로 돌린다. 새 proof는 현재 Raft의 리더가 분명하고 기존 outbound 예산이 있을 때만 발행한다. Request context에는 origin node ID와 발행마다 바뀌는 nonce를 넣는다. Caller의 원래 key·context·deadline과 FIFO commit 순서는 유지한다. 이전 발행의 ReadState는 새 proof를 완료할 수 없다. 이는 read-only quorum 확인만 다시 요청하는 경로다. 이미 수락한 application proposal을 다시 제안하거나 proof를 공유하지 않는다.
+발행한 read가 완료되기 전에 leader·term·role이 바뀌면 driver는 미완료 proof를 다시 발행 대상으로 돌린다. 새 proof는 현재 Raft의 리더가 분명하고 기존 outbound 예산이 있을 때만 발행한다. Request context에는 origin node ID와 발행마다 바뀌는 nonce를 넣는다. Caller의 원래 key·context·deadline과 FIFO commit 순서는 유지한다. 이전 발행의 ReadState는 새 proof를 완료할 수 없다. Proof를 다른 caller와 공유하지 않는다. Application 재제안은 아래의 `proposal-recovery` 활성화 경로에서만 허용한다.
 
 리더 이전이나 리더 선출 중 정상 forwarded proposal이 `raft.ErrProposalDropped`로 거절될 수 있다. 이 오류는 Raft log에 append하지 않았다는 뜻이다. Dynamic adapter는 이 경우 요청을 bounded FIFO에 보관한다. [ADR-0035](../decisions/ADR-0035-failover-aware-commit-lag-and-unsent-proposal-reclaim.md)에 따라 socket write를 한 번도 시작하지 않은 raft-lane `MsgProp`도 같은 FIFO로 회수한다. 대상은 연결 없는 peer의 outbox ring에 남은 frame과 transport가 `ErrPeerBackpressure`로 받지 않은 frame이다. Write를 시작한 `outCurrent`는 회수하지 않고 기존처럼 재연결 뒤 다시 보낸다. 리더와 저장 공간을 다시 사용할 수 있으면 같은 요청을 Raft에 넘긴다. 새 forwarded proposal도 보관 중인 요청 뒤에 정렬한다. 서로 다른 peer에 동시에 남은 proposal의 상대 순서와 FIFO overflow 때 남은 frame의 순서는 보장하지 않는다. 일반 leader-only `Propose`와 membership change의 계약은 바꾸지 않는다.
 
@@ -161,11 +161,17 @@ Leader peer에 연결되어 있지 않으면 forwarded FIFO flush credit은 0이
 
 Test-only fault control을 쓰면 driver가 Node lock을 얻기 전에 해당 Ready turn의 isolation 파일을 읽는다. Callback은 이 snapshot만 확인하며 파일 I/O를 하지 않는다. 이 값은 fault 주입의 발행 제어에만 쓰며 fresh quorum proof를 저장하거나 공유하지 않는다.
 
-이 보관은 log append 전의 명확한 거절과 socket write를 시작하지 않은 frame만 다룬다. Write를 시작하지 않은 frame은 전송 결과를 알 수 없는 요청이 아니다. Raft가 이미 수락해 전송을 시작한 요청, 전송 결과를 알 수 없는 요청, ACK가 없는 요청을 재제안하지 않는다. 보관을 성공 commit이나 성공 MQTT ACK로 바꾸지 않는다. 원래 caller의 context와 deadline도 늘리지 않는다. 정상 거절을 malformed peer로 분류하거나 peer를 reset하지 않으며, frame·identity 검증 실패는 기존 `ErrInvalidMessage` 경로를 유지한다.
+Adapter 보관은 log append 전의 명확한 거절과 socket write를 시작하지 않은 frame만 다룬다. Write를 시작하지 않은 frame은 전송 결과를 알 수 없는 요청이 아니다. `proposal-recovery` 비활성 상태에서는 Raft가 이미 수락해 전송을 시작한 요청, 전송 결과를 알 수 없는 요청, ACK가 없는 요청을 재제안하지 않는다. 보관을 성공 commit이나 성공 MQTT ACK로 바꾸지 않는다. 원래 caller의 context와 deadline도 늘리지 않는다. 정상 거절을 malformed peer로 분류하거나 peer를 reset하지 않으며, frame·identity 검증 실패는 기존 `ErrInvalidMessage` 경로를 유지한다.
 
-Caller deadline은 결과를 기다리는 시간의 상한이다. Adapter FIFO에는 원래 context·deadline이 전달되지 않으므로 deadline 만료만으로 보관 요청을 폐기하지 않는다. 이 구조에서는 timeout 뒤에도 요청이 나중에 commit될 수 있다. 따라서 timeout을 미적용의 증거로 쓰거나 자동으로 새 application command를 재제안하지 않는다. Timeout을 반환한 원래 호출에는 이후 성공 ACK를 보내면 안 된다. MQTT 재접속·재전송은 기존 PacketID 상태와 session ownership·epoch 규칙을 따른다. 일반 application command에 새로운 deduplication 보장은 추가하지 않는다.
+Caller deadline은 결과를 기다리는 시간의 상한이다. Adapter FIFO에는 원래 context·deadline이 전달되지 않으므로 deadline 만료만으로 보관 요청을 폐기하지 않는다. 이 구조에서는 timeout 뒤에도 요청이 나중에 commit될 수 있다. Timeout을 미적용의 증거로 쓰거나 새 OperationID로 자동 재제안하지 않는다. Timeout을 반환한 원래 호출에는 이후 성공 ACK를 보내면 안 된다. MQTT 재접속·재전송은 기존 PacketID 상태와 session ownership·epoch 규칙을 따른다.
 
 이 경계는 `TestClusterDurableCommitCallerTimeoutLateReplayAppliesOnceWithoutSuccess`와 `TestTCPDurablePublishFailureDrainsPendingWithoutSuccessAck`를 함께 실행해 확인했다. 통합 시험의 범위는 in-process 3-node runtime + 실제 dynamic Raft adapter·WAL·`BeginDelivery`·`Wait`다. Caller timeout 뒤 FIFO 재생 순서·각 command의 1회 적용·원래 `Wait`의 `ErrQuorumUnavailable` 반환과 늦은 결과의 buffer 보관을 확인했다. TCP 시험은 같은 오류에서 QoS 1/2 성공 ACK 없이 연결을 닫고 pending 값을 회수하는지 확인했다. MQTT process 수준에서 이 late commit 경합을 재현하지는 않았다. 실행 명령과 시간은 [§11.11의 Caller timeout 뒤 late commit 행](#1111-qos-12-durable-delivery-수용-매핑)에 기록한다. 기존 FIFO 재생·fresh-proof 취소 회귀와 BP-07 valid 결과로 이 경계를 대신 검증했다고 판단하지 않는다.
+
+`proposal-recovery`를 활성화하면 [ADR-0036](../decisions/ADR-0036-replicated-proposal-receipts-and-safe-reproposal.md)과 [ADR-0037](../decisions/ADR-0037-proposal-request-identity.md)에 따라 이미 전송한 application command도 재제안할 수 있다. Runtime은 command별 RequestID를 만들고 최초 fresh proof index와 원래 RequestID·OperationID·payload·digest를 유지한다. Leader·term 변경 뒤 새 nonce의 proof를 얻고 local apply·projection이 완료된 뒤 미완료 요청만 FIFO 순서로 재제안한다. Caller의 기존 deadline은 유지한다.
+
+복제된 receipt는 최초 성공·conflict 결과를 보관한다. 같은 origin·RequestID·digest의 중복은 상태와 외부 효과를 반복하지 않는다. 같은 RequestID의 다른 payload나 최초 proof index는 conflict다. 같은 논리 OperationID를 쓰는 별도 RequestID는 서로 다른 command다. Origin별 retirement floor 이하의 proof index는 receipt 삭제 뒤에도 거절한다. Node별 receipt 최대 1024개, cluster 전체 최대 4096개, 결과 bytes 전체 최대 32 MiB다. Snapshot은 floor와 receipt를 함께 보존한다. 기존 64 MiB 직렬화 한도는 우선한다. Activation 전 baseline bytes와 일반 ConfChangeV2 경로는 유지한다.
+
+Count 한도 초과 요청은 origin별 capacity fence로 기억한다. 결과 byte 공간은 mutation 전에 예약한다. 공간이 나중에 생겨도 처음 거절한 요청은 성공으로 바꾸지 않는다. 개별 receipt와 count 거절의 index 의미는 [ADR-0038](../decisions/ADR-0038-proposal-receipt-capacity-fences.md)을 따른다. 실행 증거는 [§11.33](#1133-안전한-proposal-복구-수용-매핑)에 기록한다.
 
 각 `(tenantId, clientId)` session에는 Raft 복제 durable queue와 QoS inflight state가 있다. Apply 단계의 target 판정은 committed ownership과 subscription으로 다시 검증하며, 현재 owner/epoch에 묶인 matching subscription 가운데 QoS 1 이상이 있어야 한다. `DeliveryChange.publish_qos`는 PUBLISH/RELEASE에서 각각 1 또는 2이며 RELEASE는 2여야 한다. Apply는 이 값을 사용해 `min(publish_qos, matching subscription QoS 최대값)`을 대상의 effective QoS로 계산한다. 각 session message는 1부터 증가하는 sequence를 가져 FIFO로 복구된다. Session당 message 64개 및 inbound 64개, tenant 전체 합계 4,096 entries와 16 MiB, payload 1,000,000 bytes, command당 1,024 targets 제한을 둔다. Committed tenant quota profile은 offline queue와 durable delivery outbound message를 함께 집계하고 `offline_queue_messages`·`offline_queue_bytes`를 적용한다. `storage_bytes`에는 retained, offline, durable delivery outbound·inbound state를 포함한다. 전체 quota 규칙은 [ADR-0017](../decisions/ADR-0017-tenant-storage-quota.md)을 따른다.
 
@@ -1497,4 +1503,30 @@ GOMAXPROCS=4 go run ./tools/verify local
 MQTT §5의 과거 “현재 QoS 0” 문장은 같은 절의 입력 QoS 저장 규범, §4.5와 기존 §11.15의 실행 증거에 따라 오래된 상태 설명으로 판단했다. 규범과 제품 동작은 바꾸지 않았다.
 
 전체 gate는 Windows에서 `cmd /d /c "set GOMAXPROCS=4&& go run ./tools/verify local"`로 실행했다. Exit 0과 `local: PASS`를 확인했다. Coverage 산출물은 `.artifacts/verification/coverage.out`과 `coverage-summary.json`이다. Gate 뒤에는 실행 증거, 첫 실패의 packet 설명과 코드 지도 확인일만 갱신했다. 이 문서 정정 뒤 traceability도 PASS했다. CI 전용 mutation, QoS 1/2 retained Will과 production storage 검증은 실행하지 않았다.
+
+
+### 11.33 안전한 proposal 복구 수용 매핑
+
+2026-10-06 사용자는 NaruMQ의 안전한 자동 재제안과 EMQX 5.8.8 고정 유지를 선택했다. [ADR-0036](../decisions/ADR-0036-replicated-proposal-receipts-and-safe-reproposal.md)·[ADR-0037](../decisions/ADR-0037-proposal-request-identity.md)·[ADR-0038](../decisions/ADR-0038-proposal-receipt-capacity-fences.md)은 §4.2의 활성 feature 경로에 적용한다. 이전 §11.28의 backlog·write 전 회수는 유지한다. 이전 실패 artifact의 판정은 바꾸지 않는다.
+
+| 시나리오 | 시험 위치·명령 | 수용 기준 | 실행 결과 |
+| --- | --- | --- | --- |
+| 최초 결과·중복 PUBLISH·다른 digest·retirement | `internal/application/membership/proposal_receipts_test.go`; 아래 focused 명령 | 중복은 처음 index·결과를 반환한다. Queue sequence를 다시 늘리지 않는다. 다른 digest와 GC 뒤 stale frame을 거절한다. | PASS; membership package 1.228s |
+| Conflict 이후 조건 변화·논리 OperationID 공유 | 같은 파일의 `TestProposalConflictDoesNotBecomeSuccessAfterOwnershipAppears`, `TestProposalRequestIdentitySeparatesMembershipTransitions` | Ownership이 생겨도 기존 conflict를 성공으로 바꾸지 않는다. STAGE_JOIN·ADD_LEARNER는 별도 RequestID로 진행하며 처음 operation view는 보존한다. | PASS; 같은 package 실행 |
+| Count·byte 한도와 복원 | 같은 파일의 `TestProposalReceiptCapacityLimits`, `TestProposalWillResultBudgetRejectsBeforeMutationAndRemembersConflict` | Full ledger의 count fence를 복원한다. 큰 Will 결과의 한도 초과는 mutation 전에 거절한다. GC·restore 뒤 거절한 요청이 Will을 소비하지 않는다. Caller가 result payload를 바꿔도 receipt는 바뀌지 않는다. | PASS; Will focused case 0.03s |
+| 모든 historical result·wire digest·inactive baseline | `cmd/narumq/cluster_records_proposal_test.go`, `internal/adapters/raft/records` | Restore 뒤 historical result를 replay하면 원래 fields를 반환하고 현재 state를 바꾸지 않는다. Digest 변경·unknown field를 거절하고 기존 baseline vectors를 유지한다. | PASS; cmd focused snapshot 두 case와 records package 1.013s |
+| 실제 WAL·leader 손실·늦은 duplicate·disk restore | `cmd/narumq/cluster_proposal_recovery_test.go::TestClusterProposalRecoveryRequiresNewQuorumProofAndAppliesOnce` | 이전 leader에 저장했지만 quorum 적용 전 손실된 요청을 복구한다. 늦은 duplicate 이후에도 메시지 1개·next sequence 2다. 실제 snapshot·archive·disk restore 뒤에도 처음 result index와 dedup을 보존한다. 미지원 restore build는 active feature를 거절한다. | PASS; final focused case 0.21s |
+| 새 quorum proof 부재·caller 취소·late ACK | 같은 파일의 `TestClusterProposalRecoveryNoQuorumNoSuccessAndNoLateAck` | Replacement leader 선출 뒤 survivor 간 전송을 멈추면 성공 결과가 없다. Caller 취소 후 늦은 원래 frame은 한 번 적용할 수 있지만 성공 응답을 다시 보내지 않는다. | PASS; focused case 0.11s. 이 case는 취소를 사용하며 실제 5초 deadline 만료를 기다리지는 않는다. |
+| 실제 MQTT SIGKILL·재접속·resync | BP-06 `compare`·`suite`; [성능 §3.6](performance-and-verification.md#36-bp-06-failure-recovery-smoke-관찰-경계) | 원래 5초 broker commit deadline, 성공 ACK durability와 NaruMQ 무예외 판정을 유지한다. | PASS; 최종 suite는 두 target 모두 5/5 valid. NaruMQ의 gap·QoS 2 duplicate·계획 밖 disconnect·protocol error·overload는 모든 반복에서 0. EMQX 예외와 non-equivalent 계약은 유지한다. |
+| 전체 local gate | `cmd /d /c "set GOMAXPROCS=4&& go run ./tools/verify local"` | 기존 시험·race·architecture·traceability·coverage 기준 유지 | PASS; 172.02s wall, integration 94.769s. Line/function coverage 85.41/97.48%. |
+
+실행 위치는 저장소 root다. Windows/amd64, Go 1.26.5에서 다음 focused 명령을 실행했다.
+
+```text
+go test ./internal/application/membership ./internal/adapters/raft/records ./cmd/narumq ./tests/benchmark/bp06 -count=1
+go test ./cmd/narumq -run TestClusterProposalRecoveryRequiresNewQuorumProofAndAppliesOnce -count=1 -v
+go test ./cmd/narumq -run TestClusterProposalRecoveryNoQuorumNoSuccessAndNoLateAck -count=1 -v
+```
+
+WAL 시험은 실제 세 Raft node와 mTLS transport fixture를 만들며, 장애 경합은 message 전달을 직접 제어한다. Process 수준 MQTT 증거는 별도 BP-06 실행이다. 이 구분을 실제 power loss·Linux/EBS·게시 release compatibility 증거로 확장하지 않는다. Feature 활성화 이후의 mixed binary rollout과 production storage는 기존 별도 수용 범위를 유지한다.
 

@@ -185,7 +185,11 @@ func (runtime *clusterRuntime) refreshReadWaiters(reads map[string]clusterReadWa
 				runtime.finishCommitRead(waiter.commit, err)
 			} else {
 				runtime.observeRaftStage(adaptersmetrics.RaftReadIndex, waiter.startedAt)
-				waiter.result <- clusterReadResponse{err: err}
+				if waiter.result != nil {
+					waiter.result <- clusterReadResponse{err: err}
+				} else if key == runtime.recoveryProofKey {
+					runtime.recoveryProofKey = ""
+				}
 			}
 			continue
 		}

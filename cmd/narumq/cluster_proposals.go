@@ -22,6 +22,8 @@ func (runtime *clusterRuntime) submitCommitBatch(pending []*clusterPendingCommit
 	if err == nil {
 		runtime.observeCommitLeadership()
 	}
+	status := runtime.node.Status()
+	leadership := raftLeadership{leader: status.LeaderID, term: status.Term, role: status.Role}
 	for _, commit := range pending {
 		if err != nil {
 			runtime.observeRaftStage(adaptersmetrics.RaftProposal, startedAt)
@@ -30,7 +32,15 @@ func (runtime *clusterRuntime) submitCommitBatch(pending []*clusterPendingCommit
 		} else {
 			runtime.markCommitProposed(commit.backlogEntry)
 			*proposals = append(*proposals, clusterProposalWaiter{
-				data: commit.data, result: commit.result, startedAt: startedAt, backlogEntry: commit.backlogEntry,
+				context:      commit.context,
+				requestID:    commit.requestID,
+				proofIndex:   commit.readProofIndex,
+				command:      commit.command,
+				data:         commit.data,
+				result:       commit.result,
+				startedAt:    startedAt,
+				leadership:   leadership,
+				backlogEntry: commit.backlogEntry,
 			})
 		}
 	}
@@ -77,4 +87,40 @@ func (runtime *clusterRuntime) reclaimUnsentProposals() {
 			runtime.logger.Info("raft proposals reclaimed from disconnected peer", "peer_id", peerID, "messages", count)
 		}
 	}
+}
+
+func hasUnappliedProposals(proposals []clusterProposalWaiter) bool {
+	for _, w := range proposals {
+		if !w.applied && w.command.Proposal != nil && (w.context == nil || w.context.Err() == nil) {
+			return true
+		}
+	}
+	return false
+}
+
+func (runtime *clusterRuntime) safeRetirementFloor(currentProof uint64, proposals []clusterProposalWaiter, staged ...*clusterPendingCommit) uint64 {
+	minProof := currentProof
+	for _, waiter := range proposals {
+		if !waiter.applied && (waiter.context == nil || waiter.context.Err() == nil) && waiter.proofIndex > 0 && waiter.proofIndex < minProof {
+			minProof = waiter.proofIndex
+		}
+	}
+	for _, pending := range runtime.pendingCommits {
+		if pending != nil && pending.context.Err() == nil && pending.readProofIndex > 0 && pending.readProofIndex < minProof {
+			minProof = pending.readProofIndex
+		}
+	}
+	for _, pending := range staged {
+		if pending != nil && pending.context.Err() == nil && pending.readProofIndex > 0 && pending.readProofIndex < minProof {
+			minProof = pending.readProofIndex
+		}
+	}
+	floor := uint64(0)
+	if minProof > 0 {
+		floor = minProof - 1
+	}
+	if currentProof > 0 && floor >= currentProof {
+		floor = currentProof - 1
+	}
+	return floor
 }

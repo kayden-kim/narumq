@@ -66,6 +66,7 @@ Release version과 feature set은 mutable committed member profile이다. Restar
 - Activation은 quorum에 commit된 cluster setting으로 기록한다.
 - Feature activation이 그 feature의 rollback window를 끝낸다.
 - Rollback window 안에는 irreversible migration을 실행해서는 안 된다.
+- `proposal-recovery`는 build capability이며 기본 비활성 feature다. 활성화 전 command field 24와 snapshot field 15는 기록하지 않는다. 모든 non-retired member가 지원할 때 기존 `FeatureActivation`으로 활성화한다. 활성화 뒤 receipt와 fence를 모르는 build로 rollback하지 않는다. Strict codec과 backup restore의 active-feature 검사는 유지한다. [ADR-0036](../decisions/ADR-0036-replicated-proposal-receipts-and-safe-reproposal.md) 참조.
 
 ### 4.1 운영 승인과 rollback window 종료
 

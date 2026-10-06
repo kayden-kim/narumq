@@ -35,6 +35,10 @@ const (
 	// ConnectionRebalanceFeature identifies the replicated connection rebalance feature.
 	ConnectionRebalanceFeature    = "connection-rebalance"
 	SessionMetadataFeature        = "session-metadata"
+	ProposalRecoveryFeature       = "proposal-recovery"
+	MaxProposalReceiptsPerOrigin  = 1024
+	MaxProposalReceipts           = 4096
+	MaxProposalResultBytes        = 32 << 20
 	MaxSessionWillBytes           = 8 << 20
 	MaxSessionWillPayloadBytes    = 65535
 	MaxSessionPrincipalFieldBytes = 1024
@@ -414,6 +418,7 @@ type CommandDTO struct {
 	SchemaMajor         uint32
 	SchemaMinor         uint32
 	OperationID         string
+	Proposal            *ProposalIdentityDTO
 	Membership          *MembershipRecordDTO
 	Ownership           *OwnershipChangeDTO
 	Subscription        *SubscriptionChangeDTO
@@ -668,13 +673,18 @@ const (
 	ConflictSessionMetadataInvalid        ApplyConflictCode = "session_metadata_invalid"
 	ConflictConnectionRebalanceInProgress ApplyConflictCode = "connection_rebalance_in_progress"
 	ConflictRebalanceNotCancellable       ApplyConflictCode = "rebalance_not_cancellable"
+	ConflictProposalRetired               ApplyConflictCode = "proposal_retired"
+	ConflictProposalIdentity              ApplyConflictCode = "proposal_identity_conflict"
+	ConflictProposalCapacity              ApplyConflictCode = "proposal_receipt_capacity_exceeded"
 )
 
 // ApplyResultDTO reports the deterministic result at a committed application index.
 type ApplyResultDTO struct {
-	Index               uint64
-	Outcome             ApplyOutcome
-	Conflict            ApplyConflictCode
+	Index    uint64
+	Outcome  ApplyOutcome
+	Conflict ApplyConflictCode
+	// Replayed means this entry returned a receipt without repeating its effects.
+	Replayed            bool
 	Operation           *MembershipOperationDTO
 	Ownership           *OwnershipStateDTO
 	Subscription        *SubscriptionStateDTO
@@ -788,4 +798,31 @@ type SnapshotDTO struct {
 	ActiveFeatures      []string
 	SessionMetadata     []SessionMetadataStateDTO
 	ConnectionRebalance *ConnectionRebalanceStateDTO
+	ProposalOrigins     []ProposalOriginStateDTO
+}
+
+// ProposalIdentityDTO identifies one command attempt independently of its logical operation.
+type ProposalIdentityDTO struct {
+	OriginNodeID   uint64
+	ProofIndex     uint64
+	RetiredThrough uint64
+	RequestID      string
+	CommandDigest  []byte
+}
+
+// ProposalReceiptDTO owns the first result of one origin's request.
+type ProposalReceiptDTO struct {
+	RequestID     string
+	ProofIndex    uint64
+	CommandDigest []byte
+	Result        ApplyResultDTO
+}
+
+// ProposalOriginStateDTO retains a permanent stale-request fence and bounded receipts.
+type ProposalOriginStateDTO struct {
+	OriginNodeID    uint64
+	RetiredThrough  uint64
+	RejectedThrough uint64
+	RejectedIndex   uint64
+	Receipts        []ProposalReceiptDTO
 }
