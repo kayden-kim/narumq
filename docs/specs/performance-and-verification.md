@@ -1034,6 +1034,63 @@ Windows/amd64, Go 1.26.5, Docker Desktop Linux/amd64에서 같은 smoke profile�
 
 두 compare manifest와 suite manifest는 baseline `a8348f792b984cca1eac9b1cae179d1cc8b71395`, `dirty=true`를 기록한다. 수정 코드와 시험의 확인 커밋은 `096f480eb06e1d5c76177847c9e991d7bac58953`다. Compare·suite·local gate는 이 커밋 전에 실행했으며 이후 source와 시험을 바꾸지 않았다. 원시 artifact는 위 경로에 보존했다. Local smoke acceptance는 5회 suite 실패로 미완료다. `SPEC-TBD-08`, BP-02·BP-04, release regression과 BP-06의 유효한 5회 suite가 남는다.
 
+#### 2026-10-06 failover commit_lag·proposal 회수 뒤 실행
+
+[ADR-0035](../decisions/ADR-0035-failover-aware-commit-lag-and-unsent-proposal-reclaim.md)의 generation·도달 가능성 기반 backlog와 socket write 전 proposal 회수를 적용했다. 이전 leader가 받은 뒤 결과가 확정되지 않은 commit의 5초 timeout·성공 ACK 없는 연결 종료 계약은 유지했다. Profile·resource limit·validity·comparator 예외 규칙은 바꾸지 않았다.
+
+Windows/amd64, Go 1.26.5와 Docker Desktop Linux/amd64에서 저장소 root 기준으로 실행했다. Compare 전에 `docker ps -a --filter name=bp0 --format "{{.Names}}"` 출력은 비어 있었다.
+
+```text
+go run ./tests/benchmark/bp06 compare --profile tests/benchmark/bp06/testdata/smoke.json
+```
+
+Compare `bp06-20261006T113617.563840500Z-134664`는 exit 0, 두 target valid였다(wall 394.14s). Artifact는 `.artifacts/benchmark/bp06/bp06-20261006T113617.563840500Z-134664/`에 있다. Profile SHA-256은 `e8e4aa2e5df1a3e55ad901acff5a4505cdb1acf4699ff061f1a2bfc51754054d`다. Manifest는 baseline `2660836f0313219f03b322e6802e7a7cd6145cb7`, `dirty=true`, `releaseGating=false`를 기록한다. 미커밋 변경을 실행했으며 이 baseline을 변경 코드의 확인 커밋이나 CI 통과 증거로 쓰지 않는다.
+
+NaruMQ의 `failureReasons`는 `[]`다. MQTT `0x97` 거절 0건, `publish rejected by backpressure` 0건, `commit_lag` log 0건, 회수 log 0건이었다. 세 node log의 `MQTT connection handling failed`·`quorum unavailable` 일치 기록도 0건이었다. 계획 밖 disconnect·gap·QoS 1/2 duplicate·protocol error·overload는 모두 0이다. Round별 RTO는 271.649ms·425.843ms·2041.412ms였다. EMQX는 gap 4건과 QoS 2 duplicate 84건을 모두 기존 comparator 예외로 기록했다. QoS 1 duplicate는 131건이며 기록 전용이다.
+
+Compare 뒤 `docker ps -a --filter name=bp06- --format "{{.Names}}"`와 `docker volume ls --filter name=bp06- --format "{{.Name}}"` 출력은 비어 있었다. Compare에서는 실제 실행에서 회수 경로 미관찰이다. 회수 구현의 경계는 [Cluster §11.28](cluster-session-and-delivery.md#1128-publish-backpressure-수용-매핑)의 TCP·Raft 행동 시험으로 확인했다. 실제 failover에서 해당 경로를 실행했다고 주장하지 않는다.
+
+```text
+go run ./tests/benchmark/bp06 suite --profile tests/benchmark/bp06/testdata/smoke.json
+```
+
+Suite `bp06-suite-20261006T114305.122396100Z-136236`는 timeout 없이 5회 실행을 마쳤다(wall 1679.08s). Exit 1, `valid=false`, 유효한 반복은 2/5였다. 두 target의 parent `metrics`는 `{}`이며 median·MAD를 산출하지 않았다. Artifact는 `.artifacts/benchmark/bp06/bp06-suite-20261006T114305.122396100Z-136236/`에 있다. Manifest의 profile hash·baseline·dirty는 위 compare와 같다.
+
+| 반복 (`runs/`) | NaruMQ | EMQX | NaruMQ 계획 밖 disconnect | NaruMQ `commit_lag` log / 거절 log / 회수 log |
+| --- | --- | --- | ---: | --- |
+| `001` | valid | invalid: QoS 2 sequence 1·2 duplicate가 예외 밖 | 0 | 0 / 0 / 0 |
+| `002` | valid | valid | 0 | 0 / 0 / 0 |
+| `003` | invalid | valid | 1 | 0 / 0 / 0 |
+| `004` | valid | valid | 0 | 0 / 0 / 0 |
+| `005` | invalid | valid | 4 | 3 / 1 / 0 |
+
+모든 NaruMQ child의 `failureReasons`는 `[]`이며 `broker rejected` 항목은 없다. MQTT `0x97` 기록은 0건이다. 다만 5회차 MQTT 3.1.1 연결에서는 `publish rejected by backpressure`가 1회 기록됐다. 이 log는 rate-limited이므로 전체 거절 건수로 해석하지 않는다. Gap·QoS 2 duplicate·protocol error·overload는 모든 NaruMQ child에서 0이다. 4회차의 QoS 1 duplicate 1건은 기존 기록 전용 규칙을 유지한다.
+
+계획 밖 disconnect 5건 가운데 다음 2건은 승인된 100ms 상관 기준으로 `quorum unavailable` 유형이다. 같은 node에서 proposal deadline 경고도 확인했다. 시각 일치는 계약상 분류 근거이며 개별 command의 전송·수신 시점을 입증하지 않는다.
+
+| 반복·node·client | `connections.jsonl`의 `at` | 같은 node의 MQTT error 시각·내용 | 시각 차이 |
+| --- | --- | --- | ---: |
+| `003`·node3·`bp06-pub-v5-q2` | `11:55:21.928842279Z` | `11:55:21.928660513Z`, `dispatch MQTT PUBREL: quorum unavailable` | 약 0.182ms |
+| `005`·node1·`bp06-sub-v5-q2` | `12:05:59.997211810Z` | `12:05:59.996980539Z`, `dispatch MQTT PUBREC: quorum unavailable` | 약 0.231ms |
+
+5회차 나머지 3건은 이 유형으로 분류하지 않았다. node1의 `bp06-pub-v5-q0` EOF(`12:05:57.222244118Z`) 직전에는 publish readiness의 `release_profile_unsynced`가 기록됐다(`12:05:57.222048981Z`). `bp06-pub-v311-q1`은 `12:05:59.521415952Z`와 `12:05:59.722144158Z`에 EOF를 기록했다. 첫 EOF는 아래 backpressure 거절 log 직후지만 둘 다 100ms 안의 MQTT `quorum unavailable` log는 없다. 이 상관만으로 근본 원인을 확정하지 않는다.
+
+5회차 node1 `broker.log`에는 다음 재발 증거가 있다. 같은 구간의 leader 변경 전용 log는 없으므로 선출 완료 시각과 entry의 제출 generation은 이 artifact에서 확정할 수 없다.
+
+- `12:05:59.521210085Z`: `publish rejected by backpressure`, `reason=commit_lag`.
+- `12:05:59.530712958Z`: `publish backpressure activated`, `oldest_seconds=1.049942573`.
+- `12:05:59.996773102Z`: `cluster command commit failed`, `commit_stage=proposal`, `failure_class=deadline`, `context deadline exceeded`. 상태는 `leader_id=1`, `role=2`, `term=4`, `commit_index=applied_index=1525`, storage `HEALTHY`다.
+- 위 실패 시 peer2는 connected이며 outbound queue는 0이다. Peer3은 disconnected이며 32 message·813 byte, `peer connection failed`, rejected 273을 기록했다.
+- `12:06:00.530196459Z`: `publish backpressure cleared`, `oldest_seconds=0`.
+
+3회차 timeout 시 node3도 local leader였다(`leader_id=3`, `role=2`, `term=4`, `commit_index=applied_index=4751`). Peer1은 connected·queue 0, peer2는 disconnected·32 message·827 byte·`peer read failed`였다.
+
+Compare와 suite 전체의 회수 log는 0회다. 실제 실행에서 회수 경로 미관찰로 기록한다. Suite 종료 뒤 BP-06 container와 volume 조회 출력은 모두 비어 있었다.
+
+`commit_lag` 거절이 다시 나왔으므로 승인된 contingency에 따라 추가 compare·suite 재실행과 정책 확대를 멈췄다. 기본값과 validity·timeout·ACK 계약은 바꾸지 않았다. BP-06 smoke 수용은 미완료다. 남은 문제는 위 local-leader 구간의 lag entry 분류와 계획 밖 disconnect, EMQX의 예외 밖 QoS 2 duplicate다.
+
+마지막으로 저장소 root에서 `cmd /d /c "set GOMAXPROCS=4&& go run ./tools/verify local"`을 실행했다. `traceability`, `architecture`, `coverage`, `local`은 모두 PASS였다(wall 170.14s). Package·integration·production race와 fuzz 실행을 포함한다. Integration은 98.534s였다. 이 local gate 통과는 invalid BP-06 suite의 수용을 대신하지 않는다. Focused 시험·race·실제 backpressure process 회귀의 명령과 시간은 [Cluster §11.28](cluster-session-and-delivery.md#1128-publish-backpressure-수용-매핑)에 기록했다.
+
 ## 4. 필수 benchmark profile
 
 | ID | 고정 조건 | 필수 결과 |

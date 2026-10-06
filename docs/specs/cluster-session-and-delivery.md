@@ -151,15 +151,17 @@ Client QoS 1/2 PUBLISH ingress admission은 local projection readiness만 먼저
 
 발행한 read가 완료되기 전에 leader·term·role이 바뀌면 driver는 미완료 proof를 다시 발행 대상으로 돌린다. 새 proof는 현재 Raft의 리더가 분명하고 기존 outbound 예산이 있을 때만 발행한다. Request context에는 origin node ID와 발행마다 바뀌는 nonce를 넣는다. Caller의 원래 key·context·deadline과 FIFO commit 순서는 유지한다. 이전 발행의 ReadState는 새 proof를 완료할 수 없다. 이는 read-only quorum 확인만 다시 요청하는 경로다. 이미 수락한 application proposal을 다시 제안하거나 proof를 공유하지 않는다.
 
-리더 이전이나 리더 선출 중 정상 forwarded proposal이 `raft.ErrProposalDropped`로 거절될 수 있다. 이 오류는 Raft log에 append하지 않았다는 뜻이다. Dynamic adapter는 이 경우에만 요청을 bounded FIFO에 보관한다. 리더와 저장 공간을 다시 사용할 수 있으면 같은 요청을 Raft에 넘긴다. 새 forwarded proposal도 보관 중인 요청 뒤에 정렬한다. 일반 leader-only `Propose`와 membership change의 계약은 바꾸지 않는다.
+리더 이전이나 리더 선출 중 정상 forwarded proposal이 `raft.ErrProposalDropped`로 거절될 수 있다. 이 오류는 Raft log에 append하지 않았다는 뜻이다. Dynamic adapter는 이 경우 요청을 bounded FIFO에 보관한다. [ADR-0035](../decisions/ADR-0035-failover-aware-commit-lag-and-unsent-proposal-reclaim.md)에 따라 socket write를 한 번도 시작하지 않은 raft-lane `MsgProp`도 같은 FIFO로 회수한다. 대상은 연결 없는 peer의 outbox ring에 남은 frame과 transport가 `ErrPeerBackpressure`로 받지 않은 frame이다. Write를 시작한 `outCurrent`는 회수하지 않고 기존처럼 재연결 뒤 다시 보낸다. 리더와 저장 공간을 다시 사용할 수 있으면 같은 요청을 Raft에 넘긴다. 새 forwarded proposal도 보관 중인 요청 뒤에 정렬한다. 서로 다른 peer에 동시에 남은 proposal의 상대 순서와 FIFO overflow 때 남은 frame의 순서는 보장하지 않는다. 일반 leader-only `Propose`와 membership change의 계약은 바꾸지 않는다.
 
 FIFO는 최대 64 message와 기존 `maxWALFramePayload-1024` byte 예산으로 제한한다. Ready 입력과 보관 요청의 합도 같은 byte 한도를 지킨다. 가득 차면 기존 `ErrBackpressure`로 거절한다. 인증된 inbound frame의 보관은 adapter가 이미 소유한 decoded 값으로 처리한다. Transport lease는 즉시 반환하며 Raft tick과 peer message 처리는 계속한다. Runtime membership reconciliation은 기존 stable checkpoint 조건을 유지하므로 보관분이 남아 있으면 기다린다. Raft의 선출·리더 이전 자체는 peer message와 tick으로 진행한다. 미처리 FIFO는 `StoragePending`에 포함해 checkpoint나 안전한 stop의 완료로 숨기지 않는다. 저장 장애와 Close는 기존 실패 계약을 따른다.
 
 Follower가 보관 요청을 넘길 때는 `Config.ForwardedProposalCapacity`로 현재 리더의 outbound count·byte 여유를 확인한다. 기존 Ready·append·apply 처리가 idle일 때만 FIFO를 그 여유 안에서 발행한다. 그렇지 않으면 64개 보관 요청을 32개 peer FIFO로 한꺼번에 넘겨 다시 유실할 수 있다. 이 callback은 기존 observer처럼 composition root에서 제공하며 Node를 다시 호출하거나 대기하지 않는다. Production cluster는 TCP의 실제 여유에서 기존 2-frame·512-byte reserve를 뺀 값을 제공한다. Transport가 없는 Batch consumer는 callback 없이 기존처럼 전체 output을 소비할 수 있다. 이전 node가 다시 leader가 되기를 기다리지 않는다.
 
+Leader peer에 연결되어 있지 않으면 forwarded FIFO flush credit은 0이다.
+
 Test-only fault control을 쓰면 driver가 Node lock을 얻기 전에 해당 Ready turn의 isolation 파일을 읽는다. Callback은 이 snapshot만 확인하며 파일 I/O를 하지 않는다. 이 값은 fault 주입의 발행 제어에만 쓰며 fresh quorum proof를 저장하거나 공유하지 않는다.
 
-이 보관은 log append 전의 명확한 거절만 다룬다. Raft가 이미 수락한 요청, 전송 결과를 알 수 없는 요청, ACK가 없는 요청을 재제안하지 않는다. 보관을 성공 commit이나 성공 MQTT ACK로 바꾸지 않는다. 원래 caller의 context와 deadline도 늘리지 않는다. 정상 거절을 malformed peer로 분류하거나 peer를 reset하지 않으며, frame·identity 검증 실패는 기존 `ErrInvalidMessage` 경로를 유지한다.
+이 보관은 log append 전의 명확한 거절과 socket write를 시작하지 않은 frame만 다룬다. Write를 시작하지 않은 frame은 전송 결과를 알 수 없는 요청이 아니다. Raft가 이미 수락해 전송을 시작한 요청, 전송 결과를 알 수 없는 요청, ACK가 없는 요청을 재제안하지 않는다. 보관을 성공 commit이나 성공 MQTT ACK로 바꾸지 않는다. 원래 caller의 context와 deadline도 늘리지 않는다. 정상 거절을 malformed peer로 분류하거나 peer를 reset하지 않으며, frame·identity 검증 실패는 기존 `ErrInvalidMessage` 경로를 유지한다.
 
 Caller deadline은 결과를 기다리는 시간의 상한이다. Adapter FIFO에는 원래 context·deadline이 전달되지 않으므로 deadline 만료만으로 보관 요청을 폐기하지 않는다. 이 구조에서는 timeout 뒤에도 요청이 나중에 commit될 수 있다. 따라서 timeout을 미적용의 증거로 쓰거나 자동으로 새 application command를 재제안하지 않는다. Timeout을 반환한 원래 호출에는 이후 성공 ACK를 보내면 안 된다. MQTT 재접속·재전송은 기존 PacketID 상태와 session ownership·epoch 규칙을 따른다. 일반 application command에 새로운 deduplication 보장은 추가하지 않는다.
 
@@ -220,7 +222,14 @@ Planned removal은 대상 외의 committed `VOTER`가 3 미만이면 non-retryab
 - QoS 2 RELEASE(PUBREL), 서버 Will, non-retained QoS 0의 live·offline·forward, 빈 payload의 retained 삭제와 SEND/ADVANCE/COMPLETE/ATTACH/DETACH/DISCARD는 제외한다.
 - 검사 순서는 disk → commit lag → retained commit·route match → delivery capacity다. QoS 1 retained commit 뒤 capacity 거절은 retained mutation을 되돌리지 않는다. QoS 2 첫 수신은 retained를 commit하지 않고 route match와 capacity를 검사한다.
 - Capacity는 local committed view에서 eligible target의 합계를 계산한다. 전역 delivery 4,096 entry·16 MiB와 tenant quota 초과는 ingress에서 publish를 거절한다. Session당 64개 및 sequence 소진 target은 기존 `Saturated` 처리다. Record를 만들거나 만료 purge를 미리 수행하지 않는다. 만료 message 때문에 보수적으로 거절할 수 있다. Apply 시점 경합과 RELEASE 시점 포화는 기존 결과를 유지한다.
-- Commit backlog는 이 node의 `BeginDelivery`로 제출한 미완료 command만 추적한다. 가장 오래된 command 나이가 `maxCommitLagMillis` 이상이면 거절한다. 이 경로는 기존 5초 timeout을 따른다. 다른 `Commit` 경로는 추적하지 않는다. Leader의 follower별 지연은 metric으로만 보고한다.
+- Commit backlog는 이 node의 `BeginDelivery` 미완료 command만 추적한다. 다른 `Commit` 경로는 추적하지 않는다. 나이 계산은 [ADR-0035](../decisions/ADR-0035-failover-aware-commit-lag-and-unsent-proposal-reclaim.md)를 따른다.
+  1. Local Raft status의 `LeaderID != 0`이고 local NodeID와 같거나 dynamic transport의 `Status(LeaderID).Connected == true`이면 도달 가능한 leader다.
+  2. 도달 가능한 leader가 없으면 `commit_lag`는 활성화되지 않는다.
+  3. `(LeaderID, Term)`이 바뀌거나 도달 가능한 leader가 도달 불가능해지면 backlog `generation`을 1 증가시킨다.
+  4. Raft에 제출한 순간의 generation을 entry에 기록한다. 현재 generation과 다른 제출 entry는 나이 계산에서 영구히 제외한다. 미제출 entry는 계속 포함한다.
+  5. 포함된 가장 오래된 entry의 나이는 `now - max(startedAt, reachableSince)`다. `reachableSince`는 현재 leader에 도달할 수 있게 된 시각이다.
+  6. 이 나이가 `maxCommitLagMillis` 이상이면 거절한다. `narumq_cluster_commit_backlog_oldest_seconds`도 같은 값을 출력한다.
+  7. Failover 지연과 quorum 손실 뒤 leader가 물러난 구간은 기존 5초 `clusterDurableCommitTimeout`이 처리한다. 결과가 확정되지 않은 commit의 timeout과 연결 종료는 §4.2·ADR-0015 §13을 유지한다. Leader의 follower별 지연은 metric으로만 보고한다.
 - Disk는 local data directory filesystem을 시작 때와 1초마다 측정한다. `free < minFreeBytes`이면 진입한다. `free >= minFreeBytes + minFreeBytes/8`이면 해제한다. `minFreeBytes=0`이면 disk admission만 끄고 gauge는 유지한다. 측정 오류는 이전 상태를 유지한다. 초기 상태는 압력 없음이다. 연속 오류는 Warn을 한 번만 남긴다. ENOSPC는 기존 `FAILED` 처리다.
 
 | 요청 | MQTT 5 거절 | MQTT 3.1.1 거절 |
@@ -249,7 +258,7 @@ Cluster config에 다음 선택 object를 넣을 수 있다. 생략하면 아래
 | `narumq_publish_backpressure_rejections_total{reason}` | `commit_lag`, `disk_free`, `delivery_capacity`, `tenant_quota` counter를 항상 출력한다. |
 | `narumq_publish_backpressure_active{reason}` | `commit_lag`, `disk_free`의 0/1 gauge를 항상 출력한다. |
 | `narumq_storage_free_bytes` | 첫 측정 성공 뒤 local 여유 공간을 출력한다. |
-| `narumq_cluster_commit_backlog_oldest_seconds` | 미완료 command의 최대 나이를 초 단위 소수점 여섯 자리로 출력한다. |
+| `narumq_cluster_commit_backlog_oldest_seconds` | `commit_lag` 판정에 쓰는 포함 entry의 최대 나이를 초 단위 소수점 여섯 자리로 출력한다. |
 | `narumq_durable_delivery_saturated_targets_total` | Apply의 포화 target 수를 누적한다. |
 | `narumq_raft_peer_replication_lag_entries{peer}` | Leader에서 non-retired peer별 `max(CommitIndex-match, 0)`를 출력한다. Follower에서는 series가 없다. |
 
@@ -1202,6 +1211,9 @@ GOMAXPROCS=4 go run ./tools/verify local
 | 새 저장 gate와 제외 경로 | `internal/application/publish/admission_test.go` `TestPublishAdmissionGatesNewDurableState` | 압력·capacity 거절 전 commit 없음, RELEASE·Will·비내구 경로 유지 | PASS — focused package 묶음 |
 | TCP adapter 응답 | `internal/adapters/tcp` `TestTCPPublishBackpressureReasonCodes` | MQTT 5 `0x97`, QoS 1/2 연결 유지, MQTT 3.1.1 종료 | PASS — `net.Pipe`에서 실제 MQTT packet 교환 |
 | Backlog 나이·disk 진입과 해제·quota 경보 | `cmd/narumq/cluster_publish_pressure_test.go`의 `TestClusterCommitBacklogOldestAge`, `TestClusterPublishPressureDiskHysteresis`, `TestClusterPublishPressureCommitLag`, `TestClusterPublishPressureCapacityReportsTenantQuota` | Entry 제거 후 회복, 1/8 hysteresis, 연속 오류 Warn 1회, counter 기록 | PASS — focused package 묶음 |
+| Failover-aware backlog | `cmd/narumq/cluster_publish_pressure_test.go` `TestClusterCommitBacklogOldestAge`, `TestClusterPublishPressureCommitLag` | 도달 불가 시 0, 재연결 시 나이 시작점 갱신, 이전 generation 제출분 영구 제외, 미제출분 포함 | PASS — 2026-10-06, 각 0.00s; caller timeout 경계와 묶음 2.073s |
+| Write 전 proposal 회수 | `internal/adapters/tcp/peer_transport_v2_test.go` `TestDynamicPeerReclaimUnsentReturnsOnlyUnwrittenProposals` | Queue 순서·count·bytes 유지, 일반 frame·outCurrent·연결 peer 제외 | PASS — 2026-10-06, 0.00s; write 실패·phase refresh 회귀와 묶음 0.818s |
+| 회수한 forwarded proposal 재생 | `internal/adapters/raft/node_dynamic_test.go` `TestDynamicDeferForwardedProposalReplaysUnsentFrameOnce` | Credit 복구 뒤 정확히 1회 apply, FIFO 공간·StoragePending 반영, 비-MsgProp 거절 | PASS — 2026-10-06, 0.05s; downstream credit·인증된 forwarding 회귀와 묶음 0.736s |
 | Strict config·metric·filesystem | `cmd/narumq/cluster_config_test.go`, `internal/adapters/metrics/registry_backpressure_test.go`, `internal/adapters/diskspace/diskspace_test.go` `TestFreeBytes` | 범위·누락·unknown 거절, 정확한 sample과 peer 교체, 실제 filesystem 조회 | PASS — Windows local filesystem 포함 |
 | Commit lag와 disk 포화·회복 | `tests/integration/cluster_publish_backpressure_process_test.go` `TestDynamicClusterPublishBackpressureProcessAcceptance` | 두 subtest, 거절 topic 미전달, healthy node 성공, 회복 뒤 재시도, 정확한 topic 집합 | PASS — 10.83s, lag 1.37s·disk 1.85s |
 | 기존 quota·matrix·fencing·durable ACK | 아래 process 회귀와 `NARUMQ_DURABLE_ACK_FAULTS=1` durable ACK faults | 기존 저장·ACK·owner 경계 보존 | PASS — 회귀 22.846s·faults 160.473s |
@@ -1253,6 +1265,25 @@ BP-03 run `bp03-20261004T072411.781053400Z-42588`의 NaruMQ·EMQX `success`·`va
 최종 문서 갱신 뒤 `go run ./tools/verify traceability`는 PASS(wall 0.98s)했다. 코드 지도·module 설계·task 목록·ADR index·ADR-0030·cluster spec의 새 backpressure 링크 13개에서 대상 파일과 heading anchor를 확인했다. 누락은 없었다. `docs/TODO.md`는 합의한 CLU-12 범위를 완료로 옮겼으며 production storage의 열린 gate는 유지했다.
 
 실행 증거는 실행한 뒤 이 절에만 기록한다. Production Linux/EBS storage gate는 이 수용과 별개다.
+
+#### 2026-10-06 failover-aware backlog와 미전송 proposal 회수 검증
+
+저장소 root에서 아래 명령을 실행했다. 각 구현 단계의 `go build ./...`는 exit 0이었다. 최종 build·vet도 exit 0이었다.
+
+```text
+go build ./... && go vet ./...
+go test ./cmd/narumq -run '^(TestClusterCommitBacklogOldestAge|TestClusterPublishPressureCommitLag|TestClusterDurableCommitCallerTimeoutLateReplayAppliesOnceWithoutSuccess)$' -count=1 -v
+go test ./internal/adapters/tcp -run '^(TestDynamicPeerReclaimUnsentReturnsOnlyUnwrittenProposals|TestCptPeerConnectionWriteFailureRetainsInFlightFrame|TestDynamicPeerPhaseRefreshPreservesInProgressOutboundFrame)$' -count=1 -v
+go test ./internal/adapters/raft -run '^(TestDynamicDeferForwardedProposalReplaysUnsentFrameOnce|TestDynamicDeferredProposalsRespectDownstreamCredits|TestDynamicStepAllowsOnlyAuthenticatedForwardedRequests)$' -count=1 -v
+go test -race ./cmd/narumq ./internal/adapters/tcp ./internal/adapters/raft -count=1
+cmd /d /c "set GOMAXPROCS=4&& go test ./tests/integration -run ^TestDynamicClusterPublishBackpressureProcessAcceptance$ -count=1 -v -timeout 20m"
+```
+
+Focused 묶음은 runtime 2.073s·TCP 0.818s·Raft 0.736s로 PASS했다. Caller timeout 회귀는 1.66s로 PASS했다. 세 node의 command 순서와 각 1회 apply, 원래 호출의 `ErrQuorumUnavailable`, 늦은 결과의 buffer 보관을 유지했다. Write failure의 fixed·dynamic 두 경로와 phase refresh도 기존 시험 그대로 통과했다.
+
+Race는 runtime 14.256s·TCP 18.723s·Raft 5.657s로 PASS했다. 실제 3-process acceptance는 11.12s로 PASS했다(package 11.419s). Held failpoint의 `commit-lag`는 1.38s, `disk-pressure`는 1.60s였다. Leader에 도달 가능한 상태의 lag 거절은 유지됐다. Subscriber는 `bp/disk/after`, `bp/lag/held`, `bp/lag/other`, `bp/lag/retry`, `bp/sentinel`을 각각 1회 받았다. QoS 0 live도 1회 받았고 거절한 topic은 없었다. Build·vet·race·process 명령 묶음의 wall time은 62.15s였다.
+
+BP-06 실제 failover와 전체 local gate의 결과는 [Performance §3.6](performance-and-verification.md#36-bp-06-failure-recovery-smoke-관찰-경계)에 구분해 기록한다.
 
 ### 11.29 Replicated-state v1 계약 수용 매핑
 

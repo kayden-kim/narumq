@@ -1073,3 +1073,75 @@ func TestDynamicDeferredProposalsRespectDownstreamCredits(t *testing.T) {
 			!nodes[1].StoragePending() && !nodes[2].StoragePending() && !nodes[3].StoragePending()
 	})
 }
+
+// Traceability: CLU-12; docs/specs/cluster-session-and-delivery.md §4.2, §11.28.
+func TestDynamicDeferForwardedProposalReplaysUnsentFrameOnce(t *testing.T) {
+	messages, availableBytes := 0, 0
+	nodes := openDynamicTestNodesWithCapacity(t, func(NodeID) (int, int) {
+		return messages, availableBytes
+	})
+	pumpDynamicNodesUntil(t, nodes, func() bool {
+		return nodes[1].Status().Bootstrapped && nodes[2].Status().Bootstrapped &&
+			nodes[3].Status().Bootstrapped && !nodes[1].StoragePending() &&
+			!nodes[2].StoragePending() && !nodes[3].StoragePending()
+	})
+	if err := nodes[1].Campaign(); err != nil {
+		t.Fatal(err)
+	}
+	pumpDynamicNodesUntil(t, nodes, func() bool {
+		return nodes[1].Status().Role == RoleLeader && nodes[2].Status().LeaderID == 1 &&
+			!nodes[1].StoragePending() && !nodes[2].StoragePending() && !nodes[3].StoragePending()
+	})
+	cmd := []byte("reclaimed-once")
+	if err := nodes[2].ProposeForwarded(cmd); err != nil {
+		t.Fatal(err)
+	}
+	batch, err := nodes[2].ProcessReady()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var saved MessageDTO
+	for _, frame := range batch.Messages {
+		if frame.Type == "MsgProp" {
+			if saved.Data != nil {
+				t.Fatal("one proposal emitted multiple frames")
+			}
+			saved = frame
+			continue
+		}
+		if _, err := nodes[frame.To].Step(frame); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := nodes[2].CompleteApply(batch.ApplySequence); err != nil {
+		t.Fatal(err)
+	}
+	if saved.Data == nil {
+		t.Fatal("follower did not emit a proposal frame")
+	}
+	before, _ := nodes[2].DeferredProposalRoom()
+	if err := nodes[2].DeferForwardedProposal(saved.Data); err != nil {
+		t.Fatal(err)
+	}
+	after, _ := nodes[2].DeferredProposalRoom()
+	if after != before-1 || !nodes[2].StoragePending() {
+		t.Fatalf("retained FIFO room = %d -> %d, pending=%v", before, after, nodes[2].StoragePending())
+	}
+	if !dynamicAppliedCommandsMatch(nodes, nil) {
+		t.Fatal("unwritten proposal applied before replay")
+	}
+	messages, availableBytes = 1, maxMessageSize
+	pumpDynamicNodesUntil(t, nodes, func() bool {
+		return dynamicAppliedCommandsMatch(nodes, [][]byte{cmd}) && !nodes[1].StoragePending() &&
+			!nodes[2].StoragePending() && !nodes[3].StoragePending()
+	})
+	heartbeat, err := proto.Marshal(&pb.Message{
+		Type: pb.MsgHeartbeat.Enum(), From: proto.Uint64(1), To: proto.Uint64(2),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := nodes[2].DeferForwardedProposal(heartbeat); !errors.Is(err, ErrInvalidMessage) {
+		t.Fatalf("heartbeat retained as proposal: %v", err)
+	}
+}

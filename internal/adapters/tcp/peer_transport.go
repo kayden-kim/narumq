@@ -53,6 +53,10 @@ type PeerMessageDTO struct {
 	From uint64
 	To   uint64
 	Data []byte
+	// Reclaimable lets the dynamic transport return this Raft-lane frame through
+	// ReclaimUnsent while no socket write has started for it. The fixed
+	// transport ignores it.
+	Reclaimable bool
 }
 
 // PeerInboundDelivery holds one authenticated peer frame until its consumer completes processing.
@@ -130,6 +134,7 @@ type peerFrame struct {
 	size             int
 	identityRevision uint64
 	enqueuedAt       time.Time
+	reclaimable      bool
 }
 
 type peerTransportState struct {
@@ -1120,17 +1125,18 @@ type dynamicPeerState struct {
 	ctx                     context.Context
 	cancel                  context.CancelFunc
 
-	outbox      []*peerFrame
-	outHead     int
-	outCount    int
-	outCurrent  *peerFrame
-	outMessages int
-	outBytes    int
-	inMessages  int
-	inBytes     int
-	rejected    uint64
-	lastError   string
-	sessionMu   sync.Mutex
+	outbox         []*peerFrame
+	outHead        int
+	outCount       int
+	outCurrent     *peerFrame
+	outMessages    int
+	outBytes       int
+	outReclaimable int
+	inMessages     int
+	inBytes        int
+	rejected       uint64
+	lastError      string
+	sessionMu      sync.Mutex
 }
 
 // NewDynamicTCPPeerTransport validates v2 identities and creates a TLS 1.3 mTLS listener.
@@ -1280,10 +1286,16 @@ func (transport *DynamicTCPPeerTransport) sendLane(message PeerMessageDTO, lane 
 		peer.mu.Unlock()
 		return ErrPeerBackpressure
 	}
-	frame := &peerFrame{data: append([]byte(nil), message.Data...), size: frameSize}
+	frame := &peerFrame{
+		data: append([]byte(nil), message.Data...), size: frameSize,
+		reclaimable: message.Reclaimable && lane == dynamicLaneRaft,
+	}
 	tail := (peer.outHead + peer.outCount) % len(peer.outbox)
 	peer.outbox[tail] = frame
 	peer.outCount++
+	if frame.reclaimable {
+		peer.outReclaimable++
+	}
 	peer.outMessages++
 	peer.outBytes += frameSize
 	peer.mu.Unlock()
@@ -1385,6 +1397,51 @@ func (transport *DynamicTCPPeerTransport) Status(peerID uint64) (PeerTransportSt
 		InboundQueuedMessages: peer.inMessages, InboundQueuedBytes: peer.inBytes,
 		RejectedMessages: peer.rejected, LastError: peer.lastError,
 	}, nil
+}
+
+// ReclaimUnsent removes, in queue order, Reclaimable Raft frames that no socket
+// write has started for while the peer has no connection.
+func (transport *DynamicTCPPeerTransport) ReclaimUnsent(peerID uint64, maxMessages, maxBytes int) ([][]byte, error) {
+	transport.mu.Lock()
+	peer, ok := transport.peers[peerID]
+	transport.mu.Unlock()
+	if !ok {
+		return nil, ErrUnknownPeer
+	}
+	peer.mu.Lock()
+	if peer.stopped || peer.connection != nil || peer.outReclaimable == 0 || maxMessages <= 0 {
+		peer.mu.Unlock()
+		return nil, nil
+	}
+	var frames [][]byte
+	usedBytes, retained := 0, 0
+	limited := false
+	for offset := 0; offset < peer.outCount; offset++ {
+		index := (peer.outHead + offset) % len(peer.outbox)
+		frame := peer.outbox[index]
+		if frame.reclaimable && !limited {
+			if len(frames) < maxMessages && len(frame.data) <= maxBytes-usedBytes {
+				frames = append(frames, frame.data)
+				usedBytes += len(frame.data)
+				peer.outMessages--
+				peer.outBytes -= frame.size
+				peer.outReclaimable--
+				continue
+			}
+			limited = true
+		}
+		peer.outbox[(peer.outHead+retained)%len(peer.outbox)] = frame
+		retained++
+	}
+	for offset := retained; offset < peer.outCount; offset++ {
+		peer.outbox[(peer.outHead+offset)%len(peer.outbox)] = nil
+	}
+	peer.outCount = retained
+	peer.mu.Unlock()
+	if len(frames) > 0 {
+		peer.owner.signalOutboundCapacity()
+	}
+	return frames, nil
 }
 
 // ResetPeer closes one peer socket after an invalid Raft message.
@@ -2400,6 +2457,9 @@ func (peer *dynamicPeerState) takeOutbound() *peerFrame {
 		return nil
 	}
 	peer.outCurrent = peer.outbox[peer.outHead]
+	if peer.outCurrent.reclaimable {
+		peer.outReclaimable--
+	}
 	peer.outbox[peer.outHead] = nil
 	peer.outHead = (peer.outHead + 1) % len(peer.outbox)
 	peer.outCount--
@@ -2460,6 +2520,7 @@ func (peer *dynamicPeerState) stop() {
 	peer.outCurrent = nil
 	peer.outMessages = 0
 	peer.outBytes = 0
+	peer.outReclaimable = 0
 	peer.inMessages = 0
 	peer.inBytes = 0
 	peer.mu.Unlock()

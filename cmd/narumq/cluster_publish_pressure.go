@@ -13,15 +13,27 @@ import (
 	"narumq/internal/application/publish"
 )
 
+// clusterBacklogEntry is one unfinished BeginDelivery command.
+type clusterBacklogEntry struct {
+	startedAt  time.Time
+	proposed   bool
+	generation uint64
+}
+
 type clusterCommitBacklog struct {
-	mu      sync.Mutex
-	entries list.List
+	mu             sync.Mutex
+	entries        list.List
+	leaderID       uint64
+	term           uint64
+	reachable      bool
+	reachableSince time.Time
+	generation     uint64
 }
 
 func (b *clusterCommitBacklog) add(now time.Time) *list.Element {
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	return b.entries.PushBack(now)
+	return b.entries.PushBack(&clusterBacklogEntry{startedAt: now})
 }
 func (b *clusterCommitBacklog) remove(entry *list.Element) {
 	if b == nil || entry == nil {
@@ -31,16 +43,77 @@ func (b *clusterCommitBacklog) remove(entry *list.Element) {
 	b.entries.Remove(entry)
 	b.mu.Unlock()
 }
+
+func (b *clusterCommitBacklog) markProposed(entry *list.Element) {
+	if b == nil || entry == nil {
+		return
+	}
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	e := entry.Value.(*clusterBacklogEntry)
+	e.proposed = true
+	e.generation = b.generation
+}
+
+func (b *clusterCommitBacklog) observeLeadership(leaderID, term uint64, reachable bool, now time.Time) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	changed := leaderID != b.leaderID || term != b.term
+	if changed || (b.reachable && !reachable) {
+		b.generation++
+	}
+	if reachable && (changed || !b.reachable) {
+		b.reachableSince = now
+	}
+	b.leaderID, b.term, b.reachable = leaderID, term, reachable
+}
+
 func (b *clusterCommitBacklog) oldest(now time.Time) time.Duration {
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	if entry := b.entries.Front(); entry != nil {
-		age := now.Sub(entry.Value.(time.Time))
+	if !b.reachable {
+		return 0
+	}
+	for entry := b.entries.Front(); entry != nil; entry = entry.Next() {
+		e := entry.Value.(*clusterBacklogEntry)
+		if e.proposed && e.generation != b.generation {
+			continue
+		}
+		start := e.startedAt
+		if b.reachableSince.After(start) {
+			start = b.reachableSince
+		}
+		age := now.Sub(start)
 		if age > 0 {
 			return age
 		}
+		return 0
 	}
 	return 0
+}
+
+func (runtime *clusterRuntime) markCommitProposed(entry *list.Element) {
+	if runtime != nil && runtime.publishPressure != nil {
+		runtime.publishPressure.backlog.markProposed(entry)
+	}
+}
+
+func (runtime *clusterRuntime) observeCommitLeadership() {
+	if runtime.publishPressure == nil || runtime.node == nil {
+		return
+	}
+	status := runtime.node.Status()
+	leader := uint64(status.LeaderID)
+	reachable := leader != 0 && (leader == runtime.config.NodeID || runtime.peerConnected(leader))
+	runtime.publishPressure.backlog.observeLeadership(leader, status.Term, reachable, time.Now())
+}
+
+func (runtime *clusterRuntime) peerConnected(id uint64) bool {
+	if runtime.transport == nil {
+		return false
+	}
+	status, err := runtime.transport.Status(id)
+	return err == nil && status.Connected
 }
 
 type clusterPublishPressureController struct {

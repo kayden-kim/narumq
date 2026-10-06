@@ -795,7 +795,7 @@ func TestDriverRequestsRejectAfterExit(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
 
-	if _, err := runtime.beginCommit(ctx, membership.CommandDTO{}); !errors.Is(err, membership.ErrQuorumUnavailable) {
+	if _, err := runtime.beginCommit(ctx, membership.CommandDTO{}, nil); !errors.Is(err, membership.ErrQuorumUnavailable) {
 		t.Fatalf("beginCommit error = %v, want %v", err, membership.ErrQuorumUnavailable)
 	}
 	if _, err := runtime.requestReadBarrier(ctx); !errors.Is(err, raftadapter.ErrFailed) {

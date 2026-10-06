@@ -1162,6 +1162,78 @@ func TestDynamicPeerPhaseRefreshPreservesInProgressOutboundFrame(t *testing.T) {
 	}
 }
 
+// Traceability: CLU-12; docs/specs/cluster-session-and-delivery.md §4.2, §11.28.
+func TestDynamicPeerReclaimUnsentReturnsOnlyUnwrittenProposals(t *testing.T) {
+	local := dynamicTestIdentity(1, "n:1", "n1", PeerPhaseVoter, "", 0x11)
+	remote := dynamicTestIdentity(2, "n:2", "n2", PeerPhaseVoter, "", 0x22)
+	transport := &DynamicTCPPeerTransport{
+		local: local, localID: local.MemberID,
+		peers: make(map[uint64]*dynamicPeerState),
+	}
+	peer := newDynamicPeerState(transport, remote)
+	transport.peers[remote.MemberID] = peer
+	defer peer.stop()
+	for _, marker := range []byte{'A', 'B', 'C', 'D'} {
+		if err := transport.Send(PeerMessageDTO{
+			From: local.MemberID, To: remote.MemberID, Data: []byte{marker},
+			Reclaimable: marker != 'B',
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	before, err := transport.Status(remote.MemberID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	inProgress := peer.takeOutbound()
+	if inProgress == nil || !bytes.Equal(inProgress.data, []byte{'A'}) {
+		t.Fatalf("in-progress frame = %v, want A", inProgress)
+	}
+	frames, err := transport.ReclaimUnsent(remote.MemberID, 1, 1<<20)
+	if err != nil || len(frames) != 1 || !bytes.Equal(frames[0], []byte{'C'}) {
+		t.Fatalf("first reclaim = %q, %v, want [C]", frames, err)
+	}
+	after, err := transport.Status(remote.MemberID)
+	if err != nil || after.OutboundQueuedMessages != 3 || after.OutboundQueuedBytes != before.OutboundQueuedBytes-5 {
+		t.Fatalf("reclaimed accounting = %+v, %v; before = %+v", after, err, before)
+	}
+	frames, err = transport.ReclaimUnsent(remote.MemberID, 1, 0)
+	if err != nil || len(frames) != 0 {
+		t.Fatalf("zero byte credit reclaimed frame: %q, %v", frames, err)
+	}
+	frames, err = transport.ReclaimUnsent(remote.MemberID, 1, 1<<20)
+	if err != nil || len(frames) != 1 || !bytes.Equal(frames[0], []byte{'D'}) {
+		t.Fatalf("second reclaim = %q, %v, want [D]", frames, err)
+	}
+	if retried := peer.takeOutbound(); retried != inProgress {
+		t.Fatal("reclaim removed or replaced in-progress A")
+	}
+	peer.completeOutbound(inProgress)
+	ordinary := peer.takeOutbound()
+	if ordinary == nil || !bytes.Equal(ordinary.data, []byte{'B'}) {
+		t.Fatalf("next outbound = %v, want B", ordinary)
+	}
+	peer.completeOutbound(ordinary)
+	if err := transport.Send(PeerMessageDTO{
+		From: local.MemberID, To: remote.MemberID, Data: []byte{'E'}, Reclaimable: true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	connection, remoteConnection := net.Pipe()
+	defer remoteConnection.Close()
+	peer.mu.Lock()
+	peer.connection = connection
+	peer.mu.Unlock()
+	frames, err = transport.ReclaimUnsent(remote.MemberID, 1, 1<<20)
+	if err != nil || frames != nil {
+		t.Fatalf("connected peer reclaim = %q, %v, want nil", frames, err)
+	}
+	frames, err = transport.ReclaimUnsent(99, 1, 1<<20)
+	if frames != nil || !errors.Is(err, ErrUnknownPeer) {
+		t.Fatalf("unknown peer reclaim = %q, %v", frames, err)
+	}
+}
+
 func TestDynamicPeerTransportExchangesRaftFrames(t *testing.T) {
 	serverTLS1, clientTLS1 := testPeerTLSConfigs(t, "node1.example")
 	serverTLS2, clientTLS2 := testPeerTLSConfigs(t, "node2.example")

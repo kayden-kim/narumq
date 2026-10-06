@@ -201,12 +201,15 @@ Publisher ingress node와 consensus leader는 같지 않을 수 있다. Runtime�
 | `internal/application/publish/admission.go` `Admission` | Application이 pressure·delivery capacity 조회 port와 sentinel을 소유한다. Raft와 filesystem 타입을 알지 않는다. |
 | `publish.go` `publish`·`BeginReceiveQoS2`, `submission.go` `beginPublish` | 새 client 저장에서 pressure를 먼저 검사한다. Route match 뒤 delivery 후보를 capacity 검사에 넘긴다. RELEASE와 trusted Will은 이 검사를 건너뛴다. |
 | `internal/application/membership/delivery_capacity.go` `DeliveryPublishCapacity` | Read lock 아래 전역·tenant 사용량과 target 합계를 검사한다. Fast path가 부족할 때만 committed ownership·subscription과 session 포화를 확인한다. `delivery.go`의 apply와 eligibility helper를 공유한다. |
-| `cmd/narumq/cluster_publish_pressure.go` `clusterPublishPressureController` | Disk 측정·hysteresis·backlog 나이와 admission 결과를 소유한다. 거절 counter, rate-limited log, sampled gauge와 leader의 peer lag를 기록한다. |
+| `cmd/narumq/cluster_publish_pressure.go` `clusterPublishPressureController` | Disk 측정·hysteresis·backlog 나이와 admission 결과를 소유한다. 거절 counter, rate-limited log, sampled gauge와 leader의 peer lag를 기록한다. `observeCommitLeadership`가 local 또는 connected leader의 도달 가능성과 leadership generation을 기록하고 `markCommitProposed`가 제출 generation을 고정한다. |
 | `internal/adapters/diskspace` `FreeBytes` | Windows·Unix filesystem API에서 일반 사용자에게 남은 byte 수를 반환한다. `cmd/narumq`가 third-party API를 직접 import하지 않는다. |
-| `cluster_durable.go` `BeginDelivery`, `cluster_runtime.go` `clusterPendingCommit.Wait` | 제출 직전 backlog entry를 등록한다. Begin 오류 또는 Wait 종료에서 같은 entry를 제거한다. 다른 Commit은 추적하지 않는다. |
+| `cluster_durable.go` `BeginDelivery`, `cluster_runtime.go` `beginCommit`·`clusterPendingCommit.Wait` | Driver에 전달하기 전에 backlog entry를 pending commit에 넣는다. Begin 오류 또는 Wait 종료에서 같은 entry를 제거한다. 다른 Commit은 추적하지 않는다. |
+| `cluster_proposals.go` → TCP transport → Raft adapter | `reclaimUnsentProposals` → `ReclaimUnsent` → `DeferForwardedProposal`로 연결 없는 peer의 write 전 `MsgProp`만 기존 FIFO로 옮긴다. `outCurrent`는 유지하며 disconnected leader의 flush credit은 0이다. |
 | `internal/adapters/metrics/registry_backpressure.go`, TCP `server.go`·`server_submission.go` | Metrics는 고정 reason과 peer별 관측값을 출력한다. TCP는 두 admission 오류를 기존 capacity 실패 응답으로 바꾼다. |
 
 `runClusterMode`는 config 기본값을 해석하고 controller를 만든다. `publish.WithAdmission`으로 use case에 주입한다. `serve`는 MQTT listener 시작 전에 동기 측정을 한 번 실행하고 1초 ticker를 시작한다. Context 종료 뒤 `stopAndWait`가 ticker goroutine을 join한다. `diskPressure`, `lagActive`, `sampleErr`는 node-local 관측 상태이며 복제하지 않는다. Backlog list와 거절 log 시각 map은 각각 mutex로 보호한다.
+
+Driver는 Ready 처리 전에 leadership을 관찰한다. Proposal batch 제출 성공 직후에도 같은 상태를 관찰하고 각 entry에 현재 generation을 기록한다. Backlog mutex는 list, 제출 상태와 leadership 상태를 함께 보호한다. 이전 generation의 제출 entry는 나이에서 제외하며 미제출 entry는 현재 leader의 도달 시작 시각을 기준으로 계산한다. Admission과 metric은 같은 `oldest` 계산을 사용한다. [ADR-0035](../decisions/ADR-0035-failover-aware-commit-lag-and-unsent-proposal-reclaim.md)를 따른다.
 
 Capacity 검사는 저장을 예약하지 않는다. 따라서 동시에 수용한 command가 apply 때 경합할 수 있다. 기존 apply는 session 포화와 RELEASE 시점 포화를 `Saturated`로 처리하며 runtime이 그 수를 집계한다. Local management summary는 기존 storage pressure에 disk admission 상태를 OR로 더한다. 다른 node의 disk 압력은 이 값에 포함하지 않는다. 실행 증거는 [Cluster §11.28](../specs/cluster-session-and-delivery.md#1128-publish-backpressure-수용-매핑)에서 확인한다.
 

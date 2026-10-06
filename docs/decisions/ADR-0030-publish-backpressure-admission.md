@@ -9,7 +9,7 @@
 | 관련 스펙·데이터 계약 | [Cluster §4.5·§11.28](../specs/cluster-session-and-delivery.md#45-publish-backpressure-admission), [Tenant 저장 quota](../specs/tenancy-and-security.md#51-저장-quota) |
 | 관련 아키텍처 | [Cluster architecture](../architectures/cluster-architecture.md), [Project structure](../architectures/project-structure.md) |
 | 이 결정이 대체하는 이전 결정 기록(ADR) | [ADR-0015](ADR-0015-cluster-durable-qos-delivery.md) (§1 7·13항의 전역·tenant capacity 처리), [ADR-0017](ADR-0017-tenant-storage-quota.md) (§1 6항의 ingress 처리) |
-| 이 결정을 대체한 새 결정 기록(ADR) | 없음 |
+| 이 결정을 대체한 새 결정 기록(ADR) | [ADR-0035](ADR-0035-failover-aware-commit-lag-and-unsent-proposal-reclaim.md) (§1 5항 backlog 나이와 metric 정의) |
 
 ## 1. 결정
 

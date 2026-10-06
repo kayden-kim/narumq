@@ -80,6 +80,9 @@ func (runtime *clusterRuntime) forwardedProposalCapacity(peerID raftadapter.Node
 			return 0, 0
 		}
 	}
+	if status, err := runtime.transport.Status(uint64(peerID)); err != nil || !status.Connected {
+		return 0, 0
+	}
 	capacity, err := runtime.transport.OutboundCapacity(uint64(peerID))
 	if err != nil {
 		return 0, 0

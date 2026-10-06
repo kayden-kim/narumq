@@ -1,7 +1,9 @@
 package raft
 
 import (
+	"bytes"
 	"errors"
+	"fmt"
 
 	etcdraft "go.etcd.io/raft/v3"
 	pb "go.etcd.io/raft/v3/raftpb"
@@ -11,6 +13,45 @@ import (
 type deferredProposal struct {
 	message *pb.Message
 	bytes   int
+}
+
+// DeferredProposalRoom reports how many reclaimed forwarded proposals the FIFO accepts now.
+func (n *Node) DeferredProposalRoom() (messages, bytes int) {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	if n.stateError() != nil || !n.canDeferProposal() || n.storageSaturated() {
+		return 0, 0
+	}
+	return len(n.deferredProposals) - n.deferredProposalCount,
+		max(0, maxWALFramePayload-1024-n.readyInputBytes-n.deferredProposalBytes)
+}
+
+// DeferForwardedProposal retains an encoded MsgProp that no peer socket write started for.
+// Retention is not commitment or an ACK.
+func (n *Node) DeferForwardedProposal(data []byte) error {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	if err := n.stateError(); err != nil {
+		return err
+	}
+	if !n.canDeferProposal() {
+		return ErrNotLeader
+	}
+	if len(data) == 0 || len(data) > maxMessageSize {
+		return ErrInvalidMessage
+	}
+	var decoded pb.Message
+	if err := proto.Unmarshal(bytes.Clone(data), &decoded); err != nil {
+		return fmt.Errorf("%w: decode message: %v", ErrInvalidMessage, err)
+	}
+	if decoded.GetType() != pb.MsgProp || !normalProposal(&decoded) ||
+		(decoded.GetFrom() != uint64(n.id) && !containsMember(n.confState, NodeID(decoded.GetFrom()))) {
+		return ErrInvalidMessage
+	}
+	if n.storageSaturated() {
+		return ErrBackpressure
+	}
+	return n.deferProposal(&decoded, len(data))
 }
 
 func (n *Node) canDeferProposal() bool {

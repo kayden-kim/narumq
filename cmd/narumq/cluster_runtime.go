@@ -872,6 +872,8 @@ func (runtime *clusterRuntime) runDriver(ctx context.Context) (driverErr error) 
 			default:
 			}
 			runtime.refreshReadWaiters(reads)
+			runtime.observeCommitLeadership()
+			runtime.reclaimUnsentProposals()
 			// Read injected fault files before Node owns its mutex.
 			if runtime.faults.enabled() {
 				control, _, _ := runtime.faults.read()
@@ -1641,6 +1643,10 @@ func (runtime *clusterRuntime) sendMessages(ctx context.Context, messages []raft
 			continue
 		}
 		if _, found := rejected[message.To]; found {
+			if message.Type == "MsgProp" {
+				_ = runtime.node.DeferForwardedProposal(message.Data)
+				continue
+			}
 			if message.IsSnapshot {
 				_ = runtime.node.ReportPeerMessageFailure(message.To, true)
 			}
@@ -1651,11 +1657,15 @@ func (runtime *clusterRuntime) sendMessages(ctx context.Context, messages []raft
 		// authenticated immediate sender, not that logical requester.
 		err := runtime.transport.Send(tcpadapter.PeerMessageDTO{
 			From: runtime.config.NodeID, To: uint64(message.To), Data: message.Data,
+			Reclaimable: message.Type == "MsgProp",
 		})
 		if err == nil {
 			continue
 		}
 		if errors.Is(err, tcpadapter.ErrPeerBackpressure) {
+			if message.Type == "MsgProp" && runtime.node.DeferForwardedProposal(message.Data) == nil {
+				continue
+			}
 			rejected[message.To] = struct{}{}
 			if reportErr := runtime.node.ReportPeerMessageFailure(message.To, message.IsSnapshot); reportErr != nil && ctx.Err() == nil {
 				localStatus := runtime.node.Status()
@@ -1688,6 +1698,7 @@ func (runtime *clusterRuntime) sendMessages(ctx context.Context, messages []raft
 		}
 		return fmt.Errorf("queue raft message for peer %d: %w", message.To, err)
 	}
+	runtime.reclaimUnsentProposals()
 	return nil
 }
 
@@ -2381,7 +2392,7 @@ func (runtime *clusterRuntime) readBarrier(ctx context.Context) error {
 }
 
 func (runtime *clusterRuntime) Commit(ctx context.Context, command membership.CommandDTO) (membership.ApplyResultDTO, error) {
-	pending, err := runtime.beginCommit(ctx, command)
+	pending, err := runtime.beginCommit(ctx, command, nil)
 	if err != nil {
 		return membership.ApplyResultDTO{}, err
 	}
@@ -2488,7 +2499,7 @@ func (pending *clusterPendingCommit) Wait() (membership.ApplyResultDTO, error) {
 	return result, err
 }
 
-func (runtime *clusterRuntime) beginCommit(ctx context.Context, command membership.CommandDTO) (*clusterPendingCommit, error) {
+func (runtime *clusterRuntime) beginCommit(ctx context.Context, command membership.CommandDTO, backlogEntry *list.Element) (*clusterPendingCommit, error) {
 	runtime.localCommits.Add(1)
 	submitted := false
 	var readCancel context.CancelFunc
@@ -2532,6 +2543,7 @@ func (runtime *clusterRuntime) beginCommit(ctx context.Context, command membersh
 		runtime: runtime, context: ctx, readContext: readContext, readCancel: readCancel,
 		contextKey: string(raw[:]), command: command, data: data,
 		staged: make(chan clusterCommitStage, 1), result: make(chan clusterApplyResponse, 1),
+		backlogEntry: backlogEntry,
 	}
 	select {
 	case runtime.requests <- clusterDriverRequest{kind: clusterDriverCommit, pending: pending, queuedAt: time.Now()}:

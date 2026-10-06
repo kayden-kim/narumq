@@ -35,11 +35,12 @@
 | [ADR-0027](ADR-0027-detach-forward-and-owner-crash-qos0-boundary.md) | Accepted | Detach 전환 중 forward QoS 0과 DETACH commit 전 owner crash의 local queue 유실을 at-most-once 경계로 확정한다. |
 | [ADR-0028](ADR-0028-planned-handoff-will-and-reason-metric.md) | Accepted | 계획 인계에 표준 Will 규칙을 적용하고 최종 결과를 고정한 6개 사유로 집계한다. |
 | [ADR-0029](ADR-0029-replication-factor-write-quorum-profile.md) | Accepted | Replication factor·write quorum은 3/2만 지원하고 removal 전 최소 voter 수를 검사한다. |
-| [ADR-0030](ADR-0030-publish-backpressure-admission.md) | Accepted | 새 durable publish에 전역·tenant capacity, ingress commit backlog와 local disk admission을 적용한다. |
+| [ADR-0030](ADR-0030-publish-backpressure-admission.md) | Accepted (§1 5항 backlog 나이 정의는 ADR-0035가 대체) | 새 durable publish에 전역·tenant capacity, ingress commit backlog와 local disk admission을 적용한다. |
 | [ADR-0031](ADR-0031-replicated-state-schema-strict-evolution.md) | Accepted | Replicated-state schema `1.0`의 strict decode, feature activation 뒤 새 형식 기록과 baseline guard를 확정한다. |
 | [ADR-0032](ADR-0032-feature-activation-approval-policy.md) | Accepted | 운영 체크리스트·외부 승인 기록으로 feature activation을 승인하며 commit이 rollback window를 끝낸다. API는 승인 evidence를 강제하지 않는다. |
 | [ADR-0033](ADR-0033-connection-rebalance-operation.md) | Accepted | 수동 일회성 연결 rebalance를 복제하고 participant 보고로 수렴을 판정한다. |
 | [ADR-0034](ADR-0034-node-local-tenant-connection-and-traffic-limits.md) | Accepted (승인된 작업 계획; TEN-06·TEN-07 node-local scope) | 인증된 tenant의 node별 연결·session·traffic 한도와 route projection의 subscription 한도를 적용한다. |
+| [ADR-0035](ADR-0035-failover-aware-commit-lag-and-unsent-proposal-reclaim.md) | Accepted | 도달 가능한 leader와 제출 generation으로 commit lag를 계산하고 write 전 forwarded proposal만 회수한다. |
 
 `Proposed` ADR은 검토 중인 제안이다. `Accepted` ADR은 각 기록에 명시한 범위 안에서 채택된 결정이다. `design target only`는 production runtime이나 acceptance 검증을 뜻하지 않는다.
 

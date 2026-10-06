@@ -19,6 +19,7 @@ import (
 func TestClusterCommitBacklogOldestAge(t *testing.T) {
 	var b clusterCommitBacklog
 	now := time.Unix(100, 0)
+	b.observeLeadership(1, 1, true, now.Add(-time.Hour))
 	if age := b.oldest(now); age != 0 {
 		t.Fatal(age)
 	}
@@ -38,6 +39,41 @@ func TestClusterCommitBacklogOldestAge(t *testing.T) {
 	if age := b.oldest(now); age != 0 {
 		t.Fatal(age)
 	}
+	first = b.add(now.Add(-3 * time.Second))
+	b.observeLeadership(1, 1, false, now)
+	if age := b.oldest(now); age != 0 {
+		t.Fatalf("unreachable leader age = %v, want 0", age)
+	}
+	b.observeLeadership(1, 1, true, now.Add(-500*time.Millisecond))
+	if age := b.oldest(now); age != 500*time.Millisecond {
+		t.Fatalf("reconnected leader age = %v, want 500ms", age)
+	}
+	b.markProposed(first)
+	next := b.add(now.Add(-200 * time.Millisecond))
+	b.observeLeadership(2, 2, true, now.Add(-time.Second))
+	if age := b.oldest(now); age != 200*time.Millisecond {
+		t.Fatalf("new leader included stale proposal or lost unsubmitted entry: %v", age)
+	}
+	b.remove(next)
+	if age := b.oldest(now); age != 0 {
+		t.Fatalf("old generation returned after removing unsubmitted entry: %v", age)
+	}
+	b.remove(first)
+	b.observeLeadership(1, 1, true, now.Add(-time.Second))
+	first = b.add(now.Add(-3 * time.Second))
+	b.markProposed(first)
+	b.observeLeadership(1, 1, false, now.Add(-500*time.Millisecond))
+	b.observeLeadership(1, 1, true, now.Add(-200*time.Millisecond))
+	if age := b.oldest(now); age != 0 {
+		t.Fatalf("same leader reconnect resurrected proposed entry: %v", age)
+	}
+	next = b.add(now.Add(-3 * time.Second))
+	b.observeLeadership(2, 2, true, now.Add(-100*time.Millisecond))
+	if age := b.oldest(now); age != 100*time.Millisecond {
+		t.Fatalf("leadership change lost unsubmitted entry: %v", age)
+	}
+	b.remove(first)
+	b.remove(next)
 }
 
 // Traceability: CLU-12; docs/specs/cluster-session-and-delivery.md §11.28.
@@ -96,6 +132,7 @@ func TestClusterPublishPressureCommitLag(t *testing.T) {
 	r := &clusterRuntime{metrics: adaptersmetrics.NewRegistry()}
 	c := &clusterPublishPressureController{runtime: r, maxCommitLag: time.Second, freeBytes: func(string) (uint64, error) { return 2 << 30, nil }}
 	r.publishPressure = c
+	c.backlog.observeLeadership(1, 1, true, time.Now().Add(-time.Hour))
 	entry := r.addCommitBacklog(time.Now().Add(-2 * time.Second))
 	if err := c.CheckPressure(); !errors.Is(err, publish.ErrPublishBackpressure) || !strings.Contains(err.Error(), "commit_lag") {
 		t.Fatalf("lag rejection=%v", err)
@@ -114,6 +151,12 @@ func TestClusterPublishPressureCommitLag(t *testing.T) {
 	c.sample(time.Now())
 	if !strings.Contains(string(r.metrics.Render(false)), "narumq_cluster_commit_backlog_oldest_seconds 0.000000\n") {
 		t.Fatal("completed entry remains in metric")
+	}
+	entry = r.addCommitBacklog(time.Now().Add(-2 * time.Second))
+	defer r.removeCommitBacklog(entry)
+	c.backlog.observeLeadership(0, 2, false, time.Now())
+	if err := c.CheckPressure(); err != nil {
+		t.Fatalf("leader loss retained commit lag rejection: %v", err)
 	}
 	var nilRuntime *clusterRuntime
 	nilRuntime.removeCommitBacklog(nil)

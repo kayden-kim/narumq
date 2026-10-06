@@ -91,7 +91,7 @@ func (runtime *clusterRuntime) BeginDelivery(
 	pending, err := runtime.beginCommit(commitCtx, membership.CommandDTO{
 		SchemaMajor: membership.SchemaMajor, SchemaMinor: membership.SchemaMinor,
 		OperationID: operationID, Delivery: &change,
-	})
+	}, entry)
 	if err != nil {
 		runtime.removeCommitBacklog(entry)
 		cancel()
@@ -101,7 +101,6 @@ func (runtime *clusterRuntime) BeginDelivery(
 		return nil, err
 	}
 	pending.deliveryCancel = cancel
-	pending.backlogEntry = entry
 	return pending, nil
 }
 
