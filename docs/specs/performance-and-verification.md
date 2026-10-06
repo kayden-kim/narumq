@@ -793,7 +793,6 @@ Local BP-07 smoke harness·broker 결함 수정·5회 교차 비교·local gate�
 | `authentication` | BP-03의 authentication reason을 그대로 쓴다. Tenant/client-ID binding과 peer mTLS의 등가는 검증하지 않는다. |
 | `resyncCondition` | NaruMQ resync completes when the leader match index for the restarted voter reaches the leader applied index observed after restart; EMQX resync completes when the pinned cluster readiness condition passes |
 | `sessionRecovery` | NaruMQ restores persistent sessions from replicated session metadata; EMQX resumes durable sessions from builtin_raft storage; equivalence is not proven |
-
 | `crashDurability` | EMQX 5.8.8은 durable storage 복제 완료 전에 QoS 1/2 ACK를 보내고(`store_batch` `sync => false`), durable session 상태를 `durable_sessions.heartbeat_interval`(5000ms)마다 저장한다. Kill 구간의 ACKed gap과 QoS 2 재전송은 EMQX target에서만 `comparatorDurabilityExceptions`로 기록한다. |
 
 #### 고정 smoke profile
@@ -1033,7 +1032,7 @@ Windows/amd64, Go 1.26.5, Docker Desktop Linux/amd64에서 같은 smoke profile�
 
 저장소 root에서 `cmd /d /c "set GOMAXPROCS=4&& go run ./tools/verify local"`을 실행했다. `traceability`, `architecture`, `coverage`, `local`이 모두 PASS였다. Local gate wall time은 156.15s다.
 
-두 compare manifest와 suite manifest는 baseline `a8348f792b984cca1eac9b1cae179d1cc8b71395`, `dirty=true`를 기록한다. 원시 artifact는 위 경로에 보존했다. Local smoke acceptance는 5회 suite 실패로 미완료다. `SPEC-TBD-08`, BP-02·BP-04, release regression과 BP-06의 유효한 5회 suite가 남는다.
+두 compare manifest와 suite manifest는 baseline `a8348f792b984cca1eac9b1cae179d1cc8b71395`, `dirty=true`를 기록한다. 수정 코드와 시험의 확인 커밋은 `096f480eb06e1d5c76177847c9e991d7bac58953`다. Compare·suite·local gate는 이 커밋 전에 실행했으며 이후 source와 시험을 바꾸지 않았다. 원시 artifact는 위 경로에 보존했다. Local smoke acceptance는 5회 suite 실패로 미완료다. `SPEC-TBD-08`, BP-02·BP-04, release regression과 BP-06의 유효한 5회 suite가 남는다.
 
 ## 4. 필수 benchmark profile
 
