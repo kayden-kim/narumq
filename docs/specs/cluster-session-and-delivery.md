@@ -1329,6 +1329,8 @@ BP-06 compare·5회 suite의 수용 판정은 [Performance §3.6](performance-an
 
 최종 source의 BP-06 증거와 확인 커밋은 [Performance §3.6](performance-and-verification.md#36-bp-06-failure-recovery-smoke-관찰-경계)에 연결한다.
 
+최종 source와 시험의 확인 커밋은 `90aa3b9515f9c22670b0c4a82160b2d3a80593e4`다. 위 최종 검증과 최종 BP-06 compare·suite는 모두 이 커밋 전에 실행했으며 이후 source·시험은 바꾸지 않았다. 커밋 뒤에는 확인 해시를 연결하는 문서만 갱신했다. 최종 suite는 invalid이며 BP-06 수용은 미완료다.
+
 ### 11.29 Replicated-state v1 계약 수용 매핑
 
 이 매핑은 [ADR-0031](../decisions/ADR-0031-replicated-state-schema-strict-evolution.md)과 [Replicated-state v1](../contracts/replicated-state-v1.md)의 strict decode·feature gate·기준 bytes를 검증한다. 게시 release별 process matrix와 production storage는 별도 gate다.

@@ -1172,6 +1172,8 @@ NaruMQ는 2/5 valid였다. 모든 반복의 `failureReasons=[]`이며 gap·QoS 2
 
 BP-06 smoke 수용은 미완료다. 최종 compare는 valid지만 suite는 0/5다. 완료 entry의 lag 오탐 수정과 caller timeout 뒤 entry 보관은 행동 시험으로 확인했다. 남은 문제는 불확실한 proposal 결과의 timeout·계획 밖 disconnect와 EMQX의 예외 밖 duplicate다. 기본값·ACK·timeout·재제안·validity 계약은 유지했다. 이미 전송한 proposal의 재제안은 ADR-0035 §7에 따라 중복 제거·순서·schema 계약을 먼저 결정해야 한다. 실패한 suite를 반복 실행하거나 판정 예외를 넓혀 수용으로 바꾸지 않는다.
 
+최종 source·시험·결과 문서의 확인 커밋은 `90aa3b9515f9c22670b0c4a82160b2d3a80593e4` (`fix(cluster): retire commit backlog at driver completion`)이다. 최종 build·vet·focused·race·process·local gate와 최종 compare·suite는 커밋 전에 같은 source·시험으로 실행했다. 이후 source와 시험은 바꾸지 않았다. 결과 문서와 TODO 갱신 뒤 `go run ./tools/verify traceability`도 PASS였다. 커밋 뒤에는 이 해시를 연결하는 문서만 갱신했다. Manifest의 원래 baseline·`dirty=true`와 invalid suite 판정은 유지한다. CI 실행 링크는 없으며 smoke 결과를 release gate로 해석하지 않는다.
+
 ## 4. 필수 benchmark profile
 
 | ID | 고정 조건 | 필수 결과 |
