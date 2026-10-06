@@ -25,11 +25,12 @@ func (runtime *clusterRuntime) submitCommitBatch(pending []*clusterPendingCommit
 	for _, commit := range pending {
 		if err != nil {
 			runtime.observeRaftStage(adaptersmetrics.RaftProposal, startedAt)
+			runtime.removeCommitBacklog(commit.backlogEntry)
 			commit.result <- clusterApplyResponse{err: err}
 		} else {
 			runtime.markCommitProposed(commit.backlogEntry)
 			*proposals = append(*proposals, clusterProposalWaiter{
-				data: commit.data, result: commit.result, startedAt: startedAt,
+				data: commit.data, result: commit.result, startedAt: startedAt, backlogEntry: commit.backlogEntry,
 			})
 		}
 	}

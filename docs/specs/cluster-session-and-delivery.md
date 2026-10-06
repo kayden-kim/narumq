@@ -230,6 +230,7 @@ Planned removal은 대상 외의 committed `VOTER`가 3 미만이면 non-retryab
   5. 포함된 가장 오래된 entry의 나이는 `now - max(startedAt, reachableSince)`다. `reachableSince`는 현재 leader에 도달할 수 있게 된 시각이다.
   6. 이 나이가 `maxCommitLagMillis` 이상이면 거절한다. `narumq_cluster_commit_backlog_oldest_seconds`도 같은 값을 출력한다.
   7. Failover 지연과 quorum 손실 뒤 leader가 물러난 구간은 기존 5초 `clusterDurableCommitTimeout`이 처리한다. 결과가 확정되지 않은 commit의 timeout과 연결 종료는 §4.2·ADR-0015 §13을 유지한다. Leader의 follower별 지연은 metric으로만 보고한다.
+  8. Driver가 local apply와 projection을 완료하면 caller가 `Wait()`를 호출하기 전에도 해당 entry를 제거한다. Fresh proof·제출 실패나 driver 종료로 오류 결과를 확정한 entry도 제거한다. Begin 오류로 driver에 전달하지 못한 entry는 caller가 제거한다. Wait의 timeout·취소는 이미 수락된 proposal의 entry를 제거하지 않는다. 그 entry는 늦은 apply·projection 완료나 driver 종료까지 유지한다. 이전 generation의 entry를 나이에서 제외하는 규칙은 그대로다. 따라서 TCP의 순서 대기나 SEND batch의 앞선 요청 timeout은 이미 완료된 command의 backlog 나이를 늘리지 않는다.
 - Disk는 local data directory filesystem을 시작 때와 1초마다 측정한다. `free < minFreeBytes`이면 진입한다. `free >= minFreeBytes + minFreeBytes/8`이면 해제한다. `minFreeBytes=0`이면 disk admission만 끄고 gauge는 유지한다. 측정 오류는 이전 상태를 유지한다. 초기 상태는 압력 없음이다. 연속 오류는 Warn을 한 번만 남긴다. ENOSPC는 기존 `FAILED` 처리다.
 
 | 요청 | MQTT 5 거절 | MQTT 3.1.1 거절 |
@@ -1212,6 +1213,7 @@ GOMAXPROCS=4 go run ./tools/verify local
 | TCP adapter 응답 | `internal/adapters/tcp` `TestTCPPublishBackpressureReasonCodes` | MQTT 5 `0x97`, QoS 1/2 연결 유지, MQTT 3.1.1 종료 | PASS — `net.Pipe`에서 실제 MQTT packet 교환 |
 | Backlog 나이·disk 진입과 해제·quota 경보 | `cmd/narumq/cluster_publish_pressure_test.go`의 `TestClusterCommitBacklogOldestAge`, `TestClusterPublishPressureDiskHysteresis`, `TestClusterPublishPressureCommitLag`, `TestClusterPublishPressureCapacityReportsTenantQuota` | Entry 제거 후 회복, 1/8 hysteresis, 연속 오류 Warn 1회, counter 기록 | PASS — focused package 묶음 |
 | Failover-aware backlog | `cmd/narumq/cluster_publish_pressure_test.go` `TestClusterCommitBacklogOldestAge`, `TestClusterPublishPressureCommitLag` | 도달 불가 시 0, 재연결 시 나이 시작점 갱신, 이전 generation 제출분 영구 제외, 미제출분 포함 | PASS — 2026-10-06, 각 0.00s; caller timeout 경계와 묶음 2.073s |
+| Apply 완료 뒤 caller 순서 대기 | `cmd/narumq/cluster_read_admission_test.go` `TestClusterAppliedDeliveryStopsBackpressureBeforeCallerWait` | 실제 3-node Raft commit과 state machine apply 뒤 Wait 전에 admission 회복, 늦은 Wait의 결과 유지, 다른 미완료 entry 보존과 제출 전 취소의 driver 정리 | 수정 전 FAIL 0.14s·최종 source PASS 0.17s — 2026-10-06; 아래 실행 증거 참조 |
 | Write 전 proposal 회수 | `internal/adapters/tcp/peer_transport_v2_test.go` `TestDynamicPeerReclaimUnsentReturnsOnlyUnwrittenProposals` | Queue 순서·count·bytes 유지, 일반 frame·outCurrent·연결 peer 제외 | PASS — 2026-10-06, 0.00s; write 실패·phase refresh 회귀와 묶음 0.818s |
 | 회수한 forwarded proposal 재생 | `internal/adapters/raft/node_dynamic_test.go` `TestDynamicDeferForwardedProposalReplaysUnsentFrameOnce` | Credit 복구 뒤 정확히 1회 apply, FIFO 공간·StoragePending 반영, 비-MsgProp 거절 | PASS — 2026-10-06, 0.05s; downstream credit·인증된 forwarding 회귀와 묶음 0.736s |
 | Strict config·metric·filesystem | `cmd/narumq/cluster_config_test.go`, `internal/adapters/metrics/registry_backpressure_test.go`, `internal/adapters/diskspace/diskspace_test.go` `TestFreeBytes` | 범위·누락·unknown 거절, 정확한 sample과 peer 교체, 실제 filesystem 조회 | PASS — Windows local filesystem 포함 |
@@ -1286,6 +1288,46 @@ Race는 runtime 14.256s·TCP 18.723s·Raft 5.657s로 PASS했다. 실제 3-proces
 BP-06 실제 failover와 전체 local gate의 결과는 [Performance §3.6](performance-and-verification.md#36-bp-06-failure-recovery-smoke-관찰-경계)에 구분해 기록한다.
 
 위 build·focused·race·process 검증 대상 source와 시험의 확인 커밋은 `b175fc4563cdc00838f16829effbf9ccb4fb8246`이다. 모든 명령은 커밋 전에 실행했으며 이후 source·시험은 바꾸지 않았다. BP-06 compare·suite와 전체 local gate도 같은 source를 실행했다. 이 해시는 미수용인 BP-06 suite를 통과로 바꾸지 않는다.
+
+#### 2026-10-06 완료된 commit의 backlog 잔류 수정 — 중간 검증
+
+원인은 [Performance §3.6](performance-and-verification.md#36-bp-06-failure-recovery-smoke-관찰-경계)의 operation trace로 확인했다. `submitCommitBatch`는 기존 backlog entry를 proposal waiter에 넘긴다. Driver는 commit·projection 완료나 확정 오류에서 entry를 제거한다. Caller의 결과 읽기 순서와 timeout·ACK 계약은 바꾸지 않았다.
+
+아래 결과는 apply 시점 제거를 추가했지만 Wait의 기존 제거를 아직 없애지 않은 중간 구현의 증거다. 이후 accepted proposal의 caller timeout 뒤에도 entry를 유지하도록 driver 소유권을 보완했다. 중간 결과를 최종 source의 검증 증거로 쓰지 않는다.
+
+일시적인 trace 코드와 진단 command를 제거한 뒤 저장소 root에서 아래 명령을 순서대로 실행했다. 전체 명령 묶음의 wall time은 209.89s였다.
+
+```text
+go build ./...
+go vet ./...
+go test ./cmd/narumq -run "^(TestClusterAppliedDeliveryStopsBackpressureBeforeCallerWait|TestClusterDurableCommitCallerTimeoutLateReplayAppliesOnceWithoutSuccess|TestClusterCommitBacklogOldestAge|TestClusterPublishPressureCommitLag)$" -count=1 -v
+go test -race ./cmd/narumq -count=1
+cmd /d /c "set GOMAXPROCS=4&& go test ./tests/integration -run ^TestDynamicClusterPublishBackpressureProcessAcceptance$ -count=1 -v -timeout 20m"
+cmd /d /c "set GOMAXPROCS=4&& go run ./tools/verify local"
+```
+
+- Build·vet는 exit 0이었다.
+- Focused 묶음은 PASS(2.071s)였다. 새 회귀는 0.10s, caller timeout·late replay 회귀는 1.64s였다.
+- 새 회귀는 in-process 3-node Raft·WAL에서 실제 command를 commit하고 membership state machine에 apply한다. `stageProposalResult`·`resolveAppliedProposals`로 완료를 연결한다. Wait 전에 admission이 회복됐다. 늦은 Wait는 적용 결과를 반환했다. 다른 미완료 entry는 유지됐고 그 caller를 취소한 뒤 압력이 해제됐다. 이 시험은 TCP worker나 `runtime.applyBatch` 전체를 직접 실행하지 않는다.
+- Runtime race는 PASS(13.873s)였다.
+- 실제 3-process backpressure acceptance는 PASS(11.58s, package 11.887s)였다. 정상 leader의 `commit-lag`와 disk pressure 거절·회복을 유지했다. Subscriber가 `bp/disk/after`, `bp/lag/held`, `bp/lag/other`, `bp/lag/retry`, `bp/sentinel`을 각각 1회 받았다. QoS 0 live도 1회 받았고 거절한 topic은 없었다.
+- 전체 local gate의 `traceability`·`architecture`·`coverage`·`local`은 PASS였다. Integration은 101.760s였다. Production race와 fuzz도 포함한다.
+
+BP-06 compare·5회 suite의 수용 판정은 [Performance §3.6](performance-and-verification.md#36-bp-06-failure-recovery-smoke-관찰-경계)에서 별도로 다룬다. 위 행동 시험과 local gate만으로 BP-06 수용을 완료하지 않는다.
+
+#### 2026-10-06 driver 소유 backlog의 최종 검증
+
+중간 구현에서 남아 있던 Wait의 무조건 제거를 없앴다. Driver에 전달한 entry는 정상 제출과 test-only held 제출에서 같은 proposal waiter로 이어진다. Caller timeout 뒤에도 수락된 entry는 유지한다. 확정된 제출 전 오류·driver 종료나 local apply·projection 완료에서만 제거한다. Begin 오류와 held 요청을 driver에 전달하지 못한 경우에는 caller가 제거한다.
+
+위 중간 검증과 같은 build·vet·focused·race·process·local 명령을 최종 source로 다시 실행했다. 전체 묶음은 exit 0, wall 249.35s였다.
+
+- Focused 묶음은 PASS(2.123s)였다. 완료 entry 회귀는 0.17s였다. 제출 전 취소 뒤에는 driver가 entry를 제거하고 Wait 전에 admission을 회복했다.
+- Caller timeout·late replay 회귀는 PASS(1.69s)였다. 원래 Wait가 `ErrQuorumUnavailable`을 반환한 뒤에도 accepted proposal의 entry가 남았다. 세 node의 late apply 뒤에는 두 entry 모두 제거됐다. 늦은 결과는 기존 buffer에 남았다.
+- Runtime race는 PASS(16.644s)였다.
+- 실제 3-process acceptance는 PASS(10.69s, package 10.962s)였다. `commit-lag`는 1.39s, disk pressure는 1.36s였다. 위와 같은 topic 각각 1회, QoS 0 live 1회와 거절 topic 부재를 확인했다.
+- 전체 local gate의 `traceability`·`architecture`·`coverage`·`local`은 PASS였다. Integration은 108.253s였다. Production race와 fuzz를 포함한다.
+
+최종 source의 BP-06 증거와 확인 커밋은 [Performance §3.6](performance-and-verification.md#36-bp-06-failure-recovery-smoke-관찰-경계)에 연결한다.
 
 ### 11.29 Replicated-state v1 계약 수용 매핑
 

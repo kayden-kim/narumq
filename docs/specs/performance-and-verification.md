@@ -1093,6 +1093,85 @@ Compare와 suite 전체의 회수 log는 0회다. 실제 실행에서 회수 경
 
 위 구현·시험·실행 결과의 확인 커밋은 `b175fc4563cdc00838f16829effbf9ccb4fb8246` (`fix(cluster): make commit lag failover-aware and reclaim unsent proposals`)이다. 단계별 build, focused 시험, build·vet·race·process 회귀, 위 compare·suite와 전체 local gate는 모두 이 커밋 전에 실행했다. 커밋에는 실행한 source·시험과 결과 문서를 포함했다. 커밋 뒤에는 이 확인 해시를 연결하는 문서만 고쳤으며 source·시험은 바꾸지 않았다. 커밋 뒤 BP-06을 재실행하지 않았고 CI 실행 링크도 없다. Manifest의 원래 baseline·`dirty=true`와 suite의 invalid 판정은 그대로 보존한다.
 
+#### 2026-10-06 commit backlog 완료 시점의 근본 원인
+
+추가 원인 조사는 일시적인 operation·entry·generation trace를 넣고 NaruMQ target만 실행했다. Profile과 broker 정책은 바꾸지 않았다. 첫 진단 `bp06-trace-20261006T122804.018659800Z`는 valid였다. 두 번째 `bp06-trace-20261006T123055.332584600Z`는 invalid였고 계획 밖 disconnect 3건을 기록했다. 두 진단의 artifact는 `.artifacts/benchmark/bp06-diagnostics/` 아래 같은 이름의 directory에 있다. 이 진단은 정식 compare나 suite 수용 증거가 아니다.
+
+두 번째 진단의 node2에서는 이미 apply한 PUBLISH가 backlog에 남아 거절을 만들었다. 문제 operation은 `5c002193-b163-4860-9e49-c8e53230e525`이며 entry는 `0x1a09dd030750`이다. 같은 entry를 begin·제출·apply·거절·Wait 반환까지 연결했다.
+
+| 단계 | UTC 시각 | 관찰한 상태 |
+| --- | --- | --- |
+| BeginDelivery | `12:31:46.481527317Z` | 아직 제출하지 않음, leader1·term3에 도달 불가 |
+| 새 leader 도달 시작 | `12:31:47.656147373Z` | local leader2·term4, generation 10 |
+| Fresh proof 완료·제출 | `12:31:47.666772930Z`·`12:31:47.666853293Z` | Entry의 제출 generation도 10 |
+| Local apply | `12:31:47.680470051Z` | 같은 operation을 index 2861에 적용 |
+| `commit_lag` 거절 | `12:31:48.680839347Z` | 직후 pressure trace가 위 완료 entry를 oldest로 선택 |
+| Wait 반환 | `12:31:51.381323671Z` | 성공, apply 뒤 약 3.701초 |
+
+`clusterPendingCommit.Wait`가 끝날 때만 entry를 제거한 것이 결함이었다. Raft commit이 느린 것이 아니라 완료 결과를 읽는 순서 대기가 backlog에 포함됐다. TCP `connectionPhases.completeLane`은 결과를 FIFO로 기다린다. `clusterDurableQueue.PromoteBatch`도 SEND 결과를 순서대로 기다린다. 따라서 앞선 요청이 끝나지 않으면 뒤에서 이미 완료한 요청도 Wait를 늦게 호출할 수 있다.
+
+수정은 proposal waiter에 기존 entry 참조를 넘기는 방식이다. Driver의 `resolveAppliedProposals`는 local apply와 projection 완료 뒤 entry를 제거한다. 결과는 기존 buffered channel에 남긴다. Fresh proof·제출 실패와 driver 종료의 확정 오류도 같은 수명을 따른다. Begin 오류로 driver에 전달하지 못한 entry만 caller가 제거한다. Wait의 timeout·취소는 수락된 proposal의 entry를 제거하지 않는다. 늦은 apply·projection 완료나 driver 종료까지 driver가 entry를 소유한다.
+
+실제 3-node Raft·WAL과 membership state machine을 사용한 `TestClusterAppliedDeliveryStopsBackpressureBeforeCallerWait`는 수정 전에 `committed delivery still rejects PUBLISH before caller Wait: publish backpressure: commit_lag`로 FAIL했다(0.14s). 회귀 시험은 caller Wait 전의 admission 회복을 검증한다. 다른 미완료 요청의 압력 유지와 제출 전 취소를 driver가 처리한 뒤 회복도 검증한다. 기존 `TestClusterDurableCommitCallerTimeoutLateReplayAppliesOnceWithoutSuccess`는 수락된 proposal의 caller timeout 뒤 entry 유지와 늦은 apply 뒤 제거도 확인한다. 시험 위치와 수정 후 실행 결과는 [Cluster §11.28](cluster-session-and-delivery.md#1128-publish-backpressure-수용-매핑)에 기록한다.
+
+원시 log와 해당 operation의 발췌는 두 번째 진단의 `narumq/node2/broker.log`와 `causal-entry.json`에 보존했다. 기존 suite 5회차에는 entry·operation trace가 없으므로 해당 과거 요청까지 같은 원인으로 확정하지 않는다. 이전 leader가 받은 요청의 불확실한 결과·5초 timeout과 성공 ACK 없는 연결 종료 계약은 별개로 유지한다. 기본값·validity·재제안·wire·replicated schema는 바꾸지 않았다.
+
+Apply 시점 제거를 추가한 중간 구현의 trace 진단 `bp06-trace-20261006T123734.830458000Z`는 valid였다(wall 129.95s, focused 시험 포함). Gap·QoS 1/2 duplicate·계획 밖 disconnect·protocol error·overload는 모두 0이었다. 거절과 `commit_lag` log도 0건이었다. 이 run에서는 apply 뒤 50ms 넘게 늦은 Wait나 불확실한 proposal timeout이 없었다. 따라서 실제 run에서 완료 결과의 순서 대기가 재발한 뒤 해소됐다고 주장하지 않는다. 해당 경계의 직접 증거는 수정 전 FAIL·수정 후 PASS인 회귀 시험이다.
+
+Trace 코드와 일시적인 `diagnose` command를 제거한 중간 구현으로 정식 compare를 실행했다. 이때 Wait의 기존 제거는 아직 남아 있었다. 이후 caller timeout 뒤 accepted proposal의 entry를 유지하도록 보완했으므로 아래 결과를 최종 source의 검증 증거로 쓰지 않는다.
+
+```text
+go run ./tests/benchmark/bp06 compare --profile tests/benchmark/bp06/testdata/smoke.json
+```
+
+Compare `bp06-20261006T124511.121401300Z-141976`는 exit 0, 두 target valid였다(wall 359.35s). Artifact는 `.artifacts/benchmark/bp06/bp06-20261006T124511.121401300Z-141976/`에 있다. Profile SHA-256은 기존 `e8e4aa2e5df1a3e55ad901acff5a4505cdb1acf4699ff061f1a2bfc51754054d`와 같다. Manifest의 baseline은 `ef1e2ffd8ae8185640ff69a29ac599e912ea4707`, `dirty=true`, `releaseGating=false`다. 이 baseline은 미커밋 수정 코드의 확인 커밋이 아니다.
+
+NaruMQ의 gap·QoS 1/2 duplicate·계획 밖 disconnect·protocol error·overload는 모두 0이다. `failureReasons=[]`, MQTT `0x97`·거절 log·`commit_lag` log·MQTT `quorum unavailable` log·회수 log도 모두 0건이었다. Round별 RTO는 1350.763ms·373.292ms·1912.264ms였다. EMQX의 gap 3건과 QoS 2 duplicate 59건은 모두 기존 예외 범위 안이었다. QoS 1 duplicate 67건은 기존 기록 전용 판정을 유지했다. NaruMQ에는 예외를 적용하지 않았다.
+
+Trace 제거 뒤 build·vet, focused 시험·race·실제 backpressure process·전체 local gate도 PASS했다. 명령과 직접 확인한 경계는 [Cluster §11.28](cluster-session-and-delivery.md#1128-publish-backpressure-수용-매핑)에 기록했다. Compare 1회 통과만으로 5회 suite나 release acceptance를 완료하지 않는다.
+
+같은 중간 구현의 5회 suite `bp06-suite-20261006T125117.906990600Z-145056`는 timeout 없이 완료했다(wall 1658.66s). Exit 1, parent `valid=false`, 유효한 반복은 3/5였다. Profile hash와 baseline·dirty는 위 compare와 같다. Artifact는 `.artifacts/benchmark/bp06/` 아래 같은 이름의 directory에 있다.
+
+| 반복 | NaruMQ | EMQX | NaruMQ 계획 밖 disconnect | 거절·`commit_lag` log |
+| --- | --- | --- | ---: | ---: |
+| `001` | valid | invalid: QoS 2 sequence 1·2 duplicate가 예외 밖 | 0 | 0 |
+| `002` | invalid | valid | 2 | 0 |
+| `003` | valid | valid | 0 | 0 |
+| `004` | valid | valid | 0 | 0 |
+| `005` | valid | valid | 0 | 0 |
+
+NaruMQ는 4/5 valid였다. 모든 반복에서 gap·QoS 2 duplicate·protocol error·overload는 0이었다. 2회차 QoS 1 duplicate 71건은 기록 전용이다. 같은 회차의 계획 밖 disconnect 2건은 각각 MQTT `PUBACK: quorum unavailable` log 뒤 약 0.224ms·0.152ms에 발생했다. Node2 subscriber `bp06-sub-v311-q1`은 `13:01:18.637152060Z`, node3 subscriber `bp06-sub-v5-q1`은 `13:01:47.723643207Z`에 끊겼다. 같은 node에서 proposal deadline도 기록됐다. 이 결과는 완료 entry의 lag 오탐과 별개인 불확실한 commit 결과 유형이다. 개별 command의 wire 수신은 이 log만으로 확정하지 않는다.
+
+이 suite는 driver 소유권 보완 전에 build한 image를 사용했다. Suite 실행 중 source의 Wait cleanup과 회귀 시험을 보완했다. 따라서 manifest의 baseline·dirty를 최종 source 해시로 해석하지 않으며 최종 코드의 수용 증거로도 쓰지 않는다.
+
+#### 2026-10-06 driver 소유권 보완 뒤 최종 실행
+
+Wait의 무조건 backlog 제거를 없앤 최종 source는 build·vet, focused 회귀, runtime race, 실제 3-process backpressure acceptance와 전체 local gate를 통과했다. 명령과 수치는 [Cluster §11.28](cluster-session-and-delivery.md#1128-publish-backpressure-수용-매핑)의 최종 검증에 기록했다. Caller timeout 뒤 accepted proposal의 entry 유지와 늦은 apply 뒤 제거도 확인했다.
+
+저장소 root에서 기존 smoke profile로 정식 compare를 실행했다. Compare `bp06-20261006T132355.315755000Z-68768`는 exit 0, 두 target valid였다(wall 402.51s). Artifact는 `.artifacts/benchmark/bp06/bp06-20261006T132355.315755000Z-68768/`에 있다. Profile SHA-256은 `e8e4aa2e5df1a3e55ad901acff5a4505cdb1acf4699ff061f1a2bfc51754054d`다. Manifest의 baseline은 `ef1e2ffd8ae8185640ff69a29ac599e912ea4707`, `dirty=true`, `releaseGating=false`다.
+
+NaruMQ의 `failureReasons=[]`이며 gap·QoS 1/2 duplicate·계획 밖 disconnect·protocol error·overload는 모두 0이다. MQTT `0x97`·거절 log·`commit_lag` log·MQTT `quorum unavailable` log·회수 log도 모두 0건이었다. Round별 RTO는 1309.252ms·1538.445ms·920.881ms였다. EMQX는 gap 13건과 QoS 2 duplicate 6건을 모두 기존 예외로 기록했다. QoS 1 duplicate 81건은 기록 전용이다. 예외 규칙과 NaruMQ의 엄격한 판정은 바꾸지 않았다.
+
+Compare 전후 BP-06 container와 volume 조회는 빈 출력을 반환했다. 실제 회수는 이번 compare에서도 미관찰이다. 이 기능의 경계는 기존 TCP·Raft 행동 시험으로만 확인했다. Compare의 1회 valid는 5회 suite나 release 수용을 대신하지 않는다.
+
+최종 source의 suite `bp06-suite-20261006T133044.622538400Z-139472`는 timeout 없이 5회를 마쳤다(wall 1720.47s). Exit 1, `valid=false`, 유효한 반복은 0/5였다. 두 target의 parent `metrics`는 `{}`이며 median·MAD를 산출하지 않았다. Profile hash·baseline·dirty는 최종 compare와 같다. Artifact는 `.artifacts/benchmark/bp06/bp06-suite-20261006T133044.622538400Z-139472/`에 있다.
+
+| 반복 | NaruMQ | EMQX | NaruMQ 계획 밖 disconnect | 거절 log / `commit_lag` log / 회수 log |
+| --- | --- | --- | ---: | --- |
+| `001` | invalid | valid | 3 | 0 / 0 / 0 |
+| `002` | invalid | valid | 3 | 0 / 0 / 0 |
+| `003` | valid | invalid: 예외 밖 QoS 2 sequence 1·2 duplicate | 0 | 0 / 0 / 0 |
+| `004` | valid | invalid: 예외 밖 QoS 2 sequence 1·2 duplicate | 0 | 0 / 0 / 0 |
+| `005` | invalid | valid | 2 | 0 / 0 / 1 |
+
+NaruMQ는 2/5 valid였다. 모든 반복의 `failureReasons=[]`이며 gap·QoS 2 duplicate·protocol error·overload는 0이었다. QoS 1 duplicate는 반복 순서대로 26·1·0·0·32건이며 기록 전용이다. MQTT `0x97`·거절과 `commit_lag` log는 모든 반복에서 0건이었다. 완료 entry 잔류 결함은 결정적 회귀로 해결을 확인했지만 이 표를 전체 failover 품질의 개선 증거로 해석하지 않는다.
+
+계획 밖 disconnect 8건은 모두 같은 node의 MQTT `quorum unavailable` log와 100ms 안에 일치했다. 1회차 node3의 3건, 2회차 node1·node2·node3 각 1건, 5회차 node1·node2 각 1건이다. 해당 구간에서 proposal deadline도 기록됐다. 분류 결과는 suite directory의 `disconnect-classification.json`에 있다. 이 시각 상관은 불확실한 commit 결과 유형을 구분한다. 개별 command가 이전 leader에 수신됐는지, 로그에 append됐는지, 늦게 apply됐는지는 이번 log만으로 확정하지 않는다.
+
+5회차 node3은 `13:54:36.720838775Z`에 disconnected peer2의 proposal frame 1개를 회수했다. 실제 회수 경로를 처음 관찰했지만 해당 frame의 apply나 중복 부재를 operation 단위로 연결하지는 않았다. Suite 종료 뒤 BP-06 container와 volume 조회 출력은 모두 비어 있었다.
+
+BP-06 smoke 수용은 미완료다. 최종 compare는 valid지만 suite는 0/5다. 완료 entry의 lag 오탐 수정과 caller timeout 뒤 entry 보관은 행동 시험으로 확인했다. 남은 문제는 불확실한 proposal 결과의 timeout·계획 밖 disconnect와 EMQX의 예외 밖 duplicate다. 기본값·ACK·timeout·재제안·validity 계약은 유지했다. 이미 전송한 proposal의 재제안은 ADR-0035 §7에 따라 중복 제거·순서·schema 계약을 먼저 결정해야 한다. 실패한 suite를 반복 실행하거나 판정 예외를 넓혀 수용으로 바꾸지 않는다.
+
 ## 4. 필수 benchmark profile
 
 | ID | 고정 조건 | 필수 결과 |

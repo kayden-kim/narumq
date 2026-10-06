@@ -589,11 +589,12 @@ type clusterReadWaiter struct {
 }
 
 type clusterProposalWaiter struct {
-	data      []byte
-	startedAt time.Time
-	result    chan clusterApplyResponse
-	response  clusterApplyResponse
-	applied   bool
+	data         []byte
+	startedAt    time.Time
+	result       chan clusterApplyResponse
+	response     clusterApplyResponse
+	applied      bool
+	backlogEntry *list.Element
 }
 
 type clusterApplyEvent struct {
@@ -1083,12 +1084,23 @@ func (runtime *clusterRuntime) handleDriverRequest(
 		reads[pending.contextKey] = waiter
 	case clusterDriverProposal:
 		startedAt := time.Now()
+		var backlogEntry *list.Element
+		if request.pending != nil {
+			backlogEntry = request.pending.backlogEntry
+		}
 		if err := runtime.node.ProposeForwarded(request.data); err != nil {
 			runtime.observeRaftStage(adaptersmetrics.RaftProposal, startedAt)
+			runtime.removeCommitBacklog(backlogEntry)
 			request.applyResult <- clusterApplyResponse{err: err}
 			return
 		}
-		*proposals = append(*proposals, clusterProposalWaiter{data: request.data, result: request.applyResult, startedAt: startedAt})
+		if backlogEntry != nil {
+			runtime.observeCommitLeadership()
+			runtime.markCommitProposed(backlogEntry)
+		}
+		*proposals = append(*proposals, clusterProposalWaiter{
+			data: request.data, result: request.applyResult, startedAt: startedAt, backlogEntry: backlogEntry,
+		})
 	case clusterDriverBackup:
 		if request.context != nil && request.context.Err() != nil {
 			request.backupResult <- clusterBackupImageResponse{err: request.context.Err()}
@@ -1456,6 +1468,8 @@ func (runtime *clusterRuntime) resolveAppliedProposals(waiters *[]clusterProposa
 			continue
 		}
 		runtime.observeRaftStage(adaptersmetrics.RaftProposal, waiter.startedAt)
+		// Retire commit work before a caller consumes its ordered result.
+		runtime.removeCommitBacklog(waiter.backlogEntry)
 		waiter.result <- waiter.response
 		last := len(*waiters) - 1
 		copy((*waiters)[index:], (*waiters)[index+1:])
@@ -1473,6 +1487,7 @@ func (runtime *clusterRuntime) failPendingProposals(waiters *[]clusterProposalWa
 	}
 	for _, waiter := range *waiters {
 		runtime.observeRaftStage(adaptersmetrics.RaftProposal, waiter.startedAt)
+		runtime.removeCommitBacklog(waiter.backlogEntry)
 		if waiter.result != nil {
 			waiter.result <- clusterApplyResponse{err: driverErr}
 		}
@@ -1503,8 +1518,12 @@ func (runtime *clusterRuntime) failQueuedDriverRequests(driverErr error) {
 				request.readResult <- clusterReadResponse{err: driverErr}
 			}
 		case clusterDriverCommit:
+			runtime.removeCommitBacklog(request.pending.backlogEntry)
 			request.pending.staged <- clusterCommitStage{err: driverErr, barrierFailure: true}
 		case clusterDriverProposal:
+			if request.pending != nil {
+				runtime.removeCommitBacklog(request.pending.backlogEntry)
+			}
 			if request.applyResult != nil {
 				request.applyResult <- clusterApplyResponse{err: driverErr}
 			}
@@ -1606,6 +1625,9 @@ func (runtime *clusterRuntime) resolveCommitReads(reads map[string]clusterReadWa
 				batchBytes += entryBytes
 			}
 		}
+		if stage.err != nil {
+			runtime.removeCommitBacklog(pending.backlogEntry)
+		}
 		pending.staged <- stage
 		runtime.pendingCommits[consumed] = nil
 		consumed++
@@ -1624,6 +1646,7 @@ func (runtime *clusterRuntime) resolveCommitReads(reads map[string]clusterReadWa
 func (runtime *clusterRuntime) failCommitReads(err error) {
 	for _, pending := range runtime.pendingCommits {
 		runtime.finishCommitRead(pending, err)
+		runtime.removeCommitBacklog(pending.backlogEntry)
 		pending.staged <- clusterCommitStage{err: err, barrierFailure: true}
 	}
 	clear(runtime.pendingCommits)
@@ -2452,7 +2475,6 @@ func (pending *clusterPendingCommit) awaitCommitStage() clusterCommitStage {
 
 func (pending *clusterPendingCommit) Wait() (membership.ApplyResultDTO, error) {
 	defer pending.runtime.localCommits.Add(-1)
-	defer pending.runtime.removeCommitBacklog(pending.backlogEntry)
 	if pending.deliveryCancel != nil {
 		defer pending.deliveryCancel()
 	}
@@ -2474,12 +2496,14 @@ func (pending *clusterPendingCommit) Wait() (membership.ApplyResultDTO, error) {
 		defer cancel()
 		select {
 		case pending.runtime.requests <- clusterDriverRequest{
-			kind: clusterDriverProposal, data: pending.data, applyResult: pending.result,
+			kind: clusterDriverProposal, data: pending.data, applyResult: pending.result, pending: pending,
 		}:
 		case <-pending.runtime.driverStopped:
+			pending.runtime.removeCommitBacklog(pending.backlogEntry)
 			pending.runtime.faults.reportHeldResult(label, membership.ApplyResultDTO{}, membership.ErrQuorumUnavailable)
 			return membership.ApplyResultDTO{}, membership.ErrQuorumUnavailable
 		case <-proposalCtx.Done():
+			pending.runtime.removeCommitBacklog(pending.backlogEntry)
 			pending.runtime.faults.reportHeldResult(label, membership.ApplyResultDTO{}, proposalCtx.Err())
 			return membership.ApplyResultDTO{}, membership.ErrQuorumUnavailable
 		}

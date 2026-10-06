@@ -550,6 +550,18 @@ func TestClusterDurableCommitCallerTimeoutLateReplayAppliesOnceWithoutSuccess(t 
 	ingress := runtimes[1]
 	ingress.storage = newClusterStorageMonitor(time.Now, nil)
 	ingress.machine = retainedTestMachine(t, ingress.config, ingress.config.ReleaseVersion)
+	ingress.publishPressure = &clusterPublishPressureController{runtime: ingress, maxCommitLag: time.Second}
+	backlogContains := func(pending *clusterPendingCommit) bool {
+		b := &ingress.publishPressure.backlog
+		b.mu.Lock()
+		defer b.mu.Unlock()
+		for entry := b.entries.Front(); entry != nil; entry = entry.Next() {
+			if entry == pending.backlogEntry {
+				return true
+			}
+		}
+		return false
+	}
 	var reads [3]map[string]clusterReadWaiter
 	var proposals [3][]clusterProposalWaiter
 	for index := range reads {
@@ -641,6 +653,9 @@ func TestClusterDurableCommitCallerTimeoutLateReplayAppliesOnceWithoutSuccess(t 
 	if !ok || timeoutOutcome.at.Before(deadline) || !errors.Is(timeoutOutcome.err, membership.ErrQuorumUnavailable) {
 		t.Fatalf("original Wait must fail at its caller deadline: outcome=%+v deadline=%v", timeoutOutcome, deadline)
 	}
+	if !backlogContains(timedOut) {
+		t.Fatal("caller timeout removed an accepted proposal before its late apply")
+	}
 	select {
 	case outcome := <-laterWait:
 		t.Fatalf("later Wait completed before leader recovery: %+v", outcome)
@@ -694,6 +709,9 @@ func TestClusterDurableCommitCallerTimeoutLateReplayAppliesOnceWithoutSuccess(t 
 	case <-time.After(5 * time.Second):
 		t.Fatal("later Wait did not complete after FIFO replay")
 	}
+	if backlogContains(timedOut) || backlogContains(later) {
+		t.Fatal("applied proposals retained backlog entries after caller completion")
+	}
 	for index, commands := range applied {
 		if len(commands) != 2 || !bytes.Equal(commands[0], timedOut.data) || !bytes.Equal(commands[1], later.data) {
 			t.Fatalf("node %d did not apply exactly the original two commands in FIFO order: count=%d", index+1, len(commands))
@@ -733,4 +751,117 @@ func TestClusterDurableCommitCallerTimeoutLateReplayAppliesOnceWithoutSuccess(t 
 		}
 	}
 	t.Log("caller Wait returned ErrQuorumUnavailable after deadline; all three nodes applied a×40000 then b×40000 once; late result stayed buffered")
+}
+
+// Traceability: CLU-12; docs/specs/cluster-session-and-delivery.md §4.5, §11.28.
+func TestClusterAppliedDeliveryStopsBackpressureBeforeCallerWait(t *testing.T) {
+	runtimes := newReadAdmissionTestCluster(t)
+	ingress := runtimes[0]
+	ingress.storage = newClusterStorageMonitor(time.Now, nil)
+	ingress.machine = retainedTestMachine(t, ingress.config, ingress.config.ReleaseVersion)
+	ingress.publishPressure = &clusterPublishPressureController{runtime: ingress, maxCommitLag: time.Second}
+	ingress.observeCommitLeadership()
+	pending, err := ingress.BeginDelivery(context.Background(), membership.DeliveryChangeDTO{
+		TenantID: "tenant-a", ClientID: "publisher-a", Action: membership.DeliveryActionPublish,
+		ProposedAtUnixMillis: 1_700_000_000_001, Topic: "events/committed", Payload: []byte("committed"), PublishQoS: 1,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	commit := pending.(*clusterPendingCommit)
+	defer commit.deliveryCancel()
+	// Control backlog age without sleeping or depending on clock resolution.
+	backlog := &ingress.publishPressure.backlog
+	backlog.mu.Lock()
+	startedAt := time.Now().Add(-2 * time.Second)
+	commit.backlogEntry.Value.(*clusterBacklogEntry).startedAt = startedAt
+	backlog.reachableSince = startedAt
+	backlog.mu.Unlock()
+	if err := ingress.publishPressure.CheckPressure(); err == nil {
+		t.Fatal("uncommitted delivery did not apply backpressure")
+	}
+	var reads [3]map[string]clusterReadWaiter
+	var proposals [3][]clusterProposalWaiter
+	for index := range reads {
+		reads[index] = make(map[string]clusterReadWaiter)
+	}
+	applied := false
+	for round := 0; round < 64 && !applied; round++ {
+		var messages []raftadapter.MessageDTO
+		for index, runtime := range runtimes {
+			if err := runtime.stageQueuedDriverWork(reads[index], &proposals[index], nil); err != nil {
+				t.Fatal(err)
+			}
+			batch, err := processReadyForTest(t, runtime.node)
+			if err != nil {
+				t.Fatal(err)
+			}
+			runtime.projectionIndex.Store(runtime.node.Status().AppliedIndex)
+			runtime.completeReadStates(batch.ReadStates, reads[index])
+			if index == 0 {
+				for commandIndex, data := range batch.Commands {
+					command, err := decodeMembershipCommand(data)
+					if err != nil {
+						t.Fatal(err)
+					}
+					result, err := ingress.machine.Apply(batch.CommandIndexes[commandIndex], command)
+					if err != nil || result.Outcome != membership.ApplyOutcomeApplied {
+						t.Fatalf("actual committed delivery failed to apply: result=%+v err=%v", result, err)
+					}
+					ingress.stageProposalResult(data, result, &proposals[index])
+					applied = bytes.Equal(data, commit.data)
+				}
+				ingress.resolveAppliedProposals(&proposals[index])
+				ingress.resolveCommitReads(reads[index], &proposals[index])
+			}
+			messages = append(messages, batch.Messages...)
+		}
+		for _, message := range messages {
+			if _, err := runtimes[message.To-1].node.Step(message); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	if !applied {
+		t.Fatal("delivery did not commit through the real three-node Raft cluster")
+	}
+	// A batch consumer can still be waiting for an earlier proposal. This
+	// completed command must not reject unrelated PUBLISHes during that wait.
+	if err := ingress.publishPressure.CheckPressure(); err != nil {
+		t.Fatalf("committed delivery still rejects PUBLISH before caller Wait: %v", err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	unapplied, err := ingress.BeginDelivery(ctx, membership.DeliveryChangeDTO{
+		TenantID: "tenant-a", ClientID: "publisher-a", Action: membership.DeliveryActionPublish,
+		ProposedAtUnixMillis: 1_700_000_000_002, Topic: "events/uncommitted", Payload: []byte("uncommitted"), PublishQoS: 1,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	backlog.mu.Lock()
+	unapplied.(*clusterPendingCommit).backlogEntry.Value.(*clusterBacklogEntry).startedAt = startedAt
+	backlog.mu.Unlock()
+	result, err := pending.Wait()
+	if err != nil || result.Outcome != membership.ApplyOutcomeApplied {
+		t.Fatalf("delayed caller did not receive its committed result: result=%+v err=%v", result, err)
+	}
+	if err := ingress.publishPressure.CheckPressure(); err == nil {
+		t.Fatal("consuming a completed result removed another uncommitted delivery")
+	}
+	cancel()
+	if err := ingress.stageQueuedDriverWork(reads[0], &proposals[0], nil); err != nil {
+		t.Fatal(err)
+	}
+	ingress.resolveCommitReads(reads[0], &proposals[0])
+	if err := ingress.publishPressure.CheckPressure(); err != nil {
+		t.Fatalf("driver did not retire cancelled pre-submission delivery before caller Wait: %v", err)
+	}
+	if _, err := unapplied.Wait(); !errors.Is(err, membership.ErrQuorumUnavailable) {
+		t.Fatalf("cancelled unapplied delivery returned %v", err)
+	}
+	if err := ingress.publishPressure.CheckPressure(); err != nil {
+		t.Fatalf("cancelled caller left backpressure active: %v", err)
+	}
+	t.Log("real quorum commit removed backpressure before the batch consumer called Wait")
 }
