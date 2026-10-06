@@ -1530,3 +1530,5 @@ go test ./cmd/narumq -run TestClusterProposalRecoveryNoQuorumNoSuccessAndNoLateA
 
 WAL 시험은 실제 세 Raft node와 mTLS transport fixture를 만들며, 장애 경합은 message 전달을 직접 제어한다. Process 수준 MQTT 증거는 별도 BP-06 실행이다. 이 구분을 실제 power loss·Linux/EBS·게시 release compatibility 증거로 확장하지 않는다. Feature 활성화 이후의 mixed binary rollout과 production storage는 기존 별도 수용 범위를 유지한다.
 
+최종 source·시험과 실행 결과의 확인 커밋은 `4145b757e2d847a4c30549827e6f5b4b6f88785a`다. Focused·local gate·5회 suite는 커밋 전에 실행했다. 커밋 뒤 source와 시험은 바꾸지 않았으며 문서의 확인 해시만 연결한다. 상세 run ID와 immutable image ID는 [성능 §3.6](performance-and-verification.md#36-bp-06-failure-recovery-smoke-관찰-경계)에 기록한다. CI 실행 링크는 없다.
+

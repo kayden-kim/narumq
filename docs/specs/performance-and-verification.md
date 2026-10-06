@@ -1217,6 +1217,8 @@ NaruMQ round별 RTO median/MAD는 `1199.148/605.695ms`, `1449.675/101.219ms`, `1
 
 Suite 뒤 BP-06 container·volume 조회 출력은 모두 비어 있었다. 이 실행으로 BP-06 local smoke의 유효한 5회 비교를 충족했다. `releaseGating=false`는 유지한다. `SPEC-TBD-08`, production storage, 게시 release matrix와 CI 전용 검증은 미완료다. EMQX 5.8.8의 예외 밖 replay가 다시 발생할 가능성도 남는다. 새 결과 문서와 TODO는 suite 뒤 갱신했으며 source와 시험은 바꾸지 않았다.
 
+실행한 최종 source·시험과 결과 문서의 확인 커밋은 `4145b757e2d847a4c30549827e6f5b4b6f88785a` (`fix(cluster): recover failover proposals with replicated receipts`)이다. Focused 시험·disk restore·전체 local gate·최종 5회 suite는 이 커밋 전에 실행했다. Source와 시험은 suite 이후 바꾸지 않았다. 결과 문서와 TODO 갱신 뒤 `go run ./tools/verify traceability`도 PASS했다. 커밋 뒤에는 이 해시를 연결하는 문서만 갱신한다. Manifest의 원래 baseline·`dirty=true`, 이전 invalid artifact와 comparator 예외는 그대로 보존한다. CI 실행 링크는 없으며 확인 커밋을 커밋 뒤 재실행이나 release gate 통과로 해석하지 않는다.
+
 
 ## 4. 필수 benchmark profile
 
