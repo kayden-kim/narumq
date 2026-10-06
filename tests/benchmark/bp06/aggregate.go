@@ -13,6 +13,13 @@ import (
 	"narumq/tests/benchmark/internal/jsonl"
 )
 
+const (
+	// emqxSessionCheckpointMillis pins EMQX 5.8.8 durable_sessions.heartbeat_interval.
+	emqxSessionCheckpointMillis = 5000
+	// emqxCrashWriteLossMillis bounds unreplicated ACKed writes after the first failure disconnect.
+	emqxCrashWriteLossMillis = 2000
+)
+
 type messageKey struct {
 	stream   string
 	sequence uint64
@@ -28,24 +35,26 @@ type messageRecord struct {
 	AckAt           string `json:"ackAt,omitempty"`
 	CompleteAt      string `json:"completeAt,omitempty"`
 	FirstReceivedAt string `json:"firstReceivedAt,omitempty"`
+	LastReceivedAt  string `json:"lastReceivedAt,omitempty"`
 	ReceiveCount    int    `json:"receiveCount"`
 	Interrupted     bool   `json:"interrupted"`
 	AckTimeout      bool   `json:"ackTimeout"`
 	Acked           bool   `json:"acked"`
 	AckReasonCode   byte   `json:"ackReasonCode,omitempty"`
 
-	scheduled   time.Time
-	sent        time.Time
-	ackedAt     time.Time
-	completedAt time.Time
-	receivedAt  time.Time
-	prepared    bool
-	sentOK      bool
-	pubrecSeen  bool
-	acked       bool
-	timedOut    bool
-	rejected    bool
-	aborted     bool
+	scheduled      time.Time
+	sent           time.Time
+	ackedAt        time.Time
+	completedAt    time.Time
+	receivedAt     time.Time
+	lastReceivedAt time.Time
+	prepared       bool
+	sentOK         bool
+	pubrecSeen     bool
+	acked          bool
+	timedOut       bool
+	rejected       bool
+	aborted        bool
 }
 
 type streamSummary struct {
@@ -96,33 +105,48 @@ type roundSummary struct {
 	latencies              []float64
 	disconnectsByClient    []plannedDisconnect
 	downObservedAt         time.Time
+	killingObservedAt      time.Time
 }
-
 type plannedDisconnect struct {
 	ClientID      string
 	At            time.Time
 	ReconnectedAt time.Time
 }
 
+type durabilityException struct {
+	Kind        string `json:"kind"`
+	Stream      string `json:"stream"`
+	Sequence    uint64 `json:"sequence"`
+	Round       int    `json:"round"`
+	Node        string `json:"node"`
+	Count       uint64 `json:"count"`
+	EvidenceAt  string `json:"evidenceAt"`
+	WindowStart string `json:"windowStart"`
+	WindowEnd   string `json:"windowEnd"`
+}
+
 type totalsSummary struct {
 	Gaps                 uint64 `json:"gaps"`
+	ExemptGaps           uint64 `json:"exemptGaps"`
 	QoS1Duplicates       uint64 `json:"qos1Duplicates"`
 	QoS2Duplicates       uint64 `json:"qos2Duplicates"`
+	ExemptQoS2Duplicates uint64 `json:"exemptQoS2Duplicates"`
 	UnplannedDisconnects uint64 `json:"unplannedDisconnects"`
 	ProtocolErrors       uint64 `json:"protocolErrors"`
 	Overload             uint64 `json:"overload"`
 }
 
 type workloadSummary struct {
-	SchemaVersion  int               `json:"schemaVersion"`
-	Target         string            `json:"target"`
-	Valid          bool              `json:"valid"`
-	FailureReasons []string          `json:"failureReasons"`
-	Clients        int               `json:"clients"`
-	InitialByNode  map[string]uint64 `json:"initialByNode"`
-	Rounds         []roundSummary    `json:"rounds"`
-	Streams        []streamSummary   `json:"streams"`
-	Totals         totalsSummary     `json:"totals"`
+	SchemaVersion                  int                   `json:"schemaVersion"`
+	Target                         string                `json:"target"`
+	Valid                          bool                  `json:"valid"`
+	FailureReasons                 []string              `json:"failureReasons"`
+	Clients                        int                   `json:"clients"`
+	InitialByNode                  map[string]uint64     `json:"initialByNode"`
+	Rounds                         []roundSummary        `json:"rounds"`
+	Streams                        []streamSummary       `json:"streams"`
+	Totals                         totalsSummary         `json:"totals"`
+	ComparatorDurabilityExceptions []durabilityException `json:"comparatorDurabilityExceptions"`
 }
 
 type streamCounters struct {
@@ -241,6 +265,14 @@ func (c *collector) recordDownObserved(roundNumber int, at time.Time) {
 	c.mu.Lock()
 	if round := c.rounds[roundNumber]; round != nil && round.downObservedAt.IsZero() {
 		round.downObservedAt = at
+	}
+	c.mu.Unlock()
+}
+
+func (c *collector) recordKillingObserved(roundNumber int, at time.Time) {
+	c.mu.Lock()
+	if round := c.rounds[roundNumber]; round != nil && round.killingObservedAt.IsZero() {
+		round.killingObservedAt = at
 	}
 	c.mu.Unlock()
 }
@@ -461,9 +493,10 @@ func (c *collector) receive(stream string, sequence uint64, at time.Time) (bool,
 		}
 	} else {
 		record.ReceiveCount++
+		record.lastReceivedAt = at
+		record.LastReceivedAt = at.UTC().Format(time.RFC3339Nano)
 		if record.QoS == 2 {
 			c.totals.QoS2Duplicates++
-			c.failureSet[fmt.Sprintf("QoS 2 duplicate for %s sequence %d", stream, sequence)] = struct{}{}
 		} else if record.QoS == 1 {
 			c.totals.QoS1Duplicates++
 		}
@@ -472,11 +505,7 @@ func (c *collector) receive(stream string, sequence uint64, at time.Time) (bool,
 	record.ReceiveCount = 1
 	return false, nil
 }
-func computeRecovery(round roundSummary, disconnects []plannedDisconnect, downObservedAt time.Time, records []*messageRecord, profile Profile) (recoverySummary, []string) {
-	result := recoverySummary{
-		StreamFirstSuccessMillis: make(map[string]float64, 4),
-	}
-	var failures []string
+func roundInjection(disconnects []plannedDisconnect, downObservedAt time.Time) (time.Time, string) {
 	var injectionAt time.Time
 	for _, disconnect := range disconnects {
 		if !disconnect.At.IsZero() && (injectionAt.IsZero() || disconnect.At.Before(injectionAt)) {
@@ -484,14 +513,25 @@ func computeRecovery(round roundSummary, disconnects []plannedDisconnect, downOb
 		}
 	}
 	if !injectionAt.IsZero() {
-		result.InjectionSource = "disconnect"
-	} else if !downObservedAt.IsZero() {
-		injectionAt = downObservedAt
-		result.InjectionSource = "marker"
-	} else {
+		return injectionAt, "disconnect"
+	}
+	if !downObservedAt.IsZero() {
+		return downObservedAt, "marker"
+	}
+	return time.Time{}, ""
+}
+
+func computeRecovery(round roundSummary, disconnects []plannedDisconnect, downObservedAt time.Time, records []*messageRecord, profile Profile) (recoverySummary, []string) {
+	result := recoverySummary{
+		StreamFirstSuccessMillis: make(map[string]float64, 4),
+	}
+	var failures []string
+	injectionAt, injectionSource := roundInjection(disconnects, downObservedAt)
+	if injectionSource == "" {
 		failures = append(failures, fmt.Sprintf("failure injection was not observed for round %02d", round.Round))
 		return result, failures
 	}
+	result.InjectionSource = injectionSource
 	result.InjectionAt = injectionAt.UTC().Format(time.RFC3339Nano)
 	var recoveredAt time.Time
 	for _, disconnect := range disconnects {
@@ -555,6 +595,66 @@ func computeRecovery(round roundSummary, disconnects []plannedDisconnect, downOb
 	return result, failures
 }
 
+func (c *collector) crashWindowGapLocked(record *messageRecord) (durabilityException, bool) {
+	if c.target != "emqx" || record.QoS == 0 || !record.acked || record.ReceiveCount != 0 || record.Interrupted || record.aborted {
+		return durabilityException{}, false
+	}
+	for roundNumber := 1; roundNumber <= c.profile.rounds(); roundNumber++ {
+		round := c.rounds[roundNumber]
+		if round == nil || round.killingObservedAt.IsZero() {
+			continue
+		}
+		injectionAt, source := roundInjection(round.disconnectsByClient, round.downObservedAt)
+		if source == "" {
+			continue
+		}
+		windowEnd := injectionAt.Add(time.Duration(emqxCrashWriteLossMillis) * time.Millisecond)
+		if record.completedAt.Before(round.killingObservedAt) || record.completedAt.After(windowEnd) {
+			continue
+		}
+		return durabilityException{
+			Kind: "ackedGap", Stream: record.Stream, Sequence: record.Sequence, Round: roundNumber, Node: round.Node,
+			Count: 1, EvidenceAt: record.completedAt.UTC().Format(time.RFC3339Nano),
+			WindowStart: round.killingObservedAt.UTC().Format(time.RFC3339Nano),
+			WindowEnd:   windowEnd.UTC().Format(time.RFC3339Nano),
+		}, true
+	}
+	return durabilityException{}, false
+}
+
+func (c *collector) checkpointRedeliveryLocked(record *messageRecord) (durabilityException, bool) {
+	if c.target != "emqx" || record.QoS != 2 || record.ReceiveCount <= 1 || record.aborted {
+		return durabilityException{}, false
+	}
+	for roundNumber := 1; roundNumber <= c.profile.rounds(); roundNumber++ {
+		round := c.rounds[roundNumber]
+		if round == nil {
+			continue
+		}
+		var subscriberLostAt time.Time
+		for _, disconnect := range round.disconnectsByClient {
+			if disconnect.ClientID == "bp06-sub-"+record.Stream {
+				subscriberLostAt = disconnect.At
+				break
+			}
+		}
+		if subscriberLostAt.IsZero() {
+			continue
+		}
+		windowStart := subscriberLostAt.Add(-time.Duration(emqxSessionCheckpointMillis) * time.Millisecond)
+		if record.receivedAt.Before(windowStart) || record.receivedAt.After(subscriberLostAt) || !record.lastReceivedAt.After(subscriberLostAt) {
+			continue
+		}
+		return durabilityException{
+			Kind: "qos2Duplicate", Stream: record.Stream, Sequence: record.Sequence, Round: roundNumber, Node: round.Node,
+			Count: uint64(record.ReceiveCount - 1), EvidenceAt: record.receivedAt.UTC().Format(time.RFC3339Nano),
+			WindowStart: windowStart.UTC().Format(time.RFC3339Nano),
+			WindowEnd:   subscriberLostAt.UTC().Format(time.RFC3339Nano),
+		}, true
+	}
+	return durabilityException{}, false
+}
+
 func (c *collector) settled() bool {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -566,12 +666,15 @@ func (c *collector) settled() bool {
 			continue
 		}
 		if record.ReceiveCount == 0 {
+			if _, exempt := c.crashWindowGapLocked(record); exempt {
+				continue
+			}
 			return false
 		}
+
 	}
 	return true
 }
-
 func (c *collector) summary() workloadSummary {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -583,8 +686,8 @@ func (c *collector) summaryLocked() workloadSummary {
 	for reason := range c.failureSet {
 		failures = append(failures, reason)
 	}
-	sort.Strings(failures)
 	streams := make([]streamSummary, 0, len(c.streams))
+	exceptions := make([]durabilityException, 0)
 	var total totalsSummary = c.totals
 	for _, name := range []string{"v5-q0", "v5-q1", "v5-q2", "v311-q1"} {
 		counters := c.streams[name]
@@ -605,6 +708,18 @@ func (c *collector) summaryLocked() workloadSummary {
 			}
 			if record.QoS > 0 && record.acked && record.ReceiveCount == 0 && !record.Interrupted {
 				stream.Gaps++
+				if exception, ok := c.crashWindowGapLocked(record); ok {
+					total.ExemptGaps += exception.Count
+					exceptions = append(exceptions, exception)
+				}
+			}
+			if record.QoS == 2 && record.ReceiveCount > 1 {
+				if exception, ok := c.checkpointRedeliveryLocked(record); ok {
+					total.ExemptQoS2Duplicates += exception.Count
+					exceptions = append(exceptions, exception)
+				} else {
+					failures = appendUnique(failures, fmt.Sprintf("QoS 2 duplicate for %s sequence %d", record.Stream, record.Sequence))
+				}
 			}
 		}
 		stream.Received = uniqueReceived
@@ -642,16 +757,32 @@ func (c *collector) summaryLocked() workloadSummary {
 			failures = appendUnique(failures, "persistent session was not present after reconnect")
 		}
 	}
-	valid := len(failures) == 0 && total.Gaps == 0 && total.QoS2Duplicates == 0 && total.UnplannedDisconnects == 0 && total.ProtocolErrors == 0 && total.Overload == 0
+	sort.Strings(failures)
+	sort.Slice(exceptions, func(i, j int) bool {
+		left, right := exceptions[i], exceptions[j]
+		if left.Round != right.Round {
+			return left.Round < right.Round
+		}
+		if left.Kind != right.Kind {
+			return left.Kind < right.Kind
+		}
+		if left.Stream != right.Stream {
+			return left.Stream < right.Stream
+		}
+		return left.Sequence < right.Sequence
+	})
+	valid := len(failures) == 0 && total.Gaps == total.ExemptGaps &&
+		total.QoS2Duplicates == total.ExemptQoS2Duplicates &&
+		total.UnplannedDisconnects == 0 && total.ProtocolErrors == 0 && total.Overload == 0
 	for _, stream := range streams {
 		if stream.AckTimeouts > 0 {
 			valid = false
 		}
 	}
 	return workloadSummary{
-		SchemaVersion: 1, Target: c.target, Valid: valid, FailureReasons: failures,
+		SchemaVersion: 2, Target: c.target, Valid: valid, FailureReasons: failures,
 		Clients: c.profile.clients(), InitialByNode: initial, Rounds: rounds,
-		Streams: streams, Totals: total,
+		Streams: streams, Totals: total, ComparatorDurabilityExceptions: exceptions,
 	}
 }
 

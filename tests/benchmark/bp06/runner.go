@@ -352,6 +352,7 @@ func watchFailure(ctx context.Context, profile Profile, outputDir string, round 
 				if err := writeAtomicJSON(filepath.Join(outputDir, "control", fmt.Sprintf(bp06AckPath, n)), ack); err != nil {
 					return fmt.Errorf("acknowledge round %02d killing marker: %w", n, err)
 				}
+				col.recordKillingObserved(n, observedAt)
 				acknowledged[n] = true
 			}
 			if marker.State == "down" && !downObserved[n] {

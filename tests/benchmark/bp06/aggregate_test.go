@@ -1,6 +1,8 @@
 package main
 
 import (
+	"fmt"
+	"slices"
 	"testing"
 	"time"
 )
@@ -135,11 +137,148 @@ func TestCollectorRecordsQoS1DuplicatesAndRejectsQoS2Duplicates(t *testing.T) {
 	if summary.Totals.QoS1Duplicates != 1 || summary.Totals.QoS2Duplicates != 1 {
 		t.Fatalf("duplicate totals = %#v", summary.Totals)
 	}
-	if _, rejected := col.failureSet["QoS 2 duplicate for v5-q2 sequence 1"]; !rejected {
-		t.Fatal("QoS 2 duplicate was not a validity failure")
+	if !slices.Contains(summary.FailureReasons, "QoS 2 duplicate for v5-q2 sequence 1") {
+		t.Fatalf("QoS 2 duplicate missing from failure reasons: %v", summary.FailureReasons)
 	}
-	if _, rejected := col.failureSet["QoS 1 duplicate for v5-q1 sequence 1"]; rejected {
-		t.Fatal("QoS 1 duplicate became a validity failure")
+	if slices.Contains(summary.FailureReasons, "QoS 1 duplicate for v5-q1 sequence 1") {
+		t.Fatalf("QoS 1 duplicate became a validity failure: %v", summary.FailureReasons)
+	}
+}
+
+func TestCollectorExemptsOnlyEMQXCrashWindowGaps(t *testing.T) {
+	base := time.Date(2026, 10, 6, 12, 0, 0, 0, time.UTC)
+	makeCollector := func(target string) *collector {
+		t.Helper()
+		col := newCollector(target, collectorTestProfile())
+		col.recordKillingObserved(1, base)
+		if _, planned := col.recordDisconnect(
+			"bp06-pub-v5-q1",
+			"node3",
+			roundMarker{Round: 1, Node: "node3", State: "killing"},
+			"eof",
+			"",
+			base.Add(300*time.Millisecond),
+		); !planned {
+			t.Fatal("planned killing disconnect was not recorded")
+		}
+		for index, completedAt := range []time.Time{
+			base.Add(-time.Millisecond),
+			base,
+			base.Add(2300 * time.Millisecond),
+			base.Add(2301 * time.Millisecond),
+		} {
+			sequence := uint64(index + 1)
+			record := messageRecord{Stream: "v5-q1", Protocol: "MQTT 5", QoS: 1, Sequence: sequence, scheduled: base.Add(-10 * time.Millisecond)}
+			if err := col.beginPublish(record); err != nil {
+				t.Fatal(err)
+			}
+			if !col.publishSent(record.Stream, sequence, base.Add(-2*time.Millisecond)) {
+				t.Fatalf("sequence %d PUBLISH was rejected", sequence)
+			}
+			if !col.publishAck(record.Stream, sequence, completedAt, 0, true) {
+				t.Fatalf("sequence %d ACK was rejected", sequence)
+			}
+		}
+		return col
+	}
+
+	emqx := makeCollector("emqx")
+	summary := emqx.summary()
+	if summary.Totals.Gaps != 4 || summary.Totals.ExemptGaps != 2 || summary.Valid {
+		t.Fatalf("EMQX crash-window totals = %#v, valid=%v", summary.Totals, summary.Valid)
+	}
+	if len(summary.ComparatorDurabilityExceptions) != 2 ||
+		summary.ComparatorDurabilityExceptions[0].Sequence != 2 ||
+		summary.ComparatorDurabilityExceptions[1].Sequence != 3 {
+		t.Fatalf("gap exceptions = %#v, want only inclusive window boundaries", summary.ComparatorDurabilityExceptions)
+	}
+	if emqx.settled() {
+		t.Fatal("settle accepted non-exempt ACKed gaps")
+	}
+	for _, sequence := range []uint64{1, 4} {
+		if duplicate, err := emqx.receive("v5-q1", sequence, base.Add(3*time.Second)); err != nil || duplicate {
+			t.Fatalf("receive sequence %d = (%v, %v)", sequence, duplicate, err)
+		}
+	}
+	summary = emqx.summary()
+	if !emqx.settled() || summary.Totals.Gaps != 2 || summary.Totals.ExemptGaps != 2 {
+		t.Fatalf("settled EMQX gaps = %#v, settled=%v", summary.Totals, emqx.settled())
+	}
+
+	narumq := makeCollector("narumq")
+	summary = narumq.summary()
+	if summary.Totals.ExemptGaps != 0 || narumq.settled() {
+		t.Fatalf("NaruMQ gap exception or settle result = %#v, settled=%v", summary.Totals, narumq.settled())
+	}
+}
+
+func TestCollectorExemptsOnlyEMQXCheckpointRedelivery(t *testing.T) {
+	base := time.Date(2026, 10, 6, 12, 0, 0, 0, time.UTC)
+	tests := []struct {
+		name            string
+		target          string
+		firstOffset     time.Duration
+		duplicateOffset time.Duration
+		subscriber      string
+		exempt          bool
+	}{
+		{name: "inclusive checkpoint start", target: "emqx", firstOffset: -5000 * time.Millisecond, duplicateOffset: time.Millisecond, subscriber: "bp06-sub-v5-q2", exempt: true},
+		{name: "inclusive disconnect end", target: "emqx", firstOffset: 0, duplicateOffset: time.Millisecond, subscriber: "bp06-sub-v5-q2", exempt: true},
+		{name: "before checkpoint window", target: "emqx", firstOffset: -5001 * time.Millisecond, duplicateOffset: time.Millisecond, subscriber: "bp06-sub-v5-q2"},
+		{name: "duplicate before disconnect", target: "emqx", firstOffset: -5000 * time.Millisecond, duplicateOffset: -time.Millisecond, subscriber: "bp06-sub-v5-q2"},
+		{name: "different subscriber", target: "emqx", firstOffset: -5000 * time.Millisecond, duplicateOffset: time.Millisecond, subscriber: "bp06-sub-v5-q1"},
+		{name: "NaruMQ target", target: "narumq", firstOffset: -5000 * time.Millisecond, duplicateOffset: time.Millisecond, subscriber: "bp06-sub-v5-q2"},
+	}
+	for index, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			col := newCollector(test.target, collectorTestProfile())
+			if _, planned := col.recordDisconnect(
+				test.subscriber,
+				"node3",
+				roundMarker{Round: 1, Node: "node3", State: "killing"},
+				"eof",
+				"",
+				base,
+			); !planned {
+				t.Fatal("planned subscriber disconnect was not recorded")
+			}
+			sequence := uint64(index + 1)
+			record := messageRecord{Stream: "v5-q2", Protocol: "MQTT 5", QoS: 2, Sequence: sequence, scheduled: base.Add(-8 * time.Second)}
+			if err := col.beginPublish(record); err != nil {
+				t.Fatal(err)
+			}
+			if !col.publishSent(record.Stream, sequence, base.Add(-7*time.Second)) {
+				t.Fatal("prepared PUBLISH was rejected")
+			}
+			if !col.publishAck(record.Stream, sequence, base.Add(-6*time.Second), 0, false) {
+				t.Fatal("PUBREC was rejected")
+			}
+			if !col.publishAck(record.Stream, sequence, base.Add(-5500*time.Millisecond), 0, true) {
+				t.Fatal("PUBCOMP was rejected")
+			}
+			if duplicate, err := col.receive(record.Stream, sequence, base.Add(test.firstOffset)); err != nil || duplicate {
+				t.Fatalf("first delivery = (%v, %v)", duplicate, err)
+			}
+			if duplicate, err := col.receive(record.Stream, sequence, base.Add(test.duplicateOffset)); err != nil || !duplicate {
+				t.Fatalf("repeat delivery = (%v, %v)", duplicate, err)
+			}
+			summary := col.summary()
+			if test.exempt {
+				if summary.Totals.QoS2Duplicates != 1 || summary.Totals.ExemptQoS2Duplicates != 1 ||
+					len(summary.ComparatorDurabilityExceptions) != 1 {
+					t.Fatalf("checkpoint exception summary = %#v", summary)
+				}
+				exception := summary.ComparatorDurabilityExceptions[0]
+				if exception.Kind != "qos2Duplicate" || exception.Round != 1 || exception.Node != "node3" {
+					t.Fatalf("checkpoint exception attribution = %#v", exception)
+				}
+				return
+			}
+			if summary.Totals.ExemptQoS2Duplicates != 0 ||
+				!slices.Contains(summary.FailureReasons, fmt.Sprintf("QoS 2 duplicate for v5-q2 sequence %d", sequence)) {
+				t.Fatalf("unqualified duplicate was not invalid: %#v", summary)
+			}
+		})
 	}
 }
 

@@ -785,7 +785,7 @@ Local BP-07 smoke harness·broker 결함 수정·5회 교차 비교·local gate�
 - Will은 필수 결과에서 제외한다. Crash 시 Will 동작은 session-metadata 활성화 조건에 묶여 있으며 이번 범위에서 판정하지 않는다.
 - Local Docker volume은 production Linux/EBS, 전원 손실, 실제 NLB와 승인된 RPO/RTO를 입증하지 않는다.
 
-`rtoDirectlyComparable=false`이며 다음 네 차원을 `nonEquivalent`로 남긴다. 직접적인 우열을 판정하지 않는다.
+`rtoDirectlyComparable=false`이며 다음 다섯 차원을 `nonEquivalent`로 남긴다. 직접적인 우열을 판정하지 않는다.
 
 | 차원 | 결과에 기록하는 이유 |
 | --- | --- |
@@ -793,6 +793,8 @@ Local BP-07 smoke harness·broker 결함 수정·5회 교차 비교·local gate�
 | `authentication` | BP-03의 authentication reason을 그대로 쓴다. Tenant/client-ID binding과 peer mTLS의 등가는 검증하지 않는다. |
 | `resyncCondition` | NaruMQ resync completes when the leader match index for the restarted voter reaches the leader applied index observed after restart; EMQX resync completes when the pinned cluster readiness condition passes |
 | `sessionRecovery` | NaruMQ restores persistent sessions from replicated session metadata; EMQX resumes durable sessions from builtin_raft storage; equivalence is not proven |
+
+| `crashDurability` | EMQX 5.8.8은 durable storage 복제 완료 전에 QoS 1/2 ACK를 보내고(`store_batch` `sync => false`), durable session 상태를 `durable_sessions.heartbeat_interval`(5000ms)마다 저장한다. Kill 구간의 ACKed gap과 QoS 2 재전송은 EMQX target에서만 `comparatorDurabilityExceptions`로 기록한다. |
 
 #### 고정 smoke profile
 
@@ -879,7 +881,7 @@ RTO는 장애 뒤 재접속과 모든 stream 처리가 돌아오는 데 걸린 �
 
 NaruMQ resync는 query 없는 `GET /api/v1/nodes`와 Bearer admin token을 사용한다. 가장 낮은 번호의 생존 node에서 LEADER의 10진수 `nodeId`를 찾는다. HTTP 200이 아니거나 leader가 없거나 `page.hasMore=true`면 다음 poll에서 다시 시도한다. 처음 leader를 찾으면 leader 주소의 응답에서 자신의 `lastAppliedIndex`를 watermark `W`로 한 번만 기록한다. 대상 voter의 `lastAppliedIndex >= W`와 `replicationHealth=="HEALTHY"`를 요구한다. 대상이 leader면 자신의 index 조건만 확인한다. Leader가 바뀌면 leader를 다시 찾되 W는 유지한다. 마지막으로 세 node readiness를 확인한다. 원격 `lastAppliedIndex`는 `cmd/narumq/cluster_runtime.go`의 `nodeSummary`가 보고하는 leader의 peer match index다. Product 코드는 바꾸지 않는다.
 
-EMQX prepare·resync는 pinned readiness 조건을 포함한 `WaitForEMQXClusterReady`를 쓴다. Rejoin은 대상 container에서 `emqx eval "emqx:is_running()."`의 exit 0과 trim한 출력 `true`를 요구한다. Poll 간격은 `healthPollMillis`이며 raw 출력은 저장하지 않는다.
+EMQX prepare·resync는 pinned readiness 조건을 포함한 `WaitForEMQXClusterReady`를 쓴다. Readiness는 `durable_sessions.heartbeat_interval == 5000`도 확인한다. Rejoin은 대상 container에서 `emqx eval "emqx:is_running()."`의 exit 0과 trim한 출력 `true`를 요구한다. Poll 간격은 `healthPollMillis`이며 raw 출력은 저장하지 않는다.
 
 #### 유효성
 
@@ -888,7 +890,7 @@ Workload는 다음 조건을 모두 만족해야 valid다.
 - 모든 phase가 성공하고 failure completion은 success다.
 - Unplanned disconnect, protocol error, ACK timeout과 overload가 0이다. Message capacity를 넘지 않는다.
 - 끊긴 client가 모두 reconnect deadline 안에 재접속한다. Persistent 재접속의 SessionPresent는 true다.
-- ACKed QoS 1/2 gap이 0이다. Interrupted는 제외한다. QoS 2 duplicate도 0이다.
+- ACKed QoS 1/2 gap과 QoS 2 duplicate는 0이어야 한다. Interrupted는 gap에서 제외한다. EMQX target의 제한된 crash-window 예외는 아래 절을 따른다.
 - 모든 round가 `Recovered=true`이고 `rtoMillis <= recoveryTimeoutMillis`다.
 - `final_check`에서 모든 client가 연결돼 있다.
 
@@ -901,6 +903,16 @@ Round의 `cpuPeakPercent`와 `memoryPeakBytes`는 세 node의 최대값이다. �
 Steady는 세 node 모두 표본 2개 이상이어야 한다. Round의 생존 node는 2개 이상, 대상 node는 `restartFinishedAt` 이후 표본 1개 이상이어야 한다. Event 파일이나 window가 없으면 resource invalid다. Target valid는 environment success와 workload·failure·resource valid의 논리곱이다.
 
 NaruMQ 또는 EMQX의 broker 동작으로 compare가 invalid면 같은 profile로 한 번 더 실행한다. 두 번 재현되면 규칙과 product 코드를 바꾸지 않고 실행 증거와 별도 수정·comparator 결정 대상을 보고한다. NaruMQ peer match index가 재시작 뒤 계속 0이어서 resync가 기한을 넘으면 정의를 바꾸지 않고 멈춘다.
+
+#### EMQX crash-window 예외
+
+2026-10-06 사용자 결정에 따라 NaruMQ 판정 규칙은 유지하고 EMQX target에만 아래 예외를 적용한다.
+
+- ACKed gap은 `killingObservedAt <= completeAt <= injectionAt + 2000ms`인 경우에만 예외다. 대상 message는 QoS 1/2 ACK 완료 상태이며, 수신되지 않았고 interrupted·aborted가 아니어야 한다. `injectionAt`은 이 절의 RTO 정의를 따른다. 예외 대상 gap은 settle 대기에서 제외한다.
+- QoS 2 duplicate는 첫 수신 시각이 해당 subscriber의 계획된 disconnect 시각 전 5000ms부터 disconnect 시각까지이고, 마지막 중복 수신이 disconnect 뒤인 경우에만 예외다. Subscriber는 `bp06-sub-<stream>`과 일치해야 한다.
+- 각 record는 round 1부터 오름차순으로 검사해 처음 맞는 round에 귀속한다. 예외가 아닌 gap·duplicate는 계속 invalid다. NaruMQ에는 예외가 없다.
+
+예외 원인은 pinned EMQX 5.8.8 동작에 한정한다. `apps/emqx/src/emqx_persistent_message.erl`의 `store_message/1`은 `emqx_ds:store_batch`를 `#{sync => false}`로 호출하므로, QoS ACK는 durable storage 복제 완료를 기다리지 않는다. 관측한 ACKed gap은 모두 runner의 killing 관찰 시각부터 injection 뒤 최대 270ms 안에 있었다. 2000ms 경계는 이 관측보다 약 7배 길고 N-1 유지 시간인 `downMillis`보다 짧다. `apps/emqx/src/emqx_schema.erl`과 `rel/i18n/emqx_schema.hocon`은 durable session 상태를 `durable_sessions.heartbeat_interval`마다 저장한다고 설명한다. 설정과 실제 중복 관측은 5000ms였으며, 중복은 모두 해당 구간 안에서 첫 수신되고 subscriber가 disconnect 뒤 다른 node에 `SessionPresent=true`로 재접속한 경우였다.
 
 #### 명령과 artifact
 
@@ -917,6 +929,8 @@ Compare는 `.artifacts/benchmark/bp06/<run-id>/`에 profile, manifest, compariso
 - `failure.jsonl`, `failure-summary.json`, `resource-summary.json`
 - `control/workload-ready.json`, `control/round-NN.json`, `control/round-NN-ack.json`, `control/failure-complete.json`
 - Node별 broker·owner stats, broker log·inspect, EMQX durability snapshot, runner log
+- `messages.jsonl`은 중복의 마지막 수신 시각인 `lastReceivedAt`을 기록한다.
+- `workload-summary.json`은 `schemaVersion=2`이며, `totals.exemptGaps`, `totals.exemptQoS2Duplicates`, `comparatorDurabilityExceptions`를 포함한다. 예외가 없으면 목록은 빈 배열 `[]`이다.
 
 Failure summary는 steady 시각, round별 kill·실제 down·rejoin·resync 시간, kill·restart·settle 시각과 NaruMQ `leaderNode,watermarkAppliedIndex,targetMatchIndex`를 기록한다. Workload round는 recovery 결과를 기록한다.
 
@@ -932,6 +946,8 @@ Suite는 두 target valid인 compare 뒤 실행한다. 새 cluster로 5회 반�
 | 준비된 node 선택과 health 변화 | `tests/benchmark/bp06/dialer_test.go` |
 | Marker ack·과거 round 거절·계획된 종료 귀속·persistent 재접속·Server Reference 거절 | `tests/benchmark/bp06/session_test.go` |
 | 최초 장애·marker fallback·stream 성공·RTO 한도·interrupted·duplicate | `tests/benchmark/bp06/aggregate_test.go` |
+| EMQX crash-window gap 예외·경계·target 한정·settle | `tests/benchmark/bp06/aggregate_test.go`의 `TestCollectorExemptsOnlyEMQXCrashWindowGaps` |
+| EMQX checkpoint 재전송 예외·subscriber 귀속·경계 | 같은 파일의 `TestCollectorExemptsOnlyEMQXCheckpointRedelivery` |
 | Leader 재탐색·고정 watermark·target match/health·pagination·deadline·control artifact | `tests/benchmark/bp06/failure_test.go` |
 | Steady·round window·생존 node와 재시작 뒤 표본·peak baseline·counter reset | `tests/benchmark/bp06/resource_test.go` |
 | Metric key·unit·round 누락/중복·invalid child·median·MAD | `tests/benchmark/bp06/suite_test.go` |
@@ -994,7 +1010,30 @@ EMQX는 두 실행 모두 ACKed gap과 QoS 2 duplicate 때문에 invalid다. 각
 - 각 compare 뒤 `docker ps -a --filter name=bp06- --format "{{.Names}}"`와 `docker volume ls --filter name=bp06- --format "{{.Name}}"` 출력은 모두 비어 있었다.
 - 저장소 root에서 `cmd /d /c "set GOMAXPROCS=4&& go run ./tools/verify local"`: PASS(143.59s wall). 출력에서 `traceability`, `architecture`, `coverage`, `local` PASS를 확인했다. 전체 시험, production race 시험과 fuzz 실행을 포함한다. BP-06 시험은 coverage 실행에서 3.228s로 통과했다.
 
-두 target valid인 compare 선행 조건을 충족하지 못했으므로 5회 suite는 미실행이다. Suite ID·median·MAD와 반복 수용을 주장하지 않는다. BP-06 local smoke acceptance는 미완료다. `SPEC-TBD-08`, BP-02·BP-04와 release regression도 남으며 TODO 체크는 `[ ]`로 유지한다.
+위 2026-10-05 실행에서는 두 target valid인 compare 선행 조건을 충족하지 못해 5회 suite를 실행하지 않았다. BP-06 local smoke acceptance는 미완료였다. `SPEC-TBD-08`, BP-02·BP-04와 release regression도 남아 있었다. 이 기록 뒤의 실행은 다음 절에 적었다.
+
+#### 2026-10-06 comparator 예외 판정 뒤 실행
+
+Windows/amd64, Go 1.26.5, Docker Desktop Linux/amd64에서 같은 smoke profile로 `compare`를 실행했다. Profile SHA-256은 `e8e4aa2e5df1a3e55ad901acff5a4505cdb1acf4699ff061f1a2bfc51754054d`다.
+
+| Run ID | Wall time | NaruMQ | EMQX | Compare |
+| --- | ---: | --- | --- | --- |
+| `bp06-20261005T231802.408701200Z-102520` | 361.12s | invalid | valid | exit 1 |
+| `bp06-20261005T232443.106702100Z-105796` | 361.88s | valid | valid | exit 0 |
+
+첫 실행의 NaruMQ workload는 29건의 계획 밖 disconnect와 MQTT `0x97` 거절을 기록했다. 승인된 contingency에 따라 같은 profile로 한 번 재실행했다. 재실행에서는 두 target이 모두 valid였다.
+
+성공한 compare의 `.artifacts/benchmark/bp06/bp06-20261005T232443.106702100Z-105796/`에서 EMQX `workload-summary.json`은 `schemaVersion=2`, `valid=true`, `gaps=exemptGaps=5`, `qos2Duplicates=exemptQoS2Duplicates=22`를 기록했다. 예외는 round 1에서 0건, round 2에서 ACKed gap 2건·QoS 2 duplicate 22건, round 3에서 ACKed gap 3건·QoS 2 duplicate 0건이다. 각 예외는 해당 kill round와 node에 귀속됐다. `messages.jsonl`의 중복 record는 `lastReceivedAt`을 포함한다. EMQX `runner.log`에는 workload valid가 기록됐고 settle timeout은 없다.
+
+같은 compare에서 NaruMQ는 `valid=true`, gap·QoS 2 duplicate 예외 0건, 예외 목록 `[]`였다. `comparison.json`은 다섯 번째 `crashDurability` 차원을 기록했다. `emqx/node1/emqx-durability.txt`의 `heartbeat_interval`은 5000이었다.
+
+다음 5회 suite는 `.artifacts/benchmark/bp06/bp06-suite-20261005T233133.843577500Z-115256/`에 있다. 5회 실행을 마쳤지만 유효한 반복은 1회뿐이고 suite `valid=false`다. Target 순서는 `narumq,emqx`와 `emqx,narumq`를 교차했다. EMQX child는 모두 workload valid였다. NaruMQ child는 반복 1·2·3·5에서 invalid였다. 반복 1·3·5는 MQTT `0x97` publish 거절을 기록했고, 반복 1·2·3은 각각 계획 밖 disconnect 3·1·2건을 기록했다. 반복 4만 두 target이 모두 valid였다. Suite `metrics`는 두 target 모두 빈 객체 `{}`다. 유효한 반복 5회를 채우지 못해 median·MAD는 산출되지 않았다. BP-06 local smoke 수용은 완료되지 않았다.
+
+각 compare와 suite 뒤 `docker ps -a --filter name=bp06- --format "{{.Names}}"`, `docker volume ls --filter name=bp06- --format "{{.Name}}"` 출력은 비어 있었다.
+
+저장소 root에서 `cmd /d /c "set GOMAXPROCS=4&& go run ./tools/verify local"`을 실행했다. `traceability`, `architecture`, `coverage`, `local`이 모두 PASS였다. Local gate wall time은 156.15s다.
+
+두 compare manifest와 suite manifest는 baseline `a8348f792b984cca1eac9b1cae179d1cc8b71395`, `dirty=true`를 기록한다. 원시 artifact는 위 경로에 보존했다. Local smoke acceptance는 5회 suite 실패로 미완료다. `SPEC-TBD-08`, BP-02·BP-04, release regression과 BP-06의 유효한 5회 suite가 남는다.
 
 ## 4. 필수 benchmark profile
 

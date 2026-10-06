@@ -29,6 +29,7 @@ const (
 		Shards = emqx_ds_replication_layer_meta:shards(messages),
 		{ok, Authenticators} = emqx_authn_chains:list_authenticators('mqtt:global'),
 		emqx:get_config([durable_sessions, enable]) =:= true andalso
+		emqx:get_config([durable_sessions, heartbeat_interval]) =:= 5000 andalso
 		lists:member({messages, builtin_raft}, emqx_ds:which_dbs()) andalso
 		maps:get(n_sites, Config) =:= 3 andalso
 		maps:get(replication_factor, Config) =:= 3 andalso
@@ -621,7 +622,7 @@ func buildBP06Comparison(manifest bp06Manifest, summary bp06Summary) bp06Compari
 		RunID:                 manifest.RunID,
 		Equivalent:            equivalent,
 		ReleaseGating:         false,
-		Reason:                "identical workload profile, resource limits, runner image, and three-node topology; exact ACK/storage, security, resync conditions, and session recovery contracts remain non-equivalent",
+		Reason:                "identical workload profile, resource limits, runner image, and three-node topology; exact ACK/storage, crash durability, security, resync conditions, and session recovery contracts remain non-equivalent",
 		ProfileSHA256:         manifest.Profile.RawSHA256,
 		ResolvedProfile:       manifest.Profile.Resolved,
 		ResourceLimits:        left.ResourceLimits,
@@ -633,6 +634,7 @@ func buildBP06Comparison(manifest bp06Manifest, summary bp06Summary) bp06Compari
 			{Dimension: "authentication", Reason: "both validate JWKS JWT; EMQX fixture does not reproduce NaruMQ tenant/client-ID bindings or peer mTLS"},
 			{Dimension: "resyncCondition", Reason: "NaruMQ resync completes when the leader match index for the restarted voter reaches the leader applied index observed after restart; EMQX resync completes when the pinned cluster readiness condition passes"},
 			{Dimension: "sessionRecovery", Reason: "NaruMQ restores persistent sessions from replicated session metadata; EMQX resumes durable sessions from builtin_raft storage; equivalence is not proven"},
+			{Dimension: "crashDurability", Reason: "EMQX 5.8.8 acknowledges QoS 1/2 publishes before durable storage replication (store_batch sync=false) and checkpoints durable session state every durable_sessions.heartbeat_interval (5000ms); SIGKILL-window ACKed gaps and QoS 2 redeliveries are recorded as comparatorDurabilityExceptions instead of invalidating the EMQX target; NaruMQ has no such exception"},
 		},
 		Targets: make(map[string]bp06ComparisonTarget, 2),
 	}
