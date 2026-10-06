@@ -1091,6 +1091,8 @@ Compare와 suite 전체의 회수 log는 0회다. 실제 실행에서 회수 경
 
 마지막으로 저장소 root에서 `cmd /d /c "set GOMAXPROCS=4&& go run ./tools/verify local"`을 실행했다. `traceability`, `architecture`, `coverage`, `local`은 모두 PASS였다(wall 170.14s). Package·integration·production race와 fuzz 실행을 포함한다. Integration은 98.534s였다. 이 local gate 통과는 invalid BP-06 suite의 수용을 대신하지 않는다. Focused 시험·race·실제 backpressure process 회귀의 명령과 시간은 [Cluster §11.28](cluster-session-and-delivery.md#1128-publish-backpressure-수용-매핑)에 기록했다.
 
+위 구현·시험·실행 결과의 확인 커밋은 `b175fc4563cdc00838f16829effbf9ccb4fb8246` (`fix(cluster): make commit lag failover-aware and reclaim unsent proposals`)이다. 단계별 build, focused 시험, build·vet·race·process 회귀, 위 compare·suite와 전체 local gate는 모두 이 커밋 전에 실행했다. 커밋에는 실행한 source·시험과 결과 문서를 포함했다. 커밋 뒤에는 이 확인 해시를 연결하는 문서만 고쳤으며 source·시험은 바꾸지 않았다. 커밋 뒤 BP-06을 재실행하지 않았고 CI 실행 링크도 없다. Manifest의 원래 baseline·`dirty=true`와 suite의 invalid 판정은 그대로 보존한다.
+
 ## 4. 필수 benchmark profile
 
 | ID | 고정 조건 | 필수 결과 |

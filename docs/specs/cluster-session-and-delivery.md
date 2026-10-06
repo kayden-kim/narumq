@@ -1285,6 +1285,8 @@ Race는 runtime 14.256s·TCP 18.723s·Raft 5.657s로 PASS했다. 실제 3-proces
 
 BP-06 실제 failover와 전체 local gate의 결과는 [Performance §3.6](performance-and-verification.md#36-bp-06-failure-recovery-smoke-관찰-경계)에 구분해 기록한다.
 
+위 build·focused·race·process 검증 대상 source와 시험의 확인 커밋은 `b175fc4563cdc00838f16829effbf9ccb4fb8246`이다. 모든 명령은 커밋 전에 실행했으며 이후 source·시험은 바꾸지 않았다. BP-06 compare·suite와 전체 local gate도 같은 source를 실행했다. 이 해시는 미수용인 BP-06 suite를 통과로 바꾸지 않는다.
+
 ### 11.29 Replicated-state v1 계약 수용 매핑
 
 이 매핑은 [ADR-0031](../decisions/ADR-0031-replicated-state-schema-strict-evolution.md)과 [Replicated-state v1](../contracts/replicated-state-v1.md)의 strict decode·feature gate·기준 bytes를 검증한다. 게시 release별 process matrix와 production storage는 별도 gate다.
