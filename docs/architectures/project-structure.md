@@ -1,421 +1,195 @@
 # Project structure
 
-NaruMQ source tree는 MQTT·session·routing·delivery·tenancy·security·cluster lifecycle domain을 중심으로 구성한다. `cmd/narumq`만 concrete adapter를 조립한다. Unit test는 package와 함께 두고, system-level 검증과 deployment artifact는 production source에서 분리한다.
+이 문서는 현재 코드의 진입점과 책임을 찾는 지도다. 계층 책임은 [Broker core architecture](broker-core.md), cluster 내부 흐름은 [Cluster architecture](cluster-architecture.md)를 따른다. 동작과 수용 기준은 관련 스펙·계약에서 관리한다. Benchmark 기준과 실행 증거는 [Performance와 verification](../specs/performance-and-verification.md)에 있다. 아래 `Target repository tree`는 목표 구조이며 구현 완료를 뜻하지 않는다.
 
 | 항목 | 값 |
 | --- | --- |
-| 관점 상태 | Active Phase 1 security and tenant isolation structure; Phase 0 gate 4와 BP-01/BP-03/BP-05 smoke harness 유지 |
+| 관점 상태 | Current implementation overview |
 | 문서 상태 | Active |
-| 구현 증거 | Phase 0 gate 3·4, Phase 1 tenancy·security·mTLS, Phase 2 replicated session/backup/QoS 1/2와 broker-side drain slice가 source·test에 연결되어 있다. `TestDynamicClusterSessionMetadataProcessAcceptance`는 3-node process acceptance PASS (29.40s; [Cluster spec §11.24](../specs/cluster-session-and-delivery.md#1124-session-metadata-복제와-owner-손실-복구-수용-매핑)). BP-03 smoke harness source와 package tests는 추가되었으며, Docker 결과는 [performance spec §3.4](../specs/performance-and-verification.md#34-bp-03-durable-delivery-smoke-관찰-경계)에 별도로 기록한다. Node drain process acceptance 두 개는 PASS (combined 25.916s; [Drain spec §10](../specs/drain-and-rolling-update.md#10-broker-drain-수용-시험-매핑)); full rollout·SDK compatibility·production storage gate는 별도다. |
-| 범위 | Repository root와 Go package directory 배치 및 현재 source dependency |
+| 범위 | 현재 repository의 코드 진입점, 모듈 책임, source dependency |
 | 관련 요구사항 | [PRD](../requirements/PRD.md) NFR-11~NFR-15, TEST-01~TEST-17, DEP-19~DEP-23 |
-| 관련 결정 | [ADR-0001](../decisions/ADR-0001-core-implementation-language.md) Accepted |
-| 관련 Architecture | [Broker core architecture](broker-core.md), [EKS on EC2 deployment](eks-ec2-deployment.md) |
-| 관련 Convention | [Go coding conventions](../conventions/go-coding-conventions.md) |
-| 최종 확인일 | 2026-10-05 |
+| 관련 결정 | [ADR-0001](../decisions/ADR-0001-core-implementation-language.md) |
+| 관련 architecture | [Broker core](broker-core.md), [Cluster](cluster-architecture.md), [EKS on EC2 deployment](eks-ec2-deployment.md) |
+| 관련 convention | [Go coding conventions](../conventions/go-coding-conventions.md) |
 
 ## 코드 지도: 실행 모드와 MQTT CONNECT 대표 흐름
 
-이 절은 CLI 실행 모드와 standalone MQTT·관리 HTTP 진입점을 찾고, MQTT CONNECT 한 흐름을 대표 예시로 따라간다. 모든 패킷 handler와 cluster 내부 흐름을 나열하지는 않으며, 자세한 구조 책임은 아래 package map과 관련 architecture·spec·contract 문서를 따른다. 아래 `Target repository tree`는 별도의 목표 구조다.
+먼저 `cmd/narumq`가 설정을 읽고 실행 모드를 고른다. MQTT 연결의 대표 경로는 listener에서 CONNECT를 읽고, application use case가 인증·session 상태를 판정한 뒤 성공 CONNACK을 쓰는 흐름이다.
 
-| 진입점·흐름 | 코드 위치와 심볼 | 역할 |
+| 관심사 | 시작점과 주요 위치 | 책임·경계 |
 | --- | --- | --- |
-| 프로세스 시작 | `cmd/narumq/main.go` `main` → `run` → `runWithContext` | CLI 설정을 검사하고 아래 실행 모드 가운데 하나를 선택한다. |
-| Dynamic cluster | 호출: `cmd/narumq/main.go` `runWithContext` → 정의: `cmd/narumq/cluster_runtime.go` `runClusterMode` | `-cluster-config`를 사용해 dynamic cluster 경로로 진입한다. |
-| Dynamic cluster 빈 directory bootstrap | `cluster_runtime.go` `runClusterMode` → `cluster_bootstrap_probe.go` `clusterDirectoryEmpty`·`runClusterBootstrapProbe` → `internal/adapters/tcp/peer_bootstrap_probe.go` `ServeBootstrapProbe`·`ProbeBootstrapPeer` → `raftadapter.Open` | Open 전에 raw peer listener만 연다. Probe server의 연결을 종료하고 deadline을 초기화한 뒤 같은 listener를 running transport에 넘긴다. `BootstrapAllowedPeerIDs`는 transport가 process memory에 소유하며 `peer_transport_flow.go` `receiveRaftFrame`이 첫 Raft payload 수신에서 해제한다. 비어 있지 않은 volume과 joiner 경로는 기존 순서를 유지한다. [ADR-0022](../decisions/ADR-0022-bootstrap-volume-loss-guard.md) 참조. |
-| Dynamic cluster joiner volume-loss 보호 | `cluster_runtime.go` `runClusterMode` → local snapshot/WAL 복구 → `runSeedAdmission`; fresh 경로 `DynamicTCPPeerTransport.RequestSeedAdmission` → seed `clusterRuntime.admitPeer` → `updateAdmissionIdentity` | 복구된 committed local voter는 seed 요청 없이 재개한다. Seed runtime은 VOTER 후보를 voter 수와 무관하게 거절하며 fresh STAGED client는 이전 seed의 VOTER 응답도 설치 전에 거절한다. 기록 손실은 새 ID 교체로 복구한다. [ADR-0024](../decisions/ADR-0024-joiner-voter-volume-loss-admission.md)·[Cluster §11.20](../specs/cluster-session-and-delivery.md#1120-voter-volume-손실-보호와-재시드-수용-매핑) 참조. |
-| Dynamic cluster replication profile과 removal 보호 | `cluster_config.go` `replicationProfile` → `membership.NewService`; HTTP removal → `membership.Service.StartPlannedRemoval` → `RemovalKeepsReplicationFactor`; driver → `cluster_runtime.go` `advanceMembership` 재확인 | `membership/replication_profile.go`가 3/2 지원값과 남은 voter 판정을 소유한다. Service는 committed `VOTER`, driver는 현재 Raft voter ID를 검사한다. 부족하면 각각 commit 전 409 또는 `REMOVING` 대기다. `clusterStateProvider.GetClusterSummary`는 같은 config profile을 노출한다. [ADR-0029](../decisions/ADR-0029-replication-factor-write-quorum-profile.md)·[Cluster §11.27](../specs/cluster-session-and-delivery.md#1127-replication-factorwrite-quorum-profile-수용-매핑)를 따른다. |
-| Dynamic cluster PUBLISH admission | `internal/adapters/tcp/server.go` `readLoop` → `server_phases.go` `dispatchPhased` → `server_submission.go` `beginInboundPublish` 또는 `dispatchPublishAt` → `cmd/narumq/cluster_runtime.go` `clusterProjectionReady` → Ready 진행 중이면 `clusterDriverProjection` → `resolveProjectionRequests` | Driver가 현재 commit index까지 apply/projection을 완료한 경계에서 local health와 applied index를 검사한다. Durable write마다 fresh ReadIndex proof를 얻는 `beginCommit`의 경계를 대신하지 않는다. |
-| Dynamic cluster publish backpressure | `publish.UseCase`의 `Admission` gate → `cmd/narumq/cluster_publish_pressure.go` `clusterPublishPressureController` → `membership.DeliveryPublishCapacity` / `diskspace.FreeBytes` → `metrics.Registry`; TCP error mapping → MQTT `0x97` 또는 종료 | 새 durable PUBLISH만 검사한다. Runtime은 미완료 `BeginDelivery` 나이를 추적하고 local filesystem 여유 공간을 1초마다 측정한다. 도달 가능한 local leader 또는 connected leader 조건과 leadership generation으로 나이를 계산한다. Capacity 사전 판정은 read-only이며 replicated apply를 바꾸지 않는다. [ADR-0030](../decisions/ADR-0030-publish-backpressure-admission.md)·[ADR-0035](../decisions/ADR-0035-failover-aware-commit-lag-and-unsent-proposal-reclaim.md)·[Cluster §4.5·§11.28](../specs/cluster-session-and-delivery.md#1128-publish-backpressure-수용-매핑)를 따른다. |
-| Dynamic cluster proposal 수집 | `cluster_runtime.go` `runDriver` → `resolveCommitReads` → `cluster_proposals.go` `submitCommitBatch` → `node.go` `ProposeBatchForwarded` | 독립 fresh proof를 완료한 FIFO command를 64개·64 KiB 예산으로 묶는다. 지금 대기 중인 inbound/request만 staging하고 8ms 추가 대기는 제거한다. `reclaimUnsentProposals` → transport `ReclaimUnsent` → adapter `DeferForwardedProposal`로 disconnected peer의 write 전 frame만 기존 FIFO로 옮긴다. |
-| Dynamic cluster 안전한 proposal 복구 | `cluster_runtime.go` `resolveCommitReads` → `cluster_proposal_recovery.go` `prepareProposal`·`recoverProposals` → `membership/proposal_receipts.go` `applyProposal` → `resolveAppliedProposals` | `proposal-recovery` 활성화 뒤 RequestID·최초 proof·digest를 원래 payload에 붙인다. Leader·term 전환 때 새 proof를 완료한 뒤 미완료 요청의 원래 bytes만 재제안한다. 복제 receipt가 최초 결과를 반환하고 중복 state mutation·외부 효과를 차단한다. Snapshot·backup은 receipt와 retirement/capacity fence를 보존한다. [ADR-0036](../decisions/ADR-0036-replicated-proposal-receipts-and-safe-reproposal.md)·[ADR-0037](../decisions/ADR-0037-proposal-request-identity.md)·[ADR-0038](../decisions/ADR-0038-proposal-receipt-capacity-fences.md) 참조. |
-| Raft 비동기 저장·apply 완료 | `node.go` `Open` → `node_ready.go` `ProcessReady` → `wal_worker.go` `WALAppendWorker.run`·`persistBatch` → `stable_store.go` `writeWALFrame`; 완료 → `applyRecord` → runtime `applyBatch`·`CompleteApply`·`resolveAppliedProposals` | Disk 전용 단일 writer가 여러 CRC frame을 한 sync로 기록한다. Driver는 저장 중 tick·peer 응답을 처리하고 저장 의존 응답·application apply는 완료 경계를 지킨다. Local apply와 projection 완료 뒤 proposal waiter의 backlog entry를 제거한다. Caller의 순서 대기는 backlog 수명에 포함하지 않는다. Snapshot·backup 대기는 driver가 소유하며 `Close`가 worker를 join한다. [ADR-0020](../decisions/ADR-0020-asynchronous-raft-wal-group-commit.md) 참조. |
-| Local snapshot 저장 공간 회수 | `node.go` `Snapshot`·`SnapshotWithApplicationData` 또는 `node_ready.go` fixed bootstrap → `stable_store.go` `createSnapshotPayload` → `wal_compaction.go` `compactWAL` → `pruneSnapshotFiles`; 재시작 `openStableStoreMode` → stale `wal.bin.tmp` 삭제 → `readWALMode` | Node mutex 아래 append worker idle 경계를 유지한다. Snapshot 확정 뒤 영속 tail과 최신 HardState로 WAL을 atomic replace하고 새 handle을 append 위치로 연 뒤 이전 snapshot을 삭제한다. CRC 오류는 zero-sector 근거가 있을 때만 마지막 frame을 절단한다. [ADR-0023](../decisions/ADR-0023-raft-wal-compaction-and-snapshot-retention.md)·[Cluster §11.22](../specs/cluster-session-and-delivery.md#1122-wal-compactionsnapshot-retentiontorn-tail-수용-매핑) 참조. |
-| Dynamic cluster fresh read 발행 제어 | `cluster_runtime.go` `runDriver` / `stageQueuedDriverWork` → `cluster_read_admission.go` `tryDriverRequest`·`refreshReadWaiters` → `DynamicTCPPeerTransport.OutboundCapacity` → `issueReadProof` → `Node.ReadIndex`; 완료 → `completeReadStates` | 실제 peer count·byte 여유와 같은 Ready 앞의 발행량을 사용한다. 리더를 모르면 기존 미발행 FIFO head로 보관한다. 발행 뒤 leader·term·role이 바뀌면 미완료 read만 새 nonce로 다시 확인한다. Wire context는 origin node ID·nonce·원래 caller key를 담는다. 원래 key와 deadline을 보존하며 이전 nonce의 결과를 거절한다. Inbound·tick을 막지 않는다. Fresh proof 공유·cache나 수락한 application proposal의 재제안은 추가하지 않는다. |
-| Dynamic cluster 병목 계측 | `internal/adapters/tcp/peer_transport.go` enqueue 시각 → `cluster_runtime.go` driver 인수·ReadIndex/proposal 완료 → `cluster_timing.go` → `internal/adapters/metrics/registry_raft.go`; `tests/benchmark/bp03/diagnostics.go`가 원시 scrape를 보존 | Queue 대기와 Ready/WAL·apply·transport enqueue·quorum 확인 구간을 분리한다. Duration은 완료된 stage의 진단값이며 ACK·fsync 보장이나 처리 순서를 바꾸지 않는다. |
-| BP-03 persistent subscriber 재접속 | `tests/benchmark/bp03/runner.go` `executeBP03` → `closeClients` → 이전 session 수신 상태 인계 → `startReader` | Reader 종료 뒤 QoS 2 pending/completed Packet ID를 새 socket에 넘긴다. 기존 PUBREL 재개는 PUBCOMP로 응답하고 delivery를 다시 집계하지 않는다. Workload 종료 오류는 최초 reader 취소 원인을 보존한다. |
-| Dynamic cluster readiness 거절 진단 | `cluster_runtime.go` `clusterReady` / `clusterHealthChecker.CheckReadiness` / `hasFreshProof`·`cluster_backup.go`·`cluster_drain.go` → `checkReadiness` → `cluster_readiness_diagnostics.go` `logReadinessFailure` | 기존 거절에 사용한 storage/local snapshot과 fresh proof 결과를 고정 purpose·stage로 기록한다. Management summary는 MQTT admission과 별도 집계한다. Ready sequence는 관찰만 하며 checkpoint 대기·재판정·quorum/ACK 정책을 바꾸지 않는다. |
-| Dynamic Raft 수신 흐름 제어 | `peer_transport.go` `runConnection` → `peer_transport_flow.go` `receiveRaftFrame` → `reserveInbound` → `TakeInbound` → `PeerInboundDelivery.Complete` | Payload allocation 전에 bounded 공간을 예약한다. 포화 때 payload를 읽지 않고 기존 deadline 안에서 공간을 기다린다. Complete·identity 변경·연결 교체·shutdown이 대기를 깨우며 fixed-voter·forwarding lane은 기존 경로를 유지한다. |
-| Dynamic Raft 리더 이전 proposal 보관 | `node.go` `ProposeForwarded`·`ProposeBatchForwarded`·`Step` 또는 `node_deferred_proposals.go` `DeferForwardedProposal` → `deferProposal` → `node_ready.go` `processReadyLocked` → `flushDeferredProposals` → 새 leader 또는 local append | Dynamic profile은 append 전 `raft.ErrProposalDropped`로 거절된 application proposal과 transport의 write 전 회수 frame을 64개 FIFO에 보관한다. 기존 보관분 뒤로 들어온 요청도 같은 순서를 지킨다. 보관분과 Ready input은 byte 예산을 공유한다. `StoragePending`은 보관분을 포함한다. Follower는 `cluster_read_admission.go` `forwardedProposalCapacity`가 읽은 connected leader의 실제 TCP count·byte 여유 안에서 전달한다. Callback은 Node mutex 아래에서 I/O 없이 실행하며, driver가 미리 읽은 fault snapshot과 2-frame·512-byte 예약을 사용한다. Write를 시작해 결과가 불확실한 요청은 회수하지 않는다. Full queue는 backpressure이며 이 사유로 peer를 reset하지 않는다. Commit·MQTT ACK 경계는 그대로다. |
-| Dynamic cluster TCP phase 처리 | `internal/adapters/tcp/server.go` `readLoop` → `server_phases.go` `dispatchPhased` → 방향별 PacketID 순서 → `server_submission.go` 준비 → application `BeginPublish`/`BeginReceiveQoS2`/`BeginQoS2Release` → `clusterRuntime.beginCommit` → driver fresh proof·FIFO proposal → 완료 worker → 기존 writer | 두 lane은 independent exchange만 겹쳐 처리한다. Lane별 16개(준비·완료 대기 포함)·공용 byte 제한, control barrier, PacketID 예약, commit 뒤 ACK와 종료 시 모든 pending 값 회수를 지킨다. |
-| Durable outbound batch와 ACK | `server.go` `writeDeliveries` → `deliveryqueue.Queue.PeekBatch`/`PromoteBatch` → `cmd/narumq/cluster_durable.go` pending SEND → proof·commit → prefix wire PUBLISH; 수신 ACK → `server_phases.go` → `BeginReplaceOutbound`/`BeginCompleteOutbound` → commit 뒤 PUBREL 또는 PacketID 해제 | Writer의 고정 배열은 최대 8개다. 부분 성공 오류와 뒤에서 이미 commit된 SEND를 숨기지 않고, 모든 suffix ID를 동일 ID 재시도 또는 연결 정리까지 보존한다. |
-| Dynamic cluster tenant storage quota | `-cluster-config` → `cmd/narumq/cluster_config.go`의 `tenantQuotas` 엄격 파싱 → `cmd/narumq/cluster_tenant_quota.go`의 profile controller → `clusterRuntime.Commit` → 커밋된 membership quota profile과 사용량 계산 → `internal/adapters/metrics` | MQTT readiness는 quota profile의 quorum commit을 요구한다. Admission은 커밋된 profile을 따른다. 로컬 설정 version이 더 높으면 controller가 profile을 제안하며, mismatch 경보는 커밋된 version이 더 높거나 같은 version의 내용이 다를 때 발생한다. 수용 증거는 [Cluster spec §11.16](../specs/cluster-session-and-delivery.md#1116-tenant-storage-quota-수용-매핑)에 있다. |
-| Dynamic cluster release profile | `-cluster-config` → `cmd/narumq/cluster_runtime.go` `runClusterMode`가 `clusterRuntime`과 controller를 구성하고 `serve`가 lifecycle을 관리 → `cmd/narumq/cluster_runtime.go` `applyBatch`는 committed local profile command·restored snapshot 뒤 gate를 무효화하고, applied feature activation이 build에서 지원되지 않으면 incompatibility를 latch한다 → `cmd/narumq/cluster_release_profile.go` `start`는 복구된 active feature를 barrier 없이 확인하고 500 ms `reconcile`은 `Members`→`ActiveFeatures` read barrier 뒤 `MemberProfileChange`를 제안한다. 두 read가 pending인 동안 마지막 synchronized 상태를 유지하고, 결과는 두 read가 모두 끝난 뒤 판정한다. Read error·wait·mismatch/proposal은 gate를 닫는다. Applied local profile change와 snapshot restore는 revision을 증가시켜 pre-change reconcile 완료가 gate를 다시 열지 못하게 한다. `releaseProfileSynced`는 readiness/admission snapshot을 gate한다. `clusterHealthChecker.CheckReadiness`는 storage·drain 확인 뒤 quorum read barrier 전에 latched incompatibility를 반환한다. | Committed profile이 running build와 일치하기 전에는 READY가 되지 않는다. Active feature를 지원하지 않는 build는 readiness 503을 반환한다. See [release compatibility contract](../contracts/cluster-release-compatibility-v1.md) and [Cluster spec §8/§11.17](../specs/cluster-session-and-delivery.md#8-mixed-version-compatibility). |
-| Dynamic cluster node drain | Management API `POST/GET/DELETE /api/v1/nodes/{nodeId}/drain` → `membership.DrainService` → `clusterRuntime.Commit` → replicated `NodeDrain` apply; controller: `cmd/narumq/cluster_drain.go` → `internal/domain/nodedrain` barrier rules → MQTT admission and ownership transfer | Quorum-committed phase/state resumes after process restart; `SAFE_TO_STOP` does not approve Pod deletion. Process evidence is in [Drain spec §10](../specs/drain-and-rolling-update.md#10-broker-drain-수용-시험-매핑). |
-| Cluster connection rebalance | Management API `POST/GET/DELETE /api/v1/cluster/rebalance` → `membership.RebalanceService` → `clusterRuntime.Commit` → replicated `ConnectionRebalance` apply; controller: `cmd/narumq/cluster_rebalance.go` → `internal/domain/connrebalance` → MQTT admission과 ownership transfer | Participant의 committed 연결 보고로 수렴을 판정한다. 12/7/0 → 7/7/5 process 증거는 [Cluster §11.31](../specs/cluster-session-and-delivery.md#1131-연결-rebalance-수용-매핑)에 있다. |
-| SDK drain 호환성 증거 | `tests/compatibility/mqtt-clients-v1/main.go` `--suite drain` → `RunDrain` → `runSuite` → `runDrainClusterCase` 또는 `runMalformedCase` → SDK `runDrainDriver` / `drain_main` → 결과·trace 검증 | Cluster 경로는 leader drain API와 readiness LB를 조립한다. 두 SDK의 callback adapter가 reference를 한 번 소비하고 permanent endpoint를 보존한다. Fake server 경로는 malformed vector 뒤 trap 접속과 configured endpoint 복귀를 검사한다. |
-| Dynamic cluster session metadata 복구 | CONNECT → `internal/application/connect/connect.go` `UseCase.ConnectContext` / `connect/session_metadata.go` `sessionConnectDTO` → `cmd/narumq/cluster_session_metadata.go` `AcquireSessionOwnership` → ownership command의 atomic session metadata와 같은 committed apply; READY 뒤 `cluster_session_recovery.go` controller → `RecoverOwnedSession` | CONNECTED lifecycle과 pending Will·expiry metadata는 ownership epoch와 함께 replicated state에 저장된다. Metadata record는 현재 owner가 같은 epoch일 때만 변경·claim할 수 있다. READY 시 controller는 복구 후보를 use case goroutine으로 전달하고, committed CLAIM_WILL/DISCARD 결과만 발행 결정으로 쓴다. 구체 흐름은 [Cluster architecture](cluster-architecture.md#session-metadata-복구-경로)·[ADR-0025](../decisions/ADR-0025-replicated-session-metadata-and-owner-loss-recovery.md)·[Cluster spec §11.24](../specs/cluster-session-and-delivery.md#1124-session-metadata-복제와-owner-손실-복구-수용-매핑)에 있다. |
-| 계획 인계 Will과 사유 집계 | `tcp/server.go` cleanup → `session.DisconnectTakeover`; 후계 `connect/session_metadata.go` `RecoverOwnedSession` → `disconnectLocked`·timer; 재접속 `membership/machine.go` `applyOwnership` → runtime `AcquireSessionOwnership` → `connect/will_outcome.go` `resolveSupersededWillLocked` | 이전 owner는 local Will만 폐기한다. 후계와 재접속 node는 committed claim·대체 결과로 표준 발행/예약/억제를 결정한다. `cmd/narumq/main.go`·`cluster_runtime.go`가 `WithWillOutcomeRecorder`를 주입하며 `adapters/metrics/registry.go`가 6개 reason을 render한다. 출처는 timer memory에만 둔다. [ADR-0028](../decisions/ADR-0028-planned-handoff-will-and-reason-metric.md)·[Drain §10](../specs/drain-and-rolling-update.md#10-broker-drain-수용-시험-매핑) 참조. |
-| Dynamic cluster detach 전환 보호 | `internal/application/connect/connect.go` `disconnectLocked` → `deliveryqueue.BeginDetach` → `DetachSession` → `FinishDetach`; `internal/application/publish/publish.go` `deliverQoS0Candidate` → `ErrDetaching` → `AwaitDetach` → 재판정 | Memory queue가 capture와 enqueue 차단을 같은 lock 안에서 수행한다. Local publish는 최대 10초 대기하며 성공 뒤 offline ENQUEUE, 실패 뒤 local enqueue로 진행한다. Forward는 기다리지 않는다. [Cluster architecture](cluster-architecture.md#detach-전환-local-publish-보호)·[ADR-0026](../decisions/ADR-0026-detach-transition-local-qos0-gate.md)·[§11.25](../specs/cluster-session-and-delivery.md#1125-detach-전환-local-qos-0-보존-수용-매핑)를 따른다. [ADR-0027](../decisions/ADR-0027-detach-forward-and-owner-crash-qos0-boundary.md)은 전환 중 forward와 commit 전 local queue 손실을 허용하며, `cmd/narumq/cluster_offline.go` `DetachSession`의 proposal 직전·Applied 확인 직후에 `offline-detach-before-commit`·`offline-detach-after-commit` failpoint를 둔다. |
-| Replicated session metadata state | `internal/application/membership/session_metadata.go` → `StateMachine.applySessionMetadata`, `SessionMetadata`/`GetSessionMetadata`; ownership apply and snapshot restore | Membership owns deterministic validation and committed lifecycle transitions; each tenant/client record is fenced by owner and epoch, and sorted deep copies feed snapshots and management/recovery reads. See [Cluster architecture](cluster-architecture.md#session-metadata-복구-경로), [ADR-0025](../decisions/ADR-0025-replicated-session-metadata-and-owner-loss-recovery.md), and [Cluster spec §11.24](../specs/cluster-session-and-delivery.md#1124-session-metadata-복제와-owner-손실-복구-수용-매핑). |
-| Cluster management client view | `cmd/narumq/cluster_session_metadata.go` `ClusterSessions` → `internal/application/management.Service` cluster session source → `/api/v1/clients` | Feature 활성화 뒤 local committed metadata view를 기준으로 cluster-wide client 목록과 단건 조회를 제공한다. 비활성일 때 management service의 기존 local session 경로를 사용한다. |
-| Cluster restore | 호출: `cmd/narumq/main.go` `runWithContext` → 정의: `cmd/narumq/cluster_backup_restore.go` `restoreClusterBackup` | `-cluster-config`와 `-cluster-restore`를 함께 지정하면 archive 복원 경로를 선택한다. |
-| Fixed-voter peer-only | 호출: `cmd/narumq/main.go` `runWithContext` → 정의: `cmd/narumq/raft_peer_config.go` `runRaftPeerOnly` | `-raft-peer-config`로 MQTT/management listener와 분리된 peer-only 경로를 선택한다. |
-| Standalone listener 시작 | `cmd/narumq/main.go` `runWithContext` → `serveServices`에 `mqttServer` (`*tcpadapter.Server`)와 `httpServer` (`*http.Server`) 인스턴스를 전달해 listener 실행을 맡긴다. | `-tcp-listen`/`-tls-listen` 및 `-http-listen` 설정에 따라 standalone MQTT와 management HTTP listener를 시작한다. |
-| MQTT CONNECT 대표 흐름 | `cmd/narumq/main.go` `runWithContext` → `mqttServer.Serve` → `internal/adapters/tcp/server.go` `readLoop`·`activate` → `internal/application/connect/connect.go` `ConnectContext` | 인증 전 pending CONNECT는 raw Client ID로 묶고 committed fence는 tenant별 owner/epoch를 검사한다. Cleanup은 연결이 획득한 epoch를 사용하며 local epoch가 다르면 부작용 전에 중단한다. 원격 takeover는 이전 node의 local epoch map을 바꾸지 않는다. 이전 연결은 `DisconnectTakeover`로 local Will을 폐기하며 집계하지 않는다. 성공 CONNACK은 commit과 bind 뒤에만 전송한다. |
-| MQTT resource limit | `internal/adapters/tcp/server.go` `readLoop` → `frame_reader.go` `frameReader` → `admitInboundPublish` → `dispatch`/`dispatchPhased`; ACK → `writePacket` → `releaseInboundQuota`; reader 오류 → `run` → `disconnectReasonFor` | 작은 수신 buffer와 packet 완성 deadline을 소유한다. 성공 CONNACK에 server 한도를 알린다. `writeDeliveries`·`writeRecoveredDeliveries`는 client Receive Maximum과 Maximum Packet Size를 적용한다. [MQTT §7.1·§8.1](../specs/mqtt-protocol-and-session.md#71-현재-상한과-기본값)을 따른다. |
-| MQTT listener admission | `cmd/narumq/main.go` 또는 `cluster_runtime.go` → `mqtt_listener.go` `openMQTTListener` → `internal/adapters/tcp/listener_admission.go` `NewAdmissionListener`·`Accept`; TLS는 `internal/adapters/tls/listener.go` `NewListener`로 바깥에서 감싼다. | Listener마다 CONNECT 전 socket까지 센다. `admit`는 최대 연결 수 뒤 rate를 검사한다. 거절은 연결 goroutine·TLS handshake 전에 닫고 `metrics.Registry.ListenerAdmissionRejected`로 집계한다. 허용 socket은 `admittedConn.Close`에서 slot을 한 번 반환한다. 설정·수용 증거는 [MQTT §7.1·§8.2](../specs/mqtt-protocol-and-session.md#82-listener-연결-수connection-rate-수용-매핑)를 따른다. |
-| Tenant 연결·traffic 한도 | `cmd/narumq/security_config.go` `validateTenantLimits` → `tenant_limits.go` `newTenantLimitService` → `internal/application/tenantlimit.Service` → `connect.ConnectContext` / `subscribe.SubscribeCommitted`·`UnsubscribeCommitted`·`subscribeOne` / TCP `readLoop`의 `admitTenantPublish` → `metrics.Registry.RecordTenantLimitRejection` | Standalone과 cluster가 같은 security config를 사용한다. 연결·session·rate는 node별로, subscription은 route projection의 tenant별 수로 검사한다. 제한 대상 local subscription 요청은 `tenantSubscriptionMu`로 판정부터 route 변경까지 직렬화한다. Fresh PUBLISH만 token을 예약하고 TCP reader가 bounded wait를 수행한다. [Tenant §5.2](../specs/tenancy-and-security.md#52-연결-상태와-traffic-한도)·[ADR-0034](../decisions/ADR-0034-node-local-tenant-connection-and-traffic-limits.md)를 따른다. |
-| 관리 HTTP | 생성 위치: `cmd/narumq/main.go` `runWithContext` → `internal/adapters/http/management/server.go` `NewServer` → `newServer` → `newRouter`; 호출 위치: `serveServices`가 `httpServer` 변수 (`*http.Server`)의 `Serve(httpListener)` 메서드를 호출 | Management API 요청은 HTTP 경계에서 처리한다. 정확한 경로와 응답 형식은 [management API contract](../contracts/management-api-v1.md)가 기준이다. |
-| Storage-fault chaos | `tests/chaos/cluster-storage-v1/main.go` `runCLI` → `runner.go` `Run` → `scenario.go`/`power.go` 또는 `ext4.go`; 별도 node module: `node/chaosfs.go`, `node/chaosfs_journal.go`, `node/supervise.go`, `node/commands.go` | 기본 `local-fuse-v1`은 tmpfs/FUSE fault·power-cut simulation을 실행한다. `local-ext4-v1`은 `ext4-entrypoint.sh`의 제한된 loop image에서 실제 ext4 ENOSPC·process crash와 기존 recovery 수용 시험을 실행한다. 둘 다 production EBS·물리 전원 손실 증거가 아니다. |
+| 프로세스 시작 | `cmd/narumq/main.go`: `main` → `run` → `runWithContext` | 설정을 확인하고 구성요소를 조립한다. `-cluster-config`, `-cluster-restore`, `-raft-peer-config` 및 standalone 설정에 따라 모드를 선택한다. |
+| Standalone ingress | `runWithContext` → `serveServices`; `internal/adapters/tcp/server.go` | MQTT TCP/TLS와 management HTTP listener를 시작하고 종료한다. HTTP API 형식은 [management API contract](../contracts/management-api-v1.md)에 둔다. |
+| MQTT CONNECT | `tcp.Server.Serve` → `readLoop`/`activate` → `internal/application/connect/connect.go` `UseCase.ConnectContext` | 인증·tenant binding·session admission·lifecycle 변경을 조정한다. Cluster mode에서는 ownership commit과 연결 bind 뒤 성공 CONNACK을 보낸다. 연결 cleanup은 획득한 epoch를 확인하며, stale epoch면 부작용을 막는다. |
+| MQTT packet과 한도 | `internal/adapters/tcp/{frame_reader,server_phases,server_submission}.go`; `internal/application/{publish,subscribe}` | TCP 경계는 frame·packet을 검증하고 해당 use case로 전달한다. Receive Maximum, Maximum Packet Size, listener·tenant 한도와 오류 경계는 [MQTT protocol spec](../specs/mqtt-protocol-and-session.md)을 따른다. |
+| Dynamic cluster 시작 | `runWithContext` → `cmd/narumq/cluster_runtime.go` `runClusterMode` | Peer transport, Raft, application projection과 runtime controller를 조립한다. 주요 bootstrap·admission·quota·release 경로는 아래 Cluster 경로 표를 본다. |
+| Backup restore / peer-only | `cluster_backup_restore.go` `restoreClusterBackup`; `raft_peer_config.go` `runRaftPeerOnly` | 각각 archive restore와 MQTT listener가 없는 fixed-voter peer 경로를 시작한다. |
+| Management API | `cmd/narumq` wiring → `internal/adapters/http/management/server.go` `NewServer` | HTTP 요청을 application management 경계로 전달한다. API endpoint와 wire response는 contract가 기준이다. |
+| Storage fault evidence | `tests/chaos/cluster-storage-v1/main.go` `runCLI` → `runner.go` `Run` | FUSE fault simulation 및 별도 local ext4 profile을 실행한다. 이는 production EBS 또는 물리 전원 손실의 증거가 아니다. |
 
-대표 CONNECT 동작은 [MQTT protocol과 session 스펙](../specs/mqtt-protocol-and-session.md)의 CONNECT 처리 순서 및 [`tests/integration/mqtt_ingress_test.go`](../../tests/integration/mqtt_ingress_test.go)에서 확인한다. Dynamic cluster와 peer-only 흐름은 각각 [Cluster architecture](cluster-architecture.md), [Raft peer transport contract](../contracts/raft-peer-transport-v1.md)를 따른다. 이 표는 진입 경로 안내이며 내부 처리 전체를 검증하는 증거는 아니다.
+### Cluster write와 복구의 코드 방향
 
-Release-profile의 적용 이벤트는 `cluster_release_profile.go`의 `invalidate`에서 gate를 닫고 대기 알림 한 개를 남긴다. `run`은 다음 500ms 주기를 기다리지 않고 기존 `Members`·`ActiveFeatures` fresh read barrier를 다시 수행한다. 적용 전 revision의 완료는 gate를 열 수 없으며, snapshot restore 직후에도 재확인이 끝나기 전의 admission 거절은 유지한다.
+Runtime driver는 Raft 처리와 application state 적용 시점을 조정한다. Durable write는 요청마다 새 ReadIndex proof로 quorum을 확인한 뒤 FIFO 순서로 제출한다. Proposal batch의 수집 예산은 최대 64개·64 KiB다.
+
+Transport에서 write를 시작하지 않은 proposal만 회수해 FIFO에 돌려놓는다. 안전한 재제안은 해당 feature가 활성화된 요청에만 적용한다. RequestID·최초 proof·digest와 원래 payload를 보존하고, 복제 receipt로 중복 상태 변경과 외부 효과를 막는다.
+
+Disk 전용 writer가 여러 WAL frame을 한 sync로 기록한다. Runtime은 적용·projection 완료 뒤 waiter를 끝낸다. 상세한 처리·실패 경계는 [Cluster architecture](cluster-architecture.md), [Raft peer transport contract](../contracts/raft-peer-transport-v1.md), [Cluster 스펙](../specs/cluster-session-and-delivery.md)을 따른다.
+
+| 관심사 | 주요 코드 위치 | 역할 |
+| --- | --- | --- |
+| Fresh proof·proposal | `cmd/narumq/cluster_read_admission.go`, `cluster_proposals.go` | Fresh read admission과 bounded proposal batch |
+| 재제안·receipt | `cmd/narumq/cluster_proposal_recovery.go`, `internal/application/membership/proposal_receipts.go` | 안전한 재제안과 복제 request receipt |
+| WAL 영속화 | `internal/adapters/raft/node_ready.go`, `wal_worker.go`, `stable_store.go` | Raft Ready 처리, WAL group commit, snapshot·WAL 저장 |
+| Drain·rebalance | `cmd/narumq/cluster_drain.go`, `cluster_rebalance.go` | 복제 상태를 사용하는 node drain·connection rebalance controller |
+| Cluster bootstrap / admission | `cmd/narumq/cluster_bootstrap_probe.go`; `cluster_runtime.go` `runClusterMode`; `internal/adapters/tcp/peer_bootstrap_probe.go` | Empty-directory bootstrap probe와 seed admission을 연결한다. |
+| Tenant quota / release profile | `cmd/narumq/cluster_tenant_quota.go`, `security_config.go`, `cluster_release_profile.go` | Tenant quota profile을 commit하고 active feature profile을 reconcile한다. |
+| Peer capacity / proposal reclaim | `cmd/narumq/cluster_read_admission.go`, `cluster_proposals.go`; `internal/adapters/tcp/peer_transport.go`, `peer_transport_flow.go` | Outbound capacity에 맞춰 read/proposal을 발행하고 아직 write하지 않은 proposal만 회수한다. |
+| Snapshot / WAL reclaim | `internal/adapters/raft/wal_compaction.go`, `stable_store.go`, `node_ready.go` | Snapshot 뒤 WAL compact와 snapshot retention을 관리한다. |
+| Session recovery | `cmd/narumq/cluster_session_metadata.go`, `cluster_session_recovery.go`; `internal/application/membership/session_metadata.go` | Owner/epoch로 session metadata를 fence하고 READY 뒤 recovery 후보를 전달한다. |
+| MQTT listener / tenant limit | `cmd/narumq/mqtt_listener.go`, `security_config.go`; `internal/adapters/tcp/listener_admission.go`, `server_tenant_limits.go`; `internal/application/tenantlimit` | Listener admission과 node-local tenant connection/traffic policy를 연결한다. |
+
+### Session과 QoS 상태 소유권
+
+MQTT session은 tenant와 Client ID로 식별한다. `internal/application/takeover`는 ownership·persistent subscriptions·inbound/outbound QoS inflight aggregate를 소유하고, `internal/application/membership`은 committed lifecycle metadata와 session ownership 전이를 적용한다. Runtime recovery controller는 READY 뒤 복구 후보를 use case에 전달한다. Will·expiry metadata는 owner와 epoch로 fence되며, committed claim/discard 결과만 발행 결정을 내린다. QoS 2 Packet ID별 handshake 상태와 재연결 처리는 session/application 경로가 관리한다. 세부 상태 전이와 복구 한계는 [MQTT protocol and session spec](../specs/mqtt-protocol-and-session.md)과 [Cluster architecture](cluster-architecture.md)를 따른다.
 
 ## Target repository tree
 
-아래 tree는 목표 구조다. Deliverable이 생기기 전에는 빈 directory를 미리 만들지 않는다.
+아래는 목표 배치를 요약한 tree다. `Target` 전용 항목은 실제 구현으로 간주하지 않는다.
 
 ```text
 .
-├── cmd/
-│   └── narumq/
-│       └── main.go
+├── cmd/narumq/                 # composition root
 ├── internal/
-│   ├── domain/
-│   │   ├── mqtt/
-│   │   ├── session/
-│   │   ├── routing/
-│   │   ├── delivery/
-│   │   ├── tenancy/
-│   │   ├── security/
-│   │   ├── clusterlifecycle/
-│   │   └── nodedrain/
-│   ├── application/
-│   │   ├── connect/
-│   │   ├── publish/
-│   │   ├── subscribe/
-│   │   ├── takeover/
-│   │   ├── membership/
-│   │   └── ports/
-│   │       ├── audit/
-│   │       ├── authentication/
-│   │       ├── clock/
-│   │       ├── consensus/
-│   │       ├── deliveryqueue/
-│   │       ├── logstore/
-│   │       ├── metrics/
-│   │       ├── nodediscovery/
-│   │       ├── random/
-│   │       ├── retained/
-│   │       ├── sessionstore/
-│   │       └── transport/
-│   └── adapters/
-│       ├── audit/
-│       ├── authentication/
-│       ├── clock/
-│       ├── kubernetes/
-│       ├── managementapi/
-│       ├── memory/
-│       │   ├── deliveryqueue/
-│       │   ├── retained/
-│       │   └── sessionstore/
-│       ├── prometheus/
-│       ├── random/
-│       ├── raft/
-│       │   └── records/
-│       ├── runtimemetrics/
-│       ├── storage/
-│       ├── tcp/
-│       └── tls/
-├── deploy/
-│   └── profiles/
-│       └── eks-ec2-ha/
+│   ├── domain/                 # protocol·session·routing·tenant·cluster invariant
+│   ├── application/            # use cases와 application-owned ports
+│   └── adapters/               # network·storage·consensus·platform I/O
+├── deploy/profiles/            # deployment inputs
 ├── tests/
-│   ├── integration/
-│   ├── conformance/
-│   │   └── mqtt-compliance-v1.json
-│   ├── verification/
-│   │   └── coverage-policy.json
-│   ├── compatibility/
-│   │   └── mqtt-clients-v1/
-│   │       ├── clients/
-│   │       │   ├── go/       # isolated nested Go module; Paho MQTT 3.1.1/5
-│   │       │   └── python/  # pinned paho-mqtt 2.1.0 image source
-│   │       ├── Dockerfile
-│   │       ├── profile.json
-│   │       ├── runner.go    # shared suite lifecycle and evidence artifacts
-│   │       ├── drain-profile.json
-│   │       ├── drain_profile.go
-│   │       ├── drain_runner.go
-│   │       ├── drain_fixture.go
-│   │       └── drain_trace.go
-│   ├── e2e/
-│   ├── chaos/
-│   │   └── cluster-storage-v1/
-│   │       ├── node/       # isolated nested Go module; FUSE storage faults, fsync control and power-loss rollback
-│   │       ├── Dockerfile
-│   │       └── runner.go   # seven-scenario Docker orchestration, process controls and evidence
-│   └── benchmark/
-│       ├── internal/
-│       │   ├── environment/
-│       │   ├── jsonl/
-│       │   ├── mqttclient/
-│       │   ├── runtimeartifact/
-│       │   └── suiteartifact/
-│       ├── bp01/
-│       ├── bp02/
-│       ├── bp03/
-│       ├── bp04/
-│       ├── bp05/
-│       ├── bp06/
-│       └── bp07/
-├── tools/
-│   └── verify/
-│       ├── main.go
-│       ├── matrix.go
-│       ├── architecture.go
-│       ├── coverage.go
-│       └── runner.go
-├── docs/
-├── go.mod
-└── go.sum
+│   ├── integration/ conformance/ compatibility/ e2e/ chaos/ benchmark/
+│   └── verification/
+├── tools/verify/
+└── docs/
 ```
-
-현재 구현된 Phase 0 gate 3 + single-node ingress, gate 4 consensus spike와 TLS/mTLS transport security deliverable에
-Phase 1 security·tenant isolation slice, Phase 2 replicated session ownership core와 broker drain slice가 추가되어 목표 tree의
-`cmd/narumq`, `domain/mqtt`, `domain/session`, `domain/routing`, `domain/tenancy`,
-`domain/security`, `domain/nodedrain`, `application/connect`, `application/publish`,
-`application/subscribe`, `application/takeover`, `application/membership`, `application/ports/authentication`,
-`application/tenantlimit`,
-`application/ports/deliveryqueue`, `application/ports/retained`,
-`adapters/authentication`, `adapters/tcp`, `adapters/tls`,
-`adapters/memory/deliveryqueue`, `adapters/memory/retained`,
-`adapters/memory/sessionstore`, `adapters/clock`, `adapters/raft`가 해당한다.
-`internal/domain/nodedrain`은 drain phase 전이와 safe-to-stop barrier를 표준 library 값으로 판정한다.
-`internal/application/membership`은 drain 요청과 replicated state port를 연결하고, `cmd/narumq/cluster_drain.go`는 dynamic-cluster runtime의 admission, transfer driver, recovery와 lifecycle을 조립한다.
-`internal/domain/connrebalance`는 연결 수렴식과 local shedding 전이를 판정한다. `membership.RebalanceService`가 관리 요청을 복제 상태에 연결하고 `cmd/narumq/cluster_rebalance.go`가 보고·admission·rate 제한 인계를 조립한다. 모듈 흐름은 [Cluster architecture의 연결 rebalance 실행 경로](cluster-architecture.md#연결-rebalance-실행-경로)에 있다.
-`internal/adapters/runtimemetrics`는 Go process 내부의 `runtime/metrics`를 고정 JSONL schema로 수집하는 outbound 진단 adapter다.
-`tests/benchmark/internal/environment`는 BP-01/BP-03/BP-05/BP-06/BP-07의 immutable image, single-broker·3-node cluster container, readiness, resource limit, runner container, Docker stats와 artifact 수집 경계를 소유한다. BP-06/BP-07용 controller hook, network owner의 published management port와 같은 broker container의 재시작도 이 package가 소유한다. `KillClusterBroker`는 SIGKILL 뒤 Docker 정지를 확인한다. `StartClusterBroker`는 기존 container와 volume을 유지한 채 시작하고 실행 상태를 확인한다. `RestartClusterBroker`는 기존 graceful stop 뒤 같은 start 경로를 사용한다. 재시작이 허용된 broker sampler는 stats 실패 뒤 inspect가 중단 상태를 보고하면 tick을 건너뛴다. Inspect가 실행 중을 보고하면 즉시 한 번 다시 표본을 얻고, 다시 실패하면 두 오류를 합쳐 실패로 처리한다. Network owner와 재시작이 허용되지 않은 broker sampler는 첫 오류에서 실패한다. BP-03에서 `bp03/compare.go`는 비교 실행을 조립하고, `fixture.go`는 target용 인증·cluster 설정을 임시 생성한다. Network owner에는 공개 JWKS만 mount하고 runner credential, broker별 private peer key와 admin token은 별도 directory로 분리한다. `runner.go`·`aggregate.go`·`metrics.go`·`resource.go`는 workload, message/WAL/resource summary를 만든다. `suite.go`는 BP-03 metric 선택과 반복 parent artifact를 소유한다.
-BP-02·BP-04도 이 package로 3-node cluster와 runner를 실행한다. 짧은 resource window를 위해 live stats streaming을 켠다.
-BP-03·BP-06·BP-07의 Enterprise comparator 설정과 image digest는 각 package의 `compare.go`가 소유한다. `fixture.go`는 EMQX 전용 ACL directory를 생성하며 NaruMQ secret directory와 분리한다. Shared environment의 `EnsureEMQXImage`는 호출자가 고른 pinned image를 확인한다. Cluster readiness는 BP-03/BP-06/BP-07이 제공한 조건으로 실제 message shard의 세 replica·transition 완료와 JWT authenticator를 확인한 뒤 node별 `emqx-durability.txt`를 저장한다. BP-01/BP-05는 기존 OSS image를 전달하므로 comparator가 바뀌지 않는다.
-BP-07의 진입점은 `bp07/main.go`의 `run|compare|suite`다. `profile.go`는 필수 입력과 smoke 한도를 검사하고, `fixture.go`는 client ID·Will ACL·인증·cluster 설정을 만든다. `compare.go`는 `environment.RunClusterTarget`에 runner와 `newRollingController`를 연결한다. Host의 `rolling.go`는 NaruMQ drain API 또는 pinned EMQX evacuation CLI로 node 하나를 교체한다. `control/`의 round marker와 completion 파일로 runner에 상태를 전달한다. Runner의 `runner.go`는 phase와 publish 일정을 실행한다. `dialer.go`는 준비된 node만 고르고, `session.go`는 재접속·session 재개·MQTT 교환을 맡는다. `aggregate.go`는 끊김의 round 귀속, message gap·duplicate와 Will 결과를 집계한다. `resource.go`는 rolling window의 실행 중 표본과 재시작 뒤 counter reset을 처리한다. `suite.go`는 target 실행 순서를 교차하며 round 시간·재접속·손실의 중앙값과 MAD를 만든다. 이 경로는 실제 NLB나 외부 rollout controller를 구현하지 않는다. 관찰 계약과 실행 증거는 [성능 §3.5](../specs/performance-and-verification.md#35-bp-07-rolling-drain-smoke-관찰-경계)에 있다.
-`runner.go`의 `currentRound.set`은 이전 round의 marker를 거절한다. 같은 round의 draining·restarting·ready 상태 갱신은 유지한다. `watchRolling`이 과거 파일을 다시 읽어도 `session.go`의 종료 관찰이 이전 round로 돌아가지 않는다. 다른 node의 종료는 기존처럼 계획 밖 종료로 집계한다.
-BP-06의 진입점은 `bp06/main.go`의 `run|compare|suite`다. `profile.go`는 필수 입력과 kill·recovery 한도를 검사하고 `fixture.go`는 Will 없는 client·ACL·인증·cluster 설정을 만든다. `compare.go`는 `environment.RunClusterTarget`에 runner와 `newFailureController`를 연결한다. Host의 `failure.go` controller는 killing marker를 쓴 뒤 runner ack를 확인하고 broker 하나를 SIGKILL한다. Down 대기 뒤 같은 container를 시작하며 driver가 rejoin·resync를 확인한다. NaruMQ driver는 leader 자신의 applied index를 watermark로 한 번 저장하고 대상 voter의 match index·transport health를 확인한다. EMQX driver는 pinned readiness 조건을 사용한다. Runner의 `watchFailure`는 첫 killing 관찰 시각을 ack에 쓰고, ack 쓰기에 성공하면 같은 시각을 collector에 기록한다. 첫 down 시각도 보관한다. `session.go`는 killing·down 상태의 같은 node 종료만 계획된 장애로 분류하고 재접속·persistent session 재개를 실행한다. `aggregate.go`의 `roundInjection`은 장애 주입 시각을 disconnect 또는 down marker에서 고르고, `computeRecovery`는 재접속과 네 stream 첫 성공 중 가장 늦은 시각을 RTO로 계산한다. Collector는 EMQX target에서만 장애 구간의 ACKed gap과 checkpoint 구간의 QoS 2 재전송을 `comparatorDurabilityExceptions`로 기록한다. `workload-summary.json`은 schema version 2와 예외별 증거를 담는다. `resource.go`는 host의 failure event 시각으로 steady·round window를 고르고 실행 중 표본과 재시작 뒤 counter reset을 처리한다. `suite.go`는 RTO·rejoin·resync·reconnect·resource peak·손실의 중앙값과 MAD를 집계한다. BP-07은 `package main`이어서 import할 수 없으므로 승인된 계획에 따라 fixture·workload 생성 패턴을 복제했다. BP-07 source와 product runtime은 바꾸지 않았다. 관찰 계약·수용 시험·실행 증거는 [성능 §3.6](../specs/performance-and-verification.md#36-bp-06-failure-recovery-smoke-관찰-경계)에 있다.
-BP-06 runner는 NaruMQ readiness 단계에서 `activateClusterFeature`로 `session-metadata`와 `proposal-recovery`를 각각 활성화하고 조회로 확인한다. 이 자동 활성화는 독립 benchmark cluster에만 적용한다. EMQX 5.8.8 image, workload와 기존 예외 판정은 유지한다.
-BP-04의 진입점은 `tests/benchmark/bp04/main.go`의 `run|compare|suite|serve-jwks`다. `profile.go`는 strict smoke 입력을 검사하고, `plan.go`는 subscriber·publisher와 topic oracle을 만든다. `fixture.go`는 RS256 JWT, node mTLS certificate, NaruMQ ACL과 EMQX ACL을 분리해 만든다. `compare.go`는 pinned EMQX OSS 5.8.8과 NaruMQ 3-node target을 `environment.RunClusterTarget`에 연결한다. `runner.go`는 readiness, setup, 측정 phase와 route probe를 실행하고 `client.go`는 MQTT 5 연결·packet I/O를 맡는다. `collector.go`는 expected delivery·missing·duplicate·latency를 집계하고 `resource.go`는 Docker stats window를 요약한다. BP-02·BP-04는 `LiveStatsStream`을 켜서 짧은 resource window를 측정하며 공통 environment sampler가 끝난 뒤 artifact를 읽는다. `suite.go`는 target 순서를 교차하고 metric의 중앙값과 MAD를 만든다. Root `tests/benchmark/Dockerfile`의 `bp04-runner` target은 runner image를 만든다. 수용 계약과 local 증거는 [성능 §3.7](../specs/performance-and-verification.md#37-bp-04-subscription-stress-smoke-관찰-경계)에 있다.
-`route.go`는 각 propagation probe의 SUBSCRIBE 전 `T0`, SUBACK `T1`, 첫 delivery `T2`, 추가·늦은 delivery와 전송 수를 보존한다.
-BP-02의 진입점은 `tests/benchmark/bp02/main.go`의 `run|compare|suite|serve-jwks`다. `profile.go`는 strict 입력·범위와 원문 hash를 검사한다. `plan.go`는 두 tenant의 고정 client 순서, node·TLS 배치와 독립 topic oracle을 만든다. `payload.go`는 크기 cycle과 결정적 message 식별자를 만든다. `fixture.go`는 tenant별 JWT·allowlist·ACL과 client TLS·peer mTLS 인증서를 준비한다. `compare.go`는 NaruMQ와 shared environment의 pinned EMQX OSS image를 3-node target으로 실행하고 여섯 비동등 경계를 보존한다.
-`runner.go`의 `executeBP02`는 readiness와 setup 뒤 rate별 warmup·measure·drain을 실행한다. Persistent 구독자 10명은 정상 DISCONNECT 뒤 다른 node에 같은 Client ID로 재연결한다. Retained publisher는 같은 topic에 두 round를 쓰고 state 구독자 4명은 최신 round만 받아야 한다. `client.go`는 TCP/TLS CONNECT, QoS 1/2 ACK·packet ID·inflight, 재전송 수신 억제와 keepalive를 소유한다. `collector.go`는 stream별 message key와 수신자 bitset으로 누락·중복을 판정하고 offline·retained 결과를 별도로 요약한다. `resource.go`는 live Docker stats의 측정 window와 setup client당 memory를 요약한다. `suite.go`는 최소 5회 교차 실행과 44개 smoke metric의 중앙값·MAD를 만든다. Root Dockerfile의 `bp02-runner` stage가 실행 image를 만든다. 이 경로는 broker 제품 코드를 변경하지 않는다. 계약과 실행 증거는 [성능 §3.8](../specs/performance-and-verification.md#38-bp-02-production-mix-smoke-관찰-경계)에 있다.
-BP-02 모듈 내부 상태는 실행마다 새로 만든다. `executeBP02`가 취소 context, 전체 client 목록, 현재 연결의 `byID`, stream별 publisher와 sequence를 소유한다. Runner가 phase 순서를 정하고 client는 packet I/O만 처리한다. 입력·phase·판정 계약은 [성능 §3.8](../specs/performance-and-verification.md#38-bp-02-production-mix-smoke-관찰-경계)을 따른다.
-`runClient`의 mutex는 publisher의 packet ID·pending ACK·deadline과 subscriber의 QoS 2 inbound 상태를 보호한다. Collector는 별도 mutex로 message key·recipient bitset·phase별 집계를 보호한다. Client reader와 publisher는 관찰 값을 collector에 전달하며 Docker resource 집계는 workload 상태를 변경하지 않는다.
-실행 오류가 나면 runner는 계획 밖 실패로 기록하고 `finalCheck=false`로 남긴다. Defer 경로가 keepalive·client를 정리하고 부분 workload와 phase artifact도 저장한다. Collector validity 실패는 실행 오류로 반환한다. Offline에서 계획한 연결 종료만 정상 전환으로 취급한다. Suite는 실패 회차의 raw artifact를 보존하지만 parent metric은 비운다.
-`tests/benchmark/internal/mqttclient`는 benchmark 전용 CONNECT 옵션과 frame I/O를 소유한다. MQTT 5·MQTT 3.1.1, Will CONNECT와 서버 DISCONNECT의 reason·Server Reference 해석을 지원한다. `ConnectOptions.TLSConfig`가 있으면 CA·hostname을 검증하는 TLS dial을 사용한다. CONNECT latency는 TLS handshake를 포함한다. 이 field가 없으면 기존 plain TCP 동작을 유지한다. Protocol version이 0인 기존 호출은 MQTT 5로 처리한다. `tests/benchmark/internal/jsonl`은 phase·event JSONL 파일의 공통 buffering/flush/close 동작을 소유하고, `tests/benchmark/internal/runtimeartifact`는 runtime 표본과 phase 경계를 검증해 target별 요약을 만든다. `tests/benchmark/internal/suiteartifact`는 반복 순서와 중앙값·MAD 계산만 소유하며 profile 의미와 BP별 metric 선택은 소유하지 않는다. 공유 package와 `bp01`~`bp07`은 product runtime이 import하지 않는 benchmark-only source다.
-각 BP package는 profile 해석, workload 상태와 comparison 판정, suite parent·child artifact schema와 Docker 실행을 소유하며 shared package는 profile·summary 의미를 결정하지 않는다.
-`tests/compatibility/mqtt-clients-v1`는 product runtime과 독립된 black-box evidence harness다. `clients/go`는 root `go.mod`에 Paho dependency를 추가하지 않는 nested Go module로 MQTT 3.1.1/5 Go SDK 역할을 격리하고, `clients/python`은 hash-pinned `paho-mqtt` runtime과 VERSION2 callback adapter를 격리한다. `Dockerfile`은 두 SDK 이미지와 retransmission proxy를 linux/amd64 digest-pinned image로 만들며, `runner.go`는 broker·proxy·client container를 case마다 새로 만들고 결과·trace·log·manifest를 수집한다. 이 directory의 source는 product runtime이 import하지 않는다.
-`main.go`의 `--suite`는 기본 `phase1`과 `drain`을 구분한다. `runner.go`의 `runSuite`는 image 준비·manifest·case 실행·summary·container/network 정리를 공유한다. `result.go`는 envelope·role·aggregate 검증을 공유하며 drain observation은 `ValidateDrain`에서 별도로 검사한다.
-
-Drain 경로에서 `drain_profile.go`와 `drain-profile.json`은 정확한 test-only 값과 10개 case 순서를 소유한다. `drain_runner.go`의 `RunDrain`은 cluster case와 fake-server case를 나눈다. `drain_fixture.go`는 임시 CA·peer certificate·JWT·security config를 만들고 종료 뒤 지운다. 다른 `package main`의 chaos fixture를 import할 수 없어 그 생성 패턴을 복제했다. Will CONNECT는 별도 `will` ACL을 요구하므로 fixture는 subscribe·publish·will을 허용한다. `drain_trace.go`는 driver readiness까지 node3 연결 하나와 fake server의 vector 한 번·CONNECT 두 번·trap 접속 부재를 검증한다. `drain_profile_test.go`, `drain_result_test.go`, `drain_trace_test.go`는 profile 변경과 결과·trace 위반을 검증한다.
-
-Nested Go module의 `clients/go/drain.go`는 strict 입력, autopaho callback 결정 channel과 SDK result를 소유한다. `clients/python/client.py`의 `DrainSafeClient`는 VERSION2 callback과 수동 SDK loop thread를 소유한다. 두 adapter는 처음 분류한 disconnect와 permanent endpoint를 유지한다. `clients/go/jwks.go`는 공개 키 HTTP 응답, `lb.go`는 readiness 기반 새 TCP 연결 선택과 기존 연결 유지, `fakeserver.go`는 malformed DISCONNECT·trap listener·재접속 응답을 맡는다. `Dockerfile`은 Go helper를 같은 executable의 basename 분기로 조립한다. Broker product runtime과 의존 계층은 바꾸지 않는다. 수용 결과와 남은 SDK blocker는 [Client contract §6.2](../contracts/mqtt-client-compatibility-v1.md#62-drain-compatibility-suite)에 있다.
-
-`tests/chaos/cluster-storage-v1`는 ENOSPC, 지연·실패하는 file/directory sync, 보류된 WAL fsync와 제어된 전원 차단을 broker process에 적용하는 black-box Docker 증거 harness다. `node/`는 go-fuse 의존성을 root `go.mod`에 추가하지 않도록 별도 Go module로 유지한다. `chaosfs_journal.go`는 전원 차단 뒤 동기화되지 않은 file bytes와 namespace 작업을 복원하며, `supervise.go`와 `commands.go`는 process-local fault control을 제공한다. `runner.go`, `scenario.go`, `power.go`는 cluster lifecycle, scenario assertion과 secret-free 증거 artifact를 관리한다. 이 harness는 production runtime이 아니며 물리 EBS 내구성을 입증하지 않는다.
-`local-ext4-v1`은 같은 harness의 별도 profile이다. `ext4-entrypoint.sh`는 시험 전용 image의 ext4 mount·신호 전달·unmount·loop detach를 소유한다. `ext4.go`는 실제 mount/exit 증거와 필수 recovery test의 누락·skip·실패를 판정한다. 일반 broker 시나리오는 노드별 256 MiB image, recovery-boundary fixture는 별도 1 GiB image를 사용한다. Docker의 Linux host/kernel은 공유하며 production runtime·기존 FUSE storage 구현은 변경하지 않는다. 진입 명령과 수용 기준은 [검증 절차](../specs/performance-and-verification.md#local-ext4-filesystem-gate)·[Cluster §11.23](../specs/cluster-session-and-delivery.md#1123-local-ext4-filesystem-수용-매핑)에 연결한다.
-
-`tests/conformance/mqtt-compliance-v1.json`은 현재 구현이 지원한다고 선언한 MQTT
-3.1.1/5.0 normative statement와 source test function의 양방향 연결표다.
-`tests/verification/coverage-policy.json`은 production coverage floor와 ratchet을
-보유한다. `tools/verify`는 이 두 파일과 실제 Go package graph를 읽는 repository
-검증 command이며, runtime product package가 import하지 않는다.
-
-Integration process 시험의 호출 흐름은 `tests/integration/cluster_membership_process_test.go`의
-`TestMain` → `m.Run` → 각 process 시험 → `newClusterMembershipProcessFixture` →
-`clusterMembershipProcessSharedBinary` → `clusterMembershipProcessBuild`다.
-`TestMain`은 실행 전체의 임시 directory를 만들고 마지막에 `removeIntegrationBinaryDirectory`로 삭제한다. Windows가 종료된 child의 실행 파일을 잠시 잠글 수 있으므로 삭제 실패 시 100ms 간격으로 최대 10초 재시도한다. 기한 뒤에도 삭제하지 못하면 기존 오류 메시지와 종료 코드 1을 유지한다.
-`newClusterMembershipProcessFixture`는 build tag별 공유 실행 파일을 받지만 data directory,
-인증서와 주소 lease는 시험마다 만든다. 기본 cluster process 시험은 `t.Parallel()`로 실행하며
-`tools/verify/runner.go`가 동시에 실행할 시험 수를 `local` 8개, `ci` 2개로 제한한다.
-`buildBinaryFrom`의 release/historical source 빌드는 fixture에 별도로 둔다.
-검증 범위와 실행 조건은 [성능 및 검증 §8](../specs/performance-and-verification.md#8-coverage와-test-quality-gate)을 따른다.
-
-Concurrent CONNECT 시험의 호출 흐름은 `cluster_session_fencing_process_test.go`의 동시 CONNECT → `clusterFencingConnectOnce` → `cluster_durable_delivery_process_test.go`의 `clusterDurableProcessReadRaw` → PING probe → `clusterFencingNaturalRaceWinner` → winner의 SUBSCRIBE다. Frame reader는 첫 byte 전 EOF와 일부 byte 수신 뒤 EOF를 구분한다. `TestClusterFencingConnectOnceConnAckBoundary`는 실제 socket으로 이 오류 경계와 정상 CONNACK을 확인한다. 수용 기준과 실행 증거는 [Cluster §11.15](../specs/cluster-session-and-delivery.md#1115-cross-node-delivery-matrix동시-connectstale-epoch-수용-매핑)에 있다. Broker runtime의 호출 경로와 데이터 형식은 바꾸지 않았다.
-
-QoS 1/2 retained 수용 시험의 진입점은 `tests/integration/cluster_retained_qos_process_test.go`의 `TestDynamicClusterRetainedQoS12ProcessAcceptance`다. 기존 `clusterDurableProcessStart`가 broker 3개를 시작한다. 시험은 MQTT socket으로 발행·ACK·replay를 확인하고 `clusterRetainedQoSWaitForState`로 각 node의 retained 관리 API를 대조한다. `clusterRetainedQoSReplay`는 여러 PUBLISH와 PUBREL의 교차 수신을 Packet ID별로 처리한다. Unit 진입점 `internal/application/publish/durable_delivery_test.go::TestPublishDurableRetainedCommitFailureStopsDeliveryCommit`는 retained commit 오류 뒤 delivery commit·fan-out 차단을 확인한다. 실행 증거는 [Cluster §11.32](../specs/cluster-session-and-delivery.md#1132-qos-12-retained-수용-매핑)에 있다. 제품의 호출 경로·상태·데이터 형식은 바꾸지 않았다.
 
 ## Directory naming
 
-- Go package directory는 package 이름과 같은 소문자 한 단어를 사용한다.
-- Go package path에는 underscore, mixed caps와 역할 없는 `common`·`utils`를 사용하지 않는다.
-- 실행 command directory는 binary 이름과 같은 `cmd/narumq`를 사용한다.
-- Go package가 아닌 deployment profile directory는 kebab case를 사용한다. Profile ID `EKS_EC2_HA`는 `eks-ec2-ha/`에 대응한다.
-- Test suite directory는 `integration`, `conformance`, `compatibility`, `e2e`, `chaos`, `benchmark`처럼 검증 목적을 이름으로 쓴다.
-- Directory 이름에 team 이름이나 일시적인 issue 번호를 넣지 않는다.
+- Go package directory는 소문자 한 단어로 짓고, package path에 underscore나 mixed caps를 쓰지 않는다.
+- `cmd/narumq`는 실행 파일 이름을 따른다. Deployment profile은 kebab-case를 쓴다.
+- Test directory는 `integration`, `conformance`, `compatibility`, `e2e`, `chaos`, `benchmark`처럼 검증 목적을 나타낸다.
+- Team 이름이나 일시적인 issue 번호를 directory 이름에 넣지 않는다.
+- 안정된 외부 Go API와 compatibility 정책이 승인되기 전에는 `pkg/`를 만들지 않는다. Dependency 공급 정책 결정 전에는 `vendor/`를 만들지 않는다.
 
 ## Root directory 책임
 
-| Directory | 책임 | 금지 사항 |
-| --- | --- | --- |
-| `cmd/narumq` | Configuration load, concrete adapter 생성, lifecycle wiring과 process 시작·종료 | Domain rule, storage query와 protocol state machine |
-| `internal/domain` | MQTT·session·routing·delivery·tenant·security·cluster invariant | Network, filesystem, Kubernetes, HTTP와 framework import |
-| `internal/application` | Use case orchestration, transaction·commit boundary, application-owned port와 use case DTO | Concrete adapter 생성, external object 전달 |
-| `internal/adapters` | TCP/TLS, storage, consensus, authentication, platform와 observability I/O | 새로운 business invariant 결정 |
-| `deploy/profiles` | 지원 deployment profile의 manifest와 resolved configuration 입력 | Application source, secret 원문 |
-| `tests` | 여러 package·process 또는 실제 dependency가 필요한 black-box 검증; `benchmark`는 profile/workload/comparison을, `benchmark/internal/{environment,mqttclient}`는 benchmark package가 공유하는 Docker·MQTT 경계를 소유 | Package-local unit test 중복, product runtime import |
-| `tools` | Repository 검증·생성 도구와 pinning | Runtime product dependency와 business logic |
-| `docs` | Requirement, architecture, decision, spec, contract와 guide | Generated binary와 runtime state |
-
-`pkg/`는 초기 구조에 두지 않는다. 외부 project가 import해야 하는 안정된 public Go API가 실제로 생기고 compatibility 정책을 승인했을 때만 추가한다. `vendor/`도 dependency 공급 정책을 별도 결정하기 전에는 만들지 않는다.
+| Directory | 현재 책임 |
+| --- | --- |
+| `cmd/narumq` | 설정 해석, concrete adapter 조립, runtime lifecycle |
+| `internal/domain` | MQTT·session·routing·delivery·tenancy·security·cluster invariant |
+| `internal/application` | Use case 조정, commit 경계, port와 application DTO |
+| `internal/adapters` | TCP/TLS, HTTP, authentication, memory, Raft/storage, metrics 등 외부 I/O |
+| `deploy/profiles` | 배포 profile과 resolved configuration 입력 |
+| `tests` | package·process·실제 dependency를 사용하는 검증. Production runtime이 import하지 않는다. |
+| `tools` | Repository 검증·생성 도구 |
+| `docs` | 요구사항, architecture, spec, contract, decision과 guide |
 
 ## Source dependency
 
-화살표는 허용된 source import 방향이다.
+화살표는 허용된 source import 방향이며 runtime 호출 순서를 나타내지 않는다.
 
 ```mermaid
 flowchart LR
     Main["cmd/narumq"] --> Adapters["internal/adapters"]
     Main --> Application["internal/application"]
     Adapters --> Application
+    Adapters --> Domain
     Application --> Domain["internal/domain"]
-    Tests["tests"] --> Main
-    Tests --> Adapters
+    Tests["source tests"] --> Adapters
     Tests --> Application
     Tests --> Domain
 ```
 
-- Domain은 다른 계층을 import하지 않는다.
-- Application은 domain과 자신이 소유한 port만 import한다.
-- Adapter는 application port와 필요한 domain value에 의존한다.
-- Composition root 밖에서 concrete adapter를 조립하지 않는다.
-- `tests`의 source dependency는 허용하지만 production package가 `tests`를 import하지 않는다.
-- Component graph에 cycle이 생기면 merge하지 않는다.
+- Domain은 외부 library/framework과 I/O package를 import하지 않는다.
+- Application은 domain과 application-owned port에만 의존한다.
+- Adapter는 application port와 필요한 domain value에 의존하며 external type을 안쪽 경계로 전달하지 않는다.
+- Concrete adapter는 composition root가 조립한다.
+- `tests`는 source test에서 production package를 사용할 수 있지만 process integration, benchmark, compatibility harness는 binary나 container를 실행한다. Production runtime은 `tests`를 import하지 않는다.
 
-### Phase 1 security·tenant-aware single-node ingress package
+## 현재 모듈 지도
 
-| 실제 package | 책임 | 허용된 inward dependency |
+아래 표는 현재 구현된 대표 package만 요약한다. Port와 DTO의 전체 경계는 [Broker core architecture](broker-core.md)를 기준으로 한다.
+
+| 그룹 | Package | 현재 책임 |
 | --- | --- | --- |
-| `internal/domain/mqtt` | CONNECT/CONNACK, PUBLISH, ACK, SUBSCRIBE 계열과 PING/DISCONNECT wire validation·ownership | 표준 library만 |
-| `internal/domain/session` | `tenancy.SessionKey`와 `security.Principal`을 포함한 Clean Start, Session Expiry와 lifecycle invariant | `domain/mqtt`, `domain/tenancy`, `domain/security`, 표준 library |
-| `internal/domain/tenancy` | tenant/session/topic/filter typed value, MQTT filter validation·matching·containment·intersection | `domain/mqtt`와 표준 library |
-| `internal/domain/security` | immutable principal, role/action/effect과 tenant-local default-deny ACL policy | `domain/tenancy`와 표준 library |
-| `internal/domain/routing` | tenant-aware non-shared/shared filter matching, overlap QoS, NL/RAP option policy와 session cleanup | `domain/mqtt`, `domain/tenancy`와 표준 library |
-| `internal/application/ports/authentication` | `Credential`과 verified client certificate DTO 및 binding result를 정의하는 authentication port | `domain/tenancy`, `domain/security`, 표준 library |
-| `internal/application/connect` | authentication, Client ID binding, Will ACL, tenant 연결·session admission, lifecycle repository, queue/routing cleanup과 CONNACK orchestration | `domain/mqtt`, `domain/session`, `domain/routing`, `domain/tenancy`, `domain/security`, `application/tenantlimit`, application ports |
-| `internal/application/subscribe` | tenant-aware ordered SUBACK/UNSUBACK reason, ACL·tenant subscription admission, retained replay와 route mutation | `domain/mqtt`, `domain/routing`, `domain/tenancy`, `domain/security`, `application/tenantlimit`, application ports |
-| `internal/application/tenantlimit` | 설정된 tenant 한도 조회, payload·node-local traffic token 예약과 거절 보고. 실제 sleep과 I/O는 하지 않는다. | `domain/tenancy`, `application/ports/clock`, 표준 library |
-| `internal/application/publish` | tenant-aware publish/Will ACL, retained replace/delete, expiry deadline, offline/remote/local candidate precedence와 route delivery | `domain/mqtt`, `domain/routing`, `domain/tenancy`, `domain/security`, application ports |
-| `internal/application/takeover` | typed ownership·persistent subscription·inbound/outbound QoS inflight session aggregate와 application committed-command sequence/fencing. Experimental codec은 acquire만 처리하며, 이 slice의 disposable routing projection은 3-node 시험 harness에만 있다. | `domain/session`, `domain/tenancy`, `domain/mqtt`, `domain/delivery`, `domain/routing`, 표준 library |
-| `internal/application/ports/deliveryqueue` | `tenancy.SessionKey`와 `tenancy.Topic`을 운반하는 bounded queue capability | application/domain value만 |
-| `internal/application/ports/retained` | `(tenant, topic)` retained ownership과 expiry-aware list contract | `domain/mqtt`, `domain/tenancy`, 표준 library |
-| `internal/adapters/authentication` | JWKS fetch/cache, JWT signature·claim 검증, static identity binding과 mTLS certificate selector mapping | `application/ports/authentication`, `domain/tenancy`, `domain/security`, jwx와 표준 library |
-| `internal/adapters/memory/deliveryqueue` | SessionKey별 fixed item capacity, FIFO ownership와 expiry purge | `application/ports/deliveryqueue`, `domain/tenancy`, 표준 library |
-| `internal/adapters/memory/retained` | tenant/topic keyed bounded retained repository와 expiry byte purge | `application/ports/retained`, `domain/mqtt`, `domain/tenancy`, 표준 library |
-| `internal/adapters/memory/sessionstore` | SessionKey별 process-local lifecycle load/save/delete와 tenant별 session·connected count 유지 | `domain/session`, `domain/tenancy`, 표준 library |
-| `internal/adapters/tcp` | bounded MQTT ingress와 connection lifecycle, fixed-voter Raft stream 및 dynamic v2의 독립 Raft/delivery-forwarding mTLS streams와 bounded queues | MQTT ingress는 application use cases/ports와 domain DTO; Raft/forward streams는 표준 library와 application boundary만 |
-| `internal/adapters/tls` | TLS 1.2+ listener, AEAD cipher allowlist, mTLS trust anchor와 verified certificate DTO 추출 | `application/ports/authentication`과 표준 library |
-| `internal/adapters/clock` | system clock와 scheduler를 공용 application port에 제공 | `application/ports/clock`, 표준 library |
-| `internal/adapters/raft` | etcd/raft DTO, 영속 WAL/snapshot 파일, Raft backup/restore seed와 persistence boundary; replicated-state protobuf의 의미는 해석하지 않는다. | `go.etcd.io/raft/v3`, 표준 library |
-| `internal/adapters/raft/records` | 버전이 있는 replicated-state/backup protobuf binding, deterministic encoding, archive framing, checksum과 summary validation; `testdata/replicated-state-v1` contract vector와 baseline descriptor | `google.golang.org/protobuf`, 표준 library |
-| `internal/adapters/runtimemetrics` | Go process runtime metrics 표본을 JSONL로 수집 | 표준 library만 |
+| Domain | `internal/domain/mqtt`, `session`, `tenancy`, `security`, `routing`, `delivery` | MQTT wire 의미, session invariant, tenant namespace·ACL, route matching과 delivery 상태 |
+| Domain lifecycle | `internal/domain/release`, `nodedrain`, `connrebalance` | Release feature profile, drain/rebalance 전이·barrier 정책 |
+| Application ingress | `internal/application/connect`, `publish`, `subscribe` | CONNECT, PUBLISH/Will, SUBSCRIBE/UNSUBSCRIBE orchestration과 commit 경계 |
+| Application state | `internal/application/takeover`, `membership`, `tenantlimit` | Session takeover/QoS state, replicated membership·metadata·receipt 적용, tenant admission policy |
+| Application ports | `internal/application/ports/{authentication,metrics}` 및 use-case-owned ports | Application이 요구하는 외부 capability 경계 |
+| Network/security adapters | `internal/adapters/tcp`, `tls`, `authentication`, `http/management` | Bounded MQTT ingress, TLS/mTLS, JWT/JWKS, management HTTP |
+| State adapters | `internal/adapters/memory/{deliveryqueue,retained,sessionstore}`, `internal/adapters/raft` | Process-local queue·retained·session store 및 Raft/WAL/snapshot persistence |
+| Raft records | `internal/adapters/raft/records` | Versioned replicated-state/backup protobuf binding, deterministic encoding과 validation |
+| Observability | `internal/adapters/clock`, `metrics`, `runtimemetrics` | Clock 제공과 process/runtime metric 기록 |
 
-Application은 concrete adapter를 import하지 않는다. Queue, clock, authentication과 session repository
-interface는 이를 사용하는 application package가 소유하고, composition root가 구현을
-생성해 주입한다. `adapters/tcp`는 inbound adapter이므로 network 자료형을 packet과
-application 결과로 변환하는 경계에만 둔다. `tenancy.SessionKey`, `tenancy.Topic`,
-`tenancy.TopicFilter`와 `security.Principal`은 application·adapter 경계를 넘어도
-private field와 accessor invariant를 유지한다. `ExpiresAt`은 application DTO 경계에서
-소유하며 domain packet property와 adapter wire encoding을 직접 섞지 않는다.
-
-Consensus와 durable log application port는 full MQTT replication use case가 정의될 때까지 이 slice의 범위 밖이며 임의로 만들지 않는다. 제한된 fixed-voter peer-only mode에서는 `cmd/narumq` composition root가 [ADR-0008](../decisions/ADR-0008-raft-peer-transport.md)에 따라 `internal/adapters/raft`와 `internal/adapters/tcp.TCPPeerTransport`를 직접 조립한다. 이는 MQTT broker runtime, replicated application state 또는 durable ACK 경로에 연결된다는 뜻이 아니다.
-
-정확한 package allowlist는 source tree가 생긴 뒤 architecture test로 고정한다.
-
-## Domain과 use case package
-
-Package 이름은 기술 계층보다 제품 책임을 드러낸다.
-
-| 책임 | Domain package | Application package 예 |
-| --- | --- | --- |
-| MQTT 연결·packet | `domain/mqtt` | `application/connect`, `application/publish`, `application/subscribe` |
-| Session·ownership | `domain/session` | `application/connect`, `application/takeover`, `application/membership` |
-| Node drain lifecycle·barrier | `domain/nodedrain` | `application/membership`, `cmd/narumq` runtime controller |
-| Connection rebalance 수렴·local shed | `domain/connrebalance` | `application/membership`, `cmd/narumq` runtime controller |
-| Subscription route | `domain/routing` | `application/subscribe`, `application/publish` |
-| Delivery·inflight | `domain/delivery` | `application/publish`, `application/takeover` |
-| Tenant namespace·quota | `domain/tenancy` | 각 use case에서 policy 호출 |
-| Replicated tenant storage quota | `domain/tenancy` tenant identity value | `application/membership` owns the committed profile, deterministic accounting and admission; `cmd/narumq/cluster_records.go` bridges DTOs; `adapters/raft/records` owns wire/snapshot validation and codec |
-| Authentication·authorization policy | `domain/security` | `application/connect`와 management use case 후보 |
-| Membership·node lifecycle | `domain/clusterlifecycle` | `application/takeover`, `application/membership` |
-
-새 package는 변경 이유와 invariant가 기존 package와 다를 때만 만든다. 단순히 file 수가 늘었다는 이유로 package를 나누지 않는다.
+Application port는 사용하는 application package가 소유한다. 외부 library와 wire type은 adapter에서 domain value나 application DTO로 바꾼다. Domain과 application은 외부 I/O, framework와 provider SDK에 의존하지 않는다. `internal/adapters/raft`의 transport/persistence 책임과 replicated record 의미는 분리되어 있다. 세부 계층 책임은 [Broker core architecture](broker-core.md)를 따른다.
 
 ## 주요 port capability와 adapter map
 
-아래 표는 use case가 외부 I/O를 위해 요구하는 주요 outbound capability를 보여준다. Port는 사용하는 application이 소유한다. 구현 package 옆에 공용 interface를 선언하지 않는다.
+Port는 capability를 요구하는 application package가 소유한다. Composition root가 concrete adapter를 만들고 주입한다. 현재 연결된 주요 경계는 다음과 같다.
 
-| Capability | Application-owned port | Concrete adapter | Adapter 내부 client·library |
-| --- | --- | --- | --- |
-| Session aggregate 저장·복구 (target) | `ports/sessionstore.SessionRepository` | `adapters/storage.WALSessionRepository` | Storage engine 또는 file I/O |
-| 현재 session lifecycle | `application/connect.SessionRepository` (`Load`/`Save`/`Delete` by `tenancy.SessionKey`) | `adapters/memory/sessionstore.MemorySessionRepository` | mutex-protected process-local map |
-| Delivery queue | `application/ports/deliveryqueue.Queue` (`tenancy.SessionKey`, tenant-aware `DeliveryDTO`) | `adapters/memory/deliveryqueue.Queue` | mutex-protected FIFO item slices with lazy expiry purge |
-| Retained message | `application/ports/retained.Repository` (tenant-aware `Topic`, expiry-aware list) | `adapters/memory/retained.Repository` | mutex-protected `(tenant, topic)` map with expiry-aware bounds |
-| 현재 clock | `application/ports/clock.Clock` | `adapters/clock.SystemClock` | Go system clock |
-| Replicated log 저장 | `ports/logstore.LogStore` | `adapters/storage.WALLogStore` | WAL·snapshot codec |
-| Consensus proposal·commit 관찰 | `ports/consensus.ReplicationService` | `adapters/raft.RaftReplicationService` 후보 | `etcd/raft` 후보 |
-| Cluster peer message 송수신 (현재 use case 없음) | — | `adapters/tcp.TCPPeerTransport` (composition-root-owned concrete service) | TCP/TLS framing과 bounded peer queues |
-| Credential 검증 | `application/ports/authentication.AuthenticationProvider` 및 `ClientCertificateAuthenticationProvider` | `adapters/authentication.JWKSAuthenticationProvider`, `MTLSAuthenticationProvider` | `lestrrat-go/jwx/v3`와 Go TLS/X.509 |
-| Cluster node 발견 | `ports/nodediscovery.NodeDiscovery` | `adapters/kubernetes.KubernetesNodeDiscovery` | `KubernetesClient` |
-| Metric·audit | `ports/metrics.MetricRecorder`, `ports/audit.AuditPublisher` | 후속 observability adapters | 이번 slice에서는 조립하지 않음 |
-| Jitter·identifier용 난수 제공 | `ports/random.RandomSource` | `adapters/random.CryptoRandomSource` 후보 | Go cryptographic random source |
+| Capability | Application port | 현재 구현 |
+| --- | --- | --- |
+| Authentication | `internal/application/ports/authentication` | `internal/adapters/authentication`, `internal/adapters/tls` |
+| Clock | `internal/application/ports/clock` | `internal/adapters/clock` |
+| Delivery queue / retained | `internal/application/ports/{deliveryqueue,retained}` | `internal/adapters/memory/{deliveryqueue,retained}` |
+| Metrics | `internal/application/ports/metrics` | `internal/adapters/metrics` |
+| Session lifecycle | `internal/application/connect`의 repository boundary | `internal/adapters/memory/sessionstore` |
 
-화살표로 읽으면 `UseCase → Port ← Adapter → Client·SDK → External system`이다. Source dependency는 adapter에서 port를 향한다. `cmd/narumq`가 concrete adapter를 생성해 use case에 주입한다. 아직 application replication use case가 없는 capability는 임의의 공용 port로 추상화하지 않으며, 현재 fixed-voter peer transport는 `cmd/narumq`에서 Raft adapter와 함께 조립한다.
-
-`*Client`는 외부 protocol 호출을 캡슐화하는 adapter 내부 구현체다. 범용 `Client` port를 만들지 않는다. Application port는 `AuthenticationProvider`, `NodeDiscovery`처럼 use case가 요구하는 capability로 이름을 짓는다. Adapter가 단순하면 concrete adapter가 SDK를 직접 사용할 수 있고, protocol 처리나 test seam이 필요하면 별도 `*Client`에 위임한다.
-
-Management API와 MQTT listener는 inbound adapter이므로 이 outbound port 표에 넣지 않는다. `adapters/managementapi`와 `adapters/tcp`의 controller가 request를 DTO 또는 domain value로 변환한 뒤 해당 use case를 호출한다.
-
-표의 interface와 concrete type 이름은 Target naming이다. 현재 `TCPPeerTransport`는 고정 voter transport service로 구현하되 Raft type을 import하지 않고, transport DTO 변환과 concrete 조립은 `cmd/narumq`가 소유한다. `etcd/raft`와 durable WAL 경계처럼 Proposed ADR에 의존하는 구현은 후보 상태를 유지한다.
-
-외부 library type은 adapter 안에서 application DTO 또는 domain value로 변환한다.
+`internal/adapters/raft`와 `internal/adapters/tcp`의 Raft runtime·peer transport는 composition root가 직접 조립한다. Cluster replication application port나 `internal/adapters/storage` WAL session repository는 이 표에서 현재 구현으로 간주하지 않는다.
 
 ## Model과 경계 자료형 배치
 
-Package는 model 종류가 아니라 소유 책임과 변경 이유로 나눈다. `models`, `entities`, `persistence/models`처럼 여러 책임의 type을 한곳에 모으지 않는다.
+| 자료형 | 위치 규칙 |
+| --- | --- |
+| Domain value와 invariant | `internal/domain/<capability>`에 둔다. Storage tag·wire encoding을 넣지 않는다. |
+| Use case DTO | 사용하는 `internal/application/<usecase>`에 둔다. Shared DTO package는 실제 안정된 경계가 생길 때만 만든다. |
+| Management HTTP wire type | `internal/adapters/http/management`에 둔다. Domain/application으로 HTTP type을 전달하지 않는다. |
+| Replicated record | `internal/adapters/raft/records`가 versioned encoding·validation을 소유한다. Domain은 record schema를 import하지 않는다. |
+| External API type | 해당 provider adapter 안에서 변환한다. External library type은 application/domain 경계를 넘지 않는다. |
 
-| 분류 | 기본 위치 | 별도 package를 허용하는 조건 | 이름과 금지 사항 |
-| --- | --- | --- | --- |
-| Domain entity·value object | `internal/domain/<capability>` | 별도 공용 model package를 만들지 않는다. | `session.State`, `delivery.InflightMessage`처럼 domain 의미를 사용한다. Storage tag와 schema version을 넣지 않는다. |
-| Use case DTO | `internal/application/<usecase>` | 여러 use case가 같은 안정된 application boundary를 공유할 때만 `internal/application/dto`를 추가한다. | 모든 human-written DTO는 [Go coding conventions](../conventions/go-coding-conventions.md#34-dto-이름)에 따라 `DTO` Postfix를 사용한다. |
-| Management API wire type | `internal/adapters/managementapi` | OpenAPI 생성물은 같은 adapter 아래 `generated/`에 격리한다. | HTTP request·response type을 domain에 전달하지 않는다. |
-| Persistence model | `internal/adapters/storage` | WAL·snapshot이 versioned schema를 공유하고 별도 compatibility lifecycle이 생길 때만 `internal/adapters/storage/record`를 추가한다. | WAL·snapshot은 `*Record`, SQL은 `*Row`, manifest는 `*Manifest`를 사용한다. `*Entity`, `*DBEntity`, `*DTO`를 사용하지 않는다. |
-| 외부 API wire type | 이를 호출하는 `internal/adapters/<provider>` | 생성기 소유 type은 해당 adapter 아래 `generated/`에 격리한다. | Adapter가 application DTO 또는 domain value로 변환한다. |
+Port와 DTO는 책임별로 배치한다. 포괄 `models`, `types`, `interfaces`, `common`, `utils` package를 만들지 않는다. Adapter 내부 mapper가 persistence/wire data와 domain/application value를 변환한다.
 
-Domain model은 business invariant와 행위를 소유한다. Persistence model은 schema version, encoding과 storage metadata만 소유한다. 양방향 mapper는 storage adapter에 두며 domain이 persistence model을 import하거나 반환하지 않게 한다.
+### File and test placement
 
-```text
-internal/domain/session/state.go
-internal/application/drain/start_drain_command_dto.go
-internal/adapters/storage/session_record.go
-internal/adapters/storage/session_record_mapper.go
-internal/adapters/managementapi/generated/
-```
+- Package-local unit/fuzz test는 대상 package의 `*_test.go`에 둔다.
+- 여러 package나 실제 process가 필요한 test는 `tests/integration` 등 검증 목적에 맞는 suite에 둔다.
+- 한 package에서만 쓰는 fixture는 package의 `testdata/`에 둔다. Suite 간 공유 fixture는 소비하는 suite 아래에 둔다.
+- Generated source는 사용하는 adapter의 `generated/` 아래에 격리하고 생성 원본과 command를 함께 관리한다.
 
-처음부터 `storage/record` package를 만들지는 않는다. Record와 codec을 여러 storage component가 공유하거나 [persisted state 호환성](../contracts/cluster-release-compatibility-v1.md#5-readiness와-persisted-state)을 독립적으로 검증해야 할 때 분리한다.
+## Benchmark harness map
 
-## File 배치
+Benchmark는 `tests/benchmark`에 격리되어 product runtime이 import하지 않는다. 각 BP package는 profile, workload, 비교 설정과 metric 선택을 소유한다. 공통 package는 Docker/MQTT 실행 경계와 artifact mechanics만 공유한다.
 
-- Package-local unit test와 fuzz test는 대상 file 옆의 `*_test.go`에 둔다.
-- 여러 package가 필요한 integration test는 `tests/integration`에 둔다.
-- MQTT wire 적합성은 `tests/conformance`, N-1↔N은 `tests/compatibility`에 둔다.
-- Kubernetes·NLB·EBS가 필요한 시험은 `tests/e2e`, `tests/chaos` 또는 `tests/benchmark`에 목적별로 둔다.
-- Test fixture가 한 package에서만 쓰이면 package 안 `testdata/`에 둔다. Repository-wide fixture는 이를 소비하는 test suite 아래에 둔다.
-- Generated source는 이를 사용하는 adapter 아래 `generated/`에 격리하고 생성 원본과 command를 기록한다.
-`tests/benchmark/bp01`은 두 broker에 같은 MQTT workload를 순차 실행하는 독립 benchmark package다. 이 package는 `cmd/narumq` 또는 `internal` production package에서 import하지 않으며, 생성 결과는 `.artifacts/`에 둔다.
+| 역할 | 위치 | 책임 |
+| --- | --- | --- |
+| Host controller | 각 BP의 `compare.go` 및 BP-06/07의 `failure.go`·`rolling.go` | Broker·runner container를 구성하고 필요한 경우 장애·rolling action을 주입한다. |
+| Runner | 각 BP의 `runner.go` | Phase 순서, client lifecycle, workload schedule과 final validity를 관리한다. |
+| MQTT client | `tests/benchmark/internal/mqttclient`; BP별 `client.go`·`session.go` | CONNECT/frame I/O 및 BP별 packet/QoS 흐름을 처리한다. QoS 2 pending/completed Packet ID 상태는 client/session 경계에 있다. |
+| Collector | BP별 `collector.go`, `aggregate.go`, `metrics.go` | Expected delivery, missing/duplicate/error와 latency를 집계한다. |
+| Resource | BP별 `resource.go`; `internal/environment` | Docker stats window와 workload/resource 요약을 연결한다. |
+| Suite | BP별 `suite.go`; `internal/suiteartifact`, `runtimeartifact` | 반복 순서, target validity 및 metric 중앙값·MAD artifact를 만든다. |
+| Shared host/runtime | `tests/benchmark/internal/{environment,jsonl,runtimeartifact,suiteartifact}` | Container·readiness·resource·JSONL 및 공통 artifact 처리 |
 
-## 만들지 않는 포괄 directory
+BP-01~BP-07의 phase, metric, timeout/error 경계와 실행 증거는 [Performance and verification spec](../specs/performance-and-verification.md)에만 둔다.
 
-다음 이름은 책임과 dependency를 감추므로 새 top-level 또는 `internal` package로 만들지 않는다.
+## Verification and integration test entrypoints
 
-- `common`, `shared`, `utils`, `helpers`
-- `models`, `types`, `interfaces`
-- 모든 기능을 모은 `services`, `repositories`, `controllers`
+| 목적 | 위치·진입점 | 소유 범위 |
+| --- | --- | --- |
+| Package unit/fuzz | 대상 package의 `*_test.go` | Package-local invariant와 경계 |
+| Process integration | `tests/integration/*_process_test.go` | 실제 broker process, socket, cluster 상태·복구 흐름 |
+| MQTT conformance | `tests/conformance/mqtt-compliance-v1.json` | 지원한다고 선언한 normative statement와 source test 연결 |
+| SDK compatibility | `tests/compatibility/mqtt-clients-v1` | 외부 Go/Python client 실행, result·trace 검증 |
+| Storage fault | `tests/chaos/cluster-storage-v1` | FUSE 및 local ext4 fault/recovery evidence |
+| Repository gate | `tools/verify` | Conformance/coverage 정책, package graph와 repository verification |
 
-공통 code가 필요하면 실제 소유 domain 또는 application client에 둔다. 두 package가 함께 쓰더라도 invariant와 변경 이유가 다르면 작은 value를 중복하는 편이 잘못된 공통 dependency보다 낫다.
-
-## 변경 기준
-
-- 새 top-level directory는 새로운 deliverable, 독립 검증 suite 또는 architecture boundary가 있을 때만 추가한다.
-- Package 이동으로 import direction이 바뀌면 [Broker core architecture](broker-core.md)와 architecture test를 함께 갱신한다.
-- Deployment profile을 추가하면 지원 상태, release evidence와 profile별 test directory를 연결한다.
-- Public package를 만들면 compatibility contract와 version 정책을 먼저 정의한다.
-- 이 view를 `Current / Verified`로 바꾸기 전에 실제 source tree와 import graph를 증거로 연결한다.
+Integration test가 process binary를 공유해 build하더라도 fixture별 data directory·certificate·address lease는 분리한다. Suite 실행 조건과 acceptance 범위는 [Performance and verification spec](../specs/performance-and-verification.md)을 따른다.
