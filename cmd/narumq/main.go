@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"narumq/internal/adapters/auditlog"
 	authenticationadapter "narumq/internal/adapters/authentication"
 	"narumq/internal/adapters/clock"
 	adaptershttp "narumq/internal/adapters/http/management"
@@ -85,9 +86,34 @@ func runWithContext(ctx context.Context, args []string, logger *slog.Logger) err
 	raftPeerConfigFile := flagSet.String("raft-peer-config", "", "strict JSON config for fixed-voter peer-only mode")
 	clusterConfigPath := flagSet.String("cluster-config", "", "strict combined configuration for dynamic cluster mode")
 	clusterRestoreArchive := flagSet.String("cluster-restore", "", "verify and seed a cluster backup archive, then exit")
+	auditVerifyDirectory := flagSet.String("audit-verify", "", "verify a node-local management audit directory and exit")
 	allowInsecureAnonymousMQTT := flagSet.Bool("allow-insecure-anonymous-mqtt", false, "development-only anonymous MQTT over loopback TCP")
 	if err := flagSet.Parse(args); err != nil {
 		return err
+	}
+	auditVerifyRequested := false
+	flagSet.Visit(func(parsedFlag *flag.Flag) {
+		if parsedFlag.Name == "audit-verify" {
+			auditVerifyRequested = true
+		}
+	})
+	if auditVerifyRequested {
+		if *auditVerifyDirectory == "" {
+			return errors.New("-audit-verify requires a non-empty directory path")
+		}
+		if flagSet.NArg() != 0 {
+			return errors.New("-audit-verify does not accept positional arguments")
+		}
+		var conflictingFlags []string
+		flagSet.Visit(func(parsedFlag *flag.Flag) {
+			if parsedFlag.Name != "audit-verify" {
+				conflictingFlags = append(conflictingFlags, "-"+parsedFlag.Name)
+			}
+		})
+		if len(conflictingFlags) != 0 {
+			return fmt.Errorf("-audit-verify cannot be combined with %s", strings.Join(conflictingFlags, ", "))
+		}
+		return verifyAuditDirectory(*auditVerifyDirectory, os.Stdout)
 	}
 	peerOnlyRequested := false
 	flagSet.Visit(func(parsedFlag *flag.Flag) {
@@ -430,6 +456,19 @@ func runWithContext(ctx context.Context, args []string, logger *slog.Logger) err
 	}
 	if managementListener != nil {
 		logger.Info("management HTTP listener stopped", "address", managementListener.Addr().String())
+	}
+	return nil
+}
+func verifyAuditDirectory(directory string, output io.Writer) error {
+	result, err := auditlog.VerifyDirectory(directory)
+	if err != nil {
+		return fmt.Errorf("verify audit log: %w", err)
+	}
+	if _, err := fmt.Fprintf(output,
+		"audit verification passed: files=%d records=%d first_seq=%d last_seq=%d last_hash=%s torn_tail=%t\n",
+		result.Files, result.Records, result.FirstSeq, result.LastSeq, result.LastHash, result.TornTail,
+	); err != nil {
+		return fmt.Errorf("write audit verification summary: %w", err)
 	}
 	return nil
 }

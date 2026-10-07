@@ -1,6 +1,7 @@
 package management
 
 import (
+	"context"
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
@@ -68,8 +69,19 @@ func validRequestID(value string) bool {
 	return true
 }
 
+// RequestIDFromContext returns the request ID installed by the router middleware.
+func RequestIDFromContext(ctx context.Context) string {
+	if value, ok := ctx.Value(requestIDKey).(string); ok {
+		return value
+	}
+	return ""
+}
+
 // GetOrGenerateRequestID retrieves or creates a valid request ID.
 func GetOrGenerateRequestID(r *http.Request) string {
+	if reqID := RequestIDFromContext(r.Context()); validRequestID(reqID) {
+		return reqID
+	}
 	reqID := strings.TrimSpace(r.Header.Get(HeaderRequestID))
 	if validRequestID(reqID) {
 		return reqID
@@ -112,6 +124,7 @@ func WriteListEnvelope(w http.ResponseWriter, r *http.Request, statusCode int, d
 
 // WriteError sends a standard error response envelope.
 func WriteError(w http.ResponseWriter, r *http.Request, statusCode int, code, message string, retryable bool, details any) {
+	setAuditErrorCode(r, code)
 	reqID := GetOrGenerateRequestID(r)
 	if details == nil {
 		details = map[string]any{}

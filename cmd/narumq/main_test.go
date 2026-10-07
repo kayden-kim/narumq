@@ -8,6 +8,8 @@ import (
 	"errors"
 	"io"
 	"log/slog"
+	"narumq/internal/adapters/auditlog"
+	portsaudit "narumq/internal/application/ports/audit"
 	"net"
 	"net/http"
 	"os"
@@ -505,5 +507,126 @@ func TestRunWithContextServesManagementHTTP(t *testing.T) {
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("runWithContext did not stop after cancellation")
+	}
+}
+
+func TestAuditVerifyCommandVerifiesAndLeavesFilesReadOnly(t *testing.T) {
+	directory := t.TempDir()
+	publisher, err := auditlog.OpenFileAuditPublisher(auditlog.FileAuditPublisherConfig{
+		Directory: directory, MaxFileBytes: auditlog.DefaultMaxFileBytes,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	closed := false
+	t.Cleanup(func() {
+		if !closed {
+			_ = publisher.Close()
+		}
+	})
+	event := portsaudit.AuditEventDTO{
+		SchemaVersion: "1.0", EventID: "event-1",
+		OccurredAt: time.Date(2026, 10, 8, 12, 0, 0, 0, time.UTC), RequestID: "request-1",
+		Producer: portsaudit.AuditProducerDTO{Component: "BROKER", InstanceID: "test-cluster/1", Version: "1.2.3"},
+		Actor:    portsaudit.AuditActorDTO{Subject: "management-bearer-token", Roles: []string{"ClusterAdmin"}},
+		Action:   "node.drain.start", Target: portsaudit.AuditTargetDTO{Type: "node", ID: "3"},
+		Result: portsaudit.AuditResultAllowed, Reason: "succeeded",
+	}
+	if err := publisher.Publish(event); err != nil {
+		t.Fatal(err)
+	}
+	if err := publisher.Close(); err != nil {
+		t.Fatal(err)
+	}
+	closed = true
+
+	logPath := filepath.Join(directory, "audit.jsonl")
+	original, err := os.ReadFile(logPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var output bytes.Buffer
+	if err := verifyAuditDirectory(directory, &output); err != nil {
+		t.Fatalf("verify valid audit chain: %v", err)
+	}
+	if !strings.Contains(output.String(), "files=1 records=1 first_seq=1 last_seq=1") ||
+		!strings.Contains(output.String(), "torn_tail=false") {
+		t.Fatalf("verification summary = %q", output.String())
+	}
+	unchanged, err := os.ReadFile(logPath)
+	if err != nil || !bytes.Equal(unchanged, original) {
+		t.Fatalf("valid verification changed audit file: read error=%v", err)
+	}
+
+	file, err := os.OpenFile(logPath, os.O_WRONLY|os.O_APPEND, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := file.Write([]byte(`{"seq":`)); err != nil {
+		t.Fatal(err)
+	}
+	if err := file.Close(); err != nil {
+		t.Fatal(err)
+	}
+	tornBefore, err := os.ReadFile(logPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	output.Reset()
+	if err := verifyAuditDirectory(directory, &output); err != nil {
+		t.Fatalf("verify recoverable active tail: %v", err)
+	}
+	if !strings.Contains(output.String(), "records=1") || !strings.Contains(output.String(), "torn_tail=true") {
+		t.Fatalf("torn-tail summary = %q", output.String())
+	}
+	tornAfter, err := os.ReadFile(logPath)
+	if err != nil || !bytes.Equal(tornAfter, tornBefore) {
+		t.Fatalf("read-only verification modified torn tail: read error=%v", err)
+	}
+
+	corrupt := bytes.Replace(tornBefore, []byte(`"requestId":"request-1"`), []byte(`"requestId":"request-x"`), 1)
+	if bytes.Equal(corrupt, tornBefore) {
+		t.Fatal("corruption did not change the event")
+	}
+	if err := os.WriteFile(logPath, corrupt, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	corruptBefore, err := os.ReadFile(logPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	output.Reset()
+	err = verifyAuditDirectory(directory, &output)
+	if err == nil || !strings.Contains(err.Error(), "audit.jsonl:1") {
+		t.Fatalf("corrupt verification error = %v, want file and line", err)
+	}
+	if output.Len() != 0 {
+		t.Fatalf("corrupt verification emitted success summary: %q", output.String())
+	}
+	corruptAfter, err := os.ReadFile(logPath)
+	if err != nil || !bytes.Equal(corruptAfter, corruptBefore) {
+		t.Fatalf("read-only verifier changed corrupt file: read error=%v", err)
+	}
+}
+
+func TestAuditVerifyFlagRequiresExclusiveDirectory(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	directory := t.TempDir()
+	for _, test := range []struct {
+		name string
+		args []string
+		want string
+	}{
+		{name: "empty path", args: []string{"-audit-verify", ""}, want: "-audit-verify requires a non-empty directory path"},
+		{name: "positional argument", args: []string{"-audit-verify", directory, "extra"}, want: "-audit-verify does not accept positional arguments"},
+		{name: "cluster mode conflict", args: []string{"-audit-verify", directory, "-cluster-config", "cluster.json"}, want: "-audit-verify cannot be combined with -cluster-config"},
+		{name: "runtime mode conflict", args: []string{"-audit-verify", directory, "-http-listen", "127.0.0.1:8080"}, want: "-audit-verify cannot be combined with -http-listen"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			err := runWithContext(context.Background(), test.args, logger)
+			if err == nil || !strings.Contains(err.Error(), test.want) {
+				t.Fatalf("runWithContext() error = %v, want %q", err, test.want)
+			}
+		})
 	}
 }

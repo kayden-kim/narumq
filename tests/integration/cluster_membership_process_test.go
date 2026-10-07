@@ -54,6 +54,8 @@ var clusterMembershipProcessBinaries = struct {
 	paths     map[string]string
 }{paths: make(map[string]string)}
 
+var clusterLegacyConfigBinaries sync.Map
+
 func TestMain(m *testing.M) {
 	directory, err := os.MkdirTemp("", "narumq-integration-binaries-")
 	if err != nil {
@@ -703,7 +705,38 @@ func (f *clusterMembershipProcessFixture) buildBinaryFrom(t *testing.T, sourceDi
 		binaryPath += ".exe"
 	}
 	clusterMembershipProcessBuild(t, sourceDir, binaryPath, "", ldflags)
+	if filepath.Clean(sourceDir) != filepath.Clean(f.repoRoot) {
+		clusterLegacyConfigBinaries.Store(binaryPath, struct{}{})
+	}
 	return binaryPath
+}
+
+func clusterProcessConfigForBinary(binary, configPath string) (string, error) {
+	if _, legacy := clusterLegacyConfigBinaries.Load(binary); !legacy {
+		return configPath, nil
+	}
+	data, err := os.ReadFile(configPath)
+	if err != nil {
+		return "", fmt.Errorf("read legacy cluster config: %w", err)
+	}
+	var config map[string]any
+	if err := json.Unmarshal(data, &config); err != nil {
+		return "", fmt.Errorf("decode legacy cluster config: %w", err)
+	}
+	management, ok := config["management"].(map[string]any)
+	if !ok {
+		return "", errors.New("legacy cluster config management object is missing")
+	}
+	delete(management, "auditDirectory")
+	data, err = json.Marshal(config)
+	if err != nil {
+		return "", fmt.Errorf("encode legacy cluster config: %w", err)
+	}
+	legacyPath := strings.TrimSuffix(configPath, filepath.Ext(configPath)) + "-legacy.json"
+	if err := os.WriteFile(legacyPath, data, 0o600); err != nil {
+		return "", fmt.Errorf("write legacy cluster config: %w", err)
+	}
+	return legacyPath, nil
 }
 func (f *clusterMembershipProcessFixture) bootstrapConfig(memberID uint64) string {
 	index := int(memberID - 1)
@@ -719,8 +752,8 @@ func (f *clusterMembershipProcessFixture) bootstrapConfig(memberID uint64) strin
 		SeedAddresses: []string{}, PeerTLS: clusterMembershipProcessTLS{
 			CertFile: f.certificates[index].certPath(f.tempDir), KeyFile: f.certificates[index].keyPath(f.tempDir), CAFile: f.caPath,
 		},
-		Management: clusterMembershipProcessManagement{ListenAddress: f.managementAddresses[index], ClusterAdminTokenFile: f.tokenPath},
-		MQTT:       clusterMembershipProcessMQTT{TCPListenAddress: f.mqttAddresses[index], TLSListenAddress: "", SecurityConfigFile: f.securityPath},
+		Management: clusterMembershipProcessManagement{ListenAddress: f.managementAddresses[index], ClusterAdminTokenFile: f.tokenPath, AuditDirectory: f.auditDirectory(memberID)},
+		MQTT:       clusterMembershipProcessMQTT{TCPListenAddress: f.mqttAddresses[index], SecurityConfigFile: f.securityPath},
 	}
 	if !f.omitPublishBackpressure {
 		config.PublishBackpressure = &clusterMembershipProcessPublishBackpressure{MinFreeBytes: 16 << 20, MaxCommitLagMillis: 1000}
@@ -750,8 +783,8 @@ func (f *clusterMembershipProcessFixture) joinerConfig(memberID uint64, seedIDs 
 		PeerTLS: clusterMembershipProcessTLS{
 			CertFile: f.certificates[index].certPath(f.tempDir), KeyFile: f.certificates[index].keyPath(f.tempDir), CAFile: f.caPath,
 		},
-		Management: clusterMembershipProcessManagement{ListenAddress: f.managementAddresses[index], ClusterAdminTokenFile: f.tokenPath},
-		MQTT:       clusterMembershipProcessMQTT{TCPListenAddress: f.mqttAddresses[index], TLSListenAddress: "", SecurityConfigFile: f.securityPath},
+		Management: clusterMembershipProcessManagement{ListenAddress: f.managementAddresses[index], ClusterAdminTokenFile: f.tokenPath, AuditDirectory: f.auditDirectory(memberID)},
+		MQTT:       clusterMembershipProcessMQTT{TCPListenAddress: f.mqttAddresses[index], SecurityConfigFile: f.securityPath},
 	}
 	if !f.omitPublishBackpressure {
 		config.PublishBackpressure = &clusterMembershipProcessPublishBackpressure{MinFreeBytes: 16 << 20, MaxCommitLagMillis: 1000}
@@ -761,6 +794,10 @@ func (f *clusterMembershipProcessFixture) joinerConfig(memberID uint64, seedIDs 
 	configPath := filepath.Join(f.tempDir, fmt.Sprintf("node-%d.json", memberID))
 	clusterMembershipProcessWriteJSON(f.harness.t, configPath, config)
 	return configPath
+}
+
+func (f *clusterMembershipProcessFixture) auditDirectory(memberID uint64) string {
+	return filepath.Join(f.tempDir, fmt.Sprintf("node-%d-audit", memberID))
 }
 
 func (f *clusterMembershipProcessFixture) stageRequest(memberID uint64) clusterMembershipProcessStageRequest {
@@ -1230,6 +1267,10 @@ func (h *clusterMembershipProcessHarness) launch(name, configPath, managementAdd
 }
 
 func (h *clusterMembershipProcessHarness) launchBinary(binary, name, configPath, managementAddress string, env []string) (*clusterMembershipProcess, error) {
+	configPath, err := clusterProcessConfigForBinary(binary, configPath)
+	if err != nil {
+		return nil, err
+	}
 	processCtx, cancel := context.WithCancel(h.ctx)
 	command := exec.CommandContext(processCtx, binary, "-cluster-config", configPath)
 	command.Dir = h.root
@@ -1458,6 +1499,7 @@ type clusterMembershipProcessTLS struct {
 type clusterMembershipProcessManagement struct {
 	ListenAddress         string `json:"listenAddress"`
 	ClusterAdminTokenFile string `json:"clusterAdminTokenFile"`
+	AuditDirectory        string `json:"auditDirectory"`
 }
 
 type clusterMembershipProcessMQTT struct {

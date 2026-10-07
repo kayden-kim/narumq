@@ -6,17 +6,17 @@ NaruMQ의 security architecture는 network 위치만으로 신뢰를 부여하�
 | --- | --- |
 | 관점 상태 | Target; MQTT client mTLS boundary partially implemented |
 | 문서 상태 | Draft |
-| 구현 증거 | MQTT client TLS trust, verified certificate DTO, exact selector mapping, tenant/client binding과 dual-credential rejection은 `internal/adapters/tls`, `internal/adapters/authentication`, `internal/application/connect`, `cmd/narumq` 및 `tests/integration/mqtt_tls_test.go`에 구현·검증되어 있다. Cluster peer, management plane, audit integrity와 operational rotation은 아직 Target이다. |
+| 구현 증거 | MQTT client TLS trust, verified certificate DTO, exact selector mapping, tenant/client binding과 dual-credential rejection은 `internal/adapters/tls`, `internal/adapters/authentication`, `internal/application/connect`, `cmd/narumq` 및 `tests/integration/mqtt_tls_test.go`에 구현·검증되어 있다. Management plane 감사 producer, node-local hash-chain publisher, read-only verifier와 outcome metric은 `internal/adapters/http/management`, `internal/adapters/auditlog`, `internal/application/audit`, `internal/adapters/metrics`, `cmd/narumq`에 구현되어 있다. Schema·secret 경계와 실제 3-process 동작은 `tests/contracts/audit-event-v1/contract_test.go::TestAuditEventMatchesSchemaAndFileChain`, `tests/integration/cluster_audit_process_test.go::TestDynamicClusterManagementAuditProcessAcceptance`에서 확인한다. SIEM 보존·접근 정책, rollout controller와 MQTT data-plane 감사는 후속 범위다. |
 | 범위 | MQTT data plane, cluster peer와 management plane의 trust boundary |
 | 관련 요구사항 | [PRD](../requirements/PRD.md) TEN-01~TEN-10, SEC-01~SEC-12, NFR-16~NFR-19 |
 | 관련 스펙 | [Tenant와 security](../specs/tenancy-and-security.md), [Management API와 observability](../specs/management-api-and-observability.md) |
 | 관련 Contract | [Management API v1](../contracts/management-api-v1.md), [Audit event v1](../contracts/audit-event-v1.md), [MQTT client compatibility v1](../contracts/mqtt-client-compatibility-v1.md) |
-| 관련 결정 | API 인증 제품, secret 관리와 audit integrity ADR은 미작성 |
-| 최종 확인일 | 2026-09-21 |
+| 관련 결정 | [ADR-0039](../decisions/ADR-0039-management-audit-log.md); API 인증 제품과 secret 관리 ADR은 미작성 |
+| 최종 확인일 | 2026-10-08 |
 
 ## Trust boundary view
 
-아래 화살표는 credential·request·event의 runtime flow다. 각 boundary의 검증을 통과하기 전에는 안쪽 identity나 권한으로 승격하지 않는다.
+아래 화살표는 Target runtime flow다. Management API → AuditAdapter 경로가 구현됐고, Domain → AuditAdapter의 MQTT data-plane 감사는 후속 범위다. Boundary 검증을 통과하기 전에는 안쪽 identity나 권한으로 승격하지 않는다.
 
 ```mermaid
 flowchart LR
@@ -154,7 +154,7 @@ NLB의 TCP/TLS mode와 TLS termination 위치는 미결정이다.
 - NLB TCP/TLS mode와 mTLS profile
 - Broker node identity 발급·회전과 membership bootstrap
 - Kubernetes secret 또는 외부 secret manager 선택
-- Audit store, retention과 위변조 방지 방식
+- 보존 기간 값과 SIEM 접근 권한은 외부 보안 운영에서 결정한다. Audit event 저장 방식과 hash-chain 무결성은 [ADR-0039](../decisions/ADR-0039-management-audit-log.md)에서 정했다.
 - At-rest encryption key 소유권과 rotation
 - Security policy 배포·rollback과 cache TTL의 확정값
 

@@ -28,8 +28,8 @@ func (stub *clusterBackupProviderStub) CaptureClusterBackup(context.Context) (po
 
 func newBackupHTTPTestHandler(provider ports.ClusterBackupProvider, role Role) http.Handler {
 	return newRouter(
-		ServerConfig{AuthToken: "cluster-secret", AuthTokenRole: role},
-		&mockStateProvider{}, nil, nil, nil, nil, nil, provider,
+		ServerConfig{AuthToken: "cluster-secret", AuthTokenRole: role, ClusterID: "test-cluster"},
+		&mockStateProvider{}, nil, nil, nil, nil, nil, provider, &spyAuditUseCase{},
 	)
 }
 

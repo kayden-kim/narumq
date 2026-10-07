@@ -385,6 +385,40 @@ func TestRegistryRendersWillOutcomes(t *testing.T) {
 	}
 }
 
+func TestRegistryRendersAuditMetrics(t *testing.T) {
+	registry := NewRegistry()
+	for _, openMetrics := range []bool{false, true} {
+		text := string(registry.Render(openMetrics))
+		var previousIndex = -1
+		for _, outcome := range auditOutcomes {
+			series := fmt.Sprintf("narumq_audit_events_total{outcome=\"%s\"} 0\n", outcome)
+			position := strings.Index(text, series)
+			if position < 0 || position <= previousIndex {
+				t.Fatalf("missing or unordered zero series for %q: %s", outcome, text)
+			}
+			previousIndex = position
+		}
+		if !strings.Contains(text, "narumq_audit_publisher_ready 0\n") {
+			t.Fatalf("missing zero readiness gauge: %s", text)
+		}
+	}
+
+	registry.AuditOutcome(ports.AuditOutcomePublished)
+	registry.AuditOutcome(ports.AuditOutcomePublished)
+	registry.AuditOutcome(ports.AuditOutcomeInvalid)
+	registry.AuditOutcome("unknown")
+	registry.SetAuditPublisherReady(true)
+	text := string(registry.Render(false))
+	if !strings.Contains(text, "narumq_audit_events_total{outcome=\"published\"} 2\n") ||
+		!strings.Contains(text, "narumq_audit_events_total{outcome=\"invalid\"} 1\n") ||
+		!strings.Contains(text, "narumq_audit_publisher_ready 1\n") {
+		t.Fatalf("audit metrics did not reflect known outcomes and readiness: %s", text)
+	}
+	if strings.Contains(text, `outcome="unknown"`) {
+		t.Fatalf("unknown outcome created a series: %s", text)
+	}
+}
+
 // Traceability: PRD MQTT-09/MQTT-11; docs/specs/mqtt-protocol-and-session.md §7.1.
 func TestRegistryRendersListenerAdmissionRejections(t *testing.T) {
 	registry := NewRegistry()

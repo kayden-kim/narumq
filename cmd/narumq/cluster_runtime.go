@@ -26,6 +26,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"narumq/internal/adapters/auditlog"
 	authenticationadapter "narumq/internal/adapters/authentication"
 	"narumq/internal/adapters/clock"
 	"narumq/internal/adapters/diskspace"
@@ -37,6 +38,7 @@ import (
 	raftadapter "narumq/internal/adapters/raft"
 	tcpadapter "narumq/internal/adapters/tcp"
 	tlsadapter "narumq/internal/adapters/tls"
+	"narumq/internal/application/audit"
 	"narumq/internal/application/connect"
 	appmgmt "narumq/internal/application/management"
 	"narumq/internal/application/membership"
@@ -65,6 +67,7 @@ const (
 	clusterDefaultControlQueueCapacity     = 256
 	clusterDefaultDeliveryQueueCapacity    = 256
 	clusterCommitFailureLogInterval        = time.Second
+	clusterAuditDenialEventsPerSecond      = 20
 )
 
 var (
@@ -412,6 +415,27 @@ func runClusterMode(ctx context.Context, config clusterConfigFile, logger *slog.
 	if err != nil {
 		return fmt.Errorf("create connection rebalance service: %w", err)
 	}
+	auditPublisher, err := auditlog.OpenFileAuditPublisher(auditlog.FileAuditPublisherConfig{
+		Directory: config.Management.AuditDirectory, MaxFileBytes: auditlog.DefaultMaxFileBytes,
+	})
+	if err != nil {
+		return fmt.Errorf("configure management audit log: %w", err)
+	}
+	defer func() {
+		if err := auditPublisher.Close(); err != nil {
+			logger.Error("close management audit log", "error", err.Error())
+		}
+	}()
+	if err := auditPublisher.Ready(); err != nil {
+		logger.Error("management audit log is unavailable; management mutations will be rejected", "error", err.Error())
+	}
+	auditService, err := audit.NewService(audit.ServiceConfig{
+		ClusterID: config.ClusterID, NodeID: config.NodeID, ReleaseVersion: config.ReleaseVersion,
+		DenialEventsPerSecond: clusterAuditDenialEventsPerSecond,
+	}, auditPublisher, systemClock, metricsRegistry)
+	if err != nil {
+		return fmt.Errorf("create management audit service: %w", err)
+	}
 	baseManagement := appmgmt.NewService(appmgmt.ServiceConfig{
 		ClusterID: config.ClusterID, NodeID: strconv.FormatUint(config.NodeID, 10), ReleaseVersion: config.ReleaseVersion,
 	}, sessions, runtime.routes, retainedRepository, metricsRegistry)
@@ -430,7 +454,8 @@ func runClusterMode(ctx context.Context, config clusterConfigFile, logger *slog.
 	managementServer := adaptershttp.NewServerWithMembership(adaptershttp.ServerConfig{
 		ListenAddr: managementListener.Addr().String(), AuthToken: adminToken,
 		AuthTokenRole: adaptershttp.RoleClusterAdmin, AllowAnonymousProbes: true,
-	}, stateProvider, healthChecker, metricsRegistry, membershipService, drainService, rebalanceService, runtime)
+		ClusterID: config.ClusterID, Logger: logger,
+	}, stateProvider, healthChecker, metricsRegistry, membershipService, drainService, rebalanceService, runtime, auditService)
 	return runtime.serve(ctx, mqttServer, managementServer, managementListener)
 }
 

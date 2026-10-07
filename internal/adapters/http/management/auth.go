@@ -3,6 +3,7 @@ package management
 import (
 	"context"
 	"crypto/subtle"
+	"log/slog"
 	"net/http"
 	"strings"
 )
@@ -18,22 +19,34 @@ const (
 	RoleClusterAdmin
 )
 
+func (role Role) String() string {
+	switch role {
+	case RoleReadOnly:
+		return "ReadOnly"
+	case RoleOperator:
+		return "Operator"
+	case RoleSecurityAdmin:
+		return "SecurityAdmin"
+	case RoleClusterAdmin:
+		return "ClusterAdmin"
+	default:
+		return "None"
+	}
+}
+
 type roleContextKey struct{}
 
 // AuthConfig configures authentication and RBAC for management endpoints.
 type AuthConfig struct {
-	// AuthToken is the optional shared Bearer token.
-	AuthToken string
-	// AuthTokenRole is the role granted to a valid Bearer token.
-	AuthTokenRole Role
-	// APIKey is the optional API key accepted in X-API-Key header.
-	APIKey string
-	// APIKeyRole is the role granted to a valid API key.
-	APIKeyRole Role
-	// AllowAnonymousProbes allows GET /health/* without auth.
-	AllowAnonymousProbes bool
-	// AllowAnonymousMetrics allows GET /metrics without auth.
+	AuthToken             string
+	AuthTokenRole         Role
+	APIKey                string
+	APIKeyRole            Role
+	AllowAnonymousProbes  bool
 	AllowAnonymousMetrics bool
+	Audit                 AuditUseCase
+	Logger                *slog.Logger
+	ClusterID             string
 }
 
 // Authenticator verifies incoming credentials and enforces RBAC.
@@ -68,27 +81,30 @@ func contextWithRole(ctx context.Context, role Role) context.Context {
 	return context.WithValue(ctx, roleContextKey{}, role)
 }
 
-// AuthenticateRequest validates credentials from headers and returns the assigned role.
-func (a *Authenticator) AuthenticateRequest(r *http.Request) (Role, bool) {
-	// If no auth is configured, grant ClusterAdmin for local development/single-node profile.
-	if !a.Enabled() {
-		return RoleClusterAdmin, true
-	}
+type managementPrincipal struct {
+	role    Role
+	subject string
+}
 
-	// 1. Check Bearer token
+func (a *Authenticator) authenticate(r *http.Request) (managementPrincipal, bool) {
+	if !a.Enabled() {
+		return managementPrincipal{role: RoleClusterAdmin, subject: "local-unauthenticated"}, true
+	}
 	authHeader := r.Header.Get("Authorization")
 	if token, ok := strings.CutPrefix(authHeader, "Bearer "); ok && token != "" &&
 		a.cfg.AuthToken != "" && constantTimeEqual(token, a.cfg.AuthToken) {
-		return a.cfg.AuthTokenRole, true
+		return managementPrincipal{role: a.cfg.AuthTokenRole, subject: "management-bearer-token"}, true
 	}
-
-	// 2. Check X-API-Key header
 	apiKey := r.Header.Get("X-API-Key")
 	if apiKey != "" && a.cfg.APIKey != "" && constantTimeEqual(apiKey, a.cfg.APIKey) {
-		return a.cfg.APIKeyRole, true
+		return managementPrincipal{role: a.cfg.APIKeyRole, subject: "management-api-key"}, true
 	}
+	return managementPrincipal{}, false
+}
 
-	return RoleNone, false
+func (a *Authenticator) AuthenticateRequest(r *http.Request) (Role, bool) {
+	principal, ok := a.authenticate(r)
+	return principal.role, ok
 }
 
 func constantTimeEqual(left, right string) bool {
@@ -100,20 +116,11 @@ func constantTimeEqual(left, right string) bool {
 
 // RequireRole returns a middleware requiring at least minRole.
 func (a *Authenticator) RequireRole(minRole Role, next http.HandlerFunc) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		role, ok := a.AuthenticateRequest(r)
-		if !ok {
-			WriteError(w, r, http.StatusUnauthorized, "unauthorized", "authentication required or credentials invalid", false, nil)
-			return
-		}
-		if role < minRole {
-			WriteError(w, r, http.StatusForbidden, "forbidden", "authenticated principal lacks required permissions", false, nil)
-			return
-		}
+	return a.require(minRole, nil, next)
+}
 
-		ctx := contextWithRole(r.Context(), role)
-		next(w, r.WithContext(ctx))
-	}
+func (a *Authenticator) RequireMutationRole(minRole Role, mutation auditMutation, next http.HandlerFunc) http.HandlerFunc {
+	return a.require(minRole, &mutation, next)
 }
 
 // MaybeAllowProbe returns a middleware for health probes.

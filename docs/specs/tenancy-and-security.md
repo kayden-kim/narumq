@@ -5,7 +5,7 @@
 | 항목 | 값 |
 | --- | --- |
 | 상태 | Active (Phase 1 security and tenant isolation slice) |
-| 적용 범위 | Phase 1에서 TEN-01~TEN-05, SEC-02~SEC-04, SEC-06과 SEC-08의 JWKS fail-closed 동작을 구현한다. Dynamic cluster의 tenant별 저장 quota(TEN-08)는 [ADR-0017](../decisions/ADR-0017-tenant-storage-quota.md) 범위에서 제공한다. TEN-06·TEN-07의 node-local 연결·session·subscription·PUBLISH traffic 한도는 §5.2를 따른다. Blocklist, management API, audit sink, 기존 연결 재인증은 후속 범위다. Metrics는 인증 성공·실패, session gauge, 저장 quota 및 tenant 한도 거절을 포함하며, 상세 observability 정책은 후속 범위다. |
+| 적용 범위 | Phase 1에서 TEN-01~TEN-05, SEC-02~SEC-04, SEC-06과 SEC-08의 JWKS fail-closed 동작을 구현한다. Dynamic cluster의 tenant별 저장 quota(TEN-08)는 [ADR-0017](../decisions/ADR-0017-tenant-storage-quota.md) 범위에서 제공한다. TEN-06·TEN-07의 node-local 연결·session·subscription·PUBLISH traffic 한도는 §5.2를 따른다. Management plane의 활성 mutation 8개와 401·403 거절 감사는 §8과 [ADR-0039](../decisions/ADR-0039-management-audit-log.md)를 따른다. Blocklist, 기존 연결 재인증, MQTT data-plane 감사와 rollout controller 감사는 후속 범위다. Metrics는 인증 성공·실패, session gauge, 저장 quota 및 tenant 한도 거절을 포함하며, 상세 observability 정책은 §8과 Management API 스펙을 따른다. |
 | 근거 | [PRD 9.3절, 9.4절과 11.4절](../requirements/PRD.md), [RFC 8725](https://www.rfc-editor.org/rfc/rfc8725.html) |
 | 관련 spec | [MQTT protocol과 session](mqtt-protocol-and-session.md), [Management API](management-api-and-observability.md) |
 | 관련 Architecture | [Security boundaries](../architectures/security-boundaries.md), [System overview](../architectures/system-overview.md) |
@@ -348,22 +348,19 @@ Proposer node는 `narumq_tenant_quota_rejections_total{tenant,dimension}` counte
 
 ## 8. 감사와 비밀정보
 
-관리 mutation과 보안 관련 거절은 최소 다음 필드를 가진 감사 이벤트를 생성해야 한다.
+Dynamic cluster의 활성 Management API mutation 8개와 인증 `401`·인가 `403` 거절은 audit event를 생성한다. Event 형식과 action·target·actor·reason·details는 [Audit event v1 계약 §5](../contracts/audit-event-v1.md#5-broker-producer-범위)를 따른다. MQTT CONNECT 인증 실패와 ACL 거절은 이 범위에서 감사하지 않는다.
 
-```json
-{
-  "timestamp": "2026-08-16T00:00:00Z",
-  "requestId": "opaque-request-id",
-  "actor": { "subject": "opaque-subject", "tenantId": "opaque-tenant" },
-  "action": "node.drain.start",
-  "target": { "type": "node", "id": "opaque-node-id" },
-  "result": "allowed",
-  "reason": "policy-code",
-  "policyVersion": "opaque-version"
-}
-```
+Management mutation은 실행 전에 node-local publisher의 준비 상태를 확인해야 한다. Publisher를 쓸 수 없으면 handler를 호출하지 않고 retryable `503 audit_unavailable`을 반환한다. Mutation 뒤 event 기록이 실패하면 작업을 되돌리지 않고 error log와 Metric으로 드러낸다.
 
-audit event에는 password, bearer token, session cookie, private key와 원문 secret을 넣어서는 안 된다. Client ID, username, certificate identity와 IP는 권한과 보존 정책에 따라 마스킹할 수 있어야 한다. 보존 기간과 위변조 방지 방식은 보안 운영 spec에서 확정한다.
+Event는 `management.auditDirectory`의 JSONL 파일에 append하며 각 줄을 fsync한다. 이전 줄의 SHA-256을 연결하는 hash chain은 손상과 연결된 줄의 누락을 검출한다. Broker는 크기 기준으로만 rotation하고 파일을 삭제하지 않는다. 외부 collector는 rotation 파일 중 가장 오래된 연속 prefix만 삭제할 수 있다. 보존 기간, 검색과 접근 권한은 외부 SIEM 책임이다.
+
+Standalone mode에는 감사 publisher를 연결하지 않는다. Standalone은 이 계약의 Dynamic cluster mutation을 제공하지 않으며, standalone 401·403 event도 기록하지 않는다.
+
+Audit directory는 필수 cluster 설정이다. Raft data directory와 같거나 서로 포함하면 startup을 거절하고, 각 node는 별도 directory를 사용한다. `narumq -audit-verify <directory>`는 저장된 chain을 읽기 전용으로 검증한다.
+
+Bearer token, API key, body, query와 원문 secret은 event에 기록하지 않는다. Management credential은 공유 값이므로 actor subject는 credential 종류를 나타내며 개인 식별을 보장하지 않는다. 초당 20개를 넘는 거절 event는 저장하지 않고 suppression Metric으로만 센다.
+
+MQTT CONNECT 인증 실패와 ACL 거절, rollout controller producer, SIEM consumer의 unknown action/reason 검증은 후속 범위다. Hash chain은 파일 전체를 다시 쓰는 권한 보유자 공격을 막지 않으므로 SIEM 보관과 접근 통제를 대체하지 않는다.
 
 ## 9. 수용 시험과 범위
 
@@ -383,10 +380,12 @@ audit event에는 password, bearer token, session cookie, private key와 원문 
 | TEN-05 | system topic, retained, shared subscription, Will과 session이 tenant 경계를 넘지 않는다. | tenancy/routing/session 시험, `tests/integration/mqtt_ingress_test.go`의 `TestMQTTSecurity` |
 | TEN-06 | Tenant별 연결·session 제한은 node별로, subscription 제한은 route table의 tenant 수로 적용한다. 한 tenant의 초과는 다른 tenant를 거절하지 않으며, 초과 응답과 state 무변경을 확인한다. 같은 node의 동시 add와 replace/remove는 직렬화한다. | `internal/application/connect`, `internal/application/subscribe`의 `TestSubscribeTenantQuotaSerializesLocalAdmission`, `TestSubscribeTenantQuotaSerializesReplacementAndRemoval`, `internal/adapters/memory/sessionstore`, `internal/domain/routing`, `tests/integration/mqtt_tenant_limits_test.go` (`TestMQTTTenantLimits`), `tests/integration/cluster_tenant_limits_process_test.go` (`TestDynamicClusterTenantLimitsProcessAcceptance`) |
 | TEN-07 | Tenant별 payload 크기·message rate·byte rate를 제한한다. Rate 초과는 최대 `maxWait`까지 대기하고, MQTT 응답과 다른 tenant의 독립성을 확인한다. | `internal/application/tenantlimit`, `internal/adapters/tcp/server_tenant_limits_test.go`, `internal/adapters/metrics`, `cmd/narumq/security_config_test.go`, `cmd/narumq/tenant_limits_test.go`, `tests/integration/mqtt_tenant_limits_test.go` (`TestMQTTTenantLimits`) |
+| SEC-11 | Dynamic cluster의 활성 Management API mutation 8개와 401·403 거절을 node-local JSONL hash chain에 기록한다. Audit publisher가 unavailable이면 mutation handler를 실행하지 않고 `503 audit_unavailable`을 반환한다. | `internal/adapters/http/management/audit_test.go`, `tests/contracts/audit-event-v1/contract_test.go::TestAuditEventMatchesSchemaAndFileChain`(8개 mutation, 거절·실패), `tests/integration/cluster_audit_process_test.go::TestDynamicClusterManagementAuditProcessAcceptance` |
+| NFR-17 | 기록된 event의 줄 순서·hash 연결·변조 검출, 중첩 details의 잘못된 UTF-8 거절, handler panic의 감사 HTTP 상태 500, Windows rotation 충돌 보호와 audit/Raft directory 경계를 확인한다. 보존 기간 값과 SIEM 접근 권한은 외부 결정으로 미정이다. | `internal/application/audit/service_test.go`, `internal/adapters/http/management/audit_test.go`, `internal/adapters/auditlog/file_publisher_test.go`, `internal/adapters/auditlog/persist_windows_test.go`, `cmd/narumq/cluster_config_test.go`, `cmd/narumq/main_test.go::TestAuditVerifyCommandVerifiesAndLeavesFilesReadOnly`, `tests/contracts/audit-event-v1/contract_test.go`, `tests/integration/cluster_audit_process_test.go::TestDynamicClusterManagementAuditProcessAcceptance` |
 
 SEC-03/SEC-04의 certificate-to-tenant acceptance와 TEN-06·TEN-07의 §5.2 범위를 구현했다. TEN-08 저장 quota는 §5.1과 ADR-0017의 채택 범위를 따른다. TEN-09의 noisy-neighbor p99 기준과 TEN-10은 이번 수용 범위에 포함하지 않는다.
 
-Security metrics의 나머지 정책, revocation·rotation, blocklist, management API, audit sink, reload과 기존 연결 token reauthentication은 완료로 표시하지 않는다. 위 표 밖의 SEC-05, SEC-07, SEC-10~SEC-12와 TEN-08~TEN-10의 미채택 범위는 후속 acceptance scope다. TEN-08의 §5.1·ADR-0017 채택 범위는 다시 미구현으로 열지 않는다.
+MQTT data-plane 거절 감사, rollout controller producer, 보존 기간 값과 SIEM 접근 권한은 후속 범위다. 위 표 밖의 SEC-05, SEC-07, SEC-10, SEC-12와 TEN-08~TEN-10의 미채택 범위는 후속 acceptance scope다. TEN-08의 §5.1·ADR-0017 채택 범위는 다시 미구현으로 열지 않는다.
 
 ### 9.1 TEN-06·TEN-07 실행 증거
 
@@ -436,3 +435,20 @@ MQTT 5 시험은 연결 상한 2, session 상한 3, subscription 상한 2를 확
 실제 binary 시험은 committed subscription projection을 세 node에서 확인한 뒤 node3의 SUBACK `0x80`을 확인했다. Node1에서 CONNACK `0x03`으로 거절된 client가 node2에서는 연결됐다. 각 거절 node의 `/metrics` counter가 1이었다.
 
 초기 수용 시험 실행은 신규 시험 코드의 type 오류와 process helper의 CONNECT credential flag 오류로 실패했다. 시험 코드를 고친 뒤 위 명령 묶음이 통과했다. 실패를 broker 동작의 통과 증거로 계산하지 않는다.
+
+### 9.2 SEC-11 / NFR-17 실행 증거
+
+2026-10-08 저장소 루트에서 Windows x64와 Go 1.26.5로 실행했다.
+
+| 검증 | 명령 | 결과 |
+| --- | --- | --- |
+| 감사 회귀 package | `go test ./internal/application/audit ./internal/adapters/http/management ./internal/adapters/auditlog ./cmd/narumq ./tests/contracts/audit-event-v1 ./internal/adapters/metrics -count=1` | PASS. 6개 package. 중첩된 잘못된 UTF-8과 unexported embedded struct의 exported field, panic의 HTTP 상태 500, Windows rotation 대상 보존, 다른 volume 경로 허용, schema contract와 metric 시험이 통과했다. |
+| Audit metric contract | `go test ./internal/adapters/metrics -count=1` | PASS. Fixed outcome series, unknown outcome와 readiness gauge 시험이 통과했다. |
+| 실제 3-process cluster | `go test ./tests/integration -run '^TestDynamicClusterManagementAuditProcessAcceptance$' -count=1 -timeout=10m -v` | PASS, 3.92s. Node 1의 drain mutation은 `503 audit_unavailable`로 거절됐다. `/metrics`에서 `narumq_audit_publisher_ready 0`과 `mutation_rejected` 1을 확인했고 MQTT CONNECT는 성공했다. Node 2의 두 event는 401 거절과 feature 활성화 실패이며 response request ID와 일치했다. CLI는 2개 record를 검증했고 변조한 사본은 `audit.jsonl:1`에서 거절했다. |
+| Historical release compatibility | `NARUMQ_RELEASE_COMPAT=1 go test ./tests/integration -run 'TestDynamicClusterHistoricalReleaseCompatibilityProcessAcceptance|TestClusterBackupRestoreHistoricalReleaseProcessAcceptance' -count=1 -timeout 60m` | PASS, 82.671s. 두 historical process acceptance 시험이 통과했다. |
+| 전체 Go package build | `go build ./...` | PASS. |
+| Go vet | `go vet ./...` | PASS. |
+| Traceability·architecture | `go run ./tools/verify traceability && go run ./tools/verify architecture` | PASS. |
+| Full local gate | `GOMAXPROCS=4 go run ./tools/verify local` | FAIL, 125.04s. Traceability, architecture, fuzz와 integration package(88.407s)가 통과했다. `go test ./...`는 BP-07 smoke profile digest assertion에서 실패해 coverage gate에 도달하지 못했다. |
+
+Full local gate는 통과하지 않았다. `tests/benchmark/bp07/profile_test.go::TestSmokeProfileIdentityAndDigest`는 digest `e1f305e1e5c38e4b00e161bfce733c46cd393075517241978594470fb508a7fb`를 기대한다. 현재 `tests/benchmark/bp07/testdata/smoke.json`의 SHA-256은 `1d543973107a0ae57697b0eb56cb63b69a056b67cffca5c6a11bd1fb103b9446`다. 이 fixture와 test assertion은 audit 변경 범위 밖이므로 수정하지 않았다.

@@ -33,8 +33,8 @@ func (stub *rebalanceHTTPStub) CancelConnectionRebalance(context.Context) (membe
 
 func newRebalanceHTTPTestHandler(service ConnectionRebalanceUseCase, role Role) http.Handler {
 	return NewRouterWithMembership(
-		ServerConfig{AuthToken: "rebalance-secret", AuthTokenRole: role},
-		&mockStateProvider{}, nil, nil, nil, nil, service, nil,
+		ServerConfig{AuthToken: "rebalance-secret", AuthTokenRole: role, ClusterID: "test-cluster"},
+		&mockStateProvider{}, nil, nil, nil, nil, service, nil, &spyAuditUseCase{},
 	)
 }
 

@@ -51,6 +51,21 @@ type WillOutcomeRecorder interface {
 	WillOutcome(reason string)
 }
 
+// Audit publication outcomes (fixed cardinality).
+const (
+	AuditOutcomePublished        = "published"
+	AuditOutcomePublishFailed    = "publish_failed"
+	AuditOutcomeInvalid          = "invalid"
+	AuditOutcomeDenialSuppressed = "denial_suppressed"
+	AuditOutcomeMutationRejected = "mutation_rejected"
+)
+
+// AuditOutcomeRecorder records audit publication outcomes and publisher readiness.
+type AuditOutcomeRecorder interface {
+	AuditOutcome(outcome string)
+	SetAuditPublisherReady(ready bool)
+}
+
 // Listener admission rejection reasons (fixed cardinality).
 const (
 	ListenerAdmissionReasonMaxConnections = "max_connections"

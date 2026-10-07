@@ -5,6 +5,7 @@ go 1.26.5
 require (
 	github.com/getkin/kin-openapi v0.149.0
 	github.com/lestrrat-go/jwx/v3 v3.3.0
+	github.com/santhosh-tekuri/jsonschema/v6 v6.0.3
 	go.etcd.io/raft/v3 v3.7.0
 	golang.org/x/sys v0.47.0
 	google.golang.org/protobuf v1.36.11
@@ -36,7 +37,6 @@ require (
 	github.com/oasdiff/yaml3 v0.0.14 // indirect
 	github.com/pelletier/go-toml/v2 v2.2.4 // indirect
 	github.com/sagikazarmark/locafero v0.12.0 // indirect
-	github.com/santhosh-tekuri/jsonschema/v6 v6.0.3 // indirect
 	github.com/segmentio/asm v1.2.1 // indirect
 	github.com/spf13/afero v1.15.0 // indirect
 	github.com/spf13/cast v1.10.0 // indirect

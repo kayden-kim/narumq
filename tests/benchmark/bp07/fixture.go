@@ -70,6 +70,7 @@ type bp07PeerTLSConfig struct {
 type bp07ManagementConfig struct {
 	ListenAddress         string `json:"listenAddress"`
 	ClusterAdminTokenFile string `json:"clusterAdminTokenFile"`
+	AuditDirectory        string `json:"auditDirectory"`
 }
 
 type bp07MQTTConfig struct {
@@ -267,7 +268,7 @@ func newBP07Fixture(profile Profile, runID string) (*bp07Fixture, error) {
 			ClusterProtocolMajor: 2, ClusterProtocolMinor: 0, StateSchemaMajor: 1, StateSchemaMinor: 0,
 			Role: "bootstrap", BootstrapMembers: members, SeedAddresses: []string{},
 			PeerTLS:    bp07PeerTLSConfig{CertFile: "/config/node.pem", KeyFile: "/config/node-key.pem", CAFile: "/config/ca.pem"},
-			Management: bp07ManagementConfig{ListenAddress: "0.0.0.0:8080", ClusterAdminTokenFile: "/config/admin.token"},
+			Management: bp07ManagementConfig{ListenAddress: "0.0.0.0:8080", ClusterAdminTokenFile: "/config/admin.token", AuditDirectory: "/var/lib/narumq/audit"},
 			MQTT:       bp07MQTTConfig{TCPListenAddress: "0.0.0.0:1883", TLSListenAddress: "", SecurityConfigFile: "/config/mqtt-security.json"},
 		}
 		configJSON, err := json.Marshal(config)

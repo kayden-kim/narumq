@@ -41,6 +41,13 @@ var willOutcomeReasons = [...]string{
 	ports.WillOutcomeUnexpectedSupportedClient,
 	ports.WillOutcomeUnplannedFailure,
 }
+var auditOutcomes = [...]string{
+	ports.AuditOutcomePublished,
+	ports.AuditOutcomePublishFailed,
+	ports.AuditOutcomeInvalid,
+	ports.AuditOutcomeDenialSuppressed,
+	ports.AuditOutcomeMutationRejected,
+}
 
 var listenerAdmissionTransports = [...]string{ports.TransportTCP, ports.TransportTLS}
 var listenerAdmissionReasons = [...]string{ports.ListenerAdmissionReasonMaxConnections, ports.ListenerAdmissionReasonConnectionRate}
@@ -132,6 +139,8 @@ type Registry struct {
 	connectRejectedTotal          atomic.Int64
 	nodeDrainTransitions          map[string]*atomic.Int64
 	willOutcomes                  [len(willOutcomeReasons)]atomic.Int64
+	auditOutcomeCounts            [len(auditOutcomes)]atomic.Int64
+	auditPublisherReady           atomic.Bool
 	listenerAdmissionRejections   [len(listenerAdmissionTransports)][len(listenerAdmissionReasons)]atomic.Int64
 	tenantQuotaRejections         map[tenantQuotaMetricKey]*atomic.Int64
 	tenantLimitRejections         map[tenantQuotaMetricKey]*atomic.Int64
@@ -174,6 +183,7 @@ func NewRegistry() *Registry {
 
 var _ ports.MetricsRecorder = (*Registry)(nil)
 var _ ports.WillOutcomeRecorder = (*Registry)(nil)
+var _ ports.AuditOutcomeRecorder = (*Registry)(nil)
 var _ ports.ListenerAdmissionRecorder = (*Registry)(nil)
 
 func (r *Registry) getCounter(m map[string]*atomic.Int64, key string) *atomic.Int64 {
@@ -335,6 +345,21 @@ func (r *Registry) WillOutcome(reason string) {
 			return
 		}
 	}
+}
+
+// AuditOutcome increments only a registered publication outcome.
+func (r *Registry) AuditOutcome(outcome string) {
+	for index, known := range auditOutcomes {
+		if outcome == known {
+			r.auditOutcomeCounts[index].Add(1)
+			return
+		}
+	}
+}
+
+// SetAuditPublisherReady reports whether the node-local publisher can append events.
+func (r *Registry) SetAuditPublisherReady(ready bool) {
+	r.auditPublisherReady.Store(ready)
 }
 
 // ListenerAdmissionRejected increments only a known transport and admission reason.
@@ -536,6 +561,18 @@ func (r *Registry) Render(isOpenMetrics bool) []byte {
 	for index, reason := range willOutcomeReasons {
 		fmt.Fprintf(&buf, "narumq_will_outcomes_total{reason=\"%s\"} %d\n", reason, r.willOutcomes[index].Load())
 	}
+	fmt.Fprintf(&buf, "# HELP narumq_audit_events_total Management audit events by publication outcome.\n")
+	fmt.Fprintf(&buf, "# TYPE narumq_audit_events_total counter\n")
+	for index, outcome := range auditOutcomes {
+		fmt.Fprintf(&buf, "narumq_audit_events_total{outcome=\"%s\"} %d\n", outcome, r.auditOutcomeCounts[index].Load())
+	}
+	fmt.Fprintf(&buf, "# HELP narumq_audit_publisher_ready Whether the node-local audit publisher can append events.\n")
+	fmt.Fprintf(&buf, "# TYPE narumq_audit_publisher_ready gauge\n")
+	ready := int64(0)
+	if r.auditPublisherReady.Load() {
+		ready = 1
+	}
+	fmt.Fprintf(&buf, "narumq_audit_publisher_ready %d\n", ready)
 	fmt.Fprintf(&buf, "# HELP narumq_mqtt_listener_admission_rejected_total MQTT listener sockets closed by admission limits before CONNECT.\n")
 	fmt.Fprintf(&buf, "# TYPE narumq_mqtt_listener_admission_rejected_total counter\n")
 	for transportIndex, transport := range listenerAdmissionTransports {

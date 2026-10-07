@@ -77,7 +77,7 @@ Prefix나 Postfix를 붙이는 것 자체가 목적은 아니다. 이름의 각 
 | `NLB` | NLB target·health lifecycle에 특화 | `NLBTargetController` |
 | `EBS` | EBS snapshot·volume API에 특화 | `EBSSnapshotRepository` |
 | `Default` | 같은 port에 여러 구현이 있고 제품 기본 구현을 명시해야 함 | `DefaultDrainService` |
-| `WAL`, `Memory`, `Static` | 저장 방식이나 data source가 구현 차이를 결정 | `WALSessionRepository`, `MemorySessionRepository` |
+| `WAL`, `Memory`, `Static`, `File` | 저장 방식이나 data source가 구현 차이를 결정 | `WALSessionRepository`, `MemorySessionRepository`, `FileAuditPublisher` |
 | `Raft`, `TCP`, `HTTP`, `JWKS`, `MTLS` | Protocol이나 mechanism이 구현 성격을 결정 | `RaftReplicationService`, `TCPPeerTransport` |
 | `Cached`, `Retrying` | 다른 구현을 감싸는 명시적 decorator | `CachedAuthenticationProvider` |
 | `Fake`, `Stub`, `Spy` | Test double의 동작 특성을 구분 | `FakeClock`, `StubSessionRepository`, `SpyAuditPublisher` |

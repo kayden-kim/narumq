@@ -72,6 +72,7 @@ type drainPeerTLSConfig struct {
 type drainManagementConfig struct {
 	ListenAddress         string `json:"listenAddress"`
 	ClusterAdminTokenFile string `json:"clusterAdminTokenFile"`
+	AuditDirectory        string `json:"auditDirectory"`
 }
 
 type drainMQTTConfig struct {
@@ -232,7 +233,7 @@ func createDrainFixture() (*drainFixture, error) {
 			StateSchemaMajor: 1, StateSchemaMinor: 0, Role: "bootstrap",
 			BootstrapMembers: members, SeedAddresses: []string{},
 			PeerTLS:    drainPeerTLSConfig{CertFile: "/config/node.pem", KeyFile: "/config/node-key.pem", CAFile: "/config/ca.pem"},
-			Management: drainManagementConfig{ListenAddress: "0.0.0.0:8080", ClusterAdminTokenFile: "/config/admin.token"},
+			Management: drainManagementConfig{ListenAddress: "0.0.0.0:8080", ClusterAdminTokenFile: "/config/admin.token", AuditDirectory: "/var/lib/narumq/audit"},
 			MQTT:       drainMQTTConfig{TCPListenAddress: "0.0.0.0:1883", TLSListenAddress: "", SecurityConfigFile: "/config/mqtt-security.json"},
 		}
 		configJSON, err := json.Marshal(config)

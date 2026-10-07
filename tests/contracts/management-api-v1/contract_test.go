@@ -25,6 +25,7 @@ import (
 	managementhttp "narumq/internal/adapters/http/management"
 
 	adaptersmetrics "narumq/internal/adapters/metrics"
+	"narumq/internal/application/audit"
 	appmembership "narumq/internal/application/membership"
 	"narumq/internal/domain/connrebalance"
 	"narumq/internal/domain/nodedrain"
@@ -389,7 +390,7 @@ func clusterManagementContractHandler() http.Handler {
 
 func clusterManagementContractHandlerWithRebalance(rebalanceService managementhttp.ConnectionRebalanceUseCase) http.Handler {
 	return managementhttp.NewRouterWithMembership(
-		managementhttp.ServerConfig{},
+		managementhttp.ServerConfig{ClusterID: "contract-cluster"},
 		contractStateProvider{},
 		contractStateProvider{},
 		adaptersmetrics.NewRegistry(),
@@ -397,8 +398,14 @@ func clusterManagementContractHandlerWithRebalance(rebalanceService managementht
 		contractDrainService{},
 		rebalanceService,
 		contractBackupProvider{},
+		contractAuditUseCase{},
 	)
 }
+
+type contractAuditUseCase struct{}
+
+func (contractAuditUseCase) AdmitMutation() error                { return nil }
+func (contractAuditUseCase) Record(audit.RecordCommandDTO) error { return nil }
 
 type contractBackupProvider struct{}
 

@@ -74,6 +74,7 @@ func (handler *membershipHandler) StageMember(w http.ResponseWriter, r *http.Req
 		writeInvalidRequest(w, r, errors.New("all member identity fields are required"))
 		return
 	}
+	setAuditTarget(r, "cluster_member", strconv.FormatUint(*request.MemberID, 10))
 	if len(*request.CertificateSHA256) != 64 || !lowerHex(*request.CertificateSHA256) {
 		writeInvalidRequest(w, r, errors.New("certificateSha256 must be 64 lowercase hexadecimal characters"))
 		return

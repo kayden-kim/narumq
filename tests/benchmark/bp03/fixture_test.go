@@ -166,7 +166,7 @@ func TestNewBP03FixtureWritesContractAndCleansUp(t *testing.T) {
 				[]string{"memberId", "address", "dnsSan", "certificateSha256"})
 		}
 		assertJSONKeys(t, "peerTLS", nested.PeerTLS, []string{"certFile", "keyFile", "caFile"})
-		assertJSONKeys(t, "management", nested.Management, []string{"listenAddress", "clusterAdminTokenFile"})
+		assertJSONKeys(t, "management", nested.Management, []string{"listenAddress", "clusterAdminTokenFile", "auditDirectory"})
 		assertJSONKeys(t, "mqtt", nested.MQTT, []string{"tcpListenAddress", "tlsListenAddress", "securityConfigFile"})
 		var cluster bp03ClusterConfig
 		if err := json.Unmarshal(mustMarshal(t, config), &cluster); err != nil {
@@ -186,7 +186,7 @@ func TestNewBP03FixtureWritesContractAndCleansUp(t *testing.T) {
 			t.Errorf("node %d members/seeds = %d/%v", nodeNumber, len(cluster.BootstrapMembers), cluster.SeedAddresses)
 		}
 		if cluster.PeerTLS != (bp03PeerTLSConfig{CertFile: "/config/node.pem", KeyFile: "/config/node-key.pem", CAFile: "/config/ca.pem"}) ||
-			cluster.Management != (bp03ManagementConfig{ListenAddress: "0.0.0.0:8080", ClusterAdminTokenFile: "/config/admin.token"}) ||
+			cluster.Management != (bp03ManagementConfig{ListenAddress: "0.0.0.0:8080", ClusterAdminTokenFile: "/config/admin.token", AuditDirectory: "/var/lib/narumq/audit"}) ||
 			cluster.MQTT != (bp03MQTTConfig{TCPListenAddress: "0.0.0.0:1883", SecurityConfigFile: "/config/mqtt-security.json"}) {
 			t.Errorf("node %d TLS/management/MQTT config mismatch", nodeNumber)
 		}

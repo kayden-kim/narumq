@@ -161,7 +161,7 @@ No-leader/quorum mutation은 어떤 stage/configuration entry도 남기지 않�
 | `bootstrapMembers` | array of member objects | exactly 3 unique identities for bootstrap; empty for joiner |
 | `seedAddresses` | array of strings | empty for bootstrap; `1..16` unique canonical DNS `host:port` addresses for joiner; IP literals are rejected so TLS SNI is bound to a DNS name |
 | `peerTLS` | object | required `certFile`, `keyFile`, `caFile`; cert/key match and CA must verify all peers |
-| `management` | object | required `listenAddress`, `clusterAdminTokenFile`; token is opaque secret input |
+| `management` | object | required `listenAddress`, `clusterAdminTokenFile`, `auditDirectory`; token is opaque secret input; `auditDirectory` is a non-empty path, must not equal or contain/be contained by `directory`, and must differ on every node |
 | `mqtt` | object | required `tcpListenAddress`, `tlsListenAddress`, `securityConfigFile`; empty address disables that listener. 선택 정수 필드 `tcpMaxConnections`, `tcpConnectionRate`, `tlsMaxConnections`, `tlsConnectionRate`는 0~1000000이며 생략 = 0 = 제한 없음. 해당 listener 주소가 비어 있으면 그 listener의 두 값은 0이어야 한다. |
 | `replication` | object (optional) | omitted = factor 3, writeQuorum 2; when present requires exactly {factor:int, writeQuorum:int} and only 3/2 is accepted |
 
@@ -189,7 +189,7 @@ Bootstrap example (`<64 lowercase hex>` is a configuration value supplied from t
   ],
   "seedAddresses": [],
   "peerTLS": {"certFile": "certs/node1.crt", "keyFile": "certs/node1.key", "caFile": "certs/ca.crt"},
-  "management": {"listenAddress": "127.0.0.1:18080", "clusterAdminTokenFile": "secrets/cluster-admin.token"},
+  "management": {"listenAddress": "127.0.0.1:18080", "clusterAdminTokenFile": "secrets/cluster-admin.token", "auditDirectory": "data/node1-audit"},
   "mqtt": {"tcpListenAddress": "", "tlsListenAddress": "127.0.0.1:1883", "securityConfigFile": "security.json"}
 }
 ```

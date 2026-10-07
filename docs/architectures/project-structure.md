@@ -18,13 +18,14 @@
 
 | 관심사 | 시작점과 주요 위치 | 책임·경계 |
 | --- | --- | --- |
-| 프로세스 시작 | `cmd/narumq/main.go`: `main` → `run` → `runWithContext` | 설정을 확인하고 구성요소를 조립한다. `-cluster-config`, `-cluster-restore`, `-raft-peer-config` 및 standalone 설정에 따라 모드를 선택한다. |
+| 프로세스 시작 | `cmd/narumq/main.go`: `main` → `run` → `runWithContext` | `-cluster-config`, `-cluster-restore`, `-raft-peer-config`, `-audit-verify`와 standalone 설정을 구분한다. `-audit-verify`는 저장 로그를 읽기 전용으로 검사한다. |
 | Standalone ingress | `runWithContext` → `serveServices`; `internal/adapters/tcp/server.go` | MQTT TCP/TLS와 management HTTP listener를 시작하고 종료한다. HTTP API 형식은 [management API contract](../contracts/management-api-v1.md)에 둔다. |
 | MQTT CONNECT | `tcp.Server.Serve` → `readLoop`/`activate` → `internal/application/connect/connect.go` `UseCase.ConnectContext` | 인증·tenant binding·session admission·lifecycle 변경을 조정한다. Cluster mode에서는 ownership commit과 연결 bind 뒤 성공 CONNACK을 보낸다. 연결 cleanup은 획득한 epoch를 확인하며, stale epoch면 부작용을 막는다. |
 | MQTT packet과 한도 | `internal/adapters/tcp/{frame_reader,server_phases,server_submission}.go`; `internal/application/{publish,subscribe}` | TCP 경계는 frame·packet을 검증하고 해당 use case로 전달한다. Receive Maximum, Maximum Packet Size, listener·tenant 한도와 오류 경계는 [MQTT protocol spec](../specs/mqtt-protocol-and-session.md)을 따른다. |
-| Dynamic cluster 시작 | `runWithContext` → `cmd/narumq/cluster_runtime.go` `runClusterMode` | Peer transport, Raft, application projection과 runtime controller를 조립한다. 주요 bootstrap·admission·quota·release 경로는 아래 Cluster 경로 표를 본다. |
+| Dynamic cluster 시작 | `runWithContext` → `cmd/narumq/cluster_config.go` → `cluster_runtime.go` `runClusterMode` | 필수 `management.auditDirectory`가 Raft `directory`와 겹치지 않는지 검증한다. Peer transport, Raft, application projection, runtime controller와 node-local audit publisher를 조립한다. |
 | Backup restore / peer-only | `cluster_backup_restore.go` `restoreClusterBackup`; `raft_peer_config.go` `runRaftPeerOnly` | 각각 archive restore와 MQTT listener가 없는 fixed-voter peer 경로를 시작한다. |
-| Management API | `cmd/narumq` wiring → `internal/adapters/http/management/server.go` `NewServer` | HTTP 요청을 application management 경계로 전달한다. API endpoint와 wire response는 contract가 기준이다. |
+| Management API | `cmd/narumq` wiring → `internal/adapters/http/management/server.go` `NewServerWithMembership` | HTTP 요청을 application management 경계로 전달한다. API endpoint와 wire response는 contract가 기준이다. |
+| Management audit | `http/management/audit.go` → `internal/application/audit` → `internal/application/ports/audit` → `internal/adapters/auditlog` | Dynamic cluster mutation을 기록 가능할 때만 실행한다. Node-local hash chain과 read-only verifier는 `auditlog`이 소유한다. |
 | Storage fault evidence | `tests/chaos/cluster-storage-v1/main.go` `runCLI` → `runner.go` `Run` | FUSE fault simulation 및 별도 local ext4 profile을 실행한다. 이는 production EBS 또는 물리 전원 손실의 증거가 아니다. |
 
 ### Cluster write와 복구의 코드 방향
@@ -124,12 +125,13 @@ flowchart LR
 | Domain lifecycle | `internal/domain/release`, `nodedrain`, `connrebalance` | Release feature profile, drain/rebalance 전이·barrier 정책 |
 | Application ingress | `internal/application/connect`, `publish`, `subscribe` | CONNECT, PUBLISH/Will, SUBSCRIBE/UNSUBSCRIBE orchestration과 commit 경계 |
 | Application state | `internal/application/takeover`, `membership`, `tenantlimit` | Session takeover/QoS state, replicated membership·metadata·receipt 적용, tenant admission policy |
-| Application ports | `internal/application/ports/{authentication,metrics}` 및 use-case-owned ports | Application이 요구하는 외부 capability 경계 |
-| Network/security adapters | `internal/adapters/tcp`, `tls`, `authentication`, `http/management` | Bounded MQTT ingress, TLS/mTLS, JWT/JWKS, management HTTP |
+| Application audit | `internal/application/audit`, `internal/application/ports/audit` | Management audit event를 검증하고 durable publisher port로 전달 |
+| Application ports | `internal/application/ports/{authentication,metrics,audit}` 및 use-case-owned ports | Application이 요구하는 외부 capability 경계 |
+| Network/security adapters | `internal/adapters/tcp`, `tls`, `authentication`, `http/management` | Bounded MQTT ingress, TLS/mTLS, JWT/JWKS, management HTTP와 fail-closed audit boundary |
 | State adapters | `internal/adapters/memory/{deliveryqueue,retained,sessionstore}`, `internal/adapters/raft` | Process-local queue·retained·session store 및 Raft/WAL/snapshot persistence |
+| Audit adapter | `internal/adapters/auditlog` | Node-local JSONL append, fsync, rotation, recovery와 hash-chain verification |
 | Raft records | `internal/adapters/raft/records` | Versioned replicated-state/backup protobuf binding, deterministic encoding과 validation |
-| Observability | `internal/adapters/clock`, `metrics`, `runtimemetrics` | Clock 제공과 process/runtime metric 기록 |
-
+| Observability | `internal/adapters/clock`, `metrics`, `runtimemetrics` | Clock 제공, process/runtime metric과 audit outcome metric 기록 |
 Application port는 사용하는 application package가 소유한다. 외부 library와 wire type은 adapter에서 domain value나 application DTO로 바꾼다. Domain과 application은 외부 I/O, framework와 provider SDK에 의존하지 않는다. `internal/adapters/raft`의 transport/persistence 책임과 replicated record 의미는 분리되어 있다. 세부 계층 책임은 [Broker core architecture](broker-core.md)를 따른다.
 
 ## 주요 port capability와 adapter map
@@ -143,6 +145,7 @@ Port는 capability를 요구하는 application package가 소유한다. Composit
 | Delivery queue / retained | `internal/application/ports/{deliveryqueue,retained}` | `internal/adapters/memory/{deliveryqueue,retained}` |
 | Metrics | `internal/application/ports/metrics` | `internal/adapters/metrics` |
 | Session lifecycle | `internal/application/connect`의 repository boundary | `internal/adapters/memory/sessionstore` |
+| Audit publisher | `internal/application/ports/audit.AuditPublisher` | `internal/adapters/auditlog.FileAuditPublisher` |
 
 `internal/adapters/raft`와 `internal/adapters/tcp`의 Raft runtime·peer transport는 composition root가 직접 조립한다. Cluster replication application port나 `internal/adapters/storage` WAL session repository는 이 표에서 현재 구현으로 간주하지 않는다.
 

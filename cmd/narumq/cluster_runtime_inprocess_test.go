@@ -68,6 +68,7 @@ func TestRunClusterModeInProcess(t *testing.T) {
 			Management: clusterManagement{
 				ListenAddress:         managementAddresses[index],
 				ClusterAdminTokenFile: filepath.Join(directory, "admin-token"),
+				AuditDirectory:        filepath.Join(directory, fmt.Sprintf("node%d-audit", nodeID)),
 			},
 			MQTT: clusterMQTT{SecurityConfigFile: filepath.Join(directory, "security.json")},
 		}
@@ -237,6 +238,7 @@ func TestRunClusterModeInProcess(t *testing.T) {
 		Management: clusterManagement{
 			ListenAddress:         joinerManagementAddress,
 			ClusterAdminTokenFile: tokenPath,
+			AuditDirectory:        filepath.Join(directory, "node4-audit"),
 		},
 		MQTT: clusterMQTT{SecurityConfigFile: securityPath},
 	}

@@ -259,6 +259,7 @@ func TestDynamicClusterDurableQoSBackupRestoreProcessAcceptance(t *testing.T) {
 			t.Fatalf("decode node config: %v", err)
 		}
 		config.Directory = filepath.Join(fixture.tempDir, fmt.Sprintf("durable-restored-data-%d", i+1))
+		config.Management.AuditDirectory = filepath.Join(fixture.tempDir, fmt.Sprintf("durable-restored-audit-%d", i+1))
 		configs[i] = filepath.Join(fixture.tempDir, fmt.Sprintf("durable-restored-%d.json", i+1))
 		clusterMembershipProcessWriteJSON(t, configs[i], config)
 	}

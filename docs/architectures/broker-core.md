@@ -213,17 +213,17 @@ Port는 구현 adapter 옆이 아니라 이를 사용하는 application 쪽이 �
 | Clock | deterministic expiry 입력 | `application/ports/clock.Clock` ← `adapters/clock.SystemClock` |
 | Replication | Command proposal, commit receipt와 membership 관찰 | 고정 voter peer-only 경로: `internal/adapters/raft` + `internal/adapters/tcp.TCPPeerTransport`; full application port는 후속 |
 | Live QoS 0 forwarding | Connected remote-owned delivery를 owner node로 bounded at-most-once 전달 | `application/publish.RemoteForwarder` ← `cmd/narumq.clusterRuntime` → `internal/adapters/tcp.DynamicTCPPeerTransport` |
-| Metric·audit | Cardinality가 제한된 관측값과 비밀 없는 event 기록 | 후속 observability adapter |
+| Metric·audit | label 수를 제한한 계측값과 node-local 관리 event | `application/audit` → `ports/audit.AuditPublisher` ← `adapters/auditlog.FileAuditPublisher`; `http/management/audit.go`는 기록 준비를 확인한 뒤 mutation을 실행하며, `adapters/metrics.Registry`는 결과를 기록한다. |
 | Node discovery·platform | Member 후보와 workload lifecycle 관찰 | Kubernetes adapter |
 | Clock·random | Expiry와 jitter를 결정적으로 제공 | Runtime·test adapter |
 현재 source에 구현된 `connect.SessionRepository`, `ports/authentication.AuthenticationProvider`,
 `ports/authentication.ClientCertificateAuthenticationProvider`, `ports/clock.Clock`,
-`ports/deliveryqueue.Queue`와 `ports/retained.Repository`의 method signature는 해당
-package가 소유한다. Domain과 application boundary는 raw client/topic/filter key와
-raw certificate를 저장하지 않고 typed value, certificate DTO와 principal snapshot을
-운반한다. delivery queue의 queued·in-flight state는 persistent session이 살아 있는 동안
-process-local boundary가 소유하며, process restart·durable storage·replication·metrics·audit는
-후속 capability 범위로 유지한다.
+`ports/deliveryqueue.Queue`, `ports/retained.Repository`와 `ports/audit.AuditPublisher`의 method
+signature는 해당 package가 소유한다. Domain과 application boundary는 raw client/topic/filter key와
+raw certificate를 저장하지 않고 typed value, certificate DTO와 principal snapshot을 운반한다.
+Delivery queue의 queued·in-flight state는 persistent session이 살아 있는 동안 process-local
+boundary가 소유한다. Process restart·durable delivery·replication은 별도 후속 capability다.
+Management API 감사는 `application/audit`와 `adapters/auditlog`가 제공하는 node-local 경로다.
 
 ## Delivery state boundary
 

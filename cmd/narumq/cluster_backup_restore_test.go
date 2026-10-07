@@ -144,7 +144,9 @@ func TestClusterRestoreSeedRejectsProtocolAndSchemaMismatch(t *testing.T) {
 
 func TestClusterRestoreRejectsInvalidArchiveBeforeTouchingTarget(t *testing.T) {
 	config := validBootstrapClusterConfig()
-	config.Directory = filepath.Join(t.TempDir(), "restore-target")
+	root := t.TempDir()
+	config.Directory = filepath.Join(root, "restore-target")
+	config.Management.AuditDirectory = filepath.Join(root, "restore-audit")
 	archivePath := filepath.Join(t.TempDir(), "invalid.nmqbak")
 	if err := os.WriteFile(archivePath, []byte("not a backup"), 0o600); err != nil {
 		t.Fatal(err)
@@ -172,7 +174,9 @@ func TestClusterRestoreRejectsInvalidArchiveBeforeTouchingTarget(t *testing.T) {
 
 func TestClusterRestoreCLISeedsAndExits(t *testing.T) {
 	config := validBootstrapClusterConfig()
-	config.Directory = filepath.Join(t.TempDir(), "node1")
+	root := t.TempDir()
+	config.Directory = filepath.Join(root, "node1")
+	config.Management.AuditDirectory = filepath.Join(root, "node1-audit")
 	archiveBytes := clusterRestoreTestArchive(t, config, nil)
 	archivePath := filepath.Join(t.TempDir(), "backup.nmqbak")
 	if err := os.WriteFile(archivePath, archiveBytes, 0o600); err != nil {

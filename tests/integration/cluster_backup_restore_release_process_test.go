@@ -195,6 +195,7 @@ func clusterBackupReleaseRestoreConfigs(t *testing.T, fixture *clusterMembership
 			t.Fatal(err)
 		}
 		config.Directory = filepath.Join(fixture.tempDir, fmt.Sprintf("%s-node-%d-data", label, index+1))
+		config.Management.AuditDirectory = filepath.Join(fixture.tempDir, fmt.Sprintf("%s-node-%d-audit", label, index+1))
 		paths[index] = filepath.Join(fixture.tempDir, fmt.Sprintf("%s-node-%d.json", label, index+1))
 		clusterMembershipProcessWriteJSON(t, paths[index], config)
 	}
@@ -202,6 +203,10 @@ func clusterBackupReleaseRestoreConfigs(t *testing.T, fixture *clusterMembership
 }
 
 func clusterBackupReleaseRestore(ctx context.Context, binary, repoRoot, configPath, archivePath string) ([]byte, error) {
+	configPath, err := clusterProcessConfigForBinary(binary, configPath)
+	if err != nil {
+		return nil, err
+	}
 	command := exec.CommandContext(ctx, binary, "-cluster-config", configPath, "-cluster-restore", archivePath)
 	command.Dir = repoRoot
 	return command.CombinedOutput()

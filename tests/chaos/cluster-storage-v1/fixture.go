@@ -78,6 +78,7 @@ type chaosPeerTLSConfig struct {
 type chaosManagementConfig struct {
 	ListenAddress         string `json:"listenAddress"`
 	ClusterAdminTokenFile string `json:"clusterAdminTokenFile"`
+	AuditDirectory        string `json:"auditDirectory"`
 }
 
 type chaosMQTTConfig struct {
@@ -246,7 +247,7 @@ func createChaosFixture() (*chaosFixture, error) {
 			StateSchemaMajor: 1, StateSchemaMinor: 0, Role: "bootstrap",
 			BootstrapMembers: members, SeedAddresses: []string{},
 			PeerTLS:             chaosPeerTLSConfig{CertFile: "/config/node.pem", KeyFile: "/config/node-key.pem", CAFile: "/config/ca.pem"},
-			Management:          chaosManagementConfig{ListenAddress: "0.0.0.0:8080", ClusterAdminTokenFile: "/config/admin.token"},
+			Management:          chaosManagementConfig{ListenAddress: "0.0.0.0:8080", ClusterAdminTokenFile: "/config/admin.token", AuditDirectory: "/var/lib/narumq/audit"},
 			MQTT:                chaosMQTTConfig{TCPListenAddress: "0.0.0.0:1883", TLSListenAddress: "", SecurityConfigFile: "/config/mqtt-security.json"},
 			PublishBackpressure: &chaosPublishBackpressureConfig{MinFreeBytes: 8 << 20, MaxCommitLagMillis: 1000},
 		}

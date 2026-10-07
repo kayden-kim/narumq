@@ -158,6 +158,7 @@ func TestClusterBackupRestoreProcessCrashAndResync(t *testing.T) {
 			t.Fatalf("decode bootstrap config %d: %v", memberID, err)
 		}
 		config.Directory = filepath.Join(fixture.tempDir, fmt.Sprintf("restored-node-%d-data", memberID))
+		config.Management.AuditDirectory = filepath.Join(fixture.tempDir, fmt.Sprintf("restored-node-%d-audit", memberID))
 		restoredConfigPaths[index] = filepath.Join(fixture.tempDir, fmt.Sprintf("restored-node-%d.json", memberID))
 		clusterMembershipProcessWriteJSON(t, restoredConfigPaths[index], config)
 	}

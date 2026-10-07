@@ -8,6 +8,7 @@ import (
 	"io"
 	"net"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -132,6 +133,7 @@ type clusterPeerTLS struct {
 type clusterManagement struct {
 	ListenAddress         string `json:"listenAddress"`
 	ClusterAdminTokenFile string `json:"clusterAdminTokenFile"`
+	AuditDirectory        string `json:"auditDirectory"`
 }
 
 type clusterMQTT struct {
@@ -282,7 +284,7 @@ func expectClusterKeys(path string, seen map[string]struct{}) error {
 	case "peerTLS":
 		required = []string{"certFile", "keyFile", "caFile"}
 	case "management":
-		required = []string{"listenAddress", "clusterAdminTokenFile"}
+		required = []string{"listenAddress", "clusterAdminTokenFile", "auditDirectory"}
 	case "mqtt":
 		required = []string{"tcpListenAddress", "tlsListenAddress", "securityConfigFile"}
 	case "replication":
@@ -347,6 +349,13 @@ func validateClusterConfig(config clusterConfigFile) error {
 	}
 	if !validHostPort(config.Management.ListenAddress, true) || !validRequiredPath(config.Management.ClusterAdminTokenFile) {
 		return errors.New("management listenAddress and clusterAdminTokenFile are required")
+	}
+	if !validRequiredPath(config.Management.AuditDirectory) {
+		return errors.New("management auditDirectory is required")
+	}
+	overlaps, err := clusterPathsOverlap(config.Directory, config.Management.AuditDirectory)
+	if err != nil || overlaps {
+		return errors.New("management auditDirectory must not overlap directory")
 	}
 	if (config.MQTT.TCPListenAddress != "" && !validHostPort(config.MQTT.TCPListenAddress, true)) || (config.MQTT.TLSListenAddress != "" && !validHostPort(config.MQTT.TLSListenAddress, true)) {
 		return errors.New("mqtt listener addresses must be empty or valid host:port values")
@@ -444,6 +453,32 @@ func validClusterString(value string, min, max int) bool {
 
 func validRequiredPath(value string) bool {
 	return strings.TrimSpace(value) != "" && strings.TrimSpace(value) == value
+}
+
+func clusterPathsOverlap(a, b string) (bool, error) {
+	absA, err := filepath.Abs(a)
+	if err != nil {
+		return false, err
+	}
+	absB, err := filepath.Abs(b)
+	if err != nil {
+		return false, err
+	}
+	if !strings.EqualFold(filepath.VolumeName(absA), filepath.VolumeName(absB)) {
+		return false, nil
+	}
+	relative, err := filepath.Rel(absA, absB)
+	if err != nil {
+		return false, err
+	}
+	if relative == "." || (relative != ".." && !strings.HasPrefix(relative, ".."+string(filepath.Separator))) {
+		return true, nil
+	}
+	relative, err = filepath.Rel(absB, absA)
+	if err != nil {
+		return false, err
+	}
+	return relative == "." || (relative != ".." && !strings.HasPrefix(relative, ".."+string(filepath.Separator))), nil
 }
 
 func validFingerprint(value string) bool {

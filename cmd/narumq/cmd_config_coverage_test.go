@@ -929,6 +929,7 @@ func TestRunWithContextClusterConfigLoading(t *testing.T) {
 
 	config := validBootstrapClusterConfig()
 	config.Directory = filepath.Join(directory, "data")
+	config.Management.AuditDirectory = filepath.Join(directory, "audit")
 	config.PeerTLS = clusterPeerTLS{
 		CertFile: filepath.Join(directory, "missing.crt"),
 		KeyFile:  filepath.Join(directory, "missing.key"),

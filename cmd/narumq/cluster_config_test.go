@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"runtime"
 	"slices"
 	"strings"
 	"testing"
@@ -23,7 +24,7 @@ func validBootstrapClusterConfig() clusterConfigFile {
 		},
 		SeedAddresses: []string{},
 		PeerTLS:       clusterPeerTLS{CertFile: "certs/node1.crt", KeyFile: "certs/node1.key", CAFile: "certs/ca.crt"},
-		Management:    clusterManagement{ListenAddress: "127.0.0.1:18080", ClusterAdminTokenFile: "secrets/admin.token"},
+		Management:    clusterManagement{ListenAddress: "127.0.0.1:18080", ClusterAdminTokenFile: "secrets/admin.token", AuditDirectory: "data/node1-audit"},
 		MQTT:          clusterMQTT{TCPListenAddress: "", TLSListenAddress: "127.0.0.1:1883", SecurityConfigFile: "security.json"},
 	}
 }
@@ -151,6 +152,10 @@ func TestParseClusterConfigRejectsInvalidInputs(t *testing.T) {
 			c.BootstrapMembers = []clusterBootstrapMember{}
 			c.SeedAddresses = []string{"127.0.0.1:19001"}
 		}},
+		{name: "blank audit directory", edit: func(c *clusterConfigFile) { c.Management.AuditDirectory = " " }},
+		{name: "audit directory equals data directory", edit: func(c *clusterConfigFile) { c.Management.AuditDirectory = c.Directory }},
+		{name: "audit directory nested in data directory", edit: func(c *clusterConfigFile) { c.Management.AuditDirectory = c.Directory + "/audit" }},
+		{name: "audit directory contains data directory", edit: func(c *clusterConfigFile) { c.Management.AuditDirectory = "data" }},
 		{name: "blank token path", edit: func(c *clusterConfigFile) { c.Management.ClusterAdminTokenFile = " " }},
 		{name: "tenant quota version zero", edit: func(c *clusterConfigFile) {
 			c.TenantQuotas = validTenantQuotaProfileConfig()
@@ -207,6 +212,7 @@ func TestParseClusterConfigRejectsDuplicateUnknownMissingAndTrailingJSON(t *test
 		{name: "unknown field", json: strings.TrimSuffix(valid, "}") + `,"unknown":true}`},
 		{name: "releaseVersion from JSON", json: strings.TrimSuffix(valid, "}") + `,"releaseVersion":"1.0.0"}`},
 		{name: "missing nested key", json: strings.Replace(valid, `,"keyFile":"certs/node1.key"`, "", 1)},
+		{name: "missing audit directory", json: strings.Replace(valid, `,"auditDirectory":"data/node1-audit"`, "", 1)},
 		{name: "null array", json: strings.Replace(valid, `"seedAddresses":[]`, `"seedAddresses":null`, 1)},
 		{name: "null object", json: strings.Replace(valid, `"peerTLS":{`, `"peerTLS":null`, 1)},
 		{name: "trailing value", json: valid + ` {}`},
@@ -241,6 +247,28 @@ func TestParseClusterConfigRejectsMalformedTenantQuotaJSON(t *testing.T) {
 				t.Fatal("parseClusterConfig accepted malformed tenant quota JSON")
 			}
 		})
+	}
+}
+
+func TestParseClusterConfigAllowsSiblingAuditDirectory(t *testing.T) {
+	config := validBootstrapClusterConfig()
+	config.Management.AuditDirectory = "data/node1-audit"
+	data := mustMarshalClusterConfig(t, config)
+	if _, err := parseClusterConfig(strings.NewReader(string(data))); err != nil {
+		t.Fatalf("parseClusterConfig rejected sibling audit directory: %v", err)
+	}
+}
+
+func TestClusterPathsOverlapAllowsDifferentWindowsVolumes(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("Windows volume paths are only distinct on Windows")
+	}
+	overlap, err := clusterPathsOverlap(`C:\narumq\data`, `D:\narumq\audit`)
+	if err != nil {
+		t.Fatalf("clusterPathsOverlap() error = %v, want different volumes accepted as disjoint", err)
+	}
+	if overlap {
+		t.Fatal("clusterPathsOverlap() reported different Windows volumes as overlapping")
 	}
 }
 
