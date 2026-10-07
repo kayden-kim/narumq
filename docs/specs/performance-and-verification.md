@@ -656,7 +656,7 @@ go run ./tools/verify local
 go run ./tools/verify ci --base <merge-base>
 ```
 
-두 명령은 gofmt 사전 점검과 atomic coverage를 포함한 전체 `go test ./...`를 한 번 실행한다. Local parallel limit은 8, CI는 2다. 독립 명령은 병렬 실행하며 하나가 실패하면 나머지를 취소한다. CI는 `internal/domain/delivery`, `internal/domain/nodedrain`, `internal/domain/session`에 각각 mutation을 추가한다. 정책은 `workers=1`, `test-cpu=1`, efficacy 80%, mutant coverage 80%이며 source/file/mutant exclusion은 없다. 한 package 결과로 다른 package 실패를 상쇄하지 않는다.
+두 명령은 gofmt 사전 점검 뒤 `.artifacts/verification/branch/module`의 계측한 사본에서 atomic coverage를 포함한 전체 `go test ./...`를 한 번 실행한다. Local parallel limit은 8, CI는 2다. 독립 명령은 병렬 실행하며 하나가 실패하면 나머지를 취소한다. CI는 `internal/domain/delivery`, `internal/domain/nodedrain`, `internal/domain/session`에 각각 mutation을 추가한다. 정책은 `workers=1`, `test-cpu=1`, efficacy 80%, mutant coverage 80%이며 source/file/mutant exclusion은 없다. 한 package 결과로 다른 package 실패를 상쇄하지 않는다.
 
 ```text
 go tool gremlins unleash --config=tests/verification/gremlins.yaml --output=.artifacts/verification/mutation-delivery.json internal/domain/delivery
@@ -719,15 +719,15 @@ go run ./tests/chaos/cluster-storage-v1 \
 
 - 전체 production code 목표: line ≥85%, function ≥90%, branch 정책 ≥85%.
 - 핵심 domain 9개(`mqtt`, `session`, `routing`, `delivery`, `tenancy`, `security`, `nodedrain`, `release`, `connrebalance`)는 line/function ≥95%, branch ≥90%다. `application/membership`은 핵심 domain이 아니며 전체 기준을 따른다. 정책은 `tests/verification/coverage-policy.json`이 source of truth다.
-- CI의 변경 production line line/function diff coverage는 ≥95%다. Generated exclusion은 `cmd/`·`internal/` 아래의 `.pb.go`와 표준 generated marker에만 적용한다. 알 수 없는 coverage file은 실패다.
+- CI의 변경 production code는 line/function/branch diff coverage ≥95%를 충족해야 한다. Generated exclusion은 `cmd/`·`internal/` 아래의 `.pb.go`와 표준 generated marker에만 적용한다. 알 수 없는 coverage file은 실패다.
 - `delivery`, `session`, `nodedrain`은 mutation efficacy와 mutant coverage가 각각 ≥80%여야 한다. 동시성 코드는 race detector 또는 동등한 검증을 통과한다.
 - Domain 규칙/state machine은 정상·오류·경계·전이 assertion coverage 100%를 기본으로 한다. Consensus·drain·infrastructure 검증은 integration/E2E/chaos에 연결한다.
 
 `verify local`과 `verify ci`는 gofmt, vet, traceability, architecture, package/integration coverage, production race, fuzz 5종과 coverage policy를 실행한다. Local parallelism은 8, CI는 2이며 CI는 여기에 mutation gate 3개를 더한다. CI의 `--base <merge-base>`는 coverage diff 계산에만 쓴다. Atomic profile은 `.artifacts/verification/coverage.out`, mutation 결과는 `.artifacts/verification/mutation-<package>.json`이다. Integration은 build tag별 일반·failpoint broker를 임시 경로에 한 번씩 build하고 child process 정리 뒤 제거한다. Race 범위는 `./cmd/... ./internal/...`이며 별도 build되는 integration child broker는 race-instrumented가 아니다.
 
-Coverage는 Go atomic coverprofile의 executable block을 집계한다. 승인된 branch instrumentation tool이 고정되지 않아 branch는 사유와 함께 `not_evaluated`이며 line coverage로 대체하지 않는다. 실행 가능한 변경 line이 없으면 diff coverage는 100%다. Ratchet은 자동 측정값이 아니라 정책 baseline이며 변경에는 반복 안정성 증거와 정책/요구사항 갱신이 필요하다.
+Coverage는 Go atomic coverprofile의 executable block을 집계한다. [ADR-0040](../decisions/ADR-0040-branch-coverage-arm-injection.md)에 따라 branch는 `if`의 then·else와 clause가 있는 switch·type switch·select의 각 case·default arm을 센다. Loop 조건, 단락 평가와 `func _` body는 제외한다. 빠진 else·switch default만 줄바꿈 없이 사본에 주입한다. Select default는 주입하지 않는다. 사본에서 전체 시험을 실행하고 manifest 좌표와 원본 SHA-256을 대조한다. Line coverage로 branch를 대체하지 않는다. 실행 가능한 변경 line이나 변경 결정점이 없으면 해당 diff coverage는 100%다.
 
-현재 gate는 local integration 8-way, CI 2-way와 위 9개 core domain을 쓴다. Final ratchet은 overall production과 core별 threshold를 `coverage-policy.json`에 둔다. Branch 미측정은 미통과 상태다. Coverage 숫자만으로는 충분하지 않으며 모든 P0 requirement와 지원 MQTT normative statement에 assertion이 연결되어야 한다.
+현재 gate는 local integration 8-way, CI 2-way와 위 9개 core domain을 쓴다. Final ratchet은 overall production과 core별 threshold를 `coverage-policy.json`에 둔다. Branch는 두 번 측정한 값 중 작은 값을 소수점 둘째 자리에서 내림한 baseline ratchet과 diff 95%를 강제한다. PRD 전체 85%·core 90% 미달은 report의 `branchCoverage.requirementShortfalls`로 보고한다. 이를 ratchet gate 실패 사유로 쓰지 않으며, 미달이 남는 동안 TEST-06·TEST-07은 미검증으로 유지한다. Ratchet 변경에는 반복 안정성 증거와 정책/요구사항 갱신이 필요하다. Coverage 숫자만으로는 충분하지 않으며 모든 P0 requirement와 지원 MQTT normative statement에 assertion이 연결되어야 한다.
 
 ### 8.1 Verification 실행 정책
 
@@ -739,6 +739,54 @@ go run ./tools/verify ci --base <merge-base>
 ```
 
 검증 순서, cancellation, artifact 경로는 runner가 소유한다. 부분적인 과거 명령 목록으로 전체 gate를 대체하지 않는다.
+
+### 8.2 Branch 측정 gate 수용 증거
+
+2026-10-08에 Windows/amd64, Go 1.26.5와 Git으로 확인했다. 변경 전 revision은 `3b1541f2d4fd916db314f56cd3e091132592a6f7`이다. Production source는 변경하지 않았다. 아래 수치는 이번 작업 트리에서 실행한 결과다. CI 플랫폼의 필수 status나 release acceptance 증거는 아니다.
+
+| 시나리오 | 요구사항 | 시험 위치·실행 | 관찰 결과 |
+| --- | --- | --- | --- |
+| 실제 Go coverage block과 arm 대응 | TEST-06·TEST-07·TEST-11 | `tools/verify/branch_test.go::TestBranchCoverageMatchesGoCoverBlocks`; `go test ./tools/verify -count=1` | PASS. 17개 outcome 중 6개 실행, 의도한 미실행 11개 정확히 일치. 원본·사본 line/function total 일치 |
+| 계측 경계와 strict manifest | TEST-11 | `TestInstrumentBranchesPreservesLinesAndAddsOnlyMissingArms`, `TestLoadBranchManifestRejectsInvalidSchemaAndJSON` | PASS. 줄 수 보존, 이미 있는 arm 중복 없음, select 의미 보존, 제외 결정점 미계측 |
+| 출력 교체의 삭제 경계 | TEST-11 | `TestBranchInstrumentRejectsUnsafeOutputBeforeDeletingFiles`, `TestBranchOutputRejectsSymlinkToRepositoryRoot`, `TestBranchOutputRejectsRepositoryLinkToExternalDirectory`; `go test ./tools/verify -count=1 -v` | PASS. Root·상위·source·검증 증거 상위 directory 삭제 거절. 기본 branch directory와 외부 출력 허용. Windows junction의 root alias와 저장소 내부→외부 출력 alias도 거절 |
+| Source·manifest·profile 불일치 거절 | TEST-06·TEST-07 | `TestEvaluateBranchCoverageRejectsStaleOrMismatchedManifest` | PASS. SHA 불일치, 파일 누락·초과와 대응 block 없음 거절 |
+| Ratchet·diff·shortfall 분리 | TEST-08·TEST-09 | `TestBranchRatchetDiffFloorAndRequirementShortfall` | PASS. Ratchet 하락과 diff branch 95% 미달 실패. PRD shortfall만 있으면 baseline gate 통과 |
+| 실제 사본 실행과 baseline 확정 | TEST-06·TEST-07·TEST-09 | Repository root에서 `go run ./tools/verify local` Run A·B·C | 세 실행 모두 `local: PASS`. Schema 2, branch `measured`, 전체 outcome 13,073개와 9개 core metric 확인 |
+| 변경 전 분모 보존 | TEST-11 | 같은 명령의 Run 0과 Run A summary 비교 | Line total 33,701, function total 1,673으로 정확히 일치 |
+| 실제 ratchet 거절 | TEST-09 | 저장소 밖 임시 policy의 routing branch ratchet만 100으로 올려 `coverage` 실행 | Exit 1. `narumq/internal/domain/routing branch ratchet 100.00% is above measured 93.15%` |
+| 실제 historical diff | TEST-08 | `go run ./tools/verify coverage --profile .artifacts/verification/coverage.out --report <tmp>/diff-summary.json --base 02ef51d` | Exit 1. Diff branch 280/405(69.14%), line 697/823(84.69%), function 62/63(98.41%). Branch·line 95% 미달을 각각 보고 |
+
+Run 0은 원본에서 coverage를 실행했다. Run A·B·C는 계측 사본에서 coverage를 실행하고 나머지 검사는 원본에서 실행했다.
+
+| 실행 | Line covered/total (%) | Function covered/total (%) | Branch covered/total (%) |
+| --- | --- | --- | --- |
+| Run 0 | 28,716/33,701 (85.21) | 1,631/1,673 (97.49) | 미측정 |
+| Run A | 28,710/33,701 (85.19) | 1,631/1,673 (97.49) | 10,434/13,073 (79.81) |
+| Run B | 28,729/33,701 (85.25) | 1,632/1,673 (97.55) | 10,441/13,073 (79.87) |
+| Run C | 28,714/33,701 (85.20) | 1,631/1,673 (97.49) | 10,439/13,073 (79.85) |
+
+Baseline은 `floor(min(A,B)*100)/100`으로 정했다. Line·function threshold는 변경하지 않았다.
+
+| 범위 | Run A branch (%) | Run B branch (%) | 확정 branch ratchet (%) | Run C branch (%) |
+| --- | --- | --- | --- | --- |
+| Overall | 79.81 | 79.87 | 79.81 | 79.85 |
+| `domain/connrebalance` | 96.15 | 96.15 | 96.15 | 96.15 |
+| `domain/delivery` | 100.00 | 100.00 | 100.00 | 100.00 |
+| `domain/mqtt` | 99.27 | 99.27 | 99.27 | 99.27 |
+| `domain/nodedrain` | 97.73 | 97.73 | 97.73 | 97.73 |
+| `domain/release` | 100.00 | 100.00 | 100.00 | 100.00 |
+| `domain/routing` | 93.15 | 93.15 | 93.15 | 93.15 |
+| `domain/security` | 90.91 | 90.91 | 90.91 | 90.91 |
+| `domain/session` | 98.73 | 98.73 | 98.73 | 98.73 |
+| `domain/tenancy` | 99.33 | 99.33 | 99.33 | 99.33 |
+
+원래 실패 시험 계획은 delivery ratchet 100%를 사용했다. 실제 delivery branch는 118/118(100%)이므로 그 명령은 exit 0과 `coverage: PASS`였다. 이를 실패로 기록하지 않았다. 같은 실패 경로를 routing ratchet 100%로 확인했다.
+
+성공한 Run A 이전의 첫 시도는 원본 race 단계의 `TestNodeCloseFlushesHeldAppendOrReportsFailure/consumed-prior-error`에서 실패했다. `node_shutdown_storage_test.go:80`은 `ErrStorage`와 `os.ErrPermission`을 기대했지만 `close WAL: permission denied`만 받았다. 취소 뒤 integration process가 남아 있었으며, 바로 이어진 시도는 Windows 파일 잠금으로 계측 directory 삭제에 실패했다. 해당 process가 끝난 뒤 Run A·B·C가 연속 통과했다. 두 실패 시도는 baseline에 포함하지 않았다. Raft 코드와 해당 test는 이번 범위에서 수정하거나 제외하지 않았다. 최초 실패의 근본 원인은 미확정이다.
+
+증거는 `.artifacts/verification/coverage-summary-run-{0,a,b,c}.json`, `branch/manifest.json`, `coverage.out`, `coverage-summary-ratchet-rejection.json`, `coverage-summary-delivery-100.json`, `coverage-summary-diff-02ef51d.json`, `branch-gate-execution-evidence.json`에 보존한다. Run C의 `requirementShortfalls`는 전체 branch 79.85%가 PRD 85%보다 낮다는 한 항목이다. Core 9개는 모두 local branch 90% 이상이다. TEST-06의 PRD floor 충족과 TEST-06·TEST-07의 필수 CI 증거는 미검증으로 남는다. CI mutation gate와 CI 플랫폼 status·TEST-10 P0 매핑은 이번 작업에서 실행하거나 완료하지 않았다.
+
+출력 경로 안전성 보완 뒤 실제 `branch-instrument --output .`와 `--output .artifacts/verification`은 각각 exit 1로 삭제 전에 거절했다. 저장소 branch subtree에 외부 임시 directory로 향하는 Windows junction을 만들고 그 하위를 출력으로 지정한 CLI도 exit 1로 거절했다. 외부 sentinel 파일은 그대로 남았고 임시 junction은 제거했다. 기본 `branch-instrument`는 PASS였다. 기존 Run C profile을 새 manifest로 다시 평가한 `coverage`도 PASS였으며 측정값은 같았다. 안전성 회귀 시험은 skip 없이 통과했다. 이 추가 증거는 `.artifacts/verification/branch-output-safety-evidence.json`과 `coverage-summary-after-safety-review.json`에 보존한다. 전체 local gate의 Run A·B·C는 이 보완 전 실행이며, 보완 뒤에는 도구 package 전체 시험과 위 CLI 경로를 검증했다.
 
 ## 9. Architecture 검증
 

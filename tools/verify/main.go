@@ -46,11 +46,24 @@ func run(args []string) int {
 		}
 		fmt.Println("architecture: PASS")
 		return 0
+	case "branch-instrument":
+		flags := flag.NewFlagSet("branch-instrument", flag.ContinueOnError)
+		policyPath := flags.String("policy", defaultCoveragePolicyPath, "coverage policy path")
+		outputDir := flags.String("output", defaultBranchOutputDir, "branch instrumentation output directory")
+		if err := flags.Parse(args[1:]); err != nil {
+			return 2
+		}
+		if err := runBranchInstrument(ctx, root, filepath.Clean(*policyPath), filepath.Clean(*outputDir)); err != nil {
+			return printCommandError("branch-instrument", err)
+		}
+		fmt.Println("branch-instrument: PASS")
+		return 0
 	case "coverage":
 		flags := flag.NewFlagSet("coverage", flag.ContinueOnError)
 		profilePath := flags.String("profile", "", "Go coverage profile path")
 		policyPath := flags.String("policy", defaultCoveragePolicyPath, "coverage policy path")
 		reportPath := flags.String("report", ".artifacts/verification/coverage-summary.json", "coverage report path")
+		manifestPath := flags.String("branch-manifest", defaultBranchManifestPath, "branch instrumentation manifest path")
 		base := flags.String("base", "", "base git ref for diff coverage")
 		if err := flags.Parse(args[1:]); err != nil {
 			return 2
@@ -59,7 +72,7 @@ func run(args []string) int {
 			fmt.Fprintln(os.Stderr, "coverage: --profile is required")
 			return 2
 		}
-		if err := runCoverage(ctx, root, filepath.Clean(*profilePath), filepath.Clean(*policyPath), filepath.Clean(*reportPath), *base); err != nil {
+		if err := runCoverage(ctx, root, filepath.Clean(*profilePath), filepath.Clean(*policyPath), filepath.Clean(*reportPath), filepath.Clean(*manifestPath), *base); err != nil {
 			return printCommandError("coverage", err)
 		}
 		fmt.Println("coverage: PASS")
@@ -102,6 +115,6 @@ func printCommandError(name string, err error) int {
 }
 
 func printUsage() {
-	fmt.Fprintln(os.Stderr, "usage: go run ./tools/verify <traceability|architecture|coverage|local|ci>")
+	fmt.Fprintln(os.Stderr, "usage: go run ./tools/verify <traceability|architecture|branch-instrument|coverage|local|ci>")
 	fmt.Fprintln(os.Stderr, "  ci requires --base <git-ref>; coverage requires --profile <path>")
 }

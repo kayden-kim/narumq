@@ -161,16 +161,16 @@ go run ./cmd/narumq -tcp-listen 127.0.0.1:1883 -http-listen 127.0.0.1:8080 -allo
 
 ## 4. 검증
 
-개발자가 수행한 작업의 완료 여부는 다음 기준표로 판정한다. 이 문서의 현재 검증은 Windows/amd64, Go 1.26.5에서 `GOMAXPROCS=4 go run ./tools/verify local`이 `local: PASS`로 끝났고, 커버리지 요약을 생성했다. Branch coverage는 `not_evaluated`이며, mutation과 수동 로컬 broker smoke는 실행하지 않았다.
+개발자가 수행한 작업의 완료 여부는 다음 기준표로 판정한다. Windows/amd64, Go 1.26.5에서 `go run ./tools/verify local` Run A·B·C가 `local: PASS`로 끝났다. Branch coverage는 schema 2 report의 `measured`로 기록한다. 전체·core baseline ratchet과 diff 95%를 강제하지만 전체 PRD branch floor는 아직 충족하지 못했다. 측정값, 실패 시도와 남은 범위는 [성능 스펙 §8.2](../specs/performance-and-verification.md#82-branch-측정-gate-수용-증거)에 있다. Mutation과 수동 로컬 broker smoke는 이번 작업에서 실행하지 않았다.
 
 | 관찰 대상 | 성공 조건 | 확인 방법 | 실제 결과 | 실행 증거 위치 |
 | --- | --- | --- | --- | --- |
-| 단위 테스트 및 레이스 | 전체 테스트 PASS 및 Data Race 0건 | `GOMAXPROCS=4 go run ./tools/verify local` | 통과; 전체 package test와 `go test -race ./cmd/... ./internal/... -count=1` 단계 완료 | 콘솔 출력 |
+| 단위 테스트 및 레이스 | 전체 테스트 PASS 및 Data Race 0건 | `go run ./tools/verify local` | Run A·B·C 통과; 전체 package test와 `go test -race ./cmd/... ./internal/... -count=1` 단계 완료. 앞선 실패 시도는 성능 스펙에 기록 | 콘솔 출력과 성능 스펙 §8.2 |
 | 아키텍처 규칙 | 계층 간 허용되지 않은 import 0건 | `go run ./tools/verify architecture` | 통과; `architecture: PASS` | 콘솔 출력 |
 | 규격 추적성 | 매트릭스와 소스 코드 요구사항 100% 일치 | `go run ./tools/verify traceability` | 통과; `traceability: PASS` | 콘솔 출력 |
-| 코드 커버리지 | 전체 라인 85% 이상, 함수 90% 이상 유지 | `GOMAXPROCS=4 go run ./tools/verify local` | 통과; line 90.07% (19,421/21,561), function 99.81% (1,066/1,068); branch `not_evaluated` (계측 도구 미설정) | `.artifacts/verification/coverage-summary.json` |
-| 뮤테이션 테스트 | Delivery 및 Session 각 80% 이상 사멸률 | `gremlins unleash ...` | 미실행; `local` gate는 mutation을 포함하지 않아 별도 실행 필요 | `.artifacts/verification/mutation-*.json` |
-| 종합 로컬 검증 | 로컬 검증 gate 전체 완료 및 종료 코드 0 | `GOMAXPROCS=4 go run ./tools/verify local` | 통과; `coverage: PASS`, `local: PASS` | 콘솔 출력 |
+| 코드 커버리지 | 기존 line/function 기준, branch baseline ratchet과 diff 95% 충족 | `go run ./tools/verify local`; `ci --base <merge-base>`는 별도 CI 실행 | Local gate 통과; branch `measured`. 전체 PRD branch 85%는 미달. 실제 historical diff 시험은 95% 미달로 실패 | `.artifacts/verification/coverage-summary.json`, 성능 스펙 §8.2 |
+| 뮤테이션 테스트 | Delivery·nodedrain·Session 각각 efficacy·mutant coverage 80% 이상 | `go run ./tools/verify ci --base <merge-base>` | 이번 작업에서 미실행; `local` gate는 mutation을 포함하지 않음 | `.artifacts/verification/mutation-*.json` |
+| 종합 로컬 검증 | 로컬 검증 gate 전체 완료 및 종료 코드 0 | `go run ./tools/verify local` | Run A·B·C 통과; `coverage: PASS`, `local: PASS`. CI release gate 통과를 뜻하지 않음 | 성능 스펙 §8.2와 Run별 summary |
 
 ## 5. 중단 조건 및 빈발 문제 해결
 

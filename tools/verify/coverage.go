@@ -24,6 +24,7 @@ import (
 type coverageFloor struct {
 	Line     float64 `json:"line"`
 	Function float64 `json:"function"`
+	Branch   float64 `json:"branch"`
 }
 
 type coveragePolicy struct {
@@ -84,16 +85,21 @@ type coverageMetric struct {
 type packageCoverage struct {
 	Line     coverageMetric `json:"line"`
 	Function coverageMetric `json:"function"`
+	Branch   coverageMetric `json:"branch"`
 }
 
 type diffCoverage struct {
 	Line     coverageMetric `json:"line"`
 	Function coverageMetric `json:"function"`
+	Branch   coverageMetric `json:"branch"`
 }
 
 type branchCoverageStatus struct {
-	Status string `json:"status"`
-	Reason string `json:"reason"`
+	Status                string   `json:"status"`
+	Reason                string   `json:"reason,omitempty"`
+	Manifest              string   `json:"manifest,omitempty"`
+	RequirementShortfalls []string `json:"requirementShortfalls"`
+	UncoveredOutcomes     []string `json:"uncoveredOutcomes"`
 }
 
 type coverageReport struct {
@@ -138,8 +144,8 @@ func loadCoveragePolicy(path string) (coveragePolicy, error) {
 
 func validateCoveragePolicy(policy coveragePolicy) architectureIssues {
 	var issues architectureIssues
-	if policy.SchemaVersion != 1 {
-		issues = append(issues, architectureIssue{Message: fmt.Sprintf("coverage policy schemaVersion = %d, want 1", policy.SchemaVersion)})
+	if policy.SchemaVersion != 2 {
+		issues = append(issues, architectureIssue{Message: fmt.Sprintf("coverage policy schemaVersion = %d, want 2", policy.SchemaVersion)})
 	}
 	if len(policy.ProductionPatterns) == 0 {
 		issues = append(issues, architectureIssue{Message: "coverage policy productionPatterns must not be empty"})
@@ -182,7 +188,7 @@ func validateCoveragePolicy(policy coveragePolicy) architectureIssues {
 }
 
 func validCoverageFloor(floor coverageFloor) bool {
-	return floor.Line >= 0 && floor.Line <= 100 && floor.Function >= 0 && floor.Function <= 100
+	return floor.Line >= 0 && floor.Line <= 100 && floor.Function >= 0 && floor.Function <= 100 && floor.Branch >= 0 && floor.Branch <= 100
 }
 
 func equalSortedUnique(values []string) bool {
@@ -194,18 +200,18 @@ func equalSortedUnique(values []string) bool {
 	return true
 }
 
-func runCoverage(ctx context.Context, root, profilePath, policyPath, reportPath, base string) error {
+func runCoverage(ctx context.Context, root, profilePath, policyPath, reportPath, manifestPath, base string) error {
 	policy, err := loadCoveragePolicy(policyPath)
 	if err != nil {
 		return err
 	}
 	report := coverageReport{
-		SchemaVersion:  1,
+		SchemaVersion:  2,
 		Profile:        relativePath(root, profilePath),
 		Core:           make(map[string]packageCoverage),
-		BranchCoverage: branchCoverageStatus{Status: "not_evaluated", Reason: "approved branch instrumentation tool is not configured"},
+		BranchCoverage: branchCoverageStatus{Status: "not_evaluated", Reason: "coverage evaluation failed before branch evaluation", RequirementShortfalls: []string{}, UncoveredOutcomes: []string{}},
 	}
-	evaluation, evaluateErr := evaluateCoverage(ctx, root, profilePath, policy, base)
+	evaluation, evaluateErr := evaluateCoverage(ctx, root, profilePath, policy, manifestPath, base)
 	if evaluation != nil {
 		report = evaluation.Report
 	}
@@ -226,42 +232,70 @@ type coverageEvaluation struct {
 	Report coverageReport
 }
 
-func evaluateCoverage(ctx context.Context, root, profilePath string, policy coveragePolicy, base string) (*coverageEvaluation, error) {
+func evaluateCoverage(ctx context.Context, root, profilePath string, policy coveragePolicy, manifestPath, base string) (*coverageEvaluation, error) {
 	data, err := parseCoverageProfile(root, profilePath, policy)
 	if err != nil {
 		return nil, err
 	}
+	manifest, err := loadBranchManifest(manifestPath)
+	if err != nil {
+		return nil, err
+	}
+	branch, err := evaluateBranchCoverage(root, manifest, data)
+	if err != nil {
+		return nil, err
+	}
 	overall, packages := calculateCoverage(data)
+	overall.Branch = branch.Overall
 	report := coverageReport{
-		SchemaVersion:  1,
+		SchemaVersion:  2,
 		Profile:        relativePath(root, profilePath),
 		Passed:         false,
 		Overall:        overall,
 		Core:           make(map[string]packageCoverage),
-		BranchCoverage: branchCoverageStatus{Status: "not_evaluated", Reason: "approved branch instrumentation tool is not configured"},
+		BranchCoverage: branchCoverageStatus{Status: "measured", Manifest: relativePath(root, manifestPath), RequirementShortfalls: []string{}, UncoveredOutcomes: []string{}},
 	}
+	for _, outcome := range branch.Outcomes {
+		if !outcome.Covered {
+			report.BranchCoverage.UncoveredOutcomes = append(report.BranchCoverage.UncoveredOutcomes, outcome.ID)
+		}
+	}
+	sort.Strings(report.BranchCoverage.UncoveredOutcomes)
 	for _, packagePath := range policy.CorePackages {
 		metric, exists := packages[packagePath]
 		if !exists {
 			return &coverageEvaluation{Report: report}, fmt.Errorf("core package %s has no production coverage data", packagePath)
 		}
+		metric.Branch = branch.Packages[packagePath]
 		report.Core[packagePath] = metric
 	}
 
 	var issues []string
 	issues = append(issues, enforceCoverageFloor("overall", overall, policy.OverallFloor, policy.Ratchet.Overall)...)
+	issues = append(issues, enforceBranchRatchet("overall", overall.Branch, policy.Ratchet.Overall.Branch)...)
+	if shortfall, exists := branchRequirementShortfall("overall", overall.Branch, policy.OverallFloor.Branch); exists {
+		report.BranchCoverage.RequirementShortfalls = append(report.BranchCoverage.RequirementShortfalls, shortfall)
+	}
 	for _, packagePath := range policy.CorePackages {
 		metric := report.Core[packagePath]
 		ratchet := policy.Ratchet.Core[packagePath]
 		issues = append(issues, enforceCoverageFloor(packagePath, metric, policy.CoreFloor, ratchet)...)
+		issues = append(issues, enforceBranchRatchet(packagePath, metric.Branch, ratchet.Branch)...)
+		if shortfall, exists := branchRequirementShortfall(packagePath, metric.Branch, policy.CoreFloor.Branch); exists {
+			report.BranchCoverage.RequirementShortfalls = append(report.BranchCoverage.RequirementShortfalls, shortfall)
+		}
 	}
+	sort.Strings(report.BranchCoverage.RequirementShortfalls)
 	if base != "" {
-		diff, diffErr := calculateDiffCoverage(ctx, root, base, data)
+		diff, diffErr := calculateDiffCoverage(ctx, root, base, data, branch)
 		if diffErr != nil {
 			return &coverageEvaluation{Report: report}, diffErr
 		}
 		report.Diff = &diff
 		issues = append(issues, enforceCoverageFloor("diff", packageCoverage{Line: diff.Line, Function: diff.Function}, policy.DiffFloor, coverageFloor{})...)
+		if diff.Branch.Percent+0.000001 < policy.DiffFloor.Branch {
+			issues = append(issues, fmt.Sprintf("diff branch coverage %.2f%% is below %.2f%%", diff.Branch.Percent, policy.DiffFloor.Branch))
+		}
 	}
 	if len(issues) > 0 {
 		return &coverageEvaluation{Report: report}, fmt.Errorf("coverage gate failed:\n%s", strings.Join(sortedStrings(issues), "\n"))
@@ -592,7 +626,7 @@ func sourceFunctionKey(function sourceFunction) string {
 	return fmt.Sprintf("%s#%s@%d", function.File, function.Name, function.StartLine)
 }
 
-func calculateDiffCoverage(ctx context.Context, root, base string, data coverageData) (diffCoverage, error) {
+func calculateDiffCoverage(ctx context.Context, root, base string, data coverageData, branch branchEvaluation) (diffCoverage, error) {
 	if err := verifyBaseRef(ctx, root, base); err != nil {
 		return diffCoverage{}, err
 	}
@@ -629,7 +663,7 @@ func calculateDiffCoverage(ctx context.Context, root, base string, data coverage
 	for _, covered := range functionValues {
 		functionResults = append(functionResults, covered)
 	}
-	return diffCoverage{Line: diffMetric(lineValues), Function: diffMetric(functionResults)}, nil
+	return diffCoverage{Line: diffMetric(lineValues), Function: diffMetric(functionResults), Branch: diffMetric(diffBranchValues(changed, branch.Outcomes))}, nil
 }
 
 func verifyBaseRef(ctx context.Context, root, base string) error {

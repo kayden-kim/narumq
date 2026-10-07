@@ -196,3 +196,19 @@ BP-01~BP-07의 phase, metric, timeout/error 경계와 실행 증거는 [Performa
 | Repository gate | `tools/verify` | Conformance/coverage 정책, package graph와 repository verification |
 
 Integration test가 process binary를 공유해 build하더라도 fixture별 data directory·certificate·address lease는 분리한다. Suite 실행 조건과 acceptance 범위는 [Performance and verification spec](../specs/performance-and-verification.md)을 따른다.
+
+### Repository coverage 모듈 흐름
+
+`tools/verify/main.go`의 `local`·`ci` 진입점은 `runner.go`의 `runVerification`을 호출한다. Runner는 원본 서식을 확인한 뒤 `branch-instrument`를 순차 실행한다. 계측이 실패하면 병렬 검사를 시작하지 않는다.
+
+| 파일·심볼 | 입력과 책임 | 다음 사용처 |
+| --- | --- | --- |
+| `tools/verify/main.go` `run` | `branch-instrument`의 policy·output과 `coverage`의 profile·manifest·base flag를 읽는다. | `runBranchInstrument`, `runCoverage` |
+| `tools/verify/branch.go` `runBranchInstrument`·`validateBranchOutputDir`·`instrumentBranches` | 출력 교체 전에 삭제 경계를 확인한다. 저장소 안에서는 전용 branch subtree만 교체하며 미해결 junction을 거절한다. Git copy set과 활성 production source를 읽고 빠진 arm·원본 hash·계측 좌표를 사본과 manifest에 쓴다. | `.artifacts/verification/branch/module`, `manifest.json` |
+| `tools/verify/runner.go` `commandSpec.Dir`·`executeCommand` | Coverage test의 작업 위치를 사본으로 지정한다. Profile은 원본 root의 절대 경로에 쓴다. 다른 검사는 원본에서 실행한다. | `coverage.out`, coverage 평가 CLI |
+| `tools/verify/coverage.go` `evaluateCoverage`·`calculateDiffCoverage` | 기존 line/function 집계에 branch 평가를 결합한다. Git diff의 변경 결정점만 diff branch 대상으로 고른다. | Schema 2 `coverage-summary.json`과 gate 결과 |
+| `tools/verify/branch.go` `evaluateBranchCoverage` | Source 집합·원본 SHA-256을 확인한다. Arm span에서 가장 이른 block 시작 위치의 count로 실행 여부를 판정한다. | 전체·package metric과 outcome 목록 |
+| `tests/verification/coverage-policy.json` | Line/function floor·ratchet과 branch floor·ratchet을 소유한다. | 전체·core branch ratchet, diff branch floor, PRD shortfall 보고 |
+| `tools/verify/branch_test.go` | 실제 Go coverage profile과 manifest의 대응, 원본·사본 분모 일치, 계측·오류·enforcement 경계를 확인한다. | [Performance와 verification §8](../specs/performance-and-verification.md#8-coverage와-test-quality-gate)의 수용 증거 |
+
+원본 production source는 수정하지 않는다. 오래된 hash나 대응 block이 없는 manifest는 평가를 거절한다. 전체·core PRD floor 미달과 gate 실패는 구분한다. Branch 정의와 enforcement 결정은 [ADR-0040](../decisions/ADR-0040-branch-coverage-arm-injection.md), 동작과 실행 증거는 [Performance와 verification §8](../specs/performance-and-verification.md#8-coverage와-test-quality-gate)을 따른다.

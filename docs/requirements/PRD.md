@@ -493,6 +493,8 @@ Unit test는 모든 기능의 기본 검증 수단이다. 그러나 분산 동�
 
 Coverage 수치는 검증의 하한이다. 높은 coverage만으로 기능 완료를 주장할 수 없다. 요구사항 수용 기준과 MQTT 표준 동작을 실제 assertion으로 확인해야 한다.
 
+Coverage 동작과 수용 시험은 [Performance와 verification §8](../specs/performance-and-verification.md#8-coverage와-test-quality-gate)에서 확인한다. Branch 측정의 기술 선택은 [ADR-0040](../decisions/ADR-0040-branch-coverage-arm-injection.md)에 기록한다.
+
 ## 12. 시스템 경계
 
 초기 제품은 하나의 broker 배포 단위 안에 명확한 모듈 경계를 둔다. 분산 서비스 수를 먼저 늘리지 않는다.

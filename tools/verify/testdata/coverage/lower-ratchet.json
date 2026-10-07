@@ -1,12 +1,12 @@
 {
-  "schemaVersion": 1,
+  "schemaVersion": 2,
   "productionPatterns": ["./cmd/...", "./internal/..."],
-  "overallFloor": {"line": 90, "function": 90},
-  "coreFloor": {"line": 95, "function": 95},
-  "diffFloor": {"line": 95, "function": 95},
+  "overallFloor": {"line": 90, "function": 90, "branch": 85},
+  "coreFloor": {"line": 95, "function": 95, "branch": 90},
+  "diffFloor": {"line": 95, "function": 95, "branch": 95},
   "corePackages": ["narumq/internal/domain/mqtt"],
   "ratchet": {
-    "overall": {"line": 96, "function": 96},
-    "core": {"narumq/internal/domain/mqtt": {"line": 90, "function": 90}}
+    "overall": {"line": 96, "function": 96, "branch": 96},
+    "core": {"narumq/internal/domain/mqtt": {"line": 90, "function": 90, "branch": 90}}
   }
 }

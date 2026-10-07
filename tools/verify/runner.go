@@ -16,6 +16,7 @@ import (
 type commandSpec struct {
 	Name string
 	Args []string
+	Dir  string
 }
 
 type commandRunner func(context.Context, string, commandSpec) error
@@ -60,6 +61,9 @@ func runVerification(ctx context.Context, root string, options verificationOptio
 	if err := os.MkdirAll(filepath.Join(root, ".artifacts", "verification"), 0o755); err != nil {
 		return fmt.Errorf("create verification artifact directory: %w", err)
 	}
+	if err := runner(ctx, root, commandSpec{Name: "go", Args: []string{"run", "./tools/verify", "branch-instrument", "--policy", defaultCoveragePolicyPath, "--output", defaultBranchOutputDir}}); err != nil {
+		return fmt.Errorf("verification stopped during branch instrumentation: %w", err)
+	}
 	fuzzCommands := []commandSpec{
 		{Name: "go", Args: []string{"test", "./internal/domain/mqtt", "-run=^$", "-fuzz=^FuzzDecoder$", "-fuzztime=10000x", "-parallel=1"}},
 		{Name: "go", Args: []string{"test", "./internal/domain/mqtt", "-run=^$", "-fuzz=^FuzzCodecRoundTrip$", "-fuzztime=10000x", "-parallel=1"}},
@@ -81,10 +85,10 @@ func runVerification(ctx context.Context, root string, options verificationOptio
 	if options.CI {
 		testParallelLimit = "-parallel=2"
 	}
-	coverageArgs := []string{"test", "./...", testParallelLimit, "-count=1", "-covermode=atomic", "-coverpkg=./cmd/...,./internal/...", "-coverprofile=.artifacts/verification/coverage.out"}
+	coverageArgs := []string{"test", "./...", testParallelLimit, "-count=1", "-covermode=atomic", "-coverpkg=./cmd/...,./internal/...", "-coverprofile=" + filepath.Join(root, ".artifacts", "verification", "coverage.out")}
 	parallelCommands := append([]commandSpec{}, preflightCommands...)
 	parallelCommands = append(parallelCommands,
-		commandSpec{Name: "go", Args: coverageArgs},
+		commandSpec{Name: "go", Dir: defaultBranchOutputDir + "/module", Args: coverageArgs},
 		commandSpec{Name: "go", Args: []string{"test", "-race", "./cmd/...", "./internal/...", "-count=1"}},
 	)
 	parallelCommands = append(parallelCommands, fuzzCommands...)
@@ -97,7 +101,7 @@ func runVerification(ctx context.Context, root string, options verificationOptio
 	}
 	coverageCommand := commandSpec{
 		Name: "go",
-		Args: []string{"run", "./tools/verify", "coverage", "--profile", ".artifacts/verification/coverage.out", "--policy", defaultCoveragePolicyPath, "--report", ".artifacts/verification/coverage-summary.json"},
+		Args: []string{"run", "./tools/verify", "coverage", "--profile", ".artifacts/verification/coverage.out", "--policy", defaultCoveragePolicyPath, "--report", ".artifacts/verification/coverage-summary.json", "--branch-manifest", defaultBranchManifestPath},
 	}
 	if options.CI {
 		coverageCommand.Args = append(coverageCommand.Args, "--base", options.Base)
@@ -160,7 +164,7 @@ func runConcurrent(ctx context.Context, root string, commands []commandSpec, run
 
 func executeCommand(ctx context.Context, root string, spec commandSpec) error {
 	command := exec.CommandContext(ctx, spec.Name, spec.Args...)
-	command.Dir = root
+	command.Dir = filepath.Join(root, filepath.FromSlash(spec.Dir))
 	command.Stdout = os.Stdout
 	command.Stderr = os.Stderr
 	if err := command.Run(); err != nil {

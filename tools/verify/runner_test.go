@@ -30,14 +30,15 @@ func TestRunCIRequiresBaseAndPropagatesBaseToCoverage(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if len(commands) != 14 {
-		t.Fatalf("command count = %d, want 14", len(commands))
+	if len(commands) != 15 {
+		t.Fatalf("command count = %d, want 15", len(commands))
 	}
 	want := []commandSpec{
+		{Name: "go", Args: []string{"run", "./tools/verify", "branch-instrument", "--policy", defaultCoveragePolicyPath, "--output", defaultBranchOutputDir}},
 		{Name: "go", Args: []string{"vet", "./..."}},
 		{Name: "go", Args: []string{"run", "./tools/verify", "traceability"}},
 		{Name: "go", Args: []string{"run", "./tools/verify", "architecture"}},
-		{Name: "go", Args: []string{"test", "./...", "-parallel=2", "-count=1", "-covermode=atomic", "-coverpkg=./cmd/...,./internal/...", "-coverprofile=.artifacts/verification/coverage.out"}},
+		{Name: "go", Dir: defaultBranchOutputDir + "/module", Args: []string{"test", "./...", "-parallel=2", "-count=1", "-covermode=atomic", "-coverpkg=./cmd/...,./internal/...", "-coverprofile=" + filepath.Join(root, ".artifacts", "verification", "coverage.out")}},
 		{Name: "go", Args: []string{"test", "-race", "./cmd/...", "./internal/...", "-count=1"}},
 		{Name: "go", Args: []string{"test", "./internal/domain/mqtt", "-run=^$", "-fuzz=^FuzzDecoder$", "-fuzztime=10000x", "-parallel=1"}},
 		{Name: "go", Args: []string{"test", "./internal/domain/mqtt", "-run=^$", "-fuzz=^FuzzCodecRoundTrip$", "-fuzztime=10000x", "-parallel=1"}},
@@ -47,7 +48,7 @@ func TestRunCIRequiresBaseAndPropagatesBaseToCoverage(t *testing.T) {
 		{Name: "go", Args: []string{"tool", "gremlins", "unleash", "--config=tests/verification/gremlins.yaml", "--output=.artifacts/verification/mutation-delivery.json", "internal/domain/delivery"}},
 		{Name: "go", Args: []string{"tool", "gremlins", "unleash", "--config=tests/verification/gremlins.yaml", "--output=.artifacts/verification/mutation-nodedrain.json", "internal/domain/nodedrain"}},
 		{Name: "go", Args: []string{"tool", "gremlins", "unleash", "--config=tests/verification/gremlins.yaml", "--output=.artifacts/verification/mutation-session.json", "internal/domain/session"}},
-		{Name: "go", Args: []string{"run", "./tools/verify", "coverage", "--profile", ".artifacts/verification/coverage.out", "--policy", defaultCoveragePolicyPath, "--report", ".artifacts/verification/coverage-summary.json", "--base", "HEAD~1"}},
+		{Name: "go", Args: []string{"run", "./tools/verify", "coverage", "--profile", ".artifacts/verification/coverage.out", "--policy", defaultCoveragePolicyPath, "--report", ".artifacts/verification/coverage-summary.json", "--branch-manifest", defaultBranchManifestPath, "--base", "HEAD~1"}},
 	}
 	sort.Slice(commands, func(i, j int) bool { return formatCommand(commands[i]) < formatCommand(commands[j]) })
 	sort.Slice(want, func(i, j int) bool { return formatCommand(want[i]) < formatCommand(want[j]) })

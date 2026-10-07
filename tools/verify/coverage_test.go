@@ -136,28 +136,6 @@ func TestDiffMetricTreatsNoExecutableChangesAsFullCoverage(t *testing.T) {
 	}
 }
 
-func TestCoverageReportWritesBranchStatus(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "summary.json")
-	report := coverageReport{
-		SchemaVersion: 1,
-		Profile:       "coverage.out",
-		BranchCoverage: branchCoverageStatus{
-			Status: "not_evaluated",
-			Reason: "approved branch instrumentation tool is not configured",
-		},
-	}
-	if err := writeCoverageReport(path, report); err != nil {
-		t.Fatal(err)
-	}
-	data, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !strings.Contains(string(data), `"status": "not_evaluated"`) {
-		t.Fatalf("coverage report = %s, missing branch status", data)
-	}
-}
-
 func TestParseCoverageProfileExcludesOnlyGeneratedProtobufSources(t *testing.T) {
 	root := t.TempDir()
 	sourceDir := filepath.Join(root, "internal")
