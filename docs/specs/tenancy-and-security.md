@@ -449,6 +449,6 @@ MQTT 5 시험은 연결 상한 2, session 상한 3, subscription 상한 2를 확
 | 전체 Go package build | `go build ./...` | PASS. |
 | Go vet | `go vet ./...` | PASS. |
 | Traceability·architecture | `go run ./tools/verify traceability && go run ./tools/verify architecture` | PASS. |
-| Full local gate | `GOMAXPROCS=4 go run ./tools/verify local` | FAIL, 125.04s. Traceability, architecture, fuzz와 integration package(88.407s)가 통과했다. `go test ./...`는 BP-07 smoke profile digest assertion에서 실패해 coverage gate에 도달하지 못했다. |
+| Full local gate | `GOMAXPROCS=4 go run ./tools/verify local` | PASS, 135.814s. Profile 줄바꿈이 이전 실패의 원인이었으며, LF 규칙과 BP-06 digest 고정값을 바꾼 뒤 통과했다. `.artifacts/verification/coverage-summary.json`의 전체 line coverage는 85.12%, function coverage는 97.43%다. |
 
-Full local gate는 통과하지 않았다. `tests/benchmark/bp07/profile_test.go::TestSmokeProfileIdentityAndDigest`는 digest `e1f305e1e5c38e4b00e161bfce733c46cd393075517241978594470fb508a7fb`를 기대한다. 현재 `tests/benchmark/bp07/testdata/smoke.json`의 SHA-256은 `1d543973107a0ae57697b0eb56cb63b69a056b67cffca5c6a11bd1fb103b9446`다. 이 fixture와 test assertion은 audit 변경 범위 밖이므로 수정하지 않았다.
+첫 Full local gate 실행은 working tree의 CRLF 줄바꿈 때문에 BP-07 digest 시험에서 실패했다. `.gitattributes`의 LF 규칙과 BP-06 digest 고정값을 바꾼 뒤 재실행이 PASS했다. Digest 기준은 [성능 §3](performance-and-verification.md#3-benchmark-공통-계약)을 따른다. 처음 실패한 실행을 통과 증거로 계산하지 않는다.

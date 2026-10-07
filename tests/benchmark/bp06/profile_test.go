@@ -21,7 +21,7 @@ func TestSmokeProfileIdentityAndDigest(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if p.ProfileID != "bp06-smoke-v1" || p.rounds() != 3 || p.clients() != 15 || digest != "e8e4aa2e5df1a3e55ad901acff5a4505cdb1acf4699ff061f1a2bfc51754054d" {
+	if p.ProfileID != "bp06-smoke-v1" || p.rounds() != 3 || p.clients() != 15 || digest != "ca5e28b04623e708d9521ab34ce5ed3b9dd617d4ac57c4571243bdd6061f6a15" {
 		t.Fatalf("unexpected smoke identity: profile=%#v digest=%s", p, digest)
 	}
 }

@@ -53,6 +53,8 @@ Latency는 p50, p95, p99, p99.9를 보고한다. 오류 sample을 제외하면 �
 
 고정 EMQX version·edition과 NaruMQ 대비 수치 합격선인 `SPEC-TBD-08`은 미정이다. BP-01/BP-04/BP-05/BP-02는 pinned OSS 5.8.8을 사용한다. BP-03/BP-06/BP-07은 pinned Enterprise 5.8.8을 사용한다. EMQX 5.8.8 OSS는 EOL historical comparator이며 현재 지원 release 기준선이나 승인된 commercial 운영 사용을 뜻하지 않는다.
 
+Profile SHA-256은 저장소에 커밋된 LF bytes로 계산한다. `.gitattributes`의 `tests/benchmark/*/testdata/*.json text eol=lf` 규칙으로 `core.autocrlf=true`인 Windows checkout에서도 같은 bytes를 쓴다. 2026-10-08 이전 BP-06 실행 artifact의 `profileSha256` `e8e4aa2e5df1a3e55ad901acff5a4505cdb1acf4699ff061f1a2bfc51754054d`는 같은 내용을 CRLF로 checkout한 bytes의 digest다. 같은 profile의 LF digest는 `ca5e28b04623e708d9521ab34ce5ed3b9dd617d4ac57c4571243bdd6061f6a15`다. 과거 artifact의 값은 실행 당시 사실이므로 고치지 않는다.
+
 | BP | 프로파일 | 스펙 위치 |
 | --- | --- | --- |
 | BP-01 | Protocol Baseline | §3.1 |
