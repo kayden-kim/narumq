@@ -220,9 +220,10 @@ Integration process 시험의 호출 흐름은 `tests/integration/cluster_member
 `newClusterMembershipProcessFixture`는 build tag별 공유 실행 파일을 받지만 data directory,
 인증서와 주소 lease는 시험마다 만든다. 기본 cluster process 시험은 `t.Parallel()`로 실행하며
 `tools/verify/runner.go`가 동시에 실행할 시험 수를 `local` 8개, `ci` 2개로 제한한다.
-`cluster_session_fencing_process_test.go`의 `clusterFencingProcessStart`는 bootstrap 뒤 각 node의 기본 tenant quota profile이 commit될 때까지 기다린다. 이 준비를 마친 뒤 concurrent CONNECT 시험을 시작한다.
 `buildBinaryFrom`의 release/historical source 빌드는 fixture에 별도로 둔다.
 검증 범위와 실행 조건은 [성능 및 검증 §8](../specs/performance-and-verification.md#8-coverage와-test-quality-gate)을 따른다.
+
+Concurrent CONNECT 시험의 호출 흐름은 `cluster_session_fencing_process_test.go`의 동시 CONNECT → `clusterFencingConnectOnce` → `cluster_durable_delivery_process_test.go`의 `clusterDurableProcessReadRaw` → PING probe → `clusterFencingNaturalRaceWinner` → winner의 SUBSCRIBE다. Frame reader는 첫 byte 전 EOF와 일부 byte 수신 뒤 EOF를 구분한다. `TestClusterFencingConnectOnceConnAckBoundary`는 실제 socket으로 이 오류 경계와 정상 CONNACK을 확인한다. 수용 기준과 실행 증거는 [Cluster §11.15](../specs/cluster-session-and-delivery.md#1115-cross-node-delivery-matrix동시-connectstale-epoch-수용-매핑)에 있다. Broker runtime의 호출 경로와 데이터 형식은 바꾸지 않았다.
 
 QoS 1/2 retained 수용 시험의 진입점은 `tests/integration/cluster_retained_qos_process_test.go`의 `TestDynamicClusterRetainedQoS12ProcessAcceptance`다. 기존 `clusterDurableProcessStart`가 broker 3개를 시작한다. 시험은 MQTT socket으로 발행·ACK·replay를 확인하고 `clusterRetainedQoSWaitForState`로 각 node의 retained 관리 API를 대조한다. `clusterRetainedQoSReplay`는 여러 PUBLISH와 PUBREL의 교차 수신을 Packet ID별로 처리한다. Unit 진입점 `internal/application/publish/durable_delivery_test.go::TestPublishDurableRetainedCommitFailureStopsDeliveryCommit`는 retained commit 오류 뒤 delivery commit·fan-out 차단을 확인한다. 실행 증거는 [Cluster §11.32](../specs/cluster-session-and-delivery.md#1132-qos-12-retained-수용-매핑)에 있다. 제품의 호출 경로·상태·데이터 형식은 바꾸지 않았다.
 

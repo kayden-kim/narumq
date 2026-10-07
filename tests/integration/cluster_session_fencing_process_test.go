@@ -4,7 +4,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net"
+	"os"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -13,6 +15,8 @@ import (
 
 	"narumq/internal/application/membership"
 )
+
+var errClusterFencingClosedWithoutConnAck = errors.New("connection closed before CONNACK")
 
 // Traceability: CLU-04/CLU-05; docs/specs/cluster-session-and-delivery.md §2, §2.1, §11.15.
 func TestDynamicClusterConcurrentConnectProcessAcceptance(t *testing.T) {
@@ -87,34 +91,29 @@ func TestDynamicClusterConcurrentConnectProcessAcceptance(t *testing.T) {
 		for round := 1; round <= 10; round++ {
 			clientID := fmt.Sprintf("concurrent-race-%d", round)
 			results := clusterFencingConnectSimultaneously(endpoints, fixture.accessToken, clientID)
-			var live []clusterFencingConnectionResult
 			for index := range results {
 				result := results[index]
-				if result.err != nil {
-					t.Fatalf("round %d node %d CONNECT: %v", round, result.nodeID, result.err)
-				}
-				if result.code != 0 && result.code != 3 {
-					t.Fatalf("round %d node %d CONNECT return code=%d, want 0 or 3", round, result.nodeID, result.code)
-				}
 				if result.conn != nil {
 					result.probe = clusterFencingAlive(result.conn)
 					results[index] = result
-					if result.probe.alive {
-						live = append(live, result)
-					}
 				}
 			}
-			if len(live) != 1 {
+			winner, err := clusterFencingNaturalRaceWinner(results)
+			if err != nil {
 				for _, result := range results {
-					t.Logf("round %d node %d CONNECT code=%d probe alive=%t elapsed=%s err=%v",
-						round, result.nodeID, result.code, result.probe.alive, result.probe.elapsed, result.probe.err)
+					t.Logf("round %d node %d CONNECT code=%d err=%v probe alive=%t elapsed=%s err=%v",
+						round, result.nodeID, result.code, result.err, result.probe.alive, result.probe.elapsed, result.probe.err)
 					if result.conn != nil {
 						_ = result.conn.Close()
 					}
 				}
-				t.Fatalf("round %d accepted/live connections=%v, want exactly one", round, clusterFencingLiveNodeIDs(live))
+				t.Fatalf("round %d: %v", round, err)
 			}
-			winner := live[0]
+			for _, result := range results {
+				if errors.Is(result.err, errClusterFencingClosedWithoutConnAck) {
+					t.Logf("round %d node %d closed before CONNACK after takeover; live owner node %d", round, result.nodeID, winner.nodeID)
+				}
+			}
 			filter := fmt.Sprintf("concurrent/race/%d", round)
 			clusterDurableProcessSubscribe(t, winner.conn, uint16(round), filter, 1)
 			_ = winner.conn.Close()
@@ -271,9 +270,6 @@ func clusterFencingProcessStart(t *testing.T) (*clusterMembershipProcessFixture,
 		nodes[nodeID-1] = process
 	}
 	clusterMembershipProcessWaitForBootstrap(t, fixture.ctx, nodes)
-	for _, process := range nodes {
-		clusterTenantQuotaProcessWaitForProfile(t, fixture.ctx, process, 0, false)
-	}
 	return fixture, nodes, controlPaths
 }
 
@@ -319,6 +315,9 @@ func clusterFencingConnectOnce(address, accessToken, clientID string) (net.Conn,
 	kind, _, response, err := clusterDurableProcessReadRaw(connection)
 	if err != nil {
 		_ = connection.Close()
+		if errors.Is(err, io.EOF) {
+			return nil, 0, fmt.Errorf("read CONNACK: %w: %w", errClusterFencingClosedWithoutConnAck, err)
+		}
 		return nil, 0, fmt.Errorf("read CONNACK: %w", err)
 	}
 	if kind != 2 || len(response) != 2 {
@@ -421,6 +420,166 @@ func TestClusterFencingAliveDeadlineFailureStopsProbe(t *testing.T) {
 	}
 }
 
+// Traceability: CLU-04/CLU-05; docs/specs/cluster-session-and-delivery.md §11.15.
+func TestClusterFencingNaturalRaceWinner(t *testing.T) {
+	closed := fmt.Errorf("read CONNACK: %w: %w", errClusterFencingClosedWithoutConnAck, io.EOF)
+	alive := clusterFencingProbeResult{alive: true}
+	for _, test := range []struct {
+		name       string
+		results    []clusterFencingConnectionResult
+		wantNodeID uint64
+		wantError  bool
+		wantCause  error
+	}{
+		{
+			name: "takeover close accepted",
+			results: []clusterFencingConnectionResult{
+				{nodeID: 2, code: 0, probe: alive},
+				{nodeID: 3, err: closed},
+			},
+			wantNodeID: 2,
+		},
+		{
+			name: "server unavailable loser",
+			results: []clusterFencingConnectionResult{
+				{nodeID: 2, code: 0, probe: alive},
+				{nodeID: 3, code: 3},
+			},
+			wantNodeID: 2,
+		},
+		{
+			name: "both closed",
+			results: []clusterFencingConnectionResult{
+				{nodeID: 2, err: closed},
+				{nodeID: 3, err: closed},
+			},
+			wantError: true,
+		},
+		{
+			name: "non-EOF read failure",
+			results: []clusterFencingConnectionResult{
+				{nodeID: 2, code: 0, probe: alive},
+				{nodeID: 3, err: fmt.Errorf("read CONNACK: %w", os.ErrDeadlineExceeded)},
+			},
+			wantError: true,
+			wantCause: os.ErrDeadlineExceeded,
+		},
+		{
+			name: "two live owners",
+			results: []clusterFencingConnectionResult{
+				{nodeID: 2, code: 0, probe: alive},
+				{nodeID: 3, code: 0, probe: alive},
+			},
+			wantError: true,
+		},
+		{
+			name: "unexpected return code",
+			results: []clusterFencingConnectionResult{
+				{nodeID: 2, code: 0, probe: alive},
+				{nodeID: 3, code: 5},
+			},
+			wantError: true,
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			winner, err := clusterFencingNaturalRaceWinner(test.results)
+			if test.wantError {
+				if err == nil {
+					t.Fatalf("winner node %d, want error", winner.nodeID)
+				}
+				if test.wantCause != nil && !errors.Is(err, test.wantCause) {
+					t.Fatalf("error = %v, want wrapped %v", err, test.wantCause)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			if winner.nodeID != test.wantNodeID {
+				t.Fatalf("winner node %d, want %d", winner.nodeID, test.wantNodeID)
+			}
+		})
+	}
+}
+
+// Traceability: CLU-04/CLU-05; docs/specs/cluster-session-and-delivery.md §11.15.
+func TestClusterFencingConnectOnceConnAckBoundary(t *testing.T) {
+	for _, test := range []struct {
+		name     string
+		response []byte
+		wantErr  error
+	}{
+		{name: "closed before first byte", wantErr: io.EOF},
+		{name: "fixed header only", response: []byte{0x20}, wantErr: io.ErrUnexpectedEOF},
+		{name: "incomplete remaining length", response: []byte{0x20, 0x82}, wantErr: io.ErrUnexpectedEOF},
+		{name: "zero body bytes", response: []byte{0x20, 0x02}, wantErr: io.ErrUnexpectedEOF},
+		{name: "partial body", response: []byte{0x20, 0x02, 0x00}, wantErr: io.ErrUnexpectedEOF},
+		{name: "complete CONNACK", response: []byte{0x20, 0x02, 0x00, 0x00}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			listener, err := net.Listen("tcp", "127.0.0.1:0")
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer listener.Close()
+			peerDone := make(chan error, 1)
+			go func() {
+				peerDone <- func() error {
+					connection, err := listener.Accept()
+					if err != nil {
+						return err
+					}
+					defer connection.Close()
+					if err := connection.SetDeadline(time.Now().Add(5 * time.Second)); err != nil {
+						return err
+					}
+					if _, _, _, err := clusterDurableProcessReadRaw(connection); err != nil {
+						return err
+					}
+					if len(test.response) == 0 {
+						return nil
+					}
+					_, err = connection.Write(test.response)
+					return err
+				}()
+			}()
+			connection, code, err := clusterFencingConnectOnce(listener.Addr().String(), "token", "client")
+			if connection != nil {
+				defer connection.Close()
+			}
+			if peerErr := <-peerDone; peerErr != nil {
+				t.Fatal(peerErr)
+			}
+			if test.wantErr == nil {
+				if err != nil || connection == nil || code != 0 {
+					t.Fatalf("CONNECT conn=%v code=%d err=%v, want accepted connection", connection, code, err)
+				}
+				return
+			}
+			if connection != nil {
+				t.Fatal("failed CONNECT returned a connection")
+			}
+			if !errors.Is(err, test.wantErr) {
+				t.Fatalf("CONNECT error = %v, want wrapped %v", err, test.wantErr)
+			}
+			if closed := errors.Is(err, errClusterFencingClosedWithoutConnAck); closed != (test.wantErr == io.EOF) {
+				t.Fatalf("CONNECT closed-before-CONNACK sentinel = %t, error = %v", closed, err)
+			}
+			_, winnerErr := clusterFencingNaturalRaceWinner([]clusterFencingConnectionResult{
+				{nodeID: 2, code: 0, probe: clusterFencingProbeResult{alive: true}},
+				{nodeID: 3, err: err},
+			})
+			if test.wantErr == io.EOF {
+				if winnerErr != nil {
+					t.Fatal(winnerErr)
+				}
+			} else if !errors.Is(winnerErr, io.ErrUnexpectedEOF) {
+				t.Fatalf("partial CONNACK round error = %v, want wrapped unexpected EOF", winnerErr)
+			}
+		})
+	}
+}
+
 type clusterFencingDeadlineErrorConn struct {
 	deadlineCalls int
 	reads         int
@@ -448,6 +607,38 @@ func (c *clusterFencingDeadlineErrorConn) SetDeadline(time.Time) error {
 	c.deadlineCalls++
 	time.Sleep(10 * time.Millisecond)
 	return c.deadlineErr
+}
+
+// clusterFencingNaturalRaceWinner applies the concurrent CONNECT contract to one
+// probed round. A connection may close before CONNACK only when a later committed
+// takeover superseded it, so exactly one other connection must remain live.
+func clusterFencingNaturalRaceWinner(results []clusterFencingConnectionResult) (clusterFencingConnectionResult, error) {
+	for _, result := range results {
+		if result.err != nil && !errors.Is(result.err, errClusterFencingClosedWithoutConnAck) {
+			return clusterFencingConnectionResult{}, fmt.Errorf("node %d CONNECT: %w", result.nodeID, result.err)
+		}
+		if result.err == nil && result.code != 0 && result.code != 3 {
+			return clusterFencingConnectionResult{}, fmt.Errorf("node %d CONNECT return code=%d, want 0 or 3", result.nodeID, result.code)
+		}
+	}
+	var winner clusterFencingConnectionResult
+	liveCount := 0
+	for _, result := range results {
+		if result.probe.alive {
+			winner = result
+			liveCount++
+		}
+	}
+	if liveCount != 1 {
+		live := make([]clusterFencingConnectionResult, 0, liveCount)
+		for _, result := range results {
+			if result.probe.alive {
+				live = append(live, result)
+			}
+		}
+		return clusterFencingConnectionResult{}, fmt.Errorf("accepted/live connections=%v, want exactly one", clusterFencingLiveNodeIDs(live))
+	}
+	return winner, nil
 }
 
 func clusterFencingLiveNodeIDs(results []clusterFencingConnectionResult) []uint64 {

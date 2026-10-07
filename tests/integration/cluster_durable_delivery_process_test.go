@@ -701,12 +701,18 @@ func clusterDurableProcessReadRaw(conn net.Conn) (byte, byte, []byte, error) {
 	for range 4 {
 		var digit [1]byte
 		if _, err := io.ReadFull(conn, digit[:]); err != nil {
+			if err == io.EOF {
+				err = io.ErrUnexpectedEOF
+			}
 			return 0, 0, nil, err
 		}
 		remaining += int(digit[0]&127) * multiplier
 		if digit[0]&128 == 0 {
 			body := make([]byte, remaining)
 			_, err := io.ReadFull(conn, body)
+			if err == io.EOF {
+				err = io.ErrUnexpectedEOF
+			}
 			return fixed[0] >> 4, fixed[0] & 15, body, err
 		}
 		multiplier *= 128

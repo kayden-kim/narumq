@@ -1382,7 +1382,7 @@ Suite metric은 NaruMQ·EMQX 공통 key만 사용한다.
 EMQX의 음수 memory 값은 이 smoke에서 `subscribed-idle` median이 `idle-baseline` median보다 낮았음을 나타낸다. 이는 production memory 절감량을 뜻하지 않는다.
 
 - 두 run 모두 `releaseGating=false`를 유지했다. 결과와 raw artifact는 각각 `.artifacts/benchmark/bp04/bp04-20261007T110131.450776700Z-190180/`와 `.artifacts/benchmark/bp04/bp04-suite-20261007T110511.057084500Z-196860/`에 있다.
-- `cmd /c "set GOMAXPROCS=4&& go run ./tools/verify local"` 통과했다. Cluster fencing process fixture는 concurrent CONNECT 시험 전에 모든 node의 default tenant quota profile commit을 기다린다.
+- `cmd /c "set GOMAXPROCS=4&& go run ./tools/verify local"`의 첫 실행은 `natural-race` round 6의 `read CONNACK: EOF`로 실패했고, 재실행은 통과했다. 이 실패의 원인 정리와 시험 변경은 [Cluster §11.15](cluster-session-and-delivery.md#1115-cross-node-delivery-matrix동시-connectstale-epoch-수용-매핑)에 기록한다.
 
 #### 실행 명령
 
