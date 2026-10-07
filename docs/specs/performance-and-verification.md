@@ -97,7 +97,7 @@ memoryBytesPerIdleConnection =
 
 ### 3.3 PERF-07 반복 suite 측정 계약
 
-BP-01, BP-03, BP-04, BP-05, BP-06와 BP-07의 `compare`는 각각 한 번의 독립 실행을 기록하고, 반복 측정은 각 benchmark package의 `suite` 명령이 소유한다. suite는 다음 명령 형식을 사용한다.
+BP-01~BP-07의 `compare`는 각각 한 번의 독립 실행을 기록하고, 반복 측정은 각 benchmark package의 `suite` 명령이 소유한다. Suite는 다음 명령 형식을 사용한다.
 
 ```text
 go run ./tests/benchmark/bp01 suite --profile <path> [--output <root>] [--repetitions <n>]
@@ -106,6 +106,7 @@ go run ./tests/benchmark/bp05 suite --profile <path> [--output <root>] [--repeti
 go run ./tests/benchmark/bp06 suite --profile <path> [--output <root>] [--repetitions <n>]
 go run ./tests/benchmark/bp07 suite --profile <path> [--output <root>] [--repetitions <n>]
 go run ./tests/benchmark/bp04 suite --profile <path> [--output <root>] [--repetitions <n>]
+go run ./tests/benchmark/bp02 suite --profile <path> [--output <root>] [--repetitions <n>]
 ```
 
 `--repetitions`의 기본값은 5이며 5보다 작으면 artifact를 만들지 않고 거부한다. 각 회차는 같은 profile과 한 번 준비한 immutable NaruMQ·runner image를 사용하지만, target별 새 container와 새 회차 directory를 사용하므로 이전 회차 상태를 공유하지 않는 독립 실행이다. suite는 회차 시작 전에 NaruMQ와 EMQX를 다음 순서로 교차한다.
@@ -131,7 +132,7 @@ suite directory는 `.artifacts/benchmark/<benchmark>/<suite-id>/`이며 `profile
 
 image build/pull 또는 suite manifest 갱신처럼 실행 추적 자체가 불가능한 준비·기록 실패는 즉시 suite를 끝내고 빈 target `metrics`와 해당 이유를 기록한다. 회차의 target 실행, comparison, 필수 metric sample 또는 runtime applicability 실패는 추적 가능한 범위에서 후속 회차를 계속 보존하되 suite 전체를 invalid로 표시한다. 이 경우 parent summary의 모든 target `metrics`는 비우고 실패 이유와 child raw artifact만 남긴다. 단, NaruMQ runtime의 GC CPU metric이 한 회차라도 unavailable이면 이는 유효한 unavailable 상태로 기록하며 suite invalid 사유로 삼지 않고, 세 CPU metric만 생략한다. 모든 suite artifact와 smoke 반복 결과는 `releaseGating=false`를 유지하며 production profile, Gate 8 통과, NaruMQ 우위를 판정하지 않는다.
 
-반복 순서와 중앙값·MAD 계산은 `tests/benchmark/internal/suiteartifact`가 소유한다. BP-01, BP-03, BP-04, BP-05, BP-06와 BP-07 package는 metric 선택, parent·child artifact schema와 Docker 실행을 각각 소유한다.
+반복 순서와 중앙값·MAD 계산은 `tests/benchmark/internal/suiteartifact`가 소유한다. BP-01~BP-07 package는 metric 선택, parent·child artifact schema와 Docker 실행을 각각 소유한다.
 
 ### 3.4 BP-03 Durable Delivery smoke 관찰 경계
 
@@ -1395,6 +1396,210 @@ go run ./tests/benchmark/bp04 suite --profile tests/benchmark/bp04/testdata/smok
 
 각 비교 결과와 raw artifact는 `.artifacts/benchmark/bp04/<run-id>/`에 보존한다. Compare 양쪽 target이 valid일 때만 suite를 실행한다. Docker local smoke는 production storage, Linux/EBS, `SPEC-TBD-08`, BP-02 Production Mix, release regression 또는 release gate를 대신하지 않는다.
 
+### 3.8 BP-02 Production Mix smoke 관찰 경계
+
+이 절의 고정 smoke 계약은 승인된 BP-02 계획에 따라 구현 기준으로 채택했다. Production 수용은 문서의 Draft 상태와 미결정 사항을 유지한다.
+
+BP-02 smoke는 QoS 0/1/2, payload 크기 cycle, 구독 유형, retained, persistent session, tenant와 TLS를 고정한 혼합 workload다. 이 smoke는 하네스와 local 실행 경로의 동작 증거다. `B_*`, `SPEC-TBD-08`, production workload, N/N-1 SLO와 release 합격선은 결정하지 않는다. Stream·tenant·TLS 비율은 production 분포가 아니라 고정 smoke 값이다. PRD PERF-01·PERF-03~PERF-09·PERF-11의 관찰 경계를 따른다. 모든 artifact는 `releaseGating=false`다.
+
+#### Topology와 비교 경계
+
+- NaruMQ `narumq-bp02` dynamic cluster와 pinned EMQX OSS 5.8.8 static cluster를 각각 3-node로 실행한다. EMQX image는 shared environment의 `EMQXImageReference`를 쓴다.
+- Node별 broker limit은 `1 CPU / 1 GiB`, generator limit은 `2 CPU / 512 MiB`다. 같은 profile 원문 SHA-256, runner image, topic, payload, seed와 phase를 쓴다.
+- MQTT 5와 RS256 JWKS JWT를 쓴다. Tenant는 `bp02-a`, `bp02-b`다. TCP 1883과 서버 인증 TLS 1.2+ 8883을 혼합한다. NaruMQ peer는 mTLS다. CA는 같지만 NaruMQ는 node별 peer 인증서를 재사용하고 EMQX는 세 SAN을 가진 server 인증서를 공유한다.
+- NaruMQ는 JWT `(iss, sub)`를 tenant·allowed client ID에 연결한다. EMQX는 `iss`, `aud`, `sub=${username}`을 확인하고 username별 file ACL을 적용한다. 두 target 모두 tenant A는 `bp02/a/#`, tenant B는 `bp02/b/#`만 허용한다.
+- Persistent session은 최초 `CleanStart=true`, 재연결은 `CleanStart=false`와 expiry 300초다. 다른 client는 clean session과 expiry 0을 쓴다.
+- `Equivalent`는 profile SHA, CPU/memory limit, runner image ID가 같고 node 수가 3일 때만 true다. 내부 구현의 동등성을 뜻하지 않는다.
+
+| Dimension | Reason |
+| --- | --- |
+| `sessionDurability` | NaruMQ commits persistent sessions, subscriptions, QoS 1/2 inflight and offline messages through Raft quorum; EMQX OSS 5.8.8 keeps memory sessions. Offline results are not a durability comparison. |
+| `tenantIsolation` | NaruMQ binds JWT (iss, sub) to a tenant namespace and allowed client IDs; EMQX uses username-scoped file ACLs on `bp02/a/#` and `bp02/b/#`. Same raw topics across tenants are not exercised. |
+| `authentication` | Both verify RS256 JWTs from the same JWKS; EMQX checks `sub` against the username and does not reproduce client-ID binding or peer mTLS. |
+| `tlsListener` | Both offer server-authenticated TLS 1.2+ from the same CA; NaruMQ reuses each node peer certificate, EMQX shares one three-SAN certificate. Cipher and session-resumption behavior are implementation-specific. |
+| `sharedSelection` | Both use shared subscriptions; cluster-wide member selection order is implementation-specific. `memberDeliveries` are recorded, not compared. |
+| `retainedReplication` | NaruMQ replicates retained state through Raft; EMQX uses its retainer storage. Only client-observed retained replay is compared. |
+
+#### 고정 smoke profile
+
+`tests/benchmark/bp02/testdata/smoke.json`은 모르는 field와 누락 field를 거절한다. 원문 SHA-256을 보존한다. 아래 범위는 하네스 안전 한도이며 production capacity나 SLO가 아니다.
+
+| 필드 | Smoke 값 | 수용 범위 |
+| --- | --- | --- |
+| `profileId` / `purpose` / `seed` | `bp02-smoke-v1` / `smoke` / `2` | 공백 불가 / `smoke`만 / `uint64` 전체 |
+| `payloadSizeCycle` | `[128,128,128,128,128,128,512,512,2048,16384]` | 1–32개, 각 32–65,536 bytes |
+| `keepAliveSeconds` / `sessionExpirySeconds` | `30` / `300` | 10–300 / 60–3,600초 |
+| `tlsEveryNthClient` | `2` | 1–16 |
+| `idleClientsTenantA` / `idleClientsTenantB` | `12` / `6` | 각 0–256 |
+| `ratesPerStreamPerSecond` | `[2,5]` | 1–4개, 엄격 오름차순, 각 1–50 |
+| `maxInflightPerPublisher` / `ackTimeoutMillis` | `16` / `10000` | 1–64 / 1,000–60,000 ms |
+| `warmupMillis` / `measureMillis` / `drainMillis` | `2000` / `10000` / `5000` | 1,000–60,000 / 3,000–120,000 / 1,000–30,000 ms |
+| `idleBaselineMillis` / `subscribedIdleMillis` | `3000` / `3000` | 각 3,000–60,000 ms |
+| `offlineSettleMillis` | `1000` | 100–10,000 ms |
+| `offlineMessagesPerStream` / `offlinePublishRatePerSecond` | `16` / `10` | 1–64 / 1–50 |
+| `reconnectTimeoutMillis` | `20000` | 1,000–120,000 ms |
+| `retainedTopicsTenantA` / `retainedTopicsTenantB` | `8` / `4` | 각 1–64 |
+| `retainedReplayTimeoutMillis` | `10000` | 1,000–60,000 ms |
+| `readyTimeoutMillis` / `setupTimeoutMillis` | `120000` / `60000` | 10,000–600,000 / 5,000–600,000 ms |
+| `maxMessages` | `2048` | 1–1,000,000이며 계산값 이상 |
+| `brokerCPUs` / `brokerMemoryBytes` | `1` / `1073741824` | 양의 유한 CPU / 양의 byte 수 |
+| `generatorCPUs` / `generatorMemoryBytes` | `2` / `536870912` | 양의 유한 CPU / 양의 byte 수 |
+
+`maxMessages` 하한은 `Σ_rate ceil(6 × rate × (warmupMillis + measureMillis) / 1000) + 3 × offlineMessagesPerStream + 2 × (retainedTopicsTenantA + retainedTopicsTenantB)`다. Smoke 계산값은 576이다. Offline stream 상한 64는 cluster spec §4.2의 session당 durable message 한도와 맞춘다. Alert 구독자 한 명은 해당 stream의 offline message를 모두 받는다.
+
+#### Workload 계획과 oracle
+
+| Stream index·이름 | Tenant | Publish QoS | Publisher ID | Topic 규칙 | 구독자·수 | Filter·QoS·session |
+| --- | --- | --- | --- | --- | --- | --- |
+| 0 `a_telemetry` | `bp02-a` | 0 | `bp02-a-pub-telemetry` | `bp02/a/telemetry/dev%02d`, `(s-1)%8` | `bp02-a-sub-telemetry-%02d` × 6 | `bp02/a/telemetry/+`, 0, clean |
+| 1 `a_alert` | `bp02-a` | 1 | `bp02-a-pub-alert` | `bp02/a/alert/zone%d`, `(s-1)%4` | `bp02-a-sub-alert-%02d` × 4 | `bp02/a/alert/#`, 1, persistent |
+| 2 `a_command` | `bp02-a` | 2 | `bp02-a-pub-command` | `bp02/a/command/dev%02d`, `(s-1)%4` | `bp02-a-sub-command-%02d` × 4 | 자기 index의 exact topic, 2, persistent |
+| 3 `a_job` | `bp02-a` | 1 | `bp02-a-pub-job` | `bp02/a/job/%d`, `(s-1)%4` | `bp02-a-sub-job-%02d` × 4 | `$share/bp02a/bp02/a/job/#`, 1, clean |
+| 4 `b_telemetry` | `bp02-b` | 0 | `bp02-b-pub-telemetry` | `bp02/b/telemetry/dev%02d`, `(s-1)%8` | `bp02-b-sub-telemetry-%02d` × 3 | `bp02/b/telemetry/+`, 0, clean |
+| 5 `b_alert` | `bp02-b` | 1 | `bp02-b-pub-alert` | `bp02/b/alert/zone%d`, `(s-1)%4` | `bp02-b-sub-alert-%02d` × 2 | `bp02/b/alert/#`, 1, persistent |
+| 6 `a_state` | `bp02-a` | 1 retained | `bp02-a-pub-state` | `bp02/a/state/dev%02d`, topic index | `bp02-a-sub-state-%02d` × 2 | `bp02/a/state/#`, 1, clean |
+| 7 `b_state` | `bp02-b` | 1 retained | `bp02-b-pub-state` | `bp02/b/state/dev%02d`, topic index | `bp02-b-sub-state-%02d` × 2 | `bp02/b/state/#`, 1, clean |
+
+`s`는 stream별 sequence다. Client 계획은 stream 0–5 publisher, state publisher 2개, stream 0–5 구독자(stream·index 순서), tenant A idle, tenant B idle, state 구독자(A 다음 B) 순서다. Idle ID는 `bp02-a-idle-%03d`, `bp02-b-idle-%03d`이며 연결과 keepalive만 한다. `nodeIndex=ordinal%3`, `tls=ordinal%tlsEveryNthClient==0`이다. State 구독자를 제외한 setup client는 49개(TLS 25, TCP 24)다.
+
+Readiness client는 계획 순서 밖이며 tenant A credential을 쓴다. 여섯 방향 TCP pair의 ID는 `bp02-probe-pub-%d-%d`, `bp02-probe-sub-%d-%d`, topic은 `bp02/a/probe/%d-%d`다. Node별 TLS probe ID는 `bp02-probe-tls-%d`다. Tenant별 allowlist는 계획 client와 probe ID를 중복 없이 고정 순서로 가진다.
+
+`topicMatches`는 production routing과 독립된 oracle이다. `$share/<group>/`을 떼고 MQTT `+`·마지막 `#` 규칙으로 비교한다. 같은 tenant의 일치 구독자만 기대 수신자다. 일반 구독자는 message마다 정확히 한 copy, shared stream은 group 전체 정확히 한 copy를 기대한다.
+
+Payload는 seed·stream index·sequence로 결정한다. 크기는 `payloadSizeCycle[(sequence-1)%len]`이다. Header에서 sequence와 stream index를 읽은 뒤 길이와 결정적 byte를 확인한다. State sequence도 publisher별 1부터 증가한다. Round `r`(1 또는 2), topic index `i`의 sequence는 `(r-1)×topicCount+i+1`이다.
+
+Warmup과 measure는 각각 `floor(rate×millis/1000)`개를 발행한다. Offline sequence의 시작값은 모든 rate의 두 phase 발행 수를 합산한 값 다음이다. Exact-topic 구독자의 offline 기대 수는 이 sequence에서 filter가 맞는 message만 센다. 두 phase의 시간을 합산한 뒤 올림하면 소수 초 duration에서 실제 발행 sequence와 달라질 수 있다. `maxMessages`의 보수적인 상한 계산과 실제 발행 수를 혼용하지 않는다.
+
+#### Phase와 유효성
+
+1. `readiness`: NaruMQ health·leader, 여섯 방향 TCP QoS 1 pair, node별 TLS CONNECT·DISCONNECT를 확인한다.
+2. `idle-baseline`: 연결 전 resource baseline을 수집한다.
+3. `setup`: 계획 순서로 state 구독자 외 client를 연결한다. SUBACK reason은 요청 QoS와 같아야 한다. SUBACK 뒤 reader를 시작한다. Setup 뒤 keepalive를 시작한다.
+4. `subscribed-idle`: 연결·구독만 유지한다.
+5. 각 rate의 `step-NN-warmup`, `step-NN-measure`, `step-NN-drain`: stream 0–5를 절대 시각 `start+(ordinal-1)×interval+streamIndex×interval/6`에 발행한다. Inflight 자리 대기는 schedule lag에 포함한다. Lag가 interval 이상이면 overload다. Drain은 해당 step 기대 delivery·ACK 완료 또는 `drainMillis`까지다.
+6. `offline-disconnect`: persistent 구독자 10명이 reason 0 DISCONNECT 후 socket을 닫는다. `offlineSettleMillis`를 기다린다.
+7. `offline-publish`: stream 1·2·5가 각각 `offlineMessagesPerStream`개를 지정 rate로 보낸다. Sequence는 계속 증가하고 step은 0이다. 모든 ACK 뒤 `offlineSettleMillis`를 기다린다.
+8. `offline-reconnect`: 같은 transport, node `(nodeIndex+1)%3`, `CleanStart=false`로 연결한다. 다시 SUBSCRIBE하지 않는다. 모두 `SessionPresent=true`여야 한다. Phase 시작부터 `reconnectTimeoutMillis` 안에 offline delivery를 모두 받아야 한다. 구독자별 drain duration은 CONNACK부터 마지막 기대 delivery까지다.
+9. `retained-publish`: state publisher 둘이 round 1·2를 차례로 보낸다. Round마다 각 topic에 QoS 1·Retain PUBLISH를 보내고 모든 PUBACK을 기다린다.
+10. `retained-replay`: state 구독자 4명이 계획 transport·node에 clean 연결하고 QoS 1로 구독한다. Topic마다 round 2 payload를 정확히 한 번 받아야 한다. `Retain=true`, QoS 1이어야 한다. SUBSCRIBE 직전부터 마지막 수신까지 replay duration을 잰다. 기대 수신 뒤 500 ms(`bp02RetainedQuietPeriod`) 동안 추가 PUBLISH도 검사한다. Timeout은 missing, round 1은 stale이다.
+11. `final_check`: 모든 reader가 살아 있고 offline·retained 실패가 없는지 확인한다.
+12. `cleanup`: keepalive를 멈추고 모든 client에 DISCONNECT를 쓴다.
+
+Publisher packet ID는 사용하지 않은 1–65535를 순환 배정한다. Inflight는 profile 한도 이하로 유지한다. QoS 1은 PUBACK, QoS 2는 PUBREC→PUBREL→PUBCOMP로 완료한다. Reason `0x80` 이상은 protocol error다. `ackTimeoutMillis`를 넘으면 `ackTimeouts`다. ACK latency는 PUBLISH 직전부터 완료 ACK까지다.
+
+구독자는 QoS 1 기록 뒤 PUBACK을 쓴다. QoS 2는 첫 PUBLISH만 기록하고 PUBREC을 쓴다. 같은 packet ID 재전송은 PUBREC만 다시 쓴다. PUBREL에서 PUBCOMP를 쓰고 pending을 지운다. Filter·payload·stream QoS가 맞아야 한다. 일반 delivery는 Retain=false, QoS 0은 DUP=false여야 한다. QoS 1/2 DUP 값은 판정하지 않는다. PINGRESP 외 packet·EOF·끊김은 오류다. Runner가 offline에서 직접 종료한 연결만 제외한다.
+
+Target은 measure stream별 `missing`, `duplicates`, `unexpected`, `qosMismatches`, `ackTimeouts`가 모두 0이고 overload·protocol·transport error가 없을 때 valid다. Setup 성공 수가 계획 수와 같아야 한다. Offline 모든 session이 present이고 missing·duplicate·unexpected가 없어야 한다. Retained는 missing·duplicate·unexpected·stale·wrongFlags가 없어야 한다. `final_check`도 성공해야 한다. Warmup missing·duplicate는 별도로 보고한다. 첫 copy만 delivery latency에 넣는다.
+
+전체 timeout은 readiness, idle 두 구간, setup, rate별 warmup+measure+drain, `2×offlineSettleMillis+ceil(offlineMessagesPerStream×1000/offlinePublishRatePerSecond)+reconnectTimeoutMillis`, `2×ackTimeoutMillis+retainedReplayTimeoutMillis+500ms`, 3분 여유의 합이다.
+
+#### Artifact와 metric
+
+각 target은 `workload-summary.json`, `resource-summary.json`, `phases.jsonl`, `messages.jsonl`, `retained.jsonl`, `connections.jsonl`을 보존한다. Workload summary는 step·stream별 sent·expectedDeliveries·delivered·missing·duplicates·unexpected·qosMismatches·ackTimeouts, delivery·ACK latency, warmupMissing·warmupDuplicates를 기록한다. Shared는 memberDeliveries도 기록한다. Offline·retained는 별도 summary를 쓴다.
+
+연결 record는 tenant, transport(`tls|tcp`), phase(`setup|offline-reconnect|retained-replay`), connectLatencyNanoseconds와 sessionPresent를 포함한다. Resource는 BP-04와 같은 live stats stream과 표본 유효성 규칙을 쓴다. Window는 `idle-baseline`, `subscribed-idle`, 각 `step-NN-measure`다. Setup client 수는 계획값 49다. Memory 증분은 음수도 보존한다.
+
+Suite는 최소 5회(기본 5회), target 순서를 교차한다. 실패 회차가 하나라도 있으면 parent metric은 비운다. Network 표본이 없으면 해당 metric은 제거한다. Metric key는 다음만 만든다.
+
+- Step별 `stepNN_delivered_per_second`(`deliveries/s`), `stepNN_cluster_median_cpu_percent`(`percent`).
+- Step·stream 0–5별 `stepNN_<stream>_delivery_latency_p99_ns`, `stepNN_<stream>_delivery_latency_p999_ns`(`ns`).
+- QoS 1/2 stream별 `stepNN_<stream>_publish_ack_latency_p99_ns`(`ns`).
+- Network stats가 있으면 `stepNN_network_tx_bytes_per_delivery`(`bytes`).
+- 해당 transport setup client가 있으면 `setup_tls_connect_latency_p99_ns`, `setup_tcp_connect_latency_p99_ns`(`ns`).
+- `offline_reconnect_connack_latency_p99_ns`, `offline_drain_duration_max_ns`, `retained_replay_duration_max_ns`(`ns`), `memory_bytes_per_setup_client`(`bytes`).
+
+#### 수용 시험 연결
+
+| 계약 | 영구 시험 |
+| --- | --- |
+| Profile 원문 hash·strict decode·범위 | `tests/benchmark/bp02/profile_test.go::TestLoadProfilePreservesSourceHash`, `TestDecodeProfileRejectsUnknownFieldAndInvalidBounds` |
+| Tenant·node·transport 계획, 수신자 oracle, payload cycle | `profile_plan_test.go::TestClientPlanAssignsTenantNodeAndTransport`, `TestExpectedRecipientsRespectTenantAndShareGroup`, `TestPayloadSizeCycleAndValidation` |
+| TLS 인증서 검증 | `tests/benchmark/internal/mqttclient/client_test.go::TestConnectOverTLSVerifiesServerCertificate` |
+| Tenant fixture·TLS·cleanup | `fixture_test.go::TestBP02FixtureSeparatesTenantsAndConfiguresTLS` |
+| Shared 중복·QoS·offline·retained 판정 | `collector_test.go::TestSharedGroupSecondMemberDeliveryCountsDuplicate`, `TestQoSMismatchInvalidatesStep`, `TestOfflineSessionNotPresentInvalidatesTarget`, `TestRetainedReplayRejectsStaleRoundAndMissingRetainFlag` |
+| Offline exact topic별 기대 수와 profile별 retained topic 수 | `collector_test.go::TestOfflineCommandExpectationsFollowExactTopics`, `TestRetainedOracleSupportsProfileTopicCounts` |
+| 소수 초 duration과 rate별 offline sequence 경계 | `collector_test.go::TestOfflineCommandOracleUsesPerPhasePublishCounts` |
+| Drain 뒤 늦은 delivery와 중단된 측정의 관찰 수 | `collector_test.go::TestLateMeasureDeliveryPreservesDrainMissingSnapshot`, `TestInterruptedStepReportsObservedMissingDeliveries` |
+| QoS 2 재전송과 PUBREL 전 수신 횟수 | `client_test.go::TestSubscriberQoS2RetransmitBeforePubRelCountsOnce` |
+| Resource 표본·memory·network | `resource_test.go::TestMedianMemoryUsesLowerPlusHalfDifference`, `TestBuildResourceSummaryAcceptsZeroNetworkDeltas`, `TestBuildResourceSummaryRejectsInsufficientSamples` |
+| Equivalence·metric 선택·suite 실패 | `compare_suite_test.go::TestBuildBP02ComparisonRequiresMatchingEvidence`, `TestBP02MetricsSelectStreamsAndPhases`, `TestBP02SuiteFailureLeavesParentMetricsEmpty` |
+
+단일 compare는 양쪽 실제 target의 setup 49/49, TLS 25, offline session 10/10, retained 구독자 4명, final check와 resource를 확인한다. 양쪽 valid일 때만 5회 suite를 실행한다. 제품 동작 결함이나 overload가 있으면 profile·판정 규칙은 바꾸지 않고 실패 증거를 기록한다.
+
+#### 실행 결과
+
+- Compare `bp02-20261007T133602.315971400Z-174004`는 NaruMQ·EMQX 모두 workload와 resource가 valid였다. Comparison은 `equivalent=true`, `releaseGating=false`였고 `nonEquivalent` 여섯 항목을 기록했다.
+- 각 target은 setup 49/49(TLS 25·TCP 24), offline `SessionPresent` 10/10, retained 구독자 4명을 기록했다. Offline missing·duplicate·unexpected와 retained missing·duplicate·unexpected·stale·wrongFlags는 모두 0이었다. Alert 구독자는 각각 16건, command exact 구독자는 각각 4건을 재연결 뒤 받았다.
+- 각 target의 모든 measure stream에서 missing·duplicate·unexpected·QoS mismatch·ACK timeout은 0이었다. Generator overload는 없었고 protocol·transport error도 0이었다. `finalCheck=true`였고 target별 raw publish record는 576건이었다.
+- Suite `bp02-suite-20261007T133920.246951900Z-122940`는 5/5 독립 반복이 valid였다. NaruMQ/EMQX와 EMQX/NaruMQ 순서를 교차했다. 모든 child comparison은 equivalent였다. 각 target은 network stats를 모든 반복에서 수집했고, 44개 metric 각각의 표본 수는 5였다.
+
+다음 표는 5회 suite metric의 중앙값이다. Latency는 ns에서 ms로 환산해 소수점 셋째 자리까지 표시했다. Cluster CPU는 세 node의 CPU 비율 합이다. QoS 1/2 latency는 서로 다른 session 저장 방식의 영향을 포함하므로 내구성 비용의 직접 우열 비교로 사용하지 않는다.
+
+| Target | Delivered/s step01/02 | Cluster CPU (%) step01/02 | Setup TLS/TCP p99 (ms) | Offline CONNACK p99/drain max (ms) | Retained replay max (ms) | Memory bytes/setup client |
+| --- | ---: | ---: | --- | --- | ---: | ---: |
+| NaruMQ | 34 / 85 | 36.50 / 84.38 | 54.530 / 52.231 | 97.755 / 64.424 | 13.964 | 53,584.4 |
+| EMQX | 34 / 85 | 2.41 / 4.14 | 6.210 / 2.083 | 6.220 / 1.109 | 1.289 | -357,371.8 |
+
+| Stream | Target | Step01 delivery p99/p99.9 (ms) | Step02 delivery p99/p99.9 (ms) |
+| --- | --- | --- | --- |
+| `a_telemetry` | NaruMQ | 1.392 / 1.432 | 9.131 / 9.149 |
+| `a_telemetry` | EMQX | 2.235 / 2.379 | 1.767 / 2.054 |
+| `a_alert` | NaruMQ | 56.970 / 56.970 | 58.377 / 70.723 |
+| `a_alert` | EMQX | 1.894 / 1.894 | 1.667 / 1.943 |
+| `a_command` | NaruMQ | 37.977 / 37.977 | 97.438 / 97.438 |
+| `a_command` | EMQX | 1.121 / 1.121 | 1.153 / 1.153 |
+| `a_job` | NaruMQ | 26.301 / 26.301 | 75.732 / 75.732 |
+| `a_job` | EMQX | 1.216 / 1.216 | 1.123 / 1.123 |
+| `b_telemetry` | NaruMQ | 1.350 / 1.350 | 5.506 / 5.576 |
+| `b_telemetry` | EMQX | 1.816 / 1.816 | 1.394 / 1.632 |
+| `b_alert` | NaruMQ | 38.166 / 38.166 | 60.794 / 68.738 |
+| `b_alert` | EMQX | 1.393 / 1.393 | 1.144 / 1.445 |
+
+| Stream | Target | Step01 publish ACK p99 (ms) | Step02 publish ACK p99 (ms) |
+| --- | --- | ---: | ---: |
+| `a_alert` | NaruMQ | 17.373 | 31.188 |
+| `a_alert` | EMQX | 0.590 | 0.652 |
+| `a_command` | NaruMQ | 24.655 | 73.236 |
+| `a_command` | EMQX | 1.305 | 1.425 |
+| `a_job` | NaruMQ | 16.792 | 49.784 |
+| `a_job` | EMQX | 0.629 | 0.675 |
+| `b_alert` | NaruMQ | 12.647 | 38.493 |
+| `b_alert` | EMQX | 0.616 | 0.606 |
+
+| Target | Step01 network Tx bytes/delivery | Step02 network Tx bytes/delivery |
+| --- | ---: | ---: |
+| NaruMQ | 10,614.7 | 11,235.3 |
+| EMQX | 3,529.4 | 3,497.6 |
+
+EMQX의 음수 memory 값은 `subscribed-idle` median이 `idle-baseline` median보다 낮았음을 뜻한다. Production memory 절감량으로 해석하지 않는다.
+
+- Raw artifact는 `.artifacts/benchmark/bp02/bp02-20261007T133602.315971400Z-174004/`와 `.artifacts/benchmark/bp02/bp02-suite-20261007T133920.246951900Z-122940/`에 보존했다. 두 manifest는 source baseline `6c200085368d701f34dedfb31e1a968a84c09028`, `dirty=true`, profile SHA-256 `b929efabd5f99e68758bec86a2034b0b80d153e9ce0291e64a8236b3e4afd7d4`를 기록한다. Runner image ID는 각 manifest에 보존했다.
+- `docker build --target bp02-runner -f tests/benchmark/Dockerfile -t narumq-bp02-step-check .`: PASS. 최초 Step 3/4 build 확인은 아직 `main`이 없어 실패했다. 실행 진입점까지 구현한 뒤 build를 통과시켰다. 임시 no-op은 넣지 않았다.
+- `go test ./tests/benchmark/internal/mqttclient ./tests/benchmark/internal/environment ./tests/benchmark/bp02 -count=1 -v`와 `go vet ./tests/benchmark/...`: PASS(합계 17.82s wall). TLS trust 검증과 QoS 2 재전송 1회 기록을 포함했다.
+- Compare는 145.60s, suite는 674.21s wall에 끝났다. Suite 뒤 `docker ps -a --filter name=bp02- --format "{{.Names}}"`와 `docker volume ls --filter name=bp02- --format "{{.Name}}"` 출력은 비어 있었다. 임시 build 확인 image tag도 삭제했다.
+- `cmd /c "set GOMAXPROCS=4&& go run ./tools/verify local"`: PASS(133.83s wall). Traceability·architecture·coverage·package/integration·production race·fuzz 검증을 포함한다.
+
+- 문서 갱신 뒤 `go run ./tools/verify traceability`: PASS(0.81s wall).
+
+- 후속 경계 검토에서 offline oracle의 합산 후 올림을 발견했다. `TestOfflineCommandOracleUsesPerPhasePublishCounts`의 fractional-total·separate-phase-floor·multiple-rates 세 사례가 수정 전 모두 FAIL했고 수정 후 PASS했다. Oracle은 runner와 같이 warmup·measure 각각의 발행 수를 내림한 뒤 합산한다.
+- 별도 경계 진단 compare `bp02-20261007T140157.761617200Z-105696`는 양쪽 workload·resource valid, `equivalent=true`, `releaseGating=false`였다(122.88s wall). 입력은 rate `[3]`, warmup 1001ms, measure 3001ms, offline stream당 1건이었다. 각 stream은 warmup 3건·measure 9건을 발행했다. 양쪽에서 command 구독자 `00`은 offline expected/delivered 1/1, 다른 command 구독자는 0/0이었다. SessionPresent는 10/10이고 offline missing·duplicate·unexpected는 0이었다. Retained와 final check도 통과했다.
+- 경계 진단의 원문 입력은 `.artifacts/benchmark/bp02/bp02-20261007T140157.761617200Z-105696/diagnostic-profile.json`에 보존한다. 이 실행은 위 고정 smoke 5회 suite와 별개의 회귀 증거다. `testdata/smoke.json`은 바꾸지 않았다. 고정 smoke의 stream별 정상 발행 수는 수정 전후 모두 84건이다.
+- 경계 수정 뒤 `go vet ./tests/benchmark/...`: PASS(1.98s wall). 전체 local gate도 다시 PASS했다(130.42s wall).
+- 후속 문서와 회귀 시험을 반영한 최종 `go test ./tests/benchmark/internal/mqttclient ./tests/benchmark/internal/environment ./tests/benchmark/bp02 -count=1 -v`, `go vet ./tests/benchmark/...`, `go run ./tools/verify traceability`: 모두 PASS(합계 19.84s wall). 경계 진단 뒤 BP-02 container·volume 목록도 비어 있었다.
+
+Local smoke 관찰 경계는 충족했다. `B_*`, production workload·storage, N/N-1 SLO, `SPEC-TBD-08`과 release regression 수용은 남아 있다. EMQX JWT placeholder·SSL env의 승인된 fallback은 사용하지 않았다.
+
+#### 실행 명령
+
+Docker Desktop이 실행 중인 저장소 root에서 실행한다.
+
+```text
+go run ./tests/benchmark/bp02 compare --profile tests/benchmark/bp02/testdata/smoke.json
+go run ./tests/benchmark/bp02 suite --profile tests/benchmark/bp02/testdata/smoke.json
+```
+
+결과는 `.artifacts/benchmark/bp02/<run-id>/`에 보존한다. 이 local smoke는 production·release 수용을 닫지 않는다.
+
 ## 4. 필수 benchmark profile
 
 | ID | 고정 조건 | 필수 결과 |
@@ -1446,6 +1651,8 @@ BP-05 제한된 smoke 실행은 `.artifacts/benchmark/bp05/<run-id>/`에 다음 
 - EMQX target의 `runtime-summary.json` (`not_applicable` 상태와 Go 프로세스에만 적용된다는 이유)
 
 이 artifact는 하네스 동작과 제한된 Phase 0 gate 6 증거를 보존한다. 전체 BP-05 용량, `B_conn`, production SLO와 release gating 결과를 대신하지 않으며 `releaseGating=false`를 유지한다.
+
+BP-02 local smoke artifact는 `.artifacts/benchmark/bp02/<run-id>/`에 보존한다. 각 target은 `workload-summary.json`, `resource-summary.json`, `phases.jsonl`, `messages.jsonl`, `retained.jsonl`, `connections.jsonl`과 합성 `summary.json`, broker stats·log, runner log, inspect, image metadata를 남긴다. Root는 `profile.json`, `manifest.json`, `comparison.json`, `summary.json`을 연결한다. Suite parent는 `suite-manifest.json`과 `suite-summary.json`으로 반복과 metric을 연결한다. 모두 `releaseGating=false`다.
 
 BP-03 single-run artifact는 `.artifacts/benchmark/bp03/<run-id>/`에 보존한다.
 

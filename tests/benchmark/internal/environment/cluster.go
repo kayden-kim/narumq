@@ -457,7 +457,7 @@ func validateClusterTargetOptions(o ClusterTargetOptions) error {
 	if o.Target != "narumq" && o.Target != "emqx" {
 		return fmt.Errorf("unsupported benchmark target %q", o.Target)
 	}
-	if o.RunnerTarget != "bp03-runner" && o.RunnerTarget != "bp04-runner" && o.RunnerTarget != "bp06-runner" && o.RunnerTarget != "bp07-runner" {
+	if o.RunnerTarget != "bp02-runner" && o.RunnerTarget != "bp03-runner" && o.RunnerTarget != "bp04-runner" && o.RunnerTarget != "bp06-runner" && o.RunnerTarget != "bp07-runner" {
 		return fmt.Errorf("unsupported runner target %q", o.RunnerTarget)
 	}
 	if len(o.Nodes) != 3 {

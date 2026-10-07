@@ -2,6 +2,7 @@ package mqttclient
 
 import (
 	"context"
+	"crypto/tls"
 	"encoding/binary"
 	"errors"
 	"fmt"
@@ -32,6 +33,8 @@ type ConnectOptions struct {
 	Username              string
 	Password              []byte
 	Will                  *mqtt.Will
+	// TLSConfig enables MQTT over TLS when non-nil; nil keeps plain TCP.
+	TLSConfig *tls.Config
 }
 
 // ConnectTiming records the wall-clock points used by a connection attempt.
@@ -42,7 +45,7 @@ type ConnectTiming struct {
 	SessionPresent bool
 }
 
-// Client owns one MQTT TCP connection and its packet codecs.
+// Client owns one MQTT TCP or TLS connection and its packet codecs.
 type Client struct {
 	connection       net.Conn
 	encoder          *mqtt.Encoder
@@ -87,7 +90,13 @@ func Connect(ctx context.Context, options ConnectOptions) (*Client, ConnectTimin
 	}
 	startedAt := time.Now()
 	dialer := net.Dialer{Timeout: handshakeTimeout}
-	connection, err := dialer.DialContext(ctx, "tcp", options.Address)
+	var connection net.Conn
+	if options.TLSConfig != nil {
+		tlsDialer := tls.Dialer{NetDialer: &dialer, Config: options.TLSConfig}
+		connection, err = tlsDialer.DialContext(ctx, "tcp", options.Address)
+	} else {
+		connection, err = dialer.DialContext(ctx, "tcp", options.Address)
+	}
 	if err != nil {
 		return nil, ConnectTiming{}, err
 	}

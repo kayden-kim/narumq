@@ -2,14 +2,114 @@ package mqttclient
 
 import (
 	"context"
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
+	"crypto/tls"
+	"crypto/x509"
 	"errors"
 	"fmt"
+	"math/big"
 	"net"
 	"testing"
 	"time"
 
 	"narumq/internal/domain/mqtt"
 )
+
+func TestConnectOverTLSVerifiesServerCertificate(t *testing.T) {
+	caKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now()
+	caTemplate := &x509.Certificate{
+		SerialNumber: big.NewInt(1), NotBefore: now.Add(-time.Minute), NotAfter: now.Add(time.Hour),
+		IsCA: true, BasicConstraintsValid: true, KeyUsage: x509.KeyUsageCertSign,
+	}
+	caDER, err := x509.CreateCertificate(rand.Reader, caTemplate, caTemplate, &caKey.PublicKey, caKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ca, err := x509.ParseCertificate(caDER)
+	if err != nil {
+		t.Fatal(err)
+	}
+	serverKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	serverTemplate := &x509.Certificate{
+		SerialNumber: big.NewInt(2), NotBefore: now.Add(-time.Minute), NotAfter: now.Add(time.Hour),
+		DNSNames: []string{"broker.test"}, KeyUsage: x509.KeyUsageDigitalSignature,
+		ExtKeyUsage: []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
+	}
+	serverDER, err := x509.CreateCertificate(rand.Reader, serverTemplate, ca, &serverKey.PublicKey, caKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	listener, err := tls.Listen("tcp", "127.0.0.1:0", &tls.Config{
+		MinVersion:   tls.VersionTLS12,
+		Certificates: []tls.Certificate{{Certificate: [][]byte{serverDER, caDER}, PrivateKey: serverKey}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer listener.Close()
+	serverErr := make(chan error, 1)
+	go func() {
+		for attempt := range 2 {
+			connection, err := listener.Accept()
+			if err != nil {
+				serverErr <- err
+				return
+			}
+			frame, readErr := readWireFrame(connection, time.Second, time.Second)
+			if attempt == 0 {
+				if readErr == nil && frame.header != 0x10 {
+					readErr = fmt.Errorf("expected CONNECT, received %#x", frame.header)
+				}
+				if readErr == nil {
+					_, readErr = connection.Write([]byte{0x20, 0x03, 0x00, 0x00, 0x00})
+				}
+			} else if readErr == nil {
+				readErr = errors.New("untrusted client unexpectedly completed TLS handshake")
+			} else {
+				readErr = nil
+			}
+			_ = connection.Close()
+			if readErr != nil {
+				serverErr <- readErr
+				return
+			}
+		}
+		serverErr <- nil
+	}()
+	roots := x509.NewCertPool()
+	roots.AddCert(ca)
+	options := ConnectOptions{
+		Address: listener.Addr().String(), ClientID: "tls-client", CleanStart: true,
+		HandshakeTimeout: time.Second,
+		TLSConfig:        &tls.Config{RootCAs: roots, ServerName: "broker.test", MinVersion: tls.VersionTLS12},
+	}
+	client, timing, err := Connect(context.Background(), options)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = client.Close()
+	if timing.Latency <= 0 {
+		t.Fatalf("connect latency = %s, want positive TLS-inclusive latency", timing.Latency)
+	}
+	options.TLSConfig = &tls.Config{RootCAs: x509.NewCertPool(), ServerName: "broker.test", MinVersion: tls.VersionTLS12}
+	_, _, err = Connect(context.Background(), options)
+	var unknownAuthority x509.UnknownAuthorityError
+	if !errors.As(err, &unknownAuthority) {
+		t.Fatalf("untrusted CA error = %v, want x509.UnknownAuthorityError", err)
+	}
+	if err := <-serverErr; err != nil {
+		t.Fatal(err)
+	}
+}
 
 func TestConnectResumesSessionWithSelectedOptions(t *testing.T) {
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
