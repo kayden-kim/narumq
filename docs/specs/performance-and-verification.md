@@ -97,7 +97,7 @@ memoryBytesPerIdleConnection =
 
 ### 3.3 PERF-07 반복 suite 측정 계약
 
-BP-01, BP-03, BP-05, BP-06와 BP-07의 `compare`는 각각 한 번의 독립 실행을 기록하고, 반복 측정은 각 benchmark package의 `suite` 명령이 소유한다. suite는 다음 명령 형식을 사용한다.
+BP-01, BP-03, BP-04, BP-05, BP-06와 BP-07의 `compare`는 각각 한 번의 독립 실행을 기록하고, 반복 측정은 각 benchmark package의 `suite` 명령이 소유한다. suite는 다음 명령 형식을 사용한다.
 
 ```text
 go run ./tests/benchmark/bp01 suite --profile <path> [--output <root>] [--repetitions <n>]
@@ -105,6 +105,7 @@ go run ./tests/benchmark/bp03 suite --profile <path> [--output <root>] [--repeti
 go run ./tests/benchmark/bp05 suite --profile <path> [--output <root>] [--repetitions <n>]
 go run ./tests/benchmark/bp06 suite --profile <path> [--output <root>] [--repetitions <n>]
 go run ./tests/benchmark/bp07 suite --profile <path> [--output <root>] [--repetitions <n>]
+go run ./tests/benchmark/bp04 suite --profile <path> [--output <root>] [--repetitions <n>]
 ```
 
 `--repetitions`의 기본값은 5이며 5보다 작으면 artifact를 만들지 않고 거부한다. 각 회차는 같은 profile과 한 번 준비한 immutable NaruMQ·runner image를 사용하지만, target별 새 container와 새 회차 directory를 사용하므로 이전 회차 상태를 공유하지 않는 독립 실행이다. suite는 회차 시작 전에 NaruMQ와 EMQX를 다음 순서로 교차한다.
@@ -130,7 +131,7 @@ suite directory는 `.artifacts/benchmark/<benchmark>/<suite-id>/`이며 `profile
 
 image build/pull 또는 suite manifest 갱신처럼 실행 추적 자체가 불가능한 준비·기록 실패는 즉시 suite를 끝내고 빈 target `metrics`와 해당 이유를 기록한다. 회차의 target 실행, comparison, 필수 metric sample 또는 runtime applicability 실패는 추적 가능한 범위에서 후속 회차를 계속 보존하되 suite 전체를 invalid로 표시한다. 이 경우 parent summary의 모든 target `metrics`는 비우고 실패 이유와 child raw artifact만 남긴다. 단, NaruMQ runtime의 GC CPU metric이 한 회차라도 unavailable이면 이는 유효한 unavailable 상태로 기록하며 suite invalid 사유로 삼지 않고, 세 CPU metric만 생략한다. 모든 suite artifact와 smoke 반복 결과는 `releaseGating=false`를 유지하며 production profile, Gate 8 통과, NaruMQ 우위를 판정하지 않는다.
 
-반복 순서와 중앙값·MAD 계산은 `tests/benchmark/internal/suiteartifact`가 소유한다. BP-01, BP-03, BP-05, BP-06와 BP-07 package는 metric 선택, parent·child artifact schema와 Docker 실행을 각각 소유한다.
+반복 순서와 중앙값·MAD 계산은 `tests/benchmark/internal/suiteartifact`가 소유한다. BP-01, BP-03, BP-04, BP-05, BP-06와 BP-07 package는 metric 선택, parent·child artifact schema와 Docker 실행을 각각 소유한다.
 
 ### 3.4 BP-03 Durable Delivery smoke 관찰 경계
 
@@ -1219,6 +1220,180 @@ Suite 뒤 BP-06 container·volume 조회 출력은 모두 비어 있었다. 이 
 
 실행한 최종 source·시험과 결과 문서의 확인 커밋은 `4145b757e2d847a4c30549827e6f5b4b6f88785a` (`fix(cluster): recover failover proposals with replicated receipts`)이다. Focused 시험·disk restore·전체 local gate·최종 5회 suite는 이 커밋 전에 실행했다. Source와 시험은 suite 이후 바꾸지 않았다. 결과 문서와 TODO 갱신 뒤 `go run ./tools/verify traceability`도 PASS했다. 커밋 뒤에는 이 해시를 연결하는 문서만 갱신한다. Manifest의 원래 baseline·`dirty=true`, 이전 invalid artifact와 comparator 예외는 그대로 보존한다. CI 실행 링크는 없으며 확인 커밋을 커밋 뒤 재실행이나 release gate 통과로 해석하지 않는다.
 
+
+### 3.7 BP-04 Subscription Stress smoke 관찰 경계
+
+BP-04는 wildcard·overlap·shared·high fan-out 구독을 고정한 QoS 0 workload다. `compare`는 한 번의 독립 실행이고 `suite`는 최소 5회의 독립 실행을 교차 순서로 수행한다. 모든 artifact는 `releaseGating=false`다. 이 smoke는 하네스와 local 실행 경로의 동작 증거이며 `SPEC-TBD-08`, production workload, release 합격선 또는 전체 PERF-01~PERF-12 수용을 결정하지 않는다.
+
+이 관찰 경계는 PRD PERF-01·PERF-03~PERF-09·PERF-11을 따른다. BP-04는 구독 유형과 고정 client workload를 관찰하며 node failure·recovery·rolling drain은 BP-06·BP-07의 범위다. Production 비교 대상과 수치형 합격 기준은 `SPEC-TBD-08`에서 별도로 결정한다.
+
+#### Topology와 비교 경계
+
+- 두 target은 각각 3-node cluster를 사용한다. NaruMQ는 `narumq-bp04` dynamic cluster와 node별 Docker named volume을 쓴다.
+- EMQX OSS 5.8.8 comparator는 BP-01/BP-05가 쓰는 pinned image `emqx/emqx:5.8.8@sha256:4593b6e30196754779fa14483332cb0be56c233f1c8a387b1308bec4337c0144`의 static 3-node cluster다. Enterprise evaluation license의 동시 session 25개 제한 때문에 BP-03/06/07 Enterprise image를 재사용하지 않는다.
+- Broker CPU·memory limit은 target마다 node별 `1 CPU / 1 GiB`다. Generator는 `2 CPU / 512 MiB`로 broker와 분리한다. 두 target은 같은 runner image, profile, payload, topic, seed, phase와 client 구현을 사용한다.
+- MQTT 5, plaintext bridge network, JWKS RS256 JWT, QoS 0, `Clean Start=true`, `Session Expiry Interval=0`, keepalive 30초를 사용한다. Publisher·subscriber 연결은 fixture의 JWT identity와 ACL로 제한한다. NaruMQ peer 통신은 mTLS다.
+- 모든 workload subscription과 publish는 QoS 0이다. 정상 측정 구간에서 기대 delivery가 하나라도 빠지거나 중복되면 target은 invalid다. Overlap subscription은 NaruMQ가 session당 한 copy를 전달하는 반면 EMQX가 일치 subscription별로 전달할 수 있으므로 `extraCopies`를 기록하되 양쪽에 공통인 missing·duplicate·unexpected 규칙은 유지한다.
+- Comparator는 OSS image를 cluster로 구성한 새 조합이다. 이 결과는 Enterprise 비교나 동일한 route replication 내부 구현을 뜻하지 않는다. 차이는 `nonEquivalent`에 기록한다.
+- Route propagation은 다른 workload traffic이 없는 별도 phase에서 측정한다. 해상도는 5 ms probe 간격이며 route visibility 값은 SUBSCRIBE 전송부터 첫 delivery까지다. SUBACK보다 먼저 delivery가 와도 유효하다.
+
+#### 고정 smoke profile
+
+`tests/benchmark/bp04/testdata/smoke.json`은 strict decode한다. 숫자 범위는 smoke 하네스 안전 한도이며 production capacity나 SLO가 아니다.
+
+| 필드 | Smoke 값 | 수용 범위 |
+| --- | --- | --- |
+| `profileId` | `bp04-smoke-v1` | 공백 불가 |
+| `purpose` | `smoke` | `smoke`만 허용 |
+| `seed` | `4` | `uint64` 전체 범위 |
+| `payloadBytes` | `128` | 16–65,536 bytes |
+| `keepAliveSeconds` | `30` | 10–300초 |
+| `fanoutSubscribers` | `48` | 1–256 |
+| `wildcardSubscribers` | `24` | 6–96, 6의 배수 |
+| `overlapSubscribers` | `12` | 1–64 |
+| `sharedSubscribers` | `12` | 2–64 |
+| `ratesPerStreamPerSecond` | `[5, 20]` | 1–4개, 오름차순, 각 1–200 |
+| `warmupMillis` | `2000` | 1,000–60,000 ms |
+| `measureMillis` | `10000` | 3,000–120,000 ms |
+| `drainMillis` | `3000` | 1,000–30,000 ms |
+| `idleBaselineMillis` | `3000` | 3,000–60,000 ms |
+| `subscribedIdleMillis` | `3000` | 3,000–60,000 ms |
+| `routeProbes` | `12` | 1–64 |
+| `routeProbeIntervalMillis` | `5` | 1–100 ms |
+| `routeTimeoutMillis` | `5000` | 1,000–30,000 ms |
+| `readyTimeoutMillis` | `120000` | 10,000–600,000 ms |
+| `setupTimeoutMillis` | `60000` | 5,000–600,000 ms |
+| `maxMessages` | `4096` | 1–1,000,000이며 계산한 workload 총량 이상 |
+| `brokerCPUs` / `brokerMemoryBytes` | `1` / `1073741824` | 양의 유한 CPU, 양의 byte 수 |
+| `generatorCPUs` / `generatorMemoryBytes` | `2` / `536870912` | 양의 유한 CPU, 양의 byte 수 |
+
+`maxMessages`는 `ceil(Σ_rate 4 × rate × (warmupMillis + measureMillis) / 1000)` 이상이어야 한다. 각 rate는 fanout·wildcard·overlap·shared 네 stream에 적용한다. 모든 subscriber는 세 node에 global ordinal을 round-robin 배치한다. Smoke profile에서 workload 구독자는 96개다.
+
+#### 구독 계획과 topic oracle
+
+Class 순서는 `fanout`, `wildcard`, `overlap`, `shared`다. 각 subscriber ID는 class별 `bp04-sub-<class>-%03d`이며 global ordinal modulo 3으로 node를 정한다.
+
+- Fan-out subscriber 48개는 `bp04/fanout/all`을 구독한다. 각 message는 subscriber별 정확히 한 copy를 기대한다.
+- Wildcard subscriber 24개는 class index `i`, `k=(i/6)%4`를 사용한다. `i%6`이 0–5일 때 filter는 각각 `bp04/wild/r{k}/+`, `bp04/wild/+/d{k}`, `bp04/wild/#`, `bp04/wild/r{k}/#`, `bp04/+/r{k}/d{k}`, `bp04/wild/r{k}/d{k}`다. 첫 topic level은 wildcard가 아니다. 각 message의 허용 copy 수는 1이다.
+- Overlap subscriber 12개는 하나의 SUBSCRIBE에 `bp04/ovl/a/b`, `bp04/ovl/+/b`, `bp04/ovl/#` 세 filter를 넣는다. NaruMQ에서 허용하는 copy 수는 3이다. 그 이상은 duplicate다.
+- Shared subscriber 12개는 `$share/bp04g/bp04/shared/#`를 구독한다. Group 전체는 message마다 정확히 한 번 받아야 한다.
+
+Stream index는 class 순서대로 0–3이다. Publisher ID는 `bp04-pub-<class>`이며 node index는 각각 0, 1, 2, 0이다. Topic은 fanout `bp04/fanout/all`, wildcard `bp04/wild/r%d/d%d`(sequence에서 계산한 r,d는 0–3), overlap `bp04/ovl/a/b`, shared `bp04/shared/j%d`(sequence modulo 8)다. Payload는 profile seed, stream index, sequence와 payload 크기로 결정한다.
+
+`topicMatches`는 production routing package와 독립된 시험 oracle이다. `/` 단위에서 `+`는 한 level, 마지막 level의 `#`는 나머지 level과 일치한다. `$share/<group>/` 접두어를 떼고 비교한다. Expected recipient는 같은 class에서 하나 이상의 filter가 topic과 일치하는 subscriber의 집합이다.
+
+Route probe `j`의 subscriber는 `bp04-route-sub-%03d`, node index `j%3`, topic `bp04/route/%03d`다. Publisher ID는 `bp04-route-pub-%d`(node 번호 1–3)이며 probe는 `(j+1)%3` node publisher를 사용한다. Readiness는 세 node의 여섯 방향 node pair마다 `bp04-probe-pub-%d-%d`, `bp04-probe-sub-%d-%d`, `bp04/probe/%d-%d`를 사용한다. Fixture의 `allowedClientIds`는 workload·route·readiness를 포함한 모든 client ID를 중복 없이 고정 순서로 가진다.
+
+#### Phase와 유효성
+
+Runner는 아래 phase를 `phases.jsonl`에 기록한다.
+
+1. `readiness`: 세 node health와 같은 cluster ID를 확인한다. 여섯 cross-node readiness pair에서 QoS 1 probe publish와 delivery를 확인한다.
+2. `idle-baseline`: workload client를 연결하기 전에 profile duration 동안 기다린다.
+3. `setup`: Route publisher 3개, workload publisher 4개, 모든 workload subscriber와 route subscriber를 순서대로 연결한다. Workload subscriber는 연결 뒤 SUBSCRIBE하고 SUBACK 성공 뒤 reader를 시작한다. Client 접속·구독 결과를 `connections.jsonl`에 쓴다. 이 phase의 setup client 수는 `3 + 4 + 96 + routeProbes`다.
+4. `subscribed-idle`: traffic 없이 profile duration 동안 기다린다.
+5. 각 rate마다 `step-NN-warmup`, `step-NN-measure`, `step-NN-drain`을 실행한다. Stream별 publisher goroutine은 절대 시각 schedule을 따른다. Measure 종료 뒤 그 step의 기대 delivery가 모두 도착하거나 `drainMillis`가 지나면 drain을 끝낸다. Stream별 sequence는 rate step 사이에서도 단조 증가한다.
+6. `route-propagation`: probe를 순서대로 실행한다. 별도 subscriber가 topic을 구독하는 동안 해당 publisher가 QoS 0 probe를 profile 간격으로 보낸다. Timeout probe는 실패로 기록한 뒤 다음 probe로 진행한다.
+7. `final_check`: 모든 client reader가 살아 있고 route probe가 성공했는지 확인한다.
+8. `cleanup`: keepalive를 중단하고 client에 `DISCONNECT`를 보낸 뒤 socket을 닫는다. Raw 기록과 요약을 쓴다.
+
+Keepalive goroutine은 setup 뒤 시작하며 `keepAliveSeconds/2`마다 모든 client에 PINGREQ를 쓴다. Reader는 QoS 0, `DUP=false`, `Retain=false` PUBLISH만 허용한다. Payload와 topic을 검증하고 delivery를 collector에 전달한다. PINGRESP는 무시한다. Route subscriber만 SUBACK을 받을 수 있다. 끊김, EOF, 잘못된 packet·payload는 workload를 invalid로 만든다.
+
+각 stream rate에서 `count = rate × durationMillis / 1000`, `interval = 1s / rate`, `scheduled = start + (ordinal-1)×interval + streamIndex×interval/4`를 사용한다. Collector에 기대 수신자를 먼저 고정하고 PUBLISH 직전 단일 runner clock으로 `sentAt`을 기록한다. `sentAt - scheduled >= interval`이면 해당 step은 `generatorOverload=true`다.
+
+Measure message는 일반 class에서 수신 copy가 0이면 `missing=1`, 허용 copy를 넘으면 초과분을 `duplicates`로 센다. 허용 범위 안의 2개 이상 수신은 `extraCopies`로 분리한다. Shared는 group 총 수신이 0이면 missing 1, 2개 이상이면 합계에서 1을 뺀 수를 duplicate로 센다. Shared member별 전달 수는 별도 기록한다. Warmup missing·duplicate는 유효성에 넣지 않고 `warmupMissing`·`warmupDuplicates`로 보고한다. 첫 copy만 delivery latency에 포함한다.
+
+Target workload는 다음을 모두 만족할 때 valid다.
+
+- 모든 step·class에서 measure `missing`, `duplicates`, `unexpected`가 0이다.
+- `generatorOverload=false`, `protocolErrors=0`, `transportErrors=0`이다.
+- Setup 성공 client 수가 계획된 수와 같고 route probe가 모두 성공한다.
+- `final_check`가 성공한다.
+
+모든 latency 백분위는 nearest-rank 방식으로 p50·p95·p99·p99.9·max를 기록한다. Measurement duration은 profile의 측정 구간이며 warmup은 집계에서 제외한다.
+
+#### Route propagation
+
+Probe `j`는 아래 순서로 실행한다.
+
+1. 선택한 route publisher가 `bp04/route/%03d`에 QoS 0 PUBLISH를 `routeProbeIntervalMillis` 간격으로 보낸다. Payload는 stream index 4를 사용하며 sequence는 publisher별 단조 증가한다.
+2. SUBSCRIBE 쓰기 직전 시각을 `T0`으로 기록한다.
+3. Reader가 전달한 SUBACK 시각을 `T1`으로 기록한다. Reason code는 하나이며 `0x00`이어야 한다.
+4. 해당 topic의 첫 유효 PUBLISH 수신 시각을 `T2`로 기록한다.
+5. `T0 + routeTimeoutMillis`까지 delivery가 없으면 timeout으로 기록한다.
+6. Publisher goroutine을 중단한다.
+
+`subscribeAckNanoseconds=T1-T0`, `routeVisibleNanoseconds=T2-T0`다. MQTT는 SUBACK 전 PUBLISH를 허용하므로 `T2<T1`도 valid다. 첫 수신 뒤 추가 probe와 이전 probe topic의 늦은 delivery는 기록하되 판정에 사용하지 않는다. `route-probes.jsonl`은 probe와 subscriber/publisher ID·node, `T0`·`T1`·`T2`, 두 latency, 전송 수와 오류를 기록한다.
+
+#### Artifact와 metric
+
+각 target은 `workload-summary.json`, `resource-summary.json`, `phases.jsonl`, `messages.jsonl`, `route-probes.jsonl`, `connections.jsonl`을 보존한다. `workload-summary.json`은 schema version 1, target·profile·purpose, `releaseGating=false`, validity와 실패 이유를 포함한다. Setup에는 client·subscriber session·subscription filter 수, SUBACK latency와 duration을 둔다. 각 step은 rate·measure duration·schedule lag·overload·delivered/s와 class별 sent·expected deliveries·delivered·missing·duplicates·extraCopies·unexpected·rate·latency·warmup count를 기록한다. Shared class만 `memberDeliveries`를 가진다. Route summary는 probe 수·성공 수·간격·SUBACK latency·route visibility latency를 기록한다. Protocol·transport error와 unexpected delivery count도 기록한다.
+
+`messages.jsonl`은 publish마다 class·sequence·step·phase·topic·scheduled/sent 시각·expected/delivered·extraCopies·duplicates를 기록한다. Missing이 있으면 `missingRecipients`를 포함한다.
+
+`resource-summary.json`은 `idle-baseline`, `subscribed-idle`, 각 `step-NN-measure` window의 broker·network-owner Docker stats를 기록한다. 각 node와 cluster의 CPU median, memory median, block read/write delta와 owner network Rx/Tx delta를 보존한다. Window·node 표본이 2개 미만이거나 필요한 window가 없으면 resource 결과는 invalid다. `Deliveries`는 해당 step measure의 전체 첫-copy delivery 수이며 idle window에서는 0이다. Network metric은 network stats를 수집할 수 있을 때만 기록한다. 짝수 memory 표본의 median은 정렬한 가운데 두 값에 `lower + (upper-lower)/2`를 적용한다. Cluster memory는 node median 합이다.
+BP-04는 Docker live stats stream에서 출력하는 각 갱신을 받아 짧은 resource window의 표본으로 저장한다. 각 node와 window에서 필요한 표본 수를 얻지 못하면 resource 결과는 invalid다.
+
+Top-level `memory`는 idle-baseline과 subscribed-idle cluster median, signed `incrementalMemoryBytes`, setup client 수와 `memoryBytesPerSetupClient`를 기록한다. 음수 증분을 0으로 자르지 않는다. BP-04 smoke profile의 setup client 수는 115다.
+
+Suite metric은 NaruMQ·EMQX 공통 key만 사용한다.
+
+- Rate step마다 `stepNN_delivered_per_second` (`deliveries/s`)와 `stepNN_cluster_median_cpu_percent` (`percent`)를 기록한다.
+- Step·class마다 `stepNN_<class>_delivery_latency_p99_ns`와 `stepNN_<class>_delivery_latency_p999_ns` (`ns`)를 기록한다.
+- Network stats가 있으면 step마다 `stepNN_network_tx_bytes_per_delivery` (`bytes`)를 기록한다.
+- `route_visible_latency_p50_ns`, `route_visible_latency_p99_ns`, `route_visible_latency_max_ns`, setup의 `subscribe_ack_latency_p99_ns`, `memory_bytes_per_setup_client`를 기록한다.
+
+모든 profile·manifest·comparison·summary·suite artifact는 `releaseGating=false`다. 반복 suite는 최소 5회, 기본 5회이며 target 순서는 NaruMQ/EMQX와 EMQX/NaruMQ를 번갈아 적용한다. 실패 회차가 하나라도 있으면 suite는 invalid이고 parent metric을 비운다. 중앙값과 MAD는 §3.3의 계산 규칙을 따른다.
+
+`comparison.json`의 `Equivalent`는 profile SHA, CPU/memory limit, runner image ID가 같고 node 수가 3일 때만 true다. `nonEquivalent`에는 다음 경계를 고정해 기록한다.
+
+| 항목 | 비동등 사유 |
+| --- | --- |
+| `overlapDelivery` | NaruMQ는 session당 최대 granted QoS에서 한 copy를 전달한다. EMQX는 matching subscription별로 전달할 수 있으므로 extra copy는 기록하되 직접 비교하지 않는다. |
+| `sharedSelection` | 두 target 모두 round-robin dispatch를 사용하지만 cluster-wide member 선택 순서는 구현별이다. `memberDeliveries`는 기록하되 비교하지 않는다. |
+| `authentication` | 양쪽 모두 JWKS JWT를 검증하지만 EMQX fixture는 NaruMQ tenant/client-ID binding과 peer mTLS를 재현하지 않는다. |
+| `subscriptionReplication` | NaruMQ는 Raft로 구독을 commit하고 node-local route projection을 만든다. EMQX OSS는 cluster database로 route를 복제한다. Client 관점 route visibility만 같은 방식으로 측정한다. |
+
+#### 수용 시험 연결
+
+| 계약 | 영구 시험 |
+| --- | --- |
+| Profile 원문 hash, strict decode와 범위 | `profile_plan_test.go::TestLoadProfilePreservesSourceHash`, `TestDecodeProfileRejectsUnknownFieldAndInvalidSmokeBound` |
+| Subscriber ID, topic oracle, wildcard 경계와 route topic 형식 | `profile_plan_test.go::TestWorkloadPlanIDsAndTopicOracle`, `TestTopicMatchesMQTTWildcardBoundaries`, `TestValidRouteTopicRequiresThreeDigits` |
+| Shared 전체 수신 수와 overlap 허용 copy 경계 | `collector_test.go::TestSharedDeliveryCountsDuplicatesAcrossDifferentMembers`, `TestOverlapExtraCopiesStopAtAllowedThree` |
+| JWT identity allowlist, peer certificate, ACL 분리와 fixture cleanup | `fixture_test.go::TestBP04FixtureRestrictsClientIdentityAndCleansUp` |
+| Live stats terminal control parsing, resource median·window·network 경계 | `tests/benchmark/internal/environment/stats_test.go::TestDecodeLiveDockerStatsLineStripsTerminalControlsAndSplitsUpdates`, `resource_test.go::TestMedianMemoryUsesLowerPlusHalfDifference`, `TestBuildResourceSummaryAcceptsZeroNetworkDeltas`, `TestBuildResourceSummaryRejectsInsufficientSamples` |
+| Live stream의 CR 구분 갱신, 취소 시 process 회수와 예상하지 않은 정상 종료 거절 | `tests/benchmark/internal/environment/stats_test.go::TestLiveStatsSamplerSplitsCarriageReturnUpdatesAndReapsOnStop`, `TestLiveStatsSamplerRejectsUnexpectedCleanExit` |
+| Equivalence, suite metric 선택과 실패 suite의 빈 parent metric | `compare_suite_test.go::TestBuildBP04ComparisonRequiresMatchingEvidence`, `TestBP04MetricsSelectProfileAndResourceObservations`, `TestBP04SuiteFailureLeavesParentMetricsEmpty` |
+
+단일 compare는 두 실제 target의 workload·인증·route·resource 결과를 확인한다. Suite는 최소 5회 교차 순서와 전체 반복의 parent metric을 확인한다.
+
+#### 실행 결과
+
+- Compare `bp04-20261007T110131.450776700Z-190180`는 NaruMQ·EMQX 모두 valid였다. Comparison은 `equivalent=true`였다. 각 target은 setup client 115개, route probe 12/12, `protocolErrors=0`, `transportErrors=0`, `unexpectedDeliveries=0`, `finalCheck=true`를 기록했다. Resource window와 network stats도 모두 valid였다.
+- Suite `bp04-suite-20261007T110511.057084500Z-196860`는 5/5 반복이 valid였다. 순서는 NaruMQ/EMQX, EMQX/NaruMQ를 번갈아 적용했다. 두 target의 network stats는 모든 반복에서 사용 가능했고, 모든 suite metric 표본 수는 5였다.
+5회 suite artifact의 metric별 중앙값은 다음과 같다. Latency는 ns에서 ms로 환산해 소수점 셋째 자리까지 표시했다. Class 순서는 fanout/wildcard/overlap/shared다.
+
+| Target | Delivered/s step01/step02 | Step01 class p99 (ms) | Step02 class p99 (ms) | Route p50/p99/max (ms) | Memory bytes/setup client |
+| --- | ---: | --- | --- | --- | ---: |
+| EMQX | 342.6 / 1,370 | 4.595 / 2.849 / 3.696 / 1.141 | 4.249 / 2.227 / 3.862 / 1.141 | 6.709 / 8.532 / 8.532 | -152,727.4 |
+| NaruMQ | 342.6 / 1,370 | 2.204 / 1.189 / 1.215 / 0.979 | 1.946 / 1.261 / 1.280 / 0.969 | 15.827 / 16.574 / 16.574 | 116,501.3 |
+
+EMQX의 음수 memory 값은 이 smoke에서 `subscribed-idle` median이 `idle-baseline` median보다 낮았음을 나타낸다. 이는 production memory 절감량을 뜻하지 않는다.
+
+- 두 run 모두 `releaseGating=false`를 유지했다. 결과와 raw artifact는 각각 `.artifacts/benchmark/bp04/bp04-20261007T110131.450776700Z-190180/`와 `.artifacts/benchmark/bp04/bp04-suite-20261007T110511.057084500Z-196860/`에 있다.
+- `cmd /c "set GOMAXPROCS=4&& go run ./tools/verify local"` 통과했다. Cluster fencing process fixture는 concurrent CONNECT 시험 전에 모든 node의 default tenant quota profile commit을 기다린다.
+
+#### 실행 명령
+
+저장소 root에서 단일 비교와 5회 반복 suite를 실행한다.
+
+```text
+go run ./tests/benchmark/bp04 compare --profile tests/benchmark/bp04/testdata/smoke.json
+go run ./tests/benchmark/bp04 suite --profile tests/benchmark/bp04/testdata/smoke.json
+```
+
+각 비교 결과와 raw artifact는 `.artifacts/benchmark/bp04/<run-id>/`에 보존한다. Compare 양쪽 target이 valid일 때만 suite를 실행한다. Docker local smoke는 production storage, Linux/EBS, `SPEC-TBD-08`, BP-02 Production Mix, release regression 또는 release gate를 대신하지 않는다.
 
 ## 4. 필수 benchmark profile
 

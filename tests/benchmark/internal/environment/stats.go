@@ -2,12 +2,14 @@ package environment
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"math"
 	"os"
+	"os/exec"
 	"strconv"
 	"strings"
 	"sync"
@@ -103,6 +105,71 @@ func decodeStatsLine(data []byte) (StatsSample, error) {
 		NetworkRxBytes: networkRx, NetworkTxBytes: networkTx,
 		BlockReadBytes: blockRead, BlockWriteBytes: blockWrite,
 	}, nil
+}
+
+func decodeLiveDockerStatsLine(line, containerName string) ([]StatsSample, error) {
+	line = stripDockerStatsANSI(line)
+	records := strings.FieldsFunc(line, func(r rune) bool { return r == '\r' || r == '\n' })
+	samples := make([]StatsSample, 0, len(records))
+	for _, record := range records {
+		record = strings.TrimSpace(record)
+		if record == "" {
+			continue
+		}
+		object := fmt.Sprintf("{\"collectedAt\":%q,\"container\":%q,\"docker\":%s}", time.Now().UTC().Format(time.RFC3339Nano), containerName, record)
+		sample, err := decodeStatsLine([]byte(object))
+		if err != nil {
+			return nil, fmt.Errorf("decode live Docker stats record: %w", err)
+		}
+		samples = append(samples, sample)
+	}
+	return samples, nil
+}
+
+func stripDockerStatsANSI(value string) string {
+	var clean strings.Builder
+	clean.Grow(len(value))
+	for i := 0; i < len(value); {
+		if value[i] == 0x1b {
+			i++
+			if i == len(value) {
+				break
+			}
+			switch value[i] {
+			case '[':
+				i++
+				for i < len(value) && (value[i] < 0x40 || value[i] > 0x7e) {
+					i++
+				}
+				if i < len(value) {
+					i++
+				}
+			case ']':
+				i++
+				for i < len(value) {
+					if value[i] == 0x07 {
+						i++
+						break
+					}
+					if value[i] == 0x1b && i+1 < len(value) && value[i+1] == '\\' {
+						i += 2
+						break
+					}
+					i++
+				}
+			default:
+				i++
+			}
+			continue
+		}
+		if value[i] < 0x20 && value[i] != '\r' && value[i] != '\n' && value[i] != '\t' {
+			i++
+			continue
+		}
+		clean.WriteByte(value[i])
+		i++
+	}
+	return clean.String()
 }
 
 func stringField(values map[string]any, name string) (string, error) {
@@ -311,6 +378,134 @@ func startStatsSampler(ctx context.Context, containerName, outputPath string, sk
 				}
 			}
 		}
+	}()
+	return stop, done
+}
+
+func splitLiveDockerStatsRecords(data []byte, atEOF bool) (int, []byte, error) {
+	for index, value := range data {
+		if value != '\r' && value != '\n' {
+			continue
+		}
+		if index == 0 {
+			return 1, nil, nil
+		}
+		return index + 1, data[:index], nil
+	}
+	if atEOF && len(data) > 0 {
+		return len(data), data, nil
+	}
+	return 0, nil, nil
+}
+
+func startLiveStatsSampler(ctx context.Context, containerName, outputPath string) (func(), <-chan error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	samplerContext, cancel := context.WithCancel(ctx)
+	stopRequested := make(chan struct{})
+	var stopOnce sync.Once
+	stop := func() {
+		stopOnce.Do(func() {
+			close(stopRequested)
+			cancel()
+		})
+	}
+	isStopped := func() bool {
+		select {
+		case <-stopRequested:
+			return true
+		default:
+			return false
+		}
+	}
+	done := make(chan error, 1)
+	go func() {
+		file, err := os.Create(outputPath)
+		if err != nil {
+			if isStopped() {
+				done <- nil
+			} else {
+				done <- err
+			}
+			return
+		}
+		defer file.Close()
+		writer := bufio.NewWriterSize(file, 64*1024)
+		command := exec.CommandContext(samplerContext, "docker", "stats", "--format", "{{json .}}", containerName)
+		stdout, err := command.StdoutPipe()
+		if err != nil {
+			done <- fmt.Errorf("open docker stats output for %s: %w", containerName, err)
+			return
+		}
+		var stderr bytes.Buffer
+		command.Stderr = &stderr
+		if err := command.Start(); err != nil {
+			if isStopped() {
+				done <- nil
+			} else {
+				done <- fmt.Errorf("start docker stats for %s: %w", containerName, err)
+			}
+			return
+		}
+
+		scanner := bufio.NewScanner(stdout)
+		scanner.Split(splitLiveDockerStatsRecords)
+		scanner.Buffer(make([]byte, 1024), 1<<20)
+		samples := 0
+		var sampleErr error
+		for scanner.Scan() {
+			decoded, err := decodeLiveDockerStatsLine(scanner.Text(), containerName)
+			if err != nil {
+				sampleErr = err
+				break
+			}
+			for _, sample := range decoded {
+				if err := json.NewEncoder(writer).Encode(sample); err != nil {
+					sampleErr = err
+					break
+				}
+				if err := writer.Flush(); err != nil {
+					sampleErr = err
+					break
+				}
+				samples++
+			}
+			if sampleErr != nil {
+				break
+			}
+		}
+		scannerErr := scanner.Err()
+		if sampleErr != nil {
+			cancel()
+		}
+		waitErr := command.Wait()
+		if isStopped() {
+			done <- nil
+			return
+		}
+		if sampleErr != nil {
+			done <- fmt.Errorf("write Docker stats sample for %s: %w", containerName, sampleErr)
+			return
+		}
+		if scannerErr != nil {
+			done <- fmt.Errorf("read Docker stats stream for %s: %w", containerName, scannerErr)
+			return
+		}
+		if waitErr != nil {
+			message := strings.TrimSpace(stderr.String())
+			if message != "" {
+				done <- fmt.Errorf("Docker stats stream for %s failed: %w: %s", containerName, waitErr, message)
+			} else {
+				done <- fmt.Errorf("Docker stats stream for %s failed: %w", containerName, waitErr)
+			}
+			return
+		}
+		if samples == 0 {
+			done <- fmt.Errorf("Docker stats returned no samples for %s", containerName)
+			return
+		}
+		done <- fmt.Errorf("Docker stats stream for %s ended unexpectedly", containerName)
 	}()
 	return stop, done
 }

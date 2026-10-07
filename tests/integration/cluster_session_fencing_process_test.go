@@ -271,6 +271,9 @@ func clusterFencingProcessStart(t *testing.T) (*clusterMembershipProcessFixture,
 		nodes[nodeID-1] = process
 	}
 	clusterMembershipProcessWaitForBootstrap(t, fixture.ctx, nodes)
+	for _, process := range nodes {
+		clusterTenantQuotaProcessWaitForProfile(t, fixture.ctx, process, 0, false)
+	}
 	return fixture, nodes, controlPaths
 }
 

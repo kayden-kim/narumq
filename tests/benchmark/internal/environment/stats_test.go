@@ -44,12 +44,104 @@ func TestReadStatsRejectsUnknownNegativeAndMalformedUnits(t *testing.T) {
 	}
 }
 
+func TestDecodeLiveDockerStatsLineStripsTerminalControlsAndSplitsUpdates(t *testing.T) {
+	first := `{"Container":"broker","CPUPerc":"1%","MemUsage":"1MiB / 2MiB","NetIO":"3B / 4B","BlockIO":"5B / 6B"}`
+	second := `{"Container":"broker","CPUPerc":"2%","MemUsage":"2MiB / 2MiB","NetIO":"7B / 8B","BlockIO":"9B / 10B"}`
+	line := "\x1b[2K" + first + "\r\x1b[2K" + second
+
+	samples, err := decodeLiveDockerStatsLine(line, "broker")
+	if err != nil {
+		t.Fatalf("decodeLiveDockerStatsLine() error = %v", err)
+	}
+	if len(samples) != 2 || samples[0].CPUPercent != 1 || samples[1].CPUPercent != 2 ||
+		samples[0].Container != "broker" || samples[1].Container != "broker" {
+		t.Fatalf("decoded live stats = %#v", samples)
+	}
+}
+
 func TestParseByteQuantityRejectsOverflow(t *testing.T) {
 	if _, err := parseByteQuantity("999999999999999999999GB"); err == nil {
 		t.Fatal("parseByteQuantity() accepted int64 overflow")
 	}
 }
 
+func TestLiveStatsSamplerSplitsCarriageReturnUpdatesAndReapsOnStop(t *testing.T) {
+	installFakeDocker(t)
+	t.Setenv(fakeDockerLiveStatsModeEnv, "stream")
+	const container = "live-stats-broker"
+	if err := writeFakeDockerRunning(container, true); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(t.TempDir(), "broker-stats.jsonl")
+	stop, done := startLiveStatsSampler(context.Background(), container, path)
+	doneReceived := false
+	defer func() {
+		if doneReceived {
+			return
+		}
+		stop()
+		select {
+		case <-done:
+		case <-time.After(5 * time.Second):
+			t.Error("live stats process was not reaped after stop")
+		}
+	}()
+
+	deadline := time.NewTimer(5 * time.Second)
+	defer deadline.Stop()
+	ticker := time.NewTicker(10 * time.Millisecond)
+	defer ticker.Stop()
+	var samples []StatsSample
+	for {
+		var err error
+		samples, err = ReadStats(path)
+		if err == nil && len(samples) >= 2 {
+			break
+		}
+		select {
+		case err := <-done:
+			doneReceived = true
+			t.Fatalf("live stats stream stopped before cancellation: %v", err)
+		case <-deadline.C:
+			t.Fatalf("live stats stream did not publish carriage-return updates: %v", err)
+		case <-ticker.C:
+		}
+	}
+	if samples[0].CPUPercent != 1 || samples[1].CPUPercent != 2 {
+		t.Fatalf("live stats samples = %#v, want two ordered updates", samples[:2])
+	}
+
+	stop()
+	select {
+	case err := <-done:
+		doneReceived = true
+		if err != nil {
+			t.Fatalf("stop live stats sampler: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("live stats sampler did not stop and reap its process")
+	}
+}
+
+func TestLiveStatsSamplerRejectsUnexpectedCleanExit(t *testing.T) {
+	installFakeDocker(t)
+	t.Setenv(fakeDockerLiveStatsModeEnv, "exit")
+	const container = "live-stats-exit-broker"
+	if err := writeFakeDockerRunning(container, true); err != nil {
+		t.Fatal(err)
+	}
+	stop, done := startLiveStatsSampler(context.Background(), container, filepath.Join(t.TempDir(), "broker-stats.jsonl"))
+	defer stop()
+
+	select {
+	case err := <-done:
+		if err == nil || !strings.Contains(err.Error(), "ended unexpectedly") {
+			t.Fatalf("unexpected clean stream exit error = %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("live stats sampler accepted a stream that did not exit")
+	}
+}
 func TestStatsSamplerRecordsBrokerRestartedBeforeInspect(t *testing.T) {
 	fakeDocker := installFakeDocker(t)
 	t.Setenv(fakeDockerStartAfterStoppedStatsEnv, "1")

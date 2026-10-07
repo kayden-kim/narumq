@@ -168,6 +168,10 @@ func TestValidateClusterTargetOptions(t *testing.T) {
 		{"duplicate dns names", func(o *ClusterTargetOptions) { o.Nodes[1].DNSName = o.Nodes[0].DNSName }},
 		{"wrong runner target", func(o *ClusterTargetOptions) { o.RunnerTarget = "bp01-runner" }},
 		{"missing network owner public config", func(o *ClusterTargetOptions) { o.NetworkOwnerConfigDirectory = "" }},
+		{"live stats stream with broker restarts", func(o *ClusterTargetOptions) {
+			o.LiveStatsStream = true
+			o.AllowBrokerRestart = true
+		}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

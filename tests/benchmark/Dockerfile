@@ -9,6 +9,7 @@ RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags='-s -w' -o
     && CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags='-s -w' -o /out/bp03 ./tests/benchmark/bp03
 RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags='-s -w' -o /out/bp07 ./tests/benchmark/bp07
 RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags='-s -w' -o /out/bp06 ./tests/benchmark/bp06
+RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags='-s -w' -o /out/bp04 ./tests/benchmark/bp04
 
 FROM scratch AS narumq
 COPY --from=build /out/narumq /narumq
@@ -33,3 +34,7 @@ ENTRYPOINT ["/bp07"]
 FROM scratch AS bp06-runner
 COPY --from=build /out/bp06 /bp06
 ENTRYPOINT ["/bp06"]
+
+FROM scratch AS bp04-runner
+COPY --from=build /out/bp04 /bp04
+ENTRYPOINT ["/bp04"]

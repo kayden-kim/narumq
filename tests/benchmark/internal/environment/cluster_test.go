@@ -24,6 +24,8 @@ const (
 	fakeDockerReleaseEnv                = "NARUMQ_ENVIRONMENT_FAKE_DOCKER_RELEASE"
 	fakeDockerEmptyPortEnv              = "NARUMQ_ENVIRONMENT_FAKE_DOCKER_EMPTY_PORT"
 	fakeDockerStartAfterStoppedStatsEnv = "NARUMQ_ENVIRONMENT_FAKE_DOCKER_START_AFTER_STOPPED_STATS"
+	fakeDockerLiveStatsModeEnv          = "NARUMQ_ENVIRONMENT_FAKE_DOCKER_LIVE_STATS_MODE"
+	fakeDockerStartDelayEnv             = "NARUMQ_ENVIRONMENT_FAKE_DOCKER_START_DELAY"
 )
 
 var fakeDockerBinary struct {
@@ -52,12 +54,16 @@ func TestRunClusterTargetKeepsPublishedOwnerPortAcrossBrokerRestart(t *testing.T
 	options := validBP07ClusterOptions(t)
 	options.Nodes[0].PublishedPorts = []string{"8080"}
 	options.AllowBrokerRestart = true
+	t.Setenv(fakeDockerStartDelayEnv, (2*DefaultStatsSamplePeriod + time.Second).String())
 	options.Controller = func(ctx context.Context, nodes []ClusterNodeResult) error {
 		before := nodes[0].PublishedPorts["8080"]
 		if before == "" {
 			return errors.New("owner management port was not resolved before controller start")
 		}
-		if err := RestartClusterBroker(ctx, nodes[0].BrokerContainer, 10*time.Second, 3*time.Second); err != nil {
+		if err := waitForBrokerStatsSample(ctx, nodes[0].BrokerStatsPath); err != nil {
+			return err
+		}
+		if err := RestartClusterBroker(ctx, nodes[0].BrokerContainer, 10*time.Second, 5*time.Second); err != nil {
 			return err
 		}
 		after, err := resolveClusterPublishedPorts(ctx, nodes[0].NetworkOwnerContainer, []string{"8080"})
@@ -145,6 +151,22 @@ func TestRunClusterTargetKeepsPublishedOwnerPortAcrossBrokerRestart(t *testing.T
 	}
 }
 
+func waitForBrokerStatsSample(ctx context.Context, path string) error {
+	ticker := time.NewTicker(10 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		samples, err := ReadStats(path)
+		if err == nil && len(samples) > 0 {
+			return nil
+		}
+		select {
+		case <-ctx.Done():
+			return fmt.Errorf("wait for broker stats sample: %w", ctx.Err())
+		case <-ticker.C:
+		}
+	}
+}
+
 func TestRunClusterTargetRecordsControllerFailure(t *testing.T) {
 	fakeDocker := installFakeDocker(t)
 	options := validBP07ClusterOptions(t)
@@ -164,15 +186,19 @@ func TestRunClusterTargetRecordsControllerFailure(t *testing.T) {
 	}
 }
 
-func TestBP07RunnerTargetValidation(t *testing.T) {
+func TestBP04RunnerTargetValidation(t *testing.T) {
 	cluster := validClusterOptions()
-	cluster.RunnerTarget = "bp07-runner"
+	cluster.RunnerTarget = "bp04-runner"
 	if err := validateClusterTargetOptions(cluster); err != nil {
-		t.Fatalf("validateClusterTargetOptions(bp07-runner) error = %v", err)
+		t.Fatalf("validateClusterTargetOptions(bp04-runner) error = %v", err)
 	}
 	cluster.RunnerTarget = "bp06-runner"
 	if err := validateClusterTargetOptions(cluster); err != nil {
 		t.Fatalf("validateClusterTargetOptions(bp06-runner) error = %v", err)
+	}
+	cluster.RunnerTarget = "bp07-runner"
+	if err := validateClusterTargetOptions(cluster); err != nil {
+		t.Fatalf("validateClusterTargetOptions(bp07-runner) error = %v", err)
 	}
 	cluster.RunnerTarget = "bp99-runner"
 	if err := validateClusterTargetOptions(cluster); err == nil {
@@ -180,9 +206,9 @@ func TestBP07RunnerTargetValidation(t *testing.T) {
 	}
 
 	single := validTargetOptions()
-	single.RunnerTarget = "bp07-runner"
+	single.RunnerTarget = "bp04-runner"
 	if err := validateTargetOptions(single); err == nil {
-		t.Fatal("validateTargetOptions() accepted bp07-runner")
+		t.Fatal("validateTargetOptions() accepted bp04-runner")
 	}
 }
 
@@ -314,6 +340,8 @@ func installFakeDocker(t *testing.T) fakeDockerPaths {
 	t.Setenv(fakeDockerReleaseEnv, releasePath)
 	t.Setenv(fakeDockerEmptyPortEnv, "")
 	t.Setenv(fakeDockerStartAfterStoppedStatsEnv, "")
+	t.Setenv(fakeDockerLiveStatsModeEnv, "")
+	t.Setenv(fakeDockerStartDelayEnv, "")
 	return fakeDockerPaths{callsPath: callsPath, releasePath: releasePath}
 }
 
@@ -396,6 +424,9 @@ func runFakeDocker(args []string) int {
 			}
 			return fakeDockerError("container is stopped")
 		}
+		if !containsToken(args, "--no-stream") && os.Getenv(fakeDockerLiveStatsModeEnv) != "" {
+			return fakeDockerLiveStats(container)
+		}
 		fmt.Println(`{"CPUPerc":"1.0%","MemUsage":"1MiB / 2GiB","NetIO":"2kB / 2kB","BlockIO":"0B / 0B"}`)
 		return 0
 	case "logs":
@@ -418,7 +449,15 @@ func runFakeDocker(args []string) int {
 		return 0
 	case "start":
 		if len(args) >= 2 {
-			time.Sleep(DefaultStatsSamplePeriod + 500*time.Millisecond)
+			startDelay := DefaultStatsSamplePeriod + 500*time.Millisecond
+			if configured := os.Getenv(fakeDockerStartDelayEnv); configured != "" {
+				parsed, err := time.ParseDuration(configured)
+				if err != nil {
+					return fakeDockerError("invalid start delay: " + err.Error())
+				}
+				startDelay = parsed
+			}
+			time.Sleep(startDelay)
 			if err := writeFakeDockerRunning(args[1], true); err != nil {
 				return fakeDockerError(err.Error())
 			}
@@ -429,6 +468,19 @@ func runFakeDocker(args []string) int {
 		return 0
 	}
 	return fakeDockerError("unexpected command: " + strings.Join(args, " "))
+}
+
+func fakeDockerLiveStats(container string) int {
+	first := fmt.Sprintf(`{"Container":%q,"CPUPerc":"1.0%%","MemUsage":"1MiB / 2GiB","NetIO":"2kB / 2kB","BlockIO":"0B / 0B"}`, container)
+	second := fmt.Sprintf(`{"Container":%q,"CPUPerc":"2.0%%","MemUsage":"2MiB / 2GiB","NetIO":"4kB / 4kB","BlockIO":"0B / 0B"}`, container)
+	if os.Getenv(fakeDockerLiveStatsModeEnv) == "exit" {
+		fmt.Print(first + "\r")
+		return 0
+	}
+	fmt.Print(first + "\r" + second + "\r")
+	for {
+		time.Sleep(time.Hour)
+	}
 }
 
 func appendFakeDockerCall(args []string) error {

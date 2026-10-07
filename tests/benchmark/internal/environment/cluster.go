@@ -45,6 +45,9 @@ type ClusterTargetOptions struct {
 
 	// AllowBrokerRestart permits stopped broker stats samples to be skipped.
 	AllowBrokerRestart bool
+
+	// LiveStatsStream records every update emitted by Docker's live stats stream.
+	LiveStatsStream bool
 }
 
 // ClusterNodeResult contains per-node container names and artifact paths.
@@ -207,7 +210,13 @@ func RunClusterTarget(ctx context.Context, options ClusterTargetOptions) (Cluste
 			if err := os.MkdirAll(filepath.Dir(item.path), 0o755); err != nil {
 				return fail(fmt.Errorf("create stats directory: %w", err))
 			}
-			cancel, done := startStatsSampler(ctx, item.container, item.path, item.skipWhenStopped)
+			var cancel func()
+			var done <-chan error
+			if options.LiveStatsStream {
+				cancel, done = startLiveStatsSampler(ctx, item.container, item.path)
+			} else {
+				cancel, done = startStatsSampler(ctx, item.container, item.path, item.skipWhenStopped)
+			}
 			samplers = append(samplers, sampler{
 				cancel: cancel, done: done, container: item.container, path: item.path,
 			})
@@ -448,7 +457,7 @@ func validateClusterTargetOptions(o ClusterTargetOptions) error {
 	if o.Target != "narumq" && o.Target != "emqx" {
 		return fmt.Errorf("unsupported benchmark target %q", o.Target)
 	}
-	if o.RunnerTarget != "bp03-runner" && o.RunnerTarget != "bp06-runner" && o.RunnerTarget != "bp07-runner" {
+	if o.RunnerTarget != "bp03-runner" && o.RunnerTarget != "bp04-runner" && o.RunnerTarget != "bp06-runner" && o.RunnerTarget != "bp07-runner" {
 		return fmt.Errorf("unsupported runner target %q", o.RunnerTarget)
 	}
 	if len(o.Nodes) != 3 {
@@ -483,6 +492,9 @@ func validateClusterTargetOptions(o ClusterTargetOptions) error {
 	}
 	if o.Timeout <= 0 || o.StartupTimeout <= 0 {
 		return errors.New("target and startup timeouts must be greater than zero")
+	}
+	if o.LiveStatsStream && o.AllowBrokerRestart {
+		return errors.New("live Docker stats streaming does not support broker restarts")
 	}
 	return nil
 }
