@@ -3,6 +3,7 @@ package tcp
 import (
 	"bytes"
 	"context"
+	"crypto/tls"
 	"encoding/hex"
 	"errors"
 	"net"
@@ -115,6 +116,120 @@ func TestServeBootstrapProbeAnswersConfiguredPeerOnly(t *testing.T) {
 		}
 	case <-time.After(time.Second):
 		t.Fatal("listener accept after cancel stalled")
+	}
+}
+
+func TestServeBootstrapProbeDropsFailedHandshakeAndBadMagic(t *testing.T) {
+	serverTLS, clientTLS := testPeerTLSConfigs(t, "node1.example")
+	peerServerTLS, peerClientTLS := testPeerTLSConfigs(t, "node2.example")
+	serverTLS.ClientCAs.AddCert(peerServerTLS.Certificates[0].Leaf)
+	clientTLS.RootCAs.AddCert(peerServerTLS.Certificates[0].Leaf)
+	peerServerTLS.ClientCAs.AddCert(serverTLS.Certificates[0].Leaf)
+	peerClientTLS.RootCAs.AddCert(serverTLS.Certificates[0].Leaf)
+	listener := cptListen(t)
+	local := identityForTestCertificate(1, listener.Addr().String(), "node1.example", PeerPhaseVoter, "", "1.0.0", serverTLS.Certificates[0])
+	peer := identityForTestCertificate(2, "127.0.0.1:19002", "node2.example", PeerPhaseVoter, "", "1.0.0", peerServerTLS.Certificates[0])
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	serverDone := make(chan error, 1)
+	go func() { serverDone <- ServeBootstrapProbe(ctx, listener, serverTLS, local, []PeerIdentityDTO{peer}) }()
+	t.Cleanup(func() {
+		cancel()
+		select {
+		case err := <-serverDone:
+			if err != nil {
+				t.Errorf("ServeBootstrapProbe after cancellation: %v", err)
+			}
+		case <-time.After(cptWaitTimeout):
+			t.Error("ServeBootstrapProbe did not stop after cancellation")
+		}
+	})
+
+	raw, err := net.DialTimeout("tcp", listener.Addr().String(), cptWaitTimeout)
+	if err != nil {
+		t.Fatalf("dial plain TCP client: %v", err)
+	}
+	if _, err := raw.Write([]byte("not a tls client hello\r\n\r\n")); err != nil {
+		_ = raw.Close()
+		t.Fatalf("write plain TCP payload: %v", err)
+	}
+	_ = raw.SetReadDeadline(time.Now().Add(cptWaitTimeout))
+	var rawResponse [1]byte
+	_, err = raw.Read(rawResponse[:])
+	_ = raw.Close()
+	if err == nil {
+		t.Fatal("plain TCP read succeeded, want failed-handshake error")
+	}
+	if timeout, ok := err.(net.Error); ok && timeout.Timeout() {
+		t.Fatalf("plain TCP read error = %v, want non-deadline error", err)
+	}
+
+	tlsConfig := peerClientTLS.Clone()
+	tlsConfig.ServerName = "node1.example"
+	tlsConn, err := tls.Dial("tcp", listener.Addr().String(), tlsConfig)
+	if err != nil {
+		t.Fatalf("TLS dial for bad magic: %v", err)
+	}
+	if err := writeDynamicFrame(tlsConn, []byte("BADMAGIC-request"), dynamicHelloLimit); err != nil {
+		_ = tlsConn.Close()
+		t.Fatalf("write bad-magic frame: %v", err)
+	}
+	_ = tlsConn.SetReadDeadline(time.Now().Add(cptWaitTimeout))
+	_, err = readDynamicFrame(tlsConn, dynamicHelloLimit)
+	_ = tlsConn.Close()
+	if err == nil {
+		t.Fatal("bad-magic response read succeeded, want error")
+	}
+	if timeout, ok := err.(net.Error); ok && timeout.Timeout() {
+		t.Fatalf("bad-magic response error = %v, want non-deadline error", err)
+	}
+
+	got, err := ProbeBootstrapPeer(ctx, peerClientTLS, peer, local)
+	if err != nil || got != (BootstrapProbeResultDTO{Status: BootstrapProbeEmpty}) {
+		t.Fatalf("healthy probe after malformed clients = %+v, err=%v; want empty result and nil", got, err)
+	}
+}
+
+func TestProbeBootstrapPeerReportsResponseReadFailure(t *testing.T) {
+	local := cptNewNode(t, "node1.example")
+	remote := cptNewNode(t, "node2.example")
+	cptTrustEachOther(local, remote)
+	listener := cptListen(t)
+	serverDone := make(chan error, 1)
+	go func() {
+		socket, err := listener.Accept()
+		if err != nil {
+			serverDone <- err
+			return
+		}
+		defer socket.Close()
+		tlsConn := tls.Server(socket, remote.serverTLS)
+		if err := tlsConn.Handshake(); err != nil {
+			serverDone <- err
+			return
+		}
+		if _, err := readDynamicFrame(tlsConn, dynamicHelloLimit); err != nil {
+			serverDone <- err
+			return
+		}
+		serverDone <- nil
+	}()
+	ctx, cancel := context.WithTimeout(context.Background(), cptWaitTimeout)
+	defer cancel()
+	addr := listener.Addr().String()
+	got, err := ProbeBootstrapPeer(ctx, local.clientTLS,
+		local.identity(1, "127.0.0.1:1", PeerPhaseVoter, ""),
+		remote.identity(2, addr, PeerPhaseVoter, ""))
+	if err == nil || got != (BootstrapProbeResultDTO{}) {
+		t.Fatalf("ProbeBootstrapPeer result = %+v, err=%v; want zero result and non-nil error", got, err)
+	}
+	select {
+	case serverErr := <-serverDone:
+		if serverErr != nil {
+			t.Fatalf("response-failure test server: %v", serverErr)
+		}
+	case <-time.After(cptWaitTimeout):
+		t.Fatal("response-failure test server did not consume probe request")
 	}
 }
 

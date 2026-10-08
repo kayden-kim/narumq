@@ -125,6 +125,26 @@ func newReadAdmissionTestCluster(t *testing.T) [3]*clusterRuntime {
 	return runtimes
 }
 
+func readAdmissionTestMachine(t *testing.T, runtimes [3]*clusterRuntime) *membership.StateMachine {
+	t.Helper()
+	members := make([]membership.MemberIdentityDTO, len(runtimes))
+	for index, runtime := range runtimes {
+		identity := runtime.transport.LocalIdentity()
+		members[index] = membership.MemberIdentityDTO{
+			MemberID: identity.MemberID, ClusterID: identity.ClusterID, Address: identity.Address,
+			DNSSAN: identity.DNSSAN, CertificateSHA256: append([]byte(nil), identity.CertificateSHA256[:]...),
+			ReleaseVersion: identity.ReleaseVersion, ClusterProtocolMajor: identity.ClusterProtocolMajor,
+			ClusterProtocolMinor: identity.ClusterProtocolMinor, StateSchemaMajor: identity.StateSchemaMajor,
+			StateSchemaMinor: identity.StateSchemaMinor, Phase: membership.MemberPhaseVoter,
+		}
+	}
+	machine := membership.NewStateMachine()
+	if err := machine.InitializeBootstrap(1, members); err != nil {
+		t.Fatalf("initialize read-admission membership machine: %v", err)
+	}
+	return machine
+}
+
 // Traceability: CLU-14; docs/specs/performance-and-verification.md §3.4.
 func TestClusterFollowerReadBurstCompletesAfterEgressDrain(t *testing.T) {
 	testClusterReadBurst(t, []int{1}, 3)

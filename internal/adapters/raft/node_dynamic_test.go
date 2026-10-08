@@ -105,6 +105,12 @@ func TestDynamicMembershipChangesApplyAndReplayAfterRestart(t *testing.T) {
 	if got := nodes[1].Status().Role; got != RoleLeader {
 		t.Fatalf("node 1 role after leadership transfer back = %v, want leader", got)
 	}
+	if match, available := nodes[2].PeerMatchIndex(1); available || match != 0 {
+		t.Fatalf("node 3 match index for node 1 = %d available=%t, want 0 and unavailable", match, available)
+	}
+	if match, available := nodes[1].PeerMatchIndex(2); !available || match <= 0 {
+		t.Fatalf("node 2 match index from node 1 = %d available=%t, want positive and available", match, available)
+	}
 	snapshotData := []byte("typed-state-snapshot")
 	if err := nodes[1].SnapshotWithApplicationData(snapshotData); err != nil {
 		t.Fatalf("persist application snapshot: %v", err)
@@ -119,6 +125,11 @@ func TestDynamicMembershipChangesApplyAndReplayAfterRestart(t *testing.T) {
 		OperationID: addLearnerOperation, MemberID: 4, Action: MembershipAddLearner,
 	}); err != nil {
 		t.Fatalf("propose learner: %v", err)
+	}
+	if err := nodes[1].ProposeMembershipChange(MembershipChangeDTO{
+		OperationID: promoteOperation, MemberID: 4, Action: MembershipPromoteVoter,
+	}); !errors.Is(err, ErrMembershipChangeInProgress) {
+		t.Fatalf("propose promotion while learner change is pending = %v, want %v", err, ErrMembershipChangeInProgress)
 	}
 	pump()
 	assertDynamicMembers(t, nodes, []NodeID{1, 2, 3}, []NodeID{4})

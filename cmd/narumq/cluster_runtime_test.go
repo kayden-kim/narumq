@@ -97,6 +97,7 @@ func TestClusterReadinessGate(t *testing.T) {
 		barrier       uint64
 		wantAdmits    bool
 		wantSatisfied bool
+		wantReason    string
 	}{
 		{
 			name: "not initialized",
@@ -106,6 +107,7 @@ func TestClusterReadinessGate(t *testing.T) {
 			barrier:       10,
 			wantAdmits:    false,
 			wantSatisfied: false,
+			wantReason:    "uninitialized",
 		},
 		{
 			name: "projection failed with equal indexes",
@@ -115,6 +117,7 @@ func TestClusterReadinessGate(t *testing.T) {
 			barrier:       10,
 			wantAdmits:    false,
 			wantSatisfied: false,
+			wantReason:    "projection_failed",
 		},
 		{
 			name: "applied-index gap (projection 5 < applied 6)",
@@ -125,6 +128,7 @@ func TestClusterReadinessGate(t *testing.T) {
 			barrier:       5,
 			wantAdmits:    false,
 			wantSatisfied: false,
+			wantReason:    "projection_behind_applied",
 		},
 		{
 			name: "not bootstrapped",
@@ -134,6 +138,7 @@ func TestClusterReadinessGate(t *testing.T) {
 			barrier:       10,
 			wantAdmits:    false,
 			wantSatisfied: false,
+			wantReason:    "not_bootstrapped",
 		},
 		{
 			name: "learner (localVoter=false)",
@@ -143,6 +148,7 @@ func TestClusterReadinessGate(t *testing.T) {
 			barrier:       10,
 			wantAdmits:    false,
 			wantSatisfied: false,
+			wantReason:    "local_not_voter",
 		},
 		{
 			name: "LEAVING (localPhaseVoter=false)",
@@ -152,6 +158,7 @@ func TestClusterReadinessGate(t *testing.T) {
 			barrier:       10,
 			wantAdmits:    false,
 			wantSatisfied: false,
+			wantReason:    "local_phase_not_voter",
 		},
 		{
 			name: "barrier > applied",
@@ -162,6 +169,7 @@ func TestClusterReadinessGate(t *testing.T) {
 			barrier:       11,
 			wantAdmits:    true,
 			wantSatisfied: false,
+			wantReason:    "proof_above_applied",
 		},
 		{
 			name: "barrier > projection",
@@ -172,6 +180,7 @@ func TestClusterReadinessGate(t *testing.T) {
 			barrier:       11,
 			wantAdmits:    true,
 			wantSatisfied: false,
+			wantReason:    "proof_above_applied",
 		},
 		{
 			name: "release profile not synchronized",
@@ -181,6 +190,7 @@ func TestClusterReadinessGate(t *testing.T) {
 			barrier:       10,
 			wantAdmits:    false,
 			wantSatisfied: false,
+			wantReason:    "release_profile_unsynced",
 		},
 		{
 			name: "tenant quota profile not committed",
@@ -190,6 +200,7 @@ func TestClusterReadinessGate(t *testing.T) {
 			barrier:       10,
 			wantAdmits:    false,
 			wantSatisfied: false,
+			wantReason:    "quota_profile_missing",
 		},
 		{
 			name:          "all satisfied",
@@ -197,6 +208,7 @@ func TestClusterReadinessGate(t *testing.T) {
 			barrier:       10,
 			wantAdmits:    true,
 			wantSatisfied: true,
+			wantReason:    "unspecified",
 		},
 	}
 
@@ -209,6 +221,9 @@ func TestClusterReadinessGate(t *testing.T) {
 			}
 			if got := s.satisfiedAt(tc.barrier); got != tc.wantSatisfied {
 				t.Errorf("satisfiedAt(%d) = %t, want %t", tc.barrier, got, tc.wantSatisfied)
+			}
+			if got := readinessSnapshotRejection(&s, tc.barrier); got != tc.wantReason {
+				t.Errorf("readinessSnapshotRejection(%+v, %d) = %q, want %q", s, tc.barrier, got, tc.wantReason)
 			}
 		})
 	}
@@ -1414,5 +1429,223 @@ func TestClusterMembershipRemovalWaitsForReplicationFactor(t *testing.T) {
 			}
 			t.Log("leader recheck: REMOVING retained, three voters unchanged, no transfer or ConfChange committed")
 		})
+	}
+}
+func TestClusterMembershipRemovalOfLocalLeaderTransfersLeadership(t *testing.T) {
+	runtimes := newReadAdmissionTestCluster(t)
+	leader := runtimes[0]
+	leader.machine = readAdmissionTestMachine(t, runtimes)
+	leader.initialized.Store(true)
+	leader.handoffProposed = map[string]uint64{}
+	const operationID = "00000000-0000-4000-8000-000000000016"
+	member := leader.machine.Members()[0]
+	member.Phase = membership.MemberPhaseLeaving
+	member.OperationID = operationID
+	result, err := leader.machine.Apply(leader.machine.LastAppliedIndex()+1, membership.CommandDTO{
+		SchemaMajor: membership.SchemaMajor, OperationID: operationID,
+		Membership: &membership.MembershipRecordDTO{
+			OperationID: operationID, Action: membership.MembershipActionBeginRemove,
+			IdempotencyKey: "remove-1", Member: &member, TargetMemberID: 1,
+		},
+	})
+	if err != nil || result.Outcome != membership.ApplyOutcomeApplied {
+		t.Fatalf("apply BeginRemove for local leader: result=%+v err=%v, want Applied", result, err)
+	}
+	if err := leader.advanceMembership(); err != nil || leader.leadershipTransferTo != 0 {
+		t.Fatalf("advanceMembership before Serve: err=%v transferTo=%d, want nil/0", err, leader.leadershipTransferTo)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	serveResults := make(chan error, 2)
+	for _, runtime := range runtimes[:2] {
+		runtime := runtime
+		go func() { serveResults <- runtime.transport.Serve(ctx) }()
+	}
+	t.Cleanup(func() {
+		cancel()
+		for range 2 {
+			if err := <-serveResults; err != nil && !errors.Is(err, context.Canceled) {
+				t.Errorf("transport Serve during cleanup: %v", err)
+			}
+		}
+	})
+	waitCtx, waitCancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer waitCancel()
+	ticker := time.NewTicker(10 * time.Millisecond)
+	defer ticker.Stop()
+	var peerStatus tcpadapter.PeerTransportStatusDTO
+	var peerStatusErr error
+	for {
+		peerStatus, peerStatusErr = leader.transport.Status(2)
+		if peerStatusErr == nil && peerStatus.Connected {
+			break
+		}
+		select {
+		case <-waitCtx.Done():
+			t.Fatalf("leader transport status for peer 2 = %+v, err=%v; want Connected before timeout", peerStatus, peerStatusErr)
+		case <-ticker.C:
+		}
+	}
+	status := leader.node.Status()
+	if err := leader.advanceMembership(); err != nil {
+		t.Fatalf("advanceMembership after Serve: %v", err)
+	}
+	if leader.leadershipTransferTo != 2 || leader.leadershipTransferTerm != status.Term || leader.leadershipTransferTicks != 0 {
+		t.Fatalf("leadership transfer state = to:%d term:%d ticks:%d, want to:2 term:%d ticks:0",
+			leader.leadershipTransferTo, leader.leadershipTransferTerm, leader.leadershipTransferTicks, status.Term)
+	}
+	for round := 0; ; round++ {
+		if round == 64 {
+			t.Fatal("Raft did not settle after local leader removal transfer")
+		}
+		var messages []raftadapter.MessageDTO
+		for _, runtime := range runtimes {
+			batch, err := processReadyForTest(t, runtime.node)
+			if err != nil {
+				t.Fatalf("process Ready for node %d: %v", runtime.config.NodeID, err)
+			}
+			messages = append(messages, batch.Messages...)
+		}
+		if len(messages) == 0 {
+			break
+		}
+		for _, message := range messages {
+			if _, err := runtimes[message.To-1].node.Step(message); err != nil {
+				t.Fatalf("step Raft message %+v: %v", message, err)
+			}
+		}
+	}
+	if got := runtimes[1].node.Status().Role; got != raftadapter.RoleLeader {
+		t.Fatalf("node 2 role after transfer = %q, want %q", got, raftadapter.RoleLeader)
+	}
+	if err := leader.reconcileCommittedPeers(); err != nil {
+		t.Fatalf("reconcile committed peers after transfer: %v", err)
+	}
+	identity := leader.transport.LocalIdentity()
+	if identity.Phase != tcpadapter.PeerPhaseLeaving || identity.OperationID != operationID {
+		t.Fatalf("local identity after reconciliation = %+v, want LEAVING operation %s", identity, operationID)
+	}
+}
+
+func TestClusterProposeMembershipChangeIgnoresPendingChangeAndFollower(t *testing.T) {
+	runtimes := newReadAdmissionTestCluster(t)
+	change := raftadapter.MembershipChangeDTO{
+		OperationID: "00000000-0000-4000-8000-000000000021", MemberID: 4, Action: raftadapter.MembershipAddLearner,
+	}
+	if err := runtimes[1].node.ProposeMembershipChange(change); !errors.Is(err, raftadapter.ErrNotLeader) {
+		t.Fatalf("follower ProposeMembershipChange(%+v) error = %v, want %v", change, err, raftadapter.ErrNotLeader)
+	}
+	if err := runtimes[1].proposeMembershipChange(change); err != nil {
+		t.Fatalf("follower proposeMembershipChange(%+v) = %v, want nil", change, err)
+	}
+	if err := runtimes[0].proposeMembershipChange(change); err != nil {
+		t.Fatalf("leader proposeMembershipChange(%+v) = %v, want nil", change, err)
+	}
+	second := change
+	second.OperationID = "00000000-0000-4000-8000-000000000022"
+	if err := runtimes[0].node.ProposeMembershipChange(second); !errors.Is(err, raftadapter.ErrMembershipChangeInProgress) {
+		t.Fatalf("second ProposeMembershipChange(%+v) error = %v, want %v", second, err, raftadapter.ErrMembershipChangeInProgress)
+	}
+	if err := runtimes[0].proposeMembershipChange(second); err != nil {
+		t.Fatalf("leader proposeMembershipChange(%+v) = %v, want nil", second, err)
+	}
+}
+
+func TestReconcileCommittedPeersSkipsRetiredLocalIdentityOutsideRaft(t *testing.T) {
+	runtimes := newReadAdmissionTestCluster(t)
+	machine := readAdmissionTestMachine(t, runtimes)
+	const operationID = "00000000-0000-4000-8000-000000000017"
+	member := machine.Members()[2]
+	member.Phase = membership.MemberPhaseLeaving
+	member.OperationID = operationID
+	result, err := machine.Apply(machine.LastAppliedIndex()+1, membership.CommandDTO{
+		SchemaMajor: membership.SchemaMajor, OperationID: operationID,
+		Membership: &membership.MembershipRecordDTO{
+			OperationID: operationID, Action: membership.MembershipActionBeginRemove,
+			IdempotencyKey: "remove-3", Member: &member, TargetMemberID: 3,
+		},
+	})
+	if err != nil || result.Outcome != membership.ApplyOutcomeApplied {
+		t.Fatalf("apply BeginRemove for member 3: result=%+v err=%v, want Applied", result, err)
+	}
+	result, err = machine.ApplyConfiguration(machine.LastAppliedIndex()+1, operationID, membership.ConfigurationActionRemoveMember, 3)
+	if err != nil || result.Outcome != membership.ApplyOutcomeApplied {
+		t.Fatalf("apply RemoveMember configuration: result=%+v err=%v, want Applied", result, err)
+	}
+	retired := machine.Members()[2]
+	if retired.Phase != membership.MemberPhaseRetired {
+		t.Fatalf("member 3 after removal configuration = %+v, want Retired", retired)
+	}
+	identity := runtimes[2].transport.LocalIdentity()
+	fresh, err := raftadapter.Open(raftadapter.Config{
+		NodeID: 3, DynamicMembership: true, ClusterID: "read-admission",
+		CertificateSHA256: identity.CertificateSHA256, Directory: t.TempDir(),
+	})
+	if err != nil {
+		t.Fatalf("open fresh unbootstrapped Raft node: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := fresh.Close(); err != nil {
+			t.Errorf("close fresh Raft node: %v", err)
+		}
+	})
+	runtime := &clusterRuntime{
+		config: runtimes[2].config, node: fresh, transport: runtimes[2].transport, machine: machine,
+		logger: slog.New(slog.NewTextHandler(io.Discard, nil)),
+	}
+	before := runtimes[2].transport.LocalIdentity()
+	if err := runtime.reconcileCommittedPeers(); err != nil {
+		t.Fatalf("reconcile retired local identity: %v", err)
+	}
+	if got := runtime.transport.LocalIdentity(); got != before {
+		t.Fatalf("transport identity after reconciliation = %+v, want unchanged %+v", got, before)
+	}
+	if runtime.localIdentity != (tcpadapter.PeerIdentityDTO{}) {
+		t.Fatalf("runtime local identity after reconciliation = %+v, want zero value", runtime.localIdentity)
+	}
+}
+
+func TestClusterAdmitPeerRejectsWhenNotLeader(t *testing.T) {
+	runtimes := newReadAdmissionTestCluster(t)
+	follower := runtimes[1]
+	follower.machine = readAdmissionTestMachine(t, runtimes)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	result := make(chan error, 1)
+	go func() {
+		_, err := follower.admitPeer(ctx, tcpadapter.PeerIdentityDTO{MemberID: 4})
+		result <- err
+	}()
+	select {
+	case request := <-follower.requests:
+		if request.kind != clusterDriverRead {
+			t.Fatalf("admitPeer driver request = %+v, want clusterDriverRead", request)
+		}
+		request.readResult <- clusterReadResponse{index: 1}
+	case <-ctx.Done():
+		t.Fatalf("admitPeer did not request read barrier before timeout: %v", ctx.Err())
+	}
+	select {
+	case err := <-result:
+		if !errors.Is(err, raftadapter.ErrNotLeader) {
+			t.Fatalf("admitPeer error = %v, want %v", err, raftadapter.ErrNotLeader)
+		}
+	case <-ctx.Done():
+		t.Fatalf("admitPeer result not returned before timeout: %v", ctx.Err())
+	}
+}
+
+func TestClusterGetOperationReportsReadBarrierFailure(t *testing.T) {
+	runtime := clusterReleaseProfileTestRuntime(t, validBootstrapClusterConfig())
+	runtime.driverFailed.Store(true)
+	operation, found, err := runtime.GetOperation(context.Background(), "00000000-0000-4000-8000-000000000001")
+	if !errors.Is(err, membership.ErrQuorumUnavailable) {
+		t.Fatalf("GetOperation error = %v, want %v", err, membership.ErrQuorumUnavailable)
+	}
+	if found || operation != (membership.MembershipOperationDTO{}) {
+		t.Fatalf("GetOperation result = operation:%+v found:%t, want zero/false", operation, found)
+	}
+	if got := len(runtime.requests); got != 0 {
+		t.Fatalf("queued driver requests = %d, want 0", got)
 	}
 }

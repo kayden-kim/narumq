@@ -11,10 +11,16 @@ import (
 
 func TestNodeCloseFlushesHeldAppendOrReportsFailure(t *testing.T) {
 	for _, scenario := range []struct {
-		name      string
-		failFinal bool
-		failPrior bool
-	}{{"persist", false, false}, {"sync-error", true, false}, {"consumed-prior-error", false, true}} {
+		name         string
+		failFinal    bool
+		failPrior    bool
+		consumePrior bool
+	}{
+		{name: "persist"},
+		{name: "sync-error", failFinal: true},
+		{name: "consumed-prior-error", failPrior: true, consumePrior: true},
+		{name: "unconsumed-prior-error", failPrior: true},
+	} {
 		t.Run(scenario.name, func(t *testing.T) {
 			node := storageBoundaryNode(t)
 			entered, release := holdWALSync(t, node)
@@ -64,11 +70,25 @@ func TestNodeCloseFlushesHeldAppendOrReportsFailure(t *testing.T) {
 			if scenario.failPrior {
 				failPrior.Store(true)
 				release()
-				if _, err := processReadyForTest(t, node); !errors.Is(err, ErrStorage) {
-					t.Fatalf("prior sync failure = %v", err)
-				}
-				if node.heldAppend == nil || len(node.writer.requests) == 0 {
-					t.Fatal("prior failure did not leave the held append and queued work unprocessed")
+				if scenario.consumePrior {
+					if _, err := processReadyForTest(t, node); !errors.Is(err, ErrStorage) {
+						t.Fatalf("prior sync failure = %v", err)
+					}
+					if node.heldAppend == nil || len(node.writer.requests) == 0 {
+						t.Fatal("prior failure did not leave the held append and queued work unprocessed")
+					}
+				} else {
+					deadline := time.NewTimer(5 * time.Second)
+					defer deadline.Stop()
+					ticker := time.NewTicker(time.Millisecond)
+					defer ticker.Stop()
+					for len(node.writer.results) == 0 {
+						select {
+						case <-deadline.C:
+							t.Fatal("prior sync failure was not queued within 5 seconds")
+						case <-ticker.C:
+						}
+					}
 				}
 			}
 			go func() { closed <- node.Close() }()

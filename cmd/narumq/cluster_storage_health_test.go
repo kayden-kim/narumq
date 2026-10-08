@@ -254,3 +254,27 @@ func TestClusterReadyRejectsStorageFaults(t *testing.T) {
 		})
 	}
 }
+
+func TestClusterStateProviderRemoteSummaryUsesLeaderMatchIndex(t *testing.T) {
+	runtimes := newReadAdmissionTestCluster(t)
+	runtimes[0].machine = retainedTestMachine(t, runtimes[0].config, buildReleaseVersion)
+	runtimes[1].machine = retainedTestMachine(t, runtimes[1].config, buildReleaseVersion)
+	member := runtimes[0].machine.Members()[2]
+	ctx := context.Background()
+	leaderSummary := (&clusterStateProvider{runtime: runtimes[0]}).nodeSummary(ctx, member)
+	match, ok := runtimes[0].node.PeerMatchIndex(3)
+	if !ok || match == 0 {
+		t.Fatalf("leader PeerMatchIndex(3) = (%d, %t), want positive match index", match, ok)
+	}
+	if leaderSummary.LastAppliedIndex != int64(match) || leaderSummary.Role != "FOLLOWER" {
+		t.Fatalf("leader remote summary = %+v, want LastAppliedIndex=%d Role=FOLLOWER", leaderSummary, match)
+	}
+	const wantReason = "remote readiness is not available from this node"
+	if leaderSummary.ReadinessReason == nil || *leaderSummary.ReadinessReason != wantReason {
+		t.Fatalf("leader remote ReadinessReason = %v, want %q", leaderSummary.ReadinessReason, wantReason)
+	}
+	followerSummary := (&clusterStateProvider{runtime: runtimes[1]}).nodeSummary(ctx, member)
+	if followerSummary.LastAppliedIndex != 0 {
+		t.Fatalf("follower remote summary LastAppliedIndex = %d, want 0", followerSummary.LastAppliedIndex)
+	}
+}

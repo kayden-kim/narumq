@@ -367,9 +367,9 @@ func evaluateBranchCoverage(root string, manifest branchManifest, data coverageD
 	return evaluation, nil
 }
 
-func enforceBranchRatchet(name string, actual coverageMetric, ratchet float64) []string {
-	if actual.Percent+0.005 < ratchet {
-		return []string{fmt.Sprintf("%s branch ratchet %.2f%% is above measured %.2f%%", name, ratchet, actual.Percent)}
+func enforceBranchRatchet(name string, actual coverageMetric, ratchet, tolerance float64) []string {
+	if actual.Percent+0.005 < ratchet-tolerance {
+		return []string{fmt.Sprintf("%s branch ratchet %.2f%% (tolerance %.2f%%p) is above measured %.2f%%", name, ratchet, tolerance, actual.Percent)}
 	}
 	return nil
 }

@@ -727,7 +727,7 @@ go run ./tests/chaos/cluster-storage-v1 \
 
 Coverage는 Go atomic coverprofile의 executable block을 집계한다. [ADR-0040](../decisions/ADR-0040-branch-coverage-arm-injection.md)에 따라 branch는 `if`의 then·else와 clause가 있는 switch·type switch·select의 각 case·default arm을 센다. Loop 조건, 단락 평가와 `func _` body는 제외한다. 빠진 else·switch default만 줄바꿈 없이 사본에 주입한다. Select default는 주입하지 않는다. 사본에서 전체 시험을 실행하고 manifest 좌표와 원본 SHA-256을 대조한다. Line coverage로 branch를 대체하지 않는다. 실행 가능한 변경 line이나 변경 결정점이 없으면 해당 diff coverage는 100%다.
 
-현재 gate는 local integration 8-way, CI 2-way와 위 9개 core domain을 쓴다. Final ratchet은 overall production과 core별 threshold를 `coverage-policy.json`에 둔다. Branch는 두 번 측정한 값 중 작은 값을 소수점 둘째 자리에서 내림한 baseline ratchet과 diff 95%를 강제한다. PRD 전체 85%·core 90% 미달은 report의 `branchCoverage.requirementShortfalls`로 보고한다. 이를 ratchet gate 실패 사유로 쓰지 않으며, 미달이 남는 동안 TEST-06·TEST-07은 미검증으로 유지한다. Ratchet 변경에는 반복 안정성 증거와 정책/요구사항 갱신이 필요하다. Coverage 숫자만으로는 충분하지 않으며 모든 P0 requirement와 지원 MQTT normative statement에 assertion이 연결되어야 한다.
+현재 gate는 local integration 8-way, CI 2-way와 위 9개 core domain을 쓴다. Final ratchet은 overall production과 core별 threshold를 `coverage-policy.json`에 둔다. Branch는 두 번 측정한 값 중 작은 값을 소수점 둘째 자리에서 내림한 baseline ratchet을 사용한다. 전체·core ratchet은 측정값이 ratchet에서 0.20%p를 뺀 값보다 낮을 때 실패하며, 비교에는 0.005%p 반올림 오차를 추가로 허용한다. 허용폭은 branch ratchet에만 적용하며 line·function gate, diff 95%와 PRD shortfall에는 적용하지 않는다. 근거와 변경 조건은 [ADR-0041](../decisions/ADR-0041-branch-ratchet-noise-tolerance.md)에 따른다. PRD 전체 85%·core 90% 미달은 report의 `branchCoverage.requirementShortfalls`로 보고한다. 이를 ratchet gate 실패 사유로 쓰지 않으며, 미달이 남는 동안 TEST-06·TEST-07은 미검증으로 유지한다. Ratchet 변경에는 반복 안정성 증거와 정책/요구사항 갱신이 필요하다. Coverage 숫자만으로는 충분하지 않으며 모든 P0 requirement와 지원 MQTT normative statement에 assertion이 연결되어야 한다.
 
 ### 8.1 Verification 실행 정책
 
@@ -813,6 +813,83 @@ Baseline은 `floor(min(A,B)*100)/100`으로 정했다. Line·function threshold�
 증거는 `.artifacts/verification/coverage-summary-run-{0,a,b,c}.json`, `branch/manifest.json`, `coverage.out`, `coverage-summary-ratchet-rejection.json`, `coverage-summary-delivery-100.json`, `coverage-summary-diff-02ef51d.json`, `branch-gate-execution-evidence.json`에 보존한다. Run C의 `requirementShortfalls`는 전체 branch 79.85%가 PRD 85%보다 낮다는 한 항목이다. Core 9개는 모두 local branch 90% 이상이다. TEST-06의 PRD floor 충족과 TEST-06·TEST-07의 필수 CI 증거는 미검증으로 남는다. CI mutation gate와 CI 플랫폼 status·TEST-10 P0 매핑은 이번 작업에서 실행하거나 완료하지 않았다.
 
 출력 경로 안전성 보완 뒤 실제 `branch-instrument --output .`와 `--output .artifacts/verification`은 각각 exit 1로 삭제 전에 거절했다. 저장소 branch subtree에 외부 임시 directory로 향하는 Windows junction을 만들고 그 하위를 출력으로 지정한 CLI도 exit 1로 거절했다. 외부 sentinel 파일은 그대로 남았고 임시 junction은 제거했다. 기본 `branch-instrument`는 PASS였다. 기존 Run C profile을 새 manifest로 다시 평가한 `coverage`도 PASS였으며 측정값은 같았다. 안전성 회귀 시험은 skip 없이 통과했다. 이 추가 증거는 `.artifacts/verification/branch-output-safety-evidence.json`과 `coverage-summary-after-safety-review.json`에 보존한다. 전체 local gate의 Run A·B·C는 이 보완 전 실행이며, 보완 뒤에는 도구 package 전체 시험과 위 CLI 경로를 검증했다.
+
+### 8.3 Branch ratchet 노이즈 허용폭 수용 증거
+
+2026-10-08에 Windows/amd64, Go 1.26.5에서 확인했다. Production source는 변경하지 않았다. Run A·B·C는 `branchTolerance=0.20`을 사용했고 모두 `coverage: PASS`, `local: PASS`로 끝났다.
+
+| 실행 | Branch covered/total (%) | 결과 |
+| --- | --- | --- |
+| Run A | 10,469/13,073 (80.08) | PASS |
+| Run B | 10,462/13,073 (80.03) | PASS |
+| Run C | 10,469/13,073 (80.08) | PASS |
+
+세 실행의 overall spread는 0.05%p다. 허용폭 0.20%p보다 작고, 기존 9회 측정 spread 0.09%p보다도 작다. 계획한 35개 branch outcome ID는 `branch/manifest.json`에 모두 있으며, A·B·C의 `uncoveredOutcomes`에는 하나도 없다.
+
+Run A·B의 작은 branch 값을 소수점 둘째 자리에서 내림해 overall ratchet을 80.03%로 바꿨다. Core ratchet은 A·B 값이 같아 기존 값을 유지했다. Line·function 기준은 변경하지 않았다.
+
+| 범위 | 확정 branch ratchet (%) | Run C (%) |
+| --- | ---: | ---: |
+| Overall | 80.03 | 80.08 |
+| `domain/connrebalance` | 96.15 | 96.15 |
+| `domain/delivery` | 100.00 | 100.00 |
+| `domain/mqtt` | 99.27 | 99.27 |
+| `domain/nodedrain` | 97.73 | 97.73 |
+| `domain/release` | 100.00 | 100.00 |
+| `domain/routing` | 93.15 | 93.15 |
+| `domain/security` | 90.91 | 90.91 |
+| `domain/session` | 98.73 | 98.73 |
+| `domain/tenancy` | 99.33 | 99.33 |
+
+#### 결정적 시험과 branch outcome
+
+아래 outcome ID는 각 Run A·B·C에서 모두 covered였다. `if`의 `then`과 `else`는 서로 다른 outcome ID다.
+
+| 시험 | 확인한 branch outcome ID |
+| --- | --- |
+| `TestClusterMembershipRemovalOfLocalLeaderTransfersLeadership` | `cmd/narumq/cluster_drain.go:617:3 if then`, `cmd/narumq/cluster_drain.go:617:3 if else`, `cmd/narumq/cluster_drain.go:620:3 if then`, `cmd/narumq/cluster_drain.go:620:3 if else`, `cmd/narumq/cluster_drain.go:625:2 if then`, `cmd/narumq/cluster_drain.go:625:2 if else`, `cmd/narumq/cluster_drain.go:628:2 if else`, `cmd/narumq/cluster_runtime.go:1896:4 if then`, `cmd/narumq/cluster_runtime.go:2144:3 switch case@2147:3` |
+| `TestReclaimUnsentProposalsStopsWhenDeferredRoomIsZero` | `cmd/narumq/cluster_proposals.go:69:3 if then`, `internal/adapters/raft/node_deferred_proposals.go:22:2 if then` |
+| `TestClusterReadinessGate` | `cmd/narumq/cluster_readiness_diagnostics.go:65:2 switch case@82:2` |
+| `TestClusterProposeMembershipChangeIgnoresPendingChangeAndFollower` | `cmd/narumq/cluster_runtime.go:1979:2 if then`, `internal/adapters/raft/node.go:608:2 if then` |
+| `TestReconcileCommittedPeersSkipsRetiredLocalIdentityOutsideRaft` | `cmd/narumq/cluster_runtime.go:2151:9 if else`, `cmd/narumq/cluster_runtime.go:2157:9 if else`, `cmd/narumq/cluster_runtime.go:2160:2 if then` |
+| `TestClusterAdmitPeerRejectsWhenNotLeader` | `cmd/narumq/cluster_runtime.go:2177:2 if then` |
+| `TestClusterGetOperationReportsReadBarrierFailure` | `cmd/narumq/cluster_runtime.go:2871:2 if then` |
+| `TestClusterStateProviderRemoteSummaryUsesLeaderMatchIndex` | `cmd/narumq/cluster_runtime.go:3619:3 if then`, `cmd/narumq/cluster_runtime.go:3619:3 if else`, `internal/adapters/raft/node.go:895:2 if then` |
+| `TestNodeCloseFlushesHeldAppendOrReportsFailure` | `internal/adapters/raft/node.go:924:4 if then` |
+| `TestQueueBatchOperationsRejectMissingSessionAndShortQueue` | `internal/adapters/memory/deliveryqueue/queue.go:180:2 if then`, `internal/adapters/memory/deliveryqueue/queue.go:260:3 if then` |
+| `TestCSVWriterLoopQueuedControlCloseAndStoppedFailure` | `internal/adapters/tcp/server.go:1708:4 if then`, `internal/adapters/tcp/server.go:1702:5 if else` |
+| `TestCSVWriteDeliveriesQueuePeekOutcomes` | `internal/adapters/tcp/server.go:1809:4 if then` |
+| `TestServeBootstrapProbeDropsFailedHandshakeAndBadMagic` | `internal/adapters/tcp/peer_bootstrap_probe.go:153:4 if then`, `internal/adapters/tcp/peer_bootstrap_probe.go:157:4 if then` |
+| `TestProbeBootstrapPeerReportsResponseReadFailure` | `internal/adapters/tcp/peer_bootstrap_probe.go:209:2 if then` |
+| `TestDynamicDialDropsConnectionWhenIdentityChangesDuringHandshake` | `internal/adapters/tcp/peer_transport.go:2053:3 if then`, `internal/adapters/tcp/peer_transport.go:2058:4 if else` |
+| `TestDynamicDialSuppressesErrorWhenIdentityChangesBeforeHelloResponse` | `internal/adapters/tcp/peer_transport.go:2104:4 if else`, `internal/adapters/tcp/peer_transport.go:2228:2 if else` |
+
+`TestDynamicMembershipChangesApplyAndReplayAfterRestart`는 peer match index와 pending membership 변경 거절을 확인한다. `TestCSVSubscribeAckWriteFailureKeepsDeliveryBlocked`는 SUBACK write 실패 뒤 delivery 차단과 writer 종료를 확인한다. `TestRunClusterModeInProcess`는 joiner seed를 follower부터 시도하고, 제거 요청은 항상 follower를 대상으로 보낸다.
+
+반복 race 시험은 모두 PASS했다.
+
+```text
+go test -race ./cmd/narumq -run '^(TestClusterMembershipRemovalOfLocalLeaderTransfersLeadership|TestReclaimUnsentProposalsStopsWhenDeferredRoomIsZero|TestClusterReadinessGate|TestClusterProposeMembershipChangeIgnoresPendingChangeAndFollower|TestReconcileCommittedPeersSkipsRetiredLocalIdentityOutsideRaft|TestClusterAdmitPeerRejectsWhenNotLeader|TestClusterGetOperationReportsReadBarrierFailure|TestClusterStateProviderRemoteSummaryUsesLeaderMatchIndex)$' -count=20
+go test -race ./cmd/narumq -run '^TestRunClusterModeInProcess$' -count=3
+go test -race ./internal/adapters/raft -run '^(TestDynamicMembershipChangesApplyAndReplayAfterRestart|TestNodeCloseFlushesHeldAppendOrReportsFailure)$' -count=50
+go test -race ./internal/adapters/memory/deliveryqueue -run '^TestQueueBatchOperationsRejectMissingSessionAndShortQueue$' -count=20
+go test -race ./internal/adapters/tcp -run '^(TestCSVSubscribeAckWriteFailureKeepsDeliveryBlocked|TestCSVWriterLoopQueuedControlCloseAndStoppedFailure|TestCSVWriteDeliveriesQueuePeekOutcomes|TestServeBootstrapProbeDropsFailedHandshakeAndBadMagic|TestProbeBootstrapPeerReportsResponseReadFailure|TestDynamicDialDropsConnectionWhenIdentityChangesDuringHandshake|TestDynamicDialSuppressesErrorWhenIdentityChangesBeforeHelloResponse)$' -count=20
+```
+
+#### 재기준과 허용폭 경계
+
+재기준 뒤 Run C profile을 최종 policy로 평가한 결과는 `coverage: PASS`였다. `GOMAXPROCS=4 go run ./tools/verify local`도 한 번 더 실행해 `coverage: PASS`, `local: PASS`를 확인했다. 추가 Run의 overall branch는 10,470/13,073(80.09%)였다.
+
+저장소 밖 policy 사본과 `.artifacts/verification/coverage-tolerance-c.out`으로 CLI 경계를 확인했다.
+
+| Overall branch ratchet | Run C 대비 | 결과 |
+| ---: | ---: | --- |
+| 80.29% | +0.21%p | Exit 1. `overall branch ratchet 80.29% (tolerance 0.20%p) is above measured 80.08%` |
+| 80.27% | +0.19%p | Exit 0. `coverage: PASS` |
+
+초기 focused 시험 실행은 test import/API type 불일치로 compile에 실패했다. 첫 TCP race 실행에서는 TLS server name 불일치와 `writerDone` 종료를 기다리지 않는 assertion이 드러났다. 두 시험 문제를 수정한 뒤 위 반복 횟수로 모두 통과했다. Run A·B·C 및 재기준 뒤 local gate에는 실패가 없었다.
+
+증거는 `.artifacts/verification/coverage-summary-tolerance-{a,b,c}.json`, `.artifacts/verification/coverage-summary-tolerance-post-ratchet.json`, `.artifacts/verification/coverage-tolerance-c.out`, `.artifacts/verification/tolerance-local-{a,b,c,post-ratchet}.log`에 보존한다. Run C와 추가 Run의 `requirementShortfalls`는 overall branch가 PRD 85%보다 낮다는 항목이다. Core 9개는 모두 90% 이상이다. CI의 필수 status, TEST-10 P0 mapping, 전체 PRD branch floor와 별도 scope의 `TestRaftPeerDriverTicksQueuesAndStops`·`TestDynamicClusterMembershipTransitionCrashRecovery`는 이 증거로 검증하지 않는다.
 
 ## 9. Architecture 검증
 

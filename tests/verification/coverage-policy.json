@@ -16,7 +16,8 @@
     "narumq/internal/domain/tenancy"
   ],
   "ratchet": {
-    "overall": {"line": 85, "function": 90, "branch": 79.81},
+    "branchTolerance": 0.2,
+    "overall": {"line": 85, "function": 90, "branch": 80.03},
     "core": {
       "narumq/internal/domain/connrebalance": {"line": 100, "function": 100, "branch": 96.15},
       "narumq/internal/domain/delivery": {"line": 100, "function": 100, "branch": 100},

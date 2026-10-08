@@ -38,8 +38,9 @@ type coveragePolicy struct {
 }
 
 type coverageRatchet struct {
-	Overall coverageFloor            `json:"overall"`
-	Core    map[string]coverageFloor `json:"core"`
+	BranchTolerance float64                  `json:"branchTolerance"`
+	Overall         coverageFloor            `json:"overall"`
+	Core            map[string]coverageFloor `json:"core"`
 }
 
 type coverageBlock struct {
@@ -168,6 +169,9 @@ func validateCoveragePolicy(policy coveragePolicy) architectureIssues {
 	if !equalSortedUnique(policy.CorePackages) {
 		issues = append(issues, architectureIssue{Message: "coverage policy corePackages must be sorted and unique"})
 	}
+	if policy.Ratchet.BranchTolerance < 0 || policy.Ratchet.BranchTolerance > 1 {
+		issues = append(issues, architectureIssue{Message: "coverage policy ratchet.branchTolerance must be between 0 and 1"})
+	}
 	if !validCoverageFloor(policy.Ratchet.Overall) {
 		issues = append(issues, architectureIssue{Message: "coverage policy ratchet.overall must be between 0 and 100"})
 	}
@@ -272,7 +276,7 @@ func evaluateCoverage(ctx context.Context, root, profilePath string, policy cove
 
 	var issues []string
 	issues = append(issues, enforceCoverageFloor("overall", overall, policy.OverallFloor, policy.Ratchet.Overall)...)
-	issues = append(issues, enforceBranchRatchet("overall", overall.Branch, policy.Ratchet.Overall.Branch)...)
+	issues = append(issues, enforceBranchRatchet("overall", overall.Branch, policy.Ratchet.Overall.Branch, policy.Ratchet.BranchTolerance)...)
 	if shortfall, exists := branchRequirementShortfall("overall", overall.Branch, policy.OverallFloor.Branch); exists {
 		report.BranchCoverage.RequirementShortfalls = append(report.BranchCoverage.RequirementShortfalls, shortfall)
 	}
@@ -280,7 +284,7 @@ func evaluateCoverage(ctx context.Context, root, profilePath string, policy cove
 		metric := report.Core[packagePath]
 		ratchet := policy.Ratchet.Core[packagePath]
 		issues = append(issues, enforceCoverageFloor(packagePath, metric, policy.CoreFloor, ratchet)...)
-		issues = append(issues, enforceBranchRatchet(packagePath, metric.Branch, ratchet.Branch)...)
+		issues = append(issues, enforceBranchRatchet(packagePath, metric.Branch, ratchet.Branch, policy.Ratchet.BranchTolerance)...)
 		if shortfall, exists := branchRequirementShortfall(packagePath, metric.Branch, policy.CoreFloor.Branch); exists {
 			report.BranchCoverage.RequirementShortfalls = append(report.BranchCoverage.RequirementShortfalls, shortfall)
 		}

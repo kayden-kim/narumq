@@ -28,6 +28,19 @@ import (
 	"narumq/internal/domain/tenancy"
 )
 
+type csvToggleWriteConn struct {
+	net.Conn
+	fail atomic.Bool
+	err  error
+}
+
+func (connection *csvToggleWriteConn) Write(data []byte) (int, error) {
+	if connection.fail.Load() {
+		return 0, connection.err
+	}
+	return connection.Conn.Write(data)
+}
+
 // csvQueue decorates the memory delivery queue with injectable persistence failures.
 type csvQueue struct {
 	*deliveryqueue.Queue
@@ -1379,6 +1392,106 @@ func TestCSVWriteDeliveriesQueuePeekOutcomes(t *testing.T) {
 	if len(conn.outbound) != 0 {
 		t.Fatalf("empty peek created outbound state %#v", conn.outbound)
 	}
+	deps.queue.setPeek(func(routing.SessionID, time.Time) (applicationdeliveryqueue.DeliveryDTO, bool, error) {
+		return applicationdeliveryqueue.DeliveryDTO{}, false, peekErr
+	})
+	conn.requestClose()
+	if err := conn.writeDeliveries(); err != nil {
+		t.Fatalf("writeDeliveries(closed with peek error) error = %v, want nil", err)
+	}
+}
+
+func TestCSVSubscribeAckWriteFailureKeepsDeliveryBlocked(t *testing.T) {
+	deps := csvNewServer(t, newPipeListener(), csvServerOptions{})
+	serverSide, client := net.Pipe()
+	defer client.Close()
+	toggle := &csvToggleWriteConn{Conn: serverSide, err: errors.New("ack write failed")}
+	conn := newConnection(deps.server, toggle)
+	go conn.writerLoop()
+	defer func() {
+		conn.requestClose()
+		<-conn.writerDone
+	}()
+
+	activated := make(chan error, 1)
+	go func() {
+		activated <- conn.activate(mqtt.Connect{Version: mqtt.ProtocolV5, CleanStart: true, ClientID: "sub-fail"})
+	}()
+	if packet := csvReadPacket(t, deps.server, client, mqtt.ProtocolV5); packet == nil {
+		t.Fatal("received nil CONNACK packet")
+	} else if _, ok := packet.(*mqtt.ConnAck); !ok {
+		t.Fatalf("activation packet = %T, want CONNACK", packet)
+	}
+	if err := <-activated; err != nil {
+		t.Fatalf("activate() error = %v, want nil", err)
+	}
+
+	toggle.fail.Store(true)
+	errAck := toggle.err
+	err := conn.dispatch(&mqtt.Subscribe{
+		Version: mqtt.ProtocolV5, PacketID: 1,
+		Subscriptions: []mqtt.Subscription{{Filter: "sub-fail/topic", QoS: mqtt.QoSAtMostOnce}},
+	})
+	if !errors.Is(err, errAck) && !errors.Is(err, ErrConnectionClosed) {
+		t.Fatalf("dispatch(SUBSCRIBE) error = %v, want %v or %v", err, errAck, ErrConnectionClosed)
+	}
+	if !conn.deliveryBlocked.Load() {
+		t.Fatal("deliveryBlocked = false after SUBACK write failure, want true")
+	}
+	select {
+	case <-conn.writerDone:
+	case <-time.After(time.Second):
+		t.Fatal("writerDone did not close after SUBACK write failure")
+	}
+}
+
+func TestCSVWriterLoopQueuedControlCloseAndStoppedFailure(t *testing.T) {
+	t.Run("close after queued control", func(t *testing.T) {
+		deps := csvNewServer(t, newPipeListener(), csvServerOptions{})
+		serverSide, client := net.Pipe()
+		defer client.Close()
+		defer serverSide.Close()
+		conn := newConnection(deps.server, serverSide)
+		done := make(chan error, 1)
+		conn.controlQueue <- controlMessage{
+			packet: &mqtt.Disconnect{Version: mqtt.ProtocolV5}, done: done, closeAfter: true,
+		}
+		go conn.writerLoop()
+		packet := csvReadPacket(t, deps.server, client, mqtt.ProtocolV5)
+		if _, ok := packet.(*mqtt.Disconnect); !ok {
+			t.Fatalf("queued control packet = %T, want DISCONNECT", packet)
+		}
+		if err := <-done; err != nil {
+			t.Fatalf("queued DISCONNECT done error = %v, want nil", err)
+		}
+		select {
+		case <-conn.writerDone:
+		case <-time.After(time.Second):
+			t.Fatal("writerDone did not close after queued DISCONNECT")
+		}
+		if !conn.isStopping() {
+			t.Fatal("isStopping() = false after closeAfter control, want true")
+		}
+	})
+
+	t.Run("stopped connection control failure", func(t *testing.T) {
+		deps := csvNewServer(t, newPipeListener(), csvServerOptions{})
+		serverSide, client := net.Pipe()
+		defer client.Close()
+		defer serverSide.Close()
+		conn := newConnection(deps.server, serverSide)
+		_ = client.Close()
+		conn.requestClose()
+		done := make(chan error, 1)
+		conn.controlQueue <- controlMessage{packet: &mqtt.PingResp{Version: mqtt.ProtocolV5}, done: done}
+		conn.writerLoop()
+		if err := <-done; !errors.Is(err, io.ErrClosedPipe) {
+			t.Fatalf("stopped control done error = %v, want %v", err, io.ErrClosedPipe)
+		}
+		if strings.Contains(deps.logs.String(), "MQTT writer failed") {
+			t.Fatalf("stopped control logged unexpected writer failure: %s", deps.logs.String())
+		}
+	})
 }
 
 func TestCSVWriteDeliveriesKeepsPromotedMessageInflightOnWireFailure(t *testing.T) {

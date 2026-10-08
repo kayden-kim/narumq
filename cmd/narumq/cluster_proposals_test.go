@@ -2,9 +2,12 @@ package main
 
 import (
 	"context"
-	"narumq/internal/application/membership"
+	"reflect"
 	"testing"
 	"time"
+
+	tcpadapter "narumq/internal/adapters/tcp"
+	"narumq/internal/application/membership"
 )
 
 func TestSafeRetirementFloorProgress(t *testing.T) {
@@ -55,5 +58,33 @@ func TestHasUnappliedProposalsChecksTimeout(t *testing.T) {
 	proposals = append(proposals, clusterProposalWaiter{requestID: "r3", context: liveCtx, applied: false, command: membership.CommandDTO{Proposal: &membership.ProposalIdentityDTO{}}})
 	if !hasUnappliedProposals(proposals) {
 		t.Fatal("expected true when live unapplied proposal exists")
+	}
+}
+
+func TestReclaimUnsentProposalsStopsWhenDeferredRoomIsZero(t *testing.T) {
+	runtimes := newReadAdmissionTestCluster(t)
+	follower := runtimes[1]
+	message := tcpadapter.PeerMessageDTO{From: 2, To: 1, Data: []byte("forwarded-proposal"), Reclaimable: true}
+	if err := follower.transport.Send(message); err != nil {
+		t.Fatalf("queue forwarded proposal %+v: %v", message, err)
+	}
+	if err := follower.node.Close(); err != nil {
+		t.Fatalf("close follower Raft node: %v", err)
+	}
+	follower.reclaimUnsentProposals()
+	status, err := follower.transport.Status(1)
+	if err != nil {
+		t.Fatalf("outbound peer status for peer 1: %v", err)
+	}
+	if status.OutboundQueuedMessages != 1 {
+		t.Fatalf("queued outbound messages for peer 1 = %d, want 1 (status=%+v)", status.OutboundQueuedMessages, status)
+	}
+	frames, err := follower.transport.ReclaimUnsent(1, 1, 1<<20)
+	if err != nil {
+		t.Fatalf("ReclaimUnsent(1, 1, 1<<20): %v", err)
+	}
+	want := [][]byte{[]byte("forwarded-proposal")}
+	if !reflect.DeepEqual(frames, want) {
+		t.Fatalf("reclaimed frames = %q, want %q", frames, want)
 	}
 }

@@ -286,6 +286,42 @@ func TestQueuePromoteHeadExpiryAndAtomicFailures(t *testing.T) {
 	}
 }
 
+func TestQueueBatchOperationsRejectMissingSessionAndShortQueue(t *testing.T) {
+	now := testNow()
+	queue, err := New(2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if count, err := queue.PeekBatch("missing", now, make([]applicationdeliveryqueue.DeliveryDTO, 1)); count != 0 || !errors.Is(err, applicationdeliveryqueue.ErrUnavailable) {
+		t.Fatalf("PeekBatch(missing) = %d, %v, want 0, unavailable", count, err)
+	}
+	if err := queue.Register("session-a"); err != nil {
+		t.Fatal(err)
+	}
+	if err := queue.TryEnqueue(applicationdeliveryqueue.DeliveryDTO{
+		SessionID: "session-a", Topic: "queued", QoS: mqtt.QoSAtLeastOnce,
+	}, now); err != nil {
+		t.Fatal(err)
+	}
+	outbounds := []applicationdeliveryqueue.OutboundDTO{
+		outboundFor(t, "session-a", 1, time.Time{}),
+		outboundFor(t, "session-a", 2, time.Time{}),
+	}
+	if count, err := queue.PromoteBatch(outbounds, now); count != 1 || !errors.Is(err, applicationdeliveryqueue.ErrUnavailable) {
+		t.Fatalf("PromoteBatch(two items, one queued) = %d, %v, want 1, unavailable", count, err)
+	}
+	got, err := queue.ListOutbound("session-a")
+	if err != nil {
+		t.Fatalf("ListOutbound(session-a): %v", err)
+	}
+	if len(got) != 1 || got[0].PacketID != 1 {
+		t.Fatalf("ListOutbound after short PromoteBatch = %#v, want only PacketID 1", got)
+	}
+	if count, err := queue.PeekBatch("session-a", now, make([]applicationdeliveryqueue.DeliveryDTO, 1)); count != 0 || err != nil {
+		t.Fatalf("PeekBatch after promotion = %d, %v, want 0, nil", count, err)
+	}
+}
+
 // Traceability: PRD MQTT-02/TEST-03/04/05; docs/specs/mqtt-protocol-and-session.md §3.2, §7.
 func TestQueueOutboundBoundSortingAndRemoval(t *testing.T) {
 	now := testNow()

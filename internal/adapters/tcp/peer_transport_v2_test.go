@@ -1675,3 +1675,127 @@ func assertDynamicFramedPayload(t *testing.T, payload []byte, maximum uint32) {
 		t.Fatal(err)
 	}
 }
+
+func TestDynamicDialDropsConnectionWhenIdentityChangesDuringHandshake(t *testing.T) {
+	n1 := cptNewNode(t, "node1.example")
+	n2 := cptNewNode(t, "node2.example")
+	cptTrustEachOther(n1, n2)
+	dialListener := cptListen(t)
+	transport := n1.newDynamic(t, cptListen(t), n1.identity(1, "127.0.0.1:19001", PeerPhaseVoter, ""),
+		[]PeerIdentityDTO{n2.identity(2, dialListener.Addr().String(), PeerPhaseVoter, "")}, nil)
+	cptServe(t, transport.Serve)
+
+	listener := dialListener.(*net.TCPListener)
+	if err := listener.SetDeadline(time.Now().Add(cptWaitTimeout)); err != nil {
+		t.Fatalf("set dial listener deadline: %v", err)
+	}
+	sockets := make([]net.Conn, 0, 2)
+	for len(sockets) < 2 {
+		socket, err := listener.Accept()
+		if err != nil {
+			t.Fatalf("accept dial lane %d: %v", len(sockets)+1, err)
+		}
+		sockets = append(sockets, socket)
+	}
+	defer func() {
+		for _, socket := range sockets {
+			_ = socket.Close()
+		}
+	}()
+
+	leaving := n2.identity(2, dialListener.Addr().String(), PeerPhaseLeaving, "00000000-0000-4000-8000-000000000031")
+	if err := transport.ReconcilePeers([]PeerIdentityDTO{leaving}); err != nil {
+		t.Fatalf("ReconcilePeers(Leaving) error = %v, want nil", err)
+	}
+	for index, socket := range sockets {
+		tlsConn := tls.Server(socket, n2.serverTLS)
+		if err := tlsConn.Handshake(); err != nil {
+			t.Fatalf("TLS handshake lane %d: %v", index, err)
+		}
+		if err := tlsConn.SetReadDeadline(time.Now().Add(cptWaitTimeout)); err != nil {
+			t.Fatalf("set lane %d read deadline: %v", index, err)
+		}
+		var payload [1]byte
+		_, err := tlsConn.Read(payload[:])
+		if !errors.Is(err, io.EOF) {
+			t.Fatalf("lane %d read after identity change = %v, want %v", index, err, io.EOF)
+		}
+	}
+
+	if err := listener.SetDeadline(time.Now().Add(cptWaitTimeout)); err != nil {
+		t.Fatalf("set retry listener deadline: %v", err)
+	}
+	retry, err := listener.Accept()
+	if err != nil {
+		t.Fatalf("accept retried dial: %v", err)
+	}
+	_ = retry.Close()
+}
+
+func TestDynamicDialSuppressesErrorWhenIdentityChangesBeforeHelloResponse(t *testing.T) {
+	n1 := cptNewNode(t, "node1.example")
+	n2 := cptNewNode(t, "node2.example")
+	cptTrustEachOther(n1, n2)
+	dialListener := cptListen(t)
+	transport := n1.newDynamic(t, cptListen(t), n1.identity(1, "127.0.0.1:19001", PeerPhaseVoter, ""),
+		[]PeerIdentityDTO{n2.identity(2, dialListener.Addr().String(), PeerPhaseVoter, "")}, nil)
+	cptServe(t, transport.Serve)
+
+	listener := dialListener.(*net.TCPListener)
+	if err := listener.SetDeadline(time.Now().Add(cptWaitTimeout)); err != nil {
+		t.Fatalf("set dial listener deadline: %v", err)
+	}
+	type lane struct {
+		socket net.Conn
+		tls    *tls.Conn
+	}
+	lanes := make([]lane, 0, 2)
+	for len(lanes) < 2 {
+		socket, err := listener.Accept()
+		if err != nil {
+			t.Fatalf("accept dial lane %d: %v", len(lanes)+1, err)
+		}
+		tlsConn := tls.Server(socket, n2.serverTLS)
+		if err := tlsConn.Handshake(); err != nil {
+			_ = socket.Close()
+			t.Fatalf("TLS handshake lane %d: %v", len(lanes), err)
+		}
+		if err := tlsConn.SetReadDeadline(time.Now().Add(cptWaitTimeout)); err != nil {
+			_ = socket.Close()
+			t.Fatalf("set lane %d read deadline: %v", len(lanes), err)
+		}
+		if _, err := readDynamicFrame(tlsConn, dynamicHelloLimit); err != nil {
+			_ = socket.Close()
+			t.Fatalf("read lane %d hello: %v", len(lanes), err)
+		}
+		lanes = append(lanes, lane{socket: socket, tls: tlsConn})
+	}
+	defer func() {
+		for _, lane := range lanes {
+			_ = lane.socket.Close()
+		}
+	}()
+
+	leaving := n2.identity(2, dialListener.Addr().String(), PeerPhaseLeaving, "00000000-0000-4000-8000-000000000031")
+	if err := transport.ReconcilePeers([]PeerIdentityDTO{leaving}); err != nil {
+		t.Fatalf("ReconcilePeers(Leaving) error = %v, want nil", err)
+	}
+	for index, lane := range lanes {
+		var payload [1]byte
+		if _, err := lane.tls.Read(payload[:]); err == nil {
+			t.Fatalf("server read lane %d after identity change succeeded, want error", index)
+		}
+	}
+
+	if err := listener.SetDeadline(time.Now().Add(cptWaitTimeout)); err != nil {
+		t.Fatalf("set retry listener deadline: %v", err)
+	}
+	retry, err := listener.Accept()
+	if err != nil {
+		t.Fatalf("accept retried dial: %v", err)
+	}
+	_ = retry.Close()
+	cptWaitUntil(t, "cleared peer LastError", func() bool {
+		return cptDynamicStatus(cptDynamicPeer(transport, 2)).LastError == ""
+	})
+}

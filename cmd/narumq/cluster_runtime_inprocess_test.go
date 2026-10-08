@@ -224,17 +224,28 @@ func TestRunClusterModeInProcess(t *testing.T) {
 	if err := os.WriteFile(joinerKeyPath, joinerKeyPEM, 0o600); err != nil {
 		t.Fatal(err)
 	}
+	seedLeader := clusterRuntimeTestLeader(t, ctx, client, managementAddresses)
+	seedAddresses := make([]string, 0, len(peerAddresses))
+	var leaderSeedAddress string
+	for index, address := range managementAddresses {
+		seedAddress := clusterRuntimeTestSeedAddress(t, peerAddresses[index])
+		if address == seedLeader {
+			leaderSeedAddress = seedAddress
+			continue
+		}
+		seedAddresses = append(seedAddresses, seedAddress)
+	}
+	if leaderSeedAddress == "" {
+		t.Fatalf("cluster leader address %q is not in management addresses %v", seedLeader, managementAddresses)
+	}
+	seedAddresses = append(seedAddresses, leaderSeedAddress)
 	joinerConfig := clusterConfigFile{
 		Mode: "cluster", ClusterID: "inprocess-coverage", NodeID: joinerID,
 		Directory: filepath.Join(directory, "node4"), ListenAddress: joinerPeerAddress,
 		AdvertisedAddress: joinerPeerAddress, LocalDNSName: joinerDNS, ReleaseVersion: buildReleaseVersion,
 		ClusterProtocolMajor: 2, StateSchemaMajor: 1, Role: "joiner",
-		SeedAddresses: []string{
-			clusterRuntimeTestSeedAddress(t, peerAddresses[0]),
-			clusterRuntimeTestSeedAddress(t, peerAddresses[1]),
-			clusterRuntimeTestSeedAddress(t, peerAddresses[2]),
-		},
-		PeerTLS: clusterPeerTLS{CertFile: joinerCertPath, KeyFile: joinerKeyPath, CAFile: caPath},
+		SeedAddresses: seedAddresses,
+		PeerTLS:       clusterPeerTLS{CertFile: joinerCertPath, KeyFile: joinerKeyPath, CAFile: caPath},
 		Management: clusterManagement{
 			ListenAddress:         joinerManagementAddress,
 			ClusterAdminTokenFile: tokenPath,
@@ -342,19 +353,30 @@ func TestRunClusterModeInProcess(t *testing.T) {
 	clusterRuntimeTestWaitReady(t, client, append(managementAddresses, joinerManagementAddress))
 
 	leaderAddress = clusterRuntimeTestLeader(t, ctx, client, append(managementAddresses, joinerManagementAddress))
+	removedIndex := -1
+	for index, address := range managementAddresses {
+		if address != leaderAddress {
+			removedIndex = index
+			break
+		}
+	}
+	if removedIndex < 0 {
+		t.Fatalf("leader address %q has no removable follower among %v", leaderAddress, managementAddresses)
+	}
+	removedMemberID := removedIndex + 1
 	removeResponse, err := clusterRuntimeTestDoRequest(ctx, client, http.MethodDelete,
-		"http://"+leaderAddress+"/api/v1/cluster/members/3", nil)
+		fmt.Sprintf("http://%s/api/v1/cluster/members/%d", leaderAddress, removedMemberID), nil)
 	if err != nil {
-		t.Fatalf("remove in-process member: %v", err)
+		t.Fatalf("remove in-process member %d: %v", removedMemberID, err)
 	}
 	removeOperationID := clusterRuntimeTestReadOperation(t, removeResponse)
 	if removeResponse.StatusCode != http.StatusAccepted {
-		t.Fatalf("remove member status = %d, want 202", removeResponse.StatusCode)
+		t.Fatalf("remove member %d status = %d, want 202", removedMemberID, removeResponse.StatusCode)
 	}
 	allAddresses := append(managementAddresses, joinerManagementAddress)
 	clusterRuntimeTestWaitOperation(t, ctx, client, allAddresses, removeOperationID, "SUCCEEDED")
-	clusterRuntimeTestWaitRemovalReady(t, client, allAddresses, 2)
-	t.Log("four-to-three voter replacement: removal 202 -> SUCCEEDED; remaining voters ready")
+	clusterRuntimeTestWaitRemovalReady(t, client, allAddresses, removedIndex)
+	t.Logf("four-to-three voter replacement: member %d removal 202 -> SUCCEEDED; remaining voters ready", removedMemberID)
 }
 
 func clusterRuntimeTestAssertNodeListing(t *testing.T, ctx context.Context, client *http.Client, address string) {

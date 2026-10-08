@@ -206,3 +206,40 @@ func TestParseCoverageProfileExcludesOnlyGeneratedProtobufSources(t *testing.T) 
 		t.Fatalf("non-production generated profile entry error = %v", err)
 	}
 }
+
+func TestValidateCoveragePolicyRejectsInvalidBranchTolerance(t *testing.T) {
+	valid := coveragePolicy{
+		SchemaVersion:      2,
+		ProductionPatterns: []string{"./internal/..."},
+		OverallFloor:       coverageFloor{},
+		CoreFloor:          coverageFloor{},
+		DiffFloor:          coverageFloor{},
+		CorePackages:       []string{"narumq/internal"},
+		Ratchet: coverageRatchet{
+			Overall: coverageFloor{},
+			Core:    map[string]coverageFloor{"narumq/internal": {}},
+		},
+	}
+	for _, tc := range []struct {
+		name       string
+		tolerance  float64
+		wantIssues int
+	}{
+		{name: "zero", tolerance: 0, wantIssues: 0},
+		{name: "configured", tolerance: 0.2, wantIssues: 0},
+		{name: "negative", tolerance: -0.01, wantIssues: 1},
+		{name: "above maximum", tolerance: 1.01, wantIssues: 1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			policy := valid
+			policy.Ratchet.BranchTolerance = tc.tolerance
+			issues := validateCoveragePolicy(policy)
+			if len(issues) != tc.wantIssues {
+				t.Fatalf("validateCoveragePolicy() issues = %v, want %d", issues, tc.wantIssues)
+			}
+			if tc.wantIssues != 0 && issues[0].Message != "coverage policy ratchet.branchTolerance must be between 0 and 1" {
+				t.Fatalf("issue = %q, want branchTolerance range error", issues[0].Message)
+			}
+		})
+	}
+}

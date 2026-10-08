@@ -306,7 +306,7 @@ func TestEvaluateBranchCoverageRejectsStaleOrMismatchedManifest(t *testing.T) {
 
 func TestBranchRatchetDiffFloorAndRequirementShortfall(t *testing.T) {
 	actual := coverageMetric{Covered: 80, Total: 100, Percent: 80}
-	if issues := enforceBranchRatchet("overall", actual, 75); len(issues) != 0 {
+	if issues := enforceBranchRatchet("overall", actual, 75, 0); len(issues) != 0 {
 		t.Fatalf("ratchet rejected 80 >= 75: %v", issues)
 	}
 	shortfall, exists := branchRequirementShortfall("overall", actual, 85)
@@ -314,11 +314,21 @@ func TestBranchRatchetDiffFloorAndRequirementShortfall(t *testing.T) {
 		t.Fatalf("shortfall = %q, %v", shortfall, exists)
 	}
 	actual.Percent = 74
-	if issues := enforceBranchRatchet("overall", actual, 75); len(issues) != 1 || !strings.Contains(issues[0], "branch ratchet") {
+	if issues := enforceBranchRatchet("overall", actual, 75, 0); len(issues) != 1 || !strings.Contains(issues[0], "branch ratchet") {
 		t.Fatalf("ratchet did not reject 74 < 75: %v", issues)
 	}
-	if issues := enforceBranchRatchet("empty", coverageMetric{}, 0); len(issues) != 0 {
+	if issues := enforceBranchRatchet("empty", coverageMetric{}, 0, 0); len(issues) != 0 {
 		t.Fatalf("zero-outcome package rejected: %v", issues)
+	}
+
+	actual.Percent = 79.61
+	if issues := enforceBranchRatchet("overall", actual, 79.81, 0.20); len(issues) != 0 {
+		t.Fatalf("ratchet rejected 79.61%% within tolerance: %v", issues)
+	}
+	actual.Percent = 79.60
+	want := "overall branch ratchet 79.81% (tolerance 0.20%p) is above measured 79.60%"
+	if issues := enforceBranchRatchet("overall", actual, 79.81, 0.20); len(issues) != 1 || issues[0] != want {
+		t.Fatalf("ratchet issue = %v, want [%s]", issues, want)
 	}
 	changed := map[string]map[int]struct{}{"internal/sample.go": {3: {}}}
 	values := diffBranchValues(changed, []branchOutcomeResult{
