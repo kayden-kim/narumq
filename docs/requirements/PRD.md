@@ -79,7 +79,7 @@ NaruMQ는 Kubernetes 환경에 최적화된 고가용성 MQTT 클러스터다. �
 | rolling update 중 비정상 Will 발행 | 지원 클라이언트 계약을 충족한 연결에서 0 |
 | 연속 100회 rolling update의 강제 종료 | 0 |
 | N-1 처리 용량 | 현행 최대 트래픽 이상 |
-| 전체 production code coverage | line 85% 이상, function 90% 이상, branch 85% 이상 |
+| 전체 production code coverage | line 85% 이상, function 90% 이상, branch 80% 이상 |
 | MQTT·session·routing·security·drain 핵심 모듈 coverage | line/function 95% 이상, branch 90% 이상 |
 | 변경 코드 coverage | line/branch 95% 이상 |
 
@@ -478,7 +478,7 @@ Unit test는 모든 기능의 기본 검증 수단이다. 그러나 분산 동�
 | TEST-03 | MQTT 3.1.1/5.0 지원 범위의 모든 normative statement를 test case와 연결한 compliance matrix로 관리한다. |
 | TEST-04 | packet parser, encoder, QoS state machine, session expiry, topic matching, ACL, quota, drain state transition의 모든 분기를 unit test한다. |
 | TEST-05 | 시간, 난수, network, storage, consensus와 인증 backend는 port/test double로 대체해 unit test를 결정적이고 빠르게 실행한다. |
-| TEST-06 | 전체 production code는 line 85% 이상, function 90% 이상, branch 85% 이상의 coverage를 유지한다. |
+| TEST-06 | 전체 production code는 line 85% 이상, function 90% 이상, branch 80% 이상의 coverage를 유지한다. |
 | TEST-07 | protocol, session, routing, delivery, tenancy, security, cluster lifecycle 핵심 모듈은 line/function 95% 이상, branch 90% 이상을 유지한다. |
 | TEST-08 | pull request의 변경 코드는 line/branch 95% 이상의 diff coverage를 충족한다. |
 | TEST-09 | 전체 production line coverage 기준은 85%, function coverage 기준은 90%이며, 더 높은 단일 측정치만으로 threshold를 자동 상향하지 않는다. 기준 변경은 근거와 함께 PRD 및 policy를 같은 변경에서 갱신한다. |

@@ -161,16 +161,16 @@ go run ./cmd/narumq -tcp-listen 127.0.0.1:1883 -http-listen 127.0.0.1:8080 -allo
 
 ## 4. 검증
 
-개발자가 수행한 작업의 완료 여부는 다음 기준표로 판정한다. Windows/amd64, Go 1.26.5에서 `go run ./tools/verify local` Run A·B·C와 재기준 뒤 추가 실행이 모두 `local: PASS`로 끝났다. Branch coverage는 schema 2 report의 `measured`로 기록한다. Overall·core branch ratchet에는 `branchTolerance=0.20`을 적용한다. Line/function과 diff 95%에는 허용폭을 적용하지 않는다. Overall PRD branch floor는 아직 충족하지 못했다. 측정값, 경계 시험과 남은 범위는 [성능 스펙 §8.3](../specs/performance-and-verification.md#83-branch-ratchet-노이즈-허용폭-수용-증거)에 있다. Mutation과 수동 로컬 broker smoke는 이번 작업에서 실행하지 않았다.
+개발자가 수행한 작업의 완료 여부는 다음 기준표로 판정한다. 2026-10-09, Windows/amd64, Go 1.26.5에서 새 80% overall branch 기준으로 Run C를 실행해 `local: PASS`를 확인했다. Branch coverage는 schema 2 report의 `measured`로 기록한다. Overall·core branch ratchet에는 `branchTolerance=0.20`을 적용한다. Core branch는 90%, 변경 코드 diff coverage는 95%다. Run C의 `requirementShortfalls`는 비었다. CI 필수 status, TEST-10 P0 mapping, TEST-07 diff CI 증거는 남아 있다. 측정값과 경계 시험은 [성능 스펙 §8.4](../specs/performance-and-verification.md#84-전체-branch-floor-수용-증거)에 있다. Mutation과 수동 로컬 broker smoke는 이번 작업에서 실행하지 않았다.
 
 | 관찰 대상 | 성공 조건 | 확인 방법 | 실제 결과 | 실행 증거 위치 |
 | --- | --- | --- | --- | --- |
 | 단위 테스트 및 레이스 | 전체 테스트 PASS 및 Data Race 0건 | `go run ./tools/verify local` | Run A·B·C 통과; 전체 package test와 `go test -race ./cmd/... ./internal/... -count=1` 단계 완료. 앞선 실패 시도는 성능 스펙에 기록 | 콘솔 출력과 성능 스펙 §8.2 |
 | 아키텍처 규칙 | 계층 간 허용되지 않은 import 0건 | `go run ./tools/verify architecture` | 통과; `architecture: PASS` | 콘솔 출력 |
-| 규격 추적성 | 매트릭스와 소스 코드 요구사항 100% 일치 | `go run ./tools/verify traceability` | 통과; `traceability: PASS` | 콘솔 출력 |
-| 코드 커버리지 | Line/function floor·ratchet, overall·core branch ratchet의 0.20%p 허용폭, diff 95% 충족 | `go run ./tools/verify local`; `ci --base <merge-base>`는 별도 CI 실행 | Run A·B·C와 재기준 뒤 추가 gate 통과. Overall ratchet 80.03%, spread 0.05%p. Overall PRD branch 85%는 미달. CLI는 C+0.21%p에서 거절하고 C+0.19%p에서 통과 | `.artifacts/verification/coverage-summary-tolerance-*.json`, 성능 스펙 §8.3 |
+| 규격 추적성 | 매트릭스와 소스 코드 요구사항 100% 일치 | `go run ./tools/verify traceability` | 통과; `traceability: PASS` | `.artifacts/verification/traceability-branch-floor80.log` |
+| 코드 커버리지 | Line/function 기준, overall branch 80%, core branch 90%, ratchet 허용폭, diff 95% 충족 | `go run ./tools/verify local`; `ci --base <merge-base>`는 별도 CI 실행 | Run C 82.84%, `requirementShortfalls` 비었음; overall ratchet 80.03%, core/diff 기준 유지. +0.21%p 경계 거절과 +0.19%p 경계 통과도 확인 | `.artifacts/verification/coverage-summary-floor-c.json`, `coverage-boundary-plus-*.json`, 성능 스펙 §8.4 |
 | 뮤테이션 테스트 | Delivery·nodedrain·Session 각각 efficacy·mutant coverage 80% 이상 | `go run ./tools/verify ci --base <merge-base>` | 이번 작업에서 미실행; `local` gate는 mutation을 포함하지 않음 | `.artifacts/verification/mutation-*.json` |
-| 종합 로컬 검증 | 로컬 검증 gate 전체 완료 및 종료 코드 0 | `go run ./tools/verify local` | Run A·B·C와 재기준 뒤 추가 gate 통과; `coverage: PASS`, `local: PASS`. CI release gate 통과를 뜻하지 않음 | 성능 스펙 §8.3과 Run별 summary |
+| 종합 로컬 검증 | 로컬 검증 gate 전체 완료 및 종료 코드 0 | `go run ./tools/verify local` | 새 80% policy의 Run C에서 `coverage: PASS`, `local: PASS`. CI 필수 status 통과를 뜻하지 않음 | `.artifacts/verification/floor-local-c.log`, 성능 스펙 §8.4 |
 
 ## 5. 중단 조건 및 빈발 문제 해결
 

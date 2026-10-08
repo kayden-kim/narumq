@@ -717,7 +717,7 @@ go run ./tests/chaos/cluster-storage-v1 \
 
 ## 8. Coverage와 test quality gate
 
-- 전체 production code 목표: line ≥85%, function ≥90%, branch 정책 ≥85%.
+- 전체 production code 목표: line ≥85%, function ≥90%, branch 정책 ≥80%.
 - 핵심 domain 9개(`mqtt`, `session`, `routing`, `delivery`, `tenancy`, `security`, `nodedrain`, `release`, `connrebalance`)는 line/function ≥95%, branch ≥90%다. `application/membership`은 핵심 domain이 아니며 전체 기준을 따른다. 정책은 `tests/verification/coverage-policy.json`이 source of truth다.
 - CI의 변경 production code는 line/function/branch diff coverage ≥95%를 충족해야 한다. Generated exclusion은 `cmd/`·`internal/` 아래의 `.pb.go`와 표준 generated marker에만 적용한다. 알 수 없는 coverage file은 실패다.
 - `delivery`, `session`, `nodedrain`은 mutation efficacy와 mutant coverage가 각각 ≥80%여야 한다. 동시성 코드는 race detector 또는 동등한 검증을 통과한다.
@@ -727,7 +727,7 @@ go run ./tests/chaos/cluster-storage-v1 \
 
 Coverage는 Go atomic coverprofile의 executable block을 집계한다. [ADR-0040](../decisions/ADR-0040-branch-coverage-arm-injection.md)에 따라 branch는 `if`의 then·else와 clause가 있는 switch·type switch·select의 각 case·default arm을 센다. Loop 조건, 단락 평가와 `func _` body는 제외한다. 빠진 else·switch default만 줄바꿈 없이 사본에 주입한다. Select default는 주입하지 않는다. 사본에서 전체 시험을 실행하고 manifest 좌표와 원본 SHA-256을 대조한다. Line coverage로 branch를 대체하지 않는다. 실행 가능한 변경 line이나 변경 결정점이 없으면 해당 diff coverage는 100%다.
 
-현재 gate는 local integration 8-way, CI 2-way와 위 9개 core domain을 쓴다. Final ratchet은 overall production과 core별 threshold를 `coverage-policy.json`에 둔다. Branch는 두 번 측정한 값 중 작은 값을 소수점 둘째 자리에서 내림한 baseline ratchet을 사용한다. 전체·core ratchet은 측정값이 ratchet에서 0.20%p를 뺀 값보다 낮을 때 실패하며, 비교에는 0.005%p 반올림 오차를 추가로 허용한다. 허용폭은 branch ratchet에만 적용하며 line·function gate, diff 95%와 PRD shortfall에는 적용하지 않는다. 근거와 변경 조건은 [ADR-0041](../decisions/ADR-0041-branch-ratchet-noise-tolerance.md)에 따른다. PRD 전체 85%·core 90% 미달은 report의 `branchCoverage.requirementShortfalls`로 보고한다. 이를 ratchet gate 실패 사유로 쓰지 않으며, 미달이 남는 동안 TEST-06·TEST-07은 미검증으로 유지한다. Ratchet 변경에는 반복 안정성 증거와 정책/요구사항 갱신이 필요하다. Coverage 숫자만으로는 충분하지 않으며 모든 P0 requirement와 지원 MQTT normative statement에 assertion이 연결되어야 한다.
+현재 gate는 local integration 8-way, CI 2-way와 위 9개 core domain을 쓴다. Final ratchet은 overall production과 core별 threshold를 `coverage-policy.json`에 둔다. Branch는 두 번 측정한 값 중 작은 값을 소수점 둘째 자리에서 내림한 baseline ratchet을 사용한다. 전체·core ratchet은 측정값이 ratchet에서 0.20%p를 뺀 값보다 낮을 때 실패하며, 비교에는 0.005%p 반올림 오차를 추가로 허용한다. 허용폭은 branch ratchet에만 적용하며 line·function gate, diff 95%와 PRD shortfall에는 적용하지 않는다. 근거와 변경 조건은 [ADR-0041](../decisions/ADR-0041-branch-ratchet-noise-tolerance.md)에 따른다. PRD 전체 80%·core 90% 미달은 report의 `branchCoverage.requirementShortfalls`로 보고한다. 이를 ratchet gate 실패 사유로 쓰지 않으며, 미달이 남는 동안 TEST-06·TEST-07은 미검증으로 유지한다. Ratchet 변경에는 반복 안정성 증거와 정책/요구사항 갱신이 필요하다. Coverage 숫자만으로는 충분하지 않으며 모든 P0 requirement와 지원 MQTT normative statement에 assertion이 연결되어야 한다.
 
 ### 8.1 Verification 실행 정책
 
@@ -810,7 +810,7 @@ Baseline은 `floor(min(A,B)*100)/100`으로 정했다. Line·function threshold�
 
 각 gate 로그는 `.artifacts/verification/raft-close-fixture-local-{first,second,third,fourth,fifth,sixth,seventh}.log`에 보존한다. Coverage 판정까지 진행한 시도의 summary는 같은 directory의 `coverage-summary-raft-close-fixture-{first,fifth,sixth,seventh}.json`에 보존한다. 기존 branch baseline과 CI·release 미검증 상태는 유지한다.
 
-증거는 `.artifacts/verification/coverage-summary-run-{0,a,b,c}.json`, `branch/manifest.json`, `coverage.out`, `coverage-summary-ratchet-rejection.json`, `coverage-summary-delivery-100.json`, `coverage-summary-diff-02ef51d.json`, `branch-gate-execution-evidence.json`에 보존한다. Run C의 `requirementShortfalls`는 전체 branch 79.85%가 PRD 85%보다 낮다는 한 항목이다. Core 9개는 모두 local branch 90% 이상이다. TEST-06의 PRD floor 충족과 TEST-06·TEST-07의 필수 CI 증거는 미검증으로 남는다. CI mutation gate와 CI 플랫폼 status·TEST-10 P0 매핑은 이번 작업에서 실행하거나 완료하지 않았다.
+이 섹션의 2026-10-08 Run C는 당시 PRD overall branch 85%보다 낮아 `requirementShortfalls`를 기록했다. 그 시점에는 TEST-06의 PRD floor와 TEST-06·TEST-07 CI 증거가 미검증이었다. 2026-10-09에 overall branch 기준을 80%로 낮춘 뒤의 Run C와 현재 상태는 §8.4에 있다.
 
 출력 경로 안전성 보완 뒤 실제 `branch-instrument --output .`와 `--output .artifacts/verification`은 각각 exit 1로 삭제 전에 거절했다. 저장소 branch subtree에 외부 임시 directory로 향하는 Windows junction을 만들고 그 하위를 출력으로 지정한 CLI도 exit 1로 거절했다. 외부 sentinel 파일은 그대로 남았고 임시 junction은 제거했다. 기본 `branch-instrument`는 PASS였다. 기존 Run C profile을 새 manifest로 다시 평가한 `coverage`도 PASS였으며 측정값은 같았다. 안전성 회귀 시험은 skip 없이 통과했다. 이 추가 증거는 `.artifacts/verification/branch-output-safety-evidence.json`과 `coverage-summary-after-safety-review.json`에 보존한다. 전체 local gate의 Run A·B·C는 이 보완 전 실행이며, 보완 뒤에는 도구 package 전체 시험과 위 CLI 경로를 검증했다.
 
@@ -889,11 +889,11 @@ go test -race ./internal/adapters/tcp -run '^(TestCSVSubscribeAckWriteFailureKee
 
 초기 focused 시험 실행은 test import/API type 불일치로 compile에 실패했다. 첫 TCP race 실행에서는 TLS server name 불일치와 `writerDone` 종료를 기다리지 않는 assertion이 드러났다. 두 시험 문제를 수정한 뒤 위 반복 횟수로 모두 통과했다. Run A·B·C 및 재기준 뒤 local gate에는 실패가 없었다.
 
-증거는 `.artifacts/verification/coverage-summary-tolerance-{a,b,c}.json`, `.artifacts/verification/coverage-summary-tolerance-post-ratchet.json`, `.artifacts/verification/coverage-tolerance-c.out`, `.artifacts/verification/tolerance-local-{a,b,c,post-ratchet}.log`에 보존한다. Run C와 추가 Run의 `requirementShortfalls`는 overall branch가 PRD 85%보다 낮다는 항목이다. Core 9개는 모두 90% 이상이다. CI의 필수 status, TEST-10 P0 mapping, 전체 PRD branch floor와 별도 scope의 `TestRaftPeerDriverTicksQueuesAndStops`·`TestDynamicClusterMembershipTransitionCrashRecovery`는 이 증거로 검증하지 않는다.
+이 섹션의 2026-10-08 Run C와 추가 실행은 당시 PRD overall branch 85%보다 낮아 `requirementShortfalls`를 기록했다. Core 9개는 모두 local branch 90% 이상이었다. 이 실행에는 CI 필수 status, TEST-10 P0 mapping, TEST-07 diff CI 증거, `TestRaftPeerDriverTicksQueuesAndStops`와 `TestDynamicClusterMembershipTransitionCrashRecovery`가 포함되지 않았다. 2026-10-09에 overall branch 기준을 80%로 낮춘 뒤의 local coverage 결과는 §8.4에 있다.
 
 ### 8.4 전체 branch floor 수용 증거
 
-2026-10-09에 Windows/amd64, Go 1.26.5에서 확인했다. Production source는 변경하지 않았다. 기준선은 10,470/13,073(80.09%)였다. 묶음 A·B·C와 예비 대상 다섯 단계를 적용한 뒤 전체 branch가 85.20%에 도달하지 못했다.
+2026-10-09에 Windows/amd64, Go 1.26.5에서 확인했다. Production source는 변경하지 않았다. 기준선은 10,470/13,073(80.09%)였다. Run A·B는 당시 overall branch 85% 기준에서 각각 82.82%·82.89%로 미달했다. 이후 사용자가 전체 branch 기준을 80%로 낮춰 PRD와 policy를 갱신했고, Run C를 새 기준으로 실행했다.
 
 `cmd/`와 `internal/`의 production source 변경 여부를 확인했다. `git diff --name-only -- cmd internal` 결과는 추적 중인 파일 46개였고, `git ls-files --others --exclude-standard -- cmd internal` 결과는 새 파일 2개였다. 48개 경로는 모두 `_test.go`로 끝났다. `git diff --cached --name-only -- cmd internal` 결과는 비어 있었다.
 
@@ -901,9 +901,9 @@ go test -race ./internal/adapters/tcp -run '^(TestCSVSubscribeAckWriteFailureKee
 | --- | --- | --- | --- |
 | Run A | 10,827/13,073 (82.82) | PASS | PASS |
 | Run B | 10,836/13,073 (82.89) | PASS | PASS |
-| Run C | 실행하지 않음 | — | — |
+| Run C (80% 기준) | 10,830/13,073 (82.84) | PASS | PASS |
 
-Run A·B의 spread는 0.07%p다. 두 결과 모두 `branchCoverage.requirementShortfalls`에 각각 82.82%·82.89%가 85.00% 미만이라는 항목이 남았다. `coverage: PASS`와 `local: PASS`여도 PRD의 85% branch 기준은 충족하지 않는다. Line은 Run A 87.59%, Run B 87.63%였다. Function은 두 run 모두 98.68%였다.
+Run A·B는 기존 85% 기준 policy로 실행해 `branchCoverage.requirementShortfalls`에 각각 82.82%·82.89%의 shortfall을 기록했다. 새 80% 기준으로 실행한 Run C에서는 `requirementShortfalls`가 비었다. Run C line은 87.59%, function은 98.68%였다.
 
 기준선보다 Run A에서 357개, Run B에서 366개의 branch outcome이 추가로 covered됐다. 아래 수치는 Run A와 기준선의 미실행 outcome 수 차이다.
 
@@ -950,11 +950,11 @@ Run A에는 2,246개의 미실행 outcome이 남았다. 아래 네 종류는 해
 
 Run A에서 미실행 outcome이 가장 많은 파일은 `cluster_runtime.go` 434개, `cluster_drain.go` 156개, `stable_store.go` 131개, `records/codec.go` 85개, `tcp/server.go` 75개였다. 이 수에는 계획에서 명시적으로 제외하지 않은 경로도 포함된다.
 
-Run A·B의 최솟값 82.82%는 ratchet 하한 85.20%보다 낮다. 따라서 `tests/verification/coverage-policy.json`의 overall branch ratchet 80.03%를 유지했다. Core ratchet도 바꾸지 않았다. 새 policy Run C는 실행하지 않았다. 전체 branch 85% floor는 아직 충족하지 않았고, TEST-06 완료로 표시하지 않는다.
+Run A·B는 당시 85% 기준에 미달했지만, 사용자의 요청으로 PRD TEST-06과 policy의 overall branch 기준을 80%로 낮췄다. Core branch 90%, diff branch 95%, line·function 기준은 바꾸지 않았다. Run C는 82.84%로 새 전체 branch floor를 충족했고 `requirementShortfalls`는 비었다. Overall ratchet 80.03%와 core ratchet은 유지했다. 로컬 coverage 기준은 충족했지만 CI 필수 status, TEST-10 P0 mapping, TEST-07 diff CI 증거가 없어 TEST-06~TEST-10 항목은 미검증으로 남는다.
 
 Run B profile에서 scratch policy로 허용폭 경계를 확인했다. 83.10%(측정값보다 +0.21%p)는 tolerance를 적용해도 측정값보다 높아 exit 1을 반환했다. 83.08%(+0.19%p)는 `coverage: PASS`를 반환했다. 결과는 `.artifacts/verification/coverage-boundary-plus-021.json`과 `.artifacts/verification/coverage-boundary-plus-019.json`에 있다.
 
-결과 파일은 `.artifacts/verification/coverage-summary-floor-a.json`, `.artifacts/verification/coverage-summary-floor-b.json`, `.artifacts/verification/floor-local-a.log`, `.artifacts/verification/floor-local-b.log`에 있다. Run C artifact는 없다. CI 필수 status, TEST-10 P0 mapping, TEST-07 diff CI 증거도 이 작업에서 확인하지 않았다.
+결과 파일은 `.artifacts/verification/coverage-summary-floor-{a,b,c}.json`, `.artifacts/verification/floor-local-{a,b,c}.log`, `.artifacts/verification/coverage-boundary-plus-{021,019}.json`, `.artifacts/verification/traceability-branch-floor80.log`에 있다. CI 필수 status, TEST-10 P0 mapping, TEST-07 diff CI 증거는 이 작업에서 확인하지 않았다.
 
 ## 9. Architecture 검증
 

@@ -19,7 +19,7 @@
 4. Git의 tracked·unignored untracked 파일을 `.artifacts/verification/branch/module`에 복사한다. Production source만 계측한다. 이 사본에서 atomic coverage를 포함한 전체 `go test ./...`를 실행한다. Race·vet·traceability·architecture·fuzz·mutation은 원본에서 실행한다. 출력 directory를 교체하기 전에 실제 경로를 확인한다. 저장소 root·상위 directory는 삭제하지 않는다. 저장소 안의 출력은 `.artifacts/verification/branch` 또는 그 하위로 제한해 다른 검증 증거를 보존한다. 저장소 밖의 별도 출력 directory는 사용할 수 있다. 저장소 안의 symlink·junction을 거치는 출력은 실제 경로를 해석하기 전에 거절한다. 실제 경로를 확인한 뒤에도 남은 symlink·junction 경로는 거절한다.
 5. Manifest schema 1은 원본 SHA-256과 계측한 좌표를 기록한다. `if then`은 body span, `else`는 then body 끝부터 else 끝까지, clause는 clause 시작부터 끝까지를 사용한다. Span 양 끝을 포함한다. Span 안에서 시작 위치가 가장 이른 coverage block 중 하나라도 count가 양수면 해당 arm을 실행한 것으로 판정한다. Source 집합·hash·block이 맞지 않으면 평가를 거절한다.
 6. Coverage policy와 report는 schema 2를 사용한다. Report에 전체·core·diff branch metric, manifest 경로, 미실행 outcome과 `requirementShortfalls`를 기록한다. Diff는 변경 줄에 결정점이 있는 outcome만 센다. 변경 결정점이 없으면 diff branch는 100%다.
-7. 전체와 core branch는 두 번 실행한 값 중 작은 값을 소수점 둘째 자리에서 내림한 baseline ratchet만 강제한다. Diff branch는 95%를 바로 강제한다. PRD 전체 85%·core 90% 미달은 `requirementShortfalls`로 보고하되 gate 실패 사유로 쓰지 않는다. 미달이 남으면 TEST-06·TEST-07은 미검증으로 유지한다. Line·function gate는 그대로 유지한다.
+7. 전체와 core branch는 두 번 실행한 값 중 작은 값을 소수점 둘째 자리에서 내림한 baseline ratchet만 강제한다. Diff branch는 95%를 바로 강제한다. 결정 시점의 PRD 전체 85%·core 90% 미달은 `requirementShortfalls`로 보고하되 gate 실패 사유로 쓰지 않는다. 미달이 남으면 TEST-06·TEST-07은 미검증으로 유지한다. Line·function gate는 그대로 유지한다.
 
 ## 2. 배경
 
@@ -51,6 +51,8 @@ Go coverage는 빈 body와 clause에도 0-statement block을 만든다. 기존 l
 - PRD floor를 충족하도록 미실행 arm의 test를 보강한다.
 - CI 플랫폼의 필수 status와 merge 차단 증거를 확보한다.
 - TEST-10 P0 요구사항 매핑은 별도 작업으로 유지한다.
+
+2026-10-09 후속 변경: 사용자는 PRD TEST-06의 전체 production branch 기준을 85%에서 80%로 낮췄다. 핵심 모듈 branch 90%, 변경 코드 diff branch 95%, shortfall을 보고하고 gate 실패 사유로 쓰지 않는 결정은 유지한다.
 
 ## 7. 검증
 
