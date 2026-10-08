@@ -782,7 +782,33 @@ Baseline은 `floor(min(A,B)*100)/100`으로 정했다. Line·function threshold�
 
 원래 실패 시험 계획은 delivery ratchet 100%를 사용했다. 실제 delivery branch는 118/118(100%)이므로 그 명령은 exit 0과 `coverage: PASS`였다. 이를 실패로 기록하지 않았다. 같은 실패 경로를 routing ratchet 100%로 확인했다.
 
-성공한 Run A 이전의 첫 시도는 원본 race 단계의 `TestNodeCloseFlushesHeldAppendOrReportsFailure/consumed-prior-error`에서 실패했다. `node_shutdown_storage_test.go:80`은 `ErrStorage`와 `os.ErrPermission`을 기대했지만 `close WAL: permission denied`만 받았다. 취소 뒤 integration process가 남아 있었으며, 바로 이어진 시도는 Windows 파일 잠금으로 계측 directory 삭제에 실패했다. 해당 process가 끝난 뒤 Run A·B·C가 연속 통과했다. 두 실패 시도는 baseline에 포함하지 않았다. Raft 코드와 해당 test는 이번 범위에서 수정하거나 제외하지 않았다. 최초 실패의 근본 원인은 미확정이다.
+성공한 Run A 이전의 첫 시도는 원본 race 단계의 `TestNodeCloseFlushesHeldAppendOrReportsFailure/consumed-prior-error`에서 실패했다. 수정 전 `node_shutdown_storage_test.go:80`은 `ErrStorage`와 `os.ErrPermission`을 기대했지만 `close WAL: permission denied`만 받았다. 취소 뒤 integration process가 남아 있었으며, 바로 이어진 시도는 Windows 파일 잠금으로 계측 directory 삭제에 실패했다. 해당 process가 끝난 뒤 Run A·B·C가 연속 통과했다. 두 실패 시도는 baseline에 포함하지 않았다. Branch baseline을 확정할 때는 Raft 코드와 해당 test를 수정하거나 제외하지 않았다.
+
+2026-10-08 후속 조사에서 `go test -race ./internal/adapters/raft -run "^TestNodeCloseFlushesHeldAppendOrReportsFailure$/^consumed-prior-error$" -count=300 -cpu=1,2,4 -failfast`가 같은 `close WAL: permission denied`로 FAIL했다. 원인은 시험 준비 코드(fixture)의 실패 주입 순서였다. Fixture는 실패 flag를 hold 중인 sync에 들어가기 전에 검사했으므로, release 뒤 index 4 sync는 성공할 수 있었다. `ProcessReady`가 성공 완료를 소비하면 보관한 append가 queue로 옮겨지고, worker의 다음 실패 batch에 함께 들어갈 수 있었다. 이때 미처리 queue와 보관한 append가 모두 없어져 `Close`는 pending append 오류 분기를 거치지 않았다.
+
+실패 flag 검사를 held sync 뒤로 옮겼다. 이제 `consumed-prior-error`는 hold 중인 index 4 sync부터 실패한다. 선행 오류를 소비한 직후 `heldAppend`와 미처리 queue가 모두 남았는지도 assertion으로 확인한다. Production `Node.Close`는 변경하지 않았다. 기존 실패 경로는 스펙의 “미처리 queue가 남는 경우”가 아니며, 저장 실패는 이미 `ProcessReady`가 `ErrStorage`로 보고했다. Production 호출자는 해당 Close 오류 분류에 의존하지 않는다. `cmd/narumq/cluster_runtime.go`는 `defer node.Close()`를 사용하고, `cmd/narumq/raft_peer_config.go`는 driver 오류를 우선 반환한다.
+
+수정 뒤 Windows/amd64, Go 1.26.5, `CGO_ENABLED=1`, `CC=gcc`에서 아래 명령을 저장소 루트에서 실행했다. Wall time은 명령 시작부터 종료까지 걸린 시간이다. CPU 설정별 반복 횟수는 각각 적용된다.
+
+| 실행 명령 | 실행 범위 | 결과 | Wall time |
+| --- | --- | --- | --- |
+| `go test -race ./internal/adapters/raft -run "^TestNodeCloseFlushesHeldAppendOrReportsFailure$/^consumed-prior-error$" -count=1000 -cpu=1,2,4 -failfast` | CPU 설정 1·2·4마다 1,000회, 총 3,000회 | PASS, exit 0 | 105.07s |
+| `go test -race ./internal/adapters/raft -run "^TestNodeCloseFlushesHeldAppendOrReportsFailure$" -count=300 -cpu=1,2,4 -failfast` | 세 subtest 각각 CPU 설정마다 300회, subtest당 총 900회 | PASS, exit 0 | 168.77s |
+| `go test -race ./internal/adapters/raft -count=1` | Raft package 전체 1회 | PASS, exit 0 | 10.74s |
+
+전체 local gate는 환경 변수 `GOMAXPROCS=4`로 `go run ./tools/verify local`을 실행했다. 각 시도 사이에 코드, 시험 선택과 coverage 합격선을 변경하지 않았다. 아래 실패를 제외하거나 PASS로 계산하지 않았다. 최종 PASS는 전체 gate가 매번 통과한다는 증거가 아니다. Branch coverage 변동과 다른 시험의 실패 원인은 이번 fixture 수정 범위에서 해결하지 않았다.
+
+| Local gate 시도 | 결과 | 관찰 결과 | Wall time |
+| --- | --- | --- | --- |
+| 1 | FAIL, exit 1 | 시험·race·fuzz 통과 뒤 branch 10,430/13,073(79.78%)로 ratchet 79.81% 미달 | 138.14s |
+| 2 | FAIL, exit 1 | `TestRaftPeerDriverTicksQueuesAndStops`의 5초 리더 선출 검사 실패 | 72.06s |
+| 3 | FAIL, exit 1 | 취소 뒤 남은 `integration.test.exe`의 Windows 파일 잠금으로 계측 directory 삭제 실패 | 2.15s |
+| 4 | FAIL, exit 1 | 파일 잠금 해소 뒤 `TestDynamicClusterMembershipTransitionCrashRecovery`에서 node 4 READY 대기 실패; `release_profile_unsynced` 관찰 | 164.32s |
+| 5 | FAIL, exit 1 | 시험·race·fuzz 통과 뒤 branch 10,430/13,073(79.78%)로 ratchet 미달 | 130.76s |
+| 6 | FAIL, exit 1 | 시험·race·fuzz 통과 뒤 branch 79.80%로 ratchet 미달 | 136.21s |
+| 7 | PASS, exit 0 | `coverage: PASS`, `local: PASS`; branch 10,441/13,073(79.87%) | 129.72s |
+
+각 gate 로그는 `.artifacts/verification/raft-close-fixture-local-{first,second,third,fourth,fifth,sixth,seventh}.log`에 보존한다. Coverage 판정까지 진행한 시도의 summary는 같은 directory의 `coverage-summary-raft-close-fixture-{first,fifth,sixth,seventh}.json`에 보존한다. 기존 branch baseline과 CI·release 미검증 상태는 유지한다.
 
 증거는 `.artifacts/verification/coverage-summary-run-{0,a,b,c}.json`, `branch/manifest.json`, `coverage.out`, `coverage-summary-ratchet-rejection.json`, `coverage-summary-delivery-100.json`, `coverage-summary-diff-02ef51d.json`, `branch-gate-execution-evidence.json`에 보존한다. Run C의 `requirementShortfalls`는 전체 branch 79.85%가 PRD 85%보다 낮다는 한 항목이다. Core 9개는 모두 local branch 90% 이상이다. TEST-06의 PRD floor 충족과 TEST-06·TEST-07의 필수 CI 증거는 미검증으로 남는다. CI mutation gate와 CI 플랫폼 status·TEST-10 P0 매핑은 이번 작업에서 실행하거나 완료하지 않았다.
 

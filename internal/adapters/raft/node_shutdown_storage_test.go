@@ -33,10 +33,11 @@ func TestNodeCloseFlushesHeldAppendOrReportsFailure(t *testing.T) {
 			}
 			heldSync := filePersistenceOps.sync
 			filePersistenceOps.sync = func(file *os.File) error {
+				err := heldSync(file)
 				if (failFinal.Load() || failPrior.Load()) && filepath.Base(file.Name()) == walName {
 					return os.ErrPermission
 				}
-				return heldSync(file)
+				return err
 			}
 			last := uint64(3)
 			for !node.storageSaturated() {
@@ -65,6 +66,9 @@ func TestNodeCloseFlushesHeldAppendOrReportsFailure(t *testing.T) {
 				release()
 				if _, err := processReadyForTest(t, node); !errors.Is(err, ErrStorage) {
 					t.Fatalf("prior sync failure = %v", err)
+				}
+				if node.heldAppend == nil || len(node.writer.requests) == 0 {
+					t.Fatal("prior failure did not leave the held append and queued work unprocessed")
 				}
 			}
 			go func() { closed <- node.Close() }()
