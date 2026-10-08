@@ -749,3 +749,16 @@ func TestNewServerAppliesDefaults(t *testing.T) {
 		t.Fatalf("default management timeouts = (%s, %s), want 10s/10s", server.ReadTimeout, server.WriteTimeout)
 	}
 }
+func TestNewServerPreservesConfiguredAddressAndTimeouts(t *testing.T) {
+	server := NewServer(
+		ServerConfig{
+			ListenAddr: ":9090", ReadTimeout: 3 * time.Second, WriteTimeout: 4 * time.Second,
+		},
+		&mockStateProvider{},
+		&mockHealthChecker{liveStatus: ports.HealthStatusUp},
+		nil,
+	)
+	if server.Addr != ":9090" || server.ReadTimeout != 3*time.Second || server.WriteTimeout != 4*time.Second {
+		t.Fatalf("configured server = addr %q, timeouts (%s, %s)", server.Addr, server.ReadTimeout, server.WriteTimeout)
+	}
+}

@@ -3,7 +3,9 @@ package main
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/hex"
+	"fmt"
 	"testing"
 	"time"
 
@@ -360,5 +362,323 @@ func assertProposalReceiptSurvivesBackupRestore(t *testing.T, runtime *clusterRu
 	state, found := restored.DeliverySession("acme", "sub1")
 	if !found || len(state.Messages) != 1 || state.NextSequence != 2 {
 		t.Fatalf("restored replay enqueued again: %+v", state)
+	}
+}
+
+// Traceability: CLU-12; docs/specs/cluster-session-and-delivery.md §4.2, §11.33.
+func TestRecoverProposalsHandlesMissingMachineAndEmptyLedger(t *testing.T) {
+	var proposals []clusterProposalWaiter
+	if replayed, err := (&clusterRuntime{}).recoverProposals(context.Background(), nil, &proposals); err != nil || replayed {
+		t.Fatalf("recoverProposals without a machine = %t, %v; want false, nil", replayed, err)
+	}
+
+	for _, staleProjection := range []bool{false, true} {
+		machine := membership.NewStateMachine()
+		runtime := &clusterRuntime{
+			machine: machine, recoveryProofKey: "stale-proof",
+			recoveryProofWait: true, recoveryProofReady: true,
+		}
+		if staleProjection {
+			if err := machine.AdvanceAppliedIndex(1); err != nil {
+				t.Fatal(err)
+			}
+		}
+		reads := map[string]clusterReadWaiter{"stale-proof": {}}
+		if replayed, err := runtime.recoverProposals(context.Background(), reads, &proposals); err != nil || replayed {
+			t.Fatalf("recoverProposals with empty ledger (staleProjection=%t) = %t, %v; want false, nil",
+				staleProjection, replayed, err)
+		}
+		if len(reads) != 0 || runtime.recoveryProofKey != "" || runtime.recoveryProofWait || runtime.recoveryProofReady {
+			t.Fatalf("empty ledger retained recovery state: reads=%d key=%q wait=%v ready=%v",
+				len(reads), runtime.recoveryProofKey, runtime.recoveryProofWait, runtime.recoveryProofReady)
+		}
+	}
+}
+
+// Traceability: CLU-12; docs/specs/cluster-session-and-delivery.md §4.2, §11.33.
+func TestPrepareProposalValidatesAndFreezesOriginalCommandDigest(t *testing.T) {
+	runtime := &clusterRuntime{config: clusterConfigFile{NodeID: 2}}
+	if err := runtime.prepareProposal(&clusterPendingCommit{data: []byte{0xff}}, 0); err == nil {
+		t.Fatal("prepareProposal accepted malformed command bytes")
+	}
+
+	command := membership.CommandDTO{
+		SchemaMajor: membership.SchemaMajor, OperationID: "00000000-0000-4000-8000-000000000211",
+		FeatureActivation: &membership.FeatureActivationDTO{Feature: membership.ProposalRecoveryFeature},
+	}
+	original, err := encodeMembershipCommand(command)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pending := &clusterPendingCommit{data: bytes.Clone(original), readProofIndex: 7}
+	if err := runtime.prepareProposal(pending, 6); err != nil {
+		t.Fatalf("prepareProposal() error = %v", err)
+	}
+	identity := pending.command.Proposal
+	if identity == nil || identity.OriginNodeID != 2 || identity.ProofIndex != 7 ||
+		identity.RetiredThrough != 6 || identity.RequestID == "" {
+		t.Fatalf("proposal identity = %+v", identity)
+	}
+	wantDigest := sha256.Sum256(original)
+	if !bytes.Equal(identity.CommandDigest, wantDigest[:]) {
+		t.Fatalf("proposal digest = %x, want original command digest %x", identity.CommandDigest, wantDigest)
+	}
+}
+
+// Traceability: CLU-12; docs/specs/cluster-session-and-delivery.md §4.2, §11.33.
+func TestRecoverProposalsUsesReceiptAndRejectsReceiptIdentityMismatch(t *testing.T) {
+	runtime := newProposalRecoveryTestCluster(t)[0]
+	command := membership.CommandDTO{
+		SchemaMajor: membership.SchemaMajor, OperationID: "00000000-0000-4000-8000-000000000221",
+		Delivery: &membership.DeliveryChangeDTO{
+			TenantID: "acme", ClientID: "publisher", Action: membership.DeliveryActionPublish,
+			Topic: "events/recovered", Payload: []byte("one"), PublishQoS: 1, ProposedAtUnixMillis: 100,
+			Targets: []membership.DeliveryTargetDTO{{ClientID: "sub1"}},
+		},
+	}
+	data, err := encodeMembershipCommand(command)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pending := &clusterPendingCommit{
+		data: data, requestID: "00000000-0000-4000-8000-000000000222", readProofIndex: 4,
+	}
+	if err := runtime.prepareProposal(pending, 0); err != nil {
+		t.Fatal(err)
+	}
+	firstIndex := runtime.machine.LastAppliedIndex() + 1
+	firstResult, err := runtime.machine.Apply(firstIndex, pending.command)
+	if err != nil || firstResult.Outcome != membership.ApplyOutcomeApplied {
+		t.Fatalf("apply receipt source command: result=%+v err=%v", firstResult, err)
+	}
+	runtime.projectionIndex.Store(runtime.machine.LastAppliedIndex())
+
+	tests := []struct {
+		name         string
+		mutate       func(*membership.ProposalIdentityDTO)
+		wantMismatch bool
+	}{
+		{name: "matching receipt"},
+		{name: "different proof index", mutate: func(identity *membership.ProposalIdentityDTO) { identity.ProofIndex++ }, wantMismatch: true},
+		{name: "different command digest", mutate: func(identity *membership.ProposalIdentityDTO) {
+			identity.CommandDigest = bytes.Clone(identity.CommandDigest)
+			identity.CommandDigest[0] ^= 0xff
+		}, wantMismatch: true},
+	}
+	for _, testCase := range tests {
+		t.Run(testCase.name, func(t *testing.T) {
+			identity := *pending.command.Proposal
+			identity.CommandDigest = bytes.Clone(identity.CommandDigest)
+			if testCase.mutate != nil {
+				testCase.mutate(&identity)
+			}
+			waiterCommand := pending.command
+			waiterCommand.Proposal = &identity
+			result := make(chan clusterApplyResponse, 1)
+			waiters := []clusterProposalWaiter{{
+				context: context.Background(), command: waiterCommand, data: pending.data,
+				requestID: identity.RequestID, proofIndex: identity.ProofIndex, result: result,
+			}}
+			replayed, recoverErr := runtime.recoverProposals(context.Background(), make(map[string]clusterReadWaiter), &waiters)
+			if testCase.wantMismatch {
+				if recoverErr != membership.ErrInvalidCommand || replayed {
+					t.Fatalf("recoverProposals() = %t, %v; want invalid receipt identity", replayed, recoverErr)
+				}
+				return
+			}
+			if recoverErr != nil || replayed || len(waiters) != 0 {
+				t.Fatalf("matching receipt recovery = replayed %t err %v waiters %d", replayed, recoverErr, len(waiters))
+			}
+			select {
+			case got := <-result:
+				if got.err != nil || got.result.Index != firstResult.Index || got.result.Outcome != firstResult.Outcome {
+					t.Fatalf("replayed receipt response = %+v, want original result %+v", got, firstResult)
+				}
+			default:
+				t.Fatal("matching receipt did not resolve the original waiter")
+			}
+		})
+	}
+
+	status := runtime.node.Status()
+	leadership := raftLeadership{leader: status.LeaderID, term: status.Term, role: status.Role}
+	runtime.recoveryLeadership = leadership
+	runtime.recoveryProofReady = true
+	waiterCommand := membership.CommandDTO{
+		SchemaMajor: membership.SchemaMajor, OperationID: "00000000-0000-4000-8000-000000000223",
+		Proposal: &membership.ProposalIdentityDTO{
+			OriginNodeID: 2, ProofIndex: 6, RequestID: "00000000-0000-4000-8000-000000000224",
+			CommandDigest: make([]byte, sha256.Size),
+		},
+	}
+	waiters := []clusterProposalWaiter{{context: context.Background(), command: waiterCommand, leadership: leadership}}
+	if replayed, err := runtime.recoverProposals(context.Background(), make(map[string]clusterReadWaiter), &waiters); err != nil || replayed || runtime.recoveryProofReady {
+		t.Fatalf("same-leadership waiter recovery = replayed %t err %v proofReady %v",
+			replayed, err, runtime.recoveryProofReady)
+	}
+}
+
+// Traceability: CLU-12; docs/specs/cluster-session-and-delivery.md §4.2, §11.33.
+func TestRecoverProposalsFlushesCountAndByteBoundedBatches(t *testing.T) {
+	for _, test := range []struct {
+		name         string
+		count        int
+		payloadBytes int
+	}{
+		{name: "count limit", count: clusterDriverStageLimit + 1, payloadBytes: 1},
+		{name: "byte limit", count: 2, payloadBytes: clusterProposalBatchBytes/2 + 1},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			runtime := newProposalRecoveryTestCluster(t)[0]
+			status := runtime.node.Status()
+			if status.LeaderID == 0 || status.Role != raftadapter.RoleLeader {
+				t.Fatalf("test node status = %+v, want elected leader", status)
+			}
+			leadership := raftLeadership{leader: status.LeaderID, term: status.Term, role: status.Role}
+			runtime.recoveryLeadership = leadership
+			runtime.recoveryProofReady = true
+
+			proposals := make([]clusterProposalWaiter, 0, test.count)
+			for index := range test.count {
+				command := membership.CommandDTO{
+					SchemaMajor: membership.SchemaMajor,
+					OperationID: fmt.Sprintf("00000000-0000-4000-8000-%012x", index+1),
+					Delivery: &membership.DeliveryChangeDTO{
+						TenantID: "acme", ClientID: "publisher", Action: membership.DeliveryActionPublish,
+						Topic: "events/replay", Payload: make([]byte, test.payloadBytes),
+						PublishQoS: 1, ProposedAtUnixMillis: 100,
+						Targets: []membership.DeliveryTargetDTO{{ClientID: "sub1"}},
+					},
+				}
+				data, err := encodeMembershipCommand(command)
+				if err != nil {
+					t.Fatalf("encode replay command %d: %v", index, err)
+				}
+				pending := &clusterPendingCommit{
+					data: data, requestID: fmt.Sprintf("00000000-0000-4000-8000-%012x", index+test.count+1),
+					readProofIndex: uint64(index + 1),
+				}
+				if err := runtime.prepareProposal(pending, 0); err != nil {
+					t.Fatalf("prepare replay command %d: %v", index, err)
+				}
+				proposals = append(proposals, clusterProposalWaiter{
+					context: context.Background(), command: pending.command, data: pending.data,
+				})
+			}
+
+			replayed, err := runtime.recoverProposals(context.Background(), nil, &proposals)
+			if err != nil || !replayed {
+				t.Fatalf("recoverProposals() = (%v, %v), want replayed batch", replayed, err)
+			}
+			if runtime.recoveryProofReady {
+				t.Fatal("successful replay kept the fresh proof ready")
+			}
+			for index, waiter := range proposals {
+				if waiter.leadership != leadership {
+					t.Errorf("replayed proposal %d leadership = %+v, want %+v", index, waiter.leadership, leadership)
+				}
+			}
+		})
+	}
+}
+
+// Traceability: CLU-12; docs/specs/cluster-session-and-delivery.md §4.2, §11.33.
+func TestRecoverProposalsDropsStaleProofWhenCapacityIsExhausted(t *testing.T) {
+	runtime := newProposalRecoveryTestCluster(t)[0]
+	status := runtime.node.Status()
+	previousLeadership := raftLeadership{leader: status.LeaderID + 1, term: status.Term, role: status.Role}
+	runtime.recoveryLeadership = previousLeadership
+	runtime.recoveryProofKey = "previous-proof"
+	runtime.recoveryProofReady = true
+	runtime.readIndexStaged = clusterDriverStageLimit
+	reads := map[string]clusterReadWaiter{"previous-proof": {}}
+	proposals := []clusterProposalWaiter{{
+		context: context.Background(),
+		command: membership.CommandDTO{Proposal: &membership.ProposalIdentityDTO{
+			OriginNodeID: 2, RequestID: "00000000-0000-4000-8000-000000000301",
+		}},
+		leadership: previousLeadership,
+	}}
+
+	replayed, err := runtime.recoverProposals(context.Background(), reads, &proposals)
+	if err != nil || replayed {
+		t.Fatalf("recoverProposals() = (%v, %v), want no replay while capacity is exhausted", replayed, err)
+	}
+	if len(reads) != 0 || runtime.recoveryProofKey != "" || !runtime.recoveryProofWait || runtime.recoveryProofReady {
+		t.Fatalf("capacity-blocked recovery state = reads:%d key:%q wait:%v ready:%v",
+			len(reads), runtime.recoveryProofKey, runtime.recoveryProofWait, runtime.recoveryProofReady)
+	}
+}
+
+// Traceability: CLU-12; docs/specs/cluster-session-and-delivery.md §4.2, §11.33.
+func TestRecoverProposalsReturnsClosedNodeErrors(t *testing.T) {
+	t.Run("new proof", func(t *testing.T) {
+		runtime := newProposalRecoveryTestCluster(t)[0]
+		status := runtime.node.Status()
+		if status.LeaderID == 0 || status.Role != raftadapter.RoleLeader {
+			t.Fatalf("test node status = %+v, want elected leader", status)
+		}
+		proposals := []clusterProposalWaiter{{
+			context: context.Background(),
+			command: membership.CommandDTO{Proposal: &membership.ProposalIdentityDTO{
+				OriginNodeID: 2, RequestID: "00000000-0000-4000-8000-000000000302",
+			}},
+		}}
+		if err := runtime.node.Close(); err != nil {
+			t.Fatalf("close test Raft node: %v", err)
+		}
+
+		replayed, err := runtime.recoverProposals(context.Background(), make(map[string]clusterReadWaiter), &proposals)
+		if replayed || err != raftadapter.ErrClosed {
+			t.Fatalf("recoverProposals() = (%v, %v), want closed-node error before replay", replayed, err)
+		}
+	})
+
+	t.Run("proposal batch", func(t *testing.T) {
+		for _, count := range []int{1, clusterDriverStageLimit + 1} {
+			t.Run(fmt.Sprintf("%d proposals", count), func(t *testing.T) {
+				runtime := newProposalRecoveryTestCluster(t)[0]
+				status := runtime.node.Status()
+				if status.LeaderID == 0 || status.Role != raftadapter.RoleLeader {
+					t.Fatalf("test node status = %+v, want elected leader", status)
+				}
+				leadership := raftLeadership{leader: status.LeaderID, term: status.Term, role: status.Role}
+				runtime.recoveryLeadership = leadership
+				runtime.recoveryProofReady = true
+				proposals := make([]clusterProposalWaiter, count)
+				for index := range proposals {
+					proposals[index] = clusterProposalWaiter{
+						context: context.Background(),
+						command: membership.CommandDTO{Proposal: &membership.ProposalIdentityDTO{
+							OriginNodeID: 2, RequestID: fmt.Sprintf("00000000-0000-4000-8000-%012x", index+0x400),
+						}},
+						data: []byte{byte(index + 1)},
+					}
+				}
+				if err := runtime.node.Close(); err != nil {
+					t.Fatalf("close test Raft node: %v", err)
+				}
+
+				replayed, err := runtime.recoverProposals(context.Background(), make(map[string]clusterReadWaiter), &proposals)
+				if replayed || err != raftadapter.ErrClosed {
+					t.Fatalf("recoverProposals(count=%d) = (%v, %v), want closed-node error", count, replayed, err)
+				}
+			})
+		}
+	})
+}
+
+// Traceability: CLU-12; docs/specs/cluster-session-and-delivery.md §4.2, §11.33.
+func TestRefreshPendingProposalProofCompletesInvalidContextKey(t *testing.T) {
+	runtime := newReadAdmissionTestCluster(t)[0]
+	pending := &clusterPendingCommit{
+		contextKey:  string(make([]byte, 128-clusterReadProofHeader+1)),
+		readContext: context.Background(),
+	}
+	reads := make(map[string]clusterReadWaiter)
+	runtime.refreshPendingProposalProof(pending, reads)
+	if !pending.readConfirmed || pending.readErr != raftadapter.ErrInvalidMessage || len(reads) != 0 {
+		t.Fatalf("pending read refresh: confirmed=%v error=%v reads=%d",
+			pending.readConfirmed, pending.readErr, len(reads))
 	}
 }

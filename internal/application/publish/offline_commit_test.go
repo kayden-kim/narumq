@@ -2,6 +2,7 @@ package publish
 
 import (
 	"context"
+	"errors"
 	"reflect"
 	"testing"
 	"time"
@@ -151,6 +152,57 @@ func TestPublishOfflineCommitUnhandledUsesLocalQueue(t *testing.T) {
 	}
 	if len(result.Delivered) != 1 || result.Delivered[0] != "connected-sub" {
 		t.Fatalf("result.Delivered = %+v, want [connected-sub]", result.Delivered)
+	}
+}
+func TestPublishOfflineCommitErrorDependsOnHandling(t *testing.T) {
+	commitErr := errors.New("offline commit unavailable")
+	for _, tc := range []struct {
+		name         string
+		handled      bool
+		wantErr      bool
+		wantEnqueued bool
+	}{
+		{name: "handled error stops local enqueue", handled: true, wantErr: true},
+		{name: "unhandled error falls back locally", wantEnqueued: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			routes := routing.NewTable()
+			addRemoteForwardTestRoute(t, routes, "subscriber", "events/#")
+			queue := &recordingQueue{errors: make(map[routing.SessionID]error)}
+			offline := &recordingOfflineCommitter{handled: tc.handled, err: commitErr}
+			forwarder := &recordingRemoteForwarder{handled: false}
+			useCase := newRemoteForwardTestUseCase(t, routes, queue,
+				WithOfflineCommitter(offline), WithRemoteForwarder(forwarder))
+
+			result, err := useCase.Publish("publisher", mqtt.Publish{
+				Version: mqtt.ProtocolV5, Topic: "events/one", Payload: []byte("value"),
+			}, testNow())
+			if tc.wantErr {
+				if !errors.Is(err, commitErr) {
+					t.Fatalf("Publish error = %v, want %v", err, commitErr)
+				}
+				if len(result.Delivered) != 0 || len(result.Saturated) != 0 {
+					t.Fatalf("result after failed handled commit = %+v, want no outcome", result)
+				}
+			} else {
+				if err != nil {
+					t.Fatalf("Publish error = %v, want nil after local fallback", err)
+				}
+				if len(result.Delivered) != 1 || result.Delivered[0] != "subscriber" {
+					t.Fatalf("delivered = %v, want subscriber", result.Delivered)
+				}
+			}
+			if tc.wantEnqueued {
+				if len(queue.deliveries) != 1 || queue.deliveries[0].SessionID != "subscriber" ||
+					len(forwarder.calls) != 1 {
+					t.Fatalf("unhandled commit did not fall back through forwarder and queue: queued=%+v forwarded=%+v",
+						queue.deliveries, forwarder.calls)
+				}
+			} else if len(queue.attempts) != 0 || len(forwarder.calls) != 0 {
+				t.Fatalf("handled commit error caused later delivery: queued=%+v forwarded=%+v",
+					queue.attempts, forwarder.calls)
+			}
+		})
 	}
 }
 

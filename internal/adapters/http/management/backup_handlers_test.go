@@ -178,3 +178,19 @@ func TestClusterBackupHTTPReportsUnavailableAndInternalErrors(t *testing.T) {
 		})
 	}
 }
+func TestClusterBackupHTTPAcceptsUnknownLengthWithoutBodyReader(t *testing.T) {
+	provider := &clusterBackupProviderStub{}
+	handler := newBackupHTTPTestHandler(provider, RoleClusterAdmin)
+	request := httptest.NewRequest(http.MethodPost, "/api/v1/cluster/backups", nil)
+	request.ContentLength = -1
+	request.TransferEncoding = []string{"chunked"}
+	request.Body = nil
+	request.Header.Set("Authorization", "Bearer cluster-secret")
+	response := httptest.NewRecorder()
+
+	handler.ServeHTTP(response, request)
+
+	if response.Code != http.StatusOK || provider.calls != 1 {
+		t.Fatalf("status=%d provider calls=%d body=%s, want empty request accepted once", response.Code, provider.calls, response.Body.String())
+	}
+}

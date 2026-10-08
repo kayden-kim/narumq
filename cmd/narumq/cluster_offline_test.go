@@ -287,3 +287,137 @@ func TestClusterOfflineCommitOfflineTable(t *testing.T) {
 		t.Fatalf("CommitOffline unparseable: handled=%v, err=%v, want false, nil", handled, err)
 	}
 }
+
+// Traceability: CLU-14; docs/specs/cluster-session-and-delivery.md §4.1, §10, §11.9.
+func TestClusterOfflineCommitCapacityAndClaimConflictPreserveState(t *testing.T) {
+	config := validBootstrapClusterConfig()
+	runtime, stop := newTestClusterOfflineRuntime(t, config)
+	defer stop()
+
+	now := time.UnixMilli(1_700_000_100_000)
+	pending := make([]deliveryqueue.DeliveryDTO, membership.MaxOfflineMessagesPerSession)
+	for i := range pending {
+		pending[i] = deliveryqueue.DeliveryDTO{
+			Topic: "events/capacity", Payload: []byte{byte(i)}, QoS: mqtt.QoSAtMostOnce,
+		}
+	}
+	if err := runtime.DetachSession(context.Background(), connect.DetachRequestDTO{
+		TenantID: "tenant-a", ClientID: "client-a", OwnerNodeID: config.NodeID,
+		Epoch: 1, DetachedAt: now, Pending: pending,
+	}); err != nil {
+		t.Fatalf("detach full offline session: %v", err)
+	}
+	before := runtime.machine.OfflineSessions()
+	if len(before) != 1 || len(before[0].Messages) != membership.MaxOfflineMessagesPerSession {
+		t.Fatalf("seeded offline state=%+v, want one full session", before)
+	}
+
+	sessionID, err := clusterSessionID("tenant-a", "client-a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	handled, err := runtime.CommitOffline(context.Background(), deliveryqueue.DeliveryDTO{
+		SessionID: sessionID, Topic: "events/overflow", Payload: []byte("extra"), QoS: mqtt.QoSAtMostOnce,
+	}, now)
+	if !handled || !errors.Is(err, deliveryqueue.ErrFull) {
+		t.Fatalf("full-session CommitOffline handled=%t err=%v, want true and ErrFull", handled, err)
+	}
+	after := runtime.machine.OfflineSessions()
+	if len(after) != 1 || len(after[0].Messages) != len(before[0].Messages) {
+		t.Fatalf("capacity rejection changed offline message count: before=%d after=%+v", len(before[0].Messages), after)
+	}
+	for i := range before[0].Messages {
+		if before[0].Messages[i].Sequence != after[0].Messages[i].Sequence ||
+			string(before[0].Messages[i].Payload) != string(after[0].Messages[i].Payload) {
+			t.Fatalf("capacity rejection changed message %d: before=%+v after=%+v", i, before[0].Messages[i], after[0].Messages[i])
+		}
+	}
+
+	if _, err := runtime.ClaimOffline(context.Background(), "tenant-a", "client-a", config.NodeID+1, 1, now); !errors.Is(err, errClusterOfflineConflict) {
+		t.Fatalf("non-owner claim error=%v, want offline conflict", err)
+	}
+	afterClaimConflict := runtime.machine.OfflineSessions()
+	if len(afterClaimConflict) != 1 || len(afterClaimConflict[0].Messages) != len(before[0].Messages) {
+		t.Fatalf("conflicting claim changed offline state: %+v", afterClaimConflict)
+	}
+}
+
+// Traceability: CLU-14; docs/specs/cluster-session-and-delivery.md §4.1, §10, §11.9.
+func TestClusterOfflineDetachRejectsInvalidQoSAndStaleOwnershipWithoutChangingState(t *testing.T) {
+	config := validBootstrapClusterConfig()
+	runtime, stop := newTestClusterOfflineRuntime(t, config)
+	defer stop()
+
+	now := time.UnixMilli(1_700_000_200_000)
+	tests := []struct {
+		name    string
+		request connect.DetachRequestDTO
+		wantErr error
+	}{
+		{
+			name: "nonzero QoS",
+			request: connect.DetachRequestDTO{
+				TenantID: "tenant-a", ClientID: "client-a", OwnerNodeID: config.NodeID,
+				Epoch: 1, DetachedAt: now,
+				Pending: []deliveryqueue.DeliveryDTO{{Topic: "events/invalid", Payload: []byte("x"), QoS: mqtt.QoSAtLeastOnce}},
+			},
+		},
+		{
+			name: "stale epoch",
+			request: connect.DetachRequestDTO{
+				TenantID: "tenant-a", ClientID: "client-a", OwnerNodeID: config.NodeID,
+				Epoch: 2, DetachedAt: now,
+				Pending: []deliveryqueue.DeliveryDTO{{Topic: "events/stale", Payload: []byte("x"), QoS: mqtt.QoSAtMostOnce}},
+			},
+			wantErr: errClusterOfflineConflict,
+		},
+		{
+			name: "wrong owner",
+			request: connect.DetachRequestDTO{
+				TenantID: "tenant-a", ClientID: "client-a", OwnerNodeID: config.NodeID + 1,
+				Epoch: 1, DetachedAt: now,
+				Pending: []deliveryqueue.DeliveryDTO{{Topic: "events/owner", Payload: []byte("x"), QoS: mqtt.QoSAtMostOnce}},
+			},
+			wantErr: errClusterOfflineConflict,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			before := runtime.machine.OfflineSessions()
+			if len(before) != 0 {
+				t.Fatalf("initial offline sessions = %+v, want none", before)
+			}
+			err := runtime.DetachSession(context.Background(), tt.request)
+			if err == nil {
+				t.Fatal("DetachSession() error = nil, want rejection")
+			}
+			if tt.wantErr != nil && !errors.Is(err, tt.wantErr) {
+				t.Fatalf("DetachSession() error = %v, want errors.Is(_, %v)", err, tt.wantErr)
+			}
+			after := runtime.machine.OfflineSessions()
+			if len(after) != 0 {
+				t.Fatalf("rejected detach changed offline state: %+v", after)
+			}
+		})
+	}
+}
+
+// Traceability: CLU-14; docs/specs/cluster-session-and-delivery.md §4.1, §10, §11.9.
+func TestClusterOfflineClaimRejectsInvalidIdentityWithoutChangingState(t *testing.T) {
+	config := validBootstrapClusterConfig()
+	runtime, stop := newTestClusterOfflineRuntime(t, config)
+	defer stop()
+
+	before := runtime.machine.OfflineSessions()
+	claim, err := runtime.ClaimOffline(context.Background(), "", "client-a", config.NodeID, 1, time.UnixMilli(1_700_000_200_000))
+	if err == nil {
+		t.Fatalf("ClaimOffline() = %+v, want invalid identity error", claim)
+	}
+	if claim.Found || len(claim.Deliveries) != 0 {
+		t.Fatalf("failed ClaimOffline() result = %+v, want empty claim", claim)
+	}
+	after := runtime.machine.OfflineSessions()
+	if len(after) != len(before) {
+		t.Fatalf("invalid claim changed offline session count: before=%+v after=%+v", before, after)
+	}
+}

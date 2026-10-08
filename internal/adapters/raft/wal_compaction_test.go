@@ -248,3 +248,19 @@ func TestStableStoreCompactionFailureKeepsRecoverableState(t *testing.T) {
 		})
 	}
 }
+
+func TestStableStoreSnapshotAtLastIndexCompactsWAL(t *testing.T) {
+	directory := t.TempDir()
+	entries, commands := compactionTestState(4, 0)
+	store := openCompactionTestStore(t, directory, entries)
+	if err := store.createSnapshot(uint64(len(entries)), &pb.ConfState{Voters: []uint64{1, 2, 3}}, commands); err != nil {
+		t.Fatalf("createSnapshot at last index: %v", err)
+	}
+
+	records := assertCompactionTail(t, directory, uint64(len(entries))+1, uint64(len(entries)))
+	if len(records) != 1 || records[0].hardState == nil || len(records[0].entries) != 0 {
+		t.Fatalf("WAL records after snapshot at last index = %#v, want one hard-state-only record", records)
+	}
+	assertCompactionFiles(t, directory, uint64(len(entries)))
+	assertCompactionRecovery(t, directory, commands)
+}

@@ -81,6 +81,42 @@ func TestForwardedDeliveryCodecRejectsMalformed(t *testing.T) {
 	}
 }
 
+// Traceability: CLU-14; docs/specs/cluster-session-and-delivery.md §4.5.
+func TestForwardedDeliveryRejectsTruncatedFieldsAndOversizedPayload(t *testing.T) {
+	oversized, err := EncodeForwardedDelivery(ForwardedDeliveryDTO{
+		SessionID: "s", Topic: "t", Payload: make([]byte, int(dynamicForwardFrameLimit)),
+	})
+	if !errors.Is(err, ErrInvalidPeerMessage) || oversized != nil {
+		t.Fatalf("oversized EncodeForwardedDelivery() = (%d bytes, %v), want nil and ErrInvalidPeerMessage", len(oversized), err)
+	}
+
+	valid, err := EncodeForwardedDelivery(ForwardedDeliveryDTO{SessionID: "s", Topic: "t", Payload: []byte{1}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	truncatedSession := bytes.Clone(valid)
+	truncatedSession[1] = 1
+	truncatedSession[2] = 0
+
+	expirationFrame, err := EncodeForwardedDelivery(ForwardedDeliveryDTO{SessionID: "12345", Topic: "abcde"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	truncatedExpiry := bytes.Clone(expirationFrame[:18])
+	truncatedLength := bytes.Clone(valid[:18])
+	for name, frame := range map[string][]byte{
+		"session exceeds remaining frame":   truncatedSession,
+		"expiry field is truncated":         truncatedExpiry,
+		"payload-length field is truncated": truncatedLength,
+	} {
+		t.Run(name, func(t *testing.T) {
+			if _, err := DecodeForwardedDelivery(frame); !errors.Is(err, ErrInvalidPeerMessage) {
+				t.Fatalf("DecodeForwardedDelivery() error = %v, want ErrInvalidPeerMessage", err)
+			}
+		})
+	}
+}
+
 func TestReadDynamicIdleFrameIgnoresPriorDeadline(t *testing.T) {
 	reader, writer := net.Pipe()
 	defer reader.Close()

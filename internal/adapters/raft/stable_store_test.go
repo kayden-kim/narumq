@@ -315,6 +315,12 @@ func TestNodeWALWriteFailureStopsOutbound(t *testing.T) {
 	if err := nodes[1].Propose([]byte("after-wal-failure")); !errors.Is(err, ErrFailed) {
 		t.Fatalf("Propose() after WAL failure = %v, want ErrFailed", err)
 	}
+	if err := nodes[1].ReadIndex([]byte("after-wal-failure")); !errors.Is(err, ErrFailed) {
+		t.Fatalf("ReadIndex() after WAL failure = %v, want ErrFailed", err)
+	}
+	if got := commandStrings(nodes[1].AppliedCommands()); !equalStringValues(got, commandsBefore) {
+		t.Fatalf("applied commands after rejected proposal/read = %v, want %v", got, commandsBefore)
+	}
 	if _, err := processReadyForTest(t, nodes[1]); !errors.Is(err, ErrFailed) {
 		t.Fatalf("ProcessReady() after WAL failure = %v, want ErrFailed", err)
 	}

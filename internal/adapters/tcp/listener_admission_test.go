@@ -266,6 +266,31 @@ func TestAdmissionListenerChecksMaximumBeforeRate(t *testing.T) {
 }
 
 // Traceability: PRD MQTT-09/MQTT-11; docs/specs/mqtt-protocol-and-session.md §7.1.
+func TestAdmissionListenerClosesRejectedSocketWithoutRecorder(t *testing.T) {
+	listener := newAdmissionTestListener(t, ListenerAdmissionConfig{
+		Transport: portsmetrics.TransportTCP, MaxConnections: 1,
+		Clock: &admissionTestClock{now: time.Now()},
+	})
+	_ = admissionDial(t, listener)
+	accepted := admissionAccept(t, listener)
+	rejected := admissionDial(t, listener)
+	if err := rejected.SetReadDeadline(time.Now().Add(2 * time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	var received [1]byte
+	count, err := rejected.Read(received[:])
+	if count != 0 || err == nil {
+		t.Fatalf("rejected socket read = (%d, %v), want zero bytes and a close error", count, err)
+	}
+	if timeout, ok := err.(net.Error); ok && timeout.Timeout() {
+		t.Fatalf("rejected socket read timed out instead of closing: %v", err)
+	}
+	if err := accepted.Close(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// Traceability: PRD MQTT-09/MQTT-11; docs/specs/mqtt-protocol-and-session.md §7.1.
 func TestAdmissionListenerReturnsInnerAcceptError(t *testing.T) {
 	listener := newAdmissionTestListener(t, ListenerAdmissionConfig{
 		Transport: portsmetrics.TransportTCP, MaxConnections: 1,

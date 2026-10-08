@@ -336,3 +336,63 @@ func TestBackupArchiveRoundTripsConfigurationEntry(t *testing.T) {
 		t.Fatalf("decoded configuration entry = %+v", decoded.Entries[1])
 	}
 }
+func TestBackupArchiveDecoderRejectsFrameBoundsManifestAndEntryRange(t *testing.T) {
+	archive := backupTestArchive(t)
+	encoded, _, err := EncodeBackupArchive(archive)
+	if err != nil {
+		t.Fatal(err)
+	}
+	badFrameLength := bytes.Clone(encoded[:len(encoded)-sha256.Size])
+	badFrameLength[len(backupMagic)] = 0xff
+	badFrameLength[len(backupMagic)+1] = 0xff
+	badFrameLength[len(backupMagic)+2] = 0xff
+	badFrameLength[len(backupMagic)+3] = 0xff
+	cases := []struct {
+		name   string
+		data   []byte
+		marker string
+	}{
+		{
+			name:   "frame length",
+			data:   backupTestAppendTrailer(badFrameLength),
+			marker: "frame 0 length is out of range",
+		},
+		{
+			name: "manifest invariant",
+			data: func() []byte {
+				invalid := proto.Clone(archive.Manifest).(*BackupManifest)
+				invalid.VoterIds = []uint64{2, 1}
+				manifest, err := deterministic.Marshal(invalid)
+				if err != nil {
+					t.Fatal(err)
+				}
+				return backupTestRawArchive(t, manifest, archive.Snapshot, archive.Entries)
+			}(),
+			marker: "voter IDs must be positive and strictly increasing",
+		},
+		{
+			name: "entry outside commit range",
+			data: func() []byte {
+				entry := proto.Clone(archive.Entries[0]).(*BackupEntry)
+				entry.Index = archive.Manifest.CommitIndex + 1
+				manifest, err := deterministic.Marshal(archive.Manifest)
+				if err != nil {
+					t.Fatal(err)
+				}
+				return backupTestRawArchive(t, manifest, archive.Snapshot, []*BackupEntry{entry})
+			}(),
+			marker: "entry index out of range",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := DecodeBackupArchive(tc.data)
+			if err == nil || !strings.Contains(err.Error(), tc.marker) || !strings.HasPrefix(err.Error(), "backup archive:") {
+				t.Fatalf("DecodeBackupArchive() error = %v, want backup archive error containing %q", err, tc.marker)
+			}
+		})
+	}
+	if !proto.Equal(archive.Manifest, backupTestArchive(t).Manifest) || archive.Entries[0].Index != 6 {
+		t.Fatal("decoder rejection changed the source archive fixture")
+	}
+}

@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"net"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -310,4 +311,121 @@ func TestDynamicTransportBootstrapProbeAllowanceClearsOnRaftFrame(t *testing.T) 
 	if _, err := ProbeBootstrapPeer(ctx, client2, local2, local1); err == nil || err.Error() != "bootstrap probe rejected" {
 		t.Fatalf("nil progress handler err=%v", err)
 	}
+}
+
+type bootstrapProbeNoDeadlineListener struct {
+	net.Listener
+}
+
+type bootstrapProbeFixedListener struct {
+	accept func() (net.Conn, error)
+}
+
+func (listener *bootstrapProbeFixedListener) Accept() (net.Conn, error) {
+	return listener.accept()
+}
+
+func (listener *bootstrapProbeFixedListener) Close() error {
+	return nil
+}
+
+func (listener *bootstrapProbeFixedListener) Addr() net.Addr {
+	return &net.TCPAddr{}
+}
+
+func (listener *bootstrapProbeFixedListener) SetDeadline(time.Time) error {
+	return nil
+}
+
+func TestBootstrapProbeValidatesListenerTLSIdentityAndPeerSet(t *testing.T) {
+	serverTLS, _ := testPeerTLSConfigs(t, "node1.example")
+	makeLocal := func(t *testing.T, address string) PeerIdentityDTO {
+		t.Helper()
+		return identityForTestCertificate(1, address, "node1.example", PeerPhaseVoter, "", "1.0.0", serverTLS.Certificates[0])
+	}
+
+	t.Run("listener without deadlines", func(t *testing.T) {
+		listener := cptListen(t)
+		local := makeLocal(t, listener.Addr().String())
+		wrapped := &bootstrapProbeNoDeadlineListener{Listener: listener}
+		if err := ServeBootstrapProbe(context.Background(), wrapped, nil, local, nil); err == nil {
+			t.Fatal("listener without deadline support was accepted")
+		}
+	})
+
+	t.Run("invalid TLS configuration", func(t *testing.T) {
+		listener := cptListen(t)
+		local := makeLocal(t, listener.Addr().String())
+		if err := ServeBootstrapProbe(context.Background(), listener, nil, local, nil); err == nil {
+			t.Fatal("nil server TLS configuration was accepted")
+		}
+	})
+
+	t.Run("certificate identity mismatch", func(t *testing.T) {
+		listener := cptListen(t)
+		local := makeLocal(t, listener.Addr().String())
+		local.DNSSAN = "wrong.example"
+		if err := ServeBootstrapProbe(context.Background(), listener, serverTLS, local, nil); err == nil {
+			t.Fatal("server certificate with a mismatched identity was accepted")
+		}
+	})
+
+	t.Run("peer set contains local identity", func(t *testing.T) {
+		listener := cptListen(t)
+		local := makeLocal(t, listener.Addr().String())
+		if err := ServeBootstrapProbe(context.Background(), listener, serverTLS, local, []PeerIdentityDTO{local}); err == nil {
+			t.Fatal("peer set containing the local member was accepted")
+		}
+	})
+}
+
+func TestBootstrapProbeReturnsUnexpectedAcceptError(t *testing.T) {
+	serverTLS, _ := testPeerTLSConfigs(t, "node1.example")
+	local := identityForTestCertificate(1, "127.0.0.1:19001", "node1.example", PeerPhaseVoter, "", "1.0.0", serverTLS.Certificates[0])
+	wantErr := errors.New("bootstrap probe accept failed")
+	listener := &bootstrapProbeFixedListener{accept: func() (net.Conn, error) {
+		return nil, wantErr
+	}}
+	if err := ServeBootstrapProbe(context.Background(), listener, serverTLS, local, nil); !errors.Is(err, wantErr) {
+		t.Fatalf("ServeBootstrapProbe error = %v, want %v", err, wantErr)
+	}
+}
+
+func TestProbeBootstrapPeerReportsDialAndHandshakeFailures(t *testing.T) {
+	localNode := cptNewNode(t, "node1.example")
+	remoteNode := cptNewNode(t, "node2.example")
+	local := localNode.identity(1, "127.0.0.1:19001", PeerPhaseVoter, "")
+
+	t.Run("dial failure", func(t *testing.T) {
+		peer := remoteNode.identity(2, "not-an-address", PeerPhaseVoter, "")
+		_, err := ProbeBootstrapPeer(context.Background(), localNode.clientTLS, local, peer)
+		var operationErr *net.OpError
+		if err == nil || !errors.As(err, &operationErr) || operationErr.Op != "dial" {
+			t.Fatalf("ProbeBootstrapPeer error = %v, want dial failure", err)
+		}
+	})
+
+	t.Run("TLS handshake failure", func(t *testing.T) {
+		listener := cptListen(t)
+		accepted := make(chan struct{})
+		go func() {
+			socket, err := listener.Accept()
+			if err == nil {
+				_ = socket.Close()
+			}
+			close(accepted)
+		}()
+		peer := remoteNode.identity(2, listener.Addr().String(), PeerPhaseVoter, "")
+		ctx, cancel := context.WithTimeout(context.Background(), cptWaitTimeout)
+		defer cancel()
+		_, err := ProbeBootstrapPeer(ctx, localNode.clientTLS, local, peer)
+		if err == nil || !strings.Contains(err.Error(), "bootstrap probe TLS handshake failed") {
+			t.Fatalf("ProbeBootstrapPeer error = %v, want TLS handshake failure", err)
+		}
+		select {
+		case <-accepted:
+		case <-time.After(cptWaitTimeout):
+			t.Fatal("TLS test server did not accept the probe connection")
+		}
+	})
 }

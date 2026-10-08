@@ -206,8 +206,12 @@ func TestFileAuditPublisherRotatesWithContinuousSequence(t *testing.T) {
 	if err != nil {
 		t.Fatalf("VerifyDirectory() error = %v", err)
 	}
-	if result.Files != 3 || result.Records != 3 || result.FirstSeq != 1 || result.LastSeq != 3 {
-		t.Fatalf("verification result = %+v, want three linked records across three files", result)
+	activeRecords := readAuditRecords(t, filepath.Join(directory, activeFileName))
+	want := VerificationResultDTO{
+		Files: 3, Records: 3, FirstSeq: 1, LastSeq: 3, LastHash: activeRecords[0].Hash,
+	}
+	if result != want {
+		t.Fatalf("verification result = %+v, want continuous chain summary %+v", result, want)
 	}
 }
 
@@ -276,8 +280,18 @@ func TestVerifyDirectoryDetectsMissingRecordAndReportsTornActiveTail(t *testing.
 		t.Fatalf("close active log: %v", err)
 	}
 	result, err := VerifyDirectory(directory)
-	if err != nil || !result.TornTail || result.Records != 3 {
-		t.Fatalf("VerifyDirectory() = (%+v, %v), want read-only torn-tail result", result, err)
+	if err != nil {
+		t.Fatalf("VerifyDirectory() error = %v", err)
+	}
+	originalRecords, scanErr := scanAuditData(data, activeFileName, false)
+	if scanErr != nil {
+		t.Fatalf("scan original active log: %v", scanErr)
+	}
+	want := VerificationResultDTO{
+		Files: 1, Records: 3, FirstSeq: 1, LastSeq: 3, LastHash: originalRecords[2].Hash, TornTail: true,
+	}
+	if err != nil || result != want {
+		t.Fatalf("VerifyDirectory() = (%+v, %v), want read-only torn-tail summary %+v", result, err, want)
 	}
 	unchanged, err := os.ReadFile(path)
 	if err != nil || !bytes.HasSuffix(unchanged, []byte(`{"seq":`)) {
@@ -349,5 +363,237 @@ func TestFileAuditPublisherRotationCollisionMakesPublisherUnavailable(t *testing
 func TestAuditHashFormattingIsLowercaseHex(t *testing.T) {
 	if !validAuditHash(genesisHash) || validAuditHash(strings.Repeat("A", 64)) || validAuditHash("not-a-hash") {
 		t.Fatal("hash validation did not enforce 64 lowercase hexadecimal characters")
+	}
+}
+func TestVerifyDirectoryRejectsCorruptSequenceAndHashChain(t *testing.T) {
+	tests := []struct {
+		name    string
+		corrupt func([]auditLogRecord) []byte
+		wantErr string
+	}{
+		{
+			name: "sequence discontinuity",
+			corrupt: func(records []auditLogRecord) []byte {
+				return append(makeAuditLine(1, records[0].PrevHash, records[0].Event, records[0].Hash),
+					makeAuditLine(4, records[1].PrevHash, records[1].Event, calculateAuditHash(4, records[1].PrevHash, records[1].Event))...)
+			},
+			wantErr: "audit.jsonl:2: sequence 4 does not follow 1",
+		},
+		{
+			name: "record hash mismatch",
+			corrupt: func(records []auditLogRecord) []byte {
+				return append(makeAuditLine(records[0].Seq, records[0].PrevHash, records[0].Event, records[0].Hash),
+					makeAuditLine(records[1].Seq, records[1].PrevHash, records[1].Event, strings.Repeat("0", 64))...)
+			},
+			wantErr: "audit.jsonl:2: audit hash mismatch",
+		},
+		{
+			name: "previous hash discontinuity",
+			corrupt: func(records []auditLogRecord) []byte {
+				previous := genesisHash
+				hash := calculateAuditHash(records[1].Seq, previous, records[1].Event)
+				return append(makeAuditLine(records[0].Seq, records[0].PrevHash, records[0].Event, records[0].Hash),
+					makeAuditLine(records[1].Seq, previous, records[1].Event, hash)...)
+			},
+			wantErr: "audit.jsonl:2: previous hash does not match the preceding record",
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			directory := t.TempDir()
+			publisher := openAuditTestPublisher(t, directory, 1<<20)
+			publishAuditTestEvents(t, publisher, 2)
+			if err := publisher.Close(); err != nil {
+				t.Fatalf("Close() error = %v", err)
+			}
+			path := filepath.Join(directory, activeFileName)
+			records := readAuditRecords(t, path)
+			if err := os.WriteFile(path, test.corrupt(records), 0o600); err != nil {
+				t.Fatalf("write corrupted audit log: %v", err)
+			}
+
+			result, err := VerifyDirectory(directory)
+			if err == nil || err.Error() != test.wantErr {
+				t.Fatalf("VerifyDirectory() = (%+v, %v), want exact error %q", result, err, test.wantErr)
+			}
+			unavailable, err := OpenFileAuditPublisher(FileAuditPublisherConfig{Directory: directory, MaxFileBytes: 1 << 20})
+			if err != nil {
+				t.Fatalf("OpenFileAuditPublisher() error = %v, want unavailable publisher", err)
+			}
+			defer unavailable.Close()
+			if err := unavailable.Ready(); err == nil || err.Error() != "open audit log: "+test.wantErr {
+				t.Fatalf("Ready() error = %v, want corruption error %q", err, "open audit log: "+test.wantErr)
+			}
+			if err := unavailable.Publish(auditLogTestEvent(3)); err == nil || err.Error() != test.wantErr {
+				t.Fatalf("Publish() error = %v, want corruption error %q", err, test.wantErr)
+			}
+		})
+	}
+}
+
+func TestFileAuditPublisherRejectsUnencodableEventAndBecomesUnavailable(t *testing.T) {
+	directory := t.TempDir()
+	publisher := openAuditTestPublisher(t, directory, 1<<20)
+	event := auditLogTestEvent(1)
+	event.Details = map[string]any{"unsupported": make(chan int)}
+	err := publisher.Publish(event)
+	if err == nil || err.Error() != "encode audit event: json: unsupported type: chan int" {
+		t.Fatalf("Publish(unencodable event) error = %v, want JSON channel encoding error", err)
+	}
+	if readyErr := publisher.Ready(); readyErr == nil || readyErr.Error() != "audit log unavailable: "+err.Error() {
+		t.Fatalf("Ready() after encoding failure = %v, want unavailable error wrapping %q", readyErr, err)
+	}
+	if retryErr := publisher.Publish(auditLogTestEvent(1)); retryErr == nil || retryErr.Error() != err.Error() {
+		t.Fatalf("Publish() after encoding failure = %v, want the original failure %q", retryErr, err)
+	}
+	records, verifyErr := VerifyDirectory(directory)
+	if verifyErr != nil {
+		t.Fatalf("VerifyDirectory() after rejected event error = %v", verifyErr)
+	}
+	if records != (VerificationResultDTO{Files: 1, LastHash: genesisHash}) {
+		t.Fatalf("verification after rejected event = %+v, want empty active log", records)
+	}
+}
+
+func TestFileAuditPublisherClosedStateRejectsPublishAndReadiness(t *testing.T) {
+	directory := t.TempDir()
+	publisher := openAuditTestPublisher(t, directory, 1<<20)
+	publishAuditTestEvents(t, publisher, 1)
+	if err := publisher.Close(); err != nil {
+		t.Fatalf("Close() error = %v", err)
+	}
+	if err := publisher.Ready(); err == nil || err.Error() != "audit publisher is closed" {
+		t.Fatalf("Ready() after Close() error = %v, want closed-state error", err)
+	}
+	if err := publisher.Publish(auditLogTestEvent(2)); err == nil || err.Error() != "audit publisher is closed" {
+		t.Fatalf("Publish() after Close() error = %v, want closed-state error", err)
+	}
+	result, err := VerifyDirectory(directory)
+	if err != nil {
+		t.Fatalf("VerifyDirectory() after Close() error = %v", err)
+	}
+	if result.Files != 1 || result.Records != 1 || result.FirstSeq != 1 || result.LastSeq != 1 {
+		t.Fatalf("verification after rejected closed publish = %+v, want only sequence 1", result)
+	}
+}
+func TestVerifyDirectoryEmptyAndEmptyActiveLog(t *testing.T) {
+	tests := []struct {
+		name       string
+		createFile bool
+	}{
+		{name: "directory without active file"},
+		{name: "empty active file", createFile: true},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			directory := t.TempDir()
+			if test.createFile {
+				if err := os.WriteFile(filepath.Join(directory, activeFileName), nil, 0o600); err != nil {
+					t.Fatalf("create empty active log: %v", err)
+				}
+			}
+			result, err := VerifyDirectory(directory)
+			if err != nil {
+				t.Fatalf("VerifyDirectory() error = %v", err)
+			}
+			wantFiles := 0
+			if test.createFile {
+				wantFiles = 1
+			}
+			want := VerificationResultDTO{Files: wantFiles, LastHash: genesisHash}
+			if result != want {
+				t.Fatalf("VerifyDirectory() = %+v, want empty-chain result %+v", result, want)
+			}
+		})
+	}
+}
+
+func TestScanAuditDataRejectsMalformedRecords(t *testing.T) {
+	event := []byte(`{"action":"test"}`)
+	valid := func() []byte {
+		return makeAuditLine(1, genesisHash, event, calculateAuditHash(1, genesisHash, event))
+	}
+	tests := []struct {
+		name    string
+		data    func() []byte
+		wantErr string
+	}{
+		{
+			name:    "empty record",
+			data:    func() []byte { return []byte("\n") },
+			wantErr: "empty audit record",
+		},
+		{
+			name: "unknown record field",
+			data: func() []byte {
+				line := strings.TrimSuffix(string(valid()), "\n")
+				return []byte(line[:len(line)-1] + `,"unknown":true}` + "\n")
+			},
+			wantErr: "unknown field",
+		},
+		{
+			name: "multiple JSON values",
+			data: func() []byte {
+				line := strings.TrimSuffix(string(valid()), "\n")
+				return []byte(line + `{}` + "\n")
+			},
+			wantErr: "trailing audit record data",
+		},
+		{
+			name: "zero sequence",
+			data: func() []byte {
+				return makeAuditLine(0, genesisHash, event, calculateAuditHash(0, genesisHash, event))
+			},
+			wantErr: "invalid sequence or hash field",
+		},
+		{
+			name: "invalid hash alphabet",
+			data: func() []byte {
+				return makeAuditLine(1, genesisHash, event, strings.Repeat("G", 64))
+			},
+			wantErr: "invalid sequence or hash field",
+		},
+		{
+			name: "non-object event",
+			data: func() []byte {
+				nonObject := []byte(`[]`)
+				return makeAuditLine(1, genesisHash, nonObject, calculateAuditHash(1, genesisHash, nonObject))
+			},
+			wantErr: "event must be a JSON object",
+		},
+		{
+			name: "non-compact event",
+			data: func() []byte {
+				nonCompact := []byte(`{ "action": "test" }`)
+				return makeAuditLine(1, genesisHash, nonCompact, calculateAuditHash(1, genesisHash, nonCompact))
+			},
+			wantErr: "event JSON must be compact",
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			_, err := scanAuditData(test.data(), activeFileName, false)
+			if err == nil || !strings.Contains(err.Error(), test.wantErr) {
+				t.Fatalf("scanAuditData() error = %v, want containing %q", err, test.wantErr)
+			}
+		})
+	}
+}
+
+func TestOpenFileAuditPublisherRejectsNonRegularActivePath(t *testing.T) {
+	directory := t.TempDir()
+	if err := os.Mkdir(filepath.Join(directory, activeFileName), 0o700); err != nil {
+		t.Fatalf("create directory at active log path: %v", err)
+	}
+	publisher, err := OpenFileAuditPublisher(FileAuditPublisherConfig{Directory: directory, MaxFileBytes: 1024})
+	if err != nil {
+		t.Fatalf("OpenFileAuditPublisher() error = %v, want unavailable publisher", err)
+	}
+	defer publisher.Close()
+	if err := publisher.Ready(); err == nil || !strings.Contains(err.Error(), "audit.jsonl is not a regular file") {
+		t.Fatalf("Ready() error = %v, want non-regular active path error", err)
+	}
+	if err := publisher.Publish(auditLogTestEvent(1)); err == nil || !strings.Contains(err.Error(), "audit.jsonl is not a regular file") {
+		t.Fatalf("Publish() error = %v, want retained recovery error", err)
 	}
 }

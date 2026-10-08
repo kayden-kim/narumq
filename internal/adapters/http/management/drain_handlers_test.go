@@ -204,3 +204,41 @@ func TestNodeDrainHTTPConflictIncludesCurrentNodeState(t *testing.T) {
 		t.Fatalf("error response = %+v", envelope.Error)
 	}
 }
+func TestNodeDrainHTTPMapsReadAndCancelServiceErrors(t *testing.T) {
+	stub := &drainHTTPStub{
+		getError: &membership.ServiceError{
+			Code: membership.ServiceErrorResourceNotFound, Message: "node drain was not found",
+		},
+		cancelError: &membership.ServiceError{
+			Code: membership.ServiceErrorDrainNotCancellable, Message: "node drain is already terminal",
+		},
+	}
+	handler := newDrainHTTPTestHandler(stub, RoleOperator)
+	for _, testCase := range []struct {
+		name       string
+		method     string
+		key        string
+		wantStatus int
+		wantCode   string
+	}{
+		{name: "get missing drain", method: http.MethodGet, wantStatus: http.StatusNotFound, wantCode: "resource_not_found"},
+		{name: "cancel completed drain", method: http.MethodDelete, key: "cancel-key", wantStatus: http.StatusConflict, wantCode: "drain_not_cancellable"},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			request := drainHTTPRequest(testCase.method, "/api/v1/nodes/2/drain", "", testCase.key)
+			response := httptest.NewRecorder()
+			handler.ServeHTTP(response, request)
+
+			var envelope ErrorResponse
+			if err := json.Unmarshal(response.Body.Bytes(), &envelope); err != nil {
+				t.Fatalf("decode error response: %v", err)
+			}
+			if response.Code != testCase.wantStatus || envelope.Error.Code != testCase.wantCode {
+				t.Fatalf("status=%d code=%q, want status=%d code=%q body=%s", response.Code, envelope.Error.Code, testCase.wantStatus, testCase.wantCode, response.Body.String())
+			}
+		})
+	}
+	if stub.getCalls != 1 || stub.cancelCalls != 1 {
+		t.Fatalf("service calls get=%d cancel=%d, want one each", stub.getCalls, stub.cancelCalls)
+	}
+}

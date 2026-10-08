@@ -62,6 +62,9 @@ func TestBeginDetachRejectsLocalEnqueueUntilFinish(t *testing.T) {
 	if err := queue.TryEnqueue(b, now); !errors.Is(err, applicationdeliveryqueue.ErrDetaching) {
 		t.Fatalf("local enqueue = %v", err)
 	}
+	if queued, err := queue.ListQueued("s", now); err != nil || !reflect.DeepEqual(queued, []applicationdeliveryqueue.DeliveryDTO{a}) {
+		t.Fatalf("queued state after detaching rejection = %#v, %v; want original head", queued, err)
+	}
 	if err := queue.TryEnqueue(durable, now); err != nil {
 		t.Fatal(err)
 	}
@@ -321,6 +324,160 @@ func TestQueueBatchOperationsRejectMissingSessionAndShortQueue(t *testing.T) {
 		t.Fatalf("PeekBatch after promotion = %d, %v, want 0, nil", count, err)
 	}
 }
+func TestQueueBatchEnqueueRejectionsPreserveQueuedState(t *testing.T) {
+	now := testNow()
+	tests := []struct {
+		name      string
+		sessionID routing.SessionID
+		batch     []applicationdeliveryqueue.DeliveryDTO
+		wantErr   error
+	}{
+		{
+			name:      "unregistered session",
+			sessionID: "session-a",
+			batch: []applicationdeliveryqueue.DeliveryDTO{
+				{SessionID: "missing", Topic: "rejected"},
+			},
+			wantErr: applicationdeliveryqueue.ErrUnavailable,
+		},
+		{
+			name:      "mixed registered sessions",
+			sessionID: "session-a",
+			batch: []applicationdeliveryqueue.DeliveryDTO{
+				{SessionID: "session-a", Topic: "rejected-a"},
+				{SessionID: "session-b", Topic: "rejected-b"},
+			},
+			wantErr: applicationdeliveryqueue.ErrUnavailable,
+		},
+		{
+			name:      "capacity exceeded",
+			sessionID: "session-a",
+			batch: []applicationdeliveryqueue.DeliveryDTO{
+				{SessionID: "session-a", Topic: "rejected-a"},
+				{SessionID: "session-a", Topic: "rejected-b"},
+			},
+			wantErr: applicationdeliveryqueue.ErrFull,
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			queue, err := New(2)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := queue.Register("session-a"); err != nil {
+				t.Fatal(err)
+			}
+			if err := queue.Register("session-b"); err != nil {
+				t.Fatal(err)
+			}
+			initial := []applicationdeliveryqueue.DeliveryDTO{
+				{SessionID: test.sessionID, Topic: "existing"},
+			}
+			if err := queue.TryEnqueue(initial[0], now); err != nil {
+				t.Fatal(err)
+			}
+			if test.name == "capacity exceeded" {
+				if err := queue.TryEnqueue(applicationdeliveryqueue.DeliveryDTO{SessionID: test.sessionID, Topic: "also-existing"}, now); err != nil {
+					t.Fatal(err)
+				}
+				initial = append(initial, applicationdeliveryqueue.DeliveryDTO{SessionID: test.sessionID, Topic: "also-existing"})
+			}
+
+			if err := queue.TryEnqueueBatch(test.batch, now); !errors.Is(err, test.wantErr) {
+				t.Fatalf("TryEnqueueBatch(%+v) error = %v, want %v", test.batch, err, test.wantErr)
+			}
+			got, err := queue.ListQueued(test.sessionID, now)
+			if err != nil {
+				t.Fatalf("ListQueued(%q): %v", test.sessionID, err)
+			}
+			if !reflect.DeepEqual(got, initial) {
+				t.Fatalf("queued state after rejected batch = %#v, want %#v", got, initial)
+			}
+			otherSession := routing.SessionID("session-b")
+			if test.sessionID == otherSession {
+				otherSession = "session-a"
+			}
+			other, err := queue.ListQueued(otherSession, now)
+			if err != nil {
+				t.Fatalf("ListQueued(%q): %v", otherSession, err)
+			}
+			if len(other) != 0 {
+				t.Fatalf("other session %q changed after rejected batch: %#v", otherSession, other)
+			}
+		})
+	}
+}
+
+func TestQueueExpiryPurgeUsesFixedBoundary(t *testing.T) {
+	now := testNow()
+	queue, err := New(3)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := queue.Register("session-a"); err != nil {
+		t.Fatal(err)
+	}
+	if err := queue.TryEnqueueBatch([]applicationdeliveryqueue.DeliveryDTO{
+		{SessionID: "session-a", Topic: "expires-at-now", ExpiresAt: now},
+		{SessionID: "session-a", Topic: "expires-after-now", ExpiresAt: now.Add(time.Second)},
+		{SessionID: "session-a", Topic: "never-expires"},
+	}, now.Add(-time.Second)); err != nil {
+		t.Fatal(err)
+	}
+
+	head, ok, err := queue.Peek("session-a", now)
+	if err != nil || !ok || head.Topic != "expires-after-now" {
+		t.Fatalf("Peek at expiry boundary = %#v, %v, %v; want live second item", head, ok, err)
+	}
+	queued, err := queue.ListQueued("session-a", now.Add(time.Second))
+	if err != nil {
+		t.Fatalf("ListQueued after expiry boundary: %v", err)
+	}
+	want := []applicationdeliveryqueue.DeliveryDTO{{SessionID: "session-a", Topic: "never-expires"}}
+	if !reflect.DeepEqual(queued, want) {
+		t.Fatalf("queued after exact/after expiry = %#v, want %#v", queued, want)
+	}
+}
+
+func TestQueuePromotePacketIDCollisionPreservesHeadAndOutbound(t *testing.T) {
+	now := testNow()
+	queue, err := New(2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := queue.Register("session-a"); err != nil {
+		t.Fatal(err)
+	}
+	if err := queue.TryEnqueue(applicationdeliveryqueue.DeliveryDTO{SessionID: "session-a", Topic: "first"}, now); err != nil {
+		t.Fatal(err)
+	}
+	if err := queue.PromoteHead(outboundFor(t, "session-a", 4, time.Time{}), now); err != nil {
+		t.Fatal(err)
+	}
+	if err := queue.TryEnqueue(applicationdeliveryqueue.DeliveryDTO{SessionID: "session-a", Topic: "blocked"}, now); err != nil {
+		t.Fatal(err)
+	}
+	before, err := queue.ListOutbound("session-a")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if err := queue.PromoteHead(outboundFor(t, "session-a", 4, time.Time{}), now); !errors.Is(err, applicationdeliveryqueue.ErrPacketIDConflict) {
+		t.Fatalf("duplicate PromoteHead() error = %v, want %v", err, applicationdeliveryqueue.ErrPacketIDConflict)
+	}
+	head, ok, err := queue.Peek("session-a", now)
+	if err != nil || !ok || head.Topic != "blocked" {
+		t.Fatalf("head after packet identifier conflict = %#v, %v, %v; want blocked", head, ok, err)
+	}
+	after, err := queue.ListOutbound("session-a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(after, before) {
+		t.Fatalf("outbound after packet identifier conflict = %#v, want unchanged %#v", after, before)
+	}
+}
 
 // Traceability: PRD MQTT-02/TEST-03/04/05; docs/specs/mqtt-protocol-and-session.md §3.2, §7.
 func TestQueueOutboundBoundSortingAndRemoval(t *testing.T) {
@@ -487,6 +644,121 @@ func TestQueueResetDurablePacketIDConflictIsAtomic(t *testing.T) {
 	if !reflect.DeepEqual(afterQueued, beforeQueued) || !reflect.DeepEqual(afterOutbound, beforeOutbound) {
 		t.Fatalf("failed ResetDurable() mutated queue: before=(%+v,%+v) after=(%+v,%+v)",
 			beforeQueued, beforeOutbound, afterQueued, afterOutbound)
+	}
+}
+
+func TestQueueResetDurableRejectsInvalidAndOverCapacityState(t *testing.T) {
+	now := testNow()
+	sessionID := routing.SessionID("session-durable")
+	tests := []struct {
+		name     string
+		queued   []applicationdeliveryqueue.DeliveryDTO
+		outbound []applicationdeliveryqueue.OutboundDTO
+		wantErr  error
+	}{
+		{
+			name: "queued session mismatch",
+			queued: []applicationdeliveryqueue.DeliveryDTO{
+				{SessionID: "other", Topic: "durable", DurableSequence: 1, DurableEpoch: 2},
+			},
+			wantErr: applicationdeliveryqueue.ErrUnavailable,
+		},
+		{
+			name: "queued sequence is not increasing",
+			queued: []applicationdeliveryqueue.DeliveryDTO{
+				{SessionID: sessionID, Topic: "first", DurableSequence: 2, DurableEpoch: 2},
+				{SessionID: sessionID, Topic: "duplicate", DurableSequence: 2, DurableEpoch: 2},
+			},
+			wantErr: applicationdeliveryqueue.ErrUnavailable,
+		},
+		{
+			name: "outbound session mismatch",
+			outbound: []applicationdeliveryqueue.OutboundDTO{
+				func() applicationdeliveryqueue.OutboundDTO {
+					item := outboundFor(t, "other", 1, time.Time{})
+					item.DurableSequence, item.DurableEpoch = 1, 2
+					return item
+				}(),
+			},
+			wantErr: applicationdeliveryqueue.ErrUnavailable,
+		},
+		{
+			name: "outbound packet IDs are not increasing",
+			outbound: []applicationdeliveryqueue.OutboundDTO{
+				func() applicationdeliveryqueue.OutboundDTO {
+					item := outboundFor(t, sessionID, 2, time.Time{})
+					item.DurableSequence, item.DurableEpoch = 1, 2
+					return item
+				}(),
+				func() applicationdeliveryqueue.OutboundDTO {
+					item := outboundFor(t, sessionID, 1, time.Time{})
+					item.DurableSequence, item.DurableEpoch = 2, 2
+					return item
+				}(),
+			},
+			wantErr: applicationdeliveryqueue.ErrPacketIDConflict,
+		},
+		{
+			name: "durable and local outbound exceed capacity",
+			outbound: []applicationdeliveryqueue.OutboundDTO{
+				func() applicationdeliveryqueue.OutboundDTO {
+					item := outboundFor(t, sessionID, 1, time.Time{})
+					item.DurableSequence, item.DurableEpoch = 1, 2
+					return item
+				}(),
+				func() applicationdeliveryqueue.OutboundDTO {
+					item := outboundFor(t, sessionID, 2, time.Time{})
+					item.DurableSequence, item.DurableEpoch = 2, 2
+					return item
+				}(),
+			},
+			wantErr: applicationdeliveryqueue.ErrFull,
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			queue, err := New(2)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := queue.Register(sessionID); err != nil {
+				t.Fatal(err)
+			}
+			if err := queue.TryEnqueue(applicationdeliveryqueue.DeliveryDTO{SessionID: sessionID, Topic: "local queued"}, now); err != nil {
+				t.Fatal(err)
+			}
+			if err := queue.TryEnqueue(applicationdeliveryqueue.DeliveryDTO{SessionID: sessionID, Topic: "local outbound"}, now); err != nil {
+				t.Fatal(err)
+			}
+			if err := queue.PromoteHead(outboundFor(t, sessionID, 7, time.Time{}), now); err != nil {
+				t.Fatal(err)
+			}
+			beforeQueued, err := queue.ListQueued(sessionID, now)
+			if err != nil {
+				t.Fatal(err)
+			}
+			beforeOutbound, err := queue.ListOutbound(sessionID)
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			if err := queue.ResetDurable(sessionID, 2, test.queued, test.outbound, now); !errors.Is(err, test.wantErr) {
+				t.Fatalf("ResetDurable() error = %v, want %v", err, test.wantErr)
+			}
+			afterQueued, err := queue.ListQueued(sessionID, now)
+			if err != nil {
+				t.Fatal(err)
+			}
+			afterOutbound, err := queue.ListOutbound(sessionID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !reflect.DeepEqual(afterQueued, beforeQueued) || !reflect.DeepEqual(afterOutbound, beforeOutbound) {
+				t.Fatalf("failed ResetDurable() mutated state: queued before/after=%+v/%+v outbound before/after=%+v/%+v",
+					beforeQueued, afterQueued, beforeOutbound, afterOutbound)
+			}
+		})
 	}
 }
 

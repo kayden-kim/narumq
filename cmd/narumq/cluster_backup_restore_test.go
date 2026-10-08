@@ -43,6 +43,23 @@ func TestClusterRestoreSeedReconstructsAndVerifiesBoundary(t *testing.T) {
 	}
 }
 
+// Traceability: CLU-11/CLU-14; docs/specs/cluster-session-and-delivery.md §10, §11.19.
+func TestClusterRestoreSeedRequiresArchiveManifest(t *testing.T) {
+	config := validBootstrapClusterConfig()
+	for _, test := range []struct {
+		name    string
+		archive *records.BackupArchive
+	}{
+		{name: "nil archive"},
+		{name: "missing manifest", archive: &records.BackupArchive{}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			if _, err := clusterRestoreSeed(config, test.archive); err == nil || err.Error() != "cluster backup archive has no manifest" {
+				t.Fatalf("clusterRestoreSeed() error = %v, want missing-manifest rejection", err)
+			}
+		})
+	}
+}
 func TestClusterRestoreSeedRejectsIdentityLearnerAndSummaryMismatch(t *testing.T) {
 	config := validBootstrapClusterConfig()
 	validArchiveBytes := clusterRestoreTestArchive(t, config, nil)
@@ -142,11 +159,71 @@ func TestClusterRestoreSeedRejectsProtocolAndSchemaMismatch(t *testing.T) {
 	}
 }
 
+func TestClusterRestoreSeedRejectsInvalidRestoreIdentityAndSnapshotBoundary(t *testing.T) {
+	config := validBootstrapClusterConfig()
+	encoded := clusterRestoreTestArchive(t, config, nil)
+	archiveFor := func() *records.BackupArchive {
+		archive, err := records.DecodeBackupArchive(encoded)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return archive
+	}
+
+	wrongRole := config
+	wrongRole.Role = "joiner"
+	wrongMemberCount := config
+	wrongMemberCount.BootstrapMembers = slices.Clone(config.BootstrapMembers[:2])
+	wrongLocalNode := config
+	wrongLocalNode.NodeID = 9
+
+	wrongSnapshotIndex := archiveFor()
+	wrongSnapshotIndex.Manifest.SnapshotIndex++
+
+	for _, test := range []struct {
+		name        string
+		config      clusterConfigFile
+		archive     *records.BackupArchive
+		wantMessage string
+	}{
+		{
+			name: "bootstrap configuration member count", config: wrongMemberCount, archive: archiveFor(),
+			wantMessage: "cluster restore requires a bootstrap configuration with exactly three members",
+		},
+		{
+			name: "non-bootstrap configuration", config: wrongRole, archive: archiveFor(),
+			wantMessage: "cluster restore requires a bootstrap configuration with exactly three members",
+		},
+		{
+			name: "local node is not a voter", config: wrongLocalNode, archive: archiveFor(),
+			wantMessage: "local node is not a configured bootstrap voter",
+		},
+		{
+			name: "typed snapshot index differs from manifest", config: config, archive: wrongSnapshotIndex,
+			wantMessage: "backup typed snapshot index does not match manifest",
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			if _, err := clusterRestoreSeed(test.config, test.archive); err == nil ||
+				!strings.Contains(err.Error(), test.wantMessage) {
+				t.Fatalf("clusterRestoreSeed() error = %v, want rejection containing %q", err, test.wantMessage)
+			}
+		})
+	}
+}
+
 func TestClusterRestoreRejectsInvalidArchiveBeforeTouchingTarget(t *testing.T) {
 	config := validBootstrapClusterConfig()
 	root := t.TempDir()
 	config.Directory = filepath.Join(root, "restore-target")
 	config.Management.AuditDirectory = filepath.Join(root, "restore-audit")
+	if err := restoreClusterBackup(config, ""); err == nil || err.Error() != "cluster backup archive path is required" {
+		t.Fatalf("restoreClusterBackup(empty path) error = %v, want required archive path", err)
+	}
+	missingArchivePath := filepath.Join(t.TempDir(), "missing.nmqbak")
+	if err := restoreClusterBackup(config, missingArchivePath); err == nil || !strings.Contains(err.Error(), "open cluster backup archive") {
+		t.Fatalf("restoreClusterBackup(missing path) error = %v, want archive open error", err)
+	}
 	archivePath := filepath.Join(t.TempDir(), "invalid.nmqbak")
 	if err := os.WriteFile(archivePath, []byte("not a backup"), 0o600); err != nil {
 		t.Fatal(err)
@@ -169,6 +246,12 @@ func TestClusterRestoreRejectsInvalidArchiveBeforeTouchingTarget(t *testing.T) {
 	}
 	if _, err := os.Stat(config.Directory); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("restore target after v2 archive: stat error=%v, want not-exist", err)
+	}
+	if err := restoreClusterBackup(config, t.TempDir()); err == nil || !strings.Contains(err.Error(), "regular file") {
+		t.Fatalf("restoreClusterBackup(directory) error = %v, want non-regular archive rejection", err)
+	}
+	if _, err := os.Stat(config.Directory); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("restore target after directory archive: stat error=%v, want not-exist", err)
 	}
 }
 

@@ -66,16 +66,101 @@ func rebalanceHTTPOperation() membership.ConnectionRebalanceOperationDTO {
 	}}
 }
 
-func TestConnectionRebalanceHTTPRequiredFieldsAndUnknownFields(t *testing.T) {
-	for _, body := range []string{
-		`{"maxDeviationConnections":1,"connectionRatePerSecond":5,"loadBalancerPropagationDelayMs":500}`,
-		`{"serverReference":"lb","maxDeviationConnections":1,"connectionRatePerSecond":5,"loadBalancerPropagationDelayMs":500,"timeoutMs":120000,"extra":true}`,
+func TestConnectionRebalanceHTTPRejectsInvalidJSONAndRequiredFields(t *testing.T) {
+	stub := &rebalanceHTTPStub{}
+	handler := newRebalanceHTTPTestHandler(stub, RoleOperator)
+	cases := []struct {
+		name string
+		body string
+	}{
+		{name: "malformed JSON", body: `{"serverReference":`},
+		{name: "missing required field", body: `{"serverReference":"lb","maxDeviationConnections":1,"connectionRatePerSecond":5,"loadBalancerPropagationDelayMs":500}`},
+		{name: "unknown field", body: `{"serverReference":"lb","maxDeviationConnections":1,"connectionRatePerSecond":5,"loadBalancerPropagationDelayMs":500,"timeoutMs":120000,"extra":true}`},
+	}
+	for _, test := range cases {
+		t.Run(test.name, func(t *testing.T) {
+			recorder := httptest.NewRecorder()
+			handler.ServeHTTP(recorder, rebalanceHTTPRequest(http.MethodPost, test.body, rebalanceHTTPKey))
+			var envelope ErrorResponse
+			if err := json.Unmarshal(recorder.Body.Bytes(), &envelope); err != nil {
+				t.Fatalf("decode invalid-request envelope: %v; body=%s", err, recorder.Body.String())
+			}
+			if recorder.Code != http.StatusBadRequest || envelope.Error.Code != "invalid_request" || envelope.Error.Retryable {
+				t.Fatalf("invalid body %s: status=%d error=%+v", test.body, recorder.Code, envelope.Error)
+			}
+		})
+	}
+	if stub.calls != 0 {
+		t.Fatalf("invalid requests reached service %d times", stub.calls)
+	}
+}
+
+func TestConnectionRebalanceHTTPConflictMapping(t *testing.T) {
+	for _, code := range []membership.ServiceErrorCode{
+		membership.ServiceErrorConnectionRebalanceInProgress,
+		membership.ServiceErrorRebalanceNotCancellable,
+		membership.ServiceErrorFeatureInactive,
 	} {
-		recorder := httptest.NewRecorder()
-		newRebalanceHTTPTestHandler(&rebalanceHTTPStub{}, RoleOperator).ServeHTTP(recorder, rebalanceHTTPRequest(http.MethodPost, body, rebalanceHTTPKey))
-		if recorder.Code != http.StatusBadRequest {
-			t.Fatalf("body %s: status=%d want=%d body=%s", body, recorder.Code, http.StatusBadRequest, recorder.Body.String())
-		}
+		t.Run(string(code), func(t *testing.T) {
+			stub := &rebalanceHTTPStub{err: &membership.ServiceError{Code: code, Message: "conflict"}}
+			recorder := httptest.NewRecorder()
+			newRebalanceHTTPTestHandler(stub, RoleOperator).ServeHTTP(recorder, rebalanceHTTPRequest(http.MethodPost, validRebalanceRequestBody, rebalanceHTTPKey))
+			var envelope ErrorResponse
+			if err := json.Unmarshal(recorder.Body.Bytes(), &envelope); err != nil {
+				t.Fatalf("decode conflict envelope: %v; body=%s", err, recorder.Body.String())
+			}
+			if recorder.Code != http.StatusConflict || envelope.Error.Code != string(code) || envelope.Error.Retryable || stub.calls != 1 {
+				t.Fatalf("status=%d error=%+v service calls=%d", recorder.Code, envelope.Error, stub.calls)
+			}
+		})
+	}
+}
+
+func TestConnectionRebalanceHTTPUnavailableMappingIsRetryable(t *testing.T) {
+	stub := &rebalanceHTTPStub{err: &membership.ServiceError{
+		Code: membership.ServiceErrorQuorumUnavailable, Message: "quorum is unavailable", Retryable: true,
+	}}
+	recorder := httptest.NewRecorder()
+	newRebalanceHTTPTestHandler(stub, RoleOperator).ServeHTTP(recorder, rebalanceHTTPRequest(http.MethodPost, validRebalanceRequestBody, rebalanceHTTPKey))
+	var envelope ErrorResponse
+	if err := json.Unmarshal(recorder.Body.Bytes(), &envelope); err != nil {
+		t.Fatalf("decode unavailable envelope: %v; body=%s", err, recorder.Body.String())
+	}
+	if recorder.Code != http.StatusServiceUnavailable || envelope.Error.Code != string(membership.ServiceErrorQuorumUnavailable) || !envelope.Error.Retryable || stub.calls != 1 {
+		t.Fatalf("status=%d error=%+v service calls=%d", recorder.Code, envelope.Error, stub.calls)
+	}
+}
+
+func TestConnectionRebalanceHTTPRoleAuthorizationAndDeleteKey(t *testing.T) {
+	stub := &rebalanceHTTPStub{operation: rebalanceHTTPOperation()}
+	readOnly := newRebalanceHTTPTestHandler(stub, RoleReadOnly)
+	recorder := httptest.NewRecorder()
+	readOnly.ServeHTTP(recorder, rebalanceHTTPRequest(http.MethodPost, validRebalanceRequestBody, rebalanceHTTPKey))
+	var forbidden ErrorResponse
+	if err := json.Unmarshal(recorder.Body.Bytes(), &forbidden); err != nil {
+		t.Fatalf("decode forbidden envelope: %v; body=%s", err, recorder.Body.String())
+	}
+	if recorder.Code != http.StatusForbidden || forbidden.Error.Code != "forbidden" || forbidden.Error.Retryable || stub.calls != 0 {
+		t.Fatalf("read-only POST status=%d error=%+v service calls=%d", recorder.Code, forbidden.Error, stub.calls)
+	}
+
+	unauthenticated := rebalanceHTTPRequest(http.MethodPost, validRebalanceRequestBody, rebalanceHTTPKey)
+	unauthenticated.Header.Del("Authorization")
+	recorder = httptest.NewRecorder()
+	newRebalanceHTTPTestHandler(stub, RoleOperator).ServeHTTP(recorder, unauthenticated)
+	var unauthorized ErrorResponse
+	if err := json.Unmarshal(recorder.Body.Bytes(), &unauthorized); err != nil {
+		t.Fatalf("decode unauthorized envelope: %v; body=%s", err, recorder.Body.String())
+	}
+	if recorder.Code != http.StatusUnauthorized || unauthorized.Error.Code != "unauthorized" || unauthorized.Error.Retryable || stub.calls != 0 {
+		t.Fatalf("unauthenticated POST status=%d error=%+v service calls=%d", recorder.Code, unauthorized.Error, stub.calls)
+	}
+
+	operator := newRebalanceHTTPTestHandler(stub, RoleOperator)
+	recorder = httptest.NewRecorder()
+	operator.ServeHTTP(recorder, rebalanceHTTPRequest(http.MethodDelete, "", ""))
+	if recorder.Code != http.StatusBadRequest {
+		t.Fatalf("DELETE without idempotency key status=%d want=%d body=%s", recorder.Code, http.StatusBadRequest, recorder.Body.String())
 	}
 }
 
@@ -107,38 +192,5 @@ func TestConnectionRebalanceHTTPStartReplayAndResponse(t *testing.T) {
 	}
 	if stub.calls != 2 {
 		t.Fatalf("start calls=%d want=2", stub.calls)
-	}
-}
-
-func TestConnectionRebalanceHTTPConflictMapping(t *testing.T) {
-	for _, code := range []membership.ServiceErrorCode{
-		membership.ServiceErrorConnectionRebalanceInProgress,
-		membership.ServiceErrorRebalanceNotCancellable,
-		membership.ServiceErrorFeatureInactive,
-	} {
-		t.Run(string(code), func(t *testing.T) {
-			stub := &rebalanceHTTPStub{err: &membership.ServiceError{Code: code, Message: "conflict"}}
-			recorder := httptest.NewRecorder()
-			newRebalanceHTTPTestHandler(stub, RoleOperator).ServeHTTP(recorder, rebalanceHTTPRequest(http.MethodPost, validRebalanceRequestBody, rebalanceHTTPKey))
-			if recorder.Code != http.StatusConflict || !strings.Contains(recorder.Body.String(), `"code":"`+string(code)+`"`) {
-				t.Fatalf("status=%d body=%s", recorder.Code, recorder.Body.String())
-			}
-		})
-	}
-}
-
-func TestConnectionRebalanceHTTPRoleAuthorizationAndDeleteKey(t *testing.T) {
-	handler := newRebalanceHTTPTestHandler(&rebalanceHTTPStub{operation: rebalanceHTTPOperation()}, RoleReadOnly)
-	recorder := httptest.NewRecorder()
-	handler.ServeHTTP(recorder, rebalanceHTTPRequest(http.MethodPost, validRebalanceRequestBody, rebalanceHTTPKey))
-	if recorder.Code != http.StatusForbidden {
-		t.Fatalf("POST status=%d want=%d", recorder.Code, http.StatusForbidden)
-	}
-
-	operator := newRebalanceHTTPTestHandler(&rebalanceHTTPStub{operation: rebalanceHTTPOperation()}, RoleOperator)
-	recorder = httptest.NewRecorder()
-	operator.ServeHTTP(recorder, rebalanceHTTPRequest(http.MethodDelete, "", ""))
-	if recorder.Code != http.StatusBadRequest {
-		t.Fatalf("DELETE without idempotency key status=%d want=%d body=%s", recorder.Code, http.StatusBadRequest, recorder.Body.String())
 	}
 }

@@ -885,3 +885,176 @@ func TestClusterAppliedDeliveryStopsBackpressureBeforeCallerWait(t *testing.T) {
 	}
 	t.Log("real quorum commit removed backpressure before the batch consumer called Wait")
 }
+
+// Traceability: CLU-07/CLU-14; docs/specs/cluster-session-and-delivery.md §4.2, §11.11.
+func TestReadAdmissionCapacityGuardsAndPeerBudget(t *testing.T) {
+	var missing *clusterRuntime
+	if messages, bytes := missing.forwardedProposalCapacity(2); messages != 0 || bytes != 0 {
+		t.Fatalf("nil runtime forwarded capacity = (%d, %d), want (0, 0)", messages, bytes)
+	}
+	runtime := &clusterRuntime{}
+	if got := runtime.readIndexCapacity(0); got != clusterDriverStageLimit {
+		t.Fatalf("readIndexCapacity without transport = %d, want %d", got, clusterDriverStageLimit)
+	}
+	if got := runtime.readIndexCapacityForStatus(raftadapter.StatusDTO{}, 0); got != clusterDriverStageLimit {
+		t.Fatalf("readIndexCapacityForStatus without transport = %d, want %d", got, clusterDriverStageLimit)
+	}
+	if messages, bytes := runtime.forwardedProposalCapacity(2); messages != 0 || bytes != 0 {
+		t.Fatalf("runtime without transport forwarded capacity = (%d, %d), want (0, 0)", messages, bytes)
+	}
+
+	runtime = newReadAdmissionTestCluster(t)[0]
+	follower := raftadapter.StatusDTO{
+		NodeID: 1, LeaderID: 2, Role: raftadapter.RoleFollower,
+		VoterIDs: []raftadapter.NodeID{1, 2, 3},
+	}
+	if got := runtime.readIndexCapacityForStatus(follower, 0); got != 5 {
+		t.Fatalf("follower read capacity = %d, want 5", got)
+	}
+	follower.LeaderID = 0
+	if got := runtime.readIndexCapacityForStatus(follower, 0); got != 0 {
+		t.Fatalf("leaderless follower read capacity = %d, want 0", got)
+	}
+	follower.LeaderID = 99
+	if got := runtime.readIndexCapacityForStatus(follower, 0); got != 0 {
+		t.Fatalf("unknown leader read capacity = %d, want 0", got)
+	}
+
+	leader := raftadapter.StatusDTO{
+		NodeID: 1, LeaderID: 1, Role: raftadapter.RoleLeader,
+		VoterIDs: []raftadapter.NodeID{1, 2, 3},
+	}
+	if got := runtime.readIndexCapacityForStatus(leader, 0); got != 5 {
+		t.Fatalf("three-voter leader read capacity = %d, want 5", got)
+	}
+	leader.VoterIDs = []raftadapter.NodeID{1}
+	if got := runtime.readIndexCapacityForStatus(leader, 0); got != clusterReadIndexLimit {
+		t.Fatalf("single-voter leader read capacity = %d, want %d", got, clusterReadIndexLimit)
+	}
+	leader.VoterIDs = []raftadapter.NodeID{1, 2, 3}
+	if got := runtime.readIndexCapacityForStatus(leader, 5); got != 0 {
+		t.Fatalf("fully staged leader read capacity = %d, want 0", got)
+	}
+
+	controlPath := filepath.Join(t.TempDir(), "fault-control.json")
+	if err := os.WriteFile(controlPath, []byte(`{"isolatePeers":[2]}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	runtime.faults = &clusterFaultControl{path: controlPath, logger: runtime.logger}
+	follower.LeaderID = 2
+	if got := runtime.readIndexCapacityForStatus(follower, 0); got != 0 {
+		t.Fatalf("isolated leader read capacity = %d, want 0", got)
+	}
+	if messages, bytes := runtime.forwardedProposalCapacity(2); messages != 0 || bytes != 0 {
+		t.Fatalf("isolated peer forwarded capacity = (%d, %d), want (0, 0)", messages, bytes)
+	}
+}
+
+// Traceability: CLU-07/CLU-14; docs/specs/cluster-session-and-delivery.md §4.2, §11.11.
+func TestReadAdmissionDeferredAndOversizedProofHelpers(t *testing.T) {
+	runtime := &clusterRuntime{}
+	runtime.hasDeferredRequest = true
+	if done := runtime.deferredRequestDone(); done != nil {
+		t.Fatal("deferred request without a context exposed a done channel")
+	}
+	key := string(make([]byte, 128-clusterReadProofHeader+1))
+	if err := runtime.issueReadProof(key, new(clusterReadWaiter), raftadapter.StatusDTO{}); !errors.Is(err, raftadapter.ErrInvalidMessage) {
+		t.Fatalf("issueReadProof oversized key error = %v, want %v", err, raftadapter.ErrInvalidMessage)
+	}
+}
+
+// Traceability: CLU-07/CLU-14; docs/specs/cluster-session-and-delivery.md §4.2, §11.11.
+func TestRefreshReadWaitersCompletesInvalidProofWaiters(t *testing.T) {
+	runtime := newReadAdmissionTestCluster(t)[0]
+	if runtime.node.Status().LeaderID == 0 {
+		t.Fatal("test Raft node has no leader")
+	}
+	// A nil transport provides a positive staging allowance without peer I/O.
+	runtime.transport = nil
+	key := string(make([]byte, 128-clusterReadProofHeader+1))
+	pending := &clusterPendingCommit{}
+	response := make(chan clusterReadResponse, 1)
+	for _, testCase := range []struct {
+		name    string
+		waiter  clusterReadWaiter
+		wantKey bool
+	}{
+		{name: "pending commit", waiter: clusterReadWaiter{commit: pending}},
+		{name: "caller response", waiter: clusterReadWaiter{ctx: context.Background(), result: response}},
+		{name: "recovery proof", waiter: clusterReadWaiter{}, wantKey: true},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			reads := map[string]clusterReadWaiter{key: testCase.waiter}
+			if testCase.wantKey {
+				runtime.recoveryProofKey = key
+			}
+			runtime.refreshReadWaiters(reads)
+			if len(reads) != 0 {
+				t.Fatalf("invalid proof waiter remains queued: %d", len(reads))
+			}
+			if testCase.waiter.commit != nil {
+				if !pending.readConfirmed || !errors.Is(pending.readErr, raftadapter.ErrInvalidMessage) {
+					t.Fatalf("pending commit read result = confirmed %v err %v", pending.readConfirmed, pending.readErr)
+				}
+				return
+			}
+			if testCase.waiter.result != nil {
+				select {
+				case got := <-response:
+					if !errors.Is(got.err, raftadapter.ErrInvalidMessage) {
+						t.Fatalf("caller proof error = %v, want %v", got.err, raftadapter.ErrInvalidMessage)
+					}
+				default:
+					t.Fatal("invalid proof did not complete the caller response")
+				}
+				return
+			}
+			if runtime.recoveryProofKey != "" {
+				t.Fatalf("failed recovery proof key = %q, want cleared", runtime.recoveryProofKey)
+			}
+		})
+	}
+}
+
+// Traceability: CLU-07/CLU-14; docs/specs/cluster-session-and-delivery.md §4.2, §11.11.
+func TestRefreshReadWaitersKeepsRequestWhenPeerCapacityIsExhausted(t *testing.T) {
+	runtime := newReadAdmissionTestCluster(t)[0]
+	if runtime.node.Status().LeaderID == 0 {
+		t.Fatal("test Raft node has no leader")
+	}
+	runtime.readIndexStaged = clusterDriverStageLimit
+	response := make(chan clusterReadResponse, 1)
+	reads := map[string]clusterReadWaiter{
+		"deferred": {ctx: context.Background(), result: response},
+	}
+
+	runtime.refreshReadWaiters(reads)
+	waiter, remains := reads["deferred"]
+	if !remains || waiter.proofSequence != 0 {
+		t.Fatalf("capacity exhaustion removed or issued the deferred read: remains=%v waiter=%+v", remains, waiter)
+	}
+	if len(response) != 0 {
+		t.Fatal("capacity exhaustion completed the read without a quorum proof")
+	}
+}
+
+// Traceability: CLU-14; docs/specs/cluster-session-and-delivery.md §3.5.
+func TestIssueReadProofReturnsClosedRaftNodeError(t *testing.T) {
+	runtime := newReadAdmissionTestCluster(t)[0]
+	status := runtime.node.Status()
+	if status.LeaderID == 0 {
+		t.Fatal("test Raft node has no leader")
+	}
+	if err := runtime.node.Close(); err != nil {
+		t.Fatalf("close test Raft node: %v", err)
+	}
+
+	waiter := clusterReadWaiter{}
+	err := runtime.issueReadProof("valid-context", &waiter, status)
+	if !errors.Is(err, raftadapter.ErrClosed) {
+		t.Fatalf("issueReadProof() error = %v, want %v", err, raftadapter.ErrClosed)
+	}
+	if waiter.proofSequence != 0 {
+		t.Fatalf("failed proof recorded sequence %d", waiter.proofSequence)
+	}
+}

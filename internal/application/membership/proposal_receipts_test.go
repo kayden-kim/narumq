@@ -1,8 +1,11 @@
 package membership
 
 import (
+	"bytes"
 	"crypto/sha256"
+	"errors"
 	"fmt"
+	"reflect"
 	"testing"
 )
 
@@ -129,6 +132,13 @@ func TestProposalDigestMismatchRejected(t *testing.T) {
 	}
 	if res2.Outcome != ApplyOutcomeConflict || res2.Conflict != ConflictProposalIdentity {
 		t.Fatalf("res2 outcome = %d, conflict = %s, want ConflictProposalIdentity", res2.Outcome, res2.Conflict)
+	}
+	original, found := machine.ProposalReceipt(1, reqID)
+	if !found || original.ProofIndex != 5 || !bytes.Equal(original.CommandDigest, cmd1.Proposal.CommandDigest) {
+		t.Fatalf("original receipt changed after identity conflict: %+v found=%v", original, found)
+	}
+	if count, total, retired := machine.ProposalAdmission(1, 0); count != 1 || total != 1 || retired != 0 {
+		t.Fatalf("identity conflict changed admission state to (%d,%d,%d)", count, total, retired)
 	}
 }
 
@@ -386,5 +396,130 @@ func TestProposalWillResultBudgetRejectsBeforeMutationAndRemembersConflict(t *te
 	state, found = restored.GetSessionMetadata("acme", "large-will")
 	if !found || !state.Connected || state.Will == nil {
 		t.Fatal("replay consumed Will after capacity became available")
+	}
+}
+func TestProposalIdentityValidationRejectsWithoutAdvancingState(t *testing.T) {
+	tests := []struct {
+		name   string
+		mutate func(*ProposalIdentityDTO)
+	}{
+		{name: "zero origin", mutate: func(identity *ProposalIdentityDTO) { identity.OriginNodeID = 0 }},
+		{name: "zero proof index", mutate: func(identity *ProposalIdentityDTO) { identity.ProofIndex = 0 }},
+		{name: "retirement reaches proof", mutate: func(identity *ProposalIdentityDTO) { identity.RetiredThrough = identity.ProofIndex }},
+		{name: "malformed request ID", mutate: func(identity *ProposalIdentityDTO) { identity.RequestID = "not-a-uuid" }},
+		{name: "short digest", mutate: func(identity *ProposalIdentityDTO) {
+			identity.CommandDigest = identity.CommandDigest[:len(identity.CommandDigest)-1]
+		}},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			machine, _ := setupProposalTestMachine(t)
+			requestID := "00000000-0000-4000-8000-000000020001"
+			command := testProposalCommand(1, 5, 0, requestID, &DeliveryChangeDTO{
+				TenantID: "acme", ClientID: "pub", Action: DeliveryActionPublish,
+				Topic: "t/validation", Payload: []byte("value"), PublishQoS: 1, ProposedAtUnixMillis: 100,
+			})
+			test.mutate(command.Proposal)
+			beforeIndex := machine.LastAppliedIndex()
+			beforeCount, beforeTotal, beforeRetired := machine.ProposalAdmission(1, 0)
+			if _, err := machine.Apply(beforeIndex+1, command); !errors.Is(err, ErrInvalidCommand) {
+				t.Fatalf("Apply error = %v, want ErrInvalidCommand", err)
+			}
+			if got := machine.LastAppliedIndex(); got != beforeIndex {
+				t.Fatalf("invalid proposal advanced index to %d, want %d", got, beforeIndex)
+			}
+			count, total, retired := machine.ProposalAdmission(1, 0)
+			if count != beforeCount || total != beforeTotal || retired != beforeRetired {
+				t.Fatalf("invalid proposal changed admission state from (%d,%d,%d) to (%d,%d,%d)",
+					beforeCount, beforeTotal, beforeRetired, count, total, retired)
+			}
+			if _, found := machine.ProposalReceipt(1, requestID); found {
+				t.Fatal("invalid proposal created a receipt")
+			}
+		})
+	}
+}
+
+func TestProposalSnapshotRestoreRejectsInvalidReceiptStateWithoutMutation(t *testing.T) {
+	const requestID = "00000000-0000-4000-8000-000000020002"
+	payload := &DeliveryChangeDTO{
+		TenantID: "acme", ClientID: "pub", Action: DeliveryActionPublish,
+		Topic: "t/restore-validation", Payload: []byte("value"), PublishQoS: 1,
+		ProposedAtUnixMillis: 100,
+	}
+	source, _ := setupProposalTestMachine(t)
+	command := testProposalCommand(1, 5, 0, requestID, payload)
+	if result, err := source.Apply(6, command); err != nil || result.Outcome != ApplyOutcomeApplied {
+		t.Fatalf("seed source receipt: result=%+v error=%v", result, err)
+	}
+	valid, err := source.Snapshot(6)
+	if err != nil {
+		t.Fatalf("source snapshot: %v", err)
+	}
+
+	tests := []struct {
+		name   string
+		mutate func(*SnapshotDTO)
+	}{
+		{name: "proposal feature missing", mutate: func(snapshot *SnapshotDTO) {
+			snapshot.ActiveFeatures = nil
+			snapshot.ObjectCount--
+		}},
+		{name: "origin missing member", mutate: func(snapshot *SnapshotDTO) {
+			snapshot.ProposalOrigins[0].OriginNodeID = 99
+		}},
+		{name: "rejected fence mismatch", mutate: func(snapshot *SnapshotDTO) {
+			snapshot.ProposalOrigins[0].RejectedThrough = 1
+		}},
+		{name: "rejected fence not below index", mutate: func(snapshot *SnapshotDTO) {
+			snapshot.ProposalOrigins[0].RejectedThrough = 5
+			snapshot.ProposalOrigins[0].RejectedIndex = 5
+		}},
+		{name: "receipt proof retired", mutate: func(snapshot *SnapshotDTO) {
+			snapshot.ProposalOrigins[0].RetiredThrough = snapshot.ProposalOrigins[0].Receipts[0].ProofIndex
+		}},
+		{name: "receipt proof not before result", mutate: func(snapshot *SnapshotDTO) {
+			snapshot.ProposalOrigins[0].Receipts[0].ProofIndex = snapshot.ProposalOrigins[0].Receipts[0].Result.Index
+		}},
+		{name: "receipt result beyond snapshot", mutate: func(snapshot *SnapshotDTO) {
+			snapshot.ProposalOrigins[0].Receipts[0].Result.Index = snapshot.LastIncludedIndex + 1
+		}},
+		{name: "receipt digest length", mutate: func(snapshot *SnapshotDTO) {
+			snapshot.ProposalOrigins[0].Receipts[0].CommandDigest = []byte{1}
+		}},
+		{name: "receipt marked replayed", mutate: func(snapshot *SnapshotDTO) {
+			snapshot.ProposalOrigins[0].Receipts[0].Result.Replayed = true
+		}},
+		{name: "receipt invalid historical outcome", mutate: func(snapshot *SnapshotDTO) {
+			snapshot.ProposalOrigins[0].Receipts[0].Result.Outcome = ApplyOutcome(255)
+		}},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			target, _ := setupProposalTestMachine(t)
+			if _, err := target.Apply(6, command); err != nil {
+				t.Fatalf("seed target receipt: %v", err)
+			}
+			before, err := target.Snapshot(6)
+			if err != nil {
+				t.Fatalf("target snapshot before restore: %v", err)
+			}
+			invalid := cloneSnapshot(valid)
+			test.mutate(&invalid)
+			if err := target.Restore(invalid); !errors.Is(err, ErrInvalidSnapshot) {
+				t.Fatalf("Restore error = %v, want ErrInvalidSnapshot", err)
+			}
+			after, err := target.Snapshot(6)
+			if err != nil {
+				t.Fatalf("target snapshot after rejected restore: %v", err)
+			}
+			if !reflect.DeepEqual(after, before) {
+				t.Fatalf("rejected restore changed target state\nbefore: %+v\nafter:  %+v", before, after)
+			}
+			receipt, found := target.ProposalReceipt(1, requestID)
+			if !found || !reflect.DeepEqual(receipt, before.ProposalOrigins[0].Receipts[0]) {
+				t.Fatalf("target receipt after rejected restore = %+v, found=%v", receipt, found)
+			}
+		})
 	}
 }

@@ -287,3 +287,102 @@ func TestOpenStableStoreSyncsDirectoryWhenOpeningWAL(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+func TestSnapshotPersistenceFailuresRecoverFromDurableState(t *testing.T) {
+	original := filePersistenceOps
+	defer func() { filePersistenceOps = original }()
+
+	for _, testCase := range []struct {
+		name             string
+		configure        func()
+		wantError        string
+		wantSnapshotFile bool
+	}{
+		{
+			name: "write",
+			configure: func() {
+				filePersistenceOps.write = func(io.Writer, []byte) (int, error) {
+					return 0, errors.New("snapshot write failure")
+				}
+			},
+			wantError: "persist snapshot",
+		},
+		{
+			name: "file sync",
+			configure: func() {
+				filePersistenceOps.sync = func(*os.File) error {
+					return errors.New("snapshot sync failure")
+				}
+			},
+			wantError: "persist snapshot",
+		},
+		{
+			name: "rename",
+			configure: func() {
+				filePersistenceOps.rename = func(string, string) error {
+					return errors.New("snapshot rename failure")
+				}
+			},
+			wantError: "finalize snapshot",
+		},
+		{
+			name: "directory sync",
+			configure: func() {
+				filePersistenceOps.syncDirectory = func(string) error {
+					return errors.New("snapshot directory sync failure")
+				}
+			},
+			wantError:        "sync snapshot directory",
+			wantSnapshotFile: true,
+		},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			filePersistenceOps = original
+			directory := t.TempDir()
+			store, err := openStableStore(directory)
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			term, commit, index := uint64(1), uint64(1), uint64(1)
+			if err := appendReadyForTest(store, netraft.Ready{
+				HardState: &pb.HardState{Term: &term, Commit: &commit},
+				Entries:   []*pb.Entry{{Index: &index, Term: &term, Type: pb.EntryNormal.Enum(), Data: []byte("durable command")}},
+			}); err != nil {
+				t.Fatal(err)
+			}
+
+			testCase.configure()
+			err = store.createSnapshot(1, &pb.ConfState{Voters: []uint64{1, 2, 3}}, [][]byte{[]byte("durable command")})
+			filePersistenceOps = original
+			if err == nil || !strings.Contains(err.Error(), testCase.wantError) {
+				t.Fatalf("createSnapshot error = %v, want error containing %q", err, testCase.wantError)
+			}
+			if closeErr := store.close(); closeErr != nil {
+				t.Fatalf("close store after snapshot failure: %v", closeErr)
+			}
+
+			_, statErr := os.Stat(filepath.Join(directory, snapshotFilename(1)))
+			snapshotExists := statErr == nil
+			if statErr != nil && !errors.Is(statErr, os.ErrNotExist) {
+				t.Fatalf("stat finalized snapshot: %v", statErr)
+			}
+			if snapshotExists != testCase.wantSnapshotFile {
+				t.Fatalf("finalized snapshot exists = %v, want %v", snapshotExists, testCase.wantSnapshotFile)
+			}
+
+			recovered, err := openStableStore(directory)
+			if err != nil {
+				t.Fatalf("recover after snapshot persistence failure: %v", err)
+			}
+			defer recovered.close()
+			wantSnapshotIndex := uint64(0)
+			if testCase.wantSnapshotFile {
+				wantSnapshotIndex = 1
+			}
+			if recovered.snapshotIndex != wantSnapshotIndex || recovered.appliedIndex != 1 || !equalStringValues(commandStrings(recovered.commands), []string{"durable command"}) {
+				t.Fatalf("recovered snapshot=%d applied=%d commands=%v, want snapshot=%d applied=1 commands=[durable command]",
+					recovered.snapshotIndex, recovered.appliedIndex, commandStrings(recovered.commands), wantSnapshotIndex)
+			}
+		})
+	}
+}

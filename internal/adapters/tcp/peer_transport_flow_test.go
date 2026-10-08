@@ -225,13 +225,19 @@ func TestDynamicRaftInboundInvalidLengthIsNeverStaged(t *testing.T) {
 
 type flowCancelAfterPayloadConn struct {
 	net.Conn
-	cancel context.CancelFunc
+	cancel           context.CancelFunc
+	afterPayloadRead func()
 }
 
 func (connection *flowCancelAfterPayloadConn) Read(data []byte) (int, error) {
 	count, err := connection.Conn.Read(data)
 	if len(data) == 1 && count == 1 {
-		connection.cancel()
+		if connection.cancel != nil {
+			connection.cancel()
+		}
+		if connection.afterPayloadRead != nil {
+			connection.afterPayloadRead()
+		}
 	}
 	return count, err
 }
@@ -262,6 +268,154 @@ func TestDynamicRaftInboundCancellationBeforeStagingReturnsReservation(t *testin
 	status := cptDynamicStatus(peer)
 	if status.InboundQueuedMessages != 0 || status.InboundQueuedBytes != 0 || len(peer.inbox) != 0 {
 		t.Fatalf("cancelled frame leaked or dispatched: %+v", status)
+	}
+}
+
+// Traceability: CLU-14; docs/specs/performance-and-verification.md §3.4.
+func TestDynamicRaftInboundReserveRejectsCancelledContext(t *testing.T) {
+	peer := newDynamicPeerState(nil, dynamicTestIdentity(2, "n:2", "n2", PeerPhaseVoter, "", 0x22))
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	err := peer.reserveInbound(ctx, nil, peer.identityRevision, 5, time.Time{})
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("reserveInbound() error = %v, want %v", err, context.Canceled)
+	}
+	status := cptDynamicStatus(peer)
+	if status.InboundQueuedMessages != 0 || status.InboundQueuedBytes != 0 {
+		t.Fatalf("rejected reservation changed queue: %+v", status)
+	}
+}
+
+// Traceability: CLU-14; docs/specs/performance-and-verification.md §3.4.
+func TestDynamicRaftInboundWaitReturnsOnContextCancellation(t *testing.T) {
+	_, peer := cptMinimalDynamic(
+		dynamicTestIdentity(1, "n:1", "n1", PeerPhaseVoter, "", 0x11),
+		dynamicTestIdentity(2, "n:2", "n2", PeerPhaseVoter, "", 0x22),
+	)
+	for range peerQueueMessages {
+		if err := peer.enqueueInbound([]byte{1}, peer.identityRevision); err != nil {
+			t.Fatal(err)
+		}
+	}
+	parent, cancel := context.WithCancel(context.Background())
+	ctx := &flowCapacityWaitContext{Context: parent, waiting: make(chan struct{})}
+	local, remote := net.Pipe()
+	peer.connection = local
+	result := make(chan error, 1)
+	done := cptRun(func() { result <- peer.receiveRaftFrame(ctx, local, peer.identityRevision) })
+	t.Cleanup(func() {
+		cancel()
+		_ = local.Close()
+		_ = remote.Close()
+		cptWaitDone(t, done, "cancelled capacity waiter")
+		peer.stop()
+	})
+	if err := remote.SetWriteDeadline(time.Now().Add(cptWaitTimeout)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := remote.Write(cptFramePrefix(1)); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-ctx.waiting:
+	case <-time.After(cptWaitTimeout):
+		t.Fatal("reader never entered its capacity wait")
+	}
+	cancel()
+	select {
+	case err := <-result:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("cancelled capacity wait error = %v, want %v", err, context.Canceled)
+		}
+	case <-time.After(cptWaitTimeout):
+		t.Fatal("cancelled capacity waiter did not exit")
+	}
+	status := cptDynamicStatus(peer)
+	if status.InboundQueuedMessages != peerQueueMessages || status.InboundQueuedBytes != 5*peerQueueMessages {
+		t.Fatalf("cancelled wait changed existing queue: %+v", status)
+	}
+}
+
+// Traceability: CLU-14; docs/specs/performance-and-verification.md §3.4.
+func TestDynamicRaftInboundIdentityChangeBeforeStagingReleasesReservation(t *testing.T) {
+	peer := newDynamicPeerState(nil, dynamicTestIdentity(2, "n:2", "n2", PeerPhaseVoter, "", 0x22))
+	local, remote := net.Pipe()
+	connection := &flowCancelAfterPayloadConn{
+		Conn: local,
+		afterPayloadRead: func() {
+			peer.mu.Lock()
+			peer.beginIdentityChangeLocked()
+			peer.mu.Unlock()
+		},
+	}
+	peer.connection = connection
+	result := make(chan error, 1)
+	done := cptRun(func() { result <- peer.receiveRaftFrame(context.Background(), connection, peer.identityRevision) })
+	t.Cleanup(func() {
+		_ = connection.Close()
+		_ = remote.Close()
+		cptWaitDone(t, done, "identity-change frame reader")
+		peer.stop()
+	})
+	if err := remote.SetWriteDeadline(time.Now().Add(cptWaitTimeout)); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeFull(remote, append(cptFramePrefix(1), 0x09)); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case err := <-result:
+		if !errors.Is(err, ErrPeerTransportClosed) {
+			t.Fatalf("identity change before staging error = %v, want %v", err, ErrPeerTransportClosed)
+		}
+	case <-time.After(cptWaitTimeout):
+		t.Fatal("identity-changing frame reader did not exit")
+	}
+	status := cptDynamicStatus(peer)
+	if status.InboundQueuedMessages != 0 || status.InboundQueuedBytes != 0 || len(peer.inbox) != 0 {
+		t.Fatalf("identity-changing frame leaked reservation: %+v", status)
+	}
+}
+
+// Traceability: CLU-14; docs/specs/performance-and-verification.md §3.4.
+func TestDynamicRaftInboundStagesFrameWithoutTransportOwner(t *testing.T) {
+	peer := newDynamicPeerState(nil, dynamicTestIdentity(2, "n:2", "n2", PeerPhaseVoter, "", 0x22))
+	local, remote := net.Pipe()
+	peer.connection = local
+	result := make(chan error, 1)
+	done := cptRun(func() { result <- peer.receiveRaftFrame(context.Background(), local, peer.identityRevision) })
+	t.Cleanup(func() {
+		_ = local.Close()
+		_ = remote.Close()
+		cptWaitDone(t, done, "ownerless frame reader")
+		peer.stop()
+	})
+	if err := remote.SetWriteDeadline(time.Now().Add(cptWaitTimeout)); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeFull(remote, append(cptFramePrefix(1), 0x09)); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case err := <-result:
+		if err != nil {
+			t.Fatalf("receiveRaftFrame() error = %v, want nil without transport owner", err)
+		}
+	case <-time.After(cptWaitTimeout):
+		t.Fatal("ownerless frame reader did not exit")
+	}
+	select {
+	case frame := <-peer.inbox:
+		if len(frame.data) != 1 || frame.data[0] != 0x09 || frame.size != 5 {
+			t.Fatalf("staged frame = %+v, want one five-byte frame", frame)
+		}
+		peer.completeInbound(frame)
+	default:
+		t.Fatal("ownerless frame was not staged")
+	}
+	status := cptDynamicStatus(peer)
+	if status.InboundQueuedMessages != 0 || status.InboundQueuedBytes != 0 {
+		t.Fatalf("completed ownerless frame left reservation: %+v", status)
 	}
 }
 

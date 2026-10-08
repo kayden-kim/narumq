@@ -51,10 +51,11 @@ func TestEvaluateReleaseProfile(t *testing.T) {
 			wantReason:     "incompatible_state_schema: committed cluster features are not supported by this release",
 		},
 		{
-			name:       "matching voter profile is synchronized",
-			members:    []membership.MemberIdentityDTO{member},
-			features:   features,
-			wantAction: releaseProfileSynced,
+			name:           "supported active feature with local identity after peer is synchronized",
+			members:        []membership.MemberIdentityDTO{{MemberID: nodeID + 1, Phase: membership.MemberPhaseVoter}, member},
+			activeFeatures: []string{"compatibility-probe"},
+			features:       features,
+			wantAction:     releaseProfileSynced,
 		},
 		{
 			name: "voter release mismatch proposes profile update",
@@ -100,6 +101,21 @@ func TestEvaluateReleaseProfile(t *testing.T) {
 				t.Fatalf("reason = %q, want %q", decision.reason, tc.wantReason)
 			}
 		})
+	}
+}
+
+// Traceability: CLU-11/CLU-14; docs/specs/cluster-session-and-delivery.md §10, §11.19.
+func TestClusterReleaseProfileReconcileCanceledContextPreservesSyncedState(t *testing.T) {
+	runtime := clusterReleaseProfileTestRuntime(t, validBootstrapClusterConfig())
+	controller := runtime.releaseProfile
+	controller.synced.Store(true)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	controller.reconcile(ctx)
+
+	if !controller.synced.Load() {
+		t.Fatal("canceled reconcile changed the previously confirmed release profile")
 	}
 }
 
@@ -262,6 +278,84 @@ func TestClusterReleaseProfileReconcileProposalClearsSyncedState(t *testing.T) {
 	}
 	if controller.synced.Load() {
 		t.Fatal("profile proposal left release profile synchronized")
+	}
+}
+
+func TestClusterReleaseProfileReconcileMapsProposalConflictsToReadiness(t *testing.T) {
+	for _, test := range []struct {
+		name       string
+		result     membership.ApplyResultDTO
+		wantReason string
+	}{
+		{
+			name: "unsupported compatibility",
+			result: membership.ApplyResultDTO{
+				Outcome: membership.ApplyOutcomeConflict, Conflict: membership.ConflictCompatibilityUnsupported,
+			},
+			wantReason: "incompatible_state_schema: committed membership rejected this release profile (compatibility_unsupported)",
+		},
+		{
+			name: "missing active feature",
+			result: membership.ApplyResultDTO{
+				Outcome: membership.ApplyOutcomeConflict, Conflict: membership.ConflictActiveFeatureMissing,
+			},
+			wantReason: "incompatible_state_schema: committed membership rejected this release profile (active_feature_missing)",
+		},
+		{
+			name: "unrelated conflict",
+			result: membership.ApplyResultDTO{
+				Outcome: membership.ApplyOutcomeConflict, Conflict: membership.ConflictPhase,
+			},
+		},
+		{
+			name:   "applied proposal",
+			result: membership.ApplyResultDTO{Outcome: membership.ApplyOutcomeApplied},
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			runtime := clusterReleaseProfileTestRuntime(t, validBootstrapClusterConfig())
+			runtime.storage = newClusterStorageMonitor(time.Now, nil)
+			runtime.config.ReleaseVersion = "1.2.0"
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			reconcileDone := make(chan struct{})
+			go func() {
+				runtime.releaseProfile.reconcile(ctx)
+				close(reconcileDone)
+			}()
+			clusterReleaseProfileTestJoinReconcile(t, reconcileDone)
+
+			for readIndex := range 2 {
+				request := clusterReleaseProfileTestReceiveRequest(t, ctx, runtime)
+				if request.kind != clusterDriverRead {
+					t.Fatalf("request %d kind=%d, want cluster read", readIndex+1, request.kind)
+				}
+				request.readResult <- clusterReadResponse{index: 1}
+			}
+			commit := clusterReleaseProfileTestReceiveRequest(t, ctx, runtime)
+			if commit.kind != clusterDriverCommit || commit.pending == nil {
+				t.Fatalf("proposal request = (%d, %v), want commit with pending proposal", commit.kind, commit.pending != nil)
+			}
+			commit.pending.staged <- clusterCommitStage{context: ctx}
+			commit.pending.result <- clusterApplyResponse{result: test.result}
+			select {
+			case <-reconcileDone:
+			case <-ctx.Done():
+				t.Fatalf("reconcile did not finish: %v", ctx.Err())
+			}
+
+			reason := runtime.releaseProfileIncompatibleReason()
+			if test.wantReason == "" {
+				if reason != nil {
+					t.Fatalf("incompatibility reason = %q, want none", *reason)
+				}
+			} else if reason == nil || *reason != test.wantReason {
+				t.Fatalf("incompatibility reason = %v, want %q", reason, test.wantReason)
+			}
+			if runtime.releaseProfileSynced() {
+				t.Fatal("profile proposal left release profile synchronized")
+			}
+		})
 	}
 }
 

@@ -193,6 +193,84 @@ func TestDrainServiceCancelReplayAndCompletedRejection(t *testing.T) {
 		t.Fatalf("completed cancellation details = %+v, want SAFE_TO_STOP", serviceError)
 	}
 }
+func TestDrainServicePortFailuresPreserveCommittedState(t *testing.T) {
+	tests := []struct {
+		name string
+		fail func(*drainServiceTestPort)
+		run  func(*DrainService) error
+	}{
+		{
+			name: "initial drain read",
+			fail: func(port *drainServiceTestPort) { port.getErr = ErrQuorumUnavailable },
+			run: func(service *DrainService) error {
+				_, err := service.StartNodeDrain(context.Background(), drainServiceTestRequest(1, "drain-port-1"))
+				return err
+			},
+		},
+		{
+			name: "member list",
+			fail: func(port *drainServiceTestPort) { port.membersErr = ErrQuorumUnavailable },
+			run: func(service *DrainService) error {
+				_, err := service.StartNodeDrain(context.Background(), drainServiceTestRequest(1, "drain-port-2"))
+				return err
+			},
+		},
+		{
+			name: "start commit",
+			fail: func(port *drainServiceTestPort) { port.commitErr = ErrQuorumUnavailable },
+			run: func(service *DrainService) error {
+				_, err := service.StartNodeDrain(context.Background(), drainServiceTestRequest(1, "drain-port-3"))
+				return err
+			},
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			service, port := newDrainServiceTest(t)
+			before := port.machine.LastAppliedIndex()
+			test.fail(port)
+			err := test.run(service)
+			if !isDrainServiceError(err, ServiceErrorQuorumUnavailable) {
+				t.Fatalf("operation error = %v, want quorum_unavailable", err)
+			}
+			if got := port.machine.LastAppliedIndex(); got != before {
+				t.Fatalf("failed operation advanced index to %d, want %d", got, before)
+			}
+			if _, exists := port.machine.GetNodeDrain(1); exists {
+				t.Fatal("failed operation created drain state")
+			}
+		})
+	}
+}
+
+func TestDrainServiceRebalanceConflictMappingPreservesDrainState(t *testing.T) {
+	port := &drainServiceTestPort{machine: activeConnectionRebalanceMachine(t)}
+	index := port.machine.LastAppliedIndex()
+	rebalance := startRebalanceTestChange("drain-conflict", 1000)
+	result, err := port.machine.Apply(index+1, connectionRebalanceCommand(index+1, rebalance))
+	if err != nil || result.Outcome != ApplyOutcomeApplied {
+		t.Fatalf("start conflicting rebalance = %+v, %v", result, err)
+	}
+	index = port.machine.LastAppliedIndex()
+	service, err := NewDrainService(port, drainServiceTestClock{now: time.UnixMilli(1000)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = service.StartNodeDrain(context.Background(), drainServiceTestRequest(1, "drain-rebalance-conflict"))
+	if !isDrainServiceError(err, ServiceErrorConnectionRebalanceInProgress) {
+		t.Fatalf("drain start error = %v, want connection_rebalance_in_progress", err)
+	}
+	var serviceError *ServiceError
+	if !errors.As(err, &serviceError) || !serviceError.Retryable {
+		t.Fatalf("rebalance conflict error = %+v, want retryable", serviceError)
+	}
+	if got := port.machine.LastAppliedIndex(); got != index+1 {
+		t.Fatalf("conflict index = %d, want committed conflict index %d", got, index+1)
+	}
+	if _, exists := port.machine.GetNodeDrain(1); exists {
+		t.Fatal("rebalance conflict created drain state")
+	}
+}
 
 func advanceDrainServiceToBarrier(t *testing.T, port *drainServiceTestPort, state NodeDrainStateDTO) {
 	t.Helper()

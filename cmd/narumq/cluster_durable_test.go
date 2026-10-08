@@ -15,6 +15,7 @@ import (
 	applicationdeliveryqueue "narumq/internal/application/ports/deliveryqueue"
 	"narumq/internal/domain/mqtt"
 	"narumq/internal/domain/routing"
+	"narumq/internal/domain/tenancy"
 )
 
 type retryingClusterDurableTestSink struct {
@@ -683,5 +684,167 @@ func TestClusterQuorumBarrierUsesReadIndexWithoutProposal(t *testing.T) {
 	}
 	if len(stoppedRuntime.requests) != 0 {
 		t.Fatalf("stopped runtime queued %d requests, want none", len(stoppedRuntime.requests))
+	}
+}
+
+// Traceability: CLU-14; docs/specs/cluster-session-and-delivery.md §4.2, §11.11.
+func TestClusterDurableEntryPointsRejectUnavailableAndInvalidState(t *testing.T) {
+	var nilRuntime *clusterRuntime
+	if _, err := nilRuntime.BeginDelivery(context.Background(), membership.DeliveryChangeDTO{}); !errors.Is(err, membership.ErrQuorumUnavailable) {
+		t.Fatalf("nil runtime BeginDelivery error=%v, want quorum unavailable", err)
+	}
+	if _, err := nilRuntime.BeginQuorumBarrier(context.Background()); !errors.Is(err, membership.ErrQuorumUnavailable) {
+		t.Fatalf("nil runtime BeginQuorumBarrier error=%v, want quorum unavailable", err)
+	}
+
+	runtime, sessionID, stop := newClusterDurableTestRuntime(t)
+	defer stop()
+	before := runtime.machine.LastAppliedIndex()
+	if _, err := runtime.BeginDelivery(context.Background(), membership.DeliveryChangeDTO{
+		TenantID: "tenant-a", ClientID: "", Action: membership.DeliveryActionPublish,
+	}); !errors.Is(err, tenancy.ErrInvalidClientID) {
+		t.Fatalf("BeginDelivery invalid publisher error=%v, want ErrInvalidClientID", err)
+	}
+	if runtime.machine.LastAppliedIndex() != before {
+		t.Fatalf("invalid BeginDelivery advanced replicated state from %d to %d", before, runtime.machine.LastAppliedIndex())
+	}
+
+	if err := runtime.ActivateDelivery(sessionID, 0, 0); !errors.Is(err, errClusterDurableConflict) {
+		t.Fatalf("zero-epoch activation error=%v, want durable conflict", err)
+	}
+	if err := runtime.ActivateDelivery("bad/session/routing/id/extra", 1, 0); !errors.Is(err, tenancy.ErrInvalidSessionKey) {
+		t.Fatalf("activation invalid routing ID error=%v, want ErrInvalidSessionKey", err)
+	}
+	if err := runtime.ActivateDelivery(sessionID, 1, 0); !errors.Is(err, errClusterDurableConflict) {
+		t.Fatalf("activation without a durable session error=%v, want durable conflict", err)
+	}
+
+	runtime.storage.fail(errors.New("simulated storage failure"))
+	if _, err := runtime.BeginQuorumBarrier(context.Background()); !errors.Is(err, membership.ErrQuorumUnavailable) {
+		t.Fatalf("failed-replication barrier error=%v, want quorum unavailable", err)
+	}
+}
+
+// Traceability: CLU-14; docs/specs/cluster-session-and-delivery.md §4.2.
+func TestClusterDurableQueueRejectsStaleAndConflictingOutboundTransitions(t *testing.T) {
+	runtime, sessionID, stop := newClusterDurableTestRuntime(t)
+	defer stop()
+	_, enqueued := seedClusterDurableDelivery(t, runtime)
+	queue, err := memorydeliveryqueue.New(8)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := queue.Register(sessionID); err != nil {
+		t.Fatal(err)
+	}
+	now := time.UnixMilli(1_700_000_000_100)
+	delivery := applicationdeliveryqueue.DeliveryDTO{
+		SessionID: sessionID, Topic: "events/one", Payload: []byte("first"), QoS: mqtt.QoSExactlyOnce,
+		DurableSequence: enqueued.Sequence, DurableEpoch: 1,
+	}
+	if err := queue.TryEnqueue(delivery, now); err != nil {
+		t.Fatal(err)
+	}
+	if err := queue.PromoteHead(applicationdeliveryqueue.OutboundDTO{
+		SessionID: sessionID, PacketID: 31, DurableSequence: enqueued.Sequence, DurableEpoch: 1,
+	}, now); err != nil {
+		t.Fatal(err)
+	}
+	decorator := &clusterDurableQueue{Queue: queue, runtime: runtime, clock: clockadapter.SystemClock{}}
+
+	conflicting := applicationdeliveryqueue.OutboundDTO{
+		SessionID: sessionID, PacketID: 31, DurableSequence: enqueued.Sequence, DurableEpoch: 1,
+	}
+	if err := decorator.ReplaceOutbound(conflicting); !errors.Is(err, errClusterDurableConflict) {
+		t.Fatalf("ADVANCE from queued durable phase error=%v, want transition conflict", err)
+	}
+	message, exists := runtime.machine.DeliveryMessage("tenant-a", "client-a", enqueued.Sequence)
+	if !exists || message.Phase != membership.DeliveryPhaseQueued {
+		t.Fatalf("conflicting ADVANCE changed durable message: %+v exists=%t", message, exists)
+	}
+	outbound, err := queue.ListOutbound(sessionID)
+	if err != nil || len(outbound) != 1 || outbound[0].PacketID != conflicting.PacketID {
+		t.Fatalf("conflicting ADVANCE changed local outbound state: %+v err=%v", outbound, err)
+	}
+
+	stale := conflicting
+	stale.DurableEpoch = 2
+	if err := decorator.ReplaceOutbound(stale); !errors.Is(err, errClusterDurableStale) {
+		t.Fatalf("stale ADVANCE error=%v, want stale owner", err)
+	}
+	staleQueue, err := memorydeliveryqueue.New(8)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := staleQueue.Register(sessionID); err != nil {
+		t.Fatal(err)
+	}
+	delivery.DurableEpoch = 2
+	if err := staleQueue.TryEnqueue(delivery, now); err != nil {
+		t.Fatal(err)
+	}
+	if err := staleQueue.PromoteHead(applicationdeliveryqueue.OutboundDTO{
+		SessionID: sessionID, PacketID: 32, DurableSequence: enqueued.Sequence, DurableEpoch: 2,
+	}, now); err != nil {
+		t.Fatal(err)
+	}
+	staleDecorator := &clusterDurableQueue{Queue: staleQueue, runtime: runtime, clock: clockadapter.SystemClock{}}
+	if err := staleDecorator.CompleteOutbound(sessionID, 32); !errors.Is(err, errClusterDurableStale) {
+		t.Fatalf("stale COMPLETE error=%v, want stale owner", err)
+	}
+	outbound, err = staleQueue.ListOutbound(sessionID)
+	if err != nil || len(outbound) != 1 || outbound[0].PacketID != 32 || outbound[0].DurableEpoch != 2 {
+		t.Fatalf("stale transitions changed local outbound state: %+v err=%v", outbound, err)
+	}
+}
+
+func TestClusterDurableQueueRejectsUnavailableQueueAndDelegatesPeek(t *testing.T) {
+	var unavailable *clusterDurableQueue
+	sessionID, err := clusterSessionID("tenant-a", "client-a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if count, err := unavailable.PeekBatch(sessionID, time.Now(), nil); count != 0 || !errors.Is(err, applicationdeliveryqueue.ErrUnavailable) {
+		t.Fatalf("nil queue PeekBatch=(%d, %v), want unavailable", count, err)
+	}
+	if count, err := unavailable.PromoteBatch(nil, time.Now()); count != 0 || !errors.Is(err, applicationdeliveryqueue.ErrUnavailable) {
+		t.Fatalf("nil queue PromoteBatch=(%d, %v), want unavailable", count, err)
+	}
+	outbound := applicationdeliveryqueue.OutboundDTO{SessionID: sessionID}
+	if err := unavailable.PromoteHead(outbound, time.Now()); !errors.Is(err, applicationdeliveryqueue.ErrUnavailable) {
+		t.Fatalf("nil queue PromoteHead error=%v, want unavailable", err)
+	}
+	if err := unavailable.ReplaceOutbound(outbound); !errors.Is(err, applicationdeliveryqueue.ErrUnavailable) {
+		t.Fatalf("nil queue ReplaceOutbound error=%v, want unavailable", err)
+	}
+	if err := unavailable.CompleteOutbound(sessionID, 1); !errors.Is(err, applicationdeliveryqueue.ErrUnavailable) {
+		t.Fatalf("nil queue CompleteOutbound error=%v, want unavailable", err)
+	}
+	if _, err := unavailable.BeginReplaceOutbound(outbound); !errors.Is(err, applicationdeliveryqueue.ErrUnavailable) {
+		t.Fatalf("nil queue BeginReplaceOutbound error=%v, want unavailable", err)
+	}
+	if _, err := unavailable.BeginCompleteOutbound(outbound); !errors.Is(err, applicationdeliveryqueue.ErrUnavailable) {
+		t.Fatalf("nil queue BeginCompleteOutbound error=%v, want unavailable", err)
+	}
+
+	queue, err := memorydeliveryqueue.New(2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := queue.Register(sessionID); err != nil {
+		t.Fatal(err)
+	}
+	now := time.UnixMilli(1_700_000_000_100)
+	delivery := applicationdeliveryqueue.DeliveryDTO{
+		SessionID: sessionID, Topic: "events/delegated", Payload: []byte("body"), QoS: mqtt.QoSAtLeastOnce,
+	}
+	if err := queue.TryEnqueue(delivery, now); err != nil {
+		t.Fatal(err)
+	}
+	decorator := &clusterDurableQueue{Queue: queue}
+	destination := make([]applicationdeliveryqueue.DeliveryDTO, 1)
+	count, err := decorator.PeekBatch(sessionID, now, destination)
+	if err != nil || count != 1 || destination[0].Topic != delivery.Topic || string(destination[0].Payload) != string(delivery.Payload) {
+		t.Fatalf("delegated PeekBatch=(%d, %+v, %v), want enqueued delivery", count, destination, err)
 	}
 }

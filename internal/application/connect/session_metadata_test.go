@@ -9,6 +9,7 @@ import (
 	"narumq/internal/application/membership"
 	"narumq/internal/domain/mqtt"
 	"narumq/internal/domain/routing"
+	"narumq/internal/domain/security"
 	"narumq/internal/domain/session"
 	"narumq/internal/domain/tenancy"
 )
@@ -402,5 +403,197 @@ func TestRecoverOwnedSessionReturnsCommitErrorForRetry(t *testing.T) {
 	state, found := repository.states["retry"]
 	if !found || state.Connected() {
 		t.Fatalf("retry recovery state = %#v found=%v, want detached", state, found)
+	}
+}
+
+func TestSessionConnectDTOEncodesRetentionWillAndPrincipalBounds(t *testing.T) {
+	tenant, err := tenancy.NewTenantID("tenant")
+	if err != nil {
+		t.Fatal(err)
+	}
+	key, err := tenancy.NewSessionKey(tenant, "client")
+	if err != nil {
+		t.Fatal(err)
+	}
+	principal, err := security.NewPrincipal(tenant, "client", "subject", "credential", []security.Role{"publisher"}, time.Unix(200, 0))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, testCase := range []struct {
+		name      string
+		retention session.Retention
+		want      membership.SessionRetention
+	}{
+		{name: "immediate", retention: session.RetentionImmediate, want: membership.SessionRetentionImmediate},
+		{name: "finite", retention: session.RetentionFinite, want: membership.SessionRetentionFinite},
+		{name: "infinite", retention: session.RetentionInfinite, want: membership.SessionRetentionInfinite},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			lifecycle, err := session.Restore(session.RestoreInput{
+				Key: key, Version: mqtt.ProtocolV5, Retention: testCase.retention, Connected: true,
+				ExpiryInterval: 30, Will: metadataWill("sensors/status", 5),
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			got := sessionConnectDTO(lifecycle, principal)
+			if got.Retention != testCase.want || got.ProtocolVersion != 5 || got.ExpiryIntervalSeconds != 30 {
+				t.Fatalf("session metadata = %#v, want retention %d and V5 expiry 30", got, testCase.want)
+			}
+			if got.Will == nil || got.Will.Topic != "sensors/status" || got.Will.DelayIntervalSeconds != 5 {
+				t.Fatalf("Will metadata = %#v, want original V5 Will", got.Will)
+			}
+			if got.Principal == nil || got.Principal.Subject != "subject" || got.Principal.CredentialID != "credential" ||
+				len(got.Principal.Roles) != 1 || got.Principal.ExpiresAtUnixMillis != 200000 {
+				t.Fatalf("principal metadata = %#v, want bounded identity snapshot", got.Principal)
+			}
+		})
+	}
+
+	lifecycle, err := session.Restore(session.RestoreInput{
+		Key: key, Version: mqtt.ProtocolV311, Retention: session.RetentionInfinite, Connected: true,
+		Will: metadataWill("sensors/status", 5),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := sessionConnectDTO(lifecycle, principal)
+	if got.ExpiryIntervalSeconds != 0 || got.Will == nil || got.Will.DelayIntervalSeconds != 0 {
+		t.Fatalf("V311 metadata = %#v, want no V5 expiry or Will delay", got)
+	}
+}
+
+func TestSessionConnectDTOOmitsPrincipalOutsideMetadataBounds(t *testing.T) {
+	tenant, err := tenancy.NewTenantID("tenant")
+	if err != nil {
+		t.Fatal(err)
+	}
+	key, err := tenancy.NewSessionKey(tenant, "client")
+	if err != nil {
+		t.Fatal(err)
+	}
+	lifecycle, err := session.Restore(session.RestoreInput{
+		Key: key, Version: mqtt.ProtocolV5, Retention: session.RetentionImmediate, Connected: true,
+		Will: metadataWill("sensors/status", 0),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, principal := range []security.Principal{
+		{},
+		mustPrincipalForMetadataTest(t, tenant, "subject", "credential", nil, time.Unix(0, 0)),
+		mustPrincipalForMetadataTest(t, tenant, string(make([]byte, membership.MaxSessionPrincipalFieldBytes+1)), "credential", nil, time.Unix(200, 0)),
+	} {
+		got := sessionConnectDTO(lifecycle, principal)
+		if got.Will == nil || got.Principal != nil {
+			t.Fatalf("session metadata = %#v, want Will and omitted out-of-bounds principal", got)
+		}
+	}
+}
+
+func mustPrincipalForMetadataTest(
+	t *testing.T, tenant tenancy.TenantID, subject, credentialID string, roles []security.Role, expiresAt time.Time,
+) security.Principal {
+	t.Helper()
+	principal, err := security.NewPrincipal(tenant, "client", subject, credentialID, roles, expiresAt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return principal
+}
+
+func TestRecoverOwnedSessionRejectsOutOfRangeMetadataWithoutInstallingState(t *testing.T) {
+	const largestSignedMillis = uint64(1<<63 - 1)
+	for _, testCase := range []struct {
+		name   string
+		change func(*membership.SessionMetadataStateDTO)
+	}{
+		{
+			name: "session expiry overflow",
+			change: func(metadata *membership.SessionMetadataStateDTO) {
+				metadata.SessionExpiresAtUnixMillis = largestSignedMillis + 1
+			},
+		},
+		{
+			name: "will due overflow",
+			change: func(metadata *membership.SessionMetadataStateDTO) {
+				metadata.WillDueAtUnixMillis = largestSignedMillis + 1
+			},
+		},
+		{
+			name: "unknown retention",
+			change: func(metadata *membership.SessionMetadataStateDTO) {
+				metadata.Retention = membership.SessionRetention(255)
+			},
+		},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			now := time.Date(2026, 10, 3, 12, 0, 0, 0, time.UTC)
+			useCase, _, repository, queue, _, scheduler, _ := newUseCase(t, now)
+			dto := recoveredMetadata("invalid", 9, false, now)
+			dto.Metadata.WillDueAtUnixMillis = uint64(now.Add(time.Minute).UnixMilli())
+			dto.Metadata.SessionExpiresAtUnixMillis = uint64(now.Add(time.Hour).UnixMilli())
+			testCase.change(&dto.Metadata)
+			if err := useCase.RecoverOwnedSession(context.Background(), dto); !errors.Is(err, session.ErrInvalidRestore) {
+				t.Fatalf("RecoverOwnedSession() error = %v, want %v", err, session.ErrInvalidRestore)
+			}
+			if _, found := repository.states["invalid"]; found || len(queue.registers) != 0 ||
+				len(scheduler.timers) != 0 || useCase.ownershipEpochs[routing.SessionID("tenant/invalid")] != 0 {
+				t.Fatalf("invalid metadata installed state: saved=%v registers=%v timers=%#v epochs=%v",
+					repository.states, queue.registers, scheduler.timers, useCase.ownershipEpochs)
+			}
+		})
+	}
+}
+
+func TestMillisTimeRejectsValuesOutsideSignedRange(t *testing.T) {
+	if got, err := millisTime(0); err != nil || !got.IsZero() {
+		t.Fatalf("millisTime(0) = %v, %v; want zero time, nil", got, err)
+	}
+	got, err := millisTime(uint64(time.Unix(200, 0).UnixMilli()))
+	if err != nil || !got.Equal(time.Unix(200, 0)) {
+		t.Fatalf("millisTime(200 seconds) = %v, %v; want matching timestamp", got, err)
+	}
+	if _, err := millisTime(uint64(1 << 63)); !errors.Is(err, session.ErrInvalidRestore) {
+		t.Fatalf("millisTime(overflow) error = %v, want %v", err, session.ErrInvalidRestore)
+	}
+}
+
+func TestRecoverOwnedDetachedSessionRestoresOnlyValidPrincipalMetadata(t *testing.T) {
+	now := time.Date(2026, 10, 3, 12, 0, 0, 0, time.UTC)
+	for _, testCase := range []struct {
+		name      string
+		principal *membership.SessionPrincipalDTO
+	}{
+		{name: "missing"},
+		{name: "zero expiry", principal: &membership.SessionPrincipalDTO{Subject: "subject", CredentialID: "credential"}},
+		{name: "overflow expiry", principal: &membership.SessionPrincipalDTO{
+			Subject: "subject", CredentialID: "credential", ExpiresAtUnixMillis: uint64(1 << 63),
+		}},
+		{name: "invalid identity", principal: &membership.SessionPrincipalDTO{
+			Subject: "subject", ExpiresAtUnixMillis: uint64(now.Add(time.Hour).UnixMilli()),
+		}},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			useCase, _, repository, _, _, _, _ := newUseCase(t, now)
+			dto := recoveredMetadata("principal", 10, false, now)
+			dto.Metadata.Retention = membership.SessionRetentionInfinite
+			dto.Metadata.ExpiryIntervalSeconds = 0
+			dto.Metadata.SessionExpiresAtUnixMillis = 0
+			dto.Metadata.Will = nil
+			dto.Metadata.Principal = testCase.principal
+			if err := useCase.RecoverOwnedSession(context.Background(), dto); err != nil {
+				t.Fatalf("RecoverOwnedSession() error = %v", err)
+			}
+			state, found := repository.states["principal"]
+			if !found || state.Connected() {
+				t.Fatalf("restored lifecycle = %#v, found=%v; want detached session", state, found)
+			}
+			tenant, _ := tenancy.NewTenantID("tenant")
+			key, _ := tenancy.NewSessionKey(tenant, "principal")
+			if _, found := useCase.principals[routing.SessionID(key.RoutingID())]; found {
+				t.Fatal("invalid principal metadata was installed")
+			}
+		})
 	}
 }

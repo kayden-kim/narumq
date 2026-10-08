@@ -175,6 +175,51 @@ func TestPendingOwnershipFenceIsTenantScoped(t *testing.T) {
 	}
 }
 
+// Traceability: CLU-07; docs/specs/cluster-session-and-delivery.md §4.2.
+func TestCommittedOwnershipFenceDoesNotRegressToStaleEpoch(t *testing.T) {
+	runtime := newAdapterTestRuntime(t, 2, defaultAdapterConfig())
+	defer runtime.stop(t)
+
+	const clientID = "stale-owner"
+	socket, peer := net.Pipe()
+	defer peer.Close()
+	connection := newConnection(runtime.server, socket)
+	defer connection.requestClose()
+	connection.ownership = subscribe.SessionOwnership{
+		TenantID: "tenant-a", ClientID: clientID, OwnerNodeID: 1, Epoch: 3,
+	}
+	runtime.server.trackConnecting(clientID, connection)
+	runtime.server.RecordCommittedOwnership(membership.OwnershipStateDTO{
+		TenantID: "tenant-a", ClientID: clientID, OwnerNodeID: 2, Epoch: 4,
+	})
+	runtime.server.RecordCommittedOwnership(membership.OwnershipStateDTO{
+		TenantID: "tenant-a", ClientID: clientID, OwnerNodeID: 1, Epoch: 3,
+	})
+
+	if runtime.server.bindSession("tenant-a/session", connection) || !connection.takeover.Load() {
+		t.Fatal("stale ownership commit allowed the older connection to bind")
+	}
+}
+
+// Traceability: CLU-07; docs/specs/cluster-session-and-delivery.md §4.2.
+func TestStoppedConnectionCannotBindSession(t *testing.T) {
+	runtime := newAdapterTestRuntime(t, 2, defaultAdapterConfig())
+	defer runtime.stop(t)
+
+	socket, peer := net.Pipe()
+	defer peer.Close()
+	connection := newConnection(runtime.server, socket)
+	runtime.server.trackConnecting("stopped-client", connection)
+	connection.requestClose()
+
+	if runtime.server.bindSession("tenant-a/stopped-client", connection) {
+		t.Fatal("stopped connection bound to a session")
+	}
+	if connection.connectingTracked {
+		t.Fatal("stopped connection remained in the pending CONNECT registry")
+	}
+}
+
 func TestCommittedTakeoverFencesConnectBeforeSessionBinding(t *testing.T) {
 	const clientID = "in-flight-client"
 	clusterConfig := func(memberID uint64) Config {
@@ -719,5 +764,87 @@ func TestServerAddListenerAndMultiListenerServe(t *testing.T) {
 	case <-stoppedListener.closed:
 	default:
 		t.Fatal("stoppedListener was not closed")
+	}
+}
+
+// Traceability: PRD MQTT-12; docs/specs/mqtt-protocol-and-session.md §7.1.
+func TestNewServerRejectsIncompleteClusterBoundary(t *testing.T) {
+	clusterConfig := defaultAdapterConfig()
+	clusterConfig.ClusterMode = true
+	clusterConfig.LocalMemberID = 1
+	clusterConfig.ClusterReady = func() bool { return true }
+	clusterConfig.ClusterAdmissionOpen = func() bool { return true }
+	clusterConfig.ClusterProjectionReady = func() bool { return true }
+	clusterRuntime := newAdapterTestRuntime(t, 2, clusterConfig)
+	defer clusterRuntime.stop(t)
+	standaloneRuntime := newAdapterTestRuntime(t, 2, defaultAdapterConfig())
+	defer standaloneRuntime.stop(t)
+
+	base := clusterRuntime.server
+	tests := []struct {
+		name          string
+		config        Config
+		connections   *connect.UseCase
+		subscriptions *subscribe.UseCase
+	}{
+		{
+			name: "missing local member",
+			config: func() Config {
+				config := base.config
+				config.LocalMemberID = 0
+				return config
+			}(),
+			connections: base.connections, subscriptions: base.subscriptions,
+		},
+		{
+			name: "missing readiness callback",
+			config: func() Config {
+				config := base.config
+				config.ClusterReady = nil
+				return config
+			}(),
+			connections: base.connections, subscriptions: base.subscriptions,
+		},
+		{
+			name: "missing admission callback",
+			config: func() Config {
+				config := base.config
+				config.ClusterAdmissionOpen = nil
+				return config
+			}(),
+			connections: base.connections, subscriptions: base.subscriptions,
+		},
+		{
+			name: "missing projection callback",
+			config: func() Config {
+				config := base.config
+				config.ClusterProjectionReady = nil
+				return config
+			}(),
+			connections: base.connections, subscriptions: base.subscriptions,
+		},
+		{
+			name:          "missing ownership coordinator",
+			config:        base.config,
+			connections:   standaloneRuntime.server.connections,
+			subscriptions: base.subscriptions,
+		},
+		{
+			name:          "missing subscription committer",
+			config:        base.config,
+			connections:   base.connections,
+			subscriptions: standaloneRuntime.server.subscriptions,
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			created, err := NewServer(
+				base.listeners[0], test.config, base.decoder, base.encoder,
+				test.connections, test.subscriptions, base.publications, base.deliveries, nil,
+			)
+			if created != nil || !errors.Is(err, ErrInvalidConfig) {
+				t.Fatalf("NewServer(cluster boundary) = (%#v, %v), want nil and %v", created, err, ErrInvalidConfig)
+			}
+		})
 	}
 }

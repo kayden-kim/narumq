@@ -125,3 +125,120 @@ func TestClusterRebalanceOldWorkerCannotClearReplacementAdmission(t *testing.T) 
 		t.Fatalf("current worker did not clear its state: runningID=%q admissionOpen=%v", controller.runningID, controller.admissionOpen())
 	}
 }
+
+func TestClusterRebalanceNilAndMissingRuntimeGuards(t *testing.T) {
+	var missing *clusterRebalanceController
+	missing.start(nil)
+	missing.start(context.Background())
+	missing.stopAndWait()
+	missing.sync()
+	if !missing.admissionOpen() || missing.currentServerReference() != "" {
+		t.Fatal("nil rebalance controller exposed closed admission or a server reference")
+	}
+
+	controller := &clusterRebalanceController{}
+	controller.sync()
+	controller.runtime = &clusterRuntime{}
+	controller.sync()
+	if !controller.admissionOpen() {
+		t.Fatal("controller without a machine closed admission")
+	}
+}
+
+func TestClusterRebalanceSyncClearsAdmissionWithoutLocalParticipant(t *testing.T) {
+	inactive := &clusterRebalanceController{
+		runtime:         &clusterRuntime{machine: membership.NewStateMachine()},
+		runningID:       "previous",
+		serverReference: "old-lb.example:1883",
+	}
+	inactive.admissionClosed.Store(true)
+	inactive.sync()
+	if !inactive.admissionOpen() || inactive.runningID != "" || inactive.currentServerReference() != "" {
+		t.Fatalf("inactive sync left admission closed=%v running=%q serverReference=%q",
+			!inactive.admissionOpen(), inactive.runningID, inactive.currentServerReference())
+	}
+
+	nonparticipant := &clusterRebalanceController{
+		runtime:         &clusterRuntime{config: clusterConfigFile{NodeID: 4}, machine: controllerRebalanceTestMachine(t, false)},
+		runningID:       "previous",
+		serverReference: "old-lb.example:1883",
+	}
+	nonparticipant.admissionClosed.Store(true)
+	nonparticipant.sync()
+	if !nonparticipant.admissionOpen() || nonparticipant.runningID != "" ||
+		nonparticipant.currentServerReference() != "lb.example:1883" {
+		t.Fatalf("nonparticipant sync left admission closed=%v running=%q serverReference=%q",
+			!nonparticipant.admissionOpen(), nonparticipant.runningID, nonparticipant.currentServerReference())
+	}
+}
+
+func TestClusterRebalanceSyncDoesNotLaunchDuplicateWorker(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	controller := &clusterRebalanceController{
+		runtime:   &clusterRuntime{config: clusterConfigFile{NodeID: 1}, machine: controllerRebalanceTestMachine(t, false)},
+		ctx:       ctx,
+		runningID: controllerRebalanceOperation,
+	}
+	controller.admissionClosed.Store(true)
+	controller.sync()
+	if controller.runningID != controllerRebalanceOperation || controller.admissionOpen() {
+		t.Fatalf("duplicate sync changed worker state: running=%q admissionOpen=%v",
+			controller.runningID, controller.admissionOpen())
+	}
+	controller.stopAndWait()
+}
+
+func TestClusterAdmissionAndConnectedVoterNilRuntimeDefaults(t *testing.T) {
+	var runtime *clusterRuntime
+	if !runtime.clusterAdmissionOpen() {
+		t.Fatal("nil runtime should leave admission open")
+	}
+	if got := runtime.connectedOtherVoters(); len(got) != 0 {
+		t.Fatalf("nil runtime connected voters = %v, want none", got)
+	}
+	if got := (&clusterRuntime{}).connectedOtherVoters(); len(got) != 0 {
+		t.Fatalf("runtime without node or peer transport connected voters = %v, want none", got)
+	}
+}
+func TestClusterRebalanceAdmissionChangesOnlyForMatchingOperation(t *testing.T) {
+	controller := &clusterRebalanceController{runningID: "active-operation"}
+	controller.admissionClosed.Store(true)
+
+	controller.setAdmission("stale-operation", false)
+	if controller.admissionOpen() || controller.runningID != "active-operation" {
+		t.Fatalf("stale operation changed admission: running=%q admissionOpen=%v",
+			controller.runningID, controller.admissionOpen())
+	}
+
+	controller.setAdmission("active-operation", false)
+	if !controller.admissionOpen() || controller.runningID != "active-operation" {
+		t.Fatalf("matching operation did not open admission: running=%q admissionOpen=%v",
+			controller.runningID, controller.admissionOpen())
+	}
+
+	controller.setAdmission("active-operation", true)
+	if controller.admissionOpen() || controller.runningID != "active-operation" {
+		t.Fatalf("matching operation did not close admission: running=%q admissionOpen=%v",
+			controller.runningID, controller.admissionOpen())
+	}
+}
+
+func TestClusterAdmissionOpenAllowsAbsentControllers(t *testing.T) {
+	for _, runtime := range []*clusterRuntime{
+		{},
+		{drain: &clusterDrainController{}},
+		{rebalance: &clusterRebalanceController{}},
+	} {
+		if !runtime.clusterAdmissionOpen() {
+			t.Fatalf("admission should be open with an absent controller: runtime=%+v", runtime)
+		}
+	}
+
+	runtime := &clusterRuntime{drain: &clusterDrainController{}, rebalance: &clusterRebalanceController{}}
+	runtime.drain.admissionClosed.Store(true)
+	runtime.rebalance.admissionClosed.Store(true)
+	if runtime.clusterAdmissionOpen() {
+		t.Fatal("admission should remain closed while both controllers are closed")
+	}
+}

@@ -891,6 +891,71 @@ go test -race ./internal/adapters/tcp -run '^(TestCSVSubscribeAckWriteFailureKee
 
 증거는 `.artifacts/verification/coverage-summary-tolerance-{a,b,c}.json`, `.artifacts/verification/coverage-summary-tolerance-post-ratchet.json`, `.artifacts/verification/coverage-tolerance-c.out`, `.artifacts/verification/tolerance-local-{a,b,c,post-ratchet}.log`에 보존한다. Run C와 추가 Run의 `requirementShortfalls`는 overall branch가 PRD 85%보다 낮다는 항목이다. Core 9개는 모두 90% 이상이다. CI의 필수 status, TEST-10 P0 mapping, 전체 PRD branch floor와 별도 scope의 `TestRaftPeerDriverTicksQueuesAndStops`·`TestDynamicClusterMembershipTransitionCrashRecovery`는 이 증거로 검증하지 않는다.
 
+### 8.4 전체 branch floor 수용 증거
+
+2026-10-09에 Windows/amd64, Go 1.26.5에서 확인했다. Production source는 변경하지 않았다. 기준선은 10,470/13,073(80.09%)였다. 묶음 A·B·C와 예비 대상 다섯 단계를 적용한 뒤 전체 branch가 85.20%에 도달하지 못했다.
+
+`cmd/`와 `internal/`의 production source 변경 여부를 확인했다. `git diff --name-only -- cmd internal` 결과는 추적 중인 파일 46개였고, `git ls-files --others --exclude-standard -- cmd internal` 결과는 새 파일 2개였다. 48개 경로는 모두 `_test.go`로 끝났다. `git diff --cached --name-only -- cmd internal` 결과는 비어 있었다.
+
+| 실행 | Branch covered/total (%) | Coverage gate | 전체 local gate |
+| --- | --- | --- | --- |
+| Run A | 10,827/13,073 (82.82) | PASS | PASS |
+| Run B | 10,836/13,073 (82.89) | PASS | PASS |
+| Run C | 실행하지 않음 | — | — |
+
+Run A·B의 spread는 0.07%p다. 두 결과 모두 `branchCoverage.requirementShortfalls`에 각각 82.82%·82.89%가 85.00% 미만이라는 항목이 남았다. `coverage: PASS`와 `local: PASS`여도 PRD의 85% branch 기준은 충족하지 않는다. Line은 Run A 87.59%, Run B 87.63%였다. Function은 두 run 모두 98.68%였다.
+
+기준선보다 Run A에서 357개, Run B에서 366개의 branch outcome이 추가로 covered됐다. 아래 수치는 Run A와 기준선의 미실행 outcome 수 차이다.
+
+| 범위 | 추가 covered outcome | 대표 시험 |
+| --- | ---: | --- |
+| `cmd/narumq` | 170 | `TestClusterDrainBarrierBlocksWhenOtherVotersAreDisconnected`, `TestRecoverProposalsFlushesCountAndByteBoundedBatches`, `TestRecoverProposalsReturnsClosedNodeErrors` |
+| `internal/adapters/auditlog` | 18 | `TestVerifyDirectoryRejectsCorruptSequenceAndHashChain` |
+| `internal/adapters/http/management` | 6 | `TestClusterBackupHTTPReportsUnavailableAndInternalErrors` |
+| `internal/adapters/memory/deliveryqueue` | 5 | `TestQueueBatchEnqueueRejectionsPreserveQueuedState` |
+| `internal/adapters/raft` | 11 | `TestSnapshotPersistenceFailuresRecoverFromDurableState`, `TestCompleteRestoreWALPersistenceFailuresCanBeCleaned` |
+| `internal/adapters/raft/records` | 26 | `TestSnapshotRejectsStateIndexesBeyondLastIncluded`, `TestBackupArchiveRejectsInconsistentMembershipAndEntries` |
+| `internal/adapters/tcp` | 33 | `TestNewServerRejectsIncompleteClusterBoundary`, `TestDynamicSendRejectsStagedForwardingAndStoppedPeers` |
+| `internal/application/audit` | 28 | `TestValidateEventRequiredFields`, `TestValidateEventDetailsJSONStringTraversal` |
+| `internal/application/connect` | 26 | `TestConnectRejectsDuplicateAndRepositoryErrors`, `TestRecoverOwnedSessionRejectsOutOfRangeMetadataWithoutInstallingState` |
+| `internal/application/membership` | 29 | `TestProposalReceiptCapacityLimits`, `TestCMAApplyRejectsMalformedCommandsWithoutAdvancing` |
+| `internal/application/publish` | 5 | `TestPublishRemoteForwardErrorDependsOnHandling` |
+
+Core 모듈 9개의 coverage와 ratchet은 바뀌지 않았다. 기존 값은 §8.3에 있다.
+
+#### 반복 race 검증
+
+새 cluster, TCP, auditlog, delivery queue 시험을 race detector 아래 20회 반복했다. 네 명령 모두 PASS했다.
+
+```text
+go test -race ./cmd/narumq -run '^(TestClusterReleaseProfileReconcileMapsProposalConflictsToReadiness|TestClusterStateProviderValidatesNodeQueriesAndPaginatesFilteredResults|TestClusterDrainBarrierBlocksWhenOtherVotersAreDisconnected|TestRefreshReadWaitersKeepsRequestWhenPeerCapacityIsExhausted|TestIssueReadProofReturnsClosedRaftNodeError|TestRecoverProposalsFlushesCountAndByteBoundedBatches|TestRecoverProposalsDropsStaleProofWhenCapacityIsExhausted|TestRecoverProposalsReturnsClosedNodeErrors)$' -count=20
+go test -race ./internal/adapters/tcp -run '^(TestPacketIDAllocatorSkipsZeroAfterIdentifierWrap|TestBeginOutboundAckRejectsZeroAndIgnoresUnknownPacketID|TestCommittedOwnershipFenceDoesNotRegressToStaleEpoch|TestStoppedConnectionCannotBindSession|TestCloseSessionForDrainDoesNotClaimUnknownSession|TestNewServerRejectsIncompleteClusterBoundary|TestDynamicSendRejectsStagedForwardingAndStoppedPeers)$' -count=20
+go test -race ./internal/adapters/auditlog -run '^(TestVerifyDirectoryRejectsCorruptSequenceAndHashChain|TestFileAuditPublisherRejectsUnencodableEventAndBecomesUnavailable|TestFileAuditPublisherClosedStateRejectsPublishAndReadiness|TestVerifyDirectoryEmptyAndEmptyActiveLog|TestScanAuditDataRejectsMalformedRecords|TestOpenFileAuditPublisherRejectsNonRegularActivePath)$' -count=20
+go test -race ./internal/adapters/memory/deliveryqueue -run '^(TestFinishDetachCommittedRemovesAndWakesWaiters|TestRemoveWakesDetachWaiters|TestQueueBatchEnqueueRejectionsPreserveQueuedState)$' -count=20
+```
+
+#### 미실행 outcome과 미달 원인
+
+Run A에는 2,246개의 미실행 outcome이 남았다. 아래 네 종류는 해당 ID를 직접 확인해 개수를 셌다.
+
+| 제외 사유 | Run A 미실행 outcome |
+| --- | ---: |
+| `sort.Slice` comparator 안의 nil guard | 22 |
+| 생성 protobuf marshal 오류 처리 | 15 |
+| 1 GiB archive 크기 제한 | 2 |
+| Windows stable-store sync 분기 | 5 |
+| 직접 확인한 제외 outcome 합계 | 44 |
+
+이 44개는 전체 미실행 수가 아니다. 남은 목록에는 실제 clock·sleep·스케줄 순서, 주입할 수 없는 OS 오류, 넓은 cluster network harness에 속한 분기도 있다. 같은 파일과 함수에 일반 동작 분기도 섞여 있어 이 세 사유는 파일 전체를 제외 수로 계산하지 않았다. 나머지 2,202개도 모두 제외 대상이거나 모두 테스트 가능한 outcome이라고 단정하지 않는다.
+
+Run A에서 미실행 outcome이 가장 많은 파일은 `cluster_runtime.go` 434개, `cluster_drain.go` 156개, `stable_store.go` 131개, `records/codec.go` 85개, `tcp/server.go` 75개였다. 이 수에는 계획에서 명시적으로 제외하지 않은 경로도 포함된다.
+
+Run A·B의 최솟값 82.82%는 ratchet 하한 85.20%보다 낮다. 따라서 `tests/verification/coverage-policy.json`의 overall branch ratchet 80.03%를 유지했다. Core ratchet도 바꾸지 않았다. 새 policy Run C는 실행하지 않았다. 전체 branch 85% floor는 아직 충족하지 않았고, TEST-06 완료로 표시하지 않는다.
+
+Run B profile에서 scratch policy로 허용폭 경계를 확인했다. 83.10%(측정값보다 +0.21%p)는 tolerance를 적용해도 측정값보다 높아 exit 1을 반환했다. 83.08%(+0.19%p)는 `coverage: PASS`를 반환했다. 결과는 `.artifacts/verification/coverage-boundary-plus-021.json`과 `.artifacts/verification/coverage-boundary-plus-019.json`에 있다.
+
+결과 파일은 `.artifacts/verification/coverage-summary-floor-a.json`, `.artifacts/verification/coverage-summary-floor-b.json`, `.artifacts/verification/floor-local-a.log`, `.artifacts/verification/floor-local-b.log`에 있다. Run C artifact는 없다. CI 필수 status, TEST-10 P0 mapping, TEST-07 diff CI 증거도 이 작업에서 확인하지 않았다.
+
 ## 9. Architecture 검증
 
 CI 아키텍처 검증은 ADR-0001의 클린 아키텍처 경계를 강제한다:

@@ -10,21 +10,33 @@ import (
 )
 
 type rebalanceServiceTestPort struct {
-	machine *StateMachine
-	err     error
+	machine   *StateMachine
+	err       error
+	commitErr error
+	activeErr error
+	getErr    error
 }
 
 func (p *rebalanceServiceTestPort) Commit(_ context.Context, c CommandDTO) (ApplyResultDTO, error) {
+	if p.commitErr != nil {
+		return ApplyResultDTO{}, p.commitErr
+	}
 	if p.err != nil {
 		return ApplyResultDTO{}, p.err
 	}
 	return p.machine.Apply(p.machine.LastAppliedIndex()+1, c)
 }
 func (p *rebalanceServiceTestPort) ActiveFeatures(context.Context) ([]string, error) {
+	if p.activeErr != nil {
+		return nil, p.activeErr
+	}
 	return p.machine.ActiveFeatures(), p.err
 }
 func (p *rebalanceServiceTestPort) GetConnectionRebalance(context.Context) (ConnectionRebalanceStateDTO, bool, error) {
 	s, ok := p.machine.ConnectionRebalance()
+	if p.getErr != nil {
+		return ConnectionRebalanceStateDTO{}, false, p.getErr
+	}
 	return s, ok, p.err
 }
 func newRebalanceServiceTest(t *testing.T) (*RebalanceService, *rebalanceServiceTestPort) {
@@ -145,5 +157,48 @@ func TestRebalanceServiceTerminalCancellation(t *testing.T) {
 				t.Fatalf("terminal replay=%+v err=%v", replay, err)
 			}
 		})
+	}
+}
+func TestRebalanceServicePortFailuresPreserveCommittedState(t *testing.T) {
+	tests := []struct {
+		name string
+		fail func(*rebalanceServiceTestPort)
+	}{
+		{name: "feature read", fail: func(port *rebalanceServiceTestPort) { port.activeErr = ErrQuorumUnavailable }},
+		{name: "current state read", fail: func(port *rebalanceServiceTestPort) { port.getErr = ErrQuorumUnavailable }},
+		{name: "commit", fail: func(port *rebalanceServiceTestPort) { port.commitErr = ErrQuorumUnavailable }},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			service, port := newRebalanceServiceTest(t)
+			before := port.machine.LastAppliedIndex()
+			test.fail(port)
+			_, err := service.StartConnectionRebalance(context.Background(), rebalanceServiceTestRequest())
+			assertRebalanceServiceError(t, err, ServiceErrorQuorumUnavailable, true)
+			if got := port.machine.LastAppliedIndex(); got != before {
+				t.Fatalf("failed start advanced index to %d, want %d", got, before)
+			}
+			if _, exists := port.machine.ConnectionRebalance(); exists {
+				t.Fatal("failed start created rebalance state")
+			}
+		})
+	}
+}
+
+func TestRebalanceServiceDrainConflictMappingPreservesOperationState(t *testing.T) {
+	service, port := newRebalanceServiceTest(t)
+	result := applyDrainTestCommand(t, port.machine, port.machine.LastAppliedIndex()+1,
+		drainTestCommand(NodeDrainActionStart, 1, drainTestOperation1, 1000))
+	if result.Outcome != ApplyOutcomeApplied {
+		t.Fatalf("start blocking drain = %+v", result)
+	}
+	index := port.machine.LastAppliedIndex()
+	_, err := service.StartConnectionRebalance(context.Background(), rebalanceServiceTestRequest())
+	assertRebalanceServiceError(t, err, ServiceErrorNodeDrainInProgress, true)
+	if got := port.machine.LastAppliedIndex(); got != index+1 {
+		t.Fatalf("conflict index = %d, want committed conflict index %d", got, index+1)
+	}
+	if _, exists := port.machine.ConnectionRebalance(); exists {
+		t.Fatal("drain conflict created rebalance state")
 	}
 }

@@ -4,6 +4,7 @@ import (
 	"crypto/sha256"
 	"fmt"
 	"reflect"
+	"strings"
 	"testing"
 
 	"narumq/internal/adapters/raft/records"
@@ -308,5 +309,98 @@ func TestProposalOriginsDiverseResultsBridgeRoundTrip(t *testing.T) {
 	}
 	if len(state.DeliverySessions) != 0 {
 		t.Fatal("replaying a restored result created delivery state")
+	}
+}
+
+// Traceability: CLU-11/CLU-14; docs/specs/cluster-session-and-delivery.md §10, §11.19.
+func TestMembershipSnapshotEncodeRejectsInvalidProposalReceipt(t *testing.T) {
+	snapshot := bridgeSnapshotFixture()
+	snapshot.ProposalOrigins = []membership.ProposalOriginStateDTO{{
+		OriginNodeID: 1,
+		Receipts: []membership.ProposalReceiptDTO{{
+			RequestID: "00000000-0000-4000-8000-000000000001", ProofIndex: 1,
+			CommandDigest: make([]byte, 32), Result: membership.ApplyResultDTO{},
+		}},
+	}}
+	snapshot.ObjectCount += 2
+	if _, err := encodeMembershipSnapshot(snapshot); err == nil || err.Error() != "invalid proposal receipt result" {
+		t.Fatalf("encode snapshot with invalid proposal receipt error = %v, want invalid proposal receipt result", err)
+	}
+}
+
+func TestProposalResultFromRecordRejectsMalformedRecords(t *testing.T) {
+	tests := []struct {
+		name string
+		wire *records.ProposalResult
+		want string
+	}{
+		{
+			name: "missing result",
+			want: "missing proposal receipt result",
+		},
+		{
+			name: "unsupported operation action",
+			wire: &records.ProposalResult{Operation: &records.MembershipRecord{}},
+			want: "unsupported membership action",
+		},
+		{
+			name: "unsupported delivery message phase",
+			wire: &records.ProposalResult{Delivery: &records.ProposalDeliveryResult{
+				Session: &records.DeliverySessionState{Messages: []*records.DeliveryMessage{{}}},
+			}},
+			want: "unsupported delivery phase",
+		},
+		{
+			name: "unspecified drain phase",
+			wire: &records.ProposalResult{NodeDrain: &records.NodeDrainState{}},
+			want: "unsupported node drain phase",
+		},
+		{
+			name: "invalid rebalance phase",
+			wire: &records.ProposalResult{ConnectionRebalance: &records.ConnectionRebalanceState{}},
+			want: "unsupported connection rebalance phase",
+		},
+		{
+			name: "superseded Will missing",
+			wire: &records.ProposalResult{SupersededWill: &records.ProposalSupersededWill{
+				Retention: records.SessionRetention_SESSION_RETENTION_FINITE,
+			}},
+			want: "invalid proposal superseded Will",
+		},
+		{
+			name: "unknown superseded Will retention",
+			wire: &records.ProposalResult{SupersededWill: &records.ProposalSupersededWill{
+				Will:      &records.SessionWill{Topic: "will/topic"},
+				Retention: records.SessionRetention(255),
+			}},
+			want: "invalid proposal superseded Will",
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			_, err := proposalResultFromRecord(test.wire)
+			if err == nil || !strings.Contains(err.Error(), test.want) {
+				t.Fatalf("proposal result conversion error = %v, want containing %q", err, test.want)
+			}
+		})
+	}
+}
+
+func TestProposalIdentityRecordConversionsPreserveAndCopyDigest(t *testing.T) {
+	digest := []byte{1, 2, 3}
+	dto := &membership.ProposalIdentityDTO{
+		OriginNodeID: 7, ProofIndex: 12, RetiredThrough: 5,
+		RequestID: "00000000-0000-4000-8000-000000000012", CommandDigest: digest,
+	}
+	wire := proposalIdentityToRecord(dto)
+	if wire == nil || !reflect.DeepEqual(proposalIdentityFromRecord(wire), dto) {
+		t.Fatalf("proposal identity round trip = %#v, want %#v", proposalIdentityFromRecord(wire), dto)
+	}
+	digest[0] = 9
+	if wire.CommandDigest[0] != 1 {
+		t.Fatalf("record digest aliased input: %v", wire.CommandDigest)
+	}
+	if proposalIdentityToRecord(nil) != nil || proposalIdentityFromRecord(nil) != nil {
+		t.Fatal("nil proposal identity did not remain nil")
 	}
 }

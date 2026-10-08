@@ -121,6 +121,17 @@ func TestCloseSessionForDrainClosesMQTT311WithoutPacket(t *testing.T) {
 	requireConnectionClosed(t, runtime.client)
 }
 
+// Traceability: DEP-07; docs/specs/drain-and-rolling-update.md §4, §10.
+func TestCloseSessionForDrainDoesNotClaimUnknownSession(t *testing.T) {
+	server := &Server{bySession: make(map[routing.SessionID]*connection)}
+	if server.CloseSessionForDrain("missing-session", "next.example:1883") {
+		t.Fatal("CloseSessionForDrain() reported an unknown session")
+	}
+	if len(server.bySession) != 0 {
+		t.Fatalf("unknown drain changed session bindings: %v", server.bySession)
+	}
+}
+
 // Traceability: DEP-03; docs/specs/drain-and-rolling-update.md §2.1, §10.
 func TestTCPClusterAdmissionClosedRejectsConnectBeforeReadiness(t *testing.T) {
 	var readinessCalls int

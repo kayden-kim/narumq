@@ -435,3 +435,75 @@ func applyOfflineForTest(t *testing.T, machine *StateMachine, index uint64, chan
 	}
 	return res
 }
+func TestOfflineCommandValidationRejectsMalformedChanges(t *testing.T) {
+	base := func() OfflineChangeDTO {
+		return OfflineChangeDTO{
+			TenantID: "tenant-a", ClientID: "client-a", OwnerNodeID: 1, Epoch: 1,
+			Action: OfflineActionDetach, ProposedAtUnixMillis: 1,
+			Messages: []OfflineMessageDTO{{Topic: "events/a"}},
+		}
+	}
+	tests := []struct {
+		name   string
+		mutate func(*OfflineChangeDTO)
+	}{
+		{name: "missing tenant", mutate: func(change *OfflineChangeDTO) { change.TenantID = "" }},
+		{name: "zero epoch", mutate: func(change *OfflineChangeDTO) { change.Epoch = 0 }},
+		{name: "zero proposal time", mutate: func(change *OfflineChangeDTO) { change.ProposedAtUnixMillis = 0 }},
+		{name: "nonzero sequence", mutate: func(change *OfflineChangeDTO) { change.Messages[0].Sequence = 1 }},
+		{name: "invalid topic", mutate: func(change *OfflineChangeDTO) { change.Messages[0].Topic = "" }},
+		{name: "unsupported qos", mutate: func(change *OfflineChangeDTO) { change.Messages[0].QoS = 1 }},
+		{name: "oversized payload", mutate: func(change *OfflineChangeDTO) {
+			change.Messages[0].Payload = make([]byte, MaxOfflinePayloadBytes+1)
+		}},
+		{name: "unknown action", mutate: func(change *OfflineChangeDTO) { change.Action = OfflineAction(255) }},
+		{name: "detach without owner", mutate: func(change *OfflineChangeDTO) { change.OwnerNodeID = 0 }},
+		{name: "detach over message limit", mutate: func(change *OfflineChangeDTO) {
+			change.Messages = make([]OfflineMessageDTO, MaxOfflineMessagesPerSession+1)
+			for i := range change.Messages {
+				change.Messages[i].Topic = "events/a"
+			}
+		}},
+		{name: "detach over byte limit", mutate: func(change *OfflineChangeDTO) {
+			change.Messages[0].Payload = make([]byte, MaxOfflineDetachMessageBytes+1)
+		}},
+		{name: "enqueue with owner", mutate: func(change *OfflineChangeDTO) {
+			change.Action = OfflineActionEnqueue
+		}},
+		{name: "enqueue without exactly one message", mutate: func(change *OfflineChangeDTO) {
+			change.Action = OfflineActionEnqueue
+			change.Messages = nil
+		}},
+		{name: "enqueue with session expiry", mutate: func(change *OfflineChangeDTO) {
+			change.Action = OfflineActionEnqueue
+			change.OwnerNodeID = 0
+			change.SessionExpiresAtUnixMillis = 1
+		}},
+		{name: "claim without owner", mutate: func(change *OfflineChangeDTO) {
+			change.Action = OfflineActionClaim
+			change.Messages = nil
+			change.OwnerNodeID = 0
+		}},
+		{name: "claim with messages", mutate: func(change *OfflineChangeDTO) {
+			change.Action = OfflineActionClaim
+		}},
+		{name: "claim with session expiry", mutate: func(change *OfflineChangeDTO) {
+			change.Action = OfflineActionClaim
+			change.Messages = nil
+			change.SessionExpiresAtUnixMillis = 1
+		}},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			change := base()
+			tc.mutate(&change)
+			err := validateCommand(CommandDTO{
+				SchemaMajor: SchemaMajor, SchemaMinor: SchemaMinor, OperationID: testOperation4,
+				Offline: &change,
+			})
+			if !errors.Is(err, ErrInvalidCommand) {
+				t.Fatalf("validateCommand() = %v, want ErrInvalidCommand", err)
+			}
+		})
+	}
+}

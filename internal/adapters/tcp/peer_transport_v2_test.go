@@ -1162,6 +1162,37 @@ func TestDynamicPeerPhaseRefreshPreservesInProgressOutboundFrame(t *testing.T) {
 	}
 }
 
+// Traceability: CLU-02/CLU-14; docs/specs/cluster-session-and-delivery.md §11.5.
+func TestDynamicSendRejectsStagedForwardingAndStoppedPeers(t *testing.T) {
+	staged := dynamicTestIdentity(1, "n:1", "n1", PeerPhaseStaged, testOperationID, 0x11)
+	remote := dynamicTestIdentity(2, "n:2", "n2", PeerPhaseVoter, "", 0x22)
+	transport := &DynamicTCPPeerTransport{
+		local: staged, localID: staged.MemberID,
+		forwardPeers: make(map[uint64]*dynamicPeerState),
+	}
+	forwardPeer := newDynamicLanePeerState(transport, remote, dynamicLaneForward)
+	transport.forwardPeers[remote.MemberID] = forwardPeer
+	defer forwardPeer.stop()
+	if err := transport.Forward(PeerMessageDTO{
+		From: staged.MemberID, To: remote.MemberID, Data: []byte{1},
+	}); !errors.Is(err, ErrInvalidPeerMessage) {
+		t.Fatalf("staged member Forward() error = %v, want invalid peer message", err)
+	}
+
+	voter := staged
+	voter.Phase = PeerPhaseVoter
+	voter.OperationID = ""
+	transport.local = voter
+	peer := newDynamicPeerState(transport, remote)
+	transport.peers = map[uint64]*dynamicPeerState{remote.MemberID: peer}
+	peer.stop()
+	if err := transport.Send(PeerMessageDTO{
+		From: voter.MemberID, To: remote.MemberID, Data: []byte{1},
+	}); !errors.Is(err, ErrPeerTransportClosed) {
+		t.Fatalf("Send() to stopped peer error = %v, want transport closed", err)
+	}
+}
+
 // Traceability: CLU-12; docs/specs/cluster-session-and-delivery.md §4.2, §11.28.
 func TestDynamicPeerReclaimUnsentReturnsOnlyUnwrittenProposals(t *testing.T) {
 	local := dynamicTestIdentity(1, "n:1", "n1", PeerPhaseVoter, "", 0x11)

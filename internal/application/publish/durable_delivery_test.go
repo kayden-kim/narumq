@@ -343,6 +343,72 @@ func TestPublishDurableCommitErrorStopsQoS0Fanout(t *testing.T) {
 		})
 	}
 }
+func TestBeginPublishCommitFailuresPreserveLocalQueue(t *testing.T) {
+	commitErr := errors.New("delivery proposal rejected")
+	for _, tc := range []struct {
+		name      string
+		configure func(*recordingDeliveryCommitter)
+		want      error
+		wait      bool
+	}{
+		{
+			name: "begin error",
+			configure: func(committer *recordingDeliveryCommitter) {
+				committer.err = commitErr
+			},
+			want: commitErr,
+		},
+		{
+			name: "rejected apply result",
+			configure: func(committer *recordingDeliveryCommitter) {
+				committer.applyResult = &membership.ApplyResultDTO{Outcome: membership.ApplyOutcomeConflict}
+			},
+			want: ErrDurableDeliveryRejected,
+			wait: true,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			useCase, queue, committer, now := durablePublishFixture(t, membership.DeliveryResultDTO{}, nil)
+			tc.configure(committer)
+			pending, err := useCase.BeginPublish(mustPublishSessionID(t, "publisher"), mqtt.Publish{
+				Version: mqtt.ProtocolV5, Topic: "events/one", QoS: mqtt.QoSAtLeastOnce,
+			}, now)
+			if tc.wait {
+				if err != nil {
+					t.Fatalf("BeginPublish error = %v, want pending publication", err)
+				}
+				_, err = pending.Wait()
+			}
+			if !errors.Is(err, tc.want) {
+				t.Fatalf("durable publication error = %v, want %v", err, tc.want)
+			}
+			if len(committer.changes) != 1 || len(queue.attempts) != 0 || len(queue.deliveries) != 0 {
+				t.Fatalf("failed durable submission changed local delivery state: changes=%+v attempts=%+v deliveries=%+v",
+					committer.changes, queue.attempts, queue.deliveries)
+			}
+		})
+	}
+}
+func TestPublishDurableSaturationPreservesQoS0Fallback(t *testing.T) {
+	useCase, queue, _, now := durablePublishFixture(t, membership.DeliveryResultDTO{
+		Saturated: []string{"durable-sub"},
+	}, nil)
+	result, err := useCase.Publish(mustPublishSessionID(t, "publisher"), mqtt.Publish{
+		Version: mqtt.ProtocolV5, Topic: "events/one", Payload: []byte("value"), QoS: mqtt.QoSAtLeastOnce,
+	}, now)
+	if err != nil {
+		t.Fatalf("Publish error = %v", err)
+	}
+	if len(result.Saturated) != 1 || result.Saturated[0] != mustPublishSessionID(t, "durable-sub") {
+		t.Fatalf("saturated = %v, want durable-sub", result.Saturated)
+	}
+	if len(result.Delivered) != 1 || result.Delivered[0] != mustPublishSessionID(t, "qos0-sub") {
+		t.Fatalf("delivered = %v, want qos0-sub", result.Delivered)
+	}
+	if len(queue.deliveries) != 1 || queue.deliveries[0].SessionID != mustPublishSessionID(t, "qos0-sub") {
+		t.Fatalf("local queue = %+v, want only qos0-sub", queue.deliveries)
+	}
+}
 
 func TestPublishQoS2ReleaseNotFoundSkipsQoS0Fallback(t *testing.T) {
 	useCase, queue, committer, now := durablePublishFixture(t, membership.DeliveryResultDTO{Found: false}, nil)
@@ -605,5 +671,48 @@ func TestPublishDurableRetainedCommitFailureStopsDeliveryCommit(t *testing.T) {
 					committer.changes, committer.barriers, queue.attempts)
 			}
 		})
+	}
+}
+
+func TestBeginPublishMapsDeliveryCapacityConflict(t *testing.T) {
+	useCase, queue, committer, now := durablePublishFixture(t, membership.DeliveryResultDTO{}, nil)
+	committer.applyResult = &membership.ApplyResultDTO{
+		Outcome:  membership.ApplyOutcomeConflict,
+		Conflict: membership.ConflictDeliveryCapacity,
+	}
+
+	pending, err := useCase.BeginPublish(mustPublishSessionID(t, "publisher"), mqtt.Publish{
+		Version: mqtt.ProtocolV5, Topic: "events/one", Payload: []byte("value"), QoS: mqtt.QoSAtLeastOnce,
+	}, now)
+	if err != nil {
+		t.Fatalf("BeginPublish error = %v, want pending publication", err)
+	}
+	_, err = pending.Wait()
+	if !errors.Is(err, ErrDurableDeliveryCapacity) {
+		t.Fatalf("pending.Wait error = %v, want ErrDurableDeliveryCapacity", err)
+	}
+	if len(committer.changes) != 1 || len(queue.attempts) != 0 || len(queue.deliveries) != 0 {
+		t.Fatalf("capacity conflict changed local delivery state: changes=%+v attempts=%+v deliveries=%+v",
+			committer.changes, queue.attempts, queue.deliveries)
+	}
+}
+
+func TestPublishWillRejectsMismatchedTrustedSession(t *testing.T) {
+	useCase, queue, committer, now := durablePublishFixture(t, membership.DeliveryResultDTO{}, nil)
+	publisher := mustPublishSessionID(t, "publisher")
+	otherKey, err := tenancy.ParseSessionKeyRoutingID(string(mustPublishSessionID(t, "qos0-sub")))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	_, err = useCase.PublishWill(publisher, otherKey, mqtt.Publish{
+		Version: mqtt.ProtocolV5, Topic: "events/will", Payload: []byte("value"), QoS: mqtt.QoSExactlyOnce,
+	}, now)
+	if !errors.Is(err, errInvalidDurableSession) {
+		t.Fatalf("PublishWill error = %v, want invalid durable session", err)
+	}
+	if len(committer.changes) != 0 || committer.barriers != 0 || len(queue.attempts) != 0 {
+		t.Fatalf("mismatched trusted session caused publication: changes=%+v barriers=%d deliveries=%+v",
+			committer.changes, committer.barriers, queue.attempts)
 	}
 }

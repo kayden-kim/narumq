@@ -54,3 +54,26 @@ func TestDynamicOutboundCapacityRemainsChargedUntilWireCompletion(t *testing.T) 
 		return err == nil && capacity.Messages == peerQueueMessages && capacity.Bytes == peerQueueBytes
 	})
 }
+
+// Traceability: CLU-14; docs/specs/performance-and-verification.md §3.4.
+func TestDynamicOutboundCapacityReportsPeerStateErrors(t *testing.T) {
+	transport, peer := cptMinimalDynamic(
+		dynamicTestIdentity(1, "n:1", "n1", PeerPhaseVoter, "", 0x11),
+		dynamicTestIdentity(2, "n:2", "n2", PeerPhaseVoter, "", 0x22),
+	)
+	if _, err := transport.OutboundCapacity(99); err != ErrUnknownPeer {
+		t.Fatalf("unknown peer capacity error = %v, want %v", err, ErrUnknownPeer)
+	}
+
+	peer.stop()
+	if _, err := transport.OutboundCapacity(2); err != ErrPeerTransportClosed {
+		t.Fatalf("stopped peer capacity error = %v, want %v", err, ErrPeerTransportClosed)
+	}
+
+	transport.mu.Lock()
+	transport.closed = true
+	transport.mu.Unlock()
+	if _, err := transport.OutboundCapacity(2); err != ErrPeerTransportClosed {
+		t.Fatalf("closed transport capacity error = %v, want %v", err, ErrPeerTransportClosed)
+	}
+}

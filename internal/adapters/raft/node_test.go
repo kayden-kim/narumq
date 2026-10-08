@@ -60,6 +60,15 @@ func TestNodeConfigAndLifecycle(t *testing.T) {
 	if err := node.Tick(); !errors.Is(err, ErrClosed) {
 		t.Fatalf("Tick() after Close() = %v, want ErrClosed", err)
 	}
+	if err := node.Propose([]byte("closed")); !errors.Is(err, ErrClosed) {
+		t.Fatalf("Propose() after Close() = %v, want ErrClosed", err)
+	}
+	if err := node.ProposeBatchForwarded([][]byte{[]byte("closed")}); !errors.Is(err, ErrClosed) {
+		t.Fatalf("ProposeBatchForwarded() after Close() = %v, want ErrClosed", err)
+	}
+	if err := node.ReadIndex([]byte("closed")); !errors.Is(err, ErrClosed) {
+		t.Fatalf("ReadIndex() after Close() = %v, want ErrClosed", err)
+	}
 	if _, err := processReadyForTest(t, node); !errors.Is(err, ErrClosed) {
 		t.Fatalf("ProcessReady() after Close() = %v, want ErrClosed", err)
 	}

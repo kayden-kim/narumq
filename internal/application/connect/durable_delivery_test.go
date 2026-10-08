@@ -407,3 +407,118 @@ func TestConnectRejectsDurableAttachConflictAndRollsBackSession(t *testing.T) {
 		t.Fatalf("local queue remained registered after rejected ATTACH: %v", queue.registered)
 	}
 }
+
+func TestDurableDeliveryHelpersRejectInvalidCommitsAndAttachment(t *testing.T) {
+	now := time.Date(2026, 1, 1, 10, 0, 0, 0, time.UTC)
+	tenant, err := tenancy.NewTenantID("default")
+	if err != nil {
+		t.Fatal(err)
+	}
+	sessionKey, err := tenancy.NewSessionKey(tenant, "helper-client")
+	if err != nil {
+		t.Fatal(err)
+	}
+	sessionID := routing.SessionID(sessionKey.RoutingID())
+
+	t.Run("commit unavailable", func(t *testing.T) {
+		useCase, _, _, _, _, _, _ := newUseCase(t, now)
+		if _, err := useCase.commitDurableDelivery(context.Background(), membership.DeliveryChangeDTO{}); !errors.Is(err, ErrDurableDeliveryRejected) {
+			t.Fatalf("commitDurableDelivery() error = %v, want ErrDurableDeliveryRejected", err)
+		}
+	})
+	t.Run("commit error", func(t *testing.T) {
+		wantErr := errors.New("replicated commit failed")
+		useCase, _, _, _ := durableConnectFixture(t, now, nil, &recordingDurableConnectCommitter{err: wantErr})
+		if _, err := useCase.commitDurableDelivery(context.Background(), membership.DeliveryChangeDTO{}); !errors.Is(err, wantErr) {
+			t.Fatalf("commitDurableDelivery() error = %v, want %v", err, wantErr)
+		}
+	})
+	t.Run("commit conflict", func(t *testing.T) {
+		useCase, _, _, _ := durableConnectFixture(t, now, nil, &recordingDurableConnectCommitter{
+			applyResult: &membership.ApplyResultDTO{Outcome: membership.ApplyOutcomeConflict},
+		})
+		if _, err := useCase.commitDurableDelivery(context.Background(), membership.DeliveryChangeDTO{}); !errors.Is(err, ErrDurableDeliveryRejected) {
+			t.Fatalf("commitDurableDelivery() error = %v, want ErrDurableDeliveryRejected", err)
+		}
+	})
+	t.Run("zero attach time", func(t *testing.T) {
+		committer := &recordingDurableConnectCommitter{}
+		useCase, _, _, _ := durableConnectFixture(t, now, nil, committer)
+		if _, _, err := useCase.attachDurableDelivery(context.Background(), sessionKey, sessionID, 7, mqtt.ProtocolV5, false, time.UnixMilli(0)); !errors.Is(err, ErrDurableDeliveryRejected) {
+			t.Fatalf("attachDurableDelivery() error = %v, want ErrDurableDeliveryRejected", err)
+		}
+		if len(committer.changes) != 0 {
+			t.Fatalf("zero-time attach committed changes: %+v", committer.changes)
+		}
+	})
+	t.Run("missing delivery result", func(t *testing.T) {
+		committer := &recordingDurableConnectCommitter{applyResult: &membership.ApplyResultDTO{Outcome: membership.ApplyOutcomeApplied}}
+		useCase, _, _, _ := durableConnectFixture(t, now, nil, committer)
+		if _, _, err := useCase.attachDurableDelivery(context.Background(), sessionKey, sessionID, 7, mqtt.ProtocolV5, false, now); !errors.Is(err, ErrDurableDeliveryRejected) {
+			t.Fatalf("attachDurableDelivery() error = %v, want ErrDurableDeliveryRejected", err)
+		}
+	})
+	t.Run("missing session projection", func(t *testing.T) {
+		useCase, _, _, _ := durableConnectFixture(t, now, nil, &recordingDurableConnectCommitter{})
+		if _, _, err := useCase.attachDurableDelivery(context.Background(), sessionKey, sessionID, 7, mqtt.ProtocolV5, false, now); !errors.Is(err, ErrDurableDeliveryRejected) {
+			t.Fatalf("attachDurableDelivery() error = %v, want ErrDurableDeliveryRejected", err)
+		}
+	})
+	t.Run("reset failure", func(t *testing.T) {
+		resetErr := errors.New("durable queue reset failed")
+		committer := &recordingDurableConnectCommitter{attachResult: membership.DeliveryResultDTO{
+			Session: &membership.DeliverySessionStateDTO{NextSequence: 1},
+		}}
+		useCase, _, queue, _ := durableConnectFixture(t, now, nil, committer)
+		queue.resetErr = resetErr
+		if _, _, err := useCase.attachDurableDelivery(context.Background(), sessionKey, sessionID, 7, mqtt.ProtocolV5, false, now); !errors.Is(err, resetErr) {
+			t.Fatalf("attachDurableDelivery() error = %v, want %v", err, resetErr)
+		}
+		if queue.resetCalls != 1 {
+			t.Fatalf("ResetDurable calls = %d, want 1", queue.resetCalls)
+		}
+	})
+}
+
+func TestCommitDeliveryLifecycleValidatesTimesBeforeCommit(t *testing.T) {
+	now := time.Date(2026, 1, 1, 10, 0, 0, 0, time.UTC)
+	tenant, err := tenancy.NewTenantID("default")
+	if err != nil {
+		t.Fatal(err)
+	}
+	sessionKey, err := tenancy.NewSessionKey(tenant, "lifecycle-client")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	t.Run("no committer", func(t *testing.T) {
+		useCase, _, _, _, _, _, _ := newUseCase(t, now)
+		if err := useCase.commitDeliveryLifecycle(context.Background(), sessionKey, 0, membership.DeliveryActionDetach, time.Time{}, time.Time{}); err != nil {
+			t.Fatalf("commitDeliveryLifecycle() without committer = %v, want nil", err)
+		}
+	})
+
+	tests := []struct {
+		name             string
+		epoch            uint64
+		proposedAt       time.Time
+		sessionExpiresAt time.Time
+	}{
+		{name: "zero epoch", epoch: 0, proposedAt: now},
+		{name: "zero proposal time", epoch: 7},
+		{name: "negative expiry time", epoch: 7, proposedAt: now, sessionExpiresAt: time.UnixMilli(-1)},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			committer := &recordingDurableConnectCommitter{}
+			useCase, _, _, _ := durableConnectFixture(t, now, nil, committer)
+			err := useCase.commitDeliveryLifecycle(context.Background(), sessionKey, tc.epoch, membership.DeliveryActionDetach, tc.proposedAt, tc.sessionExpiresAt)
+			if !errors.Is(err, ErrDurableDeliveryRejected) {
+				t.Fatalf("commitDeliveryLifecycle() = %v, want ErrDurableDeliveryRejected", err)
+			}
+			if len(committer.changes) != 0 {
+				t.Fatalf("invalid lifecycle times committed changes: %+v", committer.changes)
+			}
+		})
+	}
+}

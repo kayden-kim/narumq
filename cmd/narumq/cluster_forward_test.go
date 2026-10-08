@@ -182,3 +182,132 @@ func TestClusterForwardReceiverRequiresCommittedLocalOwner(t *testing.T) {
 		t.Fatalf("malformed frame sink calls=%d log=%q, want drop warning and no delivery", len(localSink.calls), logOutput.String())
 	}
 }
+
+// Traceability: CLU-03; docs/specs/cluster-session-and-delivery.md §3.1, §11.10.
+func TestClusterForwardRemoteRejectsUnavailableAndInvalidInput(t *testing.T) {
+	var nilRuntime *clusterRuntime
+	handled, err := nilRuntime.ForwardRemote(context.Background(), applicationdeliveryqueue.DeliveryDTO{QoS: mqtt.QoSAtMostOnce})
+	if !handled || !errors.Is(err, applicationdeliveryqueue.ErrUnavailable) {
+		t.Fatalf("nil runtime ForwardRemote() = handled %t, error %v; want handled with ErrUnavailable", handled, err)
+	}
+
+	missingMachine := &clusterRuntime{forwarder: &clusterForwardTestPeer{}}
+	handled, err = missingMachine.ForwardRemote(context.Background(), applicationdeliveryqueue.DeliveryDTO{QoS: mqtt.QoSAtMostOnce})
+	if !handled || !errors.Is(err, applicationdeliveryqueue.ErrUnavailable) {
+		t.Fatalf("missing machine ForwardRemote() = handled %t, error %v; want handled with ErrUnavailable", handled, err)
+	}
+
+	runtime, sessionID := newClusterForwardTestRuntime(t, 2)
+	if handled, err := runtime.ForwardRemote(context.Background(), applicationdeliveryqueue.DeliveryDTO{
+		SessionID: sessionID, Topic: "live/one", QoS: mqtt.QoSAtMostOnce,
+	}); !handled || !errors.Is(err, applicationdeliveryqueue.ErrUnavailable) {
+		t.Fatalf("missing forwarder ForwardRemote() = handled %t, error %v; want handled with ErrUnavailable", handled, err)
+	}
+
+	peer := &clusterForwardTestPeer{}
+	runtime.forwarder = peer
+	unownedRuntime := &clusterRuntime{
+		config: runtime.config, machine: membership.NewStateMachine(), forwarder: peer,
+	}
+	handled, err = unownedRuntime.ForwardRemote(context.Background(), applicationdeliveryqueue.DeliveryDTO{
+		SessionID: sessionID, Topic: "live/one", QoS: mqtt.QoSAtMostOnce,
+	})
+	if handled || err != nil || len(peer.calls) != 0 {
+		t.Fatalf("unowned-session ForwardRemote() = handled %t, error %v, calls %d; want unhandled without error or forwarding", handled, err, len(peer.calls))
+	}
+
+	handled, err = runtime.ForwardRemote(context.Background(), applicationdeliveryqueue.DeliveryDTO{
+		SessionID: routing.SessionID("invalid"), Topic: "live/one", QoS: mqtt.QoSAtMostOnce,
+	})
+	if handled || err != nil || len(peer.calls) != 0 {
+		t.Fatalf("invalid-session ForwardRemote() = handled %t, error %v, calls %d; want unhandled without error or forwarding", handled, err, len(peer.calls))
+	}
+
+	handled, err = runtime.ForwardRemote(context.Background(), applicationdeliveryqueue.DeliveryDTO{
+		SessionID: sessionID, QoS: mqtt.QoSAtMostOnce,
+	})
+	if !handled || !errors.Is(err, applicationdeliveryqueue.ErrUnavailable) || len(peer.calls) != 0 {
+		t.Fatalf("invalid-delivery ForwardRemote() = handled %t, error %v, calls %d; want ErrUnavailable without forwarding", handled, err, len(peer.calls))
+	}
+}
+
+// Traceability: CLU-03; docs/specs/cluster-session-and-delivery.md §3.1, §11.10.
+func TestClusterForwardReceiverLogsDeliveryFailures(t *testing.T) {
+	runtime, sessionID := newClusterForwardTestRuntime(t, 1)
+	payload, err := tcpadapter.EncodeForwardedDelivery(tcpadapter.ForwardedDeliveryDTO{
+		SessionID: string(sessionID), Topic: "live/one", Payload: []byte("value"),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var logOutput strings.Builder
+	runtime.logger = slog.New(slog.NewTextHandler(&logOutput, nil))
+	unavailableSink := &clusterForwardTestSink{err: applicationdeliveryqueue.ErrUnavailable}
+	runtime.forwardSink = unavailableSink
+	runtime.acceptForwardedFrame(tcpadapter.PeerInboundDelivery{
+		Message: tcpadapter.PeerMessageDTO{From: 2, To: 1, Data: payload},
+	})
+	if len(unavailableSink.calls) != 1 || logOutput.Len() != 0 {
+		t.Fatalf("unavailable sink calls=%d log=%q; want one delivery attempt without warning", len(unavailableSink.calls), logOutput.String())
+	}
+
+	failedSink := &clusterForwardTestSink{err: errors.New("local delivery failed")}
+	runtime.forwardSink = failedSink
+	runtime.acceptForwardedFrame(tcpadapter.PeerInboundDelivery{
+		Message: tcpadapter.PeerMessageDTO{From: 2, To: 1, Data: payload},
+	})
+	if len(failedSink.calls) != 1 || !strings.Contains(logOutput.String(), "cluster forwarded delivery was not admitted") {
+		t.Fatalf("failed sink calls=%d log=%q; want one delivery attempt and warning", len(failedSink.calls), logOutput.String())
+	}
+	if !failedSink.calls[0].ExpiresAt.IsZero() {
+		t.Fatalf("forwarded delivery expiry=%v, want zero expiry", failedSink.calls[0].ExpiresAt)
+	}
+}
+
+// Traceability: CLU-03; docs/specs/cluster-session-and-delivery.md §3.1, §11.10.
+func TestClusterForwardReceiverRejectsInvalidSessionAndMissingSink(t *testing.T) {
+	runtime, sessionID := newClusterForwardTestRuntime(t, 1)
+	var logOutput strings.Builder
+	runtime.logger = slog.New(slog.NewTextHandler(&logOutput, nil))
+
+	invalidSessionPayload, err := tcpadapter.EncodeForwardedDelivery(tcpadapter.ForwardedDeliveryDTO{
+		SessionID: "invalid", Topic: "live/one", Payload: []byte("value"),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	runtime.acceptForwardedFrame(tcpadapter.PeerInboundDelivery{
+		Message: tcpadapter.PeerMessageDTO{From: 2, To: 1, Data: invalidSessionPayload},
+	})
+	if !strings.Contains(logOutput.String(), "drop cluster forwarded delivery with invalid session") {
+		t.Fatalf("invalid-session log = %q, want identity rejection warning", logOutput.String())
+	}
+
+	logOutput.Reset()
+	validSessionPayload, err := tcpadapter.EncodeForwardedDelivery(tcpadapter.ForwardedDeliveryDTO{
+		SessionID: string(sessionID), Topic: "live/one", Payload: []byte("value"),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	runtime.acceptForwardedFrame(tcpadapter.PeerInboundDelivery{
+		Message: tcpadapter.PeerMessageDTO{From: 2, To: 1, Data: validSessionPayload},
+	})
+	if logOutput.Len() != 0 {
+		t.Fatalf("missing-sink log = %q, want silent drop when no sink is configured", logOutput.String())
+	}
+}
+
+// Traceability: CLU-03; docs/specs/cluster-session-and-delivery.md §3.1, §11.10.
+func TestClusterForwardRemoteRejectsInvalidTopicEncoding(t *testing.T) {
+	runtime, sessionID := newClusterForwardTestRuntime(t, 2)
+	peer := &clusterForwardTestPeer{}
+	runtime.forwarder = peer
+	handled, err := runtime.ForwardRemote(context.Background(), applicationdeliveryqueue.DeliveryDTO{
+		SessionID: sessionID, Topic: string([]byte{0xff}), QoS: mqtt.QoSAtMostOnce,
+	})
+	if !handled || !errors.Is(err, applicationdeliveryqueue.ErrUnavailable) || len(peer.calls) != 0 {
+		t.Fatalf("invalid-topic ForwardRemote() = handled %t, error %v, calls %d; want handled ErrUnavailable without forwarding", handled, err, len(peer.calls))
+	}
+}

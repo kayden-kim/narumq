@@ -108,3 +108,18 @@ func TestPacketIDAllocatorAcquireWrapsAndSkipsUsed(t *testing.T) {
 		t.Fatalf("acquire after wrap and skip = %d, %v; want 2, nil", id, err)
 	}
 }
+func TestPacketIDAllocatorSkipsZeroAfterIdentifierWrap(t *testing.T) {
+	alloc := newPacketIDAllocator()
+	alloc.next = 0
+
+	id, err := alloc.acquire()
+	if err != nil {
+		t.Fatalf("acquire() error = %v, want nil", err)
+	}
+	if id != 1 {
+		t.Fatalf("acquire() = %d, want first valid identifier 1", id)
+	}
+	if _, used := alloc.used[id]; !used {
+		t.Fatalf("acquired identifier %d was not reserved", id)
+	}
+}

@@ -240,6 +240,26 @@ func TestTCPTenantPublishWaitCancelledByConnectionStop(t *testing.T) {
 }
 
 // Traceability: TEN-06, TEN-07; docs/specs/tenancy-and-security.md §5.2.
+func TestTCPTenantPublishWaitStopsBeforeTimerWhenConnectionIsAlreadyStopped(t *testing.T) {
+	service := tcpTenantLimitService(t, tenantlimit.Limits{MessagesPerSecond: 1}, 5*time.Second)
+	runtime := tcpTenantRuntime(t, mqtt.ProtocolV5, service, false)
+	serverSocket, clientSocket := net.Pipe()
+	defer clientSocket.Close()
+	defer serverSocket.Close()
+	conn := newConnection(runtime.server, serverSocket)
+	conn.principal = tcpTenantPrincipal(t)
+	defer conn.requestClose()
+
+	if admitted, err := conn.admitTenantPublish(&mqtt.Publish{}); err != nil || !admitted {
+		t.Fatalf("first publish admission = (%v, %v), want (true, nil)", admitted, err)
+	}
+	conn.requestClose()
+	if admitted, err := conn.admitTenantPublish(&mqtt.Publish{}); err != nil || admitted {
+		t.Fatalf("stopped publish admission = (%v, %v), want (false, nil)", admitted, err)
+	}
+}
+
+// Traceability: TEN-06, TEN-07; docs/specs/tenancy-and-security.md §5.2.
 func TestTCPTenantLimitsSkipAnonymous(t *testing.T) {
 	config := defaultAdapterConfig()
 	config.TenantLimits = tcpTenantLimitService(t, tenantlimit.Limits{MaxPayloadBytes: 1}, 0)

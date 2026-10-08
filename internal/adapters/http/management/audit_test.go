@@ -196,3 +196,25 @@ func TestManagementAuditPanicRecordsInternalErrorWithServerErrorStatus(t *testin
 		t.Fatalf("panic audit event=%+v, want FAILED internal_error with status 500", event)
 	}
 }
+func TestManagementMutationAuditUsesImplicitSuccessStatus(t *testing.T) {
+	spy := &spyAuditUseCase{}
+	authenticator := NewAuthenticator(AuthConfig{
+		AuthToken: "audit-token", AuthTokenRole: RoleOperator, Audit: spy,
+	})
+	handler := authenticator.RequireMutationRole(RoleOperator, auditMutation{
+		action: "node.drain.cancel", targetType: "node",
+	}, func(http.ResponseWriter, *http.Request) {})
+	request := httptest.NewRequest(http.MethodDelete, "/api/v1/nodes/3/drain", nil)
+	request.Header.Set("Authorization", "Bearer audit-token")
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+
+	if response.Code != http.StatusOK || len(spy.commands) != 1 {
+		t.Fatalf("implicit response status=%d audit events=%d", response.Code, len(spy.commands))
+	}
+	event := spy.commands[0]
+	if event.Result != portsaudit.AuditResultAllowed || event.Reason != "succeeded" ||
+		event.Details["httpStatus"] != http.StatusOK || event.Target.Type != "node" {
+		t.Fatalf("implicit success audit event=%+v", event)
+	}
+}
