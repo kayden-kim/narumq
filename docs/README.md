@@ -6,15 +6,23 @@
 
 | 디렉터리 | 답하는 질문 | 시작 템플릿 |
 | --- | --- | --- |
-| [PRD(제품 요구사항 정의서)](requirements/README.md) | 무엇이 필요하며 왜 필요한가? | `PRD.template.md` |
-| [스펙(동작 명세)](specs/README.md) | 시스템은 외부에서 어떻게 동작해야 하는가? | `system-spec.template.md`, `screen-spec.template.md` |
-| [인터페이스 계약(Contract)](contracts/README.md) | 경계에서 무엇을 어떤 형식으로 주고받는가? | `contract.template.md` |
-| [아키텍처(구성요소의 책임과 연결 관계)](architectures/README.md) | 코드는 어디에 있고 구성요소와 모듈은 어떻게 연결되는가? | `code-map.template.md`, `module-design.template.md`, `architecture-view.template.md` |
-| [ADR(기술 결정 기록)](decisions/README.md) | 왜 이 선택을 했는가? | `ADR-0000-template.md` |
-| [해설](explainers/README.md) | 핵심 기술과 원리는 어떻게 작동하는가? | `explainer.template.md` |
+| [PRD(제품 요구사항 정의서)](requirements/README.md) | 무엇이 필요하며 왜 필요한가? | [PRD.template.md](templates/PRD.template.md) |
+| [스펙(동작 명세)](specs/README.md) | 시스템은 외부에서 어떻게 동작해야 하는가? | [system-spec.template.md](templates/system-spec.template.md), [screen-spec.template.md](templates/screen-spec.template.md) |
+| [인터페이스 계약(Contract)](contracts/README.md) | 경계에서 무엇을 어떤 형식으로 주고받는가? | [contract.template.md](templates/contract.template.md) |
+| [아키텍처(구성요소의 책임과 연결 관계)](architectures/README.md) | 코드는 어디에 있고 구성요소와 모듈은 어떻게 연결되는가? | [code-map.template.md](templates/code-map.template.md), [module-design.template.md](templates/module-design.template.md), [architecture-view.template.md](templates/architecture-view.template.md) |
+| [ADR(기술 결정 기록)](decisions/README.md) | 왜 이 선택을 했는가? | [ADR-0000-template.md](templates/ADR-0000-template.md) |
+| [해설](explainers/README.md) | 핵심 기술과 원리는 어떻게 작동하는가? | [explainer.template.md](templates/explainer.template.md) |
 | [시각 자료](artifacts/README.md) | 구현과 스펙을 시각 자료로 어떻게 이해하는가? | 요청별 HTML artifact |
-| [코딩 컨벤션](conventions/README.md) | 소스와 저장소 산출물을 어떤 규칙으로 작성하는가? | `convention.template.md` |
-| [실행 절차](how-to/README.md) | 특정 작업을 안전하게 어떻게 수행하는가? | `how-to.template.md` |
+| [코딩 컨벤션](conventions/README.md) | 소스와 저장소 산출물을 어떤 규칙으로 작성하는가? | [convention.template.md](templates/convention.template.md), [DESIGN.template.md](templates/DESIGN.template.md), [frontend.template.md](templates/frontend.template.md) |
+| [실행 절차](how-to/README.md) | 특정 작업을 안전하게 어떻게 수행하는가? | [how-to.template.md](templates/how-to.template.md) |
+| [사고 기록](incidents/README.md) | 사고의 영향·원인·대응·후속 조치는 무엇인가? | [incident.template.md](templates/incident.template.md) |
+
+## 템플릿과 스킬
+
+시작 템플릿은 모두 [docs/templates](templates/AGENTS.md)에서 관리한다. 유형별 사용 기준은 해당 디렉터리의 `AGENTS.md`를 따른다. 템플릿을 실제 문서 목록에 등록하지 않는다.
+
+- [frontend-workflow 스킬](../.agents/skills/frontend-workflow/SKILL.md): 프런트엔드 디자인 탐색·구현·검토
+- [explain 스킬](../.agents/skills/explain/SKILL.md): 프로젝트 구조와 코드 흐름 설명
 
 ## 처음 읽는 순서
 

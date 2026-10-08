@@ -26,16 +26,6 @@
 | [EKS on EC2 deployment architecture](eks-ec2-deployment.md) | Logical broker node는 NLB·EKS·EC2·EBS에 어떻게 대응하는가? | Target / Draft | DEP-19~23, ADR-0006~0007 |
 | [Security boundaries](security-boundaries.md) | Client·node·관리 plane의 trust boundary와 enforcement point는 어디인가? | Target / Draft | Tenant와 security spec, Management API·Audit event contract |
 
-## 작성 템플릿
-
-| 템플릿 | 사용하는 경우 |
-| --- | --- |
-| [Code map template](code-map.template.md) | 기존 코드 지도에 없는 실제 진입점·파일 경로를 새로 정리할 때. 이미 있는 Project structure 코드 지도 절을 복제하지 않는다. |
-| [Module design template](module-design.template.md) | 기존 architecture view로 답이 부족할 때 한 모듈의 내부 처리·상태·초기화 흐름을 별도 문서로 관리할 때 |
-| [Architecture view template](architecture-view.template.md) | system·cluster·deployment·security 등 구성요소 사이의 target/current 구조 관점을 추가할 때 |
-
-NaruMQ의 실제 코드 진입 지도는 [Project structure](project-structure.md)의 `코드 지도: 실행 모드와 MQTT CONNECT 대표 흐름` 절이다. 같은 문서의 나머지 package 배치와 `Target repository tree`는 기존 구조 view이므로 새 code-map 문서로 복제하지 않는다.
-
 ## 권장 읽기 순서
 
 1. Project structure의 코드 지도 절

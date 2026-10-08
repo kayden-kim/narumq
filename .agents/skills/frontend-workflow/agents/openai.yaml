@@ -1,0 +1,4 @@
+interface:
+  display_name: "Frontend Workflow"
+  short_description: "디자인 기준과 화면 스펙을 연결해 구현하고 동작·시각 결과를 검증"
+  default_prompt: "$frontend-workflow 이 화면을 프로젝트의 채택된 디자인 기준과 스펙에 따라 구현하고 검증해 줘."
