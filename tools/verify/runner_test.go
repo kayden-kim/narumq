@@ -30,8 +30,8 @@ func TestRunCIRequiresBaseAndPropagatesBaseToCoverage(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if len(commands) != 15 {
-		t.Fatalf("command count = %d, want 15", len(commands))
+	if len(commands) != 17 {
+		t.Fatalf("command count = %d, want 17", len(commands))
 	}
 	want := []commandSpec{
 		{Name: "go", Args: []string{"run", "./tools/verify", "branch-instrument", "--policy", defaultCoveragePolicyPath, "--output", defaultBranchOutputDir}},
@@ -46,7 +46,9 @@ func TestRunCIRequiresBaseAndPropagatesBaseToCoverage(t *testing.T) {
 		{Name: "go", Args: []string{"test", "./internal/domain/session", "-run=^$", "-fuzz=^FuzzLifecycleTransitions$", "-fuzztime=10000x", "-parallel=1"}},
 		{Name: "go", Args: []string{"test", "./internal/adapters/tcp", "-run=^$", "-fuzz=^FuzzConnectionInput$", "-fuzztime=10000x", "-parallel=1"}},
 		{Name: "go", Args: []string{"tool", "gremlins", "unleash", "--config=tests/verification/gremlins.yaml", "--output=.artifacts/verification/mutation-delivery.json", "internal/domain/delivery"}},
+		{Name: "go", Args: []string{"tool", "gremlins", "unleash", "--config=tests/verification/gremlins.yaml", "--output=.artifacts/verification/mutation-mqtt.json", "internal/domain/mqtt"}},
 		{Name: "go", Args: []string{"tool", "gremlins", "unleash", "--config=tests/verification/gremlins.yaml", "--output=.artifacts/verification/mutation-nodedrain.json", "internal/domain/nodedrain"}},
+		{Name: "go", Args: []string{"tool", "gremlins", "unleash", "--config=tests/verification/gremlins.yaml", "--output=.artifacts/verification/mutation-security.json", "internal/domain/security"}},
 		{Name: "go", Args: []string{"tool", "gremlins", "unleash", "--config=tests/verification/gremlins.yaml", "--output=.artifacts/verification/mutation-session.json", "internal/domain/session"}},
 		{Name: "go", Args: []string{"run", "./tools/verify", "coverage", "--profile", ".artifacts/verification/coverage.out", "--policy", defaultCoveragePolicyPath, "--report", ".artifacts/verification/coverage-summary.json", "--branch-manifest", defaultBranchManifestPath, "--base", "HEAD~1"}},
 	}

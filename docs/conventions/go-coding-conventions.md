@@ -349,7 +349,7 @@ go run ./tools/verify local
 go run ./tools/verify ci --base <merge-base>
 ```
 
-`local`은 gofmt 검사 뒤 10개 command, `ci`는 같은 검사와 mutation을 더해 13개
+`local`은 gofmt 검사 뒤 12개 command, `ci`는 같은 검사와 mutation을 더해 17개
 command를 실행한다. gofmt 검사는 source를 수정하지 않으며 불일치가 있으면 gate를
 중단한다. 독립 command는 동시에 실행하고, 하나가 실패하면 나머지를 취소한다.
 Coverage policy 판정은 전체 test command가 만든 profile을 기다린 뒤 실행한다.
@@ -371,7 +371,9 @@ Coverage policy 판정은 전체 test command가 만든 profile을 기다린 뒤
 
 CI 전용:
 → delivery mutation
+→ mqtt mutation
 → nodedrain mutation
+→ security mutation
 → session mutation
 ```
 
@@ -394,6 +396,9 @@ Package별 mutation failure는 다음 exact command로 재현하며, 결과는 �
 
 ```text
 go tool gremlins unleash --config=tests/verification/gremlins.yaml --output=.artifacts/verification/mutation-delivery.json internal/domain/delivery
+go tool gremlins unleash --config=tests/verification/gremlins.yaml --output=.artifacts/verification/mutation-mqtt.json internal/domain/mqtt
+go tool gremlins unleash --config=tests/verification/gremlins.yaml --output=.artifacts/verification/mutation-nodedrain.json internal/domain/nodedrain
+go tool gremlins unleash --config=tests/verification/gremlins.yaml --output=.artifacts/verification/mutation-security.json internal/domain/security
 go tool gremlins unleash --config=tests/verification/gremlins.yaml --output=.artifacts/verification/mutation-session.json internal/domain/session
 ```
 

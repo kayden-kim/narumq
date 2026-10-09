@@ -128,12 +128,12 @@
       <h1>코드 변경이 `PASS`가 되기까지</h1>
       <p class="lead">
         이 문서는 NaruMQ의 현재 local·CI verification gate를 명령 목록으로만 나열하지 않습니다.
-        <strong>local에서는 9개 병렬 command와 후속 coverage policy 검사를, CI에서는 여기에 두 mutation command를 더해 검증 증거와 최종 종료 상태를 만드는 과정</strong>을 실제 코드와 기준 문서에 연결해 설명합니다.
+        <strong>local에서는 9개 병렬 command와 후속 coverage policy 검사를, CI에서는 여기에 다섯 mutation command를 더해 검증 증거와 최종 종료 상태를 만드는 과정</strong>을 실제 코드와 기준 문서에 연결해 설명합니다.
       </p>
       <div class="badges">
         <span class="commit">TEST-12 · TEST-13</span>
         <span class="badge">local: 10 commands</span>
-        <span class="badge">CI: +2 mutation</span>
+        <span class="badge">CI: +5 mutation</span>
         <span class="badge">local · CI</span>
         <span class="badge">Go 1.26.5</span>
       </div>
@@ -160,14 +160,14 @@
         <div class="section-kicker">01 · 결과부터</div>
         <h2>게이트의 결과는 숫자 하나가 아니라, 재현 가능한 증거 묶음이다</h2>
         <p>
-          개발자는 저장소 루트에서 <code>go run ./tools/verify local</code>을 실행합니다. CI에서는 <code>go run ./tools/verify ci --base &lt;merge-base&gt;</code>로 PR diff coverage를 평가하고, 병렬 단계에 Delivery·Session mutation 검사를 추가합니다. 두 진입점은 <code>runVerification</code>을 공유하지만 CI는 이 두 검사를 더 실행하며 coverage command에만 <code>--base</code>를 전달합니다.
+          개발자는 저장소 루트에서 <code>go run ./tools/verify local</code>을 실행합니다. CI에서는 <code>go run ./tools/verify ci --base &lt;merge-base&gt;</code>로 PR diff coverage를 평가하고, 병렬 단계에 Delivery·MQTT·NodeDrain·Security·Session mutation 검사를 추가합니다. 두 진입점은 <code>runVerification</code>을 공유하지만 CI는 이 다섯 검사를 더 실행하며 coverage command에만 <code>--base</code>를 전달합니다.
         </p>
         <div class="flow" aria-label="verification gate 전체 흐름">
           <div class="node"><span class="label">입력</span><br><code>local</code> 또는 <code>ci --base</code><br><span class="small">repository root</span></div>
           <div class="arrow">→</div>
           <div class="node"><span class="label">사전 검사</span><br><code>go.mod</code>·gofmt<br><span class="small">실행 전 구조 확인</span></div>
           <div class="arrow">→</div>
-          <div class="node"><span class="label">검증 graph</span><br>local 9 parallel + coverage<br><span class="small">CI adds 2 mutation checks</span></div>
+          <div class="node"><span class="label">검증 graph</span><br>local 9 parallel + coverage<br><span class="small">CI adds 5 mutation checks</span></div>
           <div class="arrow">→</div>
           <div class="node"><span class="label">증거</span><br><code>.artifacts/verification/</code><br><span class="small">coverage JSON; mutation JSON in CI</span></div>
           <div class="arrow">→</div>
@@ -269,7 +269,7 @@ if err := runner(ctx, root, coverageCommand); err != nil {
         <div class="section-kicker">04 · command graph</div>
         <h2>local 9개 병렬 command 뒤 coverage policy를 평가한다</h2>
         <p>
-          아래 9개 local command는 병렬 실행되므로 목록 순서는 실행 순서가 아닙니다. CI는 두 mutation command를 같은 병렬 단계에 더합니다. 병렬 검사가 성공하면 coverage policy가 뒤이어 실행됩니다. Runner test는 local 10개 command와 CI 12개 command, mutation의 CI 전용 여부, coverage에만 전달되는 base를 확인합니다.
+          아래 local command는 병렬 실행되므로 목록 순서는 실행 순서가 아닙니다. CI는 다섯 mutation command를 같은 병렬 단계에 더합니다. 병렬 검사가 성공하면 coverage policy가 뒤이어 실행됩니다. Runner test는 CI 17개 command, local의 mutation 제외, coverage에만 전달되는 base를 확인합니다.
         </p>
         <div class="timeline">
           <div class="timeline-item"><div class="timeline-id">01 · parallel</div><div class="timeline-body"><h3><code>go vet ./...</code></h3><p>비정상적인 코드 패턴을 정적으로 검사합니다.</p></div></div>
@@ -283,6 +283,9 @@ if err := runner(ctx, root, coverageCommand); err != nil {
           <div class="timeline-item"><div class="timeline-id">09 · parallel fuzz</div><div class="timeline-body"><h3>session <code>FuzzLifecycleTransitions</code></h3><p>Clean Start, Session Expiry, reconnect와 expiry edge를 검사합니다.</p></div></div>
           <div class="timeline-item"><div class="timeline-id">10 · after parallel</div><div class="timeline-body"><h3><code>go run ./tools/verify coverage ...</code></h3><p>floor·ratchet를 평가하고 `coverage-summary.json`을 남깁니다; CI에서는 diff coverage도 평가합니다.</p></div></div>
           <div class="timeline-item"><div class="timeline-id">CI-only · parallel</div><div class="timeline-body"><h3>Delivery mutation</h3><p><code>internal/domain/delivery</code> state machine을 변형하고 JSON 결과를 남깁니다.</p></div></div>
+          <div class="timeline-item"><div class="timeline-id">CI-only · parallel</div><div class="timeline-body"><h3>MQTT mutation</h3><p><code>internal/domain/mqtt</code>의 프로토콜 규칙을 변형하고 JSON 결과를 남깁니다.</p></div></div>
+          <div class="timeline-item"><div class="timeline-id">CI-only · parallel</div><div class="timeline-body"><h3>NodeDrain mutation</h3><p><code>internal/domain/nodedrain</code>의 드레인 상태 머신을 변형하고 JSON 결과를 남깁니다.</p></div></div>
+          <div class="timeline-item"><div class="timeline-id">CI-only · parallel</div><div class="timeline-body"><h3>Security mutation</h3><p><code>internal/domain/security</code>의 ACL 규칙을 변형하고 JSON 결과를 남깁니다.</p></div></div>
           <div class="timeline-item"><div class="timeline-id">CI-only · parallel</div><div class="timeline-body"><h3>Session mutation</h3><p><code>internal/domain/session</code> state machine을 변형하고 JSON 결과를 남깁니다.</p></div></div>
         </div>
       </div>
@@ -326,10 +329,10 @@ go test ./internal/domain/session -run=^$ -fuzz=^FuzzLifecycleTransitions$ -fuzz
         <div class="section-kicker">06 · mutation</div>
         <h2>mutation은 test가 실제 규칙의 변화를 잡는지 확인한다</h2>
         <p>
-          mutation testing은 production 조건을 일부러 바꿔 테스트의 결함 검출력을 확인합니다. <code>local</code>은 이 검사를 실행하지 않고 CI만 Delivery·Session mutation command를 병렬 단계에 추가합니다. Test가 실패하면 mutant는 <code>KILLED</code>, 계속 통과하면 <code>LIVED</code>, 해당 코드가 실행되지 않으면 <code>NOT_COVERED</code>입니다.
+          mutation testing은 production 조건을 일부러 바꿔 테스트의 결함 검출력을 확인합니다. <code>local</code>은 이 검사를 실행하지 않고 CI만 Delivery·MQTT·NodeDrain·Security·Session mutation command를 병렬 단계에 추가합니다. Test가 실패하면 mutant는 <code>KILLED</code>, 계속 통과하면 <code>LIVED</code>, 해당 코드가 실행되지 않으면 <code>NOT_COVERED</code>입니다.
         </p>
         <div class="flow" aria-label="mutation 흐름">
-          <div class="node"><span class="label">원본</span><br><code>state.go</code><br><span class="small">delivery / session</span></div>
+          <div class="node"><span class="label">원본</span><br><code>internal/domain</code><br><span class="small">5 packages</span></div>
           <div class="arrow">→</div>
           <div class="node"><span class="label">변형</span><br>condition·boundary 변경<br><span class="small">Gremlins</span></div>
           <div class="arrow">→</div>
@@ -351,11 +354,14 @@ go test ./internal/domain/session -run=^$ -fuzz=^FuzzLifecycleTransitions$ -fuzz
           </tbody>
         </table>
         <p>
-          delivery와 session은 점수를 합산하지 않습니다. 한 package의 강한 test가 다른 package의 약한 state machine을 숨기지 않도록 command와 JSON을 분리합니다.
+          다섯 package는 점수를 합산하지 않습니다. 한 package의 강한 test가 다른 package의 약한 state machine을 숨기지 않도록 command와 JSON을 분리합니다.
         </p>
         <pre><code>go tool gremlins unleash --config=tests/verification/gremlins.yaml --output=.artifacts/verification/mutation-delivery.json internal/domain/delivery
+go tool gremlins unleash --config=tests/verification/gremlins.yaml --output=.artifacts/verification/mutation-mqtt.json internal/domain/mqtt
+go tool gremlins unleash --config=tests/verification/gremlins.yaml --output=.artifacts/verification/mutation-nodedrain.json internal/domain/nodedrain
+go tool gremlins unleash --config=tests/verification/gremlins.yaml --output=.artifacts/verification/mutation-security.json internal/domain/security
 go tool gremlins unleash --config=tests/verification/gremlins.yaml --output=.artifacts/verification/mutation-session.json internal/domain/session</code></pre>
-        <p class="small">정책과 대상: <a href="../../tests/verification/gremlins.yaml">gremlins.yaml</a>, <a href="../../internal/domain/delivery/state.go">delivery/state.go</a>, <a href="../../internal/domain/session/state.go">session/state.go</a>.</p>
+        <p class="small">정책과 대상: <a href="../../tests/verification/gremlins.yaml">gremlins.yaml</a>, <a href="../../internal/domain/delivery/state.go">delivery/state.go</a>, <a href="../../internal/domain/mqtt/framing.go">mqtt/framing.go</a>, <a href="../../internal/domain/nodedrain/drain.go">nodedrain/drain.go</a>, <a href="../../internal/domain/security/security.go">security/security.go</a>, <a href="../../internal/domain/session/state.go">session/state.go</a>.</p>
       </div>
     </section>
 
@@ -446,13 +452,16 @@ if !errors.Is(err, failure) {
               <li><code>.artifacts/verification/coverage.out</code> — atomic raw profile</li>
               <li><code>.artifacts/verification/coverage-summary.json</code> — floor·ratchet·diff 평가</li>
               <li><code>.artifacts/verification/mutation-delivery.json</code> — CI-only delivery mutation 결과</li>
+              <li><code>.artifacts/verification/mutation-mqtt.json</code> — CI-only mqtt mutation 결과</li>
+              <li><code>.artifacts/verification/mutation-nodedrain.json</code> — CI-only nodedrain mutation 결과</li>
+              <li><code>.artifacts/verification/mutation-security.json</code> — CI-only security mutation 결과</li>
               <li><code>.artifacts/verification/mutation-session.json</code> — CI-only session mutation 결과</li>
               <li><code>internal/domain/*/testdata/fuzz/&lt;Target&gt;/</code> — 발견된 failure corpus</li>
             </ul>
           </article>
           <article class="card warning">
-            <h3>현재 Phase 0의 범위</h3>
-            <p>mutation 대상은 delivery/session state machine입니다. production ownership·ACL·drain state machine은 아직 현재 capability가 아니므로 gate 대상에 포함하지 않습니다. 해당 기능이 구현되면 package별 command와 80% 기준을 같은 변경에 추가해야 합니다.</p>
+            <h3>현재 mutation gate의 범위</h3>
+            <p>mutation 대상은 delivery·mqtt·nodedrain·security·session의 다섯 package입니다. 전달·프로토콜·드레인·ACL·소유권 상태 머신 범위를 package별로 검사합니다. 각 package의 efficacy와 mutant coverage는 모두 80% 이상이어야 합니다.</p>
           </article>
         </div>
         <h3>현재 작업 트리에서 다시 실행할 명령</h3>

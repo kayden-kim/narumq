@@ -656,11 +656,13 @@ go run ./tools/verify local
 go run ./tools/verify ci --base <merge-base>
 ```
 
-두 명령은 gofmt 사전 점검 뒤 `.artifacts/verification/branch/module`의 계측한 사본에서 atomic coverage를 포함한 전체 `go test ./...`를 한 번 실행한다. Local parallel limit은 8, CI는 2다. 독립 명령은 병렬 실행하며 하나가 실패하면 나머지를 취소한다. CI는 `internal/domain/delivery`, `internal/domain/nodedrain`, `internal/domain/session`에 각각 mutation을 추가한다. 정책은 `workers=1`, `test-cpu=1`, efficacy 80%, mutant coverage 80%이며 source/file/mutant exclusion은 없다. 한 package 결과로 다른 package 실패를 상쇄하지 않는다.
+두 명령은 gofmt 사전 점검 뒤 `.artifacts/verification/branch/module`의 계측한 사본에서 atomic coverage를 포함한 전체 `go test ./...`를 한 번 실행한다. Local parallel limit은 8, CI는 2다. 독립 명령은 병렬 실행하며 하나가 실패하면 나머지를 취소한다. CI는 `internal/domain/delivery`, `internal/domain/mqtt`, `internal/domain/nodedrain`, `internal/domain/security`, `internal/domain/session`에 각각 mutation을 추가한다. 이 5개 package는 §7 표의 전달·프로토콜·드레인·ACL·소유권 상태 머신 범위에 대응한다. 정책은 `workers=1`, `test-cpu=1`, efficacy 80%, mutant coverage 80%이며 source/file/mutant exclusion은 없다. 한 package 결과로 다른 package 실패를 상쇄하지 않는다.
 
 ```text
 go tool gremlins unleash --config=tests/verification/gremlins.yaml --output=.artifacts/verification/mutation-delivery.json internal/domain/delivery
+go tool gremlins unleash --config=tests/verification/gremlins.yaml --output=.artifacts/verification/mutation-mqtt.json internal/domain/mqtt
 go tool gremlins unleash --config=tests/verification/gremlins.yaml --output=.artifacts/verification/mutation-nodedrain.json internal/domain/nodedrain
+go tool gremlins unleash --config=tests/verification/gremlins.yaml --output=.artifacts/verification/mutation-security.json internal/domain/security
 go tool gremlins unleash --config=tests/verification/gremlins.yaml --output=.artifacts/verification/mutation-session.json internal/domain/session
 ```
 
@@ -732,10 +734,10 @@ go run ./tests/chaos/cluster-storage-v1 \
 - 전체 production code 목표: line ≥85%, function ≥90%, branch 정책 ≥80%.
 - 핵심 domain 9개(`mqtt`, `session`, `routing`, `delivery`, `tenancy`, `security`, `nodedrain`, `release`, `connrebalance`)는 line/function ≥95%, branch ≥90%다. `application/membership`은 핵심 domain이 아니며 전체 기준을 따른다. 정책은 `tests/verification/coverage-policy.json`이 source of truth다.
 - CI의 변경 production code는 line/function/branch diff coverage ≥90%를 충족해야 한다. 기준 변경은 [ADR-0044](../decisions/ADR-0044-diff-coverage-floor-90.md)를 따른다. Generated exclusion은 `cmd/`·`internal/` 아래의 `.pb.go`와 표준 generated marker에만 적용한다. 알 수 없는 coverage file은 실패다.
-- `delivery`, `session`, `nodedrain`은 mutation efficacy와 mutant coverage가 각각 ≥80%여야 한다. 동시성 코드는 race detector 또는 동등한 검증을 통과한다.
+- `delivery`, `mqtt`, `nodedrain`, `security`, `session`은 mutation efficacy와 mutant coverage가 각각 ≥80%여야 한다. 동시성 코드는 race detector 또는 동등한 검증을 통과한다.
 - Domain 규칙/state machine은 정상·오류·경계·전이 assertion coverage 100%를 기본으로 한다. Consensus·drain·infrastructure 검증은 integration/E2E/chaos에 연결한다.
 
-`verify local`과 `verify ci`는 gofmt, vet, traceability, architecture, package/integration coverage, production race, fuzz 5종과 coverage policy를 실행한다. Local parallelism은 8, CI는 2이며 CI는 여기에 mutation gate 3개를 더한다. CI의 `--base <merge-base>`는 coverage diff 계산에만 쓴다. Atomic profile은 `.artifacts/verification/coverage.out`, mutation 결과는 `.artifacts/verification/mutation-<package>.json`이다. Integration은 build tag별 일반·failpoint broker를 임시 경로에 한 번씩 build하고 child process 정리 뒤 제거한다. Race 범위는 `./cmd/... ./internal/...`이며 별도 build되는 integration child broker는 race-instrumented가 아니다.
+`verify local`과 `verify ci`는 gofmt, vet, traceability, architecture, package/integration coverage, production race, fuzz 5종과 coverage policy를 실행한다. Local parallelism은 8, CI는 2이며 CI는 여기에 mutation gate 5개를 더한다. CI의 `--base <merge-base>`는 coverage diff 계산에만 쓴다. Atomic profile은 `.artifacts/verification/coverage.out`, mutation 결과는 `.artifacts/verification/mutation-<package>.json`이다. Integration은 build tag별 일반·failpoint broker를 임시 경로에 한 번씩 build하고 child process 정리 뒤 제거한다. Race 범위는 `./cmd/... ./internal/...`이며 별도 build되는 integration child broker는 race-instrumented가 아니다.
 
 Coverage는 Go atomic coverprofile의 executable block을 집계한다. [ADR-0040](../decisions/ADR-0040-branch-coverage-arm-injection.md)에 따라 branch는 `if`의 then·else와 clause가 있는 switch·type switch·select의 각 case·default arm을 센다. Loop 조건, 단락 평가와 `func _` body는 제외한다. 빠진 else·switch default만 줄바꿈 없이 사본에 주입한다. Select default는 주입하지 않는다. 사본에서 전체 시험을 실행하고 manifest 좌표와 원본 SHA-256을 대조한다. Line coverage로 branch를 대체하지 않는다. 실행 가능한 변경 line이나 변경 결정점이 없으면 해당 diff coverage는 100%다.
 
@@ -1037,6 +1039,65 @@ Stage 요청은 `releaseVersion`만 보내지만 joiner build는 feature 3개를
 
 필수 CI 실행 증거가 없어 TEST-12~TEST-15는 `미검증`으로 남는다. 격리한 flaky test는 없으므로 owner·해소 기한 기록 대상은 없다. 파일 배치와 호출 경로가 그대로이므로 코드 지도·모듈 설계는 갱신하지 않았다.
 
+### 8.7 Mutation gate 범위 확장 수용 증거
+
+2026-10-09에 Windows/amd64, Go 1.26.5에서 저장소 루트의 명령을 실행했다. 변경 전 revision은 `471bf60`이다. 사용자는 CI mutation 범위에 `mqtt`·`security`를 추가하고, `variableByteIntegerSize`의 경계 assertion을 보강하며, Gremlins 기본 mutator 5종을 유지하기로 정했다. Production `framing.go`와 `tests/verification/gremlins.yaml`은 변경하지 않았다.
+
+다섯 mutation 명령을 §7.2의 순서대로 하나씩 실행했다. 아래 시간은 명령 시작부터 종료까지의 wall time이다. 모든 명령은 exit 0을 반환했다.
+
+| Package | Killed | Lived | Not covered | Efficacy | Mutant coverage | 시간 |
+| --- | --- | --- | --- | --- | --- | --- |
+| `internal/domain/delivery` | 27 | 0 | 0 | 100% | 100% | 209.599s |
+| `internal/domain/mqtt` | 516 | 0 | 6 | 100% | 98.85% | 958.839s |
+| `internal/domain/nodedrain` | 64 | 0 | 0 | 100% | 100% | 132.628s |
+| `internal/domain/security` | 34 | 0 | 0 | 100% | 100% | 91.381s |
+| `internal/domain/session` | 56 | 0 | 0 | 100% | 100% | 136.568s |
+
+Timed out·Not viable·Skipped는 각 package에서 모두 0개였다. Timed out은 KILLED에 합산하지 않는다. Gremlins 공식대로 efficacy 계산에서 제외한다. 기본 mutator는 `ARITHMETIC_BASE`, `CONDITIONALS_NEGATION`, `CONDITIONALS_BOUNDARY`, `INCREMENT_DECREMENT`, `INVERT_NEGATIVES`의 5종이다.
+
+MQTT의 Not covered 6개는 `framing.go:43:13`, `45:13`, `47:13`의 `CONDITIONALS_BOUNDARY`·`CONDITIONALS_NEGATION`이다. 계획 시점과 위치·수치가 같다. [추정] Go coverage block이 expression `switch`의 `case` 식을 별도 실행 구간으로 잡지 않아 Gremlins가 해당 mutant를 시험 대상에서 뺀다. 경계 assertion을 보강했지만 Gremlins의 이 수치는 바뀌지 않았다. 아래 수동 mutant는 실제 검출력의 차이를 확인한다.
+
+수동 mutant는 `git archive --format=tar -o "$TEMP/narumq-vbi.tar" HEAD`로 만든 임시 사본에서 확인했다. 작업 트리의 수정된 `packet_test.go`를 복사한 뒤 사본의 `framing.go`만 `case value <= 128:`로 바꿨다. `go test ./internal/domain/mqtt -run '^TestRemainingLengthFramingHelperEdges' -count=1`은 exit 1로 실패했다. 오류는 `variableByteIntegerSize(128) = 1, want 2`였다. 같은 mutant에서 `git show HEAD:internal/domain/mqtt/packet_test.go`의 원본 시험을 복원하면 같은 명령이 exit 0으로 통과했다. 기존 assertion은 이 경계 오류를 놓쳤고, 보강한 assertion은 잡았다. 원본 출력은 `.artifacts/verification/mutation-scope-manual-{strengthened,original}.log`에 있다.
+
+임시 사본과 tar 파일은 비교 결과를 기록한 뒤 삭제했다. 작업 트리의 production source는 수동 mutant 확인 중에도 변경하지 않았다.
+
+| 수용 시나리오 | 요구사항 | 실행·시험 위치 | 확인 결과 |
+| --- | --- | --- | --- |
+| Variable byte integer 폭과 전체 packet 크기의 8개 경계값 | TEST-12 | `internal/domain/mqtt/packet_test.go::TestRemainingLengthFramingHelperEdges_MQTT153_1_2_MQTT154_1_2` | 원본에서 PASS. 사본의 `<= 128` mutant는 보강 시험에서 FAIL, 기존 시험에서 PASS |
+| CI의 5개 mutation command와 Local의 mutation 제외 | TEST-12 | `tools/verify/runner_test.go::TestRunCIRequiresBaseAndPropagatesBaseToCoverage`, `TestRunLocalOmitsMutationChecksAndCoverageWithoutBase` | 두 시험 PASS. 실제 CI runner도 5개 package를 병렬 검사하고 PASS |
+| Package별 efficacy·mutant coverage 80% 하한 | TEST-12 | §7.2의 Gremlins 명령과 `tools/verify/runner.go::runVerification` | 순차 측정과 CI runner의 재측정 모두 각 package 통과. LIVED·timeout 0개 |
+| 기존 traceability 유지 | TEST-10 | `go run ./tools/verify traceability` | PASS, P0 66/81 연결, 예외 15개 |
+
+모든 명령은 저장소 루트에서 실행했다. 수동 mutant 시험 두 개만 임시 사본에서 실행했다. CI runner는 로컬 Windows 환경에서 첫 시도에 통과했다. 시험을 건너뛰거나 timeout을 늘리지 않았다. 원격 CI 실행 또는 필수 status 확인 결과는 아니다.
+
+| 실행 명령 | 결과와 관찰 | Wall time |
+| --- | --- | --- |
+| `go build ./internal/domain/mqtt` | PASS, exit 0 | 0.447s |
+| `go test ./internal/domain/mqtt -run '^TestRemainingLengthFramingHelperEdges' -count=1` | PASS, exit 0 | 1.698s |
+| `go test ./internal/domain/mqtt -count=1` | PASS, exit 0 | 1.244s |
+| `go build ./tools/verify` | PASS, exit 0 | 2.466s |
+| `go test ./tools/verify -run '^TestRunCIRequiresBaseAndPropagatesBaseToCoverage$\|^TestRunLocalOmitsMutationChecksAndCoverageWithoutBase$' -count=1` | PASS, exit 0 | 1.735s |
+| `go test ./tools/verify -count=1` | PASS, exit 0 | 7.620s |
+| `go build ./internal/domain/mqtt ./tools/verify` | PASS, exit 0 | 2.065s |
+| `go test ./internal/domain/mqtt ./tools/verify -count=1` | PASS, exit 0 | 7.456s |
+| 위 경계 시험 명령, 임시 사본의 `<= 128` mutant와 보강 assertion | 기대한 FAIL, exit 1. `variableByteIntegerSize(128) = 1, want 2` | 1.956s |
+| 같은 mutant와 기존 assertion | PASS, exit 0. 기존 시험의 검출 부족 확인 | 1.765s |
+| §7.2 `delivery` mutation 명령 | PASS, exit 0 | 209.599s |
+| §7.2 `mqtt` mutation 명령 | PASS, exit 0 | 958.839s |
+| §7.2 `nodedrain` mutation 명령 | PASS, exit 0 | 132.628s |
+| §7.2 `security` mutation 명령 | PASS, exit 0 | 91.381s |
+| §7.2 `session` mutation 명령 | PASS, exit 0 | 136.568s |
+| `go run ./tools/verify ci --base HEAD` | PASS, exit 0. Branch instrumentation·vet·traceability·architecture·전체 package/integration 시험·production race·fuzz 5개 각각 10,000회·mutation 5개·coverage 통과. 최종 출력 `ci: PASS` | 1450.060s |
+| `go run ./tools/verify traceability` | PASS, exit 0. `P0 mapped 66/81, exceptions 15` | 1.017s |
+
+순차 mutation 결과는 `.artifacts/verification/mutation-scope-{delivery,mqtt,nodedrain,security,session}.json`에 보존했다. CI runner가 다시 생성한 결과는 `.artifacts/verification/mutation-{delivery,mqtt,nodedrain,security,session}.json`에 있다. 두 실행의 Killed·Lived·Not covered 수와 점수는 같다. 원본 출력은 `.artifacts/verification/mutation-scope-<name>.log`, 각 명령의 exit code와 wall time은 `.artifacts/verification/mutation-scope-results.json`에 보존했다. `name`은 `boundary-test`, `runner-tests`, `manual-strengthened`, `manual-original`, `mutation-<package>`, `ci`, `traceability` 및 단계별 `stepN-build`·`stepN-package`·`step3-packages`, `manual-archive`다. `.artifacts/`는 Git 추적 대상이 아니다.
+
+JSON의 `elapsed_time`은 명령 전체의 wall time과 다른 Gremlins 내부 측정값이다. MQTT 순차 결과인 `mutation-scope-mqtt.json`의 값은 948.8832532초이고, CI 결과인 `mutation-mqtt.json`의 값은 1414.9420929초다. 순차 명령의 전체 wall time은 958.839초이고, CI runner 전체 wall time은 1450.060초다. 두 JSON은 서로 다른 실행의 결과이며 별도 경로에 보존했다.
+
+HTML 시각 자료의 mutation 절을 실제 Chromium에서 열어 확인했다. 다섯 command·package별 점수·대상 링크를 확인했다. 파일 배치와 runtime 호출 흐름은 바꾸지 않았다. 과거 ADR·스펙 실행 기록은 당시 증거로 유지했다.
+
+필수 CI 실행 증거가 없어 TEST-12는 `미검증`으로 남는다. 파일 배치와 호출 경로가 그대로이므로 코드 지도·모듈 설계는 갱신하지 않았다.
+
 ## 9. Architecture 검증
 
 CI 아키텍처 검증은 ADR-0001의 클린 아키텍처 경계를 강제한다:
@@ -1056,7 +1117,7 @@ CI 아키텍처 검증은 ADR-0001의 클린 아키텍처 경계를 강제한다
 
 1. 각 P0 요구사항이 단위 테스트와 자동화된 인수 시험에 연결되어야 한다.
 2. 지원하는 모든 MQTT 표준 규격 문장이 적합성 매트릭스에 완전히 매핑되어야 한다.
-3. 커버리지·Race 검사, 5개 Fuzz 캠페인, delivery·nodedrain·session 3개 패키지의 mutation 검사(각 지표 ≥80%)를 모두 통과해야 한다.
+3. 커버리지·Race 검사, 5개 Fuzz 캠페인, delivery·mqtt·nodedrain·security·session 5개 패키지의 mutation 검사(각 지표 ≥80%)를 모두 통과해야 한다.
 4. 기능이 완료된 단계마다 BP-01~BP-07 벤치마크를 실행하고 원본 artifact를 보존해야 한다.
 5. 승인된 운영 profile 부하에서 3노드 정상 상태 및 N-1 상태의 SLO를 충족해야 한다.
 6. 단일 노드 강제 종료(kill) 시 durable ACK 완료 메시지의 유실(gap)이 0건이어야 한다.
@@ -1066,4 +1127,4 @@ CI 아키텍처 검증은 ADR-0001의 클린 아키텍처 경계를 강제한다
 10. 운영 유사 환경에서 백업·복구, 롤백, 메트릭·경보·대시보드 동작을 확인해야 한다.
 11. MQTT 3.1.0 프로토콜 식별 목록과 마이그레이션·격리 증거가 존재해야 한다.
 
-릴리스 필수 소스 artifact는 `.artifacts/verification/coverage.out`, `coverage-summary.json`, mutation 결과 JSON 3개, 보존된 fuzz 결함 코퍼스다. 누락된 artifact나 미검증 게이트가 있으면 완료로 간주하지 않는다. Smoke 결과의 `releaseGating=false`와 미확정된 `SPEC-TBD-08` 운영 기준치는 계속 열어 둔다.
+릴리스 필수 소스 artifact는 `.artifacts/verification/coverage.out`, `coverage-summary.json`, mutation 결과 JSON 5개, 보존된 fuzz 결함 코퍼스다. 누락된 artifact나 미검증 게이트가 있으면 완료로 간주하지 않는다. Smoke 결과의 `releaseGating=false`와 미확정된 `SPEC-TBD-08` 운영 기준치는 계속 열어 둔다.

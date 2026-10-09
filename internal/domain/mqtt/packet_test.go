@@ -183,9 +183,26 @@ func TestConnectProtocolVersionAndPacketContracts_MQTT01_MQTT13_MQTT312_MQTT313(
 }
 
 func TestRemainingLengthFramingHelperEdges_MQTT153_1_2_MQTT154_1_2(t *testing.T) {
-	for _, value := range []int{0, 127, 128, 16383, 16384, 2097151, 2097152, maxRemainingLength} {
-		if got := variableByteIntegerSize(value); got < 1 || got > 4 {
-			t.Fatalf("variableByteIntegerSize(%d) = %d", value, got)
+	cases := []struct {
+		value int
+		want  int
+	}{
+		{value: 0, want: 1},
+		{value: 127, want: 1},
+		{value: 128, want: 2},
+		{value: 16383, want: 2},
+		{value: 16384, want: 3},
+		{value: 2097151, want: 3},
+		{value: 2097152, want: 4},
+		{value: maxRemainingLength, want: 4},
+	}
+	for _, testCase := range cases {
+		value, want := testCase.value, testCase.want
+		if got := variableByteIntegerSize(value); got != want {
+			t.Fatalf("variableByteIntegerSize(%d) = %d, want %d", value, got, want)
+		}
+		if got := PacketSize(value); got != 1+want+value {
+			t.Fatalf("PacketSize(%d) = %d, want %d", value, got, 1+want+value)
 		}
 	}
 	if validMQTTUTF8("valid") == false || validMQTTUTF8("\u0000") || validMQTTUTF8("\uFDD0") || validMQTTUTF8("\U0001FFFF") || validMQTTUTF8(string([]byte{0xC0, 0x80})) {
