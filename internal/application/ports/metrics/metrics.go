@@ -99,8 +99,6 @@ type MetricsRecorder interface {
 
 	// SetSessionsActive updates the active session gauge for persistent or non-persistent sessions.
 	SetSessionsActive(persistent bool, count int64)
-	// SetSubscriptionsActive updates the active subscription gauge.
-	SetSubscriptionsActive(count int64)
 
 	// SetRetainedStats updates retained messages count and total bytes.
 	SetRetainedStats(messageCount int64, totalBytes int64)

@@ -42,6 +42,7 @@ func TestManagementAPIObservesLiveMQTTState(t *testing.T) {
 
 	metricsRegistry := adaptersmetrics.NewRegistry()
 	routes := routing.NewTable()
+	metricsRegistry.ObserveSubscriptions(routes)
 	deliveries, err := deliveryqueue.New(64)
 	if err != nil {
 		t.Fatal(err)
@@ -70,7 +71,6 @@ func TestManagementAPIObservesLiveMQTTState(t *testing.T) {
 		routes,
 		deliveries,
 		retainedRepository,
-		subscribe.WithMetrics(metricsRegistry),
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -374,6 +374,7 @@ func TestMQTT310RejectionIsObservable(t *testing.T) {
 
 	metricsRegistry := adaptersmetrics.NewRegistry()
 	routes := routing.NewTable()
+	metricsRegistry.ObserveSubscriptions(routes)
 	deliveries, err := deliveryqueue.New(64)
 	if err != nil {
 		t.Fatal(err)
@@ -401,7 +402,6 @@ func TestMQTT310RejectionIsObservable(t *testing.T) {
 		routes,
 		deliveries,
 		retainedRepository,
-		subscribe.WithMetrics(metricsRegistry),
 	)
 	if err != nil {
 		t.Fatal(err)

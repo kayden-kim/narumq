@@ -76,14 +76,6 @@ func TestCmmRegistryClampsNegativeGauges(t *testing.T) {
 			lines: []string{`narumq_sessions_active{persistent="true"} 3`, `narumq_sessions_active{persistent="false"} 0`},
 		},
 		{
-			name: "subscriptions",
-			apply: func(r *Registry) {
-				r.SetSubscriptionsActive(9)
-				r.SetSubscriptionsActive(-9)
-			},
-			lines: []string{"narumq_subscriptions_active 0"},
-		},
-		{
 			name:  "retained message count",
 			apply: func(r *Registry) { r.SetRetainedStats(-1, 128) },
 			lines: []string{"narumq_retained_messages 0", "narumq_retained_bytes 128"},

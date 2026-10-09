@@ -8,7 +8,15 @@ import (
 	"time"
 
 	ports "narumq/internal/application/ports/metrics"
+	"narumq/internal/domain/mqtt"
+	"narumq/internal/domain/routing"
 )
+
+type subscriptionCount int
+
+func (count subscriptionCount) SubscriptionCount() int {
+	return int(count)
+}
 
 func TestHistogram(t *testing.T) {
 	h := NewHistogram([]float64{0.001, 0.01, 0.1, 1.0})
@@ -72,7 +80,7 @@ func TestRegistry_OperationsAndRendering(t *testing.T) {
 	// Sessions & Subscriptions
 	reg.SetSessionsActive(true, 10)
 	reg.SetSessionsActive(false, 25)
-	reg.SetSubscriptionsActive(100)
+	reg.ObserveSubscriptions(subscriptionCount(100))
 
 	// Retained
 	reg.SetRetainedStats(42, 8192)
@@ -124,6 +132,34 @@ func TestRegistry_OperationsAndRendering(t *testing.T) {
 			t.Errorf("output contains forbidden token: %s", f)
 		}
 	}
+}
+
+// Traceability: API-03; docs/specs/management-api-and-observability.md §7.1.
+func TestRegistryReadsSubscriptionCountAtScrape(t *testing.T) {
+	registry := NewRegistry()
+	routes := routing.NewTable()
+	registry.ObserveSubscriptions(routes)
+	requireCount := func(want int) {
+		t.Helper()
+		line := fmt.Sprintf("narumq_subscriptions_active %d\n", want)
+		if output := string(registry.Render(false)); !strings.Contains(output, line) {
+			t.Fatalf("Render() missing %q:\n%s", line, output)
+		}
+	}
+
+	requireCount(0)
+	if _, err := routes.Subscribe("client", mqtt.Subscription{Filter: "sensors/#", QoS: mqtt.QoSAtMostOnce}); err != nil {
+		t.Fatalf("Subscribe(client, sensors/#): %v", err)
+	}
+	requireCount(1)
+	if _, err := routes.Subscribe("worker", mqtt.Subscription{Filter: "$share/group/jobs", QoS: mqtt.QoSAtLeastOnce}); err != nil {
+		t.Fatalf("Subscribe(worker, $share/group/jobs): %v", err)
+	}
+	requireCount(2)
+	if removed, err := routes.Unsubscribe("client", "sensors/#"); err != nil || !removed {
+		t.Fatalf("Unsubscribe(client, sensors/#) = (%t, %v), want (true, nil)", removed, err)
+	}
+	requireCount(1)
 }
 
 func TestRegistryRendersWALSyncMetrics(t *testing.T) {

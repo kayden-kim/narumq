@@ -188,6 +188,9 @@ Dynamic Raft inbound의 count·byte 한도에는 payload를 읽기 위해 예약
 | gauge | 합계가 의미 있는 값만 합산한다. quorum, leader와 state는 합산하지 않고 명시적 gauge로 표시한다. |
 | histogram | 같은 bucket 경계만 cluster에서 합산한다. quantile을 node별로 계산해 평균내서는 안 된다. |
 
+Metric별 범위와 집계 방식은 [§7.1](#71-metric별-nodecluster-집계)을 따른다.
+
+
 Dynamic cluster의 Raft WAL 동기화 세 series는 **WAL group fsync 한 번의 성공**을 관찰한다. [ADR-0020](../decisions/ADR-0020-asynchronous-raft-wal-group-commit.md)의 단일 worker는 이미 대기 중인 여러 Ready 저장 요청을 각각 CRC frame으로 기록하고 한 번 sync할 수 있다. Histogram 한 표본은 frame 수가 아니라 실제 성공한 `File.Sync` 한 번이다. Duration은 이 호출의 시간만, entries와 bytes는 그 sync가 함께 확정한 frame들의 합계를 나타낸다. Snapshot 파일·directory, metadata, restore 동기화 또는 fixed-voter 경로는 포함하지 않는다.
 
 | Metric | Type | 값과 bucket |
@@ -227,6 +230,68 @@ transport 안의 reason 순서는 `max_connections`, `connection_rate`다. 알 �
 
 기본 label에 원문 `clientId`, username, IP, 임의 topic, request ID와 token claim을 넣어서는 안 된다. 제한된 exact topic Metric은 P1 opt-in resource로 제공하며 tenant, 최대 등록 수와 TTL을 적용해야 한다.
 
+### 7.1 Metric별 node·cluster 집계
+
+각 node의 `/metrics`는 해당 node의 값만 출력한다. Cluster 값은 Prometheus 같은 조회 계층이 아래 규칙으로 계산한다. 새 Metric family를 추가하면 아래 family 표에도 행을 추가해야 한다. `internal/adapters/metrics/registry_aggregation_test.go::TestRegistryFamiliesMatchAggregationCatalog`는 이 표를 읽어 `/metrics` 출력과 비교한다.
+
+| 값 | 구분 | 뜻 |
+| --- | --- | --- |
+| `node` | 범위 | 이 node가 직접 관찰하거나 처리한 값이다. 다른 node의 값과 겹치지 않는다. |
+| `replicated` | 범위 | 복제된 committed 상태에서 만든 값이다. 모든 node가 같은 cluster 값을 보고한다. 적용이 늦은 node는 잠시 다른 값을 보고할 수 있다. |
+| `leader` | 범위 | Raft leader만 series를 출력한다. Follower는 series를 출력하지 않는다. |
+| `increase_sum` | 집계, counter | node별 `rate`·`increase`를 먼저 구한 뒤 합산한다. Process를 재시작해 값이 0이 되면 `rate`·`increase`가 이를 reset으로 처리한다. 예: `sum by (reason) (increase(narumq_will_outcomes_total[5m]))` |
+| `sum` | 집계, gauge | node 값을 합산한다. 예: `sum(narumq_connections_active)` |
+| `max` | 집계, gauge | 가장 큰 node 값을 쓴다. `replicated` 값은 합산하면 node 수만큼 커진다. 대기 시간은 최악 값을 봐야 한다. 예: `max(narumq_retained_messages)`, `max by (peer) (narumq_raft_peer_replication_lag_entries)` |
+| `per_node` | 집계, gauge | 합산하지 않는다. Node별로 표시하거나 경보한다. 예: `narumq_audit_publisher_ready == 0` |
+| `bucket_sum` | 집계, histogram | 같은 `le` bucket의 node별 `rate`를 합산한 뒤 quantile을 계산한다. Node별 quantile의 평균은 쓰지 않는다. 예: `histogram_quantile(0.99, sum by (le) (rate(narumq_publish_latency_seconds_bucket[5m])))` |
+
+시험은 다음 조합 규칙을 강제한다.
+
+- Counter 이름은 `_total`로 끝나야 한다. 범위는 `node`, 집계는 `increase_sum`이어야 한다.
+- Histogram 범위는 `node`, 집계는 `bucket_sum`이어야 한다. 이름은 `_total`로 끝나면 안 된다. Label 열에 `le`를 적지 않는다.
+- Gauge 집계는 `sum`, `max`, `per_node` 중 하나여야 한다. 이름은 `_total`로 끝나면 안 된다.
+- `sum`은 범위가 `node`일 때만 쓴다.
+- 범위가 `leader`이면 집계는 `max`여야 한다.
+
+| Metric | Type | Label | 범위 | Cluster 집계 |
+| --- | --- | --- | --- | --- |
+| `narumq_connections_active` | `gauge` | - | `node` | `sum` |
+| `narumq_connections_total` | `counter` | `protocol`, `transport`, `result` | `node` | `increase_sum` |
+| `narumq_sessions_active` | `gauge` | `persistent` | `node` | `sum` |
+| `narumq_subscriptions_active` | `gauge` | - | `replicated` | `max` |
+| `narumq_retained_messages` | `gauge` | - | `replicated` | `max` |
+| `narumq_retained_bytes` | `gauge` | - | `replicated` | `max` |
+| `narumq_packets_received_total` | `counter` | `packet_type` | `node` | `increase_sum` |
+| `narumq_packets_sent_total` | `counter` | `packet_type` | `node` | `increase_sum` |
+| `narumq_auth_attempts_total` | `counter` | `method`, `result`, `reason` | `node` | `increase_sum` |
+| `narumq_mqtt_connect_rejected_total` | `counter` | `protocol`, `reason` | `node` | `increase_sum` |
+| `narumq_node_drain_transitions_total` | `counter` | `phase` | `node` | `increase_sum` |
+| `narumq_will_outcomes_total` | `counter` | `reason` | `node` | `increase_sum` |
+| `narumq_audit_events_total` | `counter` | `outcome` | `node` | `increase_sum` |
+| `narumq_audit_publisher_ready` | `gauge` | - | `node` | `per_node` |
+| `narumq_mqtt_listener_admission_rejected_total` | `counter` | `transport`, `reason` | `node` | `increase_sum` |
+| `narumq_tenant_quota_profile_committed` | `gauge` | - | `replicated` | `per_node` |
+| `narumq_tenant_quota_profile_version` | `gauge` | - | `replicated` | `per_node` |
+| `narumq_tenant_quota_config_mismatch` | `gauge` | - | `node` | `per_node` |
+| `narumq_tenant_quota_rejections_total` | `counter` | `tenant`, `dimension` | `node` | `increase_sum` |
+| `narumq_tenant_limit_rejections_total` | `counter` | `tenant`, `dimension` | `node` | `increase_sum` |
+| `narumq_publish_backpressure_rejections_total` | `counter` | `reason` | `node` | `increase_sum` |
+| `narumq_publish_backpressure_active` | `gauge` | `reason` | `node` | `per_node` |
+| `narumq_storage_free_bytes` | `gauge` | - | `node` | `per_node` |
+| `narumq_cluster_commit_backlog_oldest_seconds` | `gauge` | - | `node` | `max` |
+| `narumq_durable_delivery_saturated_targets_total` | `counter` | - | `node` | `increase_sum` |
+| `narumq_raft_peer_replication_lag_entries` | `gauge` | `peer` | `leader` | `max` |
+| `narumq_publish_latency_seconds` | `histogram` | - | `node` | `bucket_sum` |
+| `narumq_raft_wal_sync_duration_seconds` | `histogram` | - | `node` | `bucket_sum` |
+| `narumq_raft_wal_sync_entries` | `histogram` | - | `node` | `bucket_sum` |
+| `narumq_raft_wal_written_bytes_total` | `counter` | - | `node` | `increase_sum` |
+| `narumq_raft_stage_duration_seconds` | `histogram` | `stage` | `node` | `bucket_sum` |
+
+`narumq_subscriptions_active`는 scrape할 때 이 node의 route table에서 shared·non-shared 구독 수를 읽는다. Cluster mode의 route table은 committed 구독 전체의 projection이다. 그래서 다른 node의 SUBSCRIBE·UNSUBSCRIBE와 session 제거도 이 값에 반영된다.
+
+Standalone mode는 node가 하나뿐이므로 `replicated`와 `node`의 결과가 같다.
+
+
 ## 8. Dashboard 계약
 
 Dashboard는 이 API와 외부 TSDB를 사용해야 한다. 장기 시계열 원본을 자체 저장해서는 안 된다.
@@ -246,4 +311,8 @@ UI mutation은 해당 API가 active contract에 추가될 때 같은 RBAC, 확�
 - SEC-11 / API-08 / NFR-17 수용 시험은 활성 management mutation 8개, 401·403 거절, fail-closed admission, hash-chain 손상, schema 검증, directory 경계와 Windows rotation 충돌을 확인한다: `internal/application/audit/service_test.go`, `internal/adapters/http/management/audit_test.go`, `cmd/narumq/cluster_config_test.go`, `cmd/narumq/main_test.go` (`TestAuditVerifyCommandVerifiesAndLeavesFilesReadOnly`), `tests/contracts/audit-event-v1/contract_test.go`, `tests/integration/cluster_audit_process_test.go::TestDynamicClusterManagementAuditProcessAcceptance`, `internal/adapters/auditlog/file_publisher_test.go`, `internal/adapters/auditlog/persist_windows_test.go`.
 - Cluster startup probe는 typed Raft recovery가 끝나기 전 `STARTING`, recovery 뒤 base lifecycle 상태를 반환해야 한다. `cmd/narumq/cluster_storage_health_test.go::TestClusterStartupWaitsForTypedRecovery`가 두 상태를 확인한다.
 - Metric format, type, HELP/UNIT, histogram bucket과 금지 label을 자동 검사한다.
+- API-03 catalog test `internal/adapters/metrics/registry_aggregation_test.go::TestRegistryFamiliesMatchAggregationCatalog`는 Prometheus/OpenMetrics 출력의 metric 이름·type·label, 범위와 집계 규칙을 문서 표와 비교한다. Histogram에 `_bucket` 표본이 없는 경우와 `_count` label 조합에 bucket 계열이 없는 경우도 거절한다.
+- `internal/adapters/metrics/registry_test.go::TestRegistryReadsSubscriptionCountAtScrape`는 scrape마다 현재 구독 수를 읽는지 확인한다. `internal/domain/routing/routing_test.go::TestTableSubscriptionCountMatchesSnapshot`는 nil·빈 table, shared·non-shared 구독, 교체, 해지, session 제거와 projection 교체 뒤 `SubscriptionCount()`가 `Snapshot()` 길이와 같은지 확인한다.
+- `tests/integration/cluster_metrics_process_test.go::TestDynamicClusterSubscriptionGaugeProcessAcceptance`는 3-node cluster에서 초기 gauge 0, SUBSCRIBE 2개 뒤 2, UNSUBSCRIBE 뒤 1을 확인한다. `UNSUBACK`의 packet ID, properties 길이와 성공 reason `0x00`도 확인한다. `SessionExpiryInterval=0`인 MQTT 5 연결을 종료하면 모든 node의 gauge가 0으로 돌아오는지도 확인한다.
+- API-03 process 실행 증거(2026-10-09): 수정 전 `go test ./tests/integration -run '^TestDynamicClusterSubscriptionGaugeProcessAcceptance$' -count=1 -v`는 96.22초 뒤 실패했다. 두 SUBSCRIBE를 commit한 뒤 node 1에서 gauge 2를 확인하지 못했다. 수정 후 `GOMAXPROCS=4 go test ./tests/integration -run '^TestDynamicClusterSubscriptionGaugeProcessAcceptance$' -count=1 -v -timeout 20m`는 PASS했다(시험 7.80초, package 8.799초). 모든 node의 gauge `0→2→1→0`과 MQTT 5 `UNSUBACK` body `00 03 00 00`을 확인했다.
 - deferred mutation endpoint의 idempotency, audit와 dashboard aggregation/masking 검증은 해당 endpoint가 contract에 추가될 때 이 목록에 연결한다.

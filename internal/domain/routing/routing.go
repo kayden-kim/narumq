@@ -223,6 +223,24 @@ func (table *Table) TenantSubscriptionCount(tenantID tenancy.TenantID) int {
 	return count
 }
 
+// SubscriptionCount returns the number of registered shared and non-shared subscriptions.
+func (table *Table) SubscriptionCount() int {
+	if table == nil {
+		return 0
+	}
+	table.mu.RLock()
+	defer table.mu.RUnlock()
+
+	count := 0
+	for _, subscriptions := range table.subscriptions {
+		count += len(subscriptions)
+	}
+	for _, subscriptions := range table.shared {
+		count += len(subscriptions)
+	}
+	return count
+}
+
 // Subscribe adds or replaces one non-shared subscription for sessionID.
 func (table *Table) Subscribe(sessionID SessionID, subscription mqtt.Subscription) (replaced bool, err error) {
 	if err := ValidateSessionID(sessionID); err != nil {

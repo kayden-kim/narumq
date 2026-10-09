@@ -2,11 +2,6 @@
   "schemaVersion": 1,
   "exceptions": [
     {
-      "requirementId": "API-03",
-      "reason": "집계 방식의 문서화만 수용 기준이며 자동화 시험이 없습니다.",
-      "tracking": "docs/TODO.md#18-management-apiobservability와-dashboard"
-    },
-    {
       "requirementId": "API-05",
       "reason": "rate limit과 GitOps reconciliation이 관리 스펙에서 보류된 범위입니다.",
       "tracking": "docs/TODO.md#18-management-apiobservability와-dashboard"

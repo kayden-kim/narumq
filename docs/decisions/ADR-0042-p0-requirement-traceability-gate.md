@@ -35,7 +35,7 @@
 
 PRD 표에서 모든 요구사항 ID와 P0 ID를 읽으면 수동 요구사항 목록의 중복을 피할 수 있다. 단일 `Traceability:` marker를 사용하면 같은 test comment에서 MQTT statement와 일반 PRD requirement를 함께 추적할 수 있다. 예외 목록은 이유와 추적 경로를 요구하고, 정렬·중복·stale 상태를 gate가 확인하므로 현재 shortfall을 기록하면서 새 누락이 쌓이는 것을 막는다.
 
-현재 local traceability command는 P0 81개 중 58개에 test 연결을 확인하고 23개 예외를 허용한다. 이 결과는 gate 동작의 증거이며 TEST-10 완료 증거는 아니다.
+현재 local traceability command는 P0 81개 중 59개에 test 연결을 확인하고 22개 예외를 허용한다. 이 결과는 gate 동작의 증거이며 TEST-10 완료 증거는 아니다.
 
 ## 5. 대안
 
@@ -56,7 +56,7 @@ PRD 표에서 모든 요구사항 ID와 P0 ID를 읽으면 수동 요구사항 �
 ### 부정적 결과와 비용
 
 - P0 예외마다 이유와 추적 경로를 유지해야 한다.
-- 현재 23개 예외가 남아 있어 TEST-10은 미검증이다.
+- 현재 22개 예외가 남아 있어 TEST-10은 미검증이다.
 - CI merge 차단은 실제 필수 status 실행 증거가 생길 때까지 입증되지 않는다.
 
 ### 후속 작업
@@ -70,7 +70,7 @@ PRD 표에서 모든 요구사항 ID와 P0 ID를 읽으면 수동 요구사항 �
 | --- | --- | --- | --- |
 | PRD ID·P0 연결과 예외 ratchet | `tools/verify/requirements_test.go::TestVerifyP0RequirementMapping` | 정상, 미연결, stale, non-P0, unknown, unsorted, tracking과 PRD 중복 사례 판정 | `go test ./tools/verify -count=1 -v -run 'P0|Traceability'` PASS |
 | 예외 JSON·경로 경계와 marker 파싱 | `TestLoadP0ExceptionsStrictlyValidatesJSON`, `TestParseTraceabilityAcceptsPRDPrefixesAndKeepsStatementRule` | strict decode, 경로, PRD prefix와 MQTT statement 규칙 판정 | 같은 focused suite PASS |
-| 저장소 traceability gate | `go run ./tools/verify traceability` | MQTT matrix PASS, P0 요약 출력 | `traceability: PASS (P0 mapped 58/81, exceptions 23)` |
+| 저장소 traceability gate | `go run ./tools/verify traceability` | MQTT matrix PASS, P0 요약 출력 | `traceability: PASS (P0 mapped 59/81, exceptions 22)` |
 
 ## 8. 재검토 조건
 

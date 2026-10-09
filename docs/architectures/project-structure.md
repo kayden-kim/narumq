@@ -25,6 +25,7 @@
 | Dynamic cluster 시작 | `runWithContext` → `cmd/narumq/cluster_config.go` → `cluster_runtime.go` `runClusterMode` | 필수 `management.auditDirectory`가 Raft `directory`와 겹치지 않는지 검증한다. Peer transport, Raft, application projection, runtime controller와 node-local audit publisher를 조립한다. |
 | Backup restore / peer-only | `cluster_backup_restore.go` `restoreClusterBackup`; `raft_peer_config.go` `runRaftPeerOnly` | 각각 archive restore와 MQTT listener가 없는 fixed-voter peer 경로를 시작한다. |
 | Management API | `cmd/narumq` wiring → `internal/adapters/http/management/server.go` `NewServerWithMembership` | HTTP 요청을 application management 경계로 전달한다. API endpoint와 wire response는 contract가 기준이다. |
+| Metric scrape | `GET /metrics` → `internal/adapters/http/management/metrics.go` `MetricsHandler.ServeHTTP` → `internal/adapters/metrics/registry.go` `Registry.Render` → `routing.Table.SubscriptionCount` | `cmd/narumq/main.go`는 standalone route table을 주입한다. `cmd/narumq/cluster_runtime.go`는 node별 committed route projection을 주입한다. Registry는 scrape할 때 현재 구독 수를 읽는다. subscribe use case는 gauge를 직접 갱신하지 않는다. |
 | Management audit | `http/management/audit.go` → `internal/application/audit` → `internal/application/ports/audit` → `internal/adapters/auditlog` | Dynamic cluster mutation을 기록 가능할 때만 실행한다. Node-local hash chain과 read-only verifier는 `auditlog`이 소유한다. |
 | Storage fault evidence | `tests/chaos/cluster-storage-v1/main.go` `runCLI` → `runner.go` `Run` | FUSE fault simulation 및 별도 local ext4 profile을 실행한다. 이는 production EBS 또는 물리 전원 손실의 증거가 아니다. |
 
@@ -131,7 +132,7 @@ flowchart LR
 | State adapters | `internal/adapters/memory/{deliveryqueue,retained,sessionstore}`, `internal/adapters/raft` | Process-local queue·retained·session store 및 Raft/WAL/snapshot persistence |
 | Audit adapter | `internal/adapters/auditlog` | Node-local JSONL append, fsync, rotation, recovery와 hash-chain verification |
 | Raft records | `internal/adapters/raft/records` | Versioned replicated-state/backup protobuf binding, deterministic encoding과 validation |
-| Observability | `internal/adapters/clock`, `metrics`, `runtimemetrics` | Clock 제공, process/runtime metric과 audit outcome metric 기록 |
+| Observability | `internal/adapters/clock`, `metrics`, `runtimemetrics` | Clock, process/runtime metric, audit outcome metric을 제공한다. 구독 gauge는 scrape할 때 route projection에서 읽는다. |
 Application port는 사용하는 application package가 소유한다. 외부 library와 wire type은 adapter에서 domain value나 application DTO로 바꾼다. Domain과 application은 외부 I/O, framework와 provider SDK에 의존하지 않는다. `internal/adapters/raft`의 transport/persistence 책임과 replicated record 의미는 분리되어 있다. 세부 계층 책임은 [Broker core architecture](broker-core.md)를 따른다.
 
 ## 주요 port capability와 adapter map

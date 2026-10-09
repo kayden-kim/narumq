@@ -296,7 +296,8 @@ func newClusterMembershipProcessFixture(t *testing.T, nodeCount int, buildTags s
       "retained-qos12-replay-5",
       "retained-qos12-replay-6",
       "retained-qos12-replay-7",
-      "retained-qos12-replay-8"
+      "retained-qos12-replay-8",
+      "metrics-gauge-subscriber"
     ],
     "roles": ["client"]
   }],
@@ -624,6 +625,18 @@ func newClusterMembershipProcessFixture(t *testing.T, nodeCount int, buildTags s
     "effect": "allow",
     "action": "subscribe",
     "topicFilter": "bp/#"
+  }, {
+    "tenantId": "acceptance",
+    "role": "client",
+    "effect": "allow",
+    "action": "subscribe",
+    "topicFilter": "metrics/#"
+  }, {
+    "tenantId": "acceptance",
+    "role": "client",
+    "effect": "allow",
+    "action": "unsubscribe",
+    "topicFilter": "metrics/#"
   }]
 }`, jwksURL))
 	clusterMembershipProcessWriteFile(t, securityPath, securityConfig, 0o600)

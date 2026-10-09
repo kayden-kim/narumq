@@ -242,6 +242,7 @@ func runClusterMode(ctx context.Context, config clusterConfigFile, logger *slog.
 		faults:             faults,
 		handoffProposed:    make(map[string]uint64),
 	}
+	metricsRegistry.ObserveSubscriptions(runtime.routes)
 	runtime.tenantQuotaController = &clusterTenantQuotaController{runtime: runtime}
 	minFree, maxLag := config.publishBackpressure()
 	runtime.publishPressure = &clusterPublishPressureController{
@@ -329,7 +330,6 @@ func runClusterMode(ctx context.Context, config clusterConfigFile, logger *slog.
 		connect.WithDurableDeliveryCommitter(runtime),
 	}
 	subscribeOptions := []subscribe.Option{
-		subscribe.WithMetrics(metricsRegistry),
 		subscribe.WithCommitter(runtime),
 	}
 	publishOptions := []publish.Option{

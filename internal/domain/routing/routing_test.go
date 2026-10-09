@@ -162,6 +162,64 @@ func TestSubscriptionReplacementUnsubscribeAndOverlapQoS(t *testing.T) {
 	}
 }
 
+// Traceability: API-03; docs/specs/management-api-and-observability.md §7.1.
+func TestTableSubscriptionCountMatchesSnapshot(t *testing.T) {
+	var nilTable *Table
+	if got, snapshotCount := nilTable.SubscriptionCount(), len(nilTable.Snapshot()); got != 0 || snapshotCount != 0 {
+		t.Fatalf("nil table count = %d, snapshot count = %d, want 0", got, snapshotCount)
+	}
+
+	table := NewTable()
+	requireCount := func(want int) {
+		t.Helper()
+		got, snapshotCount := table.SubscriptionCount(), len(table.Snapshot())
+		if got != snapshotCount || got != want {
+			t.Fatalf("SubscriptionCount() = %d, Snapshot() count = %d, want %d", got, snapshotCount, want)
+		}
+	}
+	subscribe := func(sessionID SessionID, filter string, qos mqtt.QoS) {
+		t.Helper()
+		if _, err := table.Subscribe(sessionID, mqtt.Subscription{Filter: filter, QoS: qos}); err != nil {
+			t.Fatalf("Subscribe(%q, %q): %v", sessionID, filter, err)
+		}
+	}
+
+	requireCount(0)
+	subscribe("client", "sensors/#", mqtt.QoSAtMostOnce)
+	subscribe("client", "alerts/#", mqtt.QoSAtMostOnce)
+	subscribe("worker-a", "worker/state/#", mqtt.QoSAtMostOnce)
+	requireCount(3)
+	if replaced, err := table.Subscribe("client", mqtt.Subscription{Filter: "sensors/#", QoS: mqtt.QoSAtLeastOnce}); err != nil || !replaced {
+		t.Fatalf("Subscribe replacement = (%t, %v), want (true, nil)", replaced, err)
+	}
+	requireCount(3)
+	subscribe("worker-a", "$share/group/jobs", mqtt.QoSAtLeastOnce)
+	subscribe("worker-b", "$share/group/jobs", mqtt.QoSAtLeastOnce)
+	requireCount(5)
+
+	if removed, err := table.Unsubscribe("client", "sensors/#"); err != nil || !removed {
+		t.Fatalf("Unsubscribe(client, sensors/#) = (%t, %v), want (true, nil)", removed, err)
+	}
+	requireCount(4)
+	if !table.RemoveSession("worker-a") {
+		t.Fatal("RemoveSession(worker-a) = false, want true")
+	}
+	requireCount(2)
+
+	tenantID, err := tenancy.NewTenantID("tenant")
+	if err != nil {
+		t.Fatal(err)
+	}
+	projection := []ProjectionSubscription{{
+		TenantID: tenantID, SessionID: "projected",
+		Subscription: mqtt.Subscription{Filter: "projected/#", QoS: mqtt.QoSAtMostOnce},
+	}}
+	if err := table.ReplaceProjection(projection); err != nil {
+		t.Fatalf("ReplaceProjection(): %v", err)
+	}
+	requireCount(1)
+}
+
 // Traceability: PRD MQTT-03/TEST-03/04; stale subscriptions are removed when
 // a session is replaced or expires.
 func TestRemoveSessionIsAtomicAndIdempotent(t *testing.T) {

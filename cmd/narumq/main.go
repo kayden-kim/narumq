@@ -306,6 +306,7 @@ func runWithContext(ctx context.Context, args []string, logger *slog.Logger) err
 		defer managementListener.Close()
 	}
 	routes := routing.NewTable()
+	metricsRegistry.ObserveSubscriptions(routes)
 	deliveries, err := deliveryqueue.New(*deliveryQueueCapacity)
 	if err != nil {
 		return fmt.Errorf("create delivery queue: %w", err)
@@ -326,7 +327,6 @@ func runWithContext(ctx context.Context, args []string, logger *slog.Logger) err
 	)
 	connectOpts = append(connectOpts, connect.WithMetrics(metricsRegistry))
 	connectOpts = append(connectOpts, connect.WithWillOutcomeRecorder(metricsRegistry))
-	subscribeOpts = append(subscribeOpts, subscribe.WithMetrics(metricsRegistry))
 	publishOpts = append(publishOpts, publish.WithMetrics(metricsRegistry))
 	tenantLimits, err := newTenantLimitService(securityBundle, metricsRegistry, logger)
 	if err != nil {

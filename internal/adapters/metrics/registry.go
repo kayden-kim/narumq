@@ -119,9 +119,16 @@ func (h *Histogram) Snapshot() (buckets []float64, counts []uint64, count uint64
 	return
 }
 
+// SubscriptionCounter reports the current number of routed subscriptions.
+type SubscriptionCounter interface {
+	SubscriptionCount() int
+}
+
 // Registry stores operational metrics and renders them in Prometheus / OpenMetrics text formats.
 type Registry struct {
 	mu sync.RWMutex
+
+	subscriptionCounter SubscriptionCounter
 
 	connectionsActive atomic.Int64
 	connectionsTotal  map[string]*atomic.Int64 // key: protocol,transport,result
@@ -129,9 +136,8 @@ type Registry struct {
 	sessionsActivePersistent    atomic.Int64
 	sessionsActiveNonPersistent atomic.Int64
 
-	subscriptionsActive atomic.Int64
-	retainedMessages    atomic.Int64
-	retainedBytes       atomic.Int64
+	retainedMessages atomic.Int64
+	retainedBytes    atomic.Int64
 
 	packetsReceivedTotal          map[string]*atomic.Int64 // key: packetType
 	packetsSentTotal              map[string]*atomic.Int64 // key: packetType
@@ -454,12 +460,11 @@ func (r *Registry) SetSessionsActive(persistent bool, count int64) {
 	}
 }
 
-// SetSubscriptionsActive updates subscription gauge.
-func (r *Registry) SetSubscriptionsActive(count int64) {
-	if count < 0 {
-		count = 0
-	}
-	r.subscriptionsActive.Store(count)
+// ObserveSubscriptions makes Render read the active subscription count at scrape time.
+func (r *Registry) ObserveSubscriptions(counter SubscriptionCounter) {
+	r.mu.Lock()
+	r.subscriptionCounter = counter
+	r.mu.Unlock()
 }
 
 // SetRetainedStats updates retained stats gauges.
@@ -500,6 +505,14 @@ func (r *Registry) ActiveConnections() int64 {
 
 // Render renders the metrics either in OpenMetrics format (isOpenMetrics=true) or Prometheus v0.0.4.
 func (r *Registry) Render(isOpenMetrics bool) []byte {
+	r.mu.RLock()
+	subscriptionCounter := r.subscriptionCounter
+	r.mu.RUnlock()
+	subscriptionCount := 0
+	if subscriptionCounter != nil {
+		subscriptionCount = subscriptionCounter.SubscriptionCount()
+	}
+
 	var buf bytes.Buffer
 
 	// 1. narumq_connections_active
@@ -521,7 +534,7 @@ func (r *Registry) Render(isOpenMetrics bool) []byte {
 	// 4. narumq_subscriptions_active
 	fmt.Fprintf(&buf, "# HELP narumq_subscriptions_active Current number of active subscriptions.\n")
 	fmt.Fprintf(&buf, "# TYPE narumq_subscriptions_active gauge\n")
-	fmt.Fprintf(&buf, "narumq_subscriptions_active %d\n", r.subscriptionsActive.Load())
+	fmt.Fprintf(&buf, "narumq_subscriptions_active %d\n", subscriptionCount)
 
 	// 5. narumq_retained_messages
 	fmt.Fprintf(&buf, "# HELP narumq_retained_messages Current number of retained messages.\n")

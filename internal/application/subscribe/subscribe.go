@@ -10,7 +10,6 @@ import (
 	"time"
 
 	"narumq/internal/application/ports/deliveryqueue"
-	portsmetrics "narumq/internal/application/ports/metrics"
 	"narumq/internal/application/ports/retained"
 	"narumq/internal/application/tenantlimit"
 	"narumq/internal/domain/mqtt"
@@ -42,13 +41,6 @@ type Option func(*UseCase)
 func WithPolicy(policy security.Policy) Option {
 	return func(u *UseCase) {
 		u.policy = policy
-	}
-}
-
-// WithMetrics configures a recorder for active subscription gauges.
-func WithMetrics(metrics portsmetrics.MetricsRecorder) Option {
-	return func(u *UseCase) {
-		u.metrics = metrics
 	}
 }
 
@@ -93,7 +85,6 @@ type UseCase struct {
 	queue        deliveryqueue.Queue
 	retained     retained.Repository
 	policy       security.Policy
-	metrics      portsmetrics.MetricsRecorder
 	committer    SubscriptionCommitter
 	tenantLimits *tenantlimit.Service
 	// tenantSubscriptionMu keeps local quota checks and route mutations ordered.
@@ -194,16 +185,16 @@ func (useCase *UseCase) UnsubscribeCommitted(
 				continue
 			}
 		}
+		_, existedBeforeCommit := useCase.routes.Lookup(sessionID, filter)
 		if err := useCase.commitSubscription(ctx, ownership, filter, 0, false, false, 0, subscriptionActionRemove); err != nil {
 			return ack, err
 		}
 		if packet.Version != mqtt.ProtocolV311 {
-			ack.ReasonCodes = append(ack.ReasonCodes, useCase.unsubscribeReason(sessionID, filter))
+			ack.ReasonCodes = append(ack.ReasonCodes, useCase.unsubscribeReason(sessionID, filter, existedBeforeCommit))
 		} else {
 			_, _ = useCase.routes.Unsubscribe(sessionID, filter)
 		}
 	}
-	useCase.recordSubscriptionGauge()
 	return ack, nil
 }
 
@@ -294,7 +285,6 @@ func (useCase *UseCase) subscribeOne(
 	if _, err := useCase.routes.Subscribe(sessionID, subscription); err != nil {
 		return invalidSubscriptionReason(version), 0, nil
 	}
-	useCase.recordSubscriptionGauge()
 	return byte(subscription.QoS), retainedQueued, nil
 }
 
@@ -353,7 +343,7 @@ func (useCase *UseCase) retainedBatch(sessionID routing.SessionID, subscription 
 	return batch, nil
 }
 
-func (useCase *UseCase) unsubscribeReason(sessionID routing.SessionID, filter string) byte {
+func (useCase *UseCase) unsubscribeReason(sessionID routing.SessionID, filter string, existedBeforeCommit bool) byte {
 	if err := routing.ValidateTopicFilter(filter); err != nil {
 		return 0x8F
 	}
@@ -361,7 +351,7 @@ func (useCase *UseCase) unsubscribeReason(sessionID routing.SessionID, filter st
 	if err != nil {
 		return 0x8F
 	}
-	if !removed {
+	if !removed && !existedBeforeCommit {
 		return 0x11
 	}
 	return 0x00
@@ -397,13 +387,6 @@ func protocolErrorReason(version mqtt.ProtocolVersion) byte {
 		return 0x82
 	}
 	return 0x80
-}
-
-func (useCase *UseCase) recordSubscriptionGauge() {
-	if useCase == nil || useCase.metrics == nil || useCase.routes == nil {
-		return
-	}
-	useCase.metrics.SetSubscriptionsActive(int64(len(useCase.routes.Snapshot())))
 }
 
 func notAuthorizedSubscriptionReason(version mqtt.ProtocolVersion) byte {
