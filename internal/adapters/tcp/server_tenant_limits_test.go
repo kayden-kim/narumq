@@ -44,6 +44,7 @@ func tcpTenantRuntime(t *testing.T, version mqtt.ProtocolVersion, service *tenan
 		config.ClusterReady = func() bool { return true }
 		config.ClusterAdmissionOpen = func() bool { return true }
 		config.ClusterProjectionReady = func() bool { return true }
+		config.CredentialRevocationChecker = &tcpCredentialRevocationChecker{}
 	}
 	runtime := newAdapterTestRuntime(t, 8, config, func(server *Server) {
 		tenant, _ := tenancy.NewTenantID("tenant-a")

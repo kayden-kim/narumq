@@ -3,682 +3,901 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <meta name="description" content="NaruMQ MQTT 프로토콜, 라우팅, standalone retained memory와 dynamic cluster Raft retained state, QoS와 세션 전달 흐름을 설명하는 문서">
-  <title>NaruMQ MQTT 프로토콜과 코드 흐름</title>
+  <meta name="color-scheme" content="light">
+  <title>ACK는 어디까지 증명할까? — NaruMQ MQTT 코드 흐름</title>
   <style>
     :root {
-      color-scheme: dark;
-      --bg: #0b1020;
-      --panel: #121a2c;
-      --panel-soft: #172239;
-      --line: #2a3b5f;
-      --text: #e8eef9;
-      --muted: #a8b6cf;
-      --blue: #83b5ff;
-      --cyan: #6ee7df;
-      --yellow: #ffd479;
-      --orange: #ffad80;
-      --red: #ff8f9d;
-      --green: #9ee6a9;
-      --shadow: 0 18px 60px rgba(0, 0, 0, .24);
+      color-scheme: light;
+      --paper: #f4f7f6;
+      --surface: #ffffff;
+      --ink: #142f3a;
+      --muted: #526872;
+      --line: #c5d4d6;
+      --accent: #126f78;
+      --accent-soft: #d9eceb;
+      --warm: #a84d36;
+      --warm-soft: #f2e4df;
+      --code: #15313d;
+      --code-ink: #e5f0f1;
+      --sans: "Pretendard", "Noto Sans KR", "Apple SD Gothic Neo", "Malgun Gothic", system-ui, sans-serif;
+      --mono: "Cascadia Code", "D2Coding", Consolas, monospace;
+      --content: 1160px;
     }
 
-    * { box-sizing: border-box; }
-    html { scroll-behavior: smooth; }
+    *, *::before, *::after { box-sizing: border-box; }
+    html { scroll-behavior: smooth; scroll-padding-top: 5rem; }
     body {
       margin: 0;
-      background:
-        radial-gradient(circle at 10% 0%, rgba(95, 142, 255, .16), transparent 34rem),
-        radial-gradient(circle at 90% 18%, rgba(80, 216, 202, .10), transparent 30rem),
-        var(--bg);
-      color: var(--text);
-      font-family: Inter, "Noto Sans KR", "Apple SD Gothic Neo", sans-serif;
-      line-height: 1.72;
+      background: var(--paper);
+      color: var(--ink);
+      font-family: var(--sans);
+      font-size: 17px;
+      line-height: 1.78;
+      word-break: keep-all;
+      overflow-wrap: break-word;
     }
-    a { color: var(--blue); text-decoration: none; border-bottom: 1px solid rgba(131, 181, 255, .35); }
-    a:hover { color: #c5dcff; border-bottom-color: currentColor; }
-    code, pre, .mono { font-family: "Cascadia Code", "JetBrains Mono", Consolas, monospace; }
-    code { color: #d9e6ff; background: rgba(119, 153, 212, .14); border-radius: 5px; padding: .08em .32em; }
-    pre {
-      margin: 1rem 0 0;
-      padding: 1rem 1.1rem;
-      overflow-x: auto;
-      border: 1px solid var(--line);
-      border-radius: 12px;
-      background: #0a0f1b;
-      color: #dbe7fb;
-      font-size: .88rem;
-      line-height: 1.62;
-      white-space: pre;
-    }
-    blockquote {
-      margin: 1rem 0;
-      padding: .75rem 1rem;
-      border-left: 3px solid var(--cyan);
-      background: rgba(110, 231, 223, .07);
-      color: var(--muted);
-    }
-    .wrap { width: min(1160px, calc(100% - 2rem)); margin: 0 auto; }
-    .hero { padding: 5.5rem 0 3rem; }
-    .eyebrow { color: var(--cyan); letter-spacing: .14em; text-transform: uppercase; font-size: .76rem; font-weight: 800; }
-    h1, h2, h3 { line-height: 1.24; letter-spacing: -.025em; }
-    h1 { max-width: 900px; margin: .8rem 0 1rem; font-size: clamp(2.2rem, 5vw, 4.6rem); }
-    h2 { margin: 0 0 1rem; font-size: clamp(1.55rem, 3vw, 2.3rem); }
-    h3 { margin: 1.5rem 0 .55rem; font-size: 1.15rem; color: #f5f8ff; }
-    p { margin: .7rem 0; }
-    .lead { max-width: 850px; color: var(--muted); font-size: 1.12rem; }
-    .badges { display: flex; flex-wrap: wrap; gap: .55rem; margin-top: 1.4rem; }
-    .badge, .commit { display: inline-flex; align-items: center; gap: .35rem; border: 1px solid var(--line); border-radius: 999px; padding: .25rem .68rem; background: rgba(18, 26, 44, .82); color: var(--muted); font-size: .82rem; }
-    .commit { color: var(--yellow); }
-    nav {
-      position: sticky; top: 0; z-index: 10;
-      border-block: 1px solid rgba(42, 59, 95, .85);
-      background: rgba(11, 16, 32, .87);
-      backdrop-filter: blur(16px);
-    }
-    nav .wrap { display: flex; gap: .8rem; overflow-x: auto; padding: .7rem 0; }
-    nav a { flex: 0 0 auto; border: 0; color: var(--muted); font-size: .87rem; }
-    nav a:hover { color: var(--text); }
-    section { padding: 2.9rem 0; border-bottom: 1px solid rgba(42, 59, 95, .7); }
-    .section-kicker { margin-bottom: .35rem; color: var(--cyan); font-size: .78rem; font-weight: 800; letter-spacing: .11em; text-transform: uppercase; }
-    .grid { display: grid; gap: 1rem; grid-template-columns: repeat(12, minmax(0, 1fr)); }
-    .card { min-width: 0; grid-column: span 4; padding: 1.15rem; border: 1px solid var(--line); border-radius: 14px; background: linear-gradient(160deg, rgba(23, 34, 57, .94), rgba(18, 26, 44, .88)); box-shadow: var(--shadow); }
-    .card.wide { grid-column: span 8; }
-    .card.full { grid-column: 1 / -1; }
-    .card p, .card li { color: var(--muted); }
-    .card strong { color: var(--text); }
-    .callout { border-left: 3px solid var(--yellow); background: rgba(255, 212, 121, .07); }
-    .warning { border-left: 3px solid var(--orange); background: rgba(255, 173, 128, .07); }
-    .success { border-left: 3px solid var(--green); background: rgba(158, 230, 169, .07); }
-    .flow { display: flex; flex-wrap: wrap; align-items: stretch; gap: .55rem; margin: 1.2rem 0; }
-    .flow .node { flex: 1 1 145px; min-width: 0; padding: .8rem; border: 1px solid var(--line); border-radius: 10px; background: var(--panel-soft); text-align: center; }
-    .flow .arrow { align-self: center; color: var(--cyan); font-size: 1.35rem; }
-    .label { display: inline-block; margin-bottom: .3rem; color: var(--cyan); font-size: .76rem; font-weight: 800; letter-spacing: .08em; text-transform: uppercase; }
-    table { width: 100%; border-collapse: collapse; margin-top: 1rem; font-size: .93rem; }
-    th, td { padding: .75rem .7rem; border-bottom: 1px solid var(--line); vertical-align: top; text-align: left; }
-    th { color: #f5f8ff; background: rgba(119, 153, 212, .10); }
-    td { color: var(--muted); }
-    td:first-child { color: var(--text); }
-    .timeline { display: grid; gap: 1rem; position: relative; }
-    .timeline-item { display: grid; grid-template-columns: 132px minmax(0, 1fr); gap: 1rem; }
-    .timeline-id { padding-top: .15rem; color: var(--yellow); font-weight: 800; }
-    .timeline-body { padding-left: 1rem; border-left: 2px solid var(--line); }
+    a { color: var(--accent); text-decoration-thickness: 1px; text-underline-offset: .2em; }
+    a:hover { color: var(--warm); }
+    a:focus-visible, button:focus-visible { outline: 3px solid var(--warm); outline-offset: 3px; }
+    code, pre { font-family: var(--mono); word-break: normal; }
+    code { font-size: .9em; }
+    p { margin: 0 0 1rem; }
+    h1, h2, h3, h4 { color: var(--ink); line-height: 1.24; margin: 0; font-weight: 740; letter-spacing: -.035em; }
+    h1 { font-size: clamp(2.7rem, 7vw, 5.6rem); max-width: 13ch; }
+    h2 { font-size: clamp(1.9rem, 4vw, 3rem); }
+    h3 { font-size: 1.28rem; }
+    h4 { font-size: 1.05rem; }
     ul, ol { padding-left: 1.25rem; }
-    li + li { margin-top: .32rem; }
-    .small { color: var(--muted); font-size: .88rem; }
-    .muted { color: var(--muted); }
-    .source-list { columns: 2 300px; column-gap: 2rem; }
-    .source-list li { break-inside: avoid; margin-bottom: .5rem; }
-    footer { padding: 2rem 0 4rem; color: var(--muted); font-size: .88rem; }
-    @media (max-width: 760px) {
-      .wrap { width: min(100% - 1rem, 1160px); }
-      .hero { padding-top: 3.2rem; }
-      .card, .card.wide { grid-column: 1 / -1; }
-      .timeline-item { grid-template-columns: 1fr; gap: .25rem; }
-      .timeline-body { padding-left: .8rem; }
-      table { display: block; overflow-x: auto; white-space: normal; }
-      th, td { min-width: 145px; }
-      pre { font-size: .78rem; }
+    li + li { margin-top: .35rem; }
+    .skip-link {
+      position: absolute; z-index: 30; left: 1rem; top: -5rem;
+      background: var(--ink); color: white; padding: .6rem .9rem;
+    }
+    .skip-link:focus { top: 1rem; }
+    .wrap { width: min(var(--content), calc(100% - 3rem)); margin-inline: auto; }
+    .site-head {
+      min-height: 58px; display: flex; align-items: center; justify-content: space-between;
+      border-bottom: 1px solid var(--line); color: var(--muted); font-size: .78rem;
+      letter-spacing: .08em; text-transform: uppercase;
+    }
+    .site-head a { color: inherit; text-decoration: none; }
+    .site-name { font-weight: 750; color: var(--ink) !important; }
+    .hero { padding: clamp(3rem, 8vw, 7rem) 0 4rem; }
+    .hero-grid { display: grid; grid-template-columns: minmax(0, .92fr) minmax(400px, 1.08fr); gap: clamp(2rem, 6vw, 5rem); align-items: center; }
+    .eyebrow, .kicker {
+      color: var(--accent); font-size: .75rem; font-weight: 800; letter-spacing: .14em;
+      text-transform: uppercase; margin-bottom: 1rem;
+    }
+    .hero h1 { margin-bottom: 1.3rem; }
+    .lede { color: var(--muted); font-size: clamp(1.06rem, 2vw, 1.28rem); line-height: 1.76; max-width: 52ch; }
+    .scope-line { display: flex; flex-wrap: wrap; gap: .65rem 1.3rem; margin-top: 1.5rem; color: var(--muted); font-size: .82rem; }
+    .scope-line span { white-space: nowrap; }
+    .scope-line span + span::before { content: "·"; margin-right: 1.3rem; color: var(--warm); }
+    figure { margin: 0; }
+    .hero-figure { border-block: 1px solid var(--line); padding: 1.2rem 0 .8rem; }
+    .hero-figure svg { display: block; width: 100%; height: auto; }
+    figcaption { color: var(--muted); font-size: .78rem; line-height: 1.55; margin-top: .8rem; }
+    .diagram-node { fill: var(--surface); stroke: var(--line); stroke-width: 1.5; }
+    .diagram-label { fill: var(--ink); font: 700 17px var(--sans); }
+    .diagram-sub { fill: var(--muted); font: 14px var(--sans); }
+    .diagram-arrow { stroke: var(--accent); stroke-width: 2.2; fill: none; }
+    .diagram-arrow.warm { stroke: var(--warm); }
+
+    .contents {
+      position: sticky; z-index: 10; top: 0; background: color-mix(in srgb, var(--paper) 94%, transparent);
+      border-block: 1px solid var(--line); backdrop-filter: blur(8px);
+    }
+    .contents .wrap { display: flex; gap: 1.35rem; overflow-x: auto; scrollbar-width: thin; padding-block: .72rem; }
+    .contents a { flex: 0 0 auto; color: var(--muted); font-size: .76rem; text-decoration: none; }
+    .contents a:hover, .contents a:focus-visible { color: var(--accent); }
+
+    .quick-read { padding: 3.5rem 0 4rem; }
+    .quick-head { display: grid; grid-template-columns: minmax(180px, .55fr) 1.45fr; gap: 2rem; align-items: end; margin-bottom: 1.4rem; }
+    .quick-head p { color: var(--muted); margin: 0; max-width: 65ch; }
+    .rule-table { width: 100%; border-collapse: collapse; border-top: 2px solid var(--ink); }
+    .rule-table th, .rule-table td { padding: .95rem .8rem; border-bottom: 1px solid var(--line); text-align: left; vertical-align: top; }
+    .rule-table th { width: 20%; font-size: .91rem; }
+    .rule-table td { color: var(--muted); font-size: .91rem; }
+    .rule-table code { color: var(--ink); }
+    .note {
+      border-left: 3px solid var(--warm); padding: .75rem 1rem; margin: 1.3rem 0 0;
+      background: var(--warm-soft); color: var(--ink); font-size: .9rem;
+    }
+
+    .chapter { padding: clamp(3.2rem, 7vw, 6rem) 0; border-top: 1px solid var(--line); }
+    .chapter-grid { display: grid; grid-template-columns: 70px minmax(0, 1fr); gap: clamp(1.2rem, 3vw, 2.6rem); }
+    .chapter-index { color: var(--warm); font-size: .78rem; font-weight: 800; letter-spacing: .1em; padding-top: .55rem; }
+    .chapter-body { min-width: 0; }
+    .chapter-head { display: grid; grid-template-columns: minmax(0, 1fr) minmax(240px, .7fr); gap: 2rem; align-items: end; margin-bottom: 2rem; }
+    .chapter-head p { color: var(--muted); margin: 0; }
+    .section-lead { font-size: 1.12rem; max-width: 66ch; color: var(--ink); }
+    .columns { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: clamp(1.4rem, 4vw, 3.5rem); }
+    .columns > * { min-width: 0; }
+    .subsection + .subsection { margin-top: 2rem; }
+    .subsection h3 { margin-bottom: .7rem; }
+    .subsection p { color: var(--muted); }
+    .source-line { margin-top: 1rem; color: var(--muted); font-size: .79rem; line-height: 1.7; }
+    .source-line strong { color: var(--ink); margin-right: .55rem; }
+    .source-line a { display: inline-block; margin-right: .75rem; }
+    .flow-caption { margin: .75rem 0 0; color: var(--muted); font-size: .78rem; }
+
+    .architecture-flow { border-block: 1px solid var(--line); padding: 1.4rem 0; }
+    .flow-start { width: fit-content; min-width: 240px; margin: 0 auto; text-align: center; }
+    .flow-node {
+      display: inline-flex; min-height: 48px; align-items: center; justify-content: center;
+      border: 1px solid var(--line); background: var(--surface); padding: .55rem .9rem;
+      text-align: center; color: var(--ink); line-height: 1.4; font-size: .88rem;
+    }
+    .flow-node strong { font-weight: 750; }
+    .flow-node.accent { border-color: var(--accent); }
+    .flow-node.warm { border-color: var(--warm); }
+    .flow-down { text-align: center; color: var(--accent); font-size: 1.45rem; line-height: 1.4; }
+    .flow-branches { display: grid; grid-template-columns: 1fr 1fr; gap: 2rem; max-width: 750px; margin: 0 auto; }
+    .flow-branch { text-align: center; }
+    .flow-branch p { margin: .5rem 0 .7rem; color: var(--muted); font-size: .76rem; font-weight: 750; letter-spacing: .08em; text-transform: uppercase; }
+    .flow-join { max-width: 840px; margin: 0 auto; }
+    .flow-chain { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: .5rem; align-items: stretch; }
+    .flow-chain .flow-node { width: 100%; height: 100%; }
+    .flow-arrow-row { display: grid; grid-template-columns: repeat(5, 1fr); color: var(--accent); text-align: center; font-size: 1.2rem; line-height: 1.5; }
+    .responsibility-table { margin-top: 2rem; }
+    .responsibility-table th:first-child { width: 29%; }
+    .responsibility-table th:nth-child(2) { width: 31%; }
+
+    .code-panel { background: var(--code); color: var(--code-ink); padding: 1rem 1.2rem 1.2rem; margin: 1.1rem 0; overflow-x: auto; }
+    .code-label { color: #b6d8d8; font-size: .73rem; letter-spacing: .08em; margin-bottom: .6rem; }
+    pre { color: inherit; font-size: .78rem; line-height: 1.68; margin: 0; white-space: pre; }
+    .code-note { color: var(--muted); font-size: .78rem; margin: -.35rem 0 1rem; }
+    .sequence { display: grid; gap: 0; margin: 1.6rem 0; border-top: 1px solid var(--line); }
+    .sequence-row { display: grid; grid-template-columns: 42px minmax(130px, .55fr) 1.45fr; gap: .8rem; padding: .8rem .15rem; border-bottom: 1px solid var(--line); align-items: start; }
+    .sequence-no { color: var(--warm); font-size: .78rem; font-weight: 800; }
+    .sequence-row strong { font-size: .9rem; }
+    .sequence-row span:last-child { color: var(--muted); font-size: .88rem; }
+
+    .sub-flow { border-block: 1px solid var(--line); padding: 1.1rem 0; }
+    .sub-flow svg { display: block; width: 100%; height: auto; }
+    .sub-flow .box { fill: var(--surface); stroke: var(--line); stroke-width: 1.5; }
+    .sub-flow .box-commit { stroke: var(--accent); }
+    .sub-flow .box-ack { stroke: var(--warm); }
+    .sub-flow .arrow { stroke: var(--accent); stroke-width: 2; fill: none; }
+    .sub-flow text { fill: var(--ink); font-family: var(--sans); }
+    .sub-flow .tiny { fill: var(--muted); }
+    .retained-options { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 1rem; margin: 1.4rem 0; }
+    .retained-options > div { border-top: 2px solid var(--accent); padding-top: .55rem; }
+    .retained-options strong { display: block; margin-bottom: .2rem; }
+    .retained-options span { color: var(--muted); font-size: .86rem; }
+
+    .publish-table { width: 100%; border-collapse: collapse; border-top: 2px solid var(--ink); margin: 1.6rem 0; }
+    .publish-table th, .publish-table td { border-bottom: 1px solid var(--line); text-align: left; vertical-align: top; padding: .9rem .75rem; }
+    .publish-table th { font-size: .85rem; }
+    .publish-table td { color: var(--muted); font-size: .87rem; }
+    .publish-table td:first-child { color: var(--ink); font-weight: 750; white-space: nowrap; }
+    .pipeline { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: .5rem; align-items: center; margin: 1.5rem 0; }
+    .pipeline .flow-node { min-height: 82px; }
+    .pipeline .arrow { text-align: center; color: var(--accent); font-size: 1.2rem; }
+    .boundary-rail { border-left: 3px solid var(--accent); padding: .2rem 0 .2rem 1rem; margin: 1.3rem 0; }
+    .boundary-rail p { margin: 0; color: var(--muted); }
+
+    .qos2-figure { border-block: 1px solid var(--line); padding: 1rem 0 1.2rem; }
+    .diagram-topline { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: center; gap: .7rem 1rem; margin-bottom: .7rem; }
+    .diagram-topline h3 { font-size: 1rem; }
+    .controls { display: inline-flex; gap: .35rem; }
+    .controls button {
+      width: 34px; height: 32px; border: 1px solid var(--line); background: var(--surface); color: var(--ink);
+      font: 700 1rem var(--sans); cursor: pointer; line-height: 1;
+    }
+    .controls button:hover:not(:disabled) { background: var(--accent-soft); border-color: var(--accent); }
+    .controls button:disabled { color: #87999d; cursor: not-allowed; }
+    .qos2-scroll { overflow-x: auto; overscroll-behavior-inline: contain; border-bottom: 1px solid var(--line); }
+    .qos2-svg { display: block; width: 100%; min-width: 820px; height: auto; }
+    .qos2-svg .lane { stroke: var(--line); stroke-dasharray: 4 7; stroke-width: 1.3; }
+    .qos2-svg .actor { fill: var(--ink); font: 700 15px var(--sans); }
+    .qos2-svg .actor-sub { fill: var(--muted); font: 12px var(--sans); }
+    .qos2-svg .lifeline { stroke: var(--line); stroke-dasharray: 3 7; stroke-width: 1.1; }
+    .qos2-svg .event line { stroke-width: 2; }
+    .qos2-svg .event.packet line { stroke: var(--accent); marker-end: url(#qos-arrow); }
+    .qos2-svg .event.internal line { stroke: var(--muted); marker-end: url(#internal-arrow); }
+    .qos2-svg .event.commit line { stroke: var(--warm); marker-end: url(#commit-arrow); }
+    .qos2-svg .event.queue line { stroke: var(--accent); marker-end: url(#qos-arrow); }
+    .qos2-svg .event text { fill: var(--ink); font: 13px var(--sans); }
+    .qos2-svg .event.active line { stroke-width: 4; }
+    .qos2-svg .event.active text { font-weight: 800; }
+    .qos2-svg .progress-rail { stroke: var(--line); stroke-width: 2; }
+    .qos2-svg .progress-dot { fill: var(--warm); stroke: var(--surface); stroke-width: 4; transition: cy 420ms ease; }
+    .diagram-legend { display: flex; flex-wrap: wrap; gap: .4rem 1.2rem; color: var(--muted); font-size: .75rem; margin: .65rem 0; }
+    .legend-swatch { display: inline-block; width: 20px; border-top: 2px solid var(--accent); vertical-align: middle; margin-right: .35rem; }
+    .legend-swatch.commit { border-color: var(--warm); }
+    .legend-swatch.internal { border-color: var(--muted); }
+    .qos2-status { display: grid; grid-template-columns: 90px minmax(0, 1fr); gap: .8rem; border-top: 1px solid var(--line); padding-top: .8rem; margin-top: .8rem; }
+    .qos2-count { color: var(--warm); font-size: .78rem; font-weight: 800; }
+    .qos2-status p { margin: 0; }
+    .qos2-status strong { display: block; }
+    .qos2-detail { color: var(--muted); font-size: .88rem; }
+    .reduced-motion-note { font-size: .73rem; color: var(--muted); margin: .45rem 0 0; }
+    .qos2-limits { display: grid; grid-template-columns: 1fr 1fr; gap: 2rem; margin-top: 1.8rem; }
+    .qos2-limits h3 { margin-bottom: .55rem; }
+    .qos2-limits p { color: var(--muted); }
+
+    .recovery-table th:first-child { width: 20%; }
+    .recovery-table th:nth-child(2) { width: 35%; }
+    .evidence-list { list-style: none; padding: 0; margin: 1.5rem 0; border-top: 2px solid var(--ink); }
+    .evidence-list li { display: grid; grid-template-columns: minmax(180px, .7fr) 1.3fr; gap: 1.2rem; border-bottom: 1px solid var(--line); padding: .85rem .1rem; }
+    .evidence-list strong { font-size: .88rem; }
+    .evidence-list span { color: var(--muted); font-size: .86rem; }
+    .status-label { display: inline-block; color: var(--warm); font-weight: 800; font-size: .75rem; letter-spacing: .04em; }
+    .scope-limit { background: var(--warm-soft); padding: 1.1rem 1.2rem; margin: 1.6rem 0; }
+    .scope-limit h3 { margin-bottom: .6rem; }
+    .scope-limit p { margin: 0; color: var(--ink); }
+    .reference-groups { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 2rem; margin-top: 1rem; }
+    .reference-groups h3 { margin-bottom: .6rem; }
+    .reference-groups ul { margin: 0; }
+    .reference-groups li { color: var(--muted); font-size: .87rem; }
+    .footer { padding: 2rem 0 3rem; border-top: 1px solid var(--line); color: var(--muted); font-size: .8rem; }
+    .footer p { margin: 0; }
+
+    @media (max-width: 860px) {
+      .hero-grid { grid-template-columns: 1fr; }
+      .hero-figure { max-width: 760px; }
+      .chapter-head { grid-template-columns: 1fr; gap: .8rem; }
+      .flow-chain { grid-template-columns: 1fr; }
+      .flow-arrow-row { display: none; }
+      .pipeline { grid-template-columns: 1fr; }
+      .pipeline .arrow { line-height: 1; }
+      .pipeline .flow-node { min-height: 52px; }
+    }
+    @media (max-width: 640px) {
+      body { font-size: 16px; }
+      .wrap { width: min(var(--content), calc(100% - 1.5rem)); }
+      .site-head { min-height: 48px; font-size: .68rem; }
+      .hero { padding-top: 3rem; }
+      .hero-grid { gap: 2rem; }
+      .hero-grid > * { min-width: 0; }
+      .quick-head { grid-template-columns: 1fr; gap: .7rem; }
+      .chapter-grid { grid-template-columns: 34px minmax(0, 1fr); gap: .5rem; }
+      .chapter-index { font-size: .68rem; }
+      .columns, .qos2-limits, .reference-groups { grid-template-columns: 1fr; }
+      .rule-table th, .rule-table td, .publish-table th, .publish-table td { padding: .7rem .45rem; }
+      .rule-table th { width: 27%; }
+      .publish-table td:first-child { white-space: normal; }
+      .sequence-row { grid-template-columns: 30px minmax(0, 1fr); gap: .4rem .6rem; }
+      .sequence-row span:last-child { grid-column: 2; }
+      .retained-options { grid-template-columns: 1fr; gap: .8rem; }
+      .evidence-list li { grid-template-columns: 1fr; gap: .25rem; }
+      .qos2-status { grid-template-columns: 55px minmax(0, 1fr); }
+      .scope-line { gap: .35rem .8rem; }
+      .scope-line span + span::before { margin-right: .8rem; }
+    }
+    @media (prefers-reduced-motion: reduce) {
+      html { scroll-behavior: auto; }
+      *, *::before, *::after { transition-duration: .01ms !important; animation-duration: .01ms !important; animation-iteration-count: 1 !important; }
+    }
+    @media print {
+      .contents, .controls, .skip-link { display: none; }
+      body { background: white; }
+      .chapter { break-inside: avoid; }
+      .wrap { width: 100%; }
     }
   </style>
 </head>
 <body>
-  <header class="hero">
-    <div class="wrap">
-      <div class="eyebrow">NaruMQ / 코드로 읽는 MQTT</div>
-      <h1>네트워크 바이트가 검증된 메시지와 세션 상태가 되기까지</h1>
-      <p class="lead">
-        이 문서는 MQTT 패킷을 읽고 쓰는 코드만 따로 설명하지 않습니다.
-        <strong>연결 요청이 들어와 세션이 열리고, subscription option이 보존되고, standalone retained publication이 bounded memory를 갱신하거나 dynamic cluster retained publication이 tenant별 Raft state에 commit되고, 발행 메시지가 맞는 구독자의 제한된 큐에 들어간 뒤 MQTT 응답 바이트가 나가는 흐름</strong>을 실제 코드, standalone loopback TCP, cluster process acceptance에 연결합니다.
-      </p>
-      <div class="badges">
-        <span class="commit">Standalone QoS 1/2와 process-local session</span>
-        <span class="commit">Cluster QoS 0 retained replication</span>
-        <span class="commit">NMQBKUP3 retained+offline archive</span>
-        <span class="badge">MQTT 3.1.1 · MQTT 5.0</span>
-        <span class="badge">Go · Clean Architecture</span>
-      </div>
-    </div>
+  <a class="skip-link" href="#main">본문으로 건너뛰기</a>
+  <header class="site-head wrap">
+    <a class="site-name" href="#top">NaruMQ / 코드 해설</a>
+    <span>MQTT 3.1.1 · MQTT 5.0</span>
   </header>
 
-  <nav>
-    <div class="wrap">
-      <a href="#result">결과부터</a>
-      <a href="#commits">커밋 흐름</a>
-      <a href="#structure">전체 구조</a>
-      <a href="#codec">패킷 코드</a>
-      <a href="#routing">라우팅·retained·큐</a>
-      <a href="#qos">QoS</a>
-      <a href="#session">세션</a>
-      <a href="#runtime">TCP 실행</a>
-      <a href="#tests">검증</a>
-      <a href="#scope">범위</a>
-    </div>
-  </nav>
-
-  <main>
-    <section id="result">
-      <div class="wrap">
-        <div class="section-kicker">01 · 결과부터</div>
-        <h2>무엇이 달라졌는가</h2>
-        <p>
-          클라이언트가 TCP 연결로 <code>CONNECT</code> 또는 <code>PUBLISH</code> 바이트를 보내면, NaruMQ는 먼저 길이와 고정 헤더를 확인합니다. 그 다음 바이트를 그대로 전달하지 않고, 검증이 끝난 <code>mqtt.Connect</code>, <code>mqtt.Publish</code> 같은 값으로 바꿉니다. 이 값은 세션, 구독표, 전달 큐라는 각각의 책임 있는 경계를 통과합니다.
-        </p>
-        <div class="flow" aria-label="MQTT 요청의 전체 흐름">
-          <div class="node"><span class="label">입력</span><br><code>TCP bytes</code><br><span class="small">고정 헤더 + 남은 길이 + 본문</span></div>
-          <div class="arrow">→</div>
-          <div class="node"><span class="label">검증</span><br><code>Decoder.Decode</code><br><span class="small">형식·버전·크기</span></div>
-          <div class="arrow">→</div>
-          <div class="node"><span class="label">정책</span><br><code>connect / subscribe / publish</code><br><span class="small">세션·구독·전달</span></div>
-          <div class="arrow">→</div>
-          <div class="node"><span class="label">출력</span><br><code>Encoder.Append</code><br><span class="small">CONNACK·ACK·PUBLISH</span></div>
-        </div>
-        <div class="grid">
-          <article class="card callout">
-            <h3>예시: 연결 요청</h3>
-            <p>입력에 MQTT 3.1.1 <code>CONNECT</code>가 오면 프로토콜 이름과 버전, 플래그, Client ID를 확인합니다. 성공하면 세션을 열고 <code>CONNACK</code>를 보냅니다.</p>
-            <p>같은 Client ID가 이미 연결되어 있거나 지원하지 않는 자격 증명·Will 상태이면 연결을 조용히 무시하지 않고 거절 응답을 만듭니다.</p>
-          </article>
-          <article class="card success">
-            <h3>예시: 발행 요청</h3>
-            <p><code>sensor/room1</code>에 QoS 0 메시지가 오면 유효한 구독 필터와 비교합니다. 일치한 각 세션의 큐에 독립된 payload 복사본을 넣고, 연결의 쓰기 루프를 깨웁니다.</p>
-            <p>큐가 가득 찬 세션은 성공으로 숨기지 않고 <code>Saturated</code> 결과로 분류한 뒤 현재 TCP 경계에서 연결을 닫습니다.</p>
-            <p>영속 세션은 연결이 닫혀도 큐의 offline FIFO와 완료되지 않은 QoS 1·2 outbound 상태를 process-local memory에 남깁니다. 재연결에서는 CONNACK를 먼저 보낸 뒤 저장된 Packet ID와 상태로 recovery packet을 출력합니다.</p>
-          </article>
-          <article class="card warning">
-            <h3>읽을 때 먼저 기억할 한계</h3>
-            <p>패킷 코덱과 QoS 1·2 상태 머신은 <code>internal/domain/delivery</code>에서 단위 테스트 가능한 정책으로 구현되고, 현재 개발용 TCP 경로도 ingress·outbound QoS 0·1·2 handshake를 연결합니다.</p>
-            <p>Message Expiry는 수신 시각에서 absolute deadline을 만들고 queue·retained replay·writer 출력에 적용합니다. MQTT 3.1.1에는 expiry property를 쓰지 않지만 만료 판정은 유지합니다.</p>
-          </article>
-        </div>
-      </div>
-    </section>
-
-    <section id="commits">
-      <div class="wrap">
-        <div class="section-kicker">02 · 네 커밋의 변화</div>
-        <h2>기능이 한 번에 생긴 것이 아니라, 경계가 차례로 닫혔다</h2>
-        <p>
-          아래 순서는 요청에 지정된 커밋의 실제 역할을 기준으로 합니다. 앞의 커밋이 만든 입력·값·경계를 뒤의 커밋이 재사용합니다. 마지막 커밋은 실행 기능을 추가한 것이 아니라, 흩어져 있던 전달 보장 설명을 하나의 문서 흐름으로 정리한 변경입니다.
-        </p>
-        <div class="timeline">
-          <div class="timeline-item">
-            <div class="timeline-id"><code>7117790</code></div>
-            <div class="timeline-body">
-              <h3>MQTT 기준선: 바이트와 패킷 값 사이</h3>
-              <p><code>Decoder</code>, <code>Encoder</code>, CONNECT·CONNACK·PUBLISH 및 제어 패킷 타입, MQTT 3.1.1·5.0의 기본 검증, 패킷 크기 제한, 소유권 복사와 오류 분류가 추가됐습니다. 이후 기능은 이 검증된 패킷 값을 입력으로 삼습니다.</p>
-              <p class="small">읽을 코드: <a href="../../internal/domain/mqtt/decoder.go">decoder.go</a>, <a href="../../internal/domain/mqtt/encoder.go">encoder.go</a>, <a href="../../internal/domain/mqtt/connect.go">connect.go</a>, <a href="../../internal/domain/mqtt/publish.go">publish.go</a></p>
-            </div>
-          </div>
-          <div class="timeline-item">
-            <div class="timeline-id"><code>332606f</code></div>
-            <div class="timeline-body">
-              <h3>라우팅과 제한된 전달 큐</h3>
-              <p>구독 필터 <code>+</code>·<code>#</code>를 검사하고 발행 토픽을 매칭하는 <code>routing.Table</code>, 구독·발행 응용 기능, 세션마다 용량이 정해진 FIFO 큐가 추가됐습니다. 네트워크 연결이 라우팅 정책이나 메모리 자료구조를 직접 소유하지 않도록 응용 포트로 분리했습니다.</p>
-              <p class="small">읽을 코드: <a href="../../internal/domain/routing/routing.go">routing.go</a>, <a href="../../internal/application/subscribe/subscribe.go">subscribe.go</a>, <a href="../../internal/application/publish/publish.go">publish.go</a>, <a href="../../internal/adapters/memory/deliveryqueue/queue.go">queue.go</a></p>
-            <p>이 큐는 연결이 살아 있을 때만 쓰는 임시 버퍼가 아니라, 영속 세션의 offline FIFO와 미완료 QoS 1·2 outbound 상태가 재연결까지 머무는 application 경계입니다.</p>
-            </div>
-          </div>
-          <div class="timeline-item">
-            <div class="timeline-id"><code>79b4663</code></div>
-            <div class="timeline-body">
-              <h3>QoS 1·2 ACK 흐름과 세션 수명</h3>
-              <p><code>PUBACK</code>, <code>PUBREC</code>, <code>PUBREL</code>, <code>PUBCOMP</code> 코덱과 송신자·수신자 상태 머신, MQTT 3.1.1·5.0 세션 열기·끊기·만료 규칙이 추가됐습니다. ACK를 받은 뒤에만 완료하거나, 중간 상태에서 중복 패킷을 다시 처리하는 규칙이 값 타입으로 고정됩니다.</p>
-              <p class="small">읽을 코드: <a href="../../internal/domain/mqtt/ack.go">ack.go</a>, <a href="../../internal/domain/delivery/state.go">delivery/state.go</a>, <a href="../../internal/domain/session/state.go">session/state.go</a></p>
-            </div>
-          </div>
-          <div class="timeline-item">
-            <div class="timeline-id"><code>aebafa9</code></div>
-            <div class="timeline-body">
-              <h3>전달 보장 설명의 통합</h3>
-              <p>QoS handshake, 발행자·브로커·구독자 사이의 hop, 세션 만료, Will과 ACK 재전송 설명을 <a href="../explainers/mqtt-delivery-guarantees-and-protocol-flows.md">하나의 해설 문서</a>로 통합하고, 목차·ADR·이 HTML을 동기화했습니다. 이 문서는 그 변경 내용을 실제 코드 흐름 중심으로 다시 읽는 보조 자료입니다.</p>
-            </div>
+  <main id="main">
+    <section class="hero wrap" id="top" aria-labelledby="doc-title">
+      <div class="hero-grid">
+        <div>
+          <p class="eyebrow">SOURCE WALKTHROUGH · MQTT</p>
+          <h1 id="doc-title">ACK는<br>어디까지<br>증명할까?</h1>
+          <p class="lede">한 번의 PUBLISH에는 서로 다른 경계가 있습니다. TCP가 바이트를 읽은 시점, NaruMQ가 MQTT 패킷을 처리한 시점, Cluster 상태가 commit된 시점, 구독자에게 전달된 시점은 같지 않습니다.</p>
+          <div class="scope-line" aria-label="설명 범위">
+            <span>코드 경로</span><span>standalone / dynamic cluster</span><span>기록된 시험 근거</span>
           </div>
         </div>
+        <figure class="hero-figure">
+          <svg viewBox="0 0 900 320" role="img" aria-labelledby="hero-diagram-title hero-diagram-desc">
+            <title id="hero-diagram-title">Publisher와 subscriber 사이의 두 MQTT 전달 구간</title>
+            <desc id="hero-diagram-desc">Publisher에서 broker까지의 입력 구간과 broker에서 subscriber까지의 별도 전달 구간을 보인다. PUBACK은 publisher 구간의 응답이며 subscriber 처리 확인이 아니다.</desc>
+            <defs>
+              <marker id="hero-arrow" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8 Z" fill="var(--accent)"></path></marker>
+              <marker id="hero-arrow-warm" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8 Z" fill="var(--warm)"></path></marker>
+            </defs>
+            <rect class="diagram-node" x="18" y="114" width="142" height="74" rx="2"></rect>
+            <text class="diagram-label" x="89" y="145" text-anchor="middle">Publisher</text>
+            <text class="diagram-sub" x="89" y="169" text-anchor="middle">PUBLISH</text>
+            <rect class="diagram-node" x="268" y="72" width="342" height="158" rx="2"></rect>
+            <text class="diagram-label" x="439" y="112" text-anchor="middle">NaruMQ broker</text>
+            <text class="diagram-sub" x="439" y="144" text-anchor="middle">TCP frame → MQTT packet</text>
+            <text class="diagram-sub" x="439" y="168" text-anchor="middle">use case → local queue / cluster commit</text>
+            <text class="diagram-sub" x="439" y="202" text-anchor="middle">응답 시점은 실행 모드와 QoS에 따라 다름</text>
+            <rect class="diagram-node" x="748" y="114" width="142" height="74" rx="2"></rect>
+            <text class="diagram-label" x="819" y="145" text-anchor="middle">Subscriber</text>
+            <text class="diagram-sub" x="819" y="169" text-anchor="middle">별도 전달</text>
+            <path class="diagram-arrow" d="M160 130 H258" marker-end="url(#hero-arrow)"></path>
+            <text class="diagram-sub" x="208" y="116" text-anchor="middle">입력</text>
+            <path class="diagram-arrow warm" d="M268 191 H170" marker-end="url(#hero-arrow-warm)"></path>
+            <text class="diagram-sub" x="218" y="220" text-anchor="middle">PUBACK / PUBREC / PUBCOMP</text>
+            <path class="diagram-arrow" d="M610 130 H738" marker-end="url(#hero-arrow)"></path>
+            <text class="diagram-sub" x="674" y="116" text-anchor="middle">queue 이후</text>
+            <text class="diagram-sub" x="674" y="205" text-anchor="middle">subscriber QoS 응답은 별도</text>
+            <line x1="180" y1="265" x2="728" y2="265" stroke="var(--line)" stroke-width="1"></line>
+            <text class="diagram-sub" x="454" y="292" text-anchor="middle">한쪽 hop의 ACK가 다른 쪽 hop의 소비 완료를 뜻하지 않는다</text>
+          </svg>
+          <figcaption>화살표는 packet 또는 전달 방향입니다. 입력 ACK와 subscriber 전달은 서로 다른 MQTT 교환입니다.</figcaption>
+        </figure>
       </div>
     </section>
 
-    <section id="structure">
+    <nav class="contents" aria-label="문서 목차">
       <div class="wrap">
-        <div class="section-kicker">03 · 전체 구조</div>
-        <h2>바깥 입력은 안쪽 정책으로 들어오고, 안쪽 정책은 바깥 출력으로 돌아간다</h2>
-        <p>
-          소켓을 다루는 코드는 <code>internal/adapters</code>에 있고, 패킷 의미와 상태 규칙은 <code>internal/domain</code>에 있습니다. 세션 열기와 발행 fan-out처럼 여러 정책을 순서대로 묶는 코드는 <code>internal/application</code>에 있습니다. 따라서 도메인은 TCP, 메모리 큐, 시계 같은 외부 수단을 알지 못합니다.
-        </p>
-        <div class="flow">
-          <div class="node"><code>adapters/tcp</code><br><span class="small">읽기·쓰기·연결 종료</span></div>
-          <div class="arrow">→</div>
-          <div class="node"><code>domain/mqtt</code><br><span class="small">패킷 형식과 값 검증</span></div>
-          <div class="arrow">→</div>
-          <div class="node"><code>application</code><br><span class="small">세션·구독·발행 순서</span></div>
-          <div class="arrow">→</div>
-          <div class="node"><code>domain/routing</code><br><span class="small">누구에게 보낼지</span></div>
-          <div class="arrow">→</div>
-          <div class="node"><code>adapters/memory</code><br><span class="small">실제 큐·세션 저장</span></div>
+        <a href="#answer">핵심 경계</a>
+        <a href="#map">코드 지도</a>
+        <a href="#wire-connect">TCP와 CONNECT</a>
+        <a href="#subscribe">SUBSCRIBE와 retained</a>
+        <a href="#publish">PUBLISH와 QoS</a>
+        <a href="#qos2">QoS 2 단계</a>
+        <a href="#recovery">재연결과 복구</a>
+        <a href="#evidence">시험 근거와 한계</a>
+        <a href="#references">참고 문서</a>
+      </div>
+    </nav>
+
+    <section class="quick-read wrap" id="answer" aria-labelledby="answer-title">
+      <div class="quick-head">
+        <div>
+          <p class="kicker">먼저 볼 것</p>
+          <h2 id="answer-title">세 경계를<br>섞지 않는다</h2>
         </div>
-        <div class="grid">
-          <article class="card wide">
-            <h3>실제 연결 시작점</h3>
-            <p><a href="../../internal/adapters/tcp/server.go#L77">tcp.NewServer</a>는 리스너, 디코더, 인코더, connect·subscribe·publish 응용 기능, 전달 큐를 주입받습니다. 서버는 이 객체들을 직접 새로 만들지 않으므로, 조립 책임은 <a href="../../cmd/narumq/main.go">cmd/narumq</a>에 남습니다.</p>
-            <p><a href="../../internal/adapters/tcp/server.go#L310">connection.readLoop</a>는 읽은 바이트를 누적하고, 한 버퍼에 여러 패킷이 들어오거나 패킷이 나뉘어 들어오는 경우를 처리합니다. 성공한 패킷만 앞에서부터 제거하고, 불완전한 패킷이면 다음 읽기를 기다립니다.</p>
-          </article>
-          <article class="card">
-            <h3>응용 포트가 필요한 이유</h3>
-            <p><code>publish.UseCase</code>는 큐의 구체 구현을 모르고 <code>TryEnqueue</code>라는 약속만 사용합니다. 메모리 큐는 그 약속의 한 구현입니다.</p>
-            <p>이렇게 하면 정책은 “가득 찼을 때 무엇으로 분류할지”를 결정하고, 저장 방식은 “어떻게 보관할지”만 결정합니다.</p>
-          </article>
+        <p>TCP는 바이트를 전달합니다. MQTT ACK는 broker와 한 client 사이의 protocol 교환입니다. Cluster commit은 구성된 상태 변경의 복제 경계입니다. 각 사실은 서로를 대신하지 않습니다.</p>
+      </div>
+      <table class="rule-table">
+        <thead><tr><th scope="col">관찰한 것</th><th scope="col">그 사실이 뜻하는 것</th></tr></thead>
+        <tbody>
+          <tr><th scope="row">TCP read가 성공</th><td>소켓에서 일부 바이트를 읽었습니다. 전체 MQTT packet이 도착했거나 처리됐다는 뜻은 아닙니다.</td></tr>
+          <tr><th scope="row">Decoder가 packet 반환</th><td>완전한 MQTT control packet 하나를 해석했습니다. 해당 작업의 성공 ACK가 기록됐다는 뜻은 아닙니다.</td></tr>
+          <tr><th scope="row">Publisher가 PUBACK·PUBREC·PUBCOMP 수신</th><td>publisher와 broker 사이 inbound 교환의 protocol 상태를 나타냅니다. subscriber 애플리케이션이 메시지를 사용했다는 증거는 아닙니다.</td></tr>
+          <tr><th scope="row">Cluster durable 경계 통과</th><td>해당 QoS 경로가 요구하는 delivery commit 또는 target 없는 QoS 1의 quorum barrier를 통과했습니다. Production 저장 장치의 전원 손실 보장은 별도입니다.</td></tr>
+        </tbody>
+      </table>
+      <p class="note"><strong>핵심:</strong> Cluster QoS 1/2 성공 ACK는 적용된 durable 상태 경계 뒤에 옵니다. Standalone의 session·queue는 process-local 메모리 상태입니다.</p>
+    </section>
+
+    <section class="chapter" id="map" aria-labelledby="map-title">
+      <div class="wrap chapter-grid">
+        <div class="chapter-index">01 / 구조</div>
+        <div class="chapter-body">
+          <div class="chapter-head">
+            <h2 id="map-title">설정은 실행 모드를 고르고,<br>TCP adapter는 MQTT 흐름을 연다</h2>
+            <p>Composition root는 concrete adapter를 만들고 application port에 연결합니다. Standalone과 dynamic cluster는 조립 방식이 다르지만 MQTT ingress는 TCP adapter의 packet 경계를 공유합니다.</p>
+          </div>
+          <figure class="architecture-flow" aria-labelledby="arch-caption">
+            <div class="flow-start"><span class="flow-node accent"><strong>cmd/narumq/main.go</strong><br>main → run → runWithContext</span></div>
+            <div class="flow-down" aria-hidden="true">↓</div>
+            <div class="flow-branches">
+              <div class="flow-branch"><p>standalone</p><span class="flow-node">serveServices<br>process-local session / queue</span></div>
+              <div class="flow-branch"><p>dynamic cluster</p><span class="flow-node">runClusterMode<br>Raft runtime / projections</span></div>
+            </div>
+            <div class="flow-down" aria-hidden="true">↓</div>
+            <div class="flow-join">
+              <div class="flow-chain">
+                <span class="flow-node accent"><strong>tcp.Server</strong><br>Serve · readLoop</span>
+                <span class="flow-node"><strong>domain/mqtt</strong><br>Decoder.Decode</span>
+                <span class="flow-node"><strong>application</strong><br>connect · subscribe · publish</span>
+                <span class="flow-node warm"><strong>state adapters</strong><br>memory or replicated state</span>
+                <span class="flow-node accent"><strong>TCP writer</strong><br>CONNACK · ACK · PUBLISH</span>
+              </div>
+            </div>
+            <figcaption id="arch-caption" class="flow-caption">아래 방향 화살표는 조립·호출 순서입니다. 마지막 응답이 확인하는 것은 publisher hop이며 subscriber의 이후 처리는 별도입니다.</figcaption>
+          </figure>
+          <table class="rule-table responsibility-table">
+            <thead><tr><th scope="col">영역</th><th scope="col">대표 파일</th><th scope="col">맡은 일</th></tr></thead>
+            <tbody>
+              <tr><th scope="row">프로세스 시작</th><td><code>cmd/narumq/main.go</code><br><code>cmd/narumq/cluster_runtime.go</code></td><td><code>runWithContext</code>가 모드를 선택합니다. Cluster 모드는 <code>runClusterMode</code>에서 Raft·projection·TCP adapter를 조립합니다.</td></tr>
+              <tr><th scope="row">전송과 packet</th><td><code>internal/adapters/tcp</code><br><code>internal/domain/mqtt</code></td><td>Adapter가 TCP byte stream을 모으고 packet을 dispatch합니다. Domain decoder는 MQTT wire 규칙을 packet 값으로 바꿉니다.</td></tr>
+              <tr><th scope="row">응용 동작</th><td><code>internal/application/connect</code><br><code>publish</code> · <code>subscribe</code></td><td>인증, session, retained, routing, queue와 configured commit 경계를 조정합니다.</td></tr>
+              <tr><th scope="row">상태 보관과 송신</th><td><code>internal/adapters/memory</code><br><code>cmd/narumq/cluster_durable.go</code></td><td>Standalone은 process-local adapter를 사용합니다. Cluster는 replicated state를 권위 값으로 두고 local projection을 TCP writer에 제공합니다.</td></tr>
+            </tbody>
+          </table>
+          <p class="source-line"><strong>코드 지도</strong><a href="../architectures/project-structure.md#코드-지도-실행-모드와-mqtt-connect-대표-흐름">실행 모드와 MQTT 대표 흐름</a><a href="../../cmd/narumq/main.go">main.go</a><a href="../../cmd/narumq/cluster_runtime.go">cluster_runtime.go</a><a href="../../internal/adapters/tcp/server.go">tcp/server.go</a></p>
         </div>
       </div>
     </section>
 
-    <section id="codec">
-      <div class="wrap">
-        <div class="section-kicker">04 · 패킷 경계와 코덱</div>
-        <h2>먼저 길이를 믿을 수 있게 만든 다음, 본문을 의미 있는 값으로 바꾼다</h2>
-        <p>
-          MQTT 패킷은 첫 바이트의 종류와 플래그, 이어지는 <strong>남은 길이(Remaining Length)</strong>, 그 길이만큼의 본문으로 구성됩니다. 남은 길이는 7비트 숫자를 여러 바이트에 나누어 저장하는 형식입니다. <code>framing.go</code>는 네 바이트를 넘는 표현과 불필요하게 긴 표현을 거부하고, 설정된 최대 크기도 적용합니다.
-        </p>
-        <pre><code>// internal/domain/mqtt/decoder.go:19-47
-// 설명을 위해 핵심 흐름만 남긴 단순화한 발췌다.
-func (d *Decoder) Decode(src []byte, version ProtocolVersion) (Packet, int, error) {
-    packetType := PacketType(src[0] &gt;&gt; 4)
-    flags := src[0] &amp; 0x0F
-    if err := validateFixedHeader(packetType, flags); err != nil { return nil, 0, err }
-
-    remainingLength, lengthBytes, err := decodeVariableByteInteger(src[1:])
-    if err != nil { return nil, 0, err }
-    if remainingLength &gt; d.maxPacketSize { return nil, 0, ErrPacketTooLarge }
-
-    frameHeaderLength := 1 + lengthBytes
-    if remainingLength &gt; len(src)-frameHeaderLength {
-        return nil, 0, ErrIncompletePacket
-    }
-    body := src[frameHeaderLength : frameHeaderLength+remainingLength]
-    // packet 종류에 따라 decodeConnect, decodePublish 등을 호출한다.
-}</code></pre>
-        <p>
-          반환하는 세 번째 값이 오류이면 두 번째 값은 항상 <code>0</code>입니다. 그래서 호출자는 실패한 바이트를 버리지 않고, <code>ErrIncompletePacket</code>이면 더 읽고, 그 밖의 오류이면 프로토콜 오류로 닫을 수 있습니다. 성공하면 <code>consumed</code>만큼만 제거하므로 한 번의 읽기에 붙어 온 다음 패킷도 잃지 않습니다.
-        </p>
-        <div class="grid">
-          <article class="card">
-            <h3>입력 버퍼 소유권</h3>
-            <p>디코더는 호출자의 입력 버퍼를 잠깐 빌려 읽습니다. 반환된 payload·password·will 데이터는 <code>cloneBytes</code>로 복사되어 패킷 값이 자기 데이터를 소유합니다.</p>
-            <p>따라서 TCP 읽기 루프가 다음 패킷을 위해 앞부분을 이동해도, 이미 만든 <code>mqtt.Publish</code>의 payload가 바뀌지 않습니다.</p>
-          </article>
-          <article class="card">
-            <h3>출력은 원자적으로 실패한다</h3>
-            <pre><code>// internal/domain/mqtt/encoder.go:18-33, 171-178
-// 실제 구현의 핵심 발췌다. 나머지 packet case와 주변 변수 선언은 생략했다.
-switch value := packet.(type) {
-case Connect:
-    body, err = encodeConnect(value, e.maxPacketSize)
-case Publish:
-    body, err = encodePublish(value, e.maxPacketSize)
-// ACK·구독·제어 패킷도 같은 방식으로 선택한다.
+    <section class="chapter" id="wire-connect" aria-labelledby="wire-title">
+      <div class="wrap chapter-grid">
+        <div class="chapter-index">02 / 입력</div>
+        <div class="chapter-body">
+          <div class="chapter-head">
+            <h2 id="wire-title">TCP는 frame을 보장하지 않는다.<br>Adapter가 packet 경계를 만든다</h2>
+            <p>TCP는 연속된 byte stream입니다. 한 번의 read에 packet 일부만 올 수 있고, 여러 packet이 한 buffer에 이어질 수도 있습니다. Frame reader와 decoder가 경계를 나눕니다.</p>
+          </div>
+          <div class="columns">
+            <div>
+              <p class="section-lead">`readLoop`는 buffer에 있는 byte를 반복해서 Decoder에 넘깁니다. 불완전한 packet이면 다음 read를 기다리고, 완전한 packet이면 decoder가 반환한 길이만 소비합니다.</p>
+              <ol class="sequence">
+                <li class="sequence-row"><span class="sequence-no">1</span><strong><code>frameReader</code></strong><span>수신 byte를 보관합니다. buffer가 차면 packet limit까지 확장하고, 남은 byte가 없으면 초기 크기로 돌아갑니다.</span></li>
+                <li class="sequence-row"><span class="sequence-no">2</span><strong><code>Decoder.Decode</code></strong><span>fixed header와 Remaining Length를 검사하고 완전한 packet 하나를 해석합니다. 미완성 입력은 <code>ErrIncompletePacket</code>을 돌려줍니다.</span></li>
+                <li class="sequence-row"><span class="sequence-no">3</span><strong><code>consume</code></strong><span>이번 packet byte만 제거합니다. 뒤에 붙은 packet은 다음 반복에서 해석합니다.</span></li>
+              </ol>
+              <div class="code-panel">
+                <div class="code-label">internal/domain/mqtt/decoder.go · Decoder.Decode 발췌</div>
+                <pre><code>if remainingLength &gt; len(src)-frameHeaderLength {
+    return nil, 0, ErrIncompletePacket
 }
-if err != nil { return dst, err }
-dst = append(dst, byte(packetType&lt;&lt;4)|flags)
-dst = appendVariableByteInteger(dst, len(body))
-dst = append(dst, body...)
-return dst, nil</code></pre>
-            <p>실제 구현은 먼저 본문을 검증하고 만든 뒤, 고정 헤더와 남은 길이를 붙입니다. 잘못된 패킷이 일부만 출력되는 일을 막는 순서입니다.</p>
-          </article>
-          <article class="card">
-            <h3>검사되는 실패 예</h3>
-            <ul>
-              <li>고정 헤더 플래그가 패킷 종류와 맞지 않음</li>
-              <li>최대 Remaining Length 초과</li>
-              <li>QoS 0인데 DUP 또는 Packet ID 사용</li>
-              <li>빈 토픽, 와일드카드가 들어간 Topic Name</li>
-              <li>0인 Packet ID, 잘못된 UTF-8, 지원하지 않는 버전</li>
-              <li>MQTT 5 Message Expiry property, absolute deadline ownership와 remaining interval 계산</li>
-            </ul>
-          </article>
-        </div>
-      </div>
-    </section>
+body := src[frameHeaderLength : frameHeaderLength+remainingLength]
 
-    <section id="connect">
-      <div class="wrap">
-        <div class="section-kicker">05 · CONNECT에서 세션까지</div>
-        <h2>패킷 검증과 실제 연결 허용은 서로 다른 층이다</h2>
-        <p>
-          <a href="../../internal/domain/mqtt/connect.go#L49">decodeConnect</a>는 MQTT 3.1.1·5.0의 프로토콜 이름과 버전, Clean Start, Keep Alive, Client ID, 선택 필드를 읽습니다. MQTT 5에서는 Session Expiry Interval도 읽습니다. 이것은 “바이트가 규격에 맞는가”를 확인하는 일입니다.
-        </p>
-        <pre><code>// internal/domain/mqtt/connect.go:183-189
-// 설명을 위해 함수의 검증·크기 확인 부분만 남긴 단순화한 발췌다.
-func encodeConnect(connect Connect, maxPacketSize int) ([]byte, error) {
-    bodySize, err := validateConnect(connect)
-    if err != nil { return nil, err }
-    if bodySize &gt; maxPacketSize { return nil, ErrPacketTooLarge }
-    // 이후 실제 구현은 body를 만들고 반환한다.
+// packet type별 decoder를 호출
+
+return packet, frameHeaderLength + remainingLength, nil</code></pre>
+              </div>
+              <p class="code-note">중간 packet type switch는 생략했습니다. 반환값의 두 번째 값은 이번 packet이 사용한 byte 수입니다.</p>
+            </div>
+            <div>
+              <div class="code-panel">
+                <div class="code-label">internal/adapters/tcp/server.go · readLoop 발췌</div>
+                <pre><code>if !connected {
+    connectPacket, ok := packet.(*mqtt.Connect)
+    if !ok {
+        return ErrProtocol
+    }
+    if err := connection.activate(*connectPacket); err != nil {
+        return err
+    }
+    connected = true
+    version = connection.version
 }</code></pre>
-        <p>
-          그 다음 <a href="../../internal/application/connect/connect.go#L83">connect.UseCase.Connect</a>가 개발용 브로커 정책을 적용합니다. 현재 구현은 Client ID가 비어 있거나 username·password·Will이 있으면 거절 CONNACK를 돌려줍니다. 코덱이 해당 필드를 읽을 수 있다는 것과 이 개발용 실행 경로가 그 기능을 허용한다는 것은 다른 계약입니다.
-        </p>
-        <table>
-          <thead><tr><th>입력 조건</th><th>세션 정책 결과</th><th>코드 위치</th></tr></thead>
-          <tbody>
-            <tr><td>처음 연결, Clean Start</td><td>새 세션을 만들고 기존 구독·큐를 지웁니다.</td><td><a href="../../internal/domain/session/state.go#L42">session.Open</a></td></tr>
-            <tr><td>MQTT 5, Session Expiry = 0</td><td>연결이 끊기면 즉시 폐기합니다.</td><td><a href="../../internal/domain/session/state.go#L120">newLifecycle</a></td></tr>
-            <tr><td>MQTT 5, 유한한 만료 시간</td><td>끊긴 시점부터 만료 시각까지 세션을 보존합니다.</td><td><a href="../../internal/domain/session/state.go#L60">Lifecycle.Disconnect</a></td></tr>
-            <tr><td>기존 세션 재연결, Clean Start 아님</td><td>만료되지 않았으면 Session Present를 표시합니다.</td><td><a href="../../internal/application/connect/connect.go#L83">Connect</a></td></tr>
-            <tr><td>이미 연결된 같은 Client ID</td><td>새 연결을 중복 연결로 거절합니다. takeover/fencing은 상위 계층의 책임입니다.</td><td><a href="../../internal/domain/session/state.go#L14">ErrAlreadyConnected</a></td></tr>
-          </tbody>
-        </table>
+              </div>
+              <p>연결에서 첫 MQTT packet은 CONNECT여야 합니다. 이후 packet은 현재 protocol version으로 해석하고 해당 handler로 보냅니다. 소켓의 byte read 자체는 MQTT ACK가 아닙니다.</p>
+              <h3>CONNECT 호출 경로</h3>
+              <p><code>readLoop → activate → UseCase.ConnectContext</code> 순서입니다. Application은 protocol·client ID와 인증정보를 확인하고 tenant principal을 만듭니다. 인증, Client ID binding, Will 권한 검사가 끝나기 전에는 session·route·queue를 바꾸지 않습니다.</p>
+              <p>그 뒤 기존 session을 읽고 열거나 새 session을 만듭니다. Cluster mode는 ownership을 얻고 durable delivery 상태를 attach하며 detached QoS 0을 claim합니다. 실패하면 성공 CONNACK을 반환하지 않습니다.</p>
+              <p>TCP adapter는 inbound/outbound inflight 상태를 복구한 뒤 CONNACK을 기록하고 write 완료를 기다립니다. 그 다음 delivery block을 풀어 recovered packet을 보냅니다.</p>
+              <p class="source-line"><strong>코드</strong><a href="../../internal/adapters/tcp/frame_reader.go">frame_reader.go</a><a href="../../internal/domain/mqtt/decoder.go">Decoder.Decode</a><a href="../../internal/adapters/tcp/server.go">readLoop / activate</a><a href="../../internal/application/connect/connect.go">ConnectContext</a></p>
+            </div>
+          </div>
+        </div>
       </div>
     </section>
 
-    <section id="routing">
-      <div class="wrap">
-        <div class="section-kicker">06 · 구독 라우팅, retained message와 제한된 큐</div>
-        <h2>옵션을 보존하고 한 번 매칭한 뒤, retained replay는 route commit 전에 원자적으로 예약한다</h2>
-        <p>
-          구독 필터는 메시지를 받을 토픽의 모양입니다. <code>+</code>는 한 단계, <code>#</code>는 마지막에서 여러 단계를 뜻합니다. <a href="../../internal/domain/routing/routing.go#L53">ValidateTopicFilter</a>는 와일드카드 위치와 MQTT 문자열 규칙을 확인하고, 현재 단계에서는 <code>$share/...</code> 공유 구독도 group별로 지원합니다. 각 exact filter의 <code>NoLocal</code>, <code>RetainAsPublished</code>와 <code>RetainHandling</code>은 routing·subscribe 경계에서 보존됩니다.
-        </p>
-        <pre><code>// internal/domain/routing/routing.go
-func (table *Table) Match(
-    publisherSessionID SessionID,
-    topic string,
-    publishQoS mqtt.QoS,
-    publishedRetain bool,
-) ([]Match, error) {
-    // No Local을 적용하고 한 session의 overlap은 하나로 합친다.
-    // effective QoS는 publish QoS와 최고 granted QoS 중 작은 값이다.
-    // RAP가 켜진 matching filter가 있고 incoming RETAIN이면 Match.Retain=true다.
+    <section class="chapter" id="subscribe" aria-labelledby="subscribe-title">
+      <div class="wrap chapter-grid">
+        <div class="chapter-index">03 / 구독</div>
+        <div class="chapter-body">
+          <div class="chapter-head">
+            <h2 id="subscribe-title">SUBACK을 쓴 뒤에야<br>retained replay가 출발한다</h2>
+            <p>Retained message는 새 구독자가 나중에 받아볼 마지막 값을 저장합니다. Replay는 현재 SUBSCRIBE가 만든 delivery이므로 writer를 잠시 막아 응답 순서를 지킵니다.</p>
+          </div>
+          <figure class="sub-flow" aria-labelledby="sub-flow-caption">
+            <svg viewBox="0 0 1050 230" role="img" aria-labelledby="sub-flow-title sub-flow-desc">
+              <title id="sub-flow-title">SUBSCRIBE 처리와 retained replay 순서</title>
+              <desc id="sub-flow-desc">Adapter가 delivery를 막고 이전 write를 끝낸 다음 application이 subscription을 검증하고 commit합니다. Retained batch를 예약한 뒤 route를 바꾸고 SUBACK을 wire에 쓴 다음 delivery를 재개합니다.</desc>
+              <defs><marker id="sub-arrow" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0 0 L8 4 L0 8 Z" fill="var(--accent)"></path></marker></defs>
+              <rect class="box" x="10" y="50" width="150" height="74"></rect>
+              <text x="85" y="79" text-anchor="middle" font-weight="700">TCP adapter</text>
+              <text class="tiny" x="85" y="102" text-anchor="middle">delivery block</text>
+              <rect class="box" x="220" y="50" width="170" height="74"></rect>
+              <text x="305" y="79" text-anchor="middle" font-weight="700">subscribeOne</text>
+              <text class="tiny" x="305" y="102" text-anchor="middle">검증 · commit</text>
+              <rect class="box" x="450" y="50" width="170" height="74"></rect>
+              <text x="535" y="79" text-anchor="middle" font-weight="700">retainedBatch</text>
+              <text class="tiny" x="535" y="102" text-anchor="middle">queue batch 예약</text>
+              <rect class="box" x="680" y="50" width="150" height="74"></rect>
+              <text x="755" y="79" text-anchor="middle" font-weight="700">route table</text>
+              <text class="tiny" x="755" y="102" text-anchor="middle">local route 적용</text>
+              <rect class="box box-ack" x="890" y="50" width="150" height="74"></rect>
+              <text x="965" y="79" text-anchor="middle" font-weight="700">SUBACK</text>
+              <text class="tiny" x="965" y="102" text-anchor="middle">wire에 기록</text>
+              <path class="arrow" d="M160 88 H210" marker-end="url(#sub-arrow)"></path>
+              <path class="arrow" d="M390 88 H440" marker-end="url(#sub-arrow)"></path>
+              <path class="arrow" d="M620 88 H670" marker-end="url(#sub-arrow)"></path>
+              <path class="arrow" d="M830 88 H880" marker-end="url(#sub-arrow)"></path>
+              <path class="arrow" d="M965 124 V176 H85 V134" marker-end="url(#sub-arrow)"></path>
+              <text class="tiny" x="520" y="166" text-anchor="middle">SUBACK 기록 완료 → delivery block 해제 → queued PUBLISH 전송</text>
+              <text class="tiny" x="85" y="211" text-anchor="middle">요청</text>
+              <text class="tiny" x="965" y="211" text-anchor="middle">응답</text>
+            </svg>
+            <figcaption id="sub-flow-caption">화살표는 처리 순서입니다. Retained batch는 route mutation 전에 queue에 원자적으로 예약하며, writer는 SUBACK을 기록한 뒤 replay를 보냅니다.</figcaption>
+          </figure>
+          <div class="columns" style="margin-top:1.7rem">
+            <div>
+              <h3>코드가 지키는 순서</h3>
+              <p><code>server.go</code>는 SUBSCRIBE에서 delivery를 block하고 writer barrier를 기다립니다. <code>SubscribeCommitted</code>는 filter와 option을 검증하고, 필요하면 cluster subscription commit을 완료합니다.</p>
+              <p><code>subscribeOne</code>은 retained replay 조건을 계산합니다. Batch를 queue에 넣고 local route를 적용한 뒤 결과를 돌려줍니다. Adapter는 SUBACK write 완료를 기다린 다음 block을 풉니다.</p>
+              <p class="source-line"><strong>코드</strong><a href="../../internal/adapters/tcp/server.go">dispatch · SUBSCRIBE</a><a href="../../internal/application/subscribe/subscribe.go">SubscribeCommitted / subscribeOne / retainedBatch</a></p>
+            </div>
+            <div>
+              <h3>Retain Handling</h3>
+              <p>이 option은 live delivery가 아니라 SUBSCRIBE가 시작하는 retained replay 시점을 고릅니다. 공유 구독은 이 replay를 하지 않습니다.</p>
+              <div class="retained-options" aria-label="Retain Handling 선택">
+                <div><strong>0 · 항상</strong><span>구독 요청 때 matching retained 값을 보냅니다.</span></div>
+                <div><strong>1 · 새 filter만</strong><span>해당 exact filter가 처음 생길 때 보냅니다.</span></div>
+                <div><strong>2 · 보내지 않음</strong><span>새 retained replay를 생략합니다.</span></div>
+              </div>
+              <p>Replay QoS는 저장된 QoS와 subscription granted QoS 중 낮은 값입니다. Replay packet에는 RETAIN flag를 둡니다.</p>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section class="chapter" id="publish" aria-labelledby="publish-title">
+      <div class="wrap chapter-grid">
+        <div class="chapter-index">04 / 발행</div>
+        <div class="chapter-body">
+          <div class="chapter-head">
+            <h2 id="publish-title">PUBLISH는 먼저 경로를 고른다.<br>ACK 규칙은 QoS와 모드가 정한다</h2>
+            <p>Application이 topic과 권한을 확인하고 route match를 만든 뒤 전달 경로를 선택합니다. Retained 입력은 저장 변경이 먼저 commit되거나 적용된 뒤 live match를 계산합니다.</p>
+          </div>
+          <figure aria-labelledby="publish-pipeline-caption">
+            <div class="pipeline">
+              <span class="flow-node">TCP adapter<br>packet · ACL</span><span class="arrow" aria-hidden="true">→</span>
+              <span class="flow-node accent">publish.UseCase<br>validation</span><span class="arrow" aria-hidden="true">→</span>
+              <span class="flow-node warm">Retain=true?<br>retained replace / delete</span>
+            </div>
+            <div class="pipeline">
+              <span class="flow-node">routing.Table<br>matching sessions</span><span class="arrow" aria-hidden="true">→</span>
+              <span class="flow-node accent">delivery lane<br>local · offline · forward</span><span class="arrow" aria-hidden="true">→</span>
+              <span class="flow-node warm">protocol boundary<br>ACK or none</span>
+            </div>
+            <figcaption id="publish-pipeline-caption">화살표는 처리 순서입니다. Retained mutation은 route matching보다 먼저 처리됩니다. Cluster QoS 1/2 durable path는 다음 표와 별도 QoS 2 도식에서 구분합니다.</figcaption>
+          </figure>
+          <table class="publish-table">
+            <thead><tr><th scope="col">입력 경로</th><th scope="col">처리 경계</th><th scope="col">Publisher가 받는 결과</th><th scope="col">확인 범위</th></tr></thead>
+            <tbody>
+              <tr><td>Standalone<br>QoS 0</td><td>Routing과 process-local delivery queue를 사용합니다. MQTT ACK가 없습니다.</td><td>성공 응답 없음</td><td>Network connection이 끊겨도 메모리 session state는 남을 수 있지만 process restart 복구는 아닙니다.</td></tr>
+              <tr><td>Standalone<br>QoS 1</td><td>Application이 local routing/delivery 처리를 마친 뒤 inbound state를 완료합니다.</td><td>PUBACK</td><td>Process-local 동작입니다. Replication이나 process restart durability를 뜻하지 않습니다.</td></tr>
+              <tr><td>Standalone<br>QoS 2</td><td>PUBLISH에서 PUBREC, PUBREL에서 routing 후 완료 state를 처리합니다.</td><td>PUBREC → PUBCOMP</td><td>Publisher와 broker의 MQTT handshake입니다. Subscriber 애플리케이션의 처리 완료를 증명하지 않습니다.</td></tr>
+              <tr><td>Dynamic cluster<br>QoS 0</td><td>Retained와 detached-session offline QoS 0은 replicated state를 사용합니다. Connected remote owner forwarding은 at-most-once입니다.</td><td>MQTT ACK 없음</td><td>Live remote forwarding에는 receiver ACK/retry가 없습니다. Offline queue는 별도 ENQUEUE/CLAIM 경로입니다.</td></tr>
+              <tr><td>Dynamic cluster<br>QoS 1</td><td>Durable target이 있으면 delivery command commit 뒤 완료합니다. Target이 없으면 delivery proposal 없이 fresh quorum ReadIndex barrier를 기다립니다.</td><td>경계 성공 뒤 PUBACK</td><td>Barrier 실패나 commit 오류에서 성공 PUBACK을 보내지 않습니다.</td></tr>
+              <tr><td>Dynamic cluster<br>QoS 2</td><td>RECEIVE를 PUBREC 전에 commit합니다. PUBREL 뒤 RELEASE와 target queue 경계를 통과한 다음 완료합니다.</td><td>RECEIVE 뒤 PUBREC; RELEASE 뒤 PUBCOMP</td><td>Inbound handshake state와 durable target delivery를 복구합니다. Consumer 애플리케이션 exactly-once 처리를 주장하지 않습니다.</td></tr>
+            </tbody>
+          </table>
+          <div class="boundary-rail">
+            <p><strong>Retained 값:</strong> tenant와 exact topic을 key로 저장합니다. 비어 있지 않은 payload는 값을 교체하고, zero-byte payload는 저장 값을 삭제합니다. Retained mutation 오류가 나면 그 PUBLISH는 fan-out으로 진행하지 않습니다.</p>
+          </div>
+          <div class="columns">
+            <div>
+              <h3>Standalone과 Cluster는 저장 의미가 다르다</h3>
+              <p>Standalone의 memory retained repository와 delivery queue가 process-local authority입니다. Dynamic cluster에서는 retained·offline·durable delivery state의 authority가 committed cluster state이고, local repository와 queue는 lookup·writer용 projection입니다.</p>
+              <p>Cluster QoS 1/2는 non-retained 입력에서 phase worker를 사용할 수 있습니다. Retained QoS 1/2는 동기 dispatch 경로를 거치며, application은 retained commit을 route match보다 앞에 둡니다.</p>
+            </div>
+            <div>
+              <h3>Effective QoS 0은 다른 lane</h3>
+              <p>Publish QoS가 1 또는 2여도 구독자가 허용한 QoS가 0이면 해당 대상은 at-most-once lane으로 갑니다. Cluster QoS 1/2 command는 durable target 상태를 commit하지만, QoS 0 live forwarding 자체에 수신 ACK나 retry가 추가되지는 않습니다.</p>
+            </div>
+          </div>
+          <p class="source-line"><strong>코드·기준</strong><a href="../../internal/adapters/tcp/server.go">dispatchPublish</a><a href="../../internal/application/publish/publish.go">preparePublication / completePublication</a><a href="../../internal/adapters/memory/retained/repository.go">standalone retained repository</a><a href="../../cmd/narumq/cluster_durable.go">cluster durable adapter</a><a href="../decisions/ADR-0015-cluster-durable-qos-delivery.md">ADR-0015</a><a href="../decisions/ADR-0019-untargeted-durable-publish-quorum-barrier.md">ADR-0019</a></p>
+        </div>
+      </div>
+    </section>
+
+    <section class="chapter" id="qos2" aria-labelledby="qos2-title-heading">
+      <div class="wrap chapter-grid">
+        <div class="chapter-index">05 / 기계</div>
+        <div class="chapter-body">
+          <div class="chapter-head">
+            <h2 id="qos2-title-heading">QoS 2는 한 번의 ACK가 아니다.<br>두 번의 commit 경계다</h2>
+            <p>아래 sequence diagram은 dynamic cluster의 non-retained inbound QoS 2를 따라갑니다. 점은 선택한 시점을 가리킵니다. 작은 화살표 control은 단계 이동과 재생을 합니다.</p>
+          </div>
+          <figure class="qos2-figure" aria-labelledby="qos2-diagram-heading">
+            <div class="diagram-topline">
+              <h3 id="qos2-diagram-heading">Publisher inbound QoS 2 · broker state transition</h3>
+              <div class="controls" role="group" aria-label="QoS 2 sequence control">
+                <button id="step-back" type="button" aria-label="이전 단계" title="이전 단계">←</button>
+                <button id="step-play" type="button" aria-label="단계 자동 재생" title="단계 자동 재생">▶</button>
+                <button id="step-forward" type="button" aria-label="다음 단계" title="다음 단계">→</button>
+                <button id="step-reset" type="button" aria-label="처음 단계로" title="처음 단계로">↺</button>
+              </div>
+            </div>
+            <div class="qos2-scroll" tabindex="0" aria-label="가로로 스크롤할 수 있는 QoS 2 sequence diagram">
+              <svg class="qos2-svg" viewBox="0 0 1060 700" role="img" aria-labelledby="qos2-svg-title qos2-svg-desc">
+                <title id="qos2-svg-title">Dynamic cluster inbound QoS 2 sequence</title>
+                <desc id="qos2-svg-desc">Publisher가 PUBLISH를 보내면 broker가 RECEIVE를 commit한 뒤 PUBREC을 보냅니다. PUBREL 뒤 RELEASE와 target queue를 commit하고 PUBCOMP을 보냅니다. Subscriber delivery는 이후 별도 handshake입니다.</desc>
+                <defs>
+                  <marker id="qos-arrow" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0 0 L8 4 L0 8 Z" fill="var(--accent)"></path></marker>
+                  <marker id="internal-arrow" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0 0 L8 4 L0 8 Z" fill="var(--muted)"></path></marker>
+                  <marker id="commit-arrow" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0 0 L8 4 L0 8 Z" fill="var(--warm)"></path></marker>
+                </defs>
+                <line class="progress-rail" x1="35" y1="90" x2="35" y2="625"></line>
+                <circle class="progress-dot" id="qos2-marker" cx="35" cy="105" r="8"></circle>
+                <text class="actor" x="135" y="36" text-anchor="middle">Publisher</text>
+                <text class="actor-sub" x="135" y="56" text-anchor="middle">client</text>
+                <text class="actor" x="345" y="36" text-anchor="middle">TCP adapter</text>
+                <text class="actor-sub" x="345" y="56" text-anchor="middle">server.go · phase worker</text>
+                <text class="actor" x="555" y="36" text-anchor="middle">publish use case</text>
+                <text class="actor-sub" x="555" y="56" text-anchor="middle">prepare / complete</text>
+                <text class="actor" x="765" y="36" text-anchor="middle">Cluster runtime</text>
+                <text class="actor-sub" x="765" y="56" text-anchor="middle">Raft commit / barrier</text>
+                <text class="actor" x="965" y="36" text-anchor="middle">Target queue</text>
+                <text class="actor-sub" x="965" y="56" text-anchor="middle">subscriber owner</text>
+                <line class="lifeline" x1="135" y1="72" x2="135" y2="670"></line>
+                <line class="lifeline" x1="345" y1="72" x2="345" y2="670"></line>
+                <line class="lifeline" x1="555" y1="72" x2="555" y2="670"></line>
+                <line class="lifeline" x1="765" y1="72" x2="765" y2="670"></line>
+                <line class="lifeline" x1="965" y1="72" x2="965" y2="670"></line>
+
+                <g class="event packet active" data-step="0"><line x1="145" y1="105" x2="335" y2="105"></line><text x="240" y="96" text-anchor="middle">PUBLISH · QoS 2</text></g>
+                <g class="event internal" data-step="1"><line x1="355" y1="170" x2="545" y2="170"></line><text x="450" y="161" text-anchor="middle">BeginReceiveQoS2</text></g>
+                <g class="event commit" data-step="2"><line x1="565" y1="235" x2="755" y2="235"></line><text x="660" y="226" text-anchor="middle">RECEIVE commit</text></g>
+                <g class="event packet" data-step="3"><line x1="335" y1="300" x2="145" y2="300"></line><text x="240" y="291" text-anchor="middle">PUBREC · commit 뒤</text></g>
+                <g class="event packet" data-step="4"><line x1="145" y1="365" x2="335" y2="365"></line><text x="240" y="356" text-anchor="middle">PUBREL</text></g>
+                <g class="event internal" data-step="5"><line x1="355" y1="430" x2="545" y2="430"></line><text x="450" y="421" text-anchor="middle">BeginQoS2Release</text></g>
+                <g class="event commit" data-step="6"><line x1="565" y1="495" x2="755" y2="495"></line><text x="660" y="486" text-anchor="middle">RELEASE commit</text></g>
+                <g class="event queue" data-step="7"><line x1="775" y1="560" x2="955" y2="560"></line><text x="865" y="551" text-anchor="middle">durable target enqueue</text></g>
+                <g class="event packet" data-step="8"><line x1="335" y1="625" x2="145" y2="625"></line><text x="240" y="616" text-anchor="middle">PUBCOMP · commit 뒤</text></g>
+              </svg>
+            </div>
+            <div class="diagram-legend" aria-label="화살표 범례">
+              <span><i class="legend-swatch"></i>MQTT packet / delivery wake</span>
+              <span><i class="legend-swatch internal"></i>in-process call</span>
+              <span><i class="legend-swatch commit"></i>durable state commit</span>
+            </div>
+            <div class="qos2-status" aria-live="polite" aria-atomic="true">
+              <span class="qos2-count" id="qos2-count">1 / 9</span>
+              <p><strong id="qos2-step-title">PUBLISH가 broker에 도착한다.</strong><span class="qos2-detail" id="qos2-step-detail">이 단계만으로 ACK가 생기지 않습니다. Adapter는 packet을 검증하고 inbound QoS 상태를 시작합니다.</span></p>
+            </div>
+            <p class="reduced-motion-note" id="motion-note">자동 재생은 이 도식의 순서를 설명합니다. reduced-motion 설정에서는 자동 재생을 끄고 수동 단계 이동만 제공합니다.</p>
+            <figcaption>세로 방향은 처리 순서입니다. 성공 PUBREC은 RECEIVE 경계 뒤에, 성공 PUBCOMP은 RELEASE 경계 뒤에 옵니다. Subscriber의 outbound QoS handshake는 이 sequence와 별개입니다.</figcaption>
+          </figure>
+          <div class="qos2-limits">
+            <div>
+              <h3>중복과 Packet Identifier</h3>
+              <p>Broker는 packet identifier별 inbound 상태를 유지합니다. 완료된 exchange의 tombstone은 반복 PUBREL을 멱등 처리합니다. 같은 identifier를 새 PUBLISH에서 재사용하면 기존 완료 상태를 새 exchange로 교체합니다.</p>
+              <p>Cluster durable connection은 두 phase lane으로 처리하고 같은 방향·identifier 순서를 보존합니다. 독립된 identifier의 durable I/O는 겹칠 수 있지만 성공 ACK는 각 완료 결과 뒤에만 나옵니다.</p>
+            </div>
+            <div>
+              <h3>이것이 보장하지 않는 것</h3>
+              <p>Publisher가 받은 PUBCOMP는 broker의 RELEASE 처리 경계입니다. Subscriber 애플리케이션이 payload를 한 번만 기록했거나 외부 side effect를 한 번만 수행했다는 증거가 아닙니다.</p>
+              <p>Target이 없더라도 Cluster QoS 2는 RECEIVE와 RELEASE 상태를 commit합니다. QoS 1 target이 없는 경우에는 별도 ReadIndex barrier를 사용합니다.</p>
+            </div>
+          </div>
+          <p class="source-line"><strong>코드·기준</strong><a href="../../internal/adapters/tcp/server_phases.go">connection phase lanes</a><a href="../../internal/adapters/tcp/server_submission.go">begin / complete inbound work</a><a href="../../internal/application/publish/submission.go">BeginPublish / BeginQoS2Release</a><a href="../../cmd/narumq/cluster_durable.go">BeginDelivery / BeginQuorumBarrier</a><a href="../decisions/ADR-0015-cluster-durable-qos-delivery.md">ADR-0015 §8–9</a><a href="../decisions/ADR-0019-untargeted-durable-publish-quorum-barrier.md">ADR-0019</a></p>
+        </div>
+      </div>
+    </section>
+
+    <section class="chapter" id="recovery" aria-labelledby="recovery-title">
+      <div class="wrap chapter-grid">
+        <div class="chapter-index">06 / 복구</div>
+        <div class="chapter-body">
+          <div class="chapter-head">
+            <h2 id="recovery-title">재연결 복구와 process 재시작은<br>같은 말이 아니다</h2>
+            <p>Persistent session은 network connection 종료 뒤에도 session state를 유지할 수 있습니다. 어떤 장애 뒤까지 남는지는 state adapter와 실행 모드가 결정합니다.</p>
+          </div>
+          <table class="rule-table recovery-table">
+            <thead><tr><th scope="col">실행 모드</th><th scope="col">연결 종료 뒤</th><th scope="col">복구 경로와 제한</th></tr></thead>
+            <tbody>
+              <tr><th scope="row">Standalone</th><td>동일 process가 살아 있으면 session과 queued/inflight delivery state를 process-local memory에서 이어갑니다.</td><td>Reconnect 때 CONNACK을 먼저 기록합니다. Recovery writer는 미완료 QoS PUBLISH에 기존 Packet Identifier와 <code>DUP=1</code>을 사용하고, QoS 2가 PUBREL 대기 상태면 같은 identifier의 PUBREL을 재개합니다. Process restart·replication 복구는 아닙니다.</td></tr>
+              <tr><th scope="row">Dynamic cluster</th><td>Ownership과 delivery state를 committed cluster state로 복구할 수 있습니다. Detached QoS 0 offline queue와 durable QoS 1/2 session state는 서로 다른 lane입니다.</td><td>새 owner가 attach한 상태를 TCP adapter에 복원하고 CONNACK 뒤 recovered packet을 재개합니다. 기록된 acceptance는 제한된 process test와 backup v3 restore에 한정됩니다.</td></tr>
+            </tbody>
+          </table>
+          <div class="columns">
+            <div>
+              <h3>Writer가 복구 packet을 먼저 다룬다</h3>
+              <p>CONNECT activation은 outbound 상태를 읽어 Packet Identifier를 예약하고, 회복할 항목을 정렬합니다. Writer는 새 queued message보다 recovered state를 먼저 확인합니다.</p>
+              <div class="code-panel">
+                <div class="code-label">internal/adapters/tcp/server.go · writeRecoveredDeliveries 발췌</div>
+                <pre><code>packet.Version = connection.version
+packet.DUP = true
+
+if err := connection.writePacket(packet); err != nil {
+    return err
 }</code></pre>
-        <p>
-          같은 세션이 <code>sensors/+</code>와 <code>sensors/room1</code>을 동시에 구독해도
-          한 번만 받습니다. Established delivery의 RETAIN은 RAP에 따라 달라지지만,
-          SUBSCRIBE가 발생시킨 retained replay는 항상 RETAIN=1입니다.
-        </p>
-        <h3 id="retained">Retained replace/delete와 replay</h3>
-        <pre><code>// internal/application/publish/publish.go
-expiresAt := time.Time{}
-if packet.HasMessageExpiryInterval {
-    expiresAt = receivedAt.Add(time.Duration(packet.MessageExpiryInterval) * time.Second)
-}
-now := useCase.clock.Now()
-expired := !expiresAt.IsZero() &amp;&amp; !now.Before(expiresAt)
-if packet.Retain {
-    tenantID := useCase.routes.SessionTenant(publisherSessionID)
-    deleteValue := len(packet.Payload) == 0 || expired
-    message := retained.MessageDTO{
-        TenantID: tenantID, PublisherSessionID: publisherSessionID, Topic: packet.Topic,
-    }
-    if !deleteValue {
-        message.Payload = packet.Payload
-        message.QoS = packet.QoS
-        message.ExpiresAt = expiresAt
-    }
-    if useCase.retainedCommitter != nil {
-        // Raft commit and node-local projection update happen before routing.
-        err = useCase.retainedCommitter.CommitRetained(context.Background(),
-            RetainedChangeDTO{Message: message, Delete: deleteValue, ProposedAt: now})
-    } else if deleteValue {
-        err = useCase.retained.Delete(tenantID, packet.Topic)
-    } else {
-        err = useCase.retained.Replace(message, now)
-    }
-    if err != nil {
-        return ResultDTO{}, err
-    }
-}
-if expired {
-    return ResultDTO{}, nil
-}
-matches, err := useCase.routes.Match(publisherSessionID, packet.Topic, packet.QoS, packet.Retain)
-// Successful retained state change precedes route matching/live fan-out.
-
-// internal/application/subscribe/subscribe.go
-queue.TryEnqueueBatch(replay, now)
-routes.Subscribe(sessionID, subscription) // replay batch committed first</code></pre>
-        <p>
-          Retained key는 <code>(tenantId, exact Topic Name)</code>입니다. Standalone에서는 bounded memory repository가 authority이고, dynamic cluster에서는 <code>RetainedCommitter</code>가 mutation을 Raft에 commit합니다. Publisher node는 committed command를 local apply하고 replay projection을 갱신한 뒤 route matching과 live fan-out을 시작합니다. 다른 node는 각자 committed command를 apply하거나 snapshot catch-up할 때 local projection을 갱신합니다. Publish 완료가 모든 peer projection의 갱신 완료를 보장하지는 않습니다.
-          Standalone repository와 cluster replay projection은 <code>List(now)</code>에서 <code>now &gt;= ExpiresAt</code>인 값을 제거합니다. Raft 권위 state는 다음 retained command를 apply할 때 proposal 시각으로 만료 값을 결정적으로 제거하므로, 그 전에는 만료 entry가 snapshot/archive와 용량 한도에 남을 수 있습니다. Replay queue가 가득 차면 route를 만들지 않고 MQTT version에 맞는 실패 reason을 반환합니다.
-        </p>
-        <p>영속 세션의 queued delivery와 outbound Packet ID 상태도 같은 application-owned queue에 보관됩니다. persistent disconnect에서는 삭제하지 않고, Clean Start 또는 Session Expiry가 실제 세션을 제거할 때만 함께 제거합니다.</p>
-        <div class="grid">
-          <article class="card wide">
-            <h3>발행 응용 기능의 결과</h3>
-            <pre><code>// internal/application/publish/publish.go
-now := useCase.clock.Now()
-for _, match := range matches {
-    delivery := deliveryqueue.DeliveryDTO{
-        SessionID: match.SessionID,
-        Topic:     packet.Topic,
-        Payload:   packet.Payload,
-        QoS:       match.QoS,
-        Retain:    match.Retain,
-        ExpiresAt: expiresAt,
-    }
-    err := useCase.queue.TryEnqueue(delivery, now)
-    // ErrFull/ErrUnavailable은 다른 session fan-out을 막지 않는다.
-}</code></pre>
-            <p>한 세션의 큐가 가득 차도 다른 세션을 계속 시도합니다. Cluster retained commit은 route matching/live fan-out보다 먼저 완료되어야 합니다. Commit error는 해당 publish call의 fan-out을 막고, timeout만으로 proposal이 반영되지 않았다고 단정할 수는 없습니다.</p>
-          </article>
-          <article class="card">
-            <h3>메모리 경계</h3>
-            <p><a href="../../internal/adapters/memory/deliveryqueue/queue.go#L62">TryEnqueue</a>와 <a href="../../internal/adapters/memory/deliveryqueue/queue.go#L83">TryEnqueueBatch</a>는 payload를 복사하고 batch 전체를 수용할 수 없으면 아무것도 추가하지 않습니다.</p>
-            <p><a href="../../internal/adapters/memory/retained/repository.go#L26">retained.Repository</a>는 전체 tenant에 걸친 entry 수와 tenant/topic/payload/publisher-routing-ID bytes 합계로 제한됩니다. 별도 tenant별 quota가 아니라 standalone authority이자 cluster replay projection입니다.</p>
-            <p>같은 메모리 adapter가 Packet ID별 QoS 1·2 상태도 보관합니다. <code>PromoteHead</code>는 FIFO head를 outbound 상태로 원자적으로 옮기고, ACK dispatcher는 <code>ReplaceOutbound</code>·<code>CompleteOutbound</code>로 상태를 먼저 갱신한 뒤 다음 출력을 깨웁니다.</p>
-          </article>
-        </div>
-        <blockquote>
-          현재 TCP writer는 연결 활성화 시 복구된 outbound를 먼저 출력하고, 이후 <code>Peek</code>·<code>PromoteHead</code>로 FIFO head를 하나씩 예약합니다. 만료된 queued/PUBLISH-stage 항목은 버리고, await-PUBCOMP 상태의 PUBREL은 원래 publication deadline과 무관하게 재개합니다. MQTT 5에는 올림한 remaining interval을 쓰고 MQTT 3.1.1에는 expiry property를 생략합니다.
-</blockquote>
-      </div>
-    </section>
-
-    <section id="qos">
-      <div class="wrap">
-        <div class="section-kicker">07 · QoS 1·2 상태 머신</div>
-        <h2>ACK는 단순한 응답 문자열이 아니라, 다음에 허용되는 행동을 바꾸는 상태다</h2>
-        <p>
-          QoS는 메시지가 목적지에 도착했다는 의미를 어느 정도까지 확인할지 정하는 수준입니다. QoS 0은 확인 없이 한 번 보냅니다. QoS 1은 <code>PUBACK</code>를 받아야 교환을 완료합니다. QoS 2는 <code>PUBREC → PUBREL → PUBCOMP</code> 네 단계로 중복 전달을 더 엄격하게 다룹니다.
-        </p>
-        <table>
-          <thead><tr><th>방향·수준</th><th>처음 보낼 것</th><th>다음 상태</th><th>재연결·중복 시 행동</th></tr></thead>
-          <tbody>
-            <tr><td>송신자 QoS 1</td><td>PUBLISH</td><td>PUBACK 대기</td><td>완료 전이면 DUP=1 PUBLISH 재전송</td></tr>
-            <tr><td>송신자 QoS 2</td><td>PUBLISH</td><td>PUBREC 대기</td><td>PUBREC 후 PUBREL, PUBCOMP까지 대기</td></tr>
-            <tr><td>수신자 QoS 1</td><td>응용 전달을 먼저 수락 대기</td><td>수락 후 PUBACK</td><td>중복 PUBLISH에는 동일한 ACK 경로</td></tr>
-            <tr><td>수신자 QoS 2</td><td>응용 수락 전 상태 보관</td><td>PUBREC → PUBREL → 최종 수락 → PUBCOMP</td><td>중복 PUBLISH/PUBREL을 현재 상태에 맞게 재응답</td></tr>
-          </tbody>
-        </table>
-        <pre><code>// internal/domain/delivery/state.go:53-66, 119-129
-// 설명을 위해 상태 전환의 핵심만 남긴 단순화한 발췌다.
-state, action, err := NewOutbound(publish)
-// action.Send는 DUP=false PUBLISH
-retry, err := state.Resume()
-// 완료 전에는 DUP=true PUBLISH 또는 PUBREL
-
-// inbound는 응용 수락이 끝난 뒤 ACK를 보낸다.
-state, action, err = NewInbound(publish)
-// QoS 1: action.Deliver + action.AwaitAcceptance
-state, action, err = state.Accept()
-// action.Send = PUBACK, action.Complete = true</code></pre>
-        <p>
-          <code>Action</code>은 상태 변화의 결과를 한 번에 나타냅니다. 보낼 패킷(<code>Send</code>), 응용에 넘길 메시지(<code>Deliver</code>), 저장·수락 장벽을 기다려야 하는지(<code>AwaitAcceptance</code>), 교환이 끝났는지(<code>Complete</code>)를 호출자가 해석합니다. 이 구조는 패킷을 보냈다는 사실만으로 “전달 완료”라고 잘못 판단하지 않게 합니다.
-        </p>
-        <div class="grid">
-          <article class="card callout">
-            <h3>코덱과 상태의 연결</h3>
-            <p><a href="../../internal/domain/mqtt/ack.go#L77">decodeAcknowledgement</a>는 Packet ID와 MQTT 5 reason code를 검증해 <code>PubAck</code>, <code>PubRec</code>, <code>PubRel</code>, <code>PubComp</code> 값으로 만듭니다.</p>
-            <p><a href="../../internal/domain/delivery/state.go#L70">Outbound.Receive</a>는 그 값이 현재 Packet ID와 상태에 맞는지 다시 확인합니다. 코덱 검증만 통과했다고 아무 ACK나 적용하지 않습니다.</p>
-          </article>
-          <article class="card warning">
-            <h3>현재 실행 경로와의 차이</h3>
-            <p>QoS 상태 머신은 <code>internal/domain/delivery</code>에서 단위 테스트 가능한 정책으로 구현됐습니다. 현재 <a href="../../internal/adapters/tcp/server.go#L535">activate</a>가 저장된 outbound를 읽고 <a href="../../internal/adapters/tcp/server.go#L1262">writeRecoveredDeliveries</a>가 CONNACK 뒤에 복구하며, <a href="../../internal/adapters/tcp/server.go#L877">dispatchPubAck</a>·ACK dispatcher가 queue 상태를 write-through합니다.</p>
-            <p>Message Expiry는 상태 머신과 별도의 absolute deadline으로 관리됩니다. queued/PUBLISH-stage 상태는 deadline이 지나면 억제하지만, PUBREL 단계는 PUBCOMP까지 재개할 수 있습니다.</p>
-          </article>
+              </div>
+              <p class="code-note">복구된 PUBLISH 단계의 packet입니다. 이미 PUBREC까지 끝난 QoS 2 상태는 PUBREL로 이어집니다.</p>
+            </div>
+            <div>
+              <h3>Backup은 별도 계약이다</h3>
+              <p><code>NMQBKUP3</code> backup v3 contract는 retained state, detached QoS 0 offline queue, durable QoS 1/2 delivery session과 inflight state를 archive 범위에 둡니다. Archive 포함 여부만으로 production storage의 power-loss 보장을 주장할 수는 없습니다.</p>
+              <p>Cluster backup v3 contract와 MQTT·Cluster implementation spec은 현재 문서에서 Draft로 표시됩니다. Accepted ADR은 각 결정의 제한된 범위에만 적용됩니다.</p>
+              <p class="source-line"><strong>코드·계약</strong><a href="../../internal/adapters/tcp/server.go">activate / writeRecoveredDeliveries</a><a href="../../internal/adapters/memory/deliveryqueue/queue.go">process-local delivery queue</a><a href="../../cmd/narumq/cluster_durable.go">durable queue projection</a><a href="../contracts/cluster-backup-v3.md">Cluster backup v3 · Draft</a></p>
+            </div>
+          </div>
         </div>
       </div>
     </section>
 
-    <section id="session">
-      <div class="wrap">
-        <div class="section-kicker">08 · 세션 수명</div>
-        <h2>연결이 끊겼다고 세션이 언제나 사라지는 것은 아니다</h2>
-        <p>
-          세션은 현재 연결 자체와, 끊긴 뒤 잠시 남을 수 있는 Client ID 기반 상태를 함께 말합니다. <a href="../../internal/domain/session/state.go#L28">session.Lifecycle</a>은 연결 여부, 만료 정책, 만료 시각, 폐기 여부를 소유합니다. <a href="../../internal/application/connect/connect.go#L151">Disconnect</a>는 persistent disconnect에서 delivery queue를 보존하고, clean reset 또는 실제 session expiry에서만 queue와 라우팅 구독을 삭제합니다.
-        </p>
-        <div class="flow">
-          <div class="node"><code>Open</code><br><span class="small">Client ID로 기존 상태 조회</span></div>
-          <div class="arrow">→</div>
-          <div class="node"><code>Connected</code><br><span class="small">큐 등록·CONNACK</span></div>
-          <div class="arrow">→</div>
-          <div class="node"><code>Disconnect</code><br><span class="small">즉시 삭제 또는 만료 예약</span></div>
-          <div class="arrow">→</div>
-          <div class="node"><code>Expired</code><br><span class="small">재연결 시 Session Present 불가</span></div>
-        </div>
-        <p>
-          MQTT 3.1.1에서는 Clean Start가 아니면 이 구현이 영속 세션 의미를 사용합니다. MQTT 5에서는 Session Expiry Interval이 0이면 즉시, 최대 <code>uint32</code> 값이면 무기한, 그 사이 값이면 Disconnect 시각부터 초 단위로 보존합니다. 만료 판정은 <code>now &gt;= expiresAt</code> 경계에서 참이 됩니다.
-        </p>
-        <div class="grid">
-          <article class="card wide">
-            <h3>재연결의 중요한 순서</h3>
-            <ol>
-              <li>저장소에서 같은 Client ID의 Lifecycle을 읽습니다.</li>
-              <li><code>session.Open</code>이 Clean Start, 폐기, 만료, 연결 중 여부를 판단합니다.</li>
-              <li>재개 세션이면 기존 queue와 outbound Packet ID 상태를 보존한 채 queue를 등록합니다.</li>
-              <li>CONNACK를 먼저 쓰고, 저장된 Packet ID·QoS 상태를 DUP PUBLISH 또는 PUBREL로 복구합니다.</li>
-              <li>복구가 끝난 뒤에만 새 FIFO delivery를 예약하고 출력합니다.</li>
-            </ol>
-            <p>큐 등록에 실패하면 저장소를 이전 값으로 되돌리거나 새 세션을 삭제하려고 합니다. 이 되돌림은 “세션은 열렸다고 저장됐는데 전달 큐는 없는” 중간 상태를 줄입니다.</p>
-          </article>
-          <article class="card">
-            <h3>아직 상위 계층 책임인 것</h3>
-            <p><code>session.Open</code>은 이미 연결된 Lifecycle을 takeover하지 않습니다. 같은 Client ID 연결을 어떻게 끊고 새 소유자에게 넘길지는 TCP 서버와 더 높은 연결 소유권 정책에서 결정해야 합니다.</p>
-            <p>이 파일은 그 정책이 존재한다고 가정하지 않고, 현재 구현된 거절 결과만 반환합니다.</p>
-          </article>
+    <section class="chapter" id="evidence" aria-labelledby="evidence-title">
+      <div class="wrap chapter-grid">
+        <div class="chapter-index">07 / 증거</div>
+        <div class="chapter-body">
+          <div class="chapter-head">
+            <h2 id="evidence-title">무엇을 시험했고,<br>무엇은 아직 주장하지 않는가</h2>
+            <p>아래는 코드와 저장소 문서에 기록된 검증 결과입니다. 이 아티팩트 작업 중 Go 시험을 다시 실행하지 않았습니다.</p>
+          </div>
+          <p class="section-lead">Cluster spec §11.11은 focused package suite와 네 process acceptance test의 PASS를 기록합니다. Process test는 실제 broker process와 MQTT socket으로 reconnect, takeover, backup restore, ACK 뒤 process kill, quorum loss 동작을 관찰합니다.</p>
+          <ul class="evidence-list">
+            <li><strong><code>TestTCPDurableQoS1WithoutTargetAcknowledgesAfterQuorumBarrier</code></strong><span>Quorum barrier가 끝나기 전에는 PUBACK을 보내지 않고, 성공 완료 뒤에만 ACK를 보냅니다.</span></li>
+            <li><strong><code>TestTCPDurableQoS2ReceiveReleaseAndCapacity</code></strong><span>RECEIVE 전에 PUBREC을 보내지 않고, RELEASE commit 전에 PUBCOMP을 보내지 않는 경계를 확인합니다.</span></li>
+            <li><strong><code>TestDynamicClusterDurableQoSTakeoverProcessAcceptance</code></strong><span>Detached QoS 1/2 delivery와 owner takeover 뒤 session state 재개를 확인합니다.</span></li>
+            <li><strong><code>TestDynamicClusterDurableQoSAckThenKillProcessAcceptance</code></strong><span>성공 PUBACK 뒤 publisher process를 중단하고 subscriber reconnect에서 committed message를 확인합니다. Quorum loss 중 성공 ACK가 없는 경로도 확인합니다.</span></li>
+            <li><strong><code>TestDynamicClusterDurableQoSBackupRestoreProcessAcceptance</code></strong><span>Backup restore 뒤 inflight QoS state와 inbound tombstone을 사용하며 duplicate subscriber delivery가 생기지 않는지 확인합니다.</span></li>
+            <li><strong><code>TestDynamicClusterDurableQoS2WillProcessAcceptance</code></strong><span>QoS 2 Will과 reconnect/takeover sequence의 제한된 process acceptance를 확인합니다.</span></li>
+          </ul>
+          <p class="source-line"><strong>기록 위치</strong><a href="../../internal/adapters/tcp/server_durable_test.go">TCP durable unit tests</a><a href="../../tests/integration/cluster_durable_delivery_process_test.go">cluster durable process tests</a><a href="../specs/cluster-session-and-delivery.md#1111-qos-12-durable-delivery-수용-매핑">Cluster spec §11.11 · recorded evidence</a></p>
+          <div class="scope-limit">
+            <h3>이 증거가 승인하지 않는 범위</h3>
+            <p><span class="status-label">미주장</span> Production storage·EBS의 물리 전원 손실, BP-03, N-1 compatibility, TEN-08 tenant quota, broker drain/SAFE_TO_STOP 완료. Process acceptance와 backup restore 성공만으로 이 조건을 대신할 수 없습니다.</p>
+          </div>
+          <p>현재 MQTT protocol/session spec과 Cluster session/delivery spec은 Draft입니다. ADR-0015는 cluster QoS 1/2 durable delivery의 제한된 범위를 Accepted로 정하며, ADR-0019는 target 없는 publish의 빈 delivery command 생략 경계만 대체합니다.</p>
         </div>
       </div>
     </section>
 
-    <section id="runtime">
-      <div class="wrap">
-        <div class="section-kicker">09 · TCP 실행 순서</div>
-        <h2>읽기 루프와 쓰기 루프를 나누되, 출력 순서는 한 곳에서 통제한다</h2>
-        <p>
-          한 연결은 읽기 루프에서 입력을 해석하고, 별도의 쓰기 루프가 제어 응답과 전달 메시지를 소켓에 씁니다. 제어 응답을 별도 제한 큐에 넣고, 전달 큐가 준비됐다는 신호를 보내는 방식으로 읽기 정책과 출력 정책을 분리합니다.
-        </p>
-        <pre><code>// internal/adapters/tcp/server.go: activate, writeDeliveries
-// 설명을 위해 읽기·쓰기 루프와 recovery 순서만 남긴 단순화한 의사코드다.
-readLoop:
-  socket.Read -&gt; buffered bytes
-  decoder.Decode(buffered)
-  incomplete -&gt; keep bytes and read again
-  success -&gt; remove consumed bytes, dispatch packet
-
-writerLoop:
-  controlQueue가 있으면 먼저 출력
-  activate 성공 -&gt; CONNACK 출력 -&gt; recovered outbound 출력
-  이후 Peek(now)로 FIFO head 확인
-  QoS 0 -&gt; write -&gt; CompleteHead
-  QoS 1·2 -&gt; Packet ID acquire -&gt; PromoteHead -&gt; PUBLISH 출력
-  PUBACK/PUBREC/PUBCOMP -&gt; CompleteOutbound 또는 ReplaceOutbound
-  만료 head -&gt; 제거, Packet ID 고갈·queue full -&gt; head 보존</code></pre>
-        <table>
-          <thead><tr><th>단계</th><th>현재 코드가 하는 일</th><th>실패 시</th></tr></thead>
-          <tbody>
-            <tr><td>첫 패킷</td><td>CONNECT만 허용하고 connect 응용 기능으로 세션을 활성화합니다.</td><td>다른 종류면 프로토콜 오류입니다.</td></tr>
-            <tr><td>SUBSCRIBE</td><td>필터마다 검증하고 retained replay batch를 queue에 먼저 예약한 뒤 route를 설치합니다.</td><td>queue가 부족하면 이전 route를 유지하고 version별 reason을 반환합니다.</td></tr>
-            <tr><td>PUBLISH QoS 0·1·2</td><td>Standalone은 QoS 0·1·2, dynamic cluster는 QoS 0 retained/offline과 ADR-0015의 QoS 1/2 durable publish 경로를 지원합니다. 성공 ACK는 관련 durable command commit 뒤 반환합니다.</td><td>Retained commit error는 해당 call의 fan-out을 막습니다. Timeout이면 commit outcome이 불확실할 수 있습니다.</td></tr>
-            <tr><td>제어 출력</td><td>CONNACK·SUBACK·PINGRESP·실패 ACK를 제한된 control queue에 넣습니다.</td><td>control queue가 가득 차면 연결을 닫습니다.</td></tr>
-            <tr><td>DISCONNECT</td><td>barrier가 앞선 제어 패킷의 출력을 기다린 뒤 세션을 정리합니다.</td><td>write barrier 실패 또는 control queue 포화면 연결을 닫습니다.</td></tr>
-<tr><td>SUBACK replay ordering</td><td>Subscribe 결과가 retained delivery를 큐에 넣어도 TCP dispatch는 SUBACK write 완료 뒤 dedicated wake를 보냅니다.</td><td>이미 pending인 delivery나 동시 publish의 wire 순서는 보장하지 않습니다.</td></tr>
-          </tbody>
-        </table>
-        <p class="small">관련 구현: <a href="../../internal/adapters/tcp/server.go#L535">activate</a>, <a href="../../internal/adapters/tcp/server.go#L1167">writeDeliveries</a>, <a href="../../internal/adapters/tcp/server.go#L1262">writeRecoveredDeliveries</a>, <a href="../../internal/adapters/tcp/server.go#L877">ACK dispatcher</a>.</p>
-      </div>
-    </section>
-
-    <section id="tests">
-      <div class="wrap">
-        <div class="section-kicker">10 · 검증 방법</div>
-        <h2>각 경계의 정상·실패·소유권 조건을 서로 다른 테스트가 맡는다</h2>
-        <p>
-          테스트 파일의 Traceability 주석은 PRD 항목과 MQTT 규격 절을 연결합니다. 아래 표는 “파일이 있다”는 목록이 아니라, 각 커밋의 기능이 어떤 관찰 가능한 조건으로 검증되는지 보여줍니다. 이 HTML을 읽었다고 테스트가 실행된 것은 아니며, 실제 확인은 아래 명령으로 별도 수행해야 합니다.
-        </p>
-        <table>
-          <thead><tr><th>기능</th><th>확인하는 행동</th><th>테스트</th></tr></thead>
-          <tbody>
-            <tr><td>CONNECT·소유권</td><td>3.1.1/5.0 왕복, 선택 필드, 잘못된 플래그·버전·크기, 입력 버퍼와 반환 값의 독립성</td><td><a href="../../internal/domain/mqtt/connect_test.go">connect_test.go</a>, <a href="../../internal/domain/mqtt/packet_edge_test.go">packet_edge_test.go</a>, <a href="../../internal/domain/mqtt/packet_fuzz_test.go">packet_fuzz_test.go</a></td></tr>
-            <tr><td>ACK 코덱</td><td>PubAck·PubRec·PubRel·PubComp 왕복, Packet ID·reason code·속성 길이 검증</td><td><a href="../../internal/domain/mqtt/ack_test.go">ack_test.go</a></td></tr>
-            <tr><td>라우팅·options</td><td>와일드카드 위치, 공유 구독 거절, 시스템 토픽, overlap 1회 전달, NL/RAP RETAIN 정책과 유효 QoS 계산</td><td><a href="../../internal/domain/routing/routing_test.go">routing_test.go</a>, <a href="../../internal/application/subscribe/subscribe_test.go">subscribe_test.go</a></td></tr>
-            <tr><td>retained repository</td><td>tenant + exact-topic replace/delete, count·byte capacity, payload ownership, expiry purge와 deterministic list</td><td><a href="../../internal/adapters/memory/retained/repository_test.go">repository_test.go</a></td></tr>
-            <tr><td>Cluster retained + offline + backup v3</td><td>Tenant-scoped retained state와 detached session의 QoS 0 offline queue는 node 사이 replay/복제되고 NMQBKUP3 restore, restart, learner catch-up 뒤에도 유지됩니다.</td><td><a href="../../internal/application/membership/retained_test.go">membership retained tests</a>, <a href="../../internal/application/membership/offline_test.go">membership offline tests</a>, <a href="../../tests/integration/cluster_backup_restore_process_test.go">TestClusterBackupRestoreProcessCrashAndResync</a>, <a href="../contracts/cluster-backup-v3.md">backup v3 contract</a></td></tr>
-            <tr><td>발행·큐</td><td>세션별 fan-out, Full/Unavailable 부분 결과, FIFO, atomic batch, payload 복사, RAP와 expiry deadline, process-local offline/outbound recovery 상태</td><td><a href="../../internal/application/publish/publish_test.go">publish_test.go</a>, <a href="../../internal/adapters/memory/deliveryqueue/queue_test.go">queue_test.go</a></td></tr>
-            <tr><td>Persistent recovery wire</td><td>persistent disconnect 후 FIFO offline delivery, CONNACK-before-recovery, QoS 1·2 DUP/Packet ID 재사용, PUBREL 재개, clean reset와 expiry suppression</td><td><a href="../../tests/integration/mqtt_ingress_test.go">TestMQTTIngressPersistentOfflineDelivery</a>, <a href="../../tests/integration/mqtt_ingress_test.go">TestMQTTIngressPersistentOutboundQoSRecovery</a></td></tr>
-            <tr><td>Message Expiry wire</td><td>MQTT 5 property 검증, MQTT 3.1.1 property 거절, 10초 deadline·3초 경과 뒤 remaining 7초·deadline no-delivery</td><td><a href="../../internal/domain/mqtt/publish_test.go">publish_test.go</a>, <a href="../../tests/integration/mqtt_ingress_test.go">mqtt_ingress_test.go</a></td></tr>
-          </tbody>
-        </table>
-        <pre><code>go test ./internal/domain/mqtt ./internal/domain/routing ./internal/domain/delivery ./internal/domain/session ./internal/application/connect ./internal/application/subscribe ./internal/application/publish ./internal/application/ports/deliveryqueue ./internal/application/ports/retained ./internal/adapters/memory/deliveryqueue ./internal/adapters/memory/retained ./internal/adapters/tcp ./tests/integration -count=1</code></pre>
-        <p class="small">Retained/backup 변경의 실행 증거에 해당하는 명령:</p>
-        <pre><code>go test ./internal/application/membership/... ./internal/adapters/raft/records/... ./internal/adapters/memory/retained/... ./internal/application/publish/... ./internal/application/subscribe/... ./internal/application/management/... ./internal/adapters/http/management/... ./cmd/narumq/... ./tests/contracts/... -count=1
-go test ./tests/integration -run '^(TestClusterBackupRestoreProcessCrashAndResync|TestDynamicClusterMembershipProcessAcceptance|TestDynamicClusterMembershipTransitionCrashRecovery|TestDynamicClusterMembershipRemovalHandoffWaitsForQuorum|TestSnapshotFinalizationCrashRecoveryAcrossProcessRestart)$' -count=1 -v</code></pre>
-      </div>
-    </section>
-
-    <section id="scope">
-      <div class="wrap">
-        <div class="section-kicker">11 · 현재 범위와 다음 경계</div>
-        <h2>구현된 것과 아직 연결되지 않은 것을 구분한다</h2>
-        <div class="grid">
-          <article class="card success">
-            <h3>이 slice로 확인되는 것</h3>
-            <ul>
-              <li>MQTT 3.1.1·5.0 패킷의 제한된 코덱과 오류 분류</li>
-              <li>CONNECT, CONNACK, PUBLISH, 구독·ACK·제어 패킷 값</li>
-              <li>와일드카드 기반 비공유 구독 매칭과 session별 FIFO 큐</li>
-              <li>subscription option별 No Local·Retain As Published와 Retain Handling</li>
-              <li>Standalone은 QoS 0·1·2 ingress/outbound ACK 상태와 재전송을 지원합니다. Dynamic cluster는 QoS 0 retained/offline replication과 제한된 QoS 1/2 durable delivery·ACK acceptance를 제공합니다.</li>
-              <li>Tenant + exact topic별 retained replace/delete와 원자적 replay, standalone profile의 expiry purge</li>
-              <li>Dynamic cluster의 QoS 0 retained/offline와 QoS 1/2 durable delivery state, backup v3 archive/restore 및 process acceptance</li>
-              <li>Message Expiry absolute deadline, remaining interval serialization과 MQTT version별 property 규칙</li>
-              <li>Clean Start, Session Expiry, Session Present 상태</li>
-              <li>개발용 TCP ingress와 SUBACK-before-replay single writer 출력 순서</li>
-              <li>persistent session의 process-local offline FIFO와 미완료 QoS 1·2 outbound 재연결 복구</li>
-            </ul>
-          </article>
-          <article class="card warning">
-            <h3>현재 문서와 코드가 명시하는 제한</h3>
-            <ul>
-              <li>Persistent offline queue와 미완료 QoS 1·2 outbound 복구는 process-local memory에 머무릅니다. Cluster는 offline delivery를 복제하지 않고 QoS 1·2 durable ACK를 제공하지 않습니다.</li>
-              <li>Retained cluster write는 정확히 같은 release/protocol/schema profile이 필요합니다. 이 gate는 N/N-1 rolling upgrade나 rollback 호환성을 입증하지 않습니다.</li>
-              <li>Message Expiry metadata는 MQTT 3.1.1 outbound wire에서 생략되지만 queued/PUBLISH-stage deadline은 적용</li>
-              <li>Persistent session/offline delivery의 영속 저장과 process 재시작 자동 복구는 retained cluster backup 경로와 별개입니다.</li>
-            </ul>
-          </article>
+    <section class="chapter" id="references" aria-labelledby="references-title">
+      <div class="wrap chapter-grid">
+        <div class="chapter-index">08 / 참고</div>
+        <div class="chapter-body">
+          <div class="chapter-head">
+            <h2 id="references-title">코드에서 기준으로<br>돌아가는 경로</h2>
+            <p>코드는 현재 구현을 설명합니다. Accepted ADR은 채택한 결정 범위를 정하고, Draft spec과 contract는 현재 문서화된 동작 및 시험 근거를 보여줍니다.</p>
+          </div>
+          <div class="reference-groups">
+            <div>
+              <h3>코드 지도와 실행 경로</h3>
+              <ul>
+                <li><a href="../architectures/project-structure.md#코드-지도-실행-모드와-mqtt-connect-대표-흐름">Project structure · MQTT 대표 흐름</a></li>
+                <li><a href="../../cmd/narumq/main.go">Process entry point · main.go</a></li>
+                <li><a href="../../internal/adapters/tcp/server.go">TCP connection, dispatch, writer</a></li>
+                <li><a href="../../internal/domain/mqtt/decoder.go">MQTT Decoder</a></li>
+                <li><a href="../../internal/application/connect/connect.go">CONNECT use case</a></li>
+                <li><a href="../../internal/application/subscribe/subscribe.go">SUBSCRIBE use case</a></li>
+                <li><a href="../../internal/application/publish/publish.go">PUBLISH use case</a></li>
+              </ul>
+            </div>
+            <div>
+              <h3>기준과 확인 기록</h3>
+              <ul>
+                <li><a href="../specs/mqtt-protocol-and-session.md">MQTT protocol and session spec · Draft</a></li>
+                <li><a href="../specs/cluster-session-and-delivery.md#42-qos-12-durable-delivery">Cluster session and delivery spec §4.2 · Draft</a></li>
+                <li><a href="../specs/cluster-session-and-delivery.md#1111-qos-12-durable-delivery-수용-매핑">Cluster acceptance evidence §11.11</a></li>
+                <li><a href="../decisions/ADR-0015-cluster-durable-qos-delivery.md">ADR-0015 · Accepted scope</a></li>
+                <li><a href="../decisions/ADR-0019-untargeted-durable-publish-quorum-barrier.md">ADR-0019 · Accepted scope</a></li>
+                <li><a href="../contracts/cluster-backup-v3.md">Cluster backup v3 contract · Draft</a></li>
+              </ul>
+            </div>
+          </div>
+          <p class="note"><strong>읽기 순서:</strong> 코드 지도로 실행 모드를 잡고, protocol spec에서 동작 계약을 읽은 다음, 해당 source와 test로 실제 경계와 증거를 대조합니다.</p>
         </div>
-        <blockquote>
-          현재 제한은 실제 호출 관계에 근거합니다. Session/offline delivery 복구는 process-local memory에 한정되지만, retained state는 standalone memory 경로와 dynamic cluster Raft 경로로 나뉩니다. Cluster 경로는 tenant-scoped QoS 0 retained replication과 v2 backup만 증명하며, 일반 QoS 1·2 durable delivery를 포함하지 않습니다.
-        </blockquote>
-        <h3>다음에 함께 읽을 문서</h3>
-        <ul class="source-list">
-          <li><a href="../specs/mqtt-protocol-and-session.md">MQTT 프로토콜·세션 시스템 스펙</a></li>
-          <li><a href="../specs/cluster-session-and-delivery.md">Cluster session·delivery spec과 acceptance evidence</a></li>
-          <li><a href="../contracts/cluster-backup-v3.md">Cluster backup v3 contract</a></li>
-          <li><a href="../decisions/ADR-0012-retained-replication-and-cluster-backup-v2.md">ADR-0012 retained replication 결정</a></li>
-          <li><a href="../decisions/ADR-0013-offline-queue-replication-and-cluster-backup-v3.md">ADR-0013 offline queue replication과 backup v3 결정</a></li>
-          <li><a href="../architectures/broker-core.md">브로커 코어 경계</a></li>
-          <li><a href="../architectures/project-structure.md">프로젝트 구조</a></li>
-          <li><a href="../explainers/mqtt-delivery-guarantees-and-protocol-flows.md">전달 보장과 프로토콜 흐름 통합 해설</a></li>
-          <li><a href="../explainers/broker-core-boundaries.md">브로커 코어 경계 해설</a></li>
-          <li><a href="../explainers/session-ownership-and-fencing.md">세션 소유권과 fencing</a></li>
-          <li><a href="../decisions/ADR-0003-durable-ack-barrier.md">durable ACK barrier 결정</a></li>
-          <li><a href="../explainers/go-buffer-ownership-and-zero-copy.md">Go 버퍼 소유권과 복사 경계</a></li>
-        </ul>
       </div>
     </section>
   </main>
 
-  <footer>
-    <div class="wrap">
-      <p>현재 호출 관계와 테스트 evidence 기준: 2026-09-26. Cluster retained/backup v2는 focused package suite, 다섯 process regression과 `go run ./tools/verify local`에서 확인했다. Offline queue replication과 production power-loss 보장은 이 artifact의 범위 밖입니다.</p>
-      <p>읽는 순서: 결과 → 커밋 변화 → 구조 → 코덱 → 라우팅·큐 → QoS → 세션 → TCP 실행 → 검증 → 범위.</p>
-    </div>
+  <footer class="footer">
+    <div class="wrap"><p>NaruMQ · MQTT packet, application state, durable commit의 경계를 구분해 읽는 코드 해설입니다.</p></div>
   </footer>
+
+  <script>
+    (() => {
+      const steps = [
+        {
+          title: "PUBLISH가 broker에 도착한다.",
+          detail: "이 단계만으로 ACK가 생기지 않습니다. Adapter는 packet을 검증하고 inbound QoS 상태를 시작합니다."
+        },
+        {
+          title: "Adapter가 RECEIVE 작업을 제출한다.",
+          detail: "Dynamic cluster의 non-retained durable 경로는 submission과 완료를 분리합니다. 같은 Packet Identifier의 순서는 유지합니다."
+        },
+        {
+          title: "RECEIVE가 commit된다.",
+          detail: "QoS 2 publisher 상태가 기록된 뒤 다음 단계로 갑니다. Target이 없어도 RECEIVE 경계는 필요합니다."
+        },
+        {
+          title: "Broker가 PUBREC을 보낸다.",
+          detail: "성공 PUBREC은 RECEIVE 완료 뒤에만 허용됩니다. Commit 또는 barrier 실패를 성공 ACK로 바꾸지 않습니다."
+        },
+        {
+          title: "Publisher가 PUBREL을 보낸다.",
+          detail: "Broker는 같은 Packet Identifier의 inbound state에서 원래 PUBLISH와 release 전이를 찾습니다."
+        },
+        {
+          title: "Adapter가 RELEASE 작업을 제출한다.",
+          detail: "Application은 원래 PUBLISH를 기준으로 route 후보와 delivery 변경을 준비합니다. Durable I/O 중에는 상태 lock을 잡지 않습니다."
+        },
+        {
+          title: "RELEASE와 대상 queue가 commit된다.",
+          detail: "확인된 target queue가 같은 durable 변경에 반영됩니다. Target이 없어도 QoS 2 RELEASE state는 commit합니다."
+        },
+        {
+          title: "Subscriber owner의 writer가 깨어난다.",
+          detail: "이것은 publisher ACK와 다른 delivery hop입니다. Subscriber의 QoS handshake와 application 처리는 별도입니다."
+        },
+        {
+          title: "Broker가 PUBCOMP을 보낸다.",
+          detail: "성공 PUBCOMP은 RELEASE 완료 뒤에 옵니다. 이 ACK는 subscriber application의 exactly-once 효과를 증명하지 않습니다."
+        }
+      ];
+      const rows = Array.from(document.querySelectorAll(".qos2-svg .event"));
+      const marker = document.getElementById("qos2-marker");
+      const count = document.getElementById("qos2-count");
+      const title = document.getElementById("qos2-step-title");
+      const detail = document.getElementById("qos2-step-detail");
+      const back = document.getElementById("step-back");
+      const play = document.getElementById("step-play");
+      const forward = document.getElementById("step-forward");
+      const reset = document.getElementById("step-reset");
+      const motionNote = document.getElementById("motion-note");
+      const reducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)");
+      let current = 0;
+      let timer = null;
+
+      function stop() {
+        if (timer !== null) {
+          window.clearInterval(timer);
+          timer = null;
+        }
+        play.textContent = "▶";
+        play.setAttribute("aria-label", "단계 자동 재생");
+        play.title = "단계 자동 재생";
+      }
+
+      function render() {
+        rows.forEach((row, index) => row.classList.toggle("active", index === current));
+        count.textContent = `${current + 1} / ${steps.length}`;
+        title.textContent = steps[current].title;
+        detail.textContent = steps[current].detail;
+        marker.setAttribute("cy", String(105 + current * 65));
+        back.disabled = current === 0;
+        forward.disabled = current === steps.length - 1;
+      }
+
+      function advance() {
+        if (current >= steps.length - 1) {
+          stop();
+          return;
+        }
+        current += 1;
+        render();
+        if (current === steps.length - 1) stop();
+      }
+
+      back.addEventListener("click", () => {
+        stop();
+        current = Math.max(0, current - 1);
+        render();
+      });
+      forward.addEventListener("click", () => {
+        stop();
+        current = Math.min(steps.length - 1, current + 1);
+        render();
+      });
+      reset.addEventListener("click", () => {
+        stop();
+        current = 0;
+        render();
+      });
+      play.addEventListener("click", () => {
+        if (timer !== null) {
+          stop();
+          return;
+        }
+        if (reducedMotion.matches) return;
+        if (current === steps.length - 1) current = 0;
+        render();
+        play.textContent = "Ⅱ";
+        play.setAttribute("aria-label", "단계 자동 재생 일시 정지");
+        play.title = "단계 자동 재생 일시 정지";
+        timer = window.setInterval(advance, 1450);
+      });
+      if (reducedMotion.matches) {
+        play.disabled = true;
+        play.title = "reduced-motion 설정으로 자동 재생이 꺼져 있습니다";
+        motionNote.textContent = "reduced-motion 설정이 켜져 있어 자동 재생은 꺼져 있습니다. 이전·다음 control로 단계를 이동할 수 있습니다.";
+      }
+      reducedMotion.addEventListener?.("change", event => {
+        if (event.matches) {
+          stop();
+          play.disabled = true;
+          motionNote.textContent = "reduced-motion 설정이 켜져 있어 자동 재생은 꺼져 있습니다. 이전·다음 control로 단계를 이동할 수 있습니다.";
+        } else {
+          play.disabled = false;
+          motionNote.textContent = "자동 재생은 이 도식의 순서를 설명합니다. reduced-motion 설정에서는 자동 재생을 끄고 수동 단계 이동만 제공합니다.";
+        }
+      });
+      render();
+    })();
+  </script>
 </body>
 </html>
