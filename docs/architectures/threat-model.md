@@ -10,8 +10,8 @@
 | 범위 | MQTT data plane, Management API. Cluster peer transport는 기존 시험만 참조한다. |
 | 코드 지도 | [Project structure](project-structure.md#verification-and-integration-test-entrypoints) |
 | 관련 PRD | [PRD](../requirements/PRD.md) NFR-19, TEN-01~TEN-05, SEC-02/04/06/10/11 |
-| 관련 스펙·계약 | [Tenant와 security §9](../specs/tenancy-and-security.md#9-수용-시험과-범위), [Management API v1](../contracts/management-api-v1.md) |
-| 관련 ADR | [ADR-0039](../decisions/ADR-0039-management-audit-log.md), [ADR-0043](../decisions/ADR-0043-management-api-rate-limit.md) |
+| 관련 스펙·계약 | [Tenant와 security §9](../specs/tenancy-and-security.md#9-수용-시험과-범위), [Management API v1](../contracts/management-api-v1.md), [Audit event v1](../contracts/audit-event-v1.md) |
+| 관련 ADR | [ADR-0039](../decisions/ADR-0039-management-audit-log.md), [ADR-0043](../decisions/ADR-0043-management-api-rate-limit.md), [ADR-0046](../decisions/ADR-0046-mqtt-data-plane-denial-audit.md) |
 | 최종 확인일 | 2026-10-09 |
 
 ## 1. 범위와 자산
@@ -56,7 +56,7 @@ STRIDE는 신원 위장(S), 변조(T), 행위 부인(R), 정보 노출(I), 서�
 | T-16 | credential → audit actor | 공유 credential의 개인 식별 불가(R) | 대응 없음 → R-02 | ADR-0039의 actor 제약 | 잔여 위험(R-02) |
 | T-17 | 공유 자원 | noisy neighbor(D) | TEN-06/07 한도는 있으나 p99 수용 기준은 미정 → R-03 | 기존 tenant limit 시험. 지연 기준은 검증하지 않는다. | 잔여 위험(R-03) |
 | T-18 | cluster peer | 비인가 node(S/E) | `internal/adapters/tcp`의 mTLS·peer identity 검증 | [TestRaftPeerTransportRejectsUnauthenticatedAndMalformedPeers](../../tests/integration/raft_peer_transport_test.go) — 이번 공격 범위 밖 | 대응·기존 시험 |
-| T-19 | MQTT 거절 → audit | data-plane 거절 감사 누락(R) | 대응 없음 → R-04 | ADR-0039의 후속 범위 | 잔여 위험(R-04) |
+| T-19 | MQTT 거절 → audit | data-plane 거절 감사 누락(R) | [ADR-0046](../decisions/ADR-0046-mqtt-data-plane-denial-audit.md)의 bounded fail-open recorder와 node-local hash chain | [`TestDynamicClusterMQTTDenialAuditProcessAcceptance`](../../tests/integration/cluster_audit_process_test.go) | 대응·자동 시험 통과 |
 
 ## 3. 자동 penetration test
 
@@ -95,7 +95,7 @@ go test ./tests/integration -run '^TestDynamicClusterTenantIsolationPenetrationP
 | R-01 | ReadOnly·admin credential은 모든 tenant의 client·subscription·retained metadata를 조회한다. | Tenant 위임 관리로 사용할 수 없으며 다른 tenant의 metadata가 보인다. | 사용자·제품/보안 담당: SEC-10, API-07, UI-06~09 | 위험 승인 대기 |
 | R-02 | 공유 credential은 actor를 개인으로 식별하지 못한다. | 개인별 책임 추적과 권한 폐기가 제한된다. | 사용자·보안 담당: SEC-10 | 위험 승인 대기 |
 | R-03 | TEN-09의 다른 tenant p99 한도가 정해지지 않았다. | 한 tenant의 부하가 다른 tenant 지연에 미치는 영향을 합격으로 판정할 수 없다. | 사용자·성능 담당: TEN-09 | 위험 승인 대기 |
-| R-04 | MQTT data-plane 거절 감사가 없다. | CONNECT·ACL 거절의 감사 추적이 빠진다. | 사용자·보안 담당: SEC-11 후속 범위, ADR-0039 | 위험 승인 대기 |
+| R-04 | MQTT data-plane 거절 감사가 구현되지 않은 상태(해결 전) | 해결 전에는 CONNECT·ACL 거절의 감사 추적이 빠진다. | SEC-11, ADR-0046; 3-process acceptance 통과 | 해소(자동 시험 통과) |
 | R-05 | Credential·인증서 회전과 폐기, 기존 연결 재인증이 없다. | 탈취 credential과 기존 연결의 권한을 운영 중 회수하는 기준이 없다. JWT/JWKS cache 동작 시험만으로 이 요구를 충족하지 않는다. | 사용자·보안 담당: SEC-07 | 위험 승인 대기 |
 | R-06 | 인증 실패 bucket은 `RemoteAddr` host 기준이다. Proxy·NAT 뒤에서 bucket을 공유한다. | 서로 다른 공격자·정상 사용자의 인증 실패가 같은 한도를 소모한다. | 사용자·배포/보안 담당: ADR-0043 | 위험 승인 대기 |
 | R-07 | 독립 penetration test와 production 환경 시험을 하지 않았다. | 저장소 사전 시험 밖의 공격과 배포 경계는 확인하지 못했다. | 사용자·출시/보안 담당: NFR-19 | 위험 승인 대기 |

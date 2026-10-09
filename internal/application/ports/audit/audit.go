@@ -50,6 +50,39 @@ type AuditEventDTO struct {
 	Details       map[string]any
 }
 
+// DataPlaneAction identifies one audited MQTT data-plane operation.
+type DataPlaneAction string
+
+const (
+	DataPlaneActionConnect     DataPlaneAction = "mqtt.connect"
+	DataPlaneActionPublish     DataPlaneAction = "mqtt.publish"
+	DataPlaneActionSubscribe   DataPlaneAction = "mqtt.subscribe"
+	DataPlaneActionUnsubscribe DataPlaneAction = "mqtt.unsubscribe"
+	DataPlaneActionWill        DataPlaneAction = "mqtt.will"
+)
+
+// DataPlaneReasonNotAuthorized is the reason for every MQTT ACL denial.
+const DataPlaneReasonNotAuthorized = "not_authorized"
+
+// DataPlaneDenialDTO describes one rejected MQTT data-plane request.
+type DataPlaneDenialDTO struct {
+	Action       DataPlaneAction
+	Reason       string
+	TenantID     string // empty before authentication
+	Subject      string // empty means unauthenticated
+	CredentialID string
+	Roles        []string
+	ClientID     string
+	SourceIP     string // remote host without port; empty when unknown
+	AuthMethod   string // mqtt.connect only
+	Topic        string // topic or filter; Will topic for mqtt.connect Will reasons
+}
+
+// DataPlaneDenialRecorder accepts MQTT denial events without blocking the caller.
+type DataPlaneDenialRecorder interface {
+	RecordDataPlaneDenial(denial DataPlaneDenialDTO)
+}
+
 // AuditPublisher appends validated audit events to a durable sink.
 type AuditPublisher interface {
 	Ready() error

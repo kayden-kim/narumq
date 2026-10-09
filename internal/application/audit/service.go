@@ -4,8 +4,6 @@ import (
 	"errors"
 	"fmt"
 	"reflect"
-	"sync"
-	"unicode/utf8"
 
 	portsaudit "narumq/internal/application/ports/audit"
 	portsclock "narumq/internal/application/ports/clock"
@@ -43,23 +41,25 @@ type Service struct {
 	publisher portsaudit.AuditPublisher
 	clock     portsclock.Clock
 	metrics   portsmetrics.AuditOutcomeRecorder
-
-	denialMu                sync.Mutex
-	denialWindow            int64
-	denialCount             int
-	denialWindowInitialized bool
+	denials   perSecondLimiter
 }
 
 // NewService creates a service and records the publisher's initial readiness.
 func NewService(config ServiceConfig, publisher portsaudit.AuditPublisher, clock portsclock.Clock, metrics portsmetrics.AuditOutcomeRecorder) (*Service, error) {
-	if config.ClusterID == "" || config.NodeID == 0 || !utf8.ValidString(config.ReleaseVersion) || utf8.RuneCountInString(config.ReleaseVersion) == 0 || utf8.RuneCountInString(config.ReleaseVersion) > 64 || config.DenialEventsPerSecond <= 0 {
+	if !validProducerIdentity(config.ClusterID, config.NodeID, config.ReleaseVersion) || config.DenialEventsPerSecond <= 0 {
 		return nil, errors.New("invalid audit service configuration")
 	}
 	if isNilDependency(publisher) || isNilDependency(clock) || isNilDependency(metrics) {
 		return nil, errors.New("audit service dependencies must not be nil")
 	}
 
-	service := &Service{config: config, publisher: publisher, clock: clock, metrics: metrics}
+	service := &Service{
+		config:    config,
+		publisher: publisher,
+		clock:     clock,
+		metrics:   metrics,
+		denials:   perSecondLimiter{limit: config.DenialEventsPerSecond},
+	}
 	metrics.SetAuditPublisherReady(publisher.Ready() == nil)
 	return service, nil
 }
@@ -92,17 +92,13 @@ func (service *Service) Record(command RecordCommandDTO) error {
 		EventID:       eventID,
 		OccurredAt:    service.clock.Now().UTC(),
 		RequestID:     command.RequestID,
-		Producer: portsaudit.AuditProducerDTO{
-			Component:  "BROKER",
-			InstanceID: fmt.Sprintf("%s/%d", service.config.ClusterID, service.config.NodeID),
-			Version:    service.config.ReleaseVersion,
-		},
-		Actor:   command.Actor,
-		Action:  command.Action,
-		Target:  command.Target,
-		Result:  command.Result,
-		Reason:  command.Reason,
-		Details: command.Details,
+		Producer:      brokerProducer(service.config.ClusterID, service.config.NodeID, service.config.ReleaseVersion),
+		Actor:         command.Actor,
+		Action:        command.Action,
+		Target:        command.Target,
+		Result:        command.Result,
+		Reason:        command.Reason,
+		Details:       command.Details,
 	}
 	if err := validateEvent(event); err != nil {
 		service.metrics.AuditOutcome(portsmetrics.AuditOutcomeInvalid)
@@ -119,20 +115,7 @@ func (service *Service) Record(command RecordCommandDTO) error {
 }
 
 func (service *Service) admitDenial() bool {
-	window := service.clock.Now().Unix()
-	service.denialMu.Lock()
-	defer service.denialMu.Unlock()
-
-	if !service.denialWindowInitialized || service.denialWindow != window {
-		service.denialWindow = window
-		service.denialCount = 0
-		service.denialWindowInitialized = true
-	}
-	if service.denialCount >= service.config.DenialEventsPerSecond {
-		return false
-	}
-	service.denialCount++
-	return true
+	return service.denials.admit(service.clock.Now().Unix())
 }
 
 func isNilDependency(dependency any) bool {

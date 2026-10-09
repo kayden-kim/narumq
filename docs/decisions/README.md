@@ -44,13 +44,14 @@
 | [ADR-0036](ADR-0036-replicated-proposal-receipts-and-safe-reproposal.md) | Accepted | 활성화된 `proposal-recovery`의 bounded 복제 receipt와 origin별 retirement floor로 이미 전송한 application command도 안전하게 재제안한다. |
 | [ADR-0037](ADR-0037-proposal-request-identity.md) | Accepted | Proposal 재제안의 RequestID를 여러 전이가 공유하는 논리 OperationID와 분리한다. |
 | [ADR-0038](ADR-0038-proposal-receipt-capacity-fences.md) | Accepted | Receipt count 거절을 origin별 fence로 보존하고 가변 길이 결과를 mutation 전에 예약한다. |
-| [ADR-0039](ADR-0039-management-audit-log.md) | Accepted | Management plane 감사 이벤트를 node-local hash-chain JSONL에 기록하고 mutation은 감사 기록 준비 상태에 따라 fail-closed한다. |
+| [ADR-0039](ADR-0039-management-audit-log.md) | Accepted (management plane 범위; MQTT data-plane 거절 감사는 ADR-0046이 대체) | Management plane 감사 이벤트를 node-local hash-chain JSONL에 기록하고 mutation은 감사 기록 준비 상태에 따라 fail-closed한다. |
 | [ADR-0040](ADR-0040-branch-coverage-arm-injection.md) | Accepted (diff 기준은 ADR-0044가 대체) | 빠진 arm을 사본에 주입해 branch를 측정하고 전체·core baseline ratchet을 강제한다. 결정 당시 diff 95% 기준은 ADR-0044가 대체한다. |
 | [ADR-0041](ADR-0041-branch-ratchet-noise-tolerance.md) | Accepted (diff 수치는 ADR-0044가 대체) | 전체·core branch ratchet에 명시된 0.20%p 노이즈 허용폭을 적용한다. Diff 수치 변경은 ADR-0044를 따른다. |
 | [ADR-0042](ADR-0042-p0-requirement-traceability-gate.md) | Accepted | PRD 기반 P0 요구사항 연결과 정렬된 예외 목록 ratchet을 적용한다. |
 | [ADR-0043](ADR-0043-management-api-rate-limit.md) | Accepted | Management API에 인증 주체별·인증 실패 IP별 node-local token bucket rate limit을 적용한다. |
 | [ADR-0044](ADR-0044-diff-coverage-floor-90.md) | Accepted | 변경 코드의 line·function·branch diff coverage 하한을 각각 90%로 정한다. 전체·core 기준과 ratchet은 유지한다. |
 | [ADR-0045](ADR-0045-operations-dashboard-grafana.md) | Accepted | Grafana와 Prometheus로 운영 Dashboard를 제공하고 조회 전용 API key를 사용한다. |
+| [ADR-0046](ADR-0046-mqtt-data-plane-denial-audit.md) | Accepted | Dynamic cluster에서 MQTT data-plane 거절을 기존 node-local hash chain에 fail-open·bounded async 방식으로 기록한다. |
 
 `Proposed` ADR은 검토 중인 제안이다. `Accepted` ADR은 각 기록에 명시한 범위 안에서 채택된 결정이다. `design target only`는 production runtime이나 acceptance 검증을 뜻하지 않는다.
 

@@ -53,12 +53,12 @@ func TestCmmUnsubscribeCommitFailureKeepsRouteAndStopsAck(t *testing.T) {
 	ownership := SessionOwnership{TenantID: "tenant-a", ClientID: "client-a", OwnerNodeID: 7, Epoch: 3}
 	packet := mqtt.Unsubscribe{Version: mqtt.ProtocolV5, PacketID: 9, Filters: []string{"broken/#/filter", "sensors/#", "other/#"}}
 
-	ack, err := useCase.UnsubscribeCommitted(context.Background(), "client-a", packet, ownership)
+	result, err := useCase.UnsubscribeCommitted(context.Background(), "client-a", packet, ownership)
 	if !errors.Is(err, commitErr) {
 		t.Fatalf("UnsubscribeCommitted() error = %v, want %v", err, commitErr)
 	}
-	if ack.PacketID != 9 || !reflect.DeepEqual(ack.ReasonCodes, []byte{0x8F}) {
-		t.Fatalf("partial ack = %#v, want only the invalid-filter reason before the failed commit", ack)
+	if result.Ack.PacketID != 9 || !reflect.DeepEqual(result.Ack.ReasonCodes, []byte{0x8F}) {
+		t.Fatalf("partial ack = %#v, want only the invalid-filter reason before the failed commit", result.Ack)
 	}
 	wantCommits := []cmmCommit{{tenantID: "tenant-a", clientID: "client-a", owner: 7, epoch: 3, filter: "sensors/#", action: subscriptionActionRemove}}
 	if !reflect.DeepEqual(committer.commits, wantCommits) {

@@ -47,6 +47,8 @@ var auditOutcomes = [...]string{
 	ports.AuditOutcomeInvalid,
 	ports.AuditOutcomeDenialSuppressed,
 	ports.AuditOutcomeMutationRejected,
+	ports.AuditOutcomeDataPlaneSuppressed,
+	ports.AuditOutcomeDataPlaneDropped,
 }
 
 var listenerAdmissionTransports = [...]string{ports.TransportTCP, ports.TransportTLS}

@@ -67,6 +67,8 @@ const (
 	clusterDefaultDeliveryQueueCapacity    = 256
 	clusterCommitFailureLogInterval        = time.Second
 	clusterAuditDenialEventsPerSecond      = 20
+	clusterDataPlaneAuditEventsPerSecond   = 20
+	clusterDataPlaneAuditQueueCapacity     = 256
 )
 
 var (
@@ -352,6 +354,30 @@ func runClusterMode(ctx context.Context, config clusterConfigFile, logger *slog.
 			subscribeOptions = append(subscribeOptions, subscribe.WithTenantLimits(tenantLimits))
 		}
 	}
+	auditPublisher, err := auditlog.OpenFileAuditPublisher(auditlog.FileAuditPublisherConfig{
+		Directory: config.Management.AuditDirectory, MaxFileBytes: auditlog.DefaultMaxFileBytes,
+	})
+	if err != nil {
+		return fmt.Errorf("configure management audit log: %w", err)
+	}
+	defer func() {
+		if err := auditPublisher.Close(); err != nil {
+			logger.Error("close management audit log", "error", err.Error())
+		}
+	}()
+	if err := auditPublisher.Ready(); err != nil {
+		logger.Error("audit log is unavailable; management mutations will be rejected and MQTT denial events will not be recorded", "error", err.Error())
+	}
+	dataPlaneAudit, err := audit.NewDataPlaneRecorder(audit.DataPlaneRecorderConfig{
+		ClusterID: config.ClusterID, NodeID: config.NodeID, ReleaseVersion: config.ReleaseVersion,
+		EventsPerSecond: clusterDataPlaneAuditEventsPerSecond, QueueCapacity: clusterDataPlaneAuditQueueCapacity,
+	}, auditPublisher, systemClock, metricsRegistry)
+	if err != nil {
+		return fmt.Errorf("create MQTT denial audit recorder: %w", err)
+	}
+	dataPlaneAudit.Start()
+	defer dataPlaneAudit.Close()
+	connectOptions = append(connectOptions, connect.WithDataPlaneAudit(dataPlaneAudit))
 	connections, err := connect.New(systemClock, sessions, deliveries, runtime.routes, systemScheduler, willBridge, connectOptions...)
 	if err != nil {
 		return fmt.Errorf("create cluster connect use case: %w", err)
@@ -383,8 +409,9 @@ func runClusterMode(ctx context.Context, config clusterConfigFile, logger *slog.
 			ControlQueueCapacity: clusterDefaultControlQueueCapacity, ClientCertificateExtractor: tlsadapter.ExtractVerifiedClientCertificateDTO,
 			ReceiveMaximum: clusterDefaultReceiveMaximum, PacketReadTimeout: clusterDefaultPacketReadTimeout,
 			Policy: tcpPolicy, Metrics: metricsRegistry, ClusterMode: true,
-			TenantLimits:  tenantLimits,
-			LocalMemberID: config.NodeID, ClusterReady: runtime.clusterReady,
+			TenantLimits:   tenantLimits,
+			DataPlaneAudit: dataPlaneAudit,
+			LocalMemberID:  config.NodeID, ClusterReady: runtime.clusterReady,
 			ClusterAdmissionOpen:   runtime.clusterAdmissionOpen,
 			ClusterProjectionReady: runtime.clusterProjectionReady,
 		}, decoder, encoder, connections, subscriptions, publications, deliveries, logger)
@@ -413,20 +440,6 @@ func runClusterMode(ctx context.Context, config clusterConfigFile, logger *slog.
 	rebalanceService, err := membership.NewRebalanceService(runtime, systemClock)
 	if err != nil {
 		return fmt.Errorf("create connection rebalance service: %w", err)
-	}
-	auditPublisher, err := auditlog.OpenFileAuditPublisher(auditlog.FileAuditPublisherConfig{
-		Directory: config.Management.AuditDirectory, MaxFileBytes: auditlog.DefaultMaxFileBytes,
-	})
-	if err != nil {
-		return fmt.Errorf("configure management audit log: %w", err)
-	}
-	defer func() {
-		if err := auditPublisher.Close(); err != nil {
-			logger.Error("close management audit log", "error", err.Error())
-		}
-	}()
-	if err := auditPublisher.Ready(); err != nil {
-		logger.Error("management audit log is unavailable; management mutations will be rejected", "error", err.Error())
 	}
 	auditService, err := audit.NewService(audit.ServiceConfig{
 		ClusterID: config.ClusterID, NodeID: config.NodeID, ReleaseVersion: config.ReleaseVersion,

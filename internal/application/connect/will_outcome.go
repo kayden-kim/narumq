@@ -4,7 +4,6 @@ import (
 	"narumq/internal/application/membership"
 	portsmetrics "narumq/internal/application/ports/metrics"
 	"narumq/internal/domain/mqtt"
-	"narumq/internal/domain/security"
 	"narumq/internal/domain/session"
 	"narumq/internal/domain/tenancy"
 )
@@ -90,8 +89,7 @@ func (useCase *UseCase) resolveSupersededWillLocked(key tenancy.SessionKey, supe
 		if !ok {
 			return nil
 		}
-		topic, err := tenancy.NewTopic(principal.TenantID(), will.Topic)
-		if err != nil || useCase.policy.AuthorizeTopic(principal, security.ActionWill, topic) != nil {
+		if !useCase.authorizeWillPublication(principal, will.Topic) {
 			return nil
 		}
 	}

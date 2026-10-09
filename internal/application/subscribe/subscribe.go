@@ -27,11 +27,17 @@ var (
 	ErrNilRetainedRepository = errors.New("subscribe retained repository is nil")
 )
 
-// ResultDTO reports the ordered SUBACK and the number of retained deliveries
-// committed to the queue for this SUBSCRIBE request.
+// ResultDTO reports the ordered SUBACK, retained deliveries, and ACL-denied filters.
 type ResultDTO struct {
-	Ack            mqtt.SubAck
-	RetainedQueued int
+	Ack              mqtt.SubAck
+	RetainedQueued   int
+	ACLDeniedFilters []string // filters rejected by ACL authorization, in request order
+}
+
+// UnsubscribeResultDTO reports the UNSUBACK and filters rejected by ACL authorization.
+type UnsubscribeResultDTO struct {
+	Ack              mqtt.UnsubAck
+	ACLDeniedFilters []string
 }
 
 // Option configures optional parameters for the subscribe use case.
@@ -139,7 +145,10 @@ func (useCase *UseCase) SubscribeCommitted(
 		Ack: mqtt.SubAck{Version: packet.Version, PacketID: packet.PacketID, ReasonCodes: make([]byte, 0, len(packet.Subscriptions))},
 	}
 	for _, subscription := range packet.Subscriptions {
-		reasonCode, retainedQueued, err := useCase.subscribeOne(ctx, sessionID, packet.Version, subscription, now, ownership, principal...)
+		reasonCode, retainedQueued, aclDenied, err := useCase.subscribeOne(ctx, sessionID, packet.Version, subscription, now, ownership, principal...)
+		if aclDenied {
+			result.ACLDeniedFilters = append(result.ACLDeniedFilters, subscription.Filter)
+		}
 		if err != nil {
 			return result, err
 		}
@@ -156,8 +165,9 @@ func (useCase *UseCase) UnsubscribeCommitted(
 	packet mqtt.Unsubscribe,
 	ownership SessionOwnership,
 	principal ...security.Principal,
-) (mqtt.UnsubAck, error) {
-	ack := mqtt.UnsubAck{Version: packet.Version, PacketID: packet.PacketID}
+) (UnsubscribeResultDTO, error) {
+	result := UnsubscribeResultDTO{Ack: mqtt.UnsubAck{Version: packet.Version, PacketID: packet.PacketID}}
+	ack := &result.Ack
 	var activePrincipal security.Principal
 	if len(principal) > 0 {
 		activePrincipal = principal[0]
@@ -179,6 +189,7 @@ func (useCase *UseCase) UnsubscribeCommitted(
 		if activePrincipal.Subject() != "" {
 			topicFilter, err := tenancy.NewTopicFilter(activePrincipal.TenantID(), filter)
 			if err != nil || useCase.policy.AuthorizeFilter(activePrincipal, security.ActionUnsubscribe, topicFilter) != nil {
+				result.ACLDeniedFilters = append(result.ACLDeniedFilters, filter)
 				if packet.Version != mqtt.ProtocolV311 {
 					ack.ReasonCodes = append(ack.ReasonCodes, 0x87)
 				}
@@ -187,7 +198,7 @@ func (useCase *UseCase) UnsubscribeCommitted(
 		}
 		_, existedBeforeCommit := useCase.routes.Lookup(sessionID, filter)
 		if err := useCase.commitSubscription(ctx, ownership, filter, 0, false, false, 0, subscriptionActionRemove); err != nil {
-			return ack, err
+			return result, err
 		}
 		if packet.Version != mqtt.ProtocolV311 {
 			ack.ReasonCodes = append(ack.ReasonCodes, useCase.unsubscribeReason(sessionID, filter, existedBeforeCommit))
@@ -195,17 +206,17 @@ func (useCase *UseCase) UnsubscribeCommitted(
 			_, _ = useCase.routes.Unsubscribe(sessionID, filter)
 		}
 	}
-	return ack, nil
+	return result, nil
 }
 
 // Unsubscribe keeps the standalone API; cluster adapters use UnsubscribeCommitted
 // so a failed quorum barrier can close the connection without a success packet.
 func (useCase *UseCase) Unsubscribe(sessionID routing.SessionID, packet mqtt.Unsubscribe, principal ...security.Principal) mqtt.UnsubAck {
-	ack, err := useCase.UnsubscribeCommitted(context.Background(), sessionID, packet, SessionOwnership{}, principal...)
+	result, err := useCase.UnsubscribeCommitted(context.Background(), sessionID, packet, SessionOwnership{}, principal...)
 	if err != nil {
 		return mqtt.UnsubAck{Version: packet.Version, PacketID: packet.PacketID}
 	}
-	return ack
+	return result.Ack
 }
 
 func (useCase *UseCase) subscribeOne(
@@ -216,27 +227,27 @@ func (useCase *UseCase) subscribeOne(
 	now time.Time,
 	ownership SessionOwnership,
 	principal ...security.Principal,
-) (byte, int, error) {
+) (byte, int, bool, error) {
 	if err := routing.ValidateSessionID(sessionID); err != nil {
-		return invalidSubscriptionReason(version), 0, nil
+		return invalidSubscriptionReason(version), 0, false, nil
 	}
 	if err := routing.ValidateTopicFilter(subscription.Filter); err != nil {
-		return invalidSubscriptionReason(version), 0, nil
+		return invalidSubscriptionReason(version), 0, false, nil
 	}
 	if subscription.QoS > mqtt.QoSExactlyOnce || subscription.RetainHandling > mqtt.DoNotSendRetained {
-		return invalidSubscriptionReason(version), 0, nil
+		return invalidSubscriptionReason(version), 0, false, nil
 	}
 	if version == mqtt.ProtocolV311 && (subscription.NoLocal || subscription.RetainAsPublished || subscription.RetainHandling != mqtt.SendRetainedAtSubscribe) {
-		return invalidSubscriptionReason(version), 0, nil
+		return invalidSubscriptionReason(version), 0, false, nil
 	}
 	isShared := routing.IsSharedFilter(subscription.Filter)
 	if isShared && subscription.NoLocal {
-		return protocolErrorReason(version), 0, nil
+		return protocolErrorReason(version), 0, false, nil
 	}
 	if len(principal) > 0 && principal[0].Subject() != "" {
 		topicFilter, err := tenancy.NewTopicFilter(principal[0].TenantID(), subscription.Filter)
 		if err != nil || useCase.policy.AuthorizeFilter(principal[0], security.ActionSubscribe, topicFilter) != nil {
-			return notAuthorizedSubscriptionReason(version), 0, nil
+			return notAuthorizedSubscriptionReason(version), 0, true, nil
 		}
 	}
 	// Capture the prior state before a cluster commit can project this route locally.
@@ -246,7 +257,7 @@ func (useCase *UseCase) subscribeOne(
 		max := useCase.tenantLimits.Limits(tenantID).MaxSubscriptions
 		if max > 0 && uint64(useCase.routes.TenantSubscriptionCount(tenantID)) >= max {
 			useCase.tenantLimits.Reject(tenantID, tenantlimit.DimensionSubscriptions)
-			return quotaExceededSubscriptionReason(version), 0, nil
+			return quotaExceededSubscriptionReason(version), 0, false, nil
 		}
 	}
 	if err := useCase.commitSubscription(
@@ -254,7 +265,7 @@ func (useCase *UseCase) subscribeOne(
 		subscription.NoLocal, subscription.RetainAsPublished, uint32(subscription.RetainHandling),
 		subscriptionActionAdd,
 	); err != nil {
-		return 0, 0, err
+		return 0, 0, false, err
 	}
 	replay := version == mqtt.ProtocolV311
 	switch subscription.RetainHandling {
@@ -272,20 +283,20 @@ func (useCase *UseCase) subscribeOne(
 	if replay {
 		batch, err := useCase.retainedBatch(sessionID, subscription, now)
 		if err != nil {
-			return 0, 0, err
+			return 0, 0, false, err
 		}
 		if err := useCase.queue.TryEnqueueBatch(batch, now); err != nil {
 			if errors.Is(err, deliveryqueue.ErrFull) {
-				return replayFullReason(version), 0, nil
+				return replayFullReason(version), 0, false, nil
 			}
-			return 0, 0, err
+			return 0, 0, false, err
 		}
 		retainedQueued = len(batch)
 	}
 	if _, err := useCase.routes.Subscribe(sessionID, subscription); err != nil {
-		return invalidSubscriptionReason(version), 0, nil
+		return invalidSubscriptionReason(version), 0, false, nil
 	}
-	return byte(subscription.QoS), retainedQueued, nil
+	return byte(subscription.QoS), retainedQueued, false, nil
 }
 
 func (useCase *UseCase) commitSubscription(

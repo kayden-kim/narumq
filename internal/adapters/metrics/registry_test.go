@@ -547,10 +547,22 @@ func TestRegistryRendersWillOutcomes(t *testing.T) {
 
 func TestRegistryRendersAuditMetrics(t *testing.T) {
 	registry := NewRegistry()
+	wantOutcomes := []string{
+		ports.AuditOutcomePublished,
+		ports.AuditOutcomePublishFailed,
+		ports.AuditOutcomeInvalid,
+		ports.AuditOutcomeDenialSuppressed,
+		ports.AuditOutcomeMutationRejected,
+		ports.AuditOutcomeDataPlaneSuppressed,
+		ports.AuditOutcomeDataPlaneDropped,
+	}
 	for _, openMetrics := range []bool{false, true} {
 		text := string(registry.Render(openMetrics))
+		if got := strings.Count(text, "narumq_audit_events_total{outcome="); got != len(wantOutcomes) {
+			t.Fatalf("audit outcome series = %d, want %d: %s", got, len(wantOutcomes), text)
+		}
 		var previousIndex = -1
-		for _, outcome := range auditOutcomes {
+		for _, outcome := range wantOutcomes {
 			series := fmt.Sprintf("narumq_audit_events_total{outcome=\"%s\"} 0\n", outcome)
 			position := strings.Index(text, series)
 			if position < 0 || position <= previousIndex {
@@ -566,11 +578,15 @@ func TestRegistryRendersAuditMetrics(t *testing.T) {
 	registry.AuditOutcome(ports.AuditOutcomePublished)
 	registry.AuditOutcome(ports.AuditOutcomePublished)
 	registry.AuditOutcome(ports.AuditOutcomeInvalid)
+	registry.AuditOutcome(ports.AuditOutcomeDataPlaneSuppressed)
+	registry.AuditOutcome(ports.AuditOutcomeDataPlaneDropped)
 	registry.AuditOutcome("unknown")
 	registry.SetAuditPublisherReady(true)
 	text := string(registry.Render(false))
 	if !strings.Contains(text, "narumq_audit_events_total{outcome=\"published\"} 2\n") ||
 		!strings.Contains(text, "narumq_audit_events_total{outcome=\"invalid\"} 1\n") ||
+		!strings.Contains(text, "narumq_audit_events_total{outcome=\"dataplane_suppressed\"} 1\n") ||
+		!strings.Contains(text, "narumq_audit_events_total{outcome=\"dataplane_dropped\"} 1\n") ||
 		!strings.Contains(text, "narumq_audit_publisher_ready 1\n") {
 		t.Fatalf("audit metrics did not reflect known outcomes and readiness: %s", text)
 	}

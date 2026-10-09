@@ -261,10 +261,10 @@ func TestSubscribeTenantQuotaSerializesReplacementAndRemoval(t *testing.T) {
 	}
 	removed := make(chan error, 1)
 	go func() {
-		ack, err := useCase.UnsubscribeCommitted(ctx, "a/first", mqtt.Unsubscribe{Version: mqtt.ProtocolV5, PacketID: 2, Filters: []string{"allowed/old"}},
+		result, err := useCase.UnsubscribeCommitted(ctx, "a/first", mqtt.Unsubscribe{Version: mqtt.ProtocolV5, PacketID: 2, Filters: []string{"allowed/old"}},
 			SessionOwnership{TenantID: "a", ClientID: "first", OwnerNodeID: 1, Epoch: 1}, firstPrincipal)
-		if err == nil && !reflect.DeepEqual(ack.ReasonCodes, []byte{0}) {
-			err = fmt.Errorf("unsubscribe reasons=%v, want [0]", ack.ReasonCodes)
+		if err == nil && !reflect.DeepEqual(result.Ack.ReasonCodes, []byte{0}) {
+			err = fmt.Errorf("unsubscribe reasons=%v, want [0]", result.Ack.ReasonCodes)
 		}
 		removed <- err
 	}()

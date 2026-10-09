@@ -5,7 +5,7 @@
 | 항목 | 값 |
 | --- | --- |
 | 상태 | Active (Phase 1 security and tenant isolation slice) |
-| 적용 범위 | Phase 1에서 TEN-01~TEN-05, SEC-02~SEC-04, SEC-06과 SEC-08의 JWKS fail-closed 동작을 구현한다. Dynamic cluster의 tenant별 저장 quota(TEN-08)는 [ADR-0017](../decisions/ADR-0017-tenant-storage-quota.md) 범위에서 제공한다. TEN-06·TEN-07의 node-local 연결·session·subscription·PUBLISH traffic 한도는 §5.2를 따른다. Management plane의 활성 mutation 8개와 401·403 거절 감사는 §8과 [ADR-0039](../decisions/ADR-0039-management-audit-log.md)를 따른다. Blocklist, 기존 연결 재인증, MQTT data-plane 감사와 rollout controller 감사는 후속 범위다. Metrics는 인증 성공·실패, session gauge, 저장 quota 및 tenant 한도 거절을 포함하며, 상세 observability 정책은 §8과 Management API 스펙을 따른다. |
+| 적용 범위 | Phase 1에서 TEN-01~TEN-05, SEC-02~SEC-04, SEC-06과 SEC-08의 JWKS fail-closed 동작을 구현한다. Dynamic cluster의 tenant별 저장 quota(TEN-08)는 [ADR-0017](../decisions/ADR-0017-tenant-storage-quota.md) 범위에서 제공한다. TEN-06·TEN-07의 node-local 연결·session·subscription·PUBLISH traffic 한도는 §5.2를 따른다. Management plane 감사는 §8과 [ADR-0039](../decisions/ADR-0039-management-audit-log.md)를 따른다. MQTT data-plane 거절 감사는 §8과 [ADR-0046](../decisions/ADR-0046-mqtt-data-plane-denial-audit.md)를 따른다. Blocklist, 기존 연결 재인증과 rollout controller 감사는 후속 범위다. Metrics는 인증 성공·실패, session gauge, 저장 quota 및 tenant 한도 거절을 포함하며, 상세 observability 정책은 §8과 Management API 스펙을 따른다. |
 | 근거 | [PRD 9.3절, 9.4절과 11.4절](../requirements/PRD.md), [RFC 8725](https://www.rfc-editor.org/rfc/rfc8725.html) |
 | 관련 spec | [MQTT protocol과 session](mqtt-protocol-and-session.md), [Management API](management-api-and-observability.md) |
 | 관련 Architecture | [Security boundaries](../architectures/security-boundaries.md), [Threat model](../architectures/threat-model.md), [System overview](../architectures/system-overview.md) |
@@ -348,7 +348,7 @@ Proposer node는 `narumq_tenant_quota_rejections_total{tenant,dimension}` counte
 
 ## 8. 감사와 비밀정보
 
-Dynamic cluster의 활성 Management API mutation 8개와 인증 `401`·인가 `403` 거절은 audit event를 생성한다. Event 형식과 action·target·actor·reason·details는 [Audit event v1 계약 §5](../contracts/audit-event-v1.md#5-broker-producer-범위)를 따른다. MQTT CONNECT 인증 실패와 ACL 거절은 이 범위에서 감사하지 않는다.
+Dynamic cluster의 활성 Management API mutation 8개와 인증 `401`·인가 `403` 거절은 audit event를 생성한다. Management event 형식은 [Audit event v1 계약 §5](../contracts/audit-event-v1.md#5-broker-producer-범위)를 따른다.
 
 Management mutation은 실행 전에 node-local publisher의 준비 상태를 확인해야 한다. Publisher를 쓸 수 없으면 handler를 호출하지 않고 retryable `503 audit_unavailable`을 반환한다. Mutation 뒤 event 기록이 실패하면 작업을 되돌리지 않고 error log와 Metric으로 드러낸다.
 
@@ -358,9 +358,11 @@ Standalone mode에는 감사 publisher를 연결하지 않는다. Standalone은 
 
 Audit directory는 필수 cluster 설정이다. Raft data directory와 같거나 서로 포함하면 startup을 거절하고, 각 node는 별도 directory를 사용한다. `narumq -audit-verify <directory>`는 저장된 chain을 읽기 전용으로 검증한다.
 
-Bearer token, API key, body, query와 원문 secret은 event에 기록하지 않는다. Management credential은 공유 값이므로 actor subject는 credential 종류를 나타내며 개인 식별을 보장하지 않는다. 초당 20개를 넘는 거절 event는 저장하지 않고 suppression Metric으로만 센다.
+Bearer token, API key, body, query와 원문 secret은 Management event에 기록하지 않는다. Management credential은 공유 값이므로 actor subject는 credential 종류를 나타내며 개인 식별을 보장하지 않는다. Management 인증·인가·rate-limit 거절은 node별 초당 20개 한도를 공유한다. 초과 event는 저장하지 않고 `denial_suppressed` Metric으로만 센다. 이 한도는 MQTT data-plane 감사 한도와 분리한다.
 
-MQTT CONNECT 인증 실패와 ACL 거절, rollout controller producer, SIEM consumer의 unknown action/reason 검증은 후속 범위다. Hash chain은 파일 전체를 다시 쓰는 권한 보유자 공격을 막지 않으므로 SIEM 보관과 접근 통제를 대체하지 않는다.
+Dynamic cluster는 CONNECT 인증·Client ID binding·Will 검증 실패, PUBLISH·SUBSCRIBE·UNSUBSCRIBE ACL 거절과 지연 Will 재인가 거절을 기존 node-local hash chain에 기록한다. Data-plane 감사는 fail-open이며 node별 초당 20개, queue capacity 256을 적용한다. 한도 초과·queue 포화·종료 뒤 event는 기록하지 않고 Metric으로 센다. 이 경로는 caller를 막지 않으며 MQTT 응답을 바꾸지 않는다. Tenant, subject, credential ID, roles, Client ID, source IP host와 topic/filter는 원문으로 기록한다. Payload, password, token과 인증서 원문은 기록하지 않는다. 빈 Client ID, 지원하지 않는 protocol, tenant 한도·저장 quota, cluster readiness, listener admission, protocol error와 principal snapshot이 없는 Will은 기록하지 않는다. 상세 event field와 길이 규칙은 [Audit event v1 계약 §5](../contracts/audit-event-v1.md#5-broker-producer-범위)를 따른다.
+
+Rollout controller producer와 SIEM consumer의 unknown action/reason 검증은 후속 범위다. Hash chain은 파일 전체를 다시 쓰는 권한 보유자 공격을 막지 않으므로 SIEM 보관과 접근 통제를 대체하지 않는다.
 
 ## 9. 수용 시험과 범위
 
@@ -380,13 +382,13 @@ MQTT CONNECT 인증 실패와 ACL 거절, rollout controller producer, SIEM cons
 | TEN-05 | system topic, retained, shared subscription, Will과 session이 tenant 경계를 넘지 않는다. | tenancy/routing/session 시험, `tests/integration/mqtt_ingress_test.go`의 `TestMQTTSecurity` |
 | TEN-06 | Tenant별 연결·session 제한은 node별로, subscription 제한은 route table의 tenant 수로 적용한다. 한 tenant의 초과는 다른 tenant를 거절하지 않으며, 초과 응답과 state 무변경을 확인한다. 같은 node의 동시 add와 replace/remove는 직렬화한다. | `internal/application/connect`, `internal/application/subscribe`의 `TestSubscribeTenantQuotaSerializesLocalAdmission`, `TestSubscribeTenantQuotaSerializesReplacementAndRemoval`, `internal/adapters/memory/sessionstore`, `internal/domain/routing`, `tests/integration/mqtt_tenant_limits_test.go` (`TestMQTTTenantLimits`), `tests/integration/cluster_tenant_limits_process_test.go` (`TestDynamicClusterTenantLimitsProcessAcceptance`) |
 | TEN-07 | Tenant별 payload 크기·message rate·byte rate를 제한한다. Rate 초과는 최대 `maxWait`까지 대기하고, MQTT 응답과 다른 tenant의 독립성을 확인한다. | `internal/application/tenantlimit`, `internal/adapters/tcp/server_tenant_limits_test.go`, `internal/adapters/metrics`, `cmd/narumq/security_config_test.go`, `cmd/narumq/tenant_limits_test.go`, `tests/integration/mqtt_tenant_limits_test.go` (`TestMQTTTenantLimits`) |
-| SEC-11 | Dynamic cluster의 활성 Management API mutation 8개와 401·403 거절을 node-local JSONL hash chain에 기록한다. Audit publisher가 unavailable이면 mutation handler를 실행하지 않고 `503 audit_unavailable`을 반환한다. | `internal/adapters/http/management/audit_test.go`, `tests/contracts/audit-event-v1/contract_test.go::TestAuditEventMatchesSchemaAndFileChain`(8개 mutation, 거절·실패), `tests/integration/cluster_audit_process_test.go::TestDynamicClusterManagementAuditProcessAcceptance` |
+| SEC-11 | Dynamic cluster는 활성 Management API mutation 8개, 401·403 거절과 ADR-0046의 MQTT CONNECT·Will·PUBLISH·SUBSCRIBE·UNSUBSCRIBE 거절을 node-local JSONL hash chain에 기록한다. Management audit unavailable은 mutation을 막고 503을 반환한다. MQTT audit는 초당 20개·queue 256 한도에서 fail-open이며 응답을 바꾸지 않는다. | `internal/adapters/http/management/audit_test.go`, `internal/application/audit/dataplane_test.go`, `internal/application/connect`, `internal/application/subscribe`, `internal/adapters/tcp`, `tests/contracts/audit-event-v1/contract_test.go::TestDataPlaneDenialEventsMatchSchema`, `tests/integration/cluster_audit_process_test.go::TestDynamicClusterMQTTDenialAuditProcessAcceptance`, `TestDynamicClusterManagementAuditProcessAcceptance` |
 | NFR-17 | 기록된 event의 줄 순서·hash 연결·변조 검출, 중첩 details의 잘못된 UTF-8 거절, handler panic의 감사 HTTP 상태 500, Windows rotation 충돌 보호와 audit/Raft directory 경계를 확인한다. 보존 기간 값과 SIEM 접근 권한은 외부 결정으로 미정이다. | `internal/application/audit/service_test.go`, `internal/adapters/http/management/audit_test.go`, `internal/adapters/auditlog/file_publisher_test.go`, `internal/adapters/auditlog/persist_windows_test.go`, `cmd/narumq/cluster_config_test.go`, `cmd/narumq/main_test.go::TestAuditVerifyCommandVerifiesAndLeavesFilesReadOnly`, `tests/contracts/audit-event-v1/contract_test.go`, `tests/integration/cluster_audit_process_test.go::TestDynamicClusterManagementAuditProcessAcceptance` |
 | NFR-19 | MQTT data plane과 Management API의 tenant 격리·인증·권한 공격 사례를 실제 3-node cluster에서 실행하고 threat model 위협 ID와 연결한다. 독립 penetration test와 threat model 승인은 남는다. | `tests/integration/cluster_tenant_isolation_pentest_process_test.go::TestDynamicClusterTenantIsolationPenetrationProcessAcceptance`, [Threat model](../architectures/threat-model.md) |
 
 SEC-03/SEC-04의 certificate-to-tenant acceptance와 TEN-06·TEN-07의 §5.2 범위를 구현했다. TEN-08 저장 quota는 §5.1과 ADR-0017의 채택 범위를 따른다. TEN-09의 noisy-neighbor p99 기준과 TEN-10은 이번 수용 범위에 포함하지 않는다.
 
-MQTT data-plane 거절 감사, rollout controller producer, 보존 기간 값과 SIEM 접근 권한은 후속 범위다. 위 표 밖의 SEC-05, SEC-07, SEC-10, SEC-12와 TEN-08~TEN-10의 미채택 범위는 후속 acceptance scope다. TEN-08의 §5.1·ADR-0017 채택 범위는 다시 미구현으로 열지 않는다.
+Rollout controller producer, 보존 기간 값과 SIEM 접근 권한은 후속 범위다. 위 표 밖의 SEC-05, SEC-07, SEC-10, SEC-12와 TEN-08~TEN-10의 미채택 범위는 후속 acceptance scope다. TEN-08의 §5.1·ADR-0017 채택 범위는 다시 미구현으로 열지 않는다.
 
 ### 9.1 TEN-06·TEN-07 실행 증거
 
@@ -475,4 +477,23 @@ MQTT 5 시험은 연결 상한 2, session 상한 3, subscription 상한 2를 확
 
 MQTT 3.1.1의 다른 tenant Client ID 요청은 CONNACK `0x05`로 거절됐다. `GET /api/v1/clients/tenant-a/b-all`은 `404`였다. `$SYS`는 ACL로 허용한 A client가 발행하고 A만 수신했다. Shared subscription projection은 underlying filter `jobs/#`였다. MQTT 3.1.1 persistent session은 B가 node 3에서 session-present=true로 재개하고 offline payload를 수신했다. A의 같은 Client ID는 session-present=false였으며 B payload를 받지 않았다.
 
-독립 penetration test, production 환경 시험, threat model 승인과 R-01~R-07 해결 또는 위험 승인은 미실행·미결정이다. 자동 시험 통과는 이를 대신하지 않는다.
+독립 penetration test, production 환경 시험, threat model 승인과 R-01~R-03·R-05~R-07 해결 또는 위험 승인은 미실행·미결정이다. 자동 시험 통과는 이를 대신하지 않는다.
+
+### 9.4 SEC-11 MQTT data-plane denial audit 실행 증거
+
+2026-10-09 저장소 루트에서 Windows x64와 Go 1.26.5 (`windows/amd64`)로 실행했다. 아래 결과는 이 작업의 SEC-11 변경과 관련된 시험이다.
+
+| 검증 | 명령 | 결과 |
+| --- | --- | --- |
+| Application·TCP·metric·schema package | `go test ./internal/application/audit ./internal/application/connect ./internal/application/subscribe ./internal/adapters/tcp ./internal/adapters/metrics ./tests/contracts/audit-event-v1 -count=1` | PASS. 6개 package의 관련 시험이 통과했다. |
+| Recorder race | `go test -race ./internal/application/audit -run 'DataPlane' -count=20` | PASS. 20회 반복에서 data-plane recorder race가 없었다. |
+| Dynamic cluster process acceptance | `go test ./tests/integration -run '^TestDynamicCluster(MQTTDenialAudit|ManagementAudit|TenantIsolationPenetration)ProcessAcceptance$' -count=1 -v -timeout 20m` | PASS. MQTT denial 시험은 invalid credential, 거절 Client ID, SUBSCRIBE와 PUBLISH 거절 4건을 기록하고 schema·hash chain·field redaction·source IP·suppressed/dropped metric을 확인했다. Management audit와 13개 NFR-19 subtest도 통과했다. |
+| Build·vet | `go build ./... && go vet ./...` | PASS. |
+| Architecture 문서 검증 | `go run ./tools/verify architecture` | PASS. |
+| 전체 local gate | `GOMAXPROCS=4 go run ./tools/verify local` | PASS. Branch instrumentation, 전체 package·integration, race, fuzz, vet, traceability, architecture와 coverage gate가 통과했다. 마지막 출력은 `coverage: PASS`, `local: PASS`다. |
+| Diff coverage | `go run ./tools/verify coverage --profile .artifacts/verification/coverage.out --report .artifacts/verification/diff-summary.json --base HEAD` | PASS. |
+| 최종 traceability | `go run ./tools/verify traceability` | PASS. `P0 mapped 66/81, exceptions 15`. |
+
+첫 전체 local gate는 `TestClusterConcurrentOriginsReadBurstCompletesAfterEgressDrain`에서 peer rejection 1건으로 실패했다. 해당 시험의 단독 normal·race 실행과 artifact 재생성 뒤의 전체 local gate는 통과했다.
+
+Data-plane recorder는 node별 초당 20건과 queue capacity 256을 적용한다. MQTT 응답은 기록 실패나 한도 초과 때문에 바뀌지 않는다. NFR-19의 독립 penetration test와 threat model 승인은 이 실행 증거에 포함되지 않는다.

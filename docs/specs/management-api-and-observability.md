@@ -234,7 +234,7 @@ Warn log `tenant limit rejected a request`는 tenant·dimension마다 10초에 �
 동작은 [Tenant §5.2](tenancy-and-security.md#52-연결-상태와-traffic-한도)를 따른다.
 
 `narumq_will_outcomes_total{reason}` counter는 [Drain §5](drain-and-rolling-update.md#5-will-판정과-관측)의 6개 reason만 허용한다. 모든 mode에서 6개 series를 0부터 항상 같은 순서로 render한다. 알 수 없는 reason은 무시하며 임의 label을 추가하지 않는다.
-`narumq_audit_events_total{outcome}`은 `published`, `publish_failed`, `invalid`, `denial_suppressed`, `mutation_rejected`의 5개 outcome을 허용한다. 모든 format과 mode에서 5개 series를 0부터 고정 순서로 render한다. 알 수 없는 outcome은 무시한다. `narumq_audit_publisher_ready` gauge는 node-local publisher가 append할 수 있으면 1, 아니면 0이다. 이 Metric에는 tenant, request ID, actor, action 또는 target label을 추가하지 않는다.
+`narumq_audit_events_total{outcome}`은 `published`, `publish_failed`, `invalid`, `denial_suppressed`, `mutation_rejected`, `dataplane_suppressed`, `dataplane_dropped`의 7개 outcome을 허용한다. 모든 format과 mode에서 7개 series를 0부터 고정 순서로 render한다. `dataplane_suppressed`는 초당 rate limit 초과를, `dataplane_dropped`는 queue 포화·종료 뒤 event를 나타낸다. 알 수 없는 outcome은 무시한다. `narumq_audit_publisher_ready` gauge는 node-local publisher가 append할 수 있으면 1, 아니면 0이다. 이 Metric에는 tenant, request ID, actor, action 또는 target label을 추가하지 않는다.
 Audit outcome series의 고정 순서, 0 기본값, 알 수 없는 label 무시와 readiness gauge는 `internal/adapters/metrics/registry_test.go::TestRegistryRendersAuditMetrics`에서 검증한다.
 
 `narumq_mqtt_listener_admission_rejected_total{transport,reason}` counter는 CONNECT 전에

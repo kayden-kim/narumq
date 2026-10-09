@@ -65,11 +65,13 @@ type WillOutcomeRecorder interface {
 
 // Audit publication outcomes (fixed cardinality).
 const (
-	AuditOutcomePublished        = "published"
-	AuditOutcomePublishFailed    = "publish_failed"
-	AuditOutcomeInvalid          = "invalid"
-	AuditOutcomeDenialSuppressed = "denial_suppressed"
-	AuditOutcomeMutationRejected = "mutation_rejected"
+	AuditOutcomePublished           = "published"
+	AuditOutcomePublishFailed       = "publish_failed"
+	AuditOutcomeInvalid             = "invalid"
+	AuditOutcomeDenialSuppressed    = "denial_suppressed"
+	AuditOutcomeMutationRejected    = "mutation_rejected"
+	AuditOutcomeDataPlaneSuppressed = "dataplane_suppressed"
+	AuditOutcomeDataPlaneDropped    = "dataplane_dropped"
 )
 
 // AuditOutcomeRecorder records audit publication outcomes and publisher readiness.

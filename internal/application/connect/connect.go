@@ -9,7 +9,9 @@ import (
 	"sync"
 	"time"
 
+	"narumq/internal/application/audit"
 	"narumq/internal/application/membership"
+	portsaudit "narumq/internal/application/ports/audit"
 	applicationauthentication "narumq/internal/application/ports/authentication"
 	applicationclock "narumq/internal/application/ports/clock"
 	"narumq/internal/application/ports/deliveryqueue"
@@ -92,6 +94,7 @@ type ResultDTO struct {
 type ConnectRequestDTO struct {
 	Packet            mqtt.Connect
 	ClientCertificate *applicationauthentication.ClientCertificateDTO
+	SourceIP          string // remote host without port; empty when unknown
 }
 
 // Option configures optional parameters for the connection use case.
@@ -123,6 +126,11 @@ func WithMetrics(metrics portsmetrics.MetricsRecorder) Option {
 	return func(useCase *UseCase) {
 		useCase.metrics = metrics
 	}
+}
+
+// WithDataPlaneAudit records MQTT authentication and authorization denials.
+func WithDataPlaneAudit(recorder portsaudit.DataPlaneDenialRecorder) Option {
+	return func(useCase *UseCase) { useCase.dataPlaneAudit = recorder }
 }
 
 // WithOwnershipCoordinator commits cluster ownership before local session activation.
@@ -199,6 +207,7 @@ type UseCase struct {
 	closed                     bool
 	metrics                    portsmetrics.MetricsRecorder
 	willOutcomes               portsmetrics.WillOutcomeRecorder
+	dataPlaneAudit             portsaudit.DataPlaneDenialRecorder
 	ownershipCoordinator       OwnershipCoordinator
 	ownerNodeID                uint64
 	offlineCoordinator         OfflineCoordinator
@@ -221,6 +230,44 @@ func (useCase *UseCase) recordAuth(method string, success bool, reason string) {
 	if useCase != nil && useCase.metrics != nil {
 		useCase.metrics.AuthAttempt(method, success, reason)
 	}
+}
+
+func (useCase *UseCase) rejectAuthentication(request ConnectRequestDTO, method, reason string, identity *applicationauthentication.Result) {
+	useCase.recordAuth(method, false, reason)
+	if useCase == nil || useCase.dataPlaneAudit == nil {
+		return
+	}
+	denial := portsaudit.DataPlaneDenialDTO{
+		Action:     portsaudit.DataPlaneActionConnect,
+		Reason:     reason,
+		ClientID:   request.Packet.ClientID,
+		SourceIP:   request.SourceIP,
+		AuthMethod: method,
+	}
+	if identity != nil {
+		denial.TenantID = identity.TenantID.String()
+		denial.Subject = identity.Subject
+		denial.CredentialID = identity.CredentialID
+		denial.Roles = make([]string, len(identity.Roles))
+		for index, role := range identity.Roles {
+			denial.Roles[index] = string(role)
+		}
+	}
+	if (reason == "invalid_will_topic" || reason == "will_unauthorized") && request.Packet.Will != nil {
+		denial.Topic = request.Packet.Will.Topic
+	}
+	useCase.dataPlaneAudit.RecordDataPlaneDenial(denial)
+}
+
+func (useCase *UseCase) authorizeWillPublication(principal security.Principal, topic string) bool {
+	willTopic, err := tenancy.NewTopic(principal.TenantID(), topic)
+	if err == nil && useCase.policy.AuthorizeTopic(principal, security.ActionWill, willTopic) == nil {
+		return true
+	}
+	if useCase.dataPlaneAudit != nil {
+		useCase.dataPlaneAudit.RecordDataPlaneDenial(audit.ACLDenial(portsaudit.DataPlaneActionWill, principal, topic, ""))
+	}
+	return false
 }
 
 func (useCase *UseCase) recordSessionGauge() {
@@ -504,19 +551,19 @@ func (useCase *UseCase) ConnectContext(ctx context.Context, request ConnectReque
 	case request.ClientCertificate != nil:
 		authMethod = portsmetrics.AuthMethodTLS
 		if useCase.certificateAuthenticator == nil {
-			useCase.recordAuth(authMethod, false, "unsupported_credentials")
+			useCase.rejectAuthentication(request, authMethod, "unsupported_credentials", nil)
 			result.ConnAck.ReasonCode = notAuthorizedReason(packet.Version)
 			return result, nil
 		}
 		if packet.HasUsername || packet.HasPassword {
-			useCase.recordAuth(authMethod, false, "dual_credentials")
+			useCase.rejectAuthentication(request, authMethod, "dual_credentials", nil)
 			result.ConnAck.ReasonCode = notAuthorizedReason(packet.Version)
 			return result, nil
 		}
 		var err error
 		authResult, err = useCase.certificateAuthenticator.AuthenticateClientCertificate(ctx, *request.ClientCertificate)
 		if err != nil {
-			useCase.recordAuth(authMethod, false, "invalid_credentials")
+			useCase.rejectAuthentication(request, authMethod, "invalid_credentials", nil)
 			result.ConnAck.ReasonCode = notAuthorizedReason(packet.Version)
 			return result, nil
 		}
@@ -524,26 +571,26 @@ func (useCase *UseCase) ConnectContext(ctx context.Context, request ConnectReque
 	case useCase.authenticator != nil:
 		authMethod = portsmetrics.AuthMethodJWT
 		if !packet.HasUsername || !packet.HasPassword || len(packet.Password) == 0 {
-			useCase.recordAuth(authMethod, false, "missing_credentials")
+			useCase.rejectAuthentication(request, authMethod, "missing_credentials", nil)
 			result.ConnAck.ReasonCode = notAuthorizedReason(packet.Version)
 			return result, nil
 		}
 		var err error
 		authResult, err = useCase.authenticator.Authenticate(ctx, applicationauthentication.Credential{Token: packet.Password})
 		if err != nil {
-			useCase.recordAuth(authMethod, false, "invalid_credentials")
+			useCase.rejectAuthentication(request, authMethod, "invalid_credentials", nil)
 			result.ConnAck.ReasonCode = notAuthorizedReason(packet.Version)
 			return result, nil
 		}
 		authenticated = true
 	case useCase.certificateAuthenticator != nil:
 		authMethod = portsmetrics.AuthMethodTLS
-		useCase.recordAuth(authMethod, false, "missing_certificate")
+		useCase.rejectAuthentication(request, authMethod, "missing_certificate", nil)
 		result.ConnAck.ReasonCode = notAuthorizedReason(packet.Version)
 		return result, nil
 	default:
 		if packet.HasUsername || packet.HasPassword {
-			useCase.recordAuth(portsmetrics.AuthMethodAnonymous, false, "unsupported_credentials")
+			useCase.rejectAuthentication(request, portsmetrics.AuthMethodAnonymous, "unsupported_credentials", nil)
 			result.ConnAck.ReasonCode = unsupportedDevelopmentReason(packet.Version)
 			return result, nil
 		}
@@ -559,7 +606,7 @@ func (useCase *UseCase) ConnectContext(ctx context.Context, request ConnectReque
 			}
 		}
 		if !allowed {
-			useCase.recordAuth(authMethod, false, "client_id_not_allowed")
+			useCase.rejectAuthentication(request, authMethod, "client_id_not_allowed", &authResult)
 			result.ConnAck.ReasonCode = notAuthorizedReason(packet.Version)
 			return result, nil
 		}
@@ -572,7 +619,7 @@ func (useCase *UseCase) ConnectContext(ctx context.Context, request ConnectReque
 			authResult.ExpiresAt,
 		)
 		if err != nil {
-			useCase.recordAuth(authMethod, false, "not_authorized")
+			useCase.rejectAuthentication(request, authMethod, "not_authorized", &authResult)
 			result.ConnAck.ReasonCode = notAuthorizedReason(packet.Version)
 			return result, nil
 		}
@@ -580,12 +627,12 @@ func (useCase *UseCase) ConnectContext(ctx context.Context, request ConnectReque
 		if packet.Will != nil {
 			willTopic, err := tenancy.NewTopic(authResult.TenantID, packet.Will.Topic)
 			if err != nil {
-				useCase.recordAuth(authMethod, false, "invalid_will_topic")
+				useCase.rejectAuthentication(request, authMethod, "invalid_will_topic", &authResult)
 				result.ConnAck.ReasonCode = notAuthorizedReason(packet.Version)
 				return result, nil
 			}
 			if err := useCase.policy.AuthorizeTopic(principal, security.ActionWill, willTopic); err != nil {
-				useCase.recordAuth(authMethod, false, "will_unauthorized")
+				useCase.rejectAuthentication(request, authMethod, "will_unauthorized", &authResult)
 				result.ConnAck.ReasonCode = notAuthorizedReason(packet.Version)
 				return result, nil
 			}
@@ -968,8 +1015,7 @@ func (useCase *UseCase) disconnectLocked(sessionID routing.SessionID, reason ses
 		if !ok {
 			shouldPublish = false
 		} else {
-			topic, topicErr := tenancy.NewTopic(principal.TenantID(), will.Topic)
-			if topicErr != nil || useCase.policy.AuthorizeTopic(principal, security.ActionWill, topic) != nil {
+			if !useCase.authorizeWillPublication(principal, will.Topic) {
 				shouldPublish = false
 			}
 		}
@@ -1089,8 +1135,7 @@ func (useCase *UseCase) onWillTimerForTimer(sessionID routing.SessionID, expecte
 		if !ok {
 			shouldPublish = false
 		} else {
-			willTopic, err := tenancy.NewTopic(principal.TenantID(), will.Topic)
-			if err != nil || useCase.policy.AuthorizeTopic(principal, security.ActionWill, willTopic) != nil {
+			if !useCase.authorizeWillPublication(principal, will.Topic) {
 				shouldPublish = false
 			}
 		}
@@ -1237,8 +1282,7 @@ func (useCase *UseCase) onExpiryTimerForTimer(sessionID routing.SessionID, expec
 		if !ok {
 			shouldPublish = false
 		} else {
-			willTopic, err := tenancy.NewTopic(principal.TenantID(), will.Topic)
-			if err != nil || useCase.policy.AuthorizeTopic(principal, security.ActionWill, willTopic) != nil {
+			if !useCase.authorizeWillPublication(principal, will.Topic) {
 				shouldPublish = false
 			}
 		}

@@ -139,8 +139,8 @@ func TestRecordRejectsInvalidEventWithoutPublishing(t *testing.T) {
 	if len(publisher.events) != 0 {
 		t.Fatalf("published events = %d, want 0", len(publisher.events))
 	}
-	if service.denialWindowInitialized || service.denialCount != 0 {
-		t.Fatalf("denial state = initialized:%t count:%d, want unchanged", service.denialWindowInitialized, service.denialCount)
+	if service.denials.initialized || service.denials.count != 0 {
+		t.Fatalf("denial state = initialized:%t count:%d, want unchanged", service.denials.initialized, service.denials.count)
 	}
 	if metrics.outcomes[portsmetrics.AuditOutcomeInvalid] != 1 {
 		t.Fatalf("invalid outcome count = %d, want 1", metrics.outcomes[portsmetrics.AuditOutcomeInvalid])

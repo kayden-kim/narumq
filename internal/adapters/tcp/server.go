@@ -14,8 +14,10 @@ import (
 	"sync/atomic"
 	"time"
 
+	applicationaudit "narumq/internal/application/audit"
 	"narumq/internal/application/connect"
 	"narumq/internal/application/membership"
+	portsaudit "narumq/internal/application/ports/audit"
 	applicationauthentication "narumq/internal/application/ports/authentication"
 	applicationclock "narumq/internal/application/ports/clock"
 	"narumq/internal/application/ports/deliveryqueue"
@@ -80,6 +82,7 @@ type Config struct {
 	// PacketReadTimeout bounds one started packet after CONNECT.
 	PacketReadTimeout          time.Duration
 	TenantLimits               *tenantlimit.Service
+	DataPlaneAudit             portsaudit.DataPlaneDenialRecorder // nil disables MQTT denial audit
 	ClientCertificateExtractor func(net.Conn) (applicationauthentication.ClientCertificateDTO, bool)
 	Policy                     security.Policy
 	Metrics                    portsmetrics.MetricsRecorder
@@ -300,6 +303,7 @@ func newConnection(server *Server, socket net.Conn) *connection {
 	connection := &connection{
 		server:           server,
 		socket:           socket,
+		sourceIP:         remoteHost(socket),
 		controlQueue:     make(chan controlMessage, server.config.ControlQueueCapacity),
 		deliveryWake:     make(chan struct{}, 1),
 		stop:             make(chan struct{}),
@@ -314,6 +318,22 @@ func newConnection(server *Server, socket net.Conn) *connection {
 		connection.phases = newConnectionPhases()
 	}
 	return connection
+}
+
+func remoteHost(socket net.Conn) string {
+	if socket == nil {
+		return ""
+	}
+	remoteAddress := socket.RemoteAddr()
+	if remoteAddress == nil {
+		return ""
+	}
+	address := remoteAddress.String()
+	host, _, err := net.SplitHostPort(address)
+	if err != nil {
+		return address
+	}
+	return host
 }
 
 func (server *Server) addActive(connection *connection) {
@@ -576,6 +596,7 @@ type pendingDeliveryPromotion struct {
 type connection struct {
 	server       *Server
 	socket       net.Conn
+	sourceIP     string
 	controlQueue chan controlMessage
 	deliveryWake chan struct{}
 	stop         chan struct{}
@@ -977,6 +998,7 @@ func (connection *connection) activate(packet mqtt.Connect) error {
 	result, err := connection.server.connections.ConnectContext(context.Background(), connect.ConnectRequestDTO{
 		Packet:            packet,
 		ClientCertificate: clientCertificate,
+		SourceIP:          connection.sourceIP,
 	})
 	if err != nil {
 		return err
@@ -1126,6 +1148,9 @@ func (connection *connection) dispatch(packet mqtt.Packet) error {
 			context.Background(), connection.sessionID, *value, connection.server.config.Clock.Now(),
 			connection.ownership, connection.principal,
 		)
+		for _, filter := range result.ACLDeniedFilters {
+			connection.auditACLDenial(portsaudit.DataPlaneActionSubscribe, filter)
+		}
 		if err != nil {
 			return err
 		}
@@ -1139,13 +1164,16 @@ func (connection *connection) dispatch(packet mqtt.Packet) error {
 		if connection.server.config.ClusterMode && !connection.server.clusterReady() {
 			return ErrClusterNotReady
 		}
-		ack, err := connection.server.subscriptions.UnsubscribeCommitted(
+		result, err := connection.server.subscriptions.UnsubscribeCommitted(
 			context.Background(), connection.sessionID, *value, connection.ownership, connection.principal,
 		)
+		for _, filter := range result.ACLDeniedFilters {
+			connection.auditACLDenial(portsaudit.DataPlaneActionUnsubscribe, filter)
+		}
 		if err != nil {
 			return err
 		}
-		return connection.enqueueAndWait(&ack)
+		return connection.enqueueAndWait(&result.Ack)
 	case *mqtt.Publish:
 		return connection.dispatchPublish(*value)
 	case *mqtt.PubAck:
@@ -1594,7 +1622,17 @@ func (connection *connection) enqueueNegativePublishAck(packet mqtt.Publish) err
 	return ErrProtocol
 }
 
+func (connection *connection) auditACLDenial(action portsaudit.DataPlaneAction, topic string) {
+	if connection.server.config.DataPlaneAudit == nil || connection.principal.Subject() == "" {
+		return
+	}
+	connection.server.config.DataPlaneAudit.RecordDataPlaneDenial(
+		applicationaudit.ACLDenial(action, connection.principal, topic, connection.sourceIP),
+	)
+}
+
 func (connection *connection) rejectUnauthorizedPublish(packet mqtt.Publish) error {
+	connection.auditACLDenial(portsaudit.DataPlaneActionPublish, packet.Topic)
 	if connection.version == mqtt.ProtocolV5 {
 		if packet.QoS == mqtt.QoSAtLeastOnce {
 			return connection.enqueueControl(&mqtt.PubAck{Version: connection.version, PacketID: packet.PacketID, ReasonCode: 0x87})

@@ -20,6 +20,7 @@ import (
 	audithttp "narumq/internal/adapters/http/management"
 	auditapp "narumq/internal/application/audit"
 	appmembership "narumq/internal/application/membership"
+	portsaudit "narumq/internal/application/ports/audit"
 	portsclock "narumq/internal/application/ports/clock"
 	portsmanagement "narumq/internal/application/ports/management"
 	portsmetrics "narumq/internal/application/ports/metrics"
@@ -272,6 +273,121 @@ func TestAuditEventMatchesSchemaAndFileChain(t *testing.T) {
 	}
 	if verification.Records != uint64(len(cases)) || verification.FirstSeq != 1 || verification.LastSeq != uint64(len(cases)) {
 		t.Fatalf("unexpected verified chain summary: %+v", verification)
+	}
+}
+
+// Traceability: SEC-11/NFR-17; docs/specs/tenancy-and-security.md §8.
+func TestDataPlaneDenialEventsMatchSchema(t *testing.T) {
+	schema := compileAuditEventSchema(t)
+	directory := t.TempDir()
+	publisher, err := auditlog.OpenFileAuditPublisher(auditlog.FileAuditPublisherConfig{
+		Directory: directory, MaxFileBytes: auditlog.DefaultMaxFileBytes,
+	})
+	if err != nil {
+		t.Fatalf("OpenFileAuditPublisher() error = %v", err)
+	}
+	defer func() {
+		if err := publisher.Close(); err != nil {
+			t.Errorf("Close() error = %v", err)
+		}
+	}()
+	clock := contractClock{now: time.Date(2026, time.October, 9, 12, 30, 0, 0, time.UTC)}
+	recorder, err := auditapp.NewDataPlaneRecorder(auditapp.DataPlaneRecorderConfig{
+		ClusterID: "contract-cluster", NodeID: 2, ReleaseVersion: "1.0.0",
+		EventsPerSecond: 20, QueueCapacity: 8,
+	}, publisher, clock, contractMetrics{})
+	if err != nil {
+		t.Fatalf("NewDataPlaneRecorder() error = %v", err)
+	}
+	defer recorder.Close()
+	recorder.Start()
+	denials := []portsaudit.DataPlaneDenialDTO{
+		{
+			Action: portsaudit.DataPlaneActionConnect, Reason: "invalid_credentials",
+			ClientID: "rejected-client", SourceIP: "203.0.113.10", AuthMethod: "jwt",
+		},
+		{
+			Action: portsaudit.DataPlaneActionPublish, Reason: portsaudit.DataPlaneReasonNotAuthorized,
+			TenantID: "tenant-a", Subject: "device-a", CredentialID: "credential-a",
+			Roles: []string{"publisher"}, ClientID: "client-a", SourceIP: "203.0.113.10",
+			Topic: strings.Repeat("界", 600),
+		},
+		{
+			Action: portsaudit.DataPlaneActionSubscribe, Reason: portsaudit.DataPlaneReasonNotAuthorized,
+			TenantID: "tenant-a", Subject: "device-a", CredentialID: "credential-a",
+			Roles: []string{"publisher"}, ClientID: "client-a", SourceIP: "203.0.113.10", Topic: "sensors/#",
+		},
+		{
+			Action: portsaudit.DataPlaneActionUnsubscribe, Reason: portsaudit.DataPlaneReasonNotAuthorized,
+			TenantID: "tenant-a", Subject: "device-a", CredentialID: "credential-a",
+			Roles: []string{"publisher"}, ClientID: "client-a", SourceIP: "203.0.113.10", Topic: "sensors/#",
+		},
+		{
+			Action: portsaudit.DataPlaneActionWill, Reason: portsaudit.DataPlaneReasonNotAuthorized,
+			TenantID: "tenant-a", Subject: "device-a", CredentialID: "credential-a",
+			Roles: []string{"publisher"}, ClientID: "client-a", Topic: "sensors/will",
+		},
+	}
+	for _, denial := range denials {
+		recorder.RecordDataPlaneDenial(denial)
+	}
+	recorder.Close()
+
+	rawLog, err := os.ReadFile(filepath.Join(directory, "audit.jsonl"))
+	if err != nil {
+		t.Fatalf("ReadFile(audit.jsonl) error = %v", err)
+	}
+	lines := bytes.Split(bytes.TrimSuffix(rawLog, []byte{'\n'}), []byte{'\n'})
+	if len(lines) != len(denials) {
+		t.Fatalf("audit log has %d events, want %d", len(lines), len(denials))
+	}
+	wantActions := []string{"mqtt.connect", "mqtt.publish", "mqtt.subscribe", "mqtt.unsubscribe", "mqtt.will"}
+	wantTargets := []string{"mqtt_client", "mqtt_topic", "mqtt_topic_filter", "mqtt_topic_filter", "mqtt_topic"}
+	for index, line := range lines {
+		var record struct {
+			Event json.RawMessage `json:"event"`
+		}
+		if err := json.Unmarshal(line, &record); err != nil {
+			t.Fatalf("decode record %d: %v", index+1, err)
+		}
+		var eventValue any
+		if err := json.Unmarshal(record.Event, &eventValue); err != nil {
+			t.Fatalf("decode event %d: %v", index+1, err)
+		}
+		if err := schema.Validate(eventValue); err != nil {
+			t.Fatalf("schema rejected data-plane event %d: %v", index+1, err)
+		}
+		var event struct {
+			Actor struct {
+				Subject string `json:"subject"`
+			} `json:"actor"`
+			Action   string                    `json:"action"`
+			Target   struct{ Type, ID string } `json:"target"`
+			Result   string                    `json:"result"`
+			Reason   string                    `json:"reason"`
+			SourceIP string                    `json:"sourceIp"`
+			Details  map[string]any            `json:"details"`
+		}
+		if err := json.Unmarshal(record.Event, &event); err != nil {
+			t.Fatalf("decode data-plane event fields %d: %v", index+1, err)
+		}
+		if event.Action != wantActions[index] || event.Target.Type != wantTargets[index] ||
+			event.Result != "DENIED" || event.Reason != denials[index].Reason || event.SourceIP != denials[index].SourceIP {
+			t.Fatalf("data-plane event %d = %+v", index+1, event)
+		}
+		if index == 0 && (event.Actor.Subject != "unauthenticated" || event.Details["authMethod"] != "jwt") {
+			t.Fatalf("pre-authentication event = %+v", event)
+		}
+		if index == 1 && (len([]rune(event.Target.ID)) != 512 || event.Details["truncated"] != true) {
+			t.Fatalf("truncated publish event target/details = %d runes/%v", len([]rune(event.Target.ID)), event.Details)
+		}
+	}
+	verification, err := auditlog.VerifyDirectory(directory)
+	if err != nil {
+		t.Fatalf("VerifyDirectory() error = %v", err)
+	}
+	if verification.Records != uint64(len(denials)) || verification.FirstSeq != 1 || verification.LastSeq != uint64(len(denials)) {
+		t.Fatalf("unexpected verified data-plane chain summary: %+v", verification)
 	}
 }
 

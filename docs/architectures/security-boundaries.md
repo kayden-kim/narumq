@@ -6,19 +6,19 @@ NaruMQ의 security architecture는 network 위치만으로 신뢰를 부여하�
 | --- | --- |
 | 관점 상태 | Target; MQTT client mTLS boundary partially implemented |
 | 문서 상태 | Draft |
-| 구현 증거 | MQTT client TLS trust, verified certificate DTO, exact selector mapping, tenant/client binding과 dual-credential rejection은 `internal/adapters/tls`, `internal/adapters/authentication`, `internal/application/connect`, `cmd/narumq` 및 `tests/integration/mqtt_tls_test.go`에 구현·검증되어 있다. Management plane 감사 producer, node-local hash-chain publisher, read-only verifier와 outcome metric은 `internal/adapters/http/management`, `internal/adapters/auditlog`, `internal/application/audit`, `internal/adapters/metrics`, `cmd/narumq`에 구현되어 있다. Schema·secret 경계와 실제 3-process 동작은 `tests/contracts/audit-event-v1/contract_test.go::TestAuditEventMatchesSchemaAndFileChain`, `tests/integration/cluster_audit_process_test.go::TestDynamicClusterManagementAuditProcessAcceptance`에서 확인한다. SIEM 보존·접근 정책, rollout controller와 MQTT data-plane 감사는 후속 범위다. |
+| 구현 증거 | MQTT client TLS trust, verified certificate DTO, exact selector mapping, tenant/client binding과 dual-credential rejection은 `internal/adapters/tls`, `internal/adapters/authentication`, `internal/application/connect`, `cmd/narumq` 및 `tests/integration/mqtt_tls_test.go`에 구현·검증되어 있다. Management audit producer, node-local hash-chain publisher, read-only verifier와 outcome metric은 `internal/adapters/http/management`, `internal/adapters/auditlog`, `internal/application/audit`, `internal/adapters/metrics`, `cmd/narumq`에 구현되어 있다. MQTT denial producer는 `internal/application/connect`, `subscribe`, `audit`, `internal/adapters/tcp`와 `cmd/narumq/cluster_runtime.go`에 구현되어 있다. Schema와 secret 경계는 `tests/contracts/audit-event-v1/contract_test.go`; 실제 동작은 `tests/integration/cluster_audit_process_test.go::TestDynamicClusterManagementAuditProcessAcceptance`, `TestDynamicClusterMQTTDenialAuditProcessAcceptance`에서 확인한다. SIEM 보존·접근 정책과 rollout controller는 미구현이다. |
 | Rate limit 근거 | 인증 주체별 요청 token bucket, 원격 IP별 인증 실패 token bucket, middleware 처리 순서와 `429` 동작은 `internal/adapters/http/management`에 구현하고 `internal/adapters/http/management/rate_limit_test.go`로 검증했다. 자세한 내용은 [Management HTTP adapter module design](management-http-module.md)과 [Management API §1.5](../specs/management-api-and-observability.md#15-rate-limit)을 따른다. |
 | 범위 | MQTT data plane, cluster peer와 management plane의 trust boundary |
 | 관련 요구사항 | [PRD](../requirements/PRD.md) TEN-01~TEN-10, SEC-01~SEC-12, NFR-16~NFR-19 |
-| 관련 스펙 | [Tenant와 security](../specs/tenancy-and-security.md), [Management API와 observability](../specs/management-api-and-observability.md) |
+| 관련 스펙 | [Tenant와 security](../specs/tenancy-and-security.md), [Management API와 observability](../specs/management-api-and-observability.md), [Audit event v1](../contracts/audit-event-v1.md) |
 | 관련 Contract | [Management API v1](../contracts/management-api-v1.md), [Audit event v1](../contracts/audit-event-v1.md), [MQTT client compatibility v1](../contracts/mqtt-client-compatibility-v1.md) |
-| 관련 결정 | [ADR-0039](../decisions/ADR-0039-management-audit-log.md), [ADR-0043](../decisions/ADR-0043-management-api-rate-limit.md); API authentication product와 secret 관리 ADR은 미작성 |
+| 관련 결정 | [ADR-0039](../decisions/ADR-0039-management-audit-log.md), [ADR-0043](../decisions/ADR-0043-management-api-rate-limit.md), [ADR-0046](../decisions/ADR-0046-mqtt-data-plane-denial-audit.md); API authentication product와 secret 관리 ADR은 미작성 |
 | Threat model | [Threat model](threat-model.md) |
 | 최종 확인일 | 2026-10-09 |
 
 ## Trust boundary view
 
-아래 화살표는 Target runtime flow다. Management API → AuditAdapter 경로가 구현됐고, Domain → AuditAdapter의 MQTT data-plane 감사는 후속 범위다. Boundary 검증을 통과하기 전에는 안쪽 identity나 권한으로 승격하지 않는다.
+아래 화살표는 Target runtime flow다. Management API와 MQTT 거절은 AuditAdapter로 전달된다. Management mutation 감사는 fail-closed이고 MQTT denial audit는 bounded fail-open이다. 감사 실패가 인증·인가 결과나 MQTT 응답을 바꾸지 않는다. Boundary 검증을 통과하기 전에는 안쪽 identity나 권한으로 승격하지 않는다.
 
 ```mermaid
 flowchart LR
@@ -49,6 +49,7 @@ flowchart LR
 
     Clients --> MQTT
     MQTT --> Principal
+    MQTT -->|"CONNECT denial"| AuditAdapter
     IdP --> Principal
     Principal --> Policy
     Policy --> Domain
@@ -60,7 +61,7 @@ flowchart LR
     Runtime --> Peer
     Peers --> Peer
     Peer --> Domain
-    Domain --> AuditAdapter
+    Policy -->|"ACL denial"| AuditAdapter
     API --> AuditAdapter
     AuditAdapter --> Audit
     AuditAdapter --> Monitor
