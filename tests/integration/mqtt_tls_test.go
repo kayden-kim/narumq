@@ -26,6 +26,8 @@ import (
 	tcpadapter "narumq/internal/adapters/tcp"
 	tlsadapter "narumq/internal/adapters/tls"
 	"narumq/internal/application/connect"
+	authenticationports "narumq/internal/application/ports/authentication"
+	portsmetrics "narumq/internal/application/ports/metrics"
 	"narumq/internal/application/publish"
 	"narumq/internal/application/subscribe"
 	"narumq/internal/domain/mqtt"
@@ -170,12 +172,13 @@ func generateIntegrationClientCert(t *testing.T, ca testCert, commonName string,
 }
 
 type tlsFixtureOptions struct {
-	ClientAuth   tlsadapter.ClientAuthMode
-	CAFile       string
-	MinVersion   string
-	CipherSuites []string
-	MTLSIdentity string
-	DualTCP      bool
+	ClientAuth       tlsadapter.ClientAuthMode
+	CAFile           string
+	MinVersion       string
+	CipherSuites     []string
+	MTLSIdentity     string
+	PasswordBindings []authentication.PasswordIdentityBinding
+	DualTCP          bool
 }
 
 type tlsFixture struct {
@@ -274,13 +277,26 @@ func newTLSFixture(t *testing.T, opts tlsFixtureOptions) *tlsFixture {
 	repository := sessionstore.New()
 	willBridge := tcpadapter.NewWillBridge()
 	systemClock := clock.SystemClock{}
-	var connectOpts []connect.Option
+	var (
+		connectOpts        []connect.Option
+		credentialProvider authenticationports.AuthenticationProvider
+		credentialMethod   string
+		mtlsProvider       *authentication.MTLSAuthenticationProvider
+	)
+	if len(opts.PasswordBindings) > 0 {
+		provider, err := authentication.NewPasswordAuthenticationProvider(opts.PasswordBindings)
+		if err != nil {
+			t.Fatalf("create password provider: %v", err)
+		}
+		credentialProvider = provider
+		credentialMethod = portsmetrics.AuthMethodPassword
+	}
 	if opts.MTLSIdentity != "" {
 		tenantID, err := tenancy.NewTenantID("tenant-a")
 		if err != nil {
 			t.Fatalf("create mTLS tenant ID: %v", err)
 		}
-		mtlsProvider, err := authentication.NewMTLSAuthenticationProvider(systemClock, []authentication.ClientCertificateIdentityBinding{{
+		mtlsProvider, err = authentication.NewMTLSAuthenticationProvider(systemClock, []authentication.ClientCertificateIdentityBinding{{
 			Kind:             authentication.ClientCertificateIdentityKindCommonName,
 			Value:            opts.MTLSIdentity,
 			TenantID:         tenantID,
@@ -292,7 +308,9 @@ func newTLSFixture(t *testing.T, opts tlsFixtureOptions) *tlsFixture {
 		if err != nil {
 			t.Fatalf("create mTLS provider: %v", err)
 		}
-		connectOpts = append(connectOpts, connect.WithSecurity(nil, mtlsProvider, security.Policy{}))
+	}
+	if credentialProvider != nil || mtlsProvider != nil {
+		connectOpts = append(connectOpts, connect.WithSecurity(credentialProvider, mtlsProvider, security.Policy{}, credentialMethod))
 	}
 	connections, err := connect.New(systemClock, repository, deliveries, routes, clock.SystemScheduler{}, willBridge, connectOpts...)
 	if err != nil {
@@ -518,6 +536,78 @@ func TestMQTTTLS_ConnectionAndDelivery(t *testing.T) {
 				t.Errorf("expected payload %q, got %q", string(payload), string(publishMsg.Payload))
 			}
 		})
+	}
+}
+
+// Traceability: SEC-05; docs/specs/tenancy-and-security.md §2.3, §2.4, §9.
+func TestMQTTTLS_PasswordAuthentication(t *testing.T) {
+	password := []byte("SEC05-tls-password")
+	encodedHash, err := authentication.HashPassword(password)
+	if err != nil {
+		t.Fatalf("hash TLS test password: %v", err)
+	}
+	passwordHash, err := authentication.ParsePasswordHash(encodedHash)
+	if err != nil {
+		t.Fatalf("parse TLS test password hash: %v", err)
+	}
+	tenantID, err := tenancy.NewTenantID("tenant-a")
+	if err != nil {
+		t.Fatalf("create TLS password tenant ID: %v", err)
+	}
+	fixture := newTLSFixture(t, tlsFixtureOptions{
+		ClientAuth:   tlsadapter.ClientAuthRequest,
+		MTLSIdentity: "tls-cert-client",
+		PasswordBindings: []authentication.PasswordIdentityBinding{{
+			Username: "tls-password-user", PasswordHash: passwordHash, TenantID: tenantID,
+			Subject: "tls-password-device", CredentialID: "tls-password-credential",
+			AllowedClientIDs: []string{"tls-password-client"}, Roles: []security.Role{"publisher"},
+		}},
+	})
+	defer fixture.close(t)
+
+	connect := func(clientCert *testCert, version mqtt.ProtocolVersion, username string, suppliedPassword []byte, hasUsername, hasPassword bool, clientID string) byte {
+		t.Helper()
+		connection := fixture.dialTLS(t, clientCert, nil)
+		defer connection.Close()
+		if err := connection.SetDeadline(time.Now().Add(5 * time.Second)); err != nil {
+			t.Fatalf("set TLS MQTT deadline: %v", err)
+		}
+		writePacket(t, connection, fixture.encoder, &mqtt.Connect{
+			Version: version, CleanStart: true, ClientID: clientID,
+			HasUsername: hasUsername, Username: username,
+			HasPassword: hasPassword, Password: suppliedPassword,
+		})
+		packet := readPacket(t, connection, fixture.decoder, version)
+		connack, ok := packet.(*mqtt.ConnAck)
+		if !ok {
+			t.Fatalf("MQTT %d TLS CONNECT response = %#v, want CONNACK", version, packet)
+		}
+		return connack.ReasonCode
+	}
+
+	certificate := generateIntegrationClientCert(t, fixture.ca, "tls-cert-client", false)
+	for _, version := range []mqtt.ProtocolVersion{mqtt.ProtocolV311, mqtt.ProtocolV5} {
+		wantRejectReason := byte(0x87)
+		if version == mqtt.ProtocolV311 {
+			wantRejectReason = 0x05
+		}
+		if reason := connect(nil, version, "tls-password-user", password, true, true, "tls-password-client"); reason != 0 {
+			t.Fatalf("MQTT %d TLS password CONNACK reason=0x%02x, want success", version, reason)
+		}
+		wrongReason := connect(nil, version, "tls-password-user", []byte("SEC05-wrong-password"), true, true, "tls-password-client")
+		unknownReason := connect(nil, version, "tls-unknown-user", password, true, true, "tls-password-client")
+		if wrongReason != wantRejectReason || unknownReason != wrongReason {
+			t.Fatalf("MQTT %d TLS wrong-password reason=0x%02x, unknown-user reason=0x%02x; want same 0x%02x", version, wrongReason, unknownReason, wantRejectReason)
+		}
+		if reason := connect(nil, version, "", nil, false, false, "tls-password-client"); reason != wantRejectReason {
+			t.Fatalf("MQTT %d TLS missing credentials CONNACK reason=0x%02x, want 0x%02x", version, reason, wantRejectReason)
+		}
+		if reason := connect(&certificate, version, "", nil, false, false, "tls-cert-client"); reason != 0 {
+			t.Fatalf("MQTT %d TLS mTLS client without MQTT credentials CONNACK reason=0x%02x, want success", version, reason)
+		}
+		if reason := connect(&certificate, version, "tls-password-user", password, true, true, "tls-cert-client"); reason != wantRejectReason {
+			t.Fatalf("MQTT %d TLS client with certificate and password credentials reason=0x%02x, want 0x%02x", version, reason, wantRejectReason)
+		}
 	}
 }
 

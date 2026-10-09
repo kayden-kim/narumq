@@ -1022,7 +1022,7 @@ func TestTCPServer_UnauthorizedPublishAndSubscribe(t *testing.T) {
 	}
 	clock := &adapterTestClock{now: time.Date(2026, time.January, 1, 0, 0, 0, 0, time.UTC)}
 	willBridge := NewWillBridge()
-	connections, err := connect.New(clock, repository, queue, routes, adapterTestScheduler{}, willBridge, connect.WithSecurity(auth, nil, policy))
+	connections, err := connect.New(clock, repository, queue, routes, adapterTestScheduler{}, willBridge, connect.WithSecurity(auth, nil, policy, "jwt"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1197,7 +1197,7 @@ func newCertificateAdapterTestRuntime(t *testing.T, config Config, authenticator
 	clock := &adapterTestClock{now: time.Date(2026, time.January, 1, 0, 0, 0, 0, time.UTC)}
 	config.Clock = clock
 	willBridge := NewWillBridge()
-	connections, err := connect.New(clock, repository, queue, routes, adapterTestScheduler{}, willBridge, connect.WithSecurity(nil, authenticator, security.Policy{}))
+	connections, err := connect.New(clock, repository, queue, routes, adapterTestScheduler{}, willBridge, connect.WithSecurity(nil, authenticator, security.Policy{}, "jwt"))
 	if err != nil {
 		t.Fatal(err)
 	}

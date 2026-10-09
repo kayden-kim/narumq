@@ -155,7 +155,7 @@ func TestCmmConnectRejectsCredentialModeMismatchesWithoutMutation(t *testing.T) 
 				mtls = mtlsProvider
 			}
 			metrics := &fakeMetrics{}
-			useCase, repository, queue := newSecurityTestUseCase(t, now, jwt, mtls, security.Policy{}, metrics)
+			useCase, repository, queue := newSecurityTestUseCase(t, now, jwt, mtls, security.Policy{}, portsmetrics.AuthMethodJWT, metrics)
 			result, err := useCase.ConnectContext(context.Background(), ConnectRequestDTO{
 				Packet:            mqtt.Connect{Version: testCase.version, ClientID: "client-1"},
 				ClientCertificate: testCase.certificate,
@@ -204,7 +204,7 @@ func TestCmmConnectRejectsUnusableAuthenticatedIdentity(t *testing.T) {
 				testCase.mutate(&authResult)
 			}
 			metrics := &fakeMetrics{}
-			useCase, repository, queue := newSecurityTestUseCase(t, now, &fakeAuthenticator{result: authResult}, nil, cmmWillPolicy(t, tenant), metrics)
+			useCase, repository, queue := newSecurityTestUseCase(t, now, &fakeAuthenticator{result: authResult}, nil, cmmWillPolicy(t, tenant), portsmetrics.AuthMethodJWT, metrics)
 			result, err := useCase.Connect(cmmJWTConnect("client-1", 0, testCase.will))
 			if err != nil || result.Accepted || result.ConnAck.ReasonCode != 0x87 {
 				t.Fatalf("Connect=%#v err=%v", result, err)
@@ -288,7 +288,7 @@ func TestCmmTenantSessionsFallBackToClientIDRepositoryAndReportGauge(t *testing.
 	queue := newFakeDeliveryQueue()
 	metrics := &cmmSessionGaugeMetrics{}
 	useCase, err := New(&fakeClock{now: now}, repository, queue, routing.NewTable(), &fakeScheduler{}, &fakeWillPublisher{},
-		WithSecurity(&fakeAuthenticator{result: cmmAuthResult(tenant, now, "transient", "persistent")}, nil, security.Policy{}),
+		WithSecurity(&fakeAuthenticator{result: cmmAuthResult(tenant, now, "transient", "persistent")}, nil, security.Policy{}, "jwt"),
 		WithMetrics(metrics))
 	if err != nil {
 		t.Fatal(err)
@@ -364,7 +364,7 @@ func TestCmmAuthenticatedDelayedWillTimerPublishesAuthorizedWill(t *testing.T) {
 	scheduler := &fakeScheduler{}
 	publisher := &fakeWillPublisher{}
 	useCase, err := New(clock, repository, newFakeDeliveryQueue(), routing.NewTable(), scheduler, publisher,
-		WithSecurity(&fakeAuthenticator{result: cmmAuthResult(tenant, now, "client-1")}, nil, cmmWillPolicy(t, tenant)))
+		WithSecurity(&fakeAuthenticator{result: cmmAuthResult(tenant, now, "client-1")}, nil, cmmWillPolicy(t, tenant), "jwt"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -410,7 +410,7 @@ func TestCmmAuthenticatedSessionExpiryPublishesPendingWill(t *testing.T) {
 	scheduler := &fakeScheduler{}
 	publisher := &fakeWillPublisher{}
 	useCase, err := New(clock, repository, queue, routing.NewTable(), scheduler, publisher,
-		WithSecurity(&fakeAuthenticator{result: cmmAuthResult(tenant, now, "client-1")}, nil, cmmWillPolicy(t, tenant)))
+		WithSecurity(&fakeAuthenticator{result: cmmAuthResult(tenant, now, "client-1")}, nil, cmmWillPolicy(t, tenant), "jwt"))
 	if err != nil {
 		t.Fatal(err)
 	}

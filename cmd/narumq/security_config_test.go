@@ -40,6 +40,16 @@ const validSecurityJSON = `{
   ]
 }`
 
+const validPasswordHash = "$argon2id$v=19$m=19456,t=2,p=1$AAAAAAAAAAAAAAAAAAAAAA$AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+
+func passwordIdentityJSON(username, subject, credentialID string) string {
+	return `{"username":"` + username + `","passwordHash":"` + validPasswordHash + `","tenantId":"tenant-a","subject":"` + subject + `","credentialId":"` + credentialID + `","allowedClientIds":["` + username + `-client"],"roles":["publisher"]}`
+}
+
+func passwordSecurityJSON(identities ...string) string {
+	return `{"passwordIdentities":[` + strings.Join(identities, ",") + `],"acl":[]}`
+}
+
 // Traceability: SEC-02, SEC-04, TEN-01
 func TestParseSecurityConfig_Valid(t *testing.T) {
 	bundle, err := parseSecurityConfig(strings.NewReader(validSecurityJSON))
@@ -54,6 +64,106 @@ func TestParseSecurityConfig_Valid(t *testing.T) {
 	}
 	if len(bundle.JWTConfig.Bindings) != 1 {
 		t.Errorf("Bindings length = %d, want 1", len(bundle.JWTConfig.Bindings))
+	}
+}
+
+// Traceability: SEC-05; docs/specs/tenancy-and-security.md §2.4.
+func TestParseSecurityConfig_PasswordIdentities(t *testing.T) {
+	bundle, err := parseSecurityConfig(strings.NewReader(passwordSecurityJSON(
+		passwordIdentityJSON("Device-A", "device-a", "device-a-key"),
+		passwordIdentityJSON("device-a", "device-a-lower", "device-a-lower-key"),
+	)))
+	if err != nil {
+		t.Fatalf("parseSecurityConfig() error = %v", err)
+	}
+	if bundle.JWTConfig != nil || len(bundle.PasswordBindings) != 2 {
+		t.Fatalf("JWTConfig = %#v, PasswordBindings = %d; want password-only bundle with two bindings", bundle.JWTConfig, len(bundle.PasswordBindings))
+	}
+	if bundle.PasswordBindings[0].Username != "Device-A" || bundle.PasswordBindings[1].Username != "device-a" {
+		t.Fatalf("password usernames = %q, %q; want case-sensitive exact keys", bundle.PasswordBindings[0].Username, bundle.PasswordBindings[1].Username)
+	}
+}
+
+// Traceability: SEC-05; docs/specs/tenancy-and-security.md §2.3–§2.4.
+func TestParseSecurityConfig_PasswordAndMTLSBindings(t *testing.T) {
+	input := strings.Replace(
+		passwordSecurityJSON(passwordIdentityJSON("device-a", "device-a", "device-a-key")),
+		`],"acl":[]}`,
+		`],"mtlsIdentities":[{"identityKind":"dnsSan","identity":"device-a.example","tenantId":"tenant-a","subject":"device-a-cert","credentialId":"device-a-cert-key","allowedClientIds":["device-a-cert"],"roles":["publisher"]}],"acl":[]}`,
+		1,
+	)
+	bundle, err := parseSecurityConfig(strings.NewReader(input))
+	if err != nil {
+		t.Fatalf("parse password and mTLS security config: %v", err)
+	}
+	if len(bundle.PasswordBindings) != 1 || len(bundle.MTLSBindings) != 1 {
+		t.Fatalf("password bindings = %d, mTLS bindings = %d; want one of each", len(bundle.PasswordBindings), len(bundle.MTLSBindings))
+	}
+}
+
+// Traceability: SEC-05; docs/specs/tenancy-and-security.md §2.4.
+func TestParseSecurityConfig_PasswordIdentityRejections(t *testing.T) {
+	validIdentity := passwordIdentityJSON("device-a", "device-a", "device-a-key")
+	duplicateUsername := passwordIdentityJSON("device-a", "device-b", "device-b-key")
+	duplicateSubject := passwordIdentityJSON("device-b", "device-a", "device-b-key")
+	duplicateCredential := passwordIdentityJSON("device-b", "device-b", "device-a-key")
+	cases := []struct {
+		name        string
+		input       string
+		errContains string
+	}{
+		{
+			name:        "plaintext password field",
+			input:       strings.Replace(passwordSecurityJSON(validIdentity), `"passwordHash":`, `"password":"plaintext","passwordHash":`, 1),
+			errContains: "unknown field",
+		},
+		{
+			name:        "malformed hash profile",
+			input:       strings.Replace(passwordSecurityJSON(validIdentity), validPasswordHash, strings.Replace(validPasswordHash, "t=2", "t=1", 1), 1),
+			errContains: "invalid password hash",
+		},
+		{
+			name:        "empty username",
+			input:       strings.Replace(passwordSecurityJSON(validIdentity), `"username":"device-a"`, `"username":""`, 1),
+			errContains: "username is required",
+		},
+		{
+			name:        "duplicate username",
+			input:       passwordSecurityJSON(validIdentity, duplicateUsername),
+			errContains: "duplicate password identity username",
+		},
+		{
+			name:        "duplicate subject",
+			input:       passwordSecurityJSON(validIdentity, duplicateSubject),
+			errContains: "duplicate password identity subject",
+		},
+		{
+			name:        "duplicate credential ID",
+			input:       passwordSecurityJSON(validIdentity, duplicateCredential),
+			errContains: "duplicate credentialId",
+		},
+		{
+			name: "JWT and password conflict",
+			input: strings.Replace(validSecurityJSON, `  "identities": [`, `  "passwordIdentities": [`+validIdentity+`],
+  "identities": [`, 1),
+			errContains: "mutually exclusive",
+		},
+		{
+			name:        "empty password list does not enable authentication",
+			input:       `{"passwordIdentities":[],"acl":[]}`,
+			errContains: "at least one authentication method is required",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := parseSecurityConfig(strings.NewReader(tc.input))
+			if err == nil {
+				t.Fatal("expected error, got nil")
+			}
+			if !strings.Contains(err.Error(), tc.errContains) {
+				t.Fatalf("error = %v, want substring %q", err, tc.errContains)
+			}
+		})
 	}
 }
 

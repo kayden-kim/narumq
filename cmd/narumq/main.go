@@ -20,7 +20,9 @@ import (
 	tlsadapter "narumq/internal/adapters/tls"
 	"narumq/internal/application/connect"
 	appmgmt "narumq/internal/application/management"
+	authenticationports "narumq/internal/application/ports/authentication"
 	portsmgmt "narumq/internal/application/ports/management"
+	portsmetrics "narumq/internal/application/ports/metrics"
 	"narumq/internal/application/publish"
 	"narumq/internal/application/subscribe"
 	"narumq/internal/domain/mqtt"
@@ -89,9 +91,25 @@ func runWithContext(ctx context.Context, args []string, logger *slog.Logger) err
 	clusterConfigPath := flagSet.String("cluster-config", "", "strict combined configuration for dynamic cluster mode")
 	clusterRestoreArchive := flagSet.String("cluster-restore", "", "verify and seed a cluster backup archive, then exit")
 	auditVerifyDirectory := flagSet.String("audit-verify", "", "verify a node-local management audit directory and exit")
+	hashPasswordRequested := flagSet.Bool("hash-password", false, "read a password from stdin and print its Argon2id PHC hash")
 	allowInsecureAnonymousMQTT := flagSet.Bool("allow-insecure-anonymous-mqtt", false, "development-only anonymous MQTT over loopback TCP")
 	if err := flagSet.Parse(args); err != nil {
 		return err
+	}
+	if *hashPasswordRequested {
+		if flagSet.NArg() != 0 {
+			return errors.New("-hash-password does not accept positional arguments")
+		}
+		var conflictingFlags []string
+		flagSet.Visit(func(parsedFlag *flag.Flag) {
+			if parsedFlag.Name != "hash-password" {
+				conflictingFlags = append(conflictingFlags, "-"+parsedFlag.Name)
+			}
+		})
+		if len(conflictingFlags) != 0 {
+			return fmt.Errorf("-hash-password cannot be combined with %s", strings.Join(conflictingFlags, ", "))
+		}
+		return hashPasswordCommand(os.Stdin, os.Stdout)
 	}
 	auditVerifyRequested := false
 	flagSet.Visit(func(parsedFlag *flag.Flag) {
@@ -224,9 +242,10 @@ func runWithContext(ctx context.Context, args []string, logger *slog.Logger) err
 
 	systemClock := clock.SystemClock{}
 	var (
-		securityBundle *SecurityBundle
-		jwtProvider    *authenticationadapter.JWKSAuthenticationProvider
-		mtlsProvider   *authenticationadapter.MTLSAuthenticationProvider
+		securityBundle     *SecurityBundle
+		credentialProvider authenticationports.AuthenticationProvider
+		credentialMethod   string
+		mtlsProvider       *authenticationadapter.MTLSAuthenticationProvider
 	)
 	if *securityConfigFile != "" {
 		bundle, err := loadSecurityConfigFile(*securityConfigFile)
@@ -242,7 +261,16 @@ func runWithContext(ctx context.Context, args []string, logger *slog.Logger) err
 			if err != nil {
 				return fmt.Errorf("create JWKS authentication provider: %w", err)
 			}
-			jwtProvider = provider
+			credentialProvider = provider
+			credentialMethod = portsmetrics.AuthMethodJWT
+		}
+		if len(bundle.PasswordBindings) > 0 {
+			provider, err := authenticationadapter.NewPasswordAuthenticationProvider(bundle.PasswordBindings)
+			if err != nil {
+				return fmt.Errorf("create password authentication provider: %w", err)
+			}
+			credentialProvider = provider
+			credentialMethod = portsmetrics.AuthMethodPassword
 		}
 		if len(bundle.MTLSBindings) > 0 {
 			provider, err := authenticationadapter.NewMTLSAuthenticationProvider(systemClock, bundle.MTLSBindings)
@@ -339,8 +367,7 @@ func runWithContext(ctx context.Context, args []string, logger *slog.Logger) err
 		return fmt.Errorf("create tenant limits: %w", err)
 	}
 	if securityBundle != nil {
-		connectOpts = append(connectOpts, connect.WithSecurity(jwtProvider, mtlsProvider, securityBundle.Policy))
-		subscribeOpts = append(subscribeOpts, subscribe.WithPolicy(securityBundle.Policy))
+		connectOpts = append(connectOpts, connect.WithSecurity(credentialProvider, mtlsProvider, securityBundle.Policy, credentialMethod))
 		publishOpts = append(publishOpts, publish.WithPolicy(securityBundle.Policy))
 		tcpConfigPolicy = securityBundle.Policy
 		if tenantLimits != nil {
@@ -651,8 +678,8 @@ func validateTLSAuthenticationBindings(clientAuth tlsadapter.ClientAuthMode, bun
 		if bindingCount == 0 {
 			return fmt.Errorf("-tls-client-auth %s requires at least one mTLS identity binding", clientAuth)
 		}
-		if bundle == nil || bundle.JWTConfig == nil {
-			return errors.New("-tls-client-auth request requires JWT configuration when mTLS identities are enabled")
+		if bundle == nil || (bundle.JWTConfig == nil && len(bundle.PasswordBindings) == 0) {
+			return errors.New("-tls-client-auth request requires JWT or password authentication configuration when mTLS identities are enabled")
 		}
 	case tlsadapter.ClientAuthRequire:
 		if bindingCount == 0 {

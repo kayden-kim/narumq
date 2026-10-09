@@ -36,7 +36,7 @@ func tenantLimitConnectFixture(t *testing.T, limits tenantlimit.Limits) (*UseCas
 	repository := sessionstore.New()
 	queue := newFakeDeliveryQueue()
 	auth := &fakeAuthenticator{result: applicationauthentication.Result{TenantID: tenant, Subject: "device", CredentialID: "cred", AllowedClientIDs: []string{"one", "two", "three"}, Roles: []security.Role{"client"}, ExpiresAt: now.Add(time.Hour)}}
-	useCase, err := New(clock, repository, queue, routing.NewTable(), &fakeScheduler{}, &fakeWillPublisher{}, WithSecurity(auth, nil, security.Policy{}), WithTenantLimits(service, repository))
+	useCase, err := New(clock, repository, queue, routing.NewTable(), &fakeScheduler{}, &fakeWillPublisher{}, WithSecurity(auth, nil, security.Policy{}, "jwt"), WithTenantLimits(service, repository))
 	if err != nil {
 		t.Fatal(err)
 	}

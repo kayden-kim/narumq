@@ -39,7 +39,7 @@ STRIDE는 신원 위장(S), 변조(T), 행위 부인(R), 정보 노출(I), 서�
 | ID | 경계 | 위협(STRIDE) | 대응 위치 | 검증 | 상태 |
 | --- | --- | --- | --- | --- | --- |
 | T-01 | JWT → principal | tenant claim 주입(S/E) | `internal/adapters/authentication`의 정적 `(issuer, subject)` binding | `T-01_T-05_WildcardWithInjectedTenantClaim` | 대응·자동 시험 통과 |
-| T-02 | MQTT CONNECT | 위조·만료·누락 credential(S) | `internal/adapters/authentication` JWT/JWKS validator | `T-02_ForgedExpiredMissingCredentials` | 대응·자동 시험 통과 |
+| T-02 | MQTT CONNECT | 위조·만료·누락 JWT credential(S) | `internal/adapters/authentication` JWT/JWKS validator | `T-02_ForgedExpiredMissingCredentials` | 대응·자동 시험 통과 |
 | T-03 | principal → session | 다른 tenant Client ID 사용(S/E) | `allowedClientIds`, `internal/application/connect` | `T-03_ForeignClientIDRejected` | 대응·자동 시험 통과 |
 | T-04 | session·offline queue | Client ID 충돌·session 인수·offline 재개(S/I) | `internal/domain/tenancy`의 `SessionKey`, session ownership·takeover | `T-04_ClientIDCollisionAndSessionResume` | 대응·자동 시험 통과 |
 | T-05 | subscription → delivery | wildcard 도청(I) | tenant typed `TopicFilter`, `internal/domain/routing`과 committed route projection | `T-01_T-05_WildcardWithInjectedTenantClaim` | 대응·자동 시험 통과 |

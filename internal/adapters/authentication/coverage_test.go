@@ -84,7 +84,7 @@ func cmmCanceledContext() context.Context {
 }
 
 func cmmAuthenticate(ctx context.Context, provider *JWKSAuthenticationProvider, token []byte) error {
-	_, err := provider.Authenticate(ctx, applicationauthentication.Credential{Token: token})
+	_, err := provider.Authenticate(ctx, applicationauthentication.Credential{Password: token})
 	return err
 }
 
@@ -133,7 +133,7 @@ func TestCmmAuthenticateRequiresExpirationAndStaticBinding(t *testing.T) {
 	}
 
 	valid := signedToken(t, key.private, now, cmmIssuer, cmmAudience, cmmSubject, &expires, nil)
-	result, err := provider.Authenticate(context.Background(), applicationauthentication.Credential{Token: valid})
+	result, err := provider.Authenticate(context.Background(), applicationauthentication.Credential{Password: valid})
 	if err != nil {
 		t.Fatalf("valid token error = %v", err)
 	}

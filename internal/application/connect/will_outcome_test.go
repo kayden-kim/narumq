@@ -183,7 +183,7 @@ func TestConnectSupersededWillAuthorization(t *testing.T) {
 				t.Fatal(err)
 			}
 			useCase, _, _, _, _, _, publisher := newUseCase(t, now)
-			WithSecurity(&fakeAuthenticator{result: cmmAuthResult(tenant, now, "client")}, nil, cmmWillPolicy(t, tenant))(useCase)
+			WithSecurity(&fakeAuthenticator{result: cmmAuthResult(tenant, now, "client")}, nil, cmmWillPolicy(t, tenant), "jwt")(useCase)
 			recorder := &fakeWillOutcomes{}
 			WithWillOutcomeRecorder(recorder)(useCase)
 			superseded := &membership.SupersededWillDTO{

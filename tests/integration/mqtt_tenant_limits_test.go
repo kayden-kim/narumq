@@ -293,7 +293,7 @@ func newTenantLimitsFixtureWithWait(t *testing.T, limits tenantlimit.Limits, max
 	}
 	repository := sessionstore.New()
 	willBridge := tcpadapter.NewWillBridge()
-	connections, err := connect.New(clock.SystemClock{}, repository, deliveries, routes, clock.SystemScheduler{}, willBridge, connect.WithSecurity(auth, nil, policy), connect.WithTenantLimits(service, repository))
+	connections, err := connect.New(clock.SystemClock{}, repository, deliveries, routes, clock.SystemScheduler{}, willBridge, connect.WithSecurity(auth, nil, policy, "jwt"), connect.WithTenantLimits(service, repository))
 	if err != nil {
 		t.Fatal(err)
 	}

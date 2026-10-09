@@ -6,7 +6,7 @@ Broker core는 MQTT, session, routing, delivery, tenancy와 cluster lifecycle �
 | --- | --- |
 | 관점 상태 | Active Phase 1 security and tenant isolation architecture |
 | 문서 상태 | Active |
-| 구현 증거 | Phase 0 단일 노드 ingress, TLS/mTLS transport와 합의 스파이크 증거가 기존 패키지에 보존되어 있다. Phase 1 tenancy·security·authentication 패키지와 JWT/mTLS 데이터 플레인 인증·인가 파이프라인은 unit/integration test, 실제 TLS socket test와 command composition test를 통해 현재 source 증거가 확보되었다. |
+| 구현 증거 | Phase 0 단일 노드 ingress, TLS/mTLS transport와 합의 스파이크 증거가 기존 패키지에 보존되어 있다. Phase 1 tenancy·security·authentication 패키지와 JWT·password·mTLS 데이터 플레인 인증·인가 파이프라인은 unit/integration test, 실제 TLS socket test와 command composition test를 통해 현재 source 증거가 확보되었다. |
 | 범위 | 단일 broker process의 component, loopback TCP runtime과 source dependency |
 | 관련 요구사항 | [PRD](../requirements/PRD.md) NFR-11~NFR-15, TEST-01~TEST-16 |
 | 관련 결정 | [ADR-0001](../decisions/ADR-0001-core-implementation-language.md) Accepted |
@@ -30,7 +30,7 @@ flowchart TB
         APIAdapter["Management API adapter"]
         RaftAdapter["Consensus·peer transport adapter"]
         StorageAdapter["WAL·snapshot·state adapter"]
-        AuthAdapter["JWT·JWKS·mTLS adapter"]
+        AuthAdapter["JWT·JWKS·Argon2id password·mTLS adapter"]
         PlatformAdapter["Kubernetes·Metric·clock adapters"]
     end
 
@@ -76,20 +76,23 @@ Domain component 사이의 세부 dependency는 구현 단계의 package graph�
 | Composition root | Strict configuration, concrete implementation 선택과 lifecycle wiring. MQTT listener 보안 mode를 socket 생성 전에 결정하고 secure mode의 authentication/policy를 반드시 조립한다. | MQTT business invariant 구현 |
 
 `cmd/narumq`는 MQTT listener를 열기 전에 하나의 보안 mode만 선택한다. Secure mode는
-`-security-config`를 strict decode하고 configured JWT/JWKS provider와 선택적인 mTLS
-certificate provider를 생성한다. 두 provider와 ACL `Policy`는 application `connect`
-use case에 주입되고, TCP adapter에는 verified certificate를
-`ClientCertificateDTO`로 변환하는 extractor만 주입된다. Insecure mode는
+`-security-config`를 strict decode하고 configured JWT/JWKS 또는 password provider와
+선택적인 mTLS certificate provider를 생성한다. 두 provider와 ACL `Policy`는 application
+`connect` use case에 주입되고, TCP adapter에는 verified certificate를
+`ClientCertificateDTO`로 변환하는 extractor만 주입된다. Verified certificate가 있으면
+mTLS를 선택하고, certificate가 없으면 configured JWT 또는 password provider를 사용한다.
+Certificate와 MQTT Username·Password를 함께 제출하면 거절한다. Insecure mode는
 `-allow-insecure-anonymous-mqtt`와 literal loopback `-tcp-listen`의 명시적
 development·benchmark 예외에서만 선택하며, 이때 provider와 policy wiring을 생략한다.
 이 flag나 allow-all `Policy`를 domain/application 계약으로 전파하지 않는다.
 
 ## Implemented Phase 1 security·tenant-aware single-node ingress slice
 
-typed tenant namespace, JWT/JWKS 또는 verified client certificate mTLS authentication,
-default-deny ACL과 loopback MQTT runtime이 현재 source와 test에 연결되어 있다.
-TLS adapter는 trust anchor와 client certificate validity/EKU를 TLS handshake에서
-검증한 뒤 application authentication port가 소비하는 certificate DTO만 전달한다.
+typed tenant namespace, JWT/JWKS, fixed-profile Argon2id username/password 또는 verified
+client certificate mTLS authentication, default-deny ACL과 loopback MQTT runtime이 현재
+source와 test에 연결되어 있다. TLS adapter는 trust anchor와 client certificate
+validity/EKU를 TLS handshake에서 검증한 뒤 application authentication port가 소비하는
+certificate DTO만 전달한다.
 
 ```text
 cmd/narumq
@@ -117,10 +120,12 @@ cmd/narumq
   MQTT credential을 함께 제출하면 거절하며, 인증·binding·Will 검증 전에는 timer·
   repository·route·queue를 변경하지 않는다.
 - `adapters/authentication`: allowlisted JWT algorithm, required `kid`, verified JWKS,
-  claim validation과 static identity binding, 그리고 exact certificate selector
-  `(commonName|dnsSan|emailSan)` mapping을 application Result로 변환한다. Certificate
-  `NotAfter` 경계와 unmapped/ambiguous selector를 fail-closed로 처리한다.
-  JWT cache refresh는 coalesced이고 TTL 이후 fetch 실패에 fail-closed한다.
+  claim validation과 static identity binding, exact certificate selector
+  `(commonName|dnsSan|emailSan)` mapping 및 fixed-profile Argon2id password 검증을
+  application Result로 변환한다. Unknown username과 잘못된 password는 같은 실패로
+  처리하며 hash 계산 동시성을 제한한다. Certificate `NotAfter` 경계와 unmapped/ambiguous
+  selector를 fail-closed로 처리한다. JWT cache refresh는 coalesced이고 TTL 이후 fetch 실패에
+  fail-closed한다.
 - `adapters/tls`: TLS 1.2+ listener와 trust anchor를 구성하고 verified chain의 leaf에서
   `ClientCertificateDTO`를 만들어 application boundary로 전달한다. Raw certificate는
   TCP/application/domain 경계로 넘기지 않는다.
@@ -132,11 +137,12 @@ cmd/narumq
   lifecycle·timer·delivery·Will 변경을 건너뛴다. 원격 takeover apply는 이전 node의 local map을
   바꾸지 않으므로 takeover cleanup은 `DisconnectTakeover`로 local lifecycle을 정리하고 Will을
   억제하며 집계하지 않는다. 후계의 표준 판단은 [ADR-0028](../decisions/ADR-0028-planned-handoff-will-and-reason-metric.md)을 따른다. 이전 epoch의 DETACH·DISCARD 등 replicated session mutation은 committed
-  owner/epoch 검증에서 거절된다. Username은 identity로 사용하지 않으며 log에 남기지 않는다.
+  owner/epoch 검증에서 거절된다. Password 방식의 `Username`은 case-sensitive exact lookup
+  key이며 나머지 identity는 static binding에서 가져온다. Username과 Password는 log에 남기지 않는다.
 - `adapters/memory/deliveryqueue`, `adapters/memory/retained`, `adapters/memory/sessionstore`는
   각각 SessionKey, `(tenant, topic)`, SessionKey를 key로 사용한다.
 
-성공 경계는 JWT 또는 mTLS로 인증된 CONNECT 뒤 QoS 0·1·2 PUBLISH handshake,
+성공 경계는 JWT, password 또는 mTLS로 인증된 CONNECT 뒤 QoS 0·1·2 PUBLISH handshake,
 ordered SUBACK/UNSUBACK와 Will 등록·지연 publication이다. ACL 거절은 mutation 전에
 반환하며 MQTT 5 PUBLISH는 QoS에 따라 DISCONNECT/PUBACK/PUBREC `0x87`,
 MQTT 3.1.1은 연결 종료를 사용한다. Tenant 연결·session·subscription·traffic 한도와

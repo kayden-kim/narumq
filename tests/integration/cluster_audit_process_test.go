@@ -178,19 +178,19 @@ func TestDynamicClusterMQTTDenialAuditProcessAcceptance(t *testing.T) {
 	node := processes[1]
 
 	const invalidToken = "invalid-mqtt-audit-token"
-	invalidConnection, invalidReason, invalidSourceIP := clusterDataPlaneProcessConnect(t, fixture.mqttAddresses[1], invalidToken, "audit-invalid-auth-client")
+	invalidConnection, invalidReason, invalidSourceIP := clusterDataPlaneProcessConnect(t, fixture.mqttAddresses[1], "jwt", invalidToken, "audit-invalid-auth-client", 5)
 	_ = invalidConnection.Close()
 	if invalidReason != 0x87 {
 		t.Fatalf("invalid-token MQTT 5 CONNACK reason = 0x%02x, want 0x87 Not authorized", invalidReason)
 	}
 
-	unlistedConnection, unlistedReason, unlistedSourceIP := clusterDataPlaneProcessConnect(t, fixture.mqttAddresses[1], fixture.accessToken, "audit-unlisted-client")
+	unlistedConnection, unlistedReason, unlistedSourceIP := clusterDataPlaneProcessConnect(t, fixture.mqttAddresses[1], "jwt", fixture.accessToken, "audit-unlisted-client", 5)
 	_ = unlistedConnection.Close()
 	if unlistedReason != 0x87 {
 		t.Fatalf("unlisted-client MQTT 5 CONNACK reason = 0x%02x, want 0x87 Not authorized", unlistedReason)
 	}
 
-	readyConnection, readyReason, readySourceIP := clusterDataPlaneProcessConnect(t, fixture.mqttAddresses[1], fixture.accessToken, "ready-connection-client")
+	readyConnection, readyReason, readySourceIP := clusterDataPlaneProcessConnect(t, fixture.mqttAddresses[1], "jwt", fixture.accessToken, "ready-connection-client", 5)
 	if readyReason != 0 {
 		_ = readyConnection.Close()
 		t.Fatalf("ready MQTT 5 CONNECT reason = 0x%02x, want success", readyReason)
@@ -326,8 +326,11 @@ func TestDynamicClusterMQTTDenialAuditProcessAcceptance(t *testing.T) {
 	}
 }
 
-func clusterDataPlaneProcessConnect(t *testing.T, address, token, clientID string) (net.Conn, byte, string) {
+func clusterDataPlaneProcessConnect(t *testing.T, address, username, password, clientID string, protocolVersion byte) (net.Conn, byte, string) {
 	t.Helper()
+	if protocolVersion != 4 && protocolVersion != 5 {
+		t.Fatalf("unsupported MQTT protocol version %d", protocolVersion)
+	}
 	connection, err := net.DialTimeout("tcp", address, 2*time.Second)
 	if err != nil {
 		t.Fatalf("dial MQTT node %s: %v", address, err)
@@ -341,16 +344,23 @@ func clusterDataPlaneProcessConnect(t *testing.T, address, token, clientID strin
 		_ = connection.Close()
 		t.Fatalf("parse MQTT client source address %q: %v", connection.LocalAddr(), err)
 	}
-	body := []byte{0, 4, 'M', 'Q', 'T', 'T', 5, 0xC2, 0, 60, 0}
-	for _, field := range []string{clientID, "jwt", token} {
+	body := []byte{0, 4, 'M', 'Q', 'T', 'T', protocolVersion, 0xC2, 0, 60}
+	if protocolVersion == 5 {
+		body = append(body, 0)
+	}
+	for _, field := range []string{clientID, username, password} {
 		body = append(body, byte(len(field)>>8), byte(len(field)))
 		body = append(body, field...)
 	}
 	clusterDataPlaneProcessWritePacket(t, connection, 0x10, body)
 	header, response, err := clusterMembershipProcessReadMQTTPacket(connection)
-	if err != nil || header != 0x20 || len(response) < 3 {
+	minimumResponseLength := 2
+	if protocolVersion == 5 {
+		minimumResponseLength = 3
+	}
+	if err != nil || header != 0x20 || len(response) < minimumResponseLength {
 		_ = connection.Close()
-		t.Fatalf("read MQTT 5 CONNACK header=0x%02x body=% X err=%v", header, response, err)
+		t.Fatalf("read MQTT %d CONNACK header=0x%02x body=% X err=%v", protocolVersion, header, response, err)
 	}
 	if err := connection.SetDeadline(time.Time{}); err != nil {
 		_ = connection.Close()

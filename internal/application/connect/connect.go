@@ -45,6 +45,8 @@ var (
 	ErrDurableDeliveryRejected = errors.New("connect durable delivery transition rejected")
 	// ErrNilTenantSessionCounter means configured tenant limits cannot count lifecycles.
 	ErrNilTenantSessionCounter = errors.New("connect tenant session counter is nil")
+	// ErrInvalidAuthenticationMethod means the configured credential provider has no supported metric and audit method.
+	ErrInvalidAuthenticationMethod = errors.New("connect authentication method is invalid")
 )
 
 // Timer allows cancelling a scheduled callback.
@@ -100,16 +102,18 @@ type ConnectRequestDTO struct {
 // Option configures optional parameters for the connection use case.
 type Option func(*UseCase)
 
-// WithSecurity configures JWT and mTLS authentication providers and the security policy.
+// WithSecurity configures one credential provider, optional mTLS authentication, and the security policy.
 func WithSecurity(
-	jwtProvider applicationauthentication.AuthenticationProvider,
+	credentialProvider applicationauthentication.AuthenticationProvider,
 	mtlsProvider applicationauthentication.ClientCertificateAuthenticationProvider,
 	policy security.Policy,
+	credentialMethod string,
 ) Option {
 	return func(useCase *UseCase) {
-		useCase.authenticator = jwtProvider
+		useCase.authenticator = credentialProvider
 		useCase.certificateAuthenticator = mtlsProvider
 		useCase.policy = policy
+		useCase.credentialMethod = credentialMethod
 	}
 }
 
@@ -192,6 +196,7 @@ type UseCase struct {
 	mu                         sync.Mutex
 	clock                      applicationclock.Clock
 	authenticator              applicationauthentication.AuthenticationProvider
+	credentialMethod           string
 	certificateAuthenticator   applicationauthentication.ClientCertificateAuthenticationProvider
 	policy                     security.Policy
 	sessions                   SessionRepository
@@ -334,6 +339,11 @@ func New(
 		if opt != nil {
 			opt(useCase)
 		}
+	}
+	if useCase.authenticator != nil &&
+		useCase.credentialMethod != portsmetrics.AuthMethodJWT &&
+		useCase.credentialMethod != portsmetrics.AuthMethodPassword {
+		return nil, ErrInvalidAuthenticationMethod
 	}
 
 	if useCase.durableDeliveryCommitter != nil && (useCase.ownershipCoordinator == nil || useCase.ownerNodeID == 0) {
@@ -569,14 +579,17 @@ func (useCase *UseCase) ConnectContext(ctx context.Context, request ConnectReque
 		}
 		authenticated = true
 	case useCase.authenticator != nil:
-		authMethod = portsmetrics.AuthMethodJWT
+		authMethod = useCase.credentialMethod
 		if !packet.HasUsername || !packet.HasPassword || len(packet.Password) == 0 {
 			useCase.rejectAuthentication(request, authMethod, "missing_credentials", nil)
 			result.ConnAck.ReasonCode = notAuthorizedReason(packet.Version)
 			return result, nil
 		}
 		var err error
-		authResult, err = useCase.authenticator.Authenticate(ctx, applicationauthentication.Credential{Token: packet.Password})
+		authResult, err = useCase.authenticator.Authenticate(ctx, applicationauthentication.Credential{
+			Username: packet.Username,
+			Password: packet.Password,
+		})
 		if err != nil {
 			useCase.rejectAuthentication(request, authMethod, "invalid_credentials", nil)
 			result.ConnAck.ReasonCode = notAuthorizedReason(packet.Version)

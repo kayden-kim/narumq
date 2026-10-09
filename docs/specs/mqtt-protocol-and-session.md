@@ -15,7 +15,10 @@
 
 ## 현재 구현 상태: standalone QoS 1/2와 dynamic cluster의 제한된 durable QoS 1/2 delivery
 
-Standalone runtime은 MQTT 3.1.1/5.0 client의 `CONNECT → SUBSCRIBE/PUBLISH → PING/DISCONNECT`와 process-local session delivery를 제공한다. 기본 standalone startup은 `-security-config` secure mode로 JWT/JWKS 또는 verified client certificate mTLS authentication과 tenant-aware ACL을 적용한다. mTLS는 handshake가 검증한 client certificate의 `commonName`, `dnsSan`, `emailSan` selector를 strict identity binding으로 바꾸며 configured Client ID가 허용 목록과 일치해야 한다. 인증·tenant 경계 없는 plaintext ingress는 `-allow-insecure-anonymous-mqtt`를 지정한 literal loopback `-tcp-listen` development·benchmark 예외에서만 허용하며 TLS listener에는 적용하지 않는다.
+Standalone runtime은 MQTT 3.1.1/5.0 client의 `CONNECT → SUBSCRIBE/PUBLISH → PING/DISCONNECT`와 process-local session delivery를 제공한다.
+기본 startup은 `-security-config` secure mode로 JWT/JWKS, fixed-profile Argon2id username/password 또는 verified client certificate mTLS authentication과 tenant-aware ACL을 적용한다.
+mTLS는 handshake가 검증한 client certificate의 `commonName`, `dnsSan`, `emailSan` selector를 strict identity binding으로 바꾸며 configured Client ID가 허용 목록과 일치해야 한다.
+인증·tenant 경계 없는 plaintext ingress는 `-allow-insecure-anonymous-mqtt`를 지정한 literal loopback `-tcp-listen` development·benchmark 예외에서만 허용하며 TLS listener에는 적용하지 않는다.
 
 Dynamic cluster는 별도 `-cluster-config` composition root다. QoS 0 retained PUBLISH와 detached persistent session의 QoS 0 offline queue는 Raft에 commit해 replay하고 NMQBKUP3 archive에 포함한다([Cluster §4.1](cluster-session-and-delivery.md#41-offline-message-capture와-전달), §11.8–§11.9). ADR-0015와 ADR-0019는 QoS 1/2 delivery와 ACK 경계를 정한다. Target 있는 delivery는 관련 command commit 뒤 ACK하고, target 없는 QoS 1 client PUBLISH는 delivery command 대신 proposal 없는 fresh quorum ReadIndex barrier 뒤 PUBACK한다([Cluster §4.2](cluster-session-and-delivery.md#42-qos-12-durable-delivery)). QoS 2 publisher inbound handshake는 target과 무관하게 commit한다. Detached QoS 1/2 delivery, takeover, backup restore, process kill과 quorum-loss 동작은 제한된 process acceptance로 확인했다(§11.11). Production storage/EBS power-loss, BP-03, N/N-1과 TEN-08은 포함하지 않는다.
 
@@ -81,9 +84,10 @@ state를 유지한다.
    listener별 transport 보안 정책을 유지하면서 동일한 session·route registry를 공유한다.
 8. CONNECT 뒤에는 negotiated version으로 packet을 decode하고, 모든 socket write는 한
    writer goroutine의 bounded control queue 또는 delivery wake를 통과한다.
-9. binary smoke와 실제 loopback wire 검증은 `tests/integration/mqtt_ingress_test.go`와
-   TLS/mTLS transport 검증은 `tests/integration/mqtt_tls_test.go` 및 `cmd/narumq`를
-   기준으로 한다.
+9. Binary smoke와 실제 loopback wire 검증은 `tests/integration/mqtt_ingress_test.go`를
+   기준으로 한다. TLS/mTLS socket과 password 인증은 `tests/integration/mqtt_tls_test.go`의
+   `TestMQTTTLS_PasswordAuthentication`, `tests/integration/cluster_password_process_test.go`의
+   `TestDynamicClusterPasswordAuthenticationProcessAcceptance`, `cmd/narumq/security_config_test.go`로 검증한다.
 
 ## 2. CONNECT 처리 순서
 
@@ -104,10 +108,11 @@ flowchart TD
 각 단계가 실패하면 이후 단계의 durable state를 만들어서는 안 된다. ownership을 얻은 뒤 응답 전 실패하면 재시도 시 같은 session 상태로 수렴해야 한다.
 
 인증 단계는 configured verified client certificate가 있으면 mTLS provider만 사용한다.
-그 CONNECT에 Username/Password가 함께 있으면 dual credential 오류로 거절하며 JWT로
-fallback하지 않는다. certificate가 없으면 JWT provider가 configured된 경우에만
-Username/Password 양쪽 flag와 token을 요구한다. 인증·Client ID binding·Will ACL이
-성공하기 전에는 session, route, queue를 변경하지 않는다.
+그 CONNECT에 Username 또는 Password가 함께 있으면 dual credential 오류로 거절하며 다른
+provider로 fallback하지 않는다. Certificate가 없으면 configured JWT 또는 password provider를
+사용한다. 두 방식 모두 MQTT Username과 Password flag가 필요하다. JWT에는 compact token을,
+password 방식에는 case-sensitive Username과 원문 Password bytes를 전달한다.
+인증·Client ID binding·Will ACL이 성공하기 전에는 session, route, queue를 변경하지 않는다.
 
 ### 2.1 Protocol version
 

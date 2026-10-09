@@ -86,7 +86,7 @@ go build -o bin/narumq.exe ./cmd/narumq
 
 #### 방식 B: 보안 단일 노드 모드 (TLS 및 보안 설정 적용)
 
-TLS 암호화 통신과 JWT(JSON Web Token) 또는 mTLS(Mutual TLS, 상호 인증) 기반 인증 및 ACL(Access Control List, 접근 제어 목록) 정책을 적용하여 기동한다.
+TLS 암호화 통신과 JWT(JSON Web Token), username/password 또는 mTLS(Mutual TLS, 상호 인증) 기반 인증 및 ACL(Access Control List, 접근 제어 목록) 정책을 적용하여 기동한다.
 
 1. 보안 설정 파일(`config/security.json`)을 준비한다.
    ```json
@@ -142,6 +142,51 @@ TLS 암호화 통신과 JWT(JSON Web Token) 또는 mTLS(Mutual TLS, 상호 인�
    명시한 0은 해당 제한을 끈다. 연결·session·rate는 node별로 집계한다.
    Cluster에서도 같은 security config schema를 사용한다. 설정 범위와 초과 응답은
    [Tenant 스펙 §5.2](../specs/tenancy-and-security.md#52-연결-상태와-traffic-한도)를 따른다.
+   Password 방식은 위 JWT 예시의 `jwt`와 `identities`를 대체한다. 두 방식의 설정을 함께
+   넣지 않는다. `mtlsIdentities`는 password 방식과 함께 사용할 수 있다. Password 방식의
+   Username은 대소문자를 구분한다. `tenantId`, `subject`, `credentialId`,
+   `allowedClientIds`, `roles`는 설정의 binding에서 정한다. TLS certificate와 MQTT
+   Username·Password를 한 CONNECT에 함께 보내면 거절한다.
+
+   **비밀번호 hash 생성과 설정**
+
+   - 비밀번호 원문을 보호된 비밀 저장소에서 stdout으로 전달한다. 아래는 pipe 형태다.
+     `secret-manager-command`를 조직에서 승인한 비밀 저장소 명령으로 바꾼다. 비밀번호를
+     명령 인자, 환경 변수, 임시 파일에 저장하지 않는다.
+     ```sh
+     secret-manager-command | ./bin/narumq -hash-password
+     ```
+
+     PowerShell에서는 Windows 바이너리를 사용한다.
+     ```powershell
+     secret-manager-command | .\bin\narumq.exe -hash-password
+     ```
+     `-hash-password`는 stdin에서 비밀번호를 읽고 Argon2id PHC hash 한 줄만 stdout에 쓴다.
+     입력 끝의 LF 또는 CRLF 한 줄을 제거한다. 이 flag는 `-security-config` 등 broker 실행
+     flag와 함께 사용할 수 없다.
+
+   - stdout의 hash를 접근이 제한된 보안 설정 관리 경로에 기록한다. Hash는 offline password
+     추측에 쓰일 수 있으므로 이슈, 로그, 공개 저장소에 올리지 않는다. 설정에
+     `passwordIdentities`를 추가한다. 아래에서 `passwordHash` 값은 실제 CLI 출력으로 바꾼다.
+     ```json
+     {
+       "passwordIdentities": [
+         {
+           "username": "device-client-1",
+           "passwordHash": "<REPLACE WITH -hash-password OUTPUT>",
+           "tenantId": "tenant-iot",
+           "subject": "device-client-1",
+           "credentialId": "device-client-1-password",
+           "allowedClientIds": ["device-client-1"],
+           "roles": ["sensor"]
+         }
+       ]
+     }
+     ```
+
+   - 설정의 ACL에 해당 tenant와 role의 허용 topic을 지정한다. TLS 인증서·키와
+     `-security-config`를 사용해 broker를 시작한다. Password provider만 구성한 CONNECT는
+     MQTT Username과 Password를 모두 보내야 한다.
 
 2. TLS 인증서와 키를 지정하여 프로세스를 시작한다. 관리 리스너(`-http-listen`)는 로컬 루프백(`127.0.0.1`) 전용으로 바인딩되며, 명령줄에 인증 토큰 등 비밀 값을 노출하지 않고 로컬 익명 헬스 프로브(`/health/ready`) 및 메트릭(`/metrics`) 엔드포인트를 통해 상태를 안전하게 검증한다.
    ```sh

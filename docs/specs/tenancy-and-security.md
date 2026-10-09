@@ -32,7 +32,7 @@ client가 username, token claim, MQTT property 또는 topic으로 제출한 `ten
 flowchart TD
     A["TLS listener"] --> B["TLS version·cipher·server certificate"]
     B --> C["선택한 인증 방식"]
-    C["선택한 인증 방식"] --> D["JWT/JWKS 또는 검증된 client certificate"]
+    C["선택한 인증 방식"] --> D["JWT/JWKS·Argon2id password 또는 검증된 client certificate"]
     D --> E["tenant·subject·clientId binding"]
     E --> F["blocklist와 connection quota"]
     F --> G["default-deny ACL 준비"]
@@ -70,32 +70,38 @@ JWKS cache는 `fetchedAt`, TTL 만료 시각과 마지막 refresh 시각을 함�
 
 ### 2.3 CONNECT credential과 strict security configuration
 
-MQTT CONNECT는 configured authentication method 중 정확히 하나를 선택한다.
+MQTT CONNECT는 configured credential 방식 하나를 선택한다. Verified client certificate가
+있으면 mTLS를 선택한다. Certificate가 없으면 security configuration에서 선택한 JWT 또는
+password provider를 사용한다. Configuration은 JWT와 nonempty `passwordIdentities`를 함께
+허용하지 않는다.
 
-- verified client certificate가 있으면 mTLS를 선택하고 MQTT `Username`과 `Password` flag를 모두
-  보내지 않아야 한다. mTLS provider는 certificate selector를 static binding에 대조해 tenant,
-  subject, credential ID, allowed Client IDs와 roles를 결정한다. 인증서가 unmapped, ambiguous
-  또는 application-level `NotAfter` 만료이면 JWT로 fallback하지 않고 거절한다.
-- verified client certificate가 없고 JWT provider가 있으면 `HasUsername=true`와
-  `HasPassword=true`를 모두 보내야 한다. Username은 비어 있어도 되며 identity로 사용하지 않고,
-  Password에는 하나의 UTF-8 compact JWT만 넣는다.
-- mTLS와 JWT credential을 함께 제출하면 거절한다. 두 방식의 identity를 합치거나 우선순위를
-  추론하지 않는다.
-- provider가 하나도 없는 경우에만 개발용 anonymous CONNECT를 허용한다.
+- Verified client certificate가 있으면 MQTT `Username`과 `Password` flag를 모두 보내지
+  않아야 한다. Certificate가 unmapped, ambiguous 또는 application-level `NotAfter` 만료이면
+  다른 방식으로 fallback하지 않고 거절한다.
+- JWT provider를 사용하면 `HasUsername=true`와 `HasPassword=true`를 보내야 한다.
+  Username은 identity로 사용하지 않으며 Password에는 하나의 UTF-8 compact JWT를 넣는다.
+- Password provider를 사용하면 두 flag를 모두 보내야 한다. Username은 비어 있지 않은
+  case-sensitive exact key다. Password는 1~65,535 bytes의 원문 byte로 검증한다.
+- mTLS certificate와 MQTT `Username` 또는 `Password` flag를 함께 제출하면 거절한다.
+  Credential을 합치거나 provider 사이에서 fallback하지 않는다.
+- Configured credential provider와 mTLS provider가 모두 없을 때만 개발용 anonymous CONNECT를 허용한다.
 
-credential, certificate identity, Client ID binding 또는 Will ACL이 실패하면 MQTT 3.1.1 CONNACK
-`0x05`, MQTT 5 CONNACK `0x87`을 반환하고 연결을 닫는다. 실패 시 session, timer, route,
-queue, retained message와 Will을 변경하지 않는다.
+Credential, certificate identity, Client ID binding 또는 Will ACL이 실패하면 MQTT 3.1.1
+CONNACK `0x05`, MQTT 5 CONNACK `0x87`을 반환하고 연결을 닫는다. Unknown username과
+잘못된 password는 모두 `invalid_credentials`로 처리한다. 인증 실패는 session, timer,
+route, queue, retained message와 Will을 변경하지 않는다.
 
-TLS listener(`-tcp-listen` 또는 `-tls-listen`)를 여는 Broker 시작에는 `-security-config <path>`가
-필수다. 파일은 알 수 없는 field와 두 번째 JSON value를 거절하는 strict decoder로 한 JSON value만
-읽는다. JWT 설정의 duration은 양수인 Go duration string이어야 한다.
-`tenantLimits.maxWait`는 §5.2의 `0s`~`10s`를 따른다. 이 설정의 decode와 JWT/JWKS·mTLS
-provider 생성은 listener socket을 열기 전에 끝나야 하며, 누락·충돌·오류가 있으면 시작을
-실패시킨다. TLS listener의 `request|require` client authentication은 최소 하나의
-`mtlsIdentities` binding을 요구하고, binding이 있으면 `client-auth none`을 사용할 수 없다.
-`request`는 JWT provider가 함께 configured된 경우에만 certificate 없는 client를 허용하며,
-`require`는 모든 TLS client에 verified certificate를 요구한다.
+TLS listener(`-tcp-listen` 또는 `-tls-listen`)를 여는 Broker 시작에는
+`-security-config <path>`가 필수다. 파일은 알 수 없는 field와 두 번째 JSON value를
+거절하는 strict decoder로 한 JSON value만 읽는다. JWT 설정의 duration은 양수인 Go
+duration string이어야 한다.
+`tenantLimits.maxWait`는 §5.2의 `0s`~`10s`를 따른다. Configuration decode와 JWT/JWKS,
+password, mTLS provider 생성은 listener socket을 열기 전에 끝나야 하며, 누락·충돌·오류가
+있으면 시작을 실패시킨다. TLS listener의 `request|require` client authentication은
+최소 하나의 `mtlsIdentities` binding을 요구하고, binding이 있으면 `client-auth none`을
+사용할 수 없다. `request`는 mTLS certificate가 없는 client에 JWT 또는 password provider가
+configured된 경우 인증을 허용한다. `require`는 모든 TLS client에 verified certificate를
+요구한다.
 
 유일한 개발·benchmark 예외는 `-tcp-listen`과 `-allow-insecure-anonymous-mqtt`를 함께 사용하고
 `-tls-listen`을 비워 둔 경우다. `-tcp-listen`은 literal `127.0.0.0/8` 또는 `::1` loopback이어야
@@ -170,7 +176,43 @@ filter는 startup에서 거절한다. `jwksUrl`은 절대 `https` URL이어야 �
 
 ### 2.4 Username/password
 
-이 방식이 활성화되면 password 검증에 salt를 포함한 승인된 password hashing scheme을 사용해야 한다. 평문이나 복호화 가능한 password를 저장해서는 안 된다. 실패 응답은 계정 존재 여부를 구분하지 않아야 한다.
+Password authentication은 `passwordIdentities`가 하나 이상 있을 때 활성화된다. 각 entry는
+`username`, `passwordHash`, `tenantId`, `subject`, `credentialId`, `allowedClientIds`,
+`roles` field만 사용한다. Plaintext `password` field는 strict decoder가 거절한다.
+Username은 비어 있지 않은 case-sensitive exact key이며 같은 configuration 안에서 중복할
+수 없다. Tenant·subject·credential·Client ID·role의 필수·중복 검사는 JWT/mTLS binding과
+같은 기준을 따른다. JWT provider와 nonempty password identity 목록을 함께 설정하면
+startup이 실패한다. Password 목록이 없거나 비어 있으면 password authentication은
+활성화되지 않는다.
+
+`passwordHash`는 다음 Argon2id PHC profile만 허용한다.
+
+```text
+$argon2id$v=19$m=19456,t=2,p=1$<salt>$<digest>
+```
+
+Salt는 16 bytes, digest는 32 bytes다. 둘 다 padding 없는 canonical standard base64로
+인코딩한다. Version, parameter, 길이 또는 encoding이 다르면 startup에서 거절한다.
+Profile은 OWASP Password Storage Cheat Sheet의 Argon2id 권장값인 19 MiB, 2회,
+1 lane을 따른다. Password는 복호화 가능한 형식이나 평문으로 저장하지 않는다.
+
+`narumq -hash-password`는 stdin에서 1~65,535 bytes를 읽어 salt가 다른 PHC hash를 stdout에
+출력한다. 입력 마지막의 LF 한 개와 바로 앞 CR 한 개만 제거한다. 그 밖의 공백과 binary
+byte는 보존한다. Password를 flag, environment variable 또는 임시 file에 전달하는 기능은
+제공하지 않는다. Secret manager 등의 pipe 입력을 사용하고 shell history에 평문 password를
+입력하지 않는다.
+
+Provider는 최대 4개의 Argon2 계산만 동시에 수행한다. Slot이 없으면 대기하지 않고 일반
+인증 실패로 거절한다. 이 제한은 계산 중인 작업 수를 제한하며 GC가 회수하기 전 process
+heap의 상한을 보장하지 않는다. Unknown username에도 저장 hash와 같은 profile의 계산을
+수행한다. Unknown username, 빈 username과 잘못된 password는 같은 CONNACK, 인증 실패
+Metric과 감사 결과를 사용한다. 이 동작은 정확히 같은 wall time을 보장하지 않는다.
+
+Password principal의 만료는 기존 principal·persisted Will 형식을 유지하기 위해
+`time.UnixMilli(math.MaxInt64)`로 표현한다. Password 별도 만료·회전 정책, 운영 중 reload,
+기존 연결 권한 회수는 이 범위에 포함하지 않는다. Password와 hash는 error, log, audit
+field 또는 Metric label에 넣지 않는다. CONNECT 거절 감사는 `authMethod: "password"`를
+사용한다.
 
 ## 3. Tenant namespace
 
@@ -372,7 +414,7 @@ Rollout controller producer와 SIEM consumer의 unknown action/reason 검증은 
 | SEC-02 | algorithm allowlist, required `kid`, cached JWKS signature, exact issuer, audience membership, subject, exp/nbf와 clock skew를 순서대로 검증하고 key rotation을 fail-closed로 처리한다. MQTT listener startup은 `-security-config`를 요구하며, 유일한 예외는 literal loopback `-tcp-listen`과 `-allow-insecure-anonymous-mqtt`의 development·benchmark 조합이다. | `internal/adapters/authentication`의 JWT/JWKS cache 시험, `cmd/narumq/main_test.go`의 `TestRunWithContextMQTTSecurityMode`와 `TestRunWithContextSecurityConfig` |
 | SEC-03 | trusted CA와 mapped certificate 성공, untrusted CA·TLS 만료 certificate·application-level `NotAfter` 만료 certificate 거절을 검증한다. | `tests/integration/mqtt_tls_test.go`의 `TestMQTTTLS_mTLS_TrustedMappedCertificate`, `TestMQTTTLS_mTLS_UntrustedCA_Rejected`, `TestMQTTTLS_mTLS_ExpiredCert_Rejected`, `internal/adapters/authentication`의 certificate expiry 시험 |
 | SEC-04 | 인증서 CN/SAN exact mapping, unmapped·ambiguous identity, dual credential 거절을 검증하고, mTLS와 JWT 인증 결과의 exact allowed Client ID가 아니면 MQTT 3.1.1 `0x05` 또는 MQTT 5 `0x87`로 거절하고 state를 만들지 않는다. | `tests/integration/mqtt_tls_test.go`의 mTLS principal acceptance/rejection 시험, `internal/application/connect`, `tests/integration/mqtt_ingress_test.go`의 `TestMQTTSecurity` |
-| SEC-06 | publish, subscribe, unsubscribe와 Will은 deny > allow > default-deny를 적용하고 거절 전에는 mutation을 수행하지 않는다. | `internal/domain/security`, application mutation-order 시험, `tests/integration/mqtt_ingress_test.go`의 `TestMQTTSecurity` |
+| SEC-05 | Username/password는 고정 Argon2id PHC hash로 인증한다. JWT와 password 설정은 상호 배타다. mTLS와 password는 함께 사용할 수 있다. MQTT 3.1.1·5의 성공·거절, tenant·Client ID·Will 경계, state 무변경, 인증 실패 Metric·audit method와 설정·저장 파일·log·Metric에서 password 원문 부재를 확인한다. | `internal/adapters/authentication/password_test.go`, `cmd/narumq/password_hash_test.go`, `internal/application/connect`, `cmd/narumq/security_config_test.go`, `tests/integration/mqtt_tls_test.go::TestMQTTTLS_PasswordAuthentication`, `tests/integration/cluster_password_process_test.go::TestDynamicClusterPasswordAuthenticationProcessAcceptance` |
 | SEC-08 | JWKS가 비어 있거나 TTL 만료 후 refresh에 실패하면 fail-closed한다. Metrics와 audit sink은 이 slice의 범위가 아니다. | `internal/adapters/authentication`의 `TestJWKSBootstrapFailureCollapses` 등 시험 |
 | SEC-09 | node 간 복제와 internal transport mTLS를 분리 검증한다. | 별도 cluster transport acceptance suite |
 | TEN-01 | 유효한 JWT와 정적 `(issuer, subject)` binding 없이 CONNECT가 성공하지 않고, token claim이 tenant를 선택하지 못한다. | `internal/adapters/authentication`의 JWT 검증 시험, `tests/integration/mqtt_ingress_test.go`의 `TestMQTTSecurity` |
@@ -386,9 +428,8 @@ Rollout controller producer와 SIEM consumer의 unknown action/reason 검증은 
 | NFR-17 | 기록된 event의 줄 순서·hash 연결·변조 검출, 중첩 details의 잘못된 UTF-8 거절, handler panic의 감사 HTTP 상태 500, Windows rotation 충돌 보호와 audit/Raft directory 경계를 확인한다. 보존 기간 값과 SIEM 접근 권한은 외부 결정으로 미정이다. | `internal/application/audit/service_test.go`, `internal/adapters/http/management/audit_test.go`, `internal/adapters/auditlog/file_publisher_test.go`, `internal/adapters/auditlog/persist_windows_test.go`, `cmd/narumq/cluster_config_test.go`, `cmd/narumq/main_test.go::TestAuditVerifyCommandVerifiesAndLeavesFilesReadOnly`, `tests/contracts/audit-event-v1/contract_test.go`, `tests/integration/cluster_audit_process_test.go::TestDynamicClusterManagementAuditProcessAcceptance` |
 | NFR-19 | MQTT data plane과 Management API의 tenant 격리·인증·권한 공격 사례를 실제 3-node cluster에서 실행하고 threat model 위협 ID와 연결한다. 독립 penetration test와 threat model 승인은 남는다. | `tests/integration/cluster_tenant_isolation_pentest_process_test.go::TestDynamicClusterTenantIsolationPenetrationProcessAcceptance`, [Threat model](../architectures/threat-model.md) |
 
-SEC-03/SEC-04의 certificate-to-tenant acceptance와 TEN-06·TEN-07의 §5.2 범위를 구현했다. TEN-08 저장 quota는 §5.1과 ADR-0017의 채택 범위를 따른다. TEN-09의 noisy-neighbor p99 기준과 TEN-10은 이번 수용 범위에 포함하지 않는다.
+SEC-03/SEC-04의 certificate-to-tenant acceptance와 TEN-06·TEN-07의 §5.2 범위를 구현했다. TEN-08 저장 quota는 §5.1과 ADR-0017의 채택 범위를 따른다. SEC-05 password 인증은 [ADR-0047](../decisions/ADR-0047-mqtt-password-authentication.md)의 범위에서 구현·수용 시험을 완료했으며 실행 증거는 §9.5에 있다. SEC-07·SEC-10·SEC-12, TEN-09·TEN-10, rollout controller producer, 보존 기간과 SIEM 접근 권한은 후속 범위다.
 
-Rollout controller producer, 보존 기간 값과 SIEM 접근 권한은 후속 범위다. 위 표 밖의 SEC-05, SEC-07, SEC-10, SEC-12와 TEN-08~TEN-10의 미채택 범위는 후속 acceptance scope다. TEN-08의 §5.1·ADR-0017 채택 범위는 다시 미구현으로 열지 않는다.
 
 ### 9.1 TEN-06·TEN-07 실행 증거
 
@@ -497,3 +538,21 @@ MQTT 3.1.1의 다른 tenant Client ID 요청은 CONNACK `0x05`로 거절됐다. 
 첫 전체 local gate는 `TestClusterConcurrentOriginsReadBurstCompletesAfterEgressDrain`에서 peer rejection 1건으로 실패했다. 해당 시험의 단독 normal·race 실행과 artifact 재생성 뒤의 전체 local gate는 통과했다.
 
 Data-plane recorder는 node별 초당 20건과 queue capacity 256을 적용한다. MQTT 응답은 기록 실패나 한도 초과 때문에 바뀌지 않는다. NFR-19의 독립 penetration test와 threat model 승인은 이 실행 증거에 포함되지 않는다.
+
+### 9.5 SEC-05 password authentication 실행 증거
+
+2026-10-09 저장소 루트에서 Windows x64, Go 1.26.5 (`windows/amd64`)로 실행했다. 아래 시간은 명령의 wall time이다.
+
+| 검증 | 명령 | 결과 |
+| --- | --- | --- |
+| Provider·CLI·CONNECT·TCP package | `go test ./internal/adapters/authentication ./cmd/narumq ./internal/application/connect ./internal/adapters/tcp -count=1` | PASS, 30.12s. 4개 package가 통과했다. |
+| Authentication race | `go test -race ./internal/adapters/authentication ./internal/application/connect ./cmd/narumq -count=1 -timeout 20m` | PASS, 52.30s. 3개 package가 통과했다. |
+| TLS·cluster process acceptance | `go test ./tests/integration -run '^(TestMQTTTLS_PasswordAuthentication|TestDynamicClusterPasswordAuthenticationProcessAcceptance|TestDynamicClusterMQTTDenialAuditProcessAcceptance)$' -count=1 -v -timeout 20m` | PASS, 10.799s. 3개 acceptance 시험이 통과했다. |
+| Secret-output scan | `go test ./tests/integration -run '^TestDynamicClusterPasswordAuthenticationProcessAcceptance$' -count=1 -v -timeout 20m` | PASS, 9.741s. Metric 응답, audit JSONL, process log에서 시험용 password와 Argon2id PHC hash가 출력되지 않는지 검사했다. |
+| P0 traceability | `go run ./tools/verify traceability` | PASS. `P0 mapped 67/81, exceptions 14`. |
+| Architecture | `go run ./tools/verify architecture` | PASS. |
+| Full local gate | `go run ./tools/verify local` | PASS, 157.72s. Branch instrumentation, 전체 package·integration, race, fuzz, vet, traceability, architecture와 coverage gate가 통과했다. 마지막 출력은 `coverage: PASS`, `local: PASS`다. |
+
+`TestMQTTTLS_PasswordAuthentication`는 MQTT 3.1.1·5의 password CONNECT를 실제 TLS socket에서 확인했다. 3-node process acceptance는 각 node에서 성공·잘못된 password·unknown username·허용되지 않은 Client ID를 확인했다. 인증 Metric은 node별 `success=2`, `invalid_credentials=4`, `client_id_not_allowed=2`였고, denial audit에는 `authMethod=password`가 기록됐다. Metric 응답·audit JSONL·process log에서 시험용 password와 Argon2id PHC hash가 나오지 않는지 검사했다. 설정·fixture 임시 파일·process log에는 원문 password가 없는지도 확인했다.
+
+SEC-05 구현 acceptance는 완료했다. Credential 회전·폐기, 기존 연결 재인증과 blocklist는 SEC-07·SEC-12 범위에 남는다.

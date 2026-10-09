@@ -41,6 +41,7 @@ import (
 	"narumq/internal/application/connect"
 	appmgmt "narumq/internal/application/management"
 	"narumq/internal/application/membership"
+	authenticationports "narumq/internal/application/ports/authentication"
 	managementports "narumq/internal/application/ports/management"
 	portsmetrics "narumq/internal/application/ports/metrics"
 	"narumq/internal/application/publish"
@@ -298,7 +299,7 @@ func runClusterMode(ctx context.Context, config clusterConfigFile, logger *slog.
 	runtime.forwarder = transport
 	runtime.refreshRouteProjection()
 
-	securityBundle, jwtProvider, mtlsProvider, err := clusterMQTTSecurity(config)
+	securityBundle, credentialProvider, mtlsProvider, credentialMethod, err := clusterMQTTSecurity(config)
 	if err != nil {
 		return err
 	}
@@ -345,7 +346,7 @@ func runClusterMode(ctx context.Context, config clusterConfigFile, logger *slog.
 		return fmt.Errorf("create tenant limits: %w", err)
 	}
 	if securityBundle != nil {
-		connectOptions = append(connectOptions, connect.WithSecurity(jwtProvider, mtlsProvider, securityBundle.Policy))
+		connectOptions = append(connectOptions, connect.WithSecurity(credentialProvider, mtlsProvider, securityBundle.Policy, credentialMethod))
 		subscribeOptions = append(subscribeOptions, subscribe.WithPolicy(securityBundle.Policy))
 		publishOptions = append(publishOptions, publish.WithPolicy(securityBundle.Policy))
 		tcpPolicy = securityBundle.Policy
@@ -378,6 +379,7 @@ func runClusterMode(ctx context.Context, config clusterConfigFile, logger *slog.
 	dataPlaneAudit.Start()
 	defer dataPlaneAudit.Close()
 	connectOptions = append(connectOptions, connect.WithDataPlaneAudit(dataPlaneAudit))
+	connectOptions = append(connectOptions, connect.WithMetrics(metricsRegistry))
 	connections, err := connect.New(systemClock, sessions, deliveries, runtime.routes, systemScheduler, willBridge, connectOptions...)
 	if err != nil {
 		return fmt.Errorf("create cluster connect use case: %w", err)
@@ -3406,29 +3408,42 @@ func clusterMQTTListeners(config clusterConfigFile, recorder portsmetrics.Listen
 	return listeners, nil
 }
 
-func clusterMQTTSecurity(config clusterConfigFile) (*SecurityBundle, *authenticationadapter.JWKSAuthenticationProvider, *authenticationadapter.MTLSAuthenticationProvider, error) {
+func clusterMQTTSecurity(config clusterConfigFile) (*SecurityBundle, authenticationports.AuthenticationProvider, *authenticationadapter.MTLSAuthenticationProvider, string, error) {
 	bundle, err := loadSecurityConfigFile(config.MQTT.SecurityConfigFile)
 	if err != nil {
-		return nil, nil, nil, fmt.Errorf("load cluster MQTT security config: %w", err)
+		return nil, nil, nil, "", fmt.Errorf("load cluster MQTT security config: %w", err)
 	}
-	var jwtProvider *authenticationadapter.JWKSAuthenticationProvider
-	var mtlsProvider *authenticationadapter.MTLSAuthenticationProvider
+	var (
+		credentialProvider authenticationports.AuthenticationProvider
+		credentialMethod   string
+		mtlsProvider       *authenticationadapter.MTLSAuthenticationProvider
+	)
 	if bundle.JWTConfig != nil {
 		jwtConfig := *bundle.JWTConfig
 		jwtConfig.HTTPClient = &http.Client{Timeout: jwtConfig.HTTPTimeout}
 		jwtConfig.Clock = clock.SystemClock{}
-		jwtProvider, err = authenticationadapter.NewJWKSAuthenticationProvider(jwtConfig)
+		provider, err := authenticationadapter.NewJWKSAuthenticationProvider(jwtConfig)
 		if err != nil {
-			return nil, nil, nil, fmt.Errorf("create cluster MQTT JWT provider: %w", err)
+			return nil, nil, nil, "", fmt.Errorf("create cluster MQTT JWT provider: %w", err)
 		}
+		credentialProvider = provider
+		credentialMethod = portsmetrics.AuthMethodJWT
+	}
+	if len(bundle.PasswordBindings) != 0 {
+		provider, err := authenticationadapter.NewPasswordAuthenticationProvider(bundle.PasswordBindings)
+		if err != nil {
+			return nil, nil, nil, "", fmt.Errorf("create cluster MQTT password provider: %w", err)
+		}
+		credentialProvider = provider
+		credentialMethod = portsmetrics.AuthMethodPassword
 	}
 	if len(bundle.MTLSBindings) != 0 {
 		mtlsProvider, err = authenticationadapter.NewMTLSAuthenticationProvider(clock.SystemClock{}, bundle.MTLSBindings)
 		if err != nil {
-			return nil, nil, nil, fmt.Errorf("create cluster MQTT mTLS provider: %w", err)
+			return nil, nil, nil, "", fmt.Errorf("create cluster MQTT mTLS provider: %w", err)
 		}
 	}
-	return bundle, jwtProvider, mtlsProvider, nil
+	return bundle, credentialProvider, mtlsProvider, credentialMethod, nil
 }
 
 type clusterHealthChecker struct {

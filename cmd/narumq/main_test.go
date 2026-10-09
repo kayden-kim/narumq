@@ -210,6 +210,28 @@ func TestClusterConfigFlagIsExclusive(t *testing.T) {
 	}
 }
 
+func TestHashPasswordFlagIsExclusive(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	cases := []struct {
+		name string
+		args []string
+		want string
+	}{
+		{name: "positional argument", args: []string{"-hash-password", "unexpected"}, want: "-hash-password does not accept positional arguments"},
+		{name: "runtime flag", args: []string{"-hash-password", "-tcp-listen", "127.0.0.1:1883"}, want: "-hash-password cannot be combined with -tcp-listen"},
+		{name: "cluster mode", args: []string{"-hash-password", "-cluster-config", "cluster.json"}, want: "-hash-password cannot be combined with -cluster-config"},
+		{name: "audit verify", args: []string{"-hash-password", "-audit-verify", "audit"}, want: "-hash-password cannot be combined with -audit-verify"},
+	}
+	for _, testCase := range cases {
+		t.Run(testCase.name, func(t *testing.T) {
+			err := runWithContext(context.Background(), testCase.args, logger)
+			if err == nil || err.Error() != testCase.want {
+				t.Fatalf("runWithContext() error = %v, want %q", err, testCase.want)
+			}
+		})
+	}
+}
+
 func TestRun_Defaults(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	if err := run(nil, logger); err != nil {
@@ -362,14 +384,14 @@ func TestRunWithContextTLSFlags(t *testing.T) {
 		}
 	})
 
-	t.Run("request requires JWT fallback for certificate-less clients", func(t *testing.T) {
+	t.Run("request requires credential fallback for certificate-less clients", func(t *testing.T) {
 		err := runWithContext(context.Background(), []string{
 			"-security-config", mtlsCfgFile,
 			"-tls-listen", "127.0.0.1:0",
 			"-tls-client-auth", "request",
 		}, logger)
-		if err == nil || !strings.Contains(err.Error(), "requires JWT configuration") {
-			t.Fatalf("expected JWT fallback requirement error, got %v", err)
+		if err == nil || !strings.Contains(err.Error(), "requires JWT or password authentication configuration") {
+			t.Fatalf("expected credential fallback requirement error, got %v", err)
 		}
 	})
 

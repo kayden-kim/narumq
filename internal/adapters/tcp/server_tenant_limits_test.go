@@ -57,7 +57,7 @@ func tcpTenantRuntime(t *testing.T, version mqtt.ProtocolVersion, service *tenan
 			t.Fatal(err)
 		}
 		auth := &testServerAuthenticator{result: applicationauthentication.Result{TenantID: tenant, Subject: "subject", CredentialID: "credential", AllowedClientIDs: []string{"publisher"}, Roles: []security.Role{"client"}, ExpiresAt: server.config.Clock.Now().Add(time.Hour)}}
-		connect.WithSecurity(auth, nil, policy)(server.connections)
+		connect.WithSecurity(auth, nil, policy, "jwt")(server.connections)
 		subscribe.WithPolicy(policy)(server.subscriptions)
 		publish.WithPolicy(policy)(server.publications)
 		server.config.Policy = policy

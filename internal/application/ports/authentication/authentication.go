@@ -9,9 +9,10 @@ import (
 	"narumq/internal/domain/tenancy"
 )
 
-// Credential carries a copied MQTT CONNECT Password token.
+// Credential carries the MQTT CONNECT username and copied Password bytes.
 type Credential struct {
-	Token []byte
+	Username string
+	Password []byte
 }
 
 // ClientCertificateDTO carries verified leaf identity fields copied at the adapter boundary.

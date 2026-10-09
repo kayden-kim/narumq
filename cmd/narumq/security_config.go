@@ -19,11 +19,12 @@ import (
 )
 
 type rawSecurityConfig struct {
-	JWT            *rawJWTConfig           `json:"jwt"`
-	Identities     []rawIdentityConfig     `json:"identities"`
-	MTLSIdentities []rawMTLSIdentityConfig `json:"mtlsIdentities"`
-	ACL            []rawACLRuleConfig      `json:"acl"`
-	TenantLimits   *rawTenantLimitsConfig  `json:"tenantLimits"`
+	JWT                *rawJWTConfig               `json:"jwt"`
+	Identities         []rawIdentityConfig         `json:"identities"`
+	PasswordIdentities []rawPasswordIdentityConfig `json:"passwordIdentities"`
+	MTLSIdentities     []rawMTLSIdentityConfig     `json:"mtlsIdentities"`
+	ACL                []rawACLRuleConfig          `json:"acl"`
+	TenantLimits       *rawTenantLimitsConfig      `json:"tenantLimits"`
 }
 
 type rawTenantLimitValues struct {
@@ -70,6 +71,15 @@ type rawIdentityConfig struct {
 	AllowedClientIDs []string `json:"allowedClientIds"`
 	Roles            []string `json:"roles"`
 }
+type rawPasswordIdentityConfig struct {
+	Username         string   `json:"username"`
+	PasswordHash     string   `json:"passwordHash"`
+	TenantID         string   `json:"tenantId"`
+	Subject          string   `json:"subject"`
+	CredentialID     string   `json:"credentialId"`
+	AllowedClientIDs []string `json:"allowedClientIds"`
+	Roles            []string `json:"roles"`
+}
 
 type rawMTLSIdentityConfig struct {
 	IdentityKind     string   `json:"identityKind"`
@@ -91,10 +101,11 @@ type rawACLRuleConfig struct {
 
 // SecurityBundle encapsulates validated authentication methods, policy and optional tenant limits.
 type SecurityBundle struct {
-	JWTConfig    *authenticationadapter.Config
-	MTLSBindings []authenticationadapter.ClientCertificateIdentityBinding
-	Policy       security.Policy
-	TenantLimits *tenantlimit.Profile
+	JWTConfig        *authenticationadapter.Config
+	PasswordBindings []authenticationadapter.PasswordIdentityBinding
+	MTLSBindings     []authenticationadapter.ClientCertificateIdentityBinding
+	Policy           security.Policy
+	TenantLimits     *tenantlimit.Profile
 }
 
 // loadSecurityConfigFile reads and strictly decodes a JSON security configuration file.
@@ -124,7 +135,7 @@ func parseSecurityConfig(reader io.Reader) (*SecurityBundle, error) {
 		return nil, errors.New("security config contains trailing JSON value")
 	}
 
-	jwtConfig, mtlsBindings, err := validateAuthenticationConfig(raw.JWT, raw.Identities, raw.MTLSIdentities)
+	jwtConfig, passwordBindings, mtlsBindings, err := validateAuthenticationConfig(raw.JWT, raw.Identities, raw.PasswordIdentities, raw.MTLSIdentities)
 	if err != nil {
 		return nil, err
 	}
@@ -140,10 +151,11 @@ func parseSecurityConfig(reader io.Reader) (*SecurityBundle, error) {
 	}
 
 	return &SecurityBundle{
-		JWTConfig:    jwtConfig,
-		MTLSBindings: mtlsBindings,
-		Policy:       policy,
-		TenantLimits: tenantLimits,
+		JWTConfig:        jwtConfig,
+		PasswordBindings: passwordBindings,
+		MTLSBindings:     mtlsBindings,
+		Policy:           policy,
+		TenantLimits:     tenantLimits,
 	}, nil
 }
 
@@ -214,29 +226,37 @@ func applyTenantLimitValues(limits *tenantlimit.Limits, raw rawTenantLimitValues
 func validateAuthenticationConfig(
 	jwt *rawJWTConfig,
 	identities []rawIdentityConfig,
+	passwordIdentities []rawPasswordIdentityConfig,
 	mtlsIdentities []rawMTLSIdentityConfig,
-) (*authenticationadapter.Config, []authenticationadapter.ClientCertificateIdentityBinding, error) {
-	seenCredentialIDs := make(map[string]struct{}, len(identities)+len(mtlsIdentities))
+) (*authenticationadapter.Config, []authenticationadapter.PasswordIdentityBinding, []authenticationadapter.ClientCertificateIdentityBinding, error) {
+	if jwt != nil && len(passwordIdentities) > 0 {
+		return nil, nil, nil, errors.New("jwt and passwordIdentities are mutually exclusive")
+	}
+	seenCredentialIDs := make(map[string]struct{}, len(identities)+len(passwordIdentities)+len(mtlsIdentities))
 	var jwtConfig *authenticationadapter.Config
 	if jwt == nil {
 		if len(identities) > 0 {
-			return nil, nil, errors.New("identities require jwt")
+			return nil, nil, nil, errors.New("identities require jwt")
 		}
 	} else {
 		var err error
 		jwtConfig, err = validateJWTAndIdentities(jwt, identities, seenCredentialIDs)
 		if err != nil {
-			return nil, nil, err
+			return nil, nil, nil, err
 		}
+	}
+	passwordBindings, err := validatePasswordIdentities(passwordIdentities, seenCredentialIDs)
+	if err != nil {
+		return nil, nil, nil, err
 	}
 	mtlsBindings, err := validateMTLSIdentities(mtlsIdentities, seenCredentialIDs)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
-	if jwtConfig == nil && len(mtlsBindings) == 0 {
-		return nil, nil, errors.New("at least one authentication method is required")
+	if jwtConfig == nil && len(passwordBindings) == 0 && len(mtlsBindings) == 0 {
+		return nil, nil, nil, errors.New("at least one authentication method is required")
 	}
-	return jwtConfig, mtlsBindings, nil
+	return jwtConfig, passwordBindings, mtlsBindings, nil
 }
 
 func validateJWTAndIdentities(
@@ -354,6 +374,66 @@ func validateJWTAndIdentities(
 		HTTPTimeout:     httpTimeout,
 		Bindings:        bindings,
 	}, nil
+}
+
+func validatePasswordIdentities(
+	identities []rawPasswordIdentityConfig,
+	seenCredentialIDs map[string]struct{},
+) ([]authenticationadapter.PasswordIdentityBinding, error) {
+	if len(identities) == 0 {
+		return nil, nil
+	}
+	if seenCredentialIDs == nil {
+		seenCredentialIDs = make(map[string]struct{}, len(identities))
+	}
+	bindings := make([]authenticationadapter.PasswordIdentityBinding, len(identities))
+	seenUsernames := make(map[string]struct{}, len(identities))
+	seenSubjects := make(map[string]struct{}, len(identities))
+	for index, identity := range identities {
+		if identity.Username == "" {
+			return nil, errors.New("password identity username is required")
+		}
+		if _, exists := seenUsernames[identity.Username]; exists {
+			return nil, fmt.Errorf("duplicate password identity username %q", identity.Username)
+		}
+		seenUsernames[identity.Username] = struct{}{}
+		if identity.Subject == "" {
+			return nil, errors.New("password identity subject is required")
+		}
+		if _, exists := seenSubjects[identity.Subject]; exists {
+			return nil, fmt.Errorf("duplicate password identity subject %q", identity.Subject)
+		}
+		seenSubjects[identity.Subject] = struct{}{}
+		passwordHash, err := authenticationadapter.ParsePasswordHash(identity.PasswordHash)
+		if err != nil {
+			return nil, fmt.Errorf("password identity %q has invalid passwordHash: %w", identity.Username, err)
+		}
+		tenantID, err := tenancy.NewTenantID(identity.TenantID)
+		if err != nil {
+			return nil, fmt.Errorf("invalid password identity tenant ID %q: %w", identity.TenantID, err)
+		}
+		if identity.CredentialID == "" {
+			return nil, errors.New("password identity credentialId is required")
+		}
+		if _, exists := seenCredentialIDs[identity.CredentialID]; exists {
+			return nil, fmt.Errorf("duplicate credentialId %q", identity.CredentialID)
+		}
+		seenCredentialIDs[identity.CredentialID] = struct{}{}
+		allowedClientIDs, err := validateAllowedClientIDs("password identity", identity.Username, identity.AllowedClientIDs)
+		if err != nil {
+			return nil, err
+		}
+		roles, err := validateRoles("password identity", identity.Username, identity.Roles)
+		if err != nil {
+			return nil, err
+		}
+		bindings[index] = authenticationadapter.PasswordIdentityBinding{
+			Username: identity.Username, PasswordHash: passwordHash, TenantID: tenantID,
+			Subject: identity.Subject, CredentialID: identity.CredentialID,
+			AllowedClientIDs: allowedClientIDs, Roles: roles,
+		}
+	}
+	return bindings, nil
 }
 
 func validateMTLSIdentities(

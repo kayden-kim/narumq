@@ -38,19 +38,22 @@ flowchart LR
         Domain["Session·routing·delivery"]
         Peer["Cluster peer boundary\nmTLS·member allowlist"]
         Runtime["Runtime configuration·secret references"]
+        Auth["JWT/JWKS·Argon2id password·mTLS identity provider"]
         AuditAdapter["Audit·Metric redaction"]
     end
 
-    IdP["JWKS issuer·mTLS CA\ncredential trust source"]
+    IdP["JWKS issuer·mTLS CA\nexternal credential trust source"]
     K8s["Kubernetes/AWS control plane"]
     Peers["Other broker nodes"]
     Audit["External audit store"]
     Monitor["Monitoring / TSDB"]
 
     Clients --> MQTT
-    MQTT --> Principal
+    MQTT --> Auth
     MQTT -->|"CONNECT denial"| AuditAdapter
-    IdP --> Principal
+    IdP --> Auth
+    Runtime --> Auth
+    Auth --> Principal
     Principal --> Policy
     Policy --> Domain
     Admins --> API
@@ -73,7 +76,7 @@ Kubernetes workload identity나 network source만으로 management 또는 cluste
 
 | Principal 종류 | 신뢰 근거 | 허용 범위 |
 | --- | --- | --- |
-| MQTT client | JWT/JWKS 또는 TLS verified client certificate의 configured identity binding | Binding된 tenant·허용 Client ID의 MQTT action |
+| MQTT client | JWT/JWKS, fixed-profile Argon2id password hash 또는 TLS verified client certificate의 configured identity binding | Binding된 tenant·허용 Client ID의 MQTT action |
 | Management user·service | Management API 인증과 role·tenant scope | Resource/action별 RBAC 범위 |
 | Broker node | 별도 cluster trust domain의 mTLS와 member allowlist | 인증된 peer protocol과 membership 후보 |
 | Rollout controller | Workload identity와 management API role | Drain 조회·시작과 승인된 workload control |
@@ -87,7 +90,7 @@ Principal 종류를 공유 credential 하나로 합치지 않는다. 특히 MQTT
 | 경계 | 검증 | 실패 결과의 기준 |
 | --- | --- | --- |
 | TLS listener | Protocol, cipher, server certificate, trust anchor와 선택한 client authentication | Tenant와 security spec |
-| MQTT CONNECT | JWT 또는 verified certificate selector, tenant·Client ID binding, blocklist와 connection quota | MQTT·security spec |
+| MQTT CONNECT | Configured JWT/password provider 또는 verified certificate selector, tenant·Client ID binding, blocklist와 connection quota | MQTT·security spec |
 | Publish·subscribe·Will | Canonical topic, action ACL, quota와 owner epoch | Tenant·cluster spec |
 | Session takeover | Authenticated session key와 quorum-committed epoch | Cluster spec, ADR-0004 |
 | Management API | Principal, resource/action RBAC, tenant scope, idempotency, authenticated-principal request bucket과 remote-IP failed-authentication bucket | Management API spec·contract, ADR-0043 |

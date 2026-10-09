@@ -24,16 +24,17 @@ func (recorder *connectDataPlaneAuditRecorder) RecordDataPlaneDenial(denial port
 	recorder.denials = append(recorder.denials, denial)
 }
 
-// Traceability: SEC-11/NFR-17; docs/specs/tenancy-and-security.md §8.
+// Traceability: SEC-05/SEC-11/NFR-17; docs/specs/tenancy-and-security.md §2.3, §2.4, §8, §9.
 func TestConnectRecordsAuthenticationDenialsWithoutChangingConnAck(t *testing.T) {
 	now := time.Date(2026, time.January, 1, 0, 0, 0, 0, time.UTC)
 	for _, test := range []struct {
-		name        string
-		packet      mqtt.Connect
-		certificate bool
-		authErr     error
-		wantReason  string
-		wantMethod  string
+		name             string
+		packet           mqtt.Connect
+		certificate      bool
+		authErr          error
+		credentialMethod string
+		wantReason       string
+		wantMethod       string
 	}{
 		{
 			name:    "invalid credentials",
@@ -46,17 +47,29 @@ func TestConnectRecordsAuthenticationDenialsWithoutChangingConnAck(t *testing.T)
 			wantReason: "missing_credentials", wantMethod: portsmetrics.AuthMethodJWT,
 		},
 		{
+			name: "password invalid credentials",
+			packet: mqtt.Connect{Version: mqtt.ProtocolV5, ClientID: "client-a", HasUsername: true, Username: "unknown",
+				HasPassword: true, Password: []byte("password-not-for-logs")},
+			authErr: errors.New("invalid credentials"), wantReason: "invalid_credentials",
+			wantMethod: portsmetrics.AuthMethodPassword, credentialMethod: portsmetrics.AuthMethodPassword,
+		},
+		{
 			name:        "dual credentials",
-			packet:      mqtt.Connect{Version: mqtt.ProtocolV5, ClientID: "client-a", HasUsername: true, HasPassword: true, Password: []byte("jwt")},
+			packet:      mqtt.Connect{Version: mqtt.ProtocolV5, ClientID: "client-a", HasUsername: true, Username: "password-user", HasPassword: true, Password: []byte("password")},
 			certificate: true, wantReason: "dual_credentials", wantMethod: portsmetrics.AuthMethodTLS,
+			credentialMethod: portsmetrics.AuthMethodPassword,
 		},
 	} {
 		t.Run(test.name, func(t *testing.T) {
+			method := test.credentialMethod
+			if method == "" {
+				method = portsmetrics.AuthMethodJWT
+			}
 			makeUseCase := func(recorder portsaudit.DataPlaneDenialRecorder) *UseCase {
-				jwt := &fakeAuthenticator{err: test.authErr}
+				credentialProvider := &fakeAuthenticator{err: test.authErr}
 				mtls := &fakeCertificateAuthenticator{}
 				useCase, _, _, _, _, _, _ := newUseCase(t, now)
-				WithSecurity(jwt, mtls, security.Policy{})(useCase)
+				WithSecurity(credentialProvider, mtls, security.Policy{}, method)(useCase)
 				if recorder != nil {
 					WithDataPlaneAudit(recorder)(useCase)
 				}
@@ -89,7 +102,7 @@ func TestConnectRecordsAuthenticationDenialsWithoutChangingConnAck(t *testing.T)
 	}
 }
 
-// Traceability: SEC-11/NFR-17; docs/specs/tenancy-and-security.md §8.
+// Traceability: SEC-05/SEC-11/NFR-17; docs/specs/tenancy-and-security.md §2.3, §2.4, §8, §9.
 func TestConnectRecordsAuthenticatedClientAndWillDenials(t *testing.T) {
 	now := time.Date(2026, time.January, 1, 0, 0, 0, 0, time.UTC)
 	tenantID, err := tenancy.NewTenantID("tenant-a")
@@ -103,9 +116,11 @@ func TestConnectRecordsAuthenticatedClientAndWillDenials(t *testing.T) {
 		willTopic    string
 		wantReason   string
 		wantTopic    string
+		username     string
+		authMethod   string
 	}{
-		{name: "client id not allowed", clientID: "other-client", wantClientID: "other-client", wantReason: "client_id_not_allowed"},
-		{name: "will denied", clientID: "client-a", wantClientID: "client-a", willTopic: "private/will", wantReason: "will_unauthorized", wantTopic: "private/will"},
+		{name: "client id not allowed", clientID: "other-client", wantClientID: "other-client", wantReason: "client_id_not_allowed", authMethod: portsmetrics.AuthMethodJWT},
+		{name: "will denied", clientID: "client-a", wantClientID: "client-a", username: "password-user", authMethod: portsmetrics.AuthMethodPassword, willTopic: "private/will", wantReason: "will_unauthorized", wantTopic: "private/will"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			identity := applicationauthentication.Result{
@@ -113,10 +128,11 @@ func TestConnectRecordsAuthenticatedClientAndWillDenials(t *testing.T) {
 				AllowedClientIDs: []string{"client-a"}, Roles: []security.Role{"publisher"}, ExpiresAt: now.Add(time.Hour),
 			}
 			useCase, _, _, _, _, _, _ := newUseCase(t, now)
-			WithSecurity(&fakeAuthenticator{result: identity}, nil, security.Policy{})(useCase)
+			WithSecurity(&fakeAuthenticator{result: identity}, nil, security.Policy{}, test.authMethod)(useCase)
 			recorder := &connectDataPlaneAuditRecorder{}
 			WithDataPlaneAudit(recorder)(useCase)
-			packet := mqtt.Connect{Version: mqtt.ProtocolV5, ClientID: test.clientID, HasUsername: true, HasPassword: true, Password: []byte("valid-token")}
+			packet := mqtt.Connect{Version: mqtt.ProtocolV5, ClientID: test.clientID, HasUsername: true, Username: test.username,
+				HasPassword: true, Password: []byte("credential-not-for-audit")}
 			if test.willTopic != "" {
 				packet.ClientID = "client-a"
 				packet.Will = metadataWill(test.willTopic, 0)
@@ -131,7 +147,7 @@ func TestConnectRecordsAuthenticatedClientAndWillDenials(t *testing.T) {
 			denial := recorder.denials[0]
 			if denial.Action != portsaudit.DataPlaneActionConnect || denial.Reason != test.wantReason || denial.TenantID != "tenant-a" ||
 				denial.Subject != "device-a" || denial.CredentialID != "credential-a" || !reflect.DeepEqual(denial.Roles, []string{"publisher"}) ||
-				denial.ClientID != test.wantClientID || denial.SourceIP != "198.51.100.8" || denial.AuthMethod != portsmetrics.AuthMethodJWT || denial.Topic != test.wantTopic {
+				denial.ClientID != test.wantClientID || denial.SourceIP != "198.51.100.8" || denial.AuthMethod != test.authMethod || denial.Topic != test.wantTopic {
 				t.Fatalf("authenticated denial = %+v", denial)
 			}
 		})
@@ -149,7 +165,7 @@ func TestConnectSuccessDoesNotRecordDenial(t *testing.T) {
 	WithSecurity(&fakeAuthenticator{result: applicationauthentication.Result{
 		TenantID: tenantID, Subject: "device-a", CredentialID: "credential-a",
 		AllowedClientIDs: []string{"client-a"}, Roles: []security.Role{"publisher"}, ExpiresAt: now.Add(time.Hour),
-	}}, nil, security.Policy{})(useCase)
+	}}, nil, security.Policy{}, "jwt")(useCase)
 	recorder := &connectDataPlaneAuditRecorder{}
 	WithDataPlaneAudit(recorder)(useCase)
 	result, err := useCase.ConnectContext(context.Background(), ConnectRequestDTO{
@@ -187,7 +203,7 @@ func TestDelayedWillAuthorizationDenialRecordsWithoutSourceIP(t *testing.T) {
 	WithSecurity(&fakeAuthenticator{result: applicationauthentication.Result{
 		TenantID: tenantID, Subject: "device-a", CredentialID: "credential-a",
 		AllowedClientIDs: []string{"client-a"}, Roles: []security.Role{"publisher"}, ExpiresAt: now.Add(time.Hour),
-	}}, nil, policy)(useCase)
+	}}, nil, policy, "jwt")(useCase)
 	recorder := &connectDataPlaneAuditRecorder{}
 	WithDataPlaneAudit(recorder)(useCase)
 	result, err := useCase.ConnectContext(context.Background(), ConnectRequestDTO{

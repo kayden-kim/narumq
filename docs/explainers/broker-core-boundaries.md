@@ -57,7 +57,7 @@ flowchart TB
 
 | 계층 | NaruMQ의 예 | 책임 | 알면 안 되는 것 |
 | --- | --- | --- | --- |
-| Domain | MQTT, session, routing, delivery, tenancy, security | Protocol invariant와 제품 정책 | Kubernetes, HTTP, Raft library, DB row, JWT/JWKS, configuration |
+| Domain | MQTT, session, routing, delivery, tenancy, security | Protocol invariant와 제품 정책 | Kubernetes, HTTP, Raft library, DB row, JWT/JWKS, Argon2id PHC, configuration |
 | Application | connect, publish, subscribe, takeover, drain | Authentication→binding→authorization→mutation 순서, transaction과 port 호출 | Concrete storage와 framework API |
 | Ports | consensus, logstore, sessionstore, authentication, clock | Use case가 외부에 요구하는 최소 계약 | 구현 제품의 설정·자료형 |
 | Adapters | TCP/TLS, authentication, Raft, storage, Kubernetes, Prometheus, management API | 외부 protocol과 product API를 안쪽 계약으로 변환 | Domain 정책의 재구현 |
@@ -65,8 +65,9 @@ flowchart TB
 
 `domain/tenancy`는 문자열 prefix를 만들지 않고 private field의 comparable
 `TenantID`, `SessionKey`, `Topic`, `TopicFilter`를 제공한다. `domain/security`의
-immutable `Principal`은 tenant와 Client ID를 snapshot으로 보유하며, JWT/JWKS
-자료형은 `application/ports/authentication`의 logical Result에서 끊긴다.
+immutable `Principal`은 tenant와 Client ID를 snapshot으로 보유한다. JWT/JWKS와 Argon2id
+PHC 자료형은 authentication adapter 안에 남고, `application/ports/authentication`은
+`Credential`, `ClientCertificateDTO`와 논리적인 `Result`만 정의한다.
 
 Domain은 port도 import하지 않는다. 외부 시간이 필요한 domain 계산은 application이 clock port에서 값을 얻어 domain value로 전달한다. 이렇게 해야 domain test에 실제 clock이나 network가 나타나지 않는다.
 
@@ -96,13 +97,15 @@ Port는 작게 유지한다. Publish use case가 session을 읽고 한 메시지
 
 ```mermaid
 flowchart LR
-    W["MQTT packet / HTTP request / DB row / JWT"] --> M["Adapter mapper"]
+    W["MQTT packet / HTTP request / DB row / JWT / username-password"] --> M["Adapter mapper"]
     M --> X["Application DTO / authentication Result"]
     X --> V["Tenant value / Principal / domain entity"]
 ```
 
-- TCP adapter는 packet parser 결과를 application command로 변환하고 CONNECT Password bytes만 authentication port에 전달한다.
-- Authentication adapter는 JWT/JWKS 자료형과 HTTP 오류를 검증된 `Result`로 바꾼다. token, Username, claims와 raw JWKS는 application·domain에 노출하지 않는다.
+- TCP adapter는 CONNECT packet의 Username과 Password bytes를
+  `application/ports/authentication.Credential`로 바꾼다. Raw credential은 domain으로 보내지 않는다.
+- Authentication adapter는 JWT/JWKS 또는 고정 profile Argon2id Password를 검증하고
+  certificate identity binding도 처리한다. Provider·library 자료형 대신 검증한 `Result`를 돌려준다.
 - Application은 CONNECT Client ID를 `Result.AllowedClientIDs`에 exact-match하고, `security.NewPrincipal`과 `tenancy.NewSessionKey`를 만든 뒤 session ownership을 요청한다.
 - Publish·subscribe·unsubscribe entry는 외부 raw topic/filter를 즉시 tenant value로 변환한다. Routing, retained와 delivery port는 raw string key를 받지 않는다.
 - Storage adapter는 DB row를 session snapshot value로 변환한다.

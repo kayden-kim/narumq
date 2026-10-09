@@ -52,6 +52,7 @@
 | [ADR-0044](ADR-0044-diff-coverage-floor-90.md) | Accepted | 변경 코드의 line·function·branch diff coverage 하한을 각각 90%로 정한다. 전체·core 기준과 ratchet은 유지한다. |
 | [ADR-0045](ADR-0045-operations-dashboard-grafana.md) | Accepted | Grafana와 Prometheus로 운영 Dashboard를 제공하고 조회 전용 API key를 사용한다. |
 | [ADR-0046](ADR-0046-mqtt-data-plane-denial-audit.md) | Accepted | Dynamic cluster에서 MQTT data-plane 거절을 기존 node-local hash chain에 fail-open·bounded async 방식으로 기록한다. |
+| [ADR-0047](ADR-0047-mqtt-password-authentication.md) | Accepted (SEC-05 적용 범위) | 고정 Argon2id PHC hash와 stdin hash 명령으로 MQTT password 인증을 제공한다. |
 
 `Proposed` ADR은 검토 중인 제안이다. `Accepted` ADR은 각 기록에 명시한 범위 안에서 채택된 결정이다. `design target only`는 production runtime이나 acceptance 검증을 뜻하지 않는다.
 

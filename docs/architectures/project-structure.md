@@ -127,11 +127,12 @@ flowchart LR
 | --- | --- | --- |
 | Domain | `internal/domain/mqtt`, `session`, `tenancy`, `security`, `routing`, `delivery` | MQTT wire 의미, session invariant, tenant namespace·ACL, route matching과 delivery 상태 |
 | Domain lifecycle | `internal/domain/release`, `nodedrain`, `connrebalance` | Release feature profile, drain/rebalance 전이·barrier 정책 |
-| Application ingress | `internal/application/connect`, `publish`, `subscribe` | CONNECT, PUBLISH/Will, SUBSCRIBE/UNSUBSCRIBE orchestration과 commit 경계 |
+| Application ingress | `internal/application/connect`, `publish`, `subscribe` | CONNECT 인증·binding, PUBLISH/Will, SUBSCRIBE/UNSUBSCRIBE 조정과 commit 경계 |
 | Application state | `internal/application/takeover`, `membership`, `tenantlimit` | Session takeover/QoS state, replicated membership·metadata·receipt 적용, tenant admission policy |
 | Application audit | `internal/application/audit`, `internal/application/ports/audit` | Management event admission과 bounded MQTT data-plane denial recording을 기존 publisher port로 전달 |
 | Application ports | `internal/application/ports/{authentication,metrics,audit}` 및 use-case-owned ports | Application이 요구하는 외부 capability 경계 |
-| Network/security adapters | `internal/adapters/tcp`, `tls`, `authentication`, `http/management` | Bounded MQTT ingress, TLS/mTLS, JWT/JWKS, management HTTP, management fail-closed audit와 MQTT fail-open audit 경계 |
+| Network/security adapters | `internal/adapters/tcp`, `tls`, `authentication`, `http/management` | MQTT ingress, TLS/mTLS, JWT/JWKS, 고정 profile Argon2id username/password 인증, management HTTP, Management audit fail-closed와 MQTT denial audit fail-open 처리 |
+| 보안 설정·password hash CLI | `cmd/narumq/security_config.go`, `main.go`, `cluster_runtime.go`, `password_hash.go` | JWT/password/mTLS binding을 strict decoder로 검증하고 standalone·cluster runtime에 provider를 조립한다. `-hash-password`는 stdin에서 password를 읽어 hash를 stdout에 쓴다. |
 | State adapters | `internal/adapters/memory/{deliveryqueue,retained,sessionstore}`, `internal/adapters/raft` | Process-local queue·retained·session store 및 Raft/WAL/snapshot persistence |
 | Audit adapter | `internal/adapters/auditlog` | Node-local JSONL append, fsync, rotation, recovery와 hash-chain verification |
 | Raft records | `internal/adapters/raft/records` | Versioned replicated-state/backup protobuf binding, deterministic encoding과 validation |
@@ -144,7 +145,7 @@ Port는 capability를 요구하는 application package가 소유한다. Composit
 
 | Capability | Application port | 현재 구현 |
 | --- | --- | --- |
-| Authentication | `internal/application/ports/authentication` | `internal/adapters/authentication`, `internal/adapters/tls` |
+| Authentication | `internal/application/ports/authentication` (`Credential`, `AuthenticationProvider`, `ClientCertificateDTO`) | JWT·Argon2id password·certificate binding은 `internal/adapters/authentication`; TLS 검증과 certificate DTO 생성은 `internal/adapters/tls` |
 | Clock | `internal/application/ports/clock` | `internal/adapters/clock` |
 | Delivery queue / retained | `internal/application/ports/{deliveryqueue,retained}` | `internal/adapters/memory/{deliveryqueue,retained}` |
 | Metrics | `internal/application/ports/metrics` | `internal/adapters/metrics` |

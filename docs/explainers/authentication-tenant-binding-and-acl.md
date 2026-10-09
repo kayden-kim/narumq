@@ -2,20 +2,20 @@
 
 Authentication은 credential이 누구의 것인지 확인한다. Tenant binding은 그 principal이 어느 tenant와 client ID 범위를 사용할 수 있는지 결정한다. 접근 제어 목록(Access Control List, ACL)은 검증된 principal이 특정 topic에 publish·subscribe·Will 동작을 해도 되는지 판정한다. 세 단계 중 하나라도 실패하면 session이나 route를 만들지 않는다.
 
-전송 계층 보안(Transport Layer Security, TLS)은 연결을 보호하고, 상호 TLS(mutual TLS, mTLS)는 client certificate도 검증한다. JSON Web Token(JWT)은 identity claim을 전달하며 JSON Web Key Set(JWKS)은 그 서명을 검증할 공개 key 집합을 제공한다. 이 수단들은 principal을 만드는 입력이지 tenant·topic 권한 그 자체는 아니다.
+전송 계층 보안(Transport Layer Security, TLS)은 연결을 보호하고, 상호 TLS(mutual TLS, mTLS)는 client certificate도 검증한다. JSON Web Token(JWT)은 identity claim을 전달하고 JSON Web Key Set(JWKS)은 서명을 확인할 공개 key 집합을 제공한다. Username/password 인증은 고정 profile Argon2id hash로 비밀번호를 확인한다. 이 수단들은 principal을 만드는 입력이지 tenant·topic 권한 그 자체는 아니다.
 
 | 항목 | 값 |
 | --- | --- |
-| 기준 독자 | TLS, JWT 기초는 알지만 멀티테넌트 브로커의 테넌트 바인딩 및 ACL 평가 파이프라인이 생소한 주니어 개발자 |
+| 기준 독자 | TLS, JWT와 password 인증 기초는 알지만 멀티테넌트 브로커의 tenant binding 및 ACL 평가 파이프라인이 생소한 주니어 개발자 |
 | 선수 문서 | 없음 |
 | 관련 기준 문서 | [PRD](../requirements/PRD.md) (SEC-01~12, TEN-01~10), [Tenant와 security spec](../specs/tenancy-and-security.md), [Security boundaries](../architectures/security-boundaries.md) |
-| 대상 version·확인일 | Draft 0.6 · mTLS DTO/selector flow 반영 |
+| 대상 version·확인일 | Draft 0.7 · Argon2id password provider 흐름 반영 |
 
 ## 읽고 나면 답할 수 있는 질문
 
-- TLS, mTLS, JWT, JWKS, principal과 ACL의 역할을 구분할 수 있는가?
+- TLS, mTLS, JWT, JWKS, Argon2id password provider, principal과 ACL의 역할을 구분할 수 있는가?
 - 외부 credential이 `(tenantId, clientId)` session key로 바뀌는 흐름을 설명할 수 있는가?
-- JWKS 장애나 ACL timeout에서 fail-closed가 필요한 이유를 설명할 수 있는가?
+- JWKS 장애, 잘못된 password나 ACL timeout에서 fail-closed가 필요한 이유를 설명할 수 있는가?
 
 ## 문제 상황
 
@@ -31,12 +31,14 @@ NaruMQ는 credential 원문을 domain으로 전달하지 않는다. Authenticati
 | mTLS | TLS handshake에서 client certificate도 검증하는 mutual TLS |
 | JWT | 서명되거나 보호된 claim 집합을 담는 JSON Web Token |
 | JWKS | JWT 서명 검증에 사용할 public key들의 JSON Web Key Set |
+| Username/password | Case-sensitive Username으로 binding을 찾고 Password bytes를 hash와 비교하는 credential |
+| Argon2id | 원문 password 대신 저장할 수 있도록 비용을 고정한 password hashing function |
 | `kid` | JWKS 안에서 후보 key를 선택하는 key identifier |
 | Principal | 검증이 끝난 logical identity와 권한 입력 |
 | Tenant binding | Principal을 신뢰된 tenant와 허용 client ID 범위에 연결하는 규칙 |
 | ACL | Action과 canonical topic/filter에 대한 allow·deny 정책 |
 
-TLS 연결이 있다는 사실만으로 application identity가 생기지는 않는다. mTLS라면 검증된 certificate identity를 principal 입력으로 사용할 수 있지만, tenant mapping 규칙은 별도로 필요하다.
+TLS 연결은 전송을 보호하지만 application identity를 만들지 않는다. mTLS는 검증된 certificate identity를 principal 입력으로 사용할 수 있다. Username/password는 설정된 identity binding의 key와 검증된 hash를 사용한다. 어느 인증도 tenant·topic 권한 자체는 아니다.
 
 ## 정상 CONNECT 흐름
 
@@ -47,15 +49,21 @@ runtime control flow다.
 flowchart TD
     A["TLS connection"] --> B["TLS handshake\ntrust·validity·client-auth EKU"]
     B --> C{"Verified client certificate?"}
-    C -->|yes| D["ClientCertificateDTO"]
-    D --> E["MTLSAuthenticationProvider\nexact CN/DNS SAN/email SAN"]
-    C -->|no| F["JWT credential"]
-    F --> G["JWT/JWKS verification"]
-    E --> H["Logical principal"]
-    G --> H
-    H --> I["Tenant + clientId binding"]
-    I --> J["Default-deny ACL context"]
-    J --> K["Session ownership request"]
+    C -->|yes| D{"MQTT credential also present?"}
+    D -->|yes| X["Reject dual credentials"]
+    D -->|no| E["ClientCertificateDTO"]
+    E --> F["mTLS identity mapping\nexact CN/DNS SAN/email SAN"]
+    C -->|no| G{"Configured provider?"}
+    G -->|JWT| H["JWT credential"]
+    H --> I["JWT/JWKS verification"]
+    G -->|password| J["Username + Password"]
+    J --> K["Argon2id PHC hash verification\nexact Username binding"]
+    F --> L["Logical principal"]
+    I --> L
+    K --> L
+    L --> M["Tenant + clientId binding"]
+    M --> N["Default-deny ACL context"]
+    N --> O["Session ownership request"]
 ```
 
 JWT를 사용하는 경우의 최소 흐름은 다음과 같다.
@@ -66,6 +74,18 @@ JWT를 사용하는 경우의 최소 흐름은 다음과 같다.
 4. `iss`, `aud`, `sub`, `exp`, `nbf`와 clock skew를 검증한다.
 5. 신뢰된 configuration이 issuer·subject를 `tenantId`와 허용 `clientId`에 binding한다.
 6. 현재 구현에서는 binding과 ACL을 통과한 뒤 session ownership을 요청한다.
+
+Password 방식을 선택하면 다음 순서로 인증한다.
+
+1. `passwordIdentities`의 case-sensitive Username을 정확히 조회한다. Tenant, subject,
+   credential ID, allowed Client ID와 role은 이 정적 binding에서 가져온다.
+2. 저장한 Argon2id PHC hash와 Password bytes를 비교한다. Unknown username에도 같은 profile의
+   dummy hash 계산을 수행한다.
+3. Hash 계산은 최대 4개까지 동시에 수행한다. Slot이 없으면 기다리지 않고 일반 인증 실패를
+   반환한다. Unknown username과 잘못된 Password는 같은 protocol reason, Metric reason,
+   audit method를 사용한다. 응답 시간까지 같다고 보장하지는 않는다.
+4. Provider가 반환한 `Result`를 받은 `application/connect`가 allowed Client ID와 Will ACL을
+   확인한 뒤 session ownership을 요청한다.
 
 검증된 client certificate를 사용하는 mTLS 흐름은 다음과 같다.
 
@@ -79,19 +99,23 @@ JWT를 사용하는 경우의 최소 흐름은 다음과 같다.
    ambiguous로 fail-closed한다.
 4. 하나의 binding이 선택되면 binding의 tenant, subject, credential ID, roles와 허용
    Client ID를 사용한다. `NotAfter`는 새 principal의 expiry가 된다.
-5. Verified certificate가 있는 CONNECT는 mTLS만 사용한다. MQTT Username/Password를
-   함께 보내면 dual credential로 거절하고, unmapped·expired·ambiguous certificate를
-   JWT로 fallback하지 않는다.
+5. Verified certificate와 MQTT Username 또는 Password를 함께 보내면 거절한다. Certificate
+   identity 검증에 실패해도 JWT나 password provider로 fallback하지 않는다.
 
-현재 application 경계는 provider 자료형이나 raw certificate를 노출하지 않는다.
-TLS adapter와 authentication port 사이에는 다음 DTO만 전달된다.
+현재 application 경계는 provider 자료형이나 raw certificate를 노출하지 않는다. MQTT
+credential은 `Credential` DTO로, verified certificate는 `ClientCertificateDTO`로 전달된다.
 
 ```go
+type Credential struct {
+	Username string
+	Password []byte
+}
+
 type ClientCertificateDTO struct {
-	CommonName      string
-	DNSNames        []string
-	EmailAddresses  []string
-	NotAfter        time.Time
+	CommonName     string
+	DNSNames       []string
+	EmailAddresses []string
+	NotAfter       time.Time
 }
 ```
 
@@ -110,9 +134,8 @@ CONNECT 성공은 모든 topic 접근 허가가 아니다.
 5. 허용된 publish만 durable log와 routing으로 보낸다.
 6. 허용된 subscribe만 route index에 추가한다.
 
-Will은 CONNECT 전에 인증된 principal과 Will ACL을 판정한다. 현재 구현은 certificate
-revocation/rotation과 기존 connection re-authentication을 수행하지 않으며, 이 기능은
-후속 security scope다.
+Will은 CONNECT 전에 인증된 principal과 Will ACL을 판정한다. Password credential 또는
+certificate의 rotation/revocation, 기존 connection re-authentication은 현재 지원 범위 밖이다.
 
 ## 실패 흐름
 
@@ -126,7 +149,8 @@ revocation/rotation과 기존 connection re-authentication을 수행하지 않�
 | `VerifiedChains`가 없는 client certificate | mTLS 인증 입력으로 사용하지 않는다. |
 | certificate 만료·zero selector match | mTLS 인증을 fail-closed로 거절한다. |
 | certificate가 여러 binding과 match | ambiguous 인증으로 fail-closed 처리한다. |
-| certificate와 MQTT Username/Password 동시 제출 | dual credential로 거절하며 JWT fallback하지 않는다. |
+| certificate와 MQTT Username/Password 동시 제출 | dual credential로 거절하며 다른 provider로 fallback하지 않는다. |
+| Unknown username 또는 잘못된 Password | 같은 `invalid_credentials` reason으로 거절하고 session state를 바꾸지 않는다. |
 | Tenant·client ID binding 실패 | Session ownership을 요청하지 않는다. |
 | ACL backend timeout | Allow로 추정하지 않고 deny한다. |
 | 인증 뒤 policy 폐기 | revocation/reauthentication은 현재 구현 범위 밖이며 후속 security scope다. |

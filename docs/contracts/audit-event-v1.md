@@ -75,7 +75,7 @@ Dynamic cluster는 아래 MQTT 거절을 management event와 같은 node-local `
 
 | `action` | 발생 지점 | Actor | `target.type` / `target.id` / `target.tenantId` | `reason` | `details` |
 | --- | --- | --- | --- | --- | --- |
-| `mqtt.connect` | CONNECT 인증 또는 Client ID·Will 검증 거절 | 인증 전: `unauthenticated`, tenant·credential·roles 없음. 인증 뒤: auth result의 subject·tenant·credential·roles | `mqtt_client` / CONNECT Client ID / 인증 뒤 tenant | 기존 reason 문자열: `unsupported_credentials`, `dual_credentials`, `invalid_credentials`, `missing_credentials`, `missing_certificate`, `client_id_not_allowed`, `not_authorized`, `invalid_will_topic`, `will_unauthorized` | `authMethod` (`anonymous`, `jwt`, `tls_cert`). `invalid_will_topic`·`will_unauthorized`이면 `willTopic` |
+| `mqtt.connect` | CONNECT 인증 또는 Client ID·Will 검증 거절 | 인증 전: `unauthenticated`, tenant·credential·roles 없음. 인증 뒤: auth result의 subject·tenant·credential·roles | `mqtt_client` / CONNECT Client ID / 인증 뒤 tenant | 기존 reason 문자열: `unsupported_credentials`, `dual_credentials`, `invalid_credentials`, `missing_credentials`, `missing_certificate`, `client_id_not_allowed`, `not_authorized`, `invalid_will_topic`, `will_unauthorized` | `authMethod` (`anonymous`, `jwt`, `password`, `tls_cert`). `invalid_will_topic`·`will_unauthorized`이면 `willTopic` |
 | `mqtt.publish` | PUBLISH ACL 거절 | Principal | `mqtt_topic` / PUBLISH topic / tenant | `not_authorized` | `clientId` |
 | `mqtt.subscribe` | SUBSCRIBE filter ACL 거절 | Principal | `mqtt_topic_filter` / filter / tenant | `not_authorized` | `clientId` |
 | `mqtt.unsubscribe` | UNSUBSCRIBE filter ACL 거절 | Principal | `mqtt_topic_filter` / filter / tenant | `not_authorized` | `clientId` |

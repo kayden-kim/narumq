@@ -12,7 +12,7 @@
 | 4 | [Broker core의 계층 경계](broker-core-boundaries.md) | domain, application, port와 adapter의 의존성은 어떻게 나뉘는가? | NFR-11~15, ADR-0001 |
 | 5 | [Boundary model과 mapping](boundary-models-and-mapping.md) | Domain entity, use case DTO, wire type과 persistence record는 무엇이 다르며 어디에서 변환하는가? | NFR-11~14 |
 | 6 | [OpenAPI, controller와 error mapping](openapi-controller-and-error-mapping.md) | OpenAPI wire type은 controller, use case DTO와 안정된 API error로 어떻게 변환되는가? | API-01~09, ADR-0005 |
-| 7 | [인증, tenant binding과 ACL](authentication-tenant-binding-and-acl.md) | TLS·mTLS·JWT/JWKS identity가 principal, tenant와 publish·subscribe 권한으로 어떻게 이어지는가? | SEC-01~12 |
+| 7 | [인증, tenant binding과 ACL](authentication-tenant-binding-and-acl.md) | TLS·mTLS, JWT/JWKS 또는 username/password 인증이 principal, tenant와 publish·subscribe 권한으로 어떻게 이어지는가? | SEC-01~12 |
 | 8 | [세션 소유권과 fencing](session-ownership-and-fencing.md) | 여러 노드가 같은 세션을 동시에 수정하지 못하게 하려면 무엇이 필요한가? | CLU-04~10, DEP-08~10, NFR-07~10 |
 | 9 | [WAL, snapshot과 crash recovery](wal-snapshot-and-crash-recovery.md) | WAL append, stable 저장, snapshot과 replay 중 어떤 상태가 crash 뒤에도 남는가? | CLU-06~12, NFR-07~10 |
 | 10 | [Raft quorum과 durable ACK](raft-quorum-and-durable-ack.md) | Replicated, persisted, committed와 applied는 어떻게 다르며 성공 ACK는 언제 가능한가? | CLU-01~12, ADR-0002~0003 |

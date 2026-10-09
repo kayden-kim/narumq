@@ -176,10 +176,10 @@ func NewJWKSAuthenticationProvider(config Config) (*JWKSAuthenticationProvider, 
 
 // Authenticate verifies a compact JWT and returns its static identity binding.
 func (provider *JWKSAuthenticationProvider) Authenticate(ctx context.Context, credential applicationauthentication.Credential) (applicationauthentication.Result, error) {
-	if provider == nil || ctx == nil || len(credential.Token) == 0 {
+	if provider == nil || ctx == nil || len(credential.Password) == 0 {
 		return applicationauthentication.Result{}, ErrInvalidCredential
 	}
-	algorithm, kid, err := parseHeader(credential.Token)
+	algorithm, kid, err := parseHeader(credential.Password)
 	if err != nil {
 		return applicationauthentication.Result{}, err
 	}
@@ -198,7 +198,7 @@ func (provider *JWKSAuthenticationProvider) Authenticate(ctx context.Context, cr
 	if !ok {
 		return applicationauthentication.Result{}, ErrUnsupportedAlgorithm
 	}
-	token, err := jwt.Parse(credential.Token,
+	token, err := jwt.Parse(credential.Password,
 		jwt.WithKey(signatureAlgorithm, key),
 		jwt.WithValidate(false),
 	)

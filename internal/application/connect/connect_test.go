@@ -314,6 +314,57 @@ func TestNewRejectsNilDependencies(t *testing.T) {
 	}
 }
 
+// Traceability: SEC-05; docs/specs/tenancy-and-security.md §2.3.
+func TestNewRejectsInvalidAuthenticationMethod(t *testing.T) {
+	now := time.Date(2026, time.January, 1, 0, 0, 0, 0, time.UTC)
+	useCase, _, repository, queue, routes, scheduler, willPublisher := newUseCase(t, now)
+	_, err := New(
+		useCase.clock, repository, queue, routes, scheduler, willPublisher,
+		WithSecurity(&fakeAuthenticator{}, nil, security.Policy{}, portsmetrics.AuthMethodAnonymous),
+	)
+	if !errors.Is(err, ErrInvalidAuthenticationMethod) {
+		t.Fatalf("New() error = %v, want %v", err, ErrInvalidAuthenticationMethod)
+	}
+}
+
+// Traceability: SEC-05; docs/specs/tenancy-and-security.md §2.3, §2.4, §9.
+func TestConnectPasswordAuthenticationFailureDoesNotMutateState(t *testing.T) {
+	for _, testCase := range []struct {
+		name       string
+		version    mqtt.ProtocolVersion
+		username   string
+		wantReason byte
+	}{
+		{name: "MQTT 3.1.1 empty username", version: mqtt.ProtocolV311, wantReason: 0x05},
+		{name: "MQTT 5 unknown username", version: mqtt.ProtocolV5, username: "unknown", wantReason: 0x87},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			now := time.Date(2026, time.January, 1, 0, 0, 0, 0, time.UTC)
+			useCase, _, repository, queue, _, _, _ := newUseCase(t, now)
+			authenticator := &fakeAuthenticator{err: errors.New("invalid credentials")}
+			metrics := &fakeMetrics{}
+			WithSecurity(authenticator, nil, security.Policy{}, portsmetrics.AuthMethodPassword)(useCase)
+			WithMetrics(metrics)(useCase)
+			result, err := useCase.ConnectContext(context.Background(), ConnectRequestDTO{Packet: mqtt.Connect{
+				Version: testCase.version, ClientID: "password-client", HasUsername: true, Username: testCase.username,
+				HasPassword: true, Password: []byte("password-not-for-logs"),
+			}})
+			if err != nil || result.Accepted || result.ConnAck.ReasonCode != testCase.wantReason {
+				t.Fatalf("password CONNECT = (%#v, %v), want rejection reason %#x", result, err, testCase.wantReason)
+			}
+			if authenticator.calls != 1 {
+				t.Fatalf("credential provider calls = %d, want 1", authenticator.calls)
+			}
+			if len(metrics.attempts) != 1 || metrics.attempts[0] != (authAttempt{method: portsmetrics.AuthMethodPassword, success: false, reason: "invalid_credentials"}) {
+				t.Fatalf("password authentication metrics = %#v", metrics.attempts)
+			}
+			if repository.loadCalls != 0 || repository.saveCalls != 0 || len(repository.states) != 0 || len(queue.registers) != 0 {
+				t.Fatalf("rejected password CONNECT mutated state: loads=%d saves=%d states=%v registrations=%v", repository.loadCalls, repository.saveCalls, repository.states, queue.registers)
+			}
+		})
+	}
+}
+
 // Traceability: PRD MQTT-03/05/TEST-03; docs/specs/mqtt-protocol-and-session.md §2.2 and §6.
 func TestConnectRejectsUnsupportedDevelopmentStateWithoutCreatingSession(t *testing.T) {
 	now := time.Date(2026, time.January, 1, 0, 0, 0, 0, time.UTC)
@@ -1268,7 +1319,7 @@ func TestConnectClusterRoutingIDsIsolateSlashDelimitedTenantAndClientIDs(t *test
 	coordinator := &fakeOwnershipCoordinator{epoch: 9}
 	useCase, err := New(
 		clock, repository, queue, routes, scheduler, publisher,
-		WithSecurity(auth, nil, security.Policy{}),
+		WithSecurity(auth, nil, security.Policy{}, "jwt"),
 		WithOwnershipCoordinator(coordinator, 1),
 	)
 	if err != nil {
@@ -1398,7 +1449,7 @@ func TestConnectAuthenticatedPipeline(t *testing.T) {
 		routes := routing.NewTable()
 		scheduler := &fakeScheduler{}
 		publisher := &fakeWillPublisher{}
-		uc, err := New(clock, repository, queue, routes, scheduler, publisher, WithSecurity(auth, nil, policy))
+		uc, err := New(clock, repository, queue, routes, scheduler, publisher, WithSecurity(auth, nil, policy, "jwt"))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -1521,15 +1572,16 @@ func TestConnectAuthenticatedPipeline(t *testing.T) {
 func newSecurityTestUseCase(
 	t *testing.T,
 	now time.Time,
-	jwtProvider applicationauthentication.AuthenticationProvider,
+	credentialProvider applicationauthentication.AuthenticationProvider,
 	mtlsProvider applicationauthentication.ClientCertificateAuthenticationProvider,
 	policy security.Policy,
+	credentialMethod string,
 	metrics *fakeMetrics,
 ) (*UseCase, *fakeSessionRepository, *fakeDeliveryQueue) {
 	t.Helper()
 	repository := newFakeSessionRepository()
 	queue := newFakeDeliveryQueue()
-	options := []Option{WithSecurity(jwtProvider, mtlsProvider, policy)}
+	options := []Option{WithSecurity(credentialProvider, mtlsProvider, policy, credentialMethod)}
 	if metrics != nil {
 		options = append(options, WithMetrics(metrics))
 	}
@@ -1540,12 +1592,12 @@ func newSecurityTestUseCase(
 	return useCase, repository, queue
 }
 
-// Traceability: SEC-03, SEC-04; verified certificate authentication must create
-// the same tenant-bound principal used by the normal ACL/session pipeline.
+// Traceability: SEC-03/SEC-04/SEC-05; verified mTLS identity remains selected
+// when a password credential provider is configured.
 func TestConnectMTLSAuthenticatesWithoutJWTAndRecordsTLSMetric(t *testing.T) {
 	now := time.Date(2026, time.January, 1, 0, 0, 0, 0, time.UTC)
 	tenant := newMTLSTestTenantForConnect(t, "tenant-a")
-	jwtProvider := &fakeAuthenticator{}
+	credentialProvider := &fakeAuthenticator{}
 	mtlsProvider := &fakeCertificateAuthenticator{
 		result: applicationauthentication.Result{
 			TenantID:         tenant,
@@ -1557,7 +1609,7 @@ func TestConnectMTLSAuthenticatesWithoutJWTAndRecordsTLSMetric(t *testing.T) {
 		},
 	}
 	metrics := &fakeMetrics{}
-	useCase, repository, queue := newSecurityTestUseCase(t, now, jwtProvider, mtlsProvider, security.Policy{}, metrics)
+	useCase, repository, queue := newSecurityTestUseCase(t, now, credentialProvider, mtlsProvider, security.Policy{}, portsmetrics.AuthMethodPassword, metrics)
 	certificate := &applicationauthentication.ClientCertificateDTO{
 		CommonName: "certificate-device",
 		NotAfter:   now.Add(time.Hour),
@@ -1575,8 +1627,8 @@ func TestConnectMTLSAuthenticatesWithoutJWTAndRecordsTLSMetric(t *testing.T) {
 	if result.Principal.TenantID() != tenant || result.Principal.CredentialID() != "certificate-credential" {
 		t.Fatalf("mTLS principal = %#v", result.Principal)
 	}
-	if mtlsProvider.calls != 1 || jwtProvider.calls != 0 {
-		t.Fatalf("authentication calls = mtls:%d jwt:%d", mtlsProvider.calls, jwtProvider.calls)
+	if mtlsProvider.calls != 1 || credentialProvider.calls != 0 {
+		t.Fatalf("authentication calls = mtls:%d credential:%d", mtlsProvider.calls, credentialProvider.calls)
 	}
 	if repository.saveCalls != 1 || len(queue.registers) != 1 {
 		t.Fatalf("mTLS state mutation = saves:%d registers:%v", repository.saveCalls, queue.registers)
@@ -1586,18 +1638,18 @@ func TestConnectMTLSAuthenticatesWithoutJWTAndRecordsTLSMetric(t *testing.T) {
 	}
 }
 
-// Traceability: SEC-04; certificate Client ID binding and all credential failures
+// Traceability: SEC-04/SEC-05; certificate Client ID binding and all credential failures
 // must complete before session repository or delivery queue mutation.
 func TestConnectMTLSRejectsUnauthorizedAndDualCredentialsWithoutMutation(t *testing.T) {
 	now := time.Date(2026, time.January, 1, 0, 0, 0, 0, time.UTC)
 	tenant := newMTLSTestTenantForConnect(t, "tenant-a")
 	cases := []struct {
-		name         string
-		packet       mqtt.Connect
-		certificate  bool
-		mtlsError    error
-		wantMTLSCall int
-		wantJWTCall  int
+		name               string
+		packet             mqtt.Connect
+		certificate        bool
+		mtlsError          error
+		wantMTLSCall       int
+		wantCredentialCall int
 	}{
 		{
 			name:         "client id mismatch",
@@ -1606,24 +1658,24 @@ func TestConnectMTLSRejectsUnauthorizedAndDualCredentialsWithoutMutation(t *test
 			wantMTLSCall: 1,
 		},
 		{
-			name:         "dual credentials",
-			packet:       mqtt.Connect{Version: mqtt.ProtocolV5, ClientID: "certificate-client", HasUsername: true, HasPassword: true, Password: []byte("jwt")},
-			certificate:  true,
-			wantMTLSCall: 0,
-			wantJWTCall:  0,
+			name:               "dual credentials",
+			packet:             mqtt.Connect{Version: mqtt.ProtocolV5, ClientID: "certificate-client", HasUsername: true, Username: "password-user", HasPassword: true, Password: []byte("password")},
+			certificate:        true,
+			wantMTLSCall:       0,
+			wantCredentialCall: 0,
 		},
 		{
-			name:         "mTLS failure does not fall back to JWT",
-			packet:       mqtt.Connect{Version: mqtt.ProtocolV5, ClientID: "certificate-client"},
-			certificate:  true,
-			mtlsError:    errors.New("unmapped certificate"),
-			wantMTLSCall: 1,
-			wantJWTCall:  0,
+			name:               "mTLS failure does not fall back to password",
+			packet:             mqtt.Connect{Version: mqtt.ProtocolV5, ClientID: "certificate-client"},
+			certificate:        true,
+			mtlsError:          errors.New("unmapped certificate"),
+			wantMTLSCall:       1,
+			wantCredentialCall: 0,
 		},
 	}
 	for _, testCase := range cases {
 		t.Run(testCase.name, func(t *testing.T) {
-			jwtProvider := &fakeAuthenticator{result: applicationauthentication.Result{
+			credentialProvider := &fakeAuthenticator{result: applicationauthentication.Result{
 				TenantID:         tenant,
 				Subject:          "jwt-subject",
 				CredentialID:     "jwt-credential",
@@ -1642,7 +1694,7 @@ func TestConnectMTLSRejectsUnauthorizedAndDualCredentialsWithoutMutation(t *test
 					ExpiresAt:        now.Add(time.Hour),
 				},
 			}
-			useCase, repository, queue := newSecurityTestUseCase(t, now, jwtProvider, mtlsProvider, security.Policy{}, nil)
+			useCase, repository, queue := newSecurityTestUseCase(t, now, credentialProvider, mtlsProvider, security.Policy{}, portsmetrics.AuthMethodPassword, nil)
 			var certificate *applicationauthentication.ClientCertificateDTO
 			if testCase.certificate {
 				certificate = &applicationauthentication.ClientCertificateDTO{CommonName: "certificate-device", NotAfter: now.Add(time.Hour)}
@@ -1651,8 +1703,8 @@ func TestConnectMTLSRejectsUnauthorizedAndDualCredentialsWithoutMutation(t *test
 			if err != nil || result.Accepted || result.ConnAck.ReasonCode != 0x87 {
 				t.Fatalf("rejected mTLS CONNECT = %#v, %v", result, err)
 			}
-			if mtlsProvider.calls != testCase.wantMTLSCall || jwtProvider.calls != testCase.wantJWTCall {
-				t.Fatalf("authentication calls = mtls:%d jwt:%d, want mtls:%d jwt:%d", mtlsProvider.calls, jwtProvider.calls, testCase.wantMTLSCall, testCase.wantJWTCall)
+			if mtlsProvider.calls != testCase.wantMTLSCall || credentialProvider.calls != testCase.wantCredentialCall {
+				t.Fatalf("authentication calls = mtls:%d credential:%d, want mtls:%d credential:%d", mtlsProvider.calls, credentialProvider.calls, testCase.wantMTLSCall, testCase.wantCredentialCall)
 			}
 			if repository.loadCalls != 0 || repository.saveCalls != 0 || len(queue.registers) != 0 {
 				t.Fatalf("rejected mTLS CONNECT mutated state: loads:%d saves:%d registers:%v", repository.loadCalls, repository.saveCalls, queue.registers)
@@ -1676,7 +1728,7 @@ func TestConnectWithoutCertificateUsesJWTAndRecordsJWTMetric(t *testing.T) {
 	}}
 	mtlsProvider := &fakeCertificateAuthenticator{}
 	metrics := &fakeMetrics{}
-	useCase, _, _ := newSecurityTestUseCase(t, now, jwtProvider, mtlsProvider, security.Policy{}, metrics)
+	useCase, _, _ := newSecurityTestUseCase(t, now, jwtProvider, mtlsProvider, security.Policy{}, portsmetrics.AuthMethodJWT, metrics)
 	result, err := useCase.ConnectContext(context.Background(), ConnectRequestDTO{Packet: mqtt.Connect{
 		Version:     mqtt.ProtocolV5,
 		ClientID:    "jwt-client",

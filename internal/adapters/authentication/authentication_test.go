@@ -203,7 +203,7 @@ func TestJWKSAuthenticationRejectsAlgorithmSignatureAndClaims(t *testing.T) {
 	provider, _ := newProviderFixture(t, clock, encodeJWKS(t, key.public), status)
 	expires := now.Add(time.Minute)
 	valid := signedToken(t, key.private, now, "https://issuer.example", "narumq", "device-1", &expires, nil)
-	if _, err := provider.Authenticate(context.Background(), applicationauthentication.Credential{Token: valid}); err != nil {
+	if _, err := provider.Authenticate(context.Background(), applicationauthentication.Credential{Password: valid}); err != nil {
 		t.Fatalf("valid token rejected: %v", err)
 	}
 	cases := []struct {
@@ -221,7 +221,7 @@ func TestJWKSAuthenticationRejectsAlgorithmSignatureAndClaims(t *testing.T) {
 	}
 	for _, testCase := range cases {
 		t.Run(testCase.name, func(t *testing.T) {
-			if _, err := provider.Authenticate(context.Background(), applicationauthentication.Credential{Token: testCase.token}); !errors.Is(err, testCase.want) {
+			if _, err := provider.Authenticate(context.Background(), applicationauthentication.Credential{Password: testCase.token}); !errors.Is(err, testCase.want) {
 				t.Fatalf("Authenticate() error = %v, want %v", err, testCase.want)
 			}
 		})
@@ -246,7 +246,7 @@ func TestJWKSBootstrapFetchCollapses(t *testing.T) {
 	for index := 0; index < 16; index++ {
 		go func() {
 			<-start
-			_, err := provider.Authenticate(context.Background(), applicationauthentication.Credential{Token: token})
+			_, err := provider.Authenticate(context.Background(), applicationauthentication.Credential{Password: token})
 			errorsCh <- err
 		}()
 	}
@@ -296,7 +296,7 @@ func TestJWKSBootstrapFailureCollapses(t *testing.T) {
 	for index := 0; index < 8; index++ {
 		go func() {
 			<-start
-			_, err := provider.Authenticate(context.Background(), applicationauthentication.Credential{Token: token})
+			_, err := provider.Authenticate(context.Background(), applicationauthentication.Credential{Password: token})
 			errorsCh <- err
 		}()
 	}
@@ -347,7 +347,7 @@ func TestJWKSUnknownKeyRefreshCollapsesAndThrottles(t *testing.T) {
 	}
 	expires := now.Add(time.Minute)
 	knownToken := signedToken(t, oldKey.private, now, "https://issuer.example", "narumq", "device-1", &expires, nil)
-	if _, err := provider.Authenticate(context.Background(), applicationauthentication.Credential{Token: knownToken}); err != nil {
+	if _, err := provider.Authenticate(context.Background(), applicationauthentication.Credential{Password: knownToken}); err != nil {
 		t.Fatal(err)
 	}
 	clock.Advance(11 * time.Second)
@@ -360,7 +360,7 @@ func TestJWKSUnknownKeyRefreshCollapsesAndThrottles(t *testing.T) {
 	for index := 0; index < 16; index++ {
 		go func() {
 			<-start
-			_, err := provider.Authenticate(context.Background(), applicationauthentication.Credential{Token: unknownToken})
+			_, err := provider.Authenticate(context.Background(), applicationauthentication.Credential{Password: unknownToken})
 			errorsCh <- err
 		}()
 	}
@@ -373,7 +373,7 @@ func TestJWKSUnknownKeyRefreshCollapsesAndThrottles(t *testing.T) {
 	if got := requests.Load(); got != 2 {
 		t.Fatalf("JWKS requests after collapsed refresh = %d, want 2", got)
 	}
-	if _, err := provider.Authenticate(context.Background(), applicationauthentication.Credential{Token: signedToken(t, newTestKey(t, "other").private, now, "https://issuer.example", "narumq", "device-1", &expires, nil)}); !errors.Is(err, ErrUnknownKey) {
+	if _, err := provider.Authenticate(context.Background(), applicationauthentication.Credential{Password: signedToken(t, newTestKey(t, "other").private, now, "https://issuer.example", "narumq", "device-1", &expires, nil)}); !errors.Is(err, ErrUnknownKey) {
 		t.Fatalf("throttled unknown key error = %v, want %v", err, ErrUnknownKey)
 	}
 	if got := requests.Load(); got != 2 {
@@ -392,23 +392,23 @@ func TestJWKSFailedEarlyRefreshPreservesKnownKeyAndTTLDoesNotExtend(t *testing.T
 	provider, requests := newProviderFixture(t, clock, encodeJWKS(t, oldKey.public), status)
 	expires := now.Add(time.Minute)
 	knownToken := signedToken(t, oldKey.private, now, "https://issuer.example", "narumq", "device-1", &expires, nil)
-	if _, err := provider.Authenticate(context.Background(), applicationauthentication.Credential{Token: knownToken}); err != nil {
+	if _, err := provider.Authenticate(context.Background(), applicationauthentication.Credential{Password: knownToken}); err != nil {
 		t.Fatal(err)
 	}
 	clock.Advance(11 * time.Second)
 	status.Store(http.StatusInternalServerError)
 	unknownToken := signedToken(t, unknownKey.private, now, "https://issuer.example", "narumq", "device-1", &expires, nil)
-	if _, err := provider.Authenticate(context.Background(), applicationauthentication.Credential{Token: unknownToken}); !errors.Is(err, ErrUnknownKey) {
+	if _, err := provider.Authenticate(context.Background(), applicationauthentication.Credential{Password: unknownToken}); !errors.Is(err, ErrUnknownKey) {
 		t.Fatalf("failed early refresh error = %v, want %v", err, ErrUnknownKey)
 	}
-	if _, err := provider.Authenticate(context.Background(), applicationauthentication.Credential{Token: knownToken}); err != nil {
+	if _, err := provider.Authenticate(context.Background(), applicationauthentication.Credential{Password: knownToken}); err != nil {
 		t.Fatalf("known key fallback error = %v", err)
 	}
 	if got := requests(); got != 2 {
 		t.Fatalf("JWKS requests after early failure = %d, want 2", got)
 	}
 	clock.Advance(61 * time.Second)
-	if _, err := provider.Authenticate(context.Background(), applicationauthentication.Credential{Token: knownToken}); !errors.Is(err, ErrJWKSUnavailable) {
+	if _, err := provider.Authenticate(context.Background(), applicationauthentication.Credential{Password: knownToken}); !errors.Is(err, ErrJWKSUnavailable) {
 		t.Fatalf("expired cache error = %v, want %v", err, ErrJWKSUnavailable)
 	}
 	if got := requests(); got != 3 {
@@ -488,15 +488,15 @@ func TestNewJWKSAuthenticationProvider_ValidationErrors(t *testing.T) {
 
 func TestAuthenticate_NilInputs(t *testing.T) {
 	var provider *JWKSAuthenticationProvider
-	if _, err := provider.Authenticate(context.Background(), applicationauthentication.Credential{Token: []byte("a.b.c")}); !errors.Is(err, ErrInvalidCredential) {
+	if _, err := provider.Authenticate(context.Background(), applicationauthentication.Credential{Password: []byte("a.b.c")}); !errors.Is(err, ErrInvalidCredential) {
 		t.Fatalf("nil provider Authenticate error = %v", err)
 	}
 	clock := &testClock{now: time.Now()}
 	p, _ := newProviderFixture(t, clock, []byte("{}"), nil)
-	if _, err := p.Authenticate(nil, applicationauthentication.Credential{Token: []byte("a.b.c")}); !errors.Is(err, ErrInvalidCredential) {
+	if _, err := p.Authenticate(nil, applicationauthentication.Credential{Password: []byte("a.b.c")}); !errors.Is(err, ErrInvalidCredential) {
 		t.Fatalf("nil context Authenticate error = %v", err)
 	}
-	if _, err := p.Authenticate(context.Background(), applicationauthentication.Credential{Token: nil}); !errors.Is(err, ErrInvalidCredential) {
+	if _, err := p.Authenticate(context.Background(), applicationauthentication.Credential{Password: nil}); !errors.Is(err, ErrInvalidCredential) {
 		t.Fatalf("nil token Authenticate error = %v", err)
 	}
 }
