@@ -8,6 +8,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -329,7 +330,7 @@ func TestDynamicClusterDurableQoS2WillProcessAcceptance(t *testing.T) {
 	observer := clusterDurableProcessConnect(t, fixture.mqttAddresses[0], fixture.accessToken, "durable-will-observer", true)
 	defer observer.Close()
 	clusterDurableProcessSubscribe(t, observer, 1, "durable-will/+", 0)
-	clusterDurableProcessWaitForSubscriptions(t, ctx, nodes,
+	clusterDurableProcessWaitForSubscriptions(t, ctx, nodes, "acceptance",
 		"durable-will-observer|durable-will/+|0",
 		"durable-will-sub|durable-will/#|2")
 
@@ -494,9 +495,9 @@ func clusterDurableProcessConnectWill(t *testing.T, address, token, clientID str
 	return nil
 }
 
-func clusterDurableProcessListSubscriptions(ctx context.Context, process *clusterMembershipProcess) ([]string, error) {
+func clusterDurableProcessListSubscriptions(ctx context.Context, process *clusterMembershipProcess, tenantID string) ([]string, error) {
 	status, body, err := clusterMembershipProcessRequest(ctx, http.MethodGet,
-		process.managementURL()+"/api/v1/subscriptions?tenantId=acceptance", nil, clusterMembershipProcessAdmin, "")
+		process.managementURL()+"/api/v1/subscriptions?tenantId="+url.QueryEscape(tenantID), nil, clusterMembershipProcessAdmin, "")
 	if err != nil {
 		return nil, fmt.Errorf("%s subscription query: %w", process.name, err)
 	}
@@ -516,8 +517,8 @@ func clusterDurableProcessListSubscriptions(ctx context.Context, process *cluste
 	}
 	subscriptions := make([]string, 0, len(list.Data))
 	for _, subscription := range list.Data {
-		if subscription.TenantID != "acceptance" {
-			return nil, fmt.Errorf("%s subscription tenant = %q, want acceptance", process.name, subscription.TenantID)
+		if subscription.TenantID != tenantID {
+			return nil, fmt.Errorf("%s subscription tenant = %q, want %q", process.name, subscription.TenantID, tenantID)
 		}
 		subscriptions = append(subscriptions,
 			fmt.Sprintf("%s|%s|%d", subscription.ClientID, subscription.TopicFilter, subscription.QoS))
@@ -526,13 +527,13 @@ func clusterDurableProcessListSubscriptions(ctx context.Context, process *cluste
 	return subscriptions, nil
 }
 
-func clusterDurableProcessWaitForSubscriptions(t *testing.T, ctx context.Context, processes []*clusterMembershipProcess, want ...string) {
+func clusterDurableProcessWaitForSubscriptions(t *testing.T, ctx context.Context, processes []*clusterMembershipProcess, tenantID string, want ...string) {
 	t.Helper()
 	expected := append([]string(nil), want...)
 	sort.Strings(expected)
 	clusterMembershipProcessWait(t, ctx, fmt.Sprintf("subscription projection %v", expected), func() (bool, string, error) {
 		for _, process := range processes {
-			got, err := clusterDurableProcessListSubscriptions(ctx, process)
+			got, err := clusterDurableProcessListSubscriptions(ctx, process, tenantID)
 			if err != nil {
 				return false, err.Error(), nil
 			}

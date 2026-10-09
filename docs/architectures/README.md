@@ -11,7 +11,7 @@
 | `Transitional` | Current에서 Target으로 이동하는 임시 구조 |
 | `Historical` | 대체되어 참고용으로만 남긴 구조 |
 
-문서 상태 `Draft`는 아직 구현 증거로 검증하지 않았음을 뜻한다. `Verified`는 연결된 source·manifest·test artifact와 view가 일치할 때만 사용한다.
+문서 상태 `Draft`는 문서 승인 또는 구현 증거 대조가 아직 끝나지 않았음을 뜻한다. `Verified`는 연결된 source·manifest·test artifact와 view가 일치할 때만 사용한다.
 
 관점 상태(`Current`/`Target`/`Transitional`/`Historical`)는 문서가 설명하는 구조 시점을 뜻하고, 문서 상태(`Draft`/`Active`/`Verified`)는 채택·증거 수준을 뜻한다. `Target` view를 `Verified`로 표시해도 목표 설계가 코드에 구현됐다는 의미는 아니다. 코드 지도는 확인한 코드 위치만 `Current`로 기록하며, Project structure 전체의 상태를 그 절에 일괄 적용하지 않는다.
 
@@ -26,6 +26,7 @@
 | [Cluster architecture](cluster-architecture.md) | Quorum, ownership, routing과 durable state는 어떻게 연결되는가? | Target / Draft | Cluster spec, ADR-0002~0004 |
 | [EKS on EC2 deployment architecture](eks-ec2-deployment.md) | Logical broker node는 NLB·EKS·EC2·EBS에 어떻게 대응하는가? | Target / Draft | DEP-19~23, ADR-0006~0007 |
 | [Security boundaries](security-boundaries.md) | Client·node·관리 plane의 trust boundary와 enforcement point는 어디인가? | Target / Draft | Tenant와 security spec, Management API·Audit event contract |
+| [Threat model](threat-model.md) | Tenant 격리를 깨는 공격은 무엇이고 어디서 막는가? | Current / Draft | NFR-19, Tenant와 security §9 |
 
 ## 권장 읽기 순서
 
@@ -36,9 +37,12 @@
 5. Cluster architecture
 6. EKS on EC2 deployment architecture
 7. Security boundaries
+8. Threat model
 
 구체적인 선택 이유가 필요하면 [ADR catalog](../decisions/README.md), source 작성 규칙은 [Convention catalog](../conventions/README.md), protocol과 분산 원리는 [기술 해설](../explainers/README.md)을 읽는다. 외부 동작과 정확한 형식의 기준은 각각 [시스템 스펙](../specs/README.md)과 [Contract catalog](../contracts/README.md)이다.
 
 ## 현재 한계
 
 System overview, broker core, cluster, deployment, security view는 현재 `Target / Draft`다. [Project structure](project-structure.md)는 `Active`이며 구현된 package facts와 명시적인 `Target repository tree`를 함께 담는다. [Management HTTP adapter module design](management-http-module.md)은 source와 시험 대조를 마친 `Current / Verified` 문서다. `Target` 경로만으로 구현 완료나 production 지원을 주장하지 않으며, 관점 상태와 구현 증거는 각 문서 metadata 및 연결된 source·test evidence로 판단한다.
+
+[Threat model](threat-model.md)은 자동 사전 시험과 대조한 `Current / Draft` 문서다. 문서 승인, 잔여 위험 승인과 독립 penetration test는 남아 있다.

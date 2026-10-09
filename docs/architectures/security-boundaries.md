@@ -13,6 +13,7 @@ NaruMQ의 security architecture는 network 위치만으로 신뢰를 부여하�
 | 관련 스펙 | [Tenant와 security](../specs/tenancy-and-security.md), [Management API와 observability](../specs/management-api-and-observability.md) |
 | 관련 Contract | [Management API v1](../contracts/management-api-v1.md), [Audit event v1](../contracts/audit-event-v1.md), [MQTT client compatibility v1](../contracts/mqtt-client-compatibility-v1.md) |
 | 관련 결정 | [ADR-0039](../decisions/ADR-0039-management-audit-log.md), [ADR-0043](../decisions/ADR-0043-management-api-rate-limit.md); API authentication product와 secret 관리 ADR은 미작성 |
+| Threat model | [Threat model](threat-model.md) |
 | 최종 확인일 | 2026-10-09 |
 
 ## Trust boundary view

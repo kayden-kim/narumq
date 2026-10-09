@@ -193,6 +193,7 @@ BP-01~BP-07의 phase, metric, timeout/error 경계와 실행 증거는 [Performa
 | --- | --- | --- |
 | Package unit/fuzz | 대상 package의 `*_test.go` | Package-local invariant와 경계 |
 | Process integration | `tests/integration/*_process_test.go` | 실제 broker process, socket, cluster 상태·복구 흐름 |
+| Tenant isolation penetration | `tests/integration/cluster_tenant_isolation_pentest_process_test.go::TestDynamicClusterTenantIsolationPenetrationProcessAcceptance` | 실제 3-node에서 tenant 격리·management 인증 공격. 위협 대응은 [Threat model](threat-model.md), 실행 증거는 [Tenant와 security §9.3](../specs/tenancy-and-security.md#93-nfr-19-자동-penetration-test-실행-증거)에 둔다. |
 | Dashboard acceptance | `tests/integration/dashboard_stack_test.go::TestDashboardProvisioningMatchesContracts`, `TestDashboardStackProcessAcceptance` | Static contract; opt-in Grafana/Prometheus acceptance checks Management API query frames, three ready broker processes, MQTT traffic and rejection metrics, ReadOnly role boundaries, and completed node drain. |
 | MQTT conformance | `tests/conformance/mqtt-compliance-v1.json` | 지원한다고 선언한 normative statement와 source test 연결 |
 | SDK compatibility | `tests/compatibility/mqtt-clients-v1` | 외부 Go/Python client 실행, result·trace 검증 |

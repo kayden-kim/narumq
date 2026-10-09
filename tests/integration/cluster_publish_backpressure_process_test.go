@@ -27,7 +27,7 @@ func TestDynamicClusterPublishBackpressureProcessAcceptance(t *testing.T) {
 	}
 	subscriber := connectV5(3, "bp-sub")
 	clusterDrainProcessSubscribeV5(t, subscriber, 1, "bp/#", 1)
-	clusterDurableProcessWaitForSubscriptions(t, fixture.ctx, nodes, "bp-sub|bp/#|1")
+	clusterDurableProcessWaitForSubscriptions(t, fixture.ctx, nodes, "acceptance", "bp-sub|bp/#|1")
 	seen := map[string]int{}
 	live := 0
 	consumeUntil := func(want string) {

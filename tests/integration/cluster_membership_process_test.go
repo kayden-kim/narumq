@@ -1684,7 +1684,19 @@ func newClusterMembershipProcessCertificate(t *testing.T, ca clusterMembershipPr
 		dnsName: dnsName, fingerprint: sha256.Sum256(certificate.Raw),
 	}
 }
+
+type clusterProcessJWTIssuer struct {
+	jwksURL    string
+	signingKey jwk.Key
+}
+
 func clusterMembershipProcessJWTFixture(t *testing.T) (string, string) {
+	t.Helper()
+	issuer := newClusterProcessJWTIssuer(t, "process-acceptance-key")
+	return issuer.jwksURL, issuer.sign(t, "mqtt-process-client", time.Now().Add(time.Hour), nil)
+}
+
+func newClusterProcessJWTIssuer(t *testing.T, keyID string) *clusterProcessJWTIssuer {
 	t.Helper()
 	privateKey, err := rsa.GenerateKey(rand.Reader, 2048)
 	if err != nil {
@@ -1694,7 +1706,7 @@ func clusterMembershipProcessJWTFixture(t *testing.T) (string, string) {
 	if err != nil {
 		t.Fatalf("import MQTT process-test signing key: %v", err)
 	}
-	if err := signingKey.Set("kid", "process-acceptance-key"); err != nil {
+	if err := signingKey.Set("kid", keyID); err != nil {
 		t.Fatalf("set process-test signing key ID: %v", err)
 	}
 	if err := signingKey.Set("alg", "RS256"); err != nil {
@@ -1704,7 +1716,7 @@ func clusterMembershipProcessJWTFixture(t *testing.T) (string, string) {
 	if err != nil {
 		t.Fatalf("derive MQTT process-test public key: %v", err)
 	}
-	if err := publicKey.Set("kid", "process-acceptance-key"); err != nil {
+	if err := publicKey.Set("kid", keyID); err != nil {
 		t.Fatalf("set process-test public key ID: %v", err)
 	}
 	if err := publicKey.Set("alg", "RS256"); err != nil {
@@ -1723,23 +1735,32 @@ func clusterMembershipProcessJWTFixture(t *testing.T) (string, string) {
 		_, _ = writer.Write(keySetJSON)
 	}))
 	t.Cleanup(server.Close)
+	return &clusterProcessJWTIssuer{jwksURL: server.URL + "/jwks.json", signingKey: signingKey}
+}
 
+func (issuer *clusterProcessJWTIssuer) sign(t *testing.T, subject string, expiresAt time.Time, extraClaims map[string]any) string {
+	t.Helper()
 	token := jwt.New()
 	for name, value := range map[string]any{
 		"iss": "https://issuer.example",
 		"aud": []string{"narumq"},
-		"sub": "mqtt-process-client",
-		"exp": time.Now().Add(time.Hour),
+		"sub": subject,
+		"exp": expiresAt,
 	} {
 		if err := token.Set(name, value); err != nil {
 			t.Fatalf("set process-test JWT claim %q: %v", name, err)
 		}
 	}
-	signedToken, err := jwt.Sign(token, jwt.WithKey(jwa.RS256(), signingKey))
+	for name, value := range extraClaims {
+		if err := token.Set(name, value); err != nil {
+			t.Fatalf("set process-test JWT extra claim %q: %v", name, err)
+		}
+	}
+	signedToken, err := jwt.Sign(token, jwt.WithKey(jwa.RS256(), issuer.signingKey))
 	if err != nil {
 		t.Fatalf("sign MQTT process-test JWT: %v", err)
 	}
-	return server.URL + "/jwks.json", string(signedToken)
+	return string(signedToken)
 }
 
 func clusterMembershipProcessRepoRoot(t *testing.T) string {
@@ -2018,6 +2039,17 @@ func clusterMembershipProcessDecodeOperation(body []byte) (clusterMembershipProc
 }
 
 func clusterMembershipProcessRequest(ctx context.Context, method, url string, body []byte, token, idempotencyKey string) (int, []byte, error) {
+	header := make(http.Header)
+	if token != "" {
+		header.Set("Authorization", "Bearer "+token)
+	}
+	if idempotencyKey != "" {
+		header.Set("Idempotency-Key", idempotencyKey)
+	}
+	return clusterMembershipProcessRequestWithHeader(ctx, method, url, body, header)
+}
+
+func clusterMembershipProcessRequestWithHeader(ctx context.Context, method, url string, body []byte, header http.Header) (int, []byte, error) {
 	requestCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
 	var reader io.Reader
@@ -2028,14 +2060,11 @@ func clusterMembershipProcessRequest(ctx context.Context, method, url string, bo
 	if err != nil {
 		return 0, nil, err
 	}
+	for name, values := range header {
+		request.Header[name] = append([]string(nil), values...)
+	}
 	if body != nil {
 		request.Header.Set("Content-Type", "application/json")
-	}
-	if token != "" {
-		request.Header.Set("Authorization", "Bearer "+token)
-	}
-	if idempotencyKey != "" {
-		request.Header.Set("Idempotency-Key", idempotencyKey)
 	}
 	// Child processes reuse listener addresses after restart; do not reuse pooled connections across process lifetimes.
 	transport := &http.Transport{Proxy: nil, DisableKeepAlives: true}

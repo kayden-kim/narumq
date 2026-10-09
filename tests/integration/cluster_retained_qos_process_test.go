@@ -161,7 +161,7 @@ func TestDynamicClusterRetainedQoS12ProcessAcceptance(t *testing.T) {
 	clusterRetainedQoSPing(t, live)
 
 	// 11. A caller timeout does not prove retained mutation was unapplied.
-	clusterMatrixWaitForRetained(t, ctx, nodes, pending, len("pending"))
+	clusterMatrixWaitForRetained(t, ctx, nodes, "acceptance", pending, len("pending"))
 	got := clusterRetainedQoSReplay(t, addr[0], token, "retained-qos12-replay-8", 2)
 	filtered := got[:0]
 	lateCommit := false

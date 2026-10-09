@@ -71,7 +71,7 @@ func TestDynamicClusterTenantStorageQuotaProcessAcceptance(t *testing.T) {
 	const durableFilter = "durable-takeover/quota/#"
 	offlineSubscriber := clusterDurableProcessConnect(t, fixture.mqttAddresses[0], fixture.accessToken, "durable-takeover-sub", false)
 	clusterDurableProcessSubscribe(t, offlineSubscriber, 1, durableFilter, 1)
-	clusterDurableProcessWaitForSubscriptions(t, ctx, nodes,
+	clusterDurableProcessWaitForSubscriptions(t, ctx, nodes, "acceptance",
 		"retained-subscriber-source|"+retainedTopic+"|0", "durable-takeover-sub|"+durableFilter+"|1")
 	clusterDurableProcessWriteFatal(t, offlineSubscriber, 0xE0, nil)
 	clusterMembershipProcessAssertConnectionClosed(t, offlineSubscriber, 2*time.Second)

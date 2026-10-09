@@ -77,7 +77,7 @@ func TestDynamicClusterConcurrentConnectProcessAcceptance(t *testing.T) {
 		publisher := clusterDurableProcessConnect(t, fixture.mqttAddresses[0], fixture.accessToken, "matrix-pub", true)
 		defer publisher.Close()
 		clusterDurableProcessSubscribe(t, winner.conn, 1, "concurrent/held", 1)
-		clusterDurableProcessWaitForSubscriptions(t, fixture.ctx, nodes, "concurrent-held|concurrent/held|1")
+		clusterDurableProcessWaitForSubscriptions(t, fixture.ctx, nodes, "acceptance", "concurrent-held|concurrent/held|1")
 		clusterDurableProcessPublish(t, publisher, "concurrent/held", 1, 610, "after-race")
 		clusterDurableProcessAck(t, publisher, 4, 610)
 		delivery := clusterDurableProcessRead(t, winner.conn)
@@ -140,7 +140,7 @@ func TestDynamicClusterStaleEpochFencingProcessAcceptance(t *testing.T) {
 		defer oldOwner.Close()
 		clusterDurableProcessSubscribe(t, oldOwner, 1, "stale/a", 1)
 		want = append(want, "stale-owner|stale/a|1")
-		clusterDurableProcessWaitForSubscriptions(t, fixture.ctx, nodes, want...)
+		clusterDurableProcessWaitForSubscriptions(t, fixture.ctx, nodes, "acceptance", want...)
 
 		clusterFencingWriteHold(t, controlPaths[2], "subscription")
 		t.Cleanup(func() { clusterDurableFaultClearControl(t, controlPaths[2]) })
@@ -173,7 +173,7 @@ func TestDynamicClusterStaleEpochFencingProcessAcceptance(t *testing.T) {
 		}
 		clusterFencingAck(t, newOwner, delivery.packetID)
 		clusterMatrixAssertQuiet(t, newOwner, time.Second)
-		clusterDurableProcessWaitForSubscriptions(t, fixture.ctx, nodes, want...)
+		clusterDurableProcessWaitForSubscriptions(t, fixture.ctx, nodes, "acceptance", want...)
 	})
 
 	t.Run("stale-inflight-complete", func(t *testing.T) {
@@ -181,7 +181,7 @@ func TestDynamicClusterStaleEpochFencingProcessAcceptance(t *testing.T) {
 		defer oldOwner.Close()
 		clusterDurableProcessSubscribe(t, oldOwner, 1, "stale/inflight", 1)
 		want = append(want, "stale-inflight|stale/inflight|1")
-		clusterDurableProcessWaitForSubscriptions(t, fixture.ctx, nodes, want...)
+		clusterDurableProcessWaitForSubscriptions(t, fixture.ctx, nodes, "acceptance", want...)
 
 		clusterDurableProcessPublish(t, publisher, "stale/inflight", 1, 703, "m1")
 		clusterDurableProcessAck(t, publisher, 4, 703)

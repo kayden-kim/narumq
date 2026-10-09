@@ -72,6 +72,8 @@ PRD는 `Draft` 상태이므로 이 목록은 요구사항을 구현 기준으로
 - [ ] **결정 필요 · 미구현 — security 후속 요구사항(SEC-05·SEC-07·SEC-10·SEC-12)**: [Tenant와 security 스펙 §9](specs/tenancy-and-security.md#9-수용-시험과-범위)는 password 방식, credential 회전·폐기, Management API·Dashboard 권한과 blocklist를 후속 acceptance로 분류한다. PRD의 P0/P1 상태와 실제 채택 범위를 맞춘다. 범위를 채택하면 password 사용 여부와 salted hash, 전 node credential 전파·기존 연결 재인증, 관리 화면까지 포함한 역할 경계와 client·IP 차단을 정책·시험으로 확정한다. 범위를 미루면 PRD의 우선순위와 출시 gate를 승인된 변경으로 갱신한다.
 - [ ] **부분 구현 — Management plane 감사 이벤트(SEC-11·NFR-17·API-08)**: [ADR-0039](decisions/ADR-0039-management-audit-log.md)에서 저장 방식·장애 정책·파일 위치를 채택했다. [Audit event v1 계약](contracts/audit-event-v1.md)은 Broker management producer 범위에서 `Active`다. Cluster mode의 활성 mutation 8개, 401·403 거절, node-local hash chain, `-audit-verify`는 구현하고 [Tenant와 security 스펙 §9](specs/tenancy-and-security.md#9-수용-시험과-범위)에 시험과 실행 증거를 연결했다. 보존 기간·SIEM 접근 권한은 외부 결정이다. Rollout controller producer, SIEM consumer의 unknown action/reason 검증, MQTT data-plane 거절 감사는 후속 범위다.
 - [ ] **미검증 — 보안 출시 gate(NFR-19)**: [PRD §11.4·§15.4](requirements/PRD.md)의 threat model과 tenant-isolation penetration test를 release 전에 수행한다. 신뢰 경계·공격 사례를 승인된 threat model에 기록하고, penetration test의 결과와 해결 또는 위험 승인 기록을 남긴다.
+  - 자동 사전 시험과 [threat model 초안](architectures/threat-model.md)을 완료했다. 시험 위치와 실행 증거는 [Tenant와 security §9.3](specs/tenancy-and-security.md#93-nfr-19-자동-penetration-test-실행-증거)에 있다.
+  - 남은 조건은 threat model 승인, R-01~R-07 해결 또는 위험 승인, 독립 penetration test다. NFR-19는 `미검증`으로 유지한다.
 
 ### 1.8 Management API·observability와 Dashboard
 

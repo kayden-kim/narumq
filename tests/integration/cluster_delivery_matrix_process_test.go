@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"net/url"
 	"strings"
 	"sync"
 	"testing"
@@ -243,7 +244,7 @@ func TestDynamicClusterCrossNodeDeliveryMatrixProcessAcceptance(t *testing.T) {
 
 	t.Run("retained-and-options", func(t *testing.T) {
 		clusterMatrixPublish(t, publisher, "retain/one", 1, 300, "r1", true)
-		clusterMatrixWaitForRetained(t, ctx, nodes, "retain/one", len("r1"))
+		clusterMatrixWaitForRetained(t, ctx, nodes, "acceptance", "retain/one", len("r1"))
 
 		retainV311 := clusterDurableProcessConnect(t, fixture.mqttAddresses[2], fixture.accessToken, "retain-v311", false)
 		defer retainV311.Close()
@@ -382,7 +383,7 @@ func clusterMatrixConnectV5WithServerUnavailableRetry(
 }
 func clusterMatrixWaitForSubscriptions(t *testing.T, ctx context.Context, nodes []*clusterMembershipProcess, want ...string) {
 	t.Helper()
-	clusterDurableProcessWaitForSubscriptions(t, ctx, nodes, want...)
+	clusterDurableProcessWaitForSubscriptions(t, ctx, nodes, "acceptance", want...)
 	for _, process := range nodes {
 		clusterMembershipProcessWaitForStatus(t, ctx, process, "/health/ready", http.StatusOK)
 	}
@@ -564,12 +565,12 @@ func clusterMatrixSubscribeV5(t *testing.T, fixture *clusterMembershipProcessFix
 		t.Fatalf("MQTT 5 SUBACK kind=%d body=%x err=%v, want packet=%d reason=%d", kind, ack, err, packetID, grantedQoS)
 	}
 }
-func clusterMatrixWaitForRetained(t *testing.T, ctx context.Context, nodes []*clusterMembershipProcess, topic string, payloadBytes int) {
+func clusterMatrixWaitForRetained(t *testing.T, ctx context.Context, nodes []*clusterMembershipProcess, tenantID, topic string, payloadBytes int) {
 	t.Helper()
 	clusterMembershipProcessWait(t, ctx, fmt.Sprintf("retained projection for %q", topic), func() (bool, string, error) {
 		for _, process := range nodes {
 			status, body, err := clusterMembershipProcessRequest(ctx, http.MethodGet,
-				process.managementURL()+"/api/v1/retained?tenantId=acceptance", nil, clusterMembershipProcessAdmin, "")
+				process.managementURL()+"/api/v1/retained?tenantId="+url.QueryEscape(tenantID), nil, clusterMembershipProcessAdmin, "")
 			if err != nil {
 				return false, fmt.Sprintf("%s retained query: %v", process.name, err), nil
 			}
@@ -588,7 +589,7 @@ func clusterMatrixWaitForRetained(t *testing.T, ctx context.Context, nodes []*cl
 			}
 			found := false
 			for _, retained := range response.Data {
-				if retained.TenantID == "acceptance" && retained.Topic == topic && retained.PayloadBytes == payloadBytes {
+				if retained.TenantID == tenantID && retained.Topic == topic && retained.PayloadBytes == payloadBytes {
 					found = true
 					break
 				}

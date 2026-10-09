@@ -50,7 +50,7 @@ func TestDynamicClusterPersistentSubscriptionReplayProcessAcceptance(t *testing.
 	clusterDurableProcessSubscribe(t, subscriber, 2, plusFilter, 2)
 	clusterDurableProcessSubscribe(t, subscriber, 3, goneFilter, 1)
 	clusterDurableProcessUnsubscribe(t, subscriber, 4, goneFilter)
-	clusterDurableProcessWaitForSubscriptions(t, ctx, nodes, phaseASubscriptions...)
+	clusterDurableProcessWaitForSubscriptions(t, ctx, nodes, "acceptance", phaseASubscriptions...)
 	clusterDurableProcessWriteFatal(t, subscriber, 0xE0, nil)
 	clusterMembershipProcessAssertConnectionClosed(t, subscriber, 2*time.Second)
 	_ = subscriber.Close()
@@ -72,7 +72,7 @@ func TestDynamicClusterPersistentSubscriptionReplayProcessAcceptance(t *testing.
 		nodes[index] = process
 	}
 	clusterMembershipProcessWaitForBootstrap(t, ctx, nodes)
-	clusterDurableProcessWaitForSubscriptions(t, ctx, nodes, phaseASubscriptions...)
+	clusterDurableProcessWaitForSubscriptions(t, ctx, nodes, "acceptance", phaseASubscriptions...)
 
 	publisher := clusterDurableProcessConnect(t, fixture.mqttAddresses[0], fixture.accessToken, "replay-pub-1", true)
 	defer publisher.Close()
@@ -142,7 +142,7 @@ func TestDynamicClusterPersistentSubscriptionReplayProcessAcceptance(t *testing.
 		if status != http.StatusOK {
 			return false, fmt.Sprintf("joiner readiness status=%d body=%s", status, body), nil
 		}
-		got, err := clusterDurableProcessListSubscriptions(ctx, joiner)
+		got, err := clusterDurableProcessListSubscriptions(ctx, joiner, "acceptance")
 		if err != nil {
 			return false, "list joiner subscriptions at first readiness: " + err.Error(), err
 		}
@@ -197,7 +197,7 @@ func TestDynamicClusterPersistentSubscriptionReplayProcessAcceptance(t *testing.
 		subscriberID + "|" + exactFilter + "|1",
 		subscriberID + "|" + lateFilter + "|1",
 	}
-	clusterDurableProcessWaitForSubscriptions(t, ctx, allNodes, phaseDSubscriptions...)
+	clusterDurableProcessWaitForSubscriptions(t, ctx, allNodes, "acceptance", phaseDSubscriptions...)
 	for index := range nodes {
 		dataDir := filepath.Join(fixture.tempDir, fmt.Sprintf("node-%d-data", index+1))
 		got := clusterSubscriptionReplayLatestSnapshotIndex(t, dataDir)
@@ -229,7 +229,7 @@ func TestDynamicClusterPersistentSubscriptionReplayProcessAcceptance(t *testing.
 	}
 	allNodes[3] = joiner
 	clusterMembershipProcessWaitForClusterSize(t, ctx, allNodes, 4)
-	clusterDurableProcessWaitForSubscriptions(t, ctx, allNodes, phaseDSubscriptions...)
+	clusterDurableProcessWaitForSubscriptions(t, ctx, allNodes, "acceptance", phaseDSubscriptions...)
 
 	_ = subscriber.Close()
 	subscriber = clusterDurableProcessConnect(t, fixture.mqttAddresses[3], fixture.accessToken, subscriberID, false)

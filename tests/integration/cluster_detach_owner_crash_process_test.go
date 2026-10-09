@@ -54,7 +54,7 @@ func clusterDetachOwnerCrashScenario(t *testing.T, point string) {
 	subscriber := clusterSessionMetadataConnect(t, fixture.mqttAddresses[2], fixture.accessToken, clientID, 300, nil)
 	defer subscriber.Close()
 	clusterSessionMetadataSubscribe(t, subscriber, 41, filter)
-	clusterDurableProcessWaitForSubscriptions(t, fixture.ctx, nodes, clientID+"|"+filter+"|1")
+	clusterDurableProcessWaitForSubscriptions(t, fixture.ctx, nodes, "acceptance", clientID+"|"+filter+"|1")
 	clusterMembershipProcessPublish(t, fixture.mqttAddresses[0], fixture.accessToken, "detach-crash-pub-live", liveTopic, []byte("live"))
 	live := clusterSessionMetadataReadPublish(t, subscriber, 5*time.Second, true)
 	if live.topic != liveTopic || live.payload != "live" || live.qos != 0 {

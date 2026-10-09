@@ -58,7 +58,7 @@ func TestDynamicClusterTenantLimitsProcessAcceptance(t *testing.T) {
 	if got := clusterTenantLimitsProcessSubscribeResult(t, subB, 1, filterB); len(got) != 1 || got[0] != 0 {
 		t.Fatalf("tl-sub-2 SUBACK=%v, want [0x00]", got)
 	}
-	clusterDurableProcessWaitForSubscriptions(t, ctx, nodes,
+	clusterDurableProcessWaitForSubscriptions(t, ctx, nodes, "acceptance",
 		"tl-sub-1|"+filterA+"|0", "tl-sub-2|"+filterB+"|0")
 
 	subC, code := clusterTenantLimitsProcessConnectResult(t, fixture.mqttAddresses[2], fixture.accessToken, "tl-sub-3")
