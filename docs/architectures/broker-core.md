@@ -140,9 +140,11 @@ cmd/narumq
   억제하며 집계하지 않는다. 후계의 표준 판단은 [ADR-0028](../decisions/ADR-0028-planned-handoff-will-and-reason-metric.md)을 따른다. 이전 epoch의 DETACH·DISCARD 등 replicated session mutation은 committed
   owner/epoch 검증에서 거절된다. Password 방식의 `Username`은 case-sensitive exact lookup
   key이며 나머지 identity는 static binding에서 가져온다. Username과 Password는 log에 남기지 않는다.
-  Cluster CONNECT는 ownership commit 뒤 TCP adapter에서 fresh revocation read를 통과해야
-  성공 CONNACK을 보낸다. Checker 오류와 committed revoked ID는 fail-closed한다. Committed
-  revoke apply는 일치하는 활성 연결을 닫고 Will을 억제한다. Credential expiry timer는 JWT
+  Cluster `connect.UseCase.ConnectContext`는 인증한 `credentialId`를 allowed Client ID 검사와
+  session·ownership 변경 전에 committed state에서 확인한다. Checker 오류와 revoked ID는
+  fail-closed한다. Ownership commit 뒤 `tcp.connection.activate`가 fresh committed read를
+  다시 수행하고, 통과한 연결에만 CONNACK을 보낸다. 두 번째 검사는 두 읽기 사이의 revoke
+  경쟁을 막는다. Apply는 일치하는 활성 연결을 닫고 Will을 억제한다. Expiry timer는 JWT
   `exp` 또는 certificate `NotAfter`를 사용한다. Expiry는 `DisconnectAbnormal` Will 처리를
   유지한다.
 - `adapters/memory/deliveryqueue`, `adapters/memory/retained`, `adapters/memory/sessionstore`는

@@ -93,7 +93,7 @@ Principal 종류를 공유 credential 하나로 합치지 않는다. 특히 MQTT
 | --- | --- | --- |
 | TLS listener | Protocol, cipher, server certificate, trust anchor와 선택한 client authentication | Tenant와 security spec |
 | MQTT CONNECT | Configured JWT/password provider 또는 verified certificate selector, tenant·Client ID binding, blocklist와 connection quota | MQTT·security spec |
-| Credential revocation | Ownership commit 뒤 fresh committed-state read; committed apply 때 일치하는 active session을 닫는다. | SEC-07, ADR-0049 |
+| Credential revocation | Dynamic cluster의 authenticated `ConnectContext`가 committed revocation state를 Client ID·session·ownership 변경 전에 확인하고, TCP `connection.activate`가 ownership commit 뒤 다시 확인한다. Committed apply는 일치하는 active session을 닫는다. | SEC-07, ADR-0049 |
 | Publish·subscribe·Will | Canonical topic, action ACL, quota와 owner epoch | Tenant·cluster spec |
 | Session takeover | Authenticated session key와 quorum-committed epoch | Cluster spec, ADR-0004 |
 | Management API | API key·OIDC·break-glass principal, 명시적 4-role permission matrix, mutation idempotency, node-local audit query와 authenticated-principal request bucket·remote-IP failed-authentication bucket | Management API spec·contract, ADR-0043·ADR-0048. Role은 tenant별 scope를 부여하지 않는다. |

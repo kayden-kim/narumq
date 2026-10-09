@@ -32,8 +32,12 @@ func (checker *tcpCredentialRevocationChecker) IsCredentialRevoked(_ context.Con
 	checker.mu.Lock()
 	defer checker.mu.Unlock()
 	checker.checked = append(checker.checked, credentialID)
+	if checker.ownershipCommitted != nil && !checker.ownershipCommitted() {
+		checker.checkedAfterOwnership = false
+		return false, nil
+	}
 	if checker.ownershipCommitted != nil {
-		checker.checkedAfterOwnership = checker.ownershipCommitted()
+		checker.checkedAfterOwnership = true
 	}
 	return checker.revoked, checker.err
 }
@@ -256,8 +260,8 @@ func TestTCPConnectRejectsRevokedCredentialAfterOwnershipCommit(t *testing.T) {
 			checkedAfterOwnership := checker.checkedAfterOwnership
 			checked := append([]string(nil), checker.checked...)
 			checker.mu.Unlock()
-			if !checkedAfterOwnership || len(checked) != 1 || checked[0] != "credential-a" {
-				t.Fatalf("revocation checks = %v after ownership commit=%t", checked, checkedAfterOwnership)
+			if !checkedAfterOwnership || len(checked) != 2 || checked[0] != "credential-a" || checked[1] != "credential-a" {
+				t.Fatalf("revocation checks = %v with final check after ownership=%t", checked, checkedAfterOwnership)
 			}
 			denials := auditRecorder.snapshot()
 			if test.revoked {

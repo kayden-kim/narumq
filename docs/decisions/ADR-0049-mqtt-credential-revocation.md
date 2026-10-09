@@ -51,7 +51,7 @@ SEC-07은 기존 rolling restart, replicated `credentialId` 폐기와 JWT `exp`�
 
 기존 rolling restart는 security configuration을 모든 node에 반영하는 운영 경로다. 신·구 credential을 함께 배포하면 client를 새 credential로 전환할 수 있고, 이후 replicated `credentialId` 폐기로 구 credential의 새 인증과 기존 연결을 회수할 수 있다. Hot reload controller를 추가하지 않아 설정 변경과 replicated 폐기 상태의 두 가지 갱신 경로를 만들지 않는다.
 
-복제된 폐기 entry는 node가 commit된 상태를 apply한 시점에 CONNECT와 연결 종료에 사용한다. Cluster의 새 CONNECT는 quorum commit된 ownership 경계를 거친 뒤 TCP adapter에서 폐기 상태를 다시 확인한다. Quorum에 도달하지 못한 node는 새 연결을 수락하지 않는다. `credentialId`를 폐기 단위로 고정하면 token 발급 시각 해석이나 credential 형식별 폐기 규칙이 필요하지 않다.
+복제된 폐기 entry는 node가 commit된 상태를 apply한 시점에 CONNECT와 연결 종료에 사용한다. Authenticated `ConnectContext`는 폐기 여부를 allowed Client ID 검사와 session·ownership 변경 전에 확인한다. Ownership commit 뒤 TCP adapter가 fresh committed read를 다시 수행해 두 검사 사이의 revoke 경쟁을 막는다. Checker 오류와 revoked credential은 fail-closed한다. `credentialId`를 폐기 단위로 고정하면 token 발급 시각 해석이나 credential 형식별 폐기 규칙이 필요하지 않다.
 
 ## 5. 대안
 

@@ -150,7 +150,7 @@ func WithOwnershipCoordinator(coordinator OwnershipCoordinator, ownerNodeID uint
 	}
 }
 
-// WithCredentialRevocationChecker configures committed-state checks before Will publication.
+// WithCredentialRevocationChecker configures committed-state checks before CONNECT ownership and Will publication.
 func WithCredentialRevocationChecker(checker CredentialRevocationChecker) Option {
 	return func(useCase *UseCase) {
 		useCase.credentialRevocationChecker = checker
@@ -588,7 +588,7 @@ func (useCase *UseCase) Connect(packet mqtt.Connect) (ResultDTO, error) {
 	return useCase.ConnectContext(context.Background(), ConnectRequestDTO{Packet: packet})
 }
 
-// ConnectContext validates authentication, tenant binding, and Will authorization
+// ConnectContext validates authentication, tenant binding, revocation, and Will authorization
 // before granting session ownership.
 func (useCase *UseCase) ConnectContext(ctx context.Context, request ConnectRequestDTO) (ResultDTO, error) {
 	if useCase == nil {
@@ -665,6 +665,18 @@ func (useCase *UseCase) ConnectContext(ctx context.Context, request ConnectReque
 	}
 
 	if authenticated {
+		if authResult.CredentialID != "" && useCase.credentialRevocationChecker != nil {
+			revoked, checkErr := useCase.credentialRevocationChecker.IsCredentialRevoked(ctx, authResult.CredentialID)
+			if checkErr != nil {
+				result.ConnAck.ReasonCode = ownershipUnavailableReason(packet.Version)
+				return result, nil
+			}
+			if revoked {
+				useCase.rejectAuthentication(request, authMethod, "credential_revoked", &authResult)
+				result.ConnAck.ReasonCode = notAuthorizedReason(packet.Version)
+				return result, nil
+			}
+		}
 		allowed := false
 		for _, allowedID := range authResult.AllowedClientIDs {
 			if allowedID == packet.ClientID {
