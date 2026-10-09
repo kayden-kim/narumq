@@ -8,6 +8,7 @@ import (
 	"time"
 
 	applicationdeliveryqueue "narumq/internal/application/ports/deliveryqueue"
+	portsmetrics "narumq/internal/application/ports/metrics"
 	applicationretained "narumq/internal/application/ports/retained"
 	"narumq/internal/domain/mqtt"
 	"narumq/internal/domain/routing"
@@ -108,6 +109,23 @@ func (queue *recordingQueue) BeginCompleteOutbound(outbound applicationdeliveryq
 func (*recordingQueue) ResetDurable(routing.SessionID, uint64, []applicationdeliveryqueue.DeliveryDTO, []applicationdeliveryqueue.OutboundDTO, time.Time) error {
 	return nil
 }
+
+type publishMetricsRecorder struct {
+	dropped []string
+}
+
+func (*publishMetricsRecorder) ConnectionOpened(string, string)  {}
+func (*publishMetricsRecorder) ConnectionClosed(string, string)  {}
+func (*publishMetricsRecorder) PacketReceived(string)            {}
+func (*publishMetricsRecorder) PacketSent(string)                {}
+func (*publishMetricsRecorder) AuthAttempt(string, bool, string) {}
+func (*publishMetricsRecorder) ConnectRejected(string, string)   {}
+func (recorder *publishMetricsRecorder) MessageDropped(reason string) {
+	recorder.dropped = append(recorder.dropped, reason)
+}
+func (*publishMetricsRecorder) SetSessionsActive(bool, int64)        {}
+func (*publishMetricsRecorder) SetRetainedStats(int64, int64)        {}
+func (*publishMetricsRecorder) ObservePublishDuration(time.Duration) {}
 
 type retainedDelete struct {
 	tenantID tenancy.TenantID
@@ -287,7 +305,8 @@ func TestPublishSharedSubscriptionHandoff(t *testing.T) {
 		"worker-b": applicationdeliveryqueue.ErrFull,
 		"worker-c": applicationdeliveryqueue.ErrUnavailable,
 	}}
-	useCase, err := newPublishUseCase(t, routes, queue, &recordingRetainedRepository{})
+	metrics := &publishMetricsRecorder{}
+	useCase, err := New(&fakeClock{now: testNow()}, routes, queue, &recordingRetainedRepository{}, WithMetrics(metrics))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -333,6 +352,60 @@ func TestPublishSharedSubscriptionHandoff(t *testing.T) {
 	}
 	if len(queue.deliveries) != 1 || queue.deliveries[0].SessionID != "worker-a" {
 		t.Fatalf("successful deliveries = %#v, want only worker-a", queue.deliveries)
+	}
+	if len(metrics.dropped) != 0 {
+		t.Fatalf("message drop metrics = %v, want none after fallback delivery succeeds", metrics.dropped)
+	}
+}
+
+// Traceability: UI-03; docs/specs/management-api-and-observability.md §7.1.
+func TestPublishQueueFullDropMetricRequiresUnsuccessfulDelivery(t *testing.T) {
+	for _, testCase := range []struct {
+		name     string
+		queueErr error
+		wantDrop []string
+	}{
+		{name: "queue full", queueErr: applicationdeliveryqueue.ErrFull, wantDrop: []string{portsmetrics.MessageDropReasonQueueFull}},
+		{name: "unavailable", queueErr: applicationdeliveryqueue.ErrUnavailable},
+		{name: "expired", queueErr: applicationdeliveryqueue.ErrExpired},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			routes := routing.NewTable()
+			if _, err := routes.Subscribe("subscriber", mqtt.Subscription{Filter: "events/#", QoS: mqtt.QoSAtMostOnce}); err != nil {
+				t.Fatal(err)
+			}
+			queue := &recordingQueue{errors: map[routing.SessionID]error{"subscriber": testCase.queueErr}}
+			metrics := &publishMetricsRecorder{}
+			useCase, err := New(
+				&fakeClock{now: testNow()}, routes, queue, &recordingRetainedRepository{}, WithMetrics(metrics),
+			)
+			if err != nil {
+				t.Fatal(err)
+			}
+			result, err := useCase.Publish("publisher", mqtt.Publish{
+				Version: mqtt.ProtocolV5, Topic: "events/created", Payload: []byte("event"),
+			}, testNow())
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !reflect.DeepEqual(metrics.dropped, testCase.wantDrop) {
+				t.Fatalf("message drop metrics = %v, want %v", metrics.dropped, testCase.wantDrop)
+			}
+			switch testCase.queueErr {
+			case applicationdeliveryqueue.ErrFull:
+				if !reflect.DeepEqual(result.Saturated, []routing.SessionID{"subscriber"}) {
+					t.Fatalf("saturated sessions = %v, want subscriber", result.Saturated)
+				}
+			case applicationdeliveryqueue.ErrUnavailable:
+				if !reflect.DeepEqual(result.Unavailable, []routing.SessionID{"subscriber"}) {
+					t.Fatalf("unavailable sessions = %v, want subscriber", result.Unavailable)
+				}
+			case applicationdeliveryqueue.ErrExpired:
+				if len(result.Delivered)+len(result.Saturated)+len(result.Unavailable) != 0 {
+					t.Fatalf("expired delivery result = %#v, want no outcome", result)
+				}
+			}
+		})
 	}
 }
 

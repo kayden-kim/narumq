@@ -900,6 +900,51 @@ func (connection *connection) handleUnsupportedVersion(err error) bool {
 	return true
 }
 
+func protocolMetricLabel(version mqtt.ProtocolVersion) string {
+	if version == mqtt.ProtocolV311 {
+		return portsmetrics.ProtocolMQTT311
+	}
+	return portsmetrics.ProtocolMQTT50
+}
+
+func connectRejectReason(version mqtt.ProtocolVersion, reasonCode byte) string {
+	if version == mqtt.ProtocolV311 {
+		switch reasonCode {
+		case 0x01:
+			return portsmetrics.ConnectRejectReasonUnsupportedProtocolVersion
+		case 0x02:
+			return portsmetrics.ConnectRejectReasonIdentifierRejected
+		case 0x03:
+			return portsmetrics.ConnectRejectReasonServerUnavailable
+		case 0x04:
+			return portsmetrics.ConnectRejectReasonBadCredentials
+		case 0x05:
+			return portsmetrics.ConnectRejectReasonNotAuthorized
+		default:
+			return portsmetrics.ConnectRejectReasonOther
+		}
+	}
+	if version == mqtt.ProtocolV5 {
+		switch reasonCode {
+		case 0x84:
+			return portsmetrics.ConnectRejectReasonUnsupportedProtocolVersion
+		case 0x85:
+			return portsmetrics.ConnectRejectReasonIdentifierRejected
+		case 0x86:
+			return portsmetrics.ConnectRejectReasonBadCredentials
+		case 0x87:
+			return portsmetrics.ConnectRejectReasonNotAuthorized
+		case 0x88, 0x89:
+			return portsmetrics.ConnectRejectReasonServerUnavailable
+		case 0x97:
+			return portsmetrics.ConnectRejectReasonQuotaExceeded
+		default:
+			return portsmetrics.ConnectRejectReasonOther
+		}
+	}
+	return portsmetrics.ConnectRejectReasonOther
+}
+
 func (connection *connection) activate(packet mqtt.Connect) error {
 	connection.clientReceiveMaximum = packet.ReceiveMaximum
 	connection.clientMaximumPacketSize = packet.MaximumPacketSize
@@ -908,6 +953,9 @@ func (connection *connection) activate(packet mqtt.Connect) error {
 		reasonCode := byte(0x03)
 		if packet.Version == mqtt.ProtocolV5 {
 			reasonCode = 0x88
+		}
+		if metrics := connection.metrics(); metrics != nil {
+			metrics.ConnectRejected(protocolMetricLabel(packet.Version), connectRejectReason(packet.Version, reasonCode))
 		}
 		if err := connection.enqueueAndWait(&mqtt.ConnAck{Version: packet.Version, ReasonCode: reasonCode}); err != nil {
 			return err
@@ -934,6 +982,9 @@ func (connection *connection) activate(packet mqtt.Connect) error {
 		return err
 	}
 	if !result.Accepted {
+		if metrics := connection.metrics(); metrics != nil {
+			metrics.ConnectRejected(protocolMetricLabel(packet.Version), connectRejectReason(packet.Version, result.ConnAck.ReasonCode))
+		}
 		if err := connection.enqueueAndWait(&result.ConnAck); err != nil {
 			return err
 		}
@@ -1832,6 +1883,9 @@ func (connection *connection) writeDeliveries() error {
 				if err := connection.server.deliveries.CompleteHead(connection.sessionID); err != nil {
 					return err
 				}
+				if metrics := connection.metrics(); metrics != nil {
+					metrics.MessageDropped(portsmetrics.MessageDropReasonPacketTooLarge)
+				}
 				continue
 			}
 			if err := connection.writePacket(&packet); err != nil {
@@ -1989,6 +2043,9 @@ func (connection *connection) writeDeliveries() error {
 			pid := outbounds[0].PacketID
 			if completeErr := connection.server.deliveries.CompleteOutbound(connection.sessionID, pid); completeErr != nil {
 				return completeErr
+			}
+			if metrics := connection.metrics(); metrics != nil {
+				metrics.MessageDropped(portsmetrics.MessageDropReasonPacketTooLarge)
 			}
 			connection.deliveryMu.Lock()
 			connection.packetIDs.release(pid)

@@ -41,6 +41,7 @@ const (
 	clusterMembershipProcessClusterID         = "process-acceptance-cluster"
 	clusterMembershipProcessRelease           = "0.0.0"
 	clusterMembershipProcessAdmin             = "process-acceptance-admin-token"
+	clusterMembershipProcessReadOnlyAPIKey    = "process-acceptance-readonly-api-key"
 	clusterMembershipProcessMaxManagementRate = 1_000_000
 )
 
@@ -97,10 +98,13 @@ type clusterMembershipProcessFixture struct {
 	managementAddresses     []string
 	mqttAddresses           []string
 	tokenPath               string
+	readOnlyAPIKeyPath      string
 	securityPath            string
 	accessToken             string
 	bootstrapMembers        []clusterMembershipProcessMember
 	omitPublishBackpressure bool
+	enableReadOnlyAPIKey    bool
+	managementBindAll       bool
 }
 
 func newClusterMembershipProcessFixture(t *testing.T, nodeCount int, buildTags string) *clusterMembershipProcessFixture {
@@ -133,6 +137,8 @@ func newClusterMembershipProcessFixture(t *testing.T, nodeCount int, buildTags s
 
 	tokenPath := filepath.Join(tempDir, "cluster-admin.token")
 	clusterMembershipProcessWriteFile(t, tokenPath, []byte(clusterMembershipProcessAdmin+"\n"), 0o600)
+	readOnlyAPIKeyPath := filepath.Join(tempDir, "cluster-readonly-api-key")
+	clusterMembershipProcessWriteFile(t, readOnlyAPIKeyPath, []byte(clusterMembershipProcessReadOnlyAPIKey), 0o600)
 
 	securityPath := filepath.Join(tempDir, "mqtt-security.json")
 	jwksURL, accessToken := clusterMembershipProcessJWTFixture(t)
@@ -230,6 +236,11 @@ func newClusterMembershipProcessFixture(t *testing.T, nodeCount int, buildTags s
       "drain-after-restart",
       "drain-publisher",
       "drain-cancel-check",
+      "dashboard-sub-v5",
+      "dashboard-pub-v311",
+      "dashboard-drain-v5",
+      "dashboard-probe-v5",
+      "dashboard-probe-v311",
       "matrix-pub",
       "matrix-exact-s0",
       "matrix-exact-s1",
@@ -663,6 +674,7 @@ func newClusterMembershipProcessFixture(t *testing.T, nodeCount int, buildTags s
 		managementAddresses: managementAddresses,
 		mqttAddresses:       mqttAddresses,
 		tokenPath:           tokenPath,
+		readOnlyAPIKeyPath:  readOnlyAPIKeyPath,
 		securityPath:        securityPath,
 		accessToken:         accessToken,
 		bootstrapMembers:    bootstrapMembers,
@@ -766,14 +778,8 @@ func (f *clusterMembershipProcessFixture) bootstrapConfig(memberID uint64) strin
 		SeedAddresses: []string{}, PeerTLS: clusterMembershipProcessTLS{
 			CertFile: f.certificates[index].certPath(f.tempDir), KeyFile: f.certificates[index].keyPath(f.tempDir), CAFile: f.caPath,
 		},
-		Management: clusterMembershipProcessManagement{
-			ListenAddress:         f.managementAddresses[index],
-			ClusterAdminTokenFile: f.tokenPath,
-			AuditDirectory:        f.auditDirectory(memberID),
-			RequestRate:           clusterMembershipProcessMaxManagementRate,
-			AuthFailureRate:       clusterMembershipProcessMaxManagementRate,
-		},
-		MQTT: clusterMembershipProcessMQTT{TCPListenAddress: f.mqttAddresses[index], SecurityConfigFile: f.securityPath},
+		Management: f.managementConfig(index, memberID),
+		MQTT:       clusterMembershipProcessMQTT{TCPListenAddress: f.mqttAddresses[index], SecurityConfigFile: f.securityPath},
 	}
 	if !f.omitPublishBackpressure {
 		config.PublishBackpressure = &clusterMembershipProcessPublishBackpressure{MinFreeBytes: 16 << 20, MaxCommitLagMillis: 1000}
@@ -803,14 +809,8 @@ func (f *clusterMembershipProcessFixture) joinerConfig(memberID uint64, seedIDs 
 		PeerTLS: clusterMembershipProcessTLS{
 			CertFile: f.certificates[index].certPath(f.tempDir), KeyFile: f.certificates[index].keyPath(f.tempDir), CAFile: f.caPath,
 		},
-		Management: clusterMembershipProcessManagement{
-			ListenAddress:         f.managementAddresses[index],
-			ClusterAdminTokenFile: f.tokenPath,
-			AuditDirectory:        f.auditDirectory(memberID),
-			RequestRate:           clusterMembershipProcessMaxManagementRate,
-			AuthFailureRate:       clusterMembershipProcessMaxManagementRate,
-		},
-		MQTT: clusterMembershipProcessMQTT{TCPListenAddress: f.mqttAddresses[index], SecurityConfigFile: f.securityPath},
+		Management: f.managementConfig(index, memberID),
+		MQTT:       clusterMembershipProcessMQTT{TCPListenAddress: f.mqttAddresses[index], SecurityConfigFile: f.securityPath},
 	}
 	if !f.omitPublishBackpressure {
 		config.PublishBackpressure = &clusterMembershipProcessPublishBackpressure{MinFreeBytes: 16 << 20, MaxCommitLagMillis: 1000}
@@ -820,6 +820,28 @@ func (f *clusterMembershipProcessFixture) joinerConfig(memberID uint64, seedIDs 
 	configPath := filepath.Join(f.tempDir, fmt.Sprintf("node-%d.json", memberID))
 	clusterMembershipProcessWriteJSON(f.harness.t, configPath, config)
 	return configPath
+}
+
+func (f *clusterMembershipProcessFixture) managementConfig(index int, memberID uint64) clusterMembershipProcessManagement {
+	listenAddress := f.managementAddresses[index]
+	if f.managementBindAll {
+		_, port, err := net.SplitHostPort(listenAddress)
+		if err != nil {
+			f.harness.t.Fatalf("split management address %q: %v", listenAddress, err)
+		}
+		listenAddress = net.JoinHostPort("0.0.0.0", port)
+	}
+	config := clusterMembershipProcessManagement{
+		ListenAddress:         listenAddress,
+		ClusterAdminTokenFile: f.tokenPath,
+		AuditDirectory:        f.auditDirectory(memberID),
+		RequestRate:           clusterMembershipProcessMaxManagementRate,
+		AuthFailureRate:       clusterMembershipProcessMaxManagementRate,
+	}
+	if f.enableReadOnlyAPIKey {
+		config.ReadOnlyAPIKeyFile = f.readOnlyAPIKeyPath
+	}
+	return config
 }
 
 func (f *clusterMembershipProcessFixture) auditDirectory(memberID uint64) string {
@@ -1525,6 +1547,7 @@ type clusterMembershipProcessTLS struct {
 type clusterMembershipProcessManagement struct {
 	ListenAddress         string `json:"listenAddress"`
 	ClusterAdminTokenFile string `json:"clusterAdminTokenFile"`
+	ReadOnlyAPIKeyFile    string `json:"readOnlyApiKeyFile,omitempty"`
 	AuditDirectory        string `json:"auditDirectory"`
 	RequestRate           int    `json:"requestRate"`
 	AuthFailureRate       int    `json:"authFailureRate"`

@@ -40,6 +40,7 @@
 | 변경 대상의 구조와 코드 위치·진입점 | [Project structure의 코드 지도 절](architectures/project-structure.md), [브로커 코어 아키텍처](architectures/broker-core.md) |
 | 적용할 코드 작성 규칙 | [Go 코딩 컨벤션](conventions/go-coding-conventions.md) |
 | 개발 환경 준비와 실행 방법 | [저장소 README](../README.md) (Go 1.26.5 기준) |
+| Operations Dashboard 구성·검증 | [NaruMQ Operations Dashboard 구성](how-to/operations-dashboard.md) |
 | 변경 범위별 테스트와 전체 완료 검증 | [성능 및 검증](specs/performance-and-verification.md) (`go run ./tools/verify local`, `ci`) |
 
 검증 절차에는 실행 위치, 필요한 도구·환경·버전, 변경 범위별 명령, 전체 완료에 필요한 명령과 성공 조건(`local`, `ci`)을 기록한다.

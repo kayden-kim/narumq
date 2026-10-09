@@ -57,6 +57,9 @@ Version 1.7.0은 `POST/GET/DELETE /api/v1/cluster/rebalance`를 추가한다. Op
 
 - API resource(`/api/v1/**`)는 configured opaque `Authorization: Bearer <token>` 또는
   `X-API-Key` API key를 사용한다.
+- Cluster mode에서 `management.readOnlyApiKeyFile`을 지정하면 파일의 앞뒤 공백을
+  제거한 값이 `X-API-Key` credential이며 `ReadOnly` role을 가진다. 파일 형식과
+  시작 시 검증은 [Raft membership v2 §1.4](raft-membership-v2.md#14-통합-클러스터-구성)를 따른다.
 - 이 contract는 OIDC issuer discovery, JWT signature, claim semantics, token scope 또는
   API key 발급 형식을 약속하지 않는다. 입력 credential은 configured opaque value와
   비교된다.

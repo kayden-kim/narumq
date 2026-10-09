@@ -50,6 +50,7 @@
 | [ADR-0042](ADR-0042-p0-requirement-traceability-gate.md) | Accepted | PRD 기반 P0 요구사항 연결과 정렬된 예외 목록 ratchet을 적용한다. |
 | [ADR-0043](ADR-0043-management-api-rate-limit.md) | Accepted | Management API에 인증 주체별·인증 실패 IP별 node-local token bucket rate limit을 적용한다. |
 | [ADR-0044](ADR-0044-diff-coverage-floor-90.md) | Accepted | 변경 코드의 line·function·branch diff coverage 하한을 각각 90%로 정한다. 전체·core 기준과 ratchet은 유지한다. |
+| [ADR-0045](ADR-0045-operations-dashboard-grafana.md) | Accepted | Grafana와 Prometheus로 운영 Dashboard를 제공하고 조회 전용 API key를 사용한다. |
 
 `Proposed` ADR은 검토 중인 제안이다. `Accepted` ADR은 각 기록에 명시한 범위 안에서 채택된 결정이다. `design target only`는 production runtime이나 acceptance 검증을 뜻하지 않는다.
 

@@ -1,0 +1,150 @@
+{
+  "annotations": {"list": []},
+  "editable": false,
+  "fiscalYearStartMonth": 0,
+  "graphTooltip": 1,
+  "id": null,
+  "links": [],
+  "liveNow": false,
+  "panels": [
+    {"collapsed": false, "gridPos": {"h": 1, "w": 24, "x": 0, "y": 0}, "id": 100, "panels": [], "title": "클러스터 상태", "type": "row"},
+    {
+      "datasource": {"type": "yesoreyeram-infinity-datasource", "uid": "narumq-management"},
+      "fieldConfig": {"defaults": {"color": {"mode": "thresholds"}, "mappings": [{"type": "value", "options": {"0": {"color": "red", "index": 0, "text": "위험"}, "1": {"color": "green", "index": 1, "text": "정상"}}}], "thresholds": {"mode": "absolute", "steps": [{"color": "red", "value": null}, {"color": "green", "value": 1}]}}, "overrides": []},
+      "gridPos": {"h": 4, "w": 4, "x": 0, "y": 1}, "id": 1, "options": {"colorMode": "background", "graphMode": "none", "justifyMode": "center", "orientation": "auto", "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": true}, "textMode": "value_and_name", "wideLayout": true},
+      "pluginVersion": "13.0.2", "targets": [{"columns": [{"selector": "quorumAvailable", "text": "Quorum", "type": "boolean"}], "datasource": {"type": "yesoreyeram-infinity-datasource", "uid": "narumq-management"}, "format": "table", "parser": "backend", "refId": "A", "root_selector": "$.data", "source": "url", "type": "json", "url": "/api/v1/cluster", "url_options": {"method": "GET"}}],
+      "transformations": [{"id": "convertFieldType", "options": {"conversions": [{"targetField": "Quorum", "destinationType": "number"}]}}],
+      "title": "Quorum", "type": "stat"
+    },
+    {
+      "datasource": {"type": "yesoreyeram-infinity-datasource", "uid": "narumq-management"},
+      "fieldConfig": {"defaults": {"color": {"mode": "thresholds"}, "thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": null}, {"color": "red", "value": 1}]}}, "overrides": []},
+      "gridPos": {"h": 4, "w": 4, "x": 4, "y": 1}, "id": 2, "options": {"colorMode": "background", "graphMode": "none", "justifyMode": "center", "orientation": "auto", "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": true}, "textMode": "value_and_name", "wideLayout": true},
+      "pluginVersion": "13.0.2", "targets": [{"columns": [{"selector": "underReplicated", "text": "Replica 부족", "type": "number"}], "datasource": {"type": "yesoreyeram-infinity-datasource", "uid": "narumq-management"}, "format": "table", "parser": "backend", "refId": "A", "root_selector": "$.data", "source": "url", "type": "json", "url": "/api/v1/cluster", "url_options": {"method": "GET"}}],
+      "title": "Replica 부족", "type": "stat"
+    },
+    {
+      "datasource": {"type": "yesoreyeram-infinity-datasource", "uid": "narumq-management"},
+      "fieldConfig": {"defaults": {"color": {"mode": "thresholds"}, "mappings": [{"type": "special", "options": {"match": "null", "result": {"color": "red", "text": "없음"}}}], "thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": null}]}}, "overrides": []},
+      "gridPos": {"h": 4, "w": 4, "x": 8, "y": 1}, "id": 3, "options": {"colorMode": "background", "graphMode": "none", "justifyMode": "center", "orientation": "auto", "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": true}, "textMode": "value_and_name", "wideLayout": true},
+      "pluginVersion": "13.0.2", "targets": [{"columns": [{"selector": "leaderNodeId", "text": "Leader", "type": "number"}], "datasource": {"type": "yesoreyeram-infinity-datasource", "uid": "narumq-management"}, "format": "table", "parser": "backend", "refId": "A", "root_selector": "$.data", "source": "url", "type": "json", "url": "/api/v1/cluster", "url_options": {"method": "GET"}}],
+      "title": "Leader", "type": "stat"
+    },
+    {
+      "datasource": {"type": "yesoreyeram-infinity-datasource", "uid": "narumq-management"},
+      "fieldConfig": {"defaults": {"color": {"mode": "palette-classic"}}, "overrides": []},
+      "gridPos": {"h": 4, "w": 6, "x": 12, "y": 1}, "id": 4, "options": {"colorMode": "value", "graphMode": "none", "justifyMode": "center", "orientation": "horizontal", "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": true}, "textMode": "value_and_name", "wideLayout": true},
+      "pluginVersion": "13.0.2", "targets": [{"columns": [{"selector": "memberCount", "text": "Members", "type": "number"}, {"selector": "quorumSize", "text": "Quorum size", "type": "number"}, {"selector": "replicationFactor", "text": "Replication factor", "type": "number"}, {"selector": "writeQuorum", "text": "Write quorum", "type": "number"}], "datasource": {"type": "yesoreyeram-infinity-datasource", "uid": "narumq-management"}, "format": "table", "parser": "backend", "refId": "A", "root_selector": "$.data", "source": "url", "type": "json", "url": "/api/v1/cluster", "url_options": {"method": "GET"}}],
+      "title": "Member·Quorum", "type": "stat"
+    },
+    {
+      "datasource": {"type": "yesoreyeram-infinity-datasource", "uid": "narumq-management"},
+      "fieldConfig": {"defaults": {"color": {"mode": "palette-classic"}}, "overrides": []},
+      "gridPos": {"h": 4, "w": 6, "x": 18, "y": 1}, "id": 5, "options": {"colorMode": "value", "graphMode": "none", "justifyMode": "center", "orientation": "horizontal", "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": true}, "textMode": "value_and_name", "wideLayout": true},
+      "pluginVersion": "13.0.2", "targets": [{"columns": [{"selector": "nodesByState.ready", "text": "Ready", "type": "number"}, {"selector": "nodesByState.joining", "text": "Joining", "type": "number"}, {"selector": "nodesByState.draining", "text": "Draining", "type": "number"}, {"selector": "nodesByState.safeToStop", "text": "Safe to stop", "type": "number"}], "datasource": {"type": "yesoreyeram-infinity-datasource", "uid": "narumq-management"}, "format": "table", "parser": "backend", "refId": "A", "root_selector": "$.data", "source": "url", "type": "json", "url": "/api/v1/cluster", "url_options": {"method": "GET"}}],
+      "title": "Node 상태 수", "type": "stat"
+    },
+    {
+      "datasource": {"type": "yesoreyeram-infinity-datasource", "uid": "narumq-management"},
+      "fieldConfig": {"defaults": {"custom": {"cellOptions": {"type": "color-text"}, "align": "auto", "inspect": false}}, "overrides": [
+        {"matcher": {"id": "byName", "options": "state"}, "properties": [{"id": "mappings", "value": [{"type": "value", "options": {"READY": {"color": "green", "text": "READY"}, "JOINING": {"color": "yellow", "text": "JOINING"}, "DRAINING": {"color": "orange", "text": "DRAINING"}, "SAFE_TO_STOP": {"color": "blue", "text": "SAFE_TO_STOP"}}}]}, {"id": "custom.cellOptions", "value": {"type": "color-text"}}]},
+        {"matcher": {"id": "byName", "options": "ready"}, "properties": [{"id": "mappings", "value": [{"type": "value", "options": {"false": {"color": "red", "text": "false"}, "true": {"color": "green", "text": "true"}}}]}]},
+        {"matcher": {"id": "byName", "options": "replicationHealth"}, "properties": [{"id": "mappings", "value": [{"type": "value", "options": {"HEALTHY": {"color": "green", "text": "HEALTHY"}, "DEGRADED": {"color": "red", "text": "DEGRADED"}, "FAILED": {"color": "red", "text": "FAILED"}, "UNREACHABLE": {"color": "red", "text": "UNREACHABLE"}}}]}]}
+      ]},
+      "gridPos": {"h": 7, "w": 24, "x": 0, "y": 5}, "id": 6, "options": {"cellHeight": "sm", "showHeader": true},
+      "pluginVersion": "13.0.2", "targets": [{"columns": [{"selector": "nodeId", "text": "Node", "type": "string"}, {"selector": "role", "text": "Role", "type": "string"}, {"selector": "version", "text": "Version", "type": "string"}, {"selector": "uptimeMs", "text": "Uptime (ms)", "type": "number"}, {"selector": "state", "text": "State", "type": "string"}, {"selector": "ready", "text": "Ready", "type": "boolean"}, {"selector": "readinessReason", "text": "Readiness reason", "type": "string"}, {"selector": "replicationHealth", "text": "Replication", "type": "string"}, {"selector": "storagePressure", "text": "Storage pressure", "type": "boolean"}, {"selector": "connectionCount", "text": "Connections", "type": "number"}, {"selector": "lastAppliedIndex", "text": "Applied index", "type": "number"}], "datasource": {"type": "yesoreyeram-infinity-datasource", "uid": "narumq-management"}, "format": "table", "parser": "backend", "refId": "A", "root_selector": "$.data", "source": "url", "type": "json", "url": "/api/v1/nodes?limit=1000", "url_options": {"method": "GET"}}],
+      "title": "Node topology", "type": "table"
+    },
+    {"collapsed": false, "gridPos": {"h": 1, "w": 24, "x": 0, "y": 12}, "id": 101, "panels": [], "title": "Traffic", "type": "row"},
+    {
+      "datasource": {"type": "prometheus", "uid": "narumq-prometheus"}, "fieldConfig": {"defaults": {"color": {"mode": "palette-classic"}, "custom": {"drawStyle": "line", "lineWidth": 2, "fillOpacity": 10, "showPoints": "never"}}, "overrides": []},
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 13}, "id": 7, "options": {"legend": {"displayMode": "list", "placement": "bottom"}, "tooltip": {"mode": "multi", "sort": "desc"}}, "pluginVersion": "13.0.2",
+      "targets": [
+        {"datasource": {"type": "prometheus", "uid": "narumq-prometheus"}, "editorMode": "code", "expr": "sum(narumq_connections_active{node_id=~\"$node\"})", "legendFormat": "Connections", "range": true, "refId": "A"},
+        {"datasource": {"type": "prometheus", "uid": "narumq-prometheus"}, "editorMode": "code", "expr": "sum(narumq_sessions_active{node_id=~\"$node\"})", "legendFormat": "Sessions", "range": true, "refId": "B"},
+        {"datasource": {"type": "prometheus", "uid": "narumq-prometheus"}, "editorMode": "code", "expr": "max(narumq_subscriptions_active{node_id=~\"$node\"})", "legendFormat": "Subscriptions", "range": true, "refId": "C"}
+      ], "title": "연결·session·subscription", "type": "timeseries"
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "narumq-prometheus"}, "fieldConfig": {"defaults": {"color": {"mode": "palette-classic"}, "custom": {"drawStyle": "line", "lineWidth": 2, "fillOpacity": 10, "showPoints": "never"}}, "overrides": []},
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 13}, "id": 8, "options": {"legend": {"displayMode": "list", "placement": "bottom"}, "tooltip": {"mode": "multi", "sort": "desc"}}, "pluginVersion": "13.0.2",
+      "targets": [
+        {"datasource": {"type": "prometheus", "uid": "narumq-prometheus"}, "editorMode": "code", "expr": "sum(rate(narumq_packets_received_total{packet_type=\"PUBLISH\",node_id=~\"$node\"}[$__rate_interval]))", "legendFormat": "Received PUBLISH", "range": true, "refId": "A"},
+        {"datasource": {"type": "prometheus", "uid": "narumq-prometheus"}, "editorMode": "code", "expr": "sum(rate(narumq_packets_sent_total{packet_type=\"PUBLISH\",node_id=~\"$node\"}[$__rate_interval]))", "legendFormat": "Sent PUBLISH", "range": true, "refId": "B"}
+      ], "title": "Message rate", "type": "timeseries"
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "narumq-prometheus"}, "fieldConfig": {"defaults": {"color": {"mode": "palette-classic"}, "custom": {"drawStyle": "line", "lineWidth": 2, "showPoints": "never"}}, "overrides": []},
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 21}, "id": 9, "options": {"legend": {"displayMode": "list", "placement": "bottom"}, "tooltip": {"mode": "multi", "sort": "desc"}}, "pluginVersion": "13.0.2",
+      "targets": [{"datasource": {"type": "prometheus", "uid": "narumq-prometheus"}, "editorMode": "code", "expr": "sum by (protocol) (rate(narumq_connections_total{result=\"success\",node_id=~\"$node\"}[$__rate_interval]))", "legendFormat": "{{protocol}}", "range": true, "refId": "A"}], "title": "Protocol별 CONNECT 성공", "type": "timeseries"
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "narumq-prometheus"}, "fieldConfig": {"defaults": {"color": {"mode": "palette-classic"}, "custom": {"drawStyle": "line", "lineWidth": 2, "showPoints": "never"}}, "overrides": []},
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 21}, "id": 10, "options": {"legend": {"displayMode": "list", "placement": "bottom"}, "tooltip": {"mode": "multi", "sort": "desc"}}, "pluginVersion": "13.0.2",
+      "targets": [{"datasource": {"type": "prometheus", "uid": "narumq-prometheus"}, "editorMode": "code", "expr": "sum by (protocol, reason) (rate(narumq_mqtt_connect_rejected_total{node_id=~\"$node\"}[$__rate_interval]))", "legendFormat": "{{protocol}} · {{reason}}", "range": true, "refId": "A"}], "title": "Protocol별 CONNECT 거절", "type": "timeseries"
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "narumq-prometheus"}, "fieldConfig": {"defaults": {"color": {"mode": "palette-classic"}, "custom": {"drawStyle": "line", "lineWidth": 2, "showPoints": "never"}}, "overrides": []},
+      "gridPos": {"h": 8, "w": 24, "x": 0, "y": 29}, "id": 11, "options": {"legend": {"displayMode": "list", "placement": "bottom"}, "tooltip": {"mode": "multi", "sort": "desc"}}, "pluginVersion": "13.0.2",
+      "targets": [
+        {"datasource": {"type": "prometheus", "uid": "narumq-prometheus"}, "editorMode": "code", "expr": "sum by (reason) (rate(narumq_messages_dropped_total{node_id=~\"$node\"}[$__rate_interval]))", "legendFormat": "Drop · {{reason}}", "range": true, "refId": "A"},
+        {"datasource": {"type": "prometheus", "uid": "narumq-prometheus"}, "editorMode": "code", "expr": "sum by (reason) (rate(narumq_publish_backpressure_rejections_total{node_id=~\"$node\"}[$__rate_interval]))", "legendFormat": "Backpressure · {{reason}}", "range": true, "refId": "B"},
+        {"datasource": {"type": "prometheus", "uid": "narumq-prometheus"}, "editorMode": "code", "expr": "sum by (dimension) (rate(narumq_tenant_limit_rejections_total{node_id=~\"$node\"}[$__rate_interval]))", "legendFormat": "Tenant limit · {{dimension}}", "range": true, "refId": "C"},
+        {"datasource": {"type": "prometheus", "uid": "narumq-prometheus"}, "editorMode": "code", "expr": "sum by (dimension) (rate(narumq_tenant_quota_rejections_total{node_id=~\"$node\"}[$__rate_interval]))", "legendFormat": "Tenant quota · {{dimension}}", "range": true, "refId": "D"},
+        {"datasource": {"type": "prometheus", "uid": "narumq-prometheus"}, "editorMode": "code", "expr": "sum(rate(narumq_durable_delivery_saturated_targets_total{node_id=~\"$node\"}[$__rate_interval]))", "legendFormat": "Durable target saturation", "range": true, "refId": "E"},
+        {"datasource": {"type": "prometheus", "uid": "narumq-prometheus"}, "editorMode": "code", "expr": "sum by (reason) (rate(narumq_mqtt_listener_admission_rejected_total{node_id=~\"$node\"}[$__rate_interval]))", "legendFormat": "Listener admission · {{reason}}", "range": true, "refId": "F"}
+      ], "title": "Drop·거절", "type": "timeseries"
+    },
+    {"collapsed": false, "gridPos": {"h": 1, "w": 24, "x": 0, "y": 37}, "id": 102, "panels": [], "title": "Node 부하", "type": "row"},
+    {
+      "datasource": {"type": "prometheus", "uid": "narumq-prometheus"},
+      "fieldConfig": {"defaults": {"custom": {"align": "auto", "cellOptions": {"type": "auto"}, "inspect": false}}, "overrides": [
+        {"matcher": {"id": "byName", "options": "rebalance_needed"}, "properties": [{"id": "mappings", "value": [{"type": "value", "options": {"0": {"color": "green", "text": "정상"}, "1": {"color": "red", "text": "필요"}}}]}, {"id": "custom.cellOptions", "value": {"type": "color-text"}}]}
+      ]},
+      "gridPos": {"h": 8, "w": 24, "x": 0, "y": 38}, "id": 12, "options": {"cellHeight": "sm", "showHeader": true}, "pluginVersion": "13.0.2",
+      "targets": [
+        {"datasource": {"type": "prometheus", "uid": "narumq-prometheus"}, "editorMode": "code", "expr": "label_replace(narumq_connections_active{node_id=~\"$node\"} + 0, \"metric\", \"connections_active\", \"node_id\", \".*\") or label_replace((narumq_connections_active{node_id=~\"$node\"} - on() group_left() ceil(sum(narumq_connections_active{node_id=~\"$node\"}) / count(narumq_connections_active{node_id=~\"$node\"}))), \"metric\", \"deviation\", \"node_id\", \".*\") or label_replace((narumq_connections_active{node_id=~\"$node\"} - on() group_left() ceil(sum(narumq_connections_active{node_id=~\"$node\"}) / count(narumq_connections_active{node_id=~\"$node\"}))) > bool $rebalance_max_deviation, \"metric\", \"rebalance_needed\", \"node_id\", \".*\")", "format": "table", "instant": true, "legendFormat": "{{metric}}", "refId": "A", "range": false}
+      ],
+      "transformations": [{"id": "labelsToFields", "options": {"keepLabels": ["node_id", "metric"]}}, {"id": "merge", "options": {}}, {"id": "groupingToMatrix", "options": {"columnField": "metric", "rowField": "node_id", "valueField": "Value"}}, {"id": "organize", "options": {"excludeByName": {}, "indexByName": {}, "renameByName": {"node_id\\metric": "Node"}}}, {"id": "sortBy", "options": {"sort": [{"field": "deviation", "desc": true}]}}], "title": "Node별 연결 편차", "type": "table"
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "narumq-prometheus"}, "fieldConfig": {"defaults": {"color": {"mode": "palette-classic"}, "custom": {"drawStyle": "line", "lineWidth": 2, "showPoints": "never"}}, "overrides": []},
+      "gridPos": {"h": 8, "w": 24, "x": 0, "y": 46}, "id": 13, "options": {"legend": {"displayMode": "list", "placement": "bottom"}, "tooltip": {"mode": "multi", "sort": "desc"}}, "pluginVersion": "13.0.2",
+      "targets": [{"datasource": {"type": "prometheus", "uid": "narumq-prometheus"}, "editorMode": "code", "expr": "sum by (node_id) (narumq_connections_active{node_id=~\"$node\"})", "legendFormat": "Node {{node_id}}", "range": true, "refId": "A"}], "title": "Node별 연결 추이", "type": "timeseries"
+    },
+    {"collapsed": false, "gridPos": {"h": 1, "w": 24, "x": 0, "y": 54}, "id": 103, "panels": [], "title": "Drain", "type": "row"},
+    {
+      "datasource": {"type": "prometheus", "uid": "narumq-prometheus"},
+      "fieldConfig": {"defaults": {"custom": {"align": "auto", "cellOptions": {"type": "auto"}, "inspect": false}}, "overrides": []},
+      "gridPos": {"h": 10, "w": 24, "x": 0, "y": 55}, "id": 14, "options": {"cellHeight": "sm", "showHeader": true}, "pluginVersion": "13.0.2",
+      "targets": [
+        {"datasource": {"type": "prometheus", "uid": "narumq-prometheus"}, "editorMode": "code", "expr": "label_replace(narumq_node_drain_active{node_id=~\"$node\"} + 0, \"metric\", \"drain_active\", \"node_id\", \".*\") or label_replace(narumq_node_drain_progress{quantity=\"connections_initial\",node_id=~\"$node\"} + 0, \"metric\", \"connections_initial\", \"node_id\", \".*\") or label_replace(narumq_node_drain_progress{quantity=\"connections_remaining\",node_id=~\"$node\"} + 0, \"metric\", \"connections_remaining\", \"node_id\", \".*\") or label_replace(narumq_node_drain_progress{quantity=\"sessions_taken_over\",node_id=~\"$node\"} + 0, \"metric\", \"sessions_taken_over\", \"node_id\", \".*\") or label_replace(narumq_node_drain_progress{quantity=\"sessions_failed\",node_id=~\"$node\"} + 0, \"metric\", \"sessions_failed\", \"node_id\", \".*\") or label_replace(clamp_min(-deriv(narumq_node_drain_progress{quantity=\"connections_remaining\",node_id=~\"$node\"}[2m]), 0) + 0, \"metric\", \"connections_per_second\", \"node_id\", \".*\") or label_replace((narumq_node_drain_progress{quantity=\"connections_remaining\",node_id=~\"$node\"} / (clamp_min(-deriv(narumq_node_drain_progress{quantity=\"connections_remaining\",node_id=~\"$node\"}[2m]), 0) > 0)) + 0, \"metric\", \"eta_seconds\", \"node_id\", \".*\") or label_replace(clamp_min(deriv(narumq_node_drain_progress{quantity=\"sessions_taken_over\",node_id=~\"$node\"}[2m]), 0) + 0, \"metric\", \"takeovers_per_second\", \"node_id\", \".*\")", "format": "table", "instant": true, "legendFormat": "{{metric}}", "refId": "A", "range": false}
+      ],
+      "transformations": [{"id": "labelsToFields", "options": {"keepLabels": ["node_id", "metric"]}}, {"id": "merge", "options": {}}, {"id": "groupingToMatrix", "options": {"columnField": "metric", "rowField": "node_id", "valueField": "Value"}}, {"id": "organize", "options": {"excludeByName": {}, "indexByName": {}, "renameByName": {"node_id\\metric": "Node"}}}], "title": "Drain 진행", "type": "table"
+    },
+    {
+      "datasource": {"type": "yesoreyeram-infinity-datasource", "uid": "narumq-management"},
+      "fieldConfig": {"defaults": {"custom": {"align": "auto", "cellOptions": {"type": "auto"}, "inspect": false}}, "overrides": []},
+      "gridPos": {"h": 8, "w": 24, "x": 0, "y": 65}, "id": 15, "options": {"cellHeight": "sm", "showHeader": true},
+      "pluginVersion": "13.0.2", "targets": [{"columns": [{"selector": "phase", "text": "Phase", "type": "string"}, {"selector": "state", "text": "State", "type": "string"}, {"selector": "safeToStop", "text": "Safe to stop", "type": "boolean"}, {"selector": "startedAt", "text": "Started at", "type": "string"}, {"selector": "deadlineAt", "text": "Deadline", "type": "string"}, {"selector": "connections.remaining", "text": "Connections remaining", "type": "number"}, {"selector": "sessions.takenOver", "text": "Sessions taken over", "type": "number"}, {"selector": "sessions.failed", "text": "Sessions failed", "type": "number"}, {"selector": "failure.code", "text": "Failure code", "type": "string"}, {"selector": "failure.blockingReason", "text": "Blocking reason", "type": "string"}], "datasource": {"type": "yesoreyeram-infinity-datasource", "uid": "narumq-management"}, "format": "table", "parser": "backend", "refId": "A", "root_selector": "$.data", "source": "url", "type": "json", "url": "/api/v1/nodes/${drain_node}/drain", "url_options": {"method": "GET"}}],
+      "title": "Drain 상세 (${drain_node})", "type": "table"
+    }
+  ],
+  "refresh": "15s",
+  "schemaVersion": 41,
+  "tags": ["narumq", "operations"],
+  "templating": {
+    "list": [
+      {"allValue": ".*", "current": {"selected": true, "text": "All", "value": ["$__all"]}, "datasource": {"type": "prometheus", "uid": "narumq-prometheus"}, "definition": "label_values(narumq_connections_active, node_id)", "includeAll": true, "label": "Node", "multi": true, "name": "node", "options": [], "query": {"query": "label_values(narumq_connections_active, node_id)", "refId": "PrometheusVariableQueryEditor-VariableQuery"}, "refresh": 1, "regex": "", "sort": 1, "type": "query"},
+      {"current": {"selected": true, "text": "1", "value": "1"}, "datasource": {"type": "prometheus", "uid": "narumq-prometheus"}, "definition": "label_values(narumq_node_drain_active, node_id)", "includeAll": false, "label": "Drain node", "multi": false, "name": "drain_node", "options": [], "query": {"query": "label_values(narumq_node_drain_active, node_id)", "refId": "PrometheusVariableQueryEditor-VariableQuery"}, "refresh": 1, "regex": "", "sort": 1, "type": "query"},
+      {"current": {"selected": true, "text": "100", "value": "100"}, "label": "Maximum connection deviation", "name": "rebalance_max_deviation", "query": "100", "type": "textbox"}
+    ]
+  },
+  "time": {"from": "now-1h", "to": "now"},
+  "timepicker": {"refresh_intervals": ["5s", "10s", "15s", "30s", "1m", "5m"], "time_options": ["5m", "15m", "1h", "6h", "12h", "24h"]},
+  "timezone": "browser",
+  "title": "NaruMQ Operations",
+  "uid": "narumq-operations",
+  "version": 1,
+  "weekStart": "monday"
+}

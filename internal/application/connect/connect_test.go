@@ -1140,6 +1140,7 @@ func (metrics *fakeMetrics) AuthAttempt(method string, success bool, reason stri
 	metrics.attempts = append(metrics.attempts, authAttempt{method: method, success: success, reason: reason})
 }
 func (metrics *fakeMetrics) ConnectRejected(string, string)       {}
+func (metrics *fakeMetrics) MessageDropped(string)                {}
 func (metrics *fakeMetrics) SetSessionsActive(bool, int64)        {}
 func (metrics *fakeMetrics) SetRetainedStats(int64, int64)        {}
 func (metrics *fakeMetrics) ObservePublishDuration(time.Duration) {}

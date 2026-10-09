@@ -75,36 +75,6 @@
       "requirementId": "TEN-09",
       "reason": "noisy-neighbor p99 한도가 확정되지 않았습니다(PRD §18 질문 8).",
       "tracking": "docs/TODO.md#17-tenantsecurity와-감사"
-    },
-    {
-      "requirementId": "UI-01",
-      "reason": "운영 Dashboard가 아직 구현되지 않았습니다.",
-      "tracking": "docs/TODO.md#18-management-apiobservability와-dashboard"
-    },
-    {
-      "requirementId": "UI-02",
-      "reason": "운영 Dashboard가 아직 구현되지 않았습니다.",
-      "tracking": "docs/TODO.md#18-management-apiobservability와-dashboard"
-    },
-    {
-      "requirementId": "UI-03",
-      "reason": "운영 Dashboard가 아직 구현되지 않았습니다.",
-      "tracking": "docs/TODO.md#18-management-apiobservability와-dashboard"
-    },
-    {
-      "requirementId": "UI-04",
-      "reason": "운영 Dashboard가 아직 구현되지 않았습니다.",
-      "tracking": "docs/TODO.md#18-management-apiobservability와-dashboard"
-    },
-    {
-      "requirementId": "UI-05",
-      "reason": "운영 Dashboard가 아직 구현되지 않았습니다.",
-      "tracking": "docs/TODO.md#18-management-apiobservability와-dashboard"
-    },
-    {
-      "requirementId": "UI-10",
-      "reason": "운영 Dashboard가 아직 구현되지 않았습니다.",
-      "tracking": "docs/TODO.md#18-management-apiobservability와-dashboard"
     }
   ]
 }

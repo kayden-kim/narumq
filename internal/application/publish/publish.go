@@ -552,6 +552,7 @@ func (useCase *UseCase) completePublication(
 			}
 			continue
 		}
+		delivered, sawFull, sawExpired := false, false, false
 
 	candidateLoop:
 		for candidateIndex := -1; candidateIndex < len(match.Fallbacks); candidateIndex++ {
@@ -574,16 +575,22 @@ func (useCase *UseCase) completePublication(
 			switch {
 			case err == nil:
 				result.Delivered = append(result.Delivered, candidate.SessionID)
+				delivered = true
 				break candidateLoop
 			case errors.Is(err, deliveryqueue.ErrExpired):
+				sawExpired = true
 				break candidateLoop
 			case errors.Is(err, deliveryqueue.ErrFull):
+				sawFull = true
 				result.Saturated = append(result.Saturated, candidate.SessionID)
 			case errors.Is(err, deliveryqueue.ErrUnavailable):
 				result.Unavailable = append(result.Unavailable, candidate.SessionID)
 			default:
 				return result, err
 			}
+		}
+		if !delivered && sawFull && !sawExpired && useCase.metrics != nil {
+			useCase.metrics.MessageDropped(portsmetrics.MessageDropReasonQueueFull)
 		}
 	}
 	return result, nil

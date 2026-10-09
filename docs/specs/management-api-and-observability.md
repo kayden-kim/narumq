@@ -9,7 +9,7 @@
 | 근거 | [PRD 9.5절, 9.6절과 14장](../requirements/PRD.md) |
 | 관련 spec | [Tenant와 security](tenancy-and-security.md), [Drain](drain-and-rolling-update.md) |
 | 관련 Architecture | [System overview](../architectures/system-overview.md), [Security boundaries](../architectures/security-boundaries.md) |
-| 관련 결정 | [ADR-0005](../decisions/ADR-0005-management-api-contract-format.md), [ADR-0018](../decisions/ADR-0018-release-compatibility-window.md), [ADR-0043](../decisions/ADR-0043-management-api-rate-limit.md) |
+| 관련 결정 | [ADR-0005](../decisions/ADR-0005-management-api-contract-format.md), [ADR-0018](../decisions/ADR-0018-release-compatibility-window.md), [ADR-0043](../decisions/ADR-0043-management-api-rate-limit.md), [ADR-0045](../decisions/ADR-0045-operations-dashboard-grafana.md) |
 | 관련 Contract | [Management API v1](../contracts/management-api-v1.md), [Management API OpenAPI](../contracts/management-api-v1.openapi.json), [Audit event v1](../contracts/audit-event-v1.md) |
 
 ## 1. HTTP 공통 계약
@@ -24,7 +24,8 @@
 
 - `-http-listen`은 Management HTTP listener의 bind 주소다.
 - `-http-auth-token`이 설정되면 유효한 `Authorization: Bearer <token>`을 요구하고, `/api/v1`에는 endpoint별 RBAC를 적용한다. 인증 실패는 `401`, 인증은 됐지만 권한이 부족하면 `403`이다.
-- `X-API-Key`는 machine-to-machine 조회 주체를 위한 opaque credential로 사용할 수 있으며, bearer token과 같은 RBAC 경계를 적용한다.
+- Cluster mode에서 `management.readOnlyApiKeyFile`을 지정하면 서버는 파일을 읽고 앞뒤 공백을 제거한 값을 `X-API-Key` credential로 사용한다. 이 key의 role은 `ReadOnly`다. 파일이 없거나 읽을 수 없고, 내용이 비어 있거나 cluster admin token과 같으면 process 시작을 거절해야 한다. 이 설정은 standalone mode에 없다.
+- `X-API-Key`는 machine-to-machine 주체를 위한 opaque credential이다. 구성된 credential에도 bearer token과 같은 endpoint별 RBAC 경계를 적용한다.
 - bearer token과 API key는 opaque 값이다. Phase 1은 OIDC discovery, JWT claim 검증과 claim 기반 tenant scope를 약속하지 않는다.
 - `-http-auth-token`이 비어 있으면 local development용 익명 모드로 동작하지만, `-http-listen`은 literal loopback IP(`127.0.0.0/8` 또는 `::1`)만 허용한다. `0.0.0.0`, `:8080`, 외부 인터페이스 주소는 거부한다.
 - 따라서 원격 interface에 Management API를 노출하려면 반드시 `-http-auth-token` 또는 동등한 API key 정책을 설정해야 한다.
@@ -243,6 +244,14 @@ series를 0부터 같은 순서로 render한다. Transport 순서는 `tcp`, `tls
 transport 안의 reason 순서는 `max_connections`, `connection_rate`다. 알 수 없는
 값은 무시한다.
 
+`narumq_mqtt_connect_rejected_total{protocol,reason}`은 broker가 CONNECT를 거절한 횟수를 protocol·고정 reason별로 센다. `protocol="3.1.0"`은 `unsupported_protocol_version` 한 series만 출력한다. `MQTT_3_1_1`과 `MQTT_5_0`은 각각 다음 7개 reason을 출력한다: `unsupported_protocol_version`, `identifier_rejected`, `bad_credentials`, `not_authorized`, `server_unavailable`, `quota_exceeded`, `other`. Registry는 총 15개 series를 0부터 같은 순서로 출력하고 알 수 없는 protocol·reason 조합은 무시한다. MQTT 5 CONNACK reason code는 `0x84`→`unsupported_protocol_version`, `0x85`→`identifier_rejected`, `0x86`→`bad_credentials`, `0x87`→`not_authorized`, `0x88`·`0x89`→`server_unavailable`, `0x97`→`quota_exceeded`이며 나머지는 `other`다. MQTT 3.1.1 return code는 `1`→`unsupported_protocol_version`, `2`→`identifier_rejected`, `3`→`server_unavailable`, `4`→`bad_credentials`, `5`→`not_authorized`이며 나머지는 `other`다. MQTT 3.1.1 wire에는 quota 전용 return code가 없으므로 quota 거절은 `0x03`으로 전송되고 `server_unavailable`로 집계된다.
+
+`narumq_messages_dropped_total{reason}`은 routing 뒤 subscriber 한 명에게 전달할 메시지를 broker가 버린 횟수다. 고정 reason은 `queue_full`과 `packet_too_large`다. `queue_full`은 QoS 0 non-durable 후보가 모두 queue full로 끝난 경우에만 증가한다. `packet_too_large`는 subscriber의 Maximum Packet Size보다 큰 전달을 폐기할 때 증가한다. Message expiry는 publisher가 요청한 수명 만료이므로 이 counter에 넣지 않는다. Durable target 포화는 기존 `narumq_durable_delivery_saturated_targets_total`로 센다.
+
+`narumq_node_drain_active`와 `narumq_node_drain_progress{quantity}`는 이 node가 적용한 drain operation의 committed progress를 나타낸다. `quantity`는 `connections_initial`, `connections_remaining`, `sessions_ready_for_takeover`, `sessions_taken_over`, `sessions_failed`, `pending_wal`, `under_replicated`다. Process 재시작 뒤에는 다음 local drain 명령 적용 전까지 모든 값이 0이다. Drain 속도와 ETA는 이 gauge의 Prometheus 추이에서 계산한다.
+
+시험 위치: `internal/adapters/metrics/registry_test.go::TestRegistryRendersConnectRejectionsByProtocolAndReason`, `TestRegistryRendersMessageDrops`, `TestRegistryRendersNodeDrainProgress`; `internal/adapters/metrics/registry_aggregation_test.go::TestRegistryFamiliesMatchAggregationCatalog`.
+
 기본 label에 원문 `clientId`, username, IP, 임의 topic, request ID와 token claim을 넣어서는 안 된다. 제한된 exact topic Metric은 P1 opt-in resource로 제공하며 tenant, 최대 등록 수와 TTL을 적용해야 한다.
 
 ### 7.1 Metric별 node·cluster 집계
@@ -285,6 +294,9 @@ transport 안의 reason 순서는 `max_connections`, `connection_rate`다. 알 �
 | `narumq_audit_events_total` | `counter` | `outcome` | `node` | `increase_sum` |
 | `narumq_audit_publisher_ready` | `gauge` | - | `node` | `per_node` |
 | `narumq_mqtt_listener_admission_rejected_total` | `counter` | `transport`, `reason` | `node` | `increase_sum` |
+| `narumq_messages_dropped_total` | `counter` | `reason` | `node` | `increase_sum` |
+| `narumq_node_drain_active` | `gauge` | - | `node` | `per_node` |
+| `narumq_node_drain_progress` | `gauge` | `quantity` | `node` | `per_node` |
 | `narumq_tenant_quota_profile_committed` | `gauge` | - | `replicated` | `per_node` |
 | `narumq_tenant_quota_profile_version` | `gauge` | - | `replicated` | `per_node` |
 | `narumq_tenant_quota_config_mismatch` | `gauge` | - | `node` | `per_node` |
@@ -309,11 +321,56 @@ Standalone mode는 node가 하나뿐이므로 `replicated`와 `node`의 결과�
 
 ## 8. Dashboard 계약
 
-Dashboard는 이 API와 외부 TSDB를 사용해야 한다. 장기 시계열 원본을 자체 저장해서는 안 된다.
+Dashboard는 [ADR-0045](../decisions/ADR-0045-operations-dashboard-grafana.md)의 Grafana OSS와 Prometheus를 사용해야 한다. 정의 파일은 `deploy/observability/grafana/dashboards/narumq-operations.json`이며 datasource UID는 `narumq-prometheus`와 `narumq-management`다. Prometheus scrape target은 `node_id` label에 Management API의 `nodeId`와 같은 문자열을 사용한다. `/metrics` 자체에는 node label을 넣지 않는다. 현재 query는 `cluster_id`로 데이터를 필터링하지 않으므로 Prometheus datasource 하나는 NaruMQ cluster 하나만 scrape해야 한다. Dashboard는 `node`(Prometheus `node_id`), `drain_node`(단일 node ID), `rebalance_max_deviation`(기본값 `100`) 변수를 제공해야 한다.
+`node`는 multi-select이며 기본값은 All이고 값은 `label_values(narumq_connections_active, node_id)`에서 읽는다. `drain_node`는 단일 선택이며 `label_values(narumq_node_drain_active, node_id)`를 사용한다. `rebalance_max_deviation`은 기본값 `100`인 입력 변수다.
 
-첫 화면은 cluster topology, quorum 위험, replica 부족, node version/readiness/drain과 핵심 traffic 추이를 보여야 한다. client/session/subscription 화면은 Phase 1 query로 제공하고, redirect/disconnect와 retained·exact topic Metric 화면은 해당 API가 active contract에 추가된 뒤 제공한다.
+Dashboard는 외부 시계열 원본인 Prometheus와 snapshot용 Management API를 함께 읽는다. Infinity datasource query는 GET만 사용하고 `ReadOnly` API key를 `X-API-Key` header로 보낸다. Grafana database에는 Dashboard 정의만 둔다. Dashboard는 자체 시계열을 저장해서는 안 된다.
 
-UI mutation은 해당 API가 active contract에 추가될 때 같은 RBAC, 확인 절차, idempotency와 감사 계약을 따라야 한다.
+첫 화면의 `클러스터 상태` 행은 `quorumAvailable=false`를 빨간색 `위험`으로 표시해야 한다. Grafana Stat에는 boolean을 0/1로 변환한 뒤 색상 mapping을 적용한다. `underReplicated`가 1 이상이면 빨간색으로 표시해야 한다. Drain 기록이 없는 `/api/v1/nodes/{nodeId}/drain`은 API의 `404`를 표시한다.
+
+| Panel ID | 행 | 제목 | PRD | 유형 | 데이터 원본과 query |
+| ---: | --- | --- | --- | --- | --- |
+| 1 | 클러스터 상태 | Quorum | UI-02 | stat | Management API `GET /api/v1/cluster`, `quorumAvailable`; Grafana에서 boolean을 0/1로 변환하고 `false`/0은 빨간색 `위험`, `true`/1은 초록색 `정상` |
+| 2 | 클러스터 상태 | Replica 부족 | UI-02 | stat | 같은 API의 `underReplicated`; 0은 초록색, 1 이상은 빨간색 |
+| 3 | 클러스터 상태 | Leader | UI-02 | stat | 같은 API의 decimal string `leaderNodeId`; Grafana에서 숫자로 표시하고 `null`은 빨간색 `없음` |
+| 4 | 클러스터 상태 | Member·Quorum | UI-02 | stat | 같은 API의 `memberCount`, `quorumSize`, `replicationFactor`, `writeQuorum` |
+| 5 | 클러스터 상태 | Node 상태 수 | UI-01 | stat | 같은 API의 `nodesByState.ready`, `joining`, `draining`, `safeToStop` |
+| 6 | 클러스터 상태 | Node topology | UI-01 | table | Management API `GET /api/v1/nodes?limit=1000`; `nodeId`, `role`, `version`, `uptimeMs`, `state`, `ready`, `readinessReason`, `replicationHealth`, `storagePressure`, `connectionCount`, `lastAppliedIndex`. `READY`는 초록색, `JOINING`은 노란색, `DRAINING`은 주황색, `SAFE_TO_STOP`은 파란색이며 `ready=false` 또는 replication health `DEGRADED`·`FAILED`·`UNREACHABLE`은 빨간색 |
+| 7 | Traffic | 연결·session·subscription | UI-03 | timeseries | Prometheus: `sum(narumq_connections_active{node_id=~"$node"})`, `sum(narumq_sessions_active{node_id=~"$node"})`, `max(narumq_subscriptions_active{node_id=~"$node"})` |
+| 8 | Traffic | Message rate | UI-03 | timeseries | Prometheus: 수신 `sum(rate(narumq_packets_received_total{packet_type="PUBLISH",node_id=~"$node"}[$__rate_interval]))`; 송신은 `narumq_packets_sent_total`로 같은 식 |
+| 9 | Traffic | Protocol별 CONNECT 성공 | UI-03 | timeseries | Prometheus: `sum by (protocol) (rate(narumq_connections_total{result="success",node_id=~"$node"}[$__rate_interval]))` |
+| 10 | Traffic | Protocol별 CONNECT 거절 | UI-03 | timeseries | Prometheus: `sum by (protocol, reason) (rate(narumq_mqtt_connect_rejected_total{node_id=~"$node"}[$__rate_interval]))` |
+| 11 | Traffic | Drop·거절 | UI-03 | timeseries | Prometheus: `narumq_messages_dropped_total` by `reason`, `narumq_publish_backpressure_rejections_total` by `reason`, `narumq_tenant_limit_rejections_total` 및 `narumq_tenant_quota_rejections_total` by `dimension`, `narumq_durable_delivery_saturated_targets_total`, `narumq_mqtt_listener_admission_rejected_total` by `reason`; 모든 query는 `node_id=~"$node"`와 `[$__rate_interval]`을 사용 |
+| 12 | Node 부하 | Node별 연결 편차 | UI-04 | table | Prometheus instant query는 `connections_active`, `deviation`, `rebalance_needed`라는 고정 `metric` label을 만든다. `deviation`은 node 연결 수에서 node 선택 범위의 평균을 올림한 값을 뺀다. `rebalance_needed`는 `deviation > bool $rebalance_max_deviation`이며 1은 빨간색 `필요`, 0은 초록색 `정상`이다. Grafana는 `node_id` 행과 metric별 열로 matrix를 만들고 deviation 내림차순으로 node를 정렬한다. |
+| 13 | Node 부하 | Node별 연결 추이 | UI-04 | timeseries | Prometheus: `sum by (node_id) (narumq_connections_active)` |
+| 14 | Drain | Drain 진행 | UI-05 | table | Prometheus instant query는 `drain_active`, `connections_initial`, `connections_remaining`, `sessions_taken_over`, `sessions_failed`, `connections_per_second`, `eta_seconds`, `takeovers_per_second` label을 만든다. 연결·session 값은 `narumq_node_drain_progress`에서 읽는다. 연결 감소 속도는 2분 `deriv`으로 계산하고 음수 결과는 0으로 제한한다. ETA는 연결 감소 속도가 양수일 때만 제공한다. Grafana는 `node_id` 행과 metric별 열로 matrix를 만든다. |
+| 15 | Drain | Drain 상세 (${drain_node}) | UI-05 | table | Management API `GET /api/v1/nodes/${drain_node}/drain`; `phase`, `state`, `safeToStop`, `startedAt`, `deadlineAt`, `connections.remaining`, `sessions.takenOver`, `sessions.failed`, `failure.code`, `failure.blockingReason`. Drain 기록이 없으면 panel은 `No data`를 보이고 `Panel status`에서 `404 Not Found`를 확인할 수 있다. |
+
+### DASH-01: Node topology and readiness
+
+UI-01은 panel 5와 6에서 다룬다. 수용 시험은 세 broker process 각각의 `/health/ready`가 `200`을 반환하는지 확인한다. `GET /api/v1/nodes`는 요청을 받은 node의 readiness를 제공한다. 원격 node는 `JOINING`과 `remote readiness is not available from this node`를 반환한다. Dashboard는 이 응답을 그대로 표시하고 원격 readiness를 추정하지 않는다.
+
+### DASH-02: Quorum and replication
+
+UI-02는 panel 1–4에서 다룬다. 정상인 3-node cluster는 quorum 사용 가능과 `underReplicated=0`을 반환한다. Quorum이 false이거나 replica 부족 값이 0보다 크면 빨간색으로 표시한다.
+
+### DASH-03: Traffic and protocol events
+
+UI-03은 panel 7–11에서 다룬다. `node` 변수로 모든 target node 또는 특정 node를 선택한다. Prometheus series에서 PUBLISH rate, protocol별 CONNECT 성공·거절, 거절 사유와 drop rate를 표시한다.
+
+### DASH-04: Node load balance
+
+UI-04는 panel 12와 13에서 다룬다. Panel 12는 node마다 한 행을 표시하고 연결 편차가 큰 순서로 정렬한다. 설정한 rebalance 기준을 넘으면 필요 상태를 표시한다. Panel 13은 node별 연결 추이를 표시한다.
+
+### DASH-05: Drain progress and safe stop
+
+UI-05는 panel 14와 15에서 다룬다. Panel 14는 초기·잔여 연결 수, takeover 수, 속도와 조건을 만족할 때 ETA를 표시한다. Panel 15는 API가 반환한 drain 단계와 `safeToStop`을 표시한다.
+
+### DASH-06: External time-series storage
+
+UI-10은 모든 panel에 적용한다. Prometheus가 시계열을 저장한다. Grafana는 Dashboard 정의를 저장하며 시계열 저장소 역할을 하지 않는다.
+
+Panel 14의 속도 단위는 연결/초와 takeover/초이며 ETA 단위는 초다. Panel 12의 `rebalance_max_deviation`은 운영자가 rebalance API의 `maxDeviationConnections`와 같은 값으로 설정한다. Client/session 상세, disconnect/redirect와 retained 조회 화면은 관련 API가 Active contract에 추가되기 전까지 제공하지 않는다. 실제 설정 순서는 [Operations Dashboard 운영 절차](../how-to/operations-dashboard.md)를 따른다.
 
 ## 9. 수용 시험
 
@@ -328,6 +385,15 @@ UI mutation은 해당 API가 active contract에 추가될 때 같은 RBAC, 확�
 - SEC-11 / API-08 / NFR-17 수용 시험은 활성 management mutation 8개, 401·403 거절, fail-closed admission, hash-chain 손상, schema 검증, directory 경계와 Windows rotation 충돌을 확인한다: `internal/application/audit/service_test.go`, `internal/adapters/http/management/audit_test.go`, `cmd/narumq/cluster_config_test.go`, `cmd/narumq/main_test.go` (`TestAuditVerifyCommandVerifiesAndLeavesFilesReadOnly`), `tests/contracts/audit-event-v1/contract_test.go`, `tests/integration/cluster_audit_process_test.go::TestDynamicClusterManagementAuditProcessAcceptance`, `internal/adapters/auditlog/file_publisher_test.go`, `internal/adapters/auditlog/persist_windows_test.go`. Process acceptance는 2026-10-09에 통과했다(시험 5.82초).
 - Cluster startup probe는 typed Raft recovery가 끝나기 전 `STARTING`, recovery 뒤 base lifecycle 상태를 반환해야 한다. `cmd/narumq/cluster_storage_health_test.go::TestClusterStartupWaitsForTypedRecovery`가 두 상태를 확인한다.
 - Metric format, type, HELP/UNIT, histogram bucket과 금지 label을 자동 검사한다.
+- UI-03 CONNECT 거절 label과 CONNACK mapping: `internal/adapters/tcp/server_connect_reject_test.go::TestConnectRejectReasonMapsEveryCONNACKCode`, `internal/adapters/metrics/registry_test.go::TestRegistryRendersConnectRejectionsByProtocolAndReason`, `tests/integration/management_api_test.go::TestMQTTConnectRejectionAndDropAreObservable`.
+- UI-03 routing 뒤 QoS 0 queue-full drop: `internal/application/publish/publish_test.go::TestPublishCountsQoS0QueueFullDrops`.
+- UI-05 node-local drain gauge: `internal/adapters/metrics/registry_test.go::TestRegistryRendersNodeDrainProgress`, `tests/integration/cluster_drain_process_test.go::TestDynamicClusterNodeDrainProcessAcceptance`.
+- Cluster ReadOnly API key의 설정·파일 검증·role 경계: `cmd/narumq/cluster_config_test.go::TestClusterManagementReadOnlyAPIKeyConfiguration`, `TestLoadClusterManagementCredentials`, `internal/adapters/http/management/backup_handlers_test.go::TestReadOnlyAPIKeyCanReadButCannotCreateBackup`.
+- UI-01~UI-05·UI-10 Dashboard contract와 process acceptance: `tests/integration/dashboard_stack_test.go::TestDashboardProvisioningMatchesContracts`, `tests/integration/dashboard_stack_test.go::TestDashboardStackProcessAcceptance`.
+- Dashboard 수용 시험 결과(2026-10-09): `TestDashboardProvisioningMatchesContracts`와 opt-in Docker E2E `TestDashboardStackProcessAcceptance`가 통과했다. E2E 실행은 `NARUMQ_DASHBOARD_E2E=1`, `NARUMQ_DASHBOARD_E2E_HOLD=90s` 조건에서 test 229.14초, package 230.254초였다. 세 process의 `/health/ready` `200`, Prometheus target 3개, datasource health 2개, ReadOnly cluster GET `200`, backup·drain POST `403`, cluster traffic·protocol Metric과 완료된 drain 결과를 확인했다. Grafana `/api/ds/query`가 panel 2, 4, 5, 6, 15의 frame을 반환했다. Replica 부족은 `0`, Member·Quorum은 `3/2/3/2`, node 상태 수는 `Ready=1`·`Joining=2`, node topology는 local `READY`와 원격 node의 `JOINING`·정확한 readiness reason, drain 상세는 `COMPLETED`·`SAFE_TO_STOP`·`safeToStop=true`·remaining `0`·takeover `1`을 표시했다. Node별 query에서는 node 1 connection·received PUBLISH rate와 MQTT 3.1.1 성공, node 2 sent PUBLISH rate와 MQTT 5.0 성공·같은 series의 `not_authorized` 거절을 확인했다. 성공 protocol label은 선택한 node 밖에서 나오지 않았다.
+- Dashboard visual 결과(2026-10-09): browser에서 Quorum `정상`, replica 부족 `0`, Leader `1`, Members `3`, quorum size `2`, replication factor `3`, write quorum `2`를 확인했다. Node topology는 node 1 `READY`, node 2 `JOINING`과 `remote readiness is not available from this node`, node 3 `SAFE_TO_STOP`을 표시했다. `Node=2` 선택 화면에서 Connections, Sent PUBLISH, MQTT 5.0 CONNECT 성공과 CONNECT 거절 panel을 확인했다. Node load에는 세 node가 보였다. Drain panel에는 node 3 `connections_initial=1`, `connections_remaining=0`, `sessions_taken_over=1`, 상세 단계 `COMPLETED`, 상태 `SAFE_TO_STOP`, `safeToStop=true`가 표시됐다. Browser error와 console error는 없었다. CI 실행 링크와 production deployment 검증은 없다.
+- P0 traceability gate (2026-10-09): `go run ./tools/verify traceability` PASS. UI-01~UI-05·UI-10이 test에 연결됐고, 전체 P0는 66/81건 매핑·15건 예외다.
+- Repository local gate (2026-10-09): `go run ./tools/verify local` PASS in 149.04 seconds. Branch instrumentation, fuzz, architecture, package tests, coverage, and traceability checks passed.
 - API-03 catalog test `internal/adapters/metrics/registry_aggregation_test.go::TestRegistryFamiliesMatchAggregationCatalog`는 Prometheus/OpenMetrics 출력의 metric 이름·type·label, 범위와 집계 규칙을 문서 표와 비교한다. Histogram에 `_bucket` 표본이 없는 경우와 `_count` label 조합에 bucket 계열이 없는 경우도 거절한다.
 - `internal/adapters/metrics/registry_test.go::TestRegistryReadsSubscriptionCountAtScrape`는 scrape마다 현재 구독 수를 읽는지 확인한다. `internal/domain/routing/routing_test.go::TestTableSubscriptionCountMatchesSnapshot`는 nil·빈 table, shared·non-shared 구독, 교체, 해지, session 제거와 projection 교체 뒤 `SubscriptionCount()`가 `Snapshot()` 길이와 같은지 확인한다.
 - `tests/integration/cluster_metrics_process_test.go::TestDynamicClusterSubscriptionGaugeProcessAcceptance`는 3-node cluster에서 초기 gauge 0, SUBSCRIBE 2개 뒤 2, UNSUBSCRIBE 뒤 1을 확인한다. `UNSUBACK`의 packet ID, properties 길이와 성공 reason `0x00`도 확인한다. `SessionExpiryInterval=0`인 MQTT 5 연결을 종료하면 모든 node의 gauge가 0으로 돌아오는지도 확인한다.

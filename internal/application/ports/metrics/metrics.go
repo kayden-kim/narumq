@@ -12,6 +12,18 @@ const (
 // Connect rejection reasons (fixed cardinality)
 const (
 	ConnectRejectReasonUnsupportedProtocolVersion = "unsupported_protocol_version"
+	ConnectRejectReasonIdentifierRejected         = "identifier_rejected"
+	ConnectRejectReasonBadCredentials             = "bad_credentials"
+	ConnectRejectReasonNotAuthorized              = "not_authorized"
+	ConnectRejectReasonServerUnavailable          = "server_unavailable"
+	ConnectRejectReasonQuotaExceeded              = "quota_exceeded"
+	ConnectRejectReasonOther                      = "other"
+)
+
+// Message drop reasons (fixed cardinality).
+const (
+	MessageDropReasonQueueFull      = "queue_full"
+	MessageDropReasonPacketTooLarge = "packet_too_large"
 )
 
 // Transport labels (fixed cardinality)
@@ -94,9 +106,11 @@ type MetricsRecorder interface {
 	// AuthAttempt increments authentication counter with method, result and reason.
 	AuthAttempt(method string, success bool, reason string)
 
-	// ConnectRejected increments the fixed-cardinality unsupported CONNECT counter.
+	// ConnectRejected increments a fixed-cardinality CONNECT rejection counter by protocol and reason.
 	ConnectRejected(protocol string, reason string)
 
+	// MessageDropped increments a fixed-cardinality post-routing message drop counter.
+	MessageDropped(reason string)
 	// SetSessionsActive updates the active session gauge for persistent or non-persistent sessions.
 	SetSessionsActive(persistent bool, count int64)
 

@@ -365,7 +365,8 @@ func TestManagementAPIObservesLiveMQTTState(t *testing.T) {
 	}
 }
 
-func TestMQTT310RejectionIsObservable(t *testing.T) {
+// Traceability: UI-03; docs/specs/management-api-and-observability.md §7.1.
+func TestMQTTRejectionsAndOversizeDropsAreObservable(t *testing.T) {
 	mqttListener, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
@@ -530,6 +531,62 @@ func TestMQTT310RejectionIsObservable(t *testing.T) {
 		})
 	}
 
+	identifierRejected, err := net.DialTimeout("tcp", mqttListener.Addr().String(), time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	writePacket(t, identifierRejected, encoder, &mqtt.Connect{
+		Version: mqtt.ProtocolV311, CleanStart: true,
+	})
+	identifierAck, ok := readPacket(t, identifierRejected, decoder, mqtt.ProtocolV311).(*mqtt.ConnAck)
+	if !ok || identifierAck.ReasonCode != 0x02 {
+		t.Fatalf("empty MQTT 3.1.1 client ID CONNACK = %#v, want reason 0x02", identifierAck)
+	}
+	expectClosed(t, identifierRejected)
+	_ = identifierRejected.Close()
+
+	subscriber, err := net.DialTimeout("tcp", mqttListener.Addr().String(), time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	writePacket(t, subscriber, encoder, &mqtt.Connect{
+		Version: mqtt.ProtocolV5, CleanStart: true, ClientID: "oversize-subscriber", MaximumPacketSize: 64,
+	})
+	subscriberAck, ok := readPacket(t, subscriber, decoder, mqtt.ProtocolV5).(*mqtt.ConnAck)
+	if !ok || subscriberAck.ReasonCode != 0 {
+		t.Fatalf("oversize subscriber CONNACK = %#v", subscriberAck)
+	}
+	writePacket(t, subscriber, encoder, &mqtt.Subscribe{
+		Version: mqtt.ProtocolV5, PacketID: 1,
+		Subscriptions: []mqtt.Subscription{{Filter: "oversize/#", QoS: mqtt.QoSAtMostOnce}},
+	})
+	subscribeAck, ok := readPacket(t, subscriber, decoder, mqtt.ProtocolV5).(*mqtt.SubAck)
+	if !ok || len(subscribeAck.ReasonCodes) != 1 || subscribeAck.ReasonCodes[0] != 0 {
+		t.Fatalf("oversize subscriber SUBACK = %#v", subscribeAck)
+	}
+
+	publisher, err := net.DialTimeout("tcp", mqttListener.Addr().String(), time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	writePacket(t, publisher, encoder, &mqtt.Connect{
+		Version: mqtt.ProtocolV5, CleanStart: true, ClientID: "oversize-publisher",
+	})
+	publisherAck, ok := readPacket(t, publisher, decoder, mqtt.ProtocolV5).(*mqtt.ConnAck)
+	if !ok || publisherAck.ReasonCode != 0 {
+		t.Fatalf("oversize publisher CONNACK = %#v", publisherAck)
+	}
+	writePacket(t, publisher, encoder, &mqtt.Publish{
+		Version: mqtt.ProtocolV5, Topic: "oversize/event", Payload: make([]byte, 128),
+	})
+	expectNoPacket(t, subscriber)
+	writePacket(t, publisher, encoder, &mqtt.Disconnect{Version: mqtt.ProtocolV5})
+	expectClosed(t, publisher)
+	_ = publisher.Close()
+	writePacket(t, subscriber, encoder, &mqtt.Disconnect{Version: mqtt.ProtocolV5})
+	expectClosed(t, subscriber)
+	_ = subscriber.Close()
+
 	client := &http.Client{Timeout: 2 * time.Second}
 	metricsResponse, err := client.Get(managementServer.URL + "/metrics")
 	if err != nil {
@@ -545,6 +602,12 @@ func TestMQTT310RejectionIsObservable(t *testing.T) {
 	}
 	if want := `narumq_mqtt_connect_rejected_total{protocol="3.1.0",reason="unsupported_protocol_version"} 2`; !strings.Contains(string(metricsBody), want) {
 		t.Fatalf("metrics missing MQTT 3.1.0 rejection count: %s", metricsBody)
+	}
+	if want := `narumq_mqtt_connect_rejected_total{protocol="MQTT_3_1_1",reason="identifier_rejected"} 1`; !strings.Contains(string(metricsBody), want) {
+		t.Fatalf("metrics missing MQTT 3.1.1 identifier rejection: %s", metricsBody)
+	}
+	if want := `narumq_messages_dropped_total{reason="packet_too_large"} 1`; !strings.Contains(string(metricsBody), want) {
+		t.Fatalf("metrics missing oversized packet drop: %s", metricsBody)
 	}
 
 	sessionsResponse, err := client.Get(managementServer.URL + "/api/v1/clients")

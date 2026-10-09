@@ -1,0 +1,23 @@
+[
+  {
+    "targets": ["narumq-node-1:8080"],
+    "labels": {
+      "cluster_id": "sample-cluster",
+      "node_id": "1"
+    }
+  },
+  {
+    "targets": ["narumq-node-2:8080"],
+    "labels": {
+      "cluster_id": "sample-cluster",
+      "node_id": "2"
+    }
+  },
+  {
+    "targets": ["narumq-node-3:8080"],
+    "labels": {
+      "cluster_id": "sample-cluster",
+      "node_id": "3"
+    }
+  }
+]

@@ -2,6 +2,9 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
+	"os"
+	"path/filepath"
 	"runtime"
 	"slices"
 	"strings"
@@ -157,6 +160,7 @@ func TestParseClusterConfigRejectsInvalidInputs(t *testing.T) {
 		{name: "audit directory nested in data directory", edit: func(c *clusterConfigFile) { c.Management.AuditDirectory = c.Directory + "/audit" }},
 		{name: "audit directory contains data directory", edit: func(c *clusterConfigFile) { c.Management.AuditDirectory = "data" }},
 		{name: "blank token path", edit: func(c *clusterConfigFile) { c.Management.ClusterAdminTokenFile = " " }},
+		{name: "blank read-only API key path", edit: func(c *clusterConfigFile) { c.Management.ReadOnlyAPIKeyFile = " " }},
 		{name: "tenant quota version zero", edit: func(c *clusterConfigFile) {
 			c.TenantQuotas = validTenantQuotaProfileConfig()
 			c.TenantQuotas.Version = 0
@@ -192,6 +196,118 @@ func TestParseClusterConfigRejectsInvalidInputs(t *testing.T) {
 			}
 			if _, err := parseClusterConfig(strings.NewReader(string(data))); err == nil {
 				t.Fatal("parseClusterConfig accepted invalid configuration")
+			}
+		})
+	}
+}
+
+// Traceability: UI-01; docs/specs/management-api-and-observability.md §8.
+func TestClusterManagementReadOnlyAPIKeyConfiguration(t *testing.T) {
+	config := validBootstrapClusterConfig()
+	config.Management.ReadOnlyAPIKeyFile = "secrets/read-only.key"
+	if err := validateClusterConfig(config); err != nil {
+		t.Fatalf("valid read-only API key path rejected: %v", err)
+	}
+	parsed, err := parseClusterConfig(strings.NewReader(string(mustMarshalClusterConfig(t, config))))
+	if err != nil {
+		t.Fatalf("parse read-only API key config: %v", err)
+	}
+	if parsed.Management.ReadOnlyAPIKeyFile != config.Management.ReadOnlyAPIKeyFile {
+		t.Fatalf("read-only API key path = %q, want %q", parsed.Management.ReadOnlyAPIKeyFile, config.Management.ReadOnlyAPIKeyFile)
+	}
+
+	for _, path := range []string{" ", " secrets/key", "secrets/key "} {
+		invalid := validBootstrapClusterConfig()
+		invalid.Management.ReadOnlyAPIKeyFile = path
+		if err := validateClusterConfig(invalid); err == nil || err.Error() != "management readOnlyApiKeyFile must be a valid path" {
+			t.Fatalf("validate readOnlyApiKeyFile %q error = %v, want invalid path error", path, err)
+		}
+	}
+}
+
+// Traceability: UI-01; docs/specs/management-api-and-observability.md §8.
+func TestLoadClusterManagementCredentials(t *testing.T) {
+	writeCredential := func(t *testing.T, directory, name, value string) string {
+		t.Helper()
+		path := filepath.Join(directory, name)
+		if err := os.WriteFile(path, []byte(value), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		return path
+	}
+
+	directory := t.TempDir()
+	adminPath := writeCredential(t, directory, "admin.token", " admin-secret \n")
+	readOnlyPath := writeCredential(t, directory, "read-only.key", " read-only-secret \n")
+	adminToken, readOnlyAPIKey, err := loadClusterManagementCredentials(clusterManagement{
+		ClusterAdminTokenFile: adminPath, ReadOnlyAPIKeyFile: readOnlyPath,
+	})
+	if err != nil || adminToken != "admin-secret" || readOnlyAPIKey != "read-only-secret" {
+		t.Fatalf("loaded credentials = (%q, %q, %v), want trimmed distinct values", adminToken, readOnlyAPIKey, err)
+	}
+	adminOnlyToken, noReadOnlyKey, err := loadClusterManagementCredentials(clusterManagement{ClusterAdminTokenFile: adminPath})
+	if err != nil || adminOnlyToken != "admin-secret" || noReadOnlyKey != "" {
+		t.Fatalf("admin-only credentials = (%q, %q, %v), want admin token and no API key", adminOnlyToken, noReadOnlyKey, err)
+	}
+
+	emptyAdminPath := writeCredential(t, directory, "empty-admin.token", "\n \t")
+	emptyReadOnlyPath := writeCredential(t, directory, "empty-read-only.key", " \n")
+	sameReadOnlyPath := writeCredential(t, directory, "same-read-only.key", "admin-secret\n")
+	for _, testCase := range []struct {
+		name      string
+		config    clusterManagement
+		wantError string
+		wantCause error
+	}{
+		{
+			name: "admin file missing",
+			config: clusterManagement{
+				ClusterAdminTokenFile: filepath.Join(directory, "missing-admin.token"),
+			},
+			wantError: "read cluster admin token file:",
+			wantCause: os.ErrNotExist,
+		},
+		{
+			name: "admin file empty",
+			config: clusterManagement{
+				ClusterAdminTokenFile: emptyAdminPath,
+			},
+			wantError: "cluster admin token file is empty",
+		},
+		{
+			name: "read-only key file missing",
+			config: clusterManagement{
+				ClusterAdminTokenFile: adminPath, ReadOnlyAPIKeyFile: filepath.Join(directory, "missing-read-only.key"),
+			},
+			wantError: "read management read-only API key file:",
+			wantCause: os.ErrNotExist,
+		},
+		{
+			name: "read-only key file empty",
+			config: clusterManagement{
+				ClusterAdminTokenFile: adminPath, ReadOnlyAPIKeyFile: emptyReadOnlyPath,
+			},
+			wantError: "management read-only API key file is empty",
+		},
+		{
+			name: "read-only key equals admin token",
+			config: clusterManagement{
+				ClusterAdminTokenFile: adminPath, ReadOnlyAPIKeyFile: sameReadOnlyPath,
+			},
+			wantError: "management read-only API key must differ from the cluster admin token",
+		},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			_, _, err := loadClusterManagementCredentials(testCase.config)
+			if err == nil {
+				t.Fatal("loadClusterManagementCredentials succeeded, want error")
+			}
+			if testCase.wantCause == nil {
+				if err.Error() != testCase.wantError {
+					t.Fatalf("error = %q, want %q", err, testCase.wantError)
+				}
+			} else if !strings.HasPrefix(err.Error(), testCase.wantError) || !errors.Is(err, testCase.wantCause) {
+				t.Fatalf("error = %v, want prefix %q wrapping %v", err, testCase.wantError, testCase.wantCause)
 			}
 		})
 	}

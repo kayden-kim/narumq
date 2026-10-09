@@ -211,6 +211,129 @@ func TestRaftStageHistogramsKeepStagesIsolatedAndBoundOverflow(t *testing.T) {
 	}
 }
 
+// Traceability: UI-03; docs/specs/management-api-and-observability.md §7.
+func TestRegistryRendersConnectRejectionsByProtocolAndReason(t *testing.T) {
+	registry := NewRegistry()
+	registry.ConnectRejected(ports.ProtocolMQTT311, ports.ConnectRejectReasonOther)
+	registry.ConnectRejected(ports.ProtocolMQTT311, ports.ConnectRejectReasonOther)
+	registry.ConnectRejected(ports.ProtocolMQTT50, ports.ConnectRejectReasonNotAuthorized)
+	registry.ConnectRejected(ports.ProtocolMQTT310, ports.ConnectRejectReasonUnsupportedProtocolVersion)
+	registry.ConnectRejected("unknown", ports.ConnectRejectReasonOther)
+	registry.ConnectRejected(ports.ProtocolMQTT50, "unknown")
+
+	protocols := []string{"3.1.0", "MQTT_3_1_1", "MQTT_5_0"}
+	reasons := []string{
+		"unsupported_protocol_version",
+		"identifier_rejected",
+		"bad_credentials",
+		"not_authorized",
+		"server_unavailable",
+		"quota_exceeded",
+		"other",
+	}
+	output := string(registry.Render(false))
+	lastIndex := -1
+	seriesCount := 0
+	for _, protocol := range protocols {
+		protocolReasons := reasons
+		if protocol == "3.1.0" {
+			protocolReasons = reasons[:1]
+		}
+		for _, reason := range protocolReasons {
+			want := uint64(0)
+			switch {
+			case protocol == "3.1.0" && reason == "unsupported_protocol_version":
+				want = 1
+			case protocol == "MQTT_3_1_1" && reason == "other":
+				want = 2
+			case protocol == "MQTT_5_0" && reason == "not_authorized":
+				want = 1
+			}
+			line := fmt.Sprintf("narumq_mqtt_connect_rejected_total{protocol=%q,reason=%q} %d\n", protocol, reason, want)
+			index := strings.Index(output, line)
+			if index < 0 {
+				t.Fatalf("missing series %q:\n%s", line, output)
+			}
+			if index <= lastIndex {
+				t.Fatalf("series order is not fixed at %q", line)
+			}
+			if count := strings.Count(output, line); count != 1 {
+				t.Fatalf("series %q occurs %d times, want once", line, count)
+			}
+			lastIndex = index
+			seriesCount++
+		}
+	}
+	if seriesCount != 15 {
+		t.Fatalf("rendered %d CONNECT rejection series, want 15", seriesCount)
+	}
+}
+
+// Traceability: UI-03; docs/specs/management-api-and-observability.md §7.
+func TestRegistryRendersMessageDrops(t *testing.T) {
+	registry := NewRegistry()
+	registry.MessageDropped(ports.MessageDropReasonQueueFull)
+	registry.MessageDropped(ports.MessageDropReasonPacketTooLarge)
+	registry.MessageDropped(ports.MessageDropReasonPacketTooLarge)
+	registry.MessageDropped("unknown")
+
+	output := string(registry.Render(true))
+	for _, line := range []string{
+		"# HELP narumq_messages_dropped_total Messages discarded after routing before delivery to one subscriber.\n",
+		"# TYPE narumq_messages_dropped_total counter\n",
+		`narumq_messages_dropped_total{reason="queue_full"} 1` + "\n",
+		`narumq_messages_dropped_total{reason="packet_too_large"} 2` + "\n",
+	} {
+		if count := strings.Count(output, line); count != 1 {
+			t.Fatalf("line %q occurs %d times, want once:\n%s", line, count, output)
+		}
+	}
+	if strings.Contains(output, `narumq_messages_dropped_total{reason="unknown"}`) {
+		t.Fatalf("unknown message drop reason was rendered:\n%s", output)
+	}
+}
+
+// Traceability: UI-05; docs/specs/management-api-and-observability.md §7.
+func TestRegistryRendersNodeDrainProgress(t *testing.T) {
+	registry := NewRegistry()
+	requireGauge := func(output string, active int, values []uint64) {
+		t.Helper()
+		if !strings.Contains(output, fmt.Sprintf("narumq_node_drain_active %d\n", active)) {
+			t.Fatalf("active gauge = %d missing:\n%s", active, output)
+		}
+		quantities := []string{
+			"connections_initial",
+			"connections_remaining",
+			"sessions_ready_for_takeover",
+			"sessions_taken_over",
+			"sessions_failed",
+			"pending_wal",
+			"under_replicated",
+		}
+		for index, quantity := range quantities {
+			line := fmt.Sprintf("narumq_node_drain_progress{quantity=%q} %d\n", quantity, values[index])
+			if !strings.Contains(output, line) {
+				t.Errorf("missing progress gauge %q:\n%s", line, output)
+			}
+		}
+	}
+	requireGauge(string(registry.Render(false)), 0, make([]uint64, 7))
+
+	registry.SetNodeDrainProgress(true, NodeDrainProgress{
+		ConnectionsInitial:       11,
+		ConnectionsRemaining:     10,
+		SessionsReadyForTakeover: 9,
+		SessionsTakenOver:        8,
+		SessionsFailed:           7,
+		PendingWAL:               6,
+		UnderReplicated:          5,
+	})
+	requireGauge(string(registry.Render(false)), 1, []uint64{11, 10, 9, 8, 7, 6, 5})
+
+	registry.SetNodeDrainProgress(false, NodeDrainProgress{})
+	requireGauge(string(registry.Render(false)), 0, make([]uint64, 7))
+}
+
 func TestRegistryRendersMQTT310UnsupportedVersionRejection(t *testing.T) {
 	reg := NewRegistry()
 	reg.ConnectRejected(ports.ProtocolMQTT310, ports.ConnectRejectReasonUnsupportedProtocolVersion)
@@ -480,7 +603,8 @@ func TestRegistryRendersListenerAdmissionRejections(t *testing.T) {
 		"narumq_mqtt_listener_admission_rejected_total{transport=\"tls\",reason=\"connection_rate\"} 1\n"
 	for _, openMetrics := range []bool{false, true} {
 		text := string(registry.Render(openMetrics))
-		if !strings.Contains(text, want) || strings.Contains(text, `reason="other"`) {
+		if !strings.Contains(text, want) ||
+			strings.Contains(text, `narumq_mqtt_listener_admission_rejected_total{transport="tcp",reason="other"}`) {
 			t.Fatalf("unexpected admission series: %s", text)
 		}
 	}

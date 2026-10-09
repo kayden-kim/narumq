@@ -306,16 +306,16 @@ legacy broker/gateway는 NaruMQ core와 별도 배포·수명 주기·Metric을 
 
 | ID | 우선순위 | 요구사항 | 수용 기준 |
 | --- | --- | --- | --- |
-| UI-01 | P0 | cluster topology와 node 상태를 표시한다. | node, role, version, uptime, readiness, drain 상태가 보인다. |
-| UI-02 | P0 | quorum과 복제 상태를 강조한다. | quorum 위험과 replica 부족을 첫 화면에서 식별한다. |
-| UI-03 | P0 | 연결, session, subscription, message rate, drop 추이를 표시한다. | cluster와 node 범위를 전환하고 protocol version별 connect와 reject를 확인할 수 있다. |
-| UI-04 | P0 | 노드별 연결 수와 부하 편차를 표시한다. | 불균형 노드를 정렬하고 rebalance 필요성을 판단할 수 있다. |
-| UI-05 | P0 | drain 진행률과 종료 안전 상태를 표시한다. | 잔여 연결, takeover, 속도, ETA, 실패 이유를 보여준다. |
+| UI-01 | P0 | cluster topology와 node 상태를 표시한다. ([DASH-01](../specs/management-api-and-observability.md#dash-01-node-topology-and-readiness)) | node, role, version, uptime, readiness, drain 상태가 보인다. |
+| UI-02 | P0 | quorum과 복제 상태를 강조한다. ([DASH-02](../specs/management-api-and-observability.md#dash-02-quorum-and-replication)) | quorum 위험과 replica 부족을 첫 화면에서 식별한다. |
+| UI-03 | P0 | 연결, session, subscription, message rate, drop 추이를 표시한다. ([DASH-03](../specs/management-api-and-observability.md#dash-03-traffic-and-protocol-events)) | cluster와 node 범위를 전환하고 protocol version별 connect와 reject를 확인할 수 있다. |
+| UI-04 | P0 | 노드별 연결 수와 부하 편차를 표시한다. ([DASH-04](../specs/management-api-and-observability.md#dash-04-node-load-balance)) | 불균형 노드를 정렬하고 rebalance 필요성을 판단할 수 있다. |
+| UI-05 | P0 | drain 진행률과 종료 안전 상태를 표시한다. ([DASH-05](../specs/management-api-and-observability.md#dash-05-drain-progress-and-safe-stop)) | 잔여 연결, takeover, 속도, ETA, 실패 이유를 보여준다. |
 | UI-06 | P1 | tenant, clientId, node, IP, protocol로 client를 검색한다. | pagination된 검색 결과에서 session 상세로 이동한다. |
 | UI-07 | P1 | client session과 subscription을 조회한다. | inflight, offline queue, 인증 identity는 권한에 따라 마스킹한다. |
 | UI-08 | P1 | client disconnect와 MQTT 5 redirect를 실행한다. | 권한 확인, 확인 절차, 감사 로그가 남는다. |
 | UI-09 | P1 | retained message와 선택 topic Metric을 조회한다. | tenant 권한 밖의 데이터는 표시하지 않는다. |
-| UI-10 | P0 | 외부 TSDB를 사용한다. | Dashboard가 장기 시계열 원본을 자체 저장하지 않는다. |
+| UI-10 | P0 | 외부 TSDB를 사용한다. ([DASH-06](../specs/management-api-and-observability.md#dash-06-external-time-series-storage)) | Dashboard가 장기 시계열 원본을 자체 저장하지 않는다. |
 
 ### 9.7 안전한 종료와 rolling update
 
@@ -787,7 +787,7 @@ Phase 0은 기준과 도구를 확정하는 단계다. Phase 1부터 기능을 �
 - Unit Test: `MQTT-3.1.4-2 / MQTT-01 invalid CONNECT rejection`
 - Test: `test_DEP_12_no_unexpected_will_for_supported_clients`
 - Benchmark: `PERF-04 / BP-03 durable delivery EMQX comparison`
-- Dashboard: `API-03 cluster aggregation 패널`
+- Dashboard: `UI-01~UI-05·UI-10` / `TestDashboardProvisioningMatchesContracts` / `TestDashboardStackProcessAcceptance`
 
 모든 기능은 최소 하나의 unit test와 연결한다. P0 요구사항은 자동 수용 시험도 가져야 한다. 지원한다고 선언한 MQTT normative statement는 compliance test가 있어야 한다. 문서에만 존재하는 요구사항은 완료로 처리하지 않는다.
 

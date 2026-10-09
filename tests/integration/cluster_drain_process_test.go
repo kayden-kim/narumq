@@ -10,6 +10,7 @@ import (
 	"net"
 	"net/http"
 	"sort"
+	"strings"
 	"testing"
 	"time"
 
@@ -168,6 +169,34 @@ func TestDynamicClusterNodeDrainProcessAcceptance(t *testing.T) {
 	clusterMembershipProcessWaitForStatus(t, ctx, processes[2], "/health/drain", http.StatusOK)
 	clusterMembershipProcessWaitForStatus(t, ctx, processes[2], "/health/ready", http.StatusServiceUnavailable)
 	clusterDrainProcessAssertNodeState(t, ctx, processes[0], 3, "SAFE_TO_STOP")
+
+	clusterMembershipProcessWait(t, ctx, "drained node exports committed local progress metrics", func() (bool, string, error) {
+		status, body, err := clusterMembershipProcessRequest(
+			ctx, http.MethodGet, processes[2].managementURL()+"/metrics", nil, clusterMembershipProcessAdmin, "",
+		)
+		if err != nil {
+			return false, fmt.Sprintf("node 3 metrics request failed: %v", err), nil
+		}
+		if status != http.StatusOK {
+			return false, fmt.Sprintf("node 3 metrics status = %d, body = %s", status, body), nil
+		}
+		wantLines := []string{
+			"narumq_node_drain_active 0",
+			fmt.Sprintf("narumq_node_drain_progress{quantity=\"connections_initial\"} %d", completed.Connections.Initial),
+			fmt.Sprintf("narumq_node_drain_progress{quantity=\"connections_remaining\"} %d", completed.Connections.Remaining),
+			fmt.Sprintf("narumq_node_drain_progress{quantity=\"sessions_ready_for_takeover\"} %d", completed.Sessions.StateReadyForTakeover),
+			fmt.Sprintf("narumq_node_drain_progress{quantity=\"sessions_taken_over\"} %d", completed.Sessions.TakenOver),
+			fmt.Sprintf("narumq_node_drain_progress{quantity=\"sessions_failed\"} %d", completed.Sessions.Failed),
+			fmt.Sprintf("narumq_node_drain_progress{quantity=\"pending_wal\"} %d", completed.Replication.PendingWAL),
+			fmt.Sprintf("narumq_node_drain_progress{quantity=\"under_replicated\"} %d", completed.Replication.UnderReplicated),
+		}
+		for _, line := range wantLines {
+			if !strings.Contains(string(body), "\n"+line+"\n") {
+				return false, fmt.Sprintf("node 3 metrics missing %q", line), nil
+			}
+		}
+		return true, "", nil
+	})
 
 	status, body, err = clusterMembershipProcessRequest(ctx, http.MethodDelete,
 		processes[0].managementURL()+"/api/v1/nodes/3/drain", nil, clusterMembershipProcessAdmin, "drain-cancel-after-safe")
@@ -358,6 +387,10 @@ type clusterDrainProcessOperation struct {
 		TakenOver             uint64 `json:"takenOver"`
 		Failed                uint64 `json:"failed"`
 	} `json:"sessions"`
+	Replication struct {
+		PendingWAL      uint64 `json:"pendingWal"`
+		UnderReplicated uint64 `json:"underReplicated"`
+	} `json:"replication"`
 	Failure *struct {
 		Code           string  `json:"code"`
 		BlockingReason *string `json:"blockingReason"`

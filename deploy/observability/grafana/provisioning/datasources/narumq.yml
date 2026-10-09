@@ -1,0 +1,28 @@
+apiVersion: 1
+
+datasources:
+  - name: NaruMQ Prometheus
+    uid: narumq-prometheus
+    type: prometheus
+    access: proxy
+    url: http://prometheus:9090
+    isDefault: true
+    editable: false
+    jsonData:
+      httpMethod: GET
+      timeInterval: 15s
+
+  - name: NaruMQ Management API
+    uid: narumq-management
+    type: yesoreyeram-infinity-datasource
+    access: proxy
+    url: ${NARUMQ_MANAGEMENT_URL}
+    editable: false
+    jsonData:
+      allowedHosts:
+        - ${NARUMQ_MANAGEMENT_URL}
+      httpHeaderName1: X-API-Key
+      allowDangerousHTTPMethods: false
+      timeoutInSeconds: 10
+    secureJsonData:
+      httpHeaderValue1: ${NARUMQ_READONLY_API_KEY}

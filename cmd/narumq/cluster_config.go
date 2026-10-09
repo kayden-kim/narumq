@@ -134,6 +134,7 @@ type clusterPeerTLS struct {
 type clusterManagement struct {
 	ListenAddress         string `json:"listenAddress"`
 	ClusterAdminTokenFile string `json:"clusterAdminTokenFile"`
+	ReadOnlyAPIKeyFile    string `json:"readOnlyApiKeyFile,omitempty"`
 	AuditDirectory        string `json:"auditDirectory"`
 	RequestRate           *int   `json:"requestRate,omitempty"`
 	AuthFailureRate       *int   `json:"authFailureRate,omitempty"`
@@ -353,6 +354,9 @@ func validateClusterConfig(config clusterConfigFile) error {
 	if !validHostPort(config.Management.ListenAddress, true) || !validRequiredPath(config.Management.ClusterAdminTokenFile) {
 		return errors.New("management listenAddress and clusterAdminTokenFile are required")
 	}
+	if config.Management.ReadOnlyAPIKeyFile != "" && !validRequiredPath(config.Management.ReadOnlyAPIKeyFile) {
+		return errors.New("management readOnlyApiKeyFile must be a valid path")
+	}
 	if !validRequiredPath(config.Management.AuditDirectory) {
 		return errors.New("management auditDirectory is required")
 	}
@@ -462,6 +466,32 @@ func validClusterString(value string, min, max int) bool {
 
 func validRequiredPath(value string) bool {
 	return strings.TrimSpace(value) != "" && strings.TrimSpace(value) == value
+}
+
+func loadClusterManagementCredentials(config clusterManagement) (adminToken, readOnlyAPIKey string, err error) {
+	adminTokenBytes, err := os.ReadFile(config.ClusterAdminTokenFile)
+	if err != nil {
+		return "", "", fmt.Errorf("read cluster admin token file: %w", err)
+	}
+	adminToken = strings.TrimSpace(string(adminTokenBytes))
+	if adminToken == "" {
+		return "", "", errors.New("cluster admin token file is empty")
+	}
+	if config.ReadOnlyAPIKeyFile == "" {
+		return adminToken, "", nil
+	}
+	readOnlyAPIKeyBytes, err := os.ReadFile(config.ReadOnlyAPIKeyFile)
+	if err != nil {
+		return "", "", fmt.Errorf("read management read-only API key file: %w", err)
+	}
+	readOnlyAPIKey = strings.TrimSpace(string(readOnlyAPIKeyBytes))
+	if readOnlyAPIKey == "" {
+		return "", "", errors.New("management read-only API key file is empty")
+	}
+	if readOnlyAPIKey == adminToken {
+		return "", "", errors.New("management read-only API key must differ from the cluster admin token")
+	}
+	return adminToken, readOnlyAPIKey, nil
 }
 
 func clusterPathsOverlap(a, b string) (bool, error) {

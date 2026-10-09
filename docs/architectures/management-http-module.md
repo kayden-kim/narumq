@@ -9,16 +9,16 @@
 | 구현 대조 | 2026-10-09 source, adapter·contract·process 시험과 local gate |
 | 코드 위치 | `internal/adapters/http/management` |
 | 코드 지도 | [Project structure](project-structure.md) |
-| 관련 스펙 | [Management API와 observability §1.5](../specs/management-api-and-observability.md#15-rate-limit), [§9](../specs/management-api-and-observability.md#9-수용-시험) |
-| 관련 요구사항 | [PRD](../requirements/PRD.md) API-05, SEC-11 |
+| 관련 스펙 | [Management API와 observability §1.5](../specs/management-api-and-observability.md#15-rate-limit), [§8·§9](../specs/management-api-and-observability.md#8-dashboard-계약) |
+| 관련 요구사항 | [PRD](../requirements/PRD.md) API-05, SEC-11, UI-01~UI-05·UI-10 |
 | 관련 계약 | [Management API v1](../contracts/management-api-v1.md), [Audit event v1](../contracts/audit-event-v1.md) |
-| 관련 ADR | [ADR-0043](../decisions/ADR-0043-management-api-rate-limit.md) |
+| 관련 ADR | [ADR-0043](../decisions/ADR-0043-management-api-rate-limit.md), [ADR-0045](../decisions/ADR-0045-operations-dashboard-grafana.md) |
 
 ## 1. 책임과 경계
 
-- 맡는 책임: HTTP route를 application management port에 연결하고, 인증·role 검사·rate limit·공통 오류 응답을 적용한다.
+- 맡는 책임: HTTP route를 application management port에 연결하고, 주입된 credential의 인증·role 검사·rate limit·공통 오류 응답을 적용한다.
 - 맡는 책임: rate limit을 적용한 요청의 거절 결과를 주입된 `AuditUseCase`에 전달한다.
-- 맡지 않는 책임: flag와 cluster JSON 검증, cluster 전체 rate 합산, audit 파일 저장과 회전이다. 설정 검증은 `cmd/narumq`가, audit 저장은 `internal/adapters/auditlog`가 담당한다.
+- 맡지 않는 책임: flag와 cluster JSON 검증, credential file I/O, cluster 전체 rate 합산, audit 파일 저장과 회전이다. 설정·key file 검증은 `cmd/narumq`가, audit 저장은 `internal/adapters/auditlog`가 담당한다.
 - 다른 모듈에 공개하는 기능: `NewServer`, `NewServerWithMembership`, `NewRouter`, `NewRouterWithMembership`와 `ServerConfig`다.
 
 `NewServer`는 audit use case를 전달하지 않는다. `NewServerWithMembership`는 cluster 구성에서 audit use case를 받는다. [Audit event v1 contract §5](../contracts/audit-event-v1.md)에 따라 standalone mode는 audit producer 범위가 아니다.
@@ -65,6 +65,7 @@ flowchart TD
 | --- | --- | --- | --- |
 | `ServerConfig.RequestRate` | 정수, 초당 rate와 burst | process 설정 | 기본 50이며 `cmd/narumq`가 1~1,000,000 범위를 검증한다. |
 | `ServerConfig.AuthFailureRate` | 정수, 초당 rate와 burst | process 설정 | 기본 5이며 `cmd/narumq`가 1~1,000,000 범위를 검증한다. |
+| `ServerConfig.APIKey`, `APIKeyRole` | key 문자열과 역할 | process 설정 | Cluster mode에서 `cmd/narumq/cluster_config.go` `loadClusterManagementCredentials`가 `management.readOnlyApiKeyFile`을 읽고 양끝 공백을 제거한다. 빈 key와 ClusterAdmin token과 같은 key를 거절한 뒤 `RoleReadOnly`로 주입한다. HTTP adapter는 파일을 직접 읽지 않는다. |
 | principal key | `managementPrincipal.subject` 문자열 | principal limiter map | Bearer, API key, local anonymous subject를 구분한다. `X-Forwarded-For`를 사용하지 않는다. |
 | 인증 실패 key | `RemoteAddr`에서 분리한 host | auth-failure limiter map | host-port parsing 실패 시 원문을 쓰고 빈 주소는 `unknown`으로 바꾼다. |
 | `rateBucket` | `tokens float64`, `refilled time.Time` | limiter map | token은 rate를 넘지 않는다. 새 bucket은 가득 찬 상태로 시작한다. |

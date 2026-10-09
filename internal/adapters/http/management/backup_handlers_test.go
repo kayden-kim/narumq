@@ -12,6 +12,7 @@ import (
 	"strings"
 	"testing"
 
+	adaptersmetrics "narumq/internal/adapters/metrics"
 	ports "narumq/internal/application/ports/management"
 )
 
@@ -91,6 +92,46 @@ func TestClusterBackupHTTPRequiresClusterAdmin(t *testing.T) {
 	}
 	if provider.calls != 0 {
 		t.Fatalf("provider called %d times without ClusterAdmin", provider.calls)
+	}
+}
+
+// Traceability: UI-01; docs/specs/management-api-and-observability.md §8.
+func TestReadOnlyAPIKeyCanReadButCannotCreateBackup(t *testing.T) {
+	provider := &clusterBackupProviderStub{backup: ports.ClusterBackupDTO{CommitIndex: 42}}
+	handler := NewRouterWithMembership(
+		ServerConfig{
+			AuthToken: "admin-secret", AuthTokenRole: RoleClusterAdmin,
+			APIKey: "read-only-secret", APIKeyRole: RoleReadOnly, ClusterID: "test-cluster",
+		},
+		&mockStateProvider{}, nil, adaptersmetrics.NewRegistry(), nil, nil, nil, provider, &spyAuditUseCase{},
+	)
+
+	for _, path := range []string{"/metrics", "/api/v1/cluster"} {
+		request := httptest.NewRequest(http.MethodGet, path, nil)
+		request.Header.Set("X-API-Key", "read-only-secret")
+		response := httptest.NewRecorder()
+		handler.ServeHTTP(response, request)
+		if response.Code != http.StatusOK {
+			t.Fatalf("read-only GET %s status = %d, want 200; body = %s", path, response.Code, response.Body.String())
+		}
+	}
+
+	readOnlyBackup := httptest.NewRequest(http.MethodPost, "/api/v1/cluster/backups", nil)
+	readOnlyBackup.Header.Set("X-API-Key", "read-only-secret")
+	readOnlyResponse := httptest.NewRecorder()
+	handler.ServeHTTP(readOnlyResponse, readOnlyBackup)
+	if readOnlyResponse.Code != http.StatusForbidden || provider.calls != 0 {
+		t.Fatalf("read-only backup status = %d, provider calls = %d; want 403 and no capture",
+			readOnlyResponse.Code, provider.calls)
+	}
+
+	adminBackup := httptest.NewRequest(http.MethodPost, "/api/v1/cluster/backups", nil)
+	adminBackup.Header.Set("Authorization", "Bearer admin-secret")
+	adminResponse := httptest.NewRecorder()
+	handler.ServeHTTP(adminResponse, adminBackup)
+	if adminResponse.Code != http.StatusOK || provider.calls != 1 {
+		t.Fatalf("admin backup status = %d, provider calls = %d; want 200 and one capture",
+			adminResponse.Code, provider.calls)
 	}
 }
 

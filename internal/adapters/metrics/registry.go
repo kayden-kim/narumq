@@ -51,6 +51,29 @@ var auditOutcomes = [...]string{
 
 var listenerAdmissionTransports = [...]string{ports.TransportTCP, ports.TransportTLS}
 var listenerAdmissionReasons = [...]string{ports.ListenerAdmissionReasonMaxConnections, ports.ListenerAdmissionReasonConnectionRate}
+var connectRejectedProtocols = [...]string{ports.ProtocolMQTT311, ports.ProtocolMQTT50}
+var connectRejectReasons = [...]string{
+	ports.ConnectRejectReasonUnsupportedProtocolVersion,
+	ports.ConnectRejectReasonIdentifierRejected,
+	ports.ConnectRejectReasonBadCredentials,
+	ports.ConnectRejectReasonNotAuthorized,
+	ports.ConnectRejectReasonServerUnavailable,
+	ports.ConnectRejectReasonQuotaExceeded,
+	ports.ConnectRejectReasonOther,
+}
+var messageDropReasons = [...]string{
+	ports.MessageDropReasonQueueFull,
+	ports.MessageDropReasonPacketTooLarge,
+}
+var nodeDrainProgressQuantities = [...]string{
+	"connections_initial",
+	"connections_remaining",
+	"sessions_ready_for_takeover",
+	"sessions_taken_over",
+	"sessions_failed",
+	"pending_wal",
+	"under_replicated",
+}
 
 // Default histogram buckets for publish latency in seconds.
 var defaultPublishLatencyBuckets = []float64{
@@ -124,6 +147,24 @@ type SubscriptionCounter interface {
 	SubscriptionCount() int
 }
 
+// NodeDrainProgress contains committed progress values for the local node's drain.
+type NodeDrainProgress struct {
+	// ConnectionsInitial is the local connection count when drain began.
+	ConnectionsInitial uint64
+	// ConnectionsRemaining is the current local connection count.
+	ConnectionsRemaining uint64
+	// SessionsReadyForTakeover is the number of sessions ready for transfer.
+	SessionsReadyForTakeover uint64
+	// SessionsTakenOver is the number of sessions transferred.
+	SessionsTakenOver uint64
+	// SessionsFailed is the number of session transfers that failed.
+	SessionsFailed uint64
+	// PendingWAL is the number of pending local WAL operations.
+	PendingWAL uint64
+	// UnderReplicated is the number of under-replicated items.
+	UnderReplicated uint64
+}
+
 // Registry stores operational metrics and renders them in Prometheus / OpenMetrics text formats.
 type Registry struct {
 	mu sync.RWMutex
@@ -143,7 +184,11 @@ type Registry struct {
 	packetsSentTotal              map[string]*atomic.Int64 // key: packetType
 	authAttemptsTotal             map[string]*atomic.Int64 // key: method,result,reason
 	connectRejectedTotal          atomic.Int64
+	connectRejectedByProtocol     [len(connectRejectedProtocols)][len(connectRejectReasons)]atomic.Uint64
 	nodeDrainTransitions          map[string]*atomic.Int64
+	messageDrops                  [len(messageDropReasons)]atomic.Uint64
+	nodeDrainActive               atomic.Bool
+	nodeDrainProgress             [len(nodeDrainProgressQuantities)]atomic.Uint64
 	willOutcomes                  [len(willOutcomeReasons)]atomic.Int64
 	auditOutcomeCounts            [len(auditOutcomes)]atomic.Int64
 	auditPublisherReady           atomic.Bool
@@ -324,12 +369,53 @@ func (r *Registry) AuthAttempt(method string, success bool, reason string) {
 	r.getCounter(r.authAttemptsTotal, key).Add(1)
 }
 
-// ConnectRejected increments the fixed-cardinality MQTT 3.1.0 rejection counter.
+// ConnectRejected increments a fixed-cardinality CONNECT rejection counter.
 func (r *Registry) ConnectRejected(protocol string, reason string) {
-	if protocol != ports.ProtocolMQTT310 || reason != ports.ConnectRejectReasonUnsupportedProtocolVersion {
+	if protocol == ports.ProtocolMQTT310 {
+		if reason == ports.ConnectRejectReasonUnsupportedProtocolVersion {
+			r.connectRejectedTotal.Add(1)
+		}
 		return
 	}
-	r.connectRejectedTotal.Add(1)
+
+	protocolIndex := -1
+	for index, knownProtocol := range connectRejectedProtocols {
+		if protocol == knownProtocol {
+			protocolIndex = index
+			break
+		}
+	}
+	if protocolIndex < 0 {
+		return
+	}
+	for reasonIndex, knownReason := range connectRejectReasons {
+		if reason == knownReason {
+			r.connectRejectedByProtocol[protocolIndex][reasonIndex].Add(1)
+			return
+		}
+	}
+}
+
+// MessageDropped increments only a registered post-routing delivery drop.
+func (r *Registry) MessageDropped(reason string) {
+	for index, knownReason := range messageDropReasons {
+		if reason == knownReason {
+			r.messageDrops[index].Add(1)
+			return
+		}
+	}
+}
+
+// SetNodeDrainProgress updates the committed drain gauges for this node.
+func (r *Registry) SetNodeDrainProgress(active bool, progress NodeDrainProgress) {
+	r.nodeDrainProgress[0].Store(progress.ConnectionsInitial)
+	r.nodeDrainProgress[1].Store(progress.ConnectionsRemaining)
+	r.nodeDrainProgress[2].Store(progress.SessionsReadyForTakeover)
+	r.nodeDrainProgress[3].Store(progress.SessionsTakenOver)
+	r.nodeDrainProgress[4].Store(progress.SessionsFailed)
+	r.nodeDrainProgress[5].Store(progress.PendingWAL)
+	r.nodeDrainProgress[6].Store(progress.UnderReplicated)
+	r.nodeDrainActive.Store(active)
 }
 
 // NodeDrainTransition increments the committed local-node drain phase counter.
@@ -562,13 +648,35 @@ func (r *Registry) Render(isOpenMetrics bool) []byte {
 	r.renderCounterMap(&buf, "narumq_auth_attempts_total", r.authAttemptsTotal)
 
 	// 10. narumq_mqtt_connect_rejected_total
-	fmt.Fprintf(&buf, "# HELP narumq_mqtt_connect_rejected_total MQTT CONNECT attempts rejected by compatibility reason.\n")
+	fmt.Fprintf(&buf, "# HELP narumq_mqtt_connect_rejected_total MQTT CONNECT attempts rejected by protocol and reason.\n")
 	fmt.Fprintf(&buf, "# TYPE narumq_mqtt_connect_rejected_total counter\n")
 	fmt.Fprintf(&buf, "narumq_mqtt_connect_rejected_total{protocol=\"3.1.0\",reason=\"unsupported_protocol_version\"} %d\n", r.connectRejectedTotal.Load())
+	for protocolIndex, protocol := range connectRejectedProtocols {
+		for reasonIndex, reason := range connectRejectReasons {
+			fmt.Fprintf(&buf, "narumq_mqtt_connect_rejected_total{protocol=\"%s\",reason=\"%s\"} %d\n", protocol, reason, r.connectRejectedByProtocol[protocolIndex][reasonIndex].Load())
+		}
+	}
 	// 11. narumq_node_drain_transitions_total
 	fmt.Fprintf(&buf, "# HELP narumq_node_drain_transitions_total Committed node drain phase transitions observed for the local node.\n")
 	fmt.Fprintf(&buf, "# TYPE narumq_node_drain_transitions_total counter\n")
 	r.renderCounterMap(&buf, "narumq_node_drain_transitions_total", r.nodeDrainTransitions)
+	fmt.Fprintf(&buf, "# HELP narumq_messages_dropped_total Messages discarded after routing before delivery to one subscriber.\n")
+	fmt.Fprintf(&buf, "# TYPE narumq_messages_dropped_total counter\n")
+	for index, reason := range messageDropReasons {
+		fmt.Fprintf(&buf, "narumq_messages_dropped_total{reason=\"%s\"} %d\n", reason, r.messageDrops[index].Load())
+	}
+	fmt.Fprintf(&buf, "# HELP narumq_node_drain_active Whether the local node has a non-terminal committed drain operation.\n")
+	fmt.Fprintf(&buf, "# TYPE narumq_node_drain_active gauge\n")
+	active := 0
+	if r.nodeDrainActive.Load() {
+		active = 1
+	}
+	fmt.Fprintf(&buf, "narumq_node_drain_active %d\n", active)
+	fmt.Fprintf(&buf, "# HELP narumq_node_drain_progress Committed progress of the local node drain operation.\n")
+	fmt.Fprintf(&buf, "# TYPE narumq_node_drain_progress gauge\n")
+	for index, quantity := range nodeDrainProgressQuantities {
+		fmt.Fprintf(&buf, "narumq_node_drain_progress{quantity=\"%s\"} %d\n", quantity, r.nodeDrainProgress[index].Load())
+	}
 	fmt.Fprintf(&buf, "# HELP narumq_will_outcomes_total Final outcomes of registered MQTT Will messages by reason.\n")
 	fmt.Fprintf(&buf, "# TYPE narumq_will_outcomes_total counter\n")
 	for index, reason := range willOutcomeReasons {

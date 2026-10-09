@@ -163,7 +163,7 @@ commit된 요청을 재시도하면 HTTP `200`과 현재 commit된 phase를 반�
 | `bootstrapMembers` | 멤버 객체 배열 | bootstrap에서는 서로 다른 식별 정보 3개; joiner에서는 빈 배열 |
 | `seedAddresses` | 문자열 배열 | bootstrap에서는 빈 배열; joiner에서는 정규 DNS `host:port` 주소 1~16개. TLS SNI를 DNS 이름에 바인딩하므로 IP 리터럴은 거절 |
 | `peerTLS` | 객체 | `certFile`, `keyFile`, `caFile` 필수; 인증서와 키가 일치하고 CA가 모든 피어를 검증해야 함 |
-| `management` | 객체 | `listenAddress`, `clusterAdminTokenFile`, `auditDirectory` 필수. token은 불투명한 secret 입력이다. `auditDirectory`는 비어 있지 않은 경로여야 하며 `directory`와 같거나 서로 포함해서는 안 되고, 각 노드에서 달라야 한다. 선택 정수 필드 `requestRate`, `authFailureRate`는 각각 `1..1,000,000`; 생략하면 `50`, `5`를 사용 |
+| `management` | 객체 | `listenAddress`, `clusterAdminTokenFile`, `auditDirectory` 필수. token은 불투명한 secret 입력이다. `auditDirectory`는 비어 있지 않은 경로여야 하며 `directory`와 같거나 서로 포함해서는 안 되고, 각 노드에서 달라야 한다. 선택 정수 필드 `requestRate`, `authFailureRate`는 각각 `1..1,000,000`; 생략하면 `50`, `5`를 사용한다. 선택 문자열 필드 `readOnlyApiKeyFile`은 cluster mode의 조회 전용 API key 파일 경로다. 파일 내용의 앞뒤 공백을 제거한 값은 비어 있지 않아야 하고 cluster admin token과 달라야 한다. 읽기 실패, 빈 값 또는 token과 같은 값이면 시작을 거절한다. |
 | `mqtt` | 객체 | `tcpListenAddress`, `tlsListenAddress`, `securityConfigFile` 필수; 주소가 비어 있으면 해당 listener를 사용하지 않는다. 선택 정수 필드 `tcpMaxConnections`, `tcpConnectionRate`, `tlsMaxConnections`, `tlsConnectionRate`는 0~1000000이며 생략하면 0(제한 없음)이다. 해당 listener 주소가 비어 있으면 그 listener의 두 값은 0이어야 한다. |
 | `replication` | 객체(선택) | 생략하면 복제 계수 3과 쓰기 쿼럼 2를 사용한다. 지정하면 정확히 `{factor:int, writeQuorum:int}`여야 하며 3/2만 허용한다. |
 

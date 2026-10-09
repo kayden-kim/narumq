@@ -16,7 +16,6 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
-	"os"
 	goruntime "runtime"
 	"slices"
 	"sort"
@@ -443,13 +442,9 @@ func runClusterMode(ctx context.Context, config clusterConfigFile, logger *slog.
 	runtime.managementState = baseManagement
 	stateProvider := &clusterStateProvider{StateProvider: baseManagement, runtime: runtime}
 	healthChecker := &clusterHealthChecker{HealthChecker: baseManagement, runtime: runtime}
-	tokenBytes, err := os.ReadFile(config.Management.ClusterAdminTokenFile)
+	adminToken, readOnlyAPIKey, err := loadClusterManagementCredentials(config.Management)
 	if err != nil {
-		return fmt.Errorf("read cluster admin token file: %w", err)
-	}
-	adminToken := strings.TrimSpace(string(tokenBytes))
-	if adminToken == "" {
-		return errors.New("cluster admin token file is empty")
+		return err
 	}
 	requestRate := 0
 	if config.Management.RequestRate != nil {
@@ -461,8 +456,9 @@ func runClusterMode(ctx context.Context, config clusterConfigFile, logger *slog.
 	}
 	managementServer := adaptershttp.NewServerWithMembership(adaptershttp.ServerConfig{
 		ListenAddr: managementListener.Addr().String(), AuthToken: adminToken,
-		AuthTokenRole: adaptershttp.RoleClusterAdmin, AllowAnonymousProbes: true,
-		RequestRate: requestRate, AuthFailureRate: authFailureRate, Clock: systemClock,
+		AuthTokenRole: adaptershttp.RoleClusterAdmin, APIKey: readOnlyAPIKey, APIKeyRole: adaptershttp.RoleReadOnly,
+		AllowAnonymousProbes: true,
+		RequestRate:          requestRate, AuthFailureRate: authFailureRate, Clock: systemClock,
 		ClusterID: config.ClusterID, Logger: logger,
 	}, stateProvider, healthChecker, metricsRegistry, membershipService, drainService, rebalanceService, runtime, auditService)
 	return runtime.serve(ctx, mqttServer, managementServer, managementListener)
@@ -1439,6 +1435,18 @@ func (runtime *clusterRuntime) applyBatch(batch raftadapter.BatchDTO, proposals 
 				"committed_index", event.index)
 			if runtime.metrics != nil && result.NodeDrain.MemberID == runtime.config.NodeID {
 				runtime.metrics.NodeDrainTransition(result.NodeDrain.Phase.String())
+				if phase := result.NodeDrain.Phase; phase.Valid() {
+					progress := result.NodeDrain.Progress
+					runtime.metrics.SetNodeDrainProgress(phase.Active() && !phase.Terminal(), adaptersmetrics.NodeDrainProgress{
+						ConnectionsInitial:       progress.ConnectionsInitial,
+						ConnectionsRemaining:     progress.ConnectionsRemaining,
+						SessionsReadyForTakeover: progress.SessionsReadyForTakeover,
+						SessionsTakenOver:        progress.SessionsTakenOver,
+						SessionsFailed:           progress.SessionsFailed,
+						PendingWAL:               progress.PendingWAL,
+						UnderReplicated:          progress.UnderReplicated,
+					})
+				}
 			}
 		}
 		if command.Membership != nil && command.Membership.Action == membership.MembershipActionBeginRemove &&
