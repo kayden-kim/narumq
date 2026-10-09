@@ -73,7 +73,7 @@ Phase 1 SDK inventory는 `github.com/eclipse/paho.mqtt.golang v1.5.1`, `github.c
 
 Broker-side drain, `SAFE_TO_STOP`, replicated recovery와 protocol redirect emission이 구현됐으며 process evidence는 [Drain spec §10](drain-and-rolling-update.md#10-broker-drain-수용-시험-매핑)에 있다. 이는 release-wide drain-safe support 완료를 뜻하지 않는다. Supported-SDK Server Reference 추종(DEP-06), MQTT 3.1.1/Will 호환성(DEP-07/12), external rollout gate(DEP-11/13~18), production profile과 storage 검증(DEP-19~23), `SPEC-TBD-04` 제품 값 및 MQTT 3.1.0 90일 migration evidence는 blocker로 남는다.
 
-Management API v1 query profile은 미결정 항목이 아니다. 현재 active contract와 OpenAPI는 [`docs/contracts/management-api-v1.md`](../contracts/management-api-v1.md), [`docs/contracts/management-api-v1.openapi.json`](../contracts/management-api-v1.openapi.json)과 [`tests/contracts/management-api-v1`](../../tests/contracts/management-api-v1)에서 관리한다. Broker drain만 active mutation이며 다른 mutation·OIDC·rate limiting은 deferred scope다.
+Management API v1 query profile은 미결정 항목이 아니다. 현재 active contract와 OpenAPI는 [`docs/contracts/management-api-v1.md`](../contracts/management-api-v1.md), [`docs/contracts/management-api-v1.openapi.json`](../contracts/management-api-v1.openapi.json)과 [`tests/contracts/management-api-v1`](../../tests/contracts/management-api-v1)에서 관리한다. Broker drain은 active mutation이며 API rate limit은 active management-plane 동작이다. 다른 mutation·OIDC는 deferred scope다.
 
 미결정 항목 때문에 규범 동작을 시험할 수 없으면 해당 release gate는 열린 상태로 남는다.
 

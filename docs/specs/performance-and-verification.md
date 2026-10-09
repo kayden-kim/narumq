@@ -686,10 +686,10 @@ MQTT normative statement 연결표는 `tests/conformance/mqtt-compliance-v1.json
 | 예외 JSON strict decode·schema·중복·빈 값·경로 경계 | `TestLoadP0ExceptionsStrictlyValidatesJSON` — 9개 사례 PASS |
 | PRD prefix 파싱과 MQTT statement ID 규칙 | `TestParseTraceabilityAcceptsPRDPrefixesAndKeepsStatementRule` PASS |
 | 미연결·stale P0의 CLI 거절 | 임시 예외 파일에서 `UI-01` 제거와 `API-01` stale 등록을 실행; 두 명령 모두 exit 1 및 지정 오류 출력 |
-| 저장소 traceability gate | `go run ./tools/verify traceability` — PASS, P0 59/81 연결, 예외 22개 |
-| 전체 local gate | `go run ./tools/verify local` — branch-instrument, traceability, 5개 fuzz target, architecture, 전체 package 시험, coverage, local 모두 PASS; 실행 시간 142.43초 |
+| 저장소 traceability gate | `go run ./tools/verify traceability` — PASS, P0 60/81 연결, 예외 21개 |
+| 전체 local gate | `go run ./tools/verify local` — branch-instrument, traceability, 5개 fuzz target, architecture, 전체 package 시험, coverage, local 모두 PASS; 실행 시간 153.41초 |
 
-22개 예외가 남아 있으므로 traceability command의 PASS는 TEST-10 완료를 뜻하지 않는다. 필수 CI merge 차단 실행 증거도 아직 없다. 따라서 TEST-10은 미검증으로 유지한다.
+21개 예외가 남아 있으므로 traceability command의 PASS는 TEST-10 완료를 뜻하지 않는다. 필수 CI merge 차단 실행 증거도 아직 없다. 따라서 TEST-10은 미검증으로 유지한다.
 
 
 ### 7.3 Cluster failpoint 빌드

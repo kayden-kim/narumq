@@ -14,6 +14,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	adaptershttp "narumq/internal/adapters/http/management"
 	"narumq/internal/application/membership"
 	"narumq/internal/domain/release"
 )
@@ -134,6 +135,8 @@ type clusterManagement struct {
 	ListenAddress         string `json:"listenAddress"`
 	ClusterAdminTokenFile string `json:"clusterAdminTokenFile"`
 	AuditDirectory        string `json:"auditDirectory"`
+	RequestRate           *int   `json:"requestRate,omitempty"`
+	AuthFailureRate       *int   `json:"authFailureRate,omitempty"`
 }
 
 type clusterMQTT struct {
@@ -356,6 +359,12 @@ func validateClusterConfig(config clusterConfigFile) error {
 	overlaps, err := clusterPathsOverlap(config.Directory, config.Management.AuditDirectory)
 	if err != nil || overlaps {
 		return errors.New("management auditDirectory must not overlap directory")
+	}
+	if (config.Management.RequestRate != nil &&
+		(*config.Management.RequestRate < 1 || *config.Management.RequestRate > adaptershttp.MaxRequestRate)) ||
+		(config.Management.AuthFailureRate != nil &&
+			(*config.Management.AuthFailureRate < 1 || *config.Management.AuthFailureRate > adaptershttp.MaxRequestRate)) {
+		return errors.New("management requestRate and authFailureRate must be between 1 and 1000000")
 	}
 	if (config.MQTT.TCPListenAddress != "" && !validHostPort(config.MQTT.TCPListenAddress, true)) || (config.MQTT.TLSListenAddress != "" && !validHostPort(config.MQTT.TLSListenAddress, true)) {
 		return errors.New("mqtt listener addresses must be empty or valid host:port values")

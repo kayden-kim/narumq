@@ -377,6 +377,12 @@ func stringPointer(value string) *string {
 }
 
 func contractHandler(cfg managementhttp.ServerConfig) http.Handler {
+	if cfg.RequestRate == 0 {
+		cfg.RequestRate = managementhttp.MaxRequestRate
+	}
+	if cfg.AuthFailureRate == 0 {
+		cfg.AuthFailureRate = managementhttp.MaxRequestRate
+	}
 	return managementhttp.NewRouter(
 		cfg,
 		contractStateProvider{},
@@ -390,7 +396,10 @@ func clusterManagementContractHandler() http.Handler {
 
 func clusterManagementContractHandlerWithRebalance(rebalanceService managementhttp.ConnectionRebalanceUseCase) http.Handler {
 	return managementhttp.NewRouterWithMembership(
-		managementhttp.ServerConfig{ClusterID: "contract-cluster"},
+		managementhttp.ServerConfig{
+			ClusterID:   "contract-cluster",
+			RequestRate: managementhttp.MaxRequestRate, AuthFailureRate: managementhttp.MaxRequestRate,
+		},
 		contractStateProvider{},
 		contractStateProvider{},
 		adaptersmetrics.NewRegistry(),
@@ -793,6 +802,7 @@ func TestManagementOperationSetMatchesOpenAPI(t *testing.T) {
 	}
 }
 
+// Traceability: PRD API-05; docs/specs/management-api-and-observability.md §9.
 func TestManagementQueryValidationMatchesOpenAPI(t *testing.T) {
 	_, router := loadManagementContract(t)
 	handler := contractHandler(managementhttp.ServerConfig{AllowAnonymousMetrics: true})
@@ -869,6 +879,52 @@ func TestManagementQueryValidationMatchesOpenAPI(t *testing.T) {
 	})
 }
 
+type contractRateLimitClock struct {
+	now time.Time
+}
+
+func (clock *contractRateLimitClock) Now() time.Time {
+	return clock.now
+}
+
+// TestManagementRateLimitMatchesOpenAPI verifies principal and failed-authentication 429 responses.
+// Traceability: PRD API-05; docs/specs/management-api-and-observability.md §1.5.
+func TestManagementRateLimitMatchesOpenAPI(t *testing.T) {
+	_, router := loadManagementContract(t)
+	clock := &contractRateLimitClock{now: time.Unix(1_800_000_000, 0)}
+	handler := managementhttp.NewRouter(managementhttp.ServerConfig{
+		AuthToken:       "bearer-secret",
+		RequestRate:     1,
+		AuthFailureRate: 1,
+		Clock:           clock,
+	}, contractStateProvider{}, contractStateProvider{}, adaptersmetrics.NewRegistry())
+
+	for _, testCase := range []struct {
+		name            string
+		authorization   string
+		wantStatusCodes []int
+	}{
+		{name: "principal", authorization: "Bearer bearer-secret", wantStatusCodes: []int{http.StatusOK, http.StatusTooManyRequests}},
+		{name: "authentication failure", authorization: "Bearer invalid", wantStatusCodes: []int{http.StatusUnauthorized, http.StatusTooManyRequests}},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			for index, wantStatus := range testCase.wantStatusCodes {
+				request := httptest.NewRequest(http.MethodGet, contractServerURL+"/api/v1/cluster", nil)
+				request.RemoteAddr = "192.0.2.10:1234"
+				request.Header.Set("Authorization", testCase.authorization)
+				input, options := findContractRoute(t, router, request)
+				recorder := httptest.NewRecorder()
+				handler.ServeHTTP(recorder, request)
+				if recorder.Code != wantStatus {
+					t.Fatalf("request %d status = %d, want %d: %s", index+1, recorder.Code, wantStatus, recorder.Body.String())
+				}
+				validateResponse(t, input, options, recorder)
+			}
+		})
+	}
+}
+
+// Traceability: PRD API-05; docs/specs/management-api-and-observability.md §9.
 func TestManagementAuthorizationMatchesOpenAPI(t *testing.T) {
 	_, router := loadManagementContract(t)
 	handler := contractHandler(managementhttp.ServerConfig{

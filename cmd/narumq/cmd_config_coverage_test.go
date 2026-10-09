@@ -373,6 +373,9 @@ func TestValidateClusterConfigReportsFirstInvalidField(t *testing.T) {
 			c.BootstrapMembers[2].CertificateSHA256 = strings.Repeat("c", 63)
 		}, want: "bootstrap member identity is invalid"},
 		{name: "local member address mismatch", edit: func(c *clusterConfigFile) { c.BootstrapMembers[0].Address = "node1.example:19001" }, want: "matching local node identity"},
+		{name: "management request rate zero", edit: func(c *clusterConfigFile) { c.Management.RequestRate = new(0) }, want: "management requestRate and authFailureRate must be between 1 and 1000000"},
+		{name: "management request rate too high", edit: func(c *clusterConfigFile) { c.Management.RequestRate = new(1_000_001) }, want: "management requestRate and authFailureRate must be between 1 and 1000000"},
+		{name: "management auth failure rate zero", edit: func(c *clusterConfigFile) { c.Management.AuthFailureRate = new(0) }, want: "management requestRate and authFailureRate must be between 1 and 1000000"},
 		{name: "too many joiner seeds", edit: func(c *clusterConfigFile) {
 			*c = validJoinerClusterConfig()
 			c.SeedAddresses = nil
@@ -390,6 +393,17 @@ func TestValidateClusterConfigReportsFirstInvalidField(t *testing.T) {
 	}
 	if err := validateClusterConfig(validBootstrapClusterConfig()); err != nil {
 		t.Fatalf("baseline bootstrap config rejected: %v", err)
+	}
+}
+
+// TestValidateClusterConfigAcceptsManagementRateBoundaries verifies the inclusive rate limits.
+// Traceability: PRD API-05; docs/specs/management-api-and-observability.md §1.5.
+func TestValidateClusterConfigAcceptsManagementRateBoundaries(t *testing.T) {
+	config := validBootstrapClusterConfig()
+	config.Management.RequestRate = new(1)
+	config.Management.AuthFailureRate = new(1_000_000)
+	if err := validateClusterConfig(config); err != nil {
+		t.Fatalf("valid management rate boundaries rejected: %v", err)
 	}
 }
 
@@ -990,6 +1004,30 @@ func TestRunWithContextReportsManagementListenFailure(t *testing.T) {
 	address := occupied.Addr().String()
 	err = runWithContext(context.Background(), []string{"-http-listen", address, "-http-auth-token", "token"}, ccfDiscardLogger())
 	ccfWantError(t, err, "listen management HTTP on")
+}
+
+// TestRunRejectsManagementRateFlagsOutOfRange verifies standalone rate flag bounds.
+// Traceability: PRD API-05; docs/specs/management-api-and-observability.md §1.5.
+func TestRunRejectsManagementRateFlagsOutOfRange(t *testing.T) {
+	want := "-http-request-rate and -http-auth-failure-rate must be between 1 and 1000000"
+	for _, testCase := range []struct {
+		name string
+		args []string
+	}{
+		{
+			name: "request rate below minimum",
+			args: []string{"-http-listen", "127.0.0.1:0", "-http-auth-token", "token", "-http-request-rate", "0"},
+		},
+		{
+			name: "auth failure rate above maximum",
+			args: []string{"-http-listen", "127.0.0.1:0", "-http-auth-token", "token", "-http-auth-failure-rate", "1000001"},
+		},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			err := runWithContext(context.Background(), testCase.args, ccfDiscardLogger())
+			ccfWantError(t, err, want)
+		})
+	}
 }
 
 func TestValidateTLSAuthenticationBindingsRequireMode(t *testing.T) {

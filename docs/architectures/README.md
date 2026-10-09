@@ -22,6 +22,7 @@
 | [System overview](system-overview.md) | 외부 actor와 NaruMQ의 주요 실행 단위는 무엇인가? | Target / Draft | PRD, 전체 system spec |
 | [Broker core architecture](broker-core.md) | Broker 내부 책임과 source dependency는 어떻게 나뉘는가? | Target / Draft | ADR-0001, NFR-11~15 |
 | [Project structure (코드 지도 절 + 구조 view)](project-structure.md) | 실제 진입 경로와 package 배치, 현재 구현 사실과 목표 tree는 어떻게 구분되는가? | Current code map section + Target tree / Active | ADR-0001, NFR-11~15, TEST-01~17 |
+| [Management HTTP adapter module design](management-http-module.md) | Management API 인증·rate limit·감사 요청 순서는 어떻게 처리되는가? | Current / Verified | Management API §1.5, ADR-0043 |
 | [Cluster architecture](cluster-architecture.md) | Quorum, ownership, routing과 durable state는 어떻게 연결되는가? | Target / Draft | Cluster spec, ADR-0002~0004 |
 | [EKS on EC2 deployment architecture](eks-ec2-deployment.md) | Logical broker node는 NLB·EKS·EC2·EBS에 어떻게 대응하는가? | Target / Draft | DEP-19~23, ADR-0006~0007 |
 | [Security boundaries](security-boundaries.md) | Client·node·관리 plane의 trust boundary와 enforcement point는 어디인가? | Target / Draft | Tenant와 security spec, Management API·Audit event contract |
@@ -29,14 +30,15 @@
 ## 권장 읽기 순서
 
 1. Project structure의 코드 지도 절
-2. Broker core architecture
-3. System overview
-4. Cluster architecture
-5. EKS on EC2 deployment architecture
-6. Security boundaries
+2. Management HTTP adapter module design
+3. Broker core architecture
+4. System overview
+5. Cluster architecture
+6. EKS on EC2 deployment architecture
+7. Security boundaries
 
 구체적인 선택 이유가 필요하면 [ADR catalog](../decisions/README.md), source 작성 규칙은 [Convention catalog](../conventions/README.md), protocol과 분산 원리는 [기술 해설](../explainers/README.md)을 읽는다. 외부 동작과 정확한 형식의 기준은 각각 [시스템 스펙](../specs/README.md)과 [Contract catalog](../contracts/README.md)이다.
 
 ## 현재 한계
 
-System overview, broker core, cluster, deployment, security view는 현재 `Target / Draft`다. [Project structure](project-structure.md)는 `Active`이며 구현된 package facts와 명시적인 `Target repository tree`를 함께 담는다. `Target` 경로만으로 구현 완료나 production 지원을 주장하지 않으며, 관점 상태와 구현 증거는 각 문서 metadata 및 연결된 source·test evidence로 판단한다.
+System overview, broker core, cluster, deployment, security view는 현재 `Target / Draft`다. [Project structure](project-structure.md)는 `Active`이며 구현된 package facts와 명시적인 `Target repository tree`를 함께 담는다. [Management HTTP adapter module design](management-http-module.md)은 source와 시험 대조를 마친 `Current / Verified` 문서다. `Target` 경로만으로 구현 완료나 production 지원을 주장하지 않으며, 관점 상태와 구현 증거는 각 문서 metadata 및 연결된 source·test evidence로 판단한다.

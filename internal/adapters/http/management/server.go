@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"time"
 
+	applicationclock "narumq/internal/application/ports/clock"
 	ports "narumq/internal/application/ports/management"
 	portsmetrics "narumq/internal/application/ports/metrics"
 )
@@ -17,6 +18,9 @@ type ServerConfig struct {
 	AuthTokenRole         Role
 	APIKey                string
 	APIKeyRole            Role
+	RequestRate           int                    // Per-second rate and burst per authenticated principal; <= 0 uses the default.
+	AuthFailureRate       int                    // Per-second rate and burst per remote IP; <= 0 uses the default.
+	Clock                 applicationclock.Clock // Nil uses the system clock.
 	AllowAnonymousProbes  bool
 	AllowAnonymousMetrics bool
 	ReadTimeout           time.Duration
@@ -64,6 +68,7 @@ func newRouter(
 	auth := NewAuthenticator(AuthConfig{
 		AuthToken: cfg.AuthToken, AuthTokenRole: cfg.AuthTokenRole,
 		APIKey: cfg.APIKey, APIKeyRole: cfg.APIKeyRole,
+		RequestRate: cfg.RequestRate, AuthFailureRate: cfg.AuthFailureRate, Clock: cfg.Clock,
 		AllowAnonymousProbes: cfg.AllowAnonymousProbes, AllowAnonymousMetrics: cfg.AllowAnonymousMetrics,
 		Audit: auditService, Logger: cfg.Logger, ClusterID: cfg.ClusterID,
 	})

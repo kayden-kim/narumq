@@ -184,6 +184,8 @@ Cluster mode에서는 flag를 함께 지정하지 않는다. Cluster JSON의 `mq
 `transport`로 listener 종류를, `reason`으로 연결 수와 rate 초과를 구분한다.
 거절한 socket에는 CONNACK을 보내지 않으며 거절 로그도 남기지 않는다.
 
+Management API는 각 node에서 인증된 principal의 초당 요청 수와 burst를 기본 50으로 제한한다. 인증 실패는 RemoteAddr IP별로 초당 5회, burst 5회까지 허용한다. Standalone mode에서는 `-http-request-rate`와 `-http-auth-failure-rate`를 설정하고, Cluster mode에서는 `management.requestRate`와 `management.authFailureRate`를 설정한다. 설정 범위는 `1..1,000,000`이며 Cluster JSON에서 필드를 생략하면 각각 50과 5를 쓴다. 한도를 넘으면 HTTP `429`와 `Retry-After: 1`을 반환한다. Health probe와 `/metrics`는 제한하지 않는다. 자세한 정책은 [Management API 스펙 §1.5](../specs/management-api-and-observability.md#15-rate-limit)를 따른다.
+
 ### 4단계: 브로커 상태 및 엔드포인트 동작 확인
 
 별도의 터미널 창을 열고 HTTP 엔드포인트를 호출하여 브로커의 준비 상태(Readiness)와 메트릭 수집을 검증한다.

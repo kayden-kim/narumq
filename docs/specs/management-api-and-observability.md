@@ -4,12 +4,12 @@
 
 | 항목 | 값 |
 | --- | --- |
-| 상태 | Active (Phase 1 query profile, broker drain, cluster feature activation and management-plane audit; other mutation·OIDC·운영 자동화는 deferred) |
+| 상태 | Active (Phase 1 query profile, broker drain, cluster feature activation, management-plane audit and API rate limit; other mutation·OIDC·운영 자동화는 deferred) |
 | 관련 요구사항 | API-01~API-09, UI-01~UI-10, SEC-10~SEC-11 |
 | 근거 | [PRD 9.5절, 9.6절과 14장](../requirements/PRD.md) |
 | 관련 spec | [Tenant와 security](tenancy-and-security.md), [Drain](drain-and-rolling-update.md) |
 | 관련 Architecture | [System overview](../architectures/system-overview.md), [Security boundaries](../architectures/security-boundaries.md) |
-| 관련 결정 | [ADR-0005](../decisions/ADR-0005-management-api-contract-format.md), [ADR-0018](../decisions/ADR-0018-release-compatibility-window.md) |
+| 관련 결정 | [ADR-0005](../decisions/ADR-0005-management-api-contract-format.md), [ADR-0018](../decisions/ADR-0018-release-compatibility-window.md), [ADR-0043](../decisions/ADR-0043-management-api-rate-limit.md) |
 | 관련 Contract | [Management API v1](../contracts/management-api-v1.md), [Management API OpenAPI](../contracts/management-api-v1.openapi.json), [Audit event v1](../contracts/audit-event-v1.md) |
 
 ## 1. HTTP 공통 계약
@@ -82,13 +82,28 @@ cursor는 불투명 값이다. client는 cursor 내용을 해석해서는 안 �
 | `429` | API rate limit 초과. 가능한 경우 `Retry-After` 포함 |
 | `503` | quorum, dependency 또는 readiness 문제로 일시 처리 불가 |
 
-오류 code 전체 목록과 각 endpoint의 response status는 [Management API v1 OpenAPI](../contracts/management-api-v1.openapi.json)에서 확정한다. 내부 stack, storage key와 secret을 오류에 포함해서는 안 된다. Active drain과 feature activation은 `409` 상태를 사용한다. Feature activation의 `feature_not_supported_by_all_members`는 non-retryable이며, `422`와 `429`를 포함한 다른 mutation 동작은 deferred다.
+오류 code 전체 목록과 각 endpoint의 response status는 [Management API v1 OpenAPI](../contracts/management-api-v1.openapi.json)에서 확정한다. 내부 stack, storage key와 secret을 오류에 포함해서는 안 된다. Active drain과 feature activation은 `409` 상태를 사용한다. Feature activation의 `feature_not_supported_by_all_members`는 non-retryable이며, `422`를 포함한 다른 mutation 동작은 deferred다. `429`는 §1.5를 따른다.
 
 ### 1.4 Deferred mutation과 idempotency
 
 Active broker drain endpoint는 `Idempotency-Key`를 요구한다. 같은 node에 active operation이 있으면 새 operation을 만들지 않고 committed operation을 돌려준다. 같은 key에 다른 parameter를 보내면 `409 idempotency_conflict`다. Feature activation은 같은 active feature를 다시 요청하면 성공 no-op이므로 별도 idempotency key가 필요하지 않다. Dynamic cluster의 활성 mutation 8개는 모두 감사 event를 기록하며, publisher를 쓸 수 없으면 handler를 실행하지 않고 retryable `503 audit_unavailable`을 반환한다. 그 밖의 mutation endpoint는 아직 deferred다.
 
 향후 mutation은 `Idempotency-Key`를 받아야 한다. 같은 principal, endpoint와 key에 같은 payload를 재시도하면 최초 결과와 의미가 같아야 한다. 같은 key에 다른 payload가 오면 `409 idempotency_conflict`를 반환해야 한다. Resource 변경은 가능한 경우 version/ETag 기반 조건부 요청을 지원해야 한다.
+
+### 1.5 Rate limit
+
+각 node는 등록된 `/api/v1/**` route 요청에 독립된 process-local token bucket을 적용해야 한다. Cluster 전체 합산 한도는 없다. Health probe, `/metrics`와 등록되지 않은 path의 404 handler는 제한하지 않는다.
+
+인증에 성공한 요청은 인증 principal의 `subject`별 bucket을 사용해야 한다. 기본값은 초당 50건이며 burst도 50건이다. 인증에 실패한 요청은 `RemoteAddr`에서 분리한 host별 bucket을 사용해야 한다. 기본값은 초당 5건이며 burst도 5건이다. `X-Forwarded-For`를 client address로 신뢰해서는 안 된다. 익명 local mode에서 인증 성공 요청은 `local-unauthenticated` subject를 사용한다. 새 bucket은 가득 찬 상태로 시작하며 시간에 비례해 최대 rate까지 token을 보충한다.
+
+처리 순서는 인증, 인증 실패 IP bucket 또는 성공 principal bucket, role 검사, mutation audit admission이어야 한다. 인증 실패 bucket을 초과하면 `401` 대신 `429`를 반환해야 한다. 인증 성공 요청은 role 검사 전에 principal token을 소비하므로 `403`도 token을 소비한다. Rate limit에 걸린 mutation은 handler를 실행하거나 `AdmitMutation`을 호출해서는 안 된다.
+
+한도를 넘긴 요청은 HTTP `429`, error code `rate_limited`, message `management API rate limit exceeded`, `retryable=true`와 `Retry-After: 1`을 반환해야 한다. 인증 실패 IP bucket 거절의 subject는 `unauthenticated`이며 roles를 생략한다. 성공 인증 거절은 인증 subject와 현재 role을 기록한다. 기존 node별 denial event 상한을 적용한다.
+Audit producer가 구성된 node는 rate-limit 거절을 `management.request` event로 기록해야 한다. Target은 `management_endpoint`와 route pattern이고, result는 `DENIED`, reason은 `rate_limited`다. Audit event v1 §5에 따라 Dynamic cluster mode는 producer 범위에 포함하고 standalone mode는 포함하지 않는다.
+
+Limiter는 각 bucket map에 최대 4096개 key를 보관해야 한다. 새 key를 저장할 때 상한에 도달하면 모든 bucket을 refill한 뒤 가득 찬 bucket을 제거해야 한다. 그래도 상한이면 새 key 요청을 거절해야 한다. 기존 key는 계속 처리한다.
+
+Standalone 설정은 `-http-request-rate`(기본 50)와 `-http-auth-failure-rate`(기본 5)다. Combined cluster configuration은 `management.requestRate`와 `management.authFailureRate`를 사용한다. Cluster field를 생략하면 각각 기본값을 쓴다. 설정한 값은 초당 rate와 burst에 함께 적용하며 1~1,000,000이어야 한다. 세부 결정은 [ADR-0043](../decisions/ADR-0043-management-api-rate-limit.md)을 따른다.
 
 ## 2. Endpoint catalog
 
@@ -302,13 +317,15 @@ UI mutation은 해당 API가 active contract에 추가될 때 같은 RBAC, 확�
 
 ## 9. 수용 시험
 
-- Contract suite는 OpenAPI 자체와 22개 active operation set, representative success response와 Prometheus/OpenMetrics media type을 검증한다.
+- API-05 rate-limit 수용 시험은 인증 성공 principal과 인증 실패 IP의 독립 bucket, token 보충·clock 역행, probe·metrics 제외, 403 token 소비, mutation 거절 감사, key 상한·eviction, `RemoteAddr` host 해석, OpenAPI `429`, standalone·cluster 설정 범위를 확인한다: `internal/adapters/http/management/rate_limit_test.go`, `tests/contracts/management-api-v1/contract_test.go::TestManagementRateLimitMatchesOpenAPI`, `cmd/narumq/cmd_config_coverage_test.go`.
+- API-05 집중 시험 결과(2026-10-09): adapter rate-limit 시험 7개, management OpenAPI contract suite, cluster·standalone 설정 시험이 모두 통과했다. 실행 파일 smoke 시험은 인증된 요청에서 `200, 200, 429`, 잘못된 자격 증명에서 `401, 429`를 반환했다. Liveness probe 5회는 모두 `200`이었다. 두 `429` 응답은 `Retry-After: 1`을 포함했다. 범위를 벗어난 standalone rate는 exit 1과 `-http-request-rate and -http-auth-failure-rate must be between 1 and 1000000` 오류를 반환했다.
+- API-05 전체 검증 결과(2026-10-09): `go run ./tools/verify traceability`가 P0 81건 중 60건 매핑, 예외 21건으로 통과했다. `go run ./tools/verify local`도 153.41초 만에 통과했다. Cluster process fixture는 API 제한이 다른 process acceptance 시험을 막지 않도록 두 rate를 최댓값으로 설정한다. 64개 동시 fresh-read 요청 시험은 5.50초 만에 통과했다.
 - Feature 조회 response는 `data.activeFeatures`와 `data.members`를 포함한다. 각 member는 decimal string `nodeId`, canonical `releaseVersion`, 정렬된 `features`를 가진다. 빈 collection은 JSON `[]`로 반환한다.
 - Contract suite는 cluster feature GET response shape, 활성화 POST의 200, 미지원 feature의 non-retryable 409, invalid feature의 400과 ReadOnly role POST의 403을 검사한다.
 - 같은 contract suite가 pagination `1`/`1000` 경계, `1001` 초과, duplicate·unknown query와 subscriptions/retained의 required `tenantId`를 검증한다.
 - 같은 contract suite가 anonymous, 잘못된 credential, ReadOnly bearer/API key 성공과 ClusterAdmin 권한 부족 `403`을 검증한다.
 - startup, liveness, readiness와 drain-complete가 quorum·sync·drain 상태 조합을 정확히 반영하는지 시험한다.
-- SEC-11 / API-08 / NFR-17 수용 시험은 활성 management mutation 8개, 401·403 거절, fail-closed admission, hash-chain 손상, schema 검증, directory 경계와 Windows rotation 충돌을 확인한다: `internal/application/audit/service_test.go`, `internal/adapters/http/management/audit_test.go`, `cmd/narumq/cluster_config_test.go`, `cmd/narumq/main_test.go` (`TestAuditVerifyCommandVerifiesAndLeavesFilesReadOnly`), `tests/contracts/audit-event-v1/contract_test.go`, `tests/integration/cluster_audit_process_test.go::TestDynamicClusterManagementAuditProcessAcceptance`, `internal/adapters/auditlog/file_publisher_test.go`, `internal/adapters/auditlog/persist_windows_test.go`.
+- SEC-11 / API-08 / NFR-17 수용 시험은 활성 management mutation 8개, 401·403 거절, fail-closed admission, hash-chain 손상, schema 검증, directory 경계와 Windows rotation 충돌을 확인한다: `internal/application/audit/service_test.go`, `internal/adapters/http/management/audit_test.go`, `cmd/narumq/cluster_config_test.go`, `cmd/narumq/main_test.go` (`TestAuditVerifyCommandVerifiesAndLeavesFilesReadOnly`), `tests/contracts/audit-event-v1/contract_test.go`, `tests/integration/cluster_audit_process_test.go::TestDynamicClusterManagementAuditProcessAcceptance`, `internal/adapters/auditlog/file_publisher_test.go`, `internal/adapters/auditlog/persist_windows_test.go`. Process acceptance는 2026-10-09에 통과했다(시험 5.82초).
 - Cluster startup probe는 typed Raft recovery가 끝나기 전 `STARTING`, recovery 뒤 base lifecycle 상태를 반환해야 한다. `cmd/narumq/cluster_storage_health_test.go::TestClusterStartupWaitsForTypedRecovery`가 두 상태를 확인한다.
 - Metric format, type, HELP/UNIT, histogram bucket과 금지 label을 자동 검사한다.
 - API-03 catalog test `internal/adapters/metrics/registry_aggregation_test.go::TestRegistryFamiliesMatchAggregationCatalog`는 Prometheus/OpenMetrics 출력의 metric 이름·type·label, 범위와 집계 규칙을 문서 표와 비교한다. Histogram에 `_bucket` 표본이 없는 경우와 `_count` label 조합에 bucket 계열이 없는 경우도 거절한다.

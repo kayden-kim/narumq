@@ -6,6 +6,8 @@ import (
 	"log/slog"
 	"net/http"
 	"strings"
+
+	applicationclock "narumq/internal/application/ports/clock"
 )
 
 // Role defines the authorization privilege level.
@@ -47,11 +49,16 @@ type AuthConfig struct {
 	Audit                 AuditUseCase
 	Logger                *slog.Logger
 	ClusterID             string
+	RequestRate           int                    // Per-second rate and burst per authenticated principal; <= 0 uses the default.
+	AuthFailureRate       int                    // Per-second rate and burst per remote IP; <= 0 uses the default.
+	Clock                 applicationclock.Clock // Nil uses the system clock.
 }
 
 // Authenticator verifies incoming credentials and enforces RBAC.
 type Authenticator struct {
-	cfg AuthConfig
+	cfg                AuthConfig
+	principalLimiter   *requestRateLimiter
+	authFailureLimiter *requestRateLimiter
 }
 
 func NewAuthenticator(cfg AuthConfig) *Authenticator {
@@ -61,7 +68,20 @@ func NewAuthenticator(cfg AuthConfig) *Authenticator {
 	if cfg.APIKeyRole == RoleNone {
 		cfg.APIKeyRole = RoleClusterAdmin
 	}
-	return &Authenticator{cfg: cfg}
+	if cfg.RequestRate <= 0 {
+		cfg.RequestRate = DefaultRequestRate
+	}
+	if cfg.AuthFailureRate <= 0 {
+		cfg.AuthFailureRate = DefaultAuthFailureRate
+	}
+	if cfg.Clock == nil {
+		cfg.Clock = systemClock{}
+	}
+	return &Authenticator{
+		cfg:                cfg,
+		principalLimiter:   newRequestRateLimiter(cfg.RequestRate, cfg.Clock),
+		authFailureLimiter: newRequestRateLimiter(cfg.AuthFailureRate, cfg.Clock),
+	}
 }
 
 // Enabled reports whether authentication is configured.
@@ -116,11 +136,11 @@ func constantTimeEqual(left, right string) bool {
 
 // RequireRole returns a middleware requiring at least minRole.
 func (a *Authenticator) RequireRole(minRole Role, next http.HandlerFunc) http.HandlerFunc {
-	return a.require(minRole, nil, next)
+	return a.require(minRole, nil, true, next)
 }
 
 func (a *Authenticator) RequireMutationRole(minRole Role, mutation auditMutation, next http.HandlerFunc) http.HandlerFunc {
-	return a.require(minRole, &mutation, next)
+	return a.require(minRole, &mutation, true, next)
 }
 
 // MaybeAllowProbe returns a middleware for health probes.
@@ -130,7 +150,7 @@ func (a *Authenticator) MaybeAllowProbe(next http.HandlerFunc) http.HandlerFunc 
 			next(w, r)
 			return
 		}
-		a.RequireRole(RoleReadOnly, next)(w, r)
+		a.require(RoleReadOnly, nil, false, next)(w, r)
 	}
 }
 
@@ -141,6 +161,6 @@ func (a *Authenticator) MaybeAllowMetrics(next http.HandlerFunc) http.HandlerFun
 			next(w, r)
 			return
 		}
-		a.RequireRole(RoleReadOnly, next)(w, r)
+		a.require(RoleReadOnly, nil, false, next)(w, r)
 	}
 }

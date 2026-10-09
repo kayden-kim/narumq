@@ -65,14 +65,22 @@ func (w *auditResponseWriter) Write(data []byte) (int, error) {
 
 func (w *auditResponseWriter) Unwrap() http.ResponseWriter { return w.ResponseWriter }
 
-func (a *Authenticator) require(minRole Role, mutation *auditMutation, next http.HandlerFunc) http.HandlerFunc {
+func (a *Authenticator) require(minRole Role, mutation *auditMutation, rateLimited bool, next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		principal, ok := a.authenticate(r)
 		if !ok {
+			if rateLimited && !a.authFailureLimiter.allow(remoteAddressKey(r.RemoteAddr)) {
+				a.rejectRateLimited(w, r, "unauthenticated", nil)
+				return
+			}
 			if a.cfg.Audit != nil {
 				a.recordOutcome(r, "management.request", "management_endpoint", r.Pattern, "unauthenticated", nil, nil, http.StatusUnauthorized, "unauthorized")
 			}
 			WriteError(w, r, http.StatusUnauthorized, "unauthorized", "authentication required or credentials invalid", false, nil)
+			return
+		}
+		if rateLimited && !a.principalLimiter.allow(principal.subject) {
+			a.rejectRateLimited(w, r, principal.subject, []string{principal.role.String()})
 			return
 		}
 		if principal.role < minRole {
@@ -135,6 +143,12 @@ func (a *Authenticator) require(minRole Role, mutation *auditMutation, next http
 		}()
 		next(wrapped, r)
 	}
+}
+
+func (a *Authenticator) rejectRateLimited(w http.ResponseWriter, r *http.Request, subject string, roles []string) {
+	a.recordOutcome(r, "management.request", "management_endpoint", r.Pattern, subject, roles, nil, http.StatusTooManyRequests, "rate_limited")
+	w.Header().Set("Retry-After", "1")
+	WriteError(w, r, http.StatusTooManyRequests, "rate_limited", "management API rate limit exceeded", true, nil)
 }
 
 func (a *Authenticator) logger() *slog.Logger {

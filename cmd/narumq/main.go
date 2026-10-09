@@ -62,6 +62,8 @@ func runWithContext(ctx context.Context, args []string, logger *slog.Logger) err
 	tlsListen := flagSet.String("tls-listen", "", "TLS listen address")
 	httpListen := flagSet.String("http-listen", "", "management HTTP listen address")
 	httpAuthToken := flagSet.String("http-auth-token", "", "management API Bearer token")
+	httpRequestRate := flagSet.Int("http-request-rate", adaptershttp.DefaultRequestRate, "management API requests per second per authenticated principal")
+	httpAuthFailureRate := flagSet.Int("http-auth-failure-rate", adaptershttp.DefaultAuthFailureRate, "management API failed-authentication requests per second per remote IP")
 	tlsCert := flagSet.String("tls-cert", "", "server certificate PEM file")
 	tlsKey := flagSet.String("tls-key", "", "server private key PEM file")
 	tlsCA := flagSet.String("tls-ca", "", "client CA certificate PEM file")
@@ -191,6 +193,10 @@ func runWithContext(ctx context.Context, args []string, logger *slog.Logger) err
 		if err := validateManagementListenAddress(*httpListen); err != nil {
 			return fmt.Errorf("unauthenticated management listener: %w", err)
 		}
+	}
+	if *httpRequestRate < 1 || *httpRequestRate > adaptershttp.MaxRequestRate ||
+		*httpAuthFailureRate < 1 || *httpAuthFailureRate > adaptershttp.MaxRequestRate {
+		return errors.New("-http-request-rate and -http-auth-failure-rate must be between 1 and 1000000")
 	}
 	mqttRequested := *tcpListen != "" || *tlsListen != ""
 	if *securityConfigFile != "" && *allowInsecureAnonymousMQTT {
@@ -419,6 +425,9 @@ func runWithContext(ctx context.Context, args []string, logger *slog.Logger) err
 			adaptershttp.ServerConfig{
 				ListenAddr:            managementListener.Addr().String(),
 				AuthToken:             *httpAuthToken,
+				RequestRate:           *httpRequestRate,
+				AuthFailureRate:       *httpAuthFailureRate,
+				Clock:                 systemClock,
 				AllowAnonymousProbes:  true,
 				AllowAnonymousMetrics: *httpAuthToken == "",
 			},

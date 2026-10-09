@@ -48,7 +48,7 @@ Audit sink 장애 정책은 [ADR-0039](../decisions/ADR-0039-management-audit-lo
 
 ## 5. Broker producer 범위
 
-이 계약 revision의 Broker producer는 Dynamic cluster management API의 활성 mutation 8개와 Management API의 인증 `401`·인가 `403` 거절을 기록한다. Standalone mode와 MQTT data plane은 producer 범위가 아니다.
+이 계약 revision의 Broker producer는 Dynamic cluster management API의 활성 mutation 8개와 Management API의 인증 `401`, 인가 `403`, rate-limit `429` 거절을 기록한다. Standalone mode와 MQTT data plane은 producer 범위가 아니다.
 
 | Method·path | `action` | `target.type` / `target.id` |
 | --- | --- | --- |
@@ -63,9 +63,11 @@ Audit sink 장애 정책은 [ADR-0039](../decisions/ADR-0039-management-audit-lo
 
 Mutation 성공은 `ALLOWED`와 `succeeded`, mutation 실패는 `FAILED`와 응답 error code를 사용한다. 인증 거절은 `DENIED`와 `unauthorized`, 인가 거절은 `DENIED`와 `forbidden`을 사용한다. Event의 `occurredAt`은 mutation 결과가 확정된 UTC 시각이다. HTTP 응답이 이미 기록된 뒤 Publisher 오류가 발생해도 응답이나 완료한 mutation을 되돌리지 않는다.
 
+Rate limit 거절은 `DENIED`와 `rate_limited`를 사용한다. 인증 실패 IP 한도 거절의 subject는 `unauthenticated`이고 roles를 생략한다.
+
 Actor subject는 인증을 끈 local mode에서 `local-unauthenticated`, 일치한 Bearer token에서 `management-bearer-token`, 일치한 API key에서 `management-api-key`, 인증 실패에서 `unauthenticated`다. 성공 인증에는 현재 role을 `roles`에 기록하며 401에는 roles를 생략한다. 공유 credential이므로 subject는 개인을 식별하지 않는다.
 
-`details`는 `httpStatus`(정수)와 `method`를 포함한다. Mutation은 `Idempotency-Key` 값이 하나이고 허용 형식일 때만 `idempotencyKey`를 포함한다. Token, API key, body와 query 값은 기록하지 않는다. 인증·인가 거절은 node별 초당 최대 20개를 저장한다. 초과 event는 기록하지 않고 `denial_suppressed` Metric만 증가시킨다.
+`details`는 `httpStatus`(정수)와 `method`를 포함한다. Mutation은 `Idempotency-Key` 값이 하나이고 허용 형식일 때만 `idempotencyKey`를 포함한다. Token, API key, body와 query 값은 기록하지 않는다. 인증·인가·rate-limit 거절은 같은 node별 초당 최대 20개 한도를 공유한다. 초과 event는 기록하지 않고 `denial_suppressed` Metric만 증가시킨다.
 
 ## 6. Node-local 기록 형식
 

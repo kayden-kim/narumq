@@ -7,12 +7,13 @@ NaruMQ의 security architecture는 network 위치만으로 신뢰를 부여하�
 | 관점 상태 | Target; MQTT client mTLS boundary partially implemented |
 | 문서 상태 | Draft |
 | 구현 증거 | MQTT client TLS trust, verified certificate DTO, exact selector mapping, tenant/client binding과 dual-credential rejection은 `internal/adapters/tls`, `internal/adapters/authentication`, `internal/application/connect`, `cmd/narumq` 및 `tests/integration/mqtt_tls_test.go`에 구현·검증되어 있다. Management plane 감사 producer, node-local hash-chain publisher, read-only verifier와 outcome metric은 `internal/adapters/http/management`, `internal/adapters/auditlog`, `internal/application/audit`, `internal/adapters/metrics`, `cmd/narumq`에 구현되어 있다. Schema·secret 경계와 실제 3-process 동작은 `tests/contracts/audit-event-v1/contract_test.go::TestAuditEventMatchesSchemaAndFileChain`, `tests/integration/cluster_audit_process_test.go::TestDynamicClusterManagementAuditProcessAcceptance`에서 확인한다. SIEM 보존·접근 정책, rollout controller와 MQTT data-plane 감사는 후속 범위다. |
+| Rate limit 근거 | 인증 주체별 요청 token bucket, 원격 IP별 인증 실패 token bucket, middleware 처리 순서와 `429` 동작은 `internal/adapters/http/management`에 구현하고 `internal/adapters/http/management/rate_limit_test.go`로 검증했다. 자세한 내용은 [Management HTTP adapter module design](management-http-module.md)과 [Management API §1.5](../specs/management-api-and-observability.md#15-rate-limit)을 따른다. |
 | 범위 | MQTT data plane, cluster peer와 management plane의 trust boundary |
 | 관련 요구사항 | [PRD](../requirements/PRD.md) TEN-01~TEN-10, SEC-01~SEC-12, NFR-16~NFR-19 |
 | 관련 스펙 | [Tenant와 security](../specs/tenancy-and-security.md), [Management API와 observability](../specs/management-api-and-observability.md) |
 | 관련 Contract | [Management API v1](../contracts/management-api-v1.md), [Audit event v1](../contracts/audit-event-v1.md), [MQTT client compatibility v1](../contracts/mqtt-client-compatibility-v1.md) |
-| 관련 결정 | [ADR-0039](../decisions/ADR-0039-management-audit-log.md); API 인증 제품과 secret 관리 ADR은 미작성 |
-| 최종 확인일 | 2026-10-08 |
+| 관련 결정 | [ADR-0039](../decisions/ADR-0039-management-audit-log.md), [ADR-0043](../decisions/ADR-0043-management-api-rate-limit.md); API authentication product와 secret 관리 ADR은 미작성 |
+| 최종 확인일 | 2026-10-09 |
 
 ## Trust boundary view
 
@@ -27,7 +28,7 @@ flowchart LR
 
     subgraph EdgeZone["NaruMQ ingress boundary"]
         MQTT["MQTT TLS listener\npacket limit·authentication"]
-        API["Management HTTPS API\nauthentication·RBAC"]
+        API["Management HTTPS API\nauthentication·RBAC·node-local rate limit"]
     end
 
     subgraph WorkloadZone["Broker workload trust domain"]
@@ -87,7 +88,7 @@ Principal 종류를 공유 credential 하나로 합치지 않는다. 특히 MQTT
 | MQTT CONNECT | JWT 또는 verified certificate selector, tenant·Client ID binding, blocklist와 connection quota | MQTT·security spec |
 | Publish·subscribe·Will | Canonical topic, action ACL, quota와 owner epoch | Tenant·cluster spec |
 | Session takeover | Authenticated session key와 quorum-committed epoch | Cluster spec, ADR-0004 |
-| Management API | Principal, resource/action RBAC, tenant scope와 idempotency | Management API spec·contract |
+| Management API | Principal, resource/action RBAC, tenant scope, idempotency, authenticated-principal request bucket과 remote-IP failed-authentication bucket | Management API spec·contract, ADR-0043 |
 | Cluster peer | Node certificate, member allowlist와 compatible release | Cluster spec·release contract |
 | Audit·Metric export | Secret 제거, masking과 cardinality 제한 | Security·observability spec |
 | Workload rollout | Controller identity, drain state와 `SAFE_TO_STOP` | Drain spec, ADR-0006 |

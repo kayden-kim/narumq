@@ -451,9 +451,18 @@ func runClusterMode(ctx context.Context, config clusterConfigFile, logger *slog.
 	if adminToken == "" {
 		return errors.New("cluster admin token file is empty")
 	}
+	requestRate := 0
+	if config.Management.RequestRate != nil {
+		requestRate = *config.Management.RequestRate
+	}
+	authFailureRate := 0
+	if config.Management.AuthFailureRate != nil {
+		authFailureRate = *config.Management.AuthFailureRate
+	}
 	managementServer := adaptershttp.NewServerWithMembership(adaptershttp.ServerConfig{
 		ListenAddr: managementListener.Addr().String(), AuthToken: adminToken,
 		AuthTokenRole: adaptershttp.RoleClusterAdmin, AllowAnonymousProbes: true,
+		RequestRate: requestRate, AuthFailureRate: authFailureRate, Clock: systemClock,
 		ClusterID: config.ClusterID, Logger: logger,
 	}, stateProvider, healthChecker, metricsRegistry, membershipService, drainService, rebalanceService, runtime, auditService)
 	return runtime.serve(ctx, mqttServer, managementServer, managementListener)

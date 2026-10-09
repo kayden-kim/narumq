@@ -6,7 +6,7 @@ path, parameter, response schema와 media type은
 
 | 항목 | 값 |
 | --- | --- |
-| 이름과 version | `narumq-management-api` 1.8.0 |
+| 이름과 version | `narumq-management-api` 1.9.0 |
 | 상태 | Active |
 | Producer | NaruMQ broker management API |
 | Consumer | Dashboard·operator·monitoring integration의 query client |
@@ -15,7 +15,7 @@ path, parameter, response schema와 media type은
 | 기준 spec | [Management API와 observability](../specs/management-api-and-observability.md) |
 | 관련 Architecture | [System overview](../architectures/system-overview.md), [Security boundaries](../architectures/security-boundaries.md) |
 | 관련 requirement | API-02, API-04~API-09, SEC-10~SEC-11 |
-| 관련 결정 | [ADR-0005](../decisions/ADR-0005-management-api-contract-format.md), [ADR-0018](../decisions/ADR-0018-release-compatibility-window.md) |
+| 관련 결정 | [ADR-0005](../decisions/ADR-0005-management-api-contract-format.md), [ADR-0018](../decisions/ADR-0018-release-compatibility-window.md), [ADR-0043](../decisions/ADR-0043-management-api-rate-limit.md) |
 | 호환성 범위 | `/api/v1` query producer와 v1 query consumer |
 | 검증 | `tests/contracts/management-api-v1`와 `tests/integration/management_api_test.go` |
 
@@ -66,6 +66,8 @@ Version 1.7.0은 `POST/GET/DELETE /api/v1/cluster/rebalance`를 추가한다. Op
   제거하지 않는다.
 - 모든 HTTP response는 `X-Request-Id`를 반환한다. 요청 header가 유효하면 같은 값을
   사용하고, 아니면 서버가 opaque 값을 생성한다.
+
+- `/api/v1/**`는 node-local rate limit을 적용한다. 한도를 넘으면 retryable `429 rate_limited`와 `Retry-After: 1`을 반환한다. 세부 규칙은 [Management API spec §1.5](../specs/management-api-and-observability.md#15-rate-limit)를 따른다.
 
 ## 3. Query와 pagination
 
@@ -132,4 +134,5 @@ method에 사용한다. 내부 오류와 credential은 response에 노출하지 
 - Version 1.7.0은 `POST/GET/DELETE /api/v1/cluster/rebalance`를 추가한다. Request parameter bounds와 operation response schema는 OpenAPI artifact가 기준이다.
 - Version 1.8.0은 Dynamic cluster의 활성 mutation 8개와 관리 API의 인증·인가 거절에 node-local 감사 event를 기록한다. Audit publisher가 append할 수 없는 경우 해당 mutation은 실행되지 않고 retryable `503 audit_unavailable`을 반환한다.
 - Active audit producer의 범위와 JSONL hash-chain 형식은 [Audit event v1 계약](audit-event-v1.md)과 [ADR-0039](../decisions/ADR-0039-management-audit-log.md)를 따른다. Future catalog의 다른 mutation endpoint, OIDC/JWT와 dashboard는 현재 Active contract가 아니다. 이 기능을 구현할 때는 별도 범위와 contract revision을 정한다.
+- Version 1.9.0은 모든 `/api/v1` operation에 `429` response를 추가한다.
 - Breaking change는 `/api/v2`와 별도 OpenAPI artifact로 제공한다.

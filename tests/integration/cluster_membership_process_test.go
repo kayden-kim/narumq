@@ -38,9 +38,10 @@ import (
 )
 
 const (
-	clusterMembershipProcessClusterID = "process-acceptance-cluster"
-	clusterMembershipProcessRelease   = "0.0.0"
-	clusterMembershipProcessAdmin     = "process-acceptance-admin-token"
+	clusterMembershipProcessClusterID         = "process-acceptance-cluster"
+	clusterMembershipProcessRelease           = "0.0.0"
+	clusterMembershipProcessAdmin             = "process-acceptance-admin-token"
+	clusterMembershipProcessMaxManagementRate = 1_000_000
 )
 
 var clusterMembershipProcessAddressLeases = struct {
@@ -765,8 +766,14 @@ func (f *clusterMembershipProcessFixture) bootstrapConfig(memberID uint64) strin
 		SeedAddresses: []string{}, PeerTLS: clusterMembershipProcessTLS{
 			CertFile: f.certificates[index].certPath(f.tempDir), KeyFile: f.certificates[index].keyPath(f.tempDir), CAFile: f.caPath,
 		},
-		Management: clusterMembershipProcessManagement{ListenAddress: f.managementAddresses[index], ClusterAdminTokenFile: f.tokenPath, AuditDirectory: f.auditDirectory(memberID)},
-		MQTT:       clusterMembershipProcessMQTT{TCPListenAddress: f.mqttAddresses[index], SecurityConfigFile: f.securityPath},
+		Management: clusterMembershipProcessManagement{
+			ListenAddress:         f.managementAddresses[index],
+			ClusterAdminTokenFile: f.tokenPath,
+			AuditDirectory:        f.auditDirectory(memberID),
+			RequestRate:           clusterMembershipProcessMaxManagementRate,
+			AuthFailureRate:       clusterMembershipProcessMaxManagementRate,
+		},
+		MQTT: clusterMembershipProcessMQTT{TCPListenAddress: f.mqttAddresses[index], SecurityConfigFile: f.securityPath},
 	}
 	if !f.omitPublishBackpressure {
 		config.PublishBackpressure = &clusterMembershipProcessPublishBackpressure{MinFreeBytes: 16 << 20, MaxCommitLagMillis: 1000}
@@ -796,8 +803,14 @@ func (f *clusterMembershipProcessFixture) joinerConfig(memberID uint64, seedIDs 
 		PeerTLS: clusterMembershipProcessTLS{
 			CertFile: f.certificates[index].certPath(f.tempDir), KeyFile: f.certificates[index].keyPath(f.tempDir), CAFile: f.caPath,
 		},
-		Management: clusterMembershipProcessManagement{ListenAddress: f.managementAddresses[index], ClusterAdminTokenFile: f.tokenPath, AuditDirectory: f.auditDirectory(memberID)},
-		MQTT:       clusterMembershipProcessMQTT{TCPListenAddress: f.mqttAddresses[index], SecurityConfigFile: f.securityPath},
+		Management: clusterMembershipProcessManagement{
+			ListenAddress:         f.managementAddresses[index],
+			ClusterAdminTokenFile: f.tokenPath,
+			AuditDirectory:        f.auditDirectory(memberID),
+			RequestRate:           clusterMembershipProcessMaxManagementRate,
+			AuthFailureRate:       clusterMembershipProcessMaxManagementRate,
+		},
+		MQTT: clusterMembershipProcessMQTT{TCPListenAddress: f.mqttAddresses[index], SecurityConfigFile: f.securityPath},
 	}
 	if !f.omitPublishBackpressure {
 		config.PublishBackpressure = &clusterMembershipProcessPublishBackpressure{MinFreeBytes: 16 << 20, MaxCommitLagMillis: 1000}
@@ -1513,6 +1526,8 @@ type clusterMembershipProcessManagement struct {
 	ListenAddress         string `json:"listenAddress"`
 	ClusterAdminTokenFile string `json:"clusterAdminTokenFile"`
 	AuditDirectory        string `json:"auditDirectory"`
+	RequestRate           int    `json:"requestRate"`
+	AuthFailureRate       int    `json:"authFailureRate"`
 }
 
 type clusterMembershipProcessMQTT struct {
