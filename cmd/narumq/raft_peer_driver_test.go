@@ -243,11 +243,6 @@ func TestRaftPeerDriverTicksQueuesAndStops(t *testing.T) {
 		_ = transport3.Close()
 		t.Fatal(err)
 	}
-	if err := node1.Campaign(); err != nil {
-		_ = node1.Close()
-		_ = node2.Close()
-		t.Fatal(err)
-	}
 
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(func() {
@@ -264,7 +259,29 @@ func TestRaftPeerDriverTicksQueuesAndStops(t *testing.T) {
 	go func() { result1 <- runRaftPeerDriver(ctx, node1, transport, logger) }()
 	go func() { result2 <- runRaftPeerDriver(ctx, node2, transport2, logger) }()
 
+	// etcd raft ignores Campaign until the bootstrap ConfChange entries are applied.
 	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		status := node1.Status()
+		if status.CommitIndex > 0 && status.AppliedIndex >= status.CommitIndex {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if status := node1.Status(); status.CommitIndex == 0 || status.AppliedIndex < status.CommitIndex {
+		cancel()
+		<-result1
+		<-result2
+		t.Fatalf("node1 did not apply bootstrap configuration before campaign: %+v", status)
+	}
+	if err := node1.Campaign(); err != nil {
+		cancel()
+		<-result1
+		<-result2
+		t.Fatal(err)
+	}
+
+	deadline = time.Now().Add(5 * time.Second)
 	for time.Now().Before(deadline) {
 		leaderID := uint64(0)
 		if node1.Status().Role == raftadapter.RoleLeader {

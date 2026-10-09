@@ -13,6 +13,7 @@ import (
 )
 
 const clusterReleaseProfileRetryInterval = 500 * time.Millisecond
+const clusterReleaseProfileCommitTimeout = 5 * time.Second
 
 type releaseProfileAction uint8
 
@@ -154,7 +155,8 @@ func (controller *clusterReleaseProfileController) reconcile(ctx context.Context
 		if err != nil {
 			return
 		}
-		result, err := controller.runtime.Commit(ctx, membership.CommandDTO{
+		commitCtx, cancel := context.WithTimeout(ctx, clusterReleaseProfileCommitTimeout)
+		result, err := controller.runtime.Commit(commitCtx, membership.CommandDTO{
 			SchemaMajor: membership.SchemaMajor, SchemaMinor: membership.SchemaMinor,
 			OperationID: operationID,
 			MemberProfile: &membership.MemberProfileChangeDTO{
@@ -162,6 +164,7 @@ func (controller *clusterReleaseProfileController) reconcile(ctx context.Context
 				Features: slices.Clone(config.Features),
 			},
 		})
+		cancel()
 		if err != nil || result.Outcome != membership.ApplyOutcomeConflict {
 			return
 		}

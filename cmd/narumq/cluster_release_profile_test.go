@@ -359,6 +359,51 @@ func TestClusterReleaseProfileReconcileMapsProposalConflictsToReadiness(t *testi
 	}
 }
 
+// Traceability: CLU-11; docs/specs/cluster-session-and-delivery.md §11.17.
+func TestClusterReleaseProfileReconcileBoundsUnansweredProposal(t *testing.T) {
+	runtime := clusterReleaseProfileTestRuntime(t, validBootstrapClusterConfig())
+	runtime.storage = newClusterStorageMonitor(time.Now, nil)
+	runtime.config.ReleaseVersion = "1.2.0"
+	ctx, cancel := context.WithTimeout(context.Background(), 3*clusterReleaseProfileCommitTimeout)
+	defer cancel()
+	reconcileDone := make(chan struct{})
+	go func() {
+		runtime.releaseProfile.reconcile(ctx)
+		close(reconcileDone)
+	}()
+	clusterReleaseProfileTestJoinReconcile(t, reconcileDone)
+
+	for readIndex := range 2 {
+		request := clusterReleaseProfileTestReceiveRequest(t, ctx, runtime)
+		if request.kind != clusterDriverRead {
+			t.Fatalf("request %d kind=%d, want cluster read", readIndex+1, request.kind)
+		}
+		request.readResult <- clusterReadResponse{index: 1}
+	}
+	commit := clusterReleaseProfileTestReceiveRequest(t, ctx, runtime)
+	if commit.kind != clusterDriverCommit || commit.pending == nil {
+		t.Fatalf("proposal request = (%d, %v), want commit with pending proposal", commit.kind, commit.pending != nil)
+	}
+	outerDeadline, _ := ctx.Deadline()
+	proposalDeadline, bounded := commit.pending.context.Deadline()
+	if !bounded || !proposalDeadline.Before(outerDeadline) {
+		t.Fatalf("profile proposal deadline = (%v, %v), want earlier than controller context %v", proposalDeadline, bounded, outerDeadline)
+	}
+	// The driver stages the proposal but never reports its commit, as after a lost forward.
+	commit.pending.staged <- clusterCommitStage{context: commit.pending.context}
+	select {
+	case <-reconcileDone:
+	case <-time.After(clusterReleaseProfileCommitTimeout + 2*time.Second):
+		t.Fatal("reconcile stayed blocked on an unanswered profile proposal")
+	}
+	if runtime.releaseProfileSynced() {
+		t.Fatal("unanswered profile proposal left release profile synchronized")
+	}
+	if reason := runtime.releaseProfileIncompatibleReason(); reason != nil {
+		t.Fatalf("unanswered profile proposal latched incompatibility %q", *reason)
+	}
+}
+
 func clusterReleaseProfileTestReceiveRequest(
 	t *testing.T,
 	ctx context.Context,

@@ -998,6 +998,45 @@ go run ./tools/verify coverage --profile .artifacts/verification/coverage.out --
 
 이번 결과는 기존 profile을 새 기준으로 평가한 로컬 증거다. 전체 local·CI gate를 새로 실행한 결과가 아니며, 실제 필수 CI status와 merge 차단도 확인하지 않았다. P0 예외 21개와 CI 증거가 남아 TEST-10은 미검증으로 유지한다.
 
+### 8.6 간헐 실패 원인 수정 수용 증거
+
+대상은 §8.2의 2026-10-08 local gate 시도 2·4다. 시험을 제외하거나 대기 시간을 늘리지 않고 두 대기 경로를 고쳤다.
+
+**원인 A — bootstrap 적용 전 campaign:** 시도 2의 `.artifacts/verification/raft-close-fixture-local-second.log:82-83`에서 `TestRaftPeerDriverTicksQueuesAndStops`가 5.04초 뒤 실패했다. 두 node 모두 `Role:1`, `Term:3`, `LeaderID:0`이었다. 시험은 driver 시작 전에 `node1.Campaign()`을 호출했다. 이때 bootstrap ConfChange entry 3개가 아직 적용되지 않았다.
+
+승인된 계획의 선행 조사에서는 임시 사본에 etcd raft debug log를 켜 다음 원문을 확인했다: `1 cannot campaign at term 1 since there are still pending configuration changes to apply`. Campaign이 무시되면 두 node는 100ms tick의 randomized election timeout(10~19 tick)에 의존한다. Peer 3은 응답하지 않는다. 두 node가 같은 tick에 선출을 시작하면 각각 자신에게 투표해 split vote가 생길 수 있다. 이때 재선출마다 1~2초가 더 걸린다.
+
+선행 조사에서 수정 전 무부하 race 시험 180회는 모두 통과했지만 시험 시간이 1.2~4.9초였다. 별도 계측 40회의 “선출+peer 3 거절” 구간은 1.01~4.41초였고 8회가 2초를 넘었다. 4.41초 사례는 term 1→2→3의 split vote 뒤 term 4에서 선출됐다. 병렬 부하로 tick 처리가 늦어지면 기존 5초 제한을 넘을 수 있다. 이는 production 결함이 아니라 시험 준비 순서의 오류다.
+
+수정한 `cmd/narumq/raft_peer_driver_test.go`는 두 driver를 먼저 시작한다. Node 1의 bootstrap commit이 적용된 뒤 campaign한다. 기존 5초 선출 제한과 node 1·2 중 어느 리더든 허용하는 검사는 유지한다. Production `runRaftPeerDriver`와 Raft adapter는 변경하지 않았다. 수정 뒤 CPU 설정 1·2·4의 총 300회 race 시험은 모두 통과했다. `-v`에 표시된 시험 전체 시간은 0.42~0.54초였다. 이 값은 선출 구간만의 시간이 아니다.
+
+**원인 B — profile proposal의 무기한 대기:** 시도 4의 `.artifacts/verification/raft-close-fixture-local-fourth.log:130-283`에서 node 4의 READY 대기가 실패했다. Join은 index 17에서 `SUCCEEDED`였다. 그 직전 node 2가 `promote-voter-before-persist` failpoint로 종료됐다. Node 4의 readiness에는 `release_profile_unsynced`가 남았다.
+
+Stage 요청은 `releaseVersion`만 보내지만 joiner build는 feature 3개를 광고한다. 따라서 controller는 local `MemberProfileChange`를 제안한다. `clusterReleaseProfileController.run`은 `reconcile`의 반환을 기다린다. 기존 propose 분기는 process 수명의 context를 `Commit`에 전달했다. `beginCommit`의 2초 상한은 read barrier에만 적용됐고 `waitProposal`은 원래 context로 결과를 기다렸다. 결과가 오지 않으면 controller가 ticker와 wake를 처리하지 못하고 gate는 닫힌 채 남았다.
+
+[추정] 기존 실패 로그는 proposal 유실 자체를 직접 보여 주지 않는다. Leader 손실 뒤 proposal 결과가 오지 않았다는 설명은 로그와 일치하는 무기한 대기 경로에 근거한다. 새 회귀 시험은 실제 leader 손실을 재현하는 대신 driver가 proposal을 인수한 뒤 결과를 보내지 않는 조건을 만들어 이 대기를 검증한다. 실제 process 회귀는 별도로 아래 3회 실행했다.
+
+수정한 `cmd/narumq/cluster_release_profile.go`는 다른 cluster commit 경로와 같은 5초 상한을 `Commit`에 적용한다. 상한이 지나면 기존 오류 분기로 반환한다. Gate는 닫힌 채 유지하고 incompatibility는 latch하지 않는다. Controller는 다음 reconcile 주기에 다시 확인한다. Ticker 간격은 500ms지만 대기 중 쌓인 tick이 있으면 반환 직후 다시 확인할 수 있다. 늦게 적용된 profile은 기존 적용 알림으로 gate를 무효화하고 controller를 깨운다. Commit의 read barrier도 이 5초 context를 사용한다. Drain·rebalance·tenant quota의 Commit 경로는 변경하지 않았다.
+
+2026-10-09에 Windows/amd64, Go 1.26.5, `CGO_ENABLED=1`, `CC=gcc`에서 아래 명령을 저장소 루트에서 실행했다. Wall time은 명령 시작부터 종료까지의 시간이다.
+
+| 실행 명령 | 결과와 관찰 | Wall time |
+| --- | --- | --- |
+| `go test ./cmd/narumq -run '^TestClusterReleaseProfileReconcileBoundsUnansweredProposal$' -count=1` (수정 전) | FAIL, exit 1. `profile proposal deadline = (..., true), want earlier than controller context ...`; 두 deadline이 같았다. | 4.38s |
+| 같은 명령 (수정 뒤) | PASS, exit 0; package 6.021s | 9.27s |
+| 같은 명령에 `-v` 추가 (수정 뒤) | PASS, exit 0; 회귀 시험 5.00s | 9.23s |
+| `go test -race ./cmd/narumq -run '^TestClusterReleaseProfile' -count=1` | PASS, exit 0; controller suite | 16.27s |
+| `go test -race ./cmd/narumq -run '^TestClusterReleaseProfile' -count=3` | PASS, exit 0; controller suite 3회 | 23.11s |
+| `go test -race ./cmd/narumq -run '^TestRaftPeerDriverTicksQueuesAndStops$' -count=100 -cpu=1,2,4 -v` | PASS, exit 0; 총 300회, 시험 전체 시간 최대 0.54s | 142.24s |
+| `go test -race ./cmd/narumq -count=1` | PASS, exit 0; package 전체 | 28.22s |
+| `go test ./tests/integration -run '^TestDynamicClusterMembershipTransitionCrashRecovery$' -count=3 -v -timeout 30m` | PASS, exit 0; 실제 process 3회(26.50s·22.60s·23.06s), node 4를 포함한 READY 검사 통과 | 74.91s |
+| `GOMAXPROCS=4 go run ./tools/verify local` | 첫 시도 PASS, exit 0; branch-instrument·traceability·architecture, fuzz 5개 각각 10,000회, package·integration 시험, production package race와 coverage 통과; `local: PASS` | 150.11s |
+| `go run ./tools/verify traceability` | PASS, exit 0; P0 66/81 연결, 예외 15개 유지 | 1.02s |
+
+새 실행의 원본 출력은 `.artifacts/verification/flaky-cluster-{profile-before,profile-after,profile-after-verbose,profile-race-once,profile-race,driver-race,package-race,membership-process,local-first,traceability}.log`에 보존한다. Exit code와 wall time은 같은 directory의 `flaky-cluster-results.json`에 보존한다. Local gate의 합격선과 시험 선택은 변경하지 않았다. Process 시험의 성공 출력은 개별 node 로그를 표시하지 않으므로 일시적인 `release_profile_unsynced`의 지속 시간은 측정하지 않았다.
+
+필수 CI 실행 증거가 없어 TEST-12~TEST-15는 `미검증`으로 남는다. 격리한 flaky test는 없으므로 owner·해소 기한 기록 대상은 없다. 파일 배치와 호출 경로가 그대로이므로 코드 지도·모듈 설계는 갱신하지 않았다.
+
 ## 9. Architecture 검증
 
 CI 아키텍처 검증은 ADR-0001의 클린 아키텍처 경계를 강제한다:
