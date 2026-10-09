@@ -15,9 +15,8 @@ import (
 type ServerConfig struct {
 	ListenAddr            string
 	AuthToken             string
-	AuthTokenRole         Role
-	APIKey                string
-	APIKeyRole            Role
+	APIKeys               []APIKeyCredential
+	OIDC                  *OIDCConfig
 	RequestRate           int                    // Per-second rate and burst per authenticated principal; <= 0 uses the default.
 	AuthFailureRate       int                    // Per-second rate and burst per remote IP; <= 0 uses the default.
 	Clock                 applicationclock.Clock // Nil uses the system clock.
@@ -36,7 +35,7 @@ func NewRouter(
 	healthChecker ports.HealthChecker,
 	metricsReg portsmetrics.MetricsRenderer,
 ) http.Handler {
-	return newRouter(cfg, stateProvider, healthChecker, metricsReg, nil, nil, nil, nil, nil)
+	return newRouter(cfg, stateProvider, healthChecker, metricsReg, nil, nil, nil, nil, nil, nil)
 }
 
 // NewRouterWithMembership constructs a router with membership, node drain, connection rebalance, and backup routes.
@@ -50,8 +49,9 @@ func NewRouterWithMembership(
 	rebalanceService ConnectionRebalanceUseCase,
 	backupProvider ports.ClusterBackupProvider,
 	auditService AuditUseCase,
+	auditQueryService AuditQueryUseCase,
 ) http.Handler {
-	return newRouter(cfg, stateProvider, healthChecker, metricsReg, membershipService, drainService, rebalanceService, backupProvider, auditService)
+	return newRouter(cfg, stateProvider, healthChecker, metricsReg, membershipService, drainService, rebalanceService, backupProvider, auditService, auditQueryService)
 }
 
 func newRouter(
@@ -64,10 +64,10 @@ func newRouter(
 	rebalanceService ConnectionRebalanceUseCase,
 	backupProvider ports.ClusterBackupProvider,
 	auditService AuditUseCase,
+	auditQueryService AuditQueryUseCase,
 ) http.Handler {
 	auth := NewAuthenticator(AuthConfig{
-		AuthToken: cfg.AuthToken, AuthTokenRole: cfg.AuthTokenRole,
-		APIKey: cfg.APIKey, APIKeyRole: cfg.APIKeyRole,
+		AuthToken: cfg.AuthToken, APIKeys: cfg.APIKeys, OIDC: cfg.OIDC,
 		RequestRate: cfg.RequestRate, AuthFailureRate: cfg.AuthFailureRate, Clock: cfg.Clock,
 		AllowAnonymousProbes: cfg.AllowAnonymousProbes, AllowAnonymousMetrics: cfg.AllowAnonymousMetrics,
 		Audit: auditService, Logger: cfg.Logger, ClusterID: cfg.ClusterID,
@@ -89,52 +89,62 @@ func newRouter(
 	mux.HandleFunc("/metrics", auth.MaybeAllowMetrics(metricsH.ServeHTTP))
 
 	// Management API v1
-	mux.HandleFunc("/api/v1/cluster", auth.RequireRole(RoleReadOnly, v1H.GetCluster))
-	mux.HandleFunc("/api/v1/nodes", auth.RequireRole(RoleReadOnly, v1H.ListNodes))
-	mux.HandleFunc("/api/v1/nodes/{nodeId}", auth.RequireRole(RoleReadOnly, v1H.GetNode))
-	mux.HandleFunc("/api/v1/clients", auth.RequireRole(RoleReadOnly, v1H.ListClients))
-	mux.HandleFunc("/api/v1/clients/{tenantId}/{clientId}", auth.RequireRole(RoleReadOnly, v1H.GetClient))
-	mux.HandleFunc("/api/v1/subscriptions", auth.RequireRole(RoleReadOnly, v1H.ListSubscriptions))
-	mux.HandleFunc("/api/v1/retained", auth.RequireRole(RoleReadOnly, v1H.ListRetained))
-	mux.HandleFunc("/api/v1/tenants", auth.RequireRole(RoleClusterAdmin, v1H.ListTenants))
+	mux.HandleFunc("/api/v1/cluster", auth.RequirePermission(PermissionRead, v1H.GetCluster))
+	mux.HandleFunc("/api/v1/nodes", auth.RequirePermission(PermissionRead, v1H.ListNodes))
+	mux.HandleFunc("/api/v1/nodes/{nodeId}", auth.RequirePermission(PermissionRead, v1H.GetNode))
+	mux.HandleFunc("/api/v1/clients", auth.RequirePermission(PermissionRead, v1H.ListClients))
+	mux.HandleFunc("/api/v1/clients/{tenantId}/{clientId}", auth.RequirePermission(PermissionRead, v1H.GetClient))
+	mux.HandleFunc("/api/v1/subscriptions", auth.RequirePermission(PermissionRead, v1H.ListSubscriptions))
+	mux.HandleFunc("/api/v1/retained", auth.RequirePermission(PermissionRead, v1H.ListRetained))
+	mux.HandleFunc("/api/v1/tenants", auth.RequirePermission(PermissionClusterAdmin, v1H.ListTenants))
+	methodNotAllowed := func(allow string) http.HandlerFunc {
+		return func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Allow", allow)
+			WriteError(w, r, http.StatusMethodNotAllowed, "method_not_allowed", "method not allowed", false, nil)
+		}
+	}
+	if auditQueryService != nil {
+		queryHandler := &auditQueryHandler{service: auditQueryService, logger: cfg.Logger}
+		mux.HandleFunc("/api/v1/audit/events", func(w http.ResponseWriter, r *http.Request) {
+			if r.Method == http.MethodGet {
+				auth.RequirePermission(PermissionAuditRead, queryHandler.List)(w, r)
+				return
+			}
+			auth.RequirePermission(PermissionRead, methodNotAllowed(http.MethodGet))(w, r)
+		})
+	}
 	if membershipService != nil {
 		membershipH := &membershipHandler{service: membershipService}
 		mux.HandleFunc("/api/v1/cluster/members", func(w http.ResponseWriter, r *http.Request) {
 			if r.Method == http.MethodPost {
-				auth.RequireMutationRole(RoleClusterAdmin, auditMutation{action: "cluster.member.stage", targetType: "cluster"}, membershipH.StageMember)(w, r)
+				auth.RequireMutationPermission(PermissionClusterAdmin, auditMutation{action: "cluster.member.stage", targetType: "cluster"}, membershipH.StageMember)(w, r)
 				return
 			}
-			auth.RequireRole(RoleClusterAdmin, membershipH.StageMember)(w, r)
+			auth.RequirePermission(PermissionClusterAdmin, membershipH.StageMember)(w, r)
 		})
 		mux.HandleFunc("/api/v1/cluster/members/{memberId}", func(w http.ResponseWriter, r *http.Request) {
 			if r.Method == http.MethodDelete {
-				auth.RequireMutationRole(RoleClusterAdmin, auditMutation{action: "cluster.member.remove", targetType: "cluster_member", targetParam: "memberId"}, membershipH.RemoveMember)(w, r)
+				auth.RequireMutationPermission(PermissionClusterAdmin, auditMutation{action: "cluster.member.remove", targetType: "cluster_member", targetParam: "memberId"}, membershipH.RemoveMember)(w, r)
 				return
 			}
-			auth.RequireRole(RoleClusterAdmin, membershipH.RemoveMember)(w, r)
+			auth.RequirePermission(PermissionClusterAdmin, membershipH.RemoveMember)(w, r)
 		})
-		mux.HandleFunc("/api/v1/cluster/membership-operations/{operationId}", auth.RequireRole(RoleReadOnly, membershipH.GetOperation))
+		mux.HandleFunc("/api/v1/cluster/membership-operations/{operationId}", auth.RequirePermission(PermissionRead, membershipH.GetOperation))
 		featureH := &clusterFeatureHandler{service: membershipService}
-		methodNotAllowed := func(allow string) http.HandlerFunc {
-			return func(w http.ResponseWriter, r *http.Request) {
-				w.Header().Set("Allow", allow)
-				WriteError(w, r, http.StatusMethodNotAllowed, "method_not_allowed", "method not allowed", false, nil)
-			}
-		}
 		mux.HandleFunc("/api/v1/cluster/features", func(w http.ResponseWriter, r *http.Request) {
 			switch r.Method {
 			case http.MethodGet:
-				auth.RequireRole(RoleReadOnly, featureH.List)(w, r)
+				auth.RequirePermission(PermissionRead, featureH.List)(w, r)
 			default:
-				auth.RequireRole(RoleReadOnly, methodNotAllowed(http.MethodGet))(w, r)
+				auth.RequirePermission(PermissionRead, methodNotAllowed(http.MethodGet))(w, r)
 			}
 		})
 		mux.HandleFunc("/api/v1/cluster/features/{feature}", func(w http.ResponseWriter, r *http.Request) {
 			switch r.Method {
 			case http.MethodPost:
-				auth.RequireMutationRole(RoleClusterAdmin, auditMutation{action: "cluster.feature.activate", targetType: "cluster_feature", targetParam: "feature"}, featureH.Activate)(w, r)
+				auth.RequireMutationPermission(PermissionClusterAdmin, auditMutation{action: "cluster.feature.activate", targetType: "cluster_feature", targetParam: "feature"}, featureH.Activate)(w, r)
 			default:
-				auth.RequireRole(RoleReadOnly, methodNotAllowed(http.MethodPost))(w, r)
+				auth.RequirePermission(PermissionRead, methodNotAllowed(http.MethodPost))(w, r)
 			}
 		})
 	}
@@ -143,13 +153,13 @@ func newRouter(
 		mux.HandleFunc("/api/v1/nodes/{nodeId}/drain", func(w http.ResponseWriter, r *http.Request) {
 			switch r.Method {
 			case http.MethodPost:
-				auth.RequireMutationRole(RoleOperator, auditMutation{action: "node.drain.start", targetType: "node", targetParam: "nodeId"}, drainH.Start)(w, r)
+				auth.RequireMutationPermission(PermissionOperate, auditMutation{action: "node.drain.start", targetType: "node", targetParam: "nodeId"}, drainH.Start)(w, r)
 			case http.MethodGet:
-				auth.RequireRole(RoleReadOnly, drainH.Get)(w, r)
+				auth.RequirePermission(PermissionRead, drainH.Get)(w, r)
 			case http.MethodDelete:
-				auth.RequireMutationRole(RoleOperator, auditMutation{action: "node.drain.cancel", targetType: "node", targetParam: "nodeId"}, drainH.Cancel)(w, r)
+				auth.RequireMutationPermission(PermissionOperate, auditMutation{action: "node.drain.cancel", targetType: "node", targetParam: "nodeId"}, drainH.Cancel)(w, r)
 			default:
-				auth.RequireRole(RoleReadOnly, func(w http.ResponseWriter, r *http.Request) {
+				auth.RequirePermission(PermissionRead, func(w http.ResponseWriter, r *http.Request) {
 					WriteError(w, r, http.StatusMethodNotAllowed, "method_not_allowed", "method not allowed", false, nil)
 				})(w, r)
 			}
@@ -160,13 +170,13 @@ func newRouter(
 		mux.HandleFunc("/api/v1/cluster/rebalance", func(w http.ResponseWriter, r *http.Request) {
 			switch r.Method {
 			case http.MethodPost:
-				auth.RequireMutationRole(RoleOperator, auditMutation{action: "cluster.rebalance.start", targetType: "cluster"}, rebalanceH.Start)(w, r)
+				auth.RequireMutationPermission(PermissionOperate, auditMutation{action: "cluster.rebalance.start", targetType: "cluster"}, rebalanceH.Start)(w, r)
 			case http.MethodGet:
-				auth.RequireRole(RoleReadOnly, rebalanceH.Get)(w, r)
+				auth.RequirePermission(PermissionRead, rebalanceH.Get)(w, r)
 			case http.MethodDelete:
-				auth.RequireMutationRole(RoleOperator, auditMutation{action: "cluster.rebalance.cancel", targetType: "cluster"}, rebalanceH.Cancel)(w, r)
+				auth.RequireMutationPermission(PermissionOperate, auditMutation{action: "cluster.rebalance.cancel", targetType: "cluster"}, rebalanceH.Cancel)(w, r)
 			default:
-				auth.RequireRole(RoleReadOnly, func(w http.ResponseWriter, r *http.Request) {
+				auth.RequirePermission(PermissionRead, func(w http.ResponseWriter, r *http.Request) {
 					WriteError(w, r, http.StatusMethodNotAllowed, "method_not_allowed", "method not allowed", false, nil)
 				})(w, r)
 			}
@@ -176,10 +186,10 @@ func newRouter(
 		backupH := &clusterBackupHandler{provider: backupProvider}
 		mux.HandleFunc("/api/v1/cluster/backups", func(w http.ResponseWriter, r *http.Request) {
 			if r.Method == http.MethodPost {
-				auth.RequireMutationRole(RoleClusterAdmin, auditMutation{action: "cluster.backup.create", targetType: "cluster"}, backupH.CreateBackup)(w, r)
+				auth.RequireMutationPermission(PermissionClusterAdmin, auditMutation{action: "cluster.backup.create", targetType: "cluster"}, backupH.CreateBackup)(w, r)
 				return
 			}
-			auth.RequireRole(RoleClusterAdmin, backupH.CreateBackup)(w, r)
+			auth.RequirePermission(PermissionClusterAdmin, backupH.CreateBackup)(w, r)
 		})
 	}
 
@@ -204,7 +214,7 @@ func NewServer(
 	healthChecker ports.HealthChecker,
 	metricsReg portsmetrics.MetricsRenderer,
 ) *http.Server {
-	return newServer(cfg, stateProvider, healthChecker, metricsReg, nil, nil, nil, nil, nil)
+	return newServer(cfg, stateProvider, healthChecker, metricsReg, nil, nil, nil, nil, nil, nil)
 }
 
 // NewServerWithMembership creates a management server with membership, node drain, connection rebalance, and backup routes.
@@ -218,8 +228,9 @@ func NewServerWithMembership(
 	rebalanceService ConnectionRebalanceUseCase,
 	backupProvider ports.ClusterBackupProvider,
 	auditService AuditUseCase,
+	auditQueryService AuditQueryUseCase,
 ) *http.Server {
-	return newServer(cfg, stateProvider, healthChecker, metricsReg, membershipService, drainService, rebalanceService, backupProvider, auditService)
+	return newServer(cfg, stateProvider, healthChecker, metricsReg, membershipService, drainService, rebalanceService, backupProvider, auditService, auditQueryService)
 }
 
 func newServer(
@@ -232,6 +243,7 @@ func newServer(
 	rebalanceService ConnectionRebalanceUseCase,
 	backupProvider ports.ClusterBackupProvider,
 	auditService AuditUseCase,
+	auditQueryService AuditQueryUseCase,
 ) *http.Server {
 
 	addr := cfg.ListenAddr
@@ -248,7 +260,7 @@ func newServer(
 		wTimeout = 10 * time.Second
 	}
 
-	handler := newRouter(cfg, stateProvider, healthChecker, metricsReg, membershipService, drainService, rebalanceService, backupProvider, auditService)
+	handler := newRouter(cfg, stateProvider, healthChecker, metricsReg, membershipService, drainService, rebalanceService, backupProvider, auditService, auditQueryService)
 
 	return &http.Server{
 		Addr:         addr,

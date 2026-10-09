@@ -40,19 +40,25 @@ Prometheus는 `/metrics`에서 node별 metric(운영 수치)을 정해진 간격
 
 1. **Cluster process에 ReadOnly API key 파일을 연결한다.**
 
-   Cluster configuration의 `management.readOnlyApiKeyFile`에 각 node의 key 파일 경로를 지정한다. 비밀 저장소가 발급한 같은 key를 각 node에 배포한다.
+   각 node의 cluster configuration `management.apiKeys`에 Dashboard 전용 API key를 등록한다. 모든 node에서 같은 `id`와 key를 사용하고 `ReadOnly` role만 부여한다. `keyFile`은 secret store가 관리하는 파일을 가리킨다.
 
    다음 JSON은 `management` 설정의 관련 부분만 보인다.
 
    ```json
    {
      "management": {
-       "readOnlyApiKeyFile": "/run/secrets/narumq-readonly.key"
+      "apiKeys": [
+        {
+          "id": "dashboard",
+          "keyFile": "/run/secrets/narumq-readonly.key",
+          "roles": ["ReadOnly"]
+        }
+      ]
      }
    }
    ```
 
-   key 파일이 비어 있거나 ClusterAdmin token과 같으면 process가 시작하지 않는다. 원격 Management listener는 방화벽과 인증 정책으로 제한한다.
+   Key file이 비어 있거나 ClusterAdmin token 또는 다른 API key와 같으면 process가 시작하지 않는다. 원격 Management listener는 방화벽과 인증 정책으로 제한한다.
 
    기대 결과: 모든 node process가 비밀 저장소의 같은 ReadOnly key를 사용한다. ReadOnly key의 cluster GET은 `200`, backup POST와 node drain POST는 `403`이어야 한다.
 
@@ -109,8 +115,8 @@ Prometheus는 `/metrics`에서 node별 metric(운영 수치)을 정해진 간격
 
 | 관찰 대상 | 성공 조건 | 확인 명령·방법 | 실제 결과 | 실행 증거 위치 |
 | --- | --- | --- | --- | --- |
-| Static provisioning contract | Dashboard panel, OpenAPI GET path, Metric catalog와 provisioning 설정이 계약과 일치한다. | 저장소 root에서 `go test ./tests/integration -run '^TestDashboardProvisioningMatchesContracts$' -count=1` | 2026-10-09 PASS | `tests/integration/dashboard_stack_test.go::TestDashboardProvisioningMatchesContracts` |
-| Prometheus scrape와 Grafana datasource | 3개 node가 Prometheus target에서 `UP`이고 두 datasource health가 `OK`다. | PowerShell 명령은 아래 code block을 실행한다. | 2026-10-09 PASS. 세 process의 `/health/ready`가 모두 `200`이었다. ReadOnly key의 cluster GET은 `200`, backup·drain POST는 `403`이었다. | `tests/integration/dashboard_stack_test.go::TestDashboardStackProcessAcceptance` |
+| Static provisioning contract | Dashboard panel, OpenAPI GET path, Metric catalog와 provisioning 설정이 계약과 일치한다. | `go test ./tests/integration -run '^(TestDynamicClusterTenantIsolationPenetrationProcessAcceptance|TestDynamicClusterConnectionRebalanceProcessAcceptance|TestDashboardProvisioningMatchesContracts)$' -count=1 -v -timeout 20m` | 2026-10-10 PASS. | `tests/integration/dashboard_stack_test.go::TestDashboardProvisioningMatchesContracts` |
+| Prometheus scrape와 Grafana datasource | 3개 node가 Prometheus target에서 `UP`이고 두 datasource health가 `OK`다. | `NARUMQ_DASHBOARD_E2E=1 NARUMQ_DASHBOARD_E2E_HOLD=90s go test ./tests/integration -run '^TestDashboardStackProcessAcceptance$' -count=1 -v -timeout 20m` | 2026-10-10 PASS, test 228.46s, package 229.503s. | `tests/integration/dashboard_stack_test.go::TestDashboardStackProcessAcceptance` |
 | Dashboard 화면 | Quorum, leader, topology, traffic, node-load와 drain panel이 표시되고 browser error가 없다. | Grafana에서 Dashboard를 열고 첫 화면, `Node 부하`, `Drain` 행을 확인한다. | 2026-10-09 local Docker stack에서 Quorum `정상`, replica 부족 `0`, Leader `1`과 세 node를 확인했다. Grafana `/api/ds/query` frame에서 panel 2는 replica 부족 `0`, panel 4는 Members `3`·quorum `2`·replication factor `3`·write quorum `2`, panel 5는 Ready `1`·Joining `2`, panel 6은 세 node와 원격 `JOINING` readiness reason을 반환했다. Panel 15는 `COMPLETED`, `SAFE_TO_STOP`, remaining `0`, takeover `1`을 반환했다. Node 2는 원격 readiness를 추정하지 않고 `JOINING`으로 표시됐다. `Node=2` 화면에서 Connections, Sent PUBLISH, MQTT 5.0 CONNECT 성공과 거절 panel을 확인했다. Node-scoped query는 node 1의 connection·received PUBLISH rate와 MQTT 3.1.1 성공, node 2의 sent PUBLISH rate와 MQTT 5.0 성공·같은 series의 `not_authorized` 거절을 검증했다. Drain의 node 3은 initial `1`, remaining `0`, takeover `1`, `safeToStop=true`였다. Browser와 console error는 없었다. | `NARUMQ_DASHBOARD_E2E_HOLD=90s` local E2E와 browser visual check. CI 실행 링크와 production deployment 검증은 없다. |
 
 Local Docker E2E는 Prometheus 3.5.0, Grafana OSS 13.0.2와 Infinity datasource 4.1.1 container를 시작하고 종료한다. Production deployment test는 아니다.
@@ -141,7 +147,7 @@ Remove-Item Env:NARUMQ_DASHBOARD_E2E
 1. Grafana provisioning과 Dashboard mount를 제거하거나 이전 deployment revision으로 되돌린다.
 2. Prometheus target file에서 해당 cluster target을 제거하고 scrape target이 사라졌는지 확인한다.
 3. Dashboard가 ReadOnly key를 더 이상 사용하지 않을 때만 key를 회전하거나 폐기한다.
-4. 다른 monitoring client가 같은 key를 쓰는지 확인한 뒤 cluster configuration에서 `readOnlyApiKeyFile`을 제거한다.
+4. 다른 monitoring client가 같은 key를 쓰는지 확인한 뒤 각 node의 `management.apiKeys`에서 `dashboard` 항목을 제거하고 key file을 폐기한다.
 
 ## 7. 해결되지 않을 때 전달할 대상
 

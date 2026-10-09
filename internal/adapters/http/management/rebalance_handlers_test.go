@@ -33,14 +33,14 @@ func (stub *rebalanceHTTPStub) CancelConnectionRebalance(context.Context) (membe
 
 func newRebalanceHTTPTestHandler(service ConnectionRebalanceUseCase, role Role) http.Handler {
 	return NewRouterWithMembership(
-		ServerConfig{AuthToken: "rebalance-secret", AuthTokenRole: role, ClusterID: "test-cluster"},
-		&mockStateProvider{}, nil, nil, nil, nil, service, nil, &spyAuditUseCase{},
+		ServerConfig{APIKeys: []APIKeyCredential{{ID: "test", Key: "rebalance-secret", Roles: []Role{role}}}, ClusterID: "test-cluster"},
+		&mockStateProvider{}, nil, nil, nil, nil, service, nil, &spyAuditUseCase{}, nil,
 	)
 }
 
 func rebalanceHTTPRequest(method, body, key string) *http.Request {
 	r := httptest.NewRequest(method, "/api/v1/cluster/rebalance", strings.NewReader(body))
-	r.Header.Set("Authorization", "Bearer rebalance-secret")
+	r.Header.Set("X-API-Key", "rebalance-secret")
 	if body != "" {
 		r.Header.Set("Content-Type", "application/json")
 	}
@@ -145,7 +145,7 @@ func TestConnectionRebalanceHTTPRoleAuthorizationAndDeleteKey(t *testing.T) {
 	}
 
 	unauthenticated := rebalanceHTTPRequest(http.MethodPost, validRebalanceRequestBody, rebalanceHTTPKey)
-	unauthenticated.Header.Del("Authorization")
+	unauthenticated.Header.Del("X-API-Key")
 	recorder = httptest.NewRecorder()
 	newRebalanceHTTPTestHandler(stub, RoleOperator).ServeHTTP(recorder, unauthenticated)
 	var unauthorized ErrorResponse

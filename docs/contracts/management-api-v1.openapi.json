@@ -3,8 +3,8 @@
   "jsonSchemaDialect": "https://json-schema.org/draft/2020-12/schema",
   "info": {
     "title": "NaruMQ Management API",
-    "version": "1.9.0",
-    "description": "Query, observability, authenticated cluster membership and feature activation, broker node drain and connection rebalance, cluster-backup operations, and node-local management audit events. Per-principal and failed-authentication rate limiting applies to /api/v1. OIDC/JWT claim semantics and dashboard APIs are deferred."
+    "version": "1.10.0",
+    "description": "Query, observability, authenticated cluster membership and feature activation, broker node drain and connection rebalance, cluster-backup operations, and node-local management audit events. Per-principal and failed-authentication rate limiting applies to /api/v1. Dashboard APIs are deferred."
   },
   "servers": [
     {
@@ -25,7 +25,8 @@
     { "name": "Clients" },
     { "name": "Subscriptions" },
     { "name": "Retained" },
-    { "name": "Metrics" }
+    { "name": "Metrics" },
+    { "name": "Audit" }
   ],
   "paths": {
     "/health/live": {
@@ -707,6 +708,85 @@
         }
       }
     },
+    "/api/v1/audit/events": {
+      "get": {
+        "tags": ["Audit"],
+        "operationId": "listAuditEvents",
+        "description": "Requires SecurityAdmin or ClusterAdmin. Returns this node's audit hash-chain records newest first.",
+        "parameters": [
+          { "$ref": "#/components/parameters/Cursor" },
+          { "$ref": "#/components/parameters/Limit" },
+          {
+            "name": "actorSubject",
+            "in": "query",
+            "required": false,
+            "description": "Exact match for actor.subject.",
+            "schema": { "type": "string", "minLength": 1, "maxLength": 256 }
+          },
+          {
+            "name": "action",
+            "in": "query",
+            "required": false,
+            "description": "Exact match for action.",
+            "schema": { "type": "string", "minLength": 1, "maxLength": 128 }
+          },
+          {
+            "name": "targetType",
+            "in": "query",
+            "required": false,
+            "description": "Exact match for target.type.",
+            "schema": { "type": "string", "minLength": 1, "maxLength": 64 }
+          },
+          {
+            "name": "targetId",
+            "in": "query",
+            "required": false,
+            "description": "Exact match for target.id.",
+            "schema": { "type": "string", "minLength": 1, "maxLength": 512 }
+          },
+          {
+            "name": "requestId",
+            "in": "query",
+            "required": false,
+            "description": "Exact match for requestId.",
+            "schema": { "type": "string", "minLength": 1, "maxLength": 128 }
+          },
+          {
+            "name": "result",
+            "in": "query",
+            "required": false,
+            "schema": { "type": "string", "enum": ["ALLOWED", "DENIED", "FAILED"] }
+          },
+          {
+            "name": "from",
+            "in": "query",
+            "required": false,
+            "description": "Inclusive RFC 3339 occurredAt lower bound.",
+            "schema": { "type": "string", "format": "date-time" }
+          },
+          {
+            "name": "to",
+            "in": "query",
+            "required": false,
+            "description": "Exclusive RFC 3339 occurredAt upper bound.",
+            "schema": { "type": "string", "format": "date-time" }
+          }
+        ],
+        "responses": {
+          "200": { "$ref": "#/components/responses/AuditRecordListResponse" },
+          "400": { "$ref": "#/components/responses/BadRequest" },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "403": { "$ref": "#/components/responses/Forbidden" },
+          "405": { "$ref": "#/components/responses/MethodNotAllowed" },
+          "429": { "$ref": "#/components/responses/TooManyRequests" },
+          "503": {
+            "description": "The node-local audit log is unavailable (`audit_unavailable`).",
+            "headers": { "X-Request-Id": { "$ref": "#/components/headers/XRequestId" } },
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorResponse" } } }
+          }
+        }
+      }
+    },
     "/api/v1/tenants": {
       "get": {
         "tags": ["Tenants"],
@@ -732,13 +812,13 @@
       "BearerAuth": {
         "type": "http",
         "scheme": "bearer",
-        "description": "Configured opaque Bearer token. OIDC and JWT claim semantics are not part of Phase 1."
+        "description": "Cluster admin break-glass opaque token (ClusterAdmin), or an OIDC JWT whose configured subject binding supplies roles when management.oidc is configured."
       },
       "ApiKeyAuth": {
         "type": "apiKey",
         "in": "header",
         "name": "X-API-Key",
-        "description": "Configured opaque API key."
+        "description": "Named API key from management.apiKeys; configured roles apply."
       }
     },
     "headers": {
@@ -758,6 +838,7 @@
         "name": "cursor",
         "in": "query",
         "required": false,
+        "description": "Opaque pagination cursor. For `/api/v1/audit/events`, RawURL base64 of `seq:<decimal>`; the next page contains records with seq lower than that value.",
         "example": "Y3VyOjUw",
         "schema": { "type": "string", "minLength": 1, "maxLength": 4096 }
       },
@@ -1199,6 +1280,15 @@
         "description": "The route does not support the requested method.",
         "headers": { "X-Request-Id": { "$ref": "#/components/headers/XRequestId" } },
         "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorResponse" } } }
+      },
+      "AuditRecordListResponse": {
+        "description": "Node-local audit hash-chain record list, newest first.",
+        "headers": { "X-Request-Id": { "$ref": "#/components/headers/XRequestId" } },
+        "content": {
+          "application/json": {
+            "schema": { "$ref": "#/components/schemas/AuditRecordListEnvelope" }
+          }
+        }
       },
       "Unavailable": {
         "description": "The probe is unavailable.",
@@ -1678,6 +1768,32 @@
         "required": ["data", "page"],
         "properties": {
           "data": { "type": "array", "items": { "$ref": "#/components/schemas/RetainedData" } },
+          "page": { "$ref": "#/components/schemas/Page" }
+        }
+      },
+      "AuditRecord": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["seq", "prevHash", "hash", "event"],
+        "properties": {
+          "seq": { "type": "integer", "minimum": 1 },
+          "prevHash": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+          "hash": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+          "event": { "$ref": "#/components/schemas/AuditEvent" }
+        }
+      },
+      "AuditEvent": {
+        "type": "object",
+        "description": "Audit event v1 object; full validation is defined by audit-event-v1.schema.json.",
+        "additionalProperties": true,
+        "required": ["schemaVersion", "eventId", "occurredAt", "requestId", "producer", "actor", "action", "target", "result", "reason"]
+      },
+      "AuditRecordListEnvelope": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["data", "page"],
+        "properties": {
+          "data": { "type": "array", "items": { "$ref": "#/components/schemas/AuditRecord" } },
           "page": { "$ref": "#/components/schemas/Page" }
         }
       },

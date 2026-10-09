@@ -27,6 +27,7 @@ import (
 	adaptersmetrics "narumq/internal/adapters/metrics"
 	"narumq/internal/application/audit"
 	appmembership "narumq/internal/application/membership"
+	portsaudit "narumq/internal/application/ports/audit"
 	"narumq/internal/domain/connrebalance"
 	"narumq/internal/domain/nodedrain"
 
@@ -63,6 +64,13 @@ func managementOperationFixtures() []operationFixture {
 		{method: http.MethodGet, path: "/api/v1/tenants", operationID: "listTenants", target: "/api/v1/tenants?limit=50"},
 	}
 }
+func auditQueryOperationFixture() operationFixture {
+	return operationFixture{
+		method: http.MethodGet, path: "/api/v1/audit/events", operationID: "listAuditEvents",
+		target: "/api/v1/audit/events?limit=2&actorSubject=management-bearer-token&action=cluster.member.stage&targetType=cluster_member&targetId=4&requestId=contract-audit-request&result=ALLOWED",
+	}
+}
+
 func membershipOperationFixtures() []operationFixture {
 	return []operationFixture{
 		{
@@ -395,11 +403,30 @@ func clusterManagementContractHandler() http.Handler {
 }
 
 func clusterManagementContractHandlerWithRebalance(rebalanceService managementhttp.ConnectionRebalanceUseCase) http.Handler {
+	return clusterManagementContractHandlerWithServices(managementhttp.ServerConfig{
+		ClusterID: "contract-cluster", AuthToken: "contract-token",
+		RequestRate: managementhttp.MaxRequestRate, AuthFailureRate: managementhttp.MaxRequestRate,
+		AllowAnonymousProbes: true, AllowAnonymousMetrics: true,
+	}, rebalanceService, contractAuditQueryUseCase{})
+}
+
+func clusterManagementContractHandlerWithConfig(config managementhttp.ServerConfig) http.Handler {
+	return clusterManagementContractHandlerWithServices(config, contractRebalanceService{}, contractAuditQueryUseCase{})
+}
+
+func clusterManagementContractHandlerWithServices(
+	config managementhttp.ServerConfig,
+	rebalanceService managementhttp.ConnectionRebalanceUseCase,
+	auditQueryService managementhttp.AuditQueryUseCase,
+) http.Handler {
+	if config.RequestRate == 0 {
+		config.RequestRate = managementhttp.MaxRequestRate
+	}
+	if config.AuthFailureRate == 0 {
+		config.AuthFailureRate = managementhttp.MaxRequestRate
+	}
 	return managementhttp.NewRouterWithMembership(
-		managementhttp.ServerConfig{
-			ClusterID:   "contract-cluster",
-			RequestRate: managementhttp.MaxRequestRate, AuthFailureRate: managementhttp.MaxRequestRate,
-		},
+		config,
 		contractStateProvider{},
 		contractStateProvider{},
 		adaptersmetrics.NewRegistry(),
@@ -408,7 +435,30 @@ func clusterManagementContractHandlerWithRebalance(rebalanceService managementht
 		rebalanceService,
 		contractBackupProvider{},
 		contractAuditUseCase{},
+		auditQueryService,
 	)
+}
+
+type contractAuditQueryUseCase struct{}
+
+func (contractAuditQueryUseCase) Query(context.Context, audit.QueryCommandDTO) (audit.QueryResultDTO, error) {
+	return audit.QueryResultDTO{Records: []portsaudit.AuditRecordDTO{contractAuditRecord()}}, nil
+}
+
+type contractAuditRecordReader struct{}
+
+func (contractAuditRecordReader) ReadAuditRecords(
+	context.Context,
+	portsaudit.AuditRecordQueryDTO,
+) (portsaudit.AuditRecordPageDTO, error) {
+	return portsaudit.AuditRecordPageDTO{Records: []portsaudit.AuditRecordDTO{contractAuditRecord()}}, nil
+}
+
+func contractAuditRecord() portsaudit.AuditRecordDTO {
+	return portsaudit.AuditRecordDTO{
+		Seq: 1, PrevHash: strings.Repeat("0", 64), Hash: strings.Repeat("1", 64),
+		EventJSON: []byte(`{"schemaVersion":"1.0","eventId":"contract-audit-event","occurredAt":"2026-10-10T00:00:00Z","requestId":"contract-audit-request","producer":{"component":"BROKER","instanceId":"contract-cluster/node-1","version":"1.0.0"},"actor":{"subject":"management-bearer-token","roles":["ClusterAdmin"]},"action":"cluster.member.stage","target":{"type":"cluster_member","id":"4"},"result":"ALLOWED","reason":"succeeded"}`),
+	}
 }
 
 type contractAuditUseCase struct{}
@@ -570,7 +620,8 @@ func contractRebalanceOperation(idempotencyKey string, phase connrebalance.Phase
 }
 
 func expectedOperationSet() []string {
-	fixtures := append(managementOperationFixtures(), membershipOperationFixtures()...)
+	fixtures := append(managementOperationFixtures(), auditQueryOperationFixture())
+	fixtures = append(fixtures, membershipOperationFixtures()...)
 	fixtures = append(fixtures, backupOperationFixtures()...)
 	fixtures = append(fixtures, drainOperationFixtures()...)
 	fixtures = append(fixtures, connectionRebalanceOperationFixtures()...)
@@ -650,6 +701,45 @@ func TestManagementHandlerResponsesMatchOpenAPI(t *testing.T) {
 		})
 	}
 }
+
+// Traceability: SEC-10/API-08; docs/specs/management-api-and-observability.md §1, §9; docs/specs/tenancy-and-security.md §6.
+func TestAuditQueryHandlerResponsesMatchOpenAPI(t *testing.T) {
+	_, router := loadManagementContract(t)
+	queryService, err := audit.NewQueryService(contractAuditRecordReader{})
+	if err != nil {
+		t.Fatalf("NewQueryService() error = %v", err)
+	}
+	handler := clusterManagementContractHandlerWithServices(
+		managementhttp.ServerConfig{ClusterID: "contract-cluster", AuthToken: "contract-token"},
+		contractRebalanceService{}, queryService,
+	)
+	fixture := auditQueryOperationFixture()
+	request := newContractRequest(fixture)
+	input, options := findContractRoute(t, router, request)
+	if input.Route.Operation.OperationID != fixture.operationID {
+		t.Fatalf("runtime fixture matched operation %q, want %q", input.Route.Operation.OperationID, fixture.operationID)
+	}
+	if err := openapi3filter.ValidateRequest(context.Background(), input); err != nil {
+		t.Fatalf("validate audit query request: %v", err)
+	}
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("audit query status=%d body=%q, want %d", response.Code, response.Body.String(), http.StatusOK)
+	}
+	validateResponse(t, input, options, response)
+
+	invalidRequest := httptest.NewRequest(http.MethodGet, contractServerURL+"/api/v1/audit/events?result=UNKNOWN", nil)
+	invalidRequest.Header.Set("Authorization", "Bearer contract-token")
+	invalidInput, invalidOptions := findContractRoute(t, router, invalidRequest)
+	invalidResponse := httptest.NewRecorder()
+	handler.ServeHTTP(invalidResponse, invalidRequest)
+	if invalidResponse.Code != http.StatusBadRequest {
+		t.Fatalf("invalid audit result status=%d body=%q, want %d", invalidResponse.Code, invalidResponse.Body.String(), http.StatusBadRequest)
+	}
+	validateResponse(t, invalidInput, invalidOptions, invalidResponse)
+}
+
 func TestMembershipHandlerResponsesMatchOpenAPI(t *testing.T) {
 	_, router := loadManagementContract(t)
 	handler := clusterManagementContractHandler()
@@ -792,7 +882,7 @@ func TestClusterFeatureHandlerResponsesMatchOpenAPI(t *testing.T) {
 	}
 }
 
-// Traceability: API-02; docs/specs/management-api-and-observability.md §9.
+// Traceability: API-02/SEC-10; docs/specs/management-api-and-observability.md §9; docs/specs/tenancy-and-security.md §6.
 func TestManagementOperationSetMatchesOpenAPI(t *testing.T) {
 	doc, _ := loadManagementContract(t)
 	got := documentOperationSet(doc)
@@ -924,14 +1014,14 @@ func TestManagementRateLimitMatchesOpenAPI(t *testing.T) {
 	}
 }
 
-// Traceability: PRD API-05; docs/specs/management-api-and-observability.md §9.
+// Traceability: API-05/SEC-10; docs/specs/management-api-and-observability.md §1.5; docs/specs/tenancy-and-security.md §6.
 func TestManagementAuthorizationMatchesOpenAPI(t *testing.T) {
 	_, router := loadManagementContract(t)
-	handler := contractHandler(managementhttp.ServerConfig{
-		AuthToken:     "bearer-secret",
-		AuthTokenRole: managementhttp.RoleReadOnly,
-		APIKey:        "api-secret",
-		APIKeyRole:    managementhttp.RoleReadOnly,
+	handler := clusterManagementContractHandlerWithConfig(managementhttp.ServerConfig{
+		ClusterID:   "contract-cluster",
+		AuthToken:   "bearer-secret",
+		APIKeys:     []managementhttp.APIKeyCredential{{ID: "dashboard", Key: "api-secret", Roles: []managementhttp.Role{managementhttp.RoleReadOnly}}},
+		RequestRate: managementhttp.MaxRequestRate, AuthFailureRate: managementhttp.MaxRequestRate,
 	})
 
 	cases := []struct {
@@ -945,7 +1035,8 @@ func TestManagementAuthorizationMatchesOpenAPI(t *testing.T) {
 		{name: "wrong bearer", path: "/api/v1/cluster", headerName: "Authorization", header: "Bearer wrong", wantStatus: http.StatusUnauthorized},
 		{name: "bearer success", path: "/api/v1/cluster", headerName: "Authorization", header: "Bearer bearer-secret", wantStatus: http.StatusOK},
 		{name: "api key success", path: "/api/v1/cluster", headerName: "X-API-Key", header: "api-secret", wantStatus: http.StatusOK},
-		{name: "insufficient role", path: "/api/v1/tenants", headerName: "Authorization", header: "Bearer bearer-secret", wantStatus: http.StatusForbidden},
+		{name: "api key insufficient audit role", path: "/api/v1/audit/events?limit=1", headerName: "X-API-Key", header: "api-secret", wantStatus: http.StatusForbidden},
+		{name: "break-glass audit access", path: "/api/v1/audit/events?limit=1", headerName: "Authorization", header: "Bearer bearer-secret", wantStatus: http.StatusOK},
 	}
 	for _, testCase := range cases {
 		t.Run(testCase.name, func(t *testing.T) {

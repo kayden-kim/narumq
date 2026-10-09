@@ -29,8 +29,8 @@ func (stub *clusterBackupProviderStub) CaptureClusterBackup(context.Context) (po
 
 func newBackupHTTPTestHandler(provider ports.ClusterBackupProvider, role Role) http.Handler {
 	return newRouter(
-		ServerConfig{AuthToken: "cluster-secret", AuthTokenRole: role, ClusterID: "test-cluster"},
-		&mockStateProvider{}, nil, nil, nil, nil, nil, provider, &spyAuditUseCase{},
+		ServerConfig{APIKeys: []APIKeyCredential{{ID: "test", Key: "cluster-secret", Roles: []Role{role}}}, ClusterID: "test-cluster"},
+		&mockStateProvider{}, nil, nil, nil, nil, nil, provider, &spyAuditUseCase{}, nil,
 	)
 }
 
@@ -43,7 +43,7 @@ func TestClusterBackupHTTPStreamsArchiveAndBoundaryHeaders(t *testing.T) {
 	}}
 	handler := newBackupHTTPTestHandler(provider, RoleClusterAdmin)
 	request := httptest.NewRequest(http.MethodPost, "/api/v1/cluster/backups", nil)
-	request.Header.Set("Authorization", "Bearer cluster-secret")
+	request.Header.Set("X-API-Key", "cluster-secret")
 	request.Header.Set(HeaderRequestID, "backup-request-42")
 	response := httptest.NewRecorder()
 
@@ -82,7 +82,7 @@ func TestClusterBackupHTTPRequiresClusterAdmin(t *testing.T) {
 	provider := &clusterBackupProviderStub{}
 	handler := newBackupHTTPTestHandler(provider, RoleReadOnly)
 	request := httptest.NewRequest(http.MethodPost, "/api/v1/cluster/backups", nil)
-	request.Header.Set("Authorization", "Bearer cluster-secret")
+	request.Header.Set("X-API-Key", "cluster-secret")
 	response := httptest.NewRecorder()
 
 	handler.ServeHTTP(response, request)
@@ -100,10 +100,11 @@ func TestReadOnlyAPIKeyCanReadButCannotCreateBackup(t *testing.T) {
 	provider := &clusterBackupProviderStub{backup: ports.ClusterBackupDTO{CommitIndex: 42}}
 	handler := NewRouterWithMembership(
 		ServerConfig{
-			AuthToken: "admin-secret", AuthTokenRole: RoleClusterAdmin,
-			APIKey: "read-only-secret", APIKeyRole: RoleReadOnly, ClusterID: "test-cluster",
+			AuthToken: "admin-secret",
+			APIKeys:   []APIKeyCredential{{ID: "dashboard", Key: "read-only-secret", Roles: []Role{RoleReadOnly}}},
+			ClusterID: "test-cluster",
 		},
-		&mockStateProvider{}, nil, adaptersmetrics.NewRegistry(), nil, nil, nil, provider, &spyAuditUseCase{},
+		&mockStateProvider{}, nil, adaptersmetrics.NewRegistry(), nil, nil, nil, provider, &spyAuditUseCase{}, nil,
 	)
 
 	for _, path := range []string{"/metrics", "/api/v1/cluster"} {
@@ -146,7 +147,7 @@ func TestClusterBackupHTTPRejectsWrongMethodAndRequestBody(t *testing.T) {
 		httptest.NewRequest(http.MethodPost, "/api/v1/cluster/backups", strings.NewReader("unexpected")),
 		chunkedBody,
 	} {
-		request.Header.Set("Authorization", "Bearer cluster-secret")
+		request.Header.Set("X-API-Key", "cluster-secret")
 		response := httptest.NewRecorder()
 		handler.ServeHTTP(response, request)
 		wantStatus := http.StatusMethodNotAllowed
@@ -168,7 +169,7 @@ func TestClusterBackupHTTPAcceptsEmptyChunkedRequest(t *testing.T) {
 	request := httptest.NewRequest(http.MethodPost, "/api/v1/cluster/backups", strings.NewReader(""))
 	request.ContentLength = -1
 	request.TransferEncoding = []string{"chunked"}
-	request.Header.Set("Authorization", "Bearer cluster-secret")
+	request.Header.Set("X-API-Key", "cluster-secret")
 	response := httptest.NewRecorder()
 
 	handler.ServeHTTP(response, request)
@@ -195,7 +196,7 @@ func TestClusterBackupHTTPReportsUnavailableAndInternalErrors(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			handler := newBackupHTTPTestHandler(&clusterBackupProviderStub{err: test.err}, RoleClusterAdmin)
 			request := httptest.NewRequest(http.MethodPost, "/api/v1/cluster/backups", nil)
-			request.Header.Set("Authorization", "Bearer cluster-secret")
+			request.Header.Set("X-API-Key", "cluster-secret")
 			response := httptest.NewRecorder()
 			handler.ServeHTTP(response, request)
 			if response.Code != test.wantStatus {
@@ -226,7 +227,7 @@ func TestClusterBackupHTTPAcceptsUnknownLengthWithoutBodyReader(t *testing.T) {
 	request.ContentLength = -1
 	request.TransferEncoding = []string{"chunked"}
 	request.Body = nil
-	request.Header.Set("Authorization", "Bearer cluster-secret")
+	request.Header.Set("X-API-Key", "cluster-secret")
 	response := httptest.NewRecorder()
 
 	handler.ServeHTTP(response, request)

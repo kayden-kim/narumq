@@ -29,6 +29,7 @@ func serveRateLimitRequest(handler http.Handler, path, bearer, apiKey, remoteAdd
 	request := httptest.NewRequest(http.MethodGet, path, nil)
 	if bearer != "" {
 		request.Header.Set("Authorization", "Bearer "+bearer)
+		request.Header.Set("X-API-Key", bearer)
 	}
 	if apiKey != "" {
 		request.Header.Set("X-API-Key", apiKey)
@@ -81,7 +82,7 @@ func TestRateLimitSeparatesPrincipalsAndAuthFailures(t *testing.T) {
 	clock := &rateLimitTestClock{now: time.Unix(1_800_000_000, 0)}
 	handler := NewRouter(ServerConfig{
 		AuthToken:       "bearer-secret",
-		APIKey:          "api-key-secret",
+		APIKeys:         []APIKeyCredential{{ID: "test", Key: "api-key-secret", Roles: []Role{RoleReadOnly}}},
 		RequestRate:     1,
 		AuthFailureRate: 1,
 		Clock:           clock,
@@ -149,10 +150,9 @@ func TestRateLimitExcludesProbesAndMetrics(t *testing.T) {
 func TestRateLimitForbiddenConsumesPrincipalToken(t *testing.T) {
 	clock := &rateLimitTestClock{now: time.Unix(1_800_000_000, 0)}
 	handler := NewRouter(ServerConfig{
-		AuthToken:     "read-only-secret",
-		AuthTokenRole: RoleReadOnly,
-		RequestRate:   1,
-		Clock:         clock,
+		APIKeys:     []APIKeyCredential{{ID: "test", Key: "read-only-secret", Roles: []Role{RoleReadOnly}}},
+		RequestRate: 1,
+		Clock:       clock,
 	}, &mockStateProvider{}, &mockHealthChecker{liveStatus: ports.HealthStatusUp}, nil)
 
 	if response := serveRateLimitRequest(handler, "/api/v1/tenants", "read-only-secret", "", "192.0.2.10:1234"); response.Code != http.StatusForbidden {
@@ -169,22 +169,21 @@ func TestRateLimitedMutationIsAuditedAndNotExecuted(t *testing.T) {
 	clock := &rateLimitTestClock{now: time.Unix(1_800_000_000, 0)}
 	spy := &spyAuditUseCase{}
 	auth := NewAuthenticator(AuthConfig{
-		AuthToken:       "bearer-secret",
-		AuthTokenRole:   RoleOperator,
+		APIKeys:         []APIKeyCredential{{ID: "test", Key: "bearer-secret", Roles: []Role{RoleOperator}}},
 		Audit:           spy,
 		RequestRate:     1,
 		AuthFailureRate: 1,
 		Clock:           clock,
 	})
 	calls := 0
-	handler := auth.RequireMutationRole(RoleOperator, auditMutation{action: "node.drain.start", targetType: "node"}, func(w http.ResponseWriter, r *http.Request) {
+	handler := auth.RequireMutationPermission(PermissionOperate, auditMutation{action: "node.drain.start", targetType: "node"}, func(w http.ResponseWriter, r *http.Request) {
 		calls++
 		w.WriteHeader(http.StatusAccepted)
 	})
 
 	for index, wantStatus := range []int{http.StatusAccepted, http.StatusTooManyRequests} {
 		request := httptest.NewRequest(http.MethodPost, "/api/v1/nodes/1/drain", nil)
-		request.Header.Set("Authorization", "Bearer bearer-secret")
+		request.Header.Set("X-API-Key", "bearer-secret")
 		request.RemoteAddr = "192.0.2.10:1234"
 		response := httptest.NewRecorder()
 		handler(response, request)
@@ -199,7 +198,7 @@ func TestRateLimitedMutationIsAuditedAndNotExecuted(t *testing.T) {
 		t.Fatalf("audit events = %d, want 2: %+v", len(spy.commands), spy.commands)
 	}
 	event := spy.commands[len(spy.commands)-1]
-	if event.Action != "management.request" || event.Result != portsaudit.AuditResultDenied || event.Reason != "rate_limited" || event.Details["httpStatus"] != http.StatusTooManyRequests || event.Actor.Subject != "management-bearer-token" {
+	if event.Action != "management.request" || event.Result != portsaudit.AuditResultDenied || event.Reason != "rate_limited" || event.Details["httpStatus"] != http.StatusTooManyRequests || event.Actor.Subject != "apikey:test" {
 		t.Fatalf("rate-limited mutation audit event = %+v", event)
 	}
 
@@ -210,7 +209,7 @@ func TestRateLimitedMutationIsAuditedAndNotExecuted(t *testing.T) {
 		AuthFailureRate: 1,
 		Clock:           clock,
 	})
-	failureHandler := failureAuth.RequireRole(RoleReadOnly, func(http.ResponseWriter, *http.Request) {})
+	failureHandler := failureAuth.RequirePermission(PermissionRead, func(http.ResponseWriter, *http.Request) {})
 	for index, wantStatus := range []int{http.StatusUnauthorized, http.StatusTooManyRequests} {
 		request := httptest.NewRequest(http.MethodGet, "/api/v1/cluster", nil)
 		request.Header.Set("Authorization", "Bearer invalid")

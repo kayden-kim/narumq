@@ -457,9 +457,24 @@ func runClusterMode(ctx context.Context, config clusterConfigFile, logger *slog.
 	runtime.managementState = baseManagement
 	stateProvider := &clusterStateProvider{StateProvider: baseManagement, runtime: runtime}
 	healthChecker := &clusterHealthChecker{HealthChecker: baseManagement, runtime: runtime}
-	adminToken, readOnlyAPIKey, err := loadClusterManagementCredentials(config.Management)
+	credentials, err := loadClusterManagementCredentials(config.Management)
 	if err != nil {
 		return err
+	}
+	var oidcConfig *adaptershttp.OIDCConfig
+	if credentials.OIDCVerifier != nil {
+		verifierConfig := *credentials.OIDCVerifier
+		verifierConfig.HTTPClient = &http.Client{Timeout: verifierConfig.HTTPTimeout}
+		verifierConfig.Clock = systemClock
+		verifier, err := authenticationadapter.NewJWTVerifier(verifierConfig)
+		if err != nil {
+			return fmt.Errorf("create management OIDC verifier: %w", err)
+		}
+		oidcConfig = &adaptershttp.OIDCConfig{Verifier: verifier, Identities: credentials.OIDCIdentities}
+	}
+	auditQueryService, err := audit.NewQueryService(auditPublisher)
+	if err != nil {
+		return fmt.Errorf("create management audit query service: %w", err)
 	}
 	requestRate := 0
 	if config.Management.RequestRate != nil {
@@ -470,12 +485,12 @@ func runClusterMode(ctx context.Context, config clusterConfigFile, logger *slog.
 		authFailureRate = *config.Management.AuthFailureRate
 	}
 	managementServer := adaptershttp.NewServerWithMembership(adaptershttp.ServerConfig{
-		ListenAddr: managementListener.Addr().String(), AuthToken: adminToken,
-		AuthTokenRole: adaptershttp.RoleClusterAdmin, APIKey: readOnlyAPIKey, APIKeyRole: adaptershttp.RoleReadOnly,
+		ListenAddr: managementListener.Addr().String(), AuthToken: credentials.AdminToken,
+		APIKeys: credentials.APIKeys, OIDC: oidcConfig,
 		AllowAnonymousProbes: true,
 		RequestRate:          requestRate, AuthFailureRate: authFailureRate, Clock: systemClock,
 		ClusterID: config.ClusterID, Logger: logger,
-	}, stateProvider, healthChecker, metricsRegistry, membershipService, drainService, rebalanceService, runtime, auditService)
+	}, stateProvider, healthChecker, metricsRegistry, membershipService, drainService, rebalanceService, runtime, auditService, auditQueryService)
 	return runtime.serve(ctx, mqttServer, managementServer, managementListener)
 }
 

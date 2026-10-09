@@ -259,58 +259,69 @@ func validateAuthenticationConfig(
 	return jwtConfig, passwordBindings, mtlsBindings, nil
 }
 
-func validateJWTAndIdentities(
-	jwt *rawJWTConfig,
-	identities []rawIdentityConfig,
-	seenCredentialIDs map[string]struct{},
-) (*authenticationadapter.Config, error) {
+func validateJWTVerifierConfig(prefix string, jwt *rawJWTConfig) (authenticationadapter.VerifierConfig, error) {
 	if jwt.Issuer == "" {
-		return nil, errors.New("jwt.issuer is required")
+		return authenticationadapter.VerifierConfig{}, fmt.Errorf("%s.issuer is required", prefix)
 	}
 	if jwt.Audience == "" {
-		return nil, errors.New("jwt.audience is required")
+		return authenticationadapter.VerifierConfig{}, fmt.Errorf("%s.audience is required", prefix)
 	}
 	if len(jwt.Algorithms) == 0 {
-		return nil, errors.New("jwt.algorithms is required")
+		return authenticationadapter.VerifierConfig{}, fmt.Errorf("%s.algorithms is required", prefix)
 	}
 	seenAlgs := make(map[string]struct{}, len(jwt.Algorithms))
 	for _, alg := range jwt.Algorithms {
 		if alg == "" {
-			return nil, errors.New("jwt algorithm must not be empty")
+			return authenticationadapter.VerifierConfig{}, fmt.Errorf("%s algorithm must not be empty", prefix)
 		}
 		if _, exists := seenAlgs[alg]; exists {
-			return nil, fmt.Errorf("duplicate jwt algorithm %q", alg)
+			return authenticationadapter.VerifierConfig{}, fmt.Errorf("duplicate %s algorithm %q", prefix, alg)
 		}
 		seenAlgs[alg] = struct{}{}
 	}
 
 	parsedURL, err := url.Parse(jwt.JWKSURL)
 	if err != nil || !parsedURL.IsAbs() || parsedURL.Host == "" {
-		return nil, errors.New("jwt.jwksUrl must be an absolute URL")
+		return authenticationadapter.VerifierConfig{}, fmt.Errorf("%s.jwksUrl must be an absolute URL", prefix)
 	}
 	if parsedURL.Scheme != "https" {
 		if parsedURL.Scheme != "http" || !isLoopbackHost(parsedURL.Hostname()) {
-			return nil, errors.New("jwt.jwksUrl must be HTTPS or loopback HTTP")
+			return authenticationadapter.VerifierConfig{}, fmt.Errorf("%s.jwksUrl must be HTTPS or loopback HTTP", prefix)
 		}
 	}
 
-	cacheTTL, err := parsePositiveDuration("jwt.cacheTtl", jwt.CacheTTL)
+	cacheTTL, err := parsePositiveDuration(prefix+".cacheTtl", jwt.CacheTTL)
 	if err != nil {
-		return nil, err
+		return authenticationadapter.VerifierConfig{}, err
 	}
-	refreshCooldown, err := parsePositiveDuration("jwt.refreshCooldown", jwt.RefreshCooldown)
+	refreshCooldown, err := parsePositiveDuration(prefix+".refreshCooldown", jwt.RefreshCooldown)
 	if err != nil {
-		return nil, err
+		return authenticationadapter.VerifierConfig{}, err
 	}
-	clockSkew, err := parsePositiveDuration("jwt.clockSkew", jwt.ClockSkew)
+	clockSkew, err := parsePositiveDuration(prefix+".clockSkew", jwt.ClockSkew)
 	if err != nil {
-		return nil, err
+		return authenticationadapter.VerifierConfig{}, err
 	}
-	httpTimeout, err := parsePositiveDuration("jwt.httpTimeout", jwt.HTTPTimeout)
+	httpTimeout, err := parsePositiveDuration(prefix+".httpTimeout", jwt.HTTPTimeout)
 	if err != nil {
-		return nil, err
+		return authenticationadapter.VerifierConfig{}, err
 	}
+	return authenticationadapter.VerifierConfig{
+		Issuer: jwt.Issuer, Audience: jwt.Audience, Algorithms: append([]string(nil), jwt.Algorithms...),
+		JWKSURL: jwt.JWKSURL, CacheTTL: cacheTTL, RefreshCooldown: refreshCooldown,
+		ClockSkew: clockSkew, HTTPTimeout: httpTimeout,
+	}, nil
+}
 
+func validateJWTAndIdentities(
+	jwt *rawJWTConfig,
+	identities []rawIdentityConfig,
+	seenCredentialIDs map[string]struct{},
+) (*authenticationadapter.Config, error) {
+	verifierConfig, err := validateJWTVerifierConfig("jwt", jwt)
+	if err != nil {
+		return nil, err
+	}
 	if len(identities) == 0 {
 		return nil, errors.New("identities must contain at least one binding")
 	}
@@ -319,7 +330,6 @@ func validateJWTAndIdentities(
 	}
 	bindings := make([]authenticationadapter.IdentityBinding, len(identities))
 	seenSubjects := make(map[string]struct{}, len(identities))
-
 	for i, id := range identities {
 		if id.Issuer != jwt.Issuer {
 			return nil, fmt.Errorf("identity issuer %q does not match jwt.issuer %q", id.Issuer, jwt.Issuer)
@@ -331,12 +341,10 @@ func validateJWTAndIdentities(
 			return nil, fmt.Errorf("duplicate identity subject %q", id.Subject)
 		}
 		seenSubjects[id.Subject] = struct{}{}
-
 		tenantID, err := tenancy.NewTenantID(id.TenantID)
 		if err != nil {
 			return nil, fmt.Errorf("invalid tenant ID %q: %w", id.TenantID, err)
 		}
-
 		if id.CredentialID == "" {
 			return nil, errors.New("identity credentialId is required")
 		}
@@ -344,7 +352,6 @@ func validateJWTAndIdentities(
 			return nil, fmt.Errorf("duplicate credentialId %q", id.CredentialID)
 		}
 		seenCredentialIDs[id.CredentialID] = struct{}{}
-
 		allowedClientIDs, err := validateAllowedClientIDs("identity", id.Subject, id.AllowedClientIDs)
 		if err != nil {
 			return nil, err
@@ -354,25 +361,15 @@ func validateJWTAndIdentities(
 			return nil, err
 		}
 		bindings[i] = authenticationadapter.IdentityBinding{
-			Issuer:           id.Issuer,
-			Subject:          id.Subject,
-			TenantID:         tenantID,
-			CredentialID:     id.CredentialID,
-			AllowedClientIDs: allowedClientIDs,
-			Roles:            roles,
+			Issuer: id.Issuer, Subject: id.Subject, TenantID: tenantID,
+			CredentialID: id.CredentialID, AllowedClientIDs: allowedClientIDs, Roles: roles,
 		}
 	}
-
 	return &authenticationadapter.Config{
-		Issuer:          jwt.Issuer,
-		Audience:        jwt.Audience,
-		Algorithms:      append([]string(nil), jwt.Algorithms...),
-		JWKSURL:         jwt.JWKSURL,
-		CacheTTL:        cacheTTL,
-		RefreshCooldown: refreshCooldown,
-		ClockSkew:       clockSkew,
-		HTTPTimeout:     httpTimeout,
-		Bindings:        bindings,
+		Issuer: verifierConfig.Issuer, Audience: verifierConfig.Audience,
+		Algorithms: verifierConfig.Algorithms, JWKSURL: verifierConfig.JWKSURL,
+		CacheTTL: verifierConfig.CacheTTL, RefreshCooldown: verifierConfig.RefreshCooldown,
+		ClockSkew: verifierConfig.ClockSkew, HTTPTimeout: verifierConfig.HTTPTimeout, Bindings: bindings,
 	}, nil
 }
 

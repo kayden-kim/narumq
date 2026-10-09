@@ -321,7 +321,7 @@ func TestAuthAndRBAC(t *testing.T) {
 	checker := &mockHealthChecker{liveStatus: ports.HealthStatusUp}
 	cfg := ServerConfig{
 		AuthToken:            "secret-token-123",
-		APIKey:               "api-key-456",
+		APIKeys:              []APIKeyCredential{{ID: "test", Key: "api-key-456", Roles: []Role{RoleReadOnly}}},
 		AllowAnonymousProbes: true,
 	}
 	handler := NewRouter(cfg, provider, checker, nil)
@@ -372,12 +372,11 @@ func TestAuthAndRBAC(t *testing.T) {
 
 func TestRBACReturnsForbiddenForInsufficientRole(t *testing.T) {
 	handler := NewRouter(ServerConfig{
-		AuthToken:     "read-only-token",
-		AuthTokenRole: RoleReadOnly,
+		APIKeys: []APIKeyCredential{{ID: "test", Key: "read-only-token", Roles: []Role{RoleReadOnly}}},
 	}, &mockStateProvider{}, &mockHealthChecker{liveStatus: ports.HealthStatusUp}, nil)
 
 	req := httptest.NewRequest("GET", "/api/v1/tenants", nil)
-	req.Header.Set("Authorization", "Bearer read-only-token")
+	req.Header.Set("X-API-Key", "read-only-token")
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
 	if rec.Code != http.StatusForbidden {
@@ -385,7 +384,7 @@ func TestRBACReturnsForbiddenForInsufficientRole(t *testing.T) {
 	}
 }
 
-func TestManagementCollectionEndpointsAndRoleContext(t *testing.T) {
+func TestManagementCollectionEndpoints(t *testing.T) {
 	leader := "node-1"
 	provider := &mockStateProvider{
 		cluster: ports.ClusterSummaryDTO{
@@ -502,12 +501,6 @@ func TestManagementCollectionEndpointsAndRoleContext(t *testing.T) {
 		t.Fatalf("missing client returned %d, want 404", rec.Code)
 	}
 
-	if got := RoleFromContext(context.Background()); got != RoleNone {
-		t.Fatalf("RoleFromContext(background) = %v, want RoleNone", got)
-	}
-	if got := RoleFromContext(contextWithRole(context.Background(), RoleOperator)); got != RoleOperator {
-		t.Fatalf("RoleFromContext(operator) = %v, want RoleOperator", got)
-	}
 }
 
 func TestManagementMethodAndEnvelopeContracts(t *testing.T) {
@@ -674,15 +667,11 @@ func TestManagementAuthMiddlewareModes(t *testing.T) {
 	nextCalled := false
 	next := func(w http.ResponseWriter, r *http.Request) {
 		nextCalled = true
-		if RoleFromContext(r.Context()) != RoleReadOnly {
-			t.Errorf("middleware role = %v, want read-only", RoleFromContext(r.Context()))
-		}
 		w.WriteHeader(http.StatusNoContent)
 	}
 
 	auth := NewAuthenticator(AuthConfig{
-		AuthToken:     "read-only",
-		AuthTokenRole: RoleReadOnly,
+		APIKeys: []APIKeyCredential{{ID: "readonly", Key: "read-only", Roles: []Role{RoleReadOnly}}},
 	})
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
 	rec := httptest.NewRecorder()
@@ -692,7 +681,7 @@ func TestManagementAuthMiddlewareModes(t *testing.T) {
 	}
 
 	req = httptest.NewRequest(http.MethodGet, "/", nil)
-	req.Header.Set("Authorization", "Bearer read-only")
+	req.Header.Set("X-API-Key", "read-only")
 	rec = httptest.NewRecorder()
 	auth.MaybeAllowMetrics(next)(rec, req)
 	if rec.Code != http.StatusNoContent || !nextCalled {
@@ -700,8 +689,12 @@ func TestManagementAuthMiddlewareModes(t *testing.T) {
 	}
 
 	anonymous := NewAuthenticator(AuthConfig{})
-	if role, ok := anonymous.AuthenticateRequest(httptest.NewRequest(http.MethodGet, "/", nil)); !ok || role != RoleClusterAdmin {
-		t.Fatalf("anonymous auth = (%v, %v), want cluster-admin success", role, ok)
+	anonymousCalled := false
+	anonymous.RequirePermission(PermissionClusterAdmin, func(http.ResponseWriter, *http.Request) {
+		anonymousCalled = true
+	})(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/", nil))
+	if !anonymousCalled {
+		t.Fatal("unauthenticated configuration did not admit ClusterAdmin permission")
 	}
 }
 

@@ -67,8 +67,8 @@ func (stub *membershipServiceStub) ActivateFeature(_ context.Context, feature st
 
 func newMembershipHTTPTestHandler(service MembershipUseCase, role Role) http.Handler {
 	return NewRouterWithMembership(
-		ServerConfig{AuthToken: "cluster-secret", AuthTokenRole: role, ClusterID: "test-cluster"},
-		&mockStateProvider{}, nil, nil, service, nil, nil, nil, &spyAuditUseCase{},
+		ServerConfig{APIKeys: []APIKeyCredential{{ID: "test", Key: "cluster-secret", Roles: []Role{role}}}, ClusterID: "test-cluster"},
+		&mockStateProvider{}, nil, nil, service, nil, nil, nil, &spyAuditUseCase{}, nil,
 	)
 }
 
@@ -78,7 +78,7 @@ func validMemberAdmissionJSON() string {
 
 func membershipRequest(method, path, body string, role Role) *http.Request {
 	request := httptest.NewRequest(method, path, strings.NewReader(body))
-	request.Header.Set("Authorization", "Bearer cluster-secret")
+	request.Header.Set("X-API-Key", "cluster-secret")
 	if body != "" {
 		request.Header.Set("Content-Type", "application/json")
 	}
@@ -146,7 +146,7 @@ func TestMembershipHTTPRejectsNonCanonicalAdmissionJSON(t *testing.T) {
 	for _, testCase := range cases {
 		t.Run(testCase.name, func(t *testing.T) {
 			request := httptest.NewRequest(http.MethodPost, "/api/v1/cluster/members", strings.NewReader(testCase.body))
-			request.Header.Set("Authorization", "Bearer cluster-secret")
+			request.Header.Set("X-API-Key", "cluster-secret")
 			request.Header.Set("Idempotency-Key", "add-member-4")
 			request.Header.Set("Content-Type", testCase.contentType)
 			response := httptest.NewRecorder()
@@ -191,14 +191,14 @@ func TestMembershipHTTPRemovalAndReadOnlyStatusAuthorization(t *testing.T) {
 
 	readOnly := newMembershipHTTPTestHandler(stub, RoleReadOnly)
 	request = httptest.NewRequest(http.MethodGet, "/api/v1/cluster/membership-operations/"+managementOperationID, nil)
-	request.Header.Set("Authorization", "Bearer cluster-secret")
+	request.Header.Set("X-API-Key", "cluster-secret")
 	response = httptest.NewRecorder()
 	readOnly.ServeHTTP(response, request)
 	if response.Code != http.StatusOK || stub.getCalls != 1 || stub.getOperationID != managementOperationID {
 		t.Fatalf("operation read status=%d calls=%d id=%q body=%s", response.Code, stub.getCalls, stub.getOperationID, response.Body.String())
 	}
 	request = httptest.NewRequest(http.MethodPost, "/api/v1/cluster/members", strings.NewReader(validMemberAdmissionJSON()))
-	request.Header.Set("Authorization", "Bearer cluster-secret")
+	request.Header.Set("X-API-Key", "cluster-secret")
 	request.Header.Set("Idempotency-Key", "add-member-4")
 	request.Header.Set("Content-Type", "application/json")
 	response = httptest.NewRecorder()

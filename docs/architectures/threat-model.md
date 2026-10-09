@@ -6,19 +6,19 @@
 | --- | --- |
 | 구조 시점 | Current |
 | 문서 상태 | Draft — 사용자 승인 전 |
-| 구현 대조 | 2026-10-09 자동 사전 시험 통과. [시험 코드](../../tests/integration/cluster_tenant_isolation_pentest_process_test.go), [실행 증거](../specs/tenancy-and-security.md#93-nfr-19-자동-penetration-test-실행-증거) |
+| 구현 대조 | NFR-19 자동 사전 시험은 2026-10-09에, SEC-10 실제 3-node Management RBAC 수용 시험은 2026-10-10에 통과했다. 각각의 실행 결과는 [NFR-19 증거](../specs/tenancy-and-security.md#93-nfr-19-자동-penetration-test-실행-증거)와 [SEC-10 증거](../specs/tenancy-and-security.md#96-sec-10-실행-증거)에 기록한다. |
 | 범위 | MQTT data plane, Management API. Cluster peer transport는 기존 시험만 참조한다. |
 | 코드 지도 | [Project structure](project-structure.md#verification-and-integration-test-entrypoints) |
 | 관련 PRD | [PRD](../requirements/PRD.md) NFR-19, TEN-01~TEN-05, SEC-02/04/06/10/11 |
 | 관련 스펙·계약 | [Tenant와 security §9](../specs/tenancy-and-security.md#9-수용-시험과-범위), [Management API v1](../contracts/management-api-v1.md), [Audit event v1](../contracts/audit-event-v1.md) |
-| 관련 ADR | [ADR-0039](../decisions/ADR-0039-management-audit-log.md), [ADR-0043](../decisions/ADR-0043-management-api-rate-limit.md), [ADR-0046](../decisions/ADR-0046-mqtt-data-plane-denial-audit.md) |
-| 최종 확인일 | 2026-10-09 |
+| 관련 ADR | [ADR-0039](../decisions/ADR-0039-management-audit-log.md), [ADR-0043](../decisions/ADR-0043-management-api-rate-limit.md), [ADR-0046](../decisions/ADR-0046-mqtt-data-plane-denial-audit.md), [ADR-0048](../decisions/ADR-0048-management-api-oidc-api-key-rbac.md) |
+| 최종 확인일 | 2026-10-10 |
 
 ## 1. 범위와 자산
 
 보호 자산은 tenant payload(메시지 본문), retained message, session과 offline queue, Will, subscription 목록, management credential과 JWT다. Session은 재연결 때 복원할 상태다. Will은 연결이 비정상 종료될 때 발행할 메시지다.
 
-공격자는 다른 tenant의 정상 credential 보유자, credential이 없는 network 공격자, ReadOnly key 보유자로 나눈다. MQTT ACL은 두 tenant 모두 넓게 허용한다. 따라서 시험은 ACL 거절이 아니라 tenant 경계가 데이터를 나누는지 확인한다.
+공격자는 다른 tenant의 정상 credential 보유자, credential이 없는 network 공격자, Management API role을 가진 주체로 나눈다. MQTT ACL은 두 tenant 모두 넓게 허용한다. 따라서 MQTT 시험은 ACL 거절이 아니라 tenant 경계가 데이터를 나누는지 확인한다.
 
 아래 화살표는 요청 흐름을 뜻한다. 인증 경계는 외부 credential을 내부 신원으로 바꾸는 지점이다. MQTT 신원과 Management API 신원은 서로 바꿔 쓸 수 없다.
 
@@ -27,14 +27,14 @@ flowchart LR
     Client["다른 tenant client / 무인증 공격자"] --> MQTT["MQTT CONNECT / JWT 검증"]
     MQTT --> Binding["정적 tenant·Client ID binding"]
     Binding --> State["tenant별 session·route·retained·Will"]
-    Manager["무인증 공격자 / ReadOnly key"] --> API["Management 인증·rate limit·role 검사"]
+    Manager["무인증 공격자 / named API key / OIDC / break-glass"] --> API["Management 인증·rate limit·permission 검사"]
     API --> DTO["조회 DTO / 허용된 mutation"]
     API --> Audit["비밀정보를 제외한 node-local 감사"]
 ```
 
 ## 2. 위협 목록
 
-STRIDE는 신원 위장(S), 변조(T), 행위 부인(R), 정보 노출(I), 서비스 거부(D), 권한 상승(E)으로 위협을 나누는 방법이다. 아래 자동 시험 이름은 §3의 시험 함수 안에 있는 subtest다. T-01과 T-05는 같은 입력으로 확인하므로 하나의 subtest를 공유한다. `대응·자동 시험 통과`는 이 사전 시험의 입력 범위에서 통과했다는 뜻이며, 모든 공격에 안전하다는 뜻은 아니다.
+STRIDE는 신원 위장(S), 변조(T), 행위 부인(R), 정보 노출(I), 서비스 거부(D), 권한 상승(E)으로 위협을 나누는 방법이다. T-01~T-19의 공격 이름은 §3 NFR-19 시험의 subtest다. T-20·T-21은 SEC-10 실제 3-node process acceptance에서 확인한다. 자동 시험 통과는 해당 입력 범위에만 적용되며 모든 공격에 안전하다는 뜻은 아니다.
 
 | ID | 경계 | 위협(STRIDE) | 대응 위치 | 검증 | 상태 |
 | --- | --- | --- | --- | --- | --- |
@@ -48,15 +48,17 @@ STRIDE는 신원 위장(S), 변조(T), 행위 부인(R), 정보 노출(I), 서�
 | T-08 | retained → 재구독 | 다른 tenant retained 수신(I) | `(tenant, topic)` retained key, tenant별 replay | `T-08_Retained` | 대응·자동 시험 통과 |
 | T-09 | shared group → delivery | 같은 shared group의 교차 tenant 분배(I) | `internal/domain/routing`의 `{tenant, filter}` cursor key와 tenant별 후보 선택 | `T-09_SharedSubscriptionGroup` | 대응·자동 시험 통과 |
 | T-10 | 종료 → Will 발행 | Will의 교차 tenant 발행(I) | principal snapshot, tenant topic과 `internal/application/publish` | `T-10_Will` | 대응·자동 시험 통과 |
-| T-11 | Management HTTP | 무인증·credential 혼동(S/E) | `internal/adapters/http/management/auth.go`의 `Authenticator.authenticate` | `T-11_UnauthenticatedAndConfusedCredentials` | 대응·자동 시험 통과 |
-| T-12 | ReadOnly → mutation | ReadOnly 권한 상승(E/T) | `RequireRole`, `RequireMutationRole`과 route별 role | `T-12_ReadOnlyEscalation` | 대응·자동 시험 통과 |
+| T-11 | Management HTTP | 무인증·credential 혼동(S/E) | `Authenticator.authenticate`가 named API key, OIDC JWT와 break-glass bearer를 분리한다. | 기존 NFR-19 subtest와 `TestDynamicClusterManagementRBACProcessAcceptance` | 대응·자동 시험 통과 |
+| T-12 | Role → Management action | permission 상승(E/T) | ADR-0048의 명시적 4-role permission matrix와 endpoint별 권한 검사 | `T-12_ReadOnlyEscalation`, `TestPermissionMatrixSeparatesManagementRoles`, `TestDynamicClusterManagementRBACProcessAcceptance` | 대응·자동 시험 통과 |
 | T-13 | 인증 실패 → 요청 처리 | 인증 brute force(D/S) | ADR-0043의 node-local auth-failure bucket | `T-13_AuthFailureBruteForce` | 대응·자동 시험 통과 |
 | T-14 | DTO·metrics·probe·audit | payload·secret 노출(I) | Management DTO, metric label 제한, audit secret 제외 | `T-14_NoPayloadOrSecretExposure` | 대응·자동 시험 통과 |
-| T-15 | Management 조회 | credential에 tenant 범위가 없음(I/E) | 대응 없음 → R-01 | 사전 시험은 credential 유무와 role만 확인한다. | 잔여 위험(R-01) |
-| T-16 | credential → audit actor | 공유 credential의 개인 식별 불가(R) | 대응 없음 → R-02 | ADR-0039의 actor 제약 | 잔여 위험(R-02) |
+| T-15 | Management 조회 | role에 tenant 범위가 없음(I/E) | 대응 없음 → R-01 | SEC-10 process acceptance는 role만 검증하며 tenant-delegated access는 제공하지 않는다. | 잔여 위험(R-01) |
+| T-16 | credential → audit actor | 공유 credential의 개인 식별 불가(R) | named API key id와 OIDC subject는 actor에 기록한다. 공유 API key와 break-glass bearer는 개인을 식별하지 못한다. | `TestDynamicClusterManagementRBACProcessAcceptance` | 잔여 위험(R-02) |
 | T-17 | 공유 자원 | noisy neighbor(D) | TEN-06/07 한도는 있으나 p99 수용 기준은 미정 → R-03 | 기존 tenant limit 시험. 지연 기준은 검증하지 않는다. | 잔여 위험(R-03) |
 | T-18 | cluster peer | 비인가 node(S/E) | `internal/adapters/tcp`의 mTLS·peer identity 검증 | [TestRaftPeerTransportRejectsUnauthenticatedAndMalformedPeers](../../tests/integration/raft_peer_transport_test.go) — 이번 공격 범위 밖 | 대응·기존 시험 |
 | T-19 | MQTT 거절 → audit | data-plane 거절 감사 누락(R) | [ADR-0046](../decisions/ADR-0046-mqtt-data-plane-denial-audit.md)의 bounded fail-open recorder와 node-local hash chain | [`TestDynamicClusterMQTTDenialAuditProcessAcceptance`](../../tests/integration/cluster_audit_process_test.go) | 대응·자동 시험 통과 |
+| T-20 | OIDC JWT → Management role | JWT role claim으로 권한 상승(S/E) | OIDC 권한은 JWT claim이 아니라 설정된 subject-role binding에서만 가져온다. | `TestDynamicClusterManagementRBACProcessAcceptance`에서 ClusterAdmin claim이 있는 SecurityAdmin의 cluster-admin mutation `403`을 확인한다. | 대응·자동 시험 통과 |
+| T-21 | Audit query → stored event | 비인가 조회 또는 query가 저장 record를 변경(I/T) | `GET /api/v1/audit/events`는 SecurityAdmin·ClusterAdmin 전용이고 stored record를 읽기만 한다. | `TestAuditQueryHandlerResponsesMatchOpenAPI`, `TestAuditQueryReturnsStoredChainRecords`, `TestDynamicClusterManagementRBACProcessAcceptance`가 권한·저장 record 반환을 확인한다. | 대응·자동 시험 통과 |
 
 ## 3. 자동 penetration test
 
@@ -82,9 +84,9 @@ go test ./tests/integration -run '^TestDynamicClusterTenantIsolationPenetrationP
 
 - 이번 자동 시험은 loopback MQTT 3.1.1과 Management HTTP를 사용한다. Production NLB와 TLS termination, secret 저장소, Kubernetes, MQTT 3.1.0, WebSocket은 시험 범위 밖이다.
 - MQTT client mTLS와 cluster peer transport는 기존 시험을 참조한다. 이번 공격 입력으로 다시 검증한 것은 아니다.
-- Management credential은 tenant별 MQTT credential과 다르다. 현재 ReadOnly·admin 조회는 tenant 위임 권한을 제공하지 않는다. 조회에서 tenant를 고르는 query는 접근 권한을 제한하는 장치가 아니다.
+- Management API credential은 tenant별 MQTT credential과 다르다. Management role은 cluster-wide이며 tenant 위임 권한을 제공하지 않는다. Tenant filter는 응답 범위를 고를 뿐 접근 권한을 제한하지 않는다. Audit query도 요청을 처리하는 node의 record만 반환한다.
 - 1초 quiet 검사는 제한된 관찰 구간이다. 장기 부하, 자원 고갈, production 지연 목표를 증명하지 않는다.
-- 테스트 helper만 바꾼다. Broker runtime, 설정 계약과 ACL 정책은 변경하지 않는다.
+- SEC-10 process acceptance는 test OIDC issuer를 사용해 실제 3-node cluster의 credential·role·audit-query 흐름을 확인한다. Production IdP, TLS termination, secret store와 Kubernetes integration은 검증하지 않는다.
 
 ## 5. 잔여 위험
 
@@ -92,10 +94,10 @@ go test ./tests/integration -run '^TestDynamicClusterTenantIsolationPenetrationP
 
 | ID | 내용 | 영향 | 결정 주체·연결 항목 | 상태 |
 | --- | --- | --- | --- | --- |
-| R-01 | ReadOnly·admin credential은 모든 tenant의 client·subscription·retained metadata를 조회한다. | Tenant 위임 관리로 사용할 수 없으며 다른 tenant의 metadata가 보인다. | 사용자·제품/보안 담당: SEC-10, API-07, UI-06~09 | 위험 승인 대기 |
-| R-02 | 공유 credential은 actor를 개인으로 식별하지 못한다. | 개인별 책임 추적과 권한 폐기가 제한된다. | 사용자·보안 담당: SEC-10 | 위험 승인 대기 |
+| R-01 | Management read permission은 tenant 범위로 나뉘지 않는다. 읽기 권한이 있는 주체는 모든 tenant의 client·subscription·retained metadata를 조회할 수 있다. | Tenant 위임 관리로 사용할 수 없으며 다른 tenant의 metadata가 보인다. | 사용자·제품/보안 담당: SEC-10, API-07, UI-06~09 | 위험 승인 대기 |
+| R-02 | 공유 API key와 break-glass bearer는 actor를 개인으로 식별하지 못한다. Named key id와 OIDC subject는 credential/subject 단위 추적만 제공한다. | 공유 credential 사용 시 개인별 책임 추적과 권한 폐기가 제한된다. | 사용자·보안 담당: SEC-10 | 위험 승인 대기 |
 | R-03 | TEN-09의 다른 tenant p99 한도가 정해지지 않았다. | 한 tenant의 부하가 다른 tenant 지연에 미치는 영향을 합격으로 판정할 수 없다. | 사용자·성능 담당: TEN-09 | 위험 승인 대기 |
-| R-04 | MQTT data-plane 거절 감사가 구현되지 않은 상태(해결 전) | 해결 전에는 CONNECT·ACL 거절의 감사 추적이 빠진다. | SEC-11, ADR-0046; 3-process acceptance 통과 | 해소(자동 시험 통과) |
+| R-04 | MQTT denial audit는 초당 20건·queue 256 bounded fail-open이다. 한도 초과·queue 포화·종료 중 event는 저장하지 않고 metric으로 센다. | 해당 조건에서 audit history가 누락될 수 있지만 MQTT 응답은 바뀌지 않는다. | SEC-11, ADR-0046; [`TestDynamicClusterMQTTDenialAuditProcessAcceptance`](../../tests/integration/cluster_audit_process_test.go) | 해소: 구현된 제한 동작과 metric이 process acceptance로 확인됨 |
 | R-05 | Credential·인증서 회전과 폐기, 기존 연결 재인증이 없다. | 탈취 credential과 기존 연결의 권한을 운영 중 회수하는 기준이 없다. JWT/JWKS cache 동작 시험만으로 이 요구를 충족하지 않는다. | 사용자·보안 담당: SEC-07 | 위험 승인 대기 |
 | R-06 | 인증 실패 bucket은 `RemoteAddr` host 기준이다. Proxy·NAT 뒤에서 bucket을 공유한다. | 서로 다른 공격자·정상 사용자의 인증 실패가 같은 한도를 소모한다. | 사용자·배포/보안 담당: ADR-0043 | 위험 승인 대기 |
 | R-07 | 독립 penetration test와 production 환경 시험을 하지 않았다. | 저장소 사전 시험 밖의 공격과 배포 경계는 확인하지 못했다. | 사용자·출시/보안 담당: NFR-19 | 위험 승인 대기 |

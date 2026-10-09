@@ -6,7 +6,7 @@ path, parameter, response schema와 media type은
 
 | 항목 | 값 |
 | --- | --- |
-| 이름과 version | `narumq-management-api` 1.9.0 |
+| 이름과 version | `narumq-management-api` 1.10.0 |
 | 상태 | Active |
 | Producer | NaruMQ broker management API |
 | Consumer | Dashboard·operator·monitoring integration의 query client |
@@ -15,7 +15,7 @@ path, parameter, response schema와 media type은
 | 기준 spec | [Management API와 observability](../specs/management-api-and-observability.md) |
 | 관련 Architecture | [System overview](../architectures/system-overview.md), [Security boundaries](../architectures/security-boundaries.md) |
 | 관련 requirement | API-02, API-04~API-09, SEC-10~SEC-11 |
-| 관련 결정 | [ADR-0005](../decisions/ADR-0005-management-api-contract-format.md), [ADR-0018](../decisions/ADR-0018-release-compatibility-window.md), [ADR-0043](../decisions/ADR-0043-management-api-rate-limit.md) |
+| 관련 결정 | [ADR-0005](../decisions/ADR-0005-management-api-contract-format.md), [ADR-0018](../decisions/ADR-0018-release-compatibility-window.md), [ADR-0043](../decisions/ADR-0043-management-api-rate-limit.md), [ADR-0048](../decisions/ADR-0048-management-api-oidc-api-key-rbac.md) |
 | 호환성 범위 | `/api/v1` query producer와 v1 query consumer |
 | 검증 | `tests/contracts/management-api-v1`와 `tests/integration/management_api_test.go` |
 
@@ -46,6 +46,7 @@ path, parameter, response schema와 media type은
 | GET | `/api/v1/subscriptions` | subscription list |
 | GET | `/api/v1/retained` | retained metadata list |
 | GET | `/api/v1/tenants` | tenant list |
+| GET | `/api/v1/audit/events` | node-local audit hash-chain record 조회 (SecurityAdmin·ClusterAdmin) |
 
 Version 1.5.0은 cluster feature 조회와 activation을 active contract에 추가한다. 조회는 `ReadOnly`, activation은 `ClusterAdmin`을 요구하며 dynamic cluster mode에서 제공된다. 이 catalog에 없는 path를 client가 호출할 수 있다는 계약은 없다.
 
@@ -55,20 +56,23 @@ Version 1.7.0은 `POST/GET/DELETE /api/v1/cluster/rebalance`를 추가한다. Op
 
 ## 2. Authentication과 authorization
 
-- API resource(`/api/v1/**`)는 configured opaque `Authorization: Bearer <token>` 또는
-  `X-API-Key` API key를 사용한다.
-- Cluster mode에서 `management.readOnlyApiKeyFile`을 지정하면 파일의 앞뒤 공백을
-  제거한 값이 `X-API-Key` credential이며 `ReadOnly` role을 가진다. 파일 형식과
-  시작 시 검증은 [Raft membership v2 §1.4](raft-membership-v2.md#14-통합-클러스터-구성)를 따른다.
-- 이 contract는 OIDC issuer discovery, JWT signature, claim semantics, token scope 또는
-  API key 발급 형식을 약속하지 않는다. 입력 credential은 configured opaque value와
-  비교된다.
-- API query operation과 node drain GET, cluster feature GET은 `ReadOnly`; node drain POST/DELETE는 `Operator`를 요구한다. Tenant list, cluster backup과 cluster feature POST는 `ClusterAdmin` role을 요구한다.
-- Health probe와 `/metrics`의 익명 허용 여부는 listener configuration이다. OpenAPI의
-  security scheme은 보호된 배포를 기술하고, local development의 anonymous policy를
-  제거하지 않는다.
-- 모든 HTTP response는 `X-Request-Id`를 반환한다. 요청 header가 유효하면 같은 값을
-  사용하고, 아니면 서버가 opaque 값을 생성한다.
+- Cluster mode의 break-glass `Authorization: Bearer <token>`은 `management.clusterAdminTokenFile`에서 읽은 opaque token이며 항상 `ClusterAdmin` 권한을 가진다.
+- `management.apiKeys`는 이름 있는 API key `{id, keyFile, roles}` 항목의 배열이다. 값은 `X-API-Key`로 전달하고 해당 항목에 설정된 역할을 가진다. 각 키의 파일 내용은 앞뒤 공백을 제거한다.
+- `management.oidc`를 설정하면 `Authorization: Bearer <JWT>`를 JWKS로 검증한다. JWT의 `iss`, `aud`, `sub`, 서명 및 시간 조건을 확인하고 권한은 claim에서 읽지 않는다. `sub`가 설정의 정적 `identities[{subject, roles}]` binding에 있어야 하며, binding 역할이 권한을 결정한다.
+- Principal subject는 break-glass token의 경우 `management-bearer-token`, API key의 경우 `apikey:<id>`, OIDC의 경우 `oidc:<sub>`다. 인증을 끈 local mode는 `local-unauthenticated`이며, 인증 실패 요청의 audit actor subject는 `unauthenticated`다.
+- 역할은 `ReadOnly`, `Operator`, `SecurityAdmin`, `ClusterAdmin`이다. Principal은 여러 역할을 가질 수 있으며, 부여된 역할 중 하나라도 해당 권한을 가지면 허용한다.
+
+| Permission | ReadOnly | Operator | SecurityAdmin | ClusterAdmin |
+| --- | --- | --- | --- | --- |
+| `PermissionRead` — 조회 route, non-anonymous `/metrics`·probe | ✓ | ✓ | ✓ | ✓ |
+| `PermissionOperate` — drain·rebalance mutation |  | ✓ |  | ✓ |
+| `PermissionAuditRead` — `GET /api/v1/audit/events` |  |  | ✓ | ✓ |
+| `PermissionClusterAdmin` — tenant, membership, feature activation, backup |  |  |  | ✓ |
+
+- `GET /api/v1/audit/events`는 SecurityAdmin 또는 ClusterAdmin만 사용할 수 있다. 현재 node의 저장된 audit records를 `seq` 내림차순으로 반환한다. 허용 query는 `limit`, `cursor`, `actorSubject`, `action`, `targetType`, `targetId`, `requestId`, `result`, `from`, `to`이며 문자열 filter는 exact match다. `result`는 `ALLOWED`, `DENIED`, `FAILED`; `from` 포함·`to` 제외 RFC 3339 시각이다.
+- Audit cursor는 RawURL base64로 인코딩한 `seq:<decimal>`이고, cursor seq보다 작은 record부터 조회한다. 응답은 공통 list envelope이며 각 record는 `seq`, `prevHash`, `hash`, 저장된 `event`를 가진다. 조회는 감사 event를 생성하지 않으며 저장 event와 chain 값을 바꾸지 않는다.
+- Health probe와 `/metrics`의 익명 허용 여부는 listener configuration이다. OpenAPI의 security scheme은 보호된 배포를 기술하고, local development의 anonymous policy를 제거하지 않는다.
+- 모든 HTTP response는 `X-Request-Id`를 반환한다. 요청 header가 유효하면 같은 값을 사용하고, 아니면 서버가 opaque 값을 생성한다.
 
 - `/api/v1/**`는 node-local rate limit을 적용한다. 한도를 넘으면 retryable `429 rate_limited`와 `Retry-After: 1`을 반환한다. 세부 규칙은 [Management API spec §1.5](../specs/management-api-and-observability.md#15-rate-limit)를 따른다.
 
@@ -86,7 +90,7 @@ Version 1.7.0은 `POST/GET/DELETE /api/v1/cluster/rebalance`를 추가한다. Op
 Endpoint별 filter allowlist:
 
 | Endpoint | 허용 filter |
-| --- | --- |
+| `/api/v1/audit/events` | `actorSubject`, `action`, `targetType`, `targetId`, `requestId`, `result`, `from`, `to`, `limit`, `cursor` |
 | `/api/v1/nodes` | `state`, `limit`, `cursor` |
 | `/api/v1/clients` | `tenantId`, `clientIdPrefix`, `nodeId`, `protocol`, `limit`, `cursor` |
 | `/api/v1/subscriptions` | required `tenantId`, optional `clientId`, `limit`, `cursor` |
@@ -136,6 +140,7 @@ method에 사용한다. 내부 오류와 credential은 response에 노출하지 
 - Version 1.5.0은 `GET /api/v1/cluster/features`와 `POST /api/v1/cluster/features/{feature}`를 추가한다. 성공 response는 `activeFeatures`와 member별 `nodeId`, `releaseVersion`, `features`를 data envelope로 반환하며, 미지원 feature activation은 non-retryable `409 feature_not_supported_by_all_members`다.
 - Version 1.7.0은 `POST/GET/DELETE /api/v1/cluster/rebalance`를 추가한다. Request parameter bounds와 operation response schema는 OpenAPI artifact가 기준이다.
 - Version 1.8.0은 Dynamic cluster의 활성 mutation 8개와 관리 API의 인증·인가 거절에 node-local 감사 event를 기록한다. Audit publisher가 append할 수 없는 경우 해당 mutation은 실행되지 않고 retryable `503 audit_unavailable`을 반환한다.
-- Active audit producer의 범위와 JSONL hash-chain 형식은 [Audit event v1 계약](audit-event-v1.md)과 [ADR-0039](../decisions/ADR-0039-management-audit-log.md)를 따른다. Future catalog의 다른 mutation endpoint, OIDC/JWT와 dashboard는 현재 Active contract가 아니다. 이 기능을 구현할 때는 별도 범위와 contract revision을 정한다.
+- Active audit producer의 범위와 JSONL hash-chain 형식은 [Audit event v1 계약](audit-event-v1.md)과 [ADR-0039](../decisions/ADR-0039-management-audit-log.md)를 따른다. `GET /api/v1/audit/events`는 SecurityAdmin·ClusterAdmin 전용 node-local read-only query다. Dashboard는 ReadOnly API key만 사용하며 OIDC 사용자 로그인은 Grafana가 맡는다.
 - Version 1.9.0은 모든 `/api/v1` operation에 `429` response를 추가한다.
+- Version 1.10.0은 이름 있는 API key, 정적 subject binding을 사용하는 OIDC JWT와 4-role authorization을 추가하고 `GET /api/v1/audit/events`로 node-local audit chain 조회를 제공한다.
 - Breaking change는 `/api/v2`와 별도 OpenAPI artifact로 제공한다.

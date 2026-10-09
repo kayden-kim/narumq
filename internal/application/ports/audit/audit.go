@@ -1,6 +1,10 @@
 package audit
 
-import "time"
+import (
+	"context"
+	"errors"
+	"time"
+)
 
 // AuditResult is the outcome of one management-plane action.
 type AuditResult string
@@ -87,4 +91,35 @@ type DataPlaneDenialRecorder interface {
 type AuditPublisher interface {
 	Ready() error
 	Publish(event AuditEventDTO) error
+}
+
+// ErrAuditRecordsUnavailable indicates that stored audit records could not be read reliably.
+var ErrAuditRecordsUnavailable = errors.New("audit records unavailable")
+
+// AuditRecordQueryDTO selects stored records with Seq < BeforeSeq (0 = no bound), newest first.
+type AuditRecordQueryDTO struct {
+	BeforeSeq                                             uint64
+	Limit                                                 int
+	ActorSubject, Action, TargetType, TargetID, RequestID string
+	Result                                                AuditResult
+	From, To                                              time.Time
+}
+
+// AuditRecordDTO contains the exact stored event JSON and its hash-chain metadata.
+type AuditRecordDTO struct {
+	Seq       uint64
+	PrevHash  string
+	Hash      string
+	EventJSON []byte
+}
+
+// AuditRecordPageDTO contains one page and whether additional matching records exist.
+type AuditRecordPageDTO struct {
+	Records []AuditRecordDTO
+	HasMore bool
+}
+
+// AuditRecordReader reads records from a durable audit chain.
+type AuditRecordReader interface {
+	ReadAuditRecords(ctx context.Context, query AuditRecordQueryDTO) (AuditRecordPageDTO, error)
 }

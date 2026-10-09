@@ -163,7 +163,7 @@ commit된 요청을 재시도하면 HTTP `200`과 현재 commit된 phase를 반�
 | `bootstrapMembers` | 멤버 객체 배열 | bootstrap에서는 서로 다른 식별 정보 3개; joiner에서는 빈 배열 |
 | `seedAddresses` | 문자열 배열 | bootstrap에서는 빈 배열; joiner에서는 정규 DNS `host:port` 주소 1~16개. TLS SNI를 DNS 이름에 바인딩하므로 IP 리터럴은 거절 |
 | `peerTLS` | 객체 | `certFile`, `keyFile`, `caFile` 필수; 인증서와 키가 일치하고 CA가 모든 피어를 검증해야 함 |
-| `management` | 객체 | `listenAddress`, `clusterAdminTokenFile`, `auditDirectory` 필수. token은 불투명한 secret 입력이다. `auditDirectory`는 비어 있지 않은 경로여야 하며 `directory`와 같거나 서로 포함해서는 안 되고, 각 노드에서 달라야 한다. 선택 정수 필드 `requestRate`, `authFailureRate`는 각각 `1..1,000,000`; 생략하면 `50`, `5`를 사용한다. 선택 문자열 필드 `readOnlyApiKeyFile`은 cluster mode의 조회 전용 API key 파일 경로다. 파일 내용의 앞뒤 공백을 제거한 값은 비어 있지 않아야 하고 cluster admin token과 달라야 한다. 읽기 실패, 빈 값 또는 token과 같은 값이면 시작을 거절한다. |
+| `management` | 객체 | `listenAddress`, `clusterAdminTokenFile`, `auditDirectory` 필수. Token은 break-glass `ClusterAdmin` opaque secret이다. `auditDirectory`는 비어 있지 않은 경로여야 하며 `directory`와 같거나 서로 포함해서는 안 되고, 각 노드에서 달라야 한다. 선택 정수 필드 `requestRate`, `authFailureRate`는 각각 `1..1,000,000`; 생략하면 `50`, `5`를 사용한다. 선택 `apiKeys`는 `{id,keyFile,roles}` 객체 배열이며 `id`는 `^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$`와 일치하고 고유해야 하며, `keyFile`은 유효한 경로여야 하고 `roles`는 비어 있지 않은 고유한 `ReadOnly`, `Operator`, `SecurityAdmin`, `ClusterAdmin` 값만 포함해야 한다. Key 파일 내용은 앞뒤 공백 제거 후 비어 있지 않아야 하며 cluster admin token 및 다른 API key와 달라야 한다. 선택 `oidc`는 JWT verifier 필드(`issuer`, `audience`, `algorithms`, `jwksUrl`, `cacheTtl`, `refreshCooldown`, `clockSkew`, `httpTimeout`)와 비어 있지 않은 `identities` 배열로 구성한다. 각 identity는 비어 있지 않고 최대 250 rune인 고유 `subject`와 비어 있지 않은 고유 역할 배열을 가져야 한다. JWT 필드는 MQTT `jwt` 설정과 같은 검증 규칙을 적용하며 `jwksUrl`은 HTTPS 또는 loopback HTTP여야 한다. OIDC 권한은 JWT claim이 아니라 정적 subject-to-roles binding에서 결정한다. |
 | `mqtt` | 객체 | `tcpListenAddress`, `tlsListenAddress`, `securityConfigFile` 필수; 주소가 비어 있으면 해당 listener를 사용하지 않는다. 선택 정수 필드 `tcpMaxConnections`, `tcpConnectionRate`, `tlsMaxConnections`, `tlsConnectionRate`는 0~1000000이며 생략하면 0(제한 없음)이다. 해당 listener 주소가 비어 있으면 그 listener의 두 값은 0이어야 한다. |
 | `replication` | 객체(선택) | 생략하면 복제 계수 3과 쓰기 쿼럼 2를 사용한다. 지정하면 정확히 `{factor:int, writeQuorum:int}`여야 하며 3/2만 허용한다. |
 
@@ -191,7 +191,12 @@ Bootstrap 예시다. `<64 lowercase hex>`는 인증서 지문에서 가져오는
   ],
   "seedAddresses": [],
   "peerTLS": {"certFile": "certs/node1.crt", "keyFile": "certs/node1.key", "caFile": "certs/ca.crt"},
-  "management": {"listenAddress": "127.0.0.1:18080", "clusterAdminTokenFile": "secrets/cluster-admin.token", "auditDirectory": "data/node1-audit"},
+  "management": {
+    "listenAddress": "127.0.0.1:18080",
+    "clusterAdminTokenFile": "secrets/cluster-admin.token",
+    "apiKeys": [{"id": "dashboard", "keyFile": "secrets/dashboard.key", "roles": ["ReadOnly"]}],
+    "auditDirectory": "data/node1-audit"
+  },
   "mqtt": {"tcpListenAddress": "", "tlsListenAddress": "127.0.0.1:1883", "securityConfigFile": "security.json"}
 }
 ```
@@ -204,7 +209,7 @@ Bootstrap 예시다. `<64 lowercase hex>`는 인증서 지문에서 가져오는
 
 같은 volume을 사용하는 가입 노드가 재시작하면 영속 snapshot/WAL에서 commit된 로컬 식별 정보를 복구한다. 복구된 `LEARNER`·`CATCHING_UP`·`VOTER` 단계는 기존 seed loop에서 새 식별 정보 승인 없이 이어간다. 기존 투표자가 해당 기록을 잃으면 같은 ID를 새 가입 노드로 승인하지 않고 새 ID로 교체한다. Seed runtime은 commit된 `VOTER` 후보를 투표자 수와 관계없이 거절한다([ADR-0024](../decisions/ADR-0024-joiner-voter-volume-loss-admission.md)).
 
-모든 모드는 `peerTLS` 인증서·키·CA, 로컬 인증서 DNS SAN과 지문의 일치, `management.clusterAdminTokenFile`, 빌드 릴리스와 feature 식별 정보, 프로토콜·스키마 버전, 영속 `directory`를 요구한다. MQTT listener를 사용하면 MQTT TLS·보안 구성도 필요하다. 제거된 JSON key `releaseVersion`은 알 수 없는 필드이므로 시작을 거절한다. Admin token은 secret 파일에서 읽으며 로그에 남기거나 응답으로 반환하지 않는다. Standalone runtime은 이 모드를 불러오지 않으며 기존 동작을 유지한다.
+모든 모드는 `peerTLS` 인증서·키·CA, 로컬 인증서 DNS SAN과 지문의 일치, `management.clusterAdminTokenFile`, 빌드 릴리스와 feature 식별 정보, 프로토콜·스키마 버전, 영속 `directory`를 요구한다. MQTT listener를 사용하면 MQTT TLS·보안 구성도 필요하다. 제거된 JSON key `releaseVersion`은 알 수 없는 필드이므로 시작을 거절한다. Admin token은 secret 파일에서 읽으며 로그에 남기거나 응답으로 반환하지 않는다. Standalone runtime은 이 모드를 불러오지 않으며 기존 동작을 유지한다. Cluster management의 선택 `apiKeys`·`oidc`와 그 정적 검증 규칙은 §1.4를 따른다.
 
 #### 로컬 식별 정보의 영속 메타데이터
 

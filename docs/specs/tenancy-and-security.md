@@ -5,7 +5,7 @@
 | 항목 | 값 |
 | --- | --- |
 | 상태 | Active (Phase 1 security and tenant isolation slice) |
-| 적용 범위 | Phase 1에서 TEN-01~TEN-05, SEC-02~SEC-04, SEC-06과 SEC-08의 JWKS fail-closed 동작을 구현한다. Dynamic cluster의 tenant별 저장 quota(TEN-08)는 [ADR-0017](../decisions/ADR-0017-tenant-storage-quota.md) 범위에서 제공한다. TEN-06·TEN-07의 node-local 연결·session·subscription·PUBLISH traffic 한도는 §5.2를 따른다. Management plane 감사는 §8과 [ADR-0039](../decisions/ADR-0039-management-audit-log.md)를 따른다. MQTT data-plane 거절 감사는 §8과 [ADR-0046](../decisions/ADR-0046-mqtt-data-plane-denial-audit.md)를 따른다. Blocklist, 기존 연결 재인증과 rollout controller 감사는 후속 범위다. Metrics는 인증 성공·실패, session gauge, 저장 quota 및 tenant 한도 거절을 포함하며, 상세 observability 정책은 §8과 Management API 스펙을 따른다. |
+| 적용 범위 | Phase 1에서 TEN-01~TEN-05, SEC-02~SEC-04, SEC-06, SEC-08의 JWKS fail-closed 동작과 SEC-10 Management API 인증·RBAC·node-local 감사 조회를 구현한다. Dynamic cluster의 tenant별 저장 quota(TEN-08)는 [ADR-0017](../decisions/ADR-0017-tenant-storage-quota.md) 범위에서 제공한다. TEN-06·TEN-07의 node-local 연결·session·subscription·PUBLISH traffic 한도는 §5.2를 따른다. Management plane 감사는 §8과 [ADR-0039](../decisions/ADR-0039-management-audit-log.md)를 따르되, SEC-10의 인증·RBAC와 node-local 감사 조회 범위는 [ADR-0048](../decisions/ADR-0048-management-api-oidc-api-key-rbac.md)을 따른다. MQTT data-plane 거절 감사는 §8과 [ADR-0046](../decisions/ADR-0046-mqtt-data-plane-denial-audit.md)를 따른다. Blocklist, 기존 연결 재인증과 rollout controller 감사는 후속 범위다. Metrics는 인증 성공·실패, session gauge, 저장 quota 및 tenant 한도 거절을 포함하며, 상세 observability 정책은 §8과 Management API 스펙을 따른다. |
 | 근거 | [PRD 9.3절, 9.4절과 11.4절](../requirements/PRD.md), [RFC 8725](https://www.rfc-editor.org/rfc/rfc8725.html) |
 | 관련 spec | [MQTT protocol과 session](mqtt-protocol-and-session.md), [Management API](management-api-and-observability.md) |
 | 관련 Architecture | [Security boundaries](../architectures/security-boundaries.md), [Threat model](../architectures/threat-model.md), [System overview](../architectures/system-overview.md) |
@@ -370,15 +370,15 @@ Proposer node는 `narumq_tenant_quota_rejections_total{tenant,dimension}` counte
 
 ## 6. 관리 plane RBAC
 
-| Role | 최소 권한 |
-| --- | --- |
-| `ReadOnly` | 허용 범위의 cluster·tenant 상태와 Metric 조회 |
-| `Operator` | drain, client disconnect·redirect와 운영 mutation |
-| `SecurityAdmin` | credential, ACL, blocklist와 감사 조회 |
-| `ClusterAdmin` | cluster 전체 설정과 tenant 관리 |
-| delegated tenant role | 자기 tenant의 credential, ACL과 quota만 관리 |
+| Permission | 의미·route | `ReadOnly` | `Operator` | `SecurityAdmin` | `ClusterAdmin` |
+| --- | --- | --- | --- | --- | --- |
+| `PermissionRead` | 기존 ReadOnly route 전체: 조회, drain·rebalance GET, membership-operation GET, feature GET, 405 응답 route, 익명 외 `/metrics`·probe | ✓ | ✓ | ✓ | ✓ |
+| `PermissionOperate` | drain POST/DELETE, rebalance POST/DELETE |  | ✓ |  | ✓ |
+| `PermissionAuditRead` | `GET /api/v1/audit/events` |  |  | ✓ | ✓ |
+| `PermissionClusterAdmin` | `/api/v1/tenants`, members POST/DELETE와 그 non-mutation 분기, feature POST, backups |  |  |  | ✓ |
+| delegated tenant role | 자기 tenant의 credential, ACL과 quota만 관리 (`TEN-10·API-07 후속 범위`) |  |  |  |  |
 
-권한은 resource와 action마다 확인해야 한다. 단순히 UI에서 control을 숨기는 것으로 권한 검사를 대신해서는 안 된다. 목록과 상세 조회에서도 tenant scope를 적용해 IDOR를 막아야 한다.
+Principal은 여러 role을 가질 수 있으며, 할당된 role 중 하나라도 해당 permission을 부여하면 요청을 허용한다. 권한은 resource와 action마다 확인해야 한다. 단순히 UI에서 control을 숨기는 것으로 권한 검사를 대신해서는 안 된다. 목록과 상세 조회에서도 tenant scope를 적용해 IDOR를 막아야 한다.
 
 ## 7. Credential 회전·폐기와 차단
 
@@ -394,13 +394,13 @@ Dynamic cluster의 활성 Management API mutation 8개와 인증 `401`·인가 `
 
 Management mutation은 실행 전에 node-local publisher의 준비 상태를 확인해야 한다. Publisher를 쓸 수 없으면 handler를 호출하지 않고 retryable `503 audit_unavailable`을 반환한다. Mutation 뒤 event 기록이 실패하면 작업을 되돌리지 않고 error log와 Metric으로 드러낸다.
 
-Event는 `management.auditDirectory`의 JSONL 파일에 append하며 각 줄을 fsync한다. 이전 줄의 SHA-256을 연결하는 hash chain은 손상과 연결된 줄의 누락을 검출한다. Broker는 크기 기준으로만 rotation하고 파일을 삭제하지 않는다. 외부 collector는 rotation 파일 중 가장 오래된 연속 prefix만 삭제할 수 있다. 보존 기간, 검색과 접근 권한은 외부 SIEM 책임이다.
+Event는 `management.auditDirectory`의 JSONL 파일에 append하며 각 줄을 fsync한다. 이전 줄의 SHA-256을 연결하는 hash chain은 손상과 연결된 줄의 누락을 검출한다. Broker는 크기 기준으로만 rotation하고 파일을 삭제하지 않는다. 외부 collector는 rotation 파일 중 가장 오래된 연속 prefix만 삭제할 수 있다. `GET /api/v1/audit/events`는 node-local 저장 record를 읽기 전용으로 조회하며, 보존 기간·SIEM 수집과 장기 검색·접근 권한은 외부 SIEM 책임이다.
 
 Standalone mode에는 감사 publisher를 연결하지 않는다. Standalone은 이 계약의 Dynamic cluster mutation을 제공하지 않으며, standalone 401·403 event도 기록하지 않는다.
 
 Audit directory는 필수 cluster 설정이다. Raft data directory와 같거나 서로 포함하면 startup을 거절하고, 각 node는 별도 directory를 사용한다. `narumq -audit-verify <directory>`는 저장된 chain을 읽기 전용으로 검증한다.
 
-Bearer token, API key, body, query와 원문 secret은 Management event에 기록하지 않는다. Management credential은 공유 값이므로 actor subject는 credential 종류를 나타내며 개인 식별을 보장하지 않는다. Management 인증·인가·rate-limit 거절은 node별 초당 20개 한도를 공유한다. 초과 event는 저장하지 않고 `denial_suppressed` Metric으로만 센다. 이 한도는 MQTT data-plane 감사 한도와 분리한다.
+Bearer token, API key, body, query와 원문 secret은 Management event에 기록하지 않는다. Named API key와 OIDC subject는 actor를 key·개인 단위로 식별하며, break-glass token만 공유 credential로 남는다. Management 인증·인가·rate-limit 거절은 node별 초당 20개 한도를 공유한다. 초과 event는 저장하지 않고 `denial_suppressed` Metric으로만 센다. 이 한도는 MQTT data-plane 감사 한도와 분리한다.
 
 Dynamic cluster는 CONNECT 인증·Client ID binding·Will 검증 실패, PUBLISH·SUBSCRIBE·UNSUBSCRIBE ACL 거절과 지연 Will 재인가 거절을 기존 node-local hash chain에 기록한다. Data-plane 감사는 fail-open이며 node별 초당 20개, queue capacity 256을 적용한다. 한도 초과·queue 포화·종료 뒤 event는 기록하지 않고 Metric으로 센다. 이 경로는 caller를 막지 않으며 MQTT 응답을 바꾸지 않는다. Tenant, subject, credential ID, roles, Client ID, source IP host와 topic/filter는 원문으로 기록한다. Payload, password, token과 인증서 원문은 기록하지 않는다. 빈 Client ID, 지원하지 않는 protocol, tenant 한도·저장 quota, cluster readiness, listener admission, protocol error와 principal snapshot이 없는 Will은 기록하지 않는다. 상세 event field와 길이 규칙은 [Audit event v1 계약 §5](../contracts/audit-event-v1.md#5-broker-producer-범위)를 따른다.
 
@@ -425,10 +425,11 @@ Rollout controller producer와 SIEM consumer의 unknown action/reason 검증은 
 | TEN-06 | Tenant별 연결·session 제한은 node별로, subscription 제한은 route table의 tenant 수로 적용한다. 한 tenant의 초과는 다른 tenant를 거절하지 않으며, 초과 응답과 state 무변경을 확인한다. 같은 node의 동시 add와 replace/remove는 직렬화한다. | `internal/application/connect`, `internal/application/subscribe`의 `TestSubscribeTenantQuotaSerializesLocalAdmission`, `TestSubscribeTenantQuotaSerializesReplacementAndRemoval`, `internal/adapters/memory/sessionstore`, `internal/domain/routing`, `tests/integration/mqtt_tenant_limits_test.go` (`TestMQTTTenantLimits`), `tests/integration/cluster_tenant_limits_process_test.go` (`TestDynamicClusterTenantLimitsProcessAcceptance`) |
 | TEN-07 | Tenant별 payload 크기·message rate·byte rate를 제한한다. Rate 초과는 최대 `maxWait`까지 대기하고, MQTT 응답과 다른 tenant의 독립성을 확인한다. | `internal/application/tenantlimit`, `internal/adapters/tcp/server_tenant_limits_test.go`, `internal/adapters/metrics`, `cmd/narumq/security_config_test.go`, `cmd/narumq/tenant_limits_test.go`, `tests/integration/mqtt_tenant_limits_test.go` (`TestMQTTTenantLimits`) |
 | SEC-11 | Dynamic cluster는 활성 Management API mutation 8개, 401·403 거절과 ADR-0046의 MQTT CONNECT·Will·PUBLISH·SUBSCRIBE·UNSUBSCRIBE 거절을 node-local JSONL hash chain에 기록한다. Management audit unavailable은 mutation을 막고 503을 반환한다. MQTT audit는 초당 20개·queue 256 한도에서 fail-open이며 응답을 바꾸지 않는다. | `internal/adapters/http/management/audit_test.go`, `internal/application/audit/dataplane_test.go`, `internal/application/connect`, `internal/application/subscribe`, `internal/adapters/tcp`, `tests/contracts/audit-event-v1/contract_test.go::TestDataPlaneDenialEventsMatchSchema`, `tests/integration/cluster_audit_process_test.go::TestDynamicClusterMQTTDenialAuditProcessAcceptance`, `TestDynamicClusterManagementAuditProcessAcceptance` |
+| SEC-10 | 이름 있는 API key와 OIDC JWT(JWKS 검증·정적 subject→roles binding), break-glass ClusterAdmin token, 명시적 4-role permission matrix, node-local 감사 조회와 ReadOnly 전용 Dashboard credential을 검증한다. Audit query는 SecurityAdmin·ClusterAdmin만 저장된 node-local hash-chain record를 필터·cursor로 읽으며 조회 event를 새로 만들지 않는다. | `cmd/narumq/cluster_config_test.go`, `internal/adapters/authentication/jwt_verifier_test.go`, `internal/adapters/http/management/auth_test.go`, `internal/application/audit/query_test.go`, `internal/adapters/auditlog/query_test.go`, `internal/adapters/http/management/audit_query_handlers_test.go`, `tests/contracts/management-api-v1/contract_test.go::TestAuditQueryHandlerResponsesMatchOpenAPI`, `tests/contracts/audit-event-v1/contract_test.go::TestAuditQueryReturnsStoredChainRecords`, `tests/integration/cluster_management_rbac_process_test.go::TestDynamicClusterManagementRBACProcessAcceptance` |
 | NFR-17 | 기록된 event의 줄 순서·hash 연결·변조 검출, 중첩 details의 잘못된 UTF-8 거절, handler panic의 감사 HTTP 상태 500, Windows rotation 충돌 보호와 audit/Raft directory 경계를 확인한다. 보존 기간 값과 SIEM 접근 권한은 외부 결정으로 미정이다. | `internal/application/audit/service_test.go`, `internal/adapters/http/management/audit_test.go`, `internal/adapters/auditlog/file_publisher_test.go`, `internal/adapters/auditlog/persist_windows_test.go`, `cmd/narumq/cluster_config_test.go`, `cmd/narumq/main_test.go::TestAuditVerifyCommandVerifiesAndLeavesFilesReadOnly`, `tests/contracts/audit-event-v1/contract_test.go`, `tests/integration/cluster_audit_process_test.go::TestDynamicClusterManagementAuditProcessAcceptance` |
 | NFR-19 | MQTT data plane과 Management API의 tenant 격리·인증·권한 공격 사례를 실제 3-node cluster에서 실행하고 threat model 위협 ID와 연결한다. 독립 penetration test와 threat model 승인은 남는다. | `tests/integration/cluster_tenant_isolation_pentest_process_test.go::TestDynamicClusterTenantIsolationPenetrationProcessAcceptance`, [Threat model](../architectures/threat-model.md) |
 
-SEC-03/SEC-04의 certificate-to-tenant acceptance와 TEN-06·TEN-07의 §5.2 범위를 구현했다. TEN-08 저장 quota는 §5.1과 ADR-0017의 채택 범위를 따른다. SEC-05 password 인증은 [ADR-0047](../decisions/ADR-0047-mqtt-password-authentication.md)의 범위에서 구현·수용 시험을 완료했으며 실행 증거는 §9.5에 있다. SEC-07·SEC-10·SEC-12, TEN-09·TEN-10, rollout controller producer, 보존 기간과 SIEM 접근 권한은 후속 범위다.
+SEC-03/SEC-04의 certificate-to-tenant acceptance와 TEN-06·TEN-07의 §5.2 범위를 구현했다. TEN-08 저장 quota는 §5.1과 ADR-0017의 채택 범위를 따른다. SEC-05 password 인증은 [ADR-0047](../decisions/ADR-0047-mqtt-password-authentication.md)의 범위에서 구현·수용 시험을 완료했으며 실행 증거는 §9.5에 있다. SEC-07·SEC-12, TEN-09·TEN-10, rollout controller producer, 보존 기간과 SIEM 접근 권한은 후속 범위다.
 
 
 ### 9.1 TEN-06·TEN-07 실행 증거
@@ -556,3 +557,26 @@ Data-plane recorder는 node별 초당 20건과 queue capacity 256을 적용한�
 `TestMQTTTLS_PasswordAuthentication`는 MQTT 3.1.1·5의 password CONNECT를 실제 TLS socket에서 확인했다. 3-node process acceptance는 각 node에서 성공·잘못된 password·unknown username·허용되지 않은 Client ID를 확인했다. 인증 Metric은 node별 `success=2`, `invalid_credentials=4`, `client_id_not_allowed=2`였고, denial audit에는 `authMethod=password`가 기록됐다. Metric 응답·audit JSONL·process log에서 시험용 password와 Argon2id PHC hash가 나오지 않는지 검사했다. 설정·fixture 임시 파일·process log에는 원문 password가 없는지도 확인했다.
 
 SEC-05 구현 acceptance는 완료했다. Credential 회전·폐기, 기존 연결 재인증과 blocklist는 SEC-07·SEC-12 범위에 남는다.
+
+### 9.6 SEC-10 실행 증거
+
+2026-10-10 저장소 루트에서 실행했다. 아래 결과는 SEC-10 구현, named credential fixture와 Dashboard regression의 검증이다.
+
+| 검증 | 명령 | 결과·시간 |
+| --- | --- | --- |
+| JWT/JWKS verifier와 설정 | `go test ./internal/adapters/authentication ./cmd/narumq -run 'JWT|JWKS|SecurityConfig' -count=1` | PASS. |
+| Cluster 설정·credential 적재 | `go test ./cmd/narumq -count=1` | PASS. |
+| Management RBAC와 authentication | `go test ./internal/adapters/http/management -count=1` | PASS. |
+| Audit query application·file reader·handler | `go test ./internal/application/audit ./internal/adapters/auditlog ./internal/adapters/http/management -count=1` | PASS. |
+| Audit query race | `go test -race ./internal/application/audit ./internal/adapters/auditlog ./internal/adapters/http/management -count=1` | PASS. |
+| Management API와 audit event contracts | `go test ./tests/contracts/... -count=1` | PASS. |
+| 실제 3-node RBAC acceptance | `go test ./tests/integration -run '^TestDynamicClusterManagementRBACProcessAcceptance$' -count=1 -v -timeout 20m` | PASS, 시험 7.38초. |
+| Process 회귀 | `go test ./tests/integration -run '^(TestDynamicClusterTenantIsolationPenetrationProcessAcceptance|TestDynamicClusterConnectionRebalanceProcessAcceptance|TestDashboardProvisioningMatchesContracts)$' -count=1 -v -timeout 20m` | PASS. |
+| Dashboard Docker E2E | `NARUMQ_DASHBOARD_E2E=1 NARUMQ_DASHBOARD_E2E_HOLD=90s go test ./tests/integration -run '^TestDashboardStackProcessAcceptance$' -count=1 -v -timeout 20m` | PASS, 시험 228.46초, package 229.503초. |
+| Traceability | `go run ./tools/verify traceability` | PASS. P0 81개 중 68개가 시험에 연결됐고 예외 13개가 남았다. SEC-10은 16개 시험에 연결됐다. |
+| Architecture | `go run ./tools/verify architecture` | PASS, 3.76초. |
+| Full local gate | `go run ./tools/verify local` | PASS, 205.10초. Branch instrumentation, traceability, 5개 fuzz target, architecture, 전체 package·integration, race, vet와 coverage가 통과했다. Integration package는 125.359초였다. |
+
+실제 3-node RBAC acceptance는 named ReadOnly·Operator API key, SecurityAdmin OIDC subject binding과 ClusterAdmin break-glass를 확인했다. OIDC token의 `ClusterAdmin` role claim은 설정된 `SecurityAdmin` 권한을 바꾸지 않았다. Operator rebalance, audit filter·cursor·actor·role과 node-local hash chain도 통과했다. Dashboard E2E는 named ReadOnly key로 cluster GET을 허용하고 backup·drain mutation을 거절했다.
+
+SEC-10의 저장소 acceptance와 local verification은 완료했다. Production IdP, production deployment와 CI merge gate는 이번 검증에 포함되지 않았다. NFR-19 독립 penetration test와 threat model 승인은 남는다.

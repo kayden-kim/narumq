@@ -14,6 +14,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	authenticationadapter "narumq/internal/adapters/authentication"
 	adaptershttp "narumq/internal/adapters/http/management"
 	"narumq/internal/application/membership"
 	"narumq/internal/domain/release"
@@ -132,12 +133,29 @@ type clusterPeerTLS struct {
 }
 
 type clusterManagement struct {
-	ListenAddress         string `json:"listenAddress"`
-	ClusterAdminTokenFile string `json:"clusterAdminTokenFile"`
-	ReadOnlyAPIKeyFile    string `json:"readOnlyApiKeyFile,omitempty"`
-	AuditDirectory        string `json:"auditDirectory"`
-	RequestRate           *int   `json:"requestRate,omitempty"`
-	AuthFailureRate       *int   `json:"authFailureRate,omitempty"`
+	ListenAddress         string                    `json:"listenAddress"`
+	ClusterAdminTokenFile string                    `json:"clusterAdminTokenFile"`
+	APIKeys               []clusterManagementAPIKey `json:"apiKeys,omitempty"`
+	OIDC                  *clusterManagementOIDC    `json:"oidc,omitempty"`
+	AuditDirectory        string                    `json:"auditDirectory"`
+	RequestRate           *int                      `json:"requestRate,omitempty"`
+	AuthFailureRate       *int                      `json:"authFailureRate,omitempty"`
+}
+
+type clusterManagementAPIKey struct {
+	ID      string   `json:"id"`
+	KeyFile string   `json:"keyFile"`
+	Roles   []string `json:"roles"`
+}
+
+type clusterManagementOIDC struct {
+	rawJWTConfig
+	Identities []clusterManagementOIDCIdentity `json:"identities"`
+}
+
+type clusterManagementOIDCIdentity struct {
+	Subject string   `json:"subject"`
+	Roles   []string `json:"roles"`
 }
 
 type clusterMQTT struct {
@@ -203,11 +221,11 @@ func checkClusterJSON(reader io.Reader) error {
 		delim, isDelim := token.(json.Delim)
 		if isDelim {
 			if (expected == "object" && delim != '{') || (expected == "array" && delim != '[') {
-				return errors.New("cluster config has invalid JSON field type")
+				return fmt.Errorf("cluster config field %q has invalid JSON field type", path)
 			}
 		} else {
 			if token == nil || expected == "object" || expected == "array" {
-				return errors.New("cluster config has invalid JSON field type")
+				return fmt.Errorf("cluster config field %q has invalid JSON field type", path)
 			}
 			return nil
 		}
@@ -267,14 +285,19 @@ func checkClusterJSON(reader io.Reader) error {
 
 func expectedClusterJSONType(path string) string {
 	switch path {
-	case "", "peerTLS", "management", "mqtt", "tenantQuotas", "tenantQuotas.default", "replication", "publishBackpressure":
+	case "", "peerTLS", "management", "management.oidc", "mqtt", "tenantQuotas", "tenantQuotas.default", "replication", "publishBackpressure":
 		return "object"
-	case "bootstrapMembers", "seedAddresses", "tenantQuotas.tenants":
+	case "bootstrapMembers", "seedAddresses", "tenantQuotas.tenants", "management.apiKeys", "management.oidc.algorithms", "management.oidc.identities":
 		return "array"
 	default:
-		if (strings.HasPrefix(path, "bootstrapMembers[") || strings.HasPrefix(path, "tenantQuotas.tenants[")) &&
-			strings.HasSuffix(path, "]") {
+		if !strings.Contains(path, "].") && (strings.HasPrefix(path, "bootstrapMembers[") ||
+			strings.HasPrefix(path, "tenantQuotas.tenants[") || strings.HasPrefix(path, "management.apiKeys[") ||
+			strings.HasPrefix(path, "management.oidc.identities[")) && strings.HasSuffix(path, "]") {
 			return "object"
+		}
+		if (strings.HasPrefix(path, "management.apiKeys[") || strings.HasPrefix(path, "management.oidc.identities[")) &&
+			strings.HasSuffix(path, ".roles") {
+			return "array"
 		}
 		return ""
 	}
@@ -289,6 +312,8 @@ func expectClusterKeys(path string, seen map[string]struct{}) error {
 		required = []string{"certFile", "keyFile", "caFile"}
 	case "management":
 		required = []string{"listenAddress", "clusterAdminTokenFile", "auditDirectory"}
+	case "management.oidc":
+		required = []string{"issuer", "audience", "algorithms", "jwksUrl", "cacheTtl", "refreshCooldown", "clockSkew", "httpTimeout", "identities"}
 	case "mqtt":
 		required = []string{"tcpListenAddress", "tlsListenAddress", "securityConfigFile"}
 	case "replication":
@@ -304,6 +329,10 @@ func expectClusterKeys(path string, seen map[string]struct{}) error {
 			required = []string{"memberId", "address", "dnsSan", "certificateSha256"}
 		} else if strings.HasPrefix(path, "tenantQuotas.tenants[") && strings.HasSuffix(path, "]") {
 			required = []string{"tenantId", "retainedBytes", "offlineQueueMessages", "offlineQueueBytes", "storageBytes"}
+		} else if strings.HasPrefix(path, "management.apiKeys[") && strings.HasSuffix(path, "]") {
+			required = []string{"id", "keyFile", "roles"}
+		} else if strings.HasPrefix(path, "management.oidc.identities[") && strings.HasSuffix(path, "]") {
+			required = []string{"subject", "roles"}
 		}
 	}
 	for _, key := range required {
@@ -354,8 +383,8 @@ func validateClusterConfig(config clusterConfigFile) error {
 	if !validHostPort(config.Management.ListenAddress, true) || !validRequiredPath(config.Management.ClusterAdminTokenFile) {
 		return errors.New("management listenAddress and clusterAdminTokenFile are required")
 	}
-	if config.Management.ReadOnlyAPIKeyFile != "" && !validRequiredPath(config.Management.ReadOnlyAPIKeyFile) {
-		return errors.New("management readOnlyApiKeyFile must be a valid path")
+	if _, _, err := validateClusterManagementAccess(config.Management); err != nil {
+		return err
 	}
 	if !validRequiredPath(config.Management.AuditDirectory) {
 		return errors.New("management auditDirectory is required")
@@ -459,6 +488,144 @@ func validateClusterConfig(config clusterConfigFile) error {
 	}
 	return nil
 }
+func validateClusterManagementAccess(config clusterManagement) (*authenticationadapter.VerifierConfig, []adaptershttp.OIDCIdentity, error) {
+	seenIDs := make(map[string]struct{}, len(config.APIKeys))
+	for i, key := range config.APIKeys {
+		if !validManagementAPIKeyID(key.ID) {
+			return nil, nil, fmt.Errorf("management apiKeys[%d].id must match ^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$", i)
+		}
+		if _, exists := seenIDs[key.ID]; exists {
+			return nil, nil, fmt.Errorf("duplicate management apiKeys id %q", key.ID)
+		}
+		seenIDs[key.ID] = struct{}{}
+		if !validRequiredPath(key.KeyFile) {
+			return nil, nil, fmt.Errorf("management apiKeys[%d].keyFile must be a valid path", i)
+		}
+		if len(key.Roles) == 0 {
+			return nil, nil, fmt.Errorf("management apiKeys[%d].roles must contain at least one role", i)
+		}
+		seenRoles := make(map[adaptershttp.Role]struct{}, len(key.Roles))
+		for _, name := range key.Roles {
+			role, ok := adaptershttp.ParseRole(name)
+			if !ok {
+				return nil, nil, fmt.Errorf("management apiKeys[%d] has unknown role %q", i, name)
+			}
+			if _, exists := seenRoles[role]; exists {
+				return nil, nil, fmt.Errorf("management apiKeys[%d] has duplicate role %q", i, name)
+			}
+			seenRoles[role] = struct{}{}
+		}
+	}
+	if config.OIDC == nil {
+		return nil, nil, nil
+	}
+	verifier, err := validateJWTVerifierConfig("management.oidc", &config.OIDC.rawJWTConfig)
+	if err != nil {
+		return nil, nil, err
+	}
+	if len(config.OIDC.Identities) == 0 {
+		return nil, nil, errors.New("management.oidc.identities must contain at least one identity")
+	}
+	identities := make([]adaptershttp.OIDCIdentity, len(config.OIDC.Identities))
+	seenSubjects := make(map[string]struct{}, len(config.OIDC.Identities))
+	for i, identity := range config.OIDC.Identities {
+		if identity.Subject == "" {
+			return nil, nil, fmt.Errorf("management.oidc.identities[%d].subject is required", i)
+		}
+		if utf8.RuneCountInString(identity.Subject) > 251 {
+			return nil, nil, fmt.Errorf("management.oidc.identities[%d].subject must not exceed 251 characters", i)
+		}
+		if _, exists := seenSubjects[identity.Subject]; exists {
+			return nil, nil, fmt.Errorf("duplicate management.oidc subject %q", identity.Subject)
+		}
+		seenSubjects[identity.Subject] = struct{}{}
+		if len(identity.Roles) == 0 {
+			return nil, nil, fmt.Errorf("management.oidc.identities[%d].roles must contain at least one role", i)
+		}
+		roles := make([]adaptershttp.Role, len(identity.Roles))
+		seenRoles := make(map[adaptershttp.Role]struct{}, len(identity.Roles))
+		for j, name := range identity.Roles {
+			role, ok := adaptershttp.ParseRole(name)
+			if !ok {
+				return nil, nil, fmt.Errorf("management.oidc.identities[%d] has unknown role %q", i, name)
+			}
+			if _, exists := seenRoles[role]; exists {
+				return nil, nil, fmt.Errorf("management.oidc.identities[%d] has duplicate role %q", i, name)
+			}
+			seenRoles[role] = struct{}{}
+			roles[j] = role
+		}
+		identities[i] = adaptershttp.OIDCIdentity{Subject: identity.Subject, Roles: roles}
+	}
+	return &verifier, identities, nil
+}
+
+func validManagementAPIKeyID(value string) bool {
+	if len(value) == 0 || len(value) > 64 || !isASCIIAlphaNumeric(value[0]) {
+		return false
+	}
+	for i := 1; i < len(value); i++ {
+		b := value[i]
+		if !isASCIIAlphaNumeric(b) && b != '.' && b != '_' && b != '-' {
+			return false
+		}
+	}
+	return true
+}
+
+func isASCIIAlphaNumeric(value byte) bool {
+	return value >= 'A' && value <= 'Z' || value >= 'a' && value <= 'z' || value >= '0' && value <= '9'
+}
+
+type clusterManagementCredentials struct {
+	AdminToken     string
+	APIKeys        []adaptershttp.APIKeyCredential
+	OIDCVerifier   *authenticationadapter.VerifierConfig
+	OIDCIdentities []adaptershttp.OIDCIdentity
+}
+
+func loadClusterManagementCredentials(config clusterManagement) (clusterManagementCredentials, error) {
+	adminBytes, err := os.ReadFile(config.ClusterAdminTokenFile)
+	if err != nil {
+		return clusterManagementCredentials{}, fmt.Errorf("read cluster admin token file: %w", err)
+	}
+	adminToken := strings.TrimSpace(string(adminBytes))
+	if adminToken == "" {
+		return clusterManagementCredentials{}, errors.New("cluster admin token file is empty")
+	}
+	verifier, identities, err := validateClusterManagementAccess(config)
+	if err != nil {
+		return clusterManagementCredentials{}, err
+	}
+	credentials := clusterManagementCredentials{
+		AdminToken: adminToken, OIDCVerifier: verifier, OIDCIdentities: identities,
+		APIKeys: make([]adaptershttp.APIKeyCredential, len(config.APIKeys)),
+	}
+	seenKeys := make(map[string]string, len(config.APIKeys))
+	for i, configured := range config.APIKeys {
+		keyBytes, readErr := os.ReadFile(configured.KeyFile)
+		if readErr != nil {
+			return clusterManagementCredentials{}, fmt.Errorf("read management API key file for %q: %w", configured.ID, readErr)
+		}
+		key := strings.TrimSpace(string(keyBytes))
+		if key == "" {
+			return clusterManagementCredentials{}, fmt.Errorf("management API key file for %q is empty", configured.ID)
+		}
+		if key == adminToken {
+			return clusterManagementCredentials{}, fmt.Errorf("management API key %q must differ from the cluster admin token", configured.ID)
+		}
+		if otherID, exists := seenKeys[key]; exists {
+			return clusterManagementCredentials{}, fmt.Errorf("management API keys %q and %q must differ", otherID, configured.ID)
+		}
+		seenKeys[key] = configured.ID
+		roles := make([]adaptershttp.Role, len(configured.Roles))
+		for j, name := range configured.Roles {
+			roles[j], _ = adaptershttp.ParseRole(name)
+		}
+		credentials.APIKeys[i] = adaptershttp.APIKeyCredential{ID: configured.ID, Key: key, Roles: roles}
+	}
+	return credentials, nil
+}
 
 func validClusterString(value string, min, max int) bool {
 	return utf8.ValidString(value) && len(value) >= min && len(value) <= max && strings.TrimSpace(value) == value && strings.TrimSpace(value) != ""
@@ -466,32 +633,6 @@ func validClusterString(value string, min, max int) bool {
 
 func validRequiredPath(value string) bool {
 	return strings.TrimSpace(value) != "" && strings.TrimSpace(value) == value
-}
-
-func loadClusterManagementCredentials(config clusterManagement) (adminToken, readOnlyAPIKey string, err error) {
-	adminTokenBytes, err := os.ReadFile(config.ClusterAdminTokenFile)
-	if err != nil {
-		return "", "", fmt.Errorf("read cluster admin token file: %w", err)
-	}
-	adminToken = strings.TrimSpace(string(adminTokenBytes))
-	if adminToken == "" {
-		return "", "", errors.New("cluster admin token file is empty")
-	}
-	if config.ReadOnlyAPIKeyFile == "" {
-		return adminToken, "", nil
-	}
-	readOnlyAPIKeyBytes, err := os.ReadFile(config.ReadOnlyAPIKeyFile)
-	if err != nil {
-		return "", "", fmt.Errorf("read management read-only API key file: %w", err)
-	}
-	readOnlyAPIKey = strings.TrimSpace(string(readOnlyAPIKeyBytes))
-	if readOnlyAPIKey == "" {
-		return "", "", errors.New("management read-only API key file is empty")
-	}
-	if readOnlyAPIKey == adminToken {
-		return "", "", errors.New("management read-only API key must differ from the cluster admin token")
-	}
-	return adminToken, readOnlyAPIKey, nil
 }
 
 func clusterPathsOverlap(a, b string) (bool, error) {

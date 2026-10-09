@@ -48,14 +48,14 @@ func (stub *drainHTTPStub) CancelNodeDrain(_ context.Context, memberID uint64) (
 
 func newDrainHTTPTestHandler(service NodeDrainUseCase, role Role) http.Handler {
 	return NewRouterWithMembership(
-		ServerConfig{AuthToken: "drain-secret", AuthTokenRole: role, ClusterID: "test-cluster"},
-		&mockStateProvider{}, nil, nil, nil, service, nil, nil, &spyAuditUseCase{},
+		ServerConfig{APIKeys: []APIKeyCredential{{ID: "test", Key: "drain-secret", Roles: []Role{role}}}, ClusterID: "test-cluster"},
+		&mockStateProvider{}, nil, nil, nil, service, nil, nil, &spyAuditUseCase{}, nil,
 	)
 }
 
 func drainHTTPRequest(method, path, body string, key string) *http.Request {
 	request := httptest.NewRequest(method, path, strings.NewReader(body))
-	request.Header.Set("Authorization", "Bearer drain-secret")
+	request.Header.Set("X-API-Key", "drain-secret")
 	if body != "" {
 		request.Header.Set("Content-Type", "application/json")
 	}

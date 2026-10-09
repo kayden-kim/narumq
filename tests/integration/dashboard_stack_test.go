@@ -388,7 +388,6 @@ func TestDashboardStackProcessAcceptance(t *testing.T) {
 	}
 
 	fixture := newClusterMembershipProcessFixture(t, 3, "")
-	fixture.enableReadOnlyAPIKey = true
 	fixture.managementBindAll = true
 	readOnlyKeyBytes := make([]byte, 32)
 	if _, err := rand.Read(readOnlyKeyBytes); err != nil {
@@ -398,6 +397,9 @@ func TestDashboardStackProcessAcceptance(t *testing.T) {
 	if err := os.WriteFile(fixture.readOnlyAPIKeyPath, []byte(hex.EncodeToString(readOnlyKeyBytes)), 0o600); err != nil {
 		t.Fatalf("write dashboard ReadOnly API key: %v", err)
 	}
+	fixture.managementAPIKeys = []clusterMembershipProcessAPIKey{{
+		ID: "dashboard", KeyFile: fixture.readOnlyAPIKeyPath, Roles: []string{"ReadOnly"},
+	}}
 
 	processes := make([]*clusterMembershipProcess, 3)
 	for index := range processes {

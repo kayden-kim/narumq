@@ -29,7 +29,7 @@ func cmmDecodeErrorEnvelope(t *testing.T, response *httptest.ResponseRecorder) E
 
 func cmmMembershipRequest(method, path string, body io.Reader) *http.Request {
 	request := httptest.NewRequest(method, path, body)
-	request.Header.Set("Authorization", "Bearer cluster-secret")
+	request.Header.Set("X-API-Key", "cluster-secret")
 	return request
 }
 

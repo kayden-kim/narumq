@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	adaptershttp "narumq/internal/adapters/http/management"
 	"narumq/internal/application/membership"
 )
 
@@ -160,7 +161,9 @@ func TestParseClusterConfigRejectsInvalidInputs(t *testing.T) {
 		{name: "audit directory nested in data directory", edit: func(c *clusterConfigFile) { c.Management.AuditDirectory = c.Directory + "/audit" }},
 		{name: "audit directory contains data directory", edit: func(c *clusterConfigFile) { c.Management.AuditDirectory = "data" }},
 		{name: "blank token path", edit: func(c *clusterConfigFile) { c.Management.ClusterAdminTokenFile = " " }},
-		{name: "blank read-only API key path", edit: func(c *clusterConfigFile) { c.Management.ReadOnlyAPIKeyFile = " " }},
+		{name: "blank API key path", edit: func(c *clusterConfigFile) {
+			c.Management.APIKeys = []clusterManagementAPIKey{{ID: "dashboard", KeyFile: " ", Roles: []string{"ReadOnly"}}}
+		}},
 		{name: "tenant quota version zero", edit: func(c *clusterConfigFile) {
 			c.TenantQuotas = validTenantQuotaProfileConfig()
 			c.TenantQuotas.Version = 0
@@ -201,31 +204,88 @@ func TestParseClusterConfigRejectsInvalidInputs(t *testing.T) {
 	}
 }
 
-// Traceability: UI-01; docs/specs/management-api-and-observability.md §8.
-func TestClusterManagementReadOnlyAPIKeyConfiguration(t *testing.T) {
+// Traceability: SEC-10; docs/specs/tenancy-and-security.md §6.
+func TestClusterManagementAccessConfiguration(t *testing.T) {
 	config := validBootstrapClusterConfig()
-	config.Management.ReadOnlyAPIKeyFile = "secrets/read-only.key"
+	config.Management.APIKeys = []clusterManagementAPIKey{{ID: "dashboard", KeyFile: "secrets/dashboard.key", Roles: []string{"ReadOnly"}}}
+	config.Management.OIDC = &clusterManagementOIDC{
+		rawJWTConfig: rawJWTConfig{
+			Issuer: "https://issuer.example", Audience: "narumq-management", Algorithms: []string{"RS256"},
+			JWKSURL: "https://issuer.example/jwks.json", CacheTTL: "5m", RefreshCooldown: "30s",
+			ClockSkew: "30s", HTTPTimeout: "5s",
+		},
+		Identities: []clusterManagementOIDCIdentity{{Subject: "alice", Roles: []string{"SecurityAdmin"}}},
+	}
 	if err := validateClusterConfig(config); err != nil {
-		t.Fatalf("valid read-only API key path rejected: %v", err)
+		t.Fatalf("valid management access configuration rejected: %v", err)
 	}
 	parsed, err := parseClusterConfig(strings.NewReader(string(mustMarshalClusterConfig(t, config))))
 	if err != nil {
-		t.Fatalf("parse read-only API key config: %v", err)
+		t.Fatalf("parse management access config: %v", err)
 	}
-	if parsed.Management.ReadOnlyAPIKeyFile != config.Management.ReadOnlyAPIKeyFile {
-		t.Fatalf("read-only API key path = %q, want %q", parsed.Management.ReadOnlyAPIKeyFile, config.Management.ReadOnlyAPIKeyFile)
+	if parsed.Management.APIKeys[0].ID != "dashboard" || parsed.Management.OIDC.Identities[0].Subject != "alice" {
+		t.Fatalf("management access config did not round trip: %+v", parsed.Management)
+	}
+	verifier, identities, err := validateClusterManagementAccess(parsed.Management)
+	if err != nil || verifier == nil || verifier.Issuer != "https://issuer.example" ||
+		len(identities) != 1 || identities[0].Roles[0] != adaptershttp.RoleSecurityAdmin {
+		t.Fatalf("validated access config = (%+v, %+v, %v)", verifier, identities, err)
+	}
+	valid := string(mustMarshalClusterConfig(t, validBootstrapClusterConfig()))
+	oldConfig := strings.Replace(valid, `"auditDirectory":"data/node1-audit"`, `"readOnlyApiKeyFile":"secrets/old.key","auditDirectory":"data/node1-audit"`, 1)
+	if _, err := parseClusterConfig(strings.NewReader(oldConfig)); err == nil {
+		t.Fatal("parseClusterConfig accepted the removed readOnlyApiKeyFile field")
 	}
 
-	for _, path := range []string{" ", " secrets/key", "secrets/key "} {
-		invalid := validBootstrapClusterConfig()
-		invalid.Management.ReadOnlyAPIKeyFile = path
-		if err := validateClusterConfig(invalid); err == nil || err.Error() != "management readOnlyApiKeyFile must be a valid path" {
-			t.Fatalf("validate readOnlyApiKeyFile %q error = %v, want invalid path error", path, err)
-		}
+	cases := []struct {
+		name string
+		edit func(*clusterManagement)
+		want string
+	}{
+		{"invalid id", func(c *clusterManagement) { c.APIKeys[0].ID = "-bad" }, "management apiKeys[0].id must match ^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$"},
+		{"duplicate id", func(c *clusterManagement) { c.APIKeys = append(c.APIKeys, c.APIKeys[0]) }, `duplicate management apiKeys id "dashboard"`},
+		{"invalid key path", func(c *clusterManagement) { c.APIKeys[0].KeyFile = " " }, "management apiKeys[0].keyFile must be a valid path"},
+		{"empty key roles", func(c *clusterManagement) { c.APIKeys[0].Roles = nil }, "management apiKeys[0].roles must contain at least one role"},
+		{"unknown key role", func(c *clusterManagement) { c.APIKeys[0].Roles = []string{"Reader"} }, `management apiKeys[0] has unknown role "Reader"`},
+		{"duplicate key role", func(c *clusterManagement) { c.APIKeys[0].Roles = []string{"ReadOnly", "ReadOnly"} }, `management apiKeys[0] has duplicate role "ReadOnly"`},
+		{"missing issuer", func(c *clusterManagement) { c.OIDC.Issuer = "" }, "management.oidc.issuer is required"},
+		{"missing audience", func(c *clusterManagement) { c.OIDC.Audience = "" }, "management.oidc.audience is required"},
+		{"missing algorithms", func(c *clusterManagement) { c.OIDC.Algorithms = nil }, "management.oidc.algorithms is required"},
+		{"empty algorithm", func(c *clusterManagement) { c.OIDC.Algorithms = []string{""} }, "management.oidc algorithm must not be empty"},
+		{"duplicate algorithm", func(c *clusterManagement) { c.OIDC.Algorithms = []string{"RS256", "RS256"} }, `duplicate management.oidc algorithm "RS256"`},
+		{"nonabsolute JWKS URL", func(c *clusterManagement) { c.OIDC.JWKSURL = "/jwks" }, "management.oidc.jwksUrl must be an absolute URL"},
+		{"missing cache TTL", func(c *clusterManagement) { c.OIDC.CacheTTL = "" }, "management.oidc.cacheTtl is required"},
+		{"invalid cache TTL", func(c *clusterManagement) { c.OIDC.CacheTTL = "soon" }, `invalid management.oidc.cacheTtl duration "soon"`},
+		{"invalid refresh cooldown", func(c *clusterManagement) { c.OIDC.RefreshCooldown = "soon" }, `invalid management.oidc.refreshCooldown duration "soon"`},
+		{"invalid clock skew", func(c *clusterManagement) { c.OIDC.ClockSkew = "soon" }, `invalid management.oidc.clockSkew duration "soon"`},
+		{"invalid HTTP timeout", func(c *clusterManagement) { c.OIDC.HTTPTimeout = "soon" }, `invalid management.oidc.httpTimeout duration "soon"`},
+		{"invalid OIDC URL", func(c *clusterManagement) { c.OIDC.JWKSURL = "http://example.com/jwks" }, "management.oidc.jwksUrl must be HTTPS or loopback HTTP"},
+		{"empty OIDC identities", func(c *clusterManagement) { c.OIDC.Identities = nil }, "management.oidc.identities must contain at least one identity"},
+		{"empty subject", func(c *clusterManagement) { c.OIDC.Identities[0].Subject = "" }, "management.oidc.identities[0].subject is required"},
+		{"long subject", func(c *clusterManagement) { c.OIDC.Identities[0].Subject = strings.Repeat("a", 252) }, "management.oidc.identities[0].subject must not exceed 251 characters"},
+		{"duplicate subject", func(c *clusterManagement) { c.OIDC.Identities = append(c.OIDC.Identities, c.OIDC.Identities[0]) }, `duplicate management.oidc subject "alice"`},
+		{"empty identity roles", func(c *clusterManagement) { c.OIDC.Identities[0].Roles = nil }, "management.oidc.identities[0].roles must contain at least one role"},
+		{"unknown identity role", func(c *clusterManagement) { c.OIDC.Identities[0].Roles = []string{"Reader"} }, `management.oidc.identities[0] has unknown role "Reader"`},
+		{"duplicate identity role", func(c *clusterManagement) { c.OIDC.Identities[0].Roles = []string{"SecurityAdmin", "SecurityAdmin"} }, `management.oidc.identities[0] has duplicate role "SecurityAdmin"`},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			c := config.Management
+			c.APIKeys = append([]clusterManagementAPIKey(nil), config.Management.APIKeys...)
+			c.APIKeys[0].Roles = append([]string(nil), c.APIKeys[0].Roles...)
+			oidc := *config.Management.OIDC
+			oidc.Identities = append([]clusterManagementOIDCIdentity(nil), oidc.Identities...)
+			c.OIDC = &oidc
+			tc.edit(&c)
+			_, _, err := validateClusterManagementAccess(c)
+			if err == nil || !strings.HasPrefix(err.Error(), tc.want) {
+				t.Fatalf("validateClusterManagementAccess error = %v, want prefix %q", err, tc.want)
+			}
+		})
 	}
 }
 
-// Traceability: UI-01; docs/specs/management-api-and-observability.md §8.
+// Traceability: SEC-10; docs/specs/tenancy-and-security.md §6.
 func TestLoadClusterManagementCredentials(t *testing.T) {
 	writeCredential := func(t *testing.T, directory, name, value string) string {
 		t.Helper()
@@ -235,79 +295,57 @@ func TestLoadClusterManagementCredentials(t *testing.T) {
 		}
 		return path
 	}
-
 	directory := t.TempDir()
 	adminPath := writeCredential(t, directory, "admin.token", " admin-secret \n")
-	readOnlyPath := writeCredential(t, directory, "read-only.key", " read-only-secret \n")
-	adminToken, readOnlyAPIKey, err := loadClusterManagementCredentials(clusterManagement{
-		ClusterAdminTokenFile: adminPath, ReadOnlyAPIKeyFile: readOnlyPath,
-	})
-	if err != nil || adminToken != "admin-secret" || readOnlyAPIKey != "read-only-secret" {
-		t.Fatalf("loaded credentials = (%q, %q, %v), want trimmed distinct values", adminToken, readOnlyAPIKey, err)
+	keyPath := writeCredential(t, directory, "dashboard.key", " dashboard-secret \n")
+	management := clusterManagement{
+		ClusterAdminTokenFile: adminPath,
+		APIKeys:               []clusterManagementAPIKey{{ID: "dashboard", KeyFile: keyPath, Roles: []string{"ReadOnly"}}},
+		OIDC: &clusterManagementOIDC{
+			rawJWTConfig: rawJWTConfig{
+				Issuer: "https://issuer.example", Audience: "narumq-management", Algorithms: []string{"RS256"},
+				JWKSURL: "https://issuer.example/jwks.json", CacheTTL: "5m", RefreshCooldown: "30s",
+				ClockSkew: "30s", HTTPTimeout: "5s",
+			},
+			Identities: []clusterManagementOIDCIdentity{{Subject: "alice", Roles: []string{"SecurityAdmin"}}},
+		},
 	}
-	adminOnlyToken, noReadOnlyKey, err := loadClusterManagementCredentials(clusterManagement{ClusterAdminTokenFile: adminPath})
-	if err != nil || adminOnlyToken != "admin-secret" || noReadOnlyKey != "" {
-		t.Fatalf("admin-only credentials = (%q, %q, %v), want admin token and no API key", adminOnlyToken, noReadOnlyKey, err)
+	credentials, err := loadClusterManagementCredentials(management)
+	if err != nil || credentials.AdminToken != "admin-secret" || len(credentials.APIKeys) != 1 ||
+		credentials.APIKeys[0].Key != "dashboard-secret" || credentials.APIKeys[0].Roles[0] != adaptershttp.RoleReadOnly ||
+		credentials.OIDCVerifier == nil || credentials.OIDCVerifier.Issuer != "https://issuer.example" ||
+		credentials.OIDCVerifier.HTTPTimeout != 5*time.Second || len(credentials.OIDCIdentities) != 1 {
+		t.Fatalf("loaded management credentials = %+v, %v", credentials, err)
 	}
-
 	emptyAdminPath := writeCredential(t, directory, "empty-admin.token", "\n \t")
-	emptyReadOnlyPath := writeCredential(t, directory, "empty-read-only.key", " \n")
-	sameReadOnlyPath := writeCredential(t, directory, "same-read-only.key", "admin-secret\n")
-	for _, testCase := range []struct {
-		name      string
-		config    clusterManagement
-		wantError string
-		wantCause error
+	emptyKeyPath := writeCredential(t, directory, "empty.key", " \n")
+	sameKeyPath := writeCredential(t, directory, "same.key", "admin-secret\n")
+	sameKey2Path := writeCredential(t, directory, "same2.key", "dashboard-secret\n")
+	oidcFree := clusterManagement{ClusterAdminTokenFile: adminPath}
+	cases := []struct {
+		name   string
+		config clusterManagement
+		want   string
+		cause  error
 	}{
-		{
-			name: "admin file missing",
-			config: clusterManagement{
-				ClusterAdminTokenFile: filepath.Join(directory, "missing-admin.token"),
-			},
-			wantError: "read cluster admin token file:",
-			wantCause: os.ErrNotExist,
-		},
-		{
-			name: "admin file empty",
-			config: clusterManagement{
-				ClusterAdminTokenFile: emptyAdminPath,
-			},
-			wantError: "cluster admin token file is empty",
-		},
-		{
-			name: "read-only key file missing",
-			config: clusterManagement{
-				ClusterAdminTokenFile: adminPath, ReadOnlyAPIKeyFile: filepath.Join(directory, "missing-read-only.key"),
-			},
-			wantError: "read management read-only API key file:",
-			wantCause: os.ErrNotExist,
-		},
-		{
-			name: "read-only key file empty",
-			config: clusterManagement{
-				ClusterAdminTokenFile: adminPath, ReadOnlyAPIKeyFile: emptyReadOnlyPath,
-			},
-			wantError: "management read-only API key file is empty",
-		},
-		{
-			name: "read-only key equals admin token",
-			config: clusterManagement{
-				ClusterAdminTokenFile: adminPath, ReadOnlyAPIKeyFile: sameReadOnlyPath,
-			},
-			wantError: "management read-only API key must differ from the cluster admin token",
-		},
-	} {
-		t.Run(testCase.name, func(t *testing.T) {
-			_, _, err := loadClusterManagementCredentials(testCase.config)
-			if err == nil {
-				t.Fatal("loadClusterManagementCredentials succeeded, want error")
-			}
-			if testCase.wantCause == nil {
-				if err.Error() != testCase.wantError {
-					t.Fatalf("error = %q, want %q", err, testCase.wantError)
+		{"missing admin", clusterManagement{ClusterAdminTokenFile: filepath.Join(directory, "missing-admin")}, "read cluster admin token file:", os.ErrNotExist},
+		{"empty admin", clusterManagement{ClusterAdminTokenFile: emptyAdminPath}, "cluster admin token file is empty", nil},
+		{"missing API key", clusterManagement{ClusterAdminTokenFile: adminPath, APIKeys: []clusterManagementAPIKey{{ID: "missing", KeyFile: filepath.Join(directory, "missing-key"), Roles: []string{"ReadOnly"}}}}, `read management API key file for "missing":`, os.ErrNotExist},
+		{"empty API key", clusterManagement{ClusterAdminTokenFile: adminPath, APIKeys: []clusterManagementAPIKey{{ID: "empty", KeyFile: emptyKeyPath, Roles: []string{"ReadOnly"}}}}, `management API key file for "empty" is empty`, nil},
+		{"API key equals admin", clusterManagement{ClusterAdminTokenFile: adminPath, APIKeys: []clusterManagementAPIKey{{ID: "same", KeyFile: sameKeyPath, Roles: []string{"ReadOnly"}}}}, `management API key "same" must differ from the cluster admin token`, nil},
+		{"duplicate API key secret", clusterManagement{ClusterAdminTokenFile: adminPath, APIKeys: []clusterManagementAPIKey{{ID: "one", KeyFile: keyPath, Roles: []string{"ReadOnly"}}, {ID: "two", KeyFile: sameKey2Path, Roles: []string{"Operator"}}}}, `management API keys "one" and "two" must differ`, nil},
+		{"admin only", oidcFree, "", nil},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := loadClusterManagementCredentials(tc.config)
+			if tc.want == "" {
+				if err != nil || got.AdminToken != "admin-secret" || len(got.APIKeys) != 0 {
+					t.Fatalf("load admin-only credentials = %+v, %v", got, err)
 				}
-			} else if !strings.HasPrefix(err.Error(), testCase.wantError) || !errors.Is(err, testCase.wantCause) {
-				t.Fatalf("error = %v, want prefix %q wrapping %v", err, testCase.wantError, testCase.wantCause)
+			} else if err == nil || !strings.HasPrefix(err.Error(), tc.want) ||
+				(tc.cause != nil && !errors.Is(err, tc.cause)) {
+				t.Fatalf("load credentials error = %v, want prefix %q wrapping %v", err, tc.want, tc.cause)
 			}
 		})
 	}

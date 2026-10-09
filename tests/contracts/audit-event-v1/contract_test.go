@@ -84,14 +84,23 @@ func TestAuditEventMatchesSchemaAndFileChain(t *testing.T) {
 	drainService := contractDrainService{}
 	rebalanceService := contractRebalanceService{}
 	backupProvider := contractBackupProvider{}
-	adminRouter := newContractManagementRouter(adminSecret, audithttp.RoleClusterAdmin, membershipService, drainService, rebalanceService, backupProvider, service)
-	readOnlyRouter := newContractManagementRouter(readOnlySecret, audithttp.RoleReadOnly, membershipService, drainService, rebalanceService, backupProvider, service)
+	adminRouter := newContractManagementRouter(
+		audithttp.ServerConfig{ClusterID: "contract-cluster", AuthToken: adminSecret},
+		membershipService, drainService, rebalanceService, backupProvider, service, nil,
+	)
+	readOnlyRouter := newContractManagementRouter(
+		audithttp.ServerConfig{ClusterID: "contract-cluster", APIKeys: []audithttp.APIKeyCredential{{
+			ID: "dashboard", Key: readOnlySecret, Roles: []audithttp.Role{audithttp.RoleReadOnly},
+		}}},
+		membershipService, drainService, rebalanceService, backupProvider, service, nil,
+	)
 	conflictDrainRouter := newContractManagementRouter(
-		adminSecret, audithttp.RoleClusterAdmin, membershipService,
+		audithttp.ServerConfig{ClusterID: "contract-cluster", AuthToken: adminSecret},
+		membershipService,
 		contractDrainService{startError: &appmembership.ServiceError{
 			Code: appmembership.ServiceErrorInvalidNodeTransition, Message: "node lifecycle transition is not allowed",
 		}},
-		rebalanceService, backupProvider, service,
+		rebalanceService, backupProvider, service, nil,
 	)
 
 	type requestCase struct {
@@ -101,6 +110,7 @@ func TestAuditEventMatchesSchemaAndFileChain(t *testing.T) {
 		action, result, reason, targetType, targetID    string
 		subject, role                                   string
 		requestID                                       string
+		apiKey                                          bool
 	}
 	cases := []requestCase{
 		{
@@ -161,7 +171,7 @@ func TestAuditEventMatchesSchemaAndFileChain(t *testing.T) {
 			body: validContractDrainRequestJSON, token: readOnlySecret, idempotencyKey: "readonly-drain-3",
 			router: readOnlyRouter, status: http.StatusForbidden, action: "management.request", result: "DENIED",
 			reason: "forbidden", targetType: "management_endpoint", targetID: "/api/v1/nodes/{nodeId}/drain",
-			subject: "management-bearer-token", role: "ReadOnly",
+			subject: "apikey:dashboard", role: "ReadOnly", apiKey: true,
 		},
 		{
 			name: "drain conflict", method: http.MethodPost, path: "/api/v1/nodes/3/drain",
@@ -175,7 +185,11 @@ func TestAuditEventMatchesSchemaAndFileChain(t *testing.T) {
 		test := &cases[index]
 		t.Run(test.name, func(t *testing.T) {
 			request := httptest.NewRequest(test.method, test.path, strings.NewReader(test.body))
-			request.Header.Set("Authorization", "Bearer "+test.token)
+			if test.apiKey {
+				request.Header.Set("X-API-Key", test.token)
+			} else {
+				request.Header.Set("Authorization", "Bearer "+test.token)
+			}
 			if test.body != "" {
 				request.Header.Set("Content-Type", "application/json")
 			}
@@ -273,6 +287,127 @@ func TestAuditEventMatchesSchemaAndFileChain(t *testing.T) {
 	}
 	if verification.Records != uint64(len(cases)) || verification.FirstSeq != 1 || verification.LastSeq != uint64(len(cases)) {
 		t.Fatalf("unexpected verified chain summary: %+v", verification)
+	}
+}
+
+// Traceability: SEC-10; docs/specs/tenancy-and-security.md §6; docs/specs/management-api-and-observability.md §1; ADR-0048 §7.
+func TestAuditQueryReturnsStoredChainRecords(t *testing.T) {
+	directory := t.TempDir()
+	publisher, err := auditlog.OpenFileAuditPublisher(auditlog.FileAuditPublisherConfig{
+		Directory: directory, MaxFileBytes: auditlog.DefaultMaxFileBytes,
+	})
+	if err != nil {
+		t.Fatalf("OpenFileAuditPublisher() error = %v", err)
+	}
+	defer func() {
+		if err := publisher.Close(); err != nil {
+			t.Errorf("Close() error = %v", err)
+		}
+	}()
+	auditService, err := auditapp.NewService(auditapp.ServiceConfig{
+		ClusterID: "contract-cluster", NodeID: 1, ReleaseVersion: "1.0.0", DenialEventsPerSecond: 20,
+	}, publisher, contractClock{now: time.Date(2026, time.October, 8, 12, 30, 0, 0, time.UTC)}, contractMetrics{})
+	if err != nil {
+		t.Fatalf("NewService() error = %v", err)
+	}
+	queryService, err := auditapp.NewQueryService(publisher)
+	if err != nil {
+		t.Fatalf("NewQueryService() error = %v", err)
+	}
+
+	const (
+		readOnlySecret  = "known-audit-query-readonly-secret"
+		auditReadSecret = "known-audit-query-security-secret"
+	)
+	router := newContractManagementRouter(
+		audithttp.ServerConfig{
+			ClusterID: "contract-cluster",
+			APIKeys: []audithttp.APIKeyCredential{
+				{ID: "dashboard", Key: readOnlySecret, Roles: []audithttp.Role{audithttp.RoleReadOnly}},
+				{ID: "audit-reader", Key: auditReadSecret, Roles: []audithttp.Role{audithttp.RoleSecurityAdmin}},
+			},
+		},
+		contractMembershipService{}, contractDrainService{}, contractRebalanceService{},
+		contractBackupProvider{}, auditService, queryService,
+	)
+	deniedMutation := httptest.NewRequest(http.MethodPost, "/api/v1/cluster/members", strings.NewReader(validContractMemberAdmissionJSON))
+	deniedMutation.Header.Set("X-API-Key", readOnlySecret)
+	deniedMutation.Header.Set("Content-Type", "application/json")
+	deniedResponse := httptest.NewRecorder()
+	router.ServeHTTP(deniedResponse, deniedMutation)
+	if deniedResponse.Code != http.StatusForbidden {
+		t.Fatalf("ReadOnly mutation status=%d body=%q, want %d", deniedResponse.Code, deniedResponse.Body.String(), http.StatusForbidden)
+	}
+
+	storedBytes, err := os.ReadFile(filepath.Join(directory, "audit.jsonl"))
+	if err != nil {
+		t.Fatalf("ReadFile(audit.jsonl) error = %v", err)
+	}
+	var storedRecord struct {
+		Seq      uint64          `json:"seq"`
+		PrevHash string          `json:"prevHash"`
+		Hash     string          `json:"hash"`
+		Event    json.RawMessage `json:"event"`
+	}
+	if err := json.Unmarshal(bytes.TrimSpace(storedBytes), &storedRecord); err != nil {
+		t.Fatalf("decode stored audit record: %v", err)
+	}
+
+	queryRequest := httptest.NewRequest(
+		http.MethodGet,
+		"/api/v1/audit/events?actorSubject=apikey%3Adashboard&action=management.request&result=DENIED&limit=1",
+		nil,
+	)
+	queryRequest.Header.Set("X-API-Key", auditReadSecret)
+	queryResponse := httptest.NewRecorder()
+	router.ServeHTTP(queryResponse, queryRequest)
+	if queryResponse.Code != http.StatusOK {
+		t.Fatalf("audit query status=%d body=%q, want %d", queryResponse.Code, queryResponse.Body.String(), http.StatusOK)
+	}
+	var queryResult struct {
+		Data []struct {
+			Seq      uint64          `json:"seq"`
+			PrevHash string          `json:"prevHash"`
+			Hash     string          `json:"hash"`
+			Event    json.RawMessage `json:"event"`
+		} `json:"data"`
+		Page struct {
+			NextCursor *string `json:"nextCursor"`
+			HasMore    bool    `json:"hasMore"`
+		} `json:"page"`
+	}
+	if err := json.Unmarshal(queryResponse.Body.Bytes(), &queryResult); err != nil {
+		t.Fatalf("decode audit query response: %v", err)
+	}
+	if len(queryResult.Data) != 1 || queryResult.Page.HasMore || queryResult.Page.NextCursor != nil {
+		t.Fatalf("audit query result=%+v, want one final stored record", queryResult)
+	}
+	gotRecord := queryResult.Data[0]
+	if gotRecord.Seq != storedRecord.Seq || gotRecord.PrevHash != storedRecord.PrevHash ||
+		gotRecord.Hash != storedRecord.Hash || !bytes.Equal(gotRecord.Event, storedRecord.Event) {
+		t.Fatalf("audit query record=%+v, want exact stored chain record %+v", gotRecord, storedRecord)
+	}
+	var storedEvent struct {
+		Actor struct {
+			Subject string   `json:"subject"`
+			Roles   []string `json:"roles"`
+		} `json:"actor"`
+		Action string `json:"action"`
+		Result string `json:"result"`
+	}
+	if err := json.Unmarshal(storedRecord.Event, &storedEvent); err != nil {
+		t.Fatalf("decode stored audit event: %v", err)
+	}
+	if storedEvent.Actor.Subject != "apikey:dashboard" || len(storedEvent.Actor.Roles) != 1 ||
+		storedEvent.Actor.Roles[0] != "ReadOnly" || storedEvent.Action != "management.request" || storedEvent.Result != "DENIED" {
+		t.Fatalf("stored actor/event=%+v, want the denied ReadOnly API key request", storedEvent)
+	}
+	verification, err := auditlog.VerifyDirectory(directory)
+	if err != nil {
+		t.Fatalf("VerifyDirectory() error = %v", err)
+	}
+	if verification.Records != 1 || verification.FirstSeq != storedRecord.Seq || verification.LastSeq != storedRecord.Seq {
+		t.Fatalf("query changed stored audit chain: %+v, record=%+v", verification, storedRecord)
 	}
 }
 
@@ -495,17 +630,17 @@ func contractRebalanceOperation() appmembership.ConnectionRebalanceOperationDTO 
 }
 
 func newContractManagementRouter(
-	token string,
-	role audithttp.Role,
+	config audithttp.ServerConfig,
 	membershipService audithttp.MembershipUseCase,
 	drainService audithttp.NodeDrainUseCase,
 	rebalanceService audithttp.ConnectionRebalanceUseCase,
 	backupProvider portsmanagement.ClusterBackupProvider,
 	auditService audithttp.AuditUseCase,
+	auditQueryService audithttp.AuditQueryUseCase,
 ) http.Handler {
 	return audithttp.NewRouterWithMembership(
-		audithttp.ServerConfig{ClusterID: "contract-cluster", AuthToken: token, AuthTokenRole: role},
-		nil, nil, nil, membershipService, drainService, rebalanceService, backupProvider, auditService,
+		config,
+		nil, nil, nil, membershipService, drainService, rebalanceService, backupProvider, auditService, auditQueryService,
 	)
 }
 

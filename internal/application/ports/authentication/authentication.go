@@ -28,6 +28,18 @@ type ClientCertificateAuthenticationProvider interface {
 	AuthenticateClientCertificate(ctx context.Context, certificate ClientCertificateDTO) (Result, error)
 }
 
+// VerifiedToken carries claims from a JWT whose signature, issuer, audience, subject, and time claims passed verification.
+type VerifiedToken struct {
+	Issuer    string
+	Subject   string
+	ExpiresAt time.Time
+}
+
+// TokenVerifier verifies one compact JWT without mapping it to an identity binding.
+type TokenVerifier interface {
+	VerifyToken(ctx context.Context, token []byte) (VerifiedToken, error)
+}
+
 // Result carries verified identity binding data without exposing provider types.
 type Result struct {
 	TenantID         tenancy.TenantID

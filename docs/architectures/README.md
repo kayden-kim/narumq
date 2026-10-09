@@ -22,7 +22,7 @@
 | [System overview](system-overview.md) | 외부 actor와 NaruMQ의 주요 실행 단위는 무엇인가? | Target / Draft | PRD, 전체 system spec |
 | [Broker core architecture](broker-core.md) | Broker 내부 책임과 source dependency는 어떻게 나뉘는가? | Target / Draft | ADR-0001, NFR-11~15 |
 | [Project structure (코드 지도 절 + 구조 view)](project-structure.md) | 실제 진입 경로와 package 배치, 현재 구현 사실과 목표 tree는 어떻게 구분되는가? | Current code map section + Target tree / Active | ADR-0001, NFR-11~15, TEST-01~17 |
-| [Management HTTP adapter module design](management-http-module.md) | Management API 인증·rate limit·감사 요청 순서는 어떻게 처리되는가? | Current / Verified | Management API §1.5, ADR-0043 |
+| [Management HTTP adapter module design](management-http-module.md) | Management API 인증·rate limit·감사 요청 순서는 어떻게 처리되는가? | Current / Verified | Management API §1.5, ADR-0043·ADR-0048 |
 | [Cluster architecture](cluster-architecture.md) | Quorum, ownership, routing과 durable state는 어떻게 연결되는가? | Target / Draft | Cluster spec, ADR-0002~0004 |
 | [EKS on EC2 deployment architecture](eks-ec2-deployment.md) | Logical broker node는 NLB·EKS·EC2·EBS에 어떻게 대응하는가? | Target / Draft | DEP-19~23, ADR-0006~0007 |
 | [Security boundaries](security-boundaries.md) | Client·node·관리 plane의 trust boundary와 enforcement point는 어디인가? | Target / Draft | Tenant와 security spec, Management API·Audit event contract |

@@ -4,16 +4,8 @@ package authentication
 import (
 	"context"
 	"errors"
-	"fmt"
-	"io"
 	"net/http"
-	"sync"
 	"time"
-
-	"github.com/lestrrat-go/jwx/v3/jwa"
-	"github.com/lestrrat-go/jwx/v3/jwk"
-	"github.com/lestrrat-go/jwx/v3/jws"
-	"github.com/lestrrat-go/jwx/v3/jwt"
 
 	applicationauthentication "narumq/internal/application/ports/authentication"
 	"narumq/internal/domain/security"
@@ -69,55 +61,22 @@ type identityKey struct {
 	issuer  string
 	subject string
 }
-type refreshCall struct {
-	done chan struct{}
-	err  error
-}
 
+// JWKSAuthenticationProvider verifies JWTs and resolves their static identity binding.
 type JWKSAuthenticationProvider struct {
-	issuer           string
-	audience         string
-	algorithms       map[string]struct{}
-	jwksURL          string
-	cacheTTL         time.Duration
-	refreshCooldown  time.Duration
-	clockSkew        time.Duration
-	httpClient       *http.Client
-	clock            Clock
-	bindings         map[identityKey]IdentityBinding
-	mu               sync.Mutex
-	keys             jwk.Set
-	fetchedAt        time.Time
-	expiresAt        time.Time
-	refreshAttemptAt time.Time
-	refreshing       *refreshCall
+	verifier *JWTVerifier
+	bindings map[identityKey]IdentityBinding
 }
 
 func NewJWKSAuthenticationProvider(config Config) (*JWKSAuthenticationProvider, error) {
-	if config.Issuer == "" || config.Audience == "" || config.JWKSURL == "" {
-		return nil, errors.New("JWKS authentication issuer, audience, and URL are required")
-	}
-	if len(config.Algorithms) == 0 {
-		return nil, errors.New("JWKS authentication algorithms are required")
-	}
-	algorithms := make(map[string]struct{}, len(config.Algorithms))
-	for _, algorithm := range config.Algorithms {
-		if algorithm == "" {
-			return nil, errors.New("JWKS authentication algorithm is empty")
-		}
-		if _, exists := algorithms[algorithm]; exists {
-			return nil, errors.New("JWKS authentication algorithm is duplicated")
-		}
-		algorithms[algorithm] = struct{}{}
-	}
-	if config.CacheTTL <= 0 || config.RefreshCooldown <= 0 || config.ClockSkew <= 0 || config.HTTPTimeout <= 0 {
-		return nil, errors.New("JWKS authentication durations must be greater than zero")
-	}
-	if config.HTTPClient == nil {
-		return nil, errors.New("JWKS authentication HTTP client is nil")
-	}
-	if config.Clock == nil {
-		return nil, errors.New("JWKS authentication clock is nil")
+	verifier, err := NewJWTVerifier(VerifierConfig{
+		Issuer: config.Issuer, Audience: config.Audience, Algorithms: config.Algorithms,
+		JWKSURL: config.JWKSURL, CacheTTL: config.CacheTTL,
+		RefreshCooldown: config.RefreshCooldown, ClockSkew: config.ClockSkew,
+		HTTPTimeout: config.HTTPTimeout, HTTPClient: config.HTTPClient, Clock: config.Clock,
+	})
+	if err != nil {
+		return nil, err
 	}
 	bindings := make(map[identityKey]IdentityBinding, len(config.Bindings))
 	for _, binding := range config.Bindings {
@@ -156,22 +115,7 @@ func NewJWKSAuthenticationProvider(config Config) (*JWKSAuthenticationProvider, 
 		binding.Roles = roles
 		bindings[key] = binding
 	}
-	client := *config.HTTPClient
-	if client.Timeout != config.HTTPTimeout {
-		client.Timeout = config.HTTPTimeout
-	}
-	return &JWKSAuthenticationProvider{
-		issuer:          config.Issuer,
-		audience:        config.Audience,
-		algorithms:      algorithms,
-		jwksURL:         config.JWKSURL,
-		cacheTTL:        config.CacheTTL,
-		refreshCooldown: config.RefreshCooldown,
-		clockSkew:       config.ClockSkew,
-		httpClient:      &client,
-		clock:           config.Clock,
-		bindings:        bindings,
-	}, nil
+	return &JWKSAuthenticationProvider{verifier: verifier, bindings: bindings}, nil
 }
 
 // Authenticate verifies a compact JWT and returns its static identity binding.
@@ -179,38 +123,11 @@ func (provider *JWKSAuthenticationProvider) Authenticate(ctx context.Context, cr
 	if provider == nil || ctx == nil || len(credential.Password) == 0 {
 		return applicationauthentication.Result{}, ErrInvalidCredential
 	}
-	algorithm, kid, err := parseHeader(credential.Password)
+	verified, err := provider.verifier.VerifyToken(ctx, credential.Password)
 	if err != nil {
 		return applicationauthentication.Result{}, err
 	}
-	if _, allowed := provider.algorithms[algorithm]; !allowed {
-		return applicationauthentication.Result{}, ErrUnsupportedAlgorithm
-	}
-	keys, err := provider.keySetFor(ctx, kid)
-	if err != nil {
-		return applicationauthentication.Result{}, err
-	}
-	key, found := keys.LookupKeyID(kid)
-	if !found {
-		return applicationauthentication.Result{}, ErrUnknownKey
-	}
-	signatureAlgorithm, ok := jwa.LookupSignatureAlgorithm(algorithm)
-	if !ok {
-		return applicationauthentication.Result{}, ErrUnsupportedAlgorithm
-	}
-	token, err := jwt.Parse(credential.Password,
-		jwt.WithKey(signatureAlgorithm, key),
-		jwt.WithValidate(false),
-	)
-	if err != nil {
-		return applicationauthentication.Result{}, ErrInvalidCredential
-	}
-	if err := provider.validateClaims(token); err != nil {
-		return applicationauthentication.Result{}, err
-	}
-	issuer, _ := token.Issuer()
-	subject, _ := token.Subject()
-	binding, ok := provider.bindings[identityKey{issuer: issuer, subject: subject}]
+	binding, ok := provider.bindings[identityKey{issuer: verified.Issuer, subject: verified.Subject}]
 	if !ok {
 		return applicationauthentication.Result{}, ErrUnmappedSubject
 	}
@@ -220,177 +137,6 @@ func (provider *JWKSAuthenticationProvider) Authenticate(ctx context.Context, cr
 		CredentialID:     binding.CredentialID,
 		AllowedClientIDs: append([]string(nil), binding.AllowedClientIDs...),
 		Roles:            append([]security.Role(nil), binding.Roles...),
-		ExpiresAt:        tokenExpiration(token),
+		ExpiresAt:        verified.ExpiresAt,
 	}, nil
-}
-
-func parseHeader(raw []byte) (string, string, error) {
-	message, err := jws.Parse(raw, jws.WithCompact())
-	if err != nil || len(message.Signatures()) != 1 {
-		return "", "", ErrInvalidCredential
-	}
-	headers := message.Signatures()[0].ProtectedHeaders()
-	algorithm, ok := headers.Algorithm()
-	if !ok || algorithm.String() == "" {
-		return "", "", ErrInvalidCredential
-	}
-	kid, ok := headers.KeyID()
-	if !ok || kid == "" {
-		return "", "", ErrInvalidCredential
-	}
-	return algorithm.String(), kid, nil
-}
-
-func (provider *JWKSAuthenticationProvider) validateClaims(token jwt.Token) error {
-	issuer, ok := token.Issuer()
-	if !ok || issuer != provider.issuer {
-		return ErrInvalidCredential
-	}
-	audience, ok := token.Audience()
-	if !ok || !contains(audience, provider.audience) {
-		return ErrInvalidCredential
-	}
-	subject, ok := token.Subject()
-	if !ok || subject == "" {
-		return ErrInvalidCredential
-	}
-	if !token.Has("exp") {
-		return ErrInvalidCredential
-	}
-	if _, ok := token.Expiration(); !ok {
-		return ErrInvalidCredential
-	}
-	if err := jwt.Validate(token,
-		jwt.WithClock(jwt.ClockFunc(provider.clock.Now)),
-		jwt.WithAcceptableSkew(provider.clockSkew),
-		jwt.WithRequiredClaim("exp"),
-	); err != nil {
-		return ErrInvalidCredential
-	}
-	return nil
-}
-
-func tokenExpiration(token jwt.Token) time.Time {
-	expiresAt, _ := token.Expiration()
-	return expiresAt
-}
-
-func contains(values []string, wanted string) bool {
-	for _, value := range values {
-		if value == wanted {
-			return true
-		}
-	}
-	return false
-}
-
-func (provider *JWKSAuthenticationProvider) keySetFor(ctx context.Context, kid string) (jwk.Set, error) {
-	for {
-		now := provider.clock.Now()
-		provider.mu.Lock()
-		cacheValid := provider.keys != nil && now.Before(provider.expiresAt)
-		if cacheValid {
-			if _, found := provider.keys.LookupKeyID(kid); found {
-				keys := provider.keys
-				provider.mu.Unlock()
-				return keys, nil
-			}
-			if provider.refreshing != nil {
-				call := provider.refreshing
-				provider.mu.Unlock()
-				if err := waitForRefresh(ctx, call); err != nil {
-					if ctx.Err() != nil {
-						return nil, ctx.Err()
-					}
-					return nil, ErrUnknownKey
-				}
-				continue
-			}
-			if !provider.refreshAttemptAt.IsZero() && now.Sub(provider.refreshAttemptAt) < provider.refreshCooldown {
-				provider.mu.Unlock()
-				return nil, ErrUnknownKey
-			}
-			provider.mu.Unlock()
-			if err := provider.refresh(ctx); err != nil {
-				return nil, ErrUnknownKey
-			}
-			continue
-		}
-		if provider.refreshing != nil {
-			call := provider.refreshing
-			provider.mu.Unlock()
-			if err := waitForRefresh(ctx, call); err != nil {
-				if ctx.Err() != nil {
-					return nil, ctx.Err()
-				}
-				return nil, fmt.Errorf("%w: refresh failed", ErrJWKSUnavailable)
-			}
-			continue
-		}
-		provider.mu.Unlock()
-		if err := provider.refresh(ctx); err != nil {
-			return nil, fmt.Errorf("%w: refresh failed", ErrJWKSUnavailable)
-		}
-	}
-}
-
-func waitForRefresh(ctx context.Context, call *refreshCall) error {
-	select {
-	case <-call.done:
-		return call.err
-	case <-ctx.Done():
-		return ctx.Err()
-	}
-}
-
-func (provider *JWKSAuthenticationProvider) refresh(ctx context.Context) error {
-	provider.mu.Lock()
-	if provider.refreshing != nil {
-		call := provider.refreshing
-		provider.mu.Unlock()
-		return waitForRefresh(ctx, call)
-	}
-	call := &refreshCall{done: make(chan struct{})}
-	provider.refreshing = call
-	attemptAt := provider.clock.Now()
-	provider.mu.Unlock()
-
-	keys, err := provider.fetch(ctx)
-	provider.mu.Lock()
-	provider.refreshAttemptAt = attemptAt
-	if err == nil {
-		fetchedAt := provider.clock.Now()
-		provider.keys = keys
-		provider.fetchedAt = fetchedAt
-		provider.expiresAt = fetchedAt.Add(provider.cacheTTL)
-	}
-	call.err = err
-	provider.refreshing = nil
-	close(call.done)
-	provider.mu.Unlock()
-	return err
-}
-
-func (provider *JWKSAuthenticationProvider) fetch(ctx context.Context) (jwk.Set, error) {
-	request, err := http.NewRequestWithContext(ctx, http.MethodGet, provider.jwksURL, nil)
-	if err != nil {
-		return nil, ErrJWKSUnavailable
-	}
-	response, err := provider.httpClient.Do(request)
-	if err != nil {
-		return nil, ErrJWKSUnavailable
-	}
-	defer response.Body.Close()
-	if response.StatusCode != http.StatusOK {
-		return nil, ErrJWKSUnavailable
-	}
-	body, err := io.ReadAll(io.LimitReader(response.Body, maxJWKSBodyBytes+1))
-	if err != nil || len(body) > maxJWKSBodyBytes {
-		return nil, ErrJWKSUnavailable
-	}
-	keys, err := jwk.Parse(body, jwk.WithRejectDuplicateKID(true), jwk.WithStrictKeySetParsing(true))
-	if err != nil || keys.Len() == 0 {
-		return nil, ErrJWKSUnavailable
-	}
-	return keys, nil
 }

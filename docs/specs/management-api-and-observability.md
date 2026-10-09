@@ -4,12 +4,12 @@
 
 | 항목 | 값 |
 | --- | --- |
-| 상태 | Active (Phase 1 query profile, broker drain, cluster feature activation, management-plane audit and API rate limit; other mutation·OIDC·운영 자동화는 deferred) |
+| 상태 | Active (Phase 1 query profile, broker drain, cluster feature activation, management-plane audit, API rate limit and SEC-10 OIDC/API key RBAC; other mutation·운영 자동화는 deferred) |
 | 관련 요구사항 | API-01~API-09, UI-01~UI-10, SEC-10~SEC-11 |
 | 근거 | [PRD 9.5절, 9.6절과 14장](../requirements/PRD.md) |
 | 관련 spec | [Tenant와 security](tenancy-and-security.md), [Drain](drain-and-rolling-update.md) |
 | 관련 Architecture | [System overview](../architectures/system-overview.md), [Security boundaries](../architectures/security-boundaries.md) |
-| 관련 결정 | [ADR-0005](../decisions/ADR-0005-management-api-contract-format.md), [ADR-0018](../decisions/ADR-0018-release-compatibility-window.md), [ADR-0043](../decisions/ADR-0043-management-api-rate-limit.md), [ADR-0045](../decisions/ADR-0045-operations-dashboard-grafana.md) |
+| 관련 결정 | [ADR-0005](../decisions/ADR-0005-management-api-contract-format.md), [ADR-0018](../decisions/ADR-0018-release-compatibility-window.md), [ADR-0043](../decisions/ADR-0043-management-api-rate-limit.md), [ADR-0045](../decisions/ADR-0045-operations-dashboard-grafana.md), [ADR-0048](../decisions/ADR-0048-management-api-oidc-api-key-rbac.md) |
 | 관련 Contract | [Management API v1](../contracts/management-api-v1.md), [Management API OpenAPI](../contracts/management-api-v1.openapi.json), [Audit event v1](../contracts/audit-event-v1.md) |
 
 ## 1. HTTP 공통 계약
@@ -24,12 +24,11 @@
 
 - `-http-listen`은 Management HTTP listener의 bind 주소다.
 - `-http-auth-token`이 설정되면 유효한 `Authorization: Bearer <token>`을 요구하고, `/api/v1`에는 endpoint별 RBAC를 적용한다. 인증 실패는 `401`, 인증은 됐지만 권한이 부족하면 `403`이다.
-- Cluster mode에서 `management.readOnlyApiKeyFile`을 지정하면 서버는 파일을 읽고 앞뒤 공백을 제거한 값을 `X-API-Key` credential로 사용한다. 이 key의 role은 `ReadOnly`다. 파일이 없거나 읽을 수 없고, 내용이 비어 있거나 cluster admin token과 같으면 process 시작을 거절해야 한다. 이 설정은 standalone mode에 없다.
-- `X-API-Key`는 machine-to-machine 주체를 위한 opaque credential이다. 구성된 credential에도 bearer token과 같은 endpoint별 RBAC 경계를 적용한다.
-- bearer token과 API key는 opaque 값이다. Phase 1은 OIDC discovery, JWT claim 검증과 claim 기반 tenant scope를 약속하지 않는다.
-- `-http-auth-token`이 비어 있으면 local development용 익명 모드로 동작하지만, `-http-listen`은 literal loopback IP(`127.0.0.0/8` 또는 `::1`)만 허용한다. `0.0.0.0`, `:8080`, 외부 인터페이스 주소는 거부한다.
-- 따라서 원격 interface에 Management API를 노출하려면 반드시 `-http-auth-token` 또는 동등한 API key 정책을 설정해야 한다.
-- CLI에서 health probe와 `/metrics`는 listener 정책에 따라 익명 노출할 수 있다. 운영 환경에서는 probe listener와 firewall 범위를 별도로 제한해야 한다.
+- Cluster mode의 `management.apiKeys`에는 이름 있는 credential을 `{id, keyFile, roles}`로 등록한다. Key 파일은 읽은 뒤 앞뒤 공백을 제거하며 비어 있거나 cluster admin token 또는 다른 API key와 같으면 process 시작을 거절한다. API key principal subject는 `apikey:<id>`다.
+- Cluster mode의 `management.oidc`는 JWT issuer·audience·algorithm allowlist와 JWKS 검증을 설정하고 `identities`의 정적 subject→roles binding으로 권한을 결정한다. JWT claims는 roles를 선택하지 않는다. OIDC principal subject는 `oidc:<sub>`다.
+- Cluster admin bearer token은 ClusterAdmin 권한의 break-glass credential로 유지한다. Management API의 네 role과 permission mapping은 [Tenant와 security §6](tenancy-and-security.md#6-관리-plane-rbac) 및 [ADR-0048](../decisions/ADR-0048-management-api-oidc-api-key-rbac.md)을 따른다. Grafana Dashboard는 ReadOnly API key만 사용하며, 사용자 인증은 Grafana가 맡는다.
+- 이 credential 형식은 cluster mode 전용이다. Standalone mode는 `-http-auth-token` 하나만 지원하며, 설정 시 ClusterAdmin bearer credential이다. `-http-auth-token`이 비어 있으면 local development용 익명 모드로 동작하지만, `-http-listen`은 literal loopback IP(`127.0.0.0/8` 또는 `::1`)만 허용한다. `0.0.0.0`, `:8080`, 외부 인터페이스 주소는 거부한다.
+- 따라서 원격 interface에 Management API를 노출하려면 인증을 설정해야 한다. CLI에서 health probe와 `/metrics`는 listener 정책에 따라 익명 노출할 수 있다. 운영 환경에서는 probe listener와 firewall 범위를 별도로 제한해야 한다.
 
 예:
 
@@ -110,7 +109,7 @@ Standalone 설정은 `-http-request-rate`(기본 50)와 `-http-auth-failure-rate
 
 ### 2.1 Phase 1 active profile
 
-- 현재 16개 GET operation과 cluster backup POST, broker drain POST/GET/DELETE, cluster feature POST가 구현·계약 대상이다. 정확한 parameter allowlist, schema, response와 operation ID는 OpenAPI가 SSOT이며 `tests/contracts/management-api-v1`가 runtime handler와 일치하는지 검사한다.
+- 현재 17개 GET operation과 cluster backup POST, broker drain POST/GET/DELETE, cluster feature POST가 구현·계약 대상이다. 정확한 parameter allowlist, schema, response와 operation ID는 OpenAPI가 SSOT이며 `tests/contracts/management-api-v1`가 runtime handler와 일치하는지 검사한다.
 
 | Method | Path | 성공 동작 | 권한 |
 | --- | --- | --- | --- |
@@ -133,6 +132,7 @@ Standalone 설정은 `-http-request-rate`(기본 50)와 `-http-auth-failure-rate
 | GET | `/api/v1/subscriptions` | required `tenantId` 범위의 subscription 조회 | ReadOnly, tenant scope |
 | GET | `/api/v1/retained` | required `tenantId` 범위의 retained metadata 조회 | ReadOnly, tenant scope |
 | GET | `/api/v1/tenants` | tenant 목록 조회 | ClusterAdmin |
+| GET | `/api/v1/audit/events` | 이 node의 저장 audit hash-chain record를 최신순으로 조회 | SecurityAdmin, ClusterAdmin |
 
 ### 2.2 Future/deferred catalog
 
@@ -380,7 +380,7 @@ Panel 14의 속도 단위는 연결/초와 takeover/초이며 ETA 단위는 초�
 - Feature 조회 response는 `data.activeFeatures`와 `data.members`를 포함한다. 각 member는 decimal string `nodeId`, canonical `releaseVersion`, 정렬된 `features`를 가진다. 빈 collection은 JSON `[]`로 반환한다.
 - Contract suite는 cluster feature GET response shape, 활성화 POST의 200, 미지원 feature의 non-retryable 409, invalid feature의 400과 ReadOnly role POST의 403을 검사한다.
 - 같은 contract suite가 pagination `1`/`1000` 경계, `1001` 초과, duplicate·unknown query와 subscriptions/retained의 required `tenantId`를 검증한다.
-- 같은 contract suite가 anonymous, 잘못된 credential, ReadOnly bearer/API key 성공과 ClusterAdmin 권한 부족 `403`을 검증한다.
+- 같은 contract suite가 anonymous, 잘못된 credential, ReadOnly API key 성공과 ClusterAdmin 권한 부족 `403`을 검증한다.
 - startup, liveness, readiness와 drain-complete가 quorum·sync·drain 상태 조합을 정확히 반영하는지 시험한다.
 - SEC-11 / API-08 / NFR-17 수용 시험은 활성 management mutation 8개, 401·403 거절, fail-closed admission, hash-chain 손상, schema 검증, directory 경계와 Windows rotation 충돌을 확인한다: `internal/application/audit/service_test.go`, `internal/adapters/http/management/audit_test.go`, `cmd/narumq/cluster_config_test.go`, `cmd/narumq/main_test.go` (`TestAuditVerifyCommandVerifiesAndLeavesFilesReadOnly`), `tests/contracts/audit-event-v1/contract_test.go`, `tests/integration/cluster_audit_process_test.go::TestDynamicClusterManagementAuditProcessAcceptance`, `internal/adapters/auditlog/file_publisher_test.go`, `internal/adapters/auditlog/persist_windows_test.go`. Process acceptance는 2026-10-09에 통과했다(시험 5.82초).
 - Cluster startup probe는 typed Raft recovery가 끝나기 전 `STARTING`, recovery 뒤 base lifecycle 상태를 반환해야 한다. `cmd/narumq/cluster_storage_health_test.go::TestClusterStartupWaitsForTypedRecovery`가 두 상태를 확인한다.
@@ -388,11 +388,14 @@ Panel 14의 속도 단위는 연결/초와 takeover/초이며 ETA 단위는 초�
 - UI-03 CONNECT 거절 label과 CONNACK mapping: `internal/adapters/tcp/server_connect_reject_test.go::TestConnectRejectReasonMapsEveryCONNACKCode`, `internal/adapters/metrics/registry_test.go::TestRegistryRendersConnectRejectionsByProtocolAndReason`, `tests/integration/management_api_test.go::TestMQTTConnectRejectionAndDropAreObservable`.
 - UI-03 routing 뒤 QoS 0 queue-full drop: `internal/application/publish/publish_test.go::TestPublishCountsQoS0QueueFullDrops`.
 - UI-05 node-local drain gauge: `internal/adapters/metrics/registry_test.go::TestRegistryRendersNodeDrainProgress`, `tests/integration/cluster_drain_process_test.go::TestDynamicClusterNodeDrainProcessAcceptance`.
-- Cluster ReadOnly API key의 설정·파일 검증·role 경계: `cmd/narumq/cluster_config_test.go::TestClusterManagementReadOnlyAPIKeyConfiguration`, `TestLoadClusterManagementCredentials`, `internal/adapters/http/management/backup_handlers_test.go::TestReadOnlyAPIKeyCanReadButCannotCreateBackup`.
+- SEC-10 설정·credential, 4-role permission matrix, OIDC 정적 subject binding과 audit query: `cmd/narumq/cluster_config_test.go`, `internal/adapters/authentication/jwt_verifier_test.go`, `internal/adapters/http/management/auth_test.go`, `internal/application/audit/query_test.go`, `internal/adapters/auditlog/query_test.go`, `internal/adapters/http/management/audit_query_handlers_test.go`, `tests/contracts/management-api-v1/contract_test.go::TestAuditQueryHandlerResponsesMatchOpenAPI`, `tests/contracts/audit-event-v1/contract_test.go::TestAuditQueryReturnsStoredChainRecords`, `tests/integration/cluster_management_rbac_process_test.go::TestDynamicClusterManagementRBACProcessAcceptance`.
 - UI-01~UI-05·UI-10 Dashboard contract와 process acceptance: `tests/integration/dashboard_stack_test.go::TestDashboardProvisioningMatchesContracts`, `tests/integration/dashboard_stack_test.go::TestDashboardStackProcessAcceptance`.
 - Dashboard 수용 시험 결과(2026-10-09): `TestDashboardProvisioningMatchesContracts`와 opt-in Docker E2E `TestDashboardStackProcessAcceptance`가 통과했다. E2E 실행은 `NARUMQ_DASHBOARD_E2E=1`, `NARUMQ_DASHBOARD_E2E_HOLD=90s` 조건에서 test 229.14초, package 230.254초였다. 세 process의 `/health/ready` `200`, Prometheus target 3개, datasource health 2개, ReadOnly cluster GET `200`, backup·drain POST `403`, cluster traffic·protocol Metric과 완료된 drain 결과를 확인했다. Grafana `/api/ds/query`가 panel 2, 4, 5, 6, 15의 frame을 반환했다. Replica 부족은 `0`, Member·Quorum은 `3/2/3/2`, node 상태 수는 `Ready=1`·`Joining=2`, node topology는 local `READY`와 원격 node의 `JOINING`·정확한 readiness reason, drain 상세는 `COMPLETED`·`SAFE_TO_STOP`·`safeToStop=true`·remaining `0`·takeover `1`을 표시했다. Node별 query에서는 node 1 connection·received PUBLISH rate와 MQTT 3.1.1 성공, node 2 sent PUBLISH rate와 MQTT 5.0 성공·같은 series의 `not_authorized` 거절을 확인했다. 성공 protocol label은 선택한 node 밖에서 나오지 않았다.
+- Dashboard named API key regression (2026-10-10): opt-in Docker E2E `TestDashboardStackProcessAcceptance`가 새 `management.apiKeys` 설정에서 통과했다. `NARUMQ_DASHBOARD_E2E=1`, `NARUMQ_DASHBOARD_E2E_HOLD=90s` 실행에서 test는 228.46초, package는 229.503초였다. ReadOnly credential로 cluster GET을 통과하고 backup·drain POST를 거절하는 acceptance가 통과했다.
 - Dashboard visual 결과(2026-10-09): browser에서 Quorum `정상`, replica 부족 `0`, Leader `1`, Members `3`, quorum size `2`, replication factor `3`, write quorum `2`를 확인했다. Node topology는 node 1 `READY`, node 2 `JOINING`과 `remote readiness is not available from this node`, node 3 `SAFE_TO_STOP`을 표시했다. `Node=2` 선택 화면에서 Connections, Sent PUBLISH, MQTT 5.0 CONNECT 성공과 CONNECT 거절 panel을 확인했다. Node load에는 세 node가 보였다. Drain panel에는 node 3 `connections_initial=1`, `connections_remaining=0`, `sessions_taken_over=1`, 상세 단계 `COMPLETED`, 상태 `SAFE_TO_STOP`, `safeToStop=true`가 표시됐다. Browser error와 console error는 없었다. CI 실행 링크와 production deployment 검증은 없다.
 - P0 traceability gate (2026-10-09): `go run ./tools/verify traceability` PASS. UI-01~UI-05·UI-10이 test에 연결됐고, 전체 P0는 66/81건 매핑·15건 예외다.
+- SEC-10 traceability gate (2026-10-10): `go run ./tools/verify traceability` PASS. P0 요구사항 81개 중 68개가 시험에 연결됐고 예외 13개가 남았다. SEC-10은 16개 시험에 연결됐으며 예외에 없다.
+- SEC-10 full local gate (2026-10-10): `go run ./tools/verify local` PASS, 205.10초. Traceability는 P0 68/81개 매핑·예외 13개, architecture·branch instrumentation·5개 fuzz target·전체 package/integration·race·vet·coverage가 통과했다. Integration package는 125.359초였다.
 - Repository local gate (2026-10-09): `go run ./tools/verify local` PASS in 149.04 seconds. Branch instrumentation, fuzz, architecture, package tests, coverage, and traceability checks passed.
 - API-03 catalog test `internal/adapters/metrics/registry_aggregation_test.go::TestRegistryFamiliesMatchAggregationCatalog`는 Prometheus/OpenMetrics 출력의 metric 이름·type·label, 범위와 집계 규칙을 문서 표와 비교한다. Histogram에 `_bucket` 표본이 없는 경우와 `_count` label 조합에 bucket 계열이 없는 경우도 거절한다.
 - `internal/adapters/metrics/registry_test.go::TestRegistryReadsSubscriptionCountAtScrape`는 scrape마다 현재 구독 수를 읽는지 확인한다. `internal/domain/routing/routing_test.go::TestTableSubscriptionCountMatchesSnapshot`는 nil·빈 table, shared·non-shared 구독, 교체, 해지, session 제거와 projection 교체 뒤 `SubscriptionCount()`가 `Snapshot()` 길이와 같은지 확인한다.

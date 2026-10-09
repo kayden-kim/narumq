@@ -102,8 +102,9 @@ type clusterMembershipProcessFixture struct {
 	securityPath            string
 	accessToken             string
 	bootstrapMembers        []clusterMembershipProcessMember
+	managementAPIKeys       []clusterMembershipProcessAPIKey
+	managementOIDC          *clusterMembershipProcessOIDC
 	omitPublishBackpressure bool
-	enableReadOnlyAPIKey    bool
 	managementBindAll       bool
 }
 
@@ -834,12 +835,11 @@ func (f *clusterMembershipProcessFixture) managementConfig(index int, memberID u
 	config := clusterMembershipProcessManagement{
 		ListenAddress:         listenAddress,
 		ClusterAdminTokenFile: f.tokenPath,
+		APIKeys:               f.managementAPIKeys,
+		OIDC:                  f.managementOIDC,
 		AuditDirectory:        f.auditDirectory(memberID),
 		RequestRate:           clusterMembershipProcessMaxManagementRate,
 		AuthFailureRate:       clusterMembershipProcessMaxManagementRate,
-	}
-	if f.enableReadOnlyAPIKey {
-		config.ReadOnlyAPIKeyFile = f.readOnlyAPIKeyPath
 	}
 	return config
 }
@@ -1545,12 +1545,36 @@ type clusterMembershipProcessTLS struct {
 }
 
 type clusterMembershipProcessManagement struct {
-	ListenAddress         string `json:"listenAddress"`
-	ClusterAdminTokenFile string `json:"clusterAdminTokenFile"`
-	ReadOnlyAPIKeyFile    string `json:"readOnlyApiKeyFile,omitempty"`
-	AuditDirectory        string `json:"auditDirectory"`
-	RequestRate           int    `json:"requestRate"`
-	AuthFailureRate       int    `json:"authFailureRate"`
+	ListenAddress         string                           `json:"listenAddress"`
+	ClusterAdminTokenFile string                           `json:"clusterAdminTokenFile"`
+	APIKeys               []clusterMembershipProcessAPIKey `json:"apiKeys,omitempty"`
+	OIDC                  *clusterMembershipProcessOIDC    `json:"oidc,omitempty"`
+	AuditDirectory        string                           `json:"auditDirectory"`
+	RequestRate           int                              `json:"requestRate"`
+	AuthFailureRate       int                              `json:"authFailureRate"`
+}
+
+type clusterMembershipProcessAPIKey struct {
+	ID      string   `json:"id"`
+	KeyFile string   `json:"keyFile"`
+	Roles   []string `json:"roles"`
+}
+
+type clusterMembershipProcessOIDC struct {
+	Issuer          string                                 `json:"issuer"`
+	Audience        string                                 `json:"audience"`
+	Algorithms      []string                               `json:"algorithms"`
+	JWKSURL         string                                 `json:"jwksUrl"`
+	CacheTTL        string                                 `json:"cacheTtl"`
+	RefreshCooldown string                                 `json:"refreshCooldown"`
+	ClockSkew       string                                 `json:"clockSkew"`
+	HTTPTimeout     string                                 `json:"httpTimeout"`
+	Identities      []clusterMembershipProcessOIDCIdentity `json:"identities"`
+}
+
+type clusterMembershipProcessOIDCIdentity struct {
+	Subject string   `json:"subject"`
+	Roles   []string `json:"roles"`
 }
 
 type clusterMembershipProcessMQTT struct {

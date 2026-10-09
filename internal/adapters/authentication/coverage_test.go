@@ -162,7 +162,7 @@ func TestCmmJWKSFetchFailuresAreUnavailable(t *testing.T) {
 		t.Run(testCase.name, func(t *testing.T) {
 			provider, _ := newProviderFixture(t, &testClock{now: now}, testCase.body, nil)
 			if testCase.url != "" {
-				provider.jwksURL = testCase.url
+				provider.verifier.jwksURL = testCase.url
 			}
 			if err := cmmAuthenticate(context.Background(), provider, token); !errors.Is(err, ErrJWKSUnavailable) {
 				t.Fatalf("Authenticate() error = %v, want %v", err, ErrJWKSUnavailable)
@@ -189,7 +189,7 @@ func TestCmmBootstrapRefreshWaitersHonorCancellationAndShareFailure(t *testing.T
 	key := newTestKey(t, "key-1")
 	provider, _ := newProviderFixture(t, &testClock{now: now}, nil, nil)
 	gate := cmmNewGatedJWKS(t, encodeJWKS(t, key.public))
-	provider.jwksURL = gate.url
+	provider.verifier.jwksURL = gate.url
 	gate.status.Store(http.StatusInternalServerError)
 	gate.armed.Store(true)
 	token := signedToken(t, key.private, now, cmmIssuer, cmmAudience, cmmSubject, timePtr(now.Add(time.Minute)), nil)
@@ -204,7 +204,7 @@ func TestCmmBootstrapRefreshWaitersHonorCancellationAndShareFailure(t *testing.T
 
 	joinCtx := cmmNewDoneSignalContext()
 	joined := make(chan error, 1)
-	go func() { joined <- provider.refresh(joinCtx) }()
+	go func() { joined <- provider.verifier.refresh(joinCtx) }()
 	<-joinCtx.joined
 	gate.Release()
 
@@ -227,7 +227,7 @@ func TestCmmUnknownKeyRefreshWaitersHonorCancellationAndShareFailure(t *testing.
 	unknownKey := newTestKey(t, "unknown")
 	provider, _ := newProviderFixture(t, clock, nil, nil)
 	gate := cmmNewGatedJWKS(t, encodeJWKS(t, knownKey.public))
-	provider.jwksURL = gate.url
+	provider.verifier.jwksURL = gate.url
 	expires := now.Add(time.Minute)
 	knownToken := signedToken(t, knownKey.private, now, cmmIssuer, cmmAudience, cmmSubject, &expires, nil)
 	unknownToken := signedToken(t, unknownKey.private, now, cmmIssuer, cmmAudience, cmmSubject, &expires, nil)

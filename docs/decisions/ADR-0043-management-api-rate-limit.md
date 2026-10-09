@@ -9,7 +9,7 @@
 | 관련 스펙·계약 | [Management API와 observability](../specs/management-api-and-observability.md), [Management API v1](../contracts/management-api-v1.md), [Audit event v1](../contracts/audit-event-v1.md), [Raft membership v2](../contracts/raft-membership-v2.md) |
 | 관련 아키텍처 문서 | [Project structure](../architectures/project-structure.md), [Broker core](../architectures/broker-core.md) |
 | 이 ADR이 대체하는 이전 ADR | 없음. ADR-0005가 후속 범위로 남긴 API rate limiting을 이 ADR이 결정한다. |
-| 이 ADR을 대체한 새 ADR | 없음 |
+| 이 ADR을 대체한 새 ADR | [ADR-0048](ADR-0048-management-api-oidc-api-key-rbac.md) (§1의 principal subject 목록만 대체) |
 
 ## 1. 결정
 

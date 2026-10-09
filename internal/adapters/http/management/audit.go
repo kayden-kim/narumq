@@ -65,7 +65,7 @@ func (w *auditResponseWriter) Write(data []byte) (int, error) {
 
 func (w *auditResponseWriter) Unwrap() http.ResponseWriter { return w.ResponseWriter }
 
-func (a *Authenticator) require(minRole Role, mutation *auditMutation, rateLimited bool, next http.HandlerFunc) http.HandlerFunc {
+func (a *Authenticator) require(permission Permission, mutation *auditMutation, rateLimited bool, next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		principal, ok := a.authenticate(r)
 		if !ok {
@@ -80,18 +80,18 @@ func (a *Authenticator) require(minRole Role, mutation *auditMutation, rateLimit
 			return
 		}
 		if rateLimited && !a.principalLimiter.allow(principal.subject) {
-			a.rejectRateLimited(w, r, principal.subject, []string{principal.role.String()})
+			a.rejectRateLimited(w, r, principal.subject, principal.roles.names())
 			return
 		}
-		if principal.role < minRole {
+		if !principal.roles.allows(permission) {
 			if a.cfg.Audit != nil {
-				a.recordOutcome(r, "management.request", "management_endpoint", r.Pattern, principal.subject, []string{principal.role.String()}, nil, http.StatusForbidden, "forbidden")
+				a.recordOutcome(r, "management.request", "management_endpoint", r.Pattern, principal.subject, principal.roles.names(), nil, http.StatusForbidden, "forbidden")
 			}
 			WriteError(w, r, http.StatusForbidden, "forbidden", "authenticated principal lacks required permissions", false, nil)
 			return
 		}
 
-		ctx := contextWithRole(r.Context(), principal.role)
+		ctx := r.Context()
 		if mutation == nil {
 			next(w, r.WithContext(ctx))
 			return
@@ -126,7 +126,7 @@ func (a *Authenticator) require(minRole Role, mutation *auditMutation, rateLimit
 				if status == 0 {
 					status = http.StatusInternalServerError
 				}
-				a.recordOutcome(r, mutation.action, outcome.targetType, outcome.targetID, principal.subject, []string{principal.role.String()}, mutation, status, "internal_error")
+				a.recordOutcome(r, mutation.action, outcome.targetType, outcome.targetID, principal.subject, principal.roles.names(), mutation, status, "internal_error")
 				panic(recovered)
 			}
 			status := wrapped.status
@@ -139,7 +139,7 @@ func (a *Authenticator) require(minRole Role, mutation *auditMutation, rateLimit
 			} else if reason == "" {
 				reason = "internal_error"
 			}
-			a.recordOutcome(r, mutation.action, outcome.targetType, outcome.targetID, principal.subject, []string{principal.role.String()}, mutation, status, reason)
+			a.recordOutcome(r, mutation.action, outcome.targetType, outcome.targetID, principal.subject, principal.roles.names(), mutation, status, reason)
 		}()
 		next(wrapped, r)
 	}

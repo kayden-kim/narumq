@@ -9,7 +9,7 @@
 | 관련 스펙·데이터 계약 | [Tenant와 security](../specs/tenancy-and-security.md), [Management API와 observability](../specs/management-api-and-observability.md), [Audit event v1](../contracts/audit-event-v1.md) |
 | 관련 아키텍처 | [Security boundaries](../architectures/security-boundaries.md), [Project structure](../architectures/project-structure.md) |
 | 이 결정이 대체하는 이전 결정 기록(ADR) | 없음 |
-| 이 결정을 대체한 새 결정 기록(ADR) | [ADR-0046](ADR-0046-mqtt-data-plane-denial-audit.md) (§1 4항의 MQTT data-plane 제외 범위만 대체) |
+| 이 결정을 대체한 새 결정 기록(ADR) | [ADR-0046](ADR-0046-mqtt-data-plane-denial-audit.md) (§1 4항의 MQTT data-plane 제외 범위만 대체), [ADR-0048](ADR-0048-management-api-oidc-api-key-rbac.md) (§1 3항의 조회 API 금지 범위만 대체; 보존·SIEM 책임은 유지) |
 
 ## 1. 결정
 

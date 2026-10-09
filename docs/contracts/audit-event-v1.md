@@ -65,7 +65,7 @@ Mutation 성공은 `ALLOWED`와 `succeeded`, mutation 실패는 `FAILED`와 응�
 
 Rate limit 거절은 `DENIED`와 `rate_limited`를 사용한다. 인증 실패 IP 한도 거절의 subject는 `unauthenticated`이고 roles를 생략한다.
 
-Actor subject는 인증을 끈 local mode에서 `local-unauthenticated`, 일치한 Bearer token에서 `management-bearer-token`, 일치한 API key에서 `management-api-key`, 인증 실패에서 `unauthenticated`다. 성공 인증에는 현재 role을 `roles`에 기록하며 401에는 roles를 생략한다. 공유 credential이므로 subject는 개인을 식별하지 않는다.
+Actor subject는 인증을 끈 local mode에서 `local-unauthenticated`, break-glass Bearer token에서 `management-bearer-token`, 일치한 API key에서 `apikey:<id>`, OIDC에서 `oidc:<sub>`, 인증 실패에서 `unauthenticated`다. 성공 인증의 `roles`는 고정 순서 `ReadOnly`, `Operator`, `SecurityAdmin`, `ClusterAdmin`로 기록하며 401에는 roles를 생략한다. Break-glass token만 공유 credential이며, API key와 OIDC subject는 개별 credential·subject를 식별한다.
 
 `details`는 `httpStatus`(정수)와 `method`를 포함한다. Mutation은 `Idempotency-Key` 값이 하나이고 허용 형식일 때만 `idempotencyKey`를 포함한다. Token, API key, body와 query 값은 기록하지 않는다. 인증·인가·rate-limit 거절은 같은 node별 초당 최대 20개 한도를 공유한다. 초과 event는 기록하지 않고 `denial_suppressed` Metric만 증가시킨다.
 
@@ -100,6 +100,8 @@ Payload, password, token과 인증서 원문은 기록하지 않는다. 다음 �
 첫 줄의 `prevHash`는 64개의 `0`이다. 각 줄의 `hash`는 `SHA-256(decimal(seq) + "\n" + prevHash + "\n" + compact event JSON)`의 소문자 16진수 표현이다. 각 줄을 쓴 뒤 파일 `fsync`를 완료해야 publish가 성공한다.
 
 크기 한도를 넘으면 현재 active 파일을 `audit-<20자리 zero-padded 첫 seq>.jsonl`로 rotation한다. Broker는 파일을 삭제하지 않는다. 외부 collector는 가장 오래된 rotation 파일부터 끊기지 않는 prefix만 삭제할 수 있다. 더 오래된 rotation 파일을 남긴 채 중간이나 더 최신 파일을 삭제해서는 안 된다. Active `audit.jsonl`은 수정하거나 삭제해서는 안 된다. 각 node는 서로 다른 audit directory를 사용해야 하며, audit directory는 Raft `directory`와 같거나 서로 포함되어서는 안 된다.
+
+`GET /api/v1/audit/events`는 이 node의 저장된 `seq`, `prevHash`, `hash`, `event`를 변경하지 않고 반환한다.
 
 Process 재시작 시 active 파일의 끝이 줄바꿈으로 끝나지 않으면 마지막 완전한 줄 뒤의 bytes를 잘라낸 뒤 동기화한다. 완전한 줄은 JSON, 순번, 이전 hash와 계산한 hash를 검증한다. Rotation 파일의 torn tail은 오류다. `narumq -audit-verify <directory>`는 저장된 chain을 읽기 전용으로 검증한다. 성공하면 `files`, `records`, `first_seq`, `last_seq`, `last_hash`, `torn_tail`을 출력한다. `torn_tail`은 active 파일만 나타내며, verifier는 파일을 수정하지 않는다.
 
