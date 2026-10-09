@@ -3,8 +3,8 @@
   "jsonSchemaDialect": "https://json-schema.org/draft/2020-12/schema",
   "info": {
     "title": "NaruMQ Management API",
-    "version": "1.10.0",
-    "description": "Query, observability, authenticated cluster membership and feature activation, broker node drain and connection rebalance, cluster-backup operations, and node-local management audit events. Per-principal and failed-authentication rate limiting applies to /api/v1. Dashboard APIs are deferred."
+    "version": "1.11.0",
+    "description": "Query, observability, authenticated cluster membership and feature activation, broker node drain and connection rebalance, credential revocation, cluster-backup operations, and node-local management audit events. Per-principal and failed-authentication rate limiting applies to /api/v1. Dashboard APIs are deferred."
   },
   "servers": [
     {
@@ -26,7 +26,8 @@
     { "name": "Subscriptions" },
     { "name": "Retained" },
     { "name": "Metrics" },
-    { "name": "Audit" }
+    { "name": "Audit" },
+    { "name": "Security" }
   ],
   "paths": {
     "/health/live": {
@@ -708,6 +709,82 @@
         }
       }
     },
+    "/api/v1/security/credential-revocations": {
+      "get": {
+        "tags": ["Security"],
+        "operationId": "listCredentialRevocations",
+        "summary": "List revoked MQTT credential IDs",
+        "description": "Requires SecurityAdmin or ClusterAdmin. Returns the committed credential revocation state in a Dynamic cluster.",
+        "responses": {
+          "200": { "$ref": "#/components/responses/CredentialRevocationListResponse" },
+          "400": { "$ref": "#/components/responses/BadRequest" },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "429": { "$ref": "#/components/responses/TooManyRequests" },
+          "403": { "$ref": "#/components/responses/Forbidden" },
+          "405": { "$ref": "#/components/responses/MethodNotAllowed" },
+          "500": {
+            "description": "Unexpected error while reading committed credential revocation state.",
+            "headers": { "X-Request-Id": { "$ref": "#/components/headers/XRequestId" } },
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorResponse" } } }
+          },
+          "503": { "$ref": "#/components/responses/Unavailable" }
+        }
+      }
+    },
+    "/api/v1/security/credential-revocations/{credentialId}": {
+      "post": {
+        "tags": ["Security"],
+        "operationId": "revokeCredential",
+        "summary": "Revoke an MQTT credential ID",
+        "description": "Requires SecurityAdmin or ClusterAdmin. Revocation is committed cluster state and remains active until restored.",
+        "parameters": [{ "$ref": "#/components/parameters/CredentialId" }],
+        "responses": {
+          "200": { "$ref": "#/components/responses/CredentialRevocationStatusResponse" },
+          "400": { "$ref": "#/components/responses/BadRequest" },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "429": { "$ref": "#/components/responses/TooManyRequests" },
+          "403": { "$ref": "#/components/responses/Forbidden" },
+          "405": { "$ref": "#/components/responses/MethodNotAllowed" },
+          "409": {
+            "description": "The credential revocation feature is inactive or the 4096-entry capacity is exhausted.",
+            "headers": { "X-Request-Id": { "$ref": "#/components/headers/XRequestId" } },
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorResponse" } } }
+          },
+          "500": {
+            "description": "Unexpected error while committing credential revocation.",
+            "headers": { "X-Request-Id": { "$ref": "#/components/headers/XRequestId" } },
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorResponse" } } }
+          },
+          "503": { "$ref": "#/components/responses/Unavailable" }
+        }
+      },
+      "delete": {
+        "tags": ["Security"],
+        "operationId": "restoreCredential",
+        "summary": "Restore an MQTT credential ID",
+        "description": "Requires SecurityAdmin or ClusterAdmin. Restores a previously revoked ID; restoring an active ID is a successful no-op.",
+        "parameters": [{ "$ref": "#/components/parameters/CredentialId" }],
+        "responses": {
+          "200": { "$ref": "#/components/responses/CredentialRevocationStatusResponse" },
+          "400": { "$ref": "#/components/responses/BadRequest" },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "429": { "$ref": "#/components/responses/TooManyRequests" },
+          "403": { "$ref": "#/components/responses/Forbidden" },
+          "405": { "$ref": "#/components/responses/MethodNotAllowed" },
+          "409": {
+            "description": "The credential revocation feature is inactive.",
+            "headers": { "X-Request-Id": { "$ref": "#/components/headers/XRequestId" } },
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorResponse" } } }
+          },
+          "500": {
+            "description": "Unexpected error while committing credential restoration.",
+            "headers": { "X-Request-Id": { "$ref": "#/components/headers/XRequestId" } },
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorResponse" } } }
+          },
+          "503": { "$ref": "#/components/responses/Unavailable" }
+        }
+      }
+    },
     "/api/v1/audit/events": {
       "get": {
         "tags": ["Audit"],
@@ -897,6 +974,13 @@
         "required": true,
         "example": "device-1",
         "schema": { "type": "string", "minLength": 1, "maxLength": 256 }
+      },
+      "CredentialId": {
+        "name": "credentialId",
+        "in": "path",
+        "required": true,
+        "description": "Credential identifier encoded as UTF-8, from 1 to 512 bytes.",
+        "schema": { "$ref": "#/components/schemas/CredentialId" }
       }
     },
     "responses": {
@@ -1290,6 +1374,35 @@
           }
         }
       },
+      "CredentialRevocationListResponse": {
+        "description": "Committed credential revocation list.",
+        "headers": { "X-Request-Id": { "$ref": "#/components/headers/XRequestId" } },
+        "content": {
+          "application/json": {
+            "schema": { "$ref": "#/components/schemas/CredentialRevocationListResponse" }
+          }
+        }
+      },
+      "CredentialRevocationStatusResponse": {
+        "description": "Committed credential revocation status.",
+        "headers": { "X-Request-Id": { "$ref": "#/components/headers/XRequestId" } },
+        "content": {
+          "application/json": {
+            "schema": { "$ref": "#/components/schemas/CredentialRevocationStatusResponse" },
+            "examples": {
+              "revoked": {
+                "value": {
+                  "data": {
+                    "credentialId": "device-1-key",
+                    "revoked": true,
+                    "revokedAt": "2026-10-10T01:02:03.004Z"
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
       "Unavailable": {
         "description": "The probe is unavailable.",
         "headers": { "X-Request-Id": { "$ref": "#/components/headers/XRequestId" } },
@@ -1607,6 +1720,53 @@
         "additionalProperties": false,
         "required": ["data"],
         "properties": { "data": { "$ref": "#/components/schemas/ClusterFeatureState" } }
+      },
+      "CredentialId": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 512
+      },
+      "CredentialRevocation": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["credentialId", "revokedAt"],
+        "properties": {
+          "credentialId": { "$ref": "#/components/schemas/CredentialId" },
+          "revokedAt": { "type": "string", "format": "date-time" }
+        }
+      },
+      "CredentialRevocationList": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["revocations"],
+        "properties": {
+          "revocations": {
+            "type": "array",
+            "items": { "$ref": "#/components/schemas/CredentialRevocation" }
+          }
+        }
+      },
+      "CredentialRevocationListResponse": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["data"],
+        "properties": { "data": { "$ref": "#/components/schemas/CredentialRevocationList" } }
+      },
+      "CredentialRevocationStatus": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["credentialId", "revoked"],
+        "properties": {
+          "credentialId": { "$ref": "#/components/schemas/CredentialId" },
+          "revoked": { "type": "boolean" },
+          "revokedAt": { "type": "string", "format": "date-time" }
+        }
+      },
+      "CredentialRevocationStatusResponse": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["data"],
+        "properties": { "data": { "$ref": "#/components/schemas/CredentialRevocationStatus" } }
       },
       "ClusterData": {
         "type": "object",

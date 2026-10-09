@@ -11,12 +11,15 @@ import (
 	"os"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	authenticationadapter "narumq/internal/adapters/authentication"
 	"narumq/internal/application/tenantlimit"
 	"narumq/internal/domain/security"
 	"narumq/internal/domain/tenancy"
 )
+
+const maxCredentialIDBytes = 512
 
 type rawSecurityConfig struct {
 	JWT                *rawJWTConfig               `json:"jwt"`
@@ -348,6 +351,9 @@ func validateJWTAndIdentities(
 		if id.CredentialID == "" {
 			return nil, errors.New("identity credentialId is required")
 		}
+		if len(id.CredentialID) > maxCredentialIDBytes || !utf8.ValidString(id.CredentialID) {
+			return nil, errors.New("identity credentialId must be 1 to 512 bytes of UTF-8")
+		}
 		if _, exists := seenCredentialIDs[id.CredentialID]; exists {
 			return nil, fmt.Errorf("duplicate credentialId %q", id.CredentialID)
 		}
@@ -385,7 +391,6 @@ func validatePasswordIdentities(
 	}
 	bindings := make([]authenticationadapter.PasswordIdentityBinding, len(identities))
 	seenUsernames := make(map[string]struct{}, len(identities))
-	seenSubjects := make(map[string]struct{}, len(identities))
 	for index, identity := range identities {
 		if identity.Username == "" {
 			return nil, errors.New("password identity username is required")
@@ -397,10 +402,6 @@ func validatePasswordIdentities(
 		if identity.Subject == "" {
 			return nil, errors.New("password identity subject is required")
 		}
-		if _, exists := seenSubjects[identity.Subject]; exists {
-			return nil, fmt.Errorf("duplicate password identity subject %q", identity.Subject)
-		}
-		seenSubjects[identity.Subject] = struct{}{}
 		passwordHash, err := authenticationadapter.ParsePasswordHash(identity.PasswordHash)
 		if err != nil {
 			return nil, fmt.Errorf("password identity %q has invalid passwordHash: %w", identity.Username, err)
@@ -411,6 +412,9 @@ func validatePasswordIdentities(
 		}
 		if identity.CredentialID == "" {
 			return nil, errors.New("password identity credentialId is required")
+		}
+		if len(identity.CredentialID) > maxCredentialIDBytes || !utf8.ValidString(identity.CredentialID) {
+			return nil, errors.New("password identity credentialId must be 1 to 512 bytes of UTF-8")
 		}
 		if _, exists := seenCredentialIDs[identity.CredentialID]; exists {
 			return nil, fmt.Errorf("duplicate credentialId %q", identity.CredentialID)
@@ -472,6 +476,9 @@ func validateMTLSIdentities(
 		}
 		if identity.CredentialID == "" {
 			return nil, errors.New("mTLS identity credentialId is required")
+		}
+		if len(identity.CredentialID) > maxCredentialIDBytes || !utf8.ValidString(identity.CredentialID) {
+			return nil, errors.New("mTLS identity credentialId must be 1 to 512 bytes of UTF-8")
 		}
 		if _, exists := seenCredentialIDs[identity.CredentialID]; exists {
 			return nil, fmt.Errorf("duplicate credentialId %q", identity.CredentialID)

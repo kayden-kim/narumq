@@ -192,6 +192,17 @@ func encodeMembershipCommand(command membership.CommandDTO) ([]byte, error) {
 			SessionExpiresAtUnixMillis: change.SessionExpiresAtUnixMillis, WillDueAtUnixMillis: change.WillDueAtUnixMillis,
 		}}
 	}
+	if command.CredentialRevocation != nil {
+		payloadCount++
+		change := command.CredentialRevocation
+		action, err := credentialRevocationActionToRecord(change.Action)
+		if err != nil {
+			return nil, err
+		}
+		wire.Payload = &records.CommandEnvelope_CredentialRevocation{CredentialRevocation: &records.CredentialRevocationChange{
+			Action: action, CredentialId: change.CredentialID, ProposedAtUnixMillis: change.ProposedAtUnixMillis,
+		}}
+	}
 	if payloadCount != 1 {
 		return nil, errors.New("application command must contain exactly one payload")
 	}
@@ -377,6 +388,18 @@ func decodeMembershipCommand(data []byte) (membership.CommandDTO, error) {
 			ProposedAtUnixMillis:       value.GetProposedAtUnixMillis(),
 			SessionExpiresAtUnixMillis: value.GetSessionExpiresAtUnixMillis(), WillDueAtUnixMillis: value.GetWillDueAtUnixMillis(),
 		}
+	case *records.CommandEnvelope_CredentialRevocation:
+		value := payload.CredentialRevocation
+		if value == nil {
+			return membership.CommandDTO{}, errors.New("credential revocation payload is required")
+		}
+		action, err := credentialRevocationActionFromRecord(value.GetAction())
+		if err != nil {
+			return membership.CommandDTO{}, err
+		}
+		command.CredentialRevocation = &membership.CredentialRevocationChangeDTO{
+			Action: action, CredentialID: value.GetCredentialId(), ProposedAtUnixMillis: value.GetProposedAtUnixMillis(),
+		}
 	default:
 		return membership.CommandDTO{}, errors.New("decoded command has no supported payload")
 	}
@@ -496,9 +519,14 @@ func encodeMembershipSnapshot(snapshot membership.SnapshotDTO) ([]byte, error) {
 		}
 		state.SessionMetadata = append(state.SessionMetadata, value)
 	}
+	for _, revocation := range snapshot.CredentialRevocations {
+		state.CredentialRevocations = append(state.CredentialRevocations, &records.CredentialRevocationState{
+			CredentialId: revocation.CredentialID, RevokedAtUnixMillis: revocation.RevokedAtUnixMillis,
+		})
+	}
 	state.ActiveFeatures = slices.Clone(snapshot.ActiveFeatures)
 	quotaProfileObjectCount := membershipQuotaProfileObjectCount(snapshot.TenantQuotaProfile)
-	objectCount := uint64(len(snapshot.Members) + len(snapshot.Ownerships) + len(snapshot.Subscriptions) + len(snapshot.DeliverySessions) + deliveryEntriesCount + len(snapshot.MembershipHistory) + len(snapshot.Retained) + len(snapshot.OfflineSessions) + offlineMessagesCount + len(snapshot.NodeDrains) + len(snapshot.ActiveFeatures) + len(snapshot.SessionMetadata) + quotaProfileObjectCount + rebalanceStateObjectCount(snapshot.ConnectionRebalance))
+	objectCount := uint64(len(snapshot.Members) + len(snapshot.Ownerships) + len(snapshot.Subscriptions) + len(snapshot.DeliverySessions) + deliveryEntriesCount + len(snapshot.MembershipHistory) + len(snapshot.Retained) + len(snapshot.OfflineSessions) + offlineMessagesCount + len(snapshot.NodeDrains) + len(snapshot.ActiveFeatures) + len(snapshot.SessionMetadata) + len(snapshot.CredentialRevocations) + quotaProfileObjectCount + rebalanceStateObjectCount(snapshot.ConnectionRebalance))
 	origins, conversionErr := proposalOriginsToRecords(snapshot.ProposalOrigins)
 	if conversionErr != nil {
 		return nil, conversionErr
@@ -637,6 +665,11 @@ func decodeMembershipSnapshot(data []byte) (membership.SnapshotDTO, error) {
 			return membership.SnapshotDTO{}, conversionErr
 		}
 		snapshot.SessionMetadata = append(snapshot.SessionMetadata, value)
+	}
+	for _, revocation := range state.GetCredentialRevocations() {
+		snapshot.CredentialRevocations = append(snapshot.CredentialRevocations, membership.CredentialRevocationStateDTO{
+			CredentialID: revocation.GetCredentialId(), RevokedAtUnixMillis: revocation.GetRevokedAtUnixMillis(),
+		})
 	}
 	snapshot.TenantQuotaProfile = tenantQuotaProfileFromRecord(state.GetTenantQuotaProfile())
 	origins, conversionErr := proposalOriginsFromRecords(state.GetProposalOrigins())
@@ -1162,6 +1195,27 @@ func rebalanceActionFromRecord(action records.ConnectionRebalanceAction) (member
 		return 0, fmt.Errorf("unsupported connection rebalance action %d", action)
 	}
 	return membership.ConnectionRebalanceAction(action), nil
+}
+func credentialRevocationActionToRecord(action membership.CredentialRevocationAction) (records.CredentialRevocationAction, error) {
+	switch action {
+	case membership.CredentialRevocationActionRevoke:
+		return records.CredentialRevocationAction_CREDENTIAL_REVOCATION_ACTION_REVOKE, nil
+	case membership.CredentialRevocationActionRestore:
+		return records.CredentialRevocationAction_CREDENTIAL_REVOCATION_ACTION_RESTORE, nil
+	default:
+		return 0, fmt.Errorf("unsupported credential revocation action %d", action)
+	}
+}
+
+func credentialRevocationActionFromRecord(action records.CredentialRevocationAction) (membership.CredentialRevocationAction, error) {
+	switch action {
+	case records.CredentialRevocationAction_CREDENTIAL_REVOCATION_ACTION_REVOKE:
+		return membership.CredentialRevocationActionRevoke, nil
+	case records.CredentialRevocationAction_CREDENTIAL_REVOCATION_ACTION_RESTORE:
+		return membership.CredentialRevocationActionRestore, nil
+	default:
+		return 0, fmt.Errorf("unsupported credential revocation action %d", action)
+	}
 }
 func rebalanceStateToRecord(state membership.ConnectionRebalanceStateDTO) (*records.ConnectionRebalanceState, error) {
 	if !state.Phase.Valid() {

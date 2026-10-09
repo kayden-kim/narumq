@@ -47,6 +47,8 @@ const (
 	maxSessionPrincipalFieldBytes      = 1024
 	maxSessionPrincipalRoles           = 64
 	maxSessionPrincipalRoleBytes       = 256
+	maxCredentialRevocations           = 4096
+	maxCredentialIDBytes               = 512
 	minRebalanceDeviation              = uint64(1)
 	maxRebalanceDeviation              = uint64(1_000_000)
 	maxRebalanceConnections            = uint64(4_294_967_295)
@@ -135,7 +137,7 @@ func MarshalSnapshot(state *ReplicatedStateSnapshot, lastIncludedIndex uint64) (
 			offlineMessagesCount += len(session.Messages)
 		}
 	}
-	count := uint64(len(ordered.Members) + len(ordered.Ownerships) + len(ordered.Subscriptions) + len(ordered.DeliverySessions) + deliveryObjectCount(ordered.DeliverySessions) + len(ordered.MembershipHistory) + len(ordered.Retained) + len(ordered.OfflineSessions) + offlineMessagesCount + len(ordered.NodeDrains) + len(ordered.ActiveFeatures) + tenantQuotaProfileObjectCount(ordered.TenantQuotaProfile) + len(ordered.SessionMetadata) + connectionRebalanceObjectCount(ordered.ConnectionRebalance) + proposalOriginsObjectCount(ordered.ProposalOrigins))
+	count := uint64(len(ordered.Members) + len(ordered.Ownerships) + len(ordered.Subscriptions) + len(ordered.DeliverySessions) + deliveryObjectCount(ordered.DeliverySessions) + len(ordered.MembershipHistory) + len(ordered.Retained) + len(ordered.OfflineSessions) + offlineMessagesCount + len(ordered.NodeDrains) + len(ordered.ActiveFeatures) + tenantQuotaProfileObjectCount(ordered.TenantQuotaProfile) + len(ordered.SessionMetadata) + connectionRebalanceObjectCount(ordered.ConnectionRebalance) + len(ordered.CredentialRevocations) + proposalOriginsObjectCount(ordered.ProposalOrigins))
 	digest := sha256.Sum256(stateBytes)
 	envelope := &SnapshotEnvelope{SchemaMajor: 1, LastIncludedIndex: lastIncludedIndex, ObjectCount: count, Sha256: digest[:], State: ordered}
 	encoded, err := deterministic.Marshal(envelope)
@@ -184,7 +186,7 @@ func UnmarshalSnapshot(encoded []byte) (*SnapshotEnvelope, error) {
 			offlineMessagesCount += len(session.Messages)
 		}
 	}
-	count := uint64(len(envelope.State.Members) + len(envelope.State.Ownerships) + len(envelope.State.Subscriptions) + len(envelope.State.DeliverySessions) + deliveryObjectCount(envelope.State.DeliverySessions) + len(envelope.State.MembershipHistory) + len(envelope.State.Retained) + len(envelope.State.OfflineSessions) + offlineMessagesCount + len(envelope.State.NodeDrains) + len(envelope.State.ActiveFeatures) + tenantQuotaProfileObjectCount(envelope.State.TenantQuotaProfile) + len(envelope.State.SessionMetadata) + connectionRebalanceObjectCount(envelope.State.ConnectionRebalance) + proposalOriginsObjectCount(envelope.State.ProposalOrigins))
+	count := uint64(len(envelope.State.Members) + len(envelope.State.Ownerships) + len(envelope.State.Subscriptions) + len(envelope.State.DeliverySessions) + deliveryObjectCount(envelope.State.DeliverySessions) + len(envelope.State.MembershipHistory) + len(envelope.State.Retained) + len(envelope.State.OfflineSessions) + offlineMessagesCount + len(envelope.State.NodeDrains) + len(envelope.State.ActiveFeatures) + tenantQuotaProfileObjectCount(envelope.State.TenantQuotaProfile) + len(envelope.State.SessionMetadata) + connectionRebalanceObjectCount(envelope.State.ConnectionRebalance) + len(envelope.State.CredentialRevocations) + proposalOriginsObjectCount(envelope.State.ProposalOrigins))
 	if envelope.ObjectCount != count {
 		return nil, errors.New("snapshot object count mismatch")
 	}
@@ -295,6 +297,11 @@ func validateCommand(c *CommandEnvelope) error {
 			return errors.New("session metadata payload is required")
 		}
 		return validateSessionMetadataChange(payload.SessionMetadata)
+	case *CommandEnvelope_CredentialRevocation:
+		if payload.CredentialRevocation == nil {
+			return errors.New("credential revocation payload is required")
+		}
+		return validateCredentialRevocationChange(payload.CredentialRevocation)
 	default:
 		return fmt.Errorf("%w: command must contain exactly one known payload", ErrIncompatibleStateSchema)
 	}
@@ -456,6 +463,18 @@ func validateConnectionRebalanceChange(change *ConnectionRebalanceChange) error 
 		return errors.New("invalid connection rebalance action")
 	}
 	return nil
+}
+func validateCredentialRevocationChange(change *CredentialRevocationChange) error {
+	if change == nil || !boundedUTF8(change.CredentialId, 1, maxCredentialIDBytes) || change.ProposedAtUnixMillis == 0 {
+		return errors.New("invalid credential revocation identity or proposal time")
+	}
+	switch change.Action {
+	case CredentialRevocationAction_CREDENTIAL_REVOCATION_ACTION_REVOKE,
+		CredentialRevocationAction_CREDENTIAL_REVOCATION_ACTION_RESTORE:
+		return nil
+	default:
+		return errors.New("invalid credential revocation action")
+	}
 }
 
 func validateConnectionRebalanceState(state *ConnectionRebalanceState) error {
@@ -1063,7 +1082,7 @@ func validateSnapshotState(s *ReplicatedStateSnapshot) error {
 			offlineMessagesCount += len(session.Messages)
 		}
 	}
-	count := len(s.Members) + len(s.Ownerships) + len(s.Subscriptions) + len(s.DeliverySessions) + deliveryObjectCount(s.DeliverySessions) + len(s.MembershipHistory) + len(s.Retained) + len(s.OfflineSessions) + offlineMessagesCount + len(s.NodeDrains) + len(s.ActiveFeatures) + tenantQuotaProfileObjectCount(s.TenantQuotaProfile) + len(s.SessionMetadata) + connectionRebalanceObjectCount(s.ConnectionRebalance)
+	count := len(s.Members) + len(s.Ownerships) + len(s.Subscriptions) + len(s.DeliverySessions) + deliveryObjectCount(s.DeliverySessions) + len(s.MembershipHistory) + len(s.Retained) + len(s.OfflineSessions) + offlineMessagesCount + len(s.NodeDrains) + len(s.ActiveFeatures) + tenantQuotaProfileObjectCount(s.TenantQuotaProfile) + len(s.SessionMetadata) + connectionRebalanceObjectCount(s.ConnectionRebalance) + len(s.CredentialRevocations)
 	if count > maxEntries {
 		return errors.New("snapshot exceeds 1,000,000 entries")
 	}
@@ -1091,6 +1110,23 @@ func validateSnapshotState(s *ReplicatedStateSnapshot) error {
 		}
 		if err := validateConnectionRebalanceState(s.ConnectionRebalance); err != nil {
 			return err
+		}
+	}
+	if len(s.CredentialRevocations) > maxCredentialRevocations {
+		return errors.New("snapshot exceeds credential revocation limit")
+	}
+	if len(s.CredentialRevocations) > 0 && !slices.Contains(s.ActiveFeatures, "credential-revocation") {
+		return errors.New("snapshot credential revocations require active credential-revocation feature")
+	}
+	for index, state := range s.CredentialRevocations {
+		if state == nil {
+			return errors.New("nil snapshot credential revocation")
+		}
+		if !boundedUTF8(state.CredentialId, 1, maxCredentialIDBytes) || state.RevokedAtUnixMillis == 0 {
+			return errors.New("invalid snapshot credential revocation")
+		}
+		if index > 0 && s.CredentialRevocations[index-1].CredentialId >= state.CredentialId {
+			return errors.New("snapshot credential revocations are not uniquely sorted")
 		}
 	}
 	type sessionIdentity struct{ tenantID, clientID string }
@@ -1397,6 +1433,15 @@ func sortSnapshot(s *ReplicatedStateSnapshot) {
 		return compare2(s.SessionMetadata[i].TenantId, s.SessionMetadata[i].ClientId, s.SessionMetadata[j].TenantId, s.SessionMetadata[j].ClientId) < 0
 	})
 	sortProposalOrigins(s.ProposalOrigins)
+	sort.Slice(s.CredentialRevocations, func(i, j int) bool {
+		if s.CredentialRevocations[i] == nil {
+			return s.CredentialRevocations[j] != nil
+		}
+		if s.CredentialRevocations[j] == nil {
+			return false
+		}
+		return s.CredentialRevocations[i].CredentialId < s.CredentialRevocations[j].CredentialId
+	})
 }
 func rejectUnknown(m protoreflect.Message) error {
 	if len(m.GetUnknown()) != 0 {

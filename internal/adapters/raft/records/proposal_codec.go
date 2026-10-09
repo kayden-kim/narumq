@@ -200,6 +200,8 @@ func validateProposalResult(result *ProposalResult) error {
 
 func validProposalConflict(code string) bool {
 	switch code {
+	case "credential_revocation_capacity_exceeded":
+		return true
 	case "member_id_reserved", "member_identity_conflict", "idempotency_conflict", "operation_id_conflict", "membership_change_in_progress", "operation_not_found", "phase_conflict", "configuration_mismatch", "stale_epoch", "ownership_missing", "member_not_found", "compatibility_unsupported", "active_feature_missing", "feature_not_supported_by_all_members", "retained_capacity_exceeded", "offline_capacity_exceeded", "offline_session_missing", "delivery_capacity_exceeded", "delivery_missing", "delivery_packet_id_conflict", "node_drain_active", "node_drain_in_progress", "drain_not_cancellable", "delivery_session_missing", "tenant_quota_stale", "feature_inactive", "session_metadata_capacity_exceeded", "session_metadata_invalid", "connection_rebalance_in_progress", "rebalance_not_cancellable", "proposal_retired", "proposal_identity_conflict", "proposal_receipt_capacity_exceeded":
 		return true
 	default:

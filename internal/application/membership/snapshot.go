@@ -121,6 +121,10 @@ func (machine *StateMachine) Restore(snapshot SnapshotDTO) error {
 		sessionMetadata[sessionKey{tenantID: state.TenantID, clientID: state.ClientID}] = cloned
 		totalSessionWillBytes += sessionWillBytes(cloned)
 	}
+	credentialRevocations := make(map[string]CredentialRevocationStateDTO, len(copyOfSnapshot.CredentialRevocations))
+	for _, state := range copyOfSnapshot.CredentialRevocations {
+		credentialRevocations[state.CredentialID] = state
+	}
 	var connectionRebalance *ConnectionRebalanceStateDTO
 	if copyOfSnapshot.ConnectionRebalance != nil {
 		state := cloneConnectionRebalanceState(*copyOfSnapshot.ConnectionRebalance)
@@ -151,6 +155,7 @@ func (machine *StateMachine) Restore(snapshot SnapshotDTO) error {
 	machine.proposalReceiptCount = proposalCount
 	machine.proposalResultBytes = proposalBytes
 	machine.connectionRebalance = connectionRebalance
+	machine.credentialRevocations = credentialRevocations
 	machine.activeFeatures = slices.Clone(copyOfSnapshot.ActiveFeatures)
 	return nil
 }
@@ -158,19 +163,20 @@ func (machine *StateMachine) Restore(snapshot SnapshotDTO) error {
 func (machine *StateMachine) snapshotLocked(lastIncludedIndex uint64) SnapshotDTO {
 	snapshot := SnapshotDTO{
 		SchemaMajor: SchemaMajor, SchemaMinor: SchemaMinor, LastIncludedIndex: lastIncludedIndex,
-		Members:             make([]MemberIdentityDTO, 0, len(machine.members)),
-		Ownerships:          make([]OwnershipStateDTO, 0, len(machine.ownerships)),
-		Subscriptions:       make([]SubscriptionStateDTO, 0, len(machine.subscriptions)),
-		DeliverySessions:    make([]DeliverySessionStateDTO, 0, len(machine.delivery)),
-		MembershipHistory:   make([]MembershipRecordDTO, 0, len(machine.operations)),
-		OfflineSessions:     make([]OfflineSessionStateDTO, 0, len(machine.offline)),
-		Retained:            make([]RetainedStateDTO, 0, len(machine.retained)),
-		NodeDrains:          make([]NodeDrainStateDTO, 0, len(machine.nodeDrains)),
-		SessionMetadata:     make([]SessionMetadataStateDTO, 0, len(machine.sessionMetadata)),
-		ConnectionRebalance: cloneConnectionRebalanceStatePointer(machine.connectionRebalance),
-		ActiveFeatures:      slices.Clone(machine.activeFeatures),
-		TenantQuotaProfile:  cloneTenantQuotaProfile(machine.tenantQuota),
-		ProposalOrigins:     machine.proposalSnapshotLocked(),
+		Members:               make([]MemberIdentityDTO, 0, len(machine.members)),
+		Ownerships:            make([]OwnershipStateDTO, 0, len(machine.ownerships)),
+		Subscriptions:         make([]SubscriptionStateDTO, 0, len(machine.subscriptions)),
+		DeliverySessions:      make([]DeliverySessionStateDTO, 0, len(machine.delivery)),
+		MembershipHistory:     make([]MembershipRecordDTO, 0, len(machine.operations)),
+		OfflineSessions:       make([]OfflineSessionStateDTO, 0, len(machine.offline)),
+		Retained:              make([]RetainedStateDTO, 0, len(machine.retained)),
+		NodeDrains:            make([]NodeDrainStateDTO, 0, len(machine.nodeDrains)),
+		SessionMetadata:       make([]SessionMetadataStateDTO, 0, len(machine.sessionMetadata)),
+		ConnectionRebalance:   cloneConnectionRebalanceStatePointer(machine.connectionRebalance),
+		CredentialRevocations: make([]CredentialRevocationStateDTO, 0, len(machine.credentialRevocations)),
+		ActiveFeatures:        slices.Clone(machine.activeFeatures),
+		TenantQuotaProfile:    cloneTenantQuotaProfile(machine.tenantQuota),
+		ProposalOrigins:       machine.proposalSnapshotLocked(),
 	}
 	for _, member := range machine.members {
 		snapshot.Members = append(snapshot.Members, cloneMember(member))
@@ -201,6 +207,9 @@ func (machine *StateMachine) snapshotLocked(lastIncludedIndex uint64) SnapshotDT
 	for _, state := range machine.sessionMetadata {
 		snapshot.SessionMetadata = append(snapshot.SessionMetadata, cloneSessionMetadataStateDTO(state))
 	}
+	for _, state := range machine.credentialRevocations {
+		snapshot.CredentialRevocations = append(snapshot.CredentialRevocations, state)
+	}
 	sort.Slice(snapshot.Members, func(left, right int) bool { return snapshot.Members[left].MemberID < snapshot.Members[right].MemberID })
 	sort.Slice(snapshot.Ownerships, func(left, right int) bool {
 		return compareSession(snapshot.Ownerships[left].TenantID, snapshot.Ownerships[left].ClientID, snapshot.Ownerships[right].TenantID, snapshot.Ownerships[right].ClientID) < 0
@@ -226,6 +235,9 @@ func (machine *StateMachine) snapshotLocked(lastIncludedIndex uint64) SnapshotDT
 	sort.Slice(snapshot.SessionMetadata, func(left, right int) bool {
 		return compareSession(snapshot.SessionMetadata[left].TenantID, snapshot.SessionMetadata[left].ClientID, snapshot.SessionMetadata[right].TenantID, snapshot.SessionMetadata[right].ClientID) < 0
 	})
+	sort.Slice(snapshot.CredentialRevocations, func(left, right int) bool {
+		return snapshot.CredentialRevocations[left].CredentialID < snapshot.CredentialRevocations[right].CredentialID
+	})
 	for index := range snapshot.DeliverySessions {
 		sort.Slice(snapshot.DeliverySessions[index].Messages, func(left, right int) bool {
 			return snapshot.DeliverySessions[index].Messages[left].Sequence < snapshot.DeliverySessions[index].Messages[right].Sequence
@@ -238,7 +250,7 @@ func (machine *StateMachine) snapshotLocked(lastIncludedIndex uint64) SnapshotDT
 	for _, record := range snapshot.DeliverySessions {
 		deliveryEntries += len(record.Messages) + len(record.Inbound)
 	}
-	snapshot.ObjectCount = uint64(len(snapshot.Members) + len(snapshot.Ownerships) + len(snapshot.Subscriptions) + len(snapshot.DeliverySessions) + deliveryEntries + len(snapshot.MembershipHistory) + len(snapshot.Retained) + len(snapshot.OfflineSessions) + offlineMessagesCount + len(snapshot.NodeDrains) + len(snapshot.ActiveFeatures) + len(snapshot.SessionMetadata) + tenantQuotaObjectCount(snapshot.TenantQuotaProfile) + proposalObjectCount(snapshot.ProposalOrigins))
+	snapshot.ObjectCount = uint64(len(snapshot.Members) + len(snapshot.Ownerships) + len(snapshot.Subscriptions) + len(snapshot.DeliverySessions) + deliveryEntries + len(snapshot.MembershipHistory) + len(snapshot.Retained) + len(snapshot.OfflineSessions) + offlineMessagesCount + len(snapshot.NodeDrains) + len(snapshot.ActiveFeatures) + len(snapshot.SessionMetadata) + len(snapshot.CredentialRevocations) + tenantQuotaObjectCount(snapshot.TenantQuotaProfile) + proposalObjectCount(snapshot.ProposalOrigins))
 	if snapshot.ConnectionRebalance != nil {
 		snapshot.ObjectCount++
 	}
@@ -370,6 +382,8 @@ func cloneSnapshot(snapshot SnapshotDTO) SnapshotDTO {
 	}
 	copyOfSnapshot.NodeDrains = append([]NodeDrainStateDTO(nil), snapshot.NodeDrains...)
 	copyOfSnapshot.ConnectionRebalance = cloneConnectionRebalanceStatePointer(snapshot.ConnectionRebalance)
+	copyOfSnapshot.CredentialRevocations = make([]CredentialRevocationStateDTO, len(snapshot.CredentialRevocations))
+	copy(copyOfSnapshot.CredentialRevocations, snapshot.CredentialRevocations)
 	copyOfSnapshot.ActiveFeatures = slices.Clone(snapshot.ActiveFeatures)
 	copyOfSnapshot.SessionMetadata = make([]SessionMetadataStateDTO, len(snapshot.SessionMetadata))
 	for index, state := range snapshot.SessionMetadata {
@@ -385,5 +399,7 @@ func sameSnapshotState(left, right SnapshotDTO) bool {
 		reflect.DeepEqual(left.Members, right.Members) && reflect.DeepEqual(left.Ownerships, right.Ownerships) && reflect.DeepEqual(left.Subscriptions, right.Subscriptions) &&
 		reflect.DeepEqual(left.DeliverySessions, right.DeliverySessions) && reflect.DeepEqual(left.MembershipHistory, right.MembershipHistory) &&
 		reflect.DeepEqual(left.Retained, right.Retained) && reflect.DeepEqual(left.OfflineSessions, right.OfflineSessions) && reflect.DeepEqual(left.NodeDrains, right.NodeDrains) &&
-		reflect.DeepEqual(left.SessionMetadata, right.SessionMetadata) && reflect.DeepEqual(left.ConnectionRebalance, right.ConnectionRebalance) && reflect.DeepEqual(left.ProposalOrigins, right.ProposalOrigins) && sameTenantQuotaProfile(left.TenantQuotaProfile, right.TenantQuotaProfile) && slices.Equal(left.ActiveFeatures, right.ActiveFeatures)
+		reflect.DeepEqual(left.SessionMetadata, right.SessionMetadata) && reflect.DeepEqual(left.ConnectionRebalance, right.ConnectionRebalance) &&
+		reflect.DeepEqual(left.CredentialRevocations, right.CredentialRevocations) && reflect.DeepEqual(left.ProposalOrigins, right.ProposalOrigins) &&
+		sameTenantQuotaProfile(left.TenantQuotaProfile, right.TenantQuotaProfile) && slices.Equal(left.ActiveFeatures, right.ActiveFeatures)
 }

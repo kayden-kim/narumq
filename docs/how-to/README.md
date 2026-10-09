@@ -12,4 +12,5 @@
 | [동적 클러스터 멤버십 변경](dynamic-cluster-membership.md) | Draft | 3-node cluster에서 node를 추가·교체·제거하는 운영 절차 |
 | [Cluster backup 복원](cluster-backup-restore.md) | Draft | 3-voter identity를 유지하며 backup archive를 오프라인 restore하고 readiness/resync를 확인한다. |
 | [Cluster feature activation 승인](cluster-feature-activation.md) | Verified (Windows local 절차 범위) | 운영 체크리스트·외부 승인 기록을 만든 뒤 PowerShell로 feature 하나를 활성화하고 commit·rollback 경계를 확인한다. Production 승인이 아니다. |
+| [Credential 회전·폐기](credential-rotation-and-revocation.md) | Draft (저장소 내 3-node process acceptance 범위; production 미검증) | Security config 배포, 새 credential 전환, Dynamic cluster 폐기와 결과 확인 |
 | [NaruMQ Operations Dashboard 구성](operations-dashboard.md) | Verified (local Docker acceptance 범위; production 미검증) | Prometheus scrape, Grafana provisioning, ReadOnly API key와 Dashboard 확인 절차 |

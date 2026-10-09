@@ -35,10 +35,10 @@ func NewRouter(
 	healthChecker ports.HealthChecker,
 	metricsReg portsmetrics.MetricsRenderer,
 ) http.Handler {
-	return newRouter(cfg, stateProvider, healthChecker, metricsReg, nil, nil, nil, nil, nil, nil)
+	return newRouter(cfg, stateProvider, healthChecker, metricsReg, nil, nil, nil, nil, nil, nil, nil)
 }
 
-// NewRouterWithMembership constructs a router with membership, node drain, connection rebalance, and backup routes.
+// NewRouterWithMembership constructs a router with cluster membership and administration routes.
 func NewRouterWithMembership(
 	cfg ServerConfig,
 	stateProvider ports.StateProvider,
@@ -50,8 +50,9 @@ func NewRouterWithMembership(
 	backupProvider ports.ClusterBackupProvider,
 	auditService AuditUseCase,
 	auditQueryService AuditQueryUseCase,
+	credentialRevocationService CredentialRevocationUseCase,
 ) http.Handler {
-	return newRouter(cfg, stateProvider, healthChecker, metricsReg, membershipService, drainService, rebalanceService, backupProvider, auditService, auditQueryService)
+	return newRouter(cfg, stateProvider, healthChecker, metricsReg, membershipService, drainService, rebalanceService, backupProvider, auditService, auditQueryService, credentialRevocationService)
 }
 
 func newRouter(
@@ -65,6 +66,7 @@ func newRouter(
 	backupProvider ports.ClusterBackupProvider,
 	auditService AuditUseCase,
 	auditQueryService AuditQueryUseCase,
+	credentialRevocationService CredentialRevocationUseCase,
 ) http.Handler {
 	auth := NewAuthenticator(AuthConfig{
 		AuthToken: cfg.AuthToken, APIKeys: cfg.APIKeys, OIDC: cfg.OIDC,
@@ -111,6 +113,30 @@ func newRouter(
 				return
 			}
 			auth.RequirePermission(PermissionRead, methodNotAllowed(http.MethodGet))(w, r)
+		})
+	}
+	if credentialRevocationService != nil {
+		credentialRevocationH := &credentialRevocationHandler{service: credentialRevocationService}
+		mux.HandleFunc("/api/v1/security/credential-revocations", func(w http.ResponseWriter, r *http.Request) {
+			if r.Method == http.MethodGet {
+				auth.RequirePermission(PermissionCredentialAdmin, credentialRevocationH.List)(w, r)
+				return
+			}
+			auth.RequirePermission(PermissionCredentialAdmin, methodNotAllowed(http.MethodGet))(w, r)
+		})
+		mux.HandleFunc("/api/v1/security/credential-revocations/{credentialId}", func(w http.ResponseWriter, r *http.Request) {
+			switch r.Method {
+			case http.MethodPost:
+				auth.RequireMutationPermission(PermissionCredentialAdmin, auditMutation{
+					action: "security.credential.revoke", targetType: "mqtt_credential", targetParam: "credentialId",
+				}, credentialRevocationH.Revoke)(w, r)
+			case http.MethodDelete:
+				auth.RequireMutationPermission(PermissionCredentialAdmin, auditMutation{
+					action: "security.credential.restore", targetType: "mqtt_credential", targetParam: "credentialId",
+				}, credentialRevocationH.Restore)(w, r)
+			default:
+				auth.RequirePermission(PermissionCredentialAdmin, methodNotAllowed("POST, DELETE"))(w, r)
+			}
 		})
 	}
 	if membershipService != nil {
@@ -214,10 +240,10 @@ func NewServer(
 	healthChecker ports.HealthChecker,
 	metricsReg portsmetrics.MetricsRenderer,
 ) *http.Server {
-	return newServer(cfg, stateProvider, healthChecker, metricsReg, nil, nil, nil, nil, nil, nil)
+	return newServer(cfg, stateProvider, healthChecker, metricsReg, nil, nil, nil, nil, nil, nil, nil)
 }
 
-// NewServerWithMembership creates a management server with membership, node drain, connection rebalance, and backup routes.
+// NewServerWithMembership creates a management server with cluster administration routes.
 func NewServerWithMembership(
 	cfg ServerConfig,
 	stateProvider ports.StateProvider,
@@ -229,8 +255,9 @@ func NewServerWithMembership(
 	backupProvider ports.ClusterBackupProvider,
 	auditService AuditUseCase,
 	auditQueryService AuditQueryUseCase,
+	credentialRevocationService CredentialRevocationUseCase,
 ) *http.Server {
-	return newServer(cfg, stateProvider, healthChecker, metricsReg, membershipService, drainService, rebalanceService, backupProvider, auditService, auditQueryService)
+	return newServer(cfg, stateProvider, healthChecker, metricsReg, membershipService, drainService, rebalanceService, backupProvider, auditService, auditQueryService, credentialRevocationService)
 }
 
 func newServer(
@@ -244,6 +271,7 @@ func newServer(
 	backupProvider ports.ClusterBackupProvider,
 	auditService AuditUseCase,
 	auditQueryService AuditQueryUseCase,
+	credentialRevocationService CredentialRevocationUseCase,
 ) *http.Server {
 
 	addr := cfg.ListenAddr
@@ -260,7 +288,7 @@ func newServer(
 		wTimeout = 10 * time.Second
 	}
 
-	handler := newRouter(cfg, stateProvider, healthChecker, metricsReg, membershipService, drainService, rebalanceService, backupProvider, auditService, auditQueryService)
+	handler := newRouter(cfg, stateProvider, healthChecker, metricsReg, membershipService, drainService, rebalanceService, backupProvider, auditService, auditQueryService, credentialRevocationService)
 
 	return &http.Server{
 		Addr:         addr,

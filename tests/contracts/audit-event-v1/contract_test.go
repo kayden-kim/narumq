@@ -162,6 +162,18 @@ func TestAuditEventMatchesSchemaAndFileChain(t *testing.T) {
 			subject: "management-bearer-token", role: "ClusterAdmin",
 		},
 		{
+			name: "revoke credential", method: http.MethodPost, path: "/api/v1/security/credential-revocations/credential-a",
+			token: adminSecret, router: adminRouter, status: http.StatusOK,
+			action: "security.credential.revoke", result: "ALLOWED", reason: "succeeded",
+			targetType: "mqtt_credential", targetID: "credential-a", subject: "management-bearer-token", role: "ClusterAdmin",
+		},
+		{
+			name: "restore credential", method: http.MethodDelete, path: "/api/v1/security/credential-revocations/credential-a",
+			token: adminSecret, router: adminRouter, status: http.StatusOK,
+			action: "security.credential.restore", result: "ALLOWED", reason: "succeeded",
+			targetType: "mqtt_credential", targetID: "credential-a", subject: "management-bearer-token", role: "ClusterAdmin",
+		},
+		{
 			name: "invalid credential", method: http.MethodGet, path: "/api/v1/cluster", token: invalidSecret,
 			router: adminRouter, status: http.StatusUnauthorized, action: "management.request", result: "DENIED",
 			reason: "unauthorized", targetType: "management_endpoint", targetID: "/api/v1/cluster", subject: "unauthenticated",
@@ -171,6 +183,12 @@ func TestAuditEventMatchesSchemaAndFileChain(t *testing.T) {
 			body: validContractDrainRequestJSON, token: readOnlySecret, idempotencyKey: "readonly-drain-3",
 			router: readOnlyRouter, status: http.StatusForbidden, action: "management.request", result: "DENIED",
 			reason: "forbidden", targetType: "management_endpoint", targetID: "/api/v1/nodes/{nodeId}/drain",
+			subject: "apikey:dashboard", role: "ReadOnly", apiKey: true,
+		},
+		{
+			name: "read-only credential mutation", method: http.MethodPost, path: "/api/v1/security/credential-revocations/credential-a",
+			token: readOnlySecret, router: readOnlyRouter, status: http.StatusForbidden, action: "management.request", result: "DENIED",
+			reason: "forbidden", targetType: "management_endpoint", targetID: "/api/v1/security/credential-revocations/{credentialId}",
 			subject: "apikey:dashboard", role: "ReadOnly", apiKey: true,
 		},
 		{
@@ -629,6 +647,24 @@ func contractRebalanceOperation() appmembership.ConnectionRebalanceOperationDTO 
 	}}
 }
 
+type contractCredentialRevocationService struct{}
+
+func (contractCredentialRevocationService) ListCredentialRevocations(context.Context) ([]appmembership.CredentialRevocationStateDTO, error) {
+	return []appmembership.CredentialRevocationStateDTO{{
+		CredentialID: "credential-a", RevokedAtUnixMillis: 1_760_000_000_000,
+	}}, nil
+}
+
+func (contractCredentialRevocationService) RevokeCredential(_ context.Context, credentialID string) (appmembership.CredentialRevocationStatusDTO, error) {
+	return appmembership.CredentialRevocationStatusDTO{
+		CredentialID: credentialID, Revoked: true, RevokedAtUnixMillis: 1_760_000_000_000,
+	}, nil
+}
+
+func (contractCredentialRevocationService) RestoreCredential(_ context.Context, credentialID string) (appmembership.CredentialRevocationStatusDTO, error) {
+	return appmembership.CredentialRevocationStatusDTO{CredentialID: credentialID}, nil
+}
+
 func newContractManagementRouter(
 	config audithttp.ServerConfig,
 	membershipService audithttp.MembershipUseCase,
@@ -640,7 +676,9 @@ func newContractManagementRouter(
 ) http.Handler {
 	return audithttp.NewRouterWithMembership(
 		config,
-		nil, nil, nil, membershipService, drainService, rebalanceService, backupProvider, auditService, auditQueryService,
+		nil, nil, nil,
+		membershipService, drainService, rebalanceService, backupProvider, auditService, auditQueryService,
+		contractCredentialRevocationService{},
 	)
 }
 

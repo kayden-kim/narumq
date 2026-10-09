@@ -558,3 +558,32 @@ func TestLifecycle_TakeoverAndPlannedHandoffWillRules(t *testing.T) {
 		})
 	}
 }
+
+// Traceability: SEC-07; docs/specs/tenancy-and-security.md §7, §9; ADR-0049.
+func TestLifecycleDisconnectCredentialRevokedDiscardsWill(t *testing.T) {
+	now := time.Unix(1, 0)
+	state, _, err := Open(nil, mqtt.Connect{
+		Version:               mqtt.ProtocolV5,
+		ClientID:              "client",
+		SessionExpiryInterval: 60,
+		Will:                  &mqtt.Will{Topic: "status/will", Payload: []byte("payload"), DelayInterval: 10},
+	}, now)
+	if err != nil {
+		t.Fatalf("Open() error = %v", err)
+	}
+
+	result, err := state.Disconnect(now, DisconnectCredentialRevoked)
+	if err != nil {
+		t.Fatalf("Disconnect() error = %v", err)
+	}
+	if result.PublishWillNow || result.ScheduleWill || !result.Lifecycle.WillDiscarded() || result.Lifecycle.HasPendingWill() {
+		t.Fatalf("revoked disconnect result = %+v", result)
+	}
+	if !result.ScheduleExpiry || result.ExpiryDuration != 60*time.Second {
+		t.Fatalf("expiry result = %+v; want scheduled 60-second expiry", result)
+	}
+	expiresAt, ok := result.Lifecycle.ExpiresAt()
+	if !ok || !expiresAt.Equal(now.Add(60*time.Second)) {
+		t.Fatalf("ExpiresAt() = %v, %v; want %v, true", expiresAt, ok, now.Add(60*time.Second))
+	}
+}

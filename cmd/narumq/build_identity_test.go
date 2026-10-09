@@ -23,6 +23,10 @@ func TestResolveBuildIdentity(t *testing.T) {
 			name: "sorts features", release: "1.2.3", features: "zeta,compatibility-probe,alpha",
 			wantRelease: "1.2.3", wantFeatures: []string{"alpha", "compatibility-probe", "zeta"},
 		},
+		{
+			name: "advertises credential revocation capability by default", release: "1.2.3", wantRelease: "1.2.3",
+			wantFeatures: []string{"credential-revocation"},
+		},
 		{name: "invalid release", release: "01.2.3", wantError: true},
 		{name: "empty feature token", release: "1.2.3", features: "alpha,,zeta", wantError: true},
 		{name: "duplicate feature", release: "1.2.3", features: "alpha,alpha,session-metadata", wantRelease: "1.2.3", wantFeatures: []string{"alpha", "session-metadata"}},

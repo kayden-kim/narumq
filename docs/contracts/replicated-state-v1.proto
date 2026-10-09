@@ -7,7 +7,8 @@ option go_package = "narumq/internal/adapters/raft/records;records";
 // State schema 1.0 is fixed and strict: consumers reject unknown fields, payloads and
 // versions. Additive changes follow replicated-state-v1.md §3 and are written only after
 // Session metadata requires the active `session-metadata` feature. Connection rebalance
-// requires the active `connection-rebalance` feature.
+// requires the active `connection-rebalance` feature. Credential revocation requires the active
+// `credential-revocation` feature.
 
 enum MemberPhase {
   MEMBER_PHASE_UNSPECIFIED = 0;
@@ -272,6 +273,23 @@ message ConnectionRebalanceState {
   uint64 committed_index = 14;
 }
 
+enum CredentialRevocationAction {
+  CREDENTIAL_REVOCATION_ACTION_UNSPECIFIED = 0;
+  CREDENTIAL_REVOCATION_ACTION_REVOKE = 1;
+  CREDENTIAL_REVOCATION_ACTION_RESTORE = 2;
+}
+
+message CredentialRevocationChange {
+  CredentialRevocationAction action = 1;
+  string credential_id = 2;
+  uint64 proposed_at_unix_millis = 3;
+}
+
+message CredentialRevocationState {
+  string credential_id = 1;
+  uint64 revoked_at_unix_millis = 2;
+}
+
 // Every application log entry has exactly one typed payload. operation_id is a
 // canonical lower-case UUID and is stable across retry of the same operation.
 message CommandEnvelope {
@@ -291,6 +309,7 @@ message CommandEnvelope {
     FeatureActivation feature_activation = 20;
     SessionMetadataChange session_metadata = 21;
     ConnectionRebalanceChange connection_rebalance = 22;
+    CredentialRevocationChange credential_revocation = 25;
   }
   reserved 13;
   reserved "checkpoint";
@@ -531,6 +550,7 @@ message ReplicatedStateSnapshot {
   ConnectionRebalanceState connection_rebalance = 13;
   reserved 14;
   repeated ProposalOriginState proposal_origins = 15;
+  repeated CredentialRevocationState credential_revocations = 16;
 }
 message SnapshotEnvelope {
   uint32 schema_major = 1;

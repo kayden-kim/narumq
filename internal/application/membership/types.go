@@ -30,16 +30,19 @@ const (
 )
 
 // Session metadata capacity is cluster-wide and is not tenant storage quota.
-// Connection rebalance and session metadata are separately activated replicated features.
+// Connection rebalance, session metadata and credential revocation activate independently.
 const (
 	// ConnectionRebalanceFeature identifies the replicated connection rebalance feature.
 	ConnectionRebalanceFeature    = "connection-rebalance"
 	SessionMetadataFeature        = "session-metadata"
+	CredentialRevocationFeature   = "credential-revocation"
 	ProposalRecoveryFeature       = "proposal-recovery"
 	MaxProposalReceiptsPerOrigin  = 1024
 	MaxProposalReceipts           = 4096
 	MaxProposalResultBytes        = 32 << 20
 	MaxSessionWillBytes           = 8 << 20
+	MaxCredentialRevocations      = 4096
+	MaxCredentialIDBytes          = 512
 	MaxSessionWillPayloadBytes    = 65535
 	MaxSessionPrincipalFieldBytes = 1024
 	MaxSessionPrincipalRoles      = 64
@@ -130,6 +133,35 @@ type SessionMetadataStateDTO struct {
 type SessionMetadataResultDTO struct {
 	Found bool
 	Will  *SessionWillDTO
+}
+
+// CredentialRevocationAction identifies one replicated credential revocation transition.
+type CredentialRevocationAction uint32
+
+const (
+	CredentialRevocationActionUnspecified CredentialRevocationAction = iota
+	CredentialRevocationActionRevoke
+	CredentialRevocationActionRestore
+)
+
+// CredentialRevocationChangeDTO carries a deterministic revoke or restore command.
+type CredentialRevocationChangeDTO struct {
+	Action               CredentialRevocationAction
+	CredentialID         string
+	ProposedAtUnixMillis uint64
+}
+
+// CredentialRevocationStateDTO is a committed revoked credential and its first revoke time.
+type CredentialRevocationStateDTO struct {
+	CredentialID        string
+	RevokedAtUnixMillis uint64
+}
+
+// CredentialRevocationStatusDTO reports the committed status of a credential ID.
+type CredentialRevocationStatusDTO struct {
+	CredentialID        string
+	Revoked             bool
+	RevokedAtUnixMillis uint64
 }
 
 // Durable delivery capacity is enforced deterministically at apply time.
@@ -415,22 +447,23 @@ type ConnectionRebalanceOperationDTO struct {
 // Exactly one payload must be non-nil. Its fields intentionally mirror the v1
 // replicated-state contract without importing adapter or generated wire types.
 type CommandDTO struct {
-	SchemaMajor         uint32
-	SchemaMinor         uint32
-	OperationID         string
-	Proposal            *ProposalIdentityDTO
-	Membership          *MembershipRecordDTO
-	Ownership           *OwnershipChangeDTO
-	Subscription        *SubscriptionChangeDTO
-	Delivery            *DeliveryChangeDTO
-	Retained            *RetainedChangeDTO
-	Offline             *OfflineChangeDTO
-	NodeDrain           *NodeDrainChangeDTO
-	TenantQuota         *TenantQuotaChangeDTO
-	MemberProfile       *MemberProfileChangeDTO
-	FeatureActivation   *FeatureActivationDTO
-	SessionMetadata     *SessionMetadataChangeDTO
-	ConnectionRebalance *ConnectionRebalanceChangeDTO
+	SchemaMajor          uint32
+	SchemaMinor          uint32
+	OperationID          string
+	Proposal             *ProposalIdentityDTO
+	Membership           *MembershipRecordDTO
+	Ownership            *OwnershipChangeDTO
+	Subscription         *SubscriptionChangeDTO
+	Delivery             *DeliveryChangeDTO
+	Retained             *RetainedChangeDTO
+	Offline              *OfflineChangeDTO
+	NodeDrain            *NodeDrainChangeDTO
+	TenantQuota          *TenantQuotaChangeDTO
+	MemberProfile        *MemberProfileChangeDTO
+	FeatureActivation    *FeatureActivationDTO
+	SessionMetadata      *SessionMetadataChangeDTO
+	ConnectionRebalance  *ConnectionRebalanceChangeDTO
+	CredentialRevocation *CredentialRevocationChangeDTO
 }
 
 // MemberIdentityDTO is a committed cluster member identity and lifecycle phase.
@@ -671,6 +704,7 @@ const (
 	ConflictFeatureInactive               ApplyConflictCode = "feature_inactive"
 	ConflictSessionMetadataCapacity       ApplyConflictCode = "session_metadata_capacity_exceeded"
 	ConflictSessionMetadataInvalid        ApplyConflictCode = "session_metadata_invalid"
+	ConflictCredentialRevocationCapacity  ApplyConflictCode = "credential_revocation_capacity_exceeded"
 	ConflictConnectionRebalanceInProgress ApplyConflictCode = "connection_rebalance_in_progress"
 	ConflictRebalanceNotCancellable       ApplyConflictCode = "rebalance_not_cancellable"
 	ConflictProposalRetired               ApplyConflictCode = "proposal_retired"
@@ -684,17 +718,18 @@ type ApplyResultDTO struct {
 	Outcome  ApplyOutcome
 	Conflict ApplyConflictCode
 	// Replayed means this entry returned a receipt without repeating its effects.
-	Replayed            bool
-	Operation           *MembershipOperationDTO
-	Ownership           *OwnershipStateDTO
-	Subscription        *SubscriptionStateDTO
-	Delivery            *DeliveryResultDTO
-	OfflineClaim        *OfflineClaimDTO
-	NodeDrain           *NodeDrainStateDTO
-	TenantQuota         *TenantQuotaRejectionDTO
-	SessionMetadata     *SessionMetadataResultDTO
-	ConnectionRebalance *ConnectionRebalanceStateDTO
-	SupersededWill      *SupersededWillDTO
+	Replayed             bool
+	Operation            *MembershipOperationDTO
+	Ownership            *OwnershipStateDTO
+	Subscription         *SubscriptionStateDTO
+	Delivery             *DeliveryResultDTO
+	OfflineClaim         *OfflineClaimDTO
+	NodeDrain            *NodeDrainStateDTO
+	TenantQuota          *TenantQuotaRejectionDTO
+	SessionMetadata      *SessionMetadataResultDTO
+	ConnectionRebalance  *ConnectionRebalanceStateDTO
+	CredentialRevocation *CredentialRevocationStatusDTO
+	SupersededWill       *SupersededWillDTO
 }
 
 // MembershipOperationPhase is the management-facing current operation status.
@@ -781,24 +816,25 @@ type NodeDrainOperationDTO struct {
 // Digest is opaque adapter-verified envelope data; an empty Digest asks the adapter
 // to compute the contract's deterministic protobuf state digest when encoding.
 type SnapshotDTO struct {
-	SchemaMajor         uint32
-	SchemaMinor         uint32
-	LastIncludedIndex   uint64
-	ObjectCount         uint64
-	Digest              []byte
-	Members             []MemberIdentityDTO
-	Ownerships          []OwnershipStateDTO
-	Subscriptions       []SubscriptionStateDTO
-	DeliverySessions    []DeliverySessionStateDTO
-	MembershipHistory   []MembershipRecordDTO
-	Retained            []RetainedStateDTO
-	OfflineSessions     []OfflineSessionStateDTO
-	NodeDrains          []NodeDrainStateDTO
-	TenantQuotaProfile  *TenantQuotaProfileDTO
-	ActiveFeatures      []string
-	SessionMetadata     []SessionMetadataStateDTO
-	ConnectionRebalance *ConnectionRebalanceStateDTO
-	ProposalOrigins     []ProposalOriginStateDTO
+	SchemaMajor           uint32
+	SchemaMinor           uint32
+	LastIncludedIndex     uint64
+	ObjectCount           uint64
+	Digest                []byte
+	Members               []MemberIdentityDTO
+	Ownerships            []OwnershipStateDTO
+	Subscriptions         []SubscriptionStateDTO
+	DeliverySessions      []DeliverySessionStateDTO
+	MembershipHistory     []MembershipRecordDTO
+	Retained              []RetainedStateDTO
+	OfflineSessions       []OfflineSessionStateDTO
+	NodeDrains            []NodeDrainStateDTO
+	TenantQuotaProfile    *TenantQuotaProfileDTO
+	ActiveFeatures        []string
+	SessionMetadata       []SessionMetadataStateDTO
+	ConnectionRebalance   *ConnectionRebalanceStateDTO
+	CredentialRevocations []CredentialRevocationStateDTO
+	ProposalOrigins       []ProposalOriginStateDTO
 }
 
 // ProposalIdentityDTO identifies one command attempt independently of its logical operation.

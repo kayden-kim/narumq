@@ -9,10 +9,10 @@
 | 구현 대조 | 2026-10-10 source, adapter·contract·process 시험과 full local gate |
 | 코드 위치 | `internal/adapters/http/management` |
 | 코드 지도 | [Project structure](project-structure.md) |
-| 관련 스펙 | [Management API](../specs/management-api-and-observability.md), [Tenant와 security §6](../specs/tenancy-and-security.md#6-관리-plane-rbac) |
-| 관련 요구사항 | [PRD](../requirements/PRD.md) API-05, SEC-10~SEC-11, UI-01~UI-05·UI-10 |
+| 관련 스펙 | [Management API](../specs/management-api-and-observability.md), [Tenant와 security](../specs/tenancy-and-security.md) §6·§7 |
+| 관련 요구사항 | [PRD](../requirements/PRD.md) API-05, SEC-07, SEC-10~SEC-11, UI-01~UI-05·UI-10 |
 | 관련 계약 | [Management API v1](../contracts/management-api-v1.md), [Audit event v1](../contracts/audit-event-v1.md) |
-| 관련 ADR | [ADR-0043](../decisions/ADR-0043-management-api-rate-limit.md), [ADR-0045](../decisions/ADR-0045-operations-dashboard-grafana.md), [ADR-0048](../decisions/ADR-0048-management-api-oidc-api-key-rbac.md) |
+| 관련 ADR | [ADR-0043](../decisions/ADR-0043-management-api-rate-limit.md), [ADR-0045](../decisions/ADR-0045-operations-dashboard-grafana.md), [ADR-0048](../decisions/ADR-0048-management-api-oidc-api-key-rbac.md), [ADR-0049](../decisions/ADR-0049-mqtt-credential-revocation.md) |
 
 ## 1. 책임과 경계
 
@@ -21,7 +21,7 @@
 - 맡지 않는 책임: flag와 cluster JSON 검증, credential file I/O, cluster 전체 rate 합산, audit 파일 저장과 회전이다. 설정·key file 검증은 `cmd/narumq`가, audit 저장은 `internal/adapters/auditlog`가 담당한다.
 - 다른 모듈에 공개하는 기능: `NewServer`, `NewServerWithMembership`, `NewRouter`, `NewRouterWithMembership`와 `ServerConfig`다.
 
-`NewServer`는 standalone mode의 audit service를 연결하지 않는다. Cluster composition은 management server에 audit mutation service와 node-local read-only query service를 주입한다. `GET /api/v1/audit/events`는 SecurityAdmin 또는 ClusterAdmin만 사용할 수 있고, 조회 결과를 다시 감사 기록하지 않는다.
+`NewServer`는 standalone mode의 audit service를 연결하지 않는다. Cluster composition은 audit service/query와 credential revocation application service를 management server에 주입한다. `/api/v1/security/credential-revocations`의 GET·POST·DELETE는 `PermissionCredentialAdmin`으로 보호한다. Mutation은 `security.credential.revoke` 또는 `security.credential.restore` event를 admission한 뒤 service에 전달한다. Standalone router에는 credential revocation service가 없으므로 해당 route를 등록하지 않는다. `GET /api/v1/audit/events`는 SecurityAdmin 또는 ClusterAdmin만 사용할 수 있고, 조회 결과를 다시 감사 기록하지 않는다.
 
 ## 2. 내부 구조
 
@@ -63,6 +63,7 @@ flowchart TD
 | `rate_limit.go` `requestRateLimiter` | key별 token bucket을 잠금으로 보호하고 refill·eviction을 수행한다. | `NewAuthenticator`마다 principal/IP limiter 하나씩 생성한다. | `ports/clock.Clock` |
 | `server.go` health·metrics route | probe와 scrape handler를 등록하고 rate limit에서 제외한다. | Router 초기화 때 등록한다. | `health.go`, `metrics.go` |
 | `audit_query_handlers.go` `GET /api/v1/audit/events` | query service에서 이 node의 저장된 hash-chain record를 읽어 공통 list envelope로 반환한다. 조회는 새 audit event를 만들지 않는다. | 요청마다 실행한다. | `application/audit` query service |
+| `credential_revocation_handlers.go` `GET`·`POST`·`DELETE` | Committed revocation list, revoke와 restore를 application service에 전달한다. | Dynamic cluster server route에서만 사용한다. | `PermissionCredentialAdmin`, mutation audit admission, `CredentialRevocationUseCase` |
 
 ## 3. 데이터 모델
 

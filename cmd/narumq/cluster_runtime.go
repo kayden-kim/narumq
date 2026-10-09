@@ -380,6 +380,7 @@ func runClusterMode(ctx context.Context, config clusterConfigFile, logger *slog.
 	defer dataPlaneAudit.Close()
 	connectOptions = append(connectOptions, connect.WithDataPlaneAudit(dataPlaneAudit))
 	connectOptions = append(connectOptions, connect.WithMetrics(metricsRegistry))
+	connectOptions = append(connectOptions, connect.WithCredentialRevocationChecker(runtime))
 	connections, err := connect.New(systemClock, sessions, deliveries, runtime.routes, systemScheduler, willBridge, connectOptions...)
 	if err != nil {
 		return fmt.Errorf("create cluster connect use case: %w", err)
@@ -409,6 +410,7 @@ func runClusterMode(ctx context.Context, config clusterConfigFile, logger *slog.
 			Clock: systemClock, MaxPacketSize: clusterDefaultPacketSize,
 			ConnectTimeout: 10 * time.Second, WriteTimeout: 5 * time.Second,
 			ControlQueueCapacity: clusterDefaultControlQueueCapacity, ClientCertificateExtractor: tlsadapter.ExtractVerifiedClientCertificateDTO,
+			CredentialRevocationChecker: runtime, TimerScheduler: systemScheduler,
 			ReceiveMaximum: clusterDefaultReceiveMaximum, PacketReadTimeout: clusterDefaultPacketReadTimeout,
 			Policy: tcpPolicy, Metrics: metricsRegistry, ClusterMode: true,
 			TenantLimits:   tenantLimits,
@@ -421,6 +423,7 @@ func runClusterMode(ctx context.Context, config clusterConfigFile, logger *slog.
 			return fmt.Errorf("create cluster MQTT server: %w", err)
 		}
 		runtime.mqttServer = mqttServer
+		mqttServer.ReplaceCredentialRevocations(runtime.machine.CredentialRevocations())
 		runtime.durableSink = mqttServer
 		runtime.forwardSink = mqttServer
 		for _, listener := range mqttListeners[1:] {
@@ -434,6 +437,10 @@ func runClusterMode(ctx context.Context, config clusterConfigFile, logger *slog.
 	membershipService, err := membership.NewService(runtime, config.replicationProfile())
 	if err != nil {
 		return fmt.Errorf("create membership service: %w", err)
+	}
+	credentialRevocationService, err := membership.NewCredentialRevocationService(runtime, systemClock)
+	if err != nil {
+		return fmt.Errorf("create credential revocation service: %w", err)
 	}
 	drainService, err := membership.NewDrainService(runtime, systemClock)
 	if err != nil {
@@ -490,7 +497,7 @@ func runClusterMode(ctx context.Context, config clusterConfigFile, logger *slog.
 		AllowAnonymousProbes: true,
 		RequestRate:          requestRate, AuthFailureRate: authFailureRate, Clock: systemClock,
 		ClusterID: config.ClusterID, Logger: logger,
-	}, stateProvider, healthChecker, metricsRegistry, membershipService, drainService, rebalanceService, runtime, auditService, auditQueryService)
+	}, stateProvider, healthChecker, metricsRegistry, membershipService, drainService, rebalanceService, runtime, auditService, auditQueryService, credentialRevocationService)
 	return runtime.serve(ctx, mqttServer, managementServer, managementListener)
 }
 
@@ -1379,6 +1386,9 @@ func (runtime *clusterRuntime) applyBatch(batch raftadapter.BatchDTO, proposals 
 		if err := runtime.machine.Restore(snapshot); err != nil {
 			return fmt.Errorf("restore membership state machine: %w", err)
 		}
+		if runtime.mqttServer != nil {
+			runtime.mqttServer.ReplaceCredentialRevocations(runtime.machine.CredentialRevocations())
+		}
 		runtime.releaseProfile.observeSnapshotRestore()
 		runtime.sessionRecovery.requestFullScan()
 		runtime.retainedResyncRequired.Store(true)
@@ -1435,6 +1445,12 @@ func (runtime *clusterRuntime) applyBatch(batch raftadapter.BatchDTO, proposals 
 		result, err := runtime.machine.Apply(event.index, command)
 		if err != nil {
 			return fmt.Errorf("apply committed command at raft index %d: %w", event.index, err)
+		}
+		if change := command.CredentialRevocation; change != nil &&
+			result.Outcome == membership.ApplyOutcomeApplied && runtime.mqttServer != nil {
+			runtime.mqttServer.ApplyCredentialRevocation(
+				change.CredentialID, runtime.machine.IsCredentialRevoked(change.CredentialID),
+			)
 		}
 		if result.Replayed {
 			runtime.stageProposalResult(event.command, result, proposals)
@@ -2905,6 +2921,20 @@ func (runtime *clusterRuntime) Members(ctx context.Context) ([]membership.Member
 		return nil, classifyClusterPortError(err)
 	}
 	return runtime.machine.Members(), nil
+}
+
+func (runtime *clusterRuntime) CredentialRevocations(ctx context.Context) ([]membership.CredentialRevocationStateDTO, error) {
+	if err := runtime.readBarrier(ctx); err != nil {
+		return nil, classifyClusterPortError(err)
+	}
+	return runtime.machine.CredentialRevocations(), nil
+}
+
+func (runtime *clusterRuntime) IsCredentialRevoked(ctx context.Context, credentialID string) (bool, error) {
+	if err := runtime.readBarrier(ctx); err != nil {
+		return false, classifyClusterPortError(err)
+	}
+	return runtime.machine.IsCredentialRevoked(credentialID), nil
 }
 
 func (runtime *clusterRuntime) ActiveFeatures(ctx context.Context) ([]string, error) {

@@ -59,6 +59,7 @@ const (
 	ServiceErrorDrainNotCancellable           ServiceErrorCode = "drain_not_cancellable"
 	ServiceErrorNodeDrainInProgress           ServiceErrorCode = "node_drain_in_progress"
 	ServiceErrorFeatureInactive               ServiceErrorCode = "feature_inactive"
+	ServiceErrorCredentialRevocationCapacity  ServiceErrorCode = "credential_revocation_capacity_exceeded"
 	ServiceErrorConnectionRebalanceInProgress ServiceErrorCode = "connection_rebalance_in_progress"
 	ServiceErrorRebalanceNotCancellable       ServiceErrorCode = "rebalance_not_cancellable"
 )
@@ -343,6 +344,10 @@ func conflictServiceError(conflict ApplyConflictCode) *ServiceError {
 		return newServiceError(ServiceErrorCompatibilityUnsupported, false)
 	case ConflictFeatureUnsupported:
 		return newServiceError(ServiceErrorFeatureUnsupported, false)
+	case ConflictFeatureInactive:
+		return newServiceError(ServiceErrorFeatureInactive, false)
+	case ConflictCredentialRevocationCapacity:
+		return newServiceError(ServiceErrorCredentialRevocationCapacity, false)
 	default:
 		return newServiceError(ServiceErrorOperationConflict, false)
 	}
@@ -375,6 +380,10 @@ func newServiceError(code ServiceErrorCode, retryable bool) *ServiceError {
 		message = "member compatibility is unsupported"
 	case ServiceErrorFeatureUnsupported:
 		message = "feature is not supported by every active member"
+	case ServiceErrorFeatureInactive:
+		message = "credential revocation feature is inactive"
+	case ServiceErrorCredentialRevocationCapacity:
+		message = "credential revocation capacity is exhausted"
 	case ServiceErrorInvalidNodeTransition:
 		message = "node lifecycle transition is not allowed"
 	case ServiceErrorDrainNotCancellable:

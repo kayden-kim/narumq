@@ -12,18 +12,19 @@
 | 방향 | Cluster node ↔ Cluster node·offline restore |
 | 스키마 기준 파일 | [replicated-state-v1.proto](replicated-state-v1.proto) |
 | 기준 동작 명세 | [Cluster §8](../specs/cluster-session-and-delivery.md#8-mixed-version-compatibility) |
-| 관련 요구사항 | CLU-11, CLU-14 |
+| 관련 요구사항 | CLU-11, CLU-14, SEC-07 |
 | 호환성 범위 | Schema `1.0`; release window와 feature activation은 [Release compatibility v1](cluster-release-compatibility-v1.md)를 따른다. |
 | 관련 결정 | [ADR-0031](../decisions/ADR-0031-replicated-state-schema-strict-evolution.md) Accepted |
 | 관련 시험 | [Cluster §11.29](../specs/cluster-session-and-delivery.md#1129-replicated-state-v1-계약-수용-매핑) |
 
 ## 1. 형식과 의미
 
-`CommandEnvelope`는 protobuf `proto3` schema major/minor와 payload 한 개를 담는다. `MembershipRecord`, `OwnershipChange`, `SubscriptionChange`, `DeliveryChange`, `RetainedChange`, `OfflineChange`, `NodeDrainChange`, `TenantQuotaChange`, `MemberProfileChange`, `FeatureActivation`, `SessionMetadataChange`, `ConnectionRebalanceChange`를 지원한다. `MemberProfileChange`는 `member_id`, canonical `release_version`과 정렬된 `features`를 담는다. 변경 가능한 build profile field만 갱신한다. `FeatureActivation`은 feature token을 담고 모든 non-retired member가 광고할 때만 적용한다. `MemberIdentity`는 commit된 release/features profile을 담는다. `ReplicatedStateSnapshot.active_features`는 정렬된 feature 집합이다.
+`CommandEnvelope`는 protobuf `proto3` schema major/minor와 payload 한 개를 담는다. `MembershipRecord`, `OwnershipChange`, `SubscriptionChange`, `DeliveryChange`, `RetainedChange`, `OfflineChange`, `NodeDrainChange`, `TenantQuotaChange`, `MemberProfileChange`, `FeatureActivation`, `SessionMetadataChange`, `ConnectionRebalanceChange`, `CredentialRevocationChange`를 지원한다. `MemberProfileChange`는 `member_id`, canonical `release_version`과 정렬된 `features`를 담는다. 변경 가능한 build profile field만 갱신한다. `FeatureActivation`은 feature token을 담고 모든 non-retired member가 광고할 때만 적용한다. `MemberIdentity`는 commit된 release/features profile을 담는다. `ReplicatedStateSnapshot.active_features`는 정렬된 feature 집합이다.
 
 Session metadata의 동작과 불변 조건은 [ADR-0025](../decisions/ADR-0025-replicated-session-metadata-and-owner-loss-recovery.md)와 [Cluster §4.3](../specs/cluster-session-and-delivery.md#43-session-metadata-복제와-owner-손실-복구)를 따른다. 실행 증거는 [§11.24](../specs/cluster-session-and-delivery.md#1124-session-metadata-복제와-owner-손실-복구-수용-매핑)에 있다. 선택 field `OwnershipChange.session`은 CONNECT acquisition 또는 transfer의 metadata를 담는다. `ACQUIRE`·`TRANSFER`에서만 유효하다. Ownership과 새 `CONNECTED` metadata를 같은 command에서 원자적으로 적용하고 이전 record와 pending Will을 대체한다. `session-metadata` 비활성 상태에서는 이 field를 생략해야 한다. `SessionMetadataChange`는 owner/epoch fencing을 적용하는 `DETACH`·`CLAIM_WILL`·`DISCARD` 전이다. Metadata를 담은 proposal과 record는 feature activation 뒤에만 쓴다. Build는 `session-metadata`를 광고하지만 activation 전에는 metadata payload를 제안하거나 저장하지 않는다. 비활성 cluster의 기존 동작과 bytes를 유지한다.
 
 `ConnectionRebalanceChange`는 `START`·`REPORT`·`FAIL`·`CANCEL`을 담는다. Command oneof 번호는 22, snapshot의 `connection_rebalance` 번호는 13이다. Active `connection-rebalance` feature 뒤에만 기록해야 한다. Snapshot의 connection rebalance record는 0개 또는 1개이며 `objectCount`에 1개로 센다. Participant는 NodeID 오름차순이다. 동작은 [ADR-0033](../decisions/ADR-0033-connection-rebalance-operation.md)과 [Cluster §9](../specs/cluster-session-and-delivery.md#9-rebalance)를 따른다.
+`CredentialRevocationChange`는 command field 25이며 `REVOKE` 또는 `RESTORE`, UTF-8 `credential_id` 1~512 bytes, 양수 proposer Unix milliseconds를 담는다. `CredentialRevocationState`는 snapshot field 16에 저장한다. `credential-revocation` feature가 활성화된 뒤에만 폐기 상태를 propose하거나 snapshot에 저장한다. Snapshot은 최대 4096개 entry를 credential ID의 UTF-8 bytewise 엄격 오름차순으로 보존한다. 같은 ID의 재폐기는 최초 `revoked_at_unix_millis`를 유지하고, capacity 초과는 `credential_revocation_capacity_exceeded`로 거절한다.
 
 Snapshot의 `membership_history`는 각 전이가 commit된 정확한 `committed_index`를 저장한다. 제안 시에는 Raft entry index를 모르므로 command payload의 이 field는 0이어야 한다. Application은 apply 때 실제 index를 기록한다. Snapshot은 `0 < committed_index <= last_included_index`를 검증한다. 복구한 operation status는 snapshot 경계가 아니라 마지막 전이의 index를 보고한다.
 
@@ -31,7 +32,7 @@ Snapshot의 `lastIncludedIndex`는 Raft가 적용한 마지막 index와 같아�
 
 `DeliverySessionState`는 `(tenantId, clientId)`별 복제 aggregate다. 증가하는 `next_sequence`, sequence 순서의 `DeliveryMessage`와 packet ID 순서의 `InboundMessage`를 담는다. Delivery message는 topic·binary payload·effective QoS·retain·expiry·packet ID·phase를 저장한다. Packet ID 0은 `QUEUED`다. Inbound state는 PUBREL 전 publisher QoS 2 payload를 보존한다. RELEASE 뒤에는 payload 없는 tombstone을 보존한다. ATTACH/DETACH/DISCARD와 SEND/ADVANCE/COMPLETE는 정확한 owner/epoch fencing으로 aggregate를 변경한다. Stale command는 commit 순서 위치를 소비하지만 aggregate를 바꾸지 않는다.
 
-`SnapshotEnvelope`는 schema major/minor, `lastIncludedIndex`, `objectCount`, SHA-256과 typed `ReplicatedStateSnapshot`을 담는다. `objectCount`는 members·ownerships·subscriptions·delivery sessions와 내부 messages/inbound·membership history·retained·offline sessions와 내부 messages·node drains·active feature 값·tenant quota profile의 object·session metadata record를 센다. Digest 입력은 envelope를 제외한 `ReplicatedStateSnapshot`의 deterministic protobuf bytes다. Unknown field, 정의되지 않은 enum/action, 중복 singular field·oneof, 잘못된 UTF-8, 비정규 bytes, 미지원 version, count·digest 불일치는 apply·recovery·readiness를 fail-closed로 막는다. Release 호환성은 이 검증을 완화하지 않는다.
+`SnapshotEnvelope`는 schema major/minor, `lastIncludedIndex`, `objectCount`, SHA-256과 typed `ReplicatedStateSnapshot`을 담는다. `objectCount`는 members·ownerships·subscriptions·delivery sessions와 내부 messages/inbound·membership history·retained·offline sessions와 내부 messages·node drains·active feature 값·tenant quota profile의 object·session metadata record·credential revocation entry를 센다. Digest 입력은 envelope를 제외한 `ReplicatedStateSnapshot`의 deterministic protobuf bytes다. Unknown field, 정의되지 않은 enum/action, 중복 singular field·oneof, 잘못된 UTF-8, 비정규 bytes, 미지원 version, count·digest 불일치는 apply·recovery·readiness를 fail-closed로 막는다. Release 호환성은 이 검증을 완화하지 않는다.
 
 ### 크기 제한
 
@@ -63,12 +64,14 @@ Snapshot의 `lastIncludedIndex`는 Raft가 적용한 마지막 index와 같아�
 | Connection rebalance `connections` | `0..4_294_967_295` |
 | Connection rebalance `failure_code` | `1..64` byte ASCII token; FAILED에서만 허용 |
 | Connection rebalance snapshot | Record 0개 또는 1개; active `connection-rebalance` 필수; participant 최소 2개, NodeID 순증가 |
+| Credential ID | UTF-8 1..512 bytes; credential ID는 전체 revoked entry에서 유일 |
+| Credential revocation state | 최대 4096 entry; revoked 시각 양수; 비어 있지 않으면 active `credential-revocation` 필수 |
 
 한도를 바꾸려면 이 contract를 변경하고 vector를 추가해야 한다.
 
 ### 정렬과 canonical bytes
 
-Deterministic serialization은 같은 값에서 같은 bytes를 만드는 규칙이다. 이를 반드시 사용한다. Proto3 기본값 scalar는 생략하고 field 번호 오름차순으로 encode한다. `members`는 `member_id`, member의 `features`와 `active_features`는 사전순으로 정렬한다. Feature 중복은 거절한다. `ownerships`·`delivery_sessions`는 UTF-8 bytewise `(tenant_id, client_id)`, `subscriptions`는 `(tenant_id, client_id, filter)`, `membership_history`는 `operation_id`로 정렬한다. Session 안의 messages는 sequence 오름차순, inbound는 양수 packet ID 오름차순이다. Canonical key 중복은 거절한다. Consumer는 parse·duplicate/unknown 검증·deterministic 재직렬화 뒤 bytes가 같은지 확인한다. 삭제한 field 번호와 enum 값은 영구 reserved로 남긴다.
+Deterministic serialization은 같은 값에서 같은 bytes를 만드는 규칙이다. 이를 반드시 사용한다. Proto3 기본값 scalar는 생략하고 field 번호 오름차순으로 encode한다. `members`는 `member_id`, member의 `features`와 `active_features`는 사전순으로 정렬한다. Feature 중복은 거절한다. `ownerships`·`delivery_sessions`는 UTF-8 bytewise `(tenant_id, client_id)`, `subscriptions`는 `(tenant_id, client_id, filter)`, `membership_history`는 `operation_id`, `credential_revocations`는 `credential_id`로 정렬한다. Session 안의 messages는 sequence 오름차순, inbound는 양수 packet ID 오름차순이다. Canonical key 중복은 거절한다. Consumer는 parse·duplicate/unknown 검증·deterministic 재직렬화 뒤 bytes가 같은지 확인한다. 삭제한 field 번호와 enum 값은 영구 reserved로 남긴다.
 
 ### Proposal recovery 형식
 
@@ -84,6 +87,7 @@ Origin과 receipt는 각각 `objectCount`에 1개로 센다. Result 안의 값�
 | 오류 코드 | 조건 | 재시도 가능 | 상태 변경 |
 | --- | --- | --- | --- |
 | `incompatible_state_schema` | Root·하위 message의 unknown field, 모르는 command payload·snapshot collection, `1.0`이 아닌 schema | 불가 | Committed apply에서 Raft driver 중단·process 종료; startup recovery는 시작 실패; READY 불가; 거절한 state를 다시 쓰지 않음 |
+| `credential_revocation_capacity_exceeded` | 폐기 목록이 4096 entry이고 새로운 credential ID를 revoke | 아니오 | 기존 replicated state 유지 |
 
 정의되지 않은 enum 값도 기존 validator가 거절한다. 값 범위·정렬·count·digest·enum validation 오류는 기존 오류를 유지하며 schema sentinel로 분류하지 않는다. Backup 경로는 오류 wrapping 뒤에도 메시지에 `incompatible_state_schema`를 남긴다.
 

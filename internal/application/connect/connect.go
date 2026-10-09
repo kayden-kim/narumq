@@ -81,6 +81,11 @@ type OwnershipCoordinator interface {
 	AcquireOwnership(context.Context, string, string, uint64) (uint64, error)
 }
 
+// CredentialRevocationChecker reports the committed revocation status for one credential.
+type CredentialRevocationChecker interface {
+	IsCredentialRevoked(context.Context, string) (bool, error)
+}
+
 // ResultDTO reports the connection response, accepted session, committed owner
 // epoch, and recovered durable delivery state.
 type ResultDTO struct {
@@ -145,6 +150,13 @@ func WithOwnershipCoordinator(coordinator OwnershipCoordinator, ownerNodeID uint
 	}
 }
 
+// WithCredentialRevocationChecker configures committed-state checks before Will publication.
+func WithCredentialRevocationChecker(checker CredentialRevocationChecker) Option {
+	return func(useCase *UseCase) {
+		useCase.credentialRevocationChecker = checker
+	}
+}
+
 const offlineDetachTimeout = 5 * time.Second
 
 // DetachRequestDTO carries a persistent session's committed detach and its pending local queue.
@@ -193,32 +205,33 @@ type clientTimers struct {
 }
 
 type UseCase struct {
-	mu                         sync.Mutex
-	clock                      applicationclock.Clock
-	authenticator              applicationauthentication.AuthenticationProvider
-	credentialMethod           string
-	certificateAuthenticator   applicationauthentication.ClientCertificateAuthenticationProvider
-	policy                     security.Policy
-	sessions                   SessionRepository
-	tenantLimits               *tenantlimit.Service
-	tenantCounter              TenantSessionCounter
-	principals                 map[routing.SessionID]security.Principal
-	sessionKeys                map[routing.SessionID]tenancy.SessionKey
-	deliveries                 deliveryqueue.Queue
-	routes                     *routing.Table
-	scheduler                  Scheduler
-	willPublisher              WillPublisher
-	activeTimers               map[string]*clientTimers
-	closed                     bool
-	metrics                    portsmetrics.MetricsRecorder
-	willOutcomes               portsmetrics.WillOutcomeRecorder
-	dataPlaneAudit             portsaudit.DataPlaneDenialRecorder
-	ownershipCoordinator       OwnershipCoordinator
-	ownerNodeID                uint64
-	offlineCoordinator         OfflineCoordinator
-	durableDeliveryCommitter   deliverystate.Committer
-	sessionMetadataCoordinator SessionMetadataCoordinator
-	ownershipEpochs            map[routing.SessionID]uint64
+	mu                          sync.Mutex
+	clock                       applicationclock.Clock
+	authenticator               applicationauthentication.AuthenticationProvider
+	credentialMethod            string
+	certificateAuthenticator    applicationauthentication.ClientCertificateAuthenticationProvider
+	policy                      security.Policy
+	sessions                    SessionRepository
+	tenantLimits                *tenantlimit.Service
+	tenantCounter               TenantSessionCounter
+	principals                  map[routing.SessionID]security.Principal
+	sessionKeys                 map[routing.SessionID]tenancy.SessionKey
+	deliveries                  deliveryqueue.Queue
+	routes                      *routing.Table
+	scheduler                   Scheduler
+	willPublisher               WillPublisher
+	activeTimers                map[string]*clientTimers
+	closed                      bool
+	metrics                     portsmetrics.MetricsRecorder
+	willOutcomes                portsmetrics.WillOutcomeRecorder
+	dataPlaneAudit              portsaudit.DataPlaneDenialRecorder
+	ownershipCoordinator        OwnershipCoordinator
+	credentialRevocationChecker CredentialRevocationChecker
+	ownerNodeID                 uint64
+	offlineCoordinator          OfflineCoordinator
+	durableDeliveryCommitter    deliverystate.Committer
+	sessionMetadataCoordinator  SessionMetadataCoordinator
+	ownershipEpochs             map[routing.SessionID]uint64
 }
 
 // ClusterOwnershipConfigured reports whether a node-specific committed ownership barrier is installed.
@@ -262,6 +275,47 @@ func (useCase *UseCase) rejectAuthentication(request ConnectRequestDTO, method, 
 		denial.Topic = request.Packet.Will.Topic
 	}
 	useCase.dataPlaneAudit.RecordDataPlaneDenial(denial)
+}
+
+// RecordCredentialRevocationDenial records a CONNECT rejected by the TCP post-ownership check.
+func (useCase *UseCase) RecordCredentialRevocationDenial(request ConnectRequestDTO, principal security.Principal) {
+	if useCase == nil {
+		return
+	}
+	method := portsmetrics.AuthMethodAnonymous
+	if request.ClientCertificate != nil {
+		method = portsmetrics.AuthMethodTLS
+	} else if useCase.authenticator != nil {
+		method = useCase.credentialMethod
+	}
+	identity := &applicationauthentication.Result{
+		TenantID: principal.TenantID(), Subject: principal.Subject(), CredentialID: principal.CredentialID(),
+		Roles: principal.Roles(), ExpiresAt: principal.ExpiresAt(),
+	}
+	useCase.rejectAuthentication(request, method, "credential_revoked", identity)
+}
+
+func (useCase *UseCase) credentialRevoked(ctx context.Context, principal security.Principal) (bool, error) {
+	if principal.CredentialID() == "" || useCase.credentialRevocationChecker == nil {
+		return false, nil
+	}
+	return useCase.credentialRevocationChecker.IsCredentialRevoked(ctx, principal.CredentialID())
+}
+
+func (useCase *UseCase) recordCredentialRevokedWill(principal security.Principal, will *mqtt.Will) {
+	if useCase.dataPlaneAudit == nil || will == nil {
+		return
+	}
+	roles := principal.Roles()
+	roleNames := make([]string, len(roles))
+	for index, role := range roles {
+		roleNames[index] = string(role)
+	}
+	useCase.dataPlaneAudit.RecordDataPlaneDenial(portsaudit.DataPlaneDenialDTO{
+		Action: portsaudit.DataPlaneActionWill, Reason: "credential_revoked",
+		TenantID: principal.TenantID().String(), Subject: principal.Subject(), CredentialID: principal.CredentialID(),
+		Roles: roleNames, ClientID: principal.ClientID(), Topic: will.Topic,
+	})
 }
 
 func (useCase *UseCase) authorizeWillPublication(principal security.Principal, topic string) bool {
@@ -925,8 +979,14 @@ func (useCase *UseCase) disconnect(
 	if err != nil {
 		return err
 	}
-	useCase.recordSessionGauge()
 	if outcome.will != nil {
+		revoked, checkErr := useCase.credentialRevoked(context.Background(), outcome.principal)
+		if revoked || checkErr != nil {
+			if revoked {
+				useCase.recordCredentialRevokedWill(outcome.principal, outcome.will)
+			}
+			return outcome.transitionErr
+		}
 		if err := useCase.willPublisher.PublishWill(outcome.sessionID, outcome.sessionKey, *outcome.will); err != nil {
 			return errors.Join(outcome.transitionErr, err)
 		}
@@ -937,6 +997,7 @@ func (useCase *UseCase) disconnect(
 type disconnectOutcome struct {
 	sessionID     routing.SessionID
 	sessionKey    tenancy.SessionKey
+	principal     security.Principal
 	will          *mqtt.Will
 	transitionErr error
 }
@@ -945,6 +1006,7 @@ type disconnectOutcome struct {
 func (useCase *UseCase) disconnectLocked(sessionID routing.SessionID, reason session.DisconnectReason) (disconnectOutcome, error) {
 	timerKey := string(sessionID)
 	outcome := disconnectOutcome{sessionID: sessionID}
+	outcome.principal = useCase.principals[sessionID]
 	useCase.stopSessionTimers(timerKey)
 	sessionKey, hasSessionKey := useCase.sessionKeys[sessionID]
 	if !hasSessionKey {
@@ -1092,6 +1154,7 @@ func (useCase *UseCase) disconnectLocked(sessionID routing.SessionID, reason ses
 		}
 		useCase.activeTimers[timerKey] = timers
 	}
+	useCase.recordSessionGauge()
 	return outcome, nil
 }
 
@@ -1143,14 +1206,19 @@ func (useCase *UseCase) onWillTimerForTimer(sessionID routing.SessionID, expecte
 		return
 	}
 	shouldPublish := will != nil
+	principal, hasPrincipal := useCase.principals[sessionID]
 	if shouldPublish && useCase.authenticator != nil {
-		principal, ok := useCase.principals[sessionID]
-		if !ok {
+		if !hasPrincipal || !useCase.authorizeWillPublication(principal, will.Topic) {
 			shouldPublish = false
-		} else {
-			if !useCase.authorizeWillPublication(principal, will.Topic) {
-				shouldPublish = false
+		}
+	}
+	if shouldPublish && hasPrincipal {
+		revoked, checkErr := useCase.credentialRevoked(context.Background(), principal)
+		if revoked || checkErr != nil {
+			if revoked {
+				useCase.recordCredentialRevokedWill(principal, will)
 			}
+			shouldPublish = false
 		}
 	}
 	if coordinator := useCase.sessionMetadataCoordinator; coordinator != nil && hasSessionKey {

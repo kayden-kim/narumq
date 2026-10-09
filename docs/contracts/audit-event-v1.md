@@ -12,7 +12,7 @@
 | 기준 artifact | [audit-event-v1.schema.json](audit-event-v1.schema.json) |
 | 기준 spec | [Tenant와 security](../specs/tenancy-and-security.md), [Management API와 observability](../specs/management-api-and-observability.md) |
 | 관련 Architecture | [Security boundaries](../architectures/security-boundaries.md), [System overview](../architectures/system-overview.md) |
-| 관련 requirement | SEC-11, NFR-16~NFR-17, API-08 |
+| 관련 requirement | SEC-07, SEC-11, NFR-16~NFR-17, API-08 |
 | 검증 | `tests/contracts/audit-event-v1` |
 
 ## 1. Event 의미
@@ -48,7 +48,7 @@ Audit sink 장애 정책은 management event에 [ADR-0039](../decisions/ADR-0039
 
 ## 5. Broker producer 범위
 
-이 계약 revision의 Broker producer는 Dynamic cluster management API의 활성 mutation 8개, Management API 인증 `401`·인가 `403`·rate-limit `429` 거절과 MQTT data-plane 거절을 기록한다. Standalone mode는 producer 범위가 아니다.
+이 계약 revision의 Broker producer는 Dynamic cluster management API의 활성 mutation 10개, Management API 인증 `401`·인가 `403`·rate-limit `429` 거절과 MQTT data-plane 거절을 기록한다. Standalone mode는 producer 범위가 아니다.
 
 | Method·path | `action` | `target.type` / `target.id` |
 | --- | --- | --- |
@@ -60,6 +60,8 @@ Audit sink 장애 정책은 management event에 [ADR-0039](../decisions/ADR-0039
 | `POST /api/v1/cluster/rebalance` | `cluster.rebalance.start` | `cluster` / cluster ID |
 | `DELETE /api/v1/cluster/rebalance` | `cluster.rebalance.cancel` | `cluster` / cluster ID |
 | `POST /api/v1/cluster/backups` | `cluster.backup.create` | `cluster` / cluster ID |
+| `POST /api/v1/security/credential-revocations/{credentialId}` | `security.credential.revoke` | `mqtt_credential` / `credentialId` |
+| `DELETE /api/v1/security/credential-revocations/{credentialId}` | `security.credential.restore` | `mqtt_credential` / `credentialId` |
 
 Mutation 성공은 `ALLOWED`와 `succeeded`, mutation 실패는 `FAILED`와 응답 error code를 사용한다. 인증 거절은 `DENIED`와 `unauthorized`, 인가 거절은 `DENIED`와 `forbidden`을 사용한다. Event의 `occurredAt`은 mutation 결과가 확정된 UTC 시각이다. HTTP 응답이 이미 기록된 뒤 Publisher 오류가 발생해도 응답이나 완료한 mutation을 되돌리지 않는다.
 
@@ -75,11 +77,11 @@ Dynamic cluster는 아래 MQTT 거절을 management event와 같은 node-local `
 
 | `action` | 발생 지점 | Actor | `target.type` / `target.id` / `target.tenantId` | `reason` | `details` |
 | --- | --- | --- | --- | --- | --- |
-| `mqtt.connect` | CONNECT 인증 또는 Client ID·Will 검증 거절 | 인증 전: `unauthenticated`, tenant·credential·roles 없음. 인증 뒤: auth result의 subject·tenant·credential·roles | `mqtt_client` / CONNECT Client ID / 인증 뒤 tenant | 기존 reason 문자열: `unsupported_credentials`, `dual_credentials`, `invalid_credentials`, `missing_credentials`, `missing_certificate`, `client_id_not_allowed`, `not_authorized`, `invalid_will_topic`, `will_unauthorized` | `authMethod` (`anonymous`, `jwt`, `password`, `tls_cert`). `invalid_will_topic`·`will_unauthorized`이면 `willTopic` |
+| `mqtt.connect` | CONNECT 인증 또는 Client ID·Will 검증 거절 | 인증 전: `unauthenticated`, tenant·credential·roles 없음. 인증 뒤: auth result의 subject·tenant·credential·roles | `mqtt_client` / CONNECT Client ID / 인증 뒤 tenant | 기존 reason 문자열에 `credential_revoked` 추가: `unsupported_credentials`, `dual_credentials`, `invalid_credentials`, `missing_credentials`, `missing_certificate`, `client_id_not_allowed`, `not_authorized`, `credential_revoked`, `invalid_will_topic`, `will_unauthorized` | `authMethod` (`anonymous`, `jwt`, `password`, `tls_cert`). `invalid_will_topic`·`will_unauthorized`이면 `willTopic` |
 | `mqtt.publish` | PUBLISH ACL 거절 | Principal | `mqtt_topic` / PUBLISH topic / tenant | `not_authorized` | `clientId` |
 | `mqtt.subscribe` | SUBSCRIBE filter ACL 거절 | Principal | `mqtt_topic_filter` / filter / tenant | `not_authorized` | `clientId` |
 | `mqtt.unsubscribe` | UNSUBSCRIBE filter ACL 거절 | Principal | `mqtt_topic_filter` / filter / tenant | `not_authorized` | `clientId` |
-| `mqtt.will` | 지연 Will 발행 시 ACL 재인가 거절 | 저장된 principal snapshot | `mqtt_topic` / Will topic / tenant | `not_authorized` | `clientId` |
+| `mqtt.will` | 지연 Will 발행 시 ACL 재인가 거절 | 저장된 principal snapshot | `mqtt_topic` / Will topic / tenant | `not_authorized` 또는 `credential_revoked` | `clientId` |
 
 `sourceIp`는 TCP `RemoteAddr`의 host 부분이며 port는 제외한다. 알 수 없거나 지연 Will event이면 빈 값이다. Topic action은 topic/filter 생성 실패와 policy deny를 구분하지 않는다. 둘 다 MQTT reason `0x87`로 거절된다.
 

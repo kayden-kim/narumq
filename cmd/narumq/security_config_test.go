@@ -67,11 +67,11 @@ func TestParseSecurityConfig_Valid(t *testing.T) {
 	}
 }
 
-// Traceability: SEC-05; docs/specs/tenancy-and-security.md §2.4.
+// Traceability: SEC-05, SEC-07; docs/specs/tenancy-and-security.md §2.4·§7.
 func TestParseSecurityConfig_PasswordIdentities(t *testing.T) {
 	bundle, err := parseSecurityConfig(strings.NewReader(passwordSecurityJSON(
 		passwordIdentityJSON("Device-A", "device-a", "device-a-key"),
-		passwordIdentityJSON("device-a", "device-a-lower", "device-a-lower-key"),
+		passwordIdentityJSON("device-a", "device-a", "device-a-lower-key"),
 	)))
 	if err != nil {
 		t.Fatalf("parseSecurityConfig() error = %v", err)
@@ -81,6 +81,9 @@ func TestParseSecurityConfig_PasswordIdentities(t *testing.T) {
 	}
 	if bundle.PasswordBindings[0].Username != "Device-A" || bundle.PasswordBindings[1].Username != "device-a" {
 		t.Fatalf("password usernames = %q, %q; want case-sensitive exact keys", bundle.PasswordBindings[0].Username, bundle.PasswordBindings[1].Username)
+	}
+	if bundle.PasswordBindings[0].Subject != bundle.PasswordBindings[1].Subject {
+		t.Fatalf("password subjects = %q, %q; want shared subject", bundle.PasswordBindings[0].Subject, bundle.PasswordBindings[1].Subject)
 	}
 }
 
@@ -101,11 +104,11 @@ func TestParseSecurityConfig_PasswordAndMTLSBindings(t *testing.T) {
 	}
 }
 
-// Traceability: SEC-05; docs/specs/tenancy-and-security.md §2.4.
+// Traceability: SEC-05, SEC-07; docs/specs/tenancy-and-security.md §2.4·§7.
 func TestParseSecurityConfig_PasswordIdentityRejections(t *testing.T) {
 	validIdentity := passwordIdentityJSON("device-a", "device-a", "device-a-key")
 	duplicateUsername := passwordIdentityJSON("device-a", "device-b", "device-b-key")
-	duplicateSubject := passwordIdentityJSON("device-b", "device-a", "device-b-key")
+	oversizedCredentialID := passwordIdentityJSON("device-b", "device-b", strings.Repeat("k", 513))
 	duplicateCredential := passwordIdentityJSON("device-b", "device-b", "device-a-key")
 	cases := []struct {
 		name        string
@@ -133,9 +136,9 @@ func TestParseSecurityConfig_PasswordIdentityRejections(t *testing.T) {
 			errContains: "duplicate password identity username",
 		},
 		{
-			name:        "duplicate subject",
-			input:       passwordSecurityJSON(validIdentity, duplicateSubject),
-			errContains: "duplicate password identity subject",
+			name:        "credential ID exceeds 512 bytes",
+			input:       passwordSecurityJSON(oversizedCredentialID),
+			errContains: "password identity credentialId must be 1 to 512 bytes of UTF-8",
 		},
 		{
 			name:        "duplicate credential ID",

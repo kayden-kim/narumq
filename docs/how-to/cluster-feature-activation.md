@@ -35,6 +35,8 @@
 
 안전한 proposal 복구를 켤 때는 `$Feature = 'proposal-recovery'`를 사용한다. 아래 승인·backup·member 확인 절차는 그대로 따른다. 활성화 뒤에는 새 receipt와 fence를 읽지 못하는 build로 rollback하지 않는다. BP-06 runner의 자동 활성화는 폐기 가능한 시험 cluster 전용이며 이 운영 절차를 대신하지 않는다.
 
+`credential-revocation`은 활성화된 Dynamic cluster에서만 폐기 API를 제공한다. 활성화 전에 [credential 회전·폐기 how-to](credential-rotation-and-revocation.md)에서 배포 전제와 기존 연결 종료 동작을 확인한다.
+
 ```powershell
 $ManagementUrl = 'https://leader.example.invalid'
 $Feature = 'session-metadata'

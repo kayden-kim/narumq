@@ -234,3 +234,75 @@ func TestDelayedWillAuthorizationDenialRecordsWithoutSourceIP(t *testing.T) {
 		t.Fatalf("delayed Will denial = %+v", denial)
 	}
 }
+
+type connectRevocationCheckerStub struct {
+	revoked bool
+	err     error
+	checked []string
+}
+
+func (checker *connectRevocationCheckerStub) IsCredentialRevoked(_ context.Context, credentialID string) (bool, error) {
+	checker.checked = append(checker.checked, credentialID)
+	return checker.revoked, checker.err
+}
+
+// Traceability: SEC-07; docs/specs/tenancy-and-security.md §7.
+func TestCredentialRevocationSuppressesImmediateAndDelayedWills(t *testing.T) {
+	now := time.Date(2026, time.January, 1, 0, 0, 0, 0, time.UTC)
+	tenant, err := tenancy.NewTenantID("tenant-a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, test := range []struct {
+		name       string
+		delay      uint32
+		revoked    bool
+		checkErr   error
+		wantAudits int
+	}{
+		{name: "immediate revoked", revoked: true, wantAudits: 1},
+		{name: "delayed revoked", delay: 5, revoked: true, wantAudits: 1},
+		{name: "checker unavailable", revoked: false, checkErr: errors.New("quorum unavailable")},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			useCase, _, _, _, _, scheduler, publisher := newUseCase(t, now)
+			WithSecurity(&fakeAuthenticator{result: cmmAuthResult(tenant, now, "client")}, nil, cmmWillPolicy(t, tenant), "jwt")(useCase)
+			checker := &connectRevocationCheckerStub{revoked: test.revoked, err: test.checkErr}
+			WithCredentialRevocationChecker(checker)(useCase)
+			auditRecorder := &connectDataPlaneAuditRecorder{}
+			WithDataPlaneAudit(auditRecorder)(useCase)
+
+			result, err := useCase.ConnectContext(context.Background(), ConnectRequestDTO{
+				Packet: cmmJWTConnect("client", 60, metadataWill("sensors/late", test.delay)),
+			})
+			if err != nil || !result.Accepted {
+				t.Fatalf("CONNECT = %+v, %v; want accepted", result, err)
+			}
+			if err := useCase.Disconnect(result.SessionID, session.DisconnectAbnormal); err != nil {
+				t.Fatalf("Disconnect() = %v", err)
+			}
+			if test.delay != 0 {
+				if len(scheduler.timers) == 0 {
+					t.Fatal("delayed Will timer was not scheduled")
+				}
+				scheduler.timers[0].callback()
+			}
+			if len(checker.checked) != 1 || checker.checked[0] != "cred-1" {
+				t.Fatalf("credential checks = %v; want [cred-1]", checker.checked)
+			}
+			if len(publisher.published) != 0 {
+				t.Fatalf("revoked or uncertain credential published Will: %+v", publisher.published)
+			}
+			if len(auditRecorder.denials) != test.wantAudits {
+				t.Fatalf("Will denial audits = %+v; want %d", auditRecorder.denials, test.wantAudits)
+			}
+			if test.wantAudits == 1 {
+				denial := auditRecorder.denials[0]
+				if denial.Action != portsaudit.DataPlaneActionWill || denial.Reason != "credential_revoked" ||
+					denial.CredentialID != "cred-1" || denial.Topic != "sensors/late" {
+					t.Fatalf("credential revocation denial = %+v", denial)
+				}
+			}
+		})
+	}
+}

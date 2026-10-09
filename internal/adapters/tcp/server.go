@@ -80,18 +80,26 @@ type Config struct {
 	// ReceiveMaximum advertises and caps unacknowledged inbound QoS 1/2 PUBLISH.
 	ReceiveMaximum uint16
 	// PacketReadTimeout bounds one started packet after CONNECT.
-	PacketReadTimeout          time.Duration
-	TenantLimits               *tenantlimit.Service
-	DataPlaneAudit             portsaudit.DataPlaneDenialRecorder // nil disables MQTT denial audit
-	ClientCertificateExtractor func(net.Conn) (applicationauthentication.ClientCertificateDTO, bool)
-	Policy                     security.Policy
-	Metrics                    portsmetrics.MetricsRecorder
-	ClusterMode                bool
-	LocalMemberID              uint64
-	ClusterReady               func() bool
-	ClusterAdmissionOpen       func() bool
+	PacketReadTimeout           time.Duration
+	TenantLimits                *tenantlimit.Service
+	DataPlaneAudit              portsaudit.DataPlaneDenialRecorder // nil disables MQTT denial audit
+	ClientCertificateExtractor  func(net.Conn) (applicationauthentication.ClientCertificateDTO, bool)
+	CredentialRevocationChecker connect.CredentialRevocationChecker
+	TimerScheduler              connect.Scheduler
+	Policy                      security.Policy
+	Metrics                     portsmetrics.MetricsRecorder
+	ClusterMode                 bool
+	LocalMemberID               uint64
+	ClusterReady                func() bool
+	ClusterAdmissionOpen        func() bool
 	// ClusterProjectionReady checks local committed projection readiness without a quorum read barrier.
 	ClusterProjectionReady func() bool
+}
+
+type tcpTimerScheduler struct{}
+
+func (tcpTimerScheduler) AfterFunc(delay time.Duration, callback func()) connect.Timer {
+	return time.AfterFunc(delay, callback)
 }
 
 // Server owns one listener, all connection goroutines and the session registry.
@@ -110,6 +118,7 @@ type Server struct {
 	active               map[*connection]struct{}
 	bySession            map[routing.SessionID]*connection
 	connectingByClientID map[string]*pendingConnectingGroup
+	revokedCredentials   map[string]struct{}
 	stopped              bool
 	stopOnce             sync.Once
 	listenersWaitGroup   sync.WaitGroup
@@ -165,6 +174,9 @@ func NewServer(
 	if config.Clock == nil {
 		return nil, ErrNilClock
 	}
+	if config.TimerScheduler == nil {
+		config.TimerScheduler = tcpTimerScheduler{}
+	}
 	if _, err := mqtt.NewDecoder(config.MaxPacketSize); err != nil {
 		return nil, ErrInvalidConfig
 	}
@@ -195,6 +207,7 @@ func NewServer(
 		active:               make(map[*connection]struct{}),
 		bySession:            make(map[routing.SessionID]*connection),
 		connectingByClientID: make(map[string]*pendingConnectingGroup),
+		revokedCredentials:   make(map[string]struct{}),
 	}, nil
 }
 
@@ -433,6 +446,12 @@ func (server *Server) bindSession(sessionID routing.SessionID, connection *conne
 			}
 		}
 	}
+	if connection.credentialID != "" {
+		if _, revoked := server.revokedCredentials[connection.credentialID]; revoked {
+			connection.credentialRevoked.Store(true)
+			return false
+		}
+	}
 	if existing, exists := server.bySession[sessionID]; exists && existing != connection {
 		return false
 	}
@@ -464,6 +483,110 @@ func (server *Server) closeSession(sessionID routing.SessionID) {
 	if connection != nil {
 		connection.requestClose()
 	}
+}
+
+func (server *Server) trackCredential(connection *connection, credentialID string) {
+	if server == nil || connection == nil {
+		return
+	}
+	server.mu.Lock()
+	connection.credentialID = credentialID
+	server.mu.Unlock()
+}
+
+// ApplyCredentialRevocation updates local admission state and closes matching sockets.
+func (server *Server) ApplyCredentialRevocation(credentialID string, revoked bool) {
+	if server == nil || credentialID == "" {
+		return
+	}
+	server.mu.Lock()
+	if revoked {
+		server.revokedCredentials[credentialID] = struct{}{}
+	} else {
+		delete(server.revokedCredentials, credentialID)
+	}
+	var connections []*connection
+	if revoked {
+		for active := range server.active {
+			if active.credentialID == credentialID && active.credentialRevoked.CompareAndSwap(false, true) {
+				if server.bySession[active.sessionID] == active {
+					delete(server.bySession, active.sessionID)
+				}
+				connections = append(connections, active)
+			}
+		}
+	}
+	server.mu.Unlock()
+	for _, active := range connections {
+		server.closeCredentialRevokedConnection(active)
+	}
+}
+
+// ReplaceCredentialRevocations restores the exact committed local admission set.
+func (server *Server) ReplaceCredentialRevocations(states []membership.CredentialRevocationStateDTO) {
+	if server == nil {
+		return
+	}
+	revoked := make(map[string]struct{}, len(states))
+	for _, state := range states {
+		revoked[state.CredentialID] = struct{}{}
+	}
+	server.mu.Lock()
+	server.revokedCredentials = revoked
+	var connections []*connection
+	for active := range server.active {
+		if _, exists := revoked[active.credentialID]; exists &&
+			active.credentialRevoked.CompareAndSwap(false, true) {
+			if server.bySession[active.sessionID] == active {
+				delete(server.bySession, active.sessionID)
+			}
+			connections = append(connections, active)
+		}
+	}
+	server.mu.Unlock()
+	for _, active := range connections {
+		server.closeCredentialRevokedConnection(active)
+	}
+}
+
+func (server *Server) closeCredentialRevokedConnection(connection *connection) {
+	if connection.establishedState.Load() && connection.version == mqtt.ProtocolV5 {
+		server.sendDisconnectAndClose(connection, 0x87)
+		return
+	}
+	connection.requestClose()
+}
+
+func (server *Server) sendDisconnectAndClose(connection *connection, reasonCode byte) {
+	go func() {
+		if err := connection.enqueueAndWait(&mqtt.Disconnect{
+			Version: mqtt.ProtocolV5, ReasonCode: reasonCode,
+		}); err != nil {
+			connection.requestClose()
+			return
+		}
+		server.config.TimerScheduler.AfterFunc(drainDisconnectFlushTimeout, connection.requestClose)
+	}()
+}
+
+func (server *Server) closeSessionForCredentialExpiry(sessionID routing.SessionID, connection *connection) bool {
+	if server == nil || connection == nil {
+		return false
+	}
+	server.mu.Lock()
+	if server.bySession[sessionID] != connection || connection.credentialExpired.Load() {
+		server.mu.Unlock()
+		return false
+	}
+	delete(server.bySession, sessionID)
+	connection.credentialExpired.Store(true)
+	server.mu.Unlock()
+	if connection.establishedState.Load() && connection.version == mqtt.ProtocolV5 {
+		server.sendDisconnectAndClose(connection, 0xA0)
+		return true
+	}
+	connection.requestClose()
+	return true
 }
 
 // DeliverDurable queues one already-committed QoS 1/2 delivery on its live owner.
@@ -624,12 +747,18 @@ type connection struct {
 	receiveMu               sync.Mutex
 	receiving               map[mqtt.PacketIdentifier]struct{}
 
-	deliveryMu        sync.Mutex
-	cleaned           bool
-	inbound           map[mqtt.PacketIdentifier]inboundState
-	outbound          map[mqtt.PacketIdentifier]deliveryqueue.OutboundDTO
-	pendingPromotions [8]pendingDeliveryPromotion
-	packetIDs         *packetIDAllocator
+	deliveryMu            sync.Mutex
+	cleaned               bool
+	inbound               map[mqtt.PacketIdentifier]inboundState
+	outbound              map[mqtt.PacketIdentifier]deliveryqueue.OutboundDTO
+	pendingPromotions     [8]pendingDeliveryPromotion
+	packetIDs             *packetIDAllocator
+	credentialID          string
+	credentialRevoked     atomic.Bool
+	credentialExpired     atomic.Bool
+	establishedState      atomic.Bool
+	credentialTimerMu     sync.Mutex
+	credentialExpiryTimer connect.Timer
 }
 
 func (connection *connection) metrics() portsmetrics.MetricsRecorder {
@@ -727,6 +856,16 @@ func (connection *connection) requestClose() {
 		}
 		_ = connection.socket.Close()
 	})
+	connection.stopCredentialExpiryTimer()
+}
+
+func (connection *connection) stopCredentialExpiryTimer() {
+	connection.credentialTimerMu.Lock()
+	if connection.credentialExpiryTimer != nil {
+		connection.credentialExpiryTimer.Stop()
+		connection.credentialExpiryTimer = nil
+	}
+	connection.credentialTimerMu.Unlock()
 }
 
 func (connection *connection) isStopping() bool {
@@ -736,6 +875,39 @@ func (connection *connection) isStopping() bool {
 	default:
 		return false
 	}
+}
+
+func (connection *connection) awaitCredentialClose() bool {
+	if !connection.credentialRevoked.Load() && !connection.credentialExpired.Load() {
+		return false
+	}
+	<-connection.stop
+	return true
+}
+
+func (connection *connection) scheduleCredentialExpiry() {
+	if connection == nil || connection.server == nil ||
+		connection.principal.Subject() == "" || connection.principal.CredentialID() == "" {
+		return
+	}
+	expiresAt := connection.principal.ExpiresAt()
+	if expiresAt.IsZero() || expiresAt.UnixMilli() == int64(^uint64(0)>>1) {
+		return
+	}
+	delay := expiresAt.Sub(connection.server.config.Clock.Now())
+	if delay < 0 {
+		delay = 0
+	}
+	timer := connection.server.config.TimerScheduler.AfterFunc(delay, func() {
+		connection.server.closeSessionForCredentialExpiry(connection.sessionID, connection)
+	})
+	connection.credentialTimerMu.Lock()
+	if connection.isStopping() {
+		timer.Stop()
+	} else {
+		connection.credentialExpiryTimer = timer
+	}
+	connection.credentialTimerMu.Unlock()
 }
 
 func (connection *connection) cleanup() {
@@ -762,7 +934,11 @@ func (connection *connection) cleanup() {
 			}
 			connection.server.unbindSession(connection.sessionID, connection)
 			disconnectReason := connection.disconnectReason
-			if connection.takeover.Load() {
+			if connection.credentialRevoked.Load() {
+				disconnectReason = session.DisconnectCredentialRevoked
+			} else if connection.credentialExpired.Load() {
+				disconnectReason = session.DisconnectAbnormal
+			} else if connection.takeover.Load() {
 				disconnectReason = session.DisconnectTakeover
 			}
 			if err := connection.server.connections.DisconnectIfOwnershipEpoch(
@@ -787,6 +963,9 @@ func (connection *connection) readLoop() error {
 			return err
 		}
 		_, readErr := reader.readFrom(connection.socket)
+		if connection.awaitCredentialClose() {
+			return nil
+		}
 		consumedAny := false
 		for reader.buffered > 0 {
 			packet, consumed, err := connection.server.decoder.Decode(reader.pending(), version)
@@ -822,8 +1001,13 @@ func (connection *connection) readLoop() error {
 				}
 				connected = true
 				connection.established = true
+				connection.establishedState.Store(true)
+				connection.scheduleCredentialExpiry()
 				version = connection.version
 			} else {
+				if connection.awaitCredentialClose() {
+					return nil
+				}
 				publish, isPublish := packet.(*mqtt.Publish)
 				fresh := true
 				if isPublish && publish.QoS != mqtt.QoSAtMostOnce && publish.PacketID != 0 {
@@ -840,6 +1024,9 @@ func (connection *connection) readLoop() error {
 					if err != nil {
 						return err
 					}
+				}
+				if connection.awaitCredentialClose() {
+					return nil
 				}
 				if admitted {
 					var dispatchErr error
@@ -995,11 +1182,10 @@ func (connection *connection) activate(packet mqtt.Connect) error {
 			clientCertificate = &extracted
 		}
 	}
-	result, err := connection.server.connections.ConnectContext(context.Background(), connect.ConnectRequestDTO{
-		Packet:            packet,
-		ClientCertificate: clientCertificate,
-		SourceIP:          connection.sourceIP,
-	})
+	request := connect.ConnectRequestDTO{
+		Packet: packet, ClientCertificate: clientCertificate, SourceIP: connection.sourceIP,
+	}
+	result, err := connection.server.connections.ConnectContext(context.Background(), request)
 	if err != nil {
 		return err
 	}
@@ -1025,6 +1211,32 @@ func (connection *connection) activate(packet mqtt.Connect) error {
 		OwnerNodeID: connection.server.config.LocalMemberID, Epoch: result.OwnershipEpoch,
 	}
 	connection.accepted = true
+	connection.server.trackCredential(connection, result.Principal.CredentialID())
+	if connection.server.config.ClusterMode && result.Principal.CredentialID() != "" {
+		checker := connection.server.config.CredentialRevocationChecker
+		revoked := connection.credentialRevoked.Load()
+		var checkErr error
+		if checker == nil {
+			checkErr = errors.New("credential revocation checker is unavailable")
+		} else if !revoked {
+			revoked, checkErr = checker.IsCredentialRevoked(context.Background(), result.Principal.CredentialID())
+			revoked = revoked || connection.credentialRevoked.Load()
+		}
+		if revoked || checkErr != nil {
+			reasonCode := byte(0x03)
+			if packet.Version == mqtt.ProtocolV5 {
+				reasonCode = 0x88
+			}
+			if revoked {
+				reasonCode = 0x05
+				if packet.Version == mqtt.ProtocolV5 {
+					reasonCode = 0x87
+				}
+				connection.server.connections.RecordCredentialRevocationDenial(request, result.Principal)
+			}
+			return connection.rejectActivatedConnect(result, reasonCode)
+		}
+	}
 	if result.DeliverySession != nil {
 		if err := connection.restoreInbound(result.DeliverySession); err != nil {
 			return err
@@ -1034,6 +1246,14 @@ func (connection *connection) activate(packet mqtt.Connect) error {
 	}
 	connection.keepAlive = packet.KeepAlive
 	if !connection.server.bindSession(connection.sessionID, connection) {
+		if connection.credentialRevoked.Load() {
+			reasonCode := byte(0x05)
+			if packet.Version == mqtt.ProtocolV5 {
+				reasonCode = 0x87
+			}
+			connection.server.connections.RecordCredentialRevocationDenial(request, result.Principal)
+			return connection.rejectActivatedConnect(result, reasonCode)
+		}
 		connection.accepted = false
 		reason := session.DisconnectAbnormal
 		if connection.takeover.Load() {
@@ -1077,11 +1297,54 @@ func (connection *connection) activate(packet mqtt.Connect) error {
 		connAck.ReceiveMaximum = connection.server.config.ReceiveMaximum
 		connAck.MaximumPacketSize = uint32(mqtt.PacketSize(connection.server.config.MaxPacketSize))
 	}
-	if err := connection.enqueueAndWait(&connAck); err != nil {
+	connection.server.mu.Lock()
+	if _, revoked := connection.server.revokedCredentials[connection.credentialID]; revoked {
+		connection.credentialRevoked.Store(true)
+	}
+	if connection.credentialRevoked.Load() {
+		connection.server.mu.Unlock()
+		return connection.rejectRevokedConnectBeforeAck(request, result)
+	}
+	connection.establishedState.Store(true)
+	done, err := connection.enqueueControlWithResult(&connAck)
+	connection.server.mu.Unlock()
+	if err != nil {
+		return err
+	}
+	if err := connection.waitForControl(done); err != nil {
 		return err
 	}
 	connection.deliveryBlocked.Store(false)
 	connection.wakeDelivery()
+	return nil
+}
+
+func (connection *connection) rejectActivatedConnect(result connect.ResultDTO, reasonCode byte) error {
+	_ = connection.server.connections.DisconnectIfOwnershipEpoch(
+		result.SessionID, session.DisconnectCredentialRevoked, result.OwnershipEpoch,
+	)
+	connection.accepted = false
+	connAck := mqtt.ConnAck{Version: connection.version, ReasonCode: reasonCode}
+	if metrics := connection.metrics(); metrics != nil {
+		metrics.ConnectRejected(protocolMetricLabel(connection.version), connectRejectReason(connection.version, reasonCode))
+	}
+	if err := connection.enqueueAndWait(&connAck); err != nil {
+		return err
+	}
+	connection.requestClose()
+	return nil
+}
+
+func (connection *connection) rejectRevokedConnectBeforeAck(
+	request connect.ConnectRequestDTO,
+	result connect.ResultDTO,
+) error {
+	connection.server.connections.RecordCredentialRevocationDenial(request, result.Principal)
+	_ = connection.server.connections.DisconnectIfOwnershipEpoch(
+		result.SessionID, session.DisconnectCredentialRevoked, result.OwnershipEpoch,
+	)
+	connection.accepted = false
+	connection.requestClose()
 	return nil
 }
 func (connection *connection) restoreInbound(session *membership.DeliverySessionStateDTO) error {
@@ -1681,30 +1944,42 @@ func (connection *connection) enqueueFinal(packet mqtt.Packet) {
 	}
 }
 
-func (connection *connection) enqueueAndWait(packet mqtt.Packet) error {
+func (connection *connection) enqueueControlWithResult(packet mqtt.Packet) (chan error, error) {
 	if packet == nil {
-		return ErrProtocol
+		return nil, ErrProtocol
 	}
 	done := make(chan error, 1)
 	select {
 	case <-connection.stop:
-		return ErrConnectionClosed
+		return nil, ErrConnectionClosed
 	default:
 	}
 	select {
 	case <-connection.stop:
-		return ErrConnectionClosed
+		return nil, ErrConnectionClosed
 	case connection.controlQueue <- controlMessage{packet: packet, done: done}:
+		return done, nil
 	default:
 		connection.requestClose()
-		return ErrControlQueueFull
+		return nil, ErrControlQueueFull
 	}
+}
+
+func (connection *connection) waitForControl(done <-chan error) error {
 	select {
 	case err := <-done:
 		return err
 	case <-connection.stop:
 		return ErrConnectionClosed
 	}
+}
+
+func (connection *connection) enqueueAndWait(packet mqtt.Packet) error {
+	done, err := connection.enqueueControlWithResult(packet)
+	if err != nil {
+		return err
+	}
+	return connection.waitForControl(done)
 }
 
 func (connection *connection) enqueueBarrier() error {

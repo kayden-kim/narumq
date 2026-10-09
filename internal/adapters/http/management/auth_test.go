@@ -27,18 +27,18 @@ func (v managementTokenVerifier) VerifyToken(_ context.Context, token []byte) (a
 	return applicationauthentication.VerifiedToken{Issuer: "issuer", Subject: subject, ExpiresAt: time.Unix(2_000_000_000, 0)}, nil
 }
 
-// Traceability: SEC-10; docs/specs/tenancy-and-security.md §6.
+// Traceability: SEC-07, SEC-10; docs/specs/tenancy-and-security.md §6-§7.
 func TestPermissionMatrixSeparatesManagementRoles(t *testing.T) {
 	cases := []struct {
 		role Role
 		want map[Permission]bool
 	}{
-		{RoleReadOnly, map[Permission]bool{PermissionRead: true, PermissionOperate: false, PermissionAuditRead: false, PermissionClusterAdmin: false}},
-		{RoleOperator, map[Permission]bool{PermissionRead: true, PermissionOperate: true, PermissionAuditRead: false, PermissionClusterAdmin: false}},
-		{RoleSecurityAdmin, map[Permission]bool{PermissionRead: true, PermissionOperate: false, PermissionAuditRead: true, PermissionClusterAdmin: false}},
-		{RoleClusterAdmin, map[Permission]bool{PermissionRead: true, PermissionOperate: true, PermissionAuditRead: true, PermissionClusterAdmin: true}},
+		{RoleReadOnly, map[Permission]bool{PermissionRead: true, PermissionOperate: false, PermissionAuditRead: false, PermissionClusterAdmin: false, PermissionCredentialAdmin: false}},
+		{RoleOperator, map[Permission]bool{PermissionRead: true, PermissionOperate: true, PermissionAuditRead: false, PermissionClusterAdmin: false, PermissionCredentialAdmin: false}},
+		{RoleSecurityAdmin, map[Permission]bool{PermissionRead: true, PermissionOperate: false, PermissionAuditRead: true, PermissionClusterAdmin: false, PermissionCredentialAdmin: true}},
+		{RoleClusterAdmin, map[Permission]bool{PermissionRead: true, PermissionOperate: true, PermissionAuditRead: true, PermissionClusterAdmin: true, PermissionCredentialAdmin: true}},
 	}
-	permissions := []Permission{PermissionRead, PermissionOperate, PermissionAuditRead, PermissionClusterAdmin}
+	permissions := []Permission{PermissionRead, PermissionOperate, PermissionAuditRead, PermissionClusterAdmin, PermissionCredentialAdmin}
 	for _, testCase := range cases {
 		roles := newRoleSet([]Role{testCase.role})
 		for _, permission := range permissions {
@@ -48,7 +48,7 @@ func TestPermissionMatrixSeparatesManagementRoles(t *testing.T) {
 		}
 	}
 	union := newRoleSet([]Role{RoleOperator, RoleSecurityAdmin})
-	if !union.allows(PermissionOperate) || !union.allows(PermissionAuditRead) || union.allows(PermissionClusterAdmin) {
+	if !union.allows(PermissionOperate) || !union.allows(PermissionAuditRead) || !union.allows(PermissionCredentialAdmin) || union.allows(PermissionClusterAdmin) {
 		t.Fatalf("Operator+SecurityAdmin union permissions incorrect: %v", union.names())
 	}
 	for _, name := range []string{"ReadOnly", "Operator", "SecurityAdmin", "ClusterAdmin"} {

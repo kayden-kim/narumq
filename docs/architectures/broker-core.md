@@ -118,7 +118,8 @@ cmd/narumq
 - `application/connect`: certificate 또는 Username·Password authentication, exact
   Client ID binding, Will ACL을 session ownership보다 먼저 평가한다. mTLS credential과
   MQTT credential을 함께 제출하면 거절하며, 인증·binding·Will 검증 전에는 timer·
-  repository·route·queue를 변경하지 않는다.
+  repository·route·queue를 변경하지 않는다. Will 발행 전에도 committed credential
+  revocation을 확인해 checker 오류에서는 fail-closed한다.
 - `adapters/authentication`: allowlisted JWT algorithm, required `kid`, verified JWKS,
   claim validation과 static identity binding, exact certificate selector
   `(commonName|dnsSan|emailSan)` mapping 및 fixed-profile Argon2id password 검증을
@@ -139,6 +140,11 @@ cmd/narumq
   억제하며 집계하지 않는다. 후계의 표준 판단은 [ADR-0028](../decisions/ADR-0028-planned-handoff-will-and-reason-metric.md)을 따른다. 이전 epoch의 DETACH·DISCARD 등 replicated session mutation은 committed
   owner/epoch 검증에서 거절된다. Password 방식의 `Username`은 case-sensitive exact lookup
   key이며 나머지 identity는 static binding에서 가져온다. Username과 Password는 log에 남기지 않는다.
+  Cluster CONNECT는 ownership commit 뒤 TCP adapter에서 fresh revocation read를 통과해야
+  성공 CONNACK을 보낸다. Checker 오류와 committed revoked ID는 fail-closed한다. Committed
+  revoke apply는 일치하는 활성 연결을 닫고 Will을 억제한다. Credential expiry timer는 JWT
+  `exp` 또는 certificate `NotAfter`를 사용한다. Expiry는 `DisconnectAbnormal` Will 처리를
+  유지한다.
 - `adapters/memory/deliveryqueue`, `adapters/memory/retained`, `adapters/memory/sessionstore`는
   각각 SessionKey, `(tenant, topic)`, SessionKey를 key로 사용한다.
 

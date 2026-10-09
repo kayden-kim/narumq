@@ -23,48 +23,50 @@ type operationState struct {
 
 // StateMachine applies committed replicated state in strictly increasing order.
 type StateMachine struct {
-	mu                   sync.RWMutex
-	lastAppliedIndex     uint64
-	members              map[uint64]MemberIdentityDTO
-	operations           map[string]operationState
-	idempotency          map[string]string
-	ownerships           map[sessionKey]OwnershipStateDTO
-	subscriptions        map[subscriptionKey]SubscriptionStateDTO
-	delivery             map[sessionKey]DeliverySessionStateDTO
-	deliveryEntries      int
-	deliveryBytes        int
-	retained             map[retainedKey]RetainedStateDTO
-	retainedBytes        int
-	offline              map[sessionKey]OfflineSessionStateDTO
-	offlineMessages      int
-	offlineBytes         int
-	tenantUsage          map[string]tenantStorageUsage
-	tenantQuota          *TenantQuotaProfileDTO
-	tenantQuotaByTenant  map[string]TenantStorageQuotaDTO
-	activeFeatures       []string
-	nodeDrains           map[uint64]NodeDrainStateDTO
-	connectionRebalance  *ConnectionRebalanceStateDTO
-	sessionMetadata      map[sessionKey]SessionMetadataStateDTO
-	sessionWillBytes     int
-	proposalOrigins      map[uint64]*proposalOriginState
-	proposalReceiptCount int
-	proposalResultBytes  int
+	mu                    sync.RWMutex
+	lastAppliedIndex      uint64
+	members               map[uint64]MemberIdentityDTO
+	operations            map[string]operationState
+	idempotency           map[string]string
+	ownerships            map[sessionKey]OwnershipStateDTO
+	subscriptions         map[subscriptionKey]SubscriptionStateDTO
+	delivery              map[sessionKey]DeliverySessionStateDTO
+	deliveryEntries       int
+	deliveryBytes         int
+	retained              map[retainedKey]RetainedStateDTO
+	retainedBytes         int
+	offline               map[sessionKey]OfflineSessionStateDTO
+	offlineMessages       int
+	offlineBytes          int
+	tenantUsage           map[string]tenantStorageUsage
+	tenantQuota           *TenantQuotaProfileDTO
+	tenantQuotaByTenant   map[string]TenantStorageQuotaDTO
+	activeFeatures        []string
+	nodeDrains            map[uint64]NodeDrainStateDTO
+	connectionRebalance   *ConnectionRebalanceStateDTO
+	credentialRevocations map[string]CredentialRevocationStateDTO
+	sessionMetadata       map[sessionKey]SessionMetadataStateDTO
+	sessionWillBytes      int
+	proposalOrigins       map[uint64]*proposalOriginState
+	proposalReceiptCount  int
+	proposalResultBytes   int
 }
 
 // NewStateMachine constructs an empty deterministic replicated-state machine.
 func NewStateMachine() *StateMachine {
 	return &StateMachine{
-		members:         make(map[uint64]MemberIdentityDTO),
-		operations:      make(map[string]operationState),
-		idempotency:     make(map[string]string),
-		ownerships:      make(map[sessionKey]OwnershipStateDTO),
-		subscriptions:   make(map[subscriptionKey]SubscriptionStateDTO),
-		delivery:        make(map[sessionKey]DeliverySessionStateDTO),
-		retained:        make(map[retainedKey]RetainedStateDTO),
-		offline:         make(map[sessionKey]OfflineSessionStateDTO),
-		tenantUsage:     make(map[string]tenantStorageUsage),
-		nodeDrains:      make(map[uint64]NodeDrainStateDTO),
-		sessionMetadata: make(map[sessionKey]SessionMetadataStateDTO),
+		members:               make(map[uint64]MemberIdentityDTO),
+		operations:            make(map[string]operationState),
+		idempotency:           make(map[string]string),
+		ownerships:            make(map[sessionKey]OwnershipStateDTO),
+		subscriptions:         make(map[subscriptionKey]SubscriptionStateDTO),
+		delivery:              make(map[sessionKey]DeliverySessionStateDTO),
+		retained:              make(map[retainedKey]RetainedStateDTO),
+		offline:               make(map[sessionKey]OfflineSessionStateDTO),
+		tenantUsage:           make(map[string]tenantStorageUsage),
+		nodeDrains:            make(map[uint64]NodeDrainStateDTO),
+		sessionMetadata:       make(map[sessionKey]SessionMetadataStateDTO),
+		credentialRevocations: make(map[string]CredentialRevocationStateDTO),
 	}
 }
 
@@ -103,7 +105,7 @@ func (machine *StateMachine) InitializeBootstrap(index uint64, members []MemberI
 	}
 	machine.mu.Lock()
 	defer machine.mu.Unlock()
-	if machine.lastAppliedIndex != 0 || len(machine.members) != 0 || len(machine.operations) != 0 || len(machine.ownerships) != 0 || len(machine.subscriptions) != 0 || len(machine.delivery) != 0 || len(machine.retained) != 0 || len(machine.offline) != 0 || machine.tenantQuota != nil || len(machine.nodeDrains) != 0 || len(machine.activeFeatures) != 0 {
+	if machine.lastAppliedIndex != 0 || len(machine.members) != 0 || len(machine.operations) != 0 || len(machine.ownerships) != 0 || len(machine.subscriptions) != 0 || len(machine.delivery) != 0 || len(machine.retained) != 0 || len(machine.offline) != 0 || machine.tenantQuota != nil || len(machine.nodeDrains) != 0 || len(machine.credentialRevocations) != 0 || len(machine.activeFeatures) != 0 {
 		return ErrBootstrapAlreadyInitialized
 	}
 	for _, member := range copied {
@@ -158,6 +160,8 @@ func (machine *StateMachine) applyCommandLocked(index uint64, command CommandDTO
 		return machine.applySessionMetadata(index, *command.SessionMetadata), nil
 	case command.ConnectionRebalance != nil:
 		return machine.applyConnectionRebalance(index, *command.ConnectionRebalance), nil
+	case command.CredentialRevocation != nil:
+		return machine.applyCredentialRevocation(index, *command.CredentialRevocation), nil
 	default:
 		// validateCommand rejects an empty discriminated union before advancing.
 		return result, nil

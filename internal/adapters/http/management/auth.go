@@ -58,6 +58,7 @@ const (
 	PermissionOperate
 	PermissionAuditRead
 	PermissionClusterAdmin
+	PermissionCredentialAdmin
 )
 
 type roleSet uint8
@@ -82,7 +83,7 @@ func (roles roleSet) allows(permission Permission) bool {
 		return roles != 0
 	case PermissionOperate:
 		return roles.has(RoleOperator) || roles.has(RoleClusterAdmin)
-	case PermissionAuditRead:
+	case PermissionAuditRead, PermissionCredentialAdmin:
 		return roles.has(RoleSecurityAdmin) || roles.has(RoleClusterAdmin)
 	case PermissionClusterAdmin:
 		return roles.has(RoleClusterAdmin)

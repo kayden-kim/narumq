@@ -137,6 +137,26 @@ func featureOperationFixtures() []operationFixture {
 	}
 }
 
+func credentialRevocationOperationFixtures() []operationFixture {
+	return []operationFixture{
+		{
+			method: http.MethodGet, path: "/api/v1/security/credential-revocations",
+			operationID: "listCredentialRevocations", target: "/api/v1/security/credential-revocations",
+			expectedStatus: http.StatusOK,
+		},
+		{
+			method: http.MethodPost, path: "/api/v1/security/credential-revocations/{credentialId}",
+			operationID: "revokeCredential", target: "/api/v1/security/credential-revocations/credential-a",
+			expectedStatus: http.StatusOK,
+		},
+		{
+			method: http.MethodDelete, path: "/api/v1/security/credential-revocations/{credentialId}",
+			operationID: "restoreCredential", target: "/api/v1/security/credential-revocations/credential-a",
+			expectedStatus: http.StatusOK,
+		},
+	}
+}
+
 func contractDocumentPath(t *testing.T) string {
 	t.Helper()
 	_, source, _, ok := runtime.Caller(0)
@@ -436,6 +456,7 @@ func clusterManagementContractHandlerWithServices(
 		contractBackupProvider{},
 		contractAuditUseCase{},
 		auditQueryService,
+		contractCredentialRevocationService{},
 	)
 }
 
@@ -522,6 +543,24 @@ func (contractMembershipService) ActivateFeature(_ context.Context, feature stri
 			MemberID: 1, ReleaseVersion: "1.2.0", Features: []string{"compatibility-probe"},
 		}},
 	}, nil
+}
+
+type contractCredentialRevocationService struct{}
+
+func (contractCredentialRevocationService) ListCredentialRevocations(context.Context) ([]appmembership.CredentialRevocationStateDTO, error) {
+	return []appmembership.CredentialRevocationStateDTO{{
+		CredentialID: "credential-a", RevokedAtUnixMillis: 1_700_000_000_000,
+	}}, nil
+}
+
+func (contractCredentialRevocationService) RevokeCredential(_ context.Context, credentialID string) (appmembership.CredentialRevocationStatusDTO, error) {
+	return appmembership.CredentialRevocationStatusDTO{
+		CredentialID: credentialID, Revoked: true, RevokedAtUnixMillis: 1_700_000_000_000,
+	}, nil
+}
+
+func (contractCredentialRevocationService) RestoreCredential(_ context.Context, credentialID string) (appmembership.CredentialRevocationStatusDTO, error) {
+	return appmembership.CredentialRevocationStatusDTO{CredentialID: credentialID}, nil
 }
 
 type contractDrainService struct{}
@@ -625,6 +664,7 @@ func expectedOperationSet() []string {
 	fixtures = append(fixtures, backupOperationFixtures()...)
 	fixtures = append(fixtures, drainOperationFixtures()...)
 	fixtures = append(fixtures, connectionRebalanceOperationFixtures()...)
+	fixtures = append(fixtures, credentialRevocationOperationFixtures()...)
 	fixtures = append(fixtures, featureOperationFixtures()...)
 	operations := make([]string, 0, len(fixtures))
 	for _, fixture := range fixtures {
@@ -878,6 +918,30 @@ func TestClusterFeatureHandlerResponsesMatchOpenAPI(t *testing.T) {
 				t.Fatalf("status = %d, want %d: %s", recorder.Code, fixture.expectedStatus, recorder.Body.String())
 			}
 			validateResponse(t, input, options, recorder)
+		})
+	}
+}
+
+// Traceability: SEC-07; docs/specs/tenancy-and-security.md §7; docs/contracts/management-api-v1.md.
+func TestCredentialRevocationHandlerResponsesMatchOpenAPI(t *testing.T) {
+	_, router := loadManagementContract(t)
+	handler := clusterManagementContractHandler()
+	for _, fixture := range credentialRevocationOperationFixtures() {
+		t.Run(fixture.operationID, func(t *testing.T) {
+			request := newContractRequest(fixture)
+			input, options := findContractRoute(t, router, request)
+			if input.Route.Operation.OperationID != fixture.operationID {
+				t.Fatalf("runtime fixture matched operation %q, want %q", input.Route.Operation.OperationID, fixture.operationID)
+			}
+			if err := openapi3filter.ValidateRequest(context.Background(), input); err != nil {
+				t.Fatalf("validate representative request: %v", err)
+			}
+			response := httptest.NewRecorder()
+			handler.ServeHTTP(response, request)
+			if response.Code != fixture.expectedStatus {
+				t.Fatalf("status=%d want %d: %s", response.Code, fixture.expectedStatus, response.Body.String())
+			}
+			validateResponse(t, input, options, response)
 		})
 	}
 }

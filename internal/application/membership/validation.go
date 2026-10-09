@@ -81,6 +81,9 @@ func validateCommand(command CommandDTO) error {
 	if command.ConnectionRebalance != nil {
 		payloadCount++
 	}
+	if command.CredentialRevocation != nil {
+		payloadCount++
+	}
 	if payloadCount != 1 {
 		return ErrInvalidCommand
 	}
@@ -131,6 +134,10 @@ func validateCommand(command CommandDTO) error {
 		}
 	case command.ConnectionRebalance != nil:
 		if validateConnectionRebalanceChange(*command.ConnectionRebalance) != nil {
+			return ErrInvalidCommand
+		}
+	case command.CredentialRevocation != nil:
+		if validateCredentialRevocationChange(*command.CredentialRevocation) != nil {
 			return ErrInvalidCommand
 		}
 	}
@@ -369,7 +376,7 @@ func validSnapshot(snapshot SnapshotDTO) error {
 	for _, session := range snapshot.DeliverySessions {
 		deliveryObjects += len(session.Messages) + len(session.Inbound)
 	}
-	count := len(snapshot.Members) + len(snapshot.Ownerships) + len(snapshot.Subscriptions) + deliveryObjects + len(snapshot.MembershipHistory) + len(snapshot.Retained) + len(snapshot.OfflineSessions) + offlineMessagesCount + len(snapshot.NodeDrains) + len(snapshot.ActiveFeatures) + len(snapshot.SessionMetadata) + tenantQuotaObjectCount(snapshot.TenantQuotaProfile) + proposalObjectCount(snapshot.ProposalOrigins)
+	count := len(snapshot.Members) + len(snapshot.Ownerships) + len(snapshot.Subscriptions) + deliveryObjects + len(snapshot.MembershipHistory) + len(snapshot.Retained) + len(snapshot.OfflineSessions) + offlineMessagesCount + len(snapshot.NodeDrains) + len(snapshot.ActiveFeatures) + len(snapshot.SessionMetadata) + tenantQuotaObjectCount(snapshot.TenantQuotaProfile) + proposalObjectCount(snapshot.ProposalOrigins) + len(snapshot.CredentialRevocations)
 	if snapshot.ConnectionRebalance != nil {
 		count++
 	}
@@ -425,6 +432,18 @@ func validSnapshot(snapshot SnapshotDTO) error {
 			}
 		}
 		if !active {
+			return ErrInvalidSnapshot
+		}
+	}
+	if len(snapshot.CredentialRevocations) > MaxCredentialRevocations {
+		return ErrInvalidSnapshot
+	}
+	if len(snapshot.CredentialRevocations) > 0 && !release.Contains(snapshot.ActiveFeatures, CredentialRevocationFeature) {
+		return ErrInvalidSnapshot
+	}
+	for index, state := range snapshot.CredentialRevocations {
+		if !validCredentialRevocationState(state) ||
+			(index > 0 && snapshot.CredentialRevocations[index-1].CredentialID >= state.CredentialID) {
 			return ErrInvalidSnapshot
 		}
 	}

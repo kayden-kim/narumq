@@ -14,7 +14,7 @@
 | replicated-state schema | [replicated-state-v1.proto](replicated-state-v1.proto), schema `1.0` |
 | 기준 동작 명세 | [Cluster §4.1·§4.2·§4.3·§10](../specs/cluster-session-and-delivery.md), [§11.9·§11.11·§11.24](../specs/cluster-session-and-delivery.md#1124-session-metadata-복제와-owner-손실-복구-수용-매핑) |
 | 관련 결정 | [ADR-0013](../decisions/ADR-0013-offline-queue-replication-and-cluster-backup-v3.md), [ADR-0015](../decisions/ADR-0015-cluster-durable-qos-delivery.md), [ADR-0021](../decisions/ADR-0021-backup-archive-release-window.md), [ADR-0025](../decisions/ADR-0025-replicated-session-metadata-and-owner-loss-recovery.md) |
-| 관련 요구사항 | [PRD CLU-14](../requirements/PRD.md#92-클러스터와-세션) |
+| 관련 요구사항 | [PRD CLU-14](../requirements/PRD.md#92-클러스터와-세션), SEC-07 |
 | 호환성 범위 | archive format `3.0`; 동일 `clusterId`, protocol/schema 및 현재 3개 bootstrap voter identity; producer·voter release는 restore build와 같은 major·minor 차이 1 이하 |
 | 관련 시험 | Codec: `internal/adapters/raft/records`; retained/offline producer·consumer: Cluster §11.9; durable delivery/backup evidence: Cluster §11.11 |
 
@@ -51,7 +51,7 @@ Retained key는 `(tenantId, exact Topic Name)`이다. Offline key는 `(tenantId,
 - Disconnect 시 persistent session의 pending QoS 0 FIFO는 DETACH command로 capture한다. 새 ownership epoch의 CONNECT는 durable delivery state를 ATTACH로 복구하고 QoS 0 offline queue는 CLAIM으로 가져와 durable delivery 뒤에 전달한다.
 - Offline limit는 session당 64 message, 전체 4,096 message·16 MiB, payload당 1,000,000 bytes, DETACH command당 topic+payload 768 KiB다. Tenant 저장 quota는 [ADR-0017](../decisions/ADR-0017-tenant-storage-quota.md)에 따라 retained, QoS 0 offline queue, durable delivery outbound·inbound state를 집계하며 새 state 초과를 거절한다. Session metadata에는 cluster 전체 최대 4,096 records와 Will+principal bytes 8 MiB 한도가 적용되며 tenant storage quota에는 포함하지 않는다.
 - Replicated-state schema `1.0`은 unknown-field rejection을 유지한다. Replication proposal의 fresh read와 release-profile gate는 [Release compatibility v1](cluster-release-compatibility-v1.md)을 따른다. 모든 build는 `session-metadata`를 광고하지만 `FeatureActivation`이 commit되어 활성화되기 전에는 metadata payload를 제안·저장하지 않는다. 따라서 비활성 cluster의 기존 동작과 wire bytes는 유지된다. Release window는 strict codec의 unknown-field rejection을 완화하지 않는다.
-- Node drain operation과 tenant quota profile은 replicated typed snapshot 및 whole-state SHA-256에 포함된다. Restore된 진행 중 drain operation은 저장된 phase와 original deadline에서 재개한다. Restored `COMPLETED` record는 node가 readiness를 다시 통과한 뒤 replicated `CLEAR`로 제거한다. Session metadata는 typed snapshot 및 whole-state SHA-256에만 포함하며 backup kind summary를 추가하지 않는다. Archive format `3.0`과 기존 kind summary는 변경하지 않는다.
+- Node drain operation, tenant quota profile, session metadata와 credential revocation은 replicated typed snapshot 및 whole-state SHA-256에 포함된다. Restore된 진행 중 drain operation은 저장된 phase와 original deadline에서 재개한다. Restored `COMPLETED` record는 node가 readiness를 다시 통과한 뒤 replicated `CLEAR`로 제거한다. Session metadata와 credential revocation은 typed snapshot 및 whole-state SHA-256에만 포함하며 kind summary를 추가하지 않는다. Archive format `3.0`과 기존 kind summary는 변경하지 않는다.
 - `proposal-recovery`의 origin, receipt와 retirement/capacity fence도 typed snapshot과 whole-state SHA-256에 포함한다. 별도 kind summary나 archive format 변경은 없다. Committed tail의 proposal metadata를 replay하면 처음 결과와 fence를 재구성한다. Restore build는 active feature를 지원해야 한다. 새 record 의미와 한도는 [Replicated-state v1](replicated-state-v1.md#proposal-recovery-형식)·[ADR-0036](../decisions/ADR-0036-replicated-proposal-receipts-and-safe-reproposal.md)·[ADR-0038](../decisions/ADR-0038-proposal-receipt-capacity-fences.md)을 따른다.
 
 ### QoS 1/2 durable delivery state
