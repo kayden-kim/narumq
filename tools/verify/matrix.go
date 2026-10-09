@@ -64,7 +64,7 @@ func (issues traceabilityIssues) Error() string {
 var (
 	statementTokenPattern   = regexp.MustCompile(`\bMQTT-\d+\.\d+\.\d+(?:-\d+(?:/\d+)*)?\b`)
 	statementPattern        = regexp.MustCompile(`^MQTT-\d+\.\d+\.\d+-\d+$`)
-	requirementTokenPattern = regexp.MustCompile(`\b(?:MQTT|TEST)-\d{2}(?:/\d{2})*\b`)
+	requirementTokenPattern = regexp.MustCompile(`\b(?:MQTT|CLU|TEN|SEC|API|UI|DEP|CLIENT|NFR|PERF|TEST)-\d{2}(?:/\d{2})*\b`)
 	functionNamePattern     = regexp.MustCompile(`^(?:Test|Fuzz)[A-Za-z0-9_]+$`)
 )
 
@@ -236,9 +236,6 @@ func collectTestMetadata(root string) ([]testMetadata, error) {
 			for _, issue := range parseIssues {
 				issues = append(issues, traceabilityIssue{Message: fmt.Sprintf("%s:%d %s: %s", relativePath(root, file), fileSet.Position(function.Pos()).Line, function.Name.Name, issue)})
 			}
-			if len(statementIDs) == 0 {
-				continue
-			}
 			metadata = append(metadata, testMetadata{
 				Reference:    testReference{Package: packagePath, Name: function.Name.Name},
 				File:         relativePath(root, file),
@@ -259,7 +256,7 @@ func collectTestMetadata(root string) ([]testMetadata, error) {
 
 func testSourceFiles(root string) ([]string, error) {
 	var files []string
-	for _, directory := range []string{"internal", filepath.Join("tests", "integration")} {
+	for _, directory := range []string{"cmd", "internal", "tests"} {
 		path := filepath.Join(root, directory)
 		if _, err := os.Stat(path); err != nil {
 			if os.IsNotExist(err) {
@@ -300,9 +297,11 @@ func parseTraceability(trace string) ([]string, []string, []string) {
 				issues = append(issues, "duplicate requirement ID "+id)
 				continue
 			}
-			if !validRequirementID(id) {
-				issues = append(issues, "invalid requirement ID "+id)
-				continue
+			if strings.HasPrefix(id, "MQTT-") || strings.HasPrefix(id, "TEST-") {
+				if !validRequirementID(id) {
+					issues = append(issues, "invalid requirement ID "+id)
+					continue
+				}
 			}
 			seenRequirements[id] = struct{}{}
 			requirements = append(requirements, id)
@@ -333,7 +332,14 @@ func parseTraceability(trace string) ([]string, []string, []string) {
 			statements = append(statements, id)
 		}
 	}
-	if len(statements) > 0 && len(requirements) == 0 {
+	hasMQTTOrTestRequirement := false
+	for requirementID := range seenRequirements {
+		if strings.HasPrefix(requirementID, "MQTT-") || strings.HasPrefix(requirementID, "TEST-") {
+			hasMQTTOrTestRequirement = true
+			break
+		}
+	}
+	if len(statements) > 0 && !hasMQTTOrTestRequirement {
 		issues = append(issues, "MQTT statement metadata must declare at least one MQTT or TEST requirement ID")
 	}
 	sort.Strings(statements)
@@ -358,6 +364,9 @@ func verifyTraceability(root, matrixPath string) error {
 	byReference := make(map[string]testMetadata, len(metadata))
 	var issues traceabilityIssues
 	for _, item := range metadata {
+		if len(item.Statements) == 0 {
+			continue
+		}
 		key := testReferenceKey(item.Reference)
 		if _, exists := byReference[key]; exists {
 			issues = append(issues, traceabilityIssue{Message: "duplicate test function reference: " + key})
@@ -373,6 +382,9 @@ func verifyTraceability(root, matrixPath string) error {
 	expectedReferences := make(map[string]map[string]testReference)
 	expectedRequirements := make(map[string]map[string]struct{})
 	for _, item := range metadata {
+		if len(item.Statements) == 0 {
+			continue
+		}
 		for _, statementID := range item.Statements {
 			if _, exists := expectedReferences[statementID]; !exists {
 				expectedReferences[statementID] = make(map[string]testReference)
@@ -381,7 +393,9 @@ func verifyTraceability(root, matrixPath string) error {
 			key := testReferenceKey(item.Reference)
 			expectedReferences[statementID][key] = item.Reference
 			for _, requirementID := range item.Requirements {
-				expectedRequirements[statementID][requirementID] = struct{}{}
+				if strings.HasPrefix(requirementID, "MQTT-") || strings.HasPrefix(requirementID, "TEST-") {
+					expectedRequirements[statementID][requirementID] = struct{}{}
+				}
 			}
 		}
 	}

@@ -12,7 +12,7 @@ import (
 	"time"
 )
 
-// Traceability: CLU-02/CLU-03/CLU-06; docs/specs/cluster-session-and-delivery.md §2.2, §7, §11.14.
+// Traceability: CLU-02/CLU-03/CLU-06/DEP-16; docs/specs/cluster-session-and-delivery.md §2.2, §7, §11.14.
 func TestDynamicClusterPersistentSubscriptionReplayProcessAcceptance(t *testing.T) {
 	t.Parallel()
 

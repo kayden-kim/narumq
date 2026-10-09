@@ -161,16 +161,16 @@ go run ./cmd/narumq -tcp-listen 127.0.0.1:1883 -http-listen 127.0.0.1:8080 -allo
 
 ## 4. 검증
 
-개발자가 수행한 작업의 완료 여부는 다음 기준표로 판정한다. 2026-10-09, Windows/amd64, Go 1.26.5에서 새 80% overall branch 기준으로 Run C를 실행해 `local: PASS`를 확인했다. Branch coverage는 schema 2 report의 `measured`로 기록한다. Overall·core branch ratchet에는 `branchTolerance=0.20`을 적용한다. Core branch는 90%, 변경 코드 diff coverage는 95%다. Run C의 `requirementShortfalls`는 비었다. CI 필수 status, TEST-10 P0 mapping, TEST-07 diff CI 증거는 남아 있다. 측정값과 경계 시험은 [성능 스펙 §8.4](../specs/performance-and-verification.md#84-전체-branch-floor-수용-증거)에 있다. Mutation과 수동 로컬 broker smoke는 이번 작업에서 실행하지 않았다.
+개발자가 수행한 작업의 완료 여부는 다음 기준표로 판정한다. 2026-10-09, Windows/amd64, Go 1.26.5에서 새 80% overall branch 기준으로 Run C를 실행해 `local: PASS`를 확인했다. Branch coverage는 schema 2 report의 `measured`로 기록한다. Overall·core branch ratchet에는 `branchTolerance=0.20`을 적용한다. Core branch는 90%, 변경 코드 diff coverage는 95%다. Run C의 `requirementShortfalls`는 비었다. P0 gate는 58/81 요구사항 연결과 예외 23개를 보고했으며, 예외가 남아 TEST-10은 미검증이다. CI 필수 status와 TEST-07 diff CI 증거도 남아 있다. 측정값과 경계 시험은 [성능 스펙 §8.4](../specs/performance-and-verification.md#84-전체-branch-floor-수용-증거)에 있다. Mutation과 수동 로컬 broker smoke는 이번 작업에서 실행하지 않았다.
 
 | 관찰 대상 | 성공 조건 | 확인 방법 | 실제 결과 | 실행 증거 위치 |
 | --- | --- | --- | --- | --- |
 | 단위 테스트 및 레이스 | 전체 테스트 PASS 및 Data Race 0건 | `go run ./tools/verify local` | Run A·B·C 통과; 전체 package test와 `go test -race ./cmd/... ./internal/... -count=1` 단계 완료. 앞선 실패 시도는 성능 스펙에 기록 | 콘솔 출력과 성능 스펙 §8.2 |
 | 아키텍처 규칙 | 계층 간 허용되지 않은 import 0건 | `go run ./tools/verify architecture` | 통과; `architecture: PASS` | 콘솔 출력 |
-| 규격 추적성 | 매트릭스와 소스 코드 요구사항 100% 일치 | `go run ./tools/verify traceability` | 통과; `traceability: PASS` | `.artifacts/verification/traceability-branch-floor80.log` |
+| 규격 추적성 | PRD의 모든 P0를 test 함수 또는 유효한 예외에 연결하고 stale 예외 0건 | `go run ./tools/verify traceability` | gate PASS: 58/81 P0 연결, 예외 23개. 예외와 필수 CI 증거가 남아 TEST-10은 미검증 | [성능 스펙 §7.2](../specs/performance-and-verification.md#72-phase-0-mutationfuzz-게이트), [ADR-0042](../decisions/ADR-0042-p0-requirement-traceability-gate.md) |
 | 코드 커버리지 | Line/function 기준, overall branch 80%, core branch 90%, ratchet 허용폭, diff 95% 충족 | `go run ./tools/verify local`; `ci --base <merge-base>`는 별도 CI 실행 | Run C 82.84%, `requirementShortfalls` 비었음; overall ratchet 80.03%, core/diff 기준 유지. +0.21%p 경계 거절과 +0.19%p 경계 통과도 확인 | `.artifacts/verification/coverage-summary-floor-c.json`, `coverage-boundary-plus-*.json`, 성능 스펙 §8.4 |
 | 뮤테이션 테스트 | Delivery·nodedrain·Session 각각 efficacy·mutant coverage 80% 이상 | `go run ./tools/verify ci --base <merge-base>` | 이번 작업에서 미실행; `local` gate는 mutation을 포함하지 않음 | `.artifacts/verification/mutation-*.json` |
-| 종합 로컬 검증 | 로컬 검증 gate 전체 완료 및 종료 코드 0 | `go run ./tools/verify local` | 새 80% policy의 Run C에서 `coverage: PASS`, `local: PASS`. CI 필수 status 통과를 뜻하지 않음 | `.artifacts/verification/floor-local-c.log`, 성능 스펙 §8.4 |
+| 종합 로컬 검증 | 로컬 검증 gate 전체 완료 및 종료 코드 0 | `go run ./tools/verify local` | 새 80% policy의 Run C에서 `coverage: PASS`, `local: PASS`. CI 필수 status 통과를 뜻하지 않음 | 성능 스펙 §8.4 (추적 가능한 결과); `.artifacts/verification/floor-local-c.log` (로컬 로그, Git 미추적) |
 
 ## 5. 중단 조건 및 빈발 문제 해결
 
@@ -181,8 +181,8 @@ go run ./cmd/narumq -tcp-listen 127.0.0.1:1883 -http-listen 127.0.0.1:8080 -allo
 - **해결:** 의존성 방향을 역전시킨다. `application/ports`에 인터페이스를 정의하고, 어댑터가 이를 구현하도록 변경한 후 `cmd/narumq`에서 주입받는다.
 
 ### 2. `traceability: FAIL` (규격 추적성 불일치)
-- **원인:** MQTT 표준 규격 관련 테스트 함수를 추가/변경하면서 `tests/conformance/mqtt-compliance-v1.json` 매트릭스에 누락되었거나 주석의 조항 번호가 다른 경우.
-- **해결:** `tests/conformance/mqtt-compliance-v1.json` 파일을 열어 해당 테스트 함수와 관련 OASIS MQTT 규격 ID 및 PRD 요구사항 ID를 일치시킨다.
+- **원인:** MQTT normative statement와 matrix의 연결이 다르거나, Traceability marker의 PRD ID가 없거나, P0 연결과 예외 목록의 상태가 맞지 않는 경우.
+- **해결:** MQTT statement 오류는 `tests/conformance/mqtt-compliance-v1.json`과 test comment를 맞춘다. `P0 requirement <ID> has no Traceability test and no exception`이면 관련 test 함수에 `Traceability:`를 추가하거나 이유와 저장소 내 경로를 적어 예외 파일에 추가한다. `P0 requirement <ID> is mapped by ... but still listed`이면 예외 파일에서 해당 ID를 제거한다. `unknown PRD requirement <ID>`이면 marker의 ID를 PRD와 대조해 고친다.
 
 ### 3. `coverage: FAIL` (커버리지 기준 미달)
 - **원인:** 새로 작성한 비즈니스 로직에 단위 테스트가 충분하지 않아 라인 85% 또는 함수 90% 기준 밑으로 떨어진 경우.

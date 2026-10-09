@@ -678,7 +678,19 @@ go test ./internal/adapters/tcp -run=^$ -fuzz=^FuzzConnectionInput$ -fuzztime=10
 
 Discovery 순서는 비결정적이다. 실패 corpus는 `testdata/fuzz/<Target>/`에 보존해 일반 시험과 다음 campaign에서 재현한다. 수정한 feature는 재현 시험을 포함해야 한다. Flaky isolation은 임시 조치이며 owner와 해결 기한을 정한다.
 
-MQTT normative statement 연결표는 `tests/conformance/mqtt-compliance-v1.json`이다. `go run ./tools/verify traceability`는 source comment와 matrix를 양방향 비교한다. 지원 동작 link 누락이나 requirement 집합 불일치는 실패다.
+MQTT normative statement 연결표는 `tests/conformance/mqtt-compliance-v1.json`이다. `go run ./tools/verify traceability`는 모든 `cmd`, `internal`, `tests` 아래 Go test·fuzz doc comment의 `Traceability:` marker를 읽는다. MQTT statement와 compliance matrix를 양방향 비교하고, marker의 모든 요구사항 ID가 PRD에 있는지 확인한다. PRD의 모든 P0 요구사항은 하나 이상의 `Test*`·`Fuzz*` 함수에 연결하거나 `tests/conformance/p0-requirement-exceptions-v1.json`에 정렬된 예외로 등록해야 한다. 시험 연결과 예외가 함께 있거나 둘 다 없으면 gate가 실패한다. `-prd`와 `-p0-exceptions`는 입력 경로를 바꿀 때 사용한다.
+
+| 검증 계약 | 영구 시험 또는 실행 결과 |
+| --- | --- |
+| P0 연결·미연결·stale 예외·PRD ID·정렬·tracking 경계 | `tools/verify/requirements_test.go::TestVerifyP0RequirementMapping` — 8개 사례 PASS |
+| 예외 JSON strict decode·schema·중복·빈 값·경로 경계 | `TestLoadP0ExceptionsStrictlyValidatesJSON` — 9개 사례 PASS |
+| PRD prefix 파싱과 MQTT statement ID 규칙 | `TestParseTraceabilityAcceptsPRDPrefixesAndKeepsStatementRule` PASS |
+| 미연결·stale P0의 CLI 거절 | 임시 예외 파일에서 `UI-01` 제거와 `API-01` stale 등록을 실행; 두 명령 모두 exit 1 및 지정 오류 출력 |
+| 저장소 traceability gate | `go run ./tools/verify traceability` — PASS, P0 58/81 연결, 예외 23개 |
+| 전체 local gate | `go run ./tools/verify local` — branch-instrument, traceability, 5개 fuzz target, architecture, 전체 package 시험, coverage, local 모두 PASS; 실행 시간 142.43초 |
+
+예외 23개가 남아 있으므로 traceability command의 PASS는 TEST-10 완료를 뜻하지 않는다. 필수 CI merge 차단 실행 증거도 아직 없다. 따라서 TEST-10은 미검증으로 유지한다.
+
 
 ### 7.3 Cluster failpoint 빌드
 

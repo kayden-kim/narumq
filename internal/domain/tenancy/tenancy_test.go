@@ -5,7 +5,7 @@ import (
 	"testing"
 )
 
-// Requirements: TEN-02, TEN-03
+// Traceability: TEN-02, TEN-03
 func TestTenantValuesPreventPrefixCollisions(t *testing.T) {
 	tenantA, err := NewTenantID("tenant-a")
 	if err != nil {
@@ -42,7 +42,7 @@ func TestTenantValuesPreventPrefixCollisions(t *testing.T) {
 	}
 }
 
-// Requirements: TEN-03, TEN-04
+// Traceability: TEN-03, TEN-04
 func TestFilterContainmentAndIntersectionPreserveMQTTWildcardSemantics(t *testing.T) {
 	tenant, err := NewTenantID("tenant-a")
 	if err != nil {
@@ -108,7 +108,7 @@ func TestFilterContainmentAndIntersectionPreserveMQTTWildcardSemantics(t *testin
 	}
 }
 
-// Requirements: TEN-03, TEN-04
+// Traceability: TEN-03, TEN-04
 func TestTenantRelationsRejectCrossTenantValues(t *testing.T) {
 	firstTenant, err := NewTenantID("tenant-a")
 	if err != nil {

@@ -570,7 +570,7 @@ func TestPublishStoresOneAbsoluteExpiryDeadlineAndAcceptsExpiredPublication(t *t
 	}
 }
 
-// Requirements: SEC-06, TEN-04
+// Traceability: SEC-06, TEN-04
 func TestPublish_UnauthorizedRejection(t *testing.T) {
 	now := testNow()
 	clock := &fakeClock{now: now}

@@ -40,7 +40,7 @@ const validSecurityJSON = `{
   ]
 }`
 
-// Requirements: SEC-02, SEC-04, TEN-01
+// Traceability: SEC-02, SEC-04, TEN-01
 func TestParseSecurityConfig_Valid(t *testing.T) {
 	bundle, err := parseSecurityConfig(strings.NewReader(validSecurityJSON))
 	if err != nil {

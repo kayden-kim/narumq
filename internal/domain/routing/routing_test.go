@@ -651,7 +651,7 @@ func TestSharedSubscriptionUnsubscribeAndSessionRemoval(t *testing.T) {
 	}
 }
 
-// Requirements: TEN-03, TEN-05
+// Traceability: TEN-03, TEN-05
 func TestRoutingTable_TenantIsolation(t *testing.T) {
 	table := NewTable()
 	tenantA, err := tenancy.NewTenantID("tenant-a")

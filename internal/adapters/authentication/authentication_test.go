@@ -193,7 +193,7 @@ func newProviderFixture(t *testing.T, clock *testClock, body []byte, handlerStat
 	return provider, func() int64 { return requests.Load() }
 }
 
-// Requirements: SEC-02
+// Traceability: SEC-02
 func TestJWKSAuthenticationRejectsAlgorithmSignatureAndClaims(t *testing.T) {
 	now := time.Unix(1000, 0)
 	clock := &testClock{now: now}
@@ -228,7 +228,7 @@ func TestJWKSAuthenticationRejectsAlgorithmSignatureAndClaims(t *testing.T) {
 	}
 }
 
-// Requirements: SEC-02
+// Traceability: SEC-02
 func TestJWKSBootstrapFetchCollapses(t *testing.T) {
 	now := time.Unix(2000, 0)
 	clock := &testClock{now: now}
@@ -261,7 +261,7 @@ func TestJWKSBootstrapFetchCollapses(t *testing.T) {
 	}
 }
 
-// Requirements: SEC-08
+// Traceability: SEC-08
 func TestJWKSBootstrapFailureCollapses(t *testing.T) {
 	now := time.Unix(2500, 0)
 	clock := &testClock{now: now}
@@ -314,7 +314,7 @@ func TestJWKSBootstrapFailureCollapses(t *testing.T) {
 	}
 }
 
-// Requirements: SEC-02
+// Traceability: SEC-02
 func TestJWKSUnknownKeyRefreshCollapsesAndThrottles(t *testing.T) {
 	now := time.Unix(3000, 0)
 	clock := &testClock{now: now}
@@ -381,7 +381,7 @@ func TestJWKSUnknownKeyRefreshCollapsesAndThrottles(t *testing.T) {
 	}
 }
 
-// Requirements: SEC-02, SEC-08
+// Traceability: SEC-02, SEC-08
 func TestJWKSFailedEarlyRefreshPreservesKnownKeyAndTTLDoesNotExtend(t *testing.T) {
 	now := time.Unix(4000, 0)
 	clock := &testClock{now: now}

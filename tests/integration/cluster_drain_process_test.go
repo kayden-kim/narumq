@@ -16,7 +16,7 @@ import (
 	"narumq/internal/domain/mqtt"
 )
 
-// Traceability: DEP-06/DEP-12; docs/specs/drain-and-rolling-update.md §2.1, §2.2, §2.3, §3, §4, §6, §10.
+// Traceability: DEP-04/DEP-05/DEP-06/DEP-10/DEP-12; docs/specs/drain-and-rolling-update.md §2.1, §2.2, §2.3, §3, §4, §6, §10.
 func TestDynamicClusterNodeDrainProcessAcceptance(t *testing.T) {
 	t.Parallel()
 
@@ -226,7 +226,7 @@ func TestDynamicClusterNodeDrainProcessAcceptance(t *testing.T) {
 	}
 }
 
-// Traceability: DEP-06/DEP-12; docs/specs/drain-and-rolling-update.md §2.1, §2.3, §3, §6, §8, §10.
+// Traceability: DEP-10; docs/specs/drain-and-rolling-update.md §2.1, §2.3, §3, §6, §8, §10.
 func TestDynamicClusterNodeDrainCancelTimeoutAndResumeProcessAcceptance(t *testing.T) {
 	t.Parallel()
 

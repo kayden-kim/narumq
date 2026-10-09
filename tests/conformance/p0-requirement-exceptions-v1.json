@@ -1,0 +1,120 @@
+{
+  "schemaVersion": 1,
+  "exceptions": [
+    {
+      "requirementId": "API-03",
+      "reason": "집계 방식의 문서화만 수용 기준이며 자동화 시험이 없습니다.",
+      "tracking": "docs/TODO.md#18-management-apiobservability와-dashboard"
+    },
+    {
+      "requirementId": "API-05",
+      "reason": "rate limit과 GitOps reconciliation이 관리 스펙에서 보류된 범위입니다.",
+      "tracking": "docs/TODO.md#18-management-apiobservability와-dashboard"
+    },
+    {
+      "requirementId": "API-09",
+      "reason": "rate limit과 GitOps reconciliation이 관리 스펙에서 보류된 범위입니다.",
+      "tracking": "docs/TODO.md#18-management-apiobservability와-dashboard"
+    },
+    {
+      "requirementId": "DEP-11",
+      "reason": "외부 rollout controller가 보류된 범위이며 ADR-0006은 Proposed입니다.",
+      "tracking": "docs/TODO.md#12-release와-rollout-gate"
+    },
+    {
+      "requirementId": "DEP-13",
+      "reason": "Kubernetes와 EKS_EC2_HA 배포 산출물이 보류된 범위입니다.",
+      "tracking": "docs/TODO.md#14-drain-정책관측과-production-배포"
+    },
+    {
+      "requirementId": "DEP-14",
+      "reason": "Kubernetes와 EKS_EC2_HA 배포 산출물이 보류된 범위입니다.",
+      "tracking": "docs/TODO.md#14-drain-정책관측과-production-배포"
+    },
+    {
+      "requirementId": "DEP-15",
+      "reason": "Kubernetes와 EKS_EC2_HA 배포 산출물이 보류된 범위입니다.",
+      "tracking": "docs/TODO.md#14-drain-정책관측과-production-배포"
+    },
+    {
+      "requirementId": "DEP-18",
+      "reason": "외부 rollout controller가 보류된 범위이며 ADR-0006은 Proposed입니다.",
+      "tracking": "docs/TODO.md#12-release와-rollout-gate"
+    },
+    {
+      "requirementId": "DEP-19",
+      "reason": "Kubernetes와 EKS_EC2_HA 배포 산출물이 보류된 범위입니다.",
+      "tracking": "docs/TODO.md#14-drain-정책관측과-production-배포"
+    },
+    {
+      "requirementId": "DEP-20",
+      "reason": "Kubernetes와 EKS_EC2_HA 배포 산출물이 보류된 범위입니다.",
+      "tracking": "docs/TODO.md#14-drain-정책관측과-production-배포"
+    },
+    {
+      "requirementId": "DEP-21",
+      "reason": "Kubernetes와 EKS_EC2_HA 배포 산출물이 보류된 범위입니다.",
+      "tracking": "docs/TODO.md#14-drain-정책관측과-production-배포"
+    },
+    {
+      "requirementId": "DEP-22",
+      "reason": "Kubernetes와 EKS_EC2_HA 배포 산출물이 보류된 범위입니다.",
+      "tracking": "docs/TODO.md#14-drain-정책관측과-production-배포"
+    },
+    {
+      "requirementId": "DEP-23",
+      "reason": "Kubernetes와 EKS_EC2_HA 배포 산출물이 보류된 범위입니다.",
+      "tracking": "docs/TODO.md#14-drain-정책관측과-production-배포"
+    },
+    {
+      "requirementId": "SEC-05",
+      "reason": "tenancy spec §9에서 후속 acceptance scope로 분류했습니다.",
+      "tracking": "docs/TODO.md#17-tenantsecurity와-감사"
+    },
+    {
+      "requirementId": "SEC-07",
+      "reason": "tenancy spec §9에서 후속 acceptance scope로 분류했습니다.",
+      "tracking": "docs/TODO.md#17-tenantsecurity와-감사"
+    },
+    {
+      "requirementId": "SEC-10",
+      "reason": "tenancy spec §9에서 후속 acceptance scope로 분류했습니다.",
+      "tracking": "docs/TODO.md#17-tenantsecurity와-감사"
+    },
+    {
+      "requirementId": "TEN-09",
+      "reason": "noisy-neighbor p99 한도가 확정되지 않았습니다(PRD §18 질문 8).",
+      "tracking": "docs/TODO.md#17-tenantsecurity와-감사"
+    },
+    {
+      "requirementId": "UI-01",
+      "reason": "운영 Dashboard가 아직 구현되지 않았습니다.",
+      "tracking": "docs/TODO.md#18-management-apiobservability와-dashboard"
+    },
+    {
+      "requirementId": "UI-02",
+      "reason": "운영 Dashboard가 아직 구현되지 않았습니다.",
+      "tracking": "docs/TODO.md#18-management-apiobservability와-dashboard"
+    },
+    {
+      "requirementId": "UI-03",
+      "reason": "운영 Dashboard가 아직 구현되지 않았습니다.",
+      "tracking": "docs/TODO.md#18-management-apiobservability와-dashboard"
+    },
+    {
+      "requirementId": "UI-04",
+      "reason": "운영 Dashboard가 아직 구현되지 않았습니다.",
+      "tracking": "docs/TODO.md#18-management-apiobservability와-dashboard"
+    },
+    {
+      "requirementId": "UI-05",
+      "reason": "운영 Dashboard가 아직 구현되지 않았습니다.",
+      "tracking": "docs/TODO.md#18-management-apiobservability와-dashboard"
+    },
+    {
+      "requirementId": "UI-10",
+      "reason": "운영 Dashboard가 아직 구현되지 않았습니다.",
+      "tracking": "docs/TODO.md#18-management-apiobservability와-dashboard"
+    }
+  ]
+}

@@ -58,7 +58,7 @@ func TestNilAndInvalidSessionRepositoryOperations(t *testing.T) {
 	}
 }
 
-// Requirements: TEN-02
+// Traceability: TEN-02
 func TestMemorySessionRepository_SessionKeyMultiTenant(t *testing.T) {
 	repository := New()
 	tenantA, err := tenancy.NewTenantID("tenant-a")

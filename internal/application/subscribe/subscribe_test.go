@@ -552,7 +552,7 @@ func TestSubscribeReplayPreservesRetainedExpiryDeadline(t *testing.T) {
 	}
 }
 
-// Requirements: SEC-06, TEN-04
+// Traceability: SEC-06, TEN-04
 func TestSubscribe_UnauthorizedRejection(t *testing.T) {
 	now := time.Date(2026, time.January, 1, 0, 0, 0, 0, time.UTC)
 	tenant, err := tenancy.NewTenantID("tenant-a")

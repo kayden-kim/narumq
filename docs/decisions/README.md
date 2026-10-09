@@ -47,6 +47,7 @@
 | [ADR-0039](ADR-0039-management-audit-log.md) | Accepted | Management plane 감사 이벤트를 node-local hash-chain JSONL에 기록하고 mutation은 감사 기록 준비 상태에 따라 fail-closed한다. |
 | [ADR-0040](ADR-0040-branch-coverage-arm-injection.md) | Accepted | 빠진 arm을 사본에 주입해 branch를 측정하고 전체·core baseline ratchet과 diff 95%를 강제한다. |
 | [ADR-0041](ADR-0041-branch-ratchet-noise-tolerance.md) | Accepted | 전체·core branch ratchet에 명시된 0.20%p 노이즈 허용폭을 적용한다. |
+| [ADR-0042](ADR-0042-p0-requirement-traceability-gate.md) | Accepted | PRD 기반 P0 요구사항 연결과 정렬된 예외 목록 ratchet을 적용한다. |
 
 `Proposed` ADR은 검토 중인 제안이다. `Accepted` ADR은 각 기록에 명시한 범위 안에서 채택된 결정이다. `design target only`는 production runtime이나 acceptance 검증을 뜻하지 않는다.
 

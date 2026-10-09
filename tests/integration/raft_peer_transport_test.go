@@ -115,6 +115,7 @@ func TestRaftPeerTransportThreeNodeReplicationAndCatchup(t *testing.T) {
 	cluster.waitForApplied([]raftadapter.NodeID{1, 2, 3}, allExpected)
 }
 
+// Traceability: SEC-09; docs/contracts/raft-peer-transport-v1.md §1.
 func TestRaftPeerTransportRejectsUnauthenticatedAndMalformedPeers(t *testing.T) {
 	pki := newPeerTransportPKI(t)
 	listener, err := net.Listen("tcp", "127.0.0.1:0")

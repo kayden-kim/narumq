@@ -1892,7 +1892,7 @@ func TestMQTTIngressSharedSubscriptionHandoff(t *testing.T) {
 	expectNoPacket(t, reconnectedA)
 }
 
-// Requirements: TEN-01, TEN-02, TEN-03, TEN-04, TEN-05, SEC-04, SEC-06
+// Traceability: TEN-01, TEN-02, TEN-03, TEN-04, TEN-05, SEC-04, SEC-06
 func TestMQTTSecurity(t *testing.T) {
 	// Generate test RSA key
 	privKey, err := rsa.GenerateKey(rand.Reader, 2048)

@@ -183,7 +183,7 @@ func TestCmmJWKSBodyAtSizeLimitIsAccepted(t *testing.T) {
 	}
 }
 
-// Requirements: SEC-08
+// Traceability: SEC-08
 func TestCmmBootstrapRefreshWaitersHonorCancellationAndShareFailure(t *testing.T) {
 	now := time.Unix(8000, 0)
 	key := newTestKey(t, "key-1")
@@ -219,7 +219,7 @@ func TestCmmBootstrapRefreshWaitersHonorCancellationAndShareFailure(t *testing.T
 	}
 }
 
-// Requirements: SEC-02, SEC-08
+// Traceability: SEC-02, SEC-08
 func TestCmmUnknownKeyRefreshWaitersHonorCancellationAndShareFailure(t *testing.T) {
 	now := time.Unix(9000, 0)
 	clock := &testClock{now: now}

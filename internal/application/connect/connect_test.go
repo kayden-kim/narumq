@@ -1360,7 +1360,7 @@ func TestClusterAnonymousSessionDisconnectUsesTenantScopedKey(t *testing.T) {
 	}
 }
 
-// Requirements: SEC-04, TEN-01, TEN-02
+// Traceability: SEC-04, TEN-01, TEN-02
 func TestConnectAuthenticatedPipeline(t *testing.T) {
 	now := time.Date(2026, time.January, 1, 0, 0, 0, 0, time.UTC)
 	tenant, err := tenancy.NewTenantID("tenant-a")
@@ -1540,7 +1540,7 @@ func newSecurityTestUseCase(
 	return useCase, repository, queue
 }
 
-// Requirements: SEC-03, SEC-04; verified certificate authentication must create
+// Traceability: SEC-03, SEC-04; verified certificate authentication must create
 // the same tenant-bound principal used by the normal ACL/session pipeline.
 func TestConnectMTLSAuthenticatesWithoutJWTAndRecordsTLSMetric(t *testing.T) {
 	now := time.Date(2026, time.January, 1, 0, 0, 0, 0, time.UTC)
@@ -1586,7 +1586,7 @@ func TestConnectMTLSAuthenticatesWithoutJWTAndRecordsTLSMetric(t *testing.T) {
 	}
 }
 
-// Requirements: SEC-04; certificate Client ID binding and all credential failures
+// Traceability: SEC-04; certificate Client ID binding and all credential failures
 // must complete before session repository or delivery queue mutation.
 func TestConnectMTLSRejectsUnauthorizedAndDualCredentialsWithoutMutation(t *testing.T) {
 	now := time.Date(2026, time.January, 1, 0, 0, 0, 0, time.UTC)
@@ -1661,7 +1661,7 @@ func TestConnectMTLSRejectsUnauthorizedAndDualCredentialsWithoutMutation(t *test
 	}
 }
 
-// Requirements: SEC-04; request-mode certificate absence selects JWT without
+// Traceability: SEC-04; request-mode certificate absence selects JWT without
 // invoking the mTLS provider.
 func TestConnectWithoutCertificateUsesJWTAndRecordsJWTMetric(t *testing.T) {
 	now := time.Date(2026, time.January, 1, 0, 0, 0, 0, time.UTC)

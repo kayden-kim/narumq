@@ -181,6 +181,7 @@ func TestHealthEndpoints(t *testing.T) {
 	}
 }
 
+// Traceability: API-01; docs/specs/management-api-and-observability.md §9.
 func TestMetricsEndpoint(t *testing.T) {
 	reg := adaptersmetrics.NewRegistry()
 	reg.ConnectionOpened(portsmetrics.ProtocolMQTT50, "tcp")

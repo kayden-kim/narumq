@@ -193,7 +193,7 @@ BP-01~BP-07의 phase, metric, timeout/error 경계와 실행 증거는 [Performa
 | MQTT conformance | `tests/conformance/mqtt-compliance-v1.json` | 지원한다고 선언한 normative statement와 source test 연결 |
 | SDK compatibility | `tests/compatibility/mqtt-clients-v1` | 외부 Go/Python client 실행, result·trace 검증 |
 | Storage fault | `tests/chaos/cluster-storage-v1` | FUSE 및 local ext4 fault/recovery evidence |
-| Repository gate | `tools/verify` | Conformance/coverage 정책, package graph와 repository verification |
+| Repository gate | `tools/verify/matrix.go`, `tools/verify/requirements.go`, `tests/conformance/{mqtt-compliance-v1.json,p0-requirement-exceptions-v1.json}` | MQTT statement matrix와 PRD P0 요구사항 연결·예외 ratchet, package graph와 repository verification |
 
 Integration test가 process binary를 공유해 build하더라도 fixture별 data directory·certificate·address lease는 분리한다. Suite 실행 조건과 acceptance 범위는 [Performance and verification spec](../specs/performance-and-verification.md)을 따른다.
 

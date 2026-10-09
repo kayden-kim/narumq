@@ -766,7 +766,7 @@ func TestSnapshotFinalizationCrashRecoveryAcrossProcessRestart(t *testing.T) {
 	clusterMembershipProcessAssertConvergedSummary(t, fixture.ctx, supervisor.procs([]uint64{1, 2, 3}), joiner, 4)
 }
 
-// Traceability: CLU-04, CLU-05; docs/specs/cluster-session-and-delivery.md §2, §2.1, §11.12.
+// Traceability: CLU-04, CLU-05, DEP-09; docs/specs/cluster-session-and-delivery.md §2, §2.1, §11.12; docs/specs/drain-and-rolling-update.md §10.
 func TestDynamicClusterMQTTConnectOwnershipTakeoverProcessAcceptance(t *testing.T) {
 	t.Parallel()
 

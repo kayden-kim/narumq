@@ -16,7 +16,7 @@ import (
 	"time"
 )
 
-// Traceability: CLU-05/CLU-06/CLU-07/CLU-09; docs/specs/cluster-session-and-delivery.md §4.2, §11.11.
+// Traceability: CLU-05/CLU-06/CLU-07/CLU-09/DEP-17; docs/specs/cluster-session-and-delivery.md §4.2, §11.11.
 func TestDynamicClusterDurableQoSTakeoverProcessAcceptance(t *testing.T) {
 	t.Parallel()
 

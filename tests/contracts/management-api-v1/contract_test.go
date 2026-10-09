@@ -585,10 +585,12 @@ func documentOperationSet(doc *openapi3.T) []string {
 	return operations
 }
 
+// Traceability: API-02; docs/specs/management-api-and-observability.md §9.
 func TestOpenAPIContractIsValid(t *testing.T) {
 	loadManagementContract(t)
 }
 
+// Traceability: API-02; docs/specs/management-api-and-observability.md §9.
 func TestManagementHandlerResponsesMatchOpenAPI(t *testing.T) {
 	_, router := loadManagementContract(t)
 	handler := contractHandler(managementhttp.ServerConfig{
@@ -781,6 +783,7 @@ func TestClusterFeatureHandlerResponsesMatchOpenAPI(t *testing.T) {
 	}
 }
 
+// Traceability: API-02; docs/specs/management-api-and-observability.md §9.
 func TestManagementOperationSetMatchesOpenAPI(t *testing.T) {
 	doc, _ := loadManagementContract(t)
 	got := documentOperationSet(doc)

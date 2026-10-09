@@ -28,13 +28,19 @@ func run(args []string) int {
 	case "traceability":
 		flags := flag.NewFlagSet("traceability", flag.ContinueOnError)
 		matrixPath := flags.String("matrix", defaultMatrixPath, "compliance matrix path")
+		prdPath := flags.String("prd", defaultPRDPath, "PRD requirement table path")
+		p0ExceptionsPath := flags.String("p0-exceptions", defaultP0ExceptionsPath, "P0 requirement exception list path")
 		if err := flags.Parse(args[1:]); err != nil {
 			return 2
 		}
 		if err := verifyTraceability(root, filepath.Clean(*matrixPath)); err != nil {
 			return printCommandError("traceability", err)
 		}
-		fmt.Println("traceability: PASS")
+		summary, err := verifyP0RequirementMapping(root, filepath.Clean(*prdPath), filepath.Clean(*p0ExceptionsPath))
+		if err != nil {
+			return printCommandError("traceability", err)
+		}
+		fmt.Printf("traceability: PASS (P0 mapped %d/%d, exceptions %d)\n", summary.Mapped, summary.Total, summary.Exceptions)
 		return 0
 	case "architecture":
 		flags := flag.NewFlagSet("architecture", flag.ContinueOnError)

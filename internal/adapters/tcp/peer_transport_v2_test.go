@@ -717,7 +717,7 @@ func TestDynamicPeerRejectsTLSCertificateIdentityMismatchBeforeRaftDelivery(t *t
 	}
 }
 
-// Traceability: PRD CLUS-02; docs/specs/cluster-session-and-delivery.md §11.5 (Compatibility and identity rejection).
+// Traceability: PRD CLU-02/SEC-09; docs/specs/cluster-session-and-delivery.md §11.5 (Compatibility and identity rejection).
 func TestDynamicPeerRejectsForeignCAAndSANAndClusterMismatchBeforeRaftDelivery(t *testing.T) {
 	t.Run("foreign CA rejected at TLS handshake before delivery", func(t *testing.T) {
 		serverTLS2, clientTLS2 := testPeerTLSConfigs(t, "node2.example")

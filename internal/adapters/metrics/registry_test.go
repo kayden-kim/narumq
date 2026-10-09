@@ -339,6 +339,7 @@ func TestRegistry_Concurrency(t *testing.T) {
 	}
 }
 
+// Traceability: API-06; docs/specs/management-api-and-observability.md §9.
 func TestRegistryNormalizesUnboundedLabels(t *testing.T) {
 	reg := NewRegistry()
 	reg.ConnectionOpened("client-id-secret", "10.0.0.1")

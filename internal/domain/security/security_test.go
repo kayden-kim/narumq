@@ -34,7 +34,7 @@ func newSecurityRule(t *testing.T, tenant tenancy.TenantID, role Role, effect Ef
 	return rule
 }
 
-// Requirements: TEN-04, SEC-06
+// Traceability: TEN-04, SEC-06
 func TestPolicyExplicitDenyWinsAcrossAllPrincipalRoles(t *testing.T) {
 	tenant, principal := newSecurityFixture(t)
 	policy, err := NewPolicy([]Rule{
@@ -69,7 +69,7 @@ func TestPolicyExplicitDenyWinsAcrossAllPrincipalRoles(t *testing.T) {
 	}
 }
 
-// Requirements: TEN-04, SEC-06
+// Traceability: TEN-04, SEC-06
 func TestPolicyUsesFilterContainmentAndDefaultDeny(t *testing.T) {
 	tenant, principal := newSecurityFixture(t)
 	policy, err := NewPolicy([]Rule{
@@ -102,7 +102,7 @@ func TestPolicyUsesFilterContainmentAndDefaultDeny(t *testing.T) {
 	}
 }
 
-// Requirements: TEN-02, TEN-04
+// Traceability: TEN-02, TEN-04
 func TestPrincipalMustMatchSessionTenantAndClient(t *testing.T) {
 	tenant, principal := newSecurityFixture(t)
 	matchingKey, err := tenancy.NewSessionKey(tenant, "device-1")
@@ -132,7 +132,7 @@ func TestPrincipalMustMatchSessionTenantAndClient(t *testing.T) {
 	}
 }
 
-// Requirements: TEN-04, SEC-06
+// Traceability: TEN-04, SEC-06
 func TestPrincipalRolesAreDeepCopied(t *testing.T) {
 	tenant, err := tenancy.NewTenantID("tenant-a")
 	if err != nil {
@@ -151,7 +151,7 @@ func TestPrincipalRolesAreDeepCopied(t *testing.T) {
 	}
 }
 
-// Requirements: TEN-04, SEC-06
+// Traceability: TEN-04, SEC-06
 func TestNewRuleRejectsUnconstructedTenantAndFilter(t *testing.T) {
 	if _, err := NewRule(tenancy.TenantID{}, "publisher", EffectAllow, ActionPublish, tenancy.TopicFilter{}); !errors.Is(err, ErrInvalidRule) {
 		t.Fatalf("zero-value NewRule() error = %v, want %v", err, ErrInvalidRule)

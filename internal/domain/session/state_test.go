@@ -395,7 +395,7 @@ func TestLifecycle_ExpireClaimsPendingWill(t *testing.T) {
 	}
 }
 
-// Requirements: TEN-02
+// Traceability: TEN-02
 func TestLifecycle_SessionKeyIsolation(t *testing.T) {
 	now := time.Date(2026, time.January, 1, 0, 0, 0, 0, time.UTC)
 	tenantA, err := tenancy.NewTenantID("tenant-a")

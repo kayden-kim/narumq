@@ -975,7 +975,7 @@ func (a *testServerAuthenticator) Authenticate(ctx context.Context, credential a
 	return a.result, nil
 }
 
-// Requirements: SEC-06, TEN-04
+// Traceability: SEC-06, TEN-04
 func TestTCPServer_UnauthorizedPublishAndSubscribe(t *testing.T) {
 	tenant, err := tenancy.NewTenantID("tenant-a")
 	if err != nil {
@@ -1235,7 +1235,7 @@ func newCertificateAdapterTestRuntime(t *testing.T, config Config, authenticator
 	return &adapterTestRuntime{server: server, listener: listener, client: client, cancel: cancel, done: done, repo: repository}
 }
 
-// Requirements: SEC-03, SEC-04; TCP carries only the application certificate DTO.
+// Traceability: SEC-03, SEC-04; TCP carries only the application certificate DTO.
 func TestTCPServerPassesExtractedCertificateToConnect(t *testing.T) {
 	tenant, err := tenancy.NewTenantID("tenant-a")
 	if err != nil {
@@ -1275,7 +1275,7 @@ func TestTCPServerPassesExtractedCertificateToConnect(t *testing.T) {
 	}
 }
 
-// Requirements: SEC-04; no verified certificate keeps the certificate-free path.
+// Traceability: SEC-04; no verified certificate keeps the certificate-free path.
 func TestTCPServerCertificateExtractorAbsenceUsesAnonymousPath(t *testing.T) {
 	extractorCalls := 0
 	config := defaultAdapterConfig()

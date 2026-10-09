@@ -79,7 +79,7 @@ Management API v1 query profile은 미결정 항목이 아니다. 현재 active 
 
 ## 추적 규칙
 
-- 구현 이슈, test case와 관측성 항목은 관련 PRD ID를 metadata에 포함해야 한다.
+- Go test·fuzz 함수의 doc comment는 `Traceability:` marker로 관련 PRD 요구사항 ID를 선언해야 한다.
 - MQTT compliance test는 PRD ID와 OASIS normative statement ID를 함께 가져야 한다.
 - 각 spec의 수용 시험은 자동화된 test case 이름 또는 compliance matrix 행으로 연결해야 한다.
 - spec의 동작을 바꾸는 결정은 관련 ADR과 PRD를 같은 변경에서 갱신해야 한다.

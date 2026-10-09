@@ -400,7 +400,7 @@ func TestRunWithContextTLSFlags(t *testing.T) {
 	})
 }
 
-// Requirements: SEC-02, SEC-04, TEN-01
+// Traceability: SEC-02, SEC-04, TEN-01
 func TestRunWithContextSecurityConfig(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	tempDir := t.TempDir()

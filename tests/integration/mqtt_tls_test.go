@@ -523,6 +523,7 @@ func TestMQTTTLS_ConnectionAndDelivery(t *testing.T) {
 
 // TestMQTTTLS_RejectInsecureTLSVersion verifies that client connections attempting
 // TLS 1.0 or TLS 1.1 are immediately rejected during the TLS handshake ([SEC-01]).
+// Traceability: SEC-01; docs/specs/tenancy-and-security.md §9.
 func TestMQTTTLS_RejectInsecureTLSVersion(t *testing.T) {
 	fixture := newTLSFixture(t, tlsFixtureOptions{MinVersion: "1.2"})
 	defer fixture.close(t)
@@ -557,6 +558,7 @@ func TestMQTTTLS_RejectInsecureTLSVersion(t *testing.T) {
 // TestMQTTTLS_mTLS_Success verifies that a client presenting a valid X.509 certificate
 // signed by the trusted CA is mapped to its configured mTLS identity and authenticates
 // successfully ([SEC-03]).
+// Traceability: SEC-03; docs/specs/tenancy-and-security.md §9.
 func TestMQTTTLS_mTLS_Success(t *testing.T) {
 	fixture := newTLSFixture(t, tlsFixtureOptions{
 		ClientAuth:   tlsadapter.ClientAuthRequire,
@@ -583,6 +585,7 @@ func TestMQTTTLS_mTLS_Success(t *testing.T) {
 
 // TestMQTTTLS_mTLS_UntrustedCA_Rejected verifies that a client presenting a certificate
 // signed by an untrusted CA is rejected during the TLS handshake ([SEC-03]).
+// Traceability: SEC-03; docs/specs/tenancy-and-security.md §9.
 func TestMQTTTLS_mTLS_UntrustedCA_Rejected(t *testing.T) {
 	fixture := newTLSFixture(t, tlsFixtureOptions{
 		ClientAuth: tlsadapter.ClientAuthRequire,
@@ -621,6 +624,7 @@ func TestMQTTTLS_mTLS_UntrustedCA_Rejected(t *testing.T) {
 
 // TestMQTTTLS_mTLS_ExpiredCert_Rejected verifies that a client presenting an expired
 // certificate is rejected during the TLS handshake ([SEC-03]).
+// Traceability: SEC-03; docs/specs/tenancy-and-security.md §9.
 func TestMQTTTLS_mTLS_ExpiredCert_Rejected(t *testing.T) {
 	fixture := newTLSFixture(t, tlsFixtureOptions{
 		ClientAuth: tlsadapter.ClientAuthRequire,
@@ -658,6 +662,7 @@ func TestMQTTTLS_mTLS_ExpiredCert_Rejected(t *testing.T) {
 
 // TestMQTTTLS_mTLS_ClientIDBinding_Rejected verifies that a trusted certificate
 // is authenticated only for its configured Client ID ([SEC-04]).
+// Traceability: SEC-04; docs/specs/tenancy-and-security.md §9.
 func TestMQTTTLS_mTLS_ClientIDBinding_Rejected(t *testing.T) {
 	certCN := "legit-device-007"
 	fixture := newTLSFixture(t, tlsFixtureOptions{
