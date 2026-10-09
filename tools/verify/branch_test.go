@@ -390,6 +390,17 @@ func TestBranchRatchetDiffFloorAndRequirementShortfall(t *testing.T) {
 	if evaluation == nil || evaluation.Report.Passed || evaluation.Report.Diff.Branch.Percent != 90 || len(evaluation.Report.BranchCoverage.RequirementShortfalls) != 1 {
 		t.Fatalf("diff failure report = %#v", evaluation)
 	}
+	policy.DiffFloor.Branch = 90
+	evaluation, err = evaluateCoverage(context.Background(), root, filepath.Join(root, "coverage.out"), policy, filepath.Join(root, "manifest.json"), "HEAD~1")
+	if err != nil || !evaluation.Report.Passed || evaluation.Report.Diff.Branch.Percent != 90 {
+		t.Fatalf("diff coverage at its floor must pass: %#v, %v", evaluation, err)
+	}
+	policy.DiffFloor.Branch = 90.01
+	policy.Ratchet.BranchTolerance = 0.20
+	evaluation, err = evaluateCoverage(context.Background(), root, filepath.Join(root, "coverage.out"), policy, filepath.Join(root, "manifest.json"), "HEAD~1")
+	if err == nil || !strings.Contains(err.Error(), "diff branch coverage 90.00% is below 90.01%") || evaluation == nil || evaluation.Report.Passed {
+		t.Fatalf("diff coverage below its floor must fail without ratchet tolerance: %#v, %v", evaluation, err)
+	}
 	evaluation, err = evaluateCoverage(context.Background(), root, filepath.Join(root, "coverage.out"), policy, filepath.Join(root, "manifest.json"), "")
 	if err != nil || !evaluation.Report.Passed || len(evaluation.Report.BranchCoverage.RequirementShortfalls) != 1 {
 		t.Fatalf("requirement shortfall must not fail baseline gate: %#v, %v", evaluation, err)

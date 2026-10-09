@@ -9,7 +9,7 @@
 | 관련 스펙 | [Performance와 verification §8](../specs/performance-and-verification.md#8-coverage와-test-quality-gate) |
 | 관련 아키텍처 | [Project structure](../architectures/project-structure.md#verification-and-integration-test-entrypoints) |
 | 이 결정이 대체하는 이전 결정 기록(ADR) | 없음 |
-| 이 결정을 대체한 새 결정 기록(ADR) | 없음 |
+| 이 결정을 대체한 새 결정 기록(ADR) | [ADR-0044](ADR-0044-diff-coverage-floor-90.md)가 §1.7의 diff branch 95% 기준만 대체한다. 나머지 결정은 유지한다. |
 
 ## 1. 결정
 

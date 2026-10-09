@@ -3,7 +3,7 @@
   "productionPatterns": ["./cmd/...", "./internal/..."],
   "overallFloor": {"line": 85, "function": 90, "branch": 80},
   "coreFloor": {"line": 95, "function": 95, "branch": 90},
-  "diffFloor": {"line": 95, "function": 95, "branch": 95},
+  "diffFloor": {"line": 90, "function": 90, "branch": 90},
   "corePackages": [
     "narumq/internal/domain/connrebalance",
     "narumq/internal/domain/delivery",

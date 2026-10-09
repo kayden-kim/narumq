@@ -70,6 +70,38 @@ func TestCoverageRatchetRejectsMeasuredValueBelowBaseline(t *testing.T) {
 	}
 }
 
+// Traceability: PRD TEST-08; docs/specs/performance-and-verification.md §8.5.
+func TestDiffCoverageLineAndFunctionFloorBoundaries(t *testing.T) {
+	floor := coverageFloor{Line: 90, Function: 90}
+	for _, testCase := range []struct {
+		name       string
+		line       float64
+		function   float64
+		wantMetric string
+	}{
+		{name: "at-floor", line: 90, function: 90},
+		{name: "above-floor", line: 90.01, function: 90.01},
+		{name: "line-below-floor", line: 89.99, function: 90, wantMetric: "line"},
+		{name: "function-below-floor", line: 90, function: 89.99, wantMetric: "function"},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			issues := enforceCoverageFloor("diff", packageCoverage{
+				Line:     coverageMetric{Percent: testCase.line},
+				Function: coverageMetric{Percent: testCase.function},
+			}, floor, coverageFloor{})
+			if testCase.wantMetric == "" {
+				if len(issues) != 0 {
+					t.Fatalf("coverage at or above the floor was rejected: %v", issues)
+				}
+				return
+			}
+			if len(issues) != 1 || !strings.Contains(issues[0], "diff "+testCase.wantMetric+" coverage") {
+				t.Fatalf("coverage below the %s floor must fail independently: %v", testCase.wantMetric, issues)
+			}
+		})
+	}
+}
+
 func TestFunctionCoverageSeparatesSameNamedMethodsFixture(t *testing.T) {
 	root := t.TempDir()
 	sourceDir := filepath.Join(root, "internal")
