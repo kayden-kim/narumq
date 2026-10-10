@@ -7,6 +7,15 @@ import (
 	"errors"
 	"io"
 	"log/slog"
+	"math"
+	authenticationadapter "narumq/internal/adapters/authentication"
+	raftadapter "narumq/internal/adapters/raft"
+	"narumq/internal/adapters/raft/records"
+	tcpadapter "narumq/internal/adapters/tcp"
+	tlsadapter "narumq/internal/adapters/tls"
+	appmgmt "narumq/internal/application/management"
+	"narumq/internal/application/membership"
+	portsmgmt "narumq/internal/application/ports/management"
 	"net"
 	"net/http"
 	"os"
@@ -16,15 +25,6 @@ import (
 	"testing"
 	"testing/iotest"
 	"time"
-
-	authenticationadapter "narumq/internal/adapters/authentication"
-	raftadapter "narumq/internal/adapters/raft"
-	"narumq/internal/adapters/raft/records"
-	tcpadapter "narumq/internal/adapters/tcp"
-	tlsadapter "narumq/internal/adapters/tls"
-	appmgmt "narumq/internal/application/management"
-	"narumq/internal/application/membership"
-	portsmgmt "narumq/internal/application/ports/management"
 )
 
 const ccfOperation = "00000000-0000-4000-8000-0000000000cc"
@@ -843,8 +843,8 @@ func TestParseSecurityConfigRejectsIncompleteAuthenticationAndACL(t *testing.T) 
 			input: `{"identities":[{"issuer":"https://issuer.example","subject":"s","tenantId":"t","credentialId":"c","allowedClientIds":["c"],"roles":["r"]}],"acl":[]}`,
 			want:  "identities require jwt",
 		},
-		{name: "missing cache TTL", input: strings.Replace(validSecurityJSON, `"cacheTtl": "15m"`, `"cacheTtl": ""`, 1), want: "jwt.cacheTtl is required"},
-		{name: "missing refresh cooldown", input: strings.Replace(validSecurityJSON, `"refreshCooldown": "30s"`, `"refreshCooldown": ""`, 1), want: "jwt.refreshCooldown is required"},
+		{name: "zero cache TTL", input: strings.Replace(validSecurityJSON, `"cacheTtlMillis": 900000`, `"cacheTtlMillis": 0`, 1), want: "jwt.cacheTtlMillis must be between 1 and 4294967295"},
+		{name: "zero refresh cooldown", input: strings.Replace(validSecurityJSON, `"refreshCooldownMillis": 30000`, `"refreshCooldownMillis": 0`, 1), want: "jwt.refreshCooldownMillis must be between 1 and 4294967295"},
 		{name: "mTLS empty identity", input: strings.Replace(validMTLSSecurityJSON, `"identity": "device-1.example"`, `"identity": ""`, 1), want: "mTLS identity is required"},
 		{name: "mTLS invalid tenant", input: strings.Replace(validMTLSSecurityJSON, `"tenantId": "tenant-a"`, `"tenantId": ""`, 1), want: "invalid mTLS tenant ID"},
 		{name: "mTLS empty subject", input: strings.Replace(validMTLSSecurityJSON, `"subject": "device-1"`, `"subject": ""`, 1), want: "mTLS identity subject is required"},
@@ -895,7 +895,7 @@ func TestParseSecurityConfigAcceptsLocalhostJWKSAndEmailSAN(t *testing.T) {
 func TestSecurityValidatorsTrackCredentialsWithoutSharedSet(t *testing.T) {
 	jwt := &rawJWTConfig{
 		Issuer: "https://issuer.example", Audience: "narumq", Algorithms: []string{"RS256"},
-		JWKSURL: "https://issuer.example/jwks.json", CacheTTL: "1m", RefreshCooldown: "1s", ClockSkew: "1s", HTTPTimeout: "1s",
+		JWKSURL: "https://issuer.example/jwks.json", CacheTTLMillis: 60000, RefreshCooldownMillis: 1000, ClockSkewMillis: 1000, HTTPTimeoutMillis: 1000,
 	}
 	identity := rawIdentityConfig{
 		Issuer: jwt.Issuer, Subject: "device-1", TenantID: "tenant-a", CredentialID: "shared",
@@ -929,22 +929,15 @@ func TestSecurityValidatorsTrackCredentialsWithoutSharedSet(t *testing.T) {
 	}
 }
 
-func TestParsePositiveDuration(t *testing.T) {
-	cases := []struct {
-		raw  string
-		want string
-	}{
-		{raw: "", want: "timeout is required"},
-		{raw: "soon", want: "invalid timeout duration"},
-		{raw: "0s", want: "timeout must be greater than zero"},
-		{raw: "-1s", want: "timeout must be greater than zero"},
+func TestPositiveMillisDuration(t *testing.T) {
+	if _, err := positiveMillisDuration("timeout", 0); err == nil || err.Error() != "timeout must be between 1 and 4294967295" {
+		t.Fatalf("positiveMillisDuration(timeout, 0) error = %v", err)
 	}
-	for _, test := range cases {
-		_, err := parsePositiveDuration("timeout", test.raw)
-		ccfWantError(t, err, test.want)
+	if got, err := positiveMillisDuration("timeout", 1500); err != nil || got != 1500*time.Millisecond {
+		t.Fatalf("positiveMillisDuration(timeout, 1500) = (%v, %v)", got, err)
 	}
-	if got, err := parsePositiveDuration("timeout", "1500ms"); err != nil || got != 1500*time.Millisecond {
-		t.Fatalf("parsePositiveDuration(1500ms) = (%v, %v)", got, err)
+	if got, err := positiveMillisDuration("timeout", math.MaxUint32); err != nil || got != time.Duration(math.MaxUint32)*time.Millisecond {
+		t.Fatalf("positiveMillisDuration(timeout, math.MaxUint32) = (%v, %v)", got, err)
 	}
 }
 

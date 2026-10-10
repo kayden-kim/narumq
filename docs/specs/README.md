@@ -43,7 +43,7 @@ MQTT packet 이름, property와 reason code는 OASIS 명칭을 사용한다. 충
 | `nodeId` | cluster membership 세대에서 node를 식별하는 불투명 문자열이다. |
 | `requestId` | 관리 요청과 감사 이벤트를 연결한다. 응답과 구조화 로그에 같은 값을 기록한다. |
 | timestamp | JSON에서는 UTC RFC 3339 문자열을 사용한다. Metric 시간은 수집 시스템의 timestamp 규칙을 따른다. |
-| duration | JSON에서는 음수가 아닌 millisecond 정수를 사용한다. 설정 파일 표기는 [Process configuration v1 §1.9](../contracts/process-configuration-v1.md#19-표기-규칙)을 따른다. |
+| duration | JSON에서는 음수가 아닌 정수 millisecond를 사용하며 duration field 이름은 `Millis`로 끝난다. Command-line flag는 Go duration 문자열을 사용한다. 설정 file의 표기는 [Process configuration v1 §1.9](../contracts/process-configuration-v1.md#19-표기-규칙)을 따른다. |
 
 ## 오류 원칙
 

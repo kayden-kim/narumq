@@ -391,7 +391,7 @@ func decodeDrainReadiness(path string, c DrainExpectedCase, value *crossReadines
 }
 
 func startDrainOperation(ctx context.Context, client *http.Client, addresses map[string]string, token string, p DrainProfile, c DrainExpectedCase) error {
-	body := map[string]any{"serverReference": p.Cluster.ServerReference, "connectionRatePerSecond": p.Cluster.ConnectionRatePerSecond, "loadBalancerPropagationDelayMs": p.Cluster.LoadBalancerPropagationDelayMillis, "timeoutMs": p.Cluster.DrainTimeoutMillis}
+	body := map[string]any{"serverReference": p.Cluster.ServerReference, "connectionRatePerSecond": p.Cluster.ConnectionRatePerSecond, "loadBalancerPropagationDelayMillis": p.Cluster.LoadBalancerPropagationDelayMillis, "timeoutMillis": p.Cluster.DrainTimeoutMillis}
 	retryCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
 	for {

@@ -86,14 +86,14 @@ type bp03SecurityConfig struct {
 }
 
 type bp03JWTConfig struct {
-	Issuer          string   `json:"issuer"`
-	Audience        string   `json:"audience"`
-	Algorithms      []string `json:"algorithms"`
-	JWKSURL         string   `json:"jwksUrl"`
-	CacheTTL        string   `json:"cacheTtl"`
-	RefreshCooldown string   `json:"refreshCooldown"`
-	ClockSkew       string   `json:"clockSkew"`
-	HTTPTimeout     string   `json:"httpTimeout"`
+	Issuer                string   `json:"issuer"`
+	Audience              string   `json:"audience"`
+	Algorithms            []string `json:"algorithms"`
+	JWKSURL               string   `json:"jwksUrl"`
+	CacheTTLMillis        uint32   `json:"cacheTtlMillis"`
+	RefreshCooldownMillis uint32   `json:"refreshCooldownMillis"`
+	ClockSkewMillis       uint32   `json:"clockSkewMillis"`
+	HTTPTimeoutMillis     uint32   `json:"httpTimeoutMillis"`
 }
 
 type bp03Identity struct {
@@ -219,8 +219,8 @@ func newBP03Fixture(profile Profile, runID string) (*bp03Fixture, error) {
 	security := bp03SecurityConfig{
 		JWT: bp03JWTConfig{
 			Issuer: "https://issuer.example", Audience: "narumq", Algorithms: []string{"RS256"},
-			JWKSURL: "http://127.0.0.1:18080/jwks.json", CacheTTL: "5m",
-			RefreshCooldown: "30s", ClockSkew: "30s", HTTPTimeout: "5s",
+			JWKSURL: "http://127.0.0.1:18080/jwks.json", CacheTTLMillis: 300000,
+			RefreshCooldownMillis: 30000, ClockSkewMillis: 30000, HTTPTimeoutMillis: 5000,
 		},
 		Identities: []bp03Identity{{
 			Issuer: "https://issuer.example", Subject: "bp03-client", TenantID: "bp03",

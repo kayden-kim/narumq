@@ -40,9 +40,9 @@ type rawTenantLimitValues struct {
 }
 
 type rawTenantLimitsConfig struct {
-	MaxWait *string                  `json:"maxWait"`
-	Default rawTenantLimitValues     `json:"default"`
-	Tenants []rawTenantLimitOverride `json:"tenants"`
+	MaxWaitMillis *uint32                  `json:"maxWaitMillis"`
+	Default       rawTenantLimitValues     `json:"default"`
+	Tenants       []rawTenantLimitOverride `json:"tenants"`
 }
 
 type rawTenantLimitOverride struct {
@@ -56,14 +56,14 @@ type rawTenantLimitOverride struct {
 }
 
 type rawJWTConfig struct {
-	Issuer          string   `json:"issuer"`
-	Audience        string   `json:"audience"`
-	Algorithms      []string `json:"algorithms"`
-	JWKSURL         string   `json:"jwksUrl"`
-	CacheTTL        string   `json:"cacheTtl"`
-	RefreshCooldown string   `json:"refreshCooldown"`
-	ClockSkew       string   `json:"clockSkew"`
-	HTTPTimeout     string   `json:"httpTimeout"`
+	Issuer                string   `json:"issuer"`
+	Audience              string   `json:"audience"`
+	Algorithms            []string `json:"algorithms"`
+	JWKSURL               string   `json:"jwksUrl"`
+	CacheTTLMillis        uint32   `json:"cacheTtlMillis"`
+	RefreshCooldownMillis uint32   `json:"refreshCooldownMillis"`
+	ClockSkewMillis       uint32   `json:"clockSkewMillis"`
+	HTTPTimeoutMillis     uint32   `json:"httpTimeoutMillis"`
 }
 
 type rawIdentityConfig struct {
@@ -177,12 +177,11 @@ func validateTenantLimits(raw *rawTenantLimitsConfig) (*tenantlimit.Profile, err
 		return nil, fmt.Errorf("invalid tenantLimits: too many tenant overrides")
 	}
 	profile := &tenantlimit.Profile{MaxWait: tenantlimit.DefaultMaxWait, Default: resolveTenantLimitValues(raw.Default), Tenants: make(map[tenancy.TenantID]tenantlimit.Limits, len(raw.Tenants))}
-	if raw.MaxWait != nil {
-		maxWait, err := time.ParseDuration(*raw.MaxWait)
-		if err != nil {
-			return nil, fmt.Errorf("invalid tenantLimits: maxWait: %w", err)
+	if raw.MaxWaitMillis != nil {
+		if int64(*raw.MaxWaitMillis) > tenantlimit.MaxWaitLimit.Milliseconds() {
+			return nil, errors.New("invalid tenantLimits: maxWaitMillis must be between 0 and 10000")
 		}
-		profile.MaxWait = maxWait
+		profile.MaxWait = time.Duration(*raw.MaxWaitMillis) * time.Millisecond
 	}
 	for _, override := range raw.Tenants {
 		tenantID, err := tenancy.NewTenantID(override.TenantID)
@@ -300,19 +299,19 @@ func validateJWTVerifierConfig(prefix string, jwt *rawJWTConfig) (authentication
 		}
 	}
 
-	cacheTTL, err := parsePositiveDuration(prefix+".cacheTtl", jwt.CacheTTL)
+	cacheTTL, err := positiveMillisDuration(prefix+".cacheTtlMillis", jwt.CacheTTLMillis)
 	if err != nil {
 		return authenticationadapter.VerifierConfig{}, err
 	}
-	refreshCooldown, err := parsePositiveDuration(prefix+".refreshCooldown", jwt.RefreshCooldown)
+	refreshCooldown, err := positiveMillisDuration(prefix+".refreshCooldownMillis", jwt.RefreshCooldownMillis)
 	if err != nil {
 		return authenticationadapter.VerifierConfig{}, err
 	}
-	clockSkew, err := parsePositiveDuration(prefix+".clockSkew", jwt.ClockSkew)
+	clockSkew, err := positiveMillisDuration(prefix+".clockSkewMillis", jwt.ClockSkewMillis)
 	if err != nil {
 		return authenticationadapter.VerifierConfig{}, err
 	}
-	httpTimeout, err := parsePositiveDuration(prefix+".httpTimeout", jwt.HTTPTimeout)
+	httpTimeout, err := positiveMillisDuration(prefix+".httpTimeoutMillis", jwt.HTTPTimeoutMillis)
 	if err != nil {
 		return authenticationadapter.VerifierConfig{}, err
 	}
@@ -599,18 +598,12 @@ func validateACL(aclConfigs []rawACLRuleConfig) (security.Policy, error) {
 	return security.NewPolicy(rules)
 }
 
-func parsePositiveDuration(name, raw string) (time.Duration, error) {
-	if raw == "" {
-		return 0, fmt.Errorf("%s is required", name)
+// positiveMillisDuration converts a required positive JSON millisecond value.
+func positiveMillisDuration(name string, millis uint32) (time.Duration, error) {
+	if millis == 0 {
+		return 0, fmt.Errorf("%s must be between 1 and 4294967295", name)
 	}
-	d, err := time.ParseDuration(raw)
-	if err != nil {
-		return 0, fmt.Errorf("invalid %s duration %q: %w", name, raw, err)
-	}
-	if d <= 0 {
-		return 0, fmt.Errorf("%s must be greater than zero", name)
-	}
-	return d, nil
+	return time.Duration(millis) * time.Millisecond, nil
 }
 
 func isLoopbackHost(host string) bool {

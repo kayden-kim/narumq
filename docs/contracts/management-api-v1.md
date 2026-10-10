@@ -6,7 +6,7 @@ path, parameter, response schema와 media type은
 
 | 항목 | 값 |
 | --- | --- |
-| 이름과 version | `narumq-management-api` 1.13.0 |
+| 이름과 version | `narumq-management-api` 1.14.0 |
 | 상태 | Active |
 | Producer | NaruMQ broker management API |
 | Consumer | Dashboard·operator·monitoring integration의 query client |
@@ -169,4 +169,5 @@ method에 사용한다. 내부 오류와 credential은 response에 노출하지 
 - Version 1.11.0은 Dynamic cluster 전용 credential revocation GET·POST·DELETE route와 `SecurityAdmin`·`ClusterAdmin` 권한을 추가한다. Replicated state의 기능은 `credential-revocation` feature activation 뒤에만 사용한다.
 - Version 1.12.0은 Dynamic cluster 전용 `client-blocklist` feature를 사용하는 GET·POST·DELETE route를 추가한다. SecurityAdmin·ClusterAdmin만 조회·변경할 수 있으며, path 값은 percent-encoding을 허용하고 query와 body는 거절한다. Blocklist entry, canonical 값, 전파 목표와 policy version 의미는 [ADR-0050](../decisions/ADR-0050-mqtt-client-blocklist.md)를 따른다.
 - Version 1.13.0은 Dynamic cluster 전용 `cluster-policy` feature를 사용하는 `GET/PUT /api/v1/cluster/policy`와 `mqttLimits` version update를 추가한다. GET은 ReadOnly, PUT은 ClusterAdmin을 요구하며 `If-Match`, `Idempotency-Key`, ETag와 audit detail을 사용한다.
+- Version 1.14.0은 `loadBalancerPropagationDelayMs`, `timeoutMs`, `uptimeMs`를 각각 `loadBalancerPropagationDelayMillis`, `timeoutMillis`, `uptimeMillis`로 바꿨다. 이 breaking change는 JSON duration 이름을 정수 millisecond 표기로 맞추기 위한 1회 예외다. Consumer는 새 이름으로 갱신한 뒤 배포해야 한다. 이전 이름은 지원하지 않는다.
 - Breaking change는 `/api/v2`와 별도 OpenAPI artifact로 제공한다.

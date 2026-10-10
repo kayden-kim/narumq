@@ -116,6 +116,7 @@ Standalone mode에서는 security config를 MQTT listener보다 먼저 적재한
 | `CFG-SCN-27` | API-09 | Feature가 활성화된 ClusterPolicy를 snapshot과 backup archive로 저장·복원한다. | Restored state에서 같은 version과 MQTT 한도를 읽는다. | `cmd/narumq.TestClusterBackupArchivePreservesClusterPolicy` | 통과 | [API-09 mqttLimits 실행 기록](#api-09-mqttlimits-execution) |
 | `CFG-SCN-28` | API-09 | 3-node cluster에서 policy PUT, 재시도·충돌, 신규·기존 연결, node restart와 drift를 확인한다. | 모든 node가 committed version을 적용한다. 기존 연결은 이전 한도를 유지하고 재시작 node는 committed 값과 mismatch를 보고한다. | `tests/integration.TestDynamicClusterPolicyProcessAcceptance` | 통과 | [API-09 mqttLimits 실행 기록](#api-09-mqttlimits-execution) |
 | `CFG-SCN-29` | SEC-01 | Cluster config의 `mqtt.tcpListenAddress`에 `0.0.0.0:1884`, `[::]:1884`, `10.0.0.5:1884`, `mqtt.example:1884`를 넣는다. `mqtt.securityConfigFile`을 비운다. 인증 방식별로 credential·certificate 없는 CONNECT를 보낸다. 3-node cluster 평문 TCP에서 password 인증을 확인한다. | 네 주소를 그대로 적재한다. 빈 security config 경로는 거절한다. JWT 설정에서 credential 없는 MQTT 5 CONNECT는 `0x87`로 거절한다. mTLS 전용 설정에서 certificate 없는 CONNECT는 MQTT 3.1.1 `0x05`, MQTT 5 `0x87`로 거절한다. Cluster TCP는 유효한 password만 연결한다. | `cmd/narumq.TestParseClusterConfigAcceptsNonLoopbackMQTTTCPListener`, `cmd/narumq.TestValidateClusterConfigReportsFirstInvalidField`, `internal/application/connect.TestConnectRecordsAuthenticationDenialsWithoutChangingConnAck`, `internal/application/connect.TestCmmConnectRejectsCredentialModeMismatchesWithoutMutation`, `tests/integration.TestDynamicClusterPasswordAuthenticationProcessAcceptance` | 통과 | [Cluster 평문 TCP(G3) 실행 기록](#cluster-plaintext-tcp-g3-execution) |
+| `CFG-SCN-30` | SEC-02, TEN-07, API-02 | Command-line flag, security config, cluster OIDC config와 Management API에 duration 값을 넣는다. Security config의 새 JWT·`tenantLimits` key에는 integer millisecond를 넣고 legacy key, string, 음수와 상한 초과도 시험한다. API request·response에서 새 field 이름을 확인하고 legacy 이름을 보낸다. | Flag는 Go duration 문자열을 유지한다. JSON duration은 `Millis` 접미사와 integer millisecond를 사용한다. Legacy config key와 API field는 거절한다. | `cmd/narumq.TestPositiveMillisDuration`, `cmd/narumq.TestParseSecurityConfig_Rejections`, `cmd/narumq.TestParseSecurityConfig_TenantLimitsMaxWaitMillis`, `cmd/narumq.TestParseSecurityConfig_TenantLimitsRejectInvalidProfiles`, `cmd/narumq.TestClusterManagementAccessConfiguration`, `tests/contracts/management-api-v1` | 통과 | [G5 duration 표기 실행 기록](#g5-duration-millis-execution) |
 
 <a id="configuration-test-execution"></a>
 ### 설정 시험 실행 기록
@@ -266,6 +267,44 @@ go run ./tools/verify ci --base 84d3a41b8b6feede6ae2856508c111c5f61674fd
 | Local gate | 첫 실행은 `cmd/narumq/cluster_config_test.go`의 gofmt 사전 검사에서 중단됐다. Gofmt 적용 뒤 `local: PASS` (194.34s), `coverage: PASS`; branch-instrument, traceability, fuzz, architecture와 전체 package·integration 시험이 통과했다. |
 | CI gate | `go run ./tools/verify ci --base 84d3a41b8b6feede6ae2856508c111c5f61674fd`: `ci: PASS` (1541.36s). |
 
+
+<a id="g5-duration-millis-execution"></a>
+### G5 duration Millis 실행 기록
+
+실행 환경은 Windows/amd64, Go 1.26.5다. JSON duration key 변경, API field rename, 현재·이전 release 경계를 확인했다.
+
+```sh
+go test ./cmd/narumq -count=1 -v -run '^(TestParseSecurityConfig_Rejections|TestParseSecurityConfig_TenantLimitsMaxWaitMillis|TestParseSecurityConfig_TenantLimitsRejectInvalidProfiles|TestClusterManagementAccessConfiguration|TestPositiveMillisDuration)$'
+go test ./cmd/narumq -count=1
+go test ./internal/adapters/http/management ./internal/application/management ./tests/contracts/... -count=1 -v -run 'Drain|Rebalance|Contract|Node'
+go test ./tests/benchmark/bp02 ./tests/benchmark/bp03 ./tests/benchmark/bp04 ./tests/benchmark/bp06 ./tests/benchmark/bp07 ./tests/chaos/cluster-storage-v1 ./tests/compatibility/mqtt-clients-v1 -count=1
+go build ./... && go vet ./...
+go test ./tests/integration -count=1 -timeout 30m -v -run '^(TestDynamicClusterManagementRBACProcessAcceptance|TestDynamicClusterCredentialExpiryProcessAcceptance|TestDynamicClusterNodeDrainProcessAcceptance|TestDynamicClusterConnectionRebalanceProcessAcceptance|TestDynamicClusterManagementAuditProcessAcceptance)$'
+NARUMQ_RELEASE_COMPAT=1 GOMAXPROCS=4 go test ./tests/integration -count=1 -timeout 30m -v -run '^TestDynamicClusterReleaseCompatibilityProcessAcceptance$'
+NARUMQ_RELEASE_COMPAT=1 GOMAXPROCS=4 go test ./tests/integration -count=1 -timeout 30m -v -run '^(TestDynamicClusterReleaseCompatibilityProcessAcceptance|TestDynamicClusterHistoricalReleaseCompatibilityProcessAcceptance|TestClusterBackupRestoreHistoricalReleaseProcessAcceptance)$'
+go test ./tests/integration -count=1 -run '^TestDashboardProvisioningMatchesContracts$'
+go run ./cmd/narumq -tcp-listen 127.0.0.1:18831 -security-config .artifacts/verification/g5-duration-millis/legacy-security.json
+go run ./cmd/narumq -tcp-listen 127.0.0.1:18832 -security-config .artifacts/verification/g5-duration-millis/current-security.json
+```
+기준 비교는 detached checkout commit `23005e1a0d819a357507ce173b8d0f89cf40cf19`에서 수행했다. Historical release acceptance 두 시험은 현재 checkout과 기준 checkout에서 모두 `load cluster config: cluster config has invalid JSON or field types`로 실패했다. Dashboard contract 시험은 panel 6의 datasource/query 형식을 기준 checkout에 맞추고 duration selector만 바꾼 뒤 현재와 기준 checkout에서 통과했다. 기준 checkout은 비교 뒤 제거했다.
+
+| 확인 | 결과 |
+| --- | --- |
+| Millis parser와 security config 경계 | 통과. 0·최대값, 새 key, legacy key, 문자열·음수·상한 초과를 확인했다. |
+| `cmd/narumq` 전체 시험 | 통과 |
+| Management API와 contract regression | 통과 |
+| Migrated benchmark·chaos·compatibility fixture 시험 | 통과 |
+| Build와 vet | 통과 |
+| Management RBAC, credential expiry, drain, rebalance, audit process acceptance | 통과 |
+| N-1/N release compatibility process acceptance | 통과. |
+| Historical release acceptance | `TestDynamicClusterHistoricalReleaseCompatibilityProcessAcceptance`와 `TestClusterBackupRestoreHistoricalReleaseProcessAcceptance`는 현재와 기준 checkout에서 모두 `load cluster config: cluster config has invalid JSON or field types`로 실패했다. 기준 checkout에서 같은 실패를 확인해 이 기존 문제는 수정하지 않았다. |
+| Dashboard provisioning contract | 통과. Panel 6의 datasource/query 형식은 기준 checkout과 같고 `uptimeMs` selector만 `uptimeMillis`로 바꿨다. |
+| Legacy JSON CLI smoke | 예상대로 종료 코드 1과 `unknown field "cacheTtl"`을 반환했다. |
+| Current JSON CLI smoke | Listener 시작 log를 확인했다. Managed process로 종료했다. |
+| Markdown links | 통과 (152 files, 2,186 local links) |
+| Traceability | 통과 (P0 mapped `70/81`, exceptions `11`) |
+| Local gate | 통과 (206.30s). Branch instrumentation, traceability, fuzz, architecture, package·race 시험과 coverage가 모두 통과했다. |
+| CI gate | 통과 (1484.27s). Coverage PASS, mutation efficacy `100%`, mutant coverage `98.85%`(6 not covered). |
 
 ## 7. 미결정 사항
 

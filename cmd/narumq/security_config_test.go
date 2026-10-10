@@ -16,10 +16,10 @@ const validSecurityJSON = `{
     "audience": "narumq",
     "algorithms": ["RS256"],
     "jwksUrl": "https://issuer.example/.well-known/jwks.json",
-    "cacheTtl": "15m",
-    "refreshCooldown": "30s",
-    "clockSkew": "30s",
-    "httpTimeout": "5s"
+    "cacheTtlMillis": 900000,
+    "refreshCooldownMillis": 30000,
+    "clockSkewMillis": 30000,
+    "httpTimeoutMillis": 5000
   },
   "identities": [
     {
@@ -202,7 +202,7 @@ func TestParseSecurityConfig_Rejections(t *testing.T) {
 		},
 		{
 			name:        "unknown field",
-			input:       `{"jwt": {"issuer": "https://issuer.example", "audience": "narumq", "algorithms": ["RS256"], "jwksUrl": "https://issuer.example/jwks", "cacheTtl": "1m", "refreshCooldown": "1m", "clockSkew": "1m", "httpTimeout": "1m"}, "identities": [{"issuer": "https://issuer.example", "subject": "s", "tenantId": "t", "credentialId": "c", "allowedClientIds": ["a"], "roles": ["r"]}], "extra": 123}`,
+			input:       `{"jwt": {"issuer": "https://issuer.example", "audience": "narumq", "algorithms": ["RS256"], "jwksUrl": "https://issuer.example/jwks", "cacheTtlMillis": 60000, "refreshCooldownMillis": 60000, "clockSkewMillis": 60000, "httpTimeoutMillis": 60000}, "identities": [{"issuer": "https://issuer.example", "subject": "s", "tenantId": "t", "credentialId": "c", "allowedClientIds": ["a"], "roles": ["r"]}], "extra": 123}`,
 			errContains: "unknown field",
 		},
 		{
@@ -217,18 +217,28 @@ func TestParseSecurityConfig_Rejections(t *testing.T) {
 		},
 		{
 			name:        "negative duration",
-			input:       strings.Replace(validSecurityJSON, `"cacheTtl": "15m"`, `"cacheTtl": "-5s"`, 1),
-			errContains: "must be greater than zero",
+			input:       strings.Replace(validSecurityJSON, `"cacheTtlMillis": 900000`, `"cacheTtlMillis": -5000`, 1),
+			errContains: "decode security config",
 		},
 		{
 			name:        "zero duration",
-			input:       strings.Replace(validSecurityJSON, `"httpTimeout": "5s"`, `"httpTimeout": "0s"`, 1),
-			errContains: "must be greater than zero",
+			input:       strings.Replace(validSecurityJSON, `"httpTimeoutMillis": 5000`, `"httpTimeoutMillis": 0`, 1),
+			errContains: "jwt.httpTimeoutMillis must be between 1 and 4294967295",
 		},
 		{
-			name:        "unparseable duration",
-			input:       strings.Replace(validSecurityJSON, `"clockSkew": "30s"`, `"clockSkew": "not-a-duration"`, 1),
-			errContains: "invalid jwt.clockSkew duration",
+			name:        "string duration",
+			input:       strings.Replace(validSecurityJSON, `"clockSkewMillis": 30000`, `"clockSkewMillis": "30s"`, 1),
+			errContains: "decode security config",
+		},
+		{
+			name:        "legacy duration key",
+			input:       strings.Replace(validSecurityJSON, `"cacheTtlMillis": 900000`, `"cacheTtl": "15m"`, 1),
+			errContains: `unknown field "cacheTtl"`,
+		},
+		{
+			name:        "duration above uint32",
+			input:       strings.Replace(validSecurityJSON, `"refreshCooldownMillis": 30000`, `"refreshCooldownMillis": 4294967296`, 1),
+			errContains: "decode security config",
 		},
 		{
 			name:        "duplicate algorithm",
@@ -319,7 +329,7 @@ func TestParseSecurityConfig_Rejections(t *testing.T) {
 		},
 		{
 			name:        "empty identities",
-			input:       `{"jwt": {"issuer": "https://issuer.example", "audience": "narumq", "algorithms": ["RS256"], "jwksUrl": "https://issuer.example/jwks", "cacheTtl": "1m", "refreshCooldown": "1m", "clockSkew": "1m", "httpTimeout": "1m"}, "identities": []}`,
+			input:       `{"jwt": {"issuer": "https://issuer.example", "audience": "narumq", "algorithms": ["RS256"], "jwksUrl": "https://issuer.example/jwks", "cacheTtlMillis": 60000, "refreshCooldownMillis": 60000, "clockSkewMillis": 60000, "httpTimeoutMillis": 60000}, "identities": []}`,
 			errContains: "identities must contain at least one binding",
 		},
 		{
@@ -565,15 +575,39 @@ func TestParseSecurityConfig_TenantLimitsRejectInvalidProfiles(t *testing.T) {
 		{"byte rate out of range", `{"default":{"bytesPerSecond":1099511627777}}`},
 		{"payload out of range", `{"default":{"maxPayloadBytes":268435456}}`},
 		{"negative value", `{"default":{"messagesPerSecond":-1}}`},
-		{"wait too large", `{"maxWait":"11s"}`},
-		{"negative wait", `{"maxWait":"-1s"}`},
-		{"malformed wait", `{"maxWait":"abc"}`},
+		{"wait too large", `{"maxWaitMillis":10001}`},
+		{"negative wait", `{"maxWaitMillis":-1}`},
+		{"malformed wait", `{"maxWaitMillis":"1s"}`},
+		{"legacy wait key", `{"maxWait":"1s"}`},
 		{"too many tenants", tooMany},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			if _, err := parseSecurityConfig(strings.NewReader(tenantLimitsSecurityJSON(tc.value))); err == nil {
 				t.Fatal("expected tenantLimits validation error")
+			}
+		})
+	}
+}
+
+// Traceability: TEN-07; docs/specs/configuration-and-runtime-options.md §6 CFG-SCN-30.
+func TestParseSecurityConfig_TenantLimitsMaxWaitMillis(t *testing.T) {
+	for _, test := range []struct {
+		name  string
+		value string
+		want  time.Duration
+	}{
+		{name: "zero", value: `{"maxWaitMillis":0}`, want: 0},
+		{name: "fraction of a second", value: `{"maxWaitMillis":250}`, want: 250 * time.Millisecond},
+		{name: "maximum", value: `{"maxWaitMillis":10000}`, want: 10 * time.Second},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			bundle, err := parseSecurityConfig(strings.NewReader(tenantLimitsSecurityJSON(test.value)))
+			if err != nil {
+				t.Fatalf("parseSecurityConfig() error = %v", err)
+			}
+			if got := bundle.TenantLimits.MaxWait; got != test.want {
+				t.Fatalf("MaxWait = %s, want %s", got, test.want)
 			}
 		})
 	}

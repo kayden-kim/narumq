@@ -59,7 +59,7 @@ type queueSample struct {
 
 type nodeData struct {
 	NodeID            string       `json:"nodeId"`
-	UptimeMs          int64        `json:"uptimeMs"`
+	UptimeMillis      int64        `json:"uptimeMillis"`
 	State             string       `json:"state"`
 	Ready             bool         `json:"ready"`
 	ReadinessReason   *string      `json:"readinessReason"`

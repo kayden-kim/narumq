@@ -64,7 +64,7 @@ func drainHTTPRequest(method, path, body string, key string) *http.Request {
 }
 
 func validDrainRequestBody() string {
-	return `{"serverReference":"mqtt.example:8883","connectionRatePerSecond":2,"loadBalancerPropagationDelayMs":1500,"timeoutMs":60000}`
+	return `{"serverReference":"mqtt.example:8883","connectionRatePerSecond":2,"loadBalancerPropagationDelayMillis":1500,"timeoutMillis":60000}`
 }
 
 func drainHTTPState(phase nodedrain.Phase) membership.NodeDrainStateDTO {
@@ -151,7 +151,8 @@ func TestNodeDrainHTTPQueriesCancelAndRejectInvalidRequests(t *testing.T) {
 		name    string
 		request *http.Request
 	}{
-		{"required numeric fields", drainHTTPRequest(http.MethodPost, "/api/v1/nodes/2/drain", `{"connectionRatePerSecond":2,"timeoutMs":60000}`, "drain-key")},
+		{"required numeric fields", drainHTTPRequest(http.MethodPost, "/api/v1/nodes/2/drain", `{"connectionRatePerSecond":2,"timeoutMillis":60000}`, "drain-key")},
+		{"legacy duration names", drainHTTPRequest(http.MethodPost, "/api/v1/nodes/2/drain", `{"connectionRatePerSecond":2,"loadBalancerPropagationDelayMs":1500,"timeoutMs":60000}`, "drain-key")},
 		{"unknown query", drainHTTPRequest(http.MethodGet, "/api/v1/nodes/2/drain?unexpected=1", "", "")},
 		{"noncanonical node ID", drainHTTPRequest(http.MethodGet, "/api/v1/nodes/02/drain", "", "")},
 		{"delete body", drainHTTPRequest(http.MethodDelete, "/api/v1/nodes/2/drain", ` `, "cancel-key")},

@@ -3780,7 +3780,7 @@ func (provider *clusterStateProvider) nodeSummary(ctx context.Context, member me
 	} else if member.MemberID == provider.runtime.config.NodeID {
 		base, _ := provider.StateProvider.GetNodeSummary(ctx, id)
 		if base != nil {
-			state, ready, reason, connections, uptime = base.State, base.Ready, base.ReadinessReason, base.ConnectionCount, base.UptimeMs
+			state, ready, reason, connections, uptime = base.State, base.Ready, base.ReadinessReason, base.ConnectionCount, base.UptimeMillis
 		}
 		applied = int64(status.AppliedIndex)
 		view := provider.runtime.storage.view()
@@ -3812,7 +3812,7 @@ func (provider *clusterStateProvider) nodeSummary(ctx context.Context, member me
 		}
 	}
 	return &managementports.NodeSummaryDTO{
-		NodeID: id, Version: member.ReleaseVersion, UptimeMs: uptime, State: state, Ready: ready,
+		NodeID: id, Version: member.ReleaseVersion, UptimeMillis: uptime, State: state, Ready: ready,
 		ReadinessReason: reason, Role: role, LastAppliedIndex: applied, ConnectionCount: connections,
 		StoragePressure: storagePressure, ReplicationHealth: replicationHealth,
 		LastErrorCode: lastErrorCode, ReplicationQueue: replicationQueue,

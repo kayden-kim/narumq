@@ -238,15 +238,15 @@ func (s *Service) GetNodeSummary(ctx context.Context, nodeID string) (*ports.Nod
 		return nil, ErrNodeNotFound
 	}
 
-	uptimeMs := time.Since(s.startedAt).Milliseconds()
-	if uptimeMs < 0 {
-		uptimeMs = 0
+	uptimeMillis := time.Since(s.startedAt).Milliseconds()
+	if uptimeMillis < 0 {
+		uptimeMillis = 0
 	}
 
 	return &ports.NodeSummaryDTO{
 		NodeID:           s.nodeID,
 		Version:          s.releaseVersion,
-		UptimeMs:         uptimeMs,
+		UptimeMillis:     uptimeMillis,
 		State:            s.nodeState,
 		Ready:            s.nodeState == ports.NodeStateReady,
 		ReadinessReason:  s.readinessReason,
@@ -278,14 +278,14 @@ func (s *Service) ListNodeSummaries(ctx context.Context, filter ports.NodeFilter
 
 	list := make([]ports.NodeSummaryDTO, 0)
 	if filter.State == "" || filter.State == state {
-		uptimeMs := time.Since(s.startedAt).Milliseconds()
-		if uptimeMs < 0 {
-			uptimeMs = 0
+		uptimeMillis := time.Since(s.startedAt).Milliseconds()
+		if uptimeMillis < 0 {
+			uptimeMillis = 0
 		}
 		list = append(list, ports.NodeSummaryDTO{
 			NodeID:           s.nodeID,
 			Version:          s.releaseVersion,
-			UptimeMs:         uptimeMs,
+			UptimeMillis:     uptimeMillis,
 			State:            state,
 			Ready:            state == ports.NodeStateReady,
 			ReadinessReason:  reason,

@@ -90,10 +90,10 @@ func TestRunClusterModeInProcess(t *testing.T) {
     "audience": "narumq",
     "algorithms": ["RS256"],
     "jwksUrl": "https://issuer.example/.well-known/jwks.json",
-    "cacheTtl": "15m",
-    "refreshCooldown": "30s",
-    "clockSkew": "30s",
-    "httpTimeout": "5s"
+    "cacheTtlMillis": 900000,
+    "refreshCooldownMillis": 30000,
+    "clockSkewMillis": 30000,
+    "httpTimeoutMillis": 5000
   },
   "identities": [{
     "issuer": "https://issuer.example",

@@ -143,10 +143,10 @@ func TestDynamicClusterReplacementRollingUpdateProcessAcceptance(t *testing.T) {
 		}
 
 		drainBody, err := json.Marshal(clusterDrainProcessRequest{
-			ServerReference:                fixture.mqttAddresses[round.reference-1],
-			ConnectionRatePerSecond:        10,
-			LoadBalancerPropagationDelayMs: 1000,
-			TimeoutMs:                      60000,
+			ServerReference:                    fixture.mqttAddresses[round.reference-1],
+			ConnectionRatePerSecond:            10,
+			LoadBalancerPropagationDelayMillis: 1000,
+			TimeoutMillis:                      60000,
 		})
 		if err != nil {
 			t.Fatalf("encode drain request for node %d: %v", round.old, err)

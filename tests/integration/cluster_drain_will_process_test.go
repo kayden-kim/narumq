@@ -61,7 +61,7 @@ func TestDynamicClusterDrainWillReasonProcessAcceptance(t *testing.T) {
 			_ = normal.Close()
 		}
 		_, leaderURL := clusterMembershipProcessFindLeader(t, ctx, nodes, 3)
-		status, body, err := clusterDrainProcessStart(ctx, leaderURL, round.drainID, clusterDrainProcessRequest{ServerReference: round.ref, ConnectionRatePerSecond: 10, LoadBalancerPropagationDelayMs: 500, TimeoutMs: 60000}, fmt.Sprintf("drain-will-%d", number))
+		status, body, err := clusterDrainProcessStart(ctx, leaderURL, round.drainID, clusterDrainProcessRequest{ServerReference: round.ref, ConnectionRatePerSecond: 10, LoadBalancerPropagationDelayMillis: 500, TimeoutMillis: 60000}, fmt.Sprintf("drain-will-%d", number))
 		if err != nil || status != http.StatusAccepted {
 			t.Fatalf("round %d drain status=%d body=%s err=%v", number, status, body, err)
 		}

@@ -39,10 +39,10 @@ func TestClusterStateProviderValidatesNodeQueriesAndPaginatesFilteredResults(t *
 	}
 
 	base.node = &managementports.NodeSummaryDTO{
-		State: managementports.NodeStateReady, Ready: true, ConnectionCount: 7, UptimeMs: 1234,
+		State: managementports.NodeStateReady, Ready: true, ConnectionCount: 7, UptimeMillis: 1234,
 	}
 	local, err := provider.GetNodeSummary(ctx, "1")
-	if err != nil || local.State != managementports.NodeStateReady || !local.Ready || local.ConnectionCount != 7 || local.UptimeMs != 1234 {
+	if err != nil || local.State != managementports.NodeStateReady || !local.Ready || local.ConnectionCount != 7 || local.UptimeMillis != 1234 {
 		t.Fatalf("GetNodeSummary(local) = (%+v, %v), want base node state", local, err)
 	}
 	base.node = nil

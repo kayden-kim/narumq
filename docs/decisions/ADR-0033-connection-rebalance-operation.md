@@ -27,6 +27,7 @@ Rebalance는 연결이 많은 node에서 다른 node로 연결을 옮기는 수�
 10. 기존 ownership `TRANSFER(epoch+1)`와 `CloseSessionForDrain`을 재사용한다. MQTT 5는 `DISCONNECT 0x9C`와 선택 Server Reference를 받고 MQTT 3.1.1은 연결이 닫힌다. 새 owner는 committed delivery state를 새 epoch ATTACH로 재개한다. [ADR-0028](ADR-0028-planned-handoff-will-and-reason-metric.md)의 epoch 비교가 계획 인계 Will을 분류하므로 drain 전용 분류를 추가하지 않는다.
 11. 같은 Idempotency-Key와 같은 parameter 5개는 phase와 무관하게 replay한다. 같은 key의 다른 parameter는 `idempotency_conflict`다. 다른 key의 Running record는 retryable `connection_rebalance_in_progress`다. Feature 비활성 시작은 non-retryable `feature_inactive`다.
 12. Snapshot은 record와 participant 깊은 복사본을 보존하며 record 하나를 objectCount 1개로 센다. Feature 없는 rebalance snapshot은 거절한다. Controller는 복구된 Running record에서 실행을 재개한다. 별도 checkpoint authority는 두지 않는다.
+2026-10-10 구현 메모: G5는 duration JSON field를 `Millis` 정수로 통일했다. API의 현재 이름은 `loadBalancerPropagationDelayMillis`, `timeoutMillis`다. Accepted 결정의 기존 이름은 당시 계약을 보존한다.
 
 ## 2. 배경
 

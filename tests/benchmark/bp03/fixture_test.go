@@ -202,7 +202,7 @@ func TestNewBP03FixtureWritesContractAndCleansUp(t *testing.T) {
 		readJSONFile(t, filepath.Join(configDir, "mqtt-security.json"), &security)
 		if !reflect.DeepEqual(security.JWT, bp03JWTConfig{
 			Issuer: "https://issuer.example", Audience: "narumq", Algorithms: []string{"RS256"},
-			JWKSURL: "http://127.0.0.1:18080/jwks.json", CacheTTL: "5m", RefreshCooldown: "30s", ClockSkew: "30s", HTTPTimeout: "5s",
+			JWKSURL: "http://127.0.0.1:18080/jwks.json", CacheTTLMillis: 300000, RefreshCooldownMillis: 30000, ClockSkewMillis: 30000, HTTPTimeoutMillis: 5000,
 		}) {
 			t.Errorf("node %d JWT config = %+v", nodeNumber, security.JWT)
 		}

@@ -24,10 +24,10 @@ type nodeDrainHandler struct {
 }
 
 type nodeDrainRequest struct {
-	ServerReference                *string `json:"serverReference"`
-	ConnectionRatePerSecond        *uint32 `json:"connectionRatePerSecond"`
-	LoadBalancerPropagationDelayMs *uint64 `json:"loadBalancerPropagationDelayMs"`
-	TimeoutMs                      *uint64 `json:"timeoutMs"`
+	ServerReference                    *string `json:"serverReference"`
+	ConnectionRatePerSecond            *uint32 `json:"connectionRatePerSecond"`
+	LoadBalancerPropagationDelayMillis *uint64 `json:"loadBalancerPropagationDelayMillis"`
+	TimeoutMillis                      *uint64 `json:"timeoutMillis"`
 }
 
 type nodeDrainOperationResponse struct {
@@ -83,8 +83,8 @@ func (handler *nodeDrainHandler) Start(w http.ResponseWriter, r *http.Request) {
 		writeInvalidRequest(w, r, err)
 		return
 	}
-	if request.ConnectionRatePerSecond == nil || request.LoadBalancerPropagationDelayMs == nil || request.TimeoutMs == nil {
-		writeInvalidRequest(w, r, errors.New("connectionRatePerSecond, loadBalancerPropagationDelayMs, and timeoutMs are required"))
+	if request.ConnectionRatePerSecond == nil || request.LoadBalancerPropagationDelayMillis == nil || request.TimeoutMillis == nil {
+		writeInvalidRequest(w, r, errors.New("connectionRatePerSecond, loadBalancerPropagationDelayMillis, and timeoutMillis are required"))
 		return
 	}
 	memberID, err := parseCanonicalMemberID(r.PathValue("nodeId"))
@@ -99,8 +99,8 @@ func (handler *nodeDrainHandler) Start(w http.ResponseWriter, r *http.Request) {
 	operation, err := handler.service.StartNodeDrain(r.Context(), membership.StartNodeDrainRequestDTO{
 		MemberID: memberID, IdempotencyKey: idempotencyKey, ServerReference: serverReference,
 		ConnectionRatePerSecond:            *request.ConnectionRatePerSecond,
-		LoadBalancerPropagationDelayMillis: *request.LoadBalancerPropagationDelayMs,
-		TimeoutMillis:                      *request.TimeoutMs,
+		LoadBalancerPropagationDelayMillis: *request.LoadBalancerPropagationDelayMillis,
+		TimeoutMillis:                      *request.TimeoutMillis,
 	})
 	if err != nil {
 		writeMembershipServiceError(w, r, err)

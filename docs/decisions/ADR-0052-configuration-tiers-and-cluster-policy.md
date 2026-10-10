@@ -2,7 +2,7 @@
 
 | 항목 | 값 |
 | --- | --- |
-| 상태 | `Proposed`. §1.1의 `ClusterPolicy` commit·version·reconciliation·`GET/PUT /api/v1/cluster/policy`·metric과 §1.2의 `mqttLimits` 적용 시점은 2026-10-10 사용자 결정으로 채택했다(G1·API-09). §1.4의 `cluster-policy` feature gate도 `mqttLimits`에 한해 채택했다. 기존 `TenantQuota` proposal 억제와 top-level `tenantQuotas`·`clusterPolicy` 충돌 거절은 §1.4에 명시한 동작을 유지한다. §1.5의 설정 parser 중복 key 거절 규칙과 secret 파일 규칙 중 standalone `-http-auth-token-file` 전환은 같은 날 채택했다(G4·G9). §1.5의 Cluster MQTT TLS(`mqtt.tls`)와 MQTT·peer 인증서 분리 규칙도 채택했다(G2·G10). Cluster runtime metrics의 node 정적 설정 `runtimeMetrics`도 채택했다(G6). §1.5의 Cluster 평문 MQTT TCP 주소 허용 규칙도 2026-10-10 사용자 결정으로 채택했다(G3). 나머지 정책 항목은 `Proposed`로 남는다. |
+| 상태 | `Proposed`. §1.1의 `ClusterPolicy` commit·version·reconciliation·`GET/PUT /api/v1/cluster/policy`·metric과 §1.2의 `mqttLimits` 적용 시점은 2026-10-10 사용자 결정으로 채택했다(G1·API-09). §1.4의 `cluster-policy` feature gate도 `mqttLimits`에 한해 채택했다. 기존 `TenantQuota` proposal 억제와 top-level `tenantQuotas`·`clusterPolicy` 충돌 거절은 §1.4에 명시한 동작을 유지한다. §1.5의 설정 parser 중복 key 거절 규칙과 secret 파일 규칙 중 standalone `-http-auth-token-file` 전환은 같은 날 채택했다(G4·G9). §1.5의 Cluster MQTT TLS(`mqtt.tls`)와 MQTT·peer 인증서 분리 규칙도 채택했다(G2·G10). Cluster runtime metrics의 node 정적 설정 `runtimeMetrics`도 채택했다(G6). §1.5의 Cluster 평문 MQTT TCP 주소 허용 규칙도 2026-10-10 사용자 결정으로 채택했다(G3). §1.5의 JSON duration 표기 규칙도 같은 날 채택했다(G5). 나머지 정책 항목은 `Proposed`로 남는다. |
 | 결정일 | 2026-10-10 |
 | 결정자 | NaruMQ 프로젝트 사용자 |
 | 관련 요구사항 | API-09, API-08, UI-01~UI-10, SEC-07, TEN-06~TEN-08, CLU-11 |
@@ -109,7 +109,7 @@ Feature가 활성화되기 전에는 각 node가 현재 파일 값을 사용한�
 
 ### 1.5 형식과 Cluster MQTT TLS
 
-- 새 duration key는 `Millis` 접미사가 붙은 정수 millisecond를 쓴다. 기존 Go duration 문자열 key는 유지한다.
+- Command-line flag는 Go duration 문자열을 쓴다. JSON의 duration 값은 `Millis` 접미사가 붙은 field 이름과 음수가 아닌 정수 millisecond를 쓴다. 이 규칙은 2026-10-10 사용자 결정으로 채택했다(G5). Security config의 JWT, cluster `management.oidc`와 `tenantLimits.maxWait` duration field를 이 형식으로 전환했다.
 - 설정 parser는 중복 key, 알 수 없는 key와 뒤따르는 JSON value를 거절한다. 이 규칙은 2026-10-10 사용자 결정으로 먼저 채택했다. Security config와 peer-only config parser에도 적용했다(G4).
 - Secret은 파일로만 받는다. Standalone `-http-auth-token`은 `-http-auth-token-file`로 바꾼다. 이 규칙은 2026-10-10 사용자 결정으로 채택해 구현했다(G9).
 - Environment variable은 설정 원천으로 사용하지 않는다.
@@ -135,7 +135,7 @@ Console은 Management API만 사용한다. 이 ADR은 UI 기술을 정하지 않
 | G2 | `clusterMQTTListeners`는 Raft peer certificate와 key를 재사용한다. MQTT TLS 설정에는 client CA와 client-auth가 없어 handshake에서 client certificate를 요청하지 않는다. 2026-10-10 해소: `mqtt.tls`가 MQTT 인증서와 client-auth를 설정하고 peer 인증서와 분리한다. |
 | G3 | Standalone `-tcp-listen`은 literal loopback만 허용한다. Cluster `mqtt.tcpListenAddress`는 wildcard를 포함한 유효한 host:port를 허용한다. 2026-10-10 해소: cluster 평문 TCP는 secure mode에서 loopback 제한 없이 허용한다고 명문화했다. 코드 동작은 바꾸지 않았다. |
 | G4 | `security_config.go`와 `raft_peer_config.go`는 중복 JSON key를 검사하지 않는다. Cluster config parser는 검사한다. 2026-10-10 해소: 세 parser가 모두 중복 key를 거절한다. |
-| G5 | Flag와 security config는 Go duration을 쓴다. Cluster config는 millisecond 정수를 쓴다. |
+| G5 | Flag와 security config는 Go duration을 쓴다. Cluster config는 millisecond 정수를 쓴다. 2026-10-10 해소: command-line flag만 Go duration 문자열을 유지하고 모든 JSON duration field는 `…Millis` 정수 millisecond를 쓴다. |
 | G6 | Runtime metrics flag는 standalone에서만 지원한다. 2026-10-10 해소: cluster는 `runtimeMetrics` object를 사용한다. |
 | G7 | 실제 설정 조회 API와 `tenantQuotas` 변경 API는 없다. |
 | G8 | Standalone Management API는 cluster ID `narumq-cluster-1`과 node ID `narumq-node-1`을 사용한다. |
@@ -198,6 +198,7 @@ ADR-0017은 versioned `tenantQuotas` command로 local config와 committed state�
 | API-09 cluster 적용 | `TestDynamicClusterPolicyProcessAcceptance` 실행 | 3개 node가 같은 committed `ClusterPolicy` version과 값을 적용하고 기존 연결의 MQTT 한도를 유지한다. | 통과 (3-node process acceptance 8.499초). [실행 기록](../specs/configuration-and-runtime-options.md#api-09-mqttlimits-execution). |
 | API-09 feature activation·restore | `TestClusterBackupArchivePreservesClusterPolicy`, `TestDynamicClusterPolicyProcessAcceptance` 실행 | Feature 활성 전 local 설정을 사용하고 snapshot·backup 복구 뒤 committed policy를 유지한다. | 통과. Backup archive 시험과 3-node restart·drift 결과는 [API-09 mqttLimits 실행 기록](../specs/configuration-and-runtime-options.md#api-09-mqttlimits-execution)에 있다. |
 | 설정 parser 중복 key 거절(G4) | `TestParseSecurityConfig_Rejections`, `TestParseRaftPeerConfigStrict`, `TestRejectDuplicateJSONKeys` 실행 | Security·peer-only config의 top-level, 중첩 object, 배열 원소 object에서 중복 key를 거절한다. | 2026-10-10 [설정 시험 기록](../specs/configuration-and-runtime-options.md#configuration-test-execution)에서 통과했다. |
+| JSON duration 형식(G5) | `TestPositiveMillisDuration`, `TestParseSecurityConfig_Rejections`, `TestParseSecurityConfig_TenantLimitsMaxWaitMillis`, `TestClusterManagementAccessConfiguration` 실행 | Security config가 integer millisecond와 `Millis` field 이름만 허용하고 legacy string field를 거절한다. Management API의 duration field rename과 이전 이름 거절도 확인한다. | [G5 duration 표기 실행 기록](../specs/configuration-and-runtime-options.md#g5-duration-millis-execution)에 결과를 기록한다. |
 | Secret 파일 flag(G9) | `TestRunWithContextManagementAuthTokenFile` 실행 | 명령행 token flag와 없는·빈 파일을 거절하고, 공백을 제거한 파일 token으로 인증한다. | 2026-10-10 [설정 시험 기록](../specs/configuration-and-runtime-options.md#configuration-test-execution)에서 통과했다. |
 | Cluster MQTT TLS(G2·G10) | `TestParseClusterConfigMQTTTLS`, `TestClusterMQTTListenersBindConfiguredEndpointsAndClosePartialOpen`, `TestClusterMQTTSecurityValidatesTLSClientAuthBindings`, `TestDynamicClusterMQTTTLSClientCertificateProcessAcceptance` 실행 | Parser 검증, TLS 인증 조합, peer·MQTT 인증서 분리와 3-node mTLS 동작을 확인한다. | 통과. [설정 스펙 실행 기록](../specs/configuration-and-runtime-options.md#cluster-mqtt-tls-g2-g10-execution)에서 결과를 확인한다. |
 | Cluster runtime metrics(G6) | `TestParseClusterConfigRuntimeMetrics`, `TestRunClusterModeInProcess` 실행 | Parser 경계를 검증하고 cluster node가 JSONL 표본을 기록한다. | 통과. [설정 스펙 실행 기록](../specs/configuration-and-runtime-options.md#cluster-runtime-metrics-g6-execution)에서 결과를 확인한다. |

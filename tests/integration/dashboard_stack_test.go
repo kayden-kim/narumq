@@ -444,7 +444,7 @@ func TestDashboardStackProcessAcceptance(t *testing.T) {
 	_, leaderURL := clusterMembershipProcessFindLeader(t, fixture.ctx, processes, 3)
 	drainRequest := clusterDrainProcessRequest{
 		ServerReference: fixture.mqttAddresses[0], ConnectionRatePerSecond: 1,
-		LoadBalancerPropagationDelayMs: 1000, TimeoutMs: 60000,
+		LoadBalancerPropagationDelayMillis: 1000, TimeoutMillis: 60000,
 	}
 	status, body, err := clusterDrainProcessStart(fixture.ctx, leaderURL, 3, drainRequest, "dashboard-drain-node-3")
 	if err != nil || status != http.StatusAccepted {
@@ -1070,7 +1070,7 @@ func (s *dashboardDockerStack) assertGrafanaNodeTopology(process *clusterMembers
 			NodeID          string  `json:"nodeId"`
 			Role            string  `json:"role"`
 			Version         string  `json:"version"`
-			UptimeMs        int64   `json:"uptimeMs"`
+			UptimeMillis    int64   `json:"uptimeMillis"`
 			State           string  `json:"state"`
 			Ready           bool    `json:"ready"`
 			ReadinessReason *string `json:"readinessReason"`
@@ -1098,9 +1098,9 @@ func (s *dashboardDockerStack) assertGrafanaNodeTopology(process *clusterMembers
 			s.t.Errorf("Management node %s role=%q, want LEADER or FOLLOWER", node.NodeID, node.Role)
 		}
 		if node.NodeID == "1" {
-			if node.State != "READY" || !node.Ready || node.UptimeMs <= 0 {
+			if node.State != "READY" || !node.Ready || node.UptimeMillis <= 0 {
 				s.t.Errorf("local Management node state=%q ready=%t uptime=%d, want READY/true/positive",
-					node.State, node.Ready, node.UptimeMs)
+					node.State, node.Ready, node.UptimeMillis)
 			}
 			continue
 		}

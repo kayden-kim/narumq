@@ -101,7 +101,7 @@ func TestDynamicClusterConnectionRebalanceProcessAcceptance(t *testing.T) {
 		}
 		readers.Wait()
 	}()
-	request := map[string]any{"serverReference": "lb.rebalance.test:1883", "maxDeviationConnections": 1, "connectionRatePerSecond": 5, "loadBalancerPropagationDelayMs": 60000, "timeoutMs": 120000}
+	request := map[string]any{"serverReference": "lb.rebalance.test:1883", "maxDeviationConnections": 1, "connectionRatePerSecond": 5, "loadBalancerPropagationDelayMillis": 60000, "timeoutMillis": 120000}
 	post := func(key string) (int, []byte, error) {
 		encoded, err := json.Marshal(request)
 		if err != nil {
@@ -143,7 +143,7 @@ func TestDynamicClusterConnectionRebalanceProcessAcceptance(t *testing.T) {
 	default:
 	}
 
-	request["loadBalancerPropagationDelayMs"] = 500
+	request["loadBalancerPropagationDelayMillis"] = 500
 	status, body, err = post("rb-main")
 	initial := clusterRebalanceProcessDecode(t, body)
 	if err != nil || status != http.StatusAccepted || initial.State != "RUNNING" {
@@ -161,7 +161,7 @@ func TestDynamicClusterConnectionRebalanceProcessAcceptance(t *testing.T) {
 		t.Fatalf("key conflict status=%d body=%s err=%v", status, body, err)
 	}
 	clusterRebalanceProcessAssertError(t, body, "idempotency_conflict")
-	status, body, err = clusterDrainProcessStart(ctx, baseURL, 2, clusterDrainProcessRequest{ConnectionRatePerSecond: 5, LoadBalancerPropagationDelayMs: 500, TimeoutMs: 120000}, "rb-drain-conflict")
+	status, body, err = clusterDrainProcessStart(ctx, baseURL, 2, clusterDrainProcessRequest{ConnectionRatePerSecond: 5, LoadBalancerPropagationDelayMillis: 500, TimeoutMillis: 120000}, "rb-drain-conflict")
 	if err != nil || status != http.StatusConflict {
 		t.Fatalf("drain conflict status=%d body=%s err=%v", status, body, err)
 	}

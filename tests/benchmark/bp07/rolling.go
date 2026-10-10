@@ -337,8 +337,8 @@ func (d *narumqDriver) start(ctx context.Context, round roundPlan) error {
 	body, err := json.Marshal(struct {
 		ServerReference string `json:"serverReference"`
 		ConnectionRate  int    `json:"connectionRatePerSecond"`
-		LBMillis        int64  `json:"loadBalancerPropagationDelayMs"`
-		TimeoutMillis   int64  `json:"timeoutMs"`
+		LBMillis        int64  `json:"loadBalancerPropagationDelayMillis"`
+		TimeoutMillis   int64  `json:"timeoutMillis"`
 	}{bp07LBReference, d.profile.ConnectionRatePerSecond, d.profile.LBPropagationMillis, d.profile.DrainTimeoutMillis})
 	if err != nil {
 		return err

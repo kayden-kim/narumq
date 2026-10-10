@@ -560,8 +560,8 @@ func TestDataPlaneDenialEventsMatchSchema(t *testing.T) {
 
 const (
 	validContractMemberAdmissionJSON  = `{"memberId":4,"address":"node4.example:19004","dnsSan":"node4.example","certificateSha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","releaseVersion":"1.0.0","clusterProtocolMajor":2,"clusterProtocolMinor":0,"stateSchemaMajor":1,"stateSchemaMinor":0}`
-	validContractDrainRequestJSON     = `{"connectionRatePerSecond":2,"loadBalancerPropagationDelayMs":1500,"timeoutMs":60000}`
-	validContractRebalanceRequestJSON = `{"maxDeviationConnections":1,"connectionRatePerSecond":5,"loadBalancerPropagationDelayMs":500,"timeoutMs":120000}`
+	validContractDrainRequestJSON     = `{"connectionRatePerSecond":2,"loadBalancerPropagationDelayMillis":1500,"timeoutMillis":60000}`
+	validContractRebalanceRequestJSON = `{"maxDeviationConnections":1,"connectionRatePerSecond":5,"loadBalancerPropagationDelayMillis":500,"timeoutMillis":120000}`
 )
 
 type contractBackupProvider struct{}

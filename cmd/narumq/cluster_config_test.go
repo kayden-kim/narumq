@@ -408,8 +408,8 @@ func TestClusterManagementAccessConfiguration(t *testing.T) {
 	config.Management.OIDC = &clusterManagementOIDC{
 		rawJWTConfig: rawJWTConfig{
 			Issuer: "https://issuer.example", Audience: "narumq-management", Algorithms: []string{"RS256"},
-			JWKSURL: "https://issuer.example/jwks.json", CacheTTL: "5m", RefreshCooldown: "30s",
-			ClockSkew: "30s", HTTPTimeout: "5s",
+			JWKSURL: "https://issuer.example/jwks.json", CacheTTLMillis: 300000, RefreshCooldownMillis: 30000,
+			ClockSkewMillis: 30000, HTTPTimeoutMillis: 5000,
 		},
 		Identities: []clusterManagementOIDCIdentity{{Subject: "alice", Roles: []string{"SecurityAdmin"}}},
 	}
@@ -433,6 +433,14 @@ func TestClusterManagementAccessConfiguration(t *testing.T) {
 	if _, err := parseClusterConfig(strings.NewReader(oldConfig)); err == nil {
 		t.Fatal("parseClusterConfig accepted the removed readOnlyApiKeyFile field")
 	}
+	oidcLegacyConfig := string(mustMarshalClusterConfig(t, config))
+	oidcLegacyConfig = strings.Replace(oidcLegacyConfig, `"cacheTtlMillis":300000`, `"cacheTtl":"5m"`, 1)
+	if oidcLegacyConfig == string(mustMarshalClusterConfig(t, config)) {
+		t.Fatal("could not replace cacheTtlMillis in cluster config")
+	}
+	if _, err := parseClusterConfig(strings.NewReader(oidcLegacyConfig)); err == nil || !strings.Contains(err.Error(), "cacheTtl") {
+		t.Fatalf("parseClusterConfig(legacy cacheTtl) error = %v, want unknown cacheTtl field", err)
+	}
 
 	cases := []struct {
 		name string
@@ -451,11 +459,10 @@ func TestClusterManagementAccessConfiguration(t *testing.T) {
 		{"empty algorithm", func(c *clusterManagement) { c.OIDC.Algorithms = []string{""} }, "management.oidc algorithm must not be empty"},
 		{"duplicate algorithm", func(c *clusterManagement) { c.OIDC.Algorithms = []string{"RS256", "RS256"} }, `duplicate management.oidc algorithm "RS256"`},
 		{"nonabsolute JWKS URL", func(c *clusterManagement) { c.OIDC.JWKSURL = "/jwks" }, "management.oidc.jwksUrl must be an absolute URL"},
-		{"missing cache TTL", func(c *clusterManagement) { c.OIDC.CacheTTL = "" }, "management.oidc.cacheTtl is required"},
-		{"invalid cache TTL", func(c *clusterManagement) { c.OIDC.CacheTTL = "soon" }, `invalid management.oidc.cacheTtl duration "soon"`},
-		{"invalid refresh cooldown", func(c *clusterManagement) { c.OIDC.RefreshCooldown = "soon" }, `invalid management.oidc.refreshCooldown duration "soon"`},
-		{"invalid clock skew", func(c *clusterManagement) { c.OIDC.ClockSkew = "soon" }, `invalid management.oidc.clockSkew duration "soon"`},
-		{"invalid HTTP timeout", func(c *clusterManagement) { c.OIDC.HTTPTimeout = "soon" }, `invalid management.oidc.httpTimeout duration "soon"`},
+		{"zero cache TTL", func(c *clusterManagement) { c.OIDC.CacheTTLMillis = 0 }, "management.oidc.cacheTtlMillis must be between 1 and 4294967295"},
+		{"zero refresh cooldown", func(c *clusterManagement) { c.OIDC.RefreshCooldownMillis = 0 }, "management.oidc.refreshCooldownMillis must be between 1 and 4294967295"},
+		{"zero clock skew", func(c *clusterManagement) { c.OIDC.ClockSkewMillis = 0 }, "management.oidc.clockSkewMillis must be between 1 and 4294967295"},
+		{"zero HTTP timeout", func(c *clusterManagement) { c.OIDC.HTTPTimeoutMillis = 0 }, "management.oidc.httpTimeoutMillis must be between 1 and 4294967295"},
 		{"invalid OIDC URL", func(c *clusterManagement) { c.OIDC.JWKSURL = "http://example.com/jwks" }, "management.oidc.jwksUrl must be HTTPS or loopback HTTP"},
 		{"empty OIDC identities", func(c *clusterManagement) { c.OIDC.Identities = nil }, "management.oidc.identities must contain at least one identity"},
 		{"empty subject", func(c *clusterManagement) { c.OIDC.Identities[0].Subject = "" }, "management.oidc.identities[0].subject is required"},
@@ -501,8 +508,8 @@ func TestLoadClusterManagementCredentials(t *testing.T) {
 		OIDC: &clusterManagementOIDC{
 			rawJWTConfig: rawJWTConfig{
 				Issuer: "https://issuer.example", Audience: "narumq-management", Algorithms: []string{"RS256"},
-				JWKSURL: "https://issuer.example/jwks.json", CacheTTL: "5m", RefreshCooldown: "30s",
-				ClockSkew: "30s", HTTPTimeout: "5s",
+				JWKSURL: "https://issuer.example/jwks.json", CacheTTLMillis: 300000, RefreshCooldownMillis: 30000,
+				ClockSkewMillis: 30000, HTTPTimeoutMillis: 5000,
 			},
 			Identities: []clusterManagementOIDCIdentity{{Subject: "alice", Roles: []string{"SecurityAdmin"}}},
 		},

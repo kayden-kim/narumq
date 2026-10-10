@@ -95,7 +95,7 @@ func drainOperationFixtures() []operationFixture {
 		{
 			method: http.MethodPost, path: "/api/v1/nodes/{nodeId}/drain", operationID: "startNodeDrain",
 			target:         "/api/v1/nodes/3/drain",
-			body:           `{"serverReference":"node3.example:1883","connectionRatePerSecond":10,"loadBalancerPropagationDelayMs":1000,"timeoutMs":60000}`,
+			body:           `{"serverReference":"node3.example:1883","connectionRatePerSecond":10,"loadBalancerPropagationDelayMillis":1000,"timeoutMillis":60000}`,
 			idempotencyKey: "contract-drain-start", expectedStatus: http.StatusAccepted,
 		},
 		{
@@ -113,7 +113,7 @@ func connectionRebalanceOperationFixtures() []operationFixture {
 		{
 			method: http.MethodPost, path: "/api/v1/cluster/rebalance", operationID: "startConnectionRebalance",
 			target:         "/api/v1/cluster/rebalance",
-			body:           `{"serverReference":"lb.example:1883","maxDeviationConnections":1,"connectionRatePerSecond":5,"loadBalancerPropagationDelayMs":500,"timeoutMs":120000}`,
+			body:           `{"serverReference":"lb.example:1883","maxDeviationConnections":1,"connectionRatePerSecond":5,"loadBalancerPropagationDelayMillis":500,"timeoutMillis":120000}`,
 			idempotencyKey: "contract-rebalance-start", expectedStatus: http.StatusAccepted,
 		},
 		{
@@ -319,7 +319,7 @@ func (contractStateProvider) GetNodeSummary(context.Context, string) (*ports.Nod
 	return &ports.NodeSummaryDTO{
 		NodeID:            "node-1",
 		Version:           "1.0.0",
-		UptimeMs:          0,
+		UptimeMillis:      0,
 		State:             ports.NodeStateReady,
 		Ready:             false,
 		ReadinessReason:   &reason,

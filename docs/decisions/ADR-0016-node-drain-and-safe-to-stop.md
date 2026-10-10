@@ -19,6 +19,7 @@
 4. API는 `Operator`의 POST/DELETE와 `ReadOnly`의 GET을 사용한다. POST/DELETE는 `Idempotency-Key`를 요구한다. `connectionRatePerSecond`, `loadBalancerPropagationDelayMs`, `timeoutMs`는 필수이며 각각 `1..10000`, `0..3600000`, `1000..86400000` 범위다. Timeout은 LB 대기보다 커야 한다. `serverReference`는 선택이며 UTF-8 256 bytes 이하, 제어 문자가 없어야 한다. 배포 기본값은 이 결정에서 만들지 않는다.
 5. `SAFE_TO_STOP` 완료는 취소할 수 없다. 취소 가능한 operation은 replicated `CANCEL`을 거친 뒤 route와 replica readiness를 다시 확인하고서만 READY가 된다. Restart 후 남은 완료 record는 node가 READY 확인을 통과한 뒤 지운다.
 6. 이 결정은 broker가 protocol redirect와 안전한 정지 상태를 제공하는 범위에 한정한다. External rollout controller와 Kubernetes/EKS 배포, 지원 SDK의 자동 Server Reference 추종, MQTT 3.1.1/Will release policy, DEP-12 reason metric, `SPEC-TBD-04` 제품 기본값, BP-07, N-1↔N 및 production EBS/power-loss 검증은 승인하지 않는다.
+2026-10-10 구현 메모: G5는 duration JSON field를 `Millis` 정수로 통일했다. API의 현재 이름은 `loadBalancerPropagationDelayMillis`, `timeoutMillis`다. Accepted 결정의 기존 이름은 당시 계약을 보존한다.
 
 ## 2. 배경
 

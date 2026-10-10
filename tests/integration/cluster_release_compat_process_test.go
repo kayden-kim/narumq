@@ -103,11 +103,11 @@ func runClusterReleaseCompatibilityAcceptance(t *testing.T, fixture *clusterMemb
 	clusterReleaseCompatDurableRoundTrip(t, fixture, oldID, f1ID, "phase-2")
 
 	// Scenario 3: drain and upgrade a non-leader still running N-1.
-	leaderID, leaderURL := clusterMembershipProcessFindLeader(t, ctx, processes, 3)
+	leaderID, _ = clusterMembershipProcessFindLeader(t, ctx, processes, 3)
 	drainID := clusterReleaseCompatSmallestVersionedNonLeader(t, ctx, processes, leaderID, "1.1.0")
-	status, drainBody, err := clusterDrainProcessStart(ctx, leaderURL, drainID, clusterDrainProcessRequest{
+	status, drainBody, err := clusterDrainProcessStartOn(ctx, processes[leaderID-1], drainID, clusterDrainProcessRequest{
 		ServerReference: fixture.mqttAddresses[f1ID-1], ConnectionRatePerSecond: 2,
-		LoadBalancerPropagationDelayMs: 1500, TimeoutMs: 60000,
+		LoadBalancerPropagationDelayMillis: 1500, TimeoutMillis: 60000,
 	}, "compat-drain-D")
 	if err != nil || status != http.StatusAccepted {
 		t.Fatalf("start drain for node %d status=%d body=%s err=%v", drainID, status, drainBody, err)

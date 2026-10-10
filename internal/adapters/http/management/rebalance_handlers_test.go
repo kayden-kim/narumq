@@ -48,7 +48,7 @@ func rebalanceHTTPRequest(method, body, key string) *http.Request {
 	return r
 }
 
-const validRebalanceRequestBody = `{"serverReference":"lb.example:1883","maxDeviationConnections":1,"connectionRatePerSecond":5,"loadBalancerPropagationDelayMs":500,"timeoutMs":120000}`
+const validRebalanceRequestBody = `{"serverReference":"lb.example:1883","maxDeviationConnections":1,"connectionRatePerSecond":5,"loadBalancerPropagationDelayMillis":500,"timeoutMillis":120000}`
 
 func rebalanceHTTPOperation() membership.ConnectionRebalanceOperationDTO {
 	return membership.ConnectionRebalanceOperationDTO{State: membership.ConnectionRebalanceStateDTO{
@@ -72,8 +72,9 @@ func TestConnectionRebalanceHTTPRejectsInvalidJSONAndRequiredFields(t *testing.T
 		body string
 	}{
 		{name: "malformed JSON", body: `{"serverReference":`},
-		{name: "missing required field", body: `{"serverReference":"lb","maxDeviationConnections":1,"connectionRatePerSecond":5,"loadBalancerPropagationDelayMs":500}`},
-		{name: "unknown field", body: `{"serverReference":"lb","maxDeviationConnections":1,"connectionRatePerSecond":5,"loadBalancerPropagationDelayMs":500,"timeoutMs":120000,"extra":true}`},
+		{name: "missing required field", body: `{"serverReference":"lb","maxDeviationConnections":1,"connectionRatePerSecond":5,"loadBalancerPropagationDelayMillis":500}`},
+		{name: "unknown field", body: `{"serverReference":"lb","maxDeviationConnections":1,"connectionRatePerSecond":5,"loadBalancerPropagationDelayMillis":500,"timeoutMillis":120000,"extra":true}`},
+		{name: "legacy duration names", body: `{"serverReference":"lb","maxDeviationConnections":1,"connectionRatePerSecond":5,"loadBalancerPropagationDelayMs":500,"timeoutMs":120000}`},
 	}
 	for _, test := range cases {
 		t.Run(test.name, func(t *testing.T) {

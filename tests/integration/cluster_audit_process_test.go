@@ -33,7 +33,7 @@ func TestDynamicClusterManagementAuditProcessAcceptance(t *testing.T) {
 	if err != nil || status != http.StatusOK {
 		t.Fatalf("node 1 management GET status=%d body=%s err=%v, want 200", status, body, err)
 	}
-	drainBody := []byte(`{"connectionRatePerSecond":2,"loadBalancerPropagationDelayMs":1500,"timeoutMs":60000}`)
+	drainBody := []byte(`{"connectionRatePerSecond":2,"loadBalancerPropagationDelayMillis":1500,"timeoutMillis":60000}`)
 	status, body, _, err = clusterManagementAuditProcessRequest(ctx, http.MethodPost,
 		processes[0].managementURL()+"/api/v1/nodes/3/drain", drainBody, clusterMembershipProcessAdmin, "")
 	if err != nil || status != http.StatusServiceUnavailable {

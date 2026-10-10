@@ -153,11 +153,11 @@ func TestCmmNodeUptimeIsClampedForFutureStartTime(t *testing.T) {
 	ctx := context.Background()
 	service := NewService(ServiceConfig{NodeID: "node-a", StartedAt: time.Now().Add(time.Hour)}, nil, nil, nil, nil)
 	node, err := service.GetNodeSummary(ctx, "node-a")
-	if err != nil || node.UptimeMs != 0 {
+	if err != nil || node.UptimeMillis != 0 {
 		t.Fatalf("future start node=%+v err=%v", node, err)
 	}
 	nodes, _, err := service.ListNodeSummaries(ctx, ports.NodeFilter{})
-	if err != nil || len(nodes) != 1 || nodes[0].UptimeMs != 0 {
+	if err != nil || len(nodes) != 1 || nodes[0].UptimeMillis != 0 {
 		t.Fatalf("future start list=%+v err=%v", nodes, err)
 	}
 }

@@ -990,7 +990,7 @@ func (scenario *storageFaultScenario) runFollowerSlowIO(ctx context.Context, lea
 	scenario.evidence.TargetLastErrorCode = degraded.LastErrorCode
 	pressure := degraded.StoragePressure
 	scenario.evidence.TargetStoragePressure = &pressure
-	scenario.evidence.UptimeBeforeRecoveryMs = degraded.UptimeMs
+	scenario.evidence.UptimeBeforeRecoveryMs = degraded.UptimeMillis
 	for attempt := 0; attempt < 3; attempt++ {
 		probe := scenario.mqtt(ctx, targetID, scenario.nextProbeID(), "chaos/probe/#")
 		if probe.Classification == "accepted" {
@@ -1058,10 +1058,10 @@ func (scenario *storageFaultScenario) runFollowerSlowIO(ctx context.Context, lea
 	}); err != nil {
 		return fmt.Errorf("slow-I/O follower did not catch up within 30s: %w", err)
 	}
-	if recovered.UptimeMs <= scenario.evidence.UptimeBeforeRecoveryMs {
-		return fmt.Errorf("slow-I/O follower uptime did not increase: %d -> %d", scenario.evidence.UptimeBeforeRecoveryMs, recovered.UptimeMs)
+	if recovered.UptimeMillis <= scenario.evidence.UptimeBeforeRecoveryMs {
+		return fmt.Errorf("slow-I/O follower uptime did not increase: %d -> %d", scenario.evidence.UptimeBeforeRecoveryMs, recovered.UptimeMillis)
 	}
-	scenario.evidence.UptimeAfterRecoveryMs = recovered.UptimeMs
+	scenario.evidence.UptimeAfterRecoveryMs = recovered.UptimeMillis
 	scenario.evidence.ConvergedAppliedIndex = recovered.LastAppliedIndex
 	if err := waitFor(ctx, 30*time.Second, probeInterval, func() (bool, error) {
 		probe, ready, err := scenario.mqttWithReadiness(ctx, targetID, recoveryClientID(targetID), "chaos/probe/#")

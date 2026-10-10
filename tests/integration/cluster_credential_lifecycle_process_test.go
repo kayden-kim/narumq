@@ -168,7 +168,7 @@ func TestDynamicClusterCredentialExpiryProcessAcceptance(t *testing.T) {
 	securityConfig := map[string]any{
 		"jwt": map[string]any{
 			"issuer": "https://issuer.example", "audience": "narumq", "algorithms": []string{"RS256"},
-			"jwksUrl": issuer.jwksURL, "cacheTtl": "5m", "refreshCooldown": "30s", "clockSkew": "1s", "httpTimeout": "5s",
+			"jwksUrl": issuer.jwksURL, "cacheTtlMillis": 300000, "refreshCooldownMillis": 30000, "clockSkewMillis": 1000, "httpTimeoutMillis": 5000,
 		},
 		"identities": []map[string]any{
 			{

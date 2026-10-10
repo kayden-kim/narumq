@@ -48,12 +48,12 @@ Recovering 또는 joining node는 committed persistent subscription에서 node-l
 {
   "serverReference": "mqtt.example.internal:8883",
   "connectionRatePerSecond": 100,
-  "loadBalancerPropagationDelayMs": 15000,
-  "timeoutMs": 600000
+  "loadBalancerPropagationDelayMillis": 15000,
+  "timeoutMillis": 600000
 }
 ```
 
-`connectionRatePerSecond`, `loadBalancerPropagationDelayMs`, `timeoutMs`는 필수다. 허용 범위는 각각 `1..10000`, `0..3600000`, `1000..86400000`이며 timeout은 LB 전파 대기보다 커야 한다. `serverReference`는 선택이고 최대 256 UTF-8 bytes이며 제어 문자를 허용하지 않는다. 누락·범위 위반·잘못된 reference는 `400 invalid_request`다. 제품 기본값은 없다.
+`connectionRatePerSecond`, `loadBalancerPropagationDelayMillis`, `timeoutMillis`는 필수다. 허용 범위는 각각 `1..10000`, `0..3600000`, `1000..86400000`이며 timeout은 LB 전파 대기보다 커야 한다. `serverReference`는 선택이고 최대 256 UTF-8 bytes이며 제어 문자를 허용하지 않는다. 누락·범위 위반·잘못된 reference는 `400 invalid_request`다. 제품 기본값은 없다.
 
 POST와 DELETE는 `Operator`, GET은 `ReadOnly` role을 요구하며 POST와 DELETE는 `Idempotency-Key`를 요구한다. 요청 대상은 cluster에 committed voter여야 한다. Active drain은 같은 node에서 새 operation을 만들지 않고 현재 committed operation을 반환한다. 최초 POST는 `202 Accepted`, 현재 operation replay는 `200 OK`다. 같은 key에 다른 parameter를 쓰면 `409 idempotency_conflict`; 다른 node drain이 이미 active이면 `409 node_drain_in_progress`다. 없는 node는 `404`, quorum을 확보할 수 없으면 `503`이다.
 

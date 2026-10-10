@@ -149,10 +149,10 @@ func newClusterMembershipProcessFixture(t *testing.T, nodeCount int, buildTags s
     "audience": "narumq",
     "algorithms": ["RS256"],
     "jwksUrl": %q,
-    "cacheTtl": "5m",
-    "refreshCooldown": "30s",
-    "clockSkew": "30s",
-    "httpTimeout": "5s"
+    "cacheTtlMillis": 300000,
+    "refreshCooldownMillis": 30000,
+    "clockSkewMillis": 30000,
+    "httpTimeoutMillis": 5000
   },
   "identities": [{
     "issuer": "https://issuer.example",
@@ -771,6 +771,28 @@ func clusterProcessConfigForBinary(binary, configPath string) (string, error) {
 		return "", errors.New("legacy cluster config management object is missing")
 	}
 	delete(management, "auditDirectory")
+	if rawOIDC, exists := management["oidc"]; exists {
+		oidc, ok := rawOIDC.(map[string]any)
+		if !ok {
+			return "", errors.New("legacy cluster config management.oidc is missing")
+		}
+		if err := clusterLegacyDurationKeys(oidc); err != nil {
+			return "", fmt.Errorf("legacy cluster config management.oidc: %w", err)
+		}
+	}
+	mqtt, ok := config["mqtt"].(map[string]any)
+	if !ok {
+		return "", errors.New("legacy cluster config mqtt object is missing")
+	}
+	securityConfigPath, ok := mqtt["securityConfigFile"].(string)
+	if !ok || securityConfigPath == "" {
+		return "", errors.New("legacy cluster config mqtt.securityConfigFile is missing")
+	}
+	legacySecurityPath, err := clusterLegacySecurityConfig(securityConfigPath)
+	if err != nil {
+		return "", fmt.Errorf("legacy cluster config security config: %w", err)
+	}
+	mqtt["securityConfigFile"] = legacySecurityPath
 	data, err = json.Marshal(config)
 	if err != nil {
 		return "", fmt.Errorf("encode legacy cluster config: %w", err)
@@ -778,6 +800,72 @@ func clusterProcessConfigForBinary(binary, configPath string) (string, error) {
 	legacyPath := strings.TrimSuffix(configPath, filepath.Ext(configPath)) + "-legacy.json"
 	if err := os.WriteFile(legacyPath, data, 0o600); err != nil {
 		return "", fmt.Errorf("write legacy cluster config: %w", err)
+	}
+	return legacyPath, nil
+}
+
+// clusterLegacyDurationKeys rewrites millisecond keys to the Go duration strings accepted by historical binaries.
+func clusterLegacyDurationKeys(object map[string]any) error {
+	for _, field := range [][2]string{
+		{"cacheTtlMillis", "cacheTtl"},
+		{"refreshCooldownMillis", "refreshCooldown"},
+		{"clockSkewMillis", "clockSkew"},
+		{"httpTimeoutMillis", "httpTimeout"},
+	} {
+		value, exists := object[field[0]]
+		if !exists {
+			continue
+		}
+		millis, ok := value.(float64)
+		if !ok {
+			return fmt.Errorf("legacy duration %s is not a number", field[0])
+		}
+		object[field[1]] = (time.Duration(millis) * time.Millisecond).String()
+		delete(object, field[0])
+	}
+	return nil
+}
+
+// clusterLegacySecurityConfig writes "<name>-legacy.json" with historical duration keys and returns its path.
+func clusterLegacySecurityConfig(path string) (string, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return "", fmt.Errorf("read security config: %w", err)
+	}
+	var config map[string]any
+	if err := json.Unmarshal(data, &config); err != nil {
+		return "", fmt.Errorf("decode security config: %w", err)
+	}
+	if rawJWT, exists := config["jwt"]; exists {
+		jwt, ok := rawJWT.(map[string]any)
+		if !ok {
+			return "", errors.New("security config jwt object is missing")
+		}
+		if err := clusterLegacyDurationKeys(jwt); err != nil {
+			return "", err
+		}
+	}
+	if rawTenantLimits, exists := config["tenantLimits"]; exists {
+		tenantLimits, ok := rawTenantLimits.(map[string]any)
+		if !ok {
+			return "", errors.New("security config tenantLimits object is missing")
+		}
+		if rawMaxWait, exists := tenantLimits["maxWaitMillis"]; exists {
+			maxWaitMillis, ok := rawMaxWait.(float64)
+			if !ok {
+				return "", errors.New("legacy duration maxWaitMillis is not a number")
+			}
+			tenantLimits["maxWait"] = (time.Duration(maxWaitMillis) * time.Millisecond).String()
+			delete(tenantLimits, "maxWaitMillis")
+		}
+	}
+	data, err = json.Marshal(config)
+	if err != nil {
+		return "", fmt.Errorf("encode security config: %w", err)
+	}
+	legacyPath := strings.TrimSuffix(path, filepath.Ext(path)) + "-legacy.json"
+	if err := os.WriteFile(legacyPath, data, 0o600); err != nil {
+		return "", fmt.Errorf("write legacy security config: %w", err)
 	}
 	return legacyPath, nil
 }
@@ -1349,7 +1437,7 @@ func (h *clusterMembershipProcessHarness) launchBinary(binary, name, configPath,
 		return nil, fmt.Errorf("start %s: %w", name, err)
 	}
 	process := &clusterMembershipProcess{
-		name: name, command: command, cancel: cancel, logs: logs,
+		name: name, binary: binary, command: command, cancel: cancel, logs: logs,
 		done: make(chan struct{}), managementAddress: managementAddress,
 	}
 	go func() {
@@ -1387,6 +1475,7 @@ func (h *clusterMembershipProcessHarness) cleanup() {
 
 type clusterMembershipProcess struct {
 	name              string
+	binary            string
 	command           *exec.Cmd
 	cancel            context.CancelFunc
 	logs              *clusterMembershipProcessLog
@@ -1577,15 +1666,15 @@ type clusterMembershipProcessAPIKey struct {
 }
 
 type clusterMembershipProcessOIDC struct {
-	Issuer          string                                 `json:"issuer"`
-	Audience        string                                 `json:"audience"`
-	Algorithms      []string                               `json:"algorithms"`
-	JWKSURL         string                                 `json:"jwksUrl"`
-	CacheTTL        string                                 `json:"cacheTtl"`
-	RefreshCooldown string                                 `json:"refreshCooldown"`
-	ClockSkew       string                                 `json:"clockSkew"`
-	HTTPTimeout     string                                 `json:"httpTimeout"`
-	Identities      []clusterMembershipProcessOIDCIdentity `json:"identities"`
+	Issuer                string                                 `json:"issuer"`
+	Audience              string                                 `json:"audience"`
+	Algorithms            []string                               `json:"algorithms"`
+	JWKSURL               string                                 `json:"jwksUrl"`
+	CacheTTLMillis        uint32                                 `json:"cacheTtlMillis"`
+	RefreshCooldownMillis uint32                                 `json:"refreshCooldownMillis"`
+	ClockSkewMillis       uint32                                 `json:"clockSkewMillis"`
+	HTTPTimeoutMillis     uint32                                 `json:"httpTimeoutMillis"`
+	Identities            []clusterMembershipProcessOIDCIdentity `json:"identities"`
 }
 
 type clusterMembershipProcessOIDCIdentity struct {

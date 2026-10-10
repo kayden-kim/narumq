@@ -97,10 +97,10 @@ TLS 암호화 통신과 JWT(JSON Web Token), username/password 또는 mTLS(Mutua
        "audience": "narumq",
        "algorithms": ["RS256"],
        "jwksUrl": "https://auth.example.com/.well-known/jwks.json",
-       "cacheTtl": "15m",
-       "refreshCooldown": "30s",
-       "clockSkew": "30s",
-       "httpTimeout": "5s"
+       "cacheTtlMillis": 900000,
+       "refreshCooldownMillis": 30000,
+       "clockSkewMillis": 30000,
+       "httpTimeoutMillis": 5000
      },
      "identities": [
        {
@@ -113,7 +113,7 @@ TLS 암호화 통신과 JWT(JSON Web Token), username/password 또는 mTLS(Mutua
        }
      ],
      "tenantLimits": {
-       "maxWait": "1s",
+       "maxWaitMillis": 1000,
        "default": {
          "maxConnections": 1000,
          "maxSessions": 2000,

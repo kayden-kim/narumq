@@ -98,7 +98,7 @@ Cluster mode에서는 `-runtime-metrics-*` flag 대신 cluster config의 `runtim
 | `bootstrapMembers` | 멤버 객체 배열 | bootstrap에서는 서로 다른 식별 정보 3개; joiner에서는 빈 배열 |
 | `seedAddresses` | 문자열 배열 | bootstrap에서는 빈 배열; joiner에서는 정규 DNS `host:port` 주소 1~16개. TLS SNI를 DNS 이름에 바인딩하므로 IP 리터럴은 거절 |
 | `peerTLS` | 객체 | `certFile`, `keyFile`, `caFile` 필수; 인증서와 키가 일치하고 CA가 모든 피어를 검증해야 함 |
-| `management` | 객체 | `listenAddress`, `clusterAdminTokenFile`, `auditDirectory` 필수. Token은 break-glass `ClusterAdmin` opaque secret이다. `auditDirectory`는 비어 있지 않은 경로여야 하며 `directory`와 같거나 서로 포함해서는 안 되고, 각 노드에서 달라야 한다. 선택 정수 필드 `requestRate`, `authFailureRate`는 각각 `1..1,000,000`; 생략하면 `50`, `5`를 사용한다. 선택 `apiKeys`는 `{id,keyFile,roles}` 객체 배열이며 `id`는 `^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$`와 일치하고 고유해야 하며, `keyFile`은 유효한 경로여야 하고 `roles`는 비어 있지 않은 고유한 `ReadOnly`, `Operator`, `SecurityAdmin`, `ClusterAdmin` 값만 포함해야 한다. Key 파일 내용은 앞뒤 공백 제거 후 비어 있지 않아야 하며 cluster admin token 및 다른 API key와 달라야 한다. 선택 `oidc`는 JWT verifier 필드(`issuer`, `audience`, `algorithms`, `jwksUrl`, `cacheTtl`, `refreshCooldown`, `clockSkew`, `httpTimeout`)와 비어 있지 않은 `identities` 배열로 구성한다. 각 identity는 비어 있지 않고 최대 250 rune인 고유 `subject`와 비어 있지 않은 고유 역할 배열을 가져야 한다. JWT 필드는 MQTT `jwt` 설정과 같은 검증 규칙을 적용하며 `jwksUrl`은 HTTPS 또는 loopback HTTP여야 한다. OIDC 권한은 JWT claim이 아니라 정적 subject-to-roles binding에서 결정한다. |
+| `management` | 객체 | `listenAddress`, `clusterAdminTokenFile`, `auditDirectory` 필수. Token은 break-glass `ClusterAdmin` opaque secret이다. `auditDirectory`는 비어 있지 않은 경로여야 하며 `directory`와 같거나 서로 포함해서는 안 되고, 각 노드에서 달라야 한다. 선택 정수 필드 `requestRate`, `authFailureRate`는 각각 `1..1,000,000`; 생략하면 `50`, `5`를 사용한다. 선택 `apiKeys`는 `{id,keyFile,roles}` 객체 배열이며 `id`는 `^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$`와 일치하고 고유해야 하며, `keyFile`은 유효한 경로여야 하고 `roles`는 비어 있지 않은 고유한 `ReadOnly`, `Operator`, `SecurityAdmin`, `ClusterAdmin` 값만 포함해야 한다. Key 파일 내용은 앞뒤 공백 제거 후 비어 있지 않아야 하며 cluster admin token 및 다른 API key와 달라야 한다. 선택 `oidc`는 JWT verifier field(`issuer`, `audience`, `algorithms`, `jwksUrl`, `cacheTtlMillis`, `refreshCooldownMillis`, `clockSkewMillis`, `httpTimeoutMillis`)와 비어 있지 않은 `identities` 배열로 구성한다. 네 duration field는 `uint32` millisecond 정수이며 각각 `1..4294967295`다. 각 identity는 비어 있지 않고 최대 250 rune인 고유 `subject`와 비어 있지 않은 고유 역할 배열을 가져야 한다. JWT 필드는 MQTT `jwt` 설정과 같은 검증 규칙을 적용하며 `jwksUrl`은 HTTPS 또는 loopback HTTP여야 한다. OIDC 권한은 JWT claim이 아니라 정적 subject-to-roles binding에서 결정한다. |
 | `mqtt` | 객체 | `tcpListenAddress`, `tlsListenAddress`, `securityConfigFile`가 필요하다. 주소가 비어 있으면 해당 listener를 사용하지 않는다. `tcpListenAddress`는 loopback 제한 없이 wildcard(`0.0.0.0`, `[::]`)와 DNS 이름을 포함한 유효한 host:port를 허용한다. Standalone `-tcp-listen`의 literal loopback 제한은 적용하지 않는다. 선택 정수 필드 `tcpMaxConnections`, `tcpConnectionRate`, `tlsMaxConnections`, `tlsConnectionRate`는 0~1000000이며 생략하면 0(제한 없음)이다. 해당 listener 주소가 비어 있으면 그 listener의 두 값은 0이어야 한다. 선택 object `tls`는 `certFile`, `keyFile`, `caFile`, `clientAuth`, `minVersion`을 모두 요구한다. `tlsListenAddress`가 비어 있으면 `tls`를 지정할 수 없고, 주소가 있으면 `tls`가 필요하다. `certFile`과 `keyFile`은 공백이 없는 비어 있지 않은 경로여야 한다. `clientAuth`는 `none`, `request`, `require` 중 하나다. `none`이면 `caFile`은 빈 문자열이어야 한다. `request` 또는 `require`이면 `caFile`은 공백이 없는 비어 있지 않은 경로여야 한다. `minVersion`은 `1.2` 또는 `1.3`이어야 한다. 인증서·키 쌍과 client CA 파일은 listener 시작 때 읽고 검증한다. |
 | `replication` | 객체(선택) | 생략하면 복제 계수 3과 쓰기 쿼럼 2를 사용한다. 지정하면 정확히 `{factor:int, writeQuorum:int}`여야 하며 3/2만 허용한다. |
 | `publishBackpressure` | 선택 object | `minFreeBytes`, `maxCommitLagMillis`는 `uint64`다. Object가 있으면 두 key가 모두 필요하다. `publishBackpressure` object를 생략하면 기본값은 각각 `1073741824`, `1000`이다. `minFreeBytes` 범위는 `0..1<<50`이며 0은 disk admission을 끈다. `maxCommitLagMillis` 범위는 `100..10000`이다. |
@@ -197,10 +197,10 @@ Object 안에서 같은 이름의 key가 다시 나오면 거절한다. 대소�
     "audience": "narumq",
     "algorithms": ["RS256"],
     "jwksUrl": "https://issuer.example/.well-known/jwks.json",
-    "cacheTtl": "15m",
-    "refreshCooldown": "30s",
-    "clockSkew": "30s",
-    "httpTimeout": "5s"
+    "cacheTtlMillis": 900000,
+    "refreshCooldownMillis": 30000,
+    "clockSkewMillis": 30000,
+    "httpTimeoutMillis": 5000
   },
   "identities": [
     {
@@ -237,7 +237,7 @@ Object 안에서 같은 이름의 key가 다시 나오면 거절한다. 대소�
 
 `mtlsIdentities` 원소는 `identityKind`, `identity`, `tenantId`, `subject`, `credentialId`, `allowedClientIds`, `roles` field만 사용한다. `identityKind`는 `commonName`, `dnsSan`, `emailSan` 중 하나다. Identity 비교는 대소문자를 구분하는 exact match다. 인증서 하나가 어떤 entry와도 맞지 않으면 unmapped로 처리한다. 둘 이상의 entry와 맞으면 ambiguous로 처리한다. `NotAfter`는 새 principal의 만료 시각으로 사용한다. Trust chain, 인증서 유효 기간과 client-auth EKU는 TLS handshake에서 먼저 검증한다.
 
-Issuer와 audience는 각각 하나만 허용한다. JWT identities의 `(issuer, subject)` binding, mTLS identities의 `(identityKind, identity)` selector, `allowedClientIds`와 `roles`는 각각 고유해야 한다. Password identities는 같은 `subject`를 공유할 수 있지만 `username`과 `credentialId`는 고유해야 한다. JWT·password·mTLS 전체에서 `credentialId`는 UTF-8 1~512 bytes이며 중복될 수 없다. ACL `effect`는 `allow|deny`, `action`은 `publish|subscribe|unsubscribe|will`만 허용한다. 중복 ACL rule과 잘못된 MQTT filter는 시작을 거절한다. `jwksUrl`은 절대 `https` URL이어야 한다. Deterministic test를 위해 IP literal loopback host의 HTTP만 예외로 허용한다. `cacheTtl`, `refreshCooldown`, `clockSkew`, `httpTimeout`은 모두 양수여야 한다.
+Issuer와 audience는 각각 하나만 허용한다. JWT identities의 `(issuer, subject)` binding, mTLS identities의 `(identityKind, identity)` selector, `allowedClientIds`와 `roles`는 각각 고유해야 한다. Password identities는 같은 `subject`를 공유할 수 있지만 `username`과 `credentialId`는 고유해야 한다. JWT·password·mTLS 전체에서 `credentialId`는 UTF-8 1~512 bytes이며 중복될 수 없다. ACL `effect`는 `allow|deny`, `action`은 `publish|subscribe|unsubscribe|will`만 허용한다. 중복 ACL rule과 잘못된 MQTT filter는 시작을 거절한다. `jwksUrl`은 절대 `https` URL이어야 한다. Deterministic test를 위해 IP literal loopback host의 HTTP만 예외로 허용한다. `cacheTtlMillis`, `refreshCooldownMillis`, `clockSkewMillis`, `httpTimeoutMillis`는 각각 `uint32` millisecond 정수이며 `1..4294967295`여야 한다.
 
 Security config에는 `jwt`, nonempty `passwordIdentities`, `mtlsIdentities` 중 하나 이상의 authentication method가 필요하다. `identities`는 `jwt`가 있어야 한다.
 
@@ -259,7 +259,7 @@ Salt는 16 bytes, digest는 32 bytes다. 둘 다 padding 없는 canonical standa
 
 ```json
 "tenantLimits": {
-  "maxWait": "1s",
+  "maxWaitMillis": 1000,
   "default": {
     "maxConnections": 1000, "maxSessions": 2000, "maxSubscriptions": 10000,
     "messagesPerSecond": 500, "bytesPerSecond": 1048576, "maxPayloadBytes": 262144
@@ -273,8 +273,8 @@ Salt는 16 bytes, digest는 32 bytes다. 둘 다 padding 없는 canonical standa
 - `maxConnections`, `maxSessions`, `maxSubscriptions`, `messagesPerSecond`의 허용 범위는 `0..1,000,000`이다.
 - `bytesPerSecond`의 허용 범위는 `0..1,099,511,627,776`(`1<<40`)이다.
 - `maxPayloadBytes`의 허용 범위는 `0..268435455`다.
-- `maxWait`는 Go duration이며 `0s..10s`다. 생략하면 `1s`다. `0s`는 대기 없이 거절한다.
-- 알 수 없는 field, 범위 밖 값, 음수와 잘못된 duration은 시작을 거절한다.
+- `maxWaitMillis`는 `uint32` millisecond 정수이며 `0..10000`이다. 생략하면 `1000`이다. `0`은 대기 없이 거절한다.
+- 알 수 없는 field, 범위 밖 값, 음수와 문자열 duration은 시작을 거절한다.
 
 ### 1.5 Peer-only config JSON
 
@@ -321,11 +321,10 @@ go build -ldflags "-X main.buildReleaseVersion=<semver> -X main.buildFeatures=<c
 
 Duration 표기는 입력 형식에 따라 다르다.
 
-- Flag는 Go duration을 쓴다. 예: `10s`.
-- Security config는 Go duration 문자열을 쓴다.
-- Cluster config는 `Millis` 접미사가 붙은 정수 millisecond를 쓴다.
+- Flag는 Go duration 문자열을 쓴다. 예: `10s`.
+- JSON duration 값은 `Millis` 접미사가 붙은 field 이름과 음수가 아닌 정수 millisecond를 쓴다. Security config와 cluster config에 같은 규칙을 적용한다. 각 field의 허용 범위는 해당 설정 절을 따른다.
 
-이 문서는 현재 형식을 기록한다. 새 key의 표기 규칙은 [ADR-0052](../decisions/ADR-0052-configuration-tiers-and-cluster-policy.md)(Proposed)가 제안한다. 상대 경로는 process의 현재 작업 디렉터리를 기준으로 한다.
+G5 규칙은 채택했다. ADR-0052의 다른 제안은 `Proposed`로 남는다. 상대 경로는 process의 현재 작업 디렉터리를 기준으로 한다.
 
 ## 2. 오류
 
@@ -356,6 +355,7 @@ Consumer는 알 수 없는 key를 거절한다. 선택 key를 추가하면 그 k
 `Draft` 단계에서는 flag·key의 삭제와 이름 변경을 같은 버전에 반영할 수 있다. 이때 변경 내용을 아래 목록에 기록한다. `Active` 이후에는 위 규칙을 따른다.
 
 - 2026-10-10: standalone `-http-auth-token`을 삭제하고 `-http-auth-token-file`로 대체했다([ADR-0052 §1.5](../decisions/ADR-0052-configuration-tiers-and-cluster-policy.md#15-형식과-cluster-mqtt-tls), G9).
+- 2026-10-10: Security config JWT, cluster `management.oidc`와 `tenantLimits.maxWait` duration key를 `Millis` 정수 field로 바꿨다. 이전 이름과 Go duration 문자열은 거절한다([ADR-0052 §1.5](../decisions/ADR-0052-configuration-tiers-and-cluster-policy.md#15-형식과-cluster-mqtt-tls), G5).
 
 ## 4. 버전과 지원 단계
 
@@ -383,7 +383,7 @@ Cluster config와 security config 예제는 [§1.3](#13-cluster-config-json)과 
 | `cmd/narumq`: `TestRunWithContextManagementAuthTokenFile` | Standalone Management token 파일의 존재·내용·Bearer 인증과 삭제된 flag | 통과 | 2026-10-10 [실행 기록](../specs/configuration-and-runtime-options.md#configuration-test-execution) |
 | `cmd/narumq`: `TestConfiguredTenantQuotaProfileUsesBuiltinOrStrictConfig`, `TestClusterTenantQuotaControllerLogsCommittedMismatchOnce`, `TestClusterMQTTListenersBindConfiguredEndpointsAndClosePartialOpen`, `TestRunRaftPeerOnlyStartupFailuresReleaseResources` | Quota profile, committed mismatch, partial listener 정리와 peer-only 시작 실패 | 통과 | 2026-10-10 [실행 기록](../specs/configuration-and-runtime-options.md#configuration-test-execution) |
 | `cmd/narumq`: `TestParseClusterConfigMQTTTLS`, `TestClusterMQTTListenersBindConfiguredEndpointsAndClosePartialOpen`, `TestClusterMQTTSecurityValidatesTLSClientAuthBindings`, `tests/integration`: `TestDynamicClusterMQTTTLSClientCertificateProcessAcceptance` | `mqtt.tls` 필수 key·strict validation, listener 자원 정리, client-auth binding과 3-node TLS·mTLS 동작 | 통과 | [Cluster MQTT TLS 실행 기록](../specs/configuration-and-runtime-options.md#cluster-mqtt-tls-g2-g10-execution) |
-| `cmd/narumq`: `TestParseClusterConfigAcceptsNonLoopbackMQTTTCPListener`, `TestValidateClusterConfigReportsFirstInvalidField` | Cluster 평문 TCP의 비 loopback 주소 허용과 필수 security config | 통과 | [Cluster 평문 TCP(G3) 실행 기록](../specs/configuration-and-runtime-options.md#cluster-plaintext-tcp-g3-execution) |
+| `cmd/narumq`: `TestPositiveMillisDuration`, `TestParseSecurityConfig_Rejections`, `TestParseSecurityConfig_TenantLimitsMaxWaitMillis`, `TestParseSecurityConfig_TenantLimitsRejectInvalidProfiles`, `TestClusterManagementAccessConfiguration` | Millis 정수 경계, security config의 새 key·legacy key·문자열 거절, tenant max wait 범위, cluster OIDC 설정 | 통과 | [G5 duration 표기 실행 기록](../specs/configuration-and-runtime-options.md#g5-duration-millis-execution) |
 
 별도 `tests/contracts` 전용 시험은 실행하지 않았다. Process configuration v1은 `Draft`를 유지한다.
 

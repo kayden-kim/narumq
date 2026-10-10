@@ -32,7 +32,7 @@ func TestDynamicClusterManagementRBACProcessAcceptance(t *testing.T) {
 	}
 	fixture.managementOIDC = &clusterMembershipProcessOIDC{
 		Issuer: "https://issuer.example", Audience: "narumq", Algorithms: []string{"RS256"},
-		JWKSURL: issuer.jwksURL, CacheTTL: "5m", RefreshCooldown: "30s", ClockSkew: "30s", HTTPTimeout: "5s",
+		JWKSURL: issuer.jwksURL, CacheTTLMillis: 300000, RefreshCooldownMillis: 30000, ClockSkewMillis: 30000, HTTPTimeoutMillis: 5000,
 		Identities: []clusterMembershipProcessOIDCIdentity{{Subject: "security-admin", Roles: []string{"SecurityAdmin"}}},
 	}
 
@@ -105,7 +105,7 @@ func TestDynamicClusterManagementRBACProcessAcceptance(t *testing.T) {
 	}
 	clusterProcessActivateFeature(t, fixture.ctx, processes, "connection-rebalance")
 
-	rebalanceBody := []byte(`{"serverReference":"lb.sec10.example.test:1883","maxDeviationConnections":1,"connectionRatePerSecond":5,"loadBalancerPropagationDelayMs":60000,"timeoutMs":120000}`)
+	rebalanceBody := []byte(`{"serverReference":"lb.sec10.example.test:1883","maxDeviationConnections":1,"connectionRatePerSecond":5,"loadBalancerPropagationDelayMillis":60000,"timeoutMillis":120000}`)
 	for _, credential := range []struct {
 		name, header, value string
 	}{

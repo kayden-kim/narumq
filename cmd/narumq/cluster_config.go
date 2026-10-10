@@ -371,7 +371,7 @@ func expectClusterKeys(path string, seen map[string]struct{}) error {
 	case "management":
 		required = []string{"listenAddress", "clusterAdminTokenFile", "auditDirectory"}
 	case "management.oidc":
-		required = []string{"issuer", "audience", "algorithms", "jwksUrl", "cacheTtl", "refreshCooldown", "clockSkew", "httpTimeout", "identities"}
+		required = []string{"issuer", "audience", "algorithms", "jwksUrl", "cacheTtlMillis", "refreshCooldownMillis", "clockSkewMillis", "httpTimeoutMillis", "identities"}
 	case "mqtt":
 		required = []string{"tcpListenAddress", "tlsListenAddress", "securityConfigFile"}
 	case "mqtt.tls":

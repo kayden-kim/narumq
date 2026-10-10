@@ -47,6 +47,7 @@ TEN-06·TEN-07의 연결 상태와 PUBLISH traffic 한도를 다음 구조로 �
   - `maxPayloadBytes`: 0~268,435,455.
   - `maxWait`: Go duration, `0s`~`10s`. 생략하면 `1s`다. `0s`는 대기 없이 바로 거절한다.
   - 알 수 없는 field, 범위 밖 값, 음수, 잘못된 duration은 startup에서 거절한다.
+2026-10-10 구현 메모: G5에서 `maxWait`를 `maxWaitMillis`로 바꿨다. 이전 Go duration 문자열은 거절한다. 현재 계약은 [Process configuration v1 §1.4](../contracts/process-configuration-v1.md#14-security-config-json)에 있다.
 
 한도는 인증된 principal(`principal.Subject() != ""`)에만 적용한다. Security config가 없는 loopback 개발 모드와 anonymous session에는 한도가 없다.
 

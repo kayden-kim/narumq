@@ -24,29 +24,29 @@ type connectionRebalanceHandler struct {
 }
 
 type connectionRebalanceRequest struct {
-	ServerReference                *string `json:"serverReference"`
-	MaxDeviationConnections        *uint64 `json:"maxDeviationConnections"`
-	ConnectionRatePerSecond        *uint32 `json:"connectionRatePerSecond"`
-	LoadBalancerPropagationDelayMs *uint64 `json:"loadBalancerPropagationDelayMs"`
-	TimeoutMs                      *uint64 `json:"timeoutMs"`
+	ServerReference                    *string `json:"serverReference"`
+	MaxDeviationConnections            *uint64 `json:"maxDeviationConnections"`
+	ConnectionRatePerSecond            *uint32 `json:"connectionRatePerSecond"`
+	LoadBalancerPropagationDelayMillis *uint64 `json:"loadBalancerPropagationDelayMillis"`
+	TimeoutMillis                      *uint64 `json:"timeoutMillis"`
 }
 
 type connectionRebalanceResponse struct {
-	OperationID                    string                      `json:"operationId"`
-	State                          string                      `json:"state"`
-	ServerReference                *string                     `json:"serverReference"`
-	MaxDeviationConnections        uint64                      `json:"maxDeviationConnections"`
-	ConnectionRatePerSecond        uint32                      `json:"connectionRatePerSecond"`
-	LoadBalancerPropagationDelayMs uint64                      `json:"loadBalancerPropagationDelayMs"`
-	TimeoutMs                      uint64                      `json:"timeoutMs"`
-	StartedAt                      *string                     `json:"startedAt"`
-	DeadlineAt                     *string                     `json:"deadlineAt"`
-	FinishedAt                     *string                     `json:"finishedAt"`
-	TotalConnections               uint64                      `json:"totalConnections"`
-	FairShare                      uint64                      `json:"fairShare"`
-	Ceiling                        uint64                      `json:"ceiling"`
-	Nodes                          []connectionRebalanceNode   `json:"nodes"`
-	Failure                        *connectionRebalanceFailure `json:"failure"`
+	OperationID                        string                      `json:"operationId"`
+	State                              string                      `json:"state"`
+	ServerReference                    *string                     `json:"serverReference"`
+	MaxDeviationConnections            uint64                      `json:"maxDeviationConnections"`
+	ConnectionRatePerSecond            uint32                      `json:"connectionRatePerSecond"`
+	LoadBalancerPropagationDelayMillis uint64                      `json:"loadBalancerPropagationDelayMillis"`
+	TimeoutMillis                      uint64                      `json:"timeoutMillis"`
+	StartedAt                          *string                     `json:"startedAt"`
+	DeadlineAt                         *string                     `json:"deadlineAt"`
+	FinishedAt                         *string                     `json:"finishedAt"`
+	TotalConnections                   uint64                      `json:"totalConnections"`
+	FairShare                          uint64                      `json:"fairShare"`
+	Ceiling                            uint64                      `json:"ceiling"`
+	Nodes                              []connectionRebalanceNode   `json:"nodes"`
+	Failure                            *connectionRebalanceFailure `json:"failure"`
 }
 
 type connectionRebalanceNode struct {
@@ -79,8 +79,8 @@ func (handler *connectionRebalanceHandler) Start(w http.ResponseWriter, r *http.
 		writeInvalidRequest(w, r, err)
 		return
 	}
-	if request.MaxDeviationConnections == nil || request.ConnectionRatePerSecond == nil || request.LoadBalancerPropagationDelayMs == nil || request.TimeoutMs == nil {
-		writeInvalidRequest(w, r, errors.New("maxDeviationConnections, connectionRatePerSecond, loadBalancerPropagationDelayMs, and timeoutMs are required"))
+	if request.MaxDeviationConnections == nil || request.ConnectionRatePerSecond == nil || request.LoadBalancerPropagationDelayMillis == nil || request.TimeoutMillis == nil {
+		writeInvalidRequest(w, r, errors.New("maxDeviationConnections, connectionRatePerSecond, loadBalancerPropagationDelayMillis, and timeoutMillis are required"))
 		return
 	}
 	serverReference := ""
@@ -90,7 +90,7 @@ func (handler *connectionRebalanceHandler) Start(w http.ResponseWriter, r *http.
 	operation, err := handler.service.StartConnectionRebalance(r.Context(), membership.StartConnectionRebalanceRequestDTO{
 		IdempotencyKey: idempotencyKey, ServerReference: serverReference,
 		MaxDeviationConnections: *request.MaxDeviationConnections, ConnectionRatePerSecond: *request.ConnectionRatePerSecond,
-		LoadBalancerPropagationDelayMillis: *request.LoadBalancerPropagationDelayMs, TimeoutMillis: *request.TimeoutMs,
+		LoadBalancerPropagationDelayMillis: *request.LoadBalancerPropagationDelayMillis, TimeoutMillis: *request.TimeoutMillis,
 	})
 	if err != nil {
 		writeMembershipServiceError(w, r, err)
@@ -171,7 +171,7 @@ func connectionRebalanceOperationBody(operation membership.ConnectionRebalanceOp
 	response := connectionRebalanceResponse{
 		OperationID: state.RebalanceOperationID, State: state.Phase.String(), ServerReference: serverReference,
 		MaxDeviationConnections: state.MaxDeviationConnections, ConnectionRatePerSecond: state.ConnectionRatePerSecond,
-		LoadBalancerPropagationDelayMs: state.LoadBalancerPropagationDelayMillis, TimeoutMs: state.TimeoutMillis,
+		LoadBalancerPropagationDelayMillis: state.LoadBalancerPropagationDelayMillis, TimeoutMillis: state.TimeoutMillis,
 		StartedAt: rebalanceTime(state.StartedAtUnixMillis), DeadlineAt: rebalanceTime(state.DeadlineAtUnixMillis),
 		FinishedAt: rebalanceTime(state.FinishedAtUnixMillis), TotalConnections: evaluation.Total,
 		FairShare: evaluation.FairShare, Ceiling: evaluation.Ceiling, Nodes: nodes,

@@ -68,7 +68,7 @@ type ClusterSummaryDTO struct {
 type NodeSummaryDTO struct {
 	NodeID            string               `json:"nodeId"`
 	Version           string               `json:"version"`
-	UptimeMs          int64                `json:"uptimeMs"`
+	UptimeMillis      int64                `json:"uptimeMillis"`
 	State             NodeState            `json:"state"`
 	Ready             bool                 `json:"ready"`
 	ReadinessReason   *string              `json:"readinessReason"`

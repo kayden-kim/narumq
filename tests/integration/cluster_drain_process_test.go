@@ -63,7 +63,7 @@ func TestDynamicClusterNodeDrainProcessAcceptance(t *testing.T) {
 
 	request := clusterDrainProcessRequest{
 		ServerReference: fixture.mqttAddresses[0], ConnectionRatePerSecond: 2,
-		LoadBalancerPropagationDelayMs: 1500, TimeoutMs: 60000,
+		LoadBalancerPropagationDelayMillis: 1500, TimeoutMillis: 60000,
 	}
 	leaderID, leaderURL := clusterMembershipProcessFindLeader(t, ctx, processes, 3)
 	status, body, err := clusterDrainProcessStart(ctx, leaderURL, 3, request, "drain-3")
@@ -265,7 +265,7 @@ func TestDynamicClusterNodeDrainCancelTimeoutAndResumeProcessAcceptance(t *testi
 	leaderID, leaderURL := clusterMembershipProcessFindLeader(t, ctx, processes, 3)
 
 	cancelRequest := clusterDrainProcessRequest{
-		ConnectionRatePerSecond: 2, LoadBalancerPropagationDelayMs: 30000, TimeoutMs: 60000,
+		ConnectionRatePerSecond: 2, LoadBalancerPropagationDelayMillis: 30000, TimeoutMillis: 60000,
 	}
 	status, body, err := clusterDrainProcessStart(ctx, leaderURL, 2, cancelRequest, "drain-cancel-node-2")
 	if err != nil || status != http.StatusAccepted {
@@ -290,7 +290,7 @@ func TestDynamicClusterNodeDrainCancelTimeoutAndResumeProcessAcceptance(t *testi
 	}
 
 	resumeRequest := clusterDrainProcessRequest{
-		ConnectionRatePerSecond: 2, LoadBalancerPropagationDelayMs: 4000, TimeoutMs: 60000,
+		ConnectionRatePerSecond: 2, LoadBalancerPropagationDelayMillis: 4000, TimeoutMillis: 60000,
 	}
 	leaderID, leaderURL = clusterMembershipProcessFindLeader(t, ctx, processes, 3)
 	status, body, err = clusterDrainProcessStart(ctx, leaderURL, 3, resumeRequest, "drain-resume-node-3")
@@ -333,7 +333,7 @@ func TestDynamicClusterNodeDrainCancelTimeoutAndResumeProcessAcceptance(t *testi
 	clusterMembershipProcessWaitForStatus(t, ctx, processes[2], "/health/ready", http.StatusOK)
 	leaderID, leaderURL = clusterMembershipProcessFindLeader(t, ctx, processes, 3)
 	timeoutRequest := clusterDrainProcessRequest{
-		ConnectionRatePerSecond: 2, LoadBalancerPropagationDelayMs: 0, TimeoutMs: 4000,
+		ConnectionRatePerSecond: 2, LoadBalancerPropagationDelayMillis: 0, TimeoutMillis: 4000,
 	}
 	status, body, err = clusterDrainProcessStart(ctx, leaderURL, 3, timeoutRequest, "drain-timeout-node-3")
 	if err != nil || status != http.StatusAccepted {
@@ -366,10 +366,10 @@ func TestDynamicClusterNodeDrainCancelTimeoutAndResumeProcessAcceptance(t *testi
 }
 
 type clusterDrainProcessRequest struct {
-	ServerReference                string `json:"serverReference"`
-	ConnectionRatePerSecond        uint32 `json:"connectionRatePerSecond"`
-	LoadBalancerPropagationDelayMs uint64 `json:"loadBalancerPropagationDelayMs"`
-	TimeoutMs                      uint64 `json:"timeoutMs"`
+	ServerReference                    string `json:"serverReference"`
+	ConnectionRatePerSecond            uint32 `json:"connectionRatePerSecond"`
+	LoadBalancerPropagationDelayMillis uint64 `json:"loadBalancerPropagationDelayMillis"`
+	TimeoutMillis                      uint64 `json:"timeoutMillis"`
 }
 
 type clusterDrainProcessOperation struct {
@@ -404,6 +404,25 @@ func clusterDrainProcessStart(ctx context.Context, baseURL string, nodeID uint64
 	}
 	return clusterMembershipProcessRequest(ctx, http.MethodPost,
 		fmt.Sprintf("%s/api/v1/nodes/%d/drain", baseURL, nodeID), body, clusterMembershipProcessAdmin, idempotencyKey)
+}
+
+// clusterDrainProcessStartOn sends the drain request in the API shape accepted by process's binary.
+func clusterDrainProcessStartOn(ctx context.Context, process *clusterMembershipProcess, nodeID uint64, request clusterDrainProcessRequest, idempotencyKey string) (int, []byte, error) {
+	if _, legacy := clusterLegacyConfigBinaries.Load(process.binary); !legacy {
+		return clusterDrainProcessStart(ctx, process.managementURL(), nodeID, request, idempotencyKey)
+	}
+	body, err := json.Marshal(map[string]any{
+		"serverReference":                request.ServerReference,
+		"connectionRatePerSecond":        request.ConnectionRatePerSecond,
+		"loadBalancerPropagationDelayMs": request.LoadBalancerPropagationDelayMillis,
+		"timeoutMs":                      request.TimeoutMillis,
+	})
+	if err != nil {
+		return 0, nil, err
+	}
+	return clusterMembershipProcessRequest(ctx, http.MethodPost,
+		fmt.Sprintf("%s/api/v1/nodes/%d/drain", process.managementURL(), nodeID), body,
+		clusterMembershipProcessAdmin, idempotencyKey)
 }
 
 func clusterDrainProcessDecodeOperation(body []byte) (clusterDrainProcessOperation, error) {
