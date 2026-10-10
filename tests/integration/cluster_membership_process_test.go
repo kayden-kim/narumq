@@ -771,6 +771,8 @@ func clusterProcessConfigForBinary(binary, configPath string) (string, error) {
 		return "", errors.New("legacy cluster config management object is missing")
 	}
 	delete(management, "auditDirectory")
+	delete(management, "requestRate")
+	delete(management, "authFailureRate")
 	if rawOIDC, exists := management["oidc"]; exists {
 		oidc, ok := rawOIDC.(map[string]any)
 		if !ok {

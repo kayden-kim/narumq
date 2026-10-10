@@ -282,11 +282,13 @@ go build ./... && go vet ./...
 go test ./tests/integration -count=1 -timeout 30m -v -run '^(TestDynamicClusterManagementRBACProcessAcceptance|TestDynamicClusterCredentialExpiryProcessAcceptance|TestDynamicClusterNodeDrainProcessAcceptance|TestDynamicClusterConnectionRebalanceProcessAcceptance|TestDynamicClusterManagementAuditProcessAcceptance)$'
 NARUMQ_RELEASE_COMPAT=1 GOMAXPROCS=4 go test ./tests/integration -count=1 -timeout 30m -v -run '^TestDynamicClusterReleaseCompatibilityProcessAcceptance$'
 NARUMQ_RELEASE_COMPAT=1 GOMAXPROCS=4 go test ./tests/integration -count=1 -timeout 30m -v -run '^(TestDynamicClusterReleaseCompatibilityProcessAcceptance|TestDynamicClusterHistoricalReleaseCompatibilityProcessAcceptance|TestClusterBackupRestoreHistoricalReleaseProcessAcceptance)$'
+NARUMQ_RELEASE_COMPAT=1 GOMAXPROCS=4 go test ./tests/integration -run '^(TestDynamicClusterHistoricalReleaseCompatibilityProcessAcceptance|TestClusterBackupRestoreHistoricalReleaseProcessAcceptance)$' -count=1 -v -timeout 30m
+NARUMQ_RELEASE_COMPAT=1 GOMAXPROCS=4 go test ./tests/integration -run '^(TestDynamicClusterReleaseCompatibilityProcessAcceptance|TestClusterBackupRestoreReleaseWindowProcessAcceptance)$' -count=1 -v -timeout 30m
 go test ./tests/integration -count=1 -run '^TestDashboardProvisioningMatchesContracts$'
 go run ./cmd/narumq -tcp-listen 127.0.0.1:18831 -security-config .artifacts/verification/g5-duration-millis/legacy-security.json
 go run ./cmd/narumq -tcp-listen 127.0.0.1:18832 -security-config .artifacts/verification/g5-duration-millis/current-security.json
 ```
-기준 비교는 detached checkout commit `23005e1a0d819a357507ce173b8d0f89cf40cf19`에서 수행했다. Historical release acceptance 두 시험은 현재 checkout과 기준 checkout에서 모두 `load cluster config: cluster config has invalid JSON or field types`로 실패했다. Dashboard contract 시험은 panel 6의 datasource/query 형식을 기준 checkout에 맞추고 duration selector만 바꾼 뒤 현재와 기준 checkout에서 통과했다. 기준 checkout은 비교 뒤 제거했다.
+기준 비교는 detached checkout commit `23005e1a0d819a357507ce173b8d0f89cf40cf19`에서 수행했다. 이전 실행에서 historical acceptance 두 시험은 현재 checkout과 기준 checkout에서 모두 `load cluster config: cluster config has invalid JSON or field types`로 실패했다. 원인은 `de19302`가 fixture에 추가한 `requestRate`·`authFailureRate`를 `clusterProcessConfigForBinary`가 legacy binary용 설정에서 제거하지 않아 historical source `58a95f801e1467379db2eb6f3454ae44e954418a`가 설정을 거절한 것이었다. Legacy 변환에서 두 key를 제거한 뒤 현재 작업 트리의 historical acceptance가 통과했다. Dashboard contract 시험은 panel 6의 datasource/query 형식을 기준 checkout에 맞추고 duration selector만 바꾼 뒤 현재와 기준 checkout에서 통과했다. 기준 checkout은 비교 뒤 제거했다.
 
 | 확인 | 결과 |
 | --- | --- |
@@ -294,16 +296,16 @@ go run ./cmd/narumq -tcp-listen 127.0.0.1:18832 -security-config .artifacts/veri
 | `cmd/narumq` 전체 시험 | 통과 |
 | Management API와 contract regression | 통과 |
 | Migrated benchmark·chaos·compatibility fixture 시험 | 통과 |
-| Build와 vet | 통과 |
+| Build와 vet | 기존 build·vet 통과. 이번 변경의 `go vet ./tests/integration`도 통과했다. |
 | Management RBAC, credential expiry, drain, rebalance, audit process acceptance | 통과 |
-| N-1/N release compatibility process acceptance | 통과. |
-| Historical release acceptance | `TestDynamicClusterHistoricalReleaseCompatibilityProcessAcceptance`와 `TestClusterBackupRestoreHistoricalReleaseProcessAcceptance`는 현재와 기준 checkout에서 모두 `load cluster config: cluster config has invalid JSON or field types`로 실패했다. 기준 checkout에서 같은 실패를 확인해 이 기존 문제는 수정하지 않았다. |
+| N-1/N release compatibility process acceptance | 통과 (`TestDynamicClusterReleaseCompatibilityProcessAcceptance`: 61.37s, `TestClusterBackupRestoreReleaseWindowProcessAcceptance`: 33.65s). |
+| Historical release acceptance | 통과 (`TestDynamicClusterHistoricalReleaseCompatibilityProcessAcceptance`: 89.78s, `TestClusterBackupRestoreHistoricalReleaseProcessAcceptance`: 19.72s). Historical source `58a95f801e1467379db2eb6f3454ae44e954418a`를 사용했고, archive 시험에서 `HEAD -> historical N-1: non-zero exit and target directory absent`를 확인했다. |
 | Dashboard provisioning contract | 통과. Panel 6의 datasource/query 형식은 기준 checkout과 같고 `uptimeMs` selector만 `uptimeMillis`로 바꿨다. |
 | Legacy JSON CLI smoke | 예상대로 종료 코드 1과 `unknown field "cacheTtl"`을 반환했다. |
 | Current JSON CLI smoke | Listener 시작 log를 확인했다. Managed process로 종료했다. |
-| Markdown links | 통과 (152 files, 2,186 local links) |
+| Markdown links | 통과 (152 files, 2,187 local links) |
 | Traceability | 통과 (P0 mapped `70/81`, exceptions `11`) |
-| Local gate | 통과 (206.30s). Branch instrumentation, traceability, fuzz, architecture, package·race 시험과 coverage가 모두 통과했다. |
+| Local gate | 통과 (219.86s). Branch instrumentation, traceability, fuzz, architecture, package·race 시험과 coverage가 모두 통과했다. |
 | CI gate | 통과 (1484.27s). Coverage PASS, mutation efficacy `100%`, mutant coverage `98.85%`(6 not covered). |
 
 ## 7. 미결정 사항
