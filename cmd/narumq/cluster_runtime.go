@@ -35,6 +35,7 @@ import (
 	"narumq/internal/adapters/memory/sessionstore"
 	adaptersmetrics "narumq/internal/adapters/metrics"
 	raftadapter "narumq/internal/adapters/raft"
+	"narumq/internal/adapters/runtimemetrics"
 	tcpadapter "narumq/internal/adapters/tcp"
 	tlsadapter "narumq/internal/adapters/tls"
 	"narumq/internal/application/audit"
@@ -504,7 +505,15 @@ func runClusterMode(ctx context.Context, config clusterConfigFile, logger *slog.
 		RequestRate:          requestRate, AuthFailureRate: authFailureRate, Clock: systemClock,
 		ClusterID: config.ClusterID, Logger: logger,
 	}, stateProvider, healthChecker, metricsRegistry, membershipService, drainService, rebalanceService, runtime, auditService, auditQueryService, credentialRevocationService, blocklistService)
-	return runtime.serve(ctx, mqttServer, managementServer, managementListener)
+	var sampler *runtimemetrics.Sampler
+	if config.RuntimeMetrics != nil {
+		createdSampler, err := runtimemetrics.New(config.RuntimeMetrics.OutputFile, config.runtimeMetricsInterval())
+		if err != nil {
+			return err
+		}
+		sampler = createdSampler
+	}
+	return runtime.serve(ctx, mqttServer, managementServer, managementListener, sampler)
 }
 
 type clusterCommitFailureKey struct {
@@ -685,7 +694,7 @@ type clusterApplyEvent struct {
 	configuration *raftadapter.CommittedConfigurationDTO
 }
 
-func (runtime *clusterRuntime) serve(parent context.Context, mqttServer *tcpadapter.Server, managementServer *http.Server, managementListener net.Listener) error {
+func (runtime *clusterRuntime) serve(parent context.Context, mqttServer *tcpadapter.Server, managementServer *http.Server, managementListener net.Listener, sampler *runtimemetrics.Sampler) error {
 	ctx, cancel := context.WithCancel(parent)
 	defer cancel()
 	driverDone := make(chan error, 1)
@@ -703,7 +712,7 @@ func (runtime *clusterRuntime) serve(parent context.Context, mqttServer *tcpadap
 		go func() { admissionDone <- runtime.runSeedAdmission(ctx) }()
 	}
 
-	serviceDone := make(chan serviceResult, 3)
+	serviceDone := make(chan serviceResult, 4)
 	remaining := 1
 	go func() {
 		serviceDone <- serviceResult{name: "cluster delivery forwarding receiver", err: runtime.runForwardReceiver(ctx)}
@@ -720,6 +729,12 @@ func (runtime *clusterRuntime) serve(parent context.Context, mqttServer *tcpadap
 		serviceDone <- serviceResult{name: "cluster management HTTP listener", err: err}
 	}()
 	remaining++
+	if sampler != nil {
+		remaining++
+		go func() {
+			serviceDone <- serviceResult{name: "cluster runtime metrics sampler", err: sampler.Run(ctx)}
+		}()
+	}
 
 	var results []error
 	parentDone := parent.Done()

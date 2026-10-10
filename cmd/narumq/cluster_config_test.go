@@ -607,3 +607,67 @@ func TestParseClusterConfigPublishBackpressure(t *testing.T) {
 		})
 	}
 }
+
+// Traceability: PERF-08; docs/specs/configuration-and-runtime-options.md §6.
+func TestParseClusterConfigRuntimeMetrics(t *testing.T) {
+	base := string(mustMarshalClusterConfig(t, validBootstrapClusterConfig()))
+	for _, tc := range []struct {
+		name, object, wantOutput string
+		wantInterval             uint64
+		wantDuration             time.Duration
+		wantError                string
+	}{
+		{name: "omitted"},
+		{
+			name: "minimum", object: `{"outputFile":"metrics/node1.jsonl","intervalMillis":1}`,
+			wantOutput: "metrics/node1.jsonl", wantInterval: 1, wantDuration: time.Millisecond,
+		},
+		{
+			name: "maximum", object: `{"outputFile":"metrics/node1.jsonl","intervalMillis":3600000}`,
+			wantOutput: "metrics/node1.jsonl", wantInterval: 3_600_000, wantDuration: time.Hour,
+		},
+		{name: "missing output", object: `{"intervalMillis":1}`, wantError: `cluster config is missing required field "outputFile"`},
+		{name: "missing interval", object: `{"outputFile":"metrics/node1.jsonl"}`, wantError: `cluster config is missing required field "intervalMillis"`},
+		{name: "zero interval", object: `{"outputFile":"metrics/node1.jsonl","intervalMillis":0}`, wantError: "runtimeMetrics intervalMillis must be between 1 and 3600000"},
+		{name: "interval too large", object: `{"outputFile":"metrics/node1.jsonl","intervalMillis":3600001}`, wantError: "runtimeMetrics intervalMillis must be between 1 and 3600000"},
+		{name: "empty output", object: `{"outputFile":"","intervalMillis":1}`, wantError: "runtimeMetrics outputFile is required"},
+		{name: "output has leading whitespace", object: `{"outputFile":" metrics.jsonl","intervalMillis":1}`, wantError: "runtimeMetrics outputFile is required"},
+		{name: "overlaps directory", object: `{"outputFile":"data/node1/metrics.jsonl","intervalMillis":1}`, wantError: "runtimeMetrics outputFile must not overlap directory or management auditDirectory"},
+		{name: "overlaps audit directory", object: `{"outputFile":"data/node1-audit/metrics.jsonl","intervalMillis":1}`, wantError: "runtimeMetrics outputFile must not overlap directory or management auditDirectory"},
+		{name: "unknown", object: `{"outputFile":"metrics/node1.jsonl","intervalMillis":1,"unknown":1}`, wantError: "cluster config has invalid JSON or field types"},
+		{name: "wrong object type", object: `[]`, wantError: `cluster config field "runtimeMetrics" has invalid JSON field type`},
+		{name: "duplicate key", object: `{"outputFile":"a.jsonl","outputFile":"b.jsonl","intervalMillis":1}`, wantError: "cluster config contains duplicate JSON key"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			input := base
+			if tc.object != "" {
+				input = strings.TrimSuffix(base, "}") + `,"runtimeMetrics":` + tc.object + "}"
+			}
+			parsed, err := parseClusterConfig(strings.NewReader(input))
+			if tc.wantError != "" {
+				if err == nil || err.Error() != tc.wantError {
+					t.Fatalf("error=%v; want %q", err, tc.wantError)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			if tc.wantOutput == "" {
+				if parsed.RuntimeMetrics != nil {
+					t.Fatalf("RuntimeMetrics=%+v; want nil", parsed.RuntimeMetrics)
+				}
+				return
+			}
+			if parsed.RuntimeMetrics == nil {
+				t.Fatal("RuntimeMetrics is nil")
+			}
+			if parsed.RuntimeMetrics.OutputFile != tc.wantOutput || parsed.RuntimeMetrics.IntervalMillis != tc.wantInterval {
+				t.Fatalf("RuntimeMetrics=%+v", parsed.RuntimeMetrics)
+			}
+			if got := parsed.runtimeMetricsInterval(); got != tc.wantDuration {
+				t.Fatalf("runtimeMetricsInterval()=%s; want %s", got, tc.wantDuration)
+			}
+		})
+	}
+}

@@ -44,11 +44,13 @@ type clusterConfigFile struct {
 	TenantQuotas         *clusterTenantQuotaProfileConfig  `json:"tenantQuotas,omitempty"`
 	Replication          *clusterReplicationConfig         `json:"replication,omitempty"`
 	PublishBackpressure  *clusterPublishBackpressureConfig `json:"publishBackpressure,omitempty"`
+	RuntimeMetrics       *clusterRuntimeMetricsConfig      `json:"runtimeMetrics,omitempty"`
 }
 
 const (
-	clusterDefaultMinFreeBytes = 1 << 30
-	clusterDefaultMaxCommitLag = time.Second
+	clusterDefaultMinFreeBytes                    = 1 << 30
+	clusterDefaultMaxCommitLag                    = time.Second
+	clusterMaxRuntimeMetricsIntervalMillis uint64 = 3_600_000
 )
 
 type clusterPublishBackpressureConfig struct {
@@ -56,11 +58,20 @@ type clusterPublishBackpressureConfig struct {
 	MaxCommitLagMillis uint64 `json:"maxCommitLagMillis"`
 }
 
+type clusterRuntimeMetricsConfig struct {
+	OutputFile     string `json:"outputFile"`
+	IntervalMillis uint64 `json:"intervalMillis"`
+}
+
 func (config clusterConfigFile) publishBackpressure() (minFreeBytes uint64, maxCommitLag time.Duration) {
 	if config.PublishBackpressure == nil {
 		return clusterDefaultMinFreeBytes, clusterDefaultMaxCommitLag
 	}
 	return config.PublishBackpressure.MinFreeBytes, time.Duration(config.PublishBackpressure.MaxCommitLagMillis) * time.Millisecond
+}
+
+func (config clusterConfigFile) runtimeMetricsInterval() time.Duration {
+	return time.Duration(config.RuntimeMetrics.IntervalMillis) * time.Millisecond
 }
 
 type clusterReplicationConfig struct {
@@ -294,7 +305,7 @@ func checkClusterJSON(reader io.Reader) error {
 
 func expectedClusterJSONType(path string) string {
 	switch path {
-	case "", "peerTLS", "management", "management.oidc", "mqtt", "mqtt.tls", "tenantQuotas", "tenantQuotas.default", "replication", "publishBackpressure":
+	case "", "peerTLS", "management", "management.oidc", "mqtt", "mqtt.tls", "tenantQuotas", "tenantQuotas.default", "replication", "publishBackpressure", "runtimeMetrics":
 		return "object"
 	case "bootstrapMembers", "seedAddresses", "tenantQuotas.tenants", "management.apiKeys", "management.oidc.algorithms", "management.oidc.identities":
 		return "array"
@@ -331,6 +342,8 @@ func expectClusterKeys(path string, seen map[string]struct{}) error {
 		required = []string{"factor", "writeQuorum"}
 	case "publishBackpressure":
 		required = []string{"minFreeBytes", "maxCommitLagMillis"}
+	case "runtimeMetrics":
+		required = []string{"outputFile", "intervalMillis"}
 	case "tenantQuotas":
 		required = []string{"version", "default", "tenants"}
 	case "tenantQuotas.default":
@@ -450,6 +463,22 @@ func validateClusterConfig(config clusterConfigFile) error {
 		}
 		if pressure.MaxCommitLagMillis < 100 || pressure.MaxCommitLagMillis > 10000 {
 			return errors.New("publishBackpressure maxCommitLagMillis must be between 100 and 10000")
+		}
+	}
+	if metrics := config.RuntimeMetrics; metrics != nil {
+		if !validRequiredPath(metrics.OutputFile) {
+			return errors.New("runtimeMetrics outputFile is required")
+		}
+		if metrics.IntervalMillis < 1 || metrics.IntervalMillis > clusterMaxRuntimeMetricsIntervalMillis {
+			return errors.New("runtimeMetrics intervalMillis must be between 1 and 3600000")
+		}
+		overlapsDirectory, err := clusterPathsOverlap(metrics.OutputFile, config.Directory)
+		if err != nil || overlapsDirectory {
+			return errors.New("runtimeMetrics outputFile must not overlap directory or management auditDirectory")
+		}
+		overlapsAuditDirectory, err := clusterPathsOverlap(metrics.OutputFile, config.Management.AuditDirectory)
+		if err != nil || overlapsAuditDirectory {
+			return errors.New("runtimeMetrics outputFile must not overlap directory or management auditDirectory")
 		}
 	}
 	if config.Role == "bootstrap" {

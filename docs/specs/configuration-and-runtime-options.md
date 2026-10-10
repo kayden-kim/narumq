@@ -35,7 +35,7 @@
 1. `run`은 SIGINT와 SIGTERM handler를 등록한다. `runWithContext`는 flag를 parse하고 실행 모드를 선택한다.
 2. Password hash, audit verify, cluster restore 같은 일회성 모드는 작업을 마친 뒤 listener 없이 종료한다.
 3. Standalone mode는 flag를 검증하고 security config와 authentication provider를 준비한 뒤 MQTT listener를 연다. Management listener와 runtime service를 구성한 뒤 실행한다. Listener 일부를 연 다음 실패하면 이미 연 listener를 닫는다.
-4. Dynamic cluster mode는 `runWithContext`에서 cluster config를 읽는다. `runClusterMode`는 config와 peer TLS를 검증하고 Raft 상태를 연다. Bootstrap 확인을 위해 peer listener를 먼저 열 수 있다. Peer transport를 준비한 뒤 MQTT security config와 provider를 읽는다. TLS listener가 있으면 MQTT security config를 읽은 직후 `mqtt.tls.clientAuth`와 `mtlsIdentities` 조합을 standalone과 같은 규칙으로 검사한다. 이어서 MQTT·management listener를 연다. 이 단계에서 실패하면 이미 연 자원을 닫는다.
+4. Dynamic cluster mode는 `runWithContext`에서 cluster config를 읽는다. `runClusterMode`는 config와 peer TLS를 검증하고 Raft 상태를 연다. Bootstrap 확인을 위해 peer listener를 먼저 열 수 있다. Peer transport를 준비한 뒤 MQTT security config와 provider를 읽는다. TLS listener가 있으면 MQTT security config를 읽은 직후 `mqtt.tls.clientAuth`와 `mtlsIdentities` 조합을 standalone과 같은 규칙으로 검사한다. 이어서 MQTT·management listener를 연다. `runtimeMetrics`가 있으면 management server를 만든 뒤 sampler를 만들고 `clusterRuntime.serve`가 다른 service와 함께 실행한다. Sampler는 시작 즉시 한 행, 설정한 간격마다 한 행, 종료할 때 마지막 한 행을 기록한다. Sampler 오류는 다른 service 오류처럼 node를 draining으로 바꾸고 process를 종료한다. Cluster restore mode는 `runtimeMetrics`를 사용하지 않는다. 이 단계에서 실패하면 이미 연 자원을 닫는다.
 5. Fixed-voter peer-only mode는 peer config와 TLS를 검증한 뒤 peer listener와 Raft node를 연다.
 6. 실행 중 SIGINT 또는 SIGTERM이 오면 `run`의 context가 취소된다. Cluster runtime은 node를 draining 상태로 전환한 뒤 service를 종료한다.
 
@@ -49,6 +49,7 @@ Standalone mode에서는 security config를 MQTT listener보다 먼저 적재한
 | --- | --- | --- | --- | --- |
 | standalone flag | listener, timeout, queue 한도 | process를 재시작한다. | node-local | [Process configuration v1](../contracts/process-configuration-v1.md) |
 | cluster config 일반 field | node별 주소와 listener 설정 | rolling restart를 한다. | node-local | [ADR-0051](../decisions/ADR-0051-cluster-update-strategy.md) |
+| Cluster runtime metrics | `runtimeMetrics` | rolling restart를 한다. | node-local | [Process configuration v1 §1.3](../contracts/process-configuration-v1.md#13-cluster-config-json), [ADR-0052](../decisions/ADR-0052-configuration-tiers-and-cluster-policy.md) |
 | cluster config bootstrap identity field | `clusterId`, `nodeId`, `role`, bootstrap identity | 첫 시작 뒤 바꿀 수 없다. `cluster.meta`와 다른 값이면 시작을 거절한다. | 변경 불가 | [Process configuration v1 §1.3](../contracts/process-configuration-v1.md), [Raft membership v2 §1.4](../contracts/raft-membership-v2.md#14-combined-cluster-configuration) |
 | `tenantQuotas` | versioned tenant storage quota profile | version을 올린 설정으로 rolling restart를 한다. Commit된 version이 cluster 전체의 기준이 된다. | cluster-wide | [Tenant §5.1](tenancy-and-security.md#51-저장-quota), [ADR-0017](../decisions/ADR-0017-tenant-storage-quota.md) |
 | `replication` | `factor`, `writeQuorum` | 3/2만 허용하므로 바꿀 수 없다. | 변경 불가 | [ADR-0029](../decisions/ADR-0029-replication-factor-write-quorum-profile.md) |
@@ -58,6 +59,8 @@ Standalone mode에서는 security config를 MQTT listener보다 먼저 적재한
 | Backup | cluster backup 생성·restore | 전용 API 또는 `-cluster-restore`를 사용한다. Backup 생성은 commit된 상태를 읽으며 cluster 상태를 변경하지 않는다. | cluster state의 archive | [Cluster backup v3](../contracts/cluster-backup-v3.md) |
 
 `tenantQuotas`는 정적 설정이지만 더 높은 version이 Raft command로 commit된 뒤 cluster-wide 기준이 된다. 그 밖의 cluster config와 security config는 node마다 적재하므로 rollout 중 값이 다를 수 있다.
+
+`runtimeMetrics`는 node 정적 설정이다. 값을 바꾸려면 해당 node를 rolling restart한다. 설정한 node만 JSONL 표본을 기록한다.
 
 ## 4. 오류와 복구
 
@@ -77,7 +80,7 @@ Standalone mode에서는 security config를 MQTT listener보다 먼저 적재한
 - Release build는 설정용 환경 변수를 읽지 않는다.
 - 설정 파일 변경은 실행 중인 process에 자동 반영되지 않는다.
 - 이 spec은 node 사이의 일반 설정 일치를 보장하지 않는다. 현재 예외는 commit된 `tenantQuotas`다.
-- 이 spec은 Proposed [ADR-0052](../decisions/ADR-0052-configuration-tiers-and-cluster-policy.md)의 목표 구조가 구현되었다고 보장하지 않는다. 단, §1.5의 중복 key 거절 규칙, standalone `-http-auth-token-file` secret 파일 규칙, Cluster MQTT TLS(`mqtt.tls`)와 MQTT·peer 인증서 분리 규칙은 채택해 구현했다(G2·G4·G9·G10).
+- 이 spec은 Proposed [ADR-0052](../decisions/ADR-0052-configuration-tiers-and-cluster-policy.md)의 목표 구조가 구현되었다고 보장하지 않는다. 단, §1.5의 중복 key 거절 규칙, standalone `-http-auth-token-file` secret 파일 규칙, Cluster MQTT TLS(`mqtt.tls`)와 MQTT·peer 인증서 분리 규칙, cluster runtime metrics의 node 정적 설정(`runtimeMetrics`)은 채택해 구현했다(G2·G4·G6·G9·G10).
 
 ## 6. 수용 시험
 
@@ -105,6 +108,8 @@ Standalone mode에서는 security config를 MQTT listener보다 먼저 적재한
 | `CFG-SCN-20` | CLU-09 | Cluster config에서 `mqtt.tls`를 생략하거나 각 필드에 잘못된 값·형식을 넣는다. | Parser는 TLS listener와 `mqtt.tls` 불일치, 누락 필드, 잘못된 `clientAuth`, CA 경로와 `minVersion`을 거절한다. | `cmd/narumq.TestParseClusterConfigMQTTTLS` | 통과 | [Cluster MQTT TLS 실행 기록](#cluster-mqtt-tls-g2-g10-execution) |
 | `CFG-SCN-21` | SEC-02 | `mqtt.tls.clientAuth`와 `mtlsIdentities` 조합을 바꾼다. | 시스템은 standalone과 같은 인증 조합만 허용한다. | `cmd/narumq.TestClusterMQTTSecurityValidatesTLSClientAuthBindings` | 통과 | [Cluster MQTT TLS 실행 기록](#cluster-mqtt-tls-g2-g10-execution) |
 | `CFG-SCN-22` | SEC-02 | 3-node cluster에 유효한, 없는, 미등록 client certificate를 제시한다. MQTT 3.1.1과 MQTT 5, TLS 1.2와 1.3, 허용·미등록 Client ID도 확인한다. | 유효한 인증서와 binding은 연결된다. `require`에서 인증서가 없거나 TLS 버전이 낮으면 handshake를 거절한다. 미등록 identity와 Client ID는 MQTT 3.1.1에서 CONNACK `0x05`, MQTT 5에서 CONNACK `0x87`로 거절한다. | `tests/integration.TestDynamicClusterMQTTTLSClientCertificateProcessAcceptance` | 통과 | [Cluster MQTT TLS 실행 기록](#cluster-mqtt-tls-g2-g10-execution) |
+| `CFG-SCN-23` | PERF-08 | Cluster config에서 `runtimeMetrics`를 생략·지정하거나 누락 key, 범위 밖 interval, 빈 경로, `directory`·`auditDirectory`와 겹치는 경로, 알 수 없는 key를 넣는다. | 생략하면 비활성이다. 유효하면 값을 적재한다. 나머지는 거절한다. | `cmd/narumq.TestParseClusterConfigRuntimeMetrics` | 통과 | [실행 기록](#cluster-runtime-metrics-g6-execution) |
+| `CFG-SCN-24` | PERF-08 | 3-node in-process cluster에서 node 1에만 `runtimeMetrics`(`intervalMillis` 50)를 지정한다. | node 1의 출력 파일에 `schemaVersion` 1인 JSON 행이 2개 이상 기록된다. | `cmd/narumq.TestRunClusterModeInProcess` | 통과 | [실행 기록](#cluster-runtime-metrics-g6-execution) |
 
 <a id="configuration-test-execution"></a>
 ### 설정 시험 실행 기록
@@ -164,6 +169,37 @@ go run ./cmd/narumq -cluster-config .artifacts/verification/g2-g10-mqtt-tls/inva
 | Traceability | `go run ./tools/verify traceability` | `PASS`; P0 `69/81` mapped, exceptions `12` |
 | Markdown links | `go run ./tools/verify markdown-links` | `PASS`; 152 files, 2,153 local links |
 | Local | `GOMAXPROCS=4 go run ./tools/verify local` | `local: PASS`, `coverage: PASS`; branch-instrument, architecture, fuzz, package tests와 traceability 통과 |
+
+<a id="cluster-runtime-metrics-g6-execution"></a>
+### Cluster runtime metrics(G6) 실행 기록
+
+실행 환경은 Windows/amd64, Go 1.26.5다. 구현 전 test-first 실행은 `RuntimeMetrics` field와 `runtimeMetricsInterval` method가 없어 build 단계에서 실패했다.
+
+```sh
+go test ./cmd/narumq -run TestParseClusterConfigRuntimeMetrics -count=1
+```
+
+구현 뒤 parser와 3-node in-process runtime 시험이 통과했다.
+
+```sh
+go test ./cmd/narumq -run 'TestParseClusterConfigRuntimeMetrics|TestRunClusterModeInProcess' -count=1 -v
+go test ./cmd/narumq -run 'TestParseClusterConfig|TestClusterConfigFlagIsExclusive|TestRunRejectsRuntimeMetricsFlagCombinations|TestRunWithContextClusterConfigLoading' -count=1
+go build ./...
+go vet ./cmd/narumq
+go run ./tools/verify traceability
+go run ./tools/verify markdown-links
+go run ./tools/verify local
+```
+
+| 확인 | 결과 |
+| --- | --- |
+| `TestParseClusterConfigRuntimeMetrics`와 `TestRunClusterModeInProcess` | 통과. Parser 사례가 모두 통과했고, node 1의 JSONL 파일에서 `schemaVersion` 1 표본 2개 이상을 읽었다. |
+| 설정 parser와 cluster flag 회귀 | 통과 |
+| Build와 vet | 통과 |
+| Traceability | `PASS`; P0 mapped `69/81`, exceptions `12` |
+| Markdown links | `PASS`; `go run ./tools/verify markdown-links`에서 문서 152개와 로컬 링크 2,159개를 확인했다. |
+| Local gate | `go run ./tools/verify local`에서 `local: PASS`, `coverage: PASS`. Branch-instrument, architecture, fuzz, package tests와 traceability가 통과했다. |
+
 
 ## 7. 미결정 사항
 

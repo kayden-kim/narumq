@@ -29,7 +29,7 @@ import (
 	"narumq/internal/adapters/raft/records"
 )
 
-// Traceability: CLU-09; docs/specs/cluster-session-and-delivery.md §4.4, §11.27.
+// Traceability: CLU-09; PERF-08; ADR-0029; docs/specs/cluster-session-and-delivery.md §4.4, §11.27; docs/specs/configuration-and-runtime-options.md §6.
 func TestRunClusterModeInProcess(t *testing.T) {
 	directory := t.TempDir()
 	caCert, caKey, caPEM := newClusterRuntimeTestCA(t)
@@ -73,6 +73,8 @@ func TestRunClusterModeInProcess(t *testing.T) {
 			MQTT: clusterMQTT{SecurityConfigFile: filepath.Join(directory, "security.json")},
 		}
 	}
+	metricsPath := filepath.Join(directory, "node1-runtime-metrics.jsonl")
+	configs[0].RuntimeMetrics = &clusterRuntimeMetricsConfig{OutputFile: metricsPath, IntervalMillis: 50}
 	for index := range configs {
 		configs[index].BootstrapMembers = bootstrapMembers
 	}
@@ -172,6 +174,41 @@ func TestRunClusterModeInProcess(t *testing.T) {
 		if status != fmt.Sprintf("%d %s", http.StatusOK, http.StatusText(http.StatusOK)) {
 			t.Fatalf("node %d readiness status = %q; all node statuses = %s", index+1, status, strings.Join(lastStatuses, ", "))
 		}
+	}
+
+	metricsDeadline := time.Now().Add(5 * time.Second)
+	runtimeMetricsRows := 0
+	var lastRuntimeMetricsError error
+	for time.Now().Before(metricsDeadline) {
+		contents, err := os.ReadFile(metricsPath)
+		if err != nil {
+			lastRuntimeMetricsError = err
+		} else {
+			runtimeMetricsRows = 0
+			for _, line := range strings.Split(strings.TrimSpace(string(contents)), "\n") {
+				if line == "" {
+					continue
+				}
+				var record struct {
+					SchemaVersion int    `json:"schemaVersion"`
+					CollectedAt   string `json:"collectedAt"`
+				}
+				if err := json.Unmarshal([]byte(line), &record); err != nil {
+					lastRuntimeMetricsError = err
+					break
+				}
+				if record.SchemaVersion == 1 && record.CollectedAt != "" {
+					runtimeMetricsRows++
+				}
+			}
+			if runtimeMetricsRows >= 2 {
+				break
+			}
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	if runtimeMetricsRows < 2 {
+		t.Fatalf("runtime metrics rows=%d; last error=%v", runtimeMetricsRows, lastRuntimeMetricsError)
 	}
 
 	request, err := http.NewRequestWithContext(ctx, http.MethodGet, "http://"+managementAddresses[0]+"/api/v1/cluster", nil)

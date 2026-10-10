@@ -62,6 +62,8 @@
 
 Listener admission flag 검증은 `validateListenerAdmissionFlags`가 수행한다. `BuildTLSConfig`는 TLS server certificate와 key를 요구한다. `request`와 `require`는 client CA를 요구한다.
 
+Cluster mode에서는 `-runtime-metrics-*` flag 대신 cluster config의 `runtimeMetrics` object로 runtime metrics를 설정한다. `-cluster-config` 단독 규칙은 유지한다.
+
 ### 1.2 모드 판정 순서와 허용 조합
 
 `cmd/narumq`는 다음 순서로 모드를 판정한다.
@@ -100,6 +102,7 @@ Listener admission flag 검증은 `validateListenerAdmissionFlags`가 수행한�
 | `mqtt` | 객체 | `tcpListenAddress`, `tlsListenAddress`, `securityConfigFile`가 필요하다. 주소가 비어 있으면 해당 listener를 사용하지 않는다. 선택 정수 필드 `tcpMaxConnections`, `tcpConnectionRate`, `tlsMaxConnections`, `tlsConnectionRate`는 0~1000000이며 생략하면 0(제한 없음)이다. 해당 listener 주소가 비어 있으면 그 listener의 두 값은 0이어야 한다. 선택 object `tls`는 `certFile`, `keyFile`, `caFile`, `clientAuth`, `minVersion`을 모두 요구한다. `tlsListenAddress`가 비어 있으면 `tls`를 지정할 수 없고, 주소가 있으면 `tls`가 필요하다. `certFile`과 `keyFile`은 공백이 없는 비어 있지 않은 경로여야 한다. `clientAuth`는 `none`, `request`, `require` 중 하나다. `none`이면 `caFile`은 빈 문자열이어야 한다. `request` 또는 `require`이면 `caFile`은 공백이 없는 비어 있지 않은 경로여야 한다. `minVersion`은 `1.2` 또는 `1.3`이어야 한다. 인증서·키 쌍과 client CA 파일은 listener 시작 때 읽고 검증한다. |
 | `replication` | 객체(선택) | 생략하면 복제 계수 3과 쓰기 쿼럼 2를 사용한다. 지정하면 정확히 `{factor:int, writeQuorum:int}`여야 하며 3/2만 허용한다. |
 | `publishBackpressure` | 선택 object | `minFreeBytes`, `maxCommitLagMillis`는 `uint64`다. Object가 있으면 두 key가 모두 필요하다. `publishBackpressure` object를 생략하면 기본값은 각각 `1073741824`, `1000`이다. `minFreeBytes` 범위는 `0..1<<50`이며 0은 disk admission을 끈다. `maxCommitLagMillis` 범위는 `100..10000`이다. |
+| `runtimeMetrics` | 선택 object | `outputFile`(string)과 `intervalMillis`(`uint64`)가 필요하다. Object가 있으면 두 key가 모두 필요하다. 생략하면 기록하지 않는다. `outputFile`은 비어 있지 않고 앞뒤 공백이 없는 경로여야 하며 `directory` 또는 `management.auditDirectory`와 겹치면 안 된다. 시작할 때 파일을 만들거나 비운다. 부모 디렉터리는 자동으로 만들지 않는다. `intervalMillis` 범위는 `1..3600000`이다. JSONL 형식은 standalone `-runtime-metrics-output`과 같다(`schemaVersion` 1). |
 | `tenantQuotas` | 선택 object | `version`은 `uint64`이며 1 이상이다. Object가 있으면 `version`, `default`, `tenants`가 필요하다. `default`와 각 `tenants[]` 원소의 `retainedBytes`, `offlineQueueMessages`, `offlineQueueBytes`, `storageBytes`는 모두 `uint64`이며 필수다. 각 `tenants[]` 원소에는 string `tenantId`도 필요하다. 생략하면 built-in profile version 0을 사용한다. |
 
 `ValidateTenantQuotaProfile`는 네 한도 값이 모두 양수인지 확인한다. 최대값은 retained bytes `16,777,216`, offline queue messages `8,192`, offline queue bytes `33,554,432`, storage bytes `50,331,648`다([ADR-0017 §1](../decisions/ADR-0017-tenant-storage-quota.md#1-결정)). `tenants`는 최대 1,024개다. 각 `tenantId`는 UTF-8 1~128 bytes이며 `tenancy.NewTenantID`를 통과해야 한다. Tenant ID는 오름차순이어야 하며 중복할 수 없다.
@@ -330,6 +333,9 @@ Duration 표기는 입력 형식에 따라 다르다.
 | `-cluster-restore requires -cluster-config` | restore만 지정했다. |
 | `-cluster-config cannot be combined with %s` | `-cluster-config`와 허용되지 않는 다른 flag를 함께 지정했다. |
 | `-runtime-metrics-output and -runtime-metrics-interval must be provided together` | runtime metrics flag 하나만 지정했다. |
+| `runtimeMetrics outputFile is required` | Cluster runtime metrics 경로가 비어 있거나 앞뒤 공백이 있다. |
+| `runtimeMetrics intervalMillis must be between 1 and 3600000` | Cluster runtime metrics 간격이 허용 범위를 벗어났다. |
+| `runtimeMetrics outputFile must not overlap directory or management auditDirectory` | 출력 경로가 cluster data 또는 management audit 경로와 겹친다. |
 | `-http-request-rate and -http-auth-failure-rate must be between 1 and 1000000` | standalone Management API rate가 허용 범위 밖이다. |
 | `read -http-auth-token-file: %w` | standalone token 파일을 읽지 못했다. |
 | `-http-auth-token-file is empty` | token 파일의 공백 제거 결과가 비어 있다. |
