@@ -87,7 +87,7 @@ In-place는 꺼진 동안의 log만 따라잡는다. 그래서 빠르고 identit
 
 ### 후속 작업
 
-- 교체형 조합(추가 → drain → planned removal)의 3-node process 수용 시험.
+- 교체형 조합(추가 → drain → planned removal)의 3-node process 수용 시험. — 완료, §7 참조.
 - 플랫폼별 실행 절차(how-to).
 - ECS lifecycle adapter(DEP-24).
 
@@ -97,7 +97,7 @@ In-place는 꺼진 동안의 log만 따라잡는다. 그래서 빠르고 identit
 | --- | --- | --- | --- |
 | In-place 교체가 세션과 상태를 보존한다 | 기존 process 수용 시험 | Drain 뒤 session resume과 restart `CLEAR`, N-1↔N 혼합 운영과 rollback | [Drain §10](../specs/drain-and-rolling-update.md#10-broker-drain-수용-시험-매핑)의 `TestDynamicClusterNodeDrainProcessAcceptance`, [Cluster §11.17](../specs/cluster-session-and-delivery.md#1117-n-1n-rolling-upgraderollback-수용-매핑)의 `TestDynamicClusterReleaseCompatibilityProcessAcceptance` |
 | 교체형 구성 요소가 동작한다 | 기존 process 수용 시험 | 새 ID 추가·승격과 planned removal이 voter 3 미만을 만들지 않는다 | [Cluster §11.20](../specs/cluster-session-and-delivery.md#1120-voter-volume-손실-보호와-재시드-수용-매핑), [Cluster §11.27](../specs/cluster-session-and-delivery.md#1127-replication-factorwrite-quorum-profile-수용-매핑) |
-| 교체형 조합이 세션과 durable 메시지를 보존한다 | 추가 → drain → planned removal 3-node process 시험 | Session 손실 0, QoS 1/2 gap 0 | 미실행. 시험이 없다. |
+| 교체형 조합이 세션과 durable 메시지를 보존한다 | 추가 → drain → planned removal 3-node process 시험 | Session 손실 0, QoS 1/2 gap 0 | [Drain §10](../specs/drain-and-rolling-update.md#10-broker-drain-수용-시험-매핑)의 `TestDynamicClusterReplacementRollingUpdateProcessAcceptance`: local process PASS(2026-10-10, 사용자 승인에 따라 offline session당 QoS 1/2 총 54개로 workload 조정). |
 
 ## 8. 재검토 조건
 

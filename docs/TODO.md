@@ -40,7 +40,7 @@ PRD는 `Draft` 상태이므로 이 목록은 요구사항을 구현 기준으로
   - 원인: Paho `Properties.Unpack`이 중복 Server Reference를 검사하지 않고 마지막 값으로 덮어쓴다. Callback에는 중복 정보가 남지 않는다([Client contract §6.2](contracts/mqtt-client-compatibility-v1.md#62-drain-compatibility-suite)).
   - 결정: 공식 SDK만 유지한다. 직접 패치한 SDK와 raw socket 검사는 도입하지 않는다.
   - 해제 조건: 이 결함을 고친 공식 SDK release의 version 변경을 검토한 뒤 drain 10개와 Phase 1 26개 case를 모두 통과한다. 조사 시점에는 수정된 공식 release가 없어 SDK 수정과 새 version 회귀는 실행하지 않았다.
-- [ ] **미검증** — 교체형 업데이트 조합: [ADR-0051](decisions/ADR-0051-cluster-update-strategy.md)의 새 node 추가·승격 → 기존 node drain·SAFE_TO_STOP → planned removal을 3-node process로 시험한다. Session 손실 0과 QoS 1/2 gap 0을 확인하고 결과를 [Drain spec §10](specs/drain-and-rolling-update.md#10-broker-drain-수용-시험-매핑)에 연결한다. 구성 요소별 시험(Cluster §11.20·§11.27)은 이 조합을 대신하지 않는다.
+- [x] **완료** — 교체형 업데이트 조합: [ADR-0051](decisions/ADR-0051-cluster-update-strategy.md)의 새 node 추가·승격 → 기존 node drain·`SAFE_TO_STOP` → planned removal을 3-node process로 확인했다. `TestDynamicClusterReplacementRollingUpdateProcessAcceptance`는 3회 연속 교체에서 session 손실 0, QoS 1/2 gap 0, QoS 2 duplicate 0과 최종 voter `{4,5,6}`을 확인한다([Drain spec §10](specs/drain-and-rolling-update.md#10-broker-drain-수용-시험-매핑)). 기존 `MaxDeliveryMessagesPerSession=64`에 맞춰 offline session당 총 54개 메시지를 보낸다. 이 local process 증거는 production profile과 N-1↔N 혼합 교체를 포함하지 않는다.
 
 ### 1.3 Cluster 기능과 알려진 구현 한계
 

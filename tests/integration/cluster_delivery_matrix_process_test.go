@@ -486,6 +486,10 @@ func clusterMatrixReadPublishFrame(connection net.Conn, v5 bool, timeout time.Du
 	if kind != 3 || len(body) < 2 {
 		return clusterMatrixDelivery{}, fmt.Errorf("unexpected MQTT packet kind=%d body=%x", kind, body)
 	}
+	return clusterMatrixDecodePublish(flags, body, v5)
+}
+
+func clusterMatrixDecodePublish(flags byte, body []byte, v5 bool) (clusterMatrixDelivery, error) {
 	topicLength := int(binary.BigEndian.Uint16(body[:2]))
 	if topicLength > len(body)-2 {
 		return clusterMatrixDelivery{}, fmt.Errorf("truncated MQTT PUBLISH topic: %x", body)

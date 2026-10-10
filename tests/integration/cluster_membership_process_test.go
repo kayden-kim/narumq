@@ -237,6 +237,10 @@ func newClusterMembershipProcessFixture(t *testing.T, nodeCount int, buildTags s
       "drain-after-restart",
       "drain-publisher",
       "drain-cancel-check",
+      "replace-live-v5",
+      "replace-live-v311",
+      "replace-offline-v311",
+      "replace-publisher",
       "dashboard-sub-v5",
       "dashboard-pub-v311",
       "dashboard-drain-v5",
@@ -530,6 +534,18 @@ func newClusterMembershipProcessFixture(t *testing.T, nodeCount int, buildTags s
     "effect": "allow",
     "action": "subscribe",
     "topicFilter": "drain/#"
+  }, {
+    "tenantId": "acceptance",
+    "role": "client",
+    "effect": "allow",
+    "action": "publish",
+    "topicFilter": "replace/#"
+  }, {
+    "tenantId": "acceptance",
+    "role": "client",
+    "effect": "allow",
+    "action": "subscribe",
+    "topicFilter": "replace/#"
   }, {
     "tenantId": "acceptance",
     "role": "client",
