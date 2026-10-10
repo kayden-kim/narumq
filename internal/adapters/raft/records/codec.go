@@ -18,6 +18,7 @@ import (
 
 	"narumq/internal/domain/nodedrain"
 	"narumq/internal/domain/release"
+	"narumq/internal/domain/security"
 	"narumq/internal/domain/tenancy"
 )
 
@@ -48,6 +49,7 @@ const (
 	maxSessionPrincipalRoles           = 64
 	maxSessionPrincipalRoleBytes       = 256
 	maxCredentialRevocations           = 4096
+	maxBlocklistEntries                = 4096
 	maxCredentialIDBytes               = 512
 	minRebalanceDeviation              = uint64(1)
 	maxRebalanceDeviation              = uint64(1_000_000)
@@ -137,7 +139,7 @@ func MarshalSnapshot(state *ReplicatedStateSnapshot, lastIncludedIndex uint64) (
 			offlineMessagesCount += len(session.Messages)
 		}
 	}
-	count := uint64(len(ordered.Members) + len(ordered.Ownerships) + len(ordered.Subscriptions) + len(ordered.DeliverySessions) + deliveryObjectCount(ordered.DeliverySessions) + len(ordered.MembershipHistory) + len(ordered.Retained) + len(ordered.OfflineSessions) + offlineMessagesCount + len(ordered.NodeDrains) + len(ordered.ActiveFeatures) + tenantQuotaProfileObjectCount(ordered.TenantQuotaProfile) + len(ordered.SessionMetadata) + connectionRebalanceObjectCount(ordered.ConnectionRebalance) + len(ordered.CredentialRevocations) + proposalOriginsObjectCount(ordered.ProposalOrigins))
+	count := uint64(len(ordered.Members) + len(ordered.Ownerships) + len(ordered.Subscriptions) + len(ordered.DeliverySessions) + deliveryObjectCount(ordered.DeliverySessions) + len(ordered.MembershipHistory) + len(ordered.Retained) + len(ordered.OfflineSessions) + offlineMessagesCount + len(ordered.NodeDrains) + len(ordered.ActiveFeatures) + tenantQuotaProfileObjectCount(ordered.TenantQuotaProfile) + len(ordered.SessionMetadata) + connectionRebalanceObjectCount(ordered.ConnectionRebalance) + len(ordered.CredentialRevocations) + len(ordered.Blocklist) + proposalOriginsObjectCount(ordered.ProposalOrigins))
 	digest := sha256.Sum256(stateBytes)
 	envelope := &SnapshotEnvelope{SchemaMajor: 1, LastIncludedIndex: lastIncludedIndex, ObjectCount: count, Sha256: digest[:], State: ordered}
 	encoded, err := deterministic.Marshal(envelope)
@@ -186,7 +188,7 @@ func UnmarshalSnapshot(encoded []byte) (*SnapshotEnvelope, error) {
 			offlineMessagesCount += len(session.Messages)
 		}
 	}
-	count := uint64(len(envelope.State.Members) + len(envelope.State.Ownerships) + len(envelope.State.Subscriptions) + len(envelope.State.DeliverySessions) + deliveryObjectCount(envelope.State.DeliverySessions) + len(envelope.State.MembershipHistory) + len(envelope.State.Retained) + len(envelope.State.OfflineSessions) + offlineMessagesCount + len(envelope.State.NodeDrains) + len(envelope.State.ActiveFeatures) + tenantQuotaProfileObjectCount(envelope.State.TenantQuotaProfile) + len(envelope.State.SessionMetadata) + connectionRebalanceObjectCount(envelope.State.ConnectionRebalance) + len(envelope.State.CredentialRevocations) + proposalOriginsObjectCount(envelope.State.ProposalOrigins))
+	count := uint64(len(envelope.State.Members) + len(envelope.State.Ownerships) + len(envelope.State.Subscriptions) + len(envelope.State.DeliverySessions) + deliveryObjectCount(envelope.State.DeliverySessions) + len(envelope.State.MembershipHistory) + len(envelope.State.Retained) + len(envelope.State.OfflineSessions) + offlineMessagesCount + len(envelope.State.NodeDrains) + len(envelope.State.ActiveFeatures) + tenantQuotaProfileObjectCount(envelope.State.TenantQuotaProfile) + len(envelope.State.SessionMetadata) + connectionRebalanceObjectCount(envelope.State.ConnectionRebalance) + len(envelope.State.CredentialRevocations) + len(envelope.State.Blocklist) + proposalOriginsObjectCount(envelope.State.ProposalOrigins))
 	if envelope.ObjectCount != count {
 		return nil, errors.New("snapshot object count mismatch")
 	}
@@ -302,6 +304,11 @@ func validateCommand(c *CommandEnvelope) error {
 			return errors.New("credential revocation payload is required")
 		}
 		return validateCredentialRevocationChange(payload.CredentialRevocation)
+	case *CommandEnvelope_Blocklist:
+		if payload.Blocklist == nil {
+			return errors.New("blocklist payload is required")
+		}
+		return validateBlocklistChange(payload.Blocklist)
 	default:
 		return fmt.Errorf("%w: command must contain exactly one known payload", ErrIncompatibleStateSchema)
 	}
@@ -475,6 +482,33 @@ func validateCredentialRevocationChange(change *CredentialRevocationChange) erro
 	default:
 		return errors.New("invalid credential revocation action")
 	}
+}
+func validateBlocklistChange(change *BlocklistChange) error {
+	if change == nil || change.Entry == nil || change.ProposedAtUnixMillis == 0 {
+		return errors.New("invalid blocklist payload")
+	}
+	switch change.Action {
+	case BlocklistAction_BLOCKLIST_ACTION_BLOCK, BlocklistAction_BLOCKLIST_ACTION_UNBLOCK:
+	default:
+		return errors.New("invalid blocklist action")
+	}
+	var kind security.BlockKind
+	switch change.Entry.Kind {
+	case BlocklistKind_BLOCKLIST_KIND_CLIENT_ID:
+		kind = security.BlockKindClientID
+	case BlocklistKind_BLOCKLIST_KIND_USERNAME:
+		kind = security.BlockKindUsername
+	case BlocklistKind_BLOCKLIST_KIND_CERTIFICATE_SHA256:
+		kind = security.BlockKindCertificateSHA256
+	case BlocklistKind_BLOCKLIST_KIND_IP_PREFIX:
+		kind = security.BlockKindIPPrefix
+	default:
+		return errors.New("invalid blocklist kind")
+	}
+	if _, err := security.NewBlockEntry(kind, change.Entry.TenantId, change.Entry.Value); err != nil {
+		return errors.New("invalid blocklist entry")
+	}
+	return nil
 }
 
 func validateConnectionRebalanceState(state *ConnectionRebalanceState) error {
@@ -1082,7 +1116,7 @@ func validateSnapshotState(s *ReplicatedStateSnapshot) error {
 			offlineMessagesCount += len(session.Messages)
 		}
 	}
-	count := len(s.Members) + len(s.Ownerships) + len(s.Subscriptions) + len(s.DeliverySessions) + deliveryObjectCount(s.DeliverySessions) + len(s.MembershipHistory) + len(s.Retained) + len(s.OfflineSessions) + offlineMessagesCount + len(s.NodeDrains) + len(s.ActiveFeatures) + tenantQuotaProfileObjectCount(s.TenantQuotaProfile) + len(s.SessionMetadata) + connectionRebalanceObjectCount(s.ConnectionRebalance) + len(s.CredentialRevocations)
+	count := len(s.Members) + len(s.Ownerships) + len(s.Subscriptions) + len(s.DeliverySessions) + deliveryObjectCount(s.DeliverySessions) + len(s.MembershipHistory) + len(s.Retained) + len(s.OfflineSessions) + offlineMessagesCount + len(s.NodeDrains) + len(s.ActiveFeatures) + tenantQuotaProfileObjectCount(s.TenantQuotaProfile) + len(s.SessionMetadata) + connectionRebalanceObjectCount(s.ConnectionRebalance) + len(s.CredentialRevocations) + len(s.Blocklist)
 	if count > maxEntries {
 		return errors.New("snapshot exceeds 1,000,000 entries")
 	}
@@ -1127,6 +1161,26 @@ func validateSnapshotState(s *ReplicatedStateSnapshot) error {
 		}
 		if index > 0 && s.CredentialRevocations[index-1].CredentialId >= state.CredentialId {
 			return errors.New("snapshot credential revocations are not uniquely sorted")
+		}
+	}
+	if len(s.Blocklist) > maxBlocklistEntries {
+		return errors.New("snapshot exceeds blocklist limit")
+	}
+	if (len(s.Blocklist) > 0 || s.BlocklistVersion > 0) && !slices.Contains(s.ActiveFeatures, "client-blocklist") {
+		return errors.New("snapshot blocklist requires active client-blocklist feature")
+	}
+	if len(s.Blocklist) > 0 && s.BlocklistVersion == 0 {
+		return errors.New("snapshot blocklist requires a positive policy version")
+	}
+	for index, state := range s.Blocklist {
+		if state == nil || state.Entry == nil || state.BlockedAtUnixMillis == 0 {
+			return errors.New("invalid snapshot blocklist state")
+		}
+		if err := validateBlocklistEntry(state.Entry); err != nil {
+			return err
+		}
+		if index > 0 && compareBlocklistEntries(s.Blocklist[index-1].Entry, state.Entry) >= 0 {
+			return errors.New("snapshot blocklist entries are not uniquely sorted")
 		}
 	}
 	type sessionIdentity struct{ tenantID, clientID string }
@@ -1442,6 +1496,59 @@ func sortSnapshot(s *ReplicatedStateSnapshot) {
 		}
 		return s.CredentialRevocations[i].CredentialId < s.CredentialRevocations[j].CredentialId
 	})
+	sort.Slice(s.Blocklist, func(i, j int) bool {
+		if s.Blocklist[i] == nil {
+			return s.Blocklist[j] != nil
+		}
+		if s.Blocklist[j] == nil {
+			return false
+		}
+		return compareBlocklistEntries(s.Blocklist[i].Entry, s.Blocklist[j].Entry) < 0
+	})
+}
+func validateBlocklistEntry(entry *BlocklistEntry) error {
+	if entry == nil {
+		return errors.New("nil blocklist entry")
+	}
+	var kind security.BlockKind
+	switch entry.Kind {
+	case BlocklistKind_BLOCKLIST_KIND_CLIENT_ID:
+		kind = security.BlockKindClientID
+	case BlocklistKind_BLOCKLIST_KIND_USERNAME:
+		kind = security.BlockKindUsername
+	case BlocklistKind_BLOCKLIST_KIND_CERTIFICATE_SHA256:
+		kind = security.BlockKindCertificateSHA256
+	case BlocklistKind_BLOCKLIST_KIND_IP_PREFIX:
+		kind = security.BlockKindIPPrefix
+	default:
+		return errors.New("invalid blocklist kind")
+	}
+	if _, err := security.NewBlockEntry(kind, entry.TenantId, entry.Value); err != nil {
+		return errors.New("invalid blocklist entry")
+	}
+	return nil
+}
+
+func compareBlocklistEntries(left, right *BlocklistEntry) int {
+	if left.Kind < right.Kind {
+		return -1
+	}
+	if left.Kind > right.Kind {
+		return 1
+	}
+	if left.TenantId < right.TenantId {
+		return -1
+	}
+	if left.TenantId > right.TenantId {
+		return 1
+	}
+	if left.Value < right.Value {
+		return -1
+	}
+	if left.Value > right.Value {
+		return 1
+	}
+	return 0
 }
 func rejectUnknown(m protoreflect.Message) error {
 	if len(m.GetUnknown()) != 0 {

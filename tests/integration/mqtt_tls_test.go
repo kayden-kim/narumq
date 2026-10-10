@@ -5,21 +5,17 @@ import (
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
+	"crypto/sha256"
 	"crypto/tls"
 	"crypto/x509"
 	"crypto/x509/pkix"
+	"encoding/hex"
 	"encoding/pem"
 	"io"
 	"log/slog"
 	"math/big"
-	"net"
-	"os"
-	"path/filepath"
-	"testing"
-	"time"
-
-	"narumq/internal/adapters/authentication"
-	"narumq/internal/adapters/clock"
+	authentication "narumq/internal/adapters/authentication"
+	clock "narumq/internal/adapters/clock"
 	"narumq/internal/adapters/memory/deliveryqueue"
 	memoryretained "narumq/internal/adapters/memory/retained"
 	"narumq/internal/adapters/memory/sessionstore"
@@ -34,6 +30,11 @@ import (
 	"narumq/internal/domain/routing"
 	"narumq/internal/domain/security"
 	"narumq/internal/domain/tenancy"
+	"net"
+	"os"
+	"path/filepath"
+	"testing"
+	"time"
 )
 
 type testCert struct {
@@ -178,7 +179,17 @@ type tlsFixtureOptions struct {
 	CipherSuites     []string
 	MTLSIdentity     string
 	PasswordBindings []authentication.PasswordIdentityBinding
+	Blocklist        []security.BlockEntry
+	CA               *testCert
 	DualTCP          bool
+}
+
+type staticTLSBlocklistMatcher struct {
+	list *security.Blocklist
+}
+
+func (matcher staticTLSBlocklistMatcher) MatchBlocklist(subject security.BlockSubject) (security.BlockKind, bool) {
+	return matcher.list.Match(subject)
 }
 
 type tlsFixture struct {
@@ -199,6 +210,9 @@ func newTLSFixture(t *testing.T, opts tlsFixtureOptions) *tlsFixture {
 	t.Helper()
 	tempDir := t.TempDir()
 	ca := generateIntegrationCA(t, "NaruMQ Test Root CA")
+	if opts.CA != nil {
+		ca = *opts.CA
+	}
 	serverCert := generateIntegrationServerCert(t, ca, []string{"127.0.0.1", "localhost"})
 
 	certPath := filepath.Join(tempDir, "server.crt")
@@ -311,6 +325,13 @@ func newTLSFixture(t *testing.T, opts tlsFixtureOptions) *tlsFixture {
 	}
 	if credentialProvider != nil || mtlsProvider != nil {
 		connectOpts = append(connectOpts, connect.WithSecurity(credentialProvider, mtlsProvider, security.Policy{}, credentialMethod))
+	}
+	if len(opts.Blocklist) > 0 {
+		blocklist := security.NewBlocklist()
+		for _, entry := range opts.Blocklist {
+			blocklist.Set(entry, true)
+		}
+		connectOpts = append(connectOpts, connect.WithBlocklistMatcher(staticTLSBlocklistMatcher{list: blocklist}))
 	}
 	connections, err := connect.New(systemClock, repository, deliveries, routes, clock.SystemScheduler{}, willBridge, connectOpts...)
 	if err != nil {
@@ -671,6 +692,52 @@ func TestMQTTTLS_mTLS_Success(t *testing.T) {
 	if !ok || connack.ReasonCode != 0 {
 		t.Fatalf("expected accepted ConnAck, got %#v", connackPacket)
 	}
+}
+
+// Traceability: SEC-12; docs/specs/tenancy-and-security.md §7.1, §9; ADR-0050.
+func TestMQTTTLSBlockedCertificateFingerprintRejected(t *testing.T) {
+	const identity = "sensor-client-01"
+	ca := generateIntegrationCA(t, "NaruMQ Test Root CA")
+	blockedCert := generateIntegrationClientCert(t, ca, identity, false)
+	allowedCert := generateIntegrationClientCert(t, ca, identity, false)
+	blockedFingerprint := sha256.Sum256(blockedCert.cert.Raw)
+	allowedFingerprint := sha256.Sum256(allowedCert.cert.Raw)
+	if blockedFingerprint == allowedFingerprint {
+		t.Fatal("generated client certificates have identical fingerprints")
+	}
+	entry, err := security.NewBlockEntry(
+		security.BlockKindCertificateSHA256,
+		"",
+		hex.EncodeToString(blockedFingerprint[:]),
+	)
+	if err != nil {
+		t.Fatalf("create certificate fingerprint blocklist entry: %v", err)
+	}
+
+	fixture := newTLSFixture(t, tlsFixtureOptions{
+		CA:           &ca,
+		ClientAuth:   tlsadapter.ClientAuthRequire,
+		MTLSIdentity: identity,
+		Blocklist:    []security.BlockEntry{entry},
+	})
+	defer fixture.close(t)
+
+	assertConnAck := func(clientCert *testCert, want byte) {
+		conn := fixture.dialTLS(t, clientCert, nil)
+		defer conn.Close()
+		writePacket(t, conn, fixture.encoder, &mqtt.Connect{
+			Version:    mqtt.ProtocolV5,
+			CleanStart: true,
+			ClientID:   identity,
+		})
+		packet := readPacket(t, conn, fixture.decoder, mqtt.ProtocolV5)
+		connack, ok := packet.(*mqtt.ConnAck)
+		if !ok || connack.ReasonCode != want {
+			t.Fatalf("certificate fingerprint CONNACK = %#v, want reason 0x%02x", packet, want)
+		}
+	}
+	assertConnAck(&blockedCert, 0x8A)
+	assertConnAck(&allowedCert, 0)
 }
 
 // TestMQTTTLS_mTLS_UntrustedCA_Rejected verifies that a client presenting a certificate

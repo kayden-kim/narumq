@@ -30,6 +30,7 @@ import (
 	portsaudit "narumq/internal/application/ports/audit"
 	"narumq/internal/domain/connrebalance"
 	"narumq/internal/domain/nodedrain"
+	"narumq/internal/domain/security"
 
 	ports "narumq/internal/application/ports/management"
 )
@@ -154,6 +155,20 @@ func credentialRevocationOperationFixtures() []operationFixture {
 			operationID: "restoreCredential", target: "/api/v1/security/credential-revocations/credential-a",
 			expectedStatus: http.StatusOK,
 		},
+	}
+}
+
+func blocklistOperationFixtures() []operationFixture {
+	return []operationFixture{
+		{method: http.MethodGet, path: "/api/v1/security/blocklist", operationID: "listBlocklist", target: "/api/v1/security/blocklist", expectedStatus: http.StatusOK},
+		{method: http.MethodPost, path: "/api/v1/security/blocklist/client-ids/{tenantId}/{clientId}", operationID: "blockClientId", target: "/api/v1/security/blocklist/client-ids/tenant-a/client-a", expectedStatus: http.StatusOK},
+		{method: http.MethodDelete, path: "/api/v1/security/blocklist/client-ids/{tenantId}/{clientId}", operationID: "unblockClientId", target: "/api/v1/security/blocklist/client-ids/tenant-a/client-a", expectedStatus: http.StatusOK},
+		{method: http.MethodPost, path: "/api/v1/security/blocklist/usernames/{username}", operationID: "blockUsername", target: "/api/v1/security/blocklist/usernames/contract-user", expectedStatus: http.StatusOK},
+		{method: http.MethodDelete, path: "/api/v1/security/blocklist/usernames/{username}", operationID: "unblockUsername", target: "/api/v1/security/blocklist/usernames/contract-user", expectedStatus: http.StatusOK},
+		{method: http.MethodPost, path: "/api/v1/security/blocklist/certificates/{certificateSha256}", operationID: "blockCertificate", target: "/api/v1/security/blocklist/certificates/0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef", expectedStatus: http.StatusOK},
+		{method: http.MethodDelete, path: "/api/v1/security/blocklist/certificates/{certificateSha256}", operationID: "unblockCertificate", target: "/api/v1/security/blocklist/certificates/0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef", expectedStatus: http.StatusOK},
+		{method: http.MethodPost, path: "/api/v1/security/blocklist/ip-prefixes/{address}/{prefixLength}", operationID: "blockIpPrefix", target: "/api/v1/security/blocklist/ip-prefixes/203.0.113.0/24", expectedStatus: http.StatusOK},
+		{method: http.MethodDelete, path: "/api/v1/security/blocklist/ip-prefixes/{address}/{prefixLength}", operationID: "unblockIpPrefix", target: "/api/v1/security/blocklist/ip-prefixes/203.0.113.0/24", expectedStatus: http.StatusOK},
 	}
 }
 
@@ -457,6 +472,7 @@ func clusterManagementContractHandlerWithServices(
 		contractAuditUseCase{},
 		auditQueryService,
 		contractCredentialRevocationService{},
+		contractBlocklistService{},
 	)
 }
 
@@ -563,6 +579,26 @@ func (contractCredentialRevocationService) RestoreCredential(_ context.Context, 
 	return appmembership.CredentialRevocationStatusDTO{CredentialID: credentialID}, nil
 }
 
+type contractBlocklistService struct{}
+
+func (contractBlocklistService) ListBlocklist(context.Context) (appmembership.BlocklistDTO, error) {
+	entry := security.BlockEntry{Kind: security.BlockKindUsername, Value: "contract-user"}
+	return appmembership.BlocklistDTO{
+		PolicyVersion: 1,
+		Entries:       []appmembership.BlocklistStateDTO{{Entry: entry, BlockedAtUnixMillis: 1_700_000_000_000}},
+	}, nil
+}
+
+func (contractBlocklistService) Block(_ context.Context, entry security.BlockEntry) (appmembership.BlocklistStatusDTO, error) {
+	return appmembership.BlocklistStatusDTO{
+		Entry: entry, Blocked: true, BlockedAtUnixMillis: 1_700_000_000_000, PolicyVersion: 2,
+	}, nil
+}
+
+func (contractBlocklistService) Unblock(_ context.Context, entry security.BlockEntry) (appmembership.BlocklistStatusDTO, error) {
+	return appmembership.BlocklistStatusDTO{Entry: entry, PolicyVersion: 3}, nil
+}
+
 type contractDrainService struct{}
 
 func (contractDrainService) StartNodeDrain(_ context.Context, request appmembership.StartNodeDrainRequestDTO) (appmembership.NodeDrainOperationDTO, error) {
@@ -665,6 +701,7 @@ func expectedOperationSet() []string {
 	fixtures = append(fixtures, drainOperationFixtures()...)
 	fixtures = append(fixtures, connectionRebalanceOperationFixtures()...)
 	fixtures = append(fixtures, credentialRevocationOperationFixtures()...)
+	fixtures = append(fixtures, blocklistOperationFixtures()...)
 	fixtures = append(fixtures, featureOperationFixtures()...)
 	operations := make([]string, 0, len(fixtures))
 	for _, fixture := range fixtures {
@@ -927,6 +964,30 @@ func TestCredentialRevocationHandlerResponsesMatchOpenAPI(t *testing.T) {
 	_, router := loadManagementContract(t)
 	handler := clusterManagementContractHandler()
 	for _, fixture := range credentialRevocationOperationFixtures() {
+		t.Run(fixture.operationID, func(t *testing.T) {
+			request := newContractRequest(fixture)
+			input, options := findContractRoute(t, router, request)
+			if input.Route.Operation.OperationID != fixture.operationID {
+				t.Fatalf("runtime fixture matched operation %q, want %q", input.Route.Operation.OperationID, fixture.operationID)
+			}
+			if err := openapi3filter.ValidateRequest(context.Background(), input); err != nil {
+				t.Fatalf("validate representative request: %v", err)
+			}
+			response := httptest.NewRecorder()
+			handler.ServeHTTP(response, request)
+			if response.Code != fixture.expectedStatus {
+				t.Fatalf("status=%d want %d: %s", response.Code, fixture.expectedStatus, response.Body.String())
+			}
+			validateResponse(t, input, options, response)
+		})
+	}
+}
+
+// Traceability: SEC-12; docs/specs/tenancy-and-security.md §7.1, §9; ADR-0050; docs/contracts/management-api-v1.md.
+func TestBlocklistHandlerResponsesMatchOpenAPI(t *testing.T) {
+	_, router := loadManagementContract(t)
+	handler := clusterManagementContractHandler()
+	for _, fixture := range blocklistOperationFixtures() {
 		t.Run(fixture.operationID, func(t *testing.T) {
 			request := newContractRequest(fixture)
 			input, options := findContractRoute(t, router, request)

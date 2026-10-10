@@ -9,6 +9,7 @@ import (
 	applicationclock "narumq/internal/application/ports/clock"
 	ports "narumq/internal/application/ports/management"
 	portsmetrics "narumq/internal/application/ports/metrics"
+	"narumq/internal/domain/security"
 )
 
 // ServerConfig configures the HTTP management server.
@@ -35,7 +36,7 @@ func NewRouter(
 	healthChecker ports.HealthChecker,
 	metricsReg portsmetrics.MetricsRenderer,
 ) http.Handler {
-	return newRouter(cfg, stateProvider, healthChecker, metricsReg, nil, nil, nil, nil, nil, nil, nil)
+	return newRouter(cfg, stateProvider, healthChecker, metricsReg, nil, nil, nil, nil, nil, nil, nil, nil)
 }
 
 // NewRouterWithMembership constructs a router with cluster membership and administration routes.
@@ -51,8 +52,9 @@ func NewRouterWithMembership(
 	auditService AuditUseCase,
 	auditQueryService AuditQueryUseCase,
 	credentialRevocationService CredentialRevocationUseCase,
+	blocklistService BlocklistUseCase,
 ) http.Handler {
-	return newRouter(cfg, stateProvider, healthChecker, metricsReg, membershipService, drainService, rebalanceService, backupProvider, auditService, auditQueryService, credentialRevocationService)
+	return newRouter(cfg, stateProvider, healthChecker, metricsReg, membershipService, drainService, rebalanceService, backupProvider, auditService, auditQueryService, credentialRevocationService, blocklistService)
 }
 
 func newRouter(
@@ -67,6 +69,7 @@ func newRouter(
 	auditService AuditUseCase,
 	auditQueryService AuditQueryUseCase,
 	credentialRevocationService CredentialRevocationUseCase,
+	blocklistService BlocklistUseCase,
 ) http.Handler {
 	auth := NewAuthenticator(AuthConfig{
 		AuthToken: cfg.AuthToken, APIKeys: cfg.APIKeys, OIDC: cfg.OIDC,
@@ -138,6 +141,36 @@ func newRouter(
 				auth.RequirePermission(PermissionCredentialAdmin, methodNotAllowed("POST, DELETE"))(w, r)
 			}
 		})
+	}
+	if blocklistService != nil {
+		blocklistH := &blocklistHandler{service: blocklistService}
+		mux.HandleFunc("/api/v1/security/blocklist", func(w http.ResponseWriter, r *http.Request) {
+			if r.Method == http.MethodGet {
+				auth.RequirePermission(PermissionCredentialAdmin, blocklistH.List)(w, r)
+				return
+			}
+			auth.RequirePermission(PermissionCredentialAdmin, methodNotAllowed(http.MethodGet))(w, r)
+		})
+		registerEntryRoute := func(pattern string, kind security.BlockKind) {
+			mux.HandleFunc(pattern, func(w http.ResponseWriter, r *http.Request) {
+				switch r.Method {
+				case http.MethodPost:
+					auth.RequireMutationPermission(PermissionCredentialAdmin, auditMutation{
+						action: "security.blocklist.add", targetType: "mqtt_blocklist_entry",
+					}, blocklistH.Block(kind))(w, r)
+				case http.MethodDelete:
+					auth.RequireMutationPermission(PermissionCredentialAdmin, auditMutation{
+						action: "security.blocklist.remove", targetType: "mqtt_blocklist_entry",
+					}, blocklistH.Unblock(kind))(w, r)
+				default:
+					auth.RequirePermission(PermissionCredentialAdmin, methodNotAllowed("POST, DELETE"))(w, r)
+				}
+			})
+		}
+		registerEntryRoute("/api/v1/security/blocklist/client-ids/{tenantId}/{clientId}", security.BlockKindClientID)
+		registerEntryRoute("/api/v1/security/blocklist/usernames/{username}", security.BlockKindUsername)
+		registerEntryRoute("/api/v1/security/blocklist/certificates/{certificateSha256}", security.BlockKindCertificateSHA256)
+		registerEntryRoute("/api/v1/security/blocklist/ip-prefixes/{address}/{prefixLength}", security.BlockKindIPPrefix)
 	}
 	if membershipService != nil {
 		membershipH := &membershipHandler{service: membershipService}
@@ -240,7 +273,7 @@ func NewServer(
 	healthChecker ports.HealthChecker,
 	metricsReg portsmetrics.MetricsRenderer,
 ) *http.Server {
-	return newServer(cfg, stateProvider, healthChecker, metricsReg, nil, nil, nil, nil, nil, nil, nil)
+	return newServer(cfg, stateProvider, healthChecker, metricsReg, nil, nil, nil, nil, nil, nil, nil, nil)
 }
 
 // NewServerWithMembership creates a management server with cluster administration routes.
@@ -256,8 +289,9 @@ func NewServerWithMembership(
 	auditService AuditUseCase,
 	auditQueryService AuditQueryUseCase,
 	credentialRevocationService CredentialRevocationUseCase,
+	blocklistService BlocklistUseCase,
 ) *http.Server {
-	return newServer(cfg, stateProvider, healthChecker, metricsReg, membershipService, drainService, rebalanceService, backupProvider, auditService, auditQueryService, credentialRevocationService)
+	return newServer(cfg, stateProvider, healthChecker, metricsReg, membershipService, drainService, rebalanceService, backupProvider, auditService, auditQueryService, credentialRevocationService, blocklistService)
 }
 
 func newServer(
@@ -272,6 +306,7 @@ func newServer(
 	auditService AuditUseCase,
 	auditQueryService AuditQueryUseCase,
 	credentialRevocationService CredentialRevocationUseCase,
+	blocklistService BlocklistUseCase,
 ) *http.Server {
 
 	addr := cfg.ListenAddr
@@ -288,7 +323,7 @@ func newServer(
 		wTimeout = 10 * time.Second
 	}
 
-	handler := newRouter(cfg, stateProvider, healthChecker, metricsReg, membershipService, drainService, rebalanceService, backupProvider, auditService, auditQueryService, credentialRevocationService)
+	handler := newRouter(cfg, stateProvider, healthChecker, metricsReg, membershipService, drainService, rebalanceService, backupProvider, auditService, auditQueryService, credentialRevocationService, blocklistService)
 
 	return &http.Server{
 		Addr:         addr,

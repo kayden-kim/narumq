@@ -328,7 +328,8 @@ func writeMembershipServiceError(w http.ResponseWriter, r *http.Request, err err
 		membership.ServiceErrorRebalanceNotCancellable,
 		membership.ServiceErrorFeatureInactive,
 		membership.ServiceErrorFeatureUnsupported,
-		membership.ServiceErrorCredentialRevocationCapacity:
+		membership.ServiceErrorCredentialRevocationCapacity,
+		membership.ServiceErrorBlocklistCapacity:
 		status = http.StatusConflict
 	case membership.ServiceErrorCompatibilityUnsupported:
 		status = http.StatusUnprocessableEntity

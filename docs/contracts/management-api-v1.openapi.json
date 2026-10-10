@@ -3,8 +3,8 @@
   "jsonSchemaDialect": "https://json-schema.org/draft/2020-12/schema",
   "info": {
     "title": "NaruMQ Management API",
-    "version": "1.11.0",
-    "description": "Query, observability, authenticated cluster membership and feature activation, broker node drain and connection rebalance, credential revocation, cluster-backup operations, and node-local management audit events. Per-principal and failed-authentication rate limiting applies to /api/v1. Dashboard APIs are deferred."
+    "version": "1.12.0",
+    "description": "Query, observability, authenticated cluster membership and feature activation, broker node drain and connection rebalance, credential revocation and client blocklist, cluster-backup operations, and node-local management audit events. Per-principal and failed-authentication rate limiting applies to /api/v1. Dashboard APIs are deferred."
   },
   "servers": [
     {
@@ -785,6 +785,87 @@
         }
       }
     },
+    "/api/v1/security/blocklist": {
+      "get": {
+        "tags": ["Security"],
+        "operationId": "listBlocklist",
+        "summary": "List blocked MQTT client identities and addresses",
+        "description": "Requires SecurityAdmin or ClusterAdmin. Available in Dynamic cluster after the client-blocklist feature is activated. Query parameters and a request body are rejected with 400 invalid_request.",
+        "responses": {
+          "200": { "$ref": "#/components/responses/BlocklistListResponse" },
+          "400": { "$ref": "#/components/responses/BadRequest" },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "403": { "$ref": "#/components/responses/Forbidden" },
+          "405": { "$ref": "#/components/responses/MethodNotAllowed" },
+          "409": { "description": "The client-blocklist feature is inactive.", "headers": { "X-Request-Id": { "$ref": "#/components/headers/XRequestId" } }, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorResponse" } } } },
+          "429": { "$ref": "#/components/responses/TooManyRequests" },
+          "500": { "description": "Unexpected error while reading blocklist state.", "headers": { "X-Request-Id": { "$ref": "#/components/headers/XRequestId" } }, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorResponse" } } } },
+          "503": { "$ref": "#/components/responses/Unavailable" }
+        }
+      }
+    },
+    "/api/v1/security/blocklist/client-ids/{tenantId}/{clientId}": {
+      "post": {
+        "tags": ["Security"], "operationId": "blockClientId", "summary": "Block a tenant-scoped MQTT client ID",
+        "description": "Requires SecurityAdmin or ClusterAdmin. Percent-encoded path values are decoded before matching (for example, a%2Fb is clientId a/b). Query parameters and a request body are rejected with 400 invalid_request.",
+        "parameters": [
+          { "name": "tenantId", "in": "path", "required": true, "schema": { "type": "string", "minLength": 1, "maxLength": 128 } },
+          { "name": "clientId", "in": "path", "required": true, "schema": { "type": "string", "minLength": 1, "maxLength": 256 } }
+        ],
+        "responses": { "200": { "$ref": "#/components/responses/BlocklistStatusResponse" }, "400": { "$ref": "#/components/responses/BadRequest" }, "401": { "$ref": "#/components/responses/Unauthorized" }, "403": { "$ref": "#/components/responses/Forbidden" }, "405": { "$ref": "#/components/responses/MethodNotAllowed" }, "409": { "description": "The feature is inactive or blocklist capacity is exhausted.", "headers": { "X-Request-Id": { "$ref": "#/components/headers/XRequestId" } }, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorResponse" } } } }, "429": { "$ref": "#/components/responses/TooManyRequests" }, "500": { "description": "Unexpected error while changing blocklist state.", "headers": { "X-Request-Id": { "$ref": "#/components/headers/XRequestId" } }, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorResponse" } } } }, "503": { "$ref": "#/components/responses/Unavailable" } }
+      },
+      "delete": {
+        "tags": ["Security"], "operationId": "unblockClientId", "summary": "Unblock a tenant-scoped MQTT client ID",
+        "description": "Requires SecurityAdmin or ClusterAdmin. Percent-encoded path values are decoded before matching. Query parameters and a request body are rejected with 400 invalid_request.",
+        "parameters": [
+          { "name": "tenantId", "in": "path", "required": true, "schema": { "type": "string", "minLength": 1, "maxLength": 128 } },
+          { "name": "clientId", "in": "path", "required": true, "schema": { "type": "string", "minLength": 1, "maxLength": 256 } }
+        ],
+        "responses": { "200": { "$ref": "#/components/responses/BlocklistStatusResponse" }, "400": { "$ref": "#/components/responses/BadRequest" }, "401": { "$ref": "#/components/responses/Unauthorized" }, "403": { "$ref": "#/components/responses/Forbidden" }, "405": { "$ref": "#/components/responses/MethodNotAllowed" }, "409": { "description": "The client-blocklist feature is inactive.", "headers": { "X-Request-Id": { "$ref": "#/components/headers/XRequestId" } }, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorResponse" } } } }, "429": { "$ref": "#/components/responses/TooManyRequests" }, "500": { "description": "Unexpected error while changing blocklist state.", "headers": { "X-Request-Id": { "$ref": "#/components/headers/XRequestId" } }, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorResponse" } } } }, "503": { "$ref": "#/components/responses/Unavailable" } }
+      }
+    },
+    "/api/v1/security/blocklist/usernames/{username}": {
+      "post": {
+        "tags": ["Security"], "operationId": "blockUsername", "summary": "Block an MQTT CONNECT username",
+        "description": "Requires SecurityAdmin or ClusterAdmin. Username matching is exact and case-sensitive. Query parameters and a request body are rejected with 400 invalid_request.",
+        "parameters": [{ "name": "username", "in": "path", "required": true, "schema": { "type": "string", "minLength": 1, "maxLength": 256 } }],
+        "responses": { "200": { "$ref": "#/components/responses/BlocklistStatusResponse" }, "400": { "$ref": "#/components/responses/BadRequest" }, "401": { "$ref": "#/components/responses/Unauthorized" }, "403": { "$ref": "#/components/responses/Forbidden" }, "405": { "$ref": "#/components/responses/MethodNotAllowed" }, "409": { "description": "The feature is inactive or blocklist capacity is exhausted.", "headers": { "X-Request-Id": { "$ref": "#/components/headers/XRequestId" } }, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorResponse" } } } }, "429": { "$ref": "#/components/responses/TooManyRequests" }, "500": { "description": "Unexpected error while changing blocklist state.", "headers": { "X-Request-Id": { "$ref": "#/components/headers/XRequestId" } }, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorResponse" } } } }, "503": { "$ref": "#/components/responses/Unavailable" } }
+      },
+      "delete": {
+        "tags": ["Security"], "operationId": "unblockUsername", "summary": "Unblock an MQTT CONNECT username",
+        "description": "Requires SecurityAdmin or ClusterAdmin. Username matching is exact and case-sensitive. Query parameters and a request body are rejected with 400 invalid_request.",
+        "parameters": [{ "name": "username", "in": "path", "required": true, "schema": { "type": "string", "minLength": 1, "maxLength": 256 } }],
+        "responses": { "200": { "$ref": "#/components/responses/BlocklistStatusResponse" }, "400": { "$ref": "#/components/responses/BadRequest" }, "401": { "$ref": "#/components/responses/Unauthorized" }, "403": { "$ref": "#/components/responses/Forbidden" }, "405": { "$ref": "#/components/responses/MethodNotAllowed" }, "409": { "description": "The client-blocklist feature is inactive.", "headers": { "X-Request-Id": { "$ref": "#/components/headers/XRequestId" } }, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorResponse" } } } }, "429": { "$ref": "#/components/responses/TooManyRequests" }, "500": { "description": "Unexpected error while changing blocklist state.", "headers": { "X-Request-Id": { "$ref": "#/components/headers/XRequestId" } }, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorResponse" } } } }, "503": { "$ref": "#/components/responses/Unavailable" } }
+      }
+    },
+    "/api/v1/security/blocklist/certificates/{certificateSha256}": {
+      "post": {
+        "tags": ["Security"], "operationId": "blockCertificate", "summary": "Block a verified client certificate",
+        "description": "Requires SecurityAdmin or ClusterAdmin. The selector is the lowercase SHA-256 fingerprint of the verified leaf certificate DER. Query parameters and a request body are rejected with 400 invalid_request.",
+        "parameters": [{ "name": "certificateSha256", "in": "path", "required": true, "schema": { "type": "string", "pattern": "^[0-9a-f]{64}$" } }],
+        "responses": { "200": { "$ref": "#/components/responses/BlocklistStatusResponse" }, "400": { "$ref": "#/components/responses/BadRequest" }, "401": { "$ref": "#/components/responses/Unauthorized" }, "403": { "$ref": "#/components/responses/Forbidden" }, "405": { "$ref": "#/components/responses/MethodNotAllowed" }, "409": { "description": "The feature is inactive or blocklist capacity is exhausted.", "headers": { "X-Request-Id": { "$ref": "#/components/headers/XRequestId" } }, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorResponse" } } } }, "429": { "$ref": "#/components/responses/TooManyRequests" }, "500": { "description": "Unexpected error while changing blocklist state.", "headers": { "X-Request-Id": { "$ref": "#/components/headers/XRequestId" } }, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorResponse" } } } }, "503": { "$ref": "#/components/responses/Unavailable" } }
+      },
+      "delete": {
+        "tags": ["Security"], "operationId": "unblockCertificate", "summary": "Unblock a verified client certificate",
+        "description": "Requires SecurityAdmin or ClusterAdmin. The selector is the lowercase SHA-256 fingerprint of the verified leaf certificate DER. Query parameters and a request body are rejected with 400 invalid_request.",
+        "parameters": [{ "name": "certificateSha256", "in": "path", "required": true, "schema": { "type": "string", "pattern": "^[0-9a-f]{64}$" } }],
+        "responses": { "200": { "$ref": "#/components/responses/BlocklistStatusResponse" }, "400": { "$ref": "#/components/responses/BadRequest" }, "401": { "$ref": "#/components/responses/Unauthorized" }, "403": { "$ref": "#/components/responses/Forbidden" }, "405": { "$ref": "#/components/responses/MethodNotAllowed" }, "409": { "description": "The client-blocklist feature is inactive.", "headers": { "X-Request-Id": { "$ref": "#/components/headers/XRequestId" } }, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorResponse" } } } }, "429": { "$ref": "#/components/responses/TooManyRequests" }, "500": { "description": "Unexpected error while changing blocklist state.", "headers": { "X-Request-Id": { "$ref": "#/components/headers/XRequestId" } }, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorResponse" } } } }, "503": { "$ref": "#/components/responses/Unavailable" } }
+      }
+    },
+    "/api/v1/security/blocklist/ip-prefixes/{address}/{prefixLength}": {
+      "post": {
+        "tags": ["Security"], "operationId": "blockIpPrefix", "summary": "Block a canonical IP network prefix",
+        "description": "Requires SecurityAdmin or ClusterAdmin. The address and prefix length form a canonical masked IPv4 or IPv6 CIDR. Query parameters and a request body are rejected with 400 invalid_request.",
+        "parameters": [{ "name": "address", "in": "path", "required": true, "schema": { "type": "string", "minLength": 1, "maxLength": 45 } }, { "name": "prefixLength", "in": "path", "required": true, "schema": { "type": "integer", "minimum": 0, "maximum": 128 } }],
+        "responses": { "200": { "$ref": "#/components/responses/BlocklistStatusResponse" }, "400": { "$ref": "#/components/responses/BadRequest" }, "401": { "$ref": "#/components/responses/Unauthorized" }, "403": { "$ref": "#/components/responses/Forbidden" }, "405": { "$ref": "#/components/responses/MethodNotAllowed" }, "409": { "description": "The feature is inactive or blocklist capacity is exhausted.", "headers": { "X-Request-Id": { "$ref": "#/components/headers/XRequestId" } }, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorResponse" } } } }, "429": { "$ref": "#/components/responses/TooManyRequests" }, "500": { "description": "Unexpected error while changing blocklist state.", "headers": { "X-Request-Id": { "$ref": "#/components/headers/XRequestId" } }, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorResponse" } } } }, "503": { "$ref": "#/components/responses/Unavailable" } }
+      },
+      "delete": {
+        "tags": ["Security"], "operationId": "unblockIpPrefix", "summary": "Unblock a canonical IP network prefix",
+        "description": "Requires SecurityAdmin or ClusterAdmin. The address and prefix length form a canonical masked IPv4 or IPv6 CIDR. Query parameters and a request body are rejected with 400 invalid_request.",
+        "parameters": [{ "name": "address", "in": "path", "required": true, "schema": { "type": "string", "minLength": 1, "maxLength": 45 } }, { "name": "prefixLength", "in": "path", "required": true, "schema": { "type": "integer", "minimum": 0, "maximum": 128 } }],
+        "responses": { "200": { "$ref": "#/components/responses/BlocklistStatusResponse" }, "400": { "$ref": "#/components/responses/BadRequest" }, "401": { "$ref": "#/components/responses/Unauthorized" }, "403": { "$ref": "#/components/responses/Forbidden" }, "405": { "$ref": "#/components/responses/MethodNotAllowed" }, "409": { "description": "The client-blocklist feature is inactive.", "headers": { "X-Request-Id": { "$ref": "#/components/headers/XRequestId" } }, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorResponse" } } } }, "429": { "$ref": "#/components/responses/TooManyRequests" }, "500": { "description": "Unexpected error while changing blocklist state.", "headers": { "X-Request-Id": { "$ref": "#/components/headers/XRequestId" } }, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorResponse" } } } }, "503": { "$ref": "#/components/responses/Unavailable" } }
+      }
+    },
     "/api/v1/audit/events": {
       "get": {
         "tags": ["Audit"],
@@ -1403,6 +1484,16 @@
           }
         }
       },
+      "BlocklistListResponse": {
+        "description": "Committed client blocklist and policy version.",
+        "headers": { "X-Request-Id": { "$ref": "#/components/headers/XRequestId" } },
+        "content": { "application/json": { "schema": { "$ref": "#/components/schemas/BlocklistListResponse" } } }
+      },
+      "BlocklistStatusResponse": {
+        "description": "Committed blocklist entry status and policy version.",
+        "headers": { "X-Request-Id": { "$ref": "#/components/headers/XRequestId" } },
+        "content": { "application/json": { "schema": { "$ref": "#/components/schemas/BlocklistStatusResponse" } } }
+      },
       "Unavailable": {
         "description": "The probe is unavailable.",
         "headers": { "X-Request-Id": { "$ref": "#/components/headers/XRequestId" } },
@@ -1767,6 +1858,51 @@
         "additionalProperties": false,
         "required": ["data"],
         "properties": { "data": { "$ref": "#/components/schemas/CredentialRevocationStatus" } }
+      },
+      "BlocklistEntry": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["kind", "value", "blockedAt"],
+        "properties": {
+          "kind": { "type": "string", "enum": ["clientId", "username", "certificateSha256", "ipPrefix"] },
+          "tenantId": { "type": "string", "minLength": 1, "maxLength": 128 },
+          "value": { "type": "string", "minLength": 1, "maxLength": 256 },
+          "blockedAt": { "type": "string", "format": "date-time" }
+        }
+      },
+      "BlocklistList": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["policyVersion", "entries"],
+        "properties": {
+          "policyVersion": { "type": "integer", "minimum": 0 },
+          "entries": { "type": "array", "items": { "$ref": "#/components/schemas/BlocklistEntry" } }
+        }
+      },
+      "BlocklistListResponse": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["data"],
+        "properties": { "data": { "$ref": "#/components/schemas/BlocklistList" } }
+      },
+      "BlocklistStatus": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["kind", "value", "blocked", "policyVersion"],
+        "properties": {
+          "kind": { "type": "string", "enum": ["clientId", "username", "certificateSha256", "ipPrefix"] },
+          "tenantId": { "type": "string", "minLength": 1, "maxLength": 128 },
+          "value": { "type": "string", "minLength": 1, "maxLength": 256 },
+          "blocked": { "type": "boolean" },
+          "blockedAt": { "type": "string", "format": "date-time" },
+          "policyVersion": { "type": "integer", "minimum": 0 }
+        }
+      },
+      "BlocklistStatusResponse": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["data"],
+        "properties": { "data": { "$ref": "#/components/schemas/BlocklistStatus" } }
       },
       "ClusterData": {
         "type": "object",

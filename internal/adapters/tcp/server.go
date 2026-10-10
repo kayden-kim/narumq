@@ -119,6 +119,7 @@ type Server struct {
 	bySession            map[routing.SessionID]*connection
 	connectingByClientID map[string]*pendingConnectingGroup
 	revokedCredentials   map[string]struct{}
+	blocklist            *security.Blocklist
 	stopped              bool
 	stopOnce             sync.Once
 	listenersWaitGroup   sync.WaitGroup
@@ -208,6 +209,7 @@ func NewServer(
 		bySession:            make(map[routing.SessionID]*connection),
 		connectingByClientID: make(map[string]*pendingConnectingGroup),
 		revokedCredentials:   make(map[string]struct{}),
+		blocklist:            security.NewBlocklist(),
 	}, nil
 }
 
@@ -313,10 +315,12 @@ func (server *Server) Serve(ctx context.Context) error {
 }
 
 func newConnection(server *Server, socket net.Conn) *connection {
+	sourceIP := remoteHost(socket)
 	connection := &connection{
 		server:           server,
 		socket:           socket,
-		sourceIP:         remoteHost(socket),
+		sourceIP:         sourceIP,
+		blockSubject:     security.BlockSubject{SourceIP: sourceIP},
 		controlQueue:     make(chan controlMessage, server.config.ControlQueueCapacity),
 		deliveryWake:     make(chan struct{}, 1),
 		stop:             make(chan struct{}),
@@ -452,6 +456,13 @@ func (server *Server) bindSession(sessionID routing.SessionID, connection *conne
 			return false
 		}
 	}
+	if connection.blocked.Load() {
+		return false
+	}
+	if _, blocked := server.blocklist.Match(connection.blockSubject); blocked {
+		connection.blocked.Store(true)
+		return false
+	}
 	if existing, exists := server.bySession[sessionID]; exists && existing != connection {
 		return false
 	}
@@ -491,6 +502,18 @@ func (server *Server) trackCredential(connection *connection, credentialID strin
 	}
 	server.mu.Lock()
 	connection.credentialID = credentialID
+	server.mu.Unlock()
+}
+
+func (server *Server) trackBlockSubject(connection *connection, subject security.BlockSubject) {
+	if server == nil || connection == nil {
+		return
+	}
+	server.mu.Lock()
+	connection.blockSubject = subject
+	if _, blocked := server.blocklist.Match(subject); blocked {
+		connection.blocked.Store(true)
+	}
 	server.mu.Unlock()
 }
 
@@ -549,9 +572,65 @@ func (server *Server) ReplaceCredentialRevocations(states []membership.Credentia
 	}
 }
 
+// ApplyBlocklist updates local admission state and closes matching sockets.
+func (server *Server) ApplyBlocklist(entry security.BlockEntry, blocked bool) {
+	if server == nil {
+		return
+	}
+	server.mu.Lock()
+	server.blocklist.Set(entry, blocked)
+	var connections []*connection
+	if blocked {
+		for active := range server.active {
+			if _, matches := server.blocklist.Match(active.blockSubject); matches &&
+				active.blocked.CompareAndSwap(false, true) {
+				if server.bySession[active.sessionID] == active {
+					delete(server.bySession, active.sessionID)
+				}
+				connections = append(connections, active)
+			}
+		}
+	}
+	server.mu.Unlock()
+	for _, active := range connections {
+		server.closeBlockedConnection(active)
+	}
+}
+
+// ReplaceBlocklist restores the exact committed local admission set.
+func (server *Server) ReplaceBlocklist(entries []security.BlockEntry) {
+	if server == nil {
+		return
+	}
+	server.mu.Lock()
+	server.blocklist.Replace(entries)
+	var connections []*connection
+	for active := range server.active {
+		if _, matches := server.blocklist.Match(active.blockSubject); matches &&
+			active.blocked.CompareAndSwap(false, true) {
+			if server.bySession[active.sessionID] == active {
+				delete(server.bySession, active.sessionID)
+			}
+			connections = append(connections, active)
+		}
+	}
+	server.mu.Unlock()
+	for _, active := range connections {
+		server.closeBlockedConnection(active)
+	}
+}
+
 func (server *Server) closeCredentialRevokedConnection(connection *connection) {
 	if connection.establishedState.Load() && connection.version == mqtt.ProtocolV5 {
 		server.sendDisconnectAndClose(connection, 0x87)
+		return
+	}
+	connection.requestClose()
+}
+
+func (server *Server) closeBlockedConnection(connection *connection) {
+	if connection.establishedState.Load() && connection.version == mqtt.ProtocolV5 {
+		server.sendDisconnectAndClose(connection, 0x98)
 		return
 	}
 	connection.requestClose()
@@ -755,6 +834,8 @@ type connection struct {
 	packetIDs             *packetIDAllocator
 	credentialID          string
 	credentialRevoked     atomic.Bool
+	blockSubject          security.BlockSubject
+	blocked               atomic.Bool
 	credentialExpired     atomic.Bool
 	establishedState      atomic.Bool
 	credentialTimerMu     sync.Mutex
@@ -934,8 +1015,8 @@ func (connection *connection) cleanup() {
 			}
 			connection.server.unbindSession(connection.sessionID, connection)
 			disconnectReason := connection.disconnectReason
-			if connection.credentialRevoked.Load() {
-				disconnectReason = session.DisconnectCredentialRevoked
+			if connection.credentialRevoked.Load() || connection.blocked.Load() {
+				disconnectReason = session.DisconnectAccessRevoked
 			} else if connection.credentialExpired.Load() {
 				disconnectReason = session.DisconnectAbnormal
 			} else if connection.takeover.Load() {
@@ -1144,6 +1225,8 @@ func connectRejectReason(version mqtt.ProtocolVersion, reasonCode byte) string {
 			return portsmetrics.ConnectRejectReasonNotAuthorized
 		case 0x88, 0x89:
 			return portsmetrics.ConnectRejectReasonServerUnavailable
+		case 0x8A:
+			return portsmetrics.ConnectRejectReasonBanned
 		case 0x97:
 			return portsmetrics.ConnectRejectReasonQuotaExceeded
 		default:
@@ -1212,6 +1295,14 @@ func (connection *connection) activate(packet mqtt.Connect) error {
 	}
 	connection.accepted = true
 	connection.server.trackCredential(connection, result.Principal.CredentialID())
+	blockSubject := security.BlockSubject{
+		TenantID: tenantID, ClientID: packet.ClientID,
+		HasUsername: packet.HasUsername, Username: packet.Username, SourceIP: connection.sourceIP,
+	}
+	if request.ClientCertificate != nil {
+		blockSubject.CertificateSHA256 = request.ClientCertificate.SHA256
+	}
+	connection.server.trackBlockSubject(connection, blockSubject)
 	if connection.server.config.ClusterMode && result.Principal.CredentialID() != "" {
 		checker := connection.server.config.CredentialRevocationChecker
 		revoked := connection.credentialRevoked.Load()
@@ -1252,6 +1343,14 @@ func (connection *connection) activate(packet mqtt.Connect) error {
 				reasonCode = 0x87
 			}
 			connection.server.connections.RecordCredentialRevocationDenial(request, result.Principal)
+			return connection.rejectActivatedConnect(result, reasonCode)
+		}
+		if connection.blocked.Load() {
+			reasonCode := byte(0x05)
+			if packet.Version == mqtt.ProtocolV5 {
+				reasonCode = 0x8A
+			}
+			connection.server.connections.RecordBlockedDenial(request, result.Principal)
 			return connection.rejectActivatedConnect(result, reasonCode)
 		}
 		connection.accepted = false
@@ -1305,6 +1404,15 @@ func (connection *connection) activate(packet mqtt.Connect) error {
 		connection.server.mu.Unlock()
 		return connection.rejectRevokedConnectBeforeAck(request, result)
 	}
+	if connection.blocked.Load() {
+		connection.server.mu.Unlock()
+		return connection.rejectBlockedConnectBeforeAck(request, result)
+	}
+	if _, blocked := connection.server.blocklist.Match(connection.blockSubject); blocked {
+		connection.blocked.Store(true)
+		connection.server.mu.Unlock()
+		return connection.rejectBlockedConnectBeforeAck(request, result)
+	}
 	connection.establishedState.Store(true)
 	done, err := connection.enqueueControlWithResult(&connAck)
 	connection.server.mu.Unlock()
@@ -1321,7 +1429,7 @@ func (connection *connection) activate(packet mqtt.Connect) error {
 
 func (connection *connection) rejectActivatedConnect(result connect.ResultDTO, reasonCode byte) error {
 	_ = connection.server.connections.DisconnectIfOwnershipEpoch(
-		result.SessionID, session.DisconnectCredentialRevoked, result.OwnershipEpoch,
+		result.SessionID, session.DisconnectAccessRevoked, result.OwnershipEpoch,
 	)
 	connection.accepted = false
 	connAck := mqtt.ConnAck{Version: connection.version, ReasonCode: reasonCode}
@@ -1341,7 +1449,20 @@ func (connection *connection) rejectRevokedConnectBeforeAck(
 ) error {
 	connection.server.connections.RecordCredentialRevocationDenial(request, result.Principal)
 	_ = connection.server.connections.DisconnectIfOwnershipEpoch(
-		result.SessionID, session.DisconnectCredentialRevoked, result.OwnershipEpoch,
+		result.SessionID, session.DisconnectAccessRevoked, result.OwnershipEpoch,
+	)
+	connection.accepted = false
+	connection.requestClose()
+	return nil
+}
+
+func (connection *connection) rejectBlockedConnectBeforeAck(
+	request connect.ConnectRequestDTO,
+	result connect.ResultDTO,
+) error {
+	connection.server.connections.RecordBlockedDenial(request, result.Principal)
+	_ = connection.server.connections.DisconnectIfOwnershipEpoch(
+		result.SessionID, session.DisconnectAccessRevoked, result.OwnershipEpoch,
 	)
 	connection.accepted = false
 	connection.requestClose()

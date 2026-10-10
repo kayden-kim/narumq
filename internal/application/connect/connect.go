@@ -86,6 +86,11 @@ type CredentialRevocationChecker interface {
 	IsCredentialRevoked(context.Context, string) (bool, error)
 }
 
+// BlocklistMatcher reports whether node-local committed policy blocks a CONNECT subject.
+type BlocklistMatcher interface {
+	MatchBlocklist(security.BlockSubject) (security.BlockKind, bool)
+}
+
 // ResultDTO reports the connection response, accepted session, committed owner
 // epoch, and recovered durable delivery state.
 type ResultDTO struct {
@@ -154,6 +159,13 @@ func WithOwnershipCoordinator(coordinator OwnershipCoordinator, ownerNodeID uint
 func WithCredentialRevocationChecker(checker CredentialRevocationChecker) Option {
 	return func(useCase *UseCase) {
 		useCase.credentialRevocationChecker = checker
+	}
+}
+
+// WithBlocklistMatcher configures node-local committed-state checks before authentication and ownership.
+func WithBlocklistMatcher(matcher BlocklistMatcher) Option {
+	return func(useCase *UseCase) {
+		useCase.blocklistMatcher = matcher
 	}
 }
 
@@ -227,6 +239,7 @@ type UseCase struct {
 	dataPlaneAudit              portsaudit.DataPlaneDenialRecorder
 	ownershipCoordinator        OwnershipCoordinator
 	credentialRevocationChecker CredentialRevocationChecker
+	blocklistMatcher            BlocklistMatcher
 	ownerNodeID                 uint64
 	offlineCoordinator          OfflineCoordinator
 	durableDeliveryCommitter    deliverystate.Committer
@@ -279,20 +292,37 @@ func (useCase *UseCase) rejectAuthentication(request ConnectRequestDTO, method, 
 
 // RecordCredentialRevocationDenial records a CONNECT rejected by the TCP post-ownership check.
 func (useCase *UseCase) RecordCredentialRevocationDenial(request ConnectRequestDTO, principal security.Principal) {
+	useCase.recordPostOwnershipDenial(request, principal, "credential_revoked")
+}
+
+// RecordBlockedDenial records a CONNECT rejected by the TCP post-ownership blocklist check.
+func (useCase *UseCase) RecordBlockedDenial(request ConnectRequestDTO, principal security.Principal) {
+	useCase.recordPostOwnershipDenial(request, principal, "blocked")
+}
+
+func (useCase *UseCase) recordPostOwnershipDenial(
+	request ConnectRequestDTO,
+	principal security.Principal,
+	reason string,
+) {
 	if useCase == nil {
 		return
-	}
-	method := portsmetrics.AuthMethodAnonymous
-	if request.ClientCertificate != nil {
-		method = portsmetrics.AuthMethodTLS
-	} else if useCase.authenticator != nil {
-		method = useCase.credentialMethod
 	}
 	identity := &applicationauthentication.Result{
 		TenantID: principal.TenantID(), Subject: principal.Subject(), CredentialID: principal.CredentialID(),
 		Roles: principal.Roles(), ExpiresAt: principal.ExpiresAt(),
 	}
-	useCase.rejectAuthentication(request, method, "credential_revoked", identity)
+	useCase.rejectAuthentication(request, useCase.connectAuthMethod(request), reason, identity)
+}
+
+func (useCase *UseCase) connectAuthMethod(request ConnectRequestDTO) string {
+	if request.ClientCertificate != nil {
+		return portsmetrics.AuthMethodTLS
+	}
+	if useCase != nil && useCase.authenticator != nil {
+		return useCase.credentialMethod
+	}
+	return portsmetrics.AuthMethodAnonymous
 }
 
 func (useCase *UseCase) credentialRevoked(ctx context.Context, principal security.Principal) (bool, error) {
@@ -604,6 +634,21 @@ func (useCase *UseCase) ConnectContext(ctx context.Context, request ConnectReque
 		result.ConnAck.ReasonCode = clientIDRejectedReason(packet.Version)
 		return result, nil
 	}
+	if useCase.blocklistMatcher != nil {
+		fingerprint := ""
+		if request.ClientCertificate != nil {
+			fingerprint = request.ClientCertificate.SHA256
+		}
+		subject := security.BlockSubject{
+			HasUsername: packet.HasUsername, Username: packet.Username,
+			CertificateSHA256: fingerprint, SourceIP: request.SourceIP,
+		}
+		if _, blocked := useCase.blocklistMatcher.MatchBlocklist(subject); blocked {
+			useCase.rejectAuthentication(request, useCase.connectAuthMethod(request), "blocked", nil)
+			result.ConnAck.ReasonCode = bannedReason(packet.Version)
+			return result, nil
+		}
+	}
 
 	var (
 		principal     security.Principal
@@ -661,6 +706,14 @@ func (useCase *UseCase) ConnectContext(ctx context.Context, request ConnectReque
 			result.ConnAck.ReasonCode = unsupportedDevelopmentReason(packet.Version)
 			return result, nil
 		}
+		if useCase.ownershipCoordinator != nil && useCase.blocklistMatcher != nil {
+			subject := security.BlockSubject{TenantID: "default", ClientID: packet.ClientID}
+			if _, blocked := useCase.blocklistMatcher.MatchBlocklist(subject); blocked {
+				useCase.rejectAuthentication(request, portsmetrics.AuthMethodAnonymous, "blocked", nil)
+				result.ConnAck.ReasonCode = bannedReason(packet.Version)
+				return result, nil
+			}
+		}
 		useCase.recordAuth(portsmetrics.AuthMethodAnonymous, true, "none")
 	}
 
@@ -674,6 +727,16 @@ func (useCase *UseCase) ConnectContext(ctx context.Context, request ConnectReque
 			if revoked {
 				useCase.rejectAuthentication(request, authMethod, "credential_revoked", &authResult)
 				result.ConnAck.ReasonCode = notAuthorizedReason(packet.Version)
+				return result, nil
+			}
+		}
+		if useCase.blocklistMatcher != nil {
+			subject := security.BlockSubject{
+				TenantID: authResult.TenantID.String(), ClientID: packet.ClientID,
+			}
+			if _, blocked := useCase.blocklistMatcher.MatchBlocklist(subject); blocked {
+				useCase.rejectAuthentication(request, authMethod, "blocked", &authResult)
+				result.ConnAck.ReasonCode = bannedReason(packet.Version)
 				return result, nil
 			}
 		}
@@ -1444,6 +1507,12 @@ func unsupportedDevelopmentReason(version mqtt.ProtocolVersion) byte {
 func notAuthorizedReason(version mqtt.ProtocolVersion) byte {
 	if version == mqtt.ProtocolV5 {
 		return 0x87
+	}
+	return 0x05
+}
+func bannedReason(version mqtt.ProtocolVersion) byte {
+	if version == mqtt.ProtocolV5 {
+		return 0x8A
 	}
 	return 0x05
 }

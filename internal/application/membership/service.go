@@ -60,6 +60,7 @@ const (
 	ServiceErrorNodeDrainInProgress           ServiceErrorCode = "node_drain_in_progress"
 	ServiceErrorFeatureInactive               ServiceErrorCode = "feature_inactive"
 	ServiceErrorCredentialRevocationCapacity  ServiceErrorCode = "credential_revocation_capacity_exceeded"
+	ServiceErrorBlocklistCapacity             ServiceErrorCode = "blocklist_capacity_exceeded"
 	ServiceErrorConnectionRebalanceInProgress ServiceErrorCode = "connection_rebalance_in_progress"
 	ServiceErrorRebalanceNotCancellable       ServiceErrorCode = "rebalance_not_cancellable"
 )
@@ -348,6 +349,8 @@ func conflictServiceError(conflict ApplyConflictCode) *ServiceError {
 		return newServiceError(ServiceErrorFeatureInactive, false)
 	case ConflictCredentialRevocationCapacity:
 		return newServiceError(ServiceErrorCredentialRevocationCapacity, false)
+	case ConflictBlocklistCapacity:
+		return newServiceError(ServiceErrorBlocklistCapacity, false)
 	default:
 		return newServiceError(ServiceErrorOperationConflict, false)
 	}
@@ -381,9 +384,11 @@ func newServiceError(code ServiceErrorCode, retryable bool) *ServiceError {
 	case ServiceErrorFeatureUnsupported:
 		message = "feature is not supported by every active member"
 	case ServiceErrorFeatureInactive:
-		message = "credential revocation feature is inactive"
+		message = "required cluster feature is inactive"
 	case ServiceErrorCredentialRevocationCapacity:
 		message = "credential revocation capacity is exhausted"
+	case ServiceErrorBlocklistCapacity:
+		message = "client blocklist capacity is exhausted"
 	case ServiceErrorInvalidNodeTransition:
 		message = "node lifecycle transition is not allowed"
 	case ServiceErrorDrainNotCancellable:

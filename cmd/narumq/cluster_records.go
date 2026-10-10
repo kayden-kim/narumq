@@ -4,12 +4,13 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
-	"narumq/internal/domain/connrebalance"
-	"narumq/internal/domain/nodedrain"
 	"slices"
 
 	"narumq/internal/adapters/raft/records"
 	"narumq/internal/application/membership"
+	"narumq/internal/domain/connrebalance"
+	"narumq/internal/domain/nodedrain"
+	"narumq/internal/domain/security"
 )
 
 func encodeMembershipCommand(command membership.CommandDTO) ([]byte, error) {
@@ -201,6 +202,25 @@ func encodeMembershipCommand(command membership.CommandDTO) ([]byte, error) {
 		}
 		wire.Payload = &records.CommandEnvelope_CredentialRevocation{CredentialRevocation: &records.CredentialRevocationChange{
 			Action: action, CredentialId: change.CredentialID, ProposedAtUnixMillis: change.ProposedAtUnixMillis,
+		}}
+	}
+	if command.Blocklist != nil {
+		payloadCount++
+		change := command.Blocklist
+		action, err := blocklistActionToRecord(change.Action)
+		if err != nil {
+			return nil, err
+		}
+		kind, err := blocklistKindToRecord(change.Entry.Kind)
+		if err != nil {
+			return nil, err
+		}
+		wire.Payload = &records.CommandEnvelope_Blocklist{Blocklist: &records.BlocklistChange{
+			Action: action,
+			Entry: &records.BlocklistEntry{
+				Kind: kind, TenantId: change.Entry.TenantID, Value: change.Entry.Value,
+			},
+			ProposedAtUnixMillis: change.ProposedAtUnixMillis,
 		}}
 	}
 	if payloadCount != 1 {
@@ -400,6 +420,26 @@ func decodeMembershipCommand(data []byte) (membership.CommandDTO, error) {
 		command.CredentialRevocation = &membership.CredentialRevocationChangeDTO{
 			Action: action, CredentialID: value.GetCredentialId(), ProposedAtUnixMillis: value.GetProposedAtUnixMillis(),
 		}
+	case *records.CommandEnvelope_Blocklist:
+		value := payload.Blocklist
+		if value == nil || value.GetEntry() == nil {
+			return membership.CommandDTO{}, errors.New("blocklist payload and entry are required")
+		}
+		action, err := blocklistActionFromRecord(value.GetAction())
+		if err != nil {
+			return membership.CommandDTO{}, err
+		}
+		kind, err := blocklistKindFromRecord(value.GetEntry().GetKind())
+		if err != nil {
+			return membership.CommandDTO{}, err
+		}
+		command.Blocklist = &membership.BlocklistChangeDTO{
+			Action: action,
+			Entry: security.BlockEntry{
+				Kind: kind, TenantID: value.GetEntry().GetTenantId(), Value: value.GetEntry().GetValue(),
+			},
+			ProposedAtUnixMillis: value.GetProposedAtUnixMillis(),
+		}
 	default:
 		return membership.CommandDTO{}, errors.New("decoded command has no supported payload")
 	}
@@ -524,9 +564,22 @@ func encodeMembershipSnapshot(snapshot membership.SnapshotDTO) ([]byte, error) {
 			CredentialId: revocation.CredentialID, RevokedAtUnixMillis: revocation.RevokedAtUnixMillis,
 		})
 	}
+	for _, blocked := range snapshot.Blocklist {
+		kind, conversionErr := blocklistKindToRecord(blocked.Entry.Kind)
+		if conversionErr != nil {
+			return nil, conversionErr
+		}
+		state.Blocklist = append(state.Blocklist, &records.BlocklistState{
+			Entry: &records.BlocklistEntry{
+				Kind: kind, TenantId: blocked.Entry.TenantID, Value: blocked.Entry.Value,
+			},
+			BlockedAtUnixMillis: blocked.BlockedAtUnixMillis,
+		})
+	}
+	state.BlocklistVersion = snapshot.BlocklistVersion
 	state.ActiveFeatures = slices.Clone(snapshot.ActiveFeatures)
 	quotaProfileObjectCount := membershipQuotaProfileObjectCount(snapshot.TenantQuotaProfile)
-	objectCount := uint64(len(snapshot.Members) + len(snapshot.Ownerships) + len(snapshot.Subscriptions) + len(snapshot.DeliverySessions) + deliveryEntriesCount + len(snapshot.MembershipHistory) + len(snapshot.Retained) + len(snapshot.OfflineSessions) + offlineMessagesCount + len(snapshot.NodeDrains) + len(snapshot.ActiveFeatures) + len(snapshot.SessionMetadata) + len(snapshot.CredentialRevocations) + quotaProfileObjectCount + rebalanceStateObjectCount(snapshot.ConnectionRebalance))
+	objectCount := uint64(len(snapshot.Members) + len(snapshot.Ownerships) + len(snapshot.Subscriptions) + len(snapshot.DeliverySessions) + deliveryEntriesCount + len(snapshot.MembershipHistory) + len(snapshot.Retained) + len(snapshot.OfflineSessions) + offlineMessagesCount + len(snapshot.NodeDrains) + len(snapshot.ActiveFeatures) + len(snapshot.SessionMetadata) + len(snapshot.CredentialRevocations) + len(snapshot.Blocklist) + quotaProfileObjectCount + rebalanceStateObjectCount(snapshot.ConnectionRebalance))
 	origins, conversionErr := proposalOriginsToRecords(snapshot.ProposalOrigins)
 	if conversionErr != nil {
 		return nil, conversionErr
@@ -562,6 +615,7 @@ func decodeMembershipSnapshot(data []byte) (membership.SnapshotDTO, error) {
 		SchemaMajor: wire.GetSchemaMajor(), SchemaMinor: wire.GetSchemaMinor(),
 		LastIncludedIndex: wire.GetLastIncludedIndex(), ObjectCount: wire.GetObjectCount(),
 		Digest: append([]byte(nil), wire.GetSha256()...), ActiveFeatures: slices.Clone(state.GetActiveFeatures()),
+		BlocklistVersion: state.GetBlocklistVersion(),
 	}
 	for _, member := range state.GetMembers() {
 		value, err := memberIdentityFromRecord(member)
@@ -669,6 +723,21 @@ func decodeMembershipSnapshot(data []byte) (membership.SnapshotDTO, error) {
 	for _, revocation := range state.GetCredentialRevocations() {
 		snapshot.CredentialRevocations = append(snapshot.CredentialRevocations, membership.CredentialRevocationStateDTO{
 			CredentialID: revocation.GetCredentialId(), RevokedAtUnixMillis: revocation.GetRevokedAtUnixMillis(),
+		})
+	}
+	for _, blocked := range state.GetBlocklist() {
+		if blocked == nil || blocked.GetEntry() == nil {
+			return membership.SnapshotDTO{}, errors.New("blocklist state and entry are required")
+		}
+		kind, conversionErr := blocklistKindFromRecord(blocked.GetEntry().GetKind())
+		if conversionErr != nil {
+			return membership.SnapshotDTO{}, conversionErr
+		}
+		snapshot.Blocklist = append(snapshot.Blocklist, membership.BlocklistStateDTO{
+			Entry: security.BlockEntry{
+				Kind: kind, TenantID: blocked.GetEntry().GetTenantId(), Value: blocked.GetEntry().GetValue(),
+			},
+			BlockedAtUnixMillis: blocked.GetBlockedAtUnixMillis(),
 		})
 	}
 	snapshot.TenantQuotaProfile = tenantQuotaProfileFromRecord(state.GetTenantQuotaProfile())
@@ -1215,6 +1284,57 @@ func credentialRevocationActionFromRecord(action records.CredentialRevocationAct
 		return membership.CredentialRevocationActionRestore, nil
 	default:
 		return 0, fmt.Errorf("unsupported credential revocation action %d", action)
+	}
+}
+func blocklistActionToRecord(action membership.BlocklistAction) (records.BlocklistAction, error) {
+	switch action {
+	case membership.BlocklistActionBlock:
+		return records.BlocklistAction_BLOCKLIST_ACTION_BLOCK, nil
+	case membership.BlocklistActionUnblock:
+		return records.BlocklistAction_BLOCKLIST_ACTION_UNBLOCK, nil
+	default:
+		return 0, fmt.Errorf("unsupported blocklist action %d", action)
+	}
+}
+
+func blocklistActionFromRecord(action records.BlocklistAction) (membership.BlocklistAction, error) {
+	switch action {
+	case records.BlocklistAction_BLOCKLIST_ACTION_BLOCK:
+		return membership.BlocklistActionBlock, nil
+	case records.BlocklistAction_BLOCKLIST_ACTION_UNBLOCK:
+		return membership.BlocklistActionUnblock, nil
+	default:
+		return 0, fmt.Errorf("unsupported blocklist action %d", action)
+	}
+}
+
+func blocklistKindToRecord(kind security.BlockKind) (records.BlocklistKind, error) {
+	switch kind {
+	case security.BlockKindClientID:
+		return records.BlocklistKind_BLOCKLIST_KIND_CLIENT_ID, nil
+	case security.BlockKindUsername:
+		return records.BlocklistKind_BLOCKLIST_KIND_USERNAME, nil
+	case security.BlockKindCertificateSHA256:
+		return records.BlocklistKind_BLOCKLIST_KIND_CERTIFICATE_SHA256, nil
+	case security.BlockKindIPPrefix:
+		return records.BlocklistKind_BLOCKLIST_KIND_IP_PREFIX, nil
+	default:
+		return 0, fmt.Errorf("unsupported blocklist kind %d", kind)
+	}
+}
+
+func blocklistKindFromRecord(kind records.BlocklistKind) (security.BlockKind, error) {
+	switch kind {
+	case records.BlocklistKind_BLOCKLIST_KIND_CLIENT_ID:
+		return security.BlockKindClientID, nil
+	case records.BlocklistKind_BLOCKLIST_KIND_USERNAME:
+		return security.BlockKindUsername, nil
+	case records.BlocklistKind_BLOCKLIST_KIND_CERTIFICATE_SHA256:
+		return security.BlockKindCertificateSHA256, nil
+	case records.BlocklistKind_BLOCKLIST_KIND_IP_PREFIX:
+		return security.BlockKindIPPrefix, nil
+	default:
+		return security.BlockKindUnspecified, fmt.Errorf("unsupported blocklist kind %d", kind)
 	}
 }
 func rebalanceStateToRecord(state membership.ConnectionRebalanceStateDTO) (*records.ConnectionRebalanceState, error) {

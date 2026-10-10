@@ -5,6 +5,8 @@ import (
 	"reflect"
 	"slices"
 	"sort"
+
+	"narumq/internal/domain/security"
 )
 
 // Snapshot returns a canonical deep-owned state image at the machine's exact applied index.
@@ -125,6 +127,12 @@ func (machine *StateMachine) Restore(snapshot SnapshotDTO) error {
 	for _, state := range copyOfSnapshot.CredentialRevocations {
 		credentialRevocations[state.CredentialID] = state
 	}
+	blocklist := make(map[security.BlockEntry]BlocklistStateDTO, len(copyOfSnapshot.Blocklist))
+	blocklistIndex := security.NewBlocklist()
+	for _, state := range copyOfSnapshot.Blocklist {
+		blocklist[state.Entry] = state
+		blocklistIndex.Set(state.Entry, true)
+	}
 	var connectionRebalance *ConnectionRebalanceStateDTO
 	if copyOfSnapshot.ConnectionRebalance != nil {
 		state := cloneConnectionRebalanceState(*copyOfSnapshot.ConnectionRebalance)
@@ -156,6 +164,9 @@ func (machine *StateMachine) Restore(snapshot SnapshotDTO) error {
 	machine.proposalResultBytes = proposalBytes
 	machine.connectionRebalance = connectionRebalance
 	machine.credentialRevocations = credentialRevocations
+	machine.blocklist = blocklist
+	machine.blocklistIndex = blocklistIndex
+	machine.blocklistVersion = copyOfSnapshot.BlocklistVersion
 	machine.activeFeatures = slices.Clone(copyOfSnapshot.ActiveFeatures)
 	return nil
 }
@@ -174,6 +185,8 @@ func (machine *StateMachine) snapshotLocked(lastIncludedIndex uint64) SnapshotDT
 		SessionMetadata:       make([]SessionMetadataStateDTO, 0, len(machine.sessionMetadata)),
 		ConnectionRebalance:   cloneConnectionRebalanceStatePointer(machine.connectionRebalance),
 		CredentialRevocations: make([]CredentialRevocationStateDTO, 0, len(machine.credentialRevocations)),
+		Blocklist:             make([]BlocklistStateDTO, 0, len(machine.blocklist)),
+		BlocklistVersion:      machine.blocklistVersion,
 		ActiveFeatures:        slices.Clone(machine.activeFeatures),
 		TenantQuotaProfile:    cloneTenantQuotaProfile(machine.tenantQuota),
 		ProposalOrigins:       machine.proposalSnapshotLocked(),
@@ -210,6 +223,9 @@ func (machine *StateMachine) snapshotLocked(lastIncludedIndex uint64) SnapshotDT
 	for _, state := range machine.credentialRevocations {
 		snapshot.CredentialRevocations = append(snapshot.CredentialRevocations, state)
 	}
+	for _, state := range machine.blocklist {
+		snapshot.Blocklist = append(snapshot.Blocklist, state)
+	}
 	sort.Slice(snapshot.Members, func(left, right int) bool { return snapshot.Members[left].MemberID < snapshot.Members[right].MemberID })
 	sort.Slice(snapshot.Ownerships, func(left, right int) bool {
 		return compareSession(snapshot.Ownerships[left].TenantID, snapshot.Ownerships[left].ClientID, snapshot.Ownerships[right].TenantID, snapshot.Ownerships[right].ClientID) < 0
@@ -238,6 +254,9 @@ func (machine *StateMachine) snapshotLocked(lastIncludedIndex uint64) SnapshotDT
 	sort.Slice(snapshot.CredentialRevocations, func(left, right int) bool {
 		return snapshot.CredentialRevocations[left].CredentialID < snapshot.CredentialRevocations[right].CredentialID
 	})
+	sort.Slice(snapshot.Blocklist, func(left, right int) bool {
+		return security.CompareBlockEntries(snapshot.Blocklist[left].Entry, snapshot.Blocklist[right].Entry) < 0
+	})
 	for index := range snapshot.DeliverySessions {
 		sort.Slice(snapshot.DeliverySessions[index].Messages, func(left, right int) bool {
 			return snapshot.DeliverySessions[index].Messages[left].Sequence < snapshot.DeliverySessions[index].Messages[right].Sequence
@@ -250,7 +269,7 @@ func (machine *StateMachine) snapshotLocked(lastIncludedIndex uint64) SnapshotDT
 	for _, record := range snapshot.DeliverySessions {
 		deliveryEntries += len(record.Messages) + len(record.Inbound)
 	}
-	snapshot.ObjectCount = uint64(len(snapshot.Members) + len(snapshot.Ownerships) + len(snapshot.Subscriptions) + len(snapshot.DeliverySessions) + deliveryEntries + len(snapshot.MembershipHistory) + len(snapshot.Retained) + len(snapshot.OfflineSessions) + offlineMessagesCount + len(snapshot.NodeDrains) + len(snapshot.ActiveFeatures) + len(snapshot.SessionMetadata) + len(snapshot.CredentialRevocations) + tenantQuotaObjectCount(snapshot.TenantQuotaProfile) + proposalObjectCount(snapshot.ProposalOrigins))
+	snapshot.ObjectCount = uint64(len(snapshot.Members) + len(snapshot.Ownerships) + len(snapshot.Subscriptions) + len(snapshot.DeliverySessions) + deliveryEntries + len(snapshot.MembershipHistory) + len(snapshot.Retained) + len(snapshot.OfflineSessions) + offlineMessagesCount + len(snapshot.NodeDrains) + len(snapshot.ActiveFeatures) + len(snapshot.SessionMetadata) + len(snapshot.CredentialRevocations) + len(snapshot.Blocklist) + tenantQuotaObjectCount(snapshot.TenantQuotaProfile) + proposalObjectCount(snapshot.ProposalOrigins))
 	if snapshot.ConnectionRebalance != nil {
 		snapshot.ObjectCount++
 	}
@@ -384,6 +403,7 @@ func cloneSnapshot(snapshot SnapshotDTO) SnapshotDTO {
 	copyOfSnapshot.ConnectionRebalance = cloneConnectionRebalanceStatePointer(snapshot.ConnectionRebalance)
 	copyOfSnapshot.CredentialRevocations = make([]CredentialRevocationStateDTO, len(snapshot.CredentialRevocations))
 	copy(copyOfSnapshot.CredentialRevocations, snapshot.CredentialRevocations)
+	copyOfSnapshot.Blocklist = append([]BlocklistStateDTO(nil), snapshot.Blocklist...)
 	copyOfSnapshot.ActiveFeatures = slices.Clone(snapshot.ActiveFeatures)
 	copyOfSnapshot.SessionMetadata = make([]SessionMetadataStateDTO, len(snapshot.SessionMetadata))
 	for index, state := range snapshot.SessionMetadata {
@@ -399,7 +419,8 @@ func sameSnapshotState(left, right SnapshotDTO) bool {
 		reflect.DeepEqual(left.Members, right.Members) && reflect.DeepEqual(left.Ownerships, right.Ownerships) && reflect.DeepEqual(left.Subscriptions, right.Subscriptions) &&
 		reflect.DeepEqual(left.DeliverySessions, right.DeliverySessions) && reflect.DeepEqual(left.MembershipHistory, right.MembershipHistory) &&
 		reflect.DeepEqual(left.Retained, right.Retained) && reflect.DeepEqual(left.OfflineSessions, right.OfflineSessions) && reflect.DeepEqual(left.NodeDrains, right.NodeDrains) &&
-		reflect.DeepEqual(left.SessionMetadata, right.SessionMetadata) && reflect.DeepEqual(left.ConnectionRebalance, right.ConnectionRebalance) &&
-		reflect.DeepEqual(left.CredentialRevocations, right.CredentialRevocations) && reflect.DeepEqual(left.ProposalOrigins, right.ProposalOrigins) &&
+		reflect.DeepEqual(left.CredentialRevocations, right.CredentialRevocations) &&
+		reflect.DeepEqual(left.Blocklist, right.Blocklist) && left.BlocklistVersion == right.BlocklistVersion &&
+		reflect.DeepEqual(left.ProposalOrigins, right.ProposalOrigins) &&
 		sameTenantQuotaProfile(left.TenantQuotaProfile, right.TenantQuotaProfile) && slices.Equal(left.ActiveFeatures, right.ActiveFeatures)
 }

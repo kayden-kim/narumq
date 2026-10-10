@@ -6,7 +6,7 @@ path, parameter, response schema와 media type은
 
 | 항목 | 값 |
 | --- | --- |
-| 이름과 version | `narumq-management-api` 1.11.0 |
+| 이름과 version | `narumq-management-api` 1.12.0 |
 | 상태 | Active |
 | Producer | NaruMQ broker management API |
 | Consumer | Dashboard·operator·monitoring integration의 query client |
@@ -14,8 +14,8 @@ path, parameter, response schema와 media type은
 | 기준 artifact | [management-api-v1.openapi.json](management-api-v1.openapi.json) |
 | 기준 spec | [Management API와 observability](../specs/management-api-and-observability.md) |
 | 관련 Architecture | [System overview](../architectures/system-overview.md), [Security boundaries](../architectures/security-boundaries.md) |
-| 관련 requirement | API-02, API-04~API-09, SEC-07, SEC-10~SEC-11 |
-| 관련 결정 | [ADR-0005](../decisions/ADR-0005-management-api-contract-format.md), [ADR-0018](../decisions/ADR-0018-release-compatibility-window.md), [ADR-0043](../decisions/ADR-0043-management-api-rate-limit.md), [ADR-0048](../decisions/ADR-0048-management-api-oidc-api-key-rbac.md), [ADR-0049](../decisions/ADR-0049-mqtt-credential-revocation.md) |
+| 관련 requirement | API-02, API-04~API-09, SEC-07, SEC-10~SEC-12 |
+| 관련 결정 | [ADR-0005](../decisions/ADR-0005-management-api-contract-format.md), [ADR-0018](../decisions/ADR-0018-release-compatibility-window.md), [ADR-0043](../decisions/ADR-0043-management-api-rate-limit.md), [ADR-0048](../decisions/ADR-0048-management-api-oidc-api-key-rbac.md), [ADR-0049](../decisions/ADR-0049-mqtt-credential-revocation.md), [ADR-0050](../decisions/ADR-0050-mqtt-client-blocklist.md) |
 | 호환성 범위 | `/api/v1` query producer와 v1 query consumer |
 | 검증 | `tests/contracts/management-api-v1`와 `tests/integration/management_api_test.go` |
 
@@ -49,7 +49,18 @@ path, parameter, response schema와 media type은
 | GET | `/api/v1/security/credential-revocations` | 폐기된 credential ID 목록 조회 (SecurityAdmin·ClusterAdmin) |
 | POST | `/api/v1/security/credential-revocations/{credentialId}` | credential ID 폐기 (SecurityAdmin·ClusterAdmin) |
 | DELETE | `/api/v1/security/credential-revocations/{credentialId}` | credential ID 폐기 복구 (SecurityAdmin·ClusterAdmin) |
+| GET | `/api/v1/security/blocklist` | blocklist와 policy version 조회 (SecurityAdmin·ClusterAdmin) |
+| POST | `/api/v1/security/blocklist/client-ids/{tenantId}/{clientId}` | tenant별 client ID 차단 (SecurityAdmin·ClusterAdmin) |
+| DELETE | `/api/v1/security/blocklist/client-ids/{tenantId}/{clientId}` | tenant별 client ID 차단 해제 (SecurityAdmin·ClusterAdmin) |
+| POST | `/api/v1/security/blocklist/usernames/{username}` | CONNECT Username 차단 (SecurityAdmin·ClusterAdmin) |
+| DELETE | `/api/v1/security/blocklist/usernames/{username}` | CONNECT Username 차단 해제 (SecurityAdmin·ClusterAdmin) |
+| POST | `/api/v1/security/blocklist/certificates/{certificateSha256}` | 검증된 client certificate fingerprint 차단 (SecurityAdmin·ClusterAdmin) |
+| DELETE | `/api/v1/security/blocklist/certificates/{certificateSha256}` | certificate fingerprint 차단 해제 (SecurityAdmin·ClusterAdmin) |
+| POST | `/api/v1/security/blocklist/ip-prefixes/{address}/{prefixLength}` | IP prefix 차단 (SecurityAdmin·ClusterAdmin) |
+| DELETE | `/api/v1/security/blocklist/ip-prefixes/{address}/{prefixLength}` | IP prefix 차단 해제 (SecurityAdmin·ClusterAdmin) |
 | GET | `/api/v1/audit/events` | node-local audit hash-chain record 조회 (SecurityAdmin·ClusterAdmin) |
+
+Blocklist는 Dynamic cluster에서 `client-blocklist` feature를 활성화한 뒤 사용할 수 있으며 standalone에는 제공하지 않는다. GET의 `data`는 `{policyVersion, entries[]}`이며 각 entry는 `kind`, 선택적 `tenantId`, `value`, `blockedAt`을 가진다. POST는 항목을 차단하고 DELETE는 해제하며, 성공 결과의 `data`에는 `blocked`와 `policyVersion`이 포함된다. 실제 entry 집합이 바뀐 command의 Raft index가 policy version이며, 중복 block·이미 해제된 항목의 unblock은 version을 바꾸지 않는다. 성공한 mutation 응답 뒤 5초 안에 모든 node가 새 차단을 적용한다. Feature 비활성 또는 4096개 capacity 초과는 `409`다. Path 값은 percent-encoding할 수 있다. 예를 들어 clientId `a/b`는 `a%2Fb`로 전달하며 서버는 이를 `a/b`로 해석한다. 이 endpoint들의 query parameter와 request body는 허용되지 않으며, 있으면 `400 invalid_request`다. Mutation은 `SecurityAdmin` 또는 `ClusterAdmin` 권한을 요구한다.
 
 Version 1.5.0은 cluster feature 조회와 activation을 active contract에 추가한다. 조회는 `ReadOnly`, activation은 `ClusterAdmin`을 요구하며 dynamic cluster mode에서 제공된다. 이 catalog에 없는 path를 client가 호출할 수 있다는 계약은 없다.
 
@@ -71,7 +82,7 @@ Version 1.7.0은 `POST/GET/DELETE /api/v1/cluster/rebalance`를 추가한다. Op
 | `PermissionOperate` — drain·rebalance mutation |  | ✓ |  | ✓ |
 | `PermissionAuditRead` — `GET /api/v1/audit/events` |  |  | ✓ | ✓ |
 | `PermissionClusterAdmin` — tenant, membership, feature activation, backup |  |  |  | ✓ |
-| `PermissionCredentialAdmin` — credential revocation list, revoke, restore |  |  | ✓ | ✓ |
+| `PermissionCredentialAdmin` — credential revocation list, revoke, restore; blocklist list·block·unblock |  |  | ✓ | ✓ |
 
 - `GET /api/v1/audit/events`는 SecurityAdmin 또는 ClusterAdmin만 사용할 수 있다. 현재 node의 저장된 audit records를 `seq` 내림차순으로 반환한다. 허용 query는 `limit`, `cursor`, `actorSubject`, `action`, `targetType`, `targetId`, `requestId`, `result`, `from`, `to`이며 문자열 filter는 exact match다. `result`는 `ALLOWED`, `DENIED`, `FAILED`; `from` 포함·`to` 제외 RFC 3339 시각이다.
 - Audit cursor는 RawURL base64로 인코딩한 `seq:<decimal>`이고, cursor seq보다 작은 record부터 조회한다. 응답은 공통 list envelope이며 각 record는 `seq`, `prevHash`, `hash`, 저장된 `event`를 가진다. 조회는 감사 event를 생성하지 않으며 저장 event와 chain 값을 바꾸지 않는다.
@@ -143,9 +154,10 @@ method에 사용한다. 내부 오류와 credential은 response에 노출하지 
 - Version 1.4.0은 `/api/v1/nodes/{nodeId}/drain`의 POST/GET/DELETE를 추가한다. Drain request parameter bounds와 replay semantics는 [Drain spec](../specs/drain-and-rolling-update.md)을 따른다.
 - Version 1.5.0은 `GET /api/v1/cluster/features`와 `POST /api/v1/cluster/features/{feature}`를 추가한다. 성공 response는 `activeFeatures`와 member별 `nodeId`, `releaseVersion`, `features`를 data envelope로 반환하며, 미지원 feature activation은 non-retryable `409 feature_not_supported_by_all_members`다.
 - Version 1.7.0은 `POST/GET/DELETE /api/v1/cluster/rebalance`를 추가한다. Request parameter bounds와 operation response schema는 OpenAPI artifact가 기준이다.
-- Version 1.8.0은 Dynamic cluster의 활성 mutation 10개와 관리 API의 인증·인가 거절에 node-local 감사 event를 기록한다. Audit publisher가 append할 수 없는 경우 해당 mutation은 실행되지 않고 retryable `503 audit_unavailable`을 반환한다.
+- Version 1.8.0은 Dynamic cluster의 활성 mutation 18개와 관리 API의 인증·인가 거절에 node-local 감사 event를 기록한다. Audit publisher가 append할 수 없는 경우 해당 mutation은 실행되지 않고 retryable `503 audit_unavailable`을 반환한다.
 - Active audit producer의 범위와 JSONL hash-chain 형식은 [Audit event v1 계약](audit-event-v1.md)과 [ADR-0039](../decisions/ADR-0039-management-audit-log.md)를 따른다. `GET /api/v1/audit/events`는 SecurityAdmin·ClusterAdmin 전용 node-local read-only query다. Dashboard는 ReadOnly API key만 사용하며 OIDC 사용자 로그인은 Grafana가 맡는다.
 - Version 1.9.0은 모든 `/api/v1` operation에 `429` response를 추가한다.
 - Version 1.10.0은 이름 있는 API key, 정적 subject binding을 사용하는 OIDC JWT와 4-role authorization을 추가하고 `GET /api/v1/audit/events`로 node-local audit chain 조회를 제공한다.
 - Version 1.11.0은 Dynamic cluster 전용 credential revocation GET·POST·DELETE route와 `SecurityAdmin`·`ClusterAdmin` 권한을 추가한다. Replicated state의 기능은 `credential-revocation` feature activation 뒤에만 사용한다.
+- Version 1.12.0은 Dynamic cluster 전용 `client-blocklist` feature를 사용하는 GET·POST·DELETE route를 추가한다. SecurityAdmin·ClusterAdmin만 조회·변경할 수 있으며, path 값은 percent-encoding을 허용하고 query와 body는 거절한다. Blocklist entry, canonical 값, 전파 목표와 policy version 의미는 [ADR-0050](../decisions/ADR-0050-mqtt-client-blocklist.md)를 따른다.
 - Breaking change는 `/api/v2`와 별도 OpenAPI artifact로 제공한다.

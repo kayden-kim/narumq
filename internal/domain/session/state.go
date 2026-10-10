@@ -93,9 +93,9 @@ const (
 	// DisconnectPlannedHandoff applies server-initiated drain/removal Will rules
 	// at the successor: publish or schedule the Will (MQTT-3.1.2-8).
 	DisconnectPlannedHandoff
-	// DisconnectCredentialRevoked closes the connection after credential revocation
-	// and discards its Will.
-	DisconnectCredentialRevoked
+	// DisconnectAccessRevoked closes the connection after credential revocation or
+	// a blocklist match and discards its Will.
+	DisconnectAccessRevoked
 )
 
 // DisconnectResult describes the state changes and scheduled actions resulting from Disconnect.
@@ -179,7 +179,7 @@ func (state Lifecycle) Disconnect(now time.Time, reason DisconnectReason) (Disco
 
 	hasWill := state.will != nil && !state.willPublished && !state.willDiscarded
 	if hasWill {
-		if reason == DisconnectNormal || reason == DisconnectTakeover || reason == DisconnectCredentialRevoked {
+		if reason == DisconnectNormal || reason == DisconnectTakeover || reason == DisconnectAccessRevoked {
 			state.willDiscarded = true
 		} else {
 			if state.version == mqtt.ProtocolV311 || state.will.DelayInterval == 0 || state.retention == RetentionImmediate {

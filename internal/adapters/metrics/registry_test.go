@@ -76,6 +76,7 @@ func TestRegistry_OperationsAndRendering(t *testing.T) {
 	// Auth
 	reg.AuthAttempt(ports.AuthMethodPassword, true, "none")
 	reg.AuthAttempt(ports.AuthMethodAnonymous, false, "not_authorized")
+	reg.AuthAttempt(ports.AuthMethodAnonymous, false, "blocked")
 
 	// Sessions & Subscriptions
 	reg.SetSessionsActive(true, 10)
@@ -110,6 +111,7 @@ func TestRegistry_OperationsAndRendering(t *testing.T) {
 		`narumq_packets_sent_total{packet_type="PUBACK"} 1`,
 		`narumq_auth_attempts_total{method="password",result="success",reason="none"} 1`,
 		`narumq_auth_attempts_total{method="anonymous",result="failure",reason="not_authorized"} 1`,
+		`narumq_auth_attempts_total{method="anonymous",result="failure",reason="blocked"} 1`,
 		"narumq_publish_latency_seconds_count 1",
 	}
 
@@ -212,12 +214,14 @@ func TestRaftStageHistogramsKeepStagesIsolatedAndBoundOverflow(t *testing.T) {
 }
 
 // Traceability: UI-03; docs/specs/management-api-and-observability.md §7.
+// Traceability: SEC-12; docs/specs/tenancy-and-security.md §7.1, §9; ADR-0050.
 func TestRegistryRendersConnectRejectionsByProtocolAndReason(t *testing.T) {
 	registry := NewRegistry()
 	registry.ConnectRejected(ports.ProtocolMQTT311, ports.ConnectRejectReasonOther)
 	registry.ConnectRejected(ports.ProtocolMQTT311, ports.ConnectRejectReasonOther)
 	registry.ConnectRejected(ports.ProtocolMQTT50, ports.ConnectRejectReasonNotAuthorized)
 	registry.ConnectRejected(ports.ProtocolMQTT310, ports.ConnectRejectReasonUnsupportedProtocolVersion)
+	registry.ConnectRejected(ports.ProtocolMQTT50, ports.ConnectRejectReasonBanned)
 	registry.ConnectRejected("unknown", ports.ConnectRejectReasonOther)
 	registry.ConnectRejected(ports.ProtocolMQTT50, "unknown")
 
@@ -229,6 +233,7 @@ func TestRegistryRendersConnectRejectionsByProtocolAndReason(t *testing.T) {
 		"not_authorized",
 		"server_unavailable",
 		"quota_exceeded",
+		"banned",
 		"other",
 	}
 	output := string(registry.Render(false))
@@ -248,6 +253,8 @@ func TestRegistryRendersConnectRejectionsByProtocolAndReason(t *testing.T) {
 				want = 2
 			case protocol == "MQTT_5_0" && reason == "not_authorized":
 				want = 1
+			case protocol == "MQTT_5_0" && reason == "banned":
+				want = 1
 			}
 			line := fmt.Sprintf("narumq_mqtt_connect_rejected_total{protocol=%q,reason=%q} %d\n", protocol, reason, want)
 			index := strings.Index(output, line)
@@ -264,8 +271,8 @@ func TestRegistryRendersConnectRejectionsByProtocolAndReason(t *testing.T) {
 			seriesCount++
 		}
 	}
-	if seriesCount != 15 {
-		t.Fatalf("rendered %d CONNECT rejection series, want 15", seriesCount)
+	if seriesCount != 17 {
+		t.Fatalf("rendered %d CONNECT rejection series, want 17", seriesCount)
 	}
 }
 

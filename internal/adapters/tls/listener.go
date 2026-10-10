@@ -1,7 +1,9 @@
 package tls
 
 import (
+	"crypto/sha256"
 	"crypto/tls"
+	"encoding/hex"
 	"errors"
 	"net"
 
@@ -42,8 +44,10 @@ func ExtractVerifiedClientCertificateDTO(conn net.Conn) (applicationauthenticati
 			continue
 		}
 		certificate := chain[0]
+		sum := sha256.Sum256(certificate.Raw)
 		return applicationauthentication.ClientCertificateDTO{
 			CommonName:     certificate.Subject.CommonName,
+			SHA256:         hex.EncodeToString(sum[:]),
 			DNSNames:       append([]string(nil), certificate.DNSNames...),
 			EmailAddresses: append([]string(nil), certificate.EmailAddresses...),
 			NotAfter:       certificate.NotAfter,

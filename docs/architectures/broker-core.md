@@ -155,9 +155,8 @@ ordered SUBACK/UNSUBACK와 Will 등록·지연 publication이다. ACL 거절은 
 반환하며 MQTT 5 PUBLISH는 QoS에 따라 DISCONNECT/PUBACK/PUBREC `0x87`,
 MQTT 3.1.1은 연결 종료를 사용한다. Tenant 연결·session·subscription·traffic 한도와
 거절 metric은 아래 내부 설계에 따라 지원한다. Dynamic cluster의 MQTT denial audit은
-SEC-11과 [ADR-0046](../decisions/ADR-0046-mqtt-data-plane-denial-audit.md)에 따라
-기존 연결 token reauthentication과 blocklist는 이 slice에서 지원하지 않는다. 관리 API의
-범위는 별도 스펙을 따른다.
+SEC-11과 [ADR-0046](../decisions/ADR-0046-mqtt-data-plane-denial-audit.md)을 따른다.
+기존 연결 token reauthentication은 이 slice에서 지원하지 않는다. SEC-12와 [ADR-0050](../decisions/ADR-0050-mqtt-client-blocklist.md)에 따라 Dynamic cluster는 replicated client blocklist를 지원하며 Standalone에는 제공하지 않는다. 관리 API의 구체 범위는 별도 스펙을 따른다.
 
 ## Tenant 연결·traffic 한도 내부 설계
 

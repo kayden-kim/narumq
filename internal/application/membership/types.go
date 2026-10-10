@@ -4,6 +4,7 @@ package membership
 import (
 	"narumq/internal/domain/connrebalance"
 	"narumq/internal/domain/nodedrain"
+	"narumq/internal/domain/security"
 )
 
 // SchemaMajor and SchemaMinor identify the supported replicated-state contract.
@@ -30,18 +31,21 @@ const (
 )
 
 // Session metadata capacity is cluster-wide and is not tenant storage quota.
-// Connection rebalance, session metadata and credential revocation activate independently.
+// Connection rebalance, session metadata, credential revocation and client blocklist
+// activate independently.
 const (
 	// ConnectionRebalanceFeature identifies the replicated connection rebalance feature.
 	ConnectionRebalanceFeature    = "connection-rebalance"
 	SessionMetadataFeature        = "session-metadata"
 	CredentialRevocationFeature   = "credential-revocation"
+	ClientBlocklistFeature        = "client-blocklist"
 	ProposalRecoveryFeature       = "proposal-recovery"
 	MaxProposalReceiptsPerOrigin  = 1024
 	MaxProposalReceipts           = 4096
 	MaxProposalResultBytes        = 32 << 20
 	MaxSessionWillBytes           = 8 << 20
 	MaxCredentialRevocations      = 4096
+	MaxBlocklistEntries           = 4096
 	MaxCredentialIDBytes          = 512
 	MaxSessionWillPayloadBytes    = 65535
 	MaxSessionPrincipalFieldBytes = 1024
@@ -162,6 +166,42 @@ type CredentialRevocationStatusDTO struct {
 	CredentialID        string
 	Revoked             bool
 	RevokedAtUnixMillis uint64
+}
+
+// BlocklistAction identifies one replicated block or unblock transition.
+type BlocklistAction uint32
+
+const (
+	BlocklistActionUnspecified BlocklistAction = iota
+	BlocklistActionBlock
+	BlocklistActionUnblock
+)
+
+// BlocklistChangeDTO carries a deterministic block or unblock command.
+type BlocklistChangeDTO struct {
+	Action               BlocklistAction
+	Entry                security.BlockEntry
+	ProposedAtUnixMillis uint64
+}
+
+// BlocklistStateDTO is one committed blocked entry and its first block time.
+type BlocklistStateDTO struct {
+	Entry               security.BlockEntry
+	BlockedAtUnixMillis uint64
+}
+
+// BlocklistStatusDTO reports the committed status and policy version of an entry.
+type BlocklistStatusDTO struct {
+	Entry               security.BlockEntry
+	Blocked             bool
+	BlockedAtUnixMillis uint64
+	PolicyVersion       uint64
+}
+
+// BlocklistDTO contains committed entries and the latest policy version.
+type BlocklistDTO struct {
+	PolicyVersion uint64
+	Entries       []BlocklistStateDTO
 }
 
 // Durable delivery capacity is enforced deterministically at apply time.
@@ -464,6 +504,7 @@ type CommandDTO struct {
 	SessionMetadata      *SessionMetadataChangeDTO
 	ConnectionRebalance  *ConnectionRebalanceChangeDTO
 	CredentialRevocation *CredentialRevocationChangeDTO
+	Blocklist            *BlocklistChangeDTO
 }
 
 // MemberIdentityDTO is a committed cluster member identity and lifecycle phase.
@@ -705,6 +746,7 @@ const (
 	ConflictSessionMetadataCapacity       ApplyConflictCode = "session_metadata_capacity_exceeded"
 	ConflictSessionMetadataInvalid        ApplyConflictCode = "session_metadata_invalid"
 	ConflictCredentialRevocationCapacity  ApplyConflictCode = "credential_revocation_capacity_exceeded"
+	ConflictBlocklistCapacity             ApplyConflictCode = "blocklist_capacity_exceeded"
 	ConflictConnectionRebalanceInProgress ApplyConflictCode = "connection_rebalance_in_progress"
 	ConflictRebalanceNotCancellable       ApplyConflictCode = "rebalance_not_cancellable"
 	ConflictProposalRetired               ApplyConflictCode = "proposal_retired"
@@ -729,6 +771,7 @@ type ApplyResultDTO struct {
 	SessionMetadata      *SessionMetadataResultDTO
 	ConnectionRebalance  *ConnectionRebalanceStateDTO
 	CredentialRevocation *CredentialRevocationStatusDTO
+	Blocklist            *BlocklistStatusDTO
 	SupersededWill       *SupersededWillDTO
 }
 
@@ -834,6 +877,8 @@ type SnapshotDTO struct {
 	SessionMetadata       []SessionMetadataStateDTO
 	ConnectionRebalance   *ConnectionRebalanceStateDTO
 	CredentialRevocations []CredentialRevocationStateDTO
+	Blocklist             []BlocklistStateDTO
+	BlocklistVersion      uint64
 	ProposalOrigins       []ProposalOriginStateDTO
 }
 

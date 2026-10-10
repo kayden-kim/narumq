@@ -17,6 +17,7 @@ const (
 	ConnectRejectReasonNotAuthorized              = "not_authorized"
 	ConnectRejectReasonServerUnavailable          = "server_unavailable"
 	ConnectRejectReasonQuotaExceeded              = "quota_exceeded"
+	ConnectRejectReasonBanned                     = "banned"
 	ConnectRejectReasonOther                      = "other"
 )
 

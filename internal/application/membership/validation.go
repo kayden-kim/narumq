@@ -10,6 +10,7 @@ import (
 	"narumq/internal/domain/nodedrain"
 	"narumq/internal/domain/release"
 	"narumq/internal/domain/routing"
+	"narumq/internal/domain/security"
 	"narumq/internal/domain/tenancy"
 )
 
@@ -84,6 +85,9 @@ func validateCommand(command CommandDTO) error {
 	if command.CredentialRevocation != nil {
 		payloadCount++
 	}
+	if command.Blocklist != nil {
+		payloadCount++
+	}
 	if payloadCount != 1 {
 		return ErrInvalidCommand
 	}
@@ -138,6 +142,10 @@ func validateCommand(command CommandDTO) error {
 		}
 	case command.CredentialRevocation != nil:
 		if validateCredentialRevocationChange(*command.CredentialRevocation) != nil {
+			return ErrInvalidCommand
+		}
+	case command.Blocklist != nil:
+		if validateBlocklistChange(*command.Blocklist) != nil {
 			return ErrInvalidCommand
 		}
 	}
@@ -376,7 +384,7 @@ func validSnapshot(snapshot SnapshotDTO) error {
 	for _, session := range snapshot.DeliverySessions {
 		deliveryObjects += len(session.Messages) + len(session.Inbound)
 	}
-	count := len(snapshot.Members) + len(snapshot.Ownerships) + len(snapshot.Subscriptions) + deliveryObjects + len(snapshot.MembershipHistory) + len(snapshot.Retained) + len(snapshot.OfflineSessions) + offlineMessagesCount + len(snapshot.NodeDrains) + len(snapshot.ActiveFeatures) + len(snapshot.SessionMetadata) + tenantQuotaObjectCount(snapshot.TenantQuotaProfile) + proposalObjectCount(snapshot.ProposalOrigins) + len(snapshot.CredentialRevocations)
+	count := len(snapshot.Members) + len(snapshot.Ownerships) + len(snapshot.Subscriptions) + deliveryObjects + len(snapshot.MembershipHistory) + len(snapshot.Retained) + len(snapshot.OfflineSessions) + offlineMessagesCount + len(snapshot.NodeDrains) + len(snapshot.ActiveFeatures) + len(snapshot.SessionMetadata) + tenantQuotaObjectCount(snapshot.TenantQuotaProfile) + proposalObjectCount(snapshot.ProposalOrigins) + len(snapshot.CredentialRevocations) + len(snapshot.Blocklist)
 	if snapshot.ConnectionRebalance != nil {
 		count++
 	}
@@ -444,6 +452,18 @@ func validSnapshot(snapshot SnapshotDTO) error {
 	for index, state := range snapshot.CredentialRevocations {
 		if !validCredentialRevocationState(state) ||
 			(index > 0 && snapshot.CredentialRevocations[index-1].CredentialID >= state.CredentialID) {
+			return ErrInvalidSnapshot
+		}
+	}
+	if len(snapshot.Blocklist) > MaxBlocklistEntries ||
+		(len(snapshot.Blocklist) > 0 && snapshot.BlocklistVersion == 0) ||
+		((len(snapshot.Blocklist) > 0 || snapshot.BlocklistVersion > 0) && !release.Contains(snapshot.ActiveFeatures, ClientBlocklistFeature)) ||
+		snapshot.BlocklistVersion > snapshot.LastIncludedIndex {
+		return ErrInvalidSnapshot
+	}
+	for index, state := range snapshot.Blocklist {
+		if !validBlocklistState(state) ||
+			(index > 0 && security.CompareBlockEntries(snapshot.Blocklist[index-1].Entry, state.Entry) >= 0) {
 			return ErrInvalidSnapshot
 		}
 	}

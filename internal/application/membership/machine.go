@@ -5,6 +5,8 @@ import (
 	"slices"
 	"sort"
 	"sync"
+
+	"narumq/internal/domain/security"
 )
 
 type sessionKey struct {
@@ -45,6 +47,9 @@ type StateMachine struct {
 	nodeDrains            map[uint64]NodeDrainStateDTO
 	connectionRebalance   *ConnectionRebalanceStateDTO
 	credentialRevocations map[string]CredentialRevocationStateDTO
+	blocklist             map[security.BlockEntry]BlocklistStateDTO
+	blocklistIndex        *security.Blocklist
+	blocklistVersion      uint64
 	sessionMetadata       map[sessionKey]SessionMetadataStateDTO
 	sessionWillBytes      int
 	proposalOrigins       map[uint64]*proposalOriginState
@@ -67,6 +72,8 @@ func NewStateMachine() *StateMachine {
 		nodeDrains:            make(map[uint64]NodeDrainStateDTO),
 		sessionMetadata:       make(map[sessionKey]SessionMetadataStateDTO),
 		credentialRevocations: make(map[string]CredentialRevocationStateDTO),
+		blocklist:             make(map[security.BlockEntry]BlocklistStateDTO),
+		blocklistIndex:        security.NewBlocklist(),
 	}
 }
 
@@ -105,7 +112,7 @@ func (machine *StateMachine) InitializeBootstrap(index uint64, members []MemberI
 	}
 	machine.mu.Lock()
 	defer machine.mu.Unlock()
-	if machine.lastAppliedIndex != 0 || len(machine.members) != 0 || len(machine.operations) != 0 || len(machine.ownerships) != 0 || len(machine.subscriptions) != 0 || len(machine.delivery) != 0 || len(machine.retained) != 0 || len(machine.offline) != 0 || machine.tenantQuota != nil || len(machine.nodeDrains) != 0 || len(machine.credentialRevocations) != 0 || len(machine.activeFeatures) != 0 {
+	if machine.lastAppliedIndex != 0 || len(machine.members) != 0 || len(machine.operations) != 0 || len(machine.ownerships) != 0 || len(machine.subscriptions) != 0 || len(machine.delivery) != 0 || len(machine.retained) != 0 || len(machine.offline) != 0 || machine.tenantQuota != nil || len(machine.nodeDrains) != 0 || len(machine.credentialRevocations) != 0 || len(machine.blocklist) != 0 || machine.blocklistVersion != 0 || len(machine.activeFeatures) != 0 {
 		return ErrBootstrapAlreadyInitialized
 	}
 	for _, member := range copied {
@@ -162,6 +169,8 @@ func (machine *StateMachine) applyCommandLocked(index uint64, command CommandDTO
 		return machine.applyConnectionRebalance(index, *command.ConnectionRebalance), nil
 	case command.CredentialRevocation != nil:
 		return machine.applyCredentialRevocation(index, *command.CredentialRevocation), nil
+	case command.Blocklist != nil:
+		return machine.applyBlocklist(index, *command.Blocklist), nil
 	default:
 		// validateCommand rejects an empty discriminated union before advancing.
 		return result, nil

@@ -25,7 +25,7 @@ func (stub *auditQueryStub) Query(context.Context, auditapp.QueryCommandDTO) (au
 
 func auditQueryTestRouter(query AuditQueryUseCase, roles ...Role) (http.Handler, *spyAuditUseCase) {
 	spy := &spyAuditUseCase{}
-	return NewRouterWithMembership(ServerConfig{APIKeys: []APIKeyCredential{{ID: "query", Key: "query-secret", Roles: roles}}}, &mockStateProvider{}, nil, nil, nil, nil, nil, nil, spy, query, nil), spy
+	return NewRouterWithMembership(ServerConfig{APIKeys: []APIKeyCredential{{ID: "query", Key: "query-secret", Roles: roles}}}, &mockStateProvider{}, nil, nil, nil, nil, nil, nil, spy, query, nil, nil), spy
 }
 
 func TestAuditQueryHandlerResponsesAndStoredBytes(t *testing.T) {

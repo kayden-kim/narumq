@@ -1,8 +1,10 @@
 package tls
 
 import (
+	"crypto/sha256"
 	"crypto/tls"
 	"crypto/x509"
+	"encoding/hex"
 	"errors"
 	"io"
 	"net"
@@ -114,6 +116,7 @@ func TestNewListenerSuccessAndHandshake(t *testing.T) {
 	}
 }
 
+// Traceability: SEC-12; docs/specs/tenancy-and-security.md §7.1, §9; ADR-0050.
 func TestExtractVerifiedClientCertificateDTO(t *testing.T) {
 	t.Run("non-tls socket", func(t *testing.T) {
 		s1, s2 := net.Pipe()
@@ -137,10 +140,11 @@ func TestExtractVerifiedClientCertificateDTO(t *testing.T) {
 			t.Fatalf("expected empty DTO and false for unverified peer certificate, got %#v, %v", dto, ok)
 		}
 	})
-
 	t.Run("verified chain copies identity fields", func(t *testing.T) {
+
 		notAfter := time.Date(2026, time.January, 1, 0, 0, 0, 0, time.UTC)
 		cert := &x509.Certificate{
+			Raw:            []byte("verified leaf DER"),
 			DNSNames:       []string{"device.narumq.internal"},
 			EmailAddresses: []string{"device@narumq.internal"},
 			NotAfter:       notAfter,
@@ -155,6 +159,10 @@ func TestExtractVerifiedClientCertificateDTO(t *testing.T) {
 		dto, ok := ExtractVerifiedClientCertificateDTO(mock)
 		if !ok {
 			t.Fatal("expected verified client certificate DTO")
+		}
+		sum := sha256.Sum256(cert.Raw)
+		if dto.SHA256 != hex.EncodeToString(sum[:]) {
+			t.Fatalf("certificate fingerprint = %q; want lowercase SHA-256 %q", dto.SHA256, hex.EncodeToString(sum[:]))
 		}
 		if dto.CommonName != "device-01" || dto.NotAfter != notAfter {
 			t.Fatalf("identity scalar fields = %#v", dto)

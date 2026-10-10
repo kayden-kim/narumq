@@ -559,8 +559,8 @@ func TestLifecycle_TakeoverAndPlannedHandoffWillRules(t *testing.T) {
 	}
 }
 
-// Traceability: SEC-07; docs/specs/tenancy-and-security.md §7, §9; ADR-0049.
-func TestLifecycleDisconnectCredentialRevokedDiscardsWill(t *testing.T) {
+// Traceability: SEC-07, SEC-12; docs/specs/tenancy-and-security.md §7, §7.1, §9; ADR-0049, ADR-0050.
+func TestLifecycleDisconnectAccessRevokedDiscardsWill(t *testing.T) {
 	now := time.Unix(1, 0)
 	state, _, err := Open(nil, mqtt.Connect{
 		Version:               mqtt.ProtocolV5,
@@ -571,8 +571,7 @@ func TestLifecycleDisconnectCredentialRevokedDiscardsWill(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Open() error = %v", err)
 	}
-
-	result, err := state.Disconnect(now, DisconnectCredentialRevoked)
+	result, err := state.Disconnect(now, DisconnectAccessRevoked)
 	if err != nil {
 		t.Fatalf("Disconnect() error = %v", err)
 	}

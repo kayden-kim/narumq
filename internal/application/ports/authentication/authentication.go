@@ -20,7 +20,9 @@ type ClientCertificateDTO struct {
 	CommonName     string
 	DNSNames       []string
 	EmailAddresses []string
-	NotAfter       time.Time
+	// SHA256 is lowercase hex SHA-256 of the verified leaf DER.
+	SHA256   string
+	NotAfter time.Time
 }
 
 // ClientCertificateAuthenticationProvider verifies a client certificate identity binding.

@@ -20,7 +20,10 @@ func resolveBuildIdentity() (string, []string, error) {
 		return "", nil, fmt.Errorf("invalid build identity: %w", err)
 	}
 
-	features := []string{membership.ConnectionRebalanceFeature, membership.CredentialRevocationFeature, membership.ProposalRecoveryFeature, membership.SessionMetadataFeature}
+	features := []string{
+		membership.ClientBlocklistFeature, membership.ConnectionRebalanceFeature,
+		membership.CredentialRevocationFeature, membership.ProposalRecoveryFeature, membership.SessionMetadataFeature,
+	}
 	if buildFeatures != "" {
 		features = append(features, strings.Split(buildFeatures, ",")...)
 	}

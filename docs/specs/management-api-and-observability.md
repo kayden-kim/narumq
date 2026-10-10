@@ -4,12 +4,12 @@
 
 | 항목 | 값 |
 | --- | --- |
-| 상태 | Active (Phase 1 query profile, broker drain, cluster feature activation, management-plane audit, API rate limit and SEC-10 OIDC/API key RBAC; other mutation·운영 자동화는 deferred) |
-| 관련 요구사항 | API-01~API-09, UI-01~UI-10, SEC-10~SEC-11 |
+| 상태 | Active (Phase 1 query profile, broker drain, cluster feature activation, management-plane audit, API rate limit, SEC-10 OIDC/API key RBAC and SEC-12 client blocklist; other mutation·운영 자동화는 deferred) |
+| 관련 요구사항 | API-01~API-09, UI-01~UI-10, SEC-10~SEC-12 |
 | 근거 | [PRD 9.5절, 9.6절과 14장](../requirements/PRD.md) |
 | 관련 spec | [Tenant와 security](tenancy-and-security.md), [Drain](drain-and-rolling-update.md) |
 | 관련 Architecture | [System overview](../architectures/system-overview.md), [Security boundaries](../architectures/security-boundaries.md) |
-| 관련 결정 | [ADR-0005](../decisions/ADR-0005-management-api-contract-format.md), [ADR-0018](../decisions/ADR-0018-release-compatibility-window.md), [ADR-0043](../decisions/ADR-0043-management-api-rate-limit.md), [ADR-0045](../decisions/ADR-0045-operations-dashboard-grafana.md), [ADR-0048](../decisions/ADR-0048-management-api-oidc-api-key-rbac.md) |
+| 관련 결정 | [ADR-0005](../decisions/ADR-0005-management-api-contract-format.md), [ADR-0018](../decisions/ADR-0018-release-compatibility-window.md), [ADR-0043](../decisions/ADR-0043-management-api-rate-limit.md), [ADR-0045](../decisions/ADR-0045-operations-dashboard-grafana.md), [ADR-0048](../decisions/ADR-0048-management-api-oidc-api-key-rbac.md), [ADR-0050](../decisions/ADR-0050-mqtt-client-blocklist.md) |
 | 관련 Contract | [Management API v1](../contracts/management-api-v1.md), [Management API OpenAPI](../contracts/management-api-v1.openapi.json), [Audit event v1](../contracts/audit-event-v1.md) |
 
 ## 1. HTTP 공통 계약
@@ -18,7 +18,7 @@
 - request와 response body는 `application/json` UTF-8을 사용한다.
 - `/api/v1` 요청은 인증과 RBAC를 통과해야 한다. Health probe와 `/metrics`의 익명 노출 범위는 listener 정책으로 제한할 수 있다.
 - 서버는 수신한 유효 request ID를 사용하거나 새 값을 생성해 `X-Request-Id`에 반환해야 한다.
-- Phase 1 catalog는 조회와 broker node drain을 제공한다. Cluster feature GET은 `ReadOnly`, cluster feature activation은 `ClusterAdmin`의 active mutation이며, 그 밖의 mutation은 deferred다.
+- Phase 1 catalog는 조회와 broker node drain을 제공한다. Cluster feature GET은 `ReadOnly`, cluster feature activation은 `ClusterAdmin`의 active mutation이며, Dynamic cluster의 client blocklist는 SEC-12의 active SecurityAdmin·ClusterAdmin mutation이다. 그 밖의 mutation은 deferred다.
 
 ### 1.1 Management listener와 인증 정책
 
@@ -82,11 +82,11 @@ cursor는 불투명 값이다. client는 cursor 내용을 해석해서는 안 �
 | `429` | API rate limit 초과. 가능한 경우 `Retry-After` 포함 |
 | `503` | quorum, dependency 또는 readiness 문제로 일시 처리 불가 |
 
-오류 code 전체 목록과 각 endpoint의 response status는 [Management API v1 OpenAPI](../contracts/management-api-v1.openapi.json)에서 확정한다. 내부 stack, storage key와 secret을 오류에 포함해서는 안 된다. Active drain과 feature activation은 `409` 상태를 사용한다. Feature activation의 `feature_not_supported_by_all_members`는 non-retryable이며, `422`를 포함한 다른 mutation 동작은 deferred다. `429`는 §1.5를 따른다.
+오류 code 전체 목록과 각 endpoint의 response status는 [Management API v1 OpenAPI](../contracts/management-api-v1.openapi.json)에서 확정한다. 내부 stack, storage key와 secret을 오류에 포함해서는 안 된다. Active drain, feature activation과 blocklist mutation은 `409` 상태를 사용한다. Feature activation의 `feature_not_supported_by_all_members`는 non-retryable이며, `422`를 포함한 다른 mutation 동작은 deferred다. `429`는 §1.5를 따른다.
 
 ### 1.4 Deferred mutation과 idempotency
 
-Active broker drain endpoint는 `Idempotency-Key`를 요구한다. 같은 node에 active operation이 있으면 새 operation을 만들지 않고 committed operation을 돌려준다. 같은 key에 다른 parameter를 보내면 `409 idempotency_conflict`다. Feature activation은 같은 active feature를 다시 요청하면 성공 no-op이므로 별도 idempotency key가 필요하지 않다. Dynamic cluster의 활성 mutation 8개는 모두 감사 event를 기록하며, publisher를 쓸 수 없으면 handler를 실행하지 않고 retryable `503 audit_unavailable`을 반환한다. 그 밖의 mutation endpoint는 아직 deferred다.
+Active broker drain endpoint는 `Idempotency-Key`를 요구한다. 같은 node에 active operation이 있으면 새 operation을 만들지 않고 committed operation을 돌려준다. 같은 key에 다른 parameter를 보내면 `409 idempotency_conflict`다. Feature activation은 같은 active feature를 다시 요청하면 성공 no-op이므로 별도 idempotency key가 필요하지 않다. Dynamic cluster의 활성 management mutation 18개는 모두 감사 event를 기록하며, publisher를 쓸 수 없으면 handler를 실행하지 않고 retryable `503 audit_unavailable`을 반환한다. Blocklist block·unblock은 결과 상태가 정해진 set operation이므로 `Idempotency-Key`를 요구하지 않는다. 그 밖의 mutation endpoint는 아직 deferred다.
 
 향후 mutation은 `Idempotency-Key`를 받아야 한다. 같은 principal, endpoint와 key에 같은 payload를 재시도하면 최초 결과와 의미가 같아야 한다. 같은 key에 다른 payload가 오면 `409 idempotency_conflict`를 반환해야 한다. Resource 변경은 가능한 경우 version/ETag 기반 조건부 요청을 지원해야 한다.
 
@@ -244,7 +244,7 @@ series를 0부터 같은 순서로 render한다. Transport 순서는 `tcp`, `tls
 transport 안의 reason 순서는 `max_connections`, `connection_rate`다. 알 수 없는
 값은 무시한다.
 
-`narumq_mqtt_connect_rejected_total{protocol,reason}`은 broker가 CONNECT를 거절한 횟수를 protocol·고정 reason별로 센다. `protocol="3.1.0"`은 `unsupported_protocol_version` 한 series만 출력한다. `MQTT_3_1_1`과 `MQTT_5_0`은 각각 다음 7개 reason을 출력한다: `unsupported_protocol_version`, `identifier_rejected`, `bad_credentials`, `not_authorized`, `server_unavailable`, `quota_exceeded`, `other`. Registry는 총 15개 series를 0부터 같은 순서로 출력하고 알 수 없는 protocol·reason 조합은 무시한다. MQTT 5 CONNACK reason code는 `0x84`→`unsupported_protocol_version`, `0x85`→`identifier_rejected`, `0x86`→`bad_credentials`, `0x87`→`not_authorized`, `0x88`·`0x89`→`server_unavailable`, `0x97`→`quota_exceeded`이며 나머지는 `other`다. MQTT 3.1.1 return code는 `1`→`unsupported_protocol_version`, `2`→`identifier_rejected`, `3`→`server_unavailable`, `4`→`bad_credentials`, `5`→`not_authorized`이며 나머지는 `other`다. MQTT 3.1.1 wire에는 quota 전용 return code가 없으므로 quota 거절은 `0x03`으로 전송되고 `server_unavailable`로 집계된다.
+`narumq_mqtt_connect_rejected_total{protocol,reason}`은 broker가 CONNECT를 거절한 횟수를 protocol·고정 reason별로 센다. `protocol="3.1.0"`은 `unsupported_protocol_version` 한 series만 출력한다. `MQTT_3_1_1`과 `MQTT_5_0`은 각각 다음 8개 reason을 출력한다: `unsupported_protocol_version`, `identifier_rejected`, `bad_credentials`, `not_authorized`, `server_unavailable`, `quota_exceeded`, `banned`, `other`. Registry는 총 17개 series를 0부터 같은 순서로 출력하고 알 수 없는 protocol·reason 조합은 무시한다. MQTT 5 CONNACK reason code는 `0x84`→`unsupported_protocol_version`, `0x85`→`identifier_rejected`, `0x86`→`bad_credentials`, `0x87`→`not_authorized`, `0x88`·`0x89`→`server_unavailable`, `0x8A`→`banned`, `0x97`→`quota_exceeded`이며 나머지는 `other`다. MQTT 3.1.1 return code는 `1`→`unsupported_protocol_version`, `2`→`identifier_rejected`, `3`→`server_unavailable`, `4`·`5`→`not_authorized`이며 나머지는 `other`다. MQTT 5의 `banned`는 blocklist에 일치하는 CONNECT를 나타낸다.
 
 `narumq_messages_dropped_total{reason}`은 routing 뒤 subscriber 한 명에게 전달할 메시지를 broker가 버린 횟수다. 고정 reason은 `queue_full`과 `packet_too_large`다. `queue_full`은 QoS 0 non-durable 후보가 모두 queue full로 끝난 경우에만 증가한다. `packet_too_large`는 subscriber의 Maximum Packet Size보다 큰 전달을 폐기할 때 증가한다. Message expiry는 publisher가 요청한 수명 만료이므로 이 counter에 넣지 않는다. Durable target 포화는 기존 `narumq_durable_delivery_saturated_targets_total`로 센다.
 

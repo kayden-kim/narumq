@@ -61,6 +61,7 @@ var connectRejectReasons = [...]string{
 	ports.ConnectRejectReasonNotAuthorized,
 	ports.ConnectRejectReasonServerUnavailable,
 	ports.ConnectRejectReasonQuotaExceeded,
+	ports.ConnectRejectReasonBanned,
 	ports.ConnectRejectReasonOther,
 }
 var messageDropReasons = [...]string{
@@ -338,7 +339,7 @@ func normalizeAuthReason(value string) string {
 	case "", "none":
 		return "none"
 	case "unsupported_credentials", "missing_credentials", "invalid_credentials",
-		"client_id_not_allowed", "not_authorized", "invalid_will_topic", "will_unauthorized":
+		"client_id_not_allowed", "not_authorized", "invalid_will_topic", "will_unauthorized", "blocked":
 		return value
 	default:
 		return "other"

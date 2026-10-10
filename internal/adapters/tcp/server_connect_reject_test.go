@@ -7,7 +7,7 @@ import (
 	"narumq/internal/domain/mqtt"
 )
 
-// Traceability: UI-03; docs/specs/management-api-and-observability.md §7.1.
+// Traceability: UI-03/SEC-12; docs/specs/tenancy-and-security.md §7.1, §9; docs/specs/management-api-and-observability.md §7.1; ADR-0050.
 func TestConnectRejectReasonMapping(t *testing.T) {
 	for _, testCase := range []struct {
 		name         string
@@ -30,6 +30,7 @@ func TestConnectRejectReasonMapping(t *testing.T) {
 		{name: "MQTT 5 server busy", version: mqtt.ProtocolV5, reasonCode: 0x89, wantProtocol: portsmetrics.ProtocolMQTT50, wantReason: portsmetrics.ConnectRejectReasonServerUnavailable},
 		{name: "MQTT 5 quota exceeded", version: mqtt.ProtocolV5, reasonCode: 0x97, wantProtocol: portsmetrics.ProtocolMQTT50, wantReason: portsmetrics.ConnectRejectReasonQuotaExceeded},
 		{name: "MQTT 5 unknown reason", version: mqtt.ProtocolV5, reasonCode: 0x80, wantProtocol: portsmetrics.ProtocolMQTT50, wantReason: portsmetrics.ConnectRejectReasonOther},
+		{name: "MQTT 5 banned", version: mqtt.ProtocolV5, reasonCode: 0x8A, wantProtocol: portsmetrics.ProtocolMQTT50, wantReason: portsmetrics.ConnectRejectReasonBanned},
 	} {
 		t.Run(testCase.name, func(t *testing.T) {
 			if got := protocolMetricLabel(testCase.version); got != testCase.wantProtocol {

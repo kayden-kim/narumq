@@ -26,6 +26,7 @@ import (
 	portsmetrics "narumq/internal/application/ports/metrics"
 	"narumq/internal/domain/connrebalance"
 	"narumq/internal/domain/nodedrain"
+	"narumq/internal/domain/security"
 )
 
 type contractClock struct{ now time.Time }
@@ -45,6 +46,7 @@ var _ audithttp.NodeDrainUseCase = contractDrainService{}
 var _ audithttp.ConnectionRebalanceUseCase = contractRebalanceService{}
 
 // Traceability: SEC-11/API-08/NFR-17; docs/specs/tenancy-and-security.md §9.
+// Traceability: SEC-12; docs/specs/tenancy-and-security.md §7.1, §9; ADR-0050.
 func TestAuditEventMatchesSchemaAndFileChain(t *testing.T) {
 	schema := compileAuditEventSchema(t)
 	directory := t.TempDir()
@@ -169,9 +171,21 @@ func TestAuditEventMatchesSchemaAndFileChain(t *testing.T) {
 		},
 		{
 			name: "restore credential", method: http.MethodDelete, path: "/api/v1/security/credential-revocations/credential-a",
-			token: adminSecret, router: adminRouter, status: http.StatusOK,
+			token: adminSecret, idempotencyKey: "restore-credential-a", router: adminRouter, status: http.StatusOK,
 			action: "security.credential.restore", result: "ALLOWED", reason: "succeeded",
 			targetType: "mqtt_credential", targetID: "credential-a", subject: "management-bearer-token", role: "ClusterAdmin",
+		},
+		{
+			name: "block client", method: http.MethodPost, path: "/api/v1/security/blocklist/client-ids/t/c",
+			token: adminSecret, router: adminRouter, status: http.StatusOK,
+			action: "security.blocklist.add", result: "ALLOWED", reason: "succeeded",
+			targetType: "mqtt_blocklist_entry", targetID: "clientId:t/c", subject: "management-bearer-token", role: "ClusterAdmin",
+		},
+		{
+			name: "unblock client", method: http.MethodDelete, path: "/api/v1/security/blocklist/client-ids/t/c",
+			token: adminSecret, router: adminRouter, status: http.StatusOK,
+			action: "security.blocklist.remove", result: "ALLOWED", reason: "succeeded",
+			targetType: "mqtt_blocklist_entry", targetID: "clientId:t/c", subject: "management-bearer-token", role: "ClusterAdmin",
 		},
 		{
 			name: "invalid credential", method: http.MethodGet, path: "/api/v1/cluster", token: invalidSecret,
@@ -665,6 +679,26 @@ func (contractCredentialRevocationService) RestoreCredential(_ context.Context, 
 	return appmembership.CredentialRevocationStatusDTO{CredentialID: credentialID}, nil
 }
 
+type contractBlocklistService struct{}
+
+func (contractBlocklistService) ListBlocklist(context.Context) (appmembership.BlocklistDTO, error) {
+	entry := security.BlockEntry{Kind: security.BlockKindUsername, Value: "contract-user"}
+	return appmembership.BlocklistDTO{
+		PolicyVersion: 1,
+		Entries:       []appmembership.BlocklistStateDTO{{Entry: entry, BlockedAtUnixMillis: 1_760_000_000_000}},
+	}, nil
+}
+
+func (contractBlocklistService) Block(_ context.Context, entry security.BlockEntry) (appmembership.BlocklistStatusDTO, error) {
+	return appmembership.BlocklistStatusDTO{
+		Entry: entry, Blocked: true, BlockedAtUnixMillis: 1_760_000_000_000, PolicyVersion: 2,
+	}, nil
+}
+
+func (contractBlocklistService) Unblock(_ context.Context, entry security.BlockEntry) (appmembership.BlocklistStatusDTO, error) {
+	return appmembership.BlocklistStatusDTO{Entry: entry, PolicyVersion: 3}, nil
+}
+
 func newContractManagementRouter(
 	config audithttp.ServerConfig,
 	membershipService audithttp.MembershipUseCase,
@@ -679,6 +713,7 @@ func newContractManagementRouter(
 		nil, nil, nil,
 		membershipService, drainService, rebalanceService, backupProvider, auditService, auditQueryService,
 		contractCredentialRevocationService{},
+		contractBlocklistService{},
 	)
 }
 

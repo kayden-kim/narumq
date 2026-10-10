@@ -381,6 +381,7 @@ func runClusterMode(ctx context.Context, config clusterConfigFile, logger *slog.
 	connectOptions = append(connectOptions, connect.WithDataPlaneAudit(dataPlaneAudit))
 	connectOptions = append(connectOptions, connect.WithMetrics(metricsRegistry))
 	connectOptions = append(connectOptions, connect.WithCredentialRevocationChecker(runtime))
+	connectOptions = append(connectOptions, connect.WithBlocklistMatcher(runtime))
 	connections, err := connect.New(systemClock, sessions, deliveries, runtime.routes, systemScheduler, willBridge, connectOptions...)
 	if err != nil {
 		return fmt.Errorf("create cluster connect use case: %w", err)
@@ -424,6 +425,7 @@ func runClusterMode(ctx context.Context, config clusterConfigFile, logger *slog.
 		}
 		runtime.mqttServer = mqttServer
 		mqttServer.ReplaceCredentialRevocations(runtime.machine.CredentialRevocations())
+		mqttServer.ReplaceBlocklist(runtime.machine.BlocklistEntries())
 		runtime.durableSink = mqttServer
 		runtime.forwardSink = mqttServer
 		for _, listener := range mqttListeners[1:] {
@@ -441,6 +443,10 @@ func runClusterMode(ctx context.Context, config clusterConfigFile, logger *slog.
 	credentialRevocationService, err := membership.NewCredentialRevocationService(runtime, systemClock)
 	if err != nil {
 		return fmt.Errorf("create credential revocation service: %w", err)
+	}
+	blocklistService, err := membership.NewBlocklistService(runtime, systemClock)
+	if err != nil {
+		return fmt.Errorf("create client blocklist service: %w", err)
 	}
 	drainService, err := membership.NewDrainService(runtime, systemClock)
 	if err != nil {
@@ -497,7 +503,7 @@ func runClusterMode(ctx context.Context, config clusterConfigFile, logger *slog.
 		AllowAnonymousProbes: true,
 		RequestRate:          requestRate, AuthFailureRate: authFailureRate, Clock: systemClock,
 		ClusterID: config.ClusterID, Logger: logger,
-	}, stateProvider, healthChecker, metricsRegistry, membershipService, drainService, rebalanceService, runtime, auditService, auditQueryService, credentialRevocationService)
+	}, stateProvider, healthChecker, metricsRegistry, membershipService, drainService, rebalanceService, runtime, auditService, auditQueryService, credentialRevocationService, blocklistService)
 	return runtime.serve(ctx, mqttServer, managementServer, managementListener)
 }
 
@@ -1388,6 +1394,7 @@ func (runtime *clusterRuntime) applyBatch(batch raftadapter.BatchDTO, proposals 
 		}
 		if runtime.mqttServer != nil {
 			runtime.mqttServer.ReplaceCredentialRevocations(runtime.machine.CredentialRevocations())
+			runtime.mqttServer.ReplaceBlocklist(runtime.machine.BlocklistEntries())
 		}
 		runtime.releaseProfile.observeSnapshotRestore()
 		runtime.sessionRecovery.requestFullScan()
@@ -1451,6 +1458,10 @@ func (runtime *clusterRuntime) applyBatch(batch raftadapter.BatchDTO, proposals 
 			runtime.mqttServer.ApplyCredentialRevocation(
 				change.CredentialID, runtime.machine.IsCredentialRevoked(change.CredentialID),
 			)
+		}
+		if change := command.Blocklist; change != nil &&
+			result.Outcome == membership.ApplyOutcomeApplied && runtime.mqttServer != nil {
+			runtime.mqttServer.ApplyBlocklist(change.Entry, runtime.machine.IsBlocked(change.Entry))
 		}
 		if result.Replayed {
 			runtime.stageProposalResult(event.command, result, proposals)
@@ -2928,6 +2939,17 @@ func (runtime *clusterRuntime) CredentialRevocations(ctx context.Context) ([]mem
 		return nil, classifyClusterPortError(err)
 	}
 	return runtime.machine.CredentialRevocations(), nil
+}
+
+func (runtime *clusterRuntime) MatchBlocklist(subject security.BlockSubject) (security.BlockKind, bool) {
+	return runtime.machine.MatchBlocklist(subject)
+}
+
+func (runtime *clusterRuntime) Blocklist(ctx context.Context) (membership.BlocklistDTO, error) {
+	if err := runtime.readBarrier(ctx); err != nil {
+		return membership.BlocklistDTO{}, classifyClusterPortError(err)
+	}
+	return runtime.machine.Blocklist(), nil
 }
 
 func (runtime *clusterRuntime) IsCredentialRevoked(ctx context.Context, credentialID string) (bool, error) {

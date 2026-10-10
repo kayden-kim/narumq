@@ -102,6 +102,25 @@ func TestPolicyUsesFilterContainmentAndDefaultDeny(t *testing.T) {
 	}
 }
 
+// Traceability: TEN-04, SEC-06
+func TestPolicyAllowsFilterOutsideDenyRule(t *testing.T) {
+	tenant, principal := newSecurityFixture(t)
+	policy, err := NewPolicy([]Rule{
+		newSecurityRule(t, tenant, "publisher", EffectAllow, ActionSubscribe, "events/#"),
+		newSecurityRule(t, tenant, "publisher", EffectDeny, ActionSubscribe, "private/#"),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	filter, err := tenancy.NewTopicFilter(tenant, "events/room/+")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := policy.AuthorizeFilter(principal, ActionSubscribe, filter); err != nil {
+		t.Fatalf("filter outside deny rule error = %v, want allowed", err)
+	}
+}
+
 // Traceability: TEN-02, TEN-04
 func TestPrincipalMustMatchSessionTenantAndClient(t *testing.T) {
 	tenant, principal := newSecurityFixture(t)
@@ -162,6 +181,13 @@ func TestNewRuleRejectsUnconstructedTenantAndFilter(t *testing.T) {
 	}
 	if _, err := NewRule(tenant, "publisher", EffectAllow, ActionPublish, tenancy.TopicFilter{}); !errors.Is(err, ErrInvalidRule) {
 		t.Fatalf("unconstructed filter NewRule() error = %v, want %v", err, ErrInvalidRule)
+	}
+}
+
+// Traceability: TEN-04, SEC-06
+func TestRuleTopicFilterValidRejectsZeroValue(t *testing.T) {
+	if (Rule{}).topicFilterValid() {
+		t.Fatal("zero-value Rule has a valid topic filter")
 	}
 }
 
