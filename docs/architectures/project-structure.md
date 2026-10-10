@@ -8,7 +8,7 @@
 | 문서 상태 | Active |
 | 범위 | 현재 repository의 코드 진입점, 모듈 책임, source dependency |
 | 관련 요구사항 | [PRD](../requirements/PRD.md) API-09, NFR-11~NFR-15, TEST-01~TEST-17, DEP-19~DEP-23 |
-| 관련 결정 | [ADR-0001](../decisions/ADR-0001-core-implementation-language.md), [ADR-0052](../decisions/ADR-0052-configuration-tiers-and-cluster-policy.md) (Proposed overall; G1·API-09 `mqttLimits`, G2·G10 TLS와 G4·G9 parser·secret-file 범위 채택) |
+| 관련 결정 | [ADR-0001](../decisions/ADR-0001-core-implementation-language.md), [ADR-0052](../decisions/ADR-0052-configuration-tiers-and-cluster-policy.md) (Proposed overall; G1·API-09 `mqttLimits`, G2·G10 TLS, G3 cluster 평문 TCP, G4·G9 parser·secret-file 범위 채택) |
 | 관련 architecture | [Broker core](broker-core.md), [Cluster](cluster-architecture.md), [EKS on EC2 deployment](eks-ec2-deployment.md) |
 | 관련 convention | [Go coding conventions](../conventions/go-coding-conventions.md) |
 

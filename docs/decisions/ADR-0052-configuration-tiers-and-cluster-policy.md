@@ -2,7 +2,7 @@
 
 | 항목 | 값 |
 | --- | --- |
-| 상태 | `Proposed`. §1.1의 `ClusterPolicy` commit·version·reconciliation·`GET/PUT /api/v1/cluster/policy`·metric과 §1.2의 `mqttLimits` 적용 시점은 2026-10-10 사용자 결정으로 채택했다(G1·API-09). §1.4의 `cluster-policy` feature gate도 `mqttLimits`에 한해 채택했다. 기존 `TenantQuota` proposal 억제와 top-level `tenantQuotas`·`clusterPolicy` 충돌 거절은 §1.4에 명시한 동작을 유지한다. §1.5의 설정 parser 중복 key 거절 규칙과 secret 파일 규칙 중 standalone `-http-auth-token-file` 전환은 같은 날 채택했다(G4·G9). §1.5의 Cluster MQTT TLS(`mqtt.tls`)와 MQTT·peer 인증서 분리 규칙도 채택했다(G2·G10). Cluster runtime metrics의 node 정적 설정 `runtimeMetrics`도 채택했다(G6). 나머지 정책 항목은 `Proposed`로 남는다. |
+| 상태 | `Proposed`. §1.1의 `ClusterPolicy` commit·version·reconciliation·`GET/PUT /api/v1/cluster/policy`·metric과 §1.2의 `mqttLimits` 적용 시점은 2026-10-10 사용자 결정으로 채택했다(G1·API-09). §1.4의 `cluster-policy` feature gate도 `mqttLimits`에 한해 채택했다. 기존 `TenantQuota` proposal 억제와 top-level `tenantQuotas`·`clusterPolicy` 충돌 거절은 §1.4에 명시한 동작을 유지한다. §1.5의 설정 parser 중복 key 거절 규칙과 secret 파일 규칙 중 standalone `-http-auth-token-file` 전환은 같은 날 채택했다(G4·G9). §1.5의 Cluster MQTT TLS(`mqtt.tls`)와 MQTT·peer 인증서 분리 규칙도 채택했다(G2·G10). Cluster runtime metrics의 node 정적 설정 `runtimeMetrics`도 채택했다(G6). §1.5의 Cluster 평문 MQTT TCP 주소 허용 규칙도 2026-10-10 사용자 결정으로 채택했다(G3). 나머지 정책 항목은 `Proposed`로 남는다. |
 | 결정일 | 2026-10-10 |
 | 결정자 | NaruMQ 프로젝트 사용자 |
 | 관련 요구사항 | API-09, API-08, UI-01~UI-10, SEC-07, TEN-06~TEN-08, CLU-11 |
@@ -113,6 +113,7 @@ Feature가 활성화되기 전에는 각 node가 현재 파일 값을 사용한�
 - 설정 parser는 중복 key, 알 수 없는 key와 뒤따르는 JSON value를 거절한다. 이 규칙은 2026-10-10 사용자 결정으로 먼저 채택했다. Security config와 peer-only config parser에도 적용했다(G4).
 - Secret은 파일로만 받는다. Standalone `-http-auth-token`은 `-http-auth-token-file`로 바꾼다. 이 규칙은 2026-10-10 사용자 결정으로 채택해 구현했다(G9).
 - Environment variable은 설정 원천으로 사용하지 않는다.
+- Cluster 평문 MQTT TCP(`mqtt.tcpListenAddress`)는 loopback 제한 없이 유효한 host:port를 허용한다. Wildcard `0.0.0.0`, `[::]`와 DNS 이름도 포함한다. 필수 `mqtt.securityConfigFile`은 authentication method를 하나 이상 요구한다. 따라서 credential이나 client certificate가 없는 CONNECT는 거절한다. Literal loopback 제한은 standalone `-tcp-listen`에만 적용한다. 평문 TCP는 username·password와 JWT를 암호화하지 않는다. 이 노출 위험은 운영자가 network 경계에서 관리한다. 이 규칙은 2026-10-10 사용자 결정으로 채택했다(G3).
 - Cluster MQTT TLS에는 node 정적 설정인 `mqtt.tls` object를 추가한다. 이 object는 `certFile`, `keyFile`, `caFile`, `clientAuth`, `minVersion`을 가진다.
 - MQTT client 인증서와 Raft peer 인증서는 분리한다.
 - `tlsListenAddress`가 있으면 `mqtt.tls`가 필요하며 `peerTLS`로 대체하지 않는다.
@@ -132,6 +133,7 @@ Console은 Management API만 사용한다. 이 ADR은 UI 기술을 정하지 않
 | --- | --- |
 | G1 | Cluster MQTT의 packet, timeout, control·delivery queue 값은 `cluster_runtime.go`의 `clusterDefault*`와 `runClusterMode`에 고정되어 있다. 2026-10-10 해소: `mqttLimits`는 committed `ClusterPolicy`와 `/api/v1/cluster/policy`로 조정한다. Control·delivery queue 256은 node 정적 설정으로 남는다. |
 | G2 | `clusterMQTTListeners`는 Raft peer certificate와 key를 재사용한다. MQTT TLS 설정에는 client CA와 client-auth가 없어 handshake에서 client certificate를 요청하지 않는다. 2026-10-10 해소: `mqtt.tls`가 MQTT 인증서와 client-auth를 설정하고 peer 인증서와 분리한다. |
+| G3 | Standalone `-tcp-listen`은 literal loopback만 허용한다. Cluster `mqtt.tcpListenAddress`는 wildcard를 포함한 유효한 host:port를 허용한다. 2026-10-10 해소: cluster 평문 TCP는 secure mode에서 loopback 제한 없이 허용한다고 명문화했다. 코드 동작은 바꾸지 않았다. |
 | G4 | `security_config.go`와 `raft_peer_config.go`는 중복 JSON key를 검사하지 않는다. Cluster config parser는 검사한다. 2026-10-10 해소: 세 parser가 모두 중복 key를 거절한다. |
 | G5 | Flag와 security config는 Go duration을 쓴다. Cluster config는 millisecond 정수를 쓴다. |
 | G6 | Runtime metrics flag는 standalone에서만 지원한다. 2026-10-10 해소: cluster는 `runtimeMetrics` object를 사용한다. |

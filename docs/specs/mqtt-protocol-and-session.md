@@ -66,7 +66,7 @@ state를 유지한다.
 
 1. TCP와 TLS listener는 MQTT 3.1.1 protocol level 4와 MQTT 5.0 protocol level 5를 수용해야 한다.
 2. listener마다 bind address, TLS 정책, 인증 방식, 최대 연결 수, connection rate와 packet 제한을 독립 적용해야 한다.
-3. 평문 TCP listener는 기본 설정에서 비활성화해야 한다. MQTT listener를 활성화할 때는 [security spec](tenancy-and-security.md)의 `-security-config` secure mode를 선택해야 하며, 유일한 예외는 `-tcp-listen`의 literal loopback bind와 `-allow-insecure-anonymous-mqtt`를 함께 지정하는 development·benchmark mode다. 두 mode를 함께 지정하거나 TLS listener에 예외 mode를 적용해서는 안 된다.
+3. 평문 TCP listener는 기본 설정에서 비활성화해야 한다. MQTT listener를 활성화할 때는 [security spec](tenancy-and-security.md)의 secure mode를 선택해야 한다. Standalone은 `-security-config`로, dynamic cluster는 필수 field `mqtt.securityConfigFile`로 secure mode를 지정한다. 유일한 예외는 standalone development·benchmark mode다. 이 mode는 `-tcp-listen`의 literal loopback bind와 `-allow-insecure-anonymous-mqtt`를 함께 지정한다. 두 mode를 함께 지정하거나 TLS listener에 예외 mode를 적용해서는 안 된다.
 4. WebSocket과 WSS는 P1 선택 기능이다. 활성화하면 MQTT packet과 session 의미가 TCP listener와 같아야 한다.
 5. connection은 설정된 CONNECT timeout 안에 유효한 CONNECT를 보내야 한다. timeout 또는 malformed packet이면 session을 만들지 않고 연결을 닫아야 한다.
    CONNECT 뒤 첫 byte가 도착한 packet은 `-packet-read-timeout`(기본 30s) 안에
@@ -88,6 +88,7 @@ state를 유지한다.
    기준으로 한다. TLS/mTLS socket과 password 인증은 `tests/integration/mqtt_tls_test.go`의
    `TestMQTTTLS_PasswordAuthentication`, `tests/integration/cluster_password_process_test.go`의
    `TestDynamicClusterPasswordAuthenticationProcessAcceptance`, `cmd/narumq/security_config_test.go`로 검증한다.
+10. Dynamic cluster의 평문 `mqtt.tcpListenAddress`는 loopback 제한 없이 유효한 host:port를 허용한다. Wildcard와 DNS 이름도 포함한다. 이 listener는 secure mode에서만 열린다. Security config에 `jwt` 또는 `passwordIdentities`가 있으면 username·password 없는 CONNECT를 `missing_credentials`로 거절한다. `mtlsIdentities`만 있으면 평문 TCP에는 client certificate가 없으므로 CONNECT를 `missing_certificate`로 거절한다. CONNACK reason은 MQTT 3.1.1에서 `0x05`, MQTT 5에서 `0x87`이다. 평문 TCP는 CONNECT credential을 암호화하지 않는다. 결정 근거는 [ADR-0052 §1.5](../decisions/ADR-0052-configuration-tiers-and-cluster-policy.md#15-형식과-cluster-mqtt-tls)(G3)다.
 
 ## 2. CONNECT 처리 순서
 

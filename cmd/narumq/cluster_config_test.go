@@ -261,6 +261,23 @@ func TestParseClusterConfigMQTTTLS(t *testing.T) {
 	}(), "invalid JSON field type")
 }
 
+// Traceability: SEC-01; CFG-SCN-29; docs/specs/configuration-and-runtime-options.md §6; ADR-0052 §1.5.
+func TestParseClusterConfigAcceptsNonLoopbackMQTTTCPListener(t *testing.T) {
+	for _, address := range []string{"0.0.0.0:1884", "[::]:1884", "10.0.0.5:1884", "mqtt.example:1884"} {
+		t.Run(address, func(t *testing.T) {
+			config := validBootstrapClusterConfig()
+			config.MQTT.TCPListenAddress = address
+			parsed, err := parseClusterConfig(strings.NewReader(string(mustMarshalClusterConfig(t, config))))
+			if err != nil {
+				t.Fatalf("parse non-loopback tcpListenAddress %q: %v", address, err)
+			}
+			if parsed.MQTT.TCPListenAddress != address || parsed.MQTT.SecurityConfigFile != config.MQTT.SecurityConfigFile {
+				t.Fatalf("parsed mqtt = %+v, want tcpListenAddress %q with securityConfigFile %q", parsed.MQTT, address, config.MQTT.SecurityConfigFile)
+			}
+		})
+	}
+}
+
 func TestParseClusterConfigTenantQuotaProfile(t *testing.T) {
 	config := validBootstrapClusterConfig()
 	config.TenantQuotas = validTenantQuotaProfileConfig()

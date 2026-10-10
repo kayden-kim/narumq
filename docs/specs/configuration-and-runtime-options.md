@@ -115,6 +115,7 @@ Standalone mode에서는 security config를 MQTT listener보다 먼저 적재한
 | `CFG-SCN-26` | API-09 | 기본값·local config·committed policy precedence와 higher/lower/same-version reconciliation을 확인한다. | Committed version이 우선한다. Higher local version만 제안하고 불일치 설정은 mismatch로 남긴다. | `cmd/narumq.TestEffectiveClusterMQTTLimitsPrecedence`, `cmd/narumq.TestClusterPolicyControllerReconcilesAndLogsMismatchOnce` | 통과 | [API-09 mqttLimits 실행 기록](#api-09-mqttlimits-execution) |
 | `CFG-SCN-27` | API-09 | Feature가 활성화된 ClusterPolicy를 snapshot과 backup archive로 저장·복원한다. | Restored state에서 같은 version과 MQTT 한도를 읽는다. | `cmd/narumq.TestClusterBackupArchivePreservesClusterPolicy` | 통과 | [API-09 mqttLimits 실행 기록](#api-09-mqttlimits-execution) |
 | `CFG-SCN-28` | API-09 | 3-node cluster에서 policy PUT, 재시도·충돌, 신규·기존 연결, node restart와 drift를 확인한다. | 모든 node가 committed version을 적용한다. 기존 연결은 이전 한도를 유지하고 재시작 node는 committed 값과 mismatch를 보고한다. | `tests/integration.TestDynamicClusterPolicyProcessAcceptance` | 통과 | [API-09 mqttLimits 실행 기록](#api-09-mqttlimits-execution) |
+| `CFG-SCN-29` | SEC-01 | Cluster config의 `mqtt.tcpListenAddress`에 `0.0.0.0:1884`, `[::]:1884`, `10.0.0.5:1884`, `mqtt.example:1884`를 넣는다. `mqtt.securityConfigFile`을 비운다. 인증 방식별로 credential·certificate 없는 CONNECT를 보낸다. 3-node cluster 평문 TCP에서 password 인증을 확인한다. | 네 주소를 그대로 적재한다. 빈 security config 경로는 거절한다. JWT 설정에서 credential 없는 MQTT 5 CONNECT는 `0x87`로 거절한다. mTLS 전용 설정에서 certificate 없는 CONNECT는 MQTT 3.1.1 `0x05`, MQTT 5 `0x87`로 거절한다. Cluster TCP는 유효한 password만 연결한다. | `cmd/narumq.TestParseClusterConfigAcceptsNonLoopbackMQTTTCPListener`, `cmd/narumq.TestValidateClusterConfigReportsFirstInvalidField`, `internal/application/connect.TestConnectRecordsAuthenticationDenialsWithoutChangingConnAck`, `internal/application/connect.TestCmmConnectRejectsCredentialModeMismatchesWithoutMutation`, `tests/integration.TestDynamicClusterPasswordAuthenticationProcessAcceptance` | 통과 | [Cluster 평문 TCP(G3) 실행 기록](#cluster-plaintext-tcp-g3-execution) |
 
 <a id="configuration-test-execution"></a>
 ### 설정 시험 실행 기록
@@ -235,6 +236,36 @@ go run ./tools/verify local
 | Traceability | `PASS`; P0 mapped `70/81`, exceptions `11` |
 | Markdown links | `PASS`; 152 documents, 2,177 local links |
 | Local gate | `go run ./tools/verify local`: `local: PASS` (193.88s), `coverage: PASS`; branch instrumentation, traceability, architecture, fuzz, package and race checks passed. |
+
+<a id="cluster-plaintext-tcp-g3-execution"></a>
+### Cluster 평문 TCP(G3) 실행 기록
+
+실행 환경은 Windows/amd64, Go 1.26.5다. 현재 작업 트리에서 production 코드는 바꾸지 않고 parser 시험만 추가했다. 첫 local gate는 `cmd/narumq/cluster_config_test.go`의 gofmt 검사에서 중단됐다. `gofmt -w cmd/narumq/cluster_config_test.go`를 실행한 뒤 parser 시험과 local gate를 재실행했다. 현재 checkout에는 remote-tracking branch가 없어서 `git merge-base HEAD HEAD`의 결과 `84d3a41b8b6feede6ae2856508c111c5f61674fd`를 CI `--base`로 사용했다.
+
+```sh
+go test ./cmd/narumq -count=1 -v -run '^(TestParseClusterConfigAcceptsNonLoopbackMQTTTCPListener|TestValidateClusterConfigReportsFirstInvalidField)$'
+go test ./cmd/narumq -count=1 -run '^(TestParseClusterConfig.*|TestValidateClusterConfig.*)$'
+go test ./internal/application/connect -count=1 -run '^(TestConnectRecordsAuthenticationDenialsWithoutChangingConnAck|TestCmmConnectRejectsCredentialModeMismatchesWithoutMutation)$'
+go test ./tests/integration -count=1 -timeout 15m -v -run '^TestDynamicClusterPasswordAuthenticationProcessAcceptance$'
+go build ./...
+go run ./tools/verify markdown-links
+go run ./tools/verify traceability
+go run ./tools/verify local
+go run ./tools/verify ci --base 84d3a41b8b6feede6ae2856508c111c5f61674fd
+```
+
+| 확인 | 결과 |
+| --- | --- |
+| Non-loopback parser와 security config 필수 경계 | 통과. Wildcard IPv4·IPv6, IPv4 주소와 DNS 주소 4개 subtest 및 `missing security file`이 통과했다. |
+| Cluster config parser 회귀 | 통과 |
+| CONNECT 인증 거절 회귀 | 통과 |
+| 3-node 평문 TCP password acceptance | 통과 (9.41s) |
+| Build | 통과 |
+| Markdown links | 첫 실행은 G3 anchor 부재로 2개 링크 오류를 반환했다. Anchor 추가 후 재실행은 `PASS` (152 files, 2,182 local links). |
+| Traceability | `PASS`; P0 mapped `70/81`, exceptions `11` |
+| Local gate | 첫 실행은 `cmd/narumq/cluster_config_test.go`의 gofmt 사전 검사에서 중단됐다. Gofmt 적용 뒤 `local: PASS` (194.34s), `coverage: PASS`; branch-instrument, traceability, fuzz, architecture와 전체 package·integration 시험이 통과했다. |
+| CI gate | `go run ./tools/verify ci --base 84d3a41b8b6feede6ae2856508c111c5f61674fd`: `ci: PASS` (1541.36s). |
+
 
 ## 7. 미결정 사항
 
