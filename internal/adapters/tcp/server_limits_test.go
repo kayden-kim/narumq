@@ -25,7 +25,7 @@ func TestTCPPartialPacketAfterConnectTimesOut(t *testing.T) {
 			_ = readTestFrame(t, fixture.client)
 			time.Sleep(600 * time.Millisecond)
 			writeTestPackets(t, fixture.client, &mqtt.PingReq{Version: version})
-			response, _, err := fixture.server.decoder.Decode(readTestFrame(t, fixture.client), version)
+			response, _, err := fixture.server.limits.Load().decoder.Decode(readTestFrame(t, fixture.client), version)
 			if _, ok := response.(*mqtt.PingResp); err != nil || !ok {
 				t.Fatalf("idle PING = (%T, %v)", response, err)
 			}
@@ -46,7 +46,7 @@ func TestTCPConnAckAdvertisesServerLimits(t *testing.T) {
 			defer fixture.stop(t)
 			writeTestPackets(t, fixture.client, &mqtt.Connect{Version: version, CleanStart: true, ClientID: "limits"})
 			wire := readTestFrame(t, fixture.client)
-			packet, _, err := fixture.server.decoder.Decode(wire, version)
+			packet, _, err := fixture.server.limits.Load().decoder.Decode(wire, version)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -97,7 +97,7 @@ func TestTCPProtocolErrorsAfterConnectDisconnectWithReason(t *testing.T) {
 				case "quota":
 					for id := mqtt.PacketIdentifier(1); id <= 2; id++ {
 						writeTestPackets(t, fixture.client, &mqtt.Publish{Version: version, QoS: mqtt.QoSExactlyOnce, PacketID: id, Topic: "quota"})
-						packet, _, err := fixture.server.decoder.Decode(readTestFrame(t, fixture.client), version)
+						packet, _, err := fixture.server.limits.Load().decoder.Decode(readTestFrame(t, fixture.client), version)
 						if rec, ok := packet.(*mqtt.PubRec); err != nil || !ok || rec.PacketID != id {
 							t.Fatalf("PUBREC = (%#v, %v)", packet, err)
 						}
@@ -105,7 +105,7 @@ func TestTCPProtocolErrorsAfterConnectDisconnectWithReason(t *testing.T) {
 					writeTestPackets(t, fixture.client, &mqtt.Publish{Version: version, QoS: mqtt.QoSExactlyOnce, PacketID: 3, Topic: "quota"})
 				}
 				if version == mqtt.ProtocolV5 {
-					packet, _, err := fixture.server.decoder.Decode(readTestFrame(t, fixture.client), version)
+					packet, _, err := fixture.server.limits.Load().decoder.Decode(readTestFrame(t, fixture.client), version)
 					if disconnect, ok := packet.(*mqtt.Disconnect); err != nil || !ok || disconnect.ReasonCode != scenario.reason {
 						t.Fatalf("DISCONNECT = (%#v, %v), want %x", packet, err, scenario.reason)
 					}
@@ -128,25 +128,25 @@ func TestTCPReceiveMaximumQuotaReturnsAfterAcknowledgement(t *testing.T) {
 			_ = readTestFrame(t, fixture.client)
 			for id := mqtt.PacketIdentifier(1); id <= 5; id++ {
 				writeTestPackets(t, fixture.client, &mqtt.Publish{Version: version, QoS: mqtt.QoSAtLeastOnce, PacketID: id, Topic: "quota"})
-				packet, _, err := fixture.server.decoder.Decode(readTestFrame(t, fixture.client), version)
+				packet, _, err := fixture.server.limits.Load().decoder.Decode(readTestFrame(t, fixture.client), version)
 				if ack, ok := packet.(*mqtt.PubAck); err != nil || !ok || ack.PacketID != id {
 					t.Fatalf("PUBACK = (%#v, %v)", packet, err)
 				}
 			}
 			for index, id := range []mqtt.PacketIdentifier{1, 2, 1} {
 				writeTestPackets(t, fixture.client, &mqtt.Publish{Version: version, QoS: mqtt.QoSExactlyOnce, PacketID: id, DUP: index == 2, Topic: "quota"})
-				packet, _, err := fixture.server.decoder.Decode(readTestFrame(t, fixture.client), version)
+				packet, _, err := fixture.server.limits.Load().decoder.Decode(readTestFrame(t, fixture.client), version)
 				if rec, ok := packet.(*mqtt.PubRec); err != nil || !ok || rec.PacketID != id {
 					t.Fatalf("PUBREC = (%#v, %v)", packet, err)
 				}
 			}
 			writeTestPackets(t, fixture.client, &mqtt.PubRel{Version: version, PacketID: 1})
-			packet, _, err := fixture.server.decoder.Decode(readTestFrame(t, fixture.client), version)
+			packet, _, err := fixture.server.limits.Load().decoder.Decode(readTestFrame(t, fixture.client), version)
 			if comp, ok := packet.(*mqtt.PubComp); err != nil || !ok || comp.PacketID != 1 {
 				t.Fatalf("PUBCOMP = (%#v, %v)", packet, err)
 			}
 			writeTestPackets(t, fixture.client, &mqtt.Publish{Version: version, QoS: mqtt.QoSExactlyOnce, PacketID: 3, Topic: "quota"})
-			packet, _, err = fixture.server.decoder.Decode(readTestFrame(t, fixture.client), version)
+			packet, _, err = fixture.server.limits.Load().decoder.Decode(readTestFrame(t, fixture.client), version)
 			if rec, ok := packet.(*mqtt.PubRec); err != nil || !ok || rec.PacketID != 3 {
 				t.Fatalf("replacement PUBREC = (%#v, %v)", packet, err)
 			}
@@ -175,7 +175,7 @@ func writeLimitsDeliveryBatch(t *testing.T, conn *connection, client net.Conn, c
 	go func() { done <- conn.writeDeliveries() }()
 	var packets []mqtt.Packet
 	for range count {
-		packet, _, err := conn.server.decoder.Decode(readTestFrame(t, client), conn.version)
+		packet, _, err := conn.server.limits.Load().decoder.Decode(readTestFrame(t, client), conn.version)
 		if err != nil {
 			t.Fatal(err)
 		}

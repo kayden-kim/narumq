@@ -30,35 +30,35 @@ func TestNewServerValidatesEveryDependencyAndBound(t *testing.T) {
 			return NewServer(runtime.listener, valid.config, nil, valid.encoder, valid.connections, valid.subscriptions, valid.publications, valid.deliveries, nil)
 		}, want: ErrNilDecoder},
 		{name: "encoder", make: func() (*Server, error) {
-			return NewServer(runtime.listener, valid.config, valid.decoder, nil, valid.connections, valid.subscriptions, valid.publications, valid.deliveries, nil)
+			return NewServer(runtime.listener, valid.config, valid.limits.Load().decoder, nil, valid.connections, valid.subscriptions, valid.publications, valid.deliveries, nil)
 		}, want: ErrNilEncoder},
 		{name: "connect", make: func() (*Server, error) {
-			return NewServer(runtime.listener, valid.config, valid.decoder, valid.encoder, nil, valid.subscriptions, valid.publications, valid.deliveries, nil)
+			return NewServer(runtime.listener, valid.config, valid.limits.Load().decoder, valid.encoder, nil, valid.subscriptions, valid.publications, valid.deliveries, nil)
 		}, want: ErrNilConnectUseCase},
 		{name: "subscribe", make: func() (*Server, error) {
-			return NewServer(runtime.listener, valid.config, valid.decoder, valid.encoder, valid.connections, nil, valid.publications, valid.deliveries, nil)
+			return NewServer(runtime.listener, valid.config, valid.limits.Load().decoder, valid.encoder, valid.connections, nil, valid.publications, valid.deliveries, nil)
 		}, want: ErrNilSubscribeUseCase},
 		{name: "publish", make: func() (*Server, error) {
-			return NewServer(runtime.listener, valid.config, valid.decoder, valid.encoder, valid.connections, valid.subscriptions, nil, valid.deliveries, nil)
+			return NewServer(runtime.listener, valid.config, valid.limits.Load().decoder, valid.encoder, valid.connections, valid.subscriptions, nil, valid.deliveries, nil)
 		}, want: ErrNilPublishUseCase},
 		{name: "delivery queue", make: func() (*Server, error) {
-			return NewServer(runtime.listener, valid.config, valid.decoder, valid.encoder, valid.connections, valid.subscriptions, valid.publications, nil, nil)
+			return NewServer(runtime.listener, valid.config, valid.limits.Load().decoder, valid.encoder, valid.connections, valid.subscriptions, valid.publications, nil, nil)
 		}, want: ErrNilDeliveryQueue},
 		{name: "clock", make: func() (*Server, error) {
-			return NewServer(runtime.listener, Config{}, valid.decoder, valid.encoder, valid.connections, valid.subscriptions, valid.publications, valid.deliveries, nil)
+			return NewServer(runtime.listener, Config{}, valid.limits.Load().decoder, valid.encoder, valid.connections, valid.subscriptions, valid.publications, valid.deliveries, nil)
 		}, want: ErrNilClock},
 		{name: "config", make: func() (*Server, error) {
-			return NewServer(runtime.listener, Config{Clock: valid.config.Clock}, valid.decoder, valid.encoder, valid.connections, valid.subscriptions, valid.publications, valid.deliveries, nil)
+			return NewServer(runtime.listener, Config{Clock: valid.config.Clock}, valid.limits.Load().decoder, valid.encoder, valid.connections, valid.subscriptions, valid.publications, valid.deliveries, nil)
 		}, want: ErrInvalidConfig},
 		{name: "remaining length above protocol maximum", make: func() (*Server, error) {
 			config := valid.config
 			config.MaxPacketSize = 1 << 28
-			return NewServer(runtime.listener, config, valid.decoder, valid.encoder, valid.connections, valid.subscriptions, valid.publications, valid.deliveries, nil)
+			return NewServer(runtime.listener, config, valid.limits.Load().decoder, valid.encoder, valid.connections, valid.subscriptions, valid.publications, valid.deliveries, nil)
 		}, want: ErrInvalidConfig},
 		{name: "packet buffer integer overflow", make: func() (*Server, error) {
 			config := valid.config
 			config.MaxPacketSize = int(^uint(0) >> 1)
-			return NewServer(runtime.listener, config, valid.decoder, valid.encoder, valid.connections, valid.subscriptions, valid.publications, valid.deliveries, nil)
+			return NewServer(runtime.listener, config, valid.limits.Load().decoder, valid.encoder, valid.connections, valid.subscriptions, valid.publications, valid.deliveries, nil)
 		}, want: ErrInvalidConfig},
 	}
 	for _, testCase := range cases {
@@ -69,7 +69,7 @@ func TestNewServerValidatesEveryDependencyAndBound(t *testing.T) {
 			}
 		})
 	}
-	created, err := NewServer(runtime.listener, valid.config, valid.decoder, valid.encoder, valid.connections, valid.subscriptions, valid.publications, valid.deliveries, nil)
+	created, err := NewServer(runtime.listener, valid.config, valid.limits.Load().decoder, valid.encoder, valid.connections, valid.subscriptions, valid.publications, valid.deliveries, nil)
 	if err != nil || created == nil || created.logger == nil {
 		t.Fatalf("NewServer(nil logger) = (%#v, %v), want default logger", created, err)
 	}
@@ -431,6 +431,7 @@ func TestConnectionQueueAndDispatchBoundaries(t *testing.T) {
 	defer clientSocket.Close()
 	connection := &connection{
 		server:       runtime.server,
+		limits:       runtime.server.limits.Load(),
 		socket:       serverSocket,
 		controlQueue: make(chan controlMessage, 1),
 		deliveryWake: make(chan struct{}, 1),
@@ -482,7 +483,7 @@ func TestHandleUnsupportedVersionBranches(t *testing.T) {
 		t.Run(testCase.name, func(t *testing.T) {
 			serverSocket, clientSocket := net.Pipe()
 			defer clientSocket.Close()
-			connection := &connection{server: runtime.server, socket: serverSocket, controlQueue: make(chan controlMessage, 1), stop: make(chan struct{}), writerDone: make(chan struct{})}
+			connection := &connection{server: runtime.server, limits: runtime.server.limits.Load(), socket: serverSocket, controlQueue: make(chan controlMessage, 1), stop: make(chan struct{}), writerDone: make(chan struct{})}
 			if got := connection.handleUnsupportedVersion(testCase.err); got != testCase.wantClose {
 				t.Fatalf("handleUnsupportedVersion() = %v, want %v", got, testCase.wantClose)
 			}
@@ -505,7 +506,7 @@ func TestUnsupportedMQTTVersionSendsConnAck(t *testing.T) {
 	} {
 		t.Run(testCase.name, func(t *testing.T) {
 			serverSocket, clientSocket := net.Pipe()
-			connection := &connection{server: runtime.server, socket: serverSocket, controlQueue: make(chan controlMessage, 1), stop: make(chan struct{}), writerDone: make(chan struct{})}
+			connection := &connection{server: runtime.server, limits: runtime.server.limits.Load(), socket: serverSocket, controlQueue: make(chan controlMessage, 1), stop: make(chan struct{}), writerDone: make(chan struct{})}
 			go connection.writerLoop()
 			result := make(chan bool, 1)
 			go func() {
@@ -839,7 +840,7 @@ func TestNewServerRejectsIncompleteClusterBoundary(t *testing.T) {
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			created, err := NewServer(
-				base.listeners[0], test.config, base.decoder, base.encoder,
+				base.listeners[0], test.config, base.limits.Load().decoder, base.encoder,
 				test.connections, test.subscriptions, base.publications, base.deliveries, nil,
 			)
 			if created != nil || !errors.Is(err, ErrInvalidConfig) {

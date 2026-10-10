@@ -60,9 +60,6 @@ const (
 	clusterProjectionAdmissionPollInterval = 10 * time.Millisecond
 	clusterTickInterval                    = 100 * time.Millisecond
 	clusterSnapshotInterval                = 1000
-	clusterDefaultPacketSize               = 1 << 20
-	clusterDefaultReceiveMaximum           = 64
-	clusterDefaultPacketReadTimeout        = 30 * time.Second
 	clusterHeldProposalTimeout             = 10 * time.Second
 	clusterDriverStageLimit                = 64
 	clusterDefaultControlQueueCapacity     = 256
@@ -247,6 +244,8 @@ func runClusterMode(ctx context.Context, config clusterConfigFile, logger *slog.
 	}
 	metricsRegistry.ObserveSubscriptions(runtime.routes)
 	runtime.tenantQuotaController = &clusterTenantQuotaController{runtime: runtime}
+	runtime.clusterPolicyController = &clusterPolicyController{runtime: runtime}
+	runtime.clusterPolicyController.refreshCommittedState()
 	minFree, maxLag := config.publishBackpressure()
 	runtime.publishPressure = &clusterPublishPressureController{
 		runtime: runtime, minFreeBytes: minFree, maxCommitLag: maxLag, freeBytes: diskspace.FreeBytes,
@@ -400,20 +399,27 @@ func runClusterMode(ctx context.Context, config clusterConfigFile, logger *slog.
 
 	var mqttServer *tcpadapter.Server
 	if len(mqttListeners) != 0 {
-		decoder, err := mqtt.NewDecoder(clusterDefaultPacketSize)
+		committed, found := runtime.machine.ClusterPolicy()
+		var committedPolicy *membership.ClusterPolicyStateDTO
+		if found {
+			committedPolicy = &committed
+		}
+		featureActive := slices.Contains(runtime.machine.ActiveFeatures(), membership.ClusterPolicyFeature)
+		connectionLimits := tcpConnectionLimits(effectiveClusterMQTTLimits(config, committedPolicy, featureActive))
+		decoder, err := mqtt.NewDecoder(connectionLimits.MaxPacketSize)
 		if err != nil {
 			return fmt.Errorf("create cluster MQTT decoder: %w", err)
 		}
-		encoder, err := mqtt.NewEncoder(clusterDefaultPacketSize)
+		encoder, err := mqtt.NewEncoder(mqtt.MaxRemainingLength)
 		if err != nil {
 			return fmt.Errorf("create cluster MQTT encoder: %w", err)
 		}
 		mqttServer, err = tcpadapter.NewServer(mqttListeners[0], tcpadapter.Config{
-			Clock: systemClock, MaxPacketSize: clusterDefaultPacketSize,
-			ConnectTimeout: 10 * time.Second, WriteTimeout: 5 * time.Second,
+			Clock: systemClock, MaxPacketSize: connectionLimits.MaxPacketSize,
+			ConnectTimeout: connectionLimits.ConnectTimeout, WriteTimeout: connectionLimits.WriteTimeout,
 			ControlQueueCapacity: clusterDefaultControlQueueCapacity, ClientCertificateExtractor: tlsadapter.ExtractVerifiedClientCertificateDTO,
 			CredentialRevocationChecker: runtime, TimerScheduler: systemScheduler,
-			ReceiveMaximum: clusterDefaultReceiveMaximum, PacketReadTimeout: clusterDefaultPacketReadTimeout,
+			ReceiveMaximum: connectionLimits.ReceiveMaximum, PacketReadTimeout: connectionLimits.PacketReadTimeout,
 			Policy: tcpPolicy, Metrics: metricsRegistry, ClusterMode: true,
 			TenantLimits:   tenantLimits,
 			DataPlaneAudit: dataPlaneAudit,
@@ -440,6 +446,11 @@ func runClusterMode(ctx context.Context, config clusterConfigFile, logger *slog.
 	membershipService, err := membership.NewService(runtime, config.replicationProfile())
 	if err != nil {
 		return fmt.Errorf("create membership service: %w", err)
+	}
+
+	clusterPolicyService, err := membership.NewClusterPolicyService(runtime)
+	if err != nil {
+		return fmt.Errorf("create cluster policy service: %w", err)
 	}
 	credentialRevocationService, err := membership.NewCredentialRevocationService(runtime, systemClock)
 	if err != nil {
@@ -504,7 +515,7 @@ func runClusterMode(ctx context.Context, config clusterConfigFile, logger *slog.
 		AllowAnonymousProbes: true,
 		RequestRate:          requestRate, AuthFailureRate: authFailureRate, Clock: systemClock,
 		ClusterID: config.ClusterID, Logger: logger,
-	}, stateProvider, healthChecker, metricsRegistry, membershipService, drainService, rebalanceService, runtime, auditService, auditQueryService, credentialRevocationService, blocklistService)
+	}, stateProvider, healthChecker, metricsRegistry, membershipService, drainService, rebalanceService, runtime, auditService, auditQueryService, credentialRevocationService, blocklistService, clusterPolicyService)
 	var sampler *runtimemetrics.Sampler
 	if config.RuntimeMetrics != nil {
 		createdSampler, err := runtimemetrics.New(config.RuntimeMetrics.OutputFile, config.runtimeMetricsInterval())
@@ -561,6 +572,7 @@ type clusterRuntime struct {
 	drain                   *clusterDrainController
 	rebalance               *clusterRebalanceController
 	tenantQuotaController   *clusterTenantQuotaController
+	clusterPolicyController *clusterPolicyController
 	publishPressure         *clusterPublishPressureController
 	releaseProfile          *clusterReleaseProfileController
 	sessionRecovery         *clusterSessionRecoveryController
@@ -700,6 +712,7 @@ func (runtime *clusterRuntime) serve(parent context.Context, mqttServer *tcpadap
 	driverDone := make(chan error, 1)
 	go func() { driverDone <- runtime.runDriver(ctx) }()
 	runtime.tenantQuotaController.start(ctx)
+	runtime.clusterPolicyController.start(ctx)
 	runtime.publishPressure.start(ctx)
 	runtime.releaseProfile.start(ctx)
 	runtime.drain.start(ctx)
@@ -801,6 +814,7 @@ func (runtime *clusterRuntime) serve(parent context.Context, mqttServer *tcpadap
 	runtime.rebalance.stopAndWait()
 	runtime.sessionRecovery.stopAndWait()
 	runtime.tenantQuotaController.stopAndWait()
+	runtime.clusterPolicyController.stopAndWait()
 	runtime.publishPressure.stopAndWait()
 	runtime.releaseProfile.stopAndWait()
 	runtime.managementState.SetNodeState(managementports.NodeStateSafeToStop, nil)
@@ -1411,6 +1425,12 @@ func (runtime *clusterRuntime) applyBatch(batch raftadapter.BatchDTO, proposals 
 			runtime.mqttServer.ReplaceCredentialRevocations(runtime.machine.CredentialRevocations())
 			runtime.mqttServer.ReplaceBlocklist(runtime.machine.BlocklistEntries())
 		}
+		if err := runtime.applyCommittedClusterMQTTLimits(); err != nil {
+			return err
+		}
+		if runtime.clusterPolicyController != nil {
+			runtime.clusterPolicyController.refreshCommittedState()
+		}
 		runtime.releaseProfile.observeSnapshotRestore()
 		runtime.sessionRecovery.requestFullScan()
 		runtime.retainedResyncRequired.Store(true)
@@ -1464,9 +1484,21 @@ func (runtime *clusterRuntime) applyBatch(batch raftadapter.BatchDTO, proposals 
 		if deliveryAckCommand && runtime.deliveryCrashArmed(failpointDeliveryCommitBeforeApply) {
 			triggerClusterFailpoint(failpointDeliveryCommitBeforeApply)
 		}
+		previousClusterPolicy, hadPreviousClusterPolicy := runtime.machine.ClusterPolicy()
 		result, err := runtime.machine.Apply(event.index, command)
 		if err != nil {
 			return fmt.Errorf("apply committed command at raft index %d: %w", event.index, err)
+		}
+		if command.ClusterPolicy != nil && result.Outcome == membership.ApplyOutcomeApplied {
+			currentClusterPolicy, found := runtime.machine.ClusterPolicy()
+			if found && (!hadPreviousClusterPolicy || currentClusterPolicy != previousClusterPolicy) {
+				if err := runtime.applyCommittedClusterMQTTLimits(); err != nil {
+					return err
+				}
+			}
+			if runtime.clusterPolicyController != nil {
+				runtime.clusterPolicyController.refreshCommittedState()
+			}
 		}
 		if change := command.CredentialRevocation; change != nil &&
 			result.Outcome == membership.ApplyOutcomeApplied && runtime.mqttServer != nil {
@@ -3019,6 +3051,14 @@ func (runtime *clusterRuntime) GetConnectionRebalance(ctx context.Context) (memb
 	state, found := runtime.machine.ConnectionRebalance()
 	return state, found, nil
 }
+
+func (runtime *clusterRuntime) GetClusterPolicy(ctx context.Context) (membership.ClusterPolicyStateDTO, bool, error) {
+	if err := runtime.readBarrier(ctx); err != nil {
+		return membership.ClusterPolicyStateDTO{}, false, classifyClusterPortError(err)
+	}
+	state, found := runtime.machine.ClusterPolicy()
+	return state, found, nil
+}
 func (runtime *clusterRuntime) AcquireOwnership(ctx context.Context, tenantID, clientID string, ownerNodeID uint64) (uint64, error) {
 	epoch, _, err := runtime.acquireOwnership(ctx, tenantID, clientID, ownerNodeID, nil)
 	return epoch, err
@@ -3832,6 +3872,7 @@ func encodeClusterCursor(offset int) string {
 }
 
 var _ membership.CommandPort = (*clusterRuntime)(nil)
+var _ membership.ClusterPolicyPort = (*clusterRuntime)(nil)
 var _ connect.OwnershipCoordinator = (*clusterRuntime)(nil)
 var _ subscribe.SubscriptionCommitter = (*clusterRuntime)(nil)
 var _ managementports.HealthChecker = (*clusterHealthChecker)(nil)

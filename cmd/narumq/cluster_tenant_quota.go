@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"slices"
 	"sync"
 	"time"
 
@@ -58,12 +59,15 @@ func (controller *clusterTenantQuotaController) reconcile(ctx context.Context) {
 	}
 	desired := configuredTenantQuotaProfile(controller.runtime.config)
 	committed, found := controller.runtime.machine.TenantQuotaProfile()
+	clusterPolicyActive := slices.Contains(controller.runtime.machine.ActiveFeatures(), membership.ClusterPolicyFeature)
 	if !found {
 		if controller.runtime.metrics != nil {
 			controller.runtime.metrics.SetTenantQuotaProfile(false, 0, false)
 		}
 		controller.setMismatch(false, desired.Version, 0)
-		controller.propose(ctx, desired)
+		if !clusterPolicyActive {
+			controller.propose(ctx, desired)
+		}
 		return
 	}
 	mismatch := committed.Version > desired.Version ||
@@ -72,7 +76,7 @@ func (controller *clusterTenantQuotaController) reconcile(ctx context.Context) {
 		controller.runtime.metrics.SetTenantQuotaProfile(true, committed.Version, mismatch)
 	}
 	controller.setMismatch(mismatch, desired.Version, committed.Version)
-	if mismatch {
+	if mismatch || clusterPolicyActive {
 		return
 	}
 	if committed.Version < desired.Version {

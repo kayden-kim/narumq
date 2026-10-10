@@ -433,6 +433,72 @@ func TestClusterBackupArchivePreservesDurableQoSState(t *testing.T) {
 	}
 }
 
+// Traceability: API-09; CFG-SCN-27; docs/contracts/replicated-state-v1.md §2; ADR-0052 §1.1.1.
+func TestClusterBackupArchivePreservesClusterPolicy(t *testing.T) {
+	config := validBootstrapClusterConfig()
+	config.Features = []string{membership.ClusterPolicyFeature}
+	_, members, err := clusterBootstrapIdentities(config)
+	if err != nil {
+		t.Fatalf("build bootstrap identities: %v", err)
+	}
+	machine := membership.NewStateMachine()
+	if err := machine.InitializeBootstrap(1, members); err != nil {
+		t.Fatalf("initialize policy backup state: %v", err)
+	}
+	activate := membership.CommandDTO{
+		SchemaMajor: membership.SchemaMajor, SchemaMinor: membership.SchemaMinor,
+		OperationID:       "00000000-0000-4000-8000-000000000001",
+		FeatureActivation: &membership.FeatureActivationDTO{Feature: membership.ClusterPolicyFeature},
+	}
+	if result, err := machine.Apply(2, activate); err != nil || result.Outcome != membership.ApplyOutcomeApplied {
+		t.Fatalf("activate ClusterPolicy: result=%+v err=%v", result, err)
+	}
+	policy := membership.ClusterPolicyDTO{MQTTLimits: membership.MQTTLimitsDTO{
+		MaxPacketSize: 2_097_152, ReceiveMaximum: 128,
+		ConnectTimeoutMillis: 15_000, PacketReadTimeoutMillis: 45_000, WriteTimeoutMillis: 7_000,
+	}}
+	change := membership.ClusterPolicyChangeDTO{ExpectedVersion: 0, Version: 1, Policy: policy, IdempotencyKey: "backup-policy"}
+	command := membership.CommandDTO{
+		SchemaMajor: membership.SchemaMajor, SchemaMinor: membership.SchemaMinor,
+		OperationID: "00000000-0000-4000-8000-000000000002", ClusterPolicy: &change,
+	}
+	if result, err := machine.Apply(3, command); err != nil || result.Outcome != membership.ApplyOutcomeApplied {
+		t.Fatalf("apply ClusterPolicy: result=%+v err=%v", result, err)
+	}
+	snapshot, err := machine.Snapshot(3)
+	if err != nil {
+		t.Fatalf("snapshot ClusterPolicy: %v", err)
+	}
+	encodedSnapshot, err := encodeMembershipSnapshot(snapshot)
+	if err != nil {
+		t.Fatalf("encode ClusterPolicy snapshot: %v", err)
+	}
+	image := raftadapter.BackupImageDTO{
+		SnapshotIndex: 3, SnapshotTerm: 1, SnapshotData: encodedSnapshot,
+		CommitIndex: 3, CommitTerm: 1, VoterIDs: []raftadapter.NodeID{1, 2, 3},
+	}
+	backup, err := buildClusterBackupArchive(config, image, encodedSnapshot)
+	if err != nil {
+		t.Fatalf("build ClusterPolicy backup: %v", err)
+	}
+	archive, err := records.DecodeBackupArchive(backup.Archive)
+	if err != nil {
+		t.Fatalf("decode ClusterPolicy backup: %v", err)
+	}
+	restoredSnapshot, err := decodeMembershipSnapshot(archive.Snapshot)
+	if err != nil {
+		t.Fatalf("decode archived ClusterPolicy snapshot: %v", err)
+	}
+	restored := membership.NewStateMachine()
+	if err := restored.Restore(restoredSnapshot); err != nil {
+		t.Fatalf("restore archived ClusterPolicy snapshot: %v", err)
+	}
+	state, found := restored.ClusterPolicy()
+	if !found || state.Version != 1 || state.Policy != policy {
+		t.Fatalf("archived ClusterPolicy state=(%+v, found=%t), want version 1 and policy %+v", state, found, policy)
+	}
+}
+
 // Traceability: CLU-14; docs/specs/cluster-session-and-delivery.md §4.2, §11.11.
 func TestClusterRestoreSeedReplaysConfigurationTail(t *testing.T) {
 	config := validBootstrapClusterConfig()

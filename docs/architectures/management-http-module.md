@@ -6,22 +6,22 @@
 | --- | --- |
 | 구조 시점 | Current |
 | 문서 상태 | Verified |
-| 구현 대조 | 2026-10-10 source, adapter·contract·process 시험과 full local gate |
+| 구현 대조 | 2026-10-10 source, API-09 `mqttLimits` 3-node acceptance, adapter·contract 시험과 `go run ./tools/verify local` PASS |
 | 코드 위치 | `internal/adapters/http/management` |
 | 코드 지도 | [Project structure](project-structure.md) |
 | 관련 스펙 | [Management API](../specs/management-api-and-observability.md), [Tenant와 security](../specs/tenancy-and-security.md) §6·§7 |
-| 관련 요구사항 | [PRD](../requirements/PRD.md) API-05, SEC-07, SEC-10~SEC-12, UI-01~UI-05·UI-10 |
+| 관련 요구사항 | [PRD](../requirements/PRD.md) API-05, API-09, SEC-07, SEC-10~SEC-12, UI-01~UI-05·UI-10 |
 | 관련 계약 | [Management API v1](../contracts/management-api-v1.md), [Audit event v1](../contracts/audit-event-v1.md) |
-| 관련 ADR | [ADR-0043](../decisions/ADR-0043-management-api-rate-limit.md), [ADR-0045](../decisions/ADR-0045-operations-dashboard-grafana.md), [ADR-0048](../decisions/ADR-0048-management-api-oidc-api-key-rbac.md), [ADR-0049](../decisions/ADR-0049-mqtt-credential-revocation.md), [ADR-0050](../decisions/ADR-0050-mqtt-client-blocklist.md) |
+| 관련 ADR | [ADR-0043](../decisions/ADR-0043-management-api-rate-limit.md), [ADR-0045](../decisions/ADR-0045-operations-dashboard-grafana.md), [ADR-0048](../decisions/ADR-0048-management-api-oidc-api-key-rbac.md), [ADR-0049](../decisions/ADR-0049-mqtt-credential-revocation.md), [ADR-0050](../decisions/ADR-0050-mqtt-client-blocklist.md), [ADR-0052](../decisions/ADR-0052-configuration-tiers-and-cluster-policy.md) §1.1.1 |
 
 ## 1. 책임과 경계
 
 - 맡는 책임: HTTP route를 application management port에 연결하고, named API key·OIDC JWT·break-glass bearer의 인증, permission matrix, rate limit과 공통 오류 응답을 적용한다.
 - 맡는 책임: rate limit을 적용한 요청의 거절 결과를 주입된 `AuditUseCase`에 전달한다.
 - 맡지 않는 책임: flag와 cluster JSON 검증, credential file I/O, cluster 전체 rate 합산, audit 파일 저장과 회전이다. 설정·key file 검증은 `cmd/narumq`가, audit 저장은 `internal/adapters/auditlog`가 담당한다.
-- 다른 모듈에 공개하는 기능: `NewServer`, `NewServerWithMembership`, `NewRouter`, `NewRouterWithMembership`와 `ServerConfig`다.
+- 다른 모듈에 공개하는 기능: `NewServer`, `NewServerWithMembership`, `NewRouter`, `NewRouterWithMembership`, `ClusterPolicyUseCase`와 `ServerConfig`다.
 
-`NewServer`는 standalone mode의 audit service를 연결하지 않는다. Cluster composition은 audit service/query와 credential revocation·blocklist application service를 management server에 주입한다. `/api/v1/security/credential-revocations`의 GET·POST·DELETE와 `/api/v1/security/blocklist`의 GET, blocklist entry의 POST·DELETE는 `PermissionCredentialAdmin`으로 보호한다. Mutation은 해당 `security.credential.*` 또는 `security.blocklist.*` event를 admission한 뒤 service에 전달한다. Standalone router에는 credential revocation·blocklist service가 없으므로 해당 route를 등록하지 않는다. `GET /api/v1/audit/events`는 SecurityAdmin 또는 ClusterAdmin만 사용할 수 있고, 조회 결과를 다시 감사 기록하지 않는다.
+`NewServer`는 standalone mode의 audit service를 연결하지 않는다. Cluster composition은 audit service/query, credential revocation·blocklist application service와 `ClusterPolicyUseCase`를 management server에 주입한다. `/api/v1/security/credential-revocations`의 GET·POST·DELETE와 `/api/v1/security/blocklist`의 GET, blocklist entry의 POST·DELETE는 `PermissionCredentialAdmin`으로 보호한다. Mutation은 해당 `security.credential.*` 또는 `security.blocklist.*` event를 admission한 뒤 service에 전달한다. `GET /api/v1/cluster/policy`는 ReadOnly, `PUT /api/v1/cluster/policy`는 ClusterAdmin 권한과 mutation audit admission을 요구한다. 성공한 policy update는 `cluster.policy.update` event에 이전·새 version을 기록한다. Standalone router에는 cluster-only service가 없으므로 해당 route를 등록하지 않는다. `GET /api/v1/audit/events`는 SecurityAdmin 또는 ClusterAdmin만 사용할 수 있고, 조회 결과를 다시 감사 기록하지 않는다.
 
 ## 2. 내부 구조
 
@@ -56,7 +56,7 @@ flowchart TD
 
 | 요소 | 역할 | 만들어지는 시점과 소유자 | 의존 대상 |
 | --- | --- | --- | --- |
-| `server.go` `newRouter` | route를 등록하고 `Authenticator`를 route middleware에 연결한다. | Router를 만들 때 생성하며 HTTP server가 소유한다. | Management ports, metrics port, `AuthConfig` |
+| `server.go` `newRouter` | route를 등록하고 `Authenticator`를 route middleware에 연결한다. | Router를 만들 때 생성하며 HTTP server가 소유한다. | Management ports, metrics port, `ClusterPolicyUseCase`, `AuthConfig` |
 | `auth.go` `NewAuthenticator` | credential 검증, `subject`·role 생성, 두 limiter 초기화와 기본값 적용을 한다. | Router 초기화 때 생성되며 해당 router가 소유한다. | `TokenVerifier`, `ports/clock.Clock`, `requestRateLimiter` |
 | `audit.go` `Authenticator.require` | 인증 실패 IP limit, 인증 성공 principal limit, permission 검사와 mutation admission 순서를 실행한다. | 요청마다 middleware가 호출한다. | `Authenticator`, optional `AuditUseCase` |
 | `audit.go` `rejectRateLimited` | denial audit 결과를 전달하고 `429` 응답과 `Retry-After`를 만든다. | 한도를 넘긴 요청마다 호출한다. | `recordOutcome`, `WriteError` |
@@ -65,6 +65,7 @@ flowchart TD
 | `audit_query_handlers.go` `GET /api/v1/audit/events` | query service에서 이 node의 저장된 hash-chain record를 읽어 공통 list envelope로 반환한다. 조회는 새 audit event를 만들지 않는다. | 요청마다 실행한다. | `application/audit` query service |
 | `credential_revocation_handlers.go` `GET`·`POST`·`DELETE` | Committed revocation list, revoke와 restore를 application service에 전달한다. | Dynamic cluster server route에서만 사용한다. | `PermissionCredentialAdmin`, mutation audit admission, `CredentialRevocationUseCase` |
 | `blocklist_handlers.go` `GET`·`POST`·`DELETE` | Committed blocklist와 block/unblock을 application service에 전달한다. | Dynamic cluster server route에서만 사용한다. | `PermissionCredentialAdmin`, mutation audit admission, `BlocklistUseCase` |
+| `cluster_policy_handlers.go` `GET`·`PUT /api/v1/cluster/policy` | Committed policy·ETag를 조회하고, conditional update와 idempotency replay를 application service에 전달한다. | Dynamic cluster server route에서만 사용한다. | ReadOnly/ClusterAdmin permission, mutation audit admission, `ClusterPolicyUseCase` |
 
 ## 3. 데이터 모델
 

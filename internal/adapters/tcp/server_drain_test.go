@@ -154,7 +154,7 @@ func TestTCPClusterAdmissionClosedRejectsConnectBeforeReadiness(t *testing.T) {
 		Version: mqtt.ProtocolV5, CleanStart: true, ClientID: "drain-admission",
 	})
 	frame := readTestFrame(t, runtime.client)
-	packet, consumed, err := runtime.server.decoder.Decode(frame, mqtt.ProtocolV5)
+	packet, consumed, err := runtime.server.limits.Load().decoder.Decode(frame, mqtt.ProtocolV5)
 	if err != nil || consumed != len(frame) {
 		t.Fatalf("decode rejected CONNACK: packet=%T consumed=%d err=%v", packet, consumed, err)
 	}

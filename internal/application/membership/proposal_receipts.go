@@ -514,7 +514,7 @@ func validProposalConflict(code ApplyConflictCode) bool {
 		ConflictActiveFeatureMissing, ConflictFeatureUnsupported, ConflictRetainedCapacity, ConflictOfflineCapacity,
 		ConflictOfflineSessionMissing, ConflictDeliveryCapacity, ConflictDeliveryMissing, ConflictDeliveryPacketID,
 		ConflictNodeDrainActive, ConflictNodeDrainInProgress, ConflictDrainNotCancellable, ConflictDeliverySessionMissing,
-		ConflictTenantQuotaStale, ConflictFeatureInactive, ConflictSessionMetadataCapacity, ConflictSessionMetadataInvalid,
+		ConflictTenantQuotaStale, ConflictFeatureInactive, ConflictClusterPolicyVersion, ConflictSessionMetadataCapacity, ConflictSessionMetadataInvalid,
 		ConflictConnectionRebalanceInProgress, ConflictRebalanceNotCancellable, ConflictProposalRetired,
 		ConflictProposalIdentity, ConflictProposalCapacity:
 		return true

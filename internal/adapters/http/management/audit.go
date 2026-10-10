@@ -27,6 +27,7 @@ type auditOutcome struct {
 	errorCode  string
 	targetType string
 	targetID   string
+	details    map[string]any
 }
 
 type auditOutcomeContextKey struct{}
@@ -40,6 +41,12 @@ func setAuditErrorCode(r *http.Request, code string) {
 func setAuditTarget(r *http.Request, targetType, targetID string) {
 	if outcome, ok := r.Context().Value(auditOutcomeContextKey{}).(*auditOutcome); ok {
 		outcome.targetType, outcome.targetID = targetType, targetID
+	}
+}
+
+func setAuditDetails(r *http.Request, details map[string]any) {
+	if outcome, ok := r.Context().Value(auditOutcomeContextKey{}).(*auditOutcome); ok {
+		outcome.details = details
 	}
 }
 
@@ -179,6 +186,11 @@ func (a *Authenticator) recordOutcome(r *http.Request, action, targetType, targe
 		values := r.Header.Values("Idempotency-Key")
 		if len(values) == 1 && validHTTPIdempotencyKey(values[0]) {
 			details["idempotencyKey"] = values[0]
+		}
+	}
+	if outcome, ok := r.Context().Value(auditOutcomeContextKey{}).(*auditOutcome); ok {
+		for key, value := range outcome.details {
+			details[key] = value
 		}
 	}
 	command := audit.RecordCommandDTO{

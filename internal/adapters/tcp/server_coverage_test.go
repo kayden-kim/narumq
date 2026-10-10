@@ -323,7 +323,7 @@ func (serving *csvServing) dial(t *testing.T) net.Conn {
 func csvReadPacket(t *testing.T, server *Server, conn net.Conn, version mqtt.ProtocolVersion) mqtt.Packet {
 	t.Helper()
 	frame := readTestFrame(t, conn)
-	packet, consumed, err := server.decoder.Decode(frame, version)
+	packet, consumed, err := server.limits.Load().decoder.Decode(frame, version)
 	if err != nil || consumed != len(frame) {
 		t.Fatalf("decode frame % X: packet=%T consumed=%d err=%v", frame, packet, consumed, err)
 	}

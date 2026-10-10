@@ -326,6 +326,7 @@ func writeMembershipServiceError(w http.ResponseWriter, r *http.Request, err err
 		membership.ServiceErrorNodeDrainInProgress,
 		membership.ServiceErrorConnectionRebalanceInProgress,
 		membership.ServiceErrorRebalanceNotCancellable,
+		membership.ServiceErrorClusterPolicyVersionConflict,
 		membership.ServiceErrorFeatureInactive,
 		membership.ServiceErrorFeatureUnsupported,
 		membership.ServiceErrorCredentialRevocationCapacity,

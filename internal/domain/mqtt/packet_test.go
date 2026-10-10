@@ -194,7 +194,7 @@ func TestRemainingLengthFramingHelperEdges_MQTT153_1_2_MQTT154_1_2(t *testing.T)
 		{value: 16384, want: 3},
 		{value: 2097151, want: 3},
 		{value: 2097152, want: 4},
-		{value: maxRemainingLength, want: 4},
+		{value: MaxRemainingLength, want: 4},
 	}
 	for _, testCase := range cases {
 		value, want := testCase.value, testCase.want
@@ -217,16 +217,16 @@ func TestRemainingLengthFramingHelperEdges_MQTT153_1_2_MQTT154_1_2(t *testing.T)
 	if !bytes.Equal(copyOfOriginal, []byte{1, 2, 3}) {
 		t.Fatal("cloneBytes did not copy data")
 	}
-	if _, err := NewDecoder(maxRemainingLength); err != nil {
+	if _, err := NewDecoder(MaxRemainingLength); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := NewEncoder(maxRemainingLength); err != nil {
+	if _, err := NewEncoder(MaxRemainingLength); err != nil {
 		t.Fatal(err)
 	}
 }
 
 func TestConnectDecoderAndEncoderEdgeContracts_MQTT01_MQTT12_MQTT13(t *testing.T) {
-	decoder, err := NewDecoder(maxRemainingLength)
+	decoder, err := NewDecoder(MaxRemainingLength)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -253,7 +253,7 @@ func TestConnectDecoderAndEncoderEdgeContracts_MQTT01_MQTT12_MQTT13(t *testing.T
 		})
 	}
 
-	encoder, err := NewEncoder(maxRemainingLength)
+	encoder, err := NewEncoder(MaxRemainingLength)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -277,10 +277,10 @@ func TestConnectDecoderAndEncoderEdgeContracts_MQTT01_MQTT12_MQTT13(t *testing.T
 			t.Fatalf("Append(%T) error = %v, want malformed", packet, err)
 		}
 	}
-	if _, err := encodeConnAck(ConnAck{Version: ProtocolUnknown}, maxRemainingLength); !errors.Is(err, ErrUnsupportedProtocolVersion) {
+	if _, err := encodeConnAck(ConnAck{Version: ProtocolUnknown}, MaxRemainingLength); !errors.Is(err, ErrUnsupportedProtocolVersion) {
 		t.Fatalf("encodeConnAck() error = %v", err)
 	}
-	if _, err := encodePublish(Publish{Version: ProtocolUnknown, Topic: "topic"}, maxRemainingLength); !errors.Is(err, ErrUnsupportedProtocolVersion) {
+	if _, err := encodePublish(Publish{Version: ProtocolUnknown, Topic: "topic"}, MaxRemainingLength); !errors.Is(err, ErrUnsupportedProtocolVersion) {
 		t.Fatalf("encodePublish() error = %v", err)
 	}
 	if _, err := decodeConnAck([]byte{0, 0}, ProtocolUnknown); !errors.Is(err, ErrMalformedPacket) {
@@ -292,7 +292,7 @@ func TestConnectDecoderAndEncoderEdgeContracts_MQTT01_MQTT12_MQTT13(t *testing.T
 }
 
 func TestConnectDecodeRareMalformedBranches_MQTT01_MQTT12_TEST03_TEST04(t *testing.T) {
-	decoder, err := NewDecoder(maxRemainingLength)
+	decoder, err := NewDecoder(MaxRemainingLength)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -324,11 +324,11 @@ func TestConnectDecodeRareMalformedBranches_MQTT01_MQTT12_TEST03_TEST04(t *testi
 }
 
 func TestConnectConnAckPublishSizeAndValueBranches_MQTT01_MQTT11_MQTT12(t *testing.T) {
-	encoder, err := NewEncoder(maxRemainingLength)
+	encoder, err := NewEncoder(MaxRemainingLength)
 	if err != nil {
 		t.Fatal(err)
 	}
-	decoder, err := NewDecoder(maxRemainingLength)
+	decoder, err := NewDecoder(MaxRemainingLength)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -341,7 +341,7 @@ func TestConnectConnAckPublishSizeAndValueBranches_MQTT01_MQTT11_MQTT12(t *testi
 	if _, err := encodeConnAck(ConnAck{Version: ProtocolV311}, 1); !errors.Is(err, ErrPacketTooLarge) {
 		t.Fatalf("encodeConnAck() error = %v, want ErrPacketTooLarge", err)
 	}
-	if _, err := encodeConnAck(ConnAck{Version: ProtocolV311, SessionPresent: true, ReasonCode: 1}, maxRemainingLength); !errors.Is(err, ErrMalformedPacket) {
+	if _, err := encodeConnAck(ConnAck{Version: ProtocolV311, SessionPresent: true, ReasonCode: 1}, MaxRemainingLength); !errors.Is(err, ErrMalformedPacket) {
 		t.Fatalf("invalid Session Present CONNACK error = %v, want ErrMalformedPacket", err)
 	}
 	encoded, err := encoder.Append(nil, Publish{Version: ProtocolV311, Retain: true, Topic: "topic"})

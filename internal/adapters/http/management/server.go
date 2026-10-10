@@ -36,7 +36,7 @@ func NewRouter(
 	healthChecker ports.HealthChecker,
 	metricsReg portsmetrics.MetricsRenderer,
 ) http.Handler {
-	return newRouter(cfg, stateProvider, healthChecker, metricsReg, nil, nil, nil, nil, nil, nil, nil, nil)
+	return newRouter(cfg, stateProvider, healthChecker, metricsReg, nil, nil, nil, nil, nil, nil, nil, nil, nil)
 }
 
 // NewRouterWithMembership constructs a router with cluster membership and administration routes.
@@ -53,8 +53,9 @@ func NewRouterWithMembership(
 	auditQueryService AuditQueryUseCase,
 	credentialRevocationService CredentialRevocationUseCase,
 	blocklistService BlocklistUseCase,
+	clusterPolicyService ClusterPolicyUseCase,
 ) http.Handler {
-	return newRouter(cfg, stateProvider, healthChecker, metricsReg, membershipService, drainService, rebalanceService, backupProvider, auditService, auditQueryService, credentialRevocationService, blocklistService)
+	return newRouter(cfg, stateProvider, healthChecker, metricsReg, membershipService, drainService, rebalanceService, backupProvider, auditService, auditQueryService, credentialRevocationService, blocklistService, clusterPolicyService)
 }
 
 func newRouter(
@@ -70,6 +71,7 @@ func newRouter(
 	auditQueryService AuditQueryUseCase,
 	credentialRevocationService CredentialRevocationUseCase,
 	blocklistService BlocklistUseCase,
+	clusterPolicyService ClusterPolicyUseCase,
 ) http.Handler {
 	auth := NewAuthenticator(AuthConfig{
 		AuthToken: cfg.AuthToken, APIKeys: cfg.APIKeys, OIDC: cfg.OIDC,
@@ -207,6 +209,21 @@ func newRouter(
 			}
 		})
 	}
+	if clusterPolicyService != nil {
+		policyH := &clusterPolicyHandler{service: clusterPolicyService}
+		mux.HandleFunc("/api/v1/cluster/policy", func(w http.ResponseWriter, r *http.Request) {
+			switch r.Method {
+			case http.MethodGet:
+				auth.RequirePermission(PermissionRead, policyH.Get)(w, r)
+			case http.MethodPut:
+				auth.RequireMutationPermission(PermissionClusterAdmin, auditMutation{
+					action: "cluster.policy.update", targetType: "cluster_policy",
+				}, policyH.Update)(w, r)
+			default:
+				auth.RequirePermission(PermissionRead, methodNotAllowed("GET, PUT"))(w, r)
+			}
+		})
+	}
 	if drainService != nil {
 		drainH := &nodeDrainHandler{service: drainService}
 		mux.HandleFunc("/api/v1/nodes/{nodeId}/drain", func(w http.ResponseWriter, r *http.Request) {
@@ -273,7 +290,7 @@ func NewServer(
 	healthChecker ports.HealthChecker,
 	metricsReg portsmetrics.MetricsRenderer,
 ) *http.Server {
-	return newServer(cfg, stateProvider, healthChecker, metricsReg, nil, nil, nil, nil, nil, nil, nil, nil)
+	return newServer(cfg, stateProvider, healthChecker, metricsReg, nil, nil, nil, nil, nil, nil, nil, nil, nil)
 }
 
 // NewServerWithMembership creates a management server with cluster administration routes.
@@ -290,8 +307,9 @@ func NewServerWithMembership(
 	auditQueryService AuditQueryUseCase,
 	credentialRevocationService CredentialRevocationUseCase,
 	blocklistService BlocklistUseCase,
+	clusterPolicyService ClusterPolicyUseCase,
 ) *http.Server {
-	return newServer(cfg, stateProvider, healthChecker, metricsReg, membershipService, drainService, rebalanceService, backupProvider, auditService, auditQueryService, credentialRevocationService, blocklistService)
+	return newServer(cfg, stateProvider, healthChecker, metricsReg, membershipService, drainService, rebalanceService, backupProvider, auditService, auditQueryService, credentialRevocationService, blocklistService, clusterPolicyService)
 }
 
 func newServer(
@@ -307,6 +325,7 @@ func newServer(
 	auditQueryService AuditQueryUseCase,
 	credentialRevocationService CredentialRevocationUseCase,
 	blocklistService BlocklistUseCase,
+	clusterPolicyService ClusterPolicyUseCase,
 ) *http.Server {
 
 	addr := cfg.ListenAddr
@@ -323,7 +342,7 @@ func newServer(
 		wTimeout = 10 * time.Second
 	}
 
-	handler := newRouter(cfg, stateProvider, healthChecker, metricsReg, membershipService, drainService, rebalanceService, backupProvider, auditService, auditQueryService, credentialRevocationService, blocklistService)
+	handler := newRouter(cfg, stateProvider, healthChecker, metricsReg, membershipService, drainService, rebalanceService, backupProvider, auditService, auditQueryService, credentialRevocationService, blocklistService, clusterPolicyService)
 
 	return &http.Server{
 		Addr:         addr,

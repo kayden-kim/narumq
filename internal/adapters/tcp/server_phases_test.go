@@ -222,7 +222,7 @@ func TestWriteDeliveriesReservesPacketIDWhilePromotionWaits(t *testing.T) {
 	firstDone := make(chan error, 1)
 	go func() { firstDone <- conn.writeDeliveries() }()
 	frame := readTestFrame(t, clientSocket)
-	packet, _, err := runtime.server.decoder.Decode(frame, mqtt.ProtocolV5)
+	packet, _, err := runtime.server.limits.Load().decoder.Decode(frame, mqtt.ProtocolV5)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -268,7 +268,7 @@ func TestWriteDeliveriesReservesPacketIDWhilePromotionWaits(t *testing.T) {
 	}
 	releaseOnce.Do(func() { close(held.release) })
 	frame = readTestFrame(t, clientSocket)
-	packet, _, err = runtime.server.decoder.Decode(frame, mqtt.ProtocolV5)
+	packet, _, err = runtime.server.limits.Load().decoder.Decode(frame, mqtt.ProtocolV5)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -629,7 +629,7 @@ func TestTCPPartialPromotionPreservesEverySuffixIdentifier(t *testing.T) {
 			checkPublish := func(sequence uint64) {
 				t.Helper()
 				frame := readTestFrame(t, clientSocket)
-				packet, _, err := runtime.server.decoder.Decode(frame, mqtt.ProtocolV5)
+				packet, _, err := runtime.server.limits.Load().decoder.Decode(frame, mqtt.ProtocolV5)
 				publish, ok := packet.(*mqtt.Publish)
 				if err != nil || !ok || publish.Topic != fmt.Sprintf("events/%d", sequence) || publish.PacketID != mqtt.PacketIdentifier(sequence) {
 					t.Fatalf("delivery %d: packet=%#v err=%v", sequence, packet, err)

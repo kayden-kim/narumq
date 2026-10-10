@@ -76,11 +76,11 @@ func TestSubscriptionPacketsRoundTrip_MQTT311_MQTT5(t *testing.T) {
 		},
 	}
 
-	decoder, err := NewDecoder(maxRemainingLength)
+	decoder, err := NewDecoder(MaxRemainingLength)
 	if err != nil {
 		t.Fatal(err)
 	}
-	encoder, err := NewEncoder(maxRemainingLength)
+	encoder, err := NewEncoder(MaxRemainingLength)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -95,7 +95,7 @@ func TestSubscriptionPacketsRoundTrip_MQTT311_MQTT5(t *testing.T) {
 
 // Traceability: PRD MQTT-01/MQTT-06/MQTT-08/TEST-03/04; docs/specs/mqtt-protocol-and-session.md §3 and §4; MQTT-3.8.3-1/2 and MQTT-3.9.3-1/2.
 func TestSubscriptionPacketsCanonicalWireAndFlags(t *testing.T) {
-	encoder, err := NewEncoder(maxRemainingLength)
+	encoder, err := NewEncoder(MaxRemainingLength)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -157,7 +157,7 @@ func TestSubscriptionPacketsCanonicalWireAndFlags(t *testing.T) {
 
 // Traceability: PRD MQTT-08/MQTT-12/TEST-03/04; MQTT-1.5.3-1/2, MQTT-1.5.5-1, and MQTT-3.8.3-1/2.
 func TestSubscriptionDecodeValidationAndPropertyProfile(t *testing.T) {
-	decoder, err := NewDecoder(maxRemainingLength)
+	decoder, err := NewDecoder(MaxRemainingLength)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -198,11 +198,11 @@ func TestSubscriptionDecodeValidationAndPropertyProfile(t *testing.T) {
 
 // Traceability: PRD MQTT-11/MQTT-12/TEST-01/04; docs/specs/mqtt-protocol-and-session.md §7.
 func TestSubscriptionOwnershipAndDestinationInvariant(t *testing.T) {
-	encoder, err := NewEncoder(maxRemainingLength)
+	encoder, err := NewEncoder(MaxRemainingLength)
 	if err != nil {
 		t.Fatal(err)
 	}
-	decoder, err := NewDecoder(maxRemainingLength)
+	decoder, err := NewDecoder(MaxRemainingLength)
 	if err != nil {
 		t.Fatal(err)
 	}

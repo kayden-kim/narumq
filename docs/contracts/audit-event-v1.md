@@ -48,7 +48,7 @@ Audit sink 장애 정책은 management event에 [ADR-0039](../decisions/ADR-0039
 
 ## 5. Broker producer 범위
 
-이 계약 revision의 Broker producer는 Dynamic cluster management API의 활성 mutation 18개, Management API 인증 `401`·인가 `403`·rate-limit `429` 거절과 MQTT data-plane 거절을 기록한다. Standalone mode는 producer 범위가 아니다.
+이 계약 revision의 Broker producer는 Dynamic cluster management API의 활성 mutation 19개, Management API 인증 `401`·인가 `403`·rate-limit `429` 거절과 MQTT data-plane 거절을 기록한다. Standalone mode는 producer 범위가 아니다.
 
 | Method·path | `action` | `target.type` / `target.id` |
 | --- | --- | --- |
@@ -69,6 +69,7 @@ Audit sink 장애 정책은 management event에 [ADR-0039](../decisions/ADR-0039
 | `POST /api/v1/security/blocklist/certificates/{certificateSha256}` | `security.blocklist.add` | `mqtt_blocklist_entry` / `BlockEntry.Key()` (`certificateSha256:<value>`) |
 | `DELETE /api/v1/security/blocklist/certificates/{certificateSha256}` | `security.blocklist.remove` | `mqtt_blocklist_entry` / `BlockEntry.Key()` (`certificateSha256:<value>`) |
 | `POST /api/v1/security/blocklist/ip-prefixes/{address}/{prefixLength}` | `security.blocklist.add` | `mqtt_blocklist_entry` / `BlockEntry.Key()` (`ipPrefix:<value>`) |
+| `PUT /api/v1/cluster/policy` | `cluster.policy.update` | `cluster_policy` / cluster ID |
 | `DELETE /api/v1/security/blocklist/ip-prefixes/{address}/{prefixLength}` | `security.blocklist.remove` | `mqtt_blocklist_entry` / `BlockEntry.Key()` (`ipPrefix:<value>`) |
 
 Mutation 성공은 `ALLOWED`와 `succeeded`, mutation 실패는 `FAILED`와 응답 error code를 사용한다. 인증 거절은 `DENIED`와 `unauthorized`, 인가 거절은 `DENIED`와 `forbidden`을 사용한다. Event의 `occurredAt`은 mutation 결과가 확정된 UTC 시각이다. HTTP 응답이 이미 기록된 뒤 Publisher 오류가 발생해도 응답이나 완료한 mutation을 되돌리지 않는다.
@@ -77,7 +78,7 @@ Rate limit 거절은 `DENIED`와 `rate_limited`를 사용한다. 인증 실패 I
 
 Actor subject는 인증을 끈 local mode에서 `local-unauthenticated`, break-glass Bearer token에서 `management-bearer-token`, 일치한 API key에서 `apikey:<id>`, OIDC에서 `oidc:<sub>`, 인증 실패에서 `unauthenticated`다. 성공 인증의 `roles`는 고정 순서 `ReadOnly`, `Operator`, `SecurityAdmin`, `ClusterAdmin`로 기록하며 401에는 roles를 생략한다. Break-glass token만 공유 credential이며, API key와 OIDC subject는 개별 credential·subject를 식별한다.
 
-`details`는 `httpStatus`(정수)와 `method`를 포함한다. Mutation은 `Idempotency-Key` 값이 하나이고 허용 형식일 때만 `idempotencyKey`를 포함한다. Token, API key, body와 query 값은 기록하지 않는다. 인증·인가·rate-limit 거절은 같은 node별 초당 최대 20개 한도를 공유한다. 초과 event는 기록하지 않고 `denial_suppressed` Metric만 증가시킨다.
+`details`는 `httpStatus`(정수)와 `method`를 포함한다. Mutation은 `Idempotency-Key` 값이 하나이고 허용 형식일 때만 `idempotencyKey`를 포함한다. 성공한 `PUT /api/v1/cluster/policy`는 추가로 `previousVersion`과 `newVersion`(정수)을 포함한다. Token, API key, body와 query 값은 기록하지 않는다. 인증·인가·rate-limit 거절은 같은 node별 초당 최대 20개 한도를 공유한다. 초과 event는 기록하지 않고 `denial_suppressed` Metric만 증가시킨다.
 
 ### MQTT data-plane producer
 

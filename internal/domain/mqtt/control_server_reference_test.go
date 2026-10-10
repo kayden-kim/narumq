@@ -9,7 +9,7 @@ import (
 
 // Traceability: DEP-06; docs/specs/drain-and-rolling-update.md §4, §10.
 func TestDisconnectServerReferenceEncoding(t *testing.T) {
-	encoder, err := NewEncoder(maxRemainingLength)
+	encoder, err := NewEncoder(MaxRemainingLength)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -48,7 +48,7 @@ func TestDisconnectRejectsInvalidServerReference(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			if _, err := encodeDisconnect(Disconnect{
 				Version: test.version, ReasonCode: test.reason, ServerReference: test.reference,
-			}, maxRemainingLength); !errors.Is(err, ErrMalformedPacket) {
+			}, MaxRemainingLength); !errors.Is(err, ErrMalformedPacket) {
 				t.Fatalf("encodeDisconnect() error = %v, want ErrMalformedPacket", err)
 			}
 		})

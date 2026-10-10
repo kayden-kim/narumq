@@ -24,11 +24,11 @@ func TestControlPacketsRoundTripAndCanonicalForms(t *testing.T) {
 		{name: "disconnect-v5-reason", packet: &Disconnect{Version: ProtocolV5, ReasonCode: 0x83}, version: ProtocolV5, wire: []byte{0xE0, 0x02, 0x83, 0x00}},
 		{name: "disconnect-v5-payload-format-invalid", packet: &Disconnect{Version: ProtocolV5, ReasonCode: 0x99}, version: ProtocolV5, wire: []byte{0xE0, 0x02, 0x99, 0x00}},
 	}
-	encoder, err := NewEncoder(maxRemainingLength)
+	encoder, err := NewEncoder(MaxRemainingLength)
 	if err != nil {
 		t.Fatal(err)
 	}
-	decoder, err := NewDecoder(maxRemainingLength)
+	decoder, err := NewDecoder(MaxRemainingLength)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -65,11 +65,11 @@ func TestDisconnectReasonAllowlist(t *testing.T) {
 		0x8E, 0x8F, 0x90, 0x93, 0x94, 0x95, 0x96, 0x97, 0x98, 0x99,
 		0x9A, 0x9B, 0x9C, 0x9D, 0x9E, 0x9F, 0xA0, 0xA1, 0xA2,
 	}
-	encoder, err := NewEncoder(maxRemainingLength)
+	encoder, err := NewEncoder(MaxRemainingLength)
 	if err != nil {
 		t.Fatal(err)
 	}
-	decoder, err := NewDecoder(maxRemainingLength)
+	decoder, err := NewDecoder(MaxRemainingLength)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -93,7 +93,7 @@ func TestDisconnectReasonAllowlist(t *testing.T) {
 // and MQTT-3.14.4-1/2; invalid control frames must fail without reporting
 // a partial frame.
 func TestControlPacketsRejectInvalidFramesAndFlags(t *testing.T) {
-	decoder, err := NewDecoder(maxRemainingLength)
+	decoder, err := NewDecoder(MaxRemainingLength)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -123,7 +123,7 @@ func TestControlPacketsRejectInvalidFramesAndFlags(t *testing.T) {
 }
 
 func TestControlPacketEncodingPreservesDestinationOnFailure(t *testing.T) {
-	encoder, err := NewEncoder(maxRemainingLength)
+	encoder, err := NewEncoder(MaxRemainingLength)
 	if err != nil {
 		t.Fatal(err)
 	}

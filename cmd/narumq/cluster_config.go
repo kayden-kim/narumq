@@ -42,15 +42,21 @@ type clusterConfigFile struct {
 	Management           clusterManagement                 `json:"management"`
 	MQTT                 clusterMQTT                       `json:"mqtt"`
 	TenantQuotas         *clusterTenantQuotaProfileConfig  `json:"tenantQuotas,omitempty"`
+	ClusterPolicy        *clusterPolicyConfig              `json:"clusterPolicy,omitempty"`
 	Replication          *clusterReplicationConfig         `json:"replication,omitempty"`
 	PublishBackpressure  *clusterPublishBackpressureConfig `json:"publishBackpressure,omitempty"`
 	RuntimeMetrics       *clusterRuntimeMetricsConfig      `json:"runtimeMetrics,omitempty"`
 }
 
 const (
-	clusterDefaultMinFreeBytes                    = 1 << 30
-	clusterDefaultMaxCommitLag                    = time.Second
-	clusterMaxRuntimeMetricsIntervalMillis uint64 = 3_600_000
+	clusterDefaultMinFreeBytes                       = 1 << 30
+	clusterDefaultMaxCommitLag                       = time.Second
+	clusterDefaultMQTTMaxPacketSize           uint32 = 1_048_576
+	clusterDefaultMQTTReceiveMaximum          uint32 = 64
+	clusterDefaultMQTTConnectTimeoutMillis    uint32 = 10_000
+	clusterDefaultMQTTPacketReadTimeoutMillis uint32 = 30_000
+	clusterDefaultMQTTWriteTimeoutMillis      uint32 = 5_000
+	clusterMaxRuntimeMetricsIntervalMillis    uint64 = 3_600_000
 )
 
 type clusterPublishBackpressureConfig struct {
@@ -61,6 +67,36 @@ type clusterPublishBackpressureConfig struct {
 type clusterRuntimeMetricsConfig struct {
 	OutputFile     string `json:"outputFile"`
 	IntervalMillis uint64 `json:"intervalMillis"`
+}
+type clusterPolicyConfig struct {
+	Version    uint64                   `json:"version"`
+	MQTTLimits *clusterMQTTLimitsConfig `json:"mqttLimits"`
+}
+
+type clusterMQTTLimitsConfig struct {
+	MaxPacketSize           uint32 `json:"maxPacketSize"`
+	ReceiveMaximum          uint32 `json:"receiveMaximum"`
+	ConnectTimeoutMillis    uint32 `json:"connectTimeoutMillis"`
+	PacketReadTimeoutMillis uint32 `json:"packetReadTimeoutMillis"`
+	WriteTimeoutMillis      uint32 `json:"writeTimeoutMillis"`
+}
+
+func (config clusterPolicyConfig) membershipPolicy() membership.ClusterPolicyDTO {
+	limits := config.MQTTLimits
+	return membership.ClusterPolicyDTO{MQTTLimits: membership.MQTTLimitsDTO{
+		MaxPacketSize: limits.MaxPacketSize, ReceiveMaximum: limits.ReceiveMaximum,
+		ConnectTimeoutMillis: limits.ConnectTimeoutMillis, PacketReadTimeoutMillis: limits.PacketReadTimeoutMillis,
+		WriteTimeoutMillis: limits.WriteTimeoutMillis,
+	}}
+}
+
+func defaultClusterMQTTLimits() membership.MQTTLimitsDTO {
+	return membership.MQTTLimitsDTO{
+		MaxPacketSize: clusterDefaultMQTTMaxPacketSize, ReceiveMaximum: clusterDefaultMQTTReceiveMaximum,
+		ConnectTimeoutMillis:    clusterDefaultMQTTConnectTimeoutMillis,
+		PacketReadTimeoutMillis: clusterDefaultMQTTPacketReadTimeoutMillis,
+		WriteTimeoutMillis:      clusterDefaultMQTTWriteTimeoutMillis,
+	}
 }
 
 func (config clusterConfigFile) publishBackpressure() (minFreeBytes uint64, maxCommitLag time.Duration) {
@@ -305,7 +341,9 @@ func checkClusterJSON(reader io.Reader) error {
 
 func expectedClusterJSONType(path string) string {
 	switch path {
-	case "", "peerTLS", "management", "management.oidc", "mqtt", "mqtt.tls", "tenantQuotas", "tenantQuotas.default", "replication", "publishBackpressure", "runtimeMetrics":
+	case "", "peerTLS", "management", "management.oidc", "mqtt", "mqtt.tls",
+		"tenantQuotas", "tenantQuotas.default", "clusterPolicy", "clusterPolicy.mqttLimits",
+		"replication", "publishBackpressure", "runtimeMetrics":
 		return "object"
 	case "bootstrapMembers", "seedAddresses", "tenantQuotas.tenants", "management.apiKeys", "management.oidc.algorithms", "management.oidc.identities":
 		return "array"
@@ -344,6 +382,10 @@ func expectClusterKeys(path string, seen map[string]struct{}) error {
 		required = []string{"minFreeBytes", "maxCommitLagMillis"}
 	case "runtimeMetrics":
 		required = []string{"outputFile", "intervalMillis"}
+	case "clusterPolicy":
+		required = []string{"version", "mqttLimits"}
+	case "clusterPolicy.mqttLimits":
+		required = []string{"maxPacketSize", "receiveMaximum", "connectTimeoutMillis", "packetReadTimeoutMillis", "writeTimeoutMillis"}
 	case "tenantQuotas":
 		required = []string{"version", "default", "tenants"}
 	case "tenantQuotas.default":
@@ -450,6 +492,20 @@ func validateClusterConfig(config clusterConfigFile) error {
 		}
 		if err := membership.ValidateTenantQuotaProfile(config.TenantQuotas.membershipProfile()); err != nil {
 			return fmt.Errorf("tenantQuotas is invalid: %w", err)
+		}
+	}
+	if config.ClusterPolicy != nil && config.TenantQuotas != nil {
+		return errors.New("tenantQuotas and clusterPolicy cannot be specified together")
+	}
+	if policy := config.ClusterPolicy; policy != nil {
+		if policy.Version == 0 {
+			return errors.New("clusterPolicy version must be at least 1")
+		}
+		if policy.MQTTLimits == nil {
+			return errors.New("clusterPolicy mqttLimits is required")
+		}
+		if err := membership.ValidateClusterPolicy(policy.membershipPolicy()); err != nil {
+			return fmt.Errorf("clusterPolicy is invalid: %w", err)
 		}
 	}
 	if config.Replication != nil {

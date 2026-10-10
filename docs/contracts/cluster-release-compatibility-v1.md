@@ -69,6 +69,7 @@ Release version과 feature set은 mutable committed member profile이다. Restar
 - `proposal-recovery`는 build capability이며 기본 비활성 feature다. 활성화 전 command field 24와 snapshot field 15는 기록하지 않는다. 모든 non-retired member가 지원할 때 기존 `FeatureActivation`으로 활성화한다. 활성화 뒤 receipt와 fence를 모르는 build로 rollback하지 않는다. Strict codec과 backup restore의 active-feature 검사는 유지한다. [ADR-0036](../decisions/ADR-0036-replicated-proposal-receipts-and-safe-reproposal.md) 참조.
 - `credential-revocation`은 build capability이며 기본 비활성 feature다. 활성화 전 command field 25와 snapshot field 16은 기록하지 않는다. 모든 non-retired member가 지원할 때 기존 `FeatureActivation`으로 활성화한다. 활성화 뒤 폐기 entry를 모르는 build로 rollback하지 않는다. Strict codec과 backup restore의 active-feature 검사는 유지한다. [ADR-0049](../decisions/ADR-0049-mqtt-credential-revocation.md) 참조.
 - `client-blocklist`은 build capability이며 기본 build feature다. 활성화 전 command field 26, snapshot field 17 및 `blocklist_version` field 18은 기록하지 않는다. 모든 non-retired member가 지원할 때 기존 `FeatureActivation`으로 활성화한다. 활성화 뒤 blocklist field를 모르는 build로 rollback하지 않는다. Strict codec과 backup restore의 active-feature 검사는 유지한다. [ADR-0050](../decisions/ADR-0050-mqtt-client-blocklist.md) 참조.
+- `cluster-policy`는 기본 build feature다. 활성화 전 command field 27과 snapshot field 19를 기록하지 않는다. 모든 non-retired member가 지원할 때 `FeatureActivation`으로 활성화한다. 활성화 뒤에는 이 field를 모르는 build로 rollback하지 않는다. [ADR-0052](../decisions/ADR-0052-configuration-tiers-and-cluster-policy.md) 참조.
 
 ### 4.1 운영 승인과 rollback window 종료
 

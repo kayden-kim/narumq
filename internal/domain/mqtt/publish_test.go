@@ -45,11 +45,11 @@ func TestPublishRoundTripAndOwnership_MQTT311_MQTT5_MQTT331_MQTT332(t *testing.T
 			trace: "PRD MQTT-02/TEST-04; MQTT-3.3.1-2/4; MQTT-4.3.3-1/2",
 		},
 	}
-	decoder, err := NewDecoder(maxRemainingLength)
+	decoder, err := NewDecoder(MaxRemainingLength)
 	if err != nil {
 		t.Fatal(err)
 	}
-	encoder, err := NewEncoder(maxRemainingLength)
+	encoder, err := NewEncoder(MaxRemainingLength)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -70,7 +70,7 @@ func TestPublishRoundTripAndOwnership_MQTT311_MQTT5_MQTT331_MQTT332(t *testing.T
 }
 
 func TestPublishCanonicalWire_MQTT311_MQTT5(t *testing.T) {
-	encoder, err := NewEncoder(maxRemainingLength)
+	encoder, err := NewEncoder(MaxRemainingLength)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -84,7 +84,7 @@ func TestPublishCanonicalWire_MQTT311_MQTT5(t *testing.T) {
 	}
 }
 func TestPublishQoSWireAndPacketIdentifierValidation_MQTT02_MQTT331_2_4_MQTT332_1(t *testing.T) {
-	encoder, err := NewEncoder(maxRemainingLength)
+	encoder, err := NewEncoder(MaxRemainingLength)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -97,7 +97,7 @@ func TestPublishQoSWireAndPacketIdentifierValidation_MQTT02_MQTT331_2_4_MQTT332_
 		t.Fatalf("QoS 2 PUBLISH = %v, want %v", qos2, want)
 	}
 
-	decoder, err := NewDecoder(maxRemainingLength)
+	decoder, err := NewDecoder(MaxRemainingLength)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -127,7 +127,7 @@ func TestPublishQoSWireAndPacketIdentifierValidation_MQTT02_MQTT331_2_4_MQTT332_
 }
 
 func TestPublishRejectsQoSAndMalformedTopics_MQTT331_1_2_MQTT333_1_2(t *testing.T) {
-	decoder, err := NewDecoder(maxRemainingLength)
+	decoder, err := NewDecoder(MaxRemainingLength)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -164,7 +164,7 @@ func TestPublishRejectsQoSAndMalformedTopics_MQTT331_1_2_MQTT333_1_2(t *testing.
 }
 
 func TestPublishRejectsMQTT5Properties_MQTT5_1_5_5_1(t *testing.T) {
-	decoder, err := NewDecoder(maxRemainingLength)
+	decoder, err := NewDecoder(MaxRemainingLength)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -189,11 +189,11 @@ func TestPublishRejectsMQTT5Properties_MQTT5_1_5_5_1(t *testing.T) {
 
 // Traceability: PRD MQTT-01/MQTT-12/TEST-04; docs/specs/mqtt-protocol-and-session.md §3.2, §5; MQTT-3.3.2-5/6.
 func TestPublishMessageExpiryProperty_MQTT5(t *testing.T) {
-	decoder, err := NewDecoder(maxRemainingLength)
+	decoder, err := NewDecoder(MaxRemainingLength)
 	if err != nil {
 		t.Fatal(err)
 	}
-	encoder, err := NewEncoder(maxRemainingLength)
+	encoder, err := NewEncoder(MaxRemainingLength)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -219,7 +219,7 @@ func TestPublishMessageExpiryProperty_MQTT5(t *testing.T) {
 
 // Traceability: PRD MQTT-01/MQTT-12/TEST-04; docs/specs/mqtt-protocol-and-session.md §3.2, §5; MQTT-3.3.2-5.
 func TestPublishMessageExpiryPropertyRejectsInvalidSections(t *testing.T) {
-	decoder, err := NewDecoder(maxRemainingLength)
+	decoder, err := NewDecoder(MaxRemainingLength)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -242,7 +242,7 @@ func TestPublishMessageExpiryPropertyRejectsInvalidSections(t *testing.T) {
 			}
 		})
 	}
-	encoder, err := NewEncoder(maxRemainingLength)
+	encoder, err := NewEncoder(MaxRemainingLength)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -277,7 +277,7 @@ func TestPublishEncoderLeavesDestinationUnchangedOnErrorAndHonorsLimit(t *testin
 
 // Traceability: PRD MQTT-11/TEST-04/05.
 func TestPublishPacketSizeAtRemainingLengthBoundaries(t *testing.T) {
-	encoder, _ := NewEncoder(maxRemainingLength)
+	encoder, _ := NewEncoder(MaxRemainingLength)
 	for _, version := range []ProtocolVersion{ProtocolV311, ProtocolV5} {
 		for _, qos := range []QoS{QoSAtMostOnce, QoSAtLeastOnce, QoSExactlyOnce} {
 			for _, expiry := range []bool{false, true} {

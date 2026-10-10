@@ -433,6 +433,33 @@ func TestRegistryTenantQuotaMetricsAndProfileGauges(t *testing.T) {
 	}
 }
 
+func TestRegistryClusterPolicyGaugesAndReset(t *testing.T) {
+	registry := NewRegistry()
+	registry.SetClusterPolicy(true, 8, true)
+	output := string(registry.Render(true))
+	for _, line := range []string{
+		"narumq_cluster_policy_committed 1\n",
+		"narumq_cluster_policy_version 8\n",
+		"narumq_cluster_policy_config_mismatch 1\n",
+	} {
+		if !strings.Contains(output, line) {
+			t.Errorf("missing cluster policy gauge %q:\n%s", line, output)
+		}
+	}
+
+	registry.SetClusterPolicy(false, 99, true)
+	output = string(registry.Render(false))
+	for _, line := range []string{
+		"narumq_cluster_policy_committed 0\n",
+		"narumq_cluster_policy_version 0\n",
+		"narumq_cluster_policy_config_mismatch 0\n",
+	} {
+		if !strings.Contains(output, line) {
+			t.Errorf("uncommitted cluster policy gauge did not reset: missing %q", line)
+		}
+	}
+}
+
 // Traceability: TEN-08; docs/specs/tenancy-and-security.md §5.1.
 func TestRegistryTenantQuotaMetricBoundsTenantLabels(t *testing.T) {
 	registry := NewRegistry()

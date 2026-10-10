@@ -19,7 +19,7 @@ func TestRemainingLengthCanonicalBoundaries_MQTT153_1_2_MQTT154_1_2(t *testing.T
 		{name: "three-byte-minimum", value: 16384, wire: []byte{0x80, 0x80, 0x01}, trace: "PRD TEST-03; MQTT-3.1.2-1; MQTT-1.5.3-1"},
 		{name: "three-byte-maximum", value: 2097151, wire: []byte{0xFF, 0xFF, 0x7F}, trace: "PRD TEST-03; MQTT-3.1.2-1; MQTT-1.5.3-1"},
 		{name: "four-byte-minimum", value: 2097152, wire: []byte{0x80, 0x80, 0x80, 0x01}, trace: "PRD TEST-03; MQTT-3.1.2-1; MQTT-1.5.3-1"},
-		{name: "four-byte-maximum", value: maxRemainingLength, wire: []byte{0xFF, 0xFF, 0xFF, 0x7F}, trace: "PRD TEST-03; MQTT-3.1.2-1; MQTT-1.5.3-1"},
+		{name: "four-byte-maximum", value: MaxRemainingLength, wire: []byte{0xFF, 0xFF, 0xFF, 0x7F}, trace: "PRD TEST-03; MQTT-3.1.2-1; MQTT-1.5.3-1"},
 	}
 	for _, testCase := range cases {
 		t.Run(testCase.name, func(t *testing.T) {
@@ -76,7 +76,7 @@ func TestRemainingLengthPacketLimitIsCheckedBeforeIncompleteBodyAllocation_MQTT1
 }
 
 func TestRemainingLengthDecodeErrorsThroughFrameParser(t *testing.T) {
-	decoder, err := NewDecoder(maxRemainingLength)
+	decoder, err := NewDecoder(MaxRemainingLength)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -99,7 +99,7 @@ func TestRemainingLengthDecodeErrorsThroughFrameParser(t *testing.T) {
 
 // Traceability: PRD MQTT-11; configured packet limits must fail before body processing.
 func TestRemainingLengthPacketLimitConfiguration(t *testing.T) {
-	for _, maxPacketSize := range []int{0, -1, maxRemainingLength + 1} {
+	for _, maxPacketSize := range []int{0, -1, MaxRemainingLength + 1} {
 		if _, err := NewDecoder(maxPacketSize); !errors.Is(err, ErrPacketTooLarge) {
 			t.Fatalf("NewDecoder(%d) error = %v, want ErrPacketTooLarge", maxPacketSize, err)
 		}

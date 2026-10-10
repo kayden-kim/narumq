@@ -2,7 +2,7 @@
 
 | 항목 | 값 |
 | --- | --- |
-| 상태 | `Proposed`. §1.5의 설정 parser 중복 key 거절 규칙과 secret 파일 규칙 중 standalone `-http-auth-token-file` 전환은 2026-10-10 사용자 결정으로 채택했다(G4·G9). §1.5의 Cluster MQTT TLS(`mqtt.tls`)와 MQTT·peer 인증서 분리 규칙도 2026-10-10 사용자 결정으로 채택했다(G2·G10). Cluster runtime metrics의 node 정적 설정 `runtimeMetrics`도 2026-10-10 사용자 결정으로 채택했다(G6). |
+| 상태 | `Proposed`. §1.1의 `ClusterPolicy` commit·version·reconciliation·`GET/PUT /api/v1/cluster/policy`·metric과 §1.2의 `mqttLimits` 적용 시점은 2026-10-10 사용자 결정으로 채택했다(G1·API-09). §1.4의 `cluster-policy` feature gate도 `mqttLimits`에 한해 채택했다. 기존 `TenantQuota` proposal 억제와 top-level `tenantQuotas`·`clusterPolicy` 충돌 거절은 §1.4에 명시한 동작을 유지한다. §1.5의 설정 parser 중복 key 거절 규칙과 secret 파일 규칙 중 standalone `-http-auth-token-file` 전환은 같은 날 채택했다(G4·G9). §1.5의 Cluster MQTT TLS(`mqtt.tls`)와 MQTT·peer 인증서 분리 규칙도 채택했다(G2·G10). Cluster runtime metrics의 node 정적 설정 `runtimeMetrics`도 채택했다(G6). 나머지 정책 항목은 `Proposed`로 남는다. |
 | 결정일 | 2026-10-10 |
 | 결정자 | NaruMQ 프로젝트 사용자 |
 | 관련 요구사항 | API-09, API-08, UI-01~UI-10, SEC-07, TEN-06~TEN-08, CLU-11 |
@@ -57,7 +57,31 @@ Management API는 아래 경로로 정책을 조회하고 변경한다.
 | `GET` | `/api/v1/cluster/policy` | `ReadOnly` | `version`과 전체 `ClusterPolicy`를 반환한다. |
 | `PUT` | `/api/v1/cluster/policy` | `ClusterAdmin` | `If-Match: "<version>"`과 `Idempotency-Key`가 필요하다. 성공하면 version을 1 올린 value를 commit한다. 현재 version이 다르면 `409 conflict`를 반환한다. |
 
-Mutation은 audit action `cluster.policy.update`로 기록한다. Audit detail에는 이전 version과 새 version을 넣는다. Response code와 JSON schema는 구현 때 Management API v1 contract revision에서 확정한다.
+Mutation은 audit action `cluster.policy.update`로 기록한다. Audit detail에는 이전 version과 새 version을 넣는다. HTTP status와 JSON schema는 [Management API v1 contract §1](../contracts/management-api-v1.md#1-phase-1-operation-profile)와 [OpenAPI JSON](../contracts/management-api-v1.openapi.json)에서 확정한다.
+
+### 1.1.1 1차 구현 계약 (`mqttLimits`)
++
+첫 구현은 `mqttLimits`만 저장한다. 다른 §1.1 정책 항목은 replicated state와 API에 포함하지 않는다.
++
+| JSON field | Type | 허용 범위 | 기본값 |
+| --- | --- | --- | --- |
+| `maxPacketSize` | `uint32` | `1..268435455` | `1048576` |
+| `receiveMaximum` | `uint32` | `1..65535` | `64` |
+| `connectTimeoutMillis` | `uint32` | `1..4294967295` | `10000` |
+| `packetReadTimeoutMillis` | `uint32` | `1..4294967295` | `30000` |
+| `writeTimeoutMillis` | `uint32` | `1..4294967295` | `5000` |
++
+`clusterPolicy`가 없는 설정과 committed policy version 0은 위 기본값을 사용한다. 적용 값은 committed version 1 이상, local `clusterPolicy`, 기본값 순서로 고른다. 변경은 새 연결부터 적용하며 기존 연결은 accept 시점의 한도를 유지한다. Control·delivery queue 256은 node 정적 설정이다.
++
+요청 JSON은 `{"mqttLimits":{...}}`이며 object와 다섯 field를 모두 요구한다. 알 수 없는 key, 누락 값과 범위 밖 값은 `400 invalid_request`다.
++
+`GET /api/v1/cluster/policy`는 `ReadOnly` 권한을 요구하고 `ETag: "<version>"`을 반환한다. Commit 전 응답은 version `0`, policy `null`이다. Feature 활성 여부와 관계없이 조회할 수 있다.
++
+`PUT /api/v1/cluster/policy`는 `ClusterAdmin` 권한을 요구한다. 정확히 하나의 `Idempotency-Key`와 `If-Match: "<version>"`을 요구한다. `If-Match`는 선행 0이 없는 uint64 decimal이어야 하며 `math.MaxUint64`는 허용하지 않는다. 성공 응답은 다음 version과 policy를 반환하고 `ETag`를 갱신한다. Feature 비활성은 `409 feature_inactive`, stale version은 non-retryable `409 cluster_policy_version_conflict`, 최근 key와 다른 요청 내용은 `409 idempotency_conflict`다. Quorum 실패는 기존 retryable `503` 규칙을 따른다.
++
+Idempotency state는 최근 적용한 update의 key 하나만 보관한다. 같은 key와 같은 이전 version·새 version·정책은 상태 변경 없이 재생한다. 오래된 key 재사용은 version CAS에서 거절한다.
++
+성공 mutation은 `cluster.policy.update` audit event를 남긴다. Target은 `cluster_policy`와 cluster ID다. `details`에는 `previousVersion`과 `newVersion`을 기록한다.
 
 GitOps 파일은 desired value의 원천이다. Console이 API로 정책을 바꾸면 committed value와 파일 사이에 drift가 생길 수 있다. Metric으로 drift를 표시한다. 운영자는 GET 결과를 같은 version으로 저장소에 반영해 차이를 없앤다.
 
@@ -71,7 +95,7 @@ Standalone에는 commit state가 없다. Standalone은 파일과 CLI 값만 사�
 
 ### 1.3 보안 설정
 
-Dynamic cluster에서는 ACL과 `tenantLimits`를 `ClusterPolicy`로 옮긴다. Authentication identity와 secret은 node 정적 설정에 남긴다. Identity·secret은 Raft log와 backup archive에 복제하지 않는다.
+이 1차 Dynamic cluster 구현의 `ClusterPolicy`에는 `mqttLimits`만 포함한다. ACL과 `tenantLimits` 이행은 범위 밖이며 현재 security config에 남는다. Authentication identity와 secret은 node 정적 설정에 남기며 Raft log와 backup archive에 복제하지 않는다.
 
 Standalone에서는 ACL과 `tenantLimits`를 계속 security config에서 읽는다. Credential rotation은 [ADR-0049](ADR-0049-mqtt-credential-revocation.md)의 rolling restart 경계를 유지한다.
 
@@ -81,7 +105,7 @@ Standalone에서는 ACL과 `tenantLimits`를 계속 security config에서 읽는
 
 Feature가 활성화되기 전에는 각 node가 현재 파일 값을 사용한다. 활성화 뒤에도 version 1 이상 `ClusterPolicy`가 commit되기 전까지는 version 0이며 각 node가 자기 파일 값을 사용한다.
 
-기존 `TenantQuota` command는 과거 log replay를 위해 유지한다. Feature 활성화 뒤 tenant quota 변경은 `ClusterPolicy`로만 제안한다. 기존 top-level `tenantQuotas`와 `clusterPolicy.tenantQuotas`를 함께 지정하면 시작을 거절한다.
+기존 `TenantQuota` command는 과거 log replay를 위해 유지한다. Feature 활성화 뒤 legacy controller는 `TenantQuota` 변경을 제안하지 않는다. 이 schema의 `ClusterPolicy`는 `mqttLimits`만 담으므로 tenant quota 변경은 지원하지 않는다. top-level `tenantQuotas`와 `clusterPolicy`를 함께 지정하면 시작을 거절한다.
 
 ### 1.5 형식과 Cluster MQTT TLS
 
@@ -106,7 +130,7 @@ Console은 Management API만 사용한다. 이 ADR은 UI 기술을 정하지 않
 
 | ID | 현재 상태와 코드 근거 |
 | --- | --- |
-| G1 | Cluster MQTT의 packet, timeout, control·delivery queue 값은 `cluster_runtime.go`의 `clusterDefault*`와 `runClusterMode`에 고정되어 있다. |
+| G1 | Cluster MQTT의 packet, timeout, control·delivery queue 값은 `cluster_runtime.go`의 `clusterDefault*`와 `runClusterMode`에 고정되어 있다. 2026-10-10 해소: `mqttLimits`는 committed `ClusterPolicy`와 `/api/v1/cluster/policy`로 조정한다. Control·delivery queue 256은 node 정적 설정으로 남는다. |
 | G2 | `clusterMQTTListeners`는 Raft peer certificate와 key를 재사용한다. MQTT TLS 설정에는 client CA와 client-auth가 없어 handshake에서 client certificate를 요청하지 않는다. 2026-10-10 해소: `mqtt.tls`가 MQTT 인증서와 client-auth를 설정하고 peer 인증서와 분리한다. |
 | G4 | `security_config.go`와 `raft_peer_config.go`는 중복 JSON key를 검사하지 않는다. Cluster config parser는 검사한다. 2026-10-10 해소: 세 parser가 모두 중복 key를 거절한다. |
 | G5 | Flag와 security config는 Go duration을 쓴다. Cluster config는 millisecond 정수를 쓴다. |
@@ -115,7 +139,7 @@ Console은 Management API만 사용한다. 이 ADR은 UI 기술을 정하지 않
 | G8 | Standalone Management API는 cluster ID `narumq-cluster-1`과 node ID `narumq-node-1`을 사용한다. |
 | G9 | Standalone은 2026-10-10 해소: `-http-auth-token`은 제거하고 `-http-auth-token-file`만 받는다. Cluster는 `clusterAdminTokenFile`을 사용한다. |
 | G10 | Cluster MQTT TLS에는 minimum TLS version과 client-auth를 설정하는 field가 없다. 2026-10-10 해소: `mqtt.tls.minVersion`은 TLS 1.2 또는 1.3을, `mqtt.tls.clientAuth`는 `none`, `request`, `require`를 설정한다. |
-새 API와 일반 `ClusterPolicy` reconciliation은 아직 구현되지 않았다. 이 제안은 현재 동작을 설명하는 [실행 옵션과 설정 스펙](../specs/configuration-and-runtime-options.md)과 구분한다.
+G1·API-09의 `mqttLimits` 범위는 채택해 구현한다. 다른 정책 범위와 일반 `ClusterPolicy` 항목은 아직 채택하지 않았다. 현재 동작은 [실행 옵션과 설정 스펙](../specs/configuration-and-runtime-options.md)에 기록한다.
 
 ## 3. 결정 요인
 
@@ -168,11 +192,9 @@ ADR-0017은 versioned `tenantQuotas` command로 local config와 committed state�
 
 | 기준 | 확인 방법 | 합격 기준 | 현재 증거 |
 | --- | --- | --- | --- |
-| 현재 source-of-truth 범위가 코드와 일치한다. | `main.go`, `cluster_runtime.go`, `cluster_tenant_quota.go`와 관련 ADR을 대조한다. | Node-local 설정, committed `tenantQuotas`, Management API mutation과 build identity를 구분한다. | 코드와 문서 대조 완료. |
-| 현재 quota mismatch 동작이 기존 계약과 일치한다. | `TestClusterTenantQuotaControllerLogsCommittedMismatchOnce` 실행 | 낮은 local version에서 committed profile을 유지하고 mismatch를 한 번 기록한다. | [설정 시험 기록](../specs/configuration-and-runtime-options.md#configuration-test-execution)에서 통과했다. |
-| API-09 version 충돌 | Proposed 구현 수용 시험 | Stale `If-Match`는 409를 반환한다. 낮은 local version과 같은 version의 다른 내용은 mismatch를 기록하고 committed value를 유지한다. | 미실행. 목표 API와 일반 reconciliation은 구현되지 않았다. |
-| Cluster 적용 | 3-node cluster에서 정책을 PUT한다. | Commit 뒤 세 node가 같은 `ClusterPolicy` version과 값을 적용한다. | 미실행. |
-| Feature activation과 restore | Feature 활성화 전후 실행, snapshot과 backup 복구를 확인한다. | 활성화 전에는 현재 동작을 유지한다. Commit된 policy는 snapshot·backup 복구 뒤에도 유지한다. | 미실행. |
+| API-09 version 충돌·idempotency | `TestClusterPolicyApplyFeatureCASAndLatestKeyReplay`, `TestClusterPolicyServiceUpdateReplayConflictAndRead`, `TestClusterPolicyHTTPRejectsInvalidRequestAndMapsErrors` 실행 | Feature gate, CAS, 최신 idempotency key 재생과 stale `If-Match` 오류를 확인한다. | 통과. 세부 실행 기록은 [API-09 mqttLimits 실행 기록](../specs/configuration-and-runtime-options.md#api-09-mqttlimits-execution)에 있다. |
+| API-09 cluster 적용 | `TestDynamicClusterPolicyProcessAcceptance` 실행 | 3개 node가 같은 committed `ClusterPolicy` version과 값을 적용하고 기존 연결의 MQTT 한도를 유지한다. | 통과 (3-node process acceptance 8.499초). [실행 기록](../specs/configuration-and-runtime-options.md#api-09-mqttlimits-execution). |
+| API-09 feature activation·restore | `TestClusterBackupArchivePreservesClusterPolicy`, `TestDynamicClusterPolicyProcessAcceptance` 실행 | Feature 활성 전 local 설정을 사용하고 snapshot·backup 복구 뒤 committed policy를 유지한다. | 통과. Backup archive 시험과 3-node restart·drift 결과는 [API-09 mqttLimits 실행 기록](../specs/configuration-and-runtime-options.md#api-09-mqttlimits-execution)에 있다. |
 | 설정 parser 중복 key 거절(G4) | `TestParseSecurityConfig_Rejections`, `TestParseRaftPeerConfigStrict`, `TestRejectDuplicateJSONKeys` 실행 | Security·peer-only config의 top-level, 중첩 object, 배열 원소 object에서 중복 key를 거절한다. | 2026-10-10 [설정 시험 기록](../specs/configuration-and-runtime-options.md#configuration-test-execution)에서 통과했다. |
 | Secret 파일 flag(G9) | `TestRunWithContextManagementAuthTokenFile` 실행 | 명령행 token flag와 없는·빈 파일을 거절하고, 공백을 제거한 파일 token으로 인증한다. | 2026-10-10 [설정 시험 기록](../specs/configuration-and-runtime-options.md#configuration-test-execution)에서 통과했다. |
 | Cluster MQTT TLS(G2·G10) | `TestParseClusterConfigMQTTTLS`, `TestClusterMQTTListenersBindConfiguredEndpointsAndClosePartialOpen`, `TestClusterMQTTSecurityValidatesTLSClientAuthBindings`, `TestDynamicClusterMQTTTLSClientCertificateProcessAcceptance` 실행 | Parser 검증, TLS 인증 조합, peer·MQTT 인증서 분리와 3-node mTLS 동작을 확인한다. | 통과. [설정 스펙 실행 기록](../specs/configuration-and-runtime-options.md#cluster-mqtt-tls-g2-g10-execution)에서 결과를 확인한다. |

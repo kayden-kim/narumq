@@ -45,6 +45,14 @@ func (port *stateMachinePort) ActiveFeatures(ctx context.Context) ([]string, err
 	return port.machine.ActiveFeatures(), nil
 }
 
+func (port *stateMachinePort) GetClusterPolicy(ctx context.Context) (ClusterPolicyStateDTO, bool, error) {
+	if err := ctx.Err(); err != nil {
+		return ClusterPolicyStateDTO{}, false, err
+	}
+	state, exists := port.machine.ClusterPolicy()
+	return state, exists, nil
+}
+
 func (port *stateMachinePort) GetOperation(ctx context.Context, operationID string) (MembershipOperationDTO, bool, error) {
 	if err := ctx.Err(); err != nil {
 		return MembershipOperationDTO{}, false, err

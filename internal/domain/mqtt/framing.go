@@ -2,11 +2,12 @@ package mqtt
 
 import "unicode/utf8"
 
-const maxRemainingLength = 268435455
+// MaxRemainingLength is the MQTT Remaining Length upper bound (268435455).
+const MaxRemainingLength = 268435455
 
 // validatePacketLimit validates the configured MQTT Remaining Length limit.
 func validatePacketLimit(maxPacketSize int) error {
-	if maxPacketSize < 1 || maxPacketSize > maxRemainingLength {
+	if maxPacketSize < 1 || maxPacketSize > MaxRemainingLength {
 		return ErrPacketTooLarge
 	}
 	return nil

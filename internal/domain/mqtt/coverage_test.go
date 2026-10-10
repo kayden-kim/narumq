@@ -9,7 +9,7 @@ import (
 // Traceability: PRD MQTT-08/MQTT-12/TEST-03/04; MQTT-3.8.3-4, MQTT-3.9.3-1/2,
 // MQTT-3.10.3-1/2, and MQTT-3.11.3-1/2.
 func TestCmmSubscriptionFamilyDecodeRejectsMalformedBodies(t *testing.T) {
-	decoder, err := NewDecoder(maxRemainingLength)
+	decoder, err := NewDecoder(MaxRemainingLength)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -74,7 +74,7 @@ func TestCmmSubscriptionOptionsRejectQoSThree(t *testing.T) {
 
 // Traceability: PRD MQTT-08/TEST-03/04; docs/specs/mqtt-protocol-and-session.md §3.
 func TestCmmSubscriptionFamilyEncodeRejectsInvalidPackets(t *testing.T) {
-	encoder, err := NewEncoder(maxRemainingLength)
+	encoder, err := NewEncoder(MaxRemainingLength)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -100,7 +100,7 @@ func (connection *connection) dispatchPhased(packet mqtt.Packet, bytes int) erro
 	}
 	work := phaseWork{packet: packet, key: key, bytes: bytes, lane: lane, receivedAt: receivedAt}
 	phases.mu.Lock()
-	for (phases.queued[lane] >= connectionPhaseCapacity || phases.queuedBytes+bytes > connection.server.config.MaxPacketSize+5) && !connection.isStopping() {
+	for (phases.queued[lane] >= connectionPhaseCapacity || phases.queuedBytes+bytes > connection.limits.MaxPacketSize+5) && !connection.isStopping() {
 		phases.changed.Wait()
 	}
 	if connection.isStopping() {

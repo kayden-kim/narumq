@@ -126,11 +126,11 @@ func TestConnectRoundTripAndOwnership_MQTT311_MQTT312_MQTT313_MQTT320(t *testing
 			trace: "PRD MQTT-01/TEST-04; MQTT-3.1.2-8/9/10; MQTT-3.1.3-9",
 		},
 	}
-	decoder, err := NewDecoder(maxRemainingLength)
+	decoder, err := NewDecoder(MaxRemainingLength)
 	if err != nil {
 		t.Fatal(err)
 	}
-	encoder, err := NewEncoder(maxRemainingLength)
+	encoder, err := NewEncoder(MaxRemainingLength)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -152,7 +152,7 @@ func TestConnectRoundTripAndOwnership_MQTT311_MQTT312_MQTT313_MQTT320(t *testing
 }
 
 func TestConnectCanonicalWire_MQTT311_MQTT5(t *testing.T) {
-	encoder, err := NewEncoder(maxRemainingLength)
+	encoder, err := NewEncoder(MaxRemainingLength)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -342,7 +342,7 @@ func TestConnectRejectsMalformedFields_MQTT311_2_2_2_1_MQTT5_1_5_5_1(t *testing.
 			trace:   "PRD MQTT-01/TEST-04; MQTT-1.5.5-1",
 		},
 	}
-	decoder, err := NewDecoder(maxRemainingLength)
+	decoder, err := NewDecoder(MaxRemainingLength)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -370,7 +370,7 @@ func TestConnectRejectsUnsupportedProtocolVersions_MQTT312_MQTT313(t *testing.T)
 		{name: "MQTT-level-3", protocolName: "MQTT", level: 3},
 		{name: "MQTT-unknown-level", protocolName: "MQTT", level: 9},
 	}
-	decoder, err := NewDecoder(maxRemainingLength)
+	decoder, err := NewDecoder(MaxRemainingLength)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -392,7 +392,7 @@ func TestConnectRejectsUnsupportedProtocolVersions_MQTT312_MQTT313(t *testing.T)
 }
 
 func TestConnectEncoderLeavesDestinationUnchangedOnError_MQTT313(t *testing.T) {
-	encoder, err := NewEncoder(maxRemainingLength)
+	encoder, err := NewEncoder(MaxRemainingLength)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -409,8 +409,8 @@ func TestConnectEncoderLeavesDestinationUnchangedOnError_MQTT313(t *testing.T) {
 
 // Traceability: PRD MQTT-11/MQTT-12/TEST-04/05.
 func TestConnectResourceLimitProperties(t *testing.T) {
-	encoder, _ := NewEncoder(maxRemainingLength)
-	decoder, _ := NewDecoder(maxRemainingLength)
+	encoder, _ := NewEncoder(MaxRemainingLength)
+	decoder, _ := NewDecoder(MaxRemainingLength)
 	for _, input := range []Connect{
 		{Version: ProtocolV5, ClientID: "limits", ReceiveMaximum: 1},
 		{Version: ProtocolV5, ClientID: "limits", MaximumPacketSize: 128},

@@ -223,6 +223,14 @@ func encodeMembershipCommand(command membership.CommandDTO) ([]byte, error) {
 			ProposedAtUnixMillis: change.ProposedAtUnixMillis,
 		}}
 	}
+	if command.ClusterPolicy != nil {
+		payloadCount++
+		change := command.ClusterPolicy
+		wire.Payload = &records.CommandEnvelope_ClusterPolicy{ClusterPolicy: &records.ClusterPolicyChange{
+			ExpectedVersion: change.ExpectedVersion, Version: change.Version,
+			Policy: clusterPolicyToRecord(change.Policy), IdempotencyKey: change.IdempotencyKey,
+		}}
+	}
 	if payloadCount != 1 {
 		return nil, errors.New("application command must contain exactly one payload")
 	}
@@ -440,6 +448,19 @@ func decodeMembershipCommand(data []byte) (membership.CommandDTO, error) {
 			},
 			ProposedAtUnixMillis: value.GetProposedAtUnixMillis(),
 		}
+	case *records.CommandEnvelope_ClusterPolicy:
+		value := payload.ClusterPolicy
+		if value == nil {
+			return membership.CommandDTO{}, errors.New("cluster policy payload is required")
+		}
+		policy, err := clusterPolicyFromRecord(value.GetPolicy())
+		if err != nil {
+			return membership.CommandDTO{}, err
+		}
+		command.ClusterPolicy = &membership.ClusterPolicyChangeDTO{
+			ExpectedVersion: value.GetExpectedVersion(), Version: value.GetVersion(),
+			Policy: *policy, IdempotencyKey: value.GetIdempotencyKey(),
+		}
 	default:
 		return membership.CommandDTO{}, errors.New("decoded command has no supported payload")
 	}
@@ -577,9 +598,10 @@ func encodeMembershipSnapshot(snapshot membership.SnapshotDTO) ([]byte, error) {
 		})
 	}
 	state.BlocklistVersion = snapshot.BlocklistVersion
+	state.ClusterPolicy = clusterPolicyStateToRecord(snapshot.ClusterPolicy)
 	state.ActiveFeatures = slices.Clone(snapshot.ActiveFeatures)
 	quotaProfileObjectCount := membershipQuotaProfileObjectCount(snapshot.TenantQuotaProfile)
-	objectCount := uint64(len(snapshot.Members) + len(snapshot.Ownerships) + len(snapshot.Subscriptions) + len(snapshot.DeliverySessions) + deliveryEntriesCount + len(snapshot.MembershipHistory) + len(snapshot.Retained) + len(snapshot.OfflineSessions) + offlineMessagesCount + len(snapshot.NodeDrains) + len(snapshot.ActiveFeatures) + len(snapshot.SessionMetadata) + len(snapshot.CredentialRevocations) + len(snapshot.Blocklist) + quotaProfileObjectCount + rebalanceStateObjectCount(snapshot.ConnectionRebalance))
+	objectCount := uint64(len(snapshot.Members) + len(snapshot.Ownerships) + len(snapshot.Subscriptions) + len(snapshot.DeliverySessions) + deliveryEntriesCount + len(snapshot.MembershipHistory) + len(snapshot.Retained) + len(snapshot.OfflineSessions) + offlineMessagesCount + len(snapshot.NodeDrains) + len(snapshot.ActiveFeatures) + len(snapshot.SessionMetadata) + len(snapshot.CredentialRevocations) + len(snapshot.Blocklist) + quotaProfileObjectCount + rebalanceStateObjectCount(snapshot.ConnectionRebalance) + clusterPolicyStateObjectCount(snapshot.ClusterPolicy))
 	origins, conversionErr := proposalOriginsToRecords(snapshot.ProposalOrigins)
 	if conversionErr != nil {
 		return nil, conversionErr
@@ -740,6 +762,11 @@ func decodeMembershipSnapshot(data []byte) (membership.SnapshotDTO, error) {
 			BlockedAtUnixMillis: blocked.GetBlockedAtUnixMillis(),
 		})
 	}
+	clusterPolicy, conversionErr := clusterPolicyStateFromRecord(state.GetClusterPolicy())
+	if conversionErr != nil {
+		return membership.SnapshotDTO{}, conversionErr
+	}
+	snapshot.ClusterPolicy = clusterPolicy
 	snapshot.TenantQuotaProfile = tenantQuotaProfileFromRecord(state.GetTenantQuotaProfile())
 	origins, conversionErr := proposalOriginsFromRecords(state.GetProposalOrigins())
 	if conversionErr != nil {
@@ -786,6 +813,57 @@ func tenantQuotaProfileFromRecord(profile *records.TenantQuotaProfile) *membersh
 	}
 }
 
+func clusterPolicyToRecord(policy membership.ClusterPolicyDTO) *records.ClusterPolicy {
+	limits := policy.MQTTLimits
+	return &records.ClusterPolicy{MqttLimits: &records.MqttLimits{
+		MaxPacketSize: limits.MaxPacketSize, ReceiveMaximum: limits.ReceiveMaximum,
+		ConnectTimeoutMillis: limits.ConnectTimeoutMillis, PacketReadTimeoutMillis: limits.PacketReadTimeoutMillis,
+		WriteTimeoutMillis: limits.WriteTimeoutMillis,
+	}}
+}
+
+func clusterPolicyFromRecord(policy *records.ClusterPolicy) (*membership.ClusterPolicyDTO, error) {
+	if policy == nil || policy.GetMqttLimits() == nil {
+		return nil, errors.New("cluster policy and MQTT limits are required")
+	}
+	limits := policy.GetMqttLimits()
+	return &membership.ClusterPolicyDTO{MQTTLimits: membership.MQTTLimitsDTO{
+		MaxPacketSize: limits.GetMaxPacketSize(), ReceiveMaximum: limits.GetReceiveMaximum(),
+		ConnectTimeoutMillis: limits.GetConnectTimeoutMillis(), PacketReadTimeoutMillis: limits.GetPacketReadTimeoutMillis(),
+		WriteTimeoutMillis: limits.GetWriteTimeoutMillis(),
+	}}, nil
+}
+
+func clusterPolicyStateToRecord(state *membership.ClusterPolicyStateDTO) *records.ClusterPolicyState {
+	if state == nil {
+		return nil
+	}
+	return &records.ClusterPolicyState{
+		Version: state.Version, Policy: clusterPolicyToRecord(state.Policy),
+		IdempotencyKey: state.IdempotencyKey, PreviousVersion: state.PreviousVersion,
+	}
+}
+
+func clusterPolicyStateFromRecord(state *records.ClusterPolicyState) (*membership.ClusterPolicyStateDTO, error) {
+	if state == nil {
+		return nil, nil
+	}
+	policy, err := clusterPolicyFromRecord(state.GetPolicy())
+	if err != nil {
+		return nil, err
+	}
+	return &membership.ClusterPolicyStateDTO{
+		Version: state.GetVersion(), Policy: *policy,
+		IdempotencyKey: state.GetIdempotencyKey(), PreviousVersion: state.GetPreviousVersion(),
+	}, nil
+}
+
+func clusterPolicyStateObjectCount(state *membership.ClusterPolicyStateDTO) int {
+	if state == nil {
+		return 0
+	}
+	return 1
+}
 func tenantStorageQuotaToRecord(quota membership.TenantStorageQuotaDTO) *records.TenantStorageQuota {
 	return &records.TenantStorageQuota{
 		TenantId: quota.TenantID, RetainedBytes: quota.RetainedBytes,

@@ -1405,7 +1405,7 @@ func TestDeliveryWriterRetainsStateOnQueueAndWireErrors(t *testing.T) {
 		readPublish := func() *mqtt.Publish {
 			t.Helper()
 			frame := readTestFrame(t, clientSocket)
-			packet, consumed, err := runtime.server.decoder.Decode(frame, mqtt.ProtocolV5)
+			packet, consumed, err := runtime.server.limits.Load().decoder.Decode(frame, mqtt.ProtocolV5)
 			if err != nil || consumed != len(frame) {
 				t.Fatalf("decode delivery frame: packet=%T consumed=%d err=%v", packet, consumed, err)
 				return nil
@@ -1503,7 +1503,7 @@ func TestDeliveryWriterRetainsStateOnQueueAndWireErrors(t *testing.T) {
 			t.Fatalf("timer retry Packet ID=%d, want preserved %d", retryAttempt.PacketID, firstAttempt.PacketID)
 		}
 		frame := readTestFrame(t, clientSocket)
-		packet, consumed, err := runtime.server.decoder.Decode(frame, mqtt.ProtocolV5)
+		packet, consumed, err := runtime.server.limits.Load().decoder.Decode(frame, mqtt.ProtocolV5)
 		publish, ok := packet.(*mqtt.Publish)
 		if err != nil || consumed != len(frame) || !ok ||
 			publish.Topic != "retry/timer" || publish.PacketID != firstAttempt.PacketID {
@@ -1661,7 +1661,7 @@ func TestDeliveryWriterRetainsStateOnQueueAndWireErrors(t *testing.T) {
 		go func() { done <- connection.writeDeliveries() }()
 
 		f1 := readTestFrame(t, clientSocket)
-		p1, _, err := runtime.server.decoder.Decode(f1, mqtt.ProtocolV5)
+		p1, _, err := runtime.server.limits.Load().decoder.Decode(f1, mqtt.ProtocolV5)
 		if err != nil {
 			t.Fatalf("decode frame 1: %v", err)
 		}
@@ -1671,7 +1671,7 @@ func TestDeliveryWriterRetainsStateOnQueueAndWireErrors(t *testing.T) {
 		}
 
 		f2 := readTestFrame(t, clientSocket)
-		p2, _, err := runtime.server.decoder.Decode(f2, mqtt.ProtocolV5)
+		p2, _, err := runtime.server.limits.Load().decoder.Decode(f2, mqtt.ProtocolV5)
 		if err != nil {
 			t.Fatalf("decode frame 2: %v", err)
 		}
@@ -1681,7 +1681,7 @@ func TestDeliveryWriterRetainsStateOnQueueAndWireErrors(t *testing.T) {
 		}
 
 		f3 := readTestFrame(t, clientSocket)
-		p3, _, err := runtime.server.decoder.Decode(f3, mqtt.ProtocolV5)
+		p3, _, err := runtime.server.limits.Load().decoder.Decode(f3, mqtt.ProtocolV5)
 		if err != nil {
 			t.Fatalf("decode frame 3: %v", err)
 		}

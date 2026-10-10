@@ -45,6 +45,7 @@ type operationFixture struct {
 	accept         string
 	body           string
 	idempotencyKey string
+	ifMatch        string
 	expectedStatus int
 }
 
@@ -135,6 +136,17 @@ func featureOperationFixtures() []operationFixture {
 	return []operationFixture{
 		{method: http.MethodGet, path: "/api/v1/cluster/features", operationID: "listClusterFeatures", target: "/api/v1/cluster/features", expectedStatus: http.StatusOK},
 		{method: http.MethodPost, path: "/api/v1/cluster/features/{feature}", operationID: "activateClusterFeature", target: "/api/v1/cluster/features/compatibility-probe", expectedStatus: http.StatusOK},
+	}
+}
+
+func clusterPolicyOperationFixtures() []operationFixture {
+	return []operationFixture{
+		{method: http.MethodGet, path: "/api/v1/cluster/policy", operationID: "getClusterPolicy", target: "/api/v1/cluster/policy", expectedStatus: http.StatusOK},
+		{
+			method: http.MethodPut, path: "/api/v1/cluster/policy", operationID: "updateClusterPolicy",
+			target: "/api/v1/cluster/policy", body: `{"mqttLimits":{"maxPacketSize":1048576,"receiveMaximum":64,"connectTimeoutMillis":10000,"packetReadTimeoutMillis":30000,"writeTimeoutMillis":5000}}`,
+			idempotencyKey: "contract-policy-update", ifMatch: `"0"`, expectedStatus: http.StatusOK,
+		},
 	}
 }
 
@@ -236,6 +248,9 @@ func newContractRequest(fixture operationFixture) *http.Request {
 	}
 	if fixture.idempotencyKey != "" {
 		req.Header.Set("Idempotency-Key", fixture.idempotencyKey)
+	}
+	if fixture.ifMatch != "" {
+		req.Header.Set("If-Match", fixture.ifMatch)
 	}
 	if fixture.accept != "" {
 		req.Header.Set("Accept", fixture.accept)
@@ -473,6 +488,7 @@ func clusterManagementContractHandlerWithServices(
 		auditQueryService,
 		contractCredentialRevocationService{},
 		contractBlocklistService{},
+		contractClusterPolicyService{},
 	)
 }
 
@@ -558,6 +574,19 @@ func (contractMembershipService) ActivateFeature(_ context.Context, feature stri
 		Members: []appmembership.MemberFeatureProfileDTO{{
 			MemberID: 1, ReleaseVersion: "1.2.0", Features: []string{"compatibility-probe"},
 		}},
+	}, nil
+}
+
+type contractClusterPolicyService struct{}
+
+func (contractClusterPolicyService) GetClusterPolicy(context.Context) (appmembership.ClusterPolicyStateDTO, bool, error) {
+	return appmembership.ClusterPolicyStateDTO{}, false, nil
+}
+
+func (contractClusterPolicyService) UpdateClusterPolicy(_ context.Context, request appmembership.UpdateClusterPolicyRequestDTO) (appmembership.ClusterPolicyStateDTO, error) {
+	return appmembership.ClusterPolicyStateDTO{
+		Version: request.ExpectedVersion + 1, Policy: request.Policy,
+		IdempotencyKey: request.IdempotencyKey, PreviousVersion: request.ExpectedVersion,
 	}, nil
 }
 
@@ -703,6 +732,7 @@ func expectedOperationSet() []string {
 	fixtures = append(fixtures, credentialRevocationOperationFixtures()...)
 	fixtures = append(fixtures, blocklistOperationFixtures()...)
 	fixtures = append(fixtures, featureOperationFixtures()...)
+	fixtures = append(fixtures, clusterPolicyOperationFixtures()...)
 	operations := make([]string, 0, len(fixtures))
 	for _, fixture := range fixtures {
 		operations = append(operations, fixture.method+" "+fixture.path+" "+fixture.operationID)
@@ -815,6 +845,30 @@ func TestAuditQueryHandlerResponsesMatchOpenAPI(t *testing.T) {
 		t.Fatalf("invalid audit result status=%d body=%q, want %d", invalidResponse.Code, invalidResponse.Body.String(), http.StatusBadRequest)
 	}
 	validateResponse(t, invalidInput, invalidOptions, invalidResponse)
+}
+
+// Traceability: API-09; docs/contracts/management-api-v1.md §1, §4; ADR-0052 §1.1.1.
+func TestClusterPolicyHandlerResponsesMatchOpenAPI(t *testing.T) {
+	_, router := loadManagementContract(t)
+	handler := clusterManagementContractHandler()
+	for _, fixture := range clusterPolicyOperationFixtures() {
+		t.Run(fixture.operationID, func(t *testing.T) {
+			request := newContractRequest(fixture)
+			input, options := findContractRoute(t, router, request)
+			if input.Route.Operation.OperationID != fixture.operationID {
+				t.Fatalf("runtime fixture matched operation %q, want %q", input.Route.Operation.OperationID, fixture.operationID)
+			}
+			if err := openapi3filter.ValidateRequest(context.Background(), input); err != nil {
+				t.Fatalf("validate policy request: %v", err)
+			}
+			response := httptest.NewRecorder()
+			handler.ServeHTTP(response, request)
+			if response.Code != fixture.expectedStatus {
+				t.Fatalf("policy status=%d want=%d body=%s", response.Code, fixture.expectedStatus, response.Body.String())
+			}
+			validateResponse(t, input, options, response)
+		})
+	}
 }
 
 func TestMembershipHandlerResponsesMatchOpenAPI(t *testing.T) {

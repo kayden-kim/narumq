@@ -40,6 +40,7 @@ const (
 	CredentialRevocationFeature   = "credential-revocation"
 	ClientBlocklistFeature        = "client-blocklist"
 	ProposalRecoveryFeature       = "proposal-recovery"
+	ClusterPolicyFeature          = "cluster-policy"
 	MaxProposalReceiptsPerOrigin  = 1024
 	MaxProposalReceipts           = 4096
 	MaxProposalResultBytes        = 32 << 20
@@ -243,6 +244,36 @@ type TenantQuotaProfileDTO struct {
 // TenantQuotaChangeDTO installs a newer tenant storage quota profile.
 type TenantQuotaChangeDTO struct {
 	Profile TenantQuotaProfileDTO
+}
+
+// MQTTLimitsDTO contains the five replicated MQTT connection limits.
+type MQTTLimitsDTO struct {
+	MaxPacketSize           uint32
+	ReceiveMaximum          uint32
+	ConnectTimeoutMillis    uint32
+	PacketReadTimeoutMillis uint32
+	WriteTimeoutMillis      uint32
+}
+
+// ClusterPolicyDTO contains the policy fields implemented by this contract version.
+type ClusterPolicyDTO struct {
+	MQTTLimits MQTTLimitsDTO
+}
+
+// ClusterPolicyChangeDTO applies a versioned policy update with compare-and-swap semantics.
+type ClusterPolicyChangeDTO struct {
+	ExpectedVersion uint64
+	Version         uint64
+	Policy          ClusterPolicyDTO
+	IdempotencyKey  string
+}
+
+// ClusterPolicyStateDTO is one committed policy version and its replay identity.
+type ClusterPolicyStateDTO struct {
+	Version         uint64
+	Policy          ClusterPolicyDTO
+	IdempotencyKey  string
+	PreviousVersion uint64
 }
 
 // TenantQuotaDimension identifies a storage quota limit.
@@ -505,6 +536,7 @@ type CommandDTO struct {
 	ConnectionRebalance  *ConnectionRebalanceChangeDTO
 	CredentialRevocation *CredentialRevocationChangeDTO
 	Blocklist            *BlocklistChangeDTO
+	ClusterPolicy        *ClusterPolicyChangeDTO
 }
 
 // MemberIdentityDTO is a committed cluster member identity and lifecycle phase.
@@ -747,6 +779,7 @@ const (
 	ConflictSessionMetadataInvalid        ApplyConflictCode = "session_metadata_invalid"
 	ConflictCredentialRevocationCapacity  ApplyConflictCode = "credential_revocation_capacity_exceeded"
 	ConflictBlocklistCapacity             ApplyConflictCode = "blocklist_capacity_exceeded"
+	ConflictClusterPolicyVersion          ApplyConflictCode = "cluster_policy_version_conflict"
 	ConflictConnectionRebalanceInProgress ApplyConflictCode = "connection_rebalance_in_progress"
 	ConflictRebalanceNotCancellable       ApplyConflictCode = "rebalance_not_cancellable"
 	ConflictProposalRetired               ApplyConflictCode = "proposal_retired"
@@ -879,6 +912,7 @@ type SnapshotDTO struct {
 	CredentialRevocations []CredentialRevocationStateDTO
 	Blocklist             []BlocklistStateDTO
 	BlocklistVersion      uint64
+	ClusterPolicy         *ClusterPolicyStateDTO
 	ProposalOrigins       []ProposalOriginStateDTO
 }
 

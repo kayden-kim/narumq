@@ -51,6 +51,8 @@ const (
 	maxCredentialRevocations           = 4096
 	maxBlocklistEntries                = 4096
 	maxCredentialIDBytes               = 512
+	maxClusterPolicyPacketSize         = 268_435_455
+	maxClusterPolicyReceiveMaximum     = 65_535
 	minRebalanceDeviation              = uint64(1)
 	maxRebalanceDeviation              = uint64(1_000_000)
 	maxRebalanceConnections            = uint64(4_294_967_295)
@@ -139,7 +141,7 @@ func MarshalSnapshot(state *ReplicatedStateSnapshot, lastIncludedIndex uint64) (
 			offlineMessagesCount += len(session.Messages)
 		}
 	}
-	count := uint64(len(ordered.Members) + len(ordered.Ownerships) + len(ordered.Subscriptions) + len(ordered.DeliverySessions) + deliveryObjectCount(ordered.DeliverySessions) + len(ordered.MembershipHistory) + len(ordered.Retained) + len(ordered.OfflineSessions) + offlineMessagesCount + len(ordered.NodeDrains) + len(ordered.ActiveFeatures) + tenantQuotaProfileObjectCount(ordered.TenantQuotaProfile) + len(ordered.SessionMetadata) + connectionRebalanceObjectCount(ordered.ConnectionRebalance) + len(ordered.CredentialRevocations) + len(ordered.Blocklist) + proposalOriginsObjectCount(ordered.ProposalOrigins))
+	count := uint64(len(ordered.Members) + len(ordered.Ownerships) + len(ordered.Subscriptions) + len(ordered.DeliverySessions) + deliveryObjectCount(ordered.DeliverySessions) + len(ordered.MembershipHistory) + len(ordered.Retained) + len(ordered.OfflineSessions) + offlineMessagesCount + len(ordered.NodeDrains) + len(ordered.ActiveFeatures) + tenantQuotaProfileObjectCount(ordered.TenantQuotaProfile) + len(ordered.SessionMetadata) + connectionRebalanceObjectCount(ordered.ConnectionRebalance) + len(ordered.CredentialRevocations) + len(ordered.Blocklist) + clusterPolicyStateObjectCount(ordered.ClusterPolicy) + proposalOriginsObjectCount(ordered.ProposalOrigins))
 	digest := sha256.Sum256(stateBytes)
 	envelope := &SnapshotEnvelope{SchemaMajor: 1, LastIncludedIndex: lastIncludedIndex, ObjectCount: count, Sha256: digest[:], State: ordered}
 	encoded, err := deterministic.Marshal(envelope)
@@ -188,7 +190,7 @@ func UnmarshalSnapshot(encoded []byte) (*SnapshotEnvelope, error) {
 			offlineMessagesCount += len(session.Messages)
 		}
 	}
-	count := uint64(len(envelope.State.Members) + len(envelope.State.Ownerships) + len(envelope.State.Subscriptions) + len(envelope.State.DeliverySessions) + deliveryObjectCount(envelope.State.DeliverySessions) + len(envelope.State.MembershipHistory) + len(envelope.State.Retained) + len(envelope.State.OfflineSessions) + offlineMessagesCount + len(envelope.State.NodeDrains) + len(envelope.State.ActiveFeatures) + tenantQuotaProfileObjectCount(envelope.State.TenantQuotaProfile) + len(envelope.State.SessionMetadata) + connectionRebalanceObjectCount(envelope.State.ConnectionRebalance) + len(envelope.State.CredentialRevocations) + len(envelope.State.Blocklist) + proposalOriginsObjectCount(envelope.State.ProposalOrigins))
+	count := uint64(len(envelope.State.Members) + len(envelope.State.Ownerships) + len(envelope.State.Subscriptions) + len(envelope.State.DeliverySessions) + deliveryObjectCount(envelope.State.DeliverySessions) + len(envelope.State.MembershipHistory) + len(envelope.State.Retained) + len(envelope.State.OfflineSessions) + offlineMessagesCount + len(envelope.State.NodeDrains) + len(envelope.State.ActiveFeatures) + tenantQuotaProfileObjectCount(envelope.State.TenantQuotaProfile) + len(envelope.State.SessionMetadata) + connectionRebalanceObjectCount(envelope.State.ConnectionRebalance) + len(envelope.State.CredentialRevocations) + len(envelope.State.Blocklist) + clusterPolicyStateObjectCount(envelope.State.ClusterPolicy) + proposalOriginsObjectCount(envelope.State.ProposalOrigins))
 	if envelope.ObjectCount != count {
 		return nil, errors.New("snapshot object count mismatch")
 	}
@@ -309,6 +311,11 @@ func validateCommand(c *CommandEnvelope) error {
 			return errors.New("blocklist payload is required")
 		}
 		return validateBlocklistChange(payload.Blocklist)
+	case *CommandEnvelope_ClusterPolicy:
+		if payload.ClusterPolicy == nil {
+			return errors.New("cluster policy payload is required")
+		}
+		return validateClusterPolicyChange(payload.ClusterPolicy)
 	default:
 		return fmt.Errorf("%w: command must contain exactly one known payload", ErrIncompatibleStateSchema)
 	}
@@ -545,6 +552,40 @@ func validateTenantQuotaChange(change *TenantQuotaChange) error {
 		return errors.New("tenant quota profile is required")
 	}
 	return validateTenantQuotaProfile(change.Profile)
+}
+
+func validateClusterPolicyChange(change *ClusterPolicyChange) error {
+	if change == nil || change.Version <= change.ExpectedVersion || !printableKey(change.IdempotencyKey) {
+		return errors.New("invalid cluster policy version or idempotency key")
+	}
+	return validateClusterPolicy(change.Policy)
+}
+
+func validateClusterPolicy(policy *ClusterPolicy) error {
+	if policy == nil || policy.MqttLimits == nil {
+		return errors.New("cluster policy MQTT limits are required")
+	}
+	limits := policy.MqttLimits
+	if limits.MaxPacketSize == 0 || limits.MaxPacketSize > maxClusterPolicyPacketSize ||
+		limits.ReceiveMaximum == 0 || limits.ReceiveMaximum > maxClusterPolicyReceiveMaximum ||
+		limits.ConnectTimeoutMillis == 0 || limits.PacketReadTimeoutMillis == 0 || limits.WriteTimeoutMillis == 0 {
+		return errors.New("invalid cluster policy MQTT limits")
+	}
+	return nil
+}
+
+func validateClusterPolicyState(state *ClusterPolicyState) error {
+	if state == nil || state.Version == 0 || state.PreviousVersion >= state.Version || !printableKey(state.IdempotencyKey) {
+		return errors.New("invalid cluster policy state version or idempotency key")
+	}
+	return validateClusterPolicy(state.Policy)
+}
+
+func clusterPolicyStateObjectCount(state *ClusterPolicyState) int {
+	if state == nil {
+		return 0
+	}
+	return 1
 }
 
 func validateTenantQuotaProfile(profile *TenantQuotaProfile) error {
@@ -1116,7 +1157,7 @@ func validateSnapshotState(s *ReplicatedStateSnapshot) error {
 			offlineMessagesCount += len(session.Messages)
 		}
 	}
-	count := len(s.Members) + len(s.Ownerships) + len(s.Subscriptions) + len(s.DeliverySessions) + deliveryObjectCount(s.DeliverySessions) + len(s.MembershipHistory) + len(s.Retained) + len(s.OfflineSessions) + offlineMessagesCount + len(s.NodeDrains) + len(s.ActiveFeatures) + tenantQuotaProfileObjectCount(s.TenantQuotaProfile) + len(s.SessionMetadata) + connectionRebalanceObjectCount(s.ConnectionRebalance) + len(s.CredentialRevocations) + len(s.Blocklist)
+	count := len(s.Members) + len(s.Ownerships) + len(s.Subscriptions) + len(s.DeliverySessions) + deliveryObjectCount(s.DeliverySessions) + len(s.MembershipHistory) + len(s.Retained) + len(s.OfflineSessions) + offlineMessagesCount + len(s.NodeDrains) + len(s.ActiveFeatures) + tenantQuotaProfileObjectCount(s.TenantQuotaProfile) + len(s.SessionMetadata) + connectionRebalanceObjectCount(s.ConnectionRebalance) + len(s.CredentialRevocations) + len(s.Blocklist) + clusterPolicyStateObjectCount(s.ClusterPolicy)
 	if count > maxEntries {
 		return errors.New("snapshot exceeds 1,000,000 entries")
 	}
@@ -1181,6 +1222,15 @@ func validateSnapshotState(s *ReplicatedStateSnapshot) error {
 		}
 		if index > 0 && compareBlocklistEntries(s.Blocklist[index-1].Entry, state.Entry) >= 0 {
 			return errors.New("snapshot blocklist entries are not uniquely sorted")
+		}
+	}
+
+	if s.ClusterPolicy != nil {
+		if !slices.Contains(s.ActiveFeatures, "cluster-policy") {
+			return errors.New("snapshot cluster policy requires active cluster-policy feature")
+		}
+		if err := validateClusterPolicyState(s.ClusterPolicy); err != nil {
+			return err
 		}
 	}
 	type sessionIdentity struct{ tenantID, clientID string }

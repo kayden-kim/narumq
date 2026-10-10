@@ -88,6 +88,9 @@ func validateCommand(command CommandDTO) error {
 	if command.Blocklist != nil {
 		payloadCount++
 	}
+	if command.ClusterPolicy != nil {
+		payloadCount++
+	}
 	if payloadCount != 1 {
 		return ErrInvalidCommand
 	}
@@ -146,6 +149,10 @@ func validateCommand(command CommandDTO) error {
 		}
 	case command.Blocklist != nil:
 		if validateBlocklistChange(*command.Blocklist) != nil {
+			return ErrInvalidCommand
+		}
+	case command.ClusterPolicy != nil:
+		if validateClusterPolicyChange(*command.ClusterPolicy) != nil {
 			return ErrInvalidCommand
 		}
 	}
@@ -373,7 +380,9 @@ func validRetainedState(state RetainedStateDTO) bool {
 
 func validSnapshot(snapshot SnapshotDTO) error {
 	if snapshot.SchemaMajor != SchemaMajor || snapshot.SchemaMinor != SchemaMinor || (len(snapshot.Digest) != 0 && len(snapshot.Digest) != 32) ||
-		!release.ValidFeatureSet(snapshot.ActiveFeatures) || validateSnapshotTenantQuotaProfile(snapshot.TenantQuotaProfile) != nil {
+		!release.ValidFeatureSet(snapshot.ActiveFeatures) || validateSnapshotTenantQuotaProfile(snapshot.TenantQuotaProfile) != nil ||
+		(snapshot.ClusterPolicy != nil &&
+			(validateClusterPolicyState(*snapshot.ClusterPolicy) != nil || !release.Contains(snapshot.ActiveFeatures, ClusterPolicyFeature))) {
 		return ErrInvalidSnapshot
 	}
 	offlineMessagesCount := 0
@@ -386,6 +395,9 @@ func validSnapshot(snapshot SnapshotDTO) error {
 	}
 	count := len(snapshot.Members) + len(snapshot.Ownerships) + len(snapshot.Subscriptions) + deliveryObjects + len(snapshot.MembershipHistory) + len(snapshot.Retained) + len(snapshot.OfflineSessions) + offlineMessagesCount + len(snapshot.NodeDrains) + len(snapshot.ActiveFeatures) + len(snapshot.SessionMetadata) + tenantQuotaObjectCount(snapshot.TenantQuotaProfile) + proposalObjectCount(snapshot.ProposalOrigins) + len(snapshot.CredentialRevocations) + len(snapshot.Blocklist)
 	if snapshot.ConnectionRebalance != nil {
+		count++
+	}
+	if snapshot.ClusterPolicy != nil {
 		count++
 	}
 	if count > maxSnapshotEntries || snapshot.ObjectCount != uint64(count) || (count > 0 && snapshot.LastIncludedIndex == 0) || len(snapshot.Retained) > MaxRetainedMessages {

@@ -6,7 +6,7 @@ path, parameter, response schema와 media type은
 
 | 항목 | 값 |
 | --- | --- |
-| 이름과 version | `narumq-management-api` 1.12.0 |
+| 이름과 version | `narumq-management-api` 1.13.0 |
 | 상태 | Active |
 | Producer | NaruMQ broker management API |
 | Consumer | Dashboard·operator·monitoring integration의 query client |
@@ -31,9 +31,14 @@ path, parameter, response schema와 media type은
 | GET | `/health/drain` | drain-complete probe |
 | GET | `/metrics` | Prometheus/OpenMetrics scrape |
 | GET | `/api/v1/cluster` | cluster summary |
+| POST | `/api/v1/cluster/members` | member admission 시작 | ClusterAdmin |
+| DELETE | `/api/v1/cluster/members/{memberId}` | cluster member removal 시작 | ClusterAdmin |
+| GET | `/api/v1/cluster/membership-operations/{operationId}` | 마지막으로 관찰한 committed membership operation 조회 | ReadOnly |
 | POST | `/api/v1/cluster/backups` | quorum-fresh 경계의 checksummed backup archive 다운로드 |
 | GET | `/api/v1/cluster/features` | committed active feature와 member build profile 조회 |
 | POST | `/api/v1/cluster/features/{feature}` | 모든 non-retired member가 지원하는 feature 활성화 |
+| GET | `/api/v1/cluster/policy` | committed `ClusterPolicy`와 version 조회 | ReadOnly |
+| PUT | `/api/v1/cluster/policy` | `mqttLimits`를 version 조건으로 commit | ClusterAdmin |
 | GET | `/api/v1/nodes` | node list |
 | GET | `/api/v1/nodes/{nodeId}` | node detail |
 | POST | `/api/v1/nodes/{nodeId}/drain` | broker drain 시작 또는 기존 operation 재생 |
@@ -42,6 +47,7 @@ path, parameter, response schema와 media type은
 | POST | `/api/v1/cluster/rebalance` | cluster connection rebalance 시작 또는 replay |
 | GET | `/api/v1/cluster/rebalance` | committed cluster connection rebalance 조회 |
 | DELETE | `/api/v1/cluster/rebalance` | 실행 중인 rebalance 취소 |
+| GET | `/api/v1/clients` | filter와 pagination을 사용하는 client search | ReadOnly, tenant scope |
 | GET | `/api/v1/clients/{tenantId}/{clientId}` | client session detail |
 | GET | `/api/v1/subscriptions` | subscription list |
 | GET | `/api/v1/retained` | retained metadata list |
@@ -61,6 +67,8 @@ path, parameter, response schema와 media type은
 | GET | `/api/v1/audit/events` | node-local audit hash-chain record 조회 (SecurityAdmin·ClusterAdmin) |
 
 Blocklist는 Dynamic cluster에서 `client-blocklist` feature를 활성화한 뒤 사용할 수 있으며 standalone에는 제공하지 않는다. GET의 `data`는 `{policyVersion, entries[]}`이며 각 entry는 `kind`, 선택적 `tenantId`, `value`, `blockedAt`을 가진다. POST는 항목을 차단하고 DELETE는 해제하며, 성공 결과의 `data`에는 `blocked`와 `policyVersion`이 포함된다. 실제 entry 집합이 바뀐 command의 Raft index가 policy version이며, 중복 block·이미 해제된 항목의 unblock은 version을 바꾸지 않는다. 성공한 mutation 응답 뒤 5초 안에 모든 node가 새 차단을 적용한다. Feature 비활성 또는 4096개 capacity 초과는 `409`다. Path 값은 percent-encoding할 수 있다. 예를 들어 clientId `a/b`는 `a%2Fb`로 전달하며 서버는 이를 `a/b`로 해석한다. 이 endpoint들의 query parameter와 request body는 허용되지 않으며, 있으면 `400 invalid_request`다. Mutation은 `SecurityAdmin` 또는 `ClusterAdmin` 권한을 요구한다.
+Cluster policy는 Dynamic cluster에서 `cluster-policy` feature 활성화 뒤 변경할 수 있으며 standalone에는 route가 없다. GET은 query와 body를 거절하고 commit 전에는 version `0`, policy `null`을 반환한다. GET·PUT은 `ETag: "<version>"`을 반환한다. PUT은 `If-Match`와 `Idempotency-Key`를 각각 하나씩 요구한다. `If-Match`가 현재 version과 다르면 non-retryable `409 cluster_policy_version_conflict`다. 성공 mutation은 `cluster.policy.update` audit event를 cluster ID target과 이전·새 version detail로 남긴다. 값과 범위는 [ADR-0052 §1.1.1](../decisions/ADR-0052-configuration-tiers-and-cluster-policy.md#111-1차-구현-계약-mqttlimits)을 따른다.
+PUT는 query parameter를 허용하지 않으며 query가 있으면 `400 invalid_request`다. `If-Match`가 없거나 형식이 틀리면 `400 invalid_request`이며 message는 `one valid If-Match header is required`다. 값 범위 밖이거나 field가 빠진 body는 `400 invalid_request`다. Feature 비활성은 `409 feature_inactive`, 최근 key를 다른 요청에 쓰면 `409 idempotency_conflict`, quorum 문제는 `503`이다.
 
 Version 1.5.0은 cluster feature 조회와 activation을 active contract에 추가한다. 조회는 `ReadOnly`, activation은 `ClusterAdmin`을 요구하며 dynamic cluster mode에서 제공된다. 이 catalog에 없는 path를 client가 호출할 수 있다는 계약은 없다.
 
@@ -81,7 +89,7 @@ Version 1.7.0은 `POST/GET/DELETE /api/v1/cluster/rebalance`를 추가한다. Op
 | `PermissionRead` — 조회 route, non-anonymous `/metrics`·probe | ✓ | ✓ | ✓ | ✓ |
 | `PermissionOperate` — drain·rebalance mutation |  | ✓ |  | ✓ |
 | `PermissionAuditRead` — `GET /api/v1/audit/events` |  |  | ✓ | ✓ |
-| `PermissionClusterAdmin` — tenant, membership, feature activation, backup |  |  |  | ✓ |
+| `PermissionClusterAdmin` — tenant, membership, feature activation, backup, cluster policy update |  |  |  | ✓ |
 | `PermissionCredentialAdmin` — credential revocation list, revoke, restore; blocklist list·block·unblock |  |  | ✓ | ✓ |
 
 - `GET /api/v1/audit/events`는 SecurityAdmin 또는 ClusterAdmin만 사용할 수 있다. 현재 node의 저장된 audit records를 `seq` 내림차순으로 반환한다. 허용 query는 `limit`, `cursor`, `actorSubject`, `action`, `targetType`, `targetId`, `requestId`, `result`, `from`, `to`이며 문자열 filter는 exact match다. `result`는 `ALLOWED`, `DENIED`, `FAILED`; `from` 포함·`to` 제외 RFC 3339 시각이다.
@@ -160,4 +168,5 @@ method에 사용한다. 내부 오류와 credential은 response에 노출하지 
 - Version 1.10.0은 이름 있는 API key, 정적 subject binding을 사용하는 OIDC JWT와 4-role authorization을 추가하고 `GET /api/v1/audit/events`로 node-local audit chain 조회를 제공한다.
 - Version 1.11.0은 Dynamic cluster 전용 credential revocation GET·POST·DELETE route와 `SecurityAdmin`·`ClusterAdmin` 권한을 추가한다. Replicated state의 기능은 `credential-revocation` feature activation 뒤에만 사용한다.
 - Version 1.12.0은 Dynamic cluster 전용 `client-blocklist` feature를 사용하는 GET·POST·DELETE route를 추가한다. SecurityAdmin·ClusterAdmin만 조회·변경할 수 있으며, path 값은 percent-encoding을 허용하고 query와 body는 거절한다. Blocklist entry, canonical 값, 전파 목표와 policy version 의미는 [ADR-0050](../decisions/ADR-0050-mqtt-client-blocklist.md)를 따른다.
+- Version 1.13.0은 Dynamic cluster 전용 `cluster-policy` feature를 사용하는 `GET/PUT /api/v1/cluster/policy`와 `mqttLimits` version update를 추가한다. GET은 ReadOnly, PUT은 ClusterAdmin을 요구하며 `If-Match`, `Idempotency-Key`, ETag와 audit detail을 사용한다.
 - Breaking change는 `/api/v2`와 별도 OpenAPI artifact로 제공한다.

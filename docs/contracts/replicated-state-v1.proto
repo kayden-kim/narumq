@@ -8,7 +8,8 @@ option go_package = "narumq/internal/adapters/raft/records;records";
 // versions. Additive changes follow replicated-state-v1.md §3 and are written only after
 // their required feature is active. Session metadata requires `session-metadata`; connection
 // rebalance requires `connection-rebalance`; credential revocation requires
-// `credential-revocation`; client blocklist requires the active `client-blocklist` feature.
+// `credential-revocation`; client blocklist requires the active `client-blocklist` feature;
+// cluster policy requires the active `cluster-policy` feature.
 
 enum MemberPhase {
   MEMBER_PHASE_UNSPECIFIED = 0;
@@ -320,6 +321,31 @@ message BlocklistState {
   BlocklistEntry entry = 1;
   uint64 blocked_at_unix_millis = 2;
 }
+message MqttLimits {
+  uint32 max_packet_size = 1;
+  uint32 receive_maximum = 2;
+  uint32 connect_timeout_millis = 3;
+  uint32 packet_read_timeout_millis = 4;
+  uint32 write_timeout_millis = 5;
+}
+
+message ClusterPolicy {
+  MqttLimits mqtt_limits = 1;
+}
+
+message ClusterPolicyChange {
+  uint64 expected_version = 1;
+  uint64 version = 2;
+  ClusterPolicy policy = 3;
+  string idempotency_key = 4;
+}
+
+message ClusterPolicyState {
+  uint64 version = 1;
+  ClusterPolicy policy = 2;
+  string idempotency_key = 3;
+  uint64 previous_version = 4;
+}
 
 // Every application log entry has exactly one typed payload. operation_id is a
 // canonical lower-case UUID and is stable across retry of the same operation.
@@ -342,6 +368,7 @@ message CommandEnvelope {
     ConnectionRebalanceChange connection_rebalance = 22;
     CredentialRevocationChange credential_revocation = 25;
     BlocklistChange blocklist = 26;
+    ClusterPolicyChange cluster_policy = 27;
   }
   reserved 13;
   reserved "checkpoint";
@@ -585,6 +612,7 @@ message ReplicatedStateSnapshot {
   repeated CredentialRevocationState credential_revocations = 16;
   repeated BlocklistState blocklist = 17;
   uint64 blocklist_version = 18;
+  ClusterPolicyState cluster_policy = 19;
 }
 message SnapshotEnvelope {
   uint32 schema_major = 1;

@@ -184,7 +184,7 @@ func tcpCredentialConnect(t *testing.T, runtime *adapterTestRuntime, client net.
 		packet.SessionExpiryInterval = 60
 	}
 	writeTestPackets(t, client, packet)
-	response, _, err := runtime.server.decoder.Decode(readTestFrame(t, client), version)
+	response, _, err := runtime.server.limits.Load().decoder.Decode(readTestFrame(t, client), version)
 	if err != nil {
 		t.Fatalf("decode %v CONNECT response: %v", version, err)
 	}
@@ -302,7 +302,7 @@ func TestTCPCommittedRevocationClosesSessionsAndBlocksLocalReconnection(t *testi
 			}
 			runtime.server.ApplyCredentialRevocation("credential-a", true)
 			if test.version == mqtt.ProtocolV5 {
-				packet, _, err := runtime.server.decoder.Decode(readTestFrame(t, runtime.client), mqtt.ProtocolV5)
+				packet, _, err := runtime.server.limits.Load().decoder.Decode(readTestFrame(t, runtime.client), mqtt.ProtocolV5)
 				disconnect, ok := packet.(*mqtt.Disconnect)
 				if err != nil || !ok || disconnect.ReasonCode != 0x87 {
 					t.Fatalf("revocation DISCONNECT = (%#v, %v), want reason 0x87", packet, err)
@@ -353,7 +353,7 @@ func TestTCPCredentialExpiryDisconnectsAndProcessesWill(t *testing.T) {
 				Version: mqtt.ProtocolV5, PacketID: 1,
 				Subscriptions: []mqtt.Subscription{{Filter: "expiry/#", QoS: mqtt.QoSAtMostOnce}},
 			})
-			if packet, _, err := runtime.server.decoder.Decode(readTestFrame(t, watcher), mqtt.ProtocolV5); err != nil {
+			if packet, _, err := runtime.server.limits.Load().decoder.Decode(readTestFrame(t, watcher), mqtt.ProtocolV5); err != nil {
 				t.Fatalf("decode watcher SUBACK: %v", err)
 			} else if _, ok := packet.(*mqtt.SubAck); !ok {
 				t.Fatalf("watcher subscription response = %T, want SUBACK", packet)
@@ -369,7 +369,7 @@ func TestTCPCredentialExpiryDisconnectsAndProcessesWill(t *testing.T) {
 				t.Fatal("victim credential-expiry timer did not fire")
 			}
 			if test.version == mqtt.ProtocolV5 {
-				packet, _, err := runtime.server.decoder.Decode(readTestFrame(t, victim), mqtt.ProtocolV5)
+				packet, _, err := runtime.server.limits.Load().decoder.Decode(readTestFrame(t, victim), mqtt.ProtocolV5)
 				disconnect, ok := packet.(*mqtt.Disconnect)
 				if err != nil || !ok || disconnect.ReasonCode != 0xA0 {
 					t.Fatalf("expiry DISCONNECT = (%#v, %v), want reason 0xA0", packet, err)
@@ -380,7 +380,7 @@ func TestTCPCredentialExpiryDisconnectsAndProcessesWill(t *testing.T) {
 			}
 			tcpCredentialAssertClosed(t, victim)
 
-			packet, _, err := runtime.server.decoder.Decode(readTestFrame(t, watcher), mqtt.ProtocolV5)
+			packet, _, err := runtime.server.limits.Load().decoder.Decode(readTestFrame(t, watcher), mqtt.ProtocolV5)
 			willPublish, ok := packet.(*mqtt.Publish)
 			if err != nil || !ok || willPublish.Topic != will.Topic || string(willPublish.Payload) != string(will.Payload) {
 				t.Fatalf("expiry Will delivery = (%#v, %v), want topic %q and payload %q", packet, err, will.Topic, will.Payload)

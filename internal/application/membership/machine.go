@@ -43,6 +43,7 @@ type StateMachine struct {
 	tenantUsage           map[string]tenantStorageUsage
 	tenantQuota           *TenantQuotaProfileDTO
 	tenantQuotaByTenant   map[string]TenantStorageQuotaDTO
+	clusterPolicy         *ClusterPolicyStateDTO
 	activeFeatures        []string
 	nodeDrains            map[uint64]NodeDrainStateDTO
 	connectionRebalance   *ConnectionRebalanceStateDTO
@@ -112,7 +113,7 @@ func (machine *StateMachine) InitializeBootstrap(index uint64, members []MemberI
 	}
 	machine.mu.Lock()
 	defer machine.mu.Unlock()
-	if machine.lastAppliedIndex != 0 || len(machine.members) != 0 || len(machine.operations) != 0 || len(machine.ownerships) != 0 || len(machine.subscriptions) != 0 || len(machine.delivery) != 0 || len(machine.retained) != 0 || len(machine.offline) != 0 || machine.tenantQuota != nil || len(machine.nodeDrains) != 0 || len(machine.credentialRevocations) != 0 || len(machine.blocklist) != 0 || machine.blocklistVersion != 0 || len(machine.activeFeatures) != 0 {
+	if machine.lastAppliedIndex != 0 || len(machine.members) != 0 || len(machine.operations) != 0 || len(machine.ownerships) != 0 || len(machine.subscriptions) != 0 || len(machine.delivery) != 0 || len(machine.retained) != 0 || len(machine.offline) != 0 || machine.tenantQuota != nil || machine.clusterPolicy != nil || len(machine.nodeDrains) != 0 || len(machine.credentialRevocations) != 0 || len(machine.blocklist) != 0 || machine.blocklistVersion != 0 || len(machine.activeFeatures) != 0 {
 		return ErrBootstrapAlreadyInitialized
 	}
 	for _, member := range copied {
@@ -171,6 +172,8 @@ func (machine *StateMachine) applyCommandLocked(index uint64, command CommandDTO
 		return machine.applyCredentialRevocation(index, *command.CredentialRevocation), nil
 	case command.Blocklist != nil:
 		return machine.applyBlocklist(index, *command.Blocklist), nil
+	case command.ClusterPolicy != nil:
+		return machine.applyClusterPolicy(index, *command.ClusterPolicy), nil
 	default:
 		// validateCommand rejects an empty discriminated union before advancing.
 		return result, nil

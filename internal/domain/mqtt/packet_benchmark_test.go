@@ -5,7 +5,7 @@ import "testing"
 func BenchmarkDecoderPublishQoS0_1KiB(b *testing.B) {
 	payload := make([]byte, 1024)
 	packet := Publish{Version: ProtocolV5, Topic: "benchmark/topic", Payload: payload}
-	encoder, err := NewEncoder(maxRemainingLength)
+	encoder, err := NewEncoder(MaxRemainingLength)
 	if err != nil {
 		b.Fatal(err)
 	}
@@ -13,7 +13,7 @@ func BenchmarkDecoderPublishQoS0_1KiB(b *testing.B) {
 	if err != nil {
 		b.Fatal(err)
 	}
-	decoder, err := NewDecoder(maxRemainingLength)
+	decoder, err := NewDecoder(MaxRemainingLength)
 	if err != nil {
 		b.Fatal(err)
 	}
@@ -29,7 +29,7 @@ func BenchmarkDecoderPublishQoS0_1KiB(b *testing.B) {
 
 func BenchmarkEncoderPublishQoS0_1KiB(b *testing.B) {
 	packet := Publish{Version: ProtocolV5, Topic: "benchmark/topic", Payload: make([]byte, 1024)}
-	encoder, err := NewEncoder(maxRemainingLength)
+	encoder, err := NewEncoder(MaxRemainingLength)
 	if err != nil {
 		b.Fatal(err)
 	}
@@ -134,7 +134,7 @@ func BenchmarkCodecPacketCorpus(b *testing.B) {
 	for _, testCase := range packets {
 		testCase := testCase
 		b.Run("decode/"+testCase.name, func(b *testing.B) {
-			encoder, err := NewEncoder(maxRemainingLength)
+			encoder, err := NewEncoder(MaxRemainingLength)
 			if err != nil {
 				b.Fatal(err)
 			}
@@ -142,7 +142,7 @@ func BenchmarkCodecPacketCorpus(b *testing.B) {
 			if err != nil {
 				b.Fatal(err)
 			}
-			decoder, err := NewDecoder(maxRemainingLength)
+			decoder, err := NewDecoder(MaxRemainingLength)
 			if err != nil {
 				b.Fatal(err)
 			}
@@ -157,7 +157,7 @@ func BenchmarkCodecPacketCorpus(b *testing.B) {
 		})
 
 		b.Run("encode/"+testCase.name, func(b *testing.B) {
-			encoder, err := NewEncoder(maxRemainingLength)
+			encoder, err := NewEncoder(MaxRemainingLength)
 			if err != nil {
 				b.Fatal(err)
 			}

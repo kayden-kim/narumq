@@ -58,7 +58,7 @@ func TestTCPCommittedBlocklistClosesMatchingSessionsAndDiscardsWill(t *testing.T
 			}
 			runtime.server.ApplyBlocklist(entry, true)
 			if test.wantDisconnect {
-				packet, _, err := runtime.server.decoder.Decode(readTestFrame(t, client), mqtt.ProtocolV5)
+				packet, _, err := runtime.server.limits.Load().decoder.Decode(readTestFrame(t, client), mqtt.ProtocolV5)
 				disconnect, ok := packet.(*mqtt.Disconnect)
 				if err != nil || !ok || disconnect.ReasonCode != 0x98 {
 					t.Fatalf("blocklist DISCONNECT = (%#v, %v), want reason 0x98", packet, err)
@@ -115,7 +115,7 @@ func TestTCPBlocklistSnapshotReplaceClosesAndUnblocksConnections(t *testing.T) {
 		t.Fatal(err)
 	}
 	runtime.server.ReplaceBlocklist([]security.BlockEntry{entry})
-	packet, _, err := runtime.server.decoder.Decode(readTestFrame(t, client), mqtt.ProtocolV5)
+	packet, _, err := runtime.server.limits.Load().decoder.Decode(readTestFrame(t, client), mqtt.ProtocolV5)
 	disconnect, ok := packet.(*mqtt.Disconnect)
 	if err != nil || !ok || disconnect.ReasonCode != 0x98 {
 		t.Fatalf("restored blocklist DISCONNECT = (%#v, %v), want reason 0x98", packet, err)

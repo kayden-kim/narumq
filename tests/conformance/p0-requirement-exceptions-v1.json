@@ -2,11 +2,6 @@
   "schemaVersion": 1,
   "exceptions": [
     {
-      "requirementId": "API-09",
-      "reason": "API-09의 GitOps/runtime source-of-truth와 reconciliation 동작이 관리 스펙에서 보류된 범위입니다.",
-      "tracking": "docs/TODO.md#18-management-apiobservability와-dashboard"
-    },
-    {
       "requirementId": "DEP-11",
       "reason": "외부 rollout controller가 보류된 범위이며 ADR-0006은 Proposed입니다.",
       "tracking": "docs/TODO.md#12-release와-rollout-gate"

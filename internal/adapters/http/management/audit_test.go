@@ -35,7 +35,7 @@ func (spy *spyAuditUseCase) Record(command audit.RecordCommandDTO) error {
 func TestManagementMutationAuditRecordsSuccessfulDrain(t *testing.T) {
 	service := &drainHTTPStub{startResult: membership.NodeDrainOperationDTO{State: drainHTTPState(nodedrain.PhaseExcludingTraffic)}}
 	spy := &spyAuditUseCase{}
-	handler := NewRouterWithMembership(ServerConfig{APIKeys: []APIKeyCredential{{ID: "test", Key: "audit-token", Roles: []Role{RoleOperator}}}, ClusterID: "test-cluster"}, &mockStateProvider{}, nil, nil, nil, service, nil, nil, spy, nil, nil, nil)
+	handler := NewRouterWithMembership(ServerConfig{APIKeys: []APIKeyCredential{{ID: "test", Key: "audit-token", Roles: []Role{RoleOperator}}}, ClusterID: "test-cluster"}, &mockStateProvider{}, nil, nil, nil, service, nil, nil, spy, nil, nil, nil, nil)
 	request := drainHTTPRequest(http.MethodPost, "/api/v1/nodes/3/drain", validDrainRequestBody(), "audit-idempotency-key")
 	request.Header.Set("X-API-Key", "audit-token")
 	response := httptest.NewRecorder()
@@ -55,7 +55,7 @@ func TestManagementMutationAuditRecordsSuccessfulDrain(t *testing.T) {
 func TestManagementAuditDenialsAndAdmission(t *testing.T) {
 	service := &drainHTTPStub{startResult: membership.NodeDrainOperationDTO{State: drainHTTPState(nodedrain.PhaseExcludingTraffic)}}
 	spy := &spyAuditUseCase{}
-	handler := NewRouterWithMembership(ServerConfig{APIKeys: []APIKeyCredential{{ID: "test", Key: "audit-token", Roles: []Role{RoleReadOnly}}}}, &mockStateProvider{}, nil, nil, nil, service, nil, nil, spy, nil, nil, nil)
+	handler := NewRouterWithMembership(ServerConfig{APIKeys: []APIKeyCredential{{ID: "test", Key: "audit-token", Roles: []Role{RoleReadOnly}}}}, &mockStateProvider{}, nil, nil, nil, service, nil, nil, spy, nil, nil, nil, nil)
 	response := httptest.NewRecorder()
 	request := auditDrainRequest(http.MethodPost, "/api/v1/nodes/3/drain")
 	handler.ServeHTTP(response, request)
@@ -77,14 +77,14 @@ func TestManagementAuditDenialsAndAdmission(t *testing.T) {
 	}
 
 	blocked := &spyAuditUseCase{admitErr: errors.New("sink unavailable")}
-	blockedHandler := NewRouterWithMembership(ServerConfig{APIKeys: []APIKeyCredential{{ID: "test", Key: "audit-token", Roles: []Role{RoleOperator}}}}, &mockStateProvider{}, nil, nil, nil, service, nil, nil, blocked, nil, nil, nil)
+	blockedHandler := NewRouterWithMembership(ServerConfig{APIKeys: []APIKeyCredential{{ID: "test", Key: "audit-token", Roles: []Role{RoleOperator}}}}, &mockStateProvider{}, nil, nil, nil, service, nil, nil, blocked, nil, nil, nil, nil)
 	request = auditDrainRequest(http.MethodPost, "/api/v1/nodes/3/drain")
 	response = httptest.NewRecorder()
 	blockedHandler.ServeHTTP(response, request)
 	if response.Code != http.StatusServiceUnavailable || !strings.Contains(response.Body.String(), `"code":"audit_unavailable"`) || !strings.Contains(response.Body.String(), `"retryable":true`) || service.startCalls != 0 || blocked.admitCalls != 1 || len(blocked.commands) != 0 {
 		t.Fatalf("admission response=%s calls=%d audit=%+v", response.Body.String(), service.startCalls, blocked)
 	}
-	noAudit := NewRouterWithMembership(ServerConfig{APIKeys: []APIKeyCredential{{ID: "test", Key: "audit-token", Roles: []Role{RoleOperator}}}}, &mockStateProvider{}, nil, nil, nil, service, nil, nil, nil, nil, nil, nil)
+	noAudit := NewRouterWithMembership(ServerConfig{APIKeys: []APIKeyCredential{{ID: "test", Key: "audit-token", Roles: []Role{RoleOperator}}}}, &mockStateProvider{}, nil, nil, nil, service, nil, nil, nil, nil, nil, nil, nil)
 	request = auditDrainRequest(http.MethodPost, "/api/v1/nodes/3/drain")
 	response = httptest.NewRecorder()
 	noAudit.ServeHTTP(response, request)
@@ -96,7 +96,7 @@ func TestManagementAuditDenialsAndAdmission(t *testing.T) {
 func TestManagementAuditMutationFailuresAndBackup(t *testing.T) {
 	spy := &spyAuditUseCase{}
 	conflict := &drainHTTPStub{startError: errors.New("conflict")}
-	handler := NewRouterWithMembership(ServerConfig{APIKeys: []APIKeyCredential{{ID: "test", Key: "audit-token", Roles: []Role{RoleOperator}}}}, &mockStateProvider{}, nil, nil, nil, conflict, nil, nil, spy, nil, nil, nil)
+	handler := NewRouterWithMembership(ServerConfig{APIKeys: []APIKeyCredential{{ID: "test", Key: "audit-token", Roles: []Role{RoleOperator}}}}, &mockStateProvider{}, nil, nil, nil, conflict, nil, nil, spy, nil, nil, nil, nil)
 	response := httptest.NewRecorder()
 	handler.ServeHTTP(response, auditDrainRequest(http.MethodPost, "/api/v1/nodes/3/drain"))
 	var envelope ErrorResponse
@@ -111,7 +111,7 @@ func TestManagementAuditMutationFailuresAndBackup(t *testing.T) {
 	backup := &clusterBackupProviderStub{backup: portsmanagement.ClusterBackupDTO{Archive: []byte("backup")}}
 	request := httptest.NewRequest(http.MethodPost, "/api/v1/cluster/backups", nil)
 	request.Header.Set("Authorization", "Bearer backup-token")
-	backupRouter := newRouter(ServerConfig{AuthToken: "backup-token"}, &mockStateProvider{}, nil, nil, nil, nil, nil, backup, backupSpy, nil, nil, nil)
+	backupRouter := newRouter(ServerConfig{AuthToken: "backup-token"}, &mockStateProvider{}, nil, nil, nil, nil, nil, backup, backupSpy, nil, nil, nil, nil)
 	response = httptest.NewRecorder()
 	backupRouter.ServeHTTP(response, request)
 	if response.Code != http.StatusOK || len(backupSpy.commands) != 1 || backupSpy.commands[0].Result != portsaudit.AuditResultAllowed || backupSpy.commands[0].Action != "cluster.backup.create" || backupSpy.commands[0].Details["httpStatus"] != http.StatusOK {
@@ -122,7 +122,7 @@ func TestManagementAuditMutationFailuresAndBackup(t *testing.T) {
 func TestStageMemberAuditTargetAndReadDoesNotAdmit(t *testing.T) {
 	spy := &spyAuditUseCase{}
 	service := &membershipServiceStub{}
-	handler := NewRouterWithMembership(ServerConfig{AuthToken: "audit-token", ClusterID: "test-cluster"}, &mockStateProvider{}, nil, nil, service, nil, nil, nil, spy, nil, nil, nil)
+	handler := NewRouterWithMembership(ServerConfig{AuthToken: "audit-token", ClusterID: "test-cluster"}, &mockStateProvider{}, nil, nil, service, nil, nil, nil, spy, nil, nil, nil, nil)
 	request := httptest.NewRequest(http.MethodPost, "/api/v1/cluster/members", strings.NewReader(validMemberAdmissionJSON()))
 	request.Header.Set("Authorization", "Bearer audit-token")
 	request.Header.Set("Content-Type", "application/json")
@@ -133,7 +133,7 @@ func TestStageMemberAuditTargetAndReadDoesNotAdmit(t *testing.T) {
 		t.Fatalf("stage event=%+v", spy.commands)
 	}
 	badSpy := &spyAuditUseCase{}
-	badHandler := NewRouterWithMembership(ServerConfig{AuthToken: "audit-token", ClusterID: "test-cluster"}, &mockStateProvider{}, nil, nil, service, nil, nil, nil, badSpy, nil, nil, nil)
+	badHandler := NewRouterWithMembership(ServerConfig{AuthToken: "audit-token", ClusterID: "test-cluster"}, &mockStateProvider{}, nil, nil, service, nil, nil, nil, badSpy, nil, nil, nil, nil)
 	bad := httptest.NewRequest(http.MethodPost, "/api/v1/cluster/members", strings.NewReader("{"))
 	bad.Header.Set("Authorization", "Bearer audit-token")
 	bad.Header.Set("Content-Type", "application/json")
@@ -144,7 +144,7 @@ func TestStageMemberAuditTargetAndReadDoesNotAdmit(t *testing.T) {
 		t.Fatalf("invalid stage event=%+v", badSpy.commands)
 	}
 	readSpy := &spyAuditUseCase{}
-	readHandler := NewRouterWithMembership(ServerConfig{AuthToken: "audit-token"}, &mockStateProvider{}, nil, nil, service, nil, nil, nil, readSpy, nil, nil, nil)
+	readHandler := NewRouterWithMembership(ServerConfig{AuthToken: "audit-token"}, &mockStateProvider{}, nil, nil, service, nil, nil, nil, readSpy, nil, nil, nil, nil)
 	get := httptest.NewRequest(http.MethodGet, "/api/v1/cluster/members", nil)
 	get.Header.Set("Authorization", "Bearer audit-token")
 	getResponse := httptest.NewRecorder()

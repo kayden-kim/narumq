@@ -3,8 +3,8 @@
   "jsonSchemaDialect": "https://json-schema.org/draft/2020-12/schema",
   "info": {
     "title": "NaruMQ Management API",
-    "version": "1.12.0",
-    "description": "Query, observability, authenticated cluster membership and feature activation, broker node drain and connection rebalance, credential revocation and client blocklist, cluster-backup operations, and node-local management audit events. Per-principal and failed-authentication rate limiting applies to /api/v1. Dashboard APIs are deferred."
+    "version": "1.13.0",
+    "description": "Query, observability, authenticated cluster membership and feature activation, cluster policy updates, broker node drain and connection rebalance, credential revocation and client blocklist, cluster-backup operations, and node-local management audit events. Per-principal and failed-authentication rate limiting applies to /api/v1. Dashboard APIs are deferred."
   },
   "servers": [
     {
@@ -119,6 +119,67 @@
           "429": { "$ref": "#/components/responses/TooManyRequests" },
           "403": { "$ref": "#/components/responses/Forbidden" },
           "405": { "$ref": "#/components/responses/MethodNotAllowed" }
+        }
+      }
+    },
+    "/api/v1/cluster/policy": {
+      "get": {
+        "tags": ["Cluster"],
+        "operationId": "getClusterPolicy",
+        "summary": "Read the committed cluster policy",
+        "description": "Requires ReadOnly. Dynamic cluster only. Query parameters and request bodies are rejected. The route remains available while the cluster-policy feature is inactive. Before a policy is committed, version is 0 and policy is null.",
+        "responses": {
+          "200": {
+            "description": "Committed cluster policy or the empty version-0 state.",
+            "headers": {
+              "X-Request-Id": { "$ref": "#/components/headers/XRequestId" },
+              "ETag": { "$ref": "#/components/headers/ETag" }
+            },
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ClusterPolicyResponse" } } }
+          },
+          "400": { "$ref": "#/components/responses/BadRequest" },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "403": { "$ref": "#/components/responses/Forbidden" },
+          "405": { "$ref": "#/components/responses/MethodNotAllowed" },
+          "429": { "$ref": "#/components/responses/TooManyRequests" },
+          "500": { "description": "Unexpected error while reading committed cluster policy.", "headers": { "X-Request-Id": { "$ref": "#/components/headers/XRequestId" } }, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorResponse" } } } },
+          "503": { "$ref": "#/components/responses/Unavailable" }
+        }
+      },
+      "put": {
+        "tags": ["Cluster"],
+        "operationId": "updateClusterPolicy",
+        "summary": "Commit cluster MQTT limits",
+        "description": "Requires ClusterAdmin and an active cluster-policy feature. If-Match must contain the current ETag version. Replaying the most recent Idempotency-Key with the same expected version and request body returns the same committed version. The node-local audit event is cluster.policy.update.",
+        "parameters": [
+          { "$ref": "#/components/parameters/IfMatch" },
+          { "$ref": "#/components/parameters/IdempotencyKey" }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ClusterPolicy" } } }
+        },
+        "responses": {
+          "200": {
+            "description": "The new committed policy version.",
+            "headers": {
+              "X-Request-Id": { "$ref": "#/components/headers/XRequestId" },
+              "ETag": { "$ref": "#/components/headers/ETag" }
+            },
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ClusterPolicyResponse" } } }
+          },
+          "400": { "$ref": "#/components/responses/BadRequest" },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "403": { "$ref": "#/components/responses/Forbidden" },
+          "405": { "$ref": "#/components/responses/MethodNotAllowed" },
+          "429": { "$ref": "#/components/responses/TooManyRequests" },
+          "409": {
+            "description": "The feature is inactive (`feature_inactive`), If-Match is stale (`cluster_policy_version_conflict`), or the key was used for different content (`idempotency_conflict`).",
+            "headers": { "X-Request-Id": { "$ref": "#/components/headers/XRequestId" } },
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorResponse" } } }
+          },
+          "500": { "description": "Unexpected error while committing cluster policy.", "headers": { "X-Request-Id": { "$ref": "#/components/headers/XRequestId" } }, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorResponse" } } } },
+          "503": { "$ref": "#/components/responses/Unavailable" }
         }
       }
     },
@@ -985,6 +1046,11 @@
         "schema": { "type": "string", "minLength": 1, "maxLength": 128 },
         "example": "req_example"
       },
+      "ETag": {
+        "description": "Current committed cluster policy version, quoted as an entity tag.",
+        "schema": { "type": "string", "pattern": "^\\\"(0|[1-9][0-9]*)\\\"$" },
+        "example": "\"2\""
+      },
       "RetryAfter": {
         "description": "Seconds until the client may retry.",
         "required": true,
@@ -1014,6 +1080,13 @@
         "required": true,
         "description": "Printable ASCII 0x21 through 0x7e, 1 to 128 bytes; spaces are not allowed.",
         "schema": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[!-~]{1,128}$" }
+      },
+      "IfMatch": {
+        "name": "If-Match",
+        "in": "header",
+        "required": true,
+        "description": "Exactly one quoted canonical uint64 version, less than 18446744073709551615.",
+        "schema": { "type": "string", "maxLength": 22, "pattern": "^\\\"(0|[1-9][0-9]*)\\\"$" }
       },
       "MemberId": {
         "name": "memberId",
@@ -1811,6 +1884,39 @@
         "additionalProperties": false,
         "required": ["data"],
         "properties": { "data": { "$ref": "#/components/schemas/ClusterFeatureState" } }
+      },
+      "MqttLimits": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["maxPacketSize", "receiveMaximum", "connectTimeoutMillis", "packetReadTimeoutMillis", "writeTimeoutMillis"],
+        "properties": {
+          "maxPacketSize": { "type": "integer", "minimum": 1, "maximum": 268435455 },
+          "receiveMaximum": { "type": "integer", "minimum": 1, "maximum": 65535 },
+          "connectTimeoutMillis": { "type": "integer", "minimum": 1, "maximum": 4294967295 },
+          "packetReadTimeoutMillis": { "type": "integer", "minimum": 1, "maximum": 4294967295 },
+          "writeTimeoutMillis": { "type": "integer", "minimum": 1, "maximum": 4294967295 }
+        }
+      },
+      "ClusterPolicy": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["mqttLimits"],
+        "properties": { "mqttLimits": { "$ref": "#/components/schemas/MqttLimits" } }
+      },
+      "ClusterPolicyView": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["version", "policy"],
+        "properties": {
+          "version": { "type": "integer", "minimum": 0, "maximum": 18446744073709551615 },
+          "policy": { "anyOf": [{ "$ref": "#/components/schemas/ClusterPolicy" }, { "type": "null" }] }
+        }
+      },
+      "ClusterPolicyResponse": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["data"],
+        "properties": { "data": { "$ref": "#/components/schemas/ClusterPolicyView" } }
       },
       "CredentialId": {
         "type": "string",

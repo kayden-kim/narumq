@@ -139,7 +139,7 @@ func TestTCPPublishTenantLimitReasonCodes(t *testing.T) {
 
 func tcpTenantAckReason(t *testing.T, runtime *adapterTestRuntime, frame []byte) byte {
 	t.Helper()
-	packet, _, err := runtime.server.decoder.Decode(frame, mqtt.ProtocolV5)
+	packet, _, err := runtime.server.limits.Load().decoder.Decode(frame, mqtt.ProtocolV5)
 	if err != nil {
 		t.Fatal(err)
 	}

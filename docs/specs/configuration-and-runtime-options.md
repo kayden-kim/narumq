@@ -50,7 +50,7 @@ Standalone mode에서는 security config를 MQTT listener보다 먼저 적재한
 | standalone flag | listener, timeout, queue 한도 | process를 재시작한다. | node-local | [Process configuration v1](../contracts/process-configuration-v1.md) |
 | cluster config 일반 field | node별 주소와 listener 설정 | rolling restart를 한다. | node-local | [ADR-0051](../decisions/ADR-0051-cluster-update-strategy.md) |
 | Cluster runtime metrics | `runtimeMetrics` | rolling restart를 한다. | node-local | [Process configuration v1 §1.3](../contracts/process-configuration-v1.md#13-cluster-config-json), [ADR-0052](../decisions/ADR-0052-configuration-tiers-and-cluster-policy.md) |
-| cluster config bootstrap identity field | `clusterId`, `nodeId`, `role`, bootstrap identity | 첫 시작 뒤 바꿀 수 없다. `cluster.meta`와 다른 값이면 시작을 거절한다. | 변경 불가 | [Process configuration v1 §1.3](../contracts/process-configuration-v1.md), [Raft membership v2 §1.4](../contracts/raft-membership-v2.md#14-combined-cluster-configuration) |
+| `clusterPolicy.mqttLimits` | Cluster MQTT의 다섯 한도 | Feature 활성 전에는 local 값, 활성 뒤 version 1 이상 commit을 마치면 committed 값을 쓴다. 새 연결부터 적용한다. | cluster-wide | [ADR-0052 §1.1.1](../decisions/ADR-0052-configuration-tiers-and-cluster-policy.md#111-1차-구현-계약-mqttlimits), [Process configuration v1](../contracts/process-configuration-v1.md) |
 | `tenantQuotas` | versioned tenant storage quota profile | version을 올린 설정으로 rolling restart를 한다. Commit된 version이 cluster 전체의 기준이 된다. | cluster-wide | [Tenant §5.1](tenancy-and-security.md#51-저장-quota), [ADR-0017](../decisions/ADR-0017-tenant-storage-quota.md) |
 | `replication` | `factor`, `writeQuorum` | 3/2만 허용하므로 바꿀 수 없다. | 변경 불가 | [ADR-0029](../decisions/ADR-0029-replication-factor-write-quorum-profile.md) |
 | security config | ACL, `tenantLimits`, 인증 identity, secret | rolling restart를 한다. Rollout 중 node마다 값이 다를 수 있다. | node-local | [ADR-0049](../decisions/ADR-0049-mqtt-credential-revocation.md), [ADR-0034](../decisions/ADR-0034-node-local-tenant-connection-and-traffic-limits.md) |
@@ -59,6 +59,7 @@ Standalone mode에서는 security config를 MQTT listener보다 먼저 적재한
 | Backup | cluster backup 생성·restore | 전용 API 또는 `-cluster-restore`를 사용한다. Backup 생성은 commit된 상태를 읽으며 cluster 상태를 변경하지 않는다. | cluster state의 archive | [Cluster backup v3](../contracts/cluster-backup-v3.md) |
 
 `tenantQuotas`는 정적 설정이지만 더 높은 version이 Raft command로 commit된 뒤 cluster-wide 기준이 된다. 그 밖의 cluster config와 security config는 node마다 적재하므로 rollout 중 값이 다를 수 있다.
+`ClusterPolicy`는 committed version 1 이상이 있으면 그 `mqttLimits`를 모든 node에 적용한다. 그렇지 않으면 각 node는 local `clusterPolicy.mqttLimits`를, 그것도 없으면 기본값을 사용한다. Reconciler는 feature 활성 뒤 local version이 committed version보다 높을 때만 새 정책을 제안한다. Local version이 낮거나 같은 version의 내용이 다르면 committed 값을 유지하고 mismatch gauge와 Warn log를 갱신한다. 설정은 연결 수락 때 capture하므로 정책 변경은 새 연결부터 반영한다.
 
 `runtimeMetrics`는 node 정적 설정이다. 값을 바꾸려면 해당 node를 rolling restart한다. 설정한 node만 JSONL 표본을 기록한다.
 
@@ -79,8 +80,8 @@ Standalone mode에서는 security config를 MQTT listener보다 먼저 적재한
 - 시스템은 token, key, password, password hash를 log에 남겨서는 안 된다.
 - Release build는 설정용 환경 변수를 읽지 않는다.
 - 설정 파일 변경은 실행 중인 process에 자동 반영되지 않는다.
-- 이 spec은 node 사이의 일반 설정 일치를 보장하지 않는다. 현재 예외는 commit된 `tenantQuotas`다.
-- 이 spec은 Proposed [ADR-0052](../decisions/ADR-0052-configuration-tiers-and-cluster-policy.md)의 목표 구조가 구현되었다고 보장하지 않는다. 단, §1.5의 중복 key 거절 규칙, standalone `-http-auth-token-file` secret 파일 규칙, Cluster MQTT TLS(`mqtt.tls`)와 MQTT·peer 인증서 분리 규칙, cluster runtime metrics의 node 정적 설정(`runtimeMetrics`)은 채택해 구현했다(G2·G4·G6·G9·G10).
+- `clusterPolicy.mqttLimits`는 versioned committed policy가 있을 때 node 간 일치한다. 일반 cluster config와 security config의 나머지 값은 node마다 적재하므로 rollout 중 다를 수 있다.
+- 이 spec은 Proposed [ADR-0052](../decisions/ADR-0052-configuration-tiers-and-cluster-policy.md)의 나머지 정책 항목이 구현되었다고 보장하지 않는다. `mqttLimits` 범위만 G1·API-09의 채택 사항이다.
 
 ## 6. 수용 시험
 
@@ -110,6 +111,10 @@ Standalone mode에서는 security config를 MQTT listener보다 먼저 적재한
 | `CFG-SCN-22` | SEC-02 | 3-node cluster에 유효한, 없는, 미등록 client certificate를 제시한다. MQTT 3.1.1과 MQTT 5, TLS 1.2와 1.3, 허용·미등록 Client ID도 확인한다. | 유효한 인증서와 binding은 연결된다. `require`에서 인증서가 없거나 TLS 버전이 낮으면 handshake를 거절한다. 미등록 identity와 Client ID는 MQTT 3.1.1에서 CONNACK `0x05`, MQTT 5에서 CONNACK `0x87`로 거절한다. | `tests/integration.TestDynamicClusterMQTTTLSClientCertificateProcessAcceptance` | 통과 | [Cluster MQTT TLS 실행 기록](#cluster-mqtt-tls-g2-g10-execution) |
 | `CFG-SCN-23` | PERF-08 | Cluster config에서 `runtimeMetrics`를 생략·지정하거나 누락 key, 범위 밖 interval, 빈 경로, `directory`·`auditDirectory`와 겹치는 경로, 알 수 없는 key를 넣는다. | 생략하면 비활성이다. 유효하면 값을 적재한다. 나머지는 거절한다. | `cmd/narumq.TestParseClusterConfigRuntimeMetrics` | 통과 | [실행 기록](#cluster-runtime-metrics-g6-execution) |
 | `CFG-SCN-24` | PERF-08 | 3-node in-process cluster에서 node 1에만 `runtimeMetrics`(`intervalMillis` 50)를 지정한다. | node 1의 출력 파일에 `schemaVersion` 1인 JSON 행이 2개 이상 기록된다. | `cmd/narumq.TestRunClusterModeInProcess` | 통과 | [실행 기록](#cluster-runtime-metrics-g6-execution) |
+| `CFG-SCN-25` | API-09 | `clusterPolicy`를 생략하거나 version, 다섯 한도 값, 필수 key와 unknown key를 바꾼다. | 생략은 허용한다. 유효한 값은 읽고, 0·상한 초과·누락·알 수 없는 key는 거절한다. | `cmd/narumq.TestParseClusterConfigClusterPolicy` | 통과 | [API-09 mqttLimits 실행 기록](#api-09-mqttlimits-execution) |
+| `CFG-SCN-26` | API-09 | 기본값·local config·committed policy precedence와 higher/lower/same-version reconciliation을 확인한다. | Committed version이 우선한다. Higher local version만 제안하고 불일치 설정은 mismatch로 남긴다. | `cmd/narumq.TestEffectiveClusterMQTTLimitsPrecedence`, `cmd/narumq.TestClusterPolicyControllerReconcilesAndLogsMismatchOnce` | 통과 | [API-09 mqttLimits 실행 기록](#api-09-mqttlimits-execution) |
+| `CFG-SCN-27` | API-09 | Feature가 활성화된 ClusterPolicy를 snapshot과 backup archive로 저장·복원한다. | Restored state에서 같은 version과 MQTT 한도를 읽는다. | `cmd/narumq.TestClusterBackupArchivePreservesClusterPolicy` | 통과 | [API-09 mqttLimits 실행 기록](#api-09-mqttlimits-execution) |
+| `CFG-SCN-28` | API-09 | 3-node cluster에서 policy PUT, 재시도·충돌, 신규·기존 연결, node restart와 drift를 확인한다. | 모든 node가 committed version을 적용한다. 기존 연결은 이전 한도를 유지하고 재시작 node는 committed 값과 mismatch를 보고한다. | `tests/integration.TestDynamicClusterPolicyProcessAcceptance` | 통과 | [API-09 mqttLimits 실행 기록](#api-09-mqttlimits-execution) |
 
 <a id="configuration-test-execution"></a>
 ### 설정 시험 실행 기록
@@ -200,6 +205,36 @@ go run ./tools/verify local
 | Markdown links | `PASS`; `go run ./tools/verify markdown-links`에서 문서 152개와 로컬 링크 2,159개를 확인했다. |
 | Local gate | `go run ./tools/verify local`에서 `local: PASS`, `coverage: PASS`. Branch-instrument, architecture, fuzz, package tests와 traceability가 통과했다. |
 
+
+<a id="api-09-mqttlimits-execution"></a>
+### API-09 mqttLimits 실행 기록
+
+실행 환경은 Windows/amd64, Go 1.26.5다. 아래 명령은 현재 작업 트리에서 실행했다.
+
+```sh
+go test ./cmd/narumq -run '^(TestParseClusterConfigClusterPolicy|TestClusterTenantQuotaControllerLogsCommittedMismatchOnce)$' -count=1 -v
+go test ./cmd/narumq ./internal/adapters/metrics ./internal/adapters/http/management ./tests/contracts/management-api-v1 -count=1
+go build ./...
+go test ./tests/integration -run '^TestDynamicClusterPolicyProcessAcceptance$' -count=1 -timeout=20m
+go test ./tests/integration -run '^(TestDynamicClusterClientBlocklistProcessAcceptance|TestDynamicClusterMQTTTLSClientCertificateProcessAcceptance)$' -count=1 -v -timeout 20m
+go test ./internal/adapters/tcp -count=1 -run '^(TestServerSetConnectionLimitsAppliesToNewConnectionsOnly|TestTCPConnAckAboveClientMaximumPacketSizeClosesWithoutSending)$'
+go test ./tests/contracts/management-api-v1 ./tests/contracts/audit-event-v1 -count=1
+go run ./tools/verify traceability
+go run ./tools/verify markdown-links
+go run ./tools/verify local
+```
+
+| 확인 | 결과 |
+| --- | --- |
+| Parser, reconciliation, snapshot/backup, Management API, audit와 OpenAPI contract package 시험 | `PASS`; `cmd/narumq`, `metrics`, `management`, `management-api-v1` 모두 통과 |
+| Build | `PASS`; `go build ./...` |
+| CFG-SCN-28 3-node process acceptance | `PASS` (8.58s); policy PUT/retry/conflict, old/new connection limits, all-node state, restart와 drift |
+| Existing TCP limit regression | `PASS` (0.551s); connection limit changes affect new connections only, oversized CONNACK rejection |
+| Existing cluster security regressions | `PASS`; `TestDynamicClusterClientBlocklistProcessAcceptance` (10.06s) and `TestDynamicClusterMQTTTLSClientCertificateProcessAcceptance` (1.54s) |
+| Audit event contract regression | `PASS`; router constructor callsite includes the new optional policy service |
+| Traceability | `PASS`; P0 mapped `70/81`, exceptions `11` |
+| Markdown links | `PASS`; 152 documents, 2,177 local links |
+| Local gate | `go run ./tools/verify local`: `local: PASS` (193.88s), `coverage: PASS`; branch instrumentation, traceability, architecture, fuzz, package and race checks passed. |
 
 ## 7. 미결정 사항
 

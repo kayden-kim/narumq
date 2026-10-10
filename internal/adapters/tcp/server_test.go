@@ -363,7 +363,7 @@ func TestTCPClusterRejectsQoS1AndQoS2Mutations(t *testing.T) {
 				Payload: []byte("not durably replicated"),
 			})
 			frame := readTestFrame(t, runtime.client)
-			packet, consumed, err := runtime.server.decoder.Decode(frame, mqtt.ProtocolV5)
+			packet, consumed, err := runtime.server.limits.Load().decoder.Decode(frame, mqtt.ProtocolV5)
 			if err != nil || consumed != len(frame) {
 				t.Fatalf("decode QoS rejection: packet=%T consumed=%d err=%v", packet, consumed, err)
 			}
@@ -390,7 +390,7 @@ func TestTCPClusterReadinessAndSubscriptionCommitFailuresRejectPackets(t *testin
 			Version: mqtt.ProtocolV5, CleanStart: true, ClientID: "cluster-client",
 		})
 		frame := readTestFrame(t, runtime.client)
-		packet, consumed, err := runtime.server.decoder.Decode(frame, mqtt.ProtocolV5)
+		packet, consumed, err := runtime.server.limits.Load().decoder.Decode(frame, mqtt.ProtocolV5)
 		if err != nil || consumed != len(frame) {
 			t.Fatalf("decode rejected CONNACK: packet=%T consumed=%d err=%v", packet, consumed, err)
 		}
@@ -502,7 +502,7 @@ func TestTCPClusterQoS0UsesLocalProjectionWithoutQuorumBarrier(t *testing.T) {
 	}
 
 	deliveryFrame := readTestFrame(t, runtime.client)
-	packet, consumed, err := runtime.server.decoder.Decode(deliveryFrame, mqtt.ProtocolV5)
+	packet, consumed, err := runtime.server.limits.Load().decoder.Decode(deliveryFrame, mqtt.ProtocolV5)
 	if err != nil || consumed != len(deliveryFrame) {
 		t.Fatalf("decode local QoS 0 delivery: packet=%T consumed=%d err=%v", packet, consumed, err)
 	}
@@ -718,7 +718,7 @@ func TestTCPBlockedWriteHonorsTimeout(t *testing.T) {
 		config:  Config{Clock: &adapterTestClock{now: time.Now()}, WriteTimeout: 20 * time.Millisecond},
 		encoder: encoder,
 	}
-	connection := &connection{server: runtimeServer, socket: serverSocket}
+	connection := &connection{server: runtimeServer, limits: &connectionLimits{ConnectionLimits: ConnectionLimits{WriteTimeout: 20 * time.Millisecond}}, socket: serverSocket}
 	done := make(chan error, 1)
 	go func() {
 		done <- connection.writePacket(&mqtt.PingResp{Version: mqtt.ProtocolV5})
@@ -770,6 +770,7 @@ func TestTCPSingleWriterPrioritizesControlOverDelivery(t *testing.T) {
 	}
 	connection := &connection{
 		server:       runtimeServer,
+		limits:       &connectionLimits{ConnectionLimits: ConnectionLimits{WriteTimeout: time.Second}},
 		socket:       serverSocket,
 		controlQueue: make(chan controlMessage, 1),
 		deliveryWake: make(chan struct{}, 1),
@@ -830,6 +831,7 @@ func TestTCPDeliveryBlockedUntilConnAckReady(t *testing.T) {
 	}
 	connection := &connection{
 		server:       runtimeServer,
+		limits:       &connectionLimits{ConnectionLimits: ConnectionLimits{WriteTimeout: time.Second}},
 		socket:       serverSocket,
 		controlQueue: make(chan controlMessage, 1),
 		deliveryWake: make(chan struct{}, 1),
@@ -895,6 +897,7 @@ func TestTCPWriterClosesConnectionAfterWriteTimeout(t *testing.T) {
 	}
 	connection := &connection{
 		server:       runtimeServer,
+		limits:       &connectionLimits{ConnectionLimits: ConnectionLimits{WriteTimeout: 20 * time.Millisecond}},
 		socket:       serverSocket,
 		controlQueue: make(chan controlMessage, 1),
 		deliveryWake: make(chan struct{}, 1),

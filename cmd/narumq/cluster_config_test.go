@@ -62,6 +62,16 @@ func validTenantQuotaProfileConfig() *clusterTenantQuotaProfileConfig {
 	}
 }
 
+func validClusterPolicyConfig() *clusterPolicyConfig {
+	return &clusterPolicyConfig{
+		Version: 1,
+		MQTTLimits: &clusterMQTTLimitsConfig{
+			MaxPacketSize: 1_048_576, ReceiveMaximum: 64,
+			ConnectTimeoutMillis: 10_000, PacketReadTimeoutMillis: 30_000, WriteTimeoutMillis: 5_000,
+		},
+	}
+}
+
 func TestParseClusterConfigValidRoles(t *testing.T) {
 	wantRelease, wantFeatures, err := resolveBuildIdentity()
 	if err != nil {
@@ -82,6 +92,80 @@ func TestParseClusterConfigValidRoles(t *testing.T) {
 		if parsed.ReleaseVersion != wantRelease || !slices.Equal(parsed.Features, wantFeatures) {
 			t.Fatalf("parsed build identity = (%q, %q), want (%q, %q)", parsed.ReleaseVersion, parsed.Features, wantRelease, wantFeatures)
 		}
+	}
+}
+
+// Traceability: API-09; CFG-SCN-25; docs/contracts/process-configuration-v1.md §1.3; ADR-0052 §1.1.1.
+func TestParseClusterConfigClusterPolicy(t *testing.T) {
+	config := validBootstrapClusterConfig()
+	config.ClusterPolicy = validClusterPolicyConfig()
+	data := mustMarshalClusterConfig(t, config)
+	parsed, err := parseClusterConfig(strings.NewReader(string(data)))
+	if err != nil {
+		t.Fatalf("parse valid clusterPolicy: %v", err)
+	}
+	if parsed.ClusterPolicy == nil || parsed.ClusterPolicy.Version != 1 ||
+		parsed.ClusterPolicy.membershipPolicy() != config.ClusterPolicy.membershipPolicy() {
+		t.Fatalf("parsed clusterPolicy = %+v, want %+v", parsed.ClusterPolicy, config.ClusterPolicy)
+	}
+
+	maximum := validBootstrapClusterConfig()
+	maximum.ClusterPolicy = validClusterPolicyConfig()
+	maximum.ClusterPolicy.MQTTLimits.MaxPacketSize = 268_435_455
+	maximum.ClusterPolicy.MQTTLimits.ReceiveMaximum = 65_535
+	maximum.ClusterPolicy.MQTTLimits.ConnectTimeoutMillis = ^uint32(0)
+	maximum.ClusterPolicy.MQTTLimits.PacketReadTimeoutMillis = ^uint32(0)
+	maximum.ClusterPolicy.MQTTLimits.WriteTimeoutMillis = ^uint32(0)
+	if err := validateClusterConfig(maximum); err != nil {
+		t.Fatalf("validate maximum clusterPolicy limits: %v", err)
+	}
+
+	jsonCases := []struct {
+		name string
+		edit func(string) string
+	}{
+		{name: "missing mqttLimits", edit: func(value string) string { return strings.Replace(value, `"mqttLimits":`, `"unknownLimits":`, 1) }},
+		{name: "missing required limit", edit: func(value string) string {
+			return strings.Replace(value, `,"writeTimeoutMillis":5000`, "", 1)
+		}},
+		{name: "unknown limit key", edit: func(value string) string {
+			return strings.Replace(value, `"writeTimeoutMillis":5000`, `"writeTimeoutMillis":5000,"unexpected":1`, 1)
+		}},
+		{name: "duplicate limit key", edit: func(value string) string {
+			return strings.Replace(value, `"writeTimeoutMillis":5000`, `"writeTimeoutMillis":5000,"writeTimeoutMillis":5000`, 1)
+		}},
+	}
+	for _, testCase := range jsonCases {
+		t.Run(testCase.name, func(t *testing.T) {
+			invalidJSON := testCase.edit(string(data))
+			if _, err := parseClusterConfig(strings.NewReader(invalidJSON)); err == nil {
+				t.Fatal("parseClusterConfig() accepted invalid clusterPolicy JSON")
+			}
+		})
+	}
+
+	invalidConfigs := []struct {
+		name string
+		edit func(*clusterConfigFile)
+	}{
+		{name: "zero version", edit: func(config *clusterConfigFile) { config.ClusterPolicy.Version = 0 }},
+		{name: "zero packet size", edit: func(config *clusterConfigFile) { config.ClusterPolicy.MQTTLimits.MaxPacketSize = 0 }},
+		{name: "packet size over MQTT maximum", edit: func(config *clusterConfigFile) { config.ClusterPolicy.MQTTLimits.MaxPacketSize = 268_435_456 }},
+		{name: "receive maximum over protocol maximum", edit: func(config *clusterConfigFile) { config.ClusterPolicy.MQTTLimits.ReceiveMaximum = 65_536 }},
+		{name: "zero connect timeout", edit: func(config *clusterConfigFile) { config.ClusterPolicy.MQTTLimits.ConnectTimeoutMillis = 0 }},
+		{name: "zero packet read timeout", edit: func(config *clusterConfigFile) { config.ClusterPolicy.MQTTLimits.PacketReadTimeoutMillis = 0 }},
+		{name: "zero write timeout", edit: func(config *clusterConfigFile) { config.ClusterPolicy.MQTTLimits.WriteTimeoutMillis = 0 }},
+		{name: "legacy quota conflict", edit: func(config *clusterConfigFile) { config.TenantQuotas = validTenantQuotaProfileConfig() }},
+	}
+	for _, testCase := range invalidConfigs {
+		t.Run(testCase.name, func(t *testing.T) {
+			invalid := validBootstrapClusterConfig()
+			invalid.ClusterPolicy = validClusterPolicyConfig()
+			testCase.edit(&invalid)
+			if err := validateClusterConfig(invalid); err == nil {
+				t.Fatal("validateClusterConfig() accepted invalid clusterPolicy configuration")
+			}
+		})
 	}
 }
 

@@ -4,12 +4,12 @@
 
 | 항목 | 값 |
 | --- | --- |
-| 상태 | Active (Phase 1 query profile, broker drain, cluster feature activation, management-plane audit, API rate limit, SEC-10 OIDC/API key RBAC and SEC-12 client blocklist; other mutation·운영 자동화는 deferred) |
+| 상태 | Active (Phase 1 query profile, broker drain, cluster feature activation, management-plane audit, API rate limit, SEC-10 OIDC/API key RBAC, SEC-12 client blocklist, API-09의 `mqttLimits` 정책 slice; 다른 ADR-0052 policy domain과 운영 mutation은 deferred) |
 | 관련 요구사항 | API-01~API-09, UI-01~UI-10, SEC-10~SEC-12 |
 | 근거 | [PRD 9.5절, 9.6절과 14장](../requirements/PRD.md) |
 | 관련 spec | [Tenant와 security](tenancy-and-security.md), [Drain](drain-and-rolling-update.md) |
 | 관련 Architecture | [System overview](../architectures/system-overview.md), [Security boundaries](../architectures/security-boundaries.md) |
-| 관련 결정 | [ADR-0005](../decisions/ADR-0005-management-api-contract-format.md), [ADR-0018](../decisions/ADR-0018-release-compatibility-window.md), [ADR-0043](../decisions/ADR-0043-management-api-rate-limit.md), [ADR-0045](../decisions/ADR-0045-operations-dashboard-grafana.md), [ADR-0048](../decisions/ADR-0048-management-api-oidc-api-key-rbac.md), [ADR-0050](../decisions/ADR-0050-mqtt-client-blocklist.md) |
+| 관련 결정 | [ADR-0005](../decisions/ADR-0005-management-api-contract-format.md), [ADR-0018](../decisions/ADR-0018-release-compatibility-window.md), [ADR-0043](../decisions/ADR-0043-management-api-rate-limit.md), [ADR-0045](../decisions/ADR-0045-operations-dashboard-grafana.md), [ADR-0048](../decisions/ADR-0048-management-api-oidc-api-key-rbac.md), [ADR-0050](../decisions/ADR-0050-mqtt-client-blocklist.md), [ADR-0052](../decisions/ADR-0052-configuration-tiers-and-cluster-policy.md) §1.1.1 |
 | 관련 Contract | [Management API v1](../contracts/management-api-v1.md), [Management API OpenAPI](../contracts/management-api-v1.openapi.json), [Audit event v1](../contracts/audit-event-v1.md) |
 
 ## 1. HTTP 공통 계약
@@ -18,7 +18,7 @@
 - request와 response body는 `application/json` UTF-8을 사용한다.
 - `/api/v1` 요청은 인증과 RBAC를 통과해야 한다. Health probe와 `/metrics`의 익명 노출 범위는 listener 정책으로 제한할 수 있다.
 - 서버는 수신한 유효 request ID를 사용하거나 새 값을 생성해 `X-Request-Id`에 반환해야 한다.
-- Phase 1 catalog는 조회와 broker node drain을 제공한다. Cluster feature GET은 `ReadOnly`, cluster feature activation은 `ClusterAdmin`의 active mutation이며, Dynamic cluster의 client blocklist는 SEC-12의 active SecurityAdmin·ClusterAdmin mutation이다. 그 밖의 mutation은 deferred다.
+- `cluster-policy`가 활성화된 Dynamic cluster는 `GET /api/v1/cluster/policy` 조회와 `PUT /api/v1/cluster/policy` mutation을 제공한다. GET은 feature 활성 여부와 관계없이 ReadOnly 권한으로 쓸 수 있고, PUT은 ClusterAdmin 권한과 `If-Match`, `Idempotency-Key`를 요구한다. 성공 응답은 새 `ETag` version을 반환한다. Standalone에는 route가 없다.
 
 ### 1.1 Management listener와 인증 정책
 
@@ -82,11 +82,11 @@ cursor는 불투명 값이다. client는 cursor 내용을 해석해서는 안 �
 | `429` | API rate limit 초과. 가능한 경우 `Retry-After` 포함 |
 | `503` | quorum, dependency 또는 readiness 문제로 일시 처리 불가 |
 
-오류 code 전체 목록과 각 endpoint의 response status는 [Management API v1 OpenAPI](../contracts/management-api-v1.openapi.json)에서 확정한다. 내부 stack, storage key와 secret을 오류에 포함해서는 안 된다. Active drain, feature activation과 blocklist mutation은 `409` 상태를 사용한다. Feature activation의 `feature_not_supported_by_all_members`는 non-retryable이며, `422`를 포함한 다른 mutation 동작은 deferred다. `429`는 §1.5를 따른다.
+오류 code 전체 목록과 각 endpoint의 response status는 [Management API v1 OpenAPI](../contracts/management-api-v1.openapi.json)에서 확정한다. 내부 stack, storage key와 secret을 오류에 포함해서는 안 된다. Active drain, feature activation, blocklist와 cluster policy mutation은 `409` 상태를 사용한다. Feature activation의 `feature_not_supported_by_all_members`는 non-retryable이며, `422`를 포함한 다른 mutation 동작은 deferred다. `429`는 §1.5를 따른다.
 
 ### 1.4 Deferred mutation과 idempotency
 
-Active broker drain endpoint는 `Idempotency-Key`를 요구한다. 같은 node에 active operation이 있으면 새 operation을 만들지 않고 committed operation을 돌려준다. 같은 key에 다른 parameter를 보내면 `409 idempotency_conflict`다. Feature activation은 같은 active feature를 다시 요청하면 성공 no-op이므로 별도 idempotency key가 필요하지 않다. Dynamic cluster의 활성 management mutation 18개는 모두 감사 event를 기록하며, publisher를 쓸 수 없으면 handler를 실행하지 않고 retryable `503 audit_unavailable`을 반환한다. Blocklist block·unblock은 결과 상태가 정해진 set operation이므로 `Idempotency-Key`를 요구하지 않는다. 그 밖의 mutation endpoint는 아직 deferred다.
+Active broker drain endpoint는 `Idempotency-Key`를 요구한다. 같은 node에 active operation이 있으면 새 operation을 만들지 않고 committed operation을 돌려준다. 같은 key에 다른 parameter를 보내면 `409 idempotency_conflict`다. Feature activation은 같은 active feature를 다시 요청하면 성공 no-op이므로 별도 idempotency key가 필요하지 않다. Dynamic cluster의 활성 management mutation 19개는 모두 감사 event를 기록하며, publisher를 쓸 수 없으면 handler를 실행하지 않고 retryable `503 audit_unavailable`을 반환한다. Blocklist block·unblock은 결과 상태가 정해진 set operation이므로 `Idempotency-Key`를 요구하지 않는다. Cluster policy update는 최근 한 건의 key만 replay한다. 같은 key를 같은 body·expected version으로 반복하면 같은 version을 반환한다. 그 외 mutation endpoint는 아직 deferred다.
 
 향후 mutation은 `Idempotency-Key`를 받아야 한다. 같은 principal, endpoint와 key에 같은 payload를 재시도하면 최초 결과와 의미가 같아야 한다. 같은 key에 다른 payload가 오면 `409 idempotency_conflict`를 반환해야 한다. Resource 변경은 가능한 경우 version/ETag 기반 조건부 요청을 지원해야 한다.
 
@@ -109,7 +109,7 @@ Standalone mode는 `-http-request-rate`와 `-http-auth-failure-rate`를 사용�
 
 ### 2.1 Phase 1 active profile
 
-- 현재 17개 GET operation과 cluster backup POST, broker drain POST/GET/DELETE, cluster feature POST가 구현·계약 대상이다. 정확한 parameter allowlist, schema, response와 operation ID는 OpenAPI가 SSOT이며 `tests/contracts/management-api-v1`가 runtime handler와 일치하는지 검사한다.
+- OpenAPI에 정의된 21개 GET operation(health·metrics 포함)과 cluster backup POST, broker drain POST/GET/DELETE, membership, rebalance, feature, security와 cluster policy operation이 구현·계약 대상이다. 정확한 parameter allowlist, schema, response와 operation ID는 OpenAPI가 SSOT이며 `tests/contracts/management-api-v1`가 runtime handler와 일치하는지 검사한다.
 
 | Method | Path | 성공 동작 | 권한 |
 | --- | --- | --- | --- |
@@ -119,19 +119,27 @@ Standalone mode는 `-http-request-rate`와 `-http-auth-failure-rate`를 사용�
 | GET | `/health/drain` | node가 `SAFE_TO_STOP`이면 `200` | probe policy |
 | GET | `/metrics` | Prometheus 또는 OpenMetrics scrape | monitoring policy |
 | GET | `/api/v1/cluster` | quorum과 cluster 요약 조회 | ReadOnly |
+| POST | `/api/v1/cluster/members` | cluster member admission 시작 | ClusterAdmin |
+| DELETE | `/api/v1/cluster/members/{memberId}` | planned removal 시작 또는 기존 operation replay | ClusterAdmin |
 | POST | `/api/v1/cluster/backups` | quorum-fresh typed state backup archive 다운로드 | ClusterAdmin |
 | GET | `/api/v1/nodes` | state filter와 pagination을 사용한 node 목록 조회 | ReadOnly |
 | GET | `/api/v1/nodes/{nodeId}` | node detail 조회 | ReadOnly |
 | GET | `/api/v1/cluster/features` | committed active feature와 member build profile 조회 | ReadOnly |
 | POST | `/api/v1/cluster/features/{feature}` | 모든 non-retired member가 지원하는 feature 활성화; replay는 성공 no-op | ClusterAdmin |
+| GET | `/api/v1/cluster/membership-operations/{operationId}` | 마지막으로 관찰한 committed membership phase 조회 | ReadOnly |
+| GET | `/api/v1/cluster/policy` | committed version과 policy 조회 | ReadOnly |
+| PUT | `/api/v1/cluster/policy` | version 조건에 따라 `mqttLimits`를 commit; stale version은 `409 cluster_policy_version_conflict` | ClusterAdmin |
 | POST | `/api/v1/nodes/{nodeId}/drain` | committed voter의 broker drain 시작 또는 현재 operation 재생 | Operator |
 | GET | `/api/v1/nodes/{nodeId}/drain` | committed drain operation 조회 | ReadOnly |
 | DELETE | `/api/v1/nodes/{nodeId}/drain` | cancellable drain operation 취소 | Operator |
+| GET | `/api/v1/cluster/rebalance` | committed connection rebalance 조회 | ReadOnly |
 | GET | `/api/v1/clients` | tenant·client prefix·node·protocol filter로 client 검색 | ReadOnly, tenant scope |
 | GET | `/api/v1/clients/{tenantId}/{clientId}` | session 상세 조회 | ReadOnly, tenant scope |
 | GET | `/api/v1/subscriptions` | required `tenantId` 범위의 subscription 조회 | ReadOnly, tenant scope |
 | GET | `/api/v1/retained` | required `tenantId` 범위의 retained metadata 조회 | ReadOnly, tenant scope |
 | GET | `/api/v1/tenants` | tenant 목록 조회 | ClusterAdmin |
+| GET | `/api/v1/security/credential-revocations` | 폐기된 credential ID 목록 조회 | SecurityAdmin, ClusterAdmin |
+| GET | `/api/v1/security/blocklist` | committed blocklist와 policy version 조회 | SecurityAdmin, ClusterAdmin |
 | GET | `/api/v1/audit/events` | 이 node의 저장 audit hash-chain record를 최신순으로 조회 | SecurityAdmin, ClusterAdmin |
 
 ### 2.2 Future/deferred catalog
@@ -226,6 +234,8 @@ Dynamic cluster의 readiness 거절은 `cluster readiness rejected` 구조화 �
 
 최소 범주는 connection/session/subscription, message·packet·ACK, latency, cluster·replication, storage, auth·ACL, drain과 process resource다. `narumq_node_drain_transitions_total{phase}`는 committed node drain 상태를 phase별로 집계하며, label은 8개 유효 drain phase만 허용한다. Dynamic cluster의 저장 quota는 `narumq_tenant_quota_rejections_total{tenant,dimension}` counter와 `narumq_tenant_quota_profile_committed`, `narumq_tenant_quota_profile_version`, `narumq_tenant_quota_config_mismatch` gauge를 제공한다. `tenant`는 처음 본 값 1,024개까지만 그대로 보존하고 나머지는 `_overflow`로 합친다. `dimension`은 `retained_bytes`, `offline_queue_messages`, `offline_queue_bytes`, `storage_bytes`만 허용한다. 기존 Metric 이름과 histogram bucket은 `SPEC-TBD-07`에서 확정한다. |
 
+`narumq_cluster_policy_committed` gauge는 local node에 ClusterPolicy가 commit됐는지 나타낸다. `narumq_cluster_policy_version`은 적용한 version을, `narumq_cluster_policy_config_mismatch`는 local config와 commit 값이 다른지 나타낸다. 이 metric은 [ADR-0052 §1.1](../decisions/ADR-0052-configuration-tiers-and-cluster-policy.md#11-cluster-정책의-권한과-reconciliation)을 따른다.
+
 `narumq_tenant_limit_rejections_total{tenant,dimension}` counter는 tenant 연결·traffic
 한도 거절마다 증가한다. `dimension`은 `connections`, `sessions`, `subscriptions`,
 `message_rate`, `byte_rate`, `payload_size`만 허용한다. `tenant` label은 저장 quota
@@ -300,6 +310,9 @@ transport 안의 reason 순서는 `max_connections`, `connection_rate`다. 알 �
 | `narumq_tenant_quota_profile_committed` | `gauge` | - | `replicated` | `per_node` |
 | `narumq_tenant_quota_profile_version` | `gauge` | - | `replicated` | `per_node` |
 | `narumq_tenant_quota_config_mismatch` | `gauge` | - | `node` | `per_node` |
+| `narumq_cluster_policy_committed` | `gauge` | - | `replicated` | `per_node` |
+| `narumq_cluster_policy_version` | `gauge` | - | `replicated` | `per_node` |
+| `narumq_cluster_policy_config_mismatch` | `gauge` | - | `node` | `per_node` |
 | `narumq_tenant_quota_rejections_total` | `counter` | `tenant`, `dimension` | `node` | `increase_sum` |
 | `narumq_tenant_limit_rejections_total` | `counter` | `tenant`, `dimension` | `node` | `increase_sum` |
 | `narumq_publish_backpressure_rejections_total` | `counter` | `reason` | `node` | `increase_sum` |

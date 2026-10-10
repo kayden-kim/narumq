@@ -714,6 +714,7 @@ func newContractManagementRouter(
 		membershipService, drainService, rebalanceService, backupProvider, auditService, auditQueryService,
 		contractCredentialRevocationService{},
 		contractBlocklistService{},
+		nil,
 	)
 }
 

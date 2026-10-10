@@ -33,11 +33,11 @@ func TestConnAckRoundTrip_MQTT311_MQTT5_MQTT322(t *testing.T) {
 			trace: "PRD MQTT-01/TEST-04; MQTT-3.2.2-1/6/8",
 		},
 	}
-	decoder, err := NewDecoder(maxRemainingLength)
+	decoder, err := NewDecoder(MaxRemainingLength)
 	if err != nil {
 		t.Fatal(err)
 	}
-	encoder, err := NewEncoder(maxRemainingLength)
+	encoder, err := NewEncoder(MaxRemainingLength)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -54,7 +54,7 @@ func TestConnAckRoundTrip_MQTT311_MQTT5_MQTT322(t *testing.T) {
 }
 
 func TestConnAckCanonicalWire_MQTT311_MQTT5(t *testing.T) {
-	encoder, err := NewEncoder(maxRemainingLength)
+	encoder, err := NewEncoder(MaxRemainingLength)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -69,7 +69,7 @@ func TestConnAckCanonicalWire_MQTT311_MQTT5(t *testing.T) {
 }
 
 func TestConnAckReasonCodeAllowLists_MQTT311_3_2_2_1_MQTT5_3_2_2_8(t *testing.T) {
-	decoder, err := NewDecoder(maxRemainingLength)
+	decoder, err := NewDecoder(MaxRemainingLength)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -107,7 +107,7 @@ func TestConnAckReasonCodeAllowLists_MQTT311_3_2_2_1_MQTT5_3_2_2_8(t *testing.T)
 }
 
 func TestConnAckRejectsMalformedAndUnsupportedProperties_MQTT5_1_5_5_1(t *testing.T) {
-	decoder, err := NewDecoder(maxRemainingLength)
+	decoder, err := NewDecoder(MaxRemainingLength)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -137,7 +137,7 @@ func TestConnAckRejectsMalformedAndUnsupportedProperties_MQTT5_1_5_5_1(t *testin
 }
 
 func TestConnAckSessionPresentInvariantAndProtocolContext(t *testing.T) {
-	decoder, err := NewDecoder(maxRemainingLength)
+	decoder, err := NewDecoder(MaxRemainingLength)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -158,7 +158,7 @@ func TestConnAckSessionPresentInvariantAndProtocolContext(t *testing.T) {
 }
 
 func TestConnAckEncoderLeavesDestinationUnchangedOnError(t *testing.T) {
-	encoder, err := NewEncoder(maxRemainingLength)
+	encoder, err := NewEncoder(MaxRemainingLength)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -175,8 +175,8 @@ func TestConnAckEncoderLeavesDestinationUnchangedOnError(t *testing.T) {
 
 // Traceability: PRD MQTT-11/MQTT-12/TEST-04/05.
 func TestConnAckResourceLimitProperties(t *testing.T) {
-	encoder, _ := NewEncoder(maxRemainingLength)
-	decoder, _ := NewDecoder(maxRemainingLength)
+	encoder, _ := NewEncoder(MaxRemainingLength)
+	decoder, _ := NewDecoder(MaxRemainingLength)
 	for _, input := range []ConnAck{
 		{Version: ProtocolV5, ReceiveMaximum: 1},
 		{Version: ProtocolV5, MaximumPacketSize: 128},

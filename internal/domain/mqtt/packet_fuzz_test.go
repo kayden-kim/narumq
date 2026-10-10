@@ -21,7 +21,7 @@ func FuzzDecoder(f *testing.F) {
 	f.Add([]byte{0xD0, 0x00}, byte(2))
 	f.Add([]byte{0xE0, 0x02, 0x83, 0x00}, byte(2))
 
-	decoder, err := NewDecoder(maxRemainingLength)
+	decoder, err := NewDecoder(MaxRemainingLength)
 	if err != nil {
 		f.Fatalf("NewDecoder() error = %v", err)
 	}
@@ -60,11 +60,11 @@ func FuzzCodecRoundTrip(f *testing.F) {
 	f.Add([]byte{0xD0, 0x00}, byte(2))
 	f.Add([]byte{0xE0, 0x02, 0x83, 0x00}, byte(2))
 
-	decoder, err := NewDecoder(maxRemainingLength)
+	decoder, err := NewDecoder(MaxRemainingLength)
 	if err != nil {
 		f.Fatalf("NewDecoder() error = %v", err)
 	}
-	encoder, err := NewEncoder(maxRemainingLength)
+	encoder, err := NewEncoder(MaxRemainingLength)
 	if err != nil {
 		f.Fatalf("NewEncoder() error = %v", err)
 	}

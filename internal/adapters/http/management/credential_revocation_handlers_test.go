@@ -48,7 +48,7 @@ func (stub *credentialRevocationHTTPStub) RestoreCredential(_ context.Context, c
 
 func newCredentialRevocationHTTPTestHandler(service CredentialRevocationUseCase, role Role, auditService AuditUseCase) http.Handler {
 	return NewRouterWithMembership(ServerConfig{APIKeys: []APIKeyCredential{{ID: "test", Key: "credential-secret", Roles: []Role{role}}}, ClusterID: "test-cluster"},
-		&mockStateProvider{}, nil, nil, nil, nil, nil, nil, auditService, nil, service, nil)
+		&mockStateProvider{}, nil, nil, nil, nil, nil, nil, auditService, nil, service, nil, nil)
 }
 
 func credentialRevocationHTTPRequest(method, path string, body io.Reader) *http.Request {
@@ -203,7 +203,7 @@ func TestCredentialRevocationHTTPMapsFailuresAndRejectsInvalidRequests(t *testin
 
 // Traceability: SEC-07; docs/specs/tenancy-and-security.md §7.
 func TestCredentialRevocationRoutesAreAbsentWithoutClusterService(t *testing.T) {
-	handler := NewRouterWithMembership(ServerConfig{}, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
+	handler := NewRouterWithMembership(ServerConfig{}, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
 	response := httptest.NewRecorder()
 	request := httptest.NewRequest(http.MethodGet, "/api/v1/security/credential-revocations", nil)
 	handler.ServeHTTP(response, request)

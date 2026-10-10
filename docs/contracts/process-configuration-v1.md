@@ -104,6 +104,9 @@ Cluster mode에서는 `-runtime-metrics-*` flag 대신 cluster config의 `runtim
 | `publishBackpressure` | 선택 object | `minFreeBytes`, `maxCommitLagMillis`는 `uint64`다. Object가 있으면 두 key가 모두 필요하다. `publishBackpressure` object를 생략하면 기본값은 각각 `1073741824`, `1000`이다. `minFreeBytes` 범위는 `0..1<<50`이며 0은 disk admission을 끈다. `maxCommitLagMillis` 범위는 `100..10000`이다. |
 | `runtimeMetrics` | 선택 object | `outputFile`(string)과 `intervalMillis`(`uint64`)가 필요하다. Object가 있으면 두 key가 모두 필요하다. 생략하면 기록하지 않는다. `outputFile`은 비어 있지 않고 앞뒤 공백이 없는 경로여야 하며 `directory` 또는 `management.auditDirectory`와 겹치면 안 된다. 시작할 때 파일을 만들거나 비운다. 부모 디렉터리는 자동으로 만들지 않는다. `intervalMillis` 범위는 `1..3600000`이다. JSONL 형식은 standalone `-runtime-metrics-output`과 같다(`schemaVersion` 1). |
 | `tenantQuotas` | 선택 object | `version`은 `uint64`이며 1 이상이다. Object가 있으면 `version`, `default`, `tenants`가 필요하다. `default`와 각 `tenants[]` 원소의 `retainedBytes`, `offlineQueueMessages`, `offlineQueueBytes`, `storageBytes`는 모두 `uint64`이며 필수다. 각 `tenants[]` 원소에는 string `tenantId`도 필요하다. 생략하면 built-in profile version 0을 사용한다. |
+| `clusterPolicy` | 선택 object | `version`은 `uint64`이며 1 이상이다. Object에는 `version`과 `mqttLimits`가 필요하다. `mqttLimits`에는 `maxPacketSize`, `receiveMaximum`, `connectTimeoutMillis`, `packetReadTimeoutMillis`, `writeTimeoutMillis`가 모두 필요하고, 각 값은 `uint32`다. 범위는 각각 `1..268435455`, `1..65535`, `1..4294967295`, `1..4294967295`, `1..4294967295`다. |
+
+`tenantQuotas`와 `clusterPolicy`는 함께 지정할 수 없다. 이 schema의 `ClusterPolicy`는 MQTT 한도만 담으므로 tenant quota 변경은 지원하지 않는다. `cluster-policy` feature가 활성화된 뒤에는 legacy `TenantQuota` command를 제안하지 않는다.
 
 `ValidateTenantQuotaProfile`는 네 한도 값이 모두 양수인지 확인한다. 최대값은 retained bytes `16,777,216`, offline queue messages `8,192`, offline queue bytes `33,554,432`, storage bytes `50,331,648`다([ADR-0017 §1](../decisions/ADR-0017-tenant-storage-quota.md#1-결정)). `tenants`는 최대 1,024개다. 각 `tenantId`는 UTF-8 1~128 bytes이며 `tenancy.NewTenantID`를 통과해야 한다. Tenant ID는 오름차순이어야 하며 중복할 수 없다.
 
@@ -134,9 +137,9 @@ Cluster mode에서는 `-runtime-metrics-*` flag 대신 cluster config의 `runtim
 
 `checkClusterJSON`는 중복 key, 알 수 없는 key, 필수 key 누락과 뒤따르는 JSON value를 거절한다. `parseClusterConfig`는 형식과 정적 검증을 수행한다. `releaseVersion`과 `features`는 build identity에서만 가져온다.
 
-Cluster mode에서 설정할 수 없는 현재 고정값은 다음과 같다.
+Cluster mode에서 `clusterPolicy` 또는 version 1 이상 committed policy가 없을 때 쓰는 기본값은 다음과 같다.
 
-| 항목 | 현재 고정값 |
+| 항목 | 기본값 |
 | --- | --- |
 | Remaining Length | `1048576` |
 | Receive Maximum | `64` |
@@ -146,6 +149,8 @@ Cluster mode에서 설정할 수 없는 현재 고정값은 다음과 같다.
 | control queue | `256` |
 | delivery queue | `256` |
 | Peer TLS | TLS 1.3 mutual TLS로 고정한다. |
+
+`clusterPolicy`가 있으면 local `mqttLimits`를 사용한다. Feature가 활성화되고 committed version이 1 이상이면 committed `mqttLimits`가 우선한다. Control·delivery queue 값은 policy에 포함하지 않는다.
 
 `bootstrapMembers`의 각 항목은 정확히 `{memberId:uint64,address:string,dnsSan:string,certificateSha256:string}` 형식이다. 멤버 ID, 주소, DNS SAN과 인증서 지문의 제약은 [Raft membership v2 §1.1](raft-membership-v2.md#11-확정된-멤버-식별-정보)을 따른다. 세 bootstrap 구성은 `memberId` 기준으로 바이트 단위 정렬을 사용하고 같은 집합을 포함해야 한다. 각 멤버의 인증서 지문과 SAN은 해당 항목과 일치해야 한다. 모든 bootstrap 노드는 같은 빌드 릴리스와 feature 집합을 사용해야 한다. `seedAddresses`는 임의의 검색 서버가 아니라 피어 승인 listener를 가리킨다. 각 host는 소문자 DNS 이름이어야 하며 TLS server name으로 사용되고 접속한 seed 인증서 SAN과 일치해야 한다. ClusterAdmin token은 지정한 파일에서 읽는다. 원본 token은 JSON이나 로그에 포함하지 않는다.
 

@@ -21,7 +21,7 @@ func resolveBuildIdentity() (string, []string, error) {
 	}
 
 	features := []string{
-		membership.ClientBlocklistFeature, membership.ConnectionRebalanceFeature,
+		membership.ClientBlocklistFeature, membership.ClusterPolicyFeature, membership.ConnectionRebalanceFeature,
 		membership.CredentialRevocationFeature, membership.ProposalRecoveryFeature, membership.SessionMetadataFeature,
 	}
 	if buildFeatures != "" {

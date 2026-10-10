@@ -23,11 +23,11 @@ func TestAcknowledgementRoundTrip_MQTT311_MQTT5(t *testing.T) {
 		{name: "v5-pubrel-not-found", packet: &PubRel{Version: ProtocolV5, PacketID: 7, ReasonCode: 0x92}, trace: "PRD MQTT-02/TEST-04; MQTT-3.6.2-1"},
 		{name: "v5-pubcomp-not-found", packet: &PubComp{Version: ProtocolV5, PacketID: 8, ReasonCode: 0x92}, trace: "PRD MQTT-02/TEST-04; MQTT-3.7.2-1"},
 	}
-	decoder, err := NewDecoder(maxRemainingLength)
+	decoder, err := NewDecoder(MaxRemainingLength)
 	if err != nil {
 		t.Fatal(err)
 	}
-	encoder, err := NewEncoder(maxRemainingLength)
+	encoder, err := NewEncoder(MaxRemainingLength)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -45,7 +45,7 @@ func TestAcknowledgementRoundTrip_MQTT311_MQTT5(t *testing.T) {
 }
 
 func TestAcknowledgementCanonicalWire_MQTT311_MQTT5(t *testing.T) {
-	encoder, err := NewEncoder(maxRemainingLength)
+	encoder, err := NewEncoder(MaxRemainingLength)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -69,7 +69,7 @@ func TestAcknowledgementCanonicalWire_MQTT311_MQTT5(t *testing.T) {
 }
 
 func TestAcknowledgementDecodeFormsAndPropertyErrors_MQTT5(t *testing.T) {
-	decoder, err := NewDecoder(maxRemainingLength)
+	decoder, err := NewDecoder(MaxRemainingLength)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -115,7 +115,7 @@ func TestAcknowledgementDecodeFormsAndPropertyErrors_MQTT5(t *testing.T) {
 }
 
 func TestAcknowledgementValidationAndFlags_MQTT311_MQTT5(t *testing.T) {
-	decoder, err := NewDecoder(maxRemainingLength)
+	decoder, err := NewDecoder(MaxRemainingLength)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -134,7 +134,7 @@ func TestAcknowledgementValidationAndFlags_MQTT311_MQTT5(t *testing.T) {
 			}
 		})
 	}
-	encoder, err := NewEncoder(maxRemainingLength)
+	encoder, err := NewEncoder(MaxRemainingLength)
 	if err != nil {
 		t.Fatal(err)
 	}

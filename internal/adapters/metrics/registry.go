@@ -202,6 +202,9 @@ type Registry struct {
 	tenantQuotaProfileCommitted   atomic.Int64
 	tenantQuotaProfileVersion     atomic.Uint64
 	tenantQuotaConfigMismatch     atomic.Int64
+	clusterPolicyCommitted        atomic.Int64
+	clusterPolicyVersion          atomic.Uint64
+	clusterPolicyConfigMismatch   atomic.Int64
 	publishBackpressureRejections [len(publishBackpressureReasons)]atomic.Uint64
 	publishBackpressureActive     [2]atomic.Bool
 	storageFreeBytes              atomic.Uint64
@@ -537,6 +540,22 @@ func (r *Registry) SetTenantQuotaProfile(committed bool, version uint64, configM
 	r.tenantQuotaConfigMismatch.Store(mismatchValue)
 }
 
+// SetClusterPolicy updates gauges for the locally applied cluster policy.
+func (r *Registry) SetClusterPolicy(committed bool, version uint64, configMismatch bool) {
+	var committedValue, mismatchValue int64
+	if committed {
+		committedValue = 1
+	} else {
+		version = 0
+	}
+	if committed && configMismatch {
+		mismatchValue = 1
+	}
+	r.clusterPolicyCommitted.Store(committedValue)
+	r.clusterPolicyVersion.Store(version)
+	r.clusterPolicyConfigMismatch.Store(mismatchValue)
+}
+
 // SetSessionsActive updates session gauges.
 func (r *Registry) SetSessionsActive(persistent bool, count int64) {
 	if count < 0 {
@@ -713,6 +732,15 @@ func (r *Registry) Render(isOpenMetrics bool) []byte {
 	fmt.Fprintf(&buf, "# HELP narumq_tenant_quota_config_mismatch Whether the local quota configuration conflicts with the committed profile.\n")
 	fmt.Fprintf(&buf, "# TYPE narumq_tenant_quota_config_mismatch gauge\n")
 	fmt.Fprintf(&buf, "narumq_tenant_quota_config_mismatch %d\n", r.tenantQuotaConfigMismatch.Load())
+	fmt.Fprintf(&buf, "# HELP narumq_cluster_policy_committed Whether a cluster policy is committed locally.\n")
+	fmt.Fprintf(&buf, "# TYPE narumq_cluster_policy_committed gauge\n")
+	fmt.Fprintf(&buf, "narumq_cluster_policy_committed %d\n", r.clusterPolicyCommitted.Load())
+	fmt.Fprintf(&buf, "# HELP narumq_cluster_policy_version Version of the locally applied cluster policy.\n")
+	fmt.Fprintf(&buf, "# TYPE narumq_cluster_policy_version gauge\n")
+	fmt.Fprintf(&buf, "narumq_cluster_policy_version %d\n", r.clusterPolicyVersion.Load())
+	fmt.Fprintf(&buf, "# HELP narumq_cluster_policy_config_mismatch Whether local cluster policy configuration conflicts with the committed policy.\n")
+	fmt.Fprintf(&buf, "# TYPE narumq_cluster_policy_config_mismatch gauge\n")
+	fmt.Fprintf(&buf, "narumq_cluster_policy_config_mismatch %d\n", r.clusterPolicyConfigMismatch.Load())
 	fmt.Fprintf(&buf, "# HELP narumq_tenant_quota_rejections_total Committed storage mutations rejected by tenant quota dimension.\n")
 	fmt.Fprintf(&buf, "# TYPE narumq_tenant_quota_rejections_total counter\n")
 	r.renderTenantQuotaRejections(&buf)

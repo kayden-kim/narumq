@@ -96,6 +96,20 @@ type Config struct {
 	ClusterProjectionReady func() bool
 }
 
+// ConnectionLimits are the MQTT limits a connection captures when it is accepted.
+type ConnectionLimits struct {
+	MaxPacketSize     int
+	ReceiveMaximum    uint16
+	ConnectTimeout    time.Duration
+	PacketReadTimeout time.Duration
+	WriteTimeout      time.Duration
+}
+
+type connectionLimits struct {
+	ConnectionLimits
+	decoder *mqtt.Decoder
+}
+
 type tcpTimerScheduler struct{}
 
 func (tcpTimerScheduler) AfterFunc(delay time.Duration, callback func()) connect.Timer {
@@ -106,7 +120,7 @@ func (tcpTimerScheduler) AfterFunc(delay time.Duration, callback func()) connect
 type Server struct {
 	listeners     []net.Listener
 	config        Config
-	decoder       *mqtt.Decoder
+	limits        atomic.Pointer[connectionLimits]
 	encoder       *mqtt.Encoder
 	connections   *connect.UseCase
 	subscriptions *subscribe.UseCase
@@ -195,10 +209,9 @@ func NewServer(
 	if logger == nil {
 		logger = slog.Default()
 	}
-	return &Server{
+	server := &Server{
 		listeners:            []net.Listener{listener},
 		config:               config,
-		decoder:              decoder,
 		encoder:              encoder,
 		connections:          connections,
 		subscriptions:        subscriptions,
@@ -210,7 +223,32 @@ func NewServer(
 		connectingByClientID: make(map[string]*pendingConnectingGroup),
 		revokedCredentials:   make(map[string]struct{}),
 		blocklist:            security.NewBlocklist(),
-	}, nil
+	}
+	server.limits.Store(&connectionLimits{
+		ConnectionLimits: ConnectionLimits{
+			MaxPacketSize:     config.MaxPacketSize,
+			ReceiveMaximum:    config.ReceiveMaximum,
+			ConnectTimeout:    config.ConnectTimeout,
+			PacketReadTimeout: config.PacketReadTimeout,
+			WriteTimeout:      config.WriteTimeout,
+		},
+		decoder: decoder,
+	})
+	return server, nil
+}
+
+// SetConnectionLimits applies limits to connections accepted after the call.
+func (server *Server) SetConnectionLimits(limits ConnectionLimits) error {
+	if server == nil {
+		return ErrNilListener
+	}
+	decoder, err := mqtt.NewDecoder(limits.MaxPacketSize)
+	if err != nil || limits.ReceiveMaximum == 0 ||
+		limits.ConnectTimeout <= 0 || limits.PacketReadTimeout <= 0 || limits.WriteTimeout <= 0 {
+		return ErrInvalidConfig
+	}
+	server.limits.Store(&connectionLimits{ConnectionLimits: limits, decoder: decoder})
+	return nil
 }
 
 func (server *Server) clusterReady() bool {
@@ -317,6 +355,7 @@ func (server *Server) Serve(ctx context.Context) error {
 func newConnection(server *Server, socket net.Conn) *connection {
 	sourceIP := remoteHost(socket)
 	connection := &connection{
+		limits:           server.limits.Load(),
 		server:           server,
 		socket:           socket,
 		sourceIP:         sourceIP,
@@ -797,6 +836,7 @@ type pendingDeliveryPromotion struct {
 
 type connection struct {
 	server       *Server
+	limits       *connectionLimits
 	socket       net.Conn
 	sourceIP     string
 	controlQueue chan controlMessage
@@ -901,7 +941,7 @@ func (connection *connection) admitInboundPublish(packetID mqtt.PacketIdentifier
 	if _, exists := connection.receiving[packetID]; exists {
 		return true, false
 	}
-	if len(connection.receiving) >= int(connection.server.config.ReceiveMaximum) {
+	if len(connection.receiving) >= int(connection.limits.ReceiveMaximum) {
 		return false, false
 	}
 	connection.receiving[packetID] = struct{}{}
@@ -1032,8 +1072,8 @@ func (connection *connection) cleanup() {
 }
 
 func (connection *connection) readLoop() error {
-	reader := newFrameReader(connection.server.config.MaxPacketSize)
-	if err := connection.socket.SetReadDeadline(time.Now().Add(connection.server.config.ConnectTimeout)); err != nil {
+	reader := newFrameReader(connection.limits.MaxPacketSize)
+	if err := connection.socket.SetReadDeadline(time.Now().Add(connection.limits.ConnectTimeout)); err != nil {
 		return err
 	}
 	connected := false
@@ -1049,7 +1089,7 @@ func (connection *connection) readLoop() error {
 		}
 		consumedAny := false
 		for reader.buffered > 0 {
-			packet, consumed, err := connection.server.decoder.Decode(reader.pending(), version)
+			packet, consumed, err := connection.limits.decoder.Decode(reader.pending(), version)
 			if errors.Is(err, mqtt.ErrIncompletePacket) {
 				break
 			}
@@ -1134,7 +1174,7 @@ func (connection *connection) readLoop() error {
 				if consumedAny || partialStarted.IsZero() {
 					partialStarted = time.Now()
 				}
-				partialDeadline := partialStarted.Add(connection.server.config.PacketReadTimeout)
+				partialDeadline := partialStarted.Add(connection.limits.PacketReadTimeout)
 				if deadline.IsZero() || partialDeadline.Before(deadline) {
 					deadline = partialDeadline
 				}
@@ -1393,8 +1433,8 @@ func (connection *connection) activate(packet mqtt.Connect) error {
 	}
 	connAck := result.ConnAck
 	if packet.Version == mqtt.ProtocolV5 {
-		connAck.ReceiveMaximum = connection.server.config.ReceiveMaximum
-		connAck.MaximumPacketSize = uint32(mqtt.PacketSize(connection.server.config.MaxPacketSize))
+		connAck.ReceiveMaximum = connection.limits.ReceiveMaximum
+		connAck.MaximumPacketSize = uint32(mqtt.PacketSize(connection.limits.MaxPacketSize))
 	}
 	connection.server.mu.Lock()
 	if _, revoked := connection.server.revokedCredentials[connection.credentialID]; revoked {
@@ -2604,7 +2644,7 @@ func (connection *connection) writePacket(packet mqtt.Packet) error {
 	if connection.exceedsClientPacketSize(len(encoded)) {
 		return ErrClientPacketTooLarge
 	}
-	if err := connection.socket.SetWriteDeadline(time.Now().Add(connection.server.config.WriteTimeout)); err != nil {
+	if err := connection.socket.SetWriteDeadline(time.Now().Add(connection.limits.WriteTimeout)); err != nil {
 		return err
 	}
 	switch ack := packet.(type) {
