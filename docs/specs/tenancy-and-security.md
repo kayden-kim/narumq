@@ -91,104 +91,28 @@ CONNACK `0x05`, MQTT 5 CONNACK `0x87`을 반환하고 연결을 닫는다. Unkno
 잘못된 password는 모두 `invalid_credentials`로 처리한다. 인증 실패는 session, timer,
 route, queue, retained message와 Will을 변경하지 않는다.
 
-TLS listener(`-tcp-listen` 또는 `-tls-listen`)를 여는 Broker 시작에는
-`-security-config <path>`가 필수다. 파일은 알 수 없는 field와 두 번째 JSON value를
-거절하는 strict decoder로 한 JSON value만 읽는다. JWT 설정의 duration은 양수인 Go
-duration string이어야 한다.
-`tenantLimits.maxWait`는 §5.2의 `0s`~`10s`를 따른다. Configuration decode와 JWT/JWKS,
-password, mTLS provider 생성은 listener socket을 열기 전에 끝나야 하며, 누락·충돌·오류가
-있으면 시작을 실패시킨다. TLS listener의 `request|require` client authentication은
-최소 하나의 `mtlsIdentities` binding을 요구하고, binding이 있으면 `client-auth none`을
-사용할 수 없다. `request`는 mTLS certificate가 없는 client에 JWT 또는 password provider가
-configured된 경우 인증을 허용한다. `require`는 모든 TLS client에 verified certificate를
-요구한다.
+Standalone mode는 MQTT listener를 열 때 security config가 필요하다. 허용된 loopback 개발 mode는 예외다. Dynamic cluster mode는 `mqtt.securityConfigFile`을 사용한다. 허용 flag 조합, 파일 구조, field 검증과 strict parsing은 [Process configuration v1 §1.1~§1.4](../contracts/process-configuration-v1.md)에서 정한다.
 
-유일한 개발·benchmark 예외는 `-tcp-listen`과 `-allow-insecure-anonymous-mqtt`를 함께 사용하고
-`-tls-listen`을 비워 둔 경우다. `-tcp-listen`은 literal `127.0.0.0/8` 또는 `::1` loopback이어야
-하며, `-security-config`와 예외 flag를 함께 사용할 수 없다. MQTT listener 없이 예외 flag만 주거나
-TLS listener와 함께 주는 경우도 거절한다. 이 예외는 production security mode가 아니며 Phase 1
-보안 완료 증거로 사용할 수 없다. MQTT listener가 없는 management-only 실행에는
-`-security-config`를 요구하지 않는다.
+Standalone mode는 MQTT listener를 열기 전에 security config를 읽고 authentication provider를 만든다. Dynamic cluster mode는 peer listener를 열거나 Raft 상태를 복구한 뒤 security config를 읽을 수 있다. MQTT·management listener를 열기 전에는 security config와 provider를 준비한다. 이후 시작이 실패하면 이미 연 자원을 닫는다. 자세한 흐름은 [Configuration and runtime options §3](configuration-and-runtime-options.md#3-시작-실행-종료-흐름)을 따른다.
 
-```json
-{
-  "jwt": {
-    "issuer": "https://issuer.example",
-    "audience": "narumq",
-    "algorithms": ["RS256"],
-    "jwksUrl": "https://issuer.example/.well-known/jwks.json",
-    "cacheTtl": "15m",
-    "refreshCooldown": "30s",
-    "clockSkew": "30s",
-    "httpTimeout": "5s"
-  },
-  "identities": [
-    {
-      "issuer": "https://issuer.example",
-      "subject": "device-1",
-      "tenantId": "tenant-a",
-      "credentialId": "device-1-key",
-      "allowedClientIds": ["device-1"],
-      "roles": ["publisher"]
-    }
-  ],
-  "mtlsIdentities": [
-    {
-      "identityKind": "commonName",
-      "identity": "device-1-cert",
-      "tenantId": "tenant-a",
-      "subject": "device-1-cert",
-      "credentialId": "device-1-cert-key",
-      "allowedClientIds": ["device-1-cert"],
-      "roles": ["publisher"]
-    }
-  ],
-  "acl": [
-    {
-      "tenantId": "tenant-a",
-      "role": "publisher",
-      "effect": "allow",
-      "action": "publish",
-      "topicFilter": "sensors/#"
-    }
-  ]
-}
-```
+TLS listener의 `request|require` client authentication에는 하나 이상의 `mtlsIdentities` binding이 필요하다. Binding이 있으면 `client-auth none`을 사용할 수 없다. `request` mode에서는 mTLS certificate가 없는 client도 JWT 또는 password authentication을 설정한 경우 인증할 수 있다. `require` mode에서는 모든 TLS client가 검증된 certificate를 제출해야 한다.
 
-`mtlsIdentities` entry는 `identityKind`, `identity`, `tenantId`, `subject`, `credentialId`,
-`allowedClientIds`, `roles` field만 사용한다. `identityKind`는 `commonName`, `dnsSan`,
-`emailSan` 중 하나이며 identity 비교는 case-sensitive exact match다. 하나의 certificate가
-zero entry와 match하면 unmapped, 둘 이상의 entry와 match하면 ambiguous다. `NotAfter`는
-새 principal의 만료 시각으로 사용하며 trust chain·certificate validity·client-auth EKU는
-TLS handshake에서 먼저 검증한다. URI SAN/SPIFFE·fingerprint selector와 cluster-peer mTLS는 이 인증 mapping slice에 포함하지 않는다. Client certificate 폐기는 §7의 `credentialId` 폐기 규칙을 따른다.
+Anonymous MQTT 예외는 loopback 개발용이다. Production security mode가 아니며 production security 완료의 근거로 사용할 수 없다.
 
-이 slice는 issuer와 audience를 각각 정확히 하나만 허용한다. JWT identities의 `(issuer, subject)` binding, mTLS identities의 `(identityKind, identity)` selector, allowed Client IDs와 roles는 각각 고유해야 한다. Password identities는 같은 `subject`를 공유할 수 있지만 `username`과 `credentialId`는 고유해야 한다. JWT·password·mTLS 전체에서 `credentialId`는 UTF-8 1~512 bytes이며 중복될 수 없다. ACL `effect`는 `allow|deny`, `action`은 `publish|subscribe|unsubscribe|will`만 허용한다. 중복 ACL rule과 malformed MQTT filter는 startup에서 거절한다. `jwksUrl`은 절대 `https` URL이어야 하며, deterministic test를 위해 IP-literal loopback host의 HTTP만 예외로 허용한다. `cacheTtl`, `refreshCooldown`, `clockSkew`, `httpTimeout`은 모두 양수여야 한다. Credential 회전과 폐기는 §7을 따른다. 운영 중 reload는 제공하지 않는다.
+`mtlsIdentities`의 schema와 selector 값은 [Process configuration v1 §1.4](../contracts/process-configuration-v1.md)에서 정한다. Certificate가 어떤 binding과도 일치하지 않으면 unmapped로 처리한다. 둘 이상의 binding과 일치하면 ambiguous로 처리한다. TLS handshake는 identity mapping 전에 trust chain, certificate 유효 기간과 client-auth EKU를 검증한다. `NotAfter`는 새 principal의 만료 시각으로 사용한다.
+
+URI SAN/SPIFFE·fingerprint selector와 cluster-peer mTLS는 이 MQTT identity mapping 범위에 포함하지 않는다. Client certificate 폐기와 credential 회전은 §7을 따른다. 설정 reload는 제공하지 않는다.
+
+JWT·password·mTLS·ACL field의 형식과 검증 규칙은 [Process configuration v1 §1.4](../contracts/process-configuration-v1.md)에서 정한다.
 
 
 ### 2.4 Username/password
 
-Password authentication은 `passwordIdentities`가 하나 이상 있을 때 활성화된다. 각 entry는
-`username`, `passwordHash`, `tenantId`, `subject`, `credentialId`, `allowedClientIds`,
-`roles` field만 사용한다. Plaintext `password` field는 strict decoder가 거절한다.
-Username은 비어 있지 않은 case-sensitive exact key이며 같은 configuration 안에서 중복할 수 없다. Password identities는 같은 `subject`를 공유할 수 있지만 각 `credentialId`는 JWT·mTLS identity를 포함해 고유해야 한다. `credentialId`는 UTF-8 1~512 bytes여야 한다. Tenant·Client ID·role의 필수·중복 검사는 JWT/mTLS binding과 같은 기준을 따른다. JWT provider와 nonempty password identity 목록을 함께 설정하면 startup이 실패한다. Password 목록이 없거나 비어 있으면 password authentication은 활성화되지 않는다.
-Dynamic cluster에서 password를 회전할 때는 새 `username`·`passwordHash`·`credentialId` entry를 추가하고 rolling restart를 수행한다. Client를 새 credential로 전환한다. 기존 `credentialId`를 폐기한다. 다음 rolling restart에서 이전 entry를 제거한다.
+Password identity와 Argon2id PHC 형식은 [Process configuration v1 §1.4](../contracts/process-configuration-v1.md)에서 정한다. `passwordIdentities`를 설정하면 password authentication을 사용한다. Password principal에는 별도 만료 시각이 없다.
 
-`passwordHash`는 다음 Argon2id PHC profile만 허용한다.
+Dynamic cluster에서 password를 회전하려면 rolling restart를 한다. 새 username, password hash와 credential ID를 추가한다. Client를 새 credential로 전환한다. 이전 credential ID를 폐기한다. 다음 rolling restart에서 이전 항목을 제거한다.
 
-```text
-$argon2id$v=19$m=19456,t=2,p=1$<salt>$<digest>
-```
-
-Salt는 16 bytes, digest는 32 bytes다. 둘 다 padding 없는 canonical standard base64로
-인코딩한다. Version, parameter, 길이 또는 encoding이 다르면 startup에서 거절한다.
-Profile은 OWASP Password Storage Cheat Sheet의 Argon2id 권장값인 19 MiB, 2회,
-1 lane을 따른다. Password는 복호화 가능한 형식이나 평문으로 저장하지 않는다.
-
-`narumq -hash-password`는 stdin에서 1~65,535 bytes를 읽어 salt가 다른 PHC hash를 stdout에
-출력한다. 입력 마지막의 LF 한 개와 바로 앞 CR 한 개만 제거한다. 그 밖의 공백과 binary
-byte는 보존한다. Password를 flag, environment variable 또는 임시 file에 전달하는 기능은
-제공하지 않는다. Secret manager 등의 pipe 입력을 사용하고 shell history에 평문 password를
-입력하지 않는다.
+`narumq -hash-password`의 입력·출력 규칙은 [Process configuration v1 §1.1](../contracts/process-configuration-v1.md)에서 정한다. Password는 보호된 pipe로 전달한다. 평문 password를 shell history에 넣지 않는다.
 
 Provider는 최대 4개의 Argon2 계산만 동시에 수행한다. Slot이 없으면 대기하지 않고 일반
 인증 실패로 거절한다. 이 제한은 계산 중인 작업 수를 제한하며 GC가 회수하기 전 process
@@ -265,57 +189,14 @@ Dynamic cluster는 tenant별 retained bytes, offline queue와 저장 총량을 �
 | `offlineQueueBytes` | 위 message들의 계산 bytes 합 | 32 MiB |
 | `storageBytes` | retained, QoS 0 offline, durable delivery outbound·inbound QoS 2 bytes 합 | 48 MiB |
 
-`-cluster-config`에는 다음 형태의 `tenantQuotas` profile을 선택적으로 지정한다. 명시 profile의 `version`은 1 이상이며, tenant별 항목은 `tenantId` 순으로 적용된다.
-
-```json
-{
-  "tenantQuotas": {
-    "version": 1,
-    "default": {
-      "retainedBytes": 16777216,
-      "offlineQueueMessages": 8192,
-      "offlineQueueBytes": 33554432,
-      "storageBytes": 50331648
-    },
-    "tenants": [
-      {
-        "tenantId": "acme",
-        "retainedBytes": 1048576,
-        "offlineQueueMessages": 256,
-        "offlineQueueBytes": 1048576,
-        "storageBytes": 4194304
-      }
-    ]
-  }
-}
-```
+선택 `tenantQuotas` field의 JSON 구조, 필수 항목과 검증 규칙은 [Process configuration v1 §1.3](../contracts/process-configuration-v1.md)에서 정한다.
 
 Profile은 더 높은 version의 Raft command가 commit된 뒤 모든 replica에 적용된다. 설정에 tenant 항목이 없으면 `default`를 사용한다. `tenantQuotas`를 생략하면 각 dimension의 cluster-wide 최대값인 version 0 built-in profile이 사용된다. 새 저장이 quota를 넘으면 retained/offline mutation은 기존 capacity 결과로 거절한다. Durable delivery는 [Cluster §4.5](cluster-session-and-delivery.md#45-publish-backpressure-admission)의 ingress 사전 판정에서 전역·tenant 한도 초과 publish를 거절한다. MQTT 5는 `0x97`, MQTT 3.1.1은 연결 종료를 반환한다. Tenant 초과는 `narumq_tenant_quota_rejections_total`에 기록한다. Apply 시점 경합은 기존 `Saturated` 처리다. Session당 한도와 RELEASE 시점 포화도 target을 건너뛰는 기존 동작을 유지한다.
 
 Proposer node는 `narumq_tenant_quota_rejections_total{tenant,dimension}` counter를 올리고 같은 tenant·dimension 경보 log를 10초 rate-limit한다. Tenant label은 최대 1,024개까지 보존하고 나머지는 `_overflow` label로 집계한다. Profile commit 여부, version과 local config mismatch는 각각 `narumq_tenant_quota_profile_committed`, `narumq_tenant_quota_profile_version`, `narumq_tenant_quota_config_mismatch`로 노출한다. Committed profile이 복구되기 전에는 cluster MQTT readiness를 허용하지 않는다.
 ### 5.2 연결 상태와 traffic 한도
 
-`-security-config` JSON에 선택 object `tenantLimits`를 둔다. Standalone과 cluster가 같은 schema를 사용한다. `tenantLimits`를 생략하면 tenant 한도가 없다.
-
-```json
-"tenantLimits": {
-  "maxWait": "1s",
-  "default": {
-    "maxConnections": 1000, "maxSessions": 2000, "maxSubscriptions": 10000,
-    "messagesPerSecond": 500, "bytesPerSecond": 1048576, "maxPayloadBytes": 262144
-  },
-  "tenants": [ { "tenantId": "acme", "maxConnections": 10, "messagesPerSecond": 0 } ]
-}
-```
-
-- **default.** 모든 field는 선택이다. 생략하거나 0이면 그 차원은 제한하지 않는다.
-- **tenants[].** `tenantId`는 필수이고 `tenancy.NewTenantID`로 검증한다. 같은 tenant가 두 번 나오면 거절한다. 최대 4,096개다. 생략한 field는 `default` 값을 상속한다. 명시한 0은 그 tenant에서 제한을 끈다.
-- **허용 범위.**
-  - `maxConnections`, `maxSessions`, `maxSubscriptions`, `messagesPerSecond`: 0~1,000,000.
-  - `bytesPerSecond`: 0~1,099,511,627,776(1<<40).
-  - `maxPayloadBytes`: 0~268,435,455.
-  - `maxWait`: Go duration, `0s`~`10s`. 생략하면 `1s`다. `0s`는 대기 없이 바로 거절한다.
-  - 알 수 없는 field, 범위 밖 값, 음수, 잘못된 duration은 startup에서 거절한다.
+선택 `tenantLimits` object의 field, 상속, 기본값과 허용 범위는 [Process configuration v1 §1.4](../contracts/process-configuration-v1.md)에서 정한다. `tenantLimits`를 생략하면 tenant 한도를 적용하지 않는다.
 
 한도는 인증된 principal(`principal.Subject() != ""`)에만 적용한다. Security config가 없는 loopback 개발 모드와 anonymous session에는 한도가 없다.
 

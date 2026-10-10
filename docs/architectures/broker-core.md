@@ -187,9 +187,9 @@ Service는 프로세스 수명 동안 bucket을 보관하며, 종료 시 별도 
 `cmd/narumq/mqtt_listener.go`의 `openMQTTListener`가 listener 조립을 소유한다.
 Standalone은 `main.go`, cluster는 `cluster_runtime.go`의 `clusterMQTTListeners`에서
 이 helper를 호출한다. 입력은 주소, TLS config, 두 한도와
-`ports/metrics.ListenerAdmissionRecorder`다. 기본값과 외부 동작은
-[MQTT §7.1](../specs/mqtt-protocol-and-session.md#71-현재-상한과-기본값),
-JSON 형식은 [cluster config 계약](../contracts/raft-membership-v2.md#14-combined-cluster-configuration)을 따른다.
+`ports/metrics.ListenerAdmissionRecorder`다. 설정 field와 기본값은
+[Process configuration v1 contract §1.1, §1.3](../contracts/process-configuration-v1.md),
+listener의 외부 동작은 [MQTT §7.1](../specs/mqtt-protocol-and-session.md#71-현재-상한과-초과-동작)을 따른다.
 
 Helper는 raw TCP listener를 연다. 두 한도 중 하나라도 켜져 있으면
 `internal/adapters/tcp/listener_admission.go`의 `NewAdmissionListener`로 감싼다.
@@ -253,7 +253,7 @@ Dynamic cluster persistent disconnect는 `BeginDetach`로 local enqueue를 차�
 
 ### MQTT 연결별 resource limit
 
-외부 동작과 기본값은 [MQTT §7.1](../specs/mqtt-protocol-and-session.md#71-현재-상한과-기본값)이 기준이다. Domain codec은 CONNECT·CONNACK의 두 한도 property를 검증한다. `PacketSize`·`PublishPacketSize`는 전송할 크기를 할당 없이 계산한다. Socket과 deadline은 TCP adapter만 소유한다.
+설정 field와 기본값은 [Process configuration v1 contract §1.1, §1.3](../contracts/process-configuration-v1.md)이 기준이다. 외부 동작은 [MQTT §7.1](../specs/mqtt-protocol-and-session.md#71-현재-상한과-초과-동작)이 기준이다. Domain codec은 CONNECT·CONNACK의 두 한도 property를 검증한다. `PacketSize`·`PublishPacketSize`는 전송할 크기를 할당 없이 계산한다. Socket과 deadline은 TCP adapter만 소유한다.
 
 `server.go`의 `readLoop`는 `frame_reader.go`의 `frameReader`로 byte를 모은다. 연결을 만들 때 작은 buffer를 할당한다. 받은 byte가 buffer를 채운 뒤에만 늘린다. 완성 packet을 소비해 남은 byte가 없으면 초기 크기로 반환한다. CONNECT 절대 deadline은 유지한다. CONNECT 뒤에는 KeepAlive deadline과 미완성 packet의 첫 수신 시각을 별도로 보관하고, 둘 가운데 이른 deadline을 socket에 설정한다. 추가 byte만 받았을 때 packet 완성 deadline을 연장하지 않는다.
 

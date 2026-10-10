@@ -94,7 +94,7 @@ Active broker drain endpoint는 `Idempotency-Key`를 요구한다. 같은 node�
 
 각 node는 등록된 `/api/v1/**` route 요청에 독립된 process-local token bucket을 적용해야 한다. Cluster 전체 합산 한도는 없다. Health probe, `/metrics`와 등록되지 않은 path의 404 handler는 제한하지 않는다.
 
-인증에 성공한 요청은 인증 principal의 `subject`별 bucket을 사용해야 한다. 기본값은 초당 50건이며 burst도 50건이다. 인증에 실패한 요청은 `RemoteAddr`에서 분리한 host별 bucket을 사용해야 한다. 기본값은 초당 5건이며 burst도 5건이다. `X-Forwarded-For`를 client address로 신뢰해서는 안 된다. 익명 local mode에서 인증 성공 요청은 `local-unauthenticated` subject를 사용한다. 새 bucket은 가득 찬 상태로 시작하며 시간에 비례해 최대 rate까지 token을 보충한다.
+인증 성공 요청은 principal의 `subject`별 bucket을 사용해야 한다. 인증 실패 요청은 `RemoteAddr`에서 분리한 host별 bucket을 사용해야 한다. `X-Forwarded-For`를 client address로 신뢰해서는 안 된다. 익명 local mode에서 인증 성공 요청은 `local-unauthenticated` subject를 사용한다. 새 bucket은 가득 찬 상태로 시작하며 설정한 rate에 따라 token을 보충한다.
 
 처리 순서는 인증, 인증 실패 IP bucket 또는 성공 principal bucket, role 검사, mutation audit admission이어야 한다. 인증 실패 bucket을 초과하면 `401` 대신 `429`를 반환해야 한다. 인증 성공 요청은 role 검사 전에 principal token을 소비하므로 `403`도 token을 소비한다. Rate limit에 걸린 mutation은 handler를 실행하거나 `AdmitMutation`을 호출해서는 안 된다.
 
@@ -103,7 +103,7 @@ Audit producer가 구성된 node는 rate-limit 거절을 `management.request` ev
 
 Limiter는 각 bucket map에 최대 4096개 key를 보관해야 한다. 새 key를 저장할 때 상한에 도달하면 모든 bucket을 refill한 뒤 가득 찬 bucket을 제거해야 한다. 그래도 상한이면 새 key 요청을 거절해야 한다. 기존 key는 계속 처리한다.
 
-Standalone 설정은 `-http-request-rate`(기본 50)와 `-http-auth-failure-rate`(기본 5)다. Combined cluster configuration은 `management.requestRate`와 `management.authFailureRate`를 사용한다. Cluster field를 생략하면 각각 기본값을 쓴다. 설정한 값은 초당 rate와 burst에 함께 적용하며 1~1,000,000이어야 한다. 세부 결정은 [ADR-0043](../decisions/ADR-0043-management-api-rate-limit.md)을 따른다.
+Standalone mode는 `-http-request-rate`와 `-http-auth-failure-rate`를 사용한다. Dynamic cluster mode는 `management.requestRate`와 `management.authFailureRate`를 사용한다. 두 mode의 기본값, 허용 범위와 field 형식은 [Process configuration v1 §1.1, §1.3](../contracts/process-configuration-v1.md)에서 정한다. 설정한 값은 token 보충 rate와 burst 용량에 함께 적용한다. 세부 결정은 [ADR-0043](../decisions/ADR-0043-management-api-rate-limit.md)을 따른다.
 
 ## 2. Endpoint catalog
 

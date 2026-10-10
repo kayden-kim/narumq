@@ -247,18 +247,7 @@ Planned removal은 대상 외의 committed `VOTER`가 3 미만이면 non-retryab
 
 PUBACK에 `0x89`를 쓰지 않는다. PUBCOMP에 `0x97`이 없으므로 RELEASE를 막지 않는다.
 
-Cluster config에 다음 선택 object를 넣을 수 있다. 생략하면 아래 기본값을 사용한다. Object가 있으면 두 key가 모두 있어야 한다. Unknown key는 거절한다. `minFreeBytes`는 0–`1<<50`, `maxCommitLagMillis`는 100–10000 범위다.
-
-```json
-{
-  "publishBackpressure": {
-    "minFreeBytes": 1073741824,
-    "maxCommitLagMillis": 1000
-  }
-}
-```
-
-이 key는 이전 binary가 unknown field로 거절한다. Config는 binary와 함께 배포해야 한다. Wire·schema·apply가 같으므로 feature gate는 추가하지 않는다.
+`publishBackpressure`의 JSON 구조, 기본값과 허용 범위는 [Process configuration v1 §1.3](../contracts/process-configuration-v1.md)에서 정한다. 설정은 해당 field를 아는 binary와 함께 배포해야 한다. 이전 binary는 알 수 없는 key를 거절한다([Process configuration v1 §3](../contracts/process-configuration-v1.md#3-호환성-규칙)). Wire·schema·apply 동작은 바뀌지 않으므로 feature gate는 추가하지 않는다.
 
 | Metric | 값과 label |
 | --- | --- |

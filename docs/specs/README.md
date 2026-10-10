@@ -19,6 +19,7 @@
 | [Cluster session과 durable delivery](cluster-session-and-delivery.md) | membership, session ownership, fencing, routing, 복제, partition, 복구 | CLU-01~CLU-14, NFR-07~NFR-10, NFR-15 |
 | [Tenant와 security](tenancy-and-security.md) | tenant 결정, topic 격리, ACL, quota, 인증, RBAC, 감사 | TEN-01~TEN-10, SEC-01~SEC-12, NFR-16~NFR-19 |
 | [Management API와 observability](management-api-and-observability.md) | REST resource, 공통 JSON 계약, probe, Metric, Dashboard 조회 | API-01~API-09, UI-01~UI-10 |
+| [실행 옵션과 설정](configuration-and-runtime-options.md) | 실행 모드 선택, 설정 적재·검증, 시작 실패, 설정 변경 반영 경로 | API-05, API-09, SEC-02, SEC-05, MQTT-09, MQTT-11, CLU-09, CLU-12, TEN-06~TEN-08 |
 | [Drain과 rolling update](drain-and-rolling-update.md) | node lifecycle, drain API, safe-to-stop barrier, client redirect, rollout gate, AWS deployment profile | DEP-01~DEP-24, CLIENT-01~CLIENT-09 |
 | [Performance와 verification](performance-and-verification.md) | 성능 측정, 시험 계층, coverage, release gate와 증거물 | NFR-01~NFR-06, NFR-11~NFR-15, PERF-01~PERF-12, TEST-01~TEST-17 |
 
@@ -42,7 +43,7 @@ MQTT packet 이름, property와 reason code는 OASIS 명칭을 사용한다. 충
 | `nodeId` | cluster membership 세대에서 node를 식별하는 불투명 문자열이다. |
 | `requestId` | 관리 요청과 감사 이벤트를 연결한다. 응답과 구조화 로그에 같은 값을 기록한다. |
 | timestamp | JSON에서는 UTC RFC 3339 문자열을 사용한다. Metric 시간은 수집 시스템의 timestamp 규칙을 따른다. |
-| duration | JSON에서는 음수가 아닌 millisecond 정수를 사용한다. 설정 파일의 표기 형식은 별도 configuration spec에서 확정한다. |
+| duration | JSON에서는 음수가 아닌 millisecond 정수를 사용한다. 설정 파일 표기는 [Process configuration v1 §1.9](../contracts/process-configuration-v1.md#19-표기-규칙)을 따른다. |
 
 ## 오류 원칙
 
@@ -59,8 +60,8 @@ MQTT packet 이름, property와 reason code는 OASIS 명칭을 사용한다. 충
 | ID | 미결정 항목 | 확정 위치 | 제약 |
 | --- | --- | --- | --- |
 | SPEC-TBD-01 | WAL 영속화 기준, replication factor, write quorum | [ADR-0002](../decisions/ADR-0002-cluster-consensus-library.md), [ADR-0003](../decisions/ADR-0003-durable-ack-barrier.md) | 두 ADR은 Proposed다. 승인 전에는 제품 기본값으로 확정하지 않는다. |
-| SPEC-TBD-02 | listener, packet, inflight, queue 및 tenant quota 수치 | 일반 설정은 configuration spec; Dynamic cluster tenant 저장 quota와 최대값은 [ADR-0017](../decisions/ADR-0017-tenant-storage-quota.md); tenant 연결·traffic 한도는 [Tenant §5.2](tenancy-and-security.md#52-연결-상태와-traffic-한도) | Tenant storage quota는 네 dimension과 cluster-wide 최대값이 확정됐다. 저장 quota에는 그 밖의 무제한 값을 허용하지 않는다. Tenant 연결·traffic 한도의 차원과 허용 범위는 확정됐다. 제품 기본 수치는 아직 정하지 않았으므로 배포 security config가 값을 명시해야 한다. 생략하면 0(제한 없음)이다. 이는 listener 한도와 같은 구현 기본값이며 제품 보장이 아니다. |
-| SPEC-TBD-03 | session·message expiry 상한과 offline queue 초과 정책 | configuration spec | 적용 결과가 protocol 응답과 Metric에 드러나야 한다. |
+| SPEC-TBD-02 | listener, packet, inflight, queue 및 tenant quota 수치 | 일반 설정은 [실행 옵션과 설정 스펙](configuration-and-runtime-options.md); Dynamic cluster tenant 저장 quota와 최대값은 [ADR-0017](../decisions/ADR-0017-tenant-storage-quota.md); tenant 연결·traffic 한도는 [Tenant §5.2](tenancy-and-security.md#52-연결-상태와-traffic-한도) | Tenant storage quota는 네 dimension과 cluster-wide 최대값이 확정됐다. 저장 quota에는 그 밖의 무제한 값을 허용하지 않는다. Tenant 연결·traffic 한도의 차원과 허용 범위는 확정됐다. 제품 기본 수치는 아직 정하지 않았으므로 배포 security config가 값을 명시해야 한다. 생략하면 0(제한 없음)이다. 이는 listener 한도와 같은 구현 기본값이며 제품 보장이 아니다. |
+| SPEC-TBD-03 | session·message expiry 상한과 offline queue 초과 정책 | [실행 옵션과 설정 스펙](configuration-and-runtime-options.md) | 적용 결과가 protocol 응답과 Metric에 드러나야 한다. |
 | SPEC-TBD-04 | drain rate, LB 전파 대기, timeout, grace period | [ADR-0006](../decisions/ADR-0006-external-rollout-controller.md), deployment spec | Controller 전략은 Proposed이며 수치는 N-1 용량과 최악 종료 시간으로 확정해야 한다. |
 | SPEC-TBD-05 | topic 내부 prefix encoding과 canonicalization 세부 규칙 | tenancy ADR/spec 개정 | 외부 topic과 tenant 격리를 보존해야 한다. |
 | SPEC-TBD-07 | Metric 이름 전체와 histogram bucket | metrics catalog | label cardinality 제한을 지켜야 한다. |

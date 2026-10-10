@@ -81,7 +81,7 @@ PRD는 `Draft` 상태이므로 이 목록은 요구사항을 구현 기준으로
 
 ### 1.8 Management API·observability와 Dashboard
 
-- [ ] **결정 필요 — Management API GitOps/runtime source of truth(API-09)**: [Management API와 observability 스펙](specs/management-api-and-observability.md)은 API-09의 GitOps/runtime source-of-truth와 reconciliation 동작을 deferred로 둔다. 설정 충돌·reconciliation 상태를 구현하고 권한·경계·재시도 수용 시험을 통과한다.
+- [ ] **제안·미구현 — API-09 GitOps와 runtime 설정의 source of truth**: [Configuration and runtime options spec](specs/configuration-and-runtime-options.md)은 현재 적용 경로를, [ADR-0052](decisions/ADR-0052-configuration-tiers-and-cluster-policy.md)는 target policy를 설명한다. ADR은 Proposed이며 API-09 구현과 수용 시험은 남아 있다. 설정 구조 차이는 §1.10 G1~G10에서 추적한다. 제안: [ADR-0052](decisions/ADR-0052-configuration-tiers-and-cluster-policy.md)(Proposed).
 - API-05 rate limit은 [ADR-0043](decisions/ADR-0043-management-api-rate-limit.md)과 [Management API 스펙 §1.5](specs/management-api-and-observability.md#15-rate-limit)로 구현·시험했다.
 - [x] **완료 — UI-01~UI-05·UI-10 운영 Dashboard**: [ADR-0045](decisions/ADR-0045-operations-dashboard-grafana.md), [Management API 스펙 §8·§9](specs/management-api-and-observability.md#8-dashboard-계약), [운영 절차](how-to/operations-dashboard.md), `tests/integration/dashboard_stack_test.go`로 구현·시험했다. 2026-10-09 static contract와 local Docker process acceptance가 통과했다. Production deployment는 미검증이다.
 - [ ] **결정 필요 — P1 관리 화면·exact-topic Metric(UI-06~UI-09·API-07·TEN-10)**: client 검색·상세, disconnect/redirect, retained·exact-topic Metric과 delegated tenant role은 active query/API 계약 또는 후속 acceptance에 걸쳐 있다. 요구 우선순위, tenant 권한, API 계약과 UI 제공 순서를 확정한다. 채택한 범위만 구현하고 권한·마스킹·pagination·idempotency·감사 기준을 시험한다. 아직 deferred인 API를 호출하는 화면은 구현된 제품 동작으로 표시하지 않는다.
@@ -99,6 +99,22 @@ PRD는 `Draft` 상태이므로 이 목록은 요구사항을 구현 기준으로
   - **원인 확인·fixture 수정 완료**: `TestNodeCloseFlushesHeldAppendOrReportsFailure/consumed-prior-error`의 실패 주입을 held sync 뒤로 옮기고, 선행 오류 뒤 보관한 append와 미처리 queue가 남는 전제를 assertion으로 확인했다. `unconsumed-prior-error` 시나리오도 추가해 선행 storage 오류를 소비하지 않고 `Close`가 `ErrStorage`와 `os.ErrPermission`을 모두 반환하는지 확인했다. 두 시나리오는 race 시험 50회 반복에서 통과했다. Production `Node.Close`는 변경하지 않았다. 실행 결과와 artifact 위치는 [성능 §8.3](specs/performance-and-verification.md#83-branch-ratchet-노이즈-허용폭-수용-증거)에 있다. 상위 TEST-12~TEST-15의 CI·mutation 검증은 남는다.
   - **두 간헐 실패 원인 수정**: 2026-10-08 local gate의 `TestRaftPeerDriverTicksQueuesAndStops`는 bootstrap 설정 적용 뒤 campaign하도록 시험 준비 순서를 고쳤다. `TestDynamicClusterMembershipTransitionCrashRecovery`와 관련된 release-profile controller는 응답 없는 proposal을 5초 뒤 반환하도록 고쳤다. Driver race 총 300회와 실제 process 회귀 3회가 통과했다. 원인 B의 실제 proposal 유실은 직접 관찰하지 않은 추정이다. 실행 증거는 [성능 §8.6](specs/performance-and-verification.md#86-간헐-실패-원인-수정-수용-증거)에 있다. CI 증거가 남아 상위 항목은 `미검증`으로 유지한다.
   - **TEST-12 로컬 측정·범위 확장**: CI mutation gate에 `mqtt`·`security`를 추가해 [성능 §7](specs/performance-and-verification.md#7-verification-계층) 표의 범위와 맞췄다. 5개 package 모두 efficacy·mutant coverage 80% 이상을 로컬에서 확인했고, `variableByteIntegerSize` 경계 assertion을 보강했다. 기본 mutator 5종을 유지한다. 실행 증거는 [성능 §8.7](specs/performance-and-verification.md#87-mutation-gate-범위-확장-수용-증거)에 있다. CI 증거가 없어 상위 항목은 `미검증`으로 유지한다.
+
+<a id="110-실행-옵션설정-구조"></a>
+### 1.10 실행 옵션·설정 구조
+
+설정 형식은 [Process configuration v1](contracts/process-configuration-v1.md), 동작은 [실행 옵션과 설정 스펙](specs/configuration-and-runtime-options.md), 목표 구조는 [ADR-0052](decisions/ADR-0052-configuration-tiers-and-cluster-policy.md)(Proposed)를 따른다.
+
+- [ ] **결정 필요 — G1 Cluster MQTT 조정값 부재**: `cmd/narumq/cluster_runtime.go`의 `runClusterMode`는 Maximum Packet Size `1048576`, Receive Maximum `64`, packet read timeout `30s`, CONNECT timeout `10s`, write timeout `5s`, control queue `256`, delivery queue `256`을 고정한다. ADR-0052의 채택 여부에 따라 처리한다.
+- [ ] **결정 필요 — G2 Cluster MQTT TLS**: `clusterMQTTListeners`는 `peerTLS` 인증서를 재사용한다. Client CA와 client-auth 설정이 없어 TLS handshake에서 client certificate를 요청하지 않는다. 따라서 cluster의 `mtlsIdentities`를 MQTT TLS handshake에 사용할 수 없다. 이 내용은 코드 판독 결과이며 실행으로 확인하지 않았다.
+- [ ] **결정 필요 — G3 평문 TCP 정책 차이**: Standalone `-tcp-listen`은 loopback만 허용한다. Cluster `mqtt.tcpListenAddress`는 유효한 host:port면 loopback 제한 없이 허용한다. [MQTT spec §1 3항](specs/mqtt-protocol-and-session.md#1-listener-계약)의 정책과 맞는지 결정한다.
+- [ ] **미구현 — G4 중복 key 검사 차이**: `security_config.go`와 `raft_peer_config.go`는 중복 JSON key를 검사하지 않는다. `cluster_config.go`만 검사한다.
+- [ ] **결정 필요 — G5 duration 표기 혼재**: flag와 security config는 Go duration을 쓴다. Cluster config는 `Millis` 접미사가 붙은 정수 millisecond를 쓴다.
+- [ ] **미구현 — G6 cluster runtime metrics**: `-runtime-metrics-output`과 `-runtime-metrics-interval`은 standalone에서만 지원한다.
+- [ ] **미구현 — G7 설정 조회 API 부재**: 실제 적용 설정을 조회하는 API와 `tenantQuotas`를 바꾸는 Management API가 없다. 이는 전용 console의 선행 조건이다.
+- [ ] **결정 필요 — G8 standalone 식별자 고정**: Standalone Management API는 cluster ID `narumq-cluster-1`과 node ID `narumq-node-1`을 사용한다. 출처는 `cmd/narumq/main.go`의 `appmgmt.ServiceConfig`다.
+- [ ] **결정 필요 — G9 secret 명령행 노출**: `-http-auth-token`은 secret 값을 명령행으로 받는다. Cluster config는 `clusterAdminTokenFile` 경로를 받는다.
+- [ ] **결정 필요 — G10 cluster TLS 설정 부재**: Cluster mode에는 `tls-min-version`과 `tls-client-auth`에 대응하는 설정이 없다. `clusterMQTTListeners`는 peer certificate/key를 쓰고 TLS 1.2를 고정한다.
 
 PRD [§16 선택적 adapter](requirements/PRD.md#16-단계별-제공-범위)의 HTTP webhook·MQTT bridge·Kafka와 DEP-24 ECS는 사용량·필요성 및 별도 수용 기준이 승인되기 전까지 조건부 후속 범위로 둔다. 이를 미구현 결함이나 완료된 기능으로 기록하지 않는다. MQTT-10과 API-07은 각각 §1.6·§1.8에서 따로 추적한다.
 

@@ -31,7 +31,7 @@ Certificate 발급·배포와 방화벽 변경은 이 절차의 범위가 아니
 
 ## 3. 절차
 
-실행 위치는 저장소 root다. 세 process가 같은 host에서 실행되는 예시이므로 peer address에는 loopback을 사용한다. JSON은 strict schema를 따르며 알 수 없는 field나 trailing JSON value를 포함하면 안 된다.
+실행 위치는 저장소 root다. 세 process가 같은 host에서 실행되는 예시이므로 peer address에는 loopback을 사용한다. JSON field, 자료형, 필수 조건과 검증 규칙은 [Process configuration v1 contract §1.5](../contracts/process-configuration-v1.md)에서 정한다.
 
 1. **Node 1 설정을 `node1.json`으로 저장한다.**
 

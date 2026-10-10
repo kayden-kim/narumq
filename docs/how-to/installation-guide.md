@@ -8,7 +8,7 @@
 | 검증 상태 | Draft; Windows/amd64, Go 1.26.5 환경에서 소스 컴파일, 익명 개발 모드 로컬 기동, 헬스 프로브 및 메트릭 엔드포인트 응답 대조 완료 (TLS 보안 모드 및 클러스터 모드는 수동 절차 미실행) |
 | 검증 환경·버전 | Windows/amd64, Go 1.26.5 |
 | 최종 검증일 | 2026-09-26 |
-| 관련 기준 문서 | [Project structure](../architectures/project-structure.md), [Broker core architecture](../architectures/broker-core.md), [Management API v1 Contract](../contracts/management-api-v1.md), [Cluster session and durable delivery 스펙](../specs/cluster-session-and-delivery.md) |
+| 관련 기준 문서 | [Process configuration v1 contract](../contracts/process-configuration-v1.md), [Configuration and runtime options spec](../specs/configuration-and-runtime-options.md), [Project structure](../architectures/project-structure.md), [Broker core architecture](../architectures/broker-core.md), [Management API v1 Contract](../contracts/management-api-v1.md), [Cluster session and durable delivery 스펙](../specs/cluster-session-and-delivery.md) |
 
 ## 1. 대상과 영향
 
@@ -20,6 +20,7 @@
 - **CLI 실행 제약 및 보안 기본값:**
   - NaruMQ CLI는 보안-기본(Security-by-default) 정책에 따라 MQTT 리스너 활성화 시 `-security-config`를 필수로 요구합니다.
   - 예외적으로 로컬 개발 환경에서만 `-tcp-listen`을 루프백(`127.0.0.1`)으로 지정하고 `-allow-insecure-anonymous-mqtt` 플래그를 함께 주어야 합니다. 외부 공개 주소에 익명 바인딩을 시도하면 기동이 차단됩니다.
+- CLI와 설정 파일의 field, 기본값과 입력 검증은 [Process configuration v1 contract](../contracts/process-configuration-v1.md)을 따른다. 시작 흐름과 변경 반영 정책은 [Configuration and runtime options spec](../specs/configuration-and-runtime-options.md)을 따른다.
 - **구현 경계 및 동작 범위:**
   - 현재 standalone 리스너(`cmd/narumq/main.go`)는 인메모리 세션, 딜리버리 큐 및 retained 저장소를 사용하며 기동 로그에 `"qos0_only": true, "retained_supported": true`를 출력합니다.
   - standalone 단일 프로세스는 영속적 세션 복구나 분산 QoS 1/2 내구성(Durable ACK)을 제공하지 않으며, 이는 개발 및 단일 노드 보안 검증을 위한 경계입니다. 분산 고가용성(HA) 및 영속 상태 복제는 클러스터 런타임 스파이크의 개발 범위에 해당합니다.
@@ -209,7 +210,7 @@ TLS 암호화 통신과 JWT(JSON Web Token), username/password 또는 mTLS(Mutua
 #### Listener 연결 한도 설정
 
 TCP와 TLS의 최대 연결 수와 초당 신규 연결 수는 따로 지정할 수 있다.
-설정 범위와 초과 처리의 기준은 [MQTT 스펙 §7.1](../specs/mqtt-protocol-and-session.md#71-현재-상한과-기본값)을 따른다.
+설정 범위와 초과 처리의 기준은 [MQTT spec §7.1](../specs/mqtt-protocol-and-session.md#71-현재-상한과-초과-동작)을 따른다.
 
 | Listener | 최대 연결 수 flag | 초당 신규 연결 수 flag |
 | --- | --- | --- |
@@ -222,14 +223,14 @@ TCP와 TLS의 최대 연결 수와 초당 신규 연결 수는 따로 지정할 
 
 Cluster mode에서는 flag를 함께 지정하지 않는다. Cluster JSON의 `mqtt`에
 `tcpMaxConnections`, `tcpConnectionRate`, `tlsMaxConnections`, `tlsConnectionRate`를
-넣는다. 필드 형식은 [cluster config 계약](../contracts/raft-membership-v2.md#14-combined-cluster-configuration)을 따른다.
+넣는다. 필드 형식은 [Process configuration v1 contract §1.3](../contracts/process-configuration-v1.md)을 따른다.
 
 초과 연결이 닫히면 `/metrics`의
 `narumq_mqtt_listener_admission_rejected_total{transport,reason}`를 확인한다.
 `transport`로 listener 종류를, `reason`으로 연결 수와 rate 초과를 구분한다.
 거절한 socket에는 CONNACK을 보내지 않으며 거절 로그도 남기지 않는다.
 
-Management API는 각 node에서 인증된 principal의 초당 요청 수와 burst를 기본 50으로 제한한다. 인증 실패는 RemoteAddr IP별로 초당 5회, burst 5회까지 허용한다. Standalone mode에서는 `-http-request-rate`와 `-http-auth-failure-rate`를 설정하고, Cluster mode에서는 `management.requestRate`와 `management.authFailureRate`를 설정한다. 설정 범위는 `1..1,000,000`이며 Cluster JSON에서 필드를 생략하면 각각 50과 5를 쓴다. 한도를 넘으면 HTTP `429`와 `Retry-After: 1`을 반환한다. Health probe와 `/metrics`는 제한하지 않는다. 자세한 정책은 [Management API 스펙 §1.5](../specs/management-api-and-observability.md#15-rate-limit)를 따른다.
+Management API rate limit은 각 node에서 독립 적용한다. Standalone flag와 cluster field의 이름·기본값·범위는 [Process configuration v1 contract §1.1, §1.3](../contracts/process-configuration-v1.md)에서 정한다. 적용 대상과 HTTP `429`, `Retry-After` 동작은 [Management API spec §1.5](../specs/management-api-and-observability.md#15-rate-limit)를 따른다.
 
 ### 4단계: 브로커 상태 및 엔드포인트 동작 확인
 

@@ -146,60 +146,6 @@ commit된 요청을 재시도하면 HTTP `200`과 현재 commit된 phase를 반�
 
 ### 1.4 통합 클러스터 구성
 
-`-cluster-config <path>`는 MQTT, 관리 API와 동적 Raft 멤버십을 함께 구성하는 엄격한 JSON 모드다. 이 옵션 외의 다른 명령행 옵션이나 위치 인수는 허용하지 않으며, 기존 `-raft-peer-config <path>`와 함께 사용할 수 없다. 기존 피어 전용 config의 스키마와 디스크 동작은 바꾸지 않는다. 설정 파일에 알 수 없는 key, 중복 key, 뒤따르는 JSON 값 또는 필수 필드 누락이 있으면 process 시작을 거절한다. `releaseVersion`은 빌드 identity에서 가져오므로 이 key를 JSON에 넣으면 알 수 없는 필드로 처리해 시작을 거절한다. 상대 경로는 process의 현재 작업 디렉터리를 기준으로 한다.
-
-| 필드 | JSON 자료형 | 필수 조건 |
-| --- | --- | --- |
-| `mode` | 문자열 | 정확히 `"cluster"` |
-| `clusterId` | 문자열 | UTF-8 `1..200`바이트 |
-| `nodeId` | `uint64` | 양수여야 하며 로컬 인증서에 바인딩된 식별 정보와 일치해야 함 |
-| `directory` | 문자열 | 영속 경로; 초기 부트스트랩 또는 새 가입 노드에서만 비어 있을 수 있음 |
-| `listenAddress` | 문자열 | 로컬 피어 TCP bind 주소 `host:port` |
-| `advertisedAddress` | 문자열 | 피어가 접속할 수 있는 `host:port`; 와일드카드 주소 금지 |
-| `localDnsName` | 문자열 | 인증서 DNS SAN 및 commit된 로컬 식별 정보와 일치 |
-| `clusterProtocolMajor`, `clusterProtocolMinor` | `uint32` | 정확히 `2`, `0` |
-| `stateSchemaMajor`, `stateSchemaMinor` | `uint32` | 이 Draft에서는 정확히 `1`, `0` |
-| `role` | 문자열 | 정확히 `"bootstrap"` 또는 `"joiner"` |
-| `bootstrapMembers` | 멤버 객체 배열 | bootstrap에서는 서로 다른 식별 정보 3개; joiner에서는 빈 배열 |
-| `seedAddresses` | 문자열 배열 | bootstrap에서는 빈 배열; joiner에서는 정규 DNS `host:port` 주소 1~16개. TLS SNI를 DNS 이름에 바인딩하므로 IP 리터럴은 거절 |
-| `peerTLS` | 객체 | `certFile`, `keyFile`, `caFile` 필수; 인증서와 키가 일치하고 CA가 모든 피어를 검증해야 함 |
-| `management` | 객체 | `listenAddress`, `clusterAdminTokenFile`, `auditDirectory` 필수. Token은 break-glass `ClusterAdmin` opaque secret이다. `auditDirectory`는 비어 있지 않은 경로여야 하며 `directory`와 같거나 서로 포함해서는 안 되고, 각 노드에서 달라야 한다. 선택 정수 필드 `requestRate`, `authFailureRate`는 각각 `1..1,000,000`; 생략하면 `50`, `5`를 사용한다. 선택 `apiKeys`는 `{id,keyFile,roles}` 객체 배열이며 `id`는 `^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$`와 일치하고 고유해야 하며, `keyFile`은 유효한 경로여야 하고 `roles`는 비어 있지 않은 고유한 `ReadOnly`, `Operator`, `SecurityAdmin`, `ClusterAdmin` 값만 포함해야 한다. Key 파일 내용은 앞뒤 공백 제거 후 비어 있지 않아야 하며 cluster admin token 및 다른 API key와 달라야 한다. 선택 `oidc`는 JWT verifier 필드(`issuer`, `audience`, `algorithms`, `jwksUrl`, `cacheTtl`, `refreshCooldown`, `clockSkew`, `httpTimeout`)와 비어 있지 않은 `identities` 배열로 구성한다. 각 identity는 비어 있지 않고 최대 250 rune인 고유 `subject`와 비어 있지 않은 고유 역할 배열을 가져야 한다. JWT 필드는 MQTT `jwt` 설정과 같은 검증 규칙을 적용하며 `jwksUrl`은 HTTPS 또는 loopback HTTP여야 한다. OIDC 권한은 JWT claim이 아니라 정적 subject-to-roles binding에서 결정한다. |
-| `mqtt` | 객체 | `tcpListenAddress`, `tlsListenAddress`, `securityConfigFile` 필수; 주소가 비어 있으면 해당 listener를 사용하지 않는다. 선택 정수 필드 `tcpMaxConnections`, `tcpConnectionRate`, `tlsMaxConnections`, `tlsConnectionRate`는 0~1000000이며 생략하면 0(제한 없음)이다. 해당 listener 주소가 비어 있으면 그 listener의 두 값은 0이어야 한다. |
-| `replication` | 객체(선택) | 생략하면 복제 계수 3과 쓰기 쿼럼 2를 사용한다. 지정하면 정확히 `{factor:int, writeQuorum:int}`여야 하며 3/2만 허용한다. |
-
-`bootstrapMembers`의 각 항목은 정확히 `{memberId:uint64,address:string,dnsSan:string,certificateSha256:string}` 형식이며 §1.1과 같은 식별 제약을 따른다. 세 bootstrap 구성은 `memberId` 기준으로 바이트 단위 정렬을 사용하고 같은 집합을 포함해야 한다. 각 멤버의 인증서 지문과 SAN은 해당 항목과 일치해야 한다. 모든 bootstrap 노드는 같은 빌드 릴리스와 feature 집합을 사용해야 한다. `seedAddresses`는 임의의 검색 서버가 아니라 피어 승인 listener를 가리킨다. 각 host는 소문자 DNS 이름이어야 하며 TLS server name으로 사용되고 접속한 seed 인증서 SAN과 일치해야 한다. ClusterAdmin token은 지정한 파일에서 읽는다. 원본 token은 JSON이나 로그에 포함하지 않는다.
-
-Bootstrap 예시다. `<64 lowercase hex>`는 인증서 지문에서 가져오는 구성 값이며, 그대로 허용되는 리터럴 값이 아니다. 예시의 릴리스와 feature는 바이너리 빌드 식별 정보에서 가져온다.
-```json
-{
-  "mode": "cluster",
-  "clusterId": "sample-cluster",
-  "nodeId": 1,
-  "directory": "data/node1",
-  "listenAddress": "127.0.0.1:19001",
-  "advertisedAddress": "127.0.0.1:19001",
-  "localDnsName": "node1.example",
-  "clusterProtocolMajor": 2,
-  "clusterProtocolMinor": 0,
-  "stateSchemaMajor": 1,
-  "stateSchemaMinor": 0,
-  "role": "bootstrap",
-  "bootstrapMembers": [
-    {"memberId": 1, "address": "127.0.0.1:19001", "dnsSan": "node1.example", "certificateSha256": "<64 lowercase hex>"},
-    {"memberId": 2, "address": "127.0.0.1:19002", "dnsSan": "node2.example", "certificateSha256": "<64 lowercase hex>"},
-    {"memberId": 3, "address": "127.0.0.1:19003", "dnsSan": "node3.example", "certificateSha256": "<64 lowercase hex>"}
-  ],
-  "seedAddresses": [],
-  "peerTLS": {"certFile": "certs/node1.crt", "keyFile": "certs/node1.key", "caFile": "certs/ca.crt"},
-  "management": {
-    "listenAddress": "127.0.0.1:18080",
-    "clusterAdminTokenFile": "secrets/cluster-admin.token",
-    "apiKeys": [{"id": "dashboard", "keyFile": "secrets/dashboard.key", "roles": ["ReadOnly"]}],
-    "auditDirectory": "data/node1-audit"
-  },
-  "mqtt": {"tcpListenAddress": "", "tlsListenAddress": "127.0.0.1:1883", "securityConfigFile": "security.json"}
-}
-```
 
 `role="bootstrap"`은 데이터 디렉터리가 비어 있고 로컬 ID를 포함한 bootstrap 식별 정보가 정확히 3개여야 한다. 모든 초기 노드 구성은 같은 `clusterId`와 동일한 정규 bootstrap 식별 정보 집합을 포함해야 한다. 모든 bootstrap 노드는 같은 빌드 릴리스와 feature를 사용해야 한다. 비어 있지 않은 디렉터리를 덮어써서는 안 된다.
 
@@ -209,7 +155,7 @@ Bootstrap 예시다. `<64 lowercase hex>`는 인증서 지문에서 가져오는
 
 같은 volume을 사용하는 가입 노드가 재시작하면 영속 snapshot/WAL에서 commit된 로컬 식별 정보를 복구한다. 복구된 `LEARNER`·`CATCHING_UP`·`VOTER` 단계는 기존 seed loop에서 새 식별 정보 승인 없이 이어간다. 기존 투표자가 해당 기록을 잃으면 같은 ID를 새 가입 노드로 승인하지 않고 새 ID로 교체한다. Seed runtime은 commit된 `VOTER` 후보를 투표자 수와 관계없이 거절한다([ADR-0024](../decisions/ADR-0024-joiner-voter-volume-loss-admission.md)).
 
-모든 모드는 `peerTLS` 인증서·키·CA, 로컬 인증서 DNS SAN과 지문의 일치, `management.clusterAdminTokenFile`, 빌드 릴리스와 feature 식별 정보, 프로토콜·스키마 버전, 영속 `directory`를 요구한다. MQTT listener를 사용하면 MQTT TLS·보안 구성도 필요하다. 제거된 JSON key `releaseVersion`은 알 수 없는 필드이므로 시작을 거절한다. Admin token은 secret 파일에서 읽으며 로그에 남기거나 응답으로 반환하지 않는다. Standalone runtime은 이 모드를 불러오지 않으며 기존 동작을 유지한다. Cluster management의 선택 `apiKeys`·`oidc`와 그 정적 검증 규칙은 §1.4를 따른다.
+Cluster config의 JSON field, 자료형과 정적 검증은 [Process configuration v1 §1.3](process-configuration-v1.md)에서 정한다. 모든 mode는 `peerTLS` 인증서·키·CA, 로컬 인증서 DNS SAN·지문 일치, `management.clusterAdminTokenFile`, build release와 feature 식별 정보, protocol·schema version, 영속 `directory`를 요구한다. MQTT listener를 사용하면 MQTT TLS·security config도 필요하다. 제거된 JSON key `releaseVersion`은 알 수 없는 field이므로 시작을 거절한다. Admin token은 secret 파일에서 읽으며 log나 응답에 넣지 않는다. Standalone runtime은 이 mode를 불러오지 않으며 기존 동작을 유지한다. Cluster management의 선택 `apiKeys`·`oidc` field와 정적 검증 규칙은 [Process configuration v1 §1.3](process-configuration-v1.md)에서 정한다.
 
 #### 로컬 식별 정보의 영속 메타데이터
 

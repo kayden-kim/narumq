@@ -29,7 +29,7 @@
 
 ## 3. 절차
 
-실행 위치는 저장소 root이며 예시는 Bash 호환 shell 기준이다. 설치된 binary를 쓰면 `go run ./cmd/narumq`를 해당 binary 경로로 바꾼다. 전체 strict config schema와 예시는 [membership v2 contract §1.4](../contracts/raft-membership-v2.md#14-combined-cluster-configuration)를 따른다.
+실행 위치는 저장소 root이며 예시는 Bash 호환 shell 기준이다. 설치된 binary를 쓰면 `go run ./cmd/narumq`를 해당 binary 경로로 바꾼다. 전체 strict config schema와 예시는 [Process configuration v1 contract §1.3](../contracts/process-configuration-v1.md)을 따른다.
 
 1. **Bootstrap 구성 파일을 세 node에 각각 만든다.** `role`은 `bootstrap`, `bootstrapMembers`는 정확히 같은 세 identity를 포함하고 `seedAddresses`는 빈 배열이어야 한다. 각 파일의 `nodeId`, `directory`, `listenAddress`, `advertisedAddress`, 인증서 경로, management 주소, MQTT 보안 파일은 해당 node 값으로 설정한다. 초기 bootstrap 디렉터리는 비어 있어야 한다.
 

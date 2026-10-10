@@ -250,32 +250,29 @@ Will publish에도 tenant 격리, ACL, payload·rate quota, retained와 delivery
 
 모든 connection queue와 inflight collection에는 설정된 상한이 있어야 한다. 제한에 도달했을 때 무제한 할당으로 진행해서는 안 된다.
 
-### 7.1 현재 상한과 기본값
+<a id="71-현재-상한과-기본값"></a>
+### 7.1 현재 상한과 초과 동작
 
 Receive Maximum은 ACK가 끝나지 않은 QoS 1/2 PUBLISH 수의 상한이다. Maximum
 Packet Size는 fixed header를 포함한 전체 packet byte 수의 상한이다.
 
-| 상한 | 설정(standalone) | 기본값 standalone / cluster | 초과 시 MQTT 5 | 초과 시 MQTT 3.1.1 |
-| --- | --- | --- | --- | --- |
-| Remaining Length | `-max-packet-size` | 1048576 / 1048576 | CONNECT 뒤 DISCONNECT 0x95 후 종료. CONNECT 전 응답 없이 종료 | 종료 |
-| Inbound Receive Maximum(PUBACK·PUBCOMP·PUBREC≥0x80을 아직 쓰지 않은 QoS 1/2 PUBLISH 수) | `-receive-maximum` | 64 / 64 | DISCONNECT 0x93 후 종료 | 종료 |
-| 시작된 packet 완성 시간(CONNECT 뒤) | `-packet-read-timeout` | 30s / 30s | 응답 없이 종료 | 응답 없이 종료 |
-| CONNECT 완료 시간 | `-connect-timeout` | 10s / 10s | 응답 없이 종료 | 응답 없이 종료 |
-| listener 동시 연결 수 | `-tcp-max-connections`, `-tls-max-connections` | 0 / 0(제한 없음) | TCP accept 직후 응답 없이 종료(TLS handshake·CONNECT 전) | 같음 |
-| listener connection rate(초당 신규 연결) | `-tcp-connection-rate`, `-tls-connection-rate` | 0 / 0(제한 없음) | TCP accept 직후 응답 없이 종료(TLS handshake·CONNECT 전) | 같음 |
-| Socket write 시간 | `-write-timeout` | 5s / 5s | 종료 | 종료 |
-| 연결별 control queue | `-control-queue-capacity` | 16 / 256 | 종료 | 종료 |
-| Session별 delivery queue | `-delivery-queue-capacity` | 64 / 256 | 기존 §3 backpressure 규칙 | 기존 규칙 |
-| 연결별 수신 buffer | 없음 | 4 KiB에서 시작해 받은 byte가 차면 2배씩 늘림(최대 Remaining Length+5), 비면 4 KiB로 반환 | — | — |
-| Malformed packet·invalid UTF-8(CONNECT 뒤) | 없음 | — | DISCONNECT 0x81 후 종료 | 종료 |
-| Protocol error(CONNECT 뒤 두 번째 CONNECT 등, reader가 발견한 경우) | 없음 | — | DISCONNECT 0x82 후 종료 | 종료 |
-| Client Receive Maximum(outbound) | client CONNECT 0x21 | 없으면 65535 | 미확인 QoS 1/2 PUBLISH가 값에 도달하면 새 PUBLISH를 보류한다. PUBREL·PUBACK 등 다른 packet은 지연하지 않는다 | 해당 없음 |
-| Client Maximum Packet Size(outbound) | client CONNECT 0x27 | 없으면 제한 없음 | 넘는 PUBLISH는 보내지 않고 전송 완료로 처리한다. QoS 1/2는 promote 후 즉시 complete한다. 다른 packet이 넘으면 보내지 않고 종료한다 | 해당 없음 |
+| 상한 | 설정 기준 | 초과 시 MQTT 5 | 초과 시 MQTT 3.1.1 |
+| --- | --- | --- | --- |
+| Remaining Length | [Process configuration v1 §1.1, §1.3](../contracts/process-configuration-v1.md) | CONNECT 뒤 DISCONNECT `0x95` 후 종료. CONNECT 전 응답 없이 종료 | 종료 |
+| Inbound Receive Maximum(PUBACK·PUBCOMP·PUBREC≥0x80을 아직 쓰지 않은 QoS 1/2 PUBLISH 수) | [Process configuration v1 §1.1, §1.3](../contracts/process-configuration-v1.md) | DISCONNECT `0x93` 후 종료 | 종료 |
+| 시작된 packet 완성 시간(CONNECT 뒤) | [Process configuration v1 §1.1, §1.3](../contracts/process-configuration-v1.md) | 응답 없이 종료 | 응답 없이 종료 |
+| CONNECT 완료 시간 | [Process configuration v1 §1.1, §1.3](../contracts/process-configuration-v1.md) | 응답 없이 종료 | 응답 없이 종료 |
+| Listener 동시 연결 수와 connection rate | [Process configuration v1 §1.1, §1.3](../contracts/process-configuration-v1.md) | TCP accept 직후 응답 없이 종료(TLS handshake·CONNECT 전) | 같음 |
+| Socket write 시간 | [Process configuration v1 §1.1, §1.3](../contracts/process-configuration-v1.md) | 종료 | 종료 |
+| 연결별 control queue | [Process configuration v1 §1.1, §1.3](../contracts/process-configuration-v1.md) | 종료 | 종료 |
+| Session별 delivery queue | [Process configuration v1 §1.1, §1.3](../contracts/process-configuration-v1.md) | 기존 §3 backpressure 규칙 | 기존 규칙 |
+| 연결별 수신 buffer | 설정 없음 | 4 KiB에서 시작해 받은 byte가 차면 2배씩 늘림(최대 Remaining Length+5), 비면 4 KiB로 반환 | — |
+| Malformed packet·invalid UTF-8(CONNECT 뒤) | MQTT protocol 규칙 | DISCONNECT `0x81` 후 종료 | 종료 |
+| Protocol error(CONNECT 뒤 두 번째 CONNECT 등, reader가 발견한 경우) | MQTT protocol 규칙 | DISCONNECT `0x82` 후 종료 | 종료 |
+| Client Receive Maximum(outbound) | Client CONNECT property `0x21`; 생략 시 65535 | 미확인 QoS 1/2 PUBLISH가 설정값에 도달하면 새 PUBLISH를 보류한다. PUBREL·PUBACK 등 다른 packet은 지연하지 않는다 | 해당 없음 |
+| Client Maximum Packet Size(outbound) | Client CONNECT property `0x27`; 생략 시 제한 없음 | 넘는 PUBLISH는 보내지 않고 전송 완료로 처리한다. QoS 1/2는 promote 후 즉시 complete한다. 다른 packet이 넘으면 보내지 않고 종료한다 | 해당 없음 |
 
-`MaxPacketSize` 설정 범위는 MQTT Remaining Length 규칙에 따라 1~268435455다.
-TCP `NewServer`도 codec의 같은 규칙을 적용한다. 범위를 벗어나면
-`ErrInvalidConfig`로 거절한다. 이 검사는 수신 buffer 크기와 CONNACK 한도를
-계산하기 전에 끝나야 한다.
+`-max-packet-size`의 허용 범위는 [Process configuration v1 §1.1](../contracts/process-configuration-v1.md)에서 정한다. TCP `NewServer`도 codec과 같은 규칙을 적용한다. 범위를 벗어나면 `ErrInvalidConfig`로 거절한다. 이 검사는 수신 buffer 크기와 CONNACK 한도를 계산하기 전에 끝나야 한다.
 
 CONNECT 단계의 malformed·oversize는 protocol version을 신뢰할 수 없으므로
 CONNACK 없이 닫는다. Cluster durable phase lane이 늦게 발견한 protocol 오류도
@@ -286,10 +283,7 @@ CONNACK 없이 닫는다. Cluster durable phase lane이 늦게 발견한 protoco
 미완료 exchange는 Receive Maximum으로 제한한다. MQTT 3.1.1에서도 초과 시
 종료한다. Read backpressure는 미완료 QoS 2의 PUBREL 수신을 막을 수 있어 쓰지 않는다.
 
-Tenant 한도는 [Tenant §5.2](tenancy-and-security.md#52-연결-상태와-traffic-한도)를 따른다.
-이 rate 대기는 위 문단의 read backpressure 금지에 대한 유일한 예외다.
-대기는 최대 `maxWait`로 제한하며 `maxWait`는 10초 이하여야 한다.
-
+Tenant 한도는 [Tenant §5.2](tenancy-and-security.md#52-연결-상태와-traffic-한도)를 따른다. Rate 대기는 앞 문단의 read backpressure 금지에 대한 유일한 예외다. 대기 시간과 허용 범위는 [Process configuration v1 §1.4](../contracts/process-configuration-v1.md)에서 정한다.
 Listener 연결 한도는 TCP와 TLS에 독립 적용한다. 연결 수는 listener가 허용한 뒤
 아직 `Close`되지 않은 socket 수다. CONNECT 전 socket도 포함한다. 첫 `Close`에서만
 연결 수를 한 번 줄인다. 최대 연결 수를 먼저 검사하고, 그다음 connection rate를 검사한다.
@@ -299,11 +293,7 @@ Connection rate는 token bucket으로 적용한다. Token은 새 socket을 허�
 가득 차 있다. 허용한 socket만 token 1개를 쓰며 거절한 socket은 쓰지 않는다.
 Clock이 뒤로 가면 token을 보충하지 않는다.
 
-네 설정의 허용 범위는 0~1000000이다. 0은 해당 제한을 끈다. 두 값이 모두 0이면
-admission wrapper를 만들지 않는다. Cluster config의 선택 필드는
-`mqtt.tcpMaxConnections`, `mqtt.tcpConnectionRate`, `mqtt.tlsMaxConnections`,
-`mqtt.tlsConnectionRate`다. 생략하면 0이며 listener 주소가 비어 있으면 해당 값도
-0이어야 한다. 정확한 형식은 [cluster config 계약](../contracts/raft-membership-v2.md#14-combined-cluster-configuration)을 따른다.
+Listener 연결 한도와 connection rate의 field 이름, 기본값, 허용 범위와 cluster config key는 [Process configuration v1 §1.1, §1.3](../contracts/process-configuration-v1.md)에서 정한다. 값 `0`은 해당 한도를 끈다. 두 값이 모두 `0`이면 admission wrapper를 만들지 않는다.
 
 초과한 socket은 TCP accept 직후 닫는다. TLS admission은 TLS wrapper 안쪽의 raw
 TCP listener에 적용한다. Server는 계속 `*tls.Conn`을 받는다. TLS handshake,
