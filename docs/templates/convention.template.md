@@ -14,7 +14,7 @@
 
 ## 1. 규칙 우선순위
 
-[컨벤션 작성 규칙](../conventions/AGENTS.md#규칙-우선순위)을 따른다.
+[컨벤션 작성 규칙](../conventions/AGENTS.md)을 따른다.
 
 ## 2. 규칙
 

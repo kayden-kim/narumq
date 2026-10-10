@@ -9,7 +9,7 @@
 | 관련 스펙·데이터 계약 | [Cluster session과 durable delivery](../specs/cluster-session-and-delivery.md), Draft [Raft membership v2](../contracts/raft-membership-v2.md), Draft [Replicated state v1](../contracts/replicated-state-v1.proto) |
 | 관련 아키텍처 | [Cluster architecture](../architectures/cluster-architecture.md) |
 | 상위 결정 | [ADR-0002](ADR-0002-cluster-consensus-library.md) (`Proposed` 유지), [ADR-0008](ADR-0008-raft-peer-transport.md), [ADR-0009](ADR-0009-raft-production-state-profile.md) |
-| 이 결정이 대체하는 이전 결정 기록(ADR) | [ADR-0009 §1.4](ADR-0009-raft-production-state-profile.md#14-consensus-group-profile)의 고정 `{1,2,3}` voter assumption만 대체 |
+| 이 결정이 대체하는 이전 결정 기록(ADR) | [ADR-0009 §1.4](ADR-0009-raft-production-state-profile.md#14-consensus-group-partition-profile)의 고정 `{1,2,3}` voter assumption만 대체 |
 | 이 결정을 대체한 새 결정 기록(ADR) | 없음 |
 
 이 결정은 membership과 MQTT admission의 설계만 채택한다. WAL·snapshot target, `etcd/raft` 선택, protobuf encoding family와 단일 Raft group에 대한 ADR-0009의 나머지 결론은 바꾸지 않는다. 구현 또는 acceptance 시험이 통과했다는 뜻은 아니다.

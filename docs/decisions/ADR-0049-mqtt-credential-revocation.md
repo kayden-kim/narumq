@@ -86,10 +86,10 @@ SEC-07은 기존 rolling restart, replicated `credentialId` 폐기와 JWT `exp`�
 
 | 가설·결정 요인 | 검증 방법 | 합격 기준 | 증거 |
 | --- | --- | --- | --- |
-| Replicated revocation은 feature gate, capacity, snapshot·backup 경계를 지킨다 | Membership·Raft records unit/contract 시험과 backup checksum 시험 | 비활성 feature 기록 거절, 한도·정렬 검증, snapshot round trip과 digest 일치 | [Tenant와 security §9.7](../specs/tenancy-and-security.md#97-sec-07-실행-증거) |
-| 폐기는 CONNECT와 기존 연결에 모든 node에서 적용되고 Will을 폐기한다 | Dynamic 3-node process acceptance | 모든 node의 새 CONNECT가 거절되고 활성 연결이 정해진 DISCONNECT/close를 받으며 Will이 발행되지 않는다 | [Tenant와 security §9.7](../specs/tenancy-and-security.md#97-sec-07-실행-증거) |
-| Expiry는 protocol별 종료와 기존 Will 규칙을 따른다 | 실제 MQTT 3.1.1·5 connection process test | 만료 시 MQTT 5 `0xA0`, 3.1.1 close, Will 발행 결과 확인 | [Tenant와 security §9.7](../specs/tenancy-and-security.md#97-sec-07-실행-증거) |
-| Management 권한과 감사가 API 계약과 일치한다 | HTTP handler·OpenAPI·audit contract·process 시험 | 권한, response schema, revoke/restore action·target 일치 | [Tenant와 security §9.7](../specs/tenancy-and-security.md#97-sec-07-실행-증거) |
+| Replicated revocation은 feature gate, capacity, snapshot·backup 경계를 지킨다 | Membership·Raft records unit/contract 시험과 backup checksum 시험 | 비활성 feature 기록 거절, 한도·정렬 검증, snapshot round trip과 digest 일치 | [Tenant와 security §9.7](../specs/tenancy-and-security.md#97-sec-07-credential-회전폐기-실행-증거) |
+| 폐기는 CONNECT와 기존 연결에 모든 node에서 적용되고 Will을 폐기한다 | Dynamic 3-node process acceptance | 모든 node의 새 CONNECT가 거절되고 활성 연결이 정해진 DISCONNECT/close를 받으며 Will이 발행되지 않는다 | [Tenant와 security §9.7](../specs/tenancy-and-security.md#97-sec-07-credential-회전폐기-실행-증거) |
+| Expiry는 protocol별 종료와 기존 Will 규칙을 따른다 | 실제 MQTT 3.1.1·5 connection process test | 만료 시 MQTT 5 `0xA0`, 3.1.1 close, Will 발행 결과 확인 | [Tenant와 security §9.7](../specs/tenancy-and-security.md#97-sec-07-credential-회전폐기-실행-증거) |
+| Management 권한과 감사가 API 계약과 일치한다 | HTTP handler·OpenAPI·audit contract·process 시험 | 권한, response schema, revoke/restore action·target 일치 | [Tenant와 security §9.7](../specs/tenancy-and-security.md#97-sec-07-credential-회전폐기-실행-증거) |
 
 ## 8. 재검토 조건
 

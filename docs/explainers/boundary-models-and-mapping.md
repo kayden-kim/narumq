@@ -115,7 +115,7 @@ Mapper가 실패하면 원본을 일부 적용한 상태로 넘어가면 안 된
 - 기준 package와 model 배치: [Project structure](../architectures/project-structure.md#model과-경계-자료형-배치)
 - Component dependency: [Broker core architecture](../architectures/broker-core.md)
 - DTO와 identifier 규칙: [Go coding conventions](../conventions/go-coding-conventions.md)
-- Persisted schema 호환성: [Cluster release compatibility v1](../contracts/cluster-release-compatibility-v1.md#5-persisted-state와-snapshot)
+- Persisted schema 호환성: [Cluster release compatibility v1](../contracts/cluster-release-compatibility-v1.md#5-readiness와-persisted-state)
 
 ## 확인 질문
 

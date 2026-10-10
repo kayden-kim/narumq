@@ -23,6 +23,7 @@
 
 - [frontend-workflow 스킬](../.agents/skills/frontend-workflow/SKILL.md): 프런트엔드 디자인 탐색·구현·검토
 - [explain 스킬](../.agents/skills/explain/SKILL.md): 프로젝트 구조와 코드 흐름 설명
+- [artifact-design 스킬](../.agents/skills/artifact-design/SKILL.md): 글·시각 자료·상호작용을 결합한 단일 HTML 아티팩트 제작
 
 ## 처음 읽는 순서
 

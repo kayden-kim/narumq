@@ -1463,7 +1463,7 @@ Synthetic build와 지정 historical baseline은 mechanics와 해당 source 조�
 
 완료 문서 반영 뒤 2026-10-04T09:30:39.833958Z의 `go run ./tools/verify traceability`는 exit 0·`traceability: PASS`였다(wall 0.83s). 새 문서와 변경한 contract·ADR·guide·목록·tasks·spec 총 11개에서 상대 링크 335개의 대상 파일 또는 directory와 heading anchor를 확인했다. 완료 증거에 추가한 tasks §2.6 링크도 별도 확인해 총 336개가 통과했다. 누락은 없었다. 결과는 `.artifacts/verification/feature-activation-approval/relative-links.json`과 `traceability.log`에 보존했다. Directory 링크를 파일만 허용한 첫 link checker는 기존 testdata directory 링크를 잘못 보고했다. Directory도 유효 대상으로 처리한 최종 확인에서 통과했다. 문서 링크의 결함은 아니었다.
 
-수동 정책 판정·실제 shell smoke·기존 runtime 수용이 모두 일치하여 [TODO.md §2.6](../TODO.md#26-release-호환성)의 운영 승인 정책만 완료로 옮겼다. 코드·API·권한·replicated schema는 변경하지 않았다. 전체 local gate는 이 문서 정책 변경의 추가 완료 요구로 실행하지 않았다. Production 실행·secret manager ACL·외부 승인 강제와 미래 게시 release별 matrix는 검증하지 않은 범위로 유지한다.
+수동 정책 판정·실제 shell smoke·기존 runtime 수용이 모두 일치하여 운영 승인 정책만 완료로 처리했다. 코드·API·권한·replicated schema는 변경하지 않았다. 전체 local gate는 이 문서 정책 변경의 추가 완료 요구로 실행하지 않았다. Production 실행·secret manager ACL·외부 승인 강제와 미래 게시 release별 matrix는 검증하지 않은 범위로 유지한다.
 
 ### 11.31 연결 rebalance 수용 매핑
 

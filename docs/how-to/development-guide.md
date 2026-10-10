@@ -147,6 +147,16 @@ go run ./tools/verify local
 
 기대 결과: 마지막에 `local: PASS` 메시지가 출력되고 종료 코드 0으로 완료된다.
 
+### Markdown 링크를 수정할 때
+
+저장소 루트에서 로컬 파일과 제목 앵커를 검사한다.
+
+```sh
+go run ./tools/verify markdown-links
+```
+
+검사 범위는 루트 `AGENTS.md`, `README.md`, `docs/**/*.md`, `.agents/skills/**/*.md`다. 검사기는 링크 대상 파일·폴더와 Markdown 제목 앵커를 확인한다. 외부 URL과 코드 펜스는 검사하지 않는다. 제목 앵커는 Markdown 제목에서 기본 slug를 만들거나 HTML `id`·`name`, `{#id}` 값을 확인한다. 인라인 링크만 검사하며 reference-style 링크는 범위 밖이다. 코드 펜스는 제외하지만 inline code 안의 링크 문법은 제외하지 않는다. 오류가 있으면 실패한 링크를 출력하고 종료 코드 1을 반환한다.
+
 ### 6단계: 로컬 브로커 기동 및 수동 확인
 
 실제 네트워크 상에서 동작을 시험해보고 싶다면 로컬 개발 모드로 브로커를 기동한다.
@@ -168,9 +178,10 @@ go run ./cmd/narumq -tcp-listen 127.0.0.1:1883 -http-listen 127.0.0.1:8080 -allo
 | 단위 테스트 및 레이스 | 전체 테스트 PASS 및 Data Race 0건 | `go run ./tools/verify local` | Run A·B·C 통과; 전체 package test와 `go test -race ./cmd/... ./internal/... -count=1` 단계 완료. 앞선 실패 시도는 성능 스펙에 기록 | 콘솔 출력과 성능 스펙 §8.2 |
 | 아키텍처 규칙 | 계층 간 허용되지 않은 import 0건 | `go run ./tools/verify architecture` | 통과; `architecture: PASS` | 콘솔 출력 |
 | 규격 추적성 | PRD의 모든 P0를 test 함수 또는 유효한 예외에 연결하고 stale 예외 0건 | `go run ./tools/verify traceability` | 최신 확인(2026-10-09): gate PASS, P0 66/81 연결, 예외 15개. 예외와 필수 CI 증거가 남아 TEST-10은 미검증. Accepted ADR-0042의 결정 기록에 적힌 59/81·22개는 그대로 유지 | [성능 스펙 §8.7](../specs/performance-and-verification.md#87-mutation-gate-범위-확장-수용-증거), [ADR-0042](../decisions/ADR-0042-p0-requirement-traceability-gate.md) |
+| Markdown 링크 | 지정 범위의 로컬 링크 대상과 제목 앵커가 모두 유효함 | `go run ./tools/verify markdown-links` | 2026-10-10 현재 작업 트리(루트 `AGENTS.md` 마이그레이션 뒤), Windows/amd64, Go 1.26.5: `markdown-links: PASS (files 148, local links 1968)`; 오류 0건 | 이 행의 실행 기록 |
 | 코드 커버리지 | Line/function 기준, overall branch 80%, core branch 90%, ratchet 허용폭, line/function/branch diff 90% 충족 | `go run ./tools/verify local`; `ci --base <merge-base>`는 별도 CI 실행 | Run C 82.84%, `requirementShortfalls` 비었음; 당시 overall ratchet 80.03%와 core/diff 기준 유지. +0.21%p 경계 거절과 +0.19%p 경계 통과도 확인. 현재 diff 기준 변경과 실행 결과는 성능 스펙 §8.5 참조 | `.artifacts/verification/coverage-summary-floor-c.json`, `coverage-boundary-plus-*.json`, 성능 스펙 §8.4·§8.5 |
 | 뮤테이션 테스트 | Delivery·MQTT·NodeDrain·Security·Session 각각 efficacy·mutant coverage 80% 이상 | `go run ./tools/verify ci --base <merge-base>` | 2026-10-09 로컬 순차 측정과 CI runner 실행 모두 5개 package 통과. LIVED·timeout 0개. `local` gate는 mutation을 포함하지 않음. 원격 필수 CI 증거가 없어 TEST-12는 미검증 | [성능 스펙 §8.7](../specs/performance-and-verification.md#87-mutation-gate-범위-확장-수용-증거), `.artifacts/verification/mutation-scope-*.json`, `mutation-*.json` |
-| 종합 로컬 검증 | 로컬 검증 gate 전체 완료 및 종료 코드 0 | `go run ./tools/verify local` | 새 80% policy의 Run C에서 `coverage: PASS`, `local: PASS`. CI 필수 status 통과를 뜻하지 않음 | 성능 스펙 §8.4 (추적 가능한 결과); `.artifacts/verification/floor-local-c.log` (로컬 로그, Git 미추적) |
+| 종합 로컬 검증 | 로컬 검증 gate 전체 완료 및 종료 코드 0 | `go run ./tools/verify local` | 새 80% policy의 Run C에서 `coverage: PASS`, `local: PASS`. 추가 실행(2026-10-10, 현재 작업 트리, Windows/amd64, Go 1.26.5): `GOMAXPROCS=4 go run ./tools/verify local`가 184.56초 뒤 `coverage: PASS`, `local: PASS`를 출력했다. Traceability는 P0 69/81 연결, 예외 12개를 보고했다. CI 필수 status 통과를 뜻하지 않음 | 성능 스펙 §8.4 (Run C 기록); 이 행(2026-10-10 추가 실행) |
 
 ## 5. 중단 조건 및 빈발 문제 해결
 

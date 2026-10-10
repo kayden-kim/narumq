@@ -52,6 +52,22 @@ func run(args []string) int {
 		}
 		fmt.Println("architecture: PASS")
 		return 0
+	case "markdown-links":
+		flags := flag.NewFlagSet("markdown-links", flag.ContinueOnError)
+		if err := flags.Parse(args[1:]); err != nil {
+			return 2
+		}
+		if flags.NArg() != 0 {
+			fmt.Fprintln(os.Stderr, "markdown-links: does not accept positional arguments")
+			return 2
+		}
+		summary, err := verifyMarkdownLinks(root)
+		if err != nil {
+			return printCommandError("markdown-links", err)
+		}
+		fmt.Printf("markdown-links: PASS (files %d, local links %d)\n", summary.MarkdownFiles, summary.LocalLinks)
+		return 0
+
 	case "branch-instrument":
 		flags := flag.NewFlagSet("branch-instrument", flag.ContinueOnError)
 		policyPath := flags.String("policy", defaultCoveragePolicyPath, "coverage policy path")
@@ -121,6 +137,6 @@ func printCommandError(name string, err error) int {
 }
 
 func printUsage() {
-	fmt.Fprintln(os.Stderr, "usage: go run ./tools/verify <traceability|architecture|branch-instrument|coverage|local|ci>")
+	fmt.Fprintln(os.Stderr, "usage: go run ./tools/verify <traceability|architecture|markdown-links|branch-instrument|coverage|local|ci>")
 	fmt.Fprintln(os.Stderr, "  ci requires --base <git-ref>; coverage requires --profile <path>")
 }

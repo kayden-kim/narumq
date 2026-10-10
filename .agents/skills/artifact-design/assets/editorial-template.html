@@ -1,0 +1,529 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>한 요청이 기록이 되기까지 — 시각 해설서</title>
+<style>
+  :root {
+    --sans: 'Pretendard', 'Noto Sans KR', 'Apple SD Gothic Neo', 'Malgun Gothic', '맑은 고딕', sans-serif;
+    --serif: 'Noto Serif KR', 'Nanum Myeongjo', 'AppleMyungjo', 'Malgun Gothic', '맑은 고딕', serif;
+    --mono: 'Cascadia Code', Consolas, Menlo, monospace;
+  }
+  * { box-sizing: border-box; }
+  body {
+    color-scheme: light;
+    --desk: #536c5f; --paper: #fbf5e5; --ink: #263e34; --muted: #546257;
+    --accent: #953e2c; --rule: #77877b; --wash: #e5ebe0; --wash-alt: #eedac6;
+    --poster-dark: #1c3830; --poster-light: #dce8da;
+    --poster-ink-light: #f8f3df; --poster-ink-dark: #253e34;
+    --title-font: var(--serif); --title-weight: 400; --leading: 1.85;
+    --title-size: clamp(2.4rem, 5.4vw, 4.5rem); --title-leading: 1.35; --title-tracking: -0.02em;
+    margin: 0; color: var(--ink); background: var(--desk);
+    font: 17px/var(--leading) var(--sans);
+    word-break: keep-all;
+    overflow-wrap: anywhere;
+    letter-spacing: -0.01em;
+  }
+  body[data-style="minimal"] {
+    --title-font: var(--sans); --title-weight: 500; --leading: 1.75;
+  }
+  body[data-style="technical"] {
+    --title-font: var(--sans); --title-weight: 700; --leading: 1.85;
+    --title-leading: 1.4; --title-tracking: -0.015em;
+    --title-size: clamp(2rem, 4.5vw, 3.5rem);
+  }
+  body[data-style="bold"] {
+    --title-font: var(--sans); --title-weight: 900; --leading: 1.75;
+    --title-size: clamp(2.5rem, 5.5vw, 4.6rem);
+  }
+  body[data-palette="blueprint"] {
+    color-scheme: light;
+    --desk: #c5d2df; --paper: #f8fbff; --ink: #18334f; --muted: #425a73;
+    --accent: #135cab; --rule: #74899f; --wash: #e1edf9; --wash-alt: #e9eef5;
+    --poster-dark: #18334f; --poster-light: #d7e6f5;
+    --poster-ink-dark: #18334f; --poster-ink-light: #f8fbff;
+  }
+  body[data-palette="citrus"] {
+    color-scheme: light;
+    --desk: #d4c09b; --paper: #fff9e9; --ink: #342e21; --muted: #5c5243;
+    --accent: #8f3828; --rule: #8f7b5d; --wash: #f5eacb; --wash-alt: #e8d7ae;
+    --poster-dark: #3f5b49; --poster-light: #e7cf83;
+    --poster-ink-dark: #342e21; --poster-ink-light: #fff9e9;
+  }
+  body[data-palette="night"] {
+    color-scheme: dark;
+    --desk: #0b141e; --paper: #152632; --ink: #edf2f3; --muted: #b8cbd3;
+    --accent: #edb793; --rule: #648691; --wash: #203e4a; --wash-alt: #333d48;
+    --poster-dark: #0e202a; --poster-light: #b5d4d0;
+    --poster-ink-dark: #1a3039; --poster-ink-light: #edf2f3;
+  }
+  body[data-palette="rose"] {
+    color-scheme: light;
+    --desk: #d8bec6; --paper: #fff6f6; --ink: #432f38; --muted: #69535d;
+    --accent: #914055; --rule: #8f7982; --wash: #f1dfe4; --wash-alt: #e9ccd5;
+    --poster-dark: #56303c; --poster-light: #edc5d1;
+    --poster-ink-dark: #432f38; --poster-ink-light: #fff6f6;
+  }
+  body[data-palette="violet"] {
+    color-scheme: light;
+    --desk: #c7c5dc; --paper: #faf9ff; --ink: #302e4d; --muted: #57566f;
+    --accent: #5b4a9b; --rule: #77758f; --wash: #e9e7f5; --wash-alt: #d9d6ed;
+    --poster-dark: #332f57; --poster-light: #d3ceef;
+    --poster-ink-dark: #302e4d; --poster-ink-light: #faf9ff;
+  }
+  body[data-palette="ocean"] {
+    color-scheme: light;
+    --desk: #b6cdc6; --paper: #f3f9f6; --ink: #203e3b; --muted: #4e625d;
+    --accent: #a34632; --rule: #71837d; --wash: #deebe4; --wash-alt: #d2e3dc;
+    --poster-dark: #204a46; --poster-light: #bfded4;
+    --poster-ink-dark: #203e3b; --poster-ink-light: #f3f9f6;
+  }
+  body[data-palette="slate"] {
+    color-scheme: light;
+    --desk: #bcc4cb; --paper: #f7f9fb; --ink: #29343f; --muted: #53606c;
+    --accent: #8b5700; --rule: #73808c; --wash: #e4e8ec; --wash-alt: #ecd9b8;
+    --poster-dark: #344b5a; --poster-light: #efcf92;
+    --poster-ink-dark: #29343f; --poster-ink-light: #f7f9fb;
+  }
+  h1, h2, h3, p, figure, blockquote { margin: 0; }
+  h1, h2, h3 {
+    font-family: var(--title-font); font-weight: var(--title-weight);
+    line-height: var(--title-leading); letter-spacing: var(--title-tracking);
+    word-break: keep-all; overflow-wrap: anywhere; text-wrap: balance;
+  }
+  h1 { font-size: var(--title-size); }
+  h2 { font-size: clamp(1.8rem, 3.2vw, 2.6rem); }
+  h3 { font-size: 1.4rem; }
+  p + p { margin-top: 1em; }
+  a { color: inherit; text-underline-offset: 0.3em; }
+  button, select { font: inherit; color: inherit; }
+  button, select {
+    border: 1px solid var(--rule); background: var(--paper);
+    padding: 7px 12px; border-radius: 0;
+  }
+  button { cursor: pointer; }
+  button:disabled { cursor: default; opacity: 0.55; }
+  button:hover:not(:disabled) { background: var(--wash-alt); }
+  :focus-visible { outline: 3px solid var(--accent); outline-offset: 4px; }
+  [hidden] { display: none !important; }
+  .preview-tools {
+    max-width: 1100px; margin: 24px auto; padding: 16px 24px;
+    display: flex; flex-wrap: wrap; align-items: center; gap: 10px 18px;
+    background: var(--paper); color: var(--ink); font-size: 0.875rem;
+  }
+  .preview-tools p { flex-basis: 100%; color: var(--muted); }
+  .paper { max-width: 1100px; margin: 0 auto 50px; background: var(--paper); }
+  .page-inset { padding-inline: clamp(22px, 6vw, 76px); }
+  .masthead {
+    padding-block: 26px; display: flex; justify-content: space-between;
+    align-items: center; flex-wrap: wrap; gap: 12px;
+    border-bottom: 1px solid var(--rule); font-size: 0.8rem;
+  }
+  .masthead nav { display: flex; flex-wrap: wrap; gap: 20px; }
+  .masthead a { text-decoration: none; }
+  .eyebrow { font-size: 0.75rem; letter-spacing: 0.04em; color: var(--accent); font-weight: 600; }
+  .cover { padding-top: 66px; }
+  .cover h1 { max-width: 12em; margin-top: 20px; }
+  .cover .lead { max-width: 38em; margin-top: 24px; color: var(--muted); }
+  .cover-art { margin-top: 42px; }
+  .cover-art svg { width: 100%; height: auto; display: block; background: var(--wash); }
+  figcaption { color: var(--muted); font-size: 0.85rem; line-height: 1.65; margin-top: 13px; }
+  .chapter { padding-block: 70px; }
+  .spread { display: grid; grid-template-columns: 0.85fr 1.15fr; align-items: start; gap: 46px; }
+  .prose { max-width: 65ch; }
+  .prose h2 { margin: 15px 0 25px; }
+  .prose p:not(.eyebrow) { color: var(--muted); }
+  .spread--reverse { grid-template-columns: 1.15fr 0.85fr; }
+  .spread--reverse .side-figure { order: -1; }
+  .side-figure { margin-top: 35px; }
+  .gallery { display: grid; grid-template-columns: 1.35fr 0.9fr; align-items: start; gap: 26px; }
+  .gallery > figure:first-child { grid-row: span 2; margin-top: 24px; }
+  .gallery svg { width: 100%; height: auto; display: block; }
+  .gallery figcaption strong { color: var(--ink); font-weight: 500; }
+  .pull-note { margin-top: 34px; border-left: 1px solid var(--accent); padding-left: 20px; }
+  .pull-note .note-label { display: block; color: var(--accent); font: 0.75rem var(--mono); margin-bottom: 10px; }
+  .pull-note p { color: var(--ink) !important; font-family: var(--title-font); font-size: 1.25rem; }
+  .chapter-band { background: var(--wash); padding-block: 66px; }
+  .chapter-band .chapter-intro { max-width: 45em; }
+  .chapter-band h2 { margin: 15px 0 22px; }
+  .chapter-band .intro-text { color: var(--muted); }
+  .feature-pair { display: grid; grid-template-columns: 1fr 1fr; gap: 30px; margin-top: 40px; }
+  .feature {
+    padding: 36px 32px; display: flex; flex-direction: column;
+    background: var(--poster-dark); color: var(--poster-ink-light);
+  }
+  .feature--light { background: var(--poster-light); color: var(--poster-ink-dark); }
+  .feature .eyebrow { color: inherit; font-weight: 400; }
+  .feature h3 { font-size: clamp(1.8rem, 3vw, 2.8rem); line-height: var(--title-leading); margin: 13px 0 22px; }
+  .feature p { font-size: 0.95rem; line-height: 1.75; max-width: 31ch; }
+  .feature a { display: inline-block; font-size: 0.95rem; margin-top: 22px; }
+  .feature-flow {
+    display: grid; grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
+    align-items: center; gap: 12px; margin-top: 30px;
+    font-family: var(--title-font); font-size: clamp(1.05rem, 1.8vw, 1.45rem);
+    font-weight: 700; text-align: center;
+  }
+  .feature-flow strong { font-size: 1.3em; }
+  .feature-caption { margin-top: 15px; }
+  .divider { border: 0; border-top: 1px solid var(--rule); margin: 0; }
+  body[data-style="technical"] .eyebrow { font-variant-numeric: tabular-nums; }
+  body[data-layout="split"] .cover {
+    display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+    grid-template-rows: auto auto 1fr; gap: 18px 42px;
+  }
+  body[data-layout="split"] .cover > .eyebrow { grid-column: 1; grid-row: 1; }
+  body[data-layout="split"] .cover h1 { grid-column: 1; grid-row: 2; margin-top: 0; font-size: clamp(2rem, 4vw, 3.2rem); }
+  body[data-layout="split"] .cover .lead { grid-column: 1; grid-row: 3; margin-top: 0; }
+  body[data-layout="split"] .cover-art { grid-column: 2; grid-row: 1 / 4; margin-top: 0; align-self: center; }
+  body[data-layout="split"] .cover-art svg { height: 300px; }
+  body[data-layout="split"] .spread, body[data-layout="split"] .spread--reverse { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
+  body[data-layout="split"] .gallery { grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 18px; }
+  body[data-layout="split"] .gallery > figure:first-child { grid-row: auto; margin-top: 0; }
+  body[data-layout="margin"] .cover {
+    display: grid; grid-template-columns: minmax(0, 2fr) minmax(0, 1fr); column-gap: 46px;
+  }
+  body[data-layout="margin"] .cover > .eyebrow { grid-column: 1 / -1; }
+  body[data-layout="margin"] .cover h1 { grid-column: 1 / -1; }
+  body[data-layout="margin"] .cover .lead { grid-column: 1; grid-row: 3; }
+  body[data-layout="margin"] .cover-art { grid-column: 2; grid-row: 3; margin-top: 24px; }
+  body[data-layout="margin"] .spread, body[data-layout="margin"] .spread--reverse { grid-template-columns: minmax(0, 2fr) minmax(0, 1fr); gap: 46px; }
+  body[data-layout="margin"] .side-figure { order: initial; border-left: 1px solid var(--rule); padding-left: 24px; }
+  body[data-layout="margin"] .gallery { grid-template-columns: 1fr; }
+  body[data-layout="margin"] .gallery > figure:first-child { grid-row: auto; margin-top: 0; }
+  .mechanism { margin-top: 38px; }
+  .track { position: relative; display: grid; grid-template-columns: 1fr 52px 1fr 52px 1fr; align-items: center; padding-bottom: 56px; }
+  .process-node {
+    min-width: 0; padding: 24px 12px 38px; text-align: center; border: 1px solid var(--rule);
+    background: var(--paper); min-height: 130px;
+  }
+  .process-node strong { display: block; font-weight: 600; }
+  .process-node .node-state { font-size: 0.8rem; display: block; color: var(--muted); }
+  .process-node[data-state="current"] { border-color: var(--accent); outline: 1px solid var(--accent); }
+  .flow-arrow { font-size: 1.7rem; text-align: center; color: var(--accent); }
+  .flow-arrow .vertical { display: none; }
+  #packet { position: absolute; left: 0; top: 0; padding: 1px 7px; font: 0.7rem/22px var(--mono); background: var(--ink); color: var(--paper); z-index: 2; }
+  .controls { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; margin-top: 20px; }
+  .controls label { font-size: 0.875rem; margin-right: 4px; }
+  .control-actions { display: flex; gap: 4px; padding: 3px; border: 1px solid var(--rule); background: var(--wash); }
+  .controls button { display: grid; place-items: center; width: 44px; min-height: 44px; padding: 0; font-size: 1.25rem; line-height: 1; }
+  .controls #play { border-color: var(--ink); background: var(--ink); color: var(--paper); font-weight: 700; }
+  .controls #play:hover:not(:disabled) { border-color: var(--accent); background: var(--accent); }
+  .stage-readout { border-top: 1px solid var(--rule); padding-top: 20px; min-height: 115px; }
+  .stage-readout h3 { font-size: 1.35rem; margin-bottom: 8px; }
+  .stage-readout p { color: var(--muted); }
+  .motion-note { font-size: 0.85rem; color: var(--muted); margin-top: 15px; }
+  .closing { padding-block: 66px; }
+  .closing h2 { margin-bottom: 22px; }
+  .closing .prose { max-width: 48em; }
+  .colophon { padding-block: 25px; border-top: 1px solid var(--rule); color: var(--muted); font-size: 0.8rem; }
+  .svg-stroke { fill: none; stroke: currentColor; stroke-width: 2; }
+  .svg-rule { fill: none; stroke: var(--rule); stroke-width: 1.5; }
+  .svg-accent { fill: var(--accent); }
+  .svg-wash { fill: var(--wash); }
+  .svg-paper { fill: var(--paper); }
+  @media (max-width: 760px) {
+    .preview-tools { margin: 0; }
+    .paper { margin-bottom: 0; }
+    .cover { padding-top: 40px; }
+    .cover h1 { max-width: 100%; padding-right: 12px; }
+    body[data-layout] .cover { display: block; }
+    body[data-layout] .cover h1 { margin-top: 20px; font-size: var(--title-size); }
+    body[data-layout] .cover .lead { margin-top: 24px; }
+    body[data-layout] .cover-art { margin-top: 42px; }
+    body[data-layout] .cover-art svg { height: auto; }
+    body[data-layout] .side-figure { order: initial; border-left: 0; padding-left: 0; }
+    body[data-layout] .gallery { grid-template-columns: 1.35fr 0.9fr; gap: 26px; }
+    body[data-layout] .gallery > figure:first-child { grid-row: span 2; margin-top: 24px; }
+    .chapter { padding-block: 45px; }
+    body[data-layout] .spread, body[data-layout] .spread--reverse { grid-template-columns: 1fr; gap: 24px; }
+    .spread--reverse .side-figure { order: initial; }
+    .side-figure { margin-top: 8px; }
+    .feature-pair { grid-template-columns: 1fr; }
+    .track { grid-template-columns: 1fr; padding: 0 28px 24px; }
+    .process-node { min-height: 112px; }
+    .flow-arrow { line-height: 1.2; padding: 10px 0; }
+    .flow-arrow .horizontal { display: none; }
+    .flow-arrow .vertical { display: inline; }
+    .chapter-band { padding-block: 45px; }
+    .controls button, .controls select { min-height: 44px; }
+    .closing { padding-block: 45px; }
+  }
+  @media (prefers-reduced-motion: reduce) { #packet { display: none !important; } }
+  @media print {
+    body { background: var(--paper); }
+    .preview-tools, .controls, .motion-note { display: none; }
+    .paper { max-width: none; margin: 0; }
+    .feature, figure { break-inside: avoid; }
+  }
+</style>
+</head>
+<body data-style="editorial" data-palette="paper-forest" data-layout="essay">
+<section class="preview-tools" aria-label="아티팩트 변형 비교">
+  <label for="styleChoice">타이포그래피</label>
+  <select id="styleChoice">
+    <option value="editorial">에디토리얼</option><option value="minimal">미니멀</option>
+    <option value="technical">기술 문서</option><option value="bold">볼드 포스터</option>
+  </select>
+  <label for="paletteChoice">색상 팔레트</label>
+  <select id="paletteChoice">
+    <option value="paper-forest">종이·숲</option><option value="blueprint">청사진</option>
+    <option value="citrus">감귤·황토</option><option value="night">야간</option>
+    <option value="rose">장미·회백</option><option value="violet">라일락·남색</option>
+    <option value="ocean">바다·청록</option><option value="slate">슬레이트</option>
+  </select>
+  <label for="layoutChoice">읽기 구성</label>
+  <select id="layoutChoice"><option value="essay">연속 에세이</option><option value="split">분할 챕터</option><option value="margin">사이드 노트</option></select>
+  <p id="visualNote" aria-live="polite">에디토리얼 타이포그래피 · 종이·숲 팔레트입니다. 색상은 타이포그래피와 별도로 바꿀 수 있습니다.</p>
+  <p id="layoutNote" aria-live="polite">연속 에세이: 제목 아래의 큰 그림과 교차하는 본문·그림으로 이어집니다.</p>
+  <p>타이포그래피와 읽기 구성을 유지한 채 색상 팔레트 8종을 비교합니다. 의미 없는 장식은 넣지 않습니다. 본문과 동작은 개념 예시이며 실제 프로젝트의 구현이나 측정 결과가 아닙니다.</p>
+</section>
+<main class="paper">
+  <header class="masthead page-inset">
+    <span>FIELD NOTES / SYSTEMS</span>
+    <nav aria-label="목차"><a href="#waiting">대기</a><a href="#boundaries">경계</a><a href="#journey">동작</a><a href="#closing">정리</a></nav>
+  </header>
+  <section class="cover page-inset" aria-labelledby="document-title">
+    <p class="eyebrow">시각 해설 / 요청과 응답의 관계</p>
+    <h1 id="document-title">한 요청이<br>기록이 되기까지</h1>
+    <p class="lead">보내는 일, 기다리는 일, 남기는 일은 서로 다릅니다. 하나의 요청을 따라가며, 대기열과 기록의 경계가 응답의 뜻을 어떻게 바꾸는지 살펴봅니다.</p>
+    <figure class="cover-art">
+      <svg viewBox="0 0 900 320" role="img" aria-labelledby="cover-title cover-desc">
+        <title id="cover-title">생성, 대기, 기록을 나타내는 세 장면</title>
+        <desc id="cover-desc">왼쪽의 작은 요청들이 중앙의 대기열을 거쳐 오른쪽 기록층으로 이어지는 개념 풍경. 세부 시간 순서는 아래 동작 그림에서 설명한다.</desc>
+        <path d="M0 265 Q180 185 310 237 T610 236 T900 190 V320 H0Z" fill="var(--paper)" opacity="0.55"/>
+        <path d="M0 281 Q200 215 370 270 T900 245" class="svg-rule"/>
+        <g class="svg-stroke"><path d="M66 150 L157 99 L238 142 L147 195Z M66 174 L147 219 L238 166 M66 198 L147 243 L238 190"/><path d="M147 195 V244 M66 150 V198 M238 142 V190"/>
+        <path d="M315 129 L427 68 L557 139 L445 201Z M315 155 L445 227 L557 165 M315 181 L445 253 L557 191 M315 207 L445 279 L557 217"/>
+        <path d="M647 124 L746 70 L841 122 L742 178Z M647 148 L742 202 L841 146 M647 172 L742 226 L841 170 M647 196 L742 250 L841 194 M647 220 L742 274 L841 218"/></g>
+        <g class="svg-accent"><circle cx="112" cy="151" r="6"/><circle cx="161" cy="151" r="6"/><circle cx="394" cy="128" r="6"/><circle cx="441" cy="154" r="6"/><circle cx="488" cy="128" r="6"/><path d="M727 128 L741 120 L756 128 L742 136Z"/></g>
+        <path d="M245 196 Q274 204 305 202 M562 196 Q603 204 638 195" class="svg-stroke" stroke-dasharray="5 7"/>
+      </svg>
+      <figcaption>그림 1. 생성 → 대기 → 기록. 큰 장면은 각 역할을, 이어지는 작은 그림은 그 안의 구조를 보여줍니다.</figcaption>
+    </figure>
+  </section>
+
+  <section class="chapter page-inset spread" id="waiting" aria-labelledby="waiting-title">
+    <div class="prose">
+      <p class="eyebrow">01 / 대기하는 공간</p>
+      <h2 id="waiting-title">도착했다고 해서<br>끝난 것은 아닙니다.</h2>
+      <p>대기열은 도착한 요청을 처리할 차례까지 보관하는 공간입니다. 이 예시에서는 요청이 들어온 순서대로 다음 처리 위치로 이동합니다.</p>
+      <p>하지만 대기열에 들어갔다는 사실만으로 기록이 남았다고 말할 수는 없습니다. 그림을 전체, 처리 위치, 기록의 세부로 나누면 이 차이가 보입니다.</p>
+      <aside class="pull-note" aria-label="개념 요약"><span class="note-label">READING NOTE</span><p>도착과 완료 사이에는<br>서로 다른 상태가 있습니다.</p></aside>
+    </div>
+    <div class="side-figure gallery">
+      <figure>
+        <svg viewBox="0 0 240 315" role="img" aria-labelledby="queue-title"><title id="queue-title">위에서 아래로 차례를 기다리는 요청</title>
+          <path d="M25 14 H215 V291 H25Z" class="svg-wash"/>
+          <g class="svg-stroke"><path d="M49 50 H191 V92 H49Z M49 118 H191 V160 H49Z M49 186 H191 V228 H49Z"/><path d="M120 92 V113 M120 160 V181 M120 228 V271 M113 262 L120 271 L127 262"/></g>
+          <g class="svg-accent"><circle cx="74" cy="71" r="7"/><circle cx="74" cy="139" r="7"/><circle cx="74" cy="207" r="7"/></g>
+          <path d="M97 71 H169 M97 139 H169 M97 207 H169" class="svg-rule"/>
+        </svg>
+        <figcaption><strong>그림 2a / 전체.</strong> 요청은 차례를 기다립니다. 화살표는 다음 처리 위치를 뜻합니다.</figcaption>
+      </figure>
+      <figure>
+        <svg viewBox="0 0 180 150" role="img" aria-labelledby="slot-title"><title id="slot-title">대기열의 한 처리 위치를 확대한 모습</title><path d="M10 10 H170 V140 H10Z" fill="var(--wash-alt)"/><circle cx="90" cy="72" r="34" class="svg-stroke"/><circle cx="90" cy="72" r="12" class="svg-accent"/><path d="M90 30 V14 M90 114 V132 M48 72 H30 M132 72 H150" class="svg-rule"/></svg>
+        <figcaption><strong>그림 2b / 처리 위치.</strong> 지금 처리할 요청 하나를 꺼냅니다.</figcaption>
+      </figure>
+      <figure>
+        <svg viewBox="0 0 180 130" role="img" aria-labelledby="entry-title"><title id="entry-title">처리 뒤에 남기는 기록 한 항목</title><g class="svg-stroke"><path d="M40 10 H145 V105 H40Z M30 20 V115 H135 M20 30 V125 H125"/><path d="M57 39 H127 M57 59 H127 M57 79 H105"/></g><circle cx="130" cy="90" r="8" class="svg-accent"/></svg>
+        <figcaption><strong>그림 2c / 기록.</strong> 처리 결과가 남는 별도의 항목입니다.</figcaption>
+      </figure>
+    </div>
+  </section>
+
+  <div class="page-inset"><hr class="divider"></div>
+  <section class="chapter page-inset" id="boundaries" aria-labelledby="boundary-title">
+    <div class="prose"><p class="eyebrow">02 / 두 가지 경계</p><h2 id="boundary-title" style="margin-top:15px">잠시 맡기는 일과<br>남겨 두는 일.</h2><p style="margin-top:24px">대기열은 처리할 차례를, 기록은 남긴 결과를 설명합니다. 두 장면을 나란히 놓으면 같은 요청에도 서로 다른 질문을 해야 한다는 점이 드러납니다.</p></div>
+    <div class="feature-pair">
+      <article class="feature" aria-labelledby="arrival-title">
+        <div><p class="eyebrow">ARRIVAL / 도착</p><h3 id="arrival-title">다음 차례를<br>기다리는 공간.</h3><p>여기서 확인하는 것은 요청을 받았는지입니다. 아직 기록 완료를 뜻하지 않습니다.</p><a href="#journey">요청의 다음 단계 보기 →</a></div>
+        <div class="feature-flow" role="group" aria-label="요청을 받은 상태와 기록을 완료한 상태는 다릅니다."><span>요청 수신</span><strong aria-hidden="true">≠</strong><span>기록 완료</span></div>
+      </article>
+      <article class="feature feature--light" aria-labelledby="record-title">
+        <div><p class="eyebrow">RECORD / 기록</p><h3 id="record-title">결과가 남는<br>다른 경계.</h3><p>여기서 확인하는 것은 기록을 남겼는지입니다. 이 모형에서는 그 결과에 따라 응답이 달라집니다.</p><a href="#journey">응답의 차이 확인하기 →</a></div>
+        <div class="feature-flow" role="group" aria-label="기록 완료를 확인한 뒤 성공 응답을 보냅니다."><span>기록 완료</span><strong aria-hidden="true">→</strong><span>성공 응답</span></div>
+      </article>
+    </div>
+    <p class="feature-caption" style="color:var(--muted);font-size:0.85rem">그림 3. 두 색상 패널은 상태의 경계를 비교합니다. 화살표와 관계 기호는 요청 수신, 기록 완료, 성공 응답 사이의 뜻을 표시하며 실제 저장 구조를 나타내지 않습니다.</p>
+  </section>
+
+  <section class="chapter-band page-inset" id="journey" aria-labelledby="journey-title">
+    <div class="chapter-intro"><p class="eyebrow">03 / 동작을 따라 읽기</p><h2 id="journey-title">응답은 무엇을<br>확인한 뒤 돌아올까요?</h2><p class="intro-text">이 모형은 기록 결과를 확인한 뒤 응답합니다. 정상 흐름과 기록 실패를 선택해, 같은 요청이 어떻게 다른 결과로 끝나는지 살펴보세요.</p></div>
+    <figure class="mechanism">
+      <div class="track" id="track" role="group" aria-label="요청자, 대기열, 기록의 상태">
+        <div class="process-node" id="requester" data-state="current"><strong>요청자</strong><span class="node-state" id="requesterState">아직 보내지 않음</span></div>
+        <div class="flow-arrow" aria-hidden="true"><span class="horizontal">→</span><span class="vertical">↓</span></div>
+        <div class="process-node" id="queue"><strong>대기열</strong><span class="node-state" id="queueState">요청 없음</span></div>
+        <div class="flow-arrow" aria-hidden="true"><span class="horizontal">→</span><span class="vertical">↓</span></div>
+        <div class="process-node" id="storage"><strong>기록</strong><span class="node-state" id="storageState">처리 전</span></div>
+        <span id="packet" aria-hidden="true" hidden>REQ</span>
+      </div>
+      <figcaption>그림 4. 화살표는 요청 방향입니다. 마지막 단계에서는 성공 또는 오류 응답이 요청자에게 돌아옵니다. 이동 속도는 설명용이며 실제 처리 시간을 뜻하지 않습니다.</figcaption>
+    </figure>
+    <div class="controls" role="group" aria-label="동작 탐색">
+      <label for="scenario">시나리오</label><select id="scenario"><option value="success">정상 흐름</option><option value="failure">기록 실패</option></select>
+      <div class="control-actions" role="group" aria-label="단계 제어">
+        <button id="previous" type="button" aria-label="이전 단계" title="이전 단계" disabled><span class="control-symbol" aria-hidden="true">←</span></button>
+        <button id="next" type="button" aria-label="다음 단계" title="다음 단계"><span class="control-symbol" aria-hidden="true">→</span></button>
+        <button id="play" type="button" aria-label="한 번 재생" title="한 번 재생"><span class="control-symbol" aria-hidden="true">▶</span></button>
+        <button id="reset" type="button" aria-label="처음으로" title="처음으로"><span class="control-symbol" aria-hidden="true">↻</span></button>
+      </div>
+    </div>
+    <p class="motion-note" id="motionNote">직접 재생하거나 이전·다음으로 한 단계씩 확인할 수 있습니다.</p>
+    <div class="stage-readout" aria-live="polite" aria-atomic="true" style="margin-top:25px"><h3 id="stageTitle">0 / 요청 전</h3><p id="stageText">요청자는 아직 요청을 보내지 않았습니다.</p></div>
+  </section>
+
+  <section class="closing page-inset spread spread--reverse" id="closing" aria-labelledby="closing-title">
+    <div class="prose"><p class="eyebrow">04 / 다시 전체로</p><h2 id="closing-title" style="margin-top:15px">완료라는 말에<br>경계를 적습니다.</h2><p style="margin-top:24px">요청을 받았는지, 기록이 남았는지, 응답이 돌아왔는지는 다른 질문입니다. 실제 시스템을 설명할 때도 무엇을 확인한 상태인지 분명히 적어야 합니다.</p><p>여기서는 단순한 관계만 다뤘습니다. 실제 서비스의 재시도, 장애 복구와 저장 보장은 해당 프로젝트의 스펙과 구현에서 확인해야 합니다.</p></div>
+    <figure class="side-figure">
+      <svg viewBox="0 0 340 240" role="img" aria-labelledby="boundary-art-title"><title id="boundary-art-title">도착, 기록, 응답을 구분하는 세 개의 경계</title><g class="svg-stroke"><circle cx="140" cy="120" r="93"/><circle cx="179" cy="120" r="68"/><circle cx="220" cy="120" r="38"/></g><path d="M37 120 H268" class="svg-rule" stroke-dasharray="4 6"/><circle cx="220" cy="120" r="7" class="svg-accent"/></svg>
+      <figcaption>그림 5. 서로 다른 확인 범위. 이 그림은 집합 포함 관계가 아니라, 완료를 설명할 때 구분해야 할 경계의 개념 표현입니다.</figcaption>
+    </figure>
+  </section>
+  <footer class="colophon page-inset"><p>ARTIFACT DESIGN / 편집 문서 예시</p><p>단일 HTML · 외부 폰트·스크립트·이미지 요청 없음 · 개념 모형, 실제 프로젝트 명세 아님</p></footer>
+</main>
+<script>
+  const byId = id => document.getElementById(id);
+  const nodes = [byId('requester'), byId('queue'), byId('storage')];
+  const packet = byId('packet');
+  const reducedMotion = matchMedia('(prefers-reduced-motion: reduce)');
+  const narrowLayout = matchMedia('(max-width: 760px)');
+  let stage = 0;
+  let scenario = 'success';
+  let running = false;
+  let animation = null;
+  let generation = 0;
+
+  const commonSteps = [
+    ['요청 전', '요청자는 아직 요청을 보내지 않았습니다.'],
+    ['대기열 도착', '요청을 받았습니다. 기록은 아직 처리하지 않았으므로 성공 응답을 보내지 않습니다.']
+  ];
+  function steps() {
+    return commonSteps.concat(scenario === 'success' ? [
+      ['기록 완료', '기록을 남겼습니다. 이제 이 모형의 성공 응답 조건을 충족합니다.'],
+      ['성공 응답 도착', '기록 완료를 확인한 뒤 성공 응답이 요청자에게 돌아왔습니다.']
+    ] : [
+      ['기록 실패', '기록을 남기지 못했습니다. 성공 응답 조건을 충족하지 않습니다.'],
+      ['오류 응답 도착', '기록 실패를 알리는 오류 응답이 요청자에게 돌아왔습니다. 이 예시는 자동 재시도를 실행하지 않습니다.']
+    ]);
+  }
+  function render() {
+    const [title, text] = steps()[stage];
+    byId('stageTitle').textContent = `${stage} / ${title}`;
+    byId('stageText').textContent = animation
+      ? `${running ? '이동 중' : '일시정지'} · 다음 상태: ${steps()[stage + 1][0]}. 완료된 상태는 ${title}입니다.`
+      : text;
+    byId('previous').disabled = stage === 0;
+    byId('next').disabled = stage === 3;
+    byId('play').hidden = reducedMotion.matches;
+    const playButton = byId('play');
+    const playLabel = animation ? (running ? '일시정지' : '재개') : (stage === 3 ? '처음부터 재생' : '한 번 재생');
+    playButton.setAttribute('aria-label', playLabel);
+    playButton.title = playLabel;
+    playButton.querySelector('.control-symbol').textContent = animation && running ? 'Ⅱ' : stage === 3 && !animation ? '↻' : '▶';
+    byId('motionNote').textContent = reducedMotion.matches
+      ? '움직임 줄이기 설정이 켜져 있습니다. 이전·다음으로 같은 내용을 정적 단계로 확인하세요.'
+      : '직접 재생하거나 이전·다음으로 한 단계씩 확인할 수 있습니다.';
+    const current = stage === 1 ? 1 : stage === 2 ? 2 : 0;
+    nodes.forEach((node, index) => node.dataset.state = index === current ? 'current' : 'other');
+    byId('requesterState').textContent = stage === 0 ? '아직 보내지 않음' : stage === 3 ? (scenario === 'success' ? '성공 응답 도착' : '오류 응답 도착') : '응답 대기';
+    byId('queueState').textContent = stage >= 1 ? '요청 전달' : '요청 없음';
+    byId('storageState').textContent = stage >= 2 ? (scenario === 'success' ? '기록 완료' : '기록 실패') : '처리 전';
+  }
+  function stop() {
+    generation += 1;
+    running = false;
+    if (animation) animation.cancel();
+    animation = null;
+    packet.hidden = true;
+  }
+  function stepTo(value) {
+    stop();
+    stage = Math.max(0, Math.min(3, value));
+    render();
+  }
+  function setScenario(value) {
+    stop();
+    scenario = value;
+    stage = 0;
+    render();
+  }
+  function points(next) {
+    const track = byId('track').getBoundingClientRect();
+    const positions = nodes.map(node => {
+      const box = node.getBoundingClientRect();
+      return { x: box.left - track.left + box.width / 2, y: box.bottom - track.top - 15 };
+    });
+    if (next < 3) return [positions[next - 1], positions[next]];
+    const start = positions[2], end = positions[0];
+    return matchMedia('(max-width: 760px)').matches
+      ? [start, {x: track.width - 14, y: start.y}, {x: track.width - 14, y: end.y}, end]
+      : [start, {x: start.x, y: start.y + 42}, {x: end.x, y: end.y + 42}, end];
+  }
+  async function run() {
+    if (reducedMotion.matches) return;
+    if (animation) {
+      running = !running;
+      if (running) animation.play(); else animation.pause();
+      render();
+      return;
+    }
+    if (stage === 3) stage = 0;
+    const ownGeneration = ++generation;
+    running = true;
+    while (stage < 3 && ownGeneration === generation) {
+      const next = stage + 1;
+      packet.textContent = next === 3 ? (scenario === 'success' ? 'ACK' : 'ERR') : 'REQ';
+      packet.hidden = false;
+      const keyframes = points(next).map(point => ({transform: `translate(${point.x}px, ${point.y}px) translate(-50%, -50%)`}));
+      animation = packet.animate(keyframes, {duration: 1600, easing: 'ease-in-out', fill: 'forwards'});
+      render();
+      try { await animation.finished; } catch { return; }
+      // 초기화 전의 완료 처리가 새 상태를 덮지 않게 한다.
+      if (ownGeneration !== generation) return;
+      animation.cancel();
+      animation = null;
+      packet.hidden = true;
+      stage = next;
+      render();
+    }
+    if (ownGeneration === generation) { running = false; render(); }
+  }
+  function updateVisualNote() {
+    const names = {
+      styles: {editorial: '에디토리얼', minimal: '미니멀', technical: '기술 문서', bold: '볼드 포스터'},
+      palettes: {'paper-forest': '종이·숲', blueprint: '청사진', citrus: '감귤·황토', night: '야간', rose: '장미·회백', violet: '라일락·남색', ocean: '바다·청록', slate: '슬레이트'}
+    };
+    const choices = document.body.dataset;
+    byId('visualNote').textContent = `${names.styles[choices.style]} 타이포그래피 · ${names.palettes[choices.palette]} 팔레트입니다. 색상은 타이포그래피와 별도로 바꿀 수 있습니다.`;
+  }
+  function updateLayoutNote() {
+    const descriptions = {
+      essay: '연속 에세이: 제목 아래의 큰 그림과 교차하는 본문·그림으로 이어집니다.',
+      split: '분할 챕터: 표지부터 글과 그림을 좌우로 나누고, 관련 그림을 가로로 묶습니다.',
+      margin: '사이드 노트: 넓은 본문 오른쪽에 좁은 주석 열을 두고 그림을 세로로 쌓습니다.'
+    };
+    byId('layoutNote').textContent = descriptions[document.body.dataset.layout]
+      + (narrowLayout.matches ? ' 현재 화면은 760px 이하이므로 읽기 쉬운 1열로 통합합니다. 구성 차이는 넓은 화면에서 확인하세요.' : '');
+  }
+  byId('styleChoice').addEventListener('change', event => { document.body.dataset.style = event.target.value; updateVisualNote(); });
+  byId('paletteChoice').addEventListener('change', event => { document.body.dataset.palette = event.target.value; updateVisualNote(); });
+  byId('layoutChoice').addEventListener('change', event => {
+    document.body.dataset.layout = event.target.value;
+    updateLayoutNote();
+  });
+  updateVisualNote();
+  byId('scenario').addEventListener('change', event => setScenario(event.target.value));
+  byId('previous').addEventListener('click', () => stepTo(stage - 1));
+  byId('next').addEventListener('click', () => stepTo(stage + 1));
+  byId('reset').addEventListener('click', () => stepTo(0));
+  byId('play').addEventListener('click', run);
+  reducedMotion.addEventListener('change', () => { stop(); render(); });
+  window.addEventListener('resize', () => { if (animation) { stop(); render(); } });
+  narrowLayout.addEventListener('change', updateLayoutNote);
+  updateLayoutNote();
+  render();
+</script>
+</body>
+</html>
