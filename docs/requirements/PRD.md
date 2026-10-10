@@ -100,6 +100,7 @@ NaruMQ는 Kubernetes 환경에 최적화된 고가용성 MQTT 클러스터다. �
 - MQTT 3.1.0 호환 코드를 broker core에 포함하는 기능
 - Docker Compose 또는 단일 Docker host의 3개 container를 production HA 배포로 지원하는 기능
 - 초기 production release에서 Amazon ECS와 Amazon EKS Fargate를 지원 배포 프로필로 선언하는 기능
+- 새 클러스터를 따로 만들고 load balancer를 전환하는 Blue/Green 업데이트에서 persistent session과 미전달 메시지를 옮기는 기능([ADR-0051](../decisions/ADR-0051-cluster-update-strategy.md))
 
 Webhook, Kafka 연동 등이 필요하면 일반 MQTT subscriber 또는 별도 adapter 서비스로 구현한다. 브로커 코어에 비즈니스 통합 기능을 넣지 않는다.
 
