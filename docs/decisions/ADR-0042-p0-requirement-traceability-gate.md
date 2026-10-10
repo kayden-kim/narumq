@@ -6,7 +6,7 @@
 | 결정일 | 2026-10-09 |
 | 결정자 | 사용자 |
 | 관련 요구사항 | [TEST-10](../requirements/PRD.md#115-테스트와-coverage) |
-| 관련 스펙·계약 | [Performance와 verification §7.2](../specs/performance-and-verification.md#72-phase-0-mutationfuzz-게이트) |
+| 관련 스펙·계약 | [Performance와 verification §7.2](../specs/performance-and-verification.md#72-fuzz-게이트와-수동-mutation-검증) |
 | 관련 아키텍처 문서 | [Project structure](../architectures/project-structure.md#verification-and-integration-test-entrypoints) |
 | 이 ADR이 대체하는 이전 ADR | 없음 |
 | 이 ADR을 대체한 새 ADR | 없음 |

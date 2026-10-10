@@ -42,9 +42,9 @@
 | 적용할 코드 작성 규칙 | [Go 코딩 컨벤션](conventions/go-coding-conventions.md) |
 | 개발 환경 준비와 실행 방법 | [저장소 README](../README.md) (Go 1.26.5 기준) |
 | Operations Dashboard 구성·검증 | [NaruMQ Operations Dashboard 구성](how-to/operations-dashboard.md) |
-| 변경 범위별 테스트와 전체 완료 검증 | [성능 및 검증](specs/performance-and-verification.md) (`go run ./tools/verify local`, `ci`) |
+| 변경 범위별 테스트와 전체 완료 검증 | [성능 및 검증](specs/performance-and-verification.md) (`go run ./tools/verify local`, `ci`, 수동 `mutation`) |
 
-검증 절차에는 실행 위치, 필요한 도구·환경·버전, 변경 범위별 명령, 전체 완료에 필요한 명령과 성공 조건(`local`, `ci`)을 기록한다.
+검증 절차에는 실행 위치, 필요한 도구·환경·버전, 변경 범위별 명령, 전체 완료 명령과 성공 조건을 기록한다. 수동 mutation 검증은 필요할 때 별도로 실행한다.
 
 작업 순서는 루트 [작업 지침](../AGENTS.md#작업-순서와-필수-참조), 문서 채택 여부와 충돌 판단은 [기준 문서 적용과 충돌 처리](AGENTS.md#기준-문서-적용과-충돌-처리)를 따른다.
 

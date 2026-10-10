@@ -673,7 +673,7 @@ Phase 0은 기준과 도구를 확정하는 단계다. Phase 1부터 기능을 �
 - 프로토콜 parser와 단일 node spike
 - consensus, session store, routing ADR 작성
 - MQTT normative statement compliance matrix 작성
-- unit test, coverage ratchet, mutation test CI gate 구축
+- unit test, coverage ratchet와 수동 mutation test command 구축
 - NaruMQ와 EMQX에 공통으로 사용하는 적합성·부하·chaos test harness 구축
 - `EKS_EC2_HA`의 지원 EKS version, EC2 instance·node group, EBS CSI, NLB와 3-AZ topology 기준 확정
 
@@ -737,7 +737,7 @@ Phase 0은 기준과 도구를 확정하는 단계다. Phase 1부터 기능을 �
 | 특정 저장소 결합 | 교체 비용 증가 | domain port와 adapter 경계를 유지하고 ADR로 결정을 기록한다. |
 | MQTT 3.1.0 legacy client 잔존 | NaruMQ 전환 시 연결 실패 | 장기간 연결 이벤트를 수집하고 client를 3.1.1 이상으로 갱신한다. 갱신할 수 없으면 별도 legacy broker/gateway로 격리한다. |
 | 기존 제품 구현 모방 | 라이선스·법적 위험 | OASIS MQTT 표준에 따른 clean-room 구현과 법무 검토를 수행한다. |
-| coverage 수치만 충족하는 약한 테스트 | 결함이 검출되지 않은 채 출시 | branch·diff coverage, mutation test, 요구사항·표준 조항 추적을 함께 강제한다. |
+| coverage 수치만 충족하는 약한 테스트 | 결함이 검출되지 않은 채 출시 | branch/diff coverage와 요구사항·표준 조항 추적을 CI에서 강제하고, critical state machine의 변경에는 mutation test를 수동 실행해 결과를 review한다. |
 | 불공정한 EMQX 비교 | 잘못된 성능 결론 | 동일 자원·기능·부하 조건, 실제 EMQX 실행, raw artifact 보관을 강제한다. |
 | AWS deployment profile의 잘못된 동등성 주장 | 단일 host·미검증 ECS/Fargate 결과로 HA 출시 | `EKS_EC2_HA`만 초기 production 기준으로 사용하고 profile별 지원 상태와 축소된 보장을 artifact에 표시한다. |
 | NLB와 EBS 설정 불일치 | 신규 연결 유입, 강제 연결 종료 또는 durable state 위험 | NLB target lifecycle과 EBS CSI topology·snapshot을 failure·rolling test에 포함한다. |

@@ -129,21 +129,23 @@ go test ./internal/adapters/tcp -run=^$ -fuzz=^FuzzConnectionInput$ -fuzztime=10
 
 ### 5단계: 로컬 종합 검증 도구 체인(`tools/verify local`) 실행
 
-저장소의 로컬 검증 gate를 실행한다. CI는 이 gate에 PR diff coverage와 다섯 Gremlins mutation 검사를 추가하므로, local PASS만으로 CI 검증 전체를 대체하지 않는다.
+저장소의 로컬 검증 gate는 `go run ./tools/verify local`로 실행한다. CI는 PR diff coverage를 추가하지만 mutation은 실행하지 않는다. 전체 mutation 검증이 필요하면 `go run ./tools/verify mutation`을 별도로 실행한다.
 
 ```sh
 go run ./tools/verify local
 ```
 
-이 명령은 먼저 `gofmt`를 검사한 뒤, 아래 9개 검증 command를 병렬 실행한다. 모두 통과하면 coverage policy 검사를 실행한다. `local`은 mutation 검사를 실행하지 않는다.
+이 명령은 먼저 `gofmt`를 검사하고 `branch-instrument`를 실행한다. 그 뒤 아래 10개 command를 병렬 실행한다. 모두 통과하면 coverage policy를 평가한다.
 
 1. **Preflight (3개 command):** `go vet ./...`, `go run ./tools/verify traceability`, `go run ./tools/verify architecture`.
-2. **전체 package test와 atomic coverage profile (병렬):** 전체 테스트를 실행해 `.artifacts/verification/coverage.out`을 생성한다.
-3. **Race suite (병렬):** `go test -race ./cmd/... ./internal/... -count=1`.
-4. **4대 fuzz campaigns (병렬):** decoder, codec round-trip, topic matching, session lifecycle를 각각 고정 실행 횟수로 검사한다.
-5. **Coverage policy:** 병렬 검사가 성공한 뒤 line 85% 및 function 90% floor/ratchet를 검사한다.
+2. **전체 package test와 atomic coverage profile:** 전체 테스트를 실행해 `.artifacts/verification/coverage.out`을 만든다.
+3. **Race suite:** `go test -race ./cmd/... ./internal/... -count=1`.
+4. **Fuzz campaign (5개 command):** MQTT decoder·codec round-trip, topic matching, session lifecycle, TCP connection input을 고정 횟수로 검사한다.
+5. **Coverage policy:** 병렬 검사가 성공한 뒤 line 85%, function 90% floor/ratchet를 검사한다.
 
-로컬 실행은 총 10개 비-mutation command(병렬 9개와 coverage policy 1개)이며, CI 실행은 병렬 단계에 Delivery·MQTT·NodeDrain·Security·Session의 다섯 Gremlins mutation command를 더한다.
+Local과 CI는 각각 총 12개 verifier command를 실행하며 mutation은 포함하지 않는다. Local coverage는 `-parallel=8`, CI coverage는 유효 `GOMAXPROCS`를 쓴다.
+
+Mutation을 실행하려면 `go run ./tools/verify mutation`을 사용한다. 이 명령은 다섯 critical package를 Gremlins worker 1개씩 실행하고, CPU 예산에 맞춰 package 작업을 batch로 나눈다. Coverage, race, fuzz gate는 다시 실행하지 않는다.
 
 기대 결과: 마지막에 `local: PASS` 메시지가 출력되고 종료 코드 0으로 완료된다.
 
@@ -171,16 +173,17 @@ go run ./cmd/narumq -tcp-listen 127.0.0.1:1883 -http-listen 127.0.0.1:8080 -allo
 
 ## 4. 검증
 
-개발자가 수행한 작업의 완료 여부는 다음 기준표로 판정한다. 2026-10-09, Windows/amd64, Go 1.26.5에서 새 80% overall branch 기준으로 Run C를 실행해 `local: PASS`를 확인했다. Branch coverage는 schema 2 report의 `measured`로 기록한다. Overall·core branch ratchet에는 `branchTolerance=0.20`을 적용한다. Core branch는 90%, 변경 코드 line/function/branch diff coverage는 각각 90%다. Diff 기준 변경은 [ADR-0044](../decisions/ADR-0044-diff-coverage-floor-90.md)를 따른다. Run C의 `requirementShortfalls`는 비었다. Run C 당시 P0 gate는 58/81 요구사항 연결과 예외 23개를 보고했으며, 예외가 남아 TEST-10은 미검증이다. CI 필수 status와 TEST-07 diff CI 증거도 남아 있다. 측정값과 경계 시험은 [성능 스펙 §8.4](../specs/performance-and-verification.md#84-전체-branch-floor-수용-증거)에 있다. Run C에서는 mutation과 수동 로컬 broker smoke를 실행하지 않았다. 이후 5개 package mutation과 로컬 CI runner를 실행해 통과했다. 이 실행 증거는 [성능 스펙 §8.7](../specs/performance-and-verification.md#87-mutation-gate-범위-확장-수용-증거)에 있다. 원격 필수 CI status를 확인한 결과는 아니다.
+개발자가 수행한 작업의 완료 여부는 다음 기준표로 판정한다. 2026-10-09, Windows/amd64, Go 1.26.5에서 새 80% overall branch 기준으로 Run C를 실행해 `local: PASS`를 확인했다. Branch coverage는 schema 2 report의 `measured`로 기록한다. Overall·core branch ratchet에는 `branchTolerance=0.20`을 적용한다. Core branch는 90%, 변경 코드 line/function/branch diff coverage는 각각 90%다. Diff 기준 변경은 [ADR-0044](../decisions/ADR-0044-diff-coverage-floor-90.md)를 따른다. Run C의 `requirementShortfalls`는 비었다. Run C 당시 P0 gate는 58/81 요구사항 연결과 예외 23개를 보고했으며, 예외가 남아 TEST-10은 미검증이다. CI 필수 status와 TEST-07 diff CI 증거도 남아 있다. 측정값과 경계 시험은 [성능 스펙 §8.4](../specs/performance-and-verification.md#84-전체-branch-floor-수용-증거)에 있다. Run C에서는 mutation과 수동 로컬 broker smoke를 실행하지 않았다. 이후 실행한 mutation 및 로컬 CI runner 결과는 당시 mutation이 자동 gate에 포함된 정책의 historical evidence다([성능 스펙 §8.7](../specs/performance-and-verification.md#87-mutation-gate-범위-확장-수용-증거)). 현재 mutation은 `go run ./tools/verify mutation`으로 별도 실행하며 결과는 [§8.8](../specs/performance-and-verification.md#88-수동-mutation-검증-수용-증거)에 기록한다. 원격 필수 CI status를 확인한 결과는 아니다.
 
 | 관찰 대상 | 성공 조건 | 확인 방법 | 실제 결과 | 실행 증거 위치 |
 | --- | --- | --- | --- | --- |
 | 단위 테스트 및 레이스 | 전체 테스트 PASS 및 Data Race 0건 | `go run ./tools/verify local` | Run A·B·C 통과; 전체 package test와 `go test -race ./cmd/... ./internal/... -count=1` 단계 완료. 앞선 실패 시도는 성능 스펙에 기록 | 콘솔 출력과 성능 스펙 §8.2 |
 | 아키텍처 규칙 | 계층 간 허용되지 않은 import 0건 | `go run ./tools/verify architecture` | 통과; `architecture: PASS` | 콘솔 출력 |
 | 규격 추적성 | PRD의 모든 P0를 test 함수 또는 유효한 예외에 연결하고 stale 예외 0건 | `go run ./tools/verify traceability` | 최신 확인(2026-10-09): gate PASS, P0 66/81 연결, 예외 15개. 예외와 필수 CI 증거가 남아 TEST-10은 미검증. Accepted ADR-0042의 결정 기록에 적힌 59/81·22개는 그대로 유지 | [성능 스펙 §8.7](../specs/performance-and-verification.md#87-mutation-gate-범위-확장-수용-증거), [ADR-0042](../decisions/ADR-0042-p0-requirement-traceability-gate.md) |
-| Markdown 링크 | 지정 범위의 로컬 링크 대상과 제목 앵커가 모두 유효함 | `go run ./tools/verify markdown-links` | 2026-10-10 현재 작업 트리(ADR-0051·Drain spec·PRD·ADR 목록·TODO 변경 포함), Windows/amd64, Go 1.26.5: `markdown-links: PASS (files 149, local links 1996)`; 오류 0건 | 이 행의 실행 기록 |
+| Markdown 링크 | 지정 범위의 로컬 링크 대상과 제목 앵커가 모두 유효함 | `go run ./tools/verify markdown-links` | 2026-10-11 현재 작업 트리, Windows/amd64, Go 1.26.5: `markdown-links: PASS (files 152, local links 2187)`; 오류 0건 | 이 행의 실행 기록 |
 | 코드 커버리지 | Line/function 기준, overall branch 80%, core branch 90%, ratchet 허용폭, line/function/branch diff 90% 충족 | `go run ./tools/verify local`; `ci --base <merge-base>`는 별도 CI 실행 | Run C 82.84%, `requirementShortfalls` 비었음; 당시 overall ratchet 80.03%와 core/diff 기준 유지. +0.21%p 경계 거절과 +0.19%p 경계 통과도 확인. 현재 diff 기준 변경과 실행 결과는 성능 스펙 §8.5 참조 | `.artifacts/verification/coverage-summary-floor-c.json`, `coverage-boundary-plus-*.json`, 성능 스펙 §8.4·§8.5 |
-| 뮤테이션 테스트 | Delivery·MQTT·NodeDrain·Security·Session 각각 efficacy·mutant coverage 80% 이상 | `go run ./tools/verify ci --base <merge-base>` | 2026-10-09 로컬 순차 측정과 CI runner 실행 모두 5개 package 통과. LIVED·timeout 0개. `local` gate는 mutation을 포함하지 않음. 원격 필수 CI 증거가 없어 TEST-12는 미검증 | [성능 스펙 §8.7](../specs/performance-and-verification.md#87-mutation-gate-범위-확장-수용-증거), `.artifacts/verification/mutation-scope-*.json`, `mutation-*.json` |
+| 뮤테이션 테스트 | Delivery·MQTT·NodeDrain·Security·Session 각각 efficacy·mutant coverage 80% 이상 | `go run ./tools/verify mutation` | 2026-10-11 수동 실행 PASS, 1464.90초. 다섯 package 모두 기준 이상. Timed out 6개와 Not covered 6개는 kill로 세지 않음. 세부 점수는 [성능 스펙 §8.8](../specs/performance-and-verification.md#88-수동-mutation-검증-수용-증거) | `.artifacts/verification/mutation-*.json` |
+| CI 자동 검증 | 저장소의 자동 CI gate가 모든 필수 단계를 통과함 | `go run ./tools/verify ci --base HEAD` | 2026-10-11 로컬 runner PASS, 175.09초. Mutation 단계는 실행하지 않았다. 원격 필수 CI status를 뜻하지 않음 | [성능 스펙 §8.8](../specs/performance-and-verification.md#88-수동-mutation-검증-수용-증거) |
 | 종합 로컬 검증 | 로컬 검증 gate 전체 완료 및 종료 코드 0 | `go run ./tools/verify local` | 새 80% policy의 Run C에서 `coverage: PASS`, `local: PASS`. 추가 실행(2026-10-10, 현재 작업 트리, Windows/amd64, Go 1.26.5): `GOMAXPROCS=4 go run ./tools/verify local`가 184.56초 뒤 `coverage: PASS`, `local: PASS`를 출력했다. Traceability는 P0 69/81 연결, 예외 12개를 보고했다. CI 필수 status 통과를 뜻하지 않음 | 성능 스펙 §8.4 (Run C 기록); 이 행(2026-10-10 추가 실행) |
 
 ## 5. 중단 조건 및 빈발 문제 해결

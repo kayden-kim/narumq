@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strings"
 	"sync"
@@ -71,33 +72,22 @@ func runVerification(ctx context.Context, root string, options verificationOptio
 		{Name: "go", Args: []string{"test", "./internal/domain/session", "-run=^$", "-fuzz=^FuzzLifecycleTransitions$", "-fuzztime=10000x", "-parallel=1"}},
 		{Name: "go", Args: []string{"test", "./internal/adapters/tcp", "-run=^$", "-fuzz=^FuzzConnectionInput$", "-fuzztime=10000x", "-parallel=1"}},
 	}
-	mutationCommands := []commandSpec{
-		{Name: "go", Args: []string{"tool", "gremlins", "unleash", "--config=tests/verification/gremlins.yaml", "--output=.artifacts/verification/mutation-delivery.json", "internal/domain/delivery"}},
-		{Name: "go", Args: []string{"tool", "gremlins", "unleash", "--config=tests/verification/gremlins.yaml", "--output=.artifacts/verification/mutation-mqtt.json", "internal/domain/mqtt"}},
-		{Name: "go", Args: []string{"tool", "gremlins", "unleash", "--config=tests/verification/gremlins.yaml", "--output=.artifacts/verification/mutation-nodedrain.json", "internal/domain/nodedrain"}},
-		{Name: "go", Args: []string{"tool", "gremlins", "unleash", "--config=tests/verification/gremlins.yaml", "--output=.artifacts/verification/mutation-security.json", "internal/domain/security"}},
-		{Name: "go", Args: []string{"tool", "gremlins", "unleash", "--config=tests/verification/gremlins.yaml", "--output=.artifacts/verification/mutation-session.json", "internal/domain/session"}},
-	}
 	preflightCommands := []commandSpec{
 		{Name: "go", Args: []string{"vet", "./..."}},
 		{Name: "go", Args: []string{"run", "./tools/verify", "traceability"}},
 		{Name: "go", Args: []string{"run", "./tools/verify", "architecture"}},
 	}
-	testParallelLimit := "-parallel=8"
+	testParallelLimit := 8
 	if options.CI {
-		testParallelLimit = "-parallel=2"
+		testParallelLimit = runtime.GOMAXPROCS(0)
 	}
-	coverageArgs := []string{"test", "./...", testParallelLimit, "-count=1", "-covermode=atomic", "-coverpkg=./cmd/...,./internal/...", "-coverprofile=" + filepath.Join(root, ".artifacts", "verification", "coverage.out")}
+	coverageArgs := []string{"test", "./...", fmt.Sprintf("-parallel=%d", testParallelLimit), "-count=1", "-covermode=atomic", "-coverpkg=./cmd/...,./internal/...", "-coverprofile=" + filepath.Join(root, ".artifacts", "verification", "coverage.out")}
 	parallelCommands := append([]commandSpec{}, preflightCommands...)
 	parallelCommands = append(parallelCommands,
 		commandSpec{Name: "go", Dir: defaultBranchOutputDir + "/module", Args: coverageArgs},
 		commandSpec{Name: "go", Args: []string{"test", "-race", "./cmd/...", "./internal/...", "-count=1"}},
 	)
 	parallelCommands = append(parallelCommands, fuzzCommands...)
-
-	if options.CI {
-		parallelCommands = append(parallelCommands, mutationCommands...)
-	}
 	if err := runConcurrent(ctx, root, parallelCommands, runner); err != nil {
 		return fmt.Errorf("verification stopped during parallel checks: %w", err)
 	}
@@ -112,6 +102,51 @@ func runVerification(ctx context.Context, root string, options verificationOptio
 		return fmt.Errorf("verification stopped after %s: %w", formatCommand(coverageCommand), err)
 	}
 	return nil
+}
+
+func runMutation(ctx context.Context, root string, runner commandRunner) error {
+	if err := ensureRepositoryRoot(root); err != nil {
+		return err
+	}
+	if err := checkGoFormat(root); err != nil {
+		return err
+	}
+	if err := os.MkdirAll(filepath.Join(root, ".artifacts", "verification"), 0o755); err != nil {
+		return fmt.Errorf("create verification artifact directory: %w", err)
+	}
+	commands := mutationCommands()
+	concurrency := mutationCommandConcurrency(runtime.GOMAXPROCS(0), 1, 1, len(commands))
+	for start := 0; start < len(commands); start += concurrency {
+		end := min(start+concurrency, len(commands))
+		if err := runConcurrent(ctx, root, commands[start:end], runner); err != nil {
+			return fmt.Errorf("mutation verification stopped during package checks: %w", err)
+		}
+	}
+	return nil
+}
+
+func mutationCommands() []commandSpec {
+	return []commandSpec{
+		{Name: "go", Args: []string{"tool", "gremlins", "unleash", "--config=tests/verification/gremlins.yaml", "--output=.artifacts/verification/mutation-delivery.json", "internal/domain/delivery", "--workers=1"}},
+		{Name: "go", Args: []string{"tool", "gremlins", "unleash", "--config=tests/verification/gremlins.yaml", "--output=.artifacts/verification/mutation-mqtt.json", "internal/domain/mqtt", "--workers=1"}},
+		{Name: "go", Args: []string{"tool", "gremlins", "unleash", "--config=tests/verification/gremlins.yaml", "--output=.artifacts/verification/mutation-nodedrain.json", "internal/domain/nodedrain", "--workers=1"}},
+		{Name: "go", Args: []string{"tool", "gremlins", "unleash", "--config=tests/verification/gremlins.yaml", "--output=.artifacts/verification/mutation-security.json", "internal/domain/security", "--workers=1"}},
+		{Name: "go", Args: []string{"tool", "gremlins", "unleash", "--config=tests/verification/gremlins.yaml", "--output=.artifacts/verification/mutation-session.json", "internal/domain/session", "--workers=1"}},
+	}
+}
+
+func mutationCommandConcurrency(availableCPUs, workersPerCommand, testCPUs, workloadCount int) int {
+	if availableCPUs < 1 || workersPerCommand < 1 || testCPUs < 1 || workloadCount < 1 {
+		return 1
+	}
+	commandLimit := availableCPUs / (workersPerCommand + testCPUs)
+	if commandLimit < 1 {
+		return 1
+	}
+	if commandLimit > workloadCount {
+		return workloadCount
+	}
+	return commandLimit
 }
 
 func runConcurrent(ctx context.Context, root string, commands []commandSpec, runner commandRunner) error {

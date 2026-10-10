@@ -347,38 +347,38 @@ Repository verification의 표준 진입점은 다음 command다.
 ```text
 go run ./tools/verify local
 go run ./tools/verify ci --base <merge-base>
+go run ./tools/verify mutation
 ```
 
-`local`은 gofmt 검사 뒤 12개 command, `ci`는 같은 검사와 mutation을 더해 17개
-command를 실행한다. gofmt 검사는 source를 수정하지 않으며 불일치가 있으면 gate를
-중단한다. 독립 command는 동시에 실행하고, 하나가 실패하면 나머지를 취소한다.
-Coverage policy 판정은 전체 test command가 만든 profile을 기다린 뒤 실행한다.
+`local`과 `ci`는 gofmt 검사 뒤 각각 12개 command를 실행한다. `local`은 package
+coverage 병렬도를 8로 두고, CI는 유효 `GOMAXPROCS`를 상한으로 쓴다. 독립 command는
+병렬 실행하며 하나가 실패하면 같은 단계의 나머지를 취소한다. Coverage policy는 전체
+test command가 만든 profile을 기다린 뒤 실행한다. Mutation은 이 두 gate에 포함되지 않는다.
 
-검증 게이트는 `go test ./... -parallel=2`로 test parallel limit을 2로 설정한다.
-기본 gate의 격리된 cluster process acceptance test는 `t.Parallel()`로 이 상한을
-함께 사용한다. 시험별 데이터와 포트는 공유하지 않는다. 빌드 공유와 opt-in 시험의
-범위는 [성능 및 검증 §8](../specs/performance-and-verification.md#8-coverage와-test-quality-gate)을 따른다.
+각 package 안에서 `t.Parallel()`의 상한은 local에서 8, CI에서 유효 `GOMAXPROCS`다.
+Local과 CI의 다른 실행 조건은 [성능 및 검증 §8](../specs/performance-and-verification.md#8-coverage와-test-quality-gate)을 따른다.
 
 ```text
 공통:
 → go vet ./...
 → traceability
 → architecture
-→ go test ./... -parallel=2 -count=1 -covermode=atomic -coverpkg=./cmd/...,./internal/... -coverprofile=.artifacts/verification/coverage.out
+→ atomic coverage test (local `-parallel=8`; CI `-parallel=GOMAXPROCS`; `-count=1`)
 → go test -race ./cmd/... ./internal/... -count=1
 → 5 bounded fuzz campaigns (각 -parallel=1)
 → coverage policy
 
 CI 전용:
-→ delivery mutation
-→ mqtt mutation
-→ nodedrain mutation
-→ security mutation
-→ session mutation
+→ coverage test `-parallel=GOMAXPROCS`; diff coverage에만 `--base` 전달
+
+수동 mutation 전용:
+→ `go run ./tools/verify mutation`
+→ Delivery, MQTT, NodeDrain, Security, Session package를 Gremlins `workers=1`,
+  `test-cpu=1`로 CPU 예산에 맞춘 batch 실행
 ```
 
-Mutation command는 CI gate에서만 자동 실행한다. Local 개발 gate는 mutation을 제외하고
-전체 package suite, race, fuzz와 coverage 검증을 유지한다.
+Mutation command는 local·CI에서 실행하지 않는다. 필요할 때 별도 명령으로 실행하고
+각 package의 efficacy와 mutant coverage 80% 기준을 확인한다.
 
 다섯 fuzz campaign은 각각 별도 process와 single worker로 실행한다.
 개별 fuzz failure는 다음 exact command로 재현할 수 있다.
@@ -391,15 +391,12 @@ go test ./internal/domain/session -run=^$ -fuzz=^FuzzLifecycleTransitions$ -fuzz
 go test ./internal/adapters/tcp -run=^$ -fuzz=^FuzzConnectionInput$ -fuzztime=10000x -parallel=1
 ```
 
-Package별 mutation failure는 다음 exact command로 재현하며, 결과는 각 JSON path에
-보존한다.
+
+`go run ./tools/verify mutation`은 다섯 package를 실행하고 각 결과를 JSON path에
+보존한다. 실패 원인을 좁히려면 해당 package 하나에 아래처럼 Gremlins를 직접 실행한다.
 
 ```text
-go tool gremlins unleash --config=tests/verification/gremlins.yaml --output=.artifacts/verification/mutation-delivery.json internal/domain/delivery
 go tool gremlins unleash --config=tests/verification/gremlins.yaml --output=.artifacts/verification/mutation-mqtt.json internal/domain/mqtt
-go tool gremlins unleash --config=tests/verification/gremlins.yaml --output=.artifacts/verification/mutation-nodedrain.json internal/domain/nodedrain
-go tool gremlins unleash --config=tests/verification/gremlins.yaml --output=.artifacts/verification/mutation-security.json internal/domain/security
-go tool gremlins unleash --config=tests/verification/gremlins.yaml --output=.artifacts/verification/mutation-session.json internal/domain/session
 ```
 
 Fuzz가 생성한 입력의 발견 순서는 deterministic하지 않다. 고정된 `10000x` quota와

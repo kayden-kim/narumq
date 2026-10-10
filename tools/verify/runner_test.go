@@ -6,7 +6,9 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -22,34 +24,47 @@ func TestRunCIRequiresBaseAndPropagatesBaseToCoverage(t *testing.T) {
 	}
 	var commands []commandSpec
 	var commandsMu sync.Mutex
+	baselineCommandsCompleted := 0
+	mutationCommandCount := 0
 	if err := runCI(context.Background(), root, "HEAD~1", func(_ context.Context, _ string, spec commandSpec) error {
 		commandsMu.Lock()
+		defer commandsMu.Unlock()
 		commands = append(commands, spec)
-		commandsMu.Unlock()
+		isMutation := len(spec.Args) >= 2 && spec.Args[0] == "tool" && spec.Args[1] == "gremlins"
+		if isMutation {
+			mutationCommandCount++
+			return nil
+		}
+		isRunnerSetup := len(spec.Args) >= 3 && spec.Args[0] == "run" &&
+			spec.Args[1] == "./tools/verify" && (spec.Args[2] == "branch-instrument" || spec.Args[2] == "coverage")
+		if !isRunnerSetup {
+			baselineCommandsCompleted++
+		}
 		return nil
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if len(commands) != 17 {
-		t.Fatalf("command count = %d, want 17", len(commands))
+	if mutationCommandCount != 0 {
+		t.Fatalf("CI ran %d mutation commands, want none", mutationCommandCount)
+	}
+	if baselineCommandsCompleted != 10 {
+		t.Fatalf("baseline completed=%d, want 10 checks", baselineCommandsCompleted)
+	}
+	if len(commands) != 12 {
+		t.Fatalf("command count = %d, want 12", len(commands))
 	}
 	want := []commandSpec{
 		{Name: "go", Args: []string{"run", "./tools/verify", "branch-instrument", "--policy", defaultCoveragePolicyPath, "--output", defaultBranchOutputDir}},
 		{Name: "go", Args: []string{"vet", "./..."}},
 		{Name: "go", Args: []string{"run", "./tools/verify", "traceability"}},
 		{Name: "go", Args: []string{"run", "./tools/verify", "architecture"}},
-		{Name: "go", Dir: defaultBranchOutputDir + "/module", Args: []string{"test", "./...", "-parallel=2", "-count=1", "-covermode=atomic", "-coverpkg=./cmd/...,./internal/...", "-coverprofile=" + filepath.Join(root, ".artifacts", "verification", "coverage.out")}},
+		{Name: "go", Dir: defaultBranchOutputDir + "/module", Args: []string{"test", "./...", "-parallel=" + strconv.Itoa(runtime.GOMAXPROCS(0)), "-count=1", "-covermode=atomic", "-coverpkg=./cmd/...,./internal/...", "-coverprofile=" + filepath.Join(root, ".artifacts", "verification", "coverage.out")}},
 		{Name: "go", Args: []string{"test", "-race", "./cmd/...", "./internal/...", "-count=1"}},
 		{Name: "go", Args: []string{"test", "./internal/domain/mqtt", "-run=^$", "-fuzz=^FuzzDecoder$", "-fuzztime=10000x", "-parallel=1"}},
 		{Name: "go", Args: []string{"test", "./internal/domain/mqtt", "-run=^$", "-fuzz=^FuzzCodecRoundTrip$", "-fuzztime=10000x", "-parallel=1"}},
 		{Name: "go", Args: []string{"test", "./internal/domain/routing", "-run=^$", "-fuzz=^FuzzTopicMatching$", "-fuzztime=10000x", "-parallel=1"}},
 		{Name: "go", Args: []string{"test", "./internal/domain/session", "-run=^$", "-fuzz=^FuzzLifecycleTransitions$", "-fuzztime=10000x", "-parallel=1"}},
 		{Name: "go", Args: []string{"test", "./internal/adapters/tcp", "-run=^$", "-fuzz=^FuzzConnectionInput$", "-fuzztime=10000x", "-parallel=1"}},
-		{Name: "go", Args: []string{"tool", "gremlins", "unleash", "--config=tests/verification/gremlins.yaml", "--output=.artifacts/verification/mutation-delivery.json", "internal/domain/delivery"}},
-		{Name: "go", Args: []string{"tool", "gremlins", "unleash", "--config=tests/verification/gremlins.yaml", "--output=.artifacts/verification/mutation-mqtt.json", "internal/domain/mqtt"}},
-		{Name: "go", Args: []string{"tool", "gremlins", "unleash", "--config=tests/verification/gremlins.yaml", "--output=.artifacts/verification/mutation-nodedrain.json", "internal/domain/nodedrain"}},
-		{Name: "go", Args: []string{"tool", "gremlins", "unleash", "--config=tests/verification/gremlins.yaml", "--output=.artifacts/verification/mutation-security.json", "internal/domain/security"}},
-		{Name: "go", Args: []string{"tool", "gremlins", "unleash", "--config=tests/verification/gremlins.yaml", "--output=.artifacts/verification/mutation-session.json", "internal/domain/session"}},
 		{Name: "go", Args: []string{"run", "./tools/verify", "coverage", "--profile", ".artifacts/verification/coverage.out", "--policy", defaultCoveragePolicyPath, "--report", ".artifacts/verification/coverage-summary.json", "--branch-manifest", defaultBranchManifestPath, "--base", "HEAD~1"}},
 	}
 	sort.Slice(commands, func(i, j int) bool { return formatCommand(commands[i]) < formatCommand(commands[j]) })
@@ -101,6 +116,55 @@ func TestRunLocalOmitsMutationChecksAndCoverageWithoutBase(t *testing.T) {
 	}
 }
 
+func TestRunMutationExecutesAllPackagesWithOneGremlinsWorker(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "go.mod"), []byte("module narumq\n\ngo 1.26.5\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	var commands []commandSpec
+	var commandsMu sync.Mutex
+	if err := runMutation(context.Background(), root, func(_ context.Context, _ string, spec commandSpec) error {
+		commandsMu.Lock()
+		commands = append(commands, spec)
+		commandsMu.Unlock()
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if len(commands) != 5 {
+		t.Fatalf("mutation command count = %d, want 5", len(commands))
+	}
+	wantPackages := map[string]string{
+		"internal/domain/delivery":  ".artifacts/verification/mutation-delivery.json",
+		"internal/domain/mqtt":      ".artifacts/verification/mutation-mqtt.json",
+		"internal/domain/nodedrain": ".artifacts/verification/mutation-nodedrain.json",
+		"internal/domain/security":  ".artifacts/verification/mutation-security.json",
+		"internal/domain/session":   ".artifacts/verification/mutation-session.json",
+	}
+	for _, command := range commands {
+		if command.Name != "go" || len(command.Args) != 7 ||
+			command.Args[0] != "tool" || command.Args[1] != "gremlins" ||
+			command.Args[2] != "unleash" || command.Args[3] != "--config=tests/verification/gremlins.yaml" ||
+			command.Args[6] != "--workers=1" {
+			t.Fatalf("unexpected mutation command: %#v", command)
+		}
+		output, ok := wantPackages[command.Args[5]]
+		if !ok {
+			t.Fatalf("unexpected mutation package %q", command.Args[5])
+		}
+		if command.Args[4] != "--output="+output {
+			t.Fatalf("mutation output for %s = %q, want %q", command.Args[5], command.Args[4], output)
+		}
+		delete(wantPackages, command.Args[5])
+	}
+	if len(wantPackages) != 0 {
+		t.Fatalf("mutation packages not invoked: %v", wantPackages)
+	}
+	if _, err := os.Stat(filepath.Join(root, ".artifacts", "verification")); err != nil {
+		t.Fatalf("mutation artifact directory missing: %v", err)
+	}
+}
+
 func TestRunConcurrentCancelsRemainingCommandsOnFailure(t *testing.T) {
 	started := make(chan struct{}, 2)
 	failure := errors.New("fuzz target failed")
@@ -119,6 +183,30 @@ func TestRunConcurrentCancelsRemainingCommandsOnFailure(t *testing.T) {
 	}, runner)
 	if !errors.Is(err, failure) {
 		t.Fatalf("runConcurrent() error = %v, want original failure", err)
+	}
+}
+
+func TestMutationCommandConcurrencyUsesAvailableCPU(t *testing.T) {
+	tests := []struct {
+		name            string
+		availableCPUs   int
+		workersPerJob   int
+		testCPUs        int
+		workloadCount   int
+		wantConcurrency int
+	}{
+		{name: "sixteen CPUs run five mutation packages", availableCPUs: 16, workersPerJob: 1, testCPUs: 1, workloadCount: 5, wantConcurrency: 5},
+		{name: "eight CPUs run four mutation packages", availableCPUs: 8, workersPerJob: 1, testCPUs: 1, workloadCount: 5, wantConcurrency: 4},
+		{name: "four CPUs run two mutation packages", availableCPUs: 4, workersPerJob: 1, testCPUs: 1, workloadCount: 5, wantConcurrency: 2},
+		{name: "one CPU keeps one package active", availableCPUs: 1, workersPerJob: 1, testCPUs: 1, workloadCount: 5, wantConcurrency: 1},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if got := mutationCommandConcurrency(test.availableCPUs, test.workersPerJob, test.testCPUs, test.workloadCount); got != test.wantConcurrency {
+				t.Fatalf("mutationCommandConcurrency(%d, %d, %d, %d) = %d, want %d",
+					test.availableCPUs, test.workersPerJob, test.testCPUs, test.workloadCount, got, test.wantConcurrency)
+			}
+		})
 	}
 }
 

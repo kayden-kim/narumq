@@ -216,17 +216,17 @@ BP-01~BP-07의 phase, metric, timeout/error 경계와 실행 증거는 [Performa
 
 Integration test가 process binary를 공유해 build하더라도 fixture별 data directory·certificate·address lease는 분리한다. Suite 실행 조건과 acceptance 범위는 [Performance and verification spec](../specs/performance-and-verification.md)을 따른다.
 
-### Repository coverage 모듈 흐름
+### Repository verification 모듈 흐름
 
-`tools/verify/main.go`의 `local`·`ci` 진입점은 `runner.go`의 `runVerification`을 호출한다. `markdown-links`는 전체 gate와 별도로 문서 링크를 검사한다. Runner는 원본 서식을 확인한 뒤 `branch-instrument`를 순차 실행한다. 계측이 실패하면 병렬 검사를 시작하지 않는다.
+`tools/verify/main.go`의 `local`·`ci` 진입점은 `runner.go`의 `runVerification`을 호출한다. 별도 `mutation` 진입점은 `runMutation`을 호출한다. `markdown-links`는 전체 gate와 별도로 문서 링크를 검사한다. Runner는 원본 서식을 확인한 뒤 `branch-instrument`를 순차 실행한다. 이후 preflight·coverage·race·fuzz 명령을 한 병렬 단계에서 실행한다. CI coverage의 `-parallel`은 Go의 유효 `GOMAXPROCS`를 따른다. 수동 mutation은 다섯 package 작업을 Gremlins worker 1개씩 CPU 예산에 맞춘 batch로 실행한다. 각 단계는 실패한 명령과 함께 같은 단계의 나머지 명령을 취소한다.
 
 | 파일·심볼 | 입력과 책임 | 다음 사용처 |
 | --- | --- | --- |
-| `tools/verify/main.go` `run` | `branch-instrument`의 policy·output과 `coverage`의 profile·manifest·base flag를 읽는다. | `runBranchInstrument`, `runCoverage` |
+| `tools/verify/main.go` `run` | `branch-instrument`의 policy·output과 `coverage`의 profile·manifest·base flag를 읽고, `mutation` subcommand를 수동 runner에 연결한다. | `runBranchInstrument`, `runCoverage`, `runMutation` |
 | `tools/verify/markdown_links.go` `verifyMarkdownLinks` | 정해진 문서 범위에서 인라인 로컬 링크, 파일·폴더 대상과 Markdown 제목 앵커를 검사한다. | `go run ./tools/verify markdown-links` |
 | `tools/verify/markdown_links_test.go` | 범위, front matter·코드 펜스 제외, 중복 제목 slug, 명시 앵커와 잘못된 대상 거절을 확인한다. | `go test ./tools/verify -count=1` |
 | `tools/verify/branch.go` `runBranchInstrument`·`validateBranchOutputDir`·`instrumentBranches` | 출력 교체 전에 삭제 경계를 확인한다. 저장소 안에서는 전용 branch subtree만 교체하며 미해결 junction을 거절한다. Git copy set과 활성 production source를 읽고 빠진 arm·원본 hash·계측 좌표를 사본과 manifest에 쓴다. | `.artifacts/verification/branch/module`, `manifest.json` |
-| `tools/verify/runner.go` `commandSpec.Dir`·`executeCommand` | Coverage test의 작업 위치를 사본으로 지정한다. Profile은 원본 root의 절대 경로에 쓴다. 다른 검사는 원본에서 실행한다. | `coverage.out`, coverage 평가 CLI |
+| `tools/verify/runner.go` `runVerification`·`runMutation`·`runConcurrent`·`executeCommand` | Local·CI coverage test의 작업 위치를 계측 사본으로 지정하고 profile을 원본 root에 쓴다. CI는 coverage/race/fuzz를 실행하며 mutation은 포함하지 않는다. 수동 mutation은 다섯 package command를 `workers=1`, `test-cpu=1`로 GOMAXPROCS 예산에 따라 batch 실행한다. Coverage `-parallel`은 Local 8, CI 유효 `GOMAXPROCS`다. | `coverage.out`, mutation JSON, coverage 평가 CLI |
 | `tools/verify/coverage.go` `evaluateCoverage`·`calculateDiffCoverage` | 기존 line/function 집계에 branch 평가를 결합한다. Git diff의 변경 결정점만 diff branch 대상으로 고른다. | Schema 2 `coverage-summary.json`과 gate 결과 |
 | `tools/verify/branch.go` `evaluateBranchCoverage` | Source 집합·원본 SHA-256을 확인한다. Arm span에서 가장 이른 block 시작 위치의 count로 실행 여부를 판정한다. | 전체·package metric과 outcome 목록 |
 | `tests/verification/coverage-policy.json` | Line/function floor·ratchet, branch floor·ratchet과 `ratchet.branchTolerance`를 소유한다. 허용폭은 overall·core branch ratchet에만 적용한다. | Overall·core branch ratchet, diff branch floor, PRD shortfall 보고 |

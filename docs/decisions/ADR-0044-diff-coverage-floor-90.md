@@ -7,7 +7,7 @@
 | 결정자 | 사용자 |
 | 관련 요구사항 | [TEST-08, TEST-09, TEST-10](../requirements/PRD.md#115-테스트와-coverage) |
 | 관련 스펙·계약 | [Performance와 verification §8](../specs/performance-and-verification.md#8-coverage와-test-quality-gate) |
-| 관련 아키텍처 문서 | [Project structure](../architectures/project-structure.md#repository-coverage-모듈-흐름) |
+| 관련 아키텍처 문서 | [Project structure](../architectures/project-structure.md#repository-verification-모듈-흐름) |
 | 이 ADR이 대체하는 이전 ADR | [ADR-0040 §1.7](ADR-0040-branch-coverage-arm-injection.md#1-결정)의 diff branch 95% 기준과 [ADR-0041 §1.4](ADR-0041-branch-ratchet-noise-tolerance.md#1-결정)의 diff 95% 수치만 대체한다. 나머지 결정은 유지한다. |
 | 이 ADR을 대체한 새 ADR | 없음 |
 

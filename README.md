@@ -88,8 +88,11 @@ go test ./... -count=1
 # 데이터 레이스(Race Detector) 검사
 go test -race ./... -count=1
 
-# CI와 동일한 13단계 로컬 종합 검증 (포맷, vet, 테스트, 퍼즈, 추적성, 아키텍처, 커버리지 90%, 뮤테이션 80%)
+# local 자동 검증 (포맷, vet, package·integration test, fuzz, 추적성, architecture, coverage)
 go run ./tools/verify local
+
+# 다섯 domain package의 수동 mutation 검증. local·CI 자동 gate에는 포함되지 않음
+go run ./tools/verify mutation
 ```
 
 상세한 검증 파이프라인 구조와 빈발 오류 해결 방법은 [개발 가이드](docs/how-to/development-guide.md)를 참조하세요.

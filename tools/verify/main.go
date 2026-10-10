@@ -120,6 +120,20 @@ func run(args []string) int {
 		}
 		fmt.Println("ci: PASS")
 		return 0
+	case "mutation":
+		flags := flag.NewFlagSet("mutation", flag.ContinueOnError)
+		if err := flags.Parse(args[1:]); err != nil {
+			return 2
+		}
+		if flags.NArg() != 0 {
+			fmt.Fprintln(os.Stderr, "mutation: does not accept positional arguments")
+			return 2
+		}
+		if err := runMutation(ctx, root, executeCommand); err != nil {
+			return printCommandError("mutation", err)
+		}
+		fmt.Println("mutation: PASS")
+		return 0
 	default:
 		fmt.Fprintf(os.Stderr, "verify: unknown subcommand %q\n", args[0])
 		printUsage()
@@ -135,8 +149,7 @@ func printCommandError(name string, err error) int {
 	}
 	return 1
 }
-
 func printUsage() {
-	fmt.Fprintln(os.Stderr, "usage: go run ./tools/verify <traceability|architecture|markdown-links|branch-instrument|coverage|local|ci>")
-	fmt.Fprintln(os.Stderr, "  ci requires --base <git-ref>; coverage requires --profile <path>")
+	fmt.Fprintln(os.Stderr, "usage: go run ./tools/verify <traceability|architecture|markdown-links|branch-instrument|coverage|local|ci|mutation>")
+	fmt.Fprintln(os.Stderr, "  ci requires --base <git-ref>; coverage requires --profile <path>; mutation runs all five packages")
 }
