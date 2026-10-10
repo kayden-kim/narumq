@@ -72,9 +72,18 @@ type bp02ManagementConfig struct {
 }
 
 type bp02MQTTConfig struct {
-	TCPListenAddress   string `json:"tcpListenAddress"`
-	TLSListenAddress   string `json:"tlsListenAddress"`
-	SecurityConfigFile string `json:"securityConfigFile"`
+	TCPListenAddress   string             `json:"tcpListenAddress"`
+	TLSListenAddress   string             `json:"tlsListenAddress"`
+	SecurityConfigFile string             `json:"securityConfigFile"`
+	TLS                *bp02MQTTTLSConfig `json:"tls,omitempty"`
+}
+
+type bp02MQTTTLSConfig struct {
+	CertFile   string `json:"certFile"`
+	KeyFile    string `json:"keyFile"`
+	CAFile     string `json:"caFile"`
+	ClientAuth string `json:"clientAuth"`
+	MinVersion string `json:"minVersion"`
 }
 
 type bp02SecurityConfig struct {
@@ -127,7 +136,7 @@ type bp02CA struct {
 	privateKey  *ecdsa.PrivateKey
 }
 
-type bp02NodeCertificate struct {
+type bp02Certificate struct {
 	certificatePEM []byte
 	privateKeyPEM  []byte
 	fingerprint    string
@@ -181,12 +190,17 @@ func newBP02Fixture(profile Profile, runID string) (*bp02Fixture, error) {
 	if err != nil {
 		return cleanup(err)
 	}
-	certificates := make([]bp02NodeCertificate, bp02NodeCount)
+	certificates := make([]bp02Certificate, bp02NodeCount)
+	mqttCertificates := make([]bp02Certificate, bp02NodeCount)
 	members := make([]bp02BootstrapMember, bp02NodeCount)
 	for index := range certificates {
 		nodeID := index + 1
 		dnsName := fmt.Sprintf("node%d.bp02.test", nodeID)
-		certificates[index], err = newBP02NodeCertificate(ca, dnsName)
+		certificates[index], err = newBP02Certificate(ca, dnsName, x509.ExtKeyUsageServerAuth, x509.ExtKeyUsageClientAuth)
+		if err != nil {
+			return cleanup(err)
+		}
+		mqttCertificates[index], err = newBP02Certificate(ca, dnsName, x509.ExtKeyUsageServerAuth)
 		if err != nil {
 			return cleanup(err)
 		}
@@ -248,8 +262,10 @@ func newBP02Fixture(profile Profile, runID string) (*bp02Fixture, error) {
 		fixture.NodeConfigDirectories[index] = configDir
 		for name, contents := range map[string][]byte{
 			"ca.pem": caFile, "node.pem": certificate.certificatePEM,
-			"node-key.pem": certificate.privateKeyPEM, "jwks.json": jwksJSON,
-			"admin.token": []byte(fixture.ManagementToken + "\n"), "mqtt-security.json": securityJSON,
+			"node-key.pem": certificate.privateKeyPEM,
+			"mqtt.pem":     mqttCertificates[index].certificatePEM, "mqtt-key.pem": mqttCertificates[index].privateKeyPEM,
+			"jwks.json": jwksJSON, "admin.token": []byte(fixture.ManagementToken + "\n"),
+			"mqtt-security.json": securityJSON,
 		} {
 			if err := writeBP02FixtureFile(filepath.Join(configDir, name), contents); err != nil {
 				return cleanup(fmt.Errorf("write BP02 node %d fixture %s: %w", nodeNumber, name, err))
@@ -263,7 +279,10 @@ func newBP02Fixture(profile Profile, runID string) (*bp02Fixture, error) {
 			Role: "bootstrap", BootstrapMembers: members, SeedAddresses: []string{},
 			PeerTLS:    bp02PeerTLSConfig{CertFile: "/config/node.pem", KeyFile: "/config/node-key.pem", CAFile: "/config/ca.pem"},
 			Management: bp02ManagementConfig{ListenAddress: "0.0.0.0:8080", ClusterAdminTokenFile: "/config/admin.token", AuditDirectory: "/var/lib/narumq/audit"},
-			MQTT:       bp02MQTTConfig{TCPListenAddress: "0.0.0.0:1883", TLSListenAddress: "0.0.0.0:8883", SecurityConfigFile: "/config/mqtt-security.json"},
+			MQTT: bp02MQTTConfig{
+				TCPListenAddress: "0.0.0.0:1883", TLSListenAddress: "0.0.0.0:8883", SecurityConfigFile: "/config/mqtt-security.json",
+				TLS: &bp02MQTTTLSConfig{CertFile: "/config/mqtt.pem", KeyFile: "/config/mqtt-key.pem", ClientAuth: "none", MinVersion: "1.2"},
+			},
 		}
 		configJSON, err := json.Marshal(config)
 		if err != nil {
@@ -331,37 +350,36 @@ func newBP02CA() (bp02CA, error) {
 	return bp02CA{certificate: certificate, privateKey: key}, nil
 }
 
-func newBP02NodeCertificate(ca bp02CA, dnsName string) (bp02NodeCertificate, error) {
+func newBP02Certificate(ca bp02CA, dnsName string, extendedKeyUsages ...x509.ExtKeyUsage) (bp02Certificate, error) {
 	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {
-		return bp02NodeCertificate{}, fmt.Errorf("generate BP02 node certificate key for %s: %w", dnsName, err)
+		return bp02Certificate{}, fmt.Errorf("generate BP02 certificate key for %s: %w", dnsName, err)
 	}
 	serial, err := rand.Int(rand.Reader, new(big.Int).Lsh(big.NewInt(1), 120))
 	if err != nil {
-		return bp02NodeCertificate{}, fmt.Errorf("generate BP02 node certificate serial for %s: %w", dnsName, err)
+		return bp02Certificate{}, fmt.Errorf("generate BP02 certificate serial for %s: %w", dnsName, err)
 	}
 	now := time.Now()
 	template := &x509.Certificate{
 		SerialNumber: serial, Subject: pkix.Name{CommonName: dnsName},
 		NotBefore: now.Add(-time.Minute), NotAfter: now.Add(2 * time.Hour),
-		KeyUsage:    x509.KeyUsageDigitalSignature,
-		ExtKeyUsage: []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth, x509.ExtKeyUsageClientAuth},
-		DNSNames:    []string{dnsName, "localhost"}, BasicConstraintsValid: true,
+		KeyUsage: x509.KeyUsageDigitalSignature, ExtKeyUsage: extendedKeyUsages,
+		DNSNames: []string{dnsName, "localhost"}, BasicConstraintsValid: true,
 	}
 	der, err := x509.CreateCertificate(rand.Reader, template, ca.certificate, &key.PublicKey, ca.privateKey)
 	if err != nil {
-		return bp02NodeCertificate{}, fmt.Errorf("create BP02 node certificate for %s: %w", dnsName, err)
+		return bp02Certificate{}, fmt.Errorf("create BP02 certificate for %s: %w", dnsName, err)
 	}
 	certificate, err := x509.ParseCertificate(der)
 	if err != nil {
-		return bp02NodeCertificate{}, fmt.Errorf("parse BP02 node certificate for %s: %w", dnsName, err)
+		return bp02Certificate{}, fmt.Errorf("parse BP02 certificate for %s: %w", dnsName, err)
 	}
 	keyDER, err := x509.MarshalECPrivateKey(key)
 	if err != nil {
-		return bp02NodeCertificate{}, fmt.Errorf("marshal BP02 node key for %s: %w", dnsName, err)
+		return bp02Certificate{}, fmt.Errorf("marshal BP02 key for %s: %w", dnsName, err)
 	}
 	fingerprint := sha256.Sum256(certificate.Raw)
-	return bp02NodeCertificate{
+	return bp02Certificate{
 		certificatePEM: pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der}),
 		privateKeyPEM:  pem.EncodeToMemory(&pem.Block{Type: "EC PRIVATE KEY", Bytes: keyDER}),
 		fingerprint:    hex.EncodeToString(fingerprint[:]),

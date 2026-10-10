@@ -103,10 +103,10 @@ PRD는 `Draft` 상태이므로 이 목록은 요구사항을 구현 기준으로
 <a id="110-실행-옵션설정-구조"></a>
 ### 1.10 실행 옵션·설정 구조
 
-설정 형식은 [Process configuration v1](contracts/process-configuration-v1.md), 동작은 [실행 옵션과 설정 스펙](specs/configuration-and-runtime-options.md), 목표 구조는 [ADR-0052](decisions/ADR-0052-configuration-tiers-and-cluster-policy.md)(Proposed)를 따른다.
+설정 형식은 [Process configuration v1](contracts/process-configuration-v1.md), 동작은 [실행 옵션과 설정 스펙](specs/configuration-and-runtime-options.md), 나머지 목표 구조는 [ADR-0052](decisions/ADR-0052-configuration-tiers-and-cluster-policy.md)(Proposed)를 따른다. ADR-0052 §1.5의 Cluster MQTT TLS(G2·G10)는 2026-10-10 사용자 결정으로 채택했다.
 
 - [ ] **결정 필요 — G1 Cluster MQTT 조정값 부재**: `cmd/narumq/cluster_runtime.go`의 `runClusterMode`는 Maximum Packet Size `1048576`, Receive Maximum `64`, packet read timeout `30s`, CONNECT timeout `10s`, write timeout `5s`, control queue `256`, delivery queue `256`을 고정한다. ADR-0052의 채택 여부에 따라 처리한다.
-- [ ] **결정 필요 — G2 Cluster MQTT TLS**: `clusterMQTTListeners`는 `peerTLS` 인증서를 재사용한다. Client CA와 client-auth 설정이 없어 TLS handshake에서 client certificate를 요청하지 않는다. 따라서 cluster의 `mtlsIdentities`를 MQTT TLS handshake에 사용할 수 없다. 이 내용은 코드 판독 결과이며 실행으로 확인하지 않았다.
+- [x] **완료 — G2 Cluster MQTT TLS**: [ADR-0052 §1.5](decisions/ADR-0052-configuration-tiers-and-cluster-policy.md#15-형식과-cluster-mqtt-tls)의 `mqtt.tls`를 사용해 MQTT server certificate와 client-auth를 peer TLS와 분리했다. `mtlsIdentities` 검증과 3-node client mTLS가 동작한다. 시험과 결과는 [설정 스펙의 Cluster MQTT TLS 실행 기록](specs/configuration-and-runtime-options.md#cluster-mqtt-tls-g2-g10-execution)에 있다.
 - [ ] **결정 필요 — G3 평문 TCP 정책 차이**: Standalone `-tcp-listen`은 loopback만 허용한다. Cluster `mqtt.tcpListenAddress`는 유효한 host:port면 loopback 제한 없이 허용한다. [MQTT spec §1 3항](specs/mqtt-protocol-and-session.md#1-listener-계약)의 정책과 맞는지 결정한다.
 - [x] **완료 — G4 중복 key 검사**: [ADR-0052 §1.5](decisions/ADR-0052-configuration-tiers-and-cluster-policy.md#15-형식과-cluster-mqtt-tls)의 중복 key 거절 규칙만 2026-10-10 사용자 결정으로 먼저 채택했다. `security_config.go`와 `raft_peer_config.go`도 모든 깊이의 object에서 중복 JSON key를 거절한다. 시험과 실행 기록은 [설정 스펙 §6](specs/configuration-and-runtime-options.md#6-수용-시험)에 있다.
 - [ ] **결정 필요 — G5 duration 표기 혼재**: flag와 security config는 Go duration을 쓴다. Cluster config는 `Millis` 접미사가 붙은 정수 millisecond를 쓴다.
@@ -114,7 +114,7 @@ PRD는 `Draft` 상태이므로 이 목록은 요구사항을 구현 기준으로
 - [ ] **미구현 — G7 설정 조회 API 부재**: 실제 적용 설정을 조회하는 API와 `tenantQuotas`를 바꾸는 Management API가 없다. 이는 전용 console의 선행 조건이다.
 - [ ] **결정 필요 — G8 standalone 식별자 고정**: Standalone Management API는 cluster ID `narumq-cluster-1`과 node ID `narumq-node-1`을 사용한다. 출처는 `cmd/narumq/main.go`의 `appmgmt.ServiceConfig`다.
 - [x] **완료 — G9 secret 파일 flag**: [ADR-0052 §1.5](decisions/ADR-0052-configuration-tiers-and-cluster-policy.md#15-형식과-cluster-mqtt-tls)의 standalone token 규칙만 2026-10-10 사용자 결정으로 채택했다. `-http-auth-token`을 삭제하고 `-http-auth-token-file`로 대체했다. 시험과 실행 기록은 [설정 스펙 §6](specs/configuration-and-runtime-options.md#6-수용-시험)에 있다. ADR-0052의 나머지 범위는 `Proposed`로 남는다.
-- [ ] **결정 필요 — G10 cluster TLS 설정 부재**: Cluster mode에는 `tls-min-version`과 `tls-client-auth`에 대응하는 설정이 없다. `clusterMQTTListeners`는 peer certificate/key를 쓰고 TLS 1.2를 고정한다.
+- [x] **완료 — G10 cluster TLS 설정**: `mqtt.tls`는 `minVersion`에 TLS 1.2 또는 1.3을, `clientAuth`에 `none`, `request`, `require`를 설정한다. 시험과 결과는 [설정 스펙의 Cluster MQTT TLS 실행 기록](specs/configuration-and-runtime-options.md#cluster-mqtt-tls-g2-g10-execution)에 있다. ADR-0052의 나머지 범위는 `Proposed`로 남는다.
 
 PRD [§16 선택적 adapter](requirements/PRD.md#16-단계별-제공-범위)의 HTTP webhook·MQTT bridge·Kafka와 DEP-24 ECS는 사용량·필요성 및 별도 수용 기준이 승인되기 전까지 조건부 후속 범위로 둔다. 이를 미구현 결함이나 완료된 기능으로 기록하지 않는다. MQTT-10과 API-07은 각각 §1.6·§1.8에서 따로 추적한다.
 

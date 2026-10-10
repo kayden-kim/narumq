@@ -1044,10 +1044,10 @@ func TestRunRejectsManagementRateFlagsOutOfRange(t *testing.T) {
 }
 
 func TestValidateTLSAuthenticationBindingsRequireMode(t *testing.T) {
-	err := validateTLSAuthenticationBindings(tlsadapter.ClientAuthRequire, nil)
+	err := validateTLSAuthenticationBindings("-tls-client-auth", tlsadapter.ClientAuthRequire, nil)
 	ccfWantError(t, err, "-tls-client-auth require requires at least one mTLS identity binding")
 	bundle := &SecurityBundle{MTLSBindings: make([]authenticationadapter.ClientCertificateIdentityBinding, 1)}
-	if err := validateTLSAuthenticationBindings(tlsadapter.ClientAuthRequire, bundle); err != nil {
+	if err := validateTLSAuthenticationBindings("-tls-client-auth", tlsadapter.ClientAuthRequire, bundle); err != nil {
 		t.Fatalf("require mode with mTLS binding error = %v", err)
 	}
 }
@@ -1055,14 +1055,14 @@ func TestValidateTLSAuthenticationBindingsRequireMode(t *testing.T) {
 // Traceability: SEC-05; docs/specs/tenancy-and-security.md §2.3.
 func TestValidateTLSAuthenticationBindingsRequestMode(t *testing.T) {
 	mTLSBinding := make([]authenticationadapter.ClientCertificateIdentityBinding, 1)
-	err := validateTLSAuthenticationBindings(tlsadapter.ClientAuthRequest, &SecurityBundle{MTLSBindings: mTLSBinding})
+	err := validateTLSAuthenticationBindings("-tls-client-auth", tlsadapter.ClientAuthRequest, &SecurityBundle{MTLSBindings: mTLSBinding})
 	ccfWantError(t, err, "-tls-client-auth request requires JWT or password authentication configuration")
 
 	passwordBundle := &SecurityBundle{
 		PasswordBindings: make([]authenticationadapter.PasswordIdentityBinding, 1),
 		MTLSBindings:     mTLSBinding,
 	}
-	if err := validateTLSAuthenticationBindings(tlsadapter.ClientAuthRequest, passwordBundle); err != nil {
+	if err := validateTLSAuthenticationBindings("-tls-client-auth", tlsadapter.ClientAuthRequest, passwordBundle); err != nil {
 		t.Fatalf("request mode with password and mTLS bindings error = %v", err)
 	}
 
@@ -1070,7 +1070,7 @@ func TestValidateTLSAuthenticationBindingsRequestMode(t *testing.T) {
 		JWTConfig:    &authenticationadapter.Config{},
 		MTLSBindings: mTLSBinding,
 	}
-	if err := validateTLSAuthenticationBindings(tlsadapter.ClientAuthRequest, jwtBundle); err != nil {
+	if err := validateTLSAuthenticationBindings("-tls-client-auth", tlsadapter.ClientAuthRequest, jwtBundle); err != nil {
 		t.Fatalf("request mode with JWT and mTLS bindings error = %v", err)
 	}
 }

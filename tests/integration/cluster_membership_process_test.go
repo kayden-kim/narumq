@@ -1594,9 +1594,18 @@ type clusterMembershipProcessOIDCIdentity struct {
 }
 
 type clusterMembershipProcessMQTT struct {
-	TCPListenAddress   string `json:"tcpListenAddress"`
-	TLSListenAddress   string `json:"tlsListenAddress"`
-	SecurityConfigFile string `json:"securityConfigFile"`
+	TCPListenAddress   string                           `json:"tcpListenAddress"`
+	TLSListenAddress   string                           `json:"tlsListenAddress"`
+	SecurityConfigFile string                           `json:"securityConfigFile"`
+	TLS                *clusterMembershipProcessMQTTTLS `json:"tls,omitempty"`
+}
+
+type clusterMembershipProcessMQTTTLS struct {
+	CertFile   string `json:"certFile"`
+	KeyFile    string `json:"keyFile"`
+	CAFile     string `json:"caFile"`
+	ClientAuth string `json:"clientAuth"`
+	MinVersion string `json:"minVersion"`
 }
 
 type clusterMembershipProcessStageRequest struct {

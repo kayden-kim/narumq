@@ -132,6 +132,14 @@ type clusterPeerTLS struct {
 	CAFile   string `json:"caFile"`
 }
 
+type clusterMQTTTLS struct {
+	CertFile   string `json:"certFile"`
+	KeyFile    string `json:"keyFile"`
+	CAFile     string `json:"caFile"`
+	ClientAuth string `json:"clientAuth"`
+	MinVersion string `json:"minVersion"`
+}
+
 type clusterManagement struct {
 	ListenAddress         string                    `json:"listenAddress"`
 	ClusterAdminTokenFile string                    `json:"clusterAdminTokenFile"`
@@ -159,13 +167,14 @@ type clusterManagementOIDCIdentity struct {
 }
 
 type clusterMQTT struct {
-	TCPListenAddress   string `json:"tcpListenAddress"`
-	TLSListenAddress   string `json:"tlsListenAddress"`
-	SecurityConfigFile string `json:"securityConfigFile"`
-	TCPMaxConnections  int    `json:"tcpMaxConnections"`
-	TCPConnectionRate  int    `json:"tcpConnectionRate"`
-	TLSMaxConnections  int    `json:"tlsMaxConnections"`
-	TLSConnectionRate  int    `json:"tlsConnectionRate"`
+	TCPListenAddress   string          `json:"tcpListenAddress"`
+	TLSListenAddress   string          `json:"tlsListenAddress"`
+	SecurityConfigFile string          `json:"securityConfigFile"`
+	TCPMaxConnections  int             `json:"tcpMaxConnections"`
+	TCPConnectionRate  int             `json:"tcpConnectionRate"`
+	TLSMaxConnections  int             `json:"tlsMaxConnections"`
+	TLSConnectionRate  int             `json:"tlsConnectionRate"`
+	TLS                *clusterMQTTTLS `json:"tls,omitempty"`
 }
 
 func loadClusterConfigFile(path string) (clusterConfigFile, error) {
@@ -285,7 +294,7 @@ func checkClusterJSON(reader io.Reader) error {
 
 func expectedClusterJSONType(path string) string {
 	switch path {
-	case "", "peerTLS", "management", "management.oidc", "mqtt", "tenantQuotas", "tenantQuotas.default", "replication", "publishBackpressure":
+	case "", "peerTLS", "management", "management.oidc", "mqtt", "mqtt.tls", "tenantQuotas", "tenantQuotas.default", "replication", "publishBackpressure":
 		return "object"
 	case "bootstrapMembers", "seedAddresses", "tenantQuotas.tenants", "management.apiKeys", "management.oidc.algorithms", "management.oidc.identities":
 		return "array"
@@ -316,6 +325,8 @@ func expectClusterKeys(path string, seen map[string]struct{}) error {
 		required = []string{"issuer", "audience", "algorithms", "jwksUrl", "cacheTtl", "refreshCooldown", "clockSkew", "httpTimeout", "identities"}
 	case "mqtt":
 		required = []string{"tcpListenAddress", "tlsListenAddress", "securityConfigFile"}
+	case "mqtt.tls":
+		required = []string{"certFile", "keyFile", "caFile", "clientAuth", "minVersion"}
 	case "replication":
 		required = []string{"factor", "writeQuorum"}
 	case "publishBackpressure":
@@ -417,6 +428,9 @@ func validateClusterConfig(config clusterConfigFile) error {
 	if config.MQTT.TLSListenAddress == "" && (config.MQTT.TLSMaxConnections != 0 || config.MQTT.TLSConnectionRate != 0) {
 		return errors.New("mqtt tls connection limits require tlsListenAddress")
 	}
+	if err := validateClusterMQTTTLS(config.MQTT); err != nil {
+		return err
+	}
 	if config.TenantQuotas != nil {
 		if config.TenantQuotas.Version == 0 {
 			return errors.New("tenantQuotas version must be at least 1")
@@ -488,6 +502,38 @@ func validateClusterConfig(config clusterConfigFile) error {
 	}
 	return nil
 }
+
+func validateClusterMQTTTLS(mqtt clusterMQTT) error {
+	if mqtt.TLSListenAddress == "" {
+		if mqtt.TLS != nil {
+			return errors.New("mqtt tls requires tlsListenAddress")
+		}
+		return nil
+	}
+	if mqtt.TLS == nil {
+		return errors.New("mqtt tls is required when tlsListenAddress is set")
+	}
+	if !validRequiredPath(mqtt.TLS.CertFile) || !validRequiredPath(mqtt.TLS.KeyFile) {
+		return errors.New("mqtt tls certFile and keyFile are required")
+	}
+	switch mqtt.TLS.ClientAuth {
+	case "none":
+		if mqtt.TLS.CAFile != "" {
+			return errors.New("mqtt tls caFile must be empty when clientAuth is none")
+		}
+	case "request", "require":
+		if !validRequiredPath(mqtt.TLS.CAFile) {
+			return errors.New("mqtt tls caFile is required when clientAuth is request or require")
+		}
+	default:
+		return errors.New("mqtt tls clientAuth must be none, request, or require")
+	}
+	if mqtt.TLS.MinVersion != "1.2" && mqtt.TLS.MinVersion != "1.3" {
+		return errors.New("mqtt tls minVersion must be 1.2 or 1.3")
+	}
+	return nil
+}
+
 func validateClusterManagementAccess(config clusterManagement) (*authenticationadapter.VerifierConfig, []adaptershttp.OIDCIdentity, error) {
 	seenIDs := make(map[string]struct{}, len(config.APIKeys))
 	for i, key := range config.APIKeys {

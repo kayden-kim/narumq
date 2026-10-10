@@ -473,7 +473,7 @@ BP-02는 QoS 0/1/2, payload size cycle, 여러 subscription 종류, retained sta
 | `sessionDurability` | NaruMQ는 persistent session·subscription·QoS1/2 inflight·offline message를 Raft quorum에 commit한다. EMQX OSS 5.8.8은 memory session을 쓴다. Offline 결과는 durability 비교가 아니다. |
 | `tenantIsolation` | NaruMQ의 JWT tenant/client-ID binding과 EMQX username ACL은 다르며, 동일 raw topic을 tenant 사이에서 시험하지 않는다. |
 | `authentication` | 양쪽 모두 같은 JWKS의 RS256을 검증하지만 EMQX는 client-ID binding과 peer mTLS를 재현하지 않는다. |
-| `tlsListener` | 같은 CA를 쓰지만 NaruMQ는 node별 peer certificate, EMQX는 3-SAN server certificate를 공유한다. Cipher와 resumption은 구현별이다. |
+| `tlsListener` | NaruMQ fixture는 peer mTLS와 분리한 node별 MQTT server certificate/key를 `mqtt.tls`에 지정하고 TLS 1.2 이상, client-auth `none`을 설정한다. EMQX는 3-SAN server certificate를 공유한다. Cipher와 resumption은 구현별이다. BP02 fixture 시험은 통과했지만 compare와 suite는 인증서 분리 변경 뒤 다시 실행하지 않았다. |
 | `sharedSelection` | Shared group member 선택 순서는 구현별이며 `memberDeliveries`는 기록만 하고 비교하지 않는다. |
 | `retainedReplication` | NaruMQ Raft와 EMQX retainer storage가 다르며 client-observed replay만 비교한다. |
 #### 고정 smoke profile

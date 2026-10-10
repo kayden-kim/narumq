@@ -524,7 +524,7 @@ func buildBP02Comparison(manifest bp02Manifest, summary bp02Summary) bp02Compari
 			{Dimension: "sessionDurability", Reason: "NaruMQ commits persistent sessions, subscriptions, QoS 1/2 inflight and offline messages through Raft quorum; EMQX OSS 5.8.8 keeps memory sessions. Offline results are not a durability comparison."},
 			{Dimension: "tenantIsolation", Reason: "NaruMQ binds JWT (iss, sub) to a tenant namespace and allowed client IDs; EMQX uses username-scoped file ACLs on bp02/a/# and bp02/b/#. Same raw topics across tenants are not exercised."},
 			{Dimension: "authentication", Reason: "Both verify RS256 JWTs from the same JWKS; EMQX checks sub against the username and does not reproduce client-ID binding or peer mTLS."},
-			{Dimension: "tlsListener", Reason: "Both offer server-authenticated TLS 1.2+ from the same CA; NaruMQ reuses each node peer certificate, EMQX shares one three-SAN certificate. Cipher and session-resumption behavior are implementation-specific."},
+			{Dimension: "tlsListener", Reason: "Both offer server-authenticated TLS 1.2+ from the same CA; NaruMQ uses per-node MQTT server certificates separate from peer mTLS, while EMQX shares one three-SAN certificate. Cipher and session-resumption behavior are implementation-specific."},
 			{Dimension: "sharedSelection", Reason: "Both use shared subscriptions; cluster-wide member selection order is implementation-specific. memberDeliveries are recorded, not compared."},
 			{Dimension: "retainedReplication", Reason: "NaruMQ replicates retained state through Raft; EMQX uses its retainer storage. Only client-observed retained replay is compared."},
 		},

@@ -29,7 +29,10 @@ func validBootstrapClusterConfig() clusterConfigFile {
 		SeedAddresses: []string{},
 		PeerTLS:       clusterPeerTLS{CertFile: "certs/node1.crt", KeyFile: "certs/node1.key", CAFile: "certs/ca.crt"},
 		Management:    clusterManagement{ListenAddress: "127.0.0.1:18080", ClusterAdminTokenFile: "secrets/admin.token", AuditDirectory: "data/node1-audit"},
-		MQTT:          clusterMQTT{TCPListenAddress: "", TLSListenAddress: "127.0.0.1:1883", SecurityConfigFile: "security.json"},
+		MQTT: clusterMQTT{
+			TCPListenAddress: "", TLSListenAddress: "127.0.0.1:1883", SecurityConfigFile: "security.json",
+			TLS: &clusterMQTTTLS{CertFile: "certs/mqtt.crt", KeyFile: "certs/mqtt.key", ClientAuth: "none", MinVersion: "1.2"},
+		},
 	}
 }
 
@@ -81,6 +84,99 @@ func TestParseClusterConfigValidRoles(t *testing.T) {
 		}
 	}
 }
+
+// Traceability: SEC-03; docs/specs/configuration-and-runtime-options.md §6; ADR-0052.
+func TestParseClusterConfigMQTTTLS(t *testing.T) {
+	validCases := []struct {
+		name string
+		tls  clusterMQTTTLS
+	}{
+		{name: "none baseline", tls: clusterMQTTTLS{CertFile: "certs/mqtt.crt", KeyFile: "certs/mqtt.key", ClientAuth: "none", MinVersion: "1.2"}},
+		{name: "request", tls: clusterMQTTTLS{CertFile: "certs/mqtt.crt", KeyFile: "certs/mqtt.key", CAFile: "certs/client-ca.crt", ClientAuth: "request", MinVersion: "1.2"}},
+		{name: "require TLS 1.3", tls: clusterMQTTTLS{CertFile: "certs/mqtt.crt", KeyFile: "certs/mqtt.key", CAFile: "certs/client-ca.crt", ClientAuth: "require", MinVersion: "1.3"}},
+	}
+	for _, test := range validCases {
+		t.Run(test.name, func(t *testing.T) {
+			config := validBootstrapClusterConfig()
+			config.MQTT.TLS = &test.tls
+			parsed, err := parseClusterConfig(strings.NewReader(string(mustMarshalClusterConfig(t, config))))
+			if err != nil {
+				t.Fatalf("parse mqtt.tls: %v", err)
+			}
+			if parsed.MQTT.TLS == nil || *parsed.MQTT.TLS != test.tls {
+				t.Fatalf("parsed mqtt.tls = %+v, want %+v", parsed.MQTT.TLS, test.tls)
+			}
+		})
+	}
+
+	invalidCases := []struct {
+		name string
+		edit func(*clusterMQTT)
+		want string
+	}{
+		{
+			name: "TLS object without listener",
+			edit: func(mqtt *clusterMQTT) { mqtt.TLSListenAddress = "" },
+			want: "mqtt tls requires tlsListenAddress",
+		},
+		{
+			name: "listener without TLS object",
+			edit: func(mqtt *clusterMQTT) { mqtt.TLS = nil },
+			want: "mqtt tls is required when tlsListenAddress is set",
+		},
+		{
+			name: "missing certificate and key",
+			edit: func(mqtt *clusterMQTT) {
+				mqtt.TLS.CertFile = ""
+				mqtt.TLS.KeyFile = ""
+			},
+			want: "mqtt tls certFile and keyFile are required",
+		},
+		{
+			name: "CA with client auth none",
+			edit: func(mqtt *clusterMQTT) { mqtt.TLS.CAFile = "certs/client-ca.crt" },
+			want: "mqtt tls caFile must be empty when clientAuth is none",
+		},
+		{
+			name: "request without CA",
+			edit: func(mqtt *clusterMQTT) { mqtt.TLS.ClientAuth = "request" },
+			want: "mqtt tls caFile is required when clientAuth is request or require",
+		},
+		{
+			name: "unknown client auth",
+			edit: func(mqtt *clusterMQTT) { mqtt.TLS.ClientAuth = "maybe" },
+			want: "mqtt tls clientAuth must be none, request, or require",
+		},
+		{
+			name: "unsupported minimum version",
+			edit: func(mqtt *clusterMQTT) { mqtt.TLS.MinVersion = "1.1" },
+			want: "mqtt tls minVersion must be 1.2 or 1.3",
+		},
+	}
+	for _, test := range invalidCases {
+		t.Run(test.name, func(t *testing.T) {
+			config := validBootstrapClusterConfig()
+			test.edit(&config.MQTT)
+			_, err := parseClusterConfig(strings.NewReader(string(mustMarshalClusterConfig(t, config))))
+			ccfWantError(t, err, test.want)
+		})
+	}
+
+	valid := string(mustMarshalClusterConfig(t, validBootstrapClusterConfig()))
+	missingMinVersion := strings.Replace(valid, `,"minVersion":"1.2"`, "", 1)
+	ccfWantError(t, func() error {
+		_, err := parseClusterConfig(strings.NewReader(missingMinVersion))
+		return err
+	}(), `missing required field "minVersion"`)
+	wrongTLSObjectType := strings.Replace(valid,
+		`"tls":{"certFile":"certs/mqtt.crt","keyFile":"certs/mqtt.key","caFile":"","clientAuth":"none","minVersion":"1.2"}`,
+		`"tls":[]`, 1)
+	ccfWantError(t, func() error {
+		_, err := parseClusterConfig(strings.NewReader(wrongTLSObjectType))
+		return err
+	}(), "invalid JSON field type")
+}
+
 func TestParseClusterConfigTenantQuotaProfile(t *testing.T) {
 	config := validBootstrapClusterConfig()
 	config.TenantQuotas = validTenantQuotaProfileConfig()

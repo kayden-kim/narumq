@@ -35,7 +35,7 @@
 1. `run`은 SIGINT와 SIGTERM handler를 등록한다. `runWithContext`는 flag를 parse하고 실행 모드를 선택한다.
 2. Password hash, audit verify, cluster restore 같은 일회성 모드는 작업을 마친 뒤 listener 없이 종료한다.
 3. Standalone mode는 flag를 검증하고 security config와 authentication provider를 준비한 뒤 MQTT listener를 연다. Management listener와 runtime service를 구성한 뒤 실행한다. Listener 일부를 연 다음 실패하면 이미 연 listener를 닫는다.
-4. Dynamic cluster mode는 `runWithContext`에서 cluster config를 읽는다. `runClusterMode`는 config와 peer TLS를 검증하고 Raft 상태를 연다. Bootstrap 확인을 위해 peer listener를 먼저 열 수 있다. Peer transport를 준비한 뒤 MQTT security config와 provider를 읽고 MQTT·management listener를 연다. 이 단계에서 실패하면 이미 연 자원을 닫는다.
+4. Dynamic cluster mode는 `runWithContext`에서 cluster config를 읽는다. `runClusterMode`는 config와 peer TLS를 검증하고 Raft 상태를 연다. Bootstrap 확인을 위해 peer listener를 먼저 열 수 있다. Peer transport를 준비한 뒤 MQTT security config와 provider를 읽는다. TLS listener가 있으면 MQTT security config를 읽은 직후 `mqtt.tls.clientAuth`와 `mtlsIdentities` 조합을 standalone과 같은 규칙으로 검사한다. 이어서 MQTT·management listener를 연다. 이 단계에서 실패하면 이미 연 자원을 닫는다.
 5. Fixed-voter peer-only mode는 peer config와 TLS를 검증한 뒤 peer listener와 Raft node를 연다.
 6. 실행 중 SIGINT 또는 SIGTERM이 오면 `run`의 context가 취소된다. Cluster runtime은 node를 draining 상태로 전환한 뒤 service를 종료한다.
 
@@ -77,7 +77,7 @@ Standalone mode에서는 security config를 MQTT listener보다 먼저 적재한
 - Release build는 설정용 환경 변수를 읽지 않는다.
 - 설정 파일 변경은 실행 중인 process에 자동 반영되지 않는다.
 - 이 spec은 node 사이의 일반 설정 일치를 보장하지 않는다. 현재 예외는 commit된 `tenantQuotas`다.
-- 이 spec은 Proposed [ADR-0052](../decisions/ADR-0052-configuration-tiers-and-cluster-policy.md)의 목표 구조가 구현되었다고 보장하지 않는다. 단, §1.5의 중복 key 거절 규칙과 standalone `-http-auth-token-file` secret 파일 규칙은 채택해 구현했다.
+- 이 spec은 Proposed [ADR-0052](../decisions/ADR-0052-configuration-tiers-and-cluster-policy.md)의 목표 구조가 구현되었다고 보장하지 않는다. 단, §1.5의 중복 key 거절 규칙, standalone `-http-auth-token-file` secret 파일 규칙, Cluster MQTT TLS(`mqtt.tls`)와 MQTT·peer 인증서 분리 규칙은 채택해 구현했다(G2·G4·G9·G10).
 
 ## 6. 수용 시험
 
@@ -102,6 +102,9 @@ Standalone mode에서는 security config를 MQTT listener보다 먼저 적재한
 | `CFG-SCN-17` | CLU-09 | Peer-only 시작이 각 실패 지점에서 중단된다. | 시스템은 시작 중 만든 자원을 반환한다. | `cmd/narumq.TestRunRaftPeerOnlyStartupFailuresReleaseResources` | 통과 | 2026-10-10 [실행 기록](#configuration-test-execution) |
 | `CFG-SCN-18` | CLU-14 | `-cluster-restore`만 지정한다. | 시스템은 `-cluster-config`가 필요하다고 거절한다. | `cmd/narumq.TestClusterConfigFlagIsExclusive` | 통과 | 2026-10-10 [실행 기록](#configuration-test-execution) |
 | `CFG-SCN-19` | SEC-10 | `-http-auth-token-file`에 없는 파일이나 공백만 있는 파일을 지정한다. 또는 삭제된 `-http-auth-token`을 지정한다. 또는 유효한 token 파일을 지정한다. | 앞의 세 입력은 시작을 거절한다. 유효한 파일을 쓰면 앞뒤 공백을 제거한 token으로 `/api/v1` Bearer 인증을 요구한다. | `cmd/narumq.TestRunWithContextManagementAuthTokenFile` | 통과 | 2026-10-10 [실행 기록](#configuration-test-execution) |
+| `CFG-SCN-20` | CLU-09 | Cluster config에서 `mqtt.tls`를 생략하거나 각 필드에 잘못된 값·형식을 넣는다. | Parser는 TLS listener와 `mqtt.tls` 불일치, 누락 필드, 잘못된 `clientAuth`, CA 경로와 `minVersion`을 거절한다. | `cmd/narumq.TestParseClusterConfigMQTTTLS` | 통과 | [Cluster MQTT TLS 실행 기록](#cluster-mqtt-tls-g2-g10-execution) |
+| `CFG-SCN-21` | SEC-02 | `mqtt.tls.clientAuth`와 `mtlsIdentities` 조합을 바꾼다. | 시스템은 standalone과 같은 인증 조합만 허용한다. | `cmd/narumq.TestClusterMQTTSecurityValidatesTLSClientAuthBindings` | 통과 | [Cluster MQTT TLS 실행 기록](#cluster-mqtt-tls-g2-g10-execution) |
+| `CFG-SCN-22` | SEC-02 | 3-node cluster에 유효한, 없는, 미등록 client certificate를 제시한다. MQTT 3.1.1과 MQTT 5, TLS 1.2와 1.3, 허용·미등록 Client ID도 확인한다. | 유효한 인증서와 binding은 연결된다. `require`에서 인증서가 없거나 TLS 버전이 낮으면 handshake를 거절한다. 미등록 identity와 Client ID는 MQTT 3.1.1에서 CONNACK `0x05`, MQTT 5에서 CONNACK `0x87`로 거절한다. | `tests/integration.TestDynamicClusterMQTTTLSClientCertificateProcessAcceptance` | 통과 | [Cluster MQTT TLS 실행 기록](#cluster-mqtt-tls-g2-g10-execution) |
 
 <a id="configuration-test-execution"></a>
 ### 설정 시험 실행 기록
@@ -119,6 +122,48 @@ CLI 기본 경로도 smoke 실행했다. `go run ./cmd/narumq`는 `MQTT TCP and 
 중복 key 시작 거절 smoke도 실행했다. Security: `go run ./cmd/narumq -tcp-listen 127.0.0.1:0 -security-config .artifacts/verification/g4-duplicate-key/dup-security.json`은 종료 코드 1과 `load security config: check security config JSON keys: duplicate JSON key`를 반환했다. Peer-only: `go run ./cmd/narumq -raft-peer-config .artifacts/verification/g4-duplicate-key/dup-peer.json`은 종료 코드 1과 `load raft peer config: check raft peer config JSON keys: duplicate JSON key`를 반환했다. 코드에서 security 설정 적재는 `openMQTTListener`보다 먼저, peer config 적재는 `net.Listen`보다 먼저 실행됨을 확인했다.
 
 G9 CLI smoke는 Windows/amd64, Go 1.26.5에서 실행했다. `go run ./cmd/narumq -http-listen 127.0.0.1:18080 -http-auth-token x`는 종료 코드 1과 `flag provided but not defined: -http-auth-token`을 반환했다. `.artifacts/verification/g9-token-file/management.token`의 token으로 시작한 server는 인증 없는 `/api/v1/cluster` 요청에 `401`, 파일 token을 담은 `Authorization: Bearer` 요청에 `200`을 반환했다. Server를 종료했으며 process log에는 token 값이 없었다. Windows shell에서 `curl -o /dev/null`은 `401` 출력 뒤 종료 코드 23을 반환했다. 두 요청은 response body를 출력하는 `curl -s -w` 호출로 다시 확인했다.
+
+<a id="cluster-mqtt-tls-g2-g10-execution"></a>
+### Cluster MQTT TLS(G2·G10) 실행 기록
+
+실행 환경은 Windows/amd64, Go 1.26.5다. Parser·runtime 시험과 build는 다음 명령으로 확인했다.
+
+```sh
+go test ./cmd/narumq -count=1 -run '^(TestParseClusterConfig.*|TestValidateClusterConfig.*|TestClusterMQTTListeners.*|TestClusterMQTTSecurityValidatesTLSClientAuthBindings|TestValidateTLSAuthenticationBindings.*|TestRunWithContextMQTTSecurityMode)$' && go build ./...
+```
+
+결과는 `PASS`다. BP-02 fixture와 전체 build도 확인했다.
+
+```sh
+go test ./tests/benchmark/bp02 -count=1 -run '^TestBP02Fixture' && go build ./...
+```
+
+결과는 `PASS`다. BP02 fixture 시험은 node별 MQTT server certificate/key가 peer mTLS 인증서와 다른지, serverAuth 용도와 CA·DNS 검증이 맞는지 확인했다. `go build ./...`도 통과했다. Compare와 suite는 인증서 분리 변경 뒤 다시 실행하지 않았다.
+
+3-node process acceptance는 다음 명령으로 실행했다.
+
+```sh
+go test ./tests/integration -count=1 -timeout 15m -v -run '^TestDynamicClusterMQTTTLSClientCertificateProcessAcceptance$'
+```
+
+결과는 `PASS`다. 세 node 모두 MQTT 3.1.1과 MQTT 5에서 TLS 1.3 mTLS 연결을 받아 `CONNACK=0x00`을 반환했다. MQTT server certificate는 peer certificate와 달랐다. Client certificate가 없거나 TLS 1.2를 사용하면 handshake가 실패했다. 미등록 certificate와 허용되지 않은 Client ID는 MQTT 3.1.1에서 각각 `CONNACK=0x05`, MQTT 5에서 각각 `CONNACK=0x87`을 반환했다.
+
+CLI startup rejection smoke도 실행했다.
+
+```sh
+go run ./cmd/narumq -cluster-config .artifacts/verification/g2-g10-mqtt-tls/missing-tls.json
+go run ./cmd/narumq -cluster-config .artifacts/verification/g2-g10-mqtt-tls/invalid-client-auth.json
+```
+
+두 명령 모두 종료 코드 `1`을 반환했다. 첫 번째는 `load cluster config: mqtt tls is required when tlsListenAddress is set`, 두 번째는 `load cluster config: mqtt tls clientAuth must be none, request, or require`를 기록했다.
+
+저장소 검증은 다음 결과를 반환했다.
+
+| Gate | 실행 명령 | 결과 |
+| --- | --- | --- |
+| Traceability | `go run ./tools/verify traceability` | `PASS`; P0 `69/81` mapped, exceptions `12` |
+| Markdown links | `go run ./tools/verify markdown-links` | `PASS`; 152 files, 2,153 local links |
+| Local | `GOMAXPROCS=4 go run ./tools/verify local` | `local: PASS`, `coverage: PASS`; branch-instrument, architecture, fuzz, package tests와 traceability 통과 |
 
 ## 7. 미결정 사항
 

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/json"
@@ -51,9 +52,50 @@ func TestBP02FixtureSeparatesTenantsAndConfiguresTLS(t *testing.T) {
 	if config.MQTT.TLSListenAddress != "0.0.0.0:8883" {
 		t.Fatalf("TLS listen = %q", config.MQTT.TLSListenAddress)
 	}
+	if config.MQTT.TLS == nil || config.MQTT.TLS.CertFile != "/config/mqtt.pem" ||
+		config.MQTT.TLS.KeyFile != "/config/mqtt-key.pem" || config.MQTT.TLS.CAFile != "" ||
+		config.MQTT.TLS.ClientAuth != "none" || config.MQTT.TLS.MinVersion != "1.2" {
+		t.Fatalf("MQTT TLS config = %+v", config.MQTT.TLS)
+	}
 	roots := x509.NewCertPool()
 	if !roots.AppendCertsFromPEM(readFile(filepath.Join(fixture.EMQXConfigDirectory, "ca.pem"))) {
 		t.Fatal("invalid CA")
+	}
+	peerCertificatePEM := readFile(filepath.Join(fixture.NodeConfigDirectories[0], "node.pem"))
+	peerBlock, _ := pem.Decode(peerCertificatePEM)
+	if peerBlock == nil {
+		t.Fatal("missing peer certificate PEM")
+	}
+	peerCertificate, err := x509.ParseCertificate(peerBlock.Bytes)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mqttCertificatePEM := readFile(filepath.Join(fixture.NodeConfigDirectories[0], "mqtt.pem"))
+	mqttBlock, _ := pem.Decode(mqttCertificatePEM)
+	if mqttBlock == nil {
+		t.Fatal("missing MQTT certificate PEM")
+	}
+	mqttCertificate, err := x509.ParseCertificate(mqttBlock.Bytes)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bytes.Equal(mqttCertificate.Raw, peerCertificate.Raw) ||
+		bytes.Equal(mqttCertificate.RawSubjectPublicKeyInfo, peerCertificate.RawSubjectPublicKeyInfo) {
+		t.Fatal("MQTT server certificate reuses peer certificate or public key")
+	}
+	if _, err := mqttCertificate.Verify(x509.VerifyOptions{
+		DNSName: "node1.bp02.test", Roots: roots, KeyUsages: []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
+	}); err != nil {
+		t.Fatalf("verify node MQTT certificate: %v", err)
+	}
+	if len(mqttCertificate.ExtKeyUsage) != 1 || mqttCertificate.ExtKeyUsage[0] != x509.ExtKeyUsageServerAuth {
+		t.Fatalf("MQTT certificate extended key usages = %v, want serverAuth only", mqttCertificate.ExtKeyUsage)
+	}
+	if _, err := tls.X509KeyPair(mqttCertificatePEM, readFile(filepath.Join(fixture.NodeConfigDirectories[0], "mqtt-key.pem"))); err != nil {
+		t.Fatalf("load MQTT server certificate and key: %v", err)
+	}
+	if _, err := tls.X509KeyPair(peerCertificatePEM, readFile(filepath.Join(fixture.NodeConfigDirectories[0], "node-key.pem"))); err != nil {
+		t.Fatalf("load peer certificate and key: %v", err)
 	}
 	certificatePEM := readFile(filepath.Join(fixture.EMQXConfigDirectory, "server.pem"))
 	block, _ := pem.Decode(certificatePEM)

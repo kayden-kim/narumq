@@ -1194,8 +1194,10 @@ func TestClusterMQTTListenersBindConfiguredEndpointsAndClosePartialOpen(t *testi
 
 	tcpAddress := clusterRuntimeTestFreeAddress(t)
 	invalidTLS := clusterConfigFile{
-		MQTT:    clusterMQTT{TCPListenAddress: tcpAddress, TLSListenAddress: clusterRuntimeTestFreeAddress(t)},
-		PeerTLS: clusterPeerTLS{CertFile: filepath.Join(t.TempDir(), "missing.crt"), KeyFile: filepath.Join(t.TempDir(), "missing.key")},
+		MQTT: clusterMQTT{
+			TCPListenAddress: tcpAddress, TLSListenAddress: clusterRuntimeTestFreeAddress(t),
+			TLS: &clusterMQTTTLS{CertFile: filepath.Join(t.TempDir(), "missing.crt"), KeyFile: filepath.Join(t.TempDir(), "missing.key"), ClientAuth: "none", MinVersion: "1.2"},
+		},
 	}
 	if listeners, err := clusterMQTTListeners(invalidTLS, nil); err == nil || listeners != nil {
 		t.Fatalf("invalid TLS listener result=%v err=%v, want closed partial TCP listener and error", listeners, err)
@@ -1208,6 +1210,25 @@ func TestClusterMQTTListenersBindConfiguredEndpointsAndClosePartialOpen(t *testi
 		t.Fatal(err)
 	}
 
+	missingTLSAddress := clusterRuntimeTestFreeAddress(t)
+	missingTLSConfig := clusterConfigFile{
+		MQTT: clusterMQTT{
+			TCPListenAddress: clusterRuntimeTestFreeAddress(t),
+			TLSListenAddress: missingTLSAddress,
+		},
+	}
+	missingTCPAddress := missingTLSConfig.MQTT.TCPListenAddress
+	if listeners, err := clusterMQTTListeners(missingTLSConfig, nil); err == nil ||
+		err.Error() != "cluster MQTT TLS listener requires mqtt.tls" || listeners != nil {
+		t.Fatalf("missing mqtt.tls listener result=%v err=%v", listeners, err)
+	}
+	rebound, err = net.Listen("tcp", missingTCPAddress)
+	if err != nil {
+		t.Fatalf("TCP listener remained open after missing mqtt.tls: %v", err)
+	}
+	if err := rebound.Close(); err != nil {
+		t.Fatal(err)
+	}
 	ca, caKey, _ := newClusterRuntimeTestCA(t)
 	certPEM, keyPEM, _ := issueClusterRuntimeTestCertificate(t, ca, caKey, "mqtt.example.test", 11)
 	certPath := filepath.Join(t.TempDir(), "mqtt.crt")
@@ -1222,8 +1243,8 @@ func TestClusterMQTTListenersBindConfiguredEndpointsAndClosePartialOpen(t *testi
 		MQTT: clusterMQTT{
 			TCPListenAddress: clusterRuntimeTestFreeAddress(t),
 			TLSListenAddress: clusterRuntimeTestFreeAddress(t),
+			TLS:              &clusterMQTTTLS{CertFile: certPath, KeyFile: keyPath, ClientAuth: "none", MinVersion: "1.2"},
 		},
-		PeerTLS: clusterPeerTLS{CertFile: certPath, KeyFile: keyPath},
 	}
 	listeners, err = clusterMQTTListeners(config, nil)
 	if err != nil || len(listeners) != 2 {
@@ -1233,6 +1254,41 @@ func TestClusterMQTTListenersBindConfiguredEndpointsAndClosePartialOpen(t *testi
 		if err := listener.Close(); err != nil {
 			t.Fatal(err)
 		}
+	}
+}
+
+// Traceability: SEC-03; docs/specs/configuration-and-runtime-options.md §6; ADR-0052.
+func TestClusterMQTTSecurityValidatesTLSClientAuthBindings(t *testing.T) {
+	securityPath := filepath.Join(t.TempDir(), "security.json")
+	if err := os.WriteFile(securityPath, []byte(validMTLSSecurityJSON), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	for _, test := range []struct {
+		clientAuth string
+		wantError  string
+	}{
+		{clientAuth: "none", wantError: "mqtt.tls.clientAuth none cannot be used with mTLS identity bindings"},
+		{clientAuth: "require"},
+		{clientAuth: "request", wantError: "mqtt.tls.clientAuth request requires JWT or password authentication configuration when mTLS identities are enabled"},
+	} {
+		t.Run(test.clientAuth, func(t *testing.T) {
+			config := clusterConfigFile{
+				MQTT: clusterMQTT{
+					TLSListenAddress: "127.0.0.1:0", SecurityConfigFile: securityPath,
+					TLS: &clusterMQTTTLS{ClientAuth: test.clientAuth},
+				},
+			}
+			bundle, _, mtlsProvider, _, err := clusterMQTTSecurity(config)
+			if test.wantError != "" {
+				if err == nil || err.Error() != test.wantError {
+					t.Fatalf("clusterMQTTSecurity error = %v, want %q", err, test.wantError)
+				}
+				return
+			}
+			if err != nil || bundle == nil || mtlsProvider == nil {
+				t.Fatalf("clusterMQTTSecurity result = bundle:%v provider:%v err:%v, want configured mTLS provider", bundle, mtlsProvider, err)
+			}
+		})
 	}
 }
 

@@ -3454,8 +3454,16 @@ func clusterMQTTListeners(config clusterConfigFile, recorder portsmetrics.Listen
 		listeners = append(listeners, listener)
 	}
 	if config.MQTT.TLSListenAddress != "" {
+		if config.MQTT.TLS == nil {
+			for _, listener := range listeners {
+				_ = listener.Close()
+			}
+			return nil, errors.New("cluster MQTT TLS listener requires mqtt.tls")
+		}
 		tlsConfig, err := tlsadapter.BuildTLSConfig(tlsadapter.Config{
-			CertFile: config.PeerTLS.CertFile, KeyFile: config.PeerTLS.KeyFile, MinVersion: "1.2",
+			CertFile: config.MQTT.TLS.CertFile, KeyFile: config.MQTT.TLS.KeyFile,
+			CAFile: config.MQTT.TLS.CAFile, ClientAuth: tlsadapter.ClientAuthMode(config.MQTT.TLS.ClientAuth),
+			MinVersion: config.MQTT.TLS.MinVersion,
 		})
 		if err != nil {
 			for _, listener := range listeners {
@@ -3480,6 +3488,16 @@ func clusterMQTTSecurity(config clusterConfigFile) (*SecurityBundle, authenticat
 	if err != nil {
 		return nil, nil, nil, "", fmt.Errorf("load cluster MQTT security config: %w", err)
 	}
+	if config.MQTT.TLSListenAddress != "" && config.MQTT.TLS != nil {
+		if err := validateTLSAuthenticationBindings(
+			"mqtt.tls.clientAuth",
+			tlsadapter.ClientAuthMode(config.MQTT.TLS.ClientAuth),
+			bundle,
+		); err != nil {
+			return nil, nil, nil, "", err
+		}
+	}
+
 	var (
 		credentialProvider authenticationports.AuthenticationProvider
 		credentialMethod   string

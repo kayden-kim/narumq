@@ -289,7 +289,7 @@ func runWithContext(ctx context.Context, args []string, logger *slog.Logger) err
 		}
 	}
 	if *tlsListen != "" {
-		if err := validateTLSAuthenticationBindings(tlsadapter.ClientAuthMode(*tlsClientAuth), securityBundle); err != nil {
+		if err := validateTLSAuthenticationBindings("-tls-client-auth", tlsadapter.ClientAuthMode(*tlsClientAuth), securityBundle); err != nil {
 			return err
 		}
 	}
@@ -686,7 +686,7 @@ func readManagementAuthTokenFile(path string) (string, error) {
 	return token, nil
 }
 
-func validateTLSAuthenticationBindings(clientAuth tlsadapter.ClientAuthMode, bundle *SecurityBundle) error {
+func validateTLSAuthenticationBindings(setting string, clientAuth tlsadapter.ClientAuthMode, bundle *SecurityBundle) error {
 	bindingCount := 0
 	if bundle != nil {
 		bindingCount = len(bundle.MTLSBindings)
@@ -694,18 +694,18 @@ func validateTLSAuthenticationBindings(clientAuth tlsadapter.ClientAuthMode, bun
 	switch clientAuth {
 	case "", tlsadapter.ClientAuthNone:
 		if bindingCount > 0 {
-			return errors.New("-tls-client-auth none cannot be used with mTLS identity bindings")
+			return fmt.Errorf("%s none cannot be used with mTLS identity bindings", setting)
 		}
 	case tlsadapter.ClientAuthRequest:
 		if bindingCount == 0 {
-			return fmt.Errorf("-tls-client-auth %s requires at least one mTLS identity binding", clientAuth)
+			return fmt.Errorf("%s %s requires at least one mTLS identity binding", setting, clientAuth)
 		}
 		if bundle == nil || (bundle.JWTConfig == nil && len(bundle.PasswordBindings) == 0) {
-			return errors.New("-tls-client-auth request requires JWT or password authentication configuration when mTLS identities are enabled")
+			return fmt.Errorf("%s request requires JWT or password authentication configuration when mTLS identities are enabled", setting)
 		}
 	case tlsadapter.ClientAuthRequire:
 		if bindingCount == 0 {
-			return fmt.Errorf("-tls-client-auth %s requires at least one mTLS identity binding", clientAuth)
+			return fmt.Errorf("%s %s requires at least one mTLS identity binding", setting, clientAuth)
 		}
 	}
 	return nil

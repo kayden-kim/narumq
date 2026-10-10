@@ -97,7 +97,7 @@ Listener admission flag 검증은 `validateListenerAdmissionFlags`가 수행한�
 | `seedAddresses` | 문자열 배열 | bootstrap에서는 빈 배열; joiner에서는 정규 DNS `host:port` 주소 1~16개. TLS SNI를 DNS 이름에 바인딩하므로 IP 리터럴은 거절 |
 | `peerTLS` | 객체 | `certFile`, `keyFile`, `caFile` 필수; 인증서와 키가 일치하고 CA가 모든 피어를 검증해야 함 |
 | `management` | 객체 | `listenAddress`, `clusterAdminTokenFile`, `auditDirectory` 필수. Token은 break-glass `ClusterAdmin` opaque secret이다. `auditDirectory`는 비어 있지 않은 경로여야 하며 `directory`와 같거나 서로 포함해서는 안 되고, 각 노드에서 달라야 한다. 선택 정수 필드 `requestRate`, `authFailureRate`는 각각 `1..1,000,000`; 생략하면 `50`, `5`를 사용한다. 선택 `apiKeys`는 `{id,keyFile,roles}` 객체 배열이며 `id`는 `^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$`와 일치하고 고유해야 하며, `keyFile`은 유효한 경로여야 하고 `roles`는 비어 있지 않은 고유한 `ReadOnly`, `Operator`, `SecurityAdmin`, `ClusterAdmin` 값만 포함해야 한다. Key 파일 내용은 앞뒤 공백 제거 후 비어 있지 않아야 하며 cluster admin token 및 다른 API key와 달라야 한다. 선택 `oidc`는 JWT verifier 필드(`issuer`, `audience`, `algorithms`, `jwksUrl`, `cacheTtl`, `refreshCooldown`, `clockSkew`, `httpTimeout`)와 비어 있지 않은 `identities` 배열로 구성한다. 각 identity는 비어 있지 않고 최대 250 rune인 고유 `subject`와 비어 있지 않은 고유 역할 배열을 가져야 한다. JWT 필드는 MQTT `jwt` 설정과 같은 검증 규칙을 적용하며 `jwksUrl`은 HTTPS 또는 loopback HTTP여야 한다. OIDC 권한은 JWT claim이 아니라 정적 subject-to-roles binding에서 결정한다. |
-| `mqtt` | 객체 | `tcpListenAddress`, `tlsListenAddress`, `securityConfigFile` 필수; 주소가 비어 있으면 해당 listener를 사용하지 않는다. 선택 정수 필드 `tcpMaxConnections`, `tcpConnectionRate`, `tlsMaxConnections`, `tlsConnectionRate`는 0~1000000이며 생략하면 0(제한 없음)이다. 해당 listener 주소가 비어 있으면 그 listener의 두 값은 0이어야 한다. |
+| `mqtt` | 객체 | `tcpListenAddress`, `tlsListenAddress`, `securityConfigFile`가 필요하다. 주소가 비어 있으면 해당 listener를 사용하지 않는다. 선택 정수 필드 `tcpMaxConnections`, `tcpConnectionRate`, `tlsMaxConnections`, `tlsConnectionRate`는 0~1000000이며 생략하면 0(제한 없음)이다. 해당 listener 주소가 비어 있으면 그 listener의 두 값은 0이어야 한다. 선택 object `tls`는 `certFile`, `keyFile`, `caFile`, `clientAuth`, `minVersion`을 모두 요구한다. `tlsListenAddress`가 비어 있으면 `tls`를 지정할 수 없고, 주소가 있으면 `tls`가 필요하다. `certFile`과 `keyFile`은 공백이 없는 비어 있지 않은 경로여야 한다. `clientAuth`는 `none`, `request`, `require` 중 하나다. `none`이면 `caFile`은 빈 문자열이어야 한다. `request` 또는 `require`이면 `caFile`은 공백이 없는 비어 있지 않은 경로여야 한다. `minVersion`은 `1.2` 또는 `1.3`이어야 한다. 인증서·키 쌍과 client CA 파일은 listener 시작 때 읽고 검증한다. |
 | `replication` | 객체(선택) | 생략하면 복제 계수 3과 쓰기 쿼럼 2를 사용한다. 지정하면 정확히 `{factor:int, writeQuorum:int}`여야 하며 3/2만 허용한다. |
 | `publishBackpressure` | 선택 object | `minFreeBytes`, `maxCommitLagMillis`는 `uint64`다. Object가 있으면 두 key가 모두 필요하다. `publishBackpressure` object를 생략하면 기본값은 각각 `1073741824`, `1000`이다. `minFreeBytes` 범위는 `0..1<<50`이며 0은 disk admission을 끈다. `maxCommitLagMillis` 범위는 `100..10000`이다. |
 | `tenantQuotas` | 선택 object | `version`은 `uint64`이며 1 이상이다. Object가 있으면 `version`, `default`, `tenants`가 필요하다. `default`와 각 `tenants[]` 원소의 `retainedBytes`, `offlineQueueMessages`, `offlineQueueBytes`, `storageBytes`는 모두 `uint64`이며 필수다. 각 `tenants[]` 원소에는 string `tenantId`도 필요하다. 생략하면 built-in profile version 0을 사용한다. |
@@ -142,7 +142,6 @@ Cluster mode에서 설정할 수 없는 현재 고정값은 다음과 같다.
 | write timeout | `5s` |
 | control queue | `256` |
 | delivery queue | `256` |
-| MQTT TLS listener | `peerTLS.certFile`과 `keyFile`을 재사용한다. TLS 1.2 이상이며 client certificate를 요청하지 않는다. |
 | Peer TLS | TLS 1.3 mutual TLS로 고정한다. |
 
 `bootstrapMembers`의 각 항목은 정확히 `{memberId:uint64,address:string,dnsSan:string,certificateSha256:string}` 형식이다. 멤버 ID, 주소, DNS SAN과 인증서 지문의 제약은 [Raft membership v2 §1.1](raft-membership-v2.md#11-확정된-멤버-식별-정보)을 따른다. 세 bootstrap 구성은 `memberId` 기준으로 바이트 단위 정렬을 사용하고 같은 집합을 포함해야 한다. 각 멤버의 인증서 지문과 SAN은 해당 항목과 일치해야 한다. 모든 bootstrap 노드는 같은 빌드 릴리스와 feature 집합을 사용해야 한다. `seedAddresses`는 임의의 검색 서버가 아니라 피어 승인 listener를 가리킨다. 각 host는 소문자 DNS 이름이어야 하며 TLS server name으로 사용되고 접속한 seed 인증서 SAN과 일치해야 한다. ClusterAdmin token은 지정한 파일에서 읽는다. 원본 token은 JSON이나 로그에 포함하지 않는다.
@@ -175,7 +174,7 @@ Bootstrap 예시다. `<64 lowercase hex>`는 인증서 지문에서 가져오는
     "apiKeys": [{"id": "dashboard", "keyFile": "secrets/dashboard.key", "roles": ["ReadOnly"]}],
     "auditDirectory": "data/node1-audit"
   },
-  "mqtt": {"tcpListenAddress": "", "tlsListenAddress": "127.0.0.1:1883", "securityConfigFile": "security.json"}
+  "mqtt": {"tcpListenAddress": "", "tlsListenAddress": "127.0.0.1:1883", "securityConfigFile": "security.json", "tls": {"certFile": "certs/mqtt.crt", "keyFile": "certs/mqtt.key", "caFile": "", "clientAuth": "none", "minVersion": "1.2"}}
 }
 ```
 
@@ -372,6 +371,7 @@ Cluster config와 security config 예제는 [§1.3](#13-cluster-config-json)과 
 | `cmd/narumq`: `TestMainNoListenerPath`, `TestRun_Defaults`, `TestRunWithContextMQTTSecurityMode`, `TestRunRejectsRuntimeMetricsFlagCombinations` | 비활성·기본 실행, MQTT 보안 mode와 runtime metrics flag 조합 | 통과 | 2026-10-10 [실행 기록](../specs/configuration-and-runtime-options.md#configuration-test-execution) |
 | `cmd/narumq`: `TestRunWithContextManagementAuthTokenFile` | Standalone Management token 파일의 존재·내용·Bearer 인증과 삭제된 flag | 통과 | 2026-10-10 [실행 기록](../specs/configuration-and-runtime-options.md#configuration-test-execution) |
 | `cmd/narumq`: `TestConfiguredTenantQuotaProfileUsesBuiltinOrStrictConfig`, `TestClusterTenantQuotaControllerLogsCommittedMismatchOnce`, `TestClusterMQTTListenersBindConfiguredEndpointsAndClosePartialOpen`, `TestRunRaftPeerOnlyStartupFailuresReleaseResources` | Quota profile, committed mismatch, partial listener 정리와 peer-only 시작 실패 | 통과 | 2026-10-10 [실행 기록](../specs/configuration-and-runtime-options.md#configuration-test-execution) |
+| `cmd/narumq`: `TestParseClusterConfigMQTTTLS`, `TestClusterMQTTListenersBindConfiguredEndpointsAndClosePartialOpen`, `TestClusterMQTTSecurityValidatesTLSClientAuthBindings`, `tests/integration`: `TestDynamicClusterMQTTTLSClientCertificateProcessAcceptance` | `mqtt.tls` 필수 key·strict validation, listener 자원 정리, client-auth binding과 3-node TLS·mTLS 동작 | 통과 | [Cluster MQTT TLS 실행 기록](../specs/configuration-and-runtime-options.md#cluster-mqtt-tls-g2-g10-execution) |
 
 별도 `tests/contracts` 전용 시험은 실행하지 않았다. Process configuration v1은 `Draft`를 유지한다.
 
