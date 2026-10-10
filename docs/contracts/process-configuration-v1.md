@@ -51,8 +51,8 @@
 | `-delivery-queue-capacity` | int | `64` | 0보다 커야 한다. `deliveryqueue.New`가 0 이하 값을 거절한다. 양수 상한은 없다. | standalone MQTT |
 | `-retained-message-capacity` | int | `1024` | 0보다 커야 한다. | standalone MQTT |
 | `-retained-byte-capacity` | int | `16777216` | 0보다 커야 한다. | standalone MQTT |
-| `-http-listen` | string | `""` | `-http-auth-token`이 비어 있으면 literal loopback만 허용한다. | standalone Management HTTP |
-| `-http-auth-token` | string | `""` | 문자열 token을 받는다. | standalone Management HTTP |
+| `-http-listen` | string | `""` | `-http-auth-token-file`을 지정하지 않으면 literal loopback만 허용한다. | standalone Management HTTP |
+| `-http-auth-token-file` | string | `""` | 비어 있지 않으면 파일을 읽는다. 앞뒤 공백을 제거한 내용이 비어 있으면 시작을 거절한다. | standalone Management HTTP |
 | `-http-request-rate` | int | `50` | 범위는 `1..1,000,000`이다. | standalone Management API |
 | `-http-auth-failure-rate` | int | `5` | 범위는 `1..1,000,000`이다. | standalone Management API |
 | `-runtime-metrics-output` | string | `""` | `-runtime-metrics-interval`과 함께 지정해야 한다. | standalone runtime metrics |
@@ -294,7 +294,7 @@ Salt는 16 bytes, digest는 32 bytes다. 둘 다 padding 없는 canonical standa
 
 Cluster config의 `management.clusterAdminTokenFile`과 `apiKeys[].keyFile`은 앞뒤 공백을 제거한 내용을 사용한다. 파일 내용은 비어 있으면 안 된다. Cluster admin token과 API key, 서로 다른 API key는 같은 값을 사용할 수 없다. 필드와 필수 조건은 [§1.3](#13-cluster-config-json)을 따른다.
 
-Standalone `-http-auth-token`은 secret을 명령행 인수로 받는 유일한 예외다.
+Standalone `-http-auth-token-file`도 앞뒤 공백을 제거한 내용을 사용하고, 비어 있으면 시작을 거절한다. Secret 값을 명령행 인수로 받는 flag는 없다.
 
 ### 1.7 환경 변수
 
@@ -332,6 +332,8 @@ Duration 표기는 입력 형식에 따라 다르다.
 | `-cluster-config cannot be combined with %s` | `-cluster-config`와 허용되지 않는 다른 flag를 함께 지정했다. |
 | `-runtime-metrics-output and -runtime-metrics-interval must be provided together` | runtime metrics flag 하나만 지정했다. |
 | `-http-request-rate and -http-auth-failure-rate must be between 1 and 1000000` | standalone Management API rate가 허용 범위 밖이다. |
+| `read -http-auth-token-file: %w` | standalone token 파일을 읽지 못했다. |
+| `-http-auth-token-file is empty` | token 파일의 공백 제거 결과가 비어 있다. |
 | `load cluster config: %w` | cluster config를 읽거나 검증하지 못했다. |
 | `load security config: %w` | security config를 읽거나 검증하지 못했다. |
 
@@ -341,7 +343,9 @@ Duration 표기는 입력 형식에 따라 다르다.
 
 Consumer는 알 수 없는 key를 거절한다. 선택 key를 추가하면 그 key를 아는 새 binary와는 호환된다. 이전 binary는 새 key를 거절하므로 설정은 binary와 함께 배포해야 한다. 이 규칙은 [ADR-0030 §1 9항](../decisions/ADR-0030-publish-backpressure-admission.md#1-결정)을 따른다.
 
-Flag나 key를 삭제하거나 이름 또는 의미를 바꾸면 breaking change다. 그런 변경은 `process-configuration-v2`를 만든다.
+`Draft` 단계에서는 flag·key의 삭제와 이름 변경을 같은 버전에 반영할 수 있다. 이때 변경 내용을 아래 목록에 기록한다. `Active` 이후에는 위 규칙을 따른다.
+
+- 2026-10-10: standalone `-http-auth-token`을 삭제하고 `-http-auth-token-file`로 대체했다([ADR-0052 §1.5](../decisions/ADR-0052-configuration-tiers-and-cluster-policy.md#15-형식과-cluster-mqtt-tls), G9).
 
 ## 4. 버전과 지원 단계
 
@@ -366,6 +370,7 @@ Cluster config와 security config 예제는 [§1.3](#13-cluster-config-json)과 
 | `cmd/narumq`: `TestRunRejectsManagementRateFlagsOutOfRange`, `TestRunWithContextRejectsConstructionBounds`, `TestValidateTLSAuthenticationBindingsRequireMode`, `TestValidateTLSAuthenticationBindingsRequestMode` | Management rate 경계, queue 생성 한도, TCP max·TLS rate 범위와 TCP listener 필수 조건, TLS 인증 binding | 통과 | 2026-10-10 [실행 기록](../specs/configuration-and-runtime-options.md#configuration-test-execution) |
 | `cmd/narumq`: `TestHashPasswordFlagIsExclusive`, `TestClusterConfigFlagIsExclusive`, `TestRaftPeerOnlyRejectsOtherFlags`, `TestAuditVerifyFlagRequiresExclusiveDirectory` | 실행 모드 flag의 배타성·필수 인수 | 통과 | 2026-10-10 [실행 기록](../specs/configuration-and-runtime-options.md#configuration-test-execution) |
 | `cmd/narumq`: `TestMainNoListenerPath`, `TestRun_Defaults`, `TestRunWithContextMQTTSecurityMode`, `TestRunRejectsRuntimeMetricsFlagCombinations` | 비활성·기본 실행, MQTT 보안 mode와 runtime metrics flag 조합 | 통과 | 2026-10-10 [실행 기록](../specs/configuration-and-runtime-options.md#configuration-test-execution) |
+| `cmd/narumq`: `TestRunWithContextManagementAuthTokenFile` | Standalone Management token 파일의 존재·내용·Bearer 인증과 삭제된 flag | 통과 | 2026-10-10 [실행 기록](../specs/configuration-and-runtime-options.md#configuration-test-execution) |
 | `cmd/narumq`: `TestConfiguredTenantQuotaProfileUsesBuiltinOrStrictConfig`, `TestClusterTenantQuotaControllerLogsCommittedMismatchOnce`, `TestClusterMQTTListenersBindConfiguredEndpointsAndClosePartialOpen`, `TestRunRaftPeerOnlyStartupFailuresReleaseResources` | Quota profile, committed mismatch, partial listener 정리와 peer-only 시작 실패 | 통과 | 2026-10-10 [실행 기록](../specs/configuration-and-runtime-options.md#configuration-test-execution) |
 
 별도 `tests/contracts` 전용 시험은 실행하지 않았다. Process configuration v1은 `Draft`를 유지한다.

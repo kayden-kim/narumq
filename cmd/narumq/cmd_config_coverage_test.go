@@ -33,6 +33,15 @@ func ccfDiscardLogger() *slog.Logger {
 	return slog.New(slog.NewTextHandler(io.Discard, nil))
 }
 
+func ccfWriteManagementTokenFile(t *testing.T, content string) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "management.token")
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
 func ccfStagedMember() membership.MemberIdentityDTO {
 	return membership.MemberIdentityDTO{
 		MemberID: 4, ClusterID: "cluster", Address: "node4.example:19004", DNSSAN: "node4.example",
@@ -1005,13 +1014,14 @@ func TestRunWithContextReportsManagementListenFailure(t *testing.T) {
 	}
 	defer occupied.Close()
 	address := occupied.Addr().String()
-	err = runWithContext(context.Background(), []string{"-http-listen", address, "-http-auth-token", "token"}, ccfDiscardLogger())
+	err = runWithContext(context.Background(), []string{"-http-listen", address, "-http-auth-token-file", ccfWriteManagementTokenFile(t, "token\n")}, ccfDiscardLogger())
 	ccfWantError(t, err, "listen management HTTP on")
 }
 
 // TestRunRejectsManagementRateFlagsOutOfRange verifies standalone rate flag bounds.
 // Traceability: PRD API-05; docs/specs/management-api-and-observability.md §1.5.
 func TestRunRejectsManagementRateFlagsOutOfRange(t *testing.T) {
+	tokenFile := ccfWriteManagementTokenFile(t, "token\n")
 	want := "-http-request-rate and -http-auth-failure-rate must be between 1 and 1000000"
 	for _, testCase := range []struct {
 		name string
@@ -1019,11 +1029,11 @@ func TestRunRejectsManagementRateFlagsOutOfRange(t *testing.T) {
 	}{
 		{
 			name: "request rate below minimum",
-			args: []string{"-http-listen", "127.0.0.1:0", "-http-auth-token", "token", "-http-request-rate", "0"},
+			args: []string{"-http-listen", "127.0.0.1:0", "-http-auth-token-file", tokenFile, "-http-request-rate", "0"},
 		},
 		{
 			name: "auth failure rate above maximum",
-			args: []string{"-http-listen", "127.0.0.1:0", "-http-auth-token", "token", "-http-auth-failure-rate", "1000001"},
+			args: []string{"-http-listen", "127.0.0.1:0", "-http-auth-token-file", tokenFile, "-http-auth-failure-rate", "1000001"},
 		},
 	} {
 		t.Run(testCase.name, func(t *testing.T) {

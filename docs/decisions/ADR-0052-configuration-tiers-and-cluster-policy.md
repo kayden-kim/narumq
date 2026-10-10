@@ -2,7 +2,7 @@
 
 | 항목 | 값 |
 | --- | --- |
-| 상태 | `Proposed`. §1.5의 설정 parser 중복 key 거절 규칙만 2026-10-10 사용자 결정으로 채택했다. |
+| 상태 | `Proposed`. §1.5의 설정 parser 중복 key 거절 규칙만 2026-10-10 사용자 결정으로 채택했다. §1.5의 secret 파일 규칙 중 standalone `-http-auth-token-file` 전환도 2026-10-10 사용자 결정으로 채택했다(G9). |
 | 결정일 | 2026-10-10 |
 | 결정자 | NaruMQ 프로젝트 사용자 |
 | 관련 요구사항 | API-09, API-08, UI-01~UI-10, SEC-07, TEN-06~TEN-08, CLU-11 |
@@ -87,7 +87,7 @@ Feature가 활성화되기 전에는 각 node가 현재 파일 값을 사용한�
 
 - 새 duration key는 `Millis` 접미사가 붙은 정수 millisecond를 쓴다. 기존 Go duration 문자열 key는 유지한다.
 - 설정 parser는 중복 key, 알 수 없는 key와 뒤따르는 JSON value를 거절한다. 이 규칙은 2026-10-10 사용자 결정으로 먼저 채택했다. Security config와 peer-only config parser에도 적용했다(G4).
-- Secret은 파일로만 받는다. Standalone `-http-auth-token`은 `-http-auth-token-file`로 바꾼다.
+- Secret은 파일로만 받는다. Standalone `-http-auth-token`은 `-http-auth-token-file`로 바꾼다. 이 규칙은 2026-10-10 사용자 결정으로 채택해 구현했다(G9).
 - Environment variable은 설정 원천으로 사용하지 않는다.
 - Cluster MQTT TLS에는 node 정적 설정인 `mqtt.tls` object를 추가한다. 이 object는 `certFile`, `keyFile`, `caFile`, `clientAuth`, `minVersion`을 가진다.
 - MQTT client 인증서와 Raft peer 인증서는 분리한다.
@@ -112,7 +112,7 @@ Console은 Management API만 사용한다. 이 ADR은 UI 기술을 정하지 않
 | G6 | Runtime metrics flag는 standalone에서만 지원한다. |
 | G7 | 실제 설정 조회 API와 `tenantQuotas` 변경 API는 없다. |
 | G8 | Standalone Management API는 cluster ID `narumq-cluster-1`과 node ID `narumq-node-1`을 사용한다. |
-| G9 | Standalone `-http-auth-token`은 secret 값을 command line에서 받고, cluster는 `clusterAdminTokenFile`을 사용한다. |
+| G9 | Standalone은 2026-10-10 해소: `-http-auth-token`은 제거하고 `-http-auth-token-file`만 받는다. Cluster는 `clusterAdminTokenFile`을 사용한다. |
 | G10 | Cluster MQTT TLS에는 minimum TLS version과 client-auth를 설정하는 field가 없다. |
 
 새 API와 일반 `ClusterPolicy` reconciliation은 아직 구현되지 않았다. 이 제안은 현재 동작을 설명하는 [실행 옵션과 설정 스펙](../specs/configuration-and-runtime-options.md)과 구분한다.
@@ -174,6 +174,7 @@ ADR-0017은 versioned `tenantQuotas` command로 local config와 committed state�
 | Cluster 적용 | 3-node cluster에서 정책을 PUT한다. | Commit 뒤 세 node가 같은 `ClusterPolicy` version과 값을 적용한다. | 미실행. |
 | Feature activation과 restore | Feature 활성화 전후 실행, snapshot과 backup 복구를 확인한다. | 활성화 전에는 현재 동작을 유지한다. Commit된 policy는 snapshot·backup 복구 뒤에도 유지한다. | 미실행. |
 | 설정 parser 중복 key 거절(G4) | `TestParseSecurityConfig_Rejections`, `TestParseRaftPeerConfigStrict`, `TestRejectDuplicateJSONKeys` 실행 | Security·peer-only config의 top-level, 중첩 object, 배열 원소 object에서 중복 key를 거절한다. | 2026-10-10 [설정 시험 기록](../specs/configuration-and-runtime-options.md#configuration-test-execution)에서 통과했다. |
+| Secret 파일 flag(G9) | `TestRunWithContextManagementAuthTokenFile` 실행 | 명령행 token flag와 없는·빈 파일을 거절하고, 공백을 제거한 파일 token으로 인증한다. | 2026-10-10 [설정 시험 기록](../specs/configuration-and-runtime-options.md#configuration-test-execution)에서 통과했다. |
 
 ## 8. 재검토 조건
 

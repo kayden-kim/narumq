@@ -113,7 +113,7 @@ PRD는 `Draft` 상태이므로 이 목록은 요구사항을 구현 기준으로
 - [ ] **미구현 — G6 cluster runtime metrics**: `-runtime-metrics-output`과 `-runtime-metrics-interval`은 standalone에서만 지원한다.
 - [ ] **미구현 — G7 설정 조회 API 부재**: 실제 적용 설정을 조회하는 API와 `tenantQuotas`를 바꾸는 Management API가 없다. 이는 전용 console의 선행 조건이다.
 - [ ] **결정 필요 — G8 standalone 식별자 고정**: Standalone Management API는 cluster ID `narumq-cluster-1`과 node ID `narumq-node-1`을 사용한다. 출처는 `cmd/narumq/main.go`의 `appmgmt.ServiceConfig`다.
-- [ ] **결정 필요 — G9 secret 명령행 노출**: `-http-auth-token`은 secret 값을 명령행으로 받는다. Cluster config는 `clusterAdminTokenFile` 경로를 받는다.
+- [x] **완료 — G9 secret 파일 flag**: [ADR-0052 §1.5](decisions/ADR-0052-configuration-tiers-and-cluster-policy.md#15-형식과-cluster-mqtt-tls)의 standalone token 규칙만 2026-10-10 사용자 결정으로 채택했다. `-http-auth-token`을 삭제하고 `-http-auth-token-file`로 대체했다. 시험과 실행 기록은 [설정 스펙 §6](specs/configuration-and-runtime-options.md#6-수용-시험)에 있다. ADR-0052의 나머지 범위는 `Proposed`로 남는다.
 - [ ] **결정 필요 — G10 cluster TLS 설정 부재**: Cluster mode에는 `tls-min-version`과 `tls-client-auth`에 대응하는 설정이 없다. `clusterMQTTListeners`는 peer certificate/key를 쓰고 TLS 1.2를 고정한다.
 
 PRD [§16 선택적 adapter](requirements/PRD.md#16-단계별-제공-범위)의 HTTP webhook·MQTT bridge·Kafka와 DEP-24 ECS는 사용량·필요성 및 별도 수용 기준이 승인되기 전까지 조건부 후속 범위로 둔다. 이를 미구현 결함이나 완료된 기능으로 기록하지 않는다. MQTT-10과 API-07은 각각 §1.6·§1.8에서 따로 추적한다.

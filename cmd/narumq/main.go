@@ -63,7 +63,7 @@ func runWithContext(ctx context.Context, args []string, logger *slog.Logger) err
 	tcpListen := flagSet.String("tcp-listen", "", "development-only loopback TCP listen address")
 	tlsListen := flagSet.String("tls-listen", "", "TLS listen address")
 	httpListen := flagSet.String("http-listen", "", "management HTTP listen address")
-	httpAuthToken := flagSet.String("http-auth-token", "", "management API Bearer token")
+	httpAuthTokenFile := flagSet.String("http-auth-token-file", "", "file containing the management API Bearer token")
 	httpRequestRate := flagSet.Int("http-request-rate", adaptershttp.DefaultRequestRate, "management API requests per second per authenticated principal")
 	httpAuthFailureRate := flagSet.Int("http-auth-failure-rate", adaptershttp.DefaultAuthFailureRate, "management API failed-authentication requests per second per remote IP")
 	tlsCert := flagSet.String("tls-cert", "", "server certificate PEM file")
@@ -207,7 +207,15 @@ func runWithContext(ctx context.Context, args []string, logger *slog.Logger) err
 	if metricsRequested && *runtimeMetricsInterval <= 0 {
 		return errors.New("-runtime-metrics-interval must be greater than zero")
 	}
-	if *httpListen != "" && *httpAuthToken == "" {
+	managementAuthToken := ""
+	if *httpAuthTokenFile != "" {
+		token, err := readManagementAuthTokenFile(*httpAuthTokenFile)
+		if err != nil {
+			return err
+		}
+		managementAuthToken = token
+	}
+	if *httpListen != "" && managementAuthToken == "" {
 		if err := validateManagementListenAddress(*httpListen); err != nil {
 			return fmt.Errorf("unauthenticated management listener: %w", err)
 		}
@@ -451,12 +459,12 @@ func runWithContext(ctx context.Context, args []string, logger *slog.Logger) err
 		managementServer = adaptershttp.NewServer(
 			adaptershttp.ServerConfig{
 				ListenAddr:            managementListener.Addr().String(),
-				AuthToken:             *httpAuthToken,
+				AuthToken:             managementAuthToken,
 				RequestRate:           *httpRequestRate,
 				AuthFailureRate:       *httpAuthFailureRate,
 				Clock:                 systemClock,
 				AllowAnonymousProbes:  true,
-				AllowAnonymousMetrics: *httpAuthToken == "",
+				AllowAnonymousMetrics: managementAuthToken == "",
 			},
 			managementState,
 			managementState,
@@ -662,6 +670,20 @@ func validateLoopbackListenAddress(address string) error {
 
 func validateManagementListenAddress(address string) error {
 	return validateLiteralLoopbackAddress("-http-listen", address)
+}
+
+// readManagementAuthTokenFile reads the standalone management Bearer token.
+// The token never appears in errors or logs.
+func readManagementAuthTokenFile(path string) (string, error) {
+	content, err := os.ReadFile(path)
+	if err != nil {
+		return "", fmt.Errorf("read -http-auth-token-file: %w", err)
+	}
+	token := strings.TrimSpace(string(content))
+	if token == "" {
+		return "", errors.New("-http-auth-token-file is empty")
+	}
+	return token, nil
 }
 
 func validateTLSAuthenticationBindings(clientAuth tlsadapter.ClientAuthMode, bundle *SecurityBundle) error {

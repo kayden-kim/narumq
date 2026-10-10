@@ -301,4 +301,4 @@ Management API rate limit은 각 node에서 독립 적용한다. Standalone flag
 
 - 전달 대상: NaruMQ 코어 유지보수 팀 및 인프라 담당자.
 - 보존할 증거: 실행 명령어 전문, NaruMQ 표준 에러 및 로그 전체(JSON 형태), `go version` 출력 결과, `curl -v http://127.0.0.1:8080/health/ready` 상세 응답 헤더.
-- 비밀 값 제외 규칙: 서버 개인키(`*.key`), 인증 토큰(`http-auth-token`), JWT 토큰 원문 등 민감한 자격 증명은 절대로 보고서나 이슈에 첨부하지 않고 마스킹 처리한다.
+- 비밀 값 제외 규칙: 서버 개인키(`*.key`), 인증 토큰 파일(`-http-auth-token-file`)의 내용, JWT 토큰 원문 등 민감한 자격 증명은 절대로 보고서나 이슈에 첨부하지 않고 마스킹 처리한다.

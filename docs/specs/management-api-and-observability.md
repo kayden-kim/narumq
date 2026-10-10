@@ -23,11 +23,11 @@
 ### 1.1 Management listener와 인증 정책
 
 - `-http-listen`은 Management HTTP listener의 bind 주소다.
-- `-http-auth-token`이 설정되면 유효한 `Authorization: Bearer <token>`을 요구하고, `/api/v1`에는 endpoint별 RBAC를 적용한다. 인증 실패는 `401`, 인증은 됐지만 권한이 부족하면 `403`이다.
+- `-http-auth-token-file`이 설정되면 파일에서 앞뒤 공백을 제거한 token을 읽고 유효한 `Authorization: Bearer <token>`을 요구하며, `/api/v1`에는 endpoint별 RBAC를 적용한다. 인증 실패는 `401`, 인증은 됐지만 권한이 부족하면 `403`이다.
 - Cluster mode의 `management.apiKeys`에는 이름 있는 credential을 `{id, keyFile, roles}`로 등록한다. Key 파일은 읽은 뒤 앞뒤 공백을 제거하며 비어 있거나 cluster admin token 또는 다른 API key와 같으면 process 시작을 거절한다. API key principal subject는 `apikey:<id>`다.
 - Cluster mode의 `management.oidc`는 JWT issuer·audience·algorithm allowlist와 JWKS 검증을 설정하고 `identities`의 정적 subject→roles binding으로 권한을 결정한다. JWT claims는 roles를 선택하지 않는다. OIDC principal subject는 `oidc:<sub>`다.
 - Cluster admin bearer token은 ClusterAdmin 권한의 break-glass credential로 유지한다. Management API의 네 role과 permission mapping은 [Tenant와 security §6](tenancy-and-security.md#6-관리-plane-rbac) 및 [ADR-0048](../decisions/ADR-0048-management-api-oidc-api-key-rbac.md)을 따른다. Grafana Dashboard는 ReadOnly API key만 사용하며, 사용자 인증은 Grafana가 맡는다.
-- 이 credential 형식은 cluster mode 전용이다. Standalone mode는 `-http-auth-token` 하나만 지원하며, 설정 시 ClusterAdmin bearer credential이다. `-http-auth-token`이 비어 있으면 local development용 익명 모드로 동작하지만, `-http-listen`은 literal loopback IP(`127.0.0.0/8` 또는 `::1`)만 허용한다. `0.0.0.0`, `:8080`, 외부 인터페이스 주소는 거부한다.
+- 이 credential 형식은 cluster mode 전용이다. Standalone mode는 `-http-auth-token-file` 하나만 지원하며, 설정 시 ClusterAdmin bearer credential이다. `-http-auth-token-file`을 지정하지 않으면 local development용 익명 모드로 동작하지만, `-http-listen`은 literal loopback IP(`127.0.0.0/8` 또는 `::1`)만 허용한다. `0.0.0.0`, `:8080`, 외부 인터페이스 주소는 거부한다.
 - 따라서 원격 interface에 Management API를 노출하려면 인증을 설정해야 한다. CLI에서 health probe와 `/metrics`는 listener 정책에 따라 익명 노출할 수 있다. 운영 환경에서는 probe listener와 firewall 범위를 별도로 제한해야 한다.
 
 예:
@@ -37,7 +37,7 @@
 go run ./cmd/narumq -http-listen 127.0.0.1:8080
 
 # remote/private interface: authentication required
-go run ./cmd/narumq -http-listen 0.0.0.0:8080 -http-auth-token "$NARUMQ_MANAGEMENT_TOKEN"
+go run ./cmd/narumq -http-listen 0.0.0.0:8080 -http-auth-token-file /etc/narumq/management.token
 ```
 
 ### 1.2 성공 envelope

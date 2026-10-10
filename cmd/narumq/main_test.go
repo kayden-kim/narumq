@@ -532,6 +532,140 @@ func TestRunWithContextServesManagementHTTP(t *testing.T) {
 	}
 }
 
+// TestRunWithContextManagementAuthTokenFile verifies that the standalone management token comes only from a file.
+// Traceability: PRD SEC-10; docs/specs/configuration-and-runtime-options.md CFG-SCN-19.
+func TestRunWithContextManagementAuthTokenFile(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+
+	t.Run("missing file", func(t *testing.T) {
+		missingPath := filepath.Join(t.TempDir(), "missing.token")
+		err := runWithContext(context.Background(), []string{
+			"-http-listen", "127.0.0.1:0",
+			"-http-auth-token-file", missingPath,
+		}, logger)
+		if err == nil || !strings.Contains(err.Error(), "read -http-auth-token-file") {
+			t.Fatalf("runWithContext error = %v, want token file read error", err)
+		}
+		if !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("runWithContext error = %v, want os.ErrNotExist", err)
+		}
+
+		err = runWithContext(context.Background(), []string{
+			"-http-auth-token-file", missingPath,
+		}, logger)
+		if err == nil || !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("runWithContext without listeners error = %v, want os.ErrNotExist", err)
+		}
+	})
+
+	t.Run("blank file", func(t *testing.T) {
+		tokenPath := filepath.Join(t.TempDir(), "management.token")
+		if err := os.WriteFile(tokenPath, []byte(" \n\t"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		err := runWithContext(context.Background(), []string{
+			"-http-listen", "127.0.0.1:0",
+			"-http-auth-token-file", tokenPath,
+		}, logger)
+		if err == nil || !strings.Contains(err.Error(), "-http-auth-token-file is empty") {
+			t.Fatalf("runWithContext error = %v, want empty token file error", err)
+		}
+	})
+
+	t.Run("removed command-line token flag", func(t *testing.T) {
+		err := runWithContext(context.Background(), []string{
+			"-http-listen", "127.0.0.1:0",
+			"-http-auth-token", "token",
+		}, logger)
+		if err == nil || !strings.Contains(err.Error(), "flag provided but not defined: -http-auth-token") {
+			t.Fatalf("runWithContext error = %v, want undefined token flag error", err)
+		}
+	})
+
+	t.Run("file token protects api", func(t *testing.T) {
+		reserveAddress := func() string {
+			t.Helper()
+			listener, err := net.Listen("tcp", "127.0.0.1:0")
+			if err != nil {
+				t.Fatal(err)
+			}
+			address := listener.Addr().String()
+			_ = listener.Close()
+			return address
+		}
+		tokenPath := filepath.Join(t.TempDir(), "management.token")
+		if err := os.WriteFile(tokenPath, []byte("  secret-token \n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+
+		httpAddress := reserveAddress()
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		done := make(chan error, 1)
+		go func() {
+			done <- runWithContext(ctx, []string{
+				"-http-listen", httpAddress,
+				"-http-auth-token-file", tokenPath,
+			}, logger)
+		}()
+
+		client := &http.Client{Timeout: 200 * time.Millisecond}
+		deadline := time.Now().Add(2 * time.Second)
+		for {
+			response, err := client.Get("http://" + httpAddress + "/health/ready")
+			if err == nil {
+				response.Body.Close()
+				if response.StatusCode != http.StatusOK {
+					t.Fatalf("management readiness status = %d, want 200", response.StatusCode)
+				}
+				break
+			}
+			if time.Now().After(deadline) {
+				t.Fatalf("management HTTP server did not become ready: %v", err)
+			}
+			select {
+			case err := <-done:
+				t.Fatalf("runWithContext stopped before management readiness: %v", err)
+			default:
+				time.Sleep(10 * time.Millisecond)
+			}
+		}
+
+		response, err := client.Get("http://" + httpAddress + "/api/v1/cluster")
+		if err != nil {
+			t.Fatalf("unauthenticated management API request failed: %v", err)
+		}
+		response.Body.Close()
+		if response.StatusCode != http.StatusUnauthorized {
+			t.Fatalf("unauthenticated management API status = %d, want 401", response.StatusCode)
+		}
+
+		request, err := http.NewRequest(http.MethodGet, "http://"+httpAddress+"/api/v1/cluster", nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		request.Header.Set("Authorization", "Bearer secret-token")
+		response, err = client.Do(request)
+		if err != nil {
+			t.Fatalf("authenticated management API request failed: %v", err)
+		}
+		response.Body.Close()
+		if response.StatusCode != http.StatusOK {
+			t.Fatalf("authenticated management API status = %d, want 200", response.StatusCode)
+		}
+
+		cancel()
+		select {
+		case err := <-done:
+			if err != nil {
+				t.Fatalf("runWithContext shutdown error = %v", err)
+			}
+		case <-time.After(2 * time.Second):
+			t.Fatal("runWithContext did not stop after cancellation")
+		}
+	})
+}
+
 func TestAuditVerifyCommandVerifiesAndLeavesFilesReadOnly(t *testing.T) {
 	directory := t.TempDir()
 	publisher, err := auditlog.OpenFileAuditPublisher(auditlog.FileAuditPublisherConfig{
