@@ -59,6 +59,8 @@ func TestParseRaftPeerConfigStrict(t *testing.T) {
 		{name: "missing directory", input: mustMarshalPeerConfig(t, func(config *raftPeerConfigFile) { config.Directory = " " }), want: "directory is required"},
 		{name: "wrong voter count", input: mustMarshalPeerConfig(t, func(config *raftPeerConfigFile) { config.Peers = config.Peers[:1] }), want: "exactly the other two"},
 		{name: "invalid local voter", input: mustMarshalPeerConfig(t, func(config *raftPeerConfigFile) { config.NodeID = 4 }), want: "fixed voters"},
+		{name: "duplicate top-level key", input: strings.Replace(string(encoded), `"clusterId":"cluster-a"`, `"clusterId":"cluster-a","clusterId":"cluster-a"`, 1), want: "duplicate JSON key"},
+		{name: "duplicate peer key", input: strings.Replace(string(encoded), `"id":2`, `"id":2,"id":2`, 1), want: "duplicate JSON key"},
 	}
 	for _, test := range cases {
 		t.Run(test.name, func(t *testing.T) {

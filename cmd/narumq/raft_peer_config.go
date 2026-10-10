@@ -52,7 +52,11 @@ func parseRaftPeerConfig(reader io.Reader) (raftPeerConfigFile, error) {
 	if reader == nil {
 		return raftPeerConfigFile{}, errors.New("raft peer config reader is nil")
 	}
-	decoder := json.NewDecoder(reader)
+	data, err := io.ReadAll(reader)
+	if err != nil {
+		return raftPeerConfigFile{}, fmt.Errorf("read raft peer config: %w", err)
+	}
+	decoder := json.NewDecoder(bytes.NewReader(data))
 	decoder.DisallowUnknownFields()
 	var config raftPeerConfigFile
 	if err := decoder.Decode(&config); err != nil {
@@ -62,6 +66,10 @@ func parseRaftPeerConfig(reader io.Reader) (raftPeerConfigFile, error) {
 	if err := decoder.Decode(&trailing); !errors.Is(err, io.EOF) {
 		return raftPeerConfigFile{}, errors.New("raft peer config contains trailing JSON value")
 	}
+	if err := rejectDuplicateJSONKeys(data); err != nil {
+		return raftPeerConfigFile{}, fmt.Errorf("check raft peer config JSON keys: %w", err)
+	}
+
 	if err := validateRaftPeerConfig(config); err != nil {
 		return raftPeerConfigFile{}, err
 	}

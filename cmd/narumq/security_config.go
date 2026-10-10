@@ -125,7 +125,11 @@ func parseSecurityConfig(reader io.Reader) (*SecurityBundle, error) {
 	if reader == nil {
 		return nil, errors.New("security config reader is nil")
 	}
-	decoder := json.NewDecoder(reader)
+	data, err := io.ReadAll(reader)
+	if err != nil {
+		return nil, fmt.Errorf("read security config: %w", err)
+	}
+	decoder := json.NewDecoder(bytes.NewReader(data))
 	decoder.DisallowUnknownFields()
 
 	var raw rawSecurityConfig
@@ -136,6 +140,9 @@ func parseSecurityConfig(reader io.Reader) (*SecurityBundle, error) {
 	var trailing any
 	if err := decoder.Decode(&trailing); !errors.Is(err, io.EOF) {
 		return nil, errors.New("security config contains trailing JSON value")
+	}
+	if err := rejectDuplicateJSONKeys(data); err != nil {
+		return nil, fmt.Errorf("check security config JSON keys: %w", err)
 	}
 
 	jwtConfig, passwordBindings, mtlsBindings, err := validateAuthenticationConfig(raw.JWT, raw.Identities, raw.PasswordIdentities, raw.MTLSIdentities)

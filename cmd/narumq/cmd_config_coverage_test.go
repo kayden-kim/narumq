@@ -479,6 +479,9 @@ func TestParseRaftPeerConfigRejectsMissingFields(t *testing.T) {
 	if _, err := parseRaftPeerConfig(nil); err == nil || !strings.Contains(err.Error(), "reader is nil") {
 		t.Fatalf("nil reader error = %v", err)
 	}
+	if _, err := parseRaftPeerConfig(iotest.ErrReader(errors.New("disk failure"))); err == nil || !strings.Contains(err.Error(), "read raft peer config") {
+		t.Fatalf("reader failure error = %v, want read raft peer config", err)
+	}
 	cases := []struct {
 		name   string
 		mutate func(*raftPeerConfigFile)

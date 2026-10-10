@@ -77,7 +77,7 @@ Standalone mode에서는 security config를 MQTT listener보다 먼저 적재한
 - Release build는 설정용 환경 변수를 읽지 않는다.
 - 설정 파일 변경은 실행 중인 process에 자동 반영되지 않는다.
 - 이 spec은 node 사이의 일반 설정 일치를 보장하지 않는다. 현재 예외는 commit된 `tenantQuotas`다.
-- 이 spec은 Proposed [ADR-0052](../decisions/ADR-0052-configuration-tiers-and-cluster-policy.md)의 목표 구조가 구현되었다고 보장하지 않는다.
+- 이 spec은 Proposed [ADR-0052](../decisions/ADR-0052-configuration-tiers-and-cluster-policy.md)의 목표 구조가 구현되었다고 보장하지 않는다. 단, §1.5의 중복 key 거절 규칙은 채택해 구현했다.
 
 ## 6. 수용 시험
 
@@ -93,8 +93,8 @@ Standalone mode에서는 security config를 MQTT listener보다 먼저 적재한
 | `CFG-SCN-08` | MQTT-09, MQTT-11 | 생성 용량에 0, TCP max에 음수, TLS rate에 상한 초과값 또는 TCP listener 없이 TCP limit을 지정한다. | 시스템은 잘못된 생성 용량·범위·flag 조합을 거절한다. | `cmd/narumq.TestRunWithContextRejectsConstructionBounds` | 통과 | 2026-10-10 [실행 기록](#configuration-test-execution) |
 | `CFG-SCN-09` | CLU-09, CLU-12, TEN-08 | Cluster config에 중복·알 수 없는·누락 key, 뒤따르는 JSON value 또는 잘못된 값을 넣는다. | Parser는 설정을 거절한다. | `cmd/narumq.TestParseClusterConfigRejectsDuplicateUnknownMissingAndTrailingJSON` | 통과 | 2026-10-10 [실행 기록](#configuration-test-execution) |
 | `CFG-SCN-10` | CLU-09 | 존재하지 않는 cluster config 파일을 지정한다. | 시스템은 시작을 거절한다. | `cmd/narumq.TestRunWithContextClusterConfigLoading` | 통과 | 2026-10-10 [실행 기록](#configuration-test-execution) |
-| `CFG-SCN-11` | SEC-02, SEC-05 | Security config에 지원하지 않는 field·형식 또는 인증·ACL 오류를 넣는다. | Parser는 설정을 거절한다. | `cmd/narumq.TestParseSecurityConfig_Rejections` | 통과 | 2026-10-10 [실행 기록](#configuration-test-execution) |
-| `CFG-SCN-12` | CLU-09 | Peer-only config에 알 수 없는 field, 뒤따르는 value 또는 중복 peer ID를 넣는다. | Parser는 알 수 없는 field와 뒤따르는 value, 중복 peer ID를 거절한다. JSON object 중복 key 검사는 제공하지 않는다. | `cmd/narumq.TestParseRaftPeerConfigStrict` | 통과 | 2026-10-10 [실행 기록](#configuration-test-execution) |
+| `CFG-SCN-11` | SEC-02, SEC-05 | Security config에 지원하지 않는 field, 중복 key, 잘못된 형식 또는 인증·ACL 오류를 넣는다. | Parser는 설정을 거절한다. | `cmd/narumq.TestParseSecurityConfig_Rejections` | 통과 | 2026-10-10 [실행 기록](#configuration-test-execution) |
+| `CFG-SCN-12` | CLU-09 | Peer-only config에 알 수 없는 field, 중복 key, 뒤따르는 value 또는 중복 peer ID를 넣는다. | Parser는 알 수 없는 field, 중복 key, 뒤따르는 value와 중복 peer ID를 거절한다. | `cmd/narumq.TestParseRaftPeerConfigStrict` | 통과 | 2026-10-10 [실행 기록](#configuration-test-execution) |
 | `CFG-SCN-13` | TEN-08 | `tenantQuotas`를 생략하거나 strict profile을 지정한다. | 생략 시 built-in version 0을 사용하고, 명시 profile은 strict하게 검증한다. | `cmd/narumq.TestConfiguredTenantQuotaProfileUsesBuiltinOrStrictConfig` | 통과 | 2026-10-10 [실행 기록](#configuration-test-execution) |
 | `CFG-SCN-14` | TEN-08 | Local `tenantQuotas`가 commit된 profile과 맞지 않는다. | 시스템은 committed profile을 유지하고 mismatch를 한 번 log에 남긴다. | `cmd/narumq.TestClusterTenantQuotaControllerLogsCommittedMismatchOnce` | 통과 | 2026-10-10 [실행 기록](#configuration-test-execution) |
 | `CFG-SCN-15` | CLU-11 | Build identity에 release version과 feature 목록을 지정한다. | 시스템은 feature를 정렬·중복 제거하고 유효성을 검사한다. | `cmd/narumq.TestResolveBuildIdentity` | 통과 | 2026-10-10 [실행 기록](#configuration-test-execution) |
@@ -108,12 +108,14 @@ Standalone mode에서는 security config를 MQTT listener보다 먼저 적재한
 실행 환경은 Windows/amd64, Go 1.26.5다. 다음 명령은 `cmd/narumq`의 설정·시작 경계 시험을 실행했다.
 
 ```sh
-go test ./cmd/narumq -count=1 -run '^(TestHashPasswordFlagIsExclusive|TestClusterConfigFlagIsExclusive|TestRaftPeerOnlyRejectsOtherFlags|TestAuditVerifyFlagRequiresExclusiveDirectory|TestMainNoListenerPath|TestRun_Defaults|TestRunWithContextMQTTSecurityMode|TestRunRejectsRuntimeMetricsFlagCombinations|TestRunWithContextRejectsConstructionBounds|TestParseClusterConfig.*|TestValidateClusterConfig.*|TestClusterManagementAccessConfiguration|TestRunWithContextClusterConfigLoading|TestParseSecurityConfig.*|TestParseRaftPeerConfig.*|TestConfiguredTenantQuotaProfileUsesBuiltinOrStrictConfig|TestClusterTenantQuotaControllerLogsCommittedMismatchOnce|TestResolveBuildIdentity|TestClusterMQTTListenersBindConfiguredEndpointsAndClosePartialOpen|TestRunRaftPeerOnlyStartupFailuresReleaseResources|TestRunRejectsManagementRateFlagsOutOfRange|TestValidateTLSAuthenticationBindings.*)$' -v
+go test ./cmd/narumq -count=1 -run '^(TestHashPasswordFlagIsExclusive|TestClusterConfigFlagIsExclusive|TestRaftPeerOnlyRejectsOtherFlags|TestAuditVerifyFlagRequiresExclusiveDirectory|TestMainNoListenerPath|TestRun_Defaults|TestRunWithContextMQTTSecurityMode|TestRunRejectsRuntimeMetricsFlagCombinations|TestRunWithContextRejectsConstructionBounds|TestParseClusterConfig.*|TestValidateClusterConfig.*|TestClusterManagementAccessConfiguration|TestRunWithContextClusterConfigLoading|TestParseSecurityConfig.*|TestParseRaftPeerConfig.*|TestRejectDuplicateJSONKeys|TestConfiguredTenantQuotaProfileUsesBuiltinOrStrictConfig|TestClusterTenantQuotaControllerLogsCommittedMismatchOnce|TestResolveBuildIdentity|TestClusterMQTTListenersBindConfiguredEndpointsAndClosePartialOpen|TestRunRaftPeerOnlyStartupFailuresReleaseResources|TestRunRejectsManagementRateFlagsOutOfRange|TestValidateTLSAuthenticationBindings.*)$' -v
 ```
 
-결과는 `PASS`다. Go는 `cmd/narumq` package의 선택 시험을 통과했다.
+결과는 `PASS`다. Helper, security·peer-only parser와 cluster parser의 설정·시작 경계 시험이 통과했다.
 
 CLI 기본 경로도 smoke 실행했다. `go run ./cmd/narumq`는 `MQTT TCP and management HTTP listeners disabled`를 기록하고 정상 종료했다.
+
+중복 key 시작 거절 smoke도 실행했다. Security: `go run ./cmd/narumq -tcp-listen 127.0.0.1:0 -security-config .artifacts/verification/g4-duplicate-key/dup-security.json`은 종료 코드 1과 `load security config: check security config JSON keys: duplicate JSON key`를 반환했다. Peer-only: `go run ./cmd/narumq -raft-peer-config .artifacts/verification/g4-duplicate-key/dup-peer.json`은 종료 코드 1과 `load raft peer config: check raft peer config JSON keys: duplicate JSON key`를 반환했다. 코드에서 security 설정 적재는 `openMQTTListener`보다 먼저, peer config 적재는 `net.Listen`보다 먼저 실행됨을 확인했다.
 
 ## 7. 미결정 사항
 

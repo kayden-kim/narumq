@@ -181,7 +181,7 @@ Bootstrap 예시다. `<64 lowercase hex>`는 인증서 지문에서 가져오는
 
 ### 1.4 Security config JSON
 
-Security config는 알 수 없는 field와 두 번째 JSON value를 거절하는 strict decoder로 JSON value 하나를 읽는다. JWT 설정의 duration은 양수인 Go duration string이어야 한다. 이 parser는 중복 key를 검사하지 않는다. `security_config.go`의 `parseSecurityConfig`는 `DisallowUnknownFields`와 뒤따르는 값 거절만 수행한다.
+Object 안에서 같은 이름의 key가 다시 나오면 거절한다. 대소문자까지 같은 문자열일 때만 중복으로 본다. `security_config.go`의 `parseSecurityConfig`는 `DisallowUnknownFields`, 뒤따르는 값 거절과 `config_json.go`의 `rejectDuplicateJSONKeys` 중복 key 검사를 수행한다.
 
 ```json
 {
@@ -288,7 +288,7 @@ Salt는 16 bytes, digest는 32 bytes다. 둘 다 padding 없는 canonical standa
 | `peers[].address` | string | 공백 제거 뒤 비어 있으면 안 된다. |
 | `peers[].dnsName` | string | 공백 제거 뒤 비어 있으면 안 된다. |
 
-알 수 없는 key와 뒤따르는 JSON value는 거절한다. 중복 key는 검사하지 않는다. `parseRaftPeerConfig`가 strict decoder와 뒤따르는 값 검사를 수행하고, `validateRaftPeerConfig`가 필수 값과 고정 voter 집합을 확인한다.
+알 수 없는 key, 중복 key와 뒤따르는 JSON value는 거절한다. 중복 key는 같은 object 안에서 대소문자까지 같은 이름이 다시 나온 경우다. `parseRaftPeerConfig`가 strict decoder, 뒤따르는 값 검사와 `rejectDuplicateJSONKeys` 중복 key 검사를 수행하고, `validateRaftPeerConfig`가 필수 값과 고정 voter 집합을 확인한다.
 
 ### 1.6 Secret 파일
 
@@ -359,8 +359,9 @@ Cluster config와 security config 예제는 [§1.3](#13-cluster-config-json)과 
 | `cmd/narumq`: `TestParseClusterConfigValidRoles`, `TestParseClusterConfigRejectsInvalidInputs`, `TestParseClusterConfigRejectsDuplicateUnknownMissingAndTrailingJSON`, `TestParseClusterConfigRejectsUnreadableAndStructurallyInvalidJSON`, `TestValidateClusterConfigReportsFirstInvalidField` | Cluster config의 role, 필수·허용 필드, 형식, 중복·뒤따르는 값과 첫 오류 | 통과 | 2026-10-10 [실행 기록](../specs/configuration-and-runtime-options.md#configuration-test-execution) |
 | `cmd/narumq`: `TestValidateClusterConfigAcceptsManagementRateBoundaries`, `TestClusterManagementAccessConfiguration` | Management rate 경계, API key와 OIDC 구성 | 통과 | 2026-10-10 [실행 기록](../specs/configuration-and-runtime-options.md#configuration-test-execution) |
 | `cmd/narumq`: `TestParseClusterConfigReplicationProfile`, `TestParseClusterConfigPublishBackpressure`, `TestParseClusterConfigTenantQuotaProfile`, `TestParseClusterConfigRejectsMalformedTenantQuotaJSON` | 선택 cluster config object와 strict 정적 검증 | 통과 | 2026-10-10 [실행 기록](../specs/configuration-and-runtime-options.md#configuration-test-execution) |
-| `cmd/narumq`: `TestParseSecurityConfig_Valid`, `TestParseSecurityConfig_Rejections`, `TestParseSecurityConfig_PasswordIdentityRejections`, `TestParseSecurityConfig_MTLSValidation`, `TestParseSecurityConfig_TenantLimitsInheritance`, `TestParseSecurityConfig_TenantLimitsRejectInvalidProfiles`, `TestParseSecurityConfigRejectsIncompleteAuthenticationAndACL` | Security config authentication, ACL, password, mTLS, tenant limits와 거절 경계 | 통과 | 2026-10-10 [실행 기록](../specs/configuration-and-runtime-options.md#configuration-test-execution) |
-| `cmd/narumq`: `TestParseRaftPeerConfigStrict`, `TestParseRaftPeerConfigRejectsMissingFields` | Peer-only config strict parsing과 필수 값 | 통과 | 2026-10-10 [실행 기록](../specs/configuration-and-runtime-options.md#configuration-test-execution) |
+| `cmd/narumq`: `TestParseSecurityConfig_Valid`, `TestParseSecurityConfig_Rejections`, `TestParseSecurityConfig_NilOrUnreadableReader`, `TestParseSecurityConfig_PasswordIdentityRejections`, `TestParseSecurityConfig_MTLSValidation`, `TestParseSecurityConfig_TenantLimitsInheritance`, `TestParseSecurityConfig_TenantLimitsRejectInvalidProfiles`, `TestParseSecurityConfigRejectsIncompleteAuthenticationAndACL` | Security config authentication, ACL, password, mTLS, tenant limits, 중복 key와 거절 경계 | 통과 | 2026-10-10 [실행 기록](../specs/configuration-and-runtime-options.md#configuration-test-execution) |
+| `cmd/narumq`: `TestParseRaftPeerConfigStrict`, `TestParseRaftPeerConfigRejectsMissingFields` | Peer-only config strict parsing, 중복 key와 필수 값 | 통과 | 2026-10-10 [실행 기록](../specs/configuration-and-runtime-options.md#configuration-test-execution) |
+| `cmd/narumq`: `TestRejectDuplicateJSONKeys` | 공통 중복 key 검사의 중첩·배열·형제 object·대소문자 경계 | 통과 | 2026-10-10 [실행 기록](../specs/configuration-and-runtime-options.md#configuration-test-execution) |
 | `cmd/narumq`: `TestResolveBuildIdentity` | Build identity 정렬, 중복 제거와 feature 검증 | 통과 | 2026-10-10 [실행 기록](../specs/configuration-and-runtime-options.md#configuration-test-execution) |
 | `cmd/narumq`: `TestRunRejectsManagementRateFlagsOutOfRange`, `TestRunWithContextRejectsConstructionBounds`, `TestValidateTLSAuthenticationBindingsRequireMode`, `TestValidateTLSAuthenticationBindingsRequestMode` | Management rate 경계, queue 생성 한도, TCP max·TLS rate 범위와 TCP listener 필수 조건, TLS 인증 binding | 통과 | 2026-10-10 [실행 기록](../specs/configuration-and-runtime-options.md#configuration-test-execution) |
 | `cmd/narumq`: `TestHashPasswordFlagIsExclusive`, `TestClusterConfigFlagIsExclusive`, `TestRaftPeerOnlyRejectsOtherFlags`, `TestAuditVerifyFlagRequiresExclusiveDirectory` | 실행 모드 flag의 배타성·필수 인수 | 통과 | 2026-10-10 [실행 기록](../specs/configuration-and-runtime-options.md#configuration-test-execution) |

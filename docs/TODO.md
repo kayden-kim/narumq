@@ -108,7 +108,7 @@ PRD는 `Draft` 상태이므로 이 목록은 요구사항을 구현 기준으로
 - [ ] **결정 필요 — G1 Cluster MQTT 조정값 부재**: `cmd/narumq/cluster_runtime.go`의 `runClusterMode`는 Maximum Packet Size `1048576`, Receive Maximum `64`, packet read timeout `30s`, CONNECT timeout `10s`, write timeout `5s`, control queue `256`, delivery queue `256`을 고정한다. ADR-0052의 채택 여부에 따라 처리한다.
 - [ ] **결정 필요 — G2 Cluster MQTT TLS**: `clusterMQTTListeners`는 `peerTLS` 인증서를 재사용한다. Client CA와 client-auth 설정이 없어 TLS handshake에서 client certificate를 요청하지 않는다. 따라서 cluster의 `mtlsIdentities`를 MQTT TLS handshake에 사용할 수 없다. 이 내용은 코드 판독 결과이며 실행으로 확인하지 않았다.
 - [ ] **결정 필요 — G3 평문 TCP 정책 차이**: Standalone `-tcp-listen`은 loopback만 허용한다. Cluster `mqtt.tcpListenAddress`는 유효한 host:port면 loopback 제한 없이 허용한다. [MQTT spec §1 3항](specs/mqtt-protocol-and-session.md#1-listener-계약)의 정책과 맞는지 결정한다.
-- [ ] **미구현 — G4 중복 key 검사 차이**: `security_config.go`와 `raft_peer_config.go`는 중복 JSON key를 검사하지 않는다. `cluster_config.go`만 검사한다.
+- [x] **완료 — G4 중복 key 검사**: [ADR-0052 §1.5](decisions/ADR-0052-configuration-tiers-and-cluster-policy.md#15-형식과-cluster-mqtt-tls)의 중복 key 거절 규칙만 2026-10-10 사용자 결정으로 먼저 채택했다. `security_config.go`와 `raft_peer_config.go`도 모든 깊이의 object에서 중복 JSON key를 거절한다. 시험과 실행 기록은 [설정 스펙 §6](specs/configuration-and-runtime-options.md#6-수용-시험)에 있다.
 - [ ] **결정 필요 — G5 duration 표기 혼재**: flag와 security config는 Go duration을 쓴다. Cluster config는 `Millis` 접미사가 붙은 정수 millisecond를 쓴다.
 - [ ] **미구현 — G6 cluster runtime metrics**: `-runtime-metrics-output`과 `-runtime-metrics-interval`은 standalone에서만 지원한다.
 - [ ] **미구현 — G7 설정 조회 API 부재**: 실제 적용 설정을 조회하는 API와 `tenantQuotas`를 바꾸는 Management API가 없다. 이는 전용 console의 선행 조건이다.

@@ -1,8 +1,10 @@
 package main
 
 import (
+	"errors"
 	"strings"
 	"testing"
+	"testing/iotest"
 	"time"
 
 	"narumq/internal/domain/tenancy"
@@ -184,6 +186,21 @@ func TestParseSecurityConfig_Rejections(t *testing.T) {
 		errContains string
 	}{
 		{
+			name:        "duplicate top-level key",
+			input:       strings.Replace(validSecurityJSON, `"acl": [`, `"acl": [], "acl": [`, 1),
+			errContains: "duplicate JSON key",
+		},
+		{
+			name:        "duplicate nested key",
+			input:       strings.Replace(validSecurityJSON, `"audience": "narumq",`, `"audience": "narumq", "audience": "narumq",`, 1),
+			errContains: "duplicate JSON key",
+		},
+		{
+			name:        "duplicate key in array element",
+			input:       strings.Replace(validSecurityJSON, `"tenantId": "tenant-a",`, `"tenantId": "tenant-a", "tenantId": "tenant-a",`, 1),
+			errContains: "duplicate JSON key",
+		},
+		{
 			name:        "unknown field",
 			input:       `{"jwt": {"issuer": "https://issuer.example", "audience": "narumq", "algorithms": ["RS256"], "jwksUrl": "https://issuer.example/jwks", "cacheTtl": "1m", "refreshCooldown": "1m", "clockSkew": "1m", "httpTimeout": "1m"}, "identities": [{"issuer": "https://issuer.example", "subject": "s", "tenantId": "t", "credentialId": "c", "allowedClientIds": ["a"], "roles": ["r"]}], "extra": 123}`,
 			errContains: "unknown field",
@@ -360,9 +377,13 @@ func TestParseSecurityConfig_Rejections(t *testing.T) {
 	}
 }
 
-func TestParseSecurityConfig_NilReader(t *testing.T) {
+func TestParseSecurityConfig_NilOrUnreadableReader(t *testing.T) {
 	if _, err := parseSecurityConfig(nil); err == nil {
 		t.Fatal("expected error for nil reader")
+	}
+	_, err := parseSecurityConfig(iotest.ErrReader(errors.New("disk failure")))
+	if err == nil || !strings.Contains(err.Error(), "read security config") {
+		t.Fatalf("reader failure error = %v, want read security config", err)
 	}
 }
 

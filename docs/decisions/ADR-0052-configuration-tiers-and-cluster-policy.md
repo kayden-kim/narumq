@@ -2,7 +2,7 @@
 
 | 항목 | 값 |
 | --- | --- |
-| 상태 | `Proposed` |
+| 상태 | `Proposed`. §1.5의 설정 parser 중복 key 거절 규칙만 2026-10-10 사용자 결정으로 채택했다. |
 | 결정일 | 2026-10-10 |
 | 결정자 | NaruMQ 프로젝트 사용자 |
 | 관련 요구사항 | API-09, API-08, UI-01~UI-10, SEC-07, TEN-06~TEN-08, CLU-11 |
@@ -86,7 +86,7 @@ Feature가 활성화되기 전에는 각 node가 현재 파일 값을 사용한�
 ### 1.5 형식과 Cluster MQTT TLS
 
 - 새 duration key는 `Millis` 접미사가 붙은 정수 millisecond를 쓴다. 기존 Go duration 문자열 key는 유지한다.
-- 설정 parser는 중복 key, 알 수 없는 key와 뒤따르는 JSON value를 거절한다.
+- 설정 parser는 중복 key, 알 수 없는 key와 뒤따르는 JSON value를 거절한다. 이 규칙은 2026-10-10 사용자 결정으로 먼저 채택했다. Security config와 peer-only config parser에도 적용했다(G4).
 - Secret은 파일로만 받는다. Standalone `-http-auth-token`은 `-http-auth-token-file`로 바꾼다.
 - Environment variable은 설정 원천으로 사용하지 않는다.
 - Cluster MQTT TLS에는 node 정적 설정인 `mqtt.tls` object를 추가한다. 이 object는 `certFile`, `keyFile`, `caFile`, `clientAuth`, `minVersion`을 가진다.
@@ -107,7 +107,7 @@ Console은 Management API만 사용한다. 이 ADR은 UI 기술을 정하지 않
 | G1 | Cluster MQTT의 packet, timeout, control·delivery queue 값은 `cluster_runtime.go`의 `clusterDefault*`와 `runClusterMode`에 고정되어 있다. |
 | G2 | `clusterMQTTListeners`는 Raft peer certificate와 key를 재사용한다. MQTT TLS 설정에는 client CA와 client-auth가 없어 handshake에서 client certificate를 요청하지 않는다. |
 | G3 | Standalone `-tcp-listen`은 literal loopback만 허용한다. Cluster `mqtt.tcpListenAddress`는 host:port 형식을 검사하지만 loopback으로 제한하지 않는다. |
-| G4 | `security_config.go`와 `raft_peer_config.go`는 중복 JSON key를 검사하지 않는다. Cluster config parser는 검사한다. |
+| G4 | `security_config.go`와 `raft_peer_config.go`는 중복 JSON key를 검사하지 않는다. Cluster config parser는 검사한다. 2026-10-10 해소: 세 parser가 모두 중복 key를 거절한다. |
 | G5 | Flag와 security config는 Go duration을 쓴다. Cluster config는 millisecond 정수를 쓴다. |
 | G6 | Runtime metrics flag는 standalone에서만 지원한다. |
 | G7 | 실제 설정 조회 API와 `tenantQuotas` 변경 API는 없다. |
@@ -173,6 +173,7 @@ ADR-0017은 versioned `tenantQuotas` command로 local config와 committed state�
 | API-09 version 충돌 | Proposed 구현 수용 시험 | Stale `If-Match`는 409를 반환한다. 낮은 local version과 같은 version의 다른 내용은 mismatch를 기록하고 committed value를 유지한다. | 미실행. 목표 API와 일반 reconciliation은 구현되지 않았다. |
 | Cluster 적용 | 3-node cluster에서 정책을 PUT한다. | Commit 뒤 세 node가 같은 `ClusterPolicy` version과 값을 적용한다. | 미실행. |
 | Feature activation과 restore | Feature 활성화 전후 실행, snapshot과 backup 복구를 확인한다. | 활성화 전에는 현재 동작을 유지한다. Commit된 policy는 snapshot·backup 복구 뒤에도 유지한다. | 미실행. |
+| 설정 parser 중복 key 거절(G4) | `TestParseSecurityConfig_Rejections`, `TestParseRaftPeerConfigStrict`, `TestRejectDuplicateJSONKeys` 실행 | Security·peer-only config의 top-level, 중첩 object, 배열 원소 object에서 중복 key를 거절한다. | 2026-10-10 [설정 시험 기록](../specs/configuration-and-runtime-options.md#configuration-test-execution)에서 통과했다. |
 
 ## 8. 재검토 조건
 
