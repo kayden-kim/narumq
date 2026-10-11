@@ -193,6 +193,7 @@ v2 피어 listener는 TLS 1.3 mTLS를 요구한다. v1은 `NMQRAFT1`을 사용�
 
 수락 응답도 길이 prefix가 붙은 `NMQJOIN2` 프레임이다. Prefix는 big-endian `uint32`이고 최대 payload 크기는 64 KiB다. Payload 필드는 다음 순서로 인코딩한다. ASCII magic 8 bytes; major/minor 각각 `uint16`(`2,0`); 상태 `uint8`(`1` 수락, `0` 거절); 수락된 경우에만 cluster ID 길이 `uint16`과 bytes; operation ID 길이 `uint16`과 bytes(안정된 `VOTER`만 비어 있을 수 있으며, 그 외에는 정규 36-byte UUID); 후보 member ID `uint64`; 후보 인증서 지문 32 bytes; 후보 DNS SAN 길이 `uint16`과 bytes; 후보의 commit된 phase `uint8`(`STAGED=1`, `LEARNER=2`, `CATCHING_UP=3`, `VOTER=4`); 상태 스키마 major/minor 각각 `uint16`; endpoint 수 `uint16`(후보를 뺀 기존 투표자 3개로 고정); 이어서 각 endpoint를 member ID 오름차순으로 정렬해 ID `uint64`, 주소 길이 `uint16`과 bytes, DNS SAN 길이 `uint16`과 bytes, 인증서 지문 32 bytes, phase `uint8`(`VOTER=4`) 순으로 인코딩한다.
 응답 phase가 `STAGED`인 동안 가입 노드는 같은 시드 승인 요청을 반복하되 Raft 스트림을 열어서는 안 된다. 시드가 `LEARNER` 또는 `CATCHING_UP`으로 commit된 식별 정보를 반환하면 가입 노드는 그 식별 정보를 로컬 전송에 적용하고 기존 투표자 3개와 대조·조정한다. 현재 seed runtime은 commit된 `VOTER` 후보를 거절한다. 기존 wire decoder는 이전 시드가 보내는 `VOTER` 응답을 표현할 수 있지만, 로컬 transport가 `STAGED`이면 식별 정보나 피어를 설치하기 전에 이를 거절한다. 이미 승인된 learner·catching-up transport는 기존 phase 전이를 처리할 수 있다. 이는 새 투표자 승인이나 영속 이력이 복구되었다는 증거가 아니다. 시드 응답 자체는 멤버십을 commit하지 않는다.
+수락 응답과 거절 응답을 보낸 뒤 시드는 TLS 연결을 닫는다. 가입 노드는 연결이 닫힌 뒤 `RequestSeedAdmission`을 완료한다. 한 연결은 한 번의 `NMQJOIN2` 교환에만 쓴다.
 
 <a id="empty-directory-bootstrap-probe"></a>
 
@@ -224,6 +225,8 @@ v2 피어 listener는 TLS 1.3 mTLS를 요구한다. v1은 `NMQRAFT1`을 사용�
 확인 노드는 구성된 모든 피어의 응답을 기다리며, 하나라도 `PROGRESSED`를 반환하면 시작을 거절한다. `EMPTY`를 반환한 피어를 process memory에 기억한다. 해당 피어에서 첫 Raft 프레임을 받으면 그 피어에 대한 허용을 해제하며, 포워딩 프레임은 이를 해제하지 않는다. 안전 결정과 배포 제약은 [ADR-0022](../decisions/ADR-0022-bootstrap-volume-loss-guard.md)에 따른다.
 
 확인 노드는 TLS 핸드셰이크 뒤 `ServerName`을 피어 DNS SAN으로 설정하고 서버 리프 인증서 지문을 검증한다.
+
+유효한 응답을 보낸 쪽은 probe 연결을 닫는다. Client는 연결 종료를 확인한 뒤 probe를 완료한다. 한 TLS 연결은 probe 한 건에만 쓴다.
 
 #### 인증된 Raft hello
 
