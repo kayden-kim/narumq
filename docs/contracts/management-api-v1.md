@@ -80,6 +80,8 @@ PUT는 query parameter를 허용하지 않으며 query가 있으면 `400 invalid
 Version 1.5.0은 cluster feature 조회와 activation을 active contract에 추가한다. 조회는 `ReadOnly`, activation은 `ClusterAdmin`을 요구하며 dynamic cluster mode에서 제공된다. 이 catalog에 없는 path를 client가 호출할 수 있다는 계약은 없다.
 
 Version 1.6.0은 `GET /api/v1/cluster` 응답에 optional `replicationFactor`, `writeQuorum`을 추가한다. Dynamic cluster는 3/2, standalone은 1/1을 반환한다.
+Standalone은 `GET /api/v1/cluster`의 `clusterId`에 `narumq-cluster-1`, `leaderNodeId`와 node 응답의 `nodeId`에 `narumq-node-1`을 반환한다. 이 값은 고정이며 바꿀 수 없다. `GET /api/v1/nodes/{nodeId}`는 `narumq-node-1`에만 node를 반환하고 다른 ID에는 `404`를 반환한다. Standalone node ID에는 Dynamic cluster의 canonical decimal 규칙을 적용하지 않는다. 결정은 [ADR-0052 §1.6](../decisions/ADR-0052-configuration-tiers-and-cluster-policy.md#16-standalone과-console)을 따른다.
+
 Version 1.7.0은 `POST/GET/DELETE /api/v1/cluster/rebalance`를 추가한다. Operation은 Operator가 시작·취소하고 ReadOnly가 조회하며, 연결 수 보고와 수렴은 committed cluster operation으로 조정된다. Request의 `maxDeviationConnections`, `connectionRatePerSecond`, `loadBalancerPropagationDelayMs`, `timeoutMs`는 필수다.
 
 

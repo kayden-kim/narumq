@@ -32,7 +32,7 @@ Prometheus는 `/metrics`에서 node별 metric(운영 수치)을 정해진 간격
 - 실행 위치: 저장소 root. Prometheus와 Grafana의 mount 설정은 해당 배포 repository에서 관리한다.
 - 바꿔 넣을 값:
   - Prometheus target의 주소는 Prometheus container에서 접근 가능한 Management listener 주소로 바꾼다.
-  - `node_id`는 Management API `nodeId`와 같은 decimal string으로 쓴다.
+  - `node_id`는 Management API `nodeId`와 같은 decimal string으로 쓴다. 이 Dashboard는 Dynamic cluster를 대상으로 한다. Standalone의 고정 node ID `narumq-node-1`은 이 규칙 대상이 아니다.
   - `cluster_id`는 대상 cluster ID로 바꾼다.
   - `NARUMQ_MANAGEMENT_URL`은 Grafana container에서 접근 가능한 Management API 주소로 설정한다.
   - `NARUMQ_READONLY_API_KEY`와 Prometheus의 API key 파일에는 같은 `ReadOnly` key를 공급한다.

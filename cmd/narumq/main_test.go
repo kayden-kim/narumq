@@ -464,6 +464,8 @@ func TestRunWithContextSecurityConfig(t *testing.T) {
 	})
 }
 
+// TestRunWithContextServesManagementHTTP verifies standalone management routes and fixed identifiers.
+// Traceability: PRD API-02; docs/specs/configuration-and-runtime-options.md CFG-SCN-39; ADR-0052 §1.6.
 func TestRunWithContextServesManagementHTTP(t *testing.T) {
 	reserveAddress := func() string {
 		t.Helper()
@@ -512,14 +514,51 @@ func TestRunWithContextServesManagementHTTP(t *testing.T) {
 			time.Sleep(10 * time.Millisecond)
 		}
 	}
-	response, err := client.Get("http://" + httpAddress + "/api/v1/cluster")
-	if err != nil {
-		t.Fatalf("local management API request failed: %v", err)
+	getJSON := func(path string, wantStatus int, target any) {
+		t.Helper()
+		response, err := client.Get("http://" + httpAddress + path)
+		if err != nil {
+			t.Fatalf("management API request %q failed: %v", path, err)
+		}
+		defer response.Body.Close()
+		if response.StatusCode != wantStatus {
+			t.Fatalf("management API %q status = %d, want %d", path, response.StatusCode, wantStatus)
+		}
+		if target != nil {
+			if err := json.NewDecoder(response.Body).Decode(target); err != nil {
+				t.Fatalf("decode management API %q response: %v", path, err)
+			}
+		}
 	}
-	response.Body.Close()
-	if response.StatusCode != http.StatusOK {
-		t.Fatalf("local management API status = %d, want 200", response.StatusCode)
+
+	var clusterResponse struct {
+		Data struct {
+			ClusterID    string  `json:"clusterId"`
+			LeaderNodeID *string `json:"leaderNodeId"`
+		} `json:"data"`
 	}
+	getJSON("/api/v1/cluster", http.StatusOK, &clusterResponse)
+	if clusterResponse.Data.ClusterID != "narumq-cluster-1" {
+		t.Fatalf("cluster ID = %q, want %q", clusterResponse.Data.ClusterID, "narumq-cluster-1")
+	}
+	leaderNodeID := "<nil>"
+	if clusterResponse.Data.LeaderNodeID != nil {
+		leaderNodeID = *clusterResponse.Data.LeaderNodeID
+	}
+	if leaderNodeID != "narumq-node-1" {
+		t.Fatalf("leader node ID = %q, want %q", leaderNodeID, "narumq-node-1")
+	}
+
+	var nodeResponse struct {
+		Data struct {
+			NodeID string `json:"nodeId"`
+		} `json:"data"`
+	}
+	getJSON("/api/v1/nodes/narumq-node-1", http.StatusOK, &nodeResponse)
+	if nodeResponse.Data.NodeID != "narumq-node-1" {
+		t.Fatalf("node ID = %q, want %q", nodeResponse.Data.NodeID, "narumq-node-1")
+	}
+	getJSON("/api/v1/nodes/1", http.StatusNotFound, nil)
 
 	cancel()
 	select {

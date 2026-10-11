@@ -2,7 +2,7 @@
 
 | 항목 | 값 |
 | --- | --- |
-| 상태 | `Proposed`. §1.1의 `ClusterPolicy` commit·version·reconciliation·`GET/PUT /api/v1/cluster/policy`·metric과 §1.2의 `mqttLimits` 적용 시점은 2026-10-10 사용자 결정으로 채택했다(G1·API-09). §1.4의 `cluster-policy` feature gate도 `mqttLimits`에 한해 채택했다. 기존 `TenantQuota` proposal 억제와 top-level `tenantQuotas`·`clusterPolicy` 충돌 거절은 §1.4에 명시한 동작을 유지한다. §1.5의 설정 parser 중복 key 거절 규칙과 secret 파일 규칙 중 standalone `-http-auth-token-file` 전환은 같은 날 채택했다(G4·G9). §1.5의 Cluster MQTT TLS(`mqtt.tls`)와 MQTT·peer 인증서 분리 규칙도 채택했다(G2·G10). Cluster runtime metrics의 node 정적 설정 `runtimeMetrics`도 채택했다(G6). §1.5의 Cluster 평문 MQTT TCP 주소 허용 규칙도 2026-10-10 사용자 결정으로 채택했다(G3). §1.5의 JSON duration 표기 규칙도 같은 날 채택했다(G5). §1.1.2 설정 조회(G7-a)와 §1.1.3 `tenantQuotas` policy(G7-b)는 2026-10-11 사용자 결정으로 채택했다. 나머지 정책 항목은 `Proposed`로 남는다. |
+| 상태 | `Proposed`. §1.1의 `ClusterPolicy` commit·version·reconciliation·`GET/PUT /api/v1/cluster/policy`·metric과 §1.2의 `mqttLimits` 적용 시점은 2026-10-10 사용자 결정으로 채택했다(G1·API-09). §1.4의 `cluster-policy` feature gate도 `mqttLimits`에 한해 채택했다. 기존 `TenantQuota` proposal 억제와 top-level `tenantQuotas`·`clusterPolicy` 충돌 거절은 §1.4에 명시한 동작을 유지한다. §1.5의 설정 parser 중복 key 거절 규칙과 secret 파일 규칙 중 standalone `-http-auth-token-file` 전환은 같은 날 채택했다(G4·G9). §1.5의 Cluster MQTT TLS(`mqtt.tls`)와 MQTT·peer 인증서 분리 규칙도 채택했다(G2·G10). Cluster runtime metrics의 node 정적 설정 `runtimeMetrics`도 채택했다(G6). §1.5의 Cluster 평문 MQTT TCP 주소 허용 규칙도 2026-10-10 사용자 결정으로 채택했다(G3). §1.5의 JSON duration 표기 규칙도 같은 날 채택했다(G5). §1.1.2 설정 조회(G7-a)와 §1.1.3 `tenantQuotas` policy(G7-b)는 2026-10-11 사용자 결정으로 채택했다. §1.6의 standalone 고정 식별자 규칙은 2026-10-11 사용자 결정으로 채택했다(G8). 코드 동작은 바꾸지 않았다. 나머지 정책 항목은 `Proposed`로 남는다. |
 | 결정일 | 2026-10-11 |
 | 결정자 | NaruMQ 프로젝트 사용자 |
 | 관련 요구사항 | API-09, API-08, UI-01~UI-10, SEC-07, TEN-06~TEN-08, CLU-11 |
@@ -140,6 +140,8 @@ Feature가 활성화되기 전에는 각 node가 현재 파일 값을 사용한�
 ### 1.6 Standalone과 console
 
 Standalone은 개발과 단일 node 검증 경계로 유지한다. 기존 flag 기반 실행은 유지하되, §1.5의 secret 파일 flag 변경은 적용한다.
+Standalone Management API는 cluster ID `narumq-cluster-1`과 node ID `narumq-node-1`을 고정값으로 사용한다. 이 값을 바꾸는 flag나 설정은 제공하지 않는다. Standalone은 개발과 단일 node 검증 경계이므로 여러 standalone process를 하나의 Dashboard나 Prometheus에서 구분하는 기능은 지원 범위가 아니다. Standalone node ID는 decimal이 아니므로 Dynamic cluster의 canonical decimal node ID 규칙과 Dashboard의 decimal `node_id` 규칙을 적용하지 않는다. 이 규칙은 2026-10-11 사용자 결정으로 채택했다(G8).
+
 
 Console은 Management API만 사용한다. 이 ADR은 UI 기술을 정하지 않는다. 전용 console을 만들려면 custom web UI 제외를 정한 ADR-0045 §7을 대체하는 별도 ADR이 필요하다.
 
@@ -156,10 +158,10 @@ Console은 Management API만 사용한다. 이 ADR은 UI 기술을 정하지 않
 | G5 | Flag와 security config는 Go duration을 쓴다. Cluster config는 millisecond 정수를 쓴다. 2026-10-10 해소: command-line flag만 Go duration 문자열을 유지하고 모든 JSON duration field는 `…Millis` 정수 millisecond를 쓴다. |
 | G6 | Runtime metrics flag는 standalone에서만 지원한다. 2026-10-10 해소: cluster는 `runtimeMetrics` object를 사용한다. |
 | G7 | 실제 적용 설정 조회 API와 `tenantQuotas` 변경 API는 없다. 2026-10-11 해소: Dynamic cluster 전용 설정 조회 API와 `ClusterPolicy.tenantQuotas` 변경 API를 제공한다. |
-| G8 | Standalone Management API는 cluster ID `narumq-cluster-1`과 node ID `narumq-node-1`을 사용한다. |
+| G8 | Standalone Management API는 cluster ID `narumq-cluster-1`과 node ID `narumq-node-1`을 사용한다. 2026-10-11 해소: 고정값을 standalone 규칙으로 명문화했다(§1.6). 코드 동작은 바꾸지 않았다. |
 | G9 | Standalone은 2026-10-10 해소: `-http-auth-token`은 제거하고 `-http-auth-token-file`만 받는다. Cluster는 `clusterAdminTokenFile`을 사용한다. |
 | G10 | Cluster MQTT TLS에는 minimum TLS version과 client-auth를 설정하는 field가 없다. 2026-10-10 해소: `mqtt.tls.minVersion`은 TLS 1.2 또는 1.3을, `mqtt.tls.clientAuth`는 `none`, `request`, `require`를 설정한다. |
-G1·API-09의 `mqttLimits`와 G7의 설정 조회·`tenantQuotas` 범위는 채택해 구현한다. 다른 정책 범위와 일반 `ClusterPolicy` 항목은 아직 채택하지 않았다. 현재 동작은 [실행 옵션과 설정 스펙](../specs/configuration-and-runtime-options.md)에 기록한다.
+G1·API-09의 `mqttLimits`와 G7의 설정 조회·`tenantQuotas` 범위는 채택해 구현한다. G8은 현재 동작을 명문화했다. 다른 정책 범위와 일반 `ClusterPolicy` 항목은 아직 채택하지 않았다. 현재 동작은 [실행 옵션과 설정 스펙](../specs/configuration-and-runtime-options.md)에 기록한다.
 
 ## 3. 결정 요인
 

@@ -25,7 +25,7 @@
 | cluster restore | `-cluster-config`와 `-cluster-restore` | data를 seed하고 종료한다. Listener를 열지 않는다. |
 | dynamic cluster | `-cluster-config`만 지정 | 실행을 유지한다. |
 | fixed-voter peer-only | `-raft-peer-config` | 실행을 유지한다. |
-| standalone | 앞의 모드가 아니며 listener flag를 하나 이상 지정 | 실행을 유지한다. |
+| standalone | 앞의 모드가 아니며 listener flag를 하나 이상 지정 | 실행을 유지한다. Management API 식별자는 cluster ID `narumq-cluster-1`, node ID `narumq-node-1`로 고정한다. |
 | 비활성 | 앞의 모드가 아니며 listener flag가 없음 | `MQTT TCP and management HTTP listeners disabled`를 log에 남기고 종료 코드 0으로 끝난다. |
 
 시스템은 다음 순서로 모드를 판정한다: `-hash-password` → `-audit-verify` → `-cluster-config` 또는 `-cluster-restore` → `-raft-peer-config` → standalone. 허용 조합은 [Process configuration v1 §1.2](../contracts/process-configuration-v1.md#12-모드-판정-순서와-허용-조합)를 따른다. 진입 조건과 결과는 `cmd/narumq/main.go`의 `runWithContext`에 근거한다.
@@ -83,6 +83,7 @@ Standalone mode에서는 security config를 MQTT listener보다 먼저 적재한
 - 설정 파일 변경은 실행 중인 process에 자동 반영되지 않는다.
 - `clusterPolicy.mqttLimits`와 활성화된 `clusterPolicy.tenantQuotas`는 committed version이 모든 node의 기준이다. Policy quota는 `cluster-policy-tenant-quotas` feature 활성 뒤에만 적용한다.
 - 이 spec은 [ADR-0052](../decisions/ADR-0052-configuration-tiers-and-cluster-policy.md)의 G7 적용 설정 조회와 G7 tenant quota 정책을 포함한다. 다른 Proposed 정책은 구현되었다고 보장하지 않는다.
+- Standalone의 cluster ID와 node ID는 고정값이며 flag로 바꿀 수 없다([ADR-0052 §1.6](../decisions/ADR-0052-configuration-tiers-and-cluster-policy.md#16-standalone과-console)).
 
 ## 6. 수용 시험
 
@@ -126,6 +127,7 @@ Standalone mode에서는 security config를 MQTT listener보다 먼저 적재한
 | `CFG-SCN-36` | TEN-08 | Committed policy에서 `tenantQuotas`를 제거한 다음, legacy quota profile을 유지한다. | Policy update 후 모든 node가 committed legacy `TenantQuota` profile로 돌아간다. | `tests/integration.TestDynamicClusterPolicyTenantQuotasProcessAcceptance`, `internal/application/membership.TestClusterPolicyTenantQuotaFeatureGateAndEffectiveProfile` | 통과 | [G7 config·quota 실행 기록](#g7-config-view-and-tenant-quotas-execution) |
 | `CFG-SCN-37` | TEN-08 | Build member가 `cluster-policy-tenant-quotas`를 광고하지 않을 때 활성화 요청을 보낸다. 이후 모든 member가 광고할 때 activation을 commit한다. | 미지원 member가 있으면 activation을 거절한다. 모두 지원하면 feature가 committed 되고 quota policy 사용이 가능하다. | `internal/application/membership.TestClusterPolicyTenantQuotaActivationRejectsUnsupportedStagedMember`, `tests/integration.TestDynamicClusterPolicyTenantQuotasProcessAcceptance` | 통과 | [G7 config·quota 실행 기록](#g7-config-view-and-tenant-quotas-execution) |
 | `CFG-SCN-38` | API-09, TEN-08 | Policy quota를 여러 node에 적용한 뒤 node를 재시작하고 snapshot/backup을 복원한다. | 모든 node와 복원된 cluster가 같은 quota value·source·ClusterPolicy version을 반환한다. | `tests/integration.TestDynamicClusterPolicyTenantQuotasProcessAcceptance`, `cmd/narumq.TestClusterBackupArchivePreservesClusterPolicyTenantQuotas` | 통과 | [G7 config·quota 실행 기록](#g7-config-view-and-tenant-quotas-execution) |
+| `CFG-SCN-39` | API-02 | Standalone을 `-tcp-listen`, `-allow-insecure-anonymous-mqtt`, `-http-listen`으로 시작하고 `GET /api/v1/cluster`, `GET /api/v1/nodes/narumq-node-1`, `GET /api/v1/nodes/1`을 호출한다. | `clusterId`는 `narumq-cluster-1`, `leaderNodeId`와 node `nodeId`는 `narumq-node-1`이다. Decimal ID `1`은 `404`다. | `cmd/narumq.TestRunWithContextServesManagementHTTP` | 통과 | [G8 실행 기록](#g8-standalone-identifiers-execution) |
 
 <a id="configuration-test-execution"></a>
 ### 설정 시험 실행 기록
@@ -367,9 +369,40 @@ go run ./tools/verify local
 | Local gate | 통과 (`branch-instrument`, traceability 70/81(P0), architecture, fuzz, package·race 시험과 coverage). |
 | CI gate | 미실행. 전체 CI merge gate는 `docs/TODO.md` §1.9에서 별도로 추적한다. |
 
+<a id="g8-standalone-identifiers-execution"></a>
+### G8 standalone 식별자 실행 기록
 
+실행 환경: Windows/amd64, Go 1.26.5. 아래 검증은 현재 작업 트리에서 실행했다.
+
+민감도 확인에서는 `cmd/narumq/main.go`의 `NodeID`를 임시로 `narumq-node-2`로 바꿔 시험이 실패하는지 확인했다. 이후 `narumq-node-1`로 복구하고 시험을 다시 실행했다.
+
+CLI smoke service는 아래 명령으로 시작했다. 응답을 확인한 뒤 service를 종료했다.
+
+```sh
+go test ./cmd/narumq -run '^TestRunWithContextServesManagementHTTP$' -count=1 -v
+# 민감도 확인: main.go의 NodeID를 임시로 narumq-node-2로 바꾸고 시험을 실행한다.
+go test ./cmd/narumq -run '^TestRunWithContextServesManagementHTTP$' -count=1 -v
+# NodeID를 narumq-node-1로 복구한 뒤 시험을 다시 실행한다.
+go test ./cmd/narumq -run '^TestRunWithContextServesManagementHTTP$' -count=1 -v
+# 다음 명령은 background service로 시작하고 HTTP 확인 뒤 종료한다.
+go run ./cmd/narumq -tcp-listen 127.0.0.1:18883 -allow-insecure-anonymous-mqtt -http-listen 127.0.0.1:18081
+curl.exe -sS http://127.0.0.1:18081/api/v1/cluster
+curl.exe -sS -o NUL -w "%{http_code}\n" http://127.0.0.1:18081/api/v1/nodes/1
+go run ./tools/verify markdown-links
+go run ./tools/verify local
+```
+
+| 확인 | 결과 |
+| --- | --- |
+| 집중 시험 | 통과. Cluster ID와 leader node ID, `narumq-node-1`의 node 응답과 decimal ID `1`의 `404`를 확인했다. |
+| 민감도 확인 | 통과. `NodeID`를 `narumq-node-2`로 바꾼 상태에서 시험이 leader node ID 불일치로 실패했다. 값을 복구한 뒤 시험이 통과했다. |
+| Standalone CLI smoke | 통과. `/api/v1/cluster`는 `narumq-cluster-1`과 `narumq-node-1`을 반환했고 `/api/v1/nodes/1`은 `404`를 반환했다. 확인 뒤 process를 종료했다. |
+| Markdown links | 통과 (152 files, 2,206 local links). |
+| Local gate | 통과 (`local: PASS`, `coverage: PASS`; 217.45s; `branch-instrument`, `architecture`, `fuzz`, package·race 시험). |
+| Traceability | 통과 (`P0 mapped 70/81, exceptions 11`). |
+| CI gate | 미실행. 전체 CI merge gate는 `docs/TODO.md` §1.9에서 별도로 추적한다. |
 
 ## 7. 미결정 사항
 
 - `SPEC-TBD-02`와 `SPEC-TBD-03`의 확정 위치는 이 spec이다. 이번 문서는 새 제품 값을 정하지 않는다.
-- G1·G7 범위는 채택했다. 나머지 ADR-0052 policy domain과 정책 제안은 해당 ADR의 상태를 따른다.
+- G1·G7·G8 범위는 채택했다. 나머지 ADR-0052 policy domain과 정책 제안은 해당 ADR의 상태를 따른다.
