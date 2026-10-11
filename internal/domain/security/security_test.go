@@ -217,6 +217,35 @@ func TestRuleAndPrincipalAccessors(t *testing.T) {
 	}
 }
 
+// Traceability: CFG-SCN-31; docs/specs/configuration-and-runtime-options.md §6.
+func TestPolicyRulesReturnsIndependentSlice(t *testing.T) {
+	tenant, _ := newSecurityFixture(t)
+	policy, err := NewPolicy([]Rule{
+		newSecurityRule(t, tenant, "publisher", EffectAllow, ActionPublish, "sensors/#"),
+		newSecurityRule(t, tenant, "subscriber", EffectDeny, ActionSubscribe, "devices/#"),
+	})
+	if err != nil {
+		t.Fatalf("NewPolicy() error = %v", err)
+	}
+	rules := policy.Rules()
+	if len(rules) != 2 {
+		t.Fatalf("len(Policy.Rules()) = %d, want 2", len(rules))
+	}
+	if rule := rules[0]; rule.TenantID() != tenant || rule.Role() != "publisher" ||
+		rule.Effect() != EffectAllow || rule.Action() != ActionPublish || rule.TopicFilter().Filter() != "sensors/#" {
+		t.Fatalf("first rule = %+v, want publisher allow publish sensors/#", rule)
+	}
+	if rule := rules[1]; rule.TenantID() != tenant || rule.Role() != "subscriber" ||
+		rule.Effect() != EffectDeny || rule.Action() != ActionSubscribe || rule.TopicFilter().Filter() != "devices/#" {
+		t.Fatalf("second rule = %+v, want subscriber deny subscribe devices/#", rule)
+	}
+
+	rules[0] = rules[1]
+	if got := policy.Rules()[0]; got.Role() != "publisher" || got.TopicFilter().Filter() != "sensors/#" {
+		t.Fatalf("Policy.Rules() changed after caller mutation: first rule = %+v", got)
+	}
+}
+
 func TestSecurityValidationErrors(t *testing.T) {
 	tenantA, err := tenancy.NewTenantID("tenant-a")
 	if err != nil {

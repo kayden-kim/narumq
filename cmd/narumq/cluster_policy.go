@@ -61,8 +61,12 @@ func (controller *clusterPolicyController) reconcile(ctx context.Context) {
 	if found {
 		committedState = &committed
 	}
-	featureActive := slices.Contains(runtime.machine.ActiveFeatures(), membership.ClusterPolicyFeature)
-	change, mismatch := clusterPolicyReconciliationDecision(runtime.config.ClusterPolicy, committedState, featureActive)
+	features := runtime.machine.ActiveFeatures()
+	featureActive := slices.Contains(features, membership.ClusterPolicyFeature)
+	tenantQuotaFeatureActive := slices.Contains(features, membership.ClusterPolicyTenantQuotasFeature)
+	change, mismatch := clusterPolicyReconciliationDecision(
+		runtime.config.ClusterPolicy, committedState, featureActive, tenantQuotaFeatureActive,
+	)
 	controller.observe(committedState, featureActive, mismatch)
 	if change != nil {
 		controller.propose(ctx, *change)
@@ -72,10 +76,13 @@ func (controller *clusterPolicyController) reconcile(ctx context.Context) {
 func clusterPolicyReconciliationDecision(
 	desired *clusterPolicyConfig,
 	committed *membership.ClusterPolicyStateDTO,
-	featureActive bool,
+	featureActive, tenantQuotaFeatureActive bool,
 ) (*membership.ClusterPolicyChangeDTO, bool) {
 	if !featureActive {
 		return nil, false
+	}
+	if desired != nil && desired.TenantQuotas != nil && !tenantQuotaFeatureActive {
+		return nil, true
 	}
 	if committed == nil || committed.Version == 0 {
 		if desired == nil {
@@ -93,7 +100,7 @@ func clusterPolicyReconciliationDecision(
 		return nil, true
 	}
 	if desired.Version == committed.Version {
-		return nil, desired.membershipPolicy() != committed.Policy
+		return nil, !membership.EqualClusterPolicy(desired.membershipPolicy(), committed.Policy)
 	}
 	return &membership.ClusterPolicyChangeDTO{
 		ExpectedVersion: committed.Version, Version: desired.Version, Policy: desired.membershipPolicy(),
@@ -145,8 +152,12 @@ func (controller *clusterPolicyController) refreshCommittedState() {
 	if found {
 		committedState = &committed
 	}
-	featureActive := slices.Contains(runtime.machine.ActiveFeatures(), membership.ClusterPolicyFeature)
-	_, mismatch := clusterPolicyReconciliationDecision(runtime.config.ClusterPolicy, committedState, featureActive)
+	features := runtime.machine.ActiveFeatures()
+	featureActive := slices.Contains(features, membership.ClusterPolicyFeature)
+	tenantQuotaFeatureActive := slices.Contains(features, membership.ClusterPolicyTenantQuotasFeature)
+	_, mismatch := clusterPolicyReconciliationDecision(
+		runtime.config.ClusterPolicy, committedState, featureActive, tenantQuotaFeatureActive,
+	)
 	controller.observe(committedState, featureActive, mismatch)
 }
 
@@ -171,18 +182,24 @@ func (controller *clusterPolicyController) setMismatch(mismatch bool, configured
 	}
 }
 
+const (
+	clusterMQTTLimitsSourceDefault       = "default"
+	clusterMQTTLimitsSourceLocalConfig   = "localConfig"
+	clusterMQTTLimitsSourceClusterPolicy = "clusterPolicy"
+)
+
 func effectiveClusterMQTTLimits(
 	config clusterConfigFile,
 	committed *membership.ClusterPolicyStateDTO,
 	featureActive bool,
-) membership.MQTTLimitsDTO {
+) (membership.MQTTLimitsDTO, string, *uint64) {
 	if featureActive && committed != nil && committed.Version > 0 {
-		return committed.Policy.MQTTLimits
+		return committed.Policy.MQTTLimits, clusterMQTTLimitsSourceClusterPolicy, &committed.Version
 	}
 	if config.ClusterPolicy != nil {
-		return config.ClusterPolicy.membershipPolicy().MQTTLimits
+		return config.ClusterPolicy.membershipPolicy().MQTTLimits, clusterMQTTLimitsSourceLocalConfig, nil
 	}
-	return defaultClusterMQTTLimits()
+	return defaultClusterMQTTLimits(), clusterMQTTLimitsSourceDefault, nil
 }
 
 func tcpConnectionLimits(limits membership.MQTTLimitsDTO) tcpadapter.ConnectionLimits {
@@ -204,7 +221,7 @@ func (runtime *clusterRuntime) applyCommittedClusterMQTTLimits() error {
 		committedState = &committed
 	}
 	featureActive := slices.Contains(runtime.machine.ActiveFeatures(), membership.ClusterPolicyFeature)
-	limits := effectiveClusterMQTTLimits(runtime.config, committedState, featureActive)
+	limits, _, _ := effectiveClusterMQTTLimits(runtime.config, committedState, featureActive)
 	if err := runtime.mqttServer.SetConnectionLimits(tcpConnectionLimits(limits)); err != nil {
 		return fmt.Errorf("apply committed cluster MQTT limits: %w", err)
 	}

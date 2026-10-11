@@ -28,17 +28,19 @@ func TestClusterPolicyReconciliationDecision(t *testing.T) {
 		ConnectTimeoutMillis: 10_000, PacketReadTimeoutMillis: 30_000, WriteTimeoutMillis: 5_000,
 	}
 
-	tests := []struct {
-		name          string
-		desired       *clusterPolicyConfig
-		committed     *membership.ClusterPolicyStateDTO
-		featureActive bool
-		wantProposal  bool
-		wantMismatch  bool
-		wantExpected  uint64
-		wantKey       string
-	}{
-		{name: "feature inactive", desired: configured, featureActive: false},
+	type testCase struct {
+		name                     string
+		desired                  *clusterPolicyConfig
+		committed                *membership.ClusterPolicyStateDTO
+		featureActive            bool
+		tenantQuotaFeatureActive bool
+		wantProposal             bool
+		wantMismatch             bool
+		wantExpected             uint64
+		wantKey                  string
+	}
+	tests := []testCase{
+		{name: "feature inactive", desired: configured},
 		{name: "no state or local config", featureActive: true},
 		{name: "initial proposal", desired: configured, featureActive: true, wantProposal: true, wantKey: "config-v1"},
 		{name: "higher configured version", desired: &changed, committed: committed, featureActive: true, wantProposal: true, wantExpected: 1, wantKey: "config-v2"},
@@ -47,9 +49,17 @@ func TestClusterPolicyReconciliationDecision(t *testing.T) {
 		{name: "matching version and content", desired: configured, committed: committed, featureActive: true},
 		{name: "same version content mismatch", desired: &mismatch, committed: committed, featureActive: true, wantMismatch: true},
 	}
+	withTenantQuotas := *configured
+	withTenantQuotas.TenantQuotas = validClusterPolicyTenantQuotasConfig()
+	tests = append(tests,
+		testCase{name: "tenant quota feature inactive", desired: &withTenantQuotas, featureActive: true, wantMismatch: true},
+		testCase{name: "tenant quota feature active", desired: &withTenantQuotas, featureActive: true, tenantQuotaFeatureActive: true, wantProposal: true, wantKey: "config-v1"},
+	)
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			proposal, gotMismatch := clusterPolicyReconciliationDecision(test.desired, test.committed, test.featureActive)
+			proposal, gotMismatch := clusterPolicyReconciliationDecision(
+				test.desired, test.committed, test.featureActive, test.tenantQuotaFeatureActive,
+			)
 			if (proposal != nil) != test.wantProposal || gotMismatch != test.wantMismatch {
 				t.Fatalf("decision = (%+v, mismatch=%t), want proposal=%t mismatch=%t", proposal, gotMismatch, test.wantProposal, test.wantMismatch)
 			}
@@ -64,25 +74,29 @@ func TestClusterPolicyReconciliationDecision(t *testing.T) {
 func TestEffectiveClusterMQTTLimitsPrecedence(t *testing.T) {
 	defaults := defaultClusterMQTTLimits()
 	config := clusterConfigFile{}
-	if got := effectiveClusterMQTTLimits(config, nil, false); got != defaults {
-		t.Fatalf("default limits = %+v, want %+v", got, defaults)
+	got, source, version := effectiveClusterMQTTLimits(config, nil, false)
+	if got != defaults || source != clusterMQTTLimitsSourceDefault || version != nil {
+		t.Fatalf("default limits = (%+v, %q, %v), want (%+v, default, nil)", got, source, version, defaults)
 	}
 
 	config.ClusterPolicy = validClusterPolicyConfig()
 	local := config.ClusterPolicy.membershipPolicy().MQTTLimits
-	if got := effectiveClusterMQTTLimits(config, nil, true); got != local {
-		t.Fatalf("local limits without committed state = %+v, want %+v", got, local)
+	got, source, version = effectiveClusterMQTTLimits(config, nil, true)
+	if got != local || source != clusterMQTTLimitsSourceLocalConfig || version != nil {
+		t.Fatalf("local limits = (%+v, %q, %v), want (%+v, localConfig, nil)", got, source, version, local)
 	}
 
 	committed := membership.ClusterPolicyStateDTO{Version: 2, Policy: membership.ClusterPolicyDTO{MQTTLimits: membership.MQTTLimitsDTO{
 		MaxPacketSize: 2_097_152, ReceiveMaximum: 32,
 		ConnectTimeoutMillis: 15_000, PacketReadTimeoutMillis: 45_000, WriteTimeoutMillis: 7_000,
 	}}}
-	if got := effectiveClusterMQTTLimits(config, &committed, true); got != committed.Policy.MQTTLimits {
-		t.Fatalf("committed limits = %+v, want %+v", got, committed.Policy.MQTTLimits)
+	got, source, version = effectiveClusterMQTTLimits(config, &committed, true)
+	if got != committed.Policy.MQTTLimits || source != clusterMQTTLimitsSourceClusterPolicy || version == nil || *version != committed.Version {
+		t.Fatalf("committed limits = (%+v, %q, %v), want (%+v, clusterPolicy, %d)", got, source, version, committed.Policy.MQTTLimits, committed.Version)
 	}
-	if got := effectiveClusterMQTTLimits(config, &committed, false); got != local {
-		t.Fatalf("feature-inactive limits = %+v, want local %+v", got, local)
+	got, source, version = effectiveClusterMQTTLimits(config, &committed, false)
+	if got != local || source != clusterMQTTLimitsSourceLocalConfig || version != nil {
+		t.Fatalf("feature-inactive limits = (%+v, %q, %v), want (%+v, localConfig, nil)", got, source, version, local)
 	}
 }
 
@@ -135,7 +149,7 @@ func TestClusterPolicyControllerReconcilesAndLogsMismatchOnce(t *testing.T) {
 	controller.reconcile(context.Background())
 
 	state, found := machine.ClusterPolicy()
-	if !found || state.Version != 1 || state.Policy != committedPolicy {
+	if !found || state.Version != 1 || !membership.EqualClusterPolicy(state.Policy, committedPolicy) {
 		t.Fatalf("reconciliation changed committed policy: state=%+v found=%t", state, found)
 	}
 	if got := strings.Count(logs.String(), "committed cluster policy differs from local configuration"); got != 1 {

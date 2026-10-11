@@ -96,9 +96,19 @@ func TestClusterPolicyServiceRejectsInvalidAndInactiveUpdates(t *testing.T) {
 	if port.commitCalls != 0 {
 		t.Fatalf("invalid updates committed %d times, want zero", port.commitCalls)
 	}
+	quotaRequest := valid
+	quotaRequest.Policy.TenantQuotas = &ClusterTenantQuotasDTO{
+		Default: DefaultTenantQuotaProfile().Default,
+		Tenants: []TenantStorageQuotaDTO{tenantQuotaForTest("tenant-a", 100, 100, 100, 100)},
+	}
+	_, err := service.UpdateClusterPolicy(context.Background(), quotaRequest)
+	assertClusterPolicyServiceError(t, err, ServiceErrorFeatureInactive, false)
+	if port.commitCalls != 0 {
+		t.Fatalf("update using inactive tenant quota feature committed %d times, want zero", port.commitCalls)
+	}
 
 	inactive, inactivePort := clusterPolicyServiceFixture(t, false)
-	_, err := inactive.UpdateClusterPolicy(context.Background(), valid)
+	_, err = inactive.UpdateClusterPolicy(context.Background(), valid)
 	assertClusterPolicyServiceError(t, err, ServiceErrorFeatureInactive, false)
 	if inactivePort.commitCalls != 0 {
 		t.Fatalf("inactive feature update committed %d times, want zero", inactivePort.commitCalls)

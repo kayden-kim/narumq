@@ -137,15 +137,15 @@ func TestDynamicClusterManagementRBACProcessAcceptance(t *testing.T) {
 	clusterMembershipProcessWaitForStatus(t, readyCtx, processes[0], "/health/ready", http.StatusOK)
 	cancelReady()
 
-	status, body, err = requestAPIKey(http.MethodGet, "/api/v1/audit/events?limit=1", nil, clusterMembershipProcessReadOnlyAPIKey, "")
+	status, body, err = requestAPIKey(http.MethodGet, "/api/v1/nodes/1/audit/events?limit=1", nil, clusterMembershipProcessReadOnlyAPIKey, "")
 	assertStatus("ReadOnly audit query permission", status, body, err, http.StatusForbidden)
-	status, body, err = requestAPIKey(http.MethodGet, "/api/v1/audit/events?limit=1", nil, clusterManagementRBACOperatorAPIKey, "")
+	status, body, err = requestAPIKey(http.MethodGet, "/api/v1/nodes/1/audit/events?limit=1", nil, clusterManagementRBACOperatorAPIKey, "")
 	assertStatus("Operator audit query permission", status, body, err, http.StatusForbidden)
 	status, body, err = request(http.MethodPost, "/api/v1/cluster/backups", nil, "Authorization", "Bearer "+clusterMembershipProcessAdmin, "")
 	assertStatus("ClusterAdmin backup permission", status, body, err, http.StatusOK)
 
 	status, body, err = requestBearer(
-		http.MethodGet, "/api/v1/audit/events?result=UNKNOWN", nil, securityAdminToken, "",
+		http.MethodGet, "/api/v1/nodes/1/audit/events?result=UNKNOWN", nil, securityAdminToken, "",
 	)
 	assertStatus("invalid audit result filter", status, body, err, http.StatusBadRequest)
 
@@ -154,7 +154,7 @@ func TestDynamicClusterManagementRBACProcessAcceptance(t *testing.T) {
 		"result":       {"ALLOWED"},
 		"limit":        {"1"},
 	}
-	status, body, err = requestBearer(http.MethodGet, "/api/v1/audit/events?"+query.Encode(), nil, securityAdminToken, "")
+	status, body, err = requestBearer(http.MethodGet, "/api/v1/nodes/1/audit/events?"+query.Encode(), nil, securityAdminToken, "")
 	assertStatus("first Operator audit page", status, body, err, http.StatusOK)
 	firstPage := decodeClusterManagementRBACAuditPage(t, body)
 	if len(firstPage.Data) != 1 || !firstPage.Page.HasMore || firstPage.Page.NextCursor == nil {
@@ -163,7 +163,7 @@ func TestDynamicClusterManagementRBACProcessAcceptance(t *testing.T) {
 	assertClusterManagementRBACAuditEvent(t, firstPage.Data[0], "apikey:operator", "Operator", "cluster.rebalance.cancel", "ALLOWED")
 
 	query.Set("cursor", *firstPage.Page.NextCursor)
-	status, body, err = requestBearer(http.MethodGet, "/api/v1/audit/events?"+query.Encode(), nil, securityAdminToken, "")
+	status, body, err = requestBearer(http.MethodGet, "/api/v1/nodes/1/audit/events?"+query.Encode(), nil, securityAdminToken, "")
 	assertStatus("second Operator audit page", status, body, err, http.StatusOK)
 	secondPage := decodeClusterManagementRBACAuditPage(t, body)
 	if len(secondPage.Data) != 1 || secondPage.Page.HasMore || secondPage.Page.NextCursor != nil {
@@ -180,7 +180,7 @@ func TestDynamicClusterManagementRBACProcessAcceptance(t *testing.T) {
 		"result":       {"DENIED"},
 		"limit":        {"10"},
 	}
-	status, body, err = requestBearer(http.MethodGet, "/api/v1/audit/events?"+query.Encode(), nil, securityAdminToken, "")
+	status, body, err = requestBearer(http.MethodGet, "/api/v1/nodes/1/audit/events?"+query.Encode(), nil, securityAdminToken, "")
 	assertStatus("OIDC actor audit filter", status, body, err, http.StatusOK)
 	securityAdminEvents := decodeClusterManagementRBACAuditPage(t, body)
 	if len(securityAdminEvents.Data) == 0 {

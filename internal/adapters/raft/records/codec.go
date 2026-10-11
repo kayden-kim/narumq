@@ -571,6 +571,13 @@ func validateClusterPolicy(policy *ClusterPolicy) error {
 		limits.ConnectTimeoutMillis == 0 || limits.PacketReadTimeoutMillis == 0 || limits.WriteTimeoutMillis == 0 {
 		return errors.New("invalid cluster policy MQTT limits")
 	}
+	if quotas := policy.GetTenantQuotas(); quotas != nil {
+		if err := validateTenantQuotaProfile(&TenantQuotaProfile{
+			DefaultQuota: quotas.GetDefaultQuota(), Tenants: quotas.GetTenantQuotas(),
+		}); err != nil {
+			return fmt.Errorf("invalid cluster policy tenant quotas: %w", err)
+		}
+	}
 	return nil
 }
 
@@ -585,7 +592,11 @@ func clusterPolicyStateObjectCount(state *ClusterPolicyState) int {
 	if state == nil {
 		return 0
 	}
-	return 1
+	count := 1
+	if quotas := state.GetPolicy().GetTenantQuotas(); quotas != nil {
+		count += 1 + len(quotas.GetTenantQuotas())
+	}
+	return count
 }
 
 func validateTenantQuotaProfile(profile *TenantQuotaProfile) error {
@@ -1228,6 +1239,10 @@ func validateSnapshotState(s *ReplicatedStateSnapshot) error {
 	if s.ClusterPolicy != nil {
 		if !slices.Contains(s.ActiveFeatures, "cluster-policy") {
 			return errors.New("snapshot cluster policy requires active cluster-policy feature")
+		}
+		if policy := s.ClusterPolicy.GetPolicy(); policy != nil && policy.GetTenantQuotas() != nil &&
+			!slices.Contains(s.ActiveFeatures, "cluster-policy-tenant-quotas") {
+			return errors.New("snapshot cluster policy tenant quotas require active cluster-policy-tenant-quotas feature")
 		}
 		if err := validateClusterPolicyState(s.ClusterPolicy); err != nil {
 			return err

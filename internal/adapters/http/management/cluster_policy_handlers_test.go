@@ -43,6 +43,7 @@ func newClusterPolicyHTTPTestHandler(service ClusterPolicyUseCase, role Role, au
 	return NewRouterWithMembership(
 		ServerConfig{APIKeys: []APIKeyCredential{{ID: "policy-test", Key: "policy-secret", Roles: []Role{role}}}, ClusterID: "cluster-policy-test"},
 		&mockStateProvider{}, nil, nil, nil, nil, nil, nil, auditService, nil, nil, nil, service,
+		nil,
 	)
 }
 
@@ -112,6 +113,131 @@ func TestClusterPolicyHTTPGetAndUpdate(t *testing.T) {
 	handler.ServeHTTP(getResponse, getRequest)
 	if getResponse.Code != http.StatusOK || getResponse.Header().Get("ETag") != `"1"` || service.getCalls != 2 {
 		t.Fatalf("committed policy status=%d etag=%q calls=%d body=%s", getResponse.Code, getResponse.Header().Get("ETag"), service.getCalls, getResponse.Body.String())
+	}
+}
+
+// Traceability: CFG-SCN-34; docs/contracts/management-api-v1.md §1, §4; ADR-0052 §1.1.1.
+func TestClusterPolicyHTTPTenantQuotasAndBodyLimit(t *testing.T) {
+	const quotasJSON = `{"mqttLimits":{"maxPacketSize":1048576,"receiveMaximum":64,"connectTimeoutMillis":10000,"packetReadTimeoutMillis":30000,"writeTimeoutMillis":5000},"tenantQuotas":{"default":{"retainedBytes":1024,"offlineQueueMessages":64,"offlineQueueBytes":2048,"storageBytes":4096},"tenants":[{"tenantId":"tenant-a","retainedBytes":512,"offlineQueueMessages":32,"offlineQueueBytes":1024,"storageBytes":2048}]}}`
+	service := &clusterPolicyHTTPStub{}
+	handler := newClusterPolicyHTTPTestHandler(service, RoleClusterAdmin, &spyAuditUseCase{})
+	request := clusterPolicyHTTPRequest(http.MethodPut, "/api/v1/cluster/policy", quotasJSON)
+	request.Header.Set("If-Match", `"0"`)
+	request.Header.Set("Idempotency-Key", "policy-with-quotas")
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+
+	var updated struct {
+		Data clusterPolicyResponse `json:"data"`
+	}
+	if err := json.Unmarshal(response.Body.Bytes(), &updated); err != nil {
+		t.Fatalf("decode policy with quotas: %v body=%s", err, response.Body.String())
+	}
+	want := membership.ClusterPolicyDTO{
+		MQTTLimits: membership.MQTTLimitsDTO{
+			MaxPacketSize: 1048576, ReceiveMaximum: 64, ConnectTimeoutMillis: 10000,
+			PacketReadTimeoutMillis: 30000, WriteTimeoutMillis: 5000,
+		},
+		TenantQuotas: &membership.ClusterTenantQuotasDTO{
+			Default: membership.TenantStorageQuotaDTO{
+				RetainedBytes: 1024, OfflineQueueMessages: 64, OfflineQueueBytes: 2048, StorageBytes: 4096,
+			},
+			Tenants: []membership.TenantStorageQuotaDTO{{
+				TenantID: "tenant-a", RetainedBytes: 512, OfflineQueueMessages: 32,
+				OfflineQueueBytes: 1024, StorageBytes: 2048,
+			}},
+		},
+	}
+	if response.Code != http.StatusOK || updated.Data.Policy == nil || updated.Data.Policy.TenantQuotas == nil ||
+		len(service.updateCalls) != 1 || !membership.EqualClusterPolicy(service.updateCalls[0].Policy, want) {
+		t.Fatalf("quota update status=%d data=%+v updates=%+v", response.Code, updated.Data, service.updateCalls)
+	}
+	quotaResponse := updated.Data.Policy.TenantQuotas
+	if quotaResponse.Default.RetainedBytes != 1024 || len(quotaResponse.Tenants) != 1 ||
+		quotaResponse.Tenants[0].TenantID != "tenant-a" || quotaResponse.Tenants[0].StorageBytes != 2048 {
+		t.Fatalf("quota response = %+v, want the committed default and tenant values", quotaResponse)
+	}
+	if !strings.Contains(response.Body.String(), `"tenants":[`) {
+		t.Fatalf("empty/non-null tenant array was not serialized as an array: %s", response.Body.String())
+	}
+
+	getResponse := httptest.NewRecorder()
+	handler.ServeHTTP(getResponse, clusterPolicyHTTPRequest(http.MethodGet, "/api/v1/cluster/policy", ""))
+	var fetched struct {
+		Data clusterPolicyResponse `json:"data"`
+	}
+	if err := json.Unmarshal(getResponse.Body.Bytes(), &fetched); err != nil {
+		t.Fatalf("decode fetched policy: %v", err)
+	}
+	if getResponse.Code != http.StatusOK || fetched.Data.Policy == nil || fetched.Data.Policy.TenantQuotas == nil ||
+		fetched.Data.Policy.TenantQuotas.Tenants[0].RetainedBytes != 512 {
+		t.Fatalf("GET policy quotas status=%d body=%s", getResponse.Code, getResponse.Body.String())
+	}
+
+	oversizedService := &clusterPolicyHTTPStub{}
+	oversizedHandler := newClusterPolicyHTTPTestHandler(oversizedService, RoleClusterAdmin, &spyAuditUseCase{})
+	exactBody := validClusterPolicyJSON + strings.Repeat(" ", maxClusterPolicyRequestBytes-len(validClusterPolicyJSON))
+	exactRequest := clusterPolicyHTTPRequest(http.MethodPut, "/api/v1/cluster/policy", exactBody)
+	exactRequest.Header.Set("If-Match", `"0"`)
+	exactRequest.Header.Set("Idempotency-Key", "policy-exact-limit")
+	exactResponse := httptest.NewRecorder()
+	oversizedHandler.ServeHTTP(exactResponse, exactRequest)
+	if exactResponse.Code != http.StatusOK || len(oversizedService.updateCalls) != 1 {
+		t.Fatalf("body at %d bytes status=%d calls=%d body=%s", maxClusterPolicyRequestBytes, exactResponse.Code, len(oversizedService.updateCalls), exactResponse.Body.String())
+	}
+	oversizedRequest := clusterPolicyHTTPRequest(http.MethodPut, "/api/v1/cluster/policy", exactBody+" ")
+	oversizedRequest.Header.Set("If-Match", `"0"`)
+	oversizedRequest.Header.Set("Idempotency-Key", "policy-over-limit")
+	oversizedResponse := httptest.NewRecorder()
+	newClusterPolicyHTTPTestHandler(oversizedService, RoleClusterAdmin, &spyAuditUseCase{}).ServeHTTP(oversizedResponse, oversizedRequest)
+	if oversizedResponse.Code != http.StatusBadRequest || len(oversizedService.updateCalls) != 1 {
+		t.Fatalf("body over %d bytes status=%d calls=%d body=%s", maxClusterPolicyRequestBytes, oversizedResponse.Code, len(oversizedService.updateCalls), oversizedResponse.Body.String())
+	}
+}
+
+// Traceability: CFG-SCN-34; docs/contracts/management-api-v1.md §1, §4; ADR-0052 §1.1.1.
+func TestClusterPolicyHTTPRejectsMalformedTenantQuotas(t *testing.T) {
+	bodies := []struct {
+		name string
+		body string
+	}{
+		{name: "missing default", body: `{"mqttLimits":{"maxPacketSize":1048576,"receiveMaximum":64,"connectTimeoutMillis":10000,"packetReadTimeoutMillis":30000,"writeTimeoutMillis":5000},"tenantQuotas":{"tenants":[]}}`},
+		{name: "missing tenants", body: `{"mqttLimits":{"maxPacketSize":1048576,"receiveMaximum":64,"connectTimeoutMillis":10000,"packetReadTimeoutMillis":30000,"writeTimeoutMillis":5000},"tenantQuotas":{"default":{"retainedBytes":1,"offlineQueueMessages":1,"offlineQueueBytes":1,"storageBytes":1}}}`},
+		{name: "missing quota limit", body: `{"mqttLimits":{"maxPacketSize":1048576,"receiveMaximum":64,"connectTimeoutMillis":10000,"packetReadTimeoutMillis":30000,"writeTimeoutMillis":5000},"tenantQuotas":{"default":{"retainedBytes":1,"offlineQueueMessages":1,"offlineQueueBytes":1},"tenants":[]}}`},
+		{name: "missing tenant ID", body: `{"mqttLimits":{"maxPacketSize":1048576,"receiveMaximum":64,"connectTimeoutMillis":10000,"packetReadTimeoutMillis":30000,"writeTimeoutMillis":5000},"tenantQuotas":{"default":{"retainedBytes":1,"offlineQueueMessages":1,"offlineQueueBytes":1,"storageBytes":1},"tenants":[{"retainedBytes":1,"offlineQueueMessages":1,"offlineQueueBytes":1,"storageBytes":1}]}}`},
+		{name: "unknown nested field", body: `{"mqttLimits":{"maxPacketSize":1048576,"receiveMaximum":64,"connectTimeoutMillis":10000,"packetReadTimeoutMillis":30000,"writeTimeoutMillis":5000},"tenantQuotas":{"default":{"retainedBytes":1,"offlineQueueMessages":1,"offlineQueueBytes":1,"storageBytes":1,"extra":1},"tenants":[]}}`},
+		{name: "nested version is unknown", body: `{"mqttLimits":{"maxPacketSize":1048576,"receiveMaximum":64,"connectTimeoutMillis":10000,"packetReadTimeoutMillis":30000,"writeTimeoutMillis":5000},"tenantQuotas":{"version":1,"default":{"retainedBytes":1,"offlineQueueMessages":1,"offlineQueueBytes":1,"storageBytes":1},"tenants":[]}}`},
+		{name: "quota is out of range", body: `{"mqttLimits":{"maxPacketSize":1048576,"receiveMaximum":64,"connectTimeoutMillis":10000,"packetReadTimeoutMillis":30000,"writeTimeoutMillis":5000},"tenantQuotas":{"default":{"retainedBytes":18446744073709551615,"offlineQueueMessages":1,"offlineQueueBytes":1,"storageBytes":1},"tenants":[]}}`},
+		{name: "tenants are unsorted", body: `{"mqttLimits":{"maxPacketSize":1048576,"receiveMaximum":64,"connectTimeoutMillis":10000,"packetReadTimeoutMillis":30000,"writeTimeoutMillis":5000},"tenantQuotas":{"default":{"retainedBytes":1,"offlineQueueMessages":1,"offlineQueueBytes":1,"storageBytes":1},"tenants":[{"tenantId":"tenant-b","retainedBytes":1,"offlineQueueMessages":1,"offlineQueueBytes":1,"storageBytes":1},{"tenantId":"tenant-a","retainedBytes":1,"offlineQueueMessages":1,"offlineQueueBytes":1,"storageBytes":1}]}}`},
+	}
+	for _, testCase := range bodies {
+		t.Run(testCase.name, func(t *testing.T) {
+			service := &clusterPolicyHTTPStub{}
+			handler := newClusterPolicyHTTPTestHandler(service, RoleClusterAdmin, &spyAuditUseCase{})
+			request := clusterPolicyHTTPRequest(http.MethodPut, "/api/v1/cluster/policy", testCase.body)
+			request.Header.Set("If-Match", `"0"`)
+			request.Header.Set("Idempotency-Key", "invalid-policy")
+			response := httptest.NewRecorder()
+			handler.ServeHTTP(response, request)
+			if response.Code != http.StatusBadRequest || len(service.updateCalls) != 0 {
+				t.Fatalf("status=%d calls=%d body=%s", response.Code, len(service.updateCalls), response.Body.String())
+			}
+		})
+	}
+
+	for _, body := range []string{
+		`{"mqttLimits":{"maxPacketSize":1048576,"receiveMaximum":64,"connectTimeoutMillis":10000,"packetReadTimeoutMillis":30000,"writeTimeoutMillis":5000}}`,
+		`{"mqttLimits":{"maxPacketSize":1048576,"receiveMaximum":64,"connectTimeoutMillis":10000,"packetReadTimeoutMillis":30000,"writeTimeoutMillis":5000},"tenantQuotas":null}`,
+	} {
+		service := &clusterPolicyHTTPStub{}
+		request := clusterPolicyHTTPRequest(http.MethodPut, "/api/v1/cluster/policy", body)
+		request.Header.Set("If-Match", `"0"`)
+		request.Header.Set("Idempotency-Key", "policy-no-quotas")
+		response := httptest.NewRecorder()
+		newClusterPolicyHTTPTestHandler(service, RoleClusterAdmin, &spyAuditUseCase{}).ServeHTTP(response, request)
+		if response.Code != http.StatusOK || len(service.updateCalls) != 1 || service.updateCalls[0].Policy.TenantQuotas != nil {
+			t.Fatalf("omitted/null quotas status=%d calls=%+v body=%s", response.Code, service.updateCalls, response.Body.String())
+		}
 	}
 }
 
@@ -236,7 +362,7 @@ func TestClusterPolicyHTTPAuthorizationAndQueryBodyRules(t *testing.T) {
 		}
 	}
 
-	withoutPolicyService := NewRouterWithMembership(ServerConfig{}, &mockStateProvider{}, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
+	withoutPolicyService := NewRouterWithMembership(ServerConfig{}, &mockStateProvider{}, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
 	response = httptest.NewRecorder()
 	withoutPolicyService.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/api/v1/cluster/policy", nil))
 	if response.Code != http.StatusNotFound {

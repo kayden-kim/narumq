@@ -67,7 +67,7 @@ foreach ($NodeIndex in 0..($NodeUrls.Count - 1)) {
 - 이전 credential로 열린 MQTT 3.1.1 연결은 즉시 닫혀야 한다. MQTT 5 연결은 DISCONNECT `0x87`을 받고 2초 안에 닫혀야 한다.
 - 폐기된 연결의 Will은 발행되지 않아야 한다. 새 credential의 연결은 계속 사용할 수 있어야 한다.
 - MQTT CONNECT 거절과 지연 Will 거절은 data-plane audit의 `credential_revoked` reason으로 기록한다. Management audit에는 `security.credential.revoke` action과 `mqtt_credential` target이 있어야 한다.
-- `/api/v1/audit/events`는 node-local 조회다. 필요한 경우 각 node에서 조회한다.
+- `GET /api/v1/nodes/{nodeId}/audit/events`는 node-local 조회다. 각 node에서 해당 node의 canonical decimal ID를 path에 넣어 조회한다. 원격 node ID로 요청하면 `409 node_not_local`을 반환한다.
 
 각 node의 committed list가 다르거나 이전 credential이 성공하면 추가 폐기를 반복하지 말고 quorum·node readiness와 요청 이력을 확인한다.
 

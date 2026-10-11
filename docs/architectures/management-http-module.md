@@ -19,9 +19,9 @@
 - 맡는 책임: HTTP route를 application management port에 연결하고, named API key·OIDC JWT·break-glass bearer의 인증, permission matrix, rate limit과 공통 오류 응답을 적용한다.
 - 맡는 책임: rate limit을 적용한 요청의 거절 결과를 주입된 `AuditUseCase`에 전달한다.
 - 맡지 않는 책임: flag와 cluster JSON 검증, credential file I/O, cluster 전체 rate 합산, audit 파일 저장과 회전이다. 설정·key file 검증은 `cmd/narumq`가, audit 저장은 `internal/adapters/auditlog`가 담당한다.
-- 다른 모듈에 공개하는 기능: `NewServer`, `NewServerWithMembership`, `NewRouter`, `NewRouterWithMembership`, `ClusterPolicyUseCase`와 `ServerConfig`다.
+- 다른 모듈에 공개하는 기능: `NewServer`, `NewServerWithMembership`, `NewRouter`, `NewRouterWithMembership`, `NodeConfigurationUseCase`, `ClusterPolicyUseCase`와 `ServerConfig`다.
 
-`NewServer`는 standalone mode의 audit service를 연결하지 않는다. Cluster composition은 audit service/query, credential revocation·blocklist application service와 `ClusterPolicyUseCase`를 management server에 주입한다. `/api/v1/security/credential-revocations`의 GET·POST·DELETE와 `/api/v1/security/blocklist`의 GET, blocklist entry의 POST·DELETE는 `PermissionCredentialAdmin`으로 보호한다. Mutation은 해당 `security.credential.*` 또는 `security.blocklist.*` event를 admission한 뒤 service에 전달한다. `GET /api/v1/cluster/policy`는 ReadOnly, `PUT /api/v1/cluster/policy`는 ClusterAdmin 권한과 mutation audit admission을 요구한다. 성공한 policy update는 `cluster.policy.update` event에 이전·새 version을 기록한다. Standalone router에는 cluster-only service가 없으므로 해당 route를 등록하지 않는다. `GET /api/v1/audit/events`는 SecurityAdmin 또는 ClusterAdmin만 사용할 수 있고, 조회 결과를 다시 감사 기록하지 않는다.
+`NewServer`는 standalone mode의 audit service를 연결하지 않는다. Dynamic cluster composition은 audit service/query, `NodeConfigurationUseCase`, credential revocation·blocklist application service와 `ClusterPolicyUseCase`를 management server에 주입한다. `/api/v1/security/credential-revocations`의 GET·POST·DELETE와 `/api/v1/security/blocklist`의 GET, blocklist entry의 POST·DELETE는 `PermissionCredentialAdmin`으로 보호한다. Mutation은 해당 `security.credential.*` 또는 `security.blocklist.*` event를 admission한 뒤 service에 전달한다. `GET /api/v1/cluster/policy`는 ReadOnly, policy PUT과 `GET /api/v1/nodes/{nodeId}/config`는 ClusterAdmin 권한을 요구한다. 성공한 policy update는 `cluster.policy.update` event에 이전·새 version을 기록한다. `config`와 `/api/v1/nodes/{nodeId}/audit/events`는 인증·권한 검사 뒤 `requireLocalNode`를 적용한다. Node ID가 다르면 원격 proxy 없이 `409 node_not_local`을 반환한다. Standalone router에는 cluster-only service가 없으므로 해당 route를 등록하지 않는다. Audit 조회 결과를 다시 감사 기록하지 않는다.
 
 ## 2. 내부 구조
 
@@ -40,10 +40,12 @@ flowchart TD
     PrincipalBucket -->|한도 초과| Reject
     PrincipalBucket -->|허용| Role{"permission matrix"}
     Role -->|거절| Forbidden["403 응답"]
-    Role -->|audit-read permission| AuditQuery["audit_query_handlers.go<br/>GET /api/v1/audit/events"]
-    Role -->|다른 route 통과| Mutation{"mutation route인가?"}
-    Mutation -->|예| Admission["AuditUseCase.AdmitMutation"]
-    Mutation -->|아니오| Handler["management endpoint handler"]
+    Role -->|허용| NodeLocalRoute{"node-local config·audit route인가?"}
+    NodeLocalRoute -->|예| NodeScope["node_scope.go<br/>requireLocalNode"]
+    NodeLocalRoute -->|아니오| Mutation{"mutation route인가?"}
+    NodeScope -->|config route| NodeConfig["node_configuration_handlers.go<br/>GET /api/v1/nodes/{nodeId}/config"]
+    NodeScope -->|audit route| AuditQuery["audit_query_handlers.go<br/>GET /api/v1/nodes/{nodeId}/audit/events"]
+    NodeConfig -->|applied local config·effective source| ConfigUseCase["application/management<br/>NodeConfigurationUseCase"]
     AuditQuery -->|filter·cursor| QueryService["application/audit<br/>query service"]
     QueryService -->|읽기 전용| AuditReader["auditlog<br/>stored node-local chain"]
     AuditReader -->|저장된 record page| AuditQuery
@@ -56,16 +58,18 @@ flowchart TD
 
 | 요소 | 역할 | 만들어지는 시점과 소유자 | 의존 대상 |
 | --- | --- | --- | --- |
-| `server.go` `newRouter` | route를 등록하고 `Authenticator`를 route middleware에 연결한다. | Router를 만들 때 생성하며 HTTP server가 소유한다. | Management ports, metrics port, `ClusterPolicyUseCase`, `AuthConfig` |
+| `server.go` `newRouter` | route를 등록하고 `Authenticator`를 route middleware에 연결한다. | Router를 만들 때 생성하며 HTTP server가 소유한다. | Management ports, `NodeConfigurationUseCase`, metrics port, `ClusterPolicyUseCase`, `AuthConfig`, local node ID |
 | `auth.go` `NewAuthenticator` | credential 검증, `subject`·role 생성, 두 limiter 초기화와 기본값 적용을 한다. | Router 초기화 때 생성되며 해당 router가 소유한다. | `TokenVerifier`, `ports/clock.Clock`, `requestRateLimiter` |
 | `audit.go` `Authenticator.require` | 인증 실패 IP limit, 인증 성공 principal limit, permission 검사와 mutation admission 순서를 실행한다. | 요청마다 middleware가 호출한다. | `Authenticator`, optional `AuditUseCase` |
 | `audit.go` `rejectRateLimited` | denial audit 결과를 전달하고 `429` 응답과 `Retry-After`를 만든다. | 한도를 넘긴 요청마다 호출한다. | `recordOutcome`, `WriteError` |
 | `rate_limit.go` `requestRateLimiter` | key별 token bucket을 잠금으로 보호하고 refill·eviction을 수행한다. | `NewAuthenticator`마다 principal/IP limiter 하나씩 생성한다. | `ports/clock.Clock` |
 | `server.go` health·metrics route | probe와 scrape handler를 등록하고 rate limit에서 제외한다. | Router 초기화 때 등록한다. | `health.go`, `metrics.go` |
-| `audit_query_handlers.go` `GET /api/v1/audit/events` | query service에서 이 node의 저장된 hash-chain record를 읽어 공통 list envelope로 반환한다. 조회는 새 audit event를 만들지 않는다. | 요청마다 실행한다. | `application/audit` query service |
+| `node_scope.go` `requireLocalNode` | canonical decimal node ID를 확인하고 요청 대상과 serving node가 다르면 409를 반환한다. Remote proxy는 하지 않는다. | Node-local config·audit handler가 permission 검사 뒤 호출한다. | `ServerConfig.LocalNodeID`, `parseCanonicalMemberID`, `WriteError` |
+| `node_configuration_handlers.go` `GET /api/v1/nodes/{nodeId}/config` | local runtime configuration and effective policy sources를 `NodeConfigurationUseCase`에서 읽어 data envelope로 반환한다. Security section은 identity 수와 non-secret ACL 규칙을 포함하고, credential identity list와 secret values/paths는 제외한다. | Dynamic cluster route에서만 사용한다. | ClusterAdmin permission, local node scope, `NodeConfigurationUseCase` |
+| `audit_query_handlers.go` `GET /api/v1/nodes/{nodeId}/audit/events` | query service에서 이 node의 저장된 hash-chain record를 읽어 공통 list envelope로 반환한다. 조회는 새 audit event를 만들지 않는다. | 요청마다 실행한다. | local node scope, `application/audit` query service |
 | `credential_revocation_handlers.go` `GET`·`POST`·`DELETE` | Committed revocation list, revoke와 restore를 application service에 전달한다. | Dynamic cluster server route에서만 사용한다. | `PermissionCredentialAdmin`, mutation audit admission, `CredentialRevocationUseCase` |
 | `blocklist_handlers.go` `GET`·`POST`·`DELETE` | Committed blocklist와 block/unblock을 application service에 전달한다. | Dynamic cluster server route에서만 사용한다. | `PermissionCredentialAdmin`, mutation audit admission, `BlocklistUseCase` |
-| `cluster_policy_handlers.go` `GET`·`PUT /api/v1/cluster/policy` | Committed policy·ETag를 조회하고, conditional update와 idempotency replay를 application service에 전달한다. | Dynamic cluster server route에서만 사용한다. | ReadOnly/ClusterAdmin permission, mutation audit admission, `ClusterPolicyUseCase` |
+| `cluster_policy_handlers.go` `GET`·`PUT /api/v1/cluster/policy` | Committed policy·ETag를 조회한다. PUT은 strict JSON body와 optional `tenantQuotas`를 검증해 conditional update와 idempotency replay를 application service에 전달한다. Quota payload는 512 KiB 이하이고 `cluster-policy-tenant-quotas` feature가 필요하다. | Dynamic cluster server route에서만 사용한다. | ReadOnly/ClusterAdmin permission, mutation audit admission, `ClusterPolicyUseCase` |
 
 ## 3. 데이터 모델
 
@@ -78,6 +82,7 @@ flowchart TD
 | 인증 실패 key | `RemoteAddr`에서 분리한 host | auth-failure limiter map | host-port parsing 실패 시 원문을 쓰고 빈 주소는 `unknown`으로 바꾼다. |
 | `rateBucket` | `tokens float64`, `refilled time.Time` | limiter map | token은 rate를 넘지 않는다. 새 bucket은 가득 찬 상태로 시작한다. |
 | `requestRateLimiter.buckets` | key와 bucket의 map | process memory | limiter마다 최대 4096개다. Cluster node 사이에 공유하지 않는다. |
+| `ServerConfig.LocalNodeID` | serving node의 canonical decimal member ID | composition root가 cluster router에 전달 | Node-local config·audit route에서 path ID와 비교한다. Standalone router에는 0을 전달해 route를 등록하지 않는다. |
 
 ## 4. 처리 순서
 

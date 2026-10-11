@@ -25,37 +25,38 @@ type operationState struct {
 
 // StateMachine applies committed replicated state in strictly increasing order.
 type StateMachine struct {
-	mu                    sync.RWMutex
-	lastAppliedIndex      uint64
-	members               map[uint64]MemberIdentityDTO
-	operations            map[string]operationState
-	idempotency           map[string]string
-	ownerships            map[sessionKey]OwnershipStateDTO
-	subscriptions         map[subscriptionKey]SubscriptionStateDTO
-	delivery              map[sessionKey]DeliverySessionStateDTO
-	deliveryEntries       int
-	deliveryBytes         int
-	retained              map[retainedKey]RetainedStateDTO
-	retainedBytes         int
-	offline               map[sessionKey]OfflineSessionStateDTO
-	offlineMessages       int
-	offlineBytes          int
-	tenantUsage           map[string]tenantStorageUsage
-	tenantQuota           *TenantQuotaProfileDTO
-	tenantQuotaByTenant   map[string]TenantStorageQuotaDTO
-	clusterPolicy         *ClusterPolicyStateDTO
-	activeFeatures        []string
-	nodeDrains            map[uint64]NodeDrainStateDTO
-	connectionRebalance   *ConnectionRebalanceStateDTO
-	credentialRevocations map[string]CredentialRevocationStateDTO
-	blocklist             map[security.BlockEntry]BlocklistStateDTO
-	blocklistIndex        *security.Blocklist
-	blocklistVersion      uint64
-	sessionMetadata       map[sessionKey]SessionMetadataStateDTO
-	sessionWillBytes      int
-	proposalOrigins       map[uint64]*proposalOriginState
-	proposalReceiptCount  int
-	proposalResultBytes   int
+	mu                               sync.RWMutex
+	lastAppliedIndex                 uint64
+	members                          map[uint64]MemberIdentityDTO
+	operations                       map[string]operationState
+	idempotency                      map[string]string
+	ownerships                       map[sessionKey]OwnershipStateDTO
+	subscriptions                    map[subscriptionKey]SubscriptionStateDTO
+	delivery                         map[sessionKey]DeliverySessionStateDTO
+	deliveryEntries                  int
+	deliveryBytes                    int
+	retained                         map[retainedKey]RetainedStateDTO
+	retainedBytes                    int
+	offline                          map[sessionKey]OfflineSessionStateDTO
+	offlineMessages                  int
+	offlineBytes                     int
+	tenantUsage                      map[string]tenantStorageUsage
+	tenantQuota                      *TenantQuotaProfileDTO
+	tenantQuotaByTenant              map[string]TenantStorageQuotaDTO
+	clusterPolicyTenantQuotaByTenant map[string]TenantStorageQuotaDTO
+	clusterPolicy                    *ClusterPolicyStateDTO
+	activeFeatures                   []string
+	nodeDrains                       map[uint64]NodeDrainStateDTO
+	connectionRebalance              *ConnectionRebalanceStateDTO
+	credentialRevocations            map[string]CredentialRevocationStateDTO
+	blocklist                        map[security.BlockEntry]BlocklistStateDTO
+	blocklistIndex                   *security.Blocklist
+	blocklistVersion                 uint64
+	sessionMetadata                  map[sessionKey]SessionMetadataStateDTO
+	sessionWillBytes                 int
+	proposalOrigins                  map[uint64]*proposalOriginState
+	proposalReceiptCount             int
+	proposalResultBytes              int
 }
 
 // NewStateMachine constructs an empty deterministic replicated-state machine.

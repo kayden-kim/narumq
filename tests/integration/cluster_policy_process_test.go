@@ -141,7 +141,8 @@ type clusterPolicyProcessState struct {
 }
 
 type clusterPolicyProcessValue struct {
-	MQTTLimits clusterPolicyProcessMQTTLimits `json:"mqttLimits"`
+	MQTTLimits   clusterPolicyProcessMQTTLimits    `json:"mqttLimits"`
+	TenantQuotas *clusterPolicyProcessTenantQuotas `json:"tenantQuotas"`
 }
 
 func clusterPolicyProcessSetDesiredConfig(t *testing.T, path string, version uint64, limits clusterPolicyProcessMQTTLimits) {

@@ -5,7 +5,7 @@
 | 항목 | 값 |
 | --- | --- |
 | 상태 | Active (Phase 1 security and tenant isolation slice) |
-| 적용 범위 | TEN-01~TEN-05, SEC-02~SEC-04, SEC-06, SEC-08의 JWKS fail-closed 동작, SEC-10 Management API 인증·RBAC·node-local 감사 조회, SEC-07 credential 회전·폐기와 SEC-12 client·identity·IP blocklist를 정의한다. Dynamic cluster의 tenant별 저장 quota(TEN-08)는 [ADR-0017](../decisions/ADR-0017-tenant-storage-quota.md) 범위에서 제공한다. TEN-06·TEN-07의 node-local 연결·session·subscription·PUBLISH traffic 한도는 §5.2를 따른다. Management plane 감사는 §8과 [ADR-0039](../decisions/ADR-0039-management-audit-log.md)를 따르되, SEC-10의 인증·RBAC와 node-local 감사 조회 범위는 [ADR-0048](../decisions/ADR-0048-management-api-oidc-api-key-rbac.md)을 따른다. MQTT data-plane 거절 감사는 §8과 [ADR-0046](../decisions/ADR-0046-mqtt-data-plane-denial-audit.md)를 따른다. SEC-12는 [ADR-0050](../decisions/ADR-0050-mqtt-client-blocklist.md)을 따른다. Rollout controller 감사는 후속 범위다. Metrics는 인증 성공·실패, session gauge, 저장 quota 및 tenant 한도 거절을 포함하며, 상세 observability 정책은 §8과 Management API 스펙을 따른다. |
+| 적용 범위 | TEN-01~TEN-05, SEC-02~SEC-04, SEC-06, SEC-08의 JWKS fail-closed 동작, SEC-10 Management API 인증·RBAC·node-local 감사 조회, SEC-07 credential 회전·폐기와 SEC-12 client·identity·IP blocklist를 정의한다. Dynamic cluster의 저장 quota(TEN-08)는 [ADR-0017](../decisions/ADR-0017-tenant-storage-quota.md)와 §5.1에서 정한다. Policy quota는 `cluster-policy-tenant-quotas` feature를 활성화한 뒤 `ClusterPolicy.tenantQuotas`로 관리한다. TEN-06·TEN-07의 node-local 연결·session·subscription·PUBLISH traffic 한도는 §5.2를 따른다. Management plane 감사는 node-local hash chain에 저장한다. |
 | 근거 | [PRD 9.3절, 9.4절과 11.4절](../requirements/PRD.md), [RFC 8725](https://www.rfc-editor.org/rfc/rfc8725.html) |
 | 관련 spec | [MQTT protocol과 session](mqtt-protocol-and-session.md), [Management API](management-api-and-observability.md) |
 | 관련 Architecture | [Security boundaries](../architectures/security-boundaries.md), [Threat model](../architectures/threat-model.md), [System overview](../architectures/system-overview.md) |
@@ -180,7 +180,7 @@ ACL은 authenticated principal이 가진 모든 role의 tenant-local rule을 대
 
 ### 5.1 저장 quota
 
-Dynamic cluster는 tenant별 retained bytes, offline queue와 저장 총량을 제한해야 한다. 한 tenant의 초과가 다른 tenant에 설정된 한도를 바꾸지 않는다. 적용 차원, byte 계산, global limit 우선순위와 profile version은 [ADR-0017](../decisions/ADR-0017-tenant-storage-quota.md)을 따른다.
+Dynamic cluster는 tenant별 retained bytes, offline queue와 저장 총량 quota를 제한해야 한다. 한 tenant의 초과가 다른 tenant에 설정된 한도를 바꾸지 않는다. 적용 차원, byte 계산, global limit 우선순위와 profile version은 [ADR-0017](../decisions/ADR-0017-tenant-storage-quota.md)을 따른다. 적용 profile은 committed `ClusterPolicy.tenantQuotas`가 있으면 이를 우선하고, 없으면 legacy committed `TenantQuota` profile을 사용한다. Policy가 quota field를 제거한 version을 commit하면 legacy profile로 돌아간다.
 
 | 설정 key | 집계 대상 | cluster-wide 최대값 |
 | --- | --- | ---: |
@@ -190,8 +190,9 @@ Dynamic cluster는 tenant별 retained bytes, offline queue와 저장 총량을 �
 | `storageBytes` | retained, QoS 0 offline, durable delivery outbound·inbound QoS 2 bytes 합 | 48 MiB |
 
 선택 `tenantQuotas` field의 JSON 구조, 필수 항목과 검증 규칙은 [Process configuration v1 §1.3](../contracts/process-configuration-v1.md)에서 정한다.
+`clusterPolicy.tenantQuotas`는 `cluster-policy-tenant-quotas` feature 활성화 뒤에만 적용한다. Profile source와 version은 `GET /api/v1/nodes/{nodeId}/config`에서 확인한다.
 
-Profile은 더 높은 version의 Raft command가 commit된 뒤 모든 replica에 적용된다. 설정에 tenant 항목이 없으면 `default`를 사용한다. `tenantQuotas`를 생략하면 각 dimension의 cluster-wide 최대값인 version 0 built-in profile이 사용된다. 새 저장이 quota를 넘으면 retained/offline mutation은 기존 capacity 결과로 거절한다. Durable delivery는 [Cluster §4.5](cluster-session-and-delivery.md#45-publish-backpressure-admission)의 ingress 사전 판정에서 전역·tenant 한도 초과 publish를 거절한다. MQTT 5는 `0x97`, MQTT 3.1.1은 연결 종료를 반환한다. Tenant 초과는 `narumq_tenant_quota_rejections_total`에 기록한다. Apply 시점 경합은 기존 `Saturated` 처리다. Session당 한도와 RELEASE 시점 포화도 target을 건너뛰는 기존 동작을 유지한다.
+Effective profile이 policy에서 오면 rejection의 `ProfileVersion`은 committed `ClusterPolicy` version이다. Legacy profile이 적용되면 기존 `TenantQuota` version을 사용한다. Profile이 없으면 storage quota source는 `none`이다. 새 저장이 quota를 넘으면 retained/offline mutation은 기존 capacity 결과로 거절한다. Durable delivery는 [Cluster §4.5](cluster-session-and-delivery.md#45-publish-backpressure-admission)의 ingress 사전 판정에서 전역·tenant 한도 초과 publish를 거절한다. MQTT 5는 `0x97`, MQTT 3.1.1은 연결 종료를 반환한다. Tenant 초과는 `narumq_tenant_quota_rejections_total`에 기록한다. Apply 시점 경합은 기존 `Saturated` 처리다. Session당 한도와 RELEASE 시점 포화도 target을 건너뛰는 기존 동작을 유지한다.
 
 Proposer node는 `narumq_tenant_quota_rejections_total{tenant,dimension}` counter를 올리고 같은 tenant·dimension 경보 log를 10초 rate-limit한다. Tenant label은 최대 1,024개까지 보존하고 나머지는 `_overflow` label로 집계한다. Profile commit 여부, version과 local config mismatch는 각각 `narumq_tenant_quota_profile_committed`, `narumq_tenant_quota_profile_version`, `narumq_tenant_quota_config_mismatch`로 노출한다. Committed profile이 복구되기 전에는 cluster MQTT readiness를 허용하지 않는다.
 ### 5.2 연결 상태와 traffic 한도
@@ -239,8 +240,8 @@ Proposer node는 `narumq_tenant_quota_rejections_total{tenant,dimension}` counte
 | --- | --- | --- | --- | --- | --- |
 | `PermissionRead` | 기존 ReadOnly route 전체: 조회, drain·rebalance GET, membership-operation GET, feature GET, 405 응답 route, 익명 외 `/metrics`·probe | ✓ | ✓ | ✓ | ✓ |
 | `PermissionOperate` | drain POST/DELETE, rebalance POST/DELETE |  | ✓ |  | ✓ |
-| `PermissionAuditRead` | `GET /api/v1/audit/events` |  |  | ✓ | ✓ |
-| `PermissionClusterAdmin` | `/api/v1/tenants`, members POST/DELETE와 그 non-mutation 분기, feature POST, backups |  |  |  | ✓ |
+| `PermissionAuditRead` | `GET /api/v1/nodes/{nodeId}/audit/events` |  |  | ✓ | ✓ |
+| `PermissionClusterAdmin` | `/api/v1/tenants`, members POST/DELETE와 그 non-mutation 분기, feature POST, backups, node config GET |  |  |  | ✓ |
 | `PermissionCredentialAdmin` | credential revocation과 client blocklist list·block·unblock route |  |  | ✓ | ✓ |
 | delegated tenant role | 자기 tenant의 credential, ACL과 quota만 관리 (`TEN-10·API-07 후속 범위`) |  |  |  |  |
 
@@ -298,7 +299,7 @@ Dynamic cluster의 활성 Management API mutation 19개와 인증 `401`·인가 
 
 Management mutation은 실행 전에 node-local publisher의 준비 상태를 확인해야 한다. Publisher를 쓸 수 없으면 handler를 호출하지 않고 retryable `503 audit_unavailable`을 반환한다. Mutation 뒤 event 기록이 실패하면 작업을 되돌리지 않고 error log와 Metric으로 드러낸다.
 
-Event는 `management.auditDirectory`의 JSONL 파일에 append하며 각 줄을 fsync한다. 이전 줄의 SHA-256을 연결하는 hash chain은 손상과 연결된 줄의 누락을 검출한다. Broker는 크기 기준으로만 rotation하고 파일을 삭제하지 않는다. 외부 collector는 rotation 파일 중 가장 오래된 연속 prefix만 삭제할 수 있다. `GET /api/v1/audit/events`는 node-local 저장 record를 읽기 전용으로 조회하며, 보존 기간·SIEM 수집과 장기 검색·접근 권한은 외부 SIEM 책임이다.
+Event는 `management.auditDirectory`의 JSONL 파일에 append하며 각 줄을 fsync한다. 이전 줄의 SHA-256을 연결하는 hash chain은 손상과 연결된 줄의 누락을 검출한다. Broker는 크기 기준으로만 rotation하고 파일을 삭제하지 않는다. 외부 collector는 rotation 파일 중 가장 오래된 연속 prefix만 삭제할 수 있다. `GET /api/v1/nodes/{nodeId}/audit/events`는 요청을 받은 node의 node-local 저장 record를 읽기 전용으로 조회하며, 보존 기간·SIEM 수집과 장기 검색·접근 권한은 외부 SIEM 책임이다.
 
 Standalone mode에는 감사 publisher를 연결하지 않는다. Standalone은 이 계약의 Dynamic cluster mutation을 제공하지 않으며, standalone 401·403 event도 기록하지 않는다.
 
@@ -329,6 +330,7 @@ Rollout controller producer와 SIEM consumer의 unknown action/reason 검증은 
 | TEN-05 | system topic, retained, shared subscription, Will과 session이 tenant 경계를 넘지 않는다. | tenancy/routing/session 시험, `tests/integration/mqtt_ingress_test.go`의 `TestMQTTSecurity` |
 | TEN-06 | Tenant별 연결·session 제한은 node별로, subscription 제한은 route table의 tenant 수로 적용한다. 한 tenant의 초과는 다른 tenant를 거절하지 않으며, 초과 응답과 state 무변경을 확인한다. 같은 node의 동시 add와 replace/remove는 직렬화한다. | `internal/application/connect`, `internal/application/subscribe`의 `TestSubscribeTenantQuotaSerializesLocalAdmission`, `TestSubscribeTenantQuotaSerializesReplacementAndRemoval`, `internal/adapters/memory/sessionstore`, `internal/domain/routing`, `tests/integration/mqtt_tenant_limits_test.go` (`TestMQTTTenantLimits`), `tests/integration/cluster_tenant_limits_process_test.go` (`TestDynamicClusterTenantLimitsProcessAcceptance`) |
 | TEN-07 | Tenant별 payload 크기·message rate·byte rate를 제한한다. Rate 초과는 최대 `maxWaitMillis`까지 대기하고, MQTT 응답과 다른 tenant의 독립성을 확인한다. | `internal/application/tenantlimit`, `internal/adapters/tcp/server_tenant_limits_test.go`, `internal/adapters/metrics`, `cmd/narumq/security_config_test.go`, `cmd/narumq/tenant_limits_test.go`, `tests/integration/mqtt_tenant_limits_test.go` (`TestMQTTTenantLimits`) |
+| TEN-08 | Dynamic cluster는 tenant별 retained bytes, offline queue와 전체 저장 quota를 적용한다. Committed `ClusterPolicy.tenantQuotas`는 legacy `TenantQuota`보다 우선하고, policy field를 제거하면 legacy committed profile로 돌아간다. Quota feature gate, 3-node 적용, rejection profile version과 backup/snapshot restore를 확인한다. | `internal/application/membership`, `internal/adapters/raft/records`, `cmd/narumq`, `tests/integration.TestDynamicClusterTenantStorageQuotaProcessAcceptance`, `tests/integration.TestDynamicClusterPolicyTenantQuotasProcessAcceptance` |
 | SEC-11 | Dynamic cluster는 활성 Management API mutation 19개, 401·403 거절과 ADR-0046의 MQTT CONNECT·Will·PUBLISH·SUBSCRIBE·UNSUBSCRIBE 거절을 node-local JSONL hash chain에 기록한다. Management audit unavailable은 mutation을 막고 503을 반환한다. MQTT audit는 초당 20개·queue 256 한도에서 fail-open이며 응답을 바꾸지 않는다. | `internal/adapters/http/management/audit_test.go`, `internal/application/audit/dataplane_test.go`, `tests/contracts/audit-event-v1/contract_test.go`, `tests/integration/cluster_audit_process_test.go::TestDynamicClusterMQTTDenialAuditProcessAcceptance` |
 | SEC-12 | Dynamic cluster에서 tenant-scoped Client ID, CONNECT User Name, verified leaf certificate fingerprint와 source IP prefix 차단을 확인한다. 적용 version·entry 목록, 5초 전파, MQTT 3.1.1·5 거절·기존 연결 종료·Will 억제, feature gate, management RBAC·audit도 확인한다. | `internal/domain/security/blocklist_test.go`, `internal/domain/session/state_test.go::TestLifecycleDisconnectAccessRevokedDiscardsWill`, `internal/application/membership/blocklist_test.go`, `blocklist_service_test.go`, `internal/adapters/raft/records/blocklist_codec_test.go`, `cmd/narumq/cluster_records_blocklist_test.go`, `internal/application/connect/blocklist_test.go`, `internal/adapters/tcp/server_blocklist_test.go`, `internal/adapters/tls/listener_test.go`, `internal/adapters/http/management/blocklist_handlers_test.go`, `tests/contracts/management-api-v1/contract_test.go`, `tests/contracts/audit-event-v1/contract_test.go`, `tests/integration/mqtt_tls_test.go::TestMQTTTLSBlockedCertificateFingerprintRejected`, `tests/integration/cluster_blocklist_process_test.go::TestDynamicClusterClientBlocklistProcessAcceptance` |
 | NFR-17 | 기록된 event의 줄 순서·hash 연결·변조 검출, 중첩 details의 잘못된 UTF-8 거절, handler panic의 감사 HTTP 상태 500, Windows rotation 충돌 보호와 audit/Raft directory 경계를 확인한다. 보존 기간 값과 SIEM 접근 권한은 외부 결정으로 미정이다. | `internal/application/audit/service_test.go`, `internal/adapters/http/management/audit_test.go`, `internal/adapters/auditlog/file_publisher_test.go`, `internal/adapters/auditlog/persist_windows_test.go`, `cmd/narumq/cluster_config_test.go`, `cmd/narumq/main_test.go::TestAuditVerifyCommandVerifiesAndLeavesFilesReadOnly`, `tests/contracts/audit-event-v1/contract_test.go`, `tests/integration/cluster_audit_process_test.go::TestDynamicClusterManagementAuditProcessAcceptance` |

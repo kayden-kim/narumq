@@ -55,7 +55,7 @@ func newBlocklistHTTPTestHandler(service BlocklistUseCase, role Role, auditServi
 		auditService = &spyAuditUseCase{}
 	}
 	return NewRouterWithMembership(ServerConfig{APIKeys: []APIKeyCredential{{ID: "test", Key: "blocklist-secret", Roles: []Role{role}}}, ClusterID: "test-cluster"},
-		&mockStateProvider{}, nil, nil, nil, nil, nil, nil, auditService, nil, nil, service, nil)
+		&mockStateProvider{}, nil, nil, nil, nil, nil, nil, auditService, nil, nil, service, nil, nil)
 }
 
 func blocklistHTTPRequest(method, path, body string) *http.Request {
@@ -295,7 +295,7 @@ func TestBlocklistRoutesRejectInvalidInputAndRoles(t *testing.T) {
 		t.Fatalf("list unsupported method response=%d Allow=%q", response.Code, response.Header().Get("Allow"))
 	}
 
-	noService := NewRouterWithMembership(ServerConfig{}, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
+	noService := NewRouterWithMembership(ServerConfig{}, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
 	response = httptest.NewRecorder()
 	noService.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/api/v1/security/blocklist", nil))
 	if response.Code != http.StatusNotFound {

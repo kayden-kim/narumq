@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"os"
@@ -433,10 +434,10 @@ func TestClusterBackupArchivePreservesDurableQoSState(t *testing.T) {
 	}
 }
 
-// Traceability: API-09; CFG-SCN-27; docs/contracts/replicated-state-v1.md §2; ADR-0052 §1.1.1.
-func TestClusterBackupArchivePreservesClusterPolicy(t *testing.T) {
+// Traceability: API-09; CFG-SCN-27, CFG-SCN-38; docs/contracts/replicated-state-v1.md §3; ADR-0052 §1.1.1.
+func TestClusterBackupArchivePreservesClusterPolicyTenantQuotas(t *testing.T) {
 	config := validBootstrapClusterConfig()
-	config.Features = []string{membership.ClusterPolicyFeature}
+	config.Features = []string{membership.ClusterPolicyFeature, membership.ClusterPolicyTenantQuotasFeature}
 	_, members, err := clusterBootstrapIdentities(config)
 	if err != nil {
 		t.Fatalf("build bootstrap identities: %v", err)
@@ -445,27 +446,41 @@ func TestClusterBackupArchivePreservesClusterPolicy(t *testing.T) {
 	if err := machine.InitializeBootstrap(1, members); err != nil {
 		t.Fatalf("initialize policy backup state: %v", err)
 	}
-	activate := membership.CommandDTO{
-		SchemaMajor: membership.SchemaMajor, SchemaMinor: membership.SchemaMinor,
-		OperationID:       "00000000-0000-4000-8000-000000000001",
-		FeatureActivation: &membership.FeatureActivationDTO{Feature: membership.ClusterPolicyFeature},
+	for index, feature := range []string{membership.ClusterPolicyFeature, membership.ClusterPolicyTenantQuotasFeature} {
+		activate := membership.CommandDTO{
+			SchemaMajor: membership.SchemaMajor, SchemaMinor: membership.SchemaMinor,
+			OperationID:       fmt.Sprintf("00000000-0000-4000-8000-%012d", index+1),
+			FeatureActivation: &membership.FeatureActivationDTO{Feature: feature},
+		}
+		if result, err := machine.Apply(uint64(index+2), activate); err != nil || result.Outcome != membership.ApplyOutcomeApplied {
+			t.Fatalf("activate feature %s: result=%+v err=%v", feature, result, err)
+		}
 	}
-	if result, err := machine.Apply(2, activate); err != nil || result.Outcome != membership.ApplyOutcomeApplied {
-		t.Fatalf("activate ClusterPolicy: result=%+v err=%v", result, err)
+	policy := membership.ClusterPolicyDTO{
+		MQTTLimits: membership.MQTTLimitsDTO{
+			MaxPacketSize: 2_097_152, ReceiveMaximum: 128,
+			ConnectTimeoutMillis: 15_000, PacketReadTimeoutMillis: 45_000, WriteTimeoutMillis: 7_000,
+		},
+		TenantQuotas: &membership.ClusterTenantQuotasDTO{
+			Default: membership.TenantStorageQuotaDTO{
+				RetainedBytes: 1_048_576, OfflineQueueMessages: 64,
+				OfflineQueueBytes: 2_097_152, StorageBytes: 4_194_304,
+			},
+			Tenants: []membership.TenantStorageQuotaDTO{{
+				TenantID: "tenant-a", RetainedBytes: 524_288, OfflineQueueMessages: 32,
+				OfflineQueueBytes: 1_048_576, StorageBytes: 2_097_152,
+			}},
+		},
 	}
-	policy := membership.ClusterPolicyDTO{MQTTLimits: membership.MQTTLimitsDTO{
-		MaxPacketSize: 2_097_152, ReceiveMaximum: 128,
-		ConnectTimeoutMillis: 15_000, PacketReadTimeoutMillis: 45_000, WriteTimeoutMillis: 7_000,
-	}}
 	change := membership.ClusterPolicyChangeDTO{ExpectedVersion: 0, Version: 1, Policy: policy, IdempotencyKey: "backup-policy"}
 	command := membership.CommandDTO{
 		SchemaMajor: membership.SchemaMajor, SchemaMinor: membership.SchemaMinor,
-		OperationID: "00000000-0000-4000-8000-000000000002", ClusterPolicy: &change,
+		OperationID: "00000000-0000-4000-8000-000000000003", ClusterPolicy: &change,
 	}
-	if result, err := machine.Apply(3, command); err != nil || result.Outcome != membership.ApplyOutcomeApplied {
+	if result, err := machine.Apply(4, command); err != nil || result.Outcome != membership.ApplyOutcomeApplied {
 		t.Fatalf("apply ClusterPolicy: result=%+v err=%v", result, err)
 	}
-	snapshot, err := machine.Snapshot(3)
+	snapshot, err := machine.Snapshot(4)
 	if err != nil {
 		t.Fatalf("snapshot ClusterPolicy: %v", err)
 	}
@@ -474,8 +489,8 @@ func TestClusterBackupArchivePreservesClusterPolicy(t *testing.T) {
 		t.Fatalf("encode ClusterPolicy snapshot: %v", err)
 	}
 	image := raftadapter.BackupImageDTO{
-		SnapshotIndex: 3, SnapshotTerm: 1, SnapshotData: encodedSnapshot,
-		CommitIndex: 3, CommitTerm: 1, VoterIDs: []raftadapter.NodeID{1, 2, 3},
+		SnapshotIndex: 4, SnapshotTerm: 1, SnapshotData: encodedSnapshot,
+		CommitIndex: 4, CommitTerm: 1, VoterIDs: []raftadapter.NodeID{1, 2, 3},
 	}
 	backup, err := buildClusterBackupArchive(config, image, encodedSnapshot)
 	if err != nil {
@@ -494,7 +509,7 @@ func TestClusterBackupArchivePreservesClusterPolicy(t *testing.T) {
 		t.Fatalf("restore archived ClusterPolicy snapshot: %v", err)
 	}
 	state, found := restored.ClusterPolicy()
-	if !found || state.Version != 1 || state.Policy != policy {
+	if !found || state.Version != 1 || !membership.EqualClusterPolicy(state.Policy, policy) {
 		t.Fatalf("archived ClusterPolicy state=(%+v, found=%t), want version 1 and policy %+v", state, found, policy)
 	}
 }

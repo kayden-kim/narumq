@@ -3,8 +3,8 @@
   "jsonSchemaDialect": "https://json-schema.org/draft/2020-12/schema",
   "info": {
     "title": "NaruMQ Management API",
-    "version": "1.14.0",
-    "description": "Query, observability, authenticated cluster membership and feature activation, cluster policy updates, broker node drain and connection rebalance, credential revocation and client blocklist, cluster-backup operations, and node-local management audit events. Per-principal and failed-authentication rate limiting applies to /api/v1. Dashboard APIs are deferred."
+    "version": "1.15.0",
+    "description": "Query, observability, authenticated cluster membership and feature activation, cluster policy updates, node configuration, broker node drain and connection rebalance, credential revocation and client blocklist, cluster-backup operations, and node-local management audit events. Per-principal and failed-authentication rate limiting applies to /api/v1. Dashboard APIs are deferred."
   },
   "servers": [
     {
@@ -149,14 +149,15 @@
       "put": {
         "tags": ["Cluster"],
         "operationId": "updateClusterPolicy",
-        "summary": "Commit cluster MQTT limits",
-        "description": "Requires ClusterAdmin and an active cluster-policy feature. If-Match must contain the current ETag version. Replaying the most recent Idempotency-Key with the same expected version and request body returns the same committed version. The node-local audit event is cluster.policy.update.",
+        "summary": "Commit cluster MQTT and tenant storage policies",
+        "description": "Requires ClusterAdmin and an active cluster-policy feature. If-Match must contain the current ETag version. Replaying the most recent Idempotency-Key with the same expected version and request body returns the same committed version. tenantQuotas also requires the cluster-policy-tenant-quotas feature. The node-local audit event is cluster.policy.update.",
         "parameters": [
           { "$ref": "#/components/parameters/IfMatch" },
           { "$ref": "#/components/parameters/IdempotencyKey" }
         ],
         "requestBody": {
           "required": true,
+          "description": "JSON body limit: 512 KiB. tenantQuotas may be omitted or null to use the committed legacy TenantQuota profile.",
           "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ClusterPolicy" } } }
         },
         "responses": {
@@ -174,7 +175,7 @@
           "405": { "$ref": "#/components/responses/MethodNotAllowed" },
           "429": { "$ref": "#/components/responses/TooManyRequests" },
           "409": {
-            "description": "The feature is inactive (`feature_inactive`), If-Match is stale (`cluster_policy_version_conflict`), or the key was used for different content (`idempotency_conflict`).",
+            "description": "The feature is inactive (`feature_inactive`), If-Match is stale (`cluster_policy_version_conflict`), the key was used for different content (`idempotency_conflict`), or tenantQuotas is present while `cluster-policy-tenant-quotas` is inactive (`feature_inactive`).",
             "headers": { "X-Request-Id": { "$ref": "#/components/headers/XRequestId" } },
             "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorResponse" } } }
           },
@@ -445,6 +446,34 @@
           "403": { "$ref": "#/components/responses/Forbidden" },
           "404": { "$ref": "#/components/responses/NotFound" },
           "405": { "$ref": "#/components/responses/MethodNotAllowed" }
+        }
+      }
+    },
+    "/api/v1/nodes/{nodeId}/config": {
+      "parameters": [{ "$ref": "#/components/parameters/LocalNodeId" }],
+      "get": {
+        "tags": ["Nodes"],
+        "operationId": "getNodeConfiguration",
+        "summary": "Read the serving node's applied configuration",
+        "description": "Requires ClusterAdmin. Dynamic cluster only. This route reads only the serving node. A different valid nodeId returns 409 node_not_local; malformed or non-canonical IDs return 404. The server does not proxy to another node. Query parameters and request bodies are rejected. Security data includes identity counts and ACL rules (tenantId, role, effect, action, topicFilter), but not authentication identity lists, secret values, secret paths, password hashes or tokens.",
+        "responses": {
+          "200": {
+            "description": "Applied node configuration and effective cluster policy sources.",
+            "headers": { "X-Request-Id": { "$ref": "#/components/headers/XRequestId" } },
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/NodeConfigurationResponse" } } }
+          },
+          "400": { "$ref": "#/components/responses/BadRequest" },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "403": { "$ref": "#/components/responses/Forbidden" },
+          "404": { "$ref": "#/components/responses/NotFound" },
+          "405": { "$ref": "#/components/responses/MethodNotAllowed" },
+          "409": {
+            "description": "The valid nodeId is not the node serving this request (`node_not_local`).",
+            "headers": { "X-Request-Id": { "$ref": "#/components/headers/XRequestId" } },
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/NodeNotLocalErrorResponse" } } }
+          },
+          "429": { "$ref": "#/components/responses/TooManyRequests" },
+          "500": { "description": "Unexpected error while reading node configuration.", "headers": { "X-Request-Id": { "$ref": "#/components/headers/XRequestId" } }, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorResponse" } } } }
         }
       }
     },
@@ -927,12 +956,13 @@
         "responses": { "200": { "$ref": "#/components/responses/BlocklistStatusResponse" }, "400": { "$ref": "#/components/responses/BadRequest" }, "401": { "$ref": "#/components/responses/Unauthorized" }, "403": { "$ref": "#/components/responses/Forbidden" }, "405": { "$ref": "#/components/responses/MethodNotAllowed" }, "409": { "description": "The client-blocklist feature is inactive.", "headers": { "X-Request-Id": { "$ref": "#/components/headers/XRequestId" } }, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorResponse" } } } }, "429": { "$ref": "#/components/responses/TooManyRequests" }, "500": { "description": "Unexpected error while changing blocklist state.", "headers": { "X-Request-Id": { "$ref": "#/components/headers/XRequestId" } }, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorResponse" } } } }, "503": { "$ref": "#/components/responses/Unavailable" } }
       }
     },
-    "/api/v1/audit/events": {
+    "/api/v1/nodes/{nodeId}/audit/events": {
       "get": {
         "tags": ["Audit"],
         "operationId": "listAuditEvents",
-        "description": "Requires SecurityAdmin or ClusterAdmin. Returns this node's audit hash-chain records newest first.",
+        "description": "Requires SecurityAdmin or ClusterAdmin. Returns this node's audit hash-chain records newest first. The canonical positive decimal nodeId must identify the serving node; otherwise the route returns 404 for an invalid ID or 409 node_not_local. The server does not proxy to another node.",
         "parameters": [
+          { "$ref": "#/components/parameters/LocalNodeId" },
           { "$ref": "#/components/parameters/Cursor" },
           { "$ref": "#/components/parameters/Limit" },
           {
@@ -998,6 +1028,12 @@
           "403": { "$ref": "#/components/responses/Forbidden" },
           "405": { "$ref": "#/components/responses/MethodNotAllowed" },
           "429": { "$ref": "#/components/responses/TooManyRequests" },
+          "404": { "$ref": "#/components/responses/NotFound" },
+          "409": {
+            "description": "The valid nodeId is not the node serving this request (`node_not_local`).",
+            "headers": { "X-Request-Id": { "$ref": "#/components/headers/XRequestId" } },
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/NodeNotLocalErrorResponse" } } }
+          },
           "503": {
             "description": "The node-local audit log is unavailable (`audit_unavailable`).",
             "headers": { "X-Request-Id": { "$ref": "#/components/headers/XRequestId" } },
@@ -1062,7 +1098,7 @@
         "name": "cursor",
         "in": "query",
         "required": false,
-        "description": "Opaque pagination cursor. For `/api/v1/audit/events`, RawURL base64 of `seq:<decimal>`; the next page contains records with seq lower than that value.",
+        "description": "Opaque pagination cursor. For `/api/v1/nodes/{nodeId}/audit/events`, RawURL base64 of `seq:<decimal>`; the next page contains records with seq lower than that value.",
         "example": "Y3VyOjUw",
         "schema": { "type": "string", "minLength": 1, "maxLength": 4096 }
       },
@@ -1107,6 +1143,14 @@
         "required": true,
         "example": "node-1",
         "schema": { "$ref": "#/components/schemas/OpaqueId" }
+      },
+      "LocalNodeId": {
+        "name": "nodeId",
+        "in": "path",
+        "required": true,
+        "description": "Canonical positive decimal uint64 ID of the node serving this request.",
+        "example": "1",
+        "schema": { "type": "string", "minLength": 1, "maxLength": 20, "pattern": "^[1-9][0-9]*$" }
       },
       "DrainNodeId": {
         "name": "nodeId",
@@ -1826,6 +1870,33 @@
           "requestId": { "type": "string", "minLength": 1, "maxLength": 128 }
         }
       },
+      "NodeNotLocalErrorBody": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["code", "message", "retryable", "details"],
+        "properties": {
+          "code": { "type": "string", "const": "node_not_local" },
+          "message": { "type": "string", "const": "nodeId does not identify the node serving this request" },
+          "retryable": { "type": "boolean", "const": false },
+          "details": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["servingNodeId"],
+            "properties": {
+              "servingNodeId": { "type": "string", "minLength": 1, "maxLength": 20, "pattern": "^[1-9][0-9]*$" }
+            }
+          }
+        }
+      },
+      "NodeNotLocalErrorResponse": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["error", "requestId"],
+        "properties": {
+          "error": { "$ref": "#/components/schemas/NodeNotLocalErrorBody" },
+          "requestId": { "type": "string", "minLength": 1, "maxLength": 128 }
+        }
+      },
       "HealthData": {
         "type": "object",
         "additionalProperties": false,
@@ -1901,7 +1972,67 @@
         "type": "object",
         "additionalProperties": false,
         "required": ["mqttLimits"],
-        "properties": { "mqttLimits": { "$ref": "#/components/schemas/MqttLimits" } }
+        "properties": {
+          "mqttLimits": { "$ref": "#/components/schemas/MqttLimits" },
+          "tenantQuotas": {
+            "anyOf": [
+              { "$ref": "#/components/schemas/ClusterTenantQuotas" },
+              { "type": "null" }
+            ]
+          }
+        }
+      },
+      "TenantQuotaLimits": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["retainedBytes", "offlineQueueMessages", "offlineQueueBytes", "storageBytes"],
+        "properties": {
+          "retainedBytes": { "type": "integer", "minimum": 1, "maximum": 16777216 },
+          "offlineQueueMessages": { "type": "integer", "minimum": 1, "maximum": 8192 },
+          "offlineQueueBytes": { "type": "integer", "minimum": 1, "maximum": 33554432 },
+          "storageBytes": { "type": "integer", "minimum": 1, "maximum": 50331648 }
+        }
+      },
+      "TenantQuotaEntry": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["tenantId", "retainedBytes", "offlineQueueMessages", "offlineQueueBytes", "storageBytes"],
+        "properties": {
+          "tenantId": { "type": "string", "minLength": 1, "maxLength": 128 },
+          "retainedBytes": { "type": "integer", "minimum": 1, "maximum": 16777216 },
+          "offlineQueueMessages": { "type": "integer", "minimum": 1, "maximum": 8192 },
+          "offlineQueueBytes": { "type": "integer", "minimum": 1, "maximum": 33554432 },
+          "storageBytes": { "type": "integer", "minimum": 1, "maximum": 50331648 }
+        }
+      },
+      "ClusterTenantQuotas": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["default", "tenants"],
+        "properties": {
+          "default": { "$ref": "#/components/schemas/TenantQuotaLimits" },
+          "tenants": {
+            "type": "array",
+            "maxItems": 1024,
+            "items": { "$ref": "#/components/schemas/TenantQuotaEntry" },
+            "description": "Tenant IDs must be unique and sorted in ascending UTF-8 byte order."
+          }
+        }
+      },
+      "TenantQuotaProfile": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["version", "default", "tenants"],
+        "properties": {
+          "version": { "type": "integer", "minimum": 0, "maximum": 18446744073709551615 },
+          "default": { "$ref": "#/components/schemas/TenantQuotaLimits" },
+          "tenants": {
+            "type": "array",
+            "maxItems": 1024,
+            "items": { "$ref": "#/components/schemas/TenantQuotaEntry" },
+            "description": "Tenant IDs must be unique and sorted in ascending UTF-8 byte order."
+          }
+        }
       },
       "ClusterPolicyView": {
         "type": "object",
@@ -2096,6 +2227,285 @@
         "properties": {
           "data": { "type": "array", "items": { "$ref": "#/components/schemas/NodeData" } },
           "page": { "$ref": "#/components/schemas/Page" }
+        }
+      },
+      "NodeConfigurationData": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["node", "build", "peer", "management", "mqtt", "replication", "publishBackpressure", "runtimeMetrics", "security", "effectivePolicy"],
+        "properties": {
+          "node": { "$ref": "#/components/schemas/NodeIdentityConfiguration" },
+          "build": { "$ref": "#/components/schemas/NodeBuildConfiguration" },
+          "peer": { "$ref": "#/components/schemas/PeerConfiguration" },
+          "management": { "$ref": "#/components/schemas/ManagementConfiguration" },
+          "mqtt": { "$ref": "#/components/schemas/MQTTListenerConfiguration" },
+          "replication": { "$ref": "#/components/schemas/ReplicationConfiguration" },
+          "publishBackpressure": { "$ref": "#/components/schemas/PublishBackpressureConfiguration" },
+          "runtimeMetrics": { "$ref": "#/components/schemas/RuntimeMetricsConfiguration" },
+          "security": { "$ref": "#/components/schemas/SecurityConfiguration" },
+          "effectivePolicy": { "$ref": "#/components/schemas/EffectivePolicyConfiguration" }
+        }
+      },
+      "NodeConfigurationResponse": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["data"],
+        "properties": { "data": { "$ref": "#/components/schemas/NodeConfigurationData" } }
+      },
+      "NodeIdentityConfiguration": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["clusterId", "nodeId", "role", "listenAddress", "advertisedAddress", "localDNSName"],
+        "properties": {
+          "clusterId": { "type": "string", "minLength": 1, "maxLength": 128 },
+          "nodeId": { "type": "string", "minLength": 1, "maxLength": 20, "pattern": "^[1-9][0-9]*$" },
+          "role": { "type": "string", "minLength": 1, "maxLength": 32 },
+          "listenAddress": { "type": "string", "minLength": 1, "maxLength": 512 },
+          "advertisedAddress": { "type": "string", "minLength": 1, "maxLength": 512 },
+          "localDNSName": { "type": "string", "minLength": 1, "maxLength": 253 }
+        }
+      },
+      "NodeBuildConfiguration": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["releaseVersion", "features", "clusterProtocolMajor", "clusterProtocolMinor", "stateSchemaMajor", "stateSchemaMinor"],
+        "properties": {
+          "releaseVersion": { "type": "string", "minLength": 5, "maxLength": 64 },
+          "features": { "type": "array", "items": { "$ref": "#/components/schemas/ClusterFeatureToken" } },
+          "clusterProtocolMajor": { "type": "integer", "minimum": 1, "maximum": 4294967295 },
+          "clusterProtocolMinor": { "type": "integer", "minimum": 0, "maximum": 4294967295 },
+          "stateSchemaMajor": { "type": "integer", "minimum": 1, "maximum": 4294967295 },
+          "stateSchemaMinor": { "type": "integer", "minimum": 0, "maximum": 4294967295 }
+        }
+      },
+      "PeerBootstrapMemberConfiguration": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["memberId", "address", "dnsSan"],
+        "properties": {
+          "memberId": { "type": "integer", "minimum": 1, "maximum": 18446744073709551615 },
+          "address": { "type": "string", "minLength": 1, "maxLength": 512 },
+          "dnsSan": { "type": "string", "minLength": 1, "maxLength": 253 }
+        }
+      },
+      "PeerTLSConfiguration": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["certificateConfigured", "privateKeyConfigured", "caConfigured"],
+        "properties": {
+          "certificateConfigured": { "type": "boolean" },
+          "privateKeyConfigured": { "type": "boolean" },
+          "caConfigured": { "type": "boolean" }
+        }
+      },
+      "PeerConfiguration": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["seedAddresses", "bootstrapMembers", "tls"],
+        "properties": {
+          "seedAddresses": { "type": "array", "items": { "type": "string", "minLength": 1, "maxLength": 512 } },
+          "bootstrapMembers": { "type": "array", "items": { "$ref": "#/components/schemas/PeerBootstrapMemberConfiguration" } },
+          "tls": { "$ref": "#/components/schemas/PeerTLSConfiguration" }
+        }
+      },
+      "JWTVerifierConfiguration": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["issuer", "audience", "algorithms", "jwksUrl", "cacheTtlMillis", "refreshCooldownMillis", "clockSkewMillis", "httpTimeoutMillis", "identityCount"],
+        "properties": {
+          "issuer": { "type": "string", "minLength": 1, "maxLength": 2048 },
+          "audience": { "type": "string", "minLength": 1, "maxLength": 2048 },
+          "algorithms": { "type": "array", "minItems": 1, "items": { "type": "string", "minLength": 1, "maxLength": 32 } },
+          "jwksUrl": { "type": "string", "format": "uri", "maxLength": 2048, "description": "User information is removed from the URL before it is returned." },
+          "cacheTtlMillis": { "type": "integer", "minimum": 1, "maximum": 4294967295 },
+          "refreshCooldownMillis": { "type": "integer", "minimum": 1, "maximum": 4294967295 },
+          "clockSkewMillis": { "type": "integer", "minimum": 1, "maximum": 4294967295 },
+          "httpTimeoutMillis": { "type": "integer", "minimum": 1, "maximum": 4294967295 },
+          "identityCount": { "type": "integer", "minimum": 0, "maximum": 1000000 }
+        }
+      },
+      "ManagementConfiguration": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["listenAddress", "requestRate", "authFailureRate", "apiKeyCount", "oidc", "breakGlassTokenConfigured", "auditDirectoryConfigured"],
+        "properties": {
+          "listenAddress": { "type": "string", "minLength": 1, "maxLength": 512 },
+          "requestRate": { "type": "integer", "minimum": 1, "maximum": 1000000 },
+          "authFailureRate": { "type": "integer", "minimum": 1, "maximum": 1000000 },
+          "apiKeyCount": { "type": "integer", "minimum": 0, "maximum": 1000000 },
+          "oidc": { "anyOf": [{ "$ref": "#/components/schemas/JWTVerifierConfiguration" }, { "type": "null" }] },
+          "breakGlassTokenConfigured": { "type": "boolean" },
+          "auditDirectoryConfigured": { "type": "boolean" }
+        }
+      },
+      "MQTTTLSConfiguration": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["clientAuth", "minVersion", "certificateConfigured", "privateKeyConfigured", "caConfigured"],
+        "properties": {
+          "clientAuth": { "type": "string", "enum": ["none", "request", "require"] },
+          "minVersion": { "type": "string", "enum": ["1.2", "1.3"] },
+          "certificateConfigured": { "type": "boolean" },
+          "privateKeyConfigured": { "type": "boolean" },
+          "caConfigured": { "type": "boolean" }
+        }
+      },
+      "MQTTListenerConfiguration": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["tcpListenAddress", "tlsListenAddress", "securityConfigConfigured", "tcpMaxConnections", "tcpConnectionRate", "tlsMaxConnections", "tlsConnectionRate", "tls"],
+        "properties": {
+          "tcpListenAddress": { "type": "string", "maxLength": 512 },
+          "tlsListenAddress": { "type": "string", "maxLength": 512 },
+          "securityConfigConfigured": { "type": "boolean" },
+          "tcpMaxConnections": { "type": "integer", "minimum": 0, "maximum": 1000000 },
+          "tcpConnectionRate": { "type": "integer", "minimum": 0, "maximum": 1000000 },
+          "tlsMaxConnections": { "type": "integer", "minimum": 0, "maximum": 1000000 },
+          "tlsConnectionRate": { "type": "integer", "minimum": 0, "maximum": 1000000 },
+          "tls": { "anyOf": [{ "$ref": "#/components/schemas/MQTTTLSConfiguration" }, { "type": "null" }] }
+        }
+      },
+      "ReplicationConfiguration": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["factor", "writeQuorum"],
+        "properties": {
+          "factor": { "type": "integer", "minimum": 1 },
+          "writeQuorum": { "type": "integer", "minimum": 1 }
+        }
+      },
+      "PublishBackpressureConfiguration": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["minFreeBytes", "maxCommitLagMillis"],
+        "properties": {
+          "minFreeBytes": { "type": "integer", "minimum": 0, "maximum": 1125899906842624 },
+          "maxCommitLagMillis": { "type": "integer", "minimum": 100, "maximum": 10000 }
+        }
+      },
+      "RuntimeMetricsConfiguration": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["enabled", "intervalMillis", "outputFileConfigured"],
+        "properties": {
+          "enabled": { "type": "boolean" },
+          "intervalMillis": { "type": "integer", "minimum": 0, "maximum": 3600000 },
+          "outputFileConfigured": { "type": "boolean" }
+        }
+      },
+      "TenantLimitValues": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["maxConnections", "maxSessions", "maxSubscriptions", "messagesPerSecond", "bytesPerSecond", "maxPayloadBytes"],
+        "properties": {
+          "maxConnections": { "type": "integer", "minimum": 0, "maximum": 18446744073709551615 },
+          "maxSessions": { "type": "integer", "minimum": 0, "maximum": 18446744073709551615 },
+          "maxSubscriptions": { "type": "integer", "minimum": 0, "maximum": 18446744073709551615 },
+          "messagesPerSecond": { "type": "integer", "minimum": 0, "maximum": 18446744073709551615 },
+          "bytesPerSecond": { "type": "integer", "minimum": 0, "maximum": 18446744073709551615 },
+          "maxPayloadBytes": { "type": "integer", "minimum": 0, "maximum": 18446744073709551615 }
+        }
+      },
+      "TenantLimitsConfiguration": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["maxWaitMillis", "default", "tenantCount"],
+        "properties": {
+          "maxWaitMillis": { "type": "integer", "minimum": 0, "maximum": 4294967295 },
+          "default": { "$ref": "#/components/schemas/TenantLimitValues" },
+          "tenantCount": { "type": "integer", "minimum": 0, "maximum": 1000000 }
+        }
+      },
+      "JWTConfiguration": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["issuer", "audience", "algorithms", "jwksUrl", "cacheTtlMillis", "refreshCooldownMillis", "clockSkewMillis", "httpTimeoutMillis"],
+        "properties": {
+          "issuer": { "type": "string", "minLength": 1, "maxLength": 2048 },
+          "audience": { "type": "string", "minLength": 1, "maxLength": 2048 },
+          "algorithms": { "type": "array", "minItems": 1, "items": { "type": "string", "minLength": 1, "maxLength": 32 } },
+          "jwksUrl": { "type": "string", "format": "uri", "maxLength": 2048, "description": "User information is removed from the URL before it is returned." },
+          "cacheTtlMillis": { "type": "integer", "minimum": 1, "maximum": 4294967295 },
+          "refreshCooldownMillis": { "type": "integer", "minimum": 1, "maximum": 4294967295 },
+          "clockSkewMillis": { "type": "integer", "minimum": 1, "maximum": 4294967295 },
+          "httpTimeoutMillis": { "type": "integer", "minimum": 1, "maximum": 4294967295 }
+        }
+      },
+      "SecurityIdentityCounts": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["jwt", "password", "mtls"],
+        "properties": {
+          "jwt": { "type": "integer", "minimum": 0, "maximum": 1000000 },
+          "password": { "type": "integer", "minimum": 0, "maximum": 1000000 },
+          "mtls": { "type": "integer", "minimum": 0, "maximum": 1000000 }
+        }
+      },
+      "ACLRuleConfiguration": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["tenantId", "role", "effect", "action", "topicFilter"],
+        "properties": {
+          "tenantId": { "$ref": "#/components/schemas/OpaqueId" },
+          "role": { "type": "string", "minLength": 1 },
+          "effect": { "type": "string", "enum": ["allow", "deny"] },
+          "action": { "type": "string", "enum": ["publish", "subscribe", "unsubscribe", "will"] },
+          "topicFilter": { "type": "string", "minLength": 1, "maxLength": 65535 }
+        }
+      },
+      "SecurityConfiguration": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["configFileConfigured", "jwt", "identityCounts", "acl", "tenantLimits"],
+        "properties": {
+          "configFileConfigured": { "type": "boolean" },
+          "jwt": { "anyOf": [{ "$ref": "#/components/schemas/JWTConfiguration" }, { "type": "null" }] },
+          "identityCounts": { "$ref": "#/components/schemas/SecurityIdentityCounts" },
+          "acl": { "type": "array", "items": { "$ref": "#/components/schemas/ACLRuleConfiguration" } },
+          "tenantLimits": { "anyOf": [{ "$ref": "#/components/schemas/TenantLimitsConfiguration" }, { "type": "null" }] }
+        }
+      },
+      "EffectiveMQTTLimits": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["source", "version", "value"],
+        "properties": {
+          "source": { "type": "string", "enum": ["default", "localConfig", "clusterPolicy"] },
+          "version": { "type": ["integer", "null"], "minimum": 0, "maximum": 18446744073709551615 },
+          "value": { "$ref": "#/components/schemas/MqttLimits" }
+        }
+      },
+      "EffectiveTenantQuotas": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["featureActive", "source", "version", "value"],
+        "properties": {
+          "featureActive": { "type": "boolean" },
+          "source": { "type": "string", "enum": ["none", "replicatedProfile", "clusterPolicy"] },
+          "version": { "type": ["integer", "null"], "minimum": 0, "maximum": 18446744073709551615 },
+          "value": { "anyOf": [{ "$ref": "#/components/schemas/TenantQuotaProfile" }, { "type": "null" }] }
+        }
+      },
+      "ClusterPolicyConfigurationStatus": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["featureActive", "tenantQuotaFeatureActive", "configuredVersion", "committedVersion", "mismatch"],
+        "properties": {
+          "featureActive": { "type": "boolean" },
+          "tenantQuotaFeatureActive": { "type": "boolean" },
+          "configuredVersion": { "type": ["integer", "null"], "minimum": 1, "maximum": 18446744073709551615 },
+          "committedVersion": { "type": "integer", "minimum": 0, "maximum": 18446744073709551615 },
+          "mismatch": { "type": "boolean" }
+        }
+      },
+      "EffectivePolicyConfiguration": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["clusterPolicy", "mqttLimits", "tenantQuotas"],
+        "properties": {
+          "clusterPolicy": { "$ref": "#/components/schemas/ClusterPolicyConfigurationStatus" },
+          "mqttLimits": { "$ref": "#/components/schemas/EffectiveMQTTLimits" },
+          "tenantQuotas": { "$ref": "#/components/schemas/EffectiveTenantQuotas" }
         }
       },
       "ClientSession": {

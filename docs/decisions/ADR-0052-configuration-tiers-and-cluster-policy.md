@@ -2,8 +2,8 @@
 
 | 항목 | 값 |
 | --- | --- |
-| 상태 | `Proposed`. §1.1의 `ClusterPolicy` commit·version·reconciliation·`GET/PUT /api/v1/cluster/policy`·metric과 §1.2의 `mqttLimits` 적용 시점은 2026-10-10 사용자 결정으로 채택했다(G1·API-09). §1.4의 `cluster-policy` feature gate도 `mqttLimits`에 한해 채택했다. 기존 `TenantQuota` proposal 억제와 top-level `tenantQuotas`·`clusterPolicy` 충돌 거절은 §1.4에 명시한 동작을 유지한다. §1.5의 설정 parser 중복 key 거절 규칙과 secret 파일 규칙 중 standalone `-http-auth-token-file` 전환은 같은 날 채택했다(G4·G9). §1.5의 Cluster MQTT TLS(`mqtt.tls`)와 MQTT·peer 인증서 분리 규칙도 채택했다(G2·G10). Cluster runtime metrics의 node 정적 설정 `runtimeMetrics`도 채택했다(G6). §1.5의 Cluster 평문 MQTT TCP 주소 허용 규칙도 2026-10-10 사용자 결정으로 채택했다(G3). §1.5의 JSON duration 표기 규칙도 같은 날 채택했다(G5). 나머지 정책 항목은 `Proposed`로 남는다. |
-| 결정일 | 2026-10-10 |
+| 상태 | `Proposed`. §1.1의 `ClusterPolicy` commit·version·reconciliation·`GET/PUT /api/v1/cluster/policy`·metric과 §1.2의 `mqttLimits` 적용 시점은 2026-10-10 사용자 결정으로 채택했다(G1·API-09). §1.4의 `cluster-policy` feature gate도 `mqttLimits`에 한해 채택했다. 기존 `TenantQuota` proposal 억제와 top-level `tenantQuotas`·`clusterPolicy` 충돌 거절은 §1.4에 명시한 동작을 유지한다. §1.5의 설정 parser 중복 key 거절 규칙과 secret 파일 규칙 중 standalone `-http-auth-token-file` 전환은 같은 날 채택했다(G4·G9). §1.5의 Cluster MQTT TLS(`mqtt.tls`)와 MQTT·peer 인증서 분리 규칙도 채택했다(G2·G10). Cluster runtime metrics의 node 정적 설정 `runtimeMetrics`도 채택했다(G6). §1.5의 Cluster 평문 MQTT TCP 주소 허용 규칙도 2026-10-10 사용자 결정으로 채택했다(G3). §1.5의 JSON duration 표기 규칙도 같은 날 채택했다(G5). §1.1.2 설정 조회(G7-a)와 §1.1.3 `tenantQuotas` policy(G7-b)는 2026-10-11 사용자 결정으로 채택했다. 나머지 정책 항목은 `Proposed`로 남는다. |
+| 결정일 | 2026-10-11 |
 | 결정자 | NaruMQ 프로젝트 사용자 |
 | 관련 요구사항 | API-09, API-08, UI-01~UI-10, SEC-07, TEN-06~TEN-08, CLU-11 |
 | 관련 스펙·계약 | [실행 옵션과 설정 스펙](../specs/configuration-and-runtime-options.md), [Process configuration v1](../contracts/process-configuration-v1.md), [Management API v1](../contracts/management-api-v1.md), [replicated-state-v1](../contracts/replicated-state-v1.proto) |
@@ -83,6 +83,24 @@ Idempotency state는 최근 적용한 update의 key 하나만 보관한다. 같�
 +
 성공 mutation은 `cluster.policy.update` audit event를 남긴다. Target은 `cluster_policy`와 cluster ID다. `details`에는 `previousVersion`과 `newVersion`을 기록한다.
 
+### 1.1.2 적용 설정 조회 (`G7-a`)
+
+Dynamic cluster는 `GET /api/v1/nodes/{nodeId}/config`로 해당 node가 실제로 적용하는 설정을 조회한다. 이 API는 node 정적 설정과 cluster-wide committed policy의 적용 출처를 함께 보여 준다. Standalone에는 route를 제공하지 않는다.
+
+이 route는 `ClusterAdmin` 권한을 요구한다. Node 고유 정보와 특정 node만 대상으로 하는 API는 `/api/v1/nodes/{nodeId}/...`를 사용한다. 요청을 받은 node의 `nodeId`와 path의 canonical decimal ID가 다르면 `409 node_not_local`을 반환한다. API는 원격 node에 proxy하지 않으므로 조회 대상 node에 직접 요청해야 한다. Raft commit으로 cluster 전체에 적용되는 `/api/v1/nodes/{nodeId}/drain`은 이 규칙에서 제외한다.
+
+응답에는 build·active feature, node·management·MQTT listener 설정, TLS 인증서와 key 파일의 존재 여부, cluster policy reconciliation, effective MQTT limits와 tenant quotas, replication·publish backpressure·runtime metrics, security policy를 포함한다. Secret 원문과 secret file 경로, password hash, token, identity 목록은 반환하지 않는다. Secret은 설정 여부나 개수만 반환한다. OIDC·JWT의 JWKS URL은 URL userinfo를 제거한다.
+
+`tenantQuotas.source`는 `none`, `replicatedProfile`, `clusterPolicy` 중 하나다. `value`는 적용된 quota profile이며 출처가 `none`이면 `null`이다. 상세 JSON schema는 [Management API v1 contract](../contracts/management-api-v1.md)와 OpenAPI가 정한다.
+
+### 1.1.3 ClusterPolicy tenant quota (`G7-b`)
+
+`ClusterPolicy`는 선택 field `tenantQuotas`로 versioned tenant storage quota를 담을 수 있다. 이 field를 쓰려면 `cluster-policy`와 별도로 build feature `cluster-policy-tenant-quotas`를 활성화해야 한다. 해당 feature가 비활성화된 동안 reconciler는 quota가 포함된 policy를 제안하지 않고, Management API PUT은 `409 feature_inactive`를 반환한다.
+
+운영자는 `PUT /api/v1/cluster/policy`에서 기존 `mqttLimits`와 함께 `tenantQuotas`를 갱신한다. Request body는 최대 512 KiB다. `tenantQuotas`를 `null`로 보내거나 생략하면 policy가 quota를 관리하지 않는다. 이때 legacy committed `TenantQuota` profile이 적용된다. Policy quota가 있으면 그 quota가 legacy profile보다 우선하며 admission rejection에는 policy version을 기록한다. Policy field를 제거한 새 version이 commit되면 legacy profile로 돌아간다.
+
+`tenantQuotas`가 저장된 뒤에는 해당 field를 모르는 build로 rollback할 수 없다. Feature gate, replicated schema와 release 호환 규칙은 [Replicated-state v1](../contracts/replicated-state-v1.md), [Cluster release compatibility v1](../contracts/cluster-release-compatibility-v1.md)에서 정한다. 설정 파일의 strict shape는 [Process configuration v1](../contracts/process-configuration-v1.md)에서 정한다.
+
 GitOps 파일은 desired value의 원천이다. Console이 API로 정책을 바꾸면 committed value와 파일 사이에 drift가 생길 수 있다. Metric으로 drift를 표시한다. 운영자는 GET 결과를 같은 version으로 저장소에 반영해 차이를 없앤다.
 
 Standalone에는 commit state가 없다. Standalone은 파일과 CLI 값만 사용한다. Runtime 설정 변경 API는 지원하지 않는다.
@@ -95,7 +113,7 @@ Standalone에는 commit state가 없다. Standalone은 파일과 CLI 값만 사�
 
 ### 1.3 보안 설정
 
-이 1차 Dynamic cluster 구현의 `ClusterPolicy`에는 `mqttLimits`만 포함한다. ACL과 `tenantLimits` 이행은 범위 밖이며 현재 security config에 남는다. Authentication identity와 secret은 node 정적 설정에 남기며 Raft log와 backup archive에 복제하지 않는다.
+이 1차 Dynamic cluster 구현의 `ClusterPolicy`는 `mqttLimits`와 선택적 `tenantQuotas`를 포함한다. ACL과 `tenantLimits` 이행은 범위 밖이며 현재 security config에 남는다. Authentication identity와 secret은 node 정적 설정에 남기며 Raft log와 backup archive에 복제하지 않는다.
 
 Standalone에서는 ACL과 `tenantLimits`를 계속 security config에서 읽는다. Credential rotation은 [ADR-0049](ADR-0049-mqtt-credential-revocation.md)의 rolling restart 경계를 유지한다.
 
@@ -105,7 +123,7 @@ Standalone에서는 ACL과 `tenantLimits`를 계속 security config에서 읽는
 
 Feature가 활성화되기 전에는 각 node가 현재 파일 값을 사용한다. 활성화 뒤에도 version 1 이상 `ClusterPolicy`가 commit되기 전까지는 version 0이며 각 node가 자기 파일 값을 사용한다.
 
-기존 `TenantQuota` command는 과거 log replay를 위해 유지한다. Feature 활성화 뒤 legacy controller는 `TenantQuota` 변경을 제안하지 않는다. 이 schema의 `ClusterPolicy`는 `mqttLimits`만 담으므로 tenant quota 변경은 지원하지 않는다. top-level `tenantQuotas`와 `clusterPolicy`를 함께 지정하면 시작을 거절한다.
+기존 `TenantQuota` command는 과거 log replay와 policy field가 없을 때의 호환성을 위해 유지한다. `cluster-policy`가 활성화되어도 legacy controller는 `TenantQuota` 변경을 제안하지 않는다. `cluster-policy-tenant-quotas`가 활성화된 뒤 `ClusterPolicy.tenantQuotas`로 quota를 변경한다. top-level `tenantQuotas`와 `clusterPolicy`를 함께 지정하면 시작을 거절한다. Policy field를 생략하면 legacy `TenantQuota` committed profile이 계속 적용된다.
 
 ### 1.5 형식과 Cluster MQTT TLS
 
@@ -137,11 +155,11 @@ Console은 Management API만 사용한다. 이 ADR은 UI 기술을 정하지 않
 | G4 | `security_config.go`와 `raft_peer_config.go`는 중복 JSON key를 검사하지 않는다. Cluster config parser는 검사한다. 2026-10-10 해소: 세 parser가 모두 중복 key를 거절한다. |
 | G5 | Flag와 security config는 Go duration을 쓴다. Cluster config는 millisecond 정수를 쓴다. 2026-10-10 해소: command-line flag만 Go duration 문자열을 유지하고 모든 JSON duration field는 `…Millis` 정수 millisecond를 쓴다. |
 | G6 | Runtime metrics flag는 standalone에서만 지원한다. 2026-10-10 해소: cluster는 `runtimeMetrics` object를 사용한다. |
-| G7 | 실제 설정 조회 API와 `tenantQuotas` 변경 API는 없다. |
+| G7 | 실제 적용 설정 조회 API와 `tenantQuotas` 변경 API는 없다. 2026-10-11 해소: Dynamic cluster 전용 설정 조회 API와 `ClusterPolicy.tenantQuotas` 변경 API를 제공한다. |
 | G8 | Standalone Management API는 cluster ID `narumq-cluster-1`과 node ID `narumq-node-1`을 사용한다. |
 | G9 | Standalone은 2026-10-10 해소: `-http-auth-token`은 제거하고 `-http-auth-token-file`만 받는다. Cluster는 `clusterAdminTokenFile`을 사용한다. |
 | G10 | Cluster MQTT TLS에는 minimum TLS version과 client-auth를 설정하는 field가 없다. 2026-10-10 해소: `mqtt.tls.minVersion`은 TLS 1.2 또는 1.3을, `mqtt.tls.clientAuth`는 `none`, `request`, `require`를 설정한다. |
-G1·API-09의 `mqttLimits` 범위는 채택해 구현한다. 다른 정책 범위와 일반 `ClusterPolicy` 항목은 아직 채택하지 않았다. 현재 동작은 [실행 옵션과 설정 스펙](../specs/configuration-and-runtime-options.md)에 기록한다.
+G1·API-09의 `mqttLimits`와 G7의 설정 조회·`tenantQuotas` 범위는 채택해 구현한다. 다른 정책 범위와 일반 `ClusterPolicy` 항목은 아직 채택하지 않았다. 현재 동작은 [실행 옵션과 설정 스펙](../specs/configuration-and-runtime-options.md)에 기록한다.
 
 ## 3. 결정 요인
 

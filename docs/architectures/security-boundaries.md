@@ -20,7 +20,7 @@ NaruMQ의 security architecture는 network 위치만으로 신뢰를 부여하�
 
 ## Trust boundary view
 
-아래 화살표는 Target runtime flow다. Management API는 named API key, OIDC subject binding 또는 break-glass bearer로 principal을 만들고 permission과 node-local rate limit을 적용한다. Mutation 감사는 fail-closed이고 MQTT denial audit는 bounded fail-open이다. `GET /api/v1/audit/events`는 node-local hash-chain record를 읽기만 한다. Boundary 검증을 통과하기 전에는 안쪽 identity나 권한으로 승격하지 않는다.
+아래 화살표는 Target runtime flow다. Management API는 named API key, OIDC subject binding 또는 break-glass bearer로 principal을 만들고 permission과 node-local rate limit을 적용한다. Mutation 감사는 fail-closed이고 MQTT denial audit는 bounded fail-open이다. `GET /api/v1/nodes/{nodeId}/audit/events`는 요청을 받은 node의 node-local hash-chain record를 읽기만 한다. Node-scoped config와 audit query는 path ID가 serving node와 다르면 `409 node_not_local`을 반환하며 원격 proxy를 하지 않는다. Boundary 검증을 통과하기 전에는 안쪽 identity나 권한으로 승격하지 않는다.
 
 ```mermaid
 flowchart LR

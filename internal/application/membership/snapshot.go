@@ -138,7 +138,12 @@ func (machine *StateMachine) Restore(snapshot SnapshotDTO) error {
 		state := cloneConnectionRebalanceState(*copyOfSnapshot.ConnectionRebalance)
 		connectionRebalance = &state
 	}
+	clusterPolicy := cloneClusterPolicyState(copyOfSnapshot.ClusterPolicy)
 	tenantQuota, tenantQuotaByTenant := installTenantQuotaProfile(copyOfSnapshot.TenantQuotaProfile)
+	var clusterPolicyTenantQuotaByTenant map[string]TenantStorageQuotaDTO
+	if clusterPolicy != nil {
+		clusterPolicyTenantQuotaByTenant = clusterTenantQuotaMap(clusterPolicy.Policy.TenantQuotas)
+	}
 	proposalOrigins, proposalCount, proposalBytes := restoreProposalOrigins(copyOfSnapshot.ProposalOrigins)
 	machine.lastAppliedIndex = copyOfSnapshot.LastIncludedIndex
 	machine.members = members
@@ -167,7 +172,8 @@ func (machine *StateMachine) Restore(snapshot SnapshotDTO) error {
 	machine.blocklist = blocklist
 	machine.blocklistIndex = blocklistIndex
 	machine.blocklistVersion = copyOfSnapshot.BlocklistVersion
-	machine.clusterPolicy = cloneClusterPolicyState(copyOfSnapshot.ClusterPolicy)
+	machine.clusterPolicy = clusterPolicy
+	machine.clusterPolicyTenantQuotaByTenant = clusterPolicyTenantQuotaByTenant
 	machine.activeFeatures = slices.Clone(copyOfSnapshot.ActiveFeatures)
 	return nil
 }
@@ -271,11 +277,8 @@ func (machine *StateMachine) snapshotLocked(lastIncludedIndex uint64) SnapshotDT
 	for _, record := range snapshot.DeliverySessions {
 		deliveryEntries += len(record.Messages) + len(record.Inbound)
 	}
-	snapshot.ObjectCount = uint64(len(snapshot.Members) + len(snapshot.Ownerships) + len(snapshot.Subscriptions) + len(snapshot.DeliverySessions) + deliveryEntries + len(snapshot.MembershipHistory) + len(snapshot.Retained) + len(snapshot.OfflineSessions) + offlineMessagesCount + len(snapshot.NodeDrains) + len(snapshot.ActiveFeatures) + len(snapshot.SessionMetadata) + len(snapshot.CredentialRevocations) + len(snapshot.Blocklist) + tenantQuotaObjectCount(snapshot.TenantQuotaProfile) + proposalObjectCount(snapshot.ProposalOrigins))
+	snapshot.ObjectCount = uint64(len(snapshot.Members) + len(snapshot.Ownerships) + len(snapshot.Subscriptions) + len(snapshot.DeliverySessions) + deliveryEntries + len(snapshot.MembershipHistory) + len(snapshot.Retained) + len(snapshot.OfflineSessions) + offlineMessagesCount + len(snapshot.NodeDrains) + len(snapshot.ActiveFeatures) + len(snapshot.SessionMetadata) + len(snapshot.CredentialRevocations) + len(snapshot.Blocklist) + tenantQuotaObjectCount(snapshot.TenantQuotaProfile) + proposalObjectCount(snapshot.ProposalOrigins) + clusterPolicyObjectCount(snapshot.ClusterPolicy))
 	if snapshot.ConnectionRebalance != nil {
-		snapshot.ObjectCount++
-	}
-	if snapshot.ClusterPolicy != nil {
 		snapshot.ObjectCount++
 	}
 	return snapshot

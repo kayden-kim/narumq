@@ -8,8 +8,8 @@ option go_package = "narumq/internal/adapters/raft/records;records";
 // versions. Additive changes follow replicated-state-v1.md §3 and are written only after
 // their required feature is active. Session metadata requires `session-metadata`; connection
 // rebalance requires `connection-rebalance`; credential revocation requires
-// `credential-revocation`; client blocklist requires the active `client-blocklist` feature;
-// cluster policy requires the active `cluster-policy` feature.
+// `credential-revocation`; client blocklist requires `client-blocklist`; cluster policy requires
+// `cluster-policy`; policy tenant quotas require `cluster-policy-tenant-quotas`.
 
 enum MemberPhase {
   MEMBER_PHASE_UNSPECIFIED = 0;
@@ -329,8 +329,14 @@ message MqttLimits {
   uint32 write_timeout_millis = 5;
 }
 
+message ClusterTenantQuotas {
+  TenantStorageQuota default_quota = 1;
+  repeated TenantStorageQuota tenant_quotas = 2;
+}
+
 message ClusterPolicy {
   MqttLimits mqtt_limits = 1;
+  ClusterTenantQuotas tenant_quotas = 2;
 }
 
 message ClusterPolicyChange {

@@ -15,9 +15,10 @@
 
 1. Cluster Management API 인증은 이름 있는 API key와 OIDC JWT를 지원한다. 설정된 기존 cluster admin bearer token은 ClusterAdmin 권한의 break-glass credential로 유지한다. API key의 principal subject는 `apikey:<id>`, OIDC subject는 `oidc:<sub>`이며, bearer break-glass token은 `management-bearer-token`으로 기록한다. API key에는 설정한 역할을 부여하고 OIDC 권한은 토큰 claim에서 선택하지 않는다. 검증된 OIDC subject를 설정의 정적 `subject → roles` binding에 연결한다. 이는 MQTT TEN-01의 정적 identity binding 원칙을 따른다.
 2. 네 역할에 순서 비교가 아닌 명시적 권한 표를 적용한다. `PermissionRead`는 ReadOnly, Operator, SecurityAdmin, ClusterAdmin에 허용한다. `PermissionOperate`는 Operator와 ClusterAdmin, `PermissionAuditRead`는 SecurityAdmin과 ClusterAdmin, `PermissionClusterAdmin`은 ClusterAdmin에만 허용한다. 한 principal에 여러 역할이 있으면 그중 하나라도 권한을 부여할 때 허용한다.
-3. SecurityAdmin과 ClusterAdmin 전용 `GET /api/v1/audit/events`를 제공한다. 요청을 처리하는 node의 저장된 audit hash-chain record를 최신 순서로 읽으며, 필터·cursor 기반 pagination을 지원한다. 읽기 전용이며 조회 성공을 감사 event로 다시 기록하지 않는다. ADR-0039의 조회 API를 추가하지 않는 결정은 이 node-local endpoint에 한해 대체한다. 보존과 SIEM 수집 책임은 ADR-0039대로 외부 collector/SIEM에 둔다.
-4. Dashboard는 ReadOnly API key만 사용한다. Dashboard 사용자의 로그인과 인증은 Grafana가 맡고 mutation 화면을 제공하지 않는다. Grafana 사용자 인증 자체만으로 SEC-10을 충족하는 것은 아니다. [ADR-0045](ADR-0045-operations-dashboard-grafana.md)의 기존 Dashboard 결정은 이 인증 경계를 유지한다.
-5. ADR-0043 §1의 principal subject 목록은 위의 break-glass, API key 및 OIDC subject 규칙으로 대체한다. Rate limit은 인증된 principal subject를 key로 계속 사용한다.
+3. SecurityAdmin과 ClusterAdmin 전용 `GET /api/v1/nodes/{nodeId}/audit/events`를 제공한다. 요청을 처리하는 node의 저장된 audit hash-chain record를 최신 순서로 읽으며, 필터·cursor 기반 pagination을 지원한다. 읽기 전용이며 조회 성공을 감사 event로 다시 기록하지 않는다. 2026-10-11에 경로를 node-scoped route로 이동했다. 이전 `/api/v1/audit/events` 경로는 지원하지 않는다. ADR-0039의 조회 API를 추가하지 않는 결정은 이 node-local endpoint에 한해 대체한다. 보존과 SIEM 수집 책임은 ADR-0039대로 외부 collector/SIEM에 둔다.
+4. Dynamic cluster에서 ClusterAdmin 전용 `GET /api/v1/nodes/{nodeId}/config`를 제공한다. Node-local route는 요청을 처리하는 node ID만 받으며 원격 node로 proxy하지 않는다. 응답에서 secret 원문·경로, password hash와 identity 목록을 제외한다.
+5. Dashboard는 ReadOnly API key만 사용한다. Dashboard 사용자의 로그인과 인증은 Grafana가 맡고 mutation 화면을 제공하지 않는다. Grafana 사용자 인증 자체만으로 SEC-10을 충족하는 것은 아니다. [ADR-0045](ADR-0045-operations-dashboard-grafana.md)의 기존 Dashboard 결정은 이 인증 경계를 유지한다.
+6. ADR-0043 §1의 principal subject 목록은 위의 break-glass, API key 및 OIDC subject 규칙으로 대체한다. Rate limit은 인증된 principal subject를 key로 계속 사용한다.
 
 ## 2. 배경
 

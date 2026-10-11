@@ -146,3 +146,59 @@ func TestClusterPolicySnapshotFeatureValidationAndObjectCount(t *testing.T) {
 		})
 	}
 }
+
+// Traceability: CFG-SCN-34; docs/contracts/replicated-state-v1.md §3; ADR-0052 §1.1.1.
+func TestClusterPolicyTenantQuotasFeatureGateAndSnapshotCount(t *testing.T) {
+	quotaPolicy := proto.Clone(clusterPolicyTestRecordChange(0, 1, "policy-1").Policy).(*ClusterPolicy)
+	quotaPolicy.TenantQuotas = &ClusterTenantQuotas{
+		DefaultQuota: &TenantStorageQuota{
+			RetainedBytes: 1024, OfflineQueueMessages: 64, OfflineQueueBytes: 2048, StorageBytes: 4096,
+		},
+		TenantQuotas: []*TenantStorageQuota{{
+			TenantId: "tenant-a", RetainedBytes: 512, OfflineQueueMessages: 32,
+			OfflineQueueBytes: 1024, StorageBytes: 2048,
+		}},
+	}
+	command := clusterPolicyTestCommand(&ClusterPolicyChange{
+		ExpectedVersion: 0, Version: 1, IdempotencyKey: "policy-1", Policy: quotaPolicy,
+	})
+	wire, err := MarshalCommand(command)
+	if err != nil {
+		t.Fatalf("MarshalCommand(policy with tenant quotas): %v", err)
+	}
+	decoded, err := UnmarshalCommand(wire)
+	if err != nil || !proto.Equal(decoded, command) {
+		t.Fatalf("tenant quota policy command round trip = %v, %v", decoded, err)
+	}
+
+	state := &ReplicatedStateSnapshot{
+		ActiveFeatures: []string{"cluster-policy", "cluster-policy-tenant-quotas"},
+		ClusterPolicy: &ClusterPolicyState{
+			Version: 1, IdempotencyKey: "policy-1", PreviousVersion: 0, Policy: quotaPolicy,
+		},
+	}
+	snapshotWire, err := MarshalSnapshot(state, 3)
+	if err != nil {
+		t.Fatalf("MarshalSnapshot(policy with tenant quotas): %v", err)
+	}
+	envelope, err := UnmarshalSnapshot(snapshotWire)
+	if err != nil || envelope.ObjectCount != 5 || !proto.Equal(envelope.State, state) {
+		t.Fatalf("tenant quota snapshot round trip = count %d, state %v, error %v", envelope.GetObjectCount(), envelope.GetState(), err)
+	}
+
+	withoutFeature := proto.Clone(state).(*ReplicatedStateSnapshot)
+	withoutFeature.ActiveFeatures = []string{"cluster-policy"}
+	if _, err := MarshalSnapshot(withoutFeature, 3); err == nil {
+		t.Fatal("MarshalSnapshot() accepted tenant quotas without their feature")
+	}
+
+	badCount := proto.Clone(envelope).(*SnapshotEnvelope)
+	badCount.ObjectCount--
+	encoded, err := deterministic.Marshal(badCount)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := UnmarshalSnapshot(encoded); err == nil {
+		t.Fatal("UnmarshalSnapshot() accepted the wrong tenant quota object count")
+	}
+}

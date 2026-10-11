@@ -303,6 +303,7 @@ func runClusterMode(ctx context.Context, config clusterConfigFile, logger *slog.
 	if err != nil {
 		return err
 	}
+	runtime.securityBundle = securityBundle
 	mqttListeners, err := clusterMQTTListeners(config, metricsRegistry)
 	if err != nil {
 		return err
@@ -405,7 +406,8 @@ func runClusterMode(ctx context.Context, config clusterConfigFile, logger *slog.
 			committedPolicy = &committed
 		}
 		featureActive := slices.Contains(runtime.machine.ActiveFeatures(), membership.ClusterPolicyFeature)
-		connectionLimits := tcpConnectionLimits(effectiveClusterMQTTLimits(config, committedPolicy, featureActive))
+		limits, _, _ := effectiveClusterMQTTLimits(config, committedPolicy, featureActive)
+		connectionLimits := tcpConnectionLimits(limits)
 		decoder, err := mqtt.NewDecoder(connectionLimits.MaxPacketSize)
 		if err != nil {
 			return fmt.Errorf("create cluster MQTT decoder: %w", err)
@@ -514,8 +516,8 @@ func runClusterMode(ctx context.Context, config clusterConfigFile, logger *slog.
 		APIKeys: credentials.APIKeys, OIDC: oidcConfig,
 		AllowAnonymousProbes: true,
 		RequestRate:          requestRate, AuthFailureRate: authFailureRate, Clock: systemClock,
-		ClusterID: config.ClusterID, Logger: logger,
-	}, stateProvider, healthChecker, metricsRegistry, membershipService, drainService, rebalanceService, runtime, auditService, auditQueryService, credentialRevocationService, blocklistService, clusterPolicyService)
+		ClusterID: config.ClusterID, LocalNodeID: config.NodeID, Logger: logger,
+	}, stateProvider, healthChecker, metricsRegistry, membershipService, drainService, rebalanceService, runtime, auditService, auditQueryService, credentialRevocationService, blocklistService, clusterPolicyService, runtime)
 	var sampler *runtimemetrics.Sampler
 	if config.RuntimeMetrics != nil {
 		createdSampler, err := runtimemetrics.New(config.RuntimeMetrics.OutputFile, config.runtimeMetricsInterval())
@@ -554,6 +556,7 @@ type clusterInboundRaftQueue interface {
 
 type clusterRuntime struct {
 	config                  clusterConfigFile
+	securityBundle          *SecurityBundle
 	logger                  *slog.Logger
 	node                    *raftadapter.Node
 	transport               *tcpadapter.DynamicTCPPeerTransport
@@ -1491,7 +1494,7 @@ func (runtime *clusterRuntime) applyBatch(batch raftadapter.BatchDTO, proposals 
 		}
 		if command.ClusterPolicy != nil && result.Outcome == membership.ApplyOutcomeApplied {
 			currentClusterPolicy, found := runtime.machine.ClusterPolicy()
-			if found && (!hadPreviousClusterPolicy || currentClusterPolicy != previousClusterPolicy) {
+			if found && (!hadPreviousClusterPolicy || currentClusterPolicy.Policy.MQTTLimits != previousClusterPolicy.Policy.MQTTLimits) {
 				if err := runtime.applyCommittedClusterMQTTLimits(); err != nil {
 					return err
 				}

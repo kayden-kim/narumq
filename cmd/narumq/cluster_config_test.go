@@ -72,6 +72,55 @@ func validClusterPolicyConfig() *clusterPolicyConfig {
 	}
 }
 
+func validClusterPolicyTenantQuotasConfig() *clusterPolicyTenantQuotasConfig {
+	return &clusterPolicyTenantQuotasConfig{
+		Default: clusterTenantQuotaLimitsConfig{
+			RetainedBytes: 1024, OfflineQueueMessages: 64,
+			OfflineQueueBytes: 2048, StorageBytes: 4096,
+		},
+		Tenants: []clusterTenantQuotaTenantConfig{{
+			TenantID: "acme", RetainedBytes: 512, OfflineQueueMessages: 32,
+			OfflineQueueBytes: 1024, StorageBytes: 2048,
+		}},
+	}
+}
+
+func mutateClusterPolicyTenantQuotasJSON(
+	t *testing.T,
+	data []byte,
+	mutate func(map[string]json.RawMessage),
+) []byte {
+	t.Helper()
+	var root map[string]json.RawMessage
+	if err := json.Unmarshal(data, &root); err != nil {
+		t.Fatalf("decode cluster config: %v", err)
+	}
+	var policy map[string]json.RawMessage
+	if err := json.Unmarshal(root["clusterPolicy"], &policy); err != nil {
+		t.Fatalf("decode cluster policy: %v", err)
+	}
+	var quotas map[string]json.RawMessage
+	if err := json.Unmarshal(policy["tenantQuotas"], &quotas); err != nil {
+		t.Fatalf("decode policy tenant quotas: %v", err)
+	}
+	mutate(quotas)
+	encodedQuotas, err := json.Marshal(quotas)
+	if err != nil {
+		t.Fatalf("encode policy tenant quotas: %v", err)
+	}
+	policy["tenantQuotas"] = encodedQuotas
+	encodedPolicy, err := json.Marshal(policy)
+	if err != nil {
+		t.Fatalf("encode cluster policy: %v", err)
+	}
+	root["clusterPolicy"] = encodedPolicy
+	encoded, err := json.Marshal(root)
+	if err != nil {
+		t.Fatalf("encode cluster config: %v", err)
+	}
+	return encoded
+}
+
 func TestParseClusterConfigValidRoles(t *testing.T) {
 	wantRelease, wantFeatures, err := resolveBuildIdentity()
 	if err != nil {
@@ -105,7 +154,7 @@ func TestParseClusterConfigClusterPolicy(t *testing.T) {
 		t.Fatalf("parse valid clusterPolicy: %v", err)
 	}
 	if parsed.ClusterPolicy == nil || parsed.ClusterPolicy.Version != 1 ||
-		parsed.ClusterPolicy.membershipPolicy() != config.ClusterPolicy.membershipPolicy() {
+		!membership.EqualClusterPolicy(parsed.ClusterPolicy.membershipPolicy(), config.ClusterPolicy.membershipPolicy()) {
 		t.Fatalf("parsed clusterPolicy = %+v, want %+v", parsed.ClusterPolicy, config.ClusterPolicy)
 	}
 
@@ -166,6 +215,89 @@ func TestParseClusterConfigClusterPolicy(t *testing.T) {
 				t.Fatal("validateClusterConfig() accepted invalid clusterPolicy configuration")
 			}
 		})
+	}
+}
+
+// Traceability: CFG-SCN-33; TEN-08; docs/contracts/process-configuration-v1.md §1.3.
+func TestParseClusterConfigClusterPolicyTenantQuotas(t *testing.T) {
+	config := validBootstrapClusterConfig()
+	config.ClusterPolicy = validClusterPolicyConfig()
+	config.ClusterPolicy.TenantQuotas = validClusterPolicyTenantQuotasConfig()
+	data := mustMarshalClusterConfig(t, config)
+	parsed, err := parseClusterConfig(strings.NewReader(string(data)))
+	if err != nil {
+		t.Fatalf("parse valid clusterPolicy.tenantQuotas: %v", err)
+	}
+	if parsed.ClusterPolicy == nil || parsed.ClusterPolicy.TenantQuotas == nil {
+		t.Fatalf("parsed clusterPolicy tenant quotas = %+v, want configured quotas", parsed.ClusterPolicy)
+	}
+	got := parsed.ClusterPolicy.membershipPolicy()
+	want := config.ClusterPolicy.membershipPolicy()
+	if !membership.EqualClusterPolicy(got, want) || got.TenantQuotas.Default.StorageBytes != 4096 ||
+		len(got.TenantQuotas.Tenants) != 1 || got.TenantQuotas.Tenants[0].TenantID != "acme" {
+		t.Fatalf("parsed policy quotas = %+v, want %+v", got, want)
+	}
+
+	invalidJSON := []struct {
+		name   string
+		mutate func(map[string]json.RawMessage)
+	}{
+		{name: "missing default", mutate: func(quotas map[string]json.RawMessage) { delete(quotas, "default") }},
+		{name: "missing tenants", mutate: func(quotas map[string]json.RawMessage) { delete(quotas, "tenants") }},
+		{name: "unknown key", mutate: func(quotas map[string]json.RawMessage) { quotas["unexpected"] = json.RawMessage(`1`) }},
+		{name: "nested profile version", mutate: func(quotas map[string]json.RawMessage) { quotas["version"] = json.RawMessage(`1`) }},
+		{name: "default limit over maximum", mutate: func(quotas map[string]json.RawMessage) {
+			var limits map[string]json.RawMessage
+			if err := json.Unmarshal(quotas["default"], &limits); err != nil {
+				t.Fatalf("decode default quota: %v", err)
+			}
+			limits["retainedBytes"] = json.RawMessage(`16777217`)
+			quotas["default"], err = json.Marshal(limits)
+			if err != nil {
+				t.Fatalf("encode default quota: %v", err)
+			}
+		}},
+		{name: "tenant ID missing", mutate: func(quotas map[string]json.RawMessage) {
+			var tenants []map[string]json.RawMessage
+			if err := json.Unmarshal(quotas["tenants"], &tenants); err != nil {
+				t.Fatalf("decode tenant quotas: %v", err)
+			}
+			delete(tenants[0], "tenantId")
+			quotas["tenants"], err = json.Marshal(tenants)
+			if err != nil {
+				t.Fatalf("encode tenant quotas: %v", err)
+			}
+		}},
+		{name: "invalid tenant ID", mutate: func(quotas map[string]json.RawMessage) {
+			var tenants []map[string]json.RawMessage
+			if err := json.Unmarshal(quotas["tenants"], &tenants); err != nil {
+				t.Fatalf("decode tenant quotas: %v", err)
+			}
+			tenants[0]["tenantId"] = json.RawMessage(`""`)
+			quotas["tenants"], err = json.Marshal(tenants)
+			if err != nil {
+				t.Fatalf("encode tenant quotas: %v", err)
+			}
+		}},
+	}
+	for _, testCase := range invalidJSON {
+		t.Run(testCase.name, func(t *testing.T) {
+			invalid := mutateClusterPolicyTenantQuotasJSON(t, data, testCase.mutate)
+			if _, err := parseClusterConfig(strings.NewReader(string(invalid))); err == nil {
+				t.Fatal("parseClusterConfig() accepted invalid clusterPolicy.tenantQuotas")
+			}
+		})
+	}
+
+	unsorted := validBootstrapClusterConfig()
+	unsorted.ClusterPolicy = validClusterPolicyConfig()
+	unsorted.ClusterPolicy.TenantQuotas = validClusterPolicyTenantQuotasConfig()
+	unsorted.ClusterPolicy.TenantQuotas.Tenants = []clusterTenantQuotaTenantConfig{
+		{TenantID: "zeta", RetainedBytes: 512, OfflineQueueMessages: 32, OfflineQueueBytes: 1024, StorageBytes: 2048},
+		{TenantID: "acme", RetainedBytes: 512, OfflineQueueMessages: 32, OfflineQueueBytes: 1024, StorageBytes: 2048},
+	}
+	if _, err := parseClusterConfig(strings.NewReader(string(mustMarshalClusterConfig(t, unsorted)))); err == nil {
+		t.Fatal("parseClusterConfig() accepted descending tenant quota IDs")
 	}
 }
 

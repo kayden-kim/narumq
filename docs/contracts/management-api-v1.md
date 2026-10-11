@@ -6,7 +6,7 @@ path, parameter, response schema와 media type은
 
 | 항목 | 값 |
 | --- | --- |
-| 이름과 version | `narumq-management-api` 1.14.0 |
+| 이름과 version | `narumq-management-api` 1.15.0 |
 | 상태 | Active |
 | Producer | NaruMQ broker management API |
 | Consumer | Dashboard·operator·monitoring integration의 query client |
@@ -38,9 +38,10 @@ path, parameter, response schema와 media type은
 | GET | `/api/v1/cluster/features` | committed active feature와 member build profile 조회 |
 | POST | `/api/v1/cluster/features/{feature}` | 모든 non-retired member가 지원하는 feature 활성화 |
 | GET | `/api/v1/cluster/policy` | committed `ClusterPolicy`와 version 조회 | ReadOnly |
-| PUT | `/api/v1/cluster/policy` | `mqttLimits`를 version 조건으로 commit | ClusterAdmin |
+| PUT | `/api/v1/cluster/policy` | `mqttLimits`와 선택 `tenantQuotas`를 version 조건으로 commit | ClusterAdmin |
 | GET | `/api/v1/nodes` | node list |
 | GET | `/api/v1/nodes/{nodeId}` | node detail |
+| GET | `/api/v1/nodes/{nodeId}/config` | 요청을 받은 node의 실제 적용 설정 조회 | ClusterAdmin |
 | POST | `/api/v1/nodes/{nodeId}/drain` | broker drain 시작 또는 기존 operation 재생 |
 | GET | `/api/v1/nodes/{nodeId}/drain` | committed drain operation 조회 |
 | DELETE | `/api/v1/nodes/{nodeId}/drain` | 취소 가능한 drain operation 취소 |
@@ -64,11 +65,17 @@ path, parameter, response schema와 media type은
 | DELETE | `/api/v1/security/blocklist/certificates/{certificateSha256}` | certificate fingerprint 차단 해제 (SecurityAdmin·ClusterAdmin) |
 | POST | `/api/v1/security/blocklist/ip-prefixes/{address}/{prefixLength}` | IP prefix 차단 (SecurityAdmin·ClusterAdmin) |
 | DELETE | `/api/v1/security/blocklist/ip-prefixes/{address}/{prefixLength}` | IP prefix 차단 해제 (SecurityAdmin·ClusterAdmin) |
-| GET | `/api/v1/audit/events` | node-local audit hash-chain record 조회 (SecurityAdmin·ClusterAdmin) |
+| GET | `/api/v1/nodes/{nodeId}/audit/events` | node-local audit hash-chain record 조회 (SecurityAdmin·ClusterAdmin) |
+
+Node 고유 정보와 특정 node만 대상으로 하는 제어는 `/api/v1/nodes/{nodeId}/...` 경로를 사용한다. 단, Raft commit으로 cluster 전체에 적용되는 `/api/v1/nodes/{nodeId}/drain`은 어느 node에서 호출해도 된다. `config`와 `audit/events`에서 `nodeId`는 canonical positive decimal uint64여야 한다. 값이 잘못됐거나 canonical 형식이 아니면 `404 resource_not_found`를 반환한다. 유효한 ID가 요청을 받은 node를 가리키지 않으면 non-retryable `409 node_not_local`을 반환하고 `error.details.servingNodeId`에 serving node ID를 넣는다. API는 원격 node로 proxy하지 않으므로 대상 node에 직접 요청해야 한다.
+
+`GET /api/v1/nodes/{nodeId}/config`는 Dynamic cluster에서만 제공하며 `ClusterAdmin` 권한을 요구한다. Query와 request body는 허용하지 않는다. 응답은 node의 실제 적용 설정과 `mqttLimits`, `tenantQuotas`의 적용 출처·version을 반환한다. `security`에는 JWT 설정, 인증 identity 수, ACL 규칙과 tenant limit을 포함한다. ACL 규칙은 `tenantId`, `role`, `effect`, `action`, `topicFilter`를 보여 준다. 인증 identity 목록, secret 원문과 secret file 경로, password hash, token은 반환하지 않는다. OIDC·JWT의 JWKS URL에서는 userinfo를 제거한다. 전체 응답 schema는 OpenAPI `NodeConfigurationResponse`를 따른다.
+
+`GET /api/v1/nodes/{nodeId}/audit/events`는 SecurityAdmin 또는 ClusterAdmin만 사용할 수 있다. 현재 node의 저장된 audit records를 `seq` 내림차순으로 반환한다. 허용 query는 `limit`, `cursor`, `actorSubject`, `action`, `targetType`, `targetId`, `requestId`, `result`, `from`, `to`이며 문자열 filter는 exact match다. `result`는 `ALLOWED`, `DENIED`, `FAILED`; `from` 포함·`to` 제외 RFC 3339 시각이다.
 
 Blocklist는 Dynamic cluster에서 `client-blocklist` feature를 활성화한 뒤 사용할 수 있으며 standalone에는 제공하지 않는다. GET의 `data`는 `{policyVersion, entries[]}`이며 각 entry는 `kind`, 선택적 `tenantId`, `value`, `blockedAt`을 가진다. POST는 항목을 차단하고 DELETE는 해제하며, 성공 결과의 `data`에는 `blocked`와 `policyVersion`이 포함된다. 실제 entry 집합이 바뀐 command의 Raft index가 policy version이며, 중복 block·이미 해제된 항목의 unblock은 version을 바꾸지 않는다. 성공한 mutation 응답 뒤 5초 안에 모든 node가 새 차단을 적용한다. Feature 비활성 또는 4096개 capacity 초과는 `409`다. Path 값은 percent-encoding할 수 있다. 예를 들어 clientId `a/b`는 `a%2Fb`로 전달하며 서버는 이를 `a/b`로 해석한다. 이 endpoint들의 query parameter와 request body는 허용되지 않으며, 있으면 `400 invalid_request`다. Mutation은 `SecurityAdmin` 또는 `ClusterAdmin` 권한을 요구한다.
-Cluster policy는 Dynamic cluster에서 `cluster-policy` feature 활성화 뒤 변경할 수 있으며 standalone에는 route가 없다. GET은 query와 body를 거절하고 commit 전에는 version `0`, policy `null`을 반환한다. GET·PUT은 `ETag: "<version>"`을 반환한다. PUT은 `If-Match`와 `Idempotency-Key`를 각각 하나씩 요구한다. `If-Match`가 현재 version과 다르면 non-retryable `409 cluster_policy_version_conflict`다. 성공 mutation은 `cluster.policy.update` audit event를 cluster ID target과 이전·새 version detail로 남긴다. 값과 범위는 [ADR-0052 §1.1.1](../decisions/ADR-0052-configuration-tiers-and-cluster-policy.md#111-1차-구현-계약-mqttlimits)을 따른다.
-PUT는 query parameter를 허용하지 않으며 query가 있으면 `400 invalid_request`다. `If-Match`가 없거나 형식이 틀리면 `400 invalid_request`이며 message는 `one valid If-Match header is required`다. 값 범위 밖이거나 field가 빠진 body는 `400 invalid_request`다. Feature 비활성은 `409 feature_inactive`, 최근 key를 다른 요청에 쓰면 `409 idempotency_conflict`, quorum 문제는 `503`이다.
+Cluster policy는 Dynamic cluster에서 `cluster-policy` feature 활성화 뒤 변경할 수 있으며 standalone에는 route가 없다. GET은 query와 body를 거절하고 commit 전에는 version `0`, policy `null`을 반환한다. GET·PUT은 `ETag: "<version>"`을 반환한다. PUT은 `If-Match`와 `Idempotency-Key`를 각각 하나씩 요구한다. `If-Match`가 현재 version과 다르면 non-retryable `409 cluster_policy_version_conflict`다. 성공 mutation은 `cluster.policy.update` audit event를 cluster ID target과 이전·새 version detail로 남긴다. 선택 `tenantQuotas`는 `cluster-policy-tenant-quotas` feature 활성화 뒤 사용할 수 있고, 네 quota 값과 tenant 목록 검증은 [ADR-0052 §1.1.3](../decisions/ADR-0052-configuration-tiers-and-cluster-policy.md#113-clusterpolicy-tenant-quota-g7-b)를 따른다.
+PUT는 query parameter를 허용하지 않으며 query가 있으면 `400 invalid_request`다. `If-Match`가 없거나 형식이 틀리면 `400 invalid_request`이며 message는 `one valid If-Match header is required`다. `mqttLimits` 값 범위 밖, 필수 quota field 누락, 잘못된 quota profile 또는 JSON body가 512 KiB보다 크면 `400 invalid_request`다. `tenantQuotas`를 생략하거나 `null`로 지정하면 ClusterPolicy는 quota profile을 관리하지 않는다. Feature 비활성은 `409 feature_inactive`, 최근 key를 다른 요청에 쓰면 `409 idempotency_conflict`, quorum 문제는 `503`이다.
 
 Version 1.5.0은 cluster feature 조회와 activation을 active contract에 추가한다. 조회는 `ReadOnly`, activation은 `ClusterAdmin`을 요구하며 dynamic cluster mode에서 제공된다. 이 catalog에 없는 path를 client가 호출할 수 있다는 계약은 없다.
 
@@ -88,11 +95,11 @@ Version 1.7.0은 `POST/GET/DELETE /api/v1/cluster/rebalance`를 추가한다. Op
 | --- | --- | --- | --- | --- |
 | `PermissionRead` — 조회 route, non-anonymous `/metrics`·probe | ✓ | ✓ | ✓ | ✓ |
 | `PermissionOperate` — drain·rebalance mutation |  | ✓ |  | ✓ |
-| `PermissionAuditRead` — `GET /api/v1/audit/events` |  |  | ✓ | ✓ |
-| `PermissionClusterAdmin` — tenant, membership, feature activation, backup, cluster policy update |  |  |  | ✓ |
+| `PermissionAuditRead` — `GET /api/v1/nodes/{nodeId}/audit/events` |  |  | ✓ | ✓ |
+| `PermissionClusterAdmin` — tenant, membership, feature activation, backup, cluster policy update, node configuration view |  |  |  | ✓ |
 | `PermissionCredentialAdmin` — credential revocation list, revoke, restore; blocklist list·block·unblock |  |  | ✓ | ✓ |
 
-- `GET /api/v1/audit/events`는 SecurityAdmin 또는 ClusterAdmin만 사용할 수 있다. 현재 node의 저장된 audit records를 `seq` 내림차순으로 반환한다. 허용 query는 `limit`, `cursor`, `actorSubject`, `action`, `targetType`, `targetId`, `requestId`, `result`, `from`, `to`이며 문자열 filter는 exact match다. `result`는 `ALLOWED`, `DENIED`, `FAILED`; `from` 포함·`to` 제외 RFC 3339 시각이다.
+- `GET /api/v1/nodes/{nodeId}/audit/events`는 SecurityAdmin 또는 ClusterAdmin만 사용할 수 있다. Node-local query 규칙과 node mismatch 응답은 §1의 경로 규칙을 따른다.
 - Audit cursor는 RawURL base64로 인코딩한 `seq:<decimal>`이고, cursor seq보다 작은 record부터 조회한다. 응답은 공통 list envelope이며 각 record는 `seq`, `prevHash`, `hash`, 저장된 `event`를 가진다. 조회는 감사 event를 생성하지 않으며 저장 event와 chain 값을 바꾸지 않는다.
 - Health probe와 `/metrics`의 익명 허용 여부는 listener configuration이다. OpenAPI의 security scheme은 보호된 배포를 기술하고, local development의 anonymous policy를 제거하지 않는다.
 - 모든 HTTP response는 `X-Request-Id`를 반환한다. 요청 header가 유효하면 같은 값을 사용하고, 아니면 서버가 opaque 값을 생성한다.
@@ -113,7 +120,7 @@ Version 1.7.0은 `POST/GET/DELETE /api/v1/cluster/rebalance`를 추가한다. Op
 Endpoint별 filter allowlist:
 
 | Endpoint | 허용 filter |
-| `/api/v1/audit/events` | `actorSubject`, `action`, `targetType`, `targetId`, `requestId`, `result`, `from`, `to`, `limit`, `cursor` |
+| `/api/v1/nodes/{nodeId}/audit/events` | `actorSubject`, `action`, `targetType`, `targetId`, `requestId`, `result`, `from`, `to`, `limit`, `cursor` |
 | `/api/v1/nodes` | `state`, `limit`, `cursor` |
 | `/api/v1/clients` | `tenantId`, `clientIdPrefix`, `nodeId`, `protocol`, `limit`, `cursor` |
 | `/api/v1/subscriptions` | required `tenantId`, optional `clientId`, `limit`, `cursor` |
@@ -149,8 +156,7 @@ JSON 오류는 다음 envelope다.
 }
 ```
 
-`404`는 존재하지 않는 node/client와 알 수 없는 router path에, `405`는 선언되지 않은
-method에 사용한다. 내부 오류와 credential은 response에 노출하지 않는다.
+`404`는 존재하지 않는 resource, 잘못됐거나 canonical 형식이 아닌 node ID, 알 수 없는 router path에 사용한다. `409 node_not_local`은 유효하지만 요청을 받은 node와 다른 ID를 node-local route에 지정했을 때 반환한다. 내부 오류와 credential은 response에 노출하지 않는다.
 
 ## 5. Compatibility와 deferred scope
 
@@ -163,11 +169,15 @@ method에 사용한다. 내부 오류와 credential은 response에 노출하지 
 - Version 1.5.0은 `GET /api/v1/cluster/features`와 `POST /api/v1/cluster/features/{feature}`를 추가한다. 성공 response는 `activeFeatures`와 member별 `nodeId`, `releaseVersion`, `features`를 data envelope로 반환하며, 미지원 feature activation은 non-retryable `409 feature_not_supported_by_all_members`다.
 - Version 1.7.0은 `POST/GET/DELETE /api/v1/cluster/rebalance`를 추가한다. Request parameter bounds와 operation response schema는 OpenAPI artifact가 기준이다.
 - Version 1.8.0은 Dynamic cluster의 활성 mutation 18개와 관리 API의 인증·인가 거절에 node-local 감사 event를 기록한다. Audit publisher가 append할 수 없는 경우 해당 mutation은 실행되지 않고 retryable `503 audit_unavailable`을 반환한다.
-- Active audit producer의 범위와 JSONL hash-chain 형식은 [Audit event v1 계약](audit-event-v1.md)과 [ADR-0039](../decisions/ADR-0039-management-audit-log.md)를 따른다. `GET /api/v1/audit/events`는 SecurityAdmin·ClusterAdmin 전용 node-local read-only query다. Dashboard는 ReadOnly API key만 사용하며 OIDC 사용자 로그인은 Grafana가 맡는다.
+- Active audit producer의 범위와 JSONL hash-chain 형식은 [Audit event v1 계약](audit-event-v1.md)과 [ADR-0039](../decisions/ADR-0039-management-audit-log.md)를 따른다. `GET /api/v1/nodes/{nodeId}/audit/events`는 SecurityAdmin·ClusterAdmin 전용 node-local read-only query다. Dashboard는 ReadOnly API key만 사용하며 OIDC 사용자 로그인은 Grafana가 맡는다.
 - Version 1.9.0은 모든 `/api/v1` operation에 `429` response를 추가한다.
-- Version 1.10.0은 이름 있는 API key, 정적 subject binding을 사용하는 OIDC JWT와 4-role authorization을 추가하고 `GET /api/v1/audit/events`로 node-local audit chain 조회를 제공한다.
+- Version 1.10.0은 이름 있는 API key, 정적 subject binding을 사용하는 OIDC JWT와 4-role authorization을 추가하고 node-local audit chain 조회를 제공한다.
 - Version 1.11.0은 Dynamic cluster 전용 credential revocation GET·POST·DELETE route와 `SecurityAdmin`·`ClusterAdmin` 권한을 추가한다. Replicated state의 기능은 `credential-revocation` feature activation 뒤에만 사용한다.
 - Version 1.12.0은 Dynamic cluster 전용 `client-blocklist` feature를 사용하는 GET·POST·DELETE route를 추가한다. SecurityAdmin·ClusterAdmin만 조회·변경할 수 있으며, path 값은 percent-encoding을 허용하고 query와 body는 거절한다. Blocklist entry, canonical 값, 전파 목표와 policy version 의미는 [ADR-0050](../decisions/ADR-0050-mqtt-client-blocklist.md)를 따른다.
 - Version 1.13.0은 Dynamic cluster 전용 `cluster-policy` feature를 사용하는 `GET/PUT /api/v1/cluster/policy`와 `mqttLimits` version update를 추가한다. GET은 ReadOnly, PUT은 ClusterAdmin을 요구하며 `If-Match`, `Idempotency-Key`, ETag와 audit detail을 사용한다.
 - Version 1.14.0은 `loadBalancerPropagationDelayMs`, `timeoutMs`, `uptimeMs`를 각각 `loadBalancerPropagationDelayMillis`, `timeoutMillis`, `uptimeMillis`로 바꿨다. 이 breaking change는 JSON duration 이름을 정수 millisecond 표기로 맞추기 위한 1회 예외다. Consumer는 새 이름으로 갱신한 뒤 배포해야 한다. 이전 이름은 지원하지 않는다.
 - Breaking change는 `/api/v2`와 별도 OpenAPI artifact로 제공한다.
+- G7의 audit path 이동은 이 contract에서 명시한 breaking-change 규칙의 예외다. 이전 `/api/v1/audit/events` 경로는 지원하지 않는다.
+- Version 1.15.0은 `ClusterPolicy` request·response에 선택적 `tenantQuotas`를 추가한다. 해당 field는 `cluster-policy-tenant-quotas` feature 활성화 뒤 사용할 수 있고, PUT body 한도는 512 KiB다.
+- Version 1.15.0은 Dynamic cluster 전용 `GET /api/v1/nodes/{nodeId}/config`를 추가한다. ClusterAdmin 전용이며 적용 설정, policy 출처와 version을 반환하고 secret 원문·경로를 제외한다. Node-local route는 요청 node의 canonical decimal ID만 받으며 다른 ID에는 `409 node_not_local`을 반환한다.
+- Version 1.15.0은 audit query를 `/api/v1/audit/events`에서 `/api/v1/nodes/{nodeId}/audit/events`로 이동한다. 이전 경로는 지원하지 않으며 client를 갱신해야 한다. Audit query도 local node만 대상으로 한다.

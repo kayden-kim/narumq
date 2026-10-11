@@ -387,7 +387,7 @@ func TestAuditQueryReturnsStoredChainRecords(t *testing.T) {
 
 	queryRequest := httptest.NewRequest(
 		http.MethodGet,
-		"/api/v1/audit/events?actorSubject=apikey%3Adashboard&action=management.request&result=DENIED&limit=1",
+		"/api/v1/nodes/1/audit/events?actorSubject=apikey%3Adashboard&action=management.request&result=DENIED&limit=1",
 		nil,
 	)
 	queryRequest.Header.Set("X-API-Key", auditReadSecret)
@@ -708,12 +708,14 @@ func newContractManagementRouter(
 	auditService audithttp.AuditUseCase,
 	auditQueryService audithttp.AuditQueryUseCase,
 ) http.Handler {
+	config.LocalNodeID = 1
 	return audithttp.NewRouterWithMembership(
 		config,
 		nil, nil, nil,
 		membershipService, drainService, rebalanceService, backupProvider, auditService, auditQueryService,
 		contractCredentialRevocationService{},
 		contractBlocklistService{},
+		nil,
 		nil,
 	)
 }

@@ -69,8 +69,14 @@ type clusterRuntimeMetricsConfig struct {
 	IntervalMillis uint64 `json:"intervalMillis"`
 }
 type clusterPolicyConfig struct {
-	Version    uint64                   `json:"version"`
-	MQTTLimits *clusterMQTTLimitsConfig `json:"mqttLimits"`
+	Version      uint64                           `json:"version"`
+	MQTTLimits   *clusterMQTTLimitsConfig         `json:"mqttLimits"`
+	TenantQuotas *clusterPolicyTenantQuotasConfig `json:"tenantQuotas,omitempty"`
+}
+
+type clusterPolicyTenantQuotasConfig struct {
+	Default clusterTenantQuotaLimitsConfig   `json:"default"`
+	Tenants []clusterTenantQuotaTenantConfig `json:"tenants"`
 }
 
 type clusterMQTTLimitsConfig struct {
@@ -83,11 +89,24 @@ type clusterMQTTLimitsConfig struct {
 
 func (config clusterPolicyConfig) membershipPolicy() membership.ClusterPolicyDTO {
 	limits := config.MQTTLimits
-	return membership.ClusterPolicyDTO{MQTTLimits: membership.MQTTLimitsDTO{
+	policy := membership.ClusterPolicyDTO{MQTTLimits: membership.MQTTLimitsDTO{
 		MaxPacketSize: limits.MaxPacketSize, ReceiveMaximum: limits.ReceiveMaximum,
 		ConnectTimeoutMillis: limits.ConnectTimeoutMillis, PacketReadTimeoutMillis: limits.PacketReadTimeoutMillis,
 		WriteTimeoutMillis: limits.WriteTimeoutMillis,
 	}}
+	if config.TenantQuotas != nil {
+		quotas := config.TenantQuotas.membershipQuotas()
+		policy.TenantQuotas = &quotas
+	}
+	return policy
+}
+
+func (config clusterPolicyTenantQuotasConfig) membershipQuotas() membership.ClusterTenantQuotasDTO {
+	profile := clusterTenantQuotaProfileConfig{
+		Default: config.Default, Tenants: config.Tenants,
+	}
+	converted := profile.membershipProfile()
+	return membership.ClusterTenantQuotasDTO{Default: converted.Default, Tenants: converted.Tenants}
 }
 
 func defaultClusterMQTTLimits() membership.MQTTLimitsDTO {
@@ -343,14 +362,17 @@ func expectedClusterJSONType(path string) string {
 	switch path {
 	case "", "peerTLS", "management", "management.oidc", "mqtt", "mqtt.tls",
 		"tenantQuotas", "tenantQuotas.default", "clusterPolicy", "clusterPolicy.mqttLimits",
+		"clusterPolicy.tenantQuotas", "clusterPolicy.tenantQuotas.default",
 		"replication", "publishBackpressure", "runtimeMetrics":
 		return "object"
-	case "bootstrapMembers", "seedAddresses", "tenantQuotas.tenants", "management.apiKeys", "management.oidc.algorithms", "management.oidc.identities":
+	case "bootstrapMembers", "seedAddresses", "tenantQuotas.tenants", "clusterPolicy.tenantQuotas.tenants",
+		"management.apiKeys", "management.oidc.algorithms", "management.oidc.identities":
 		return "array"
 	default:
 		if !strings.Contains(path, "].") && (strings.HasPrefix(path, "bootstrapMembers[") ||
-			strings.HasPrefix(path, "tenantQuotas.tenants[") || strings.HasPrefix(path, "management.apiKeys[") ||
-			strings.HasPrefix(path, "management.oidc.identities[")) && strings.HasSuffix(path, "]") {
+			strings.HasPrefix(path, "tenantQuotas.tenants[") || strings.HasPrefix(path, "clusterPolicy.tenantQuotas.tenants[") ||
+			strings.HasPrefix(path, "management.apiKeys[") || strings.HasPrefix(path, "management.oidc.identities[")) &&
+			strings.HasSuffix(path, "]") {
 			return "object"
 		}
 		if (strings.HasPrefix(path, "management.apiKeys[") || strings.HasPrefix(path, "management.oidc.identities[")) &&
@@ -386,6 +408,10 @@ func expectClusterKeys(path string, seen map[string]struct{}) error {
 		required = []string{"version", "mqttLimits"}
 	case "clusterPolicy.mqttLimits":
 		required = []string{"maxPacketSize", "receiveMaximum", "connectTimeoutMillis", "packetReadTimeoutMillis", "writeTimeoutMillis"}
+	case "clusterPolicy.tenantQuotas":
+		required = []string{"default", "tenants"}
+	case "clusterPolicy.tenantQuotas.default":
+		required = []string{"retainedBytes", "offlineQueueMessages", "offlineQueueBytes", "storageBytes"}
 	case "tenantQuotas":
 		required = []string{"version", "default", "tenants"}
 	case "tenantQuotas.default":
@@ -393,7 +419,8 @@ func expectClusterKeys(path string, seen map[string]struct{}) error {
 	default:
 		if strings.HasPrefix(path, "bootstrapMembers[") && strings.HasSuffix(path, "]") {
 			required = []string{"memberId", "address", "dnsSan", "certificateSha256"}
-		} else if strings.HasPrefix(path, "tenantQuotas.tenants[") && strings.HasSuffix(path, "]") {
+		} else if (strings.HasPrefix(path, "tenantQuotas.tenants[") ||
+			strings.HasPrefix(path, "clusterPolicy.tenantQuotas.tenants[")) && strings.HasSuffix(path, "]") {
 			required = []string{"tenantId", "retainedBytes", "offlineQueueMessages", "offlineQueueBytes", "storageBytes"}
 		} else if strings.HasPrefix(path, "management.apiKeys[") && strings.HasSuffix(path, "]") {
 			required = []string{"id", "keyFile", "roles"}

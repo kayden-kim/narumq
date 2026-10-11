@@ -20,7 +20,8 @@ type clusterPolicyHandler struct {
 }
 
 type clusterPolicyRequest struct {
-	MQTTLimits *clusterPolicyLimitsRequest `json:"mqttLimits"`
+	MQTTLimits   *clusterPolicyLimitsRequest `json:"mqttLimits"`
+	TenantQuotas *clusterTenantQuotasRequest `json:"tenantQuotas"`
 }
 
 type clusterPolicyLimitsRequest struct {
@@ -31,13 +32,38 @@ type clusterPolicyLimitsRequest struct {
 	WriteTimeoutMillis      *uint32 `json:"writeTimeoutMillis"`
 }
 
+type clusterTenantQuotasRequest struct {
+	Default *clusterTenantQuotaLimitsRequest  `json:"default"`
+	Tenants *[]clusterTenantQuotaEntryRequest `json:"tenants"`
+}
+
+type clusterTenantQuotaLimitsRequest struct {
+	RetainedBytes        *uint64 `json:"retainedBytes"`
+	OfflineQueueMessages *uint64 `json:"offlineQueueMessages"`
+	OfflineQueueBytes    *uint64 `json:"offlineQueueBytes"`
+	StorageBytes         *uint64 `json:"storageBytes"`
+}
+
+type clusterTenantQuotaEntryRequest struct {
+	TenantID             *string `json:"tenantId"`
+	RetainedBytes        *uint64 `json:"retainedBytes"`
+	OfflineQueueMessages *uint64 `json:"offlineQueueMessages"`
+	OfflineQueueBytes    *uint64 `json:"offlineQueueBytes"`
+	StorageBytes         *uint64 `json:"storageBytes"`
+}
 type clusterPolicyResponse struct {
 	Version uint64                      `json:"version"`
 	Policy  *clusterPolicyValueResponse `json:"policy"`
 }
 
 type clusterPolicyValueResponse struct {
-	MQTTLimits clusterPolicyLimitsResponse `json:"mqttLimits"`
+	MQTTLimits   clusterPolicyLimitsResponse        `json:"mqttLimits"`
+	TenantQuotas *clusterPolicyTenantQuotasResponse `json:"tenantQuotas"`
+}
+
+type clusterPolicyTenantQuotasResponse struct {
+	Default tenantQuotaLimitsResponse  `json:"default"`
+	Tenants []tenantQuotaEntryResponse `json:"tenants"`
 }
 
 type clusterPolicyLimitsResponse struct {
@@ -83,7 +109,7 @@ func (handler *clusterPolicyHandler) Update(w http.ResponseWriter, r *http.Reque
 		return
 	}
 	var request clusterPolicyRequest
-	if err := decodeStrictMembershipJSON(r, &request); err != nil {
+	if err := decodeStrictClusterPolicyJSON(r, &request); err != nil {
 		writeInvalidRequest(w, r, err)
 		return
 	}
@@ -98,8 +124,16 @@ func (handler *clusterPolicyHandler) Update(w http.ResponseWriter, r *http.Reque
 		ConnectTimeoutMillis: *limits.ConnectTimeoutMillis, PacketReadTimeoutMillis: *limits.PacketReadTimeoutMillis,
 		WriteTimeoutMillis: *limits.WriteTimeoutMillis,
 	}}
+	if request.TenantQuotas != nil {
+		quotas, err := clusterTenantQuotasFromRequest(request.TenantQuotas)
+		if err != nil {
+			writeInvalidRequest(w, r, err)
+			return
+		}
+		policy.TenantQuotas = quotas
+	}
 	if err := membership.ValidateClusterPolicy(policy); err != nil {
-		writeInvalidRequest(w, r, errors.New("mqttLimits contains an out-of-range value"))
+		writeInvalidRequest(w, r, errors.New("mqttLimits or tenantQuotas contains an out-of-range value"))
 		return
 	}
 	state, err := handler.service.UpdateClusterPolicy(r.Context(), membership.UpdateClusterPolicyRequestDTO{
@@ -112,6 +146,51 @@ func (handler *clusterPolicyHandler) Update(w http.ResponseWriter, r *http.Reque
 	setAuditDetails(r, map[string]any{"previousVersion": state.PreviousVersion, "newVersion": state.Version})
 	w.Header().Set("ETag", clusterPolicyETag(state.Version))
 	WriteDataEnvelope(w, r, http.StatusOK, clusterPolicyResponseBody(state))
+}
+
+func clusterTenantQuotasFromRequest(request *clusterTenantQuotasRequest) (*membership.ClusterTenantQuotasDTO, error) {
+	if request == nil || request.Default == nil || request.Tenants == nil {
+		return nil, errors.New("tenantQuotas requires default and tenants")
+	}
+	defaultQuota, err := clusterTenantQuotaLimitsFromRequest(request.Default)
+	if err != nil {
+		return nil, err
+	}
+	tenants := make([]membership.TenantStorageQuotaDTO, len(*request.Tenants))
+	for index, requestTenant := range *request.Tenants {
+		tenant, err := clusterTenantQuotaEntryFromRequest(requestTenant)
+		if err != nil {
+			return nil, err
+		}
+		tenants[index] = tenant
+	}
+	return &membership.ClusterTenantQuotasDTO{Default: defaultQuota, Tenants: tenants}, nil
+}
+
+func clusterTenantQuotaEntryFromRequest(request clusterTenantQuotaEntryRequest) (membership.TenantStorageQuotaDTO, error) {
+	if request.TenantID == nil {
+		return membership.TenantStorageQuotaDTO{}, errors.New("tenantQuotas tenantId is required")
+	}
+	quota, err := clusterTenantQuotaLimitsFromRequest(&clusterTenantQuotaLimitsRequest{
+		RetainedBytes: request.RetainedBytes, OfflineQueueMessages: request.OfflineQueueMessages,
+		OfflineQueueBytes: request.OfflineQueueBytes, StorageBytes: request.StorageBytes,
+	})
+	if err != nil {
+		return membership.TenantStorageQuotaDTO{}, err
+	}
+	quota.TenantID = *request.TenantID
+	return quota, nil
+}
+
+func clusterTenantQuotaLimitsFromRequest(request *clusterTenantQuotaLimitsRequest) (membership.TenantStorageQuotaDTO, error) {
+	if request == nil || request.RetainedBytes == nil || request.OfflineQueueMessages == nil ||
+		request.OfflineQueueBytes == nil || request.StorageBytes == nil {
+		return membership.TenantStorageQuotaDTO{}, errors.New("tenantQuotas requires every quota limit")
+	}
+	return membership.TenantStorageQuotaDTO{
+		RetainedBytes: *request.RetainedBytes, OfflineQueueMessages: *request.OfflineQueueMessages,
+		OfflineQueueBytes: *request.OfflineQueueBytes, StorageBytes: *request.StorageBytes,
+	}, nil
 }
 
 func clusterPolicyVersionFromRequest(w http.ResponseWriter, r *http.Request) (uint64, bool) {
@@ -139,10 +218,34 @@ func clusterPolicyResponseBody(state membership.ClusterPolicyStateDTO) clusterPo
 		return response
 	}
 	limits := state.Policy.MQTTLimits
-	response.Policy = &clusterPolicyValueResponse{MQTTLimits: clusterPolicyLimitsResponse{
-		MaxPacketSize: limits.MaxPacketSize, ReceiveMaximum: limits.ReceiveMaximum,
-		ConnectTimeoutMillis: limits.ConnectTimeoutMillis, PacketReadTimeoutMillis: limits.PacketReadTimeoutMillis,
-		WriteTimeoutMillis: limits.WriteTimeoutMillis,
-	}}
+	response.Policy = &clusterPolicyValueResponse{
+		MQTTLimits: clusterPolicyLimitsResponse{
+			MaxPacketSize: limits.MaxPacketSize, ReceiveMaximum: limits.ReceiveMaximum,
+			ConnectTimeoutMillis: limits.ConnectTimeoutMillis, PacketReadTimeoutMillis: limits.PacketReadTimeoutMillis,
+			WriteTimeoutMillis: limits.WriteTimeoutMillis,
+		},
+		TenantQuotas: clusterTenantQuotasResponseFromDTO(state.Policy.TenantQuotas),
+	}
 	return response
+}
+
+func clusterTenantQuotasResponseFromDTO(quotas *membership.ClusterTenantQuotasDTO) *clusterPolicyTenantQuotasResponse {
+	if quotas == nil {
+		return nil
+	}
+	tenants := make([]tenantQuotaEntryResponse, len(quotas.Tenants))
+	for index, tenant := range quotas.Tenants {
+		tenants[index] = tenantQuotaEntryResponse{
+			TenantID: tenant.TenantID, RetainedBytes: tenant.RetainedBytes,
+			OfflineQueueMessages: tenant.OfflineQueueMessages, OfflineQueueBytes: tenant.OfflineQueueBytes,
+			StorageBytes: tenant.StorageBytes,
+		}
+	}
+	return &clusterPolicyTenantQuotasResponse{
+		Default: tenantQuotaLimitsResponse{
+			RetainedBytes: quotas.Default.RetainedBytes, OfflineQueueMessages: quotas.Default.OfflineQueueMessages,
+			OfflineQueueBytes: quotas.Default.OfflineQueueBytes, StorageBytes: quotas.Default.StorageBytes,
+		},
+		Tenants: tenants,
+	}
 }

@@ -4,7 +4,7 @@
 
 | 항목 | 값 |
 | --- | --- |
-| 상태 | Active (Phase 1 query profile, broker drain, cluster feature activation, management-plane audit, API rate limit, SEC-10 OIDC/API key RBAC, SEC-12 client blocklist, API-09의 `mqttLimits` 정책 slice; 다른 ADR-0052 policy domain과 운영 mutation은 deferred) |
+| 상태 | Active (Phase 1 query profile, broker drain, cluster feature activation, management-plane audit, API rate limit, SEC-10 OIDC/API key RBAC, SEC-12 client blocklist, API-09 `mqttLimits`와 node configuration 조회, TEN-08 ClusterPolicy quota slice; 다른 ADR-0052 policy domain과 운영 mutation은 deferred) |
 | 관련 요구사항 | API-01~API-09, UI-01~UI-10, SEC-10~SEC-12 |
 | 근거 | [PRD 9.5절, 9.6절과 14장](../requirements/PRD.md) |
 | 관련 spec | [Tenant와 security](tenancy-and-security.md), [Drain](drain-and-rolling-update.md) |
@@ -109,7 +109,8 @@ Standalone mode는 `-http-request-rate`와 `-http-auth-failure-rate`를 사용�
 
 ### 2.1 Phase 1 active profile
 
-- OpenAPI에 정의된 21개 GET operation(health·metrics 포함)과 cluster backup POST, broker drain POST/GET/DELETE, membership, rebalance, feature, security와 cluster policy operation이 구현·계약 대상이다. 정확한 parameter allowlist, schema, response와 operation ID는 OpenAPI가 SSOT이며 `tests/contracts/management-api-v1`가 runtime handler와 일치하는지 검사한다.
+- OpenAPI에 정의된 22개 GET operation(health·metrics 포함)과 cluster backup POST, broker drain POST/GET/DELETE, membership, rebalance, feature, security와 cluster policy operation이 구현·계약 대상이다. 정확한 parameter allowlist, schema, response와 operation ID는 OpenAPI가 SSOT이며 `tests/contracts/management-api-v1`가 runtime handler와 일치하는지 검사한다.
+Node configuration와 audit query는 요청을 받은 node에만 적용한다. `nodeId`는 canonical positive decimal uint64여야 한다. ID가 잘못됐거나 canonical 형식이 아니면 `404 resource_not_found`, 다른 유효한 node ID면 `409 node_not_local`을 반환하며 원격 proxy를 하지 않는다. `/api/v1/nodes/{nodeId}/drain`은 Raft commit으로 cluster 전체에 적용되므로 이 제한에서 제외한다.
 
 | Method | Path | 성공 동작 | 권한 |
 | --- | --- | --- | --- |
@@ -124,11 +125,12 @@ Standalone mode는 `-http-request-rate`와 `-http-auth-failure-rate`를 사용�
 | POST | `/api/v1/cluster/backups` | quorum-fresh typed state backup archive 다운로드 | ClusterAdmin |
 | GET | `/api/v1/nodes` | state filter와 pagination을 사용한 node 목록 조회 | ReadOnly |
 | GET | `/api/v1/nodes/{nodeId}` | node detail 조회 | ReadOnly |
+| GET | `/api/v1/nodes/{nodeId}/config` | 해당 node의 실제 적용 설정·policy source 조회 | ClusterAdmin |
 | GET | `/api/v1/cluster/features` | committed active feature와 member build profile 조회 | ReadOnly |
 | POST | `/api/v1/cluster/features/{feature}` | 모든 non-retired member가 지원하는 feature 활성화; replay는 성공 no-op | ClusterAdmin |
 | GET | `/api/v1/cluster/membership-operations/{operationId}` | 마지막으로 관찰한 committed membership phase 조회 | ReadOnly |
 | GET | `/api/v1/cluster/policy` | committed version과 policy 조회 | ReadOnly |
-| PUT | `/api/v1/cluster/policy` | version 조건에 따라 `mqttLimits`를 commit; stale version은 `409 cluster_policy_version_conflict` | ClusterAdmin |
+| PUT | `/api/v1/cluster/policy` | version 조건으로 `mqttLimits`와 선택 `tenantQuotas`를 commit; stale version은 `409 cluster_policy_version_conflict` | ClusterAdmin |
 | POST | `/api/v1/nodes/{nodeId}/drain` | committed voter의 broker drain 시작 또는 현재 operation 재생 | Operator |
 | GET | `/api/v1/nodes/{nodeId}/drain` | committed drain operation 조회 | ReadOnly |
 | DELETE | `/api/v1/nodes/{nodeId}/drain` | cancellable drain operation 취소 | Operator |
@@ -140,7 +142,7 @@ Standalone mode는 `-http-request-rate`와 `-http-auth-failure-rate`를 사용�
 | GET | `/api/v1/tenants` | tenant 목록 조회 | ClusterAdmin |
 | GET | `/api/v1/security/credential-revocations` | 폐기된 credential ID 목록 조회 | SecurityAdmin, ClusterAdmin |
 | GET | `/api/v1/security/blocklist` | committed blocklist와 policy version 조회 | SecurityAdmin, ClusterAdmin |
-| GET | `/api/v1/audit/events` | 이 node의 저장 audit hash-chain record를 최신순으로 조회 | SecurityAdmin, ClusterAdmin |
+| GET | `/api/v1/nodes/{nodeId}/audit/events` | 요청을 받은 node의 저장 audit hash-chain record를 최신순으로 조회 | SecurityAdmin, ClusterAdmin |
 
 ### 2.2 Future/deferred catalog
 
@@ -402,6 +404,7 @@ Panel 14의 속도 단위는 연결/초와 takeover/초이며 ETA 단위는 초�
 - UI-03 routing 뒤 QoS 0 queue-full drop: `internal/application/publish/publish_test.go::TestPublishCountsQoS0QueueFullDrops`.
 - UI-05 node-local drain gauge: `internal/adapters/metrics/registry_test.go::TestRegistryRendersNodeDrainProgress`, `tests/integration/cluster_drain_process_test.go::TestDynamicClusterNodeDrainProcessAcceptance`.
 - SEC-10 설정·credential, 4-role permission matrix, OIDC 정적 subject binding과 audit query: `cmd/narumq/cluster_config_test.go`, `internal/adapters/authentication/jwt_verifier_test.go`, `internal/adapters/http/management/auth_test.go`, `internal/application/audit/query_test.go`, `internal/adapters/auditlog/query_test.go`, `internal/adapters/http/management/audit_query_handlers_test.go`, `tests/contracts/management-api-v1/contract_test.go::TestAuditQueryHandlerResponsesMatchOpenAPI`, `tests/contracts/audit-event-v1/contract_test.go::TestAuditQueryReturnsStoredChainRecords`, `tests/integration/cluster_management_rbac_process_test.go::TestDynamicClusterManagementRBACProcessAcceptance`.
+- API-09 G7 configuration query와 TEN-08 policy quota는 [Configuration §6 CFG-SCN-31~38](configuration-and-runtime-options.md#6-수용-시험) 및 [G7 실행 기록](configuration-and-runtime-options.md#g7-config-view-and-tenant-quotas-execution)에 연결한다. Contract test는 설정 응답 schema와 secret redaction, node-local 404/409, policy quota feature gate를 확인한다. Process acceptance는 3-node policy precedence와 legacy fallback을 확인한다.
 - UI-01~UI-05·UI-10 Dashboard contract와 process acceptance: `tests/integration/dashboard_stack_test.go::TestDashboardProvisioningMatchesContracts`, `tests/integration/dashboard_stack_test.go::TestDashboardStackProcessAcceptance`.
 - Dashboard 수용 시험 결과(2026-10-09): `TestDashboardProvisioningMatchesContracts`와 opt-in Docker E2E `TestDashboardStackProcessAcceptance`가 통과했다. E2E 실행은 `NARUMQ_DASHBOARD_E2E=1`, `NARUMQ_DASHBOARD_E2E_HOLD=90s` 조건에서 test 229.14초, package 230.254초였다. 세 process의 `/health/ready` `200`, Prometheus target 3개, datasource health 2개, ReadOnly cluster GET `200`, backup·drain POST `403`, cluster traffic·protocol Metric과 완료된 drain 결과를 확인했다. Grafana `/api/ds/query`가 panel 2, 4, 5, 6, 15의 frame을 반환했다. Replica 부족은 `0`, Member·Quorum은 `3/2/3/2`, node 상태 수는 `Ready=1`·`Joining=2`, node topology는 local `READY`와 원격 node의 `JOINING`·정확한 readiness reason, drain 상세는 `COMPLETED`·`SAFE_TO_STOP`·`safeToStop=true`·remaining `0`·takeover `1`을 표시했다. Node별 query에서는 node 1 connection·received PUBLISH rate와 MQTT 3.1.1 성공, node 2 sent PUBLISH rate와 MQTT 5.0 성공·같은 series의 `not_authorized` 거절을 확인했다. 성공 protocol label은 선택한 node 밖에서 나오지 않았다.
 - Dashboard named API key regression (2026-10-10): opt-in Docker E2E `TestDashboardStackProcessAcceptance`가 새 `management.apiKeys` 설정에서 통과했다. `NARUMQ_DASHBOARD_E2E=1`, `NARUMQ_DASHBOARD_E2E_HOLD=90s` 실행에서 test는 228.46초, package는 229.503초였다. ReadOnly credential로 cluster GET을 통과하고 backup·drain POST를 거절하는 acceptance가 통과했다.

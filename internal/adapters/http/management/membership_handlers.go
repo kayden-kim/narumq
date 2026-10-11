@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"mime"
 	"net/http"
@@ -16,6 +17,7 @@ import (
 )
 
 const maxMembershipRequestBytes = 16 * 1024
+const maxClusterPolicyRequestBytes = 512 * 1024
 
 // MembershipUseCase is the application boundary used by cluster membership routes.
 type MembershipUseCase interface {
@@ -159,6 +161,14 @@ func (handler *membershipHandler) GetOperation(w http.ResponseWriter, r *http.Re
 }
 
 func decodeStrictMembershipJSON(r *http.Request, target any) error {
+	return decodeStrictJSONRequest(r, target, maxMembershipRequestBytes, "membership")
+}
+
+func decodeStrictClusterPolicyJSON(r *http.Request, target any) error {
+	return decodeStrictJSONRequest(r, target, maxClusterPolicyRequestBytes, "cluster policy")
+}
+
+func decodeStrictJSONRequest(r *http.Request, target any, maxBytes int, requestName string) error {
 	contentTypes := r.Header.Values("Content-Type")
 	if len(contentTypes) != 1 {
 		return errors.New("one Content-Type header is required")
@@ -167,24 +177,24 @@ func decodeStrictMembershipJSON(r *http.Request, target any) error {
 	if err != nil || mediaType != "application/json" {
 		return errors.New("Content-Type must be application/json")
 	}
-	data, err := io.ReadAll(io.LimitReader(r.Body, maxMembershipRequestBytes+1))
+	data, err := io.ReadAll(io.LimitReader(r.Body, int64(maxBytes)+1))
 	if err != nil {
-		return errors.New("membership request body could not be read")
+		return fmt.Errorf("%s request body could not be read", requestName)
 	}
-	if len(data) == 0 || len(data) > maxMembershipRequestBytes || !utf8.Valid(data) {
-		return errors.New("membership request body is empty, oversized, or invalid UTF-8")
+	if len(data) == 0 || len(data) > maxBytes || !utf8.Valid(data) {
+		return fmt.Errorf("%s request body is empty, oversized, or invalid UTF-8", requestName)
 	}
 	if err := rejectDuplicateJSONKeys(data); err != nil {
-		return errors.New("membership request JSON is invalid or contains duplicate fields")
+		return fmt.Errorf("%s request JSON is invalid or contains duplicate fields", requestName)
 	}
 	decoder := json.NewDecoder(bytes.NewReader(data))
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(target); err != nil {
-		return errors.New("membership request JSON has an unknown field or invalid value")
+		return fmt.Errorf("%s request JSON has an unknown field or invalid value", requestName)
 	}
 	var trailing any
 	if err := decoder.Decode(&trailing); !errors.Is(err, io.EOF) {
-		return errors.New("membership request contains trailing JSON value")
+		return fmt.Errorf("%s request contains trailing JSON value", requestName)
 	}
 	return nil
 }

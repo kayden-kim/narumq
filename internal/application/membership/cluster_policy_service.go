@@ -63,19 +63,22 @@ func (service *ClusterPolicyService) UpdateClusterPolicy(ctx context.Context, re
 	if err != nil {
 		return ClusterPolicyStateDTO{}, portFailure(err)
 	}
-	if !slices.Contains(features, ClusterPolicyFeature) {
+	if !slices.Contains(features, ClusterPolicyFeature) ||
+		(request.Policy.TenantQuotas != nil && !slices.Contains(features, ClusterPolicyTenantQuotasFeature)) {
 		return ClusterPolicyStateDTO{}, newServiceError(ServiceErrorFeatureInactive, false)
 	}
 	operationID, err := newOperationID()
 	if err != nil {
 		return ClusterPolicyStateDTO{}, newServiceError(ServiceErrorQuorumUnavailable, true)
 	}
+	policy := request.Policy
+	policy.TenantQuotas = cloneClusterTenantQuotas(request.Policy.TenantQuotas)
 	version := request.ExpectedVersion + 1
 	result, err := service.port.Commit(ctx, CommandDTO{
 		SchemaMajor: SchemaMajor, SchemaMinor: SchemaMinor, OperationID: operationID,
 		ClusterPolicy: &ClusterPolicyChangeDTO{
 			ExpectedVersion: request.ExpectedVersion, Version: version,
-			Policy: request.Policy, IdempotencyKey: request.IdempotencyKey,
+			Policy: policy, IdempotencyKey: request.IdempotencyKey,
 		},
 	})
 	if err != nil {
@@ -88,7 +91,7 @@ func (service *ClusterPolicyService) UpdateClusterPolicy(ctx context.Context, re
 		return ClusterPolicyStateDTO{}, newServiceError(ServiceErrorQuorumUnavailable, true)
 	}
 	return ClusterPolicyStateDTO{
-		Version: version, Policy: request.Policy,
+		Version: version, Policy: policy,
 		IdempotencyKey: request.IdempotencyKey, PreviousVersion: request.ExpectedVersion,
 	}, nil
 }

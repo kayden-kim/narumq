@@ -51,15 +51,16 @@ Standalone mode에서는 security config를 MQTT listener보다 먼저 적재한
 | cluster config 일반 field | node별 주소와 listener 설정 | rolling restart를 한다. | node-local | [ADR-0051](../decisions/ADR-0051-cluster-update-strategy.md) |
 | Cluster runtime metrics | `runtimeMetrics` | rolling restart를 한다. | node-local | [Process configuration v1 §1.3](../contracts/process-configuration-v1.md#13-cluster-config-json), [ADR-0052](../decisions/ADR-0052-configuration-tiers-and-cluster-policy.md) |
 | `clusterPolicy.mqttLimits` | Cluster MQTT의 다섯 한도 | Feature 활성 전에는 local 값, 활성 뒤 version 1 이상 commit을 마치면 committed 값을 쓴다. 새 연결부터 적용한다. | cluster-wide | [ADR-0052 §1.1.1](../decisions/ADR-0052-configuration-tiers-and-cluster-policy.md#111-1차-구현-계약-mqttlimits), [Process configuration v1](../contracts/process-configuration-v1.md) |
-| `tenantQuotas` | versioned tenant storage quota profile | version을 올린 설정으로 rolling restart를 한다. Commit된 version이 cluster 전체의 기준이 된다. | cluster-wide | [Tenant §5.1](tenancy-and-security.md#51-저장-quota), [ADR-0017](../decisions/ADR-0017-tenant-storage-quota.md) |
+| `clusterPolicy.tenantQuotas` | Cluster tenant storage quota profile | `cluster-policy-tenant-quotas` 활성 뒤 commit한 policy quota를 우선한다. Field를 제거하면 committed legacy `TenantQuota` profile로 돌아간다. | cluster-wide | [ADR-0052 §1.1.3](../decisions/ADR-0052-configuration-tiers-and-cluster-policy.md#113-clusterpolicy-tenant-quota-g7-b), [Tenant §5.1](tenancy-and-security.md#51-저장-quota) |
+| `tenantQuotas` | Legacy versioned tenant storage quota profile | `clusterPolicy.tenantQuotas`가 없을 때만 fallback으로 적용한다. 새 profile은 policy가 설정되지 않은 경우에만 제안한다. | cluster-wide | [Tenant §5.1](tenancy-and-security.md#51-저장-quota), [ADR-0017](../decisions/ADR-0017-tenant-storage-quota.md) |
 | `replication` | `factor`, `writeQuorum` | 3/2만 허용하므로 바꿀 수 없다. | 변경 불가 | [ADR-0029](../decisions/ADR-0029-replication-factor-write-quorum-profile.md) |
 | security config | ACL, `tenantLimits`, 인증 identity, secret | rolling restart를 한다. Rollout 중 node마다 값이 다를 수 있다. | node-local | [ADR-0049](../decisions/ADR-0049-mqtt-credential-revocation.md), [ADR-0034](../decisions/ADR-0034-node-local-tenant-connection-and-traffic-limits.md) |
 | build identity | release version, build feature | binary를 교체한다. | node별 binary | [Process configuration v1 §1.8](../contracts/process-configuration-v1.md#18-build-identity) |
 | 운영 상태 변경 | feature activation, credential revocation, blocklist, drain, rebalance, membership | 기존 전용 Management API를 사용한다. Mutation은 cluster에 commit한 뒤 적용한다. | cluster-wide | [Management API spec](management-api-and-observability.md), [Cluster spec](cluster-session-and-delivery.md), [Tenant와 security spec](tenancy-and-security.md), [Drain spec](drain-and-rolling-update.md) |
 | Backup | cluster backup 생성·restore | 전용 API 또는 `-cluster-restore`를 사용한다. Backup 생성은 commit된 상태를 읽으며 cluster 상태를 변경하지 않는다. | cluster state의 archive | [Cluster backup v3](../contracts/cluster-backup-v3.md) |
 
-`tenantQuotas`는 정적 설정이지만 더 높은 version이 Raft command로 commit된 뒤 cluster-wide 기준이 된다. 그 밖의 cluster config와 security config는 node마다 적재하므로 rollout 중 값이 다를 수 있다.
-`ClusterPolicy`는 committed version 1 이상이 있으면 그 `mqttLimits`를 모든 node에 적용한다. 그렇지 않으면 각 node는 local `clusterPolicy.mqttLimits`를, 그것도 없으면 기본값을 사용한다. Reconciler는 feature 활성 뒤 local version이 committed version보다 높을 때만 새 정책을 제안한다. Local version이 낮거나 같은 version의 내용이 다르면 committed 값을 유지하고 mismatch gauge와 Warn log를 갱신한다. 설정은 연결 수락 때 capture하므로 정책 변경은 새 연결부터 반영한다.
+`tenantQuotas`는 정적 설정이다. Policy quota를 설정하면 `cluster-policy-tenant-quotas` 활성 뒤 committed `ClusterPolicy.tenantQuotas`가 모든 node에서 우선한다. Policy field를 제거하면 committed legacy `TenantQuota` profile로 돌아간다. Cluster config의 top-level `tenantQuotas`와 `clusterPolicy`는 함께 지정할 수 없다.
+`ClusterPolicy`는 committed version 1 이상이 있으면 그 `mqttLimits`를 모든 node에 적용한다. 그렇지 않으면 각 node는 local `clusterPolicy.mqttLimits`를, 그것도 없으면 기본값을 사용한다. Reconciler는 feature 활성 뒤 local version이 committed version보다 높을 때만 새 정책을 제안한다. Local version이 낮거나 같은 version의 내용이 다르면 committed 값을 유지하고 mismatch gauge와 Warn log를 갱신한다. Policy quota는 별도 feature 활성 뒤에만 reconcile한다. Policy에서 quota를 제거하는 higher version을 commit하면 quota admission은 legacy `TenantQuota` profile로 돌아간다. 설정은 연결 수락 때 capture하므로 MQTT policy 변경은 새 연결부터 반영한다.
 
 `runtimeMetrics`는 node 정적 설정이다. 값을 바꾸려면 해당 node를 rolling restart한다. 설정한 node만 JSONL 표본을 기록한다.
 
@@ -80,8 +81,8 @@ Standalone mode에서는 security config를 MQTT listener보다 먼저 적재한
 - 시스템은 token, key, password, password hash를 log에 남겨서는 안 된다.
 - Release build는 설정용 환경 변수를 읽지 않는다.
 - 설정 파일 변경은 실행 중인 process에 자동 반영되지 않는다.
-- `clusterPolicy.mqttLimits`는 versioned committed policy가 있을 때 node 간 일치한다. 일반 cluster config와 security config의 나머지 값은 node마다 적재하므로 rollout 중 다를 수 있다.
-- 이 spec은 Proposed [ADR-0052](../decisions/ADR-0052-configuration-tiers-and-cluster-policy.md)의 나머지 정책 항목이 구현되었다고 보장하지 않는다. `mqttLimits` 범위만 G1·API-09의 채택 사항이다.
+- `clusterPolicy.mqttLimits`와 활성화된 `clusterPolicy.tenantQuotas`는 committed version이 모든 node의 기준이다. Policy quota는 `cluster-policy-tenant-quotas` feature 활성 뒤에만 적용한다.
+- 이 spec은 [ADR-0052](../decisions/ADR-0052-configuration-tiers-and-cluster-policy.md)의 G7 적용 설정 조회와 G7 tenant quota 정책을 포함한다. 다른 Proposed 정책은 구현되었다고 보장하지 않는다.
 
 ## 6. 수용 시험
 
@@ -113,10 +114,18 @@ Standalone mode에서는 security config를 MQTT listener보다 먼저 적재한
 | `CFG-SCN-24` | PERF-08 | 3-node in-process cluster에서 node 1에만 `runtimeMetrics`(`intervalMillis` 50)를 지정한다. | node 1의 출력 파일에 `schemaVersion` 1인 JSON 행이 2개 이상 기록된다. | `cmd/narumq.TestRunClusterModeInProcess` | 통과 | [실행 기록](#cluster-runtime-metrics-g6-execution) |
 | `CFG-SCN-25` | API-09 | `clusterPolicy`를 생략하거나 version, 다섯 한도 값, 필수 key와 unknown key를 바꾼다. | 생략은 허용한다. 유효한 값은 읽고, 0·상한 초과·누락·알 수 없는 key는 거절한다. | `cmd/narumq.TestParseClusterConfigClusterPolicy` | 통과 | [API-09 mqttLimits 실행 기록](#api-09-mqttlimits-execution) |
 | `CFG-SCN-26` | API-09 | 기본값·local config·committed policy precedence와 higher/lower/same-version reconciliation을 확인한다. | Committed version이 우선한다. Higher local version만 제안하고 불일치 설정은 mismatch로 남긴다. | `cmd/narumq.TestEffectiveClusterMQTTLimitsPrecedence`, `cmd/narumq.TestClusterPolicyControllerReconcilesAndLogsMismatchOnce` | 통과 | [API-09 mqttLimits 실행 기록](#api-09-mqttlimits-execution) |
-| `CFG-SCN-27` | API-09 | Feature가 활성화된 ClusterPolicy를 snapshot과 backup archive로 저장·복원한다. | Restored state에서 같은 version과 MQTT 한도를 읽는다. | `cmd/narumq.TestClusterBackupArchivePreservesClusterPolicy` | 통과 | [API-09 mqttLimits 실행 기록](#api-09-mqttlimits-execution) |
+| `CFG-SCN-27` | API-09 | Feature가 활성화된 ClusterPolicy를 snapshot과 backup archive로 저장·복원한다. | Restored state에서 같은 version과 MQTT 한도를 읽는다. | `cmd/narumq.TestClusterBackupArchivePreservesClusterPolicyTenantQuotas` | 통과 | [G7 config·quota 실행 기록](#g7-config-view-and-tenant-quotas-execution) |
 | `CFG-SCN-28` | API-09 | 3-node cluster에서 policy PUT, 재시도·충돌, 신규·기존 연결, node restart와 drift를 확인한다. | 모든 node가 committed version을 적용한다. 기존 연결은 이전 한도를 유지하고 재시작 node는 committed 값과 mismatch를 보고한다. | `tests/integration.TestDynamicClusterPolicyProcessAcceptance` | 통과 | [API-09 mqttLimits 실행 기록](#api-09-mqttlimits-execution) |
 | `CFG-SCN-29` | SEC-01 | Cluster config의 `mqtt.tcpListenAddress`에 `0.0.0.0:1884`, `[::]:1884`, `10.0.0.5:1884`, `mqtt.example:1884`를 넣는다. `mqtt.securityConfigFile`을 비운다. 인증 방식별로 credential·certificate 없는 CONNECT를 보낸다. 3-node cluster 평문 TCP에서 password 인증을 확인한다. | 네 주소를 그대로 적재한다. 빈 security config 경로는 거절한다. JWT 설정에서 credential 없는 MQTT 5 CONNECT는 `0x87`로 거절한다. mTLS 전용 설정에서 certificate 없는 CONNECT는 MQTT 3.1.1 `0x05`, MQTT 5 `0x87`로 거절한다. Cluster TCP는 유효한 password만 연결한다. | `cmd/narumq.TestParseClusterConfigAcceptsNonLoopbackMQTTTCPListener`, `cmd/narumq.TestValidateClusterConfigReportsFirstInvalidField`, `internal/application/connect.TestConnectRecordsAuthenticationDenialsWithoutChangingConnAck`, `internal/application/connect.TestCmmConnectRejectsCredentialModeMismatchesWithoutMutation`, `tests/integration.TestDynamicClusterPasswordAuthenticationProcessAcceptance` | 통과 | [Cluster 평문 TCP(G3) 실행 기록](#cluster-plaintext-tcp-g3-execution) |
 | `CFG-SCN-30` | SEC-02, TEN-07, API-02 | Command-line flag, security config, cluster OIDC config와 Management API에 duration 값을 넣는다. Security config의 새 JWT·`tenantLimits` key에는 integer millisecond를 넣고 legacy key, string, 음수와 상한 초과도 시험한다. API request·response에서 새 field 이름을 확인하고 legacy 이름을 보낸다. | Flag는 Go duration 문자열을 유지한다. JSON duration은 `Millis` 접미사와 integer millisecond를 사용한다. Legacy config key와 API field는 거절한다. | `cmd/narumq.TestPositiveMillisDuration`, `cmd/narumq.TestParseSecurityConfig_Rejections`, `cmd/narumq.TestParseSecurityConfig_TenantLimitsMaxWaitMillis`, `cmd/narumq.TestParseSecurityConfig_TenantLimitsRejectInvalidProfiles`, `cmd/narumq.TestClusterManagementAccessConfiguration`, `tests/contracts/management-api-v1` | 통과 | [G5 duration 표기 실행 기록](#g5-duration-millis-execution) |
+| `CFG-SCN-31` | API-09, TEN-08 | Dynamic cluster node에서 `GET /api/v1/nodes/{nodeId}/config`를 호출한다. Secret이 설정된 경우도 확인한다. | Response는 해당 node의 적용 설정, policy source·version, listener 상태와 non-secret security metadata를 반환한다. `security.identityCounts`는 JWT·password·mTLS identity 수를, `security.acl`은 적용 ACL 규칙을 반환한다. Credential identity 목록, secret 원문·경로·hash는 포함하지 않는다. | `tests/integration.TestDynamicClusterNodeConfigurationProcessAcceptance`, `internal/domain/security.TestPolicyRulesReturnsIndependentSlice` | 통과 | [G7 config·quota 실행 기록](#g7-config-view-and-tenant-quotas-execution) |
+| `CFG-SCN-32` | API-09 | Config 또는 audit node-local route에서 다른 node ID, 0이 붙은 ID와 잘못된 ID를 지정한다. | 다른 node ID는 `409 node_not_local`, canonical decimal이 아닌 ID와 잘못된 ID는 `404 resource_not_found`다. 원격 proxy를 하지 않는다. | `internal/adapters/http/management.TestNodeLocalRouteScope`, `tests/integration.TestDynamicClusterNodeConfigurationProcessAcceptance` | 통과 | [G7 config·quota 실행 기록](#g7-config-view-and-tenant-quotas-execution) |
+| `CFG-SCN-33` | TEN-08 | `clusterPolicy.tenantQuotas`에 필수·알 수 없는 key, 잘못된 범위, tenant 순서·ID와 profile version을 넣는다. | 유효한 quota는 strict하게 읽는다. 누락·unknown·version field·범위 밖 값·중복 또는 내림차순 tenant는 거절한다. | `cmd/narumq.TestParseClusterConfigClusterPolicyTenantQuotas` | 통과 | [G7 config·quota 실행 기록](#g7-config-view-and-tenant-quotas-execution) |
+| `CFG-SCN-34` | TEN-08 | Policy quota가 비활성 feature에서 commit·snapshot decode에 들어가거나, 활성 상태에서 snapshot count가 틀린다. | Inactive feature의 policy quota와 objectCount 불일치 snapshot은 거절한다. Valid snapshot은 복구한다. | `internal/application/membership.TestClusterPolicyTenantQuotaFeatureGateAndEffectiveProfile`, `internal/adapters/raft/records.TestClusterPolicyTenantQuotasFeatureGateAndSnapshotCount` | 통과 | [G7 config·quota 실행 기록](#g7-config-view-and-tenant-quotas-execution) |
+| `CFG-SCN-35` | TEN-08 | 3-node cluster에서 legacy quota와 policy quota가 다를 때 feature를 활성화하고 policy quota를 commit한다. | 모든 node는 policy quota와 ClusterPolicy version을 적용한다. Quota rejection의 profile version은 policy version이다. | `tests/integration.TestDynamicClusterPolicyTenantQuotasProcessAcceptance` | 통과 | [G7 config·quota 실행 기록](#g7-config-view-and-tenant-quotas-execution) |
+| `CFG-SCN-36` | TEN-08 | Committed policy에서 `tenantQuotas`를 제거한 다음, legacy quota profile을 유지한다. | Policy update 후 모든 node가 committed legacy `TenantQuota` profile로 돌아간다. | `tests/integration.TestDynamicClusterPolicyTenantQuotasProcessAcceptance`, `internal/application/membership.TestClusterPolicyTenantQuotaFeatureGateAndEffectiveProfile` | 통과 | [G7 config·quota 실행 기록](#g7-config-view-and-tenant-quotas-execution) |
+| `CFG-SCN-37` | TEN-08 | Build member가 `cluster-policy-tenant-quotas`를 광고하지 않을 때 활성화 요청을 보낸다. 이후 모든 member가 광고할 때 activation을 commit한다. | 미지원 member가 있으면 activation을 거절한다. 모두 지원하면 feature가 committed 되고 quota policy 사용이 가능하다. | `internal/application/membership.TestClusterPolicyTenantQuotaActivationRejectsUnsupportedStagedMember`, `tests/integration.TestDynamicClusterPolicyTenantQuotasProcessAcceptance` | 통과 | [G7 config·quota 실행 기록](#g7-config-view-and-tenant-quotas-execution) |
+| `CFG-SCN-38` | API-09, TEN-08 | Policy quota를 여러 node에 적용한 뒤 node를 재시작하고 snapshot/backup을 복원한다. | 모든 node와 복원된 cluster가 같은 quota value·source·ClusterPolicy version을 반환한다. | `tests/integration.TestDynamicClusterPolicyTenantQuotasProcessAcceptance`, `cmd/narumq.TestClusterBackupArchivePreservesClusterPolicyTenantQuotas` | 통과 | [G7 config·quota 실행 기록](#g7-config-view-and-tenant-quotas-execution) |
 
 <a id="configuration-test-execution"></a>
 ### 설정 시험 실행 기록
@@ -308,7 +317,59 @@ go run ./cmd/narumq -tcp-listen 127.0.0.1:18832 -security-config .artifacts/veri
 | Local gate | 통과 (219.86s). Branch instrumentation, traceability, fuzz, architecture, package·race 시험과 coverage가 모두 통과했다. |
 | CI gate | 통과 (1484.27s). Coverage PASS, mutation efficacy `100%`, mutant coverage `98.85%`(6 not covered). |
 
+<a id="g7-config-view-and-tenant-quotas-execution"></a>
+### G7 config view·ClusterPolicy tenant quota 실행 기록
+
+실행 환경은 Windows/amd64, Go 1.26.5다. 이 기록은 적용 설정 조회, node-local route 경계, ClusterPolicy quota feature gate와 precedence를 확인한다.
+검증 대상은 G7에서 수정한 작업 트리다. 이 작업에서 commit은 만들지 않았다.
+
+첫 local gate는 `internal/domain/security` 함수 coverage가 97.06%로 100% ratchet에 미달해 실패했다. ACL policy accessor의 직접 시험이 없어 coverage를 채우지 못했다. `Policy.Rules()`의 copy 동작과 process 응답의 ACL 규칙을 확인하는 시험을 추가한 뒤 local gate가 통과했다.
+
+
+```sh
+go test ./internal/domain/security ./internal/application/membership ./internal/adapters/raft/records ./internal/adapters/http/management ./cmd/narumq -count=1
+go test ./tests/contracts/... -count=1
+go test ./tests/integration -run '^(TestDynamicClusterNodeConfigurationProcessAcceptance|TestDynamicClusterPolicyProcessAcceptance|TestDynamicClusterPolicyTenantQuotasProcessAcceptance|TestDynamicClusterTenantStorageQuotaProcessAcceptance|TestDynamicClusterManagementRBACProcessAcceptance)$' -count=1 -timeout=30m
+go run ./tools/verify markdown-links
+go run ./tools/verify local
+```
+
+| 확인 | 결과 |
+| --- | --- |
+| Domain·membership·Raft records·Management API·configuration parser 시험 | 통과 (`go test ./internal/domain/security ./internal/application/membership ./internal/adapters/raft/records ./internal/adapters/http/management ./cmd/narumq -count=1`) |
+| Contract suite | 통과 (`go test ./tests/contracts/... -count=1`) |
+| G7 node configuration·policy·tenant quota process acceptance | 통과 (선택한 5개 process acceptance; package 15.197s) |
+| Markdown links | 통과 (152 files, 2,201 local links) |
+| Traceability | 통과 (P0 mapped 70/81, exceptions 11) |
+| Local gate | 통과 (198.09s; branch instrumentation, traceability, fuzz, architecture, package·race 시험과 coverage 통과) |
+| CI gate | 미실행. G7 local gate를 실행했다. 전체 CI merge gate는 `docs/TODO.md` §1.9에서 별도로 추적한다. |
+
+#### ACL 응답 계약 보정 실행 기록
+
+초기 config response는 ACL 규칙 수만 반환했다. 승인된 A1/A2 계약은 `security.identityCounts`와 설정 순서의 `security.acl[]` 항목을 요구한다. MQTT JWT identity 수는 `identityCounts.jwt`에 두고, JWT configuration에서는 count를 제외한다. Management OIDC 응답은 바꾸지 않았다.
+
+다음 검증은 이 계약 보정 뒤 현재 작업 트리에서 실행했다.
+
+```sh
+go test ./internal/domain/security ./internal/application/membership ./internal/adapters/raft/records ./internal/adapters/http/management ./cmd/narumq -count=1
+go test ./tests/contracts/... -count=1
+go test ./tests/integration -run '^TestDynamicClusterNodeConfigurationProcessAcceptance$' -count=1 -timeout=30m
+go run ./tools/verify markdown-links
+go run ./tools/verify local
+```
+
+| 확인 | 결과 |
+| --- | --- |
+| Focused package suites | 통과. `Policy.Rules()`의 복사·순서, runtime ACL 매핑과 Management adapter를 포함한다. |
+| Management contract suite | 통과. OpenAPI에서 새 `identityCounts`와 ACL rule array 응답을 확인했다. |
+| Node configuration process acceptance | 통과. 58개 ACL rule의 첫 항목·마지막 항목, identity count와 private key redaction을 확인했다. |
+| Markdown links | 통과 (152 files, 2,201 local links) |
+| Local gate | 통과 (`branch-instrument`, traceability 70/81(P0), architecture, fuzz, package·race 시험과 coverage). |
+| CI gate | 미실행. 전체 CI merge gate는 `docs/TODO.md` §1.9에서 별도로 추적한다. |
+
+
+
 ## 7. 미결정 사항
 
 - `SPEC-TBD-02`와 `SPEC-TBD-03`의 확정 위치는 이 spec이다. 이번 문서는 새 제품 값을 정하지 않는다.
-- 목표 설정 구조와 API-09 정책은 [ADR-0052](../decisions/ADR-0052-configuration-tiers-and-cluster-policy.md)(Proposed)를 따른다.
+- G1·G7 범위는 채택했다. 나머지 ADR-0052 policy domain과 정책 제안은 해당 ADR의 상태를 따른다.

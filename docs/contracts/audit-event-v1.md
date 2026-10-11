@@ -112,7 +112,7 @@ Payload, password, token과 인증서 원문은 기록하지 않는다. 다음 �
 
 크기 한도를 넘으면 현재 active 파일을 `audit-<20자리 zero-padded 첫 seq>.jsonl`로 rotation한다. Broker는 파일을 삭제하지 않는다. 외부 collector는 가장 오래된 rotation 파일부터 끊기지 않는 prefix만 삭제할 수 있다. 더 오래된 rotation 파일을 남긴 채 중간이나 더 최신 파일을 삭제해서는 안 된다. Active `audit.jsonl`은 수정하거나 삭제해서는 안 된다. 각 node는 서로 다른 audit directory를 사용해야 하며, audit directory는 Raft `directory`와 같거나 서로 포함되어서는 안 된다.
 
-`GET /api/v1/audit/events`는 이 node의 저장된 `seq`, `prevHash`, `hash`, `event`를 변경하지 않고 반환한다.
+`GET /api/v1/nodes/{nodeId}/audit/events`는 요청을 받은 node의 저장된 `seq`, `prevHash`, `hash`, `event`를 변경하지 않고 반환한다. Path의 node ID가 요청을 받은 node와 다르면 `409 node_not_local`을 반환한다. 이 조회 API는 remote node로 proxy하지 않는다.
 
 Process 재시작 시 active 파일의 끝이 줄바꿈으로 끝나지 않으면 마지막 완전한 줄 뒤의 bytes를 잘라낸 뒤 동기화한다. 완전한 줄은 JSON, 순번, 이전 hash와 계산한 hash를 검증한다. Rotation 파일의 torn tail은 오류다. `narumq -audit-verify <directory>`는 저장된 chain을 읽기 전용으로 검증한다. 성공하면 `files`, `records`, `first_seq`, `last_seq`, `last_hash`, `torn_tail`을 출력한다. `torn_tail`은 active 파일만 나타내며, verifier는 파일을 수정하지 않는다.
 

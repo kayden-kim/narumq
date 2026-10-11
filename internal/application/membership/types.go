@@ -35,23 +35,24 @@ const (
 // activate independently.
 const (
 	// ConnectionRebalanceFeature identifies the replicated connection rebalance feature.
-	ConnectionRebalanceFeature    = "connection-rebalance"
-	SessionMetadataFeature        = "session-metadata"
-	CredentialRevocationFeature   = "credential-revocation"
-	ClientBlocklistFeature        = "client-blocklist"
-	ProposalRecoveryFeature       = "proposal-recovery"
-	ClusterPolicyFeature          = "cluster-policy"
-	MaxProposalReceiptsPerOrigin  = 1024
-	MaxProposalReceipts           = 4096
-	MaxProposalResultBytes        = 32 << 20
-	MaxSessionWillBytes           = 8 << 20
-	MaxCredentialRevocations      = 4096
-	MaxBlocklistEntries           = 4096
-	MaxCredentialIDBytes          = 512
-	MaxSessionWillPayloadBytes    = 65535
-	MaxSessionPrincipalFieldBytes = 1024
-	MaxSessionPrincipalRoles      = 64
-	MaxSessionPrincipalRoleBytes  = 256
+	ConnectionRebalanceFeature       = "connection-rebalance"
+	SessionMetadataFeature           = "session-metadata"
+	CredentialRevocationFeature      = "credential-revocation"
+	ClientBlocklistFeature           = "client-blocklist"
+	ProposalRecoveryFeature          = "proposal-recovery"
+	ClusterPolicyFeature             = "cluster-policy"
+	ClusterPolicyTenantQuotasFeature = "cluster-policy-tenant-quotas"
+	MaxProposalReceiptsPerOrigin     = 1024
+	MaxProposalReceipts              = 4096
+	MaxProposalResultBytes           = 32 << 20
+	MaxSessionWillBytes              = 8 << 20
+	MaxCredentialRevocations         = 4096
+	MaxBlocklistEntries              = 4096
+	MaxCredentialIDBytes             = 512
+	MaxSessionWillPayloadBytes       = 65535
+	MaxSessionPrincipalFieldBytes    = 1024
+	MaxSessionPrincipalRoles         = 64
+	MaxSessionPrincipalRoleBytes     = 256
 )
 
 // SessionRetention matches the replicated-state protocol enum.
@@ -255,9 +256,16 @@ type MQTTLimitsDTO struct {
 	WriteTimeoutMillis      uint32
 }
 
+// ClusterTenantQuotasDTO contains policy quota values. Its version is the enclosing policy version.
+type ClusterTenantQuotasDTO struct {
+	Default TenantStorageQuotaDTO
+	Tenants []TenantStorageQuotaDTO
+}
+
 // ClusterPolicyDTO contains the policy fields implemented by this contract version.
 type ClusterPolicyDTO struct {
-	MQTTLimits MQTTLimitsDTO
+	MQTTLimits   MQTTLimitsDTO
+	TenantQuotas *ClusterTenantQuotasDTO
 }
 
 // ClusterPolicyChangeDTO applies a versioned policy update with compare-and-swap semantics.

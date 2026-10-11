@@ -131,15 +131,27 @@ func EqualTenantQuotaProfile(left, right TenantQuotaProfileDTO) bool {
 }
 
 func (machine *StateMachine) tenantQuotaExceededLocked(tenantID string, retainedDelta, queueMessagesDelta, queueBytesDelta, storageDelta int) *TenantQuotaRejectionDTO {
-	if machine.tenantQuota == nil {
-		return nil
-	}
-	quota := machine.tenantQuota.Default
-	if tenantQuota, exists := machine.tenantQuotaByTenant[tenantID]; exists {
-		quota = tenantQuota
+	quota := TenantStorageQuotaDTO{}
+	var version uint64
+	if policy := machine.clusterPolicy; policy != nil && policy.Policy.TenantQuotas != nil &&
+		slices.Contains(machine.activeFeatures, ClusterPolicyTenantQuotasFeature) {
+		quotas := policy.Policy.TenantQuotas
+		quota = quotas.Default
+		if tenantQuota, exists := machine.clusterPolicyTenantQuotaByTenant[tenantID]; exists {
+			quota = tenantQuota
+		}
+		version = policy.Version
+	} else {
+		if machine.tenantQuota == nil {
+			return nil
+		}
+		quota = machine.tenantQuota.Default
+		if tenantQuota, exists := machine.tenantQuotaByTenant[tenantID]; exists {
+			quota = tenantQuota
+		}
+		version = machine.tenantQuota.Version
 	}
 	usage := machine.tenantUsage[tenantID]
-	version := machine.tenantQuota.Version
 	if retainedDelta > 0 && usage.retainedBytes+retainedDelta > int(quota.RetainedBytes) {
 		return &TenantQuotaRejectionDTO{TenantID: tenantID, Dimension: TenantQuotaRetainedBytes, ProfileVersion: version}
 	}

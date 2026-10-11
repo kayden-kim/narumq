@@ -41,6 +41,7 @@ type operationFixture struct {
 	method         string
 	path           string
 	operationID    string
+	testName       string
 	target         string
 	accept         string
 	body           string
@@ -68,8 +69,15 @@ func managementOperationFixtures() []operationFixture {
 }
 func auditQueryOperationFixture() operationFixture {
 	return operationFixture{
-		method: http.MethodGet, path: "/api/v1/audit/events", operationID: "listAuditEvents",
-		target: "/api/v1/audit/events?limit=2&actorSubject=management-bearer-token&action=cluster.member.stage&targetType=cluster_member&targetId=4&requestId=contract-audit-request&result=ALLOWED",
+		method: http.MethodGet, path: "/api/v1/nodes/{nodeId}/audit/events", operationID: "listAuditEvents",
+		target: "/api/v1/nodes/1/audit/events?limit=2&actorSubject=management-bearer-token&action=cluster.member.stage&targetType=cluster_member&targetId=4&requestId=contract-audit-request&result=ALLOWED",
+	}
+}
+
+func nodeConfigurationOperationFixture() operationFixture {
+	return operationFixture{
+		method: http.MethodGet, path: "/api/v1/nodes/{nodeId}/config", operationID: "getNodeConfiguration",
+		target: "/api/v1/nodes/1/config",
 	}
 }
 
@@ -148,6 +156,21 @@ func clusterPolicyOperationFixtures() []operationFixture {
 			idempotencyKey: "contract-policy-update", ifMatch: `"0"`, expectedStatus: http.StatusOK,
 		},
 	}
+}
+func clusterPolicyTenantQuotasUpdateFixture() operationFixture {
+	return operationFixture{
+		method: http.MethodPut, path: "/api/v1/cluster/policy", operationID: "updateClusterPolicy",
+		testName: "updateClusterPolicyWithTenantQuotas",
+		target:   "/api/v1/cluster/policy", body: `{"mqttLimits":{"maxPacketSize":1048576,"receiveMaximum":64,"connectTimeoutMillis":10000,"packetReadTimeoutMillis":30000,"writeTimeoutMillis":5000},"tenantQuotas":{"default":{"retainedBytes":1024,"offlineQueueMessages":64,"offlineQueueBytes":2048,"storageBytes":4096},"tenants":[{"tenantId":"tenant-a","retainedBytes":512,"offlineQueueMessages":32,"offlineQueueBytes":1024,"storageBytes":2048}]}}`,
+		idempotencyKey: "contract-policy-quota-update", ifMatch: `"0"`, expectedStatus: http.StatusOK,
+	}
+}
+
+func (fixture operationFixture) testNameOrOperationID() string {
+	if fixture.testName != "" {
+		return fixture.testName
+	}
+	return fixture.operationID
 }
 
 func credentialRevocationOperationFixtures() []operationFixture {
@@ -469,6 +492,9 @@ func clusterManagementContractHandlerWithServices(
 	rebalanceService managementhttp.ConnectionRebalanceUseCase,
 	auditQueryService managementhttp.AuditQueryUseCase,
 ) http.Handler {
+	if config.LocalNodeID == 0 {
+		config.LocalNodeID = 1
+	}
 	if config.RequestRate == 0 {
 		config.RequestRate = managementhttp.MaxRequestRate
 	}
@@ -489,6 +515,7 @@ func clusterManagementContractHandlerWithServices(
 		contractCredentialRevocationService{},
 		contractBlocklistService{},
 		contractClusterPolicyService{},
+		contractNodeConfigurationUseCase{},
 	)
 }
 
@@ -587,6 +614,59 @@ func (contractClusterPolicyService) UpdateClusterPolicy(_ context.Context, reque
 	return appmembership.ClusterPolicyStateDTO{
 		Version: request.ExpectedVersion + 1, Policy: request.Policy,
 		IdempotencyKey: request.IdempotencyKey, PreviousVersion: request.ExpectedVersion,
+	}, nil
+}
+
+type contractNodeConfigurationUseCase struct{}
+
+func (contractNodeConfigurationUseCase) GetNodeConfiguration(context.Context) (ports.NodeConfigurationDTO, error) {
+	return ports.NodeConfigurationDTO{
+		Node: ports.NodeIdentityConfigurationDTO{
+			ClusterID: "contract-cluster", NodeID: 1, Role: "bootstrap",
+			ListenAddress: "127.0.0.1:19001", AdvertisedAddress: "127.0.0.1:19001", LocalDNSName: "node1.example",
+		},
+		Build: ports.NodeBuildConfigurationDTO{
+			ReleaseVersion: "1.0.0", Features: []string{}, ClusterProtocolMajor: 2, StateSchemaMajor: 1,
+		},
+		Peer: ports.PeerConfigurationDTO{
+			SeedAddresses: []string{}, BootstrapMembers: []ports.PeerBootstrapMemberConfigurationDTO{},
+			TLS: ports.PeerTLSConfigurationDTO{CertificateConfigured: true, PrivateKeyConfigured: true, CAConfigured: true},
+		},
+		Management: ports.ManagementConfigurationDTO{
+			ListenAddress: "127.0.0.1:18080", RequestRate: managementhttp.MaxRequestRate,
+			AuthFailureRate: managementhttp.MaxRequestRate, APIKeyCount: 0,
+			BreakGlassTokenConfigured: true, AuditDirectoryConfigured: true,
+		},
+		MQTT: ports.MQTTListenerConfigurationDTO{
+			TCPListenAddress: "", TLSListenAddress: "", SecurityConfigConfigured: false,
+		},
+		Replication: ports.ReplicationConfigurationDTO{Factor: 1, WriteQuorum: 1},
+		PublishBackpressure: ports.PublishBackpressureConfigurationDTO{
+			MinFreeBytes: 0, MaxCommitLagMillis: 1000,
+		},
+		Security: ports.SecurityConfigurationDTO{
+			ConfigFileConfigured: true,
+			JWT: &ports.JWTConfigurationDTO{
+				Issuer: "https://issuer.example", Audience: "narumq", Algorithms: []string{"RS256"},
+				JWKSURL:        "https://issuer.example/.well-known/jwks.json",
+				CacheTTLMillis: 300000, RefreshCooldownMillis: 30000, ClockSkewMillis: 30000, HTTPTimeoutMillis: 5000,
+			},
+			IdentityCounts: ports.IdentityCountsDTO{JWT: 2, Password: 1, MTLS: 1},
+			ACL: []ports.ACLRuleConfigurationDTO{{
+				TenantID: "tenant-a", Role: "client", Effect: "allow", Action: "subscribe", TopicFilter: "events/#",
+			}},
+		},
+		EffectivePolicy: ports.EffectivePolicyConfigurationDTO{
+			ClusterPolicy: ports.ClusterPolicyConfigurationStatusDTO{},
+			MQTTLimits: ports.EffectiveMQTTLimitsDTO{
+				Source: "default",
+				Value: ports.MQTTLimitsConfigurationDTO{
+					MaxPacketSize: 1, ReceiveMaximum: 1, ConnectTimeoutMillis: 1000,
+					PacketReadTimeoutMillis: 1000, WriteTimeoutMillis: 1000,
+				},
+			},
+			TenantQuotas: ports.EffectiveTenantQuotasDTO{Source: "none"},
+		},
 	}, nil
 }
 
@@ -724,7 +804,7 @@ func contractRebalanceOperation(idempotencyKey string, phase connrebalance.Phase
 }
 
 func expectedOperationSet() []string {
-	fixtures := append(managementOperationFixtures(), auditQueryOperationFixture())
+	fixtures := append(managementOperationFixtures(), auditQueryOperationFixture(), nodeConfigurationOperationFixture())
 	fixtures = append(fixtures, membershipOperationFixtures()...)
 	fixtures = append(fixtures, backupOperationFixtures()...)
 	fixtures = append(fixtures, drainOperationFixtures()...)
@@ -817,7 +897,7 @@ func TestAuditQueryHandlerResponsesMatchOpenAPI(t *testing.T) {
 		t.Fatalf("NewQueryService() error = %v", err)
 	}
 	handler := clusterManagementContractHandlerWithServices(
-		managementhttp.ServerConfig{ClusterID: "contract-cluster", AuthToken: "contract-token"},
+		managementhttp.ServerConfig{ClusterID: "contract-cluster", LocalNodeID: 1, AuthToken: "contract-token"},
 		contractRebalanceService{}, queryService,
 	)
 	fixture := auditQueryOperationFixture()
@@ -836,7 +916,7 @@ func TestAuditQueryHandlerResponsesMatchOpenAPI(t *testing.T) {
 	}
 	validateResponse(t, input, options, response)
 
-	invalidRequest := httptest.NewRequest(http.MethodGet, contractServerURL+"/api/v1/audit/events?result=UNKNOWN", nil)
+	invalidRequest := httptest.NewRequest(http.MethodGet, contractServerURL+"/api/v1/nodes/1/audit/events?result=UNKNOWN", nil)
 	invalidRequest.Header.Set("Authorization", "Bearer contract-token")
 	invalidInput, invalidOptions := findContractRoute(t, router, invalidRequest)
 	invalidResponse := httptest.NewRecorder()
@@ -847,12 +927,36 @@ func TestAuditQueryHandlerResponsesMatchOpenAPI(t *testing.T) {
 	validateResponse(t, invalidInput, invalidOptions, invalidResponse)
 }
 
+// Traceability: CFG-SCN-31; docs/specs/configuration-and-runtime-options.md §10.
+func TestNodeConfigurationHandlerResponseMatchesOpenAPI(t *testing.T) {
+	_, router := loadManagementContract(t)
+	handler := clusterManagementContractHandlerWithConfig(managementhttp.ServerConfig{
+		ClusterID: "contract-cluster", LocalNodeID: 1, AuthToken: "contract-token",
+	})
+	fixture := nodeConfigurationOperationFixture()
+	request := newContractRequest(fixture)
+	input, options := findContractRoute(t, router, request)
+	if input.Route.Operation.OperationID != fixture.operationID {
+		t.Fatalf("runtime fixture matched operation %q, want %q", input.Route.Operation.OperationID, fixture.operationID)
+	}
+	if err := openapi3filter.ValidateRequest(context.Background(), input); err != nil {
+		t.Fatalf("validate node configuration request: %v", err)
+	}
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("node configuration status=%d body=%q, want %d", response.Code, response.Body.String(), http.StatusOK)
+	}
+	validateResponse(t, input, options, response)
+}
+
 // Traceability: API-09; docs/contracts/management-api-v1.md §1, §4; ADR-0052 §1.1.1.
 func TestClusterPolicyHandlerResponsesMatchOpenAPI(t *testing.T) {
 	_, router := loadManagementContract(t)
 	handler := clusterManagementContractHandler()
-	for _, fixture := range clusterPolicyOperationFixtures() {
-		t.Run(fixture.operationID, func(t *testing.T) {
+	fixtures := append(clusterPolicyOperationFixtures(), clusterPolicyTenantQuotasUpdateFixture())
+	for _, fixture := range fixtures {
+		t.Run(fixture.testNameOrOperationID(), func(t *testing.T) {
 			request := newContractRequest(fixture)
 			input, options := findContractRoute(t, router, request)
 			if input.Route.Operation.OperationID != fixture.operationID {
@@ -1214,8 +1318,8 @@ func TestManagementAuthorizationMatchesOpenAPI(t *testing.T) {
 		{name: "wrong bearer", path: "/api/v1/cluster", headerName: "Authorization", header: "Bearer wrong", wantStatus: http.StatusUnauthorized},
 		{name: "bearer success", path: "/api/v1/cluster", headerName: "Authorization", header: "Bearer bearer-secret", wantStatus: http.StatusOK},
 		{name: "api key success", path: "/api/v1/cluster", headerName: "X-API-Key", header: "api-secret", wantStatus: http.StatusOK},
-		{name: "api key insufficient audit role", path: "/api/v1/audit/events?limit=1", headerName: "X-API-Key", header: "api-secret", wantStatus: http.StatusForbidden},
-		{name: "break-glass audit access", path: "/api/v1/audit/events?limit=1", headerName: "Authorization", header: "Bearer bearer-secret", wantStatus: http.StatusOK},
+		{name: "api key insufficient audit role", path: "/api/v1/nodes/1/audit/events?limit=1", headerName: "X-API-Key", header: "api-secret", wantStatus: http.StatusForbidden},
+		{name: "break-glass audit access", path: "/api/v1/nodes/1/audit/events?limit=1", headerName: "Authorization", header: "Bearer bearer-secret", wantStatus: http.StatusOK},
 	}
 	for _, testCase := range cases {
 		t.Run(testCase.name, func(t *testing.T) {

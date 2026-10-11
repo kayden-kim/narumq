@@ -815,11 +815,14 @@ func tenantQuotaProfileFromRecord(profile *records.TenantQuotaProfile) *membersh
 
 func clusterPolicyToRecord(policy membership.ClusterPolicyDTO) *records.ClusterPolicy {
 	limits := policy.MQTTLimits
-	return &records.ClusterPolicy{MqttLimits: &records.MqttLimits{
-		MaxPacketSize: limits.MaxPacketSize, ReceiveMaximum: limits.ReceiveMaximum,
-		ConnectTimeoutMillis: limits.ConnectTimeoutMillis, PacketReadTimeoutMillis: limits.PacketReadTimeoutMillis,
-		WriteTimeoutMillis: limits.WriteTimeoutMillis,
-	}}
+	return &records.ClusterPolicy{
+		MqttLimits: &records.MqttLimits{
+			MaxPacketSize: limits.MaxPacketSize, ReceiveMaximum: limits.ReceiveMaximum,
+			ConnectTimeoutMillis: limits.ConnectTimeoutMillis, PacketReadTimeoutMillis: limits.PacketReadTimeoutMillis,
+			WriteTimeoutMillis: limits.WriteTimeoutMillis,
+		},
+		TenantQuotas: clusterTenantQuotasToRecord(policy.TenantQuotas),
+	}
 }
 
 func clusterPolicyFromRecord(policy *records.ClusterPolicy) (*membership.ClusterPolicyDTO, error) {
@@ -827,11 +830,54 @@ func clusterPolicyFromRecord(policy *records.ClusterPolicy) (*membership.Cluster
 		return nil, errors.New("cluster policy and MQTT limits are required")
 	}
 	limits := policy.GetMqttLimits()
-	return &membership.ClusterPolicyDTO{MQTTLimits: membership.MQTTLimitsDTO{
+	result := &membership.ClusterPolicyDTO{MQTTLimits: membership.MQTTLimitsDTO{
 		MaxPacketSize: limits.GetMaxPacketSize(), ReceiveMaximum: limits.GetReceiveMaximum(),
 		ConnectTimeoutMillis: limits.GetConnectTimeoutMillis(), PacketReadTimeoutMillis: limits.GetPacketReadTimeoutMillis(),
 		WriteTimeoutMillis: limits.GetWriteTimeoutMillis(),
-	}}, nil
+	}}
+	if policy.GetTenantQuotas() != nil {
+		quotas, err := clusterTenantQuotasFromRecord(policy.GetTenantQuotas())
+		if err != nil {
+			return nil, err
+		}
+		result.TenantQuotas = quotas
+	}
+	return result, nil
+}
+
+func clusterTenantQuotasToRecord(quotas *membership.ClusterTenantQuotasDTO) *records.ClusterTenantQuotas {
+	if quotas == nil {
+		return nil
+	}
+	var tenants []*records.TenantStorageQuota
+	if quotas.Tenants != nil {
+		tenants = make([]*records.TenantStorageQuota, 0, len(quotas.Tenants))
+	}
+	for _, tenant := range quotas.Tenants {
+		tenants = append(tenants, tenantStorageQuotaToRecord(tenant))
+	}
+	return &records.ClusterTenantQuotas{
+		DefaultQuota: tenantStorageQuotaToRecord(quotas.Default), TenantQuotas: tenants,
+	}
+}
+
+func clusterTenantQuotasFromRecord(quotas *records.ClusterTenantQuotas) (*membership.ClusterTenantQuotasDTO, error) {
+	if quotas.GetDefaultQuota() == nil {
+		return nil, errors.New("cluster policy tenant quota default is required")
+	}
+	var tenants []membership.TenantStorageQuotaDTO
+	if quotas.TenantQuotas != nil {
+		tenants = make([]membership.TenantStorageQuotaDTO, 0, len(quotas.TenantQuotas))
+	}
+	for _, tenant := range quotas.TenantQuotas {
+		if tenant == nil {
+			return nil, errors.New("cluster policy tenant quota entry is required")
+		}
+		tenants = append(tenants, tenantStorageQuotaFromRecord(tenant))
+	}
+	return &membership.ClusterTenantQuotasDTO{
+		Default: tenantStorageQuotaFromRecord(quotas.GetDefaultQuota()), Tenants: tenants,
+	}, nil
 }
 
 func clusterPolicyStateToRecord(state *membership.ClusterPolicyStateDTO) *records.ClusterPolicyState {
@@ -862,8 +908,13 @@ func clusterPolicyStateObjectCount(state *membership.ClusterPolicyStateDTO) int 
 	if state == nil {
 		return 0
 	}
-	return 1
+	count := 1
+	if state.Policy.TenantQuotas != nil {
+		count += 1 + len(state.Policy.TenantQuotas.Tenants)
+	}
+	return count
 }
+
 func tenantStorageQuotaToRecord(quota membership.TenantStorageQuotaDTO) *records.TenantStorageQuota {
 	return &records.TenantStorageQuota{
 		TenantId: quota.TenantID, RetainedBytes: quota.RetainedBytes,

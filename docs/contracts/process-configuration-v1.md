@@ -103,12 +103,12 @@ Cluster mode에서는 `-runtime-metrics-*` flag 대신 cluster config의 `runtim
 | `replication` | 객체(선택) | 생략하면 복제 계수 3과 쓰기 쿼럼 2를 사용한다. 지정하면 정확히 `{factor:int, writeQuorum:int}`여야 하며 3/2만 허용한다. |
 | `publishBackpressure` | 선택 object | `minFreeBytes`, `maxCommitLagMillis`는 `uint64`다. Object가 있으면 두 key가 모두 필요하다. `publishBackpressure` object를 생략하면 기본값은 각각 `1073741824`, `1000`이다. `minFreeBytes` 범위는 `0..1<<50`이며 0은 disk admission을 끈다. `maxCommitLagMillis` 범위는 `100..10000`이다. |
 | `runtimeMetrics` | 선택 object | `outputFile`(string)과 `intervalMillis`(`uint64`)가 필요하다. Object가 있으면 두 key가 모두 필요하다. 생략하면 기록하지 않는다. `outputFile`은 비어 있지 않고 앞뒤 공백이 없는 경로여야 하며 `directory` 또는 `management.auditDirectory`와 겹치면 안 된다. 시작할 때 파일을 만들거나 비운다. 부모 디렉터리는 자동으로 만들지 않는다. `intervalMillis` 범위는 `1..3600000`이다. JSONL 형식은 standalone `-runtime-metrics-output`과 같다(`schemaVersion` 1). |
-| `tenantQuotas` | 선택 object | `version`은 `uint64`이며 1 이상이다. Object가 있으면 `version`, `default`, `tenants`가 필요하다. `default`와 각 `tenants[]` 원소의 `retainedBytes`, `offlineQueueMessages`, `offlineQueueBytes`, `storageBytes`는 모두 `uint64`이며 필수다. 각 `tenants[]` 원소에는 string `tenantId`도 필요하다. 생략하면 built-in profile version 0을 사용한다. |
-| `clusterPolicy` | 선택 object | `version`은 `uint64`이며 1 이상이다. Object에는 `version`과 `mqttLimits`가 필요하다. `mqttLimits`에는 `maxPacketSize`, `receiveMaximum`, `connectTimeoutMillis`, `packetReadTimeoutMillis`, `writeTimeoutMillis`가 모두 필요하고, 각 값은 `uint32`다. 범위는 각각 `1..268435455`, `1..65535`, `1..4294967295`, `1..4294967295`, `1..4294967295`다. |
+| `tenantQuotas` | 선택 object | Legacy committed `TenantQuota` profile을 제안한다. `version`은 `uint64`이며 1 이상이다. Object가 있으면 `version`, `default`, `tenants`가 필요하다. `default`와 각 `tenants[]` 원소의 `retainedBytes`, `offlineQueueMessages`, `offlineQueueBytes`, `storageBytes`는 모두 `uint64`이며 필수다. 각 `tenants[]` 원소에는 string `tenantId`도 필요하다. 생략하면 built-in profile version 0을 사용한다. |
+| `clusterPolicy` | 선택 object | `version`은 `uint64`이며 1 이상이다. `version`, `mqttLimits`가 필요하고 `tenantQuotas`는 선택이다. `mqttLimits`에는 `maxPacketSize`, `receiveMaximum`, `connectTimeoutMillis`, `packetReadTimeoutMillis`, `writeTimeoutMillis`가 모두 필요하며 `uint32`다. 범위는 각각 `1..268435455`, `1..65535`, `1..4294967295`, `1..4294967295`, `1..4294967295`다. `tenantQuotas`에는 `default`와 `tenants`가 필요하고 `version`은 허용하지 않는다. 각 quota object는 `retainedBytes`, `offlineQueueMessages`, `offlineQueueBytes`, `storageBytes`를 `uint64`로 모두 지정한다. `tenants[]`에는 `tenantId`를 추가하고 ID 오름차순으로 지정한다. |
 
-`tenantQuotas`와 `clusterPolicy`는 함께 지정할 수 없다. 이 schema의 `ClusterPolicy`는 MQTT 한도만 담으므로 tenant quota 변경은 지원하지 않는다. `cluster-policy` feature가 활성화된 뒤에는 legacy `TenantQuota` command를 제안하지 않는다.
+`tenantQuotas`와 `clusterPolicy`는 함께 지정할 수 없다. Policy 안에 quota를 넣을 때는 `clusterPolicy.tenantQuotas`를 사용한다. `cluster-policy`와 `cluster-policy-tenant-quotas`는 별도 build feature다. `cluster-policy-tenant-quotas`가 활성화되기 전에는 정책 quota를 적용하지 않는다. Committed `ClusterPolicy.tenantQuotas`가 있으면 legacy `TenantQuota`보다 우선한다. Policy에서 quota field를 생략하면 committed legacy profile로 돌아간다. `cluster-policy` feature가 활성화된 뒤에는 새 legacy `TenantQuota` command를 제안하지 않는다. 기존 committed legacy profile은 policy quota가 없을 때 fallback으로 유지한다.
 
-`ValidateTenantQuotaProfile`는 네 한도 값이 모두 양수인지 확인한다. 최대값은 retained bytes `16,777,216`, offline queue messages `8,192`, offline queue bytes `33,554,432`, storage bytes `50,331,648`다([ADR-0017 §1](../decisions/ADR-0017-tenant-storage-quota.md#1-결정)). `tenants`는 최대 1,024개다. 각 `tenantId`는 UTF-8 1~128 bytes이며 `tenancy.NewTenantID`를 통과해야 한다. Tenant ID는 오름차순이어야 하며 중복할 수 없다.
+`ValidateTenantQuotaProfile`는 네 한도 값이 모두 양수인지 확인한다. 최대값은 retained bytes `16,777,216`, offline queue messages `8,192`, offline queue bytes `33,554,432`, storage bytes `50,331,648`다([ADR-0017 §1](../decisions/ADR-0017-tenant-storage-quota.md#1-결정)). `tenants`는 최대 1,024개다. 각 `tenantId`는 UTF-8 1~128 bytes이며 `tenancy.NewTenantID`를 통과해야 한다. Tenant ID는 오름차순이어야 하며 중복할 수 없다. `clusterPolicy.tenantQuotas`에도 같은 limits와 ID 검증을 적용한다. `clusterPolicy.tenantQuotas` 자체에는 profile version이 없으며 outer `clusterPolicy.version`을 사용한다.
 
 `-cluster-config`에는 다음 형태의 `tenantQuotas` profile을 선택적으로 지정한다. tenant별 항목은 `tenantId` 순으로 적용된다.
 
@@ -134,10 +134,35 @@ Cluster mode에서는 `-runtime-metrics-*` flag 대신 cluster config의 `runtim
   }
 }
 ```
+`clusterPolicy.tenantQuotas`는 outer `clusterPolicy.version`을 profile version으로 사용한다. JSON에는 quota profile version을 넣지 않는다.
+
+```json
+{
+  "clusterPolicy": {
+    "version": 2,
+    "mqttLimits": {
+      "maxPacketSize": 1048576,
+      "receiveMaximum": 64,
+      "connectTimeoutMillis": 10000,
+      "packetReadTimeoutMillis": 30000,
+      "writeTimeoutMillis": 5000
+    },
+    "tenantQuotas": {
+      "default": {
+        "retainedBytes": 16777216,
+        "offlineQueueMessages": 8192,
+        "offlineQueueBytes": 33554432,
+        "storageBytes": 50331648
+      },
+      "tenants": []
+    }
+  }
+}
+```
 
 `checkClusterJSON`는 중복 key, 알 수 없는 key, 필수 key 누락과 뒤따르는 JSON value를 거절한다. `parseClusterConfig`는 형식과 정적 검증을 수행한다. `releaseVersion`과 `features`는 build identity에서만 가져온다.
 
-Cluster mode에서 `clusterPolicy` 또는 version 1 이상 committed policy가 없을 때 쓰는 기본값은 다음과 같다.
+Cluster mode에서 `clusterPolicy` 또는 version 1 이상 committed policy가 없을 때 쓰는 MQTT 기본값은 다음과 같다.
 
 | 항목 | 기본값 |
 | --- | --- |
@@ -150,7 +175,7 @@ Cluster mode에서 `clusterPolicy` 또는 version 1 이상 committed policy가 �
 | delivery queue | `256` |
 | Peer TLS | TLS 1.3 mutual TLS로 고정한다. |
 
-`clusterPolicy`가 있으면 local `mqttLimits`를 사용한다. Feature가 활성화되고 committed version이 1 이상이면 committed `mqttLimits`가 우선한다. Control·delivery queue 값은 policy에 포함하지 않는다.
+`clusterPolicy`가 있으면 local `mqttLimits`를 사용한다. Feature가 활성화되고 committed version이 1 이상이면 committed `mqttLimits`가 우선한다. 활성화된 `cluster-policy-tenant-quotas` feature와 committed quota field가 함께 있으면 그 quota도 모든 node에 적용한다. Policy에 quota field가 없으면 committed legacy `TenantQuota` profile을 사용한다. Control·delivery queue 값은 policy에 포함하지 않는다.
 
 `bootstrapMembers`의 각 항목은 정확히 `{memberId:uint64,address:string,dnsSan:string,certificateSha256:string}` 형식이다. 멤버 ID, 주소, DNS SAN과 인증서 지문의 제약은 [Raft membership v2 §1.1](raft-membership-v2.md#11-확정된-멤버-식별-정보)을 따른다. 세 bootstrap 구성은 `memberId` 기준으로 바이트 단위 정렬을 사용하고 같은 집합을 포함해야 한다. 각 멤버의 인증서 지문과 SAN은 해당 항목과 일치해야 한다. 모든 bootstrap 노드는 같은 빌드 릴리스와 feature 집합을 사용해야 한다. `seedAddresses`는 임의의 검색 서버가 아니라 피어 승인 listener를 가리킨다. 각 host는 소문자 DNS 이름이어야 하며 TLS server name으로 사용되고 접속한 seed 인증서 SAN과 일치해야 한다. ClusterAdmin token은 지정한 파일에서 읽는다. 원본 token은 JSON이나 로그에 포함하지 않는다.
 
@@ -315,7 +340,7 @@ Build identity는 다음 `ldflags` 형식으로 지정한다.
 go build -ldflags "-X main.buildReleaseVersion=<semver> -X main.buildFeatures=<comma list>"
 ```
 
-기본값은 release version `0.0.0`과 빈 feature 목록이다. 항상 포함하는 feature는 `client-blocklist`, `connection-rebalance`, `credential-revocation`, `proposal-recovery`, `session-metadata`다. `resolveBuildIdentity`는 feature를 정렬하고 중복을 제거한 뒤 `release.ValidFeatureSet`으로 검증한다. 출처는 `cmd/narumq/build_identity.go`와 `tests/integration/cluster_release_compat_process_test.go` 26–28행이다.
+기본값은 release version `0.0.0`과 빈 feature 목록이다. 항상 포함하는 feature는 `client-blocklist`, `cluster-policy-tenant-quotas`, `connection-rebalance`, `credential-revocation`, `proposal-recovery`, `session-metadata`다. `resolveBuildIdentity`는 feature를 정렬하고 중복을 제거한 뒤 `release.ValidFeatureSet`으로 검증한다. 출처는 `cmd/narumq/build_identity.go`와 `tests/integration/cluster_release_compat_process_test.go` 26–28행이다.
 
 ### 1.9 표기 규칙
 
@@ -384,6 +409,7 @@ Cluster config와 security config 예제는 [§1.3](#13-cluster-config-json)과 
 | `cmd/narumq`: `TestConfiguredTenantQuotaProfileUsesBuiltinOrStrictConfig`, `TestClusterTenantQuotaControllerLogsCommittedMismatchOnce`, `TestClusterMQTTListenersBindConfiguredEndpointsAndClosePartialOpen`, `TestRunRaftPeerOnlyStartupFailuresReleaseResources` | Quota profile, committed mismatch, partial listener 정리와 peer-only 시작 실패 | 통과 | 2026-10-10 [실행 기록](../specs/configuration-and-runtime-options.md#configuration-test-execution) |
 | `cmd/narumq`: `TestParseClusterConfigMQTTTLS`, `TestClusterMQTTListenersBindConfiguredEndpointsAndClosePartialOpen`, `TestClusterMQTTSecurityValidatesTLSClientAuthBindings`, `tests/integration`: `TestDynamicClusterMQTTTLSClientCertificateProcessAcceptance` | `mqtt.tls` 필수 key·strict validation, listener 자원 정리, client-auth binding과 3-node TLS·mTLS 동작 | 통과 | [Cluster MQTT TLS 실행 기록](../specs/configuration-and-runtime-options.md#cluster-mqtt-tls-g2-g10-execution) |
 | `cmd/narumq`: `TestPositiveMillisDuration`, `TestParseSecurityConfig_Rejections`, `TestParseSecurityConfig_TenantLimitsMaxWaitMillis`, `TestParseSecurityConfig_TenantLimitsRejectInvalidProfiles`, `TestClusterManagementAccessConfiguration` | Millis 정수 경계, security config의 새 key·legacy key·문자열 거절, tenant max wait 범위, cluster OIDC 설정 | 통과 | [G5 duration 표기 실행 기록](../specs/configuration-and-runtime-options.md#g5-duration-millis-execution) |
+| `cmd/narumq`: `TestParseClusterConfigClusterPolicyTenantQuotas` | `clusterPolicy.tenantQuotas`의 required·unknown·version field, 범위와 tenant ID·정렬 경계 | 통과 | [G7 config·quota 실행 기록](../specs/configuration-and-runtime-options.md#g7-config-view-and-tenant-quotas-execution) |
 
 별도 `tests/contracts` 전용 시험은 실행하지 않았다. Process configuration v1은 `Draft`를 유지한다.
 

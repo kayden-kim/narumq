@@ -3,6 +3,7 @@ package security
 
 import (
 	"errors"
+	"slices"
 	"time"
 
 	"narumq/internal/domain/tenancy"
@@ -201,6 +202,11 @@ func NewPolicy(rules []Rule) (Policy, error) {
 		seen[rule] = struct{}{}
 	}
 	return Policy{rules: copiedRules}, nil
+}
+
+// Rules returns a copy of the policy's rules in configuration order.
+func (policy Policy) Rules() []Rule {
+	return slices.Clone(policy.rules)
 }
 
 // AuthorizeTopic evaluates publish or Will authorization for a concrete topic.
