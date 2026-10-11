@@ -287,6 +287,7 @@ legacy broker/gateway는 NaruMQ core와 별도 배포·수명 주기·Metric을 
 | API-07 | P1 | 선택한 정확한 topic의 Metric을 제공한다. | wildcard를 받지 않고 최대 등록 수와 TTL을 제한한다. |
 | API-08 | P1 | mutation API에 idempotency와 감사 추적을 제공한다. | 같은 idempotency key의 재시도가 중복 작업을 만들지 않는다. |
 | API-09 | P0 | GitOps와 runtime 변경의 source of truth를 구분한다. | 설정 충돌 시 우선순위와 reconciliation 결과가 명확하다. |
+| API-99 | P0 | TEST-10 merge 차단 probe용 미매핑 요구사항이다. | 이 probe branch에만 존재한다. |
 
 필수 Metric 범위는 다음과 같다.
 
