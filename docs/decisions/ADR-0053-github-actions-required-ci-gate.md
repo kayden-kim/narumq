@@ -85,6 +85,7 @@ GitHub API 조회에서 main protection은 필수 `verify`, `strict=true`, revie
 | 가설·결정 요인 | 검증 방법 | 합격 기준 | 증거 |
 | --- | --- | --- | --- |
 | 원격 main CI가 전체 gate를 실행한다. | GitHub Actions run의 `verify` check 확인 | `success` | [Run 38112386284](https://github.com/kayden-kim/narumq/actions/runs/38112386284) |
+| Updated runner·action runtime | 문서 PR #2의 `verify` check | `ubuntu-24.04`, Node 24 action v7에서 `success` | [Run 38113714789](https://github.com/kayden-kim/narumq/actions/runs/38113714789) |
 | main protection이 `verify`를 요구한다. | Branch protection API 조회 | `strict=true`, check `verify`, force push·삭제 금지 | [§8.9](../specs/performance-and-verification.md#89-github-actions-원격-ci와-required-check-증거) |
 | 실패한 PR은 merge 가능 상태가 아니다. | Intentional failing test가 있는 probe PR의 check와 merge state 조회 | `verify=failure`, `mergeable_state=blocked` | [Probe PR #1](https://github.com/kayden-kim/narumq/pull/1), [run 38112802413](https://github.com/kayden-kim/narumq/actions/runs/38112802413). Coverage·traceability 거절과 실제 merge API는 별도로 시험하지 않았다. |
 | 로컬 Linux CI가 같은 commit에서 통과한다. | Docker의 Go 1.26.5 Linux container에서 `go run ./tools/verify ci --base f847a491e7b4a68d7fc48a868ad801895894d32a` 실행 | `coverage: PASS`, `ci: PASS` | `.artifacts/verification/ci-linux-one-shot-admission-close.log`; 세부 내용은 [§8.9](../specs/performance-and-verification.md#89-github-actions-원격-ci와-required-check-증거) |

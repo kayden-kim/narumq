@@ -1141,7 +1141,7 @@ HTML 시각 자료는 Chromium desktop·mobile 화면에서 확인했다. Consol
 | Remote main | `03c84f40c345195f0a323c5af2e623e9ebbbc998`; GitHub Actions | [Run 38112386284](https://github.com/kayden-kim/narumq/actions/runs/38112386284)의 `verify` check가 5분 49초 뒤 `success`였다. `verification-38112386284-1` artifact는 9,979,845 bytes이며 2026-11-10까지 보관한다. |
 | Full Linux CI 사전 실행 | `03c84f40c345195f0a323c5af2e623e9ebbbc998`; Go 1.26.5 Docker container; `--base f847a491e7b4a68d7fc48a868ad801895894d32a` | `go run ./tools/verify ci --base f847a491e7b4a68d7fc48a868ad801895894d32a`가 `coverage: PASS`, `ci: PASS`로 종료했다. Wall time은 696.35초다. Diff coverage는 line 24/25(96%), function 5/5(100%), branch 11/12(91.67%)였다. 로그는 `.artifacts/verification/ci-linux-one-shot-admission-close.log`에 있다. |
 
-성공한 main run은 기존 `actions/checkout@v4`, `actions/setup-go@v5`, `actions/upload-artifact@v4`와 `ubuntu-latest`를 사용했다. GitHub는 Node 20 deprecation과 `ubuntu-latest`의 Ubuntu 26 전환 예정 경고를 표시했다. 현재 workflow는 `ubuntu-24.04`와 public action manifest에서 `runs.using: node24`로 확인한 `actions/*@v7`을 사용한다. 변경한 action과 runner는 문서 PR의 `verify` check에서도 실행해 확인한다.
+성공한 main run은 기존 `actions/checkout@v4`, `actions/setup-go@v5`, `actions/upload-artifact@v4`와 `ubuntu-latest`를 사용했다. GitHub는 Node 20 deprecation과 `ubuntu-latest`의 Ubuntu 26 전환 예정 경고를 표시했다. 현재 workflow는 `ubuntu-24.04`와 public action manifest에서 `runs.using: node24`로 확인한 `actions/*@v7`을 사용한다. 이 변경은 문서 PR [#2](https://github.com/kayden-kim/narumq/pull/2)의 [verify run 38113714789](https://github.com/kayden-kim/narumq/actions/runs/38113714789)에서 4분 59초 뒤 PASS했다. 해당 run에 Node 20·Ubuntu 26 경고는 없었다. Run artifact `verification-38113714789-1`도 30일 보관한다.
 
 초기 원격 실행에서 서로 다른 세 회귀가 발견됐다. 테스트를 끄거나 대기를 늘리지 않고 연결 종료와 inbound slot 반환 경계를 수정했다.
 
