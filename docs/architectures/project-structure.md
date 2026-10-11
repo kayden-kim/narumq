@@ -49,7 +49,7 @@ Disk 전용 writer가 여러 WAL frame을 한 sync로 기록한다. Runtime은 �
 | 재제안·receipt | `cmd/narumq/cluster_proposal_recovery.go`, `internal/application/membership/proposal_receipts.go` | 안전한 재제안과 복제 request receipt |
 | WAL 영속화 | `internal/adapters/raft/node_ready.go`, `wal_worker.go`, `stable_store.go` | Raft Ready 처리, WAL group commit, snapshot·WAL 저장 |
 | Drain·rebalance | `cmd/narumq/cluster_drain.go`, `cluster_rebalance.go` | 복제 상태를 사용하는 node drain·connection rebalance controller |
-| Cluster bootstrap / admission | `cmd/narumq/cluster_bootstrap_probe.go`; `cluster_runtime.go` `runClusterMode`; `internal/adapters/tcp/peer_bootstrap_probe.go` | Empty-directory bootstrap probe와 seed admission을 연결한다. |
+| Cluster bootstrap / admission | `cmd/narumq/cluster_bootstrap_probe.go`; `cluster_runtime.go` `runClusterMode`; `internal/adapters/tcp/peer_bootstrap_probe.go`, `peer_transport.go` `RequestSeedAdmission` | Empty-directory bootstrap probe와 seed admission을 연결한다. 두 client는 응답 뒤 peer가 TLS 연결을 닫을 때까지 기다리고, dynamic transport는 inbound slot을 반환한 뒤 연결을 닫는다. |
 | Tenant quota / release profile | `cmd/narumq/cluster_tenant_quota.go`, `cluster_release_profile.go`; `internal/application/membership/tenant_quota.go`, `cluster_policy.go`, `snapshot.go` | Legacy quota profile을 commit한다. `StateMachine.EffectiveTenantQuotaProfile`은 active `cluster-policy-tenant-quotas` policy 값을 우선하고 policy field가 없으면 legacy profile로 돌아간다. Snapshot restore는 두 값을 복구한다. |
 | Cluster MQTT policy | `cmd/narumq/cluster_policy.go`, `cluster_config.go`, `cluster_runtime.go`; `internal/application/membership/cluster_policy.go`, `cluster_policy_service.go`; `internal/adapters/tcp/server.go` | Local versioned `mqttLimits`와 선택 quota를 feature activation 뒤 제안하고 committed policy를 적용한다. `SetConnectionLimits`는 신규 connection에 적용하며 기존 connection의 limits는 유지한다. Management HTTP wire format은 `cluster_policy_handlers.go`가 맡는다. |
 | Peer capacity / proposal reclaim | `cmd/narumq/cluster_read_admission.go`, `cluster_proposals.go`; `internal/adapters/tcp/peer_transport.go`, `peer_transport_flow.go` | Outbound capacity에 맞춰 read/proposal을 발행하고 아직 write하지 않은 proposal만 회수한다. |
@@ -67,6 +67,7 @@ MQTT session은 tenant와 Client ID로 식별한다. `internal/application/takeo
 
 ```text
 .
+├── .github/workflows/         # repository automation
 ├── cmd/narumq/                 # composition root
 ├── internal/
 │   ├── domain/                 # protocol·session·routing·tenant·cluster invariant
@@ -213,12 +214,13 @@ BP-01~BP-07의 phase, metric, timeout/error 경계와 실행 증거는 [Performa
 | SDK compatibility | `tests/compatibility/mqtt-clients-v1` | 외부 Go/Python client 실행, result·trace 검증 |
 | Storage fault | `tests/chaos/cluster-storage-v1` | FUSE 및 local ext4 fault/recovery evidence |
 | Repository gate | `tools/verify/matrix.go`, `tools/verify/requirements.go`, `tools/verify/markdown_links.go`, `tests/conformance/{mqtt-compliance-v1.json,p0-requirement-exceptions-v1.json}` | MQTT statement matrix와 PRD P0 요구사항 연결·예외 ratchet, package graph, 저장소 검증과 별도 Markdown 로컬 링크 검사 |
+| GitHub Actions CI | `.github/workflows/verify.yml` | PR·main push·수동 실행에서 `ci` gate를 호출하고, PR base 또는 push 전 commit을 `--base`로 전달한다. Runner는 `ubuntu-24.04`, action은 Node 24를 사용하는 v7이다. Coverage evidence를 30일 동안 보관한다. |
 
 Integration test가 process binary를 공유해 build하더라도 fixture별 data directory·certificate·address lease는 분리한다. Suite 실행 조건과 acceptance 범위는 [Performance and verification spec](../specs/performance-and-verification.md)을 따른다.
 
 ### Repository verification 모듈 흐름
 
-`tools/verify/main.go`의 `local`·`ci` 진입점은 `runner.go`의 `runVerification`을 호출한다. 별도 `mutation` 진입점은 `runMutation`을 호출한다. `markdown-links`는 전체 gate와 별도로 문서 링크를 검사한다. Runner는 원본 서식을 확인한 뒤 `branch-instrument`를 순차 실행한다. 이후 preflight·coverage·race·fuzz 명령을 한 병렬 단계에서 실행한다. CI coverage의 `-parallel`은 Go의 유효 `GOMAXPROCS`를 따른다. 수동 mutation은 다섯 package 작업을 Gremlins worker 1개씩 CPU 예산에 맞춘 batch로 실행한다. 각 단계는 실패한 명령과 함께 같은 단계의 나머지 명령을 취소한다.
+`tools/verify/main.go`의 `local`·`ci` 진입점은 `runner.go`의 `runVerification`을 호출한다. 별도 `mutation` 진입점은 `runMutation`을 호출한다. `markdown-links`는 전체 gate와 별도로 문서 링크를 검사한다. GitHub Actions의 `.github/workflows/verify.yml`은 PR base나 `main` push 이전 SHA를 `--base`로 전달하고 CI artifact를 30일 보관한다. Runner는 원본 서식을 확인한 뒤 `branch-instrument`를 순차 실행한다. 이후 preflight·coverage·race·fuzz 명령을 한 병렬 단계에서 실행한다. CI coverage의 `-parallel`은 Go의 유효 `GOMAXPROCS`를 따른다. 수동 mutation은 다섯 package 작업을 Gremlins worker 1개씩 CPU 예산에 맞춘 batch로 실행한다. 각 단계는 실패한 명령과 함께 같은 단계의 나머지 명령을 취소한다.
 
 | 파일·심볼 | 입력과 책임 | 다음 사용처 |
 | --- | --- | --- |

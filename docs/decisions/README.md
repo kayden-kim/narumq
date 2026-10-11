@@ -58,6 +58,7 @@
 | [ADR-0050](ADR-0050-mqtt-client-blocklist.md) | Accepted (SEC-12 적용 범위) | Dynamic cluster에서 replicated client·username·certificate·IP blocklist와 기존 연결 회수를 제공한다. |
 | [ADR-0051](ADR-0051-cluster-update-strategy.md) | Accepted (업데이트 방식과 선택 기준만) | 계획 업데이트는 in-place와 교체형 rolling을 함께 지원하고, 데이터 디렉터리 재연결 가능 여부로 선택한다. 별도 클러스터 Blue/Green은 지원하지 않는다. |
 | [ADR-0052](ADR-0052-configuration-tiers-and-cluster-policy.md) | Proposed | 설정을 다섯 범주로 나누고 Dynamic cluster 정책은 Raft에 commit된 versioned 문서를 기준으로 한다. 설정 파일은 versioned 초기값을 제공한다. |
+| [ADR-0053](ADR-0053-github-actions-required-ci-gate.md) | Accepted | GitHub Actions `verify`를 실행하고 main의 필수 CI status로 사용한다. |
 
 `Proposed` ADR은 검토 중인 제안이다. `Accepted` ADR은 각 기록에 명시한 범위 안에서 채택된 결정이다. `design target only`는 production runtime이나 acceptance 검증을 뜻하지 않는다.
 

@@ -696,7 +696,7 @@ MQTT normative statement 연결표는 `tests/conformance/mqtt-compliance-v1.json
 | 전체 local gate (2026-10-10) | `go run ./tools/verify local` PASS, 205.10초. Branch instrumentation, traceability, 5개 fuzz target, architecture, 전체 package·integration(125.359초), race, vet과 coverage가 통과했다. |
 | CI 병렬도 실험 (2026-10-10, mutation 수동 분리 전) | `go run ./tools/verify ci --base 23005e1a0d819a357507ce173b8d0f89cf40cf19` PASS, 1,388.95초. Coverage는 `-parallel=16`, integration은 156.691초였다. Mutation 단계는 18분 29초였다. 다섯 package 결과는 662 killed, 0 lived, 6 not covered였다. MQTT는 efficacy 100%, mutant coverage 98.80%였지만 console에 22 timed out도 기록됐다. 이 기록은 mutation을 CI에서 제외하기 전 실행 결과다. |
 
-13개 P0 예외가 남아 있으므로 traceability command의 PASS는 TEST-10 완료를 뜻하지 않는다. 필수 CI merge 차단 실행 증거도 아직 없다. 따라서 TEST-10은 미검증으로 유지한다.
+2026-10-11 현재 P0 예외는 11개다. 원격 main `verify` gate는 traceability를 포함해 PASS했다. 실패 probe PR의 `verify` check는 실패했고 PR 상태는 `blocked`였다. `enforce_admins=false`라 관리자 merge 거절은 시험하지 않았으므로 TEST-10은 미검증으로 유지한다. 설정과 run 증거는 §8.9에 있다.
 
 
 ### 7.3 Cluster failpoint 빌드
@@ -1131,6 +1131,46 @@ MQTT의 Not covered 6개는 `framing.go:43:13`, `45:13`, `47:13`의 `CONDITIONAL
 자동 실행의 예상 시간을 늘리는 mutation 단계는 `local`·`ci`에서 제외했다. 검출력 검토가 필요한 변경에서는 저장소 루트에서 `go run ./tools/verify mutation`을 수동 실행한다. 이전 CI 정책의 시간 비교는 §7.2, 기존 범위 확장 기록은 §8.7에 있다.
 
 HTML 시각 자료는 Chromium desktop·mobile 화면에서 확인했다. Console error는 없었다. 이번 변경은 verification runner와 문서만 수정했고 domain production code는 바꾸지 않았다.
+
+### 8.9 GitHub Actions 원격 CI와 required check 증거
+
+2026-10-11에 `.github/workflows/verify.yml`을 `main`에 push하고 원격 실행을 확인했다. Workflow는 pull request, `main` push와 `workflow_dispatch`에서 `go run ./tools/verify ci --base <base>`를 실행한다. PR은 `origin/$BASE_REF`를, main push는 push 이전 commit을 diff base로 쓴다. Coverage profile, summary와 branch manifest는 30일 보관한다. Mutation은 자동 gate에서 제외하고 `go run ./tools/verify mutation`으로 별도 실행한다.
+
+| 실행 | Commit·환경 | 확인 결과 |
+| --- | --- | --- |
+| Remote main | `03c84f40c345195f0a323c5af2e623e9ebbbc998`; GitHub Actions | [Run 38112386284](https://github.com/kayden-kim/narumq/actions/runs/38112386284)의 `verify` check가 5분 49초 뒤 `success`였다. `verification-38112386284-1` artifact는 9,979,845 bytes이며 2026-11-10까지 보관한다. |
+| Full Linux CI 사전 실행 | `03c84f40c345195f0a323c5af2e623e9ebbbc998`; Go 1.26.5 Docker container; `--base f847a491e7b4a68d7fc48a868ad801895894d32a` | `go run ./tools/verify ci --base f847a491e7b4a68d7fc48a868ad801895894d32a`가 `coverage: PASS`, `ci: PASS`로 종료했다. Wall time은 696.35초다. Diff coverage는 line 24/25(96%), function 5/5(100%), branch 11/12(91.67%)였다. 로그는 `.artifacts/verification/ci-linux-one-shot-admission-close.log`에 있다. |
+
+성공한 main run은 기존 `actions/checkout@v4`, `actions/setup-go@v5`, `actions/upload-artifact@v4`와 `ubuntu-latest`를 사용했다. GitHub는 Node 20 deprecation과 `ubuntu-latest`의 Ubuntu 26 전환 예정 경고를 표시했다. 현재 workflow는 `ubuntu-24.04`와 public action manifest에서 `runs.using: node24`로 확인한 `actions/*@v7`을 사용한다. 변경한 action과 runner는 문서 PR의 `verify` check에서도 실행해 확인한다.
+
+초기 원격 실행에서 서로 다른 세 회귀가 발견됐다. 테스트를 끄거나 대기를 늘리지 않고 연결 종료와 inbound slot 반환 경계를 수정했다.
+
+| Run | 실패 관찰 | 수정 |
+| --- | --- | --- |
+| [38107031157](https://github.com/kayden-kim/narumq/actions/runs/38107031157) | BP-05 reconnect 시험에서 두 시도 중 하나만 성공했다. | `f847a49`에서 client가 peer close를 확인한 뒤 reconnect하도록 했다. `go test ./tests/benchmark/bp05 -count=25`가 통과했다. |
+| [38108358932](https://github.com/kayden-kim/narumq/actions/runs/38108358932) | Bootstrap probe의 후속 TLS handshake가 `EOF`로 실패했다. [추론] 직전 응답 뒤 client가 바로 반환하면서 server의 inbound slot 반환과 다음 연결이 경합했다. | `f7b24da`에서 client가 peer close를 기다리고, server는 slot을 반환한 뒤 connection을 닫도록 했다. 관련 시험을 race detector 아래 100회 반복해 통과했다. |
+| [38111263856](https://github.com/kayden-kim/narumq/actions/runs/38111263856) | `TestDynamicSeedAdmissionRequiresTLSBoundCommittedStage`의 순차 seed admission 요청이 연결되지 못했다. | `03c84f4`에서 `ProbeBootstrapPeer`와 `RequestSeedAdmission`이 공통 close helper로 peer 종료를 기다리게 했다. Server는 close 전에 inbound slot을 반환한다. 해당 시험은 Linux race detector 아래 50회, Windows 아래 10회 통과했다. |
+
+### Main branch protection
+
+`main` 보호 설정은 GitHub Branch Protection API로 적용한 뒤 다시 조회했다.
+
+| 설정 | 조회 결과 |
+| --- | --- |
+| 필수 status check | `verify` |
+| Strict status check | `true`; 최신 `main` 반영 필요 |
+| Required review | 없음 |
+| Admin enforcement | `false`; 관리자는 보호를 우회할 수 있음 |
+| Force push·branch deletion | 둘 다 금지 |
+| Push restriction | 없음 |
+
+### 실패 PR probe
+
+임시 PR [#1](https://github.com/kayden-kim/narumq/pull/1)은 `tools/verify/branch_protection_probe_test.go::TestBranchProtectionProbe`에서 의도적으로 실패했다. [Run 38112802413](https://github.com/kayden-kim/narumq/actions/runs/38112802413)에서 필수 `verify` check가 `failure`였고 PR API는 `mergeable_state=blocked`를 반환했다. 이 조회 뒤 PR을 닫고 probe branch를 삭제했다. 시험 파일은 `main`에 남지 않았다.
+
+Probe는 test 실패만 확인했다. Coverage 저하와 미매핑 P0 실패를 별도로 주입하지 않았다. 실제 merge API 요청도 보내지 않았다. `enforce_admins=false`이므로 현재 관리자 인증으로는 branch protection이 merge 거절을 보장하지 않는다. 실패 check와 차단 상태는 관찰했지만 비관리자 write 권한에서의 merge 거절은 확인하지 못했다. 따라서 PRD TEST-10은 미검증이다.
+
+Traceability gate는 `P0 mapped 70/81, exceptions 11`을 보고했다. 예외 11개가 남아 있다. CI의 traceability PASS는 허용된 예외 목록과 test 연결이 일치한다는 뜻이며, 81개 P0 모두가 test에 연결됐다는 뜻은 아니다. Full CI는 fuzz와 race 단계를 통과했고 위의 알려진 회귀 경로를 반복 검증했다. 이 결과는 TEST-06~TEST-09, TEST-13~TEST-15의 원격 CI 실행 증거다. Production workload와 release gate는 별도다.
 
 ## 9. Architecture 검증
 
