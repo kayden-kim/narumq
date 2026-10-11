@@ -218,19 +218,10 @@ func decodeBootstrapProbeResponseAndWaitForClose(payload []byte, connection io.R
 	if err != nil {
 		return BootstrapProbeResultDTO{}, err
 	}
-	var trailing [1]byte
-	for {
-		n, err := connection.Read(trailing[:])
-		if n > 0 {
-			return BootstrapProbeResultDTO{}, fmt.Errorf("bootstrap probe response has trailing data")
-		}
-		if errors.Is(err, io.EOF) {
-			return result, nil
-		}
-		if err != nil {
-			return BootstrapProbeResultDTO{}, fmt.Errorf("wait for bootstrap probe close: %w", err)
-		}
+	if err := waitForDynamicPeerClose(connection, "bootstrap probe"); err != nil {
+		return BootstrapProbeResultDTO{}, err
 	}
+	return result, nil
 }
 
 func (transport *DynamicTCPPeerTransport) handleBootstrapProbe(connection *tls.Conn, payload []byte) {

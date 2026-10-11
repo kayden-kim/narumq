@@ -1743,6 +1743,9 @@ func (transport *DynamicTCPPeerTransport) RequestSeedAdmission(
 	if err != nil {
 		return nil, fmt.Errorf("seed admission response failed")
 	}
+	if err := waitForDynamicPeerClose(connection, "seed admission"); err != nil {
+		return nil, fmt.Errorf("seed admission close failed: %w", err)
+	}
 	response, err := decodeSeedAdmissionResponse(responsePayload)
 	if err != nil || !response.Accepted {
 		return nil, fmt.Errorf("seed admission rejected")
@@ -3155,6 +3158,23 @@ func readDynamicFrame(connection net.Conn, maximum uint32) ([]byte, error) {
 		return nil, err
 	}
 	return payload, nil
+}
+
+// waitForDynamicPeerClose synchronizes a one-shot exchange with inbound slot release.
+func waitForDynamicPeerClose(connection io.Reader, exchange string) error {
+	var trailing [1]byte
+	for {
+		n, err := connection.Read(trailing[:])
+		if n > 0 {
+			return fmt.Errorf("%s response has trailing data", exchange)
+		}
+		if errors.Is(err, io.EOF) {
+			return nil
+		}
+		if err != nil {
+			return fmt.Errorf("wait for %s close: %w", exchange, err)
+		}
+	}
 }
 
 func readDynamicIdleFrame(connection net.Conn, maximum uint32) ([]byte, error) {
