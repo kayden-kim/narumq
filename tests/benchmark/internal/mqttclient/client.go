@@ -204,6 +204,21 @@ func (client *Client) Close() error {
 	return client.closeErr
 }
 
+// WaitForServerClose waits for the server to close the network connection after DISCONNECT.
+func (client *Client) WaitForServerClose(timeout time.Duration) error {
+	if client == nil || client.connection == nil {
+		return errors.New("MQTT client is closed")
+	}
+	_, err := client.Read(timeout)
+	if errors.Is(err, io.EOF) {
+		return nil
+	}
+	if err == nil {
+		return errors.New("MQTT server sent a packet after DISCONNECT")
+	}
+	return fmt.Errorf("wait for MQTT server close: %w", err)
+}
+
 // IsTimeout reports only a first-byte read timeout.
 func IsTimeout(err error) bool {
 	var netErr net.Error

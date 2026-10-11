@@ -223,6 +223,10 @@ func executeWorkload(ctx context.Context, options RunOptions, connectionsWriter,
 			protocol, transport := classifyError(err)
 			counters.protocolErrors += protocol
 			counters.transportErrors += transport
+		} else if err := record.client.WaitForServerClose(pingResponseTimeout); err != nil {
+			protocol, transport := classifyError(err)
+			counters.protocolErrors += protocol
+			counters.transportErrors += transport
 		}
 		if err := record.client.Close(); err != nil {
 			counters.transportErrors++
