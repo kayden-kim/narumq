@@ -78,8 +78,8 @@
     .hero-figure svg { display: block; width: 100%; height: auto; }
     figcaption { color: var(--muted); font-size: .78rem; line-height: 1.55; margin-top: .8rem; }
     .diagram-node { fill: var(--surface); stroke: var(--line); stroke-width: 1.5; }
-    .diagram-label { fill: var(--ink); font: 700 17px var(--sans); }
-    .diagram-sub { fill: var(--muted); font: 14px var(--sans); }
+    .diagram-label { fill: var(--ink); font: 700 20px var(--sans); }
+    .diagram-sub { fill: var(--muted); font: 16px var(--sans); }
     .diagram-arrow { stroke: var(--accent); stroke-width: 2.2; fill: none; }
     .diagram-arrow.warm { stroke: var(--warm); }
 
@@ -139,6 +139,8 @@
     .flow-chain { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: .5rem; align-items: stretch; }
     .flow-chain .flow-node { width: 100%; height: 100%; }
     .flow-arrow-row { display: grid; grid-template-columns: repeat(5, 1fr); color: var(--accent); text-align: center; font-size: 1.2rem; line-height: 1.5; }
+    .table-scroll { max-width: 100%; overflow-x: auto; overscroll-behavior-inline: contain; }
+    .table-scroll:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
     .responsibility-table { margin-top: 2rem; }
     .responsibility-table th:first-child { width: 29%; }
     .responsibility-table th:nth-child(2) { width: 31%; }
@@ -256,6 +258,11 @@
       .chapter-index { font-size: .68rem; }
       .columns, .qos2-limits, .reference-groups { grid-template-columns: 1fr; }
       .rule-table th, .rule-table td, .publish-table th, .publish-table td { padding: .7rem .45rem; }
+      .rule-table, .publish-table { table-layout: fixed; width: 100%; }
+      .rule-table th, .rule-table td, .publish-table th, .publish-table td { overflow-wrap: anywhere; }
+      .rule-table code, .publish-table code, .evidence-list strong, .evidence-list code, .source-line a { overflow-wrap: anywhere; }
+      .responsibility-table, .recovery-table { min-width: 640px; }
+      .publish-table { min-width: 760px; }
       .rule-table th { width: 27%; }
       .publish-table td:first-child { white-space: normal; }
       .sequence-row { grid-template-columns: 30px minmax(0, 1fr); gap: .4rem .6rem; }
@@ -297,33 +304,33 @@
           </div>
         </div>
         <figure class="hero-figure">
-          <svg viewBox="0 0 900 320" role="img" aria-labelledby="hero-diagram-title hero-diagram-desc">
+          <svg viewBox="0 0 700 320" role="img" aria-labelledby="hero-diagram-title hero-diagram-desc">
             <title id="hero-diagram-title">Publisher와 subscriber 사이의 두 MQTT 전달 구간</title>
             <desc id="hero-diagram-desc">Publisher에서 broker까지의 입력 구간과 broker에서 subscriber까지의 별도 전달 구간을 보인다. PUBACK은 publisher 구간의 응답이며 subscriber 처리 확인이 아니다.</desc>
             <defs>
               <marker id="hero-arrow" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8 Z" fill="var(--accent)"></path></marker>
               <marker id="hero-arrow-warm" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8 Z" fill="var(--warm)"></path></marker>
             </defs>
-            <rect class="diagram-node" x="18" y="114" width="142" height="74" rx="2"></rect>
-            <text class="diagram-label" x="89" y="145" text-anchor="middle">Publisher</text>
-            <text class="diagram-sub" x="89" y="169" text-anchor="middle">PUBLISH</text>
-            <rect class="diagram-node" x="268" y="72" width="342" height="158" rx="2"></rect>
-            <text class="diagram-label" x="439" y="112" text-anchor="middle">NaruMQ broker</text>
-            <text class="diagram-sub" x="439" y="144" text-anchor="middle">TCP frame → MQTT packet</text>
-            <text class="diagram-sub" x="439" y="168" text-anchor="middle">use case → local queue / cluster commit</text>
-            <text class="diagram-sub" x="439" y="202" text-anchor="middle">응답 시점은 실행 모드와 QoS에 따라 다름</text>
-            <rect class="diagram-node" x="748" y="114" width="142" height="74" rx="2"></rect>
-            <text class="diagram-label" x="819" y="145" text-anchor="middle">Subscriber</text>
-            <text class="diagram-sub" x="819" y="169" text-anchor="middle">별도 전달</text>
-            <path class="diagram-arrow" d="M160 130 H258" marker-end="url(#hero-arrow)"></path>
-            <text class="diagram-sub" x="208" y="116" text-anchor="middle">입력</text>
-            <path class="diagram-arrow warm" d="M268 191 H170" marker-end="url(#hero-arrow-warm)"></path>
-            <text class="diagram-sub" x="218" y="220" text-anchor="middle">PUBACK / PUBREC / PUBCOMP</text>
-            <path class="diagram-arrow" d="M610 130 H738" marker-end="url(#hero-arrow)"></path>
-            <text class="diagram-sub" x="674" y="116" text-anchor="middle">queue 이후</text>
-            <text class="diagram-sub" x="674" y="205" text-anchor="middle">subscriber QoS 응답은 별도</text>
-            <line x1="180" y1="265" x2="728" y2="265" stroke="var(--line)" stroke-width="1"></line>
-            <text class="diagram-sub" x="454" y="292" text-anchor="middle">한쪽 hop의 ACK가 다른 쪽 hop의 소비 완료를 뜻하지 않는다</text>
+            <rect class="diagram-node" x="8" y="114" width="120" height="74" rx="2"></rect>
+            <text class="diagram-label" x="68" y="145" text-anchor="middle">Publisher</text>
+            <text class="diagram-sub" x="68" y="169" text-anchor="middle">PUBLISH</text>
+            <rect class="diagram-node" x="203" y="72" width="294" height="158" rx="2"></rect>
+            <text class="diagram-label" x="350" y="109" text-anchor="middle">NaruMQ broker</text>
+            <text class="diagram-sub" x="350" y="141" text-anchor="middle">TCP frame → MQTT packet</text>
+            <text class="diagram-sub" x="350" y="168" text-anchor="middle">use case → local / replicated state</text>
+            <text class="diagram-sub" x="350" y="194" text-anchor="middle">ACK는 모드와 QoS별 경계 뒤</text>
+            <rect class="diagram-node" x="572" y="114" width="120" height="74" rx="2"></rect>
+            <text class="diagram-label" x="632" y="145" text-anchor="middle">Subscriber</text>
+            <text class="diagram-sub" x="632" y="169" text-anchor="middle">별도 전달</text>
+            <path class="diagram-arrow" d="M128 130 H194" marker-end="url(#hero-arrow)"></path>
+            <text class="diagram-sub" x="161" y="116" text-anchor="middle">입력</text>
+            <path class="diagram-arrow warm" d="M203 191 H138" marker-end="url(#hero-arrow-warm)"></path>
+            <text class="diagram-sub" x="170" y="238" text-anchor="middle">PUBACK / PUBREC / PUBCOMP</text>
+            <path class="diagram-arrow" d="M497 130 H564" marker-end="url(#hero-arrow)"></path>
+            <text class="diagram-sub" x="530" y="116" text-anchor="middle">queue 이후</text>
+            <text class="diagram-sub" x="530" y="238" text-anchor="middle">subscriber QoS 응답은 별도</text>
+            <line x1="140" y1="265" x2="560" y2="265" stroke="var(--line)" stroke-width="1"></line>
+            <text class="diagram-sub" x="350" y="292" text-anchor="middle">한쪽 hop의 ACK가 다른 쪽 hop의 소비 완료를 뜻하지 않는다</text>
           </svg>
           <figcaption>화살표는 packet 또는 전달 방향입니다. 입력 ACK와 subscriber 전달은 서로 다른 MQTT 교환입니다.</figcaption>
         </figure>
@@ -391,15 +398,17 @@
             </div>
             <figcaption id="arch-caption" class="flow-caption">아래 방향 화살표는 조립·호출 순서입니다. 마지막 응답이 확인하는 것은 publisher hop이며 subscriber의 이후 처리는 별도입니다.</figcaption>
           </figure>
-          <table class="rule-table responsibility-table">
-            <thead><tr><th scope="col">영역</th><th scope="col">대표 파일</th><th scope="col">맡은 일</th></tr></thead>
-            <tbody>
-              <tr><th scope="row">프로세스 시작</th><td><code>cmd/narumq/main.go</code><br><code>cmd/narumq/cluster_runtime.go</code></td><td><code>runWithContext</code>가 모드를 선택합니다. Cluster 모드는 <code>runClusterMode</code>에서 Raft·projection·TCP adapter를 조립합니다.</td></tr>
-              <tr><th scope="row">전송과 packet</th><td><code>internal/adapters/tcp</code><br><code>internal/domain/mqtt</code></td><td>Adapter가 TCP byte stream을 모으고 packet을 dispatch합니다. Domain decoder는 MQTT wire 규칙을 packet 값으로 바꿉니다.</td></tr>
-              <tr><th scope="row">응용 동작</th><td><code>internal/application/connect</code><br><code>publish</code> · <code>subscribe</code></td><td>인증, session, retained, routing, queue와 configured commit 경계를 조정합니다.</td></tr>
-              <tr><th scope="row">상태 보관과 송신</th><td><code>internal/adapters/memory</code><br><code>cmd/narumq/cluster_durable.go</code></td><td>Standalone은 process-local adapter를 사용합니다. Cluster는 replicated state를 권위 값으로 두고 local projection을 TCP writer에 제공합니다.</td></tr>
-            </tbody>
-          </table>
+          <div class="table-scroll" role="region" tabindex="0" aria-label="코드 책임 표. 좌우로 스크롤할 수 있습니다.">
+            <table class="rule-table responsibility-table">
+              <thead><tr><th scope="col">영역</th><th scope="col">대표 파일</th><th scope="col">맡은 일</th></tr></thead>
+              <tbody>
+                <tr><th scope="row">프로세스 시작</th><td><code>cmd/narumq/main.go</code><br><code>cmd/narumq/cluster_runtime.go</code></td><td><code>runWithContext</code>가 모드를 선택합니다. Cluster 모드는 <code>runClusterMode</code>에서 Raft·projection·TCP adapter를 조립합니다.</td></tr>
+                <tr><th scope="row">전송과 packet</th><td><code>internal/adapters/tcp</code><br><code>internal/domain/mqtt</code></td><td>Adapter가 TCP byte stream을 모으고 packet을 dispatch합니다. Domain decoder는 MQTT wire 규칙을 packet 값으로 바꿉니다.</td></tr>
+                <tr><th scope="row">응용 동작</th><td><code>internal/application/connect</code><br><code>publish</code> · <code>subscribe</code></td><td>인증, session, retained, routing, queue와 configured commit 경계를 조정합니다.</td></tr>
+                <tr><th scope="row">상태 보관과 송신</th><td><code>internal/adapters/memory</code><br><code>cmd/narumq/cluster_durable.go</code></td><td>Standalone은 process-local adapter를 사용합니다. Cluster는 replicated state를 권위 값으로 두고 local projection을 TCP writer에 제공합니다.</td></tr>
+              </tbody>
+            </table>
+          </div>
           <p class="source-line"><strong>코드 지도</strong><a href="../architectures/project-structure.md#코드-지도-실행-모드와-mqtt-connect-대표-흐름">실행 모드와 MQTT 대표 흐름</a><a href="../../cmd/narumq/main.go">main.go</a><a href="../../cmd/narumq/cluster_runtime.go">cluster_runtime.go</a><a href="../../internal/adapters/tcp/server.go">tcp/server.go</a></p>
         </div>
       </div>
@@ -543,17 +552,19 @@ return packet, frameHeaderLength + remainingLength, nil</code></pre>
             </div>
             <figcaption id="publish-pipeline-caption">화살표는 처리 순서입니다. Retained mutation은 route matching보다 먼저 처리됩니다. Cluster QoS 1/2 durable path는 다음 표와 별도 QoS 2 도식에서 구분합니다.</figcaption>
           </figure>
-          <table class="publish-table">
-            <thead><tr><th scope="col">입력 경로</th><th scope="col">처리 경계</th><th scope="col">Publisher가 받는 결과</th><th scope="col">확인 범위</th></tr></thead>
-            <tbody>
-              <tr><td>Standalone<br>QoS 0</td><td>Routing과 process-local delivery queue를 사용합니다. MQTT ACK가 없습니다.</td><td>성공 응답 없음</td><td>Network connection이 끊겨도 메모리 session state는 남을 수 있지만 process restart 복구는 아닙니다.</td></tr>
-              <tr><td>Standalone<br>QoS 1</td><td>Application이 local routing/delivery 처리를 마친 뒤 inbound state를 완료합니다.</td><td>PUBACK</td><td>Process-local 동작입니다. Replication이나 process restart durability를 뜻하지 않습니다.</td></tr>
-              <tr><td>Standalone<br>QoS 2</td><td>PUBLISH에서 PUBREC, PUBREL에서 routing 후 완료 state를 처리합니다.</td><td>PUBREC → PUBCOMP</td><td>Publisher와 broker의 MQTT handshake입니다. Subscriber 애플리케이션의 처리 완료를 증명하지 않습니다.</td></tr>
-              <tr><td>Dynamic cluster<br>QoS 0</td><td>Retained와 detached-session offline QoS 0은 replicated state를 사용합니다. Connected remote owner forwarding은 at-most-once입니다.</td><td>MQTT ACK 없음</td><td>Live remote forwarding에는 receiver ACK/retry가 없습니다. Offline queue는 별도 ENQUEUE/CLAIM 경로입니다.</td></tr>
-              <tr><td>Dynamic cluster<br>QoS 1</td><td>Durable target이 있으면 delivery command commit 뒤 완료합니다. Target이 없으면 delivery proposal 없이 fresh quorum ReadIndex barrier를 기다립니다.</td><td>경계 성공 뒤 PUBACK</td><td>Barrier 실패나 commit 오류에서 성공 PUBACK을 보내지 않습니다.</td></tr>
-              <tr><td>Dynamic cluster<br>QoS 2</td><td>RECEIVE를 PUBREC 전에 commit합니다. PUBREL 뒤 RELEASE와 target queue 경계를 통과한 다음 완료합니다.</td><td>RECEIVE 뒤 PUBREC; RELEASE 뒤 PUBCOMP</td><td>Inbound handshake state와 durable target delivery를 복구합니다. Consumer 애플리케이션 exactly-once 처리를 주장하지 않습니다.</td></tr>
-            </tbody>
-          </table>
+          <div class="table-scroll" role="region" tabindex="0" aria-label="PUBLISH 입력 경로별 처리 경계와 응답 표. 좌우로 스크롤할 수 있습니다.">
+            <table class="publish-table">
+              <thead><tr><th scope="col">입력 경로</th><th scope="col">처리 경계</th><th scope="col">Publisher가 받는 결과</th><th scope="col">확인 범위</th></tr></thead>
+              <tbody>
+                <tr><td>Standalone<br>QoS 0</td><td>Routing과 process-local delivery queue를 사용합니다. MQTT ACK가 없습니다.</td><td>성공 응답 없음</td><td>Network connection이 끊겨도 메모리 session state는 남을 수 있지만 process restart 복구는 아닙니다.</td></tr>
+                <tr><td>Standalone<br>QoS 1</td><td>Application이 local routing/delivery 처리를 마친 뒤 inbound state를 완료합니다.</td><td>PUBACK</td><td>Process-local 동작입니다. Replication이나 process restart durability를 뜻하지 않습니다.</td></tr>
+                <tr><td>Standalone<br>QoS 2</td><td>PUBLISH에서 PUBREC, PUBREL에서 routing 후 완료 state를 처리합니다.</td><td>PUBREC → PUBCOMP</td><td>Publisher와 broker의 MQTT handshake입니다. Subscriber 애플리케이션의 처리 완료를 증명하지 않습니다.</td></tr>
+                <tr><td>Dynamic cluster<br>QoS 0</td><td>Retained와 detached-session offline QoS 0은 replicated state를 사용합니다. Connected remote owner forwarding은 at-most-once입니다.</td><td>MQTT ACK 없음</td><td>Live remote forwarding에는 receiver ACK/retry가 없습니다. Offline queue는 별도 ENQUEUE/CLAIM 경로입니다.</td></tr>
+                <tr><td>Dynamic cluster<br>QoS 1</td><td>Durable target이 있으면 delivery command commit 뒤 완료합니다. Target이 없으면 delivery proposal 없이 fresh quorum ReadIndex barrier를 기다립니다.</td><td>경계 성공 뒤 PUBACK</td><td>Barrier 실패나 commit 오류에서 성공 PUBACK을 보내지 않습니다.</td></tr>
+                <tr><td>Dynamic cluster<br>QoS 2</td><td>RECEIVE를 PUBREC 전에 commit합니다. PUBREL 뒤 RELEASE와 target queue 경계를 통과한 다음 완료합니다.</td><td>RECEIVE 뒤 PUBREC; RELEASE 뒤 PUBCOMP</td><td>Inbound handshake state와 durable target delivery를 복구합니다. Consumer 애플리케이션 exactly-once 처리를 주장하지 않습니다.</td></tr>
+              </tbody>
+            </table>
+          </div>
           <div class="boundary-rail">
             <p><strong>Retained 값:</strong> tenant와 exact topic을 key로 저장합니다. 비어 있지 않은 payload는 값을 교체하고, zero-byte payload는 저장 값을 삭제합니다. Retained mutation 오류가 나면 그 PUBLISH는 fan-out으로 진행하지 않습니다.</p>
           </div>
@@ -666,13 +677,15 @@ return packet, frameHeaderLength + remainingLength, nil</code></pre>
             <h2 id="recovery-title">재연결 복구와 process 재시작은<br>같은 말이 아니다</h2>
             <p>Persistent session은 network connection 종료 뒤에도 session state를 유지할 수 있습니다. 어떤 장애 뒤까지 남는지는 state adapter와 실행 모드가 결정합니다.</p>
           </div>
-          <table class="rule-table recovery-table">
-            <thead><tr><th scope="col">실행 모드</th><th scope="col">연결 종료 뒤</th><th scope="col">복구 경로와 제한</th></tr></thead>
-            <tbody>
-              <tr><th scope="row">Standalone</th><td>동일 process가 살아 있으면 session과 queued/inflight delivery state를 process-local memory에서 이어갑니다.</td><td>Reconnect 때 CONNACK을 먼저 기록합니다. Recovery writer는 미완료 QoS PUBLISH에 기존 Packet Identifier와 <code>DUP=1</code>을 사용하고, QoS 2가 PUBREL 대기 상태면 같은 identifier의 PUBREL을 재개합니다. Process restart·replication 복구는 아닙니다.</td></tr>
-              <tr><th scope="row">Dynamic cluster</th><td>Ownership과 delivery state를 committed cluster state로 복구할 수 있습니다. Detached QoS 0 offline queue와 durable QoS 1/2 session state는 서로 다른 lane입니다.</td><td>새 owner가 attach한 상태를 TCP adapter에 복원하고 CONNACK 뒤 recovered packet을 재개합니다. 기록된 acceptance는 제한된 process test와 backup v3 restore에 한정됩니다.</td></tr>
-            </tbody>
-          </table>
+          <div class="table-scroll" role="region" tabindex="0" aria-label="실행 모드별 재연결 복구 경로 표. 좌우로 스크롤할 수 있습니다.">
+            <table class="rule-table recovery-table">
+              <thead><tr><th scope="col">실행 모드</th><th scope="col">연결 종료 뒤</th><th scope="col">복구 경로와 제한</th></tr></thead>
+              <tbody>
+                <tr><th scope="row">Standalone</th><td>동일 process가 살아 있으면 session과 queued/inflight delivery state를 process-local memory에서 이어갑니다.</td><td>Reconnect 때 CONNACK을 먼저 기록합니다. Recovery writer는 미완료 QoS PUBLISH에 기존 Packet Identifier와 <code>DUP=1</code>을 사용하고, QoS 2가 PUBREL 대기 상태면 같은 identifier의 PUBREL을 재개합니다. Process restart·replication 복구는 아닙니다.</td></tr>
+                <tr><th scope="row">Dynamic cluster</th><td>Ownership과 delivery state를 committed cluster state로 복구할 수 있습니다. Detached QoS 0 offline queue와 durable QoS 1/2 session state는 서로 다른 lane입니다.</td><td>새 owner가 attach한 상태를 TCP adapter에 복원하고 CONNACK 뒤 recovered packet을 재개합니다. 기록된 acceptance는 제한된 process test와 backup v3 restore에 한정됩니다.</td></tr>
+              </tbody>
+            </table>
+          </div>
           <div class="columns">
             <div>
               <h3>Writer가 복구 packet을 먼저 다룬다</h3>
@@ -771,6 +784,17 @@ if err := connection.writePacket(packet); err != nil {
 
   <script>
     (() => {
+      document.querySelectorAll(".table-scroll").forEach((region) => {
+        region.addEventListener("keydown", (event) => {
+          if (region.scrollWidth <= region.clientWidth ||
+              (event.key !== "ArrowLeft" && event.key !== "ArrowRight")) return;
+          region.scrollLeft += event.key === "ArrowRight"
+            ? region.clientWidth * .65
+            : -region.clientWidth * .65;
+          event.preventDefault();
+        });
+      });
+
       const steps = [
         {
           title: "PUBLISH가 broker에 도착한다.",
