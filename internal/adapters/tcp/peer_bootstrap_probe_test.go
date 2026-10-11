@@ -253,6 +253,12 @@ func TestDecodeBootstrapProbeResponseWaitsForConnectionClose(t *testing.T) {
 			want:    result,
 		},
 		{
+			name:    "transient empty read",
+			payload: validPayload,
+			reader:  &bootstrapProbeNoProgressReader{},
+			want:    result,
+		},
+		{
 			name:    "malformed response",
 			payload: []byte("invalid"),
 			reader:  strings.NewReader(""),
@@ -296,6 +302,18 @@ type bootstrapProbeErrorReader struct {
 
 func (reader bootstrapProbeErrorReader) Read([]byte) (int, error) {
 	return 0, reader.err
+}
+
+type bootstrapProbeNoProgressReader struct {
+	returnEOF bool
+}
+
+func (reader *bootstrapProbeNoProgressReader) Read([]byte) (int, error) {
+	if reader.returnEOF {
+		return 0, io.EOF
+	}
+	reader.returnEOF = true
+	return 0, nil
 }
 
 func TestDynamicTransportBootstrapProbeAllowanceClearsOnRaftFrame(t *testing.T) {
