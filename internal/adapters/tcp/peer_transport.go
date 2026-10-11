@@ -1877,9 +1877,12 @@ func (transport *DynamicTCPPeerTransport) acceptLoop(ctx context.Context) error 
 		}
 		transport.workers.Add(1)
 		go func(connection net.Conn) {
-			defer transport.workers.Done()
-			defer transport.untrackInboundConnection(connection)
-			defer connection.Close()
+			defer func() {
+				// A peer can reconnect as soon as it observes the close.
+				transport.untrackInboundConnection(connection)
+				_ = connection.Close()
+				transport.workers.Done()
+			}()
 			transport.handleInbound(ctx, connection)
 		}(socket)
 	}

@@ -6,6 +6,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"sync"
 	"time"
@@ -209,7 +210,24 @@ func ProbeBootstrapPeer(ctx context.Context, clientTLS *tls.Config, local, peer 
 	if err != nil {
 		return BootstrapProbeResultDTO{}, err
 	}
-	return decodeBootstrapProbeResponse(payload)
+	result, err := decodeBootstrapProbeResponse(payload)
+	if err != nil {
+		return BootstrapProbeResultDTO{}, err
+	}
+	// The server releases its inbound slot before closing this connection.
+	var trailing [1]byte
+	for {
+		n, err := connection.Read(trailing[:])
+		if n > 0 {
+			return BootstrapProbeResultDTO{}, fmt.Errorf("bootstrap probe response has trailing data")
+		}
+		if errors.Is(err, io.EOF) {
+			return result, nil
+		}
+		if err != nil {
+			return BootstrapProbeResultDTO{}, fmt.Errorf("wait for bootstrap probe close: %w", err)
+		}
+	}
 }
 
 func (transport *DynamicTCPPeerTransport) handleBootstrapProbe(connection *tls.Conn, payload []byte) {
