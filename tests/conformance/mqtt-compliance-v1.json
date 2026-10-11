@@ -1390,6 +1390,13 @@
           "package": "narumq/tests/integration"
         }
       ]
+    },
+    {
+      "id": "MQTT-4.9.0-1",
+      "requirementIds": [
+        "MQTT-07"
+      ],
+      "tests": []
     }
   ]
 }
