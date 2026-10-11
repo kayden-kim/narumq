@@ -6,6 +6,7 @@ import (
 	"crypto/tls"
 	"encoding/hex"
 	"errors"
+	"io"
 	"net"
 	"strings"
 	"sync/atomic"
@@ -232,6 +233,69 @@ func TestProbeBootstrapPeerReportsResponseReadFailure(t *testing.T) {
 	case <-time.After(cptWaitTimeout):
 		t.Fatal("response-failure test server did not consume probe request")
 	}
+}
+
+func TestDecodeBootstrapProbeResponseWaitsForConnectionClose(t *testing.T) {
+	result := BootstrapProbeResultDTO{Status: BootstrapProbeReady, Term: 1, CommitIndex: 3}
+	validPayload := encodeBootstrapProbeResponse(result)
+	readFailure := errors.New("probe close read failed")
+	tests := []struct {
+		name    string
+		payload []byte
+		reader  io.Reader
+		want    BootstrapProbeResultDTO
+		wantErr string
+	}{
+		{
+			name:    "valid response closes cleanly",
+			payload: validPayload,
+			reader:  strings.NewReader(""),
+			want:    result,
+		},
+		{
+			name:    "malformed response",
+			payload: []byte("invalid"),
+			reader:  strings.NewReader(""),
+			wantErr: "bootstrap probe response is invalid",
+		},
+		{
+			name:    "trailing data",
+			payload: validPayload,
+			reader:  strings.NewReader("x"),
+			wantErr: "bootstrap probe response has trailing data",
+		},
+		{
+			name:    "close read failure",
+			payload: validPayload,
+			reader:  bootstrapProbeErrorReader{err: readFailure},
+			wantErr: "wait for bootstrap probe close: probe close read failed",
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			got, err := decodeBootstrapProbeResponseAndWaitForClose(test.payload, test.reader)
+			if test.wantErr != "" {
+				if err == nil || err.Error() != test.wantErr {
+					t.Fatalf("result=%+v err=%v, want error %q", got, err, test.wantErr)
+				}
+				if got != (BootstrapProbeResultDTO{}) {
+					t.Fatalf("result=%+v, want zero result on error", got)
+				}
+				return
+			}
+			if err != nil || got != test.want {
+				t.Fatalf("result=%+v err=%v, want %+v", got, err, test.want)
+			}
+		})
+	}
+}
+
+type bootstrapProbeErrorReader struct {
+	err error
+}
+
+func (reader bootstrapProbeErrorReader) Read([]byte) (int, error) {
+	return 0, reader.err
 }
 
 func TestDynamicTransportBootstrapProbeAllowanceClearsOnRaftFrame(t *testing.T) {

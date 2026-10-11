@@ -210,11 +210,14 @@ func ProbeBootstrapPeer(ctx context.Context, clientTLS *tls.Config, local, peer 
 	if err != nil {
 		return BootstrapProbeResultDTO{}, err
 	}
+	return decodeBootstrapProbeResponseAndWaitForClose(payload, connection)
+}
+
+func decodeBootstrapProbeResponseAndWaitForClose(payload []byte, connection io.Reader) (BootstrapProbeResultDTO, error) {
 	result, err := decodeBootstrapProbeResponse(payload)
 	if err != nil {
 		return BootstrapProbeResultDTO{}, err
 	}
-	// The server releases its inbound slot before closing this connection.
 	var trailing [1]byte
 	for {
 		n, err := connection.Read(trailing[:])
