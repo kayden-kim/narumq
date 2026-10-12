@@ -70,3 +70,8 @@ $RECYCLE.BIN/
 
 ### Benchmark artifacts
 .artifacts/
+
+### Node & VitePress
+node_modules/
+**/.vitepress/dist/
+**/.vitepress/cache/

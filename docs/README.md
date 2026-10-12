@@ -16,6 +16,7 @@
 | [코딩 컨벤션](conventions/README.md) | 소스와 저장소 산출물을 어떤 규칙으로 작성하는가? | [convention.template.md](templates/convention.template.md), [DESIGN.template.md](templates/DESIGN.template.md), [frontend.template.md](templates/frontend.template.md) |
 | [실행 절차](how-to/README.md) | 특정 작업을 안전하게 어떻게 수행하는가? | [how-to.template.md](templates/how-to.template.md) |
 | [사고 기록](incidents/README.md) | 사고의 영향·원인·대응·후속 조치는 무엇인가? | [incident.template.md](templates/incident.template.md) |
+| [사용자 매뉴얼](manual/index.md) | 브로커를 어떻게 실행하고 클라이언트를 어떻게 연동하는가? | GitHub Pages (VitePress) |
 
 ## 템플릿과 스킬
 
