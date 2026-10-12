@@ -1,0 +1,14 @@
+{
+  "name": "narumq-docs",
+  "version": "0.1.0",
+  "private": true,
+  "description": "NaruMQ User Manual and Documentation Site",
+  "scripts": {
+    "docs:dev": "vitepress dev docs/manual",
+    "docs:build": "vitepress build docs/manual",
+    "docs:preview": "vitepress preview docs/manual"
+  },
+  "devDependencies": {
+    "vitepress": "^1.6.3"
+  }
+}
