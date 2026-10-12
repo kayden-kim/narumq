@@ -1,6 +1,8 @@
 import { defineConfig } from 'vitepress'
+import { withMermaid } from 'vitepress-plugin-mermaid'
 
-export default defineConfig({
+export default withMermaid(
+  defineConfig({
   title: 'NaruMQ 사용자 매뉴얼',
   description: '분산 MQTT 브로커 NaruMQ 클라이언트 개발자 및 운영자 가이드',
   lang: 'ko-KR',
@@ -91,4 +93,5 @@ export default defineConfig({
       label: '목차'
     }
   }
-})
+  })
+)
