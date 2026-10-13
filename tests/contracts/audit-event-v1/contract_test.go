@@ -443,6 +443,246 @@ func TestAuditQueryReturnsStoredChainRecords(t *testing.T) {
 	}
 }
 
+// Traceability: SEC-11/NFR-17; docs/contracts/audit-event-v1.md §4; docs/specs/tenancy-and-security.md §8.
+func TestAuditConsumersPreserveUnknownActionAndReason(t *testing.T) {
+	schema := compileAuditEventSchema(t)
+	directory := t.TempDir()
+	publisher, err := auditlog.OpenFileAuditPublisher(auditlog.FileAuditPublisherConfig{
+		Directory: directory, MaxFileBytes: auditlog.DefaultMaxFileBytes,
+	})
+	if err != nil {
+		t.Fatalf("OpenFileAuditPublisher() error = %v", err)
+	}
+	defer func() {
+		if err := publisher.Close(); err != nil {
+			t.Errorf("Close() error = %v", err)
+		}
+	}()
+
+	occurredAt := time.Date(2026, time.October, 11, 9, 0, 0, 0, time.UTC)
+	events := []portsaudit.AuditEventDTO{
+		{
+			SchemaVersion: "1.0",
+			EventID:       "evt-known",
+			OccurredAt:    occurredAt,
+			RequestID:     "req-known",
+			Producer:      portsaudit.AuditProducerDTO{Component: "BROKER", InstanceID: "contract-cluster/1", Version: "1.0.0"},
+			Actor:         portsaudit.AuditActorDTO{Subject: "contract-actor"},
+			Action:        "node.drain.start",
+			Target:        portsaudit.AuditTargetDTO{Type: "node", ID: "1"},
+			Result:        portsaudit.AuditResultAllowed,
+			Reason:        "succeeded",
+			Details:       map[string]any{"httpStatus": 202, "method": "POST"},
+		},
+		{
+			SchemaVersion: "1.0",
+			EventID:       "evt-unknown-rollout",
+			OccurredAt:    occurredAt,
+			RequestID:     "req-unknown-rollout",
+			Producer:      portsaudit.AuditProducerDTO{Component: "ROLLOUT_CONTROLLER", InstanceID: "contract-rollout/1", Version: "1.0.0"},
+			Actor:         portsaudit.AuditActorDTO{Subject: "contract-actor"},
+			Action:        "rollout.pod.delete_approved",
+			Target:        portsaudit.AuditTargetDTO{Type: "rollout_pod", ID: "narumq-2"},
+			Result:        portsaudit.AuditResultDenied,
+			Reason:        "unknown_barrier_state",
+			Details:       map[string]any{"barrier": "unknown"},
+		},
+		{
+			SchemaVersion: "1.0",
+			EventID:       "evt-unknown-future",
+			OccurredAt:    occurredAt,
+			RequestID:     "req-unknown-future",
+			Producer:      portsaudit.AuditProducerDTO{Component: "BROKER", InstanceID: "contract-cluster/1", Version: "1.0.0"},
+			Actor:         portsaudit.AuditActorDTO{Subject: "contract-actor"},
+			Action:        "future.feature.activate_v2",
+			Target:        portsaudit.AuditTargetDTO{Type: "future_resource", ID: "f-1"},
+			Result:        portsaudit.AuditResultFailed,
+			Reason:        "future_reason_code",
+		},
+	}
+	for _, event := range events {
+		if err := publisher.Publish(event); err != nil {
+			t.Fatalf("Publish(%s) error = %v", event.EventID, err)
+		}
+	}
+
+	storedBytes, err := os.ReadFile(filepath.Join(directory, "audit.jsonl"))
+	if err != nil {
+		t.Fatalf("ReadFile(audit.jsonl) error = %v", err)
+	}
+	lines := bytes.Split(bytes.TrimSpace(storedBytes), []byte("\n"))
+	if len(lines) != len(events) {
+		t.Fatalf("stored audit records=%d, want %d", len(lines), len(events))
+	}
+	storedEvents := make([]json.RawMessage, len(lines))
+	for index, line := range lines {
+		var record struct {
+			Event json.RawMessage `json:"event"`
+		}
+		if err := json.Unmarshal(line, &record); err != nil {
+			t.Fatalf("decode stored audit record %d: %v", index+1, err)
+		}
+		var eventValue any
+		if err := json.Unmarshal(record.Event, &eventValue); err != nil {
+			t.Fatalf("decode stored audit event %d: %v", index+1, err)
+		}
+		if err := schema.Validate(eventValue); err != nil {
+			t.Fatalf("schema rejected stored audit event %d: %v", index+1, err)
+		}
+		var eventFields struct {
+			Action   string `json:"action"`
+			Reason   string `json:"reason"`
+			Producer struct {
+				Component string `json:"component"`
+			} `json:"producer"`
+		}
+		if err := json.Unmarshal(record.Event, &eventFields); err != nil {
+			t.Fatalf("decode stored audit event fields %d: %v", index+1, err)
+		}
+		want := events[index]
+		if eventFields.Action != want.Action || eventFields.Reason != want.Reason || eventFields.Producer.Component != want.Producer.Component {
+			t.Fatalf("stored audit event %d action/reason/component=%q/%q/%q, want %q/%q/%q",
+				index+1, eventFields.Action, eventFields.Reason, eventFields.Producer.Component,
+				want.Action, want.Reason, want.Producer.Component)
+		}
+		storedEvents[index] = append(json.RawMessage(nil), record.Event...)
+	}
+	verification, err := auditlog.VerifyDirectory(directory)
+	if err != nil {
+		t.Fatalf("VerifyDirectory() error = %v", err)
+	}
+	if verification.Records != 3 || verification.FirstSeq != 1 || verification.LastSeq != 3 {
+		t.Fatalf("verified chain summary=%+v, want records=3 first=1 last=3", verification)
+	}
+
+	auditService, err := auditapp.NewService(auditapp.ServiceConfig{
+		ClusterID: "contract-cluster", NodeID: 1, ReleaseVersion: "1.0.0", DenialEventsPerSecond: 20,
+	}, publisher, contractClock{now: occurredAt}, contractMetrics{})
+	if err != nil {
+		t.Fatalf("NewService() error = %v", err)
+	}
+	queryService, err := auditapp.NewQueryService(publisher)
+	if err != nil {
+		t.Fatalf("NewQueryService() error = %v", err)
+	}
+	const auditSecret = "known-audit-unknown-values-secret"
+	router := newContractManagementRouter(
+		audithttp.ServerConfig{
+			ClusterID: "contract-cluster",
+			APIKeys: []audithttp.APIKeyCredential{
+				{ID: "audit-reader", Key: auditSecret, Roles: []audithttp.Role{audithttp.RoleSecurityAdmin}},
+			},
+		},
+		contractMembershipService{}, contractDrainService{}, contractRebalanceService{},
+		contractBackupProvider{}, auditService, queryService,
+	)
+
+	queryRequest := httptest.NewRequest(http.MethodGet, "/api/v1/nodes/1/audit/events?limit=10", nil)
+	queryRequest.Header.Set("X-API-Key", auditSecret)
+	queryResponse := httptest.NewRecorder()
+	router.ServeHTTP(queryResponse, queryRequest)
+	if queryResponse.Code != http.StatusOK {
+		t.Fatalf("audit query status=%d body=%q, want %d", queryResponse.Code, queryResponse.Body.String(), http.StatusOK)
+	}
+	var queryResult struct {
+		Data []struct {
+			Seq      uint64          `json:"seq"`
+			PrevHash string          `json:"prevHash"`
+			Hash     string          `json:"hash"`
+			Event    json.RawMessage `json:"event"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(queryResponse.Body.Bytes(), &queryResult); err != nil {
+		t.Fatalf("decode audit query response: %v", err)
+	}
+	if len(queryResult.Data) != 3 {
+		t.Fatalf("audit query records=%d, want 3", len(queryResult.Data))
+	}
+	for index, record := range queryResult.Data {
+		storedIndex := len(storedEvents) - 1 - index
+		if record.Seq != uint64(len(storedEvents)-index) || !bytes.Equal(record.Event, storedEvents[storedIndex]) {
+			t.Fatalf("audit query record %d seq=%d event=%s, want seq=%d exact stored event %s",
+				index, record.Seq, record.Event, len(storedEvents)-index, storedEvents[storedIndex])
+		}
+	}
+
+	rolloutRequest := httptest.NewRequest(
+		http.MethodGet,
+		"/api/v1/nodes/1/audit/events?action=rollout.pod.delete_approved",
+		nil,
+	)
+	rolloutRequest.Header.Set("X-API-Key", auditSecret)
+	rolloutResponse := httptest.NewRecorder()
+	router.ServeHTTP(rolloutResponse, rolloutRequest)
+	if rolloutResponse.Code != http.StatusOK {
+		t.Fatalf("rollout audit query status=%d body=%q, want %d", rolloutResponse.Code, rolloutResponse.Body.String(), http.StatusOK)
+	}
+	var rolloutResult struct {
+		Data []struct {
+			Event json.RawMessage `json:"event"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(rolloutResponse.Body.Bytes(), &rolloutResult); err != nil {
+		t.Fatalf("decode rollout audit query response: %v", err)
+	}
+	if len(rolloutResult.Data) != 1 {
+		t.Fatalf("rollout audit query records=%d, want 1", len(rolloutResult.Data))
+	}
+	var rolloutEvent struct {
+		Reason   string `json:"reason"`
+		Producer struct {
+			Component string `json:"component"`
+		} `json:"producer"`
+	}
+	if err := json.Unmarshal(rolloutResult.Data[0].Event, &rolloutEvent); err != nil {
+		t.Fatalf("decode rollout audit event: %v", err)
+	}
+	if rolloutEvent.Reason != "unknown_barrier_state" || rolloutEvent.Producer.Component != "ROLLOUT_CONTROLLER" {
+		t.Fatalf("rollout audit event reason/component=%q/%q, want %q/%q",
+			rolloutEvent.Reason, rolloutEvent.Producer.Component, "unknown_barrier_state", "ROLLOUT_CONTROLLER")
+	}
+
+	futureRequest := httptest.NewRequest(
+		http.MethodGet,
+		"/api/v1/nodes/1/audit/events?action=future.feature.activate_v2",
+		nil,
+	)
+	futureRequest.Header.Set("X-API-Key", auditSecret)
+	futureResponse := httptest.NewRecorder()
+	router.ServeHTTP(futureResponse, futureRequest)
+	if futureResponse.Code != http.StatusOK {
+		t.Fatalf("future audit query status=%d body=%q, want %d", futureResponse.Code, futureResponse.Body.String(), http.StatusOK)
+	}
+	var futureResult struct {
+		Data []struct {
+			Event json.RawMessage `json:"event"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(futureResponse.Body.Bytes(), &futureResult); err != nil {
+		t.Fatalf("decode future audit query response: %v", err)
+	}
+	if len(futureResult.Data) != 1 {
+		t.Fatalf("future audit query records=%d, want 1", len(futureResult.Data))
+	}
+	var futureEvent struct {
+		Reason string `json:"reason"`
+	}
+	if err := json.Unmarshal(futureResult.Data[0].Event, &futureEvent); err != nil {
+		t.Fatalf("decode future audit event: %v", err)
+	}
+	if futureEvent.Reason != "future_reason_code" {
+		t.Fatalf("future audit event reason=%q, want %q", futureEvent.Reason, "future_reason_code")
+	}
+
+	verification, err = auditlog.VerifyDirectory(directory)
+	if err != nil {
+		t.Fatalf("VerifyDirectory() after query error = %v", err)
+	}
+	if verification.Records != 3 {
+		t.Fatalf("query changed stored audit chain: records=%d, want 3", verification.Records)
+	}
+}
+
 // Traceability: SEC-11/NFR-17; docs/specs/tenancy-and-security.md §8.
 func TestDataPlaneDenialEventsMatchSchema(t *testing.T) {
 	schema := compileAuditEventSchema(t)

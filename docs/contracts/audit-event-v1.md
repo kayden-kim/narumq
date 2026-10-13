@@ -120,5 +120,5 @@ Process 재시작 시 active 파일의 끝이 줄바꿈으로 끝나지 않으�
 
 - 보존 기간 값과 SIEM 접근 권한은 외부 보안 운영 책임이며 값은 미정이다.
 - Rollout controller producer는 이 Broker producer 범위에 포함하지 않는다.
-- SIEM consumer의 unknown action/reason 검증은 별도 범위다.
+- 외부 SIEM consumer가 unknown `action`·`reason`을 저장·표시하는 동작은 이 계약 시험 범위에 포함하지 않는다.
 
