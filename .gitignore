@@ -82,3 +82,9 @@ node_modules/
 **/*.tfstate.*
 **/*.tfvars
 !**/*.tfvars.example
+
+### Secrets & Temporary Material
+.tmp-eks/
+**/*secret.yaml
+!**/*secret.yaml.example
+!**/*secret.template.yaml

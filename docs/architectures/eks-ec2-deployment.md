@@ -6,13 +6,13 @@
 | --- | --- |
 | 관점 상태 | Target |
 | 문서 상태 | Draft |
-| 구현 증거 | 없음 |
+| 구현 증거 | `deploy/kubernetes/eks-ec2-ha/`가 `narumq-eks`에서 초기 3-node cluster를 시작했다. 세 Pod가 서로 다른 AZ에서 Ready다. |
 | 범위 | `EKS_EC2_HA` logical-to-physical deployment mapping |
 | 관련 요구사항 | [PRD](../requirements/PRD.md) DEP-01~DEP-23, CLU-01~CLU-14 |
 | 관련 스펙 | [Drain과 rolling update](../specs/drain-and-rolling-update.md), [Cluster session과 durable delivery](../specs/cluster-session-and-delivery.md), [Performance와 verification](../specs/performance-and-verification.md) |
 | 관련 결정 | [ADR-0006](../decisions/ADR-0006-external-rollout-controller.md), [ADR-0007](../decisions/ADR-0007-aws-production-deployment-platform.md). 모두 Accepted |
 | 관련 해설 | [EKS 고가용성과 장애 도메인](../explainers/eks-ha-failure-domains.md), [AWS NLB와 MQTT 연결 lifecycle](../explainers/aws-nlb-mqtt-connection-lifecycle.md) |
-| 최종 확인일 | 2026-10-12 |
+| 최종 확인일 | 2026-10-13 |
 
 ## Production qualification profile selected
 
@@ -23,13 +23,13 @@
 | EKS | Kubernetes 1.37 | EKS platform version과 시험 증거 |
 | Worker와 AMI | `m7g.large` 3대, AZ마다 1대; 인스턴스당 2 vCPU·8 GiB; EKS-optimized Amazon Linux 2023 ARM64 | Region별 AMI ID와 node group 설정 |
 | Broker storage | broker별 20 GiB `gp3`, 기본 3,000 IOPS·125 MiB/s | 암호화·snapshot 정책과 production I/O 적합성 |
-| NLB | `IP` target, TCP listener; broker에서 TLS 종료 | AWS Load Balancer Controller 버전, health check, deregistration, idle timeout |
+| NLB | 내부 `IP` target, TCP 1883; Management 8080은 내부 ClusterIP Service | Broker TLS endpoint, health check, deregistration, idle timeout |
 | Broker resources | Pod마다 requests=limits `1 CPU`·`4 GiB` | 측정한 production workload의 N-1 capacity |
 | Comparator | EMQX Enterprise 6.3.1, ARM64 | 측정 workload를 허용하는 license; [PRD §18 질문 15](../requirements/PRD.md#18-미결정-사항) 참고 |
 
 `IP` target은 Amazon VPC CNI를 사용한다. AWS Load Balancer Controller는 2.7.2 이상으로 하고 실제 버전과 image digest를 run artifact에 고정한다. NaruMQ와 EMQX에는 같은 node와 broker resource limit을 적용한다.
 
-Production broker image의 build·publish 경로는 아직 정해지지 않았다. `tests/` 아래의 benchmark·compatibility·chaos Dockerfile은 production image 공급 경로를 정의하지 않는다. 생산 profile에는 선택한 architecture의 broker image를 registry에 게시하고 immutable digest로 고정해야 한다.
+ARM64 broker image는 `809446814769.dkr.ecr.ap-northeast-2.amazonaws.com/narumq@sha256:7515ab8864da8a7f93d5ebc14b95a9f574b7c8b17ebbdc991032fc918716ce26`으로 고정한다. Peer TLS 인증서와 관리·MQTT 인증 정보는 Git에 넣지 않고 EKS Secret `narumq-cluster-secrets`에 저장한다. 이 image와 initial cluster bootstrap은 production workload, TLS client endpoint, 장애 주입 또는 안전한 rolling rollout을 증명하지 않는다.
 
 
 ## Physical deployment view
@@ -78,7 +78,7 @@ flowchart TB
     MA -.->|"drain·health"| PC
 ```
 
-Management API ingress 위치와 Rollout controller의 availability topology는 아직 확정하지 않았다. Diagram의 `MA`는 논리 경계이며 별도 service 배포를 확정하지 않는다.
+Management API는 내부 `narumq-management` ClusterIP Service의 8080/TCP로 접근한다. MQTT NLB도 `internal`이며 현재 1883/TCP만 노출한다. Dedicated rollout controller는 아직 배포하지 않았다. Diagram의 rollout 경로는 target design이며 live cluster에서 drain gate 시험을 거치지 않았다.
 
 ## Logical-to-physical mapping
 
