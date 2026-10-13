@@ -97,6 +97,8 @@ type clusterMembershipProcessFixture struct {
 	peerAddresses           []string
 	managementAddresses     []string
 	mqttAddresses           []string
+	webSocketAddresses      []string
+	webSocketConfigured     bool
 	tokenPath               string
 	readOnlyAPIKeyPath      string
 	securityPath            string
@@ -133,13 +135,13 @@ func newClusterMembershipProcessFixtureWithLifetime(t *testing.T, nodeCount int,
 	}
 	clusterMembershipProcessWriteFile(t, caPath, ca.pem, 0o600)
 
-	addresses := clusterMembershipProcessAddresses(t, 3*nodeCount)
+	addresses := clusterMembershipProcessAddresses(t, 4*nodeCount)
 	t.Cleanup(harness.cleanup)
 
 	peerAddresses := addresses[0:nodeCount]
 	managementAddresses := addresses[nodeCount : 2*nodeCount]
 	mqttAddresses := addresses[2*nodeCount : 3*nodeCount]
-
+	webSocketAddresses := addresses[3*nodeCount : 4*nodeCount]
 	tokenPath := filepath.Join(tempDir, "cluster-admin.token")
 	clusterMembershipProcessWriteFile(t, tokenPath, []byte(clusterMembershipProcessAdmin+"\n"), 0o600)
 	readOnlyAPIKeyPath := filepath.Join(tempDir, "cluster-readonly-api-key")
@@ -720,6 +722,7 @@ func newClusterMembershipProcessFixtureWithLifetime(t *testing.T, nodeCount int,
 		peerAddresses:       peerAddresses,
 		managementAddresses: managementAddresses,
 		mqttAddresses:       mqttAddresses,
+		webSocketAddresses:  webSocketAddresses,
 		tokenPath:           tokenPath,
 		readOnlyAPIKeyPath:  readOnlyAPIKeyPath,
 		securityPath:        securityPath,
@@ -918,6 +921,11 @@ func (f *clusterMembershipProcessFixture) bootstrapConfig(memberID uint64) strin
 		Management: f.managementConfig(index, memberID),
 		MQTT:       clusterMembershipProcessMQTT{TCPListenAddress: f.mqttAddresses[index], SecurityConfigFile: f.securityPath},
 	}
+	if f.webSocketConfigured {
+		config.MQTT.WebSocket = &clusterMembershipProcessMQTTWebSocket{
+			ListenAddress: f.webSocketAddresses[index],
+		}
+	}
 	if !f.omitPublishBackpressure {
 		config.PublishBackpressure = &clusterMembershipProcessPublishBackpressure{MinFreeBytes: 16 << 20, MaxCommitLagMillis: 1000}
 	}
@@ -948,6 +956,11 @@ func (f *clusterMembershipProcessFixture) joinerConfig(memberID uint64, seedIDs 
 		},
 		Management: f.managementConfig(index, memberID),
 		MQTT:       clusterMembershipProcessMQTT{TCPListenAddress: f.mqttAddresses[index], SecurityConfigFile: f.securityPath},
+	}
+	if f.webSocketConfigured {
+		config.MQTT.WebSocket = &clusterMembershipProcessMQTTWebSocket{
+			ListenAddress: f.webSocketAddresses[index],
+		}
 	}
 	if !f.omitPublishBackpressure {
 		config.PublishBackpressure = &clusterMembershipProcessPublishBackpressure{MinFreeBytes: 16 << 20, MaxCommitLagMillis: 1000}
@@ -1715,10 +1728,16 @@ type clusterMembershipProcessOIDCIdentity struct {
 }
 
 type clusterMembershipProcessMQTT struct {
-	TCPListenAddress   string                           `json:"tcpListenAddress"`
-	TLSListenAddress   string                           `json:"tlsListenAddress"`
-	SecurityConfigFile string                           `json:"securityConfigFile"`
-	TLS                *clusterMembershipProcessMQTTTLS `json:"tls,omitempty"`
+	TCPListenAddress   string                                 `json:"tcpListenAddress"`
+	TLSListenAddress   string                                 `json:"tlsListenAddress"`
+	SecurityConfigFile string                                 `json:"securityConfigFile"`
+	TLS                *clusterMembershipProcessMQTTTLS       `json:"tls,omitempty"`
+	WebSocket          *clusterMembershipProcessMQTTWebSocket `json:"webSocket,omitempty"`
+}
+
+type clusterMembershipProcessMQTTWebSocket struct {
+	ListenAddress    string `json:"listenAddress"`
+	TLSListenAddress string `json:"tlsListenAddress"`
 }
 
 type clusterMembershipProcessMQTTTLS struct {

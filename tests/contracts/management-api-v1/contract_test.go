@@ -639,6 +639,13 @@ func (contractNodeConfigurationUseCase) GetNodeConfiguration(context.Context) (p
 		},
 		MQTT: ports.MQTTListenerConfigurationDTO{
 			TCPListenAddress: "", TLSListenAddress: "", SecurityConfigConfigured: false,
+			TLS: &ports.MQTTTLSConfigurationDTO{
+				ClientAuth: "none", MinVersion: "1.2", CertificateConfigured: true, PrivateKeyConfigured: true,
+			},
+			WebSocket: &ports.MQTTWebSocketConfigurationDTO{
+				ListenAddress: "127.0.0.1:1884", TLSListenAddress: "127.0.0.1:8884",
+				MaxConnections: 10, ConnectionRate: 20, TLSMaxConnections: 30, TLSConnectionRate: 40,
+			},
 		},
 		Replication: ports.ReplicationConfigurationDTO{Factor: 1, WriteQuorum: 1},
 		PublishBackpressure: ports.PublishBackpressureConfigurationDTO{
@@ -966,7 +973,7 @@ func TestAuditQueryHandlerResponsesMatchOpenAPI(t *testing.T) {
 	validateResponse(t, invalidInput, invalidOptions, invalidResponse)
 }
 
-// Traceability: CFG-SCN-31; docs/specs/configuration-and-runtime-options.md §10.
+// Traceability: CFG-SCN-31, CFG-SCN-46, PRD MQTT-10; docs/specs/configuration-and-runtime-options.md §6, §10; docs/contracts/management-api-v1.md §1.
 func TestNodeConfigurationHandlerResponseMatchesOpenAPI(t *testing.T) {
 	_, router := loadManagementContract(t)
 	handler := clusterManagementContractHandlerWithConfig(managementhttp.ServerConfig{

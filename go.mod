@@ -3,6 +3,7 @@ module narumq
 go 1.26.5
 
 require (
+	github.com/coder/websocket v1.8.15
 	github.com/getkin/kin-openapi v0.149.0
 	github.com/lestrrat-go/jwx/v3 v3.3.0
 	github.com/santhosh-tekuri/jsonschema/v6 v6.0.3

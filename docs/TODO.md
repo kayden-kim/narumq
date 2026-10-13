@@ -20,7 +20,7 @@ PRD는 `Draft` 상태이므로 이 목록은 요구사항을 구현 기준으로
 | --- | --- | --- |
 | **K8s(`EKS_EC2_HA`)·AWS 인프라 테스트 필요 (보류·미검증)** | • Linux/EBS 전원·volume 손실 수용 (`CLU-14`, §1.1)<br>• Linux/EBS에서 RPO/RTO 복구 검증 (`SPEC-TBD-09`, §1.1)<br>• K8s External rollout controller (`DEP-11·DEP-18`, §1.2)<br>• K8s 종료 연동과 `EKS_EC2_HA` 배포 산출물 (`DEP-13~23`, §1.4)<br>• Rollout controller 감사 이벤트 producer (`SEC-11`, §1.7)<br>• TEST-10 merge 차단 최종 gate (10 deferred K8s/EKS DEP P0 exceptions, §1.9) | 각 항목에 적힌 로컬 증거는 K8s·클라우드 인프라 수용 시험을 대체하지 않는다. 특히 §1.2 rollout controller와 §1.4 EKS 배포 산출물은 아직 구현·검증 증거가 없다. TEST-10의 CI failure 및 merge rejection probes는 확인했으며, 남은 조건은 deferred K8s/EKS DEP P0 exceptions 해결이다. |
 | **운영 환경·출시 부하 검증 필요 (미검증)** | • 운영 Dashboard (`UI-01~05·UI-10`, §1.8)<br>• BP-07 rolling drain 비교 (`PERF-07`, §1.2)<br>• 최대 traffic 연속 100회 rolling (`DEP-01~12`, §1.2)<br>• Production benchmark profile (`PERF-01·05~07·10~12·NFR-06`, §1.9)<br>• 운영 경계 독립 침투 시험 (`NFR-19`, §1.7)<br>• MQTT-13 90일 운영 전환 감시 (`MQTT-13`, §1.6)<br>• TEN-09 production workload·절대 SLO (`§1.9`) | 해당 항목은 로컬 프로세스/Docker smoke 시험을 통과했지만 실제 운영 환경 또는 대상 인프라에서의 검증이 남아 있다. |
-| **K8s 인프라 불필요 — 선행 정책·계약 결정** | • WebSocket/WSS 필요성 (`MQTT-10`, §1.6)<br>• 보존 기간·SIEM 접근 권한 (`SEC-11·NFR-17`, §1.7)<br>• Threat model 승인·위험 처분 (`NFR-19`, §1.7)<br>• P1 관리 화면·API 계약·tenant 위임 권한 (`UI-06~09·API-07·TEN-10`, §1.8)<br>• Production workload 수치·성능 합격선 (`SPEC-TBD-08`, §1.9) | 정책·계약 결정 후 해당 입력 기준에 따라 로컬·통합 시험 또는 운영 인프라 시험을 진행한다. |
+| **K8s 인프라 불필요 — 선행 정책·계약 결정** | • 보존 기간·SIEM 접근 권한 (`SEC-11·NFR-17`, §1.7)<br>• Threat model 승인·위험 처분 (`NFR-19`, §1.7)<br>• P1 관리 화면·API 계약·tenant 위임 권한 (`UI-06~09·API-07·TEN-10`, §1.8)<br>• Production workload 수치·성능 합격선 (`SPEC-TBD-08`, §1.9) | 정책·계약 결정 후 해당 입력 기준에 따라 로컬·통합 시험 또는 운영 인프라 검증을 진행한다. |
 | **K8s 인프라 불필요 — 로컬·CI·외부 의존성 검증** | • 게시 release별 N-1↔N 호환성 (`CLU-11·NFR-15`, §1.2)<br>• 지원 SDK Server redirect·Will 호환성 (`CLIENT-01~09`, §1.2) | 로컬 프로세스·Docker 호환성 suite, GitHub 원격 CI 설정, 공식 SDK 패치 릴리스 또는 client 인벤토리 조사로 검증한다. |
 
 ### 1.1 Production storage와 disaster recovery
@@ -71,7 +71,7 @@ PRD는 `Draft` 상태이므로 이 목록은 요구사항을 구현 기준으로
 ### 1.6 MQTT protocol과 client 호환성
 
 - [ ] **미검증 · [비인프라 — 운영 전환 조사·감시]** — MQTT 3.1.0 production 전환(MQTT-13): [PRD §9.1](requirements/PRD.md#91-mqtt-프로토콜)의 90일 이상 client 사용량 조사, 오래된 firmware·외부 장비 소유자 확인, 3.1.1 이상 전환 또는 별도 gateway 격리와 canary 거절 Metric 감시를 완료한다. 브로커의 wire-level 거절 구현·로컬 시험은 완료된 범위이며 이 항목은 운영 전환 gate다.
-- [ ] **결정 필요 · [비인프라 — 선행 제품 결정 후 로컬 검증]** — WebSocket/WSS 필요성(MQTT-10): [PRD §18 질문 6](requirements/PRD.md#18-미결정-사항)에서 사용 현황을 확인한다. 사용 필요가 승인되면 WebSocket/WSS listener와 TCP와 같은 MQTT packet·session 동작을 구현·검증한다. 필요가 확인되지 않으면 PRD의 P1 범위를 갱신하기 전까지 구현하지 않는다.
+- [x] **완료** — WebSocket/WSS listener(MQTT-10): [ADR-0057](decisions/ADR-0057-mqtt-websocket-listener.md), [MQTT spec §8.3](specs/mqtt-protocol-and-session.md#83-websocketwss-수용-매핑), [Configuration spec §6](specs/configuration-and-runtime-options.md#6-수용-시험)에 구현과 수용 검증을 기록했다.
 
 ### 1.7 Tenant·security와 감사
 

@@ -304,7 +304,7 @@ func runClusterMode(ctx context.Context, config clusterConfigFile, logger *slog.
 		return err
 	}
 	runtime.securityBundle = securityBundle
-	mqttListeners, err := clusterMQTTListeners(config, metricsRegistry)
+	mqttListeners, err := clusterMQTTListeners(config, metricsRegistry, logger)
 	if err != nil {
 		return err
 	}
@@ -3502,39 +3502,57 @@ func isUnconfiguredRemotePeer(status raftadapter.StatusDTO, localID uint64, peer
 		!containsNodeID(status.LearnerIDs, uint64(peerID))
 }
 
-func clusterMQTTListeners(config clusterConfigFile, recorder portsmetrics.ListenerAdmissionRecorder) ([]net.Listener, error) {
+func clusterMQTTListeners(config clusterConfigFile, recorder portsmetrics.ListenerAdmissionRecorder, logger *slog.Logger) ([]net.Listener, error) {
+	var tlsConfig *tls.Config
+	if config.MQTT.tlsListenerConfigured() {
+		if config.MQTT.TLS == nil {
+			return nil, errors.New("cluster MQTT TLS listener requires mqtt.tls")
+		}
+		var err error
+		tlsConfig, err = tlsadapter.BuildTLSConfig(tlsadapter.Config{
+			CertFile: config.MQTT.TLS.CertFile, KeyFile: config.MQTT.TLS.KeyFile,
+			CAFile: config.MQTT.TLS.CAFile, ClientAuth: tlsadapter.ClientAuthMode(config.MQTT.TLS.ClientAuth),
+			MinVersion: config.MQTT.TLS.MinVersion,
+		})
+		if err != nil {
+			return nil, fmt.Errorf("configure cluster MQTT TLS: %w", err)
+		}
+	}
+
 	var listeners []net.Listener
+	closeOpened := func() {
+		for _, listener := range listeners {
+			_ = listener.Close()
+		}
+	}
 	if config.MQTT.TCPListenAddress != "" {
-		listener, err := openMQTTListener(config.MQTT.TCPListenAddress, nil, config.MQTT.TCPMaxConnections, config.MQTT.TCPConnectionRate, recorder)
+		listener, err := openMQTTListener(portsmetrics.TransportTCP, config.MQTT.TCPListenAddress, nil, config.MQTT.TCPMaxConnections, config.MQTT.TCPConnectionRate, recorder)
 		if err != nil {
 			return nil, fmt.Errorf("listen for cluster MQTT TCP on %q: %w", config.MQTT.TCPListenAddress, err)
 		}
 		listeners = append(listeners, listener)
 	}
 	if config.MQTT.TLSListenAddress != "" {
-		if config.MQTT.TLS == nil {
-			for _, listener := range listeners {
-				_ = listener.Close()
-			}
-			return nil, errors.New("cluster MQTT TLS listener requires mqtt.tls")
-		}
-		tlsConfig, err := tlsadapter.BuildTLSConfig(tlsadapter.Config{
-			CertFile: config.MQTT.TLS.CertFile, KeyFile: config.MQTT.TLS.KeyFile,
-			CAFile: config.MQTT.TLS.CAFile, ClientAuth: tlsadapter.ClientAuthMode(config.MQTT.TLS.ClientAuth),
-			MinVersion: config.MQTT.TLS.MinVersion,
-		})
+		listener, err := openMQTTListener(portsmetrics.TransportTLS, config.MQTT.TLSListenAddress, tlsConfig, config.MQTT.TLSMaxConnections, config.MQTT.TLSConnectionRate, recorder)
 		if err != nil {
-			for _, listener := range listeners {
-				_ = listener.Close()
-			}
-			return nil, fmt.Errorf("configure cluster MQTT TLS: %w", err)
-		}
-		listener, err := openMQTTListener(config.MQTT.TLSListenAddress, tlsConfig, config.MQTT.TLSMaxConnections, config.MQTT.TLSConnectionRate, recorder)
-		if err != nil {
-			for _, opened := range listeners {
-				_ = opened.Close()
-			}
+			closeOpened()
 			return nil, fmt.Errorf("listen for cluster MQTT TLS on %q: %w", config.MQTT.TLSListenAddress, err)
+		}
+		listeners = append(listeners, listener)
+	}
+	if webSocket := config.MQTT.WebSocket; webSocket != nil && webSocket.ListenAddress != "" {
+		listener, err := openWebSocketListener(webSocket.ListenAddress, nil, webSocket.MaxConnections, webSocket.ConnectionRate, recorder, logger)
+		if err != nil {
+			closeOpened()
+			return nil, fmt.Errorf("listen for cluster MQTT WebSocket on %q: %w", webSocket.ListenAddress, err)
+		}
+		listeners = append(listeners, listener)
+	}
+	if webSocket := config.MQTT.WebSocket; webSocket != nil && webSocket.TLSListenAddress != "" {
+		listener, err := openWebSocketListener(webSocket.TLSListenAddress, tlsConfig, webSocket.TLSMaxConnections, webSocket.TLSConnectionRate, recorder, logger)
+		if err != nil {
+			closeOpened()
+			return nil, fmt.Errorf("listen for cluster MQTT WSS on %q: %w", webSocket.TLSListenAddress, err)
 		}
 		listeners = append(listeners, listener)
 	}
@@ -3546,7 +3564,7 @@ func clusterMQTTSecurity(config clusterConfigFile) (*SecurityBundle, authenticat
 	if err != nil {
 		return nil, nil, nil, "", fmt.Errorf("load cluster MQTT security config: %w", err)
 	}
-	if config.MQTT.TLSListenAddress != "" && config.MQTT.TLS != nil {
+	if config.MQTT.tlsListenerConfigured() && config.MQTT.TLS != nil {
 		if err := validateTLSAuthenticationBindings(
 			"mqtt.tls.clientAuth",
 			tlsadapter.ClientAuthMode(config.MQTT.TLS.ClientAuth),

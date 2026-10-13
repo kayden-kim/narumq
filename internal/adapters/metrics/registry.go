@@ -51,7 +51,7 @@ var auditOutcomes = [...]string{
 	ports.AuditOutcomeDataPlaneDropped,
 }
 
-var listenerAdmissionTransports = [...]string{ports.TransportTCP, ports.TransportTLS}
+var listenerAdmissionTransports = [...]string{ports.TransportTCP, ports.TransportTLS, ports.TransportWS, ports.TransportWSS}
 var listenerAdmissionReasons = [...]string{ports.ListenerAdmissionReasonMaxConnections, ports.ListenerAdmissionReasonConnectionRate}
 var connectRejectedProtocols = [...]string{ports.ProtocolMQTT311, ports.ProtocolMQTT50}
 var connectRejectReasons = [...]string{

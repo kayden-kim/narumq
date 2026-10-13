@@ -333,12 +333,12 @@ func TestParseClusterConfigMQTTTLS(t *testing.T) {
 		{
 			name: "TLS object without listener",
 			edit: func(mqtt *clusterMQTT) { mqtt.TLSListenAddress = "" },
-			want: "mqtt tls requires tlsListenAddress",
+			want: "mqtt tls requires tlsListenAddress or webSocket.tlsListenAddress",
 		},
 		{
 			name: "listener without TLS object",
 			edit: func(mqtt *clusterMQTT) { mqtt.TLS = nil },
-			want: "mqtt tls is required when tlsListenAddress is set",
+			want: "mqtt tls is required when tlsListenAddress or webSocket.tlsListenAddress is set",
 		},
 		{
 			name: "missing certificate and key",
@@ -391,6 +391,138 @@ func TestParseClusterConfigMQTTTLS(t *testing.T) {
 		_, err := parseClusterConfig(strings.NewReader(wrongTLSObjectType))
 		return err
 	}(), "invalid JSON field type")
+}
+
+// Traceability: PRD MQTT-10; docs/contracts/process-configuration-v1.md §1; docs/specs/configuration-and-runtime-options.md §6.
+func TestParseClusterConfigWebSocket(t *testing.T) {
+	parse := func(config clusterConfigFile) (clusterConfigFile, error) {
+		return parseClusterConfig(strings.NewReader(string(mustMarshalClusterConfig(t, config))))
+	}
+	validBase := validBootstrapClusterConfig()
+
+	t.Run("absent object remains valid", func(t *testing.T) {
+		parsed, err := parse(validBase)
+		if err != nil || parsed.MQTT.WebSocket != nil {
+			t.Fatalf("parse config without mqtt.webSocket = (%+v, %v), want nil WebSocket", parsed.MQTT.WebSocket, err)
+		}
+	})
+	t.Run("optional limits default to zero", func(t *testing.T) {
+		data := strings.Replace(string(mustMarshalClusterConfig(t, validBase)),
+			`"mqtt":{`, `"mqtt":{"webSocket":{"listenAddress":"","tlsListenAddress":""},`, 1)
+		parsed, err := parseClusterConfig(strings.NewReader(data))
+		if err != nil {
+			t.Fatalf("parse mqtt.webSocket without optional limits: %v", err)
+		}
+		if got := parsed.MQTT.WebSocket; got == nil || got.MaxConnections != 0 || got.ConnectionRate != 0 || got.TLSMaxConnections != 0 || got.TLSConnectionRate != 0 {
+			t.Fatalf("optional WebSocket limits = %+v, want zero defaults", got)
+		}
+	})
+	for _, test := range []struct {
+		name string
+		ws   clusterMQTTWebSocket
+		tls  bool
+	}{
+		{name: "empty listeners", ws: clusterMQTTWebSocket{}},
+		{name: "plain WS", ws: clusterMQTTWebSocket{ListenAddress: "0.0.0.0:1884", MaxConnections: 1, ConnectionRate: 2}},
+		{name: "WS admission limit upper boundary", ws: clusterMQTTWebSocket{ListenAddress: "localhost:1884", MaxConnections: 1_000_000}},
+		{name: "WSS", ws: clusterMQTTWebSocket{TLSListenAddress: "mqtt.example:8884", TLSMaxConnections: 3, TLSConnectionRate: 4}, tls: true},
+		{name: "both listeners at admission limit upper boundary", ws: clusterMQTTWebSocket{
+			ListenAddress: "[::]:1884", TLSListenAddress: "[::]:8884",
+			MaxConnections: 1_000_000, ConnectionRate: 1_000_000,
+			TLSMaxConnections: 1_000_000, TLSConnectionRate: 1_000_000,
+		}, tls: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			config := validBase
+			config.MQTT.WebSocket = &test.ws
+			config.MQTT.TLSListenAddress = ""
+			if test.tls {
+				config.MQTT.TLS = &clusterMQTTTLS{CertFile: "certs/mqtt.crt", KeyFile: "certs/mqtt.key", ClientAuth: "none", MinVersion: "1.2"}
+			} else {
+				config.MQTT.TLSListenAddress = ""
+				config.MQTT.TLS = nil
+			}
+			parsed, err := parse(config)
+			if err != nil {
+				t.Fatalf("parse valid mqtt.webSocket: %v", err)
+			}
+			if parsed.MQTT.WebSocket == nil || *parsed.MQTT.WebSocket != test.ws {
+				t.Fatalf("parsed mqtt.webSocket = %+v, want %+v", parsed.MQTT.WebSocket, test.ws)
+			}
+		})
+	}
+
+	t.Run("required keys", func(t *testing.T) {
+		baseJSON := string(mustMarshalClusterConfig(t, validBase))
+		for _, field := range []string{"listenAddress", "tlsListenAddress"} {
+			t.Run(field, func(t *testing.T) {
+				raw := `{"listenAddress":"","tlsListenAddress":""}`
+				if field == "listenAddress" {
+					raw = `{"tlsListenAddress":""}`
+				} else {
+					raw = `{"listenAddress":""}`
+				}
+				mutated := strings.Replace(baseJSON, `"mqtt":{`, `"mqtt":{"webSocket":`+raw+`,`, 1)
+				ccfWantError(t, func() error {
+					_, err := parseClusterConfig(strings.NewReader(mutated))
+					return err
+				}(), `missing required field "`+field+`"`)
+			})
+		}
+	})
+	for _, test := range []struct {
+		name, raw, want string
+	}{
+		{name: "object wrong type", raw: `[]`, want: "invalid JSON field type"},
+		{name: "address wrong type", raw: `{"listenAddress":4,"tlsListenAddress":""}`, want: "cluster config has invalid JSON or field types"},
+		{name: "limit wrong type", raw: `{"listenAddress":"","tlsListenAddress":"","maxConnections":"1"}`, want: "cluster config has invalid JSON or field types"},
+		{name: "unknown field", raw: `{"listenAddress":"","tlsListenAddress":"","unexpected":true}`, want: "cluster config has invalid JSON or field types"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			data := strings.Replace(string(mustMarshalClusterConfig(t, validBase)), `"mqtt":{`, `"mqtt":{"webSocket":`+test.raw+`,`, 1)
+			ccfWantError(t, func() error {
+				_, err := parseClusterConfig(strings.NewReader(data))
+				return err
+			}(), test.want)
+		})
+	}
+
+	for _, test := range []struct {
+		name string
+		ws   clusterMQTTWebSocket
+		tls  *clusterMQTTTLS
+		want string
+	}{
+		{name: "malformed plain address", ws: clusterMQTTWebSocket{ListenAddress: "localhost"}, want: "mqtt webSocket listener addresses must be empty or valid host:port values"},
+		{name: "malformed secure address", ws: clusterMQTTWebSocket{TLSListenAddress: "localhost"}, tls: &clusterMQTTTLS{CertFile: "cert", KeyFile: "key", ClientAuth: "none", MinVersion: "1.2"}, want: "mqtt webSocket listener addresses must be empty or valid host:port values"},
+		{name: "negative plain max", ws: clusterMQTTWebSocket{ListenAddress: "localhost:1884", MaxConnections: -1}, want: "mqtt webSocket connection limits must be between 0 and 1000000"},
+		{name: "plain max too large", ws: clusterMQTTWebSocket{ListenAddress: "localhost:1884", MaxConnections: 1_000_001}, want: "mqtt webSocket connection limits must be between 0 and 1000000"},
+		{name: "secure rate too large", ws: clusterMQTTWebSocket{TLSListenAddress: "localhost:8884", TLSConnectionRate: 1_000_001}, tls: &clusterMQTTTLS{CertFile: "cert", KeyFile: "key", ClientAuth: "none", MinVersion: "1.2"}, want: "mqtt webSocket connection limits must be between 0 and 1000000"},
+		{name: "plain limit requires address", ws: clusterMQTTWebSocket{MaxConnections: 1}, want: "mqtt webSocket connection limits require listenAddress"},
+		{name: "plain rate requires address", ws: clusterMQTTWebSocket{ConnectionRate: 1}, want: "mqtt webSocket connection limits require listenAddress"},
+		{name: "secure limit requires address", ws: clusterMQTTWebSocket{TLSMaxConnections: 1}, want: "mqtt webSocket tls connection limits require tlsListenAddress"},
+		{name: "secure rate requires address", ws: clusterMQTTWebSocket{TLSConnectionRate: 1}, want: "mqtt webSocket tls connection limits require tlsListenAddress"},
+		{name: "WSS requires shared TLS profile", ws: clusterMQTTWebSocket{TLSListenAddress: "localhost:8884"}, want: "mqtt tls is required when tlsListenAddress or webSocket.tlsListenAddress is set"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			config := validBase
+			config.MQTT.TLSListenAddress = ""
+			config.MQTT.TLS = test.tls
+			config.MQTT.WebSocket = &test.ws
+			_, err := parse(config)
+			ccfWantError(t, err, test.want)
+		})
+	}
+}
+
+// Traceability: PRD MQTT-10; docs/contracts/process-configuration-v1.md §1; docs/specs/configuration-and-runtime-options.md §6.
+func TestParseClusterConfigWebSocketTLSProfileBinding(t *testing.T) {
+	config := validBootstrapClusterConfig()
+	config.MQTT.TLSListenAddress = ""
+	config.MQTT.TLS = &clusterMQTTTLS{CertFile: "cert", KeyFile: "key", ClientAuth: "none", MinVersion: "1.2"}
+	config.MQTT.WebSocket = &clusterMQTTWebSocket{}
+	_, err := parseClusterConfig(strings.NewReader(string(mustMarshalClusterConfig(t, config))))
+	ccfWantError(t, err, "mqtt tls requires tlsListenAddress or webSocket.tlsListenAddress")
 }
 
 // Traceability: SEC-01; CFG-SCN-29; docs/specs/configuration-and-runtime-options.md §6; ADR-0052 §1.5.

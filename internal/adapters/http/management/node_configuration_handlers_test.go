@@ -2,6 +2,7 @@ package management
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"net/http"
 	"net/http/httptest"
@@ -94,5 +95,85 @@ func TestNodeConfigurationHandlerHidesServiceErrors(t *testing.T) {
 	handler.ServeHTTP(response, request)
 	if response.Code != http.StatusInternalServerError || !strings.Contains(response.Body.String(), `"code":"configuration_unavailable"`) || strings.Contains(response.Body.String(), "private configuration path") {
 		t.Fatalf("response=%d %s", response.Code, response.Body.String())
+	}
+}
+
+// Traceability: CFG-SCN-46, PRD MQTT-10; docs/specs/configuration-and-runtime-options.md §6; docs/contracts/management-api-v1.md §1, §4.
+func TestNodeConfigurationResponseIncludesWebSocketSettings(t *testing.T) {
+	type webSocketResponse struct {
+		ListenAddress     string `json:"listenAddress"`
+		TLSListenAddress  string `json:"tlsListenAddress"`
+		MaxConnections    int    `json:"maxConnections"`
+		ConnectionRate    int    `json:"connectionRate"`
+		TLSMaxConnections int    `json:"tlsMaxConnections"`
+		TLSConnectionRate int    `json:"tlsConnectionRate"`
+	}
+	for _, test := range []struct {
+		name   string
+		config *ports.MQTTWebSocketConfigurationDTO
+		want   *webSocketResponse
+	}{
+		{name: "not configured"},
+		{
+			name: "configured",
+			config: &ports.MQTTWebSocketConfigurationDTO{
+				ListenAddress: "127.0.0.1:1884", TLSListenAddress: "0.0.0.0:8884",
+				MaxConnections: 10, ConnectionRate: 20, TLSMaxConnections: 30, TLSConnectionRate: 40,
+			},
+			want: &webSocketResponse{
+				ListenAddress: "127.0.0.1:1884", TLSListenAddress: "0.0.0.0:8884",
+				MaxConnections: 10, ConnectionRate: 20, TLSMaxConnections: 30, TLSConnectionRate: 40,
+			},
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			mqttConfiguration := ports.MQTTListenerConfigurationDTO{WebSocket: test.config}
+			if test.config != nil {
+				mqttConfiguration.TLS = &ports.MQTTTLSConfigurationDTO{
+					ClientAuth: "none", MinVersion: "1.2", CertificateConfigured: true, PrivateKeyConfigured: true,
+				}
+			}
+			service := &nodeConfigurationUseCaseStub{configuration: ports.NodeConfigurationDTO{
+				MQTT: mqttConfiguration,
+			}}
+			handler := nodeConfigurationTestRouter(service, RoleClusterAdmin)
+			request := httptest.NewRequest(http.MethodGet, "/api/v1/nodes/1/config", nil)
+			request.Header.Set("X-API-Key", "config-secret")
+			response := httptest.NewRecorder()
+			handler.ServeHTTP(response, request)
+			if response.Code != http.StatusOK {
+				t.Fatalf("status=%d body=%s, want %d", response.Code, response.Body.String(), http.StatusOK)
+			}
+
+			var envelope struct {
+				Data struct {
+					MQTT json.RawMessage `json:"mqtt"`
+				} `json:"data"`
+			}
+			if err := json.Unmarshal(response.Body.Bytes(), &envelope); err != nil {
+				t.Fatalf("decode response envelope: %v", err)
+			}
+			var mqttFields map[string]json.RawMessage
+			if err := json.Unmarshal(envelope.Data.MQTT, &mqttFields); err != nil {
+				t.Fatalf("decode MQTT configuration: %v", err)
+			}
+			webSocketJSON, exists := mqttFields["webSocket"]
+			if !exists {
+				t.Fatal("mqtt.webSocket is missing from response")
+			}
+			if test.want == nil {
+				if string(webSocketJSON) != "null" {
+					t.Fatalf("mqtt.webSocket = %s, want null", webSocketJSON)
+				}
+				return
+			}
+			var got webSocketResponse
+			if err := json.Unmarshal(webSocketJSON, &got); err != nil {
+				t.Fatalf("decode mqtt.webSocket: %v", err)
+			}
+			if got != *test.want {
+				t.Fatalf("mqtt.webSocket = %+v, want %+v", got, *test.want)
+			}
+		})
 	}
 }

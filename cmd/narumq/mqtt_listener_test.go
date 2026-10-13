@@ -2,6 +2,7 @@ package main
 
 import (
 	"crypto/tls"
+	"errors"
 	"fmt"
 	"net"
 	"strings"
@@ -10,6 +11,8 @@ import (
 
 	adaptersmetrics "narumq/internal/adapters/metrics"
 	tlsadapter "narumq/internal/adapters/tls"
+	websocketadapter "narumq/internal/adapters/websocket"
+	portsmetrics "narumq/internal/application/ports/metrics"
 )
 
 // Traceability: PRD MQTT-09/MQTT-11; docs/specs/mqtt-protocol-and-session.md §7.1.
@@ -23,7 +26,7 @@ func TestOpenMQTTListenerAppliesAdmissionInsideTLS(t *testing.T) {
 		t.Fatal(err)
 	}
 	registry := adaptersmetrics.NewRegistry()
-	listener, err := openMQTTListener("127.0.0.1:0", tlsConfig, 1, 0, registry)
+	listener, err := openMQTTListener(portsmetrics.TransportTLS, "127.0.0.1:0", tlsConfig, 1, 0, registry)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -103,5 +106,29 @@ func TestOpenMQTTListenerAppliesAdmissionInsideTLS(t *testing.T) {
 			t.Fatalf("TLS admission rejection metric missing from render:\n%s", registry.Render(false))
 		}
 		time.Sleep(time.Millisecond)
+	}
+}
+
+// Traceability: PRD MQTT-10; docs/specs/mqtt-protocol-and-session.md §1.
+func TestOpenWebSocketListenerClosesSocketOnInvalidAdapterConfig(t *testing.T) {
+	probe, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	address := probe.Addr().String()
+	if err := probe.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	listener, err := openWebSocketListener(address, nil, 0, 0, nil, nil)
+	if !errors.Is(err, websocketadapter.ErrInvalidConfig) || listener != nil {
+		t.Fatalf("openWebSocketListener() = (%v, %v), want (nil, ErrInvalidConfig)", listener, err)
+	}
+	rebound, err := net.Listen("tcp", address)
+	if err != nil {
+		t.Fatalf("WebSocket listener socket remained open after adapter setup failed: %v", err)
+	}
+	if err := rebound.Close(); err != nil {
+		t.Fatal(err)
 	}
 }

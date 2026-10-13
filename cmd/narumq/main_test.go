@@ -310,12 +310,12 @@ func TestRunWithContextMQTTSecurityMode(t *testing.T) {
 				"-tls-listen", "127.0.0.1:0",
 				"-allow-insecure-anonymous-mqtt",
 			},
-			want: "-allow-insecure-anonymous-mqtt requires a loopback-only -tcp-listen and cannot be used with -tls-listen",
+			want: "-allow-insecure-anonymous-mqtt requires a loopback-only -tcp-listen and cannot be used with -tls-listen, -ws-listen, or -wss-listen",
 		},
 		{
 			name: "insecure exception without MQTT listener",
 			args: []string{"-allow-insecure-anonymous-mqtt"},
-			want: "-allow-insecure-anonymous-mqtt requires a loopback-only -tcp-listen and cannot be used with -tls-listen",
+			want: "-allow-insecure-anonymous-mqtt requires a loopback-only -tcp-listen and cannot be used with -tls-listen, -ws-listen, or -wss-listen",
 		},
 	}
 	for _, test := range tests {
@@ -823,5 +823,137 @@ func TestAuditVerifyFlagRequiresExclusiveDirectory(t *testing.T) {
 				t.Fatalf("runWithContext() error = %v, want %q", err, test.want)
 			}
 		})
+	}
+}
+
+// Traceability: PRD MQTT-10; docs/specs/configuration-and-runtime-options.md §6; docs/contracts/process-configuration-v1.md §1.
+func TestRunWithContextWebSocketFlags(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	securityFile := filepath.Join(t.TempDir(), "security.json")
+	if err := os.WriteFile(securityFile, []byte(validSecurityJSON), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	tests := []struct {
+		name string
+		args []string
+		want string
+	}{
+		{name: "plain ws requires security", args: []string{"-ws-listen", "127.0.0.1:0"}, want: "-security-config is required when an MQTT listener is enabled"},
+		{name: "wss requires security", args: []string{"-wss-listen", "127.0.0.1:0"}, want: "-security-config is required when an MQTT listener is enabled"},
+		{name: "plain ws literal loopback only", args: []string{"-ws-listen", "0.0.0.0:1883", "-security-config", securityFile}, want: "-ws-listen must use literal loopback IP"},
+		{name: "anonymous ws is forbidden", args: []string{"-ws-listen", "127.0.0.1:0", "-allow-insecure-anonymous-mqtt"}, want: "-allow-insecure-anonymous-mqtt requires a loopback-only -tcp-listen and cannot be used with -tls-listen, -ws-listen, or -wss-listen"},
+		{name: "anonymous wss is forbidden", args: []string{"-wss-listen", "127.0.0.1:0", "-allow-insecure-anonymous-mqtt"}, want: "-allow-insecure-anonymous-mqtt requires a loopback-only -tcp-listen and cannot be used with -tls-listen, -ws-listen, or -wss-listen"},
+		{name: "ws max requires ws listener", args: []string{"-ws-max-connections", "5"}, want: "-ws-max-connections and -ws-connection-rate require -ws-listen"},
+		{name: "wss rate requires wss listener", args: []string{"-wss-connection-rate", "5"}, want: "-wss-max-connections and -wss-connection-rate require -wss-listen"},
+		{name: "ws admission maximum boundary", args: []string{"-ws-listen", "127.0.0.1:0", "-security-config", securityFile, "-ws-max-connections", "1000001"}, want: "-ws-max-connections must be between 0 and 1000000"},
+		{name: "wss admission rate boundary", args: []string{"-wss-listen", "127.0.0.1:0", "-security-config", securityFile, "-wss-connection-rate", "-1"}, want: "-wss-connection-rate must be between 0 and 1000000"},
+		{name: "wss reuses TLS profile and requires certificate", args: []string{"-wss-listen", "127.0.0.1:0", "-security-config", securityFile}, want: "configure TLS:"},
+		{name: "client auth binding applies to wss", args: []string{"-wss-listen", "127.0.0.1:0", "-security-config", securityFile, "-tls-client-auth", "require"}, want: "-tls-client-auth require requires at least one mTLS identity binding"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			err := runWithContext(context.Background(), test.args, logger)
+			if err == nil || !strings.Contains(err.Error(), test.want) {
+				t.Fatalf("runWithContext() error = %v, want error containing %q", err, test.want)
+			}
+		})
+	}
+}
+
+// Traceability: PRD MQTT-10; CFG-SCN-47; docs/specs/configuration-and-runtime-options.md §6; docs/contracts/process-configuration-v1.md §1.
+func TestRunWithContextStartsAndStopsWebSocketListeners(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	directory := t.TempDir()
+	securityFile := filepath.Join(directory, "security.json")
+	if err := os.WriteFile(securityFile, []byte(validSecurityJSON), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	ca, caKey, _ := newClusterRuntimeTestCA(t)
+	certificate, key, _ := issueClusterRuntimeTestCertificate(t, ca, caKey, "mqtt.example.test", 42)
+	certificateFile := filepath.Join(directory, "server.pem")
+	keyFile := filepath.Join(directory, "server-key.pem")
+	if err := os.WriteFile(certificateFile, certificate, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(keyFile, key, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	wsReservation, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer wsReservation.Close()
+	wssReservation, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer wssReservation.Close()
+	wsAddress, wssAddress := wsReservation.Addr().String(), wssReservation.Addr().String()
+	if err := wsReservation.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := wssReservation.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan error, 1)
+	go func() {
+		done <- runWithContext(ctx, []string{
+			"-security-config", securityFile,
+			"-ws-listen", wsAddress,
+			"-wss-listen", wssAddress,
+			"-tls-cert", certificateFile,
+			"-tls-key", keyFile,
+		}, logger)
+	}()
+	finished := false
+	defer func() {
+		cancel()
+		if finished {
+			return
+		}
+		select {
+		case <-done:
+		case <-time.After(2 * time.Second):
+			t.Error("runWithContext did not stop after cancellation")
+		}
+	}()
+
+	waitForListener := func(address string) {
+		deadline := time.Now().Add(2 * time.Second)
+		for {
+			connection, err := net.DialTimeout("tcp", address, 100*time.Millisecond)
+			if err == nil {
+				_ = connection.Close()
+				return
+			}
+			select {
+			case runErr := <-done:
+				finished = true
+				t.Fatalf("runWithContext returned before listener %s was ready: %v", address, runErr)
+			default:
+			}
+			if time.Now().After(deadline) {
+				t.Fatalf("listener %s did not accept connections: %v", address, err)
+			}
+			time.Sleep(10 * time.Millisecond)
+		}
+	}
+	waitForListener(wsAddress)
+	waitForListener(wssAddress)
+
+	cancel()
+	select {
+	case err := <-done:
+		finished = true
+		if err != nil {
+			t.Fatalf("runWithContext() error after cancellation = %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("runWithContext did not stop after cancellation")
 	}
 }

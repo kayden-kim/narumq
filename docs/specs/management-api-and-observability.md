@@ -4,12 +4,12 @@
 
 | 항목 | 값 |
 | --- | --- |
-| 상태 | Active (Phase 1 query profile, broker drain, cluster feature activation, management-plane audit, API rate limit, SEC-10 OIDC/API key RBAC, SEC-12 client blocklist, API-09 `mqttLimits`와 node configuration 조회, TEN-08 ClusterPolicy quota slice; 다른 ADR-0052 policy domain과 운영 mutation은 deferred) |
-| 관련 요구사항 | API-01~API-09, UI-01~UI-10, SEC-10~SEC-12 |
+| 상태 | Active (Phase 1 query profile, broker drain, cluster feature activation, management-plane audit, API rate limit, SEC-10 OIDC/API key RBAC, SEC-12 client blocklist, API-09 `mqttLimits`와 node configuration 조회, TEN-08 ClusterPolicy quota slice, MQTT-10 WS/WSS admission metric; 다른 ADR-0052 policy domain과 운영 mutation은 deferred) |
+| 관련 요구사항 | API-01~API-09, MQTT-10, UI-01~UI-10, SEC-10~SEC-12 |
 | 근거 | [PRD 9.5절, 9.6절과 14장](../requirements/PRD.md) |
 | 관련 spec | [Tenant와 security](tenancy-and-security.md), [Drain](drain-and-rolling-update.md) |
 | 관련 Architecture | [System overview](../architectures/system-overview.md), [Security boundaries](../architectures/security-boundaries.md) |
-| 관련 결정 | [ADR-0005](../decisions/ADR-0005-management-api-contract-format.md), [ADR-0018](../decisions/ADR-0018-release-compatibility-window.md), [ADR-0043](../decisions/ADR-0043-management-api-rate-limit.md), [ADR-0045](../decisions/ADR-0045-operations-dashboard-grafana.md), [ADR-0048](../decisions/ADR-0048-management-api-oidc-api-key-rbac.md), [ADR-0050](../decisions/ADR-0050-mqtt-client-blocklist.md), [ADR-0052](../decisions/ADR-0052-configuration-tiers-and-cluster-policy.md) §1.1.1 |
+| 관련 결정 | [ADR-0005](../decisions/ADR-0005-management-api-contract-format.md), [ADR-0018](../decisions/ADR-0018-release-compatibility-window.md), [ADR-0043](../decisions/ADR-0043-management-api-rate-limit.md), [ADR-0045](../decisions/ADR-0045-operations-dashboard-grafana.md), [ADR-0048](../decisions/ADR-0048-management-api-oidc-api-key-rbac.md), [ADR-0050](../decisions/ADR-0050-mqtt-client-blocklist.md), [ADR-0052](../decisions/ADR-0052-configuration-tiers-and-cluster-policy.md) §1.1.1, [ADR-0057](../decisions/ADR-0057-mqtt-websocket-listener.md) |
 | 관련 Contract | [Management API v1](../contracts/management-api-v1.md), [Management API OpenAPI](../contracts/management-api-v1.openapi.json), [Audit event v1](../contracts/audit-event-v1.md) |
 
 ## 1. HTTP 공통 계약
@@ -250,9 +250,9 @@ Warn log `tenant limit rejected a request`는 tenant·dimension마다 10초에 �
 Audit outcome series의 고정 순서, 0 기본값, 알 수 없는 label 무시와 readiness gauge는 `internal/adapters/metrics/registry_test.go::TestRegistryRendersAuditMetrics`에서 검증한다.
 
 `narumq_mqtt_listener_admission_rejected_total{transport,reason}` counter는 CONNECT 전에
-listener 한도로 닫은 socket을 센다. `transport`는 `tcp`, `tls`만 허용한다.
-`reason`은 `max_connections`, `connection_rate`만 허용한다. 모든 mode에서 4개
-series를 0부터 같은 순서로 render한다. Transport 순서는 `tcp`, `tls`이며 각
+listener 한도로 닫은 socket을 센다. `transport`는 `tcp`, `tls`, `ws`, `wss`만 허용한다.
+`reason`은 `max_connections`, `connection_rate`만 허용한다. 모든 mode에서 8개
+series를 0부터 같은 순서로 render한다. Transport 순서는 `tcp`, `tls`, `ws`, `wss`이며 각
 transport 안의 reason 순서는 `max_connections`, `connection_rate`다. 알 수 없는
 값은 무시한다.
 

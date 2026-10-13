@@ -16,6 +16,7 @@ import (
 
 	authenticationadapter "narumq/internal/adapters/authentication"
 	adaptershttp "narumq/internal/adapters/http/management"
+	tcpadapter "narumq/internal/adapters/tcp"
 	"narumq/internal/application/membership"
 	"narumq/internal/domain/release"
 )
@@ -233,14 +234,28 @@ type clusterManagementOIDCIdentity struct {
 }
 
 type clusterMQTT struct {
-	TCPListenAddress   string          `json:"tcpListenAddress"`
-	TLSListenAddress   string          `json:"tlsListenAddress"`
-	SecurityConfigFile string          `json:"securityConfigFile"`
-	TCPMaxConnections  int             `json:"tcpMaxConnections"`
-	TCPConnectionRate  int             `json:"tcpConnectionRate"`
-	TLSMaxConnections  int             `json:"tlsMaxConnections"`
-	TLSConnectionRate  int             `json:"tlsConnectionRate"`
-	TLS                *clusterMQTTTLS `json:"tls,omitempty"`
+	TCPListenAddress   string                `json:"tcpListenAddress"`
+	TLSListenAddress   string                `json:"tlsListenAddress"`
+	SecurityConfigFile string                `json:"securityConfigFile"`
+	TCPMaxConnections  int                   `json:"tcpMaxConnections"`
+	TCPConnectionRate  int                   `json:"tcpConnectionRate"`
+	TLSMaxConnections  int                   `json:"tlsMaxConnections"`
+	TLSConnectionRate  int                   `json:"tlsConnectionRate"`
+	TLS                *clusterMQTTTLS       `json:"tls,omitempty"`
+	WebSocket          *clusterMQTTWebSocket `json:"webSocket,omitempty"`
+}
+
+type clusterMQTTWebSocket struct {
+	ListenAddress     string `json:"listenAddress"`
+	TLSListenAddress  string `json:"tlsListenAddress"`
+	MaxConnections    int    `json:"maxConnections"`
+	ConnectionRate    int    `json:"connectionRate"`
+	TLSMaxConnections int    `json:"tlsMaxConnections"`
+	TLSConnectionRate int    `json:"tlsConnectionRate"`
+}
+
+func (mqtt clusterMQTT) tlsListenerConfigured() bool {
+	return mqtt.TLSListenAddress != "" || (mqtt.WebSocket != nil && mqtt.WebSocket.TLSListenAddress != "")
 }
 
 func loadClusterConfigFile(path string) (clusterConfigFile, error) {
@@ -360,7 +375,7 @@ func checkClusterJSON(reader io.Reader) error {
 
 func expectedClusterJSONType(path string) string {
 	switch path {
-	case "", "peerTLS", "management", "management.oidc", "mqtt", "mqtt.tls",
+	case "", "peerTLS", "management", "management.oidc", "mqtt", "mqtt.tls", "mqtt.webSocket",
 		"tenantQuotas", "tenantQuotas.default", "clusterPolicy", "clusterPolicy.mqttLimits",
 		"clusterPolicy.tenantQuotas", "clusterPolicy.tenantQuotas.default",
 		"replication", "publishBackpressure", "runtimeMetrics":
@@ -398,6 +413,8 @@ func expectClusterKeys(path string, seen map[string]struct{}) error {
 		required = []string{"tcpListenAddress", "tlsListenAddress", "securityConfigFile"}
 	case "mqtt.tls":
 		required = []string{"certFile", "keyFile", "caFile", "clientAuth", "minVersion"}
+	case "mqtt.webSocket":
+		required = []string{"listenAddress", "tlsListenAddress"}
 	case "replication":
 		required = []string{"factor", "writeQuorum"}
 	case "publishBackpressure":
@@ -510,6 +527,24 @@ func validateClusterConfig(config clusterConfigFile) error {
 	if config.MQTT.TLSListenAddress == "" && (config.MQTT.TLSMaxConnections != 0 || config.MQTT.TLSConnectionRate != 0) {
 		return errors.New("mqtt tls connection limits require tlsListenAddress")
 	}
+	if webSocket := config.MQTT.WebSocket; webSocket != nil {
+		if (webSocket.ListenAddress != "" && !validHostPort(webSocket.ListenAddress, true)) ||
+			(webSocket.TLSListenAddress != "" && !validHostPort(webSocket.TLSListenAddress, true)) {
+			return errors.New("mqtt webSocket listener addresses must be empty or valid host:port values")
+		}
+		if webSocket.MaxConnections < 0 || webSocket.MaxConnections > tcpadapter.MaxListenerAdmissionLimit ||
+			webSocket.ConnectionRate < 0 || webSocket.ConnectionRate > tcpadapter.MaxListenerAdmissionLimit ||
+			webSocket.TLSMaxConnections < 0 || webSocket.TLSMaxConnections > tcpadapter.MaxListenerAdmissionLimit ||
+			webSocket.TLSConnectionRate < 0 || webSocket.TLSConnectionRate > tcpadapter.MaxListenerAdmissionLimit {
+			return errors.New("mqtt webSocket connection limits must be between 0 and 1000000")
+		}
+		if webSocket.ListenAddress == "" && (webSocket.MaxConnections != 0 || webSocket.ConnectionRate != 0) {
+			return errors.New("mqtt webSocket connection limits require listenAddress")
+		}
+		if webSocket.TLSListenAddress == "" && (webSocket.TLSMaxConnections != 0 || webSocket.TLSConnectionRate != 0) {
+			return errors.New("mqtt webSocket tls connection limits require tlsListenAddress")
+		}
+	}
 	if err := validateClusterMQTTTLS(config.MQTT); err != nil {
 		return err
 	}
@@ -616,14 +651,14 @@ func validateClusterConfig(config clusterConfigFile) error {
 }
 
 func validateClusterMQTTTLS(mqtt clusterMQTT) error {
-	if mqtt.TLSListenAddress == "" {
+	if !mqtt.tlsListenerConfigured() {
 		if mqtt.TLS != nil {
-			return errors.New("mqtt tls requires tlsListenAddress")
+			return errors.New("mqtt tls requires tlsListenAddress or webSocket.tlsListenAddress")
 		}
 		return nil
 	}
 	if mqtt.TLS == nil {
-		return errors.New("mqtt tls is required when tlsListenAddress is set")
+		return errors.New("mqtt tls is required when tlsListenAddress or webSocket.tlsListenAddress is set")
 	}
 	if !validRequiredPath(mqtt.TLS.CertFile) || !validRequiredPath(mqtt.TLS.KeyFile) {
 		return errors.New("mqtt tls certFile and keyFile are required")

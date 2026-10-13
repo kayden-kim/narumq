@@ -9,6 +9,7 @@
 | 근거 | [PRD 8장과 9.1절](../requirements/PRD.md), [OASIS MQTT 3.1.1](https://docs.oasis-open.org/mqtt/mqtt/v3.1.1/mqtt-v3.1.1.html), [OASIS MQTT 5.0](https://docs.oasis-open.org/mqtt/mqtt/v5.0/mqtt-v5.0.html) |
 | 관련 Architecture | [System overview](../architectures/system-overview.md), [Broker core](../architectures/broker-core.md) |
 | 관련 Contract | [MQTT client compatibility v1](../contracts/mqtt-client-compatibility-v1.md) |
+| 관련 결정 | [ADR-0057 MQTT WebSocket/WSS listener](../decisions/ADR-0057-mqtt-websocket-listener.md) |
 | 해설 | [MQTT 전달 보장과 QoS·Session·Will protocol 흐름](../explainers/mqtt-delivery-guarantees-and-protocol-flows.md) |
 
 2026-10-05 승인된 resource limit 구현 범위는 §1의 packet 완성 시간과 §7.1·§8.1이다. 나머지 Draft 범위의 채택 상태는 바꾸지 않는다.
@@ -64,31 +65,20 @@ state를 유지한다.
 
 ## 1. Listener 계약
 
-1. TCP와 TLS listener는 MQTT 3.1.1 protocol level 4와 MQTT 5.0 protocol level 5를 수용해야 한다.
+1. TCP, TLS, WebSocket과 WSS listener는 MQTT 3.1.1 protocol level 4와 MQTT 5.0 protocol level 5를 수용해야 한다.
 2. listener마다 bind address, TLS 정책, 인증 방식, 최대 연결 수, connection rate와 packet 제한을 독립 적용해야 한다.
 3. 평문 TCP listener는 기본 설정에서 비활성화해야 한다. MQTT listener를 활성화할 때는 [security spec](tenancy-and-security.md)의 secure mode를 선택해야 한다. Standalone은 `-security-config`로, dynamic cluster는 필수 field `mqtt.securityConfigFile`로 secure mode를 지정한다. 유일한 예외는 standalone development·benchmark mode다. 이 mode는 `-tcp-listen`의 literal loopback bind와 `-allow-insecure-anonymous-mqtt`를 함께 지정한다. 두 mode를 함께 지정하거나 TLS listener에 예외 mode를 적용해서는 안 된다.
-4. WebSocket과 WSS는 P1 선택 기능이다. 활성화하면 MQTT packet과 session 의미가 TCP listener와 같아야 한다.
+4. WebSocket과 WSS listener는 MQTT packet과 session 의미를 TCP listener와 같게 제공해야 한다. WebSocket handshake는 `/mqtt` 경로와 `mqtt` subprotocol을 요구하고 binary frame만 허용한다. WSS는 기존 TLS profile을 사용한다. 각 listener의 admission 제한을 TLS handshake와 HTTP upgrade 전에 적용한다. TLS handshake와 HTTP upgrade는 10초 안에 끝나야 한다.
 5. connection은 설정된 CONNECT timeout 안에 유효한 CONNECT를 보내야 한다. timeout 또는 malformed packet이면 session을 만들지 않고 연결을 닫아야 한다.
    CONNECT 뒤 첫 byte가 도착한 packet은 `-packet-read-timeout`(기본 30s) 안에
    완성되어야 한다. 시간을 넘기면 응답 없이 연결을 닫는다. KeepAlive=0이고
    미완성 byte가 없는 유휴 연결은 유지한다.
-6. development profile의 평문 `-tcp-listen`은 `127.0.0.0/8` 또는 `::1` literal
-   loopback만 허용한다. 이 listener는 `-allow-insecure-anonymous-mqtt`를 명시한 경우에만
-   anonymous MQTT를 허용한다. TLS listener는 `-tls-listen`으로 별도 활성화하며,
-   TLS 1.2 이상, 허용된 AEAD cipher suite와 설정된 서버 인증서를 적용한다.
-   `request` 또는 `require` client authentication을 선택하면 strict security config의
-   mTLS identity binding이 필요하다. TLS adapter는 verified chain의 leaf certificate에서
-   application `ClientCertificateDTO`를 만들고, authentication adapter가 exact
-   Common Name, DNS SAN 또는 email SAN match를 수행한다.
-7. `-tcp-listen`과 `-tls-listen`은 하나의 `tcp.Server`에 함께 등록할 수 있고,
-   listener별 transport 보안 정책을 유지하면서 동일한 session·route registry를 공유한다.
-8. CONNECT 뒤에는 negotiated version으로 packet을 decode하고, 모든 socket write는 한
-   writer goroutine의 bounded control queue 또는 delivery wake를 통과한다.
-9. Binary smoke와 실제 loopback wire 검증은 `tests/integration/mqtt_ingress_test.go`를
-   기준으로 한다. TLS/mTLS socket과 password 인증은 `tests/integration/mqtt_tls_test.go`의
-   `TestMQTTTLS_PasswordAuthentication`, `tests/integration/cluster_password_process_test.go`의
-   `TestDynamicClusterPasswordAuthenticationProcessAcceptance`, `cmd/narumq/security_config_test.go`로 검증한다.
+6. Development profile의 평문 `-tcp-listen`은 `127.0.0.0/8` 또는 `::1` literal loopback만 허용한다. 이 listener는 `-allow-insecure-anonymous-mqtt`를 명시한 경우에만 anonymous MQTT를 허용한다. TLS listener는 `-tls-listen`으로 활성화하고 TLS 1.2 이상, 허용된 AEAD cipher suite와 설정된 server certificate를 적용한다. `request` 또는 `require` client authentication에는 strict security config의 mTLS identity binding이 필요하다. TLS adapter는 verified chain의 leaf certificate에서 application `ClientCertificateDTO`를 만들고, authentication adapter는 exact Common Name, DNS SAN 또는 email SAN을 match한다. WSS는 같은 TLS 설정을 사용한다.
+7. `-tcp-listen`, `-tls-listen`, `-ws-listen`과 `-wss-listen`은 하나의 `tcp.Server`에 함께 등록할 수 있고 listener별 transport 보안 정책을 유지하면서 같은 session·route registry를 공유한다.
+8. CONNECT 뒤에는 negotiated version으로 packet을 decode하고, 모든 socket write는 한 writer goroutine의 bounded control queue 또는 delivery wake를 통과한다.
+9. Binary smoke와 실제 loopback wire 검증은 `tests/integration/mqtt_ingress_test.go`를 기준으로 한다. TLS/mTLS socket과 password 인증은 `tests/integration/mqtt_tls_test.go`의 `TestMQTTTLS_PasswordAuthentication`, `tests/integration/cluster_password_process_test.go`의 `TestDynamicClusterPasswordAuthenticationProcessAcceptance`, `cmd/narumq/security_config_test.go`로 검증한다.
 10. Dynamic cluster의 평문 `mqtt.tcpListenAddress`는 loopback 제한 없이 유효한 host:port를 허용한다. Wildcard와 DNS 이름도 포함한다. 이 listener는 secure mode에서만 열린다. Security config에 `jwt` 또는 `passwordIdentities`가 있으면 username·password 없는 CONNECT를 `missing_credentials`로 거절한다. `mtlsIdentities`만 있으면 평문 TCP에는 client certificate가 없으므로 CONNECT를 `missing_certificate`로 거절한다. CONNACK reason은 MQTT 3.1.1에서 `0x05`, MQTT 5에서 `0x87`이다. 평문 TCP는 CONNECT credential을 암호화하지 않는다. 결정 근거는 [ADR-0052 §1.5](../decisions/ADR-0052-configuration-tiers-and-cluster-policy.md#15-형식과-cluster-mqtt-tls)(G3)다.
+11. Standalone 평문 `-ws-listen`은 literal loopback IP(`127.0.0.0/8` 또는 `::1`)만 허용하고 `-security-config`를 요구한다. `-allow-insecure-anonymous-mqtt`는 TCP에만 적용하며 WS/WSS와 함께 사용할 수 없다. Dynamic cluster의 평문 `mqtt.webSocket.listenAddress`는 유효한 host:port를 허용하지만 `mqtt.securityConfigFile`을 요구한다. WSS는 `mqtt.tls` 또는 기존 standalone `-tls-*` 설정을 사용한다.
 
 ## 2. CONNECT 처리 순서
 
@@ -263,7 +253,7 @@ Packet Size는 fixed header를 포함한 전체 packet byte 수의 상한이다.
 | Inbound Receive Maximum(PUBACK·PUBCOMP·PUBREC≥0x80을 아직 쓰지 않은 QoS 1/2 PUBLISH 수) | [Process configuration v1 §1.1, §1.3](../contracts/process-configuration-v1.md) | DISCONNECT `0x93` 후 종료 | 종료 |
 | 시작된 packet 완성 시간(CONNECT 뒤) | [Process configuration v1 §1.1, §1.3](../contracts/process-configuration-v1.md) | 응답 없이 종료 | 응답 없이 종료 |
 | CONNECT 완료 시간 | [Process configuration v1 §1.1, §1.3](../contracts/process-configuration-v1.md) | 응답 없이 종료 | 응답 없이 종료 |
-| Listener 동시 연결 수와 connection rate | [Process configuration v1 §1.1, §1.3](../contracts/process-configuration-v1.md) | TCP accept 직후 응답 없이 종료(TLS handshake·CONNECT 전) | 같음 |
+| Listener 동시 연결 수와 connection rate | [Process configuration v1 §1.1, §1.3](../contracts/process-configuration-v1.md) | TCP accept 뒤, TLS handshake·HTTP upgrade·CONNECT 전에 응답 없이 종료 | 같음 |
 | Socket write 시간 | [Process configuration v1 §1.1, §1.3](../contracts/process-configuration-v1.md) | 종료 | 종료 |
 | 연결별 control queue | [Process configuration v1 §1.1, §1.3](../contracts/process-configuration-v1.md) | 종료 | 종료 |
 | Session별 delivery queue | [Process configuration v1 §1.1, §1.3](../contracts/process-configuration-v1.md) | 기존 §3 backpressure 규칙 | 기존 규칙 |
@@ -285,7 +275,7 @@ CONNACK 없이 닫는다. Cluster durable phase lane이 늦게 발견한 protoco
 종료한다. Read backpressure는 미완료 QoS 2의 PUBREL 수신을 막을 수 있어 쓰지 않는다.
 
 Tenant 한도는 [Tenant §5.2](tenancy-and-security.md#52-연결-상태와-traffic-한도)를 따른다. Rate 대기는 앞 문단의 read backpressure 금지에 대한 유일한 예외다. 대기 시간과 허용 범위는 [Process configuration v1 §1.4](../contracts/process-configuration-v1.md)에서 정한다.
-Listener 연결 한도는 TCP와 TLS에 독립 적용한다. 연결 수는 listener가 허용한 뒤
+Listener 연결 한도는 TCP, TLS, WebSocket과 WSS에 독립 적용한다. 연결 수는 listener가 허용한 뒤
 아직 `Close`되지 않은 socket 수다. CONNECT 전 socket도 포함한다. 첫 `Close`에서만
 연결 수를 한 번 줄인다. 최대 연결 수를 먼저 검사하고, 그다음 connection rate를 검사한다.
 
@@ -296,11 +286,7 @@ Clock이 뒤로 가면 token을 보충하지 않는다.
 
 Listener 연결 한도와 connection rate의 field 이름, 기본값, 허용 범위와 cluster config key는 [Process configuration v1 §1.1, §1.3](../contracts/process-configuration-v1.md)에서 정한다. 값 `0`은 해당 한도를 끈다. 두 값이 모두 `0`이면 admission wrapper를 만들지 않는다.
 
-초과한 socket은 TCP accept 직후 닫는다. TLS admission은 TLS wrapper 안쪽의 raw
-TCP listener에 적용한다. Server는 계속 `*tls.Conn`을 받는다. TLS handshake,
-CONNECT 읽기와 연결 goroutine을 만들기 전에 거절하므로 CONNACK은 보내지 않는다.
-이 방식은 폭주 때 handshake와 goroutine 비용을 막는다. 거절 로그는 남기지 않고
-`narumq_mqtt_listener_admission_rejected_total{transport,reason}`만 올린다.
+Admission은 raw TCP listener에서 TLS handshake와 HTTP upgrade 전에 적용한다. TLS/WSS는 TLS wrapper 안쪽, WebSocket upgrade는 WebSocket adapter 안쪽에서 거절한다. 거절된 socket은 MQTT CONNECT를 처리하지 않으므로 CONNACK을 보내지 않는다. 이 방식은 handshake와 connection goroutine 비용을 줄인다. 거절 로그는 남기지 않고 `narumq_mqtt_listener_admission_rejected_total{transport,reason}`만 올린다.
 
 Memory delivery queue는 만료되지 않은 persistent session의 queued·in-flight
 delivery를 reconnect까지 보존한다. Clean start/session expiry와 message expiry
@@ -316,7 +302,7 @@ deadline에 도달한 state만 제거한다. Cluster recovery 범위는 §4와 c
   이 동작과 Metric 집계는 `tests/integration/management_api_test.go::TestMQTT310RejectionIsObservable`에서 두 wire variant를 함께 검증한다.
 - wildcard 경계, shared subscription failover와 MQTT 5 subscription option 조합을 검증한다.
 - parser fuzzing, slowloris, packet·queue 상한 시험에서 memory와 goroutine leak이 없어야 한다.
-- Cluster mode에서 설정된 TCP/TLS listener를 열고, TLS 설정 실패 시 이미 연 TCP listener를 닫는다. `cmd/narumq/cluster_runtime_test.go::TestClusterMQTTListenersBindConfiguredEndpointsAndClosePartialOpen`이 binding과 cleanup을 확인한다.
+- Cluster mode에서 설정된 TCP/TLS/WS/WSS listener를 열고, TLS 설정 실패 시 이미 연 TCP listener를 닫는다. `cmd/narumq/cluster_runtime_test.go::TestClusterMQTTListenersBindConfiguredEndpointsAndClosePartialOpen`이 binding과 cleanup을 확인한다.
 - 두 protocol version client가 같은 외부 topic에서 ACL 범위 안의 메시지를 상호 전달해야 한다.
 - 이 slice의 acceptance mapping은 `tests/integration/mqtt_ingress_test.go`의 MQTT 3.1.1/5.0
   CONNECT, QoS 0 fan-out, retained replace/delete, retained Message Expiry,
@@ -411,7 +397,7 @@ Admission 시험에서는 Client ID `a`를 넣은
 | Rate 보충과 burst | 초기 rate개 허용, 시간만큼 보충, burst 상한과 역행 clock 유지 | `internal/adapters/tcp/listener_admission_test.go::TestAdmissionListenerRefillsConnectionRateFromClock` | PASS, rate=2·500ms 보충·10s burst 상한·역행 clock |
 | 검사 순서 | 최대 연결 수 우선, 거절 socket은 token을 쓰지 않음 | `internal/adapters/tcp/listener_admission_test.go::TestAdmissionListenerChecksMaximumBeforeRate` | PASS, 3개 최대 연결 수 거절 뒤 같은 clock에서 다음 연결 허용 |
 | Accept 오류 | inner listener 오류를 그대로 반환 | `internal/adapters/tcp/listener_admission_test.go::TestAdmissionListenerReturnsInnerAcceptError` | PASS, `net.ErrClosed` 유지 |
-| 거절 Metric | 고정 4개 series, 알 수 없는 label 무시 | `internal/adapters/metrics/registry_test.go::TestRegistryRendersListenerAdmissionRejections` | PASS, Prometheus·OpenMetrics 순서와 값 2/0/0/1 |
+| 거절 Metric | 8개 고정 series, 알 수 없는 label 무시 | `internal/adapters/metrics/registry_test.go::TestRegistryRendersListenerAdmissionRejections` | 기존 4개에서 WS/WSS를 더한 8개 transport·reason 조합 확인 |
 | MQTT 연결 수·독립성 | 양 protocol 초과 종료, slot 회수, 다른 listener는 계속 허용 | `tests/integration/mqtt_resource_limits_test.go::TestMQTTListenerAdmissionClosesConnectionsAboveMaximum` | PASS, integration focused 0.461s |
 | MQTT rate | 초과 종료, 1초 보충 뒤 CONNACK 성공 | `tests/integration/mqtt_resource_limits_test.go::TestMQTTListenerAdmissionClosesConnectionsAboveRate` | PASS, 실제 socket과 Metric count=1 |
 | TLS 적용 순서 | Server는 `*tls.Conn`, raw TCP 초과 socket은 handshake 전 종료 | `cmd/narumq/mqtt_listener_test.go::TestOpenMQTTListenerAppliesAdmissionInsideTLS`; `tests/integration/mqtt_tls_test.go` | PASS, 실제 TLS handshake·raw TCP 종료·TLS Metric count=1 |
@@ -429,3 +415,18 @@ Local gate는 mutation을 실행하지 않는다. 계획의 mutation 확인은 �
 끝난 뒤 같은 코드와 같은 26개 시나리오로 수행했다. 첫 실패의 원인은 확정하지
 않았다. 기본값 0에서는 admission wrapper를 만들지 않는다. SDK나 제품의
 session 처리에 재시도·대기·오류 무시를 추가하지 않았다.
+
+### 8.3 WebSocket/WSS 수용 매핑
+
+| 시나리오 ID | 관찰할 결과 | 시험 위치 | 실행 증거 |
+| --- | --- | --- | --- |
+| `MQTT-10-SCN-01` | `/mqtt`와 `mqtt` subprotocol만 협상하고 binary message를 byte stream으로 처리한다. Text frame과 잘못된 path·subprotocol은 거절한다. | `internal/adapters/websocket.TestNewListenerValidatesConfig`, `TestListenerStreamsBinaryMessagesAsByteStream`, `TestListenerRejectsWrongPathAndMissingSubprotocol`, `TestListenerRejectsTextFrame`; `tests/integration.TestMQTTWebSocketFrameBoundaries` | 통과 — [실행 기록](configuration-and-runtime-options.md#websocket-execution) |
+| `MQTT-10-SCN-02` | Read/write deadline은 timeout으로 분류된다. Upgrade timeout, listener close와 unresponsive peer 종료는 제한 시간 안에 끝난다. | `internal/adapters/websocket.TestConnReadDeadlineReportsTimeout`, `TestConnWriteDeadlineReportsTimeout`, `TestListenerHandshakeTimeout`, `TestListenerCloseUnblocksAcceptAndClosesInnerListener`, `TestConnCloseDoesNotWaitForUnresponsivePeer` | 통과 — [실행 기록](configuration-and-runtime-options.md#websocket-execution) |
+| `MQTT-10-SCN-03` | WS는 TCP peer IP와 `ws` label을 노출한다. Blocklist는 전달된 peer IP를 사용한다. | `internal/adapters/websocket.TestListenerExposesRemoteIPAndTransport`; `tests/integration.TestMQTTWebSocketBlocklistedSourceIPRejected` | 통과 — [실행 기록](configuration-and-runtime-options.md#websocket-execution) |
+| `MQTT-10-SCN-04` | WSS는 verified client certificate와 `wss` label을 노출한다. `require`에서 client certificate가 없는 handshake를 거절한다. | `internal/adapters/websocket.TestListenerWSSExposesVerifiedClientCertificate`; `tests/integration.TestMQTTWebSocketWSSMTLSIdentityAndClientCertificateRejection` | 통과 — [실행 기록](configuration-and-runtime-options.md#websocket-execution) |
+| `MQTT-10-SCN-05` | MQTT 3.1.1과 MQTT 5에서 CONNECT, SUBSCRIBE, QoS 0/1/2 PUBLISH round trip이 TCP와 같은 결과를 낸다. | `tests/integration.TestMQTTWebSocketProtocolAndQoS` | 통과 — [실행 기록](configuration-and-runtime-options.md#websocket-execution) |
+| `MQTT-10-SCN-06` | TCP publisher는 WS subscriber에게, WSS publisher는 TLS subscriber에게 메시지를 전달한다. | `tests/integration.TestMQTTWebSocketCrossTransportDelivery` | 통과 — [실행 기록](configuration-and-runtime-options.md#websocket-execution) |
+| `MQTT-10-SCN-07` | Password authentication과 mTLS identity binding은 WSS에서 기존 TLS와 같은 결과를 낸다. | `tests/integration.TestMQTTWebSocketPasswordAuthentication`, `TestMQTTWebSocketWSSMTLSIdentityAndClientCertificateRejection` | 통과 — [실행 기록](configuration-and-runtime-options.md#websocket-execution) |
+| `MQTT-10-SCN-08` | WS KeepAlive timeout은 Will을 발행하고 `MQTT connection handling failed` warning을 남기지 않는다. | `tests/integration.TestMQTTWebSocketKeepAliveTimeoutPublishesWillWithoutWarning` | 통과 — [실행 기록](configuration-and-runtime-options.md#websocket-execution) |
+| `MQTT-10-SCN-09` | Listener별 admission 한도와 connection metric에 `ws`·`wss` label을 적용하고 live client 종료가 제한 시간 안에 끝난다. | `tests/integration.TestMQTTWebSocketMetricsAndAdmission`, `TestMQTTWebSocketCloseWithLiveClients` | 통과 — [실행 기록](configuration-and-runtime-options.md#websocket-execution) |
+| `MQTT-10-SCN-10` | Dynamic cluster의 WS subscriber와 다른 node의 WS publisher가 메시지를 교환한다. Node config API는 적용된 `mqtt.webSocket` 값을 반환한다. | `tests/integration.TestDynamicClusterWebSocketProcessAcceptance` | 통과 — [실행 기록](configuration-and-runtime-options.md#websocket-execution) |

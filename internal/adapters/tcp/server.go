@@ -889,6 +889,21 @@ func (connection *connection) metrics() portsmetrics.MetricsRecorder {
 	return nil
 }
 
+type transportMetricLabeler interface {
+	MetricsTransport() string
+}
+
+func (connection *connection) metricsTransport() string {
+	switch socket := connection.socket.(type) {
+	case transportMetricLabeler:
+		return socket.MetricsTransport()
+	case *tls.Conn:
+		return portsmetrics.TransportTLS
+	default:
+		return portsmetrics.TransportTCP
+	}
+}
+
 func (connection *connection) run() {
 	if connection.phases != nil {
 		connection.phases.start(connection)
@@ -1046,10 +1061,7 @@ func (connection *connection) cleanup() {
 			if connection.version == mqtt.ProtocolV311 {
 				proto = portsmetrics.ProtocolMQTT311
 			}
-			transport := portsmetrics.TransportTCP
-			if _, isTLS := connection.socket.(*tls.Conn); isTLS {
-				transport = portsmetrics.TransportTLS
-			}
+			transport := connection.metricsTransport()
 			if metrics := connection.metrics(); metrics != nil {
 				metrics.ConnectionClosed(proto, transport)
 			}
@@ -1424,10 +1436,7 @@ func (connection *connection) activate(packet mqtt.Connect) error {
 	if packet.Version == mqtt.ProtocolV311 {
 		proto = portsmetrics.ProtocolMQTT311
 	}
-	transport := portsmetrics.TransportTCP
-	if _, isTLS := connection.socket.(*tls.Conn); isTLS {
-		transport = portsmetrics.TransportTLS
-	}
+	transport := connection.metricsTransport()
 	if metrics := connection.metrics(); metrics != nil {
 		metrics.ConnectionOpened(proto, transport)
 	}

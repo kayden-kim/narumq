@@ -3,7 +3,7 @@
   "jsonSchemaDialect": "https://json-schema.org/draft/2020-12/schema",
   "info": {
     "title": "NaruMQ Management API",
-    "version": "1.16.0",
+    "version": "1.17.0",
     "description": "Query, observability, authenticated cluster membership and feature activation, cluster policy updates, node configuration, broker node drain and connection rebalance, credential revocation and client blocklist, cluster-backup operations, and node-local management audit events. Per-principal and failed-authentication rate limiting applies to /api/v1. Dashboard APIs are deferred."
   },
   "servers": [
@@ -2350,10 +2350,23 @@
           "caConfigured": { "type": "boolean" }
         }
       },
+      "MQTTWebSocketConfiguration": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["listenAddress", "tlsListenAddress", "maxConnections", "connectionRate", "tlsMaxConnections", "tlsConnectionRate"],
+        "properties": {
+          "listenAddress": { "type": "string", "maxLength": 512 },
+          "tlsListenAddress": { "type": "string", "maxLength": 512 },
+          "maxConnections": { "type": "integer", "minimum": 0, "maximum": 1000000 },
+          "connectionRate": { "type": "integer", "minimum": 0, "maximum": 1000000 },
+          "tlsMaxConnections": { "type": "integer", "minimum": 0, "maximum": 1000000 },
+          "tlsConnectionRate": { "type": "integer", "minimum": 0, "maximum": 1000000 }
+        }
+      },
       "MQTTListenerConfiguration": {
         "type": "object",
         "additionalProperties": false,
-        "required": ["tcpListenAddress", "tlsListenAddress", "securityConfigConfigured", "tcpMaxConnections", "tcpConnectionRate", "tlsMaxConnections", "tlsConnectionRate", "tls"],
+        "required": ["tcpListenAddress", "tlsListenAddress", "securityConfigConfigured", "tcpMaxConnections", "tcpConnectionRate", "tlsMaxConnections", "tlsConnectionRate", "tls", "webSocket"],
         "properties": {
           "tcpListenAddress": { "type": "string", "maxLength": 512 },
           "tlsListenAddress": { "type": "string", "maxLength": 512 },
@@ -2362,7 +2375,8 @@
           "tcpConnectionRate": { "type": "integer", "minimum": 0, "maximum": 1000000 },
           "tlsMaxConnections": { "type": "integer", "minimum": 0, "maximum": 1000000 },
           "tlsConnectionRate": { "type": "integer", "minimum": 0, "maximum": 1000000 },
-          "tls": { "anyOf": [{ "$ref": "#/components/schemas/MQTTTLSConfiguration" }, { "type": "null" }] }
+          "tls": { "anyOf": [{ "$ref": "#/components/schemas/MQTTTLSConfiguration" }, { "type": "null" }] },
+          "webSocket": { "anyOf": [{ "$ref": "#/components/schemas/MQTTWebSocketConfiguration" }, { "type": "null" }] }
         }
       },
       "ReplicationConfiguration": {

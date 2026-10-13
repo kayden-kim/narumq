@@ -203,7 +203,7 @@ NaruMQ가 말하는 “메시지 유실 없음”은 MQTT hop별 조건으로 �
 | MQTT-07 | P0 | `$share/{group}/...` shared subscription을 지원한다. | 그룹당 한 subscriber에 전달되고 subscriber 장애 시 다른 멤버가 이어받는다. |
 | MQTT-08 | P0 | MQTT 5 subscription options와 message expiry를 지원한다. | No Local, Retain As Published, Retain Handling, expiry 시험을 통과한다. |
 | MQTT-09 | P0 | TCP와 TLS listener를 제공한다. | listener별 인증 정책과 연결 제한을 독립 설정한다. |
-| MQTT-10 | P1 | WebSocket과 WSS listener를 제공한다. | 기존 사용 현황에서 필요가 확인되면 TCP와 같은 MQTT 의미를 제공한다. |
+| MQTT-10 | P1 | WebSocket과 WSS listener를 제공한다. | WebSocket과 WSS는 TCP와 같은 MQTT packet·session 의미를 제공하고 [MQTT-10-SCN-01..10](../specs/mqtt-protocol-and-session.md#83-websocketwss-수용-매핑)을 통과한다. |
 | MQTT-11 | P0 | packet size, receive maximum, inflight, queue 한도를 적용한다. | 제한 초과 시 표준 reason code 또는 연결 종료로 자원을 보호한다. |
 | MQTT-12 | P0 | 비정상 packet과 slow client를 방어한다. | parser fuzzing과 slowloris 시험에서 메모리·goroutine/thread 누수가 없다. |
 | MQTT-13 | P0 | MQTT 3.1.0 연결을 지원하지 않는다. | protocol name `MQIsdp` 또는 protocol level 3 연결을 unsupported protocol version으로 거절하고 session을 생성하지 않으며 Metric과 구조화 로그를 남긴다. |
@@ -751,7 +751,7 @@ Phase 0은 기준과 도구를 확정하는 단계다. Phase 1부터 기능을 �
 3. QoS 0/1/2 비율은 얼마인가?
 4. persistent session, retained, shared subscription 사용량은 얼마인가?
 5. wildcard topic cardinality와 subscription fan-out은 얼마인가?
-6. MQTT 3.1.0과 WebSocket을 사용하는 client가 각각 있는가? 3.1.0 client가 있다면 누가 소유하며 3.1.1 이상으로 갱신하거나 격리할 수 있는가?
+6. MQTT 3.1.0을 사용하는 client가 있는가? 있다면 누가 소유하며 3.1.1 이상으로 갱신하거나 격리할 수 있는가? WebSocket listener 필요성은 승인했다. 지원 SDK와 최소 version은 별도 compatibility 결정을 기다린다.
 7. 현재 Session Expiry와 reconnect backoff 설정은 무엇인가?
 8. tenant 수와 tenant별 최대 부하 편차는 얼마인가?
 9. 현재 인증 방식과 외부 인증 backend는 무엇인가?

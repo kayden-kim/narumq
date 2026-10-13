@@ -26,7 +26,7 @@ flowchart TB
     end
 
     subgraph Adapters["Infrastructure adapters"]
-        MQTTAdapter["TCP/TLS MQTT adapter"]
+        MQTTAdapter["TCP/TLS/WS/WSS MQTT adapter"]
         APIAdapter["Management API adapter"]
         RaftAdapter["Consensus·peer transport adapter"]
         StorageAdapter["WAL·snapshot·state adapter"]
@@ -130,6 +130,12 @@ cmd/narumq
 - `adapters/tls`: TLS 1.2+ listener와 trust anchor를 구성하고 verified chain의 leaf에서
   `ClientCertificateDTO`를 만들어 application boundary로 전달한다. Raw certificate는
   TCP/application/domain 경계로 넘기지 않는다.
+
+- `adapters/websocket`: Composition root는 socket admission 뒤에 선택 TLS를 적용하고,
+  그 바깥에 이 adapter를 붙인다. Adapter는 `/mqtt` path와 `mqtt` subprotocol을
+  요구한다. Binary frame을 `net.Conn` byte stream으로 바꾼다. Connection은 기존
+  인증서 extractor에 verified TLS state를 제공한다. 이 package는 TCP/TLS adapter를
+  import하지 않는다.
 - `adapters/tcp`: accepted SessionKey와 principal snapshot을 connection에 보관하고 모든
   data-plane dispatch에 함께 전달한다. Dynamic cluster는 CONNECT를 raw MQTT Client ID로
   추적하고 tenant별 committed owner/epoch fence를 기록한다. bind 시 반환 ownership이 fence와
@@ -208,8 +214,20 @@ inner socket을 닫고 `sync.Once`로 연결 수를 한 번 줄인다.
 첫 연결이 종료되면 `server.go`의 `requestClose`가 socket의 `Close`를 호출한다.
 TLS도 raw socket의 `Close`까지 전달하므로 같은 slot 반환을 따른다.
 
-TLS를 바깥에서 감싸면 Server의 입력은 계속 `*tls.Conn`이다. 따라서 기존
-transport 판별과 verified client certificate 추출을 바꾸지 않는다. Clock은
+### WebSocket listener composition
+
+`openWebSocketListener`는 먼저 `openMQTTListener`를 `ws` 또는 `wss` transport label로
+호출한다. 그 결과 listener를 `websocketadapter.NewListener`로 감싼다. Standalone과
+cluster는 이 helper를 사용해 WebSocket listener를 연다.
+
+Adapter는 `/mqtt` 경로에서 `mqtt` subprotocol을 협상한 HTTP upgrade만 받는다.
+Binary WebSocket frame을 byte stream으로 바꾼다. MQTT packet 경계와 frame 경계는
+일치할 필요가 없다. Browser `Origin`은 검사하지 않는다. MQTT 인증이 client 신뢰
+경계다. WSS에서는 `ConnectionState`가 verified TLS state를 기존 인증서
+extractor에 제공한다.
+
+TCP/TLS listener에서 Server는 `*tls.Conn`을 받는다. WSS는 WebSocket connection의
+`ConnectionState`를 통해 기존 verified client certificate 추출 경로를 유지한다. Clock은
 composition root에서 `clock.SystemClock`으로 제공한다. Metric port의 구현은
 `internal/adapters/metrics/registry.go`의 `Registry`다. 이 두 의존성은 adapter에서
 application-owned port를 향하며 domain에는 socket이나 limiter 의존성을 추가하지 않는다.

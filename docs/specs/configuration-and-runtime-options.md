@@ -5,16 +5,16 @@
 | 항목 | 값 |
 | --- | --- |
 | 상태 | `Draft` |
-| 관련 요구사항 | [PRD](../requirements/PRD.md) API-05, API-09, SEC-02, SEC-05, MQTT-09, MQTT-11, CLU-09, CLU-12, TEN-06~TEN-08 |
+| 관련 요구사항 | [PRD](../requirements/PRD.md) API-05, API-09, SEC-02, SEC-05, MQTT-09, MQTT-10, MQTT-11, CLU-09, CLU-12, TEN-06~TEN-08 |
 | 관련 아키텍처 문서 | [Project structure 코드 지도](../architectures/project-structure.md) |
 | 관련 계약 | [Process configuration v1](../contracts/process-configuration-v1.md) |
-| 관련 ADR | [ADR-0017](../decisions/ADR-0017-tenant-storage-quota.md), [ADR-0029](../decisions/ADR-0029-replication-factor-write-quorum-profile.md), [ADR-0030](../decisions/ADR-0030-publish-backpressure-admission.md), [ADR-0034](../decisions/ADR-0034-node-local-tenant-connection-and-traffic-limits.md), [ADR-0043](../decisions/ADR-0043-management-api-rate-limit.md), [ADR-0049](../decisions/ADR-0049-mqtt-credential-revocation.md), [ADR-0051](../decisions/ADR-0051-cluster-update-strategy.md), [ADR-0052](../decisions/ADR-0052-configuration-tiers-and-cluster-policy.md) (Proposed, 목표 구조) |
+| 관련 ADR | [ADR-0017](../decisions/ADR-0017-tenant-storage-quota.md), [ADR-0029](../decisions/ADR-0029-replication-factor-write-quorum-profile.md), [ADR-0030](../decisions/ADR-0030-publish-backpressure-admission.md), [ADR-0034](../decisions/ADR-0034-node-local-tenant-connection-and-traffic-limits.md), [ADR-0043](../decisions/ADR-0043-management-api-rate-limit.md), [ADR-0049](../decisions/ADR-0049-mqtt-credential-revocation.md), [ADR-0051](../decisions/ADR-0051-cluster-update-strategy.md), [ADR-0052](../decisions/ADR-0052-configuration-tiers-and-cluster-policy.md) (Proposed, 목표 구조), [ADR-0057](../decisions/ADR-0057-mqtt-websocket-listener.md) |
 
 ## 1. 범위와 외부 주체
 
 - 외부 주체: 운영자, 배포 도구, build pipeline
 - 포함: 실행 모드 선택, 설정 적재와 검증 순서, 시작 실패, 현재 설정 변경 반영 경로, node-local과 cluster-wide 적용 범위
-- 제외: 형식·범위·기본값은 [Process configuration v1](../contracts/process-configuration-v1.md)이 소유한다. 설정값이 MQTT·API·tenant 동작에 주는 효과는 해당 도메인 spec이 소유한다. MQTT listener의 보안 mode 규칙은 [Tenant와 security §2.3](tenancy-and-security.md#23-connect-credential과-strict-security-configuration)을 따른다. 목표 구조는 [ADR-0052](../decisions/ADR-0052-configuration-tiers-and-cluster-policy.md)가 소유한다.
+- 제외: 형식·범위·기본값은 [Process configuration v1](../contracts/process-configuration-v1.md)이 소유한다. 설정값이 MQTT·API·tenant 동작에 주는 효과는 해당 도메인 spec이 소유한다. MQTT listener의 보안 mode 규칙은 [Tenant와 security §2.3](tenancy-and-security.md#23-connect-credential과-strict-security-configuration)을 따른다. WS/WSS listener 결정은 [ADR-0057](../decisions/ADR-0057-mqtt-websocket-listener.md)을 따른다. 목표 구조는 [ADR-0052](../decisions/ADR-0052-configuration-tiers-and-cluster-policy.md)가 소유한다.
 
 ## 2. 실행 모드
 
@@ -26,7 +26,7 @@
 | dynamic cluster | `-cluster-config`만 지정 | 실행을 유지한다. |
 | fixed-voter peer-only | `-raft-peer-config` | 실행을 유지한다. |
 | standalone | 앞의 모드가 아니며 listener flag를 하나 이상 지정 | 실행을 유지한다. Management API 식별자는 cluster ID `narumq-cluster-1`, node ID `narumq-node-1`로 고정한다. |
-| 비활성 | 앞의 모드가 아니며 listener flag가 없음 | `MQTT TCP and management HTTP listeners disabled`를 log에 남기고 종료 코드 0으로 끝난다. |
+| 비활성 | 앞의 모드가 아니며 `-tcp-listen`, `-tls-listen`, `-ws-listen`, `-wss-listen`, `-http-listen`이 모두 비어 있음 | `MQTT TCP and management HTTP listeners disabled`를 log에 남기고 종료 코드 0으로 끝난다. |
 
 시스템은 다음 순서로 모드를 판정한다: `-hash-password` → `-audit-verify` → `-cluster-config` 또는 `-cluster-restore` → `-raft-peer-config` → standalone. 허용 조합은 [Process configuration v1 §1.2](../contracts/process-configuration-v1.md#12-모드-판정-순서와-허용-조합)를 따른다. 진입 조건과 결과는 `cmd/narumq/main.go`의 `runWithContext`에 근거한다.
 
@@ -34,8 +34,8 @@
 
 1. `run`은 SIGINT와 SIGTERM handler를 등록한다. `runWithContext`는 flag를 parse하고 실행 모드를 선택한다.
 2. Password hash, audit verify, cluster restore 같은 일회성 모드는 작업을 마친 뒤 listener 없이 종료한다.
-3. Standalone mode는 flag를 검증하고 security config와 authentication provider를 준비한 뒤 MQTT listener를 연다. Management listener와 runtime service를 구성한 뒤 실행한다. Listener 일부를 연 다음 실패하면 이미 연 listener를 닫는다.
-4. Dynamic cluster mode는 `runWithContext`에서 cluster config를 읽는다. `runClusterMode`는 config와 peer TLS를 검증하고 Raft 상태를 연다. Bootstrap 확인을 위해 peer listener를 먼저 열 수 있다. Peer transport를 준비한 뒤 MQTT security config와 provider를 읽는다. TLS listener가 있으면 MQTT security config를 읽은 직후 `mqtt.tls.clientAuth`와 `mtlsIdentities` 조합을 standalone과 같은 규칙으로 검사한다. 이어서 MQTT·management listener를 연다. `runtimeMetrics`가 있으면 management server를 만든 뒤 sampler를 만들고 `clusterRuntime.serve`가 다른 service와 함께 실행한다. Sampler는 시작 즉시 한 행, 설정한 간격마다 한 행, 종료할 때 마지막 한 행을 기록한다. Sampler 오류는 다른 service 오류처럼 node를 draining으로 바꾸고 process를 종료한다. Cluster restore mode는 `runtimeMetrics`를 사용하지 않는다. 이 단계에서 실패하면 이미 연 자원을 닫는다.
+3. Standalone mode는 flag를 검증하고 security config와 authentication provider를 준비한 뒤 MQTT TCP/TLS/WS/WSS listener를 연다. Management listener와 runtime service를 구성한 뒤 실행한다. Listener 일부를 연 다음 실패하면 이미 연 listener를 닫는다.
+4. Dynamic cluster mode는 `runWithContext`에서 cluster config를 읽는다. `runClusterMode`는 config와 peer TLS를 검증하고 Raft 상태를 연다. Bootstrap 확인을 위해 peer listener를 먼저 열 수 있다. Peer transport를 준비한 뒤 MQTT security config와 provider를 읽는다. TLS 또는 WSS listener가 있으면 MQTT security config를 읽은 직후 `mqtt.tls.clientAuth`와 `mtlsIdentities` 조합을 standalone과 같은 규칙으로 검사한다. 이어서 MQTT·management listener를 연다. `runtimeMetrics`가 있으면 management server를 만든 뒤 sampler를 만들고 `clusterRuntime.serve`가 다른 service와 함께 실행한다. Sampler는 시작 즉시 한 행, 설정한 간격마다 한 행, 종료할 때 마지막 한 행을 기록한다. Sampler 오류는 다른 service 오류처럼 node를 draining으로 바꾸고 process를 종료한다. Cluster restore mode는 `runtimeMetrics`를 사용하지 않는다. 이 단계에서 실패하면 이미 연 자원을 닫는다.
 5. Fixed-voter peer-only mode는 peer config와 TLS를 검증한 뒤 peer listener와 Raft node를 연다.
 6. 실행 중 SIGINT 또는 SIGTERM이 오면 `run`의 context가 취소된다. Cluster runtime은 node를 draining 상태로 전환한 뒤 service를 종료한다.
 
@@ -128,6 +128,14 @@ Standalone mode에서는 security config를 MQTT listener보다 먼저 적재한
 | `CFG-SCN-37` | TEN-08 | Build member가 `cluster-policy-tenant-quotas`를 광고하지 않을 때 활성화 요청을 보낸다. 이후 모든 member가 광고할 때 activation을 commit한다. | 미지원 member가 있으면 activation을 거절한다. 모두 지원하면 feature가 committed 되고 quota policy 사용이 가능하다. | `internal/application/membership.TestClusterPolicyTenantQuotaActivationRejectsUnsupportedStagedMember`, `tests/integration.TestDynamicClusterPolicyTenantQuotasProcessAcceptance` | 통과 | [G7 config·quota 실행 기록](#g7-config-view-and-tenant-quotas-execution) |
 | `CFG-SCN-38` | API-09, TEN-08 | Policy quota를 여러 node에 적용한 뒤 node를 재시작하고 snapshot/backup을 복원한다. | 모든 node와 복원된 cluster가 같은 quota value·source·ClusterPolicy version을 반환한다. | `tests/integration.TestDynamicClusterPolicyTenantQuotasProcessAcceptance`, `cmd/narumq.TestClusterBackupArchivePreservesClusterPolicyTenantQuotas` | 통과 | [G7 config·quota 실행 기록](#g7-config-view-and-tenant-quotas-execution) |
 | `CFG-SCN-39` | API-02 | Standalone을 `-tcp-listen`, `-allow-insecure-anonymous-mqtt`, `-http-listen`으로 시작하고 `GET /api/v1/cluster`, `GET /api/v1/nodes/narumq-node-1`, `GET /api/v1/nodes/1`을 호출한다. | `clusterId`는 `narumq-cluster-1`, `leaderNodeId`와 node `nodeId`는 `narumq-node-1`이다. Decimal ID `1`은 `404`다. | `cmd/narumq.TestRunWithContextServesManagementHTTP` | 통과 | [G8 실행 기록](#g8-standalone-identifiers-execution) |
+| `CFG-SCN-40` | MQTT-10 | Standalone `-ws-listen 0.0.0.0:1`을 지정한다. | 시스템은 literal loopback이 아닌 주소를 거절한다. | `cmd/narumq.TestRunWithContextWebSocketFlags` | 통과 | [WebSocket 실행 기록](#websocket-execution) |
+| `CFG-SCN-41` | MQTT-10, SEC-02 | `-wss-listen`에 certificate/key를 빼거나 TLS client-auth binding을 바꾼다. | TLS 설정 누락과 standalone TLS와 다른 mTLS binding을 거절한다. | `cmd/narumq.TestRunWithContextWebSocketFlags`, `cmd/narumq.TestRunWithContextMQTTSecurityMode` | 통과 | [WebSocket 실행 기록](#websocket-execution) |
+| `CFG-SCN-42` | MQTT-10, SEC-02 | `-allow-insecure-anonymous-mqtt`와 `-ws-listen` 또는 `-wss-listen`을 함께 지정한다. | 시스템은 조합을 거절한다. | `cmd/narumq.TestRunWithContextWebSocketFlags` | 통과 | [WebSocket 실행 기록](#websocket-execution) |
+| `CFG-SCN-43` | MQTT-10, MQTT-11 | `-ws-*` 또는 `-wss-*` admission 제한에 대응 listener를 지정하지 않는다. | 시스템은 각 제한을 거절한다. | `cmd/narumq.TestRunWithContextWebSocketFlags` | 통과 | [WebSocket 실행 기록](#websocket-execution) |
+| `CFG-SCN-44` | MQTT-10 | Cluster config에서 `mqtt.webSocket` object를 생략한다. | 기존 설정을 계속 읽고 WS/WSS listener를 비활성화한다. | `cmd/narumq.TestParseClusterConfigWebSocket`, `cmd/narumq.TestClusterMQTTListenersBindConfiguredEndpointsAndClosePartialOpen` | 통과 | [WebSocket 실행 기록](#websocket-execution) |
+| `CFG-SCN-45` | MQTT-10, SEC-02 | `mqtt.webSocket.tlsListenAddress`를 설정하고 `mqtt.tls`를 생략한다. | Parser는 TLS profile 누락을 거절한다. | `cmd/narumq.TestParseClusterConfigWebSocket`, `tests/integration.TestDynamicClusterWebSocketProcessAcceptance` | 통과 | [WebSocket 실행 기록](#websocket-execution) |
+| `CFG-SCN-46` | MQTT-10, API-09 | Dynamic cluster node의 적용 설정을 조회한다. | Response의 `mqtt.webSocket`은 configured address와 limits를 반환하고, 미설정이면 `null`이다. | `cmd/narumq.TestNodeConfigurationMQTTWebSocketNil`, `internal/adapters/http/management.TestNodeConfigurationResponseIncludesWebSocketSettings`, `tests/integration.TestDynamicClusterWebSocketProcessAcceptance` | 통과 | [WebSocket 실행 기록](#websocket-execution) |
+| `CFG-SCN-47` | MQTT-10, SEC-02 | Standalone 프로세스에서 security config, `-ws-listen`, `-wss-listen`, TLS certificate/key를 지정한다. | 두 loopback listener가 연결을 수락하고 context cancellation 뒤 정상 종료한다. | `cmd/narumq.TestRunWithContextStartsAndStopsWebSocketListeners` | 통과 | [WebSocket 실행 기록](#websocket-execution) |
 
 <a id="configuration-test-execution"></a>
 ### 설정 시험 실행 기록
@@ -401,6 +409,37 @@ go run ./tools/verify local
 | Local gate | 통과 (`local: PASS`, `coverage: PASS`; 217.45s; `branch-instrument`, `architecture`, `fuzz`, package·race 시험). |
 | Traceability | 통과 (`P0 mapped 70/81, exceptions 11`). |
 | CI gate | 미실행. 전체 CI merge gate는 `docs/TODO.md` §1.9에서 별도로 추적한다. |
+
+<a id="websocket-execution"></a>
+### MQTT-10 WebSocket/WSS 실행 기록
+
+실행 환경은 Windows/amd64, Go 1.26.5다. 검증은 현재 작업 트리에서 실행했다. CI는 실행하지 않았다.
+
+첫 local 검증은 adapter 시험 표식에 `MQTT-10`이 두 번 나와 traceability gate에서 실패했다. 시나리오 ID는 유지하고 중복된 요구사항 표기를 제거했다. 다음 실행에서는 TLS 통합 fixture가 nil registry pointer를 `MetricsRecorder` interface에 전달해 panic했다. Fixture는 nil pointer일 때 nil interface를 전달하도록 고쳤다. 수정 뒤 local gate가 통과했다.
+
+```sh
+go test ./cmd/narumq -run '^TestRunWithContextStartsAndStopsWebSocketListeners$' -count=1 -v
+go test ./internal/adapters/websocket ./internal/adapters/tcp ./internal/adapters/metrics ./internal/adapters/http/management ./cmd/narumq -count=1 -race
+go test ./tests/integration -run 'WebSocket' -count=1 -v
+go test ./tests/integration -run '^TestDynamicClusterWebSocketProcessAcceptance$' -count=1 -v -timeout 10m
+go build ./... && go vet ./...
+go run ./tools/verify traceability
+go run ./tools/verify markdown-links
+GOMAXPROCS=4 go run ./tools/verify local
+```
+
+| 확인 | 결과 |
+| --- | --- |
+| Standalone listener startup | 통과. WS와 WSS loopback socket이 연결을 받았고 context 취소 뒤 `runWithContext`가 nil을 반환했다. |
+| Adapter·composition race suite | 통과. WebSocket, TCP, metrics, management adapter와 `cmd/narumq` 시험이 race detector를 통과했다. |
+| WebSocket wire integration | 통과. MQTT 3.1.1/5, cross-transport, password, mTLS, keepalive, blocklist, frame boundary, live close, admission·metrics 시나리오를 확인했다. mTLS에서 인증서가 없는 client의 TLS handshake warning은 예상한 거절 로그다. |
+| Dynamic cluster process acceptance | 통과. 세 node 사이 WS publish/subscribe와 applied-config 응답을 확인했다. |
+| Real binary smoke | 통과. `go build -o .artifacts/mqtt10-ws-smoke/narumq.exe ./cmd/narumq`로 binary를 만들었다. `.artifacts/mqtt10-ws-smoke/narumq.exe -ws-listen 127.0.0.1:18083 -security-config .artifacts/mqtt10-ws-smoke/security.json`을 background service로 시작했다. `go run .artifacts/mqtt10-ws-smoke/client.go`는 `CONNACK return code=0`을 받았다. `.artifacts/mqtt10-ws-smoke/narumq.exe -ws-listen 0.0.0.0:18083 -security-config .artifacts/mqtt10-ws-smoke/security.json`은 종료 코드 1과 `-ws-listen must use literal loopback IP 127.0.0.0/8 or ::1`을 반환했다. 임시 binary, security config, client source는 smoke 뒤 제거했으므로 명령을 그대로 다시 실행할 수는 없다. |
+| Build·vet | 통과 (`go build ./... && go vet ./...`). |
+| Traceability | 통과 (`P0 mapped 71/81, exceptions 10`). |
+| Markdown links | 통과 (`go run ./tools/verify markdown-links`; 157 files, 2,318 local links). |
+| Local gate | 통과 (`local: PASS`, `coverage: PASS`; branch-instrument, architecture, fuzz, package·race 시험과 전체 coverage 검증). |
+| CI gate | 미실행. 저장소 전체 CI merge gate는 `docs/TODO.md` §1.9에서 별도로 추적한다. |
 
 ## 7. 미결정 사항
 

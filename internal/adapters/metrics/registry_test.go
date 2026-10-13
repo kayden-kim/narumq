@@ -629,7 +629,7 @@ func TestRegistryRendersAuditMetrics(t *testing.T) {
 	}
 }
 
-// Traceability: PRD MQTT-09/MQTT-11; docs/specs/mqtt-protocol-and-session.md §7.1.
+// Traceability: PRD MQTT-09/MQTT-10/MQTT-11; docs/specs/mqtt-protocol-and-session.md §1, §7.1.
 func TestRegistryRendersListenerAdmissionRejections(t *testing.T) {
 	registry := NewRegistry()
 	for _, openMetrics := range []bool{false, true} {
@@ -637,7 +637,11 @@ func TestRegistryRendersListenerAdmissionRejections(t *testing.T) {
 		want := "narumq_mqtt_listener_admission_rejected_total{transport=\"tcp\",reason=\"max_connections\"} 0\n" +
 			"narumq_mqtt_listener_admission_rejected_total{transport=\"tcp\",reason=\"connection_rate\"} 0\n" +
 			"narumq_mqtt_listener_admission_rejected_total{transport=\"tls\",reason=\"max_connections\"} 0\n" +
-			"narumq_mqtt_listener_admission_rejected_total{transport=\"tls\",reason=\"connection_rate\"} 0\n"
+			"narumq_mqtt_listener_admission_rejected_total{transport=\"tls\",reason=\"connection_rate\"} 0\n" +
+			"narumq_mqtt_listener_admission_rejected_total{transport=\"ws\",reason=\"max_connections\"} 0\n" +
+			"narumq_mqtt_listener_admission_rejected_total{transport=\"ws\",reason=\"connection_rate\"} 0\n" +
+			"narumq_mqtt_listener_admission_rejected_total{transport=\"wss\",reason=\"max_connections\"} 0\n" +
+			"narumq_mqtt_listener_admission_rejected_total{transport=\"wss\",reason=\"connection_rate\"} 0\n"
 		if !strings.Contains(text, want) {
 			t.Fatalf("missing ordered zero series: %s", text)
 		}
@@ -645,16 +649,23 @@ func TestRegistryRendersListenerAdmissionRejections(t *testing.T) {
 	registry.ListenerAdmissionRejected(ports.TransportTCP, ports.ListenerAdmissionReasonMaxConnections)
 	registry.ListenerAdmissionRejected(ports.TransportTCP, ports.ListenerAdmissionReasonMaxConnections)
 	registry.ListenerAdmissionRejected(ports.TransportTLS, ports.ListenerAdmissionReasonConnectionRate)
-	registry.ListenerAdmissionRejected("ws", ports.ListenerAdmissionReasonMaxConnections)
+	registry.ListenerAdmissionRejected(ports.TransportWS, ports.ListenerAdmissionReasonMaxConnections)
+	registry.ListenerAdmissionRejected(ports.TransportWSS, ports.ListenerAdmissionReasonConnectionRate)
+	registry.ListenerAdmissionRejected("quic", ports.ListenerAdmissionReasonMaxConnections)
 	registry.ListenerAdmissionRejected(ports.TransportTCP, "other")
 	want := "narumq_mqtt_listener_admission_rejected_total{transport=\"tcp\",reason=\"max_connections\"} 2\n" +
 		"narumq_mqtt_listener_admission_rejected_total{transport=\"tcp\",reason=\"connection_rate\"} 0\n" +
 		"narumq_mqtt_listener_admission_rejected_total{transport=\"tls\",reason=\"max_connections\"} 0\n" +
-		"narumq_mqtt_listener_admission_rejected_total{transport=\"tls\",reason=\"connection_rate\"} 1\n"
+		"narumq_mqtt_listener_admission_rejected_total{transport=\"tls\",reason=\"connection_rate\"} 1\n" +
+		"narumq_mqtt_listener_admission_rejected_total{transport=\"ws\",reason=\"max_connections\"} 1\n" +
+		"narumq_mqtt_listener_admission_rejected_total{transport=\"ws\",reason=\"connection_rate\"} 0\n" +
+		"narumq_mqtt_listener_admission_rejected_total{transport=\"wss\",reason=\"max_connections\"} 0\n" +
+		"narumq_mqtt_listener_admission_rejected_total{transport=\"wss\",reason=\"connection_rate\"} 1\n"
 	for _, openMetrics := range []bool{false, true} {
 		text := string(registry.Render(openMetrics))
 		if !strings.Contains(text, want) ||
-			strings.Contains(text, `narumq_mqtt_listener_admission_rejected_total{transport="tcp",reason="other"}`) {
+			strings.Contains(text, `narumq_mqtt_listener_admission_rejected_total{transport="tcp",reason="other"}`) ||
+			strings.Contains(text, `narumq_mqtt_listener_admission_rejected_total{transport="quic"}`) {
 			t.Fatalf("unexpected admission series: %s", text)
 		}
 	}

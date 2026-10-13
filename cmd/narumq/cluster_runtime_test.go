@@ -1185,9 +1185,9 @@ func TestClusterSnapshotAndWALTailReplayRestoresSessionAggregateAndRouteProjecti
 	}
 }
 
-// Traceability: MQTT-01; docs/specs/mqtt-protocol-and-session.md §1.
+// Traceability: MQTT-01, PRD MQTT-10; docs/specs/mqtt-protocol-and-session.md §1.
 func TestClusterMQTTListenersBindConfiguredEndpointsAndClosePartialOpen(t *testing.T) {
-	listeners, err := clusterMQTTListeners(clusterConfigFile{}, nil)
+	listeners, err := clusterMQTTListeners(clusterConfigFile{}, nil, slog.Default())
 	if err != nil || len(listeners) != 0 {
 		t.Fatalf("empty cluster MQTT listeners=%v err=%v", listeners, err)
 	}
@@ -1199,7 +1199,7 @@ func TestClusterMQTTListenersBindConfiguredEndpointsAndClosePartialOpen(t *testi
 			TLS: &clusterMQTTTLS{CertFile: filepath.Join(t.TempDir(), "missing.crt"), KeyFile: filepath.Join(t.TempDir(), "missing.key"), ClientAuth: "none", MinVersion: "1.2"},
 		},
 	}
-	if listeners, err := clusterMQTTListeners(invalidTLS, nil); err == nil || listeners != nil {
+	if listeners, err := clusterMQTTListeners(invalidTLS, nil, slog.Default()); err == nil || listeners != nil {
 		t.Fatalf("invalid TLS listener result=%v err=%v, want closed partial TCP listener and error", listeners, err)
 	}
 	rebound, err := net.Listen("tcp", tcpAddress)
@@ -1218,7 +1218,7 @@ func TestClusterMQTTListenersBindConfiguredEndpointsAndClosePartialOpen(t *testi
 		},
 	}
 	missingTCPAddress := missingTLSConfig.MQTT.TCPListenAddress
-	if listeners, err := clusterMQTTListeners(missingTLSConfig, nil); err == nil ||
+	if listeners, err := clusterMQTTListeners(missingTLSConfig, nil, slog.Default()); err == nil ||
 		err.Error() != "cluster MQTT TLS listener requires mqtt.tls" || listeners != nil {
 		t.Fatalf("missing mqtt.tls listener result=%v err=%v", listeners, err)
 	}
@@ -1244,20 +1244,56 @@ func TestClusterMQTTListenersBindConfiguredEndpointsAndClosePartialOpen(t *testi
 			TCPListenAddress: clusterRuntimeTestFreeAddress(t),
 			TLSListenAddress: clusterRuntimeTestFreeAddress(t),
 			TLS:              &clusterMQTTTLS{CertFile: certPath, KeyFile: keyPath, ClientAuth: "none", MinVersion: "1.2"},
+			WebSocket: &clusterMQTTWebSocket{
+				ListenAddress: clusterRuntimeTestFreeAddress(t), TLSListenAddress: clusterRuntimeTestFreeAddress(t),
+			},
 		},
 	}
-	listeners, err = clusterMQTTListeners(config, nil)
-	if err != nil || len(listeners) != 2 {
-		t.Fatalf("configured TCP/TLS listeners=%v err=%v, want two bound listeners", listeners, err)
+	listeners, err = clusterMQTTListeners(config, nil, slog.Default())
+	if err != nil || len(listeners) != 4 {
+		t.Fatalf("configured TCP/TLS/WS/WSS listeners=%v err=%v, want four bound listeners", listeners, err)
 	}
 	for _, listener := range listeners {
 		if err := listener.Close(); err != nil {
 			t.Fatal(err)
 		}
 	}
+
+	wssConflict, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	conflictAddress := wssConflict.Addr().String()
+	partialConfig := clusterConfigFile{
+		MQTT: clusterMQTT{
+			TCPListenAddress: clusterRuntimeTestFreeAddress(t),
+			WebSocket: &clusterMQTTWebSocket{
+				ListenAddress: clusterRuntimeTestFreeAddress(t), TLSListenAddress: conflictAddress,
+			},
+			TLS: &clusterMQTTTLS{CertFile: certPath, KeyFile: keyPath, ClientAuth: "none", MinVersion: "1.2"},
+		},
+	}
+	tcpAddress = partialConfig.MQTT.TCPListenAddress
+	wsAddress := partialConfig.MQTT.WebSocket.ListenAddress
+	if listeners, err := clusterMQTTListeners(partialConfig, nil, slog.Default()); err == nil || listeners != nil {
+		_ = wssConflict.Close()
+		t.Fatalf("WSS conflict result=%v err=%v, want closed partial TCP and WS listeners", listeners, err)
+	}
+	if err := wssConflict.Close(); err != nil {
+		t.Fatal(err)
+	}
+	for _, address := range []string{tcpAddress, wsAddress} {
+		rebound, err := net.Listen("tcp", address)
+		if err != nil {
+			t.Fatalf("listener on %s remained open after WSS setup failure: %v", address, err)
+		}
+		if err := rebound.Close(); err != nil {
+			t.Fatal(err)
+		}
+	}
 }
 
-// Traceability: SEC-03; docs/specs/configuration-and-runtime-options.md §6; ADR-0052.
+// Traceability: SEC-03, PRD MQTT-10; docs/specs/configuration-and-runtime-options.md §6; ADR-0052.
 func TestClusterMQTTSecurityValidatesTLSClientAuthBindings(t *testing.T) {
 	securityPath := filepath.Join(t.TempDir(), "security.json")
 	if err := os.WriteFile(securityPath, []byte(validMTLSSecurityJSON), 0o600); err != nil {
@@ -1266,18 +1302,26 @@ func TestClusterMQTTSecurityValidatesTLSClientAuthBindings(t *testing.T) {
 	for _, test := range []struct {
 		clientAuth string
 		wantError  string
+		wss        bool
 	}{
 		{clientAuth: "none", wantError: "mqtt.tls.clientAuth none cannot be used with mTLS identity bindings"},
 		{clientAuth: "require"},
 		{clientAuth: "request", wantError: "mqtt.tls.clientAuth request requires JWT or password authentication configuration when mTLS identities are enabled"},
+		{clientAuth: "require", wss: true},
+		{clientAuth: "none", wantError: "mqtt.tls.clientAuth none cannot be used with mTLS identity bindings", wss: true},
 	} {
-		t.Run(test.clientAuth, func(t *testing.T) {
-			config := clusterConfigFile{
-				MQTT: clusterMQTT{
-					TLSListenAddress: "127.0.0.1:0", SecurityConfigFile: securityPath,
-					TLS: &clusterMQTTTLS{ClientAuth: test.clientAuth},
-				},
+		name := test.clientAuth
+		if test.wss {
+			name += " WSS"
+		}
+		t.Run(name, func(t *testing.T) {
+			mqttConfig := clusterMQTT{SecurityConfigFile: securityPath, TLS: &clusterMQTTTLS{ClientAuth: test.clientAuth}}
+			if test.wss {
+				mqttConfig.WebSocket = &clusterMQTTWebSocket{TLSListenAddress: "127.0.0.1:0"}
+			} else {
+				mqttConfig.TLSListenAddress = "127.0.0.1:0"
 			}
+			config := clusterConfigFile{MQTT: mqttConfig}
 			bundle, _, mtlsProvider, _, err := clusterMQTTSecurity(config)
 			if test.wantError != "" {
 				if err == nil || err.Error() != test.wantError {

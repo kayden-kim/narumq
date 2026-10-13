@@ -143,7 +143,7 @@ func admissionAssertRejected(t *testing.T, connection net.Conn, recorder *admiss
 	}
 }
 
-// Traceability: PRD MQTT-09/MQTT-11; docs/specs/mqtt-protocol-and-session.md §7.1.
+// Traceability: PRD MQTT-09/MQTT-10/MQTT-11; docs/specs/mqtt-protocol-and-session.md §1, §7.1.
 func TestNewAdmissionListenerValidatesConfig(t *testing.T) {
 	clock := &admissionTestClock{now: time.Now()}
 	inner, err := net.Listen("tcp", "127.0.0.1:0")
@@ -161,7 +161,7 @@ func TestNewAdmissionListenerValidatesConfig(t *testing.T) {
 	}{
 		{name: "nil listener", config: valid, want: ErrNilListener},
 		{name: "nil clock", inner: inner, config: ListenerAdmissionConfig{Transport: portsmetrics.TransportTCP, MaxConnections: 1}, want: ErrNilClock},
-		{name: "invalid transport", inner: inner, config: ListenerAdmissionConfig{Transport: "ws", MaxConnections: 1, Clock: clock}, want: ErrInvalidConfig},
+		{name: "invalid transport", inner: inner, config: ListenerAdmissionConfig{Transport: "quic", MaxConnections: 1, Clock: clock}, want: ErrInvalidConfig},
 		{name: "both disabled", inner: inner, config: ListenerAdmissionConfig{Transport: portsmetrics.TransportTCP, Clock: clock}, want: ErrInvalidConfig},
 		{name: "negative max connections", inner: inner, config: ListenerAdmissionConfig{Transport: portsmetrics.TransportTCP, MaxConnections: -1, Clock: clock}, want: ErrInvalidConfig},
 		{name: "max connections above bound", inner: inner, config: ListenerAdmissionConfig{Transport: portsmetrics.TransportTCP, MaxConnections: MaxListenerAdmissionLimit + 1, Clock: clock}, want: ErrInvalidConfig},
@@ -173,6 +173,20 @@ func TestNewAdmissionListenerValidatesConfig(t *testing.T) {
 			listener, err := NewAdmissionListener(test.inner, test.config)
 			if listener != nil || !errors.Is(err, test.want) {
 				t.Fatalf("NewAdmissionListener() = (%v, %v), want (nil, %v)", listener, err, test.want)
+			}
+		})
+	}
+	for _, transport := range []string{portsmetrics.TransportWS, portsmetrics.TransportWSS} {
+		t.Run("accepts "+transport, func(t *testing.T) {
+			inner := newPipeListener()
+			listener, err := NewAdmissionListener(inner, ListenerAdmissionConfig{
+				Transport: transport, MaxConnections: 1, Clock: clock,
+			})
+			if err != nil {
+				t.Fatalf("NewAdmissionListener(%q) error = %v", transport, err)
+			}
+			if err := listener.Close(); err != nil {
+				t.Fatalf("Close() error = %v", err)
 			}
 		})
 	}
