@@ -696,7 +696,7 @@ MQTT normative statement 연결표는 `tests/conformance/mqtt-compliance-v1.json
 | 전체 local gate (2026-10-10) | `go run ./tools/verify local` PASS, 205.10초. Branch instrumentation, traceability, 5개 fuzz target, architecture, 전체 package·integration(125.359초), race, vet과 coverage가 통과했다. |
 | CI 병렬도 실험 (2026-10-10, mutation 수동 분리 전) | `go run ./tools/verify ci --base 23005e1a0d819a357507ce173b8d0f89cf40cf19` PASS, 1,388.95초. Coverage는 `-parallel=16`, integration은 156.691초였다. Mutation 단계는 18분 29초였다. 다섯 package 결과는 662 killed, 0 lived, 6 not covered였다. MQTT는 efficacy 100%, mutant coverage 98.80%였지만 console에 22 timed out도 기록됐다. 이 기록은 mutation을 CI에서 제외하기 전 실행 결과다. |
 
-2026-10-11 현재 작업 트리의 P0 예외는 10개다. `go run ./tools/verify traceability`는 PASS하며 `P0 mapped 71/81, exceptions 10`을 출력했다. 원격 main `verify` gate의 당시 결과와 실패 probe PR의 `blocked` 상태는 §8.9에 보존한다. `enforce_admins=false`라 관리자 merge 거절은 시험하지 않았으므로 TEST-10은 미검증으로 유지한다.
+2026-10-11 현재 작업 트리의 P0 예외는 10개다. `go run ./tools/verify traceability`는 PASS하며 `P0 mapped 71/81, exceptions 10`을 출력했다. 원격 main `verify` gate 결과, 네 조건의 merge 거절 probe와 `enforce_admins=true` 적용 증거는 §8.9에 기록했다. 보류된 DEP P0 예외 10개가 남아 있어 TEST-10은 미검증으로 유지한다.
 
 
 ### 7.3 Cluster failpoint 빌드
@@ -1160,17 +1160,30 @@ HTML 시각 자료는 Chromium desktop·mobile 화면에서 확인했다. Consol
 | 필수 status check | `verify` |
 | Strict status check | `true`; 최신 `main` 반영 필요 |
 | Required review | 없음 |
-| Admin enforcement | `false`; 관리자는 보호를 우회할 수 있음 |
+| Admin enforcement | `true` (2026-10-11 [ADR-0056](../decisions/ADR-0056-branch-protection-for-admins.md) 적용); 관리자에게도 동일하게 보호 적용 |
 | Force push·branch deletion | 둘 다 금지 |
 | Push restriction | 없음 |
 
-### 실패 PR probe
+### 실패 PR probe (초기 관찰)
 
-임시 PR [#1](https://github.com/kayden-kim/narumq/pull/1)은 `tools/verify/branch_protection_probe_test.go::TestBranchProtectionProbe`에서 의도적으로 실패했다. [Run 38112802413](https://github.com/kayden-kim/narumq/actions/runs/38112802413)에서 필수 `verify` check가 `failure`였고 PR API는 `mergeable_state=blocked`를 반환했다. 이 조회 뒤 PR을 닫고 probe branch를 삭제했다. 시험 파일은 `main`에 남지 않았다.
+초기 임시 PR [#1](https://github.com/kayden-kim/narumq/pull/1)은 `tools/verify/branch_protection_probe_test.go::TestBranchProtectionProbe`에서 의도적으로 실패했다. [Run 38112802413](https://github.com/kayden-kim/narumq/actions/runs/38112802413)에서 필수 `verify` check가 `failure`였고 PR API는 `mergeable_state=blocked`를 반환했다. 이 조회 뒤 PR을 닫고 probe branch를 삭제했다. 시험 파일은 `main`에 남지 않았다. 초기 실행 시점에는 `enforce_admins=false`였고 실제 merge API 호출은 검증하지 않았다.
 
-Probe는 test 실패만 확인했다. Coverage 저하와 미매핑 P0 실패를 별도로 주입하지 않았다. 실제 merge API 요청도 보내지 않았다. `enforce_admins=false`이므로 현재 관리자 인증으로는 branch protection이 merge 거절을 보장하지 않는다. 실패 check와 차단 상태는 관찰했지만 비관리자 write 권한에서의 merge 거절은 확인하지 못했다. 따라서 PRD TEST-10은 미검증이다.
+### TEST-10 merge 거절 probe
 
-Traceability gate는 `P0 mapped 70/81, exceptions 11`을 보고했다. 예외 11개가 남아 있다. CI의 traceability PASS는 허용된 예외 목록과 test 연결이 일치한다는 뜻이며, 81개 P0 모두가 test에 연결됐다는 뜻은 아니다. Full CI는 fuzz와 race 단계를 통과했고 위의 알려진 회귀 경로를 반복 검증했다. 이 결과는 TEST-06~TEST-09, TEST-13~TEST-15의 원격 CI 실행 증거다. Production workload와 release gate는 별도다.
+2026-10-11에 [ADR-0056](../decisions/ADR-0056-branch-protection-for-admins.md)에 따라 `enforce_admins=true`를 영구 설정하고, PRD TEST-10의 네 조건(test 실패, coverage 저하, 미매핑 P0, 미매핑 normative statement)마다 별도 probe PR을 열어 CI 실패와 관리자 merge API 거절(HTTP 405)을 검증했다.
+
+| Probe | 주입 내용 | PR | Run ID | CI 실패 문자열 | `mergeable_state` | Merge API 결과 |
+| --- | --- | --- | --- | --- | --- | --- |
+| `test-failure` | `tools/verify/branch_protection_probe_test.go`에 의도적 실패 테스트 주입 | [#3](https://github.com/kayden-kim/narumq/pull/3) | [38125505236](https://github.com/kayden-kim/narumq/actions/runs/38125505236) | `--- FAIL: TestBranchProtectionProbe`, `TEST-10 probe: intentional test failure` | `blocked` | HTTP 405 (`Required status check "verify" is failing.`) |
+| `coverage-drop` | `internal/domain/mqtt/branch_protection_probe.go`에 테스트 없는 함수 주입 | [#4](https://github.com/kayden-kim/narumq/pull/4) | [38125509535](https://github.com/kayden-kim/narumq/actions/runs/38125509535) | `coverage gate failed:`, `narumq/internal/domain/mqtt function ratchet 100.00% is above measured 98.91%`, `diff line coverage 0.00% is below 90.00%`, `diff function coverage 0.00% is below 90.00%` | `blocked` | HTTP 405 (`Required status check "verify" is failing.`) |
+| `unmapped-p0` | `docs/requirements/PRD.md`에 테스트/예외 없는 `API-99` P0 행 추가 | [#5](https://github.com/kayden-kim/narumq/pull/5) | [38125513065](https://github.com/kayden-kim/narumq/actions/runs/38125513065) | `traceability: P0 requirement API-99 has no Traceability test and no exception in tests/conformance/p0-requirement-exceptions-v1.json` | `blocked` | HTTP 405 (`Required status check "verify" is failing.`) |
+| `unmapped-mqtt-statement` | `tests/conformance/mqtt-compliance-v1.json`에 test 빈 배열인 `MQTT-4.9.0-1` 추가 | [#6](https://github.com/kayden-kim/narumq/pull/6) | [38125516594](https://github.com/kayden-kim/narumq/actions/runs/38125516594) | `traceability: invalid compliance matrix tests/conformance/mqtt-compliance-v1.json: statement[61].tests must not be empty` | `blocked` | HTTP 405 (`Required status check "verify" is failing.`) |
+
+증거 수집 후 네 PR을 모두 닫고 remote branch를 삭제했다. Probe 변경은 `main`에 남지 않았다. 관리자 계정으로 호출한 merge API 거절(HTTP 405)과 호출 후 `merged=false`, `origin/main` SHA 불변(`4c1ab4cc143426411cb5ea9ad1c0d2b501b2b5d4`)을 확인했다.
+
+네 가지 조건의 merge 차단은 모두 증명했다. 그러나 보류된 인프라 범위의 DEP P0 예외 10개가 `tests/conformance/p0-requirement-exceptions-v1.json`에 남아 있으므로, [ADR-0042](../decisions/ADR-0042-p0-requirement-traceability-gate.md) §1.6에 따라 TEST-10은 계속 **미검증**으로 관리한다.
+
+Traceability gate는 `P0 mapped 71/81, exceptions 10`을 보고했다. 보류된 DEP 예외 10개가 남아 있다. CI의 traceability PASS는 허용된 예외 목록과 test 연결이 일치한다는 뜻이며, 81개 P0 모두가 test에 연결됐다는 뜻은 아니다. Full CI는 fuzz와 race 단계를 통과했고 위의 알려진 회귀 경로를 반복 검증했다. 이 결과는 TEST-06~TEST-09, TEST-13~TEST-15의 원격 CI 실행 증거다. Production workload와 release gate는 별도다.
 
 ## 9. Architecture 검증
 
