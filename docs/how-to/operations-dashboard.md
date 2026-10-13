@@ -1,13 +1,13 @@
 # NaruMQ Operations Dashboard를 구성하는 방법
 
-Prometheus는 `/metrics`에서 node별 metric(운영 수치)을 정해진 간격으로 읽어 시간에 따른 값을 저장한다. Grafana는 Prometheus 값과 Management API 상태를 datasource(데이터 원본 연결)로 읽어 한 화면에 보여준다. 이 절차는 두 도구를 NaruMQ에 연결한다. Cluster API는 조회만 허용하는 `ReadOnly` API key로 읽는다. Local Docker acceptance에서 설정·수집·Dashboard·권한 경계를 확인했다. Production 배포 환경은 검증하지 않았다.
+Prometheus는 `/metrics`에서 node별 metric(운영 수치)을 정해진 간격으로 읽어 시간에 따른 값을 저장한다. Grafana는 Prometheus 값과 Management API 상태를 datasource(데이터 원본 연결)로 읽어 한 화면에 보여준다. 이 절차는 두 도구를 NaruMQ에 연결한다. Cluster API는 조회만 허용하는 `ReadOnly` API key로 읽는다. Local Docker acceptance에서 설정·수집·Dashboard·권한 경계를 확인했고, 2026-10-13 EKS에서는 stack 배포와 Dashboard provisioning API를 확인했다. EKS의 실제 NaruMQ scrape와 Management API datasource 연결은 미검증이다.
 
 | 항목 | 값 |
 | --- | --- |
 | 대상 독자 | NaruMQ 운영자와 monitoring 담당자 |
-| 검증 상태 | Verified (local Docker acceptance 범위; production 배포 미검증) |
-| 검증 환경·버전 | Prometheus 3.5.0, Grafana OSS 13.0.2, Infinity datasource 4.1.1, 3개 NaruMQ process |
-| 최종 검증일 | 2026-10-09 |
+| 검증 상태 | Verified (local Docker acceptance 및 EKS stack 배포·Dashboard API provisioning; EKS live scrape/data source integration 미검증) |
+| 검증 환경·버전 | Prometheus 3.5.0, Grafana OSS 13.0.2, Infinity datasource 4.1.1, local 3개 NaruMQ process 및 EKS `narumq-eks` |
+| 최종 검증일 | 2026-10-13 |
 | 관련 기준 문서 | [PRD §9.6](../requirements/PRD.md#96-대시보드), [Management API와 observability §8·§9](../specs/management-api-and-observability.md#8-dashboard-계약), [Management API v1](../contracts/management-api-v1.md), [ADR-0045](../decisions/ADR-0045-operations-dashboard-grafana.md) |
 
 ## 1. 대상과 영향
@@ -29,7 +29,7 @@ Prometheus는 `/metrics`에서 node별 metric(운영 수치)을 정해진 간격
 ## 3. 절차
 
 - 실행 환경: 배포 플랫폼의 관리 환경. Acceptance 명령은 PowerShell 또는 Go가 동작하는 shell에서 실행한다.
-- 실행 위치: 저장소 root. Prometheus와 Grafana의 mount 설정은 해당 배포 repository에서 관리한다.
+- 실행 위치: 저장소 root. Prometheus와 Grafana의 mount 설정은 해당 배포 repository에서 관리한다. Kubernetes/EKS 배포는 저장소 root에서 Kustomize manifest를 적용한다.
 - 바꿔 넣을 값:
   - Prometheus target의 주소는 Prometheus container에서 접근 가능한 Management listener 주소로 바꾼다.
   - `node_id`는 Management API `nodeId`와 같은 decimal string으로 쓴다. 이 Dashboard는 Dynamic cluster를 대상으로 한다. Standalone의 고정 node ID `narumq-node-1`은 이 규칙 대상이 아니다.
@@ -99,7 +99,19 @@ Prometheus는 `/metrics`에서 node별 metric(운영 수치)을 정해진 간격
 
    기대 결과: Grafana에 Prometheus와 Management API datasource, `NaruMQ Operations` Dashboard가 provision된다.
 
-5. **Datasource와 Dashboard를 확인한다.**
+5. **Kubernetes/EKS에 Dashboard stack을 배포한다.**
+
+   저장소 root에서 다음 명령을 실행한다.
+
+   ```sh
+   kubectl apply -k deploy/observability
+   ```
+
+   Kustomize는 namespace `narumq-observability`를 적용하고 이 저장소의 Prometheus 설정·target, Grafana provisioning 및 Dashboard 파일로 ConfigMap을 생성한다. Prometheus와 Grafana는 ClusterIP Services로 노출된다.
+
+   기대 결과: `narumq-observability` namespace에 Prometheus와 Grafana Deployment 및 Service가 생성된다. 배포 후 실제 NaruMQ target과 조회 전용 API credential을 환경에 연결해야 scrape와 Management API 조회가 동작한다.
+
+6. **Datasource와 Dashboard를 확인한다.**
 
    Grafana의 [Dashboard](http://localhost:3000/d/narumq-operations/narumq-operations)를 연다. 운영 URL을 사용하는 경우 `localhost:3000`을 Grafana 주소로 바꾼다.
 
@@ -117,6 +129,7 @@ Prometheus는 `/metrics`에서 node별 metric(운영 수치)을 정해진 간격
 | --- | --- | --- | --- | --- |
 | Static provisioning contract | Dashboard panel, OpenAPI GET path, Metric catalog와 provisioning 설정이 계약과 일치한다. | `go test ./tests/integration -run '^(TestDynamicClusterTenantIsolationPenetrationProcessAcceptance|TestDynamicClusterConnectionRebalanceProcessAcceptance|TestDashboardProvisioningMatchesContracts)$' -count=1 -v -timeout 20m` | 2026-10-10 PASS. | `tests/integration/dashboard_stack_test.go::TestDashboardProvisioningMatchesContracts` |
 | Prometheus scrape와 Grafana datasource | 3개 node가 Prometheus target에서 `UP`이고 두 datasource health가 `OK`다. | `NARUMQ_DASHBOARD_E2E=1 NARUMQ_DASHBOARD_E2E_HOLD=90s go test ./tests/integration -run '^TestDashboardStackProcessAcceptance$' -count=1 -v -timeout 20m` | 2026-10-10 PASS, test 228.46s, package 229.503s. | `tests/integration/dashboard_stack_test.go::TestDashboardStackProcessAcceptance` |
+| EKS stack 배포와 Dashboard provisioning | `narumq-observability` namespace의 Prometheus·Grafana pod가 Ready이고, Infinity plugin과 provisioned Dashboard API가 응답한다. | `kubectl get deployments,pods,services -n narumq-observability`; Grafana plugin 목록과 `GET /api/dashboards/uid/narumq-operations` 확인 | 2026-10-13 `narumq-eks`의 `narumq-observability` namespace에서 Prometheus v3.5.0 및 Grafana v13.0.2 pod가 각각 1/1 Ready, ClusterIP Services 생성, Infinity v4.1.1 로드, Dashboard API가 `provisioned=true`와 `NaruMQ Operations`를 반환했다. 브로커 pod가 아직 배포되지 않아 in-cluster broker scraping과 panel frames는 미검증으로 남아 있다. | `deploy/observability/kubernetes/`, `deploy/observability/kustomization.yaml`; EKS `narumq-eks` |
 | Dashboard 화면 | Quorum, leader, topology, traffic, node-load와 drain panel이 표시되고 browser error가 없다. | Grafana에서 Dashboard를 열고 첫 화면, `Node 부하`, `Drain` 행을 확인한다. | 2026-10-09 local Docker stack에서 Quorum `정상`, replica 부족 `0`, Leader `1`과 세 node를 확인했다. Grafana `/api/ds/query` frame에서 panel 2는 replica 부족 `0`, panel 4는 Members `3`·quorum `2`·replication factor `3`·write quorum `2`, panel 5는 Ready `1`·Joining `2`, panel 6은 세 node와 원격 `JOINING` readiness reason을 반환했다. Panel 15는 `COMPLETED`, `SAFE_TO_STOP`, remaining `0`, takeover `1`을 반환했다. Node 2는 원격 readiness를 추정하지 않고 `JOINING`으로 표시됐다. `Node=2` 화면에서 Connections, Sent PUBLISH, MQTT 5.0 CONNECT 성공과 거절 panel을 확인했다. Node-scoped query는 node 1의 connection·received PUBLISH rate와 MQTT 3.1.1 성공, node 2의 sent PUBLISH rate와 MQTT 5.0 성공·같은 series의 `not_authorized` 거절을 검증했다. Drain의 node 3은 initial `1`, remaining `0`, takeover `1`, `safeToStop=true`였다. Browser와 console error는 없었다. | `NARUMQ_DASHBOARD_E2E_HOLD=90s` local E2E와 browser visual check. CI 실행 링크와 production deployment 검증은 없다. |
 
 Local Docker E2E는 Prometheus 3.5.0, Grafana OSS 13.0.2와 Infinity datasource 4.1.1 container를 시작하고 종료한다. Production deployment test는 아니다.
