@@ -65,7 +65,7 @@ NaruMQ는 Kubernetes 환경에 최적화된 고가용성 MQTT 클러스터다. �
 
 ### 4.2 초기 성공 지표
 
-아래 값은 초기 목표다. 현행 EMQX 트래픽 기준값을 수집한 뒤 확정한다.
+아래 값은 초기 목표다. 실제 EMQX traffic baseline을 수집한 뒤 production SLO로 확정한다. N-1 용량과 profile별 latency 기준도 실제 workload에 따라 수치화한다.
 
 | 지표 | 초기 목표 |
 | --- | --- |
@@ -415,7 +415,7 @@ NaruMQ는 지원 SDK별 호환성 표와 기준 설정 예시를 제공한다.
 | NFR-01 | `B_conn`, `B_pub`, `B_sub`, `B_msg_size`, `B_topic`으로 현행 최대 트래픽 기준값을 정의한다. |
 | NFR-02 | 정상 3노드와 N-1 상태에서 기준 부하를 견딘다. |
 | NFR-03 | 용량 시험은 QoS 비율, wildcard, shared subscription, retained, offline session 분포를 재현한다. |
-| NFR-04 | p50, p95, p99 publish-to-delivery 지연 목표를 부하 프로필별로 정의한다. |
+| NFR-04 | p50/p95/p99 publish-to-delivery latency를 부하 프로필별로 보고한다. profile별 p99/p99.9 limit은 Phase 0에서 정한다. [Performance와 verification §6](../specs/performance-and-verification.md#6-regression-gate)의 EMQX 대비 비율은 별도 제안이며 아직 채택하지 않았다. |
 | NFR-05 | overload 시 무제한 queue 증가보다 backpressure와 명시적 거부를 우선한다. |
 | NFR-06 | node 추가·복구 중 초기 동기화가 데이터 플레인 SLO를 깨지 않아야 한다. |
 
@@ -639,7 +639,7 @@ Unit test suite는 외부 서비스 없이 실행되어야 한다. 개발자 환
 - error, reject, drop, duplicate와 message gap
 - failover RTO, data resync 시간, drain 완료 시간
 
-Phase 0에서는 실제 EMQX 기준선과 현행 트래픽을 측정하고, Phase 1에 들어가기 전에 부하 profile별 최소 throughput, 최대 p99·p99.9 latency, 연결당 memory와 복구 RTO를 수치로 확정한다. NaruMQ 비교는 각 profile에 필요한 기능이 완성된 phase에서 실행한다. BP-03은 Phase 2, BP-07은 Phase 3의 출시 gate다. 확정 전에도 raw 결과와 차이는 공개한다. NaruMQ 자체 회귀는 이전 안정 버전보다 throughput 또는 p99 latency가 5% 이상 악화되면 release를 차단한다. 측정 편차가 5%보다 크면 원인을 확인한 뒤 반복 횟수를 늘린다.
+Phase 0은 고정 comparator EMQX Enterprise 6.3.1과 현행 production workload를 측정한다. Phase 1에 들어가기 전에 실제 `B_*`와 comparator run을 사용해 profile별 최소 throughput, 최대 p99·p99.9 latency, 연결당 memory와 복구 RTO를 수치로 확정한다. NaruMQ 비교는 각 profile에 필요한 기능이 완성된 phase에서 실행한다. BP-03은 Phase 2, BP-07은 Phase 3의 출시 gate다. 수치 확정 전에도 raw 결과와 차이는 공개한다. NaruMQ 자체 회귀는 이전 안정 버전보다 throughput 또는 p99 latency가 5% 이상 악화되면 release를 차단한다. 이 자체 회귀 규칙은 EMQX 대비 합격률을 정하지 않는다. 측정 편차가 5%보다 크면 원인을 확인한 뒤 반복 횟수를 늘린다.
 
 ### 15.6 P0 출시 게이트
 
@@ -760,9 +760,11 @@ Phase 0은 기준과 도구를 확정하는 단계다. Phase 1부터 기능을 �
 12. disaster recovery의 RPO/RTO와 백업 보존 기간은 얼마인가?
 13. 지원할 클라이언트 SDK와 최소 버전은 무엇인가?
 14. 실제 EMQX 대비 허용할 throughput, p99 latency와 자원 효율 비율은 얼마인가?
+    - 제안(미채택): 같은 production workload와 `EKS_EC2_HA` profile에서 NaruMQ 처리량 95% 이상, publish-to-delivery p99/p99.9 latency·성공 전달당 CPU·연결당 memory 105% 이하를 요구한다. `nonEquivalent` 지표는 직접 판정에서 제외하고 최소 5회 실행의 중앙값으로 비교한다. 이 비율은 별도의 product acceptance 제안이며, NaruMQ 자체 회귀의 5% 차단 규칙에서 도출한 기준이 아니다. 실제 `B_*`와 comparator run이 확보되고 이 제안을 채택하기 전까지 `SPEC-TBD-08` gate는 열린 상태다.
 15. 장기 benchmark에 사용할 고정 EMQX version과 edition은 무엇인가?
-    - 2026-10-01 사용자 요청의 적용 범위: BP-03 local smoke comparator는 EMQX 5.8.8 Enterprise 평가판의 3-node replicated Durable Sessions로 고정한다([성능 검증 §3.4](../specs/performance-and-verification.md#34-bp-03-durable-delivery-smoke-관찰-경계)). 이는 장기 production 기준선 또는 commercial license 결정이 아니며 BP-01/BP-05의 역사적 OSS comparator는 유지한다.
+    - 고정 production benchmark comparator는 EMQX Enterprise 6.3.1, `linux/arm64`다. Image는 `emqx/emqx-enterprise:6.3.1`, OCI index digest `sha256:5ecbf93d04e34aaf4096af074e93b773d0838c8ea668cfabdec7976b272d9606`, ARM64 manifest digest `sha256:a9c5cd1e2af9d0cc474d1c048f9c9e64081ac0b0e2777776497b457ba387b0c6`로 고정한다. 실제 부하를 허용하는 유효한 EMQX license가 필요하다. 기존 5.8.8 local smoke와 artifact는 과거 증거로 유지하며 이 기준선으로 소급 변경하지 않는다.
 16. `EKS_EC2_HA`에서 지원할 EKS minor version, EC2 instance family, EBS volume type·IOPS와 NLB target mode는 무엇인가?
+    - Qualification profile은 EKS Kubernetes 1.37, EKS-optimized Amazon Linux 2023 ARM64, `m7g.large` 3대(3개 AZ에 1대씩), broker별 20 GiB `gp3`(기본 3,000 IOPS·125 MiB/s), NLB `IP` targets와 TCP pass-through, broker별 requests=limits `1 CPU`·`4 GiB`로 정한다. Broker가 TLS를 종료한다. AWS Load Balancer Controller는 2.7.2 이상을 사용하고 실제 버전·image digest를 artifact에 고정한다. 이 profile은 qualification 선택이며 시험 전 production 지원이나 release gate 통과를 뜻하지 않는다. 질문 1~5의 실제 workload 값은 아직 없어 N-1 capacity와 profile별 latency 수치는 실행 기준으로 확정되지 않았다.
 17. ECS adapter 검토를 시작할 실제 운영 수요와 ECS Task Protection·stop timeout·persistent volume의 합격 기준은 무엇인가?
 
 ## 19. 요구사항 추적성

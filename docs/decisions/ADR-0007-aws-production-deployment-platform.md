@@ -27,7 +27,16 @@ NaruMQ의 초기 AWS production deployment profile인 `EKS_EC2_HA`는 Amazon EKS
 
 Amazon ECS on EC2는 별도 lifecycle adapter가 같은 배포·장애 시험을 통과할 때까지 `Experimental`로 둔다. Amazon EKS Fargate와 Docker Compose는 초기 production HA profile로 지원하지 않는다.
 
-이 결정은 특정 EKS managed node group 방식, EC2 instance type, EBS volume type·IOPS 또는 NLB target type의 값을 확정하지 않는다. 이 값은 benchmark와 장애 시험 뒤 release profile에서 확정한다.
+Qualification과 BP-02 release comparison에 사용할 profile을 다음처럼 선택한다.
+
+- EKS Kubernetes 1.37과 EKS-optimized Amazon Linux 2023 ARM64를 사용한다. 2026-10-12 기준으로 1.37은 AWS EKS의 최신 standard-support version이며 지원 종료일은 2027-12-01이다.
+- `m7g.large` worker 3대를 서로 다른 AZ에 하나씩 둔다. 각 노드에는 broker Pod 하나를 배치한다.
+- Broker마다 20 GiB `gp3` EBS volume을 둔다. 기본 성능은 3,000 IOPS와 125 MiB/s이며 추가 성능은 provision하지 않는다.
+- `m7g.large`는 2 vCPU와 8 GiB memory를 제공한다. Broker Pod의 CPU·memory requests와 limits는 각각 `1 CPU`, `4 GiB`로 맞춰 NaruMQ와 EMQX에 같은 자원을 준다. 나머지 nominal capacity는 OS와 Kubernetes add-on에 남긴다. 실제 allocatable 자원과 N-1 capacity는 시험한다.
+- NLB는 `IP` target과 TCP listener를 사용한다. TLS는 broker에서 종료해 mTLS client certificate identity를 보존한다.
+- AWS Load Balancer Controller는 2.7.2 이상을 사용한다. 실제 controller·AMI·add-on version과 image digest는 run artifact에 고정한다.
+
+이 값은 qualification profile의 선택이다. 실제 AWS/EBS 장애 시험, production workload 수집과 성능 gate를 통과하기 전에는 production 지원 선언이 아니다. Broker image 공급 경로, EBS 암호화·snapshot 정책, NLB health check·deregistration·idle timeout과 운영용 controller 설정은 별도 고정이 필요하다.
 
 ## 2. 배경
 
@@ -77,6 +86,8 @@ NLB는 Layer 4에서 MQTT TCP/TLS 연결을 분산한다. Target 제외는 새 �
 하나의 기준 profile은 다음 값을 release artifact와 자동 시험에 고정할 수 있게 한다.
 
 - Kubernetes·EKS version과 AWS Load Balancer Controller version
+- Worker CPU architecture, EC2 instance family, AMI와 image digest
+- Production broker image build·publish 경로, registry와 immutable image digest
 - Pod·EC2·가용 영역 placement
 - StorageClass, EBS encryption·volume type·IOPS와 snapshot 정책
 - NLB target type, health check, deregistration, connection termination와 idle timeout 정책
@@ -132,8 +143,13 @@ NLB는 Layer 4에서 MQTT TCP/TLS 연결을 분산한다. Target 제외는 새 �
 ## 9. 참고 자료
 
 - [Amazon EKS Kubernetes versions](https://docs.aws.amazon.com/eks/latest/userguide/kubernetes-versions.html)
+- [Amazon EKS-optimized Arm Amazon Linux AMIs](https://docs.aws.amazon.com/eks/latest/userguide/eks-optimized-ami.html)
 - [Amazon EKS EBS CSI driver](https://docs.aws.amazon.com/eks/latest/userguide/ebs-csi.html)
 - [Amazon EKS에서 Network Load Balancer 사용](https://docs.aws.amazon.com/eks/latest/userguide/network-load-balancing.html)
 - [Amazon EBS volume과 가용 영역](https://docs.aws.amazon.com/ebs/latest/userguide/ebs-volumes.html)
 - [Amazon EKS Fargate](https://docs.aws.amazon.com/eks/latest/userguide/fargate.html)
 - [Amazon ECS Task Scale-in Protection](https://docs.aws.amazon.com/AmazonECS/latest/developerguide/task-scale-in-protection.html)
+- [Amazon EBS gp3 volume performance](https://docs.aws.amazon.com/ebs/latest/userguide/general-purpose.html)
+- [Amazon EC2 M7g instances](https://aws.amazon.com/ec2/instance-types/m7g/)
+- [EMQX Enterprise 6.3.1 release notes](https://docs.emqx.com/en/emqx/latest/changes/changes-ee-v6.html)
+- [EMQX Enterprise 6.3.1 Docker image metadata](https://hub.docker.com/v2/repositories/emqx/emqx-enterprise/tags/6.3.1)

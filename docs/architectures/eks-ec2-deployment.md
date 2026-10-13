@@ -12,7 +12,25 @@
 | 관련 스펙 | [Drain과 rolling update](../specs/drain-and-rolling-update.md), [Cluster session과 durable delivery](../specs/cluster-session-and-delivery.md), [Performance와 verification](../specs/performance-and-verification.md) |
 | 관련 결정 | [ADR-0006](../decisions/ADR-0006-external-rollout-controller.md), [ADR-0007](../decisions/ADR-0007-aws-production-deployment-platform.md). 모두 Proposed |
 | 관련 해설 | [EKS 고가용성과 장애 도메인](../explainers/eks-ha-failure-domains.md), [AWS NLB와 MQTT 연결 lifecycle](../explainers/aws-nlb-mqtt-connection-lifecycle.md) |
-| 최종 확인일 | 2026-08-16 |
+| 최종 확인일 | 2026-10-12 |
+
+## Production qualification profile selected
+
+아래 값은 EKS qualification과 BP-02 비교에 사용할 profile이다. 실제 배포나 production 지원을 증명하지 않는다.
+
+| 항목 | 선택 값 | 남은 검증 |
+| --- | --- | --- |
+| EKS | Kubernetes 1.37 | EKS platform version과 시험 증거 |
+| Worker와 AMI | `m7g.large` 3대, AZ마다 1대; 인스턴스당 2 vCPU·8 GiB; EKS-optimized Amazon Linux 2023 ARM64 | Region별 AMI ID와 node group 설정 |
+| Broker storage | broker별 20 GiB `gp3`, 기본 3,000 IOPS·125 MiB/s | 암호화·snapshot 정책과 production I/O 적합성 |
+| NLB | `IP` target, TCP listener; broker에서 TLS 종료 | AWS Load Balancer Controller 버전, health check, deregistration, idle timeout |
+| Broker resources | Pod마다 requests=limits `1 CPU`·`4 GiB` | 측정한 production workload의 N-1 capacity |
+| Comparator | EMQX Enterprise 6.3.1, ARM64 | 측정 workload를 허용하는 license; [PRD §18 질문 15](../requirements/PRD.md#18-미결정-사항) 참고 |
+
+`IP` target은 Amazon VPC CNI를 사용한다. AWS Load Balancer Controller는 2.7.2 이상으로 하고 실제 버전과 image digest를 run artifact에 고정한다. NaruMQ와 EMQX에는 같은 node와 broker resource limit을 적용한다.
+
+Production broker image의 build·publish 경로는 아직 정해지지 않았다. `tests/` 아래의 benchmark·compatibility·chaos Dockerfile은 production image 공급 경로를 정의하지 않는다. 생산 profile에는 선택한 architecture의 broker image를 registry에 게시하고 immutable digest로 고정해야 한다.
+
 
 ## Physical deployment view
 
@@ -20,7 +38,7 @@
 
 ```mermaid
 flowchart TB
-    Clients["MQTT clients"] --> NLB["AWS NLB\nTCP/TLS mode TBD"]
+    Clients["MQTT clients"] --> NLB["AWS NLB\nIP targets · TCP pass-through"]
     GitOps["Argo CD / GitOps"]
 
     subgraph EKS["Amazon EKS cluster / one Region"]
@@ -68,7 +86,7 @@ Management API ingress 위치와 Rollout controller의 availability topology는 
 | --- | --- | --- |
 | NaruMQ `nodeId` | Broker membership record와 assigned stable state | Pod 이름·IP·EC2 ID와 다르며 cluster lifetime 동안 재사용하지 않는다. |
 | Broker process | Container in Pod | 재시작 시 TCP connection과 memory를 잃는다. |
-| Broker runtime endpoint | Pod IP 또는 NodePort target | NLB target type에 따라 달라지며 release profile에 고정한다. |
+| Broker runtime endpoint | Pod IP (`IP` target) | NLB가 Pod IP로 직접 전달하며 NodePort를 거치지 않는다. |
 | Stable WAL·snapshot | Broker별 EBS persistent volume | 같은 가용 영역의 replacement EC2에 재연결한다. |
 | Failure domain | EC2 instance와 가용 영역 | Quorum Pod를 서로 다르게 배치한다. |
 | Session owner | Quorum-committed `(nodeId, epoch)` | Kubernetes scheduling state로 판정하지 않는다. |
@@ -83,7 +101,7 @@ PersistentVolume, Pod와 logical `nodeId`의 결합 방식은 storage·membershi
 4. 선택한 broker가 필요하면 cluster peer와 통신해 ownership·durable commit을 완료한다.
 5. Client connection은 선택한 broker에 남는다. NLB는 established connection을 다른 Pod로 옮기지 않는다.
 
-NLB TCP/TLS mode, TLS termination, target type과 client IP 정책은 미결정이다. 특히 mTLS listener는 client certificate identity가 broker의 인증 경계까지 보존돼야 한다. 이 조건을 만족하지 않는 TLS termination profile을 production으로 선언하지 않는다.
+NLB는 `IP` targets와 TCP listeners를 사용한다. TLS를 NLB에서 종료하지 않고 broker listener에서 종료한다. 이 경로는 mTLS client certificate identity를 broker 인증 경계까지 보존한다. Health check, deregistration, client IP와 idle timeout 정책은 시험 profile에 고정해야 한다.
 
 ## Planned rollout control path
 
@@ -127,10 +145,10 @@ Dashboard label로 모든 cloud ID를 항상 노출할 필요는 없다. 그러�
 
 다음 값은 release profile과 후속 ADR에서 확정해야 한다.
 
-- EKS·Kubernetes와 AWS Load Balancer Controller version
-- EC2 instance family, node group과 capacity policy
-- EBS volume type, IOPS, throughput, encryption와 snapshot policy
-- NLB target type, TCP/TLS mode, health check와 deregistration 속성
+- EKS platform version, region-specific AMI ID, node group과 capacity policy
+- AWS Load Balancer Controller와 EKS add-on의 exact version·image digest
+- EBS encryption·snapshot 정책과 실제 production I/O 적합성
+- NLB health check, deregistration, client IP와 idle timeout 속성
 - Management API ingress와 network policy
 - Rollout controller replica, leader election과 failure recovery
 - `terminationGracePeriodSeconds`, drain deadline과 전파 대기 값

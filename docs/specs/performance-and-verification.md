@@ -12,7 +12,7 @@
 
 ## 1. Workload 기준값
 
-Phase 0은 production workload를 다음 값과 단위로 확정해야 한다. 평균만으로 profile을 만들지 않는다.
+Phase 0은 현행 production EMQX의 실제 workload를 다음 값과 단위로 확정해야 한다. 평균만으로 profile을 만들지 않는다. BP smoke 입력은 production workload의 대체값으로 사용하지 않는다.
 
 | 기호 | 의미 | 필수 분해 요소 |
 | --- | --- | --- |
@@ -22,7 +22,7 @@ Phase 0은 production workload를 다음 값과 단위로 확정해야 한다. �
 | `B_msg_size` | payload 크기 분포 | p50, p95, p99, 최대값 |
 | `B_topic` | 토픽·필터 규모 | exact 매칭, wildcard, overlap, fan-out |
 
-또한 persistent session 비율, offline 비율·시간, Session Expiry, reconnect ramp, 인증 backend latency, tenant 부하 편차와 AZ network 특성을 기록한다. 이 값과 SLO를 정하는 `SPEC-TBD-08`은 미확정이다.
+또한 persistent session 비율, offline 비율·시간, Session Expiry, reconnect ramp, 인증 backend latency, tenant 부하 편차와 AZ network 특성을 기록한다. §6에는 EMQX 대비 성능 비율 제안을 기록한다. 실제 `B_*`, production SLO와 profile별 수치 기준은 telemetry·comparator run 뒤 확정한다.
 
 ## 2. SLI와 판정
 
@@ -51,7 +51,9 @@ Latency는 p50, p95, p99, p99.9를 보고한다. 오류 sample을 제외하면 �
 5. 고정 warm-up·측정 구간을 두고 최소 5회 독립 실행한다. Suite는 target 순서를 교차한다.
 6. 중앙값과 MAD를 함께 보고하고 broker·generator 오류와 saturation을 모두 수집한다.
 
-고정 EMQX version·edition과 NaruMQ 대비 수치 합격선인 `SPEC-TBD-08`은 미정이다. BP-01/BP-04/BP-05/BP-02는 pinned OSS 5.8.8을 사용한다. BP-03/BP-06/BP-07은 pinned Enterprise 5.8.8을 사용한다. EMQX 5.8.8 OSS는 EOL historical comparator이며 현재 지원 release 기준선이나 승인된 commercial 운영 사용을 뜻하지 않는다.
+고정 production comparator는 EMQX Enterprise 6.3.1이며 exact edition·image digest는 [PRD §18 질문 15](../requirements/PRD.md#18-미결정-사항)에 있다. 기존 BP-01/BP-02/BP-04/BP-05 local smoke의 OSS 5.8.8과 BP-03/BP-06/BP-07 local smoke의 Enterprise 5.8.8은 과거 smoke 기준이다. 과거 artifact와 결과는 수정하지 않는다. EMQX 5.8.8 OSS는 EOL historical comparator이며 현재 지원 release 기준선이나 commercial 운영 사용을 뜻하지 않는다.
+
+Qualification과 BP-02 release comparison profile은 [ADR-0007](../decisions/ADR-0007-aws-production-deployment-platform.md)의 ARM64 EKS 선택값을 따른다. 이 선택만으로 production gate를 통과하지 않는다. Production gate에는 실제 `B_*`, valid license, native ARM64 broker·generator image, full profile digest와 AWS/EBS 수용 증거가 필요하다. 현재 [`tests/benchmark/Dockerfile`](../../tests/benchmark/Dockerfile)은 `GOARCH=amd64`로 빌드하므로 ARM64 broker image build 경로를 준비해야 한다. 조건을 충족하지 않은 artifact는 `releaseGating=false`로 둔다.
 
 Profile SHA-256은 저장소에 커밋된 LF bytes로 계산한다. `.gitattributes`의 `tests/benchmark/*/testdata/*.json text eol=lf` 규칙으로 `core.autocrlf=true`인 Windows checkout에서도 같은 bytes를 쓴다. 2026-10-08 이전 BP-06 실행 artifact의 `profileSha256` `e8e4aa2e5df1a3e55ad901acff5a4505cdb1acf4699ff061f1a2bfc51754054d`는 같은 내용을 CRLF로 checkout한 bytes의 digest다. 같은 profile의 LF digest는 `ca5e28b04623e708d9521ab34ce5ed3b9dd617d4ac57c4571243bdd6061f6a15`다. 과거 artifact의 값은 실행 당시 사실이므로 고치지 않는다.
 
@@ -243,7 +245,7 @@ go run ./tests/benchmark/bp03 suite --profile tests/benchmark/bp03/testdata/smok
 
 ### 3.5 BP-07 Rolling Drain smoke 관찰 경계
 
-BP-07은 같은 연결 수를 유지한 3-node cluster에서 node 하나씩 drain하고 같은 volume으로 재시작한다. Retained workload와 최대 traffic에서 연속 100회 rolling은 별도 범위다. 모든 artifact `releaseGating=false`; `SPEC-TBD-08` 미정이다.
+BP-07은 같은 연결 수를 유지한 3-node cluster에서 node 하나씩 drain하고 같은 volume으로 재시작한다. Retained workload와 최대 traffic에서 연속 100회 rolling은 별도 범위다. 모든 artifact `releaseGating=false`; `SPEC-TBD-08`의 comparator 수치 제안은 미채택이며 실제 workload와 profile별 cutoff도 미정이다.
 
 #### Topology와 비교 경계
 
@@ -306,7 +308,7 @@ Workload가 valid하려면 다음을 모두 만족한다.
 
 최종 compare `bp07-20261005T031404.679399800Z-37844`에서 양쪽 workload·rolling·resource가 valid였고 QoS1/2 gap·duplicate, 계획 밖 종료, protocol error, overload는 0이었다. Suite `bp07-suite-20261005T032136.047989300Z-30100`는 교차 순서 5/5 valid였다. NaruMQ QoS1 duplicate는 첫 4회 각 1, 마지막 회 0이며 QoS0 loss 1–2건은 기록 전용이었다. EMQX QoS0 loss·QoS1 duplicate는 0이었다. NaruMQ v5-safe Will은 0, MQTT 3.1.1 server-close와 고유 Will은 매 회 1이었다. 12개 metric key 모두 5 sample을 가졌다. Round metric은 `roundNN_drain_millis`, `roundNN_restart_ready_millis`, `roundNN_reconnect_latency_max_millis`; aggregate는 `reconnects_total`, `qos1_duplicates_total`, `qos0_lost_total`이다. Drain contract가 달라 target 우열로 해석하지 않는다.
 
-`SPEC-TBD-08`, Linux/EBS power loss, 실제 NLB·rollout controller와 최대 traffic 연속 100회 rolling은 미완료다. Manifest의 baseline과 `dirty=true`는 실행 당시 상태이며 확인 commit이나 CI rerun을 뜻하지 않는다.
+`SPEC-TBD-08`의 comparator 수치 제안은 미채택이다. Profile별 수치 기준, Linux/EBS power loss, 실제 NLB·rollout controller와 최대 traffic 연속 100회 rolling은 미완료다. Manifest의 baseline과 `dirty=true`는 실행 당시 상태이며 확인 commit이나 CI rerun을 뜻하지 않는다.
 
 #### 명령과 시험
 
@@ -319,7 +321,7 @@ Profile·dialer·session·QoS·marker round attribution·Will validity·drain st
 
 ### 3.6 BP-06 Failure Recovery smoke 관찰 경계
 
-BP-06은 3-node cluster에서 broker 하나를 drain 없이 `SIGKILL`해 N-1을 유지한 뒤 같은 container·volume으로 재시작한다. Artifact는 모두 `releaseGating=false`; `SPEC-TBD-08`은 미정이다.
+BP-06은 3-node cluster에서 broker 하나를 drain 없이 `SIGKILL`해 N-1을 유지한 뒤 같은 container·volume으로 재시작한다. Artifact는 모두 `releaseGating=false`; `SPEC-TBD-08` 기준과 run-derived profile cutoff가 미정이다.
 
 #### Topology와 비교 경계
 
@@ -460,7 +462,9 @@ go run ./tests/benchmark/bp04 suite --profile tests/benchmark/bp04/testdata/smok
 
 ### 3.8 BP-02 Production Mix smoke 관찰 경계
 
-BP-02는 QoS 0/1/2, payload size cycle, 여러 subscription 종류, retained state, persistent session, tenant, TLS를 섞은 고정 workload다. 하네스와 local 실행만 증명한다. 고정 tenant·stream·TLS 비율은 production 분포가 아니다. `B_*`, `SPEC-TBD-08`, production workload, N/N-1 SLO, release threshold와 release acceptance는 미정이다. Artifact는 모두 `releaseGating=false`다.
+BP-02는 QoS 0/1/2, payload size cycle, 여러 subscription 종류, retained state, persistent session, tenant, TLS를 섞은 고정 workload다. 하네스와 local 실행만 증명한다. 고정 tenant·stream·TLS 비율은 production 분포가 아니다. `B_*`, 실제 N/N-1 SLO, profile별 `SPEC-TBD-08` cutoff, production storage와 release acceptance는 미정이다. EMQX Enterprise 6.3.1 comparator는 선택했지만 95%/105% gate 제안은 미채택이며 artifact는 모두 `releaseGating=false`다.
+
+현재 local BP-02 smoke artifact는 계속 `releaseGating=false`다. 선택한 ARM64 qualification profile을 사용한다는 사실만으로 production performance gate를 통과하지 않는다. Candidate run도 승인된 production workload와 full EKS profile에서 공통 계약을 충족해야 gate 증거로 인정한다.
 
 #### Topology와 비교 경계
 
@@ -561,7 +565,7 @@ go run ./tests/benchmark/bp02 suite --profile tests/benchmark/bp02/testdata/smok
 
 최종 valid fixed compare는 `bp02-20261007T133602.315971400Z-174004`, valid 5/5 suite는 `bp02-suite-20261007T133920.246951900Z-122940`다. 두 target 모두 setup 49/49(TLS 25/TCP 24), persistent offline session 10/10, retained replay 구독자 4명, validity error 0, `finalCheck=true`였다. Suite는 target당 metric 44개, metric별 sample 5개였고 모든 반복에 network stats가 있었다. Fractional boundary compare `bp02-20261007T140157.761617200Z-105696`도 양쪽 valid이며 phase별 FLOOR publish count를 확인했다. Fixed smoke 입력은 변하지 않았다. 최종 local gate는 130.42초 PASS; focused mqttclient/environment/BP02 tests, benchmark vet, traceability도 통과했다. 이는 local smoke/코드 검증이지 production gate가 아니다.
 
-Manifest의 baseline `6c200085368d701f34dedfb31e1a968a84c09028`, `dirty=true`, profile SHA `b929efabd5f99e68758bec86a2034b0b80d153e9ce0291e64a8236b3e4afd7d4`는 실행 당시 사실이다. Profile 원문은 artifact에 연결된다. `B_*`, production workload/storage, N/N-1 SLO, `SPEC-TBD-08`, release regression과 release acceptance는 미정이다. EMQX JWT placeholder와 SSL environment fallback은 사용하지 않았다.
+Manifest의 baseline `6c200085368d701f34dedfb31e1a968a84c09028`, `dirty=true`, profile SHA `b929efabd5f99e68758bec86a2034b0b80d153e9ce0291e64a8236b3e4afd7d4`는 실행 당시 사실이다. Profile 원문은 artifact에 연결된다. `B_*`, production workload/storage, N/N-1 SLO, `SPEC-TBD-08`의 수치 제안 채택과 profile cutoff, release regression과 release acceptance는 미정이다. EMQX JWT placeholder와 SSL environment fallback은 사용하지 않았다.
 
 ## 4. 필수 benchmark profile
 
@@ -579,10 +583,10 @@ BP-03은 durable 구간이, BP-07은 drain 구간이 정상 완료되어야 해�
 
 ## 5. Artifact manifest
 
-각 run ID는 Git 커밋, NaruMQ 및 Go 버전, EMQX 버전·digest·에디션·라이선스·설정, 배포 프로파일·지원 상태·토폴로지·스토리지를 연결한다. 해당할 경우 AWS/EKS/EC2/EBS CSI/NLB의 해석된 설정도 기록한다. 제너레이터·클라이언트 SDK·seed·명령어, 확정 프로파일, 단계 경계·반복·타임스탬프, 원본 표본·로그·지표 및 오류·유실·중복 결과를 보존한다. 보안 비밀 값은 저장하지 않고 식별 참조만 남긴다.
+각 run ID는 Git 커밋, NaruMQ 및 Go 버전, EMQX 버전·digest·에디션·라이선스·설정, 배포 프로파일·지원 상태·토폴로지·스토리지를 연결한다. 해당할 경우 AWS/EKS/EC2/EBS CSI/NLB의 해석된 설정도 기록한다. 제너레이터·클라이언트 SDK·seed·명령어, 확정 프로파일, 단계 경계·반복·타임스탬프, 원본 표본·로그·지표 및 오류·유실·중복 결과를 보존한다. 보안 비밀 값은 저장하지 않고 식별 참조만 남긴다. 모든 실행 이미지에는 역할, immutable digest와 OS·architecture를 기록한다. BP-02 EKS run에서는 NaruMQ·EMQX·generator와 실제 실행한 rollout controller·필수 add-on image를 각각 기록한다. Container가 아닌 generator도 실행파일의 OS·architecture를 남긴다.
 
 - **BP-01**: 프로파일 및 SHA, 확정 설정, `samples.jsonl`, NaruMQ runtime 지표, workload summary, 브로커 통계·로그, 불변 이미지 메타데이터를 보존한다.
-- **BP-02**: `workload-summary.json`, `resource-summary.json`, `phases.jsonl`, `messages.jsonl`, `retained.jsonl`, `connections.jsonl`, 브로커 통계·로그·이미지 정보를 보존한다.
+- **BP-02**: `workload-summary.json`, `resource-summary.json`, `phases.jsonl`, `messages.jsonl`, `retained.jsonl`, `connections.jsonl`, 브로커 통계·로그와 각 image의 역할·immutable digest·OS·architecture를 보존한다. EKS run은 실제 실행한 rollout controller와 필수 add-on image도 포함한다.
 - **BP-03**: target별 workload·resource·WAL summary, `phases.jsonl`, `messages.jsonl`, `diagnostics.jsonl`, 브로커 로그를 보존한다.
 - **BP-04**: workload·resource summary, `phases.jsonl`, `messages.jsonl`, `route.jsonl`, 브로커 로그를 보존한다.
 - **BP-05**: `connections.jsonl`, `phases.jsonl`, workload·resource summary를 보존한다.
@@ -608,9 +612,18 @@ GC pause 백분위수는 누적 히스토그램 표본 차이에 nearest-rank를
 
 ## 6. Regression gate
 
-모든 릴리스는 이전 안정 버전 NaruMQ 및 승인된 고정 EMQX 기준선과 대조해야 한다. 처리량이나 p99 latency가 5% 이상 악화하면 릴리스를 차단한다. 측정 변동성이 5%를 초과하면 합격·불합격을 성급히 판정하지 않고 원인을 조사하며 반복 횟수를 늘린다.
+모든 릴리스는 이전 안정 NaruMQ와 고정 EMQX comparator를 대조한다. 이전 안정 NaruMQ 대비 처리량이 5% 이상 낮아지거나 p99 latency가 5% 이상 나빠지면 릴리스를 차단한다. 이 규칙은 NaruMQ 자체 회귀만 판정하며 EMQX 대비 합격 기준이 아니다. 측정 변동성이 5%를 초과하면 합격·불합격을 판정하지 않고 원인을 조사한 뒤 반복 횟수를 늘린다.
 
-Phase 0은 프로파일별 최소 처리량, 최대 p99/p99.9 latency, 연결당 메모리, N-1 상태 SLO, 복구 RTO 수치를 확정해야 한다. 수치가 누락된 항목이 있으면 성능 게이트를 열린 상태로 둔다.
+`SPEC-TBD-08`의 service SLO와 EMQX 대비 수치 기준은 아직 채택하지 않았다. [PRD §4.2](../requirements/PRD.md#42-초기-성공-지표)의 값은 초기 목표이며, 실제 EMQX traffic baseline을 수집한 뒤 production SLO로 확정한다.
+
+EMQX 대비 초기 product acceptance 제안은 다음과 같다.
+
+- 같은 `B_*`와 동등 profile에서 NaruMQ 처리량은 EMQX의 95% 이상이어야 한다.
+- Publish-to-delivery p99/p99.9 latency, 성공 전달당 CPU와 연결당 memory는 EMQX 값의 105% 이하여야 한다.
+- Network/disk 비용도 측정한다. 기능·durability가 `nonEquivalent`인 지표는 직접 우열 합격 판정에서 제외한다.
+- 각 target은 최소 5회 독립 실행하고 중앙값을 비교한다. 유효한 EMQX license, workload와 profile digest가 없으면 해당 run은 gate evidence가 아니다.
+
+95%/105% 비율은 별도의 product acceptance 제안이다. 기존 5% self-regression rule에서 도출한 요구사항이 아니며, 수치도 아직 채택되지 않았다. 실제 production `B_*`와 comparator run이 없어 현재 profile별 처리량·latency·resource cutoff도 계산되지 않았다. 제안을 채택하고 workload 값을 채운 뒤 EKS/EBS gate를 통과할 때까지 release gate는 열린 상태다.
 
 ## 7. Verification 계층
 
@@ -1214,4 +1227,4 @@ CI 아키텍처 검증은 ADR-0001의 클린 아키텍처 경계를 강제한다
 10. 운영 유사 환경에서 백업·복구, 롤백, 메트릭·경보·대시보드 동작을 확인해야 한다.
 11. MQTT 3.1.0 프로토콜 식별 목록과 마이그레이션·격리 증거가 존재해야 한다.
 
-릴리스 필수 소스 artifact는 `.artifacts/verification/coverage.out`, `coverage-summary.json`, mutation 결과 JSON 5개, 보존된 fuzz 결함 코퍼스다. 누락된 artifact나 미검증 게이트가 있으면 완료로 간주하지 않는다. Smoke 결과의 `releaseGating=false`와 미확정된 `SPEC-TBD-08` 운영 기준치는 계속 열어 둔다.
+릴리스 필수 소스 artifact는 `.artifacts/verification/coverage.out`, `coverage-summary.json`, mutation 결과 JSON 5개, 보존된 fuzz 결함 코퍼스다. 누락된 artifact나 미검증 게이트가 있으면 완료로 간주하지 않는다. Smoke 결과의 `releaseGating=false`와 미채택 `SPEC-TBD-08` 기준·미계산 profile cutoff는 계속 열어 둔다.

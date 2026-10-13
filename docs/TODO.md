@@ -25,11 +25,11 @@ PRD는 `Draft` 상태이므로 이 목록은 요구사항을 구현 기준으로
 
 ### 1.1 Production storage와 disaster recovery
 
-2026-10-03 사용자 결정으로 실제 인프라 시험을 보류한다. 아래 두 항목이 닫히기 전에는 CLU-14, [ADR-0009 §7](decisions/ADR-0009-raft-production-state-profile.md#7-검증)의 production 행과 [ADR-0003 §9](decisions/ADR-0003-durable-ack-barrier.md#9-검증) 전체를 완료로 표시하지 않는다.
+2026-10-03 사용자 결정으로 실제 인프라 시험을 보류한다. PRD §18 질문 16의 `EKS_EC2_HA` ARM64 qualification profile은 [ADR-0007](decisions/ADR-0007-aws-production-deployment-platform.md)과 [EKS architecture](architectures/eks-ec2-deployment.md)에 정의했다: EKS `1.34`, `c7g.xlarge`, `gp3` 100 GiB / 3,000 IOPS / 125 MiB/s, NLB `ip` mode. Profile 정의는 production workload·storage 적합성이나 인프라 검증 완료를 뜻하지 않는다. 아래 두 항목이 닫히기 전에는 CLU-14, [ADR-0009 §7](decisions/ADR-0009-raft-production-state-profile.md#7-검증)의 production 행과 [ADR-0003 §9](decisions/ADR-0003-durable-ack-barrier.md#9-검증) 전체를 완료로 표시하지 않는다.
 
 - [ ] **보류 · [K8s/AWS 인프라 테스트 필요]** — Linux/EBS 전원·volume 손실 수용: 지원 Linux filesystem과 Amazon EBS에서 전원 손실 뒤 마지막 durable commit 보존, production WAL torn-tail 판정, volume loss/reseed를 시험한다.
-  - 보류 사유: 인프라 시험을 보류했다. 시험용 AWS 계정이 없고 [PRD §18](requirements/PRD.md#18-미결정-사항) 질문 16(EKS minor version, EC2 instance family, EBS volume type·IOPS, NLB target mode)이 정해지지 않았다.
-  - 해제 조건: 인프라 시험 재개 결정, 시험 계정·region 확보와 질문 16의 storage profile 확정.
+  - 보류 사유: 인프라 시험을 보류했고 시험용 AWS 계정이 없다. Profile은 선택했지만 production workload와 storage 적합성을 검증하지 않았다.
+  - 해제 조건: 인프라 시험 재개 결정, 시험 계정·region 확보와 선택한 profile 적용.
   - 로컬 완료 범위(이 gate를 대신하지 않음): Docker/FUSE 장애·power-cut simulation [§11.6](specs/cluster-session-and-delivery.md#116-storage-fault-chaos-mapping), WAL lifecycle·torn-tail [§11.22](specs/cluster-session-and-delivery.md#1122-wal-compactionsnapshot-retentiontorn-tail-수용-매핑), voter volume 손실 [§11.20](specs/cluster-session-and-delivery.md#1120-voter-volume-손실-보호와-재시드-수용-매핑), local ext4 [§11.23](specs/cluster-session-and-delivery.md#1123-local-ext4-filesystem-수용-매핑).
 - [ ] **보류 · [선행 결정 + K8s/AWS 인프라 테스트 필요]** — Backup 보존 기간과 disaster-recovery RPO/RTO(`SPEC-TBD-09`): [Cluster §10](specs/cluster-session-and-delivery.md#10-snapshot-backup과-restore) 7항의 보존 기간과 RPO/RTO를 정하고 restore 시간·보존을 시험한다. 현재 backup은 수동 online API와 offline restore만 제공하며 정기 backup과 외부 저장소는 없다.
   - 보류 사유: [PRD §18](requirements/PRD.md#18-미결정-사항) 질문 12의 정책 값이 정해지지 않았다.
@@ -57,8 +57,8 @@ PRD는 `Draft` 상태이므로 이 목록은 요구사항을 구현 기준으로
 
 - [x] **완료(제품 기본값) / [ ] 미검증(K8s·NLB 실측)** — Drain·reconnect 운영값(SPEC-TBD-04): [ADR-0055](decisions/ADR-0055-drain-and-reconnect-operating-defaults.md)와 [Drain spec §2·§7](specs/drain-and-rolling-update.md#2-drain-operation-resource)에 제품 기본값(drain 100/s, LB 대기 30s, timeout 600s, 최소 grace 660s, reconnect 1~30s·10회)을 반영하고 생략 시 기본값 적용을 구현했다. 실제 NLB deregistration·SIGTERM 종료 시간 실측과 Kubernetes 배포 admission 검증은 아래 K8s 배포 항목에서 함께 수행한다.
 - [ ] **보류 · 미구현 · [K8s/AWS 인프라 테스트 필요]** — Kubernetes 종료 연동과 `EKS_EC2_HA` 배포 artifact(DEP-13~DEP-23): [Drain spec §7·§7.1](specs/drain-and-rolling-update.md#7-external-rollout-gate와-kuberneteseks), [ADR-0007 §7](decisions/ADR-0007-aws-production-deployment-platform.md#7-검증)과 [EKS architecture](architectures/eks-ec2-deployment.md)의 목표 범위다. `preStop`의 idempotent drain 호출·결과 기록, grace period 검증, PDB·3-AZ placement·교체 동시성, stable node identity와 EBS 결합, NLB target lifecycle 및 profile별 지원 상태를 배포 artifact에 연결한다. Controller 구현은 §1.2, storage 전원·volume 시험은 §1.1에서 추적한다.
-  - 보류 사유: 인프라 시험 보류 중이며 ADR-0006/0007은 Proposed, EKS architecture는 Target/Draft이고 구현 증거가 없다.
-  - 해제 조건: 인프라 작업 재개와 배포 결정 채택, [PRD §18](requirements/PRD.md#18-미결정-사항) 질문 10·16의 profile 확정 및 실행 환경 확보.
+  - 보류 사유: 인프라 시험 보류 중이며 배포 artifact와 구현 증거가 없다. Profile은 [ADR-0007](decisions/ADR-0007-aws-production-deployment-platform.md)과 [EKS architecture](architectures/eks-ec2-deployment.md)에 정의했지만 qualification은 미검증이다.
+  - 해제 조건: 인프라 작업 재개와 배포 결정 채택, PRD §18 질문 10의 profile 확정 및 실행 환경 확보. 질문 16 ARM64 profile은 정의되어 있다.
   - K8s 인프라 검증 항목: hook 중복·실패·grace 부족, NLB 전파 중 신규 연결, Pod·EC2·단일 AZ 손실, EBS 재연결과 연속 rolling upgrade·rollback을 실제 `EKS_EC2_HA` 환경에서 시험한다. Broker process의 `SAFE_TO_STOP` 통과로 대신하지 않는다.
 
 ### 1.5 설계 미결정과 비지원 범위

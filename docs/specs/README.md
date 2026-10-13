@@ -64,7 +64,7 @@ MQTT packet 이름, property와 reason code는 OASIS 명칭을 사용한다. 충
 | SPEC-TBD-03 | session·message expiry 상한과 offline queue 초과 정책 | [실행 옵션과 설정 스펙](configuration-and-runtime-options.md) | 적용 결과가 protocol 응답과 Metric에 드러나야 한다. |
 | SPEC-TBD-05 | topic 내부 prefix encoding과 canonicalization 세부 규칙 | tenancy ADR/spec 개정 | 외부 topic과 tenant 격리를 보존해야 한다. |
 | SPEC-TBD-07 | Metric 이름 전체와 histogram bucket | metrics catalog | label cardinality 제한을 지켜야 한다. |
-| SPEC-TBD-08 | 성능 SLO와 release-gating EMQX version·edition | Phase 0 benchmark record | BP-01 historical OSS comparator는 `5.8.8`로 고정됐지만, release-gating EMQX와 합격 수치는 미확정이다. 동일 조건에서 반복 측정해야 한다. |
+| SPEC-TBD-08 | 성능 SLO와 release-gating EMQX version·edition | [Performance와 verification §6](performance-and-verification.md#6-regression-gate) | EMQX Enterprise 6.3.1 comparator는 선택했다. 95%/105% 비율은 별도 미채택 제안이다. 실제 `B_*`, comparator 측정값과 profile별 숫자 기준이 없어 gate는 열린 상태다. |
 | SPEC-TBD-09 | backup RPO/RTO와 보존 기간 | disaster recovery spec | snapshot 원자성과 checksum 검증을 포함해야 한다. |
 
 ### Phase 1 확정 SDK 목록
