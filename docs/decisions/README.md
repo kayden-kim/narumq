@@ -11,8 +11,8 @@
 | [ADR-0003](ADR-0003-durable-ack-barrier.md) | Proposed | 저장 상태는 quorum WAL 영속화·commit 뒤, target 없는 QoS 1 publish는 quorum read barrier 뒤 ACK한다. |
 | [ADR-0004](ADR-0004-session-ownership-and-fencing.md) | Proposed | Session ownership을 quorum-committed epoch와 저장 경계 fencing으로 보장한다. |
 | [ADR-0005](ADR-0005-management-api-contract-format.md) | Accepted | Phase 1 query profile의 기준 계약을 OpenAPI 3.1.2 JSON으로 관리한다. |
-| [ADR-0006](ADR-0006-external-rollout-controller.md) | Proposed | Pod 삭제 전 drain을 승인하는 전용 rollout controller를 둔다. |
-| [ADR-0007](ADR-0007-aws-production-deployment-platform.md) | Proposed | 초기 AWS production profile로 Amazon EKS on EC2를 사용한다. |
+| [ADR-0006](ADR-0006-external-rollout-controller.md) | Accepted | Pod 삭제 전 drain을 승인하는 전용 rollout controller를 둔다. |
+| [ADR-0007](ADR-0007-aws-production-deployment-platform.md) | Accepted | 초기 AWS production profile로 Amazon EKS on EC2를 사용한다. |
 | [ADR-0008](ADR-0008-raft-peer-transport.md) | Accepted | 고정 3-node Raft transport v1에 mTLS TCP와 bounded queues를 사용한다. |
 | [ADR-0009](ADR-0009-raft-production-state-profile.md) | Accepted (design target only) | Raft version, file-backed storage, replicated-state encoding family와 단일 group target을 정하되 production readiness는 승인하지 않는다. |
 | [ADR-0010](ADR-0010-dynamic-cluster-membership.md) | Accepted (membership 설계만) | Cluster membership은 staged learner 전환과 영구 node ID를 사용한다. |

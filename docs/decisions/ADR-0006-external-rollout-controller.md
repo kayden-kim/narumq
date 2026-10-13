@@ -2,10 +2,10 @@
 
 | 항목 | 내용 |
 | --- | --- |
-| 상태 | Proposed |
+| 상태 | Accepted |
 | 제안일 | 2026-08-16 |
-| 결정일 | 미정 |
-| 결정자 | 미정 |
+| 결정일 | 2026-10-13 |
+| 결정자 | 사용자 |
 | 관련 요구사항 | DEP-01~DEP-24, CLIENT-03~CLIENT-09, CLU-11 |
 | 관련 스펙 | [Drain과 rolling update](../specs/drain-and-rolling-update.md) |
 | 관련 Architecture | [EKS on EC2 deployment](../architectures/eks-ec2-deployment.md), [System overview](../architectures/system-overview.md) |
