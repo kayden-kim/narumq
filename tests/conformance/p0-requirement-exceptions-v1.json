@@ -50,11 +50,6 @@
       "requirementId": "DEP-23",
       "reason": "Kubernetes와 EKS_EC2_HA 배포 산출물이 보류된 범위입니다.",
       "tracking": "docs/TODO.md#14-drain-정책관측과-production-배포"
-    },
-    {
-      "requirementId": "TEN-09",
-      "reason": "noisy-neighbor p99 한도가 확정되지 않았습니다(PRD §18 질문 8).",
-      "tracking": "docs/TODO.md#17-tenantsecurity와-감사"
     }
   ]
 }

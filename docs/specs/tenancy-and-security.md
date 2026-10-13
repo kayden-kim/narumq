@@ -5,7 +5,7 @@
 | 항목 | 값 |
 | --- | --- |
 | 상태 | Active (Phase 1 security and tenant isolation slice) |
-| 적용 범위 | TEN-01~TEN-05, SEC-02~SEC-04, SEC-06, SEC-08의 JWKS fail-closed 동작, SEC-10 Management API 인증·RBAC·node-local 감사 조회, SEC-07 credential 회전·폐기와 SEC-12 client·identity·IP blocklist를 정의한다. Dynamic cluster의 저장 quota(TEN-08)는 [ADR-0017](../decisions/ADR-0017-tenant-storage-quota.md)와 §5.1에서 정한다. Policy quota는 `cluster-policy-tenant-quotas` feature를 활성화한 뒤 `ClusterPolicy.tenantQuotas`로 관리한다. TEN-06·TEN-07의 node-local 연결·session·subscription·PUBLISH traffic 한도는 §5.2를 따른다. Management plane 감사는 node-local hash chain에 저장한다. |
+| 적용 범위 | TEN-01~TEN-05, SEC-02~SEC-04, SEC-06, SEC-08의 JWKS fail-closed 동작, SEC-10 Management API 인증·RBAC·node-local 감사 조회, SEC-07 credential 회전·폐기와 SEC-12 client·identity·IP blocklist를 정의한다. Dynamic cluster의 저장 quota(TEN-08)는 [ADR-0017](../decisions/ADR-0017-tenant-storage-quota.md)와 §5.1에서 정한다. Policy quota는 `cluster-policy-tenant-quotas` feature를 활성화한 뒤 `ClusterPolicy.tenantQuotas`로 관리한다. TEN-06·TEN-07의 node-local 연결·session·subscription·PUBLISH traffic 한도는 §5.2를, TEN-09 local noisy-neighbor p99 기준은 §5.3을 따른다. Management plane 감사는 node-local hash chain에 저장한다. |
 | 근거 | [PRD 9.3절, 9.4절과 11.4절](../requirements/PRD.md), [RFC 8725](https://www.rfc-editor.org/rfc/rfc8725.html) |
 | 관련 spec | [MQTT protocol과 session](mqtt-protocol-and-session.md), [Management API](management-api-and-observability.md) |
 | 관련 Architecture | [Security boundaries](../architectures/security-boundaries.md), [Threat model](../architectures/threat-model.md), [System overview](../architectures/system-overview.md) |
@@ -233,6 +233,21 @@ Proposer node는 `narumq_tenant_quota_rejections_total{tenant,dimension}` counte
 - `tenant` label은 기존 저장 quota metric과 같은 1,024개 tenant 집합을 공유한다. 집합을 넘으면 `_overflow`로 모은다.
 - 거절마다 counter를 올린다. Warn log `tenant limit rejected a request`(`tenant`, `dimension`)는 tenant·dimension마다 10초에 한 번만 남긴다.
 
+### 5.3 Noisy neighbor 완화(TEN-09)
+
+운영자가 TEN-07의 tenant별 PUBLISH rate 한도를 설정하면 시험에서 noisy tenant의 부하 중 victim 지연을 확인해야 한다. 합격 조건은 같은 실행의 noisy 구간 victim QoS 1 PUBLISH p99가 baseline p99의 1.5배 이하인 것이다. 시험은 `2 × noisyP99 ≤ 3 × baselineP99`를 정수 `time.Duration`으로 비교해야 한다. p99는 nearest-rank 방식으로 계산한다. 표본을 오름차순 정렬한 뒤 index `ceil(0.99 × n) − 1`을 사용해야 한다.
+
+지연은 victim publisher가 QoS 1 PUBLISH를 쓰기 직전부터 victim subscriber가 그 PUBLISH를 읽을 때까지 측정해야 한다. 시험은 MQTT 3.1.1을 쓰는 실제 3-node Dynamic cluster에서 모든 client를 node 1에 연결해야 한다.
+
+| Tenant | Client와 부하 |
+| --- | --- |
+| `tenant-victim` | Publisher 한 개가 `victim/latency`에 QoS 1 PUBLISH를 20ms 간격(50 msg/s)으로 보낸다. Subscriber 한 개가 같은 topic을 QoS 1로 구독한다. |
+| `tenant-noisy` | Publisher 연결 네 개가 `noisy/load/<n>`에 QoS 1과 256-byte payload를 8ms 간격(연결별 125 msg/s, 합계 500 msg/s 목표)으로 보낸다. 연결별 in-flight는 최대 16개다. Subscriber 한 개는 `noisy/#`을 QoS 0으로 구독한다. |
+
+`tenantLimits.maxWaitMillis`는 1000, `tenantLimits.default.messagesPerSecond`는 200, `tenantLimits.tenants`의 noisy tenant `messagesPerSecond`는 50이어야 한다. 처음 50개 victim 측정은 버려야 한다. 이후 5 round를 실행해야 한다. Round마다 baseline 100개를 측정한 뒤 noisy 부하를 시작하고, 1초 안정화 후 noisy 구간 100개를 측정해야 한다. Noisy 부하를 멈춘 뒤 publisher in-flight가 0이 될 때까지 기다리고 500ms 휴지해야 한다. Baseline과 noisy 구간은 각각 500개 표본을 만들어야 한다.
+
+각 noisy round에서 subscriber가 받은 메시지 수는 50 이상이어야 하고, bucket 용량과 보충률로 계산한 상한 `50 + ceil(50 × roundSeconds)` 이하여야 한다. Rate 한도를 설정하지 않은 tenant에는 noisy-neighbor p99를 보장하지 않는다. 이 기준은 local 수용 profile이며 production tenant 수·부하 편차와 절대 latency SLO는 정하지 않는다. Production 기준은 §1.9의 `SPEC-TBD-08`에서 계속 추적한다. 결정은 [ADR-0054](../decisions/ADR-0054-tenant-noisy-neighbor-latency-acceptance.md)를 따른다.
+
 
 ## 6. 관리 plane RBAC
 
@@ -330,13 +345,13 @@ Rollout controller producer와 SIEM consumer의 unknown action/reason 검증은 
 | TEN-05 | system topic, retained, shared subscription, Will과 session이 tenant 경계를 넘지 않는다. | tenancy/routing/session 시험, `tests/integration/mqtt_ingress_test.go`의 `TestMQTTSecurity` |
 | TEN-06 | Tenant별 연결·session 제한은 node별로, subscription 제한은 route table의 tenant 수로 적용한다. 한 tenant의 초과는 다른 tenant를 거절하지 않으며, 초과 응답과 state 무변경을 확인한다. 같은 node의 동시 add와 replace/remove는 직렬화한다. | `internal/application/connect`, `internal/application/subscribe`의 `TestSubscribeTenantQuotaSerializesLocalAdmission`, `TestSubscribeTenantQuotaSerializesReplacementAndRemoval`, `internal/adapters/memory/sessionstore`, `internal/domain/routing`, `tests/integration/mqtt_tenant_limits_test.go` (`TestMQTTTenantLimits`), `tests/integration/cluster_tenant_limits_process_test.go` (`TestDynamicClusterTenantLimitsProcessAcceptance`) |
 | TEN-07 | Tenant별 payload 크기·message rate·byte rate를 제한한다. Rate 초과는 최대 `maxWaitMillis`까지 대기하고, MQTT 응답과 다른 tenant의 독립성을 확인한다. | `internal/application/tenantlimit`, `internal/adapters/tcp/server_tenant_limits_test.go`, `internal/adapters/metrics`, `cmd/narumq/security_config_test.go`, `cmd/narumq/tenant_limits_test.go`, `tests/integration/mqtt_tenant_limits_test.go` (`TestMQTTTenantLimits`) |
-| TEN-08 | Dynamic cluster는 tenant별 retained bytes, offline queue와 전체 저장 quota를 적용한다. Committed `ClusterPolicy.tenantQuotas`는 legacy `TenantQuota`보다 우선하고, policy field를 제거하면 legacy committed profile로 돌아간다. Quota feature gate, 3-node 적용, rejection profile version과 backup/snapshot restore를 확인한다. | `internal/application/membership`, `internal/adapters/raft/records`, `cmd/narumq`, `tests/integration.TestDynamicClusterTenantStorageQuotaProcessAcceptance`, `tests/integration.TestDynamicClusterPolicyTenantQuotasProcessAcceptance` |
+| TEN-09 | TEN-07 rate 한도를 넘는 noisy tenant 부하 중 victim QoS 1 PUBLISH p99는 같은 실행 baseline p99의 1.5배 이하여야 하고, noisy 수신 수는 token bucket 상한 이하여야 한다. | `tests/integration/cluster_tenant_noisy_neighbor_process_test.go::TestDynamicClusterTenantNoisyNeighborProcessAcceptance` |
 | SEC-11 | Dynamic cluster는 활성 Management API mutation 19개, 401·403 거절과 ADR-0046의 MQTT CONNECT·Will·PUBLISH·SUBSCRIBE·UNSUBSCRIBE 거절을 node-local JSONL hash chain에 기록한다. Management audit unavailable은 mutation을 막고 503을 반환한다. MQTT audit는 초당 20개·queue 256 한도에서 fail-open이며 응답을 바꾸지 않는다. | `internal/adapters/http/management/audit_test.go`, `internal/application/audit/dataplane_test.go`, `tests/contracts/audit-event-v1/contract_test.go`, `tests/integration/cluster_audit_process_test.go::TestDynamicClusterMQTTDenialAuditProcessAcceptance` |
 | SEC-12 | Dynamic cluster에서 tenant-scoped Client ID, CONNECT User Name, verified leaf certificate fingerprint와 source IP prefix 차단을 확인한다. 적용 version·entry 목록, 5초 전파, MQTT 3.1.1·5 거절·기존 연결 종료·Will 억제, feature gate, management RBAC·audit도 확인한다. | `internal/domain/security/blocklist_test.go`, `internal/domain/session/state_test.go::TestLifecycleDisconnectAccessRevokedDiscardsWill`, `internal/application/membership/blocklist_test.go`, `blocklist_service_test.go`, `internal/adapters/raft/records/blocklist_codec_test.go`, `cmd/narumq/cluster_records_blocklist_test.go`, `internal/application/connect/blocklist_test.go`, `internal/adapters/tcp/server_blocklist_test.go`, `internal/adapters/tls/listener_test.go`, `internal/adapters/http/management/blocklist_handlers_test.go`, `tests/contracts/management-api-v1/contract_test.go`, `tests/contracts/audit-event-v1/contract_test.go`, `tests/integration/mqtt_tls_test.go::TestMQTTTLSBlockedCertificateFingerprintRejected`, `tests/integration/cluster_blocklist_process_test.go::TestDynamicClusterClientBlocklistProcessAcceptance` |
 | NFR-17 | 기록된 event의 줄 순서·hash 연결·변조 검출, 중첩 details의 잘못된 UTF-8 거절, handler panic의 감사 HTTP 상태 500, Windows rotation 충돌 보호와 audit/Raft directory 경계를 확인한다. 보존 기간 값과 SIEM 접근 권한은 외부 결정으로 미정이다. | `internal/application/audit/service_test.go`, `internal/adapters/http/management/audit_test.go`, `internal/adapters/auditlog/file_publisher_test.go`, `internal/adapters/auditlog/persist_windows_test.go`, `cmd/narumq/cluster_config_test.go`, `cmd/narumq/main_test.go::TestAuditVerifyCommandVerifiesAndLeavesFilesReadOnly`, `tests/contracts/audit-event-v1/contract_test.go`, `tests/integration/cluster_audit_process_test.go::TestDynamicClusterManagementAuditProcessAcceptance` |
 | NFR-19 | MQTT data plane과 Management API의 tenant 격리·인증·권한 공격 사례를 실제 3-node cluster에서 실행하고 threat model 위협 ID와 연결한다. 독립 penetration test와 threat model 승인은 남는다. | `tests/integration/cluster_tenant_isolation_pentest_process_test.go::TestDynamicClusterTenantIsolationPenetrationProcessAcceptance`, [Threat model](../architectures/threat-model.md) |
 
-SEC-03/SEC-04의 certificate-to-tenant acceptance와 TEN-06·TEN-07의 §5.2 범위를 구현했다. TEN-08 저장 quota는 §5.1과 ADR-0017의 채택 범위를 따른다. SEC-05 password 인증은 [ADR-0047](../decisions/ADR-0047-mqtt-password-authentication.md)의 범위에서 구현·수용 시험을 완료했으며 실행 증거는 §9.5에 있다. SEC-07 credential rotation과 폐기 계약은 [ADR-0049](../decisions/ADR-0049-mqtt-credential-revocation.md)에 따라 §7과 §9.7에서 관리한다. SEC-12의 동작 기준은 §7.1, 구현 실행 증거는 §9.8에서 관리한다. TEN-09·TEN-10, rollout controller producer, 보존 기간과 SIEM 접근 권한은 후속 범위다.
+SEC-03/SEC-04의 certificate-to-tenant acceptance와 TEN-06·TEN-07의 §5.2 범위를 구현했다. TEN-08 저장 quota는 §5.1과 ADR-0017의 채택 범위를 따른다. TEN-09 local noisy-neighbor p99 기준은 §5.3과 ADR-0054에, 실행 증거는 §9.9에 둔다. SEC-05 password 인증은 [ADR-0047](../decisions/ADR-0047-mqtt-password-authentication.md)의 범위에서 구현·수용 시험을 완료했으며 실행 증거는 §9.5에 있다. SEC-07 credential rotation과 폐기 계약은 [ADR-0049](../decisions/ADR-0049-mqtt-credential-revocation.md)에 따라 §7과 §9.7에서 관리한다. SEC-12의 동작 기준은 §7.1, 구현 실행 증거는 §9.8에서 관리한다. TEN-10, rollout controller producer, 보존 기간과 SIEM 접근 권한은 후속 범위다.
 
 ### 9.1 TEN-06·TEN-07 실행 증거
 
@@ -425,7 +440,7 @@ MQTT 5 시험은 연결 상한 2, session 상한 3, subscription 상한 2를 확
 
 MQTT 3.1.1의 다른 tenant Client ID 요청은 CONNACK `0x05`로 거절됐다. `GET /api/v1/clients/tenant-a/b-all`은 `404`였다. `$SYS`는 ACL로 허용한 A client가 발행하고 A만 수신했다. Shared subscription projection은 underlying filter `jobs/#`였다. MQTT 3.1.1 persistent session은 B가 node 3에서 session-present=true로 재개하고 offline payload를 수신했다. A의 같은 Client ID는 session-present=false였으며 B payload를 받지 않았다.
 
-독립 penetration test, production 환경 시험, threat model 승인과 R-01~R-03·R-05~R-07 해결 또는 위험 승인은 미실행·미결정이다. 자동 시험 통과는 이를 대신하지 않는다.
+독립 penetration test, production 환경 시험, threat model 승인과 R-01·R-02·R-05~R-07 해결 또는 위험 승인은 미실행·미결정이다. 자동 시험 통과는 이를 대신하지 않는다.
 
 ### 9.4 SEC-11 MQTT data-plane denial audit 실행 증거
 
@@ -525,3 +540,24 @@ Process acceptance는 Dynamic 3-node cluster에서 password credential을 revoke
 첫 full local gate는 core `internal/domain/security` line coverage 92.41%와 branch coverage 87.79%로 coverage gate에서 실패했다. Canonical 값 오류, 전체 comparator 순서, 알 수 없는 kind의 안전한 무시와 policy filter 동작을 확인하는 시험을 추가했다. Threshold는 바꾸지 않았다. 다음 full local gate와 local CI gate는 통과했다.
 
 실행 증거는 저장소 acceptance와 local verification 범위다. Hosted CI, production 환경, 독립 penetration test와 threat model 승인은 이 실행에 포함되지 않는다. NFR-19는 별도 release gate로 유지한다.
+
+### 9.9 TEN-09 noisy-neighbor 실행 증거
+
+2026-10-11 저장소 루트에서 Windows x64, Go 1.26.5 (`windows/amd64`)로 실행했다.
+
+| 실행 | baseline p50/p99/max | noisy p50/p99/max | p99 비율 | noisy received/상한 per round | offered |
+| --- | --- | --- | ---: | --- | ---: |
+| 1 | 11.6598/28.7616/53.7386ms | 11.7026/30.5298/38.8162ms | 1.061 | 263/264, 263/264, 263/264, 262/263, 263/264 | 1314 |
+| 2 | 11.6791/28.6557/37.0045ms | 11.6323/26.0608/36.6205ms | 0.909 | 263/264, 263/264, 263/264, 263/264, 263/264 | 1315 |
+| 3 | 11.7204/29.4892/35.7259ms | 11.7043/28.7731/45.3087ms | 0.976 | 263/264, 263/264, 263/264, 263/264, 263/264 | 1315 |
+| 4 | 11.814/38.6218/94.3751ms | 11.7249/29.7111/34.5871ms | 0.769 | 263/264, 263/264, 262/263, 263/264, 264/265 | 1315 |
+| 5 | 11.7185/24.574/34.5682ms | 11.8383/28.7883/74.3548ms | 1.171 | 263/264, 262/263, 263/264, 263/264, 263/264 | 1314 |
+
+| 검증 | 명령 | 결과 |
+| --- | --- | --- |
+| 실제 3-node 수용 시험 5회 | `go test ./tests/integration -run '^TestDynamicClusterTenantNoisyNeighborProcessAcceptance$' -count=5 -v -timeout 30m` | PASS, 5/5. Package 194.198초. 모든 round의 noisy 수신 수는 50 이상이고 계산한 token bucket 상한 이하였다. 최대 p99 비율은 1.171이며 noisy 연결 오류는 없었다. |
+| Rate 제한 음성 대조 | 같은 시험에서 tenant override `messagesPerSecond`를 일시적으로 0으로 설정해 `-count=1` 실행 | 예상한 FAIL. 2.9902118초 동안 1492개를 수신해 계산 상한 200을 넘었다. 확인 뒤 설정을 50으로 복원했다. |
+| P0 traceability | `go run ./tools/verify traceability` | PASS. `P0 mapped 71/81, exceptions 10`. |
+| Full local gate | `go run ./tools/verify local` | PASS, 284.42초. Branch instrumentation, traceability (`P0 mapped 71/81, exceptions 10`), fuzz, architecture, package·integration, race, vet과 coverage가 통과했다. 마지막 출력은 `coverage: PASS`, `local: PASS`였다. |
+
+이 local 수용 시험은 상대 p99 기준과 tenant rate limit 적용을 확인한다. Production tenant 부하, production 환경, 절대 지연 SLO와 독립 penetration test는 확인하지 않는다.

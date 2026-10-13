@@ -696,7 +696,7 @@ MQTT normative statement 연결표는 `tests/conformance/mqtt-compliance-v1.json
 | 전체 local gate (2026-10-10) | `go run ./tools/verify local` PASS, 205.10초. Branch instrumentation, traceability, 5개 fuzz target, architecture, 전체 package·integration(125.359초), race, vet과 coverage가 통과했다. |
 | CI 병렬도 실험 (2026-10-10, mutation 수동 분리 전) | `go run ./tools/verify ci --base 23005e1a0d819a357507ce173b8d0f89cf40cf19` PASS, 1,388.95초. Coverage는 `-parallel=16`, integration은 156.691초였다. Mutation 단계는 18분 29초였다. 다섯 package 결과는 662 killed, 0 lived, 6 not covered였다. MQTT는 efficacy 100%, mutant coverage 98.80%였지만 console에 22 timed out도 기록됐다. 이 기록은 mutation을 CI에서 제외하기 전 실행 결과다. |
 
-2026-10-11 현재 P0 예외는 11개다. 원격 main `verify` gate는 traceability를 포함해 PASS했다. 실패 probe PR의 `verify` check는 실패했고 PR 상태는 `blocked`였다. `enforce_admins=false`라 관리자 merge 거절은 시험하지 않았으므로 TEST-10은 미검증으로 유지한다. 설정과 run 증거는 §8.9에 있다.
+2026-10-11 현재 작업 트리의 P0 예외는 10개다. `go run ./tools/verify traceability`는 PASS하며 `P0 mapped 71/81, exceptions 10`을 출력했다. 원격 main `verify` gate의 당시 결과와 실패 probe PR의 `blocked` 상태는 §8.9에 보존한다. `enforce_admins=false`라 관리자 merge 거절은 시험하지 않았으므로 TEST-10은 미검증으로 유지한다.
 
 
 ### 7.3 Cluster failpoint 빌드

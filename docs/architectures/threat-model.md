@@ -6,13 +6,13 @@
 | --- | --- |
 | 구조 시점 | Current |
 | 문서 상태 | Draft — 사용자 승인 전 |
-| 구현 대조 | NFR-19 자동 사전 시험은 2026-10-09에, SEC-10 실제 3-node Management RBAC 수용 시험은 2026-10-10에 통과했다. 각각의 실행 결과는 [NFR-19 증거](../specs/tenancy-and-security.md#93-nfr-19-자동-penetration-test-실행-증거)와 [SEC-10 증거](../specs/tenancy-and-security.md#96-sec-10-실행-증거)에 기록한다. |
+| 구현 대조 | NFR-19 자동 사전 시험은 2026-10-09에, SEC-10 실제 3-node Management RBAC 수용 시험은 2026-10-10에, TEN-09 noisy-neighbor process 수용 시험은 2026-10-11에 통과했다. 각 실행 결과는 [NFR-19 증거](../specs/tenancy-and-security.md#93-nfr-19-자동-penetration-test-실행-증거), [SEC-10 증거](../specs/tenancy-and-security.md#96-sec-10-실행-증거), [TEN-09 증거](../specs/tenancy-and-security.md#99-ten-09-noisy-neighbor-실행-증거)에 기록한다. |
 | 범위 | MQTT data plane, Management API. Cluster peer transport는 기존 시험만 참조한다. |
 | 코드 지도 | [Project structure](project-structure.md#verification-and-integration-test-entrypoints) |
-| 관련 PRD | [PRD](../requirements/PRD.md) NFR-19, TEN-01~TEN-05, SEC-02/04/06/10/11 |
+| 관련 PRD | [PRD](../requirements/PRD.md) NFR-19, TEN-01~TEN-05, TEN-09, SEC-02/04/06/10/11 |
 | 관련 스펙·계약 | [Tenant와 security §9](../specs/tenancy-and-security.md#9-수용-시험과-범위), [Management API v1](../contracts/management-api-v1.md), [Audit event v1](../contracts/audit-event-v1.md) |
-| 관련 ADR | [ADR-0039](../decisions/ADR-0039-management-audit-log.md), [ADR-0043](../decisions/ADR-0043-management-api-rate-limit.md), [ADR-0046](../decisions/ADR-0046-mqtt-data-plane-denial-audit.md), [ADR-0048](../decisions/ADR-0048-management-api-oidc-api-key-rbac.md) |
-| 최종 확인일 | 2026-10-10 |
+| 관련 ADR | [ADR-0039](../decisions/ADR-0039-management-audit-log.md), [ADR-0043](../decisions/ADR-0043-management-api-rate-limit.md), [ADR-0046](../decisions/ADR-0046-mqtt-data-plane-denial-audit.md), [ADR-0048](../decisions/ADR-0048-management-api-oidc-api-key-rbac.md), [ADR-0054](../decisions/ADR-0054-tenant-noisy-neighbor-latency-acceptance.md) |
+| 최종 확인일 | 2026-10-11 |
 
 ## 1. 범위와 자산
 
@@ -54,7 +54,7 @@ STRIDE는 신원 위장(S), 변조(T), 행위 부인(R), 정보 노출(I), 서�
 | T-14 | DTO·metrics·probe·audit | payload·secret 노출(I) | Management DTO, metric label 제한, audit secret 제외 | `T-14_NoPayloadOrSecretExposure` | 대응·자동 시험 통과 |
 | T-15 | Management 조회 | role에 tenant 범위가 없음(I/E) | 대응 없음 → R-01 | SEC-10 process acceptance는 role만 검증하며 tenant-delegated access는 제공하지 않는다. | 잔여 위험(R-01) |
 | T-16 | credential → audit actor | 공유 credential의 개인 식별 불가(R) | named API key id와 OIDC subject는 actor에 기록한다. 공유 API key와 break-glass bearer는 개인을 식별하지 못한다. | `TestDynamicClusterManagementRBACProcessAcceptance` | 잔여 위험(R-02) |
-| T-17 | 공유 자원 | noisy neighbor(D) | TEN-06/07 한도는 있으나 p99 수용 기준은 미정 → R-03 | 기존 tenant limit 시험. 지연 기준은 검증하지 않는다. | 잔여 위험(R-03) |
+| T-17 | 공유 자원 | noisy neighbor(D) | TEN-06/07 tenant rate limit과 [ADR-0054](../decisions/ADR-0054-tenant-noisy-neighbor-latency-acceptance.md)의 local p99 기준 | [`TestDynamicClusterTenantNoisyNeighborProcessAcceptance`](../../tests/integration/cluster_tenant_noisy_neighbor_process_test.go) | 대응·자동 시험 통과 |
 | T-18 | cluster peer | 비인가 node(S/E) | `internal/adapters/tcp`의 mTLS·peer identity 검증 | [TestRaftPeerTransportRejectsUnauthenticatedAndMalformedPeers](../../tests/integration/raft_peer_transport_test.go) — 이번 공격 범위 밖 | 대응·기존 시험 |
 | T-19 | MQTT 거절 → audit | data-plane 거절 감사 누락(R) | [ADR-0046](../decisions/ADR-0046-mqtt-data-plane-denial-audit.md)의 bounded fail-open recorder와 node-local hash chain | [`TestDynamicClusterMQTTDenialAuditProcessAcceptance`](../../tests/integration/cluster_audit_process_test.go) | 대응·자동 시험 통과 |
 | T-20 | OIDC JWT → Management role | JWT role claim으로 권한 상승(S/E) | OIDC 권한은 JWT claim이 아니라 설정된 subject-role binding에서만 가져온다. | `TestDynamicClusterManagementRBACProcessAcceptance`에서 ClusterAdmin claim이 있는 SecurityAdmin의 cluster-admin mutation `403`을 확인한다. | 대응·자동 시험 통과 |
@@ -97,7 +97,7 @@ go test ./tests/integration -run '^TestDynamicClusterTenantIsolationPenetrationP
 | --- | --- | --- | --- | --- |
 | R-01 | Management read permission은 tenant 범위로 나뉘지 않는다. 읽기 권한이 있는 주체는 모든 tenant의 client·subscription·retained metadata를 조회할 수 있다. | Tenant 위임 관리로 사용할 수 없으며 다른 tenant의 metadata가 보인다. | 사용자·제품/보안 담당: SEC-10, API-07, UI-06~09 | 위험 승인 대기 |
 | R-02 | 공유 API key와 break-glass bearer는 actor를 개인으로 식별하지 못한다. Named key id와 OIDC subject는 credential/subject 단위 추적만 제공한다. | 공유 credential 사용 시 개인별 책임 추적과 권한 폐기가 제한된다. | 사용자·보안 담당: SEC-10 | 위험 승인 대기 |
-| R-03 | TEN-09의 다른 tenant p99 한도가 정해지지 않았다. | 한 tenant의 부하가 다른 tenant 지연에 미치는 영향을 합격으로 판정할 수 없다. | 사용자·성능 담당: TEN-09 | 위험 승인 대기 |
+| R-03 | TEN-09 local p99 기준은 정했지만 production tenant 부하와 절대 SLO는 미정이다. | Local 기준 통과만으로 production workload의 latency를 판단할 수 없다. | 사용자·성능 담당: TEN-09, PRD §18 질문 8 | 해소: [ADR-0054](../decisions/ADR-0054-tenant-noisy-neighbor-latency-acceptance.md) local 기준과 [`TestDynamicClusterTenantNoisyNeighborProcessAcceptance`](../../tests/integration/cluster_tenant_noisy_neighbor_process_test.go)로 확인됨. Production tenant 부하는 [PRD §18 질문 8](../requirements/PRD.md#18-미결정-사항)에서 추적 |
 | R-04 | MQTT denial audit는 초당 20건·queue 256 bounded fail-open이다. 한도 초과·queue 포화·종료 중 event는 저장하지 않고 metric으로 센다. | 해당 조건에서 audit history가 누락될 수 있지만 MQTT 응답은 바뀌지 않는다. | SEC-11, ADR-0046; [`TestDynamicClusterMQTTDenialAuditProcessAcceptance`](../../tests/integration/cluster_audit_process_test.go) | 해소: 구현된 제한 동작과 metric이 process acceptance로 확인됨 |
 | R-05 | Security config은 시작할 때만 읽는다. Runtime은 rolling-restart credential 회전, Dynamic cluster의 committed `credentialId` 폐기와 JWT `exp`·certificate `NotAfter` 만료 종료를 지원한다. MQTT 5 `AUTH` 재인증은 제공하지 않는다. | Production IdP·certificate lifecycle·deployment rollout은 저장소 acceptance에서 검증하지 않았다. Client는 새 credential로 재연결해야 한다. | SEC-07, ADR-0049; [`TestDynamicClusterCredentialRevocationProcessAcceptance`](../../tests/integration/cluster_credential_lifecycle_process_test.go), [`TestDynamicClusterCredentialExpiryProcessAcceptance`](../../tests/integration/cluster_credential_lifecycle_process_test.go) | 구현 acceptance 뒤에도 production 운영 경계 검증과 위험 승인 대기 |
 | R-06 | 인증 실패 bucket은 `RemoteAddr` host 기준이다. Proxy·NAT 뒤에서 bucket을 공유한다. | 서로 다른 공격자·정상 사용자의 인증 실패가 같은 한도를 소모한다. | 사용자·배포/보안 담당: ADR-0043 | 위험 승인 대기 |
