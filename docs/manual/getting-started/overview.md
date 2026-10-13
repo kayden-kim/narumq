@@ -37,7 +37,7 @@ NaruMQ는 현재 개발 로드맵에 따라 기능을 단계적으로 확장하�
 - **전송 계층(Transport):**
   - 표준 TCP (로컬 개발 전용)
   - TLS 1.2 및 TLS 1.3 암호화 통신 (운영 권장)
-- **HTTP 관리 및 모니터링:**
+  - MQTT over WebSocket 및 WSS (WebSocket 엔드포인트 `/mqtt`, subprotocol `mqtt`)
   - HTTP/1.1 REST 관리 API v1
   - Prometheus / OpenMetrics 호환 메트릭 수집 엔드포인트
 
