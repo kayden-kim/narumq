@@ -758,9 +758,10 @@ Phase 0은 기준과 도구를 확정하는 단계다. Phase 1부터 기능을 �
 10. 기준 3-AZ 프로필에서 허용할 AZ 간 지연, storage topology와 장애 domain은 무엇인가? 단일 AZ 배포 같은 비기준 프로필의 보장 축소를 어떻게 표시할 것인가?
 11. durable 메시지를 모든 QoS 1/2 publish에 적용할지, durable subscriber가 있는 경우에만 적용할지? [ADR-0003](../decisions/ADR-0003-durable-ack-barrier.md)은 전자를 제안하며 아직 Proposed다.
 12. disaster recovery의 RPO/RTO와 백업 보존 기간은 얼마인가?
+    - 채택(2026-10-13): 정기 백업은 일 1회 수행하고 30일간 보존한다. 전체 클러스터 재해 복구 목표는 RPO 24시간, RTO 1시간으로 정한다(단일 노드 장애는 3-node Raft quorum으로 RPO 0을 유지한다). 실제 Linux/EBS 환경에서의 복구 시간·보존 검증은 K8s/AWS 인프라 게이트에서 수행한다.
 13. 지원할 클라이언트 SDK와 최소 버전은 무엇인가?
 14. 실제 EMQX 대비 허용할 throughput, p99 latency와 자원 효율 비율은 얼마인가?
-    - 제안(미채택): 같은 production workload와 `EKS_EC2_HA` profile에서 NaruMQ 처리량 95% 이상, publish-to-delivery p99/p99.9 latency·성공 전달당 CPU·연결당 memory 105% 이하를 요구한다. `nonEquivalent` 지표는 직접 판정에서 제외하고 최소 5회 실행의 중앙값으로 비교한다. 이 비율은 별도의 product acceptance 제안이며, NaruMQ 자체 회귀의 5% 차단 규칙에서 도출한 기준이 아니다. 실제 `B_*`와 comparator run이 확보되고 이 제안을 채택하기 전까지 `SPEC-TBD-08` gate는 열린 상태다.
+    - 채택(2026-10-13): 같은 production workload와 `EKS_EC2_HA` profile에서 NaruMQ 처리량 95% 이상, publish-to-delivery p99/p99.9 latency·성공 전달당 CPU·연결당 memory 105% 이하를 요구한다. `nonEquivalent` 지표는 직접 판정에서 제외하고 최소 5회 실행의 중앙값으로 비교한다. 이 비율은 NaruMQ 자체 회귀의 5% 차단 규칙과 별개인 product acceptance 기준이다. 실제 `B_*`(질문 1~5)와 comparator run이 확보되어 profile별 절대 cutoff를 계산하기 전까지 `SPEC-TBD-08` 실행 gate는 열린 상태다.
 15. 장기 benchmark에 사용할 고정 EMQX version과 edition은 무엇인가?
     - 고정 production benchmark comparator는 EMQX Enterprise 6.3.1, `linux/arm64`다. Image는 `emqx/emqx-enterprise:6.3.1`, OCI index digest `sha256:5ecbf93d04e34aaf4096af074e93b773d0838c8ea668cfabdec7976b272d9606`, ARM64 manifest digest `sha256:a9c5cd1e2af9d0cc474d1c048f9c9e64081ac0b0e2777776497b457ba387b0c6`로 고정한다. 실제 부하를 허용하는 유효한 EMQX license가 필요하다. 기존 5.8.8 local smoke와 artifact는 과거 증거로 유지하며 이 기준선으로 소급 변경하지 않는다.
 16. `EKS_EC2_HA`에서 지원할 EKS minor version, EC2 instance family, EBS volume type·IOPS와 NLB target mode는 무엇인가?

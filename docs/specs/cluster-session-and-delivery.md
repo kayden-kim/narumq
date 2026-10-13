@@ -346,7 +346,7 @@ Rebalance는 ownership fencing과 이미 복제된 delivery state를 보존해 s
 4. Restore는 snapshot과 committed tail을 replay한 뒤 manifest의 commit-boundary count/checksum과 비교해야 한다. Format, identity, version, member identity 또는 summary가 일치하지 않으면 target storage를 바꾸기 전에 거절한다.
 5. Current v3 restore는 동일 cluster·protocol/schema를 요구하고 producer와 모든 voter release는 restore build와 같은 major·minor 차이 1 이하인 N/N-1 window 안이어야 한다 ([ADR-0021](../decisions/ADR-0021-backup-archive-release-window.md)). Commit 경계 state의 active feature를 restore build가 지원하지 않으면 target storage 변경 전에 거절한다. 기존 strict decode·replay·summary 검증은 유지하며 모르는 state를 무시하지 않는다. 정확히 세 bootstrap voter ID와 동일 address/DNS SAN/certificate fingerprint를 요구하며 learner ID가 있으면 거절한다. V1/v2 archive, cross-cluster migration과 voter-set 변경은 지원하지 않는다. Restore는 member profile을 바꾸지 않으며 startup 뒤 build profile commit·재확인 전에는 READY가 되지 않는다.
 6. Restore는 offline CLI로 voter별 빈 target directory를 seed한 뒤 종료한다. Durable restore marker가 남은 node는 일반 startup에서 READY가 되면 안 된다.
-7. Retention 기간과 disaster-recovery RPO/RTO는 `SPEC-TBD-09`이며, Linux EBS/power-loss 보장은 별도 acceptance로 남는다.
+7. Retention 기간과 disaster-recovery RPO/RTO(`SPEC-TBD-09`)는 2026-10-13 사용자 결정으로 일 1회 정기 백업·30일 보존, 전체 클러스터 재해 복구 RPO 24시간·RTO 1시간으로 정한다(단일 노드 장애는 3-node Raft quorum으로 RPO 0 유지). 정기 백업·외부 저장소 연동과 Linux EBS/power-loss 복구 시간 검증은 별도 인프라 acceptance로 남는다.
 
 ## 11. 수용 시험
 

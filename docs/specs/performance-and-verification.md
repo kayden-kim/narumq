@@ -614,16 +614,16 @@ GC pause 백분위수는 누적 히스토그램 표본 차이에 nearest-rank를
 
 모든 릴리스는 이전 안정 NaruMQ와 고정 EMQX comparator를 대조한다. 이전 안정 NaruMQ 대비 처리량이 5% 이상 낮아지거나 p99 latency가 5% 이상 나빠지면 릴리스를 차단한다. 이 규칙은 NaruMQ 자체 회귀만 판정하며 EMQX 대비 합격 기준이 아니다. 측정 변동성이 5%를 초과하면 합격·불합격을 판정하지 않고 원인을 조사한 뒤 반복 횟수를 늘린다.
 
-`SPEC-TBD-08`의 service SLO와 EMQX 대비 수치 기준은 아직 채택하지 않았다. [PRD §4.2](../requirements/PRD.md#42-초기-성공-지표)의 값은 초기 목표이며, 실제 EMQX traffic baseline을 수집한 뒤 production SLO로 확정한다.
+`SPEC-TBD-08` 중 EMQX 대비 상대 합격 비율은 2026-10-13 사용자 결정으로 채택했다. [PRD §4.2](../requirements/PRD.md#42-초기-성공-지표)의 절대 값은 초기 목표이며, 실제 EMQX traffic baseline(`B_*`)을 수집한 뒤 production 절대 SLO로 확정한다.
 
-EMQX 대비 초기 product acceptance 제안은 다음과 같다.
+채택한 EMQX 대비 product acceptance 기준은 다음과 같다.
 
 - 같은 `B_*`와 동등 profile에서 NaruMQ 처리량은 EMQX의 95% 이상이어야 한다.
 - Publish-to-delivery p99/p99.9 latency, 성공 전달당 CPU와 연결당 memory는 EMQX 값의 105% 이하여야 한다.
 - Network/disk 비용도 측정한다. 기능·durability가 `nonEquivalent`인 지표는 직접 우열 합격 판정에서 제외한다.
 - 각 target은 최소 5회 독립 실행하고 중앙값을 비교한다. 유효한 EMQX license, workload와 profile digest가 없으면 해당 run은 gate evidence가 아니다.
 
-95%/105% 비율은 별도의 product acceptance 제안이다. 기존 5% self-regression rule에서 도출한 요구사항이 아니며, 수치도 아직 채택되지 않았다. 실제 production `B_*`와 comparator run이 없어 현재 profile별 처리량·latency·resource cutoff도 계산되지 않았다. 제안을 채택하고 workload 값을 채운 뒤 EKS/EBS gate를 통과할 때까지 release gate는 열린 상태다.
+95%/105% 상대 비율은 기존 5% self-regression rule과 별개인 채택된 product acceptance 기준이다. 다만 실제 production `B_*`와 comparator run이 없어 현재 profile별 처리량·latency·resource 절대 cutoff는 아직 계산되지 않았다. Workload 값을 채운 뒤 EKS/EBS gate를 통과할 때까지 release gate는 열린 상태다.
 
 ## 7. Verification 계층
 
