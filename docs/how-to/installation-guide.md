@@ -17,6 +17,7 @@
   - `1883`: 개발용 평문(Plaintext) MQTT 리스너 포트 (보안을 위해 루프백 주소 `127.0.0.1`에만 바인딩 허용).
   - `8883`: TLS(Transport Layer Security) MQTT 리스너 포트.
   - `8080`: 관리 HTTP API, 헬스 프로브 및 Prometheus 메트릭 수집 포트 (현재 루프백 주소만 허용).
+- WebSocket 리스너도 지원한다: `-ws-listen`은 `/mqtt` 경로와 `mqtt` subprotocol을 사용하고, WSS 리스너는 `-wss-listen` 및 `-ws-allowed-origins`로 설정한다. 세부 규칙은 [ADR-0057](../decisions/ADR-0057-mqtt-websocket-listener.md)과 [Process configuration v1 contract](../contracts/process-configuration-v1.md)을 따른다.
 - **CLI 실행 제약 및 보안 기본값:**
   - NaruMQ CLI는 보안-기본(Security-by-default) 정책에 따라 MQTT 리스너 활성화 시 `-security-config`를 필수로 요구합니다.
   - 예외적으로 로컬 개발 환경에서만 `-tcp-listen`을 루프백(`127.0.0.1`)으로 지정하고 `-allow-insecure-anonymous-mqtt` 플래그를 함께 주어야 합니다. 외부 공개 주소에 익명 바인딩을 시도하면 기동이 차단됩니다.

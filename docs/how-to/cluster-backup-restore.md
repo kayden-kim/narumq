@@ -18,6 +18,7 @@
 - Restore는 현재 voter 세 개만 지원한다. Archive에 learner ID가 있으면 거절한다. 다른 cluster ID로 이동하거나 node ID/address/DNS SAN/certificate fingerprint를 바꾸는 작업이 아니다. v1(`NMQBKUP1`) 및 v2(`NMQBKUP2`) archive는 current restore에서 명시적으로 거절한다.
 - Cutover와 업그레이드 전 drain: 새 build로 cluster를 업그레이드할 때 이전 build의 node-local queue는 복제되지 않으므로, 업그레이드 전에 persistent subscriber를 재접속시켜 대기 큐를 drain해야 한다. Drain하지 않은 기존 node-local 큐는 프로세스 종료와 함께 유실될 수 있다.
 - Archive에는 고객 식별자, retained payload와 session 정보가 들어갈 수 있다. 인증된 암호화 저장소에 보관하고 access를 제한한다.
+- 채택된 [SPEC-TBD-09] 정기 백업 정책: 일 1회 수행하고 30일간 보존한다. 전체 클러스터 재해 복구 목표는 RPO 24시간·RTO 1시간이다(단일 노드 장애는 3-node Raft quorum으로 RPO 0 유지; [Cluster §10](../specs/cluster-session-and-delivery.md#10-snapshot-backup과-restore) 참조).
 - Backup 요청은 쓰기를 중지하지 않는다. Fresh quorum barrier가 유효하지 않으면 retryable `503`을 반환한다. Retained, offline 및 durable delivery operation은 [Release contract](../contracts/cluster-release-compatibility-v1.md#5-readiness와-persisted-state)의 fresh read·committed profile gate를 따른다. Release는 same-major 인접 minor window를 허용하며 protocol/schema는 exact 비교를 유지한다.
 
 ## 2. 전제 조건
