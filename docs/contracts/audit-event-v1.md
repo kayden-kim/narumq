@@ -118,7 +118,7 @@ Process 재시작 시 active 파일의 끝이 줄바꿈으로 끝나지 않으�
 
 ## 7. 남은 범위
 
-- 보존 기간 값과 SIEM 접근 권한은 외부 보안 운영 책임이며 값은 미정이다.
+- 보존 기간과 접근 권한은 2026-10-13 사용자 결정으로 외부 SIEM 최소 365일 위변조 방지 보관, node-local 디스크 최소 7일 회전 버퍼 유지, 조회·접근 권한은 `SecurityAdmin`·`ClusterAdmin` 전용으로 확정한다.
 - Rollout controller producer는 이 Broker producer 범위에 포함하지 않는다.
 - 외부 SIEM consumer가 unknown `action`·`reason`을 저장·표시하는 동작은 이 계약 시험 범위에 포함하지 않는다.
 
