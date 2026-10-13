@@ -109,12 +109,16 @@ type clusterMembershipProcessFixture struct {
 }
 
 func newClusterMembershipProcessFixture(t *testing.T, nodeCount int, buildTags string) *clusterMembershipProcessFixture {
+	return newClusterMembershipProcessFixtureWithLifetime(t, nodeCount, buildTags, 10*time.Minute)
+}
+
+func newClusterMembershipProcessFixtureWithLifetime(t *testing.T, nodeCount int, buildTags string, lifetime time.Duration) *clusterMembershipProcessFixture {
 	t.Helper()
 	repoRoot := clusterMembershipProcessRepoRoot(t)
 	tempDir := t.TempDir()
 	binaryPath := clusterMembershipProcessSharedBinary(t, repoRoot, buildTags)
 
-	clusterCtx, clusterCancel := context.WithTimeout(context.Background(), 10*time.Minute)
+	clusterCtx, clusterCancel := context.WithTimeout(context.Background(), lifetime)
 	t.Cleanup(clusterCancel)
 	harness := newClusterMembershipProcessHarness(t, clusterCtx, repoRoot, binaryPath)
 
@@ -142,7 +146,7 @@ func newClusterMembershipProcessFixture(t *testing.T, nodeCount int, buildTags s
 	clusterMembershipProcessWriteFile(t, readOnlyAPIKeyPath, []byte(clusterMembershipProcessReadOnlyAPIKey), 0o600)
 
 	securityPath := filepath.Join(tempDir, "mqtt-security.json")
-	jwksURL, accessToken := clusterMembershipProcessJWTFixture(t)
+	jwksURL, accessToken := clusterMembershipProcessJWTFixture(t, lifetime+time.Hour)
 	securityConfig := []byte(fmt.Sprintf(`{
   "jwt": {
     "issuer": "https://issuer.example",
@@ -314,6 +318,14 @@ func newClusterMembershipProcessFixture(t *testing.T, nodeCount int, buildTags s
       "retained-qos12-replay-6",
       "retained-qos12-replay-7",
       "retained-qos12-replay-8",
+      "roll-sub-v5",
+      "roll-sub-v311",
+      "roll-pub",
+      "roll-will-v5",
+      "roll-will-v311",
+      "roll-observer",
+      "roll-retained-v5",
+      "roll-retained-v311",
       "metrics-gauge-subscriber"
     ],
     "roles": ["client"]
@@ -468,6 +480,24 @@ func newClusterMembershipProcessFixture(t *testing.T, nodeCount int, buildTags s
     "effect": "allow",
     "action": "will",
     "topicFilter": "drain-will/#"
+  }, {
+    "tenantId": "acceptance",
+    "role": "client",
+    "effect": "allow",
+    "action": "publish",
+    "topicFilter": "roll/#"
+  }, {
+    "tenantId": "acceptance",
+    "role": "client",
+    "effect": "allow",
+    "action": "subscribe",
+    "topicFilter": "roll/#"
+  }, {
+    "tenantId": "acceptance",
+    "role": "client",
+    "effect": "allow",
+    "action": "will",
+    "topicFilter": "roll/#"
   }, {
     "tenantId": "acceptance",
     "role": "client",
@@ -1830,10 +1860,10 @@ type clusterProcessJWTIssuer struct {
 	signingKey jwk.Key
 }
 
-func clusterMembershipProcessJWTFixture(t *testing.T) (string, string) {
+func clusterMembershipProcessJWTFixture(t *testing.T, lifetime time.Duration) (string, string) {
 	t.Helper()
 	issuer := newClusterProcessJWTIssuer(t, "process-acceptance-key")
-	return issuer.jwksURL, issuer.sign(t, "mqtt-process-client", time.Now().Add(time.Hour), nil)
+	return issuer.jwksURL, issuer.sign(t, "mqtt-process-client", time.Now().Add(lifetime), nil)
 }
 
 func newClusterProcessJWTIssuer(t *testing.T, keyID string) *clusterProcessJWTIssuer {
