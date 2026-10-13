@@ -75,3 +75,10 @@ $RECYCLE.BIN/
 node_modules/
 **/.vitepress/dist/
 **/.vitepress/cache/
+
+### Terraform
+**/.terraform/
+**/*.tfstate
+**/*.tfstate.*
+**/*.tfvars
+!**/*.tfvars.example

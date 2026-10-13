@@ -1,0 +1,2 @@
+aws_region                             = "ap-northeast-2"
+cluster_endpoint_public_access_cidrs = ["YOUR_PUBLIC_IP/32"]
