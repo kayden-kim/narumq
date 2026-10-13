@@ -56,7 +56,8 @@ spec:
           configMap:
             name: narumq-prometheus-targets
         - name: secrets
-          emptyDir: {}
+          secret:
+            secretName: narumq-readonly-secret
         - name: data
           emptyDir: {}
 ---
@@ -96,9 +97,12 @@ spec:
             - name: GF_PLUGINS_PREINSTALL_SYNC
               value: yesoreyeram-infinity-datasource@4.1.1
             - name: NARUMQ_MANAGEMENT_URL
-              value: http://narumq-management:8080
+              value: http://narumq-management.narumq.svc.cluster.local:8080
             - name: NARUMQ_READONLY_API_KEY
-              value: ""
+              valueFrom:
+                secretKeyRef:
+                  name: narumq-readonly-secret
+                  key: narumq-readonly.key
           ports:
             - name: http
               containerPort: 3000
