@@ -27,9 +27,9 @@
 - Disconnect reason, reconnect attempt와 `Session Present` 결과를 관측 가능하게 기록한다.
 - MQTT 3.1.0 `MQIsdp`와 protocol level 3을 사용하지 않는다.
 
-Full jitter delay는 `random(0, min(cap, base × 2^attempt))` millisecond다. `base`, `cap`과 최대 attempt는 deployment profile이 정한다. 값이 없으면 SDK profile을 Active로 승인할 수 없다.
+Full jitter delay는 `random(0, min(cap, base × 2^attempt))` millisecond다. Deployment profile이 따로 정하지 않으면 [ADR-0055](../decisions/ADR-0055-drain-and-reconnect-operating-defaults.md)에 따라 `base=1000ms`, `cap=30000ms`, 최대 attempt `10`을 쓴다.
 
-아래 값은 Phase 1과 drain suite의 자동 검증에만 사용한다. Production rollout 기본값이 아니다. Rollout과 reconnect의 운영 수치는 `SPEC-TBD-04`가 계속 소유한다.
+아래 값은 Phase 1과 drain suite의 자동 검증에만 사용한다. Production rollout 기본값이 아니다. 운영 기본값은 §4와 [ADR-0055](../decisions/ADR-0055-drain-and-reconnect-operating-defaults.md)를 따른다.
 
 | 항목 | Phase 1 test-only 값 | Drain test-only 값 |
 | --- | --- | --- |
@@ -109,7 +109,7 @@ SDK별 실행 가능한 기준 설정 예시는 다음과 같다.
 - `Session Present=0`이면 client는 필요한 subscription을 다시 만들고 local outbox를 기준으로 미완료 publish를 복구해야 한다.
 - MQTT 5 Session Expiry는 `maximumRolloutDuration + reconnectSafetyMargin`보다 커야 한다.
 - `MQTT5_DRAIN_SAFE` Will Delay는 `maximumReconnectDuration + willSafetyMargin`보다 커야 한다.
-- 위 네 deployment 값의 숫자는 `SPEC-TBD-04`가 확정한다. 숫자가 없는 profile은 Draft다.
+- `maximumRolloutDuration=3600s`, `reconnectSafetyMargin=600s`이므로 Session Expiry는 4200초보다 커야 한다. `maximumReconnectDuration=60s`, `willSafetyMargin=30s`이므로 `MQTT5_DRAIN_SAFE` Will Delay는 90초보다 커야 한다([ADR-0055](../decisions/ADR-0055-drain-and-reconnect-operating-defaults.md)).
 
 ## 5. Drain과 Will matrix
 
@@ -167,7 +167,7 @@ python-mqtt31-rejected
 
 Cross-SDK QoS 1 case는 subscriber가 `ready.json`에 `schemaVersion`, `caseId`, `sdk`, `role=subscriber`, `protocol`, `ready=true`를 기록한 뒤에만 publisher를 시작한다. Orchestrator는 이 object를 strict decode하고 case·SDK·protocol을 검증한 뒤 publisher의 `readiness.json`으로 복사하여 `/input/readiness.json`에 read-only mount한다. Publisher는 파일이 없거나 형식·값이 다르면 publish하지 않고 failed result를 기록한다.
 
-`MQTT5_DRAIN_SAFE`의 test-only redirect·Will evidence는 §6.2에서 확인했다. 전체 profile은 `SPEC-TBD-04` 운영 수치, rollout timing과 matrix의 Go malformed 열 때문에 계속 `blocked`다. Broker-side drain controller와 `DISCONNECT 0x9C`/Server Reference 송신은 [Drain spec §10](../specs/drain-and-rolling-update.md#10-broker-drain-수용-시험-매핑)에 연결한다. MQTT 3.1.0 90일 inventory와 migration isolation도 계속 `blocked`다.
+`MQTT5_DRAIN_SAFE`의 test-only redirect·Will evidence는 §6.2에서 확인했다. 전체 profile은 rollout timing과 matrix의 Go malformed 열 때문에 계속 `blocked`다. Broker-side drain controller와 `DISCONNECT 0x9C`/Server Reference 송신은 [Drain spec §10](../specs/drain-and-rolling-update.md#10-broker-drain-수용-시험-매핑)에 연결한다. MQTT 3.1.0 90일 inventory와 migration isolation도 계속 `blocked`다.
 
 SDK matrix row는 연결된 Phase 1 case가 모두 통과하고 immutable image/result artifact가 보존된 뒤에만 `phase1_verified`가 될 수 있다. required drain, Will 또는 migration evidence가 하나라도 `blocked`인 동안에는 이 Draft contract를 `Active`로 승격하지 않는다.
 
@@ -237,9 +237,8 @@ go run ./tests/compatibility/mqtt-clients-v1 --suite drain \
 
 ## 8. Draft blocker
 
-- `SPEC-TBD-04`: rollout·reconnect 시간과 production backoff 수치
 - `DEP-06`~`DEP-12`: external rollout gate의 end-to-end evidence. Broker의 표준 Will 처리와 reason 계측은 [ADR-0028](../decisions/ADR-0028-planned-handoff-will-and-reason-metric.md)을 따르며 수용 증거는 [Drain §10](../specs/drain-and-rolling-update.md#10-broker-drain-수용-시험-매핑)에 둔다.
-- `MQTT5_DRAIN_SAFE`: `SPEC-TBD-04` 운영 수치, rollout timing과 matrix에 `blocked`로 남은 Go malformed DISCONNECT 열
+- `MQTT5_DRAIN_SAFE`: rollout timing과 matrix에 `blocked`로 남은 Go malformed DISCONNECT 열
 - SDK별 automated compatibility harness의 Phase 1 artifact가 없는 후보는 `unverified`
 - MQTT 3.1.0 90일 관찰과 legacy 격리 완료 전까지 migration evidence가 blocked
 

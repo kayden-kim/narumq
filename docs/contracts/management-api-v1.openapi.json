@@ -3,7 +3,7 @@
   "jsonSchemaDialect": "https://json-schema.org/draft/2020-12/schema",
   "info": {
     "title": "NaruMQ Management API",
-    "version": "1.15.0",
+    "version": "1.16.0",
     "description": "Query, observability, authenticated cluster membership and feature activation, cluster policy updates, node configuration, broker node drain and connection rebalance, credential revocation and client blocklist, cluster-backup operations, and node-local management audit events. Per-principal and failed-authentication rate limiting applies to /api/v1. Dashboard APIs are deferred."
   },
   "servers": [
@@ -1673,20 +1673,20 @@
       "NodeDrainRequest": {
         "type": "object",
         "additionalProperties": false,
-        "required": ["connectionRatePerSecond", "loadBalancerPropagationDelayMillis", "timeoutMillis"],
         "properties": {
           "serverReference": {
             "type": "string",
             "maxLength": 256,
             "description": "Optional MQTT 5 Server Reference; at most 256 UTF-8 bytes and no control characters."
           },
-          "connectionRatePerSecond": { "type": "integer", "minimum": 1, "maximum": 10000 },
-          "loadBalancerPropagationDelayMillis": { "type": "integer", "minimum": 0, "maximum": 3600000 },
+          "connectionRatePerSecond": { "type": "integer", "minimum": 1, "maximum": 10000, "default": 100 },
+          "loadBalancerPropagationDelayMillis": { "type": "integer", "minimum": 0, "maximum": 3600000, "default": 30000 },
           "timeoutMillis": {
             "type": "integer",
             "minimum": 1000,
             "maximum": 86400000,
-            "description": "Must be greater than loadBalancerPropagationDelayMillis."
+            "default": 600000,
+            "description": "Must be greater than loadBalancerPropagationDelayMillis after defaults are applied."
           }
         }
       },

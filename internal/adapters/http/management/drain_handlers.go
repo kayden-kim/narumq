@@ -83,9 +83,17 @@ func (handler *nodeDrainHandler) Start(w http.ResponseWriter, r *http.Request) {
 		writeInvalidRequest(w, r, err)
 		return
 	}
-	if request.ConnectionRatePerSecond == nil || request.LoadBalancerPropagationDelayMillis == nil || request.TimeoutMillis == nil {
-		writeInvalidRequest(w, r, errors.New("connectionRatePerSecond, loadBalancerPropagationDelayMillis, and timeoutMillis are required"))
-		return
+	rate := nodedrain.DefaultConnectionRatePerSecond
+	if request.ConnectionRatePerSecond != nil {
+		rate = *request.ConnectionRatePerSecond
+	}
+	lbDelayMillis := nodedrain.DefaultLoadBalancerPropagationDelayMillis
+	if request.LoadBalancerPropagationDelayMillis != nil {
+		lbDelayMillis = *request.LoadBalancerPropagationDelayMillis
+	}
+	timeoutMillis := nodedrain.DefaultTimeoutMillis
+	if request.TimeoutMillis != nil {
+		timeoutMillis = *request.TimeoutMillis
 	}
 	memberID, err := parseCanonicalMemberID(r.PathValue("nodeId"))
 	if err != nil {
@@ -98,9 +106,9 @@ func (handler *nodeDrainHandler) Start(w http.ResponseWriter, r *http.Request) {
 	}
 	operation, err := handler.service.StartNodeDrain(r.Context(), membership.StartNodeDrainRequestDTO{
 		MemberID: memberID, IdempotencyKey: idempotencyKey, ServerReference: serverReference,
-		ConnectionRatePerSecond:            *request.ConnectionRatePerSecond,
-		LoadBalancerPropagationDelayMillis: *request.LoadBalancerPropagationDelayMillis,
-		TimeoutMillis:                      *request.TimeoutMillis,
+		ConnectionRatePerSecond:            rate,
+		LoadBalancerPropagationDelayMillis: lbDelayMillis,
+		TimeoutMillis:                      timeoutMillis,
 	})
 	if err != nil {
 		writeMembershipServiceError(w, r, err)

@@ -19,8 +19,8 @@ PRD는 `Draft` 상태이므로 이 목록은 요구사항을 구현 기준으로
 | 구분 | 해당 항목 | 선행 조건 및 검증 경계 |
 | --- | --- | --- |
 | **K8s(`EKS_EC2_HA`)·AWS 인프라 테스트 필요 (보류·미검증)** | • Linux/EBS 전원·volume 손실 수용 (`CLU-14`, §1.1)<br>• Linux/EBS에서 RPO/RTO 복구 검증 (`SPEC-TBD-09`, §1.1)<br>• K8s External rollout controller (`DEP-11·DEP-18`, §1.2)<br>• K8s 종료 연동과 `EKS_EC2_HA` 배포 산출물 (`DEP-13~23`, §1.4)<br>• Rollout controller 감사 이벤트 producer (`SEC-11`, §1.7) | 각 항목에 적힌 로컬 증거는 K8s·클라우드 인프라 수용 시험을 대체하지 않는다. 특히 §1.2 rollout controller와 §1.4 EKS 배포 산출물은 아직 구현·검증 증거가 없다. |
-| **운영 환경·출시 부하 검증 필요 (미검증)** | • 운영 Dashboard (`UI-01~05·UI-10`, §1.8)<br>• BP-07 rolling drain 비교 (`PERF-07`, §1.2)<br>• 최대 traffic 연속 100회 rolling (`DEP-01~12`, §1.2)<br>• Production benchmark profile (`PERF-01·05~07·10~12·NFR-06`, §1.9)<br>• 운영 경계 독립 침투 시험 (`NFR-19`, §1.7)<br>• MQTT-13 90일 운영 전환 감시 (`MQTT-13`, §1.6) | 해당 항목은 로컬 프로세스/Docker smoke 시험을 통과했지만 실제 운영 환경 또는 대상 인프라에서의 검증이 남아 있다. |
-| **K8s 인프라 불필요 — 선행 정책·계약 결정** | • Drain·reconnect 운영 기본값 (`SPEC-TBD-04`, §1.4)<br>• WebSocket/WSS 필요성 (`MQTT-10`, §1.6)<br>• Noisy-neighbor p99 지연 한도 (`TEN-09`, §1.7)<br>• 보존 기간·SIEM 접근 권한 (`SEC-11·NFR-17`, §1.7)<br>• Threat model 승인·위험 처분 (`NFR-19`, §1.7)<br>• P1 관리 화면·API 계약·tenant 위임 권한 (`UI-06~09·API-07·TEN-10`, §1.8)<br>• Production workload 수치·성능 합격선 (`SPEC-TBD-08`, §1.9) | 정책·계약 결정 후 해당 입력 기준에 따라 로컬·통합 시험 또는 운영 인프라 시험을 진행한다. |
+| **운영 환경·출시 부하 검증 필요 (미검증)** | • 운영 Dashboard (`UI-01~05·UI-10`, §1.8)<br>• BP-07 rolling drain 비교 (`PERF-07`, §1.2)<br>• 최대 traffic 연속 100회 rolling (`DEP-01~12`, §1.2)<br>• Production benchmark profile (`PERF-01·05~07·10~12·NFR-06`, §1.9)<br>• 운영 경계 독립 침투 시험 (`NFR-19`, §1.7)<br>• MQTT-13 90일 운영 전환 감시 (`MQTT-13`, §1.6)<br>• TEN-09 production workload·절대 SLO (`§1.9`) | 해당 항목은 로컬 프로세스/Docker smoke 시험을 통과했지만 실제 운영 환경 또는 대상 인프라에서의 검증이 남아 있다. |
+| **K8s 인프라 불필요 — 선행 정책·계약 결정** | • WebSocket/WSS 필요성 (`MQTT-10`, §1.6)<br>• 보존 기간·SIEM 접근 권한 (`SEC-11·NFR-17`, §1.7)<br>• Threat model 승인·위험 처분 (`NFR-19`, §1.7)<br>• P1 관리 화면·API 계약·tenant 위임 권한 (`UI-06~09·API-07·TEN-10`, §1.8)<br>• Production workload 수치·성능 합격선 (`SPEC-TBD-08`, §1.9) | 정책·계약 결정 후 해당 입력 기준에 따라 로컬·통합 시험 또는 운영 인프라 시험을 진행한다. |
 | **K8s 인프라 불필요 — 로컬·CI·외부 의존성 검증** | • 게시 release별 N-1↔N 호환성 (`CLU-11·NFR-15`, §1.2)<br>• 지원 SDK Server redirect·Will 호환성 (`CLIENT-01~09`, §1.2)<br>• SIEM consumer unknown 감사 코드 호환성 (`SEC-11`, §1.7)<br>• GitHub `main` 관리자 포함 merge 차단 (`TEST-10`, §1.9) | 로컬 프로세스·Docker 호환성 suite, GitHub 원격 CI 설정, 공식 SDK 패치 릴리스 또는 client 인벤토리 조사로 검증한다. |
 
 ### 1.1 Production storage와 disaster recovery
@@ -55,7 +55,7 @@ PRD는 `Draft` 상태이므로 이 목록은 요구사항을 구현 기준으로
 
 ### 1.4 Drain 정책·관측과 production 배포
 
-- [ ] **결정 필요 · [비인프라 — 선행 운영값 결정]** — Drain·reconnect 운영값(`SPEC-TBD-04`): [ADR-0016 §6](decisions/ADR-0016-node-drain-and-safe-to-stop.md#6-결과)과 [MQTT client contract §4](contracts/mqtt-client-compatibility-v1.md#4-session과-expiry)의 connection rate, LB 전파 대기, timeout, reconnect/backoff·Will safety margin과 최악 termination grace를 확정한다. 현재 drain API는 rate/delay/timeout을 호출자가 지정하며 제품 기본값이 없다. Phase 1 test-only 값을 production 기본값으로 쓰지 않는다. 확정한 값은 SDK 시험과 K8s 배포 admission의 기준으로 연결한다.
+- [x] **완료(제품 기본값) / [ ] 미검증(K8s·NLB 실측)** — Drain·reconnect 운영값(SPEC-TBD-04): [ADR-0055](decisions/ADR-0055-drain-and-reconnect-operating-defaults.md)와 [Drain spec §2·§7](specs/drain-and-rolling-update.md#2-drain-operation-resource)에 제품 기본값(drain 100/s, LB 대기 30s, timeout 600s, 최소 grace 660s, reconnect 1~30s·10회)을 반영하고 생략 시 기본값 적용을 구현했다. 실제 NLB deregistration·SIGTERM 종료 시간 실측과 Kubernetes 배포 admission 검증은 아래 K8s 배포 항목에서 함께 수행한다.
 - [ ] **보류 · 미구현 · [K8s/AWS 인프라 테스트 필요]** — Kubernetes 종료 연동과 `EKS_EC2_HA` 배포 artifact(DEP-13~DEP-23): [Drain spec §7·§7.1](specs/drain-and-rolling-update.md#7-external-rollout-gate와-kuberneteseks), [ADR-0007 §7](decisions/ADR-0007-aws-production-deployment-platform.md#7-검증)과 [EKS architecture](architectures/eks-ec2-deployment.md)의 목표 범위다. `preStop`의 idempotent drain 호출·결과 기록, grace period 검증, PDB·3-AZ placement·교체 동시성, stable node identity와 EBS 결합, NLB target lifecycle 및 profile별 지원 상태를 배포 artifact에 연결한다. Controller 구현은 §1.2, storage 전원·volume 시험은 §1.1에서 추적한다.
   - 보류 사유: 인프라 시험 보류 중이며 ADR-0006/0007은 Proposed, EKS architecture는 Target/Draft이고 구현 증거가 없다.
   - 해제 조건: 인프라 작업 재개와 배포 결정 채택, [PRD §18](requirements/PRD.md#18-미결정-사항) 질문 10·16의 profile 확정 및 실행 환경 확보.
@@ -75,7 +75,7 @@ PRD는 `Draft` 상태이므로 이 목록은 요구사항을 구현 기준으로
 
 ### 1.7 Tenant·security와 감사
 
-- [ ] **결정 필요 · [비인프라 — 선행 수치 결정]** — noisy-neighbor p99 한도(TEN-09; PRD §18 질문 8): [PRD §18](requirements/PRD.md#18-미결정-사항)에서 tenant 부하와 허용할 다른 tenant의 p99 지연을 확정한다. TEN-06·TEN-07의 기능 격리 시험은 p99 수용 기준을 대신하지 않는다. TEN-08 저장 quota는 ADR-0017의 채택 범위로 제공하므로 다시 미구현으로 열지 않는다.
+- [x] **완료(로컬 수용)** — TEN-09 noisy-neighbor 완화: [ADR-0054](decisions/ADR-0054-tenant-noisy-neighbor-latency-acceptance.md) · [Tenant와 security §9.9](specs/tenancy-and-security.md#99-ten-09-noisy-neighbor-실행-증거). Production workload와 절대 SLO는 §1.9에서 추적한다.
 - [x] **완료** — SEC-05 MQTT username/password 인증: [ADR-0047](decisions/ADR-0047-mqtt-password-authentication.md)과 [Tenant와 security §9.5](specs/tenancy-and-security.md#95-sec-05-password-authentication-실행-증거)에 구현·검증을 기록했다.
 - [x] **완료** — SEC-07 MQTT credential 회전·폐기와 만료 종료: [ADR-0049](decisions/ADR-0049-mqtt-credential-revocation.md), [운영 가이드](how-to/credential-rotation-and-revocation.md)와 [Tenant와 security §9.7](specs/tenancy-and-security.md#97-sec-07-credential-회전폐기-실행-증거)에 구현·검증을 기록했다.
 - [x] **완료** — SEC-10 Management API 인증·RBAC·감사 조회: [ADR-0048](decisions/ADR-0048-management-api-oidc-api-key-rbac.md)과 [Tenant와 security §9.6](specs/tenancy-and-security.md#96-sec-10-실행-증거)에 구현·검증을 기록했다.
@@ -86,7 +86,7 @@ PRD는 `Draft` 상태이므로 이 목록은 요구사항을 구현 기준으로
   - **비인프라 정책 결정**: 감사 로그 보존 기간과 SIEM 접근 권한 확정.
 - [ ] **미검증 · [선행 승인 + K8s/운영 인프라 테스트 필요]** — 보안 출시 gate(NFR-19): [PRD §11.4·§15.4](requirements/PRD.md)의 threat model과 tenant-isolation penetration test를 release 전에 수행한다.
   - 로컬 완료 범위: 자동 사전 침투 시험과 [threat model 초안](architectures/threat-model.md)을 완료했다([Tenant와 security §9.3](specs/tenancy-and-security.md#93-nfr-19-자동-penetration-test-실행-증거)).
-  - 비인프라 선행 결정: Threat model 승인, `R-01~R-03`·`R-05~R-07` 해결 또는 위험 승인.
+  - 비인프라 선행 결정: Threat model 승인, `R-01·R-02`·`R-05~R-07` 해결 또는 위험 승인.
   - K8s/운영 인프라 테스트 필요: 로컬 loopback 시험 범위 밖인 NLB, TLS termination, secret 저장소, Kubernetes 경계를 포함한 독립 penetration test 수행.
 
 ### 1.8 Management API·observability와 Dashboard

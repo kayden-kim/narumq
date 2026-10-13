@@ -62,7 +62,6 @@ MQTT packet 이름, property와 reason code는 OASIS 명칭을 사용한다. 충
 | SPEC-TBD-01 | WAL 영속화 기준, replication factor, write quorum | [ADR-0002](../decisions/ADR-0002-cluster-consensus-library.md), [ADR-0003](../decisions/ADR-0003-durable-ack-barrier.md) | 두 ADR은 Proposed다. 승인 전에는 제품 기본값으로 확정하지 않는다. |
 | SPEC-TBD-02 | listener, packet, inflight, queue 및 tenant quota 수치 | 일반 설정은 [실행 옵션과 설정 스펙](configuration-and-runtime-options.md); Dynamic cluster tenant 저장 quota와 최대값은 [ADR-0017](../decisions/ADR-0017-tenant-storage-quota.md); tenant 연결·traffic 한도는 [Tenant §5.2](tenancy-and-security.md#52-연결-상태와-traffic-한도) | Tenant storage quota는 네 dimension과 cluster-wide 최대값이 확정됐다. 저장 quota에는 그 밖의 무제한 값을 허용하지 않는다. Tenant 연결·traffic 한도의 차원과 허용 범위는 확정됐다. 제품 기본 수치는 아직 정하지 않았으므로 배포 security config가 값을 명시해야 한다. 생략하면 0(제한 없음)이다. 이는 listener 한도와 같은 구현 기본값이며 제품 보장이 아니다. |
 | SPEC-TBD-03 | session·message expiry 상한과 offline queue 초과 정책 | [실행 옵션과 설정 스펙](configuration-and-runtime-options.md) | 적용 결과가 protocol 응답과 Metric에 드러나야 한다. |
-| SPEC-TBD-04 | drain rate, LB 전파 대기, timeout, grace period | [ADR-0006](../decisions/ADR-0006-external-rollout-controller.md), deployment spec | Controller 전략은 Proposed이며 수치는 N-1 용량과 최악 종료 시간으로 확정해야 한다. |
 | SPEC-TBD-05 | topic 내부 prefix encoding과 canonicalization 세부 규칙 | tenancy ADR/spec 개정 | 외부 topic과 tenant 격리를 보존해야 한다. |
 | SPEC-TBD-07 | Metric 이름 전체와 histogram bucket | metrics catalog | label cardinality 제한을 지켜야 한다. |
 | SPEC-TBD-08 | 성능 SLO와 release-gating EMQX version·edition | Phase 0 benchmark record | BP-01 historical OSS comparator는 `5.8.8`로 고정됐지만, release-gating EMQX와 합격 수치는 미확정이다. 동일 조건에서 반복 측정해야 한다. |
@@ -72,7 +71,7 @@ MQTT packet 이름, property와 reason code는 OASIS 명칭을 사용한다. 충
 
 Phase 1 SDK inventory는 `github.com/eclipse/paho.mqtt.golang v1.5.1`, `github.com/eclipse/paho.golang v0.23.0`, `paho-mqtt 2.1.0`으로 확정했다. 이 inventory는 Phase 1 compatibility evidence에만 적용하며, 자동 artifact가 없는 후보와 전체 contract 승격 조건은 compatibility contract에서 별도로 관리한다.
 
-Broker-side drain, `SAFE_TO_STOP`, replicated recovery와 protocol redirect emission이 구현됐으며 process evidence는 [Drain spec §10](drain-and-rolling-update.md#10-broker-drain-수용-시험-매핑)에 있다. 이는 release-wide drain-safe support 완료를 뜻하지 않는다. Supported-SDK Server Reference 추종(DEP-06), MQTT 3.1.1/Will 호환성(DEP-07/12), external rollout gate(DEP-11/13~18), production profile과 storage 검증(DEP-19~23), `SPEC-TBD-04` 제품 값 및 MQTT 3.1.0 90일 migration evidence는 blocker로 남는다.
+Broker-side drain, `SAFE_TO_STOP`, replicated recovery와 protocol redirect emission이 구현됐으며 process evidence는 [Drain spec §10](drain-and-rolling-update.md#10-broker-drain-수용-시험-매핑)에 있다. 이는 release-wide drain-safe support 완료를 뜻하지 않는다. Supported-SDK Server Reference 추종(DEP-06), MQTT 3.1.1/Will 호환성(DEP-07/12), external rollout gate(DEP-11/13~18), production profile과 storage 검증(DEP-19~23), MQTT 3.1.0 90일 migration evidence는 blocker로 남는다.
 
 Management API v1 query profile은 미결정 항목이 아니다. 현재 active contract와 OpenAPI는 [`docs/contracts/management-api-v1.md`](../contracts/management-api-v1.md), [`docs/contracts/management-api-v1.openapi.json`](../contracts/management-api-v1.openapi.json)과 [`tests/contracts/management-api-v1`](../../tests/contracts/management-api-v1)에서 관리한다. Broker drain은 active mutation이며 API rate limit은 active management-plane 동작이다. 다른 mutation·OIDC는 deferred scope다.
 

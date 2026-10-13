@@ -6,7 +6,7 @@ path, parameter, response schema와 media type은
 
 | 항목 | 값 |
 | --- | --- |
-| 이름과 version | `narumq-management-api` 1.15.0 |
+| 이름과 version | `narumq-management-api` 1.16.0 |
 | 상태 | Active |
 | Producer | NaruMQ broker management API |
 | Consumer | Dashboard·operator·monitoring integration의 query client |
@@ -183,3 +183,4 @@ JSON 오류는 다음 envelope다.
 - Version 1.15.0은 `ClusterPolicy` request·response에 선택적 `tenantQuotas`를 추가한다. 해당 field는 `cluster-policy-tenant-quotas` feature 활성화 뒤 사용할 수 있고, PUT body 한도는 512 KiB다.
 - Version 1.15.0은 Dynamic cluster 전용 `GET /api/v1/nodes/{nodeId}/config`를 추가한다. ClusterAdmin 전용이며 적용 설정, policy 출처와 version을 반환하고 secret 원문·경로를 제외한다. Node-local route는 요청 node의 canonical decimal ID만 받으며 다른 ID에는 `409 node_not_local`을 반환한다.
 - Version 1.15.0은 audit query를 `/api/v1/audit/events`에서 `/api/v1/nodes/{nodeId}/audit/events`로 이동한다. 이전 경로는 지원하지 않으며 client를 갱신해야 한다. Audit query도 local node만 대상으로 한다.
+- Version 1.16.0은 drain POST의 `connectionRatePerSecond`, `loadBalancerPropagationDelayMillis`, `timeoutMillis`를 선택 field로 바꾼다. 생략하면 [ADR-0055](../decisions/ADR-0055-drain-and-reconnect-operating-defaults.md)의 기본값 `100`, `30000`, `600000`을 적용한다. 세 값을 모두 보내는 기존 요청은 그대로 유효하다. Rebalance request는 바뀌지 않는다.

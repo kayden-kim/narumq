@@ -101,6 +101,12 @@ func CanCancel(from Phase) bool { return from != PhaseCompleted }
 func CanClear(from Phase) bool { return from == PhaseCompleted }
 
 const (
+	// DefaultConnectionRatePerSecond is the product transfer rate applied when a drain request omits it (ADR-0055).
+	DefaultConnectionRatePerSecond uint32 = 100
+	// DefaultLoadBalancerPropagationDelayMillis is the product LB wait applied when a drain request omits it (ADR-0055).
+	DefaultLoadBalancerPropagationDelayMillis uint64 = 30_000
+	// DefaultTimeoutMillis is the product drain timeout applied when a drain request omits it (ADR-0055).
+	DefaultTimeoutMillis uint64 = 600_000
 	// MinConnectionRatePerSecond is the lowest accepted session transfer rate.
 	MinConnectionRatePerSecond uint32 = 1
 	// MaxConnectionRatePerSecond is the highest accepted session transfer rate.

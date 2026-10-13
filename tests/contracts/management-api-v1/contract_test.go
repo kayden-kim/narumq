@@ -837,6 +837,45 @@ func TestOpenAPIContractIsValid(t *testing.T) {
 	loadManagementContract(t)
 }
 
+// Traceability: API-02/DEP-02; docs/specs/drain-and-rolling-update.md §2.1.
+func TestNodeDrainRequestDefaultsMatchDomain(t *testing.T) {
+	doc, _ := loadManagementContract(t)
+	drainRef, ok := doc.Components.Schemas["NodeDrainRequest"]
+	if !ok || drainRef.Value == nil {
+		t.Fatal("NodeDrainRequest schema is missing")
+	}
+	drainSchema := drainRef.Value
+	if len(drainSchema.Required) != 0 {
+		t.Fatalf("NodeDrainRequest required = %v, want no required fields", drainSchema.Required)
+	}
+	for _, test := range []struct {
+		name string
+		want float64
+	}{
+		{name: "connectionRatePerSecond", want: float64(nodedrain.DefaultConnectionRatePerSecond)},
+		{name: "loadBalancerPropagationDelayMillis", want: float64(nodedrain.DefaultLoadBalancerPropagationDelayMillis)},
+		{name: "timeoutMillis", want: float64(nodedrain.DefaultTimeoutMillis)},
+	} {
+		property, exists := drainSchema.Properties[test.name]
+		if !exists || property.Value == nil {
+			t.Fatalf("NodeDrainRequest property %q is missing", test.name)
+		}
+		got, ok := property.Value.Default.(float64)
+		if !ok || got != test.want {
+			t.Fatalf("NodeDrainRequest %s default = %v (%T), want %v", test.name, property.Value.Default, property.Value.Default, test.want)
+		}
+	}
+
+	rebalanceRef, ok := doc.Components.Schemas["ConnectionRebalanceRequest"]
+	if !ok || rebalanceRef.Value == nil {
+		t.Fatal("ConnectionRebalanceRequest schema is missing")
+	}
+	wantRequired := []string{"maxDeviationConnections", "connectionRatePerSecond", "loadBalancerPropagationDelayMillis", "timeoutMillis"}
+	if !reflect.DeepEqual(rebalanceRef.Value.Required, wantRequired) {
+		t.Fatalf("ConnectionRebalanceRequest required = %v, want %v", rebalanceRef.Value.Required, wantRequired)
+	}
+}
+
 // Traceability: API-02; docs/specs/management-api-and-observability.md §9.
 func TestManagementHandlerResponsesMatchOpenAPI(t *testing.T) {
 	_, router := loadManagementContract(t)

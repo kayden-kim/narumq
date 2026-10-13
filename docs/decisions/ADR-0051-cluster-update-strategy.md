@@ -37,7 +37,7 @@
 6. 이 ADR은 업데이트 방식과 선택 기준만 정한다. 다음 항목은 각 기준 문서가 정한다.
    - Kubernetes rollout controller와 Pod 삭제 승인은 [ADR-0006](ADR-0006-external-rollout-controller.md)을 따른다.
    - ECS lifecycle adapter는 PRD DEP-24를 따른다.
-   - Drain 운영값은 `SPEC-TBD-04`를 따른다.
+   - Drain 운영값은 [ADR-0055](ADR-0055-drain-and-reconnect-operating-defaults.md)를 따른다.
    - 자동화 도구는 이 ADR의 범위가 아니다.
 
 ## 2. 배경
