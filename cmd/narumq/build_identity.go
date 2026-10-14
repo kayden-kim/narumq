@@ -1,10 +1,7 @@
 package main
 
 import (
-	"errors"
 	"fmt"
-	"slices"
-	"strings"
 
 	"narumq/internal/application/membership"
 	"narumq/internal/domain/release"
@@ -19,20 +16,9 @@ func resolveBuildIdentity() (string, []string, error) {
 	if _, err := release.Parse(buildReleaseVersion); err != nil {
 		return "", nil, fmt.Errorf("invalid build identity: %w", err)
 	}
-
-	features := []string{
-		membership.ClientBlocklistFeature, membership.ClusterPolicyFeature,
-		membership.ClusterPolicyTenantQuotasFeature, membership.ConnectionRebalanceFeature,
-		membership.CredentialRevocationFeature, membership.ProposalRecoveryFeature, membership.SessionMetadataFeature,
-		release.ClusterObservabilityFeature,
-	}
-	if buildFeatures != "" {
-		features = append(features, strings.Split(buildFeatures, ",")...)
-	}
-	slices.Sort(features)
-	features = slices.Compact(features)
-	if !release.ValidFeatureSet(features) {
-		return "", nil, fmt.Errorf("invalid build identity: %w", errors.New("build features are invalid"))
+	features, err := membership.BuildFeatures(buildFeatures)
+	if err != nil {
+		return "", nil, fmt.Errorf("invalid build identity: %w", err)
 	}
 	return buildReleaseVersion, features, nil
 }

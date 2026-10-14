@@ -31,17 +31,19 @@ type FileAuditPublisherConfig struct {
 }
 
 type FileAuditPublisher struct {
-	mu          sync.Mutex
-	directory   string
-	maxFileSize int64
-	file        *os.File
-	activeSize  int64
-	activeFirst uint64
-	seq         uint64
-	prevHash    string
-	unavailable error
-	openFailed  bool
-	closed      bool
+	mu             sync.Mutex
+	directory      string
+	maxFileSize    int64
+	file           *os.File
+	activeSize     int64
+	activeFirst    uint64
+	seq            uint64
+	prevHash       string
+	unavailable    error
+	openFailed     bool
+	eventIDs       map[string]struct{}
+	eventIDsLoaded bool
+	closed         bool
 }
 
 type auditEventWire struct {
@@ -138,6 +140,46 @@ func (publisher *FileAuditPublisher) Ready() error {
 func (publisher *FileAuditPublisher) Publish(event portsaudit.AuditEventDTO) error {
 	publisher.mu.Lock()
 	defer publisher.mu.Unlock()
+	if err := publisher.publishLocked(event); err != nil {
+		return err
+	}
+	if publisher.eventIDsLoaded && event.EventID != "" {
+		publisher.eventIDs[event.EventID] = struct{}{}
+	}
+	return nil
+}
+
+// PublishOnce appends an event only if its ID is absent from the verified local chain history.
+func (publisher *FileAuditPublisher) PublishOnce(event portsaudit.AuditEventDTO) error {
+	publisher.mu.Lock()
+	defer publisher.mu.Unlock()
+	if event.EventID == "" {
+		return errors.New("audit event ID is required for idempotent publication")
+	}
+	if publisher.unavailable != nil {
+		return publisher.unavailable
+	}
+	if publisher.closed {
+		return errors.New("audit publisher is closed")
+	}
+	if !publisher.eventIDsLoaded {
+		eventIDs, err := publisher.loadEventIDs()
+		if err != nil {
+			return publisher.fail(fmt.Errorf("index audit event IDs: %w", err))
+		}
+		publisher.eventIDs, publisher.eventIDsLoaded = eventIDs, true
+	}
+	if _, exists := publisher.eventIDs[event.EventID]; exists {
+		return nil
+	}
+	if err := publisher.publishLocked(event); err != nil {
+		return err
+	}
+	publisher.eventIDs[event.EventID] = struct{}{}
+	return nil
+}
+
+func (publisher *FileAuditPublisher) publishLocked(event portsaudit.AuditEventDTO) error {
 	if publisher.unavailable != nil {
 		return publisher.unavailable
 	}
@@ -280,6 +322,59 @@ func (publisher *FileAuditPublisher) open() error {
 		if err := syncDirectory(publisher.directory); err != nil {
 			return fmt.Errorf("sync audit directory after active file creation: %w", err)
 		}
+	}
+	return nil
+}
+
+func (publisher *FileAuditPublisher) loadEventIDs() (map[string]struct{}, error) {
+	rotations, err := listAuditRotationFiles(publisher.directory)
+	if err != nil {
+		return nil, err
+	}
+	chain, err := verifyRotationFiles(rotations)
+	if err != nil {
+		return nil, err
+	}
+	eventIDs := make(map[string]struct{})
+	for _, rotation := range rotations {
+		data, err := os.ReadFile(rotation.path)
+		if err != nil {
+			return nil, err
+		}
+		records, err := scanAuditData(data, rotation.name, false)
+		if err != nil {
+			return nil, err
+		}
+		if err := addEventIDs(eventIDs, records, rotation.name); err != nil {
+			return nil, err
+		}
+	}
+	activeData, err := os.ReadFile(filepath.Join(publisher.directory, activeFileName))
+	if err != nil {
+		return nil, err
+	}
+	activeRecords, err := scanAuditData(activeData, activeFileName, false)
+	if err != nil {
+		return nil, err
+	}
+	if _, err := verifyRecords(activeRecords, chain, 0, activeFileName); err != nil {
+		return nil, err
+	}
+	if err := addEventIDs(eventIDs, activeRecords, activeFileName); err != nil {
+		return nil, err
+	}
+	return eventIDs, nil
+}
+
+func addEventIDs(eventIDs map[string]struct{}, records []auditLogRecord, fileName string) error {
+	for index, record := range records {
+		var event struct {
+			EventID string `json:"eventId"`
+		}
+		if err := json.Unmarshal(record.Event, &event); err != nil || event.EventID == "" {
+			return fmt.Errorf("%s:%d: audit event has no valid eventId", fileName, index+1)
+		}
+		eventIDs[event.EventID] = struct{}{}
 	}
 	return nil
 }

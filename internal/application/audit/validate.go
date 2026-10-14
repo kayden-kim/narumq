@@ -17,6 +17,10 @@ var (
 	auditReasonPattern = regexp.MustCompile(`^[a-z][a-z0-9_]*$`)
 )
 
+// ValidateEvent applies the shared Audit Event v1 payload validation rules.
+func ValidateEvent(event portsaudit.AuditEventDTO) error {
+	return validateEvent(event)
+}
 func validateEvent(event portsaudit.AuditEventDTO) error {
 	if event.SchemaVersion != "1.0" {
 		return fmt.Errorf("schemaVersion must be 1.0")

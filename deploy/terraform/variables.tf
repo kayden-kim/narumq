@@ -79,3 +79,45 @@ variable "tags" {
   type        = map(string)
   default     = {}
 }
+variable "backup_s3_enabled" {
+  description = "Opt in to the private S3 backup bucket, scoped IRSA roles, and namespace configuration."
+  type        = bool
+  default     = false
+}
+
+variable "backup_s3_bucket_name" {
+  description = "Unique S3 bucket name required when backup_s3_enabled is true."
+  type        = string
+  default     = null
+  nullable    = true
+
+  validation {
+    condition = var.backup_s3_bucket_name == null ? true : (
+      length(var.backup_s3_bucket_name) >= 3 &&
+      length(var.backup_s3_bucket_name) <= 63 &&
+      can(regex("^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$", var.backup_s3_bucket_name)) &&
+      !strcontains(var.backup_s3_bucket_name, "..") &&
+      !strcontains(var.backup_s3_bucket_name, ".-") &&
+      !strcontains(var.backup_s3_bucket_name, "-.")
+    )
+    error_message = "backup_s3_bucket_name must be a valid lowercase S3 bucket name."
+  }
+}
+
+variable "backup_s3_prefix" {
+  description = "Non-empty relative S3 key prefix required when backup_s3_enabled is true."
+  type        = string
+  default     = null
+  nullable    = true
+
+  validation {
+    condition = var.backup_s3_prefix == null ? true : (
+      length(var.backup_s3_prefix) > 0 &&
+      can(regex("^[A-Za-z0-9][A-Za-z0-9._/-]*$", var.backup_s3_prefix)) &&
+      !strcontains(var.backup_s3_prefix, "..") &&
+      !strcontains(var.backup_s3_prefix, "//") &&
+      !endswith(var.backup_s3_prefix, "/")
+    )
+    error_message = "backup_s3_prefix must be a non-empty relative key prefix without empty or parent path segments."
+  }
+}

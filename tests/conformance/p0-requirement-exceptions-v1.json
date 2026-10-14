@@ -3,7 +3,7 @@
   "exceptions": [
     {
       "requirementId": "DEP-11",
-      "reason": "외부 rollout controller가 보류된 범위이며 ADR-0006은 Proposed입니다.",
+      "reason": "전용 rollout controller는 Accepted ADR-0006의 결정이나 아직 구현되지 않았다. 후속 rollout-controller v1 계약은 Draft/Proposal이며 사용자 채택을 기다린다.",
       "tracking": "docs/TODO.md#12-release와-rollout-gate"
     },
     {
@@ -23,7 +23,7 @@
     },
     {
       "requirementId": "DEP-18",
-      "reason": "외부 rollout controller가 보류된 범위이며 ADR-0006은 Proposed입니다.",
+      "reason": "전용 rollout controller는 Accepted ADR-0006의 결정이나 아직 구현되지 않았다. 후속 rollout-controller v1 계약은 Draft/Proposal이며 사용자 채택을 기다린다.",
       "tracking": "docs/TODO.md#12-release와-rollout-gate"
     },
     {

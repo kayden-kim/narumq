@@ -29,6 +29,10 @@ jobs:
         with:
           go-version-file: go.mod
           cache: true
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.9"
       - name: Resolve diff base
         id: base
         env:
@@ -49,6 +53,10 @@ jobs:
         env:
           DIFF_BASE: ${{ steps.base.outputs.base }}
         run: go run ./tools/verify ci --base "$DIFF_BASE"
+      - name: Run S3 transfer helper tests
+        env:
+          PYTHONDONTWRITEBYTECODE: "1"
+        run: python tests/test_backup_s3.py
       - name: Upload verification evidence
         if: always()
         uses: actions/upload-artifact@v7

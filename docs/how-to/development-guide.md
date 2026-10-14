@@ -74,6 +74,124 @@ NaruMQ는 **클린 아키텍처(Clean Architecture / Ports and Adapters)** 패�
 4. **`cmd/narumq` (Composition Root)**
    - 설정을 읽고 구체 어댑터를 생성하여 유스케이스 포트에 주입(Dependency Injection)하는 유일한 장소다.
 
+
+#### Broker release image metadata
+
+The repository-root `Dockerfile` requires both build arguments; there is no default release identity. Every build pipeline or manual build must supply the release version and the full canonical, sorted feature list used by the broker binary:
+
+```sh
+docker build \
+  --build-arg "NARUMQ_RELEASE_VERSION=${RELEASE_VERSION}" \
+  --build-arg "NARUMQ_FEATURES=${NARUMQ_FEATURES}" \
+  --tag "${BROKER_IMAGE}" .
+```
+
+The same values are validated by `tools/release-metadata`, linked into the executable, and written to OCI config labels `org.opencontainers.image.version` and `io.narumq.features`. The environment values must come from the release artifact/build record; do not substitute a locally invented release identity for a published N/N-1 qualification. The separate `tests/benchmark/Dockerfile` and compatibility/chaos Dockerfiles are independent test images and do not call the root Dockerfile.
+
+For a cross-platform registry artifact, use the same root Dockerfile and explicit arguments for the target platform. Publish a task-unique tag, then inspect the immutable platform-manifest digest and confirm the OCI labels against those build inputs before deploying the digest:
+
+```sh
+docker buildx build --platform linux/arm64 --provenance=false \
+  --build-arg TARGETOS=linux --build-arg TARGETARCH=arm64 \
+  --build-arg "NARUMQ_RELEASE_VERSION=${RELEASE_VERSION}" \
+  --build-arg "NARUMQ_FEATURES=${NARUMQ_FEATURES}" \
+  --tag "${BROKER_IMAGE_TAG}" --push .
+```
+
+#### 격리된 EKS 롤아웃 컨트롤러 인수 테스트 번들 (준비 전용)
+
+이는 합성 fixture 전용 검증이며 정식 릴리스가 아닙니다. 격리 fixture 담당자가 명시적으로 인계하고 CLU-14 증거를 제공하기 전에는 어느 이미지도 push하거나 배포하지 마세요. `narumq-eks`를 쓰기 대상으로 절대 사용하지 마세요. 기존 `narumq` ECR 저장소에서 UTC 타임스탬프와 임의 접미사가 포함된 run ID로 서로 다른 작업 전용 태그를 사용하세요:
+
+컨트롤러: `rollout-controller-dep11-sec11-${RUN_ID}`.
+브로커 대상: `rollout-target-0.0.1-${RUN_ID}`.
+
+기존 후보 저장소는 `809446814769.dkr.ecr.ap-northeast-2.amazonaws.com/narumq`이며, 롤아웃 Deployment의 허용 registry 정책과 기존 이미지 기록에 지정되어 있습니다. 게시 전에 읽기 전용으로 저장소를 확인하고 정확히 지정한 두 태그가 아직 사용되지 않았는지 검증하세요:
+
+```powershell
+$AwsProfile = 'kayden-sandbox-admin'
+$RunId = "$([DateTime]::UtcNow.ToString('yyyyMMddTHHmmssZ'))-$([guid]::NewGuid().ToString('N').Substring(0,8))"
+$Repository = '809446814769.dkr.ecr.ap-northeast-2.amazonaws.com/narumq'
+$ControllerTag = "rollout-controller-dep11-sec11-$RunId"
+$BrokerTag = "rollout-target-0.0.1-$RunId"
+if ((aws sts get-caller-identity --profile $AwsProfile --region ap-northeast-2 --query Account --output text) -ne '809446814769') { throw 'AWS profile account mismatch' }
+aws ecr describe-repositories --profile $AwsProfile --region ap-northeast-2 --repository-names narumq --query 'repositories[].{uri:repositoryUri,tagMutability:imageTagMutability,scanOnPush:imageScanningConfiguration.scanOnPush}' --output json
+aws ecr describe-images --profile $AwsProfile --region ap-northeast-2 --repository-name narumq --image-ids "imageTag=$ControllerTag" --output json
+aws ecr describe-images --profile $AwsProfile --region ap-northeast-2 --repository-name narumq --image-ids "imageTag=$BrokerTag" --output json
+```
+
+계정 `809446814769`와 `kayden-sandbox-admin` profile로 읽기 전용 확인을 완료했습니다. 이 기존 공유 저장소의 태그 변경 가능성은 `MUTABLE`이며, scan-on-push는 비활성화되어 있고, 암호화는 AES256입니다. 고유 run ID 태그를 사용할 때만 후보로 삼으세요. 위의 정확한 태그 충돌 확인은 승인된 push 직전에 반드시 수행해야 합니다. 둘 중 하나라도 이미 있거나 저장소를 안전하게 사용할 수 없으면 다른 저장소를 만들거나 공유 저장소 정책을 바꾸지 말고 중단하세요. 작업 전용 저장소를 만들 계획은 없습니다.
+
+인계 이후에만 기존 저장소에 Docker 인증을 하고 서로 다른 `linux/arm64` manifest 두 개를 빌드하세요. `--provenance=false`를 지정하면 각 단일 플랫폼 빌드를 해당 플랫폼 manifest digest로 식별할 수 있습니다.
+
+```powershell
+$Registry = $Repository.Split('/')[0]
+aws ecr get-login-password --profile $AwsProfile --region ap-northeast-2 | docker login --username AWS --password-stdin $Registry
+```
+
+```powershell
+$Repository = '809446814769.dkr.ecr.ap-northeast-2.amazonaws.com/narumq'
+$Features = 'client-blocklist,cluster-observability-v1,cluster-policy,cluster-policy-tenant-quotas,connection-rebalance,credential-revocation,proposal-recovery,session-metadata'
+$ControllerVersion = "1.0.0-test-only-$RunId"
+New-Item -ItemType Directory -Force -Path '.artifacts/verification' | Out-Null
+
+docker buildx build --platform linux/arm64 --provenance=false `
+  --build-arg TARGETOS=linux --build-arg TARGETARCH=arm64 `
+  --build-arg "NARUMQ_CONTROLLER_VERSION=$ControllerVersion" `
+  --metadata-file ".artifacts/verification/$RunId-controller-build.json" `
+  --tag "$Repository`:$ControllerTag" --push `
+  --file deploy/kubernetes/rollout-controller/Dockerfile .
+
+docker buildx build --platform linux/arm64 --provenance=false `
+  --build-arg TARGETOS=linux --build-arg TARGETARCH=arm64 `
+  --build-arg NARUMQ_RELEASE_VERSION=0.0.1 `
+  --build-arg "NARUMQ_FEATURES=$Features" `
+  --metadata-file ".artifacts/verification/$RunId-broker-build.json" `
+  --tag "$Repository`:$BrokerTag" --push --file Dockerfile .
+```
+
+push한 태그에서 각 immutable manifest digest를 확인해 기록한 뒤, OCI config blob만 검사하세요 (filesystem layer를 다운로드하거나 풀지 마세요). `crane config` 결과는 `os=linux`, `architecture=arm64`여야 합니다. 브로커의 `org.opencontainers.image.version`은 정확히 `0.0.1`이어야 하며 `io.narumq.features`는 `$Features`와 일치해야 합니다. 컨트롤러 config에는 `io.narumq.component=rollout-controller`와 `$ControllerVersion`이 있어야 합니다. 불일치, index digest, mutable tag 참조 또는 검증되지 않은 source-voter metadata가 있으면 인수를 진행하지 마세요.
+
+ECR에서 반환한 `imageDigest`를 기록할 digest로 사용하고 OCI metadata와 대조하세요:
+
+```powershell
+$ControllerDigest = (aws ecr describe-images --profile $AwsProfile --region ap-northeast-2 --repository-name narumq --image-ids "imageTag=$ControllerTag" --query 'imageDetails[0].imageDigest' --output text).Trim()
+$BrokerDigest = (aws ecr describe-images --profile $AwsProfile --region ap-northeast-2 --repository-name narumq --image-ids "imageTag=$BrokerTag" --query 'imageDetails[0].imageDigest' --output text).Trim()
+$ControllerImageRef = "$Repository@$ControllerDigest"
+$BrokerImageRef = "$Repository@$BrokerDigest"
+$ControllerManifest = crane manifest $ControllerImageRef | ConvertFrom-Json
+$BrokerManifest = crane manifest $BrokerImageRef | ConvertFrom-Json
+$PlatformManifestTypes = @('application/vnd.oci.image.manifest.v1+json', 'application/vnd.docker.distribution.manifest.v2+json')
+if ($ControllerManifest.mediaType -notin $PlatformManifestTypes -or $BrokerManifest.mediaType -notin $PlatformManifestTypes) { throw 'Expected platform manifests, not OCI index/list digests' }
+$ControllerConfig = crane config $ControllerImageRef | ConvertFrom-Json
+$BrokerConfig = crane config $BrokerImageRef | ConvertFrom-Json
+if ($ControllerConfig.os -ne 'linux' -or $ControllerConfig.architecture -ne 'arm64' -or $BrokerConfig.os -ne 'linux' -or $BrokerConfig.architecture -ne 'arm64') { throw 'Image config platform mismatch' }
+if ($ControllerConfig.config.Labels.'org.opencontainers.image.version' -ne $ControllerVersion -or $ControllerConfig.config.Labels.'io.narumq.component' -ne 'rollout-controller') { throw 'Controller image labels mismatch' }
+if ($BrokerConfig.config.Labels.'org.opencontainers.image.version' -ne '0.0.1' -or $BrokerConfig.config.Labels.'io.narumq.features' -ne $Features) { throw 'Broker image labels mismatch' }
+```
+
+EKS overlay에서 사용할 컨트롤러 이미지 입력은 검증된 digest reference뿐입니다. 검증이 끝난 뒤에만 폐기 가능한 checkout에서 ignored 입력 파일을 만드세요:
+
+```powershell
+$ControllerImage = "$Repository@$ControllerDigest"
+if ($ControllerImage -notmatch '^.+@sha256:[0-9a-f]{64}$') { throw 'Controller image must be an immutable platform-manifest digest' }
+Set-Content -Path 'deploy/kubernetes/rollout-controller/overlays/eks-fixture/controller-image.env' -Value "CONTROLLER_IMAGE=$ControllerImage" -Encoding Ascii
+kubectl kustomize deploy/kubernetes/rollout-controller/overlays/eks-fixture
+```
+
+이는 로컬 render일 뿐 배포가 아닙니다. 명시적인 fixture handoff와 CLU-14 증거를 받은 뒤에만 준비된 overlay를 `kubectl --context $FixtureContext apply -k deploy/kubernetes/rollout-controller/overlays/eks-fixture` 명령으로 적용할 수 있습니다. `$FixtureContext`는 격리 fixture의 context여야 하며 `narumq-eks`를 가리켜서는 안 됩니다.
+
+ignored `controller-image.env`는 기본 이미지가 아니라 운영자가 제공해야 하는 필수 릴리스 입력이며, 검증된 controller manifest digest에서 생성해야 합니다. rollout CR은 `$Repository@$BrokerDigest`를 대상으로 하고, 해당 OCI version/features 및 실제로 커밋된 3-voter 브로커 프로필과 일치해야 합니다.
+
+fixture를 폐기하고 증거를 보존한 뒤에만 작업 전용 태그 두 개를 정리하세요:
+
+```powershell
+aws ecr describe-images --profile $AwsProfile --region ap-northeast-2 --repository-name narumq --image-ids "imageTag=$ControllerTag" --query 'imageDetails[0].{digest:imageDigest,tags:imageTags}' --output json
+aws ecr batch-delete-image --profile $AwsProfile --region ap-northeast-2 --repository-name narumq --image-ids "imageTag=$ControllerTag"
+aws ecr describe-images --profile $AwsProfile --region ap-northeast-2 --repository-name narumq --image-ids "imageTag=$BrokerTag" --query 'imageDetails[0].{digest:imageDigest,tags:imageTags}' --output json
+aws ecr batch-delete-image --profile $AwsProfile --region ap-northeast-2 --repository-name narumq --image-ids "imageTag=$BrokerTag"
+```
+
+삭제 전에 각 태그와 digest가 기록된 작업 산출물과 일치하는지 확인하세요. 소유한 정확한 `imageTag`만 삭제하고, `imageDigest`로는 삭제하지 마세요. 다른 태그나 공유 저장소도 삭제하지 마세요. 동일 manifest에 다른 태그 참조가 있으면 작업 태그만 제거하고 나머지 참조는 그대로 두세요. 작업 전용 저장소는 계획되어 있지 않습니다. 공유 저장소를 안전하게 사용할 수 없다면 별도 정리 계획과 승인을 받기 전까지 중단하세요.
 #### 주요 코딩 컨벤션 요약
 - **식별자 명명:** 역할에 맞는 접두사와 접미사를 붙인다.
   - 저장소 포트: `*Repository` (예: `SessionRepository`)

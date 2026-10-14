@@ -63,6 +63,7 @@
 | [ADR-0055](ADR-0055-drain-and-reconnect-operating-defaults.md) | Accepted | Drain rate·LB 대기·timeout 제품 기본값, termination grace 공식과 client reconnect·Will·Session Expiry 운영값을 정한다. |
 | [ADR-0056](ADR-0056-branch-protection-for-admins.md) | Accepted | main branch protection을 관리자에게도 적용해 실패한 필수 check를 우회한 merge를 막는다. |
 | [ADR-0057](ADR-0057-mqtt-websocket-listener.md) | Accepted | MQTT WS/WSS listener는 TCP server를 재사용하고 binary WebSocket stream, TLS, admission과 metric label을 고정한다. |
+| [ADR-0058](ADR-0058-cluster-backup-s3-retention-and-restore.md) | Accepted | S3 is authoritative for 30-day backup retention; the PVC stages request-backed uploads, legacy archives remain local, and a separate prefix-scoped IRSA identity restores exact keys offline. |
 
 `Proposed` ADR은 검토 중인 제안이다. `Accepted` ADR은 각 기록에 명시한 범위 안에서 채택된 결정이다. `design target only`는 production runtime이나 acceptance 검증을 뜻하지 않는다.
 

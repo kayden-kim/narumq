@@ -8,3 +8,11 @@ resources:
   - service-nlb.yaml
   - service-management.yaml
   - statefulset.yaml
+  - cronjob-backup.yaml
+configMapGenerator:
+  - name: narumq-backup-scripts
+    namespace: narumq
+    files:
+      - backup.sh
+generatorOptions:
+  disableNameSuffixHash: true

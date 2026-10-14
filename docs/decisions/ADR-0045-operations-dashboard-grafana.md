@@ -74,3 +74,7 @@ Grafana는 API snapshot과 Prometheus series를 한 화면에서 조회한다. P
 - 자체 Web UI가 필요한 별도 요구사항과 유지보수 소유자가 승인되는 경우
 - Dashboard용 사용자 인증이 NaruMQ의 role·tenant 정책과 통합되어야 하는 경우
 - Prometheus 이외의 승인된 시계열 저장 정책이 생기는 경우
+
+## 9. 위임된 P0/P1 범위 (2026-10-14)
+
+위임된 범위 결정에 따라 기존 P0 읽기 전용 Dashboard를 유지한다. P1 화면·API·tenant 위임 기능은 출시 후 작업으로 남긴다. 이 결정은 현재 release 범위를 넓히거나 frontend 변경을 승인하지 않는다.

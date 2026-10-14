@@ -564,6 +564,9 @@ Process acceptance는 Dynamic 3-node cluster에서 password credential을 revoke
 | 3 | 11.7204/29.4892/35.7259ms | 11.7043/28.7731/45.3087ms | 0.976 | 263/264, 263/264, 263/264, 263/264, 263/264 | 1315 |
 | 4 | 11.814/38.6218/94.3751ms | 11.7249/29.7111/34.5871ms | 0.769 | 263/264, 263/264, 262/263, 263/264, 264/265 | 1315 |
 | 5 | 11.7185/24.574/34.5682ms | 11.8383/28.7883/74.3548ms | 1.171 | 263/264, 262/263, 263/264, 263/264, 263/264 | 1314 |
+| 2026-10-15 isolated diagnostic (one run; not replacement for five-run evidence) | 11.5375/32.3042/54.604ms | 11.5115/23.6597/33.2267ms | 0.732 | 262/263, 263/264, 262/263, 263/264, 263/264 | 1313 |
+
+2026-10-15 follow-up diagnostic: `GOMAXPROCS=4 go test ./tests/integration -run '^TestDynamicClusterTenantNoisyNeighborProcessAcceptance$' -count=1 -v -timeout 10m` PASS; test 45.35s, package 47.090s. This is one isolated diagnostic run; it does not replace the existing five-run local acceptance evidence or the production gate.
 
 | 검증 | 명령 | 결과 |
 | --- | --- | --- |

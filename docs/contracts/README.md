@@ -11,6 +11,7 @@
 | [Audit event v1](audit-event-v1.md) | Draft | Broker·controller → audit store·security operator | [JSON Schema](audit-event-v1.schema.json) | SEC-11, NFR-16~NFR-17 |
 | [MQTT client compatibility v1](mqtt-client-compatibility-v1.md) | Draft | Broker ↔ MQTT client | 이 문서의 profile·matrix | MQTT-01~MQTT-13, CLIENT-01~CLIENT-09, DEP-06~DEP-12 |
 | [Cluster release compatibility v1](cluster-release-compatibility-v1.md) | Draft | Release N node ↔ N-1 node | 이 문서의 compatibility matrix | CLU-11, NFR-15, DEP-18 |
+| [Rollout controller v1](rollout-controller-v1.md) | Active | GitOps·운영자·Kubernetes → NaruMQ rollout controller → Management API·workload API | `deploy/kubernetes/rollout-controller/crd.yaml` | DEP-11, DEP-18 |
 | [Raft peer transport v1](raft-peer-transport-v1.md) | Active | NaruMQ Raft node ↔ NaruMQ Raft node | 이 문서의 hello·frame·queue·retry 계약 | CLU-01~CLU-02, CLU-09~CLU-10, SEC-09, NFR-07~NFR-10 |
 | [Process configuration v1](process-configuration-v1.md) | Draft | 운영자·배포 도구·build pipeline → `cmd/narumq` process | 이 문서의 flag·JSON 표 | API-05, API-09, SEC-02, SEC-05, MQTT-09, MQTT-11, CLU-09, CLU-12, TEN-06~TEN-08 |
 | [Raft membership v2](raft-membership-v2.md) | Draft | ClusterAdmin · joining broker ↔ Cluster leader · authenticated peer transport | 이 문서와 [replicated-state-v1.proto](replicated-state-v1.proto) | CLU-01~CLU-02, CLU-04~CLU-11, SEC-09~SEC-11, NFR-07~NFR-10 |
@@ -34,7 +35,6 @@ contract에 명시한다.
 | 후보 | 대기 이유 |
 | --- | --- |
 | Metrics catalog v1 | `SPEC-TBD-07`의 이름과 histogram bucket을 Phase 0 workload로 확정해야 한다. |
-| Rollout custom resource v1 | [ADR-0006](../decisions/ADR-0006-external-rollout-controller.md) 승인과 controller resource model이 필요하다. |
 
 SDK별 client version과 실행 profile은 독립 contract를 만들지 않고
 [MQTT client compatibility v1](mqtt-client-compatibility-v1.md)의 checked-in

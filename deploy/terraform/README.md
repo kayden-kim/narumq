@@ -27,9 +27,18 @@ The cluster's default Kubernetes version is `1.37`. This is the current supporte
 | `node_desired_size` | `3` | Desired worker count |
 | `node_min_size` | `3` | Minimum worker count |
 | `node_max_size` | `6` | Maximum worker count |
+| `backup_s3_enabled` | `false` | Create the private S3 backup bucket, upload-only writer and prefix-scoped restore IRSA roles, service accounts, and backup settings |
+| `backup_s3_bucket_name` | `null` | Unique S3 bucket name; required when `backup_s3_enabled=true` |
+| `backup_s3_prefix` | `null` | Exact relative key prefix for this cluster; required when `backup_s3_enabled=true` |
 | `tags` | `{}` | Extra tags for provisioned AWS resources |
 
 Set AWS credentials through the named profile, for example `AWS_PROFILE=kayden-sandbox-admin` in POSIX shells or `$env:AWS_PROFILE = 'kayden-sandbox-admin'` in PowerShell. AWS provider credentials are not embedded in Terraform configuration.
+
+## Optional S3 backup integration
+
+The shared EKS Terraform root leaves S3 backup disabled by default, so `narumq-eks` is unchanged unless `backup_s3_enabled=true` is explicitly selected with a bucket name and cluster prefix. The opt-in module creates the private same-region bucket, lifecycle controls, exact-subject writer and restore IRSA roles, `narumq-backup` and `narumq-backup-restore` service accounts, and the namespace configuration map. The `narumq` namespace must already exist before enabling the module. Apply the backup deployment's opt-in Kustomize overlay only after the module has created its service account and settings.
+
+For disposable acceptance, use the separate `deploy/terraform-acceptance-s3` root and its own local state, with the existing `narumq-ha-acceptance-*` fixture name. It rejects `narumq-eks`; do not use the shared root or production cluster for fixture smoke. Destroy the acceptance root after evidence collection so its S3 bucket, IAM roles, service accounts, and settings are removed.
 
 ## Provisioning
 

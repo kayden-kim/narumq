@@ -22,14 +22,36 @@
 | --- | --- | --- |
 | EKS | Kubernetes 1.37 | EKS platform version과 시험 증거 |
 | Worker와 AMI | `m7g.large` 3대, AZ마다 1대; 인스턴스당 2 vCPU·8 GiB; EKS-optimized Amazon Linux 2023 ARM64 | Region별 AMI ID와 node group 설정 |
-| Broker storage | broker별 20 GiB `gp3`, 기본 3,000 IOPS·125 MiB/s | 암호화·snapshot 정책과 production I/O 적합성 |
-| NLB | 내부 `IP` target, TCP 1883; Management 8080은 내부 ClusterIP Service | Broker TLS endpoint, health check, deregistration, idle timeout |
+| Broker storage | broker별 20 GiB `gp3`, 기본 3,000 IOPS·125 MiB/s | 3개 volume의 KMS 암호화·AZ binding 및 단일 Pod 재생성 뒤 같은 PVC/EBS remount 관찰; cross-worker 재연결, snapshot/restore, disk pressure, production I/O·durability 미검증 |
+| NLB | 내부 `IP` target, TCP 1883; Management 8080은 내부 ClusterIP Service | T0→EndpointSlice unready 11.520641s, T0→target `draining` 12.647725s 관찰(보고된 30s 예산 이내); 성공 인증 traffic routing, existing connection drain, TLS endpoint, idle timeout·client IP 미검증 |
 | Broker resources | Pod마다 requests=limits `1 CPU`·`4 GiB` | 측정한 production workload의 N-1 capacity |
 | Comparator | EMQX Enterprise 6.3.1, ARM64 | 측정 workload를 허용하는 license; [PRD §18 질문 15](../requirements/PRD.md#18-미결정-사항) 참고 |
 
 `IP` target은 Amazon VPC CNI를 사용한다. AWS Load Balancer Controller는 2.7.2 이상으로 하고 실제 버전과 image digest를 run artifact에 고정한다. NaruMQ와 EMQX에는 같은 node와 broker resource limit을 적용한다.
 
 ARM64 broker image는 `809446814769.dkr.ecr.ap-northeast-2.amazonaws.com/narumq@sha256:09f77ae1e4d2277fb96192abaafbf3e2d1717683746ff8e6acc17efc9ccfa916`으로 고정한다. 2026-10-14 작업 트리의 node 관측 API를 포함한 image이며 배포·검증 결과는 [EKS 재배포 실행 기록](../how-to/operations-dashboard.md#eks-재배포-실행-기록-2026-10-14)에 둔다. Peer TLS 인증서와 관리·MQTT 인증 정보는 Git에 넣지 않고 EKS Secret `narumq-cluster-secrets`에 저장한다. 이 image의 초기 cluster·Dashboard 검증은 production workload, TLS client endpoint 또는 장애 주입의 증거가 아니다.
+
+### 라이브 EKS에서 관찰한 제한된 동작 (2026-10-14)
+
+AWS EKS live cluster(`narumq-eks`, ap-northeast-2)의 배치·단일 drain·Pod 재생성·preStop 성공 관찰이다. 아래 결과는 각 acceptance의 일부 evidence이며 DEP-13~23 전체 또는 EKS production qualification 완료를 뜻하지 않는다.
+
+1. **3-AZ 배치 관찰 (DEP-15·DEP-20 일부)**:
+   - 3개 worker node(`ap-northeast-2a`, `ap-northeast-2b`, `ap-northeast-2c`)에 broker Pod(`narumq-0`, `narumq-1`, `narumq-2`)가 하나씩 배치된 것을 확인했다.
+   - `podAntiAffinity`(`requiredDuringSchedulingIgnoredDuringExecution` on `kubernetes.io/hostname`) 및 `topologySpreadConstraints`(`maxSkew: 1`, `topologyKey: topology.kubernetes.io/zone`, `DoNotSchedule`) 설정을 확인했다. EC2/AZ failure injection, 단일 AZ 장애 데이터 플레인 복구, PDB 및 rollout 동시성 acceptance는 이 결과로 검증되지 않는다.
+2. **EBS 볼륨 독립성 및 KMS 암호화 (DEP-21)**:
+   - 3개 PV(`pvc-c5fb94f3-...`, `pvc-ee6982d0-...`, `pvc-4432f554-...`)에 바인딩된 Amazon EBS 볼륨(`vol-008e786a085cefaf1`, `vol-09c3a0e11277903d9`, `vol-0b7a87e6bafd97a79`)이 모두 `gp3`, 20 GiB, AWS KMS 고객 관리 키 암호화(`Encrypted: true`), 각 AZ별 `in-use` 상태임을 AWS EC2 API로 확인했다.
+3. **Pod 재생성 뒤 동일 EBS 재연결 관찰 (DEP-21 일부)**:
+   - `narumq-1` Pod 삭제 시 나머지 두 노드로 quorum(`quorumAvailable=true`)이 유지됐다.
+   - 재생성 Pod가 같은 PVC(`data-narumq-1`)와 EBS volume(`vol-09c3a0e11277903d9`)을 재사용해 65.1초 만에 `Ready`가 됐다. 이는 같은 volume remount 관찰이지 다른 worker에 대한 EBS 재연결 acceptance는 아니다.
+   - Applied index는 93에서 100으로 전진했다. 이 관찰만으로 WAL/snapshot 무손실 복구, durable ACK/data 보존을 입증하지 않는다.
+4. **단일 drain에서의 상태·전파 관찰 (DEP-22 일부)**:
+   - Drain 시작 뒤 `/health/ready`가 0.079s 내 503, EndpointSlice `ready:false`는 T0+11.520641s, AWS NLB target `draining`은 T0+12.647725s에 관찰됐다. 두 전파 시간은 기록 timestamp에서 계산한 값으로 30초 예산 이내다.
+   - NLB를 통한 20개 MQTT connect probe는 모두 unauthenticated였고 성공적으로 수락된 연결은 없었다. Report의 `nlbRoutingIsolated=false`; 이 결과는 정상 인증 traffic이 healthy target에만 routing됨을 증명하지 않는다. 별도의 direct probe는 drain 중 broker가 `CONNACK 0x03`을 반환한 것을 확인했다.
+5. **preStop 성공 경로 관찰 (DEP-13·DEP-14 일부)**:
+   - 최초 실행(GET 404) 뒤 POST하고 `COMPLETED/SAFE_TO_STOP`까지 기다린 실행(36.5s, exit 0), 재실행 시 완료 작업 재사용(1.5s, exit 0)을 확인했다.
+   - Hook/drain failure, timeout, grace expiry 및 삭제 admission 차단은 이 성공 경로로 검증되지 않는다. 기존 연결 drain/termination, NLB idle timeout/client IP, EBS snapshot/restore와 disk pressure도 미검증이다.
+6. **Evidence**:
+   - `.artifacts/verification/nlb-lifecycle-verification-report.json`, `.artifacts/verification/prestop-hook-verification-report.json`, `.artifacts/verification/ebs-storage-az-recovery-report.json`.
 
 
 ## Physical deployment view
