@@ -291,6 +291,8 @@ Process crash 또는 host loss에서는 planned drain과 barrier가 실행되지
 
 Broker process test는 Server Reference packet을 확인한다. SDK drain suite는 callback adapter의 1회 임시 redirect·session resume·Will 억제를 두 MQTT 5 SDK에서 확인했다. Go의 중복 Server Reference 처리는 실패했으므로 전체 SDK gate는 열려 있다. 표준 계획 인계 Will과 DEP-12 metric은 ADR-0028 수용 범위다. Test-only LB와 시간 값은 실제 NLB·운영 timing을 증명하지 않는다. External rollout deletion gate, Kubernetes `preStop`, 연속 100회 rolling·BP-07, N-1↔N, EKS/EBS power-loss·restore 및 MQTT 3.1.0 migration은 열린 gate로 유지한다.
 
+EKS 종료 hook의 제한된 실행 증거(2026-10-14)는 [Dashboard 재배포 기록](../how-to/operations-dashboard.md#eks-재배포-실행-기록-2026-10-14)에 연결한다. MQTT 연결이 없는 환경에서 hook의 drain 시작·완료 대기·완료 작업 재사용과 수동 삭제 전 `SAFE_TO_STOP` gate를 확인했다. 전체 hook 장애·grace 부족·NLB 전파·운영 부하 gate를 닫는 증거는 아니다.
+
 ### ADR-0028 연속 rolling 관측
 
 아래 값은 각 round의 전후 모든 node counter 합 차이다. Node restart로 counter가 0으로 돌아가기 전에 차이를 기록했다.

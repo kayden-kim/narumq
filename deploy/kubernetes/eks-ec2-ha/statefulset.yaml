@@ -39,7 +39,7 @@ spec:
               app: narumq
       initContainers:
         - name: select-peer-identity
-          image: 809446814769.dkr.ecr.ap-northeast-2.amazonaws.com/narumq@sha256:7515ab8864da8a7f93d5ebc14b95a9f574b7c8b17ebbdc991032fc918716ce26
+          image: 809446814769.dkr.ecr.ap-northeast-2.amazonaws.com/narumq@sha256:09f77ae1e4d2277fb96192abaafbf3e2d1717683746ff8e6acc17efc9ccfa916
           imagePullPolicy: IfNotPresent
           command:
             - /bin/sh
@@ -75,7 +75,7 @@ spec:
               mountPath: /volume
       containers:
         - name: narumq
-          image: 809446814769.dkr.ecr.ap-northeast-2.amazonaws.com/narumq@sha256:7515ab8864da8a7f93d5ebc14b95a9f574b7c8b17ebbdc991032fc918716ce26
+          image: 809446814769.dkr.ecr.ap-northeast-2.amazonaws.com/narumq@sha256:09f77ae1e4d2277fb96192abaafbf3e2d1717683746ff8e6acc17efc9ccfa916
           imagePullPolicy: IfNotPresent
           command:
             - /bin/sh
@@ -103,15 +103,45 @@ spec:
                   - /bin/sh
                   - -c
                   - |
-                    NODE_INDEX="$(hostname | awk -F'-' '{print $NF}')"
+                    set -eu
+                    NODE_INDEX="${HOSTNAME##*-}"
                     NODE_ID="$((NODE_INDEX + 1))"
+                    DRAIN_URL="http://127.0.0.1:8080/api/v1/nodes/${NODE_ID}/drain"
                     IDEMPOTENCY_KEY="prestop-${NODE_ID}-$(cat /proc/sys/kernel/random/uuid)"
-                    curl --fail --silent --show-error --max-time 600 \
-                      -X POST "http://127.0.0.1:8080/api/v1/nodes/${NODE_ID}/drain" \
-                      -H "Authorization: Bearer $(cat /secrets/admin.token)" \
-                      -H "Idempotency-Key: ${IDEMPOTENCY_KEY}" \
-                      -H "Content-Type: application/json" \
-                      --data '{}'
+                    DEADLINE="$(( $(date +%s) + 600 ))"
+                    request() {
+                      {
+                        printf 'header = "Authorization: Bearer %s"\n' "$(cat /secrets/admin.token)"
+                        printf 'header = "Idempotency-Key: %s"\n' "${IDEMPOTENCY_KEY}"
+                        printf 'header = "Content-Type: application/json"\n'
+                      } | curl --silent --show-error --max-time 10 --config - \
+                        --request "$1" "${DRAIN_URL}" --write-out 'HTTP:%{http_code}' ${2:+"--data"} ${2:+"$2"}
+                    }
+                    RESULT="$(request GET)"
+                    STATUS="${RESULT##*HTTP:}"
+                    if [ "${STATUS}" = "404" ]; then
+                      RESULT="$(request POST '{}')"
+                      STATUS="${RESULT##*HTTP:}"
+                      case "${STATUS}" in
+                        200|202) ;;
+                        *) printf 'Drain start failed: HTTP %s\n' "${STATUS}" >&2; exit 1 ;;
+                      esac
+                    elif [ "${STATUS}" != "200" ]; then
+                      printf 'Drain query failed: HTTP %s\n' "${STATUS}" >&2
+                      exit 1
+                    fi
+                    while [ "$(date +%s)" -lt "${DEADLINE}" ]; do
+                      case "${RESULT}" in
+                        *'"phase":"COMPLETED"'*'"safeToStop":true'*) exit 0 ;;
+                        *'"phase":"FAILED"'*|*'"phase":"CANCELLED"'*) printf 'Drain did not complete\n' >&2; exit 1 ;;
+                      esac
+                      sleep 5
+                      RESULT="$(request GET)"
+                      STATUS="${RESULT##*HTTP:}"
+                      [ "${STATUS}" = "200" ] || { printf 'Drain query failed: HTTP %s\n' "${STATUS}" >&2; exit 1; }
+                    done
+                    printf 'Drain completion timed out\n' >&2
+                    exit 1
           startupProbe:
             httpGet:
               path: /health/startup

@@ -19,6 +19,7 @@ import (
 	tcpadapter "narumq/internal/adapters/tcp"
 	"narumq/internal/application/membership"
 	"narumq/internal/domain/mqtt"
+	"narumq/internal/domain/release"
 	"narumq/internal/domain/routing"
 	"narumq/internal/domain/tenancy"
 )
@@ -517,29 +518,32 @@ func TestPeerIdentityFromMember(t *testing.T) {
 		CertificateSHA256: bytes.Repeat([]byte{0x42}, 32),
 		ReleaseVersion:    "1.0.0",
 		Phase:             membership.MemberPhaseVoter,
+		Features:          []string{release.ClusterObservabilityFeature},
 	}
 	got, err := peerIdentityFromMember(valid)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if got.MemberID != 1 || got.Phase != tcpadapter.PeerPhaseVoter {
-		t.Fatalf("unexpected identity: %+v", got)
+	if got.MemberID != 1 || got.Phase != tcpadapter.PeerPhaseVoter || !got.ObservabilitySupported {
+		t.Fatalf("unexpected observability-enabled identity: %+v", got)
 	}
 }
 
 func TestConfiguredLocalPeerIdentity(t *testing.T) {
 	var fp [32]byte
 	fp[0] = 0xAA
-	bootstrapCfg := clusterConfigFile{Role: "bootstrap", NodeID: 1, ClusterID: "c"}
+	bootstrapCfg := clusterConfigFile{
+		Role: "bootstrap", NodeID: 1, ClusterID: "c", Features: []string{release.ClusterObservabilityFeature},
+	}
 	gotB := configuredLocalPeerIdentity(bootstrapCfg, fp)
-	if gotB.Phase != tcpadapter.PeerPhaseVoter {
-		t.Fatalf("bootstrap phase = %d, want Voter", gotB.Phase)
+	if gotB.Phase != tcpadapter.PeerPhaseVoter || !gotB.ObservabilitySupported {
+		t.Fatalf("bootstrap identity = %+v; want voter with observability support", gotB)
 	}
 
 	joinerCfg := clusterConfigFile{Role: "joiner", NodeID: 4, ClusterID: "c"}
 	gotJ := configuredLocalPeerIdentity(joinerCfg, fp)
-	if gotJ.Phase != tcpadapter.PeerPhaseStaged {
-		t.Fatalf("joiner phase = %d, want Staged", gotJ.Phase)
+	if gotJ.Phase != tcpadapter.PeerPhaseStaged || gotJ.ObservabilitySupported {
+		t.Fatalf("joiner identity = %+v; want staged without observability support", gotJ)
 	}
 }
 

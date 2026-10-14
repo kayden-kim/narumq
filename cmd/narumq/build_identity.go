@@ -24,6 +24,7 @@ func resolveBuildIdentity() (string, []string, error) {
 		membership.ClientBlocklistFeature, membership.ClusterPolicyFeature,
 		membership.ClusterPolicyTenantQuotasFeature, membership.ConnectionRebalanceFeature,
 		membership.CredentialRevocationFeature, membership.ProposalRecoveryFeature, membership.SessionMetadataFeature,
+		release.ClusterObservabilityFeature,
 	}
 	if buildFeatures != "" {
 		features = append(features, strings.Split(buildFeatures, ",")...)

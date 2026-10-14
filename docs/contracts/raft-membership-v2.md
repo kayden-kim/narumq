@@ -290,6 +290,10 @@ v1 전달 메시지 payload는 다음 순서로 인코딩한다.
 
 포워딩 스트림은 `NMQRAFT2` hello, Raft 메시지 프레임 바이트, 멤버십 레코드, snapshot, backup 또는 클러스터 프로토콜 `2.0`을 변경하지 않는다.
 
+#### 관측 snapshot RPC
+
+운영 snapshot 조회는 같은 mTLS peer listener를 사용하지만 Raft와 forwarding stream에 포함하지 않는 별도 one-shot 연결이다. Hello identity 검사와 member phase 정책은 이 절의 v2 peer 인증 규칙을 따른다. 관측 wire version·frame·한도·capability는 [Peer observability v1 contract](peer-observability-v1.md)가 기준이다. 이 RPC는 cluster protocol `2.0`, Raft frame과 replicated state schema를 바꾸지 않는다.
+
 ### 1.6 복제 레코드와 스냅샷
 
 명령·스냅샷 형식, 크기 한도, 정렬과 정규 바이트는 [복제 상태 v1 §1](replicated-state-v1.md#1-형식과-의미)을 따른다. 이 계약은 멤버십 식별 정보, 전이와 전송 경계를 정의한다.

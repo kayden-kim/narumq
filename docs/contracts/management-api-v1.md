@@ -6,7 +6,7 @@ path, parameter, response schema와 media type은
 
 | 항목 | 값 |
 | --- | --- |
-| 이름과 version | `narumq-management-api` 1.17.0 |
+| 이름과 version | `narumq-management-api` 1.18.0 |
 | 상태 | Active |
 | Producer | NaruMQ broker management API |
 | Consumer | Dashboard·operator·monitoring integration의 query client |
@@ -30,6 +30,8 @@ path, parameter, response schema와 media type은
 | GET | `/health/startup` | startup probe |
 | GET | `/health/drain` | drain-complete probe |
 | GET | `/metrics` | Prometheus/OpenMetrics scrape |
+| GET | `/api/v1/metrics` | JSON node별·cluster metric snapshot 조회 (ReadOnly) |
+| GET | `/api/v1/nodes/{nodeId}/metrics` | 대상 node의 JSON metric snapshot 조회 (ReadOnly) |
 | GET | `/api/v1/cluster` | cluster summary |
 | POST | `/api/v1/cluster/members` | member admission 시작 | ClusterAdmin |
 | DELETE | `/api/v1/cluster/members/{memberId}` | cluster member removal 시작 | ClusterAdmin |
@@ -67,8 +69,22 @@ path, parameter, response schema와 media type은
 | DELETE | `/api/v1/security/blocklist/ip-prefixes/{address}/{prefixLength}` | IP prefix 차단 해제 (SecurityAdmin·ClusterAdmin) |
 | GET | `/api/v1/nodes/{nodeId}/audit/events` | node-local audit hash-chain record 조회 (SecurityAdmin·ClusterAdmin) |
 
-Node 고유 정보와 특정 node만 대상으로 하는 제어는 `/api/v1/nodes/{nodeId}/...` 경로를 사용한다. 단, Raft commit으로 cluster 전체에 적용되는 `/api/v1/nodes/{nodeId}/drain`은 어느 node에서 호출해도 된다. `config`와 `audit/events`에서 `nodeId`는 canonical positive decimal uint64여야 한다. 값이 잘못됐거나 canonical 형식이 아니면 `404 resource_not_found`를 반환한다. 유효한 ID가 요청을 받은 node를 가리키지 않으면 non-retryable `409 node_not_local`을 반환하고 `error.details.servingNodeId`에 serving node ID를 넣는다. API는 원격 node로 proxy하지 않으므로 대상 node에 직접 요청해야 한다.
+`GET /api/v1/nodes`와 `GET /api/v1/nodes/{nodeId}`는 membership에 등록된 node를 조회한다. Node 운영 snapshot은 요청 node가 아닌 대상 node에서 직접 읽는다. 원격 query가 실패해도 등록된 ID는 `200`과 `queryStatus`가 담긴 `NodeData`를 반환한다. ID가 없거나 Dynamic ID가 정규 양의 10진수 uint64가 아니면 `404 resource_not_found`다. `config`와 `audit/events`는 기존대로 요청을 받은 node만 조회한다. Drain은 어느 node에서 호출해도 cluster 전체에 적용된다.
+Node response는 항상 `nodeId`, `membershipPhase`, `queryStatus`, `queryErrorCode`, `observedAt`과 모든 측정 field를 포함한다. Query status는 `OK`, `UNREACHABLE`, `UNSUPPORTED`, `RETIRED`, `ERROR` 중 하나다. `OK`이면 `observedAt`은 대상 node가 측정을 마친 UTC 시각이고, readiness가 false여도 유효한 측정이다. 그 외 status에서는 `observedAt`과 모든 측정 field가 `null`이다. 이 규칙은 미확인 값을 0·false·`JOINING`으로 바꾸지 않는다.
+측정 field는 `version`, `uptimeMillis`, `state`, `ready`, `readinessReason`, `role`, `lastAppliedIndex`, `connectionCount`, `sessionCount`, `storagePressure`, `replicationHealth`, `lastErrorCode`다. 모두 필수 nullable field다. 정상 측정값 `0`·`false`는 값으로 반환한다. `replicationHealth`는 대상의 local storage health이며 `HEALTHY`, `DEGRADED`, `FAILED`만 허용한다. `replicationQueue`는 제거한다. Peer별 Raft 지연은 `/metrics`의 `narumq_raft_peer_replication_lag_entries{peer}`에서 조회한다.
 
+`queryErrorCode`는 `node_unreachable`, `node_query_timeout`, `node_query_unsupported`, `node_query_busy`, `node_query_invalid_response`, `node_snapshot_too_large`, `node_query_failed`, `node_not_running` 중 하나이거나 `null`이다. `RETIRED`는 error code가 `null`이다. Raw TLS·I/O 오류, 주소, 인증서와 credential은 반환하지 않는다. `STAGED`는 RPC 대상이 아니며 `UNREACHABLE`/`node_not_running`이다.
+
+`GET /api/v1/nodes`는 현행 `state`, `limit`, `cursor`만 받는다. Node ID의 uint64 오름차순으로 정렬한다. `state` filter는 `queryStatus=OK`인 실제 state에만 적용한다. Filter가 없으면 retired와 staged member도 반환한다. 목록 cursor는 기존 RawURL-base64 `cur:<offset>` 형식이며 page 사이에 membership 변경의 원자적 일관성을 보장하지 않는다. Cluster summary의 `nodesByState.unknown`은 retired member를 뺀 미확인 수다. `connectionCount`와 `sessionCount` 합계는 모든 non-retired node query가 성공했을 때만 제공하며 하나라도 미확인이면 `null`이다. `subscriptionCount`는 local committed route projection 값으로 유지한다.
+`GET /api/v1/nodes/{nodeId}/metrics`는 query와 body를 허용하지 않는다. 등록된 대상의 metric snapshot을 `data` envelope로 반환하며 원격 조회 실패·미지원·퇴역은 HTTP 200의 상태 metadata와 `families: null`로 표현한다. 없는 node ID는 `404`다.
+
+`GET /api/v1/metrics`는 `mode`만 받으며 기본값은 `all_nodes_unaggregated`다. 허용 값은 `node`, `all_nodes_unaggregated`, `all_nodes_aggregated`다. Response는 `MetricCollectionData` envelope다. Unaggregated JSON은 일부 node 실패에도 `200`, `complete=false`와 성공 node의 sample을 반환한다. Aggregated JSON은 non-retired node 하나라도 실패하면 retryable `503 metrics_collection_incomplete`를 반환한다. 전체 JSON/text 결과는 64 MiB로 제한하며 초과는 `503 metrics_snapshot_too_large`, schema·aggregation 오류는 `503 metrics_aggregation_failed`다.
+
+`/metrics`의 기본값은 `mode=node`다. 이 mode는 기존 local Registry fast path이며 원격 RPC나 readiness proof를 실행하지 않는다. `all_nodes_unaggregated`는 모든 sample에 `node_id`를 추가한다. `all_nodes_aggregated`는 gauge만 기존 catalog의 `sum`, `max`, `per_node` 규칙으로 집계한다. Counter와 histogram은 process restart-safe 계산에 필요한 node별 series를 유지한다. Cluster text mode는 모두 성공해야 하며 일부 결과를 출력하지 않는다. Query mode가 없거나 unknown·중복·빈 값이면 `400 invalid_request`다. Request body와 잘못된 method는 각각 기존 `400`·`405` 응답을 따른다.
+
+`/api/v1/metrics`, `/api/v1/nodes/{nodeId}/metrics`, cluster text mode는 `ReadOnly` 인증을 요구한다. Anonymous metrics 허용 설정은 cluster mode에 적용되지 않는다. Literal-loopback standalone의 기존 익명 principal은 유지한다. `/metrics?mode=node`만 기존 anonymous scrape 정책을 따른다. `/metrics`는 `/api/v1/**` rate limit에 포함하지 않는다. 모든 JSON API는 기존 request ID와 인증 거절 감사 정책을 따른다.
+
+Metrics snapshot의 family는 `name`, `help`, `type`, `scope`, `aggregation`, `labelNames`, `samples`를 가진다. Sample은 `name`, 이름순 `labels`, `valueKind`, `value`를 가진다. `value`는 정확한 uint64 또는 finite float의 canonical decimal 문자열이다. Histogram은 `<name>_bucket`, `<name>_count`, `<name>_sum` sample과 원래 bucket·stage label을 보존한다. Node metric metadata의 `startedAt`은 대상 Registry 시작 시각이며 restart 뒤 counter reset 경계로 사용한다. Snapshot은 최대 64 family, 16,384 sample, sample당 8 label이며 node RPC JSON은 최대 8 MiB다.
 `GET /api/v1/nodes/{nodeId}/config`는 Dynamic cluster에서만 제공하며 `ClusterAdmin` 권한을 요구한다. Query와 request body는 허용하지 않는다. 응답은 node의 실제 적용 설정, `mqttLimits`, `tenantQuotas`의 적용 출처·version과 `mqtt.webSocket` listener address·admission limits를 반환한다. `mqtt.webSocket`은 설정 object가 없으면 `null`이다. `security`에는 JWT 설정, 인증 identity 수, ACL 규칙과 tenant limit을 포함한다. ACL 규칙은 `tenantId`, `role`, `effect`, `action`, `topicFilter`를 보여 준다. 인증 identity 목록, secret 원문과 secret file 경로, password hash, token은 반환하지 않는다. OIDC·JWT의 JWKS URL에서는 userinfo를 제거한다. 전체 응답 schema는 OpenAPI `NodeConfigurationResponse`를 따른다.
 
 `GET /api/v1/nodes/{nodeId}/audit/events`는 SecurityAdmin 또는 ClusterAdmin만 사용할 수 있다. 현재 node의 저장된 audit records를 `seq` 내림차순으로 반환한다. 허용 query는 `limit`, `cursor`, `actorSubject`, `action`, `targetType`, `targetId`, `requestId`, `result`, `from`, `to`이며 문자열 filter는 exact match다. `result`는 `ALLOWED`, `DENIED`, `FAILED`; `from` 포함·`to` 제외 RFC 3339 시각이다.
@@ -95,7 +111,7 @@ Version 1.7.0은 `POST/GET/DELETE /api/v1/cluster/rebalance`를 추가한다. Op
 
 | Permission | ReadOnly | Operator | SecurityAdmin | ClusterAdmin |
 | --- | --- | --- | --- | --- |
-| `PermissionRead` — 조회 route, non-anonymous `/metrics`·probe | ✓ | ✓ | ✓ | ✓ |
+| `PermissionRead` — 조회 route, non-anonymous `/metrics`·probe, JSON·cluster metrics | ✓ | ✓ | ✓ | ✓ |
 | `PermissionOperate` — drain·rebalance mutation |  | ✓ |  | ✓ |
 | `PermissionAuditRead` — `GET /api/v1/nodes/{nodeId}/audit/events` |  |  | ✓ | ✓ |
 | `PermissionClusterAdmin` — tenant, membership, feature activation, backup, cluster policy update, node configuration view |  |  |  | ✓ |
@@ -165,7 +181,7 @@ JSON 오류는 다음 envelope다.
 - `/api/v1`의 required response field 삭제·rename·type 변경은 breaking change다.
 - Optional response field 추가는 contract suite와 consumer compatibility 확인 뒤에만
   허용한다.
-- Version 1.2.0은 `NodeData`에 optional `replicationHealth`, `lastErrorCode`, `replicationQueue` field를 추가했다. Field schema와 enum은 OpenAPI artifact가 기준이며, contract suite가 response shape를 검증한다.
+- Version 1.18.0은 사용자 승인에 따라 개발 중인 `/api/v1` 계약을 재정의한다. Node measurement를 대상 node에서 직접 읽고 필수 nullable field와 query metadata를 추가한다. `replicationQueue`를 제거하고 node metric snapshot 경로를 추가한다. 예전 response·route alias·redirect·compatibility adapter는 지원하지 않는다. 같은 URL의 새 동작으로 전환한다. 이 예외는 현재 v1 개발 계약에만 적용하며, 이후 breaking change는 별도 승인 없이 v2 경로 규칙을 따른다.
 - Version 1.3.0은 `POST /api/v1/cluster/backups`를 추가했다. ClusterAdmin 전용이며 fresh quorum barrier에서 캡처한 typed snapshot과 committed tail을 binary archive로 반환한다.
 - Version 1.4.0은 `/api/v1/nodes/{nodeId}/drain`의 POST/GET/DELETE를 추가한다. Drain request parameter bounds와 replay semantics는 [Drain spec](../specs/drain-and-rolling-update.md)을 따른다.
 - Version 1.5.0은 `GET /api/v1/cluster/features`와 `POST /api/v1/cluster/features/{feature}`를 추가한다. 성공 response는 `activeFeatures`와 member별 `nodeId`, `releaseVersion`, `features`를 data envelope로 반환하며, 미지원 feature activation은 non-retryable `409 feature_not_supported_by_all_members`다.
@@ -178,10 +194,11 @@ JSON 오류는 다음 envelope다.
 - Version 1.12.0은 Dynamic cluster 전용 `client-blocklist` feature를 사용하는 GET·POST·DELETE route를 추가한다. SecurityAdmin·ClusterAdmin만 조회·변경할 수 있으며, path 값은 percent-encoding을 허용하고 query와 body는 거절한다. Blocklist entry, canonical 값, 전파 목표와 policy version 의미는 [ADR-0050](../decisions/ADR-0050-mqtt-client-blocklist.md)를 따른다.
 - Version 1.13.0은 Dynamic cluster 전용 `cluster-policy` feature를 사용하는 `GET/PUT /api/v1/cluster/policy`와 `mqttLimits` version update를 추가한다. GET은 ReadOnly, PUT은 ClusterAdmin을 요구하며 `If-Match`, `Idempotency-Key`, ETag와 audit detail을 사용한다.
 - Version 1.14.0은 `loadBalancerPropagationDelayMs`, `timeoutMs`, `uptimeMs`를 각각 `loadBalancerPropagationDelayMillis`, `timeoutMillis`, `uptimeMillis`로 바꿨다. 이 breaking change는 JSON duration 이름을 정수 millisecond 표기로 맞추기 위한 1회 예외다. Consumer는 새 이름으로 갱신한 뒤 배포해야 한다. 이전 이름은 지원하지 않는다.
-- Breaking change는 `/api/v2`와 별도 OpenAPI artifact로 제공한다.
+- 이 v1 재정의 외의 breaking change는 `/api/v2`와 별도 OpenAPI artifact로 제공한다.
 - G7의 audit path 이동은 이 contract에서 명시한 breaking-change 규칙의 예외다. 이전 `/api/v1/audit/events` 경로는 지원하지 않는다.
 - Version 1.15.0은 `ClusterPolicy` request·response에 선택적 `tenantQuotas`를 추가한다. 해당 field는 `cluster-policy-tenant-quotas` feature 활성화 뒤 사용할 수 있고, PUT body 한도는 512 KiB다.
 - Version 1.15.0은 Dynamic cluster 전용 `GET /api/v1/nodes/{nodeId}/config`를 추가한다. ClusterAdmin 전용이며 적용 설정, policy 출처와 version을 반환하고 secret 원문·경로를 제외한다. Node-local route는 요청 node의 canonical decimal ID만 받으며 다른 ID에는 `409 node_not_local`을 반환한다.
 - Version 1.15.0은 audit query를 `/api/v1/audit/events`에서 `/api/v1/nodes/{nodeId}/audit/events`로 이동한다. 이전 경로는 지원하지 않으며 client를 갱신해야 한다. Audit query도 local node만 대상으로 한다.
 - Version 1.16.0은 drain POST의 `connectionRatePerSecond`, `loadBalancerPropagationDelayMillis`, `timeoutMillis`를 선택 field로 바꾼다. 생략하면 [ADR-0055](../decisions/ADR-0055-drain-and-reconnect-operating-defaults.md)의 기본값 `100`, `30000`, `600000`을 적용한다. 세 값을 모두 보내는 기존 요청은 그대로 유효하다. Rebalance request는 바뀌지 않는다.
 - Version 1.17.0은 node configuration response의 `mqtt.webSocket` field를 추가한다. Field는 항상 포함하고, cluster config에 `mqtt.webSocket`이 없으면 `null`을 반환한다. 설정하면 WS/WSS 주소와 네 admission limit을 반환한다.
+- Version 1.18.0은 `GET /api/v1/nodes/{nodeId}/metrics`, `GET /api/v1/metrics`의 typed JSON snapshot과 `/metrics?mode=...`의 node·cluster text mode를 추가한다. 자세한 query status, aggregation, authentication, size limit과 error rules는 OpenAPI와 Management API spec §4·§7을 따른다.

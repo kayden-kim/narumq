@@ -9,6 +9,7 @@ import (
 	applicationclock "narumq/internal/application/ports/clock"
 	ports "narumq/internal/application/ports/management"
 	portsmetrics "narumq/internal/application/ports/metrics"
+	observationports "narumq/internal/application/ports/observability"
 	"narumq/internal/domain/security"
 )
 
@@ -23,6 +24,7 @@ type ServerConfig struct {
 	Clock                 applicationclock.Clock // Nil uses the system clock.
 	AllowAnonymousProbes  bool
 	AllowAnonymousMetrics bool
+	Observability         observationports.QueryService
 	ReadTimeout           time.Duration
 	WriteTimeout          time.Duration
 	ClusterID             string
@@ -85,7 +87,9 @@ func newRouter(
 
 	healthH := NewHealthHandler(healthChecker)
 	metricsH := NewMetricsHandler(metricsReg)
+	metricsH.observability = cfg.Observability
 	v1H := NewV1Handler(stateProvider)
+	v1H.observability = cfg.Observability
 
 	mux := http.NewServeMux()
 
@@ -96,12 +100,23 @@ func newRouter(
 	mux.HandleFunc("/health/drain", auth.MaybeAllowProbe(healthH.Drain))
 
 	// Observability metrics
-	mux.HandleFunc("/metrics", auth.MaybeAllowMetrics(metricsH.ServeHTTP))
+	localMetrics := auth.MaybeAllowMetrics(metricsH.ServeHTTP)
+	clusterMetrics := auth.require(PermissionRead, nil, false, metricsH.ServeHTTP)
+	mux.HandleFunc("/metrics", func(w http.ResponseWriter, r *http.Request) {
+		modeValues := r.URL.Query()["mode"]
+		if len(modeValues) == 1 && (modeValues[0] == "all_nodes_unaggregated" || modeValues[0] == "all_nodes_aggregated") {
+			clusterMetrics(w, r)
+			return
+		}
+		localMetrics(w, r)
+	})
 
 	// Management API v1
 	mux.HandleFunc("/api/v1/cluster", auth.RequirePermission(PermissionRead, v1H.GetCluster))
 	mux.HandleFunc("/api/v1/nodes", auth.RequirePermission(PermissionRead, v1H.ListNodes))
 	mux.HandleFunc("/api/v1/nodes/{nodeId}", auth.RequirePermission(PermissionRead, v1H.GetNode))
+	mux.HandleFunc("/api/v1/metrics", auth.RequirePermission(PermissionRead, v1H.GetMetrics))
+	mux.HandleFunc("/api/v1/nodes/{nodeId}/metrics", auth.RequirePermission(PermissionRead, v1H.GetNodeMetrics))
 	mux.HandleFunc("/api/v1/clients", auth.RequirePermission(PermissionRead, v1H.ListClients))
 	mux.HandleFunc("/api/v1/clients/{tenantId}/{clientId}", auth.RequirePermission(PermissionRead, v1H.GetClient))
 	mux.HandleFunc("/api/v1/subscriptions", auth.RequirePermission(PermissionRead, v1H.ListSubscriptions))

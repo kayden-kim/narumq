@@ -42,9 +42,11 @@ import (
 	"narumq/internal/application/connect"
 	appmgmt "narumq/internal/application/management"
 	"narumq/internal/application/membership"
+	appobservability "narumq/internal/application/observability"
 	authenticationports "narumq/internal/application/ports/authentication"
 	managementports "narumq/internal/application/ports/management"
 	portsmetrics "narumq/internal/application/ports/metrics"
+	observationports "narumq/internal/application/ports/observability"
 	"narumq/internal/application/publish"
 	"narumq/internal/application/subscribe"
 	"narumq/internal/domain/mqtt"
@@ -186,6 +188,9 @@ func runClusterMode(ctx context.Context, config clusterConfigFile, logger *slog.
 	}
 
 	var runtime *clusterRuntime
+
+	var observabilityQuery observationports.QueryService
+	var peerObservabilityHandler tcpadapter.PeerObservabilityHandler
 	metricsRegistry := adaptersmetrics.NewRegistry()
 	storageMonitor := newClusterStorageMonitor(time.Now, logger)
 	node, err := raftadapter.Open(raftadapter.Config{
@@ -289,6 +294,12 @@ func runClusterMode(ctx context.Context, config clusterConfigFile, logger *slog.
 		ServerTLS: peerServerTLS, ClientTLS: peerClientTLS,
 		Peers: initialPeers, AdmissionHandler: runtime.admitPeer,
 		BootstrapProgress: runtime.bootstrapProgress, BootstrapAllowedPeerIDs: bootstrapAllowed,
+		ObservabilityHandler: func(ctx context.Context, kind tcpadapter.PeerObservabilityKind) ([]byte, error) {
+			if peerObservabilityHandler == nil {
+				return nil, errors.New("peer observability query service is unavailable")
+			}
+			return peerObservabilityHandler(ctx, kind)
+		},
 	})
 	if err != nil {
 		return fmt.Errorf("create dynamic raft peer transport: %w", err)
@@ -482,6 +493,18 @@ func runClusterMode(ctx context.Context, config clusterConfigFile, logger *slog.
 	}, sessions, runtime.routes, retainedRepository, metricsRegistry)
 	baseManagement.UseClusterSessionSource(runtime)
 	runtime.managementState = baseManagement
+	observabilitySource := &observabilitySource{
+		runtime: runtime, state: baseManagement, metrics: metricsRegistry, clock: systemClock,
+		clusterID: config.ClusterID, localNodeID: strconv.FormatUint(config.NodeID, 10),
+		releaseVersion: config.ReleaseVersion,
+	}
+	observabilityQuery, err = appobservability.NewService(
+		observabilitySource, observabilitySource, tcpadapter.NewPeerObservabilityReader(transport), systemClock,
+	)
+	if err != nil {
+		return fmt.Errorf("create observability query service: %w", err)
+	}
+	peerObservabilityHandler = tcpadapter.NewPeerObservabilityHandler(observabilityQuery, observabilitySource.localNodeID)
 	stateProvider := &clusterStateProvider{StateProvider: baseManagement, runtime: runtime}
 	healthChecker := &clusterHealthChecker{HealthChecker: baseManagement, runtime: runtime}
 	credentials, err := loadClusterManagementCredentials(config.Management)
@@ -517,6 +540,7 @@ func runClusterMode(ctx context.Context, config clusterConfigFile, logger *slog.
 		AllowAnonymousProbes: true,
 		RequestRate:          requestRate, AuthFailureRate: authFailureRate, Clock: systemClock,
 		ClusterID: config.ClusterID, LocalNodeID: config.NodeID, Logger: logger,
+		Observability: observabilityQuery,
 	}, stateProvider, healthChecker, metricsRegistry, membershipService, drainService, rebalanceService, runtime, auditService, auditQueryService, credentialRevocationService, blocklistService, clusterPolicyService, runtime)
 	var sampler *runtimemetrics.Sampler
 	if config.RuntimeMetrics != nil {
@@ -3334,6 +3358,7 @@ func configuredLocalPeerIdentity(config clusterConfigFile, fingerprint [32]byte)
 		DNSSAN: config.LocalDNSName, CertificateSHA256: fingerprint, ReleaseVersion: config.ReleaseVersion,
 		ClusterProtocolMajor: config.ClusterProtocolMajor, ClusterProtocolMinor: config.ClusterProtocolMinor,
 		StateSchemaMajor: config.StateSchemaMajor, StateSchemaMinor: config.StateSchemaMinor, Phase: phase,
+		ObservabilitySupported: release.Contains(config.Features, release.ClusterObservabilityFeature),
 	}
 }
 
@@ -3367,6 +3392,7 @@ func peerIdentityFromMember(member *membership.MemberIdentityDTO) (tcpadapter.Pe
 		ClusterProtocolMajor: member.ClusterProtocolMajor, ClusterProtocolMinor: member.ClusterProtocolMinor,
 		StateSchemaMajor: member.StateSchemaMajor, StateSchemaMinor: member.StateSchemaMinor,
 		Phase: phase, OperationID: member.OperationID,
+		ObservabilitySupported: release.Contains(member.Features, release.ClusterObservabilityFeature),
 	}, nil
 }
 

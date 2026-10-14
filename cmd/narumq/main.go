@@ -21,6 +21,7 @@ import (
 	tlsadapter "narumq/internal/adapters/tls"
 	"narumq/internal/application/connect"
 	appmgmt "narumq/internal/application/management"
+	appobservability "narumq/internal/application/observability"
 	authenticationports "narumq/internal/application/ports/authentication"
 	portsmgmt "narumq/internal/application/ports/management"
 	portsmetrics "narumq/internal/application/ports/metrics"
@@ -488,6 +489,15 @@ func runWithContext(ctx context.Context, args []string, logger *slog.Logger) err
 		retainedRepository,
 		metricsRegistry,
 	)
+	observabilitySource := &observabilitySource{
+		state: managementState, metrics: metricsRegistry, clock: systemClock,
+		clusterID: "narumq-cluster-1", localNodeID: "narumq-node-1",
+		releaseVersion: buildReleaseVersion,
+	}
+	observabilityQuery, err := appobservability.NewService(observabilitySource, observabilitySource, nil, systemClock)
+	if err != nil {
+		return fmt.Errorf("create observability query service: %w", err)
+	}
 	var managementServer *http.Server
 	if managementListener != nil {
 		managementServer = adaptershttp.NewServer(
@@ -499,6 +509,7 @@ func runWithContext(ctx context.Context, args []string, logger *slog.Logger) err
 				Clock:                 systemClock,
 				AllowAnonymousProbes:  true,
 				AllowAnonymousMetrics: managementAuthToken == "",
+				Observability:         observabilityQuery,
 			},
 			managementState,
 			managementState,

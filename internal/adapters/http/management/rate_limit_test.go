@@ -47,9 +47,10 @@ func serveRateLimitRequest(handler http.Handler, path, bearer, apiKey, remoteAdd
 func TestRateLimitPrincipalBucketRejectsThenRefills(t *testing.T) {
 	clock := &rateLimitTestClock{now: time.Unix(1_800_000_000, 0)}
 	handler := NewRouter(ServerConfig{
-		AuthToken:   "bearer-secret",
-		RequestRate: 2,
-		Clock:       clock,
+		AuthToken:     "bearer-secret",
+		RequestRate:   2,
+		Clock:         clock,
+		Observability: successHTTPObservabilityStub(),
 	}, &mockStateProvider{}, &mockHealthChecker{liveStatus: ports.HealthStatusUp}, nil)
 
 	for index, wantStatus := range []int{http.StatusOK, http.StatusOK, http.StatusTooManyRequests} {
@@ -86,6 +87,7 @@ func TestRateLimitSeparatesPrincipalsAndAuthFailures(t *testing.T) {
 		RequestRate:     1,
 		AuthFailureRate: 1,
 		Clock:           clock,
+		Observability:   successHTTPObservabilityStub(),
 	}, &mockStateProvider{}, &mockHealthChecker{liveStatus: ports.HealthStatusUp}, nil)
 
 	if response := serveRateLimitRequest(handler, "/api/v1/cluster", "bearer-secret", "", "192.0.2.10:1234"); response.Code != http.StatusOK {
@@ -130,6 +132,7 @@ func TestRateLimitExcludesProbesAndMetrics(t *testing.T) {
 		RequestRate:     1,
 		AuthFailureRate: 1,
 		Clock:           clock,
+		Observability:   successHTTPObservabilityStub(),
 	}, &mockStateProvider{}, &mockHealthChecker{liveStatus: ports.HealthStatusUp}, registry)
 
 	for _, path := range []string{"/health/live", "/metrics", "/not-registered"} {

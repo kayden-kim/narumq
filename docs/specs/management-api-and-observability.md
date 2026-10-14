@@ -14,7 +14,7 @@
 
 ## 1. HTTP 공통 계약
 
-- 관리 API base path는 `/api/v1`이다. 호환되지 않는 변경은 새 major path에서 제공해야 한다.
+- Management API의 base path는 `/api/v1`이다. 사용자가 승인한 1.18.0 개발 계약 재정의는 현재 v1에서 직접 교체하며 별도 alias를 제공하지 않는다. 이 재정의 이후의 breaking change는 새 major path에서 제공한다.
 - request와 response body는 `application/json` UTF-8을 사용한다.
 - `/api/v1` 요청은 인증과 RBAC를 통과해야 한다. Health probe와 `/metrics`의 익명 노출 범위는 listener 정책으로 제한할 수 있다.
 - 서버는 수신한 유효 request ID를 사용하거나 새 값을 생성해 `X-Request-Id`에 반환해야 한다.
@@ -109,7 +109,7 @@ Standalone mode는 `-http-request-rate`와 `-http-auth-failure-rate`를 사용�
 
 ### 2.1 Phase 1 active profile
 
-- OpenAPI에 정의된 22개 GET operation(health·metrics 포함)과 cluster backup POST, broker drain POST/GET/DELETE, membership, rebalance, feature, security와 cluster policy operation이 구현·계약 대상이다. 정확한 parameter allowlist, schema, response와 operation ID는 OpenAPI가 SSOT이며 `tests/contracts/management-api-v1`가 runtime handler와 일치하는지 검사한다.
+- OpenAPI에 정의된 24개 GET operation(health·metrics 포함)과 cluster backup POST, broker drain POST/GET/DELETE, membership, rebalance, feature, security와 cluster policy operation이 구현·계약 대상이다. 정확한 parameter allowlist, schema, response와 operation ID는 OpenAPI가 SSOT이며 `tests/contracts/management-api-v1`가 runtime handler와 일치하는지 검사한다.
 Node configuration와 audit query는 요청을 받은 node에만 적용한다. `nodeId`는 canonical positive decimal uint64여야 한다. ID가 잘못됐거나 canonical 형식이 아니면 `404 resource_not_found`, 다른 유효한 node ID면 `409 node_not_local`을 반환하며 원격 proxy를 하지 않는다. `/api/v1/nodes/{nodeId}/drain`은 Raft commit으로 cluster 전체에 적용되므로 이 제한에서 제외한다.
 
 | Method | Path | 성공 동작 | 권한 |
@@ -119,12 +119,14 @@ Node configuration와 audit query는 요청을 받은 node에만 적용한다. `
 | GET | `/health/startup` | 초기 동기화가 완료되면 `200` | probe policy |
 | GET | `/health/drain` | node가 `SAFE_TO_STOP`이면 `200` | probe policy |
 | GET | `/metrics` | Prometheus 또는 OpenMetrics scrape | monitoring policy |
+| GET | `/api/v1/metrics` | node 또는 cluster typed JSON metric snapshot 조회 | ReadOnly |
 | GET | `/api/v1/cluster` | quorum과 cluster 요약 조회 | ReadOnly |
 | POST | `/api/v1/cluster/members` | cluster member admission 시작 | ClusterAdmin |
 | DELETE | `/api/v1/cluster/members/{memberId}` | planned removal 시작 또는 기존 operation replay | ClusterAdmin |
 | POST | `/api/v1/cluster/backups` | quorum-fresh typed state backup archive 다운로드 | ClusterAdmin |
 | GET | `/api/v1/nodes` | state filter와 pagination을 사용한 node 목록 조회 | ReadOnly |
 | GET | `/api/v1/nodes/{nodeId}` | node detail 조회 | ReadOnly |
+| GET | `/api/v1/nodes/{nodeId}/metrics` | 대상 node의 typed metric snapshot 조회 | ReadOnly |
 | GET | `/api/v1/nodes/{nodeId}/config` | 해당 node의 실제 적용 설정·policy source 조회 | ClusterAdmin |
 | GET | `/api/v1/cluster/features` | committed active feature와 member build profile 조회 | ReadOnly |
 | POST | `/api/v1/cluster/features/{feature}` | 모든 non-retired member가 지원하는 feature 활성화; replay는 성공 no-op | ClusterAdmin |
@@ -172,15 +174,17 @@ Active drain endpoint의 body와 상태는 [drain spec](drain-and-rolling-update
 
 ## 4. Cluster·node representation
 
-Cluster 요약은 최소 다음 정보를 제공해야 한다.
+Cluster 요약은 cluster identity·release compatibility·term·leader, membership/quorum 정보, lifecycle별 node 수, replication/storage 요약을 제공한다. `nodesByState`에는 `joining`, `ready`, `draining`, `safeToStop`, `unknown`을 반환한다. `unknown`은 retired member를 제외하고 실제 상태를 읽지 못한 member 수다. `nodeQueryComplete`와 `observedAt`은 cluster node query 완료 상태와 응답 생성 시각을 나타낸다.
 
-- cluster ID, release compatibility 범위와 current term/leader 식별 정보
-- member 수, quorum 필요 수와 quorum 가능 여부
-- READY/JOINING/DRAINING/SAFE_TO_STOP node 수
-- replica 부족·replication lag와 storage pressure 요약
-- 전체 connection, session, subscription과 message rate 요약
+Node 상세는 membership identity와 query 상태, 대상 node에서 직접 측정한 version, uptime, lifecycle, readiness 원인, role, applied index, connection·session 수, storage pressure와 local storage health를 제공한다. 측정값은 required nullable field다. `queryStatus=OK`이면 readiness가 false여도 실제 측정 결과다. 원격 조회 실패·미지원·퇴역·오류에서는 모든 측정값과 `observedAt`이 null이며 기본값이나 이전 값을 재사용하지 않는다. `replicationHealth`는 대상 node의 local storage health만 나타낸다. `replicationQueue`는 제거하고, peer별 replication lag는 `narumq_raft_peer_replication_lag_entries{peer}`로 본다.
 
-Node 상세는 `nodeId`, version, uptime, lifecycle state, readiness 원인, role, last applied index, resource pressure, connection 수와 drain operation을 포함해야 한다. Cluster mode에서 현재 node의 `replicationHealth`는 local Raft storage 상태를 나타내고, 원격 peer 행에서는 조회 node가 관찰한 peer 연결 상태를 나타내며 remote storage 상태를 주장하지 않는다. `lastErrorCode`는 원인별 안정된 code다. 원격 peer 행의 `replicationQueue`는 조회 node에서 해당 peer로 보내는 outbound message·byte·rejection 수를 제공한다. Local `DEGRADED`·`FAILED`는 lifecycle `state`를 변경하지 않고 readiness와 `storagePressure`에 반영하며, 내부 오류 원문을 노출해서는 안 된다. 정확한 field name과 schema는 OpenAPI에서 고정한다.
+`connectionCount`와 `sessionCount`는 non-retired node를 모두 성공적으로 읽었을 때만 합산한다. 일부 node가 unknown이면 두 합계는 null이다. `subscriptionCount`는 각 node의 복제된 route projection을 합산하지 않고 요청 node의 local committed projection 값으로 반환한다. `quorumAvailable`은 요청 node의 fresh proof 결과이며 remote query 성공 여부로 대체하지 않는다. `memberCount`, leader·quorum profile과 `underReplicated`의 의미는 유지한다.
+
+Node 목록은 Dynamic node ID 오름차순으로 반환한다. `state` filter는 실제 state를 성공적으로 읽은 node만 대상으로 한다. Filter가 없으면 retired·staged member도 나타내며 staged member는 `UNREACHABLE`/`node_not_running`이다. Page 사이의 membership snapshot 원자성은 보장하지 않는다.
+
+Metric 수집은 Management API와 `/metrics`가 같은 typed Registry snapshot을 사용한다. `/metrics?mode=node`는 기존 node-local fast path이며 RPC·readiness proof가 없다. `all_nodes_unaggregated`는 sample마다 `node_id`를 붙이고 각 node의 replicated projection도 별도 보존한다. `all_nodes_aggregated`는 catalog의 gauge `sum`, `max`, `per_node`만 적용한다. Counter와 histogram은 process restart 뒤 reset-safe rate/increase를 계산할 수 없으므로 node별 series를 유지한다. Histogram bucket·stage label과 누락 sample은 그대로 보존하며 없는 값을 0으로 만들지 않는다.
+
+`/api/v1/nodes/{nodeId}/metrics`는 node snapshot과 `startedAt`을 반환한다. `GET /api/v1/metrics` 기본값은 `all_nodes_unaggregated`다. Unaggregated 응답은 부분 실패를 HTTP 200, `complete=false`, node별 상태 metadata로 나타낸다. Aggregated JSON과 cluster text mode는 non-retired node 하나라도 실패하면 retryable 503을 반환하며 partial text를 쓰지 않는다. `/metrics?mode=node`는 anonymous scrape policy를 유지한다. Cluster text mode와 모든 JSON metric route는 `ReadOnly` 인증이 필요하다. Public measurement/schema·mode·error 형식은 [Management API v1 contract](../contracts/management-api-v1.md)과 OpenAPI가 기준이다.
 
 Dynamic Raft inbound의 count·byte 한도에는 payload를 읽기 위해 예약한 frame과 driver가 인수했지만 아직 `Complete`하지 않은 frame도 포함한다. 포화된 reader는 payload를 할당하지 않은 채 공간을 기다리며, 이 아직 예약하지 못한 frame은 queue count·byte에 더하지 않는다. 한 reader의 예약·대기·해제는 [v2 Raft 경계 계약](../contracts/raft-membership-v2.md)의 채택된 inbound 정책을 따른다. Forwarding lane과 fixed-voter queue의 의미는 바꾸지 않는다.
 
@@ -268,7 +272,7 @@ transport 안의 reason 순서는 `max_connections`, `connection_rate`다. 알 �
 
 ### 7.1 Metric별 node·cluster 집계
 
-각 node의 `/metrics`는 해당 node의 값만 출력한다. Cluster 값은 Prometheus 같은 조회 계층이 아래 규칙으로 계산한다. 새 Metric family를 추가하면 아래 family 표에도 행을 추가해야 한다. `internal/adapters/metrics/registry_aggregation_test.go::TestRegistryFamiliesMatchAggregationCatalog`는 이 표를 읽어 `/metrics` 출력과 비교한다.
+각 node의 `/metrics`는 해당 node 값만 출력한다. Prometheus는 scrape target의 `node_id` label로 node를 구분하고 아래 catalog에 따라 time-series를 집계한다. Management API snapshot mode도 같은 descriptor catalog를 사용하되 reset-safe stateless aggregation은 §7.2 규칙을 따른다. 새 Metric family를 추가하면 아래 표에도 행을 추가해야 한다.
 
 | 값 | 구분 | 뜻 |
 | --- | --- | --- |
@@ -333,6 +337,28 @@ transport 안의 reason 순서는 `max_connections`, `connection_rate`다. 알 �
 
 Standalone mode는 node가 하나뿐이므로 `replicated`와 `node`의 결과가 같다.
 
+### 7.2 Snapshot API와 cluster mode
+
+`GET /api/v1/nodes/{nodeId}/metrics`는 대상 Registry의 typed snapshot을 반환한다. `NodeMetricsData`는 `nodeId`, `queryStatus`, nullable `queryErrorCode`, nullable `observedAt`, nullable `startedAt`, nullable `families`를 포함한다. `OK`에서 empty snapshot은 `[]`다. 다른 status에서는 두 시각과 `families`가 null이다. `startedAt`은 Registry instance 시작 경계이며 OS process 생성 시각이라고 보장하지 않는다.
+
+`GET /api/v1/metrics`는 `mode=node`, `all_nodes_unaggregated`, `all_nodes_aggregated`를 받는다. 기본값은 `all_nodes_unaggregated`다. `MetricCollectionData`는 요청 mode, 전체 collection 완료 시각, `complete`, node별 metadata와 family를 반환한다. Empty arrays는 `[]`다. `node`는 local Registry fast path를 사용하며 다른 node에 RPC를 보내거나 readiness를 검사하지 않는다.
+
+Node mode에서 metric label은 catalog 그대로 유지한다. Unaggregated cluster mode는 모든 sample에 `node_id` label을 추가하며 기존 label을 보존한다. `labelNames`에도 추가 label을 반영한다. Aggregated mode는 동일 원래 label identity별 gauge `sum` 또는 `max`를 적용하고 `per_node`는 `node_id`를 유지한다. Leader-scoped lag는 실제 반환 sample의 동일 peer별 max만 계산한다. Counter/`increase_sum`와 histogram/`bucket_sum`은 원시 누적값을 합치지 않고 `node_id`를 유지한다. Consumer는 node별 counter rate 또는 histogram bucket rate를 계산한 뒤 합산한다. Restart metadata가 rate 계산의 경계다.
+
+Family와 sample은 이름·label 기준으로 정렬한다. Label 이름 중복, catalog와 다른 descriptor, 잘못된 family·bucket schema, non-finite sample, integer overflow, 서로 다른 descriptor는 aggregation failure다. Missing sample을 0으로 채우지 않는다. Snapshot에는 최대 64 family, 16,384 sample, sample당 8 label, label value당 1,024 UTF-8 byte를 허용한다. 각 node snapshot은 최대 8 MiB, 전체 JSON/text 결과는 최대 64 MiB다. 한도를 넘으면 결과를 자르지 않고 오류를 반환한다.
+
+전체 collection은 시작 시 membership을 한 번 복사하고 최대 8 worker로 대상 node를 조회한다. 요청 전체 기한은 5초이며 caller deadline이 더 짧으면 이를 따른다. 자동 재시도와 주기 cache는 없다. 취소 시 진행 중 조회를 취소하고 worker를 모두 종료한다. Raw transport error·주소·인증 정보는 외부 오류에 노출하지 않는다.
+
+| Query status 또는 오류 | 관찰 동작 |
+| --- | --- |
+| `OK` | 대상이 직접 측정한 snapshot과 `observedAt` 반환 |
+| `UNREACHABLE` / `node_unreachable`, `node_query_timeout`, `node_not_running` | 측정값 없음; Node API는 상태 metadata를 반환 |
+| `UNSUPPORTED` / `node_query_unsupported` | capability가 없는 peer; RPC 전송 안 함 |
+| `RETIRED` | 측정값 없음; 오류 code 없음 |
+| `ERROR` / `node_query_busy`, `node_query_invalid_response`, `node_snapshot_too_large`, `node_query_failed` | 정제한 실패 code와 함께 미확인 처리 |
+| `metrics_collection_incomplete` | Aggregated JSON 또는 cluster text의 하나 이상 대상 실패; retryable 503 |
+| `metrics_snapshot_too_large`, `metrics_aggregation_failed` | 64 MiB 한도 또는 schema·reduction 실패; retryable 503 |
+
 
 ## 8. Dashboard 계약
 
@@ -349,8 +375,8 @@ Dashboard는 외부 시계열 원본인 Prometheus와 snapshot용 Management API
 | 2 | 클러스터 상태 | Replica 부족 | UI-02 | stat | 같은 API의 `underReplicated`; 0은 초록색, 1 이상은 빨간색 |
 | 3 | 클러스터 상태 | Leader | UI-02 | stat | 같은 API의 decimal string `leaderNodeId`; Grafana에서 숫자로 표시하고 `null`은 빨간색 `없음` |
 | 4 | 클러스터 상태 | Member·Quorum | UI-02 | stat | 같은 API의 `memberCount`, `quorumSize`, `replicationFactor`, `writeQuorum` |
-| 5 | 클러스터 상태 | Node 상태 수 | UI-01 | stat | 같은 API의 `nodesByState.ready`, `joining`, `draining`, `safeToStop` |
-| 6 | 클러스터 상태 | Node topology | UI-01 | table | Management API `GET /api/v1/nodes?limit=1000`; `nodeId`, `role`, `version`, `uptimeMillis`, `state`, `ready`, `readinessReason`, `replicationHealth`, `storagePressure`, `connectionCount`, `lastAppliedIndex`. `READY`는 초록색, `JOINING`은 노란색, `DRAINING`은 주황색, `SAFE_TO_STOP`은 파란색이며 `ready=false` 또는 replication health `DEGRADED`·`FAILED`·`UNREACHABLE`은 빨간색 |
+| 5 | 클러스터 상태 | Node 상태 수 | UI-01 | stat | 같은 API의 `nodesByState.ready`, `joining`, `draining`, `safeToStop`, `unknown`, `nodeQueryComplete`; `nodeQueryComplete=true`는 초록 `완료`, false는 주황 `일부 미확인` |
+| 6 | 클러스터 상태 | Node topology | UI-01 | table | Management API `GET /api/v1/nodes?limit=1000`; `nodeId`, `membershipPhase`, `queryStatus`, `queryErrorCode`, `observedAt`와 nullable 측정 field. Query status와 null을 아래 DASH-01 mapping으로 표시한다 |
 | 7 | Traffic | 연결·session·subscription | UI-03 | timeseries | Prometheus: `sum(narumq_connections_active{node_id=~"$node"})`, `sum(narumq_sessions_active{node_id=~"$node"})`, `max(narumq_subscriptions_active{node_id=~"$node"})` |
 | 8 | Traffic | Message rate | UI-03 | timeseries | Prometheus: 수신 `sum(rate(narumq_packets_received_total{packet_type="PUBLISH",node_id=~"$node"}[$__rate_interval]))`; 송신은 `narumq_packets_sent_total`로 같은 식 |
 | 9 | Traffic | Protocol별 CONNECT 성공 | UI-03 | timeseries | Prometheus: `sum by (protocol) (rate(narumq_connections_total{result="success",node_id=~"$node"}[$__rate_interval]))` |
@@ -363,7 +389,8 @@ Dashboard는 외부 시계열 원본인 Prometheus와 snapshot용 Management API
 
 ### DASH-01: Node topology and readiness
 
-UI-01은 panel 5와 6에서 다룬다. 수용 시험은 세 broker process 각각의 `/health/ready`가 `200`을 반환하는지 확인한다. `GET /api/v1/nodes`는 요청을 받은 node의 readiness를 제공한다. 원격 node는 `JOINING`과 `remote readiness is not available from this node`를 반환한다. Dashboard는 이 응답을 그대로 표시하고 원격 readiness를 추정하지 않는다.
+UI-01은 panel 5와 6에서 다룬다. 세 node가 정상 조회되면 실제 상태와 함께 Ready=3, Joining=0, Unknown=0, `nodeQueryComplete=true`를 표시한다. Raft quorum은 있지만 대상 readiness proof가 실패하면 `queryStatus=OK`, `ready=false`인 실제 not-ready 상태다. 조회 불가 시 해당 row는 `UNREACHABLE`과 null measurement를 표시하고 cluster `unknown` 수를 올리며 `nodeQueryComplete=false`를 표시한다. Dashboard는 null을 0 또는 `JOINING`으로 바꾸지 않는다.
+Panel 6은 사용자가 readiness 원인을 먼저 볼 수 있도록 `Node`, `State`, `Ready`, `Readiness reason`, `Query status`, `Query error`, `Membership`, `Role`, `Replication` 순서로 표시한다. 나머지 snapshot field는 그 뒤에 둔다. Override matcher는 selector가 아니라 실제 column `State`, `Ready`, `Replication`, `Query status`를 사용한다. State `READY`는 초록, `JOINING`은 노랑, `DRAINING`은 주황, `SAFE_TO_STOP`은 파랑, null은 회색 `미확인`이다. Ready true는 초록 `READY`, false는 빨강 `NOT READY`, null은 회색 `미확인`이다. Replication `HEALTHY`는 초록, `DEGRADED`·`FAILED`는 빨강, null은 회색 `미확인`이다. Query status `OK`는 초록 `조회 성공`, `UNREACHABLE`은 주황 `조회 불가`, `UNSUPPORTED`는 회색 `조회 미지원`, `RETIRED`는 회색 `퇴역`, `ERROR`는 주황 `조회 오류`다. Null 숫자는 `—`로 표시하며 0으로 변환하지 않는다.
 
 ### DASH-02: Quorum and replication
 
@@ -406,9 +433,14 @@ Panel 14의 속도 단위는 연결/초와 takeover/초이며 ETA 단위는 초�
 - SEC-10 설정·credential, 4-role permission matrix, OIDC 정적 subject binding과 audit query: `cmd/narumq/cluster_config_test.go`, `internal/adapters/authentication/jwt_verifier_test.go`, `internal/adapters/http/management/auth_test.go`, `internal/application/audit/query_test.go`, `internal/adapters/auditlog/query_test.go`, `internal/adapters/http/management/audit_query_handlers_test.go`, `tests/contracts/management-api-v1/contract_test.go::TestAuditQueryHandlerResponsesMatchOpenAPI`, `tests/contracts/audit-event-v1/contract_test.go::TestAuditQueryReturnsStoredChainRecords`, `tests/integration/cluster_management_rbac_process_test.go::TestDynamicClusterManagementRBACProcessAcceptance`.
 - API-09 G7 configuration query와 TEN-08 policy quota는 [Configuration §6 CFG-SCN-31~38](configuration-and-runtime-options.md#6-수용-시험) 및 [G7 실행 기록](configuration-and-runtime-options.md#g7-config-view-and-tenant-quotas-execution)에 연결한다. Contract test는 설정 응답 schema와 secret redaction, node-local 404/409, policy quota feature gate를 확인한다. Process acceptance는 3-node policy precedence와 legacy fallback을 확인한다.
 - UI-01~UI-05·UI-10 Dashboard contract와 process acceptance: `tests/integration/dashboard_stack_test.go::TestDashboardProvisioningMatchesContracts`, `tests/integration/dashboard_stack_test.go::TestDashboardStackProcessAcceptance`.
+- UI-01 node observability acceptance: `internal/application/observability/service_test.go::TestNodeListPreservesMeasuredNotReadyStatus`, `tests/contracts/management-api-v1/contract_test.go`, `tests/integration/cluster_observability_process_test.go::TestDynamicClusterObservabilityProcessAcceptance`, `tests/integration/dashboard_stack_test.go::TestDashboardStackProcessAcceptance`. Tests verify measured `ready=false`, healthy follower snapshots, unreachable-node null fields, cluster `unknown` aggregation, partial JSON metrics, and aggregate/text scrape failure.
 - Dashboard 수용 시험 결과(2026-10-09): `TestDashboardProvisioningMatchesContracts`와 opt-in Docker E2E `TestDashboardStackProcessAcceptance`가 통과했다. E2E 실행은 `NARUMQ_DASHBOARD_E2E=1`, `NARUMQ_DASHBOARD_E2E_HOLD=90s` 조건에서 test 229.14초, package 230.254초였다. 세 process의 `/health/ready` `200`, Prometheus target 3개, datasource health 2개, ReadOnly cluster GET `200`, backup·drain POST `403`, cluster traffic·protocol Metric과 완료된 drain 결과를 확인했다. Grafana `/api/ds/query`가 panel 2, 4, 5, 6, 15의 frame을 반환했다. Replica 부족은 `0`, Member·Quorum은 `3/2/3/2`, node 상태 수는 `Ready=1`·`Joining=2`, node topology는 local `READY`와 원격 node의 `JOINING`·정확한 readiness reason, drain 상세는 `COMPLETED`·`SAFE_TO_STOP`·`safeToStop=true`·remaining `0`·takeover `1`을 표시했다. Node별 query에서는 node 1 connection·received PUBLISH rate와 MQTT 3.1.1 성공, node 2 sent PUBLISH rate와 MQTT 5.0 성공·같은 series의 `not_authorized` 거절을 확인했다. 성공 protocol label은 선택한 node 밖에서 나오지 않았다.
 - Dashboard named API key regression (2026-10-10): opt-in Docker E2E `TestDashboardStackProcessAcceptance`가 새 `management.apiKeys` 설정에서 통과했다. `NARUMQ_DASHBOARD_E2E=1`, `NARUMQ_DASHBOARD_E2E_HOLD=90s` 실행에서 test는 228.46초, package는 229.503초였다. ReadOnly credential로 cluster GET을 통과하고 backup·drain POST를 거절하는 acceptance가 통과했다.
 - EKS dashboard acceptance 결과(2026-10-13): EKS `narumq-eks`의 3 broker pod가 3개 AZ에 걸쳐 실행 중이다. Grafana Management API datasource의 `/api/v1/cluster` 요청은 HTTP `200`을 반환했고 panel 1/2에 live cluster data frame(`quorumAvailable=true`, `memberCount=3`, `underReplicated=0`)이 표시됐다. 그러나 Prometheus scrape target은 `up=0`이며 `net/http: invalid header field value for "X-Api-Key"` 오류를 보고했고, time-series metric panel 7은 empty frame을 반환했다. 따라서 overall live dashboard acceptance는 계속 open이다.
+- EKS 제한 수정 실행 기록(2026-10-14): binary API key·consumer 불일치를 문자열 key와 전체 재배포로 해결했다. 관측 RPC를 포함한 ARM64 image로 세 broker를 교체했다. 최종 세 node는 `OK/READY`, cluster는 `Ready=3/Unknown=0`, quorum 정상·replica 부족 `0`이다. Prometheus target 3개 `UP`, Grafana datasource 2개 `OK`, 실제 topology 화면과 panel 7 시계열 frame을 확인했다. 실행 환경·image digest·종료 hook 수정·보안 처리·초기 실패와 검증 범위는 [EKS 재배포 실행 기록](../how-to/operations-dashboard.md#eks-재배포-실행-기록-2026-10-14)에 둔다. 기존 header 오류의 live 통합 gate는 통과했다. Production 최대 부하·보안 운영 승인은 포함하지 않는다.
+- Node observability 실행 기록(2026-10-14): `GOMAXPROCS=2 GOFLAGS=-p=1 go test ./internal/application/observability ./internal/adapters/http/management ./tests/contracts/management-api-v1 -count=1` 통과. `GOMAXPROCS=2 GOFLAGS=-p=1 go test ./tests/integration -run '^TestDynamicClusterObservabilityProcessAcceptance$' -parallel=1 -count=1 -v`도 통과했다(시험 9.41초). 정상 3-node 조회, 강제 종료한 node의 `UNREACHABLE`·null measurement, `unknown=1`, partial unaggregated JSON, aggregated JSON·cluster text의 `503 metrics_collection_incomplete`를 확인했다.
+- Dashboard topology mapping 실행 기록(2026-10-14): `GOMAXPROCS=4 GOFLAGS=-p=1 go test ./tests/integration -run '^TestDashboardProvisioningMatchesContracts$' -parallel=1 -count=1 -v` 통과했다. 첫 opt-in E2E 시도는 `/api/ds/query`의 raw boolean `nodeQueryComplete`를 숫자로 읽는 test assertion 때문에 실패했다. Assertion을 boolean으로 수정했다. Browser에서 정상 조회(`Ready=3`, `조회 완료=완료`), node 3의 not-ready 상태(`SAFE_TO_STOP`, `NOT READY`, `조회 성공`), 조회 불가 상태(`미확인`, `조회 불가`, `node_unreachable`, `unknown=1`, 일부 미확인)를 확인했다. 오른쪽 열에서 null `Replication`이 회색 `미확인`으로 표시되는 것도 확인했다. 수정 후 opt-in Docker E2E `GOMAXPROCS=4 GOFLAGS=-p=1 NARUMQ_DASHBOARD_E2E=1 NARUMQ_DASHBOARD_E2E_HOLD=15s go test ./tests/integration -run '^TestDashboardStackProcessAcceptance$' -parallel=1 -count=1 -v` 통과했다(시험 205.86초, package 207.727초).
+- 전체 local gate 실행 기록(2026-10-14): 첫 `GOMAXPROCS=4 GOFLAGS=-p=1 go run ./tools/verify local` 실행은 `TestDynamicClusterDurableQoSBackupRestoreProcessAcceptance`에서 `compact WAL: replace WAL: Access is denied` 오류로 중단됐다. 같은 test를 `-parallel=1`로 실행해 통과(14.97초)한 뒤 전체 gate를 다시 실행해 통과했다(551.79초). Branch instrumentation, traceability(P0 71/81 매핑·예외 10), architecture, fuzz, package·integration 시험과 coverage 검증을 완료했다.
 - Dashboard visual 결과(2026-10-09): browser에서 Quorum `정상`, replica 부족 `0`, Leader `1`, Members `3`, quorum size `2`, replication factor `3`, write quorum `2`를 확인했다. Node topology는 node 1 `READY`, node 2 `JOINING`과 `remote readiness is not available from this node`, node 3 `SAFE_TO_STOP`을 표시했다. `Node=2` 선택 화면에서 Connections, Sent PUBLISH, MQTT 5.0 CONNECT 성공과 CONNECT 거절 panel을 확인했다. Node load에는 세 node가 보였다. Drain panel에는 node 3 `connections_initial=1`, `connections_remaining=0`, `sessions_taken_over=1`, 상세 단계 `COMPLETED`, 상태 `SAFE_TO_STOP`, `safeToStop=true`가 표시됐다. Browser error와 console error는 없었다. CI 실행 링크와 production deployment 검증은 없다.
 - P0 traceability gate (2026-10-09): `go run ./tools/verify traceability` PASS. UI-01~UI-05·UI-10이 test에 연결됐고, 전체 P0는 66/81건 매핑·15건 예외다.
 - SEC-10 traceability gate (2026-10-10): `go run ./tools/verify traceability` PASS. P0 요구사항 81개 중 68개가 시험에 연결됐고 예외 13개가 남았다. SEC-10은 16개 시험에 연결됐으며 예외에 없다.

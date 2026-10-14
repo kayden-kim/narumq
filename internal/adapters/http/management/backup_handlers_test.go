@@ -28,7 +28,11 @@ func (stub *clusterBackupProviderStub) CaptureClusterBackup(context.Context) (po
 }
 
 func newBackupHTTPTestHandler(provider ports.ClusterBackupProvider, role Role) http.Handler {
-	return newRouter(ServerConfig{APIKeys: []APIKeyCredential{{ID: "test", Key: "cluster-secret", Roles: []Role{role}}}, ClusterID: "test-cluster"},
+	return newRouter(ServerConfig{
+		APIKeys:       []APIKeyCredential{{ID: "test", Key: "cluster-secret", Roles: []Role{role}}},
+		ClusterID:     "test-cluster",
+		Observability: successHTTPObservabilityStub(),
+	},
 		&mockStateProvider{}, nil, nil, nil, nil, nil, provider, &spyAuditUseCase{}, nil, nil, nil, nil, nil)
 }
 
@@ -97,9 +101,10 @@ func TestClusterBackupHTTPRequiresClusterAdmin(t *testing.T) {
 func TestReadOnlyAPIKeyCanReadButCannotCreateBackup(t *testing.T) {
 	provider := &clusterBackupProviderStub{backup: ports.ClusterBackupDTO{CommitIndex: 42}}
 	handler := NewRouterWithMembership(ServerConfig{
-		AuthToken: "admin-secret",
-		APIKeys:   []APIKeyCredential{{ID: "dashboard", Key: "read-only-secret", Roles: []Role{RoleReadOnly}}},
-		ClusterID: "test-cluster",
+		AuthToken:     "admin-secret",
+		APIKeys:       []APIKeyCredential{{ID: "dashboard", Key: "read-only-secret", Roles: []Role{RoleReadOnly}}},
+		ClusterID:     "test-cluster",
+		Observability: successHTTPObservabilityStub(),
 	},
 		&mockStateProvider{}, nil, adaptersmetrics.NewRegistry(), nil, nil, nil, provider, &spyAuditUseCase{}, nil, nil, nil, nil, nil)
 

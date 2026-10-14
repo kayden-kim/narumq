@@ -228,9 +228,11 @@ extractor에 제공한다.
 
 TCP/TLS listener에서 Server는 `*tls.Conn`을 받는다. WSS는 WebSocket connection의
 `ConnectionState`를 통해 기존 verified client certificate 추출 경로를 유지한다. Clock은
-composition root에서 `clock.SystemClock`으로 제공한다. Metric port의 구현은
-`internal/adapters/metrics/registry.go`의 `Registry`다. 이 두 의존성은 adapter에서
-application-owned port를 향하며 domain에는 socket이나 limiter 의존성을 추가하지 않는다.
+composition root에서 `clock.SystemClock`으로 제공한다. Metric port는
+`internal/application/ports/metrics`가 소유한다. `internal/adapters/metrics/registry.go`가
+기록 기능을 맡고, `registry_snapshot.go`가 같은 `VisitMetrics` visitor로 Prometheus text와
+typed snapshot을 만든다. Adapter는 application port 쪽으로 의존하며 domain에는 socket이나
+limiter 의존성을 추가하지 않는다.
 
 ## Application-owned port
 

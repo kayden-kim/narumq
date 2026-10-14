@@ -1945,7 +1945,7 @@ func TestCptDynamicAdmissionAbortsWhenLocalIdentityChanges(t *testing.T) {
 	}
 }
 
-func TestCptDynamicInboundConnectionsAreBoundedByPeerSlots(t *testing.T) {
+func TestCptDynamicInboundConnectionsAreBoundedByPeerAndObservationSlots(t *testing.T) {
 	server := cptNewNode(t, "seed.example")
 	client := cptNewNode(t, "node4.example")
 	cptTrustEachOther(server, client)
@@ -1954,17 +1954,26 @@ func TestCptDynamicInboundConnectionsAreBoundedByPeerSlots(t *testing.T) {
 	cptServe(t, transport.Serve)
 	address := listener.Addr().String()
 
-	held, err := tls.Dial("tcp", address, client.dialConfig(server.dnsName))
-	if err != nil {
-		t.Fatalf("dial admission slot: %v", err)
+	inboundLimit := 1 + dynamicObservabilitySlots
+	held := make([]*tls.Conn, 0, inboundLimit)
+	for range inboundLimit {
+		connection, err := tls.Dial("tcp", address, client.dialConfig(server.dnsName))
+		if err != nil {
+			t.Fatalf("dial inbound connection within the admission and observation slots: %v", err)
+		}
+		held = append(held, connection)
 	}
 	if overflow, err := tls.Dial("tcp", address, client.dialConfig(server.dnsName)); err == nil {
 		_ = overflow.Close()
-		_ = held.Close()
-		t.Fatal("inbound connection beyond the admission slot completed a TLS handshake")
+		for _, connection := range held {
+			_ = connection.Close()
+		}
+		t.Fatal("inbound connection beyond the admission and observation slots completed a TLS handshake")
 	}
-	_ = held.Close()
-	cptWaitUntil(t, "released admission slot", func() bool {
+	for _, connection := range held {
+		_ = connection.Close()
+	}
+	cptWaitUntil(t, "released admission and observation slots", func() bool {
 		connection, err := tls.Dial("tcp", address, client.dialConfig(server.dnsName))
 		if err != nil {
 			return false

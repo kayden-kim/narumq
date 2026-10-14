@@ -4,10 +4,7 @@ import (
 	"bufio"
 	"fmt"
 	"math"
-	"os"
-	"path/filepath"
 	"regexp"
-	"runtime"
 	"sort"
 	"strconv"
 	"strings"
@@ -17,133 +14,70 @@ import (
 	ports "narumq/internal/application/ports/metrics"
 )
 
-type aggregationCatalogEntry struct {
-	Name        string
-	Type        string
-	Scope       string
-	Aggregation string
-	Labels      []string
-}
-
 var aggregationMetricNamePattern = regexp.MustCompile(`^narumq_[a-z0-9_]+$`)
 var expositionSamplePattern = regexp.MustCompile(`^([a-zA-Z_:][a-zA-Z0-9_:]*)(?:\{(.*)\})? (\S+)$`)
 
-func aggregationCatalogPath(t *testing.T) string {
-	t.Helper()
-	_, source, _, ok := runtime.Caller(0)
-	if !ok {
-		t.Fatal("runtime.Caller failed")
-	}
-	return filepath.Clean(filepath.Join(filepath.Dir(source), "..", "..", "..", "docs", "specs", "management-api-and-observability.md"))
-}
+type aggregationCatalogEntry = ports.MetricDescriptorDTO
 
 func loadAggregationCatalog(t *testing.T) map[string]aggregationCatalogEntry {
 	t.Helper()
-	file, err := os.Open(aggregationCatalogPath(t))
-	if err != nil {
-		t.Fatalf("open aggregation catalog: %v", err)
-	}
-	defer file.Close()
-
-	var lines []string
-	scanner := bufio.NewScanner(file)
-	for scanner.Scan() {
-		lines = append(lines, scanner.Text())
-	}
-	if err := scanner.Err(); err != nil {
-		t.Fatalf("read aggregation catalog: %v", err)
-	}
-
-	const header = "| Metric | Type | Label | 범위 | Cluster 집계 |"
-	headerIndex := -1
-	headerCount := 0
-	for index, line := range lines {
-		if strings.TrimSpace(line) == header {
-			headerIndex = index
-			headerCount++
-		}
-	}
-	if headerCount != 1 {
-		t.Fatalf("aggregation catalog header count = %d, want 1", headerCount)
-	}
-	if headerIndex+1 >= len(lines) {
-		t.Fatal("aggregation catalog has no table separator")
-	}
-
 	catalog := make(map[string]aggregationCatalogEntry)
-	for index := headerIndex + 2; index < len(lines); index++ {
-		line := strings.TrimSpace(lines[index])
-		if !strings.HasPrefix(line, "|") {
-			break
-		}
-		cells := strings.Split(strings.Trim(line, "|"), "|")
-		if len(cells) != 5 {
-			t.Errorf("aggregation catalog row %d has %d cells, want 5: %q", index+1, len(cells), line)
-			continue
-		}
-		for cellIndex := range cells {
-			cells[cellIndex] = strings.Trim(strings.TrimSpace(cells[cellIndex]), "`")
-		}
-
-		entry := aggregationCatalogEntry{
-			Name:        cells[0],
-			Type:        cells[1],
-			Scope:       cells[3],
-			Aggregation: cells[4],
-		}
-		if cells[2] != "-" {
-			for _, label := range strings.Split(cells[2], ",") {
-				entry.Labels = append(entry.Labels, strings.Trim(strings.TrimSpace(label), "`"))
-			}
-		}
-
+	for _, descriptor := range ports.MetricCatalog() {
+		entry := descriptor
 		if !aggregationMetricNamePattern.MatchString(entry.Name) {
 			t.Errorf("%s: metric name must match ^narumq_[a-z0-9_]+$", entry.Name)
 		}
 		if _, exists := catalog[entry.Name]; exists {
 			t.Errorf("%s: duplicate metric family", entry.Name)
 		}
-		if entry.Type != "counter" && entry.Type != "gauge" && entry.Type != "histogram" {
+		switch entry.Type {
+		case ports.MetricTypeCounter, ports.MetricTypeGauge, ports.MetricTypeHistogram:
+		default:
 			t.Errorf("%s: unknown metric type %q", entry.Name, entry.Type)
 		}
-		if entry.Scope != "node" && entry.Scope != "replicated" && entry.Scope != "leader" {
+		switch entry.Scope {
+		case ports.MetricScopeNode, ports.MetricScopeReplicated, ports.MetricScopeLeader:
+		default:
 			t.Errorf("%s: unknown metric scope %q", entry.Name, entry.Scope)
 		}
-		if entry.Aggregation != "increase_sum" && entry.Aggregation != "sum" && entry.Aggregation != "max" &&
-			entry.Aggregation != "per_node" && entry.Aggregation != "bucket_sum" {
+		switch entry.Aggregation {
+		case ports.MetricAggregationIncreaseSum, ports.MetricAggregationSum, ports.MetricAggregationMax,
+			ports.MetricAggregationPerNode, ports.MetricAggregationBucketSum:
+		default:
 			t.Errorf("%s: unknown cluster aggregation %q", entry.Name, entry.Aggregation)
 		}
 
 		switch entry.Type {
-		case "counter":
+		case ports.MetricTypeCounter:
 			if !strings.HasSuffix(entry.Name, "_total") {
 				t.Errorf("%s: counter names must end in _total", entry.Name)
 			}
-			if entry.Scope != "node" || entry.Aggregation != "increase_sum" {
+			if entry.Scope != ports.MetricScopeNode || entry.Aggregation != ports.MetricAggregationIncreaseSum {
 				t.Errorf("%s: counter requires scope node and aggregation increase_sum", entry.Name)
 			}
-		case "histogram":
-			if entry.Scope != "node" || entry.Aggregation != "bucket_sum" {
+		case ports.MetricTypeHistogram:
+			if entry.Scope != ports.MetricScopeNode || entry.Aggregation != ports.MetricAggregationBucketSum {
 				t.Errorf("%s: histogram requires scope node and aggregation bucket_sum", entry.Name)
 			}
 			if strings.HasSuffix(entry.Name, "_total") {
 				t.Errorf("%s: histogram names must not end in _total", entry.Name)
 			}
-			if containsString(entry.Labels, "le") {
+			if containsString(entry.LabelNames, "le") {
 				t.Errorf("%s: histogram catalog labels must not include le", entry.Name)
 			}
-		case "gauge":
-			if entry.Aggregation != "sum" && entry.Aggregation != "max" && entry.Aggregation != "per_node" {
+		case ports.MetricTypeGauge:
+			if entry.Aggregation != ports.MetricAggregationSum && entry.Aggregation != ports.MetricAggregationMax &&
+				entry.Aggregation != ports.MetricAggregationPerNode {
 				t.Errorf("%s: gauge aggregation must be sum, max, or per_node", entry.Name)
 			}
 			if strings.HasSuffix(entry.Name, "_total") {
 				t.Errorf("%s: gauge names must not end in _total", entry.Name)
 			}
 		}
-		if entry.Aggregation == "sum" && entry.Scope != "node" {
+		if entry.Aggregation == ports.MetricAggregationSum && entry.Scope != ports.MetricScopeNode {
 			t.Errorf("%s: sum requires scope node", entry.Name)
 		}
-		if entry.Scope == "leader" && entry.Aggregation != "max" {
+		if entry.Scope == ports.MetricScopeLeader && entry.Aggregation != ports.MetricAggregationMax {
 			t.Errorf("%s: leader scope requires aggregation max", entry.Name)
 		}
 		catalog[entry.Name] = entry
@@ -197,6 +131,7 @@ type expositionSample struct {
 
 type expositionFamily struct {
 	Type    string
+	Help    string
 	Samples []expositionSample
 }
 
@@ -206,6 +141,7 @@ func parseExposition(t *testing.T, text string) map[string]*expositionFamily {
 	scanner := bufio.NewScanner(strings.NewReader(text))
 	currentFamily := ""
 	lastHelpName := ""
+	lastHelpValue := ""
 	for scanner.Scan() {
 		line := strings.TrimSpace(scanner.Text())
 		if line == "" {
@@ -213,6 +149,7 @@ func parseExposition(t *testing.T, text string) map[string]*expositionFamily {
 		}
 		if line == "# EOF" {
 			lastHelpName = ""
+			lastHelpValue = ""
 			continue
 		}
 		if strings.HasPrefix(line, "# HELP ") {
@@ -220,9 +157,11 @@ func parseExposition(t *testing.T, text string) map[string]*expositionFamily {
 			if len(parts) != 2 || strings.TrimSpace(parts[1]) == "" {
 				t.Errorf("malformed or empty HELP line %q", line)
 				lastHelpName = ""
+				lastHelpValue = ""
 				continue
 			}
 			lastHelpName = parts[0]
+			lastHelpValue = parts[1]
 			continue
 		}
 		if strings.HasPrefix(line, "# TYPE ") {
@@ -230,6 +169,7 @@ func parseExposition(t *testing.T, text string) map[string]*expositionFamily {
 			if len(parts) != 2 {
 				t.Errorf("malformed TYPE line %q", line)
 				lastHelpName = ""
+				lastHelpValue = ""
 				continue
 			}
 			name, metricType := parts[0], parts[1]
@@ -239,19 +179,23 @@ func parseExposition(t *testing.T, text string) map[string]*expositionFamily {
 			if _, exists := families[name]; exists {
 				t.Errorf("%s: duplicate TYPE family", name)
 				lastHelpName = ""
+				lastHelpValue = ""
 				continue
 			}
-			families[name] = &expositionFamily{Type: metricType}
+			families[name] = &expositionFamily{Type: metricType, Help: lastHelpValue}
 			currentFamily = name
 			lastHelpName = ""
+			lastHelpValue = ""
 			continue
 		}
 		if strings.HasPrefix(line, "#") {
 			t.Errorf("unexpected exposition comment %q", line)
 			lastHelpName = ""
+			lastHelpValue = ""
 			continue
 		}
 		lastHelpName = ""
+		lastHelpValue = ""
 
 		parts := expositionSamplePattern.FindStringSubmatch(line)
 		if parts == nil {
@@ -397,15 +341,18 @@ func TestRegistryFamiliesMatchAggregationCatalog(t *testing.T) {
 				if !exists {
 					continue
 				}
-				if family.Type != entry.Type {
+				if family.Help != entry.Help {
+					t.Errorf("%s: HELP = %q, catalog help = %q", name, family.Help, entry.Help)
+				}
+				if family.Type != string(entry.Type) {
 					t.Errorf("%s: TYPE = %q, catalog type = %q", name, family.Type, entry.Type)
 				}
 				if len(family.Samples) == 0 {
 					t.Errorf("%s: family has no samples", name)
 				}
 				for _, sample := range family.Samples {
-					expectedLabels := append([]string(nil), entry.Labels...)
-					if entry.Type == "histogram" && strings.HasSuffix(sample.Name, "_bucket") {
+					expectedLabels := append([]string(nil), entry.LabelNames...)
+					if entry.Type == ports.MetricTypeHistogram && sample.Name == name+"_bucket" {
 						expectedLabels = append(expectedLabels, "le")
 					}
 					actualLabels := sortedLabelNames(sample.Labels)
@@ -417,7 +364,7 @@ func TestRegistryFamiliesMatchAggregationCatalog(t *testing.T) {
 						t.Errorf("%s sample %q has invalid value %v", name, sample.Name, sample.Value)
 					}
 				}
-				if entry.Type == "histogram" {
+				if entry.Type == ports.MetricTypeHistogram {
 					validateHistogramBuckets(t, name, family)
 				}
 			}

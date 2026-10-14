@@ -1416,8 +1416,9 @@ func clusterMembershipProcessAssertVotersAndRetired(t *testing.T, ctx context.Co
 		}
 		var envelope struct {
 			Data []struct {
-				NodeID string `json:"nodeId"`
-				Role   string `json:"role"`
+				NodeID          string `json:"nodeId"`
+				MembershipPhase string `json:"membershipPhase"`
+				QueryStatus     string `json:"queryStatus"`
 			} `json:"data"`
 		}
 		if err := json.Unmarshal(body, &envelope); err != nil {
@@ -1426,13 +1427,12 @@ func clusterMembershipProcessAssertVotersAndRetired(t *testing.T, ctx context.Co
 		var voterIDs []string
 		foundRetired := false
 		for _, node := range envelope.Data {
-			switch node.Role {
-			case "LEADER", "FOLLOWER":
+			if node.MembershipPhase == "VOTER" {
 				voterIDs = append(voterIDs, node.NodeID)
-			case "RETIRED":
-				if node.NodeID == wantRetired {
-					foundRetired = true
-				}
+			}
+			if node.NodeID == wantRetired && node.MembershipPhase == "RETIRED" &&
+				node.QueryStatus == "RETIRED" {
+				foundRetired = true
 			}
 		}
 		sort.Strings(voterIDs)

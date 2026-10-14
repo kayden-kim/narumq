@@ -24,8 +24,8 @@ func TestResolveBuildIdentity(t *testing.T) {
 			wantRelease: "1.2.3", wantFeatures: []string{"alpha", "compatibility-probe", "zeta"},
 		},
 		{
-			name: "advertises replicated policy, tenant quotas, credential revocation, and client blocklist by default", release: "1.2.3", wantRelease: "1.2.3",
-			wantFeatures: []string{"client-blocklist", "cluster-policy", "cluster-policy-tenant-quotas", "credential-revocation"},
+			name: "advertises replicated policy, tenant quotas, credential revocation, client blocklist, and observability by default", release: "1.2.3", wantRelease: "1.2.3",
+			wantFeatures: []string{"client-blocklist", "cluster-observability-v1", "cluster-policy", "cluster-policy-tenant-quotas", "credential-revocation"},
 		},
 		{name: "invalid release", release: "01.2.3", wantError: true},
 		{name: "empty feature token", release: "1.2.3", features: "alpha,,zeta", wantError: true},

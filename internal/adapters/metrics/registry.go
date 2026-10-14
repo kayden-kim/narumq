@@ -2,7 +2,6 @@ package metrics
 
 import (
 	"bytes"
-	"fmt"
 	"math"
 	"sort"
 	"strings"
@@ -23,6 +22,25 @@ const (
 type tenantQuotaMetricKey struct {
 	tenantID  string
 	dimension string
+}
+type connectionMetricKey struct {
+	protocol  string
+	transport string
+	result    string
+}
+
+type packetMetricKey struct {
+	packetType string
+}
+
+type authAttemptMetricKey struct {
+	method string
+	result string
+	reason string
+}
+
+type nodeDrainMetricKey struct {
+	phase string
 }
 
 type tenantQuotaMetricEntry struct {
@@ -172,10 +190,12 @@ type NodeDrainProgress struct {
 type Registry struct {
 	mu sync.RWMutex
 
+	startedAt           time.Time
+	metricCatalog       []ports.MetricDescriptorDTO
 	subscriptionCounter SubscriptionCounter
 
 	connectionsActive atomic.Int64
-	connectionsTotal  map[string]*atomic.Int64 // key: protocol,transport,result
+	connectionsTotal  map[connectionMetricKey]*atomic.Int64
 
 	sessionsActivePersistent    atomic.Int64
 	sessionsActiveNonPersistent atomic.Int64
@@ -183,12 +203,12 @@ type Registry struct {
 	retainedMessages atomic.Int64
 	retainedBytes    atomic.Int64
 
-	packetsReceivedTotal          map[string]*atomic.Int64 // key: packetType
-	packetsSentTotal              map[string]*atomic.Int64 // key: packetType
-	authAttemptsTotal             map[string]*atomic.Int64 // key: method,result,reason
+	packetsReceivedTotal          map[packetMetricKey]*atomic.Int64
+	packetsSentTotal              map[packetMetricKey]*atomic.Int64
+	authAttemptsTotal             map[authAttemptMetricKey]*atomic.Int64
 	connectRejectedTotal          atomic.Int64
 	connectRejectedByProtocol     [len(connectRejectedProtocols)][len(connectRejectReasons)]atomic.Uint64
-	nodeDrainTransitions          map[string]*atomic.Int64
+	nodeDrainTransitions          map[nodeDrainMetricKey]*atomic.Int64
 	messageDrops                  [len(messageDropReasons)]atomic.Uint64
 	nodeDrainActive               atomic.Bool
 	nodeDrainProgress             [len(nodeDrainProgressQuantities)]atomic.Uint64
@@ -223,11 +243,13 @@ type Registry struct {
 // NewRegistry initializes an empty Registry.
 func NewRegistry() *Registry {
 	return &Registry{
-		connectionsTotal:      make(map[string]*atomic.Int64),
-		packetsReceivedTotal:  make(map[string]*atomic.Int64),
-		packetsSentTotal:      make(map[string]*atomic.Int64),
-		authAttemptsTotal:     make(map[string]*atomic.Int64),
-		nodeDrainTransitions:  make(map[string]*atomic.Int64),
+		startedAt:             time.Now().UTC(),
+		metricCatalog:         ports.MetricCatalog(),
+		connectionsTotal:      make(map[connectionMetricKey]*atomic.Int64),
+		packetsReceivedTotal:  make(map[packetMetricKey]*atomic.Int64),
+		packetsSentTotal:      make(map[packetMetricKey]*atomic.Int64),
+		authAttemptsTotal:     make(map[authAttemptMetricKey]*atomic.Int64),
+		nodeDrainTransitions:  make(map[nodeDrainMetricKey]*atomic.Int64),
 		tenantQuotaRejections: make(map[tenantQuotaMetricKey]*atomic.Int64),
 		tenantLimitRejections: make(map[tenantQuotaMetricKey]*atomic.Int64),
 		tenantQuotaTenants:    make(map[string]struct{}),
@@ -243,22 +265,22 @@ var _ ports.WillOutcomeRecorder = (*Registry)(nil)
 var _ ports.AuditOutcomeRecorder = (*Registry)(nil)
 var _ ports.ListenerAdmissionRecorder = (*Registry)(nil)
 
-func (r *Registry) getCounter(m map[string]*atomic.Int64, key string) *atomic.Int64 {
+func getCounter[K comparable](r *Registry, counters map[K]*atomic.Int64, key K) *atomic.Int64 {
 	r.mu.RLock()
-	c, ok := m[key]
+	counter, exists := counters[key]
 	r.mu.RUnlock()
-	if ok {
-		return c
+	if exists {
+		return counter
 	}
 
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	if c, ok = m[key]; ok {
-		return c
+	if counter, exists = counters[key]; exists {
+		return counter
 	}
-	c = &atomic.Int64{}
-	m[key] = c
-	return c
+	counter = &atomic.Int64{}
+	counters[key] = counter
+	return counter
 }
 
 // ConnectionOpened increments active connections and total counter.
@@ -266,8 +288,8 @@ func (r *Registry) ConnectionOpened(protocol string, transport string) {
 	protocol = normalizeProtocol(protocol)
 	transport = normalizeTransport(transport)
 	r.connectionsActive.Add(1)
-	key := fmt.Sprintf(`protocol="%s",transport="%s",result="success"`, protocol, transport)
-	r.getCounter(r.connectionsTotal, key).Add(1)
+	key := connectionMetricKey{protocol: protocol, transport: transport, result: "success"}
+	getCounter(r, r.connectionsTotal, key).Add(1)
 }
 
 // ConnectionClosed decrements active connections and records a closed connection.
@@ -280,8 +302,8 @@ func (r *Registry) ConnectionClosed(protocol string, transport string) {
 			break
 		}
 	}
-	key := fmt.Sprintf(`protocol="%s",transport="%s",result="closed"`, protocol, transport)
-	r.getCounter(r.connectionsTotal, key).Add(1)
+	key := connectionMetricKey{protocol: protocol, transport: transport, result: "closed"}
+	getCounter(r, r.connectionsTotal, key).Add(1)
 }
 
 func normalizeProtocol(value string) string {
@@ -352,15 +374,15 @@ func normalizeAuthReason(value string) string {
 // PacketReceived increments packet received total counter.
 func (r *Registry) PacketReceived(packetType string) {
 	packetType = normalizePacketType(packetType)
-	key := fmt.Sprintf(`packet_type="%s"`, packetType)
-	r.getCounter(r.packetsReceivedTotal, key).Add(1)
+	key := packetMetricKey{packetType: packetType}
+	getCounter(r, r.packetsReceivedTotal, key).Add(1)
 }
 
 // PacketSent increments packet sent total counter.
 func (r *Registry) PacketSent(packetType string) {
 	packetType = normalizePacketType(packetType)
-	key := fmt.Sprintf(`packet_type="%s"`, packetType)
-	r.getCounter(r.packetsSentTotal, key).Add(1)
+	key := packetMetricKey{packetType: packetType}
+	getCounter(r, r.packetsSentTotal, key).Add(1)
 }
 
 // AuthAttempt increments auth attempts total counter.
@@ -371,8 +393,8 @@ func (r *Registry) AuthAttempt(method string, success bool, reason string) {
 		result = ports.AuthResultSuccess
 	}
 	reason = normalizeAuthReason(reason)
-	key := fmt.Sprintf(`method="%s",result="%s",reason="%s"`, method, result, reason)
-	r.getCounter(r.authAttemptsTotal, key).Add(1)
+	key := authAttemptMetricKey{method: method, result: result, reason: reason}
+	getCounter(r, r.authAttemptsTotal, key).Add(1)
 }
 
 // ConnectRejected increments a fixed-cardinality CONNECT rejection counter.
@@ -432,7 +454,7 @@ func (r *Registry) NodeDrainTransition(phase string) {
 	default:
 		return
 	}
-	r.getCounter(r.nodeDrainTransitions, fmt.Sprintf(`phase="%s"`, phase)).Add(1)
+	getCounter(r, r.nodeDrainTransitions, nodeDrainMetricKey{phase: phase}).Add(1)
 }
 
 // WillOutcome increments only a known final Will outcome.
@@ -611,233 +633,15 @@ func (r *Registry) ActiveConnections() int64 {
 	return v
 }
 
-// Render renders the metrics either in OpenMetrics format (isOpenMetrics=true) or Prometheus v0.0.4.
+// Render renders the metrics either in OpenMetrics format or Prometheus v0.0.4.
 func (r *Registry) Render(isOpenMetrics bool) []byte {
-	r.mu.RLock()
-	subscriptionCounter := r.subscriptionCounter
-	r.mu.RUnlock()
-	subscriptionCount := 0
-	if subscriptionCounter != nil {
-		subscriptionCount = subscriptionCounter.SubscriptionCount()
+	var buffer bytes.Buffer
+	visitor := textMetricVisitor{buffer: &buffer}
+	if err := r.VisitMetrics(&visitor); err != nil {
+		panic(err)
 	}
-
-	var buf bytes.Buffer
-
-	// 1. narumq_connections_active
-	fmt.Fprintf(&buf, "# HELP narumq_connections_active Current number of active client connections.\n")
-	fmt.Fprintf(&buf, "# TYPE narumq_connections_active gauge\n")
-	fmt.Fprintf(&buf, "narumq_connections_active %d\n", r.ActiveConnections())
-
-	// 2. narumq_connections_total
-	fmt.Fprintf(&buf, "# HELP narumq_connections_total Total client connection attempts.\n")
-	fmt.Fprintf(&buf, "# TYPE narumq_connections_total counter\n")
-	r.renderCounterMap(&buf, "narumq_connections_total", r.connectionsTotal)
-
-	// 3. narumq_sessions_active
-	fmt.Fprintf(&buf, "# HELP narumq_sessions_active Current number of active client sessions.\n")
-	fmt.Fprintf(&buf, "# TYPE narumq_sessions_active gauge\n")
-	fmt.Fprintf(&buf, "narumq_sessions_active{persistent=\"true\"} %d\n", r.sessionsActivePersistent.Load())
-	fmt.Fprintf(&buf, "narumq_sessions_active{persistent=\"false\"} %d\n", r.sessionsActiveNonPersistent.Load())
-
-	// 4. narumq_subscriptions_active
-	fmt.Fprintf(&buf, "# HELP narumq_subscriptions_active Current number of active subscriptions.\n")
-	fmt.Fprintf(&buf, "# TYPE narumq_subscriptions_active gauge\n")
-	fmt.Fprintf(&buf, "narumq_subscriptions_active %d\n", subscriptionCount)
-
-	// 5. narumq_retained_messages
-	fmt.Fprintf(&buf, "# HELP narumq_retained_messages Current number of retained messages.\n")
-	fmt.Fprintf(&buf, "# TYPE narumq_retained_messages gauge\n")
-	fmt.Fprintf(&buf, "narumq_retained_messages %d\n", r.retainedMessages.Load())
-
-	// 6. narumq_retained_bytes
-	fmt.Fprintf(&buf, "# HELP narumq_retained_bytes Total bytes stored by retained messages.\n")
-	fmt.Fprintf(&buf, "# TYPE narumq_retained_bytes gauge\n")
-	fmt.Fprintf(&buf, "narumq_retained_bytes %d\n", r.retainedBytes.Load())
-
-	// 7. narumq_packets_received_total
-	fmt.Fprintf(&buf, "# HELP narumq_packets_received_total Total MQTT packets received by packet type.\n")
-	fmt.Fprintf(&buf, "# TYPE narumq_packets_received_total counter\n")
-	r.renderCounterMap(&buf, "narumq_packets_received_total", r.packetsReceivedTotal)
-
-	// 8. narumq_packets_sent_total
-	fmt.Fprintf(&buf, "# HELP narumq_packets_sent_total Total MQTT packets sent by packet type.\n")
-	fmt.Fprintf(&buf, "# TYPE narumq_packets_sent_total counter\n")
-	r.renderCounterMap(&buf, "narumq_packets_sent_total", r.packetsSentTotal)
-
-	// 9. narumq_auth_attempts_total
-	fmt.Fprintf(&buf, "# HELP narumq_auth_attempts_total Total authentication attempts.\n")
-	fmt.Fprintf(&buf, "# TYPE narumq_auth_attempts_total counter\n")
-	r.renderCounterMap(&buf, "narumq_auth_attempts_total", r.authAttemptsTotal)
-
-	// 10. narumq_mqtt_connect_rejected_total
-	fmt.Fprintf(&buf, "# HELP narumq_mqtt_connect_rejected_total MQTT CONNECT attempts rejected by protocol and reason.\n")
-	fmt.Fprintf(&buf, "# TYPE narumq_mqtt_connect_rejected_total counter\n")
-	fmt.Fprintf(&buf, "narumq_mqtt_connect_rejected_total{protocol=\"3.1.0\",reason=\"unsupported_protocol_version\"} %d\n", r.connectRejectedTotal.Load())
-	for protocolIndex, protocol := range connectRejectedProtocols {
-		for reasonIndex, reason := range connectRejectReasons {
-			fmt.Fprintf(&buf, "narumq_mqtt_connect_rejected_total{protocol=\"%s\",reason=\"%s\"} %d\n", protocol, reason, r.connectRejectedByProtocol[protocolIndex][reasonIndex].Load())
-		}
-	}
-	// 11. narumq_node_drain_transitions_total
-	fmt.Fprintf(&buf, "# HELP narumq_node_drain_transitions_total Committed node drain phase transitions observed for the local node.\n")
-	fmt.Fprintf(&buf, "# TYPE narumq_node_drain_transitions_total counter\n")
-	r.renderCounterMap(&buf, "narumq_node_drain_transitions_total", r.nodeDrainTransitions)
-	fmt.Fprintf(&buf, "# HELP narumq_messages_dropped_total Messages discarded after routing before delivery to one subscriber.\n")
-	fmt.Fprintf(&buf, "# TYPE narumq_messages_dropped_total counter\n")
-	for index, reason := range messageDropReasons {
-		fmt.Fprintf(&buf, "narumq_messages_dropped_total{reason=\"%s\"} %d\n", reason, r.messageDrops[index].Load())
-	}
-	fmt.Fprintf(&buf, "# HELP narumq_node_drain_active Whether the local node has a non-terminal committed drain operation.\n")
-	fmt.Fprintf(&buf, "# TYPE narumq_node_drain_active gauge\n")
-	active := 0
-	if r.nodeDrainActive.Load() {
-		active = 1
-	}
-	fmt.Fprintf(&buf, "narumq_node_drain_active %d\n", active)
-	fmt.Fprintf(&buf, "# HELP narumq_node_drain_progress Committed progress of the local node drain operation.\n")
-	fmt.Fprintf(&buf, "# TYPE narumq_node_drain_progress gauge\n")
-	for index, quantity := range nodeDrainProgressQuantities {
-		fmt.Fprintf(&buf, "narumq_node_drain_progress{quantity=\"%s\"} %d\n", quantity, r.nodeDrainProgress[index].Load())
-	}
-	fmt.Fprintf(&buf, "# HELP narumq_will_outcomes_total Final outcomes of registered MQTT Will messages by reason.\n")
-	fmt.Fprintf(&buf, "# TYPE narumq_will_outcomes_total counter\n")
-	for index, reason := range willOutcomeReasons {
-		fmt.Fprintf(&buf, "narumq_will_outcomes_total{reason=\"%s\"} %d\n", reason, r.willOutcomes[index].Load())
-	}
-	fmt.Fprintf(&buf, "# HELP narumq_audit_events_total Management audit events by publication outcome.\n")
-	fmt.Fprintf(&buf, "# TYPE narumq_audit_events_total counter\n")
-	for index, outcome := range auditOutcomes {
-		fmt.Fprintf(&buf, "narumq_audit_events_total{outcome=\"%s\"} %d\n", outcome, r.auditOutcomeCounts[index].Load())
-	}
-	fmt.Fprintf(&buf, "# HELP narumq_audit_publisher_ready Whether the node-local audit publisher can append events.\n")
-	fmt.Fprintf(&buf, "# TYPE narumq_audit_publisher_ready gauge\n")
-	ready := int64(0)
-	if r.auditPublisherReady.Load() {
-		ready = 1
-	}
-	fmt.Fprintf(&buf, "narumq_audit_publisher_ready %d\n", ready)
-	fmt.Fprintf(&buf, "# HELP narumq_mqtt_listener_admission_rejected_total MQTT listener sockets closed by admission limits before CONNECT.\n")
-	fmt.Fprintf(&buf, "# TYPE narumq_mqtt_listener_admission_rejected_total counter\n")
-	for transportIndex, transport := range listenerAdmissionTransports {
-		for reasonIndex, reason := range listenerAdmissionReasons {
-			fmt.Fprintf(&buf, "narumq_mqtt_listener_admission_rejected_total{transport=\"%s\",reason=\"%s\"} %d\n", transport, reason, r.listenerAdmissionRejections[transportIndex][reasonIndex].Load())
-		}
-	}
-	fmt.Fprintf(&buf, "# HELP narumq_tenant_quota_profile_committed Whether a tenant quota profile is committed locally.\n")
-	fmt.Fprintf(&buf, "# TYPE narumq_tenant_quota_profile_committed gauge\n")
-	fmt.Fprintf(&buf, "narumq_tenant_quota_profile_committed %d\n", r.tenantQuotaProfileCommitted.Load())
-	fmt.Fprintf(&buf, "# HELP narumq_tenant_quota_profile_version Version of the locally committed tenant quota profile.\n")
-	fmt.Fprintf(&buf, "# TYPE narumq_tenant_quota_profile_version gauge\n")
-	fmt.Fprintf(&buf, "narumq_tenant_quota_profile_version %d\n", r.tenantQuotaProfileVersion.Load())
-	fmt.Fprintf(&buf, "# HELP narumq_tenant_quota_config_mismatch Whether the local quota configuration conflicts with the committed profile.\n")
-	fmt.Fprintf(&buf, "# TYPE narumq_tenant_quota_config_mismatch gauge\n")
-	fmt.Fprintf(&buf, "narumq_tenant_quota_config_mismatch %d\n", r.tenantQuotaConfigMismatch.Load())
-	fmt.Fprintf(&buf, "# HELP narumq_cluster_policy_committed Whether a cluster policy is committed locally.\n")
-	fmt.Fprintf(&buf, "# TYPE narumq_cluster_policy_committed gauge\n")
-	fmt.Fprintf(&buf, "narumq_cluster_policy_committed %d\n", r.clusterPolicyCommitted.Load())
-	fmt.Fprintf(&buf, "# HELP narumq_cluster_policy_version Version of the locally applied cluster policy.\n")
-	fmt.Fprintf(&buf, "# TYPE narumq_cluster_policy_version gauge\n")
-	fmt.Fprintf(&buf, "narumq_cluster_policy_version %d\n", r.clusterPolicyVersion.Load())
-	fmt.Fprintf(&buf, "# HELP narumq_cluster_policy_config_mismatch Whether local cluster policy configuration conflicts with the committed policy.\n")
-	fmt.Fprintf(&buf, "# TYPE narumq_cluster_policy_config_mismatch gauge\n")
-	fmt.Fprintf(&buf, "narumq_cluster_policy_config_mismatch %d\n", r.clusterPolicyConfigMismatch.Load())
-	fmt.Fprintf(&buf, "# HELP narumq_tenant_quota_rejections_total Committed storage mutations rejected by tenant quota dimension.\n")
-	fmt.Fprintf(&buf, "# TYPE narumq_tenant_quota_rejections_total counter\n")
-	r.renderTenantQuotaRejections(&buf)
-	fmt.Fprintf(&buf, "# HELP narumq_tenant_limit_rejections_total Requests rejected by tenant connection, session, subscription, payload, or rate limits.\n")
-	fmt.Fprintf(&buf, "# TYPE narumq_tenant_limit_rejections_total counter\n")
-	r.renderTenantLimitRejections(&buf)
-	r.renderPublishBackpressure(&buf)
-
-	// 11. narumq_publish_latency_seconds
-	fmt.Fprintf(&buf, "# HELP narumq_publish_latency_seconds Latency of publish processing in seconds.\n")
-	fmt.Fprintf(&buf, "# TYPE narumq_publish_latency_seconds histogram\n")
-	renderHistogram(&buf, "narumq_publish_latency_seconds", r.publishLatency)
-
-	fmt.Fprintf(&buf, "# HELP narumq_raft_wal_sync_duration_seconds Duration of one successful Raft WAL group fsync.\n")
-	fmt.Fprintf(&buf, "# TYPE narumq_raft_wal_sync_duration_seconds histogram\n")
-	renderHistogram(&buf, "narumq_raft_wal_sync_duration_seconds", r.walSyncDuration)
-	fmt.Fprintf(&buf, "# HELP narumq_raft_wal_sync_entries Raft log entries persisted by one WAL group fsync.\n")
-	fmt.Fprintf(&buf, "# TYPE narumq_raft_wal_sync_entries histogram\n")
-	renderHistogram(&buf, "narumq_raft_wal_sync_entries", r.walSyncEntries)
-	fmt.Fprintf(&buf, "# HELP narumq_raft_wal_written_bytes_total Bytes appended to the Raft WAL including frame headers.\n")
-	fmt.Fprintf(&buf, "# TYPE narumq_raft_wal_written_bytes_total counter\n")
-	fmt.Fprintf(&buf, "narumq_raft_wal_written_bytes_total %d\n", r.walWrittenBytes.Load())
-	r.renderRaftStages(&buf)
-
 	if isOpenMetrics {
-		fmt.Fprintf(&buf, "# EOF\n")
+		buffer.WriteString("# EOF\n")
 	}
-
-	return buf.Bytes()
-}
-
-func renderHistogram(buf *bytes.Buffer, name string, histogram *Histogram) {
-	buckets, counts, count, sum := histogram.Snapshot()
-	for i, bucket := range buckets {
-		fmt.Fprintf(buf, "%s_bucket{le=\"%g\"} %d\n", name, bucket, counts[i])
-	}
-	fmt.Fprintf(buf, "%s_bucket{le=\"+Inf\"} %d\n", name, count)
-	fmt.Fprintf(buf, "%s_sum %.6f\n", name, sum)
-	fmt.Fprintf(buf, "%s_count %d\n", name, count)
-}
-
-func (r *Registry) renderCounterMap(buf *bytes.Buffer, name string, m map[string]*atomic.Int64) {
-	r.mu.RLock()
-	keys := make([]string, 0, len(m))
-	for k := range m {
-		keys = append(keys, k)
-	}
-	sort.Strings(keys)
-	entries := make([]struct {
-		labels string
-		val    int64
-	}, len(keys))
-	for i, k := range keys {
-		entries[i].labels = k
-		entries[i].val = m[k].Load()
-	}
-	r.mu.RUnlock()
-
-	for _, e := range entries {
-		fmt.Fprintf(buf, "%s{%s} %d\n", name, e.labels, e.val)
-	}
-}
-func (r *Registry) renderTenantQuotaRejections(buf *bytes.Buffer) {
-	r.mu.RLock()
-	entries := make([]tenantQuotaMetricEntry, 0, len(r.tenantQuotaRejections))
-	for key, counter := range r.tenantQuotaRejections {
-		entries = append(entries, tenantQuotaMetricEntry{
-			tenantID: key.tenantID, dimension: key.dimension, count: counter.Load(),
-		})
-	}
-	r.mu.RUnlock()
-	sort.Slice(entries, func(left, right int) bool {
-		if entries[left].tenantID != entries[right].tenantID {
-			return entries[left].tenantID < entries[right].tenantID
-		}
-		return entries[left].dimension < entries[right].dimension
-	})
-	for _, entry := range entries {
-		fmt.Fprintf(buf, "narumq_tenant_quota_rejections_total{tenant=\"%s\",dimension=\"%s\"} %d\n",
-			prometheusLabelEscaper.Replace(entry.tenantID), prometheusLabelEscaper.Replace(entry.dimension), entry.count)
-	}
-}
-func (r *Registry) renderTenantLimitRejections(buf *bytes.Buffer) {
-	r.mu.RLock()
-	entries := make([]tenantQuotaMetricEntry, 0, len(r.tenantLimitRejections))
-	for key, counter := range r.tenantLimitRejections {
-		entries = append(entries, tenantQuotaMetricEntry{tenantID: key.tenantID, dimension: key.dimension, count: counter.Load()})
-	}
-	r.mu.RUnlock()
-	sort.Slice(entries, func(left, right int) bool {
-		if entries[left].tenantID != entries[right].tenantID {
-			return entries[left].tenantID < entries[right].tenantID
-		}
-		return entries[left].dimension < entries[right].dimension
-	})
-	for _, entry := range entries {
-		fmt.Fprintf(buf, "narumq_tenant_limit_rejections_total{tenant=\"%s\",dimension=\"%s\"} %d\n",
-			prometheusLabelEscaper.Replace(entry.tenantID), prometheusLabelEscaper.Replace(entry.dimension), entry.count)
-	}
+	return buffer.Bytes()
 }

@@ -7,6 +7,7 @@
 | Contract | 상태 | Producer → Consumer | 기준 artifact | 관련 요구사항 |
 | --- | --- | --- | --- | --- |
 | [Management API v1](management-api-v1.md) | Active | Broker → Dashboard·operator·monitoring query client | [OpenAPI JSON](management-api-v1.openapi.json) | API-02, API-04~API-09, SEC-10~SEC-11 |
+| [Peer observability v1](peer-observability-v1.md) | Draft | Dynamic peer transport → 관측 query service | 이 문서의 mTLS·frame·snapshot 계약 | API-02, UI-01, UI-03, CLU-01~CLU-02, SEC-09 |
 | [Audit event v1](audit-event-v1.md) | Draft | Broker·controller → audit store·security operator | [JSON Schema](audit-event-v1.schema.json) | SEC-11, NFR-16~NFR-17 |
 | [MQTT client compatibility v1](mqtt-client-compatibility-v1.md) | Draft | Broker ↔ MQTT client | 이 문서의 profile·matrix | MQTT-01~MQTT-13, CLIENT-01~CLIENT-09, DEP-06~DEP-12 |
 | [Cluster release compatibility v1](cluster-release-compatibility-v1.md) | Draft | Release N node ↔ N-1 node | 이 문서의 compatibility matrix | CLU-11, NFR-15, DEP-18 |
@@ -44,6 +45,6 @@ Phase 1 profile과 결과 schema에서 관리한다. Drain inventory와 migratio
 
 - Contract 이름의 `v1`은 호환성 major를 뜻한다.
 - 문서 metadata의 `1.x.y`는 contract revision을 뜻한다.
-- 같은 major에서 backward-compatible 변경만 허용한다.
-- Breaking change는 새 major contract와 migration 계획을 만든다.
+- 같은 major에서 backward-compatible 변경만 허용한다. 사용자가 승인한 개발 중 Management API v1 재정의는 [Management API v1 contract](management-api-v1.md)에 기록한 단일 cutover 예외다. 예전 route·schema alias를 제공하지 않는다.
+- 그 예외 외의 breaking change는 새 major contract와 migration 계획을 만든다.
 - Deprecated contract는 Active consumer가 0이고 종료 조건을 검증하기 전까지 삭제하지 않는다.

@@ -28,11 +28,11 @@ import (
 	"narumq/internal/application/audit"
 	appmembership "narumq/internal/application/membership"
 	portsaudit "narumq/internal/application/ports/audit"
+	ports "narumq/internal/application/ports/management"
+	observationports "narumq/internal/application/ports/observability"
 	"narumq/internal/domain/connrebalance"
 	"narumq/internal/domain/nodedrain"
 	"narumq/internal/domain/security"
-
-	ports "narumq/internal/application/ports/management"
 )
 
 const contractServerURL = "https://narumq.example.invalid"
@@ -57,10 +57,12 @@ func managementOperationFixtures() []operationFixture {
 		{method: http.MethodGet, path: "/health/startup", operationID: "getStartup", target: "/health/startup"},
 		{method: http.MethodGet, path: "/health/drain", operationID: "getDrainCompletion", target: "/health/drain"},
 		{method: http.MethodGet, path: "/metrics", operationID: "getMetrics", target: "/metrics"},
+		{method: http.MethodGet, path: "/api/v1/metrics", operationID: "getMetricCollection", target: "/api/v1/metrics?mode=all_nodes_unaggregated"},
 		{method: http.MethodGet, path: "/api/v1/cluster", operationID: "getCluster", target: "/api/v1/cluster"},
 		{method: http.MethodGet, path: "/api/v1/nodes", operationID: "listNodes", target: "/api/v1/nodes?limit=50"},
-		{method: http.MethodGet, path: "/api/v1/nodes/{nodeId}", operationID: "getNode", target: "/api/v1/nodes/node-1"},
-		{method: http.MethodGet, path: "/api/v1/clients", operationID: "listClients", target: "/api/v1/clients?tenantId=default&clientIdPrefix=device-&nodeId=node-1&protocol=MQTT_5_0&limit=50"},
+		{method: http.MethodGet, path: "/api/v1/nodes/{nodeId}", operationID: "getNode", target: "/api/v1/nodes/1"},
+		{method: http.MethodGet, path: "/api/v1/nodes/{nodeId}/metrics", operationID: "getNodeMetrics", target: "/api/v1/nodes/1/metrics"},
+		{method: http.MethodGet, path: "/api/v1/clients", operationID: "listClients", target: "/api/v1/clients?tenantId=default&clientIdPrefix=device-&nodeId=1&protocol=MQTT_5_0&limit=50"},
 		{method: http.MethodGet, path: "/api/v1/clients/{tenantId}/{clientId}", operationID: "getClientSession", target: "/api/v1/clients/default/device-1"},
 		{method: http.MethodGet, path: "/api/v1/subscriptions", operationID: "listSubscriptions", target: "/api/v1/subscriptions?tenantId=default&clientId=device-1&limit=50"},
 		{method: http.MethodGet, path: "/api/v1/retained", operationID: "listRetainedMessages", target: "/api/v1/retained?tenantId=default&topicPrefix=sensors/&limit=50"},
@@ -457,6 +459,70 @@ func stringPointer(value string) *string {
 	return &value
 }
 
+type contractObservabilityService struct{}
+
+func (contractObservabilityService) GetCluster(context.Context) (observationports.ClusterDataDTO, error) {
+	connectionCount, sessionCount := uint64(1), uint64(1)
+	return observationports.ClusterDataDTO{
+		ClusterID: "contract-cluster", ReleaseVersion: "1.0.0", MemberCount: 1,
+		QuorumSize: 1, ReplicationFactor: 1, WriteQuorum: 1, QuorumAvailable: true,
+		NodesByState: observationports.NodesByStateDTO{Ready: 1}, NodeQueryComplete: true,
+		ObservedAt:      time.Date(2026, 10, 15, 12, 0, 0, 123456789, time.UTC),
+		ConnectionCount: &connectionCount, SessionCount: &sessionCount,
+	}, nil
+}
+
+func (contractObservabilityService) GetNode(_ context.Context, nodeID string) (observationports.NodeDataDTO, error) {
+	if nodeID != "1" {
+		return observationports.NodeDataDTO{}, observationports.ErrNodeNotFound
+	}
+	observedAt := time.Date(2026, 10, 15, 12, 0, 0, 123456789, time.UTC)
+	version, uptime, state, ready := "1.0.0", int64(3600000), observationports.NodeStateReady, true
+	role, index, connectionCount, sessionCount := "LEADER", uint64(5), uint64(1), uint64(1)
+	storagePressure, replicationHealth := false, "HEALTHY"
+	return observationports.NodeDataDTO{
+		NodeID: nodeID, MembershipPhase: observationports.MembershipPhaseVoter,
+		QueryStatus: observationports.QueryStatusOK, ObservedAt: &observedAt,
+		Version: &version, UptimeMillis: &uptime, State: &state, Ready: &ready,
+		Role: &role, LastAppliedIndex: &index, ConnectionCount: &connectionCount,
+		SessionCount: &sessionCount, StoragePressure: &storagePressure,
+		ReplicationHealth: &replicationHealth,
+	}, nil
+}
+
+func (service contractObservabilityService) ListNodes(ctx context.Context, _ observationports.NodeFilter) ([]observationports.NodeDataDTO, *ports.PageDTO, error) {
+	node, _ := service.GetNode(ctx, "1")
+	return []observationports.NodeDataDTO{node}, emptyPage(), nil
+}
+
+func (service contractObservabilityService) GetNodeMetrics(ctx context.Context, nodeID string) (observationports.NodeMetricsDataDTO, error) {
+	node, err := service.GetNode(ctx, nodeID)
+	if err != nil {
+		return observationports.NodeMetricsDataDTO{}, err
+	}
+	observedAt := *node.ObservedAt
+	startedAt := time.Date(2026, 10, 15, 11, 0, 0, 0, time.UTC)
+	return observationports.NodeMetricsDataDTO{
+		NodeID: nodeID, QueryStatus: observationports.QueryStatusOK,
+		ObservedAt: &observedAt, StartedAt: &startedAt,
+		Families: []observationports.MetricFamilyDTO{},
+	}, nil
+}
+
+func (contractObservabilityService) CollectMetrics(_ context.Context, mode observationports.MetricsMode) (observationports.MetricsCollectionDataDTO, error) {
+	observedAt := time.Date(2026, 10, 15, 12, 0, 0, 123456789, time.UTC)
+	return observationports.MetricsCollectionDataDTO{
+		Mode: mode, ObservedAt: observedAt, Complete: true,
+		Nodes: []observationports.MetricsNodeStatusDTO{{
+			NodeID: "1", QueryStatus: observationports.QueryStatusOK,
+			ObservedAt: &observedAt,
+		}},
+		Families: []observationports.MetricFamilyDTO{},
+	}, nil
+}
+
+var _ observationports.QueryService = contractObservabilityService{}
+
 func contractHandler(cfg managementhttp.ServerConfig) http.Handler {
 	if cfg.RequestRate == 0 {
 		cfg.RequestRate = managementhttp.MaxRequestRate
@@ -464,6 +530,7 @@ func contractHandler(cfg managementhttp.ServerConfig) http.Handler {
 	if cfg.AuthFailureRate == 0 {
 		cfg.AuthFailureRate = managementhttp.MaxRequestRate
 	}
+	cfg.Observability = contractObservabilityService{}
 	return managementhttp.NewRouter(
 		cfg,
 		contractStateProvider{},
@@ -501,6 +568,7 @@ func clusterManagementContractHandlerWithServices(
 	if config.AuthFailureRate == 0 {
 		config.AuthFailureRate = managementhttp.MaxRequestRate
 	}
+	config.Observability = contractObservabilityService{}
 	return managementhttp.NewRouterWithMembership(
 		config,
 		contractStateProvider{},
@@ -1229,6 +1297,11 @@ func TestManagementQueryValidationMatchesOpenAPI(t *testing.T) {
 	valid := []string{
 		"/api/v1/nodes?limit=1",
 		"/api/v1/nodes?limit=1000",
+		"/api/v1/nodes/1",
+		"/api/v1/nodes/1/metrics",
+		"/api/v1/metrics",
+		"/api/v1/metrics?mode=node",
+		"/api/v1/metrics?mode=all_nodes_aggregated",
 		"/api/v1/clients?limit=50",
 		"/api/v1/subscriptions?tenantId=default&limit=50",
 		"/api/v1/retained?tenantId=default&limit=50",
@@ -1253,6 +1326,9 @@ func TestManagementQueryValidationMatchesOpenAPI(t *testing.T) {
 
 	invalid := []string{
 		"/api/v1/nodes?unknown=value",
+		"/api/v1/metrics?mode=unknown",
+		"/api/v1/metrics?mode=",
+		"/api/v1/metrics?mode=node&mode=all_nodes_aggregated",
 		"/api/v1/clients?limit=1&limit=2",
 		"/api/v1/clients?limit=0",
 		"/api/v1/subscriptions",
@@ -1316,6 +1392,7 @@ func TestManagementRateLimitMatchesOpenAPI(t *testing.T) {
 		RequestRate:     1,
 		AuthFailureRate: 1,
 		Clock:           clock,
+		Observability:   contractObservabilityService{},
 	}, contractStateProvider{}, contractStateProvider{}, adaptersmetrics.NewRegistry())
 
 	for _, testCase := range []struct {

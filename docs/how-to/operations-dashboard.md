@@ -1,13 +1,13 @@
 # NaruMQ Operations Dashboard를 구성하는 방법
 
-Prometheus는 `/metrics`에서 node별 metric(운영 수치)을 정해진 간격으로 읽어 시간에 따른 값을 저장한다. Grafana는 Prometheus 값과 Management API 상태를 datasource(데이터 원본 연결)로 읽어 한 화면에 보여준다. 이 절차는 두 도구를 NaruMQ에 연결한다. Cluster API는 조회만 허용하는 `ReadOnly` API key로 읽는다. Local Docker acceptance에서 설정·수집·Dashboard·권한 경계를 확인했고, 2026-10-13 EKS에서는 stack 배포와 live cluster data frame을 확인했다. Prometheus live scrape는 `X-Api-Key` header 오류로 실패하고 time-series panel은 비어 있어 overall live dashboard acceptance는 미검증이다.
+Prometheus는 `/metrics`에서 node별 metric(운영 수치)을 정해진 간격으로 읽어 시간에 따른 값을 저장한다. Grafana는 Prometheus 값과 Management API 상태를 함께 보여준다. Cluster API에는 조회 전용 `ReadOnly` API key를 사용한다. 2026-10-14에 local Docker acceptance와 EKS `narumq-eks`의 3-node 관측 결과·Prometheus scrape·Grafana 화면을 확인했다. EKS의 API key header 오류는 문자열 key 교체와 전체 재배포로 해결했다.
 
 | 항목 | 값 |
 | --- | --- |
 | 대상 독자 | NaruMQ 운영자와 monitoring 담당자 |
-| 검증 상태 | Verified (local Docker acceptance 및 EKS stack 배포·Dashboard API provisioning; EKS live scrape/data source integration 미검증) |
+| 검증 상태 | Verified (local Docker acceptance 및 EKS live scrape·node topology·시계열 frame·화면 확인; production 부하·보안 운영 승인은 별도) |
 | 검증 환경·버전 | Prometheus 3.5.0, Grafana OSS 13.0.2, Infinity datasource 4.1.1, local 3개 NaruMQ process 및 EKS `narumq-eks` |
-| 최종 검증일 | 2026-10-13 |
+| 최종 검증일 | 2026-10-14 |
 | 관련 기준 문서 | [PRD §9.6](../requirements/PRD.md#96-대시보드), [Management API와 observability §8·§9](../specs/management-api-and-observability.md#8-dashboard-계약), [Management API v1](../contracts/management-api-v1.md), [ADR-0045](../decisions/ADR-0045-operations-dashboard-grafana.md) |
 
 ## 1. 대상과 영향
@@ -41,6 +41,8 @@ Prometheus는 `/metrics`에서 node별 metric(운영 수치)을 정해진 간격
 1. **Cluster process에 ReadOnly API key 파일을 연결한다.**
 
    각 node의 cluster configuration `management.apiKeys`에 Dashboard 전용 API key를 등록한다. 모든 node에서 같은 `id`와 key를 사용하고 `ReadOnly` role만 부여한다. `keyFile`은 secret store가 관리하는 파일을 가리킨다.
+
+   Key는 HTTP header에 넣을 수 있는 문자열로 발급한다. 32-byte 난수를 64자리 16진수 문자열로 바꾸는 방식을 권장한다. 난수의 원본 binary bytes를 key 파일이나 Kubernetes Secret에 그대로 넣지 않는다. Broker, Prometheus 파일과 Grafana 환경 변수에는 줄바꿈 없는 같은 문자열을 공급한다. Kubernetes Secret의 `data`에는 이 문자열을 base64로 인코딩한다. Base64는 저장 형식이며 API key 자체를 바꾸는 규칙이 아니다.
 
    다음 JSON은 `management` 설정의 관련 부분만 보인다.
 
@@ -111,13 +113,25 @@ Prometheus는 `/metrics`에서 node별 metric(운영 수치)을 정해진 간격
 
    기대 결과: `narumq-observability` namespace에 Prometheus와 Grafana Deployment 및 Service가 생성된다. 배포 후 실제 NaruMQ target과 조회 전용 API credential을 환경에 연결해야 scrape와 Management API 조회가 동작한다.
 
+   ConfigMap 이름은 고정되어 있고 일부 파일은 `subPath`로 mount된다. 파일이나 Secret을 바꾼 뒤에는 두 Deployment를 재시작한다. Grafana의 Secret 환경 변수도 재시작해야 바뀐다.
+
+   ```sh
+   kubectl rollout restart deployment/prometheus deployment/grafana -n narumq-observability
+   kubectl rollout status deployment/prometheus -n narumq-observability --timeout=5m
+   kubectl rollout status deployment/grafana -n narumq-observability --timeout=5m
+   ```
+
+   Broker는 API key 파일을 시작할 때 읽는다. Broker key를 바꾸면 node별 재시작도 필요하다. EKS StatefulSet은 `OnDelete`이므로 Deployment 재시작 명령만으로 broker pod가 바뀌지 않는다. 기존 drain 절차로 한 pod만 교체하고, 전체 3개 pod가 Ready로 돌아온 뒤 다음 pod를 교체한다. Admin token에 제어 문자가 있으면 drain 요청도 실패할 수 있으므로 재시작 전에 token 형식을 확인한다. Secret 원문을 출력해 확인하지 않는다.
+
 6. **Datasource와 Dashboard를 확인한다.**
 
    Grafana의 [Dashboard](http://localhost:3000/d/narumq-operations/narumq-operations)를 연다. 운영 URL을 사용하는 경우 `localhost:3000`을 Grafana 주소로 바꾼다.
 
    `Node` filter는 Prometheus의 `node_id` label을 사용한다. Node load와 Drain 표는 node마다 한 행을 만들고 metric마다 열을 만든다. `Drain node` filter는 drain Metric이 있는 node를 선택한다. `Maximum connection deviation`은 rebalance API의 `maxDeviationConnections`와 같은 값으로 설정한다. ETA는 연결이 실제로 줄어들 때 표시한다.
 
-   기대 결과: Quorum, Leader, node topology, Node load와 Drain progress가 보인다. 각 process의 `/health/ready`는 `200`을 반환해야 한다. Node topology는 조회를 받은 node의 readiness만 보장한다. 원격 node가 `JOINING`으로 표시되면 해당 node의 `/health/ready`를 직접 확인한다. Active drain이 없으면 `Drain 상세`의 panel status에서 `404 Not Found`를 확인한다.
+   Node topology는 `membershipPhase`, `queryStatus`, `queryErrorCode`, `observedAt`과 대상 node가 직접 측정한 nullable 상태를 표시한다. `queryStatus=OK`, `state=READY`, `ready=true`이면 조회한 node가 준비된 상태다. `queryStatus`가 `UNREACHABLE`, `UNSUPPORTED`, `RETIRED` 또는 `ERROR`이면 측정값을 추정하지 않고 빈 값으로 표시한다. 이는 node가 실제로 준비되지 않았다는 뜻이 아니다. `queryStatus=OK`인데 `ready=false`이면 대상 node가 준비되지 않은 실제 상태다. `readinessReason`과 대상 node의 `/health/ready`를 확인한다.
+
+   기대 결과: Quorum, Leader, node topology, Node load와 Drain progress가 보인다. 정상 cluster에서는 각 member의 query status가 `OK`이고 준비된 node의 `state`와 `ready`가 각각 `READY`와 `true`다. 조회가 실패하면 `queryStatus`와 `queryErrorCode`를 먼저 확인한다. Active drain이 없으면 `Drain 상세`의 panel status에서 `404 Not Found`를 확인한다.
 
    Traffic이 없으면 message rate와 일부 counter panel이 `No data`로 보일 수 있다. Active drain 기록이 없으면 `Drain 상세` panel은 `No data`를 보인다. Panel의 `Panel status`에서 Management API `404 Not Found`를 확인한다. 이 두 상태는 datasource 오류와 다르다.
 
@@ -129,8 +143,8 @@ Prometheus는 `/metrics`에서 node별 metric(운영 수치)을 정해진 간격
 | --- | --- | --- | --- | --- |
 | Static provisioning contract | Dashboard panel, OpenAPI GET path, Metric catalog와 provisioning 설정이 계약과 일치한다. | `go test ./tests/integration -run '^(TestDynamicClusterTenantIsolationPenetrationProcessAcceptance|TestDynamicClusterConnectionRebalanceProcessAcceptance|TestDashboardProvisioningMatchesContracts)$' -count=1 -v -timeout 20m` | 2026-10-10 PASS. | `tests/integration/dashboard_stack_test.go::TestDashboardProvisioningMatchesContracts` |
 | Prometheus scrape와 Grafana datasource | 3개 node가 Prometheus target에서 `UP`이고 두 datasource health가 `OK`다. | `NARUMQ_DASHBOARD_E2E=1 NARUMQ_DASHBOARD_E2E_HOLD=90s go test ./tests/integration -run '^TestDashboardStackProcessAcceptance$' -count=1 -v -timeout 20m` | 2026-10-10 PASS, test 228.46s, package 229.503s. | `tests/integration/dashboard_stack_test.go::TestDashboardStackProcessAcceptance` |
-| EKS stack 배포와 live Dashboard data | 3 broker pod가 3개 AZ에서 실행되고 Management API datasource가 HTTP `200`과 live cluster frame을 반환한다. Prometheus target과 time-series panel도 실제 data를 반환한다. | EKS에서 `kubectl get deployments,pods,services -n narumq-observability`; Grafana `/api/v1/cluster` datasource frame, Prometheus target 상태와 panel 7 frame 확인 | 2026-10-13 `narumq-eks`에서 broker pod 3개가 3개 AZ에 걸쳐 실행 중이다. Grafana Management API datasource `/api/v1/cluster`는 HTTP `200`을 반환하고 panel 1/2에 live frame(`quorumAvailable=true`, `memberCount=3`, `underReplicated=0`)을 표시했다. 그러나 Prometheus scrape target은 `up=0`이며 `net/http: invalid header field value for "X-Api-Key"` 오류가 났고, time-series metric panel 7은 empty frame을 반환했다. Overall live dashboard acceptance는 open이다. | EKS `narumq-eks`, namespace `narumq-observability`; `deploy/observability/kubernetes/` |
-| Dashboard 화면 | Quorum, leader, topology, traffic, node-load와 drain panel이 표시되고 browser error가 없다. | Grafana에서 Dashboard를 열고 첫 화면, `Node 부하`, `Drain` 행을 확인한다. | 2026-10-09 local Docker stack에서 Quorum `정상`, replica 부족 `0`, Leader `1`과 세 node를 확인했다. Grafana `/api/ds/query` frame에서 panel 2는 replica 부족 `0`, panel 4는 Members `3`·quorum `2`·replication factor `3`·write quorum `2`, panel 5는 Ready `1`·Joining `2`, panel 6은 세 node와 원격 `JOINING` readiness reason을 반환했다. Panel 15는 `COMPLETED`, `SAFE_TO_STOP`, remaining `0`, takeover `1`을 반환했다. Node 2는 원격 readiness를 추정하지 않고 `JOINING`으로 표시됐다. `Node=2` 화면에서 Connections, Sent PUBLISH, MQTT 5.0 CONNECT 성공과 거절 panel을 확인했다. Node-scoped query는 node 1의 connection·received PUBLISH rate와 MQTT 3.1.1 성공, node 2의 sent PUBLISH rate와 MQTT 5.0 성공·같은 series의 `not_authorized` 거절을 검증했다. Drain의 node 3은 initial `1`, remaining `0`, takeover `1`, `safeToStop=true`였다. Browser와 console error는 없었다. | `NARUMQ_DASHBOARD_E2E_HOLD=90s` local E2E와 browser visual check. CI 실행 링크와 production deployment 검증은 없다. |
+| EKS stack 배포와 live Dashboard data | 3 broker pod가 3개 AZ에서 Ready이고, 두 datasource와 live API·시계열 frame이 정상이다. | `kubectl` pod·node 조회, Prometheus `/api/v1/targets`·`up` query, Grafana datasource health·`/api/ds/query` 및 browser 확인 | 2026-10-14 PASS. Broker 3개 Ready, AZ `2a/2b/2c`, Prometheus target 3개 `UP`·lastError 없음·`up=1`, datasource 2개 `OK`. Panel 5 `Ready=3/Unknown=0`, panel 6 세 node `OK/READY`, panel 7 세 query에 실제 시계열 frame이 있다. | 아래 [EKS 실행 기록](#eks-재배포-실행-기록-2026-10-14) |
+| Dashboard 화면 | Quorum, leader, topology, traffic, node-load와 drain panel이 표시되고 browser error가 없다. | Grafana에서 Dashboard를 열고 첫 화면, `Node 부하`, `Drain` 행을 확인한다. | Local Docker 2026-10-09: Quorum `정상`, replica 부족 `0`, Leader `1`, node topology·node별 traffic·drain 완료 상태를 확인했다. EKS 2026-10-14: browser에서 Quorum `정상`, replica 부족 `0`, Leader `1`, Ready `3`, Unknown `0`, 세 node `READY`·`조회 성공`, node 연결 편차 `0`·정상을 확인했다. 두 datasource와 Panel 1·2·5·6·7·12 query가 정상이며, Panel 7의 세 시계열 query가 frame을 반환했다. Browser page error는 0건이었다. MQTT traffic이 없어 message rate는 `No data`였고 traffic 성공 증거로 보지 않는다. | Local Docker E2E·browser visual check 및 [EKS 실행 기록](#eks-재배포-실행-기록-2026-10-14) |
 
 Local Docker E2E는 Prometheus 3.5.0, Grafana OSS 13.0.2와 Infinity datasource 4.1.1 container를 시작하고 종료한다. Production deployment test는 아니다.
 
@@ -148,9 +162,31 @@ Remove-Item Env:NARUMQ_DASHBOARD_E2E
 
 화면을 확인하려면 test 전에 `$env:NARUMQ_DASHBOARD_E2E_HOLD = "90s"`도 설정한다. Test 출력의 `Grafana dashboard URL`을 열고 90초 안에 화면을 확인한다. 실행이 끝나면 두 environment variable을 지운다.
 
+### EKS 재배포 실행 기록 (2026-10-14)
+
+- 대상: EKS `narumq-eks`, broker namespace `narumq`, monitoring namespace `narumq-observability`. 현재 작업 트리의 Dashboard provisioning 재배포와 전체 broker 재시작을 요청받았다.
+- 원인 확인: broker와 Prometheus Secret의 API key가 각각 제어 문자를 포함한 32-byte binary 값이었다. 두 Secret의 값도 달랐다. Grafana 환경 변수는 64-byte 문자열이었지만 현재 monitoring Secret과 달랐다. 값 자체는 실행 기록에 남기지 않는다.
+- 수정: 새 64자리 16진수 ReadOnly key를 메모리에서 생성했다. Broker의 `dashboard.key`와 monitoring의 `narumq-readonly.key`를 같은 값으로 교체했다. Secret 일치와 제어 문자 없는 형식을 확인했다.
+- 보안 처리: 조사 중 기존 monitoring Secret의 base64 값이 도구 출력에 노출됐다. 새 key를 발급하고 전체 broker와 monitoring pod를 교체했다. 최종 Prometheus 파일·Grafana 환경 변수·broker Secret의 일치를 확인했다. 이전 Secret 값이 남은 `last-applied-configuration` annotation도 제거했다.
+- 관리 token 복구: `admin.token`도 제어 문자를 포함한 32-byte binary 값이었다. 기존 token의 요청은 HTTP `400`이었다. 새 64자리 문자열 token을 발급하고 전체 broker를 교체했다. 새 token의 node-local config GET은 세 node에서 `200`, 중간 회전 token은 세 node에서 `401`이었다.
+- 복구 시작의 예외: 기존 admin 인증이 불가능해 `narumq-1`에서 직접 connection·local session 수가 모두 `0`이고 quorum과 전체 Ready가 유지되는지 확인한 뒤 먼저 교체했다. 이 최초 교체는 drain gate 성공 증거가 아니다. 이후에는 복구한 관리 인증으로 대상 drain의 `COMPLETED`·`safeToStop=true`를 확인한 뒤에만 pod를 삭제했다.
+- 종료 hook 수정: 기존 hook은 완료된 기록을 조회하지 않고 POST만 실행했다. 교체 과정에서 새 drain 기록이 생겨 재시작 node가 준비되지 않는 상태도 관찰했다. 새 hook은 GET으로 기록을 확인하고, `404`에서만 시작하며, 완료된 기록은 재사용한다. 최대 600초 동안 완료를 기다리고 HTTP·실패 phase·timeout을 오류로 종료한다. Token은 curl stdin 설정으로 전달한다. Hook 실패가 Kubernetes 삭제를 취소하지는 않으므로 외부의 삭제 전 gate는 계속 필요하다.
+- 재시작 중 관찰: 초기 교체에서는 Ready 대기가 시간 초과됐고 startup probe 실패와 container 재시작을 관찰했다. 이후 completed drain 기록이 `CLEAR`된 뒤 health가 회복됐다. 최종 hook revision의 순차 교체는 세 pod 모두 Ready로 끝났다. 시간 초과 결과를 성공으로 바꿔 기록하지 않는다.
+- 로컬 manifest 확인: `kubectl kustomize deploy/observability`가 종료 코드 `0`으로 manifest를 생성했다. 최종 코드·문서 검증과 EKS 배포 결과는 아래 항목에 기록한다.
+- 배포 이미지: 현재 작업 트리에서 `docker build --platform linux/arm64 -t narumq:observability-20261014 .`가 통과했다. 생성 image의 standalone smoke는 readiness `200`, Node API `OK/READY`, JSON metrics `complete=true`였다. ECR push digest는 `sha256:09f77ae1e4d2277fb96192abaafbf3e2d1717683746ff8e6acc17efc9ccfa916`이다. `kubectl apply -k deploy/kubernetes/eks-ec2-ha`로 고정 digest·hook을 반영하고 세 pod를 한 개씩 교체했다. 기존 image에는 `cluster-observability-v1` capability가 없었고 새 image에는 있다.
+- 최종 broker 결과: `narumq-0/1/2`가 각각 `ap-northeast-2a/2b/2c`에서 Ready다. 세 pod의 revision은 `narumq-56bffccc46`이고 image와 hook이 최신 template과 같다. Node API의 세 행은 `queryStatus=OK`, `state=READY`, `ready=true`다. Cluster는 `quorumAvailable=true`, `underReplicated=0`, `Ready=3`, `Unknown=0`, `nodeQueryComplete=true`다.
+- Hook 실제 실행: 최종 template의 shell hook을 `narumq-2`에서 실행했다. 기록이 없는 상태에서 시작해 `COMPLETED`·`safeToStop=true`까지 기다렸다. 다시 실행해 같은 operation ID가 유지되는지 확인했다. 삭제·같은 volume 재시작 후 Ready를 확인했다. 이후 나머지 두 pod도 삭제 전 완료 gate와 재시작 Ready를 확인했다.
+- Monitoring 재배포: `kubectl apply -k deploy/observability`와 `kubectl rollout restart deployment/prometheus deployment/grafana -n narumq-observability`를 실행했다. 두 `rollout status --timeout=5m`가 성공했고 새 pod가 Ready다. Prometheus target 3개는 `health=up`, `lastError=""`이며 `up{job="narumq-management"}`는 node 1·2·3에서 각각 `1`이다.
+- Grafana 검증: 두 datasource의 `/health`가 HTTP `200`·`OK`였다. `/api/ds/query`의 panel 1·2·5·6·7·12는 HTTP `200`을 반환했다. Panel 6은 3개 node 행, panel 7의 connection·session·subscription query는 각각 12개 시각 표본을 반환했다. Browser에서 Quorum `정상`, replica 부족 `0`, 세 node `READY`·`조회 성공`, node 연결 편차 `0`·정상을 확인했다. Page error는 0건이었다. ReadOnly drain POST는 `403`이었다.
+- 확인 범위: 현재 MQTT 연결·session·subscription은 모두 `0`이다. Message rate와 CONNECT 성공의 `No data`를 traffic 동작 검증으로 해석하지 않는다. 운영 최대 부하·장애 주입·100회 rolling은 이번 실행에 포함하지 않았다.
+- 운영 경계: 현재 monitoring manifest는 Prometheus에 `emptyDir`를 사용한다. Pod 재배포로 이전 시계열이 유지되지 않는다. Grafana는 기본 관리자 인증이 동작하는 상태다. 영속 저장과 운영용 인증을 준비하기 전 production 보안·보존 정책 수용으로 보고하지 않는다.
+- 최종 정적 검증: `go test ./tests/integration -run '^(TestEKSDeployment|TestDashboardProvisioningMatchesContracts)$' -count=1 -v` 통과(package 1.483초). Hook 문구 전체를 복사해 비교하던 assertion은 제거하고 위 실제 hook 실행 증거로 확인했다. `go run ./tools/verify markdown-links`는 `PASS (files 171, local links 2372)`였다. 최종 live 조회에서 broker 3개와 monitoring 2개가 모두 Ready이고 broker container restart count는 모두 `0`이었다.
+
+
 ## 5. 중단 조건
 
 - Prometheus target 하나라도 `DOWN`이면 Dashboard data를 운영에 쓰지 않는다. Target 주소, `node_id`, key file 경로와 network policy를 확인한다.
+- Prometheus가 `net/http: invalid header field value for "X-Api-Key"`를 보고하면 key 파일에 제어 문자가 있는지 확인한다. 길이와 형식 판정만 출력한다. Binary key를 문자열로 다시 발급한 뒤 broker·Prometheus·Grafana의 key를 함께 교체한다. Header 오류가 없어졌는데 `401`이 나오면 세 경로의 key 일치 여부와 broker 재시작 상태를 확인한다.
 - Grafana Management API datasource가 `401` 또는 `403`을 반환하면 key와 role 경계를 확인한다. ClusterAdmin token을 Dashboard에 대신 넣지 않는다.
 - Grafana가 `prometheus:9090`을 찾지 못하면 network alias 또는 datasource URL을 먼저 수정한다.
 - 여러 cluster의 Metric이 같은 Prometheus에 들어가면 설치를 완료로 표시하지 않는다. 이 Dashboard는 현재 cluster filter를 제공하지 않는다.

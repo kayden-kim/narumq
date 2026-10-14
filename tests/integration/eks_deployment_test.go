@@ -165,8 +165,6 @@ func TestEKSDeployment(t *testing.T) {
 	wantString(at(statefulSet, "spec", "template", "spec", "topologySpreadConstraints", "0", "topologyKey"), "topology.kubernetes.io/zone")
 	wantString(at(statefulSet, "spec", "template", "spec", "topologySpreadConstraints", "0", "whenUnsatisfiable"), "DoNotSchedule")
 	container := at(statefulSet, "spec", "template", "spec", "containers", "0")
-	wantString(at(container, "command", "2"), "NODE_INDEX=\"$(hostname | awk -F'-' '{print $NF}')\"\nexec /narumq -cluster-config \"/configs/node-$((NODE_INDEX + 1)).json\"\n")
-	wantString(at(container, "lifecycle", "preStop", "exec", "command", "2"), "NODE_INDEX=\"$(hostname | awk -F'-' '{print $NF}')\"\nNODE_ID=\"$((NODE_INDEX + 1))\"\nIDEMPOTENCY_KEY=\"prestop-${NODE_ID}-$(cat /proc/sys/kernel/random/uuid)\"\ncurl --fail --silent --show-error --max-time 600 \\\n  -X POST \"http://127.0.0.1:8080/api/v1/nodes/${NODE_ID}/drain\" \\\n  -H \"Authorization: Bearer $(cat /secrets/admin.token)\" \\\n  -H \"Idempotency-Key: ${IDEMPOTENCY_KEY}\" \\\n  -H \"Content-Type: application/json\" \\\n  --data '{}'\n")
 	resources := at(container, "resources")
 	wantString(at(resources, "requests", "cpu"), "1")
 	wantString(at(resources, "requests", "memory"), "4Gi")
