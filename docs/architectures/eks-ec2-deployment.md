@@ -22,7 +22,7 @@
 | --- | --- | --- |
 | EKS | Kubernetes 1.37 | EKS platform version과 시험 증거 |
 | Worker와 AMI | `m7g.large` 3대, AZ마다 1대; 인스턴스당 2 vCPU·8 GiB; EKS-optimized Amazon Linux 2023 ARM64 | Region별 AMI ID와 node group 설정 |
-| Broker storage | broker별 20 GiB `gp3`, 기본 3,000 IOPS·125 MiB/s | 3개 volume의 KMS 암호화·AZ binding 및 단일 Pod 재생성 뒤 같은 PVC/EBS remount 관찰; cross-worker 재연결, snapshot/restore, disk pressure, production I/O·durability 미검증 |
+| Broker storage | broker별 20 GiB `gp3`, 기본 3,000 IOPS·125 MiB/s | 암호화·AZ binding·같은 PVC/EBS remount와 계획된 same-AZ cross-worker 재연결은 제한 범위에서 확인했다([수용 기록](../specs/drain-and-rolling-update.md#계획된-cross-worker-ebs-복구-수용-2026-10-15)). EC2 장애 뒤 재연결, snapshot/restore, disk pressure, production I/O·durability는 미검증이다. |
 | NLB | 내부 `IP` target, TCP 1883; Management 8080은 내부 ClusterIP Service | T0→EndpointSlice unready 11.520641s, T0→target `draining` 12.647725s 관찰(보고된 30s 예산 이내); 성공 인증 traffic routing, existing connection drain, TLS endpoint, idle timeout·client IP 미검증 |
 | Broker resources | Pod마다 requests=limits `1 CPU`·`4 GiB` | 측정한 production workload의 N-1 capacity |
 | Comparator | EMQX Enterprise 6.3.1, ARM64 | 측정 workload를 허용하는 license; [PRD §18 질문 15](../requirements/PRD.md#18-미결정-사항) 참고 |
@@ -70,6 +70,11 @@ AWS EKS live cluster(`narumq-eks`, ap-northeast-2)의 배치·단일 drain·Pod 
 실제 rollout·active-drain controller 재시작·API 실패 차단·target Lease 독점과 감사 PVC 검증은 [Drain §10](../specs/drain-and-rolling-update.md#10-broker-drain-수용-시험-매핑)에 있다. 새 PVC 세 개의 S3 복원·전체 RTO는 [Cluster §11.9](../specs/cluster-session-and-delivery.md#119-offline-queue-replication과-backup-v3-수용-매핑), 같은 EC2/EBS 비정상 재시작에서 찾은 취소 상태 결함과 수정 후 검증은 [§11.20](../specs/cluster-session-and-delivery.md#1120-voter-volume-손실-보호와-재시드-수용-매핑)에 둔다. 이 제한된 실행을 전체 DEP·CLU-14 또는 production 성능 수용으로 사용하지 않는다.
 
 시험 후 새 EKS·S3 전용 관리 자원 54개를 삭제했다. 직접 AWS 조회에서 전용 VPC·NLB·EBS 11개·ENI·security group·ASG·IAM·OIDC·S3 bucket·log group 부재와 NAT `deleted`를 확인했다. 두 state의 resource는 0개다. 작업 image 태그·digest 5개를 제거하고 기존 공유 image와 보호 snapshot 세 개는 유지했다. 필요한 archive·설정·감사·state/plan 기록은 DPAPI `CurrentUser`로 암호화했다. 상세는 `.artifacts/verification/eks-resume-20261015T000337Z-21df3b/final-summary.json`, `direct-cleanup-verification.json`, `iam-nat-cleanup-verification.json`을 따른다. 전체 CloudWatch 로그는 수집하지 않았다.
+
+### 계획된 다른 worker의 EBS 복구 (2026-10-15)
+
+별도 state·새 VPC의 합성 fixture에서 기존 3-AZ broker 배치를 사용했다. 이동 대상 volume과 같은 AZ에 임시 worker 하나를 추가했다. 기존 worker의 신규 scheduling을 막은 뒤 broker의 `SAFE_TO_STOP`을 확인하고 해당 Pod UID를 삭제했다. 새 worker가 같은 PVC·PV·EBS를 연결했으며 broker와 MQTT 상태가 복구됐다. 이는 계획된 이동 경로이며 EC2·AZ·volume 장애 경로는 아니다. 실행 파일·결과와 자원 정리는 [Drain §10의 수용 기록](../specs/drain-and-rolling-update.md#계획된-cross-worker-ebs-복구-수용-2026-10-15)을 따른다. 제품 코드와 배포 template은 바꾸지 않았다.
+
 
 ## Physical deployment view
 
