@@ -194,6 +194,36 @@ aws ecr batch-delete-image --profile $AwsProfile --region ap-northeast-2 --repos
 ```
 
 삭제 전에 각 태그와 digest가 기록된 작업 산출물과 일치하는지 확인하세요. 소유한 정확한 `imageTag`만 삭제하고, `imageDigest`로는 삭제하지 마세요. 다른 태그나 공유 저장소도 삭제하지 마세요. 동일 manifest에 다른 태그 참조가 있으면 작업 태그만 제거하고 나머지 참조는 그대로 두세요. 작업 전용 저장소는 계획되어 있지 않습니다. 공유 저장소를 안전하게 사용할 수 없다면 별도 정리 계획과 승인을 받기 전까지 중단하세요.
+
+#### Argo CD health mapping 연결과 확인
+
+승인된 격리 EKS fixture에서만 시험한다. 먼저 Argo CD의 application-controller·repo-server·Redis가 Ready인지 확인한다. `NaruMQRollout` CRD와 실제 Git source를 사용하는 Application도 있어야 한다. Status를 직접 주입하는 시험은 NaruMQ controller가 없는 전용 health 시험 CR에만 수행한다. 실제 rollout CR의 status를 바꾸면 안 된다.
+
+저장소 루트의 PowerShell에서 기존 Lua를 Argo CD ConfigMap에 연결한다. `$FixtureKubeconfig`와 `$FixtureContext`는 해당 fixture의 전용 kubeconfig와 context다. 아래 namespace는 시험에서 사용한 `argocd`다. 운영 Argo CD에 적용하는 명령이 아니다.
+
+```powershell
+$Lua = Get-Content -Raw 'deploy/kubernetes/rollout-controller/argocd-health.lua'
+$Patch = @{ data = @{ 'resource.customizations.health.narumq.io_NaruMQRollout' = $Lua } }
+$PatchPath = [System.IO.Path]::GetTempFileName()
+try {
+    [System.IO.File]::WriteAllText($PatchPath, ($Patch | ConvertTo-Json -Depth 3), [System.Text.UTF8Encoding]::new($false))
+    kubectl --kubeconfig $FixtureKubeconfig --context $FixtureContext -n argocd patch configmap argocd-cm --type=merge --patch-file $PatchPath
+} finally {
+    Remove-Item $PatchPath
+}
+```
+
+Argo CD `v3.5.5`는 리소스별 health를 기본적으로 Application CR이 아닌 application tree에 저장한다. Kubernetes API로 리소스·Application health를 함께 관찰할 때는 시험 controller에 공식 옵션을 켠다. 이는 관찰 설정이며 NaruMQ Lua 판정은 바꾸지 않는다.
+
+```powershell
+kubectl --kubeconfig $FixtureKubeconfig --context $FixtureContext -n argocd set env statefulset/argocd-application-controller ARGOCD_APPLICATION_CONTROLLER_PERSIST_RESOURCE_HEALTH=true
+kubectl --kubeconfig $FixtureKubeconfig --context $FixtureContext -n argocd rollout status statefulset/argocd-application-controller --timeout=180s
+```
+
+실제 Git sync가 `Synced`이고 비교 오류가 없는 상태에서 리소스와 Application의 health를 함께 확인한다. 초기 비교가 repo-server 준비 전 실패했다면 준비 완료 뒤 해당 Application에 `argocd.argoproj.io/refresh=hard` annotation을 설정한다. `Healthy` 하나만 보고 통과로 판정하지 않는다. 비교에 실패해 대상 리소스가 없는 초기 Application도 `Healthy`로 관찰됐기 때문이다. 상태·전이별 기대값과 실행 증거는 [Drain §10의 Argo CD 수용 기록](../specs/drain-and-rolling-update.md#argo-cd-health-소비자-수용-2026-10-15)을 따른다.
+
+Health 시험은 broker 교체 수용과 별개다. 시험 후 전용 CR·Application·Argo CD namespace와 새 AWS fixture 자원을 정리한다. 제품 코드의 구조와 호출 경로는 바꾸지 않았으므로 코드 지도와 모듈 설계는 갱신하지 않았다.
+
 #### 주요 코딩 컨벤션 요약
 - **식별자 명명:** 역할에 맞는 접두사와 접미사를 붙인다.
   - 저장소 포트: `*Repository` (예: `SessionRepository`)
