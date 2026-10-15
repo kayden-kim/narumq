@@ -136,7 +136,7 @@
 
 목록 조회 및 시드 Job 매니페스트는 `deploy/kubernetes/eks-ec2-ha-s3`에 있지만 해당 overlay의 Kustomize 적용 대상에는 포함하지 않는다. 아래 절차의 지정된 시점에만 `kubectl create -f`로 실행한다. 고정 AWS 자격 증명은 사용하지 않는다.
 
-1. **실패한 업로드 파일을 보존한다.** 예약 백업 CronJob은 새 archive를 요청하기 전에 PVC의 게시된 `backup-*.nrbak.staged` directory에 있는 요청을 먼저 처리한다. `PutObject`가 실패하거나 SHA-256 응답이 다르면 archive와 JSON 요청 기록을 함께 남겨 둔다. 다음 Job은 같은 SHA에서 파생된 key로 재시도한다. 게시 directory의 파일을 삭제·이름 변경·수정하지 않는다. 게시 전 중단된 `.staging-*`는 자동 업로드하지 않으므로 필요하면 증거를 보존해 운영자에게 전달한다. 요청 기록이 없는 기존 archive는 S3 업로드 대상으로 삼지 않으며 기존 로컬 `mtime +30` 정리만 적용한다.
+1. **실패한 업로드 파일을 보존한다.** 예약 백업 CronJob은 새 archive를 요청하기 전에 PVC의 게시된 `backup-*.nrbak.staged` directory에 있는 요청을 먼저 처리한다. `PutObject`가 실패하거나 SHA-256 응답이 다르면 archive와 JSON 요청 기록을 함께 남겨 둔다. 다음 Job은 같은 SHA에서 파생된 key로 재시도한다. 게시 directory의 파일을 삭제·이름 변경·수정하지 않는다. 게시 전 중단된 `.staging-*`는 자동 업로드하지 않는다. 아래 offline maintenance 절차로만 복구·정리한다. 요청 기록이 없는 기존 archive는 S3 업로드 대상으로 삼지 않으며 기존 로컬 `mtime +30` 정리만 적용한다.
 
 2. **복원 전용 IAM 역할로 백업 목록을 조회한다.** 저장소 루트에서 임시 목록 조회 Job을 생성하고, 생성된 Job 이름을 기록한다.
 
@@ -204,6 +204,33 @@
 | 새 요청 기록 기반 archive 업로드 | 일치하는 S3 checksum 응답을 확인한 뒤에만 로컬 staging 파일을 정리한다. 실패하면 archive와 요청 기록을 모두 남겨 재시도한다. |
 | 기존 로컬 archive | 자동 이관하거나 형식을 파싱하지 않는다. 기존 로컬 `mtime +30` 정리만 적용한다. |
 | 30일 보존 및 RPO/RTO | Lifecycle 설정은 구성 확인 증거다. 실제 30일 경과 보존과 지속적인 일일 백업 RPO ≤ 24h는 반복 실행이 필요하다. 2026-10-15 격리 합성 fixture에서 목록 조회·다운로드·새 PVC 3개 seed·Ready·quorum·기존 MQTT session/retained 읽기까지 전체 RTO 124.79초를 검증했다([Cluster §11.9](../specs/cluster-session-and-delivery.md#119-offline-queue-replication과-backup-v3-수용-매핑)). 이 한 번의 실행은 production 데이터 크기나 남은 시간 기반 수용을 대신하지 않는다. |
+
+### 미게시 staging의 offline 복구·정리
+
+이 절차는 게시 전 Pod 종료로 남은 `.staging-XXXXXXXX` 하나만 처리한다. AWS 요청을 보내지 않는다. 파일 내용은 고객 데이터를 포함할 수 있으므로 비공개로 보존한다. 자동 스캔·오래된 파일 일괄 삭제는 하지 않는다.
+
+1. **모든 backup 쓰기를 중지한다.** CronJob을 suspend한 뒤 기존 예약 Job과 수동 Job의 backup producer·uploader가 모두 종료됐는지 확인한다. Maintenance 중에는 새 Job을 시작하지 않는다. CronJob의 `Forbid`나 `suspend`만으로 수동 Job까지 멈췄다고 판단하지 않는다.
+2. **백업 PVC를 maintenance 작업에만 연결한다.** Python 3가 있는 신뢰한 Linux 관리 container에 해당 PVC를 `/backups`로 연결한다. 기존 S3 helper ConfigMap의 `/scripts/s3_uploader.py`를 사용한다. AWS token은 필요 없다. 다른 작업의 mount·쓰기 상태를 확인할 수 없으면 진행하지 않는다.
+3. **정확한 directory 이름과 파일 목록을 확인한다.** `.staging-XXXXXXXX` 하나의 이름을 선택한다. Wildcard나 상위 경로를 명령에 넘기지 않는다. 필요한 증거를 보호된 저장소에 보존한다.
+4. **완성된 요청과 archive 쌍을 복구한다.** 관리 container 안에서 실행한다. 아래 `.staging-Ab12Cd34`는 확인한 실제 이름으로 바꾼다.
+
+   ```sh
+   python3 /scripts/s3_uploader.py recover-stage .staging-Ab12Cd34 --offline
+   ```
+
+   명령은 기존 metadata·요청 파일 이름·archive 크기·전체 SHA-256을 검사한다. 성공하면 기존 이름의 `<archive filename>.staged`로 directory를 게시한다. 이미 게시된 같은 경로가 있거나 검증에 실패하면 원본을 남기고 종료한다. Metadata를 추정하거나 손으로 고치지 않는다. 복원 적합성은 기존 offline restore CLI가 따로 검사한다.
+
+5. **복구할 수 없는 잔여만 명시적으로 정리한다.** 다른 유효한 백업이 있고 필요한 증거를 보존했는지 먼저 확인한다. 삭제는 되돌릴 수 없다. Directory 안의 부분 archive·부분 request만 제거하며, 다른 백업·게시 directory는 바꾸지 않는다.
+
+   ```sh
+   python3 /scripts/s3_uploader.py discard-stage .staging-Ab12Cd34 --offline
+   ```
+
+   예상 밖 파일, 하위 directory, symlink 또는 서로 다른 backup의 파일이 있으면 거절한다. 강제로 지우지 말고 증거를 보존해 담당자에게 전달한다.
+
+6. **Maintenance 작업을 끝낸 뒤 예약 백업을 재개한다.** 복구한 게시 directory는 다음 정상 uploader가 기존 checksum 확인 절차로 전송한다. `.staged` 게시만으로 S3 업로드 성공을 선언하지 않는다. `--offline`은 운영자가 중지 상태를 확인했다는 명시적 조건이며 자동 잠금이나 Kubernetes 상태 검사는 아니다.
+
+로컬 검증 명령·실제 shell 중단 smoke·한계는 [Cluster §11.9](../specs/cluster-session-and-delivery.md#119-offline-queue-replication과-backup-v3-수용-매핑)에 있다. 실제 EBS 전원 손실·S3 장애 matrix 수용은 별도다.
 
 ## 7. 해결되지 않을 때 전달할 대상
 

@@ -46,6 +46,9 @@ print(checksum)
 """,
  'mv': """#!/usr/local/bin/python3
 import os,pathlib,signal,subprocess,sys
+if os.environ.get('INTERRUPT_PREPUBLICATION')=='1' and pathlib.Path(sys.argv[-1]).name.endswith('.staged'):
+    os.kill(os.getppid(),signal.SIGKILL)
+    sys.exit(1)
 subprocess.run(['/bin/mv']+sys.argv[1:],check=True)
 # Stop the producer after its validated archive moves but before request publication.
 if os.environ.get('INTERRUPT_ARCHIVE_MOVE')=='1' and pathlib.Path(sys.argv[-1]).name.endswith('.nrbak'):
@@ -66,6 +69,15 @@ assert result.returncode == -signal.SIGKILL, (result.returncode,result.stderr)
 # An interrupted unpublished transaction must not strand a visible new archive.
 assert list(root.glob('backup-*.nrbak')) == [legacy], 'archive became visible before its request'
 assert not list(root.glob('backup-*.nrbak.staged')), 'incomplete transaction was published'
+incomplete=next(root.glob('.staging-*'))
+original_incomplete={p.name:p.read_bytes() for p in incomplete.iterdir()}
+result=subprocess.run(['python3',uploader,'recover-stage',incomplete.name,'--offline'],env=env,capture_output=True,text=True,timeout=10)
+assert result.returncode!=0 and {p.name:p.read_bytes() for p in incomplete.iterdir()}==original_incomplete
+result=subprocess.run(['python3',uploader,'discard-stage',incomplete.name],env=env,capture_output=True,text=True,timeout=10)
+assert result.returncode==2 and incomplete.exists(), 'missing offline acknowledgement allowed mutation'
+result=subprocess.run(['python3',uploader,'discard-stage',incomplete.name,'--offline'],env=env,capture_output=True,text=True,timeout=10)
+assert result.returncode==0 and not incomplete.exists(),(result.stdout,result.stderr)
+assert legacy.read_bytes()==b'legacy-do-not-upload'
 second='22222222-2222-2222-2222-222222222222'
 state=pathlib.Path('/run/narumq-backup')/second
 state.mkdir(parents=True); (state/'uploader.ready').touch()
@@ -89,7 +101,47 @@ try:
  assert metadata['filename'] in records[0]['key'], 'pending archive was not retried first'
  assert legacy.read_bytes()==b'legacy-do-not-upload'
  assert not list(root.glob('backup-*.nrbak.staged')), 'uploaded transaction was not cleaned'
- print('PASS: interruption before/after publication, new Pod pending retry, checksum, legacy preservation, committed staging cleanup')
+ fourth='44444444-4444-4444-4444-444444444444'
+ state=pathlib.Path('/run/narumq-backup')/fourth
+ state.mkdir(parents=True); (state/'uploader.ready').touch()
+ result=subprocess.run(['bash',producer],env=dict(env,BACKUP_RUN_ID=fourth,INTERRUPT_PREPUBLICATION='1'),capture_output=True,text=True,timeout=20)
+ assert result.returncode==-signal.SIGKILL,(result.returncode,result.stderr)
+ complete=next(root.glob('.staging-*'))
+ original={p.name:p.read_bytes() for p in complete.iterdir()}
+ assert len(original)==2 and not list(root.glob('backup-*.nrbak.staged'))
+ result=subprocess.run(['python3',uploader,'recover-stage',complete.name,'--offline'],env=env,capture_output=True,text=True,timeout=10)
+ assert result.returncode==0,(result.stdout,result.stderr)
+ published=root/json.loads(result.stdout)['publishedDirectory']
+ assert not complete.exists() and {p.name:p.read_bytes() for p in published.iterdir()}==original
+ fifth='55555555-5555-5555-5555-555555555555'
+ final_upload=subprocess.Popen(['python3',uploader],env=dict(env,BACKUP_RUN_ID=fifth),stdout=subprocess.PIPE,stderr=subprocess.PIPE,text=True)
+ try:
+  deadline=time.monotonic()+15
+  while published.exists() and time.monotonic()<deadline:
+   time.sleep(0.05)
+  assert not published.exists(), 'recovered archive was not uploaded'
+  state=pathlib.Path('/run/narumq-backup')/fifth
+  (state/'main.done').touch()
+  out,err=final_upload.communicate(timeout=10)
+  assert final_upload.returncode==0,(out,err)
+ finally:
+  if final_upload.poll() is None: final_upload.kill(); final_upload.wait()
+ records=[json.loads(line) for line in pathlib.Path('/tmp/uploads').read_text().splitlines()]
+ assert len(records)==3 and records[-1]['sha256']==hashlib.sha256(archive).hexdigest()
+ assert legacy.read_bytes()==b'legacy-do-not-upload'
+ assert not list(root.glob('.staging-*'))
+ # Reject symlink escapes on the actual Linux filesystem, preserving their targets.
+ external=pathlib.Path('/tmp/external'); external.mkdir()
+ (external/'keep').write_bytes(b'outside data')
+ linked=root/'.staging-Ab12Cd34'; linked.symlink_to(external,target_is_directory=True)
+ result=subprocess.run(['python3',uploader,'discard-stage',linked.name,'--offline'],env=env,capture_output=True,text=True,timeout=10)
+ assert result.returncode!=0 and (external/'keep').read_bytes()==b'outside data'
+ linked.unlink()
+ linked.mkdir()
+ (linked/('backup-20261015T000000Z-42-'+'a'*64+'.nrbak')).symlink_to(external/'keep')
+ result=subprocess.run(['python3',uploader,'discard-stage',linked.name,'--offline'],env=env,capture_output=True,text=True,timeout=10)
+ assert result.returncode!=0 and (external/'keep').read_bytes()==b'outside data'
+ print('PASS: real shell interruption, explicit offline incomplete discard, complete pair recovery/upload, no AWS network, legacy and symlink target preservation')
 finally:
  if upload.poll() is None: upload.kill(); upload.wait()
 '''

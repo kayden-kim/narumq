@@ -436,4 +436,4 @@ Cluster config와 security config 예제는 [§1.3](#13-cluster-config-json)과 
 ## 6. 초안을 확정하기 전에 해결할 사항
 
 - 별도 contract 시험이 §1 표와 실제 parser를 대조해야 `Active`로 전환할 수 있다.
-- [docs/TODO.md §1.10](../TODO.md#110-실행-옵션설정-구조)의 G1~G10에서 설정 구조의 결정·미구현 차이를 추적한다.
+- 채택한 G1~G10의 완료 범위와 나머지 Proposed 범위는 [docs/TODO.md §1.10](../TODO.md#110-실행-옵션설정-구조)과 연결된 설정 스펙의 수용 매핑을 따른다.

@@ -389,22 +389,28 @@ GOMAXPROCS=4 go test ./tests/integration -run '^(TestDynamicClusterNodeDrainProc
 
 ### EKS worker observer 보완 기준
 
-검증 도구를 저장소에서 관리하도록 보완했다. 제품의 복구 정책·API 예산·drain gate는 바꾸지 않았다. 적용 범위는 전용 합성 fixture의 관찰과 operator fencing 판정이다. 실제 EKS 장애 재시험은 아직 실행하지 않았다.
+검증 도구를 저장소에서 관리하도록 보완했다. 제품의 복구 정책·API 예산·drain gate는 바꾸지 않았다. 적용 범위는 전용 합성 fixture의 관찰과 operator fencing 판정이다. 로컬 검증 뒤 실제 EKS 재시험을 한 번 실행했다. 결과와 한계는 [생존 Pod 고정 observer의 EKS 재시험](#생존-pod-고정-observer의-eks-재시험-2026-10-15)을 따른다.
 
 - 관리 API와 MQTT는 독립된 작업에서 각각 표본을 기록한다. API 조회 실패·지연 때문에 MQTT 표본을 생략하지 않는다. API client 제한 시간은 서버의 전체 5초 query 예산보다 긴 10초다.
+- Fault mode는 plan에 지정한 생존 Pod의 UID·worker·provider instance를 확인한다. 대상 Pod·worker·instance와 같거나 Ready가 아니면 fault를 주입하지 않는다. 도구가 직접 그 Pod 하나에 관리 API·MQTT port-forward를 열고 두 port의 준비와 Pod identity를 재확인한다. 기존 port를 재사용하거나 service/LB로 연결하지 않는다. Tunnel이 중단되면 재연결·다른 Pod 전환 없이 실패로 남긴다. Fault 직전 identity·tunnel 생존을 다시 확인하고, 관찰과 MQTT 종료 후 tunnel도 종료한다.
 - 각 표본은 시작·종료 시각과 결과를 기록한다. 오류가 있어도 표본을 남기고, 실패·관찰 공백을 성공으로 바꾸지 않는다. 인증 값과 오류의 비밀 원문은 기록하지 않는다.
 - Operator Node 변경은 AWS에서 대상 instance가 `terminated`임을 확인한 뒤에만 허용한다. Patch 직전에도 종료 상태를 확인한다. 기존 Node UID·provider instance가 다르면 해당 Node를 변경하지 않는다. 기존 taint를 보존하고 `node.kubernetes.io/out-of-service:NoExecute`를 추가한다. 같은 key의 `NoSchedule`만으로는 이 조건을 충족하지 않는다.
 - Node patch 명령이 실패하면 fresh GET으로 현재 Node를 읽는다. 삭제·UID 교체·resourceVersion 변경·같은 상태를 구분해 기록한다. 실패한 JSON Patch 연산이나 실제 적용 여부를 응답 없이 추정하지 않으며 patch를 자동 반복하지 않는다. 이후에는 읽기 전용으로 대체 Pod 복구를 관찰한다. 상태 변화가 없는 실패나 변경 후 taint 미확인은 전체 결과를 실패로 남긴다.
+- Fencing 결과가 `out_of_service` 또는 `already_out_of_service`이면 기존 대상 Pod 하나를 Pod UID precondition과 `gracePeriodSeconds=0`으로 한 번 삭제한다. 삭제 직전에 EC2 `terminated`, 기존 Node UID·provider instance·out-of-service `NoExecute` taint, Pod UID·`spec.nodeName`을 다시 읽는다. 하나라도 다르거나 Node가 없으면 삭제하지 않고 이유를 기록한다. 삭제 명령이 실패하면 fresh GET으로 Pod를 읽고 자동 반복하지 않는다. 같은 UID가 남아 있는 결과(`failed_unexplained`·`delete_unconfirmed`)는 전체 결과를 실패로 남긴다. 이유: EC2 terminate에서는 cloud controller가 Node와 taint를 먼저 지울 수 있다. 그러면 Kubernetes가 taint를 근거로 하는 Pod 강제 삭제와 즉시 detach를 하지 못하고 기본 6분 force detach 대기에 들어간다고 본다 [INFERENCE]. 이 삭제는 PodGC가 NotReady·out-of-service Node에서 하는 강제 삭제를 Node가 사라지기 전에 앞당긴다. 기존 EC2가 `terminated`일 때만 허용하므로 이전 instance가 같은 EBS에 쓰는 경로는 없다. EBS force detach와 VolumeAttachment 삭제는 하지 않는다. 근거는 [EBS detach 대기 분석](../../.artifacts/analysis/ebs-detach-wait-analysis.md)이다.
+- 복구 표본마다 대상 PV의 VolumeAttachment(`nodeName`·`attached`·삭제 시각·detach 오류 시각)와 EBS attachment(instance·state)를 함께 기록한다. 이 조회가 실패해도 오류 종류만 남기고 복구 관찰은 계속한다.
 - 관찰 작업은 fault와 복구 판정 동안 계속 실행한다. 종료 시 진행 중인 probe가 끝나고 표본 파일이 닫혔는지 확인한다. 기록 실패나 작업 종료 실패가 있으면 전체 관찰을 통과로 표시하지 않는다.
-- 로컬 회귀·실제 MQTT와 Kubernetes API smoke는 observer의 동작만 검증한다. 실제 EC2 장애·EBS 재연결·연속 운영 가용성 gate는 별도 EKS 실행 전까지 열린 상태다.
+- 로컬 회귀·실제 MQTT와 Kubernetes API smoke는 observer의 동작만 검증한다. 실제 EC2 장애·EBS 재연결 판정은 EKS 실행 기록만 근거로 쓴다. 연속 운영 가용성과 전체 장애 matrix는 계속 열린 gate다.
+- 진단용 `nodes` 표본은 fault mode에서만 약 4초 간격으로 생존 Pod의 `GET /api/v1/nodes` 첫 페이지를 읽어 노드별 7개 필드만 `nodes-samples.jsonl`에 남긴다. 이 스트림은 관찰 전용 부하이며 PASS/FAIL 판정에 쓰지 않는다. 다만 표본 기록 실패와 작업 종료 실패는 전체 관찰을 실패로 만든다.
+- Fault 요청 전에 `nodes` 첫 표본이 끝나기를 최대 20초 기다린다. 결과는 `monitor.diagnostics.nodes.baseline`에 남긴다. `available`은 첫 완료 표본이 성공했을 때만 참이다. 한도까지 표본이 없거나 실패해도 fault는 진행하고 PASS/FAIL 판정은 바뀌지 않는다. `faultRequestedAt`은 AWS 요청 직전에 기록한다.
+- Cycle 1에서는 `monitor.diagnostics.nodes.baseline`이 fault 전에 available이었다. 세 node 모두 약 0.03초에 `OK`였다. [Cycle 1 결과](../../.artifacts/verification/eks-unknown-retest-20261015T135242Z/fault/cycle-1/eks-unknown-retest-20261015T135242Z-2b7e10/summary.json)를 따른다.
 
 #### 구현과 로컬 검증 (2026-10-15)
 
 진입점은 [main.py](../../tests/chaos/eks-worker-recovery/main.py)의 `main`이다. `monitor`는 읽기 전용 관리 조회와 합성 MQTT QoS 1 publish를 실행한다. `IndependentMonitor`는 [observer.py](../../tests/chaos/eks-worker-recovery/observer.py)에서 두 작업의 JSONL 표본·오류·종료를 관리한다. 예를 들어 API 응답이 6초 걸려도 MQTT 작업은 기다리지 않고 PUBACK을 기록한다. 표본 사이의 가용성은 추정하지 않는다.
 
-`fault`는 명시한 `--execute`와 별도 plan이 있어야 실행한다. `preflight`에서 전용 namespace·account·cluster·Pod/Node/EC2·PVC/PV/EBS·같은-AZ 여분 worker·완료 snapshot을 확인한다. 이후 `observe_fault`가 단일 follower EC2를 종료하고 `fence_node`의 fresh 관찰 뒤 대체 Pod·volume attachment를 읽는다. Persistent session·오프라인 payload·retained oracle은 별도 시나리오다. 명령의 PASS를 그 시나리오나 전체 DEP gate의 PASS로 쓰지 않는다. 준비와 실행 방법은 [개발 가이드](../how-to/development-guide.md#eks-worker-observer-실행)를 따른다.
+`fault`는 명시한 `--execute`와 별도 plan이 있어야 실행한다. `preflight`에서 전용 namespace·account·cluster·Pod/Node/EC2·PVC/PV/EBS·같은-AZ 여분 worker·완료 snapshot을 확인한다. 이후 `observe_fault`가 단일 follower EC2를 종료하고 `fence_node`의 fresh 관찰 뒤 `release_fenced_pod`로 기존 대상 Pod를 한 번 삭제한다. 결과는 `pod-release-observation.json`과 summary의 `recovery.podRelease`에 남는다. 이후 대체 Pod·volume attachment를 읽고, `recovery-observations.json`의 각 표본에 Pod 삭제 시각, 기존 Node의 존재·taint·Ready, VolumeAttachment와 EBS attachment 상태를 기록한다. Persistent session·오프라인 payload·retained oracle은 별도 시나리오다. 명령의 PASS를 그 시나리오나 전체 DEP gate의 PASS로 쓰지 않는다. 준비와 실행 방법은 [개발 가이드](../how-to/development-guide.md#eks-worker-observer-실행)를 따른다.
 
-로컬 회귀 파일은 [test_eks_worker_recovery.py](../../tests/test_eks_worker_recovery.py)다. `python -B tests/test_eks_worker_recovery.py -v`로 17개 시험을 통과했다. CI에도 별도 단계로 연결했다. `go run ./tools/verify local`은 이 Python 시험을 실행하지 않는다.
+로컬 회귀 파일은 [test_eks_worker_recovery.py](../../tests/test_eks_worker_recovery.py)다. `python -B -W error::ResourceWarning tests/test_eks_worker_recovery.py`로 48개 시험을 통과했다(2026-10-15, 기존 Pod 해제 시험 9개 추가). CI에도 별도 단계로 연결했다. `go run ./tools/verify local`은 이 Python 시험을 실행하지 않는다.
 
 | 보완 기준 | 회귀 시험 이름 | 실제 표면 확인 |
 | --- | --- | --- |
@@ -414,9 +420,104 @@ GOMAXPROCS=4 go test ./tests/integration -run '^(TestDynamicClusterNodeDrainProc
 | 종료·UID·provider identity 경계 | `FenceTests.test_nonterminated_instance_never_allows_node_mutation`, `test_state_change_before_patch_blocks_mutation`, `test_absent_or_replaced_node_is_never_mutated`, `test_provider_change_with_same_uid_does_not_fence_another_instance` | 실제 Kind API의 합성 Node를 사용. `running` 입력에서는 patch 0회 |
 | CAS·삭제·교체·응답 유실 뒤 새 조회, 재시도 금지 | `FenceTests.test_stale_resource_version_is_refreshed_without_retry_or_cause_claim`, `test_delete_during_patch_resumes_read_only_observation`, `test_uid_replacement_during_patch_does_not_mutate_the_replacement`, `test_unchanged_rejection_is_not_classified_as_a_known_cas_failure`, `test_response_loss_does_not_claim_our_mutation_was_applied` | 실제 API에서 RV 갱신·UID 교체·Node 삭제를 patch 직전에 수행. 각각 patch 1회만 시도하고 현재 상태를 기록. kubectl 1ms deadline 실패도 fresh GET 뒤 실패 원인·적용 여부를 미확정으로 유지 |
 | 기존 taint 보존·NoExecute 확인 | `FenceTests.test_patch_preserves_taints_and_requires_both_identity_preconditions`, `test_already_fenced_node_is_not_patched_again`, `test_noschedule_alone_does_not_establish_the_required_noexecute_fencing` | 실제 API의 정상 추가와 기존 NoSchedule만 있는 Node에서 확인. 기존 maintenance taint와 NoSchedule을 보존 |
+| 기존 Pod 해제: 종료·fencing·Node identity 경계 | `PodReleaseTests.test_nonterminated_instance_never_allows_pod_deletion`, `test_unfenced_outcomes_never_delete`, `test_node_must_still_exist_with_the_same_identity_and_taint` | Kind 1.31.2 API에서 taint 제거 Node와 삭제된 Node에 대해 삭제 0회 |
+| 기존 Pod 해제: UID 조건 1회 삭제·대체 Pod 보존·재시도 금지 | `PodReleaseTests.test_fenced_terminated_node_releases_the_old_pod_once_with_its_uid`, `test_replacement_or_moved_pod_is_never_deleted`, `test_replacement_created_during_delete_is_kept_and_attempt_is_not_retried`, `test_rejected_delete_with_old_pod_remaining_is_unexplained_without_retry`, `test_accepted_delete_that_leaves_the_old_pod_is_unconfirmed` | Kind API에서 kubelet 없는 Node의 Terminating Pod를 `delete --raw` grace 0으로 제거. 다른 UID 조건은 API가 거절하고 Pod를 유지. 같은 이름의 새 UID Pod는 삭제하지 않음 |
+| 해제 실패의 판정·attachment 표본 | `DiagnosticBaselineWiringTests.test_old_pod_that_survives_the_release_attempt_fails_the_run` | Kind API의 VolumeAttachment 2개 중 대상 PV 1개만 기록. EBS 조회 실패는 오류 종류만 남김. EBS 응답은 통제된 입력 |
+
+기존 Pod 해제의 실제 API 확인은 [Kind 기록](../../.artifacts/verification/pod-release-local-20261015T1625Z/kind-release-proof.json)을 따른다. Kind에는 attach-detach controller가 EBS를 붙이는 경로가 없다. 따라서 이 기록은 삭제 조건만 확인하며 detach 단축의 증거가 아니다. Kind cluster는 시험 뒤 삭제했다.
 
 기록은 [최종 결과](../../.artifacts/verification/worker-observer-local-20261015T071513Z/final-summary.json), [6초 지연](../../.artifacts/verification/worker-observer-local-20261015T071513Z/delayed-api-proof.json), [10초 deadline 실패 보존](../../.artifacts/verification/worker-observer-local-20261015T071513Z/deadline-api-proof.json), [Kubernetes 7개 경계](../../.artifacts/verification/worker-observer-local-20261015T071513Z/kubernetes-fencing-proof.json)를 따른다. Python 3.14·Paho MQTT 2.1.0, Docker의 실제 broker 3개와 Kind Kubernetes 1.31.2를 사용했다. Broker는 기존 `9c96670` 합성 image를 사용했다. 로컬 broker의 준비 상태는 시험용 GET으로 확인했다. 이를 EKS startup probe 증거로 쓰지 않는다.
 
 Kubernetes 시험의 EC2 상태는 통제된 입력이다. AWS 종료·EBS 재연결 증거가 아니다. 사용한 broker container 3개·network·Kind cluster·새 private directory는 삭제했다. AWS 자원은 생성하지 않았다. 기존 암호화 입력과 공유 image는 보존했다. 제품 Go 코드·의존 흐름은 바꾸지 않아 전체 local suite는 실행하지 않았다. 원격 CI도 이 작업에서는 실행하지 않았다. Workflow YAML 구문 확인과 문서 링크 검사는 통과했다. 과거 local suite 실패·최초 EKS observer 실패·`CLU-14 FAILED/UNRESOLVED`는 유지한다.
 
-다음 EKS 작업은 새 격리 fixture에서 이 observer를 fault 전부터 복구 완료까지 실행하는 시험이다. 단일 follower `SkipOsShutdown` 종료, 동일 EBS의 다른 worker 연결, 관찰 공백 없는 API·MQTT 표본과 별도 persistent payload oracle이 모두 필요하다. 이번 로컬 통과로 이 gate를 닫지 않는다. 코드 지도에는 검증 도구의 진입점만 추가했으며 제품 모듈 설계는 변경하지 않았다.
+이 절의 로컬 통과는 EKS gate를 닫지 않았다. 이후 실제 EKS 재시험은 아래 절에 기록한다. 코드 지도에는 검증 도구의 진입점만 추가했으며 제품 모듈 설계는 변경하지 않았다.
+
+#### 생존 Pod의 관찰 경로 고정 (2026-10-15)
+
+기존 fault observer는 외부에서 연 두 port의 대상 identity를 확인하지 않았다. Cluster summary만으로는 요청을 받은 Pod를 특정할 수 없다. 대상 worker로 잘못 연결하면 fault와 함께 관찰도 끊길 위험이 있다.
+
+`main`은 fault plan의 `observerPod`·`observerPodUID`·`observerWorkerName`·`observerInstanceId`로 `SurvivorTunnel`을 시작한다. 이 class는 실제 Pod·Node·provider와 EC2 running 상태를 확인한 뒤 kubectl을 직접 실행한다. `23880:8080`과 `23883:1883`을 지정 Pod 하나에 연결하고 두 port의 준비 뒤 identity를 다시 읽는다. Fault 직전에도 identity·process를 확인한다. `observer-endpoint.json`과 summary에 확인한 identity를 기록한다. 각 관찰 작업은 process 종료를 실패로 기록한다. 관찰과 MQTT 종료 뒤 소유한 tunnel·출력 thread를 닫는다. `monitor` mode의 외부 tunnel은 이 검증 범위가 아니다.
+
+기준은 위 observer 계약이며 제품의 복구 정책이나 API 형식은 바꾸지 않았다. 변경 파일은 `main.py`의 tunnel lifecycle, `tests/test_eks_worker_recovery.py`의 안전 경계, 실행 절차와 코드 지도다. 예를 들어 plan의 생존 Pod UID가 연결 준비 중 바뀌면 tunnel을 닫고 fault를 주입하지 않는다.
+
+| 기준 | 시험·확인 방법 | 결과 |
+| --- | --- | --- |
+| 대상 Pod·worker·instance 관찰 거절 | `SurvivorTests.test_target_pod_worker_or_instance_cannot_be_used_as_survivor` | PASS. 세 identity의 충돌을 각각 거절 |
+| 교체·NotReady·삭제 중·종료 instance 거절 | `SurvivorTests.test_changed_identity_notready_or_terminating_survivor_is_rejected` | PASS. Pod UID·worker·provider 불일치와 readiness·deletion·running 경계 확인 |
+| Fault CLI의 거절 기록 | `SurvivorTests.test_fault_cli_persists_refusal_before_mqtt_or_aws_mutation` | PASS. exit 1·summary FAIL, MQTT 시작·AWS mutation 없음 |
+| 실제 두 port의 정확한 Pod 연결 | Kind 1.31.2·kubectl 1.34.1, 실제 Python HTTP/TCP Pod와 `SurvivorTunnel.start` | PASS. 두 port에서 같은 합성 Pod 표식을 확인하고 UID 기록 |
+| 기존 port를 재사용하지 않음 | Host의 23880을 점유한 뒤 실제 kubectl 실행 | PASS. 준비 실패 뒤 소유 process·thread 종료 |
+| 연결 준비 중 UID 교체 | 두 번째 identity GET 전에 실제 Pod 삭제·재생성 | PASS. 다른 UID를 거절하고 tunnel 종료 |
+| Process 종료 뒤 자동 재연결 없음 | 실제 tunnel process 종료 뒤 `check` | PASS. 오류 반환, 같은 종료 process 유지 |
+| 유휴 tunnel의 Pod 삭제 감지 한계 | 실제 Pod 삭제 뒤 kubectl 종료를 25초 기다림 | **예상한 process 종료 대기 실패를 보존**. 유휴 process가 남았다. Process 생존은 Pod 생존의 증거가 아니며 즉시 Pod 손실 감지를 보장하지 않는다. Fault 직전 fresh identity 검사는 별도로 유지한다. |
+
+`python -B tests/test_eks_worker_recovery.py -v`로 기존 시험을 포함한 20개가 통과했다. 검증 대상은 `ef6e561` 이후 미커밋 observer·시험·문서 변경이며 이전 staging/TODO 변경도 작업 트리에 있었다. 실제 로컬 실행은 [runtime 기록](../../.artifacts/verification/survivor-tunnel-20261015T085807Z/runtime-proof.json)과 [최종 기록](../../.artifacts/verification/survivor-tunnel-20261015T085807Z/final-summary.json)을 따른다. EC2 running은 통제된 입력이고 endpoint는 합성 HTTP/TCP다. 이 로컬 실행은 새 MQTT protocol·NaruMQ·AWS/EKS 장애 수용을 통과했다고 주장하지 않는다. 임시 Kind cluster·kubeconfig와 소유 tunnel process·thread는 제거했다. AWS 자원은 생성하지 않았다. 전체 Go local gate와 원격 CI는 실행하지 않았다. 과거 실패는 유지한다.
+
+#### 생존 Pod 고정 observer의 EKS 재시험 (2026-10-15)
+
+결과는 **단일 follower EC2 비정상 종료에 한정한 통과**다. 상태는 `PASS_SINGLE_FOLLOWER_ABRUPT_EC2_OBSERVER_AND_DATA_RECOVERY_LIMITED`다. [결과 기록](../../.artifacts/verification/eks-observer-acceptance-20261015T091838Z-617088/acceptance-result.json)과 [최종 기록](../../.artifacts/verification/eks-observer-acceptance-20261015T091838Z-617088/final-summary.json)을 따른다. 기존 `CLU-14 FAILED/UNRESOLVED`, 과거 최초 observer 실패, 전체 EC2·AZ 장애 matrix와 production 수용은 바꾸지 않는다.
+
+대상 HEAD는 `ef6e561`이고 observer·시험·문서의 미커밋 변경을 포함했다. 제품 코드는 `9c96670`과 같음을 확인했다. 이전 합성 ARM64 broker image를 작업 전용 tag로 다시 게시했고 공유 image는 바꾸지 않았다. 별도 local state·새 VPC의 EKS 1.37, 서로 다른 AZ의 `m7g.large` worker 3대와 새 gp3 PVC 3개를 사용했다. Cluster ID는 run ID다. Startup은 수동 readiness GET 없이 Kubernetes probe로 통과했다. 도구는 Python 3.14, Paho MQTT 2.1.0, kubectl 1.37.1이다. kubectl은 공식 SHA-256과 일치했다.
+
+준비 단계에서 leader는 node 3이었다. 대상은 follower `narumq-1`(node 2, AZ b), 관찰 경로는 다른 worker·instance의 `narumq-0`(AZ a)이다. 대상과 같은 AZ의 Ready worker 한 대를 추가하고, run 전용 snapshot이 `completed`임을 확인했다. 대상 data volume은 암호화돼 있고 `DeleteOnTermination=false`였다. 서로 다른 두 생존 Pod에서 pre-fault drain 기록 조회가 같은 404를 반환했다([조회 기록](../../.artifacts/verification/eks-observer-acceptance-20261015T091838Z-617088/drain-record-read-path.json)). 장애 전 persistent session, retained marker 1개와 오프라인 QoS 1 메시지 3개의 PUBACK 4개를 확인했다. 모두 Reason Code 0이었다.
+
+실행 순서는 다음과 같다. `<private-directory>`와 plan에 필요한 값은 [개발 가이드](../how-to/development-guide.md#eks-worker-observer-실행)를 따른다.
+
+```text
+<venv-python> -B tests/chaos/eks-worker-recovery/payload_oracle.py prepare --private <private-directory> --run-id <run-id> --output <result-directory> --target-port <대상 Pod tunnel port> --publisher-port <생존 Pod tunnel port>
+<venv-python> -B tests/chaos/eks-worker-recovery/main.py fault --private <private-directory> --output <run-directory>/<run-id> --plan <fault-plan.json> --execute
+<venv-python> -B tests/chaos/eks-worker-recovery/payload_oracle.py verify --private <private-directory> --run-id <run-id> --output <result-directory> --target-port <복구된 대상 Pod tunnel port>
+```
+
+`prepare`의 tunnel은 `fault` 시작 전에 닫아야 한다. `fault`가 `23880`·`23883`을 직접 소유하기 때문이다.
+
+| 관찰 항목 | 실제 결과 |
+| --- | --- |
+| Fault 요청·종료 확인·fencing | `SkipOsShutdown=true` 요청 후 17.1초에 `terminated`, 약 19.0초에 out-of-service `NoExecute` taint 적용. Patch 실패와 CAS 거절은 없었다. 기존 Node는 `NodeNotReady` 뒤 cloud controller가 2초 안에 삭제했다. 수동 Pod 삭제와 EBS force detach는 사용하지 않았다. |
+| API·MQTT 관찰 | 도구가 소유한 `narumq-0` tunnel에서 관리 API 203개·MQTT 238개 표본이 모두 성공했다. Fault 요청 뒤 표본은 각각 200개·235개다. 표본 시작 시각 기준 최대 간격은 관리 API 7.065초, MQTT 2.056초다. 관리 API 표본 13개(11:39:02Z~11:40:32Z)는 각각 약 5.03초 걸렸고 모두 `quorumAvailable=true`를 반환했다. 최대 소요는 5.061초다. 이전 표본 종료부터 다음 표본 시작까지의 idle gap은 관리 API 최대 2.016초다. 두 값은 다르다. 종료 때 worker와 journal을 닫았다. |
+| 대체 Pod와 volume | 대체 Pod는 fault 후 95.6초 관측 표본에 나타났다. 같은 AZ의 다른 worker에서 같은 PVC·PV·EBS·VolumeAttachment를 사용했다. 나머지 두 broker Pod UID는 바뀌지 않았다. Broker 3개 Ready와 quorum은 fault 후 471.06초에 관찰했다. |
+| 데이터 oracle | 복구한 broker에서 `sessionPresent=true`, 오프라인 QoS 1 payload hash 3개를 발행 없이 받았다. 중복은 0개, retained hash는 같았다. |
+
+471.06초는 표본으로 관찰한 상한이며 정확한 RTO나 production SLO가 아니다. 관리 API 표본은 장애 구간에서 약 7초 간격까지 벌어졌다. 이전 후속 관찰의 상한 472.829초와 비슷하다. 대체 Pod가 생성된 뒤 `FailedAttachVolume`(`waiting for detach`)이 11:40:35Z부터 11:46:40Z까지 약 365초 이어졌다. 이 대기가 복구 시간의 대부분이다. 이 시험은 제품 코드나 Kubernetes 설정을 바꿔 그 시간을 줄이지 않았다.
+
+세 EKS 실행의 event를 비교하면 detach 대기는 모두 6분 3~5초였다. Out-of-service taint 적용이 실패한 실행과 성공한 두 실행의 대기가 같았다. Node 삭제 시각이 기록된 두 실행에서 cloud controller는 Node가 NotReady가 된 뒤 1~2초 안에 Node를 삭제했고, 대체 Pod는 Node 삭제 45~48초 뒤 생성됐다. Kubernetes `v1.37.0` source에서 PodGC는 NotReady이면서 taint가 있는 Node의 종료 중 Pod만 강제 삭제한다(20초 주기). Attach-detach controller는 Pod object가 삭제되거나 종료 상태가 보고돼야 volume을 detach 대상으로 본다. 그 뒤 Node object에 taint가 있으면 바로 detach하고, 그렇지 않으면 `maxWaitForUnmountDuration`(기본 6분) 뒤 force detach한다. [INFERENCE] EC2 terminate에서는 Node 삭제와 함께 taint도 사라진다. 그래서 taint가 detach를 앞당기지 못하고 6분 기본 대기로 복구된다. EKS patch 차이, controller-manager 로그와 실제 설정값은 확인하지 않았다. 이 분석에 따라 관찰 도구는 taint 확인 직후 기존 Pod를 UID 조건으로 삭제하도록 바뀌었다([EKS worker observer 보완 기준](#eks-worker-observer-보완-기준)). 효과는 [기존 Pod 해제의 EKS 재시험](#기존-pod-해제의-eks-재시험-2026-10-15) 1회에서 확인했다. 근거는 [EBS detach 대기 분석](../../.artifacts/analysis/ebs-detach-wait-analysis.md)에 있다.
+
+함께 보존할 결과와 한계는 다음과 같다.
+
+- 첫 `prepare` 시도는 Windows 예약 TCP 범위(`28814~29013`)에서 `28883` bind에 실패했다. 이 실패는 장애 주입 전이었고 해당 시도는 AWS를 변경하지 않았다. 기존 observer가 대상 Pod의 `28880` tunnel을 가정하던 drain 기록 조회도 같은 범위와 충돌했다. 이를 소유한 생존 Pod tunnel의 cluster-wide 조회로 바꾸고 `DrainRecordTests` 2개를 추가했다. 이후 회귀는 22개가 통과했다. 이 변경은 fault 실행 전에 적용했다.
+- 이번 장애는 follower 하나이며 생존 voter 둘이 quorum을 유지했다. EBS 데이터도 quorum 복제와 함께 쓰이므로 EBS만으로 독립 복구했다는 증거가 아니다. 전체 voter 전원 손실, volume loss/reseed, 단일 AZ 손실, 자연 발생 WAL torn-tail, production 최대 부하와 SLO는 시험하지 않았다.
+- 표본이 모두 성공해도 표본 사이의 연속 가용성은 입증하지 않는다. 관리 API의 7초 간격 동안과 모든 표본 사이의 상태는 알 수 없다. `kubectl port-forward` process 생존은 Pod 생존의 증거가 아니다. 이번 결과는 한 Pod의 tunnel에서 관찰한 표본이다.
+- 앞선 EKS 실행에서는 `nodesByState`가 `ready 1·unknown 2`에서 `ready 2·unknown 1`로 바뀌었다. 생존 node가 `unknown`이 된 원인은 당시 `[INFERENCE]`였다. 그 실행의 로컬 Docker 재현에서는 target 하나만 응답하지 않게 했고 leader의 `unknown`은 나오지 않았다. 추가 S1–S4 실험 8회에서도 재현하지 못했다. 이는 이후 cycle 1 및 DNS 실험과 별개다. [이전 실행 기록](../../.artifacts/verification/eks-observer-acceptance-20261015T091838Z-617088/unknown-repro-local-load.json).
+- 2026-10-15 EKS cycle 1에서는 healthy leader node 2가 quorum을 유지하면서 `unknown`으로 집계됐다. `GET /api/v1/nodes`에서 node 2와 target node 3이 14:18:17.677Z, 14:18:26.711Z, 14:18:35.747Z 시작 표본에서 `UNREACHABLE/node_query_timeout`(5.02–5.03초)이었다. Node 2는 14:18:44.794Z 표본에서 `OK`였다. 비정상으로 관측된 구간은 표본 경계로 23.1–36.2초다. `GET /api/v1/cluster`는 14:18:15.7–14:18:36.9에 `ready 1·unknown 2`였고 이후 `ready 2·unknown 1`이 됐다. Leader 2와 quorum은 203개 표본 전체에서 유지됐다. MQTT QoS 1 PUBACK은 성공했다(9–23ms, 한 건 0.245초). Node 3은 대체 Pod Ready까지 비정상이었다(+473.383초). Oracle 검증은 PASS였다. Node 1·2 broker log에는 이 창의 오류가 없었다. Node 2의 첫 `dynamic peer backpressure` 로그는 14:21:15Z였다. 종료 전 target log는 수집하지 않았다. 두 CoreDNS replica는 종료 worker에 배치돼 있었다. 대체 container는 14:18:40Z에 시작했다. 사후 dump에 남은 Deployment `Available` condition의 전환 시각은 14:18:41Z다. 이 값은 대체 Pod Ready나 DNS 복구 시각이 아니다. DNS probe Pod의 정상 상태 조회 876회는 실패 없이 완료됐다(중앙값 0.002초, 최대 0.012초). Fault 중 DNS 관측은 없었다. EndpointSlice의 구 endpoint 제거 시각과 대체 Pod Ready 시각은 복원할 수 없다. [EKS cycle 1 표본](../../.artifacts/verification/eks-unknown-retest-20261015T135242Z/fault/cycle-1/eks-unknown-retest-20261015T135242Z-2b7e10/nodes-samples.jsonl), [CoreDNS timeline](../../.artifacts/verification/eks-unknown-retest-20261015T135242Z/fault/cycle-1/post-fault/cycle1-coredns-timeline.json). EKS fixture는 시험 뒤 삭제했다. Terraform 41개를 destroy했고 직접 조회 32개 항목이 모두 통과했다. 두 번째 fault cycle은 준비만 하고 실행하지 않았다. [직접 정리 확인](../../.artifacts/verification/eks-unknown-retest-20261015T135242Z/direct-cleanup-verification.json).
+- 로컬 Docker DNS 실험은 8회 수행했다. D1 resolver pause와 UDP/TCP DROP에서 건강한 node 2와 node 3은 먼저 약 5초 `node_query_timeout`, 이어 빠른 `node_unreachable`이 됐다. `unknown=2`, leader 2, quorum은 유지됐고 MQTT QoS 1은 475/475 성공했다. D2는 DNS가 정상인 채 node 3을 pause했으며 node 3만 비정상이었다. D3은 DNS를 약 25초 차단한 동안 node 3도 pause했다. DNS 복구 후 node 2는 `OK`가 됐고 node 3은 peer 복구까지 비정상이었다. Broker 로그는 각 run에서 0줄이었다. 코드상 `QueryObservability`는 hostname으로 매 RPC dial하고 app-level address cache는 없다. Image는 `CGO_ENABLED=0`이며 lookup deadline은 `node_query_timeout`으로 매핑된다. [로컬 DNS 실험](../../.artifacts/analysis/dns-stall/experiment.json), [코드 분석](../../.artifacts/analysis/unknown-leader-timeout-analysis.md).
+- [INFERENCE] EKS worker 종료로 CoreDNS 두 replica가 함께 사라져 14:18:13.043Z부터 대체 container가 시작된 14:18:40Z까지 약 27초간 새 DNS 조회가 지연되고, 매번 fresh dial하는 healthy peer 관측 RPC도 timeout됐을 가능성이 있다. 이는 node 2와 3의 동시 timeout, 종료 시점과 복구 시점, 기존 MQTT/Raft 연결의 지속과 맞는다. 그러나 EKS fault 중 DNS가 측정되지 않아 원인은 확인되지 않았다. Nodes 경로에는 ReadIndex barrier가 없고 dead peer 송신 queue는 block하지 않는다. A(barrier), B(rejection), C(deadline race)는 자료의 지지를 받지 않는다. D(dead-peer queue)는 이 구간의 원인으로 기각됐다. 다음 EKS 재시험은 CoreDNS replica를 서로 다른 worker에 두고 placement와 observer worker의 DNS를 fault 중 기록해야 한다. 결정은 열린 상태다. TODO §1.8에 사용자 선택과 해제 조건을 기록했다.
+- EKS 실행은 이전 artifact의 oracle 사본을 사용했다. 저장소의 [payload_oracle.py](../../tests/chaos/eks-worker-recovery/payload_oracle.py)는 같은 검증 논리에 `--run-id`·`--output` 인자를 붙여 옮긴 것이다. 실제 로컬 Docker 3-voter broker에서 `prepare`와 `verify`를 모두 통과했다([로컬 검증](../../.artifacts/verification/eks-observer-acceptance-20261015T091838Z-617088/tracked-oracle-local-proof.json)). 이 로컬 검증은 EC2 장애나 broker 재시작을 포함하지 않고 broker가 `joining` 요약 상태일 때 실행했다. 따라서 이 파일 자체를 EKS 장애 복구의 증거로 쓰지 않는다.
+
+시험 뒤 합성 StatefulSet·PVC·namespace, EBS 3개, run 전용 snapshot 1개와 추가 node group을 삭제했다. 검토한 delete-only plan으로 Terraform 관리 자원 41개를 삭제했고 state의 관리 자원은 0개다. 직접 AWS 조회에서 EKS·VPC·ENI·security group·load balancer·EIP·IAM 역할/정책·ASG·CloudWatch log group의 부재와 NAT `deleted`, worker instance 5개 `terminated`를 확인했다. 작업 image tag·digest도 삭제했다. 보호 snapshot 3개와 공유 image는 유지했다. 합성 입력·plan·state는 Windows DPAPI `CurrentUser`로 암호화해 보존했다. 정리 단계의 StatefulSet orphan 삭제와 Pod grace 0 제거는 관찰 뒤 작업이며 복구 증거가 아니다. 로컬 oracle 검증을 위해 Docker Desktop을 시작했다. 전체 AWS 비용이 0이라고 주장하지 않는다. [직접 정리 확인](../../.artifacts/verification/eks-observer-acceptance-20261015T091838Z-617088/direct-cleanup-verification.json)을 따른다. 전체 Go local gate와 원격 CI는 실행하지 않았다.
+
+#### 기존 Pod 해제의 EKS 재시험 (2026-10-15)
+
+결과는 **1회 실행에서 6분 detach 대기가 사라졌다**는 것이다. 대체 Pod의 `FailedAttachVolume`은 0건이었고, 기존 Pod 삭제 요청 약 5.5초 뒤 같은 EBS가 여분 worker에 attach됐다. Broker 3개 Ready 관찰은 fault 요청 뒤 193.995초다. 이전 세 실행의 471~473초보다 짧다. Tool 결과와 데이터 oracle은 모두 PASS다. [최종 기록](../../.artifacts/verification/eks-detach-release-20261015T162550Z-23b31b/final-summary.json)과 [tool summary](../../.artifacts/verification/eks-detach-release-20261015T162550Z-23b31b/fault/eks-detach-release-20261015T162550Z-23b31b/summary.json)를 따른다.
+
+Fixture는 이전과 같은 Terraform root(EKS `v1.37.0-eks-b9510e3`, 새 VPC, `m7g.large` worker 3대)와 같은 broker image digest `sha256:140a99b2…`를 사용했다. Image는 작업 전용 tag로 다시 게시했다. Leader는 `narumq-1`(node 2, AZ a)이었다. 대상은 follower `narumq-2`(node 3, AZ b), 관찰 경로는 `narumq-0`(AZ c)이다. 대상과 같은 AZ b에 여분 worker 한 대를 추가했다. 두 CoreDNS replica는 대상이 아닌 worker에 있었다. EBS CSI controller replica 하나가 대상 worker에 있었고 attacher·provisioner lease를 갖고 있었다. Attach 시간에 controller 장애 조치가 섞이지 않도록 대상 worker를 잠시 cordon한 뒤 그 replica를 삭제했다. 새 replica가 Ready가 되고 lease가 대상이 아닌 replica로 옮겨진 뒤 uncordon했다([배치 기록](../../.artifacts/verification/eks-detach-release-20261015T162550Z-23b31b/pre-fault-placement.json)). 이 조정은 fault 전 작업이다.
+
+| 시각(UTC) | 관찰 |
+| --- | --- |
+| 16:48:23.762 | Fault 요청(`SkipOsShutdown`) |
+| 16:48:43.548 | EC2 `terminated` 확인 |
+| 16:48:47.014 | Out-of-service taint 적용(`out_of_service`) |
+| 16:48:51 | `TaintManagerEviction` event |
+| 16:48:54.458 | 기존 Pod UID 조건 grace 0 삭제 요청. 2.1초 뒤 fresh GET에서 새 UID Pod 확인(`deleted`) |
+| 16:48:57 | 대체 Pod가 여분 worker에 scheduling |
+| 16:48:58.899 | 첫 복구 표본. 기존 Node는 남아 있고 taint가 있었다. VolumeAttachment는 여분 worker의 것 1개뿐이고 `attached=true`였다. EBS attach 시각은 16:48:59 |
+| 16:49:00 | `SuccessfulAttachVolume` event |
+| 16:49:02~03 | Container 시작 |
+| 16:49:21.372 | 기존 Node가 없는 첫 표본 |
+| 16:49:13~16:51:23 | Startup probe 503 14회 |
+| 16:51:31.344 | 관리 API 표본에서 `ready 3` 확인(+187.6초) |
+
+Fault 요청 뒤 관리 API 85개·MQTT 99개 표본이 모두 성공했다. 표본 시작 간격은 최대 7.042초·2.054초다. 데이터 oracle은 복구한 broker에서 `sessionPresent=true`, 오프라인 QoS 1 payload 3개와 retained를 재발행 없이 확인했다. 첫 표본 전에 기존 VolumeAttachment가 사라졌으므로 정확한 제거 시각은 16:48:54.458과 16:48:58.899 사이로만 안다. 이 결과는 가설과 맞는다. 다만 한 번의 실행이며 controller-manager 로그는 읽지 않았다.
+
+새로 드러난 대기는 attach 뒤 약 130초의 startup probe 실패다. 대체 node 3은 16:50:02Z부터 peer 1·2를 `connected=false`, `outbound queue full`로 기록했다. Leader `narumq-1`은 16:51:14Z부터 peer 3을 `connected=true`, `outbound queue full`로, 16:51:18Z부터 `peer write failed`로 기록했다. 16:51:23.161Z에 `connected=false`가 됐고, node 3은 16:51:23.172Z에 release profile 동기화를 기록했다. [INFERENCE] Leader가 종료된 이전 Pod 주소로 맺은 peer 연결을 쓰기 실패가 날 때까지 유지했고, 그동안 대체 node가 leader 메시지를 받지 못했다. Socket 상태, node 3의 송신이 연결되지 않은 이유와 transport의 write deadline은 확인하지 않았다. 이전 실행에서는 attach가 6분 늦어 이 대기가 가려졌을 수 있다 [INFERENCE]. 이 항목은 TODO §1.4에서 추적한다. [Broker log](../../.artifacts/verification/eks-detach-release-20261015T162550Z-23b31b/fault/post-fault/logs/narumq-1.log)를 따른다.
+
+시험 뒤 합성 namespace와 broker EBS 3개, 여분 node group, run 전용 snapshot, 작업 image tag·digest를 삭제했다. 검토한 delete-only plan으로 Terraform 관리 자원 41개를 삭제했다. 직접 AWS 조회 27개가 모두 통과했다. 보호 snapshot 3개와 공유 image tag `observability-20261014`는 유지했다. 증거 파일에서 관리 token과 MQTT 비밀번호는 발견되지 않았다. 합성 입력·plan·state·kubeconfig는 Windows DPAPI `CurrentUser`로 암호화해 보존했다. [직접 정리 확인](../../.artifacts/verification/eks-detach-release-20261015T162550Z-23b31b/direct-cleanup-verification.json)을 따른다. 제품 코드는 바꾸지 않아 전체 Go local gate와 원격 CI는 실행하지 않았다. `CLU-14 FAILED/UNRESOLVED`와 과거 실패 기록은 유지한다.

@@ -274,7 +274,7 @@ Remove-Item Env:NARUMQ_BACKUP_SMOKE_IMAGE
 
 실제 broker를 관찰하려면 전용 임시 venv에 `paho-mqtt==2.1.0`을 설치한다. `<private-directory>`에는 `admin.token`과 `mqtt.password`를 둔다. 고정 합성 identity는 username `acceptance-device`, client ID `ebs-worker-publisher`다. ACL은 `acceptance/<run-id>/continuity` publish를 허용해야 한다. 다른 시험이 같은 client ID를 사용하고 있으면 먼저 끝낸다. 비밀 원문을 명령줄이나 검증 아티팩트에 넣지 않는다.
 
-관리 API `127.0.0.1:23880`과 MQTT `127.0.0.1:23883`을 장애 대상이 아닌 같은 Ready broker에 연결한다. 읽기 전용 관리 조회의 client 제한은 10초다. 다음 명령의 `<venv-python>`은 준비한 venv의 Python 실행 파일이다. 출력 디렉터리는 없어야 하며 마지막 이름 `<run-id>`가 표본의 topic에 쓰인다.
+`monitor`에서는 관리 API `127.0.0.1:23880`과 MQTT `127.0.0.1:23883`을 같은 Ready broker에 미리 연결한다. 이 mode는 tunnel의 Pod identity를 검증하지 않으며 fault 수용 증거가 아니다. 읽기 전용 관리 조회의 client 제한은 10초다. 다음 명령의 `<venv-python>`은 준비한 venv의 Python 실행 파일이다. 출력 디렉터리는 없어야 하며 마지막 이름 `<run-id>`가 표본의 topic에 쓰인다.
 
 ```text
 <venv-python> -B tests/chaos/eks-worker-recovery/main.py monitor --private <private-directory> --output .artifacts/verification/worker-observer/<run-id> --seconds 30
@@ -282,14 +282,23 @@ Remove-Item Env:NARUMQ_BACKUP_SMOKE_IMAGE
 
 `management-samples.jsonl`과 `mqtt-samples.jsonl`은 각 표본의 시작·종료·결과를 따로 기록한다. `summary.json`에는 실패와 종료 결과를 남긴다. API 오류 중에도 MQTT probe는 계속 실행한다. Timeout이나 음수 PUBACK을 성공으로 처리하지 않는다. PASS는 표본에만 해당하며 표본 사이의 연속 가용성을 뜻하지 않는다.
 
-실제 EKS fault 관찰은 별도 준비가 필요하다. 현재 wrapper는 Windows 시험 환경의 `<private-directory>/kubectl.exe`·`kubeconfig`를 사용한다. Kubeconfig context는 `<run-id>`와 같아야 한다. AWS CLI의 `kayden-sandbox-admin` profile·`ap-northeast-2`·account `809446814769`에서만 실행한다. 별도 port `127.0.0.1:28880`은 대상 follower의 관리 API에 연결한다. 기존 drain 기록이 없어야 한다.
+실제 EKS `fault` mode는 별도 준비가 필요하다. 현재 wrapper는 Windows 시험 환경의 `<private-directory>/kubectl.exe`·`kubeconfig`를 사용한다. Kubeconfig context는 `<run-id>`와 같아야 한다. AWS CLI의 `kayden-sandbox-admin` profile·`ap-northeast-2`·account `809446814769`에서만 실행한다. 관리·MQTT 관찰용 `23880`·`23883` port는 미리 열지 않는다. 도구가 plan의 생존 Pod 하나에 두 port를 직접 연결한다. 기존 tunnel이 port를 점유하면 재사용하지 않고 실패한다. 기존 drain 기록의 부재도 같은 생존 Pod tunnel로 cluster 전체 조회해 확인한다. 별도의 대상 Pod 관리 tunnel은 필요 없다. Windows에서는 `netsh int ipv4 show excludedportrange protocol=tcp`로 `23880`·`23883`이 예약 범위에 없는지 먼저 확인한다. 예약 범위에 있으면 bind에 실패한다.
 
 `<fault-plan.json>`에는 현재 fixture에서 읽은 아래 값을 넣는다. 과거에 삭제한 환경의 plan을 재사용하지 않는다.
 
 - 소유·cluster: `runId`, `clusterName`, `vpcId`. Namespace `narumq`의 `narumq.io/acceptance-run` label과 broker cluster ID가 `runId`와 같아야 한다. Cluster 이름은 `narumq-ha-acceptance-`로 시작해야 한다.
 - 대상: `targetPod`, `targetNodeId`, `oldPodUID`, `oldWorkerName`, `oldNodeUID`, `oldInstanceId`. Broker 3개가 Ready이고 quorum이 있어야 한다. 대상은 follower여야 한다.
+- 생존 관찰 경로: `observerPod`, `observerPodUID`, `observerWorkerName`, `observerInstanceId`. 대상 Pod·worker·instance와 각각 달라야 한다. 현재 Pod UID·배치·provider instance가 일치하고 Pod·worker가 Ready이며 EC2가 running이어야 한다. 도구는 tunnel 준비 뒤와 fault 직전에도 identity를 확인한다.
 - 복구 원본: `pvcName`, `pvcUID`, `pvName`, `volumeId`, `zone`, `snapshotId`. 대상 instance의 data volume은 `DeleteOnTermination=false`여야 한다. 완료 snapshot에는 같은 `RunId` tag가 있어야 한다.
 - 여분 worker: `spareWorkerName`, `spareInstanceId`. 대상과 다른 같은-AZ Ready worker여야 하고 scheduling을 허용해야 한다.
+
+장애 전 데이터를 준비한다. 대상 Pod와 생존 Pod에 각각 임시 `kubectl port-forward`를 열고, 예약 범위가 아닌 대상 port를 쓴다. 생존 Pod의 MQTT tunnel은 `23883`을 쓸 수 있다. 아래 명령은 persistent session을 만든 뒤 retained marker 1개와 오프라인 QoS 1 메시지 3개를 발행한다. 성공 PUBACK 4개와 retained 읽기를 확인한다. 결과 JSON에는 payload hash만 남긴다. 명령이 끝나면 두 tunnel을 닫는다. `fault`가 `23883`을 직접 소유해야 하기 때문이다. `<result-directory>`에는 `mqtt-before-fault.json`이 생긴다.
+
+```text
+<venv-python> -B tests/chaos/eks-worker-recovery/payload_oracle.py prepare --private <private-directory> --run-id <run-id> --output <result-directory> --target-port <대상-tunnel-port> --publisher-port <생존-tunnel-port>
+```
+
+Oracle은 고정 client ID `ebs-worker-subscriber`·`ebs-worker-publisher`·`ebs-worker-reader`와 `acceptance/<run-id>/` topic을 쓴다. 같은 broker에 이전 session이나 retained 상태가 남아 있으면 결과가 오염된다. 새 격리 fixture나 비어 있는 broker에서만 실행한다. 다른 run ID를 쓰더라도 기존 persistent session은 client ID 때문에 이어질 수 있다. 시험 전 전용 fixture의 이전 oracle 상태가 없음을 확인한다. 저장소의 Docker 검증은 oracle 동작 확인이며 fault 복구 증거가 아니다.
 
 종료 대상과 보호 snapshot을 검토한 뒤에만 아래 명령을 실행한다. 출력 경로는 새 경로여야 하며 마지막 이름은 plan·context와 같은 `<run-id>`다. `--execute`나 `--plan`이 없으면 fault 명령은 종료한다.
 
@@ -297,7 +306,19 @@ Remove-Item Env:NARUMQ_BACKUP_SMOKE_IMAGE
 <venv-python> -B tests/chaos/eks-worker-recovery/main.py fault --private <private-directory> --output .artifacts/verification/worker-fault-observer/<run-id> --plan <fault-plan.json> --execute
 ```
 
-이 명령은 EC2 `SkipOsShutdown` 종료 뒤 종료 상태를 확인한다. Node UID·resourceVersion 조건으로 out-of-service taint를 한 번만 시도한다. 명령이 실패하면 실제 적용 여부를 추정하지 않고 새 Node를 읽는다. 이후 대체 Pod·동일 PVC/PV/EBS·attachment를 관찰한다. Persistent session·오프라인 payload·retained 검증은 별도로 해야 한다. 실행 후 전용 fixture와 임시 입력을 정리한다. 로컬 검증과 아직 실행하지 않은 EKS 범위는 [Drain spec의 observer 기록](../specs/drain-and-rolling-update.md#eks-worker-observer-보완-기준)을 따른다.
+이 명령은 EC2 `SkipOsShutdown` 종료 뒤 종료 상태를 확인한다. Node UID·resourceVersion 조건으로 out-of-service taint를 한 번만 시도한다. 명령이 실패하면 실제 적용 여부를 추정하지 않고 새 Node를 읽는다. Taint가 확인되면 도구는 기존 대상 Pod 하나를 Pod UID precondition과 `gracePeriodSeconds=0`으로 한 번만 삭제한다. 삭제 직전에도 EC2 `terminated`, Node UID·provider instance·taint, Pod UID·배치를 다시 확인한다. 하나라도 다르면 삭제하지 않는다. 대체 Pod나 다른 Pod는 삭제하지 않고 실패해도 다시 시도하지 않는다. 이후 대체 Pod·동일 PVC/PV/EBS·attachment를 관찰하고, 복구 표본마다 VolumeAttachment와 EBS attachment 상태를 남긴다. EBS force detach와 VolumeAttachment 삭제는 복구 수단으로 쓰지 않는다. 명령이 PASS여도 데이터 oracle의 PASS는 아니다. 복구한 대상 Pod에 새 tunnel을 열고 `verify`를 실행한다.
+
+```text
+<venv-python> -B tests/chaos/eks-worker-recovery/payload_oracle.py verify --private <private-directory> --run-id <run-id> --output <result-directory> --target-port <복구된-대상-tunnel-port>
+```
+
+`verify`는 다시 발행하지 않는다. `sessionPresent=true`, 오프라인 payload hash 3개와 retained hash가 같을 때만 통과한다. 실행 후 합성 StatefulSet·PVC·snapshot·추가 node group과 전용 fixture를 정리한다. PVC를 먼저 삭제해 EBS 삭제를 확인한 뒤 Terraform을 실행한다. 임시 입력은 암호화 보존 후 제거한다. 실제 실행 결과와 남은 gate는 [Drain spec의 EKS 재시험 기록](../specs/drain-and-rolling-update.md#생존-pod-고정-observer의-eks-재시험-2026-10-15)을 따른다.
+
+`observer-endpoint.json`과 최종 summary의 `observerEndpoint`는 실제로 확인한 생존 Pod UID·worker·instance와 두 port를 기록한다. Tunnel은 service나 LB를 선택하지 않는다. 끊어진 tunnel을 다시 열거나 다른 Pod로 전환하지 않는다. 관찰·MQTT가 끝난 뒤 tunnel process와 출력 worker도 종료한다. `monitor`의 외부 tunnel 관찰과 `fault`의 도구 소유 tunnel을 혼용하지 않는다.
+
+`fault` 모드는 진단용 `nodes-samples.jsonl`도 남기며, 이 표본은 관찰 전용 부하로 PASS/FAIL 판정에 쓰지 않는다.
+
+`fault` 모드는 fault 요청 전에 `nodes` 첫 표본이 끝나기를 최대 20초 기다린다. 첫 완료 표본이 성공하면 `summary.json`의 `monitor.diagnostics.nodes.baseline.available`이 참이다. 실패하거나 아직 끝나지 않았으면 거짓이며, `firstSampleMayOverlapFault`로 진행 중일 수 있는 표본을 구분한다. 이 대기는 fault와 PASS/FAIL 판정을 바꾸지 않는다. `faultRequestedAt`은 AWS 요청 직전에 기록하므로 요청이 실패해도 남는다.
 
 
 ### 4단계: 바운디드 퍼즈 캠페인(Bounded Fuzz Campaigns) 실행

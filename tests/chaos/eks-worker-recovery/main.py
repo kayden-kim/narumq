@@ -11,7 +11,12 @@ import time
 import urllib.error
 import urllib.request
 
-from observer import IndependentMonitor, MANAGEMENT_TIMEOUT_SECONDS, MutationRejected, fence_node, timestamp
+from observer import (IndependentMonitor, MANAGEMENT_TIMEOUT_SECONDS, MutationRejected, fence_node, fenced,
+                      node_diagnostic, release_fenced_pod, timestamp)
+
+
+# Bounded wait for the first nodes sample before a fault; diagnostics never gate the fault or the result.
+DIAGNOSTIC_BASELINE_WAIT_SECONDS = 20
 
 
 class CommandFailed(RuntimeError):
@@ -27,8 +32,8 @@ class Fixture:
         self.environment.update(AWS_PROFILE="kayden-sandbox-admin", AWS_REGION="ap-northeast-2", AWS_PAGER="")
         self.kubectl = [str(private / "kubectl.exe"), "--kubeconfig", str(private / "kubeconfig"), "--context", run_id]
 
-    def command(self, args: list[str], timeout: float = 90) -> str:
-        result = subprocess.run(args, env=self.environment, text=True, encoding="utf-8",
+    def command(self, args: list[str], timeout: float = 90, stdin: str | None = None) -> str:
+        result = subprocess.run(args, env=self.environment, text=True, encoding="utf-8", input=stdin,
                                 capture_output=True, timeout=timeout)
         if result.returncode:
             # CLI stderr can contain credentials. Structured observer results do not include it.
@@ -51,6 +56,37 @@ class Fixture:
         except (CommandFailed, subprocess.TimeoutExpired) as exc:
             raise MutationRejected("Kubernetes mutation command failed; application and failed operation unknown") from exc
 
+    def get_pod(self, name: str):
+        return self.get("pod", name, "-n", "narumq", "--ignore-not-found")
+
+    def delete_pod(self, name: str, uid: str):
+        """One DELETE with a UID precondition; kubectl has no flag for it, so send DeleteOptions raw."""
+        options = {"kind": "DeleteOptions", "apiVersion": "v1", "gracePeriodSeconds": 0,
+                   "preconditions": {"uid": uid}}
+        try:
+            self.command(self.kubectl + ["delete", "--raw", f"/api/v1/namespaces/narumq/pods/{name}", "-f", "-"],
+                         stdin=json.dumps(options))
+        except (CommandFailed, subprocess.TimeoutExpired) as exc:
+            raise MutationRejected("Kubernetes delete command failed; application unknown") from exc
+
+    def attachment_probe(self, pv_name: str, volume_id: str) -> dict:
+        """Read-only VolumeAttachment and EBS attachment state; failures are recorded, not raised."""
+        sample = {"at": timestamp()}
+        try:
+            listed = self.get("volumeattachments") or {"items": []}
+            sample["volumeAttachments"] = [volume_attachment(item) for item in listed.get("items", [])
+                                           if item.get("spec", {}).get("source", {}).get("persistentVolumeName") == pv_name]
+        except Exception as exc:
+            sample["volumeAttachmentErrorCode"] = type(exc).__name__
+        try:
+            volume = self.aws("ec2", "describe-volumes", "--volume-ids", volume_id)["Volumes"][0]
+            sample["ebs"] = {"state": volume.get("State"),
+                             "attachments": [{key: item.get(key) for key in ("InstanceId", "State", "AttachTime")}
+                                             for item in volume.get("Attachments", [])]}
+        except Exception as exc:
+            sample["ebsErrorCode"] = type(exc).__name__
+        return sample
+
     def instance(self, instance_id: str) -> dict:
         return self.aws("ec2", "describe-instances", "--instance-ids", instance_id)["Reservations"][0]["Instances"][0]
 
@@ -66,6 +102,96 @@ class Fixture:
     def management_probe(self) -> dict:
         cluster = self.api("/api/v1/cluster")
         return {key: cluster[key] for key in ("quorumAvailable", "leaderNodeId", "nodesByState")}
+
+    def nodes_probe(self) -> list[dict]:
+        nodes = self.api("/api/v1/nodes")
+        if not isinstance(nodes, list):
+            raise ValueError("node list is not a list")
+        return [node_diagnostic(node) for node in nodes]
+
+
+class SurvivorTunnel:
+    """Own both local ports for one identity-checked surviving Pod, without retry."""
+
+    def __init__(self, fixture: Fixture, plan: dict):
+        self.fixture = fixture
+        self.plan = plan
+        self.process = None
+        self.reader = None
+        self.bound = set()
+        self.lock = threading.Lock()
+
+    def identity(self) -> dict:
+        plan = self.plan
+        required = ("observerPod", "observerPodUID", "observerWorkerName", "observerInstanceId",
+                    "targetPod", "oldWorkerName", "oldInstanceId")
+        if not all(isinstance(plan.get(key), str) and plan[key] for key in required):
+            raise ValueError("missing survivor identity")
+        if (plan["observerPod"] == plan["targetPod"] or plan["observerWorkerName"] == plan["oldWorkerName"]
+                or plan["observerInstanceId"] == plan["oldInstanceId"]):
+            raise ValueError("observer must use an independent surviving worker")
+        pod = self.fixture.get("pod", plan["observerPod"], "-n", "narumq")
+        node = self.fixture.get_node(plan["observerWorkerName"])
+        if (not pod or not node or pod["metadata"]["uid"] != plan["observerPodUID"]
+                or pod["metadata"].get("deletionTimestamp")
+                or pod["metadata"].get("labels", {}).get("app") != "narumq"
+                or pod["spec"].get("nodeName") != plan["observerWorkerName"] or not ready(pod)
+                or node["spec"].get("providerID", "").rsplit("/", 1)[-1] != plan["observerInstanceId"]
+                or not ready(node) or node["metadata"].get("deletionTimestamp")
+                or self.fixture.instance_state(plan["observerInstanceId"]) != "running"):
+            raise ValueError("surviving Pod or worker identity is not current and Ready")
+        return {key: plan[key] for key in required[:4]}
+
+    def start(self, timeout: float = 20) -> dict:
+        identity = self.identity()
+        self.process = subprocess.Popen(
+            self.fixture.kubectl + ["-n", "narumq", "port-forward", "pod/" + self.plan["observerPod"],
+                                    "--address=127.0.0.1", "23880:8080", "23883:1883"],
+            env=self.fixture.environment, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+            text=True, encoding="utf-8", errors="replace")
+        def drain():
+            for line in self.process.stdout:
+                for port in (23880, 23883):
+                    if line.startswith(f"Forwarding from 127.0.0.1:{port} ->"):
+                        with self.lock:
+                            self.bound.add(port)
+        self.reader = threading.Thread(target=drain, daemon=True)
+        self.reader.start()
+        try:
+            deadline = time.monotonic() + timeout
+            while time.monotonic() < deadline:
+                self.check()
+                with self.lock:
+                    established = self.bound == {23880, 23883}
+                if established:
+                    self.identity()
+                    self.check()
+                    return {**identity, "at": timestamp(), "ports": {"management": 23880, "mqtt": 23883},
+                            "routing": "owned kubectl port-forward to exact Pod; no service selection or reconnect"}
+                time.sleep(0.05)
+            raise TimeoutError("survivor tunnel ports did not become ready")
+        except Exception:
+            self.close()
+            raise
+
+    def check(self) -> None:
+        if self.process is None or self.process.poll() is not None:
+            raise RuntimeError("survivor tunnel is not running")
+
+    def close(self) -> None:
+        if self.process is not None:
+            if self.process.poll() is None:
+                self.process.terminate()
+                try:
+                    self.process.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    self.process.kill()
+                    self.process.wait(timeout=5)
+            if self.reader is not None:
+                self.reader.join(timeout=5)
+                if self.reader.is_alive():
+                    raise TimeoutError("survivor tunnel output worker did not stop")
+            self.process.stdout.close()
 
 
 class MQTTProbe:
@@ -112,8 +238,27 @@ def ready(obj: dict) -> bool:
     return any(c["type"] == "Ready" and c["status"] == "True" for c in obj.get("status", {}).get("conditions", []))
 
 
+def volume_attachment(item: dict) -> dict:
+    status = item.get("status", {})
+    return {"name": item["metadata"]["name"], "nodeName": item.get("spec", {}).get("nodeName"),
+            "attached": status.get("attached"), "deletionTimestamp": item["metadata"].get("deletionTimestamp"),
+            "attachErrorAt": (status.get("attachError") or {}).get("time"),
+            "detachErrorAt": (status.get("detachError") or {}).get("time")}
+
+
 def save(output: Path, name: str, value) -> None:
     (output / name).write_text(json.dumps(value, indent=2), encoding="utf-8")
+
+
+def require_drain_record_absent(fixture, target_node_id: str) -> None:
+    """Read the cluster-wide drain record through the owned surviving-Pod tunnel."""
+    try:
+        fixture.api(f"/api/v1/nodes/{target_node_id}/drain")
+    except urllib.error.HTTPError as exc:
+        if exc.code != 404:
+            raise
+    else:
+        raise ValueError("pre-fault drain record must be absent")
 
 
 def preflight(fixture: Fixture, plan: dict) -> list[dict]:
@@ -162,13 +307,7 @@ def preflight(fixture: Fixture, plan: dict) -> list[dict]:
     if (snapshot["State"] != "completed" or snapshot["VolumeId"] != plan["volumeId"]
             or not any(t["Key"] == "RunId" and t["Value"] == fixture.run_id for t in snapshot.get("Tags", []))):
         raise ValueError("completed run-owned baseline snapshot is required")
-    try:
-        fixture.api(f"/api/v1/nodes/{plan['targetNodeId']}/drain", port=28880)
-    except urllib.error.HTTPError as exc:
-        if exc.code != 404:
-            raise
-    else:
-        raise ValueError("pre-fault drain record must be absent")
+    require_drain_record_absent(fixture, plan["targetNodeId"])
     return pods
 
 
@@ -185,11 +324,20 @@ def observe_fault(fixture: Fixture, plan: dict, output: Path, original: list[dic
     fencing = fence_node(fixture.get_node, fixture.patch_node, fixture.instance_state,
                          plan["oldWorkerName"], plan["oldNodeUID"], plan["oldInstanceId"])
     save(output, "fencing-observation.json", fencing)
+    release = release_fenced_pod(fixture.get_node, fixture.get_pod, fixture.delete_pod, fixture.instance_state,
+                                 fencing, plan["oldWorkerName"], plan["oldNodeUID"], plan["oldInstanceId"],
+                                 plan["targetPod"], plan["oldPodUID"])
+    save(output, "pod-release-observation.json", release)
     observations = []
     while time.monotonic() - start < 900:
         pods = fixture.get("pods", "-n", "narumq", "-l", "app=narumq")["items"]
-        observations.append({"secondsAfterFault": time.monotonic() - start, "pods": [
-            {"name": p["metadata"]["name"], "uid": p["metadata"]["uid"], "node": p["spec"].get("nodeName"), "ready": ready(p)} for p in pods]})
+        old_node = fixture.get_node(plan["oldWorkerName"])
+        observations.append({"at": timestamp(), "secondsAfterFault": time.monotonic() - start, "pods": [
+            {"name": p["metadata"]["name"], "uid": p["metadata"]["uid"], "node": p["spec"].get("nodeName"), "ready": ready(p),
+             "deletionTimestamp": p["metadata"].get("deletionTimestamp")} for p in pods],
+            "oldNode": None if old_node is None else {"uid": old_node["metadata"]["uid"], "fenced": fenced(old_node),
+                                                      "ready": ready(old_node)},
+            "attachment": fixture.attachment_probe(plan["pvName"], plan["volumeId"])})
         save(output, "recovery-observations.json", observations)
         replacement = next((p for p in pods if p["metadata"]["name"] == plan["targetPod"]), None)
         if replacement and replacement["metadata"]["uid"] != plan["oldPodUID"] and len(pods) == 3 and all(ready(p) for p in pods):
@@ -221,7 +369,7 @@ def observe_fault(fixture: Fixture, plan: dict, output: Path, original: list[dic
     final = fixture.api("/api/v1/cluster")
     if final["quorumAvailable"] is not True or final["nodesByState"]["ready"] != 3:
         raise RuntimeError("cluster did not converge to three Ready brokers")
-    return {"readyObservedSecondsAfterFault": ready_seconds, "fencing": fencing,
+    return {"readyObservedSecondsAfterFault": ready_seconds, "fencing": fencing, "podRelease": release,
             "oldInstanceId": plan["oldInstanceId"], "newInstanceId": new_instance,
             "samePVC_PV_EBS": True, "survivorPodUIDsUnchanged": True,
             "scope": "physical recovery and sampled continuity; persistent payload oracle remains a separate scenario"}
@@ -243,13 +391,31 @@ def main(argv=None) -> int:
     args.output.mkdir(parents=True, exist_ok=False)
     monitor = None
     mqtt = None
+    tunnel = None
     report = {"result": "FAIL", "mode": args.mode, "startedAt": timestamp()}
     try:
         fixture = Fixture(args.private, args.output.name)
         plan = json.loads(args.plan.read_text(encoding="utf-8")) if args.mode == "fault" else None
+        if plan:
+            tunnel = SurvivorTunnel(fixture, plan)
+            report["observerEndpoint"] = tunnel.start()
+            save(args.output, "observer-endpoint.json", report["observerEndpoint"])
         original = preflight(fixture, plan) if plan else None
         mqtt = MQTTProbe(args.private, args.output.name)
-        monitor = IndependentMonitor(fixture.management_probe, mqtt.probe, args.output)
+        def management_probe():
+            if tunnel:
+                tunnel.check()
+            return fixture.management_probe()
+        def mqtt_probe():
+            if tunnel:
+                tunnel.check()
+            return mqtt.probe()
+        def nodes_probe():
+            if tunnel:
+                tunnel.check()
+            return fixture.nodes_probe()
+        diagnostics = {"nodes": nodes_probe} if args.mode == "fault" else None
+        monitor = IndependentMonitor(management_probe, mqtt_probe, args.output, diagnostics=diagnostics)
         monitor.start()
         if not monitor.wait_initial():
             raise TimeoutError("initial probes did not complete")
@@ -258,12 +424,20 @@ def main(argv=None) -> int:
                                             for name, field in (("management", "quorumAvailable"), ("mqtt", "puback"))):
             raise RuntimeError("initial probes are not successful; fault not injected")
         if args.mode == "fault":
+            monitor.wait_diagnostic_baseline("nodes", DIAGNOSTIC_BASELINE_WAIT_SECONDS)
+            tunnel.identity()
+            tunnel.check()
+            report["faultRequestedAt"] = timestamp()
             report["recovery"] = observe_fault(fixture, plan, args.output, original)
         else:
             time.sleep(args.seconds)
         monitor.stop()
+        if tunnel:
+            tunnel.check()
         report["monitor"] = monitor.summary()
-        explained = args.mode != "fault" or report["recovery"]["fencing"]["outcome"] not in ("failed_unexplained", "mutation_unconfirmed")
+        explained = args.mode != "fault" or (
+            report["recovery"]["fencing"]["outcome"] not in ("failed_unexplained", "mutation_unconfirmed")
+            and report["recovery"]["podRelease"]["outcome"] not in ("failed_unexplained", "delete_unconfirmed"))
         report["result"] = "PASS" if report["monitor"]["result"] == "PASS" and explained else "FAIL"
     except Exception as exc:
         report["errorCode"] = type(exc).__name__
@@ -279,6 +453,11 @@ def main(argv=None) -> int:
                 mqtt.close()
             except Exception as exc:
                 report.update(result="FAIL", mqttStopErrorCode=type(exc).__name__)
+        if tunnel:
+            try:
+                tunnel.close()
+            except Exception as exc:
+                report.update(result="FAIL", tunnelStopErrorCode=type(exc).__name__)
         report["finishedAt"] = timestamp()
         save(args.output, "summary.json", report)
     print(json.dumps(report))

@@ -3,7 +3,9 @@
 
 from __future__ import annotations
 
+import argparse
 import base64
+import hashlib
 import json
 import os
 import re
@@ -201,7 +203,63 @@ def process_request(request: Path, root: Path, state: Path, bucket: str, prefix:
     print(f"backup-uploader: uploaded key={key} commit={commit_index} sha256={full_sha}")
 
 
-def main() -> int:
+def maintain_stage(root: Path, name: str, discard: bool = False) -> Path | None:
+    """Maintain one unpublished stage while all backup writers are stopped."""
+    if not stat.S_ISDIR(root.lstat().st_mode):
+        fail("backup root must be a real directory")
+    if not re.fullmatch(r"\.staging-[A-Za-z0-9]{8}", name):
+        fail("an exact unpublished staging directory name is required")
+    stage = root / name
+    if not stat.S_ISDIR(stage.lstat().st_mode):
+        fail("unpublished staging entry must be a real directory")
+    entries = list(stage.iterdir())
+    if len(entries) > 2:
+        fail("unpublished staging directory contains unexpected files")
+    stems = set()
+    for entry in entries:
+        if not stat.S_ISREG(entry.lstat().st_mode):
+            fail("unpublished staging files must be regular files")
+        match = re.fullmatch(r"(backup-[0-9]{8}T[0-9]{6}Z-[0-9]+-[0-9a-f]{64}\.nrbak)(?:\.request\.json)?", entry.name)
+        if match is None:
+            fail("unpublished staging directory contains an unexpected filename")
+        stems.add(match.group(1))
+    if len(stems) > 1:
+        fail("unpublished staging files do not belong to one backup")
+    if discard:
+        for entry in entries:
+            entry.unlink()
+        stage.rmdir()
+        return None
+    requests = [entry for entry in entries if entry.name.endswith(REQUEST_SUFFIX)]
+    if len(entries) != 2 or len(requests) != 1:
+        fail("recovery requires one complete archive and request pair; originals retained")
+    archive, _, _, full_sha, _ = read_request(requests[0], stage)
+    actual = hashlib.sha256()
+    with archive.open("rb") as stream:
+        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+            actual.update(chunk)
+    if actual.hexdigest() != full_sha:
+        fail("unpublished archive SHA-256 mismatch; originals retained")
+    destination = root / (archive.name + ".staged")
+    if destination.exists() or destination.is_symlink():
+        fail("published staging destination already exists; originals retained")
+    stage.rename(destination)
+    return destination
+
+
+def main(arguments: list[str]) -> int:
+    if arguments:
+        parser = argparse.ArgumentParser(description="Offline maintenance; stop all scheduled/manual backup writers first.")
+        parser.add_argument("action", choices=("recover-stage", "discard-stage"))
+        parser.add_argument("stage", help="exact unpublished .staging-XXXXXXXX directory name")
+        parser.add_argument("--offline", action="store_true", required=True,
+                            help="acknowledge all producer/uploader processes are stopped and maintenance is exclusive")
+        args = parser.parse_args(arguments)
+        destination = maintain_stage(Path(os.environ.get("BACKUP_DIR", "/backups")), args.stage,
+                                     discard=args.action == "discard-stage")
+        print(json.dumps({"action": args.action, "stage": args.stage,
+                          "publishedDirectory": destination.name if destination else None}))
+        return 0
     bucket, prefix, region, run_id = validate_config()
     root = Path(os.environ.get("BACKUP_DIR", "/backups"))
     state = Path("/run/narumq-backup") / run_id
@@ -240,7 +298,7 @@ def main() -> int:
 
 if __name__ == "__main__":
     try:
-        raise SystemExit(main())
+        raise SystemExit(main(sys.argv[1:]))
     except Exception as exc:
         print(f"backup-uploader: startup failed: {exc}", file=sys.stderr)
         raise SystemExit(1)

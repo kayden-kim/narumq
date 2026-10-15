@@ -22,7 +22,7 @@
 | --- | --- | --- |
 | EKS | Kubernetes 1.37 | EKS platform version과 시험 증거 |
 | Worker와 AMI | `m7g.large` 3대, AZ마다 1대; 인스턴스당 2 vCPU·8 GiB; EKS-optimized Amazon Linux 2023 ARM64 | Region별 AMI ID와 node group 설정 |
-| Broker storage | broker별 20 GiB `gp3`, 기본 3,000 IOPS·125 MiB/s | 암호화·AZ binding·같은 PVC/EBS remount와 계획된 same-AZ cross-worker 재연결은 제한 범위에서 확인했다([수용 기록](../specs/drain-and-rolling-update.md#계획된-cross-worker-ebs-복구-수용-2026-10-15)). 단일 EC2 비정상 종료 후 재연결은 [실패한 초기 observer와 후속 복구 관찰](../specs/drain-and-rolling-update.md#비정상-단일-ec2-worker-복구-관찰-2026-10-15)로 구분한다. 전체 장애 matrix·자동 관찰 완료·정확한 RTO·snapshot/restore·disk pressure·production I/O·durability는 미검증이다. |
+| Broker storage | broker별 20 GiB `gp3`, 기본 3,000 IOPS·125 MiB/s | 암호화·AZ binding·같은 PVC/EBS remount와 계획된 same-AZ cross-worker 재연결은 제한 범위에서 확인했다([수용 기록](../specs/drain-and-rolling-update.md#계획된-cross-worker-ebs-복구-수용-2026-10-15)). 단일 follower EC2 비정상 종료 후 같은 EBS 재연결은 [실패한 초기 observer와 후속 복구 관찰](../specs/drain-and-rolling-update.md#비정상-단일-ec2-worker-복구-관찰-2026-10-15) 및 [생존 Pod 고정 재시험](../specs/drain-and-rolling-update.md#생존-pod-고정-observer의-eks-재시험-2026-10-15)으로 구분한다. 전체 장애 matrix·정확한 RTO·snapshot/restore·disk pressure·production I/O·durability는 미검증이다. |
 | NLB | 내부 `IP` target, TCP 1883; Management 8080은 내부 ClusterIP Service | T0→EndpointSlice unready 11.520641s, T0→target `draining` 12.647725s 관찰(보고된 30s 예산 이내); 성공 인증 traffic routing, existing connection drain, TLS endpoint, idle timeout·client IP 미검증 |
 | Broker resources | Pod마다 requests=limits `1 CPU`·`4 GiB` | 측정한 production workload의 N-1 capacity |
 | Comparator | EMQX Enterprise 6.3.1, ARM64 | 측정 workload를 허용하는 license; [PRD §18 질문 15](../requirements/PRD.md#18-미결정-사항) 참고 |
@@ -78,6 +78,14 @@ AWS EKS live cluster(`narumq-eks`, ap-northeast-2)의 배치·단일 drain·Pod 
 ### 단일 EC2 비정상 종료 후 복구 관찰 (2026-10-15)
 
 새 격리 fixture에서 follower EC2를 OS shutdown 없이 종료했다. 종료 확인 뒤 시도한 operator의 out-of-service Node patch는 CAS 검사에서 거절됐다. AWS cloud controller가 기존 Node를 제거했고, 다른 EC2에서 같은 EBS를 연결한 broker와 기존 MQTT 상태가 복구됐다. 이 관찰은 제품 코드·배포 template을 바꾸지 않았다. 초기 observer 실패와 관찰 공백이 있으므로 자동 복구 수용·정확한 RTO·연속 가용성을 완료로 표시하지 않는다. 실행과 정리의 기준 기록은 [Drain §10](../specs/drain-and-rolling-update.md#비정상-단일-ec2-worker-복구-관찰-2026-10-15)을 따른다.
+
+### 단일 EC2 비정상 종료 재시험 (2026-10-15)
+
+새 격리 fixture에서 follower EC2를 다시 OS shutdown 없이 종료했다. 관찰 도구는 장애 대상이 아닌 생존 Pod에 직접 연결했다. Operator의 out-of-service taint는 실패 없이 적용됐고, 다른 EC2에서 같은 PVC·EBS를 연결한 broker와 persistent session·오프라인 QoS 1·retained 데이터가 복구됐다. 장애 요청 뒤 API·MQTT 표본은 모두 성공했다. Broker 3개 Ready 관찰 상한은 471.06초이며 대체 Pod의 volume 연결 대기가 대부분이었다. 정확한 RTO, 연속 가용성, 전체 장애 matrix와 production 수용은 입증하지 않았다. 제품 코드와 배포 template은 바꾸지 않았다. 기준 기록은 [Drain §10](../specs/drain-and-rolling-update.md#생존-pod-고정-observer의-eks-재시험-2026-10-15)을 따른다.
+
+### 기존 Pod 해제 뒤 단일 EC2 비정상 종료 재시험 (2026-10-15)
+
+새 격리 fixture에서 follower EC2를 OS shutdown 없이 종료했다. 관찰 도구는 종료 확인과 out-of-service taint 뒤 기존 Pod 하나를 UID 조건·grace 0으로 삭제했다. 대체 Pod는 6분 detach 대기 없이 약 5.5초 뒤 같은 EBS를 연결했다. Broker 3개 Ready 관찰은 193.995초였고 데이터 oracle은 PASS다. 남은 시간의 대부분은 대체 broker가 peer와 다시 연결되기를 기다린 시간으로 보인다 [INFERENCE]. 한 번의 실행이며 정확한 RTO와 production 수용은 입증하지 않았다. 제품 코드와 배포 template은 바꾸지 않았다. 기준 기록은 [Drain §10](../specs/drain-and-rolling-update.md#기존-pod-해제의-eks-재시험-2026-10-15)을 따른다.
 
 
 

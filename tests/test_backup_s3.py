@@ -463,6 +463,117 @@ class S3TransferTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 restore.configuration()
 
+    def test_unpublished_complete_pair_recovers_and_uploads_with_original_identity(self) -> None:
+        stage = self.temp / ".staging-Ab12Cd34"
+        archive, request, filename, sha = self.make_staged_request(stage, b"validated backup bytes")
+        published = uploader.maintain_stage(self.temp, stage.name)
+        self.assertEqual(published, self.temp / (filename + ".staged"))
+        self.assertFalse(stage.exists())
+        self.assertEqual(json.loads((published / request.name).read_text())["commitIndex"], self.commit_index)
+        state = self.temp / "state"
+        (state / "status").mkdir(parents=True)
+        uploader.process_request(published / request.name, published, state, self.bucket, self.prefix, self.region)
+        self.assertEqual(self.fake_objects, {self.expected_key(sha): base64.b64encode(bytes.fromhex(sha)).decode()})
+        self.assertFalse((published / archive.name).exists())
+        self.assertFalse((published / request.name).exists())
+
+    def test_unpublished_missing_or_invalid_request_and_bad_hash_preserve_files(self) -> None:
+        for case in ("missing", "invalid", "hash"):
+            with self.subTest(case=case):
+                parent = self.temp / case
+                stage = parent / ".staging-Ab12Cd34"
+                archive, request, _, _ = self.make_staged_request(stage, b"original archive")
+                if case == "missing":
+                    request.unlink()
+                elif case == "invalid":
+                    request.write_text('{"incomplete":')
+                else:
+                    archive.write_bytes(b"corrupted archive")
+                before = {p.name: p.read_bytes() for p in stage.iterdir()}
+                with self.assertRaises(ValueError):
+                    uploader.maintain_stage(parent, stage.name)
+                self.assertEqual({p.name: p.read_bytes() for p in stage.iterdir()}, before)
+                self.assertEqual(self.calls(), [])
+
+    def test_unpublished_recovery_never_overwrites_existing_publication(self) -> None:
+        for occupied in ("empty", "nonempty"):
+            with self.subTest(occupied=occupied):
+                parent = self.temp / occupied
+                stage = parent / ".staging-Ab12Cd34"
+                _, _, filename, _ = self.make_staged_request(stage, b"original archive")
+                destination = parent / (filename + ".staged")
+                destination.mkdir()
+                if occupied == "nonempty":
+                    (destination / "keep").write_bytes(b"existing publication")
+                before = {p.name: p.read_bytes() for p in stage.iterdir()}
+                with self.assertRaises(ValueError):
+                    uploader.maintain_stage(parent, stage.name)
+                self.assertEqual({p.name: p.read_bytes() for p in stage.iterdir()}, before)
+                self.assertEqual(sorted(p.name for p in destination.iterdir()), ["keep"] if occupied == "nonempty" else [])
+
+    def test_discard_removes_only_explicit_incomplete_stage(self) -> None:
+        stage = self.temp / ".staging-Ab12Cd34"
+        archive, request, _, _ = self.make_staged_request(stage, b"orphan bytes")
+        request.write_text('{"partial":')
+        legacy = self.temp / "backup-20261014000000.nrbak"
+        legacy.write_bytes(b"keep legacy")
+        sibling = self.temp / ".staging-Xy98Za76"
+        sibling.mkdir()
+        (sibling / "keep").write_bytes(b"other transaction")
+        uploader.maintain_stage(self.temp, stage.name, discard=True)
+        self.assertFalse(stage.exists())
+        self.assertEqual(legacy.read_bytes(), b"keep legacy")
+        self.assertEqual((sibling / "keep").read_bytes(), b"other transaction")
+        self.assertEqual(self.calls(), [])
+
+    def test_unsafe_stage_names_and_unexpected_entries_never_delete_data(self) -> None:
+        for name in ("../.staging-Ab12Cd34", "/.staging-Ab12Cd34", ".staging-*", "backup-valid.nrbak.staged"):
+            with self.subTest(name=name):
+                with self.assertRaises(ValueError):
+                    uploader.maintain_stage(self.temp, name, discard=True)
+        for kind in ("file", "directory", "mixed"):
+            with self.subTest(kind=kind):
+                parent = self.temp / kind
+                stage = parent / ".staging-Ab12Cd34"
+                archive, _, _, _ = self.make_staged_request(stage, b"keep original")
+                if kind == "file":
+                    (stage / "foreign").write_bytes(b"unknown")
+                elif kind == "directory":
+                    (stage / "nested").mkdir()
+                else:
+                    archive.rename(stage / archive.name.replace("-42-", "-43-"))
+                with self.assertRaises(ValueError):
+                    uploader.maintain_stage(parent, stage.name, discard=True)
+                self.assertTrue(stage.exists())
+                self.assertEqual(next(stage.glob("*.nrbak")).read_bytes(), b"keep original")
+
+    @unittest.skipUnless(os.name == "posix", "symlink creation is privilege-dependent on Windows")
+    def test_stage_symlinks_never_follow_or_delete_external_data(self) -> None:
+        external = self.temp / "external"
+        external.mkdir()
+        keep = external / "keep"
+        keep.write_bytes(b"external data")
+        linked_stage = self.temp / ".staging-Ab12Cd34"
+        linked_stage.symlink_to(external, target_is_directory=True)
+        with self.assertRaises(ValueError):
+            uploader.maintain_stage(self.temp, linked_stage.name, discard=True)
+        linked_stage.unlink()
+        linked_stage.mkdir()
+        (linked_stage / ("backup-20261014T120000Z-42-" + "a" * 64 + ".nrbak")).symlink_to(keep)
+        with self.assertRaises(ValueError):
+            uploader.maintain_stage(self.temp, linked_stage.name, discard=True)
+        self.assertEqual(keep.read_bytes(), b"external data")
+
+    def test_maintenance_requires_offline_acknowledgement_before_mutation(self) -> None:
+        stage = self.temp / ".staging-Ab12Cd34"
+        self.make_staged_request(stage, b"must not change")
+        before = {p.name: p.read_bytes() for p in stage.iterdir()}
+        with contextlib.redirect_stderr(io.StringIO()):
+            with self.assertRaises(SystemExit) as refusal:
+                uploader.main(["discard-stage", stage.name])
+        self.assertEqual(refusal.exception.code, 2)
+        self.assertEqual({p.name: p.read_bytes() for p in stage.iterdir()}, before)
+
 
 if __name__ == "__main__":
     unittest.main()
