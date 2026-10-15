@@ -89,7 +89,8 @@ PRD는 `Draft` 상태이므로 이 목록은 요구사항을 구현 기준으로
   - 별도 미완료 gate: External rollout controller의 나머지 acceptance는 §1.2, CLU-14 storage-loss acceptance는 §1.1에서 추적한다. 2026-10-15 재개 fixture의 제한된 controller·S3·동일 EBS 재시작 검증은 과거 실패나 위 DEP-13~23의 나머지 미검증 시나리오를 완료로 바꾸지 않는다.
   - [x] **완료(계획된 same-AZ cross-worker 범위)** — `SAFE_TO_STOP` 뒤 다른 EC2 worker에서 같은 PVC·PV·EBS를 재연결하고 broker 복구와 기존 MQTT 데이터를 확인했다. EC2 전원 손실·강제 detach·AZ/volume 손실은 시험하지 않았다. 명령·시험 파일·실측·정리 증거는 [Drain §10](specs/drain-and-rolling-update.md#계획된-cross-worker-ebs-복구-수용-2026-10-15)을 따른다. 이 범위만 완료하며 DEP-13~23 전체와 과거 `CLU-14 FAILED/UNRESOLVED`는 유지한다.
   - [ ] **복구 후속 관찰 완료 / 최초 observer 실패 유지** — 단일 follower의 실제 EC2 `SkipOsShutdown` 종료 뒤 다른 worker에서 같은 PVC·PV·EBS와 기존 MQTT 데이터를 확인했다. 최초 observer는 Node CAS 거절로 종료됐고 관리 API probe 세 건도 timeout됐다. 같은 장애의 읽기 전용 후속 관찰만 진행했으며 장애를 다시 주입하지 않았다. 정확한 RTO·연속 가용성·자동 observer 완료는 입증하지 않았다([Drain §10](specs/drain-and-rolling-update.md#비정상-단일-ec2-worker-복구-관찰-2026-10-15)). 전체 gate는 열린 상태다.
-    - 해제 조건: 관리 API 조회와 MQTT 전송 관찰을 분리하고 client deadline에 전체 query 예산의 여유를 둔다. Node CAS 거절 뒤에는 기존 Node의 UID·현재 상태를 새로 조회해 변경 여부를 판단한다. 종료한 Node의 자동 삭제와 대체 Pod 복구까지 관찰이 끊기지 않는 시험이 필요하다.
+    - [x] **완료(로컬 observer 보완)** — 관리 API·MQTT를 독립 작업으로 기록하고 API client 제한을 10초로 뒀다. Node 변경 전 종료 상태를 확인하고 UID·resourceVersion 조건을 사용한다. 명령 실패 뒤에는 새 Node 상태를 기록하며 patch를 반복하지 않는다. 회귀 17개, 실제 broker 지연·timeout CLI 시험, 실제 Kind API의 fencing 경계 7개를 통과했다. 기록·종료 실패도 PASS로 바꾸지 않는다([구현·검증](specs/drain-and-rolling-update.md#eks-worker-observer-보완-기준)).
+    - 해제 조건: 새 격리 EKS에서 보완한 observer를 fault 전부터 끝까지 실행한다. 종료한 Node의 자동 삭제·fencing 경쟁·대체 Pod의 동일 EBS 복구까지 API와 MQTT 관찰이 끊기지 않아야 한다. 별도 persistent session·오프라인 payload·retained oracle도 통과해야 한다. 로컬 통과는 실제 EC2/EBS 재시험이나 DEP-13~23 전체 gate의 완료가 아니다.
 ### 1.5 설계 미결정과 비지원 범위
 
 [Cluster architecture의 미결정 사항](architectures/cluster-architecture.md#미결정-사항)은 과거 target과 현재 구현을 함께 언급한다. 아래 경계는 새 기능의 구현 승인이 아니며, 현재 지원 범위를 넓힐 때 먼저 결정해야 할 사항이다.

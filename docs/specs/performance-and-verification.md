@@ -674,6 +674,8 @@ go run ./tools/verify mutation
 
 Local의 `-parallel`은 8이다. CI는 Go의 유효 `GOMAXPROCS` 값을 `-parallel`에 넘긴다. 이 값은 package 안에서 `t.Parallel()`로 실행하는 test의 상한이다. Preflight, coverage, race, fuzz는 한 병렬 단계에서 실행한다. `local`과 `ci`는 mutation을 실행하지 않는다.
 
+CI workflow는 Go gate 외에 S3 helper와 EKS worker observer의 Python 회귀를 별도 단계로 실행한다. Observer만 로컬에서 확인하려면 `python -B tests/test_eks_worker_recovery.py -v`를 실행한다. 이 시험은 AWS·Docker 없이 관찰 독립성·오류 보존·종료·Node identity 경쟁 경계를 확인한다. 실제 broker·Kubernetes API smoke와 남은 EKS gate는 [Drain spec §10](drain-and-rolling-update.md#eks-worker-observer-보완-기준)을 따른다. 이 로컬 통과는 production 장애 수용을 대신하지 않는다.
+
 개발자가 mutation을 실행하려면 `go run ./tools/verify mutation`을 사용한다. 이 명령은 `delivery`, `mqtt`, `nodedrain`, `security`, `session` 다섯 package를 대상으로 한다. Gremlins worker와 test CPU는 각각 1이다. Runner는 한 번에 `max(1, min(5, floor(GOMAXPROCS/2)))`개 package를 실행하고 나머지는 다음 batch로 넘긴다. 실패하면 같은 batch의 남은 명령을 취소한다.
 
 각 결과는 `.artifacts/verification/mutation-<package>.json`에 저장한다. 기본 Gremlins 설정은 `tests/verification/gremlins.yaml`에 있다. Source, file, mutant exclusion은 없다. CI의 `--base <merge-base>`는 coverage diff 계산에만 쓴다.
