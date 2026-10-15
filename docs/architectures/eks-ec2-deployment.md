@@ -22,7 +22,7 @@
 | --- | --- | --- |
 | EKS | Kubernetes 1.37 | EKS platform version과 시험 증거 |
 | Worker와 AMI | `m7g.large` 3대, AZ마다 1대; 인스턴스당 2 vCPU·8 GiB; EKS-optimized Amazon Linux 2023 ARM64 | Region별 AMI ID와 node group 설정 |
-| Broker storage | broker별 20 GiB `gp3`, 기본 3,000 IOPS·125 MiB/s | 암호화·AZ binding·같은 PVC/EBS remount와 계획된 same-AZ cross-worker 재연결은 제한 범위에서 확인했다([수용 기록](../specs/drain-and-rolling-update.md#계획된-cross-worker-ebs-복구-수용-2026-10-15)). EC2 장애 뒤 재연결, snapshot/restore, disk pressure, production I/O·durability는 미검증이다. |
+| Broker storage | broker별 20 GiB `gp3`, 기본 3,000 IOPS·125 MiB/s | 암호화·AZ binding·같은 PVC/EBS remount와 계획된 same-AZ cross-worker 재연결은 제한 범위에서 확인했다([수용 기록](../specs/drain-and-rolling-update.md#계획된-cross-worker-ebs-복구-수용-2026-10-15)). 단일 EC2 비정상 종료 후 재연결은 [실패한 초기 observer와 후속 복구 관찰](../specs/drain-and-rolling-update.md#비정상-단일-ec2-worker-복구-관찰-2026-10-15)로 구분한다. 전체 장애 matrix·자동 관찰 완료·정확한 RTO·snapshot/restore·disk pressure·production I/O·durability는 미검증이다. |
 | NLB | 내부 `IP` target, TCP 1883; Management 8080은 내부 ClusterIP Service | T0→EndpointSlice unready 11.520641s, T0→target `draining` 12.647725s 관찰(보고된 30s 예산 이내); 성공 인증 traffic routing, existing connection drain, TLS endpoint, idle timeout·client IP 미검증 |
 | Broker resources | Pod마다 requests=limits `1 CPU`·`4 GiB` | 측정한 production workload의 N-1 capacity |
 | Comparator | EMQX Enterprise 6.3.1, ARM64 | 측정 workload를 허용하는 license; [PRD §18 질문 15](../requirements/PRD.md#18-미결정-사항) 참고 |
@@ -74,6 +74,11 @@ AWS EKS live cluster(`narumq-eks`, ap-northeast-2)의 배치·단일 drain·Pod 
 ### 계획된 다른 worker의 EBS 복구 (2026-10-15)
 
 별도 state·새 VPC의 합성 fixture에서 기존 3-AZ broker 배치를 사용했다. 이동 대상 volume과 같은 AZ에 임시 worker 하나를 추가했다. 기존 worker의 신규 scheduling을 막은 뒤 broker의 `SAFE_TO_STOP`을 확인하고 해당 Pod UID를 삭제했다. 새 worker가 같은 PVC·PV·EBS를 연결했으며 broker와 MQTT 상태가 복구됐다. 이는 계획된 이동 경로이며 EC2·AZ·volume 장애 경로는 아니다. 실행 파일·결과와 자원 정리는 [Drain §10의 수용 기록](../specs/drain-and-rolling-update.md#계획된-cross-worker-ebs-복구-수용-2026-10-15)을 따른다. 제품 코드와 배포 template은 바꾸지 않았다.
+
+### 단일 EC2 비정상 종료 후 복구 관찰 (2026-10-15)
+
+새 격리 fixture에서 follower EC2를 OS shutdown 없이 종료했다. 종료 확인 뒤 시도한 operator의 out-of-service Node patch는 CAS 검사에서 거절됐다. AWS cloud controller가 기존 Node를 제거했고, 다른 EC2에서 같은 EBS를 연결한 broker와 기존 MQTT 상태가 복구됐다. 이 관찰은 제품 코드·배포 template을 바꾸지 않았다. 초기 observer 실패와 관찰 공백이 있으므로 자동 복구 수용·정확한 RTO·연속 가용성을 완료로 표시하지 않는다. 실행과 정리의 기준 기록은 [Drain §10](../specs/drain-and-rolling-update.md#비정상-단일-ec2-worker-복구-관찰-2026-10-15)을 따른다.
+
 
 
 ## Physical deployment view
