@@ -172,6 +172,8 @@ Active drain endpoint의 body와 상태는 [drain spec](drain-and-rolling-update
 
 `DRAINING`과 `SAFE_TO_STOP` node의 readiness는 실패해야 한다. Startup이 아직 실패한다고 liveness도 실패하게 만들어 초기 sync 중 재시작 loop를 유발해서는 안 된다.
 
+Cluster startup은 `JOINING`일 때 readiness와 같은 quorum·sync·route 준비 조건을 직접 확인한다. 조건을 충족하면 `READY`로 전환하고 성공한다. 외부 `/health/ready` 호출을 기다려서는 안 된다. Kubernetes는 startup 성공 전에 readiness probe를 실행하지 않기 때문이다. Typed Raft recovery 전에는 계속 `STARTING`이며, 이미 시작한 node의 drain 상태를 startup 요청으로 해제하지 않는다.
+
 ## 4. Cluster·node representation
 
 Cluster 요약은 cluster identity·release compatibility·term·leader, membership/quorum 정보, lifecycle별 node 수, replication/storage 요약을 제공한다. `nodesByState`에는 `joining`, `ready`, `draining`, `safeToStop`, `unknown`을 반환한다. `unknown`은 retired member를 제외하고 실제 상태를 읽지 못한 member 수다. `nodeQueryComplete`와 `observedAt`은 cluster node query 완료 상태와 응답 생성 시각을 나타낸다.
@@ -425,7 +427,7 @@ Panel 14의 속도 단위는 연결/초와 takeover/초이며 ETA 단위는 초�
 - 같은 contract suite가 anonymous, 잘못된 credential, ReadOnly API key 성공과 ClusterAdmin 권한 부족 `403`을 검증한다.
 - startup, liveness, readiness와 drain-complete가 quorum·sync·drain 상태 조합을 정확히 반영하는지 시험한다.
 - SEC-11 / API-08 / NFR-17 수용 시험은 활성 management mutation 8개, 401·403 거절, fail-closed admission, hash-chain 손상, schema 검증, directory 경계와 Windows rotation 충돌을 확인한다: `internal/application/audit/service_test.go`, `internal/adapters/http/management/audit_test.go`, `cmd/narumq/cluster_config_test.go`, `cmd/narumq/main_test.go` (`TestAuditVerifyCommandVerifiesAndLeavesFilesReadOnly`), `tests/contracts/audit-event-v1/contract_test.go`, `tests/integration/cluster_audit_process_test.go::TestDynamicClusterManagementAuditProcessAcceptance`, `internal/adapters/auditlog/file_publisher_test.go`, `internal/adapters/auditlog/persist_windows_test.go`. Process acceptance는 2026-10-09에 통과했다(시험 5.82초).
-- Cluster startup probe는 typed Raft recovery가 끝나기 전 `STARTING`, recovery 뒤 base lifecycle 상태를 반환해야 한다. `cmd/narumq/cluster_storage_health_test.go::TestClusterStartupWaitsForTypedRecovery`가 두 상태를 확인한다.
+- Cluster startup probe는 typed Raft recovery가 끝나기 전 `STARTING`을 반환한다. Recovery 뒤 `JOINING`이면 readiness 조건을 직접 확인한다. `cmd/narumq/cluster_storage_health_test.go::TestClusterStartupWaitsForTypedRecovery`가 typed recovery 경계를, `tests/integration/cluster_membership_process_test.go::TestDynamicClusterStartupWithoutReadinessProbeProcessAcceptance`가 readiness 요청 없는 3-node startup을 확인한다. 2026-10-15 작업 트리 실행은 각각 포함한 health 시험 PASS(2.196초)와 process 시험 PASS(19.516초)다. EKS의 수정 전 startup `503`·readiness `200` 불일치는 `.artifacts/verification/eks-resume-20261015T000337Z-21df3b/initial-startup-diagnostic.json`에 연결한다.
 - Metric format, type, HELP/UNIT, histogram bucket과 금지 label을 자동 검사한다.
 - UI-03 CONNECT 거절 label과 CONNACK mapping: `internal/adapters/tcp/server_connect_reject_test.go::TestConnectRejectReasonMapsEveryCONNACKCode`, `internal/adapters/metrics/registry_test.go::TestRegistryRendersConnectRejectionsByProtocolAndReason`, `tests/integration/management_api_test.go::TestMQTTConnectRejectionAndDropAreObservable`.
 - UI-03 routing 뒤 QoS 0 queue-full drop: `internal/application/publish/publish_test.go::TestPublishCountsQoS0QueueFullDrops`.

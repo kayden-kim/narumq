@@ -200,6 +200,26 @@ func TestStateMachineNodeDrainCancelRestartAndCompletedCannotCancel(t *testing.T
 	}
 }
 
+// Traceability: DEP-10, CLU-14; docs/specs/drain-and-rolling-update.md §2.3.
+func TestStateMachineFailedDrainCancellationClearsFailure(t *testing.T) {
+	machine := newDrainTestMachine(t)
+	applyDrainTestStart(t, machine, 2, 2, drainTestOperation1)
+	failure := drainTestCommand(NodeDrainActionFail, 2, drainTestOperation1, 1_003)
+	failure.NodeDrain.FailureCode = "drain_timeout"
+	failure.NodeDrain.BlockingReason = "insufficient_replicas"
+	if result := applyDrainTestCommand(t, machine, 3, failure); result.Outcome != ApplyOutcomeApplied {
+		t.Fatalf("FAIL result = %+v", result)
+	}
+	cancel := drainTestCommand(NodeDrainActionCancel, 2, drainTestOperation1, 1_004)
+	result := applyDrainTestCommand(t, machine, 4, cancel)
+	if result.Outcome != ApplyOutcomeApplied || result.NodeDrain.Phase != nodedrain.PhaseCancelled {
+		t.Fatalf("CANCEL result = %+v", result)
+	}
+	if result.NodeDrain.FailureCode != "" || result.NodeDrain.BlockingReason != "" {
+		t.Fatalf("cancelled drain retained failure fields: %+v", result.NodeDrain)
+	}
+}
+
 // Traceability: DEP-01/DEP-02; docs/specs/drain-and-rolling-update.md §1, §3, §10.
 func TestStateMachineNodeRemovalDeletesDrainRecord(t *testing.T) {
 	machine := newDrainTestMachine(t)

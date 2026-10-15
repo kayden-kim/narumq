@@ -363,6 +363,20 @@ func TestDynamicClusterNodeDrainCancelTimeoutAndResumeProcessAcceptance(t *testi
 	}
 	processes[0] = node1
 	clusterMembershipProcessWaitForBootstrap(t, ctx, processes)
+	if err := processes[2].crash(5 * time.Second); err != nil {
+		t.Fatalf("crash node 3 after failed-drain cancellation: %v", err)
+	}
+	restarted, err = fixture.harness.start("cancelled failed drain restart", fixture.bootstrapConfig(3), fixture.managementAddresses[2])
+	if err != nil {
+		t.Fatalf("restart node 3 after failed-drain cancellation: %v", err)
+	}
+	processes[2] = restarted
+	clusterMembershipProcessWaitForStatus(t, ctx, restarted, "/health/startup", http.StatusOK)
+	clusterMembershipProcessWaitForStatus(t, ctx, restarted, "/health/ready", http.StatusOK)
+	recoveredCancel := clusterDrainProcessWaitForPhase(t, ctx, restarted, 3, "CANCELLED")
+	if recoveredCancel.OperationID != failed.OperationID || recoveredCancel.Failure != nil {
+		t.Fatalf("recovered cancellation = %+v, want same operation without failure", recoveredCancel)
+	}
 }
 
 type clusterDrainProcessRequest struct {

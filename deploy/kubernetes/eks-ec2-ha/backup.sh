@@ -46,13 +46,13 @@ TEMP_ARCHIVE=
 TEMP_HEADERS=
 TEMP_FULL_HASH=
 TEMP_CURL_STATUS=
-TEMP_REQUEST=
+TEMP_STAGE=
 finish() {
   [ -z "$TEMP_ARCHIVE" ] || rm -f "$TEMP_ARCHIVE"
   [ -z "$TEMP_HEADERS" ] || rm -f "$TEMP_HEADERS"
   [ -z "$TEMP_FULL_HASH" ] || rm -f "$TEMP_FULL_HASH"
   [ -z "$TEMP_CURL_STATUS" ] || rm -f "$TEMP_CURL_STATUS"
-  [ -z "$TEMP_REQUEST" ] || rm -f "$TEMP_REQUEST"
+  [ -z "$TEMP_STAGE" ] || rm -rf "$TEMP_STAGE"
   if [ "$S3_ENABLED" = 1 ]; then
     touch "$STATE_DIR/main.done"
   fi
@@ -107,7 +107,7 @@ if [ "$S3_ENABLED" = 1 ]; then
 
   # Only durable request-backed archives are S3 upload candidates. Legacy timestamp-only
   # archives remain local and keep their original mtime-based cleanup.
-  for request in "$BACKUP_DIR"/backup-*.nrbak.request.json; do
+  for request in "$BACKUP_DIR"/backup-*.nrbak.staged/*.request.json; do
     [ -f "$request" ] || continue
     upload_request "$request"
   done
@@ -211,19 +211,21 @@ esac
 [ "${#FULL_SHA}" = 64 ] || fail "backup API full-file SHA-256 length is invalid"
 UTC_STAMP=$(date -u +%Y%m%dT%H%M%SZ)
 ARCHIVE_NAME="backup-${UTC_STAMP}-${COMMIT_INDEX}-${FULL_SHA}.nrbak"
-FINAL_ARCHIVE="$BACKUP_DIR/$ARCHIVE_NAME"
-REQUEST_PATH="$FINAL_ARCHIVE.request.json"
-TEMP_REQUEST="$REQUEST_PATH.tmp.$$"
+TEMP_STAGE=$(mktemp -d "$BACKUP_DIR/.staging-XXXXXXXX")
+STAGED_ARCHIVE="$TEMP_STAGE/$ARCHIVE_NAME"
+REQUEST_PATH="$TEMP_STAGE/$ARCHIVE_NAME.request.json"
 chmod 0660 "$TEMP_ARCHIVE"
-mv "$TEMP_ARCHIVE" "$FINAL_ARCHIVE"
+mv "$TEMP_ARCHIVE" "$STAGED_ARCHIVE"
 TEMP_ARCHIVE=
 printf '{"utcTimestamp":"%s","commitIndex":"%s","sha256":"%s","filename":"%s"}\n' \
-  "$UTC_STAMP" "$COMMIT_INDEX" "$FULL_SHA" "$ARCHIVE_NAME" > "$TEMP_REQUEST"
-REQUEST_BYTES=$(wc -c < "$TEMP_REQUEST" | tr -d '[:space:]')
+  "$UTC_STAMP" "$COMMIT_INDEX" "$FULL_SHA" "$ARCHIVE_NAME" > "$REQUEST_PATH"
+REQUEST_BYTES=$(wc -c < "$REQUEST_PATH" | tr -d '[:space:]')
 [ "$REQUEST_BYTES" -le 512 ] || fail "S3 upload request exceeds 512 bytes"
-chmod 0660 "$TEMP_REQUEST"
-mv "$TEMP_REQUEST" "$REQUEST_PATH"
-TEMP_REQUEST=
+chmod 0660 "$REQUEST_PATH"
+FINAL_STAGE="$BACKUP_DIR/$ARCHIVE_NAME.staged"
+mv -T "$TEMP_STAGE" "$FINAL_STAGE"
+TEMP_STAGE=
+REQUEST_PATH="$FINAL_STAGE/$ARCHIVE_NAME.request.json"
 rm -f "$TEMP_HEADERS" "$TEMP_FULL_HASH" "$TEMP_CURL_STATUS"
 TEMP_HEADERS=
 TEMP_FULL_HASH=

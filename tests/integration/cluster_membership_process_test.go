@@ -1017,6 +1017,32 @@ func (f *clusterMembershipProcessFixture) stageRequestBody(memberID uint64) []by
 	return requestBody
 }
 
+// Traceability: API-04; docs/specs/management-api-and-observability.md §3.
+func TestDynamicClusterStartupWithoutReadinessProbeProcessAcceptance(t *testing.T) {
+	t.Parallel()
+	fixture := newClusterMembershipProcessFixture(t, 3, "")
+	processes := make([]*clusterMembershipProcess, 3)
+	for index := range processes {
+		process, err := fixture.harness.start(
+			fmt.Sprintf("startup-only node %d", index+1),
+			fixture.bootstrapConfig(uint64(index+1)),
+			fixture.managementAddresses[index],
+		)
+		if err != nil {
+			t.Fatalf("start bootstrap node %d: %v", index+1, err)
+		}
+		processes[index] = process
+	}
+	// Kubernetes does not run readiness until startup succeeds. Do not use the
+	// bootstrap helper here: it calls readiness and would conceal this deadlock.
+	for _, process := range processes {
+		clusterMembershipProcessWaitForStatus(t, fixture.ctx, process, "/health/startup", http.StatusOK)
+	}
+	for _, process := range processes {
+		clusterMembershipProcessWaitForStatus(t, fixture.ctx, process, "/health/ready", http.StatusOK)
+	}
+}
+
 // Traceability: CLU-03; docs/specs/cluster-session-and-delivery.md §3.1, §11.10.
 func TestDynamicClusterLiveQoS0CrossNodeForwardingProcessAcceptance(t *testing.T) {
 	t.Parallel()

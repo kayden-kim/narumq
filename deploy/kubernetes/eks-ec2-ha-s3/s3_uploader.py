@@ -209,24 +209,31 @@ def main() -> int:
     atomic_write(state / "uploader.ready", "ready\n")
 
     while not (state / "main.done").exists():
-        for receipt in sorted(root.glob(f"backup-*{REQUEST_SUFFIX}.uploaded")):
-            try:
-                finish_prior_success(receipt, root, prefix)
-            except Exception as exc:
-                filename = receipt.name.removesuffix(REQUEST_SUFFIX + ".uploaded")
-                message = str(exc).replace("\n", " ")[:2000]
-                atomic_write(status_path(state, filename, "failed"), message + "\n")
-                print(f"backup-uploader: cleanup failed for {filename}: {message}", file=sys.stderr)
-        for request in sorted(root.glob(f"backup-*{REQUEST_SUFFIX}")):
-            filename = request.name.removesuffix(REQUEST_SUFFIX)
-            if status_path(state, filename, "uploaded").exists() or status_path(state, filename, "failed").exists():
-                continue
-            try:
-                process_request(request, root, state, bucket, prefix, region)
-            except Exception as exc:
-                message = str(exc).replace("\n", " ")[:2000]
-                atomic_write(status_path(state, filename, "failed"), message + "\n")
-                print(f"backup-uploader: upload failed for {filename}: {message}", file=sys.stderr)
+        for stage in sorted(root.glob("backup-*.nrbak.staged")):
+            if stage.is_symlink() or not stage.is_dir():
+                fail("published backup staging entry must be a real directory")
+            for receipt in sorted(stage.glob(f"backup-*{REQUEST_SUFFIX}.uploaded")):
+                try:
+                    finish_prior_success(receipt, stage, prefix)
+                except Exception as exc:
+                    filename = receipt.name.removesuffix(REQUEST_SUFFIX + ".uploaded")
+                    message = str(exc).replace("\n", " ")[:2000]
+                    atomic_write(status_path(state, filename, "failed"), message + "\n")
+                    print(f"backup-uploader: cleanup failed for {filename}: {message}", file=sys.stderr)
+            for request in sorted(stage.glob(f"backup-*{REQUEST_SUFFIX}")):
+                filename = request.name.removesuffix(REQUEST_SUFFIX)
+                if stage.name != filename + ".staged":
+                    fail("published backup staging directory does not match its request")
+                if status_path(state, filename, "uploaded").exists() or status_path(state, filename, "failed").exists():
+                    continue
+                try:
+                    process_request(request, stage, state, bucket, prefix, region)
+                except Exception as exc:
+                    message = str(exc).replace("\n", " ")[:2000]
+                    atomic_write(status_path(state, filename, "failed"), message + "\n")
+                    print(f"backup-uploader: upload failed for {filename}: {message}", file=sys.stderr)
+            if not any(stage.iterdir()):
+                stage.rmdir()
         time.sleep(1)
     return 0
 

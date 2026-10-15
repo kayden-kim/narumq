@@ -56,8 +56,21 @@ The public endpoint is limited to the CIDRs in `terraform.tfvars`; with an empty
 
 ## Teardown
 
-```sh
-terraform destroy
-```
+운영 데이터 보존 전에는 삭제하지 않는다. `gp3` StorageClass의 reclaim policy는 `Delete`이므로 PVC 삭제가 EBS 데이터 삭제로 이어질 수 있다. 삭제 승인은 롤아웃·장애·복원 시험 승인이 아니다.
 
-The `gp3` StorageClass uses `Delete` reclaim policy; persistent volumes created from it may therefore be deleted when their claims are removed. Back up any required data before deleting workloads or destroying this infrastructure. A single NAT Gateway and NAT egress across AZs are a sandbox cost optimization, not an AZ-resilient production topology.
+1. AWS account, cluster ARN, VPC와 Terraform state의 lineage·serial 및 실제 관리 대상 ID를 대조한다.
+2. 필요한 online backup, voter 설정·인증 자료, node-local 감사 기록과 Terraform state를 비공개 저장소에 보존한다. archive checksum을 검증한다.
+3. 현재 state에서 `terraform plan -destroy -out=<private-plan-path>`로 새 계획을 만든다. managed action이 정확히 `delete` 또는 `no-op`인지, 대상이 승인된 전용 자원인지 확인한다. 보호 snapshot과 공유 ECR은 삭제 대상에 넣지 않는다.
+4. 보존을 확인한 뒤 인벤토리에 있는 전용 workload와 Service를 삭제한다. AWS Load Balancer Controller와 EBS CSI가 살아 있는 동안 NLB·target group·PVC/EBS 정리를 완료한다. 이는 최종 폐기이며 수용 시험이 아니다.
+5. 검토한 계획을 `terraform apply <private-plan-path>`로 실행한다. state가 바뀌면 이전 계획을 폐기하고 다시 만든다.
+6. EKS, nodegroup, VPC, NAT/EIP, NLB·target group·전용 security group, EBS, IAM 및 전용 log group을 직접 조회해 잔여 자원을 확인한다. Tagging API의 오래된 기록만으로 존재 여부를 판단하지 않는다.
+
+2026-10-15 사전 보존은 Windows DPAPI `CurrentUser`를 사용했다. 해당 Windows 사용자 프로필에서만 복호화할 수 있다. `C:/Users/kayden.kim/AppData/Local/narumq/preservation/eks-final-20261014T221024Z`의 `.dpapi` 파일과 사용자 프로필을 함께 보호한다. 복호화는 PowerShell의 `[Security.Cryptography.ProtectedData]::Unprotect(bytes, $null, [Security.Cryptography.DataProtectionScope]::CurrentUser)`를 사용한다. 복호화한 Secret·archive·state를 Git이나 로그에 넣지 않는다. 이 로컬 보존은 외부 재해 복구나 30일 S3 보존 수용 증거가 아니다.
+
+단일 NAT Gateway와 AZ 간 NAT egress는 sandbox 비용 절감 설정이다. AZ 장애에 강한 production topology를 입증하지 않는다.
+
+### 2026-10-15 최종 정리 기록
+
+사용자의 기존 `narumq-eks` 삭제 승인에 따라 Terraform state lineage `103d4690-cf1d-a395-505e-eae2e875c471`, serial `44`의 관리 주소·ID 41개를 검토했다. 전용 namespace와 NLB·PVC 정리를 먼저 확인한 뒤 새 saved plan을 적용해 `0 added, 0 changed, 41 destroyed`로 끝났다. 최종 state는 serial `90`, resource 0개다. 전용 CloudWatch log group도 삭제했다. 전체 제어 평면 로그 수집은 필요하지 않아 중단했고 부분 수집 파일을 제거했다. 최종 backup·설정·node-local 감사 기록과 state는 위 DPAPI directory에 보존했다.
+
+보호 snapshot `snap-01999990697d01221`, `snap-0e3a75c648325b3cd`, `snap-059315c3eb5c3bae4`와 공유 `narumq` ECR repository의 `observability-20261014` image는 유지했다. 이 보존 예외를 포함해 AWS 비용이 모두 0이 됐다고 주장하지 않는다. 직접 조회 결과와 미검증 gate는 `.artifacts/verification/eks-final-20261014T221024Z/final-decommission-summary.json`에 있다. 최종 폐기는 rollout·장애·복원 수용 시험을 대신하지 않는다.

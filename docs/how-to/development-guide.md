@@ -102,6 +102,8 @@ docker buildx build --platform linux/arm64 --provenance=false \
 
 이는 합성 fixture 전용 검증이며 정식 릴리스가 아닙니다. 격리 fixture 담당자가 명시적으로 인계하고 CLU-14 증거를 제공하기 전에는 어느 이미지도 push하거나 배포하지 마세요. `narumq-eks`를 쓰기 대상으로 절대 사용하지 마세요. 기존 `narumq` ECR 저장소에서 UTC 타임스탬프와 임의 접미사가 포함된 run ID로 서로 다른 작업 전용 태그를 사용하세요:
 
+2026-10-15 재개 실행에서는 사용자가 격리 EKS 시험을 다시 승인했다. 새 전용 state·VPC의 fixture에서 아래 절차의 ARM64 digest·identity 경계를 적용했다. Startup 준비 조건의 순환 대기와 실패 drain 취소 후 재시작 결함을 찾아 수정했고 실제 EKS에서 검증했다. 이 실행의 수용 범위는 [Drain §10](../specs/drain-and-rolling-update.md#10-broker-drain-수용-시험-매핑)과 [Cluster §11.9·§11.20](../specs/cluster-session-and-delivery.md#119-offline-queue-replication과-backup-v3-수용-매핑)을 따른다. 합성 fixture는 증거 보존 뒤 삭제했으며 이 기록이 다음 인프라 실행의 무제한 승인을 뜻하지 않는다.
+
 컨트롤러: `rollout-controller-dep11-sec11-${RUN_ID}`.
 브로커 대상: `rollout-target-0.0.1-${RUN_ID}`.
 
@@ -221,6 +223,18 @@ aws ecr batch-delete-image --profile $AwsProfile --region ap-northeast-2 --repos
    go test -race ./... -count=1
    ```
    기대 결과: 데이터 레이스 경고 없이 전체 통과.
+
+S3 helper의 로컬 회귀 시험은 `python -B tests/test_backup_s3.py`로 실행한다. 실제 backup shell의 게시 전후 중단은 별도 Docker opt-in smoke로 확인한다. Python 3, Bash와 GNU coreutils가 있는 Linux container image를 준비해야 한다. 기존 compatibility 시험의 `python-client` image를 사용할 수 있다. 저장소 루트의 PowerShell에서 다음과 같이 실행한다.
+
+```powershell
+$env:NARUMQ_BACKUP_PUBLICATION_SMOKE = "1"
+$env:NARUMQ_BACKUP_SMOKE_IMAGE = "narumq-compat-python-drain-paho-go-python-will-acl-final:phase1"
+python -B tests/test_backup_publication.py
+Remove-Item Env:NARUMQ_BACKUP_PUBLICATION_SMOKE
+Remove-Item Env:NARUMQ_BACKUP_SMOKE_IMAGE
+```
+
+이 smoke는 실제 `backup.sh`를 게시 전후에 강제 종료하고 새 Pod UID의 uploader로 재시도한다. AWS CLI는 checksum을 검사하는 대역이며 container는 `--network none`으로 실행한다. 데이터는 container tmpfs에만 있고 종료 때 container를 제거한다. 실제 AWS 업로드·물리 전원 손실 시험이 아니다. 실행 결과는 [Cluster §11.9](../specs/cluster-session-and-delivery.md#119-offline-queue-replication과-backup-v3-수용-매핑)를 따른다.
 
 ### 4단계: 바운디드 퍼즈 캠페인(Bounded Fuzz Campaigns) 실행
 

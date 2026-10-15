@@ -6,13 +6,13 @@
 | --- | --- |
 | 관점 상태 | Target |
 | 문서 상태 | Draft |
-| 구현 증거 | `deploy/kubernetes/eks-ec2-ha/`가 `narumq-eks`에서 초기 3-node cluster를 시작했다. 세 Pod가 서로 다른 AZ에서 Ready다. |
+| 구현 증거 | `deploy/kubernetes/eks-ec2-ha/`의 초기 3-node 배포와 2026-10-15 삭제 전 3-AZ·Ready 관찰은 과거 실행 증거다. 비용 정리 승인에 따라 `narumq-eks`와 전용 인프라를 폐기했으며 현재 실행 중인 배포가 아니다. |
 | 범위 | `EKS_EC2_HA` logical-to-physical deployment mapping |
 | 관련 요구사항 | [PRD](../requirements/PRD.md) DEP-01~DEP-23, CLU-01~CLU-14 |
 | 관련 스펙 | [Drain과 rolling update](../specs/drain-and-rolling-update.md), [Cluster session과 durable delivery](../specs/cluster-session-and-delivery.md), [Performance와 verification](../specs/performance-and-verification.md) |
 | 관련 결정 | [ADR-0006](../decisions/ADR-0006-external-rollout-controller.md), [ADR-0007](../decisions/ADR-0007-aws-production-deployment-platform.md). 모두 Accepted |
 | 관련 해설 | [EKS 고가용성과 장애 도메인](../explainers/eks-ha-failure-domains.md), [AWS NLB와 MQTT 연결 lifecycle](../explainers/aws-nlb-mqtt-connection-lifecycle.md) |
-| 최종 확인일 | 2026-10-13 |
+| 최종 확인일 | 2026-10-15 |
 
 ## Production qualification profile selected
 
@@ -53,6 +53,23 @@ AWS EKS live cluster(`narumq-eks`, ap-northeast-2)의 배치·단일 drain·Pod 
 6. **Evidence**:
    - `.artifacts/verification/nlb-lifecycle-verification-report.json`, `.artifacts/verification/prestop-hook-verification-report.json`, `.artifacts/verification/ebs-storage-az-recovery-report.json`.
 
+
+
+### 기존 시험 환경 최종 폐기 (2026-10-15)
+
+사용자가 비용 정리를 위해 기존 `narumq-eks`와 전용 인프라의 삭제를 승인했다. 삭제 전에는 읽기 전용 점검만 수행했다. Broker 3개가 서로 다른 AZ·worker에서 Ready였고, health probe 9개와 NLB healthy target 3개를 확인했다. 독립된 20 GiB 암호화 gp3 volume과 660초 종료 유예 설정도 확인했다. Rollout controller는 설치돼 있지 않았다. 이 구성 관찰은 장애·timeout·복원 수용 시험을 대신하지 않는다.
+
+최종 online backup(commit index 100)의 body/trailer checksum과 전체 파일 hash를 검증했다. Archive, voter 설정·인증 자료, node-local 감사 기록과 Terraform state를 Windows DPAPI `CurrentUser`로 암호화해 보존한 뒤 전용 namespace와 Terraform 관리 자원 41개를 삭제했다. 직접 AWS 조회에서 EKS·VPC·NLB·target group·전용 security group·ENI·EBS 7개·EIP·IAM 역할/정책/OIDC provider가 없고, NAT는 `deleted` 상태이며 Terraform state는 resource 0개였다. 전용 CloudWatch log group도 삭제했다. 사용자가 전체 로그 보존의 필요성을 질문한 뒤 불필요한 전체 내보내기를 중단했고 부분 수집 파일도 제거했다. 필요한 시험 증거와 node-local 감사 기록은 별도로 보존했다. 보호 snapshot 세 개와 공유 ECR image는 유지했다. 최종 상태는 `.artifacts/verification/eks-final-20261014T221024Z/final-decommission-summary.json`에 기록했다.
+
+증거는 `.artifacts/verification/eks-final-20261014T221024Z/eks-readonly-qualification.json`, `preservation.json`, `terraform-final-apply-result.json`, `post-terraform-direct-verification.json`에 있다. 기존 `CLU-14 FAILED/UNRESOLVED`와 전체 EKS acceptance 미완료 상태는 유지한다. 최종 폐기를 장애·롤아웃 시험 결과로 사용하지 않는다.
+
+### 격리 시험 재개 (2026-10-15)
+
+사용자 재개 지시에 따라 `deploy/terraform-acceptance`의 별도 local state로 `narumq-ha-acceptance-20261015`를 만들었다. `m7g.large` worker 세 개를 서로 다른 AZ에 배치했고 새 VPC의 peering/TGW 경로 부재를 확인했다. 원본 `narumq-eks`는 재생성하지 않았다. 전용 S3·IRSA는 별도 `deploy/terraform-acceptance-s3` state로 관리했다. Base 배포의 공유 image pin을 시험 image로 덮어쓰지 않고, 검증한 전용 ARM64 platform digest를 fixture 입력으로만 사용했다.
+
+실제 rollout·active-drain controller 재시작·API 실패 차단·target Lease 독점과 감사 PVC 검증은 [Drain §10](../specs/drain-and-rolling-update.md#10-broker-drain-수용-시험-매핑)에 있다. 새 PVC 세 개의 S3 복원·전체 RTO는 [Cluster §11.9](../specs/cluster-session-and-delivery.md#119-offline-queue-replication과-backup-v3-수용-매핑), 같은 EC2/EBS 비정상 재시작에서 찾은 취소 상태 결함과 수정 후 검증은 [§11.20](../specs/cluster-session-and-delivery.md#1120-voter-volume-손실-보호와-재시드-수용-매핑)에 둔다. 이 제한된 실행을 전체 DEP·CLU-14 또는 production 성능 수용으로 사용하지 않는다.
+
+시험 후 새 EKS·S3 전용 관리 자원 54개를 삭제했다. 직접 AWS 조회에서 전용 VPC·NLB·EBS 11개·ENI·security group·ASG·IAM·OIDC·S3 bucket·log group 부재와 NAT `deleted`를 확인했다. 두 state의 resource는 0개다. 작업 image 태그·digest 5개를 제거하고 기존 공유 image와 보호 snapshot 세 개는 유지했다. 필요한 archive·설정·감사·state/plan 기록은 DPAPI `CurrentUser`로 암호화했다. 상세는 `.artifacts/verification/eks-resume-20261015T000337Z-21df3b/final-summary.json`, `direct-cleanup-verification.json`, `iam-nat-cleanup-verification.json`을 따른다. 전체 CloudWatch 로그는 수집하지 않았다.
 
 ## Physical deployment view
 

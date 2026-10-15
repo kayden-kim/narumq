@@ -3690,7 +3690,14 @@ func (checker *clusterHealthChecker) CheckStartup(ctx context.Context) (manageme
 		reason := "typed raft state has not been recovered"
 		return managementports.HealthStatusStarting, &reason
 	}
-	return checker.HealthChecker.CheckStartup(ctx)
+	status, reason := checker.HealthChecker.CheckStartup(ctx)
+	if status != managementports.HealthStatusStarting {
+		return status, reason
+	}
+	if ready, readinessReason := checker.CheckReadiness(ctx); ready != managementports.HealthStatusUp {
+		return managementports.HealthStatusStarting, readinessReason
+	}
+	return managementports.HealthStatusUp, nil
 }
 
 func (checker *clusterHealthChecker) CheckDrain(ctx context.Context) (managementports.HealthStatus, *string) {

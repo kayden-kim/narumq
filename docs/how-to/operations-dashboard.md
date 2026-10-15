@@ -10,6 +10,8 @@ Prometheus는 `/metrics`에서 node별 metric(운영 수치)을 정해진 간격
 | 최종 검증일 | 2026-10-14 |
 | 관련 기준 문서 | [PRD §9.6](../requirements/PRD.md#96-대시보드), [Management API와 observability §8·§9](../specs/management-api-and-observability.md#8-dashboard-계약), [Management API v1](../contracts/management-api-v1.md), [ADR-0045](../decisions/ADR-0045-operations-dashboard-grafana.md) |
 
+2026-10-15 비용 정리: 사용자의 최종 삭제 승인에 따라 `narumq`, `narumq-observability` namespace와 기존 `narumq-eks`의 전용 인프라를 폐기했다. 아래 2026-10-14 live 검증은 과거 실행 기록이며 현재 접속 가능한 Dashboard가 아니다. 설정·인증 자료는 암호화해 보존했다. 정리 증거는 `.artifacts/verification/eks-final-20261014T221024Z/post-terraform-direct-verification.json`과 `preservation.json`에 있다.
+
 ## 1. 대상과 영향
 
 - 대상: Prometheus와 Grafana, 그리고 Management API가 활성화된 NaruMQ cluster.

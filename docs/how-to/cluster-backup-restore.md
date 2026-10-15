@@ -20,7 +20,7 @@
 - Archive에는 고객 식별자, retained payload와 session 정보가 들어갈 수 있다. 인증된 암호화 저장소에 보관하고 access를 제한한다.
 - 채택된 [SPEC-TBD-09] 정기 백업 정책: 일 1회 수행하고 30일간 보존한다. 전체 클러스터 재해 복구 목표는 RPO 24시간·RTO 1시간이다(단일 노드 장애는 3-node Raft quorum으로 RPO 0 유지; [Cluster §10](../specs/cluster-session-and-delivery.md#10-snapshot-backup과-restore) 참조).
 - S3 is authoritative for 30-day retention; the private same-region bucket blocks public access, denies non-TLS access, uses SSE-S3, expires objects after 30 days, and aborts incomplete multipart uploads after one day. The PVC is staging only.
-- Only a new archive with an atomically written persistent request record is eligible for S3. Pending request-backed uploads run before a new archive; failures retain both files. Legacy files without original commit-index metadata are not parsed, migrated, or assigned invented metadata; they remain under the existing local `mtime +30` cleanup.
+- 새 archive와 요청 기록은 같은 PVC의 비공개 임시 directory에 준비하고, directory를 `<archive filename>.staged`로 원자적으로 rename해 함께 게시한다. 업로더는 게시된 directory만 처리한다. 게시 전 중단된 `.staging-*` directory는 자동 업로드하지 않는다. 실패한 게시 directory는 다음 Job을 위해 보존한다. 기존 요청 없는 archive는 자동 이관하지 않고 기존 local `mtime +30` 정리만 적용한다.
 - Backup 요청은 쓰기를 중지하지 않는다. Fresh quorum barrier가 유효하지 않으면 retryable `503`을 반환한다. Retained, offline 및 durable delivery operation은 [Release contract](../contracts/cluster-release-compatibility-v1.md#5-readiness와-persisted-state)의 fresh read·committed profile gate를 따른다. Release는 same-major 인접 minor window를 허용하며 protocol/schema는 exact 비교를 유지한다.
 
 ## 2. 전제 조건
@@ -136,7 +136,7 @@
 
 목록 조회 및 시드 Job 매니페스트는 `deploy/kubernetes/eks-ec2-ha-s3`에 있지만 해당 overlay의 Kustomize 적용 대상에는 포함하지 않는다. 아래 절차의 지정된 시점에만 `kubectl create -f`로 실행한다. 고정 AWS 자격 증명은 사용하지 않는다.
 
-1. **실패한 업로드 파일을 보존한다.** 예약 백업 CronJob은 새 archive를 요청하기 전에 PVC에 남은 업로드 대기 파일 중 요청 기록이 있는 것을 모두 먼저 처리한다. `PutObject`가 실패하거나 SHA-256 응답이 다르면 archive와 JSON 요청 기록을 모두 PVC에 남겨 둔다. 다음 Job은 같은 SHA에서 파생된 key로 재시도한다. 두 파일을 삭제·이름 변경·수정하지 않는다. 요청 기록이 없는 기존 파일은 S3 업로드 대상으로 삼지 않으며 기존 로컬 `mtime +30` 정리만 적용한다.
+1. **실패한 업로드 파일을 보존한다.** 예약 백업 CronJob은 새 archive를 요청하기 전에 PVC의 게시된 `backup-*.nrbak.staged` directory에 있는 요청을 먼저 처리한다. `PutObject`가 실패하거나 SHA-256 응답이 다르면 archive와 JSON 요청 기록을 함께 남겨 둔다. 다음 Job은 같은 SHA에서 파생된 key로 재시도한다. 게시 directory의 파일을 삭제·이름 변경·수정하지 않는다. 게시 전 중단된 `.staging-*`는 자동 업로드하지 않으므로 필요하면 증거를 보존해 운영자에게 전달한다. 요청 기록이 없는 기존 archive는 S3 업로드 대상으로 삼지 않으며 기존 로컬 `mtime +30` 정리만 적용한다.
 
 2. **복원 전용 IAM 역할로 백업 목록을 조회한다.** 저장소 루트에서 임시 목록 조회 Job을 생성하고, 생성된 Job 이름을 기록한다.
 
@@ -156,6 +156,8 @@
    ```
 
    S3 restore overlay는 `StatefulSet/narumq`의 `replicas`를 0으로 유지하고 S3 backup CronJob의 `suspend`를 `true`로 설정하며 StatefulSet의 volumeClaimTemplate과 같은 이름으로 빈 voter PVC 세 개를 만든다. 로컬 archive만 복원할 때는 `deploy/kubernetes/eks-ec2-ha-restore-mode`를 사용한다. 두 overlay 모두 기존 claim을 비우거나 변경하지 않는다. 적용 후 대상 claim이 새로 만들어져 비어 있는지 확인한다. Seed Job은 예상하지 못한 PVC 파일이 있거나 `data`·`audit` 하위 경로가 비어 있지 않으면 거절하며 기존 파일을 삭제하지 않는다.
+
+   기존 fixture와 같은 namespace에서 시험 복원을 할 때도 `data-narumq-*`를 재사용하지 않는다. 원본 broker 프로세스를 모두 정지하고 같은 identity가 동시에 실행되지 않음을 확인한다. 별도의 새 claim 이름을 seed Job과 복구 StatefulSet에 일관되게 지정한다. 2026-10-15 시험은 `restore-data-narumq-*`를 사용해 원래 PVC를 보존했다. `WaitForFirstConsumer` claim은 seed Job의 node 배치를 지정해 각 voter가 서로 다른 AZ의 EBS에 놓이도록 한다. 이 작업은 비어 있는 새 대상의 복원이며 기존 claim을 지우는 절차가 아니다.
 
 4. **이 순차 복원에 사용할 object key 하나만 지정한다.** 아래 명령의 `S3_KEY`에 목록에서 복사한 key를 넣는다. 이 값은 데이터이며 AWS 자격 증명이 아니다.
 
@@ -201,7 +203,7 @@
 | --- | --- |
 | 새 요청 기록 기반 archive 업로드 | 일치하는 S3 checksum 응답을 확인한 뒤에만 로컬 staging 파일을 정리한다. 실패하면 archive와 요청 기록을 모두 남겨 재시도한다. |
 | 기존 로컬 archive | 자동 이관하거나 형식을 파싱하지 않는다. 기존 로컬 `mtime +30` 정리만 적용한다. |
-| 30일 보존 및 RPO/RTO | Lifecycle 설정은 구성 확인 증거에 불과하다. 실제 30일 경과 보존과 지속적인 일일 백업 RPO ≤ 24h를 입증하려면 일정 기간 반복 실행해야 한다. 전체 복원 RTO는 목록 조회, 다운로드, 세 voter 모두의 기동·readiness, quorum, 서비스 복구 동작을 포함해 복원 시작부터 측정해야 한다. 이 라이브 수용 기준은 아직 열려 있다. |
+| 30일 보존 및 RPO/RTO | Lifecycle 설정은 구성 확인 증거다. 실제 30일 경과 보존과 지속적인 일일 백업 RPO ≤ 24h는 반복 실행이 필요하다. 2026-10-15 격리 합성 fixture에서 목록 조회·다운로드·새 PVC 3개 seed·Ready·quorum·기존 MQTT session/retained 읽기까지 전체 RTO 124.79초를 검증했다([Cluster §11.9](../specs/cluster-session-and-delivery.md#119-offline-queue-replication과-backup-v3-수용-매핑)). 이 한 번의 실행은 production 데이터 크기나 남은 시간 기반 수용을 대신하지 않는다. |
 
 ## 7. 해결되지 않을 때 전달할 대상
 
