@@ -1,0 +1,33 @@
+{
+  "profileId": "capacity-local-smoke-v1",
+  "purpose": "local-smoke",
+  "seed": 2,
+  "payloadSizeCycle": [128, 128, 128, 128, 128, 128, 512, 512, 2048, 16384],
+  "keepAliveSeconds": 30,
+  "sessionExpirySeconds": 300,
+  "tlsEveryNthClient": 2,
+  "retainedTopicsTenantA": 8,
+  "retainedTopicsTenantB": 4,
+  "maxInflightPerPublisher": 16,
+  "ackTimeoutMillis": 10000,
+  "steps": [
+    { "cells": 1, "ratePerStreamPerSecond": 2 },
+    { "cells": 2, "ratePerStreamPerSecond": 2 }
+  ],
+  "bisectRounds": 0,
+  "confirmRuns": 1,
+  "connectRatePerSecond": 200,
+  "warmupMillis": 2000,
+  "measureMillis": 5000,
+  "drainMillis": 5000,
+  "recoveryTimeoutMillis": 30000,
+  "readyTimeoutMillis": 120000,
+  "resyncTimeoutMillis": 120000,
+  "markerAckTimeoutMillis": 5000,
+  "latencyP99LimitMillis": 1000,
+  "generatorCpuSaturationPercent": 80,
+  "brokerCPUs": 1,
+  "brokerMemoryBytes": 1073741824,
+  "generatorCPUs": 2,
+  "generatorMemoryBytes": 536870912
+}

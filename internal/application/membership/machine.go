@@ -57,6 +57,7 @@ type StateMachine struct {
 	proposalOrigins                  map[uint64]*proposalOriginState
 	proposalReceiptCount             int
 	proposalResultBytes              int
+	deliveryReroutes                 []DeliveryRerouteDTO
 }
 
 // NewStateMachine constructs an empty deterministic replicated-state machine.
@@ -436,8 +437,7 @@ func (machine *StateMachine) applyOwnership(index uint64, change OwnershipChange
 		}
 		delete(machine.ownerships, key)
 		machine.removeSessionMetadataLocked(key)
-		machine.removeDeliveryLocked(key)
-		machine.removeSubscriptionsLocked(key)
+		machine.discardSessionDeliveryLocked(key, 0, change.OwnerNodeID)
 		machine.removeOfflineLocked(key)
 		return result
 	}

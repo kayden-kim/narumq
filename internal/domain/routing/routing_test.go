@@ -569,33 +569,34 @@ func TestSharedSubscriptionRoundRobin(t *testing.T) {
 		}
 	}
 
+	const origin = "$share/workers/tasks/+"
 	want := []Match{
 		{
-			Primary: Target{SessionID: "worker-1", QoS: mqtt.QoSAtMostOnce},
+			Primary: Target{SessionID: "worker-1", QoS: mqtt.QoSAtMostOnce, SharedFilter: origin},
 			Fallbacks: []Target{
-				{SessionID: "worker-2", QoS: mqtt.QoSAtLeastOnce, Retain: true},
-				{SessionID: "worker-3", QoS: mqtt.QoSExactlyOnce},
+				{SessionID: "worker-2", QoS: mqtt.QoSAtLeastOnce, Retain: true, SharedFilter: origin},
+				{SessionID: "worker-3", QoS: mqtt.QoSExactlyOnce, SharedFilter: origin},
 			},
 		},
 		{
-			Primary: Target{SessionID: "worker-2", QoS: mqtt.QoSAtLeastOnce, Retain: true},
+			Primary: Target{SessionID: "worker-2", QoS: mqtt.QoSAtLeastOnce, Retain: true, SharedFilter: origin},
 			Fallbacks: []Target{
-				{SessionID: "worker-3", QoS: mqtt.QoSExactlyOnce},
-				{SessionID: "worker-1", QoS: mqtt.QoSAtMostOnce},
+				{SessionID: "worker-3", QoS: mqtt.QoSExactlyOnce, SharedFilter: origin},
+				{SessionID: "worker-1", QoS: mqtt.QoSAtMostOnce, SharedFilter: origin},
 			},
 		},
 		{
-			Primary: Target{SessionID: "worker-3", QoS: mqtt.QoSExactlyOnce},
+			Primary: Target{SessionID: "worker-3", QoS: mqtt.QoSExactlyOnce, SharedFilter: origin},
 			Fallbacks: []Target{
-				{SessionID: "worker-1", QoS: mqtt.QoSAtMostOnce},
-				{SessionID: "worker-2", QoS: mqtt.QoSAtLeastOnce, Retain: true},
+				{SessionID: "worker-1", QoS: mqtt.QoSAtMostOnce, SharedFilter: origin},
+				{SessionID: "worker-2", QoS: mqtt.QoSAtLeastOnce, Retain: true, SharedFilter: origin},
 			},
 		},
 		{
-			Primary: Target{SessionID: "worker-1", QoS: mqtt.QoSAtMostOnce},
+			Primary: Target{SessionID: "worker-1", QoS: mqtt.QoSAtMostOnce, SharedFilter: origin},
 			Fallbacks: []Target{
-				{SessionID: "worker-2", QoS: mqtt.QoSAtLeastOnce, Retain: true},
-				{SessionID: "worker-3", QoS: mqtt.QoSExactlyOnce},
+				{SessionID: "worker-2", QoS: mqtt.QoSAtLeastOnce, Retain: true, SharedFilter: origin},
+				{SessionID: "worker-3", QoS: mqtt.QoSExactlyOnce, SharedFilter: origin},
 			},
 		},
 	}
@@ -984,5 +985,82 @@ func TestReplaceProjectionPreservesTenantSharedRoundRobinCursor(t *testing.T) {
 	}
 	if len(second) != 1 || second[0].Primary.SessionID != "subscriber-b" {
 		t.Fatalf("shared target after projection replacement = %+v, want subscriber-b", second)
+	}
+}
+
+func ownerReachabilityTable(t *testing.T, owners map[SessionID]uint64) (*Table, tenancy.TenantID) {
+	t.Helper()
+	tenantID, err := tenancy.NewTenantID("tenant-a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	filter := "$share/group/jobs/#"
+	ids := []SessionID{"m0", "m1", "m2", "m3"}
+	sessions := make([]ProjectionSession, 0, len(ids))
+	projection := make([]ProjectionSubscription, 0, len(ids))
+	for _, id := range ids {
+		sessions = append(sessions, ProjectionSession{TenantID: tenantID, SessionID: id, OwnerNodeID: owners[id]})
+		projection = append(projection, ProjectionSubscription{TenantID: tenantID, SessionID: id, Subscription: mqtt.Subscription{Filter: filter, QoS: mqtt.QoSAtLeastOnce}})
+	}
+	table := NewTable()
+	if err := table.ReplaceProjectionWithSessions(sessions, projection); err != nil {
+		t.Fatal(err)
+	}
+	return table, tenantID
+}
+
+// Traceability: PRD MQTT-07, CLU-05; docs/specs/cluster-session-and-delivery.md §3 item 6, §11.35.
+func TestSharedSubscriptionSkipsMembersWhoseOwnerIsUnreachable(t *testing.T) {
+	table, tenantID := ownerReachabilityTable(t, map[SessionID]uint64{"m0": 1, "m1": 1, "m2": 2, "m3": 3})
+	table.SetOwnerReachability(func(owner uint64) bool { return owner != 1 })
+
+	primaries := make([]SessionID, 0, 4)
+	for range 4 {
+		matches, err := table.MatchForTenant("publisher", tenantID, "jobs/a", mqtt.QoSAtLeastOnce, false)
+		if err != nil || len(matches) != 1 {
+			t.Fatalf("match = %+v err=%v", matches, err)
+		}
+		primaries = append(primaries, matches[0].Primary.SessionID)
+		if got := matches[0].Primary.SharedFilter; got != "$share/group/jobs/#" {
+			t.Fatalf("primary shared origin = %q", got)
+		}
+		fallbacks := matches[0].Fallbacks
+		if len(fallbacks) != 3 || fallbacks[1].SessionID != "m0" || fallbacks[2].SessionID != "m1" {
+			t.Fatalf("fallbacks = %+v, want the other reachable member then the unreachable members in session order", fallbacks)
+		}
+	}
+	if !reflect.DeepEqual(primaries, []SessionID{"m2", "m3", "m2", "m3"}) {
+		t.Fatalf("primaries = %v, want round robin over reachable members only", primaries)
+	}
+
+	table.SetOwnerReachability(func(uint64) bool { return true })
+	matches, err := table.MatchForTenant("publisher", tenantID, "jobs/a", mqtt.QoSAtLeastOnce, false)
+	if err != nil || len(matches) != 1 || matches[0].Primary.SessionID != "m0" {
+		t.Fatalf("all-reachable match = %+v err=%v", matches, err)
+	}
+}
+
+// Traceability: PRD MQTT-07, CLU-05; docs/specs/cluster-session-and-delivery.md §3 item 6, §11.35.
+func TestSharedSubscriptionKeepsRoundRobinWhenEveryOwnerIsUnreachableOrUnknown(t *testing.T) {
+	table, tenantID := ownerReachabilityTable(t, map[SessionID]uint64{"m0": 1, "m1": 2, "m2": 3, "m3": 0})
+	table.SetOwnerReachability(func(owner uint64) bool { return false })
+	// m3 has no committed owner and counts as reachable.
+	matches, err := table.MatchForTenant("publisher", tenantID, "jobs/a", mqtt.QoSAtLeastOnce, false)
+	if err != nil || len(matches) != 1 || matches[0].Primary.SessionID != "m3" {
+		t.Fatalf("unknown-owner member was not preferred: %+v err=%v", matches, err)
+	}
+
+	table, tenantID = ownerReachabilityTable(t, map[SessionID]uint64{"m0": 1, "m1": 2, "m2": 3, "m3": 4})
+	table.SetOwnerReachability(func(owner uint64) bool { return false })
+	primaries := make([]SessionID, 0, 4)
+	for range 4 {
+		matches, err := table.MatchForTenant("publisher", tenantID, "jobs/a", mqtt.QoSAtLeastOnce, false)
+		if err != nil || len(matches) != 1 || len(matches[0].Fallbacks) != 3 {
+			t.Fatalf("match = %+v err=%v", matches, err)
+		}
+		primaries = append(primaries, matches[0].Primary.SessionID)
+	}
+	if !reflect.DeepEqual(primaries, []SessionID{"m0", "m1", "m2", "m3"}) {
+		t.Fatalf("primaries = %v, want the unchanged round robin when no member is reachable", primaries)
 	}
 }

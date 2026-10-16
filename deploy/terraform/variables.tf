@@ -121,3 +121,21 @@ variable "backup_s3_prefix" {
     error_message = "backup_s3_prefix must be a non-empty relative key prefix without empty or parent path segments."
   }
 }
+
+variable "generator_node_group_enabled" {
+  description = "Opt in to a dedicated, tainted managed node group that runs the BP-02 capacity generator Job. Disabled by default."
+  type        = bool
+  default     = false
+}
+
+variable "generator_instance_types" {
+  description = "ARM64 EC2 instance types for the capacity generator node group."
+  type        = list(string)
+  default     = ["c7g.xlarge"]
+}
+
+variable "generator_desired_size" {
+  description = "Desired capacity generator node group size."
+  type        = number
+  default     = 1
+}

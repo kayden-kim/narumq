@@ -8,7 +8,7 @@
 | 관련 요구사항 | CLU-01~CLU-14, NFR-07~NFR-10, NFR-15 |
 | 근거 | [PRD 8장, 9.2절과 11.2절](../requirements/PRD.md) |
 | 관련 Architecture | [Cluster architecture](../architectures/cluster-architecture.md), [EKS on EC2 deployment](../architectures/eks-ec2-deployment.md) |
-| 관련 결정 | [ADR-0001](../decisions/ADR-0001-core-implementation-language.md), [ADR-0002](../decisions/ADR-0002-cluster-consensus-library.md), [ADR-0003](../decisions/ADR-0003-durable-ack-barrier.md), [ADR-0004](../decisions/ADR-0004-session-ownership-and-fencing.md), [ADR-0007](../decisions/ADR-0007-aws-production-deployment-platform.md), [ADR-0008](../decisions/ADR-0008-raft-peer-transport.md), [ADR-0009](../decisions/ADR-0009-raft-production-state-profile.md), [ADR-0011](../decisions/ADR-0011-cluster-backup-restore-v1.md) (historical v1 boundary), [ADR-0012](../decisions/ADR-0012-retained-replication-and-cluster-backup-v2.md) (retained scope), [ADR-0013](../decisions/ADR-0013-offline-queue-replication-and-cluster-backup-v3.md), [ADR-0014](../decisions/ADR-0014-cross-node-live-qos0-forwarding.md), [ADR-0015](../decisions/ADR-0015-cluster-durable-qos-delivery.md) (cluster QoS 1/2 durable delivery scope), [ADR-0017](../decisions/ADR-0017-tenant-storage-quota.md) (TEN-08 storage quota scope), [ADR-0018](../decisions/ADR-0018-release-compatibility-window.md) (N/N-1 release profile and feature activation), [ADR-0019](../decisions/ADR-0019-untargeted-durable-publish-quorum-barrier.md) (target 0 command 생략 범위), [ADR-0027](../decisions/ADR-0027-detach-forward-and-owner-crash-qos0-boundary.md) |
+| 관련 결정 | [ADR-0001](../decisions/ADR-0001-core-implementation-language.md), [ADR-0002](../decisions/ADR-0002-cluster-consensus-library.md), [ADR-0003](../decisions/ADR-0003-durable-ack-barrier.md), [ADR-0004](../decisions/ADR-0004-session-ownership-and-fencing.md), [ADR-0007](../decisions/ADR-0007-aws-production-deployment-platform.md), [ADR-0008](../decisions/ADR-0008-raft-peer-transport.md), [ADR-0009](../decisions/ADR-0009-raft-production-state-profile.md), [ADR-0011](../decisions/ADR-0011-cluster-backup-restore-v1.md) (historical v1 boundary), [ADR-0012](../decisions/ADR-0012-retained-replication-and-cluster-backup-v2.md) (retained scope), [ADR-0013](../decisions/ADR-0013-offline-queue-replication-and-cluster-backup-v3.md), [ADR-0014](../decisions/ADR-0014-cross-node-live-qos0-forwarding.md), [ADR-0015](../decisions/ADR-0015-cluster-durable-qos-delivery.md) (cluster QoS 1/2 durable delivery scope), [ADR-0017](../decisions/ADR-0017-tenant-storage-quota.md) (TEN-08 storage quota scope), [ADR-0018](../decisions/ADR-0018-release-compatibility-window.md) (N/N-1 release profile and feature activation), [ADR-0019](../decisions/ADR-0019-untargeted-durable-publish-quorum-barrier.md) (target 0 command 생략 범위), [ADR-0027](../decisions/ADR-0027-detach-forward-and-owner-crash-qos0-boundary.md), [ADR-0060](../decisions/ADR-0060-shared-subscription-durable-owner-loss-reroute.md) (공유 구독 durable 전달의 owner 손실) |
 | 관련 Contract | [Cluster release compatibility v1](../contracts/cluster-release-compatibility-v1.md), [Raft peer transport v1](../contracts/raft-peer-transport-v1.md), Draft [Cluster backup v3](../contracts/cluster-backup-v3.md), Superseded [Cluster backup v2](../contracts/cluster-backup-v2.md), Superseded [Cluster backup v1](../contracts/cluster-backup-v1.md) |
 | 해설 | [세션 소유권과 fencing](../explainers/session-ownership-and-fencing.md), [EKS 고가용성과 장애 도메인](../explainers/eks-ha-failure-domains.md) |
 
@@ -89,7 +89,7 @@ WAL·snapshot target, protobuf encoding family와 단일 group profile은 scoped
 3. Route-affecting subscription mutation은 authoritative fenced command로 `sessionKey`, `ownerNodeId`, `epoch`와 subscription option을 전달한다. Committed apply 뒤 route projection은 committed persistent subscription state에서 파생하며, 별도의 authorized route mutation으로 처리하지 않는다.
 4. 이전 owner 또는 stale owner/epoch의 route-affecting subscription add·remove mutation은 거절해야 한다.
 5. route propagation 지연은 측정 가능해야 한다. 지연 중에도 권한 또는 tenant 경계를 우회해서는 안 된다.
-6. shared subscription member 선택은 tenant와 group 경계를 지켜야 하며, unavailable owner를 계속 선택해서는 안 된다.
+6. shared subscription member 선택은 tenant와 group 경계를 지켜야 하며, unavailable owner를 계속 선택해서는 안 된다. Ingress node는 owner node가 현재 이 node의 peer 연결 상태로 도달할 수 없는 member를 primary에서 제외하고 `Fallbacks` 끝으로 보낸다. Owner가 local node이거나 transport가 모르는 node인 member는 도달 가능으로 본다. 도달 가능한 member가 없으면 전체 member에서 고른다. 이 선호는 node-local이며 ownership·epoch와 replicated state를 바꾸지 않는다. Timeout으로 owner를 실패 처리하지 않는다([ADR-0060](../decisions/ADR-0060-shared-subscription-durable-owner-loss-reroute.md)). Durable QoS 1/2와 QoS 0 선택이 같은 순서를 쓴다.
 
 ### 3.1 Live cross-node QoS 0 전달
 
@@ -173,6 +173,8 @@ Caller deadline은 결과를 기다리는 시간의 상한이다. Adapter FIFO�
 
 Count 한도 초과 요청은 origin별 capacity fence로 기억한다. 결과 byte 공간은 mutation 전에 예약한다. 공간이 나중에 생겨도 처음 거절한 요청은 성공으로 바꾸지 않는다. 개별 receipt와 count 거절의 index 의미는 [ADR-0038](../decisions/ADR-0038-proposal-receipt-capacity-fences.md)을 따른다. 실행 증거는 [§11.33](#1133-안전한-proposal-복구-수용-매핑)에 기록한다.
 
+`proposal-recovery`를 활성화하면 리더 kill 때 전송 중이던 PUBACK COMPLETE와 PUBREL RELEASE commit도 같은 재제안 경로를 탄다. 생존 node의 persistent subscriber 연결은 닫히지 않고, publisher는 같은 연결에서 PUBCOMP을 받는다. 두 command의 RequestID·OperationID와 payload는 바뀌지 않으며 원래 5초 deadline도 늘리지 않는다. 비활성 상태에서는 같은 commit이 5초 deadline에서 `ErrQuorumUnavailable`을 반환하고 연결을 닫는다. 위 비활성 계약은 그대로다. 따라서 N-1에서 계획 밖 disconnect 0을 요구하는 용량 시험은 `proposal-recovery`를 활성화한 cluster에서 실행해야 한다. 이 feature는 기본 비활성이며 활성화와 rollback 제약은 [ADR-0036](../decisions/ADR-0036-replicated-proposal-receipts-and-safe-reproposal.md)과 [feature activation 절차](../how-to/cluster-feature-activation.md)를 따른다. 비활성·활성 비교는 [§11.33](#1133-안전한-proposal-복구-수용-매핑)의 leader kill 행에 기록한다.
+
 각 `(tenantId, clientId)` session에는 Raft 복제 durable queue와 QoS inflight state가 있다. Apply 단계의 target 판정은 committed ownership과 subscription으로 다시 검증하며, 현재 owner/epoch에 묶인 matching subscription 가운데 QoS 1 이상이 있어야 한다. `DeliveryChange.publish_qos`는 PUBLISH/RELEASE에서 각각 1 또는 2이며 RELEASE는 2여야 한다. Apply는 이 값을 사용해 `min(publish_qos, matching subscription QoS 최대값)`을 대상의 effective QoS로 계산한다. 각 session message는 1부터 증가하는 sequence를 가져 FIFO로 복구된다. Session당 message 64개 및 inbound 64개, tenant 전체 합계 4,096 entries와 16 MiB, payload 1,000,000 bytes, command당 1,024 targets 제한을 둔다. Committed tenant quota profile은 offline queue와 durable delivery outbound message를 함께 집계하고 `offline_queue_messages`·`offline_queue_bytes`를 적용한다. `storage_bytes`에는 retained, offline, durable delivery outbound·inbound state를 포함한다. 전체 quota 규칙은 [ADR-0017](../decisions/ADR-0017-tenant-storage-quota.md)을 따른다.
 
 Delivery command를 만들지 여부를 결정하는 target 후보는 prepare 시점 ingress projection의 primary 후보 가운데 effective QoS가 1 이상인 matching subscription이다. Session의 persistent 여부는 후보 포함 여부를 바꾸지 않으며, Apply는 기존대로 committed ownership과 subscription을 다시 검증한다. Ingress node에 아직 적용되지 않은 SUBSCRIBE는 publish보다 뒤에 정렬된다. Target 없는 경로에서 barrier가 실패하거나 timeout되면 성공 ACK와 QoS 0 lane 처리를 막는다. QoS 1 client PUBLISH는 기존 commit 실패와 같이 연결을 닫으며, Will에는 원래 publisher ACK가 없다. Barrier timeout은 5초다. 이 경로는 별도 release profile compatibility gate나 feature activation을 추가하지 않는다.
@@ -184,6 +186,10 @@ Owner는 outbound PUBLISH 쓰기 전에 SEND를 commit하고, subscriber의 PUBR
 `SEND` commit에서 quorum을 일시적으로 사용할 수 없으면 replicated message와 local queue head를 소비하거나 승격해서는 안 된다. 이 사유만으로 subscriber TCP connection을 닫거나 PUBLISH를 보내지 않는다. `ErrRetryableUnavailable`은 SEND commit 결과를 확인할 수 없는 상태를 나타내며, local queue head와 pending Packet Identifier를 보존하고 같은 ID로 재시도한다. Writer는 최대 초당 한 번 자동 재시도하고, 다음 durable-delivery notification은 retry timer보다 먼저 처리를 깨울 수 있다. 일반 `ErrUnavailable`은 missing session/state를 뜻하므로 일시적 quorum 오류로 취급하지 않는다.
 
 `ATTACH`는 command 전부터 `DeliverySessionState` record가 있으면 message/inbound가 비어 있어도 `Found=true`를 반환한다. `Reset=true`인 CleanStart는 delivery/inbound state와 committed persistent subscriptions를 지우고 `Found=false`를 반환하며, record가 있으면 `next_sequence`는 단조 증가를 유지한다.
+
+공유 구독의 durable message 재배분은 `shared-subscription-reroute` feature 활성화 뒤의 동작이다([ADR-0060](../decisions/ADR-0060-shared-subscription-durable-owner-loss-reroute.md)). 모든 build는 이 feature를 광고하지만 `FeatureActivation`이 commit되기 전에는 `shared_filter`를 제안하거나 저장하지 않는다. 비활성 cluster의 동작과 wire bytes는 기존과 같다. 활성화 뒤 ingress는 group 선택의 결과인 durable target에 group을 포함한 전체 filter(`$share/<group>/<filter>`)를 `shared_filter`로 싣는다. 같은 client가 비공유 구독으로도 match하면 싣지 않는다. Apply는 대상이 현재 owner/epoch로 그 filter를 구독 중일 때만 message에 기록한다. 저장한 `shared_filter`의 byte 길이는 그 message의 byte 수에 더해 전체 16 MiB와 tenant quota에 포함한다.
+
+Delivery record를 지우는 apply(CleanStart `Reset=true` ATTACH, DISCARD, session expiry purge, ownership Release)는 지우기 전에 `shared_filter`가 있고 만료되지 않은 message 가운데 `QUEUED`와 QoS 1 `AWAIT_PUBACK`을 같은 group의 다른 member queue로 옮긴다. QoS 2 `AWAIT_PUBREC`·`AWAIT_PUBCOMP`는 이미 보내기 시작한 message라서 옮기지 않는다(MQTT-4.8.2-5). 목적지는 같은 tenant에서 같은 filter를 현재 owner/epoch로 QoS 1 이상 구독 중인 다른 client다. 그 command를 제안한 owner node(CleanStart 재접속이면 재접속한 node)가 owner인 member를 먼저 고른다. 그 node는 방금 command를 보냈으므로 살아 있다. Expiry purge처럼 제안한 node를 알 수 없으면 이 단계를 건너뛴다. 각 단계에서 client ID 오름차순으로 정렬하고 지워지는 client의 다음부터 한 건씩 돌려 가며 고른다. Session당 64개, 전체·tenant 한도 또는 sequence가 가득 찬 member는 건너뛴다. 받을 member가 없으면 message를 버린다. 새 message는 새 sequence의 `QUEUED`이고 만료 시각과 `shared_filter`를 유지한다. QoS는 `min(원래 QoS, 목적지 구독 QoS)`이고 RETAIN은 저장된 RETAIN이 true이며 목적지가 Retain As Published를 요청했을 때만 true다. 한 message는 한 member에게만 간다. Persistent session의 member가 살아 있으면 queue는 그대로 남고 그 member가 돌아올 때 전달된다. 옮긴 message는 목적지 owner node가 기존 durable 알림 경로로 전달한다.
 
 QoS 2 publisher inbound record는 PUBREL 전 상태 또는 완료 tombstone을 복구한다. Tombstone은 RELEASE 뒤 PUBCOMP가 유실되어 client가 PUBREL을 재시도할 때 성공 PUBCOMP을 보장하며, 같은 packet identifier의 새 RECEIVE, capacity eviction, ATTACH reset 또는 record 삭제까지만 유지된다. QoS 1 중복은 같은 connection에서 기존 inbound 상태로 억제하지만, reconnect 뒤 DUP 재전송은 새 PUBLISH로 처리될 수 있어 중복 전달이 가능하다. QoS 2는 publisher inbound state로 connection/node를 넘어 중복을 억제한다.
 
@@ -282,6 +288,7 @@ sequenceDiagram
 - matching durable subscriber(durable target)가 없으면 publisher ACK는 quorum 확인만 뜻하며 payload를 저장하지 않는다. 미래 subscriber 전달을 뜻하지 않는다.
 - owner 장애 뒤 새 owner는 committed inflight 단계에서 handshake를 재개해야 한다.
 - QoS 1 중복은 허용되지만 durable ACK 뒤 message gap은 허용되지 않는다.
+- 공유 구독 group에 살아 있는 member가 있으면 durable ACK된 message는 어느 member에게든 전달돼야 한다. Ingress는 도달 불가 owner의 member를 고르지 않고(§3), 이미 그 member queue에 들어간 message는 record가 지워질 때 다른 member로 옮긴다(§4.2). Persistent session member의 queue는 그 member가 돌아올 때 전달되어도 된다.
 - QoS 2는 MQTT receiver와의 protocol handshake에서 중복 전달을 막아야 한다. subscriber 애플리케이션의 정확히 한 번 처리는 보장하지 않는다.
 
 ## 6. Partition과 quorum loss
@@ -1563,6 +1570,9 @@ MQTT §5의 과거 “현재 QoS 0” 문장은 같은 절의 입력 QoS 저장 
 | 모든 historical result·wire digest·inactive baseline | `cmd/narumq/cluster_records_proposal_test.go`, `internal/adapters/raft/records` | Restore 뒤 historical result를 replay하면 원래 fields를 반환하고 현재 state를 바꾸지 않는다. Digest 변경·unknown field를 거절하고 기존 baseline vectors를 유지한다. | PASS; cmd focused snapshot 두 case와 records package 1.013s |
 | 실제 WAL·leader 손실·늦은 duplicate·disk restore | `cmd/narumq/cluster_proposal_recovery_test.go::TestClusterProposalRecoveryRequiresNewQuorumProofAndAppliesOnce` | 이전 leader에 저장했지만 quorum 적용 전 손실된 요청을 복구한다. 늦은 duplicate 이후에도 메시지 1개·next sequence 2다. 실제 snapshot·archive·disk restore 뒤에도 처음 result index와 dedup을 보존한다. 미지원 restore build는 active feature를 거절한다. | PASS; final focused case 0.21s |
 | 새 quorum proof 부재·caller 취소·late ACK | 같은 파일의 `TestClusterProposalRecoveryNoQuorumNoSuccessAndNoLateAck` | Replacement leader 선출 뒤 survivor 간 전송을 멈추면 성공 결과가 없다. Caller 취소 후 늦은 원래 frame은 한 번 적용할 수 있지만 성공 응답을 다시 보내지 않는다. | PASS; focused case 0.11s. 이 case는 취소를 사용하며 실제 5초 deadline 만료를 기다리지는 않는다. |
+| 리더 kill 때 전송 중이던 PUBACK COMPLETE: 활성·비활성 비교 | `tests/integration/cluster_proposal_recovery_leader_kill_process_test.go::TestDynamicClusterProposalRecoveryLeaderKillInFlightCommit/puback-complete/recovery-active`, `/recovery-inactive`; `go test ./tests/integration -run '^TestDynamicClusterProposalRecoveryLeaderKillInFlightCommit$' -count=3 -v` | Subscriber 소속 ingress node가 Raft에 낸 COMPLETE proposal이 사라진 상태에서(`dropProposalPeers`, [성능 §7.3](performance-and-verification.md#73-cluster-failpoint-빌드)) 리더를 kill한다. 활성: subscriber 연결은 8초 동안 닫히지 않는다. 이어서 보낸 새 PUBLISH를 같은 연결로 받고, 세션을 이어 붙여도 첫 message를 다시 받지 않는다(COMPLETE 적용). 비활성: 같은 상태에서 5초 deadline 뒤 연결이 닫힌다. | PASS 3/3(working tree). 활성은 연결 유지 8.0초. 비활성은 kill 뒤 4.49–4.50초에 연결 종료. 한 번 실행은 32.6–39.1초. |
+| 리더 kill 때 전송 중이던 PUBREL RELEASE: 활성·비활성 비교 | 같은 시험의 `pubrel-release/recovery-active`, `/recovery-inactive` | Publisher 소속 ingress node의 RELEASE proposal이 사라진 상태에서 리더를 kill한다. 활성: 같은 연결에서 kill 뒤 8초 안에 PUBCOMP을 받고 subscriber가 QoS 2 message를 한 번 받으며 2초 동안 두 번째 전달이 없다. 비활성: PUBCOMP 없이 연결이 닫힌다. | PASS 3/3. 활성 PUBCOMP은 kill 뒤 1.00–1.46초. 비활성은 4.50초에 연결 종료. |
+| CPU 경쟁 아래 3-node process 반복(진단) | 진단 하네스 `.artifacts/analysis/n1-delivery/it/n1_repro_test.go`(gitignore 대상): `N1_BURN=24 N1_ROUNDS=8 go test -run '^TestN1PersistentClose$'`와 `N1_FEATURE=proposal-recovery` 변형; 결과 `.artifacts/analysis/n1-delivery/{control,feature}-run-8c.txt`, `qos2-races-feature.txt` | Persistent QoS 1 subscriber 6명과 약 25 msg/s publish 중 리더를 kill한다. 활성은 계획 밖 subscriber 종료와 `dispatch MQTT PUBACK: quorum unavailable`이 0이어야 한다. | 비활성 8 round 중 4 round에서 subscriber 12명이 kill 뒤 약 5초에 종료(Warn `commit_stage=proposal`, `failure_class=deadline` 일치). 활성 8 round는 종료 0, commit 실패 Warn 0. QoS 2 PUBREL 직후 kill 20 round(활성)는 시작 실패 1 round(Windows WAL `Access is denied`, 시나리오 전)를 제외한 19 round 모두 PUBCOMP 수신(kill 뒤 1.08–2.46초)과 전달. |
 | 실제 MQTT SIGKILL·재접속·resync | BP-06 `compare`·`suite`; [성능 §3.6](performance-and-verification.md#36-bp-06-failure-recovery-smoke-관찰-경계) | 원래 5초 broker commit deadline, 성공 ACK durability와 NaruMQ 무예외 판정을 유지한다. | PASS; 최종 suite는 두 target 모두 5/5 valid. NaruMQ의 gap·QoS 2 duplicate·계획 밖 disconnect·protocol error·overload는 모든 반복에서 0. EMQX 예외와 non-equivalent 계약은 유지한다. |
 | 전체 local gate | `cmd /d /c "set GOMAXPROCS=4&& go run ./tools/verify local"` | 기존 시험·race·architecture·traceability·coverage 기준 유지 | PASS; 172.02s wall, integration 94.769s. Line/function coverage 85.41/97.48%. |
 
@@ -1578,3 +1588,99 @@ WAL 시험은 실제 세 Raft node와 mTLS transport fixture를 만들며, 장�
 
 최종 source·시험과 실행 결과의 확인 커밋은 `4145b757e2d847a4c30549827e6f5b4b6f88785a`다. Focused·local gate·5회 suite는 커밋 전에 실행했다. 커밋 뒤 source와 시험은 바꾸지 않았으며 문서의 확인 해시만 연결한다. 상세 run ID와 immutable image ID는 [성능 §3.6](performance-and-verification.md#36-bp-06-failure-recovery-smoke-관찰-경계)에 기록한다. CI 실행 링크는 없다.
 
+### 11.34 Dynamic peer TCP 생존 확인 수용 매핑
+
+기준은 [ADR-0059](../decisions/ADR-0059-dynamic-peer-tcp-liveness.md)와 [Raft membership v2](../contracts/raft-membership-v2.md#raft-메시지-프레임과-크기-한도)다. 연결 방향 규칙상 member ID가 낮은 node만 dial한다. 따라서 높은 ID의 node가 새 IP로 다시 시작하면, 낮은 ID 쪽이 이전 연결을 끝내야 새 node가 Raft 메시지를 받는다. 이 매핑은 응답 없이 사라진 이전 IP의 연결이 응용 송신 대기열 포화나 write deadline 실패를 기다리지 않고 끊기는지 확인한다.
+
+| 시나리오 | 시험 위치·명령 | 수용 기준 | 실행 결과 |
+| --- | --- | --- | --- |
+| 같은 DNS 이름의 peer를 새 IP로 교체하고 이전 IP를 응답 없이 버림 | `tests/chaos/peer-blackhole-reconnect/run.py`; 아래 명령 | EKS 사건과 같게 leader가 node 2인 cluster만 사용한다. 다른 leader가 선출되면 새 cluster로 다시 시작한다. Node 1·2에서 node 3의 이전 IP 송수신을 DROP하고 node 3을 kill한다. 20초 뒤 같은 alias·volume·새 IP로 대체 node를 시작한다. 대체 node `/health/ready` 200이 `docker run` 반환 뒤 15초 이내여야 한다. | 변경 전 image: FAIL, 28.74초([result](../../.artifacts/verification/peer-blackhole-before-20261015T1840Z/result.json)). 변경 뒤 tree: PASS, 0.016초([result](../../.artifacts/verification/peer-blackhole-after-20261015T1840Z/result.json)). 두 실행 모두 다섯 번째 cluster(시작 순서 1·3·2)에서 leader 2를 얻었다. |
+| 기존 peer transport 동작 유지 | `go test ./internal/adapters/tcp -count=1` | 기존 v2 handshake·queue·reconcile·forwarding 시험이 통과한다. | PASS, 17.972s |
+| EKS에서 follower EC2를 OS 종료 없이 잃음 | `tests/chaos/eks-worker-recovery/main.py fault --execute`; leader Pod의 `/proc/net/tcp` 0.2초 표본; 아래 [EKS 무응답 종료 재측정](#eks-무응답-종료-재측정-2026-10-16) | preStop·drain이 실행되지 않는다. Leader는 이전 IP 연결에 확인받지 못한 송신 데이터가 생긴 뒤 약 10초 안에 그 연결을 닫는다. 기존 Pod 해제가 `deleted`이고, leader가 대체 node의 새 IP에 연결하며, 데이터 oracle이 통과한다. | PASS 2/2. 연결 종료는 송신 대기 첫 표본 뒤 10.31초·10.32초였다(표본 간격 0.2초). [결과](../../.artifacts/verification/eks-adr59-dns-20261016T053249Z-f3b329/result.json) |
+| 전체 local gate | `GOMAXPROCS=4 go run ./tools/verify local` | 기존 시험·race·coverage 기준 유지 | 미통과. 변경 tree에서 모든 package 시험은 PASS였고, gate는 coverage 단계에서 멈췄다(line 83.85% < 85%, branch 79.16% < ratchet 80.03%). Coverage 뒤 단계는 실행되지 않았다. 같은 명령을 기준 commit `2b23116`의 git worktree에서 실행하자 coverage도 line 83.84%, branch 79.19%로 같은 단계에서 멈췄다. 따라서 미달은 이번 변경 전부터 있었다. 기준 worktree의 첫 시도는 `internal/adapters/raft`의 `TestWALSyncObserverReportsSuccessfulReadyFsyncs` 실패로 coverage 전에 멈췄다. 기존 전체 local 실패는 [TODO §1.9](../TODO.md)에서 추적한다. |
+
+저장소 root에서 Windows/amd64, Go 1.26.5, Docker Engine 29.4.0(linux/amd64)으로 실행했다. 기준 commit은 `2b23116`이다. 변경 전 image(`sha256:b7b092a6aa5d…`)는 `2b23116`의 git worktree를 linux/amd64로 build한 것이다. 변경 뒤 실행은 runner가 작업 tree에서 image(`sha256:a1ccfbb4ff04…`)를 build했다.
+
+```text
+python -B tests/chaos/peer-blackhole-reconnect/run.py --image <2b23116 image> --output .artifacts/verification/peer-blackhole-before-20261015T1840Z
+python -B tests/chaos/peer-blackhole-reconnect/run.py --output .artifacts/verification/peer-blackhole-after-20261015T1840Z
+```
+
+변경 전 실행에서 leader node 2는 fault 뒤 41.0초에 peer 3을 `connected=true`, `outbound queue full`로 기록했다. 44.5초에 `peer write failed`, 49.5초에 `connected=false`가 됐고, 대체 node 3은 0.114초 뒤 release profile을 동기화했다. 대체 node는 그 전 28초 동안 `joining`에 머물렀다. 이 순서는 EKS 재시험의 leader log와 같다([Drain §10 재시험](drain-and-rolling-update.md#기존-pod-해제의-eks-재시험-2026-10-15)). 변경 뒤 실행에서 leader node 2의 첫 peer 3 기록(fault 뒤 12.7초)은 이미 `connected=false`였다. 대체 node는 `docker run` 반환 시점에 이미 동기화를 마쳤고 첫 probe에서 200을 반환했다. 따라서 0.016초는 process 시작부터 잰 시간이 아니다.
+
+이 시험은 Docker bridge network와 한 host kernel에서 실행한 local chaos 증거다. EKS·cross-AZ network, EBS attach 시간과 실제 EC2 종료를 대신하지 않는다. `write failed`에서 `connected=false`까지 5초 간격의 원인은 확인하지 않았다. 변경 뒤 EKS 결과는 아래 두 절에 있다.
+
+#### EKS 재측정 관찰 (2026-10-16)
+
+사용자의 EKS 실행 승인 뒤 격리 fixture `eks-capacity-20261016T015110Z-db4c38`에서 node 2가 leader인 상태로 node 3의 EC2를 종료했다. Image는 작업 tree(`2b23116`, dirty)의 ARM64 broker digest `sha256:edd5ef4a502e6b07c73bbf3464a92bc16f386e4fb9a9c906b5eddeda3ae211c1`이다. Node·Pod UID와 instance·VPC를 대조하고 기존 observer의 `fence_node`·`release_fenced_pod` 경계를 재사용했다.
+
+| 관찰 | 결과·한계 |
+| --- | --- |
+| 종료 뒤 3개 broker Ready | workstation 단일 monotonic clock 기준 413.094초. MQTT payload oracle이나 정확한 RTO 판정은 아님 |
+| 대체 broker 초기화 | worker의 container `StartedAt`은 `02:15:33Z`, 같은 worker의 release 동기화 log는 `02:15:33.810275387Z`. 이전 약 130초 정체는 이 실행에서 관찰되지 않음. StartedAt의 정밀도는 초 단위 |
+| 대체 broker health | 새 container가 running으로 보인 뒤 첫 직접 `/health/ready` probe가 성공. Workstation 시계와 worker 시계의 차로 원시 시각 차가 음수(-0.04262초)였음. 이를 소요 시간이나 0초로 보고하지 않고 `null`로 기록 |
+| Fencing·기존 Pod 해제 | 종료 확인 때 기존 Node가 이미 삭제되어 `node_absent`, Pod 해제는 `skipped_not_fenced`. 앞선 detach 단축 성공의 재현 증거가 아님 |
+| 장애의 성격 | `EC2 terminate` 뒤 broker preStop/drain이 실행됨. 갑작스러운 전원 손실이나 이전 IP의 무응답 DROP이 아니므로 `TCP_USER_TIMEOUT`의 효과를 분리 입증하지 않음 |
+
+근거는 [대상 identity](../../.artifacts/verification/eks-capacity-20261016T015110Z-db4c38/peer-retest/plan.json), [관찰 표본](../../.artifacts/verification/eks-capacity-20261016T015110Z-db4c38/peer-retest/samples.jsonl), [대체 broker log](../../.artifacts/verification/eks-capacity-20261016T015110Z-db4c38/peer-retest/narumq-2.log), [시계 한계를 반영한 결과](../../.artifacts/verification/eks-capacity-20261016T015110Z-db4c38/peer-retest/result.json)다. 조기 Pod 해제 경로와 무응답 장애의 EKS 증거는 아래 재측정에서 확인했다.
+
+#### EKS 무응답 종료 재측정 (2026-10-16)
+
+결과는 **두 번의 실행에서 모두 통과**다. Leader는 사라진 이전 IP의 연결을 약 10초 만에 닫았다. 대체 node는 container 시작 뒤 3.5~4.4초 안에 release profile을 동기화했다. 이전의 약 130초 정체는 나오지 않았다. 기준 기록은 [결과](../../.artifacts/verification/eks-adr59-dns-20261016T053249Z-f3b329/result.json)와 [분석](../../.artifacts/verification/eks-adr59-dns-20261016T053249Z-f3b329/analysis.json)이다.
+
+시험 환경과 방법은 다음과 같다.
+
+- 격리 fixture `eks-adr59-dns-20261016T053249Z-f3b329`에서 합성 data만 썼다. 3-voter cluster의 leader는 node 2, 종료 대상은 node 3이었다. 관찰 도구는 대상이 아닌 node 1 Pod에 직접 연결했다.
+- Image는 작업 tree(`2b23116`, dirty)의 ARM64 broker digest `sha256:3db1943f010bb8e6128e637c5a6713dce96bdbf4b7256c36564fbe5ad9a7f9a0`이다.
+- 장애는 `terminate-instances`에 `skipOsShutdown=true`를 붙여 주입했다. 그래서 preStop과 drain이 실행되지 않는다. 생존 node와 대체 node의 log에 drain 기록이 없었다. Node·cluster 표본에도 `DRAINING`·`SAFE_TO_STOP`이 없었다.
+- Leader Pod 안에서 `/proc/net/tcp`를 0.2초마다 읽었다. 송신 대기량(`tx_queue`), 재전송 횟수와 연결 상태를 기록했다. Worker의 `date`와 `/proc/uptime`을 함께 읽어 시각을 맞췄다.
+- 두 실행은 CoreDNS 배치만 다르다. 재현 실행은 CoreDNS 두 개를 모두 대상 worker에 두었다. 전제 실행은 Terraform 배치 전제를 적용한 뒤 하나만 대상 worker에 두었다. DNS 결과는 [Drain §10](drain-and-rolling-update.md#coredns-배치와-healthy-node-unknown의-eks-재현-2026-10-16)에 있다.
+
+시각은 fault 요청 뒤의 초다. Socket 표본과 broker log는 서로 다른 worker 시계를 쓴다. Host 사이의 시계 오차는 측정하지 않았다.
+
+| 관찰 | 재현 실행 | 전제 실행 |
+| --- | --- | --- |
+| Leader의 이전 IP 연결에 송신 대기 첫 표본 | 6.01 | 5.51 |
+| 그 연결이 사라진 첫 표본 | 16.32 | 15.83 |
+| Fencing·기존 Pod 해제 | `out_of_service` 39.09, `deleted` 43.85 | `out_of_service` 21.85, `deleted` 25.79 |
+| 대체 Pod 생성·container 시작 | 55.2, 60.2 | 36.4, 43.4 |
+| 대체 node release 동기화 | 64.56 | 46.86 |
+| Leader의 새 IP 연결 첫 표본 | 64.57 | 46.89 |
+| Broker 3개 Ready 관찰 | 79.11 | 55.98 |
+| 관리 API·MQTT 표본 | 27/27, 46/46 성공 | 21/21, 33/33 성공 |
+| 데이터 oracle | PASS | PASS |
+
+두 실행 모두 `FailedAttachVolume`은 0건이었다. 연결이 닫힌 뒤 leader는 이전 IP로 다시 연결을 시도했다. 그 시점에는 DNS가 아직 이전 IP를 돌려주었다. 각 시도는 약 5초 뒤 닫혔다. 대체 node가 새 IP에서 시작한 뒤에는 바로 연결됐다. 재현 실행에서 새 IP 연결이 늦은 이유는 EC2 종료 확인이 늦었기 때문이다(35.88초, 전제 실행은 19.17초). 그래서 기존 Pod 해제와 대체 Pod 생성도 늦어졌다. TCP 생존 확인과는 관계가 없다.
+
+한계는 다음과 같다. 실행은 cycle마다 한 번이다. 표본 사이의 연속 가용성과 정확한 RTO는 입증하지 않는다. 종료된 worker의 대상 log는 수집할 수 없었다. Keepalive와 `TCP_USER_TIMEOUT` 각각의 기여는 분리하지 않았다.
+
+
+### 11.35 공유 구독 durable 전달의 owner 손실 수용 매핑
+
+기준은 [ADR-0060](../decisions/ADR-0060-shared-subscription-durable-owner-loss-reroute.md), §3 6항, §4.2와 §5다. BP-02 capacity 시험(N-1)에서 owner node를 kill한 뒤 공유 group으로 보낸 QoS 1 message가 PUBACK을 받고도 어느 member에게도 가지 않았다. 이 매핑은 두 가지를 확인한다. 선택 단계가 죽은 owner의 member를 건너뛰는가? 그래도 그 member의 record가 지워질 때 message가 같은 group의 다른 member에게 옮겨지는가?
+
+| 시나리오 | 시험 위치 | 수용 기준 | 실행 결과 |
+| --- | --- | --- | --- |
+| Owner node에 닿지 않는 member는 선택하지 않는다 | `internal/domain/routing` `TestSharedSubscriptionSkipsMembersWhoseOwnerIsUnreachable` | 도달 가능한 member만 primary가 되고 round-robin이 유지된다. 도달 불가 member는 fallback 끝에만 남는다. 다시 도달 가능해지면 원래 순서로 돌아온다. | PASS |
+| 모든 owner에 닿지 않거나 owner를 모르면 기존 선택을 유지한다 | `TestSharedSubscriptionKeepsRoundRobinWhenEveryOwnerIsUnreachableOrUnknown` | Group 전체가 도달 불가이면 기존 round-robin 순서와 같다. Owner 정보가 없는 session은 도달 가능으로 본다. | PASS |
+| 공유 선택의 결과만 `shared_filter`를 싣는다 | `internal/application/publish` `TestPublishDurableTargetsCarrySharedOriginUnlessNonSharedRouteAlsoMatches` | 공유 group 대상은 전체 filter를 싣는다. 같은 client가 비공유 구독으로도 match하면 싣지 않는다. | PASS |
+| Apply는 정확한 공유 구독에만 출처를 기록하고 feature·byte 한도를 지킨다 | `internal/application/membership` `TestSharedOriginIsRecordedOnlyForExactSharedSubscription`, `TestSharedOriginFeatureGateSnapshotAndByteAccounting` | 현재 owner/epoch로 그 filter를 구독 중일 때만 기록한다. Feature 비활성 상태의 `shared_filter`는 `feature_inactive`로 거절한다. Filter 길이가 byte 계산에 들어가고 snapshot 복원 뒤에도 같다. | PASS |
+| CleanStart 재접속은 QUEUED와 QoS 1 미ACK message만 옮긴다 | `TestSharedRerouteOnCleanResetMovesQueuedAndUnackedQoS1Only` | QoS 2 진행 중 message와 만료 message는 옮기지 않는다. 한 message는 한 member에게만 간다. | PASS |
+| 옮긴 message의 QoS·RETAIN은 목적지 구독을 따른다 | `TestSharedRerouteCapsQoSAndRetainAtDestination` | QoS는 `min(원래, 목적지)`다. RETAIN은 저장된 RETAIN과 목적지 Retain As Published가 모두 true일 때만 true다. | PASS |
+| 제안한 node의 member를 먼저 고른다 | `TestSharedRerouteTriesMembersOwnedByProposerFirst` | 죽은 node의 member가 다른 live node의 member보다 ring에서 먼저여도, 재접속을 제안한 node의 member가 message를 모두 받는다. | PASS |
+| DISCARD와 ownership Release도 옮긴다 | `TestSharedRerouteOnDiscardRelease` | Clean session 종료나 owner Release로 record가 지워져도 message가 남은 member로 간다. | PASS |
+| Session expiry purge는 client ID 순서로 옮긴다 | `TestSharedRerouteOnSessionExpiryPurgeIsOrderedAndSkipsExpiredMembers` | 같은 apply에서 만료되는 member는 목적지가 되지 않는다. 남은 member가 만료 session의 message를 client ID 순서로 받는다. | PASS |
+| 용량이 가득 찼거나 다른 member가 없으면 기존 결과와 같다 | `TestSharedRerouteSkipsFullMemberAndDropsWhenNobodyCanTake`, `TestSharedRerouteDropsWhenGroupHasNoOtherMemberAndLeavesNonSharedAndExpiredMessages` | 가득 찬 member는 건너뛴다. 받을 member가 없으면 버린다. 비공유 message는 건드리지 않는다. | PASS |
+| Wire·snapshot 계약 | `internal/adapters/raft/records` `TestDeliverySharedFilterCommandRoundTripAndValidation`, `TestDeliverySharedFilterSnapshotRequiresActiveFeature` | 잘못된 `shared_filter`를 거절한다. Feature가 활성이 아닌 snapshot의 `shared_filter`를 거절한다. 활성 상태의 round trip이 같다. | PASS |
+| 3-node에서 leader를 kill해도 PUBACK한 QoS 1 message가 모두 member에게 간다 | `tests/integration` `TestDynamicClusterSharedSubscriptionOwnerLossProcessAcceptance` (`clean-members`, `persistent-members`) | Leader node에 member 2개, 생존 node에 member 2개를 둔다. Kill 뒤 40개를 생존 node에서 발행한다. PUBACK한 message는 모두 어느 member가 받아야 한다. Leader node의 member는 생존 node에 다시 접속한다. Clean member는 CleanStart=true로 다시 구독하고 persistent member는 session을 이어받는다. 선출 중 연결이 끊긴 persistent member는 session을 이어받아 queue를 받는다. | 같은 명령 5회 연속 PASS. 첫 시험 실행에서 persistent 시나리오가 한 번 실패했다. 선출 중 PUBACK commit이 `quorum unavailable`로 끝나 broker가 생존 member 연결을 닫았고, 그 member는 test가 다시 접속하지 않아 queue가 남았다. 시험이 그런 member를 session 이어받기로 다시 접속시키도록 바꾼 뒤 통과했다. |
+
+저장소 root에서 Windows/amd64, Go 1.26.5로 실행했다. 시험 명령은 다음과 같다.
+
+```text
+go test ./internal/domain/routing ./internal/application/membership ./internal/application/publish ./internal/adapters/raft/records -count=1
+go test ./tests/integration -run TestDynamicClusterSharedSubscriptionOwnerLossProcessAcceptance -count=1 -v
+```
+
+변경 전 재현(같은 layout: leader node에 member 2개, 생존 node에 member 2개, kill 뒤 40개 발행)에서는 `clean`과 `persistent` 두 경우 모두 PUBACK한 40개 중 20개가 어느 live member에게도 가지 않았다. 변경 뒤 같은 재현은 두 경우 모두 0개였다. Leader node의 member는 clean 경우 재접속 뒤 queue가 없었고 persistent 경우 session이 남았다. 재현 기록은 `.artifacts/analysis/n1-delivery/before-fix-shared.txt`, `after-fix-shared.txt`다.
+
+이 시험이 보장하지 않는 것은 다음과 같다. 연결 끊김을 감지하기 전에 죽은 node의 clean member queue에 들어간 message는 그 member가 재접속하거나 reset될 때까지 queue에 남는다. Persistent member는 돌아올 때 queue를 받는다. 이 시험은 한 host의 process 시험이다. EKS·cross-AZ network에서의 감지 시간은 측정하지 않았다.

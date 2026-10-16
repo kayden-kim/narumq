@@ -20,7 +20,7 @@
 | [ADR-0012](ADR-0012-retained-replication-and-cluster-backup-v2.md) | Accepted (retained scope; archive v2는 ADR-0013이 대체) | Retained state를 Raft로 복제하고 backup v2에 포함한다. |
 | [ADR-0013](ADR-0013-offline-queue-replication-and-cluster-backup-v3.md) | Accepted (offline QoS 0 + backup v3 scope only) | Detached persistent session의 QoS 0 offline message를 Raft로 복제하고 backup v3에 포함한다. Restore release 규칙은 ADR-0021이 대체한다. |
 | [ADR-0014](ADR-0014-cross-node-live-qos0-forwarding.md) | Accepted (cluster live QoS 0 forwarding only; QoS 1/2·durable ACK 제외) | Dynamic cluster의 cross-node live QoS 0 delivery를 별도 `NMQFWRD2` peer stream으로 전달한다. |
-| [ADR-0015](ADR-0015-cluster-durable-qos-delivery.md) | Accepted (cluster QoS 1/2 durable delivery scope; production storage·BP-03·N-1 제외; target 0개 PUBLISH command는 ADR-0019가 대체) | Cluster QoS 1/2 전달 queue와 inflight를 Raft에 복제하고 ACK보다 먼저 commit한다. |
+| [ADR-0015](ADR-0015-cluster-durable-qos-delivery.md) | Accepted (cluster QoS 1/2 durable delivery scope; production storage·BP-03·N-1 제외; target 0개 PUBLISH command는 ADR-0019가, §8의 shared-subscription fallback 금지와 §12의 CleanStart reset 중 shared 출처 message 처리는 ADR-0060이 대체) | Cluster QoS 1/2 전달 queue와 inflight를 Raft에 복제하고 ACK보다 먼저 commit한다. |
 | [ADR-0016](ADR-0016-node-drain-and-safe-to-stop.md) | Accepted (broker drain/`SAFE_TO_STOP` scope only; rollout·SDK/Will·production storage·BP-07·N-1 제외) | Replicated drain operation과 `SAFE_TO_STOP` barrier를 제공한다. |
 | [ADR-0017](ADR-0017-tenant-storage-quota.md) | Accepted (TEN-08 storage quota scope only) | Dynamic cluster에 versioned tenant별 storage quota와 새 state 거절·초과 경보를 제공한다. |
 | [ADR-0018](ADR-0018-release-compatibility-window.md) | Accepted (N/N-1 mixed-release window scope; rollout preflight·historical-source wire 제외) | 인접 minor release의 mixed operation, committed build profile과 cluster-wide feature activation을 정한다. Archive cross-release restore 제외는 ADR-0021이 대체한다. |
@@ -64,6 +64,8 @@
 | [ADR-0056](ADR-0056-branch-protection-for-admins.md) | Accepted | main branch protection을 관리자에게도 적용해 실패한 필수 check를 우회한 merge를 막는다. |
 | [ADR-0057](ADR-0057-mqtt-websocket-listener.md) | Accepted | MQTT WS/WSS listener는 TCP server를 재사용하고 binary WebSocket stream, TLS, admission과 metric label을 고정한다. |
 | [ADR-0058](ADR-0058-cluster-backup-s3-retention-and-restore.md) | Accepted | S3 is authoritative for 30-day backup retention; the PVC stages request-backed uploads, legacy archives remain local, and a separate prefix-scoped IRSA identity restores exact keys offline. |
+| [ADR-0059](ADR-0059-dynamic-peer-tcp-liveness.md) | Accepted | Dynamic v2 peer socket은 TCP keepalive와 Linux `TCP_USER_TIMEOUT` 10초로 응답 없는 상대를 끊고 같은 DNS 이름으로 재연결한다. |
+| [ADR-0060](ADR-0060-shared-subscription-durable-owner-loss-reroute.md) | Accepted | 공유 구독의 durable 전달은 도달할 수 없는 owner의 member를 건너뛰어 고르고, 공유 출처 message는 member session이 reset·삭제될 때 같은 group의 다른 member로 다시 넣는다. |
 
 `Proposed` ADR은 검토 중인 제안이다. `Accepted` ADR은 각 기록에 명시한 범위 안에서 채택된 결정이다. `design target only`는 production runtime이나 acceptance 검증을 뜻하지 않는다.
 

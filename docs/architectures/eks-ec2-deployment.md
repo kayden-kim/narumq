@@ -6,13 +6,13 @@
 | --- | --- |
 | 관점 상태 | Target |
 | 문서 상태 | Draft |
-| 구현 증거 | `deploy/kubernetes/eks-ec2-ha/`의 초기 3-node 배포와 2026-10-15 삭제 전 3-AZ·Ready 관찰은 과거 실행 증거다. 비용 정리 승인에 따라 `narumq-eks`와 전용 인프라를 폐기했으며 현재 실행 중인 배포가 아니다. |
+| 구현 증거 | `deploy/kubernetes/eks-ec2-ha/`의 초기 3-node 배포와 2026-10-15 삭제 전 3-AZ·Ready 관찰은 과거 실행 증거다. `narumq-eks`와 전용 인프라는 폐기했다. 2026-10-16 첫 격리 fixture의 [관측·용량 실행](../specs/performance-and-verification.md#eks-용량-실행-기록-2026-10-16)과 별도 fixture의 [Pod 장애 보완 재실행](../specs/performance-and-verification.md#pod-장애-주입-보완의-eks-재실행-2026-10-16) 뒤에도 시험 자원을 모두 삭제했다. 현재 실행 중인 배포가 아니다. |
 | 범위 | `EKS_EC2_HA` logical-to-physical deployment mapping |
 | 관련 요구사항 | [PRD](../requirements/PRD.md) DEP-01~DEP-23, CLU-01~CLU-14 |
 | 관련 스펙 | [Drain과 rolling update](../specs/drain-and-rolling-update.md), [Cluster session과 durable delivery](../specs/cluster-session-and-delivery.md), [Performance와 verification](../specs/performance-and-verification.md) |
 | 관련 결정 | [ADR-0006](../decisions/ADR-0006-external-rollout-controller.md), [ADR-0007](../decisions/ADR-0007-aws-production-deployment-platform.md). 모두 Accepted |
 | 관련 해설 | [EKS 고가용성과 장애 도메인](../explainers/eks-ha-failure-domains.md), [AWS NLB와 MQTT 연결 lifecycle](../explainers/aws-nlb-mqtt-connection-lifecycle.md) |
-| 최종 확인일 | 2026-10-15 |
+| 최종 확인일 | 2026-10-16 |
 
 ## Production qualification profile selected
 
@@ -29,7 +29,12 @@
 
 `IP` target은 Amazon VPC CNI를 사용한다. AWS Load Balancer Controller는 2.7.2 이상으로 하고 실제 버전과 image digest를 run artifact에 고정한다. NaruMQ와 EMQX에는 같은 node와 broker resource limit을 적용한다.
 
-ARM64 broker image는 `809446814769.dkr.ecr.ap-northeast-2.amazonaws.com/narumq@sha256:09f77ae1e4d2277fb96192abaafbf3e2d1717683746ff8e6acc17efc9ccfa916`으로 고정한다. 2026-10-14 작업 트리의 node 관측 API를 포함한 image이며 배포·검증 결과는 [EKS 재배포 실행 기록](../how-to/operations-dashboard.md#eks-재배포-실행-기록-2026-10-14)에 둔다. Peer TLS 인증서와 관리·MQTT 인증 정보는 Git에 넣지 않고 EKS Secret `narumq-cluster-secrets`에 저장한다. 이 image의 초기 cluster·Dashboard 검증은 production workload, TLS client endpoint 또는 장애 주입의 증거가 아니다.
+용량 측정에는 시험 전용 overlay `deploy/kubernetes/eks-ec2-ha-capacity/`를 쓴다. 이 overlay는 기본 `eks-ec2-ha`에 MQTT TLS listener 8883, NLB TCP 8883, broker Pod마다 loopback JWKS sidecar와 `security.json`을 만드는 init container를 더한다. 시험 전용 `broker-process.sh`는 broker를 자식 process로 실행한다. Controller는 이를 멈춘 뒤 Pod를 삭제해 정상 drain과 비정상 장애를 구분한다. 작은 실행 identity 파일은 64 KiB memory emptyDir에 둔다. Wrapper 자원도 broker container의 한도에 포함된다. Generator는 Terraform 변수 `capacity_generator_enabled`(기본 `false`)로 만드는 전용 node group(`c7g.xlarge` 1대, taint `narumq.io/generator=true:NoSchedule`)에서 Job으로 실행한다. 기본 manifest와 기본 Terraform 계획은 바뀌지 않는다. 측정 계약은 [성능 §3.9](../specs/performance-and-verification.md#39-bp-02-eks-용량-측정-계약)다.
+
+2026-10-16 첫 EKS 실행 3회는 모두 invalid였고 수용 용량을 채택하지 않았다. 보완 전 Pod 삭제에서도 preStop이 실행돼 대체 broker에 active drain record가 남았다. 이후 사용자는 worker 강제 정지 대신 시험 전용 process 제어를 채택했다. 별도 fixture의 1-cell 실행에서 삭제·N-1·Ready·resync 복구는 끝났지만 quota 계열 거절 3건으로 전체 판정은 invalid였다. 정상 drain·worker 전원 손실·Pod 삭제는 같은 장애로 취급하지 않는다. 상세 증거와 거절 분류·이전 ACKed gap의 미해결 범위는 [성능 §3.9 재실행 기록](../specs/performance-and-verification.md#pod-장애-주입-보완의-eks-재실행-2026-10-16)에 둔다.
+
+
+2026-10-14 초기 배포·Dashboard 검증에 쓴 ARM64 broker image는 `809446814769.dkr.ecr.ap-northeast-2.amazonaws.com/narumq@sha256:09f77ae1e4d2277fb96192abaafbf3e2d1717683746ff8e6acc17efc9ccfa916`이다. 당시 node 관측 API를 포함한 작업 tree의 image이며 [EKS 재배포 실행 기록](../how-to/operations-dashboard.md#eks-재배포-실행-기록-2026-10-14)에 연결된다. 2026-10-16 시험 image는 위 성능 실행 기록에 별도로 고정한다. Peer TLS 인증서와 관리·MQTT 인증 정보는 Git에 넣지 않고 EKS Secret `narumq-cluster-secrets`에 저장한다. 초기 cluster·Dashboard 검증은 production workload, TLS client endpoint 또는 장애 주입의 증거가 아니다.
 
 ### 라이브 EKS에서 관찰한 제한된 동작 (2026-10-14)
 
@@ -86,6 +91,12 @@ AWS EKS live cluster(`narumq-eks`, ap-northeast-2)의 배치·단일 drain·Pod 
 ### 기존 Pod 해제 뒤 단일 EC2 비정상 종료 재시험 (2026-10-15)
 
 새 격리 fixture에서 follower EC2를 OS shutdown 없이 종료했다. 관찰 도구는 종료 확인과 out-of-service taint 뒤 기존 Pod 하나를 UID 조건·grace 0으로 삭제했다. 대체 Pod는 6분 detach 대기 없이 약 5.5초 뒤 같은 EBS를 연결했다. Broker 3개 Ready 관찰은 193.995초였고 데이터 oracle은 PASS다. 남은 시간의 대부분은 대체 broker가 peer와 다시 연결되기를 기다린 시간으로 보인다 [INFERENCE]. 한 번의 실행이며 정확한 RTO와 production 수용은 입증하지 않았다. 제품 코드와 배포 template은 바꾸지 않았다. 기준 기록은 [Drain §10](../specs/drain-and-rolling-update.md#기존-pod-해제의-eks-재시험-2026-10-15)을 따른다.
+
+이 peer 재연결 대기는 이후 로컬 Docker에서 재현했다. Leader가 사라진 Pod IP의 peer 연결을 응용 송신 대기열이 차고 write deadline이 실패할 때까지 유지한 것이 원인이다. [ADR-0059](../decisions/ADR-0059-dynamic-peer-tcp-liveness.md)로 Raft·forwarding stream socket의 생존 확인 시간을 제한했다. 로컬 결과는 [Cluster §11.34](../specs/cluster-session-and-delivery.md#1134-dynamic-peer-tcp-생존-확인-수용-매핑)에 있다.
+
+### TCP 생존 확인과 CoreDNS 배치의 EKS 재측정 (2026-10-16)
+
+새 격리 fixture에서 follower EC2를 OS 종료 없이 두 번 잃었다. 두 번 모두 leader가 이전 IP 연결을 약 10초 만에 닫았다. 대체 node는 새 IP에서 시작한 직후 연결됐다. 기존 Pod 해제는 `deleted`였고 Broker 3개 Ready 관찰은 79.11초·55.98초였다. 데이터 oracle은 두 번 모두 PASS다. 같은 실행에서 CoreDNS 배치에 따라 healthy node가 `unknown`으로 보이는 원인을 확인하고, 아래 CoreDNS 배치 전제를 Terraform에 반영했다. 기준 기록은 [Cluster §11.34 EKS 무응답 종료 재측정](../specs/cluster-session-and-delivery.md#eks-무응답-종료-재측정-2026-10-16)과 [Drain §10 CoreDNS 재현](../specs/drain-and-rolling-update.md#coredns-배치와-healthy-node-unknown의-eks-재현-2026-10-16)을 따른다. 정확한 RTO, 연속 가용성과 production 수용은 입증하지 않았다.
 
 
 
@@ -180,8 +191,11 @@ NLB는 `IP` targets와 TCP listeners를 사용한다. TLS를 NLB에서 종료하
 - PodDisruptionBudget과 rollout 동시성은 계획 중단을 한 번에 한 broker로 제한한다.
 - Replacement는 log·snapshot·route sync와 quorum 확인 전 NLB target에 포함되지 않는다.
 - N-1 상태에서 production traffic과 재동기화를 함께 감당할 capacity를 확보한다.
+- CoreDNS replica 두 개는 서로 다른 worker와 AZ에 둔다. `deploy/terraform/eks.tf`의 `aws_eks_addon.coredns`가 required hostname anti-affinity와 zone topology spread(`DoNotSchedule`)를 설정한다. Worker 하나를 잃어도 cluster DNS endpoint가 모두 사라지지 않는다.
 
 PDB는 host·AZ loss를 막지 않으며 NLB deregistration은 application drain을 증명하지 않는다. 각각 placement evidence와 `SAFE_TO_STOP` evidence가 필요하다.
+
+CoreDNS 배치 전제는 healthy node가 `unknown`으로 보이는 구간을 줄일 뿐 없애지 않는다. 관측 RPC는 query마다 peer DNS 이름을 새로 조회한다. 죽은 worker의 CoreDNS endpoint가 not ready가 될 때까지 일부 DNS 조회가 timeout된다. 그동안 healthy node가 `UNREACHABLE/node_query_timeout`으로 보일 수 있다. 2026-10-16 EKS 전제 실행에서 DNS timeout은 fault 뒤 5.39~27.89초에 나왔다. 사용자는 이 동작을 계약 동작으로 수용했다([Drain §10 CoreDNS 재현](../specs/drain-and-rolling-update.md#coredns-배치와-healthy-node-unknown의-eks-재현-2026-10-16)).
 
 ## Observability mapping
 

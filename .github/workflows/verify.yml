@@ -61,6 +61,10 @@ jobs:
         env:
           PYTHONDONTWRITEBYTECODE: "1"
         run: python tests/test_eks_worker_recovery.py
+      - name: Run capacity controller tests
+        env:
+          PYTHONDONTWRITEBYTECODE: "1"
+        run: python tests/test_eks_capacity_controller.py
       - name: Upload verification evidence
         if: always()
         uses: actions/upload-artifact@v7

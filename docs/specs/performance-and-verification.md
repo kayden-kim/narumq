@@ -12,7 +12,7 @@
 
 ## 1. Workload 기준값
 
-Phase 0은 현행 production EMQX의 실제 workload를 다음 값과 단위로 확정해야 한다. 평균만으로 profile을 만들지 않는다. BP smoke 입력은 production workload의 대체값으로 사용하지 않는다.
+Phase 0은 workload를 다음 값과 단위로 확정해야 한다. 평균만으로 profile을 만들지 않는다. BP smoke 입력은 production workload의 대체값으로 사용하지 않는다. 2026-10-15 사용자는 production EMQX traffic 대신 `EKS_EC2_HA` 선택 profile에서 잰 수용 용량을 `B_*`로 쓰기로 했다. 측정 방법은 [§3.9](#39-bp-02-eks-용량-측정-계약)를 따른다.
 
 | 기호 | 의미 | 필수 분해 요소 |
 | --- | --- | --- |
@@ -22,7 +22,7 @@ Phase 0은 현행 production EMQX의 실제 workload를 다음 값과 단위로 
 | `B_msg_size` | payload 크기 분포 | p50, p95, p99, 최대값 |
 | `B_topic` | 토픽·필터 규모 | exact 매칭, wildcard, overlap, fan-out |
 
-또한 persistent session 비율, offline 비율·시간, Session Expiry, reconnect ramp, 인증 backend latency, tenant 부하 편차와 AZ network 특성을 기록한다. §6에는 EMQX 대비 성능 비율 제안을 기록한다. 실제 `B_*`, production SLO와 profile별 수치 기준은 telemetry·comparator run 뒤 확정한다.
+또한 persistent session 비율, offline 비율·시간, Session Expiry, reconnect ramp, 인증 backend latency, tenant 부하 편차와 AZ network 특성을 기록한다. §6에는 EMQX 대비 성능 비율 제안을 기록한다. 실제 `B_*` 값은 §3.9 측정 뒤 기록한다. Production SLO와 profile별 절대 수치 기준은 그 측정 결과를 근거로 확정한다.
 
 ## 2. SLI와 판정
 
@@ -60,7 +60,7 @@ Profile SHA-256은 저장소에 커밋된 LF bytes로 계산한다. `.gitattribu
 | BP | 프로파일 | 스펙 위치 |
 | --- | --- | --- |
 | BP-01 | Protocol Baseline | §3.1 |
-| BP-02 | Production Mix | §3.8 |
+| BP-02 | Production Mix | §3.8, EKS 용량 측정 §3.9 |
 | BP-03 | Durable Delivery | §3.4 |
 | BP-04 | Subscription Stress | §3.7 |
 | BP-05 | Connection Scale | §3.2 |
@@ -565,7 +565,205 @@ go run ./tests/benchmark/bp02 suite --profile tests/benchmark/bp02/testdata/smok
 
 최종 valid fixed compare는 `bp02-20261007T133602.315971400Z-174004`, valid 5/5 suite는 `bp02-suite-20261007T133920.246951900Z-122940`다. 두 target 모두 setup 49/49(TLS 25/TCP 24), persistent offline session 10/10, retained replay 구독자 4명, validity error 0, `finalCheck=true`였다. Suite는 target당 metric 44개, metric별 sample 5개였고 모든 반복에 network stats가 있었다. Fractional boundary compare `bp02-20261007T140157.761617200Z-105696`도 양쪽 valid이며 phase별 FLOOR publish count를 확인했다. Fixed smoke 입력은 변하지 않았다. 최종 local gate는 130.42초 PASS; focused mqttclient/environment/BP02 tests, benchmark vet, traceability도 통과했다. 이는 local smoke/코드 검증이지 production gate가 아니다.
 
-Manifest의 baseline `6c200085368d701f34dedfb31e1a968a84c09028`, `dirty=true`, profile SHA `b929efabd5f99e68758bec86a2034b0b80d153e9ce0291e64a8236b3e4afd7d4`는 실행 당시 사실이다. Profile 원문은 artifact에 연결된다. `B_*`, production workload/storage, N/N-1 SLO, `SPEC-TBD-08`의 수치 제안 채택과 profile cutoff, release regression과 release acceptance는 미정이다. EMQX JWT placeholder와 SSL environment fallback은 사용하지 않았다.
+Manifest의 baseline `6c200085368d701f34dedfb31e1a968a84c09028`, `dirty=true`, profile SHA `b929efabd5f99e68758bec86a2034b0b80d153e9ce0291e64a8236b3e4afd7d4`는 실행 당시 사실이다. Profile 원문은 artifact에 연결된다. 이 smoke 실행 당시 `B_*`, production workload/storage, N/N-1 SLO, `SPEC-TBD-08`의 수치 제안 채택과 profile cutoff, release regression과 release acceptance는 미정이었다. 그 뒤 `B_*` 측정 방법과 N-1 기준은 §3.9에서 정했다. EMQX JWT placeholder와 SSL environment fallback은 사용하지 않았다.
+
+### 3.9 BP-02 EKS 용량 측정 계약
+
+이 절은 [PRD §18 질문 1~5](../requirements/PRD.md#18-미결정-사항)의 채택에 따라 선택한 `EKS_EC2_HA` profile의 수용 용량을 재고 `B_*`로 기록하는 방법을 정한다. 2026-10-15 사용자는 다음을 선택했다.
+
+| 항목 | 결정 |
+| --- | --- |
+| Workload 분포 | §3.8 BP-02 production mix의 비율을 그대로 두고 규모만 키운다. |
+| 용량 판정 | N-1 유지 기준. Broker 하나가 빠진 동안과 복구 과정에서도 아래 판정 조건을 지키는 가장 높은 부하 단계를 용량으로 본다. |
+| Latency 한도 | Publish-to-delivery p99 100ms 이하 |
+| 부하 생성 위치 | 같은 EKS cluster의 전용 node group에서 Kubernetes Job으로 실행하고 내부 NLB로 접속한다. |
+
+#### Workload 단위(cell)
+
+Cell 하나는 §3.8의 stream 8개, 구독자 23명, retained 구독자 4명과 idle client 18명(A 12, B 6)을 그대로 복제한 단위다. Cell마다 publisher 8명을 포함해 client 53명이 있다. Tenant도 cell마다 두 개(`bp02-a-c%03d`, `bp02-b-c%03d`)를 둔다. 그래서 tenant와 client의 비율이 smoke와 같고, tenant별 quota 상한이 cell 수와 함께 커지는 부하에 걸리지 않는다. Cell `c`의 topic은 tenant 경로 다음에 `c%03d` 단계를 둔다. 예를 들어 `bp02/a/c007/telemetry/dev03`이고 ACL은 `bp02/a/c007/#`이다. Filter도 같은 단계를 포함한다. Shared group 이름은 `bp02a-c%03d`다. Client ID는 tenant 다음에 `c%03d`를 붙인다(`bp02-a-c007-pub-telemetry`). 각 tenant의 JWT identity는 그 cell의 client ID를 정확히 나열한다. QoS·persistent·retained 구성, `payloadSizeCycle`, keepalive 30초, Session Expiry 300초, `tlsEveryNthClient=2`는 §3.8 smoke와 같다. 따라서 `B_msg_size`는 p50 128 byte, p95·p99·최대 16,384 byte(nearest-rank)다.
+
+부하 단계는 `(cells, ratePerStreamPerSecond)` 쌍이다. 단계 `i`의 offered publish 속도는 `8*cells*rate` msg/s이고 연결 수는 `53*cells`다. Profile은 offered 부하가 엄격히 증가하는 단계 목록을 가진다. 첫 실패 단계가 나오면 마지막 통과 단계와 첫 실패 단계 사이의 cell 수를 이분 탐색으로 두 번 좁힌다. Rate는 §3.8 smoke 상한과 같은 `ratePerStreamPerSecond` 1–50 범위를 쓴다.
+
+#### 환경
+
+- Broker는 [EKS 배포 구조](../architectures/eks-ec2-deployment.md#production-qualification-profile-selected)의 선택 profile을 쓴다(`m7g.large` 3대, broker container마다 1 CPU·4 GiB, 20 GiB `gp3`, 내부 NLB IP target). Broker image는 ARM64 immutable digest로 고정한다. 용량 overlay는 broker container 자원을 그대로 두고 Pod에 JWKS sidecar와 init container를 더한다(2026-10-15 사용자 결정). 그래서 Pod 합계는 선택 profile보다 크다. 결과에는 broker container와 sidecar·init container의 requests·limits를 따로 기록하고, 이 값이 시험 overlay 조건임을 밝힌다.
+- Broker cluster는 준비 단계에서 `session-metadata`, `proposal-recovery`, `shared-subscription-reroute` feature를 활성화하고 확인한다. `proposal-recovery`는 leader가 바뀔 때 전송 중이던 commit을 새 leader에 다시 제안해, 생존 node의 연결이 commit timeout으로 닫히지 않게 한다(2026-10-15 사용자 결정). `shared-subscription-reroute`는 member session이 끝날 때 shared group message를 다른 member로 옮긴다([ADR-0060](../decisions/ADR-0060-shared-subscription-durable-owner-loss-reroute.md)). 활성 feature 목록을 artifact에 기록한다.
+- MQTT TLS는 broker listener가 종료한다. 용량 시험 overlay는 broker에 TLS listener 8883과 시험용 server certificate를 설정하고 NLB에 TCP 8883 listener를 추가한다. 기본 `eks-ec2-ha` manifest는 바꾸지 않는다.
+- 인증은 §3.8과 같은 RS256 JWT다. Broker는 loopback이 아닌 `http` JWKS 주소를 거절한다. 그래서 각 broker Pod에 JWKS를 `127.0.0.1`로 제공하는 시험용 sidecar를 둔다. Tenant quota는 설정하지 않아 기본값(상한)을 쓰고, 적용된 값을 artifact에 기록한다. Tenant 한도에 걸린 거절이 나오면 해당 단계는 invalid다.
+- Generator Job은 broker worker와 다른 전용 node group에서 실행한다. Generator Pod의 CPU 사용률이 80%를 넘거나 publish schedule lag가 publish 간격 이상이면 generator 포화다. 포화한 단계는 실패가 아니라 invalid이며, generator 자원을 늘려 다시 잰다.
+
+#### 단계 절차
+
+각 단계는 새 client 집합으로 다음 순서를 따른다. 단계 사이에는 세 broker가 ready이고 resync를 마친 상태여야 한다.
+
+1. `setup`: 모든 client를 NLB 주소로 연결하고 구독한다. 연결 속도는 profile의 `connectRatePerSecond`로 제한한다.
+2. `warmup`: 정해진 시간 동안 부하를 건다. 판정하지 않는다.
+3. `measureN`: 세 broker에서 `measureMillis` 동안 판정 구간을 잰다.
+4. `failure`: 그 시점의 Raft leader Pod를 강제 삭제(`gracePeriodSeconds=0`)한다. 같은 시각에 그 worker를 cordon해 대체 Pod가 다시 schedule되지 않게 한다. Broker EBS는 AZ에 묶여 있어 다른 worker로 옮겨 가지 않는다. 부하는 계속 건다. 이 장애는 Pod 하나의 손실이다. PRD `EKS_EC2_HA`의 EC2 worker 또는 AZ 손실은 이 측정이 검증하지 않으며 별도 장애 시험이 다룬다.
+5. `recovery`: 영향받은 client가 NLB로 재연결하고 stream마다 장애 뒤 첫 성공 완료를 관찰할 때까지다. RTO 정의는 §3.6과 같다.
+6. `measureN1`: RTO 뒤 남은 두 broker에서 `measureMillis` 동안 판정 구간을 잰다.
+7. `restore`: Worker를 uncordon하고 대체 Pod의 ready와 resync를 기다린다. 판정하지 않으며 `readyTimeoutMillis`를 넘기면 단계는 invalid다.
+8. `cleanup`: 모든 client를 정리한다. Client ID는 단계마다 같으므로 persistent client ID마다 `CleanStart=true`, Session Expiry 0으로 접속했다가 끊어 이전 session을 지운다.
+
+#### 판정
+
+한 단계는 다음 조건을 모두 지킬 때 통과다.
+
+- `measureN`과 `measureN1`에서 QoS별 publish-to-delivery p99가 100ms 이하다. Latency는 publish 직전부터 첫 copy 수신까지이며 generator 한 process의 단일 clock으로 잰다.
+- 단계 전체에서 broker가 ACK한 QoS 1/2 message의 미수신(gap)이 0이고 QoS 2 중복이 0이다. QoS 1은 PUBACK, QoS 2는 PUBREC(reason < `0x80`)을 받으면 broker가 ACK한 것으로 본다. ACK를 받지 못한 publish는 `unacked`로 기록하고 gap에 넣지 않는다. Clean session publisher가 PUBREC을 받은 뒤 PUBCOMP 전에 연결을 잃은 QoS 2 message는 전달 보장 대상이 아니다([PRD §8](../requirements/PRD.md#8-메시지-보장-모델) QoS 2 행). 이 미수신은 gap이 아니라 `cleanPublisherInterrupted`로 수를 기록한다. QoS 1 중복과 QoS 0 손실은 기록만 한다. Gap 판정 규칙은 아래와 같다.
+  - Message의 보장 수신자는 publish를 보낸 시점에 구독이 유효하고, 다음 중 하나를 만족하는 subscriber다. Persistent session subscriber이거나, clean session subscriber로서 그 연결이 drain 끝까지 유지된 경우다. 구독은 현재 연결에서 SUBACK을 받았거나 persistent session이 있으면 유효하다.
+  - 보장 수신자의 미수신은 모두 gap이다. 시간 기준의 예외는 두지 않는다.
+  - Clean session subscriber의 연결이 publish 뒤 수신 전에 끊기면 그 message는 보장 대상이 아니다. MQTT clean session은 끊긴 연결의 미전달 message를 보존하지 않기 때문이다. 이 미수신은 gap이 아니라 `cleanSessionLoss`로 QoS별 수와 publish부터 끊김까지의 최대 간격을 기록한다. 끊긴 뒤 다시 SUBACK을 받기 전에 보낸 message도 기대하지 않는다.
+  - 단, publish부터 끊김까지가 p99 한도(EKS 100ms)를 넘은 `cleanSessionLoss`는 실패다. 장애 전부터 전달이 멈춘 message를 끊김이 가리지 않게 하기 위해서다(2026-10-15 사용자 결정). 한도와 같은 간격은 제외 대상이다.
+- `measureN`과 `measureN1`에서 ACK timeout, protocol error와 계획 밖 disconnect가 0이다. Publisher가 inflight credit을 기다려 생긴 schedule lag가 publish 간격 이상이면 broker ACK가 부하를 따라가지 못한 것이므로 실패다. Credit 대기 없이 생긴 lag는 generator 포화이므로 invalid다.
+- RTO가 30초 이하다([PRD §4.2](../requirements/PRD.md#42-초기-성공-지표)). Persistent session은 재연결에서 `SessionPresent=true`여야 한다.
+
+통과한 단계 중 offered 부하가 가장 큰 단계를 후보로 둔다. 후보 단계를 독립적으로 5번 더 실행해 모두 통과해야 그 단계의 값을 `B_*`로 기록한다. 하나라도 실패하면 바로 아래 통과 단계로 같은 확인을 반복한다.
+
+| 기호 | 기록 값 |
+| --- | --- |
+| `B_conn` | 채택 단계의 연결 수 `53*cells`와 TLS·TCP 비율 |
+| `B_pub` | 채택 단계의 offered publish 속도와 QoS별 비율 |
+| `B_sub` | 채택 단계 `measureN1`의 delivery 속도와 QoS별 비율 |
+| `B_msg_size` | p50 128 byte, p95·p99·최대 16,384 byte |
+| `B_topic` | 채택 단계의 filter 수와 exact·wildcard·shared 구성 |
+
+이 결과는 선택 profile의 용량이다. EMQX 대비 상대 판정과 release gate는 별도이며 artifact는 `releaseGating=false`로 둔다. 실제 운영 traffic이 `B_*`를 넘으면 `B_*`를 다시 정한다.
+
+#### Runner 구성
+
+- Generator는 target에 무관한 runner로 만든다. 입력은 MQTT endpoint, management endpoint, credential과 profile이다. 단계 경계에서 control marker(§3.6과 같은 방식)를 써서 외부 controller가 장애 주입과 복구를 수행한다.
+- Local controller는 Docker 3-node cluster에서 같은 runner를 실행하고 container `SIGKILL`과 재시작으로 장애를 만든다. Runner와 판정 코드의 local 검증에 쓰며 용량 값의 증거가 아니다.
+- EKS controller는 저장소 root의 workstation에서 `kubectl`로 Job 실행, marker 교환, Pod 강제 삭제, cordon·uncordon과 artifact 수집을 수행한다.
+- 2026-10-16 사용자는 실제 worker 정지 대신 Pod 장애 시험 보완을 선택했다. 시험 overlay만 `broker-process.sh`를 PID 1(container 안의 첫 process)로 실행하고 broker를 자식 process로 둔다. 같은 PID namespace에서 PID 1에 보낸 `SIGSTOP`은 성공을 반환해도 실행을 멈추지 않을 수 있으므로 PID 1을 직접 멈추는 방식은 쓰지 않는다. 평소 preStop은 기본 배포와 같고 wrapper는 TERM·INT를 broker에 전달하고 종료 상태를 기다린다. Wrapper의 메모리·CPU도 broker container의 1 CPU·4 GiB 예산에 포함된다.
+- Wrapper는 실행마다 UUID를 `/capacity-runtime`의 작은 memory emptyDir에 기록한다. Controller는 준비 때 Pod UID·container ID·broker PID·이 UUID를 보관한다. Runner ACK 뒤에는 UID·worker·container ID를 다시 대조한다. Container 안의 helper도 UUID와 실행 파일을 대조하므로 `kubectl exec`가 교체된 process에 도착하면 신호를 보내지 않는다. Broker 자식에게 `SIGSTOP`을 보내고 모든 thread가 실제 stopped 상태인지 확인한 뒤 Pod를 강제 삭제한다. 이 순서로 preStop이 broker에 정상 drain을 시작할 기회를 차단한다. 멈춘 시각·PID·thread 수·대상 identity와 삭제 시각을 기록한다. Worker·OS·EBS는 계속 실행되므로 전원 손실 증거는 아니다.
+- `kubectl delete --wait=false`의 성공은 삭제 요청 수락이며 기존 Pod의 삭제 완료가 아니다. 요청 수락 뒤에도 정지 대상의 추적을 유지한다. `restore`에서 다른 UID인 Ready Pod를 확인한 뒤 추적을 마친다. 삭제 실패, controller 예외, Ctrl+C 또는 대기 시간 초과로 Python의 `finally`가 실행되면 원래 UID·container ID·실행 UUID가 확인되는 대상에만 `SIGCONT`를 보내 재개를 시도한다. 교체된 container에는 신호를 보내지 않는다. 주입·정지 확인·복구 실패는 invalid이며 기준을 낮춰 통과시키지 않는다. 정상 preStop과 기본 `eks-ec2-ha` manifest는 바꾸지 않는다.
+- 2026-10-16 사용자는 정리 가능한 중단만 지원하기로 결정했다. `SIGKILL`, workstation 장애, 강제 process 종료처럼 `finally`가 실행되지 않는 중단에는 자동 재개를 보장하지 않는다. Lease나 watchdog은 두지 않는다. 이 경우 또는 Kubernetes API·exec 실패로 재개할 수 없는 경우에는 격리 fixture를 수동 복구하거나 삭제해야 한다. 중단된 측정을 용량 채택의 증거로 쓰지 않는다.
+- Artifact는 §5를 따른다. 단계마다 `step-summary.json`, phase·message·connection 기록, broker와 generator의 resource 표본, Raft leader와 삭제한 Pod·worker, cordon·uncordon 시각을 남긴다.
+- EKS controller는 `controller/runtime-health.jsonl`에 준비 뒤·각 단계의 ready와 complete·실행 종료 및 `--sample-seconds` 간격(기본 10초)의 표본을 남긴다. 경계 관측은 비동기로 요청해 장애 주입과 marker ACK를 지연시키지 않는다. 요청 시각(`requestedAt`)과 실제 수집 시각(`at`)을 구분한다. 수집 시간은 주기 간격에 더해진다. Broker container의 cgroup `cpu.stat`에서 `nr_periods`, `nr_throttled`, `throttled_usec` 누계와 같은 container의 직전 표본 대비 증가량을 기록한다. Cgroup v1의 `throttled_time`은 ns에서 µs로 바꾼다. 첫 표본·Pod UID 또는 container ID 변경·누계 감소 때 증가량은 알 수 없음(`null`)으로 기록한다.
+- 같은 표본에는 broker와 generator Pod의 UID·worker, regular·init container별 restart count, 현재 상태와 직전 종료 상태(reason, exit code, signal, 시작·종료 시각)를 기록한다. `OOMKilled`는 Kubernetes가 보고한 reason 그대로 보존한다. 읽기 실패·권한 부족·교체 중 표본은 알 수 없음으로 남기며 0이나 정상으로 바꾸지 않는다. CPU 표본 수집 전후의 Pod·container identity가 다르면 그 CPU 표본을 버린다.
+- 이 기록은 CPU limit에 걸린 지연과 OOM·재시작 원인을 분석하기 위한 관측 자료다. 판정 기준을 바꾸거나 장애 중 Pod를 복구하는 추가 동작은 하지 않는다. 주기 사이에 삭제된 Pod나 여러 번 재시작한 container의 모든 OOM 이력을 보장하지 않는다. 실제 EKS 수집은 별도 실행으로 확인해야 한다.
+- `prepare`는 fixture ConfigMap과 Secret을 server-side apply로 갱신한다. 512 cell의 credential 파일은 약 586 KB이므로 client-side apply의 `last-applied-configuration` annotation(최대 262,144 bytes)에 복제할 수 없다. Secret 본문은 그대로 유지한다. 기존 client-side apply manager가 소유한 값과 충돌하면 강제로 덮어쓰지 않는다. 이번 새 fixture에서 실패한 준비 작업이 만든 Secret 두 개만 삭제하고 다시 만들었다.
+- Kill marker의 `target.nodeId`는 runner의 `killTarget.NodeID`에 맞는 JSON 문자열이다. Python 내부의 숫자 node ID는 marker를 쓸 때 문자열로 바꾼다. 숫자로 쓰면 Go가 marker를 읽지 못하므로 runner는 ACK를 쓰지 않고 해당 단계는 invalid가 된다.
+- Local smoke profile(`tests/benchmark/capacity/testdata/local-smoke.json`)은 Docker에서 단계 진행·확인·정리 경로를 실행하려고 p99 한도를 1,000ms로 둔다. 이 값은 판정 기준이 아니다. EKS profile(`eks-capacity-v1.json`)은 100ms를 쓴다.
+
+#### 시험 연결과 실행 기록
+
+| 대상 | 시험 위치·명령 | 확인하는 규칙 | 결과 |
+| --- | --- | --- | --- |
+| Profile·cell·client ID | `tests/benchmark/capacity/{profile,plan}_test.go` | Profile 범위 검증, cell당 client 53명, tenant별 정확한 client ID, cell 밖으로 나가지 않는 filter | PASS |
+| Gap·`cleanSessionLoss` 판정 | `tests/benchmark/capacity/collector_test.go` | 보장 수신자 규칙, persistent 무예외, PUBCOMP 뒤 미수신의 gap, clean publisher의 PUBCOMP 전 끊김(`cleanPublisherInterrupted`), 끊긴 동안의 publish 제외, p99 한도 경계의 `cleanSessionLoss` | PASS |
+| 단계 판정·탐색 | `tests/benchmark/capacity/{verdict,ladder}_test.go` | p99 경계, invalid 우선, RTO·SessionPresent, 이분 탐색과 5회 확인 | PASS |
+| Feature 활성화 | `tests/benchmark/capacity/management_test.go` `TestEnsureFeaturesActivatesAndVerifiesEveryRequiredFeature` | 세 feature를 활성화하고 하나라도 비활성이면 오류 | PASS |
+| Marker 교환·Pod 자원 기록 | `tests/benchmark/capacity/control_test.go`; `tests/benchmark/capacity/eks_control_test.go` `TestEKSKillMarkersDecodeInRunner`; `tests/test_eks_capacity_controller.py` | Runner와 controller의 marker 순서와 timeout, 실제 Python producer → Go consumer의 5개 상태 JSON 형식, broker·sidecar·init container 자원의 분리 기록 | PASS. EKS에서 발견한 숫자 node ID 회귀는 수정 전 5개 상태 모두 FAIL → 문자열로 수정 뒤 모두 PASS. `GOMAXPROCS=2 go test ./tests/benchmark/capacity -count=1` 및 Python 33개 PASS, 2026-10-16 |
+| EKS overlay 경계 | `GOMAXPROCS=2 go test -p=2 ./tests/integration -run '^TestEKSCapacityOverlay$' -count=1` | 기본 node 설정에서 MQTT TLS·security 경로만 다름, sidecar·Job 자원·routing 경계 | PASS, 2026-10-16 |
+| Pod 장애 대상 identity | `tests/test_eks_capacity_controller.py` `FaultIdentityTests.test_signals_require_the_original_live_broker_identity` | 다른 Pod UID·worker·container, 종료·삭제·상태 미확인 대상과 sidecar에 신호를 보내지 않음 | PASS. Controller 시험 총 34개 |
+| 실제 broker의 process 정지·복구 | [실행 결과](../../.artifacts/verification/capacity-pod-fault-20261016T033428Z/result.json), [controller rollback](../../.artifacts/verification/capacity-pod-fault-20261016T033428Z/controller-rollback-events.jsonl) | Native amd64 Linux Docker에서 실제 standalone broker PID 8의 thread 7개 정지 → HTTP 불통 → SIGCONT 뒤 Ready. 잘못된 실행 UUID 거절. 삭제 오류를 주입한 controller가 실제 process를 다시 실행시킴. 정상 TERM 전달 뒤 exit 0 | PASS. Docker stop 0.408초. 삭제 오류는 adapter에서 주입했으며 Kubernetes·EKS 수용 증거는 아님 |
+| 삭제 요청 수락 뒤 종료 정리 | [실행 결과](../../.artifacts/verification/capacity-pod-cleanup-20261016T043338Z/result.json), [수정 전](../../.artifacts/verification/capacity-pod-cleanup-20261016T043338Z/before.json), [수정 뒤](../../.artifacts/verification/capacity-pod-cleanup-20261016T043338Z/after.json), [복구 timeout](../../.artifacts/verification/capacity-pod-cleanup-20261016T043338Z/restore-timeout.json) | 삭제 요청은 성공했지만 원래 UID인 Pod가 남은 상태에서 controller가 끝나도 같은 process의 재개를 시도함 | 수정 전에는 Ctrl+C 뒤 실제 broker가 계속 stopped였다. 수정 뒤 Ctrl+C·controller 예외·restore timeout 모두 HTTP Ready와 worker uncordon 확인. Kubernetes 삭제 지연은 adapter에서 주입했으며 이 정리 수정의 EKS 실행은 하지 않음 |
+| CPU throttling·OOM·재시작 관측 | `tests/test_eks_capacity_controller.py` `RuntimeDiagnosticsTests`의 4개 시험; `python -B -W error::ResourceWarning tests/test_eks_capacity_controller.py` | cgroup v1/v2 단위 변환, 누계 증가량, 재시작·Pod 교체·읽기 실패 때 baseline 무효화, 현재·직전 OOM 상태 보존 | PASS, 2026-10-16 controller 시험 총 33개 |
+| 관측 수집 경로 smoke | [실행 결과](../../.artifacts/verification/capacity-runtime-health-20261016T014702Z/result.json), [수집 자료](../../.artifacts/verification/capacity-runtime-health-20261016T014702Z/runtime-health.jsonl) | CPU·메모리 제한 Docker container의 실제 `cpu.stat` 읽기 → `ResourceSampler`·`RuntimeDiagnostics` → JSONL 기록. Docker inspect의 실제 상태를 Pod DTO로 변환한 adapter 사용 | PASS, 0.25 CPU·32 MiB에서 약 3초 부하: 30개 period 중 30개 throttled, 증가 시간 2,405,808µs. 재시작 뒤 delta `null`, 실제 OOMKilled exit 137 기록. Container 삭제 완료. Kubernetes exec/status 전송은 미검증 |
+| 실제 EKS 관측 사전 확인 | [runtime-health](../../.artifacts/verification/eks-capacity-20261016T015110Z-db4c38/preflight/runtime-health.jsonl) | 실제 `kubectl exec`·Pod status 조회, cgroup v2 누계와 증가량 수집 | PASS, broker 3개 모두 읽기 성공. 유휴 상태 throttling 0. Kubernetes 1.37·AL2023 ARM64. 부하 중 여유나 모든 OOM 이력의 증거는 아님 |
+| EKS의 큰 credential Secret 준비 | [실패](../../.artifacts/verification/eks-capacity-20261016T015110Z-db4c38/fixture-prepare-failure.json), [수정 뒤 성공](../../.artifacts/verification/eks-capacity-20261016T015110Z-db4c38/fixture-prepare-success.json) | Credential 파일 585,729 bytes를 annotation에 넣지 않고 Secret으로 저장 | Client-side apply FAIL → server-side apply PASS. Secret 값은 출력·공개 artifact에서 제외. Controller 회귀 시험 33개 PASS |
+| Local 단계 실행 | `go run ./tests/benchmark/capacity local --profile tests/benchmark/capacity/testdata/local-smoke.json` | 장애 주입·복구·판정·정리가 끝까지 실행됨 | 수정 전 FAIL([기록](../../.artifacts/verification/capacity-local-20261015T231636Z/capacity-summary.json)), 수정 뒤 PASS 3/3([기록](../../.artifacts/verification/capacity-local-20261016T011708Z/capacity-summary.json)) |
+| EKS 측정 | `tests/benchmark/capacity/eks/controller.py`, 아래 2026-10-16 실행 기록과 Pod 장애 보완 재실행 | `B_*` 기록 | 초기 3회와 주입 보완 뒤 1회 모두 invalid. 보완 뒤에는 삭제·N-1 측정·Ready·resync 복구가 끝났지만 quota 계열 거절 3건으로 중단했다. `B_*`와 bounds는 채택하지 않음 |
+| 보완한 Pod 장애의 EKS 실행 | [Controller events](../../.artifacts/verification/eks-podfix-20261016T033737Z/capacity/controller/events.jsonl), [최종 node 상태](../../.artifacts/verification/eks-podfix-20261016T033737Z/final/management-nodes.json) | 원래 Pod UID·container·실행 UUID 확인 → broker thread 정지 → 강제 삭제 → N-1 → 새 Pod Ready·resync | 해당 경로 1회 확인. 전체 용량 판정은 invalid이며 5회 확인과 상위 단계는 실행하지 않음 |
+
+2026-10-15 수정 전 local 실행(Docker 3 node, 1–2 cell)은 단계 3개 중 1개가 통과하고 2개가 실패했다. 아래 원인 분석에서 실패가 broker 동작에서 나왔음을 재현으로 확인했다.
+
+- Leader kill 뒤 생존 node가 PUBACK한 shared group `a_job`(clean session member) QoS 1 message를 살아 있는 member가 받지 못했다(gap 1개, 3개).
+- 생존 node에 연결된 persistent `alert` subscriber 3개가 `measureN1` 중 broker 쪽에서 끊겼다. 약 0.4초 뒤 `SessionPresent=true`로 다시 연결했다.
+- 1 cell 확인 실행의 `measureN1` QoS 1 p99는 2.59초였다.
+
+원인 분석은 [N-1 delivery 분석](../../.artifacts/analysis/n1-delivery/analysis.md)에 있다. 2026-10-15 사용자 결정에 따라 다음과 같이 처리했다.
+
+- Shared group gap: member 선택이 owner node의 도달 여부를 보지 않았고, durable 대상은 primary만 썼다. 죽은 node의 clean member queue에 들어간 message는 그 member가 `CleanStart=true`로 돌아오면 사라졌다. [ADR-0060](../decisions/ADR-0060-shared-subscription-durable-owner-loss-reroute.md)으로 ADR-0015 §8을 고쳤다. Ingress node는 도달할 수 없는 owner의 member를 고르지 않는다. Member session이 reset·폐기·만료되면 남은 shared message를 같은 group의 다른 member로 옮긴다. 수용 기록은 [Cluster §11.35](cluster-session-and-delivery.md#1135-공유-구독-durable-전달의-owner-손실-수용-매핑)다.
+- 생존 node의 persistent 연결 끊김: 죽은 leader에 전달된 PUBACK COMPLETE commit이 5초 commit timeout에 걸려 broker가 연결을 닫았다. `proposal-recovery`를 켜면 재현 8회 중 0회로 사라졌다(끄면 8회 중 4회). Broker는 바꾸지 않았고 위 환경 조건에서 이 feature를 켠다.
+- QoS 2: PUBREC 뒤 PUBREL commit 전에 clean session publisher의 연결이 끊기면 message가 전달되지 않는다. PRD §8에서 이 경우를 보장 대상에서 뺐고, 판정은 `cleanPublisherInterrupted`로 따로 기록한다.
+
+수정 뒤 같은 명령을 다시 실행했다([기록](../../.artifacts/verification/capacity-local-20261016T011708Z/capacity-summary.json)). 세 feature가 활성 상태였고 단계 3개가 모두 통과했다.
+
+| 단계 실행 | Cell | RTO | p99 `measureN` QoS 0/1/2 | p99 `measureN1` QoS 0/1/2 | Gap | `cleanSessionLoss` | `measureN1` 계획 밖 disconnect |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| 01-r1 | 1 | 1.85초 | 2.2 / 53.7 / 57.0ms | 1.4 / 54.5 / 39.4ms | 0 | 0 | 0 |
+| 02-r1 | 2 | 3.55초 | 25.2 / 96.9 / 160.7ms | 3.3 / 115.3 / 88.3ms | 0 | 0 | 0 |
+| 02-r2(확인) | 2 | 4.12초 | 81.1 / 606.2 / 652.7ms | 1.3 / 81.7 / 98.5ms | 0 | QoS 1 2개, 최대 36.7ms | 0 |
+
+이 실행은 Docker 한 host의 local smoke이며 p99 한도는 1,000ms다. 판정 경로가 동작한다는 증거일 뿐 `B_*`나 EKS 100ms 기준의 증거가 아니다. 확인 실행의 `measureN` p99가 600ms를 넘은 것은 장애 전 구간이다. 원인은 확인하지 않았다 [INFERENCE: 같은 host의 Docker CPU 경합].
+
+#### EKS 용량 실행 기록 (2026-10-16)
+
+사용자가 승인한 격리 fixture `eks-capacity-20261016T015110Z-db4c38`에서 실행했다. Broker는 3-AZ의 `m7g.large` 3대, generator는 taint로 분리한 `c7g.xlarge` 1대다. Broker container는 각각 1 CPU·4 GiB이고 sidecar 예산은 별도다. [Image 기록](../../.artifacts/verification/eks-capacity-20261016T015110Z-db4c38/image-records.json)에 ARM64 digest·OCI label을 고정했다. Peer 인증서·bootstrap pin을 새로 만들었고 합성 데이터만 썼다. `proposal-recovery`·`session-metadata`·`shared-subscription-reroute`를 모두 활성화했다.
+
+| 실행 | 결과와 근거 |
+| --- | --- |
+| 기본 profile, 첫 8 cell·424 연결·320 publish/s | Setup 중 `CONNACK 0x88`로 invalid. Measure·장애 주입 전에 종료. 원인은 미확정이며 CPU 포화로 해석하지 않음. [Summary](../../.artifacts/verification/eks-capacity-20261016T015110Z-db4c38/capacity/generator-output/capacity-summary.json) |
+| 작은 부하 탐색, 첫 1 cell·53 연결·40 publish/s | 기본 단계 앞에 1·2·4 cell을 추가한 [profile](../../.artifacts/verification/eks-capacity-20261016T015110Z-db4c38/eks-capacity-low-range-v1.json). Rate·p99 100ms·RTO 30초·5회 확인·손실 기준은 그대로다. Python marker가 숫자 node ID를 써서 Go runner가 ACK하지 못함. Pod 삭제 없이 invalid. [Summary](../../.artifacts/verification/eks-capacity-20261016T015110Z-db4c38/capacity-low/generator-output/capacity-summary.json) |
+| Marker 수정 뒤 같은 작은 부하 | Leader node 2 Pod 삭제, N-1 60초 측정, uncordon까지 실행. 대체 Pod는 running이지만 10분 안에 Ready가 되지 않아 invalid. [Summary](../../.artifacts/verification/eks-capacity-20261016T015110Z-db4c38/capacity-fixed/generator-output/capacity-summary.json), [controller events](../../.artifacts/verification/eks-capacity-20261016T015110Z-db4c38/capacity-fixed/controller/events.jsonl) |
+
+세 번째 실행의 마지막 직접 조회에서 node 2는 replication `HEALTHY`·`SAFE_TO_STOP`·`ready=false`였다([관리 API](../../.artifacts/verification/eks-capacity-20261016T015110Z-db4c38/final/management-nodes.json)). `/health/ready`는 503과 `node drain record is active`를 반환했다([응답](../../.artifacts/verification/eks-capacity-20261016T015110Z-db4c38/final/restored-pod-health.json)). 삭제 때 `FailedPreStopHook` event가 있었고, 대체 broker는 같은 drain operation을 재개해 `COMPLETED`를 commit했다([event](../../.artifacts/verification/eks-capacity-20261016T015110Z-db4c38/final/events.json), [log](../../.artifacts/verification/eks-capacity-20261016T015110Z-db4c38/final/narumq-1.log)). 현재 `force delete`가 preStop을 실행하지 않는다는 가정은 성립하지 않았다. 정상 drain을 포함한 이 실행을 갑작스러운 broker 손실의 수용 증거로 쓰지 않는다. 장애 전용 lifecycle 분리 또는 정상 drain 시험으로의 구분은 다음 실행 전에 결정해야 한다. 기준을 낮추거나 active drain을 임의로 지우지 않았다.
+
+복구 실패와 별도로 runner는 QoS 1·2 ACKed gap을 각각 1개 기록했다. QoS 1은 `a_job` sequence 517, QoS 2는 `a_command` sequence 717이다([message 표본](../../.artifacts/verification/eks-capacity-20261016T015110Z-db4c38/capacity-fixed/generator-output/steps/01-r1/messages-sample.jsonl)). 원인은 아직 확인하지 않았다. 다음은 이 invalid 실행의 관찰값이며 통과 판정이 아니다([step summary](../../.artifacts/verification/eks-capacity-20261016T015110Z-db4c38/capacity-fixed/generator-output/steps/01-r1/step-summary.json)).
+
+| QoS | `measureN` p99 | `measureN1` p99 |
+| --- | --- | --- |
+| 0 | 4.629ms | 4.937ms |
+| 1 | 63.083ms | 66.681ms |
+| 2 | 64.700ms | 65.851ms |
+
+Runner가 관찰한 영향 client 13개의 reconnect RTO는 7.597초, SessionPresent failure는 0이었다. 이는 대체 broker의 Ready 복구 시간이 아니다. Generator의 측정 구간 CPU는 3 CPU 한도 기준 약 0.294%였다. [Pod resource 표본의 최댓값](../../.artifacts/verification/eks-capacity-20261016T015110Z-db4c38/resource-peaks.json)은 broker Pod 263m CPU·36 MiB, generator Pod 16m CPU·19 MiB다. Pod 값은 sidecar를 포함하며 연속 관측의 절대 최댓값이 아니다.
+
+[Runtime 관측 분석](../../.artifacts/verification/eks-capacity-20261016T015110Z-db4c38/telemetry-analysis.json)에는 세 실행의 원본 JSONL과 같은 container에서 얻은 증가량만 합산했다. 세 번째 실행의 broker별 관측 period 합은 7,225·6,162·7,408이고 `nr_throttled`·`throttled_usec` 증가량은 모두 0이었다. 삭제·교체 중 node 2에서 CPU 값을 얻지 못한 표본 5개는 정상값으로 대체하지 않았다. `run-start`·`step-ready`·`step-complete`·`run-end` 경계와 periodic 표본이 실제 EKS에서 수집됐다. 관측된 현재·직전 종료 상태에 `OOMKilled`는 없었다. 삭제 사이의 모든 종료나 고부하에서의 안전성을 보장하지 않는다.
+
+모든 실행의 `adopted`·`bounds`는 `null`이다. 5회 확인과 상위 단계 탐색은 완료하지 못했다. `B_*`, production 지원과 release gate는 미검증으로 유지한다.
+
+시험 뒤 Namespace·NLB·target group·시험 PVC/EBS를 먼저 정리했다. 별도 state에서 만든 Terraform 자원은 계획한 42개만 생성하고 42개 모두 삭제했다. Fixture CloudWatch log group과 이번에 만든 ECR image tag 두 개도 삭제했다. AWS API로 cluster·VPC·활성 instance·시험 EBS·EIP·NLB·target group·IAM role·log group이 없고 NAT gateway가 deleted임을 확인했다([정리 계획](../../.artifacts/verification/eks-capacity-20261016T015110Z-db4c38/final/destroy-plan-review.json), [적용 기록](../../.artifacts/verification/eks-capacity-20261016T015110Z-db4c38/final/destroy-apply.txt), [최종 확인](../../.artifacts/verification/eks-capacity-20261016T015110Z-db4c38/final/cleanup-verification.json)). 보호 snapshot 3개와 `observability-20261014` image digest는 유지했다.
+
+현재 Secret·TLS key·kubeconfig·Terraform state와 계획·비공개 log 등 58개 파일은 DPAPI CurrentUser로 암호화했다. 복호화한 SHA-256이 원본과 같은지 확인한 뒤 평문·임시 script·binary·provider cache를 지웠다([보관 결과](../../.artifacts/verification/eks-capacity-20261016T015110Z-db4c38/final/private-archive.json)). [집중 검증 기록](../../.artifacts/verification/eks-capacity-20261016T015110Z-db4c38/focused-verification.json)은 capacity package·Python 33개·vet·traceability PASS를 연결한다. 앞선 전체 local gate의 coverage 실패는 해결하거나 재실행하지 않았다.
+
+#### Pod 장애 주입 보완의 EKS 재실행 (2026-10-16)
+
+사용자가 Pod 장애 보완을 선택한 뒤 `eks-podfix-20261016T033737Z` fixture에서 다시 실행했다. 앞선 fixture는 이미 정리했으므로 별도 state로 같은 규모의 새 환경을 만들었다. Broker·runner ARM64 image digest와 작은 부하 탐색 profile은 앞선 실행과 같다([image](../../.artifacts/verification/eks-podfix-20261016T033737Z/image-records.json), [profile](../../.artifacts/verification/eks-podfix-20261016T033737Z/eks-capacity-low-range-v1.json)). Broker binary나 운영용 preStop은 바꾸지 않았다.
+
+준비 때 broker 3개가 서로 다른 worker·AZ에 있고 generator는 전용 node에 있는지 확인했다([배치](../../.artifacts/verification/eks-podfix-20261016T033737Z/preflight/placement.json)). 모든 broker의 process helper가 실제 Pod UID를 반환했다. Kustomize가 만든 process ConfigMap은 namespace를 명시해 StatefulSet volume과 같은 이름으로 연결했다([실제 render](../../.artifacts/verification/eks-podfix-20261016T033737Z/rendered-broker.json)). MQTT 두 target group의 대상 3개가 모두 healthy인 상태에서 시작했다([NLB](../../.artifacts/verification/eks-podfix-20261016T033737Z/nlb-preflight.json)).
+
+AWS Load Balancer Controller는 Helm chart 1.17.1·image v2.17.1을 썼다. 실제 container status의 digest `sha256:3f4a2222c128a7e2baccae3f1d2cc566c70aa7a6cddda6caa22488fd3aa0337c`는 teardown 중 남아 있던 EKS audit log에서 확보했다. 새로 pending인 Pod의 빈 status를 runtime 증거로 쓰지 않았다([도구 정보](../../.artifacts/verification/eks-podfix-20261016T033737Z/tooling.json), [선별한 audit 증거](../../.artifacts/verification/eks-podfix-20261016T033737Z/controller-image-audit-evidence.json)). Metrics server managed addon은 `v0.9.0-eksbuild.13`이다.
+
+
+첫 1 cell(53 연결, 40 publish/s)에서 leader node 3을 골랐다. 원래 UID·container ID·실행 UUID를 확인하고 PID 8의 thread 9개를 멈췄다. 이어서 worker를 cordon한 상태로 Pod를 강제 삭제했다. `killing`·`down`·`restoring`·`restored`를 runner가 모두 관찰했다. Restore 처리는 uncordon과 새 Pod Ready·resync 확인을 포함해 28.93초였다([controller events](../../.artifacts/verification/eks-podfix-20261016T033737Z/capacity/controller/events.jsonl), [step summary](../../.artifacts/verification/eks-podfix-20261016T033737Z/capacity/generator-output/steps/01-r1/step-summary.json)). 삭제 때 preStop 실패 event는 있었지만 대체 broker는 active drain에 묶이지 않았다. 마지막 직접 조회에서 세 broker 모두 `READY`·`ready=true`였고 `/health/ready`도 모두 200이었다([node 상태](../../.artifacts/verification/eks-podfix-20261016T033737Z/final/management-nodes.json)).
+
+| QoS | `measureN` p99 | `measureN1` p99 |
+| --- | --- | --- |
+| 0 | 6.042ms | 3.273ms |
+| 1 | 56.665ms | 61.815ms |
+| 2 | 73.060ms | 68.873ms |
+
+두 측정 구간의 ACK timeout·protocol error·계획 밖 disconnect는 모두 0이었다. 영향 client 13개가 복구됐고 SessionPresent 실패는 0이었다. Runner가 첫 장애 연결 끊김을 기준으로 잰 RTO는 2.227초였다. 주입 전 `killing` 관찰(ACK 직전)부터 회복까지를 같은 generator clock으로 넓게 잡으면 상한은 11.534초다. 이 상한에는 장애 전 controller 처리도 포함된다. 서로 다른 host 시각을 빼서 정확한 process 정지 RTO로 보고하지 않는다([clock 계산](../../.artifacts/verification/eks-podfix-20261016T033737Z/recovery-clock-analysis.json)).
+
+이 한 번의 실행에서 ACKed gap·QoS 2 중복·`cleanSessionLoss`는 모두 0이었다. QoS 1 unacked 48개와 QoS 0 미수신 132개는 별도 기록이다. 모든 offered message가 전달됐다는 뜻은 아니다. 앞선 drain 혼합 실행에서 나온 ACKed gap의 원인과 재현 조건을 닫는 증거로도 쓰지 않는다.
+
+전체 판정은 **invalid**다([summary](../../.artifacts/verification/eks-podfix-20261016T033737Z/capacity/generator-output/capacity-summary.json)). Runner는 `tenant limit rejection observed 3 times`를 기록했다. 그러나 이 counter는 MQTT `0x97`·`0x9F`를 모두 tenant 한도로 분류한다(`tests/benchmark/capacity/verdict.go` `isLimitRejection`, `client.go` `finishAck`). Broker는 서버 commit lag·delivery capacity 거절에도 `0x97`을 쓴다(`internal/adapters/tcp/server_submission.go`). Node 2의 실제 metric은 `narumq_publish_backpressure_rejections_total{reason="commit_lag"} 3`, `reason="tenant_quota"`는 0이었다([metric](../../.artifacts/verification/eks-podfix-20261016T033737Z/final/narumq-1-metrics.txt), [log](../../.artifacts/verification/eks-podfix-20261016T033737Z/final/narumq-1.log)). 따라서 runner 문구만으로 실제 tenant 한도 초과라고 단정하지 않는다.
+
+Metric 합계는 서버 backpressure 설명을 뒷받침하지만 패킷별 원인이나 발생 구간과 직접 연결한 증거는 아니다. 재생성한 node의 metric에는 죽은 container의 이력이 없다. Quota 계열 거절의 원인·구간 기록과 tenant/server 분류 보완은 남았다. 이번 3건을 임의로 failure 구간의 허용 거절로 바꾸거나 제외하지 않았다([분석·한계](../../.artifacts/verification/eks-podfix-20261016T033737Z/rejection-analysis.json)). `adopted`·`bounds`는 null이고 5회 확인·상위 단계·`B_*` 채택은 미완료다.
+
+[Resource 표본](../../.artifacts/verification/eks-podfix-20261016T033737Z/resource-peaks.json)의 broker Pod 최댓값은 193m CPU·35 MiB, generator Pod는 15m CPU·18 MiB였다. [Runtime 관측](../../.artifacts/verification/eks-podfix-20261016T033737Z/telemetry-analysis.json) 14개에서 읽을 수 있었던 같은 container의 throttling 증가량은 모두 0이었다. 삭제·교체 중 node 3의 CPU를 읽지 못한 표본 5개는 제외했다. 수집한 현재·직전 종료 상태에 OOMKilled는 없었다. 이 낮은 부하의 표본은 CPU 100% 포화나 더 높은 부하의 안전성을 검증하지 않는다.
+
+시험 뒤 Namespace·NLB·target group·시험 PVC/EBS를 정리하고 Terraform 자원 42개를 모두 삭제했다. AWS API로 fixture cluster·VPC·활성 instance·시험 EBS·EIP·NLB·target group·IAM role·log group이 없고 NAT gateway가 deleted임을 확인했다. 이번에 다시 올린 image tag 두 개도 삭제했다. 보호 snapshot 3개와 `observability-20261014` digest는 유지했다([정리 계획](../../.artifacts/verification/eks-podfix-20261016T033737Z/final/destroy-plan-review.json), [적용 기록](../../.artifacts/verification/eks-podfix-20261016T033737Z/final/destroy-apply.txt), [최종 확인](../../.artifacts/verification/eks-podfix-20261016T033737Z/final/cleanup-verification.json)).
+
+TLS key·JWT credential·현재 Secret·kubeconfig·state·계획·비공개 log·임시 Docker 인증 등 62개 파일은 DPAPI CurrentUser로 암호화했다. 복호화한 SHA-256을 원본과 대조한 뒤 평문·임시 script·binary·provider cache를 지웠다([보관 결과](../../.artifacts/verification/eks-podfix-20261016T033737Z/final/private-archive.json)). Capacity package·Python 34개·EKS overlay 집중 시험·vet는 PASS다([실행 기록](../../.artifacts/verification/eks-podfix-20261016T033737Z/focused-verification.json)). `GOMAXPROCS=2 go run ./tools/verify traceability`도 PASS(`P0 mapped 71/81, exceptions 10`)다. 전체 local gate는 재실행하지 않았으며 기존 coverage 미달은 남아 있다.
+
+#### 삭제 지연 시 종료 정리 보완 (2026-10-16)
+
+EKS 재실행과 자원 정리 뒤 `handle_kill`의 종료 정리 결함을 확인했다. 삭제 요청이 수락되자 `frozen` 추적을 끝내고 있어, 실제 삭제가 지연된 상태에서 controller가 중단되면 `finally`가 broker를 다시 실행시키지 않았다. 추적 종료를 `handle_restore`에서 다른 UID인 Ready Pod를 확인한 뒤로 옮겼다. 기존 대상이 남아 있으면 원래 identity에 대한 재개 경로를 유지한다.
+
+Native amd64 Linux의 실제 standalone broker로 수정 전·후를 확인했다. 수정 전에는 삭제 수락 뒤 Ctrl+C를 주입하면 HTTP가 계속 응답하지 않았다. 수정 뒤에는 Ctrl+C·controller 예외·restore timeout 모두 `RunController.run`의 `finally`가 broker를 재개했고 HTTP Ready가 됐다. Worker uncordon도 확인했다. 시험 container는 0.5 CPU·256 MiB로 제한했다. Python controller 시험 34개도 PASS다([결과와 범위](../../.artifacts/verification/capacity-pod-cleanup-20261016T043338Z/result.json)).
+
+실제 broker와 HTTP는 실행했지만 Kubernetes의 삭제 지연과 worker 상태는 adapter에서 주입했다. 관측 sampler는 이 정리 시험에서 제외했다. 이 수정으로 EKS를 다시 만들지 않았고, 앞선 EKS invalid 판정이나 `B_*` 미채택 상태도 바꾸지 않았다. Container는 정상 종료 코드 0을 확인한 뒤 지웠고 임시 binary도 지웠다.
+
+사용자 결정에 따라 정리 가능한 중단만 지원한다. Controller 강제 종료나 workstation 장애를 복구하는 lease·watchdog은 추가하지 않았다. 이 경우에는 fixture의 수동 복구 또는 삭제가 필요하다. 따라서 앞선 “controller 중단 시 복구” 설명은 모든 process 종료를 보장하는 뜻이 아니다.
+
+
+
+
 
 ## 4. 필수 benchmark profile
 
@@ -614,7 +812,7 @@ GC pause 백분위수는 누적 히스토그램 표본 차이에 nearest-rank를
 
 모든 릴리스는 이전 안정 NaruMQ와 고정 EMQX comparator를 대조한다. 이전 안정 NaruMQ 대비 처리량이 5% 이상 낮아지거나 p99 latency가 5% 이상 나빠지면 릴리스를 차단한다. 이 규칙은 NaruMQ 자체 회귀만 판정하며 EMQX 대비 합격 기준이 아니다. 측정 변동성이 5%를 초과하면 합격·불합격을 판정하지 않고 원인을 조사한 뒤 반복 횟수를 늘린다.
 
-`SPEC-TBD-08` 중 EMQX 대비 상대 합격 비율은 2026-10-13 사용자 결정으로 채택했다. [PRD §4.2](../requirements/PRD.md#42-초기-성공-지표)의 절대 값은 초기 목표이며, 실제 EMQX traffic baseline(`B_*`)을 수집한 뒤 production 절대 SLO로 확정한다.
+`SPEC-TBD-08` 중 EMQX 대비 상대 합격 비율은 2026-10-13 사용자 결정으로 채택했다. [PRD §4.2](../requirements/PRD.md#42-초기-성공-지표)의 절대 값은 초기 목표다. 2026-10-15 사용자 결정에 따라 `B_*`는 실제 운영 traffic 대신 선택한 `EKS_EC2_HA` qualification profile에서 측정한 수용 용량으로 정한다([PRD §18 질문 1~5](../requirements/PRD.md#18-미결정-사항)). 측정 workload 분포와 N-1·용량 판정 기준은 [§3.9](#39-bp-02-eks-용량-측정-계약)에 정했다. 측정 결과로 production 절대 SLO를 확정한다.
 
 채택한 EMQX 대비 product acceptance 기준은 다음과 같다.
 
@@ -721,6 +919,8 @@ Membership crash-boundary와 durable-ACK acceptance 시험은 `narumq_failpoint`
 허용 crash point: `add-learner-before-persist`, `add-learner-after-persist`, `add-learner-after-apply`, `promote-voter-before-persist`, `promote-voter-after-persist`, `promote-voter-after-apply`, `remove-member-before-persist`, `remove-member-after-persist`, `remove-member-after-apply`, `snapshot-install-before-persist`, `snapshot-install-after-persist`, `begin-remove-after-apply`, `route-projection-rebuild-error`, `ownership-acquire-after-commit`, `offline-detach-before-commit`, `offline-detach-after-commit`, `delivery-wal-before-write`, `delivery-wal-before-sync`, `delivery-wal-after-sync`, `delivery-commit-before-apply`, `delivery-commit-after-apply`.
 
 Tagged runtime은 JSON control file을 동기식으로 읽는다. 예: `{"crash":"delivery-wal-before-sync","isolatePeers":[2],"holdCommands":["subscription"]}`. `isolatePeers`는 inbound/outbound traffic 모두에 적용한다. 파일을 비우거나 제거하면 해제한다. 잘못된 JSON/value는 log를 남기고 해당 read를 비활성화한다. Hold 종류는 `ownership`, `subscription`, `delivery`다. 일치한 command는 read barrier/profile 확인 뒤, encoding/proposal 전에 멈춘다. 해제될 때까지 poll하고 60초 뒤 경고 후 진행한다. Proposal은 `WithoutCancel`에서 만든 10초 context로 실행한다. 결과는 applied/conflict/error다. Test 전용 기능이다.
+
+`dropProposalPeers`는 해당 peer로 가는 forwarded proposal(`MsgProp`) frame만 Raft가 보낸 것으로 처리하고 버린다. Read proof와 다른 Raft message는 막지 않는다. 이미 전송한 proposal이 리더 장애와 함께 사라진 상태를 process 시험에서 결정적으로 만들기 위한 test 전용 기능이다. 파일을 비우거나 제거하면 해제한다.
 
 Raft adapter는 일반 non-empty WAL entry에서 `PersistenceBoundaryHook`과 별도 `WALBoundaryHook`을 호출한다. Callback은 node lock을 보유하며 빌린 byte는 callback 동안만 유효하다. Composition root가 entry를 decode하고 crash 대상은 durable `DeliveryActionPublish`/`DeliveryActionReceive`로 제한한다. `ownership-acquire-after-commit`은 quorum commit 뒤 CONNECT 활성화 전에 실행된다. Offline detach hook은 proposal 직전과 `Applied` 뒤에 있다.
 

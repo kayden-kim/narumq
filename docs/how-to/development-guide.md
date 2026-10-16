@@ -132,7 +132,7 @@ aws ecr get-login-password --profile $AwsProfile --region ap-northeast-2 | docke
 
 ```powershell
 $Repository = '809446814769.dkr.ecr.ap-northeast-2.amazonaws.com/narumq'
-$Features = 'client-blocklist,cluster-observability-v1,cluster-policy,cluster-policy-tenant-quotas,connection-rebalance,credential-revocation,proposal-recovery,session-metadata'
+$Features = 'client-blocklist,cluster-observability-v1,cluster-policy,cluster-policy-tenant-quotas,connection-rebalance,credential-revocation,proposal-recovery,session-metadata,shared-subscription-reroute'
 $ControllerVersion = "1.0.0-test-only-$RunId"
 New-Item -ItemType Directory -Force -Path '.artifacts/verification' | Out-Null
 

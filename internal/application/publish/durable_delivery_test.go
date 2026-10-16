@@ -716,3 +716,52 @@ func TestPublishWillRejectsMismatchedTrustedSession(t *testing.T) {
 			committer.changes, committer.barriers, queue.attempts)
 	}
 }
+
+// Traceability: MQTT-07, CLU-05; docs/specs/cluster-session-and-delivery.md §4.2, §11.35.
+func TestPublishDurableTargetsCarrySharedOriginUnlessNonSharedRouteAlsoMatches(t *testing.T) {
+	now := testNow()
+	routes := routing.NewTable()
+	tenant, err := tenancy.NewTenantID("tenant-a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	subscribe := func(clientID, filter string) {
+		key, err := tenancy.NewSessionKey(tenant, clientID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		id := routing.SessionID(key.RoutingID())
+		if err := routes.BindSessionTenant(id, tenant); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := routes.Subscribe(id, mqtt.Subscription{Filter: filter, QoS: mqtt.QoSAtLeastOnce}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	publisher, _ := tenancy.NewSessionKey(tenant, "publisher")
+	if err := routes.BindSessionTenant(routing.SessionID(publisher.RoutingID()), tenant); err != nil {
+		t.Fatal(err)
+	}
+	subscribe("worker", "$share/g/events/#")
+	subscribe("mixed", "$share/h/events/#")
+	subscribe("mixed", "events/#")
+	committer := &recordingDeliveryCommitter{result: membership.DeliveryResultDTO{Enqueued: []membership.DeliveryEnqueuedDTO{{ClientID: "worker", Sequence: 1}, {ClientID: "mixed", Sequence: 1}}}}
+	useCase, err := New(&fakeClock{now: now}, routes, &recordingQueue{errors: make(map[routing.SessionID]error)}, &recordingRetainedRepository{}, WithDurableDeliveryCommitter(committer))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := useCase.Publish(routing.SessionID(publisher.RoutingID()), mqtt.Publish{Version: mqtt.ProtocolV5, Topic: "events/one", Payload: []byte("x"), QoS: mqtt.QoSAtLeastOnce}, now); err != nil {
+		t.Fatal(err)
+	}
+	if len(committer.changes) != 1 {
+		t.Fatalf("commit count = %d", len(committer.changes))
+	}
+	origins := make(map[string]string)
+	for _, target := range committer.changes[0].Targets {
+		origins[target.ClientID] = target.SharedFilter
+	}
+	want := map[string]string{"worker": "$share/g/events/#", "mixed": ""}
+	if len(origins) != len(want) || origins["worker"] != want["worker"] || origins["mixed"] != want["mixed"] {
+		t.Fatalf("target origins = %v, want %v", origins, want)
+	}
+}

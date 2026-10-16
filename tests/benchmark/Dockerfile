@@ -13,6 +13,7 @@ RUN CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} go build -trimpath -ldfl
 RUN CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} go build -trimpath -ldflags='-s -w' -o /out/bp06 ./tests/benchmark/bp06
 RUN CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} go build -trimpath -ldflags='-s -w' -o /out/bp04 ./tests/benchmark/bp04
 RUN CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} go build -trimpath -ldflags='-s -w' -o /out/bp02 ./tests/benchmark/bp02
+RUN CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} go build -trimpath -ldflags='-s -w' -o /out/capacity ./tests/benchmark/capacity
 
 FROM scratch AS narumq
 COPY --from=build /out/narumq /narumq
@@ -45,3 +46,7 @@ ENTRYPOINT ["/bp04"]
 FROM scratch AS bp02-runner
 COPY --from=build /out/bp02 /bp02
 ENTRYPOINT ["/bp02"]
+
+FROM scratch AS capacity-runner
+COPY --from=build /out/capacity /capacity
+ENTRYPOINT ["/capacity"]

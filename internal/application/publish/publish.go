@@ -332,6 +332,9 @@ type durableTarget struct {
 	clientID  string
 	sessionID routing.SessionID
 	retain    bool
+	// sharedFilter is the shared subscription that selected the target; empty when the client
+	// also matched through a non-shared subscription or has no shared origin.
+	sharedFilter string
 }
 
 func needsDeliveryCommand(release *durableRelease, targets []durableTarget) bool {
@@ -678,17 +681,20 @@ func (useCase *UseCase) prepareDurableDelivery(
 		clientID := key.ClientID()
 		if index, exists := targetsByClient[clientID]; exists {
 			targets[index].retain = targets[index].retain || candidate.Retain
+			if candidate.SharedFilter == "" {
+				targets[index].sharedFilter = ""
+			}
 			continue
 		}
 		targetsByClient[clientID] = len(targets)
 		targets = append(targets, durableTarget{
-			clientID: clientID, sessionID: candidate.SessionID, retain: candidate.Retain,
+			clientID: clientID, sessionID: candidate.SessionID, retain: candidate.Retain, sharedFilter: candidate.SharedFilter,
 		})
 	}
 
 	deliveryTargets := make([]membership.DeliveryTargetDTO, len(targets))
 	for i, target := range targets {
-		deliveryTargets[i] = membership.DeliveryTargetDTO{ClientID: target.clientID, Retain: target.retain}
+		deliveryTargets[i] = membership.DeliveryTargetDTO{ClientID: target.clientID, Retain: target.retain, SharedFilter: target.sharedFilter}
 	}
 	change := membership.DeliveryChangeDTO{
 		TenantID:             publisherKey.TenantID().String(),

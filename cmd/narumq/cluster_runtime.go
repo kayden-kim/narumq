@@ -308,6 +308,7 @@ func runClusterMode(ctx context.Context, config clusterConfigFile, logger *slog.
 	runtime.inboundQueue = transport
 	defer transport.Close()
 	runtime.forwarder = transport
+	runtime.routes.SetOwnerReachability(runtime.ownerReachable)
 	runtime.refreshRouteProjection()
 
 	securityBundle, credentialProvider, mtlsProvider, credentialMethod, err := clusterMQTTSecurity(config)
@@ -1618,6 +1619,9 @@ func (runtime *clusterRuntime) applyBatch(batch raftadapter.BatchDTO, proposals 
 				runtime.logger.Warn("durable delivery targets skipped", "tenant_id", command.Delivery.TenantID, "skipped", result.Delivery.Skipped)
 			}
 		}
+		if reroutes := runtime.machine.TakeDeliveryReroutes(); len(reroutes) > 0 {
+			runtime.notifyDeliveryReroutes(reroutes)
+		}
 		runtime.stageProposalResult(event.command, result, proposals)
 	}
 	if runtime.initialized.Load() {
@@ -1890,7 +1894,7 @@ func (runtime *clusterRuntime) sendMessages(ctx context.Context, messages []raft
 	defer func() { runtime.readIndexStaged = 0 }()
 	rejected := make(map[raftadapter.NodeID]struct{}, len(messages))
 	for _, message := range messages {
-		if runtime.faults.isolates(uint64(message.To)) {
+		if runtime.faults.isolates(uint64(message.To)) || message.Type == "MsgProp" && runtime.faults.dropsProposals(uint64(message.To)) {
 			continue
 		}
 		// A Ready batch can contain a response to a peer removed by that same committed change.
@@ -2207,7 +2211,7 @@ func (runtime *clusterRuntime) rebuildRouteProjection() error {
 			return fmt.Errorf("committed ownership session identity is invalid: %w", err)
 		}
 		projectionSessions = append(projectionSessions, routing.ProjectionSession{
-			TenantID: tenantID, SessionID: sessionID,
+			TenantID: tenantID, SessionID: sessionID, OwnerNodeID: ownership.OwnerNodeID,
 		})
 	}
 

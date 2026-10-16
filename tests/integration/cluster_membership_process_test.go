@@ -198,6 +198,8 @@ func newClusterMembershipProcessFixtureWithLifetime(t *testing.T, nodeCount int,
       "durable-takeover-pub",
       "durable-takeover-qos2-pub",
       "durable-takeover-sentinel",
+      "recovery-sub",
+      "recovery-pub",
       "durable-ack-sub",
       "durable-ack-pub",
       "durable-no-quorum-1",
@@ -328,6 +330,7 @@ func newClusterMembershipProcessFixtureWithLifetime(t *testing.T, nodeCount int,
       "roll-observer",
       "roll-retained-v5",
       "roll-retained-v311",
+      "owner-loss-m0", "owner-loss-m1", "owner-loss-m2", "owner-loss-m3", "owner-loss-publisher",
       "metrics-gauge-subscriber"
     ],
     "roles": ["client"]
@@ -698,6 +701,18 @@ func newClusterMembershipProcessFixtureWithLifetime(t *testing.T, nodeCount int,
     "effect": "allow",
     "action": "unsubscribe",
     "topicFilter": "metrics/#"
+  }, {
+    "tenantId": "acceptance",
+    "role": "client",
+    "effect": "allow",
+    "action": "publish",
+    "topicFilter": "recovery/#"
+  }, {
+    "tenantId": "acceptance",
+    "role": "client",
+    "effect": "allow",
+    "action": "subscribe",
+    "topicFilter": "recovery/#"
   }]
 }`, jwksURL))
 	clusterMembershipProcessWriteFile(t, securityPath, securityConfig, 0o600)

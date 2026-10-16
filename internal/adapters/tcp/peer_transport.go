@@ -1933,9 +1933,14 @@ func (transport *DynamicTCPPeerTransport) handleInbound(ctx context.Context, soc
 	case dynamicBootstrapProbeMagic:
 		transport.handleBootstrapProbe(connection, payload)
 	case dynamicRaftMagic:
-		transport.handleStreamInbound(connection, payload, dynamicLaneRaft)
+		// One-shot admission, probe and observability exchanges keep their own deadlines (ADR-0059).
+		if applyPeerLiveness(connection.NetConn()) == nil {
+			transport.handleStreamInbound(connection, payload, dynamicLaneRaft)
+		}
 	case dynamicForwardMagic:
-		transport.handleStreamInbound(connection, payload, dynamicLaneForward)
+		if applyPeerLiveness(connection.NetConn()) == nil {
+			transport.handleStreamInbound(connection, payload, dynamicLaneForward)
+		}
 	case peerObservabilityMagic:
 		transport.handleObservabilityInbound(ctx, connection, payload)
 	}
@@ -2056,7 +2061,7 @@ func (transport *DynamicTCPPeerTransport) dialPeer(ctx context.Context, peer *dy
 		clientTLS := transport.clientTLS.Clone()
 		clientTLS.ServerName = identity.DNSSAN
 		dialCtx, cancel := context.WithTimeout(ctx, peerIOTimeout)
-		dialer := &tls.Dialer{NetDialer: &net.Dialer{Timeout: peerIOTimeout}, Config: clientTLS}
+		dialer := &tls.Dialer{NetDialer: newPeerNetDialer(), Config: clientTLS}
 		socket, err := dialer.DialContext(dialCtx, "tcp", identity.Address)
 		cancel()
 		if err != nil {

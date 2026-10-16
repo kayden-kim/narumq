@@ -2,14 +2,14 @@
 
 | 항목 | 내용 |
 | --- | --- |
-| 상태 | Accepted (cluster QoS 1/2 durable delivery scope; production storage·BP-03·N-1 제외; §1–8의 target 0개 PUBLISH commit은 ADR-0019가 대체) |
+| 상태 | Accepted (cluster QoS 1/2 durable delivery scope; production storage·BP-03·N-1 제외; §1–8의 target 0개 PUBLISH commit은 ADR-0019가 대체; §8의 shared-subscription fallback 금지와 §12의 CleanStart reset 중 shared 출처 message 처리는 ADR-0060이 대체) |
 | 결정일 | 2026-09-27 |
 | 결정자 | NaruMQ 프로젝트 (승인된 작업 계획) |
 | 관련 요구사항 | [PRD CLU-05·CLU-06·CLU-07·CLU-09·CLU-12](../requirements/PRD.md#92-클러스터와-세션), [PRD TEN-08](../requirements/PRD.md#93-멀티테넌시) (tenant별 quota는 미충족·후속) |
 | 관련 스펙·데이터 계약 | [Cluster §4.2·§11.11](../specs/cluster-session-and-delivery.md), [replicated-state-v1.proto](../contracts/replicated-state-v1.proto), [Cluster backup v3](../contracts/cluster-backup-v3.md) |
 | 관련 아키텍처 | [Cluster architecture](../architectures/cluster-architecture.md), [Broker core boundaries](../explainers/broker-core-boundaries.md) |
 | 이 결정이 대체하는 이전 결정 기록(ADR) | 없음 |
-| 이 결정을 대체한 새 결정 기록(ADR) | [ADR-0019](ADR-0019-untargeted-durable-publish-quorum-barrier.md) (§1–8의 target 0개 PUBLISH commit 문장만 대체), [ADR-0030](ADR-0030-publish-backpressure-admission.md) (§1 7·13항의 전역·tenant capacity 처리) |
+| 이 결정을 대체한 새 결정 기록(ADR) | [ADR-0019](ADR-0019-untargeted-durable-publish-quorum-barrier.md) (§1–8의 target 0개 PUBLISH commit 문장만 대체), [ADR-0030](ADR-0030-publish-backpressure-admission.md) (§1 7·13항의 전역·tenant capacity 처리), [ADR-0060](ADR-0060-shared-subscription-durable-owner-loss-reroute.md) (§8의 "shared-subscription fallback은 없다" 문장과 §12의 CleanStart reset 중 shared 출처 message 처리만 대체) |
 
 ## 1. 결정
 

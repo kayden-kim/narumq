@@ -8,6 +8,12 @@ variable "cluster_endpoint_public_access_cidrs" {
   }
 }
 
+variable "capacity_generator_enabled" {
+  description = "Opt in to the dedicated BP-02 capacity generator node group (c7g.xlarge, tainted narumq.io/generator=true:NoSchedule)."
+  type        = bool
+  default     = false
+}
+
 module "fixture" {
   source = "../terraform"
 
@@ -22,6 +28,7 @@ module "fixture" {
   node_desired_size                    = 3
   node_min_size                        = 3
   node_max_size                        = 4
+  generator_node_group_enabled         = var.capacity_generator_enabled
   tags = {
     Purpose    = "disposable-acceptance-fixture"
     Workstream = "CLU-14-SPEC-TBD-09-DEP-11-23-SEC-11"

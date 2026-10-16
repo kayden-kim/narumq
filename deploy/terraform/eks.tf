@@ -129,6 +129,46 @@ resource "aws_eks_node_group" "main" {
   tags = local.common_tags
 }
 
+resource "aws_eks_node_group" "generator" {
+  count = var.generator_node_group_enabled ? 1 : 0
+
+  cluster_name    = aws_eks_cluster.main.name
+  node_group_name = "${var.cluster_name}-generator"
+  node_role_arn   = aws_iam_role.node.arn
+  subnet_ids      = aws_subnet.private[*].id
+  instance_types  = var.generator_instance_types
+  ami_type        = "AL2023_ARM_64_STANDARD"
+  capacity_type   = "ON_DEMAND"
+
+  scaling_config {
+    desired_size = var.generator_desired_size
+    min_size     = 0
+    max_size     = var.generator_desired_size
+  }
+
+  update_config {
+    max_unavailable = 1
+  }
+
+  labels = {
+    "narumq.io/generator" = "true"
+  }
+
+  taint {
+    key    = "narumq.io/generator"
+    value  = "true"
+    effect = "NO_SCHEDULE"
+  }
+
+  depends_on = [
+    aws_iam_role_policy_attachment.node_worker,
+    aws_iam_role_policy_attachment.node_cni,
+    aws_iam_role_policy_attachment.node_ecr
+  ]
+
+  tags = local.common_tags
+}
+
 resource "aws_eks_addon" "vpc_cni" {
   cluster_name                = aws_eks_cluster.main.name
   addon_name                  = "vpc-cni"
@@ -138,13 +178,44 @@ resource "aws_eks_addon" "vpc_cni" {
   tags                        = local.common_tags
 }
 
+# Deployment premise (TODO §1.8 decision, 2026-10-16): the two CoreDNS replicas never share a worker
+# or an AZ, so one worker loss cannot remove every cluster DNS endpoint at once. The lost replica's
+# endpoint still receives queries until Kubernetes marks it not ready, so peer observability queries
+# can briefly report a healthy node as unknown (EKS run 2026-10-16, docs/architectures/eks-ec2-deployment.md).
 resource "aws_eks_addon" "coredns" {
   cluster_name                = aws_eks_cluster.main.name
   addon_name                  = "coredns"
   resolve_conflicts_on_create = "OVERWRITE"
   resolve_conflicts_on_update = "PRESERVE"
-  depends_on                  = [aws_eks_node_group.main]
-  tags                        = local.common_tags
+  configuration_values = jsonencode({
+    replicaCount = 2
+    affinity = {
+      nodeAffinity = {
+        requiredDuringSchedulingIgnoredDuringExecution = {
+          nodeSelectorTerms = [{
+            matchExpressions = [
+              { key = "kubernetes.io/os", operator = "In", values = ["linux"] },
+              { key = "kubernetes.io/arch", operator = "In", values = ["amd64", "arm64"] }
+            ]
+          }]
+        }
+      }
+      podAntiAffinity = {
+        requiredDuringSchedulingIgnoredDuringExecution = [{
+          labelSelector = { matchLabels = { "k8s-app" = "kube-dns" } }
+          topologyKey   = "kubernetes.io/hostname"
+        }]
+      }
+    }
+    topologySpreadConstraints = [{
+      maxSkew           = 1
+      topologyKey       = "topology.kubernetes.io/zone"
+      whenUnsatisfiable = "DoNotSchedule"
+      labelSelector     = { matchLabels = { "k8s-app" = "kube-dns" } }
+    }]
+  })
+  depends_on = [aws_eks_node_group.main]
+  tags       = local.common_tags
 }
 
 resource "aws_eks_addon" "kube_proxy" {

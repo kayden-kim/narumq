@@ -12,10 +12,11 @@ import (
 )
 
 type clusterFaultControlFile struct {
-	Crash        string   `json:"crash"`
-	IsolatePeers []uint64 `json:"isolatePeers"`
-	HoldCommands []string `json:"holdCommands"`
-	FreeBytes    *uint64  `json:"freeBytes"`
+	Crash             string   `json:"crash"`
+	IsolatePeers      []uint64 `json:"isolatePeers"`
+	DropProposalPeers []uint64 `json:"dropProposalPeers"`
+	HoldCommands      []string `json:"holdCommands"`
+	FreeBytes         *uint64  `json:"freeBytes"`
 }
 
 type clusterHeldCommandKind string
@@ -103,6 +104,21 @@ func (c *clusterFaultControl) isolates(peerID uint64) bool {
 	}
 	return false
 }
+
+// dropsProposals reports whether forwarded MsgProp frames addressed to peerID are discarded after Raft emitted them.
+func (c *clusterFaultControl) dropsProposals(peerID uint64) bool {
+	control, _, ok := c.read()
+	if !ok {
+		return false
+	}
+	for _, droppedPeerID := range control.DropProposalPeers {
+		if droppedPeerID == peerID {
+			return true
+		}
+	}
+	return false
+}
+
 func (c *clusterFaultControl) holds(kind clusterHeldCommandKind) bool {
 	control, _, ok := c.read()
 	if !ok {

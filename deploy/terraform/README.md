@@ -12,6 +12,8 @@ This Terraform root provisions the NaruMQ EKS EC2 qualification profile in `ap-n
 
 The cluster's default Kubernetes version is `1.37`. This is the current supported version confirmed for `ap-northeast-2` using `aws eks describe-addon-versions --kubernetes-version 1.37`; select another EKS-supported version using `-var kubernetes_version=...` if required. EKS add-on versions are selected by AWS when unspecified.
 
+The CoreDNS add-on runs two replicas with required hostname anti-affinity and a zone topology spread (`DoNotSchedule`), so one worker loss cannot remove every cluster DNS endpoint. This reduces, but does not remove, short `unknown` node reports after a worker loss; see [EKS architecture](../../docs/architectures/eks-ec2-deployment.md#placement와-availability-constraint).
+
 ## Configuration
 
 | Variable | Default | Description |

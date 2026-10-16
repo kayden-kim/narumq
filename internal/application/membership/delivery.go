@@ -8,6 +8,13 @@ import (
 )
 
 func (machine *StateMachine) applyDelivery(index uint64, change DeliveryChangeDTO) ApplyResultDTO {
+	if !machine.sharedRerouteActiveLocked() {
+		for _, target := range change.Targets {
+			if target.SharedFilter != "" {
+				return conflictResult(index, ConflictFeatureInactive)
+			}
+		}
+	}
 	machine.purgeExpiredDeliveryLocked(change.ProposedAtUnixMillis)
 	key := sessionKey{tenantID: change.TenantID, clientID: change.ClientID}
 	result := ApplyResultDTO{Index: index, Outcome: ApplyOutcomeApplied, Delivery: &DeliveryResultDTO{}}
@@ -199,14 +206,17 @@ func (machine *StateMachine) applyDelivery(index uint64, change DeliveryChangeDT
 		} else {
 			result.Delivery.Found = !change.Reset
 		}
+		var rerouted []DeliveryMessageDTO
 		if change.Reset {
 			if exists {
+				rerouted = reroutableSharedMessages(record, change.ProposedAtUnixMillis)
 				machine.clearDeliveryEntriesLocked(key, &record)
 			}
 			machine.removeSubscriptionsLocked(key)
 		}
 		record.SessionExpiresAtUnixMillis = 0
 		machine.delivery[key] = record
+		machine.rerouteSharedLocked(key, rerouted, change.OwnerNodeID)
 		result.Delivery.Session = new(cloneDeliverySession(record))
 		return result
 	case DeliveryActionDetach:
@@ -222,8 +232,7 @@ func (machine *StateMachine) applyDelivery(index uint64, change DeliveryChangeDT
 		if !machine.authorized(key, change.OwnerNodeID, change.Epoch) {
 			return conflictResult(index, ConflictStaleEpoch)
 		}
-		machine.removeDeliveryLocked(key)
-		machine.removeSubscriptionsLocked(key)
+		machine.discardSessionDeliveryLocked(key, change.ProposedAtUnixMillis, change.OwnerNodeID)
 		return result
 	default:
 		return conflictResult(index, ConflictNone)
@@ -262,7 +271,11 @@ func (machine *StateMachine) enqueueDeliveryTargetsLocked(tenantID, topic string
 			saturated = append(saturated, target.ClientID)
 			continue
 		}
-		message := DeliveryMessageDTO{Sequence: record.NextSequence, Topic: topic, Payload: payload, QoS: qos, Retain: target.Retain, ExpiresAtUnixMillis: expiry, Phase: DeliveryPhaseQueued}
+		sharedFilter := ""
+		if target.SharedFilter != "" && machine.sharedOriginLocked(key, target.SharedFilter) {
+			sharedFilter = target.SharedFilter
+		}
+		message := DeliveryMessageDTO{Sequence: record.NextSequence, Topic: topic, Payload: payload, QoS: qos, Retain: target.Retain, ExpiresAtUnixMillis: expiry, Phase: DeliveryPhaseQueued, SharedFilter: sharedFilter}
 		messageBytes := deliveryMessageBytes(key, message)
 		if len(record.Messages) >= MaxDeliveryMessagesPerSession || machine.deliveryEntries >= MaxDeliveryEntries || machine.deliveryBytes+messageBytes > MaxDeliveryBytes {
 			saturated = append(saturated, target.ClientID)
@@ -351,10 +364,10 @@ func (machine *StateMachine) purgeExpiredDeliveryLocked(proposedAt uint64) {
 	if proposedAt == 0 {
 		return
 	}
+	var expired []sessionKey
 	for key, record := range machine.delivery {
 		if record.SessionExpiresAtUnixMillis > 0 && record.SessionExpiresAtUnixMillis <= proposedAt {
-			machine.removeDeliveryLocked(key)
-			machine.removeSubscriptionsLocked(key)
+			expired = append(expired, key)
 			continue
 		}
 		kept := record.Messages[:0]
@@ -368,10 +381,26 @@ func (machine *StateMachine) purgeExpiredDeliveryLocked(proposedAt uint64) {
 		record.Messages = kept
 		machine.delivery[key] = record
 	}
+	// Map order is not deterministic: remove every expired session first, then re-route in key order.
+	sort.Slice(expired, func(i, j int) bool {
+		if expired[i].tenantID != expired[j].tenantID {
+			return expired[i].tenantID < expired[j].tenantID
+		}
+		return expired[i].clientID < expired[j].clientID
+	})
+	rerouted := make([][]DeliveryMessageDTO, len(expired))
+	for i, key := range expired {
+		rerouted[i] = reroutableSharedMessages(machine.delivery[key], proposedAt)
+		machine.removeDeliveryLocked(key)
+		machine.removeSubscriptionsLocked(key)
+	}
+	for i, key := range expired {
+		machine.rerouteSharedLocked(key, rerouted[i], 0)
+	}
 }
 
 func deliveryMessageBytes(key sessionKey, message DeliveryMessageDTO) int {
-	return deliveryEntryBytes(key, message.Topic, message.Payload)
+	return deliveryEntryBytes(key, message.Topic, message.Payload) + len(message.SharedFilter)
 }
 
 func deliveryInboundBytes(key sessionKey, inbound DeliveryInboundDTO) int {

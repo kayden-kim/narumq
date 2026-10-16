@@ -135,13 +135,13 @@ func TestDynamicClusterNodeConfigurationProcessAcceptance(t *testing.T) {
 		response.Data.Security.IdentityCounts.MTLS != 0 {
 		t.Fatalf("security identity counts = %+v, want JWT=1, password=0, mTLS=0", response.Data.Security.IdentityCounts)
 	}
-	if got := response.Data.Security.ACL; len(got) != 61 ||
+	if got := response.Data.Security.ACL; len(got) != 63 ||
 		got[0].TenantID != "acceptance" || got[0].Role != "client" || got[0].Effect != "allow" ||
 		got[0].Action != "subscribe" || got[0].TopicFilter != "handoff/#" ||
 		got[len(got)-1].TenantID != "acceptance" || got[len(got)-1].Role != "client" ||
-		got[len(got)-1].Effect != "allow" || got[len(got)-1].Action != "unsubscribe" ||
-		got[len(got)-1].TopicFilter != "metrics/#" {
-		t.Fatalf("ACL configuration = %+v, want 61 rules in configured order", got)
+		got[len(got)-1].Effect != "allow" || got[len(got)-1].Action != "subscribe" ||
+		got[len(got)-1].TopicFilter != "recovery/#" {
+		t.Fatalf("ACL configuration = %+v, want 63 rules in configured order", got)
 	}
 
 	if response.Data.PublishBackpressure.MinFreeBytes != 16<<20 || response.Data.PublishBackpressure.MaxCommitLagMillis != 1000 {

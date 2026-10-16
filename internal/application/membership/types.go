@@ -42,6 +42,9 @@ const (
 	ProposalRecoveryFeature          = "proposal-recovery"
 	ClusterPolicyFeature             = "cluster-policy"
 	ClusterPolicyTenantQuotasFeature = "cluster-policy-tenant-quotas"
+	// SharedSubscriptionRerouteFeature records the shared-subscription origin of durable messages
+	// and re-routes them to another group member when the member's delivery record is removed.
+	SharedSubscriptionRerouteFeature = "shared-subscription-reroute"
 	MaxProposalReceiptsPerOrigin     = 1024
 	MaxProposalReceipts              = 4096
 	MaxProposalResultBytes           = 32 << 20
@@ -675,6 +678,9 @@ type RetainedStateDTO struct {
 type DeliveryTargetDTO struct {
 	ClientID string
 	Retain   bool
+	// SharedFilter is the full `$share/<group>/<filter>` that selected this target. It is empty
+	// for non-shared targets and until SharedSubscriptionRerouteFeature is active.
+	SharedFilter string
 }
 
 // DeliveryChangeDTO carries one durable delivery action.
@@ -707,6 +713,8 @@ type DeliveryMessageDTO struct {
 	ExpiresAtUnixMillis uint64
 	PacketID            uint32
 	Phase               DeliveryPhase
+	// SharedFilter is the shared-subscription origin used to re-route the message.
+	SharedFilter string
 }
 
 // DeliveryInboundDTO stores a publisher-side QoS 2 exchange or RELEASE tombstone.
@@ -731,6 +739,14 @@ type DeliverySessionStateDTO struct {
 }
 
 type DeliveryEnqueuedDTO struct {
+	ClientID string
+	Sequence uint64
+}
+
+// DeliveryRerouteDTO names a message that apply moved to another shared-subscription member.
+// It is a node-local notification and is not replicated state.
+type DeliveryRerouteDTO struct {
+	TenantID string
 	ClientID string
 	Sequence uint64
 }

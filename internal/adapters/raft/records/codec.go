@@ -735,6 +735,9 @@ func validateDeliveryChange(change *DeliveryChange) error {
 			if target == nil || !boundedUTF8(target.ClientId, 1, 256) {
 				return errors.New("invalid delivery target client_id")
 			}
+			if target.SharedFilter != "" && !validSharedFilter(target.SharedFilter) {
+				return errors.New("invalid delivery target shared_filter")
+			}
 			if _, exists := seen[target.ClientId]; exists {
 				return errors.New("duplicate delivery target")
 			}
@@ -911,6 +914,9 @@ func validateDeliverySessionState(state *DeliverySessionState) error {
 		if message.Sequence == 0 || message.Sequence >= state.NextSequence || !validTopic(message.Topic) || message.Qos < 1 || message.Qos > 2 || len(message.Payload) > maxPublishPayload {
 			return errors.New("invalid snapshot delivery message")
 		}
+		if message.SharedFilter != "" && !validSharedFilter(message.SharedFilter) {
+			return errors.New("invalid snapshot delivery message shared_filter")
+		}
 		if i > 0 && state.Messages[i-1].Sequence >= message.Sequence {
 			return errors.New("snapshot delivery messages are not strictly ordered by sequence")
 		}
@@ -952,6 +958,14 @@ func validateDeliverySessionState(state *DeliverySessionState) error {
 
 func deliveryEntryBytes(tenantID, clientID, topic string, payload []byte) int {
 	return len(tenantID) + len(clientID) + len(topic) + len(payload)
+}
+
+func validSharedFilter(filter string) bool {
+	if len(filter) == 0 || len(filter) > 65535 || !utf8.ValidString(filter) {
+		return false
+	}
+	_, _, shared, err := tenancy.ParseSharedFilter(filter)
+	return err == nil && shared
 }
 
 func deliveryObjectCount(sessions []*DeliverySessionState) int {
@@ -1353,7 +1367,10 @@ func validateSnapshotState(s *ReplicatedStateSnapshot) error {
 		}
 		deliveryEntries += len(session.Messages) + len(session.Inbound)
 		for _, message := range session.Messages {
-			deliveryBytes += deliveryEntryBytes(session.TenantId, session.ClientId, message.Topic, message.Payload)
+			if message.SharedFilter != "" && !slices.Contains(s.ActiveFeatures, "shared-subscription-reroute") {
+				return errors.New("snapshot delivery shared_filter requires active shared-subscription-reroute feature")
+			}
+			deliveryBytes += deliveryEntryBytes(session.TenantId, session.ClientId, message.Topic, message.Payload) + len(message.SharedFilter)
 		}
 		for _, inbound := range session.Inbound {
 			deliveryBytes += deliveryEntryBytes(session.TenantId, session.ClientId, inbound.Topic, inbound.Payload)

@@ -267,9 +267,11 @@ v2 hello 뒤의 Raft 프레임은 v1과 같은 프레임 구조를 사용한다.
 
 `TestDynamicPeerReconcileAndQueueBounds`는 송신 queue가 가득 찬 뒤에도 연결에서 byte를 주고받을 수 있는지, identity를 다시 바인딩하면 연결이 닫히는지 확인한다. Reconciliation은 commit된 피어 ID·주소·인증서 등록 정보를 원자적으로 교체한다. 변경할 수 없는 identity는 그대로인데 commit된 단계나 operation ID가 바뀌면 연결을 닫고 다시 인증한다. 이때 대기 중인 송신 Raft 메시지는 보존하고 이전 identity revision의 수신 대기 데이터는 버린다. 해당 revision에서 읽기 loop가 가져온 프레임도 거절한다. v2 어댑터는 대기 중인 프레임을 합친 `InboundReady` 신호로 알리고 `TakeInbound` lease로 제공한다. 클러스터 driver는 `Step` 뒤에 `Complete`를 호출한다. Reconciliation은 새 lease 발급을 막고 진행 중인 lease가 끝날 때까지 기다린다. 이어서 identity revision을 높이고 남은 이전 revision의 수신 데이터를 버린 뒤 반환한다. 불변 identity를 다시 바인딩하거나 피어를 제거하면 해당 피어를 폐기하고 두 대기열의 사용량을 정리한다. 알 수 없는 피어는 거절한다. v2는 프레임별 I/O 제한 시간 5초와 재시도 간격 100ms를 유지한다. 대기열 한도와 Raft entry 처리 중 한도는 보관된 log 크기를 제한하지 않는다.
 
+Raft·forwarding stream에는 [ADR-0059](../decisions/ADR-0059-dynamic-peer-tcp-liveness.md)의 TCP 생존 확인을 적용한다. Dial 쪽은 연결 전에, accept 쪽은 stream magic(`NMQRAFT2`, `NMQFWRD2`)을 읽은 뒤 설정한다. 가입·bootstrap probe·관측 RPC socket은 기존 설정을 유지한다. TCP keepalive는 유휴 5초 뒤 5초 간격으로 2회 probe한다. Linux에서는 `TCP_USER_TIMEOUT`을 10초로 둔다. 이 10초는 ACK 대기 data가 생긴 시점부터 센다. 상대 host가 응답 없이 사라지면 kernel이 연결을 닫고, 연결을 거는 쪽은 commit된 주소로 다시 dial한다. 주소의 DNS 이름은 dial마다 다시 해석된다. 이 설정은 wire 형식, 길이 prefix의 유휴 대기 규칙과 대기열 한도를 바꾸지 않는다. 시험 연결은 [Cluster spec §11.34](../specs/cluster-session-and-delivery.md#1134-dynamic-peer-tcp-생존-확인-수용-매핑)에 둔다.
+
 #### 전달 포워딩 스트림
 
-전달 포워딩 스트림은 같은 TLS 1.3 mTLS listener에서 추가로 제공된다. 인증된 hello는 매직 값이 정확히 `NMQFWRD2`라는 점을 제외하면 위의 `NMQRAFT2` hello와 필드 및 검증 방식이 같다. commit된 식별 정보, 클러스터·릴리스·스키마, 단계와 operation ID 검사를 동일하게 적용한다. `LEARNER`, `CATCHING_UP`, `VOTER`, `LEAVING`만 허용한다. 기존 연결 방향 규칙에 따라 member ID가 낮은 노드는 연결을 수락하고 높은 노드는 연결을 건다. 수락 측은 자체 `NMQFWRD2` hello로 응답한다. 양쪽 hello가 모두 검증되기 전에는 데이터 프레임을 전달하지 않는다.
+전달 포워딩 스트림은 같은 TLS 1.3 mTLS listener에서 추가로 제공된다. 인증된 hello는 매직 값이 정확히 `NMQFWRD2`라는 점을 제외하면 위의 `NMQRAFT2` hello와 필드 및 검증 방식이 같다. commit된 식별 정보, 클러스터·릴리스·스키마, 단계와 operation ID 검사를 동일하게 적용한다. `LEARNER`, `CATCHING_UP`, `VOTER`, `LEAVING`만 허용한다. 기존 연결 방향 규칙([ADR-0008](../decisions/ADR-0008-raft-peer-transport.md))에 따라 member ID가 낮은 노드가 연결을 걸고 높은 노드가 수락한다. 수락 측은 자체 `NMQFWRD2` hello로 응답한다. 양쪽 hello가 모두 검증되기 전에는 데이터 프레임을 전달하지 않는다.
 
 hello 뒤의 프레임은 `uint32` 부호 없는 big-endian payload 길이 뒤에 payload를 붙여 인코딩한다. 길이 prefix는 payload 한도에 포함하지 않는다. Payload 길이는 `1..1,179,648`바이트여야 한다. 4-byte 길이 prefix를 기다리는 동안에는 유휴 제한 시간을 두지 않는다. Prefix를 읽고 검증한 뒤 payload에 5초 I/O 제한 시간을 적용한다. 길이가 0이거나 한도를 넘거나 payload가 잘리면 stream을 닫는다.
 

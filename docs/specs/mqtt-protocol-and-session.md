@@ -189,7 +189,7 @@ MQTT 3.1.1은 연결을 닫는다.
 
 1. Topic Filter의 `+`, `#` 위치와 UTF-8을 표준대로 검증해야 한다.
 2. 겹치는 subscription이 같은 client session에 여러 번 match하면 MQTT version의 표준 전달 규칙과 granted QoS를 적용해야 한다.
-3. `$share/{group}/{filter}`는 tenant 안의 같은 group에서 한 활성 subscriber를 선택해야 한다. 선택된 subscriber가 전달을 완료하지 못하면 session·QoS 규칙에 따라 다른 member가 이어받을 수 있어야 한다.
+3. `$share/{group}/{filter}`는 tenant 안의 같은 group에서 한 활성 subscriber를 선택해야 한다. 선택된 subscriber가 전달을 완료하지 못하면 session·QoS 규칙에 따라 다른 member가 이어받을 수 있어야 한다. Cluster에서 선택된 subscriber의 owner node에 도달할 수 없거나 그 session이 CleanStart reset·삭제로 사라지면 QoS 1 이상 message는 다른 member가 이어받는다. QoS 2는 이미 보내기 시작한 message를 다른 member에게 보내지 않는다. Cluster 동작은 [Cluster §4.2](cluster-session-and-delivery.md#42-qos-12-durable-delivery)를 따른다.
 4. MQTT 5 subscription option은 exact filter별로 보존하고 다음처럼 적용해야 한다.
    - `No Local=true`면 publication publisher와 같은 `clientId`의 live delivery를 제외한다.
    - `Retain As Published=false`면 established-subscription delivery의 RETAIN을 지우고, `true`면 incoming RETAIN을 보존한다.

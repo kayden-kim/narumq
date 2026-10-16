@@ -165,7 +165,7 @@ NaruMQ가 말하는 “메시지 유실 없음”은 MQTT hop별 조건으로 �
 | --- | --- | --- |
 | publisher → broker, QoS 0 | 모든 연결 | 최선 노력. 유실 없음 보장 대상이 아니다. |
 | publisher → broker, QoS 1 | broker가 성공 PUBACK을 반환 | Durable target 또는 retained 상태가 있으면 설정된 replica와 write quorum이 WAL 영속화 기준을 충족한 뒤 메시지 소유권을 인수한다. Durable target이 없으면 아래 `matching durable subscriber가 없음` 행을 따른다. |
-| publisher → broker, QoS 2 | broker가 성공 PUBREC을 반환 | QoS 2 수신 handshake와 메시지를 같은 내구성 경계까지 저장한 뒤 소유권을 인수한다. PUBCOMP까지 handshake를 복구할 수 있다. |
+| publisher → broker, QoS 2 | broker가 성공 PUBREC을 반환 | QoS 2 수신 handshake와 메시지를 같은 내구성 경계까지 저장한 뒤 소유권을 인수한다. PUBCOMP까지 handshake를 복구할 수 있다. 전달은 PUBREL 처리 뒤 시작한다. 그래서 publisher session이 남아 PUBREL을 다시 보낼 수 있어야 복구된다. Clean Start 또는 Session Expiry 0인 publisher가 PUBCOMP 전에 연결을 잃으면 publisher session과 함께 handshake 상태가 지워지므로 그 메시지의 전달을 보장하지 않는다(2026-10-15 사용자 결정). |
 | broker → durable subscriber, QoS 1 | persistent session, 미만료 메시지, 저장 quota와 quorum 유지 | offline queue가 메시지를 인수한 뒤 최소 한 번 전달한다. 중복될 수 있다. |
 | broker → durable subscriber, QoS 2 | 위 조건과 송신 QoS 2 handshake 복제 | MQTT protocol receiver에 중복 없이 전달하도록 handshake를 재개한다. 애플리케이션 처리를 정확히 한 번 보장하지 않는다. |
 | subscription의 최대 QoS가 더 낮음 | 모든 전달 | publisher QoS와 granted subscription QoS 중 낮은 수준으로 전달하며, 낮아진 QoS의 보장만 적용한다. |
@@ -176,7 +176,7 @@ NaruMQ가 말하는 “메시지 유실 없음”은 MQTT hop별 조건으로 �
 | 변경된 Client ID | 재접속 | 이전 session을 이어받지 않는다. |
 | quorum 상실 | 내구성 ACK 전 | 내구성 기준을 충족할 수 없으면 성공 ACK를 반환하지 않고 backpressure 또는 오류를 적용한다. |
 
-이 문서에서 **내구성 ACK**는 QoS 1의 성공 PUBACK과 QoS 2의 성공 PUBREC을 뜻한다. 구체적인 WAL fsync, replication factor와 write quorum의 최솟값은 저장소·consensus ADR에서 정한다. 해당 값은 1노드 장애 RPO 0 목표를 약화할 수 없다.
+이 문서에서 **내구성 ACK**는 QoS 1의 성공 PUBACK과 QoS 2의 성공 PUBREC을 뜻한다. 구체적인 WAL fsync, replication factor와 write quorum의 최솟값은 저장소·consensus ADR에서 정한다. 해당 값은 1노드 장애 RPO 0 목표를 약화할 수 없다. 단, 위 표의 QoS 2 행에 따라 Clean Start 또는 Session Expiry 0인 publisher가 PUBCOMP 전에 연결을 잃은 QoS 2 메시지는 RPO 0(NFR-07)과 출시 기준 6의 대상이 아니다.
 
 보장 범위는 publisher와 broker, broker와 subscriber 사이의 MQTT protocol hop까지다. subscriber가 ACK한 메시지를 애플리케이션 DB에 반영하는 것은 NaruMQ의 책임이 아니다.
 
@@ -200,7 +200,7 @@ NaruMQ가 말하는 “메시지 유실 없음”은 MQTT hop별 조건으로 �
 | MQTT-04 | P0 | Retained Message를 지원한다. | 새 subscriber가 권한 있는 topic의 최신 retained message를 받는다. |
 | MQTT-05 | P0 | Will Message와 MQTT 5 Will Delay를 표준대로 지원한다. | 클라이언트의 정상 DISCONNECT를 받았거나 MQTT 5 클라이언트가 Will Delay 안에 같은 session으로 재접속하면 Will을 발행하지 않는다. 그 밖의 연결 종료는 프로토콜 버전과 Will 설정에 따라 표준대로 처리한다. |
 | MQTT-06 | P0 | `+`, `#` wildcard subscription을 지원한다. | 겹치는 subscription과 wildcard 경계 사례를 표준대로 처리한다. |
-| MQTT-07 | P0 | `$share/{group}/...` shared subscription을 지원한다. | 그룹당 한 subscriber에 전달되고 subscriber 장애 시 다른 멤버가 이어받는다. |
+| MQTT-07 | P0 | `$share/{group}/...` shared subscription을 지원한다. | 그룹당 한 subscriber에 전달되고 subscriber 장애 시 다른 멤버가 이어받는다. Cluster에서 한 node가 죽어도 살아 있는 멤버가 있으면 durable ACK를 받은 QoS 1 message는 어느 멤버에게든 전달된다. Persistent session 멤버의 queue는 그 멤버가 돌아올 때 전달해도 된다. 이미 보내기 시작한 QoS 2 message는 다른 멤버에게 다시 보내지 않는다. 상세 규칙은 [Cluster §3·§4.2](../specs/cluster-session-and-delivery.md#3-routing)와 [ADR-0060](../decisions/ADR-0060-shared-subscription-durable-owner-loss-reroute.md)을 따른다. |
 | MQTT-08 | P0 | MQTT 5 subscription options와 message expiry를 지원한다. | No Local, Retain As Published, Retain Handling, expiry 시험을 통과한다. |
 | MQTT-09 | P0 | TCP와 TLS listener를 제공한다. | listener별 인증 정책과 연결 제한을 독립 설정한다. |
 | MQTT-10 | P1 | WebSocket과 WSS listener를 제공한다. | WebSocket과 WSS는 TCP와 같은 MQTT packet·session 의미를 제공하고 [MQTT-10-SCN-01..10](../specs/mqtt-protocol-and-session.md#83-websocketwss-수용-매핑)을 통과한다. |
@@ -751,6 +751,9 @@ Phase 0은 기준과 도구를 확정하는 단계다. Phase 1부터 기능을 �
 3. QoS 0/1/2 비율은 얼마인가?
 4. persistent session, retained, shared subscription 사용량은 얼마인가?
 5. wildcard topic cardinality와 subscription fan-out은 얼마인가?
+    - 채택(2026-10-15, 질문 1~5): 사용자는 선택한 `EKS_EC2_HA` qualification profile([EKS 배포 구조](../architectures/eks-ec2-deployment.md#production-qualification-profile-selected))을 production에 준하는 사양으로 본다. 실제 운영 traffic 대신 이 profile에서 측정한 수용 용량을 `B_*`로 채택한다. 측정 workload의 QoS·payload·session·retained·subscription 분포, N-1 조건과 용량 판정 기준은 측정 전에 [Performance와 verification](../specs/performance-and-verification.md)에 정한다. 측정 전까지 `B_*` 수치와 절대 cutoff는 비어 있다. 실제 운영 traffic이 측정값을 넘으면 `B_*`와 cutoff를 다시 정해야 한다. EMQX 상대 비교에는 여전히 측정 부하를 허용하는 license가 필요하다.
+    - 채택(2026-10-15, 측정 방법): 측정 workload는 BP-02 production mix의 비율을 그대로 두고 규모만 키운다. 용량은 broker 하나가 빠진 N-1 상태에서도 QoS 1/2 손실 0, publish-to-delivery p99 100ms 이하, RTO 30초 이하를 지키는 가장 높은 부하로 정한다. 부하 generator는 같은 EKS cluster의 전용 node group에서 Kubernetes Job으로 실행한다. 세부 절차는 [성능 §3.9](../specs/performance-and-verification.md#39-bp-02-eks-용량-측정-계약)를 따른다.
+    - 채택(2026-10-15, N-1 판정 보완): Local 측정에서 나온 broker 동작에 대해 다음을 정했다. Shared group durable message는 도달할 수 없는 owner의 member를 피하고, member session이 끝나면 다른 member로 옮긴다([ADR-0060](../decisions/ADR-0060-shared-subscription-durable-owner-loss-reroute.md)). Leader 교체 때 전송 중이던 commit은 `proposal-recovery`로 다시 제안해 연결을 닫지 않는다. Clean Start 또는 Session Expiry 0인 QoS 2 publisher가 PUBCOMP 전에 연결을 잃은 메시지는 전달을 보장하지 않는다(§8). Clean session 구독자의 연결 끊김으로 빠진 메시지 중 publish부터 끊김까지 p99 한도를 넘은 것은 실패로 본다. 용량 overlay의 broker container는 1 CPU·4 GiB를 유지하고 sidecar 자원은 더해서 따로 기록한다.
 6. MQTT 3.1.0을 사용하는 client가 있는가? 있다면 누가 소유하며 3.1.1 이상으로 갱신하거나 격리할 수 있는가? WebSocket listener 필요성은 승인했다. 지원 SDK와 최소 version은 별도 compatibility 결정을 기다린다.
 7. 현재 Session Expiry와 reconnect backoff 설정은 무엇인가?
 8. tenant 수와 tenant별 최대 부하 편차는 얼마인가?

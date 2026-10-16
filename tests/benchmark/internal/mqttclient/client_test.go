@@ -1,6 +1,7 @@
 package mqttclient
 
 import (
+	"bufio"
 	"context"
 	"crypto/ecdsa"
 	"crypto/elliptic"
@@ -324,6 +325,31 @@ func TestReadConnAckAcceptsBrokerProperties(t *testing.T) {
 	}
 	if connAck.Version != mqtt.ProtocolV5 || connAck.SessionPresent || connAck.ReasonCode != 0 {
 		t.Fatalf("readConnAck() = %#v, want successful MQTT 5 CONNACK", connAck)
+	}
+}
+
+func TestReadKeepsBufferedBytesOfBackToBackFrames(t *testing.T) {
+	reader, writer := net.Pipe()
+	defer reader.Close()
+	defer writer.Close()
+	// Two PUBACK frames (packet IDs 1 and 2) arrive in one segment; the second must survive the first Read.
+	go func() { _, _ = writer.Write([]byte{0x40, 0x02, 0x00, 0x01, 0x40, 0x02, 0x00, 0x02}) }()
+	decoder, err := mqtt.NewDecoder(MaxPacketSize)
+	if err != nil {
+		t.Fatal(err)
+	}
+	client := &Client{connection: reader, reader: bufio.NewReader(reader), decoder: decoder, protocolVersion: mqtt.ProtocolV5, handshakeTimeout: time.Second}
+	for want := mqtt.PacketIdentifier(1); want <= 2; want++ {
+		packet, err := client.Read(time.Second)
+		if err != nil {
+			t.Fatalf("Read() for packet %d: %v", want, err)
+		}
+		if ack, ok := packet.(*mqtt.PubAck); !ok || ack.PacketID != want {
+			t.Fatalf("Read() = %#v, want PUBACK %d", packet, want)
+		}
+	}
+	if _, err := client.Read(20 * time.Millisecond); !IsTimeout(err) {
+		t.Fatalf("Read() on an idle buffered connection = %v, want first-byte timeout", err)
 	}
 }
 

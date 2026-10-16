@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"time"
 
 	"narumq/internal/adapters/raft/records"
@@ -65,6 +66,13 @@ func (runtime *clusterRuntime) BeginDelivery(
 		for _, target := range change.Targets {
 			if _, err := clusterSessionID(change.TenantID, target.ClientID); err != nil {
 				return nil, err
+			}
+		}
+		if runtime.machine != nil && !slices.Contains(runtime.machine.ActiveFeatures(), membership.SharedSubscriptionRerouteFeature) {
+			// The shared origin is proposed only after shared-subscription-reroute is active.
+			change.Targets = slices.Clone(change.Targets)
+			for i := range change.Targets {
+				change.Targets[i].SharedFilter = ""
 			}
 		}
 	}
@@ -182,6 +190,17 @@ func (runtime *clusterRuntime) notifyDurable(tenantID string, enqueued []members
 	defer runtime.durableMu.Unlock()
 	runtime.ensureDurableAttachmentsLocked()
 	runtime.notifyDurableLocked(tenantID, enqueued)
+}
+
+// notifyDeliveryReroutes projects messages that apply moved to another shared-subscription
+// member. Only attachments on this node load them; others read the queue on ATTACH.
+func (runtime *clusterRuntime) notifyDeliveryReroutes(reroutes []membership.DeliveryRerouteDTO) {
+	runtime.durableMu.Lock()
+	defer runtime.durableMu.Unlock()
+	runtime.ensureDurableAttachmentsLocked()
+	for _, item := range reroutes {
+		runtime.notifyDurableLocked(item.TenantID, []membership.DeliveryEnqueuedDTO{{ClientID: item.ClientID, Sequence: item.Sequence}})
+	}
 }
 
 func (runtime *clusterRuntime) notifyDurableLocked(tenantID string, enqueued []membership.DeliveryEnqueuedDTO) {

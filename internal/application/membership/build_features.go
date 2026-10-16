@@ -14,6 +14,7 @@ func BuildFeatures(additional string) ([]string, error) {
 		ClientBlocklistFeature, ClusterPolicyFeature,
 		ClusterPolicyTenantQuotasFeature, ConnectionRebalanceFeature,
 		CredentialRevocationFeature, ProposalRecoveryFeature, SessionMetadataFeature,
+		SharedSubscriptionRerouteFeature,
 		release.ClusterObservabilityFeature,
 	}
 	if additional != "" {
