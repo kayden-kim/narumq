@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"reflect"
 	"slices"
 	"strings"
 	"time"
@@ -158,7 +159,7 @@ func (service *Service) Reconcile(ctx context.Context, rollout RolloutDTO) (Reco
 		}
 		if pod.ResourceVersion != state.CurrentPodRV {
 			if _, err := service.requireSafeDrain(ctx, rollout, &state); err != nil {
-				return service.block(ctx, rollout, state, "barrier_unknown", "drain GET did not return complete safe evidence")
+				return service.approvalEvidenceUnavailable(ctx, rollout, state, err, "drain GET did not return complete safe evidence")
 			}
 			state.CurrentPodRV = pod.ResourceVersion
 			state.Phase, state.DeleteIntent = PhaseDrainSafe, false
@@ -169,7 +170,7 @@ func (service *Service) Reconcile(ctx context.Context, rollout RolloutDTO) (Reco
 		}
 		evidenceChanged, err := service.requireSafeDrain(ctx, rollout, &state)
 		if err != nil {
-			return service.block(ctx, rollout, state, "barrier_unknown", "drain GET did not return complete safe evidence")
+			return service.approvalEvidenceUnavailable(ctx, rollout, state, err, "drain GET did not return complete safe evidence")
 		}
 		if evidenceChanged {
 			if _, err := service.save(ctx, &rollout, state); err != nil {
@@ -365,7 +366,7 @@ func (service *Service) pollDrain(ctx context.Context, rollout RolloutDTO, state
 func (service *Service) approveDelete(ctx context.Context, rollout RolloutDTO, state StatusDTO) (ReconcileResultDTO, error) {
 	evidenceChanged, err := service.requireSafeDrain(ctx, rollout, &state)
 	if err != nil {
-		return service.block(ctx, rollout, state, "barrier_unknown", "fresh drain evidence is not a complete SAFE_TO_STOP result")
+		return service.approvalEvidenceUnavailable(ctx, rollout, state, err, "fresh drain evidence is not a complete SAFE_TO_STOP result")
 	}
 	if state.SafeToStopObservedAt == nil || state.DrainDeadlineAt == nil || !state.SafeToStopObservedAt.Before(*state.DrainDeadlineAt) {
 		return service.fail(ctx, rollout, state, "drain_timeout", "SAFE_TO_STOP was not observed before the persisted deadline")
@@ -422,10 +423,22 @@ func (service *Service) approveDelete(ctx context.Context, rollout RolloutDTO, s
 	return ReconcileResultDTO{RequeueAfter: PollInterval, Phase: state.Phase}, nil
 }
 
+// errDrainDeadlineElapsed marks approval evidence that can no longer arrive in time; the rollout must fail, not wait.
+var errDrainDeadlineElapsed = errors.New("persisted drain deadline elapsed before fresh approval evidence")
+
+// approvalEvidenceUnavailable fails the rollout with drain_timeout once the persisted deadline has elapsed, so the
+// status shows the failure and operator action. Before the deadline, missing or unsafe evidence only blocks.
+func (service *Service) approvalEvidenceUnavailable(ctx context.Context, rollout RolloutDTO, state StatusDTO, err error, message string) (ReconcileResultDTO, error) {
+	if errors.Is(err, errDrainDeadlineElapsed) {
+		return service.fail(ctx, rollout, state, "drain_timeout", "SAFE_TO_STOP approval evidence was not confirmed before the persisted drain deadline")
+	}
+	return service.block(ctx, rollout, state, "barrier_unknown", message)
+}
+
 func (service *Service) requireSafeDrain(ctx context.Context, rollout RolloutDTO, state *StatusDTO) (bool, error) {
 	now := service.clock.Now().UTC()
 	if state.DrainDeadlineAt == nil || !now.Before(*state.DrainDeadlineAt) {
-		return false, errors.New("persisted drain deadline elapsed before fresh approval evidence")
+		return false, errDrainDeadlineElapsed
 	}
 	before := *state
 	observation, found, err := service.broker.GetDrain(ctx, rollout.Namespace, rollout.ManagementEndpoint, rollout.ManagementSecret, uint32(state.CurrentOrdinal+1), state.AttemptKey)
@@ -434,7 +447,7 @@ func (service *Service) requireSafeDrain(ctx context.Context, rollout RolloutDTO
 	}
 	now = service.clock.Now().UTC()
 	if !now.Before(*state.DrainDeadlineAt) {
-		return false, errors.New("fresh SAFE_TO_STOP evidence arrived at or after the persisted deadline")
+		return false, errDrainDeadlineElapsed
 	}
 	if state.DrainOperationID == "" || observation.OperationID != state.DrainOperationID || observation.NodeID != uint32(state.CurrentOrdinal+1) ||
 		!rolloutdomain.SafeToStop(observation.Phase, observation.State, observation.SafeToStop, observation.FailurePresent) ||
@@ -655,7 +668,9 @@ func (service *Service) recordDrain(state *StatusDTO, observation DrainObservati
 	state.DrainSessionsReady, state.DrainSessionsTakenOver, state.DrainSessionsFailed = observation.SessionsReady, observation.SessionsTakenOver, observation.SessionsFailed
 	state.DrainPendingWAL, state.DrainUnderReplicated = observation.PendingWAL, observation.UnderReplicated
 	state.DrainFailureCode, state.DrainBlockingReason = observation.FailureCode, observation.BlockingReason
-	started, deadline := observation.StartedAt.UTC(), observation.DeadlineAt.UTC()
+	// Keep broker times at the persisted status precision so an unchanged observation compares equal.
+	// Truncating the deadline moves it earlier, which only makes the deadline check stricter.
+	started, deadline := persistedTime(observation.StartedAt), persistedTime(observation.DeadlineAt)
 	if !started.IsZero() {
 		state.DrainStartedAt = &started
 	}
@@ -673,9 +688,25 @@ func (service *Service) block(ctx context.Context, rollout RolloutDTO, state Sta
 	return ReconcileResultDTO{RequeueAfter: PollInterval, Phase: state.Phase}, nil
 }
 
+// failedOperatorAction is the only safe operator action after Failed (contract §2.9): force delete is unsupported.
+const failedOperatorAction = "operator action: set spec.retryToken to a new opaque value to cancel the failed drain and retry this ordinal, or set spec.abort=true"
+
+// safeToStopOperatorAction replaces failedOperatorAction when the last observed drain was SAFE_TO_STOP:
+// the broker cannot cancel that drain, so a new retryToken only blocks with retry_cancel_unconfirmed (contract §2.9).
+const safeToStopOperatorAction = "operator action: set spec.abort=true; a new spec.retryToken cannot cancel a SAFE_TO_STOP drain"
+
+func failureOperatorAction(state StatusDTO) string {
+	if state.DrainSafeToStop != nil && *state.DrainSafeToStop {
+		return safeToStopOperatorAction
+	}
+	return failedOperatorAction
+}
+
 func (service *Service) fail(ctx context.Context, rollout RolloutDTO, state StatusDTO, code, message string) (ReconcileResultDTO, error) {
 	now := service.clock.Now().UTC()
-	state.Phase, state.FailureCode, state.FailureReason = PhaseFailed, code, message
+	operatorAction := failureOperatorAction(state)
+	reason := message + "; " + operatorAction
+	state.Phase, state.FailureCode, state.FailureReason = PhaseFailed, code, reason
 	if service.audit.Ready() == nil {
 		if state.CurrentPodName != "" && state.AttemptKey != "" {
 			action := "rollout.pod.delete_denied"
@@ -702,14 +733,14 @@ func (service *Service) fail(ctx context.Context, rollout RolloutDTO, state Stat
 			Result: portsaudit.AuditResultFailed, Reason: code,
 			Details: map[string]any{
 				"rolloutUid": rollout.UID, "currentNode": state.CurrentOrdinal + 1, "drainOperationId": state.DrainOperationID,
-				"operatorAction": message,
+				"failureReason": message, "operatorAction": operatorAction,
 			},
 		}
 		if auditapp.ValidateEvent(event) == nil {
 			_ = service.publishAudit(ctx, event)
 		}
 	}
-	setBlockedCondition(&state, rollout.Generation, code, message, now)
+	setBlockedCondition(&state, rollout.Generation, code, reason, now)
 	if _, err := service.save(ctx, &rollout, state); err != nil {
 		return ReconcileResultDTO{}, err
 	}
@@ -723,14 +754,49 @@ func (service *Service) publishAudit(ctx context.Context, event portsaudit.Audit
 	return service.audit.PublishOnce(event)
 }
 
+// save writes status with a resourceVersion CAS. An unchanged status is not rewritten: every write is a
+// watch event that runs reconcile again at once, which would bypass PollInterval and hide blockers, and
+// lastTransitionTime should move only when the status changes.
 func (service *Service) save(ctx context.Context, rollout *RolloutDTO, state StatusDTO) (string, error) {
+	if sameStatus(rollout.Status, state) {
+		return rollout.ResourceVersion, nil
+	}
 	state.LastTransitionTime = service.clock.Now().UTC()
 	resourceVersion, err := service.status.CompareAndSwapStatus(ctx, *rollout, rollout.ResourceVersion, state)
 	if err != nil {
 		return "", err
 	}
-	rollout.ResourceVersion = resourceVersion
+	rollout.ResourceVersion, rollout.Status = resourceVersion, state
 	return resourceVersion, nil
+}
+
+// persistedTime is the precision of a Kubernetes status time (metav1.Time, RFC3339 seconds).
+func persistedTime(value time.Time) time.Time {
+	return value.UTC().Truncate(time.Second)
+}
+
+// sameStatus compares status as Kubernetes persists it, ignoring transition times.
+func sameStatus(left, right StatusDTO) bool {
+	return reflect.DeepEqual(comparableStatus(left), comparableStatus(right))
+}
+
+func comparableStatus(state StatusDTO) StatusDTO {
+	for _, field := range []**time.Time{&state.DrainIntentAt, &state.DrainStartedAt, &state.DrainDeadlineAt, &state.SafeToStopObservedAt} {
+		if *field != nil {
+			persisted := persistedTime(**field)
+			*field = &persisted
+		}
+	}
+	state.LastTransitionTime = time.Time{}
+	conditions := make([]ConditionDTO, 0, len(state.Conditions))
+	for _, condition := range state.Conditions {
+		condition.LastTransitionTime = time.Time{}
+		conditions = append(conditions, condition)
+	}
+	state.Conditions = conditions
+	state.CompletedOrdinals = append([]int32{}, state.CompletedOrdinals...)
+	state.TargetFeatures = append([]string{}, state.TargetFeatures...)
+	return state
 }
 
 func newStatus(rollout RolloutDTO, now time.Time) StatusDTO {

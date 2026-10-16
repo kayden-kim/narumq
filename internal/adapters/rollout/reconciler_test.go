@@ -2,6 +2,7 @@ package rollout
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"slices"
 	"strings"
@@ -19,6 +20,7 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 )
 
@@ -101,6 +103,7 @@ type reconcilerStubClock struct{}
 
 func (reconcilerStubClock) Now() time.Time { return time.Date(2026, 10, 14, 12, 0, 0, 0, time.UTC) }
 
+// Traceability: DEP-18; docs/contracts/rollout-controller-v1.md §2.5, §2.11, §3 "Argo CD-applied broker 교체".
 func TestReconcilerMissingSecretsAndNormalReconcileCAS(t *testing.T) {
 	scheme := runtime.NewScheme()
 	_ = corev1.AddToScheme(scheme)
@@ -133,9 +136,29 @@ func TestReconcilerMissingSecretsAndNormalReconcileCAS(t *testing.T) {
 		Data:       map[string][]byte{corev1.DockerConfigJsonKey: []byte(`{"auths":{}}`)},
 	}
 
+	// Finalizer writes must not re-encode spec: a full Update drops explicit zero values (abort=false)
+	// and leaves a GitOps-applied CR out of sync.
+	var finalizerPatches []string
 	kube := fake.NewClientBuilder().WithScheme(scheme).WithStatusSubresource(&NaruMQRollout{}).WithObjects(
 		rolloutCR, operatorSecret, ecrSecret,
-	).Build()
+	).WithInterceptorFuncs(interceptor.Funcs{
+		Update: func(ctx context.Context, c client.WithWatch, object client.Object, options ...client.UpdateOption) error {
+			if _, ok := object.(*NaruMQRollout); ok {
+				t.Errorf("reconciler sent a full NaruMQRollout update")
+			}
+			return c.Update(ctx, object, options...)
+		},
+		Patch: func(ctx context.Context, c client.WithWatch, object client.Object, patch client.Patch, options ...client.PatchOption) error {
+			if _, ok := object.(*NaruMQRollout); ok {
+				data, err := patch.Data(object)
+				if err != nil {
+					return err
+				}
+				finalizerPatches = append(finalizerPatches, string(data))
+			}
+			return c.Patch(ctx, object, patch, options...)
+		},
+	}).Build()
 
 	runtimeAdapter, err := NewKubernetesRuntime(kube, kube)
 	if err != nil {
@@ -239,5 +262,19 @@ func TestReconcilerMissingSecretsAndNormalReconcileCAS(t *testing.T) {
 	}
 	if serviceRuntime.releaseCalls != 1 {
 		t.Fatalf("aborted rollout released target %d times, want once", serviceRuntime.releaseCalls)
+	}
+	if len(finalizerPatches) != 2 {
+		t.Fatalf("finalizer patches = %v, want install and release", finalizerPatches)
+	}
+	for _, data := range finalizerPatches {
+		var body map[string]map[string]any
+		if err := json.Unmarshal([]byte(data), &body); err != nil {
+			t.Fatal(err)
+		}
+		metadata, onlyMetadata := body["metadata"]
+		_, hasFinalizers := metadata["finalizers"]
+		if len(body) != 1 || !onlyMetadata || len(metadata) != 2 || !hasFinalizers || metadata["resourceVersion"] == "" {
+			t.Fatalf("finalizer patch %s must change only metadata.finalizers under a resourceVersion lock", data)
+		}
 	}
 }

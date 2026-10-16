@@ -3,7 +3,7 @@
   "exceptions": [
     {
       "requirementId": "DEP-11",
-      "reason": "외부 rollout controller는 구현했고 로컬·격리 EKS의 일부 수용을 통과했다. Drain 실패·timeout·API와 mutation 결과 불명 및 나머지 restart 경계의 전체 수용이 남았다.",
+      "reason": "격리 EKS에서 rollout controller 결함 matrix(drain 실패·deadline, drain GET 장애, audit 장애, Pod DELETE·drain POST 결과 불명, restart, non-leader, status CAS)를 통과했다(2026-10-16). 남은 범위: SAFE_TO_STOP 뒤 실패한 rollout의 retry 의미 결정과 구현이다. DrainSafe·DeleteApproved의 deadline 실패 수정과 abort만 안내하는 operator action은 단위 시험으로만 확인했다.",
       "tracking": "docs/TODO.md#12-release와-rollout-gate"
     },
     {
@@ -20,11 +20,6 @@
       "requirementId": "DEP-15",
       "reason": "PDB·anti-affinity·topology spread·동시성 제한 산출물과 제한된 EKS 배치는 확인했다. 계획 배포·장애 중 전체 3-AZ 수용이 남았다.",
       "tracking": "docs/TODO.md#14-drain-정책관측과-production-배포"
-    },
-    {
-      "requirementId": "DEP-18",
-      "reason": "외부 rollout controller와 Argo CD health 소비자는 구현·부분 검증했다. 전체 삭제 차단 matrix와 Argo CD가 적용한 실제 broker 교체의 통합 수용이 남았다.",
-      "tracking": "docs/TODO.md#12-release와-rollout-gate"
     },
     {
       "requirementId": "DEP-19",

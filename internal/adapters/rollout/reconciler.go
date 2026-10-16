@@ -47,8 +47,11 @@ func (reconciler *Reconciler) Reconcile(ctx context.Context, request reconcile.R
 		return reconcile.Result{}, err
 	}
 	if resource.DeletionTimestamp.IsZero() && !containsFinalizer(resource.Finalizers, rolloutFinalizer) {
+		// Patch only metadata: a full Update re-encodes spec and drops explicit zero values such as
+		// abort=false, which leaves a GitOps-applied CR permanently out of sync.
+		base := resource.DeepCopy()
 		resource.Finalizers = append(resource.Finalizers, rolloutFinalizer)
-		if err := reconciler.client.Update(ctx, resource); err != nil {
+		if err := reconciler.client.Patch(ctx, resource, client.MergeFromWithOptions(base, client.MergeFromWithOptimisticLock{})); err != nil {
 			return reconcile.Result{}, err
 		}
 		return reconcile.Result{RequeueAfter: rolloutapp.PollInterval}, nil
@@ -97,8 +100,9 @@ func (reconciler *Reconciler) Reconcile(ctx context.Context, request reconcile.R
 		if fresh.UID != resource.UID {
 			return reconcile.Result{}, errors.New("rollout UID changed while releasing its deletion finalizer")
 		}
+		base := fresh.DeepCopy()
 		fresh.Finalizers = removeFinalizer(fresh.Finalizers, rolloutFinalizer)
-		if err := reconciler.client.Update(ctx, fresh); err != nil {
+		if err := reconciler.client.Patch(ctx, fresh, client.MergeFromWithOptions(base, client.MergeFromWithOptimisticLock{})); err != nil {
 			return reconcile.Result{}, err
 		}
 		return reconcile.Result{}, nil

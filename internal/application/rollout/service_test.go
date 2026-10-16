@@ -21,6 +21,7 @@ type rolloutTestStatus struct {
 	resourceVersion string
 	status          StatusDTO
 	failNext        bool
+	writes          int
 }
 
 func (store *rolloutTestStatus) CompareAndSwapStatus(_ context.Context, rollout RolloutDTO, expected string, status StatusDTO) (string, error) {
@@ -31,9 +32,29 @@ func (store *rolloutTestStatus) CompareAndSwapStatus(_ context.Context, rollout 
 	if rollout.ResourceVersion != expected || expected != store.resourceVersion {
 		return "", errors.New("resourceVersion conflict")
 	}
-	store.status = status
+	store.status = persistedStatus(status)
+	store.writes++
 	store.resourceVersion = fmt.Sprintf("rv-%d", len(status.CompletedOrdinals)+len(status.Conditions)+storeRevision(store.resourceVersion))
 	return store.resourceVersion, nil
+}
+
+// persistedStatus mirrors the Kubernetes status round trip: metav1.Time keeps RFC3339 seconds.
+func persistedStatus(status StatusDTO) StatusDTO {
+	seconds := func(value *time.Time) *time.Time {
+		if value == nil {
+			return nil
+		}
+		persisted := value.UTC().Truncate(time.Second)
+		return &persisted
+	}
+	status.DrainIntentAt, status.DrainStartedAt = seconds(status.DrainIntentAt), seconds(status.DrainStartedAt)
+	status.DrainDeadlineAt, status.SafeToStopObservedAt = seconds(status.DrainDeadlineAt), seconds(status.SafeToStopObservedAt)
+	status.LastTransitionTime = status.LastTransitionTime.UTC().Truncate(time.Second)
+	status.Conditions = slices.Clone(status.Conditions)
+	for index := range status.Conditions {
+		status.Conditions[index].LastTransitionTime = status.Conditions[index].LastTransitionTime.UTC().Truncate(time.Second)
+	}
+	return status
 }
 
 func storeRevision(value string) int {
@@ -115,6 +136,7 @@ type rolloutTestBroker struct {
 	getErr            error
 	advanceOnGet      func()
 	onSafeObservation func(*DrainObservationDTO)
+	onGet             func(*DrainObservationDTO)
 }
 
 func (broker *rolloutTestBroker) ClusterFeatures(context.Context, string, string, string) (ClusterFeaturesDTO, error) {
@@ -144,6 +166,10 @@ func (broker *rolloutTestBroker) GetDrain(_ context.Context, _, _, _ string, nod
 	if broker.advanceOnGet != nil {
 		broker.advanceOnGet()
 		broker.advanceOnGet = nil
+	}
+	if broker.onGet != nil {
+		broker.onGet(&observation)
+		broker.operations[key] = observation
 	}
 	if observation.NodeID != nodeID {
 		return DrainObservationDTO{}, false, errors.New("node mismatch")
@@ -445,6 +471,14 @@ func TestUnknownIncompleteAndLateDrainEvidenceNeverDeletes(t *testing.T) {
 		{name: "SAFE_TO_STOP returned at deadline", configure: func(h *rolloutTestHarness) {
 			h.broker.advanceOnGet = func() { h.clock.now = h.clock.now.Add(DefaultDrainTimeout) }
 		}, want: PhaseFailed},
+		{name: "drain FAILED", configure: func(h *rolloutTestHarness) {
+			h.broker.onGet = func(obs *DrainObservationDTO) {
+				obs.Phase = "FAILED"
+				obs.FailureCode = "drain_timeout"
+				obs.FailurePresent = true
+				obs.SafeToStop = new(false)
+			}
+		}, want: PhaseFailed},
 	}
 	for _, testCase := range cases {
 		t.Run(testCase.name, func(t *testing.T) {
@@ -465,6 +499,47 @@ func TestUnknownIncompleteAndLateDrainEvidenceNeverDeletes(t *testing.T) {
 				t.Fatalf("unsafe drain advanced/deleted: phase=%s want=%s ordinal=%d deletes=%d", harness.status.status.Phase, testCase.want, harness.status.status.CurrentOrdinal, harness.runtime.deleteCalls)
 			}
 		})
+	}
+}
+
+// Traceability: DEP-18; docs/contracts/rollout-controller-v1.md §2.9, §3 "Drain failure / timeout", §5 rollout.failed.
+func TestDrainFailedShowsSafeOperatorActionInStatusAndAudit(t *testing.T) {
+	harness := newRolloutTestHarness(t)
+	harness.broker.safe = false
+	for range 2 {
+		if _, err := harness.reconcile(t); err != nil {
+			t.Fatal(err)
+		}
+	}
+	harness.broker.onGet = func(observation *DrainObservationDTO) {
+		observation.Phase, observation.FailureCode, observation.FailurePresent = "FAILED", "drain_timeout", true
+	}
+	if _, err := harness.reconcile(t); err != nil {
+		t.Fatal(err)
+	}
+	status := harness.status.status
+	if status.Phase != PhaseFailed || status.FailureCode != "drain_timeout" || harness.runtime.deleteCalls != 0 {
+		t.Fatalf("FAILED drain: phase=%s code=%s deletes=%d", status.Phase, status.FailureCode, harness.runtime.deleteCalls)
+	}
+	want := "broker drain entered FAILED; " + failedOperatorAction
+	if status.FailureReason != want || len(status.Conditions) == 0 || status.Conditions[len(status.Conditions)-1].Message != want {
+		t.Fatalf("status does not name the operator action: reason=%q conditions=%+v", status.FailureReason, status.Conditions)
+	}
+	if !strings.Contains(failedOperatorAction, "spec.retryToken") || !strings.Contains(failedOperatorAction, "spec.abort=true") {
+		t.Fatalf("operator action omits retry or abort: %q", failedOperatorAction)
+	}
+	var failed *portsaudit.AuditEventDTO
+	for _, event := range harness.audit.events {
+		if event.Action == "rollout.failed" {
+			failed = &event
+		}
+	}
+	if failed == nil || failed.Details["operatorAction"] != failedOperatorAction || failed.Details["failureReason"] != "broker drain entered FAILED" {
+		t.Fatalf("rollout.failed audit operator action = %+v", failed)
+	}
+	// The Failed attempt stays put until the operator changes retryToken.
+	if _, err := harness.reconcile(t); err != nil || harness.status.status.Phase != PhaseFailed || harness.broker.starts != 1 {
+		t.Fatalf("Failed attempt progressed without operator action: phase=%s starts=%d err=%v", harness.status.status.Phase, harness.broker.starts, err)
 	}
 }
 
@@ -596,22 +671,68 @@ func TestAlreadyTargetPreflightRequiresPodHealthProbe(t *testing.T) {
 	}
 }
 
-func TestFreshApprovalAtPersistedDeadlineIsBlocked(t *testing.T) {
-	harness := newRolloutTestHarness(t)
-	for range 3 {
-		if _, err := harness.reconcile(t); err != nil {
-			t.Fatal(err)
-		}
+// Traceability: DEP-18; docs/contracts/rollout-controller-v1.md §2.9, §3 "Drain failure / timeout".
+func TestApprovalAfterPersistedDeadlineFailsWithoutDelete(t *testing.T) {
+	cases := []struct {
+		name  string
+		steps int
+		phase string
+		// deleteUnconfirmed leaves the rollout blocked with delete_unconfirmed before the deadline passes.
+		deleteUnconfirmed bool
+		// podRVChanged re-reads the evidence through the DeleteApproved resourceVersion-change branch.
+		podRVChanged bool
+	}{
+		{name: "drain safe before approval", steps: 3, phase: PhaseDrainSafe},
+		{name: "delete approved before DELETE", steps: 4, phase: PhaseDeleteApproved},
+		{name: "delete approved, DELETE result unknown", steps: 4, phase: PhaseDeleteApproved, deleteUnconfirmed: true},
+		{name: "delete approved, Pod resourceVersion changed", steps: 4, phase: PhaseDeleteApproved, podRVChanged: true},
 	}
-	if harness.status.status.Phase != PhaseDrainSafe || harness.status.status.DrainDeadlineAt == nil {
-		t.Fatalf("safe drain status = %+v", harness.status.status)
-	}
-	harness.clock.now = *harness.status.status.DrainDeadlineAt
-	if _, err := harness.reconcile(t); err != nil {
-		t.Fatal(err)
-	}
-	if harness.status.status.Phase != PhaseDrainSafe || harness.runtime.deleteCalls != 0 || harness.audit.calls != 0 {
-		t.Fatalf("late approval was not blocked: phase=%s deletes=%d audit=%d", harness.status.status.Phase, harness.runtime.deleteCalls, harness.audit.calls)
+	for _, test := range cases {
+		t.Run(test.name, func(t *testing.T) {
+			harness := newRolloutTestHarness(t)
+			for range test.steps {
+				if _, err := harness.reconcile(t); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if harness.status.status.Phase != test.phase || harness.status.status.DrainDeadlineAt == nil {
+				t.Fatalf("status before deadline = %+v", harness.status.status)
+			}
+			if test.deleteUnconfirmed {
+				harness.runtime.deleteErr = errors.New("Kubernetes DELETE timeout")
+				if _, err := harness.reconcile(t); err != nil {
+					t.Fatal(err)
+				}
+				if harness.status.status.FailureCode != "delete_unconfirmed" {
+					t.Fatalf("unknown DELETE result code = %s", harness.status.status.FailureCode)
+				}
+			}
+			deletesBefore, startsBefore := harness.runtime.deleteCalls, harness.broker.starts
+			if test.podRVChanged {
+				harness.runtime.workload.Pods[0].ResourceVersion = "rv-after-approval"
+			}
+			harness.clock.now = *harness.status.status.DrainDeadlineAt
+			if _, err := harness.reconcile(t); err != nil {
+				t.Fatal(err)
+			}
+			status := harness.status.status
+			if status.Phase != PhaseFailed || status.FailureCode != "drain_timeout" || !strings.HasSuffix(status.FailureReason, safeToStopOperatorAction) {
+				t.Fatalf("late approval: phase=%s code=%s reason=%q, want Failed drain_timeout with abort-only operator action", status.Phase, status.FailureCode, status.FailureReason)
+			}
+			if harness.runtime.deleteCalls != deletesBefore || harness.broker.starts != startsBefore || status.CurrentOrdinal != 0 || len(status.CompletedOrdinals) != 0 {
+				t.Fatalf("late approval mutated workload: deletes=%d->%d drainStarts=%d->%d ordinal=%d completed=%v",
+					deletesBefore, harness.runtime.deleteCalls, startsBefore, harness.broker.starts, status.CurrentOrdinal, status.CompletedOrdinals)
+			}
+			var failed []portsaudit.AuditEventDTO
+			for _, event := range harness.audit.events {
+				if event.Action == "rollout.failed" {
+					failed = append(failed, event)
+				}
+			}
+			if len(failed) != 1 || failed[0].Reason != "drain_timeout" || failed[0].Details["operatorAction"] != safeToStopOperatorAction {
+				t.Fatalf("rollout.failed audit events = %+v, want one drain_timeout event with abort-only action", failed)
+			}
+		})
 	}
 }
 
@@ -676,5 +797,134 @@ func TestPodResourceVersionConflictDoesNotDeleteReplacement(t *testing.T) {
 	}
 	if harness.runtime.deleteCalls != 0 || harness.status.status.Phase != PhaseDrainSafe {
 		t.Fatalf("stale resourceVersion deleted Pod or kept approval: deletes=%d phase=%s", harness.runtime.deleteCalls, harness.status.status.Phase)
+	}
+}
+
+// Traceability: DEP-18; docs/contracts/rollout-controller-v1.md §2.7, §3 "Kubernetes mutation 결과 불명".
+func TestDeletePodUnknownResultRetriesSamePreconditionAndHoldsNextNode(t *testing.T) {
+	harness := newRolloutTestHarness(t)
+	for range 4 {
+		if _, err := harness.reconcile(t); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if harness.status.status.Phase != PhaseDeleteApproved {
+		t.Fatalf("phase = %s, want %s", harness.status.status.Phase, PhaseDeleteApproved)
+	}
+	approvedUID, approvedRV := harness.status.status.CurrentPodUID, harness.status.status.CurrentPodRV
+	startsBefore := harness.broker.starts
+	harness.runtime.deleteErr = errors.New("Kubernetes DELETE timeout")
+	assertHeld := func(step string, wantDeletes int) {
+		t.Helper()
+		status := harness.status.status
+		if status.CurrentOrdinal != 0 || len(status.CompletedOrdinals) != 0 || harness.broker.starts != startsBefore {
+			t.Fatalf("%s advanced to next node: ordinal=%d completed=%v drainStarts=%d", step, status.CurrentOrdinal, status.CompletedOrdinals, harness.broker.starts)
+		}
+		// The fake counts a DELETE only when the request carries the approved Pod UID and resourceVersion.
+		if harness.runtime.deleteCalls != wantDeletes || !slices.Equal(harness.runtime.deleteOrdinals, slices.Repeat([]int32{0}, wantDeletes)) {
+			t.Fatalf("%s deletes=%d ordinals=%v, want %d precondition-matched deletes of ordinal 0", step, harness.runtime.deleteCalls, harness.runtime.deleteOrdinals, wantDeletes)
+		}
+		if status.CurrentPodUID != approvedUID || status.CurrentPodRV != approvedRV {
+			t.Fatalf("%s changed delete preconditions: uid=%s rv=%s", step, status.CurrentPodUID, status.CurrentPodRV)
+		}
+	}
+	result, err := harness.reconcile(t)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Phase != PhaseDeleteApproved || harness.status.status.FailureCode != "delete_unconfirmed" {
+		t.Fatalf("unknown DELETE result: phase=%s code=%s", result.Phase, harness.status.status.FailureCode)
+	}
+	assertHeld("unknown DELETE", 1)
+	// Same Pod UID remains and deletion has not started: retry with the identical precondition.
+	if _, err := harness.reconcile(t); err != nil {
+		t.Fatal(err)
+	}
+	assertHeld("retry while same UID remains", 2)
+	// The earlier DELETE took effect late: deletionTimestamp is set, so no duplicate DELETE is sent.
+	harness.runtime.workload.Pods[0].Deleting = true
+	result, err = harness.reconcile(t)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Phase != PhaseAwaitingReplacement {
+		t.Fatalf("phase after observed deletionTimestamp = %s, want %s", result.Phase, PhaseAwaitingReplacement)
+	}
+	assertHeld("deletionTimestamp observed", 2)
+	if _, err := harness.reconcile(t); err != nil {
+		t.Fatal(err)
+	}
+	assertHeld("replacement not ready", 2)
+}
+
+// Traceability: DEP-18; docs/contracts/rollout-controller-v1.md §2.1, §2.6, §3 "Kubernetes mutation 결과 불명".
+func TestUnknownDeleteRetryKeepsBlockerWithoutRewritingUnchangedStatus(t *testing.T) {
+	harness := newRolloutTestHarness(t)
+	// The broker reports sub-second times; the persisted status keeps whole seconds.
+	harness.broker.onGet = func(observation *DrainObservationDTO) {
+		observation.StartedAt = observation.StartedAt.Truncate(time.Second).Add(742 * time.Millisecond)
+	}
+	for range 4 {
+		if _, err := harness.reconcile(t); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if harness.status.status.Phase != PhaseDeleteApproved {
+		t.Fatalf("phase = %s, want %s", harness.status.status.Phase, PhaseDeleteApproved)
+	}
+	harness.runtime.deleteErr = errors.New("Kubernetes DELETE timeout")
+	if _, err := harness.reconcile(t); err != nil {
+		t.Fatal(err)
+	}
+	blocked, writes := harness.status.status, harness.status.writes
+	if blocked.FailureCode != "delete_unconfirmed" || len(blocked.Conditions) != 1 || blocked.Conditions[0].Reason != "delete_unconfirmed" {
+		t.Fatalf("unknown DELETE status = %+v", blocked)
+	}
+	for step := range 3 {
+		harness.clock.now = harness.clock.now.Add(PollInterval)
+		result, err := harness.reconcile(t)
+		if err != nil {
+			t.Fatal(err)
+		}
+		status := harness.status.status
+		// Every status write is a watch event that re-runs reconcile at once, so an unchanged poll must not write.
+		if harness.status.writes != writes || result.RequeueAfter != PollInterval || result.Phase != PhaseDeleteApproved {
+			t.Fatalf("poll %d rewrote unchanged status or skipped the poll interval: writes=%d want=%d result=%+v", step, harness.status.writes, writes, result)
+		}
+		if status.FailureCode != "delete_unconfirmed" || !status.Conditions[0].LastTransitionTime.Equal(blocked.Conditions[0].LastTransitionTime) {
+			t.Fatalf("poll %d lost the blocker or its transition time: %+v", step, status)
+		}
+		if harness.runtime.deleteCalls != 2+step {
+			t.Fatalf("poll %d deletes = %d, want retry with the same precondition", step, harness.runtime.deleteCalls)
+		}
+	}
+}
+
+// Traceability: DEP-18; docs/contracts/rollout-controller-v1.md §2.5, §3 "Exclusive controller/target" (status CAS).
+func TestStatusCASConflictRejectsStaleUpdateAndLeavesWorkloadUnmutated(t *testing.T) {
+	harness := newRolloutTestHarness(t)
+	for range 3 {
+		if _, err := harness.reconcile(t); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if harness.status.status.Phase != PhaseDrainSafe {
+		t.Fatalf("phase = %s, want %s before approval", harness.status.status.Phase, PhaseDrainSafe)
+	}
+	persisted := harness.status.status
+	// A concurrent writer (non-leader or second controller) advances the CR resourceVersion.
+	stale := harness.request
+	stale.Status = persisted
+	stale.ResourceVersion = harness.status.resourceVersion
+	harness.status.resourceVersion = "concurrent-writer-rv"
+	ctx := context.WithValue(context.Background(), rolloutTestClockKey{}, harness.clock)
+	if _, err := harness.service.Reconcile(ctx, stale); err == nil || !strings.Contains(err.Error(), "conflict") {
+		t.Fatalf("stale status write must stop on CAS conflict, got %v", err)
+	}
+	if harness.runtime.deleteCalls != 0 {
+		t.Fatalf("deleteCalls = %d after CAS conflict, want 0", harness.runtime.deleteCalls)
+	}
+	if harness.status.status.Phase != persisted.Phase || harness.status.status.DeleteIntent {
+		t.Fatalf("CAS conflict changed persisted state: before=%s after=%+v", persisted.Phase, harness.status.status)
 	}
 }

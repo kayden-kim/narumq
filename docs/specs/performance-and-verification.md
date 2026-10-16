@@ -51,9 +51,9 @@ Latency는 p50, p95, p99, p99.9를 보고한다. 오류 sample을 제외하면 �
 5. 고정 warm-up·측정 구간을 두고 최소 5회 독립 실행한다. Suite는 target 순서를 교차한다.
 6. 중앙값과 MAD를 함께 보고하고 broker·generator 오류와 saturation을 모두 수집한다.
 
-고정 production comparator는 EMQX Enterprise 6.3.1이며 exact edition·image digest는 [PRD §18 질문 15](../requirements/PRD.md#18-미결정-사항)에 있다. 기존 BP-01/BP-02/BP-04/BP-05 local smoke의 OSS 5.8.8과 BP-03/BP-06/BP-07 local smoke의 Enterprise 5.8.8은 과거 smoke 기준이다. 과거 artifact와 결과는 수정하지 않는다. EMQX 5.8.8 OSS는 EOL historical comparator이며 현재 지원 release 기준선이나 commercial 운영 사용을 뜻하지 않는다.
+고정 production comparator는 EMQX Enterprise 6.3.1이며 exact edition·image digest는 [PRD §18 질문 15](../requirements/PRD.md#18-미결정-사항)에 있다. 기존 BP-01/BP-02/BP-04/BP-05 local smoke의 OSS 5.8.8과 BP-03/BP-06/BP-07 local smoke의 Enterprise 5.8.8은 과거 smoke 기준이다. 과거 artifact와 결과는 수정하지 않는다. 2026-10-16 사용자 결정에 따라 상용 EMQX Enterprise 라이선스를 요구하는 상대 비교는 필수 출시 차단 게이트에서 제외하고 선택적 외부 벤치마크로 운영한다. 필수 릴리스 게이트는 NaruMQ 자체의 5% 회귀 차단 규칙과 `EKS_EC2_HA` qualification profile에서 측정한 자립형 수용 용량(`B_*`)으로 판정한다.
 
-Qualification과 BP-02 release comparison profile은 [ADR-0007](../decisions/ADR-0007-aws-production-deployment-platform.md)의 ARM64 EKS 선택값을 따른다. 이 선택만으로 production gate를 통과하지 않는다. Production gate에는 실제 `B_*`, valid license, native ARM64 broker·generator image, full profile digest와 AWS/EBS 수용 증거가 필요하다. [`tests/benchmark/Dockerfile`](../../tests/benchmark/Dockerfile)은 `TARGETOS`/`TARGETARCH`(`amd64` 기본값, `arm64` 지원)로 broker와 runner 바이너리를 빌드한다. 실제 EKS 실행에는 ARM64 이미지를 빌드·게시하고 immutable digest를 고정해야 한다. 조건을 충족하지 않은 artifact는 `releaseGating=false`로 둔다.
+Qualification과 BP-02 release comparison profile은 [ADR-0007](../decisions/ADR-0007-aws-production-deployment-platform.md)의 ARM64 EKS 선택값을 따른다. 이 선택만으로 production gate를 통과하지 않는다. Production gate에는 실제 `B_*`, native ARM64 broker·generator image, full profile digest와 AWS/EBS 수용 증거가 필요하다. [`tests/benchmark/Dockerfile`](../../tests/benchmark/Dockerfile)은 `TARGETOS`/`TARGETARCH`(`amd64` 기본값, `arm64` 지원)로 broker와 runner 바이너리를 빌드한다. 실제 EKS 실행에는 ARM64 이미지를 빌드·게시하고 immutable digest를 고정해야 한다. 조건을 충족하지 않은 artifact는 `releaseGating=false`로 둔다.
 
 Profile SHA-256은 저장소에 커밋된 LF bytes로 계산한다. `.gitattributes`의 `tests/benchmark/*/testdata/*.json text eol=lf` 규칙으로 `core.autocrlf=true`인 Windows checkout에서도 같은 bytes를 쓴다. 2026-10-08 이전 BP-06 실행 artifact의 `profileSha256` `e8e4aa2e5df1a3e55ad901acff5a4505cdb1acf4699ff061f1a2bfc51754054d`는 같은 내용을 CRLF로 checkout한 bytes의 digest다. 같은 profile의 LF digest는 `ca5e28b04623e708d9521ab34ce5ed3b9dd617d4ac57c4571243bdd6061f6a15`다. 과거 artifact의 값은 실행 당시 사실이므로 고치지 않는다.
 
@@ -810,18 +810,18 @@ GC pause 백분위수는 누적 히스토그램 표본 차이에 nearest-rank를
 
 ## 6. Regression gate
 
-모든 릴리스는 이전 안정 NaruMQ와 고정 EMQX comparator를 대조한다. 이전 안정 NaruMQ 대비 처리량이 5% 이상 낮아지거나 p99 latency가 5% 이상 나빠지면 릴리스를 차단한다. 이 규칙은 NaruMQ 자체 회귀만 판정하며 EMQX 대비 합격 기준이 아니다. 측정 변동성이 5%를 초과하면 합격·불합격을 판정하지 않고 원인을 조사한 뒤 반복 횟수를 늘린다.
+모든 릴리스는 이전 안정 NaruMQ와의 회귀를 대조한다. 이전 안정 NaruMQ 대비 처리량이 5% 이상 낮아지거나 p99 latency가 5% 이상 나빠지면 릴리스를 차단한다. 측정 변동성이 5%를 초과하면 합격·불합격을 판정하지 않고 원인을 조사한 뒤 반복 횟수를 늘린다.
 
-`SPEC-TBD-08` 중 EMQX 대비 상대 합격 비율은 2026-10-13 사용자 결정으로 채택했다. [PRD §4.2](../requirements/PRD.md#42-초기-성공-지표)의 절대 값은 초기 목표다. 2026-10-15 사용자 결정에 따라 `B_*`는 실제 운영 traffic 대신 선택한 `EKS_EC2_HA` qualification profile에서 측정한 수용 용량으로 정한다([PRD §18 질문 1~5](../requirements/PRD.md#18-미결정-사항)). 측정 workload 분포와 N-1·용량 판정 기준은 [§3.9](#39-bp-02-eks-용량-측정-계약)에 정했다. 측정 결과로 production 절대 SLO를 확정한다.
+2026-10-16 사용자 결정에 따라 상용 EMQX Enterprise 라이선스를 요구하는 95%/105% 상대 비율 조건은 필수 릴리스 게이트에서 제외하고 선택적 외부 벤치마크로 운영한다. 필수 제품 출시 게이트는 5% self-regression 규칙과 `EKS_EC2_HA` qualification profile에서 측정한 N-1 자립형 수용 용량(`B_*`)으로 판정한다.
 
-채택한 EMQX 대비 product acceptance 기준은 다음과 같다.
+선택적 EMQX 비교를 실행할 때 적용하는 참고 기준은 다음과 같다.
 
 - 같은 `B_*`와 동등 profile에서 NaruMQ 처리량은 EMQX의 95% 이상이어야 한다.
 - Publish-to-delivery p99/p99.9 latency, 성공 전달당 CPU와 연결당 memory는 EMQX 값의 105% 이하여야 한다.
 - Network/disk 비용도 측정한다. 기능·durability가 `nonEquivalent`인 지표는 직접 우열 합격 판정에서 제외한다.
-- 각 target은 최소 5회 독립 실행하고 중앙값을 비교한다. 유효한 EMQX license, workload와 profile digest가 없으면 해당 run은 gate evidence가 아니다.
+- 각 target은 최소 5회 독립 실행하고 중앙값을 비교한다.
 
-95%/105% 상대 비율은 기존 5% self-regression rule과 별개인 채택된 product acceptance 기준이다. 다만 실제 production `B_*`와 comparator run이 없어 현재 profile별 처리량·latency·resource 절대 cutoff는 아직 계산되지 않았다. Workload 값을 채운 뒤 EKS/EBS gate를 통과할 때까지 release gate는 열린 상태다.
+필수 성능 릴리스 게이트는 N-1 수용 용량 `B_*` 산출 및 자체 회귀 5% 미만 충족 시 통과로 판정한다.
 
 ## 7. Verification 계층
 

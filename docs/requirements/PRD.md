@@ -421,7 +421,7 @@ NaruMQ는 지원 SDK별 호환성 표와 기준 설정 예시를 제공한다.
 
 Go runtime에서 bounded queue, cancellation, GC와 진단 도구가 이 요구사항에 미치는 영향은 [Go 동시성과 backpressure](../explainers/go-concurrency-and-backpressure.md)를 참고한다.
 
-실제 EMQX 비교를 위한 요구사항은 다음과 같다.
+2026-10-16 사용자 결정에 따라 상용 EMQX Enterprise 라이선스를 요구하는 직접 비교는 필수 출시 차단 게이트에서 제외하고 선택적 외부 벤치마크로 운영한다. 필수 성능 게이트는 NaruMQ 자체의 수용 용량(`B_*`) 및 직전 안정 버전 대비 회귀 검증(5% 미만)으로 판정한다. 실제 EMQX 비교를 실행할 때 적용하는 참고 기준은 다음과 같다.
 
 | ID | 요구사항 |
 | --- | --- |
@@ -764,9 +764,9 @@ Phase 0은 기준과 도구를 확정하는 단계다. Phase 1부터 기능을 �
     - 채택(2026-10-13): 정기 백업은 일 1회 수행하고 30일간 보존한다. 전체 클러스터 재해 복구 목표는 RPO 24시간, RTO 1시간으로 정한다(단일 노드 장애는 3-node Raft quorum으로 RPO 0을 유지한다). 실제 Linux/EBS 환경에서의 복구 시간·보존 검증은 K8s/AWS 인프라 게이트에서 수행한다.
 13. 지원할 클라이언트 SDK와 최소 버전은 무엇인가?
 14. 실제 EMQX 대비 허용할 throughput, p99 latency와 자원 효율 비율은 얼마인가?
-    - 채택(2026-10-13): 같은 production workload와 `EKS_EC2_HA` profile에서 NaruMQ 처리량 95% 이상, publish-to-delivery p99/p99.9 latency·성공 전달당 CPU·연결당 memory 105% 이하를 요구한다. `nonEquivalent` 지표는 직접 판정에서 제외하고 최소 5회 실행의 중앙값으로 비교한다. 이 비율은 NaruMQ 자체 회귀의 5% 차단 규칙과 별개인 product acceptance 기준이다. 실제 `B_*`(질문 1~5)와 comparator run이 확보되어 profile별 절대 cutoff를 계산하기 전까지 `SPEC-TBD-08` 실행 gate는 열린 상태다.
+    - 채택(2026-10-13, 갱신 2026-10-16): 2026-10-16 사용자 결정에 따라 상용 EMQX Enterprise 라이선스를 요구하는 95%/105% 비교 조건은 필수 제품 출시 게이트에서 제외하고 선택적 외부 벤치마크로 운영한다. 필수 릴리스 게이트는 NaruMQ 자체 회귀 5% 미만 차단 규칙과 `EKS_EC2_HA` qualification profile에서 측정한 N-1 수용 용량(`B_*`)으로 판정한다.
 15. 장기 benchmark에 사용할 고정 EMQX version과 edition은 무엇인가?
-    - 고정 production benchmark comparator는 EMQX Enterprise 6.3.1, `linux/arm64`다. Image는 `emqx/emqx-enterprise:6.3.1`, OCI index digest `sha256:5ecbf93d04e34aaf4096af074e93b773d0838c8ea668cfabdec7976b272d9606`, ARM64 manifest digest `sha256:a9c5cd1e2af9d0cc474d1c048f9c9e64081ac0b0e2777776497b457ba387b0c6`로 고정한다. 실제 부하를 허용하는 유효한 EMQX license가 필요하다. 기존 5.8.8 local smoke와 artifact는 과거 증거로 유지하며 이 기준선으로 소급 변경하지 않는다.
+    - 고정 production benchmark comparator는 EMQX Enterprise 6.3.1, `linux/arm64`다. Image는 `emqx/emqx-enterprise:6.3.1`, OCI index digest `sha256:5ecbf93d04e34aaf4096af074e93b773d0838c8ea668cfabdec7976b272d9606`, ARM64 manifest digest `sha256:a9c5cd1e2af9d0cc474d1c048f9c9e64081ac0b0e2777776497b457ba387b0c6`로 고정한다. 상용 라이선스를 확보한 환경의 비교 실행에만 쓰며, 필수 릴리스 검증 선행 조건으로 삼지 않는다.
 16. `EKS_EC2_HA`에서 지원할 EKS minor version, EC2 instance family, EBS volume type·IOPS와 NLB target mode는 무엇인가?
     - Qualification profile은 EKS Kubernetes 1.37, EKS-optimized Amazon Linux 2023 ARM64, `m7g.large` 3대(3개 AZ에 1대씩), broker별 20 GiB `gp3`(기본 3,000 IOPS·125 MiB/s), NLB `IP` targets와 TCP pass-through, broker별 requests=limits `1 CPU`·`4 GiB`로 정한다. Broker가 TLS를 종료한다. AWS Load Balancer Controller는 2.7.2 이상을 사용하고 실제 버전·image digest를 artifact에 고정한다. 이 profile은 qualification 선택이며 시험 전 production 지원이나 release gate 통과를 뜻하지 않는다. 질문 1~5의 실제 workload 값은 아직 없어 N-1 capacity와 profile별 latency 수치는 실행 기준으로 확정되지 않았다.
 17. ECS adapter 검토를 시작할 실제 운영 수요와 ECS Task Protection·stop timeout·persistent volume의 합격 기준은 무엇인가?
