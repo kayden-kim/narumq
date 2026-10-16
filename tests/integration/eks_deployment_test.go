@@ -162,15 +162,28 @@ func TestEKSDeployment(t *testing.T) {
 		t.Fatalf("decode configmap-cluster.yaml: %v", err)
 	}
 	for index := range 3 {
-		name := "node-" + strconv.Itoa(index+1) + ".json"
+		slotName := "slot-" + strconv.Itoa(index)
+		slot, ok := configs.Data[slotName]
+		if !ok || slot != strconv.Itoa(index+1) {
+			t.Fatalf("%s = %q (present=%t), want %q", slotName, slot, ok, strconv.Itoa(index+1))
+		}
+		memberID, err := strconv.Atoi(slot)
+		if err != nil {
+			t.Fatalf("%s = %q is not a decimal member ID: %v", slotName, slot, err)
+		}
+		name := "node-" + slot + ".json"
+		rawConfig, ok := configs.Data[name]
+		if !ok {
+			t.Fatalf("%s references %s, which the ConfigMap does not contain", slotName, name)
+		}
 		var config map[string]any
-		if err := json.Unmarshal([]byte(configs.Data[name]), &config); err != nil {
+		if err := json.Unmarshal([]byte(rawConfig), &config); err != nil {
 			t.Fatalf("decode %s: %v", name, err)
 		}
 		if got := at(config, "clusterId"); got != "narumq-cluster-1" {
 			t.Fatalf("%s clusterId = %v", name, got)
 		}
-		wantInt(at(config, "nodeId"), index+1)
+		wantInt(at(config, "nodeId"), memberID)
 		wantString(at(config, "directory"), "/data")
 		wantString(at(config, "listenAddress"), "0.0.0.0:7000")
 		peer := "narumq-" + strconv.Itoa(index) + ".narumq-headless.narumq.svc.cluster.local"
@@ -272,6 +285,24 @@ func TestEKSDeployment(t *testing.T) {
 	if !ok || len(preStopScript) == 0 {
 		t.Fatalf("preStop script = %v, want non-empty string", preStopCommands[2])
 	}
+	mainCommands, ok := at(container, "command").([]any)
+	if !ok || len(mainCommands) != 3 {
+		t.Fatalf("main command = %v, want 3 elements [/bin/sh, -c, script]", at(container, "command"))
+	}
+	wantString(mainCommands[0], "/bin/sh")
+	wantString(mainCommands[1], "-c")
+	mainScript, ok := mainCommands[2].(string)
+	if !ok || len(mainScript) == 0 {
+		t.Fatalf("main script = %v, want non-empty string", mainCommands[2])
+	}
+	// The scripts run in a sandbox that replaces only absolute paths and external programs.
+	// A slot value other than ordinal+1 must change the executed config and the drained ID.
+	t.Run("slot scripts", func(t *testing.T) {
+		assertEKSMainSlotBehaviour(t, mainScript, "/narumq", func(configs, id string) []string {
+			return []string{"-cluster-config", configs + "/node-" + id + ".json"}
+		})
+		assertEKSPreStopSlotBehaviour(t, preStopScript)
+	})
 	wantString(at(statefulSet, "spec", "volumeClaimTemplates", "0", "spec", "storageClassName"), "gp3")
 	wantString(at(statefulSet, "spec", "volumeClaimTemplates", "0", "spec", "resources", "requests", "storage"), "20Gi")
 	wantString(at(statefulSet, "spec", "template", "spec", "volumes", "1", "secret", "secretName"), "narumq-cluster-secrets")

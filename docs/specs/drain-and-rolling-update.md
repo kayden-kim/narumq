@@ -184,6 +184,8 @@ Rollout controller는 Pod 삭제 전에 drain을 시작하고 `SAFE_TO_STOP`을 
 
 Kubernetes의 termination grace period는 `preStop` 실행 전에 계산이 시작된다. hook 실패나 장기 실행이 Pod 삭제를 영구 차단한다고 가정해서는 안 된다. `terminationGracePeriodSeconds`는 LB 대기, drain 최악 시간, hook overhead와 SIGTERM 뒤 정상 종료 시간을 합친 값 이상이어야 하며, 검증되지 않은 짧은 값은 배포 admission에서 거절해야 한다.
 
+Kubernetes는 Pod 삭제뿐 아니라 startup·liveness probe 실패로 container를 종료할 때도 `preStop`을 실행한다. 따라서 startup 예산(`failureThreshold` × `periodSeconds`)을 다 쓴 container는 종료 직전에 drain을 시작한다. 이 drain은 계획된 교체가 아니다. 결과와 복구 규칙은 [§8.1](#81-startup-probe-종료와-drain-기록-재시작-순환)을 따른다.
+
 `terminationGracePeriodSeconds ≥ ceil(timeoutMillis/1000) + 30 + 30`이어야 한다. 기본 drain 값으로는 660초다. 두 30초 값은 측정 전 예산이며 실측은 [TODO §1.4](../TODO.md#14-drain-정책관측과-production-배포)에서 추적한다.
 
 배포 template은 PodDisruptionBudget, required anti-affinity, topology spread와 max unavailable 1을 제공해야 한다. 기준 3-AZ profile은 quorum node를 AZ마다 하나씩 배치해야 한다.
@@ -245,6 +247,23 @@ Amazon ECS on EC2를 지원하려면 Kubernetes rollout controller와 별개인 
 
 Process crash 또는 host loss에서는 planned drain과 barrier가 실행되지 않을 수 있다. 남은 node는 cluster spec에 따라 새 epoch를 획득하고 persistent session을 복구해야 한다. 이를 계획 drain 성공으로 기록해서는 안 되며 `unplanned_failure`로 관측해야 한다. `COMPLETED` record를 재생한 node는 admission을 닫은 채 유지하고 bounded readiness preflight를 통과한 뒤 replicated `CLEAR`를 commit해야 한다. Preflight 또는 commit에 실패하면 재시도하며, `CLEAR` apply 뒤에만 admission을 다시 연다.
 
+### 8.1 Startup probe 종료와 drain 기록 재시작 순환
+
+Kubelet은 startup probe가 성공하기 전에는 readiness·liveness probe를 실행하지 않는다. 그래서 cluster runtime의 `/health/startup`은 `JOINING`일 때 readiness 조건을 스스로 평가해야 한다. 외부의 `/health/ready` 요청을 기다려서는 안 된다. `DRAINING`·`SAFE_TO_STOP`은 startup을 통과한다. 이때 readiness는 계속 실패한다.
+
+Container가 startup 예산을 다 써서 종료되면 `preStop`이 drain을 시작하고 drain은 보통 `COMPLETED`가 된다. 재시작한 container는 이 기록을 §8 규칙대로 `CLEAR`한 뒤 readiness를 다시 평가한다. 기록이 사라지면 사유는 `node drain cancelled; readiness recheck pending`으로 보일 수 있다. 이 문구는 취소 요청이 없었어도 `CLEAR` 뒤에 나온다. 취소 기록과 구분하려면 `GET /api/v1/nodes/{nodeId}/drain`의 phase와 `cleared completed node drain record` 로그를 본다.
+
+복구 규칙은 다음과 같다.
+
+| 재시작 때 기록 | 동작 | 사람이 할 일 |
+| --- | --- | --- |
+| 없음(전원 손실·`SIGKILL`) | `preStop`이 없으므로 drain 기록도 없다. Startup이 readiness를 평가해 `READY`가 된다. | 없음 |
+| `COMPLETED` | 자동 `CLEAR` 뒤 `READY`가 된다. | 없음. Startup이 멈추면 원인을 찾는다. |
+| `FAILED` | `DRAINING`과 readiness 실패를 유지한다. | 원인을 해결한 뒤 `DELETE /api/v1/nodes/{nodeId}/drain`으로 취소한다. |
+| `CANCELLED` | 기록은 무해하다. Startup이 readiness를 평가한다. | 없음 |
+
+전원 손실 시험 도구는 장애 뒤 대상 node가 `DRAINING`이면 먼저 Pod의 `restartCount`와 직전 container 종료 사유를 확인한다. 재시작이 있으면 drain 기록의 phase를 읽는다. `/health/ready`를 호출해 startup을 대신 통과시켜서는 안 된다. 그 호출은 결함을 가린다. 2026-10-15 전원 손실 실패가 이 경로였다([Cluster spec](cluster-session-and-delivery.md#2026-10-15-격리-eks-전원-손실-후속-관찰-failedunresolved)의 2026-10-16 원인 분석).
+
 ## 9. 수용 시험
 
 - 최대 예상 traffic에서 연속 100회 rolling update를 수행한다.
@@ -295,9 +314,13 @@ Process crash 또는 host loss에서는 planned drain과 barrier가 실행되지
 | 격리 EKS controller 교체·재시작 (2026-10-15 재개) | 전용 `narumq-ha-acceptance-20261015`, broker `0.0.0`→합성 `0.0.1`, ARM64 platform digest, 실제 Management API·EBS 감사 PVC | **PASS, 제한 범위**: 세 broker UID 교체·Ready, active-drain controller 재시작 뒤 같은 operation/key 복구, 전체 교체 156.16초. 수정 target의 startup은 수동 readiness 호출 없이 통과했다. `.artifacts/verification/eks-resume-20261015T000337Z-21df3b/rollout-lifecycle-result.json`; `rollout-active-drain-restart.json`. 게시 release 호환성·최대 부하·나머지 restart 경계는 미검증. |
 | 격리 EKS API 실패·target 독점 (2026-10-15 재개) | Controller 전용 hostAlias fault proxy는 실제 cluster/features를 전달하고 drain에 HTTP 503을 반환한다. 별도 CR은 같은 target Lease를 요구한다. | **PASS, 관찰 범위**: API 실패와 `target_owned`에서 세 broker UID 불변. `.artifacts/verification/eks-resume-20261015T000337Z-21df3b/rollout-api-unavailable.json`; `rollout-exclusive-target.json`. Proxy를 Service selector로 연결한 첫 설정은 preflight에서 거절됐고 복구 중 한 ordinal이 교체됐다. 이 실패한 설정은 no-mutation 성공 증거에서 제외했다(`fault-setup-recovery.json`). |
 | 실패 drain 취소 뒤 재시작 | `TestStateMachineFailedDrainCancellationClearsFailure`, `TestDynamicClusterNodeDrainCancelTimeoutAndResumeProcessAcceptance`의 취소 후 재시작 | **수정 전 EKS·local FAIL → 수정 후 PASS**. 취소 전이의 failure fields를 지웠다. Membership drain 시험 PASS(0.795초), startup·drain 재시작 process 시험 PASS(28.180초). EKS에서 실패한 container의 image만 바꿔 같은 Pod UID·WAL·EBS를 복구했고, 후속 동일 EC2 비정상 재시작도 235.05초에 3-voter Ready와 기존 marker 읽기를 통과했다. 증거: `.artifacts/verification/eks-resume-20261015T000337Z-21df3b/drainfix-same-volume-recovery.json`, `powerloss-afterfix-result.json`. 이전 실패 기록은 보존한다. |
+| Startup probe 종료 뒤 drain 기록 재시작 (2026-10-16 원인 분석) | `TestDynamicClusterRestartStartupOnlyAfterProbeKillAndCrashProcessAcceptance`: 3-node process에서 node 3에 `preStop` 같은 drain을 `COMPLETED`까지 실행하고 `SIGKILL`한다. 재시작한 node는 `/health/startup`만 호출한다. 이어 drain 없이 한 번 더 `SIGKILL`하고 같은 방식으로 확인한다. | **수정 전 FAIL → 수정 후 PASS**. 수정 전 tree(`9ddd24d`)에서는 시험 제한 시간 동안 `/health/startup`이 계속 `503`, `node is joining`이었다(시험 98.64초). 수정 후 tree에서는 16.63초에 통과했다. `.artifacts/analysis/clu14-powerloss-0210-rca.md`. |
 | 격리 EKS Argo CD health 소비자 (DEP-18) | 실제 Argo CD Git sync 뒤 동일 `NaruMQRollout`의 status를 주입하고 리소스·Application health를 함께 확인한다. | **2026-10-15 PASS, 15개 case**. 명령·환경·실패한 초기 설정·증거·broker 미배포 경계는 [아래 수용 기록](#argo-cd-health-소비자-수용-2026-10-15)을 따른다. |
 | 계획된 cross-worker 동일 EBS 복구 (DEP-17·DEP-21, NFR-07 일부) | `SAFE_TO_STOP` 뒤 exact UID·resourceVersion으로 Pod를 삭제한다. 같은 AZ의 다른 worker에서 기존 PVC·PV·EBS와 MQTT 상태를 확인한다. | **2026-10-15 PASS, 계획된 이동만**. 파일·명령·실측과 장애 수용의 남은 경계는 [아래 기록](#계획된-cross-worker-ebs-복구-수용-2026-10-15)을 따른다. |
 | 단일 EC2 비정상 종료 뒤 동일 EBS 복구 (DEP-17·DEP-21, NFR-07 일부) | 단일 follower EC2의 OS shutdown을 생략해 종료한다. 종료 확인 전 operator storage 복구 변경은 금지하고, 새 worker의 동일 PVC·PV·EBS와 기존 MQTT 상태를 확인한다. | **2026-10-15 초기 observer FAIL / 같은 장애의 물리·MQTT 후속 관찰 PASS**. 전체 자동 수용은 미완료다. 실패·관찰 공백·명령과 증거는 [아래 기록](#비정상-단일-ec2-worker-복구-관찰-2026-10-15)을 따른다. |
+| 단일 leader EC2 비정상 종료 (DEP-20·DEP-17, NFR-07) | 현재 leader의 EC2를 OS 종료 없이 종료한다. 생존 follower로 관찰하며 새 leader 선출, 30초 이하 단일 불가용 구간, 같은 PVC·PV·EBS 복구와 durable stream RPO 0을 확인한다. | **2026-10-16 PASS(1회)**. 수정 image `sha256:edcff675…`, leader node 1(`ap-northeast-2b`)의 EC2를 `terminate-instances --skip-os-shutdown`으로 종료했다. 장애 요청 9.2초 뒤 node 3이 leader로 관찰됐다. 장애 뒤 관리 API 26/26·MQTT 37/37 표본이 성공해 표본 기준 불가용 구간은 없었다. 장애 요청 61.3초 뒤 같은 AZ 여분 worker에서 같은 PVC·PV·EBS로 Ready가 됐다. Durable stream은 acked 25개(22개는 장애 요청 뒤 전송)를 `SessionPresent=1`로 모두 받았다. 표본 사이 연속 가용성과 cross-host 시계 오차는 확인하지 않았다. [기준](#dep-20-leader-ec2-손실) |
+| 단일 AZ 전원 중단 모델 (DEP-20, NFR-07) | Follower 한 개가 있는 AZ의 모든 worker를 OS 종료 없이 정지하고 대체 용량 없이 유지한 뒤 다시 시작한다. 중단 중 남은 두 AZ의 quorum·MQTT·session 인계와 재시작 뒤 3-voter 복구, durable stream RPO 0, 통제 해제 뒤 180초 안정 상태를 확인한다. | **2026-10-16 PASS(모델 범위, 1회)**. 2차 실행(수정 image `sha256:edcff675…`, `ap-northeast-2a`, node 3): 480초 정지 동안 관리 API 74/74·MQTT 254/254 표본 성공, 중단 중 생존 node에서 `SessionPresent=1`과 acked 60/60 수신, 시작 요청 뒤 74.0초에 대상 Pod Ready(같은 PVC·PV·EBS), 재개 뒤 180초 동안 ASG activity·instance·Pod UID 변화 0. 1차 실행(이전 image `sha256:1d780c51…`)도 중단·회복 조건은 통과했으나 재개 직후 ASG 교체가 판정 밖에서 일어나 기준을 보완했다. 표본 관찰이며 표본 사이 연속 가용성, network·EBS 서비스·control plane 장애는 확인하지 않았다. [기준과 기록](#dep-20-단일-az-전원-중단-모델) |
+| EBS disk pressure·ENOSPC (DEP-21, NFR-07) | 실제 broker EBS filesystem에 ballast를 써서 follower admission 압박(`0x97`), follower ENOSPC, 두 follower ENOSPC를 차례로 만든다. 공간 회복과 재시작 뒤 durable stream RPO 0을 확인한다. | **2026-10-16 PASS(1회, 3번째 실행)**. 수정 image `sha256:407129c5…`, leader node 3(관찰), 대상 node 4·2, 부하 128 KiB × 2 topic. **D1**: 여유 공간 512 MiB에서 첫 `0x97`이 0.15초에 왔고(15회 모두 `0x97`), 관찰 표본 25/25 성공, ballast 축소 뒤 0.77초에 대상 경로 publish가 성공했다. **D2**: 대상 filesystem을 여유 0 byte까지 채운 4초 뒤 부하를 시작했다. 부하 시작 뒤 관찰을 시작하자 첫 표본에서 대상 자신의 관리 API에 `storage_no_space`·`storagePressure=true`·`replicationHealth=FAILED`가 보였다. ENOSPC가 첫 부하 publish보다 먼저 일어났는지는 확인하지 않았다. Pod는 6.3초에 NotReady가 되었다. 생존 경로 관리 API 54/54·MQTT 55/55 성공. Ballast 제거 45.0초 뒤 같은 Pod UID로 3개 Ready(container 재시작 1회). Durable 29/29, 누락·중복 0. **D3**: 두 대상 모두 자신의 API에서 storage 실패가 보인 10:04:18부터 회복까지 보낸 3개는 모두 결과 미상(`connection_lost`)이고 `acked`는 없었다. 회복 54.5초. Durable PUBACK 3개 모두 수신, 누락 0, 결과 미상 3개 미전달. 두 시나리오 모두 retained 부하 정리가 완료되었다(topic마다 PUBACK reason 0). 앞선 실행: 1번째는 D1 PASS. 2번째(storage-2)는 D2·D3 도구 결함(원격 행으로 판정, 관찰 tunnel 끊김)으로 판정 불가였고, 남은 1 MiB retained 부하가 CLU-14 재시드의 snapshot 결함을 드러냈다([Cluster §7](cluster-session-and-delivery.md#7-failure-recovery) 7항). 증거: `.artifacts/verification/eks-matrix-20261016T065350Z-24adc2/storage-3/eks-matrix-20261016T065350Z-24adc2/summary.json`. 표본 관찰이며 반복 성능이 아니다. |
 검증 환경은 Windows/amd64, Go 1.26.5다. 검증 기준 HEAD는 `ee01d3aeeb7a6637b1bca6dfa529561f3257d3f0`이며, PowerShell gate 실행 당시 아래 16개 변경 파일은 모두 미커밋이었다: `docs/TODO.md`, `docs/contracts/management-api-v1.md`, `docs/contracts/management-api-v1.openapi.json`, `docs/contracts/mqtt-client-compatibility-v1.md`, `docs/decisions/ADR-0016-node-drain-and-safe-to-stop.md`, `docs/decisions/ADR-0051-cluster-update-strategy.md`, `docs/decisions/README.md`, `docs/decisions/ADR-0055-drain-and-reconnect-operating-defaults.md`, `docs/explainers/safe-node-drain-and-will.md`, `docs/specs/README.md`, `docs/specs/drain-and-rolling-update.md`, `internal/adapters/http/management/drain_handlers.go`, `internal/adapters/http/management/drain_handlers_test.go`, `internal/domain/nodedrain/drain.go`, `internal/domain/nodedrain/drain_test.go`, `tests/contracts/management-api-v1/contract_test.go`. PowerShell gate 뒤에는 이 문서와 ADR-0055의 검증 기록만 갱신했다. Go 코드와 시험은 바꾸지 않았다. Markdown 링크 검사는 최종 기록 뒤 다시 실행했다.
 
 
@@ -548,3 +571,58 @@ Fault 요청 뒤 관리 API 85개·MQTT 99개 표본이 모두 성공했다. 표
 한계는 다음과 같다. 실행은 배치마다 한 번이다. 죽은 endpoint가 빠지는 시각은 Node 상태와 fencing 시각에 따라 달라진다. 이번 두 실행은 관찰 도구의 fencing과 기존 Pod 해제를 포함한다. Fencing이 없으면 이 구간이 더 길 수 있다 [INFERENCE]. NodeLocal DNSCache 같은 다른 DNS 구성은 시험하지 않았다. [결과](../../.artifacts/verification/eks-adr59-dns-20261016T053249Z-f3b329/result.json), [분석](../../.artifacts/verification/eks-adr59-dns-20261016T053249Z-f3b329/analysis.json), [재현 실행 DNS 표본](../../.artifacts/verification/eks-adr59-dns-20261016T053249Z-f3b329/cycle-b/post-fault/dns-probe.jsonl), [전제 실행 DNS 표본](../../.artifacts/verification/eks-adr59-dns-20261016T053249Z-f3b329/cycle-a/post-fault/dns-probe.jsonl), [CoreDNS 배치 기록](../../.artifacts/verification/eks-adr59-dns-20261016T053249Z-f3b329/cycle-a-coredns-placement.json)을 따른다.
 
 시험 뒤 합성 namespace 두 개와 broker EBS 3개, AWS CLI로 만든 여분 node group, run 전용 snapshot, 작업 image, CloudWatch log group을 삭제했다. 검토한 delete-only plan으로 Terraform 관리 자원 41개를 삭제했고 state는 비었다. 직접 AWS 조회 22개 항목이 모두 통과했다. 보호 snapshot 3개와 공유 image tag `observability-20261014`의 digest는 그대로다. 공개 증거 폴더와 `docs/`·`deploy/terraform`에서 관리 token, MQTT 비밀번호, fixture Secret의 base64 값 10개와 PEM private key 머리글을 검색했고 발견되지 않았다. 합성 입력·plan·state·kubeconfig·도구 출력은 Windows DPAPI `CurrentUser`로 암호화해 보존했다. 각 파일은 복호화 뒤 원본과 같은지 확인한 다음 평문을 지웠다. [직접 정리 확인](../../.artifacts/verification/eks-adr59-dns-20261016T053249Z-f3b329/direct-cleanup-verification.json)을 따른다. `CLU-14 FAILED/UNRESOLVED`와 기존 전체 local gate 실패는 유지한다.
+
+### EKS 장애 matrix 보완 기준 (2026-10-16)
+
+이 절은 DEP-20·DEP-21의 남은 EKS 장애 시나리오와 판정 기준을 실행 전에 정한다. 대상은 전용 합성 fixture다. 각 시나리오는 한 번 실행하며, 한 번의 결과를 반복 성능으로 해석하지 않는다. 제품 동작 기준은 [Cluster §6·§7](cluster-session-and-delivery.md#7-failure-recovery), [ADR-0003](../decisions/ADR-0003-durable-ack-barrier.md), [Cluster §11.28 publish backpressure](cluster-session-and-delivery.md#1128-publish-backpressure-수용-매핑)와 [PRD §4.2](../requirements/PRD.md#42-초기-성공-지표)의 비정상 노드 장애 RTO 30초다.
+
+#### 공통 durable stream oracle
+
+Durable stream oracle은 PUBACK을 받은 메시지가 장애 뒤에도 사라지지 않는지(RPO 0) 확인한다.
+
+1. 장애 전에 subscriber `durable-stream-subscriber`가 장애 대상 Pod에서 persistent session(Session Expiry 3600초)을 만든다. 시나리오 topic을 QoS 1로 구독한 뒤 정상 종료한다.
+2. Publisher `durable-stream-publisher`는 생존 Pod에 연결해 장애 직전부터 순번 payload를 MQTT 5 QoS 1로 보낸다. 기본 간격은 3초이고 시나리오당 최대 60개다. 분리된 session의 durable queue는 session당 64개까지 담는다. 그 뒤의 대상은 `Saturated`로 건너뛰지만 publish는 성공할 수 있다([Cluster §4.2](cluster-session-and-delivery.md#42-qos-12-durable-delivery)의 승인된 결정). 그래서 60개를 넘겨 보내면 RPO가 아니라 이 한도를 재게 된다. 메시지마다 결과를 기록한다.
+   - `acked`: reason code가 `0x80` 미만인 PUBACK을 받았다.
+   - `rejected`: reason code가 `0x80` 이상인 PUBACK을 받았다.
+   - `unknown`: 15초 안에 PUBACK이 없거나 연결이 끊겼다.
+3. 확인 단계에서 subscriber는 지정한 Pod에 Clean Start 0으로 다시 연결한다. `SessionPresent=1`이어야 한다. 10초 동안 새 메시지가 없을 때까지 받는다.
+4. 통과 조건은 두 가지다. `acked` 메시지는 모두 한 번 이상 받아야 한다(누락 0). `rejected` 메시지는 받으면 안 된다. `unknown` 메시지의 전달 여부와 QoS 1 중복 수는 기록만 하고 판정에 쓰지 않는다.
+
+2026-10-16 첫 EKS 실행은 이 상한 없이 0.2초 간격으로 보냈다. D3 subscriber session은 PUBACK을 받은 1,515개 중 seq 65 이후를 받지 못했다. 이는 위 session당 64개 한도와 일치하며 oracle 설계 오류로 판정한다. 그 실행의 RPO 판정은 쓰지 않는다. 증거는 `.artifacts/verification/eks-matrix-20261016T065350Z-24adc2/storage/`에 보존한다.
+
+#### DEP-20 leader EC2 손실
+
+- 사전 조건은 기존 follower 시험과 같다. 차이는 다음과 같다. 대상은 현재 leader여야 한다. 관찰 Pod는 다른 AZ의 follower여야 한다.
+- 장애 주입, fencing, 기존 Pod 해제, 같은 AZ 여분 worker의 같은 PVC·PV·EBS 복구 판정은 [EKS worker observer 보완 기준](#eks-worker-observer-보완-기준)을 따른다.
+- 관리 API 표본에서 생존 member 하나가 새 leader로 보여야 한다.
+- 관리 API와 MQTT 표본의 실패는 장애 요청 뒤 하나의 연속 구간에만 허용한다. 그 구간은 첫 실패 표본 시작부터 다음 성공 표본 종료까지 30초 이하여야 한다. 구간 밖의 실패가 있으면 실패다.
+- Durable stream 확인은 복구 뒤 생존 Pod에서 한다.
+
+#### DEP-20 단일 AZ 전원 중단 모델
+
+이 시나리오는 한 AZ의 compute 전원을 잃은 상태를 모델로 삼는다. AZ의 network·EBS 서비스·EKS control plane 장애는 모델에 포함하지 않는다. 실제 AZ 장애를 완전히 재현한 것으로 표현하지 않는다.
+
+- 대상 AZ에는 follower 한 개가 있어야 한다. Leader와 관찰 Pod는 다른 AZ에 있어야 한다. 대상 AZ에는 여분 worker가 없어야 한다.
+- 장애 전에 대상 AZ를 포함한 node group ASG의 `Launch`, `Terminate`, `ReplaceUnhealthy`, `AZRebalance`, `HealthCheck` process를 멈춘다. 이 조치는 정지한 instance가 교체되지 않게 하는 시험 통제다. 시험 전부터 멈춰 있던 process는 건드리지 않는다. 시험이 끝나면 도구가 멈춘 process만 다시 켠다.
+- Process를 다시 켜기 전에 시작한 instance의 ASG health를 확인한다. Instance가 `running`이고 Kubernetes Node가 Ready인데 ASG health가 `Unhealthy`이면 `set-instance-health --health-status Healthy`로 되돌리고 기록한다. 120초 안에 조건을 만족하지 못한 instance는 바꾸지 않고 기록한다.
+- 대상 AZ의 모든 worker EC2를 `stop-instances --skip-os-shutdown`으로 정지한다. 480초 동안 유지한 뒤 같은 instance를 시작한다.
+- 중단 동안 관찰 Pod의 관리 API 표본은 모두 `quorumAvailable=true`여야 하고 leader는 대상 AZ 밖에 있어야 한다. MQTT 표본은 모두 성공해야 한다.
+- 중단 동안 subscriber가 관찰 Pod로 다시 연결해 durable stream을 1차 확인한다. 대상 Pod가 소유했던 session을 생존 node가 넘겨받는지 보는 단계다.
+- 시작 뒤 900초 안에 대상 slot의 Pod가 Ready가 되어야 한다. 같은 PVC·PV·EBS를 써야 하고, 3개 broker Ready와 quorum이 회복되어야 한다. 이후 durable stream을 2차 확인한다.
+- Process를 다시 켠 뒤 `postResumeSeconds`(기본 180초) 동안 10초 간격으로 관찰한다. 이 동안 ASG scaling activity가 없어야 하고, ASG instance 집합과 broker Pod UID가 회복 시점과 같아야 한다. 이 조건은 모델이 만든 상태가 시험 뒤에도 그대로 유지되는지 확인한다. 모델 통제를 푼 직후의 교체는 실제 AZ 장애가 아니라 시험 통제의 부작용이므로 별도 실패로 판정한다.
+
+2026-10-16 첫 실행(`HealthCheck` 미중단, 사후 관찰 없음)은 위 중단·회복 조건을 모두 통과했다. 그러나 도구가 process를 다시 켠 6초 뒤 ASG가 다시 시작한 instance를 "EC2 health check가 stopped를 보고함" 이유로 종료하고 새 instance를 띄웠다. Data volume은 같은 PVC로 새 instance에 붙었다. 이 교체는 도구 판정 뒤에 일어나 판정에 들어가지 않았다. 그래서 `HealthCheck` 중단과 사후 관찰 조건을 추가했다.
+
+#### DEP-21 EBS disk pressure·ENOSPC
+
+Ballast는 대상 broker Pod에 추가한 ephemeral container가 같은 PVC filesystem에 쓰는 파일이다. Broker container와 제품 설정은 바꾸지 않는다. 대상은 follower다. 기본 `minFreeBytes`는 1 GiB다([Process configuration v1](../contracts/process-configuration-v1.md)).
+
+| 단계 | 조치 | 통과 조건 |
+| --- | --- | --- |
+| D1 admission 압박 | 대상 filesystem의 여유 공간을 1 GiB 미만, 0보다 크게 만든다. | 대상 Pod로 보낸 QoS 1 PUBLISH가 10초 안에 PUBACK `0x97`을 받는다. 생존 Pod 경로의 publish는 성공한다. Ballast를 줄여 여유 공간을 1 GiB+128 MiB 이상으로 만들면 10초 안에 대상 경로 publish가 다시 성공한다. |
+| D2 follower ENOSPC | 대상 filesystem을 가득 채우고, 관찰 Pod로 retained QoS 1 쓰기 부하를 보낸다. | 부하 시작 60초 안에 대상 node가 Ready가 아니게 되고, **대상 node 자신의** 관리 API에 `lastErrorCode=storage_no_space` 또는 `FAILED`와 `storagePressure=true`가 보인다. 다른 node의 원격 행은 연결 상태만 담고 storage 상태를 담지 않으므로 판정에 쓰지 않는다([Cluster §7](cluster-session-and-delivery.md#7-failure-recovery), [§11.6](cluster-session-and-delivery.md#116-storage-fault-chaos-mapping)). Liveness 503으로 Kubernetes가 container를 다시 시작하면 공간이 회복될 때까지 시작이 실패할 수 있다. 이는 fail-closed 동작이다. 생존 Pod의 quorum과 MQTT 표본은 모두 성공한다. Ballast를 지우면 900초 안에 같은 PVC로 3개 broker가 Ready가 된다. Durable stream 확인이 통과한다. 관찰 tunnel이 끊기면 결과를 판정 불가(FAIL)로 기록한다. |
+| D3 두 follower ENOSPC | 두 follower filesystem을 모두 가득 채우고, leader인 관찰 Pod로 retained QoS 1 쓰기 부하를 보낸다. | 두 node 모두 각자의 관리 API에서 storage 실패가 보이거나 Ready가 아니게 된 때부터 한 node의 공간이 회복될 때까지 보낸 메시지에 `acked`가 없어야 한다. 공간 회복과 재시작 뒤 900초 안에 3개 broker가 Ready가 된다. Durable stream 확인이 통과한다. |
+
+D2·D3 부하가 남기는 retained 상태는 256 KiB 이하로 유지해야 한다. 기본값은 128 KiB payload를 2개 topic에 번갈아 쓰는 것이다(`loadPayloadBytes`·`loadTopics`). WAL은 publish마다 payload만큼 커지므로 topic 수를 줄여도 filesystem을 채우는 데는 영향이 없다. 직렬화한 snapshot이 1 MiB를 넘으면 다시 시작한 follower가 snapshot으로 따라잡을 수 없다([Cluster §7](cluster-session-and-delivery.md#7-failure-recovery) 7항). 그러면 이 시험은 disk pressure가 아니라 알려진 snapshot 전송 한계를 측정하게 된다. 256 KiB는 1 MiB 한도에 여유를 두는 시험 설계값이다. 다른 복제 상태와 직렬화 overhead까지 포함한 실제 snapshot 크기는 측정하지 않았다. 부하를 시작한 시나리오는 결과와 관계없이 부하 topic의 retained message 삭제를 시도하고 완료 여부를 기록한다. 완료되지 않았으면 다음 시험 전에 지워야 한다.
+
+2026-10-16 두 번째 실행(storage-2)은 8개 topic(1 MiB)을 썼다. D2 관찰 tunnel이 끊겨 retained 정리를 하지 못했다. 이 상태가 다음 CLU-14 재시드에서 1 MiB를 넘는 snapshot(1,055,832 byte)의 대부분을 차지한 것으로 본다 [INFERENCE].

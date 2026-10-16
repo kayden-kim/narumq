@@ -197,7 +197,8 @@ func runClusterMode(ctx context.Context, config clusterConfigFile, logger *slog.
 		NodeID: raftadapter.NodeID(config.NodeID), Directory: config.Directory,
 		DynamicMembership: true, ClusterID: config.ClusterID,
 		CertificateSHA256: localFingerprint, BootstrapVoterIDs: bootstrapIDs,
-		PersistenceBoundaryHook: persistenceHook, WALBoundaryHook: walBoundaryHook,
+		PersistenceBoundaryHook: persistenceHook, WALBoundaryHook: walBoundaryHook, Logger: logger,
+		SnapshotStreamActive: func() bool { return runtime.snapshotStreamActive() },
 		ForwardedProposalCapacity: func(peerID raftadapter.NodeID) (int, int) {
 			return runtime.forwardedProposalCapacity(peerID)
 		},
@@ -293,7 +294,8 @@ func runClusterMode(ctx context.Context, config clusterConfigFile, logger *slog.
 		LocalIdentity: runtime.localIdentity, Listener: peerListener,
 		ServerTLS: peerServerTLS, ClientTLS: peerClientTLS,
 		Peers: initialPeers, AdmissionHandler: runtime.admitPeer,
-		BootstrapProgress: runtime.bootstrapProgress, BootstrapAllowedPeerIDs: bootstrapAllowed,
+		SnapshotStreamHandler: runtime.receiveSnapshotStream,
+		BootstrapProgress:     runtime.bootstrapProgress, BootstrapAllowedPeerIDs: bootstrapAllowed,
 		ObservabilityHandler: func(ctx context.Context, kind tcpadapter.PeerObservabilityKind) ([]byte, error) {
 			if peerObservabilityHandler == nil {
 				return nil, errors.New("peer observability query service is unavailable")
@@ -305,6 +307,7 @@ func runClusterMode(ctx context.Context, config clusterConfigFile, logger *slog.
 		return fmt.Errorf("create dynamic raft peer transport: %w", err)
 	}
 	runtime.transport = transport
+	runtime.snapshotStreams = newClusterSnapshotStreams(logger, transport, node, runtime.faults.isolates)
 	runtime.inboundQueue = transport
 	defer transport.Close()
 	runtime.forwarder = transport
@@ -585,6 +588,7 @@ type clusterRuntime struct {
 	logger                  *slog.Logger
 	node                    *raftadapter.Node
 	transport               *tcpadapter.DynamicTCPPeerTransport
+	snapshotStreams         *clusterSnapshotStreams
 	inboundQueue            clusterInboundRaftQueue
 	forwarder               clusterPeerForwarder
 	forwardSink             clusterForwardSink
@@ -909,6 +913,12 @@ func (runtime *clusterRuntime) runDriver(ctx context.Context) (driverErr error) 
 	go func() { serveResult <- runtime.transport.Serve(ctx) }()
 	ticker := time.NewTicker(clusterTickInterval)
 	defer ticker.Stop()
+	// Snapshot stream transfers end with the driver, whatever the reason.
+	streamContext, stopSnapshotStreams := context.WithCancel(ctx)
+	defer func() {
+		stopSnapshotStreams()
+		runtime.snapshotStreams.wait()
+	}()
 	reads := make(map[string]clusterReadWaiter)
 	var proposals []clusterProposalWaiter
 	deferredReads := make([]raftadapter.ReadStateDTO, 0)
@@ -1089,6 +1099,7 @@ func (runtime *clusterRuntime) runDriver(ctx context.Context) (driverErr error) 
 			if err != nil {
 				return err
 			}
+			runtime.snapshotStreams.start(streamContext, batch.SnapshotStreams)
 			status := runtime.node.Status()
 			runtime.publishProjectionAdmissionStatus(status)
 			deferredReads = runtime.completeReadStates(deferredReads, reads)
@@ -1147,6 +1158,10 @@ func (runtime *clusterRuntime) runDriver(ctx context.Context) (driverErr error) 
 				return err
 			}
 		case <-runtime.node.StorageReady():
+			if err := processReady(); err != nil {
+				return err
+			}
+		case <-runtime.snapshotStreams.wakeChannel():
 			if err := processReady(); err != nil {
 				return err
 			}
@@ -1427,7 +1442,7 @@ type raftLeadership struct {
 
 func clusterBatchEmpty(batch raftadapter.BatchDTO) bool {
 	return !batch.Progress && batch.ApplySequence == 0 && len(batch.Messages) == 0 && len(batch.Commands) == 0 && len(batch.ConfigurationChanges) == 0 &&
-		len(batch.SnapshotData) == 0 && len(batch.ReadStates) == 0
+		len(batch.SnapshotData) == 0 && len(batch.ReadStates) == 0 && len(batch.SnapshotStreams) == 0
 }
 
 func (runtime *clusterRuntime) deliveryCrashArmed(point clusterFailpoint) bool {

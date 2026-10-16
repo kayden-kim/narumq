@@ -4,6 +4,9 @@ metadata:
   name: narumq-cluster-configs
   namespace: narumq
 data:
+  slot-0: "1"
+  slot-1: "2"
+  slot-2: "3"
   node-1.json: |
     {
       "mode": "cluster",

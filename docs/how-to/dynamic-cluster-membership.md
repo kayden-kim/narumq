@@ -83,6 +83,123 @@
 
 초기 배포에서 `cluster bootstrap refused`가 나오고 **아직 사용자 데이터가 없다면**, 세 node를 모두 중지하고 세 directory를 비운 뒤 동시에 다시 시작한다. 사용자 데이터가 있는 cluster에서는 directory를 지우지 말고 원래 volume을 복구하거나 위 새 ID 교체 절차를 따른다.
 
+### EKS slot의 volume 손실 교체
+
+이 절차는 `deploy/kubernetes/eks-ec2-ha`에서 EBS volume을 잃은 broker 자리(slot) 하나를 새 member ID로 다시 채운다. 근거와 결정은 [ADR-0061](../decisions/ADR-0061-eks-ordinal-member-slot.md), 합격 기준은 [Cluster §11.20 EKS slot 재시드 기준](../specs/cluster-session-and-delivery.md#eks-slot-재시드-기준-2026-10-16)이다. 이 절차도 위 절차와 같이 Draft다. 로컬 process 시험에서 같은 주소 새 ID 재시드가 64회 중 4회 실패했다. 원인은 `dialPeer`가 hello를 보낸 뒤에야 상대 인증서를 확인한 것이었고, 이제 hello 전에 확인한다. 수정 뒤 같은 시험은 40회 모두 통과했다([Cluster §11.20](../specs/cluster-session-and-delivery.md#1120-voter-volume-손실-보호와-재시드-수용-매핑)). 이 수정을 포함하지 않은 이미지로 교체하면 이전 ID 제거가 늦어지거나 quorum이 흔들릴 수 있다. 2026-10-16 격리 EKS에서 실제 EBS 손실 뒤 이 절차를 한 번 실행해 통과했다([실행 결과](../specs/cluster-session-and-delivery.md#2026-10-16-eks-slot-재시드-실행-결과)).
+
+실행 위치는 대상 cluster의 `kubectl` context를 가진 운영자 작업 환경이며 예시는 Bash 기준이다. 관리 API는 `kubectl port-forward`로 생존 Pod의 8080에 연결해 호출한다. 아래 자리표시자는 실제 값으로 바꾼다.
+
+| 자리표시자 | 뜻 |
+| --- | --- |
+| `<SLOT>` | 손실된 Pod의 ordinal. 예: `2` |
+| `<LOST_ID>` | 손실된 slot이 쓰던 member ID. 예: `3` |
+| `<NEW_ID>` | 아직 쓴 적 없는 새 member ID. 예: `4` |
+| `<SURVIVOR>` | 정상인 Pod의 ordinal |
+| `<SLOT_DNS>` | `narumq-<SLOT>.narumq-headless.narumq.svc.cluster.local` |
+| `<ADMIN_TOKEN_FILE>` | `ClusterAdmin` token을 담은 파일 경로. token 값은 명령줄·로그·문서에 남기지 않는다. |
+
+시작 전 확인:
+
+- [ ] 남은 두 voter가 모두 READY이고 quorum이 있다. 한 번에 slot 하나만 교체한다.
+- [ ] `snapshot-stream`을 장애 전에 활성화했다(`POST /api/v1/cluster/features/snapshot-stream`, [Feature activation](cluster-feature-activation.md), [Raft snapshot stream v1](../contracts/raft-snapshot-stream-v1.md)). 이 feature가 비활성이면 1 MiB 초과 snapshot을 새 ID에 보낼 수 없다([Cluster §7](../specs/cluster-session-and-delivery.md#7-failure-recovery) 7항). Stage 뒤 leader 로그에 `raft snapshot exceeds peer frame limit; not sent`가 나오면 이 상태다. 이때는 이전 ID를 제거하지 않는다. 남은 두 voter의 quorum과 서비스는 유지된다. 따라잡지 못하는 새 ID가 member로 남아 있으면 활성화가 `409 feature_not_supported_by_all_members`로 거절될 수 있다. 이 상태의 자동 복구 절차는 검증하지 않았다. 증거를 보존해 담당자에게 전달한다. 활성화는 되돌릴 수 없다. 활성화한 뒤에는 이 feature를 모르는 build로 rollback하지 않는다.
+- [ ] 손실한 volume이 되돌릴 수 없게 사라졌다고 확인했다. 확인하지 못했으면 4단계 이후로 진행하지 않는다.
+- [ ] `<NEW_ID>`는 `GET /api/v1/nodes`에 없고 이전에 쓴 적이 없다.
+- [ ] Peer CA로 인증서를 발급할 수 있다. CA 비밀키는 이 절차의 산출물에 넣지 않는다.
+
+1. **남은 voter와 quorum을 확인한다.** 생존 Pod에 연결해 두 voter가 모두 READY이고 leader가 있는지 본다.
+
+   ```bash
+   kubectl -n narumq port-forward pod/narumq-<SURVIVOR> 8080:8080
+   ```
+
+   다른 터미널에서 호출한다. Token은 stdin 설정으로 넘겨 process 목록에 남기지 않는다.
+
+   ```bash
+   mgmt() { # 사용: mgmt <METHOD> <PATH> [<Idempotency-Key> [<본문 파일>]]
+     printf 'header = "Authorization: Bearer %s"\n' "$(cat "<ADMIN_TOKEN_FILE>")" |
+       curl --silent --show-error --max-time 10 --config - --request "$1" "http://127.0.0.1:8080$2" \
+         ${3:+--header "Idempotency-Key: $3"} ${4:+--header "Content-Type: application/json" --data "@$4"} \
+         --write-out '\nHTTP:%{http_code}\n'
+   }
+   mgmt GET /api/v1/nodes
+   ```
+
+   검사 기준: `VOTER`가 정확히 둘이다. 손실 node는 `UNREACHABLE` 같은 비정상 상태일 수 있다. Quorum을 확인하지 못하면 이후 단계를 진행하지 않는다.
+
+2. **빈 volume의 같은 ID 시작이 거절되는지 본다.** StatefulSet이 새 빈 PVC로 만든 Pod는 이전 ID로 시작해 `cluster bootstrap refused` 로그와 함께 exit 1로 끝나야 한다([ADR-0022](../decisions/ADR-0022-bootstrap-volume-loss-guard.md)). Pod를 지우거나 data directory를 만들지 않는다.
+
+   ```bash
+   kubectl -n narumq logs pod/narumq-<SLOT> --previous
+   ```
+
+3. **새 ID용 key와 인증서를 만든다.** DNS SAN은 `<SLOT_DNS>`이고 기존 peer CA(`ca.crt`)가 서명해야 한다. 새 key를 쓴다. 이전 ID의 인증서와 key를 재사용하지 않는다. 인증서의 SHA-256은 DER 형식 leaf 인증서 전체에 대한 값이다.
+
+   ```bash
+   openssl x509 -in <new-cert.pem> -outform DER | openssl dgst -sha256
+   ```
+
+   검사 기준: SAN에 `<SLOT_DNS>`가 있고, SHA-256이 이전 ID의 값과 다르다.
+
+4. **새 ID를 stage한다.** 본문 파일에는 `memberId`=`<NEW_ID>`, `address`=`<SLOT_DNS>:7000`, `dnsSan`=`<SLOT_DNS>`, 3단계의 `certificateSha256`, 실행 중인 cluster와 같은 `releaseVersion`·`clusterProtocolMajor`·`clusterProtocolMinor`·`stateSchemaMajor`·`stateSchemaMinor`를 넣는다. `releaseVersion`은 `GET /api/v1/cluster` 응답에서 읽는다.
+
+   ```bash
+   mgmt POST /api/v1/cluster/members "eks-slot-stage-<NEW_ID>" <stage-body.json>
+   ```
+
+   `202 Accepted`와 `STAGED` phase를 확인하고 `operationId`를 보존한다. 응답을 잃으면 **같은 key와 같은 본문**으로만 다시 호출한다. 주소가 이전 ID와 같아도 membership은 member ID 중복만 거절한다. 주소 중복은 거절하지 않는다.
+
+5. **ConfigMap과 Secret을 새 ID로 바꾼다.** 한 번에 같은 변경으로 적용한다.
+
+   - ConfigMap `narumq-cluster-configs`에 `node-<NEW_ID>.json`을 더한다. 내용은 bootstrap 설정과 같은 필드를 쓰되 `nodeId`는 `<NEW_ID>`, `role`은 `joiner`, `bootstrapMembers`는 `[]`, `seedAddresses`는 **다른 두 slot**의 `<dns>:7000`이다. `advertisedAddress`와 `localDnsName`은 이 slot의 값 그대로다.
+   - 같은 ConfigMap의 `slot-<SLOT>` 값을 `<NEW_ID>`로 바꾼다.
+   - Secret `narumq-cluster-secrets`의 `node-<SLOT>.crt`와 `node-<SLOT>.key`를 3단계의 새 인증서와 key로 바꾼다. Key 이름은 그대로다.
+
+   적용은 배포에 쓰는 같은 방법(GitOps 또는 `kubectl apply`)으로 한다. 적용 뒤 값을 읽어 확인한다.
+
+   ```bash
+   kubectl -n narumq get configmap narumq-cluster-configs -o jsonpath='{.data.slot-<SLOT>}'
+   ```
+
+   검사 기준: 출력이 `<NEW_ID>`이다. Secret 본문은 출력하지 않는다. 이 변경 뒤 손실 volume이 아닌 이전 data가 남은 Pod를 다시 시작하지 않는다([ADR-0061 §5](../decisions/ADR-0061-eks-ordinal-member-slot.md#5-결과와-제약)).
+
+6. **손실된 PVC와 Pod를 삭제한다.** 손실 volume을 확인한 뒤에만 한다. StatefulSet이 빈 PVC로 Pod를 다시 만들고, 새 Pod는 `slot-<SLOT>`의 `<NEW_ID>`로 joiner를 시작한다.
+
+   ```bash
+   kubectl -n narumq delete pvc data-narumq-<SLOT> --wait=false
+   kubectl -n narumq delete pod narumq-<SLOT>
+   ```
+
+7. **새 ID가 voter가 되는지 본다.** `operationId`가 `SUCCEEDED`가 되고 `GET /api/v1/nodes`에서 `<NEW_ID>`가 `VOTER`이며 Pod가 READY인지 확인한다.
+
+   ```bash
+   mgmt GET /api/v1/cluster/membership-operations/<operationId>
+   mgmt GET /api/v1/nodes
+   ```
+
+8. **이전 ID를 제거한다.** 7단계가 끝난 뒤에만 호출한다. 이 planned removal은 이전 ID가 소유한 session을 남은 voter로 옮긴다.
+
+   ```bash
+   mgmt DELETE /api/v1/cluster/members/<LOST_ID> "eks-slot-remove-<LOST_ID>"
+   ```
+
+   `SUCCEEDED`를 기다린 뒤 `GET /api/v1/nodes`에서 `<LOST_ID>`가 `RETIRED`인지 확인한다.
+
+9. **이전 ID의 설정을 지운다.** ConfigMap에서 `node-<LOST_ID>.json`을 삭제한다. 이 파일은 8단계 전에 지우지 않는다.
+
+10. **결과를 확인한다.** Broker Pod 3개가 READY이고 voter가 남은 두 ID와 `<NEW_ID>`이며 `<LOST_ID>`가 `RETIRED`인지 확인한다. 손실 전에 기록한 retained marker와 persistent session·offline message가 새 member에서 복구되는지 확인한다. `<LOST_ID>`로 다시 stage하면 `409 member_id_reserved`여야 한다.
+
+중단 조건(위 §5에 더한다):
+
+- 시작 전 확인 항목 중 하나라도 충족하지 못했다.
+- 2단계에서 `cluster bootstrap refused`가 아닌 다른 이유로 Pod가 실패하거나, 이전 ID가 시작에 성공했다.
+- 4단계 응답이 `202 STAGED`가 아니거나 `member_id_reserved`·identity conflict가 나왔다.
+- 5단계 뒤 `slot-<SLOT>`이 `<NEW_ID>`가 아니다.
+- 7단계에서 operation이 `SUCCEEDED`가 되지 않거나 `<NEW_ID>`가 `VOTER`가 되지 않는다. 8단계를 호출하지 않는다.
+
+중단하면 새 stage key를 만들거나 다른 ID를 stage하지 않는다. 4단계 이후에는 같은 operation과 같은 key로만 상태를 조회·재시도하고, 증거를 보존해 §7 담당자에게 전달한다.
+
+`deploy/kubernetes/eks-ec2-ha-s3`의 restore Job은 ID 1~3의 설정을 고정해 쓴다. Voter ID가 바뀐 cluster에는 이 절차를 적용해도 restore Job을 쓰지 않는다. 이 조합의 S3 복원은 검증하지 않았다.
+
 ## 4. 검증
 
 다중 프로세스 TLS membership과 retained/v2 backup process acceptance에서 관찰한 범위만 기록한다. 전체 cluster의 다른 수용 기준과 production 사용 여부는 Draft로 유지한다. Membership evidence는 [Cluster §11.5](../specs/cluster-session-and-delivery.md#115-dynamic-membershiprestart-convergencemqtt-readiness-mapping), retained evidence는 [§11.8](../specs/cluster-session-and-delivery.md#118-retained-replication과-backup-v2-수용-매핑)에 연결한다.
@@ -129,6 +246,7 @@ go test ./tests/integration -run '^(TestClusterBackupRestoreProcessCrashAndResyn
 1. `STAGED` 이후 operation이 진행되지 않으면 동일 key와 동일 request만 재시도하고 원인을 확인한다. 새로운 stage key, 수동 tombstone 삭제, ID 재사용, 데이터 디렉터리 초기화는 복구 방법이 아니다.
 2. Joiner가 learner가 된 뒤 응답을 잃었으면 같은 persistent directory로 재시작하고 동일 operation을 조회한다. Heartbeat timeout이나 process 종료만으로 learner/voter를 자동 삭제하지 않는다.
 3. Planned removal은 successor ownership transfer가 commit된 뒤에만 허용된다. Durable delivery aggregate는 별도 checkpoint command 없이 새 owner가 다음 CONNECT에서 ATTACH로 재개한다. Quorum이나 successor transfer가 확인되지 않으면 `DELETE /api/v1/cluster/members/{memberId}`를 호출하지 말고 기존 voter를 유지한다. Active session handoff와 quorum loss 복구 acceptance는 `TestDynamicClusterMembershipRemovalHandoffWaitsForQuorum`로 검증했다.
+3a. 전원 손실이나 `SIGKILL` 뒤 같은 volume으로 재시작한 voter가 오래 `Ready`가 되지 않으면 Pod의 `restartCount`와 직전 container 종료 사유를 먼저 확인한다. Kubelet은 startup probe 예산을 다 쓴 container를 종료하기 전에 `preStop`을 실행하므로 node에 drain 기록이 생길 수 있다. `GET /api/v1/nodes/{nodeId}/drain`의 phase가 `COMPLETED`이면 재시작 뒤 자동으로 `CLEAR`된다. `FAILED`일 때만 원인을 해결한 뒤 `DELETE /api/v1/nodes/{nodeId}/drain`으로 취소한다. `/health/ready`를 직접 호출해 startup을 통과시키지 않는다. 그 호출은 startup 결함을 가린다. 규칙과 근거는 [Drain §8.1](../specs/drain-and-rolling-update.md#81-startup-probe-종료와-drain-기록-재시작-순환)을 따른다.
 4. Restore 절차인 [Cluster backup/restore](cluster-backup-restore.md)는 v3 archive에 retained, offline 및 durable delivery state를 포함한다. Release window·active feature·동일 identity 복원은 최신 [Backup v3 §2·§4](../contracts/cluster-backup-v3.md#4-호환성-규칙)를 따른다. [Feature activation 승인](cluster-feature-activation.md) 뒤에는 해당 feature를 지원하지 않는 build로 rollback하지 않는다. Activation 전 backup 복원은 이후 commit 손실이 가능한 별도 disaster recovery다. Production volume power-loss는 이 절차에서 검증하지 않으며, 이전 v1/v2 archive 또는 binary로의 직접 downgrade 경로는 지원하지 않는다.
 
 ## 7. 해결되지 않을 때 전달할 대상

@@ -279,3 +279,103 @@ def release_fenced_pod(get_node: Callable, get_pod: Callable, delete_pod: Callab
             result["observedPodUID"] = after["metadata"]["uid"]
         return {**result, "outcome": "deleted", "deleteApplied": None if result["deleteFailed"] else True}
     return {**result, "outcome": "failed_unexplained" if result["deleteFailed"] else "delete_unconfirmed"}
+
+
+STREAM_FIELDS = {"management": "quorumAvailable", "mqtt": "puback"}
+
+
+def _failed(sample: dict, field: str) -> bool:
+    return not (sample.get("ok") and sample.get("data", {}).get(field) is True)
+
+
+def _at(value: str) -> datetime.datetime:
+    return datetime.datetime.fromisoformat(value)
+
+
+def failure_windows(samples: list[dict], field: str, fault_requested_at: str) -> dict:
+    """Group the failed samples of one stream into runs of consecutive failures.
+
+    A window starts at the first failed sample's start and ends when the next successful sample finishes
+    (monitor-relative seconds). A run without a later success stays open. Failures that started before
+    the fault request are counted separately because no window may cover them.
+    """
+    fault = _at(fault_requested_at)
+    ordered = sorted(samples, key=lambda s: s["startedSeconds"])
+    before = sum(_failed(s, field) for s in ordered if _at(s["startedAt"]) < fault)
+    after = [s for s in ordered if _at(s["startedAt"]) >= fault]
+    windows: list[dict] = []
+    current = None
+    for sample in after:
+        if _failed(sample, field):
+            if current is None:
+                current = {"start": sample["startedSeconds"], "end": None, "failedSamples": 0}
+                windows.append(current)
+            current["failedSamples"] += 1
+        elif current is not None:
+            current["end"] = sample["startedSeconds"] + sample["elapsedSeconds"]
+            current = None
+    return {"samplesAfterFault": len(after), "failedBeforeFault": before,
+            "failedAfterFault": sum(w["failedSamples"] for w in windows), "windows": windows}
+
+
+def _span(window: dict) -> float | None:
+    return None if window["end"] is None else window["end"] - window["start"]
+
+
+def merge_windows(windows: list[dict]) -> list[dict]:
+    """Union of windows across streams; an open window extends to infinity."""
+    merged: list[dict] = []
+    for window in sorted(windows, key=lambda w: w["start"]):
+        if merged and (merged[-1]["end"] is None or window["start"] <= merged[-1]["end"]):
+            last = merged[-1]
+            last["end"] = None if last["end"] is None or window["end"] is None else max(last["end"], window["end"])
+        else:
+            merged.append({"start": window["start"], "end": window["end"]})
+    return merged
+
+
+def leader_continuity(samples: dict[str, list[dict]], fault_requested_at: str, target_node_id: str,
+                      limit_seconds: float = 30.0) -> dict:
+    """Judge a leader loss: failures only inside ONE closed window of at most `limit_seconds`, and a
+    management sample that shows a surviving member as leader with quorum after the fault request."""
+    reasons: list[str] = []
+    streams = {}
+    every = []
+    for name, field in STREAM_FIELDS.items():
+        stream = failure_windows(samples[name], field, fault_requested_at)
+        for window in stream["windows"]:
+            window["spanSeconds"] = _span(window)
+            every.append(window)
+        if stream["samplesAfterFault"] == 0:
+            reasons.append(f"{name}: no samples after the fault request")
+        if stream["failedBeforeFault"]:
+            reasons.append(f"{name}: failure before the fault request")
+        if len(stream["windows"]) > 1:
+            reasons.append(f"{name}: more than one failure window")
+        streams[name] = stream
+    union = merge_windows([{"start": w["start"], "end": w["end"]} for w in every])
+    for window in union:
+        window["spanSeconds"] = _span(window)
+        if window["spanSeconds"] is None:
+            reasons.append("failure window is still open at the last sample")
+        elif window["spanSeconds"] > limit_seconds:
+            reasons.append(f"failure window longer than {limit_seconds:g} s")
+    if len(union) > 1:
+        reasons.append("failures are not inside one contiguous window")
+    fault = _at(fault_requested_at)
+    new_leader = next(({"nodeId": str(s["data"]["leaderNodeId"]), "at": s["startedAt"]}
+                       for s in samples["management"]
+                       if s.get("ok") and _at(s["startedAt"]) >= fault and s["data"].get("quorumAvailable") is True
+                       and s["data"].get("leaderNodeId") not in (None, "")
+                       and str(s["data"]["leaderNodeId"]) != str(target_node_id)), None)
+    if new_leader is None:
+        reasons.append("no management sample shows a surviving member as leader with quorum")
+    return {"result": "FAIL" if reasons else "PASS", "limitSeconds": limit_seconds, "streams": streams,
+            "union": union, "newLeader": new_leader, "reasons": reasons}
+
+
+def monitor_integrity(summary: dict) -> bool:
+    """Workers stopped, journals closed without error, and every acceptance stream has samples."""
+    return bool(summary["workersStoppedAndJournalsClosed"] and not summary["journalErrors"]
+                and not summary["shutdownDeadlineExceeded"]
+                and all(stream["samples"] > 0 for stream in summary["streams"].values()))

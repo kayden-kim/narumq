@@ -33,12 +33,12 @@
     },
     {
       "requirementId": "DEP-20",
-      "reason": "격리 EKS의 3-AZ 배치와 단일 follower EC2 비정상 종료 복구는 관측한 모든 API·MQTT 표본 성공과 데이터 oracle로 확인했다. 표본 사이의 연속 가용성은 입증하지 않았다. 다른 EC2 장애, AZ 장애와 전체 matrix의 데이터 플레인 복구 수용이 남았다.",
+      "reason": "격리 EKS에서 3-AZ 배치, 단일 follower EC2 비정상 종료, 단일 leader EC2 비정상 종료와 단일 AZ 전원 중단 모델의 데이터 플레인 복구를 각각 1회 실행으로 확인했다(2026-10-16). 남은 범위: AZ 장애는 worker 정지 모델이며 network·EBS 서비스·control plane 장애는 시험하지 않았다. 표본 사이 연속 가용성과 반복 실행은 입증하지 않았다. 실행은 Python EKS 도구로 했으며 Go traceability 시험에 연결되지 않는다.",
       "tracking": "docs/TODO.md#14-drain-정책관측과-production-배포"
     },
     {
       "requirementId": "DEP-21",
-      "reason": "독립·암호화·AZ-bound EBS와 합성 snapshot/restore·동일 volume 복구는 일부 검증했다. Disk pressure와 durable ACK RPO 0의 전체 storage 수용이 남았다.",
+      "reason": "격리 EKS에서 독립·암호화·AZ-bound EBS, 합성 snapshot/restore, 동일 volume 복구와 disk pressure D1–D3(admission 0x97, follower ENOSPC, 두 follower ENOSPC 뒤 durable ACK 누락 0)를 확인했다(2026-10-16, 1회). 남은 범위: 반복 실행과 production 부하 크기다. 실행은 Python EKS 도구로 했으며 Go traceability 시험에 연결되지 않는다.",
       "tracking": "docs/TODO.md#14-drain-정책관측과-production-배포"
     },
     {

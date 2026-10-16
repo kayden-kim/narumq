@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"log/slog"
+	"path/filepath"
 	"slices"
 	"sort"
 	"sync"
@@ -107,6 +109,12 @@ type Config struct {
 	// It runs under Node's mutex and must not call Node. Nil permits a
 	// transport-free Batch consumer to consume the bounded output directly.
 	ForwardedProposalCapacity func(NodeID) (messages, bytes int)
+	// Logger receives rate-limited adapter warnings and WAL recovery notices. Nil uses slog.Default.
+	Logger *slog.Logger
+	// SnapshotStreamActive reports whether the cluster activated the snapshot-stream feature
+	// (ADR-0062). It runs under Node's mutex and must not call Node. Nil means inactive: a
+	// MsgSnap above the peer frame limit is then never sent.
+	SnapshotStreamActive func() bool
 }
 
 // WALBoundaryStage identifies one step of appending a Ready frame to wal.bin.
@@ -204,9 +212,23 @@ type StepResultDTO struct {
 	ReadIndexRequest bool
 }
 
+// SnapshotStreamDTO is one serialized MsgSnap that exceeds the peer frame limit and must go
+// through the chunked snapshot stream (ADR-0062). The consumer reports the outcome with
+// ReportSnapshotStream.
+type SnapshotStreamDTO struct {
+	To    NodeID
+	Index uint64
+	Term  uint64
+	// Data is the protobuf-serialized MsgSnap.
+	Data []byte
+}
+
 // BatchDTO contains outbound messages, committed commands, snapshots, and read barriers.
 type BatchDTO struct {
-	Messages             []MessageDTO
+	Messages []MessageDTO
+	// SnapshotStreams lists oversized snapshots to send out of band. Empty unless
+	// Config.SnapshotStreamActive reports the feature active.
+	SnapshotStreams      []SnapshotStreamDTO
 	Commands             [][]byte
 	CommandIndexes       []uint64
 	ConfigurationChanges []CommittedConfigurationDTO
@@ -275,6 +297,9 @@ type Node struct {
 	configurationChanges      []CommittedConfigurationDTO
 	stateSnapshot             []byte
 	confChangePending         bool
+	logger                    *slog.Logger
+	snapshotWarnings          peerWarningLimiter
+	snapshotStreamActive      func() bool
 }
 
 // Open opens a fixed-voter peer-only node or a v2 dynamic cluster member.
@@ -405,6 +430,8 @@ func Open(config Config) (*Node, error) {
 		configurationChanges:      slices.Clone(store.configurationChanges),
 		stateSnapshot:             bytes.Clone(store.snapshotData),
 		forwardedProposalCapacity: config.ForwardedProposalCapacity,
+		logger:                    config.Logger,
+		snapshotStreamActive:      config.SnapshotStreamActive,
 	}
 	for _, change := range store.confChanges {
 		node.confState = cloneConfState(raw.ApplyConfChange(change))
@@ -421,7 +448,21 @@ func Open(config Config) (*Node, error) {
 		node.confChangePending = node.hasUncommittedConfChange()
 	}
 	node.writer = newWALAppendWorker(store, config.PersistenceBoundaryHook, config.StorageActivityObserver)
+	if truncation := store.tailTruncated; truncation != nil {
+		node.logWALTailTruncation(filepath.Join(config.Directory, walName), truncation)
+	}
 	return node, nil
+}
+
+// logWALTailTruncation records that recovery cut a torn tail off the WAL. It is the operator's
+// evidence that an unclean stop left an unfinished last frame (ADR-0023).
+func (n *Node) logWALTailTruncation(path string, truncation *walTailTruncation) {
+	logger := n.logger
+	if logger == nil {
+		logger = slog.Default()
+	}
+	logger.Info("raft wal torn tail truncated", "path", path,
+		"valid_bytes", truncation.validBytes, "dropped_bytes", truncation.droppedBytes, "reason", truncation.reason)
 }
 
 // Campaign asks the local RawNode to start an election.
@@ -702,13 +743,42 @@ func (n *Node) Step(message MessageDTO) (StepResultDTO, error) {
 	if err := n.stateError(); err != nil {
 		return StepResultDTO{}, err
 	}
-	if message.From == 0 || message.To == 0 || message.To != n.id || len(message.Data) == 0 || len(message.Data) > maxMessageSize {
+	return n.stepLocked(message, maxMessageSize, nil)
+}
+
+// streamedSnapshot names the MsgSnap a snapshot stream manifest announced.
+type streamedSnapshot struct{ index, term uint64 }
+
+// StepSnapshotStream delivers one MsgSnap received through the snapshot stream. It applies the
+// checks of Step with the size limit raised to a full snapshot, and it accepts only a MsgSnap whose
+// snapshot metadata equals the manifest (ADR-0062).
+func (n *Node) StepSnapshotStream(message MessageDTO, index, term uint64) error {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	if err := n.stateError(); err != nil {
+		return err
+	}
+	if !n.dynamic || index == 0 || term == 0 {
+		return ErrInvalidMessage
+	}
+	_, err := n.stepLocked(message, maxDynamicRaftSnapshotSize, &streamedSnapshot{index: index, term: term})
+	return err
+}
+
+func (n *Node) stepLocked(message MessageDTO, limit int, streamed *streamedSnapshot) (StepResultDTO, error) {
+	if message.From == 0 || message.To == 0 || message.To != n.id || len(message.Data) == 0 || len(message.Data) > limit {
 		return StepResultDTO{}, ErrInvalidMessage
 	}
 	payload := bytes.Clone(message.Data)
 	var decoded pb.Message
 	if err := proto.Unmarshal(payload, &decoded); err != nil {
 		return StepResultDTO{}, fmt.Errorf("%w: decode message: %v", ErrInvalidMessage, err)
+	}
+	if streamed != nil {
+		metadata := decoded.GetSnapshot().GetMetadata()
+		if decoded.GetType() != pb.MsgSnap || metadata.GetIndex() != streamed.index || metadata.GetTerm() != streamed.term {
+			return StepResultDTO{}, ErrInvalidMessage
+		}
 	}
 	if decoded.GetTo() != uint64(message.To) || decoded.GetFrom() == 0 || decoded.GetTo() == 0 {
 		return StepResultDTO{}, ErrInvalidMessage
@@ -777,6 +847,26 @@ func (n *Node) ReportPeerMessageFailure(peerID NodeID, isSnapshot bool) error {
 		n.raw.ReportSnapshot(uint64(peerID), etcdraft.SnapshotFailure)
 	}
 	n.raw.ReportUnreachable(uint64(peerID))
+	return nil
+}
+
+// ReportSnapshotStream tells RawNode whether a snapshot stream to peerID finished. A delivered
+// snapshot moves the peer to probe state after its next response; a failed one lets Raft retry on
+// a later heartbeat response. It never waits for the stream.
+func (n *Node) ReportSnapshotStream(peerID NodeID, delivered bool) error {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	if err := n.stateError(); err != nil {
+		return err
+	}
+	if peerID == 0 || peerID == n.id || !containsMember(n.confState, peerID) {
+		return ErrInvalidMessage
+	}
+	status := etcdraft.SnapshotFailure
+	if delivered {
+		status = etcdraft.SnapshotFinish
+	}
+	n.raw.ReportSnapshot(uint64(peerID), status)
 	return nil
 }
 

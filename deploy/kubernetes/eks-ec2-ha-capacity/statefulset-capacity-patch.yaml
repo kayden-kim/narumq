@@ -41,7 +41,14 @@ spec:
             - -c
             - |
               NODE_INDEX="${HOSTNAME##*-}"
-              exec /bin/sh /capacity-process/broker-process.sh run /narumq -cluster-config "/configs/node-$((NODE_INDEX + 1)).json"
+              NODE_ID="$(cat "/configs/slot-${NODE_INDEX}" 2>/dev/null || true)"
+              case "${NODE_ID}" in
+                ''|0*|*[!0-9]*)
+                  printf 'Invalid or missing member slot /configs/slot-%s\n' "${NODE_INDEX}" >&2
+                  exit 1
+                  ;;
+              esac
+              exec /bin/sh /capacity-process/broker-process.sh run /narumq -cluster-config "/configs/node-${NODE_ID}.json"
           env:
             - name: CAPACITY_POD_UID
               valueFrom:

@@ -153,13 +153,14 @@ Management API는 내부 `narumq-management` ClusterIP Service의 8080/TCP로 �
 | Logical identity·state | Physical resource | 수명과 제약 |
 | --- | --- | --- |
 | NaruMQ `nodeId` | Broker membership record와 assigned stable state | Pod 이름·IP·EC2 ID와 다르며 cluster lifetime 동안 재사용하지 않는다. |
+| StatefulSet slot | Pod 이름·peer DNS·PVC·peer 인증서 `node-<ordinal>`·ConfigMap `slot-<ordinal>` | Slot은 ordinal로 정해지는 broker 자리다. `slot-<ordinal>` 값이 그 자리에서 실행할 `nodeId`를 정하고, Pod는 `node-<nodeId>.json`으로 시작한다. 초기 값은 `slot-0=1`, `slot-1=2`, `slot-2=3`이다. Volume을 잃은 slot은 새 `nodeId`로 채운다. |
 | Broker process | Container in Pod | 재시작 시 TCP connection과 memory를 잃는다. |
 | Broker runtime endpoint | Pod IP (`IP` target) | NLB가 Pod IP로 직접 전달하며 NodePort를 거치지 않는다. |
 | Stable WAL·snapshot | Broker별 EBS persistent volume | 같은 가용 영역의 replacement EC2에 재연결한다. |
 | Failure domain | EC2 instance와 가용 영역 | Quorum Pod를 서로 다르게 배치한다. |
 | Session owner | Quorum-committed `(nodeId, epoch)` | Kubernetes scheduling state로 판정하지 않는다. |
 
-PersistentVolume, Pod와 logical `nodeId`의 결합 방식은 storage·membership ADR에서 확정해야 한다. 잘못된 volume이 연결되거나 identity를 확인할 수 없으면 Pod를 READY로 만들지 않는다.
+PersistentVolume, Pod와 logical `nodeId`는 [ADR-0061](../decisions/ADR-0061-eks-ordinal-member-slot.md)의 slot으로 결합한다. Main container와 preStop drain은 같은 `slot-<ordinal>` 파일에서 `nodeId`를 읽는다. 파일이 없거나 값이 양의 10진수가 아니면 broker를 시작하지 않고 preStop도 drain을 요청하지 않는다. 잘못된 volume이 연결되거나 identity를 확인할 수 없으면 Pod를 READY로 만들지 않는다. 교체 절차는 [동적 멤버십 절차](../how-to/dynamic-cluster-membership.md#eks-slot의-volume-손실-교체)를 따르며 아직 Draft다.
 
 ## Traffic path
 

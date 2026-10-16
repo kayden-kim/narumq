@@ -1028,13 +1028,15 @@ type PeerObservabilityHandler func(context.Context, PeerObservabilityKind) ([]by
 
 // DynamicPeerTransportConfig configures the additive v2 TLS listener and committed peer set.
 type DynamicPeerTransportConfig struct {
-	LocalIdentity           PeerIdentityDTO
-	Listener                net.Listener
-	ServerTLS               *tls.Config
-	ClientTLS               *tls.Config
-	Peers                   []PeerIdentityDTO
-	AdmissionHandler        SeedAdmissionHandler
-	ObservabilityHandler    PeerObservabilityHandler
+	LocalIdentity        PeerIdentityDTO
+	Listener             net.Listener
+	ServerTLS            *tls.Config
+	ClientTLS            *tls.Config
+	Peers                []PeerIdentityDTO
+	AdmissionHandler     SeedAdmissionHandler
+	ObservabilityHandler PeerObservabilityHandler
+	// SnapshotStreamHandler receives snapshots streamed by a leader (ADR-0062). Nil rejects them as unsupported.
+	SnapshotStreamHandler   SnapshotStreamHandler
 	BootstrapProgress       BootstrapProgressHandler
 	BootstrapAllowedPeerIDs []uint64
 }
@@ -1052,6 +1054,11 @@ type DynamicTCPPeerTransport struct {
 	observabilityHandler       PeerObservabilityHandler
 	observabilityInboundSlots  chan struct{}
 	observabilityOutboundSlots chan struct{}
+	snapshotHandler            SnapshotStreamHandler
+	snapshotOutboundSlots      chan struct{}
+	snapshotInboundSlot        chan struct{}
+	snapshotMu                 sync.Mutex
+	snapshotPartial            *snapshotPartial
 	bootstrapProgress          BootstrapProgressHandler
 	bootstrapMu                sync.Mutex
 	bootstrapAllowed           map[uint64]struct{}
@@ -1189,6 +1196,9 @@ func NewDynamicTCPPeerTransport(config DynamicPeerTransportConfig) (*DynamicTCPP
 		observabilityHandler:       config.ObservabilityHandler,
 		observabilityInboundSlots:  make(chan struct{}, dynamicObservabilitySlots),
 		observabilityOutboundSlots: make(chan struct{}, dynamicObservabilitySlots),
+		snapshotHandler:            config.SnapshotStreamHandler,
+		snapshotOutboundSlots:      make(chan struct{}, snapshotStreamOutboundSlots),
+		snapshotInboundSlot:        make(chan struct{}, 1),
 		bootstrapProgress:          config.BootstrapProgress,
 		bootstrapAllowed:           make(map[uint64]struct{}, len(config.BootstrapAllowedPeerIDs)),
 		peers:                      make(map[uint64]*dynamicPeerState),
@@ -1943,6 +1953,8 @@ func (transport *DynamicTCPPeerTransport) handleInbound(ctx context.Context, soc
 		}
 	case peerObservabilityMagic:
 		transport.handleObservabilityInbound(ctx, connection, payload)
+	case dynamicSnapshotMagic:
+		transport.handleSnapshotInbound(ctx, connection, payload)
 	}
 }
 
@@ -2102,6 +2114,12 @@ func (transport *DynamicTCPPeerTransport) dialPeer(ctx context.Context, peer *dy
 			err = connection.HandshakeContext(handshakeCtx)
 			handshakeCancel()
 		}
+		if err == nil && !matchesPeerCertificate(connection, identity) {
+			// Verify the expected member's leaf before any hello leaves this node. After a slot reuse
+			// (ADR-0061) another member can answer at the committed address. A hello sent to it would be
+			// accepted as a stream from this node and replace the connection this node legitimately holds.
+			err = fmt.Errorf("peer identity mismatch")
+		}
 		if err == nil {
 			var hello []byte
 			hello, err = encodeDynamicPeerHello(local, peer.lane.magic())
@@ -2172,7 +2190,7 @@ func matchesPeerCertificate(connection *tls.Conn, identity PeerIdentityDTO) bool
 func (transport *DynamicTCPPeerTransport) trackInboundConnection(connection net.Conn) bool {
 	transport.mu.Lock()
 	defer transport.mu.Unlock()
-	limit := 2*len(transport.peers) + 1 + dynamicObservabilitySlots // Two streams per peer, admission, and one-shot observation slots.
+	limit := 2*len(transport.peers) + 1 + dynamicObservabilitySlots + 1 // Two streams per peer, admission, one-shot observation slots, one snapshot stream.
 	if transport.closed || transport.inboundConnections >= limit {
 		return false
 	}
@@ -2776,7 +2794,7 @@ func sameAdmissionCandidate(requested, committed PeerIdentityDTO) bool {
 }
 
 func encodeDynamicPeerHello(identity PeerIdentityDTO, magic string) ([]byte, error) {
-	if magic != dynamicRaftMagic && magic != dynamicForwardMagic && magic != peerObservabilityMagic {
+	if magic != dynamicRaftMagic && magic != dynamicForwardMagic && magic != peerObservabilityMagic && magic != dynamicSnapshotMagic {
 		return nil, ErrInvalidPeerMessage
 	}
 	if err := validateDynamicIdentity(identity, false); err != nil {
@@ -2805,7 +2823,7 @@ func encodeDynamicPeerHello(identity PeerIdentityDTO, magic string) ([]byte, err
 }
 
 func decodeDynamicPeerHello(payload []byte, magic string) (PeerIdentityDTO, error) {
-	if (magic != dynamicRaftMagic && magic != dynamicForwardMagic && magic != peerObservabilityMagic) ||
+	if (magic != dynamicRaftMagic && magic != dynamicForwardMagic && magic != peerObservabilityMagic && magic != dynamicSnapshotMagic) ||
 		len(payload) > dynamicHelloLimit || len(payload) < 8 || string(payload[:8]) != magic {
 		return PeerIdentityDTO{}, ErrInvalidPeerMessage
 	}
@@ -3149,7 +3167,7 @@ func readDynamicHandshakeFrame(connection net.Conn) ([]byte, error) {
 	switch string(magic[:]) {
 	case "NMQJOIN2":
 		maximum = dynamicAdmissionLimit
-	case dynamicRaftMagic, dynamicForwardMagic, dynamicBootstrapProbeMagic, peerObservabilityMagic:
+	case dynamicRaftMagic, dynamicForwardMagic, dynamicBootstrapProbeMagic, peerObservabilityMagic, dynamicSnapshotMagic:
 		maximum = dynamicHelloLimit
 	default:
 		return nil, ErrInvalidPeerMessage

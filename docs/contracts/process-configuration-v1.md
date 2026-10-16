@@ -347,7 +347,7 @@ Build identity는 다음 `ldflags` 형식으로 지정한다.
 go build -ldflags "-X main.buildReleaseVersion=<semver> -X main.buildFeatures=<comma list>"
 ```
 
-기본값은 release version `0.0.0`과 빈 feature 목록이다. 항상 포함하는 feature는 `client-blocklist`, `cluster-policy-tenant-quotas`, `connection-rebalance`, `credential-revocation`, `proposal-recovery`, `session-metadata`, `shared-subscription-reroute`다. `resolveBuildIdentity`는 feature를 정렬하고 중복을 제거한 뒤 `release.ValidFeatureSet`으로 검증한다. 출처는 `cmd/narumq/build_identity.go`와 `tests/integration/cluster_release_compat_process_test.go` 26–28행이다.
+기본값은 release version `0.0.0`이다. 항상 포함하는 feature는 `client-blocklist`, `cluster-observability-v1`, `cluster-policy`, `cluster-policy-tenant-quotas`, `connection-rebalance`, `credential-revocation`, `proposal-recovery`, `session-metadata`, `shared-subscription-reroute`, `snapshot-stream`이다. `resolveBuildIdentity`는 추가 feature를 합치고 정렬·중복 제거한 뒤 `release.ValidFeatureSet`으로 검증한다. 출처는 `cmd/narumq/build_identity.go`와 `internal/application/membership/build_features.go`다.
 
 ### 1.9 표기 규칙
 

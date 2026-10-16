@@ -15,6 +15,7 @@
 | [Raft peer transport v1](raft-peer-transport-v1.md) | Active | NaruMQ Raft node ↔ NaruMQ Raft node | 이 문서의 hello·frame·queue·retry 계약 | CLU-01~CLU-02, CLU-09~CLU-10, SEC-09, NFR-07~NFR-10 |
 | [Process configuration v1](process-configuration-v1.md) | Draft | 운영자·배포 도구·build pipeline → `cmd/narumq` process | 이 문서의 flag·JSON 표 | API-05, API-09, SEC-02, SEC-05, MQTT-09, MQTT-11, CLU-09, CLU-12, TEN-06~TEN-08 |
 | [Raft membership v2](raft-membership-v2.md) | Draft | ClusterAdmin · joining broker ↔ Cluster leader · authenticated peer transport | 이 문서와 [replicated-state-v1.proto](replicated-state-v1.proto) | CLU-01~CLU-02, CLU-04~CLU-11, SEC-09~SEC-11, NFR-07~NFR-10 |
+| [Raft snapshot stream v1](raft-snapshot-stream-v1.md) | Active | Cluster leader → 뒤처진 peer · authenticated peer transport | 이 문서의 frame·limit 표 | CLU-14 |
 | [Replicated-state v1](replicated-state-v1.md) | Active | Cluster node ↔ Cluster node·offline restore | [replicated-state-v1.proto](replicated-state-v1.proto) | CLU-11, CLU-14 |
 | [Cluster backup v3](cluster-backup-v3.md) | Draft | ClusterAdmin backup producer → offline restore CLI | [Protobuf archive schema](cluster-backup-v3.proto) | CLU-14 |
 | [Cluster backup v2](cluster-backup-v2.md) | Superseded | Historical producer → historical offline restore CLI | v2 source/generated binding은 제거됨 | CLU-14 |

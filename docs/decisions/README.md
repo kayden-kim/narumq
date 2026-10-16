@@ -66,6 +66,8 @@
 | [ADR-0058](ADR-0058-cluster-backup-s3-retention-and-restore.md) | Accepted | S3 is authoritative for 30-day backup retention; the PVC stages request-backed uploads, legacy archives remain local, and a separate prefix-scoped IRSA identity restores exact keys offline. |
 | [ADR-0059](ADR-0059-dynamic-peer-tcp-liveness.md) | Accepted | Dynamic v2 peer socket은 TCP keepalive와 Linux `TCP_USER_TIMEOUT` 10초로 응답 없는 상대를 끊고 같은 DNS 이름으로 재연결한다. |
 | [ADR-0060](ADR-0060-shared-subscription-durable-owner-loss-reroute.md) | Accepted | 공유 구독의 durable 전달은 도달할 수 없는 owner의 member를 건너뛰어 고르고, 공유 출처 message는 member session이 reset·삭제될 때 같은 group의 다른 member로 다시 넣는다. |
+| [ADR-0061](ADR-0061-eks-ordinal-member-slot.md) | Accepted | EKS StatefulSet Pod는 ordinal slot 파일이 가리키는 member ID로 시작해, volume을 잃은 slot을 같은 Pod 자리의 새 member ID로 재시드한다. |
+| [ADR-0062](ADR-0062-raft-snapshot-stream.md) | Accepted | 1 MiB를 넘는 Raft snapshot은 `snapshot-stream` feature를 활성화한 cluster에서 별도 chunk stream으로 보낸다. 활성화 전에는 지금처럼 보내지 않고 실패로 알린다. |
 
 `Proposed` ADR은 검토 중인 제안이다. `Accepted` ADR은 각 기록에 명시한 범위 안에서 채택된 결정이다. `design target only`는 production runtime이나 acceptance 검증을 뜻하지 않는다.
 

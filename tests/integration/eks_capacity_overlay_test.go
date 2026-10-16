@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"regexp"
+	"strings"
 	"testing"
 
 	"go.yaml.in/yaml/v3"
@@ -90,10 +91,16 @@ func TestEKSCapacityOverlay(t *testing.T) {
 	if err := yaml.Unmarshal(read("eks-ec2-ha-capacity/configmap-cluster-tls-patch.yaml"), &patchConfigs); err != nil {
 		t.Fatal(err)
 	}
-	if len(patchConfigs.Data) != 3 || len(baseConfigs.Data) != 3 {
-		t.Fatalf("node config counts base=%d patch=%d, want 3", len(baseConfigs.Data), len(patchConfigs.Data))
+	if len(patchConfigs.Data) != 3 || len(baseConfigs.Data) != 6 {
+		t.Fatalf("config key counts base=%d patch=%d, want base 6 (3 node configs + 3 slots) and patch 3", len(baseConfigs.Data), len(patchConfigs.Data))
 	}
 	for name, baseJSON := range baseConfigs.Data {
+		if strings.HasPrefix(name, "slot-") {
+			if _, patched := patchConfigs.Data[name]; patched {
+				t.Fatalf("capacity patch must not override %s", name)
+			}
+			continue
+		}
 		var want, got map[string]any
 		if err := json.Unmarshal([]byte(baseJSON), &want); err != nil {
 			t.Fatalf("decode base %s: %v", name, err)
@@ -144,6 +151,17 @@ func TestEKSCapacityOverlay(t *testing.T) {
 	if at(named(at(pod, "containers"), "narumq"), "ports", 0, "containerPort") != 8883 {
 		t.Fatal("broker container must expose MQTT TLS 8883")
 	}
+	capacityCommand, _ := at(named(at(pod, "containers"), "narumq"), "command").([]any)
+	if len(capacityCommand) != 3 {
+		t.Fatalf("capacity broker command = %v, want [/bin/sh, -c, script]", capacityCommand)
+	}
+	capacityScript, _ := capacityCommand[2].(string)
+	t.Run("slot script", func(t *testing.T) {
+		// The fake process wrapper receives the arguments the real wrapper would pass to the broker.
+		assertEKSMainSlotBehaviour(t, capacityScript, "/capacity-process/broker-process.sh", func(configs, id string) []string {
+			return []string{"run", "/narumq", "-cluster-config", configs + "/node-" + id + ".json"}
+		})
+	})
 
 	jobTemplate := string(read("eks-ec2-ha-capacity/job-capacity-runner.template.yaml"))
 	rendered := regexp.MustCompile(`\$\{[A-Z_]+\}`).ReplaceAllStringFunc(jobTemplate, func(match string) string {

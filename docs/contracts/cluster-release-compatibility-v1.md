@@ -72,6 +72,7 @@ Release version과 feature set은 mutable committed member profile이다. Restar
 - `cluster-policy`는 기본 build feature다. 활성화 전 command field 27과 snapshot field 19를 기록하지 않는다. 모든 non-retired member가 지원할 때 `FeatureActivation`으로 활성화한다. 활성화 뒤에는 이 field를 모르는 build로 rollback하지 않는다. [ADR-0052](../decisions/ADR-0052-configuration-tiers-and-cluster-policy.md) 참조.
 - `shared-subscription-reroute`는 기본 build feature다. 활성화 전 `DeliveryTarget` field 3과 `DeliveryMessage` field 9를 제안하거나 기록하지 않으며, 활성화 전 동작과 wire bytes는 기존과 같다. 모든 non-retired member가 지원할 때 `FeatureActivation`으로 활성화한다. 활성화 뒤에는 공유 구독 출처와 그 재배분을 모르는 build로 rollback하지 않는다. Strict codec과 backup restore의 active-feature 검사는 유지한다. 도달 불가 owner의 member를 건너뛰는 routing 선호는 node-local이라 feature와 무관하다. [ADR-0060](../decisions/ADR-0060-shared-subscription-durable-owner-loss-reroute.md) 참조.
 - `cluster-policy-tenant-quotas`는 기본 build feature다. `ClusterPolicy.tenant_quotas`와 snapshot field 19의 nested quota field는 해당 feature가 활성화된 뒤에만 기록한다. 모든 non-retired member가 지원할 때 `FeatureActivation`으로 활성화한다. 활성화 뒤에는 tenant quota field를 모르는 build로 rollback하지 않는다. [ADR-0052](../decisions/ADR-0052-configuration-tiers-and-cluster-policy.md) 참조.
+- `snapshot-stream`은 기본 build feature이며 기본 비활성이다. 활성화 전에는 1 MiB 초과 `MsgSnap`을 보내지 않고 실패로 알린다. 활성화 뒤에는 [Raft snapshot stream v1](raft-snapshot-stream-v1.md)으로 보낸다. 활성화 뒤에는 이 stream을 모르는 build로 rollback하지 않는다. [ADR-0062](../decisions/ADR-0062-raft-snapshot-stream.md) 참조.
 
 ### 4.1 운영 승인과 rollback window 종료
 

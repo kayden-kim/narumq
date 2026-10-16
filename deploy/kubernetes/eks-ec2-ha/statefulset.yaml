@@ -82,7 +82,14 @@ spec:
             - -c
             - |
               NODE_INDEX="$(hostname | awk -F'-' '{print $NF}')"
-              exec /narumq -cluster-config "/configs/node-$((NODE_INDEX + 1)).json"
+              NODE_ID="$(cat "/configs/slot-${NODE_INDEX}" 2>/dev/null || true)"
+              case "${NODE_ID}" in
+                ''|0*|*[!0-9]*)
+                  printf 'Invalid or missing member slot /configs/slot-%s\n' "${NODE_INDEX}" >&2
+                  exit 1
+                  ;;
+              esac
+              exec /narumq -cluster-config "/configs/node-${NODE_ID}.json"
           ports:
             - name: raft-peer
               containerPort: 7000
@@ -105,7 +112,13 @@ spec:
                   - |
                     set -eu
                     NODE_INDEX="${HOSTNAME##*-}"
-                    NODE_ID="$((NODE_INDEX + 1))"
+                    NODE_ID="$(cat "/configs/slot-${NODE_INDEX}" 2>/dev/null || true)"
+                    case "${NODE_ID}" in
+                      ''|0*|*[!0-9]*)
+                        printf 'Invalid or missing member slot /configs/slot-%s\n' "${NODE_INDEX}" >&2
+                        exit 1
+                        ;;
+                    esac
                     DRAIN_URL="http://127.0.0.1:8080/api/v1/nodes/${NODE_ID}/drain"
                     IDEMPOTENCY_KEY="prestop-${NODE_ID}-$(cat /proc/sys/kernel/random/uuid)"
                     DEADLINE="$(( $(date +%s) + 600 ))"

@@ -426,31 +426,22 @@ func clusterReleaseCompatWaitForLeader(t *testing.T, ctx context.Context, proces
 }
 
 func clusterReleaseCompatReadVersions(ctx context.Context, process *clusterMembershipProcess) (map[string]string, error) {
-	status, body, err := clusterMembershipProcessRequest(ctx, http.MethodGet, process.managementURL()+"/api/v1/nodes", nil, clusterMembershipProcessAdmin, "")
+	status, profiles, body, err := clusterReleaseCompatFeatures(ctx, process)
 	if err != nil {
 		return nil, err
 	}
 	if status != http.StatusOK {
-		return nil, fmt.Errorf("node list status=%d body=%s", status, body)
+		return nil, fmt.Errorf("release profiles status=%d body=%s", status, body)
 	}
-	var envelope struct {
-		Data []struct {
-			NodeID  string `json:"nodeId"`
-			Version string `json:"version"`
-		} `json:"data"`
-	}
-	if err := json.Unmarshal(body, &envelope); err != nil {
-		return nil, fmt.Errorf("decode node list: %w", err)
-	}
-	versions := make(map[string]string, len(envelope.Data))
-	for _, node := range envelope.Data {
-		if node.NodeID == "" || node.Version == "" {
-			return nil, fmt.Errorf("node list has incomplete identity: %+v", node)
+	versions := make(map[string]string, len(profiles.Members))
+	for _, member := range profiles.Members {
+		if member.NodeID == "" || member.ReleaseVersion == "" {
+			return nil, fmt.Errorf("committed release profile has incomplete identity: %+v", member)
 		}
-		if _, exists := versions[node.NodeID]; exists {
-			return nil, fmt.Errorf("node list repeats node %q", node.NodeID)
+		if _, exists := versions[member.NodeID]; exists {
+			return nil, fmt.Errorf("committed release profiles repeat node %q", member.NodeID)
 		}
-		versions[node.NodeID] = node.Version
+		versions[member.NodeID] = member.ReleaseVersion
 	}
 	return versions, nil
 }

@@ -93,6 +93,7 @@ type clusterMembershipProcessFixture struct {
 	ctx                     context.Context
 	harness                 *clusterMembershipProcessHarness
 	caPath                  string
+	ca                      clusterMembershipProcessCA
 	certificates            []clusterMembershipProcessCertificate
 	peerAddresses           []string
 	managementAddresses     []string
@@ -732,6 +733,7 @@ func newClusterMembershipProcessFixtureWithLifetime(t *testing.T, nodeCount int,
 		binary:              binaryPath,
 		ctx:                 clusterCtx,
 		harness:             harness,
+		ca:                  ca,
 		caPath:              caPath,
 		certificates:        certificates,
 		peerAddresses:       peerAddresses,

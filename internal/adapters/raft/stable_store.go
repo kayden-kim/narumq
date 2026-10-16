@@ -78,6 +78,8 @@ type stableStore struct {
 	finalizeHook    func(PersistenceStage)
 	walHook         func(WALBoundaryDTO)
 	walSyncObserver func(WALSyncDTO)
+	// tailTruncated is the torn tail recovery cut off when the store opened; nil when none.
+	tailTruncated *walTailTruncation
 
 	snapshotIndex        uint64
 	hardState            *pb.HardState
@@ -410,7 +412,7 @@ func openStableStoreMode(directory string, dynamic bool) (*stableStore, error) {
 	} else if err := filePersistenceOps.syncDirectory(directory); err != nil {
 		return nil, fmt.Errorf("remove stale WAL compaction file: %w", err)
 	}
-	records, err := readWALMode(filepath.Join(directory, walName), dynamic)
+	records, truncation, err := readWALModeTruncation(filepath.Join(directory, walName), dynamic)
 	if err != nil {
 		return nil, err
 	}
@@ -423,6 +425,7 @@ func openStableStoreMode(directory string, dynamic bool) (*stableStore, error) {
 		hardState:     &pb.HardState{},
 		confState:     &pb.ConfState{},
 		snapshotIndex: snapshotIndex,
+		tailTruncated: truncation,
 	}
 	if latestSnapshot != nil {
 		if err := memory.ApplySnapshot(proto.Clone(latestSnapshot).(*pb.Snapshot)); err != nil {
@@ -889,53 +892,82 @@ func readWAL(path string) ([]walRecord, error) {
 	return readWALMode(path, false)
 }
 
+// walTailTruncation records a torn tail that recovery cut off the WAL (ADR-0023).
+type walTailTruncation struct {
+	validBytes   int64
+	droppedBytes int64
+	reason       string
+}
+
+// Reasons recorded in walTailTruncation and logged as `reason`.
+const (
+	walTruncatedPartialHeader  = "partial_frame_header"
+	walTruncatedZeroTail       = "zero_tail"
+	walTruncatedPartialPayload = "partial_frame_payload"
+	walTruncatedTornFinalFrame = "torn_final_frame"
+)
+
 func readWALMode(path string, dynamic bool) ([]walRecord, error) {
+	records, _, err := readWALModeTruncation(path, dynamic)
+	return records, err
+}
+
+// readWALModeTruncation replays the WAL and reports the torn tail it truncated, if any.
+func readWALModeTruncation(path string, dynamic bool) ([]walRecord, *walTailTruncation, error) {
 	file, err := os.OpenFile(path, os.O_RDWR|os.O_CREATE, 0o600)
 	if err != nil {
-		return nil, fmt.Errorf("open WAL: %w", err)
+		return nil, nil, fmt.Errorf("open WAL: %w", err)
 	}
 	defer file.Close()
 	stat, err := file.Stat()
 	if err != nil {
-		return nil, fmt.Errorf("stat WAL: %w", err)
+		return nil, nil, fmt.Errorf("stat WAL: %w", err)
 	}
 	if stat.Size() == 0 {
-		return nil, nil
+		return nil, nil, nil
 	}
 	if stat.Size() < int64(len(walMagic)) {
-		return nil, fmt.Errorf("%w: truncated WAL magic", ErrCorruptWAL)
+		return nil, nil, fmt.Errorf("%w: truncated WAL magic", ErrCorruptWAL)
 	}
 	magic := make([]byte, len(walMagic))
 	if _, err := io.ReadFull(file, magic); err != nil || string(magic) != walMagic {
-		return nil, fmt.Errorf("%w: invalid WAL magic", ErrCorruptWAL)
+		return nil, nil, fmt.Errorf("%w: invalid WAL magic", ErrCorruptWAL)
 	}
 	fileSize := stat.Size()
 	offset := int64(len(walMagic))
 	validOffset := offset
 	var records []walRecord
+	var truncation *walTailTruncation
+	truncate := func(reason string) error {
+		if err := truncateWAL(file, validOffset); err != nil {
+			return err
+		}
+		truncation = &walTailTruncation{validBytes: validOffset, droppedBytes: fileSize - validOffset, reason: reason}
+		return nil
+	}
 	for offset < fileSize {
 		remaining := fileSize - offset
 		if remaining < 8 {
-			if err := truncateWAL(file, validOffset); err != nil {
-				return nil, err
+			if err := truncate(walTruncatedPartialHeader); err != nil {
+				return nil, nil, err
 			}
 			break
 		}
 		var header [8]byte
 		if _, err := file.ReadAt(header[:], offset); err != nil {
-			return nil, fmt.Errorf("%w: read WAL frame header: %v", ErrCorruptWAL, err)
+			return nil, nil, fmt.Errorf("%w: read WAL frame header: %v", ErrCorruptWAL, err)
 		}
 		length := binary.BigEndian.Uint32(header[:4])
 		if length == 0 {
 			zero, err := walRangeZero(file, offset, fileSize)
 			if err != nil {
-				return nil, err
+				return nil, nil, err
 			}
 			if !zero {
-				return nil, fmt.Errorf("%w: zero-length WAL frame", ErrCorruptWAL)
+				return nil, nil, fmt.Errorf("%w: zero-length WAL frame", ErrCorruptWAL)
 			}
-			if err := truncateWAL(file, validOffset); err != nil {
-				return nil, err
+			if err := truncate(walTruncatedZeroTail); err != nil {
+				return nil, nil, err
 			}
 			break
 		}
@@ -944,18 +976,18 @@ func readWALMode(path string, dynamic bool) ([]walRecord, error) {
 			frameLimit = maxDynamicWALFramePayload
 		}
 		if length > frameLimit {
-			return nil, fmt.Errorf("%w: WAL frame length %d exceeds %d", ErrCorruptWAL, length, frameLimit)
+			return nil, nil, fmt.Errorf("%w: WAL frame length %d exceeds %d", ErrCorruptWAL, length, frameLimit)
 		}
 		frameEnd := offset + 8 + int64(length)
 		if frameEnd > fileSize {
-			if err := truncateWAL(file, validOffset); err != nil {
-				return nil, err
+			if err := truncate(walTruncatedPartialPayload); err != nil {
+				return nil, nil, err
 			}
 			break
 		}
 		payload := make([]byte, length)
 		if _, err := file.ReadAt(payload, offset+8); err != nil {
-			return nil, fmt.Errorf("%w: read WAL frame: %v", ErrCorruptWAL, err)
+			return nil, nil, fmt.Errorf("%w: read WAL frame: %v", ErrCorruptWAL, err)
 		}
 		checksum := binary.BigEndian.Uint32(header[4:])
 		if crc32.Checksum(payload, crcTable) != checksum {
@@ -964,33 +996,33 @@ func readWALMode(path string, dynamic bool) ([]walRecord, error) {
 				var err error
 				final, err = walRangeZero(file, frameEnd, fileSize)
 				if err != nil {
-					return nil, err
+					return nil, nil, err
 				}
 			}
 			if final {
 				zero, err := walFrameHasZeroSector(file, offset, frameEnd)
 				if err != nil {
-					return nil, err
+					return nil, nil, err
 				}
 				if !zero {
-					return nil, fmt.Errorf("%w: final WAL frame checksum mismatch without torn-write evidence", ErrCorruptWAL)
+					return nil, nil, fmt.Errorf("%w: final WAL frame checksum mismatch without torn-write evidence", ErrCorruptWAL)
 				}
-				if err := truncateWAL(file, validOffset); err != nil {
-					return nil, err
+				if err := truncate(walTruncatedTornFinalFrame); err != nil {
+					return nil, nil, err
 				}
 				break
 			}
-			return nil, fmt.Errorf("%w: middle WAL frame checksum mismatch", ErrCorruptWAL)
+			return nil, nil, fmt.Errorf("%w: middle WAL frame checksum mismatch", ErrCorruptWAL)
 		}
 		record, err := decodeWALRecordMode(payload, dynamic)
 		if err != nil {
-			return nil, fmt.Errorf("%w: decode WAL frame: %v", ErrCorruptWAL, err)
+			return nil, nil, fmt.Errorf("%w: decode WAL frame: %v", ErrCorruptWAL, err)
 		}
 		records = append(records, record)
 		validOffset = frameEnd
 		offset = frameEnd
 	}
-	return records, nil
+	return records, truncation, nil
 }
 
 const walSectorSize = 512

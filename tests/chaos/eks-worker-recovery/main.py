@@ -1,113 +1,30 @@
-"""Observe a prepared synthetic fixture; AWS mutation requires the fault subcommand."""
+"""Observe a prepared synthetic fixture; AWS mutation requires the fault, az-outage or power-loss subcommand."""
 from __future__ import annotations
 
 import argparse
 import json
-import os
 from pathlib import Path
-import subprocess
 import threading
 import time
 import urllib.error
-import urllib.request
 
-from observer import (IndependentMonitor, MANAGEMENT_TIMEOUT_SECONDS, MutationRejected, fence_node, fenced,
-                      node_diagnostic, release_fenced_pod, timestamp)
+import az_outage
+import power_loss
+from durable_stream import DurablePublisher, plan_settings, prepare_subscriber, verify_subscriber
+from fixture import Fixture, ready, save
+from observer import (IndependentMonitor, fence_node, fenced, leader_continuity, monitor_integrity,
+                      release_fenced_pod, timestamp)
+from pod_tunnel import PodTunnel
 
 
 # Bounded wait for the first nodes sample before a fault; diagnostics never gate the fault or the result.
 DIAGNOSTIC_BASELINE_WAIT_SECONDS = 20
-
-
-class CommandFailed(RuntimeError):
-    pass
-
-
-class Fixture:
-    def __init__(self, private: Path, run_id: str):
-        self.private = private
-        self.run_id = run_id
-        self.token = (private / "admin.token").read_text(encoding="utf-8").strip()
-        self.environment = os.environ.copy()
-        self.environment.update(AWS_PROFILE="kayden-sandbox-admin", AWS_REGION="ap-northeast-2", AWS_PAGER="")
-        self.kubectl = [str(private / "kubectl.exe"), "--kubeconfig", str(private / "kubeconfig"), "--context", run_id]
-
-    def command(self, args: list[str], timeout: float = 90, stdin: str | None = None) -> str:
-        result = subprocess.run(args, env=self.environment, text=True, encoding="utf-8", input=stdin,
-                                capture_output=True, timeout=timeout)
-        if result.returncode:
-            # CLI stderr can contain credentials. Structured observer results do not include it.
-            raise CommandFailed(f"command exit {result.returncode}")
-        return result.stdout
-
-    def aws(self, *args) -> dict:
-        return json.loads(self.command(["aws", *args, "--output", "json"]))
-
-    def get(self, *args):
-        value = self.command(self.kubectl + ["get", *args, "-o", "json"]).strip()
-        return json.loads(value) if value else None
-
-    def get_node(self, name: str):
-        return self.get("node", name, "--ignore-not-found")
-
-    def patch_node(self, name: str, operations: list[dict]):
-        try:
-            self.command(self.kubectl + ["patch", "node", name, "--type=json", "-p", json.dumps(operations), "-o", "json"])
-        except (CommandFailed, subprocess.TimeoutExpired) as exc:
-            raise MutationRejected("Kubernetes mutation command failed; application and failed operation unknown") from exc
-
-    def get_pod(self, name: str):
-        return self.get("pod", name, "-n", "narumq", "--ignore-not-found")
-
-    def delete_pod(self, name: str, uid: str):
-        """One DELETE with a UID precondition; kubectl has no flag for it, so send DeleteOptions raw."""
-        options = {"kind": "DeleteOptions", "apiVersion": "v1", "gracePeriodSeconds": 0,
-                   "preconditions": {"uid": uid}}
-        try:
-            self.command(self.kubectl + ["delete", "--raw", f"/api/v1/namespaces/narumq/pods/{name}", "-f", "-"],
-                         stdin=json.dumps(options))
-        except (CommandFailed, subprocess.TimeoutExpired) as exc:
-            raise MutationRejected("Kubernetes delete command failed; application unknown") from exc
-
-    def attachment_probe(self, pv_name: str, volume_id: str) -> dict:
-        """Read-only VolumeAttachment and EBS attachment state; failures are recorded, not raised."""
-        sample = {"at": timestamp()}
-        try:
-            listed = self.get("volumeattachments") or {"items": []}
-            sample["volumeAttachments"] = [volume_attachment(item) for item in listed.get("items", [])
-                                           if item.get("spec", {}).get("source", {}).get("persistentVolumeName") == pv_name]
-        except Exception as exc:
-            sample["volumeAttachmentErrorCode"] = type(exc).__name__
-        try:
-            volume = self.aws("ec2", "describe-volumes", "--volume-ids", volume_id)["Volumes"][0]
-            sample["ebs"] = {"state": volume.get("State"),
-                             "attachments": [{key: item.get(key) for key in ("InstanceId", "State", "AttachTime")}
-                                             for item in volume.get("Attachments", [])]}
-        except Exception as exc:
-            sample["ebsErrorCode"] = type(exc).__name__
-        return sample
-
-    def instance(self, instance_id: str) -> dict:
-        return self.aws("ec2", "describe-instances", "--instance-ids", instance_id)["Reservations"][0]["Instances"][0]
-
-    def instance_state(self, instance_id: str) -> str:
-        return self.instance(instance_id)["State"]["Name"]
-
-    def api(self, path: str, port: int = 23880) -> dict:
-        request = urllib.request.Request(f"http://127.0.0.1:{port}{path}",
-                                        headers={"Authorization": "Bearer " + self.token})
-        with urllib.request.urlopen(request, timeout=MANAGEMENT_TIMEOUT_SECONDS) as response:
-            return json.load(response)["data"]
-
-    def management_probe(self) -> dict:
-        cluster = self.api("/api/v1/cluster")
-        return {key: cluster[key] for key in ("quorumAvailable", "leaderNodeId", "nodesByState")}
-
-    def nodes_probe(self) -> list[dict]:
-        nodes = self.api("/api/v1/nodes")
-        if not isinstance(nodes, list):
-            raise ValueError("node list is not a list")
-        return [node_diagnostic(node) for node in nodes]
+# Fixed local ports: observer (survivor) 23880/23883, target Pod 24880/24883.
+OBSERVER_MANAGEMENT_PORT, OBSERVER_MQTT_PORT = 23880, 23883
+TARGET_MANAGEMENT_PORT, TARGET_MQTT_PORT = 24880, 24883
+# Acked messages required before a fault so the stream has a pre-fault baseline.
+DURABLE_BASELINE_ACKS = 3
+TARGET_ROLES = ("follower", "leader")
 
 
 class SurvivorTunnel:
@@ -116,10 +33,7 @@ class SurvivorTunnel:
     def __init__(self, fixture: Fixture, plan: dict):
         self.fixture = fixture
         self.plan = plan
-        self.process = None
-        self.reader = None
-        self.bound = set()
-        self.lock = threading.Lock()
+        self.tunnel = None
 
     def identity(self) -> dict:
         plan = self.plan
@@ -144,54 +58,26 @@ class SurvivorTunnel:
 
     def start(self, timeout: float = 20) -> dict:
         identity = self.identity()
-        self.process = subprocess.Popen(
-            self.fixture.kubectl + ["-n", "narumq", "port-forward", "pod/" + self.plan["observerPod"],
-                                    "--address=127.0.0.1", "23880:8080", "23883:1883"],
-            env=self.fixture.environment, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-            text=True, encoding="utf-8", errors="replace")
-        def drain():
-            for line in self.process.stdout:
-                for port in (23880, 23883):
-                    if line.startswith(f"Forwarding from 127.0.0.1:{port} ->"):
-                        with self.lock:
-                            self.bound.add(port)
-        self.reader = threading.Thread(target=drain, daemon=True)
-        self.reader.start()
+        self.tunnel = PodTunnel(self.fixture, self.plan["observerPod"], self.plan["observerPodUID"],
+                                OBSERVER_MANAGEMENT_PORT, OBSERVER_MQTT_PORT)
         try:
-            deadline = time.monotonic() + timeout
-            while time.monotonic() < deadline:
-                self.check()
-                with self.lock:
-                    established = self.bound == {23880, 23883}
-                if established:
-                    self.identity()
-                    self.check()
-                    return {**identity, "at": timestamp(), "ports": {"management": 23880, "mqtt": 23883},
-                            "routing": "owned kubectl port-forward to exact Pod; no service selection or reconnect"}
-                time.sleep(0.05)
-            raise TimeoutError("survivor tunnel ports did not become ready")
+            self.tunnel.start(timeout)
+            self.identity()
         except Exception:
             self.close()
             raise
+        return {**identity, "at": timestamp(), "ports": {"management": OBSERVER_MANAGEMENT_PORT,
+                                                         "mqtt": OBSERVER_MQTT_PORT},
+                "routing": "owned kubectl port-forward to exact Pod; no service selection or reconnect"}
 
     def check(self) -> None:
-        if self.process is None or self.process.poll() is not None:
+        if self.tunnel is None:
             raise RuntimeError("survivor tunnel is not running")
+        self.tunnel.check()
 
     def close(self) -> None:
-        if self.process is not None:
-            if self.process.poll() is None:
-                self.process.terminate()
-                try:
-                    self.process.wait(timeout=5)
-                except subprocess.TimeoutExpired:
-                    self.process.kill()
-                    self.process.wait(timeout=5)
-            if self.reader is not None:
-                self.reader.join(timeout=5)
-                if self.reader.is_alive():
-                    raise TimeoutError("survivor tunnel output worker did not stop")
-            self.process.stdout.close()
+        if self.tunnel is not None:
+            self.tunnel.close()
 
 
 class MQTTProbe:
@@ -234,20 +120,57 @@ class MQTTProbe:
         self.client.loop_stop()
 
 
-def ready(obj: dict) -> bool:
-    return any(c["type"] == "Ready" and c["status"] == "True" for c in obj.get("status", {}).get("conditions", []))
+class DurableRun:
+    """Durable stream of one fault scenario: subscriber prepared on the target, publisher on the observer."""
 
+    def __init__(self, fixture: Fixture, private: Path, run_id: str, plan: dict, output: Path):
+        self.fixture = fixture
+        self.private = private
+        self.run_id = run_id
+        self.plan = plan
+        self.output = output
+        self.scenario = plan["durableScenario"]
+        self.publisher = None
+        self.report = {"scenario": self.scenario, "verifications": {}}
+        plan_settings(plan)
 
-def volume_attachment(item: dict) -> dict:
-    status = item.get("status", {})
-    return {"name": item["metadata"]["name"], "nodeName": item.get("spec", {}).get("nodeName"),
-            "attached": status.get("attached"), "deletionTimestamp": item["metadata"].get("deletionTimestamp"),
-            "attachErrorAt": (status.get("attachError") or {}).get("time"),
-            "detachErrorAt": (status.get("detachError") or {}).get("time")}
+    def begin(self) -> None:
+        """Subscribe on the target Pod, then start publishing through the observer; call before the fault."""
+        tunnel = PodTunnel(self.fixture, self.plan["targetPod"], self.plan["oldPodUID"],
+                           TARGET_MANAGEMENT_PORT, TARGET_MQTT_PORT)
+        try:
+            self.report["targetTunnel"] = tunnel.start()
+            self.report["prepare"] = prepare_subscriber(self.private, self.run_id, self.scenario,
+                                                        TARGET_MQTT_PORT, self.output)
+        finally:
+            tunnel.close()
+        interval, max_messages = plan_settings(self.plan)
+        self.publisher = DurablePublisher(self.private, self.run_id, self.scenario, OBSERVER_MQTT_PORT, self.output,
+                                          interval=interval, max_messages=max_messages)
+        self.publisher.start()
+        self.report["publisherStartedAt"] = timestamp()
+        if not self.publisher.wait_for_acked(DURABLE_BASELINE_ACKS, 30):
+            raise RuntimeError("durable publisher has no acked baseline; fault not injected")
 
+    def verify(self, label: str, cutoff: str | None = None) -> dict:
+        result = verify_subscriber(self.private, self.run_id, self.scenario, OBSERVER_MQTT_PORT, self.output,
+                                   label, cutoff=cutoff)
+        self.report["verifications"][label] = result
+        return result
 
-def save(output: Path, name: str, value) -> None:
-    (output / name).write_text(json.dumps(value, indent=2), encoding="utf-8")
+    def finish(self, label: str) -> dict:
+        """Stop publishing after recovery, then verify; a lost publisher connection fails the stream."""
+        stats = self.publisher.stop()
+        self.report["publisher"] = stats
+        result = self.verify(label)
+        if stats["connectionLost"]:
+            result["result"] = "FAIL"
+            result["publisherConnectionLost"] = True
+        return result
+
+    def abort(self) -> None:
+        if self.publisher is not None:
+            self.report["publisher"] = self.publisher.stop()
 
 
 def require_drain_record_absent(fixture, target_node_id: str) -> None:
@@ -264,9 +187,11 @@ def require_drain_record_absent(fixture, target_node_id: str) -> None:
 def preflight(fixture: Fixture, plan: dict) -> list[dict]:
     required = ("runId", "clusterName", "vpcId", "targetPod", "targetNodeId", "oldPodUID", "oldWorkerName",
                 "oldNodeUID", "oldInstanceId", "pvcName", "pvcUID", "pvName", "volumeId", "zone",
-                "spareWorkerName", "spareInstanceId", "snapshotId")
+                "spareWorkerName", "spareInstanceId", "snapshotId", "targetRole")
     if not all(isinstance(plan.get(key), str) and plan[key] for key in required):
         raise ValueError("incomplete fixture plan")
+    if plan["targetRole"] not in TARGET_ROLES:
+        raise ValueError("targetRole must be follower or leader")
     if plan["runId"] != fixture.run_id or not plan["clusterName"].startswith("narumq-ha-acceptance-"):
         raise ValueError("plan does not identify this disposable fixture")
     if fixture.aws("sts", "get-caller-identity")["Account"] != "809446814769":
@@ -275,9 +200,10 @@ def preflight(fixture: Fixture, plan: dict) -> list[dict]:
     if ns["metadata"].get("labels", {}).get("narumq.io/acceptance-run") != fixture.run_id:
         raise ValueError("namespace is not owned by this synthetic fixture")
     cluster = fixture.api("/api/v1/cluster")
+    leader_is_target = str(cluster["leaderNodeId"]) == plan["targetNodeId"]
     if (cluster["clusterId"] != fixture.run_id or cluster["quorumAvailable"] is not True
-            or str(cluster["leaderNodeId"]) == plan["targetNodeId"]):
-        raise ValueError("cluster must have quorum and the target must be a follower")
+            or leader_is_target != (plan["targetRole"] == "leader")):
+        raise ValueError(f"cluster must have quorum and the target must be the current {plan['targetRole']}")
     pods = fixture.get("pods", "-n", "narumq", "-l", "app=narumq")["items"]
     if len(pods) != 3 or not all(ready(p) for p in pods):
         raise ValueError("three Ready voters are required before the fault")
@@ -290,6 +216,11 @@ def preflight(fixture: Fixture, plan: dict) -> list[dict]:
             or old_node["spec"]["providerID"].rsplit("/", 1)[-1] != plan["oldInstanceId"]
             or instance["State"]["Name"] != "running" or instance["VpcId"] != plan["vpcId"]):
         raise ValueError("fault target identity changed")
+    if plan["targetRole"] == "leader":
+        observer = fixture.get_node(plan["observerWorkerName"])
+        if not observer or (observer["metadata"]["labels"]["topology.kubernetes.io/zone"]
+                            == old_node["metadata"]["labels"]["topology.kubernetes.io/zone"]):
+            raise ValueError("leader fault requires the observer in a different AZ from the target")
     if (not spare or not ready(spare) or spare["spec"].get("unschedulable", False)
             or spare["spec"]["providerID"].rsplit("/", 1)[-1] != plan["spareInstanceId"]
             or plan["spareInstanceId"] == plan["oldInstanceId"]
@@ -372,35 +303,72 @@ def observe_fault(fixture: Fixture, plan: dict, output: Path, original: list[dic
     return {"readyObservedSecondsAfterFault": ready_seconds, "fencing": fencing, "podRelease": release,
             "oldInstanceId": plan["oldInstanceId"], "newInstanceId": new_instance,
             "samePVC_PV_EBS": True, "survivorPodUIDsUnchanged": True,
-            "scope": "physical recovery and sampled continuity; persistent payload oracle remains a separate scenario"}
+            "scope": "physical recovery and sampled continuity; the durable stream oracle is judged separately in report['durable']"}
+
+
+def judge_fault(report: dict, plan: dict, monitor, durable) -> bool:
+    """Overall verdict of fault mode: continuity rule of the target role, explained mutations, durable stream."""
+    summary = report["monitor"]
+    explained = (report["recovery"]["fencing"]["outcome"] not in ("failed_unexplained", "mutation_unconfirmed")
+                 and report["recovery"]["podRelease"]["outcome"] not in ("failed_unexplained", "delete_unconfirmed"))
+    if plan.get("targetRole") == "leader":
+        report["continuity"] = leader_continuity(monitor.snapshot(), report["faultRequestedAt"], plan["targetNodeId"])
+        continuous = report["continuity"]["result"] == "PASS" and monitor_integrity(summary)
+    else:
+        continuous = summary["result"] == "PASS"
+    stream = durable is None or durable.report.get("verifications", {}).get("after-recovery", {}).get("result") == "PASS"
+    return continuous and explained and stream
+
+
+def judge_az_outage(report: dict, plan: dict, monitor) -> bool:
+    """Overall verdict of az-outage mode; the whole-run monitor result stays informational."""
+    outage = report["outage"]
+    times = outage["timings"]["at"]
+    report["hold"] = az_outage.judge_hold(monitor.snapshot(), times["stopRequested"], times["startRequested"],
+                                          plan["targetNodeId"])
+    return (report["hold"]["result"] == "PASS" and monitor_integrity(report["monitor"])
+            and outage["midOutage"]["result"] == "PASS" and outage["afterRestore"]["result"] == "PASS"
+            and "recovery" in outage and not outage["asg"]["resume"]["failed"]
+            and outage.get("postResume", {}).get("result") == "PASS")
 
 
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("mode", choices=("monitor", "fault"))
+    parser.add_argument("mode", choices=("monitor", "fault", "az-outage", "power-loss"))
     parser.add_argument("--private", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--seconds", type=float, default=12, help="read-only monitor duration")
     parser.add_argument("--plan", type=Path)
-    parser.add_argument("--execute", action="store_true", help="allow termination of the checked synthetic follower")
+    parser.add_argument("--execute", action="store_true",
+                        help="allow the AWS mutation of the checked synthetic fixture (fault, az-outage, power-loss)")
     args = parser.parse_args(argv)
-    if args.mode == "fault" and (not args.execute or args.plan is None):
-        parser.error("fault requires --execute and --plan")
+    acting = args.mode != "monitor"
+    if acting and (not args.execute or args.plan is None):
+        parser.error(f"{args.mode} requires --execute and --plan")
+    if args.mode == "power-loss":
+        return power_loss.run_cli(args)
     if not 0 < args.seconds <= 3600:
         parser.error("--seconds must be within (0, 3600]")
     args.output.mkdir(parents=True, exist_ok=False)
     monitor = None
     mqtt = None
     tunnel = None
+    durable = None
     report = {"result": "FAIL", "mode": args.mode, "startedAt": timestamp()}
     try:
         fixture = Fixture(args.private, args.output.name)
-        plan = json.loads(args.plan.read_text(encoding="utf-8")) if args.mode == "fault" else None
+        plan = json.loads(args.plan.read_text(encoding="utf-8")) if acting else None
+        if args.mode == "az-outage":
+            report["holdSeconds"] = az_outage.validate_plan(plan)
         if plan:
             tunnel = SurvivorTunnel(fixture, plan)
             report["observerEndpoint"] = tunnel.start()
             save(args.output, "observer-endpoint.json", report["observerEndpoint"])
-        original = preflight(fixture, plan) if plan else None
+        if args.mode == "az-outage":
+            original = az_outage.preflight(fixture, plan)["pods"]
+            require_drain_record_absent(fixture, plan["targetNodeId"])
+        else:
+            original = preflight(fixture, plan) if plan else None
         mqtt = MQTTProbe(args.private, args.output.name)
         def management_probe():
             if tunnel:
@@ -414,31 +382,44 @@ def main(argv=None) -> int:
             if tunnel:
                 tunnel.check()
             return fixture.nodes_probe()
-        diagnostics = {"nodes": nodes_probe} if args.mode == "fault" else None
+        diagnostics = {"nodes": nodes_probe} if acting else None
         monitor = IndependentMonitor(management_probe, mqtt_probe, args.output, diagnostics=diagnostics)
         monitor.start()
         if not monitor.wait_initial():
             raise TimeoutError("initial probes did not complete")
         initial = monitor.snapshot()
-        if args.mode == "fault" and not all(initial[name][0]["ok"] and initial[name][0]["data"].get(field) is True
-                                            for name, field in (("management", "quorumAvailable"), ("mqtt", "puback"))):
+        if acting and not all(initial[name][0]["ok"] and initial[name][0]["data"].get(field) is True
+                              for name, field in (("management", "quorumAvailable"), ("mqtt", "puback"))):
             raise RuntimeError("initial probes are not successful; fault not injected")
-        if args.mode == "fault":
+        if acting:
             monitor.wait_diagnostic_baseline("nodes", DIAGNOSTIC_BASELINE_WAIT_SECONDS)
             tunnel.identity()
             tunnel.check()
+            if plan.get("durableScenario"):
+                durable = DurableRun(fixture, args.private, args.output.name, plan, args.output)
+                report["durable"] = durable.report
+                durable.begin()
             report["faultRequestedAt"] = timestamp()
-            report["recovery"] = observe_fault(fixture, plan, args.output, original)
+            if args.mode == "fault":
+                report["recovery"] = observe_fault(fixture, plan, args.output, original)
+                if durable:
+                    durable.finish("after-recovery")
+            else:
+                report["outage"] = {}
+                az_outage.execute(fixture, plan, args.output, original, durable, tunnel.check, report["outage"])
         else:
             time.sleep(args.seconds)
         monitor.stop()
         if tunnel:
             tunnel.check()
         report["monitor"] = monitor.summary()
-        explained = args.mode != "fault" or (
-            report["recovery"]["fencing"]["outcome"] not in ("failed_unexplained", "mutation_unconfirmed")
-            and report["recovery"]["podRelease"]["outcome"] not in ("failed_unexplained", "delete_unconfirmed"))
-        report["result"] = "PASS" if report["monitor"]["result"] == "PASS" and explained else "FAIL"
+        if args.mode == "monitor":
+            passed = report["monitor"]["result"] == "PASS"
+        elif args.mode == "fault":
+            passed = judge_fault(report, plan, monitor, durable)
+        else:
+            passed = judge_az_outage(report, plan, monitor)
+        report["result"] = "PASS" if passed else "FAIL"
     except Exception as exc:
         report["errorCode"] = type(exc).__name__
     finally:
@@ -448,6 +429,11 @@ def main(argv=None) -> int:
             except Exception as exc:
                 report.update(result="FAIL", stopErrorCode=type(exc).__name__)
             report["monitor"] = monitor.summary()
+        if durable:
+            try:
+                durable.abort()
+            except Exception as exc:
+                report.update(result="FAIL", durableStopErrorCode=type(exc).__name__)
         if mqtt:
             try:
                 mqtt.close()
