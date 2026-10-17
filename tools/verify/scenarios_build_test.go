@@ -156,3 +156,45 @@ func TestScenarioPackageErrorsDoNotExemptOrdinaryMissingResults(t *testing.T) {
 		t.Fatalf("package error exempted an ordinary missing result: %+v", report.Summary)
 	}
 }
+
+// Scenarios: performance-and-verification.md:PRF-SCN-121
+func TestScenarioAlternatePlatformDeclarationsKeepActiveKeyInScope(t *testing.T) {
+	for _, target := range []string{"linux", "windows"} {
+		for _, outcome := range []string{testResultNone, testResultSkip} {
+			t.Run(target+"/"+outcome, func(t *testing.T) {
+				t.Setenv("GOOS", target)
+				t.Setenv("GOARCH", "amd64")
+				t.Setenv("GOFLAGS", "")
+				source := "package pkg\n\nimport \"testing\"\n\n" +
+					"// Scenarios: a.md:AAA-SCN-001\nfunc TestAlternate(t *testing.T) {}\n"
+				events := `{"Action":"pass","Package":"` + scenarioFixtureModule + `/pkg"}` + "\n"
+				if outcome == testResultSkip {
+					events += `{"Action":"skip","Package":"` + scenarioFixtureModule + `/pkg","Test":"TestAlternate"}` + "\n"
+				}
+				root := writeScenarioFixture(t, map[string]string{
+					"go.mod":                        "module " + scenarioFixtureModule + "\n\ngo 1.26\n",
+					"docs/specs/a.md":               scenarioTable("AAA-SCN-001"),
+					"pkg/alternate_linux_test.go":   source,
+					"pkg/alternate_windows_test.go": source,
+					"results/go.json":               events,
+				})
+				report, err := runScenarios(root, scenarioOptions{GoTestJSON: []string{"results/go.json"}, RequireExecuted: true}, time.Unix(0, 0))
+				if err != nil {
+					t.Fatal(err)
+				}
+				entry := report.Specs[0].Scenarios[0]
+				wantReason := scenarioReasonNoResult
+				if outcome == testResultSkip {
+					wantReason = scenarioReasonSkipped
+				}
+				if !report.Summary.hasProblems() || report.Summary.NotExecuted != 1 || report.Summary.OutsideGate != 0 ||
+					entry.Status != scenarioStatusNotRun || entry.Reason != wantReason {
+					t.Fatalf("alternate declaration hid %s result: entry=%+v summary=%+v", outcome, entry, report.Summary)
+				}
+				if len(entry.Tests) != 1 || !entry.Tests[0].InScope || entry.Tests[0].File != "pkg/alternate_"+target+"_test.go" {
+					t.Fatalf("coalesced key did not retain active declaration: %+v", entry.Tests)
+				}
+			})
+		}
+	}
+}

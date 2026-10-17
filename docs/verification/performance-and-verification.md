@@ -528,3 +528,5 @@ go run ./tools/verify scenarios --go-test-json ROOT/remote-artifact/go-test.json
 
 원본과 새 결과, 첫 실패와 최종 보고서는 [증거 디렉터리](../../.artifacts/verification/scenario-platform-scope/)에 있다. 이는 원격 CI 결과에 새 집중 시험을 합친 기능 smoke다. 전체 원격 gate를 다시 통과했다는 주장은 아니다. 보고 도구는 현재 Go 환경으로 누락 결과의 실행 범위를 판정한다. 외부 JSON에는 원래 빌드 환경이 없으므로 원래 GOOS·GOARCH·CGO와 GOFLAGS를 재현해야 한다. 여러 플랫폼 결과를 합치면 명시적 pass·fail은 유지하지만 누락 결과를 플랫폼별로 추론하지 않는다. 일반 활성 파일의 건너뜀은 계속 실패다.
 
+후속 검토에서 같은 package·함수 이름을 Windows·Linux 파일에 각각 선언하면 마지막 파일이 활성 선언을 덮는 경계를 확인했다. 결과 키를 합칠 때 활성 선언을 우선하도록 고쳤다. `TestScenarioAlternatePlatformDeclarationsKeepActiveKeyInScope`는 두 플랫폼의 결과 누락과 일반 건너뜀을 각각 입력해 실행 검사 실패, 범위 안 미실행 1개와 활성 파일 경로를 확인한다. `go test ./tools/verify -run "TestScenario" -count=1`은 3.478초에 PASS했고 `go vet ./tools/verify`도 PASS했다. 이 후속 변경 뒤 전체 원격 CI는 실행하지 않았다.
+

@@ -899,6 +899,15 @@ func buildScenarioReport(specs []scenarioSpec, refs []scenarioRef, problems []sc
 		if linked[key] == nil {
 			linked[key] = make(map[string]scenarioTest)
 		}
+		if previous, exists := linked[key][ref.Test.Key]; exists {
+			_, previousExcluded := results.excluded[previous.File]
+			_, currentExcluded := results.excluded[ref.Test.File]
+			// Alternate platform declarations share an outcome key. Keep the active declaration
+			// so an excluded file encountered later cannot hide its missing or skipped result.
+			if !previousExcluded && currentExcluded {
+				continue
+			}
+		}
 		linked[key][ref.Test.Key] = ref.Test
 	}
 
