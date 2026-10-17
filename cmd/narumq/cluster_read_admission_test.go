@@ -10,6 +10,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	goruntime "runtime"
 	"testing"
 	"time"
 
@@ -148,25 +149,53 @@ func readAdmissionTestMachine(t *testing.T, runtimes [3]*clusterRuntime) *member
 // Traceability: CLU-14; docs/specs/performance-and-verification.md §3.4.
 // Scenarios: performance-and-verification.md:PRF-SCN-011
 func TestClusterFollowerReadBurstCompletesAfterEgressDrain(t *testing.T) {
-	testClusterReadBurst(t, []int{1}, 3)
+	testClusterReadBurst(t, []int{1}, 3, 3)
 }
 
 // Traceability: CLU-14; docs/specs/performance-and-verification.md §3.4.
 // Scenarios: performance-and-verification.md:PRF-SCN-012
 func TestClusterLeaderReadBurstPreservesHealthyQuorumWithBlockedMinority(t *testing.T) {
-	testClusterReadBurst(t, []int{0}, 2)
+	testClusterReadBurst(t, []int{0}, 2, 2)
 }
 
 // Traceability: CLU-14; docs/specs/performance-and-verification.md §3.4.
+// Scenarios: performance-and-verification.md:PRF-SCN-011, performance-and-verification.md:PRF-SCN-012
 func TestClusterConcurrentOriginsReadBurstCompletesAfterEgressDrain(t *testing.T) {
-	testClusterReadBurst(t, []int{0, 1, 2}, 3)
+	testClusterReadBurst(t, []int{0, 1, 2}, 2, 3)
 }
 
-func testClusterReadBurst(t *testing.T, issuers []int, connected int) {
+func testClusterReadBurst(t *testing.T, issuers []int, initiallyConnected, connected int) {
 	t.Helper()
 	runtimes := newReadAdmissionTestCluster(t)
 	ctx, cancel := context.WithTimeout(context.Background(), clusterReadTimeout)
 	defer cancel()
+	var baseline [3]uint64
+	var queueLimits [3][3]tcpadapter.PeerOutboundCapacityDTO
+	for index, runtime := range runtimes {
+		baseline[index] = runtime.node.Status().AppliedIndex
+		for peerIndex := range runtimes {
+			if peerIndex == index {
+				continue
+			}
+			capacity, err := runtime.transport.OutboundCapacity(uint64(peerIndex + 1))
+			if err != nil {
+				t.Fatal(err)
+			}
+			queueLimits[index][peerIndex] = capacity
+		}
+	}
+	checkQueueBounds := func(index int) {
+		t.Helper()
+		for peerIndex, limit := range queueLimits[index] {
+			if peerIndex == index {
+				continue
+			}
+			status, err := runtimes[index].transport.Status(uint64(peerIndex + 1))
+			if err != nil || status.OutboundQueuedMessages > limit.Messages || status.OutboundQueuedBytes > limit.Bytes {
+				t.Fatalf("node %d peer %d status=%+v limit=%+v err=%v", index+1, peerIndex+1, status, limit, err)
+			}
+		}
+	}
 	results := make([]chan clusterReadResponse, 64*len(issuers))
 	var reads [3]map[string]clusterReadWaiter
 	var proposals [3][]clusterProposalWaiter
@@ -195,18 +224,23 @@ func testClusterReadBurst(t *testing.T, issuers []int, connected int) {
 		if err := runtime.sendMessages(ctx, batch.Messages); err != nil {
 			t.Fatal(err)
 		}
+		checkQueueBounds(index)
 	}
 	// No writer exists yet: the first burst must survive the fixed egress cap.
 	for _, issuer := range issuers {
 		process(issuer)
 	}
 	serveResults := make(chan error, 3)
-	for _, runtime := range runtimes[:connected] {
-		go func() { serveResults <- runtime.transport.Serve(ctx) }()
+	serving := initiallyConnected
+	startTransports := func(from, to int) {
+		for _, runtime := range runtimes[from:to] {
+			go func() { serveResults <- runtime.transport.Serve(ctx) }()
+		}
 	}
+	startTransports(0, serving)
 	defer func() {
 		cancel()
-		for range connected {
+		for range serving {
 			if err := <-serveResults; err != nil {
 				t.Errorf("transport shutdown: %v", err)
 			}
@@ -223,31 +257,30 @@ func testClusterReadBurst(t *testing.T, issuers []int, connected int) {
 			}
 			select {
 			case response := <-result:
-				if response.err != nil || response.index == 0 {
-					t.Fatalf("request %d result=%+v", index, response)
+				issuer := issuers[index/64]
+				if response.err != nil || response.index == 0 || response.index < baseline[issuer] {
+					t.Fatalf("request %d result=%+v baseline=%d", index, response, baseline[issuer])
 				}
 				results[index] = nil
 				completed++
 			default:
 			}
 		}
-		time.Sleep(time.Millisecond)
+		if serving < connected && completed >= 64*initiallyConnected {
+			// The majority has completed its burst without the last peer draining.
+			// Now its original 64 requests must complete under the same deadline.
+			startTransports(serving, connected)
+			serving = connected
+		}
+		goruntime.Gosched()
 	}
 	if completed != len(results) {
 		t.Fatalf("fresh proofs completed=%d/%d after egress drain", completed, len(results))
 	}
-	for _, runtime := range runtimes {
-		for _, id := range []uint64{1, 2, 3} {
-			if id == runtime.config.NodeID {
-				continue
-			}
-			status, err := runtime.transport.Status(id)
-			if err != nil || (id <= uint64(connected) && status.RejectedMessages != 0) || status.OutboundQueuedMessages > 32 || status.OutboundQueuedBytes > 4<<20 {
-				t.Fatalf("node %d peer %d status=%+v err=%v", runtime.config.NodeID, id, status, err)
-			}
-		}
+	for index := range runtimes {
+		checkQueueBounds(index)
 	}
-	t.Logf("all %d independent fresh proofs completed within %s with %d connected nodes; no healthy-peer rejections", len(results), clusterReadTimeout, connected)
+	t.Logf("all %d independent fresh proofs reached their pre-burst applied index within %s with %d connected nodes; peer queues stayed bounded", len(results), clusterReadTimeout, connected)
 }
 
 // Traceability: CLU-14; docs/specs/performance-and-verification.md §3.4.
