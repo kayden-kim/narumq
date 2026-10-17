@@ -18,7 +18,7 @@
 
 새 인프라 시험은 승인된 별도 state·VPC의 격리 합성 fixture에서만 수행한다. 보호 자원은 바꾸지 않는다. 필요한 증거를 보존하고 시험 후 새 전용 자원을 정리한다. 운영 데이터나 시간 경과가 필요한 시험을 기다리려고 EKS를 계속 유지하지 않는다.
 
-다음 우선 작업은 EKS에서만 확인할 수 있는 남은 gate의 시험이다. 후보는 preStop/drain 실패·timeout·grace expiry, 정상 MQTT traffic의 NLB routing·연결 drain, controller failure/restart matrix, 전체 voter 전원 손실과 volume loss/reseed다. 각 시험은 새 격리 fixture의 별도 승인된 계획으로 시작한다. S3 미게시 staging 복구·정리와 단일 follower EC2 비정상 종료 관찰은 각 기준 문서의 검증 범위까지 완료했다. 실제 운영 부하·보존 기간·공식 SDK release가 필요한 항목은 해당 선행 조건을 기다린다.
+다음 우선 작업은 EKS에서만 확인할 수 있는 남은 gate의 시험이다. 후보는 preStop/drain 실패·timeout·grace expiry, 정상 MQTT traffic의 NLB routing·연결 drain, controller failure/restart matrix, 전체 voter 전원 손실과 volume loss/reseed다. 각 시험은 새 격리 fixture의 별도 승인된 계획으로 시작한다. S3 미게시 staging 복구·정리와 단일 follower EC2 비정상 종료 관찰은 각 기준 문서의 검증 범위까지 완료했다. 실제 운영 부하·보존 기간이 필요한 항목은 해당 선행 조건을 기다린다.
 
 ## 1. 열린 작업
 
@@ -35,7 +35,7 @@
 - [x] **완료(격리 EKS 범위)** — Drain 실패·timeout 뒤 rollout 처리(`DEP-11`). 2026-10-16 격리 EKS에서 drain `FAILED`와 drain GET 장애 중 deadline 만료가 delete 없이 `Failed`로 끝나는 것을 확인했다. 2026-10-17 사용자 결정으로 `SAFE_TO_STOP` 뒤 실패한 rollout의 새 `retryToken`은 같은 drain을 새 승인 시한(`approvalDeadlineAt`, 재승인 뒤 10분) 안에서 fresh 증거로 다시 승인한다. Pod UID가 같으면 현재 Pod resourceVersion을 채택한다. 같은 날 격리 EKS(run `eks-rollout-20261016T232359Z-68569c`)에서 `DrainSafe` deadline 실패, 재승인 안내, broker deadline 뒤 재승인, 새 승인 시한의 실패와 재승인 뒤 교체 완료를 확인했다. 그동안 delete와 drain POST·취소는 0건이었다. Pod resourceVersion 변경 채택, `pod_identity_changed`·`retry_cancel_unconfirmed` 차단, `DeleteApproved`의 deadline 실패는 단위 시험이 판정한다. [Rollout controller contract §2.9](contracts/rollout-controller-v1.md#2-reconciliation-contract), [Drain §10 기록](specs/drain-and-rolling-update.md#재승인-retry와-argo-cd-적용-교체-eks-재시험-2026-10-17)을 따른다.
 - [ ] **미검증 · 운영 부하 선행** — BP-07 rolling drain 비교(`PERF-07`). 로컬 비교와 반복 suite의 제한된 통과는 유지한다. `SPEC-TBD-08` 수치형 합격 기준과 production 배포 환경에서의 비교가 필요하다. [성능 §3.5](specs/performance-and-verification.md#35-bp-07-rolling-drain-smoke-관찰-경계)를 따른다.
 - [ ] **미검증 · 운영 최대 부하 선행** — Kubernetes 최대 traffic의 연속 100회 rolling(`DEP-01~12`). 로컬 process의 혼합 MQTT·QoS·session 100회 시험은 통과했다. 실제 `B_conn/B_pub/B_sub`, QoS·payload·session·tenant·TLS profile과 절대 cutoff를 확정한 뒤 운영 배포 profile에서 검증한다. External rollout controller의 최대 부하 수용도 이 항목에서 판정한다(2026-10-16 인계). [Drain §9·§10](specs/drain-and-rolling-update.md#9-수용-시험)을 따른다.
-- [ ] **보류 · 공식 SDK 수정 release 대기** — Server redirect·Will 호환성(`CLIENT-01~09`). Paho Go MQTT 5 `v0.23.0`의 중복 Server Reference 수락 결함이 남았다. 직접 수정한 SDK나 raw socket 대체 시험은 도입하지 않는다. 공식 수정 release 채택 뒤 drain 10개와 Phase 1 26개를 모두 검증한다. [Client contract §6.2](contracts/mqtt-client-compatibility-v1.md#62-drain-compatibility-suite)를 따른다.
+- [ ] **부분 검증 · 운영 rollout 수용 증거 필요** — Server redirect·Will 호환성(`CLIENT-01~09`). Phase 1과 정상 SDK drain 연동은 검증했다. 남은 범위는 production rollout timing과 배포 profile의 수용 증거다. Fake server의 malformed 응답 8개는 선택적 SDK 진단이며 제품 승인을 차단하지 않는다. Go 중복 Server Reference 진단 실패는 보존하되 공식 SDK 수정 release를 정상 drain 승인의 선행 조건으로 두지 않는다. [Client contract §6.2·§6.3](contracts/mqtt-client-compatibility-v1.md#62-drain-compatibility-suite)를 따른다.
 
 ### 1.3 Cluster 기능과 알려진 구현 한계
 

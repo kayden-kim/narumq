@@ -848,15 +848,19 @@ go run ./tests/compatibility/mqtt-clients-v1 \
 
 Checked-in strict profile은 amd64 image에서 Paho Go MQTT 3.1.1 v1.5.1, Go MQTT5 v0.23.0, Python `paho-mqtt` 2.1.0을 build한다. Docker가 없거나 amd64가 아니면 case를 시작하지 않고 환경 실패 evidence를 쓴다. Manifest, summary, case, build log, image inspect, case별 broker/client 출력을 보존한다. Payload, credential, raw certificate, 외부 client ID, secret은 artifact에 넣지 않는다. Phase 1은 Go 10, Python 10, SDK 간 QoS1 4, MQTT 3.1.0 reject 2개 등 26 case다. `MQTT5_DRAIN_SAFE`와 malformed server DISCONNECT는 여기서 다루지 않는다. Adapter 계약은 [Drain §10](drain-and-rolling-update.md#10-broker-drain-수용-시험-매핑)을 따른다.
 
-Drain suite는 별도 run ID와 output 경로를 쓴다.
+필수 drain suite는 별도 run ID와 output 경로를 쓴다. 기존 artifact 경로를 재사용하지 않는다.
 
 ```text
 go run ./tests/compatibility/mqtt-clients-v1 --suite drain \
-  --run-id drain-paho-go-python-will-acl-final \
-  --output .artifacts/compatibility/mqtt-clients-v1/drain-paho-go-python-will-acl-final
+  --run-id drain-required-storage-fixed-20261016 \
+  --output .artifacts/compatibility/mqtt-clients-v1/drain-required-storage-fixed-20261016
 ```
 
-Suite는 SDK cluster drain 2 case와 malformed DISCONNECT 8 case를 고정한다. Cluster case는 새 3-node broker, JWT/JWKS, test readiness LB를 쓴다. Malformed case는 fake server/trap listener를 쓴다. Timeout, Will delay, reconnect, LB settle, rate는 test 전용이다. Secret/private key는 임시 경로에만 둔다. 최신 기록은 9/10이며 Go의 중복 Server Reference trap case가 실패했다. 이는 전체 SDK 승인 결과가 아니다. Phase 1 adapter suite는 26/26 통과했다. Local verification은 Docker suite 두 개를 제외하며 nested SDK module을 다운로드하거나 Docker를 시작하지 않는다.
+2026-10-16 사용자 결정에 따라 `--suite drain`은 SDK cluster drain 2 case만 필수로 실행한다. 새 3-node broker, JWT/JWKS, test readiness LB에서 redirect·session resume·후속 전달·Will 억제와 `SAFE_TO_STOP`을 검증한다. Fake server/trap listener를 쓰는 malformed DISCONNECT 8 case는 `--suite sdk-diagnostics`로 분리한다. SDK 진단은 선택 사항이며 제품 release gate와 정상 drain 판정에 합치지 않는다. 실행한 진단의 실패·누락은 별도 summary와 nonzero exit로 보존한다. 전체 case 목록과 선택 기준은 [Client contract §6.2·§6.3](../contracts/mqtt-client-compatibility-v1.md#62-drain-compatibility-suite)을 따른다.
+
+Timeout, Will delay, reconnect, LB settle, rate는 test 전용이다. Secret/private key는 임시 경로에만 둔다. 기존 혼합 suite의 9/10 FAIL 기록은 변경하지 않는다. 그중 필수 cluster drain은 2/2 PASS, SDK 진단은 7/8 PASS였으며 Go의 중복 Server Reference trap case가 실패했다. Phase 1 adapter suite는 26/26 통과했다. 이는 전체 운영 SDK 승인 결과가 아니다. Local verification은 이 Docker 실행들을 제외하며 nested SDK module을 다운로드하거나 Docker를 시작하지 않는다.
+
+Suite 분리와 fixture 수정 뒤의 실행 결과는 [Client contract §6.4](../contracts/mqtt-client-compatibility-v1.md#64-검증-범위-분리-실행-기록-2026-10-16)에 둔다. 필수 정상 drain의 최초 fixture 실패와 최종 통과, 별도 SDK 진단 실패를 구분해 보존한다.
 
 ### 7.2 Fuzz 게이트와 수동 mutation 검증
 
