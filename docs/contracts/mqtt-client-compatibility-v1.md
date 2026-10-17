@@ -54,7 +54,7 @@ Profile status는 다음 의미만 사용한다.
 | `blocked` | 필수 broker 동작, 결정되지 않은 기준 또는 아직 충족하지 못한 compatibility evidence 때문에 시험을 통과시킬 수 없다. |
 | `unverified` | 지원 후보이지만 수용된 자동 artifact가 아직 없다. |
 
-전체 contract는 Go malformed DISCONNECT 실패, rollout timing과 MQTT 3.1.0 migration evidence가 남아 있으므로 `Draft`를 유지한다. SDK matrix의 부분 검증 상태는 전체 contract를 `Active`로 승격하지 않는다.
+전체 contract는 Go malformed DISCONNECT 실패와 rollout timing이 남아 있으므로 `Draft`를 유지한다. SDK matrix의 부분 검증 상태는 전체 contract를 `Active`로 승격하지 않는다. MQTT 3.1.0 client의 관찰·전환·격리는 2026-10-17 사용자 결정으로 이 contract의 승격 조건에서 제외했다([PRD §9.1](../requirements/PRD.md#mqtt-310-비지원과-이전-정책)).
 
 ## 2. Compatibility profile
 
@@ -167,9 +167,9 @@ python-mqtt31-rejected
 
 Cross-SDK QoS 1 case는 subscriber가 `ready.json`에 `schemaVersion`, `caseId`, `sdk`, `role=subscriber`, `protocol`, `ready=true`를 기록한 뒤에만 publisher를 시작한다. Orchestrator는 이 object를 strict decode하고 case·SDK·protocol을 검증한 뒤 publisher의 `readiness.json`으로 복사하여 `/input/readiness.json`에 read-only mount한다. Publisher는 파일이 없거나 형식·값이 다르면 publish하지 않고 failed result를 기록한다.
 
-`MQTT5_DRAIN_SAFE`의 test-only redirect·Will evidence는 §6.2에서 확인했다. 전체 profile은 rollout timing과 matrix의 Go malformed 열 때문에 계속 `blocked`다. Broker-side drain controller와 `DISCONNECT 0x9C`/Server Reference 송신은 [Drain spec §10](../specs/drain-and-rolling-update.md#10-broker-drain-수용-시험-매핑)에 연결한다. MQTT 3.1.0 90일 inventory와 migration isolation도 계속 `blocked`다.
+`MQTT5_DRAIN_SAFE`의 test-only redirect·Will evidence는 §6.2에서 확인했다. 전체 profile은 rollout timing과 matrix의 Go malformed 열 때문에 계속 `blocked`다. Broker-side drain controller와 `DISCONNECT 0x9C`/Server Reference 송신은 [Drain spec §10](../specs/drain-and-rolling-update.md#10-broker-drain-수용-시험-매핑)에 연결한다.
 
-SDK matrix row는 연결된 Phase 1 case가 모두 통과하고 immutable image/result artifact가 보존된 뒤에만 `phase1_verified`가 될 수 있다. required drain, Will 또는 migration evidence가 하나라도 `blocked`인 동안에는 이 Draft contract를 `Active`로 승격하지 않는다.
+SDK matrix row는 연결된 Phase 1 case가 모두 통과하고 immutable image/result artifact가 보존된 뒤에만 `phase1_verified`가 될 수 있다. required drain 또는 Will evidence가 하나라도 `blocked`인 동안에는 이 Draft contract를 `Active`로 승격하지 않는다.
 
 ### 6.1 Client-result schema
 
@@ -240,7 +240,6 @@ go run ./tests/compatibility/mqtt-clients-v1 --suite drain \
 - `DEP-06`~`DEP-12`: external rollout gate의 end-to-end evidence. Broker의 표준 Will 처리와 reason 계측은 [ADR-0028](../decisions/ADR-0028-planned-handoff-will-and-reason-metric.md)을 따르며 수용 증거는 [Drain §10](../specs/drain-and-rolling-update.md#10-broker-drain-수용-시험-매핑)에 둔다.
 - `MQTT5_DRAIN_SAFE`: rollout timing과 matrix에 `blocked`로 남은 Go malformed DISCONNECT 열
 - SDK별 automated compatibility harness의 Phase 1 artifact가 없는 후보는 `unverified`
-- MQTT 3.1.0 90일 관찰과 legacy 격리 완료 전까지 migration evidence가 blocked
 
 ## 9. 참고 자료
 

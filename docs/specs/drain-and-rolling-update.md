@@ -330,7 +330,7 @@ Container가 startup 예산을 다 써서 종료되면 `preStop`이 drain을 시
 
 Broker process test는 Server Reference packet을 확인한다. SDK drain suite는 callback adapter의 1회 임시 redirect·session resume·Will 억제를 두 MQTT 5 SDK에서 확인했다. Go의 중복 Server Reference 처리는 실패했으므로 전체 SDK gate는 열려 있다. 표준 계획 인계 Will과 DEP-12 metric은 ADR-0028 수용 범위다.
 
-EKS 실측(2026-10-14)은 `preStop` 훅 시맨틱·실행, EndpointSlice/NLB 관측 전파 시각, 별도 direct drain-target의 `CONNACK 0x03` 거절, 그리고 정상 Pod 재생성 후 동일 PVC/EBS 재연결·쿼럼 유지·applied index 93→100을 기록했다. 20개 unauthenticated MQTT probe 중 accepted된 것은 없고 `nlbRoutingIsolated=false`이므로 healthy target로의 성공적 독점 라우팅이나 accepted traffic/active connection 안전성은 입증되지 않았다. EBS 시험은 durable ACK payload, WAL/snapshot 무손실, EBS 손실, cross-worker 재부착 또는 crash fault를 검증하지 않았다. Local rollout controller의 실제 broker/Kind lifecycle acceptance는 위 §10에 기록했지만 이 증거는 전체 DEP 수용을 뜻하지 않는다. Production EKS controller rollout, 물리 HW 전원·단일 AZ 손실 카오스, 연속 100회 rolling·BP-07, N-1↔N, 및 MQTT 3.1.0 migration은 열린 gate로 유지한다.
+EKS 실측(2026-10-14)은 `preStop` 훅 시맨틱·실행, EndpointSlice/NLB 관측 전파 시각, 별도 direct drain-target의 `CONNACK 0x03` 거절, 그리고 정상 Pod 재생성 후 동일 PVC/EBS 재연결·쿼럼 유지·applied index 93→100을 기록했다. 20개 unauthenticated MQTT probe 중 accepted된 것은 없고 `nlbRoutingIsolated=false`이므로 healthy target로의 성공적 독점 라우팅이나 accepted traffic/active connection 안전성은 입증되지 않았다. EBS 시험은 durable ACK payload, WAL/snapshot 무손실, EBS 손실, cross-worker 재부착 또는 crash fault를 검증하지 않았다. Local rollout controller의 실제 broker/Kind lifecycle acceptance는 위 §10에 기록했지만 이 증거는 전체 DEP 수용을 뜻하지 않는다. Production EKS controller rollout, 물리 HW 전원·단일 AZ 손실 카오스, 연속 100회 rolling·BP-07, N-1↔N은 열린 gate로 유지한다. MQTT 3.1.0 migration은 2026-10-17 사용자 결정으로 제품 gate에서 제외했다([PRD §9.1](../requirements/PRD.md#mqtt-310-비지원과-이전-정책)).
 
 ### ADR-0028 연속 rolling 관측
 

@@ -39,8 +39,9 @@ contract에 명시한다.
 
 SDK별 client version과 실행 profile은 독립 contract를 만들지 않고
 [MQTT client compatibility v1](mqtt-client-compatibility-v1.md)의 checked-in
-Phase 1 profile과 결과 schema에서 관리한다. Drain inventory와 migration evidence가
-해결되기 전에는 해당 contract를 `Active`로 전환하지 않는다.
+Phase 1 profile과 결과 schema에서 관리한다. Drain inventory가
+해결되기 전에는 해당 contract를 `Active`로 전환하지 않는다. MQTT 3.1.0 migration
+evidence는 2026-10-17 사용자 결정으로 이 조건에서 제외했다.
 
 ## Version 정책
 

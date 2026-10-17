@@ -212,6 +212,8 @@ NaruMQ가 말하는 “메시지 유실 없음”은 MQTT hop별 조건으로 �
 
 NaruMQ v1은 MQTT 3.1.0을 지원하지 않는다. MQTT 3.1.1과 MQTT 5.0만 제품 지원 범위와 compliance matrix에 포함한다. MQTT 3.1.0과 3.1.1을 통칭해 MQTT v3으로 표기하지 않고 정확한 버전을 사용한다.
 
+2026-10-17 사용자 결정에 따라 3.1.0 client의 관찰·전환·격리는 제품 출시 gate(§15.6)와 제품 구현 잔여 작업에서 제외한다. 아래 관찰과 전환 조건은 EMQX에서 NaruMQ로 전환하는 운영자가 전환 전에 수행하는 운영 절차다. 제품 release의 수용 증거로 요구하지 않는다.
+
 EMQX에서 NaruMQ로 전환하기 전에는 모든 연결 이벤트의 `proto_name`, `proto_ver`, `clientId`, tenant 또는 서비스 식별자와 timestamp를 외부 저장소에 적재한다. 관찰 기간은 최소 90일과 정상 클라이언트의 최장 재접속 주기 중 더 긴 기간으로 한다. 현재 연결 목록의 일회성 snapshot만으로 호환성을 판정하지 않는다.
 
 다음 조건을 모두 충족해야 MQTT 3.1.0 비지원 상태로 production 전환할 수 있다.
@@ -655,8 +657,7 @@ Phase 0은 고정 comparator EMQX Enterprise 6.3.1과 현행 production workload
 8. tenant isolation 보안 시험을 통과한다.
 9. backup/restore runbook과 rollback 절차를 검증한다.
 10. 주요 Metric, alert, Dashboard가 운영 환경에서 동작한다.
-11. MQTT 3.1.0 관찰 기간과 client inventory를 완료하고, 남은 legacy client는 3.1.1 이상으로 전환하거나 별도 broker/gateway로 격리한다.
-12. `EKS_EC2_HA`의 3-AZ 배치, EBS CSI 복구, NLB drain과 단일 node·AZ failure 수용 시험을 통과한다.
+11. `EKS_EC2_HA`의 3-AZ 배치, EBS CSI 복구, NLB drain과 단일 node·AZ failure 수용 시험을 통과한다.
 
 ## 16. 단계별 제공 범위
 
@@ -665,11 +666,9 @@ Phase 0은 기준과 도구를 확정하는 단계다. Phase 1부터 기능을 �
 ### Phase 0: 기준선과 위험 제거
 
 - 현행 EMQX 트래픽·기능 사용 현황 수집
-- EMQX 연결 이벤트의 `proto_name`과 `proto_ver`를 최소 90일과 최장 재접속 주기 중 더 긴 기간 동안 수집
 - 고정 version의 실제 EMQX만 사용해 BP-01부터 BP-07까지의 성능 기준선 수집
 - Phase 1 진입 전에 부하 profile별 성능·메모리·복구 SLO 수치 확정
 - MQTT client SDK와 재접속 설정 조사
-- MQTT 3.1.0 client 소유자·firmware 갱신 가능성·격리 계획 확정
 - 프로토콜 parser와 단일 node spike
 - consensus, session store, routing ADR 작성
 - MQTT normative statement compliance matrix 작성
@@ -755,6 +754,7 @@ Phase 0은 기준과 도구를 확정하는 단계다. Phase 1부터 기능을 �
     - 채택(2026-10-15, 측정 방법): 측정 workload는 BP-02 production mix의 비율을 그대로 두고 규모만 키운다. 용량은 broker 하나가 빠진 N-1 상태에서도 QoS 1/2 손실 0, publish-to-delivery p99 100ms 이하, RTO 30초 이하를 지키는 가장 높은 부하로 정한다. 부하 generator는 같은 EKS cluster의 전용 node group에서 Kubernetes Job으로 실행한다. 세부 절차는 [성능 §3.9](../specs/performance-and-verification.md#39-bp-02-eks-용량-측정-계약)를 따른다.
     - 채택(2026-10-15, N-1 판정 보완): Local 측정에서 나온 broker 동작에 대해 다음을 정했다. Shared group durable message는 도달할 수 없는 owner의 member를 피하고, member session이 끝나면 다른 member로 옮긴다([ADR-0060](../decisions/ADR-0060-shared-subscription-durable-owner-loss-reroute.md)). Leader 교체 때 전송 중이던 commit은 `proposal-recovery`로 다시 제안해 연결을 닫지 않는다. Clean Start 또는 Session Expiry 0인 QoS 2 publisher가 PUBCOMP 전에 연결을 잃은 메시지는 전달을 보장하지 않는다(§8). Clean session 구독자의 연결 끊김으로 빠진 메시지 중 publish부터 끊김까지 p99 한도를 넘은 것은 실패로 본다. 용량 overlay의 broker container는 1 CPU·4 GiB를 유지하고 sidecar 자원은 더해서 따로 기록한다.
 6. MQTT 3.1.0을 사용하는 client가 있는가? 있다면 누가 소유하며 3.1.1 이상으로 갱신하거나 격리할 수 있는가? WebSocket listener 필요성은 승인했다. 지원 SDK와 최소 version은 별도 compatibility 결정을 기다린다.
+    - 채택(2026-10-17): MQTT 3.1.0은 지원 대상이 아니다. 3.1.0 client 조사·전환·격리는 제품 출시 gate에서 제외하고 운영자의 전환 절차로 둔다(§9.1).
 7. 현재 Session Expiry와 reconnect backoff 설정은 무엇인가?
 8. tenant 수와 tenant별 최대 부하 편차는 얼마인가?
 9. 현재 인증 방식과 외부 인증 backend는 무엇인가?

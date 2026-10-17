@@ -56,7 +56,7 @@
 
 ### 1.6 MQTT protocol과 client 호환성
 
-- [ ] **미검증 · 운영 조사·감시** — MQTT 3.1.0 전환(`MQTT-13`). 90일 이상 client 사용량, 오래된 firmware·장비 소유자, 3.1.1 이상 전환 또는 gateway 격리, canary 거절 Metric을 확인한다. Wire-level 거절 구현의 로컬 통과는 운영 전환 완료가 아니다. [PRD §9.1](requirements/PRD.md#91-mqtt-프로토콜)을 따른다.
+MQTT 3.1.0 연결 거절(`MQTT-13`)은 구현했고 P0 시험에 연결했다. MQTT 3.1.0은 지원 대상이 아니므로 2026-10-17 사용자 결정에 따라 3.1.0 client의 관찰·전환·격리를 제품 출시 gate와 이 목록에서 제외한다. 이 절차는 EMQX에서 전환하는 운영자가 [PRD §9.1](requirements/PRD.md#mqtt-310-비지원과-이전-정책)에 따라 수행한다.
 
 ### 1.7 Tenant·security와 감사
 

@@ -1427,6 +1427,5 @@ CI 아키텍처 검증은 ADR-0001의 클린 아키텍처 경계를 강제한다
 8. 100회 연속 롤링 업데이트에서 영속 세션 소실 0건, 지원 클라이언트의 비정상 Will 발행 0건이어야 한다.
 9. 테넌트 간 격리와 관리 API의 RBAC 침투 테스트를 통과해야 한다.
 10. 운영 유사 환경에서 백업·복구, 롤백, 메트릭·경보·대시보드 동작을 확인해야 한다.
-11. MQTT 3.1.0 프로토콜 식별 목록과 마이그레이션·격리 증거가 존재해야 한다.
 
 릴리스 필수 소스 artifact는 `.artifacts/verification/coverage.out`, `coverage-summary.json`, mutation 결과 JSON 5개, 보존된 fuzz 결함 코퍼스다. 누락된 artifact나 미검증 게이트가 있으면 완료로 간주하지 않는다. Smoke 결과의 `releaseGating=false`와 미채택 `SPEC-TBD-08` 기준·미계산 profile cutoff는 계속 열어 둔다.
