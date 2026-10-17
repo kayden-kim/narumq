@@ -227,6 +227,9 @@ Native amd64 Linux의 실제 standalone broker로 수정 전·후를 확인했�
 
 `go run ./tools/verify local`은 487.94초 뒤 **실패**했다. 실행 시작 시 도구는 `75d4688`의 source와 이 주소 대체 수정을 기준으로 빌드됐다. 실행 중 별도 도구 수정 `c6c74c7`이 `TestScenarioAlternatePlatformDeclarationsKeepActiveKeyInScope`를 추가했다. Go package test는 모두 통과했지만 뒤의 실행 검사가 새 test metadata를 읽으면서 기존 `go-test.json`에 없는 PRF-SCN-121 시험 1건을 누락으로 판정했다(통과 514, 실패 0, 실행 범위 안 미실행 1·밖 119). 이 혼합 snapshot을 local 통과의 증거로 쓰지 않는다. 해당 새 시험을 포함하는 `go test ./tools/verify -run "TestScenario" -count=1`은 별도로 통과했다(3.478초). [단독 JSON 증거](../../.artifacts/verification/scenario-platform-scope/alternate-declaration-results.json)도 실제 실행으로 확보했다(exit 0, 3.46초). 문서 링크 검사는 190개 파일·3,194개 local link에서 통과했다.
 
+위 혼합 snapshot 실패를 보존한 뒤 `c8d9b06`으로 source·test metadata를 동결하고 기본 `go run ./tools/verify local`을 한 번 실행했다. 521.18초에 **local: PASS**였다. 실행 검사는 634개 중 통과 515·실패 0·실행 범위 안 미실행 0·게이트 밖 119였고 coverage도 통과했다. 별도 opt-in을 켜지 않았다. 이 결과는 분류·주소 대체 구현과 기본 local gate의 완료 증거이며 PRF-SCN-062 smoke 실패를 해제하지 않는다. 같은 동결 commit의 문서 링크 검사는 190개 파일·3,195개 local link에서 통과했다. Source·test metadata는 이 기록을 추가할 때도 변경하지 않았다.
+
+
 
 
 
