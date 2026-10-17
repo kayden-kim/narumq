@@ -206,6 +206,30 @@ Native amd64 Linux의 실제 standalone broker로 수정 전·후를 확인했�
 
 후속 검토에서 특정 미지원 CONNECT property를 고정하는 추가 회귀 시험과 그 시나리오 문구는 제거했다. 지원 CONNECT subset 자체는 바꾸지 않았다. 이 후속 변경에서는 전체 gate를 다시 실행하지 않고 Markdown 링크만 검사했다.
 
+<a id="capacity-connect-fallback-diagnosis"></a>
+### CONNECT 송신 뒤 주소 대체 진단과 차단 (2026-10-17)
+
+대상은 PRF-SCN-120이다. 앞선 PRF-SCN-062 실패 원인을 찾으려고 기존 `0x88` 결정 경계에 임시 오류·시각 기록을 붙였다. Credential·CONNECT 본문은 기록하지 않았다. 원래 local-smoke profile과 resource·deadline·재시도·판정 값을 그대로 사용했다. 아래 세 실행은 진단용 binary다. 수용 통과의 증거로 쓰지 않는다. 임시 기록 코드는 진단 뒤 모두 제거했다.
+
+| 진단 출력 root (`go run ./tests/benchmark/capacity local --profile tests/benchmark/capacity/testdata/local-smoke.json --output <root>`) | 관측 결과 |
+| --- | --- |
+| `.artifacts/verification/connect-diagnostic` | 180.55초. 02-r1 setup 실패를 재현했다. Node 1의 ownership commit이 `outcome=2`, `conflict=stale_epoch`, `err=nil`을 반환했고 CONNECT가 이를 `0x88`로 바꿨다. [Summary](../../.artifacts/verification/connect-diagnostic/capacity-local-20261017T125229Z/capacity-summary.json), [원인 경계 기록](../../.artifacts/verification/connect-diagnostic/capacity-local-20261017T125229Z/node1/broker.log). |
+| `.artifacts/verification/connect-overlap-diagnostic` | 222.65초. 추가한 송신·dial·ownership 시각으로 같은 client의 겹친 CONNECT를 관측했다. Setup은 통과했으므로 앞선 setup 거절의 구체적 경로를 소급해 증명하지는 않는다. [Summary](../../.artifacts/verification/connect-overlap-diagnostic/capacity-local-20261017T125639Z/capacity-summary.json). |
+| `.artifacts/verification/connect-lock-diagnostic` | 144.21초. CONNECT mutex 대기 시각까지 추가했다. 모든 단계는 통과했고 `0x88`은 재현되지 않았다. 이 결과로 앞선 실패를 해제하지 않았다. [Summary](../../.artifacts/verification/connect-lock-diagnostic/capacity-local-20261017T130144Z/capacity-summary.json). |
+
+겹친 요청은 `bp02-a-c001-sub-telemetry-05`에서 확인했다. [Runner 기록](../../.artifacts/verification/connect-overlap-diagnostic/capacity-local-20261017T125639Z/runner.log)에는 node 2 주소로 CONNECT 송신 완료(12:58:50.101719859Z), CONNACK 대기 timeout(12:58:55.102462825Z), node 3 주소로 다음 CONNECT 송신 완료(12:58:55.102847095Z)가 순서대로 남았다. [Node 3](../../.artifacts/verification/connect-overlap-diagnostic/capacity-local-20261017T125639Z/node3/broker.log)은 epoch 2를 획득한 뒤 CLAIM이 stale epoch로 거절됐다. 아직 처리 중이던 첫 요청은 [node 2](../../.artifacts/verification/connect-overlap-diagnostic/capacity-local-20261017T125639Z/node2/broker.log)에서 12:58:55.479361325Z~12:58:55.540377533Z에 epoch 3을 획득했다. 즉 첫 CONNECT를 보낸 뒤의 timeout을 단순한 dial 실패처럼 대체하면 ownership 처리가 겹칠 수 있다.
+
+이 관측으로 확인한 runner 주소 대체 결함만 수정했다. 공통 MQTT client의 `DialError`는 CONNECT 전 TCP dial·TLS handshake 실패만 표시한다. Capacity endpoint는 이 오류만 다음 주소로 대체한다. 쓰기 오류(일부 CONNECT byte 송신 포함), CONNACK timeout·거절·protocol 오류는 그대로 반환한다. 원래 오류는 `Unwrap`으로 보존한다. 기존 문자열 기반 거절 검사 helper는 제거했다. Broker ownership 처리·epoch 충돌·deadline·reconnect 횟수는 바꾸지 않았다. 이 수정은 과거 setup `0x88`의 전체 원인이 확정됐다는 뜻이 아니다.
+
+`go test ./tests/benchmark/capacity ./tests/benchmark/internal/mqttclient -count=1`과 `go vet ./tests/benchmark/capacity ./tests/benchmark/internal/mqttclient`는 통과했다. 실제 scripted TCP listener로 CONNECT 송신 뒤 timeout·거절·일부 byte 뒤 reset이 두 번째 CONNECT를 만들지 않는지 확인했다. 외부 DNS는 쓰지 않았으며, CONNECT 전 dial 실패의 대체와 TLS 오류·취소의 typed wrapping도 확인했다.
+
+수정 뒤 임시 계측이 없는 source로 원래 명령 `go run ./tests/benchmark/capacity local --profile tests/benchmark/capacity/testdata/local-smoke.json`을 실행했다. 245.97초 뒤 명령은 exit 0이었지만 PRF-SCN-062는 다시 **실패**했다([summary](../../.artifacts/verification/capacity-local-20261017T130729Z/capacity-summary.json)). 01-r1·02-r1은 통과했다. 02-r2 확인 실행은 clean-session loss 1건의 최대 나이 1,425.6ms가 1,000ms를 넘어 실패했다. 이어 실행한 하위 01-r2는 통과했다. 원래 기대한 세 실행이 모두 통과하지 않았으므로 smoke 통과로 표시하지 않는다. 이 실행에서는 setup `0x88`이 없었지만 과거 실패를 해제하거나 원인을 확정하는 증거는 아니다. 추가 동작 변경·기준 완화·반복 실행은 하지 않았다.
+
+`go run ./tools/verify local`은 487.94초 뒤 **실패**했다. 실행 시작 시 도구는 `75d4688`의 source와 이 주소 대체 수정을 기준으로 빌드됐다. 실행 중 별도 도구 수정 `c6c74c7`이 `TestScenarioAlternatePlatformDeclarationsKeepActiveKeyInScope`를 추가했다. Go package test는 모두 통과했지만 뒤의 실행 검사가 새 test metadata를 읽으면서 기존 `go-test.json`에 없는 PRF-SCN-121 시험 1건을 누락으로 판정했다(통과 514, 실패 0, 실행 범위 안 미실행 1·밖 119). 이 혼합 snapshot을 local 통과의 증거로 쓰지 않는다. 해당 새 시험을 포함하는 `go test ./tools/verify -run "TestScenario" -count=1`은 별도로 통과했다(3.478초). [단독 JSON 증거](../../.artifacts/verification/scenario-platform-scope/alternate-declaration-results.json)도 실제 실행으로 확보했다(exit 0, 3.46초). 문서 링크 검사는 190개 파일·3,194개 local link에서 통과했다.
+
+
+
+
 
 
 

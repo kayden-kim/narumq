@@ -680,6 +680,7 @@ Quota 계열 거절은 runner가 MQTT reason code `0x97` 또는 `0x9F`를 받은
 #### Runner 구성
 
 - Generator는 target에 무관한 runner로 만든다. 입력은 MQTT endpoint, management endpoint, credential과 profile이다. 단계 경계에서 control marker(§3.6과 같은 방식)를 써서 외부 controller가 장애 주입과 복구를 수행한다.
+- MQTT endpoint 주소 대체는 CONNECT를 보내기 전의 TCP dial·TLS handshake 실패에만 허용한다. 공통 MQTT client는 이 실패를 typed dial error로 구분한다. CONNECT 쓰기 오류(일부 byte만 보낸 경우 포함), CONNACK 대기 timeout·거절·protocol 오류는 다른 주소로 대체하지 않고 그대로 보고한다. 첫 서버가 ownership 처리를 계속하는 동안 같은 client의 두 번째 CONNECT를 보내지 않기 위해서다. Session reconnect loop와 단계의 timeout·재시도 횟수는 바꾸지 않는다.
 - Local controller는 Docker 3-node cluster에서 같은 runner를 실행하고 container `SIGKILL`과 재시작으로 장애를 만든다. Runner와 판정 코드의 local 검증에 쓰며 용량 값의 증거가 아니다.
 - EKS controller는 저장소 root의 workstation에서 `kubectl`로 Job 실행, marker 교환, Pod 강제 삭제, cordon·uncordon과 artifact 수집을 수행한다.
 - 2026-10-16 사용자는 실제 worker 정지 대신 Pod 장애 시험 보완을 선택했다. 시험 overlay만 `broker-process.sh`를 PID 1(container 안의 첫 process)로 실행하고 broker를 자식 process로 둔다. 같은 PID namespace에서 PID 1에 보낸 `SIGSTOP`은 성공을 반환해도 실행을 멈추지 않을 수 있으므로 PID 1을 직접 멈추는 방식은 쓰지 않는다. 평소 preStop은 기본 배포와 같고 wrapper는 TERM·INT를 broker에 전달하고 종료 상태를 기다린다. Wrapper의 메모리·CPU도 broker container의 1 CPU·4 GiB 예산에 포함된다.
@@ -719,6 +720,7 @@ Quota 계열 거절은 runner가 MQTT reason code `0x97` 또는 `0x9F`를 받은
 | PRF-SCN-117 | NFR-02 | PUBACK·PUBREC `0x97`을 MQTT §7.2의 알려진 class·cause, 형식이 틀린 값, 모르는 class·cause, 빈 값으로 받는다. CONNACK `0x97`, `0x9F`와 SUBACK `0x97`도 받는다. | 알려진 class·cause는 그대로 분류·기록한다. CONNACK `0x97`은 `tenant_limit`, cause는 `connections_or_sessions`다. 형식이 틀린 값, 모르는 class·cause, 빈 값, `0x9F`와 SUBACK `0x97`은 `unclassified`다. 원인을 추측하지 않는다. |
 | PRF-SCN-118 | NFR-02 | 단계 판정에 `tenant_limit`, `server_backpressure`, `unclassified` 거절을 따로 또는 함께 입력한다. | `tenant_limit`은 invalid다. `server_backpressure`와 `unclassified`는 fail이다. 함께 있으면 invalid가 우선하고 나머지 건수는 `failConditions`에 남는다. 거절이 없으면 판정을 바꾸지 않는다. |
 | PRF-SCN-119 | NFR-02 | Runner가 구간(`setup`, `warmup`, `measureN`, `failure`, `measureN1`, `restore`, `cleanup`)마다 서로 다른 client·tenant로 quota 계열 거절을 관찰한다. Artifact 쓰기 오류도 입력한다. | `quota-rejections.jsonl`에 거절마다 시각, 구간, client, tenant, packet, reason code, Reason String, 분류와 cause가 한 줄씩 남는다. `step-summary.json`의 `quotaRejections`가 분류별·구간별 건수를 담는다. 어떤 구간의 거절도 판정에서 빠지지 않는다. 기록 실패는 실행 오류로 보존한다. |
+| PRF-SCN-120 | NFR-02 | 외부 DNS 없이 실제 scripted TCP listener로 dial 실패, CONNECT를 받은 뒤 CONNACK timeout·거절, CONNECT 일부 byte를 받은 뒤 연결 reset을 만든다. | CONNECT 전 dial 실패만 다음 주소로 연결한다. 나머지는 오류를 보고하고 두 번째 CONNECT를 보내지 않는다. 공통 client의 typed dial error는 원래 오류의 `errors.Is`·`errors.As` 동작을 보존한다. |
 
 ## 4. 필수 benchmark profile
 

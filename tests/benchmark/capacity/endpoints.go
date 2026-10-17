@@ -84,11 +84,6 @@ func (e *endpoints) resolve(ctx context.Context, host string, force bool) ([]str
 	return addresses, nil
 }
 
-// isConnAckRefusal reports a CONNACK rejection, which must not be retried on another address.
-func isConnAckRefusal(err error) bool {
-	return err != nil && strings.Contains(err.Error(), "unexpected CONNACK")
-}
-
 // connect dials one resolved address, falling through to the others on dial or TLS failure.
 func (e *endpoints) connect(ctx context.Context, rng *rand.Rand, useTLS bool, options mqttclient.ConnectOptions) (*mqttclient.Client, mqttclient.ConnectTiming, error) {
 	address := e.plain
@@ -114,7 +109,8 @@ func (e *endpoints) connect(ctx context.Context, rng *rand.Rand, useTLS bool, op
 				return client, timing, nil
 			}
 			lastErr = err
-			if isConnAckRefusal(err) || ctx.Err() != nil {
+			var dialError *mqttclient.DialError
+			if !errors.As(err, &dialError) || ctx.Err() != nil {
 				return nil, mqttclient.ConnectTiming{}, err
 			}
 		}

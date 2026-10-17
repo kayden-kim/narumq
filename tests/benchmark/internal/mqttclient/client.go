@@ -63,6 +63,16 @@ type Client struct {
 	closeErr         error
 }
 
+// DialError reports a TCP dial or TLS handshake failure before any MQTT CONNECT
+// bytes can be written. Later failures are not DialError, including partial writes.
+type DialError struct {
+	Err error
+}
+
+func (err *DialError) Error() string { return err.Err.Error() }
+
+func (err *DialError) Unwrap() error { return err.Err }
+
 // Connect performs an MQTT CONNECT with caller-selected protocol, session, credentials, and Will.
 func Connect(ctx context.Context, options ConnectOptions) (*Client, ConnectTiming, error) {
 	if ctx == nil {
@@ -103,7 +113,7 @@ func Connect(ctx context.Context, options ConnectOptions) (*Client, ConnectTimin
 		connection, err = dialer.DialContext(ctx, "tcp", options.Address)
 	}
 	if err != nil {
-		return nil, ConnectTiming{}, err
+		return nil, ConnectTiming{}, &DialError{Err: err}
 	}
 	client := &Client{
 		connection:       connection,

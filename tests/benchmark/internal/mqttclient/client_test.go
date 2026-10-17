@@ -19,7 +19,7 @@ import (
 )
 
 // TestConnectOverTLSVerifiesServerCertificate verifies the TLS client verifies the server certificate.
-// Scenarios: performance-and-verification.md:PRF-SCN-042
+// Scenarios: performance-and-verification.md:PRF-SCN-042, performance-and-verification.md:PRF-SCN-120
 func TestConnectOverTLSVerifiesServerCertificate(t *testing.T) {
 	caKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {
@@ -109,8 +109,25 @@ func TestConnectOverTLSVerifiesServerCertificate(t *testing.T) {
 	if !errors.As(err, &unknownAuthority) {
 		t.Fatalf("untrusted CA error = %v, want x509.UnknownAuthorityError", err)
 	}
+	var dialError *DialError
+	if !errors.As(err, &dialError) {
+		t.Fatalf("TLS handshake failure was not a pre-CONNECT DialError: %v", err)
+	}
 	if err := <-serverErr; err != nil {
 		t.Fatal(err)
+	}
+}
+
+// Scenarios: performance-and-verification.md:PRF-SCN-120
+func TestConnectDialErrorPreservesCancellation(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	_, _, err := Connect(ctx, ConnectOptions{
+		Address: "127.0.0.1:1", ClientID: "canceled-dial", HandshakeTimeout: time.Second,
+	})
+	var dialError *DialError
+	if !errors.As(err, &dialError) || !errors.Is(err, context.Canceled) {
+		t.Fatalf("canceled dial did not preserve typed stage and underlying cancellation: %v", err)
 	}
 }
 
