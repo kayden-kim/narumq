@@ -11,6 +11,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"narumq/internal/application/membership"
 )
 
 // TestRolloutControllerKindLifecycle is an opt-in producer/consumer acceptance test.
@@ -252,9 +254,10 @@ func TestRolloutControllerKindLifecycle(t *testing.T) {
 	}
 	targetConfigDigest := registryConfigDigest(t, hostRegistryURL, targetDigest)
 	originalUIDs := smokePodUIDs(t, kubectl)
-	features := []string{
-		"client-blocklist", "cluster-observability-v1", "cluster-policy", "cluster-policy-tenant-quotas",
-		"connection-rebalance", "credential-revocation", "proposal-recovery", "session-metadata",
+	// The CR target must equal the digest-bound OCI feature label, which is the canonical build feature set.
+	features, err := membership.BuildFeatures("")
+	if err != nil {
+		t.Fatal(err)
 	}
 	rolloutResource := func(name, version string) map[string]any {
 		return map[string]any{

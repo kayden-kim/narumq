@@ -30,7 +30,7 @@ func TestStatusConversionRoundtripAndBounds(t *testing.T) {
 		CurrentOrdinal: 1, CurrentPodName: "broker-1", CurrentPodUID: "uid-1", CurrentPodRV: "rv-1",
 		DrainOperationID: "op-1", DrainIntentAt: &now, DrainStartedAt: &now, DrainDeadlineAt: &now,
 		DrainPhase: "TRANSFERRING_SESSIONS", DrainState: "DRAINING", DrainSafeToStop: &safe,
-		SafeToStopObservedAt: &now, DrainConnectionsInitial: 10, DrainConnectionsRemaining: 2,
+		SafeToStopObservedAt: &now, ApprovalDeadlineAt: &now, DrainConnectionsInitial: 10, DrainConnectionsRemaining: 2,
 		DrainSessionsReady: 5, DrainSessionsTakenOver: 3, DrainSessionsFailed: 0,
 		DrainPendingWAL: 0, DrainUnderReplicated: 0, DrainFailureCode: "", DrainBlockingReason: "",
 		DeleteIntent: true, FailureCode: "", FailureReason: "", CompletedOrdinals: []int32{0},
@@ -53,7 +53,8 @@ func TestStatusConversionRoundtripAndBounds(t *testing.T) {
 		t.Fatalf("statusFromResource: %v", err)
 	}
 	if back.CurrentOrdinal != status.CurrentOrdinal || back.WorkloadName != status.WorkloadName ||
-		back.DrainConnectionsRemaining != status.DrainConnectionsRemaining || !back.LastTransitionTime.Equal(status.LastTransitionTime) {
+		back.DrainConnectionsRemaining != status.DrainConnectionsRemaining || !back.LastTransitionTime.Equal(status.LastTransitionTime) ||
+		back.ApprovalDeadlineAt == nil || !back.ApprovalDeadlineAt.Equal(now) {
 		t.Fatalf("roundtrip mismatch: got %+v want %+v", back, status)
 	}
 

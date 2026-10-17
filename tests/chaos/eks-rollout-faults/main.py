@@ -2,10 +2,10 @@
 
 The runner drives a disposable EKS fixture through docs/contracts/rollout-controller-v1.md §3:
 drain failure and deadline, GET timeout / malformed / incomplete evidence, audit sink failure,
-Kubernetes DELETE result unknown, Pod resourceVersion change, deletionTimestamp, controller
-restart while a drain POST or a Pod DELETE result is unknown, non-leader replicas, status CAS
-conflict, an Argo CD-applied broker replacement, and a separate finalizer-only Argo CD sync check
-without Pod replacement.
+re-approval of a SAFE_TO_STOP drain after a failure (§2.9), Kubernetes DELETE result unknown,
+Pod resourceVersion change, deletionTimestamp, controller restart while a drain POST or a Pod
+DELETE result is unknown, non-leader replicas, status CAS conflict, an Argo CD-applied broker
+replacement, and a separate finalizer-only Argo CD sync check without Pod replacement.
 
 Every mutating call first requires ``Fixture.verify_identity()``. It checks that the kubeconfig
 context, the EKS cluster endpoint and tags, and the namespace label all name the same disposable
@@ -26,6 +26,7 @@ import time
 import urllib.error
 import urllib.request
 from dataclasses import dataclass, field
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable
 
@@ -43,6 +44,10 @@ HELPER = "rollout-audit-helper"
 HOLD_FINALIZER = "narumq.io/acceptance-hold"
 FAILED_DRAIN_PARAMS = {"loadBalancerPropagationDelayMillis": 999, "timeoutMillis": 1000}
 LONG_DRAIN_PARAMS = {"loadBalancerPropagationDelayMillis": 1_500_000, "timeoutMillis": 1_800_000}
+# A short broker deadline lets a SAFE_TO_STOP drain outlive it within one scenario.
+SAFE_RETRY_DRAIN_PARAMS = {"loadBalancerPropagationDelayMillis": 1000, "timeoutMillis": 150_000}
+# Contract §2.9: a SAFE_TO_STOP retry sets approvalDeadlineAt = now + DefaultDrainTimeout (10 minutes).
+APPROVAL_WINDOW_SECONDS = 600
 REQUIRED_TAGS = {"Purpose": "disposable-acceptance-fixture", "DataClass": "synthetic-test-data-only"}
 
 
@@ -75,6 +80,25 @@ def wait_for(probe: Callable[[], Any], timeout: float, interval: float = 2.0, wh
             return last
         time.sleep(interval)
     raise TimeoutError(f"{what} not reached in {timeout:.0f}s; last={last!r}")
+
+
+def observe_until(fixture: Fixture, rollout: str, done: Callable[[dict[str, Any]], bool], timeout: float,
+                  interval: float = 3.0, what: str = "condition") -> tuple[dict[str, Any], list[dict[str, Any]]]:
+    """Sample the rollout status until ``done`` holds; return the final status and every sample."""
+    samples, deadline = [], time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        status = fixture.status(rollout)
+        samples.append({"at": time.time(), "phase": status.get("phase"), "failureCode": status.get("failureCode"),
+                        "attemptKey": status.get("attemptKey"), "operation": status.get("drainOperationID"),
+                        "approvalDeadlineAt": status.get("approvalDeadlineAt"), "deleteIntent": status.get("deleteIntent")})
+        if done(status):
+            return status, samples
+        time.sleep(interval)
+    raise TimeoutError(f"{what} not reached in {timeout:.0f}s; last={samples[-1] if samples else None!r}")
+
+
+def rfc3339(value: str) -> float:
+    return datetime.fromisoformat(value.replace("Z", "+00:00")).timestamp()
 
 
 def http_json(method: str, url: str, body: Any = None, headers: dict[str, str] | None = None,
@@ -552,6 +576,108 @@ def scenario_audit_sink_failure(session: Session, retry_token: str, hold: float 
                                                                            auditBefore=before, auditAfter=after, window=[start, end]))
 
 
+# Scenario H: retry after a failure at SAFE_TO_STOP re-approves the same drain ----------------------
+def scenario_safe_retry(session: Session, tokens: tuple[str, str, str], approval_timeout: float = 900) -> dict[str, Any]:
+    """Contract §2.9 SAFE_TO_STOP retry on a real broker drain.
+
+    The audit file is immutable, so approval blocks with ``audit_unavailable`` after a real SAFE_TO_STOP.
+    1. The first token starts a drain with a short broker deadline; the rollout fails at that deadline.
+    2. The second token, after the broker deadline, re-approves the same drain with a new 10-minute
+       approval deadline; approval still blocks, and the rollout fails again at the approval deadline.
+    3. With the audit file writable, the controller restarts, because the durable audit publisher stays
+       unavailable after a write failure until the process restarts. The third token then re-approves
+       again; the controller deletes the same Pod once and the rollout completes. No drain POST or
+       cancel reaches node 1 after step 1.
+
+    Time comparisons use cluster clocks (broker ``deadlineAt``, controller status times); the
+    workstation clock is only used for observation windows."""
+    fx, checks, start = session.fixture, Checks(), time.time()
+    baseline = fx.broker_pods()
+    previous = fx.status(session.rollout_name)
+    start_helper(session)
+    helper_exec(session, "chattr +i /audit/audit.jsonl")
+    audit_before = helper_exec(session, "sha256sum /audit/audit.jsonl && stat -c %s /audit/audit.jsonl")
+    session.proxy_set(getMode="relay", postParams=SAFE_RETRY_DRAIN_PARAMS, getDelaySeconds=0, postResponseDelaySeconds=0)
+    session.set_retry_token(tokens[0])
+    first, first_samples = observe_until(fx, session.rollout_name, lambda s: s.get("phase") == "Failed" and s.get("attemptKey") != previous.get("attemptKey"),
+                                         600, what="failure at SAFE_TO_STOP")
+    real = session.drain(1)
+    drain = real[1]["data"] if real[0] == 200 else {}
+    checks.check("1: real SAFE_TO_STOP was reached and approval blocked on the audit sink",
+                 any(s["phase"] == "DrainSafe" and s["failureCode"] == "audit_unavailable" for s in first_samples),
+                 sorted({(s["phase"], s["failureCode"]) for s in first_samples}, key=str))
+    checks.check("1: rollout failed with drain_timeout while the last drain was SAFE_TO_STOP, without a re-approval deadline",
+                 first.get("failureCode") == "drain_timeout" and first.get("drainSafeToStop") is True and not first.get("approvalDeadlineAt")
+                 and not first.get("deleteIntent"), {k: first.get(k) for k in ("failureCode", "drainSafeToStop", "approvalDeadlineAt", "deleteIntent")})
+    checks.check("1: real broker reports the same operation COMPLETED with safeToStop",
+                 drain.get("operationId") == first.get("drainOperationID") and drain.get("phase") == "COMPLETED" and drain.get("safeToStop") is True, real)
+    reason = first.get("failureReason", "")
+    checks.check("1: status names the SAFE_TO_STOP operator action (re-approve or abort)",
+                 "re-approve" in reason and "spec.retryToken" in reason and "spec.abort=true" in reason, reason)
+    broker_deadline = rfc3339(drain["deadlineAt"]) if drain.get("deadlineAt") else None
+
+    retried_at = time.time()
+    session.set_retry_token(tokens[1])
+    second, _ = observe_until(fx, session.rollout_name, lambda s: s.get("approvalDeadlineAt") and s.get("retryTokenHash") != first.get("retryTokenHash"),
+                              180, what="SAFE_TO_STOP re-approval")
+    checks.check("2: retry kept the drain idempotency key and broker operation",
+                 second.get("attemptKey") == first.get("attemptKey") and second.get("drainOperationID") == first.get("drainOperationID"),
+                 {k: (first.get(k), second.get(k)) for k in ("attemptKey", "drainOperationID")})
+    # approvalDeadlineAt is the controller's re-approval time plus 10 minutes, truncated to seconds,
+    # so approvalDeadlineAt - 10m is no later than the re-approval on the controller clock.
+    reapproved_no_later = rfc3339(second["approvalDeadlineAt"]) - APPROVAL_WINDOW_SECONDS
+    checks.check("2: re-approval was recorded after the broker drain deadline (cluster clocks)",
+                 broker_deadline is not None and reapproved_no_later >= broker_deadline,
+                 {"brokerDeadlineAt": drain.get("deadlineAt"), "approvalDeadlineAt": second["approvalDeadlineAt"],
+                  "firstFailedAt": first.get("lastTransitionTime")})
+    window = rfc3339(second["approvalDeadlineAt"]) - retried_at
+    checks.check("2: approval deadline is about 10 minutes after the retry (workstation clock)", 590 <= window <= 640,
+                 {"approvalDeadlineAt": second["approvalDeadlineAt"], "secondsAfterRetry": round(window, 1)})
+    failed_again, second_samples = observe_until(fx, session.rollout_name, lambda s: s.get("phase") == "Failed", approval_timeout,
+                                                 what="failure at the approval deadline")
+    checks.check("2: approval stayed blocked on the audit sink in DrainSafe",
+                 all(s["phase"] in ("DrainSafe", "Failed") for s in second_samples)
+                 and any(s["phase"] == "DrainSafe" and s["failureCode"] == "audit_unavailable" for s in second_samples),
+                 sorted({(s["phase"], s["failureCode"]) for s in second_samples}, key=str))
+    checks.check("2: rollout failed with drain_timeout at or after the approval deadline",
+                 failed_again.get("failureCode") == "drain_timeout"
+                 and rfc3339(failed_again["lastTransitionTime"]) >= rfc3339(second["approvalDeadlineAt"]),
+                 {k: failed_again.get(k) for k in ("failureCode", "lastTransitionTime", "approvalDeadlineAt")})
+    audit_after = helper_exec(session, "sha256sum /audit/audit.jsonl && stat -c %s /audit/audit.jsonl")
+    checks.check("1-2: audit file bytes unchanged while it was immutable", audit_before == audit_after, {"before": audit_before, "after": audit_after})
+    pods = fx.broker_pods()
+    checks.check("1-2: no broker Pod was deleted", all(pods.get(n, {}).get("uid") == p["uid"] and not pods.get(n, {}).get("deleting") for n, p in baseline.items()),
+                 {n: pods.get(n, {}).get("uid") for n in baseline})
+    blocked_end = time.time()
+    session.mark_window("safe_retry_blocked", start, blocked_end)
+
+    helper_exec(session, "chattr -i /audit/audit.jsonl")
+    stop_helper(session)
+    restart = session.restart_controller()
+    checks.check("3: a new controller process holds the leader Lease before the re-approval",
+                 restart["leaderAfter"]["holder"] != restart["leaderBefore"]["holder"],
+                 {"before": restart["leaderBefore"]["holder"], "after": restart["leaderAfter"]["holder"]})
+    session.proxy_set(postParams=None)
+    session.set_retry_token(tokens[2])
+    final, final_samples = observe_until(fx, session.rollout_name, lambda s: s.get("phase") in ("Completed", "Failed", "Aborted"), 2700, 5,
+                                         "rollout completion")
+    pods = fx.broker_pods()
+    target_digest = session.target["image"].split("@", 1)[1]
+    checks.check("3: rollout completed after the re-approval", final.get("phase") == "Completed" and sorted(final.get("completedOrdinals", [])) == [0, 1, 2],
+                 {k: final.get(k) for k in ("phase", "completedOrdinals", "failureCode", "failureReason")})
+    checks.check("3: every broker Pod was replaced with the target digest and is Ready",
+                 all(pods[n]["uid"] != p["uid"] and (pods[n]["imageID"] or "").endswith(target_digest) and pods[n]["ready"] for n, p in baseline.items()),
+                 {n: (p["uid"], pods.get(n, {}).get("uid"), pods.get(n, {}).get("imageID")) for n, p in baseline.items()})
+    node1 = [r for r in session.proxy_requests(retried_at) if r["method"] in ("POST", "DELETE") and "/nodes/1/drain" in r["path"]]
+    checks.check("2-3: no drain POST or cancel reached node 1 after the first failure", not node1, node1)
+    end = time.time()
+    session.mark_window("safe_retry_reapproved", blocked_end, end, allowed_pods=tuple(baseline))
+    return fx.save_result("rollout-safe-retry.json", checks.result(
+        "safe_retry", first=first, firstSamples=first_samples, realDrain=real, second=second, failedAgain=failed_again,
+        secondSamples=second_samples, restart=restart, final=final, finalSamples=final_samples, baseline=baseline, after=pods,
+        tokens=list(tokens), window=[start, end], retriedAt=retried_at, blockedEnd=blocked_end))
+
+
 # Scenario D: DELETE result unknown, RV change, deletionTimestamp, restarts --------------------------
 def webhook_configuration(session: Session, ca_bundle: bytes, pod: str, timeout_seconds: int) -> dict[str, Any]:
     return {"apiVersion": "admissionregistration.k8s.io/v1", "kind": "ValidatingWebhookConfiguration",
@@ -984,6 +1110,15 @@ def scenario_argo_upgrade(session: Session, rollout_name: str, target: dict[str,
         if sample["phase"] in ("Completed", "Failed", "Aborted") and sample["appHealth"] in ("Healthy", "Degraded"):
             break
         time.sleep(5)
+    # The 2026-10-16 OutOfSync defect appeared only after completion, so hold the completed state for 60 s.
+    settle: list[dict[str, Any]] = []
+    settle_end = time.monotonic() + 60
+    while time.monotonic() < settle_end:
+        status = fx.kjson("get", "application", ARGO_APP, namespace=ARGO_NS).get("status", {})
+        resource = next((r for r in status.get("resources", []) if r.get("kind") == "NaruMQRollout" and r.get("name") == rollout_name), {})
+        settle.append({"at": time.time(), "revision": status.get("sync", {}).get("revision"), "sync": status.get("sync", {}).get("status"),
+                       "rolloutSync": resource.get("status"), "appHealth": status.get("health", {}).get("status")})
+        time.sleep(5)
     final_app = fx.kjson("get", "application", ARGO_APP, namespace=ARGO_NS)
     final = fx.status(rollout_name)
     after = fx.broker_pods()
@@ -1017,10 +1152,14 @@ def scenario_argo_upgrade(session: Session, rollout_name: str, target: dict[str,
     checks.check("Argo CD reported Progressing while the controller replaced brokers, then Healthy",
                  any(s["appHealth"] == "Progressing" and s["phase"] not in (None, "Completed") for s in timeline)
                  and final_app["status"]["health"]["status"] == "Healthy", sorted({(s["appHealth"], s["phase"]) for s in timeline}, key=str))
+    checks.check("Argo CD kept the Application and the NaruMQRollout Synced and Healthy for 60 s after the rollout completed",
+                 bool(settle) and all(s["revision"] == revision and s["sync"] == "Synced" and s["rolloutSync"] == "Synced"
+                                      and s["appHealth"] == "Healthy" for s in settle),
+                 sorted({(s["sync"], s["rolloutSync"], s["appHealth"]) for s in settle}, key=str))
     session.mark_window("argo_upgrade", start, end, allowed_pods=("narumq-0", "narumq-1", "narumq-2"))
     return fx.save_result("rollout-argo-upgrade.json", checks.result(
         "argo_upgrade", revision=revision, repoURL=repo_url, target=target, before=before, after=after, final=final,
-        application=final_app.get("status"), clusterFeatures=features, timeline=timeline, window=[start, end]))
+        application=final_app.get("status"), clusterFeatures=features, timeline=timeline, settle=settle, window=[start, end]))
 
 
 def verify_argo_deletes(session: Session, start: float, end: float) -> dict[str, Any]:

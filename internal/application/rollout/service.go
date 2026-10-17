@@ -123,6 +123,7 @@ func (service *Service) Reconcile(ctx context.Context, rollout RolloutDTO) (Reco
 		state.AttemptKey = attemptKey(rollout.UID, ordinal, rollout.RetryToken)
 		state.DrainOperationID, state.DrainPhase, state.DrainState = "", "", ""
 		state.DrainSafeToStop, state.SafeToStopObservedAt, state.DeleteIntent = nil, nil, false
+		state.ApprovalDeadlineAt = nil
 		state.DrainConnectionsInitial, state.DrainConnectionsRemaining = 0, 0
 		state.DrainSessionsReady, state.DrainSessionsTakenOver, state.DrainSessionsFailed = 0, 0, 0
 		state.DrainPendingWAL, state.DrainUnderReplicated = 0, 0
@@ -177,8 +178,8 @@ func (service *Service) Reconcile(ctx context.Context, rollout RolloutDTO) (Reco
 				return ReconcileResultDTO{}, err
 			}
 		}
-		if state.DrainDeadlineAt == nil || !service.clock.Now().UTC().Before(*state.DrainDeadlineAt) {
-			return service.fail(ctx, rollout, state, "drain_timeout", "fresh SAFE_TO_STOP evidence was not persisted before the drain deadline")
+		if deadline := approvalDeadline(state); deadline == nil || !service.clock.Now().UTC().Before(*deadline) {
+			return service.fail(ctx, rollout, state, "drain_timeout", "fresh SAFE_TO_STOP evidence was not persisted before the approval deadline")
 		}
 		deleteErr := service.runtime.DeletePod(ctx, DeletePodDTO{
 			Namespace: rollout.Namespace, Name: state.CurrentPodName, UID: state.CurrentPodUID, ResourceVersion: state.CurrentPodRV,
@@ -368,15 +369,15 @@ func (service *Service) approveDelete(ctx context.Context, rollout RolloutDTO, s
 	if err != nil {
 		return service.approvalEvidenceUnavailable(ctx, rollout, state, err, "fresh drain evidence is not a complete SAFE_TO_STOP result")
 	}
-	if state.SafeToStopObservedAt == nil || state.DrainDeadlineAt == nil || !state.SafeToStopObservedAt.Before(*state.DrainDeadlineAt) {
-		return service.fail(ctx, rollout, state, "drain_timeout", "SAFE_TO_STOP was not observed before the persisted deadline")
+	if deadline := approvalDeadline(state); state.SafeToStopObservedAt == nil || deadline == nil || !state.SafeToStopObservedAt.Before(*deadline) {
+		return service.fail(ctx, rollout, state, "drain_timeout", "SAFE_TO_STOP was not observed before the approval deadline")
 	}
 	if evidenceChanged {
 		if _, err := service.save(ctx, &rollout, state); err != nil {
 			return ReconcileResultDTO{}, err
 		}
 	}
-	if state.DrainDeadlineAt == nil || !service.clock.Now().UTC().Before(*state.DrainDeadlineAt) {
+	if deadline := approvalDeadline(state); deadline == nil || !service.clock.Now().UTC().Before(*deadline) {
 		return service.fail(ctx, rollout, state, "drain_timeout", "fresh SAFE_TO_STOP evidence was not persisted before the approval deadline")
 	}
 	if err := service.audit.Ready(); err != nil {
@@ -384,7 +385,7 @@ func (service *Service) approveDelete(ctx context.Context, rollout RolloutDTO, s
 	}
 	now := service.clock.Now().UTC()
 	action := "rollout.pod.delete_approved"
-	eventID := eventID(rollout.UID, state.CurrentOrdinal, state.CurrentPodUID, state.CurrentPodRV, state.AttemptKey, action)
+	eventID := eventID(rollout.UID, state.CurrentOrdinal, state.CurrentPodUID, state.CurrentPodRV, decisionKey(state), action)
 	event := portsaudit.AuditEventDTO{
 		SchemaVersion: "1.0",
 		EventID:       eventID,
@@ -424,20 +425,20 @@ func (service *Service) approveDelete(ctx context.Context, rollout RolloutDTO, s
 }
 
 // errDrainDeadlineElapsed marks approval evidence that can no longer arrive in time; the rollout must fail, not wait.
-var errDrainDeadlineElapsed = errors.New("persisted drain deadline elapsed before fresh approval evidence")
+var errDrainDeadlineElapsed = errors.New("approval deadline elapsed before fresh SAFE_TO_STOP evidence")
 
-// approvalEvidenceUnavailable fails the rollout with drain_timeout once the persisted deadline has elapsed, so the
+// approvalEvidenceUnavailable fails the rollout with drain_timeout once the approval deadline has elapsed, so the
 // status shows the failure and operator action. Before the deadline, missing or unsafe evidence only blocks.
 func (service *Service) approvalEvidenceUnavailable(ctx context.Context, rollout RolloutDTO, state StatusDTO, err error, message string) (ReconcileResultDTO, error) {
 	if errors.Is(err, errDrainDeadlineElapsed) {
-		return service.fail(ctx, rollout, state, "drain_timeout", "SAFE_TO_STOP approval evidence was not confirmed before the persisted drain deadline")
+		return service.fail(ctx, rollout, state, "drain_timeout", "SAFE_TO_STOP approval evidence was not confirmed before the approval deadline")
 	}
 	return service.block(ctx, rollout, state, "barrier_unknown", message)
 }
 
 func (service *Service) requireSafeDrain(ctx context.Context, rollout RolloutDTO, state *StatusDTO) (bool, error) {
-	now := service.clock.Now().UTC()
-	if state.DrainDeadlineAt == nil || !now.Before(*state.DrainDeadlineAt) {
+	deadline := approvalDeadline(*state)
+	if deadline == nil || !service.clock.Now().UTC().Before(*deadline) {
 		return false, errDrainDeadlineElapsed
 	}
 	before := *state
@@ -445,27 +446,51 @@ func (service *Service) requireSafeDrain(ctx context.Context, rollout RolloutDTO
 	if err != nil || !found || observation.DeadlineAt.IsZero() {
 		return false, errors.New("drain GET did not return a complete operation")
 	}
-	now = service.clock.Now().UTC()
-	if !now.Before(*state.DrainDeadlineAt) {
+	if !service.clock.Now().UTC().Before(*deadline) {
 		return false, errDrainDeadlineElapsed
 	}
-	if state.DrainOperationID == "" || observation.OperationID != state.DrainOperationID || observation.NodeID != uint32(state.CurrentOrdinal+1) ||
-		!rolloutdomain.SafeToStop(observation.Phase, observation.State, observation.SafeToStop, observation.FailurePresent) ||
-		observation.ConnectionsRemaining != 0 || observation.SessionsFailed != 0 || observation.PendingWAL != 0 || observation.UnderReplicated != 0 {
+	if !completeSafeObservation(*state, observation) {
 		return false, errors.New("drain GET is not a complete failure-free SAFE_TO_STOP observation")
 	}
 	service.recordDrain(state, observation)
+	// recordDrain may move only the drain deadline earlier; re-read the approval deadline after it.
+	deadline = approvalDeadline(*state)
 	if state.SafeToStopObservedAt == nil {
 		observedAt := service.clock.Now().UTC()
-		if state.DrainDeadlineAt == nil || !observedAt.Before(*state.DrainDeadlineAt) {
-			return false, errors.New("SAFE_TO_STOP was observed at or after the persisted deadline")
+		if deadline == nil || !observedAt.Before(*deadline) {
+			return false, errors.New("SAFE_TO_STOP was observed at or after the approval deadline")
 		}
 		state.SafeToStopObservedAt = &observedAt
 	}
-	if state.DrainDeadlineAt == nil || !state.SafeToStopObservedAt.Before(*state.DrainDeadlineAt) {
-		return false, errors.New("SAFE_TO_STOP evidence is not before the persisted deadline")
+	if deadline == nil || !state.SafeToStopObservedAt.Before(*deadline) {
+		return false, errors.New("SAFE_TO_STOP evidence is not before the approval deadline")
 	}
 	return !sameDrainEvidence(before, *state), nil
+}
+
+// completeSafeObservation reports whether a drain GET is the persisted operation's complete, failure-free SAFE_TO_STOP result.
+func completeSafeObservation(state StatusDTO, observation DrainObservationDTO) bool {
+	return state.DrainOperationID != "" && observation.OperationID == state.DrainOperationID &&
+		observation.NodeID == uint32(state.CurrentOrdinal+1) &&
+		rolloutdomain.SafeToStop(observation.Phase, observation.State, observation.SafeToStop, observation.FailurePresent) &&
+		observation.ConnectionsRemaining == 0 && observation.SessionsFailed == 0 && observation.PendingWAL == 0 && observation.UnderReplicated == 0
+}
+
+// approvalDeadline bounds approval and DELETE: the re-approval deadline after a SAFE_TO_STOP retry, else the drain deadline.
+func approvalDeadline(state StatusDTO) *time.Time {
+	if state.ApprovalDeadlineAt != nil {
+		return state.ApprovalDeadlineAt
+	}
+	return state.DrainDeadlineAt
+}
+
+// decisionKey separates approval and failure audit events of a SAFE_TO_STOP re-approval from the earlier decisions on the
+// same drain idempotency key (contract §2.7).
+func decisionKey(state StatusDTO) string {
+	if state.ApprovalDeadlineAt != nil {
+		return state.AttemptKey + "\x00" + state.RetryTokenHash
+	}
+	return state.AttemptKey
 }
 
 func (service *Service) awaitReplacement(ctx context.Context, rollout RolloutDTO, state StatusDTO, workload WorkloadDTO, features ClusterFeaturesDTO, metadata ImageMetadataDTO, pod *PodDTO, found bool) (ReconcileResultDTO, error) {
@@ -609,6 +634,9 @@ func (service *Service) retry(ctx context.Context, rollout RolloutDTO, state Sta
 	if state.AttemptKey == "" {
 		return service.fail(ctx, rollout, state, "retry_without_attempt", "failed rollout has no persisted drain attempt")
 	}
+	if state.DrainSafeToStop != nil && *state.DrainSafeToStop {
+		return service.retrySafeToStop(ctx, rollout, state, tokenHash)
+	}
 	nodeID := uint32(state.CurrentOrdinal + 1)
 	observation, found, err := service.broker.GetDrain(ctx, rollout.Namespace, rollout.ManagementEndpoint, rollout.ManagementSecret, nodeID, state.AttemptKey)
 	if err != nil {
@@ -638,13 +666,52 @@ func (service *Service) retry(ctx context.Context, rollout RolloutDTO, state Sta
 	state.AttemptKey = attemptKey(rollout.UID, state.CurrentOrdinal, rollout.RetryToken)
 	state.DrainOperationID, state.DrainIntentAt, state.DrainStartedAt, state.DrainDeadlineAt = "", nil, nil, nil
 	state.DrainPhase, state.DrainState, state.DrainSafeToStop = "", "", nil
-	state.SafeToStopObservedAt = nil
+	state.SafeToStopObservedAt, state.ApprovalDeadlineAt = nil, nil
 	state.DrainConnectionsInitial, state.DrainConnectionsRemaining = 0, 0
 	state.DrainSessionsReady, state.DrainSessionsTakenOver, state.DrainSessionsFailed = 0, 0, 0
 	state.DrainPendingWAL, state.DrainUnderReplicated = 0, 0
 	state.DrainFailureCode, state.DrainBlockingReason = "", ""
 	state.DeleteIntent, state.FailureCode, state.FailureReason = false, "", ""
 	state.Phase = PhasePreflight
+	if _, err := service.save(ctx, &rollout, state); err != nil {
+		return ReconcileResultDTO{}, err
+	}
+	return ReconcileResultDTO{RequeueAfter: 0, Phase: state.Phase}, nil
+}
+
+// retrySafeToStop re-approves the same SAFE_TO_STOP drain because the broker cannot cancel it (contract §2.9). It keeps
+// the drain idempotency key and operation, and approval then repeats the fresh GET, preflight and audit checks.
+func (service *Service) retrySafeToStop(ctx context.Context, rollout RolloutDTO, state StatusDTO, tokenHash string) (ReconcileResultDTO, error) {
+	workload, err := service.runtime.InspectWorkload(ctx, rollout)
+	if err != nil {
+		return service.block(ctx, rollout, state, "retry_cancel_unconfirmed", "current Pod identity is unknown")
+	}
+	pod, found := findPod(workload.Pods, state.CurrentOrdinal)
+	if !found || pod.UID != state.CurrentPodUID || pod.Deleting {
+		if !state.DeleteIntent {
+			return service.block(ctx, rollout, state, "pod_identity_changed", "SAFE_TO_STOP Pod changed without a recorded delete approval")
+		}
+		// The audited approval's DELETE (or its unknown result) already took effect; wait for the same ordinal only.
+		state.RetryTokenHash = tokenHash
+		state.FailureCode, state.FailureReason = "", ""
+		state.Phase = PhaseAwaitingReplacement
+		if _, err := service.save(ctx, &rollout, state); err != nil {
+			return ReconcileResultDTO{}, err
+		}
+		return ReconcileResultDTO{RequeueAfter: PollInterval, Phase: state.Phase}, nil
+	}
+	observation, observed, err := service.broker.GetDrain(ctx, rollout.Namespace, rollout.ManagementEndpoint, rollout.ManagementSecret, uint32(state.CurrentOrdinal+1), state.AttemptKey)
+	if err != nil || !observed || !completeSafeObservation(state, observation) {
+		return service.block(ctx, rollout, state, "retry_cancel_unconfirmed", "previous SAFE_TO_STOP drain could not be confirmed")
+	}
+	service.recordDrain(&state, observation)
+	now := service.clock.Now().UTC()
+	deadline := now.Add(DefaultDrainTimeout)
+	state.RetryTokenHash = tokenHash
+	state.CurrentPodRV = pod.ResourceVersion
+	state.SafeToStopObservedAt, state.ApprovalDeadlineAt = &now, &deadline
+	state.DeleteIntent, state.FailureCode, state.FailureReason = false, "", ""
+	state.Phase = PhaseDrainSafe
 	if _, err := service.save(ctx, &rollout, state); err != nil {
 		return ReconcileResultDTO{}, err
 	}
@@ -688,12 +755,12 @@ func (service *Service) block(ctx context.Context, rollout RolloutDTO, state Sta
 	return ReconcileResultDTO{RequeueAfter: PollInterval, Phase: state.Phase}, nil
 }
 
-// failedOperatorAction is the only safe operator action after Failed (contract §2.9): force delete is unsupported.
+// failedOperatorAction is the operator action after a failure before SAFE_TO_STOP (contract §2.9): force delete is unsupported.
 const failedOperatorAction = "operator action: set spec.retryToken to a new opaque value to cancel the failed drain and retry this ordinal, or set spec.abort=true"
 
-// safeToStopOperatorAction replaces failedOperatorAction when the last observed drain was SAFE_TO_STOP:
-// the broker cannot cancel that drain, so a new retryToken only blocks with retry_cancel_unconfirmed (contract §2.9).
-const safeToStopOperatorAction = "operator action: set spec.abort=true; a new spec.retryToken cannot cancel a SAFE_TO_STOP drain"
+// safeToStopOperatorAction replaces failedOperatorAction when the last observed drain was SAFE_TO_STOP: the broker
+// cannot cancel that drain, so a retry re-approves its deletion with fresh evidence instead (contract §2.9).
+const safeToStopOperatorAction = "operator action: set spec.retryToken to a new opaque value to re-approve deletion of this SAFE_TO_STOP Pod with fresh evidence, or set spec.abort=true"
 
 func failureOperatorAction(state StatusDTO) string {
 	if state.DrainSafeToStop != nil && *state.DrainSafeToStop {
@@ -710,7 +777,7 @@ func (service *Service) fail(ctx context.Context, rollout RolloutDTO, state Stat
 	if service.audit.Ready() == nil {
 		if state.CurrentPodName != "" && state.AttemptKey != "" {
 			action := "rollout.pod.delete_denied"
-			deniedID := eventID(rollout.UID, state.CurrentOrdinal, state.CurrentPodUID, state.CurrentPodRV, state.AttemptKey+"\x00"+code, action)
+			deniedID := eventID(rollout.UID, state.CurrentOrdinal, state.CurrentPodUID, state.CurrentPodRV, decisionKey(state)+"\x00"+code, action)
 			denied := portsaudit.AuditEventDTO{
 				SchemaVersion: "1.0", EventID: deniedID, OccurredAt: now, RequestID: deniedID,
 				Producer: portsaudit.AuditProducerDTO{Component: "ROLLOUT_CONTROLLER", InstanceID: service.config.ProducerInstanceID, Version: service.config.ProducerVersion},
@@ -724,7 +791,7 @@ func (service *Service) fail(ctx context.Context, rollout RolloutDTO, state Stat
 			}
 		}
 		action := "rollout.failed"
-		auditID := eventID(rollout.UID, state.CurrentOrdinal, state.CurrentPodUID, state.CurrentPodRV, state.AttemptKey+"\x00"+code, action)
+		auditID := eventID(rollout.UID, state.CurrentOrdinal, state.CurrentPodUID, state.CurrentPodRV, decisionKey(state)+"\x00"+code, action)
 		event := portsaudit.AuditEventDTO{
 			SchemaVersion: "1.0", EventID: auditID, OccurredAt: now, RequestID: auditID,
 			Producer: portsaudit.AuditProducerDTO{Component: "ROLLOUT_CONTROLLER", InstanceID: service.config.ProducerInstanceID, Version: service.config.ProducerVersion},
@@ -781,7 +848,7 @@ func sameStatus(left, right StatusDTO) bool {
 }
 
 func comparableStatus(state StatusDTO) StatusDTO {
-	for _, field := range []**time.Time{&state.DrainIntentAt, &state.DrainStartedAt, &state.DrainDeadlineAt, &state.SafeToStopObservedAt} {
+	for _, field := range []**time.Time{&state.DrainIntentAt, &state.DrainStartedAt, &state.DrainDeadlineAt, &state.SafeToStopObservedAt, &state.ApprovalDeadlineAt} {
 		if *field != nil {
 			persisted := persistedTime(**field)
 			*field = &persisted
@@ -933,6 +1000,7 @@ func nonempty(value, fallback string) string {
 
 func clearDrainEvidence(state *StatusDTO) {
 	state.DrainIntentAt, state.DrainStartedAt, state.DrainDeadlineAt, state.SafeToStopObservedAt = nil, nil, nil, nil
+	state.ApprovalDeadlineAt = nil
 	state.DrainOperationID, state.DrainPhase, state.DrainState = "", "", ""
 	state.DrainSafeToStop, state.DeleteIntent = nil, false
 	state.DrainConnectionsInitial, state.DrainConnectionsRemaining = 0, 0

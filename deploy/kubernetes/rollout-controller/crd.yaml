@@ -160,6 +160,9 @@ spec:
                 safeToStopObservedAt:
                   type: string
                   format: date-time
+                approvalDeadlineAt:
+                  type: string
+                  format: date-time
                 drainConnectionsInitial:
                   type: integer
                   format: int64

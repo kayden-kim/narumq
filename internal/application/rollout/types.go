@@ -40,22 +40,24 @@ type RolloutDTO struct {
 }
 
 type StatusDTO struct {
-	Phase                     string
-	ObservedGeneration        int64
-	AttemptKey                string
-	RetryTokenHash            string
-	CurrentOrdinal            int32
-	CurrentPodName            string
-	CurrentPodUID             string
-	CurrentPodRV              string
-	DrainOperationID          string
-	DrainIntentAt             *time.Time
-	DrainStartedAt            *time.Time
-	DrainDeadlineAt           *time.Time
-	DrainPhase                string
-	DrainState                string
-	DrainSafeToStop           *bool
-	SafeToStopObservedAt      *time.Time
+	Phase                string
+	ObservedGeneration   int64
+	AttemptKey           string
+	RetryTokenHash       string
+	CurrentOrdinal       int32
+	CurrentPodName       string
+	CurrentPodUID        string
+	CurrentPodRV         string
+	DrainOperationID     string
+	DrainIntentAt        *time.Time
+	DrainStartedAt       *time.Time
+	DrainDeadlineAt      *time.Time
+	DrainPhase           string
+	DrainState           string
+	DrainSafeToStop      *bool
+	SafeToStopObservedAt *time.Time
+	// ApprovalDeadlineAt bounds approval and DELETE after a SAFE_TO_STOP re-approval; nil means DrainDeadlineAt applies.
+	ApprovalDeadlineAt        *time.Time
 	DrainConnectionsInitial   uint64
 	DrainConnectionsRemaining uint64
 	DrainSessionsReady        uint64

@@ -63,6 +63,7 @@ type NaruMQRolloutStatus struct {
 	DrainState                string             `json:"drainState,omitempty"`
 	DrainSafeToStop           *bool              `json:"drainSafeToStop,omitempty"`
 	SafeToStopObservedAt      *metav1.Time       `json:"safeToStopObservedAt,omitempty"`
+	ApprovalDeadlineAt        *metav1.Time       `json:"approvalDeadlineAt,omitempty"`
 	DrainConnectionsInitial   int64              `json:"drainConnectionsInitial,omitempty"`
 	DrainConnectionsRemaining int64              `json:"drainConnectionsRemaining,omitempty"`
 	DrainSessionsReady        int64              `json:"drainSessionsReady,omitempty"`
@@ -118,6 +119,7 @@ func (resource *NaruMQRollout) DeepCopy() *NaruMQRollout {
 	copy.Status.DrainStartedAt = copyTime(resource.Status.DrainStartedAt)
 	copy.Status.DrainDeadlineAt = copyTime(resource.Status.DrainDeadlineAt)
 	copy.Status.SafeToStopObservedAt = copyTime(resource.Status.SafeToStopObservedAt)
+	copy.Status.ApprovalDeadlineAt = copyTime(resource.Status.ApprovalDeadlineAt)
 	copy.Status.LastTransitionTime = copyTime(resource.Status.LastTransitionTime)
 	if resource.Status.DrainSafeToStop != nil {
 		value := *resource.Status.DrainSafeToStop

@@ -502,7 +502,7 @@ func TestUnknownIncompleteAndLateDrainEvidenceNeverDeletes(t *testing.T) {
 	}
 }
 
-// Traceability: DEP-18; docs/contracts/rollout-controller-v1.md §2.9, §3 "Drain failure / timeout", §5 rollout.failed.
+// Traceability: DEP-11, DEP-18; docs/contracts/rollout-controller-v1.md §2.9, §3 "Drain failure / timeout", §5 rollout.failed.
 func TestDrainFailedShowsSafeOperatorActionInStatusAndAudit(t *testing.T) {
 	harness := newRolloutTestHarness(t)
 	harness.broker.safe = false
@@ -671,7 +671,7 @@ func TestAlreadyTargetPreflightRequiresPodHealthProbe(t *testing.T) {
 	}
 }
 
-// Traceability: DEP-18; docs/contracts/rollout-controller-v1.md §2.9, §3 "Drain failure / timeout".
+// Traceability: DEP-11, DEP-18; docs/contracts/rollout-controller-v1.md §2.9, §3 "Drain failure / timeout".
 func TestApprovalAfterPersistedDeadlineFailsWithoutDelete(t *testing.T) {
 	cases := []struct {
 		name  string
@@ -731,6 +731,165 @@ func TestApprovalAfterPersistedDeadlineFailsWithoutDelete(t *testing.T) {
 			}
 			if len(failed) != 1 || failed[0].Reason != "drain_timeout" || failed[0].Details["operatorAction"] != safeToStopOperatorAction {
 				t.Fatalf("rollout.failed audit events = %+v, want one drain_timeout event with abort-only action", failed)
+			}
+		})
+	}
+}
+
+// failAtApprovalDeadline drives the harness to SAFE_TO_STOP in the given phase and lets the approval deadline pass.
+func failAtApprovalDeadline(t *testing.T, harness *rolloutTestHarness, steps int) {
+	t.Helper()
+	for range steps {
+		if _, err := harness.reconcile(t); err != nil {
+			t.Fatal(err)
+		}
+	}
+	harness.clock.now = *harness.status.status.DrainDeadlineAt
+	if _, err := harness.reconcile(t); err != nil {
+		t.Fatal(err)
+	}
+	if status := harness.status.status; status.Phase != PhaseFailed || status.FailureCode != "drain_timeout" || status.DrainSafeToStop == nil || !*status.DrainSafeToStop {
+		t.Fatalf("setup did not fail at SAFE_TO_STOP: %+v", status)
+	}
+}
+
+func auditActions(harness *rolloutTestHarness, action string) []portsaudit.AuditEventDTO {
+	var events []portsaudit.AuditEventDTO
+	for _, event := range harness.audit.events {
+		if event.Action == action {
+			events = append(events, event)
+		}
+	}
+	return events
+}
+
+// Traceability: DEP-11, DEP-18; docs/contracts/rollout-controller-v1.md §2.7, §2.9, §3 "Drain failure / timeout".
+func TestSafeToStopRetryReapprovesSameDrainAndDeletesOnce(t *testing.T) {
+	cases := []struct {
+		name         string
+		steps        int
+		podRVChanged bool
+	}{
+		{name: "failed in DrainSafe", steps: 3},
+		{name: "failed in DeleteApproved", steps: 4},
+		{name: "Pod resourceVersion changed after failure", steps: 4, podRVChanged: true},
+	}
+	for _, test := range cases {
+		t.Run(test.name, func(t *testing.T) {
+			harness := newRolloutTestHarness(t)
+			failAtApprovalDeadline(t, harness, test.steps)
+			failed := harness.status.status
+			approvalsBefore := len(auditActions(harness, "rollout.pod.delete_approved"))
+			starts, cancels, deletes := harness.broker.starts, harness.broker.cancels, harness.runtime.deleteCalls
+			if test.podRVChanged {
+				harness.runtime.workload.Pods[0].ResourceVersion = "rv-after-failure"
+			}
+			// Past both the persisted drain deadline and the broker deadline: only the new approval deadline may allow approval.
+			harness.clock.now = harness.clock.now.Add(time.Minute)
+			harness.request.RetryToken = "attempt-2"
+			if _, err := harness.reconcile(t); err != nil {
+				t.Fatal(err)
+			}
+			status := harness.status.status
+			if status.Phase != PhaseDrainSafe || status.AttemptKey != failed.AttemptKey || status.DrainOperationID != failed.DrainOperationID ||
+				status.ApprovalDeadlineAt == nil || !status.ApprovalDeadlineAt.Equal(harness.clock.now.Add(DefaultDrainTimeout)) ||
+				status.CurrentPodRV != harness.runtime.workload.Pods[0].ResourceVersion || status.DeleteIntent || status.RetryTokenHash != retryTokenHash("attempt-2") {
+				t.Fatalf("SAFE_TO_STOP retry status = %+v, want DrainSafe on the same drain with a new approval deadline", status)
+			}
+			if harness.broker.starts != starts || harness.broker.cancels != cancels || harness.runtime.deleteCalls != deletes {
+				t.Fatalf("retry mutated broker or Pod: starts %d->%d cancels %d->%d deletes %d->%d",
+					starts, harness.broker.starts, cancels, harness.broker.cancels, deletes, harness.runtime.deleteCalls)
+			}
+			for range 2 {
+				if _, err := harness.reconcile(t); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if harness.status.status.Phase != PhaseAwaitingReplacement || harness.runtime.deleteCalls != deletes+1 || harness.broker.starts != starts || harness.broker.cancels != cancels {
+				t.Fatalf("re-approval: phase=%s deletes=%d (want %d) starts=%d cancels=%d", harness.status.status.Phase, harness.runtime.deleteCalls, deletes+1, harness.broker.starts, harness.broker.cancels)
+			}
+			if approvals := auditActions(harness, "rollout.pod.delete_approved"); len(approvals) != approvalsBefore+1 {
+				t.Fatalf("delete_approved events = %d, want a distinct re-approval event after %d", len(approvals), approvalsBefore)
+			}
+		})
+	}
+}
+
+// Traceability: DEP-11, DEP-18; docs/contracts/rollout-controller-v1.md §2.9, §3 "Drain failure / timeout".
+func TestSafeToStopRetryFailsAgainAtApprovalDeadlineWithoutDelete(t *testing.T) {
+	harness := newRolloutTestHarness(t)
+	failAtApprovalDeadline(t, harness, 3)
+	harness.request.RetryToken = "attempt-2"
+	if _, err := harness.reconcile(t); err != nil {
+		t.Fatal(err)
+	}
+	approvalDeadline := *harness.status.status.ApprovalDeadlineAt
+	harness.broker.getErr = errors.New("drain GET unavailable")
+	if _, err := harness.reconcile(t); err != nil {
+		t.Fatal(err)
+	}
+	if status := harness.status.status; status.Phase != PhaseDrainSafe || status.FailureCode != "barrier_unknown" {
+		t.Fatalf("unknown GET before the approval deadline: phase=%s code=%s, want DrainSafe barrier_unknown", status.Phase, status.FailureCode)
+	}
+	harness.clock.now = approvalDeadline
+	if _, err := harness.reconcile(t); err != nil {
+		t.Fatal(err)
+	}
+	status := harness.status.status
+	if status.Phase != PhaseFailed || status.FailureCode != "drain_timeout" || !strings.HasSuffix(status.FailureReason, safeToStopOperatorAction) || harness.runtime.deleteCalls != 0 {
+		t.Fatalf("approval deadline: phase=%s code=%s reason=%q deletes=%d, want Failed drain_timeout without delete", status.Phase, status.FailureCode, status.FailureReason, harness.runtime.deleteCalls)
+	}
+	if failed := auditActions(harness, "rollout.failed"); len(failed) != 2 {
+		t.Fatalf("rollout.failed events = %d, want the first failure and a distinct re-approval failure", len(failed))
+	}
+}
+
+// Traceability: DEP-11, DEP-18; docs/contracts/rollout-controller-v1.md §2.7, §2.9.
+func TestSafeToStopRetryNeverAdoptsUnauditedPodChangeOrUnconfirmedDrain(t *testing.T) {
+	cases := []struct {
+		name      string
+		steps     int
+		configure func(*rolloutTestHarness)
+		wantPhase string
+		wantCode  string
+	}{
+		{name: "Pod replaced without delete intent", steps: 3, configure: func(h *rolloutTestHarness) {
+			h.runtime.workload.Pods[0].UID = "unaudited-uid"
+		}, wantPhase: PhaseFailed, wantCode: "pod_identity_changed"},
+		{name: "Pod terminating without delete intent", steps: 3, configure: func(h *rolloutTestHarness) {
+			h.runtime.workload.Pods[0].Deleting = true
+		}, wantPhase: PhaseFailed, wantCode: "pod_identity_changed"},
+		{name: "Pod terminating after audited delete intent", steps: 4, configure: func(h *rolloutTestHarness) {
+			h.runtime.workload.Pods[0].Deleting = true
+		}, wantPhase: PhaseAwaitingReplacement},
+		{name: "drain GET unavailable", steps: 3, configure: func(h *rolloutTestHarness) {
+			h.broker.getErr = errors.New("drain GET unavailable")
+		}, wantPhase: PhaseFailed, wantCode: "retry_cancel_unconfirmed"},
+		{name: "drain no longer SAFE_TO_STOP", steps: 3, configure: func(h *rolloutTestHarness) {
+			h.broker.safe = false
+		}, wantPhase: PhaseFailed, wantCode: "retry_cancel_unconfirmed"},
+	}
+	for _, test := range cases {
+		t.Run(test.name, func(t *testing.T) {
+			harness := newRolloutTestHarness(t)
+			failAtApprovalDeadline(t, harness, test.steps)
+			failed := harness.status.status
+			starts, cancels, deletes := harness.broker.starts, harness.broker.cancels, harness.runtime.deleteCalls
+			test.configure(harness)
+			harness.request.RetryToken = "attempt-2"
+			if _, err := harness.reconcile(t); err != nil {
+				t.Fatal(err)
+			}
+			status := harness.status.status
+			if status.Phase != test.wantPhase || status.FailureCode != test.wantCode || status.AttemptKey != failed.AttemptKey {
+				t.Fatalf("retry: phase=%s code=%s attemptKeyKept=%t, want phase=%s code=%q", status.Phase, status.FailureCode, status.AttemptKey == failed.AttemptKey, test.wantPhase, test.wantCode)
+			}
+			if test.wantPhase == PhaseFailed && status.RetryTokenHash != failed.RetryTokenHash {
+				t.Fatal("blocked retry consumed the new retryToken")
+			}
+			if harness.broker.starts != starts || harness.broker.cancels != cancels || harness.runtime.deleteCalls != deletes {
+				t.Fatalf("retry mutated broker or Pod: starts %d->%d cancels %d->%d deletes %d->%d",
+					starts, harness.broker.starts, cancels, harness.broker.cancels, deletes, harness.runtime.deleteCalls)
 			}
 		})
 	}
