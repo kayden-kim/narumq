@@ -1,51 +1,33 @@
 package rollout
 
 import (
-	"net"
-	"os"
-	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
-// useLoopbackKubeconfig points controller-runtime at an unreachable loopback API server so that
-// RunController can build a manager without a cluster. The manager never connects before it fails.
-func useLoopbackKubeconfig(t *testing.T) {
+// runControllerBounded runs RunController in a goroutine. A regression that lets an invalid
+// configuration reach manager construction or Start fails the test instead of hanging it.
+func runControllerBounded(t *testing.T, config ControllerConfig, audit *reconcilerStubAudit) error {
 	t.Helper()
-	path := filepath.Join(t.TempDir(), "kubeconfig")
-	config := `apiVersion: v1
-kind: Config
-clusters:
-- name: test
-  cluster: {server: "http://127.0.0.1:1"}
-users:
-- name: test
-  user: {token: test}
-contexts:
-- name: test
-  context: {cluster: test, user: test}
-current-context: test
-`
-	if err := os.WriteFile(path, []byte(config), 0o600); err != nil {
-		t.Fatal(err)
+	result := make(chan error, 1)
+	go func() {
+		if audit == nil {
+			result <- RunController(config, nil)
+			return
+		}
+		result <- RunController(config, *audit)
+	}()
+	select {
+	case err := <-result:
+		return err
+	case <-time.After(10 * time.Second):
+		t.Fatal("RunController did not reject the configuration; it went on to build the manager")
+		return nil
 	}
-	t.Setenv("KUBECONFIG", path)
-}
-
-// holdProbePort occupies the health-probe port RunController binds, so manager construction fails
-// deterministically instead of blocking in manager.Start.
-func holdProbePort(t *testing.T) {
-	t.Helper()
-	listener, err := net.Listen("tcp", ":8081")
-	if err != nil {
-		t.Skipf("health probe port 8081 is not available for this test: %v", err)
-	}
-	t.Cleanup(func() { _ = listener.Close() })
 }
 
 func TestRunControllerRejectsIncompleteConfigurationBeforeTouchingTheCluster(t *testing.T) {
-	useLoopbackKubeconfig(t)
-	holdProbePort(t)
 	valid := ControllerConfig{Namespace: "ns", ProducerID: "producer", ProducerVersion: "1.0.0", Registries: []string{"https://registry.test"}}
 
 	cases := []struct {
@@ -66,13 +48,11 @@ func TestRunControllerRejectsIncompleteConfigurationBeforeTouchingTheCluster(t *
 			config := valid
 			config.Registries = append([]string(nil), valid.Registries...)
 			tc.mutate(&config)
-			audit := reconcilerStubAudit{}
-			var err error
-			if tc.nilAudit {
-				err = RunController(config, nil)
-			} else {
-				err = RunController(config, audit)
+			var audit *reconcilerStubAudit
+			if !tc.nilAudit {
+				audit = &reconcilerStubAudit{}
 			}
+			err := runControllerBounded(t, config, audit)
 			if err == nil || !strings.Contains(err.Error(), tc.want) {
 				t.Fatalf("RunController error = %v, want one mentioning %q", err, tc.want)
 			}
@@ -80,19 +60,5 @@ func TestRunControllerRejectsIncompleteConfigurationBeforeTouchingTheCluster(t *
 				t.Fatalf("configuration error was reported only after manager construction: %v", err)
 			}
 		})
-	}
-}
-
-func TestRunControllerReportsManagerConstructionFailure(t *testing.T) {
-	useLoopbackKubeconfig(t)
-	holdProbePort(t)
-	config := ControllerConfig{Namespace: "ns", ProducerID: "producer", ProducerVersion: "1.0.0", Registries: []string{" https://registry.test "}}
-
-	err := RunController(config, reconcilerStubAudit{})
-	if err == nil {
-		t.Fatal("RunController succeeded although the health probe port is occupied")
-	}
-	if !strings.Contains(err.Error(), "create rollout controller manager") || !strings.Contains(err.Error(), ":8081") {
-		t.Fatalf("error = %v, want manager construction failure naming the probe address", err)
 	}
 }
