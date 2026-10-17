@@ -28,13 +28,30 @@ type snapshotStreamPair struct {
 	received         chan SnapshotStreamReceiptDTO
 }
 
-func newSnapshotStreamPair(t *testing.T, realReceiver bool, handler SnapshotStreamHandler) *snapshotStreamPair {
+// snapshotPairOption adjusts the pair's nodes before any transport starts. Started transports share
+// the nodes' certificate pools by pointer, so trust must be complete before Serve runs.
+type snapshotPairOption func(*snapshotStreamPair)
+
+// trustedByReceiver makes the receiver's pools accept outsider, and outsider's pools accept the receiver.
+func trustedByReceiver(outsider *cptNode) snapshotPairOption {
+	return func(pair *snapshotStreamPair) { cptTrustEachOther(pair.receiverNode, outsider) }
+}
+
+// trustedBySender makes the sender's pools accept outsider, and outsider's pools accept the sender.
+func trustedBySender(outsider *cptNode) snapshotPairOption {
+	return func(pair *snapshotStreamPair) { cptTrustEachOther(pair.senderNode, outsider) }
+}
+
+func newSnapshotStreamPair(t *testing.T, realReceiver bool, handler SnapshotStreamHandler, options ...snapshotPairOption) *snapshotStreamPair {
 	t.Helper()
 	pair := &snapshotStreamPair{
 		t: t, senderNode: cptNewNode(t, "node1.example"), receiverNode: cptNewNode(t, "node2.example"),
 		received: make(chan SnapshotStreamReceiptDTO, 4),
 	}
 	cptTrustEachOther(pair.senderNode, pair.receiverNode)
+	for _, option := range options {
+		option(pair)
+	}
 	senderListener, receiverListener := cptListen(t), cptListen(t)
 	pair.receiverListener = receiverListener
 	pair.senderIdentity = pair.senderNode.identity(1, senderListener.Addr().String(), PeerPhaseVoter, "")
@@ -332,9 +349,8 @@ func TestSnapshotStreamSenderGivesUpAfterRepeatedConnectionLoss(t *testing.T) {
 }
 
 func TestSnapshotStreamSenderRefusesWrongCertificateBeforeHello(t *testing.T) {
-	pair := newSnapshotStreamPair(t, false, nil)
 	other := cptNewNode(t, "node2.example") // same DNS name, different key and certificate
-	cptTrustEachOther(pair.senderNode, other)
+	pair := newSnapshotStreamPair(t, false, nil, trustedBySender(other))
 	var snapshotHellos atomic.Int32
 	listener := tls.NewListener(pair.receiverListener, other.serverTLS)
 	go func() {
@@ -684,9 +700,8 @@ func TestSnapshotStreamReceiverResumeContinuesRetainedBytes(t *testing.T) {
 
 // Scenarios: cluster-session-and-delivery.md:CLU-SCN-260
 func TestSnapshotStreamReceiverRefusesUnknownSender(t *testing.T) {
-	pair := newSnapshotStreamPair(t, true, nil)
 	stranger := cptNewNode(t, "node9.example")
-	cptTrustEachOther(stranger, pair.receiverNode)
+	pair := newSnapshotStreamPair(t, true, nil, trustedByReceiver(stranger))
 	connection, err := tls.Dial("tcp", pair.receiverIdentity.Address, stranger.dialConfig(pair.receiverIdentity.DNSSAN))
 	if err != nil {
 		t.Fatal(err)
@@ -707,9 +722,8 @@ func TestSnapshotStreamReceiverRefusesUnknownSender(t *testing.T) {
 
 // Scenarios: cluster-session-and-delivery.md:CLU-SCN-260
 func TestSnapshotStreamReceiverRefusesSenderWithMismatchedCertificate(t *testing.T) {
-	pair := newSnapshotStreamPair(t, true, nil)
 	impostor := cptNewNode(t, "node1.example") // member 1's DNS name with another key
-	cptTrustEachOther(impostor, pair.receiverNode)
+	pair := newSnapshotStreamPair(t, true, nil, trustedByReceiver(impostor))
 	connection, err := tls.Dial("tcp", pair.receiverIdentity.Address, impostor.dialConfig(pair.receiverIdentity.DNSSAN))
 	if err != nil {
 		t.Fatal(err)
