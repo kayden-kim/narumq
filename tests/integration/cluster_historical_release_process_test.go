@@ -16,6 +16,8 @@ import (
 const clusterHistoricalReleaseRevision = "58a95f801e1467379db2eb6f3454ae44e954418a"
 
 // Traceability: CLU-11/NFR-15; docs/specs/cluster-session-and-delivery.md §8, §11.21.
+// Acceptance: NARUMQ_RELEASE_COMPAT
+// Scenarios: cluster-session-and-delivery.md:CLU-SCN-146, cluster-session-and-delivery.md:CLU-SCN-147, cluster-session-and-delivery.md:CLU-SCN-158, cluster-session-and-delivery.md:CLU-SCN-264, cluster-session-and-delivery.md:CLU-SCN-222, cluster-session-and-delivery.md:CLU-SCN-173
 func TestDynamicClusterHistoricalReleaseCompatibilityProcessAcceptance(t *testing.T) {
 	if os.Getenv("NARUMQ_RELEASE_COMPAT") != "1" {
 		t.Skip("set NARUMQ_RELEASE_COMPAT=1 to run historical-source release compatibility acceptance")
@@ -30,6 +32,8 @@ func TestDynamicClusterHistoricalReleaseCompatibilityProcessAcceptance(t *testin
 }
 
 // Traceability: CLU-11/CLU-14; docs/specs/cluster-session-and-delivery.md §10, §11.21.
+// Acceptance: NARUMQ_RELEASE_COMPAT
+// Scenarios: cluster-session-and-delivery.md:CLU-SCN-146, cluster-session-and-delivery.md:CLU-SCN-148, cluster-session-and-delivery.md:CLU-SCN-149, cluster-session-and-delivery.md:CLU-SCN-222
 func TestClusterBackupRestoreHistoricalReleaseProcessAcceptance(t *testing.T) {
 	if os.Getenv("NARUMQ_RELEASE_COMPAT") != "1" {
 		t.Skip("set NARUMQ_RELEASE_COMPAT=1 to run historical-source backup archive acceptance")
@@ -75,17 +79,25 @@ func clusterMembershipProcessExtractRevision(t *testing.T, repoRoot, revision, d
 	t.Helper()
 	resolveCtx, resolveCancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer resolveCancel()
-	resolved, err := exec.CommandContext(resolveCtx, "git", "-C", repoRoot, "rev-parse", "--verify", revision+"^{commit}").CombinedOutput()
+	topLevel, err := exec.CommandContext(resolveCtx, "git", "-C", repoRoot, "rev-parse", "--show-toplevel").CombinedOutput()
+	if err != nil {
+		t.Fatalf("resolve git top-level from %s: %v\n%s", repoRoot, err, topLevel)
+	}
+	gitRoot := strings.TrimSpace(string(topLevel))
+	resolved, err := exec.CommandContext(resolveCtx, "git", "-C", gitRoot, "rev-parse", "--verify", revision+"^{commit}").CombinedOutput()
 	if err != nil {
 		t.Fatalf("resolve historical revision %s (full git history required): %v\n%s", revision, err, resolved)
 	}
 	if got := strings.TrimSpace(string(resolved)); got != revision {
 		t.Fatalf("resolved historical revision = %q, want %s", got, revision)
 	}
+	if err := os.MkdirAll(destination, 0o755); err != nil {
+		t.Fatalf("create historical destination directory %s: %v", destination, err)
+	}
 
 	archiveCtx, archiveCancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer archiveCancel()
-	command := exec.CommandContext(archiveCtx, "git", "-C", repoRoot, "archive", "--format=tar", revision)
+	command := exec.CommandContext(archiveCtx, "git", "-C", gitRoot, "archive", "--format=tar", revision)
 	var stderr bytes.Buffer
 	command.Stderr = &stderr
 	stdout, err := command.StdoutPipe()
@@ -99,6 +111,7 @@ func clusterMembershipProcessExtractRevision(t *testing.T, repoRoot, revision, d
 	defer func() {
 		if !waited {
 			archiveCancel()
+			_ = stdout.Close()
 			_ = command.Wait()
 		}
 	}()
@@ -144,8 +157,9 @@ func clusterMembershipProcessExtractRevision(t *testing.T, repoRoot, revision, d
 			t.Fatalf("unsupported archive entry %s type %c", header.Name, header.Typeflag)
 		}
 	}
+	_, _ = io.Copy(io.Discard, stdout)
+	_ = stdout.Close()
 	err = command.Wait()
-	waited = true
 	if err != nil {
 		t.Fatalf("extract historical revision %s: %v\n%s", revision, err, stderr.String())
 	}

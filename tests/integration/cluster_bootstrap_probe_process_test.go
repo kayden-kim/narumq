@@ -13,6 +13,7 @@ import (
 )
 
 // Traceability: CLU-02/CLU-07/CLU-14; docs/specs/cluster-session-and-delivery.md §1, §7, §11.20.
+// Scenarios: cluster-session-and-delivery.md:CLU-SCN-128, cluster-session-and-delivery.md:CLU-SCN-129
 func TestDynamicClusterVoterVolumeLossProcessAcceptance(t *testing.T) {
 	t.Parallel()
 	fixture := newClusterMembershipProcessFixture(t, 4, "")
@@ -106,6 +107,7 @@ func TestDynamicClusterVoterVolumeLossProcessAcceptance(t *testing.T) {
 }
 
 // Traceability: CLU-02/CLU-07/CLU-14; docs/specs/cluster-session-and-delivery.md §1, §11.20.
+// Scenarios: cluster-session-and-delivery.md:CLU-SCN-130
 func TestDynamicClusterBootstrapProbeAllowsLateCoBootstrapPeer(t *testing.T) {
 	t.Parallel()
 

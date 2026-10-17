@@ -14,6 +14,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"regexp"
 	"strconv"
 	"strings"
@@ -46,6 +47,85 @@ type dashboardStackColumn struct {
 	Text     string `json:"text"`
 	Type     string `json:"type"`
 }
+type dashboardStackMappingResult struct {
+	Color string `json:"color"`
+	Text  string `json:"text"`
+}
+
+type dashboardStackMappings struct {
+	Values  map[string]dashboardStackMappingResult
+	Special map[string]dashboardStackMappingResult
+}
+
+func dashboardStackFieldMappings(t *testing.T, fieldConfig json.RawMessage) map[string]dashboardStackMappings {
+	t.Helper()
+	var config struct {
+		Overrides []struct {
+			Matcher struct {
+				ID      string `json:"id"`
+				Options string `json:"options"`
+			} `json:"matcher"`
+			Properties []struct {
+				ID    string          `json:"id"`
+				Value json.RawMessage `json:"value"`
+			} `json:"properties"`
+		} `json:"overrides"`
+	}
+	if err := json.Unmarshal(fieldConfig, &config); err != nil {
+		t.Fatalf("decode field mapping config: %v", err)
+	}
+	fieldMappings := make(map[string]dashboardStackMappings, len(config.Overrides))
+	for _, override := range config.Overrides {
+		if override.Matcher.ID != "byName" {
+			continue
+		}
+		name := override.Matcher.Options
+		if _, duplicate := fieldMappings[name]; duplicate {
+			t.Fatalf("duplicate field mapping matcher for %q", name)
+		}
+		mappings := dashboardStackMappings{
+			Values:  make(map[string]dashboardStackMappingResult),
+			Special: make(map[string]dashboardStackMappingResult),
+		}
+		for _, property := range override.Properties {
+			if property.ID != "mappings" {
+				continue
+			}
+			var entries []struct {
+				Type    string          `json:"type"`
+				Options json.RawMessage `json:"options"`
+			}
+			if err := json.Unmarshal(property.Value, &entries); err != nil {
+				t.Fatalf("decode %q mappings: %v", name, err)
+			}
+			for _, entry := range entries {
+				switch entry.Type {
+				case "value":
+					var values map[string]dashboardStackMappingResult
+					if err := json.Unmarshal(entry.Options, &values); err != nil {
+						t.Fatalf("decode %q value mappings: %v", name, err)
+					}
+					for value, result := range values {
+						mappings.Values[value] = result
+					}
+				case "special":
+					var special struct {
+						Match  string                      `json:"match"`
+						Result dashboardStackMappingResult `json:"result"`
+					}
+					if err := json.Unmarshal(entry.Options, &special); err != nil {
+						t.Fatalf("decode %q special mapping: %v", name, err)
+					}
+					mappings.Special[special.Match] = special.Result
+				default:
+					t.Fatalf("unsupported mapping type %q for %q", entry.Type, name)
+				}
+			}
+		}
+		fieldMappings[name] = mappings
+	}
+	return fieldMappings
+}
 
 type dashboardStackTarget struct {
 	Datasource struct {
@@ -75,6 +155,7 @@ type dashboardStackTransform struct {
 	ID      string `json:"id"`
 	Options struct {
 		KeepLabels   []string          `json:"keepLabels"`
+		IndexByName  map[string]int    `json:"indexByName"`
 		ColumnField  string            `json:"columnField"`
 		RowField     string            `json:"rowField"`
 		ValueField   string            `json:"valueField"`
@@ -127,6 +208,7 @@ type dashboardStackVariable struct {
 
 // TestDashboardProvisioningMatchesContracts checks panel, query, datasource, and provisioning contracts.
 // Traceability: UI-01, UI-02, UI-03, UI-04, UI-05, UI-10; docs/specs/management-api-and-observability.md §8.
+// Scenarios: management-api-and-observability.md:MGT-SCN-040
 func TestDashboardProvisioningMatchesContracts(t *testing.T) {
 	root := clusterMembershipProcessRepoRoot(t)
 	read := func(relative string) []byte {
@@ -212,6 +294,71 @@ func TestDashboardProvisioningMatchesContracts(t *testing.T) {
 		leaderTargets[0].Columns[0].Selector != "leaderNodeId" || leaderTargets[0].Columns[0].Type != "number" ||
 		leaderTargets[0].Parser != "backend" {
 		t.Errorf("leader stat must parse leaderNodeId as a number: %+v", leaderTargets)
+	}
+
+	topologyTargets := panels[6].Targets
+	requiredTopologyColumns := map[string]bool{
+		"nodeId": false, "membershipPhase": false, "queryStatus": false,
+		"queryErrorCode": false, "observedAt": false, "state": false, "ready": false,
+	}
+	if len(topologyTargets) != 1 {
+		t.Errorf("node topology must use one management query, got %d", len(topologyTargets))
+	} else {
+		for _, column := range topologyTargets[0].Columns {
+			if _, required := requiredTopologyColumns[column.Selector]; required {
+				requiredTopologyColumns[column.Selector] = true
+			}
+		}
+		for column, found := range requiredTopologyColumns {
+			if !found {
+				t.Errorf("node topology query does not include %q", column)
+			}
+		}
+	}
+	summaryColumns := map[string]dashboardStackColumn{
+		"nodesByState.ready":      {Selector: "nodesByState.ready", Text: "Ready", Type: "number"},
+		"nodesByState.unknown":    {Selector: "nodesByState.unknown", Text: "Unknown", Type: "number"},
+		"nodesByState.joining":    {Selector: "nodesByState.joining", Text: "Joining", Type: "number"},
+		"nodesByState.draining":   {Selector: "nodesByState.draining", Text: "Draining", Type: "number"},
+		"nodesByState.safeToStop": {Selector: "nodesByState.safeToStop", Text: "Safe to stop", Type: "number"},
+		"nodeQueryComplete":       {Selector: "nodeQueryComplete", Text: "조회 완료", Type: "boolean"},
+	}
+	if len(panels[5].Targets) != 1 {
+		t.Fatalf("node state summary must use one management query, got %d", len(panels[5].Targets))
+	}
+	if got := panels[5].Targets[0].Columns; len(got) != len(summaryColumns) {
+		t.Errorf("node state summary columns=%+v, want %d fields", got, len(summaryColumns))
+	} else {
+		for _, column := range got {
+			if want, found := summaryColumns[column.Selector]; !found || column != want {
+				t.Errorf("node state summary column=%+v, want selector/text/type from %v", column, summaryColumns)
+			}
+		}
+	}
+	summaryTransformations := panels[5].Transformations
+	if len(summaryTransformations) != 1 || summaryTransformations[0].ID != "convertFieldType" ||
+		len(summaryTransformations[0].Options.Conversions) != 1 ||
+		summaryTransformations[0].Options.Conversions[0].TargetField != "조회 완료" ||
+		summaryTransformations[0].Options.Conversions[0].DestinationType != "number" {
+		t.Errorf("node state summary must convert query-complete boolean for Stat rendering: %+v", summaryTransformations)
+	}
+	topologyOrder := []string{
+		"Node", "State", "Ready", "Readiness reason", "Query status", "Query error",
+		"Membership", "Role", "Replication", "Observed at", "Version", "Uptime (ms)",
+		"Connections", "Last applied index", "Storage pressure",
+	}
+	topologyTransformations := panels[6].Transformations
+	if len(topologyTransformations) != 1 || topologyTransformations[0].ID != "organize" {
+		t.Fatalf("node topology must organize fields for readiness-first display: %+v", topologyTransformations)
+	}
+	topologyIndexes := topologyTransformations[0].Options.IndexByName
+	if len(topologyIndexes) != len(topologyOrder) {
+		t.Errorf("node topology index map has %d fields, want %d: %+v", len(topologyIndexes), len(topologyOrder), topologyIndexes)
+	}
+	for index, name := range topologyOrder {
+		if got, ok := topologyIndexes[name]; !ok || got != index {
+			t.Errorf("node topology field %q index=%d, found=%t, want %d", name, got, ok, index)
+		}
 	}
 
 	var openAPI struct {
@@ -329,7 +476,6 @@ func TestDashboardProvisioningMatchesContracts(t *testing.T) {
 		1:  {`"0"`, `"1"`, `위험`, `정상`, `red`, `green`},
 		2:  {`"value":1`, `red`, `green`},
 		3:  {`"match":"null"`, `없음`, `red`},
-		6:  {`READY`, `JOINING`, `DRAINING`, `SAFE_TO_STOP`, `UNREACHABLE`},
 		12: {`rebalance_needed`, `필요`, `정상`, `red`, `green`},
 	} {
 		var encoded []byte
@@ -338,6 +484,65 @@ func TestDashboardProvisioningMatchesContracts(t *testing.T) {
 			if !bytes.Contains(encoded, []byte(fragment)) {
 				t.Errorf("panel %d field mapping lacks %q", panelID, fragment)
 			}
+		}
+	}
+	expectedMappings := map[int]map[string]dashboardStackMappings{
+		5: {
+			"조회 완료": {
+				Values: map[string]dashboardStackMappingResult{
+					"1": {Color: "green", Text: "완료"},
+					"0": {Color: "orange", Text: "일부 미확인"},
+				},
+				Special: map[string]dashboardStackMappingResult{},
+			},
+		},
+		6: {
+			"State": {
+				Values: map[string]dashboardStackMappingResult{
+					"READY":        {Color: "green", Text: "READY"},
+					"JOINING":      {Color: "yellow", Text: "JOINING"},
+					"DRAINING":     {Color: "orange", Text: "DRAINING"},
+					"SAFE_TO_STOP": {Color: "blue", Text: "SAFE_TO_STOP"},
+				},
+				Special: map[string]dashboardStackMappingResult{
+					"null": {Color: "gray", Text: "미확인"},
+				},
+			},
+			"Ready": {
+				Values: map[string]dashboardStackMappingResult{
+					"true":  {Color: "green", Text: "READY"},
+					"false": {Color: "red", Text: "NOT READY"},
+				},
+				Special: map[string]dashboardStackMappingResult{
+					"null": {Color: "gray", Text: "미확인"},
+				},
+			},
+			"Replication": {
+				Values: map[string]dashboardStackMappingResult{
+					"HEALTHY":  {Color: "green", Text: "HEALTHY"},
+					"DEGRADED": {Color: "red", Text: "DEGRADED"},
+					"FAILED":   {Color: "red", Text: "FAILED"},
+				},
+				Special: map[string]dashboardStackMappingResult{
+					"null": {Color: "gray", Text: "미확인"},
+				},
+			},
+			"Query status": {
+				Values: map[string]dashboardStackMappingResult{
+					"OK":          {Color: "green", Text: "조회 성공"},
+					"UNREACHABLE": {Color: "orange", Text: "조회 불가"},
+					"UNSUPPORTED": {Color: "gray", Text: "조회 미지원"},
+					"RETIRED":     {Color: "gray", Text: "퇴역"},
+					"ERROR":       {Color: "orange", Text: "조회 오류"},
+				},
+				Special: map[string]dashboardStackMappingResult{},
+			},
+		},
+	}
+	for panelID, expected := range expectedMappings {
+		got := dashboardStackFieldMappings(t, panels[panelID].FieldConfig)
+		if !reflect.DeepEqual(got, expected) {
+			t.Errorf("panel %d mappings=%+v, want %+v", panelID, got, expected)
 		}
 	}
 
@@ -353,7 +558,7 @@ func TestDashboardProvisioningMatchesContracts(t *testing.T) {
 		t.Fatalf("Prometheus target groups = %d, want 3", len(targetGroups))
 	}
 	for index, group := range targetGroups {
-		if len(group.Targets) != 1 || group.Labels["cluster_id"] != "sample-cluster" || group.Labels["node_id"] != strconv.Itoa(index+1) {
+		if len(group.Targets) != 1 || group.Labels["cluster_id"] != "narumq-cluster-1" || group.Labels["node_id"] != strconv.Itoa(index+1) {
 			t.Errorf("Prometheus target group %d is not node-labeled: %+v", index, group)
 		}
 	}
@@ -377,6 +582,8 @@ func TestDashboardProvisioningMatchesContracts(t *testing.T) {
 
 // TestDashboardStackProcessAcceptance checks the provisioned dashboard against three broker processes.
 // Traceability: UI-01, UI-02, UI-03, UI-04, UI-05, UI-10; docs/specs/management-api-and-observability.md §8.
+// Acceptance: NARUMQ_DASHBOARD_E2E
+// Scenarios: management-api-and-observability.md:MGT-SCN-041, management-api-and-observability.md:MGT-SCN-042
 func TestDashboardStackProcessAcceptance(t *testing.T) {
 	if os.Getenv("NARUMQ_DASHBOARD_E2E") != "1" {
 		t.Skip("set NARUMQ_DASHBOARD_E2E=1 to run the Docker-backed Grafana and Prometheus acceptance")
@@ -388,7 +595,6 @@ func TestDashboardStackProcessAcceptance(t *testing.T) {
 	}
 
 	fixture := newClusterMembershipProcessFixture(t, 3, "")
-	fixture.managementBindAll = true
 	readOnlyKeyBytes := make([]byte, 32)
 	if _, err := rand.Read(readOnlyKeyBytes); err != nil {
 		t.Fatalf("generate dashboard ReadOnly API key: %v", err)
@@ -434,7 +640,7 @@ func TestDashboardStackProcessAcceptance(t *testing.T) {
 	stack.assertGrafanaDatasourceSet()
 	stack.assertGrafanaDashboardHas15Panels()
 	stack.assertGrafanaClusterOverview(processes[0])
-	stack.assertGrafanaNodeTopology(processes[0])
+	stack.assertGrafanaNodeTopology(processes[0], dashboardNodeTopologyHealthy)
 
 	dashboardStackGenerateTraffic(t, fixture, processes)
 	stack.assertGrafanaTrafficQueries()
@@ -462,15 +668,101 @@ func TestDashboardStackProcessAcceptance(t *testing.T) {
 	stack.assertManagementDrainOperation(processes[0], completed)
 	dashboardStackWait(t, fixture.ctx, 30*time.Second)
 	stack.assertGrafanaDrainPanels()
+	stack.assertGrafanaNodeTopology(processes[0], dashboardNodeTopologyNotReady)
+	stack.assertGrafanaNodeStateSummary(2, 0, 0, 0, 1, true)
+	t.Logf("Grafana not-ready phase; review %s", dashboardURL)
+	dashboardStackWait(t, fixture.ctx, 30*time.Second)
+	if err := processes[2].stop(5 * time.Second); err != nil {
+		t.Fatalf("stop drained dashboard node 3: %v", err)
+	}
+	dashboardStackWaitForNodeQueryStatus(t, fixture.ctx, stack, processes[0], "3", "UNREACHABLE")
+	stack.assertGrafanaNodeTopology(processes[0], dashboardNodeTopologyUnreachable)
+	stack.assertGrafanaNodeStateSummary(2, 1, 0, 0, 0, false)
+	t.Logf("Grafana unreachable phase; review %s", dashboardURL)
 	if hold := os.Getenv("NARUMQ_DASHBOARD_E2E_HOLD"); hold != "" {
 		duration, err := time.ParseDuration(hold)
 		if err != nil || duration <= 0 {
 			t.Fatalf("parse NARUMQ_DASHBOARD_E2E_HOLD %q: %v", hold, err)
 		}
-		t.Logf("holding Grafana stack for %s", duration)
+		t.Logf("holding Grafana stack in unreachable phase for %s", duration)
 		time.Sleep(duration)
 	}
 }
+
+const (
+	dashboardNodeTopologyHealthy     = "healthy"
+	dashboardNodeTopologyNotReady    = "not-ready"
+	dashboardNodeTopologyUnreachable = "unreachable"
+)
+
+func dashboardStackWaitForNodeQueryStatus(
+	t *testing.T,
+	ctx context.Context,
+	stack *dashboardDockerStack,
+	process *clusterMembershipProcess,
+	nodeID, want string,
+) {
+	t.Helper()
+	timeout := time.NewTimer(15 * time.Second)
+	defer timeout.Stop()
+	retry := time.NewTicker(100 * time.Millisecond)
+	defer retry.Stop()
+	var lastStatus int
+	var lastBody []byte
+	var lastErr error
+	for {
+		lastStatus, lastBody, lastErr = stack.managementRequest(
+			process, http.MethodGet, "/api/v1/nodes/"+nodeID,
+		)
+		if lastErr == nil && lastStatus == http.StatusOK {
+			var response struct {
+				Data struct {
+					QueryStatus string `json:"queryStatus"`
+				} `json:"data"`
+			}
+			if json.Unmarshal(lastBody, &response) == nil && response.Data.QueryStatus == want {
+				return
+			}
+		}
+		select {
+		case <-ctx.Done():
+			t.Fatalf("wait for node %s query status=%s: %v", nodeID, want, ctx.Err())
+		case <-timeout.C:
+			t.Fatalf("node %s query status did not become %s: status=%d body=%s err=%v",
+				nodeID, want, lastStatus, lastBody, lastErr)
+		case <-retry.C:
+		}
+	}
+}
+
+func dashboardStackExpectedNodeObservation(
+	phase, nodeID string,
+) (queryStatus string, state *string, ready *bool) {
+	if phase == dashboardNodeTopologyUnreachable && nodeID == "3" {
+		return "UNREACHABLE", nil, nil
+	}
+	if phase == dashboardNodeTopologyNotReady && nodeID == "3" {
+		stateValue, readyValue := "SAFE_TO_STOP", false
+		return "OK", &stateValue, &readyValue
+	}
+	stateValue, readyValue := "READY", true
+	return "OK", &stateValue, &readyValue
+}
+
+func dashboardStackValueMatchesString(value any, expected *string) bool {
+	if expected == nil {
+		return value == nil
+	}
+	return fmt.Sprint(value) == *expected
+}
+
+func dashboardStackValueMatchesBool(value any, expected *bool) bool {
+	if expected == nil {
+		return value == nil
+	}
+	return fmt.Sprint(value) == strconv.FormatBool(*expected)
+}
+
 func dashboardStackWaitForReadyNodes(t *testing.T, ctx context.Context, processes []*clusterMembershipProcess) {
 	t.Helper()
 	for _, process := range processes {
@@ -983,6 +1275,15 @@ func dashboardStackResultFieldNumber(result dashboardStackQueryResult, fieldName
 	}
 	return 0, false
 }
+func dashboardStackResultFieldBoolean(result dashboardStackQueryResult, fieldName string) (bool, bool) {
+	values := dashboardStackResultColumnValues(result, fieldName)
+	for index := len(values) - 1; index >= 0; index-- {
+		if value, ok := values[index].(bool); ok {
+			return value, true
+		}
+	}
+	return false, false
+}
 
 func dashboardStackResultMetricValue(result dashboardStackQueryResult, metric, nodeID string) (float64, bool) {
 	for _, frame := range result.Frames {
@@ -1030,18 +1331,7 @@ func (s *dashboardDockerStack) assertGrafanaClusterOverview(process *clusterMemb
 	} {
 		assertNumber(4, members.Results["A"], expected.field, expected.value)
 	}
-	nodeStates := s.queryGrafanaPanel(5, ".*", "1m", "")
-	for _, expected := range []struct {
-		field string
-		value float64
-	}{
-		{field: "Ready", value: 1},
-		{field: "Joining", value: 2},
-		{field: "Draining", value: 0},
-		{field: "Safe to stop", value: 0},
-	} {
-		assertNumber(5, nodeStates.Results["A"], expected.field, expected.value)
-	}
+	s.assertGrafanaNodeStateSummary(3, 0, 0, 0, 0, true)
 
 	status, body, err := s.managementRequest(process, http.MethodGet, "/api/v1/cluster")
 	if err != nil || status != http.StatusOK {
@@ -1049,17 +1339,53 @@ func (s *dashboardDockerStack) assertGrafanaClusterOverview(process *clusterMemb
 	}
 	var response struct {
 		Data struct {
-			UnderReplicated *int `json:"underReplicated"`
+			UnderReplicated   *int `json:"underReplicated"`
+			NodeQueryComplete bool `json:"nodeQueryComplete"`
+			NodesByState      struct {
+				Unknown int `json:"unknown"`
+			} `json:"nodesByState"`
 		} `json:"data"`
 	}
 	if err := json.Unmarshal(body, &response); err != nil ||
-		response.Data.UnderReplicated == nil || *response.Data.UnderReplicated != 0 {
-		s.t.Fatalf("cluster underReplicated=%v decode=%v body=%s, want 0",
-			response.Data.UnderReplicated, err, body)
+		response.Data.UnderReplicated == nil || *response.Data.UnderReplicated != 0 ||
+		!response.Data.NodeQueryComplete || response.Data.NodesByState.Unknown != 0 {
+		s.t.Fatalf("cluster underReplicated=%v queryComplete=%t unknown=%d decode=%v body=%s, want 0/true/0",
+			response.Data.UnderReplicated, response.Data.NodeQueryComplete, response.Data.NodesByState.Unknown, err, body)
+	}
+}
+func (s *dashboardDockerStack) assertGrafanaNodeStateSummary(
+	ready, unknown, joining, draining, safeToStop int,
+	queryComplete bool,
+) {
+	s.t.Helper()
+	result := s.queryGrafanaPanel(5, ".*", "1m", "").Results["A"]
+	for _, expected := range []struct {
+		field string
+		value float64
+	}{
+		{field: "Ready", value: float64(ready)},
+		{field: "Unknown", value: float64(unknown)},
+		{field: "Joining", value: float64(joining)},
+		{field: "Draining", value: float64(draining)},
+		{field: "Safe to stop", value: float64(safeToStop)},
+	} {
+		got, ok := dashboardStackResultFieldNumber(result, expected.field)
+		if !ok || got != expected.value {
+			s.t.Errorf("Grafana panel 5 field %q=%v (present=%t), want %v",
+				expected.field, got, ok, expected.value)
+		}
+	}
+	gotComplete, ok := dashboardStackResultFieldBoolean(result, "조회 완료")
+	if !ok || gotComplete != queryComplete {
+		s.t.Errorf("Grafana panel 5 query-complete value=%v (present=%t), want %t",
+			gotComplete, ok, queryComplete)
 	}
 }
 
-func (s *dashboardDockerStack) assertGrafanaNodeTopology(process *clusterMembershipProcess) {
+func (s *dashboardDockerStack) assertGrafanaNodeTopology(
+	process *clusterMembershipProcess,
+	phase string,
+) {
 	s.t.Helper()
 	status, body, err := s.managementRequest(process, http.MethodGet, "/api/v1/nodes")
 	if err != nil || status != http.StatusOK {
@@ -1067,13 +1393,18 @@ func (s *dashboardDockerStack) assertGrafanaNodeTopology(process *clusterMembers
 	}
 	var response struct {
 		Data []struct {
-			NodeID          string  `json:"nodeId"`
-			Role            string  `json:"role"`
-			Version         string  `json:"version"`
-			UptimeMillis    int64   `json:"uptimeMillis"`
-			State           string  `json:"state"`
-			Ready           bool    `json:"ready"`
-			ReadinessReason *string `json:"readinessReason"`
+			NodeID            string     `json:"nodeId"`
+			MembershipPhase   string     `json:"membershipPhase"`
+			QueryStatus       string     `json:"queryStatus"`
+			QueryErrorCode    *string    `json:"queryErrorCode"`
+			ObservedAt        *time.Time `json:"observedAt"`
+			Role              *string    `json:"role"`
+			Version           *string    `json:"version"`
+			UptimeMillis      *int64     `json:"uptimeMillis"`
+			State             *string    `json:"state"`
+			Ready             *bool      `json:"ready"`
+			ReadinessReason   *string    `json:"readinessReason"`
+			ReplicationHealth *string    `json:"replicationHealth"`
 		} `json:"data"`
 	}
 	if err := json.Unmarshal(body, &response); err != nil {
@@ -1086,76 +1417,118 @@ func (s *dashboardDockerStack) assertGrafanaNodeTopology(process *clusterMembers
 	leaderCount, followerCount := 0, 0
 	for _, node := range response.Data {
 		seen[node.NodeID] = true
-		if node.Version == "" {
-			s.t.Errorf("Management node %s has empty version", node.NodeID)
+		wantQueryStatus, wantState, wantReady := dashboardStackExpectedNodeObservation(phase, node.NodeID)
+		if node.MembershipPhase != "VOTER" || node.QueryStatus != wantQueryStatus {
+			s.t.Errorf("Management node %s membership=%q queryStatus=%q, want VOTER/%s",
+				node.NodeID, node.MembershipPhase, node.QueryStatus, wantQueryStatus)
 		}
-		switch node.Role {
-		case "LEADER":
-			leaderCount++
-		case "FOLLOWER":
-			followerCount++
-		default:
-			s.t.Errorf("Management node %s role=%q, want LEADER or FOLLOWER", node.NodeID, node.Role)
-		}
-		if node.NodeID == "1" {
-			if node.State != "READY" || !node.Ready || node.UptimeMillis <= 0 {
-				s.t.Errorf("local Management node state=%q ready=%t uptime=%d, want READY/true/positive",
-					node.State, node.Ready, node.UptimeMillis)
+		if node.QueryStatus == "OK" {
+			if node.QueryErrorCode != nil || node.ObservedAt == nil {
+				s.t.Errorf("Management node %s queryError=%v observedAt=%v, want no error and observed time",
+					node.NodeID, node.QueryErrorCode, node.ObservedAt)
 			}
-			continue
-		}
-		if node.State != "JOINING" || node.ReadinessReason == nil ||
-			*node.ReadinessReason != "remote readiness is not available from this node" {
-			s.t.Errorf("remote Management node %s state=%q reason=%v, want JOINING with remote-readiness-unavailable reason",
-				node.NodeID, node.State, node.ReadinessReason)
+			if node.Version == nil || *node.Version == "" {
+				s.t.Errorf("Management node %s has no measured version", node.NodeID)
+			}
+			if node.Role == nil {
+				s.t.Errorf("Management node %s has no measured role", node.NodeID)
+			} else {
+				switch *node.Role {
+				case "LEADER":
+					leaderCount++
+				case "FOLLOWER":
+					followerCount++
+				default:
+					s.t.Errorf("Management node %s role=%q, want LEADER or FOLLOWER", node.NodeID, *node.Role)
+				}
+			}
+			if node.State == nil || wantState == nil || *node.State != *wantState ||
+				node.Ready == nil || wantReady == nil || *node.Ready != *wantReady ||
+				node.UptimeMillis == nil || *node.UptimeMillis <= 0 {
+				s.t.Errorf("Management node %s state=%v ready=%v uptime=%v, want %v/%v/positive",
+					node.NodeID, node.State, node.Ready, node.UptimeMillis, wantState, wantReady)
+			}
+		} else if node.QueryErrorCode == nil || node.ObservedAt != nil ||
+			node.Role != nil || node.Version != nil || node.UptimeMillis != nil ||
+			node.State != nil || node.Ready != nil || node.ReadinessReason != nil ||
+			node.ReplicationHealth != nil {
+			s.t.Errorf("unavailable Management node %s leaked measurements: queryError=%v observedAt=%v role=%v version=%v uptime=%v state=%v ready=%v reason=%v replication=%v",
+				node.NodeID, node.QueryErrorCode, node.ObservedAt, node.Role, node.Version,
+				node.UptimeMillis, node.State, node.Ready, node.ReadinessReason, node.ReplicationHealth)
 		}
 	}
-	if len(seen) != 3 || !seen["1"] || !seen["2"] || !seen["3"] || leaderCount != 1 || followerCount != 2 {
-		s.t.Fatalf("Management nodes=%v roles leader=%d follower=%d, want nodes 1,2,3 and one leader/two followers",
-			seen, leaderCount, followerCount)
+	expectedHealthyNodes := 3
+	if phase == dashboardNodeTopologyUnreachable {
+		expectedHealthyNodes--
 	}
-	s.assertGrafanaNodeTopologyPanel()
+	if len(seen) != 3 || !seen["1"] || !seen["2"] || !seen["3"] ||
+		leaderCount != 1 || followerCount != expectedHealthyNodes-1 {
+		s.t.Fatalf("Management nodes=%v roles leader=%d follower=%d, want IDs 1,2,3 and one leader/%d followers",
+			seen, leaderCount, followerCount, expectedHealthyNodes-1)
+	}
+	s.assertGrafanaNodeTopologyPanel(phase)
 }
-func (s *dashboardDockerStack) assertGrafanaNodeTopologyPanel() {
+
+func (s *dashboardDockerStack) assertGrafanaNodeTopologyPanel(phase string) {
 	s.t.Helper()
 	result := s.queryGrafanaPanel(6, ".*", "1m", "").Results["A"]
-	columnNames := []string{"Node", "Role", "Version", "Uptime (ms)", "State", "Ready", "Readiness reason"}
+	columnNames := []string{
+		"Node", "Membership", "Query status", "Query error", "Observed at", "Role",
+		"Version", "Uptime (ms)", "State", "Ready", "Readiness reason", "Replication",
+	}
 	columns := make(map[string][]any, len(columnNames))
-	var nodeIDs []any
 	for _, name := range columnNames {
 		values := dashboardStackResultColumnValues(result, name)
 		if len(values) != 3 {
 			s.t.Fatalf("Grafana panel 6 column %q has %d values, want 3: %+v", name, len(values), result)
 		}
 		columns[name] = values
-		if name == "Node" {
-			nodeIDs = values
-		}
 	}
-	seen := make(map[string]bool, len(nodeIDs))
-	for index, value := range nodeIDs {
+	seen := make(map[string]bool, 3)
+	for index, value := range dashboardStackResultColumnValues(result, "Node") {
 		nodeID := fmt.Sprint(value)
 		seen[nodeID] = true
-		if fmt.Sprint(columns["Version"][index]) == "" || fmt.Sprint(columns["Role"][index]) == "" {
-			s.t.Errorf("Grafana panel 6 node %s lacks version or role", nodeID)
+		wantQueryStatus, wantState, wantReady := dashboardStackExpectedNodeObservation(phase, nodeID)
+		if fmt.Sprint(columns["Membership"][index]) != "VOTER" ||
+			fmt.Sprint(columns["Query status"][index]) != wantQueryStatus {
+			s.t.Errorf("Grafana panel 6 node %s membership=%v query=%v, want VOTER/%s",
+				nodeID, columns["Membership"][index], columns["Query status"][index], wantQueryStatus)
 		}
-		switch nodeID {
-		case "1":
+		if wantQueryStatus == "OK" {
+			if columns["Query error"][index] != nil && fmt.Sprint(columns["Query error"][index]) != "" ||
+				columns["Observed at"][index] == nil ||
+				fmt.Sprint(columns["Observed at"][index]) == "" ||
+				fmt.Sprint(columns["Observed at"][index]) == "<nil>" ||
+				fmt.Sprint(columns["Version"][index]) == "" ||
+				fmt.Sprint(columns["Role"][index]) == "" {
+				s.t.Errorf("Grafana panel 6 node %s has incomplete successful observation: error=%v observedAt=%v role=%v version=%v",
+					nodeID, columns["Query error"][index], columns["Observed at"][index],
+					columns["Role"][index], columns["Version"][index])
+			}
+			if !dashboardStackValueMatchesString(columns["State"][index], wantState) ||
+				!dashboardStackValueMatchesBool(columns["Ready"][index], wantReady) {
+				s.t.Errorf("Grafana panel 6 node %s state=%v ready=%v, want %v/%v",
+					nodeID, columns["State"][index], columns["Ready"][index], wantState, wantReady)
+			}
 			uptime, ok := dashboardStackNumber(columns["Uptime (ms)"][index])
-			if fmt.Sprint(columns["State"][index]) != "READY" ||
-				fmt.Sprint(columns["Ready"][index]) != "true" || !ok || uptime <= 0 {
-				s.t.Errorf("Grafana panel 6 node 1 state=%v ready=%v uptime=%v, want READY/true/positive",
-					columns["State"][index], columns["Ready"][index], columns["Uptime (ms)"][index])
+			if !ok || uptime <= 0 {
+				s.t.Errorf("Grafana panel 6 node %s uptime=%v, want positive", nodeID, columns["Uptime (ms)"][index])
 			}
-		case "2", "3":
-			if fmt.Sprint(columns["State"][index]) != "JOINING" ||
-				fmt.Sprint(columns["Ready"][index]) != "false" ||
-				fmt.Sprint(columns["Readiness reason"][index]) != "remote readiness is not available from this node" {
-				s.t.Errorf("Grafana panel 6 node %s state=%v ready=%v reason=%v, want JOINING/false/remote-readiness-unavailable",
-					nodeID, columns["State"][index], columns["Ready"][index], columns["Readiness reason"][index])
-			}
-		default:
-			s.t.Errorf("Grafana panel 6 returned unexpected node %q", nodeID)
+		} else if columns["Query error"][index] == nil ||
+			fmt.Sprint(columns["Query error"][index]) == "" ||
+			columns["Observed at"][index] != nil ||
+			columns["State"][index] != nil ||
+			columns["Ready"][index] != nil ||
+			columns["Readiness reason"][index] != nil ||
+			columns["Replication"][index] != nil ||
+			columns["Version"][index] != nil ||
+			columns["Role"][index] != nil ||
+			columns["Uptime (ms)"][index] != nil {
+			s.t.Errorf("Grafana panel 6 unavailable node %s has non-null measurements: error=%v observedAt=%v state=%v ready=%v reason=%v replication=%v version=%v role=%v uptime=%v",
+				nodeID, columns["Query error"][index], columns["Observed at"][index],
+				columns["State"][index], columns["Ready"][index], columns["Readiness reason"][index],
+				columns["Replication"][index], columns["Version"][index], columns["Role"][index],
+				columns["Uptime (ms)"][index])
 		}
 	}
 	if len(seen) != 3 || !seen["1"] || !seen["2"] || !seen["3"] {

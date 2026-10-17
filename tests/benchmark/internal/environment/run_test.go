@@ -2,6 +2,8 @@ package environment
 
 import (
 	"errors"
+	"os"
+	"os/exec"
 	"path/filepath"
 	"reflect"
 	"strings"
@@ -260,4 +262,40 @@ func containsToken(values []string, want string) bool {
 		}
 	}
 	return false
+}
+func TestBenchmarkDockerfileSupportsTargetArchAndARM64Build(t *testing.T) {
+	dockerfile, err := os.ReadFile("../../Dockerfile")
+	if err != nil {
+		t.Fatalf("read benchmark Dockerfile: %v", err)
+	}
+	content := string(dockerfile)
+	if !strings.Contains(content, "ARG TARGETOS=linux") {
+		t.Fatal("Dockerfile does not define ARG TARGETOS=linux")
+	}
+	if !strings.Contains(content, "ARG TARGETARCH=amd64") {
+		t.Fatal("Dockerfile does not define ARG TARGETARCH=amd64")
+	}
+	buildLines := 0
+	for _, line := range strings.Split(content, "\n") {
+		if strings.Contains(line, "go build") {
+			buildLines++
+			if !strings.Contains(line, "GOOS=${TARGETOS} GOARCH=${TARGETARCH}") {
+				t.Errorf("go build does not use target args: %s", line)
+			}
+		}
+	}
+	if buildLines == 0 {
+		t.Fatal("Dockerfile contains no go build invocations")
+	}
+	if strings.Contains(content, "GOARCH=amd64") {
+		t.Fatal("Dockerfile contains hardcoded GOARCH=amd64")
+	}
+
+	output := filepath.Join(t.TempDir(), "narumq")
+	cmd := exec.Command("go", "build", "-o", output, "../../../cmd/narumq")
+	cmd.Dir = ".."
+	cmd.Env = append(os.Environ(), "CGO_ENABLED=0", "GOOS=linux", "GOARCH=arm64")
+	if result, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("build narumq for linux/arm64: %v\n%s", err, result)
+	}
 }

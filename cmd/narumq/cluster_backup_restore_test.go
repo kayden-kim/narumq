@@ -61,6 +61,8 @@ func TestClusterRestoreSeedRequiresArchiveManifest(t *testing.T) {
 		})
 	}
 }
+
+// Scenarios: cluster-session-and-delivery.md:CLU-SCN-033
 func TestClusterRestoreSeedRejectsIdentityLearnerAndSummaryMismatch(t *testing.T) {
 	config := validBootstrapClusterConfig()
 	validArchiveBytes := clusterRestoreTestArchive(t, config, nil)
@@ -133,6 +135,7 @@ func TestClusterRestoreSeedRejectsIdentityLearnerAndSummaryMismatch(t *testing.T
 }
 
 // Traceability: CLU-11/CLU-14; docs/specs/cluster-session-and-delivery.md §10, §11.19.
+// Scenarios: cluster-session-and-delivery.md:CLU-SCN-124, cluster-session-and-delivery.md:CLU-SCN-033
 func TestClusterRestoreSeedRejectsProtocolAndSchemaMismatch(t *testing.T) {
 	config := validBootstrapClusterConfig()
 	encoded := clusterRestoreTestArchive(t, config, nil)
@@ -160,6 +163,7 @@ func TestClusterRestoreSeedRejectsProtocolAndSchemaMismatch(t *testing.T) {
 	}
 }
 
+// Scenarios: cluster-session-and-delivery.md:CLU-SCN-033
 func TestClusterRestoreSeedRejectsInvalidRestoreIdentityAndSnapshotBoundary(t *testing.T) {
 	config := validBootstrapClusterConfig()
 	encoded := clusterRestoreTestArchive(t, config, nil)
@@ -213,6 +217,7 @@ func TestClusterRestoreSeedRejectsInvalidRestoreIdentityAndSnapshotBoundary(t *t
 	}
 }
 
+// Scenarios: cluster-session-and-delivery.md:CLU-SCN-033, cluster-session-and-delivery.md:CLU-SCN-043
 func TestClusterRestoreRejectsInvalidArchiveBeforeTouchingTarget(t *testing.T) {
 	config := validBootstrapClusterConfig()
 	root := t.TempDir()
@@ -383,6 +388,7 @@ func clusterRestoreTestArchive(t *testing.T, config clusterConfigFile, mutate fu
 }
 
 // Traceability: CLU-14; docs/specs/cluster-session-and-delivery.md §4.2, §11.11.
+// Scenarios: cluster-session-and-delivery.md:CLU-SCN-065
 func TestClusterBackupArchivePreservesDurableQoSState(t *testing.T) {
 	config := validBootstrapClusterConfig()
 	runtime, stop := newTestClusterOfflineRuntime(t, config)
@@ -435,6 +441,7 @@ func TestClusterBackupArchivePreservesDurableQoSState(t *testing.T) {
 }
 
 // Traceability: API-09; CFG-SCN-27, CFG-SCN-38; docs/contracts/replicated-state-v1.md §3; ADR-0052 §1.1.1.
+// Scenarios: configuration-and-runtime-options.md:CFG-SCN-27, configuration-and-runtime-options.md:CFG-SCN-38
 func TestClusterBackupArchivePreservesClusterPolicyTenantQuotas(t *testing.T) {
 	config := validBootstrapClusterConfig()
 	config.Features = []string{membership.ClusterPolicyFeature, membership.ClusterPolicyTenantQuotasFeature}
@@ -515,6 +522,7 @@ func TestClusterBackupArchivePreservesClusterPolicyTenantQuotas(t *testing.T) {
 }
 
 // Traceability: CLU-14; docs/specs/cluster-session-and-delivery.md §4.2, §11.11.
+// Scenarios: cluster-session-and-delivery.md:CLU-SCN-066
 func TestClusterRestoreSeedReplaysConfigurationTail(t *testing.T) {
 	config := validBootstrapClusterConfig()
 	_, bootstrapMembers, err := clusterBootstrapIdentities(config)
@@ -652,6 +660,7 @@ func TestClusterRestoreSeedReplaysConfigurationTail(t *testing.T) {
 }
 
 // Traceability: CLU-14; docs/specs/cluster-session-and-delivery.md §4.2, §11.11.
+// Scenarios: cluster-session-and-delivery.md:CLU-SCN-066
 func TestClusterBackupConfigurationActionsRoundTrip(t *testing.T) {
 	for _, testCase := range []struct {
 		raftAction   raftadapter.MembershipChangeAction
@@ -679,6 +688,7 @@ func TestClusterBackupConfigurationActionsRoundTrip(t *testing.T) {
 }
 
 // Traceability: CLU-11/CLU-14; docs/specs/cluster-session-and-delivery.md §10, §11.19.
+// Scenarios: cluster-session-and-delivery.md:CLU-SCN-123
 func TestClusterRestoreSeedAppliesAdjacentReleaseWindow(t *testing.T) {
 	for _, test := range []struct {
 		archive string
@@ -728,6 +738,7 @@ func TestClusterRestoreSeedAppliesAdjacentReleaseWindow(t *testing.T) {
 }
 
 // Traceability: CLU-11/CLU-14; docs/specs/cluster-session-and-delivery.md §10, §11.19.
+// Scenarios: cluster-session-and-delivery.md:CLU-SCN-123
 func TestClusterRestoreSeedRejectsUnsupportedActiveFeature(t *testing.T) {
 	config := validBootstrapClusterConfig()
 	config.ReleaseVersion = "1.2.0"
@@ -757,6 +768,7 @@ func TestClusterRestoreSeedRejectsUnsupportedActiveFeature(t *testing.T) {
 }
 
 // Traceability: CLU-11/CLU-14; docs/specs/cluster-session-and-delivery.md §10, §11.19.
+// Scenarios: cluster-session-and-delivery.md:CLU-SCN-123
 func TestClusterRestoreMemberReleaseWindow(t *testing.T) {
 	config := validBootstrapClusterConfig()
 	config.ReleaseVersion = "1.2.0"

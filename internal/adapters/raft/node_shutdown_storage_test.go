@@ -9,6 +9,7 @@ import (
 	"time"
 )
 
+// Scenarios: cluster-session-and-delivery.md:CLU-SCN-118, performance-and-verification.md:PRF-SCN-086, performance-and-verification.md:PRF-SCN-088
 func TestNodeCloseFlushesHeldAppendOrReportsFailure(t *testing.T) {
 	for _, scenario := range []struct {
 		name         string

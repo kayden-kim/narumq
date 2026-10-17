@@ -1,22 +1,22 @@
 [
   {
-    "targets": ["narumq-node-1:8080"],
+    "targets": ["narumq-0.narumq-headless.narumq.svc.cluster.local:8080"],
     "labels": {
-      "cluster_id": "sample-cluster",
+      "cluster_id": "narumq-cluster-1",
       "node_id": "1"
     }
   },
   {
-    "targets": ["narumq-node-2:8080"],
+    "targets": ["narumq-1.narumq-headless.narumq.svc.cluster.local:8080"],
     "labels": {
-      "cluster_id": "sample-cluster",
+      "cluster_id": "narumq-cluster-1",
       "node_id": "2"
     }
   },
   {
-    "targets": ["narumq-node-3:8080"],
+    "targets": ["narumq-2.narumq-headless.narumq.svc.cluster.local:8080"],
     "labels": {
-      "cluster_id": "sample-cluster",
+      "cluster_id": "narumq-cluster-1",
       "node_id": "3"
     }
   }

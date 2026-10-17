@@ -14,7 +14,7 @@
 | 기준 동작 명세 | [Cluster §8](../specs/cluster-session-and-delivery.md#8-mixed-version-compatibility) |
 | 관련 요구사항 | CLU-11, CLU-14, SEC-07, SEC-12 |
 | 호환성 범위 | Schema `1.0`; release window와 feature activation은 [Release compatibility v1](cluster-release-compatibility-v1.md)를 따른다. |
-| 관련 결정 | [ADR-0031](../decisions/ADR-0031-replicated-state-schema-strict-evolution.md) Accepted; [ADR-0050](../decisions/ADR-0050-mqtt-client-blocklist.md) |
+| 관련 결정 | [ADR-0031](../decisions/ADR-0031-replicated-state-schema-strict-evolution.md) Accepted; [ADR-0050](../decisions/ADR-0050-mqtt-client-blocklist.md); [ADR-0060](../decisions/ADR-0060-shared-subscription-durable-owner-loss-reroute.md) |
 | 관련 시험 | [Cluster §11.29](../specs/cluster-session-and-delivery.md#1129-replicated-state-v1-계약-수용-매핑) |
 
 ## 1. 형식과 의미
@@ -37,6 +37,8 @@ Snapshot의 `membership_history`는 각 전이가 commit된 정확한 `committed
 Snapshot의 `lastIncludedIndex`는 Raft가 적용한 마지막 index와 같아야 한다. 리더 선출의 빈 entry처럼 application event가 없는 commit도 typed state index를 전진시킨다. Member·operation 내용은 바꾸지 않는다. 이 규칙으로 learner 추가 직후 snapshot의 `ConfState`와 typed snapshot index를 맞추고 learner 복구를 지원한다.
 
 `DeliverySessionState`는 `(tenantId, clientId)`별 복제 aggregate다. 증가하는 `next_sequence`, sequence 순서의 `DeliveryMessage`와 packet ID 순서의 `InboundMessage`를 담는다. Delivery message는 topic·binary payload·effective QoS·retain·expiry·packet ID·phase를 저장한다. Packet ID 0은 `QUEUED`다. Inbound state는 PUBREL 전 publisher QoS 2 payload를 보존한다. RELEASE 뒤에는 payload 없는 tombstone을 보존한다. ATTACH/DETACH/DISCARD와 SEND/ADVANCE/COMPLETE는 정확한 owner/epoch fencing으로 aggregate를 변경한다. Stale command는 commit 순서 위치를 소비하지만 aggregate를 바꾸지 않는다.
+
+공유 구독 출처 `shared_filter`는 `DeliveryTarget` field 3과 `DeliveryMessage` field 9다. 값은 group을 포함한 전체 filter(`$share/<group>/<filter>`)이며 비어 있으면 출처가 없다. `shared-subscription-reroute` feature가 활성화된 뒤에만 command와 snapshot에 비어 있지 않은 값을 기록한다. Apply는 feature가 비활성인 상태의 비어 있지 않은 `DeliveryTarget.shared_filter`를 `feature_inactive`로 거절한다. Snapshot에 비어 있지 않은 `DeliveryMessage.shared_filter`가 있으면 그 feature가 active여야 한다. Apply는 대상 client가 현재 owner/epoch로 그 filter를 구독 중일 때만 message에 값을 저장한다. Delivery record가 지워질 때 이 값으로 같은 group의 다른 member에게 message를 다시 넣는 규칙은 [Cluster §4.2](../specs/cluster-session-and-delivery.md#42-qos-12-durable-delivery)를 따른다. 값의 byte 길이는 그 message의 delivery byte 수에 포함한다. 출처 없는 message의 byte 수는 바뀌지 않는다.
 
 `SnapshotEnvelope`는 schema major/minor, `lastIncludedIndex`, `objectCount`, SHA-256과 typed `ReplicatedStateSnapshot`을 담는다. `objectCount`는 members·ownerships·subscriptions·delivery sessions와 내부 messages/inbound·membership history·retained·offline sessions와 내부 messages·node drains·active feature 값·tenant quota profile의 object·session metadata record·credential revocation entry·blocklist entry·ClusterPolicy state를 센다. `ClusterPolicy`는 1개로 센다. `tenant_quotas`가 있으면 `ClusterTenantQuotas` 1개와 각 tenant entry를 추가로 센다. Digest 입력은 envelope를 제외한 `ReplicatedStateSnapshot`의 deterministic protobuf bytes다. Unknown field, 정의되지 않은 enum/action, 중복 singular field·oneof, 잘못된 UTF-8, 비정규 bytes, 미지원 version, count·digest 불일치는 apply·recovery·readiness를 fail-closed로 막는다. Release 호환성은 이 검증을 완화하지 않는다.
 
@@ -76,6 +78,7 @@ Snapshot의 `lastIncludedIndex`는 Raft가 적용한 마지막 index와 같아�
 | Blocklist snapshot | 전체 kind 합계 최대 4096; entry가 있거나 version이 양수면 active `client-blocklist` 필수; entry가 있으면 version 양수; `(kind, tenantId, value)` 엄격 오름차순 |
 | Cluster policy | `maxPacketSize` 1..268435455, `receiveMaximum` 1..65535, 세 timeout millisecond 값은 1..4294967295; version은 1 이상이고 `previous_version < version`; key는 비거나 printable ASCII 1..128 byte |
 | Cluster policy tenant quota | Active `cluster-policy-tenant-quotas` 필수; 네 quota 값은 양수이며 ADR-0017 최대값 이내; tenant 최대 1,024개, 유효한 UTF-8 ID 오름차순·중복 없음; `objectCount`는 ClusterPolicy 1 + ClusterTenantQuotas 1 + tenant 수 |
+| Delivery 공유 구독 출처 | `DeliveryTarget.shared_filter`·`DeliveryMessage.shared_filter`는 비어 있거나 `$share/<group>/<filter>` 형식의 유효한 MQTT shared filter이며 UTF-8 1..65,535 byte; 비어 있지 않으면 active `shared-subscription-reroute` 필수; 길이는 message byte 수에 포함 |
 
 한도를 바꾸려면 이 contract를 변경하고 vector를 추가해야 한다.
 

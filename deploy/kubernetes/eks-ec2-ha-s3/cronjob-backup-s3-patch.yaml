@@ -1,0 +1,81 @@
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: narumq-backup
+  namespace: narumq
+spec:
+  jobTemplate:
+    spec:
+      template:
+        metadata:
+          annotations:
+            eks.amazonaws.com/skip-containers: backup
+        spec:
+          serviceAccountName: narumq-backup
+          initContainers:
+            - name: s3-uploader
+              restartPolicy: Always
+              image: amazon/aws-cli:2.37.9@sha256:92de75724b6a746951f0e8b915d86bbccd7cb55aff96cd0cb4f7017272160780
+              imagePullPolicy: IfNotPresent
+              command:
+                - python3
+                - /scripts/s3_uploader.py
+              envFrom:
+                - configMapRef:
+                    name: narumq-backup-config
+              env:
+                - name: BACKUP_RUN_ID
+                  valueFrom:
+                    fieldRef:
+                      fieldPath: metadata.uid
+                - name: PYTHONDONTWRITEBYTECODE
+                  value: "1"
+                - name: HOME
+                  value: /tmp
+              resources:
+                requests:
+                  cpu: 100m
+                  memory: 128Mi
+                limits:
+                  cpu: 500m
+                  memory: 512Mi
+              securityContext:
+                allowPrivilegeEscalation: false
+                readOnlyRootFilesystem: true
+                runAsNonRoot: true
+                runAsUser: 10001
+                runAsGroup: 10001
+                capabilities:
+                  drop:
+                    - ALL
+              volumeMounts:
+                - name: backup-scripts
+                  mountPath: /scripts
+                  readOnly: true
+                - name: backup-storage
+                  mountPath: /backups
+                - name: run-state
+                  mountPath: /run/narumq-backup
+                - name: tmp
+                  mountPath: /tmp
+          containers:
+            - name: backup
+              envFrom:
+                - configMapRef:
+                    name: narumq-backup-config
+              env:
+                - name: BACKUP_RUN_ID
+                  valueFrom:
+                    fieldRef:
+                      fieldPath: metadata.uid
+              volumeMounts:
+                - name: run-state
+                  mountPath: /run/narumq-backup
+          volumes:
+            - name: run-state
+              emptyDir:
+                medium: Memory
+                sizeLimit: 1Mi
+            - name: tmp
+              emptyDir:
+                sizeLimit: 64Mi

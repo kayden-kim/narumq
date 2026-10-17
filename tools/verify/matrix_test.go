@@ -55,6 +55,7 @@ func TestParseTraceabilitySlashExpansionFixture(t *testing.T) {
 	}
 }
 
+// Scenarios: mqtt-protocol-and-session.md:MQTT-SCN-001
 func TestVerifyTraceabilityRejectsMissingAndStaleReverseReferences(t *testing.T) {
 	root := t.TempDir()
 	sourcePath := filepath.Join(root, "internal", "domain", "mqtt", "example_test.go")

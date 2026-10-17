@@ -194,6 +194,7 @@ func newProviderFixture(t *testing.T, clock *testClock, body []byte, handlerStat
 }
 
 // Traceability: SEC-02
+// Scenarios: tenancy-and-security.md:SEC-SCN-010
 func TestJWKSAuthenticationRejectsAlgorithmSignatureAndClaims(t *testing.T) {
 	now := time.Unix(1000, 0)
 	clock := &testClock{now: now}
@@ -229,6 +230,7 @@ func TestJWKSAuthenticationRejectsAlgorithmSignatureAndClaims(t *testing.T) {
 }
 
 // Traceability: SEC-02
+// Scenarios: tenancy-and-security.md:SEC-SCN-011
 func TestJWKSBootstrapFetchCollapses(t *testing.T) {
 	now := time.Unix(2000, 0)
 	clock := &testClock{now: now}
@@ -262,6 +264,7 @@ func TestJWKSBootstrapFetchCollapses(t *testing.T) {
 }
 
 // Traceability: SEC-08
+// Scenarios: tenancy-and-security.md:SEC-SCN-013
 func TestJWKSBootstrapFailureCollapses(t *testing.T) {
 	now := time.Unix(2500, 0)
 	clock := &testClock{now: now}
@@ -315,6 +318,7 @@ func TestJWKSBootstrapFailureCollapses(t *testing.T) {
 }
 
 // Traceability: SEC-02
+// Scenarios: tenancy-and-security.md:SEC-SCN-011
 func TestJWKSUnknownKeyRefreshCollapsesAndThrottles(t *testing.T) {
 	now := time.Unix(3000, 0)
 	clock := &testClock{now: now}
@@ -382,6 +386,7 @@ func TestJWKSUnknownKeyRefreshCollapsesAndThrottles(t *testing.T) {
 }
 
 // Traceability: SEC-02, SEC-08
+// Scenarios: tenancy-and-security.md:SEC-SCN-011, tenancy-and-security.md:SEC-SCN-013
 func TestJWKSFailedEarlyRefreshPreservesKnownKeyAndTTLDoesNotExtend(t *testing.T) {
 	now := time.Unix(4000, 0)
 	clock := &testClock{now: now}

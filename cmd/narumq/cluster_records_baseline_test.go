@@ -40,6 +40,7 @@ func baselineUnknownFieldPath(m protoreflect.Message) string {
 }
 
 // Traceability: CLU-11; docs/specs/cluster-session-and-delivery.md §8, §11.29.
+// Scenarios: cluster-session-and-delivery.md:CLU-SCN-209
 func TestInactiveFeatureRecordsDecodeWithBaselineSchema(t *testing.T) {
 	wire, err := os.ReadFile(filepath.Join("..", "..", "internal", "adapters", "raft", "records", "testdata", "replicated-state-v1", "baseline-schema-1.0.binpb"))
 	if err != nil {

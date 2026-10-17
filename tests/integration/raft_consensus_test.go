@@ -201,6 +201,7 @@ func assertCommands(t *testing.T, cluster *deterministicCluster, nodeIDs []rafta
 }
 
 // Traceability: PRD CLU-01/02/06/07/09/10; ADR-0001 §7 gate 4; ADR-0002 §7; cluster spec §6/7/10/11.
+// Scenarios: cluster-session-and-delivery.md:CLU-SCN-001, cluster-session-and-delivery.md:CLU-SCN-002, cluster-session-and-delivery.md:CLU-SCN-003, cluster-session-and-delivery.md:CLU-SCN-004, cluster-session-and-delivery.md:CLU-SCN-006, cluster-session-and-delivery.md:CLU-SCN-155
 func TestRaftConsensusSpike(t *testing.T) {
 	t.Run("snapshot compaction replaces WAL and prunes older snapshots", func(t *testing.T) {
 		cluster := newDeterministicCluster(t)
@@ -459,6 +460,7 @@ func TestRaftConsensusSpike(t *testing.T) {
 const maxProposalBytes = 64 * 1024
 
 // Traceability: PRD CLU-04/05/10; ADR-0002 §7; ADR-0004 §8; cluster spec §2/2.1/11.2.
+// Scenarios: cluster-session-and-delivery.md:CLU-SCN-007, cluster-session-and-delivery.md:CLU-SCN-008, cluster-session-and-delivery.md:CLU-SCN-009, cluster-session-and-delivery.md:CLU-SCN-010, cluster-session-and-delivery.md:CLU-SCN-011
 func TestReplicatedSessionOwnership(t *testing.T) {
 	t.Run("concurrent acquire elects single owner", func(t *testing.T) {
 		cluster := newDeterministicCluster(t)

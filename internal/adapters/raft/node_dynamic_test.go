@@ -24,6 +24,8 @@ const (
 	removeOperation      = "00000000-0000-4000-8000-000000000003"
 )
 
+// TestDynamicMembershipChangesApplyAndReplayAfterRestart verifies membership changes apply, replay after restart, and reject a pending change.
+// Scenarios: performance-and-verification.md:PRF-SCN-088
 func TestDynamicMembershipChangesApplyAndReplayAfterRestart(t *testing.T) {
 	root := t.TempDir()
 	nodes := make(map[NodeID]*Node, 3)
@@ -598,6 +600,7 @@ func TestDynamicPersistenceBoundaryHookReportsMembershipReady(t *testing.T) {
 	}
 }
 
+// Scenarios: cluster-session-and-delivery.md:CLU-SCN-022
 func TestDynamicStepAllowsOnlyAuthenticatedForwardedRequests(t *testing.T) {
 	node, err := Open(dynamicTestConfig(1, filepath.Join(t.TempDir(), "node-1")))
 	if err != nil {
@@ -637,6 +640,8 @@ func TestDynamicStepAllowsOnlyAuthenticatedForwardedRequests(t *testing.T) {
 	}
 }
 
+// TestDynamicFollowerForwardsApplicationProposal verifies a dynamic follower forwards an application proposal to the leader.
+// Scenarios: performance-and-verification.md:PRF-SCN-009
 func TestDynamicFollowerForwardsApplicationProposal(t *testing.T) {
 	root := t.TempDir()
 	nodes := make(map[NodeID]*Node, 3)
@@ -833,6 +838,7 @@ func dynamicAppliedCommandsMatch(nodes map[NodeID]*Node, want [][]byte) bool {
 	return true
 }
 
+// Scenarios: cluster-session-and-delivery.md:CLU-SCN-060
 func TestDynamicRejectedProposalsReplayAfterLeadershipTransfer(t *testing.T) {
 	nodes := openDynamicTestNodes(t)
 	pumpDynamicNodesUntil(t, nodes, func() bool {
@@ -928,6 +934,7 @@ func TestDynamicRejectedProposalsReplayAfterLeadershipTransfer(t *testing.T) {
 	}
 }
 
+// Scenarios: cluster-session-and-delivery.md:CLU-SCN-061
 func TestDynamicRejectedProposalStagingHasItemAndByteBounds(t *testing.T) {
 	nodes := openDynamicTestNodes(t)
 	pumpDynamicNodesUntil(t, nodes, func() bool {
@@ -1016,6 +1023,7 @@ func TestDynamicRejectedProposalStagingHasItemAndByteBounds(t *testing.T) {
 	})
 }
 
+// Scenarios: cluster-session-and-delivery.md:CLU-SCN-061
 func TestDynamicDeferredProposalsRespectDownstreamCredits(t *testing.T) {
 	messages, availableBytes := 0, 0
 	nodes := openDynamicTestNodesWithCapacity(t, func(NodeID) (int, int) {
@@ -1086,6 +1094,7 @@ func TestDynamicDeferredProposalsRespectDownstreamCredits(t *testing.T) {
 }
 
 // Traceability: CLU-12; docs/specs/cluster-session-and-delivery.md §4.2, §11.28.
+// Scenarios: cluster-session-and-delivery.md:CLU-SCN-202
 func TestDynamicDeferForwardedProposalReplaysUnsentFrameOnce(t *testing.T) {
 	messages, availableBytes := 0, 0
 	nodes := openDynamicTestNodesWithCapacity(t, func(NodeID) (int, int) {

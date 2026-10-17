@@ -11,6 +11,7 @@ import (
 )
 
 // Traceability: CLU-08; docs/specs/cluster-session-and-delivery.md §4.3, §11.24.
+// Scenarios: cluster-session-and-delivery.md:CLU-SCN-168
 func TestClusterSessionMetadataCommitRequiresActiveFeature(t *testing.T) {
 	runtime, _, stop := newClusterDurableTestRuntime(t)
 	defer stop()
@@ -111,6 +112,7 @@ func TestClusterSessionMetadataCommitRequiresActiveFeature(t *testing.T) {
 }
 
 // Traceability: CLU-08; docs/specs/cluster-session-and-delivery.md §4.3, §11.24.
+// Scenarios: cluster-session-and-delivery.md:CLU-SCN-170
 func TestClusterSessionViewCountsCommittedQueueAndExchanges(t *testing.T) {
 	machine := membership.NewStateMachine()
 	runtime := &clusterRuntime{machine: machine}

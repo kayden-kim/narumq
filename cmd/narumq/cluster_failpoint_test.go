@@ -6,6 +6,7 @@ import (
 	raftadapter "narumq/internal/adapters/raft"
 )
 
+// Scenarios: cluster-session-and-delivery.md:CLU-SCN-183, cluster-session-and-delivery.md:CLU-SCN-080
 func TestClusterFailpointParse(t *testing.T) {
 	cases := []struct {
 		input   string
@@ -52,6 +53,7 @@ func TestClusterFailpointParse(t *testing.T) {
 	}
 }
 
+// Scenarios: cluster-session-and-delivery.md:CLU-SCN-183, cluster-session-and-delivery.md:CLU-SCN-080
 func TestClusterFailpointMatchesOnlyItsBoundary(t *testing.T) {
 	stages := []raftadapter.PersistenceStage{
 		raftadapter.PersistenceBeforeReady,

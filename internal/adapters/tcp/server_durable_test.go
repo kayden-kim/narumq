@@ -159,6 +159,7 @@ func requireControlPacket(t *testing.T, conn *connection, want mqtt.Packet) mqtt
 	}
 }
 
+// Scenarios: cluster-session-and-delivery.md:CLU-SCN-072
 func TestTCPDurableQoS1AcknowledgesOnlyAfterCommit(t *testing.T) {
 	commitErr := errors.New("replication unavailable")
 	for _, testCase := range []struct {
@@ -196,6 +197,7 @@ func TestTCPDurableQoS1AcknowledgesOnlyAfterCommit(t *testing.T) {
 }
 
 // Traceability: CLU-14; docs/specs/cluster-session-and-delivery.md §4.2, §11.11.
+// Scenarios: cluster-session-and-delivery.md:CLU-SCN-072
 func TestTCPClusterDurablePublishUsesCommitWithoutReadinessPreflight(t *testing.T) {
 	for _, testCase := range []struct {
 		name        string
@@ -294,6 +296,7 @@ func TestTCPDurableQoS2ReceiveReleaseAndCapacity(t *testing.T) {
 }
 
 // Traceability: PRD MQTT-02/TEST-03/TEST-04/TEST-05; docs/specs/mqtt-protocol-and-session.md §3.1; MQTT-4.3.2-1, MQTT-4.3.2-2, MQTT-4.3.3-1, MQTT-4.3.3-2.
+// Scenarios: mqtt-protocol-and-session.md:MQTT-SCN-005
 func TestDispatchPublishReusesCompletedPacketIdentifier(t *testing.T) {
 	for _, testCase := range []struct {
 		name string
@@ -498,6 +501,7 @@ func TestTCPDeliverDurableClosesOwnerWhenQueueIsFull(t *testing.T) {
 }
 
 // Traceability: CLU-07; docs/specs/cluster-session-and-delivery.md §4.2, §11.11.
+// Scenarios: cluster-session-and-delivery.md:CLU-SCN-070
 func TestTCPDurableQoS1WithoutTargetAcknowledgesAfterQuorumBarrier(t *testing.T) {
 	for _, testCase := range []struct {
 		name       string
@@ -562,6 +566,7 @@ func (committer *heldTCPBarrierCommitter) BeginQuorumBarrier(context.Context) (d
 }
 
 // Traceability: CLU-07; docs/specs/cluster-session-and-delivery.md §4.2, §11.11.
+// Scenarios: cluster-session-and-delivery.md:CLU-SCN-070
 func TestTCPDurablePhasesWithoutTargetWaitForQuorumBarrier(t *testing.T) {
 	for _, barrierErr := range []error{nil, membership.ErrQuorumUnavailable} {
 		name := "success"

@@ -37,6 +37,8 @@ func TestParseEndpointsRequiresThreeDistinctNumericHostPorts(t *testing.T) {
 	}
 }
 
+// TestMakeStreamsAssignsCrossNodeRoles verifies streams place publisher, subscriber and reconnect roles on different nodes.
+// Scenarios: performance-and-verification.md:PRF-SCN-002
 func TestMakeStreamsAssignsCrossNodeRoles(t *testing.T) {
 	profile := validBP03Profile()
 	profile.PairsPerQoS = 2
@@ -58,6 +60,8 @@ func TestMakeStreamsAssignsCrossNodeRoles(t *testing.T) {
 	}
 }
 
+// TestWaitSlotReturnsReaderFailure verifies a publisher reader failure wakes slot waiters.
+// Scenarios: performance-and-verification.md:PRF-SCN-002
 func TestWaitSlotReturnsReaderFailure(t *testing.T) {
 	want := errors.New("publisher reader failed")
 	client := &runClient{
@@ -114,6 +118,8 @@ func TestCloseClientsReturnsDisconnectFailure(t *testing.T) {
 	}
 }
 
+// TestPublisherACKTimeoutQuarantinesPacketIdentifier verifies a timed-out ACK quarantines its packet identifier.
+// Scenarios: performance-and-verification.md:PRF-SCN-002
 func TestPublisherACKTimeoutQuarantinesPacketIdentifier(t *testing.T) {
 	now := time.Now()
 	packetID := mqtt.PacketIdentifier(7)

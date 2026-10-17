@@ -16,6 +16,8 @@ import (
 	"narumq/tests/benchmark/internal/environment"
 )
 
+// TestNaruMQResyncRetainsWatermarkAcrossLeaderChangeAndRetriesPages verifies the resync watermark is retained across leader changes.
+// Scenarios: performance-and-verification.md:PRF-SCN-031
 func TestNaruMQResyncRetainsWatermarkAcrossLeaderChangeAndRetriesPages(t *testing.T) {
 	profile, _, _, err := LoadProfile("testdata/smoke.json")
 	if err != nil {
@@ -99,6 +101,8 @@ func nodeList(leader int, leaderApplied, targetMatch uint64, targetHealth string
 	return string(data)
 }
 
+// TestNaruMQResyncAllowsRestartedLeaderWithoutPeerHealth verifies resync completes with a restarted leader.
+// Scenarios: performance-and-verification.md:PRF-SCN-031
 func TestNaruMQResyncAllowsRestartedLeaderWithoutPeerHealth(t *testing.T) {
 	profile, _, _, err := LoadProfile("testdata/smoke.json")
 	if err != nil {
@@ -136,6 +140,8 @@ func TestNaruMQResyncAllowsRestartedLeaderWithoutPeerHealth(t *testing.T) {
 	}
 }
 
+// TestNaruMQResyncHonorsDeadline verifies resync fails at the deadline.
+// Scenarios: performance-and-verification.md:PRF-SCN-031
 func TestNaruMQResyncHonorsDeadline(t *testing.T) {
 	profile, _, _, err := LoadProfile("testdata/smoke.json")
 	if err != nil {
@@ -164,6 +170,8 @@ func TestNaruMQResyncHonorsDeadline(t *testing.T) {
 	}
 }
 
+// TestMarkerAckWaitsForMatchingRoundAndState verifies the control marker acknowledgement matches round and state.
+// Scenarios: performance-and-verification.md:PRF-SCN-030
 func TestMarkerAckWaitsForMatchingRoundAndState(t *testing.T) {
 	root := t.TempDir()
 	round := roundPlan{Round: 2, NodeID: 3}
@@ -232,6 +240,8 @@ func TestFailureControllerKeepsIncompleteRoundDiagnostics(t *testing.T) {
 	}
 }
 
+// TestFailureMarkerWritesExpectedControlJSON verifies the control marker content.
+// Scenarios: performance-and-verification.md:PRF-SCN-030
 func TestFailureMarkerWritesExpectedControlJSON(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "control", "round-01.json")
 	round := roundPlan{Round: 1, Node: "node2", NodeID: 2}

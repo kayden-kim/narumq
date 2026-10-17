@@ -967,6 +967,7 @@ const (
 	dynamicHelloLimit          = 1024
 	dynamicAdmissionLimit      = 64 << 10
 	dynamicFrameLimit          = 1 << 20
+	dynamicObservabilitySlots  = 8
 	dynamicBootstrapProbeMagic = "NMQBOOT2"
 )
 
@@ -1002,6 +1003,8 @@ type PeerIdentityDTO struct {
 	StateSchemaMinor     uint32
 	Phase                PeerPhaseDTO
 	OperationID          string
+	// ObservabilitySupported comes from committed member features; the peer hello layout does not carry it.
+	ObservabilitySupported bool
 }
 
 // SeedAdmissionRequestDTO carries the candidate identity proved during seed admission.
@@ -1020,45 +1023,59 @@ type SeedAdmissionResponseDTO struct {
 // Returning an error or an unaccepted response sends only the generic rejection frame.
 type SeedAdmissionHandler func(context.Context, PeerIdentityDTO) (SeedAdmissionResponseDTO, error)
 
+// PeerObservabilityHandler returns one node-local JSON object for an authenticated peer request.
+type PeerObservabilityHandler func(context.Context, PeerObservabilityKind) ([]byte, error)
+
 // DynamicPeerTransportConfig configures the additive v2 TLS listener and committed peer set.
 type DynamicPeerTransportConfig struct {
-	LocalIdentity           PeerIdentityDTO
-	Listener                net.Listener
-	ServerTLS               *tls.Config
-	ClientTLS               *tls.Config
-	Peers                   []PeerIdentityDTO
-	AdmissionHandler        SeedAdmissionHandler
+	LocalIdentity        PeerIdentityDTO
+	Listener             net.Listener
+	ServerTLS            *tls.Config
+	ClientTLS            *tls.Config
+	Peers                []PeerIdentityDTO
+	AdmissionHandler     SeedAdmissionHandler
+	ObservabilityHandler PeerObservabilityHandler
+	// SnapshotStreamHandler receives snapshots streamed by a leader (ADR-0062). Nil rejects them as unsupported.
+	SnapshotStreamHandler   SnapshotStreamHandler
 	BootstrapProgress       BootstrapProgressHandler
 	BootstrapAllowedPeerIDs []uint64
 }
 
 // DynamicTCPPeerTransport owns a dynamic v2 TLS listener and its reconciled peer workers.
 type DynamicTCPPeerTransport struct {
-	mu                 sync.Mutex
-	local              PeerIdentityDTO
-	localID            uint64
-	clusterID          string
-	listener           net.Listener
-	serverTLS          *tls.Config
-	clientTLS          *tls.Config
-	admission          SeedAdmissionHandler
-	bootstrapProgress  BootstrapProgressHandler
-	bootstrapMu        sync.Mutex
-	bootstrapAllowed   map[uint64]struct{}
-	peers              map[uint64]*dynamicPeerState
-	forwardPeers       map[uint64]*dynamicPeerState
-	inboundReady       chan struct{}
-	outboundReady      chan struct{}
-	forwardReady       chan struct{}
-	connections        map[net.Conn]struct{}
-	inboundConnections int
-	started            bool
-	closed             bool
-	ctx                context.Context
-	cancel             context.CancelFunc
-	workers            sync.WaitGroup
-	done               chan struct{}
-	finishOnce         sync.Once
+	mu                         sync.Mutex
+	local                      PeerIdentityDTO
+	localID                    uint64
+	clusterID                  string
+	listener                   net.Listener
+	serverTLS                  *tls.Config
+	clientTLS                  *tls.Config
+	admission                  SeedAdmissionHandler
+	observabilityHandler       PeerObservabilityHandler
+	observabilityInboundSlots  chan struct{}
+	observabilityOutboundSlots chan struct{}
+	snapshotHandler            SnapshotStreamHandler
+	snapshotOutboundSlots      chan struct{}
+	snapshotInboundSlot        chan struct{}
+	snapshotMu                 sync.Mutex
+	snapshotPartial            *snapshotPartial
+	bootstrapProgress          BootstrapProgressHandler
+	bootstrapMu                sync.Mutex
+	bootstrapAllowed           map[uint64]struct{}
+	peers                      map[uint64]*dynamicPeerState
+	forwardPeers               map[uint64]*dynamicPeerState
+	inboundReady               chan struct{}
+	outboundReady              chan struct{}
+	forwardReady               chan struct{}
+	connections                map[net.Conn]struct{}
+	inboundConnections         int
+	started                    bool
+	closed                     bool
+	ctx                        context.Context
+	cancel                     context.CancelFunc
+	workers                    sync.WaitGroup
+	done                       chan struct{}
+	finishOnce                 sync.Once
 }
 
 type dynamicLane uint8
@@ -1147,6 +1164,9 @@ func NewDynamicTCPPeerTransport(config DynamicPeerTransportConfig) (*DynamicTCPP
 	if config.AdmissionHandler == nil {
 		return nil, fmt.Errorf("seed admission handler is required")
 	}
+	if config.LocalIdentity.ObservabilitySupported && config.ObservabilityHandler == nil {
+		return nil, fmt.Errorf("observability handler is required when the local peer advertises support")
+	}
 	if err := validateDynamicInitialIdentity(config.LocalIdentity); err != nil {
 		return nil, fmt.Errorf("local peer identity: %w", err)
 	}
@@ -1166,22 +1186,28 @@ func NewDynamicTCPPeerTransport(config DynamicPeerTransportConfig) (*DynamicTCPP
 	}
 
 	transport := &DynamicTCPPeerTransport{
-		local:             config.LocalIdentity,
-		localID:           config.LocalIdentity.MemberID,
-		clusterID:         config.LocalIdentity.ClusterID,
-		listener:          tls.NewListener(config.Listener, serverTLS),
-		serverTLS:         serverTLS,
-		clientTLS:         clientTLS,
-		admission:         config.AdmissionHandler,
-		bootstrapProgress: config.BootstrapProgress,
-		bootstrapAllowed:  make(map[uint64]struct{}, len(config.BootstrapAllowedPeerIDs)),
-		peers:             make(map[uint64]*dynamicPeerState),
-		forwardPeers:      make(map[uint64]*dynamicPeerState),
-		inboundReady:      make(chan struct{}, 1),
-		outboundReady:     make(chan struct{}, 1),
-		forwardReady:      make(chan struct{}, 1),
-		connections:       make(map[net.Conn]struct{}),
-		done:              make(chan struct{}),
+		local:                      config.LocalIdentity,
+		localID:                    config.LocalIdentity.MemberID,
+		clusterID:                  config.LocalIdentity.ClusterID,
+		listener:                   tls.NewListener(config.Listener, serverTLS),
+		serverTLS:                  serverTLS,
+		clientTLS:                  clientTLS,
+		admission:                  config.AdmissionHandler,
+		observabilityHandler:       config.ObservabilityHandler,
+		observabilityInboundSlots:  make(chan struct{}, dynamicObservabilitySlots),
+		observabilityOutboundSlots: make(chan struct{}, dynamicObservabilitySlots),
+		snapshotHandler:            config.SnapshotStreamHandler,
+		snapshotOutboundSlots:      make(chan struct{}, snapshotStreamOutboundSlots),
+		snapshotInboundSlot:        make(chan struct{}, 1),
+		bootstrapProgress:          config.BootstrapProgress,
+		bootstrapAllowed:           make(map[uint64]struct{}, len(config.BootstrapAllowedPeerIDs)),
+		peers:                      make(map[uint64]*dynamicPeerState),
+		forwardPeers:               make(map[uint64]*dynamicPeerState),
+		inboundReady:               make(chan struct{}, 1),
+		outboundReady:              make(chan struct{}, 1),
+		forwardReady:               make(chan struct{}, 1),
+		connections:                make(map[net.Conn]struct{}),
+		done:                       make(chan struct{}),
 	}
 	if err := validateDynamicPeerSet(config.LocalIdentity, config.Peers); err != nil {
 		_ = transport.listener.Close()
@@ -1476,7 +1502,7 @@ func (transport *DynamicTCPPeerTransport) LocalIdentity() PeerIdentityDTO {
 	return transport.local
 }
 
-// UpdateLocalIdentity applies a committed local phase or operation-ID change.
+// UpdateLocalIdentity applies committed phase, operation-ID or observability capability changes.
 // Identity, address and certificate bindings are immutable after construction.
 func (transport *DynamicTCPPeerTransport) UpdateLocalIdentity(identity PeerIdentityDTO) error {
 	if err := validateDynamicLocalIdentity(identity); err != nil {
@@ -1486,6 +1512,10 @@ func (transport *DynamicTCPPeerTransport) UpdateLocalIdentity(identity PeerIdent
 	if transport.closed {
 		transport.mu.Unlock()
 		return ErrPeerTransportClosed
+	}
+	if identity.ObservabilitySupported && transport.observabilityHandler == nil {
+		transport.mu.Unlock()
+		return fmt.Errorf("observability handler is required when the local peer advertises support")
 	}
 	current := transport.local
 	if !sameImmutableIdentity(current, identity) {
@@ -1502,6 +1532,7 @@ func (transport *DynamicTCPPeerTransport) UpdateLocalIdentity(identity PeerIdent
 		return fmt.Errorf("local peer membership operation cannot change")
 	}
 	if samePeerIdentity(current, identity) {
+		transport.local.ObservabilitySupported = identity.ObservabilitySupported
 		transport.mu.Unlock()
 		return nil
 	}
@@ -1912,9 +1943,18 @@ func (transport *DynamicTCPPeerTransport) handleInbound(ctx context.Context, soc
 	case dynamicBootstrapProbeMagic:
 		transport.handleBootstrapProbe(connection, payload)
 	case dynamicRaftMagic:
-		transport.handleStreamInbound(connection, payload, dynamicLaneRaft)
+		// One-shot admission, probe and observability exchanges keep their own deadlines (ADR-0059).
+		if applyPeerLiveness(connection.NetConn()) == nil {
+			transport.handleStreamInbound(connection, payload, dynamicLaneRaft)
+		}
 	case dynamicForwardMagic:
-		transport.handleStreamInbound(connection, payload, dynamicLaneForward)
+		if applyPeerLiveness(connection.NetConn()) == nil {
+			transport.handleStreamInbound(connection, payload, dynamicLaneForward)
+		}
+	case peerObservabilityMagic:
+		transport.handleObservabilityInbound(ctx, connection, payload)
+	case dynamicSnapshotMagic:
+		transport.handleSnapshotInbound(ctx, connection, payload)
 	}
 }
 
@@ -2033,7 +2073,7 @@ func (transport *DynamicTCPPeerTransport) dialPeer(ctx context.Context, peer *dy
 		clientTLS := transport.clientTLS.Clone()
 		clientTLS.ServerName = identity.DNSSAN
 		dialCtx, cancel := context.WithTimeout(ctx, peerIOTimeout)
-		dialer := &tls.Dialer{NetDialer: &net.Dialer{Timeout: peerIOTimeout}, Config: clientTLS}
+		dialer := &tls.Dialer{NetDialer: newPeerNetDialer(), Config: clientTLS}
 		socket, err := dialer.DialContext(dialCtx, "tcp", identity.Address)
 		cancel()
 		if err != nil {
@@ -2073,6 +2113,12 @@ func (transport *DynamicTCPPeerTransport) dialPeer(ctx context.Context, peer *dy
 			handshakeCtx, handshakeCancel := context.WithTimeout(ctx, peerIOTimeout)
 			err = connection.HandshakeContext(handshakeCtx)
 			handshakeCancel()
+		}
+		if err == nil && !matchesPeerCertificate(connection, identity) {
+			// Verify the expected member's leaf before any hello leaves this node. After a slot reuse
+			// (ADR-0061) another member can answer at the committed address. A hello sent to it would be
+			// accepted as a stream from this node and replace the connection this node legitimately holds.
+			err = fmt.Errorf("peer identity mismatch")
 		}
 		if err == nil {
 			var hello []byte
@@ -2144,7 +2190,7 @@ func matchesPeerCertificate(connection *tls.Conn, identity PeerIdentityDTO) bool
 func (transport *DynamicTCPPeerTransport) trackInboundConnection(connection net.Conn) bool {
 	transport.mu.Lock()
 	defer transport.mu.Unlock()
-	limit := 2*len(transport.peers) + 1 // Two streams per peer plus one seed-admission slot.
+	limit := 2*len(transport.peers) + 1 + dynamicObservabilitySlots + 1 // Two streams per peer, admission, one-shot observation slots, one snapshot stream.
 	if transport.closed || transport.inboundConnections >= limit {
 		return false
 	}
@@ -2748,7 +2794,7 @@ func sameAdmissionCandidate(requested, committed PeerIdentityDTO) bool {
 }
 
 func encodeDynamicPeerHello(identity PeerIdentityDTO, magic string) ([]byte, error) {
-	if magic != dynamicRaftMagic && magic != dynamicForwardMagic {
+	if magic != dynamicRaftMagic && magic != dynamicForwardMagic && magic != peerObservabilityMagic && magic != dynamicSnapshotMagic {
 		return nil, ErrInvalidPeerMessage
 	}
 	if err := validateDynamicIdentity(identity, false); err != nil {
@@ -2777,7 +2823,7 @@ func encodeDynamicPeerHello(identity PeerIdentityDTO, magic string) ([]byte, err
 }
 
 func decodeDynamicPeerHello(payload []byte, magic string) (PeerIdentityDTO, error) {
-	if (magic != dynamicRaftMagic && magic != dynamicForwardMagic) ||
+	if (magic != dynamicRaftMagic && magic != dynamicForwardMagic && magic != peerObservabilityMagic && magic != dynamicSnapshotMagic) ||
 		len(payload) > dynamicHelloLimit || len(payload) < 8 || string(payload[:8]) != magic {
 		return PeerIdentityDTO{}, ErrInvalidPeerMessage
 	}
@@ -3121,11 +3167,7 @@ func readDynamicHandshakeFrame(connection net.Conn) ([]byte, error) {
 	switch string(magic[:]) {
 	case "NMQJOIN2":
 		maximum = dynamicAdmissionLimit
-	case dynamicRaftMagic:
-		maximum = dynamicHelloLimit
-	case dynamicForwardMagic:
-		maximum = dynamicHelloLimit
-	case dynamicBootstrapProbeMagic:
+	case dynamicRaftMagic, dynamicForwardMagic, dynamicBootstrapProbeMagic, peerObservabilityMagic, dynamicSnapshotMagic:
 		maximum = dynamicHelloLimit
 	default:
 		return nil, ErrInvalidPeerMessage

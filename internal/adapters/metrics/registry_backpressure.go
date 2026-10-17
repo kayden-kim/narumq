@@ -1,8 +1,6 @@
 package metrics
 
 import (
-	"bytes"
-	"fmt"
 	"sort"
 	"time"
 )
@@ -60,39 +58,4 @@ func (r *Registry) SetPeerReplicationLag(lags map[uint64]uint64) {
 	r.mu.Lock()
 	r.peerReplicationLag = entries
 	r.mu.Unlock()
-}
-
-func (r *Registry) renderPublishBackpressure(buf *bytes.Buffer) {
-	fmt.Fprintln(buf, "# HELP narumq_publish_backpressure_rejections_total New durable publishes rejected by admission reason.")
-	fmt.Fprintln(buf, "# TYPE narumq_publish_backpressure_rejections_total counter")
-	for i, reason := range publishBackpressureReasons {
-		fmt.Fprintf(buf, "narumq_publish_backpressure_rejections_total{reason=\"%s\"} %d\n", reason, r.publishBackpressureRejections[i].Load())
-	}
-	fmt.Fprintln(buf, "# HELP narumq_publish_backpressure_active Whether a sampled ingress pressure reason is active.")
-	fmt.Fprintln(buf, "# TYPE narumq_publish_backpressure_active gauge")
-	for i := range r.publishBackpressureActive {
-		value := 0
-		if r.publishBackpressureActive[i].Load() {
-			value = 1
-		}
-		fmt.Fprintf(buf, "narumq_publish_backpressure_active{reason=\"%s\"} %d\n", publishBackpressureReasons[i], value)
-	}
-	if r.storageFreeBytesSet.Load() {
-		fmt.Fprintln(buf, "# HELP narumq_storage_free_bytes Filesystem bytes available to the local cluster data directory.")
-		fmt.Fprintln(buf, "# TYPE narumq_storage_free_bytes gauge")
-		fmt.Fprintf(buf, "narumq_storage_free_bytes %d\n", r.storageFreeBytes.Load())
-	}
-	fmt.Fprintln(buf, "# HELP narumq_cluster_commit_backlog_oldest_seconds Age of the oldest unfinished ingress delivery command.")
-	fmt.Fprintln(buf, "# TYPE narumq_cluster_commit_backlog_oldest_seconds gauge")
-	fmt.Fprintf(buf, "narumq_cluster_commit_backlog_oldest_seconds %.6f\n", time.Duration(r.commitBacklogOldest.Load()).Seconds())
-	fmt.Fprintln(buf, "# HELP narumq_durable_delivery_saturated_targets_total Durable delivery targets skipped because committed capacity was saturated.")
-	fmt.Fprintln(buf, "# TYPE narumq_durable_delivery_saturated_targets_total counter")
-	fmt.Fprintf(buf, "narumq_durable_delivery_saturated_targets_total %d\n", r.durableDeliverySaturated.Load())
-	fmt.Fprintln(buf, "# HELP narumq_raft_peer_replication_lag_entries Leader commit entries not yet matched by each peer.")
-	fmt.Fprintln(buf, "# TYPE narumq_raft_peer_replication_lag_entries gauge")
-	r.mu.RLock()
-	for _, entry := range r.peerReplicationLag {
-		fmt.Fprintf(buf, "narumq_raft_peer_replication_lag_entries{peer=\"%d\"} %d\n", entry.peer, entry.lag)
-	}
-	r.mu.RUnlock()
 }

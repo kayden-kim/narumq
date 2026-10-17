@@ -14,6 +14,7 @@ import (
 	appmgmt "narumq/internal/application/management"
 	ports "narumq/internal/application/ports/management"
 	portsmetrics "narumq/internal/application/ports/metrics"
+	observationports "narumq/internal/application/ports/observability"
 )
 
 type mockStateProvider struct {
@@ -107,6 +108,7 @@ func (m *mockHealthChecker) CheckDrain(ctx context.Context) (ports.HealthStatus,
 	return m.drainStatus, m.drainReason
 }
 
+// Scenarios: management-api-and-observability.md:MGT-SCN-020
 func TestHealthEndpoints(t *testing.T) {
 	reason := "initializing consensus"
 	checker := &mockHealthChecker{
@@ -182,6 +184,7 @@ func TestHealthEndpoints(t *testing.T) {
 }
 
 // Traceability: API-01; docs/specs/management-api-and-observability.md §9.
+// Scenarios: management-api-and-observability.md:MGT-SCN-025
 func TestMetricsEndpoint(t *testing.T) {
 	reg := adaptersmetrics.NewRegistry()
 	reg.ConnectionOpened(portsmetrics.ProtocolMQTT50, "tcp")
@@ -243,7 +246,8 @@ func TestManagementV1Endpoints(t *testing.T) {
 		},
 	}
 	checker := &mockHealthChecker{liveStatus: ports.HealthStatusUp}
-	handler := NewRouter(ServerConfig{}, provider, checker, nil)
+	observability := successHTTPObservabilityStub()
+	handler := NewRouter(ServerConfig{Observability: observability}, provider, checker, nil)
 
 	// 1. GET /api/v1/cluster
 	req := httptest.NewRequest("GET", "/api/v1/cluster", nil)
@@ -254,7 +258,7 @@ func TestManagementV1Endpoints(t *testing.T) {
 		t.Fatalf("expected 200 for cluster, got %d: %s", rec.Code, rec.Body.String())
 	}
 	var clusterResp struct {
-		Data ports.ClusterSummaryDTO `json:"data"`
+		Data observationports.ClusterDataDTO `json:"data"`
 	}
 	if err := json.Unmarshal(rec.Body.Bytes(), &clusterResp); err != nil {
 		t.Fatalf("unmarshal error: %v", err)
@@ -316,6 +320,7 @@ func TestManagementV1Endpoints(t *testing.T) {
 	}
 }
 
+// Scenarios: management-api-and-observability.md:MGT-SCN-003
 func TestAuthAndRBAC(t *testing.T) {
 	provider := &mockStateProvider{}
 	checker := &mockHealthChecker{liveStatus: ports.HealthStatusUp}
@@ -323,6 +328,7 @@ func TestAuthAndRBAC(t *testing.T) {
 		AuthToken:            "secret-token-123",
 		APIKeys:              []APIKeyCredential{{ID: "test", Key: "api-key-456", Roles: []Role{RoleReadOnly}}},
 		AllowAnonymousProbes: true,
+		Observability:        successHTTPObservabilityStub(),
 	}
 	handler := NewRouter(cfg, provider, checker, nil)
 
@@ -370,6 +376,7 @@ func TestAuthAndRBAC(t *testing.T) {
 	}
 }
 
+// Scenarios: management-api-and-observability.md:MGT-SCN-003
 func TestRBACReturnsForbiddenForInsufficientRole(t *testing.T) {
 	handler := NewRouter(ServerConfig{
 		APIKeys: []APIKeyCredential{{ID: "test", Key: "read-only-token", Roles: []Role{RoleReadOnly}}},
@@ -384,6 +391,7 @@ func TestRBACReturnsForbiddenForInsufficientRole(t *testing.T) {
 	}
 }
 
+// Scenarios: management-api-and-observability.md:MGT-SCN-002
 func TestManagementCollectionEndpoints(t *testing.T) {
 	leader := "node-1"
 	provider := &mockStateProvider{
@@ -412,7 +420,7 @@ func TestManagementCollectionEndpoints(t *testing.T) {
 		},
 	}
 	handler := NewRouter(
-		ServerConfig{AllowAnonymousProbes: true, AllowAnonymousMetrics: true},
+		ServerConfig{AllowAnonymousProbes: true, AllowAnonymousMetrics: true, Observability: successHTTPObservabilityStub()},
 		provider,
 		&mockHealthChecker{liveStatus: ports.HealthStatusUp},
 		nil,
@@ -701,18 +709,19 @@ func TestManagementAuthMiddlewareModes(t *testing.T) {
 func TestManagementProviderErrorsBecomeInternalErrors(t *testing.T) {
 	checker := &mockHealthChecker{liveStatus: ports.HealthStatusUp}
 	for _, testCase := range []struct {
-		name     string
-		path     string
-		provider *mockStateProvider
+		name          string
+		path          string
+		provider      *mockStateProvider
+		observability *httpObservabilityStub
 	}{
-		{name: "nodes", path: "/api/v1/nodes", provider: &mockStateProvider{nodesErr: errors.New("nodes")}},
+		{name: "nodes", path: "/api/v1/nodes", observability: &httpObservabilityStub{listNodesErr: errors.New("nodes")}},
 		{name: "clients", path: "/api/v1/clients", provider: &mockStateProvider{clientsErr: errors.New("clients")}},
 		{name: "subscriptions", path: "/api/v1/subscriptions?tenantId=tenant-a", provider: &mockStateProvider{subsErr: errors.New("subscriptions")}},
 		{name: "retained", path: "/api/v1/retained?tenantId=tenant-a", provider: &mockStateProvider{retainedErr: errors.New("retained")}},
 		{name: "tenants", path: "/api/v1/tenants", provider: &mockStateProvider{tenantsErr: errors.New("tenants")}},
 	} {
 		t.Run(testCase.name, func(t *testing.T) {
-			handler := NewRouter(ServerConfig{}, testCase.provider, checker, nil)
+			handler := NewRouter(ServerConfig{Observability: testCase.observability}, testCase.provider, checker, nil)
 			req := httptest.NewRequest(http.MethodGet, testCase.path, nil)
 			rec := httptest.NewRecorder()
 			handler.ServeHTTP(rec, req)

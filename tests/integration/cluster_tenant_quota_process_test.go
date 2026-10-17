@@ -14,6 +14,7 @@ import (
 )
 
 // Traceability: TEN-08; docs/specs/cluster-session-and-delivery.md §11.16.
+// Scenarios: tenancy-and-security.md:SEC-SCN-029, cluster-session-and-delivery.md:CLU-SCN-102
 func TestDynamicClusterTenantStorageQuotaProcessAcceptance(t *testing.T) {
 	t.Parallel()
 

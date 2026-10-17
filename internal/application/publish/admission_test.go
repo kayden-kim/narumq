@@ -17,6 +17,7 @@ func (a *fakePublishAdmission) CheckDeliveryCapacity(membership.DeliveryChangeDT
 }
 
 // Traceability: CLU-12; docs/specs/cluster-session-and-delivery.md §4.5, §11.28.
+// Scenarios: cluster-session-and-delivery.md:CLU-SCN-196
 func TestPublishAdmissionGatesNewDurableState(t *testing.T) {
 	for _, tc := range []struct {
 		name, path                                     string

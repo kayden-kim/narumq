@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/binary"
+	"time"
 
 	adaptersmetrics "narumq/internal/adapters/metrics"
 	raftadapter "narumq/internal/adapters/raft"
@@ -14,6 +15,9 @@ const (
 	clusterReadIndexFrames     = 2 // Heartbeat and proof response compete in the same peer FIFO.
 	clusterReadIndexLimit      = (32 - clusterReadIndexReserve) / clusterReadIndexFrames
 	clusterReadProofHeader     = 16 // Origin node ID and per-emission nonce.
+	// A proof response rejected by a full peer FIFO is not retransmitted. The origin re-issues a
+	// proof whose ReadState has not arrived after this interval, leaving room for three attempts.
+	clusterReadProofRetryInterval = clusterReadTimeout / 4
 )
 
 // readIndexCapacity accounts for writes already queued and reads not flushed in a Ready yet.
@@ -146,18 +150,31 @@ func (runtime *clusterRuntime) issueReadProof(key string, waiter *clusterReadWai
 		return err
 	}
 	waiter.proofSequence = nonce
+	waiter.issuedAt = time.Now()
+	waiter.answered = false
 	waiter.leadership = raftLeadership{leader: status.LeaderID, term: status.Term, role: status.Role}
 	return nil
 }
 
+// proofRetryDue reports an issued proof whose ReadState has not arrived within clusterReadProofRetryInterval.
+func (waiter clusterReadWaiter) proofRetryDue(now time.Time) bool {
+	return waiter.proofSequence != 0 && !waiter.answered && !waiter.issuedAt.IsZero() &&
+		now.Sub(waiter.issuedAt) >= clusterReadProofRetryInterval
+}
+
 // A Raft leadership reset may discard an issued read without reporting an
-// error. Re-issue only this read-only proof, with a new nonce and old deadline.
+// error, and a full peer FIFO may reject its proof response. Re-issue only this
+// read-only proof, with a new nonce and old deadline, after a leadership change
+// or when no ReadState arrived within clusterReadProofRetryInterval. A proof due
+// for retry keeps its old nonce until peer capacity allows the replacement, and
+// it does not count against that capacity while it waits.
 func (runtime *clusterRuntime) refreshReadWaiters(reads map[string]clusterReadWaiter) {
 	if len(reads) == 0 {
 		return
 	}
 	status := runtime.node.Status()
 	leadership := raftLeadership{leader: status.LeaderID, term: status.Term, role: status.Role}
+	now := time.Now()
 	outstanding := 0
 	for key, waiter := range reads {
 		if waiter.leadership != leadership {
@@ -165,7 +182,7 @@ func (runtime *clusterRuntime) refreshReadWaiters(reads map[string]clusterReadWa
 			waiter.leadership = leadership
 			reads[key] = waiter
 		}
-		if waiter.proofSequence != 0 {
+		if waiter.proofSequence != 0 && !waiter.proofRetryDue(now) {
 			outstanding++
 		}
 	}
@@ -173,7 +190,7 @@ func (runtime *clusterRuntime) refreshReadWaiters(reads map[string]clusterReadWa
 		return
 	}
 	for key, waiter := range reads {
-		if waiter.proofSequence != 0 || (waiter.ctx != nil && waiter.ctx.Err() != nil) {
+		if (waiter.proofSequence != 0 && !waiter.proofRetryDue(now)) || (waiter.ctx != nil && waiter.ctx.Err() != nil) {
 			continue
 		}
 		if runtime.readIndexCapacityForStatus(status, outstanding) == 0 {

@@ -18,6 +18,7 @@ import (
 )
 
 // Traceability: SEC-05; docs/specs/tenancy-and-security.md §2.3, §2.4, §9.
+// Scenarios: configuration-and-runtime-options.md:CFG-SCN-29, mqtt-protocol-and-session.md:MQTT-SCN-021, tenancy-and-security.md:SEC-SCN-014, tenancy-and-security.md:SEC-SCN-017
 func TestDynamicClusterPasswordAuthenticationProcessAcceptance(t *testing.T) {
 	t.Parallel()
 	fixture := newClusterMembershipProcessFixture(t, 3, "")

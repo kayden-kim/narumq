@@ -29,6 +29,7 @@ func sessionMetadataSnapshotForTest() *ReplicatedStateSnapshot {
 }
 
 // Traceability: CLU-08; docs/specs/cluster-session-and-delivery.md §4.3, §11.24.
+// Scenarios: cluster-session-and-delivery.md:CLU-SCN-167
 func TestSessionMetadataCommandCodecRoundTripsAndValidatesBoundaries(t *testing.T) {
 	valid := &CommandEnvelope{SchemaMajor: 1, OperationId: op1, Payload: &CommandEnvelope_SessionMetadata{SessionMetadata: &SessionMetadataChange{
 		TenantId: "tenant", ClientId: "client", OwnerNodeId: 1, Epoch: 2,
@@ -118,6 +119,7 @@ func TestSessionMetadataCommandCodecRoundTripsAndValidatesBoundaries(t *testing.
 }
 
 // Traceability: CLU-08; docs/specs/cluster-session-and-delivery.md §4.3, §11.24.
+// Scenarios: cluster-session-and-delivery.md:CLU-SCN-167
 func TestSessionMetadataSnapshotCodecSortsCountsAndValidatesState(t *testing.T) {
 	state := sessionMetadataSnapshotForTest()
 	before := proto.Clone(state)

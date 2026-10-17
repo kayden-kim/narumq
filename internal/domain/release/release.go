@@ -13,6 +13,9 @@ var ErrInvalidVersion = errors.New("release version must be MAJOR.MINOR.PATCH")
 // MaxFeatures is the maximum number of feature tokens supported by one build.
 const MaxFeatures = 16
 
+// ClusterObservabilityFeature identifies builds that support peer observability queries.
+const ClusterObservabilityFeature = "cluster-observability-v1"
+
 // Version is a canonical semantic release version with unsigned 32-bit components.
 type Version struct {
 	Major uint32

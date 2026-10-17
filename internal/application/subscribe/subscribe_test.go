@@ -177,6 +177,7 @@ func TestSubscribeKeepsOrderedReasonsAndIsolatesFailures(t *testing.T) {
 }
 
 // Traceability: PRD MQTT-04/MQTT-08/TEST-04/05; docs/specs/mqtt-protocol-and-session.md §4 항목 3/4 and §5; MQTT-3.8.3-3 and MQTT-3.8.4-3/4.
+// Scenarios: mqtt-protocol-and-session.md:MQTT-SCN-014
 func TestSubscribeRetainHandlingAndReplayQoS(t *testing.T) {
 	routes := routing.NewTable()
 	queue := &recordingQueue{}
@@ -209,6 +210,7 @@ func TestSubscribeRetainHandlingAndReplayQoS(t *testing.T) {
 	}
 }
 
+// Scenarios: cluster-session-and-delivery.md:CLU-SCN-097
 func TestSubscribeRetainHandlingIfNewChecksBeforeCommittedProjection(t *testing.T) {
 	tenantID, err := tenancy.NewTenantID("tenant-a")
 	if err != nil {
@@ -307,6 +309,7 @@ func TestSubscribeRetainedReplayIsTenantScoped(t *testing.T) {
 }
 
 // Traceability: PRD MQTT-08/TEST-03/04/05; docs/specs/mqtt-protocol-and-session.md §4 항목 4; MQTT-3.8.3-1/2.
+// Scenarios: mqtt-protocol-and-session.md:MQTT-SCN-014
 func TestSubscribeMQTT311RejectsRuntimeOptions(t *testing.T) {
 	routes := routing.NewTable()
 	queue := &recordingQueue{}
@@ -553,6 +556,7 @@ func TestSubscribeReplayPreservesRetainedExpiryDeadline(t *testing.T) {
 }
 
 // Traceability: SEC-06, TEN-04
+// Scenarios: tenancy-and-security.md:SEC-SCN-023
 func TestSubscribe_UnauthorizedRejection(t *testing.T) {
 	now := time.Date(2026, time.January, 1, 0, 0, 0, 0, time.UTC)
 	tenant, err := tenancy.NewTenantID("tenant-a")

@@ -3,7 +3,6 @@ package main
 import (
 	"container/list"
 	"context"
-	"fmt"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -254,7 +253,7 @@ func (c *clusterPublishPressureController) CheckPressure() error {
 	if c.shouldLog(reason, time.Now()) && c.runtime.logger != nil {
 		c.runtime.logger.Warn("publish rejected by backpressure", "reason", reason)
 	}
-	return fmt.Errorf("%w: %s", publish.ErrPublishBackpressure, reason)
+	return publish.NewRejectionError(publish.ErrPublishBackpressure, publish.RejectionClassServerBackpressure, reason)
 }
 
 func (c *clusterPublishPressureController) CheckDeliveryCapacity(change membership.DeliveryChangeDTO) error {
@@ -262,7 +261,15 @@ func (c *clusterPublishPressureController) CheckDeliveryCapacity(change membersh
 	if result.Fits {
 		return nil
 	}
+	return c.rejectDeliveryCapacity(change.TenantID, result)
+}
+
+// rejectDeliveryCapacity records and classifies a refusal: a tenant storage quota is a
+// tenant limit, every other capacity reason protects the server.
+func (c *clusterPublishPressureController) rejectDeliveryCapacity(tenantID string, result membership.DeliveryCapacityDTO) error {
+	class := publish.RejectionClassServerBackpressure
 	if result.Reason == membership.DeliveryCapacityTenantQuota {
+		class = publish.RejectionClassTenantLimit
 		if c.runtime.metrics != nil {
 			c.runtime.metrics.RecordPublishBackpressureRejection("tenant_quota")
 		}
@@ -272,10 +279,10 @@ func (c *clusterPublishPressureController) CheckDeliveryCapacity(change membersh
 			c.runtime.metrics.RecordPublishBackpressureRejection("delivery_capacity")
 		}
 		if c.shouldLog(result.Reason, time.Now()) && c.runtime.logger != nil {
-			c.runtime.logger.Warn("publish rejected by durable delivery capacity", "reason", result.Reason, "tenant", change.TenantID)
+			c.runtime.logger.Warn("publish rejected by durable delivery capacity", "reason", result.Reason, "tenant", tenantID)
 		}
 	}
-	return fmt.Errorf("%w: %s", publish.ErrDurableDeliveryCapacity, result.Reason)
+	return publish.NewRejectionError(publish.ErrDurableDeliveryCapacity, class, result.Reason)
 }
 
 func (runtime *clusterRuntime) addCommitBacklog(now time.Time) *list.Element {

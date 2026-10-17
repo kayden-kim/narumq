@@ -1,0 +1,72 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  generateName: narumq-backup-list-
+  namespace: narumq
+  labels:
+    app.kubernetes.io/name: narumq-backup
+    app.kubernetes.io/component: restore-list
+spec:
+  activeDeadlineSeconds: 300
+  backoffLimit: 0
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: narumq-backup
+        app.kubernetes.io/component: restore-list
+    spec:
+      serviceAccountName: narumq-backup-restore
+      automountServiceAccountToken: false
+      restartPolicy: Never
+      securityContext:
+        runAsUser: 10001
+        runAsGroup: 10001
+        fsGroup: 10001
+        fsGroupChangePolicy: OnRootMismatch
+      containers:
+        - name: list
+          image: amazon/aws-cli:2.37.9@sha256:92de75724b6a746951f0e8b915d86bbccd7cb55aff96cd0cb4f7017272160780
+          imagePullPolicy: IfNotPresent
+          command:
+            - python3
+            - /scripts/restore-from-s3.py
+          args:
+            - list
+          envFrom:
+            - configMapRef:
+                name: narumq-backup-config
+          env:
+            - name: PYTHONDONTWRITEBYTECODE
+              value: "1"
+            - name: HOME
+              value: /tmp
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            runAsNonRoot: true
+            runAsUser: 10001
+            runAsGroup: 10001
+            capabilities:
+              drop:
+                - ALL
+          volumeMounts:
+            - name: backup-scripts
+              mountPath: /scripts
+              readOnly: true
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: backup-scripts
+          configMap:
+            name: narumq-backup-scripts
+            defaultMode: 0444
+        - name: tmp
+          emptyDir:
+            sizeLimit: 64Mi

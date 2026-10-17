@@ -1299,7 +1299,7 @@ func deliveryChangeToRecord(change membership.DeliveryChangeDTO) (*records.Deliv
 		SessionExpiresAtUnixMillis: change.SessionExpiresAtUnixMillis, PublishQos: change.PublishQoS,
 	}
 	for _, target := range change.Targets {
-		value.Targets = append(value.Targets, &records.DeliveryTarget{ClientId: target.ClientID, Retain: target.Retain})
+		value.Targets = append(value.Targets, &records.DeliveryTarget{ClientId: target.ClientID, Retain: target.Retain, SharedFilter: target.SharedFilter})
 	}
 	return value, nil
 }
@@ -1321,7 +1321,7 @@ func deliveryChangeFromRecord(change *records.DeliveryChange) (*membership.Deliv
 		SessionExpiresAtUnixMillis: change.GetSessionExpiresAtUnixMillis(), PublishQoS: change.GetPublishQos(),
 	}
 	for _, target := range change.GetTargets() {
-		value.Targets = append(value.Targets, membership.DeliveryTargetDTO{ClientID: target.GetClientId(), Retain: target.GetRetain()})
+		value.Targets = append(value.Targets, membership.DeliveryTargetDTO{ClientID: target.GetClientId(), Retain: target.GetRetain(), SharedFilter: target.GetSharedFilter()})
 	}
 	return value, nil
 }
@@ -1339,7 +1339,7 @@ func deliverySessionToRecord(session membership.DeliverySessionStateDTO) (*recor
 		value.Messages = append(value.Messages, &records.DeliveryMessage{
 			Sequence: message.Sequence, Topic: message.Topic, Payload: append([]byte(nil), message.Payload...),
 			Qos: message.QoS, Retain: message.Retain, ExpiresAtUnixMillis: message.ExpiresAtUnixMillis,
-			PacketId: message.PacketID, Phase: phase,
+			PacketId: message.PacketID, Phase: phase, SharedFilter: message.SharedFilter,
 		})
 	}
 	for _, inbound := range session.Inbound {
@@ -1368,7 +1368,7 @@ func deliverySessionFromRecord(session *records.DeliverySessionState) (membershi
 		value.Messages = append(value.Messages, membership.DeliveryMessageDTO{
 			Sequence: message.GetSequence(), Topic: message.GetTopic(), Payload: append([]byte(nil), message.GetPayload()...),
 			QoS: message.GetQos(), Retain: message.GetRetain(), ExpiresAtUnixMillis: message.GetExpiresAtUnixMillis(),
-			PacketID: message.GetPacketId(), Phase: phase,
+			PacketID: message.GetPacketId(), Phase: phase, SharedFilter: message.GetSharedFilter(),
 		})
 	}
 	for _, inbound := range session.GetInbound() {

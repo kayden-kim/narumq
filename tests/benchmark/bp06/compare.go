@@ -358,6 +358,7 @@ func newBP06Manifest(options bp06RunOptions, startedAt time.Time) bp06Manifest {
 	}
 }
 
+// Scenarios: cluster-session-and-delivery.md:CLU-SCN-242
 func executeBP06Comparison(ctx context.Context, options bp06RunOptions, manifest bp06Manifest) (final bp06Manifest, runErr error) {
 	if len(options.TargetOrder) == 0 {
 		options.TargetOrder = []string{"narumq", "emqx"}

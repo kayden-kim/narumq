@@ -32,6 +32,7 @@ func (spy *spyAuditUseCase) Record(command audit.RecordCommandDTO) error {
 	return spy.recordErr
 }
 
+// Scenarios: management-api-and-observability.md:MGT-SCN-012, tenancy-and-security.md:SEC-SCN-046
 func TestManagementMutationAuditRecordsSuccessfulDrain(t *testing.T) {
 	service := &drainHTTPStub{startResult: membership.NodeDrainOperationDTO{State: drainHTTPState(nodedrain.PhaseExcludingTraffic)}}
 	spy := &spyAuditUseCase{}
@@ -52,6 +53,7 @@ func TestManagementMutationAuditRecordsSuccessfulDrain(t *testing.T) {
 	}
 }
 
+// Scenarios: management-api-and-observability.md:MGT-SCN-013, tenancy-and-security.md:SEC-SCN-046
 func TestManagementAuditDenialsAndAdmission(t *testing.T) {
 	service := &drainHTTPStub{startResult: membership.NodeDrainOperationDTO{State: drainHTTPState(nodedrain.PhaseExcludingTraffic)}}
 	spy := &spyAuditUseCase{}
@@ -93,6 +95,7 @@ func TestManagementAuditDenialsAndAdmission(t *testing.T) {
 	}
 }
 
+// Scenarios: management-api-and-observability.md:MGT-SCN-012, tenancy-and-security.md:SEC-SCN-046
 func TestManagementAuditMutationFailuresAndBackup(t *testing.T) {
 	spy := &spyAuditUseCase{}
 	conflict := &drainHTTPStub{startError: errors.New("conflict")}
@@ -119,6 +122,7 @@ func TestManagementAuditMutationFailuresAndBackup(t *testing.T) {
 	}
 }
 
+// Scenarios: management-api-and-observability.md:MGT-SCN-012
 func TestStageMemberAuditTargetAndReadDoesNotAdmit(t *testing.T) {
 	spy := &spyAuditUseCase{}
 	service := &membershipServiceStub{}
@@ -160,6 +164,7 @@ func auditDrainRequest(method, path string) *http.Request {
 	return request
 }
 
+// Scenarios: management-api-and-observability.md:MGT-SCN-012, tenancy-and-security.md:SEC-SCN-050
 func TestManagementAuditPanicRecordsInternalErrorWithServerErrorStatus(t *testing.T) {
 	spy := &spyAuditUseCase{}
 	authenticator := NewAuthenticator(AuthConfig{
@@ -195,6 +200,8 @@ func TestManagementAuditPanicRecordsInternalErrorWithServerErrorStatus(t *testin
 		t.Fatalf("panic audit event=%+v, want FAILED internal_error with status 500", event)
 	}
 }
+
+// Scenarios: management-api-and-observability.md:MGT-SCN-012, tenancy-and-security.md:SEC-SCN-046
 func TestManagementMutationAuditUsesImplicitSuccessStatus(t *testing.T) {
 	spy := &spyAuditUseCase{}
 	authenticator := NewAuthenticator(AuthConfig{

@@ -136,7 +136,8 @@ func (runtime *clusterRuntime) GetNodeConfiguration(ctx context.Context) (ports.
 			SecurityConfigConfigured: securityConfigured,
 			TCPMaxConnections:        config.MQTT.TCPMaxConnections, TCPConnectionRate: config.MQTT.TCPConnectionRate,
 			TLSMaxConnections: config.MQTT.TLSMaxConnections, TLSConnectionRate: config.MQTT.TLSConnectionRate,
-			TLS: nodeConfigurationMQTTTLS(config.MQTT.TLS),
+			TLS:       nodeConfigurationMQTTTLS(config.MQTT.TLS),
+			WebSocket: nodeConfigurationMQTTWebSocket(config.MQTT.WebSocket),
 		},
 		Replication: ports.ReplicationConfigurationDTO{Factor: replication.Factor, WriteQuorum: replication.WriteQuorum},
 		PublishBackpressure: ports.PublishBackpressureConfigurationDTO{
@@ -188,6 +189,17 @@ func nodeConfigurationMQTTTLS(config *clusterMQTTTLS) *ports.MQTTTLSConfiguratio
 	return &ports.MQTTTLSConfigurationDTO{
 		ClientAuth: config.ClientAuth, MinVersion: config.MinVersion,
 		CertificateConfigured: config.CertFile != "", PrivateKeyConfigured: config.KeyFile != "", CAConfigured: config.CAFile != "",
+	}
+}
+
+func nodeConfigurationMQTTWebSocket(config *clusterMQTTWebSocket) *ports.MQTTWebSocketConfigurationDTO {
+	if config == nil {
+		return nil
+	}
+	return &ports.MQTTWebSocketConfigurationDTO{
+		ListenAddress: config.ListenAddress, TLSListenAddress: config.TLSListenAddress,
+		MaxConnections: config.MaxConnections, ConnectionRate: config.ConnectionRate,
+		TLSMaxConnections: config.TLSMaxConnections, TLSConnectionRate: config.TLSConnectionRate,
 	}
 }
 

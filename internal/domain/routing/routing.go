@@ -38,6 +38,9 @@ type Target struct {
 	SessionID SessionID
 	QoS       mqtt.QoS
 	Retain    bool
+	// SharedFilter is the full `$share/<group>/<filter>` that selected this target.
+	// It is empty for targets of non-shared subscriptions.
+	SharedFilter string
 }
 
 // Match is one logical delivery route with an ordered candidate list.
@@ -50,6 +53,8 @@ type Match struct {
 type ProjectionSession struct {
 	TenantID  tenancy.TenantID
 	SessionID SessionID
+	// OwnerNodeID is the committed owner node; zero means unknown.
+	OwnerNodeID uint64
 }
 
 // ProjectionSubscription is one subscription in a full committed-state route projection.
@@ -74,6 +79,10 @@ type Table struct {
 	shared         map[string]map[SessionID]mqtt.Subscription // sharedFilter -> SessionID -> Subscription
 	sharedCursors  map[sharedCursorKey]uint64                 // tenant and shared filter -> round-robin cursor
 	sessionTenants map[SessionID]tenancy.TenantID
+	sessionOwners  map[SessionID]uint64
+	// ownerReachable reports whether this node can currently reach an owner node.
+	// It is called with the table lock held and must not call back into the table.
+	ownerReachable func(ownerNodeID uint64) bool
 }
 
 // NewTable creates an empty synchronized routing table.
@@ -83,7 +92,17 @@ func NewTable() *Table {
 		shared:         make(map[string]map[SessionID]mqtt.Subscription),
 		sharedCursors:  make(map[sharedCursorKey]uint64),
 		sessionTenants: make(map[SessionID]tenancy.TenantID),
+		sessionOwners:  make(map[SessionID]uint64),
 	}
+}
+
+// SetOwnerReachability installs the liveness signal used to order shared-subscription members.
+// A shared group member whose owner node is unreachable is chosen only when every member is
+// unreachable. The signal is a routing preference; it never changes ownership.
+func (table *Table) SetOwnerReachability(reachable func(ownerNodeID uint64) bool) {
+	table.mu.Lock()
+	table.ownerReachable = reachable
+	table.mu.Unlock()
 }
 
 // ReplaceProjection validates and atomically replaces the complete route projection.
@@ -119,6 +138,9 @@ func (table *Table) ReplaceProjectionWithSessions(
 		if err := bindTenant(entry.SessionID, entry.TenantID); err != nil {
 			return err
 		}
+		if entry.OwnerNodeID != 0 {
+			next.sessionOwners[entry.SessionID] = entry.OwnerNodeID
+		}
 	}
 	for _, entry := range projection {
 		key := projectionKey{sessionID: entry.SessionID, filter: entry.Subscription.Filter}
@@ -147,6 +169,7 @@ func (table *Table) ReplaceProjectionWithSessions(
 	table.shared = next.shared
 	table.sharedCursors = next.sharedCursors
 	table.sessionTenants = next.sessionTenants
+	table.sessionOwners = next.sessionOwners
 	table.mu.Unlock()
 	return nil
 }
@@ -543,9 +566,10 @@ func (table *Table) matchLocked(
 					effectiveQoS = subscription.QoS
 				}
 				candidates = append(candidates, Target{
-					SessionID: sessionID,
-					QoS:       effectiveQoS,
-					Retain:    publishedRetain && subscription.RetainAsPublished,
+					SessionID:    sessionID,
+					QoS:          effectiveQoS,
+					Retain:       publishedRetain && subscription.RetainAsPublished,
+					SharedFilter: sharedFilter,
 				})
 			}
 			if len(candidates) == 0 {
@@ -555,16 +579,34 @@ func (table *Table) matchLocked(
 				return candidates[left].SessionID < candidates[right].SessionID
 			})
 
+			pool, unreachable := candidates, []Target(nil)
+			if table.ownerReachable != nil {
+				reachable := make([]Target, 0, len(candidates))
+				for _, candidate := range candidates {
+					if owner := table.sessionOwners[candidate.SessionID]; owner == 0 || table.ownerReachable(owner) {
+						reachable = append(reachable, candidate)
+					} else {
+						unreachable = append(unreachable, candidate)
+					}
+				}
+				if len(reachable) > 0 {
+					pool = reachable
+				} else {
+					unreachable = nil
+				}
+			}
+
 			cursorKey := sharedCursorKey{tenantID: publisherTenant, filter: sharedFilter}
 			cursor := table.sharedCursors[cursorKey]
-			primaryIndex := int(cursor % uint64(len(candidates)))
-			primary := candidates[primaryIndex]
+			primaryIndex := int(cursor % uint64(len(pool)))
+			primary := pool[primaryIndex]
 			var fallbacks []Target
-			if len(candidates) > 1 {
-				fallbacks = make([]Target, 0, len(candidates)-1)
-				for offset := 1; offset < len(candidates); offset++ {
-					fallbacks = append(fallbacks, candidates[(primaryIndex+offset)%len(candidates)])
+			if len(pool)+len(unreachable) > 1 {
+				fallbacks = make([]Target, 0, len(pool)+len(unreachable)-1)
+				for offset := 1; offset < len(pool); offset++ {
+					fallbacks = append(fallbacks, pool[(primaryIndex+offset)%len(pool)])
 				}
+				fallbacks = append(fallbacks, unreachable...)
 			}
 			table.sharedCursors[cursorKey]++
 			matches = append(matches, Match{Primary: primary, Fallbacks: fallbacks})

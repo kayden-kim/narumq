@@ -27,14 +27,14 @@ func runCLI(ctx context.Context, args []string, stdout, stderr io.Writer) error 
 	flags.SetOutput(stderr)
 	runID := flags.String("run-id", "", "non-empty path-safe evidence run identifier")
 	outputDir := flags.String("output", "", "empty evidence output directory")
-	suite := flags.String("suite", "phase1", "compatibility suite: phase1 or drain")
+	suite := flags.String("suite", "phase1", "compatibility suite: phase1, drain, or optional sdk-diagnostics")
 	if err := flags.Parse(args); err != nil {
 		return err
 	}
 	if flags.NArg() != 0 {
 		return fmt.Errorf("unexpected arguments: %v", flags.Args())
 	}
-	if *suite != "phase1" && *suite != "drain" {
+	if *suite != "phase1" && *suite != "drain" && *suite != "sdk-diagnostics" {
 		return fmt.Errorf("unsupported suite %q", *suite)
 	}
 	if *runID == "" || *outputDir == "" {
@@ -45,7 +45,7 @@ func runCLI(ctx context.Context, args []string, stdout, stderr io.Writer) error 
 		return fmt.Errorf("get working directory: %w", err)
 	}
 	profilePath := filepath.Join(workingDirectory, "tests", "compatibility", "mqtt-clients-v1", "profile.json")
-	if *suite == "drain" {
+	if *suite == "drain" || *suite == "sdk-diagnostics" {
 		profilePath = filepath.Join(workingDirectory, "tests", "compatibility", "mqtt-clients-v1", "drain-profile.json")
 	}
 	repoRoot := findRepoRoot(profilePath)
@@ -56,8 +56,11 @@ func runCLI(ctx context.Context, args []string, stdout, stderr io.Writer) error 
 		*outputDir = filepath.Join(workingDirectory, *outputDir)
 	}
 	execute := Run
-	if *suite == "drain" {
+	switch *suite {
+	case "drain":
 		execute = RunDrain
+	case "sdk-diagnostics":
+		execute = runSDKDiagnostics
 	}
 	summary, runErr := execute(ctx, runOptions{
 		RunID: *runID, OutputDir: *outputDir, ProfilePath: profilePath, RepoRoot: repoRoot,

@@ -118,7 +118,5 @@ Process 재시작 시 active 파일의 끝이 줄바꿈으로 끝나지 않으�
 
 ## 7. 남은 범위
 
-- 보존 기간 값과 SIEM 접근 권한은 외부 보안 운영 책임이며 값은 미정이다.
-- Rollout controller producer는 이 Broker producer 범위에 포함하지 않는다.
-- SIEM consumer의 unknown action/reason 검증은 별도 범위다.
+Controller는 `rollout-controller-v1.md` §5에 정의한 `rollout.pod.delete_approved`, `rollout.pod.delete_denied`, `rollout.failed` event를 같은 v1 schema와 node-local hash-chain publisher implementation으로 기록한다. Controller는 자체 durable PVC에 fsync하며 Pod delete intent보다 approval event를 먼저 append한다. PVC는 restart 경계일 뿐 외부 SIEM의 확정된 365일 보존·immutability 요건을 대신하지 않는다. Controller producer action별 경계와 secret redaction은 rollout contract를 따른다.
 

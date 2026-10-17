@@ -7,6 +7,8 @@ import (
 	"narumq/tests/benchmark/internal/suiteartifact"
 )
 
+// TestBuildBP04ComparisonRequiresMatchingEvidence verifies comparison requires matching evidence.
+// Scenarios: performance-and-verification.md:PRF-SCN-039
 func TestBuildBP04ComparisonRequiresMatchingEvidence(t *testing.T) {
 	profile := smokeProfile(t)
 	limits := bp04ResourceLimits{BrokerCPUs: profile.BrokerCPUs, BrokerMemory: profile.BrokerMemoryBytes, GeneratorCPUs: profile.GeneratorCPUs, GeneratorMemory: profile.GeneratorMemoryBytes, NetworkMode: "bridge"}
@@ -66,6 +68,8 @@ func TestBuildBP04ComparisonRequiresMatchingEvidence(t *testing.T) {
 	}
 }
 
+// TestBP04MetricsSelectProfileAndResourceObservations verifies metric selection.
+// Scenarios: performance-and-verification.md:PRF-SCN-039
 func TestBP04MetricsSelectProfileAndResourceObservations(t *testing.T) {
 	profile := smokeProfile(t)
 	steps := make([]stepSummary, 0, len(profile.RatesPerStreamPerSecond))
@@ -120,6 +124,8 @@ func TestBP04MetricsSelectProfileAndResourceObservations(t *testing.T) {
 	}
 }
 
+// TestBP04SuiteFailureLeavesParentMetricsEmpty verifies a failed suite leaves parent metrics empty.
+// Scenarios: performance-and-verification.md:PRF-SCN-039
 func TestBP04SuiteFailureLeavesParentMetricsEmpty(t *testing.T) {
 	profile := smokeProfile(t)
 	options := bp04SuiteOptions{Profile: profile, Repetitions: suiteartifact.MinimumRepetitions}

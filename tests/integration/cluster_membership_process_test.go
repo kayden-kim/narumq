@@ -93,10 +93,13 @@ type clusterMembershipProcessFixture struct {
 	ctx                     context.Context
 	harness                 *clusterMembershipProcessHarness
 	caPath                  string
+	ca                      clusterMembershipProcessCA
 	certificates            []clusterMembershipProcessCertificate
 	peerAddresses           []string
 	managementAddresses     []string
 	mqttAddresses           []string
+	webSocketAddresses      []string
+	webSocketConfigured     bool
 	tokenPath               string
 	readOnlyAPIKeyPath      string
 	securityPath            string
@@ -105,16 +108,19 @@ type clusterMembershipProcessFixture struct {
 	managementAPIKeys       []clusterMembershipProcessAPIKey
 	managementOIDC          *clusterMembershipProcessOIDC
 	omitPublishBackpressure bool
-	managementBindAll       bool
 }
 
 func newClusterMembershipProcessFixture(t *testing.T, nodeCount int, buildTags string) *clusterMembershipProcessFixture {
+	return newClusterMembershipProcessFixtureWithLifetime(t, nodeCount, buildTags, 10*time.Minute)
+}
+
+func newClusterMembershipProcessFixtureWithLifetime(t *testing.T, nodeCount int, buildTags string, lifetime time.Duration) *clusterMembershipProcessFixture {
 	t.Helper()
 	repoRoot := clusterMembershipProcessRepoRoot(t)
 	tempDir := t.TempDir()
 	binaryPath := clusterMembershipProcessSharedBinary(t, repoRoot, buildTags)
 
-	clusterCtx, clusterCancel := context.WithTimeout(context.Background(), 10*time.Minute)
+	clusterCtx, clusterCancel := context.WithTimeout(context.Background(), lifetime)
 	t.Cleanup(clusterCancel)
 	harness := newClusterMembershipProcessHarness(t, clusterCtx, repoRoot, binaryPath)
 
@@ -129,20 +135,20 @@ func newClusterMembershipProcessFixture(t *testing.T, nodeCount int, buildTags s
 	}
 	clusterMembershipProcessWriteFile(t, caPath, ca.pem, 0o600)
 
-	addresses := clusterMembershipProcessAddresses(t, 3*nodeCount)
+	addresses := clusterMembershipProcessAddresses(t, 4*nodeCount)
 	t.Cleanup(harness.cleanup)
 
 	peerAddresses := addresses[0:nodeCount]
 	managementAddresses := addresses[nodeCount : 2*nodeCount]
 	mqttAddresses := addresses[2*nodeCount : 3*nodeCount]
-
+	webSocketAddresses := addresses[3*nodeCount : 4*nodeCount]
 	tokenPath := filepath.Join(tempDir, "cluster-admin.token")
 	clusterMembershipProcessWriteFile(t, tokenPath, []byte(clusterMembershipProcessAdmin+"\n"), 0o600)
 	readOnlyAPIKeyPath := filepath.Join(tempDir, "cluster-readonly-api-key")
 	clusterMembershipProcessWriteFile(t, readOnlyAPIKeyPath, []byte(clusterMembershipProcessReadOnlyAPIKey), 0o600)
 
 	securityPath := filepath.Join(tempDir, "mqtt-security.json")
-	jwksURL, accessToken := clusterMembershipProcessJWTFixture(t)
+	jwksURL, accessToken := clusterMembershipProcessJWTFixture(t, lifetime+time.Hour)
 	securityConfig := []byte(fmt.Sprintf(`{
   "jwt": {
     "issuer": "https://issuer.example",
@@ -192,6 +198,8 @@ func newClusterMembershipProcessFixture(t *testing.T, nodeCount int, buildTags s
       "durable-takeover-pub",
       "durable-takeover-qos2-pub",
       "durable-takeover-sentinel",
+      "recovery-sub",
+      "recovery-pub",
       "durable-ack-sub",
       "durable-ack-pub",
       "durable-no-quorum-1",
@@ -314,6 +322,15 @@ func newClusterMembershipProcessFixture(t *testing.T, nodeCount int, buildTags s
       "retained-qos12-replay-6",
       "retained-qos12-replay-7",
       "retained-qos12-replay-8",
+      "roll-sub-v5",
+      "roll-sub-v311",
+      "roll-pub",
+      "roll-will-v5",
+      "roll-will-v311",
+      "roll-observer",
+      "roll-retained-v5",
+      "roll-retained-v311",
+      "owner-loss-m0", "owner-loss-m1", "owner-loss-m2", "owner-loss-m3", "owner-loss-publisher",
       "metrics-gauge-subscriber"
     ],
     "roles": ["client"]
@@ -473,6 +490,24 @@ func newClusterMembershipProcessFixture(t *testing.T, nodeCount int, buildTags s
     "role": "client",
     "effect": "allow",
     "action": "publish",
+    "topicFilter": "roll/#"
+  }, {
+    "tenantId": "acceptance",
+    "role": "client",
+    "effect": "allow",
+    "action": "subscribe",
+    "topicFilter": "roll/#"
+  }, {
+    "tenantId": "acceptance",
+    "role": "client",
+    "effect": "allow",
+    "action": "will",
+    "topicFilter": "roll/#"
+  }, {
+    "tenantId": "acceptance",
+    "role": "client",
+    "effect": "allow",
+    "action": "publish",
     "topicFilter": "detach/crash/#"
   }, {
     "tenantId": "acceptance",
@@ -666,6 +701,18 @@ func newClusterMembershipProcessFixture(t *testing.T, nodeCount int, buildTags s
     "effect": "allow",
     "action": "unsubscribe",
     "topicFilter": "metrics/#"
+  }, {
+    "tenantId": "acceptance",
+    "role": "client",
+    "effect": "allow",
+    "action": "publish",
+    "topicFilter": "recovery/#"
+  }, {
+    "tenantId": "acceptance",
+    "role": "client",
+    "effect": "allow",
+    "action": "subscribe",
+    "topicFilter": "recovery/#"
   }]
 }`, jwksURL))
 	clusterMembershipProcessWriteFile(t, securityPath, securityConfig, 0o600)
@@ -685,11 +732,13 @@ func newClusterMembershipProcessFixture(t *testing.T, nodeCount int, buildTags s
 		binary:              binaryPath,
 		ctx:                 clusterCtx,
 		harness:             harness,
+		ca:                  ca,
 		caPath:              caPath,
 		certificates:        certificates,
 		peerAddresses:       peerAddresses,
 		managementAddresses: managementAddresses,
 		mqttAddresses:       mqttAddresses,
+		webSocketAddresses:  webSocketAddresses,
 		tokenPath:           tokenPath,
 		readOnlyAPIKeyPath:  readOnlyAPIKeyPath,
 		securityPath:        securityPath,
@@ -888,6 +937,11 @@ func (f *clusterMembershipProcessFixture) bootstrapConfig(memberID uint64) strin
 		Management: f.managementConfig(index, memberID),
 		MQTT:       clusterMembershipProcessMQTT{TCPListenAddress: f.mqttAddresses[index], SecurityConfigFile: f.securityPath},
 	}
+	if f.webSocketConfigured {
+		config.MQTT.WebSocket = &clusterMembershipProcessMQTTWebSocket{
+			ListenAddress: f.webSocketAddresses[index],
+		}
+	}
 	if !f.omitPublishBackpressure {
 		config.PublishBackpressure = &clusterMembershipProcessPublishBackpressure{MinFreeBytes: 16 << 20, MaxCommitLagMillis: 1000}
 	}
@@ -919,6 +973,11 @@ func (f *clusterMembershipProcessFixture) joinerConfig(memberID uint64, seedIDs 
 		Management: f.managementConfig(index, memberID),
 		MQTT:       clusterMembershipProcessMQTT{TCPListenAddress: f.mqttAddresses[index], SecurityConfigFile: f.securityPath},
 	}
+	if f.webSocketConfigured {
+		config.MQTT.WebSocket = &clusterMembershipProcessMQTTWebSocket{
+			ListenAddress: f.webSocketAddresses[index],
+		}
+	}
 	if !f.omitPublishBackpressure {
 		config.PublishBackpressure = &clusterMembershipProcessPublishBackpressure{MinFreeBytes: 16 << 20, MaxCommitLagMillis: 1000}
 	}
@@ -930,16 +989,8 @@ func (f *clusterMembershipProcessFixture) joinerConfig(memberID uint64, seedIDs 
 }
 
 func (f *clusterMembershipProcessFixture) managementConfig(index int, memberID uint64) clusterMembershipProcessManagement {
-	listenAddress := f.managementAddresses[index]
-	if f.managementBindAll {
-		_, port, err := net.SplitHostPort(listenAddress)
-		if err != nil {
-			f.harness.t.Fatalf("split management address %q: %v", listenAddress, err)
-		}
-		listenAddress = net.JoinHostPort("0.0.0.0", port)
-	}
 	config := clusterMembershipProcessManagement{
-		ListenAddress:         listenAddress,
+		ListenAddress:         f.managementAddresses[index],
 		ClusterAdminTokenFile: f.tokenPath,
 		APIKeys:               f.managementAPIKeys,
 		OIDC:                  f.managementOIDC,
@@ -974,7 +1025,35 @@ func (f *clusterMembershipProcessFixture) stageRequestBody(memberID uint64) []by
 	return requestBody
 }
 
+// Traceability: API-04; docs/specs/management-api-and-observability.md §3.
+// Scenarios: management-api-and-observability.md:MGT-SCN-021
+func TestDynamicClusterStartupWithoutReadinessProbeProcessAcceptance(t *testing.T) {
+	t.Parallel()
+	fixture := newClusterMembershipProcessFixture(t, 3, "")
+	processes := make([]*clusterMembershipProcess, 3)
+	for index := range processes {
+		process, err := fixture.harness.start(
+			fmt.Sprintf("startup-only node %d", index+1),
+			fixture.bootstrapConfig(uint64(index+1)),
+			fixture.managementAddresses[index],
+		)
+		if err != nil {
+			t.Fatalf("start bootstrap node %d: %v", index+1, err)
+		}
+		processes[index] = process
+	}
+	// Kubernetes does not run readiness until startup succeeds. Do not use the
+	// bootstrap helper here: it calls readiness and would conceal this deadlock.
+	for _, process := range processes {
+		clusterMembershipProcessWaitForStatus(t, fixture.ctx, process, "/health/startup", http.StatusOK)
+	}
+	for _, process := range processes {
+		clusterMembershipProcessWaitForStatus(t, fixture.ctx, process, "/health/ready", http.StatusOK)
+	}
+}
+
 // Traceability: CLU-03; docs/specs/cluster-session-and-delivery.md §3.1, §11.10.
+// Scenarios: cluster-session-and-delivery.md:CLU-SCN-056, cluster-session-and-delivery.md:CLU-SCN-058
 func TestDynamicClusterLiveQoS0CrossNodeForwardingProcessAcceptance(t *testing.T) {
 	t.Parallel()
 
@@ -1043,6 +1122,7 @@ func TestDynamicClusterLiveQoS0CrossNodeForwardingProcessAcceptance(t *testing.T
 	clusterMembershipProcessRequireLivePublish(t, subscriber3, topic, movedPayload)
 }
 
+// Scenarios: cluster-session-and-delivery.md:CLU-SCN-018, cluster-session-and-delivery.md:CLU-SCN-019, cluster-session-and-delivery.md:CLU-SCN-020
 func TestDynamicClusterMembershipProcessAcceptance(t *testing.T) {
 	t.Parallel()
 
@@ -1373,8 +1453,9 @@ func clusterMembershipProcessAssertVotersAndRetired(t *testing.T, ctx context.Co
 		}
 		var envelope struct {
 			Data []struct {
-				NodeID string `json:"nodeId"`
-				Role   string `json:"role"`
+				NodeID          string `json:"nodeId"`
+				MembershipPhase string `json:"membershipPhase"`
+				QueryStatus     string `json:"queryStatus"`
 			} `json:"data"`
 		}
 		if err := json.Unmarshal(body, &envelope); err != nil {
@@ -1383,13 +1464,12 @@ func clusterMembershipProcessAssertVotersAndRetired(t *testing.T, ctx context.Co
 		var voterIDs []string
 		foundRetired := false
 		for _, node := range envelope.Data {
-			switch node.Role {
-			case "LEADER", "FOLLOWER":
+			if node.MembershipPhase == "VOTER" {
 				voterIDs = append(voterIDs, node.NodeID)
-			case "RETIRED":
-				if node.NodeID == wantRetired {
-					foundRetired = true
-				}
+			}
+			if node.NodeID == wantRetired && node.MembershipPhase == "RETIRED" &&
+				node.QueryStatus == "RETIRED" {
+				foundRetired = true
 			}
 		}
 		sort.Strings(voterIDs)
@@ -1685,10 +1765,16 @@ type clusterMembershipProcessOIDCIdentity struct {
 }
 
 type clusterMembershipProcessMQTT struct {
-	TCPListenAddress   string                           `json:"tcpListenAddress"`
-	TLSListenAddress   string                           `json:"tlsListenAddress"`
-	SecurityConfigFile string                           `json:"securityConfigFile"`
-	TLS                *clusterMembershipProcessMQTTTLS `json:"tls,omitempty"`
+	TCPListenAddress   string                                 `json:"tcpListenAddress"`
+	TLSListenAddress   string                                 `json:"tlsListenAddress"`
+	SecurityConfigFile string                                 `json:"securityConfigFile"`
+	TLS                *clusterMembershipProcessMQTTTLS       `json:"tls,omitempty"`
+	WebSocket          *clusterMembershipProcessMQTTWebSocket `json:"webSocket,omitempty"`
+}
+
+type clusterMembershipProcessMQTTWebSocket struct {
+	ListenAddress    string `json:"listenAddress"`
+	TLSListenAddress string `json:"tlsListenAddress"`
 }
 
 type clusterMembershipProcessMQTTTLS struct {
@@ -1830,10 +1916,10 @@ type clusterProcessJWTIssuer struct {
 	signingKey jwk.Key
 }
 
-func clusterMembershipProcessJWTFixture(t *testing.T) (string, string) {
+func clusterMembershipProcessJWTFixture(t *testing.T, lifetime time.Duration) (string, string) {
 	t.Helper()
 	issuer := newClusterProcessJWTIssuer(t, "process-acceptance-key")
-	return issuer.jwksURL, issuer.sign(t, "mqtt-process-client", time.Now().Add(time.Hour), nil)
+	return issuer.jwksURL, issuer.sign(t, "mqtt-process-client", time.Now().Add(lifetime), nil)
 }
 
 func newClusterProcessJWTIssuer(t *testing.T, keyID string) *clusterProcessJWTIssuer {

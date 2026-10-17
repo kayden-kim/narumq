@@ -6,7 +6,7 @@ Broker core는 MQTT, session, routing, delivery, tenancy와 cluster lifecycle �
 | --- | --- |
 | 관점 상태 | Active Phase 1 security and tenant isolation architecture |
 | 문서 상태 | Active |
-| 구현 증거 | Phase 0 단일 노드 ingress, TLS/mTLS transport와 합의 스파이크 증거가 기존 패키지에 보존되어 있다. Phase 1 tenancy·security·authentication 패키지와 JWT·password·mTLS 데이터 플레인 인증·인가 파이프라인은 unit/integration test, 실제 TLS socket test와 command composition test를 통해 현재 source 증거가 확보되었다. |
+| 구현 증거 | MQTT ingress·TLS/mTLS와 tenancy·security 인증·인가 파이프라인의 unit/integration·실제 socket·composition 시험을 [MQTT 검증 기록](../verification/mqtt-protocol-and-session.md), [Tenant와 security 검증 기록](../verification/tenancy-and-security.md)에 연결한다. |
 | 범위 | 단일 broker process의 component, loopback TCP runtime과 source dependency |
 | 관련 요구사항 | [PRD](../requirements/PRD.md) NFR-11~NFR-15, TEST-01~TEST-16 |
 | 관련 결정 | [ADR-0001](../decisions/ADR-0001-core-implementation-language.md) Accepted |
@@ -26,7 +26,7 @@ flowchart TB
     end
 
     subgraph Adapters["Infrastructure adapters"]
-        MQTTAdapter["TCP/TLS MQTT adapter"]
+        MQTTAdapter["TCP/TLS/WS/WSS MQTT adapter"]
         APIAdapter["Management API adapter"]
         RaftAdapter["Consensus·peer transport adapter"]
         StorageAdapter["WAL·snapshot·state adapter"]
@@ -130,6 +130,12 @@ cmd/narumq
 - `adapters/tls`: TLS 1.2+ listener와 trust anchor를 구성하고 verified chain의 leaf에서
   `ClientCertificateDTO`를 만들어 application boundary로 전달한다. Raw certificate는
   TCP/application/domain 경계로 넘기지 않는다.
+
+- `adapters/websocket`: Composition root는 socket admission 뒤에 선택 TLS를 적용하고,
+  그 바깥에 이 adapter를 붙인다. Adapter는 `/mqtt` path와 `mqtt` subprotocol을
+  요구한다. Binary frame을 `net.Conn` byte stream으로 바꾼다. Connection은 기존
+  인증서 extractor에 verified TLS state를 제공한다. 이 package는 TCP/TLS adapter를
+  import하지 않는다.
 - `adapters/tcp`: accepted SessionKey와 principal snapshot을 connection에 보관하고 모든
   data-plane dispatch에 함께 전달한다. Dynamic cluster는 CONNECT를 raw MQTT Client ID로
   추적하고 tenant별 committed owner/epoch fence를 기록한다. bind 시 반환 ownership이 fence와
@@ -208,11 +214,25 @@ inner socket을 닫고 `sync.Once`로 연결 수를 한 번 줄인다.
 첫 연결이 종료되면 `server.go`의 `requestClose`가 socket의 `Close`를 호출한다.
 TLS도 raw socket의 `Close`까지 전달하므로 같은 slot 반환을 따른다.
 
-TLS를 바깥에서 감싸면 Server의 입력은 계속 `*tls.Conn`이다. 따라서 기존
-transport 판별과 verified client certificate 추출을 바꾸지 않는다. Clock은
-composition root에서 `clock.SystemClock`으로 제공한다. Metric port의 구현은
-`internal/adapters/metrics/registry.go`의 `Registry`다. 이 두 의존성은 adapter에서
-application-owned port를 향하며 domain에는 socket이나 limiter 의존성을 추가하지 않는다.
+### WebSocket listener composition
+
+`openWebSocketListener`는 먼저 `openMQTTListener`를 `ws` 또는 `wss` transport label로
+호출한다. 그 결과 listener를 `websocketadapter.NewListener`로 감싼다. Standalone과
+cluster는 이 helper를 사용해 WebSocket listener를 연다.
+
+Adapter는 `/mqtt` 경로에서 `mqtt` subprotocol을 협상한 HTTP upgrade만 받는다.
+Binary WebSocket frame을 byte stream으로 바꾼다. MQTT packet 경계와 frame 경계는
+일치할 필요가 없다. Browser `Origin`은 검사하지 않는다. MQTT 인증이 client 신뢰
+경계다. WSS에서는 `ConnectionState`가 verified TLS state를 기존 인증서
+extractor에 제공한다.
+
+TCP/TLS listener에서 Server는 `*tls.Conn`을 받는다. WSS는 WebSocket connection의
+`ConnectionState`를 통해 기존 verified client certificate 추출 경로를 유지한다. Clock은
+composition root에서 `clock.SystemClock`으로 제공한다. Metric port는
+`internal/application/ports/metrics`가 소유한다. `internal/adapters/metrics/registry.go`가
+기록 기능을 맡고, `registry_snapshot.go`가 같은 `VisitMetrics` visitor로 Prometheus text와
+typed snapshot을 만든다. Adapter는 application port 쪽으로 의존하며 domain에는 socket이나
+limiter 의존성을 추가하지 않는다.
 
 ## Application-owned port
 
@@ -284,6 +304,8 @@ WAL worker는 이미 대기 중인 요청의 기존 CRC frame을 순서대로 �
 
 Entry-bearing `MsgApp`도 local append 완료까지 같은 bounded 요청에서 보류한다. 공식 async의 leader 복제·저장 병행보다 엄격한 기존 crash-point 계약을 유지하기 위한 경계이며, heartbeat·tick을 함께 보류하지 않는다. Fresh-read readiness는 driver가 게시한 application 완료 상태를 검사한다. Read 결과는 해당 상태 게시 뒤 반환하므로 다음 Ready의 in-flight adapter index를 완료된 projection으로 오해하지 않는다.
 
+`processReadyLocked`는 직렬화한 크기가 1 MiB를 넘는 `MsgSnap`을 peer 출력에 넣지 않는다. `Config.SnapshotStreamActive`가 거짓이면 `RawNode.ReportSnapshot` 실패를 보고하고 peer별 30초 제한의 `WARN`을 `Config.Logger`(없으면 `slog.Default`)로 남긴다. 이 경우 node는 실패하지 않는다. 참이면 직렬화한 `MsgSnap`을 `BatchDTO.SnapshotStreams`에 담아 driver에 넘긴다. Driver는 Ready loop를 막지 않는 goroutine에서 `DynamicTCPPeerTransport.SendSnapshot`으로 보낸 뒤 `Node.ReportSnapshotStream`으로 결과를 Raft에 알린다. 수신 node는 transport가 digest를 확인한 snapshot을 `Node.StepSnapshotStream`으로 Raft에 넘긴다. 다른 종류의 메시지가 1 MiB를 넘으면 기존처럼 node를 실패 처리한다. 기준은 [Raft membership v2](../contracts/raft-membership-v2.md#raft-메시지-프레임과-크기-한도)와 [Raft snapshot stream v1](../contracts/raft-snapshot-stream-v1.md)이다.
+
 Apply 요청은 발행 시점의 append sequence까지 영속화된 뒤 반환한다. Runtime의 `applyBatch`가 typed application과 route projection을 갱신한 뒤 `CompleteApply(batch.ApplySequence)`로 library apply 완료를 확인한다. `Advance`와 8ms timed driver 수집은 제거한다. `stageQueuedDriverWork`는 공용 64개 예산 안에서 지금 대기 중인 inbound를 먼저 처리하며 새로운 도착을 기다리지 않는다. 이미 fresh proof를 완료한 FIFO command의 64개·64 KiB proposal batch는 유지한다. 적용·projection·outbound가 끝난 proposal은 이후 unrelated 저장 완료까지 기다리지 않고 반환한다.
 
 Incoming snapshot은 WAL worker의 단독 barrier 작업이다. Local typed snapshot은 pending WAL·apply가 없는 경계까지 `snapshotPending`으로 보존한다. Backup request도 driver 소유 목록에서 cancel·failure 또는 저장·apply가 끝날 때까지 기다리며 inbound FIFO를 막지 않는다. Drain의 fresh proof와 durable applied/projection index는 유지한다. `Close`는 신규 node 작업을 막고 worker를 join한 뒤 WAL을 닫는다. WAL open의 file·parent directory sync와 snapshot의 temp write·file sync·rename·directory sync는 그대로다.
@@ -291,6 +313,8 @@ Incoming snapshot은 WAL worker의 단독 barrier 작업이다. Local typed snap
 Close의 마지막 저장은 queue 밖에 보관된 append도 포함한다. Worker는 queued 작업 뒤 이를 기록하되 shutdown 완료를 새 응답으로 발행하지 않아 완료 channel 상한을 지킨다. 선행 terminal 오류로 미처리 작업이 남거나 마지막 sync가 실패하면 저장 실패를 Close에서 반환한다. 반복 Close는 이미 닫힌 파일을 다시 sync하지 않는다. 보류 entry-bearing peer 메시지는 한 번 marshal한 소유 bytes로 보관해 이후 Ready의 protobuf 수명에 의존하지 않는다.
 
 새 local ReadIndex는 `cluster_read_admission.go`가 peer별 전송 여유와 같은 Ready 앞의 발행량을 대조해 제어한다. Follower는 leader 방향의 공간을, leader는 quorum을 구성할 voter의 공간을 기준으로 삼는다. Heartbeat와 proof response의 두 frame 비용 및 두 control frame 여유를 유지하며, 여러 node가 leader queue를 함께 쓰는 비용은 현재 voter·learner 수로 나눈 발행 예산에 반영한다. 분모를 1–15로 제한하여 최소 한 요청은 발행할 수 있게 한다. 빈 3-voter cluster의 local proof 한도는 node별 5개다. 공간이 없으면 driver가 단일 FIFO request를 인수한 상태로 보관하고 request channel의 추가 인수를 멈춘다. `DynamicTCPPeerTransport.OutboundReady`의 write 완료 알림 또는 원래 context 취소에서 다시 판정하며 inbound와 tick은 계속 처리한다. `Node.Step`의 `StepResultDTO`는 decoded message가 ReadIndex request인지 알려 주므로 fan-out 앞에서 inbound 수집을 멈추되 replication response는 같은 staging 예산에서 모을 수 있다. 전송 뒤에는 `runtime.Gosched`로 transport writer에 실행 기회를 준다. Transport 용량은 예약이 아닌 snapshot이고 incoming remote 요청의 발생량까지 보장하지 않는다.
+
+발행한 proof의 ReadState가 `clusterReadProofRetryInterval`(500ms) 안에 오지 않으면 `refreshReadWaiters`가 같은 read를 새 nonce로 다시 발행한다. Peer FIFO가 가득 차면 leader의 `MsgReadIndexResp`가 거절될 수 있고 송신 쪽은 이를 다시 보내지 않으므로, 이 재발행이 유실을 복구한다. `clusterReadWaiter.issuedAt`은 발행 시각을, `answered`는 ReadState가 이미 도착해 local apply·projection을 기다리는 상태를 기록한다. `completeReadStates`가 `answered`를 표시하며, 표시된 proof는 다시 발행하지 않는다. 재발행 대상은 발행 예산에서 제외하고 새 발행 여유가 생길 때까지 이전 nonce를 유지한다. Caller의 key·context·deadline은 바꾸지 않는다. 결정 근거는 [ADR-0002 §1.2](../decisions/ADR-0002-cluster-consensus-library.md#12-dynamic-driver의-제한된-발행-제어-채택)다.
 
 PUBLISH의 local projection admission은 `clusterProjectionReady`가 소유한다. Ready drain 중인 요청은 `clusterDriverProjection`으로 driver queue에 들어가며, `handleDriverRequest`는 driver 소유 목록에 넣는다. 현재 commit index까지 apply/projection이 완료된 경계에서 `resolveProjectionRequests`가 health와 applied index를 검사해 응답한다. 이미 안정된 상태에서는 atomic snapshot으로 즉시 판정한다. 이 checkpoint는 quorum proof를 캐시하거나 새 ReadIndex를 추가하지 않는다. Storage health만 10ms마다 재확인하므로, ingress가 그 주기로 Ready의 짧은 종료 구간을 찾아야 하는 기아(처리 기회를 계속 놓치는 현상)를 피한다.
 

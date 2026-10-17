@@ -18,6 +18,7 @@ import (
 )
 
 // Traceability: CLU-05/CLU-06/CLU-07/CLU-09/DEP-17; docs/specs/cluster-session-and-delivery.md §4.2, §11.11.
+// Scenarios: cluster-session-and-delivery.md:CLU-SCN-072, cluster-session-and-delivery.md:CLU-SCN-075
 func TestDynamicClusterDurableQoSTakeoverProcessAcceptance(t *testing.T) {
 	t.Parallel()
 
@@ -137,6 +138,7 @@ func TestDynamicClusterDurableQoSTakeoverProcessAcceptance(t *testing.T) {
 }
 
 // Traceability: CLU-07/CLU-09; docs/specs/cluster-session-and-delivery.md §4.2, §11.11.
+// Scenarios: cluster-session-and-delivery.md:CLU-SCN-072, cluster-session-and-delivery.md:CLU-SCN-076, cluster-session-and-delivery.md:CLU-SCN-193
 func TestDynamicClusterDurableQoSAckThenKillProcessAcceptance(t *testing.T) {
 	t.Parallel()
 
@@ -210,6 +212,7 @@ func TestDynamicClusterDurableQoSAckThenKillProcessAcceptance(t *testing.T) {
 }
 
 // Traceability: CLU-07; docs/specs/cluster-session-and-delivery.md §4.2, §11.11.
+// Scenarios: cluster-session-and-delivery.md:CLU-SCN-065, cluster-session-and-delivery.md:CLU-SCN-072
 func TestDynamicClusterDurableQoSBackupRestoreProcessAcceptance(t *testing.T) {
 	t.Parallel()
 
@@ -318,6 +321,7 @@ func TestDynamicClusterDurableQoSBackupRestoreProcessAcceptance(t *testing.T) {
 }
 
 // Traceability: CLU-07/CLU-09; docs/specs/cluster-session-and-delivery.md §4.2, §11.11.
+// Scenarios: cluster-session-and-delivery.md:CLU-SCN-077
 func TestDynamicClusterDurableQoS2WillProcessAcceptance(t *testing.T) {
 	t.Parallel()
 

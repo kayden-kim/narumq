@@ -7,6 +7,8 @@ import (
 	"narumq/tests/benchmark/internal/suiteartifact"
 )
 
+// TestBP07MetricsEmitExactKeysAndUnits verifies the suite emits exactly the expected metric keys and units.
+// Scenarios: performance-and-verification.md:PRF-SCN-023
 func TestBP07MetricsEmitExactKeysAndUnits(t *testing.T) {
 	profile := loadBP07SuiteTestProfile(t)
 	wantUnits := make(map[string]string, profile.rounds()*3+3)
@@ -54,6 +56,8 @@ func TestBP07MetricsEmitExactKeysAndUnits(t *testing.T) {
 	}
 }
 
+// TestBP07MetricsRejectDuplicateOrMissingRounds verifies duplicate or missing rounds are rejected when building metrics.
+// Scenarios: performance-and-verification.md:PRF-SCN-023
 func TestBP07MetricsRejectDuplicateOrMissingRounds(t *testing.T) {
 	profile := loadBP07SuiteTestProfile(t)
 	t.Run("duplicate rolling round", func(t *testing.T) {
@@ -77,6 +81,8 @@ func TestBP07MetricsRejectDuplicateOrMissingRounds(t *testing.T) {
 	})
 }
 
+// TestBuildBP07SuiteSummaryKeepsMetricsWithoutNetworkStats verifies metrics are kept when network stats are unavailable.
+// Scenarios: performance-and-verification.md:PRF-SCN-023
 func TestBuildBP07SuiteSummaryKeepsMetricsWithoutNetworkStats(t *testing.T) {
 	profile := loadBP07SuiteTestProfile(t)
 	manifest, runs := suiteTestRuns(profile)
@@ -101,6 +107,8 @@ func TestBuildBP07SuiteSummaryKeepsMetricsWithoutNetworkStats(t *testing.T) {
 	}
 }
 
+// TestBuildBP07SuiteSummaryInvalidatesAllMetricsOnOneFailedRun verifies one failed child run clears all parent metrics.
+// Scenarios: performance-and-verification.md:PRF-SCN-023
 func TestBuildBP07SuiteSummaryInvalidatesAllMetricsOnOneFailedRun(t *testing.T) {
 	profile := loadBP07SuiteTestProfile(t)
 	manifest, runs := suiteTestRuns(profile)
@@ -117,6 +125,8 @@ func TestBuildBP07SuiteSummaryInvalidatesAllMetricsOnOneFailedRun(t *testing.T) 
 	}
 }
 
+// TestBuildBP07SuiteSummaryUsesEveryRepetitionForMedianAndMAD verifies suite metrics use every repetition for median and MAD.
+// Scenarios: performance-and-verification.md:PRF-SCN-023
 func TestBuildBP07SuiteSummaryUsesEveryRepetitionForMedianAndMAD(t *testing.T) {
 	profile := loadBP07SuiteTestProfile(t)
 	manifest, runs := suiteTestRuns(profile)

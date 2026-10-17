@@ -13,6 +13,8 @@ import (
 	"testing"
 )
 
+// TestBP02FixtureSeparatesTenantsAndConfiguresTLS verifies tenant separation, TLS listeners and cleanup.
+// Scenarios: performance-and-verification.md:PRF-SCN-043
 func TestBP02FixtureSeparatesTenantsAndConfiguresTLS(t *testing.T) {
 	profile := bp02SmokeProfile(t)
 	fixture, err := newBP02Fixture(profile, "bp02-fixture-test")

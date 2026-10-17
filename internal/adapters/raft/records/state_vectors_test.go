@@ -48,6 +48,7 @@ func readStateVector(t *testing.T, name string) []byte {
 }
 
 // Traceability: CLU-11; docs/specs/cluster-session-and-delivery.md §8, §11.29.
+// Scenarios: cluster-session-and-delivery.md:CLU-SCN-206, cluster-session-and-delivery.md:CLU-SCN-236
 func TestReplicatedStateContractVectors(t *testing.T) {
 	for name, command := range producerCommandVectors() {
 		t.Run(name, func(t *testing.T) {

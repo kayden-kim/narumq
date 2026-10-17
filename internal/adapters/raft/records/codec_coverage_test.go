@@ -192,6 +192,7 @@ func TestCrrCommandRoundTripPreservesEveryRecordKind(t *testing.T) {
 	}
 }
 
+// Scenarios: cluster-session-and-delivery.md:CLU-SCN-207
 func TestCrrMarshalCommandRejectsInvalidEnvelope(t *testing.T) {
 	if _, err := MarshalCommand(nil); err == nil || !strings.Contains(err.Error(), "command is nil") {
 		t.Fatalf("nil command error = %v", err)
@@ -520,6 +521,7 @@ func TestCrrSubscriptionFilterGrammar(t *testing.T) {
 	}
 }
 
+// Scenarios: cluster-session-and-delivery.md:CLU-SCN-064
 func TestCrrDeliveryChangeValidation(t *testing.T) {
 	cases := []struct {
 		name   string
@@ -566,6 +568,8 @@ func TestCrrDeliveryChangeValidation(t *testing.T) {
 		})
 	}
 }
+
+// Scenarios: cluster-session-and-delivery.md:CLU-SCN-064
 func TestCrrCommandSizeLimits(t *testing.T) {
 	big := crrDelivery(DeliveryAction_DELIVERY_ACTION_PUBLISH)
 	big.Payload = make([]byte, maxPublishPayload)
@@ -616,6 +620,7 @@ func TestCrrUnmarshalCommandRejectsDecodedButInvalidInput(t *testing.T) {
 	}
 }
 
+// Scenarios: cluster-session-and-delivery.md:CLU-SCN-064
 func TestCrrSnapshotRoundTripSortsEveryCollection(t *testing.T) {
 	catchingUp := crrVoter(3)
 	catchingUp.Phase, catchingUp.OperationId, catchingUp.Address = MemberPhase_MEMBER_PHASE_CATCHING_UP, crrOp3, "10.0.0.3:7000"
@@ -693,6 +698,7 @@ func TestCrrSnapshotRoundTripSortsEveryCollection(t *testing.T) {
 	}
 }
 
+// Scenarios: cluster-session-and-delivery.md:CLU-SCN-207
 func TestCrrMarshalSnapshotRejectsInvalidState(t *testing.T) {
 	if _, err := MarshalSnapshot(nil, 1); err == nil || !strings.Contains(err.Error(), "snapshot state is nil") {
 		t.Fatalf("nil state error = %v", err)
@@ -778,6 +784,7 @@ func TestCrrMarshalSnapshotRejectsInvalidState(t *testing.T) {
 	}
 }
 
+// Scenarios: cluster-session-and-delivery.md:CLU-SCN-207
 func TestCrrUnmarshalSnapshotRejectsInvalidEnvelope(t *testing.T) {
 	valid, err := MarshalSnapshot(&ReplicatedStateSnapshot{Ownerships: []*OwnershipState{{TenantId: "t", ClientId: "c", OwnerNodeId: 1, Epoch: 1}}}, 3)
 	if err != nil {
@@ -827,6 +834,7 @@ func TestCrrUnmarshalSnapshotRejectsInvalidEnvelope(t *testing.T) {
 	}
 }
 
+// Scenarios: cluster-session-and-delivery.md:CLU-SCN-064
 func TestCrrUnmarshalSnapshotRejectsUnsortedForeignState(t *testing.T) {
 	cases := []struct {
 		name  string

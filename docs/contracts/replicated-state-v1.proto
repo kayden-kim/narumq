@@ -9,7 +9,9 @@ option go_package = "narumq/internal/adapters/raft/records;records";
 // their required feature is active. Session metadata requires `session-metadata`; connection
 // rebalance requires `connection-rebalance`; credential revocation requires
 // `credential-revocation`; client blocklist requires `client-blocklist`; cluster policy requires
-// `cluster-policy`; policy tenant quotas require `cluster-policy-tenant-quotas`.
+// `cluster-policy`; policy tenant quotas require `cluster-policy-tenant-quotas`; shared-subscription
+// origin (`DeliveryTarget.shared_filter`, `DeliveryMessage.shared_filter`) requires
+// `shared-subscription-reroute`.
 
 enum MemberPhase {
   MEMBER_PHASE_UNSPECIFIED = 0;
@@ -451,6 +453,8 @@ message SubscriptionChange {
 message DeliveryTarget {
   string client_id = 1;
   bool retain = 2;
+  // `$share/<group>/<filter>` that selected this target; empty for non-shared targets.
+  string shared_filter = 3;
 }
 
 message DeliveryChange {
@@ -481,6 +485,8 @@ message DeliveryMessage {
   uint64 expires_at_unix_millis = 6;
   uint32 packet_id = 7;
   DeliveryPhase phase = 8;
+  // Shared-subscription origin of the queued message; empty when the message has none.
+  string shared_filter = 9;
 }
 
 message InboundMessage {

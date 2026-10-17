@@ -19,8 +19,10 @@ import (
 	"narumq/internal/adapters/memory/deliveryqueue"
 	memoryretained "narumq/internal/adapters/memory/retained"
 	"narumq/internal/adapters/memory/sessionstore"
+	metricsadapter "narumq/internal/adapters/metrics"
 	tcpadapter "narumq/internal/adapters/tcp"
 	tlsadapter "narumq/internal/adapters/tls"
+	websocketadapter "narumq/internal/adapters/websocket"
 	"narumq/internal/application/connect"
 	authenticationports "narumq/internal/application/ports/authentication"
 	portsmetrics "narumq/internal/application/ports/metrics"
@@ -182,6 +184,12 @@ type tlsFixtureOptions struct {
 	Blocklist        []security.BlockEntry
 	CA               *testCert
 	DualTCP          bool
+	WS               bool
+	WSS              bool
+	WSMaxConnections int
+	Metrics          *metricsadapter.Registry
+	SecurityPolicy   *security.Policy
+	LogOutput        io.Writer
 }
 
 type staticTLSBlocklistMatcher struct {
@@ -196,8 +204,12 @@ type tlsFixture struct {
 	server      *tcpadapter.Server
 	tlsListener net.Listener
 	tcpListener net.Listener
+	wsListener  net.Listener
+	wssListener net.Listener
 	tlsAddr     string
 	tcpAddr     string
+	wsAddr      string
+	wssAddr     string
 	ca          testCert
 	serverCert  testCert
 	cancel      context.CancelFunc
@@ -261,6 +273,58 @@ func newTLSFixture(t *testing.T, opts tlsFixtureOptions) *tlsFixture {
 		t.Fatalf("listen TLS: %v", err)
 	}
 
+	var wsListener, wssListener net.Listener
+	if opts.WS || opts.WSS {
+		if opts.Metrics == nil {
+			opts.Metrics = metricsadapter.NewRegistry()
+		}
+	}
+	if opts.WS {
+		wsInner, listenErr := net.Listen("tcp", "127.0.0.1:0")
+		if listenErr != nil {
+			tlsListener.Close()
+			t.Fatalf("listen WS: %v", listenErr)
+		}
+		if opts.WSMaxConnections > 0 {
+			wsInner, listenErr = tcpadapter.NewAdmissionListener(wsInner, tcpadapter.ListenerAdmissionConfig{
+				Transport: portsmetrics.TransportWS, MaxConnections: opts.WSMaxConnections,
+				Clock: clock.SystemClock{}, Recorder: opts.Metrics,
+			})
+			if listenErr != nil {
+				t.Fatal(listenErr)
+			}
+		}
+		wsListener, listenErr = websocketadapter.NewListener(wsInner, websocketadapter.Config{
+			HandshakeTimeout: websocketadapter.HandshakeTimeout, Logger: slog.Default(),
+		})
+		if listenErr != nil {
+			wsInner.Close()
+			t.Fatalf("listen WS: %v", listenErr)
+		}
+	}
+	if opts.WSS {
+		wssInner, listenErr := net.Listen("tcp", "127.0.0.1:0")
+		if listenErr != nil {
+			tlsListener.Close()
+			if wsListener != nil {
+				wsListener.Close()
+			}
+			t.Fatalf("listen WSS: %v", listenErr)
+		}
+		wssTLS, listenErr := tlsadapter.NewListener(wssInner, tlsCfg)
+		if listenErr != nil {
+			wssInner.Close()
+			t.Fatalf("listen WSS TLS: %v", listenErr)
+		}
+		wssListener, listenErr = websocketadapter.NewListener(wssTLS, websocketadapter.Config{
+			HandshakeTimeout: websocketadapter.HandshakeTimeout, Logger: slog.Default(),
+		})
+		if listenErr != nil {
+			wssTLS.Close()
+			t.Fatalf("listen WSS: %v", listenErr)
+		}
+	}
+
 	var tcpListener net.Listener
 	if opts.DualTCP {
 		var err error
@@ -293,6 +357,8 @@ func newTLSFixture(t *testing.T, opts tlsFixtureOptions) *tlsFixture {
 	systemClock := clock.SystemClock{}
 	var (
 		connectOpts        []connect.Option
+		subscribeOpts      []subscribe.Option
+		publishOpts        []publish.Option
 		credentialProvider authenticationports.AuthenticationProvider
 		credentialMethod   string
 		mtlsProvider       *authentication.MTLSAuthenticationProvider
@@ -324,7 +390,13 @@ func newTLSFixture(t *testing.T, opts tlsFixtureOptions) *tlsFixture {
 		}
 	}
 	if credentialProvider != nil || mtlsProvider != nil {
-		connectOpts = append(connectOpts, connect.WithSecurity(credentialProvider, mtlsProvider, security.Policy{}, credentialMethod))
+		policy := security.Policy{}
+		if opts.SecurityPolicy != nil {
+			policy = *opts.SecurityPolicy
+		}
+		connectOpts = append(connectOpts, connect.WithSecurity(credentialProvider, mtlsProvider, policy, credentialMethod))
+		subscribeOpts = append(subscribeOpts, subscribe.WithPolicy(policy))
+		publishOpts = append(publishOpts, publish.WithPolicy(policy))
 	}
 	if len(opts.Blocklist) > 0 {
 		blocklist := security.NewBlocklist()
@@ -341,7 +413,7 @@ func newTLSFixture(t *testing.T, opts tlsFixtureOptions) *tlsFixture {
 		}
 		t.Fatal(err)
 	}
-	subscriptions, err := subscribe.New(routes, deliveries, retainedRepo)
+	subscriptions, err := subscribe.New(routes, deliveries, retainedRepo, subscribeOpts...)
 	if err != nil {
 		tlsListener.Close()
 		if tcpListener != nil {
@@ -349,7 +421,7 @@ func newTLSFixture(t *testing.T, opts tlsFixtureOptions) *tlsFixture {
 		}
 		t.Fatal(err)
 	}
-	publications, err := publish.New(systemClock, routes, deliveries, retainedRepo)
+	publications, err := publish.New(systemClock, routes, deliveries, retainedRepo, publishOpts...)
 	if err != nil {
 		tlsListener.Close()
 		if tcpListener != nil {
@@ -379,6 +451,14 @@ func newTLSFixture(t *testing.T, opts tlsFixtureOptions) *tlsFixture {
 		primaryListener = tcpListener
 	}
 
+	var logOutput io.Writer = io.Discard
+	if opts.LogOutput != nil {
+		logOutput = opts.LogOutput
+	}
+	var metricRecorder portsmetrics.MetricsRecorder
+	if opts.Metrics != nil {
+		metricRecorder = opts.Metrics
+	}
 	server, err := tcpadapter.NewServer(
 		primaryListener,
 		tcpadapter.Config{
@@ -389,6 +469,7 @@ func newTLSFixture(t *testing.T, opts tlsFixtureOptions) *tlsFixture {
 			ControlQueueCapacity: 16,
 			ReceiveMaximum:       64, PacketReadTimeout: 10 * time.Second,
 			ClientCertificateExtractor: tlsadapter.ExtractVerifiedClientCertificateDTO,
+			Metrics:                    metricRecorder,
 		},
 		decoder,
 		encoder,
@@ -396,19 +477,39 @@ func newTLSFixture(t *testing.T, opts tlsFixtureOptions) *tlsFixture {
 		subscriptions,
 		publications,
 		deliveries,
-		slog.New(slog.NewTextHandler(io.Discard, nil)),
+		slog.New(slog.NewTextHandler(logOutput, nil)),
 	)
 	if err != nil {
 		tlsListener.Close()
 		if tcpListener != nil {
 			tcpListener.Close()
 		}
+		if wsListener != nil {
+			wsListener.Close()
+		}
+		if wssListener != nil {
+			wssListener.Close()
+		}
 		t.Fatal(err)
 	}
+	listeners := []net.Listener{tlsListener}
 	if tcpListener != nil {
-		if err := server.AddListener(tlsListener); err != nil {
-			tlsListener.Close()
-			tcpListener.Close()
+		listeners = append(listeners, tcpListener)
+	}
+	if wsListener != nil {
+		listeners = append(listeners, wsListener)
+	}
+	if wssListener != nil {
+		listeners = append(listeners, wssListener)
+	}
+	for _, listener := range listeners {
+		if listener == primaryListener {
+			continue
+		}
+		if err := server.AddListener(listener); err != nil {
+			for _, opened := range listeners {
+				_ = opened.Close()
+			}
 			t.Fatal(err)
 		}
 	}
@@ -418,17 +519,27 @@ func newTLSFixture(t *testing.T, opts tlsFixtureOptions) *tlsFixture {
 	done := make(chan error, 1)
 	go func() { done <- server.Serve(ctx) }()
 
-	var tcpAddr string
+	var tcpAddr, wsAddr, wssAddr string
 	if tcpListener != nil {
 		tcpAddr = tcpListener.Addr().String()
+	}
+	if wsListener != nil {
+		wsAddr = wsListener.Addr().String()
+	}
+	if wssListener != nil {
+		wssAddr = wssListener.Addr().String()
 	}
 
 	return &tlsFixture{
 		server:      server,
 		tlsListener: tlsListener,
 		tcpListener: tcpListener,
+		wsListener:  wsListener,
+		wssListener: wssListener,
 		tlsAddr:     tlsListener.Addr().String(),
 		tcpAddr:     tcpAddr,
+		wsAddr:      wsAddr,
+		wssAddr:     wssAddr,
 		ca:          ca,
 		serverCert:  serverCert,
 		cancel:      cancel,
@@ -448,6 +559,11 @@ func (f *tlsFixture) close(t *testing.T) {
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("Serve() did not stop")
+	}
+	for _, listener := range []net.Listener{f.wsListener, f.wssListener} {
+		if listener != nil {
+			_ = listener.Close()
+		}
 	}
 }
 
@@ -480,6 +596,7 @@ func (f *tlsFixture) dialTLS(t *testing.T, clientCert *testCert, configModifier 
 
 // TestMQTTTLS_ConnectionAndDelivery verifies full MQTT CONNECT -> SUBSCRIBE -> PUBLISH
 // roundtrip over a TLS 1.2 and TLS 1.3 encrypted socket.
+// Scenarios: mqtt-protocol-and-session.md:MQTT-SCN-019, tenancy-and-security.md:SEC-SCN-003
 func TestMQTTTLS_ConnectionAndDelivery(t *testing.T) {
 	fixture := newTLSFixture(t, tlsFixtureOptions{})
 	defer fixture.close(t)
@@ -561,6 +678,7 @@ func TestMQTTTLS_ConnectionAndDelivery(t *testing.T) {
 }
 
 // Traceability: SEC-05; docs/specs/tenancy-and-security.md §2.3, §2.4, §9.
+// Scenarios: mqtt-protocol-and-session.md:MQTT-SCN-021, tenancy-and-security.md:SEC-SCN-014
 func TestMQTTTLS_PasswordAuthentication(t *testing.T) {
 	password := []byte("SEC05-tls-password")
 	encodedHash, err := authentication.HashPassword(password)
@@ -635,6 +753,7 @@ func TestMQTTTLS_PasswordAuthentication(t *testing.T) {
 // TestMQTTTLS_RejectInsecureTLSVersion verifies that client connections attempting
 // TLS 1.0 or TLS 1.1 are immediately rejected during the TLS handshake ([SEC-01]).
 // Traceability: SEC-01; docs/specs/tenancy-and-security.md §9.
+// Scenarios: tenancy-and-security.md:SEC-SCN-001
 func TestMQTTTLS_RejectInsecureTLSVersion(t *testing.T) {
 	fixture := newTLSFixture(t, tlsFixtureOptions{MinVersion: "1.2"})
 	defer fixture.close(t)
@@ -670,6 +789,7 @@ func TestMQTTTLS_RejectInsecureTLSVersion(t *testing.T) {
 // signed by the trusted CA is mapped to its configured mTLS identity and authenticates
 // successfully ([SEC-03]).
 // Traceability: SEC-03; docs/specs/tenancy-and-security.md §9.
+// Scenarios: mqtt-protocol-and-session.md:MQTT-SCN-019, tenancy-and-security.md:SEC-SCN-004
 func TestMQTTTLS_mTLS_Success(t *testing.T) {
 	fixture := newTLSFixture(t, tlsFixtureOptions{
 		ClientAuth:   tlsadapter.ClientAuthRequire,
@@ -695,6 +815,7 @@ func TestMQTTTLS_mTLS_Success(t *testing.T) {
 }
 
 // Traceability: SEC-12; docs/specs/tenancy-and-security.md §7.1, §9; ADR-0050.
+// Scenarios: tenancy-and-security.md:SEC-SCN-045
 func TestMQTTTLSBlockedCertificateFingerprintRejected(t *testing.T) {
 	const identity = "sensor-client-01"
 	ca := generateIntegrationCA(t, "NaruMQ Test Root CA")
@@ -743,6 +864,7 @@ func TestMQTTTLSBlockedCertificateFingerprintRejected(t *testing.T) {
 // TestMQTTTLS_mTLS_UntrustedCA_Rejected verifies that a client presenting a certificate
 // signed by an untrusted CA is rejected during the TLS handshake ([SEC-03]).
 // Traceability: SEC-03; docs/specs/tenancy-and-security.md §9.
+// Scenarios: mqtt-protocol-and-session.md:MQTT-SCN-019, tenancy-and-security.md:SEC-SCN-005
 func TestMQTTTLS_mTLS_UntrustedCA_Rejected(t *testing.T) {
 	fixture := newTLSFixture(t, tlsFixtureOptions{
 		ClientAuth: tlsadapter.ClientAuthRequire,
@@ -782,6 +904,7 @@ func TestMQTTTLS_mTLS_UntrustedCA_Rejected(t *testing.T) {
 // TestMQTTTLS_mTLS_ExpiredCert_Rejected verifies that a client presenting an expired
 // certificate is rejected during the TLS handshake ([SEC-03]).
 // Traceability: SEC-03; docs/specs/tenancy-and-security.md §9.
+// Scenarios: mqtt-protocol-and-session.md:MQTT-SCN-019, tenancy-and-security.md:SEC-SCN-005
 func TestMQTTTLS_mTLS_ExpiredCert_Rejected(t *testing.T) {
 	fixture := newTLSFixture(t, tlsFixtureOptions{
 		ClientAuth: tlsadapter.ClientAuthRequire,
@@ -820,6 +943,7 @@ func TestMQTTTLS_mTLS_ExpiredCert_Rejected(t *testing.T) {
 // TestMQTTTLS_mTLS_ClientIDBinding_Rejected verifies that a trusted certificate
 // is authenticated only for its configured Client ID ([SEC-04]).
 // Traceability: SEC-04; docs/specs/tenancy-and-security.md §9.
+// Scenarios: mqtt-protocol-and-session.md:MQTT-SCN-019, tenancy-and-security.md:SEC-SCN-008
 func TestMQTTTLS_mTLS_ClientIDBinding_Rejected(t *testing.T) {
 	certCN := "legit-device-007"
 	fixture := newTLSFixture(t, tlsFixtureOptions{
@@ -902,6 +1026,7 @@ func TestMQTTTLS_mTLS_ClientIDBinding_Rejected(t *testing.T) {
 
 // TestMQTTTLS_DualListener_TCPAndTLS verifies that a broker serving both plain TCP
 // and TLS listeners delivers publications cross-transport seamlessly.
+// Scenarios: tenancy-and-security.md:SEC-SCN-003
 func TestMQTTTLS_DualListener_TCPAndTLS(t *testing.T) {
 	fixture := newTLSFixture(t, tlsFixtureOptions{DualTCP: true})
 	defer fixture.close(t)

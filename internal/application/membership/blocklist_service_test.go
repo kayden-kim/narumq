@@ -47,6 +47,7 @@ func blocklistServiceTestErrorIs(t *testing.T, err error, want ServiceErrorCode)
 }
 
 // Traceability: SEC-12; docs/specs/tenancy-and-security.md §7.1, §9; ADR-0050.
+// Scenarios: tenancy-and-security.md:SEC-SCN-043
 func TestBlocklistServiceCommitsAndReportsPolicyVersion(t *testing.T) {
 	service, port, clock := newBlocklistServiceTestFixture(t)
 	entry, err := security.NewBlockEntry(security.BlockKindClientID, "tenant", "client")
@@ -80,6 +81,7 @@ func TestBlocklistServiceCommitsAndReportsPolicyVersion(t *testing.T) {
 }
 
 // Traceability: SEC-12; docs/specs/tenancy-and-security.md §7.1, §9; ADR-0050.
+// Scenarios: tenancy-and-security.md:SEC-SCN-040, tenancy-and-security.md:SEC-SCN-043
 func TestBlocklistServiceRejectsInvalidEntryWithoutCommit(t *testing.T) {
 	service, port, _ := newBlocklistServiceTestFixture(t)
 	noncanonical := security.BlockEntry{Kind: security.BlockKindIPPrefix, Value: "203.0.113.5/24"}

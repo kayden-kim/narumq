@@ -1,6 +1,7 @@
 package mqttclient
 
 import (
+	"bufio"
 	"context"
 	"crypto/ecdsa"
 	"crypto/elliptic"
@@ -17,6 +18,8 @@ import (
 	"narumq/internal/domain/mqtt"
 )
 
+// TestConnectOverTLSVerifiesServerCertificate verifies the TLS client verifies the server certificate.
+// Scenarios: performance-and-verification.md:PRF-SCN-042, performance-and-verification.md:PRF-SCN-120
 func TestConnectOverTLSVerifiesServerCertificate(t *testing.T) {
 	caKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {
@@ -106,8 +109,25 @@ func TestConnectOverTLSVerifiesServerCertificate(t *testing.T) {
 	if !errors.As(err, &unknownAuthority) {
 		t.Fatalf("untrusted CA error = %v, want x509.UnknownAuthorityError", err)
 	}
+	var dialError *DialError
+	if !errors.As(err, &dialError) {
+		t.Fatalf("TLS handshake failure was not a pre-CONNECT DialError: %v", err)
+	}
 	if err := <-serverErr; err != nil {
 		t.Fatal(err)
+	}
+}
+
+// Scenarios: performance-and-verification.md:PRF-SCN-120
+func TestConnectDialErrorPreservesCancellation(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	_, _, err := Connect(ctx, ConnectOptions{
+		Address: "127.0.0.1:1", ClientID: "canceled-dial", HandshakeTimeout: time.Second,
+	})
+	var dialError *DialError
+	if !errors.As(err, &dialError) || !errors.Is(err, context.Canceled) {
+		t.Fatalf("canceled dial did not preserve typed stage and underlying cancellation: %v", err)
 	}
 }
 
@@ -327,6 +347,33 @@ func TestReadConnAckAcceptsBrokerProperties(t *testing.T) {
 	}
 }
 
+// TestReadKeepsBufferedBytesOfBackToBackFrames verifies back-to-back frames in one segment are each read intact.
+// Scenarios: performance-and-verification.md:PRF-SCN-024
+func TestReadKeepsBufferedBytesOfBackToBackFrames(t *testing.T) {
+	reader, writer := net.Pipe()
+	defer reader.Close()
+	defer writer.Close()
+	// Two PUBACK frames (packet IDs 1 and 2) arrive in one segment; the second must survive the first Read.
+	go func() { _, _ = writer.Write([]byte{0x40, 0x02, 0x00, 0x01, 0x40, 0x02, 0x00, 0x02}) }()
+	decoder, err := mqtt.NewDecoder(MaxPacketSize)
+	if err != nil {
+		t.Fatal(err)
+	}
+	client := &Client{connection: reader, reader: bufio.NewReader(reader), decoder: decoder, protocolVersion: mqtt.ProtocolV5, handshakeTimeout: time.Second}
+	for want := mqtt.PacketIdentifier(1); want <= 2; want++ {
+		packet, err := client.Read(time.Second)
+		if err != nil {
+			t.Fatalf("Read() for packet %d: %v", want, err)
+		}
+		if ack, ok := packet.(*mqtt.PubAck); !ok || ack.PacketID != want {
+			t.Fatalf("Read() = %#v, want PUBACK %d", packet, want)
+		}
+	}
+	if _, err := client.Read(20 * time.Millisecond); !IsTimeout(err) {
+		t.Fatalf("Read() on an idle buffered connection = %v, want first-byte timeout", err)
+	}
+}
+
 func TestReadServerDisconnectWithReference(t *testing.T) {
 	serverReference := []byte("lb.bp07.test:1883")
 	reasonString := []byte("server moved")
@@ -437,6 +484,8 @@ func TestReadServerDisconnectWithReference(t *testing.T) {
 	}
 }
 
+// TestReadWireFrameMidFrameTimeoutIsFatal verifies a timeout in the middle of a frame is fatal rather than an idle timeout.
+// Scenarios: performance-and-verification.md:PRF-SCN-024
 func TestReadWireFrameMidFrameTimeoutIsFatal(t *testing.T) {
 	reader, writer := net.Pipe()
 	defer reader.Close()
@@ -448,6 +497,8 @@ func TestReadWireFrameMidFrameTimeoutIsFatal(t *testing.T) {
 	}
 }
 
+// TestReadWireFrameRejectsUnterminatedRemainingLength verifies an unterminated Remaining Length is a malformed packet.
+// Scenarios: performance-and-verification.md:PRF-SCN-024
 func TestReadWireFrameRejectsUnterminatedRemainingLength(t *testing.T) {
 	reader, writer := net.Pipe()
 	defer reader.Close()

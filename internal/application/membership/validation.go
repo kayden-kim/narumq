@@ -3,6 +3,7 @@ package membership
 import (
 	"errors"
 	"net"
+	"slices"
 	"strconv"
 	"strings"
 	"unicode/utf8"
@@ -294,6 +295,9 @@ func validateDelivery(change DeliveryChangeDTO) error {
 			if !validSessionIdentity(change.TenantID, target.ClientID) {
 				return false
 			}
+			if target.SharedFilter != "" && !validSharedFilter(target.SharedFilter) {
+				return false
+			}
 			if _, exists := seen[target.ClientID]; exists {
 				return false
 			}
@@ -514,6 +518,7 @@ func validSnapshot(snapshot SnapshotDTO) error {
 			return ErrInvalidSnapshot
 		}
 	}
+	sharedRerouteActive := slices.Contains(snapshot.ActiveFeatures, SharedSubscriptionRerouteFeature)
 	for index, record := range snapshot.DeliverySessions {
 		key := sessionKey{tenantID: record.TenantID, clientID: record.ClientID}
 		if !validSessionIdentity(record.TenantID, record.ClientID) || record.NextSequence < 1 || (index > 0 && compareSession(snapshot.DeliverySessions[index-1].TenantID, snapshot.DeliverySessions[index-1].ClientID, record.TenantID, record.ClientID) >= 0) {
@@ -525,6 +530,9 @@ func validSnapshot(snapshot SnapshotDTO) error {
 		packetIDs := make(map[uint32]struct{}, len(record.Messages))
 		for mi, message := range record.Messages {
 			if message.Sequence == 0 || message.Sequence >= record.NextSequence || !validTopic(message.Topic) || message.QoS < 1 || message.QoS > 2 || len(message.Payload) > MaxDeliveryPayloadBytes || (mi > 0 && record.Messages[mi-1].Sequence >= message.Sequence) {
+				return ErrInvalidSnapshot
+			}
+			if message.SharedFilter != "" && (!sharedRerouteActive || !validSharedFilter(message.SharedFilter)) {
 				return ErrInvalidSnapshot
 			}
 			if message.PacketID == 0 {
@@ -595,7 +603,7 @@ func validSnapshot(snapshot SnapshotDTO) error {
 	for _, record := range snapshot.DeliverySessions {
 		totalDeliveryEntries += len(record.Messages) + len(record.Inbound)
 		for _, message := range record.Messages {
-			totalDeliveryBytes += len(record.TenantID) + len(record.ClientID) + len(message.Topic) + len(message.Payload)
+			totalDeliveryBytes += len(record.TenantID) + len(record.ClientID) + len(message.Topic) + len(message.Payload) + len(message.SharedFilter)
 		}
 		for _, inbound := range record.Inbound {
 			totalDeliveryBytes += len(record.TenantID) + len(record.ClientID) + len(inbound.Topic) + len(inbound.Payload)

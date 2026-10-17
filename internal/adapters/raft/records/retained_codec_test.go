@@ -37,6 +37,7 @@ func TestRetainedCommandCodecMatchesWireVector(t *testing.T) {
 }
 
 // Traceability: CLU-14; docs/specs/cluster-session-and-delivery.md §4, §10, §11.8.
+// Scenarios: cluster-session-and-delivery.md:CLU-SCN-037
 func TestRetainedCommandCodecRejectsInvalidMutations(t *testing.T) {
 	valid := &RetainedChange{
 		TenantId: "tenant", Topic: "status", PublisherClientId: "publisher",
@@ -80,6 +81,7 @@ func TestRetainedCommandCodecRejectsInvalidMutations(t *testing.T) {
 }
 
 // Traceability: CLU-14; docs/specs/cluster-session-and-delivery.md §4, §10, §11.8.
+// Scenarios: cluster-session-and-delivery.md:CLU-SCN-037
 func TestRetainedSnapshotCodecSortsAndCounts(t *testing.T) {
 	state := &ReplicatedStateSnapshot{Retained: []*RetainedState{
 		retainedRecordForTest("tenant-b", "alpha"),
@@ -112,6 +114,7 @@ func TestRetainedSnapshotCodecSortsAndCounts(t *testing.T) {
 }
 
 // Traceability: CLU-14; docs/specs/cluster-session-and-delivery.md §4, §10, §11.8.
+// Scenarios: cluster-session-and-delivery.md:CLU-SCN-037
 func TestRetainedSnapshotCodecRejectsInvalidState(t *testing.T) {
 	valid := retainedRecordForTest("tenant", "status")
 	cases := []struct {

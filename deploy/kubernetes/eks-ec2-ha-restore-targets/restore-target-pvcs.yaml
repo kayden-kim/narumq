@@ -1,0 +1,47 @@
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: data-narumq-0
+  namespace: narumq
+  labels:
+    app.kubernetes.io/name: narumq
+    app.kubernetes.io/component: restore-target
+spec:
+  accessModes:
+    - ReadWriteOnce
+  storageClassName: gp3
+  resources:
+    requests:
+      storage: 20Gi
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: data-narumq-1
+  namespace: narumq
+  labels:
+    app.kubernetes.io/name: narumq
+    app.kubernetes.io/component: restore-target
+spec:
+  accessModes:
+    - ReadWriteOnce
+  storageClassName: gp3
+  resources:
+    requests:
+      storage: 20Gi
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: data-narumq-2
+  namespace: narumq
+  labels:
+    app.kubernetes.io/name: narumq
+    app.kubernetes.io/component: restore-target
+spec:
+  accessModes:
+    - ReadWriteOnce
+  storageClassName: gp3
+  resources:
+    requests:
+      storage: 20Gi

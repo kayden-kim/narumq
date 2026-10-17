@@ -6,6 +6,7 @@ import (
 )
 
 // Traceability: TEN-02, TEN-03
+// Scenarios: tenancy-and-security.md:SEC-SCN-020, tenancy-and-security.md:SEC-SCN-021
 func TestTenantValuesPreventPrefixCollisions(t *testing.T) {
 	tenantA, err := NewTenantID("tenant-a")
 	if err != nil {
@@ -43,6 +44,7 @@ func TestTenantValuesPreventPrefixCollisions(t *testing.T) {
 }
 
 // Traceability: TEN-03, TEN-04
+// Scenarios: tenancy-and-security.md:SEC-SCN-021
 func TestFilterContainmentAndIntersectionPreserveMQTTWildcardSemantics(t *testing.T) {
 	tenant, err := NewTenantID("tenant-a")
 	if err != nil {
@@ -109,6 +111,7 @@ func TestFilterContainmentAndIntersectionPreserveMQTTWildcardSemantics(t *testin
 }
 
 // Traceability: TEN-03, TEN-04
+// Scenarios: tenancy-and-security.md:SEC-SCN-020, tenancy-and-security.md:SEC-SCN-021
 func TestTenantRelationsRejectCrossTenantValues(t *testing.T) {
 	firstTenant, err := NewTenantID("tenant-a")
 	if err != nil {

@@ -16,6 +16,7 @@ import (
 )
 
 // Traceability: SEC-03, SEC-04; docs/specs/configuration-and-runtime-options.md §6; ADR-0052.
+// Scenarios: configuration-and-runtime-options.md:CFG-SCN-22, tenancy-and-security.md:SEC-SCN-004, tenancy-and-security.md:SEC-SCN-005, tenancy-and-security.md:SEC-SCN-006, tenancy-and-security.md:SEC-SCN-008
 func TestDynamicClusterMQTTTLSClientCertificateProcessAcceptance(t *testing.T) {
 	fixture := newClusterMembershipProcessFixture(t, 3, "")
 	mqttCA := newClusterMembershipProcessCA(t)

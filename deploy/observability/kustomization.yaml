@@ -1,0 +1,26 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: narumq-observability
+
+resources:
+  - kubernetes/dashboard-stack.yaml
+
+configMapGenerator:
+  - name: narumq-prometheus-config
+    files:
+      - prometheus/prometheus.yml
+  - name: narumq-prometheus-targets
+    files:
+      - prometheus/targets/narumq-cluster.json
+  - name: narumq-grafana-datasource
+    files:
+      - grafana/provisioning/datasources/narumq.yml
+  - name: narumq-grafana-dashboard-provider
+    files:
+      - grafana/provisioning/dashboards/narumq.yml
+  - name: narumq-grafana-dashboard
+    files:
+      - grafana/dashboards/narumq-operations.json
+
+generatorOptions:
+  disableNameSuffixHash: true

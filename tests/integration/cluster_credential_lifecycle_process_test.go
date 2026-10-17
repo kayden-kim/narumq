@@ -15,6 +15,7 @@ import (
 )
 
 // Traceability: SEC-07; docs/specs/tenancy-and-security.md §7, §9; ADR-0049 §7.
+// Scenarios: tenancy-and-security.md:SEC-SCN-034, tenancy-and-security.md:SEC-SCN-035
 func TestDynamicClusterCredentialRevocationProcessAcceptance(t *testing.T) {
 	fixture := newClusterMembershipProcessFixture(t, 3, "")
 
@@ -162,6 +163,7 @@ func TestDynamicClusterCredentialRevocationProcessAcceptance(t *testing.T) {
 }
 
 // Traceability: SEC-07; docs/specs/tenancy-and-security.md §7, §9; ADR-0049 §7.
+// Scenarios: tenancy-and-security.md:SEC-SCN-038
 func TestDynamicClusterCredentialExpiryProcessAcceptance(t *testing.T) {
 	fixture := newClusterMembershipProcessFixture(t, 3, "")
 	issuer := newClusterProcessJWTIssuer(t, "sec07-expiry-key")

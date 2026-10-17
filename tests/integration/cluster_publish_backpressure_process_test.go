@@ -13,6 +13,7 @@ import (
 )
 
 // Traceability: CLU-12; docs/specs/cluster-session-and-delivery.md §4.5, §11.28.
+// Scenarios: cluster-session-and-delivery.md:CLU-SCN-204
 func TestDynamicClusterPublishBackpressureProcessAcceptance(t *testing.T) {
 	fixture, nodes, controls := clusterFencingProcessStart(t)
 	defer clusterDurableFaultClearControl(t, controls[0])

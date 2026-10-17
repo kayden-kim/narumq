@@ -9,6 +9,7 @@ import (
 )
 
 // Traceability: SEC-07; docs/specs/tenancy-and-security.md §7, §9; ADR-0049.
+// Scenarios: tenancy-and-security.md:SEC-SCN-036
 func TestClusterCredentialRevocationRecordBridgeRoundTrips(t *testing.T) {
 	commands := []membership.CommandDTO{
 		{

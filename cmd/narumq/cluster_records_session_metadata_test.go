@@ -12,6 +12,7 @@ import (
 )
 
 // Traceability: CLU-08; docs/specs/cluster-session-and-delivery.md §4.3, §11.24.
+// Scenarios: cluster-session-and-delivery.md:CLU-SCN-168
 func TestClusterSessionMetadataRecordBridgeRoundTrips(t *testing.T) {
 	will := &membership.SessionWillDTO{
 		Topic: "meta/will/client", Payload: []byte{0, 1, 2}, QoS: 2, Retain: true, DelayIntervalSeconds: 7,

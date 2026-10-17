@@ -17,6 +17,8 @@ import (
 )
 
 // Traceability: CLU-11/NFR-15; docs/specs/cluster-session-and-delivery.md §8, §11.17.
+// Acceptance: NARUMQ_RELEASE_COMPAT
+// Scenarios: cluster-session-and-delivery.md:CLU-SCN-103, cluster-session-and-delivery.md:CLU-SCN-104, cluster-session-and-delivery.md:CLU-SCN-105, cluster-session-and-delivery.md:CLU-SCN-106, cluster-session-and-delivery.md:CLU-SCN-107, cluster-session-and-delivery.md:CLU-SCN-108, cluster-session-and-delivery.md:CLU-SCN-109, cluster-session-and-delivery.md:CLU-SCN-110, cluster-session-and-delivery.md:CLU-SCN-158, cluster-session-and-delivery.md:CLU-SCN-263, cluster-session-and-delivery.md:CLU-SCN-222, cluster-session-and-delivery.md:CLU-SCN-173, cluster-session-and-delivery.md:CLU-SCN-216
 func TestDynamicClusterReleaseCompatibilityProcessAcceptance(t *testing.T) {
 	if os.Getenv("NARUMQ_RELEASE_COMPAT") != "1" {
 		t.Skip("set NARUMQ_RELEASE_COMPAT=1 to run release N-1/N compatibility acceptance")
@@ -426,31 +428,22 @@ func clusterReleaseCompatWaitForLeader(t *testing.T, ctx context.Context, proces
 }
 
 func clusterReleaseCompatReadVersions(ctx context.Context, process *clusterMembershipProcess) (map[string]string, error) {
-	status, body, err := clusterMembershipProcessRequest(ctx, http.MethodGet, process.managementURL()+"/api/v1/nodes", nil, clusterMembershipProcessAdmin, "")
+	status, profiles, body, err := clusterReleaseCompatFeatures(ctx, process)
 	if err != nil {
 		return nil, err
 	}
 	if status != http.StatusOK {
-		return nil, fmt.Errorf("node list status=%d body=%s", status, body)
+		return nil, fmt.Errorf("release profiles status=%d body=%s", status, body)
 	}
-	var envelope struct {
-		Data []struct {
-			NodeID  string `json:"nodeId"`
-			Version string `json:"version"`
-		} `json:"data"`
-	}
-	if err := json.Unmarshal(body, &envelope); err != nil {
-		return nil, fmt.Errorf("decode node list: %w", err)
-	}
-	versions := make(map[string]string, len(envelope.Data))
-	for _, node := range envelope.Data {
-		if node.NodeID == "" || node.Version == "" {
-			return nil, fmt.Errorf("node list has incomplete identity: %+v", node)
+	versions := make(map[string]string, len(profiles.Members))
+	for _, member := range profiles.Members {
+		if member.NodeID == "" || member.ReleaseVersion == "" {
+			return nil, fmt.Errorf("committed release profile has incomplete identity: %+v", member)
 		}
-		if _, exists := versions[node.NodeID]; exists {
-			return nil, fmt.Errorf("node list repeats node %q", node.NodeID)
+		if _, exists := versions[member.NodeID]; exists {
+			return nil, fmt.Errorf("committed release profiles repeat node %q", member.NodeID)
 		}
-		versions[node.NodeID] = node.Version
+		versions[member.NodeID] = member.ReleaseVersion
 	}
 	return versions, nil
 }

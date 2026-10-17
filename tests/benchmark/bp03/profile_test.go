@@ -60,6 +60,8 @@ func profileFixtureJSON() string {
 }`
 }
 
+// TestDecodeProfileStrictAndComputesMessageBound verifies strict decoding and the computed message upper bound.
+// Scenarios: performance-and-verification.md:PRF-SCN-001
 func TestDecodeProfileStrictAndComputesMessageBound(t *testing.T) {
 	profile, err := DecodeProfile([]byte(profileFixtureJSON()))
 	if err != nil {
@@ -90,6 +92,8 @@ func TestBundledSmokeProfileDecodes(t *testing.T) {
 	}
 }
 
+// TestDecodeProfileRejectsMissingUnknownTrailingAndOverflow verifies missing/unknown fields, trailing JSON and overflow are rejected.
+// Scenarios: performance-and-verification.md:PRF-SCN-001
 func TestDecodeProfileRejectsMissingUnknownTrailingAndOverflow(t *testing.T) {
 	missingFields := []string{
 		"profileId", "purpose", "seed", "pairsPerQoS", "payloadBytes", "sessionExpirySeconds",
@@ -143,6 +147,8 @@ func TestDecodeProfileRejectsMissingUnknownTrailingAndOverflow(t *testing.T) {
 	}
 }
 
+// TestProfileRejectsEveryOutOfRangeValue verifies every out-of-range profile value is rejected.
+// Scenarios: performance-and-verification.md:PRF-SCN-001
 func TestProfileRejectsEveryOutOfRangeValue(t *testing.T) {
 	cases := []struct {
 		name   string
@@ -191,6 +197,8 @@ func TestProfileRejectsEveryOutOfRangeValue(t *testing.T) {
 	}
 }
 
+// TestLoadProfileReturnsExactBytesAndSHA256 verifies LoadProfile returns the raw bytes and their SHA-256.
+// Scenarios: performance-and-verification.md:PRF-SCN-001
 func TestLoadProfileReturnsExactBytesAndSHA256(t *testing.T) {
 	data := []byte(profileFixtureJSON())
 	path := filepath.Join(t.TempDir(), "profile.json")

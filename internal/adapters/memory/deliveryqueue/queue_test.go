@@ -39,6 +39,7 @@ func outboundFor(t *testing.T, sessionID routing.SessionID, packetID mqtt.Packet
 }
 
 // Traceability: CLU-14; docs/specs/cluster-session-and-delivery.md §4.1, §11.25.
+// Scenarios: cluster-session-and-delivery.md:CLU-SCN-174
 func TestBeginDetachRejectsLocalEnqueueUntilFinish(t *testing.T) {
 	queue, err := New(4)
 	if err != nil {
@@ -90,11 +91,13 @@ func TestBeginDetachRejectsLocalEnqueueUntilFinish(t *testing.T) {
 }
 
 // Traceability: CLU-14; docs/specs/cluster-session-and-delivery.md §4.1, §11.25.
+// Scenarios: cluster-session-and-delivery.md:CLU-SCN-175
 func TestFinishDetachCommittedRemovesAndWakesWaiters(t *testing.T) {
 	testDetachWaiterWake(t, true)
 }
 
 // Traceability: CLU-14; docs/specs/cluster-session-and-delivery.md §4.1, §11.25.
+// Scenarios: cluster-session-and-delivery.md:CLU-SCN-176
 func TestRemoveWakesDetachWaiters(t *testing.T) {
 	testDetachWaiterWake(t, false)
 }
@@ -168,6 +171,7 @@ func TestNewAndRegisterValidateBounds(t *testing.T) {
 }
 
 // Traceability: PRD MQTT-11/TEST-04/05; docs/specs/mqtt-protocol-and-session.md §3.2, §7.
+// Scenarios: mqtt-protocol-and-session.md:MQTT-SCN-033
 func TestQueueFIFOAndPayloadOwnership(t *testing.T) {
 	queue, err := New(2)
 	if err != nil {
@@ -289,6 +293,8 @@ func TestQueuePromoteHeadExpiryAndAtomicFailures(t *testing.T) {
 	}
 }
 
+// TestQueueBatchOperationsRejectMissingSessionAndShortQueue verifies batch operations reject a missing session and a short queue.
+// Scenarios: performance-and-verification.md:PRF-SCN-088
 func TestQueueBatchOperationsRejectMissingSessionAndShortQueue(t *testing.T) {
 	now := testNow()
 	queue, err := New(2)
@@ -529,6 +535,7 @@ func TestQueueOutboundBoundSortingAndRemoval(t *testing.T) {
 }
 
 // Traceability: CLU-05/CLU-06; docs/specs/cluster-session-and-delivery.md §4.2, §11.11.
+// Scenarios: cluster-session-and-delivery.md:CLU-SCN-067
 func TestQueueResetDurableReplacesStateAndBoundsLocalQueue(t *testing.T) {
 	now := testNow()
 	queue, err := New(3)
@@ -598,6 +605,7 @@ func TestQueueResetDurableReplacesStateAndBoundsLocalQueue(t *testing.T) {
 }
 
 // Traceability: CLU-05/CLU-06; docs/specs/cluster-session-and-delivery.md §4.2, §11.11.
+// Scenarios: cluster-session-and-delivery.md:CLU-SCN-067
 func TestQueueResetDurablePacketIDConflictIsAtomic(t *testing.T) {
 	now := testNow()
 	queue, err := New(2)
@@ -762,6 +770,7 @@ func TestQueueResetDurableRejectsInvalidAndOverCapacityState(t *testing.T) {
 	}
 }
 
+// Scenarios: mqtt-protocol-and-session.md:MQTT-SCN-033
 func TestQueueOutboundCapacityLeavesHeadOnFailure(t *testing.T) {
 	now := testNow()
 	queue, err := New(1)

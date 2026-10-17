@@ -115,6 +115,7 @@ func bridgeTypedCommandFixtures() []membership.CommandDTO {
 	}
 }
 
+// Scenarios: cluster-session-and-delivery.md:CLU-SCN-099
 func TestMembershipRecordBridgeRoundTripsTypedCommands(t *testing.T) {
 	commands := append(bridgeTypedCommandFixtures(), bridgeExtendedTypedCommandFixtures()...)
 
@@ -330,6 +331,7 @@ func bridgeSnapshotFixture() membership.SnapshotDTO {
 	}
 }
 
+// Scenarios: cluster-session-and-delivery.md:CLU-SCN-099
 func TestMembershipRecordBridgePreservesSnapshotIndexesAndDigest(t *testing.T) {
 	snapshot := bridgeSnapshotFixture()
 	wire, err := encodeMembershipSnapshot(snapshot)

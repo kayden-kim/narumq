@@ -7,6 +7,7 @@
 | 문서 | 상태 | 적용 범위 | 답하는 질문 |
 | --- | --- | --- | --- |
 | [Go coding conventions](go-coding-conventions.md) | Active | 새로 작성하거나 변경하는 human-written Go source | Package, type, Prefix·Postfix, DTO, error와 test를 어떻게 이름 짓고 작성하는가? |
+| [테스트 컨벤션](test-conventions.md) | Active | 스펙 시나리오를 검증하는 Go·Python 테스트 | 스펙 시나리오와 테스트를 어떻게 연결하고, 커버리지와 결과를 어떻게 보고하는가? |
 
 ## 적용 원칙
 

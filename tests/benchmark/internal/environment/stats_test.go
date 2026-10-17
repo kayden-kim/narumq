@@ -142,6 +142,9 @@ func TestLiveStatsSamplerRejectsUnexpectedCleanExit(t *testing.T) {
 		t.Fatal("live stats sampler accepted a stream that did not exit")
 	}
 }
+
+// TestStatsSamplerRecordsBrokerRestartedBeforeInspect verifies the stats sampler records a broker that restarted before inspection.
+// Scenarios: performance-and-verification.md:PRF-SCN-025
 func TestStatsSamplerRecordsBrokerRestartedBeforeInspect(t *testing.T) {
 	fakeDocker := installFakeDocker(t)
 	t.Setenv(fakeDockerStartAfterStoppedStatsEnv, "1")

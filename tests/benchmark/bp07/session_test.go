@@ -60,6 +60,8 @@ func newSessionTestDialer(t *testing.T, nodes []string, health []*sessionTestHea
 	return dialer
 }
 
+// TestSessionReconnectUsesReadyNodeAndResumesPersistentSession verifies reconnect to a ready node resumes the persistent session.
+// Scenarios: performance-and-verification.md:PRF-SCN-019
 func TestSessionReconnectUsesReadyNodeAndResumesPersistentSession(t *testing.T) {
 	listenerA := listenSessionTestNode(t)
 	listenerB := listenSessionTestNode(t)
@@ -200,6 +202,8 @@ func TestSessionReconnectUsesReadyNodeAndResumesPersistentSession(t *testing.T) 
 	}
 }
 
+// TestSessionRejectsUnexpectedServerReference verifies an unexpected Server Reference is a protocol error after resuming the session.
+// Scenarios: performance-and-verification.md:PRF-SCN-019
 func TestSessionRejectsUnexpectedServerReference(t *testing.T) {
 	listenerA := listenSessionTestNode(t)
 	listenerB := listenSessionTestNode(t)
@@ -300,6 +304,8 @@ func TestSessionRejectsUnexpectedServerReference(t *testing.T) {
 	}
 }
 
+// TestRollingRoundRemainsMonotonicForDisconnectClassification verifies a stale round marker does not revert disconnect attribution.
+// Scenarios: performance-and-verification.md:PRF-SCN-020
 func TestRollingRoundRemainsMonotonicForDisconnectClassification(t *testing.T) {
 	profile := sessionTestProfile()
 	profile.ReplacementOrder = []int{3, 1, 2}

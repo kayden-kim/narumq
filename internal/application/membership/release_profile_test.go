@@ -60,6 +60,7 @@ func memberByIDForTest(t *testing.T, machine *StateMachine, memberID uint64) Mem
 	return MemberIdentityDTO{}
 }
 
+// Scenarios: cluster-session-and-delivery.md:CLU-SCN-218
 func TestMemberProfileChangeCompatibilityAndActiveFeatures(t *testing.T) {
 	machine := releaseProfileMachine(t, "1.1.0", nil)
 	features := []string{"compatibility-probe"}
@@ -92,6 +93,7 @@ func TestMemberProfileChangeCompatibilityAndActiveFeatures(t *testing.T) {
 	}
 }
 
+// Scenarios: cluster-session-and-delivery.md:CLU-SCN-218
 func TestFeatureActivationRequiresAllNonRetiredMembers(t *testing.T) {
 	stagedMachine := releaseProfileMachine(t, "1.2.0", []string{"compatibility-probe"})
 	stage := stageRecord(testOperation4, "join-4", 4)

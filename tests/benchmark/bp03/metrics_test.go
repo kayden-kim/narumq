@@ -10,6 +10,8 @@ import (
 	"time"
 )
 
+// TestWriteWALSummaryUsesBucketDeltasAndOverflow verifies the WAL summary uses bucket deltas and reports overflow.
+// Scenarios: performance-and-verification.md:PRF-SCN-005
 func TestWriteWALSummaryUsesBucketDeltasAndOverflow(t *testing.T) {
 	const start = `# HELP narumq_raft_wal_sync_duration_seconds test
 # TYPE narumq_raft_wal_sync_duration_seconds histogram
@@ -70,6 +72,8 @@ narumq_raft_wal_written_bytes_total 5100
 	}
 }
 
+// TestWriteWALSummaryMissingFamilyPersistsInvalidSummary verifies a missing metric family persists an invalid summary.
+// Scenarios: performance-and-verification.md:PRF-SCN-005
 func TestWriteWALSummaryMissingFamilyPersistsInvalidSummary(t *testing.T) {
 	const scrape = `narumq_raft_wal_sync_duration_seconds_bucket{le="+Inf"} 2
 narumq_raft_wal_sync_duration_seconds_count 2
@@ -91,6 +95,8 @@ narumq_raft_wal_sync_entries_sum 0
 	}
 }
 
+// TestWriteWALSummaryEMQXNotApplicable verifies the EMQX WAL summary is not_applicable.
+// Scenarios: performance-and-verification.md:PRF-SCN-005
 func TestWriteWALSummaryEMQXNotApplicable(t *testing.T) {
 	dir := t.TempDir()
 	summary, err := writeWALSummary(dir, "emqx", nil)

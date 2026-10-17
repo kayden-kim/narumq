@@ -16,6 +16,7 @@ import (
 )
 
 // Traceability: CLU-12; docs/specs/cluster-session-and-delivery.md §4.5, §11.28.
+// Scenarios: cluster-session-and-delivery.md:CLU-SCN-198, cluster-session-and-delivery.md:CLU-SCN-199
 func TestClusterCommitBacklogOldestAge(t *testing.T) {
 	var b clusterCommitBacklog
 	now := time.Unix(100, 0)
@@ -77,6 +78,7 @@ func TestClusterCommitBacklogOldestAge(t *testing.T) {
 }
 
 // Traceability: CLU-12; docs/specs/cluster-session-and-delivery.md §11.28.
+// Scenarios: cluster-session-and-delivery.md:CLU-SCN-198
 func TestClusterPublishPressureDiskHysteresis(t *testing.T) {
 	var logs bytes.Buffer
 	r := &clusterRuntime{metrics: adaptersmetrics.NewRegistry(), logger: slog.New(slog.NewTextHandler(&logs, nil))}
@@ -128,14 +130,19 @@ func TestClusterPublishPressureDiskHysteresis(t *testing.T) {
 }
 
 // Traceability: CLU-12; docs/specs/cluster-session-and-delivery.md §11.28.
+// Scenarios: cluster-session-and-delivery.md:CLU-SCN-198, cluster-session-and-delivery.md:CLU-SCN-199, mqtt-protocol-and-session.md:MQTT-SCN-056
 func TestClusterPublishPressureCommitLag(t *testing.T) {
 	r := &clusterRuntime{metrics: adaptersmetrics.NewRegistry()}
 	c := &clusterPublishPressureController{runtime: r, maxCommitLag: time.Second, freeBytes: func(string) (uint64, error) { return 2 << 30, nil }}
 	r.publishPressure = c
 	c.backlog.observeLeadership(1, 1, true, time.Now().Add(-time.Hour))
 	entry := r.addCommitBacklog(time.Now().Add(-2 * time.Second))
-	if err := c.CheckPressure(); !errors.Is(err, publish.ErrPublishBackpressure) || !strings.Contains(err.Error(), "commit_lag") {
+	err := c.CheckPressure()
+	if !errors.Is(err, publish.ErrPublishBackpressure) || !strings.Contains(err.Error(), "commit_lag") {
 		t.Fatalf("lag rejection=%v", err)
+	}
+	if reason := publish.RejectionReason(err); reason != "server_backpressure:commit_lag" {
+		t.Fatalf("lag rejection reason=%q", reason)
 	}
 	c.sample(time.Now())
 	text := string(r.metrics.Render(false))
@@ -166,6 +173,7 @@ func TestClusterPublishPressureCommitLag(t *testing.T) {
 }
 
 // Traceability: CLU-12, TEN-08; docs/specs/cluster-session-and-delivery.md §11.28.
+// Scenarios: cluster-session-and-delivery.md:CLU-SCN-198, mqtt-protocol-and-session.md:MQTT-SCN-056
 func TestClusterPublishPressureCapacityReportsTenantQuota(t *testing.T) {
 	machine := membership.NewStateMachine()
 	apply := func(index uint64, command membership.CommandDTO) {
@@ -188,13 +196,35 @@ func TestClusterPublishPressureCapacityReportsTenantQuota(t *testing.T) {
 	apply(4, membership.CommandDTO{Delivery: &change})
 	r := &clusterRuntime{machine: machine, metrics: adaptersmetrics.NewRegistry()}
 	c := &clusterPublishPressureController{runtime: r}
-	if err := c.CheckDeliveryCapacity(change); !errors.Is(err, publish.ErrDurableDeliveryCapacity) {
+	err := c.CheckDeliveryCapacity(change)
+	if !errors.Is(err, publish.ErrDurableDeliveryCapacity) {
 		t.Fatal(err)
+	}
+	if reason := publish.RejectionReason(err); reason != "tenant_limit:tenant_quota" {
+		t.Fatalf("tenant quota rejection reason=%q", reason)
 	}
 	text := string(r.metrics.Render(false))
 	for _, line := range []string{"narumq_tenant_quota_rejections_total{tenant=\"acme\",dimension=\"offline_queue_messages\"} 1\n", "narumq_publish_backpressure_rejections_total{reason=\"tenant_quota\"} 1\n"} {
 		if !strings.Contains(text, line) {
 			t.Fatal(line)
 		}
+	}
+}
+
+// Scenarios: mqtt-protocol-and-session.md:MQTT-SCN-056
+func TestClusterPublishPressureGlobalDeliveryCapacityIsServerBackpressure(t *testing.T) {
+	r := &clusterRuntime{metrics: adaptersmetrics.NewRegistry()}
+	c := &clusterPublishPressureController{runtime: r}
+	for _, capacity := range []string{membership.DeliveryCapacityEntries, membership.DeliveryCapacityBytes} {
+		err := c.rejectDeliveryCapacity("acme", membership.DeliveryCapacityDTO{Reason: capacity})
+		if !errors.Is(err, publish.ErrDurableDeliveryCapacity) {
+			t.Fatalf("%s rejection=%v", capacity, err)
+		}
+		if reason := publish.RejectionReason(err); reason != "server_backpressure:"+capacity {
+			t.Fatalf("%s rejection reason=%q", capacity, reason)
+		}
+	}
+	if !strings.Contains(string(r.metrics.Render(false)), "narumq_publish_backpressure_rejections_total{reason=\"delivery_capacity\"} 2\n") {
+		t.Fatal("global capacity rejections were not counted as delivery_capacity")
 	}
 }

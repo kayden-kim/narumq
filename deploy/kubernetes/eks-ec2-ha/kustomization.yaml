@@ -1,0 +1,18 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - namespace.yaml
+  - configmap-cluster.yaml
+  - pdb.yaml
+  - service-headless.yaml
+  - service-nlb.yaml
+  - service-management.yaml
+  - statefulset.yaml
+  - cronjob-backup.yaml
+configMapGenerator:
+  - name: narumq-backup-scripts
+    namespace: narumq
+    files:
+      - backup.sh
+generatorOptions:
+  disableNameSuffixHash: true

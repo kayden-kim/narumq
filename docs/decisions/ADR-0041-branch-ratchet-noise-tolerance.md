@@ -9,7 +9,7 @@
 | 관련 스펙 | [Performance와 verification §8](../specs/performance-and-verification.md#8-coverage와-test-quality-gate) |
 | 관련 아키텍처 | [Project structure](../architectures/project-structure.md#verification-and-integration-test-entrypoints) |
 | 이 결정이 대체하는 이전 결정 기록(ADR) | 없음. [ADR-0040 §1](ADR-0040-branch-coverage-arm-injection.md#1-결정)을 보완하며 대체하지 않는다. |
-| 이 결정을 대체한 새 결정 기록(ADR) | [ADR-0044](ADR-0044-diff-coverage-floor-90.md)가 §1.4의 diff 95% 수치만 대체한다. 허용폭의 적용 범위와 나머지 결정은 유지한다. |
+| 이 결정을 대체한 새 결정 기록(ADR) | [ADR-0044](ADR-0044-diff-coverage-floor-90.md)가 §1.4의 diff 95% 수치만 대체한다. 현재 diff 하한 수치는 [ADR-0063](ADR-0063-diff-coverage-floor-80.md)을 따른다. 허용폭의 적용 범위와 나머지 결정은 유지한다. |
 
 ## 1. 결정
 
@@ -48,13 +48,13 @@ Branch ratchet은 작은 측정 변동을 허용하지만 실제 branch 미실�
 
 - 반복 실행으로 시험 경로가 고정되고 branch spread가 허용폭 아래인지 확인한다.
 - 반복 측정 A·B로 전체·core ratchet을 다시 정하고 Run C와 실제 CLI 경계로 검증한다.
-- 측정 결과와 uncovered outcome은 [Performance와 verification §8.3](../specs/performance-and-verification.md#83-branch-ratchet-노이즈-허용폭-수용-증거)에 기록한다.
+- 측정 결과와 uncovered outcome은 [Performance와 verification §8.3](../verification/performance-and-verification.md#83-branch-ratchet-노이즈-허용폭-수용-증거)에 기록한다.
 
 ## 7. 검증
 
 | 결정 요인 | 검증 방법 | 합격 기준 | 증거 |
 | --- | --- | --- | --- |
-| 허용폭 비교와 범위 | `tools/verify` 단위 시험 및 coverage CLI 경계 실행 | 79.61% 통과, 79.60% 거절; -0.01과 1.01 거절; CLI 경계에서 0.21%p 초과 거절, 0.19%p 이내 통과 | [성능 스펙 §8.3](../specs/performance-and-verification.md#83-branch-ratchet-노이즈-허용폭-수용-증거) |
+| 허용폭 비교와 범위 | `tools/verify` 단위 시험 및 coverage CLI 경계 실행 | 79.61% 통과, 79.60% 거절; -0.01과 1.01 거절; CLI 경계에서 0.21%p 초과 거절, 0.19%p 이내 통과 | [성능 검증 기록 §8.3](../verification/performance-and-verification.md#83-branch-ratchet-노이즈-허용폭-수용-증거) |
 | 시험 경로 고정 | 계획된 반복 `-race` 시험 및 Run A·B·C outcome 확인 | 지정 outcome이 각 실행에서 covered이고 spread가 0.20%p 미만 | 같은 스펙 절 |
 | Ratchet 재기준 | Run A·B로 전체·core ratchet 계산, Run C와 추가 local gate 실행 | Run C 및 local gate가 PASS | 같은 스펙 절 |
 

@@ -31,6 +31,7 @@ func activateCredentialRevocationForTest(t *testing.T, machine *StateMachine, in
 }
 
 // Traceability: SEC-07; docs/specs/tenancy-and-security.md §7, §9; ADR-0049.
+// Scenarios: tenancy-and-security.md:SEC-SCN-036
 func TestCredentialRevocationApplyFeatureGateAndTransitions(t *testing.T) {
 	machine := NewStateMachine()
 	credentialID := strings.Repeat("é", 256)
@@ -74,6 +75,7 @@ func TestCredentialRevocationApplyFeatureGateAndTransitions(t *testing.T) {
 }
 
 // Traceability: SEC-07; docs/specs/tenancy-and-security.md §7, §9; ADR-0049.
+// Scenarios: tenancy-and-security.md:SEC-SCN-036
 func TestCredentialRevocationApplyRejectsInvalidCommandsWithoutAdvancing(t *testing.T) {
 	cases := []struct {
 		name   string
@@ -103,6 +105,7 @@ func TestCredentialRevocationApplyRejectsInvalidCommandsWithoutAdvancing(t *test
 }
 
 // Traceability: SEC-07; docs/specs/tenancy-and-security.md §7, §9; ADR-0049.
+// Scenarios: tenancy-and-security.md:SEC-SCN-036
 func TestCredentialRevocationSnapshotRestorePreservesSortedState(t *testing.T) {
 	machine := NewStateMachine()
 	activateCredentialRevocationForTest(t, machine, 1)
@@ -138,6 +141,7 @@ func TestCredentialRevocationSnapshotRestorePreservesSortedState(t *testing.T) {
 }
 
 // Traceability: SEC-07; docs/specs/tenancy-and-security.md §7, §9; ADR-0049.
+// Scenarios: tenancy-and-security.md:SEC-SCN-036
 func TestCredentialRevocationCapacityBoundary(t *testing.T) {
 	machine := NewStateMachine()
 	activateCredentialRevocationForTest(t, machine, 1)
@@ -163,6 +167,7 @@ func TestCredentialRevocationCapacityBoundary(t *testing.T) {
 }
 
 // Traceability: SEC-07; docs/specs/tenancy-and-security.md §7, §9; ADR-0049.
+// Scenarios: tenancy-and-security.md:SEC-SCN-036
 func TestCredentialRevocationSnapshotRejectsInvalidState(t *testing.T) {
 	base := SnapshotDTO{
 		SchemaMajor: SchemaMajor, LastIncludedIndex: 1, ObjectCount: 2,

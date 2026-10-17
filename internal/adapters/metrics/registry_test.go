@@ -137,6 +137,7 @@ func TestRegistry_OperationsAndRendering(t *testing.T) {
 }
 
 // Traceability: API-03; docs/specs/management-api-and-observability.md §7.1.
+// Scenarios: management-api-and-observability.md:MGT-SCN-028
 func TestRegistryReadsSubscriptionCountAtScrape(t *testing.T) {
 	registry := NewRegistry()
 	routes := routing.NewTable()
@@ -164,6 +165,7 @@ func TestRegistryReadsSubscriptionCountAtScrape(t *testing.T) {
 	requireCount(1)
 }
 
+// Scenarios: management-api-and-observability.md:MGT-SCN-032
 func TestRegistryRendersWALSyncMetrics(t *testing.T) {
 	registry := NewRegistry()
 	registry.ObserveWALSync(300*time.Microsecond, 0, 100)
@@ -192,6 +194,7 @@ func TestRegistryRendersWALSyncMetrics(t *testing.T) {
 	}
 }
 
+// Scenarios: management-api-and-observability.md:MGT-SCN-033, performance-and-verification.md:PRF-SCN-008
 func TestRaftStageHistogramsKeepStagesIsolatedAndBoundOverflow(t *testing.T) {
 	registry := NewRegistry()
 	registry.ObserveRaftStage(RaftInboundQueue, time.Millisecond)
@@ -215,6 +218,7 @@ func TestRaftStageHistogramsKeepStagesIsolatedAndBoundOverflow(t *testing.T) {
 
 // Traceability: UI-03; docs/specs/management-api-and-observability.md §7.
 // Traceability: SEC-12; docs/specs/tenancy-and-security.md §7.1, §9; ADR-0050.
+// Scenarios: management-api-and-observability.md:MGT-SCN-029
 func TestRegistryRendersConnectRejectionsByProtocolAndReason(t *testing.T) {
 	registry := NewRegistry()
 	registry.ConnectRejected(ports.ProtocolMQTT311, ports.ConnectRejectReasonOther)
@@ -277,6 +281,7 @@ func TestRegistryRendersConnectRejectionsByProtocolAndReason(t *testing.T) {
 }
 
 // Traceability: UI-03; docs/specs/management-api-and-observability.md §7.
+// Scenarios: management-api-and-observability.md:MGT-SCN-030
 func TestRegistryRendersMessageDrops(t *testing.T) {
 	registry := NewRegistry()
 	registry.MessageDropped(ports.MessageDropReasonQueueFull)
@@ -301,6 +306,7 @@ func TestRegistryRendersMessageDrops(t *testing.T) {
 }
 
 // Traceability: UI-05; docs/specs/management-api-and-observability.md §7.
+// Scenarios: management-api-and-observability.md:MGT-SCN-031
 func TestRegistryRendersNodeDrainProgress(t *testing.T) {
 	registry := NewRegistry()
 	requireGauge := func(output string, active int, values []uint64) {
@@ -341,6 +347,7 @@ func TestRegistryRendersNodeDrainProgress(t *testing.T) {
 	requireGauge(string(registry.Render(false)), 0, make([]uint64, 7))
 }
 
+// Scenarios: management-api-and-observability.md:MGT-SCN-029
 func TestRegistryRendersMQTT310UnsupportedVersionRejection(t *testing.T) {
 	reg := NewRegistry()
 	reg.ConnectRejected(ports.ProtocolMQTT310, ports.ConnectRejectReasonUnsupportedProtocolVersion)
@@ -355,6 +362,7 @@ func TestRegistryRendersMQTT310UnsupportedVersionRejection(t *testing.T) {
 }
 
 // Traceability: DEP-01; docs/specs/drain-and-rolling-update.md §6, §10.
+// Scenarios: management-api-and-observability.md:MGT-SCN-031, drain-and-rolling-update.md:DRN-SCN-009
 func TestRegistryNodeDrainTransitionMetricUsesFixedPhaseLabels(t *testing.T) {
 	registry := NewRegistry()
 	phases := []string{
@@ -385,6 +393,7 @@ func TestRegistryNodeDrainTransitionMetricUsesFixedPhaseLabels(t *testing.T) {
 }
 
 // Traceability: TEN-08; docs/specs/tenancy-and-security.md §5.1.
+// Scenarios: management-api-and-observability.md:MGT-SCN-038, tenancy-and-security.md:SEC-SCN-029, cluster-session-and-delivery.md:CLU-SCN-101
 func TestRegistryTenantQuotaMetricsAndProfileGauges(t *testing.T) {
 	registry := NewRegistry()
 	if label := registry.RecordTenantQuotaRejection("acme", "retained_bytes"); label != "acme" {
@@ -433,6 +442,7 @@ func TestRegistryTenantQuotaMetricsAndProfileGauges(t *testing.T) {
 	}
 }
 
+// Scenarios: management-api-and-observability.md:MGT-SCN-039
 func TestRegistryClusterPolicyGaugesAndReset(t *testing.T) {
 	registry := NewRegistry()
 	registry.SetClusterPolicy(true, 8, true)
@@ -461,6 +471,7 @@ func TestRegistryClusterPolicyGaugesAndReset(t *testing.T) {
 }
 
 // Traceability: TEN-08; docs/specs/tenancy-and-security.md §5.1.
+// Scenarios: management-api-and-observability.md:MGT-SCN-038, tenancy-and-security.md:SEC-SCN-029, cluster-session-and-delivery.md:CLU-SCN-101
 func TestRegistryTenantQuotaMetricBoundsTenantLabels(t *testing.T) {
 	registry := NewRegistry()
 	for index := 0; index < maxTenantQuotaMetricTenants; index++ {
@@ -533,6 +544,7 @@ func TestRegistry_Concurrency(t *testing.T) {
 }
 
 // Traceability: API-06; docs/specs/management-api-and-observability.md §9.
+// Scenarios: management-api-and-observability.md:MGT-SCN-026
 func TestRegistryNormalizesUnboundedLabels(t *testing.T) {
 	reg := NewRegistry()
 	reg.ConnectionOpened("client-id-secret", "10.0.0.1")
@@ -554,6 +566,7 @@ func TestRegistryNormalizesUnboundedLabels(t *testing.T) {
 	}
 }
 
+// Scenarios: management-api-and-observability.md:MGT-SCN-035, drain-and-rolling-update.md:DRN-SCN-011
 func TestRegistryRendersWillOutcomes(t *testing.T) {
 	registry := NewRegistry()
 	for _, openMetrics := range []bool{false, true} {
@@ -579,6 +592,7 @@ func TestRegistryRendersWillOutcomes(t *testing.T) {
 	}
 }
 
+// Scenarios: management-api-and-observability.md:MGT-SCN-034
 func TestRegistryRendersAuditMetrics(t *testing.T) {
 	registry := NewRegistry()
 	wantOutcomes := []string{
@@ -629,7 +643,8 @@ func TestRegistryRendersAuditMetrics(t *testing.T) {
 	}
 }
 
-// Traceability: PRD MQTT-09/MQTT-11; docs/specs/mqtt-protocol-and-session.md §7.1.
+// Traceability: PRD MQTT-09/MQTT-10/MQTT-11; docs/specs/mqtt-protocol-and-session.md §1, §7.1.
+// Scenarios: mqtt-protocol-and-session.md:MQTT-SCN-048, management-api-and-observability.md:MGT-SCN-036
 func TestRegistryRendersListenerAdmissionRejections(t *testing.T) {
 	registry := NewRegistry()
 	for _, openMetrics := range []bool{false, true} {
@@ -637,7 +652,11 @@ func TestRegistryRendersListenerAdmissionRejections(t *testing.T) {
 		want := "narumq_mqtt_listener_admission_rejected_total{transport=\"tcp\",reason=\"max_connections\"} 0\n" +
 			"narumq_mqtt_listener_admission_rejected_total{transport=\"tcp\",reason=\"connection_rate\"} 0\n" +
 			"narumq_mqtt_listener_admission_rejected_total{transport=\"tls\",reason=\"max_connections\"} 0\n" +
-			"narumq_mqtt_listener_admission_rejected_total{transport=\"tls\",reason=\"connection_rate\"} 0\n"
+			"narumq_mqtt_listener_admission_rejected_total{transport=\"tls\",reason=\"connection_rate\"} 0\n" +
+			"narumq_mqtt_listener_admission_rejected_total{transport=\"ws\",reason=\"max_connections\"} 0\n" +
+			"narumq_mqtt_listener_admission_rejected_total{transport=\"ws\",reason=\"connection_rate\"} 0\n" +
+			"narumq_mqtt_listener_admission_rejected_total{transport=\"wss\",reason=\"max_connections\"} 0\n" +
+			"narumq_mqtt_listener_admission_rejected_total{transport=\"wss\",reason=\"connection_rate\"} 0\n"
 		if !strings.Contains(text, want) {
 			t.Fatalf("missing ordered zero series: %s", text)
 		}
@@ -645,22 +664,30 @@ func TestRegistryRendersListenerAdmissionRejections(t *testing.T) {
 	registry.ListenerAdmissionRejected(ports.TransportTCP, ports.ListenerAdmissionReasonMaxConnections)
 	registry.ListenerAdmissionRejected(ports.TransportTCP, ports.ListenerAdmissionReasonMaxConnections)
 	registry.ListenerAdmissionRejected(ports.TransportTLS, ports.ListenerAdmissionReasonConnectionRate)
-	registry.ListenerAdmissionRejected("ws", ports.ListenerAdmissionReasonMaxConnections)
+	registry.ListenerAdmissionRejected(ports.TransportWS, ports.ListenerAdmissionReasonMaxConnections)
+	registry.ListenerAdmissionRejected(ports.TransportWSS, ports.ListenerAdmissionReasonConnectionRate)
+	registry.ListenerAdmissionRejected("quic", ports.ListenerAdmissionReasonMaxConnections)
 	registry.ListenerAdmissionRejected(ports.TransportTCP, "other")
 	want := "narumq_mqtt_listener_admission_rejected_total{transport=\"tcp\",reason=\"max_connections\"} 2\n" +
 		"narumq_mqtt_listener_admission_rejected_total{transport=\"tcp\",reason=\"connection_rate\"} 0\n" +
 		"narumq_mqtt_listener_admission_rejected_total{transport=\"tls\",reason=\"max_connections\"} 0\n" +
-		"narumq_mqtt_listener_admission_rejected_total{transport=\"tls\",reason=\"connection_rate\"} 1\n"
+		"narumq_mqtt_listener_admission_rejected_total{transport=\"tls\",reason=\"connection_rate\"} 1\n" +
+		"narumq_mqtt_listener_admission_rejected_total{transport=\"ws\",reason=\"max_connections\"} 1\n" +
+		"narumq_mqtt_listener_admission_rejected_total{transport=\"ws\",reason=\"connection_rate\"} 0\n" +
+		"narumq_mqtt_listener_admission_rejected_total{transport=\"wss\",reason=\"max_connections\"} 0\n" +
+		"narumq_mqtt_listener_admission_rejected_total{transport=\"wss\",reason=\"connection_rate\"} 1\n"
 	for _, openMetrics := range []bool{false, true} {
 		text := string(registry.Render(openMetrics))
 		if !strings.Contains(text, want) ||
-			strings.Contains(text, `narumq_mqtt_listener_admission_rejected_total{transport="tcp",reason="other"}`) {
+			strings.Contains(text, `narumq_mqtt_listener_admission_rejected_total{transport="tcp",reason="other"}`) ||
+			strings.Contains(text, `narumq_mqtt_listener_admission_rejected_total{transport="quic"}`) {
 			t.Fatalf("unexpected admission series: %s", text)
 		}
 	}
 }
 
 // Traceability: TEN-06, TEN-07; docs/specs/tenancy-and-security.md §5.2.
+// Scenarios: management-api-and-observability.md:MGT-SCN-037, tenancy-and-security.md:SEC-SCN-028
 func TestRegistryTenantLimitRejectionsShareBoundedTenantLabels(t *testing.T) {
 	registry := NewRegistry()
 	for index := range maxTenantQuotaMetricTenants {
@@ -700,6 +727,7 @@ func TestRegistryTenantLimitRejectionsShareBoundedTenantLabels(t *testing.T) {
 }
 
 // Traceability: TEN-06, TEN-07; docs/specs/tenancy-and-security.md §5.2.
+// Scenarios: management-api-and-observability.md:MGT-SCN-037, tenancy-and-security.md:SEC-SCN-028
 func TestRegistryTenantLimitMetricDimensionAllowlist(t *testing.T) {
 	registry := NewRegistry()
 	for _, dimension := range []string{"connections", "sessions", "subscriptions", "message_rate", "byte_rate", "payload_size"} {

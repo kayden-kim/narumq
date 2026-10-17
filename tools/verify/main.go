@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
+	"time"
 )
 
 func main() {
@@ -67,6 +69,30 @@ func run(args []string) int {
 		}
 		fmt.Printf("markdown-links: PASS (files %d, local links %d)\n", summary.MarkdownFiles, summary.LocalLinks)
 		return 0
+	case "scenarios":
+		flags := flag.NewFlagSet("scenarios", flag.ContinueOnError)
+		var goTestJSON, results stringListFlag
+		flags.Var(&goTestJSON, "go-test-json", "go test -json event stream file (repeatable)")
+		flags.Var(&results, "results", "JSON Lines result file for non-Go tests (repeatable)")
+		outputDir := flags.String("output", defaultScenarioOutputDir, "scenario report output directory")
+		requireExecuted := flags.Bool("require-executed", false, "also fail on linked tests in the executed scope that have no pass result")
+		if err := flags.Parse(args[1:]); err != nil {
+			return 2
+		}
+		if flags.NArg() != 0 {
+			fmt.Fprintln(os.Stderr, "scenarios: does not accept positional arguments")
+			return 2
+		}
+		report, err := runScenarios(root, scenarioOptions{GoTestJSON: goTestJSON, Results: results, OutputDir: filepath.Clean(*outputDir), RequireExecuted: *requireExecuted}, time.Now())
+		if err != nil {
+			return printCommandError("scenarios", err)
+		}
+		printScenarioFindings(os.Stderr, report)
+		fmt.Println(formatScenarioSummary(report.Summary))
+		if report.Summary.hasProblems() {
+			return 1
+		}
+		return 0
 
 	case "branch-instrument":
 		flags := flag.NewFlagSet("branch-instrument", flag.ContinueOnError)
@@ -120,6 +146,21 @@ func run(args []string) int {
 		}
 		fmt.Println("ci: PASS")
 		return 0
+	case "acceptance":
+		flags := flag.NewFlagSet("acceptance", flag.ContinueOnError)
+		runPattern := flags.String("run", "", "Go regexp that selects Acceptance tests by name")
+		if err := flags.Parse(args[1:]); err != nil {
+			return 2
+		}
+		if flags.NArg() != 0 {
+			fmt.Fprintln(os.Stderr, "acceptance: does not accept positional arguments")
+			return 2
+		}
+		if err := runAcceptance(ctx, root, *runPattern, os.Getenv, executeCommand, os.Stdout); err != nil {
+			return printCommandError("acceptance", err)
+		}
+		fmt.Println("acceptance: PASS")
+		return 0
 	case "mutation":
 		flags := flag.NewFlagSet("mutation", flag.ContinueOnError)
 		if err := flags.Parse(args[1:]); err != nil {
@@ -134,6 +175,30 @@ func run(args []string) int {
 		}
 		fmt.Println("mutation: PASS")
 		return 0
+	case "baseline":
+		flags := flag.NewFlagSet("baseline", flag.ContinueOnError)
+		resultsPath := flags.String("results", defaultAcceptanceResultsPath, "JSON Lines file that receives the baseline result")
+		if err := flags.Parse(args[1:]); err != nil {
+			return 2
+		}
+		if flags.NArg() != 0 {
+			fmt.Fprintln(os.Stderr, "baseline: does not accept positional arguments")
+			return 2
+		}
+		_, runErr := runBranchBaseline(ctx, root, executeCommand, os.Stdout)
+		return finishAcceptance(root, *resultsPath, "runBranchBaseline", "go run ./tools/verify baseline", "baseline", runErr)
+	case "package-tests":
+		flags := flag.NewFlagSet("package-tests", flag.ContinueOnError)
+		resultsPath := flags.String("results", defaultAcceptanceResultsPath, "JSON Lines file that receives the package test result")
+		if err := flags.Parse(args[1:]); err != nil {
+			return 2
+		}
+		if flags.NArg() != 0 {
+			fmt.Fprintln(os.Stderr, "package-tests: does not accept positional arguments")
+			return 2
+		}
+		runErr := runVerifyPackageTests(ctx, root, executeCommand)
+		return finishAcceptance(root, *resultsPath, "runVerifyPackageTests", "go run ./tools/verify package-tests", "package-tests", runErr)
 	default:
 		fmt.Fprintf(os.Stderr, "verify: unknown subcommand %q\n", args[0])
 		printUsage()
@@ -150,6 +215,23 @@ func printCommandError(name string, err error) int {
 	return 1
 }
 func printUsage() {
-	fmt.Fprintln(os.Stderr, "usage: go run ./tools/verify <traceability|architecture|markdown-links|branch-instrument|coverage|local|ci|mutation>")
+	fmt.Fprintln(os.Stderr, "usage: go run ./tools/verify <traceability|architecture|markdown-links|scenarios|branch-instrument|coverage|local|ci|acceptance|mutation|baseline|package-tests>")
+	fmt.Fprintln(os.Stderr, "  acceptance [--run REGEXP] runs the Go tests marked Acceptance: <ENV> and requires every selected test to pass")
 	fmt.Fprintln(os.Stderr, "  ci requires --base <git-ref>; coverage requires --profile <path>; mutation runs all five packages")
+	fmt.Fprintln(os.Stderr, "  scenarios [--go-test-json FILE]... [--results FILE]... [--require-executed] [--output DIR] writes report.md and report.json")
+	fmt.Fprintln(os.Stderr, "  baseline runs local three times and derives the branch baseline; package-tests runs go test ./tools/verify; both accept --results FILE")
+}
+
+type stringListFlag []string
+
+func (values *stringListFlag) String() string {
+	return strings.Join(*values, ",")
+}
+
+func (values *stringListFlag) Set(value string) error {
+	if value == "" {
+		return errors.New("value must not be empty")
+	}
+	*values = append(*values, filepath.Clean(value))
+	return nil
 }

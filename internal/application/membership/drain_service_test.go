@@ -62,6 +62,7 @@ func drainServiceTestRequest(memberID uint64, key string) StartNodeDrainRequestD
 }
 
 // Traceability: DEP-01/DEP-02; docs/specs/drain-and-rolling-update.md §2.1, §2.2, §10.
+// Scenarios: drain-and-rolling-update.md:DRN-SCN-005
 func TestDrainServiceStartIdempotencyAndValidation(t *testing.T) {
 	service, _ := newDrainServiceTest(t)
 	ctx := context.Background()
@@ -106,6 +107,7 @@ func TestDrainServiceStartIdempotencyAndValidation(t *testing.T) {
 }
 
 // Traceability: DEP-01/DEP-02; docs/specs/drain-and-rolling-update.md §1, §2.1, §10.
+// Scenarios: drain-and-rolling-update.md:DRN-SCN-005
 func TestDrainServiceNonVoterStateAndClusterConflicts(t *testing.T) {
 	t.Run("non-voter includes lifecycle state", func(t *testing.T) {
 		service, port := newDrainServiceTest(t)
@@ -150,6 +152,7 @@ func TestDrainServiceNonVoterStateAndClusterConflicts(t *testing.T) {
 }
 
 // Traceability: DEP-01/DEP-02; docs/specs/drain-and-rolling-update.md §1, §2.3, §10.
+// Scenarios: drain-and-rolling-update.md:DRN-SCN-005
 func TestDrainServiceCancelReplayAndCompletedRejection(t *testing.T) {
 	service, port := newDrainServiceTest(t)
 	ctx := context.Background()

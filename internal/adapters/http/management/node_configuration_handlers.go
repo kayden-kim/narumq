@@ -130,15 +130,25 @@ type mqttTLSConfigurationResponse struct {
 	CAConfigured          bool   `json:"caConfigured"`
 }
 
+type mqttWebSocketConfigurationResponse struct {
+	ListenAddress     string `json:"listenAddress"`
+	TLSListenAddress  string `json:"tlsListenAddress"`
+	MaxConnections    int    `json:"maxConnections"`
+	ConnectionRate    int    `json:"connectionRate"`
+	TLSMaxConnections int    `json:"tlsMaxConnections"`
+	TLSConnectionRate int    `json:"tlsConnectionRate"`
+}
+
 type mqttListenerConfigurationResponse struct {
-	TCPListenAddress         string                        `json:"tcpListenAddress"`
-	TLSListenAddress         string                        `json:"tlsListenAddress"`
-	SecurityConfigConfigured bool                          `json:"securityConfigConfigured"`
-	TCPMaxConnections        int                           `json:"tcpMaxConnections"`
-	TCPConnectionRate        int                           `json:"tcpConnectionRate"`
-	TLSMaxConnections        int                           `json:"tlsMaxConnections"`
-	TLSConnectionRate        int                           `json:"tlsConnectionRate"`
-	TLS                      *mqttTLSConfigurationResponse `json:"tls"`
+	TCPListenAddress         string                              `json:"tcpListenAddress"`
+	TLSListenAddress         string                              `json:"tlsListenAddress"`
+	SecurityConfigConfigured bool                                `json:"securityConfigConfigured"`
+	TCPMaxConnections        int                                 `json:"tcpMaxConnections"`
+	TCPConnectionRate        int                                 `json:"tcpConnectionRate"`
+	TLSMaxConnections        int                                 `json:"tlsMaxConnections"`
+	TLSConnectionRate        int                                 `json:"tlsConnectionRate"`
+	TLS                      *mqttTLSConfigurationResponse       `json:"tls"`
+	WebSocket                *mqttWebSocketConfigurationResponse `json:"webSocket"`
 }
 
 type replicationConfigurationResponse struct {
@@ -286,7 +296,8 @@ func nodeConfigurationResponse(configuration ports.NodeConfigurationDTO) nodeCon
 			SecurityConfigConfigured: configuration.MQTT.SecurityConfigConfigured,
 			TCPMaxConnections:        configuration.MQTT.TCPMaxConnections, TCPConnectionRate: configuration.MQTT.TCPConnectionRate,
 			TLSMaxConnections: configuration.MQTT.TLSMaxConnections, TLSConnectionRate: configuration.MQTT.TLSConnectionRate,
-			TLS: mqttTLSResponse(configuration.MQTT.TLS),
+			TLS:       mqttTLSResponse(configuration.MQTT.TLS),
+			WebSocket: mqttWebSocketResponse(configuration.MQTT.WebSocket),
 		},
 		Replication: replicationConfigurationResponse{Factor: configuration.Replication.Factor, WriteQuorum: configuration.Replication.WriteQuorum},
 		PublishBackpressure: publishBackpressureConfigurationResponse{
@@ -364,6 +375,17 @@ func mqttTLSResponse(configuration *ports.MQTTTLSConfigurationDTO) *mqttTLSConfi
 		ClientAuth: configuration.ClientAuth, MinVersion: configuration.MinVersion,
 		CertificateConfigured: configuration.CertificateConfigured, PrivateKeyConfigured: configuration.PrivateKeyConfigured,
 		CAConfigured: configuration.CAConfigured,
+	}
+}
+
+func mqttWebSocketResponse(configuration *ports.MQTTWebSocketConfigurationDTO) *mqttWebSocketConfigurationResponse {
+	if configuration == nil {
+		return nil
+	}
+	return &mqttWebSocketConfigurationResponse{
+		ListenAddress: configuration.ListenAddress, TLSListenAddress: configuration.TLSListenAddress,
+		MaxConnections: configuration.MaxConnections, ConnectionRate: configuration.ConnectionRate,
+		TLSMaxConnections: configuration.TLSMaxConnections, TLSConnectionRate: configuration.TLSConnectionRate,
 	}
 }
 

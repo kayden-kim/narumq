@@ -162,6 +162,7 @@ type compatibilityRun struct {
 }
 
 // Run executes one complete compatibility evidence run and writes its summary.
+// Scenarios: mqtt-protocol-and-session.md:MQTT-SCN-042
 func Run(ctx context.Context, options runOptions) (Summary, error) {
 	profile, _, err := LoadProfile(options.ProfilePath)
 	if err != nil {

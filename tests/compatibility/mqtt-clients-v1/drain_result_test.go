@@ -51,3 +51,65 @@ func TestValidateDrainResultRejectsContractViolations(t *testing.T) {
 		}
 	})
 }
+
+// Scenarios: drain-and-rolling-update.md:DRN-SCN-016
+func TestDrainSuiteVerdictsSeparateSDKDiagnostics(t *testing.T) {
+	for _, test := range []struct {
+		name         string
+		kind         string
+		failedCase   string
+		missingCase  string
+		wantStatus   string
+		wantExpected int
+		wantFailed   int
+	}{
+		{
+			name: "diagnostic failure does not block normal drain",
+			kind: "cluster_drain", failedCase: "go-mqtt5-malformed-duplicate-server-reference",
+			wantStatus: "passed", wantExpected: 2,
+		},
+		{
+			name: "diagnostic failure remains visible in its own suite",
+			kind: "malformed_disconnect", failedCase: "go-mqtt5-malformed-duplicate-server-reference",
+			wantStatus: "failed", wantExpected: 8, wantFailed: 1,
+		},
+		{
+			name: "normal drain failure still blocks approval",
+			kind: "cluster_drain", failedCase: "go-mqtt5-drain-redirect",
+			wantStatus: "failed", wantExpected: 2, wantFailed: 1,
+		},
+		{
+			name: "missing normal SDK result still blocks approval",
+			kind: "cluster_drain", missingCase: "python-mqtt5-drain-redirect",
+			wantStatus: "failed", wantExpected: 2, wantFailed: 1,
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			p := selectDrainProfile(canonicalDrainProfile(), test.kind)
+			results := make(map[string][]Result)
+			for _, c := range p.ExpectedCases {
+				if c.CaseID == test.missingCase {
+					continue
+				}
+				r := passingDrainResult(c, p)
+				if c.CaseID == test.failedCase {
+					if c.Kind == "cluster_drain" {
+						r.Observations["willReceived"] = true
+					} else {
+						r.Observations["serverReferenceAccepted"] = true
+					}
+				}
+				results[c.CaseID] = []Result{r}
+			}
+			summary := AggregateDrainSummary("suite-boundary", p, results, nil, "", "")
+			if summary.Status != test.wantStatus || summary.ExpectedCases != test.wantExpected || summary.FailedCases != test.wantFailed {
+				t.Fatalf("unexpected suite verdict: %+v", summary)
+			}
+			for _, item := range summary.CaseSummaries {
+				if item.CaseID == test.failedCase && item.Status != "failed" {
+					t.Fatalf("failure was hidden: %+v", item)
+				}
+			}
+		})
+	}
+}

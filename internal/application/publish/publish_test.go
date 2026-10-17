@@ -359,6 +359,7 @@ func TestPublishSharedSubscriptionHandoff(t *testing.T) {
 }
 
 // Traceability: UI-03; docs/specs/management-api-and-observability.md §7.1.
+// Scenarios: management-api-and-observability.md:MGT-SCN-030
 func TestPublishQueueFullDropMetricRequiresUnsuccessfulDelivery(t *testing.T) {
 	for _, testCase := range []struct {
 		name     string

@@ -4,17 +4,17 @@
 
 | 항목 | 값 |
 | --- | --- |
-| 상태 | Active (Phase 1 query profile, broker drain, cluster feature activation, management-plane audit, API rate limit, SEC-10 OIDC/API key RBAC, SEC-12 client blocklist, API-09 `mqttLimits`와 node configuration 조회, TEN-08 ClusterPolicy quota slice; 다른 ADR-0052 policy domain과 운영 mutation은 deferred) |
-| 관련 요구사항 | API-01~API-09, UI-01~UI-10, SEC-10~SEC-12 |
+| 상태 | Active (Phase 1 query profile, broker drain, cluster feature activation, management-plane audit, API rate limit, SEC-10 OIDC/API key RBAC, SEC-12 client blocklist, API-09 `mqttLimits`와 node configuration 조회, TEN-08 ClusterPolicy quota slice, MQTT-10 WS/WSS admission metric; 다른 ADR-0052 policy domain과 운영 mutation은 deferred) |
+| 관련 요구사항 | API-01~API-09, MQTT-10, UI-01~UI-10, SEC-10~SEC-12 |
 | 근거 | [PRD 9.5절, 9.6절과 14장](../requirements/PRD.md) |
 | 관련 spec | [Tenant와 security](tenancy-and-security.md), [Drain](drain-and-rolling-update.md) |
 | 관련 Architecture | [System overview](../architectures/system-overview.md), [Security boundaries](../architectures/security-boundaries.md) |
-| 관련 결정 | [ADR-0005](../decisions/ADR-0005-management-api-contract-format.md), [ADR-0018](../decisions/ADR-0018-release-compatibility-window.md), [ADR-0043](../decisions/ADR-0043-management-api-rate-limit.md), [ADR-0045](../decisions/ADR-0045-operations-dashboard-grafana.md), [ADR-0048](../decisions/ADR-0048-management-api-oidc-api-key-rbac.md), [ADR-0050](../decisions/ADR-0050-mqtt-client-blocklist.md), [ADR-0052](../decisions/ADR-0052-configuration-tiers-and-cluster-policy.md) §1.1.1 |
+| 관련 결정 | [ADR-0005](../decisions/ADR-0005-management-api-contract-format.md), [ADR-0018](../decisions/ADR-0018-release-compatibility-window.md), [ADR-0043](../decisions/ADR-0043-management-api-rate-limit.md), [ADR-0045](../decisions/ADR-0045-operations-dashboard-grafana.md), [ADR-0048](../decisions/ADR-0048-management-api-oidc-api-key-rbac.md), [ADR-0050](../decisions/ADR-0050-mqtt-client-blocklist.md), [ADR-0052](../decisions/ADR-0052-configuration-tiers-and-cluster-policy.md) §1.1.1, [ADR-0057](../decisions/ADR-0057-mqtt-websocket-listener.md) |
 | 관련 Contract | [Management API v1](../contracts/management-api-v1.md), [Management API OpenAPI](../contracts/management-api-v1.openapi.json), [Audit event v1](../contracts/audit-event-v1.md) |
 
 ## 1. HTTP 공통 계약
 
-- 관리 API base path는 `/api/v1`이다. 호환되지 않는 변경은 새 major path에서 제공해야 한다.
+- Management API의 base path는 `/api/v1`이다. 사용자가 승인한 1.18.0 개발 계약 재정의는 현재 v1에서 직접 교체하며 별도 alias를 제공하지 않는다. 이 재정의 이후의 breaking change는 새 major path에서 제공한다.
 - request와 response body는 `application/json` UTF-8을 사용한다.
 - `/api/v1` 요청은 인증과 RBAC를 통과해야 한다. Health probe와 `/metrics`의 익명 노출 범위는 listener 정책으로 제한할 수 있다.
 - 서버는 수신한 유효 request ID를 사용하거나 새 값을 생성해 `X-Request-Id`에 반환해야 한다.
@@ -109,7 +109,7 @@ Standalone mode는 `-http-request-rate`와 `-http-auth-failure-rate`를 사용�
 
 ### 2.1 Phase 1 active profile
 
-- OpenAPI에 정의된 22개 GET operation(health·metrics 포함)과 cluster backup POST, broker drain POST/GET/DELETE, membership, rebalance, feature, security와 cluster policy operation이 구현·계약 대상이다. 정확한 parameter allowlist, schema, response와 operation ID는 OpenAPI가 SSOT이며 `tests/contracts/management-api-v1`가 runtime handler와 일치하는지 검사한다.
+- OpenAPI에 정의된 24개 GET operation(health·metrics 포함)과 cluster backup POST, broker drain POST/GET/DELETE, membership, rebalance, feature, security와 cluster policy operation이 구현·계약 대상이다. 정확한 parameter allowlist, schema, response와 operation ID는 OpenAPI가 SSOT이며 `tests/contracts/management-api-v1`가 runtime handler와 일치하는지 검사한다.
 Node configuration와 audit query는 요청을 받은 node에만 적용한다. `nodeId`는 canonical positive decimal uint64여야 한다. ID가 잘못됐거나 canonical 형식이 아니면 `404 resource_not_found`, 다른 유효한 node ID면 `409 node_not_local`을 반환하며 원격 proxy를 하지 않는다. `/api/v1/nodes/{nodeId}/drain`은 Raft commit으로 cluster 전체에 적용되므로 이 제한에서 제외한다.
 
 | Method | Path | 성공 동작 | 권한 |
@@ -119,12 +119,14 @@ Node configuration와 audit query는 요청을 받은 node에만 적용한다. `
 | GET | `/health/startup` | 초기 동기화가 완료되면 `200` | probe policy |
 | GET | `/health/drain` | node가 `SAFE_TO_STOP`이면 `200` | probe policy |
 | GET | `/metrics` | Prometheus 또는 OpenMetrics scrape | monitoring policy |
+| GET | `/api/v1/metrics` | node 또는 cluster typed JSON metric snapshot 조회 | ReadOnly |
 | GET | `/api/v1/cluster` | quorum과 cluster 요약 조회 | ReadOnly |
 | POST | `/api/v1/cluster/members` | cluster member admission 시작 | ClusterAdmin |
 | DELETE | `/api/v1/cluster/members/{memberId}` | planned removal 시작 또는 기존 operation replay | ClusterAdmin |
 | POST | `/api/v1/cluster/backups` | quorum-fresh typed state backup archive 다운로드 | ClusterAdmin |
 | GET | `/api/v1/nodes` | state filter와 pagination을 사용한 node 목록 조회 | ReadOnly |
 | GET | `/api/v1/nodes/{nodeId}` | node detail 조회 | ReadOnly |
+| GET | `/api/v1/nodes/{nodeId}/metrics` | 대상 node의 typed metric snapshot 조회 | ReadOnly |
 | GET | `/api/v1/nodes/{nodeId}/config` | 해당 node의 실제 적용 설정·policy source 조회 | ClusterAdmin |
 | GET | `/api/v1/cluster/features` | committed active feature와 member build profile 조회 | ReadOnly |
 | POST | `/api/v1/cluster/features/{feature}` | 모든 non-retired member가 지원하는 feature 활성화; replay는 성공 no-op | ClusterAdmin |
@@ -170,17 +172,21 @@ Active drain endpoint의 body와 상태는 [drain spec](drain-and-rolling-update
 
 `DRAINING`과 `SAFE_TO_STOP` node의 readiness는 실패해야 한다. Startup이 아직 실패한다고 liveness도 실패하게 만들어 초기 sync 중 재시작 loop를 유발해서는 안 된다.
 
+Cluster startup은 `JOINING`일 때 readiness와 같은 quorum·sync·route 준비 조건을 직접 확인한다. 조건을 충족하면 `READY`로 전환하고 성공한다. 외부 `/health/ready` 호출을 기다려서는 안 된다. Kubernetes는 startup 성공 전에 readiness probe를 실행하지 않기 때문이다. Typed Raft recovery 전에는 계속 `STARTING`이며, 이미 시작한 node의 drain 상태를 startup 요청으로 해제하지 않는다.
+
 ## 4. Cluster·node representation
 
-Cluster 요약은 최소 다음 정보를 제공해야 한다.
+Cluster 요약은 cluster identity·release compatibility·term·leader, membership/quorum 정보, lifecycle별 node 수, replication/storage 요약을 제공한다. `nodesByState`에는 `joining`, `ready`, `draining`, `safeToStop`, `unknown`을 반환한다. `unknown`은 retired member를 제외하고 실제 상태를 읽지 못한 member 수다. `nodeQueryComplete`와 `observedAt`은 cluster node query 완료 상태와 응답 생성 시각을 나타낸다.
 
-- cluster ID, release compatibility 범위와 current term/leader 식별 정보
-- member 수, quorum 필요 수와 quorum 가능 여부
-- READY/JOINING/DRAINING/SAFE_TO_STOP node 수
-- replica 부족·replication lag와 storage pressure 요약
-- 전체 connection, session, subscription과 message rate 요약
+Node 상세는 membership identity와 query 상태, 대상 node에서 직접 측정한 version, uptime, lifecycle, readiness 원인, role, applied index, connection·session 수, storage pressure와 local storage health를 제공한다. 측정값은 required nullable field다. `queryStatus=OK`이면 readiness가 false여도 실제 측정 결과다. 원격 조회 실패·미지원·퇴역·오류에서는 모든 측정값과 `observedAt`이 null이며 기본값이나 이전 값을 재사용하지 않는다. `replicationHealth`는 대상 node의 local storage health만 나타낸다. `replicationQueue`는 제거하고, peer별 replication lag는 `narumq_raft_peer_replication_lag_entries{peer}`로 본다.
 
-Node 상세는 `nodeId`, version, uptime, lifecycle state, readiness 원인, role, last applied index, resource pressure, connection 수와 drain operation을 포함해야 한다. Cluster mode에서 현재 node의 `replicationHealth`는 local Raft storage 상태를 나타내고, 원격 peer 행에서는 조회 node가 관찰한 peer 연결 상태를 나타내며 remote storage 상태를 주장하지 않는다. `lastErrorCode`는 원인별 안정된 code다. 원격 peer 행의 `replicationQueue`는 조회 node에서 해당 peer로 보내는 outbound message·byte·rejection 수를 제공한다. Local `DEGRADED`·`FAILED`는 lifecycle `state`를 변경하지 않고 readiness와 `storagePressure`에 반영하며, 내부 오류 원문을 노출해서는 안 된다. 정확한 field name과 schema는 OpenAPI에서 고정한다.
+`connectionCount`와 `sessionCount`는 non-retired node를 모두 성공적으로 읽었을 때만 합산한다. 일부 node가 unknown이면 두 합계는 null이다. `subscriptionCount`는 각 node의 복제된 route projection을 합산하지 않고 요청 node의 local committed projection 값으로 반환한다. `quorumAvailable`은 요청 node의 fresh proof 결과이며 remote query 성공 여부로 대체하지 않는다. `memberCount`, leader·quorum profile과 `underReplicated`의 의미는 유지한다.
+
+Node 목록은 Dynamic node ID 오름차순으로 반환한다. `state` filter는 실제 state를 성공적으로 읽은 node만 대상으로 한다. Filter가 없으면 retired·staged member도 나타내며 staged member는 `UNREACHABLE`/`node_not_running`이다. Page 사이의 membership snapshot 원자성은 보장하지 않는다.
+
+Metric 수집은 Management API와 `/metrics`가 같은 typed Registry snapshot을 사용한다. `/metrics?mode=node`는 기존 node-local fast path이며 RPC·readiness proof가 없다. `all_nodes_unaggregated`는 sample마다 `node_id`를 붙이고 각 node의 replicated projection도 별도 보존한다. `all_nodes_aggregated`는 catalog의 gauge `sum`, `max`, `per_node`만 적용한다. Counter와 histogram은 process restart 뒤 reset-safe rate/increase를 계산할 수 없으므로 node별 series를 유지한다. Histogram bucket·stage label과 누락 sample은 그대로 보존하며 없는 값을 0으로 만들지 않는다.
+
+`/api/v1/nodes/{nodeId}/metrics`는 node snapshot과 `startedAt`을 반환한다. `GET /api/v1/metrics` 기본값은 `all_nodes_unaggregated`다. Unaggregated 응답은 부분 실패를 HTTP 200, `complete=false`, node별 상태 metadata로 나타낸다. Aggregated JSON과 cluster text mode는 non-retired node 하나라도 실패하면 retryable 503을 반환하며 partial text를 쓰지 않는다. `/metrics?mode=node`는 anonymous scrape policy를 유지한다. Cluster text mode와 모든 JSON metric route는 `ReadOnly` 인증이 필요하다. Public measurement/schema·mode·error 형식은 [Management API v1 contract](../contracts/management-api-v1.md)과 OpenAPI가 기준이다.
 
 Dynamic Raft inbound의 count·byte 한도에는 payload를 읽기 위해 예약한 frame과 driver가 인수했지만 아직 `Complete`하지 않은 frame도 포함한다. 포화된 reader는 payload를 할당하지 않은 채 공간을 기다리며, 이 아직 예약하지 못한 frame은 queue count·byte에 더하지 않는다. 한 reader의 예약·대기·해제는 [v2 Raft 경계 계약](../contracts/raft-membership-v2.md)의 채택된 inbound 정책을 따른다. Forwarding lane과 fixed-voter queue의 의미는 바꾸지 않는다.
 
@@ -227,7 +233,7 @@ Dynamic cluster의 Raft WAL 동기화 세 series는 **WAL group fsync 한 번의
 
 이 세 series는 **label을 갖지 않는다**. 따라서 client ID, tenant, arbitrary topic 또는 node identity를 label에 추가해서는 안 된다. Registry는 모든 모드에서 series를 render하며 WAL observer가 연결되지 않은 standalone/fixed-voter 모드의 값은 0이다. Histogram을 cluster 차원으로 합산할 때는 node별 raw bucket count를 동일 경계에서 더하고, node별 quantile의 평균을 구하지 않는다.
 
-`internal/adapters/raft`의 `WALSyncObserver`는 dynamic cluster의 successful WAL group `File.Sync` 뒤에 한 번만 불린다. 저장 값이 없어 frame·sync가 생략된 요청과 fsync 실패는 관찰하지 않으며, fixed-voter `raft_peer_config.go` 경로에는 observer를 연결하지 않는다. 시험 위치: `internal/adapters/raft/wal_worker_test.go::TestWALWorkerGroupsQueuedFramesAndFailsClosed`, `internal/adapters/raft/node_test.go::TestWALSyncObserverReportsSuccessfulReadyFsyncs`, `internal/adapters/metrics/registry_test.go::TestRegistryRendersWALSyncMetrics`.
+`internal/adapters/raft`의 `WALSyncObserver`는 dynamic cluster의 successful WAL group `File.Sync` 뒤에 한 번만 불린다. 저장 값이 없어 frame·sync가 생략된 요청과 fsync 실패는 관찰하지 않으며, fixed-voter `raft_peer_config.go` 경로에는 observer를 연결하지 않는다.
 
 Dynamic cluster는 `narumq_raft_stage_duration_seconds{stage}` histogram으로 driver의 처리·대기 시간을 기록한다. 고정 stage와 시작·종료 경계는 [BP-03 Raft 병목 진단](performance-and-verification.md#raft-병목-진단)을 따른다. Finite bucket은 `0.0001`, `0.00025`, `0.0005`, `0.001`, `0.0025`, `0.005`, `0.01`, `0.025`, `0.05`, `0.1`, `0.25`, `0.5`, `1`, `2`, `5`, `10`초이며 표준 `+Inf`를 추가한다. Registry는 모든 mode에서 render하지만 dynamic driver가 아닌 경로의 값은 0이다. 이 값에는 실패와 빈 Ready 처리도 포함되므로 WAL 성공 수나 MQTT 성공 ACK 수와 같은 분모로 취급하지 않는다.
 
@@ -247,12 +253,11 @@ Warn log `tenant limit rejected a request`는 tenant·dimension마다 10초에 �
 
 `narumq_will_outcomes_total{reason}` counter는 [Drain §5](drain-and-rolling-update.md#5-will-판정과-관측)의 6개 reason만 허용한다. 모든 mode에서 6개 series를 0부터 항상 같은 순서로 render한다. 알 수 없는 reason은 무시하며 임의 label을 추가하지 않는다.
 `narumq_audit_events_total{outcome}`은 `published`, `publish_failed`, `invalid`, `denial_suppressed`, `mutation_rejected`, `dataplane_suppressed`, `dataplane_dropped`의 7개 outcome을 허용한다. 모든 format과 mode에서 7개 series를 0부터 고정 순서로 render한다. `dataplane_suppressed`는 초당 rate limit 초과를, `dataplane_dropped`는 queue 포화·종료 뒤 event를 나타낸다. 알 수 없는 outcome은 무시한다. `narumq_audit_publisher_ready` gauge는 node-local publisher가 append할 수 있으면 1, 아니면 0이다. 이 Metric에는 tenant, request ID, actor, action 또는 target label을 추가하지 않는다.
-Audit outcome series의 고정 순서, 0 기본값, 알 수 없는 label 무시와 readiness gauge는 `internal/adapters/metrics/registry_test.go::TestRegistryRendersAuditMetrics`에서 검증한다.
 
 `narumq_mqtt_listener_admission_rejected_total{transport,reason}` counter는 CONNECT 전에
-listener 한도로 닫은 socket을 센다. `transport`는 `tcp`, `tls`만 허용한다.
-`reason`은 `max_connections`, `connection_rate`만 허용한다. 모든 mode에서 4개
-series를 0부터 같은 순서로 render한다. Transport 순서는 `tcp`, `tls`이며 각
+listener 한도로 닫은 socket을 센다. `transport`는 `tcp`, `tls`, `ws`, `wss`만 허용한다.
+`reason`은 `max_connections`, `connection_rate`만 허용한다. 모든 mode에서 8개
+series를 0부터 같은 순서로 render한다. Transport 순서는 `tcp`, `tls`, `ws`, `wss`이며 각
 transport 안의 reason 순서는 `max_connections`, `connection_rate`다. 알 수 없는
 값은 무시한다.
 
@@ -262,13 +267,11 @@ transport 안의 reason 순서는 `max_connections`, `connection_rate`다. 알 �
 
 `narumq_node_drain_active`와 `narumq_node_drain_progress{quantity}`는 이 node가 적용한 drain operation의 committed progress를 나타낸다. `quantity`는 `connections_initial`, `connections_remaining`, `sessions_ready_for_takeover`, `sessions_taken_over`, `sessions_failed`, `pending_wal`, `under_replicated`다. Process 재시작 뒤에는 다음 local drain 명령 적용 전까지 모든 값이 0이다. Drain 속도와 ETA는 이 gauge의 Prometheus 추이에서 계산한다.
 
-시험 위치: `internal/adapters/metrics/registry_test.go::TestRegistryRendersConnectRejectionsByProtocolAndReason`, `TestRegistryRendersMessageDrops`, `TestRegistryRendersNodeDrainProgress`; `internal/adapters/metrics/registry_aggregation_test.go::TestRegistryFamiliesMatchAggregationCatalog`.
-
 기본 label에 원문 `clientId`, username, IP, 임의 topic, request ID와 token claim을 넣어서는 안 된다. 제한된 exact topic Metric은 P1 opt-in resource로 제공하며 tenant, 최대 등록 수와 TTL을 적용해야 한다.
 
 ### 7.1 Metric별 node·cluster 집계
 
-각 node의 `/metrics`는 해당 node의 값만 출력한다. Cluster 값은 Prometheus 같은 조회 계층이 아래 규칙으로 계산한다. 새 Metric family를 추가하면 아래 family 표에도 행을 추가해야 한다. `internal/adapters/metrics/registry_aggregation_test.go::TestRegistryFamiliesMatchAggregationCatalog`는 이 표를 읽어 `/metrics` 출력과 비교한다.
+각 node의 `/metrics`는 해당 node 값만 출력한다. Prometheus는 scrape target의 `node_id` label로 node를 구분하고 아래 catalog에 따라 time-series를 집계한다. Management API snapshot mode도 같은 descriptor catalog를 사용하되 reset-safe stateless aggregation은 §7.2 규칙을 따른다. 새 Metric family를 추가하면 아래 표에도 행을 추가해야 한다.
 
 | 값 | 구분 | 뜻 |
 | --- | --- | --- |
@@ -333,6 +336,28 @@ transport 안의 reason 순서는 `max_connections`, `connection_rate`다. 알 �
 
 Standalone mode는 node가 하나뿐이므로 `replicated`와 `node`의 결과가 같다.
 
+### 7.2 Snapshot API와 cluster mode
+
+`GET /api/v1/nodes/{nodeId}/metrics`는 대상 Registry의 typed snapshot을 반환한다. `NodeMetricsData`는 `nodeId`, `queryStatus`, nullable `queryErrorCode`, nullable `observedAt`, nullable `startedAt`, nullable `families`를 포함한다. `OK`에서 empty snapshot은 `[]`다. 다른 status에서는 두 시각과 `families`가 null이다. `startedAt`은 Registry instance 시작 경계이며 OS process 생성 시각이라고 보장하지 않는다.
+
+`GET /api/v1/metrics`는 `mode=node`, `all_nodes_unaggregated`, `all_nodes_aggregated`를 받는다. 기본값은 `all_nodes_unaggregated`다. `MetricCollectionData`는 요청 mode, 전체 collection 완료 시각, `complete`, node별 metadata와 family를 반환한다. Empty arrays는 `[]`다. `node`는 local Registry fast path를 사용하며 다른 node에 RPC를 보내거나 readiness를 검사하지 않는다.
+
+Node mode에서 metric label은 catalog 그대로 유지한다. Unaggregated cluster mode는 모든 sample에 `node_id` label을 추가하며 기존 label을 보존한다. `labelNames`에도 추가 label을 반영한다. Aggregated mode는 동일 원래 label identity별 gauge `sum` 또는 `max`를 적용하고 `per_node`는 `node_id`를 유지한다. Leader-scoped lag는 실제 반환 sample의 동일 peer별 max만 계산한다. Counter/`increase_sum`와 histogram/`bucket_sum`은 원시 누적값을 합치지 않고 `node_id`를 유지한다. Consumer는 node별 counter rate 또는 histogram bucket rate를 계산한 뒤 합산한다. Restart metadata가 rate 계산의 경계다.
+
+Family와 sample은 이름·label 기준으로 정렬한다. Label 이름 중복, catalog와 다른 descriptor, 잘못된 family·bucket schema, non-finite sample, integer overflow, 서로 다른 descriptor는 aggregation failure다. Missing sample을 0으로 채우지 않는다. Snapshot에는 최대 64 family, 16,384 sample, sample당 8 label, label value당 1,024 UTF-8 byte를 허용한다. 각 node snapshot은 최대 8 MiB, 전체 JSON/text 결과는 최대 64 MiB다. 한도를 넘으면 결과를 자르지 않고 오류를 반환한다.
+
+전체 collection은 시작 시 membership을 한 번 복사하고 최대 8 worker로 대상 node를 조회한다. 요청 전체 기한은 5초이며 caller deadline이 더 짧으면 이를 따른다. 자동 재시도와 주기 cache는 없다. 취소 시 진행 중 조회를 취소하고 worker를 모두 종료한다. Raw transport error·주소·인증 정보는 외부 오류에 노출하지 않는다.
+
+| Query status 또는 오류 | 관찰 동작 |
+| --- | --- |
+| `OK` | 대상이 직접 측정한 snapshot과 `observedAt` 반환 |
+| `UNREACHABLE` / `node_unreachable`, `node_query_timeout`, `node_not_running` | 측정값 없음; Node API는 상태 metadata를 반환 |
+| `UNSUPPORTED` / `node_query_unsupported` | capability가 없는 peer; RPC 전송 안 함 |
+| `RETIRED` | 측정값 없음; 오류 code 없음 |
+| `ERROR` / `node_query_busy`, `node_query_invalid_response`, `node_snapshot_too_large`, `node_query_failed` | 정제한 실패 code와 함께 미확인 처리 |
+| `metrics_collection_incomplete` | Aggregated JSON 또는 cluster text의 하나 이상 대상 실패; retryable 503 |
+| `metrics_snapshot_too_large`, `metrics_aggregation_failed` | 64 MiB 한도 또는 schema·reduction 실패; retryable 503 |
+
 
 ## 8. Dashboard 계약
 
@@ -349,8 +374,8 @@ Dashboard는 외부 시계열 원본인 Prometheus와 snapshot용 Management API
 | 2 | 클러스터 상태 | Replica 부족 | UI-02 | stat | 같은 API의 `underReplicated`; 0은 초록색, 1 이상은 빨간색 |
 | 3 | 클러스터 상태 | Leader | UI-02 | stat | 같은 API의 decimal string `leaderNodeId`; Grafana에서 숫자로 표시하고 `null`은 빨간색 `없음` |
 | 4 | 클러스터 상태 | Member·Quorum | UI-02 | stat | 같은 API의 `memberCount`, `quorumSize`, `replicationFactor`, `writeQuorum` |
-| 5 | 클러스터 상태 | Node 상태 수 | UI-01 | stat | 같은 API의 `nodesByState.ready`, `joining`, `draining`, `safeToStop` |
-| 6 | 클러스터 상태 | Node topology | UI-01 | table | Management API `GET /api/v1/nodes?limit=1000`; `nodeId`, `role`, `version`, `uptimeMillis`, `state`, `ready`, `readinessReason`, `replicationHealth`, `storagePressure`, `connectionCount`, `lastAppliedIndex`. `READY`는 초록색, `JOINING`은 노란색, `DRAINING`은 주황색, `SAFE_TO_STOP`은 파란색이며 `ready=false` 또는 replication health `DEGRADED`·`FAILED`·`UNREACHABLE`은 빨간색 |
+| 5 | 클러스터 상태 | Node 상태 수 | UI-01 | stat | 같은 API의 `nodesByState.ready`, `joining`, `draining`, `safeToStop`, `unknown`, `nodeQueryComplete`; `nodeQueryComplete=true`는 초록 `완료`, false는 주황 `일부 미확인` |
+| 6 | 클러스터 상태 | Node topology | UI-01 | table | Management API `GET /api/v1/nodes?limit=1000`; `nodeId`, `membershipPhase`, `queryStatus`, `queryErrorCode`, `observedAt`와 nullable 측정 field. Query status와 null을 아래 DASH-01 mapping으로 표시한다 |
 | 7 | Traffic | 연결·session·subscription | UI-03 | timeseries | Prometheus: `sum(narumq_connections_active{node_id=~"$node"})`, `sum(narumq_sessions_active{node_id=~"$node"})`, `max(narumq_subscriptions_active{node_id=~"$node"})` |
 | 8 | Traffic | Message rate | UI-03 | timeseries | Prometheus: 수신 `sum(rate(narumq_packets_received_total{packet_type="PUBLISH",node_id=~"$node"}[$__rate_interval]))`; 송신은 `narumq_packets_sent_total`로 같은 식 |
 | 9 | Traffic | Protocol별 CONNECT 성공 | UI-03 | timeseries | Prometheus: `sum by (protocol) (rate(narumq_connections_total{result="success",node_id=~"$node"}[$__rate_interval]))` |
@@ -363,7 +388,8 @@ Dashboard는 외부 시계열 원본인 Prometheus와 snapshot용 Management API
 
 ### DASH-01: Node topology and readiness
 
-UI-01은 panel 5와 6에서 다룬다. 수용 시험은 세 broker process 각각의 `/health/ready`가 `200`을 반환하는지 확인한다. `GET /api/v1/nodes`는 요청을 받은 node의 readiness를 제공한다. 원격 node는 `JOINING`과 `remote readiness is not available from this node`를 반환한다. Dashboard는 이 응답을 그대로 표시하고 원격 readiness를 추정하지 않는다.
+UI-01은 panel 5와 6에서 다룬다. 세 node가 정상 조회되면 실제 상태와 함께 Ready=3, Joining=0, Unknown=0, `nodeQueryComplete=true`를 표시한다. Raft quorum은 있지만 대상 readiness proof가 실패하면 `queryStatus=OK`, `ready=false`인 실제 not-ready 상태다. 조회 불가 시 해당 row는 `UNREACHABLE`과 null measurement를 표시하고 cluster `unknown` 수를 올리며 `nodeQueryComplete=false`를 표시한다. Dashboard는 null을 0 또는 `JOINING`으로 바꾸지 않는다.
+Panel 6은 사용자가 readiness 원인을 먼저 볼 수 있도록 `Node`, `State`, `Ready`, `Readiness reason`, `Query status`, `Query error`, `Membership`, `Role`, `Replication` 순서로 표시한다. 나머지 snapshot field는 그 뒤에 둔다. Override matcher는 selector가 아니라 실제 column `State`, `Ready`, `Replication`, `Query status`를 사용한다. State `READY`는 초록, `JOINING`은 노랑, `DRAINING`은 주황, `SAFE_TO_STOP`은 파랑, null은 회색 `미확인`이다. Ready true는 초록 `READY`, false는 빨강 `NOT READY`, null은 회색 `미확인`이다. Replication `HEALTHY`는 초록, `DEGRADED`·`FAILED`는 빨강, null은 회색 `미확인`이다. Query status `OK`는 초록 `조회 성공`, `UNREACHABLE`은 주황 `조회 불가`, `UNSUPPORTED`는 회색 `조회 미지원`, `RETIRED`는 회색 `퇴역`, `ERROR`는 주황 `조회 오류`다. Null 숫자는 `—`로 표시하며 0으로 변환하지 않는다.
 
 ### DASH-02: Quorum and replication
 
@@ -389,32 +415,56 @@ Panel 14의 속도 단위는 연결/초와 takeover/초이며 ETA 단위는 초�
 
 ## 9. 수용 시험
 
-- API-05 rate-limit 수용 시험은 인증 성공 principal과 인증 실패 IP의 독립 bucket, token 보충·clock 역행, probe·metrics 제외, 403 token 소비, mutation 거절 감사, key 상한·eviction, `RemoteAddr` host 해석, OpenAPI `429`, standalone·cluster 설정 범위를 확인한다: `internal/adapters/http/management/rate_limit_test.go`, `tests/contracts/management-api-v1/contract_test.go::TestManagementRateLimitMatchesOpenAPI`, `cmd/narumq/cmd_config_coverage_test.go`.
-- API-05 집중 시험 결과(2026-10-09): adapter rate-limit 시험 7개, management OpenAPI contract suite, cluster·standalone 설정 시험이 모두 통과했다. 실행 파일 smoke 시험은 인증된 요청에서 `200, 200, 429`, 잘못된 자격 증명에서 `401, 429`를 반환했다. Liveness probe 5회는 모두 `200`이었다. 두 `429` 응답은 `Retry-After: 1`을 포함했다. 범위를 벗어난 standalone rate는 exit 1과 `-http-request-rate and -http-auth-failure-rate must be between 1 and 1000000` 오류를 반환했다.
-- API-05 전체 검증 결과(2026-10-09): `go run ./tools/verify traceability`가 P0 81건 중 60건 매핑, 예외 21건으로 통과했다. `go run ./tools/verify local`도 153.41초 만에 통과했다. Cluster process fixture는 API 제한이 다른 process acceptance 시험을 막지 않도록 두 rate를 최댓값으로 설정한다. 64개 동시 fresh-read 요청 시험은 5.50초 만에 통과했다.
-- Feature 조회 response는 `data.activeFeatures`와 `data.members`를 포함한다. 각 member는 decimal string `nodeId`, canonical `releaseVersion`, 정렬된 `features`를 가진다. 빈 collection은 JSON `[]`로 반환한다.
-- Contract suite는 cluster feature GET response shape, 활성화 POST의 200, 미지원 feature의 non-retryable 409, invalid feature의 400과 ReadOnly role POST의 403을 검사한다.
-- 같은 contract suite가 pagination `1`/`1000` 경계, `1001` 초과, duplicate·unknown query와 subscriptions/retained의 required `tenantId`를 검증한다.
-- 같은 contract suite가 anonymous, 잘못된 credential, ReadOnly API key 성공과 ClusterAdmin 권한 부족 `403`을 검증한다.
-- startup, liveness, readiness와 drain-complete가 quorum·sync·drain 상태 조합을 정확히 반영하는지 시험한다.
-- SEC-11 / API-08 / NFR-17 수용 시험은 활성 management mutation 8개, 401·403 거절, fail-closed admission, hash-chain 손상, schema 검증, directory 경계와 Windows rotation 충돌을 확인한다: `internal/application/audit/service_test.go`, `internal/adapters/http/management/audit_test.go`, `cmd/narumq/cluster_config_test.go`, `cmd/narumq/main_test.go` (`TestAuditVerifyCommandVerifiesAndLeavesFilesReadOnly`), `tests/contracts/audit-event-v1/contract_test.go`, `tests/integration/cluster_audit_process_test.go::TestDynamicClusterManagementAuditProcessAcceptance`, `internal/adapters/auditlog/file_publisher_test.go`, `internal/adapters/auditlog/persist_windows_test.go`. Process acceptance는 2026-10-09에 통과했다(시험 5.82초).
-- Cluster startup probe는 typed Raft recovery가 끝나기 전 `STARTING`, recovery 뒤 base lifecycle 상태를 반환해야 한다. `cmd/narumq/cluster_storage_health_test.go::TestClusterStartupWaitsForTypedRecovery`가 두 상태를 확인한다.
-- Metric format, type, HELP/UNIT, histogram bucket과 금지 label을 자동 검사한다.
-- UI-03 CONNECT 거절 label과 CONNACK mapping: `internal/adapters/tcp/server_connect_reject_test.go::TestConnectRejectReasonMapsEveryCONNACKCode`, `internal/adapters/metrics/registry_test.go::TestRegistryRendersConnectRejectionsByProtocolAndReason`, `tests/integration/management_api_test.go::TestMQTTConnectRejectionAndDropAreObservable`.
-- UI-03 routing 뒤 QoS 0 queue-full drop: `internal/application/publish/publish_test.go::TestPublishCountsQoS0QueueFullDrops`.
-- UI-05 node-local drain gauge: `internal/adapters/metrics/registry_test.go::TestRegistryRendersNodeDrainProgress`, `tests/integration/cluster_drain_process_test.go::TestDynamicClusterNodeDrainProcessAcceptance`.
-- SEC-10 설정·credential, 4-role permission matrix, OIDC 정적 subject binding과 audit query: `cmd/narumq/cluster_config_test.go`, `internal/adapters/authentication/jwt_verifier_test.go`, `internal/adapters/http/management/auth_test.go`, `internal/application/audit/query_test.go`, `internal/adapters/auditlog/query_test.go`, `internal/adapters/http/management/audit_query_handlers_test.go`, `tests/contracts/management-api-v1/contract_test.go::TestAuditQueryHandlerResponsesMatchOpenAPI`, `tests/contracts/audit-event-v1/contract_test.go::TestAuditQueryReturnsStoredChainRecords`, `tests/integration/cluster_management_rbac_process_test.go::TestDynamicClusterManagementRBACProcessAcceptance`.
-- API-09 G7 configuration query와 TEN-08 policy quota는 [Configuration §6 CFG-SCN-31~38](configuration-and-runtime-options.md#6-수용-시험) 및 [G7 실행 기록](configuration-and-runtime-options.md#g7-config-view-and-tenant-quotas-execution)에 연결한다. Contract test는 설정 응답 schema와 secret redaction, node-local 404/409, policy quota feature gate를 확인한다. Process acceptance는 3-node policy precedence와 legacy fallback을 확인한다.
-- UI-01~UI-05·UI-10 Dashboard contract와 process acceptance: `tests/integration/dashboard_stack_test.go::TestDashboardProvisioningMatchesContracts`, `tests/integration/dashboard_stack_test.go::TestDashboardStackProcessAcceptance`.
-- Dashboard 수용 시험 결과(2026-10-09): `TestDashboardProvisioningMatchesContracts`와 opt-in Docker E2E `TestDashboardStackProcessAcceptance`가 통과했다. E2E 실행은 `NARUMQ_DASHBOARD_E2E=1`, `NARUMQ_DASHBOARD_E2E_HOLD=90s` 조건에서 test 229.14초, package 230.254초였다. 세 process의 `/health/ready` `200`, Prometheus target 3개, datasource health 2개, ReadOnly cluster GET `200`, backup·drain POST `403`, cluster traffic·protocol Metric과 완료된 drain 결과를 확인했다. Grafana `/api/ds/query`가 panel 2, 4, 5, 6, 15의 frame을 반환했다. Replica 부족은 `0`, Member·Quorum은 `3/2/3/2`, node 상태 수는 `Ready=1`·`Joining=2`, node topology는 local `READY`와 원격 node의 `JOINING`·정확한 readiness reason, drain 상세는 `COMPLETED`·`SAFE_TO_STOP`·`safeToStop=true`·remaining `0`·takeover `1`을 표시했다. Node별 query에서는 node 1 connection·received PUBLISH rate와 MQTT 3.1.1 성공, node 2 sent PUBLISH rate와 MQTT 5.0 성공·같은 series의 `not_authorized` 거절을 확인했다. 성공 protocol label은 선택한 node 밖에서 나오지 않았다.
-- Dashboard named API key regression (2026-10-10): opt-in Docker E2E `TestDashboardStackProcessAcceptance`가 새 `management.apiKeys` 설정에서 통과했다. `NARUMQ_DASHBOARD_E2E=1`, `NARUMQ_DASHBOARD_E2E_HOLD=90s` 실행에서 test는 228.46초, package는 229.503초였다. ReadOnly credential로 cluster GET을 통과하고 backup·drain POST를 거절하는 acceptance가 통과했다.
-- Dashboard visual 결과(2026-10-09): browser에서 Quorum `정상`, replica 부족 `0`, Leader `1`, Members `3`, quorum size `2`, replication factor `3`, write quorum `2`를 확인했다. Node topology는 node 1 `READY`, node 2 `JOINING`과 `remote readiness is not available from this node`, node 3 `SAFE_TO_STOP`을 표시했다. `Node=2` 선택 화면에서 Connections, Sent PUBLISH, MQTT 5.0 CONNECT 성공과 CONNECT 거절 panel을 확인했다. Node load에는 세 node가 보였다. Drain panel에는 node 3 `connections_initial=1`, `connections_remaining=0`, `sessions_taken_over=1`, 상세 단계 `COMPLETED`, 상태 `SAFE_TO_STOP`, `safeToStop=true`가 표시됐다. Browser error와 console error는 없었다. CI 실행 링크와 production deployment 검증은 없다.
-- P0 traceability gate (2026-10-09): `go run ./tools/verify traceability` PASS. UI-01~UI-05·UI-10이 test에 연결됐고, 전체 P0는 66/81건 매핑·15건 예외다.
-- SEC-10 traceability gate (2026-10-10): `go run ./tools/verify traceability` PASS. P0 요구사항 81개 중 68개가 시험에 연결됐고 예외 13개가 남았다. SEC-10은 16개 시험에 연결됐으며 예외에 없다.
-- SEC-10 full local gate (2026-10-10): `go run ./tools/verify local` PASS, 205.10초. Traceability는 P0 68/81개 매핑·예외 13개, architecture·branch instrumentation·5개 fuzz target·전체 package/integration·race·vet·coverage가 통과했다. Integration package는 125.359초였다.
-- Repository local gate (2026-10-09): `go run ./tools/verify local` PASS in 149.04 seconds. Branch instrumentation, fuzz, architecture, package tests, coverage, and traceability checks passed.
-- API-03 catalog test `internal/adapters/metrics/registry_aggregation_test.go::TestRegistryFamiliesMatchAggregationCatalog`는 Prometheus/OpenMetrics 출력의 metric 이름·type·label, 범위와 집계 규칙을 문서 표와 비교한다. Histogram에 `_bucket` 표본이 없는 경우와 `_count` label 조합에 bucket 계열이 없는 경우도 거절한다.
-- `internal/adapters/metrics/registry_test.go::TestRegistryReadsSubscriptionCountAtScrape`는 scrape마다 현재 구독 수를 읽는지 확인한다. `internal/domain/routing/routing_test.go::TestTableSubscriptionCountMatchesSnapshot`는 nil·빈 table, shared·non-shared 구독, 교체, 해지, session 제거와 projection 교체 뒤 `SubscriptionCount()`가 `Snapshot()` 길이와 같은지 확인한다.
-- `tests/integration/cluster_metrics_process_test.go::TestDynamicClusterSubscriptionGaugeProcessAcceptance`는 3-node cluster에서 초기 gauge 0, SUBSCRIBE 2개 뒤 2, UNSUBSCRIBE 뒤 1을 확인한다. `UNSUBACK`의 packet ID, properties 길이와 성공 reason `0x00`도 확인한다. `SessionExpiryInterval=0`인 MQTT 5 연결을 종료하면 모든 node의 gauge가 0으로 돌아오는지도 확인한다.
-- API-03 process 실행 증거(2026-10-09): 수정 전 `go test ./tests/integration -run '^TestDynamicClusterSubscriptionGaugeProcessAcceptance$' -count=1 -v`는 96.22초 뒤 실패했다. 두 SUBSCRIBE를 commit한 뒤 node 1에서 gauge 2를 확인하지 못했다. 수정 후 `GOMAXPROCS=4 go test ./tests/integration -run '^TestDynamicClusterSubscriptionGaugeProcessAcceptance$' -count=1 -v -timeout 20m`는 PASS했다(시험 7.80초, package 8.799초). 모든 node의 gauge `0→2→1→0`과 MQTT 5 `UNSUBACK` body `00 03 00 00`을 확인했다.
-- deferred mutation endpoint의 idempotency, audit와 dashboard aggregation/masking 검증은 해당 endpoint가 contract에 추가될 때 이 목록에 연결한다.
+테스트 연결과 결과는 [테스트 컨벤션](../conventions/test-conventions.md)의 시나리오 보고서로 확인한다. 과거 실행 기록은 [검증 기록](../verification/management-api-and-observability.md)에 있다.
+
+| 시나리오 ID | 요구사항 ID | 조건과 입력 | 기대 결과 |
+| --- | --- | --- | --- |
+| MGT-SCN-001 | API-02 | OpenAPI 3.1 문서를 읽고 등록된 operation 전체를 runtime route와 handler 응답에 대조한다. | 문서가 유효하다. operation 집합이 runtime route와 일치한다. 성공 응답은 해당 operation의 response schema와 일치한다. |
+| MGT-SCN-002 | API-05 | 목록 endpoint에 `limit` `1`·`1000`·`1001`, 중복·선언되지 않은 query, 빈 값을 보낸다. client 검색 filter(`tenantId`, `clientIdPrefix`, `nodeId`, `protocol`)를 쓰고, `tenantId` 없이 `subscriptions`와 `retained`를 요청한다. 없는 client 상세도 요청한다. | `1`과 `1000`은 성공한다. `1001`, 중복·알 수 없는 query, 빈 값, 범위를 벗어난 `limit`, 필수 `tenantId` 누락은 `400 invalid_request`다. 허용 filter는 성공한다. 없는 client 상세는 `404`다. |
+| MGT-SCN-003 | API-05, SEC-10 | 익명, 잘못된 credential, Bearer token, ReadOnly API key로 `/api/v1`을 요청한다. ReadOnly credential로 ClusterAdmin 권한이 필요한 endpoint도 요청한다. | credential이 없거나 틀리면 `401`이다. Bearer token과 ReadOnly API key는 조회에 성공한다. 권한이 부족하면 `403`이다. Health probe는 listener 정책에 따라 익명으로 접근한다. |
+| MGT-SCN-004 | API-02, SEC-10 | cluster feature를 조회하고 활성화한다. 미지원 feature, 잘못된 feature 이름, ReadOnly role의 POST도 요청한다. | GET 응답은 `data.activeFeatures`와 `data.members`를 포함한다. 각 member는 decimal string `nodeId`, canonical `releaseVersion`, 정렬된 `features`를 가진다. 빈 collection은 JSON `[]`다. 활성화 POST는 `200`, 미지원 feature는 non-retryable `409`, 잘못된 feature는 `400`, ReadOnly role의 POST는 `403`이다. |
+| MGT-SCN-005 | API-05 | 서로 다른 principal과 같은 host의 인증 실패 요청이 각각 한도를 넘게 요청한다. 시간을 진행하거나 되돌린다. `RemoteAddr`에 host와 port를 함께 둔다. | principal마다, 인증 실패 host마다 독립된 bucket을 쓴다. 한도를 넘으면 거절하고 시간이 지나면 token을 보충한다. clock 역행은 token을 늘리지 않는다. bucket key는 `RemoteAddr`에서 port를 뺀 host다. |
+| MGT-SCN-006 | API-05 | 한도를 소진한 뒤 health probe와 `/metrics`를 요청한다. | 이 요청들은 제한하지 않는다. |
+| MGT-SCN-007 | API-05 | 권한이 부족한 인증 성공 요청으로 principal token을 소진한다. | `403` 요청도 principal token을 소비한다. 한도를 넘으면 `429`를 반환한다. |
+| MGT-SCN-008 | API-05, SEC-11 | Audit producer가 구성된 node에서 한도를 넘긴 mutation 요청과 인증 실패 요청을 보낸다. | 거절된 mutation은 handler를 실행하지 않고 `AdmitMutation`을 호출하지 않는다. 거절은 `management.request` event(result `DENIED`, reason `rate_limited`)로 기록한다. 인증 실패 거절의 subject는 `unauthenticated`이며 roles를 생략한다. |
+| MGT-SCN-009 | API-05 | 서로 다른 key 4096개를 채운 뒤 새 key와 기존 key를 요청한다. 시간을 진행한 뒤 새 key를 다시 요청한다. | 상한에서 새 key는 거절하고 기존 key는 계속 처리한다. 시간이 지나 가득 찬 bucket을 제거하면 새 key를 받는다. |
+| MGT-SCN-010 | API-05 | OpenAPI에 정의된 operation의 `429` 응답을 contract 시험으로 확인한다. | 한도 초과는 `429`, error code `rate_limited`, message `management API rate limit exceeded`, `retryable=true`, `Retry-After: 1`이며 OpenAPI와 일치한다. |
+| MGT-SCN-011 | API-05 | Standalone `-http-request-rate`·`-http-auth-failure-rate`와 cluster `management.requestRate`·`management.authFailureRate`에 경계값과 범위를 벗어난 값을 설정한다. | 경계값은 받는다. 범위를 벗어난 standalone 값은 exit 1과 `-http-request-rate and -http-auth-failure-rate must be between 1 and 1000000` 오류로 거절한다. |
+| MGT-SCN-012 | SEC-11, API-08 | Dynamic cluster의 활성 management mutation(drain 성공, 실패, backup, staged member, panic)을 실행한다. 조회 요청도 보낸다. | 모든 mutation은 감사 event를 기록하고 결과 status를 포함한다. 조회는 mutation admission을 요청하지 않는다. 3-node process에서도 같은 기록을 확인한다. |
+| MGT-SCN-013 | SEC-11, NFR-17 | 401·403으로 거절한 mutation과 audit publisher를 쓸 수 없는 상태의 mutation을 요청한다. | 401·403 거절은 audit event로 남는다. Publisher를 쓸 수 없으면 handler를 실행하지 않고 retryable `503 audit_unavailable`을 반환한다. |
+| MGT-SCN-014 | SEC-11, NFR-17 | Audit 파일의 hash-chain 손상, 끝부분 손상, 중간 누락, rotation, 가장 오래된 rotation 삭제, directory 경계와 Windows rotation 충돌을 만든다. read-only 검증 명령을 실행한다. | 손상과 누락은 검출하고 publisher는 사용 불가가 된다. 삭제된 가장 오래된 rotation 뒤의 chain은 검증한다. 검증 명령은 파일을 변경하지 않는다. Windows에서 기존 대상 파일은 덮어쓰지 않는다. |
+| MGT-SCN-015 | SEC-11 | 유효한 event, 잘못된 event, schema 경계값 event를 audit에 기록한다. | 유효한 event는 schema대로 저장하고 chain을 이어 간다. 잘못된 event는 발행하지 않는다. 저장한 event는 audit event v1 schema를 만족한다. |
+| MGT-SCN-016 | SEC-10 | `management.apiKeys`와 `management.oidc` 설정을 정상값과 잘못된 값으로 읽는다. credential 파일을 읽는다. | 파일의 앞뒤 공백을 제거한다. 읽지 못하는 파일, 비어 있는 key, cluster admin token 또는 다른 API key와 같은 key는 process 시작을 거절한다. |
+| MGT-SCN-017 | SEC-10 | break-glass token, API key, OIDC subject로 role별 permission을 요청한다. 정적 binding이 없는 OIDC subject도 요청한다. | Permission matrix가 네 role을 구분한다. Break-glass token은 ClusterAdmin이다. 정적 binding이 없는 OIDC subject는 `401`, 권한 밖 permission은 `403`이다. API key principal subject는 `apikey:<id>`이고 audit actor에 role을 기록한다. |
+| MGT-SCN-018 | SEC-10 | OIDC JWT를 정상 claim, 잘못된 issuer·audience·algorithm·signature로 제출한다. | 검증한 claim으로 정적 subject→roles binding을 적용한다. JWT claim은 roles를 선택하지 않는다. 검증 실패는 `401`이다. |
+| MGT-SCN-019 | SEC-10, API-08 | SecurityAdmin·ClusterAdmin이 `/api/v1/nodes/{nodeId}/audit/events`를 조회한다. 저장 record가 여러 rotation 파일에 걸쳐 있다. 권한이 없는 role과 audit reader가 없는 node도 요청한다. | 저장한 hash-chain record를 최신순으로 반환하고 cursor로 이어 읽는다. 권한이 없으면 거절한다. Reader가 없으면 route가 없다. 응답은 OpenAPI와 일치한다. |
+| MGT-SCN-020 | API-04 | Node를 `JOINING`, `READY`, `DRAINING`, `SAFE_TO_STOP` 순서로 바꾸며 `/health/live`, `/health/ready`, `/health/startup`, `/health/drain`을 요청한다. Raft storage가 실패하거나 느린 상태도 만든다. | startup은 `JOINING`에서 실패하고 `READY`에서 성공한다. readiness는 `DRAINING`·`SAFE_TO_STOP`에서 실패한다. drain-complete는 `SAFE_TO_STOP`에서 성공한다. terminal storage 실패는 liveness를 내린다. 느린 storage는 lifecycle state를 바꾸지 않고 readiness만 실패시킨다. |
+| MGT-SCN-021 | API-04 | Typed Raft recovery 전과 후에 startup을 요청한다. Recovery 뒤 `JOINING`인 3-node cluster를 외부 `/health/ready` 호출 없이 시작한다. | Recovery 전에는 `STARTING`이다. Recovery 뒤 `JOINING`이면 readiness 조건을 직접 확인하고 충족하면 `READY`로 전환해 startup이 성공한다. |
+| MGT-SCN-022 | UI-01 | Cluster 요약과 node 목록을 조회한다. Quorum은 있지만 대상 readiness proof가 실패한 node, 상태를 읽지 못한 node, 퇴역한 node를 포함한다. | `nodesByState`는 `joining`, `ready`, `draining`, `safeToStop`, `unknown`을 반환한다. `queryStatus=OK`이면 `ready=false`도 실제 측정값으로 보존한다. 읽지 못하거나 퇴역한 node는 측정값이 null이고 `unknown`은 retired를 제외하고 센다. Node 목록은 ID 오름차순이다. |
+| MGT-SCN-023 | UI-01, API-03 | `/api/v1/metrics`와 `/metrics`를 mode `node`, `all_nodes_unaggregated`, `all_nodes_aggregated`와 잘못된 mode로 요청한다. 일부 node가 실패한 상태, snapshot descriptor가 잘못된 상태, 정수 overflow를 포함한다. | 기본 mode는 `all_nodes_unaggregated`다. `node` mode는 local snapshot만 쓴다. 부분 실패한 unaggregated JSON은 `200`, `complete=false`다. Aggregated JSON과 cluster text는 retryable `503 metrics_collection_incomplete`다. 잘못된 mode는 `400`이다. 잘못된 descriptor와 overflow는 aggregation failure다. Cluster text mode는 `ReadOnly` 인증을 요구하고 `/metrics?mode=node`는 익명 scrape를 유지한다. |
+| MGT-SCN-024 | UI-01 | 정상 3-node cluster를 조회한 뒤 한 node를 강제 종료하고 node 목록, cluster 요약, metric API를 다시 조회한다. | 정상일 때 세 node를 모두 읽는다. 종료한 node는 `UNREACHABLE`과 null 측정값이고 cluster `unknown=1`이다. Unaggregated JSON은 부분 결과를 반환한다. Aggregated JSON과 cluster text는 `503 metrics_collection_incomplete`다. |
+| MGT-SCN-025 | API-01 | `/metrics`를 Prometheus와 OpenMetrics `Accept`로 요청한다. | `text/plain; version=0.0.4; charset=utf-8` 또는 `application/openmetrics-text; version=1.0.0; charset=utf-8`을 반환한다. OpenMetrics 본문은 `# EOF`로 끝나고 Prometheus 본문에는 없다. |
+| MGT-SCN-026 | API-06 | 원문 client ID, IP, topic, token, request ID를 label 값으로 넣어 Metric을 기록한다. | 출력에 원문 값이 없다. 알 수 없는 protocol·transport·packet type은 `UNKNOWN`·`unknown`으로 정규화한다. |
+| MGT-SCN-027 | API-03 | Registry가 출력한 Metric family를 §7.1 표와 비교한다. `_bucket` 표본이 없는 histogram도 만든다. | 모든 family의 이름·type·label·범위·집계 규칙이 표와 같다. `_bucket` 표본이 없는 histogram은 거절한다. |
+| MGT-SCN-028 | API-03 | 3-node cluster에서 SUBSCRIBE 2개, UNSUBSCRIBE 1개, `SessionExpiryInterval=0`인 MQTT 5 연결 종료를 차례로 수행한다. Route table에서 shared·non-shared 구독을 교체·해지·제거한다. | 모든 node의 `narumq_subscriptions_active`가 `0→2→1→0`이다. MQTT 5 `UNSUBACK`은 packet ID, properties 길이와 성공 reason `0x00`을 포함한다. Route table의 `SubscriptionCount()`는 `Snapshot()` 길이와 같다. |
+| MGT-SCN-029 | UI-03 | MQTT 3.1.0·3.1.1·5.0 CONNECT를 거절시키고 모든 CONNACK reason code와 return code를 Metric label로 변환한다. | `narumq_mqtt_connect_rejected_total{protocol,reason}`이 protocol·고정 reason별로 증가한다. 17개 series를 0부터 고정 순서로 render하고 알 수 없는 조합은 무시한다. CONNACK mapping은 §7과 같다. |
+| MGT-SCN-030 | UI-03 | Routing 뒤 QoS 0 non-durable 후보가 모두 queue full로 끝나게 하고, subscriber의 Maximum Packet Size를 넘는 전달을 만든다. | `queue_full`과 `packet_too_large` reason으로 `narumq_messages_dropped_total`이 증가한다. `queue_full`은 전달에 모두 실패했을 때만 증가한다. 실제 broker process의 Metric으로도 관측한다. |
+| MGT-SCN-031 | UI-05 | Node drain을 시작해 완료하고 `narumq_node_drain_active`, `narumq_node_drain_progress{quantity}`, `narumq_node_drain_transitions_total{phase}`를 scrape한다. | Gauge는 committed progress를 나타낸다. Phase label은 8개 유효 phase만 허용한다. Process 재시작 뒤 다음 drain 명령 전까지 값은 0이다. |
+| MGT-SCN-032 | - | WAL group fsync를 성공·실패시키고 `narumq_raft_wal_sync_duration_seconds`, `narumq_raft_wal_sync_entries`, `narumq_raft_wal_written_bytes_total`을 scrape한다. | Histogram 표본은 성공한 `File.Sync` 한 번이다. 실패한 write·sync와 값이 없어 생략된 요청은 관찰하지 않는다. 세 series는 label이 없고 observer가 없는 mode에서는 0이다. |
+| MGT-SCN-033 | - | `narumq_raft_stage_duration_seconds{stage}`에 여러 stage의 시간을 기록하고 10초를 넘는 값도 기록한다. | Stage별 count·sum·bucket이 따로 쌓인다. 10초를 넘는 값은 `+Inf` bucket에만 들어간다. 기록이 없는 stage도 0으로 render한다. |
+| MGT-SCN-034 | SEC-11 | `narumq_audit_events_total{outcome}`과 `narumq_audit_publisher_ready`를 모든 format과 mode에서 render한다. 알 수 없는 outcome을 기록한다. | 7개 outcome series를 0부터 고정 순서로 render한다. 알 수 없는 outcome은 무시한다. Publisher가 append할 수 있으면 gauge는 1이고 아니면 0이다. |
+| MGT-SCN-035 | DEP-07, DEP-12 | `narumq_will_outcomes_total{reason}`을 모든 format과 mode에서 render한다. 알 수 없는 reason을 기록한다. | 6개 reason series를 0부터 고정 순서로 render한다. 알 수 없는 reason은 무시한다. |
+| MGT-SCN-036 | MQTT-10 | CONNECT 전에 listener 한도를 넘는 연결을 `tcp`, `tls`, `ws`, `wss`에서 만든다. | `narumq_mqtt_listener_admission_rejected_total{transport,reason}`의 8개 series를 0부터 고정 순서로 render한다. 알 수 없는 값은 무시한다. |
+| MGT-SCN-037 | TEN-06, TEN-07 | Tenant 연결·traffic 한도 거절을 여러 tenant와 허용 목록 밖 dimension으로 만든다. | `narumq_tenant_limit_rejections_total{tenant,dimension}`은 6개 dimension만 허용한다. `tenant` label은 저장 quota Metric과 처음 본 1,024개 집합을 공유하고 나머지는 `_overflow`로 합친다. |
+| MGT-SCN-038 | TEN-08 | Tenant 저장 quota 거절과 profile 상태를 기록하고, 1,024개를 넘는 tenant를 만든다. | `narumq_tenant_quota_rejections_total`은 4개 dimension만 허용한다. `narumq_tenant_quota_profile_committed`, `narumq_tenant_quota_profile_version`, `narumq_tenant_quota_config_mismatch`가 상태를 나타낸다. 처음 본 1,024개 뒤 tenant는 `_overflow`다. |
+| MGT-SCN-039 | API-09, TEN-08 | ClusterPolicy를 commit하고 local 설정과 다르게 둔다. 값을 초기화한다. | `narumq_cluster_policy_committed`, `narumq_cluster_policy_version`, `narumq_cluster_policy_config_mismatch`가 local 적용 상태를 나타낸다. 초기화하면 gauge도 초기값으로 돌아간다. 불일치는 한 번만 기록한다. |
+| MGT-SCN-040 | UI-01, UI-02, UI-03, UI-04, UI-05, UI-10 | Dashboard provisioning 정의를 계약 문서·OpenAPI·Metric catalog와 대조한다. | 모든 panel의 데이터 원본, API GET path와 Metric family가 기준 문서와 일치한다. |
+| MGT-SCN-041 | UI-01, UI-02, UI-03, UI-04, UI-05, UI-10 | Docker로 3-node cluster, Prometheus, Grafana를 띄우고 panel query를 실행한다. | 세 process가 ready다. Prometheus target 3개와 datasource 2개가 정상이다. Panel query가 §8의 값을 frame으로 반환한다. Drain 완료 상세와 node별 Metric이 선택한 node 범위로 나온다. |
+| MGT-SCN-042 | UI-01, SEC-10 | Dashboard용 ReadOnly API key로 `/metrics`와 `/api/v1/cluster`를 GET하고 backup POST를 요청한다. ClusterAdmin token으로도 backup POST를 요청한다. | ReadOnly GET은 `200`이다. ReadOnly backup POST는 `403`이며 backup을 만들지 않는다. ClusterAdmin의 backup POST는 `200`이다. |
+| MGT-SCN-043 | UI-01, UI-02, UI-03, UI-04, UI-05, UI-10 | EKS `narumq-eks`에서 Prometheus target, Grafana datasource, topology와 시계열 panel을 확인한다. | Prometheus target이 `UP`이고 datasource가 `OK`다. 실제 topology와 panel 7 시계열 frame이 표시된다. |
+| MGT-SCN-044 | API-03 | Snapshot이 64 family, 16,384 sample, sample당 8 label, label value당 1,024 byte, node당 8 MiB, 전체 64 MiB 한도를 넘거나 collection이 5초를 넘긴다. 요청을 취소한다. | 한도를 넘으면 결과를 자르지 않고 오류를 반환한다. Collection은 8 worker 이하로 조회하고 취소 시 모든 worker를 종료한다. |
+| MGT-SCN-045 | API-04 | Dynamic cluster에서 PUBLISH local projection admission과 fresh read barrier를 통과한 readiness 거절을 만든다. | `cluster readiness rejected` 로그의 `purpose=publish`는 `fresh_proof_confirmed=false`다. 실제 fresh read barrier를 통과한 local snapshot 거절만 `true`다. Storage 검사나 fresh proof 단계의 거절은 snapshot flag와 index를 기록하지 않는다. |
+
+API-09 `mqttLimits`와 node configuration 조회, TEN-08 ClusterPolicy quota의 시나리오는 [Configuration §6](configuration-and-runtime-options.md#6-수용-시험)의 `CFG-SCN-31`~`CFG-SCN-38`에 정의한다. 이 스펙은 같은 시나리오를 다시 정의하지 않는다.
+
+Deferred mutation endpoint의 idempotency, audit와 dashboard aggregation·masking 시나리오는 해당 endpoint가 contract에 추가될 때 이 표에 추가한다.

@@ -92,6 +92,8 @@ func (machine *StateMachine) applyNodeDrain(index uint64, change NodeDrainChange
 		}
 		current.Phase = nodedrain.PhaseCancelled
 		current.PhaseStartedAtUnixMillis = change.ProposedAtUnixMillis
+		current.FailureCode = ""
+		current.BlockingReason = ""
 	case NodeDrainActionClear:
 		if !nodedrain.CanClear(current.Phase) {
 			return conflictResult(index, ConflictPhase)

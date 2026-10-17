@@ -11,8 +11,8 @@
 | [ADR-0003](ADR-0003-durable-ack-barrier.md) | Proposed | 저장 상태는 quorum WAL 영속화·commit 뒤, target 없는 QoS 1 publish는 quorum read barrier 뒤 ACK한다. |
 | [ADR-0004](ADR-0004-session-ownership-and-fencing.md) | Proposed | Session ownership을 quorum-committed epoch와 저장 경계 fencing으로 보장한다. |
 | [ADR-0005](ADR-0005-management-api-contract-format.md) | Accepted | Phase 1 query profile의 기준 계약을 OpenAPI 3.1.2 JSON으로 관리한다. |
-| [ADR-0006](ADR-0006-external-rollout-controller.md) | Proposed | Pod 삭제 전 drain을 승인하는 전용 rollout controller를 둔다. |
-| [ADR-0007](ADR-0007-aws-production-deployment-platform.md) | Proposed | 초기 AWS production profile로 Amazon EKS on EC2를 사용한다. |
+| [ADR-0006](ADR-0006-external-rollout-controller.md) | Accepted | Pod 삭제 전 drain을 승인하는 전용 rollout controller를 둔다. |
+| [ADR-0007](ADR-0007-aws-production-deployment-platform.md) | Accepted | 초기 AWS production profile로 Amazon EKS on EC2를 사용한다. |
 | [ADR-0008](ADR-0008-raft-peer-transport.md) | Accepted | 고정 3-node Raft transport v1에 mTLS TCP와 bounded queues를 사용한다. |
 | [ADR-0009](ADR-0009-raft-production-state-profile.md) | Accepted (design target only) | Raft version, file-backed storage, replicated-state encoding family와 단일 group target을 정하되 production readiness는 승인하지 않는다. |
 | [ADR-0010](ADR-0010-dynamic-cluster-membership.md) | Accepted (membership 설계만) | Cluster membership은 staged learner 전환과 영구 node ID를 사용한다. |
@@ -20,7 +20,7 @@
 | [ADR-0012](ADR-0012-retained-replication-and-cluster-backup-v2.md) | Accepted (retained scope; archive v2는 ADR-0013이 대체) | Retained state를 Raft로 복제하고 backup v2에 포함한다. |
 | [ADR-0013](ADR-0013-offline-queue-replication-and-cluster-backup-v3.md) | Accepted (offline QoS 0 + backup v3 scope only) | Detached persistent session의 QoS 0 offline message를 Raft로 복제하고 backup v3에 포함한다. Restore release 규칙은 ADR-0021이 대체한다. |
 | [ADR-0014](ADR-0014-cross-node-live-qos0-forwarding.md) | Accepted (cluster live QoS 0 forwarding only; QoS 1/2·durable ACK 제외) | Dynamic cluster의 cross-node live QoS 0 delivery를 별도 `NMQFWRD2` peer stream으로 전달한다. |
-| [ADR-0015](ADR-0015-cluster-durable-qos-delivery.md) | Accepted (cluster QoS 1/2 durable delivery scope; production storage·BP-03·N-1 제외; target 0개 PUBLISH command는 ADR-0019가 대체) | Cluster QoS 1/2 전달 queue와 inflight를 Raft에 복제하고 ACK보다 먼저 commit한다. |
+| [ADR-0015](ADR-0015-cluster-durable-qos-delivery.md) | Accepted (cluster QoS 1/2 durable delivery scope; production storage·BP-03·N-1 제외; target 0개 PUBLISH command는 ADR-0019가, §8의 shared-subscription fallback 금지와 §12의 CleanStart reset 중 shared 출처 message 처리는 ADR-0060이 대체) | Cluster QoS 1/2 전달 queue와 inflight를 Raft에 복제하고 ACK보다 먼저 commit한다. |
 | [ADR-0016](ADR-0016-node-drain-and-safe-to-stop.md) | Accepted (broker drain/`SAFE_TO_STOP` scope only; rollout·SDK/Will·production storage·BP-07·N-1 제외) | Replicated drain operation과 `SAFE_TO_STOP` barrier를 제공한다. |
 | [ADR-0017](ADR-0017-tenant-storage-quota.md) | Accepted (TEN-08 storage quota scope only) | Dynamic cluster에 versioned tenant별 storage quota와 새 state 거절·초과 경보를 제공한다. |
 | [ADR-0018](ADR-0018-release-compatibility-window.md) | Accepted (N/N-1 mixed-release window scope; rollout preflight·historical-source wire 제외) | 인접 minor release의 mixed operation, committed build profile과 cluster-wide feature activation을 정한다. Archive cross-release restore 제외는 ADR-0021이 대체한다. |
@@ -49,7 +49,7 @@
 | [ADR-0041](ADR-0041-branch-ratchet-noise-tolerance.md) | Accepted (diff 수치는 ADR-0044가 대체) | 전체·core branch ratchet에 명시된 0.20%p 노이즈 허용폭을 적용한다. Diff 수치 변경은 ADR-0044를 따른다. |
 | [ADR-0042](ADR-0042-p0-requirement-traceability-gate.md) | Accepted | PRD 기반 P0 요구사항 연결과 정렬된 예외 목록 ratchet을 적용한다. |
 | [ADR-0043](ADR-0043-management-api-rate-limit.md) | Accepted (principal subject 목록은 ADR-0048이 대체) | Management API에 인증 주체별·인증 실패 IP별 node-local token bucket rate limit을 적용한다. |
-| [ADR-0044](ADR-0044-diff-coverage-floor-90.md) | Accepted | 변경 코드의 line·function·branch diff coverage 하한을 각각 90%로 정한다. 전체·core 기준과 ratchet은 유지한다. |
+| [ADR-0044](ADR-0044-diff-coverage-floor-90.md) | Accepted (diff 하한 수치는 ADR-0063이 대체) | 변경 코드의 line·function·branch diff coverage 하한을 각각 90%로 정했다. 전체·core 기준과 ratchet 유지 결정은 그대로다. |
 | [ADR-0045](ADR-0045-operations-dashboard-grafana.md) | Accepted | Grafana와 Prometheus로 운영 Dashboard를 제공하고 조회 전용 API key를 사용한다. |
 | [ADR-0046](ADR-0046-mqtt-data-plane-denial-audit.md) | Accepted | Dynamic cluster에서 MQTT data-plane 거절을 기존 node-local hash chain에 fail-open·bounded async 방식으로 기록한다. |
 | [ADR-0047](ADR-0047-mqtt-password-authentication.md) | Accepted (SEC-05 적용 범위) | 고정 Argon2id PHC hash와 stdin hash 명령으로 MQTT password 인증을 제공한다. |
@@ -58,7 +58,17 @@
 | [ADR-0050](ADR-0050-mqtt-client-blocklist.md) | Accepted (SEC-12 적용 범위) | Dynamic cluster에서 replicated client·username·certificate·IP blocklist와 기존 연결 회수를 제공한다. |
 | [ADR-0051](ADR-0051-cluster-update-strategy.md) | Accepted (업데이트 방식과 선택 기준만) | 계획 업데이트는 in-place와 교체형 rolling을 함께 지원하고, 데이터 디렉터리 재연결 가능 여부로 선택한다. 별도 클러스터 Blue/Green은 지원하지 않는다. |
 | [ADR-0052](ADR-0052-configuration-tiers-and-cluster-policy.md) | Proposed | 설정을 다섯 범주로 나누고 Dynamic cluster 정책은 Raft에 commit된 versioned 문서를 기준으로 한다. 설정 파일은 versioned 초기값을 제공한다. |
-| [ADR-0053](ADR-0053-github-actions-required-ci-gate.md) | Accepted | GitHub Actions `verify`를 실행하고 main의 필수 CI status로 사용한다. |
+| [ADR-0053](ADR-0053-github-actions-required-ci-gate.md) | Accepted (관리자 보호 적용은 ADR-0056이 대체) | GitHub Actions `verify`를 실행하고 main의 필수 CI status로 사용한다. |
+| [ADR-0054](ADR-0054-tenant-noisy-neighbor-latency-acceptance.md) | Accepted | TEN-09를 같은 실행 baseline 대비 victim p99 1.5배 이하로 판정하는 local 3-node 수용 기준을 정한다. |
+| [ADR-0055](ADR-0055-drain-and-reconnect-operating-defaults.md) | Accepted | Drain rate·LB 대기·timeout 제품 기본값, termination grace 공식과 client reconnect·Will·Session Expiry 운영값을 정한다. |
+| [ADR-0056](ADR-0056-branch-protection-for-admins.md) | Accepted | main branch protection을 관리자에게도 적용해 실패한 필수 check를 우회한 merge를 막는다. |
+| [ADR-0057](ADR-0057-mqtt-websocket-listener.md) | Accepted | MQTT WS/WSS listener는 TCP server를 재사용하고 binary WebSocket stream, TLS, admission과 metric label을 고정한다. |
+| [ADR-0058](ADR-0058-cluster-backup-s3-retention-and-restore.md) | Accepted | S3 is authoritative for 30-day backup retention; the PVC stages request-backed uploads, legacy archives remain local, and a separate prefix-scoped IRSA identity restores exact keys offline. |
+| [ADR-0059](ADR-0059-dynamic-peer-tcp-liveness.md) | Accepted | Dynamic v2 peer socket은 TCP keepalive와 Linux `TCP_USER_TIMEOUT` 10초로 응답 없는 상대를 끊고 같은 DNS 이름으로 재연결한다. |
+| [ADR-0060](ADR-0060-shared-subscription-durable-owner-loss-reroute.md) | Accepted | 공유 구독의 durable 전달은 도달할 수 없는 owner의 member를 건너뛰어 고르고, 공유 출처 message는 member session이 reset·삭제될 때 같은 group의 다른 member로 다시 넣는다. |
+| [ADR-0061](ADR-0061-eks-ordinal-member-slot.md) | Accepted | EKS StatefulSet Pod는 ordinal slot 파일이 가리키는 member ID로 시작해, volume을 잃은 slot을 같은 Pod 자리의 새 member ID로 재시드한다. |
+| [ADR-0062](ADR-0062-raft-snapshot-stream.md) | Accepted | 1 MiB를 넘는 Raft snapshot은 `snapshot-stream` feature를 활성화한 cluster에서 별도 chunk stream으로 보낸다. 활성화 전에는 지금처럼 보내지 않고 실패로 알린다. |
+| [ADR-0063](ADR-0063-diff-coverage-floor-80.md) | Accepted | 변경 코드의 line·function·branch diff coverage 하한을 각각 80%로 낮춘다. 전체·core 기준과 ratchet은 유지한다. |
 
 `Proposed` ADR은 검토 중인 제안이다. `Accepted` ADR은 각 기록에 명시한 범위 안에서 채택된 결정이다. `design target only`는 production runtime이나 acceptance 검증을 뜻하지 않는다.
 

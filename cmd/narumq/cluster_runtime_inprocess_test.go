@@ -30,6 +30,7 @@ import (
 )
 
 // Traceability: CLU-09; PERF-08; ADR-0029; docs/specs/cluster-session-and-delivery.md §4.4, §11.27; docs/specs/configuration-and-runtime-options.md §6.
+// Scenarios: configuration-and-runtime-options.md:CFG-SCN-24, cluster-session-and-delivery.md:CLU-SCN-032, cluster-session-and-delivery.md:CLU-SCN-191, performance-and-verification.md:PRF-SCN-088
 func TestRunClusterModeInProcess(t *testing.T) {
 	directory := t.TempDir()
 	caCert, caKey, caPEM := newClusterRuntimeTestCA(t)

@@ -45,6 +45,7 @@ func TestBuildTLSConfig_MissingCertificate(t *testing.T) {
 	}
 }
 
+// Scenarios: tenancy-and-security.md:SEC-SCN-001
 func TestBuildTLSConfig_InsecureTLSVersion(t *testing.T) {
 	tempDir := t.TempDir()
 	ca := generateCA(t, "Root CA")
@@ -68,6 +69,7 @@ func TestBuildTLSConfig_InsecureTLSVersion(t *testing.T) {
 	}
 }
 
+// Scenarios: tenancy-and-security.md:SEC-SCN-001
 func TestBuildTLSConfig_ValidTLSVersions(t *testing.T) {
 	tempDir := t.TempDir()
 	ca := generateCA(t, "Root CA")
@@ -103,6 +105,7 @@ func TestBuildTLSConfig_ValidTLSVersions(t *testing.T) {
 	}
 }
 
+// Scenarios: tenancy-and-security.md:SEC-SCN-002
 func TestBuildTLSConfig_CipherSuites(t *testing.T) {
 	tempDir := t.TempDir()
 	ca := generateCA(t, "Root CA")

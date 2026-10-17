@@ -7,6 +7,7 @@ import (
 )
 
 // Traceability: CLU-12; docs/specs/cluster-session-and-delivery.md §4.5, §11.28.
+// Scenarios: cluster-session-and-delivery.md:CLU-SCN-195
 func TestDeliveryPublishCapacity(t *testing.T) {
 	for _, tc := range []struct {
 		name, reason                         string

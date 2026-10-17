@@ -303,6 +303,7 @@ func waitForSessionDisconnected(t *testing.T, repository *sessionstore.MemorySes
 }
 
 // Traceability: PRD MQTT-03/MQTT-08/TEST-03/TEST-04/TEST-05; docs/specs/mqtt-protocol-and-session.md §2.2, §3.2, §7.
+// Scenarios: mqtt-protocol-and-session.md:MQTT-SCN-007
 func TestMQTTIngressPersistentOfflineDelivery(t *testing.T) {
 	for _, testCase := range []struct {
 		name    string
@@ -447,6 +448,7 @@ func TestMQTTIngressPersistentOfflineDelivery(t *testing.T) {
 }
 
 // Traceability: PRD MQTT-02/TEST-03/TEST-04/TEST-05; docs/specs/mqtt-protocol-and-session.md §3.2; MQTT-4.3.2-1, MQTT-4.3.2-2, MQTT-4.3.3-1, MQTT-4.3.3-2.
+// Scenarios: mqtt-protocol-and-session.md:MQTT-SCN-008
 func TestMQTTIngressPersistentOutboundQoSRecovery(t *testing.T) {
 	testClock := &ingressClock{now: time.Date(2026, time.January, 1, 0, 0, 0, 0, time.UTC)}
 	fixture := newIngressFixtureWithClock(t, 1024, 1<<20, testClock)
@@ -617,6 +619,7 @@ func TestMQTTIngressPersistentOutboundQoSRecovery(t *testing.T) {
 // Traceability: PRD MQTT-01/MQTT-02/MQTT-06/TEST-03/04/05; docs/specs/mqtt-protocol-and-session.md §1, §2, §3.2, §7.
 // Wire-level acceptance scenarios cover CONNECT, SUBSCRIBE, QoS 0 PUBLISH,
 // PINGRESP, DISCONNECT, persistent Session Present, and rejected CONNECT.
+// Scenarios: mqtt-protocol-and-session.md:MQTT-SCN-002, mqtt-protocol-and-session.md:MQTT-SCN-010, mqtt-protocol-and-session.md:MQTT-SCN-011, mqtt-protocol-and-session.md:MQTT-SCN-012
 func TestMQTTIngress(t *testing.T) {
 	t.Run("qos0 fanout ping and disconnect", func(t *testing.T) {
 		fixture := newIngressFixture(t)
@@ -707,6 +710,7 @@ func TestMQTTIngress(t *testing.T) {
 }
 
 // Traceability: PRD MQTT-04/MQTT-08/TEST-03/TEST-04/TEST-05; docs/specs/mqtt-protocol-and-session.md §4, §5; MQTT-3.3.2-5/6.
+// Scenarios: mqtt-protocol-and-session.md:MQTT-SCN-009
 func TestMQTTIngressMessageExpiry(t *testing.T) {
 	testClock := &ingressClock{now: time.Date(2026, time.January, 1, 0, 0, 0, 0, time.UTC)}
 	fixture := newIngressFixtureWithClock(t, 1024, 1<<20, testClock)
@@ -802,6 +806,7 @@ func TestMQTTIngressMessageExpiry(t *testing.T) {
 }
 
 // Traceability: PRD MQTT-02/TEST-03/TEST-04/TEST-05; docs/specs/mqtt-protocol-and-session.md §3.1, §3.2, §7; MQTT-4.3.2-1, MQTT-4.3.2-2.
+// Scenarios: mqtt-protocol-and-session.md:MQTT-SCN-003
 func TestMQTTIngressQoS1Handshake(t *testing.T) {
 	fixture := newIngressFixture(t)
 	defer fixture.close(t)
@@ -931,6 +936,7 @@ func TestMQTTIngressQoS1Handshake(t *testing.T) {
 }
 
 // Traceability: PRD MQTT-02/TEST-04/TEST-05; docs/specs/mqtt-protocol-and-session.md §3.1, §3.2, §7; MQTT-4.3.3-1, MQTT-4.3.3-2.
+// Scenarios: mqtt-protocol-and-session.md:MQTT-SCN-004
 func TestMQTTIngressQoS2Handshake(t *testing.T) {
 	fixture := newIngressFixture(t)
 	defer fixture.close(t)
@@ -1114,6 +1120,7 @@ func TestMQTTIngressQoS2Handshake(t *testing.T) {
 }
 
 // Traceability: PRD MQTT-02/TEST-03/TEST-04/TEST-05; docs/specs/mqtt-protocol-and-session.md §3.1, §3.2, §7; MQTT-4.3.2-1, MQTT-4.3.2-2, MQTT-4.3.3-1, MQTT-4.3.3-2.
+// Scenarios: mqtt-protocol-and-session.md:MQTT-SCN-006
 func TestMQTTIngressQoSOutboundDelivery(t *testing.T) {
 	fixture := newIngressFixture(t)
 	defer fixture.close(t)
@@ -1244,6 +1251,7 @@ func TestMQTTIngressQoSOutboundDelivery(t *testing.T) {
 }
 
 // Traceability: PRD MQTT-04/MQTT-08/TEST-04/05; docs/specs/mqtt-protocol-and-session.md §4 and §5; MQTT-3.3.1-5/6/7/8/9/10/11/12/13, MQTT-3.8.3-3, MQTT-3.8.4-3/4.
+// Scenarios: mqtt-protocol-and-session.md:MQTT-SCN-013, mqtt-protocol-and-session.md:MQTT-SCN-014
 func TestMQTTIngressRetainedMessageAndSubscriptionOptions(t *testing.T) {
 	fixture := newIngressFixture(t)
 	defer fixture.close(t)
@@ -1344,6 +1352,7 @@ func TestMQTTIngressRetainedMessageAndSubscriptionOptions(t *testing.T) {
 }
 
 // Traceability: PRD MQTT-04/TEST-04/05; docs/specs/mqtt-protocol-and-session.md §5; MQTT-3.3.1-5/6.
+// Scenarios: mqtt-protocol-and-session.md:MQTT-SCN-015
 func TestMQTTIngressRetainedCapacityDisconnect(t *testing.T) {
 	fixture := newIngressFixtureWithRetainedCapacity(t, 1, 1)
 	defer fixture.close(t)
@@ -1774,6 +1783,7 @@ func TestMQTTIngressSharedSubscription(t *testing.T) {
 }
 
 // Traceability: PRD MQTT-07/TEST-03; MQTT-4.8.2-3.
+// Scenarios: mqtt-protocol-and-session.md:MQTT-SCN-016
 func TestMQTTIngressSharedSubscriptionHandoff(t *testing.T) {
 	fixture := newIngressFixtureWithDeliveryCapacity(t, 1)
 	defer fixture.close(t)
@@ -1893,6 +1903,7 @@ func TestMQTTIngressSharedSubscriptionHandoff(t *testing.T) {
 }
 
 // Traceability: TEN-01, TEN-02, TEN-03, TEN-04, TEN-05, SEC-04, SEC-06
+// Scenarios: tenancy-and-security.md:SEC-SCN-008, tenancy-and-security.md:SEC-SCN-018, tenancy-and-security.md:SEC-SCN-019, tenancy-and-security.md:SEC-SCN-020, tenancy-and-security.md:SEC-SCN-021, tenancy-and-security.md:SEC-SCN-022, tenancy-and-security.md:SEC-SCN-023
 func TestMQTTSecurity(t *testing.T) {
 	// Generate test RSA key
 	privKey, err := rsa.GenerateKey(rand.Reader, 2048)

@@ -28,6 +28,7 @@ func (v managementTokenVerifier) VerifyToken(_ context.Context, token []byte) (a
 }
 
 // Traceability: SEC-07, SEC-10; docs/specs/tenancy-and-security.md §6-§7.
+// Scenarios: management-api-and-observability.md:MGT-SCN-017, tenancy-and-security.md:SEC-SCN-031, tenancy-and-security.md:SEC-SCN-037
 func TestPermissionMatrixSeparatesManagementRoles(t *testing.T) {
 	cases := []struct {
 		role Role
@@ -65,6 +66,7 @@ func TestPermissionMatrixSeparatesManagementRoles(t *testing.T) {
 }
 
 // Traceability: SEC-10; docs/specs/tenancy-and-security.md §6.
+// Scenarios: management-api-and-observability.md:MGT-SCN-017, tenancy-and-security.md:SEC-SCN-032
 func TestManagementPrincipalCredentialBindings(t *testing.T) {
 	verifier := managementTokenVerifier{tokens: map[string]string{"alice-token": "alice", "mallory-token": "mallory"}}
 	audit := &spyAuditUseCase{}
@@ -111,6 +113,7 @@ func TestManagementPrincipalCredentialBindings(t *testing.T) {
 }
 
 // Traceability: SEC-10; docs/specs/tenancy-and-security.md §6.
+// Scenarios: management-api-and-observability.md:MGT-SCN-018, tenancy-and-security.md:SEC-SCN-032
 func TestManagementOIDCFailuresAreUnauthorized(t *testing.T) {
 	request := httptest.NewRequest(http.MethodGet, "/", nil)
 	request.Header.Set("Authorization", "Bearer token")

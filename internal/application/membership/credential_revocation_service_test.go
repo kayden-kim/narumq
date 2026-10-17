@@ -48,6 +48,7 @@ func newCredentialRevocationServiceFixture(t *testing.T, active bool) (*Credenti
 }
 
 // Traceability: SEC-07; docs/specs/tenancy-and-security.md §7; docs/contracts/management-api-v1.md.
+// Scenarios: tenancy-and-security.md:SEC-SCN-036
 func TestCredentialRevocationServiceCommitsAndReturnsCommittedStatus(t *testing.T) {
 	service, port, clock := newCredentialRevocationServiceFixture(t, true)
 	first, err := service.RevokeCredential(context.Background(), "credential-z")
@@ -87,6 +88,7 @@ func TestCredentialRevocationServiceCommitsAndReturnsCommittedStatus(t *testing.
 }
 
 // Traceability: SEC-07; docs/specs/tenancy-and-security.md §7; docs/contracts/management-api-v1.md.
+// Scenarios: tenancy-and-security.md:SEC-SCN-036
 func TestCredentialRevocationServiceRejectsInactiveFeatureAndCapacity(t *testing.T) {
 	inactive, inactivePort, _ := newCredentialRevocationServiceFixture(t, false)
 	if _, err := inactive.RevokeCredential(context.Background(), "credential-a"); !credentialRevocationServiceErrorIs(t, err, ServiceErrorFeatureInactive) {
@@ -131,6 +133,7 @@ func credentialRevocationServiceErrorIs(t *testing.T, err error, want ServiceErr
 }
 
 // Traceability: SEC-07; docs/specs/tenancy-and-security.md §7.
+// Scenarios: tenancy-and-security.md:SEC-SCN-036
 func TestCredentialRevocationServiceValidatesInputsAndPortFailures(t *testing.T) {
 	service, port, _ := newCredentialRevocationServiceFixture(t, true)
 	for _, credentialID := range []string{"", string([]byte{0xff}), strings.Repeat("x", MaxCredentialIDBytes+1)} {
@@ -149,6 +152,7 @@ func TestCredentialRevocationServiceValidatesInputsAndPortFailures(t *testing.T)
 }
 
 // Traceability: SEC-07; docs/specs/tenancy-and-security.md §7.
+// Scenarios: tenancy-and-security.md:SEC-SCN-036
 func TestNewCredentialRevocationServiceRequiresPorts(t *testing.T) {
 	clock := &credentialRevocationServiceClock{now: time.UnixMilli(1)}
 	if service, err := NewCredentialRevocationService(nil, clock); service != nil || err == nil {

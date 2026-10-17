@@ -11,6 +11,7 @@ import (
 	"time"
 )
 
+// Scenarios: configuration-and-runtime-options.md:CFG-SCN-13, cluster-session-and-delivery.md:CLU-SCN-100
 func TestConfiguredTenantQuotaProfileUsesBuiltinOrStrictConfig(t *testing.T) {
 	if got, want := configuredTenantQuotaProfile(clusterConfigFile{}), membership.DefaultTenantQuotaProfile(); !membership.EqualTenantQuotaProfile(got, want) {
 		t.Fatalf("omitted tenant quota profile = %+v, want built-in %+v", got, want)
@@ -23,6 +24,7 @@ func TestConfiguredTenantQuotaProfileUsesBuiltinOrStrictConfig(t *testing.T) {
 	}
 }
 
+// Scenarios: configuration-and-runtime-options.md:CFG-SCN-14, cluster-session-and-delivery.md:CLU-SCN-100
 func TestClusterTenantQuotaControllerLogsCommittedMismatchOnce(t *testing.T) {
 	config := validBootstrapClusterConfig()
 	config.TenantQuotas = validTenantQuotaProfileConfig()
@@ -65,6 +67,7 @@ func TestClusterTenantQuotaControllerLogsCommittedMismatchOnce(t *testing.T) {
 	}
 }
 
+// Scenarios: cluster-session-and-delivery.md:CLU-SCN-100
 func TestTenantQuotaRejectionReporterRateLimitsByTenantAndDimension(t *testing.T) {
 	var reporter tenantQuotaRejectionReporter
 	now := time.Unix(1_000, 0)
@@ -82,6 +85,7 @@ func TestTenantQuotaRejectionReporterRateLimitsByTenantAndDimension(t *testing.T
 	}
 }
 
+// Scenarios: cluster-session-and-delivery.md:CLU-SCN-100
 func TestRuntimeTenantQuotaReporterCountsEveryRejectionAndRateLimitsWarnings(t *testing.T) {
 	var logs bytes.Buffer
 	runtime := &clusterRuntime{

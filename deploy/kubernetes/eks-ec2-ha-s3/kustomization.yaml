@@ -1,0 +1,21 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - ../eks-ec2-ha
+configMapGenerator:
+  - name: narumq-backup-scripts
+    namespace: narumq
+    behavior: merge
+    files:
+      - s3_uploader.py
+      - restore-from-s3.py
+generatorOptions:
+  disableNameSuffixHash: true
+patches:
+  - path: cronjob-backup-s3-patch.yaml
+    target:
+      group: batch
+      version: v1
+      kind: CronJob
+      name: narumq-backup
+      namespace: narumq

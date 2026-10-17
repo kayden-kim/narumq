@@ -1,0 +1,15 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: narumq-headless
+  namespace: narumq
+spec:
+  clusterIP: None
+  publishNotReadyAddresses: true
+  selector:
+    app: narumq
+  ports:
+    - name: raft-peer
+      port: 7000
+      targetPort: raft-peer
+      protocol: TCP

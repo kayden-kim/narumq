@@ -10,6 +10,7 @@ import (
 )
 
 // Traceability: SEC-12; docs/specs/tenancy-and-security.md §7.1, §9; ADR-0050.
+// Scenarios: tenancy-and-security.md:SEC-SCN-043
 func TestClusterBlocklistRecordBridgeRoundTrips(t *testing.T) {
 	entries := []security.BlockEntry{
 		{Kind: security.BlockKindClientID, TenantID: "tenant-a", Value: "client-a"},

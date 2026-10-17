@@ -120,6 +120,7 @@ func TestCmmClusterOwnershipConfiguredRequiresMatchingNode(t *testing.T) {
 	}
 }
 
+// Scenarios: configuration-and-runtime-options.md:CFG-SCN-29
 func TestCmmConnectRejectsCredentialModeMismatchesWithoutMutation(t *testing.T) {
 	now := time.Date(2026, time.January, 1, 0, 0, 0, 0, time.UTC)
 	tenant := newMTLSTestTenantForConnect(t, "tenant-a")

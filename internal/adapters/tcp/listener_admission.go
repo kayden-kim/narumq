@@ -29,7 +29,8 @@ func NewAdmissionListener(inner net.Listener, config ListenerAdmissionConfig) (n
 	if config.Clock == nil {
 		return nil, ErrNilClock
 	}
-	if (config.Transport != portsmetrics.TransportTCP && config.Transport != portsmetrics.TransportTLS) ||
+	if (config.Transport != portsmetrics.TransportTCP && config.Transport != portsmetrics.TransportTLS &&
+		config.Transport != portsmetrics.TransportWS && config.Transport != portsmetrics.TransportWSS) ||
 		config.MaxConnections < 0 || config.MaxConnections > MaxListenerAdmissionLimit ||
 		config.ConnectionRate < 0 || config.ConnectionRate > MaxListenerAdmissionLimit ||
 		(config.MaxConnections == 0 && config.ConnectionRate == 0) {

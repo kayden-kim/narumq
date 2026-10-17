@@ -148,6 +148,7 @@ func TestClusterPolicySnapshotFeatureValidationAndObjectCount(t *testing.T) {
 }
 
 // Traceability: CFG-SCN-34; docs/contracts/replicated-state-v1.md §3; ADR-0052 §1.1.1.
+// Scenarios: configuration-and-runtime-options.md:CFG-SCN-34
 func TestClusterPolicyTenantQuotasFeatureGateAndSnapshotCount(t *testing.T) {
 	quotaPolicy := proto.Clone(clusterPolicyTestRecordChange(0, 1, "policy-1").Policy).(*ClusterPolicy)
 	quotaPolicy.TenantQuotas = &ClusterTenantQuotas{

@@ -377,6 +377,7 @@ func (scenario *storageFaultScenario) fillDiskLeaving(ctx context.Context, nodeI
 	return evidence, scenario.recorder.record("disk", nodeID, evidence)
 }
 
+// Scenarios: cluster-session-and-delivery.md:CLU-SCN-205
 func (scenario *storageFaultScenario) runFollowerDiskPressure(ctx context.Context, leader, target, healthy string) error {
 	scenario.evidence.TargetNodeIDs = []string{target}
 	if _, err := scenario.fillDiskLeaving(ctx, target, 4<<20); err != nil {
@@ -495,6 +496,7 @@ func (scenario *storageFaultScenario) inspectFailedFollower(ctx context.Context,
 	return nil
 }
 
+// Scenarios: cluster-session-and-delivery.md:CLU-SCN-026, cluster-session-and-delivery.md:CLU-SCN-084, cluster-session-and-delivery.md:CLU-SCN-160
 func (scenario *storageFaultScenario) runFollowerDiskFull(ctx context.Context, leaderID, targetID, healthyID string) error {
 	scenario.evidence.TargetNodeIDs = []string{targetID}
 	if _, err := scenario.fillDisk(ctx, targetID); err != nil {
@@ -684,6 +686,7 @@ func (scenario *storageFaultScenario) awaitFollowerRecovery(ctx context.Context,
 	return nil
 }
 
+// Scenarios: cluster-session-and-delivery.md:CLU-SCN-027, cluster-session-and-delivery.md:CLU-SCN-084, cluster-session-and-delivery.md:CLU-SCN-161
 func (scenario *storageFaultScenario) runQuorumDiskFull(ctx context.Context, leaderID string, followers []string) error {
 	scenario.evidence.TargetNodeIDs = append([]string(nil), followers...)
 	preFaultQoS1 := durableTopic(scenario.options.ScenarioID, "leader", "before-qos1")
@@ -925,6 +928,7 @@ func (scenario *storageFaultScenario) runQuorumDiskFull(ctx context.Context, lea
 	return nil
 }
 
+// Scenarios: cluster-session-and-delivery.md:CLU-SCN-028, cluster-session-and-delivery.md:CLU-SCN-084
 func (scenario *storageFaultScenario) runFollowerSlowIO(ctx context.Context, leaderID, targetID, healthyID string) error {
 	scenario.evidence.TargetNodeIDs = []string{targetID}
 	if _, err := scenario.docker.execNode(ctx, targetID, "set-io-delay", "--file", "/run/narumq-chaos/io-delay", "--ms", "2000"); err != nil {

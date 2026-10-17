@@ -13,6 +13,7 @@ import (
 )
 
 // Traceability: SEC-12; docs/specs/tenancy-and-security.md §7.1, §9; ADR-0050.
+// Scenarios: tenancy-and-security.md:SEC-SCN-042
 func TestTCPCommittedBlocklistClosesMatchingSessionsAndDiscardsWill(t *testing.T) {
 	for _, test := range []struct {
 		name           string
@@ -100,6 +101,7 @@ func TestTCPCommittedBlocklistClosesMatchingSessionsAndDiscardsWill(t *testing.T
 }
 
 // Traceability: SEC-12; docs/specs/tenancy-and-security.md §7.1, §9; ADR-0050.
+// Scenarios: tenancy-and-security.md:SEC-SCN-042
 func TestTCPBlocklistSnapshotReplaceClosesAndUnblocksConnections(t *testing.T) {
 	scheduler := &tcpCredentialScheduler{}
 	runtime, tenant := newTCPCredentialRuntime(t, &tcpCredentialRevocationChecker{}, scheduler, time.Hour, false)
@@ -137,6 +139,7 @@ func TestTCPBlocklistSnapshotReplaceClosesAndUnblocksConnections(t *testing.T) {
 }
 
 // Traceability: SEC-12; docs/specs/tenancy-and-security.md §7.1, §9; ADR-0050.
+// Scenarios: tenancy-and-security.md:SEC-SCN-041
 func TestTCPConnectRejectsBlockAppliedAfterOwnershipCommit(t *testing.T) {
 	checker := &tcpCredentialRevocationChecker{}
 	scheduler := &tcpCredentialScheduler{}

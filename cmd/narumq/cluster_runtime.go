@@ -42,9 +42,11 @@ import (
 	"narumq/internal/application/connect"
 	appmgmt "narumq/internal/application/management"
 	"narumq/internal/application/membership"
+	appobservability "narumq/internal/application/observability"
 	authenticationports "narumq/internal/application/ports/authentication"
 	managementports "narumq/internal/application/ports/management"
 	portsmetrics "narumq/internal/application/ports/metrics"
+	observationports "narumq/internal/application/ports/observability"
 	"narumq/internal/application/publish"
 	"narumq/internal/application/subscribe"
 	"narumq/internal/domain/mqtt"
@@ -186,13 +188,17 @@ func runClusterMode(ctx context.Context, config clusterConfigFile, logger *slog.
 	}
 
 	var runtime *clusterRuntime
+
+	var observabilityQuery observationports.QueryService
+	var peerObservabilityHandler tcpadapter.PeerObservabilityHandler
 	metricsRegistry := adaptersmetrics.NewRegistry()
 	storageMonitor := newClusterStorageMonitor(time.Now, logger)
 	node, err := raftadapter.Open(raftadapter.Config{
 		NodeID: raftadapter.NodeID(config.NodeID), Directory: config.Directory,
 		DynamicMembership: true, ClusterID: config.ClusterID,
 		CertificateSHA256: localFingerprint, BootstrapVoterIDs: bootstrapIDs,
-		PersistenceBoundaryHook: persistenceHook, WALBoundaryHook: walBoundaryHook,
+		PersistenceBoundaryHook: persistenceHook, WALBoundaryHook: walBoundaryHook, Logger: logger,
+		SnapshotStreamActive: func() bool { return runtime.snapshotStreamActive() },
 		ForwardedProposalCapacity: func(peerID raftadapter.NodeID) (int, int) {
 			return runtime.forwardedProposalCapacity(peerID)
 		},
@@ -288,15 +294,24 @@ func runClusterMode(ctx context.Context, config clusterConfigFile, logger *slog.
 		LocalIdentity: runtime.localIdentity, Listener: peerListener,
 		ServerTLS: peerServerTLS, ClientTLS: peerClientTLS,
 		Peers: initialPeers, AdmissionHandler: runtime.admitPeer,
-		BootstrapProgress: runtime.bootstrapProgress, BootstrapAllowedPeerIDs: bootstrapAllowed,
+		SnapshotStreamHandler: runtime.receiveSnapshotStream,
+		BootstrapProgress:     runtime.bootstrapProgress, BootstrapAllowedPeerIDs: bootstrapAllowed,
+		ObservabilityHandler: func(ctx context.Context, kind tcpadapter.PeerObservabilityKind) ([]byte, error) {
+			if peerObservabilityHandler == nil {
+				return nil, errors.New("peer observability query service is unavailable")
+			}
+			return peerObservabilityHandler(ctx, kind)
+		},
 	})
 	if err != nil {
 		return fmt.Errorf("create dynamic raft peer transport: %w", err)
 	}
 	runtime.transport = transport
+	runtime.snapshotStreams = newClusterSnapshotStreams(logger, transport, node, runtime.faults.isolates)
 	runtime.inboundQueue = transport
 	defer transport.Close()
 	runtime.forwarder = transport
+	runtime.routes.SetOwnerReachability(runtime.ownerReachable)
 	runtime.refreshRouteProjection()
 
 	securityBundle, credentialProvider, mtlsProvider, credentialMethod, err := clusterMQTTSecurity(config)
@@ -304,7 +319,7 @@ func runClusterMode(ctx context.Context, config clusterConfigFile, logger *slog.
 		return err
 	}
 	runtime.securityBundle = securityBundle
-	mqttListeners, err := clusterMQTTListeners(config, metricsRegistry)
+	mqttListeners, err := clusterMQTTListeners(config, metricsRegistry, logger)
 	if err != nil {
 		return err
 	}
@@ -482,6 +497,18 @@ func runClusterMode(ctx context.Context, config clusterConfigFile, logger *slog.
 	}, sessions, runtime.routes, retainedRepository, metricsRegistry)
 	baseManagement.UseClusterSessionSource(runtime)
 	runtime.managementState = baseManagement
+	observabilitySource := &observabilitySource{
+		runtime: runtime, state: baseManagement, metrics: metricsRegistry, clock: systemClock,
+		clusterID: config.ClusterID, localNodeID: strconv.FormatUint(config.NodeID, 10),
+		releaseVersion: config.ReleaseVersion,
+	}
+	observabilityQuery, err = appobservability.NewService(
+		observabilitySource, observabilitySource, tcpadapter.NewPeerObservabilityReader(transport), systemClock,
+	)
+	if err != nil {
+		return fmt.Errorf("create observability query service: %w", err)
+	}
+	peerObservabilityHandler = tcpadapter.NewPeerObservabilityHandler(observabilityQuery, observabilitySource.localNodeID)
 	stateProvider := &clusterStateProvider{StateProvider: baseManagement, runtime: runtime}
 	healthChecker := &clusterHealthChecker{HealthChecker: baseManagement, runtime: runtime}
 	credentials, err := loadClusterManagementCredentials(config.Management)
@@ -517,6 +544,7 @@ func runClusterMode(ctx context.Context, config clusterConfigFile, logger *slog.
 		AllowAnonymousProbes: true,
 		RequestRate:          requestRate, AuthFailureRate: authFailureRate, Clock: systemClock,
 		ClusterID: config.ClusterID, LocalNodeID: config.NodeID, Logger: logger,
+		Observability: observabilityQuery,
 	}, stateProvider, healthChecker, metricsRegistry, membershipService, drainService, rebalanceService, runtime, auditService, auditQueryService, credentialRevocationService, blocklistService, clusterPolicyService, runtime)
 	var sampler *runtimemetrics.Sampler
 	if config.RuntimeMetrics != nil {
@@ -560,6 +588,7 @@ type clusterRuntime struct {
 	logger                  *slog.Logger
 	node                    *raftadapter.Node
 	transport               *tcpadapter.DynamicTCPPeerTransport
+	snapshotStreams         *clusterSnapshotStreams
 	inboundQueue            clusterInboundRaftQueue
 	forwarder               clusterPeerForwarder
 	forwardSink             clusterForwardSink
@@ -687,6 +716,8 @@ type clusterReadWaiter struct {
 	commit        *clusterPendingCommit
 	leadership    raftLeadership
 	proofSequence uint64
+	issuedAt      time.Time // Emission time of proofSequence; the zero value never expires.
+	answered      bool      // The ReadState arrived and waits for local apply and projection.
 }
 
 type clusterProposalWaiter struct {
@@ -884,6 +915,12 @@ func (runtime *clusterRuntime) runDriver(ctx context.Context) (driverErr error) 
 	go func() { serveResult <- runtime.transport.Serve(ctx) }()
 	ticker := time.NewTicker(clusterTickInterval)
 	defer ticker.Stop()
+	// Snapshot stream transfers end with the driver, whatever the reason.
+	streamContext, stopSnapshotStreams := context.WithCancel(ctx)
+	defer func() {
+		stopSnapshotStreams()
+		runtime.snapshotStreams.wait()
+	}()
 	reads := make(map[string]clusterReadWaiter)
 	var proposals []clusterProposalWaiter
 	deferredReads := make([]raftadapter.ReadStateDTO, 0)
@@ -1064,6 +1101,7 @@ func (runtime *clusterRuntime) runDriver(ctx context.Context) (driverErr error) 
 			if err != nil {
 				return err
 			}
+			runtime.snapshotStreams.start(streamContext, batch.SnapshotStreams)
 			status := runtime.node.Status()
 			runtime.publishProjectionAdmissionStatus(status)
 			deferredReads = runtime.completeReadStates(deferredReads, reads)
@@ -1122,6 +1160,10 @@ func (runtime *clusterRuntime) runDriver(ctx context.Context) (driverErr error) 
 				return err
 			}
 		case <-runtime.node.StorageReady():
+			if err := processReady(); err != nil {
+				return err
+			}
+		case <-runtime.snapshotStreams.wakeChannel():
 			if err := processReady(); err != nil {
 				return err
 			}
@@ -1402,7 +1444,7 @@ type raftLeadership struct {
 
 func clusterBatchEmpty(batch raftadapter.BatchDTO) bool {
 	return !batch.Progress && batch.ApplySequence == 0 && len(batch.Messages) == 0 && len(batch.Commands) == 0 && len(batch.ConfigurationChanges) == 0 &&
-		len(batch.SnapshotData) == 0 && len(batch.ReadStates) == 0
+		len(batch.SnapshotData) == 0 && len(batch.ReadStates) == 0 && len(batch.SnapshotStreams) == 0
 }
 
 func (runtime *clusterRuntime) deliveryCrashArmed(point clusterFailpoint) bool {
@@ -1594,6 +1636,9 @@ func (runtime *clusterRuntime) applyBatch(batch raftadapter.BatchDTO, proposals 
 				runtime.logger.Warn("durable delivery targets skipped", "tenant_id", command.Delivery.TenantID, "skipped", result.Delivery.Skipped)
 			}
 		}
+		if reroutes := runtime.machine.TakeDeliveryReroutes(); len(reroutes) > 0 {
+			runtime.notifyDeliveryReroutes(reroutes)
+		}
 		runtime.stageProposalResult(event.command, result, proposals)
 	}
 	if runtime.initialized.Load() {
@@ -1748,6 +1793,8 @@ func (runtime *clusterRuntime) completeReadStates(states []raftadapter.ReadState
 			continue
 		}
 		if state.Index > status.AppliedIndex || state.Index > runtime.projectionIndex.Load() {
+			waiter.answered = true
+			waiters[key] = waiter
 			remaining = append(remaining, state)
 			continue
 		}
@@ -1866,7 +1913,7 @@ func (runtime *clusterRuntime) sendMessages(ctx context.Context, messages []raft
 	defer func() { runtime.readIndexStaged = 0 }()
 	rejected := make(map[raftadapter.NodeID]struct{}, len(messages))
 	for _, message := range messages {
-		if runtime.faults.isolates(uint64(message.To)) {
+		if runtime.faults.isolates(uint64(message.To)) || message.Type == "MsgProp" && runtime.faults.dropsProposals(uint64(message.To)) {
 			continue
 		}
 		// A Ready batch can contain a response to a peer removed by that same committed change.
@@ -2183,7 +2230,7 @@ func (runtime *clusterRuntime) rebuildRouteProjection() error {
 			return fmt.Errorf("committed ownership session identity is invalid: %w", err)
 		}
 		projectionSessions = append(projectionSessions, routing.ProjectionSession{
-			TenantID: tenantID, SessionID: sessionID,
+			TenantID: tenantID, SessionID: sessionID, OwnerNodeID: ownership.OwnerNodeID,
 		})
 	}
 
@@ -3334,6 +3381,7 @@ func configuredLocalPeerIdentity(config clusterConfigFile, fingerprint [32]byte)
 		DNSSAN: config.LocalDNSName, CertificateSHA256: fingerprint, ReleaseVersion: config.ReleaseVersion,
 		ClusterProtocolMajor: config.ClusterProtocolMajor, ClusterProtocolMinor: config.ClusterProtocolMinor,
 		StateSchemaMajor: config.StateSchemaMajor, StateSchemaMinor: config.StateSchemaMinor, Phase: phase,
+		ObservabilitySupported: release.Contains(config.Features, release.ClusterObservabilityFeature),
 	}
 }
 
@@ -3367,6 +3415,7 @@ func peerIdentityFromMember(member *membership.MemberIdentityDTO) (tcpadapter.Pe
 		ClusterProtocolMajor: member.ClusterProtocolMajor, ClusterProtocolMinor: member.ClusterProtocolMinor,
 		StateSchemaMajor: member.StateSchemaMajor, StateSchemaMinor: member.StateSchemaMinor,
 		Phase: phase, OperationID: member.OperationID,
+		ObservabilitySupported: release.Contains(member.Features, release.ClusterObservabilityFeature),
 	}, nil
 }
 
@@ -3502,39 +3551,57 @@ func isUnconfiguredRemotePeer(status raftadapter.StatusDTO, localID uint64, peer
 		!containsNodeID(status.LearnerIDs, uint64(peerID))
 }
 
-func clusterMQTTListeners(config clusterConfigFile, recorder portsmetrics.ListenerAdmissionRecorder) ([]net.Listener, error) {
+func clusterMQTTListeners(config clusterConfigFile, recorder portsmetrics.ListenerAdmissionRecorder, logger *slog.Logger) ([]net.Listener, error) {
+	var tlsConfig *tls.Config
+	if config.MQTT.tlsListenerConfigured() {
+		if config.MQTT.TLS == nil {
+			return nil, errors.New("cluster MQTT TLS listener requires mqtt.tls")
+		}
+		var err error
+		tlsConfig, err = tlsadapter.BuildTLSConfig(tlsadapter.Config{
+			CertFile: config.MQTT.TLS.CertFile, KeyFile: config.MQTT.TLS.KeyFile,
+			CAFile: config.MQTT.TLS.CAFile, ClientAuth: tlsadapter.ClientAuthMode(config.MQTT.TLS.ClientAuth),
+			MinVersion: config.MQTT.TLS.MinVersion,
+		})
+		if err != nil {
+			return nil, fmt.Errorf("configure cluster MQTT TLS: %w", err)
+		}
+	}
+
 	var listeners []net.Listener
+	closeOpened := func() {
+		for _, listener := range listeners {
+			_ = listener.Close()
+		}
+	}
 	if config.MQTT.TCPListenAddress != "" {
-		listener, err := openMQTTListener(config.MQTT.TCPListenAddress, nil, config.MQTT.TCPMaxConnections, config.MQTT.TCPConnectionRate, recorder)
+		listener, err := openMQTTListener(portsmetrics.TransportTCP, config.MQTT.TCPListenAddress, nil, config.MQTT.TCPMaxConnections, config.MQTT.TCPConnectionRate, recorder)
 		if err != nil {
 			return nil, fmt.Errorf("listen for cluster MQTT TCP on %q: %w", config.MQTT.TCPListenAddress, err)
 		}
 		listeners = append(listeners, listener)
 	}
 	if config.MQTT.TLSListenAddress != "" {
-		if config.MQTT.TLS == nil {
-			for _, listener := range listeners {
-				_ = listener.Close()
-			}
-			return nil, errors.New("cluster MQTT TLS listener requires mqtt.tls")
-		}
-		tlsConfig, err := tlsadapter.BuildTLSConfig(tlsadapter.Config{
-			CertFile: config.MQTT.TLS.CertFile, KeyFile: config.MQTT.TLS.KeyFile,
-			CAFile: config.MQTT.TLS.CAFile, ClientAuth: tlsadapter.ClientAuthMode(config.MQTT.TLS.ClientAuth),
-			MinVersion: config.MQTT.TLS.MinVersion,
-		})
+		listener, err := openMQTTListener(portsmetrics.TransportTLS, config.MQTT.TLSListenAddress, tlsConfig, config.MQTT.TLSMaxConnections, config.MQTT.TLSConnectionRate, recorder)
 		if err != nil {
-			for _, listener := range listeners {
-				_ = listener.Close()
-			}
-			return nil, fmt.Errorf("configure cluster MQTT TLS: %w", err)
-		}
-		listener, err := openMQTTListener(config.MQTT.TLSListenAddress, tlsConfig, config.MQTT.TLSMaxConnections, config.MQTT.TLSConnectionRate, recorder)
-		if err != nil {
-			for _, opened := range listeners {
-				_ = opened.Close()
-			}
+			closeOpened()
 			return nil, fmt.Errorf("listen for cluster MQTT TLS on %q: %w", config.MQTT.TLSListenAddress, err)
+		}
+		listeners = append(listeners, listener)
+	}
+	if webSocket := config.MQTT.WebSocket; webSocket != nil && webSocket.ListenAddress != "" {
+		listener, err := openWebSocketListener(webSocket.ListenAddress, nil, webSocket.MaxConnections, webSocket.ConnectionRate, recorder, logger)
+		if err != nil {
+			closeOpened()
+			return nil, fmt.Errorf("listen for cluster MQTT WebSocket on %q: %w", webSocket.ListenAddress, err)
+		}
+		listeners = append(listeners, listener)
+	}
+	if webSocket := config.MQTT.WebSocket; webSocket != nil && webSocket.TLSListenAddress != "" {
+		listener, err := openWebSocketListener(webSocket.TLSListenAddress, tlsConfig, webSocket.TLSMaxConnections, webSocket.TLSConnectionRate, recorder, logger)
+		if err != nil {
+			closeOpened()
+			return nil, fmt.Errorf("listen for cluster MQTT WSS on %q: %w", webSocket.TLSListenAddress, err)
 		}
 		listeners = append(listeners, listener)
 	}
@@ -3546,7 +3613,7 @@ func clusterMQTTSecurity(config clusterConfigFile) (*SecurityBundle, authenticat
 	if err != nil {
 		return nil, nil, nil, "", fmt.Errorf("load cluster MQTT security config: %w", err)
 	}
-	if config.MQTT.TLSListenAddress != "" && config.MQTT.TLS != nil {
+	if config.MQTT.tlsListenerConfigured() && config.MQTT.TLS != nil {
 		if err := validateTLSAuthenticationBindings(
 			"mqtt.tls.clientAuth",
 			tlsadapter.ClientAuthMode(config.MQTT.TLS.ClientAuth),
@@ -3646,7 +3713,14 @@ func (checker *clusterHealthChecker) CheckStartup(ctx context.Context) (manageme
 		reason := "typed raft state has not been recovered"
 		return managementports.HealthStatusStarting, &reason
 	}
-	return checker.HealthChecker.CheckStartup(ctx)
+	status, reason := checker.HealthChecker.CheckStartup(ctx)
+	if status != managementports.HealthStatusStarting {
+		return status, reason
+	}
+	if ready, readinessReason := checker.CheckReadiness(ctx); ready != managementports.HealthStatusUp {
+		return managementports.HealthStatusStarting, readinessReason
+	}
+	return managementports.HealthStatusUp, nil
 }
 
 func (checker *clusterHealthChecker) CheckDrain(ctx context.Context) (managementports.HealthStatus, *string) {

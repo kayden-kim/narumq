@@ -1,2 +1,8 @@
 .git
 .artifacts
+.tmp-eks/
+**/.terraform
+**/*.tfstate
+**/*.tfstate.*
+**/*.tfplan
+deploy/terraform-acceptance/$planPath

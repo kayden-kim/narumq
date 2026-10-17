@@ -18,6 +18,8 @@ func smokeProfile(t *testing.T) Profile {
 	return profile
 }
 
+// TestLoadProfilePreservesSourceHash verifies the profile source hash is preserved.
+// Scenarios: performance-and-verification.md:PRF-SCN-035
 func TestLoadProfilePreservesSourceHash(t *testing.T) {
 	path := filepath.Join("testdata", "smoke.json")
 	profile, source, hash, err := LoadProfile(path)
@@ -40,6 +42,8 @@ func TestLoadProfilePreservesSourceHash(t *testing.T) {
 	}
 }
 
+// TestDecodeProfileRejectsUnknownFieldAndInvalidSmokeBound verifies rejection of unknown fields and out-of-range values.
+// Scenarios: performance-and-verification.md:PRF-SCN-035
 func TestDecodeProfileRejectsUnknownFieldAndInvalidSmokeBound(t *testing.T) {
 	data, err := os.ReadFile(filepath.Join("testdata", "smoke.json"))
 	if err != nil {
@@ -57,6 +61,8 @@ func TestDecodeProfileRejectsUnknownFieldAndInvalidSmokeBound(t *testing.T) {
 	}
 }
 
+// TestWorkloadPlanIDsAndTopicOracle verifies subscriber IDs and the topic oracle.
+// Scenarios: performance-and-verification.md:PRF-SCN-035
 func TestWorkloadPlanIDsAndTopicOracle(t *testing.T) {
 	profile := smokeProfile(t)
 	subscribers := workloadSubscribers(profile)
@@ -94,6 +100,8 @@ func TestWorkloadPlanIDsAndTopicOracle(t *testing.T) {
 	}
 }
 
+// TestTopicMatchesMQTTWildcardBoundaries verifies the wildcard matching used by the topic oracle.
+// Scenarios: performance-and-verification.md:PRF-SCN-035
 func TestTopicMatchesMQTTWildcardBoundaries(t *testing.T) {
 	cases := []struct {
 		filter string
@@ -117,6 +125,8 @@ func TestTopicMatchesMQTTWildcardBoundaries(t *testing.T) {
 	}
 }
 
+// TestValidRouteTopicRequiresThreeDigits verifies the route topic rule used by the topic oracle.
+// Scenarios: performance-and-verification.md:PRF-SCN-035
 func TestValidRouteTopicRequiresThreeDigits(t *testing.T) {
 	for _, topic := range []string{"bp04/route/000", "bp04/route/012", "bp04/route/999"} {
 		if !validRouteTopic(topic) {

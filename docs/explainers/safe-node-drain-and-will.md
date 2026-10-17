@@ -131,6 +131,7 @@ Recovery 전에 재접속해도 ownership apply가 대체한 Will을 결과로 �
 - Drain ETA가 termination grace period를 넘으면 controller가 배포를 중단한다.
 
 속도 제한은 drain 시간을 늘린다. 너무 빠르면 reconnect storm이 생기고 너무 느리면 배포가 끝나지 않는다. 실제 연결 수와 N-1 용량으로 비율을 측정해야 한다.
+기본 drain 값은 초당 100개, LB 전파 대기 30초, timeout 600초다. 연결 수가 57000개를 넘는 node는 rate 또는 timeout을 직접 지정해야 한다([ADR-0055](../decisions/ADR-0055-drain-and-reconnect-operating-defaults.md)).
 
 ## 실패 흐름과 보장하지 않는 범위
 

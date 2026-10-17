@@ -227,6 +227,7 @@ func TestOwnership_ImmutabilityOnFailure(t *testing.T) {
 	}
 }
 
+// Scenarios: tenancy-and-security.md:SEC-SCN-019
 func TestOwnership_CrossTenantIsolation(t *testing.T) {
 	t.Parallel()
 

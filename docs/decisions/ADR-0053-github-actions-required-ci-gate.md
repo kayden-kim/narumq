@@ -8,9 +8,9 @@
 | 관련 요구사항 | [PRD](../requirements/PRD.md)의 TEST-06~TEST-10, TEST-13~TEST-15 |
 | 관련 스펙·계약 | [Performance와 verification](../specs/performance-and-verification.md), [개발 안내](../how-to/development-guide.md) |
 | 관련 아키텍처 문서 | [Project structure](../architectures/project-structure.md) |
-| 관련 ADR | [ADR-0042](ADR-0042-p0-requirement-traceability-gate.md), [ADR-0044](ADR-0044-diff-coverage-floor-90.md) |
+| 관련 ADR | [ADR-0042](ADR-0042-p0-requirement-traceability-gate.md), [ADR-0044](ADR-0044-diff-coverage-floor-90.md), [ADR-0063](ADR-0063-diff-coverage-floor-80.md) |
 | 이 ADR이 대체하는 이전 ADR | 없음 |
-| 이 ADR을 대체한 새 ADR | 없음 |
+| 이 ADR을 대체한 새 ADR | [ADR-0056](ADR-0056-branch-protection-for-admins.md)가 §1의 관리자 보호 적용 행만 대체한다. 나머지 결정은 유지한다. |
 
 ## 1. 결정
 
@@ -47,7 +47,7 @@ Mutation 검증은 CI에서 실행하지 않는다. 2026-10-11 수동 실행은 
 
 2026-10-11 main commit `03c84f40c345195f0a323c5af2e623e9ebbbc998`의 GitHub Actions run [38112386284](https://github.com/kayden-kim/narumq/actions/runs/38112386284)은 `verify` check와 `ci` gate를 통과했다. Job은 5분 49초 뒤 완료됐고 `verification-38112386284-1` artifact를 생성했다. Artifact는 2026-11-10까지 보관한다.
 
-GitHub API 조회에서 main protection은 필수 `verify`, `strict=true`, review 없음, 제한 없음, force push 금지, branch 삭제 금지, `enforce_admins=false`로 확인했다. 실패 test를 넣은 probe PR은 `verify`가 실패한 뒤 `mergeable_state=blocked`였다. 이 증거와 TEST-10의 남은 한계는 [§8.9](../specs/performance-and-verification.md#89-github-actions-원격-ci와-required-check-증거)에 기록한다.
+GitHub API 조회에서 main protection은 필수 `verify`, `strict=true`, review 없음, 제한 없음, force push 금지, branch 삭제 금지, `enforce_admins=false`로 확인했다. 실패 test를 넣은 probe PR은 `verify`가 실패한 뒤 `mergeable_state=blocked`였다. 이 증거와 TEST-10의 남은 한계는 [§8.9](../verification/performance-and-verification.md#89-github-actions-원격-ci와-required-check-증거)에 기록한다.
 
 `P0 mapped 70/81, exceptions 11`이며 traceability gate는 PASS했다. 이 결과는 등록된 예외가 허용된다는 뜻이며, 모든 P0 요구사항에 test가 있다는 뜻은 아니다.
 
@@ -77,7 +77,7 @@ GitHub API 조회에서 main protection은 필수 `verify`, `strict=true`, revie
 
 ### 후속 작업
 
-- Verification run과 branch protection 증거를 [Performance와 verification §8.9](../specs/performance-and-verification.md#89-github-actions-원격-ci와-required-check-증거)에 유지한다.
+- Verification run과 branch protection 증거를 [Performance와 verification §8.9](../verification/performance-and-verification.md#89-github-actions-원격-ci와-required-check-증거)에 유지한다.
 - Action major와 `ubuntu-24.04` runner를 지원 상태에 맞춰 정기 검토한다.
 
 ## 7. 검증
@@ -86,9 +86,9 @@ GitHub API 조회에서 main protection은 필수 `verify`, `strict=true`, revie
 | --- | --- | --- | --- |
 | 원격 main CI가 전체 gate를 실행한다. | GitHub Actions run의 `verify` check 확인 | `success` | [Run 38112386284](https://github.com/kayden-kim/narumq/actions/runs/38112386284) |
 | Updated runner·action runtime | 문서 PR #2의 `verify` check | `ubuntu-24.04`, Node 24 action v7에서 `success` | [Run 38113714789](https://github.com/kayden-kim/narumq/actions/runs/38113714789) |
-| main protection이 `verify`를 요구한다. | Branch protection API 조회 | `strict=true`, check `verify`, force push·삭제 금지 | [§8.9](../specs/performance-and-verification.md#89-github-actions-원격-ci와-required-check-증거) |
+| main protection이 `verify`를 요구한다. | Branch protection API 조회 | `strict=true`, check `verify`, force push·삭제 금지 | [§8.9](../verification/performance-and-verification.md#89-github-actions-원격-ci와-required-check-증거) |
 | 실패한 PR은 merge 가능 상태가 아니다. | Intentional failing test가 있는 probe PR의 check와 merge state 조회 | `verify=failure`, `mergeable_state=blocked` | [Probe PR #1](https://github.com/kayden-kim/narumq/pull/1), [run 38112802413](https://github.com/kayden-kim/narumq/actions/runs/38112802413). Coverage·traceability 거절과 실제 merge API는 별도로 시험하지 않았다. |
-| 로컬 Linux CI가 같은 commit에서 통과한다. | Docker의 Go 1.26.5 Linux container에서 `go run ./tools/verify ci --base f847a491e7b4a68d7fc48a868ad801895894d32a` 실행 | `coverage: PASS`, `ci: PASS` | `.artifacts/verification/ci-linux-one-shot-admission-close.log`; 세부 내용은 [§8.9](../specs/performance-and-verification.md#89-github-actions-원격-ci와-required-check-증거) |
+| 로컬 Linux CI가 같은 commit에서 통과한다. | Docker의 Go 1.26.5 Linux container에서 `go run ./tools/verify ci --base f847a491e7b4a68d7fc48a868ad801895894d32a` 실행 | `coverage: PASS`, `ci: PASS` | `.artifacts/verification/ci-linux-one-shot-admission-close.log`; 세부 내용은 [§8.9](../verification/performance-and-verification.md#89-github-actions-원격-ci와-required-check-증거) |
 
 ## 8. 재검토 조건
 

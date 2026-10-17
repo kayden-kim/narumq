@@ -40,6 +40,7 @@ func TestClusterFeatureHTTPListReturnsNonNullArraysAndStringNodeIDs(t *testing.T
 	}
 }
 
+// Scenarios: cluster-session-and-delivery.md:CLU-SCN-219
 func TestClusterFeatureHTTPActivateAndMapUnsupportedConflict(t *testing.T) {
 	stub := &membershipServiceStub{featureState: membership.FeatureStateDTO{
 		ActiveFeatures: []string{"compatibility-probe"},
@@ -79,6 +80,7 @@ func TestClusterFeatureHTTPActivateAndMapUnsupportedConflict(t *testing.T) {
 	}
 }
 
+// Scenarios: cluster-session-and-delivery.md:CLU-SCN-219
 func TestClusterFeatureHTTPRejectsInvalidFeatureAndReadOnlyActivation(t *testing.T) {
 	stub := &membershipServiceStub{}
 	adminHandler := newMembershipHTTPTestHandler(stub, RoleClusterAdmin)

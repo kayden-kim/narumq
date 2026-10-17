@@ -24,6 +24,7 @@ func (committer *recordingRetainedCommitter) CommitRetained(_ context.Context, c
 }
 
 // Traceability: PRD CLU-08/CLU-14/TEN-05; docs/specs/cluster-session-and-delivery.md §4·§10.
+// Scenarios: cluster-session-and-delivery.md:CLU-SCN-038
 func TestPublishCommitsRetainedReplaceAndDeleteWithoutLocalMutation(t *testing.T) {
 	now := testNow()
 	clock := &fakeClock{now: now}
@@ -95,6 +96,7 @@ func TestPublishCommitsRetainedReplaceAndDeleteWithoutLocalMutation(t *testing.T
 }
 
 // Traceability: PRD CLU-08/CLU-14/TEN-05; docs/specs/cluster-session-and-delivery.md §4·§10.
+// Scenarios: cluster-session-and-delivery.md:CLU-SCN-038
 func TestPublishRetainedCommitFailureStopsFanout(t *testing.T) {
 	routes := routing.NewTable()
 	if _, err := routes.Subscribe("subscriber", mqtt.Subscription{Filter: "events/#", QoS: mqtt.QoSAtMostOnce}); err != nil {

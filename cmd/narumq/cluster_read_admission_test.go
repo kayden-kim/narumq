@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"encoding/binary"
 	"errors"
 	"fmt"
 	"io"
@@ -10,6 +11,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	goruntime "runtime"
 	"testing"
 	"time"
 
@@ -146,25 +148,55 @@ func readAdmissionTestMachine(t *testing.T, runtimes [3]*clusterRuntime) *member
 }
 
 // Traceability: CLU-14; docs/specs/performance-and-verification.md §3.4.
+// Scenarios: performance-and-verification.md:PRF-SCN-011
 func TestClusterFollowerReadBurstCompletesAfterEgressDrain(t *testing.T) {
-	testClusterReadBurst(t, []int{1}, 3)
+	testClusterReadBurst(t, []int{1}, 3, 3)
 }
 
 // Traceability: CLU-14; docs/specs/performance-and-verification.md §3.4.
+// Scenarios: performance-and-verification.md:PRF-SCN-012
 func TestClusterLeaderReadBurstPreservesHealthyQuorumWithBlockedMinority(t *testing.T) {
-	testClusterReadBurst(t, []int{0}, 2)
+	testClusterReadBurst(t, []int{0}, 2, 2)
 }
 
 // Traceability: CLU-14; docs/specs/performance-and-verification.md §3.4.
+// Scenarios: performance-and-verification.md:PRF-SCN-011, performance-and-verification.md:PRF-SCN-012
 func TestClusterConcurrentOriginsReadBurstCompletesAfterEgressDrain(t *testing.T) {
-	testClusterReadBurst(t, []int{0, 1, 2}, 3)
+	testClusterReadBurst(t, []int{0, 1, 2}, 2, 3)
 }
 
-func testClusterReadBurst(t *testing.T, issuers []int, connected int) {
+func testClusterReadBurst(t *testing.T, issuers []int, initiallyConnected, connected int) {
 	t.Helper()
 	runtimes := newReadAdmissionTestCluster(t)
 	ctx, cancel := context.WithTimeout(context.Background(), clusterReadTimeout)
 	defer cancel()
+	var baseline [3]uint64
+	var queueLimits [3][3]tcpadapter.PeerOutboundCapacityDTO
+	for index, runtime := range runtimes {
+		baseline[index] = runtime.node.Status().AppliedIndex
+		for peerIndex := range runtimes {
+			if peerIndex == index {
+				continue
+			}
+			capacity, err := runtime.transport.OutboundCapacity(uint64(peerIndex + 1))
+			if err != nil {
+				t.Fatal(err)
+			}
+			queueLimits[index][peerIndex] = capacity
+		}
+	}
+	checkQueueBounds := func(index int) {
+		t.Helper()
+		for peerIndex, limit := range queueLimits[index] {
+			if peerIndex == index {
+				continue
+			}
+			status, err := runtimes[index].transport.Status(uint64(peerIndex + 1))
+			if err != nil || status.OutboundQueuedMessages > limit.Messages || status.OutboundQueuedBytes > limit.Bytes {
+				t.Fatalf("node %d peer %d status=%+v limit=%+v err=%v", index+1, peerIndex+1, status, limit, err)
+			}
+		}
+	}
 	results := make([]chan clusterReadResponse, 64*len(issuers))
 	var reads [3]map[string]clusterReadWaiter
 	var proposals [3][]clusterProposalWaiter
@@ -193,18 +225,23 @@ func testClusterReadBurst(t *testing.T, issuers []int, connected int) {
 		if err := runtime.sendMessages(ctx, batch.Messages); err != nil {
 			t.Fatal(err)
 		}
+		checkQueueBounds(index)
 	}
 	// No writer exists yet: the first burst must survive the fixed egress cap.
 	for _, issuer := range issuers {
 		process(issuer)
 	}
 	serveResults := make(chan error, 3)
-	for _, runtime := range runtimes[:connected] {
-		go func() { serveResults <- runtime.transport.Serve(ctx) }()
+	serving := initiallyConnected
+	startTransports := func(from, to int) {
+		for _, runtime := range runtimes[from:to] {
+			go func() { serveResults <- runtime.transport.Serve(ctx) }()
+		}
 	}
+	startTransports(0, serving)
 	defer func() {
 		cancel()
-		for range connected {
+		for range serving {
 			if err := <-serveResults; err != nil {
 				t.Errorf("transport shutdown: %v", err)
 			}
@@ -221,34 +258,34 @@ func testClusterReadBurst(t *testing.T, issuers []int, connected int) {
 			}
 			select {
 			case response := <-result:
-				if response.err != nil || response.index == 0 {
-					t.Fatalf("request %d result=%+v", index, response)
+				issuer := issuers[index/64]
+				if response.err != nil || response.index == 0 || response.index < baseline[issuer] {
+					t.Fatalf("request %d result=%+v baseline=%d", index, response, baseline[issuer])
 				}
 				results[index] = nil
 				completed++
 			default:
 			}
 		}
-		time.Sleep(time.Millisecond)
+		if serving < connected && completed >= 64*initiallyConnected {
+			// The majority has completed its burst without the last peer draining.
+			// Now its original 64 requests must complete under the same deadline.
+			startTransports(serving, connected)
+			serving = connected
+		}
+		goruntime.Gosched()
 	}
 	if completed != len(results) {
 		t.Fatalf("fresh proofs completed=%d/%d after egress drain", completed, len(results))
 	}
-	for _, runtime := range runtimes {
-		for _, id := range []uint64{1, 2, 3} {
-			if id == runtime.config.NodeID {
-				continue
-			}
-			status, err := runtime.transport.Status(id)
-			if err != nil || (id <= uint64(connected) && status.RejectedMessages != 0) || status.OutboundQueuedMessages > 32 || status.OutboundQueuedBytes > 4<<20 {
-				t.Fatalf("node %d peer %d status=%+v err=%v", runtime.config.NodeID, id, status, err)
-			}
-		}
+	for index := range runtimes {
+		checkQueueBounds(index)
 	}
-	t.Logf("all %d independent fresh proofs completed within %s with %d connected nodes; no healthy-peer rejections", len(results), clusterReadTimeout, connected)
+	t.Logf("all %d independent fresh proofs reached their pre-burst applied index within %s with %d connected nodes; peer queues stayed bounded", len(results), clusterReadTimeout, connected)
 }
 
 // Traceability: CLU-14; docs/specs/performance-and-verification.md §3.4.
+// Scenarios: performance-and-verification.md:PRF-SCN-013
 func TestClusterUnissuedReadReturnsCancellationAndDriverFailure(t *testing.T) {
 	for _, reason := range []string{"count", "bytes", "driver exit"} {
 		t.Run(reason, func(t *testing.T) {
@@ -303,6 +340,7 @@ func TestClusterUnissuedReadReturnsCancellationAndDriverFailure(t *testing.T) {
 }
 
 // Traceability: CLU-14; docs/specs/performance-and-verification.md §3.5.
+// Scenarios: cluster-session-and-delivery.md:CLU-SCN-059, performance-and-verification.md:PRF-SCN-026
 func TestClusterLeaderlessReadCompletesWhenLeaderReturns(t *testing.T) {
 	runtimes := newReadAdmissionTestCluster(t)
 	issuer := runtimes[1]
@@ -360,6 +398,7 @@ func TestClusterLeaderlessReadCompletesWhenLeaderReturns(t *testing.T) {
 }
 
 // Traceability: CLU-14; docs/specs/performance-and-verification.md §3.5.
+// Scenarios: cluster-session-and-delivery.md:CLU-SCN-059, performance-and-verification.md:PRF-SCN-026
 func TestClusterIssuedReadRecoversAcrossLeadershipTransfer(t *testing.T) {
 	runtimes := newReadAdmissionTestCluster(t)
 	issuer := runtimes[0]
@@ -425,6 +464,7 @@ func TestClusterIssuedReadRecoversAcrossLeadershipTransfer(t *testing.T) {
 }
 
 // Traceability: CLU-14; docs/specs/performance-and-verification.md §3.5.
+// Scenarios: performance-and-verification.md:PRF-SCN-026
 func TestClusterFreshReadsFromConcurrentOriginsDoNotCollide(t *testing.T) {
 	runtimes := newReadAdmissionTestCluster(t)
 	ctx, cancel := context.WithTimeout(context.Background(), clusterReadTimeout)
@@ -483,6 +523,7 @@ func TestClusterFreshReadsFromConcurrentOriginsDoNotCollide(t *testing.T) {
 }
 
 // Traceability: CLU-14; docs/specs/performance-and-verification.md §3.5.
+// Scenarios: cluster-session-and-delivery.md:CLU-SCN-059, performance-and-verification.md:PRF-SCN-026
 func TestClusterReissuedReadRejectsPreviousQuorumProof(t *testing.T) {
 	runtimes := newReadAdmissionTestCluster(t)
 	issuer := runtimes[0]
@@ -565,6 +606,7 @@ func TestClusterReissuedReadRejectsPreviousQuorumProof(t *testing.T) {
 }
 
 // Traceability: CLU-07; docs/specs/cluster-session-and-delivery.md §4.2, §11.11.
+// Scenarios: cluster-session-and-delivery.md:CLU-SCN-073
 func TestClusterDurableCommitCallerTimeoutLateReplayAppliesOnceWithoutSuccess(t *testing.T) {
 	runtimes := newReadAdmissionTestCluster(t)
 	ingress := runtimes[1]
@@ -774,6 +816,7 @@ func TestClusterDurableCommitCallerTimeoutLateReplayAppliesOnceWithoutSuccess(t 
 }
 
 // Traceability: CLU-12; docs/specs/cluster-session-and-delivery.md §4.5, §11.28.
+// Scenarios: cluster-session-and-delivery.md:CLU-SCN-200
 func TestClusterAppliedDeliveryStopsBackpressureBeforeCallerWait(t *testing.T) {
 	runtimes := newReadAdmissionTestCluster(t)
 	ingress := runtimes[0]
@@ -1056,5 +1099,184 @@ func TestIssueReadProofReturnsClosedRaftNodeError(t *testing.T) {
 	}
 	if waiter.proofSequence != 0 {
 		t.Fatalf("failed proof recorded sequence %d", waiter.proofSequence)
+	}
+}
+
+// readProofContext builds the wire context that issueReadProof gives to Raft.
+func readProofContext(nodeID, nonce uint64, key string) []byte {
+	wire := binary.BigEndian.AppendUint64(nil, nodeID)
+	wire = binary.BigEndian.AppendUint64(wire, nonce)
+	return append(wire, key...)
+}
+
+// Traceability: CLU-14; docs/specs/cluster-session-and-delivery.md §4.2, §11.38.
+// Scenarios: cluster-session-and-delivery.md:CLU-SCN-265
+func TestClusterLostProofResponseIsReissuedAfterRetryInterval(t *testing.T) {
+	runtimes := newReadAdmissionTestCluster(t)
+	follower := runtimes[2]
+	ctx, cancel := context.WithTimeout(context.Background(), clusterReadTimeout)
+	defer cancel()
+	baseline := follower.node.Status().AppliedIndex
+	const key = "lost-proof-response"
+	var reads [3]map[string]clusterReadWaiter
+	var proposals [3][]clusterProposalWaiter
+	for index := range reads {
+		reads[index] = make(map[string]clusterReadWaiter)
+	}
+	result := make(chan clusterReadResponse, 1)
+	follower.requests <- clusterDriverRequest{kind: clusterDriverRead, contextKey: key, context: ctx, readResult: result}
+
+	lost := 0
+	// settle delivers Raft messages until every node is idle. A dropped proof response models
+	// the leader's full peer FIFO rejecting it; the sender does not retransmit it.
+	settle := func(dropResponses bool) {
+		t.Helper()
+		for range 64 {
+			var messages []raftadapter.MessageDTO
+			for index, runtime := range runtimes {
+				if err := runtime.stageQueuedDriverWork(reads[index], &proposals[index], ctx.Done()); err != nil {
+					t.Fatal(err)
+				}
+				batch, err := processReadyForTest(t, runtime.node)
+				if err != nil {
+					t.Fatal(err)
+				}
+				runtime.projectionIndex.Store(runtime.node.Status().AppliedIndex)
+				runtime.completeReadStates(batch.ReadStates, reads[index])
+				runtime.readIndexStaged = 0
+				messages = append(messages, batch.Messages...)
+			}
+			if len(messages) == 0 {
+				return
+			}
+			for _, message := range messages {
+				if dropResponses && message.Type == "MsgReadIndexResp" {
+					lost++
+					continue
+				}
+				if _, err := runtimes[message.To-1].node.Step(message); err != nil {
+					t.Fatal(err)
+				}
+			}
+		}
+		t.Fatal("Raft nodes did not settle")
+	}
+
+	settle(true)
+	waiter, pending := reads[2][key]
+	if lost != 1 || !pending || waiter.proofSequence == 0 || len(result) != 0 {
+		t.Fatalf("lost responses=%d pending=%v waiter=%+v results=%d, want one lost response and an unanswered proof",
+			lost, pending, waiter, len(result))
+	}
+	first := waiter.proofSequence
+
+	follower.refreshReadWaiters(reads[2])
+	if got := reads[2][key].proofSequence; got != first {
+		t.Fatalf("proof was re-issued before the retry interval: nonce %d, want %d", got, first)
+	}
+
+	waiter.issuedAt = time.Now().Add(-clusterReadProofRetryInterval)
+	reads[2][key] = waiter
+	follower.refreshReadWaiters(reads[2])
+	reissued := reads[2][key].proofSequence
+	if reissued == 0 || reissued == first {
+		t.Fatalf("proof nonce after the retry interval = %d, want a new nonce after %d", reissued, first)
+	}
+
+	// The lost emission's ReadState must not complete or replace the new proof.
+	staleState := raftadapter.ReadStateDTO{RequestContext: readProofContext(follower.config.NodeID, first, key), Index: baseline}
+	remaining := follower.completeReadStates([]raftadapter.ReadStateDTO{staleState}, reads[2])
+	if len(remaining) != 0 || len(result) != 0 || reads[2][key].proofSequence != reissued {
+		t.Fatalf("stale ReadState completed or replaced the re-issued proof: remaining=%d results=%d waiter=%+v",
+			len(remaining), len(result), reads[2][key])
+	}
+
+	settle(false)
+	select {
+	case response := <-result:
+		if response.err != nil || response.index < baseline {
+			t.Fatalf("re-issued proof result=%+v baseline=%d", response, baseline)
+		}
+	default:
+		t.Fatal("re-issued proof did not complete the read")
+	}
+	if len(reads[2]) != 0 {
+		t.Fatalf("completed read remains queued: %d", len(reads[2]))
+	}
+}
+
+// Traceability: CLU-07/CLU-14; docs/specs/cluster-session-and-delivery.md §4.2, §11.38.
+func TestRefreshReadWaitersReissuesOnlyUnansweredExpiredProofs(t *testing.T) {
+	runtime := newReadAdmissionTestCluster(t)[0]
+	status := runtime.node.Status()
+	if status.LeaderID == 0 {
+		t.Fatal("test Raft node has no leader")
+	}
+	expired := time.Now().Add(-clusterReadProofRetryInterval)
+	ended, endContext := context.WithCancel(context.Background())
+	endContext()
+	for _, testCase := range []struct {
+		name        string
+		ctx         context.Context
+		issuedAt    time.Time
+		answered    bool
+		staged      int
+		wantReissue bool
+	}{
+		{name: "fresh proof", issuedAt: time.Now()},
+		{name: "unanswered expired proof", issuedAt: expired, wantReissue: true},
+		{name: "answered expired proof", issuedAt: expired, answered: true},
+		{name: "expired proof with ended context", ctx: ended, issuedAt: expired},
+		{name: "expired proof without outbound capacity", issuedAt: expired, staged: clusterDriverStageLimit},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			readContext := testCase.ctx
+			if readContext == nil {
+				readContext = context.Background()
+			}
+			waiter := clusterReadWaiter{ctx: readContext, result: make(chan clusterReadResponse, 1)}
+			if err := runtime.issueReadProof("proof", &waiter, status); err != nil {
+				t.Fatal(err)
+			}
+			first := waiter.proofSequence
+			waiter.issuedAt, waiter.answered = testCase.issuedAt, testCase.answered
+			reads := map[string]clusterReadWaiter{"proof": waiter}
+			runtime.readIndexStaged = testCase.staged
+			defer func() { runtime.readIndexStaged = 0 }()
+
+			runtime.refreshReadWaiters(reads)
+			got, remains := reads["proof"]
+			if !remains {
+				t.Fatal("refresh removed the read")
+			}
+			if reissued := got.proofSequence != first; reissued != testCase.wantReissue || got.proofSequence == 0 {
+				t.Fatalf("proof nonce = %d, first = %d, want re-issue %v", got.proofSequence, first, testCase.wantReissue)
+			}
+			if testCase.wantReissue && !got.issuedAt.After(expired) {
+				t.Fatalf("re-issued proof kept the old emission time %v", got.issuedAt)
+			}
+		})
+	}
+}
+
+// Traceability: CLU-07/CLU-14; docs/specs/cluster-session-and-delivery.md §4.2, §11.38.
+func TestCompleteReadStatesMarksProofWaitingForApplyAsAnswered(t *testing.T) {
+	runtime := newReadAdmissionTestCluster(t)[0]
+	status := runtime.node.Status()
+	waiter := clusterReadWaiter{ctx: context.Background(), result: make(chan clusterReadResponse, 1)}
+	if err := runtime.issueReadProof("answered", &waiter, status); err != nil {
+		t.Fatal(err)
+	}
+	reads := map[string]clusterReadWaiter{"answered": waiter}
+	runtime.projectionIndex.Store(status.AppliedIndex)
+	ahead := raftadapter.ReadStateDTO{
+		RequestContext: readProofContext(runtime.config.NodeID, waiter.proofSequence, "answered"),
+		Index:          status.AppliedIndex + 1,
+	}
+
+	remaining := runtime.completeReadStates([]raftadapter.ReadStateDTO{ahead}, reads)
+	if len(remaining) != 1 || !reads["answered"].answered || len(waiter.result) != 0 {
+		t.Fatalf("ReadState ahead of apply: remaining=%d waiter=%+v results=%d, want it kept and marked answered",
+			len(remaining), reads["answered"], len(waiter.result))
 	}
 }

@@ -249,11 +249,17 @@ v2 피어 listener는 같은 TLS 1.3 mTLS 연결 포트에서 시드 승인과 R
 
 양 끝점은 각 Raft hello 필드를 commit된 등록 정보 및 TLS 식별 정보와 대조한다. `STAGED`는 `NMQJOIN2` 시드 승인 교환에서만 허용하며 Raft 스트림 단계로는 사용할 수 없다. 학습자는 학습자 추가 구성이 commit된 뒤, 투표자는 승격이 commit된 뒤에만 Raft 메시지를 교환할 수 있다. 인증서·클러스터 불일치, 미지원 릴리스·스키마, 알 수 없는 ID, 오래된 작업 ID, 잘못된 단계, 형식이 잘못되었거나 뒤에 데이터가 붙은 바이트, hello 불일치가 있으면 프레임을 전달하기 전에 socket을 닫는다.
 
+연결을 거는 쪽은 기대하는 멤버의 TLS 리프 인증서 SHA-256과 DNS SAN을 TLS handshake 직후, 자신의 hello를 보내기 전에 확인한다. 서로 다르면 hello를 보내지 않고 연결을 닫고 다시 dial한다. 같은 주소를 쓰는 다른 멤버가 받은 hello는 그 멤버에게 "이 노드가 거는 정상 연결"로 보이기 때문이다. 그러면 수락 측이 같은 노드의 기존 연결을 새 연결로 교체하고 닫는다([ADR-0061](../decisions/ADR-0061-eks-ordinal-member-slot.md) §1). 수락 측은 hello에 대상 멤버 ID가 없어 이 경우를 구분할 수 없다. `TestDynamicDialVerifiesPeerCertificateBeforeSendingHello`와 `TestDynamicSameAddressStaleDialerDoesNotEvictLiveConnection`이 이 순서를 확인한다. Hello 필드와 프로토콜 `2.0`은 바꾸지 않는다.
+
 #### Raft 메시지 프레임과 크기 한도
 
 v2 hello 뒤의 Raft 프레임은 v1과 같은 프레임 구조를 사용한다. `uint32` 부호 없는 big-endian payload 길이 뒤에 직렬화된 Raft protobuf를 붙인다. Payload는 `1..1,048,576`바이트여야 한다. 길이가 0이거나 한도를 넘으면 payload 메모리를 할당하기 전에 연결을 닫는다. 프레임이 잘리면 전달하지 않고 연결을 닫는다. Payload의 protobuf `From`과 `To`는 인증된 전송 식별 정보와 로컬 노드 ID에 일치해야 한다.
 
 각 활성 피어는 송신 FIFO와 수신 대기열을 서로 독립적으로 유지한다. 각 대기열은 프레임 최대 32개와 프레임화한 데이터 4 MiB로 제한한다. 쓰기 중인 송신 메시지도 한도에 포함한다. 송신 대기열이 가득 차면 `ErrPeerBackpressure`를 즉시 반환하고 기존 연결과 대기열을 보존한다. Driver는 해당 피어만 Raft 도달 불가 또는 snapshot 실패로 표시하고 다른 피어 전송은 계속한다.
+
+**1 MiB를 넘는 `MsgSnap`(feature 비활성):** Raft `MsgSnap`은 snapshot 전체를 한 메시지에 담는다. `snapshot-stream`이 비활성이면 adapter는 직렬화한 크기가 1,048,576바이트를 넘는 `MsgSnap`을 송신하지 않는다. 이 메시지를 peer transport에 넘기지 않고, 해당 peer의 snapshot 전송을 실패로 Raft에 알린다(`RawNode.ReportSnapshot` 실패). Raft는 그 peer의 진행 상태를 snapshot 대기에서 probe로 되돌리고 나중에 다시 시도한다. 로컬 node는 실패하지 않고 같은 Ready의 다른 peer 메시지를 계속 보낸다. Adapter는 이 거절을 `WARN` 로그 `raft snapshot exceeds peer frame limit; not sent`로 남긴다. 필드는 `peer_id`, `snapshot_index`, `encoded_bytes`, `limit_bytes`이며 같은 peer에 대해 30초에 한 번만 기록한다. 같은 거절이 그 사이에 반복되어도 로그는 늘지 않는다. `MsgSnap`이 아닌 메시지가 한도를 넘으면 기존처럼 node를 실패 처리한다.
+
+**1 MiB 초과 snapshot의 전달:** 직렬화한 `MsgSnap`이 1 MiB를 넘으면 `snapshot-stream` feature가 활성화된 cluster에서만 별도 chunk stream으로 전달한다. 형식과 한도는 [Raft snapshot stream v1](raft-snapshot-stream-v1.md), 결정은 [ADR-0062](../decisions/ADR-0062-raft-snapshot-stream.md)다. 활성화 전에는 위 단락의 동작이 그대로다. 이때 뒤처진 follower와 새 learner는 snapshot을 받을 수 없어 로그를 따라잡지 못하고 voter로 승격할 수 없다. 기존 voter는 healthy 상태를 유지한다. 활성화는 member가 모두 이 feature를 알려야 가능하다. 따라서 1 MiB를 넘는 snapshot이 예상되는 cluster는 새 member를 stage하기 전에 활성화한다.
 
 동적 driver는 새 로컬 ReadIndex를 발행할 때 `DynamicTCPPeerTransport.OutboundCapacity(peerID)`가 반환하는 피어별 잔여 메시지 수 `Messages`와 프레임화한 byte 수 `Bytes`를 참고한다. `OutboundReady()`의 쓰기 완료 알림은 여러 완료를 하나로 합칠 수 있다. 따라서 알림 수를 용량 회수량으로 간주하지 않고 현재 용량을 다시 읽는다. 현재 쓰기 중인 메시지도 송신 사용량에 포함한다. 이 제어는 wire 형식, 한도, FIFO 또는 `Send`의 즉시 거절 정책을 바꾸지 않으며, 보내지 못한 프레임의 재시도도 새로 추가하지 않는다. Driver는 로컬 요청이 막혀 기다리는 동안에도 피어 응답, tick과 Ready를 처리한다. `TestDynamicOutboundCapacityRemainsChargedUntilWireCompletion`은 실제 socket 쓰기가 끝나기 전에 용량을 반환하지 않고, 완료 뒤 FIFO 프레임 처리와 용량 회수·깨움이 일어나는지 확인한다.
 
@@ -267,9 +273,11 @@ v2 hello 뒤의 Raft 프레임은 v1과 같은 프레임 구조를 사용한다.
 
 `TestDynamicPeerReconcileAndQueueBounds`는 송신 queue가 가득 찬 뒤에도 연결에서 byte를 주고받을 수 있는지, identity를 다시 바인딩하면 연결이 닫히는지 확인한다. Reconciliation은 commit된 피어 ID·주소·인증서 등록 정보를 원자적으로 교체한다. 변경할 수 없는 identity는 그대로인데 commit된 단계나 operation ID가 바뀌면 연결을 닫고 다시 인증한다. 이때 대기 중인 송신 Raft 메시지는 보존하고 이전 identity revision의 수신 대기 데이터는 버린다. 해당 revision에서 읽기 loop가 가져온 프레임도 거절한다. v2 어댑터는 대기 중인 프레임을 합친 `InboundReady` 신호로 알리고 `TakeInbound` lease로 제공한다. 클러스터 driver는 `Step` 뒤에 `Complete`를 호출한다. Reconciliation은 새 lease 발급을 막고 진행 중인 lease가 끝날 때까지 기다린다. 이어서 identity revision을 높이고 남은 이전 revision의 수신 데이터를 버린 뒤 반환한다. 불변 identity를 다시 바인딩하거나 피어를 제거하면 해당 피어를 폐기하고 두 대기열의 사용량을 정리한다. 알 수 없는 피어는 거절한다. v2는 프레임별 I/O 제한 시간 5초와 재시도 간격 100ms를 유지한다. 대기열 한도와 Raft entry 처리 중 한도는 보관된 log 크기를 제한하지 않는다.
 
+Raft·forwarding stream에는 [ADR-0059](../decisions/ADR-0059-dynamic-peer-tcp-liveness.md)의 TCP 생존 확인을 적용한다. Dial 쪽은 연결 전에, accept 쪽은 stream magic(`NMQRAFT2`, `NMQFWRD2`)을 읽은 뒤 설정한다. 가입·bootstrap probe·관측 RPC socket은 기존 설정을 유지한다. TCP keepalive는 유휴 5초 뒤 5초 간격으로 2회 probe한다. Linux에서는 `TCP_USER_TIMEOUT`을 10초로 둔다. 이 10초는 ACK 대기 data가 생긴 시점부터 센다. 상대 host가 응답 없이 사라지면 kernel이 연결을 닫고, 연결을 거는 쪽은 commit된 주소로 다시 dial한다. 주소의 DNS 이름은 dial마다 다시 해석된다. 이 설정은 wire 형식, 길이 prefix의 유휴 대기 규칙과 대기열 한도를 바꾸지 않는다. 시험 연결은 [Cluster spec §11.34](../specs/cluster-session-and-delivery.md#1134-dynamic-peer-tcp-생존-확인-수용-매핑)에 둔다.
+
 #### 전달 포워딩 스트림
 
-전달 포워딩 스트림은 같은 TLS 1.3 mTLS listener에서 추가로 제공된다. 인증된 hello는 매직 값이 정확히 `NMQFWRD2`라는 점을 제외하면 위의 `NMQRAFT2` hello와 필드 및 검증 방식이 같다. commit된 식별 정보, 클러스터·릴리스·스키마, 단계와 operation ID 검사를 동일하게 적용한다. `LEARNER`, `CATCHING_UP`, `VOTER`, `LEAVING`만 허용한다. 기존 연결 방향 규칙에 따라 member ID가 낮은 노드는 연결을 수락하고 높은 노드는 연결을 건다. 수락 측은 자체 `NMQFWRD2` hello로 응답한다. 양쪽 hello가 모두 검증되기 전에는 데이터 프레임을 전달하지 않는다.
+전달 포워딩 스트림은 같은 TLS 1.3 mTLS listener에서 추가로 제공된다. 인증된 hello는 매직 값이 정확히 `NMQFWRD2`라는 점을 제외하면 위의 `NMQRAFT2` hello와 필드 및 검증 방식이 같다. commit된 식별 정보, 클러스터·릴리스·스키마, 단계와 operation ID 검사를 동일하게 적용한다. `LEARNER`, `CATCHING_UP`, `VOTER`, `LEAVING`만 허용한다. 기존 연결 방향 규칙([ADR-0008](../decisions/ADR-0008-raft-peer-transport.md))에 따라 member ID가 낮은 노드가 연결을 걸고 높은 노드가 수락한다. 수락 측은 자체 `NMQFWRD2` hello로 응답한다. 양쪽 hello가 모두 검증되기 전에는 데이터 프레임을 전달하지 않는다.
 
 hello 뒤의 프레임은 `uint32` 부호 없는 big-endian payload 길이 뒤에 payload를 붙여 인코딩한다. 길이 prefix는 payload 한도에 포함하지 않는다. Payload 길이는 `1..1,179,648`바이트여야 한다. 4-byte 길이 prefix를 기다리는 동안에는 유휴 제한 시간을 두지 않는다. Prefix를 읽고 검증한 뒤 payload에 5초 I/O 제한 시간을 적용한다. 길이가 0이거나 한도를 넘거나 payload가 잘리면 stream을 닫는다.
 
@@ -289,6 +297,10 @@ v1 전달 메시지 payload는 다음 순서로 인코딩한다.
 각 피어는 양방향에 독립된 FIFO 송신 대기열과 수신 staging 대기열을 가진다. 각 대기열은 프레임 최대 1,024개와 프레임화한 데이터 8 MiB로 제한한다. 전달 대기열이 가득 차도 Raft 스트림이나 포워딩 스트림을 재설정하지 않고 해당 전달을 거절한다. Raft 대기열은 별도의 기존 한도인 프레임 32개·4 MiB와 포화 동작을 유지한다. Forward frame은 포워딩 수신 측에만 전달하며 Raft `Step`으로 보내지 않는다. 수신 application은 commit된 로컬 소유권·세션 등록 정보와 더 이상 일치하지 않는 frame을 버릴 수 있다. 확인 응답이나 재시도는 없다.
 
 포워딩 스트림은 `NMQRAFT2` hello, Raft 메시지 프레임 바이트, 멤버십 레코드, snapshot, backup 또는 클러스터 프로토콜 `2.0`을 변경하지 않는다.
+
+#### 관측 snapshot RPC
+
+운영 snapshot 조회는 같은 mTLS peer listener를 사용하지만 Raft와 forwarding stream에 포함하지 않는 별도 one-shot 연결이다. Hello identity 검사와 member phase 정책은 이 절의 v2 peer 인증 규칙을 따른다. 관측 wire version·frame·한도·capability는 [Peer observability v1 contract](peer-observability-v1.md)가 기준이다. 이 RPC는 cluster protocol `2.0`, Raft frame과 replicated state schema를 바꾸지 않는다.
 
 ### 1.6 복제 레코드와 스냅샷
 

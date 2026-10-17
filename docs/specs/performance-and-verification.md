@@ -2,6 +2,8 @@
 
 이 문서는 NaruMQ의 성능·신뢰성 요구, benchmark 판정 경계와 검증 증거를 정의한다. 수치가 확정되지 않은 release gate는 닫지 않는다.
 
+이 문서의 수용 테스트 표는 시나리오 ID, 조건과 기대 결과만 둔다. 테스트 연결과 결과는 [테스트 컨벤션](../conventions/test-conventions.md)의 시나리오 보고서로 확인하고, 과거 실행 기록은 [검증 기록](../verification/performance-and-verification.md)에 둔다.
+
 | 항목 | 값 |
 | --- | --- |
 | 상태 | Draft |
@@ -12,7 +14,7 @@
 
 ## 1. Workload 기준값
 
-Phase 0은 production workload를 다음 값과 단위로 확정해야 한다. 평균만으로 profile을 만들지 않는다.
+Phase 0은 workload를 다음 값과 단위로 확정해야 한다. 평균만으로 profile을 만들지 않는다. BP smoke 입력은 production workload의 대체값으로 사용하지 않는다. 2026-10-15 사용자는 production EMQX traffic 대신 `EKS_EC2_HA` 선택 profile에서 잰 수용 용량을 `B_*`로 쓰기로 했다. 측정 방법은 [§3.9](#39-bp-02-eks-용량-측정-계약)를 따른다.
 
 | 기호 | 의미 | 필수 분해 요소 |
 | --- | --- | --- |
@@ -22,7 +24,7 @@ Phase 0은 production workload를 다음 값과 단위로 확정해야 한다. �
 | `B_msg_size` | payload 크기 분포 | p50, p95, p99, 최대값 |
 | `B_topic` | 토픽·필터 규모 | exact 매칭, wildcard, overlap, fan-out |
 
-또한 persistent session 비율, offline 비율·시간, Session Expiry, reconnect ramp, 인증 backend latency, tenant 부하 편차와 AZ network 특성을 기록한다. 이 값과 SLO를 정하는 `SPEC-TBD-08`은 미확정이다.
+또한 persistent session 비율, offline 비율·시간, Session Expiry, reconnect ramp, 인증 backend latency, tenant 부하 편차와 AZ network 특성을 기록한다. §6에는 EMQX 대비 성능 비율 제안을 기록한다. 실제 `B_*` 값은 §3.9 측정 뒤 기록한다. Production SLO와 profile별 절대 수치 기준은 그 측정 결과를 근거로 확정한다.
 
 ## 2. SLI와 판정
 
@@ -51,14 +53,16 @@ Latency는 p50, p95, p99, p99.9를 보고한다. 오류 sample을 제외하면 �
 5. 고정 warm-up·측정 구간을 두고 최소 5회 독립 실행한다. Suite는 target 순서를 교차한다.
 6. 중앙값과 MAD를 함께 보고하고 broker·generator 오류와 saturation을 모두 수집한다.
 
-고정 EMQX version·edition과 NaruMQ 대비 수치 합격선인 `SPEC-TBD-08`은 미정이다. BP-01/BP-04/BP-05/BP-02는 pinned OSS 5.8.8을 사용한다. BP-03/BP-06/BP-07은 pinned Enterprise 5.8.8을 사용한다. EMQX 5.8.8 OSS는 EOL historical comparator이며 현재 지원 release 기준선이나 승인된 commercial 운영 사용을 뜻하지 않는다.
+고정 production comparator는 EMQX Enterprise 6.3.1이며 exact edition·image digest는 [PRD §18 질문 15](../requirements/PRD.md#18-미결정-사항)에 있다. 기존 BP-01/BP-02/BP-04/BP-05 local smoke의 OSS 5.8.8과 BP-03/BP-06/BP-07 local smoke의 Enterprise 5.8.8은 과거 smoke 기준이다. 과거 artifact와 결과는 수정하지 않는다. 2026-10-16 사용자 결정에 따라 상용 EMQX Enterprise 라이선스를 요구하는 상대 비교는 필수 출시 차단 게이트에서 제외하고 선택적 외부 벤치마크로 운영한다. 필수 릴리스 게이트는 NaruMQ 자체의 5% 회귀 차단 규칙과 `EKS_EC2_HA` qualification profile에서 측정한 자립형 수용 용량(`B_*`)으로 판정한다.
 
-Profile SHA-256은 저장소에 커밋된 LF bytes로 계산한다. `.gitattributes`의 `tests/benchmark/*/testdata/*.json text eol=lf` 규칙으로 `core.autocrlf=true`인 Windows checkout에서도 같은 bytes를 쓴다. 2026-10-08 이전 BP-06 실행 artifact의 `profileSha256` `e8e4aa2e5df1a3e55ad901acff5a4505cdb1acf4699ff061f1a2bfc51754054d`는 같은 내용을 CRLF로 checkout한 bytes의 digest다. 같은 profile의 LF digest는 `ca5e28b04623e708d9521ab34ce5ed3b9dd617d4ac57c4571243bdd6061f6a15`다. 과거 artifact의 값은 실행 당시 사실이므로 고치지 않는다.
+Qualification과 BP-02 release comparison profile은 [ADR-0007](../decisions/ADR-0007-aws-production-deployment-platform.md)의 ARM64 EKS 선택값을 따른다. 이 선택만으로 production gate를 통과하지 않는다. Production gate에는 실제 `B_*`, native ARM64 broker·generator image, full profile digest와 AWS/EBS 수용 증거가 필요하다. [`tests/benchmark/Dockerfile`](../../tests/benchmark/Dockerfile)은 `TARGETOS`/`TARGETARCH`(`amd64` 기본값, `arm64` 지원)로 broker와 runner 바이너리를 빌드한다. 실제 EKS 실행에는 ARM64 이미지를 빌드·게시하고 immutable digest를 고정해야 한다. 조건을 충족하지 않은 artifact는 `releaseGating=false`로 둔다.
+
+Profile SHA-256은 저장소에 커밋된 LF bytes로 계산한다. `.gitattributes`의 `tests/benchmark/*/testdata/*.json text eol=lf` 규칙으로 `core.autocrlf=true`인 Windows checkout에서도 같은 bytes를 쓴다. BP-06 profile의 LF digest는 `ca5e28b04623e708d9521ab34ce5ed3b9dd617d4ac57c4571243bdd6061f6a15`다. 과거 artifact의 값은 실행 당시 사실이므로 고치지 않는다. 2026-10-08 이전 BP-06 artifact의 digest는 [검증 기록](../verification/performance-and-verification.md#3-benchmark-공통-계약-기록)에 있다.
 
 | BP | 프로파일 | 스펙 위치 |
 | --- | --- | --- |
 | BP-01 | Protocol Baseline | §3.1 |
-| BP-02 | Production Mix | §3.8 |
+| BP-02 | Production Mix | §3.8, EKS 용량 측정 §3.9 |
 | BP-03 | Durable Delivery | §3.4 |
 | BP-04 | Subscription Stress | §3.7 |
 | BP-05 | Connection Scale | §3.2 |
@@ -199,7 +203,7 @@ Runner는 readiness 완료 뒤부터 cleanup 직전까지 node별 `/metrics` 원
 
 원인 분석은 같은 구간의 stage histogram delta, WAL sync 시간, peer 포화 log를 대조한다. 높은 fsync 비율만으로 queue 포화의 원인을 확정하지 않는다. 계측이 지목한 경로만 조사하며 command별 fresh proof, commit-only HardState sync, Packet ID와 epoch fencing을 생략하지 않는다.
 
-시험은 `internal/adapters/metrics/registry_test.go::TestRaftStageHistogramsKeepStagesIsolatedAndBoundOverflow`, `internal/adapters/raft/node_dynamic_test.go::TestDynamicFollowerForwardsApplicationProposal`, `cmd/narumq/cluster_runtime_test.go::TestClusterCommitReadProofPreservesSubmissionOrderAndCancellation`, `cmd/narumq/cluster_read_admission_test.go::TestClusterFollowerReadBurstCompletesAfterEgressDrain`, `TestClusterLeaderReadBurstPreservesHealthyQuorumWithBlockedMinority`, `TestClusterUnissuedReadReturnsCancellationAndDriverFailure`, `internal/adapters/tcp.TestDynamicOutboundCapacityRemainsChargedUntilWireCompletion`, `tests/integration.TestDynamicClusterConcurrentFreshReadProcessAcceptance`에 연결한다.
+Raft stage histogram, proposal 전달과 fresh read 경로의 시나리오는 아래 BP-03 수용 테스트의 PRF-SCN-008~PRF-SCN-015다.
 
 #### Readiness 진단 계약
 
@@ -212,21 +216,35 @@ Readiness는 storage 검사, fresh quorum proof, local snapshot 판정을 기존
 - Storage 값은 원래 검사 시점의 값이다. 이후 값으로 다시 sample하지 않는다. 동일 purpose·stage·거절 분류는 최초 건과 1초 간격 표본만 출력하고 건수를 누적한다. 표본 log는 개별 CONNECT 기록이 아니다.
 - Client/tenant ID, payload, topic, token을 기록하지 않는다. Retry, checkpoint 대기, proof 재사용, ACK 경계 변경을 하지 않는다.
 
-Readiness 판정·diagnostic field는 `cmd/narumq`의 readiness 거절 시험에 연결한다. 수집 경계와 log rate limit은 이 절의 계약이며 stage histogram 시험과 구분한다.
+Readiness 진단의 시나리오는 PRF-SCN-016과 PRF-SCN-017이다. 수집 경계와 log rate limit은 이 절의 계약이며 stage histogram 시험과 구분한다.
 
 Target은 `phases.jsonl`, `messages.jsonl`, `workload-summary.json`, `resource-summary.json`, `wal-summary.json`, runner/broker log, redacted inspect와 broker/network-owner stats를 보존한다. NaruMQ의 raw metric은 `metrics/` 아래에 둔다. `diagnostics.jsonl`은 node·요청 시각·raw 경로 또는 scrape 오류를 잇는다. Failure에도 최종 scrape를 시도한다. Resource window에서 source/node 표본이 2개 미만이면 invalid다. Block write가 0인 표본은 유효하다. Network owner delta가 모두 0이면 `networkStatsAvailable=false`로 기록하고 workload를 invalid로 하지 않으며, suite에서 해당 network metric만 생략한다. Stats는 host clock, phase는 runner clock이므로 `clockSource`에 둘 다 기록한다.
 
 Suite metric key는 `stepNN_qQ_ack_latency_p99_ns`, `stepNN_qQ_ack_latency_p999_ns`, `stepNN_qQ_delivery_latency_p99_ns`, `stepNN_qQ_ack_rate_per_second`와 `stepNN_block_write_bytes_per_acked_message`다. Network 표본이 있으면 `stepNN_network_tx_bytes_per_acked_message`를 추가한다. NaruMQ 전용 key는 `stepNN_wal_syncs_per_second`, `stepNN_wal_mean_entries_per_sync`, `stepNN_wal_bytes_per_acked_message`다. `offline_reconnect_drain_millis_max`는 양 target metric이다. EMQX의 NaruMQ WAL key는 `not_applicable`이며 metric으로 0을 만들지 않는다.
 
-| 검증 계약 | 영구 시험 |
-| --- | --- |
-| 프로파일 strict decode·범위·소스 해시 | `profile_test.go::TestDecodeProfileStrictAndComputesMessageBound`, `TestDecodeProfileRejectsMissingUnknownTrailingAndOverflow`, `TestProfileRejectsEveryOutOfRangeValue`, `TestLoadProfileReturnsExactBytesAndSHA256` |
-| 스트림 노드 배치·발행자 reader·ACK 타임아웃 | `runner_test.go::TestMakeStreamsAssignsCrossNodeRoles`, `TestWaitSlotReturnsReaderFailure`, `TestPublisherACKTimeoutQuarantinesPacketIdentifier` |
-| 세션의 QoS 2 PUBREL 재개 | `subscriber_resume_test.go::TestSubscriberReaderResumesQoS2Release` |
-| Gap, 중복, 스케줄 지연, 드레인 스냅샷, QoS 2 PUBCOMP·오프라인 경계 | `aggregate_test.go::TestAckedUnreceivedMessageIsGapAndInvalid`, `TestQoS2DuplicateInvalid`, `TestQoS1DuplicateReportedButAllowed`, `TestScheduleLagEqualToIntervalIsOverload`, `TestMessageSnapshotDoesNotObserveLaterAcknowledgements`, `TestQoS2PUBCOMPTimeoutCountsIncompleteExchange`, `TestOfflineCompletionWaitsForQoS2PUBCOMP`, `TestOfflineCompletionRequiresEveryExpectedReceipt`, `TestOfflineCompletionFailsWhenReceiptMissesDeadline` |
-| WAL 히스토그램 델타, 비정상 시리즈, EMQX 적용성 | `metrics_test.go::TestWriteWALSummaryUsesBucketDeltasAndOverflow`, `TestWriteWALSummaryMissingFamilyPersistsInvalidSummary`, `TestWriteWALSummaryEMQXNotApplicable` |
-| 리소스 표본, 0 바이트 블록 쓰기, 네트워크 적용성 | `resource_test.go::TestBuildResourceSummaryInsufficientSamplesInvalidates`, `TestBuildResourceSummaryZeroBlockWritesValid`, `TestBuildResourceSummaryNetworkUnavailableDoesNotInvalidate` |
-| 비교 검증, 지표 생략 및 실패 suite 부모 무효화 | `compare_test.go::TestBuildBP03ComparisonEquivalenceAndNonEquivalentDimensions`, `TestSummarizeBP03RunDoesNotRequireEMQXWALApplicability`, `suite_test.go::TestBP03MetricsEmitRequiredKeysAndUnits`, `TestBuildBP03SuiteSummaryOmitsNetworkMetricsWhenAnyRunLacksNetworkStats`, `TestBuildBP03SuiteSummaryInvalidatesAllMetricsOnOneFailedRun` |
+#### BP-03 수용 테스트
+
+시나리오 결과와 테스트 연결은 [테스트 컨벤션](../conventions/test-conventions.md)의 시나리오 보고서로 확인한다. 과거 실행 기록은 [검증 기록](../verification/performance-and-verification.md#34-bp-03-durable-delivery-기록)에 있다.
+
+| 시나리오 ID | 요구사항 ID | 조건과 입력 | 기대 결과 |
+| --- | --- | --- | --- |
+| PRF-SCN-001 | - | BP-03 profile에 누락·알 수 없는 field, trailing JSON, overflow와 모든 범위 밖 값을 입력한다. profile 원문을 읽는다. | Profile을 strict decode하고 message 상한을 계산한다. 누락·알 수 없는 field, trailing JSON, overflow와 범위 밖 값은 거절한다. 원문 bytes와 SHA-256을 그대로 반환한다. |
+| PRF-SCN-002 | - | Stream을 node에 배치하고 발행자 reader 실패와 ACK timeout을 입력한다. | Stream마다 노드를 교차 배치한다. Reader 실패는 slot 대기가 반환한다. ACK timeout이 난 Packet ID는 격리한다. |
+| PRF-SCN-003 | - | Subscriber reader가 QoS 2 PUBREL 흐름을 이어서 처리한다. | QoS 2 release 흐름을 재개한다. |
+| PRF-SCN-004 | - | ACK됐지만 수신하지 못한 message, QoS 1·2 duplicate, 스케줄 지연, drain snapshot, QoS 2 PUBCOMP timeout과 offline 완료 경계를 입력한다. | ACK됐지만 받지 못한 message는 gap이며 invalid다. QoS 2 duplicate는 invalid다. QoS 1 duplicate는 보고하되 허용한다. 스케줄 지연이 간격과 같으면 overload다. Snapshot은 이후 ACK를 관찰하지 않는다. PUBCOMP timeout은 미완료 교환으로 센다. Offline 완료는 QoS 2 PUBCOMP와 기대한 모든 수신을 기다리며 기한을 놓치면 실패한다. |
+| PRF-SCN-005 | - | WAL histogram의 bucket delta, overflow, 누락된 family와 EMQX target을 입력한다. | Bucket delta와 overflow를 반영해 WAL summary를 만든다. 누락된 family는 invalid summary로 남긴다. EMQX는 `not_applicable`이다. |
+| PRF-SCN-006 | - | Resource window의 표본 부족, 0 byte block write와 network owner 표본 없음을 입력한다. | 표본이 부족하면 invalid다. 0 byte block write는 유효하다. Network 표본이 없어도 workload는 invalid가 아니다. |
+| PRF-SCN-007 | - | 두 target의 compare와 suite를 만든다. 동등성 증거, EMQX WAL 적용성, network 표본이 없는 실행과 실패한 하위 실행을 입력한다. | 동등성과 `nonEquivalent` dimension을 판정한다. EMQX WAL 적용성은 요구하지 않는다. 필수 key와 단위를 만든다. 한 실행이라도 network 표본이 없으면 network metric만 생략한다. 하위 실행이 하나라도 실패하면 모든 상위 metric을 비운다. |
+| PRF-SCN-008 | - | 7개 고정 Raft stage와 허용되지 않은 label, histogram overflow를 기록한다. | 고정 stage만 허용한다. Stage별 histogram이 서로 격리되고 overflow는 상한 안에 둔다. |
+| PRF-SCN-009 | - | 동적 cluster의 follower가 application proposal을 받는다. | Follower가 proposal을 leader로 전달한다. |
+| PRF-SCN-010 | - | Commit read proof를 여러 개 제출하고 일부를 취소한다. | 제출 순서를 보존한다. 취소를 올바르게 처리한다. |
+| PRF-SCN-011 | - | Follower에서 fresh read를 한꺼번에 요청한다. | Egress가 drain된 뒤 모든 read가 완료된다. |
+| PRF-SCN-012 | - | Leader에서 fresh read를 한꺼번에 요청하고 소수 node의 응답을 막는다. | 정상 quorum을 유지한 채 모든 read가 완료된다. |
+| PRF-SCN-013 | - | 아직 발행하지 않은 read를 취소하고 driver 실패를 일으킨다. | 취소와 driver 실패를 각각 호출자에게 반환한다. |
+| PRF-SCN-014 | - | TCP outbound capacity를 점유한 frame이 wire에 완전히 나가기 전 상태를 만든다. | Wire 전송이 끝날 때까지 capacity가 계속 차감된다. |
+| PRF-SCN-015 | - | 실제 process cluster에서 fresh read를 동시에 요청한다. | 모든 read가 인수 시험 기준대로 완료된다. |
+| PRF-SCN-016 | - | Readiness의 storage, fresh quorum proof와 local snapshot 판정이 각각 실패한다. | 단계별 거절 사유를 보고하고 기존 fail-closed 반환 오류를 유지한다. |
+| PRF-SCN-017 | - | 같은 purpose·stage·거절 분류의 readiness 실패가 반복된다. | 최초 건과 1초 간격 표본만 출력하고 건수를 누적한다. Diagnostic field에 Client/tenant ID, payload, topic, token을 넣지 않는다. |
 
 저장소 root에서 실행한다.
 
@@ -236,14 +254,13 @@ go run ./tests/benchmark/bp03 compare --profile tests/benchmark/bp03/testdata/sm
 go run ./tests/benchmark/bp03 suite --profile tests/benchmark/bp03/testdata/smoke.json
 ```
 
-#### 최종 실행 증거와 열린 조건
+#### Smoke 결과의 해석 경계
 
-최종 async WAL code에서 compare `bp03-20261002T193345.142241000Z-38956`와 suite `bp03-suite-20261002T193711.351279300Z-4364`는 valid이며 suite는 5/5다. 5회 모두 QoS별 Step 3 offered/sent/ACK/delivery 600, offline QoS별 64, SessionPresent 4/4, gap·duplicate 0이었다. Max schedule lag는 1.177–1.641 ms, overload는 없었다. Step 3 QoS 1 ACK p99 median/MAD 54.895/1.657 ms (range 53.238–57.203 ms), QoS 2 56.611/3.149 ms (53.387–62.605 ms), mean entries/sync 2.053607/0.003409 (2.036770–2.071090)였다. Suite는 고정 local smoke의 반복 증거이며 production SLO, direct target superiority, ADR-0003 전체 또는 production acceptance가 아니다. `releaseGating=false`, `ackLatencyDirectlyComparable=false`를 유지한다.
-
+Suite는 고정 local smoke의 반복 증거이며 production SLO, direct target superiority, ADR-0003 전체 또는 production acceptance가 아니다. `releaseGating=false`, `ackLatencyDirectlyComparable=false`를 유지한다.
 
 ### 3.5 BP-07 Rolling Drain smoke 관찰 경계
 
-BP-07은 같은 연결 수를 유지한 3-node cluster에서 node 하나씩 drain하고 같은 volume으로 재시작한다. Retained workload와 최대 traffic에서 연속 100회 rolling은 별도 범위다. 모든 artifact `releaseGating=false`; `SPEC-TBD-08` 미정이다.
+BP-07은 같은 연결 수를 유지한 3-node cluster에서 node 하나씩 drain하고 같은 volume으로 재시작한다. Retained workload와 최대 traffic에서 연속 100회 rolling은 별도 범위다. 모든 artifact `releaseGating=false`; `SPEC-TBD-08`의 comparator 수치 제안은 미채택이며 실제 workload와 profile별 cutoff도 미정이다.
 
 #### Topology와 비교 경계
 
@@ -304,22 +321,36 @@ Workload가 valid하려면 다음을 모두 만족한다.
 - QoS1 duplicate, QoS0 lost/reorder는 기록 전용. NaruMQ Will counter의 고정 6 series를 모두 읽고 `unexpected_supported_client`·`unplanned_failure` delta가 0이어야 한다. NaruMQ v5-safe Will은 0, MQTT 3.1.1 고유 Will 수는 해당 server-close 수와 같아야 한다. EMQX Will은 validity 판정에서 제외한다.
 - Resource rolling sample은 node마다 최소 2개다. CPU는 median, memory는 maximum이다. Reset-aware block write를 기록한다. Owner network delta가 모두 0이면 `networkStatsAvailable=false`이며 workload 실패는 아니다.
 
-최종 compare `bp07-20261005T031404.679399800Z-37844`에서 양쪽 workload·rolling·resource가 valid였고 QoS1/2 gap·duplicate, 계획 밖 종료, protocol error, overload는 0이었다. Suite `bp07-suite-20261005T032136.047989300Z-30100`는 교차 순서 5/5 valid였다. NaruMQ QoS1 duplicate는 첫 4회 각 1, 마지막 회 0이며 QoS0 loss 1–2건은 기록 전용이었다. EMQX QoS0 loss·QoS1 duplicate는 0이었다. NaruMQ v5-safe Will은 0, MQTT 3.1.1 server-close와 고유 Will은 매 회 1이었다. 12개 metric key 모두 5 sample을 가졌다. Round metric은 `roundNN_drain_millis`, `roundNN_restart_ready_millis`, `roundNN_reconnect_latency_max_millis`; aggregate는 `reconnects_total`, `qos1_duplicates_total`, `qos0_lost_total`이다. Drain contract가 달라 target 우열로 해석하지 않는다.
+Round metric은 `roundNN_drain_millis`, `roundNN_restart_ready_millis`, `roundNN_reconnect_latency_max_millis`; aggregate는 `reconnects_total`, `qos1_duplicates_total`, `qos0_lost_total`이다. Drain contract가 달라 target 우열로 해석하지 않는다.
 
-`SPEC-TBD-08`, Linux/EBS power loss, 실제 NLB·rollout controller와 최대 traffic 연속 100회 rolling은 미완료다. Manifest의 baseline과 `dirty=true`는 실행 당시 상태이며 확인 commit이나 CI rerun을 뜻하지 않는다.
+`SPEC-TBD-08`의 comparator 수치 제안은 미채택이다. Profile별 수치 기준, Linux/EBS power loss, 실제 NLB·rollout controller와 최대 traffic 연속 100회 rolling은 미완료다.
 
-#### 명령과 시험
+#### 명령과 수용 테스트
 
 ```text
 go run ./tests/benchmark/bp07 compare --profile tests/benchmark/bp07/testdata/smoke.json
 go run ./tests/benchmark/bp07 suite --profile tests/benchmark/bp07/testdata/smoke.json
 ```
 
-Profile·dialer·session·QoS·marker round attribution·Will validity·drain state·EMQX CLI·resource·suite 검증은 실제 파일 `tests/benchmark/bp07/{profile,dialer,session,aggregate,rolling,resource,suite}_test.go`에 있다. MQTT packet 경계는 `tests/benchmark/internal/mqttclient/client_test.go`, published owner port·restart·stats는 `tests/benchmark/internal/environment/cluster_test.go`에서 확인한다. Broker-side proof·projection/FIFO/cancellation acceptance는 `cmd/narumq`, `internal/adapters/{raft,tcp}`, `tests/integration`의 시험에 연결된다. Local gate PASS는 invalid workload나 미완료 production gate를 대체하지 않는다.
+시나리오 결과와 테스트 연결은 [테스트 컨벤션](../conventions/test-conventions.md)의 시나리오 보고서로 확인한다. 과거 실행 기록은 [검증 기록](../verification/performance-and-verification.md#35-bp-07-rolling-drain-기록)에 있다.
+
+| 시나리오 ID | 요구사항 ID | 조건과 입력 | 기대 결과 |
+| --- | --- | --- | --- |
+| PRF-SCN-018 | - | BP-07 smoke profile에 알 수 없는 field와 범위 밖 값을 입력한다. | 모두 거절한다. |
+| PRF-SCN-019 | - | Dialer와 session이 MQTT 연결, 구독과 QoS 흐름을 실행한다. | 연결·재연결과 QoS 흐름이 규칙대로 동작한다. |
+| PRF-SCN-020 | - | QoS 1/2 gap·duplicate, 계획 밖 disconnect, marker round 귀속과 Will counter를 입력해 집계한다. | Gap·duplicate와 계획 밖 disconnect를 이 절의 validity 규칙대로 판정한다. Marker는 올바른 round에 귀속하고 stale round marker는 상태를 되돌리지 않는다. NaruMQ v5-safe Will은 0이고 MQTT 3.1.1 고유 Will 수는 server-close 수와 같으며 EMQX Will은 판정에서 제외한다. |
+| PRF-SCN-021 | - | Rolling round의 drain state와 EMQX CLI 결과를 입력한다. | Round마다 세 node ready를 확인하고 drain·evacuation 결과를 판정한다. 모든 round가 deadline 안에 끝나야 통과한다. |
+| PRF-SCN-022 | - | Rolling 구간의 리소스 표본을 입력한다. | Node마다 최소 2개 표본으로 CPU 중앙값과 memory 최댓값을 계산한다. Owner network delta가 모두 0이면 `networkStatsAvailable=false`이며 workload는 실패가 아니다. |
+| PRF-SCN-023 | - | Suite 지표와 하위 실행 실패를 입력한다. | 지표를 만들고 하위 실행이 invalid이면 상위 지표를 비운다. |
+| PRF-SCN-024 | - | MQTT packet 경계 입력을 client에 넣는다. | Packet 경계를 규칙대로 해석한다. |
+| PRF-SCN-025 | - | 3-node 환경의 published owner port, restart와 stats를 확인한다. | Owner port, restart와 stats를 올바르게 보고한다. |
+| PRF-SCN-026 | - | 리더가 없는 상태, 리더십 이전, 여러 origin의 동시 요청과 다시 발행한 요청에서 broker가 fresh read를 처리한다. | 리더가 돌아오면 leaderless read가 완료된다. 발행된 read는 리더십 이전을 넘어 복구된다. 여러 origin의 read가 충돌하지 않는다. 다시 발행한 read는 이전 quorum proof를 거절한다. |
+
+Local gate PASS는 invalid workload나 미완료 production gate를 대체하지 않는다.
 
 ### 3.6 BP-06 Failure Recovery smoke 관찰 경계
 
-BP-06은 3-node cluster에서 broker 하나를 drain 없이 `SIGKILL`해 N-1을 유지한 뒤 같은 container·volume으로 재시작한다. Artifact는 모두 `releaseGating=false`; `SPEC-TBD-08`은 미정이다.
+BP-06은 3-node cluster에서 broker 하나를 drain 없이 `SIGKILL`해 N-1을 유지한 뒤 같은 container·volume으로 재시작한다. Artifact는 모두 `releaseGating=false`; `SPEC-TBD-08` 기준과 run-derived profile cutoff가 미정이다.
 
 #### Topology와 비교 경계
 
@@ -370,30 +401,31 @@ Round의 `injectionAt`은 귀속 가능한 가장 이른 disconnect다. 없으�
 - QoS2 duplicate는 첫 receipt가 subscriber 계획 disconnect 5,000ms 이내 앞에 있고 마지막 duplicate가 disconnect 뒤인 경우만 면제한다. Subscriber ID는 `bp06-sub-<stream>`과 일치해야 한다.
 - Round 순서대로 살펴보고 각 record는 처음으로 조건에 맞는 round에 귀속한다. 그 밖의 모든 조건은 invalid다.
 
-경계는 pinned EMQX 5.8.8 동작에 따른다. `emqx_persistent_message:store_message/1`은 `emqx_ds:store_batch`를 `sync => false`로 부르고 durable session state는 5,000ms heartbeat에 저장한다. 관찰된 ACKed gap은 주입 후 270ms 안에 있었다. 이후 실패를 이유로 예외를 넓히지 않는다.
+경계는 pinned EMQX 5.8.8 동작에 따른다. `emqx_persistent_message:store_message/1`은 `emqx_ds:store_batch`를 `sync => false`로 부르고 durable session state는 5,000ms heartbeat에 저장한다. 이후 실패를 이유로 예외를 넓히지 않는다.
 
-#### Artifact·시험·최종 증거
+#### Artifact·수용 테스트
 
 Target은 phase/health/connection/message/workload/failure/resource record, round control marker, log, inspect, EMQX durability snapshot을 보존한다. `workload-summary.json` schemaVersion 2는 `exemptGaps`, `exemptQoS2Duplicates`, `comparatorDurabilityExceptions`를 포함하며 `messages.jsonl`은 `lastReceivedAt`을 담는다. Suite metric은 round RTO/rejoin-ready/resync/reconnect-max, CPU·memory peak, aggregate reconnect 수, QoS1 duplicate, QoS0 lost다. Child 하나가 invalid면 parent metric을 비운다.
 
 Metric key는 round별 `roundNN_rto_millis`, `roundNN_rejoin_ready_millis`, `roundNN_resync_millis`, `roundNN_reconnect_latency_max_millis`, `roundNN_recovery_cpu_peak_percent`, `roundNN_recovery_memory_peak_bytes`; aggregate는 `reconnects_total`, `qos1_duplicates_total`, `qos0_lost_total`이다.
 
-| 검증 계약 | 영구 시험 |
-| Kill/inspect/start와 컨테이너 소유권 유지 | `tests/benchmark/internal/environment/cluster_test.go::TestKillAndStartClusterBrokerKeepContainer` |
-| 엄격 프로파일·경계치·타임아웃/만료/용량 | `tests/benchmark/bp06/profile_test.go` |
-| 픽스처 인증정보·ACL·클라이언트 허용 목록 | `tests/benchmark/bp06/fixture_test.go` |
-| 마커·재연결·연결 끊김 귀속 | `tests/benchmark/bp06/session_test.go`, `aggregate_test.go` |
-| RTO·복구·재동기화 워터마크/기한 | `tests/benchmark/bp06/aggregate_test.go`, `failure_test.go` |
-| EMQX crash-window 경계·대상 범위 | `aggregate_test.go::TestCollectorExemptsOnlyEMQXCrashWindowGaps`, `TestCollectorExemptsOnlyEMQXCheckpointRedelivery` |
-| 리소스 구간·재설정·표본 임계치 | `tests/benchmark/bp06/resource_test.go` |
-| 지표/단위·하위 실패 시 빈 지표·중앙값/MAD | `tests/benchmark/bp06/suite_test.go` |
+시나리오 결과와 테스트 연결은 [테스트 컨벤션](../conventions/test-conventions.md)의 시나리오 보고서로 확인한다. 과거 실행 기록은 [검증 기록](../verification/performance-and-verification.md#36-bp-06-failure-recovery-기록)에 있다.
+
+| 시나리오 ID | 요구사항 ID | 조건과 입력 | 기대 결과 |
+| --- | --- | --- | --- |
+| PRF-SCN-027 | - | 실행 중인 broker container를 kill하고 inspect한 뒤 다시 start한다. | 같은 container와 volume을 유지한 채 재시작한다. 소유권이 바뀌지 않는다. |
+| PRF-SCN-028 | - | Smoke profile에 알 수 없는 field, 범위 밖 값과 timeout·expiry·capacity 경계 위반을 입력한다. | 모든 경우를 거절한다. 경계값은 허용한다. |
+| PRF-SCN-029 | - | BP-06 fixture의 인증 정보, ACL과 client 허용 목록을 만든다. | 인증 정보와 ACL이 규칙대로 구성되고 허용 목록 밖의 client는 거절한다. |
+| PRF-SCN-030 | - | Control marker, 재연결과 연결 끊김을 round에 귀속한다. | 영향받은 연결의 끊김과 재연결을 올바른 round에 귀속한다. 계획 밖 disconnect는 invalid다. |
+| PRF-SCN-031 | - | RTO, 복구와 resync watermark·deadline을 판정한다. | RTO와 resync 기한 안에 회복한 round만 통과한다. 기한 초과와 watermark 미달은 invalid다. |
+| PRF-SCN-032 | - | EMQX target에 `killingObservedAt <= completeAt <= injectionAt+2000ms`인 ACKed gap과 5,000ms 안에 첫 receipt가 있는 QoS 2 duplicate, 그 밖의 gap·duplicate를 입력한다. NaruMQ target에도 같은 입력을 넣는다. | EMQX의 지정 crash window 안의 gap과 checkpoint 재전달만 면제한다. 그 밖의 gap·duplicate는 EMQX를 invalid로 만든다. NaruMQ에는 면제가 없다. |
+| PRF-SCN-033 | - | Steady·round 리소스 구간, counter 재설정과 표본 수 임계치를 입력한다. | 필요한 window와 sample이 없으면 resource invalid다. Counter 재설정을 반영한 값을 기록한다. |
+| PRF-SCN-034 | - | Suite 지표와 단위, 하위 실행 실패를 입력한다. 반복 값의 중앙값과 MAD를 계산한다. | 지표와 단위를 정확히 만든다. 하위 실행이 하나라도 invalid이면 상위 지표를 비운다. 중앙값과 MAD를 계산한다. |
 
 ```text
 go run ./tests/benchmark/bp06 compare --profile tests/benchmark/bp06/testdata/smoke.json
 go run ./tests/benchmark/bp06 suite --profile tests/benchmark/bp06/testdata/smoke.json
 ```
-
-최종 suite `bp06-suite-20261006T163812.777212000Z-92296`는 5/5 valid다. NaruMQ는 매 반복 gap, QoS2 duplicate, 계획 밖 disconnect, protocol error, overload가 0이었다. QoS1 duplicate는 `0,0,0,1,0`이며 기록 전용이다. EMQX crashDurability의 gap/exempt는 `1/1, 5/5, 5/5, 5/5, 5/5`(총 21), QoS2 duplicate/exempt는 `40/40, 50/50, 60/60, 41/41, 60/60`(총 251)이었다. 이는 EMQX crash durability 동등성이나 guaranteed delivery를 뜻하지 않는다. 지정 window 밖 gap/duplicate는 모두 EMQX를 invalid로 만든다. `releaseGating=false`다. `SPEC-TBD-08`, production storage/release matrix와 CI-only check는 미완료다. `dirty=true`와 baseline은 실행 당시의 역사적 metadata이며 post-commit/CI 재실행 증거가 아니다.
 
 ### 3.7 BP-04 Subscription Stress smoke 관찰 경계
 
@@ -442,25 +474,28 @@ Resource는 idle-baseline, subscribed-idle, 각 measure window에서 Docker live
 
 Suite metric은 step별 delivered/s·cluster CPU, class별 delivery p99/p999, network Tx bytes/delivery(가능할 때), route visibility p50/p99/max, setup SUBACK p99, setup client당 memory다. `Equivalent`는 profile SHA, limits, runner image ID, 3-node 일치가 필요하다. `nonEquivalent`: `overlapDelivery`는 target별 matching-copy 처리 차이, `sharedSelection`은 member 선택 순서가 implementation-specific, `authentication`은 EMQX가 tenant/client-ID binding과 peer mTLS를 재현하지 않음, `subscriptionReplication`은 Raft projection과 EMQX cluster database 차이이며 client-observed visibility만 비교한다.
 
-| 영구 시험 범위 | 실제 시험 파일 |
-| --- | --- |
-| 프로파일 해시·엄격 경계·ID·토픽 오라클 | `tests/benchmark/bp04/profile_plan_test.go` |
-| Shared·overlap 수신 집계 | `tests/benchmark/bp04/collector_test.go` |
-| JWT·ACL·인증서 정리 | `tests/benchmark/bp04/fixture_test.go` |
-| 중앙값·네트워크·표본 한도 | `tests/benchmark/bp04/resource_test.go` |
-| 동등성·지표 선택·실패 suite 빈 지표 처리 | `tests/benchmark/bp04/compare_suite_test.go` |
+#### BP-04 수용 테스트
+
+시나리오 결과와 테스트 연결은 [테스트 컨벤션](../conventions/test-conventions.md)의 시나리오 보고서로 확인한다. 과거 실행 기록은 [검증 기록](../verification/performance-and-verification.md#37-bp-04-subscription-stress-기록)에 있다.
+
+| 시나리오 ID | 요구사항 ID | 조건과 입력 | 기대 결과 |
+| --- | --- | --- | --- |
+| PRF-SCN-035 | - | Smoke profile을 읽는다. 알 수 없는 field와 범위 밖 경계값을 입력하고 subscriber ID와 topic oracle을 만든다. | 원문 해시를 보존한다. 알 수 없는 field와 범위 밖 값은 거절한다. Subscriber ID와 topic oracle이 class 순서와 이 절의 규칙을 따른다. |
+| PRF-SCN-036 | - | Shared와 overlap 구독자의 수신을 집계한다. | Shared group과 overlap 구독의 수신을 이 절의 oracle대로 집계한다. |
+| PRF-SCN-037 | - | BP-04 fixture의 JWT, ACL과 인증서를 만들고 정리한다. | JWT, ACL과 인증서가 규칙대로 구성되고 정리된다. |
+| PRF-SCN-038 | - | 리소스 표본의 중앙값, 네트워크 증가량과 표본 한도를 입력한다. | 중앙값과 네트워크 값을 계산하고 표본 한도를 넘거나 부족하면 거절한다. |
+| PRF-SCN-039 | - | Compare에 증거와 지표를 입력하고 실패한 suite를 실행한다. | 동등성 증거가 맞을 때만 비교한다. 지표를 선택하고 suite가 실패하면 상위 지표를 비워 둔다. |
 
 ```text
 go run ./tests/benchmark/bp04 compare --profile tests/benchmark/bp04/testdata/smoke.json
 go run ./tests/benchmark/bp04 suite --profile tests/benchmark/bp04/testdata/smoke.json
 ```
 
-최종 compare `bp04-20261007T110131.450776700Z-190180`에서 두 target 모두 valid, setup 115, probe 12/12 성공, protocol/transport/unexpected delivery 0, resource/network valid, `equivalent=true`였다. Suite `bp04-suite-20261007T110511.057084500Z-196860`는 5/5 valid이며 모든 metric에 5 sample이 있었다. Production capacity나 release 합격 증거는 아니다.
-
-
 ### 3.8 BP-02 Production Mix smoke 관찰 경계
 
-BP-02는 QoS 0/1/2, payload size cycle, 여러 subscription 종류, retained state, persistent session, tenant, TLS를 섞은 고정 workload다. 하네스와 local 실행만 증명한다. 고정 tenant·stream·TLS 비율은 production 분포가 아니다. `B_*`, `SPEC-TBD-08`, production workload, N/N-1 SLO, release threshold와 release acceptance는 미정이다. Artifact는 모두 `releaseGating=false`다.
+BP-02는 QoS 0/1/2, payload size cycle, 여러 subscription 종류, retained state, persistent session, tenant, TLS를 섞은 고정 workload다. 하네스와 local 실행만 증명한다. 고정 tenant·stream·TLS 비율은 production 분포가 아니다. `B_*`, 실제 N/N-1 SLO, profile별 `SPEC-TBD-08` cutoff, production storage와 release acceptance는 미정이다. EMQX Enterprise 6.3.1 comparator는 선택했지만 95%/105% gate 제안은 미채택이며 artifact는 모두 `releaseGating=false`다.
+
+현재 local BP-02 smoke artifact는 계속 `releaseGating=false`다. 선택한 ARM64 qualification profile을 사용한다는 사실만으로 production performance gate를 통과하지 않는다. Candidate run도 승인된 production workload와 full EKS profile에서 공통 계약을 충족해야 gate 증거로 인정한다.
 
 #### Topology와 비교 경계
 
@@ -473,7 +508,7 @@ BP-02는 QoS 0/1/2, payload size cycle, 여러 subscription 종류, retained sta
 | `sessionDurability` | NaruMQ는 persistent session·subscription·QoS1/2 inflight·offline message를 Raft quorum에 commit한다. EMQX OSS 5.8.8은 memory session을 쓴다. Offline 결과는 durability 비교가 아니다. |
 | `tenantIsolation` | NaruMQ의 JWT tenant/client-ID binding과 EMQX username ACL은 다르며, 동일 raw topic을 tenant 사이에서 시험하지 않는다. |
 | `authentication` | 양쪽 모두 같은 JWKS의 RS256을 검증하지만 EMQX는 client-ID binding과 peer mTLS를 재현하지 않는다. |
-| `tlsListener` | NaruMQ fixture는 peer mTLS와 분리한 node별 MQTT server certificate/key를 `mqtt.tls`에 지정하고 TLS 1.2 이상, client-auth `none`을 설정한다. EMQX는 3-SAN server certificate를 공유한다. Cipher와 resumption은 구현별이다. BP02 fixture 시험은 통과했지만 compare와 suite는 인증서 분리 변경 뒤 다시 실행하지 않았다. |
+| `tlsListener` | NaruMQ fixture는 peer mTLS와 분리한 node별 MQTT server certificate/key를 `mqtt.tls`에 지정하고 TLS 1.2 이상, client-auth `none`을 설정한다. EMQX는 3-SAN server certificate를 공유한다. Cipher와 resumption은 구현별이다. |
 | `sharedSelection` | Shared group member 선택 순서는 구현별이며 `memberDeliveries`는 기록만 하고 비교하지 않는다. |
 | `retainedReplication` | NaruMQ Raft와 EMQX retainer storage가 다르며 client-observed replay만 비교한다. |
 #### 고정 smoke profile
@@ -534,7 +569,7 @@ Publisher packet ID는 1–65,535 중 미사용 값을 순환 배정하며 infli
 
 Valid 조건: measure stream별 missing/duplicate/unexpected/QoS mismatch/ACK timeout이 모두 0이고 overload·protocol·transport error가 없어야 한다. Setup 수는 계획과 같아야 한다. Offline은 모든 `SessionPresent=true`이고 missing/duplicate/unexpected가 0이어야 한다. Retained는 missing/duplicate/unexpected/stale/wrongFlags가 모두 0이어야 한다. `final_check`도 성공해야 한다. Warmup missing/duplicate는 별도 기록한다. 첫 copy만 delivery latency에 반영한다. 전체 timeout은 readiness + idle 2회 + setup + 모든 rate의 warmup/measure/drain + `2*offlineSettleMillis+ceil(offlineMessagesPerStream*1000/offlinePublishRatePerSecond)+reconnectTimeoutMillis` + `2*ackTimeoutMillis+retainedReplayTimeoutMillis+500ms` + 3분이다.
 
-#### Artifact·metric·시험·최종 증거
+#### Artifact·metric·수용 테스트
 
 Target artifact는 `workload-summary.json`, `resource-summary.json`, `phases.jsonl`, `messages.jsonl`, `retained.jsonl`, `connections.jsonl`이다. Workload summary는 step/stream별 sent, expected/delivered, missing, duplicates, unexpected, QoS mismatch, ACK timeout, delivery/ACK latency, warmup counter를 담는다. Shared는 `memberDeliveries`, offline·retained는 각자 별도 summary를 가진다. Connection record에는 tenant, `tls|tcp`, setup/offline-reconnect/retained-replay phase, connect latency, `SessionPresent`가 있다. Resource는 idle-baseline, subscribed-idle, measure window의 Docker live stats를 쓰며 signed memory delta와 setup client 49개를 기록한다. Suite는 5회 반복한다. Child 하나라도 invalid면 parent metric 전체를 비운다. Network stats가 없으면 network metric만 생략한다.
 
@@ -542,26 +577,150 @@ Suite metric은 step별 delivered/s·cluster median CPU, stream별 delivery p99/
 
 Key는 `stepNN_delivered_per_second`, `stepNN_cluster_median_cpu_percent`, stream별 `stepNN_<stream>_delivery_latency_p99_ns`·`p999_ns`다. QoS1/2 stream은 `stepNN_<stream>_publish_ack_latency_p99_ns`도 포함한다. Network가 있으면 `stepNN_network_tx_bytes_per_delivery`를 포함한다. Transport가 있을 때만 setup TLS/TCP connect p99를 만든다. 공통 key는 `offline_reconnect_connack_latency_p99_ns`, `offline_drain_duration_max_ns`, `retained_replay_duration_max_ns`, `memory_bytes_per_setup_client`다. Latency 단위는 ns, throughput은 deliveries/s, CPU는 percent, network·memory는 bytes다.
 
-| 검증 계약 | 영구 시험 |
-| --- | --- |
-| 프로파일 소스 해시·엄격 디코딩·경계치 | `profile_test.go::TestLoadProfilePreservesSourceHash`, `TestDecodeProfileRejectsUnknownFieldAndInvalidBounds` |
-| 테넌트/노드/전송 계획·오라클·페이로드 사이클 | `profile_plan_test.go::TestClientPlanAssignsTenantNodeAndTransport`, `TestExpectedRecipientsRespectTenantAndShareGroup`, `TestPayloadSizeCycleAndValidation` |
-| TLS 서버 인증서 검증 | `tests/benchmark/internal/mqttclient/client_test.go::TestConnectOverTLSVerifiesServerCertificate` |
-| 테넌트/TLS 픽스처와 정리 | `fixture_test.go::TestBP02FixtureSeparatesTenantsAndConfiguresTLS` |
-| Shared 중복·QoS·오프라인·retained 전달 | `collector_test.go::TestSharedGroupSecondMemberDeliveryCountsDuplicate`, `TestQoSMismatchInvalidatesStep`, `TestOfflineSessionNotPresentInvalidatesTarget`, `TestRetainedReplayRejectsStaleRoundAndMissingRetainFlag` |
-| 단계별 정수 발행·정확 토픽/오프라인·지연/중단·retained 수 | `collector_test.go::TestOfflineCommandOracleUsesPerPhasePublishCounts`, `TestOfflineCommandExpectationsFollowExactTopics`, `TestLateMeasureDeliveryPreservesDrainMissingSnapshot`, `TestInterruptedStepReportsObservedMissingDeliveries`, `TestRetainedOracleSupportsProfileTopicCounts` |
-| PUBREL 수신 전 QoS 2 재전송 처리 | `client_test.go::TestSubscriberQoS2RetransmitBeforePubRelCountsOnce` |
-| 리소스 중앙값·0 바이트 네트워크·표본 부족 처리 | `resource_test.go::TestMedianMemoryUsesLowerPlusHalfDifference`, `TestBuildResourceSummaryAcceptsZeroNetworkDeltas`, `TestBuildResourceSummaryRejectsInsufficientSamples` |
-| 동등성 판정·지표 선택·실패 suite 빈 지표 처리 | `compare_suite_test.go::TestBuildBP02ComparisonRequiresMatchingEvidence`, `TestBP02MetricsSelectStreamsAndPhases`, `TestBP02SuiteFailureLeavesParentMetricsEmpty` |
+시나리오 결과와 테스트 연결은 [테스트 컨벤션](../conventions/test-conventions.md)의 시나리오 보고서로 확인한다. 과거 실행 기록은 [검증 기록](../verification/performance-and-verification.md#38-bp-02-production-mix-smoke-기록)에 있다.
+
+| 시나리오 ID | 요구사항 ID | 조건과 입력 | 기대 결과 |
+| --- | --- | --- | --- |
+| PRF-SCN-040 | - | Smoke profile JSON을 읽는다. 알 수 없는 field, 누락 field와 범위 밖 경계값을 입력한다. | 원문 SHA-256을 보존한다. 알 수 없는 field, 누락 field와 범위 밖 값은 거절한다. |
+| PRF-SCN-041 | - | Client 계획, 기대 수신자 oracle과 payload size cycle을 만든다. | Client마다 tenant, node와 TLS·TCP 전송이 규칙대로 배정된다. 기대 수신자는 같은 tenant와 shared group 규칙을 따른다. Payload size cycle은 profile 값과 같고 검증 규칙을 지킨다. |
+| PRF-SCN-042 | - | Server certificate를 검증하는 TLS client로 broker에 연결한다. | 서버 인증서를 검증한다. |
+| PRF-SCN-043 | - | BP02 fixture를 만든다. | Tenant A·B가 분리되고 node별 TLS listener가 구성되며 fixture가 정리된다. |
+| PRF-SCN-044 | - | Shared group의 두 번째 member 중복 전달, QoS 불일치, offline session 없음, 오래된 retained round와 retain flag 누락을 입력한다. | 중복 전달은 중복으로 센다. QoS 불일치는 step을 invalid로 만든다. Offline session이 없으면 target이 invalid다. 오래된 round와 retain flag 누락은 거절한다. |
+| PRF-SCN-045 | - | Phase별 정수 발행 수, 정확한 topic, 늦은 measure 전달, 중단된 step과 profile의 retained topic 수를 입력한다. | Oracle이 phase별 publish 수를 쓴다. Offline command 기대는 정확한 topic을 따른다. Drain 시점의 missing snapshot을 보존한다. 중단된 step은 관찰한 미수신을 보고한다. Retained oracle은 profile의 topic 수를 따른다. |
+| PRF-SCN-046 | - | Subscriber가 PUBREL을 받기 전에 같은 QoS 2 PUBLISH 재전송을 받는다. | 한 번만 센다. |
+| PRF-SCN-047 | - | 리소스 표본의 메모리 중앙값, 0 byte 네트워크 증가량과 부족한 표본을 입력한다. | 메모리 중앙값은 가운데 두 값의 하위 값에 차이의 절반을 더해 구한다. 0 byte 네트워크 증가량을 받아들인다. 표본이 부족하면 거절한다. |
+| PRF-SCN-048 | - | Compare에 증거가 맞지 않는 target, stream·phase별 metric 입력과 실패한 suite를 넣는다. | 증거가 일치해야 비교한다. Metric은 stream과 phase에 맞게 선택한다. Suite가 실패하면 상위 metric을 비워 둔다. |
 
 ```text
 go run ./tests/benchmark/bp02 compare --profile tests/benchmark/bp02/testdata/smoke.json
 go run ./tests/benchmark/bp02 suite --profile tests/benchmark/bp02/testdata/smoke.json
 ```
 
-최종 valid fixed compare는 `bp02-20261007T133602.315971400Z-174004`, valid 5/5 suite는 `bp02-suite-20261007T133920.246951900Z-122940`다. 두 target 모두 setup 49/49(TLS 25/TCP 24), persistent offline session 10/10, retained replay 구독자 4명, validity error 0, `finalCheck=true`였다. Suite는 target당 metric 44개, metric별 sample 5개였고 모든 반복에 network stats가 있었다. Fractional boundary compare `bp02-20261007T140157.761617200Z-105696`도 양쪽 valid이며 phase별 FLOOR publish count를 확인했다. Fixed smoke 입력은 변하지 않았다. 최종 local gate는 130.42초 PASS; focused mqttclient/environment/BP02 tests, benchmark vet, traceability도 통과했다. 이는 local smoke/코드 검증이지 production gate가 아니다.
+### 3.9 BP-02 EKS 용량 측정 계약
 
-Manifest의 baseline `6c200085368d701f34dedfb31e1a968a84c09028`, `dirty=true`, profile SHA `b929efabd5f99e68758bec86a2034b0b80d153e9ce0291e64a8236b3e4afd7d4`는 실행 당시 사실이다. Profile 원문은 artifact에 연결된다. `B_*`, production workload/storage, N/N-1 SLO, `SPEC-TBD-08`, release regression과 release acceptance는 미정이다. EMQX JWT placeholder와 SSL environment fallback은 사용하지 않았다.
+이 절은 [PRD §18 질문 1~5](../requirements/PRD.md#18-미결정-사항)의 채택에 따라 선택한 `EKS_EC2_HA` profile의 수용 용량을 재고 `B_*`로 기록하는 방법을 정한다. 2026-10-15 사용자는 다음을 선택했다.
+
+| 항목 | 결정 |
+| --- | --- |
+| Workload 분포 | §3.8 BP-02 production mix의 비율을 그대로 두고 규모만 키운다. |
+| 용량 판정 | N-1 유지 기준. Broker 하나가 빠진 동안과 복구 과정에서도 아래 판정 조건을 지키는 가장 높은 부하 단계를 용량으로 본다. |
+| Latency 한도 | Publish-to-delivery p99 100ms 이하 |
+| 부하 생성 위치 | 같은 EKS cluster의 전용 node group에서 Kubernetes Job으로 실행하고 내부 NLB로 접속한다. |
+
+#### Workload 단위(cell)
+
+Cell 하나는 §3.8의 stream 8개, 구독자 23명, retained 구독자 4명과 idle client 18명(A 12, B 6)을 그대로 복제한 단위다. Cell마다 publisher 8명을 포함해 client 53명이 있다. Tenant도 cell마다 두 개(`bp02-a-c%03d`, `bp02-b-c%03d`)를 둔다. 그래서 tenant와 client의 비율이 smoke와 같고, tenant별 quota 상한이 cell 수와 함께 커지는 부하에 걸리지 않는다. Cell `c`의 topic은 tenant 경로 다음에 `c%03d` 단계를 둔다. 예를 들어 `bp02/a/c007/telemetry/dev03`이고 ACL은 `bp02/a/c007/#`이다. Filter도 같은 단계를 포함한다. Shared group 이름은 `bp02a-c%03d`다. Client ID는 tenant 다음에 `c%03d`를 붙인다(`bp02-a-c007-pub-telemetry`). 각 tenant의 JWT identity는 그 cell의 client ID를 정확히 나열한다. QoS·persistent·retained 구성, `payloadSizeCycle`, keepalive 30초, Session Expiry 300초, `tlsEveryNthClient=2`는 §3.8 smoke와 같다. 따라서 `B_msg_size`는 p50 128 byte, p95·p99·최대 16,384 byte(nearest-rank)다.
+
+부하 단계는 `(cells, ratePerStreamPerSecond)` 쌍이다. 단계 `i`의 offered publish 속도는 `8*cells*rate` msg/s이고 연결 수는 `53*cells`다. Profile은 offered 부하가 엄격히 증가하는 단계 목록을 가진다. 첫 실패 단계가 나오면 마지막 통과 단계와 첫 실패 단계 사이의 cell 수를 이분 탐색으로 두 번 좁힌다. Rate는 §3.8 smoke 상한과 같은 `ratePerStreamPerSecond` 1–50 범위를 쓴다.
+
+#### 환경
+
+- Broker는 [EKS 배포 구조](../architectures/eks-ec2-deployment.md#production-qualification-profile-selected)의 선택 profile을 쓴다(`m7g.large` 3대, broker container마다 1 CPU·4 GiB, 20 GiB `gp3`, 내부 NLB IP target). Broker image는 ARM64 immutable digest로 고정한다. 용량 overlay는 broker container 자원을 그대로 두고 Pod에 JWKS sidecar와 init container를 더한다(2026-10-15 사용자 결정). 그래서 Pod 합계는 선택 profile보다 크다. 결과에는 broker container와 sidecar·init container의 requests·limits를 따로 기록하고, 이 값이 시험 overlay 조건임을 밝힌다.
+- Broker cluster는 준비 단계에서 `session-metadata`, `proposal-recovery`, `shared-subscription-reroute` feature를 활성화하고 확인한다. `proposal-recovery`는 leader가 바뀔 때 전송 중이던 commit을 새 leader에 다시 제안해, 생존 node의 연결이 commit timeout으로 닫히지 않게 한다(2026-10-15 사용자 결정). `shared-subscription-reroute`는 member session이 끝날 때 shared group message를 다른 member로 옮긴다([ADR-0060](../decisions/ADR-0060-shared-subscription-durable-owner-loss-reroute.md)). 활성 feature 목록을 artifact에 기록한다.
+- MQTT TLS는 broker listener가 종료한다. 용량 시험 overlay는 broker에 TLS listener 8883과 시험용 server certificate를 설정하고 NLB에 TCP 8883 listener를 추가한다. 기본 `eks-ec2-ha` manifest는 바꾸지 않는다.
+- 인증은 §3.8과 같은 RS256 JWT다. Broker는 loopback이 아닌 `http` JWKS 주소를 거절한다. 그래서 각 broker Pod에 JWKS를 `127.0.0.1`로 제공하는 시험용 sidecar를 둔다. Tenant quota는 설정하지 않아 기본값(상한)을 쓰고, 적용된 값을 artifact에 기록한다. Tenant 한도에 걸린 거절이 나오면 해당 단계는 invalid다. 거절 분류는 [Quota 계열 거절 판정](#quota-계열-거절-판정)을 따른다.
+- Generator Job은 broker worker와 다른 전용 node group에서 실행한다. Generator Pod의 CPU 사용률이 80%를 넘거나 publish schedule lag가 publish 간격 이상이면 generator 포화다. 포화한 단계는 실패가 아니라 invalid이며, generator 자원을 늘려 다시 잰다.
+
+#### 단계 절차
+
+각 단계는 새 client 집합으로 다음 순서를 따른다. 단계 사이에는 세 broker가 ready이고 resync를 마친 상태여야 한다.
+
+1. `setup`: 모든 client를 NLB 주소로 연결하고 구독한다. 연결 속도는 profile의 `connectRatePerSecond`로 제한한다.
+2. `warmup`: 정해진 시간 동안 부하를 건다. 판정하지 않는다.
+3. `measureN`: 세 broker에서 `measureMillis` 동안 판정 구간을 잰다.
+4. `failure`: 그 시점의 Raft leader Pod를 강제 삭제(`gracePeriodSeconds=0`)한다. 같은 시각에 그 worker를 cordon해 대체 Pod가 다시 schedule되지 않게 한다. Broker EBS는 AZ에 묶여 있어 다른 worker로 옮겨 가지 않는다. 부하는 계속 건다. 이 장애는 Pod 하나의 손실이다. PRD `EKS_EC2_HA`의 EC2 worker 또는 AZ 손실은 이 측정이 검증하지 않으며 별도 장애 시험이 다룬다.
+5. `recovery`: 영향받은 client가 NLB로 재연결하고 stream마다 장애 뒤 첫 성공 완료를 관찰할 때까지다. RTO 정의는 §3.6과 같다.
+6. `measureN1`: RTO 뒤 남은 두 broker에서 `measureMillis` 동안 판정 구간을 잰다.
+7. `restore`: Worker를 uncordon하고 대체 Pod의 ready와 resync를 기다린다. 판정하지 않으며 `readyTimeoutMillis`를 넘기면 단계는 invalid다.
+8. `cleanup`: 모든 client를 정리한다. Client ID는 단계마다 같으므로 persistent client ID마다 `CleanStart=true`, Session Expiry 0으로 접속했다가 끊어 이전 session을 지운다.
+
+#### 판정
+
+한 단계는 다음 조건을 모두 지킬 때 통과다.
+
+- `measureN`과 `measureN1`에서 QoS별 publish-to-delivery p99가 100ms 이하다. Latency는 publish 직전부터 첫 copy 수신까지이며 generator 한 process의 단일 clock으로 잰다.
+- 단계 전체에서 broker가 ACK한 QoS 1/2 message의 미수신(gap)이 0이고 QoS 2 중복이 0이다. QoS 1은 PUBACK, QoS 2는 PUBREC(reason < `0x80`)을 받으면 broker가 ACK한 것으로 본다. ACK를 받지 못한 publish는 `unacked`로 기록하고 gap에 넣지 않는다. Clean session publisher가 PUBREC을 받은 뒤 PUBCOMP 전에 연결을 잃은 QoS 2 message는 전달 보장 대상이 아니다([PRD §8](../requirements/PRD.md#8-메시지-보장-모델) QoS 2 행). 이 미수신은 gap이 아니라 `cleanPublisherInterrupted`로 수를 기록한다. QoS 1 중복과 QoS 0 손실은 기록만 한다. Gap 판정 규칙은 아래와 같다.
+  - Message의 보장 수신자는 publish를 보낸 시점에 구독이 유효하고, 다음 중 하나를 만족하는 subscriber다. Persistent session subscriber이거나, clean session subscriber로서 그 연결이 drain 끝까지 유지된 경우다. 구독은 현재 연결에서 SUBACK을 받았거나 persistent session이 있으면 유효하다.
+  - 보장 수신자의 미수신은 모두 gap이다. 시간 기준의 예외는 두지 않는다.
+  - Clean session subscriber의 연결이 publish 뒤 수신 전에 끊기면 그 message는 보장 대상이 아니다. MQTT clean session은 끊긴 연결의 미전달 message를 보존하지 않기 때문이다. 이 미수신은 gap이 아니라 `cleanSessionLoss`로 QoS별 수와 publish부터 끊김까지의 최대 간격을 기록한다. 끊긴 뒤 다시 SUBACK을 받기 전에 보낸 message도 기대하지 않는다.
+  - 단, publish부터 끊김까지가 p99 한도(EKS 100ms)를 넘은 `cleanSessionLoss`는 실패다. 장애 전부터 전달이 멈춘 message를 끊김이 가리지 않게 하기 위해서다(2026-10-15 사용자 결정). 한도와 같은 간격은 제외 대상이다.
+- `measureN`과 `measureN1`에서 ACK timeout, protocol error와 계획 밖 disconnect가 0이다. Publisher가 inflight credit을 기다려 생긴 schedule lag가 publish 간격 이상이면 broker ACK가 부하를 따라가지 못한 것이므로 실패다. Credit 대기 없이 생긴 lag는 generator 포화이므로 invalid다.
+- RTO가 30초 이하다([PRD §4.2](../requirements/PRD.md#42-초기-성공-지표)). Persistent session은 재연결에서 `SessionPresent=true`여야 한다.
+
+통과한 단계 중 offered 부하가 가장 큰 단계를 후보로 둔다. 후보 단계를 독립적으로 5번 더 실행해 모두 통과해야 그 단계의 값을 `B_*`로 기록한다. 하나라도 실패하면 바로 아래 통과 단계로 같은 확인을 반복한다.
+
+| 기호 | 기록 값 |
+| --- | --- |
+| `B_conn` | 채택 단계의 연결 수 `53*cells`와 TLS·TCP 비율 |
+| `B_pub` | 채택 단계의 offered publish 속도와 QoS별 비율 |
+| `B_sub` | 채택 단계 `measureN1`의 delivery 속도와 QoS별 비율 |
+| `B_msg_size` | p50 128 byte, p95·p99·최대 16,384 byte |
+| `B_topic` | 채택 단계의 filter 수와 exact·wildcard·shared 구성 |
+
+이 결과는 선택 profile의 용량이다. EMQX 대비 상대 판정과 release gate는 별도이며 artifact는 `releaseGating=false`로 둔다. 실제 운영 traffic이 `B_*`를 넘으면 `B_*`를 다시 정한다.
+
+<a id="quota-계열-거절-판정"></a>
+#### Quota 계열 거절 판정
+
+Quota 계열 거절은 runner가 MQTT reason code `0x97` 또는 `0x9F`를 받은 경우다. `0x97`은 tenant 한도와 서버 backpressure에 함께 쓰인다. 그래서 reason code만으로 원인을 정하지 않는다. Broker는 PUBACK·PUBREC `0x97`에 거절 원인을 Reason String으로 알린다([MQTT §7.2](mqtt-protocol-and-session.md#72-quota-계열-거절의-원인-표시)). Runner는 거절 하나마다 아래 분류를 정하고 기록한다.
+
+| 분류 | 조건 | 판정 |
+| --- | --- | --- |
+| `tenant_limit` | PUBACK·PUBREC Reason String의 class·cause가 MQTT §7.2 표의 tenant 한도다. 또는 CONNACK `0x97`이다(cause `connections_or_sessions`). | 단계는 invalid다. |
+| `server_backpressure` | PUBACK·PUBREC Reason String의 class·cause가 MQTT §7.2 표의 서버 backpressure다. | 단계는 fail이다. |
+| `unclassified` | Reason String이 없거나 형식·class·cause를 알 수 없다. 또는 `0x9F`이거나 SUBACK `0x97`이다. | 단계는 fail이다. |
+
+- 판정은 거절이 일어난 구간(`setup`, `warmup`, `measureN`, `failure`, `measureN1`, `restore`, `cleanup`)과 관계없이 단계 전체에 적용한다. `warmup`을 판정하지 않는다는 규칙은 이 거절에 적용하지 않는다. 거절은 broker가 publish를 받지 않았다는 뜻이다. 어느 구간이든 용량 판정을 통과시키면 안 된다. 서버 backpressure와 분류 불가를 구간별로 면제하지 않는다.
+- `server_backpressure`는 broker가 부하를 감당하지 못한 증거이므로 fail이다. generator나 설정 문제를 뜻하는 invalid가 아니다. 분류 불가는 원인을 모르므로 통과시키지 않고 fail로 둔다. 원인을 추측해서 `tenant_limit`나 `server_backpressure`로 바꾸지 않는다.
+- Invalid가 fail보다 우선한다는 규칙은 그대로다. 한 단계에 `tenant_limit`과 `server_backpressure`가 함께 있으면 단계는 invalid이고, 다른 분류의 건수는 `failConditions`에 증거로 남는다.
+- 거절된 publish는 ACK를 받지 못한 publish다. gap에 넣지 않는다.
+- Broker metric의 합계나 시각이 비슷하다는 이유로 거절의 분류를 바꾸지 않는다. Reason String을 보내지 않는 binary가 보낸 `0x97`은 `unclassified`다.
+- `steps/<NN>-r<R>/quota-rejections.jsonl`에 거절마다 한 줄을 쓴다. 필드는 `at`, `phase`, `clientId`, `tenant`, `packet`(`connack`, `suback`, `puback`, `pubrec`), `reasonCode`, `reasonString`(있을 때), `classification`, `cause`(있을 때)다. `step-summary.json`의 `quotaRejections`는 분류별 건수와 구간별 건수를 담는다.
+
+#### Runner 구성
+
+- Generator는 target에 무관한 runner로 만든다. 입력은 MQTT endpoint, management endpoint, credential과 profile이다. 단계 경계에서 control marker(§3.6과 같은 방식)를 써서 외부 controller가 장애 주입과 복구를 수행한다.
+- MQTT endpoint 주소 대체는 CONNECT를 보내기 전의 TCP dial·TLS handshake 실패에만 허용한다. 공통 MQTT client는 이 실패를 typed dial error로 구분한다. CONNECT 쓰기 오류(일부 byte만 보낸 경우 포함), CONNACK 대기 timeout·거절·protocol 오류는 다른 주소로 대체하지 않고 그대로 보고한다. 첫 서버가 ownership 처리를 계속하는 동안 같은 client의 두 번째 CONNECT를 보내지 않기 위해서다. Session reconnect loop와 단계의 timeout·재시도 횟수는 바꾸지 않는다.
+- Local controller는 Docker 3-node cluster에서 같은 runner를 실행하고 container `SIGKILL`과 재시작으로 장애를 만든다. Runner와 판정 코드의 local 검증에 쓰며 용량 값의 증거가 아니다.
+- EKS controller는 저장소 root의 workstation에서 `kubectl`로 Job 실행, marker 교환, Pod 강제 삭제, cordon·uncordon과 artifact 수집을 수행한다.
+- 2026-10-16 사용자는 실제 worker 정지 대신 Pod 장애 시험 보완을 선택했다. 시험 overlay만 `broker-process.sh`를 PID 1(container 안의 첫 process)로 실행하고 broker를 자식 process로 둔다. 같은 PID namespace에서 PID 1에 보낸 `SIGSTOP`은 성공을 반환해도 실행을 멈추지 않을 수 있으므로 PID 1을 직접 멈추는 방식은 쓰지 않는다. 평소 preStop은 기본 배포와 같고 wrapper는 TERM·INT를 broker에 전달하고 종료 상태를 기다린다. Wrapper의 메모리·CPU도 broker container의 1 CPU·4 GiB 예산에 포함된다.
+- Wrapper는 실행마다 UUID를 `/capacity-runtime`의 작은 memory emptyDir에 기록한다. Controller는 준비 때 Pod UID·container ID·broker PID·이 UUID를 보관한다. Runner ACK 뒤에는 UID·worker·container ID를 다시 대조한다. Container 안의 helper도 UUID와 실행 파일을 대조하므로 `kubectl exec`가 교체된 process에 도착하면 신호를 보내지 않는다. Broker 자식에게 `SIGSTOP`을 보내고 모든 thread가 실제 stopped 상태인지 확인한 뒤 Pod를 강제 삭제한다. 이 순서로 preStop이 broker에 정상 drain을 시작할 기회를 차단한다. 멈춘 시각·PID·thread 수·대상 identity와 삭제 시각을 기록한다. Worker·OS·EBS는 계속 실행되므로 전원 손실 증거는 아니다.
+- `kubectl delete --wait=false`의 성공은 삭제 요청 수락이며 기존 Pod의 삭제 완료가 아니다. 요청 수락 뒤에도 정지 대상의 추적을 유지한다. `restore`에서 다른 UID인 Ready Pod를 확인한 뒤 추적을 마친다. 삭제 실패, controller 예외, Ctrl+C 또는 대기 시간 초과로 Python의 `finally`가 실행되면 원래 UID·container ID·실행 UUID가 확인되는 대상에만 `SIGCONT`를 보내 재개를 시도한다. 교체된 container에는 신호를 보내지 않는다. 주입·정지 확인·복구 실패는 invalid이며 기준을 낮춰 통과시키지 않는다. 정상 preStop과 기본 `eks-ec2-ha` manifest는 바꾸지 않는다.
+- 2026-10-16 사용자는 정리 가능한 중단만 지원하기로 결정했다. `SIGKILL`, workstation 장애, 강제 process 종료처럼 `finally`가 실행되지 않는 중단에는 자동 재개를 보장하지 않는다. Lease나 watchdog은 두지 않는다. 이 경우 또는 Kubernetes API·exec 실패로 재개할 수 없는 경우에는 격리 fixture를 수동 복구하거나 삭제해야 한다. 중단된 측정을 용량 채택의 증거로 쓰지 않는다.
+- Artifact는 §5를 따른다. 단계마다 `step-summary.json`, phase·message·connection 기록, broker와 generator의 resource 표본, Raft leader와 삭제한 Pod·worker, cordon·uncordon 시각을 남긴다.
+- EKS controller는 `controller/runtime-health.jsonl`에 준비 뒤·각 단계의 ready와 complete·실행 종료 및 `--sample-seconds` 간격(기본 10초)의 표본을 남긴다. 경계 관측은 비동기로 요청해 장애 주입과 marker ACK를 지연시키지 않는다. 요청 시각(`requestedAt`)과 실제 수집 시각(`at`)을 구분한다. 수집 시간은 주기 간격에 더해진다. Broker container의 cgroup `cpu.stat`에서 `nr_periods`, `nr_throttled`, `throttled_usec` 누계와 같은 container의 직전 표본 대비 증가량을 기록한다. Cgroup v1의 `throttled_time`은 ns에서 µs로 바꾼다. 첫 표본·Pod UID 또는 container ID 변경·누계 감소 때 증가량은 알 수 없음(`null`)으로 기록한다.
+- 같은 표본에는 broker와 generator Pod의 UID·worker, regular·init container별 restart count, 현재 상태와 직전 종료 상태(reason, exit code, signal, 시작·종료 시각)를 기록한다. `OOMKilled`는 Kubernetes가 보고한 reason 그대로 보존한다. 읽기 실패·권한 부족·교체 중 표본은 알 수 없음으로 남기며 0이나 정상으로 바꾸지 않는다. CPU 표본 수집 전후의 Pod·container identity가 다르면 그 CPU 표본을 버린다.
+- 이 기록은 CPU limit에 걸린 지연과 OOM·재시작 원인을 분석하기 위한 관측 자료다. 판정 기준을 바꾸거나 장애 중 Pod를 복구하는 추가 동작은 하지 않는다. 주기 사이에 삭제된 Pod나 여러 번 재시작한 container의 모든 OOM 이력을 보장하지 않는다. 실제 EKS 수집은 별도 실행으로 확인해야 한다.
+- `prepare`는 fixture ConfigMap과 Secret을 server-side apply로 갱신한다. 512 cell의 credential 파일은 약 586 KB이므로 client-side apply의 `last-applied-configuration` annotation(최대 262,144 bytes)에 복제할 수 없다. Secret 본문은 그대로 유지한다. 기존 client-side apply manager가 소유한 값과 충돌하면 강제로 덮어쓰지 않는다.
+- Kill marker의 `target.nodeId`는 runner의 `killTarget.NodeID`에 맞는 JSON 문자열이다. Python 내부의 숫자 node ID는 marker를 쓸 때 문자열로 바꾼다. 숫자로 쓰면 Go가 marker를 읽지 못하므로 runner는 ACK를 쓰지 않고 해당 단계는 invalid가 된다.
+- Local smoke profile(`tests/benchmark/capacity/testdata/local-smoke.json`)은 Docker에서 단계 진행·확인·정리 경로를 실행하려고 p99 한도를 1,000ms로 둔다. 이 값은 판정 기준이 아니다. EKS profile(`eks-capacity-v1.json`)은 100ms를 쓴다.
+
+#### 용량 측정 수용 테스트
+
+시나리오 결과와 테스트 연결은 [테스트 컨벤션](../conventions/test-conventions.md)의 시나리오 보고서로 확인한다. 과거 실행 기록은 [검증 기록](../verification/performance-and-verification.md#39-bp-02-eks-용량-측정-기록)에 있다.
+
+| 시나리오 ID | 요구사항 ID | 조건과 입력 | 기대 결과 |
+| --- | --- | --- | --- |
+| PRF-SCN-049 | NFR-01, NFR-03 | 용량 profile을 읽고 cell별 client를 계획한다. 범위 밖 profile 값을 입력한다. | Profile 범위를 검증한다. Cell당 client는 53명이고 tenant별 client ID를 정확히 나열한다. Filter는 cell 밖으로 나가지 않는다. |
+| PRF-SCN-050 | NFR-02 | 보장 수신자, persistent session, clean session 연결 끊김, PUBCOMP 전에 끊긴 clean publisher, p99 한도와 같은 간격의 `cleanSessionLoss`를 입력해 gap을 판정한다. | 보장 수신자의 미수신은 persistent session에서 예외 없이 gap이다. PUBCOMP 뒤 미수신도 gap이다. Clean publisher의 PUBCOMP 전 끊김은 `cleanPublisherInterrupted`로 기록한다. 끊긴 동안의 publish는 기대에서 제외한다. p99 한도를 넘는 `cleanSessionLoss`는 실패다. |
+| PRF-SCN-051 | NFR-02 | 단계 판정에 p99 경계값, invalid 사유, RTO와 `SessionPresent` 입력을 넣고 부하 단계를 탐색한다. | p99 100ms 경계를 지킨다. invalid가 실패보다 우선한다. RTO 30초 이하와 `SessionPresent=true`를 요구한다. 첫 실패 단계 앞뒤를 이분 탐색하고 후보 단계를 5회 확인한다. |
+| PRF-SCN-052 | - | 준비 단계에서 `session-metadata`, `proposal-recovery`, `shared-subscription-reroute` feature를 활성화하고 확인한다. | 세 feature를 활성화한다. 하나라도 비활성이면 오류다. |
+| PRF-SCN-053 | - | Runner와 controller가 control marker를 교환한다. Python controller가 쓴 상태 JSON 5개를 Go runner가 읽는다. Broker·sidecar·init container 자원을 기록한다. | Marker 순서와 timeout을 지킨다. 숫자 node ID가 아니라 JSON 문자열 node ID를 쓰므로 runner가 5개 상태를 모두 읽는다. Broker, sidecar와 init container의 requests·limits를 분리해 기록한다. |
+| PRF-SCN-054 | - | 기본 `eks-ec2-ha` manifest와 용량 overlay `deploy/kubernetes/eks-ec2-ha-capacity/`를 렌더링해 비교한다. | MQTT TLS·security 경로만 기본 설정과 다르다. Sidecar, Job 자원과 routing 경계가 overlay 규칙을 따른다. |
+| PRF-SCN-055 | - | 장애 신호 요청에 다른 Pod UID·worker·container, 종료·삭제·상태 미확인 대상과 sidecar를 지정한다. | 원래 live broker identity가 확인되지 않는 대상에는 신호를 보내지 않는다. |
+| PRF-SCN-056 | - | Native amd64 Linux Docker의 실제 standalone broker에서 broker thread를 정지한다. 이어서 `SIGCONT`, 잘못된 실행 UUID, 삭제 오류 주입, 정상 `TERM` 전달을 확인한다. | Broker thread가 모두 정지하고 HTTP가 응답하지 않는다. `SIGCONT` 뒤 Ready가 된다. 잘못된 실행 UUID는 거절한다. 삭제 오류를 주입한 controller가 실제 process를 다시 실행시킨다. 정상 `TERM` 전달 뒤 exit 0이다. |
+| PRF-SCN-057 | - | 삭제 요청은 성공했지만 원래 UID인 Pod가 남은 상태에서 Ctrl+C, controller 예외, restore timeout을 각각 주입한다. | 세 경우 모두 원래 identity의 process를 재개하고 HTTP Ready와 worker uncordon을 확인한다. |
+| PRF-SCN-058 | - | cgroup v1·v2 CPU 값, 누계 증가, 재시작, Pod 교체, 읽기 실패와 `OOMKilled` 상태를 runtime 진단에 입력한다. | 단위를 변환하고 같은 container의 증가량을 계산한다. 재시작·Pod 교체·읽기 실패 때 baseline을 무효화한다. 현재·직전 OOM 상태를 보존한다. |
+| PRF-SCN-059 | - | CPU·메모리를 제한한 Docker container에서 실제 `cpu.stat`를 읽고 `ResourceSampler`와 `RuntimeDiagnostics`가 JSONL을 기록한다. | Throttling 누계와 증가량을 기록한다. 재시작 뒤 증가량은 `null`이다. 실제 `OOMKilled` exit 137을 기록한다. |
+| PRF-SCN-060 | - | 실제 EKS broker Pod에서 `kubectl exec`와 Pod status 조회로 cgroup v2 누계와 증가량을 수집한다. | Broker 3개 모두 읽기에 성공하고 누계와 증가량을 기록한다. |
+| PRF-SCN-061 | - | 512 cell의 credential 파일(약 586 KB)을 EKS fixture Secret으로 준비한다. | Credential을 `last-applied-configuration` annotation에 넣지 않고 server-side apply로 Secret에 저장한다. Secret 값은 출력과 공개 artifact에서 제외한다. |
+| PRF-SCN-062 | NFR-02 | `go run ./tests/benchmark/capacity local --profile tests/benchmark/capacity/testdata/local-smoke.json`을 실행한다. | 장애 주입, 복구, 판정과 정리가 끝까지 실행되고 모든 단계가 통과한다. |
+| PRF-SCN-063 | NFR-01, NFR-02 | `tests/benchmark/capacity/eks/controller.py`로 `EKS_EC2_HA` profile에서 용량을 측정한다. | 모든 단계 판정을 통과하고 후보 단계를 5회 확인해 `B_*`를 기록한다. invalid 단계가 하나라도 있으면 `adopted`와 `bounds`는 `null`이다. |
+| PRF-SCN-064 | NFR-02 | EKS에서 원래 Pod UID·container·실행 UUID를 확인하고 broker thread를 정지한 뒤 Pod를 강제 삭제한다. | `killing`·`down`·`restoring`·`restored`를 runner가 모두 관찰한다. 새 Pod가 Ready가 되고 resync를 마치며 active drain에 묶이지 않는다. |
+| PRF-SCN-117 | NFR-02 | PUBACK·PUBREC `0x97`을 MQTT §7.2의 알려진 class·cause, 형식이 틀린 값, 모르는 class·cause, 빈 값으로 받는다. CONNACK `0x97`, `0x9F`와 SUBACK `0x97`도 받는다. | 알려진 class·cause는 그대로 분류·기록한다. CONNACK `0x97`은 `tenant_limit`, cause는 `connections_or_sessions`다. 형식이 틀린 값, 모르는 class·cause, 빈 값, `0x9F`와 SUBACK `0x97`은 `unclassified`다. 원인을 추측하지 않는다. |
+| PRF-SCN-118 | NFR-02 | 단계 판정에 `tenant_limit`, `server_backpressure`, `unclassified` 거절을 따로 또는 함께 입력한다. | `tenant_limit`은 invalid다. `server_backpressure`와 `unclassified`는 fail이다. 함께 있으면 invalid가 우선하고 나머지 건수는 `failConditions`에 남는다. 거절이 없으면 판정을 바꾸지 않는다. |
+| PRF-SCN-119 | NFR-02 | Runner가 구간(`setup`, `warmup`, `measureN`, `failure`, `measureN1`, `restore`, `cleanup`)마다 서로 다른 client·tenant로 quota 계열 거절을 관찰한다. Artifact 쓰기 오류도 입력한다. | `quota-rejections.jsonl`에 거절마다 시각, 구간, client, tenant, packet, reason code, Reason String, 분류와 cause가 한 줄씩 남는다. `step-summary.json`의 `quotaRejections`가 분류별·구간별 건수를 담는다. 어떤 구간의 거절도 판정에서 빠지지 않는다. 기록 실패는 실행 오류로 보존한다. |
+| PRF-SCN-120 | NFR-02 | 외부 DNS 없이 실제 scripted TCP listener로 dial 실패, CONNECT를 받은 뒤 CONNACK timeout·거절, CONNECT 일부 byte를 받은 뒤 연결 reset을 만든다. | CONNECT 전 dial 실패만 다음 주소로 연결한다. 나머지는 오류를 보고하고 두 번째 CONNECT를 보내지 않는다. 공통 client의 typed dial error는 원래 오류의 `errors.Is`·`errors.As` 동작을 보존한다. |
 
 ## 4. 필수 benchmark profile
 
@@ -579,10 +738,10 @@ BP-03은 durable 구간이, BP-07은 drain 구간이 정상 완료되어야 해�
 
 ## 5. Artifact manifest
 
-각 run ID는 Git 커밋, NaruMQ 및 Go 버전, EMQX 버전·digest·에디션·라이선스·설정, 배포 프로파일·지원 상태·토폴로지·스토리지를 연결한다. 해당할 경우 AWS/EKS/EC2/EBS CSI/NLB의 해석된 설정도 기록한다. 제너레이터·클라이언트 SDK·seed·명령어, 확정 프로파일, 단계 경계·반복·타임스탬프, 원본 표본·로그·지표 및 오류·유실·중복 결과를 보존한다. 보안 비밀 값은 저장하지 않고 식별 참조만 남긴다.
+각 run ID는 Git 커밋, NaruMQ 및 Go 버전, EMQX 버전·digest·에디션·라이선스·설정, 배포 프로파일·지원 상태·토폴로지·스토리지를 연결한다. 해당할 경우 AWS/EKS/EC2/EBS CSI/NLB의 해석된 설정도 기록한다. 제너레이터·클라이언트 SDK·seed·명령어, 확정 프로파일, 단계 경계·반복·타임스탬프, 원본 표본·로그·지표 및 오류·유실·중복 결과를 보존한다. 보안 비밀 값은 저장하지 않고 식별 참조만 남긴다. 모든 실행 이미지에는 역할, immutable digest와 OS·architecture를 기록한다. BP-02 EKS run에서는 NaruMQ·EMQX·generator와 실제 실행한 rollout controller·필수 add-on image를 각각 기록한다. Container가 아닌 generator도 실행파일의 OS·architecture를 남긴다.
 
 - **BP-01**: 프로파일 및 SHA, 확정 설정, `samples.jsonl`, NaruMQ runtime 지표, workload summary, 브로커 통계·로그, 불변 이미지 메타데이터를 보존한다.
-- **BP-02**: `workload-summary.json`, `resource-summary.json`, `phases.jsonl`, `messages.jsonl`, `retained.jsonl`, `connections.jsonl`, 브로커 통계·로그·이미지 정보를 보존한다.
+- **BP-02**: `workload-summary.json`, `resource-summary.json`, `phases.jsonl`, `messages.jsonl`, `retained.jsonl`, `connections.jsonl`, 브로커 통계·로그와 각 image의 역할·immutable digest·OS·architecture를 보존한다. EKS run은 실제 실행한 rollout controller와 필수 add-on image도 포함한다.
 - **BP-03**: target별 workload·resource·WAL summary, `phases.jsonl`, `messages.jsonl`, `diagnostics.jsonl`, 브로커 로그를 보존한다.
 - **BP-04**: workload·resource summary, `phases.jsonl`, `messages.jsonl`, `route.jsonl`, 브로커 로그를 보존한다.
 - **BP-05**: `connections.jsonl`, `phases.jsonl`, workload·resource summary를 보존한다.
@@ -608,9 +767,18 @@ GC pause 백분위수는 누적 히스토그램 표본 차이에 nearest-rank를
 
 ## 6. Regression gate
 
-모든 릴리스는 이전 안정 버전 NaruMQ 및 승인된 고정 EMQX 기준선과 대조해야 한다. 처리량이나 p99 latency가 5% 이상 악화하면 릴리스를 차단한다. 측정 변동성이 5%를 초과하면 합격·불합격을 성급히 판정하지 않고 원인을 조사하며 반복 횟수를 늘린다.
+모든 릴리스는 이전 안정 NaruMQ와의 회귀를 대조한다. 이전 안정 NaruMQ 대비 처리량이 5% 이상 낮아지거나 p99 latency가 5% 이상 나빠지면 릴리스를 차단한다. 측정 변동성이 5%를 초과하면 합격·불합격을 판정하지 않고 원인을 조사한 뒤 반복 횟수를 늘린다.
 
-Phase 0은 프로파일별 최소 처리량, 최대 p99/p99.9 latency, 연결당 메모리, N-1 상태 SLO, 복구 RTO 수치를 확정해야 한다. 수치가 누락된 항목이 있으면 성능 게이트를 열린 상태로 둔다.
+2026-10-16 사용자 결정에 따라 상용 EMQX Enterprise 라이선스를 요구하는 95%/105% 상대 비율 조건은 필수 릴리스 게이트에서 제외하고 선택적 외부 벤치마크로 운영한다. 필수 제품 출시 게이트는 5% self-regression 규칙과 `EKS_EC2_HA` qualification profile에서 측정한 N-1 자립형 수용 용량(`B_*`)으로 판정한다.
+
+선택적 EMQX 비교를 실행할 때 적용하는 참고 기준은 다음과 같다.
+
+- 같은 `B_*`와 동등 profile에서 NaruMQ 처리량은 EMQX의 95% 이상이어야 한다.
+- Publish-to-delivery p99/p99.9 latency, 성공 전달당 CPU와 연결당 memory는 EMQX 값의 105% 이하여야 한다.
+- Network/disk 비용도 측정한다. 기능·durability가 `nonEquivalent`인 지표는 직접 우열 합격 판정에서 제외한다.
+- 각 target은 최소 5회 독립 실행하고 중앙값을 비교한다.
+
+필수 성능 릴리스 게이트는 N-1 수용 용량 `B_*` 산출 및 자체 회귀 5% 미만 충족 시 통과로 판정한다.
 
 ## 7. Verification 계층
 
@@ -637,15 +805,19 @@ go run ./tests/compatibility/mqtt-clients-v1 \
 
 Checked-in strict profile은 amd64 image에서 Paho Go MQTT 3.1.1 v1.5.1, Go MQTT5 v0.23.0, Python `paho-mqtt` 2.1.0을 build한다. Docker가 없거나 amd64가 아니면 case를 시작하지 않고 환경 실패 evidence를 쓴다. Manifest, summary, case, build log, image inspect, case별 broker/client 출력을 보존한다. Payload, credential, raw certificate, 외부 client ID, secret은 artifact에 넣지 않는다. Phase 1은 Go 10, Python 10, SDK 간 QoS1 4, MQTT 3.1.0 reject 2개 등 26 case다. `MQTT5_DRAIN_SAFE`와 malformed server DISCONNECT는 여기서 다루지 않는다. Adapter 계약은 [Drain §10](drain-and-rolling-update.md#10-broker-drain-수용-시험-매핑)을 따른다.
 
-Drain suite는 별도 run ID와 output 경로를 쓴다.
+필수 drain suite는 별도 run ID와 output 경로를 쓴다. 기존 artifact 경로를 재사용하지 않는다.
 
 ```text
 go run ./tests/compatibility/mqtt-clients-v1 --suite drain \
-  --run-id drain-paho-go-python-will-acl-final \
-  --output .artifacts/compatibility/mqtt-clients-v1/drain-paho-go-python-will-acl-final
+  --run-id drain-required-storage-fixed-20261016 \
+  --output .artifacts/compatibility/mqtt-clients-v1/drain-required-storage-fixed-20261016
 ```
 
-Suite는 SDK cluster drain 2 case와 malformed DISCONNECT 8 case를 고정한다. Cluster case는 새 3-node broker, JWT/JWKS, test readiness LB를 쓴다. Malformed case는 fake server/trap listener를 쓴다. Timeout, Will delay, reconnect, LB settle, rate는 test 전용이다. Secret/private key는 임시 경로에만 둔다. 최신 기록은 9/10이며 Go의 중복 Server Reference trap case가 실패했다. 이는 전체 SDK 승인 결과가 아니다. Phase 1 adapter suite는 26/26 통과했다. Local verification은 Docker suite 두 개를 제외하며 nested SDK module을 다운로드하거나 Docker를 시작하지 않는다.
+2026-10-16 사용자 결정에 따라 `--suite drain`은 SDK cluster drain 2 case만 필수로 실행한다. 새 3-node broker, JWT/JWKS, test readiness LB에서 redirect·session resume·후속 전달·Will 억제와 `SAFE_TO_STOP`을 검증한다. Fake server/trap listener를 쓰는 malformed DISCONNECT 8 case는 `--suite sdk-diagnostics`로 분리한다. SDK 진단은 선택 사항이며 제품 release gate와 정상 drain 판정에 합치지 않는다. 실행한 진단의 실패·누락은 별도 summary와 nonzero exit로 보존한다. 전체 case 목록과 선택 기준은 [Client contract §6.2·§6.3](../contracts/mqtt-client-compatibility-v1.md#62-drain-compatibility-suite)을 따른다.
+
+Timeout, Will delay, reconnect, LB settle, rate는 test 전용이다. Secret/private key는 임시 경로에만 둔다. Local verification은 이 Docker 실행들을 제외하며 nested SDK module을 다운로드하거나 Docker를 시작하지 않는다.
+
+Suite 분리와 fixture 수정 뒤의 실행 결과는 [Client contract §6.4](../contracts/mqtt-client-compatibility-v1.md#64-검증-범위-분리-실행-기록-2026-10-16)에 둔다. 필수 정상 drain의 최초 fixture 실패와 최종 통과, 별도 SDK 진단 실패를 구분해 보존한다.
 
 ### 7.2 Fuzz 게이트와 수동 mutation 검증
 
@@ -654,16 +826,44 @@ Suite는 SDK cluster drain 2 case와 malformed DISCONNECT 8 case를 고정한다
 ```text
 go run ./tools/verify local
 go run ./tools/verify ci --base <merge-base>
+go run ./tools/verify acceptance [--run <regexp>]
 go run ./tools/verify mutation
 ```
 
 `local`과 `ci`는 gofmt 사전 점검 뒤 `.artifacts/verification/branch/module`의 계측 사본에서 atomic coverage를 포함한 전체 `go test ./...`를 한 번 실행한다.
 
+Coverage의 전체 package 실행에는 `-timeout=3h`를 적용한다. 이는 opt-in 환경 변수를 켜고 gate를 실행할 때 100회 rolling process 시험이 쓰는 기존 fixture 수명과 같은 실행 예산이다. Broker 요청·장애 복구·시나리오별 제한 시간은 바꾸지 않는다. 테스트 doc comment에 `Acceptance: <환경 변수>`를 표시한 opt-in 수용 시험은 그 환경 변수가 없으면 건너뛰고 `미실행 (게이트 밖)`으로 보고한다. 이 표시가 없는 연결 시험을 건너뛰면 뒤의 실행 검사가 실패한다.
+
+시나리오 실행 검사는 Go 도구가 현재 빌드에서 제외한 파일의 테스트를 결과가 없다는 이유로 실패시키지 않는다. 파일명의 GOOS·GOARCH 제약과 `//go:build`를 그대로 따른다. 소스 연결 검사에서는 제외된 파일도 유지한다. 다른 플랫폼에서 명시적으로 받은 통과·실패 결과는 버리지 않는다. 활성 파일의 일반 테스트가 건너뛰거나 결과가 없으면 여전히 실패다. 외부 실행 결과의 빌드 환경 재현 범위는 [테스트 컨벤션 §5](../conventions/test-conventions.md#5-검증-명령과-통과-기준)를 따른다.
+같은 package·테스트 이름을 서로 배타적인 플랫폼 파일에 정의하고 같은 시나리오에 연결하면 하나의 결과 키로 합친다. 현재 빌드에 포함되는 선언이 하나라도 있으면 그 키는 실행 범위 안에 남는다.
+
 Local의 `-parallel`은 8이다. CI는 Go의 유효 `GOMAXPROCS` 값을 `-parallel`에 넘긴다. 이 값은 package 안에서 `t.Parallel()`로 실행하는 test의 상한이다. Preflight, coverage, race, fuzz는 한 병렬 단계에서 실행한다. `local`과 `ci`는 mutation을 실행하지 않는다.
+
+병렬 명령 하나가 실패하면 나머지 명령을 취소한다. 하위 process를 종료한 OS가 종료 코드만 반환하더라도 runner는 context의 취소 원인을 보존해야 한다. 이 취소를 별도의 시험 실패로 보고하지 않는다. 취소 없이 끝난 명령의 실제 non-zero 종료 코드는 그대로 실패로 보고한다.
+
+`local`과 `ci`의 preflight는 `go vet`, `go run ./tools/verify traceability`, `go run ./tools/verify scenarios`, `go run ./tools/verify architecture` 순서로 실행한다. `scenarios`는 이 문서의 `시나리오 ID` 표와 테스트 소스의 `Scenarios:` 메타 정보를 대조하는 연결 검사다. 결과 파일 없이 실행하므로 `오류`, `미연결`, `실패`가 하나라도 있으면 gate가 실패하고 `미실행`은 실패가 아니다. 계측 사본의 coverage `go test ./...`는 `-json`으로 실행해 stdout을 `.artifacts/verification/go-test.json`에 쓰며 실패하면 이 파일에서 실패한 시험 목록을 출력한다. 병렬 검사가 끝나면 gate는 `go run ./tools/verify scenarios --go-test-json .artifacts/verification/go-test.json --require-executed`로 실행 검사를 한다. 실행 검사는 `오류`·`미연결`·`실패`에 더해 실행 범위(결과 JSON에 나온 Go package의 `Test*`·`Fuzz*`, `--results` 파일에 결과가 있는 시험)에서 통과 결과가 없는 연결 시험(`미실행 (건너뜀)`, `미실행 (결과 없음)`)도 실패로 처리한다. 실행 범위 밖의 연결 시험(결과 파일이 없는 Python·EKS 함수, 결과 JSON에 없는 Go package, 결과 기록이 없는 `Test*`가 아닌 Go 함수, 통과·실패 결과가 없는 `Acceptance:` 표시 시험)은 `미실행 (게이트 밖)`으로 보고하며 실패로 처리하지 않는다. 그런 시험의 통과·실패 증거는 [검증 기록](../verification/performance-and-verification.md)이나 아래 `acceptance` 결과에 둔다.
+
+Python 시나리오 함수는 `tests/scenario_results.py`로 `.artifacts/verification/scenarios/python-results.jsonl`에 결과(`<file>#<def>` 키, 상태, commit, 환경, 명령, 종료 시각)를 JSON Lines로 덧붙일 수 있다. 이 기록은 gate에 포함하지 않는다. 시나리오별 보고서는 `.artifacts/verification/scenarios/report.md`와 `report.json`에 쓰고 CI는 두 파일을 artifact로 올린다. 같은 보고서를 수동으로 만들려면 `go test -json ./... > .artifacts/verification/go-test.json` 뒤 `go run ./tools/verify scenarios --go-test-json .artifacts/verification/go-test.json`을 실행한다. 메타 정보 문법과 상태 정의는 [테스트 컨벤션](../conventions/test-conventions.md)을 따른다.
+
+Opt-in 수용 시험은 `go run ./tools/verify acceptance [--run <regexp>]`로 따로 실행한다. 이 시험들은 100회 rolling, Kind, Docker 같은 별도 환경과 긴 실행 시간이 필요하다. 2026-10-17 측정에서 이 시험 11개는 integration package 시간의 약 78%(약 2420초)였다. 기본 gate가 매번 이 시험을 요구하면 `local`이 약 52분 걸리고, opt-in 환경이 없는 CI는 통과할 수 없다. 그래서 기본 gate는 일반 시험의 실행을 증명하고, opt-in 수용은 이 명령의 결과로 증명한다. 두 결과를 함께 보고하려면 `scenarios`에 두 Go JSON 파일을 모두 넘긴다.
+
+`acceptance`는 다음 순서로 동작한다.
+
+1. 연결 검사와 같은 scanner로 `Acceptance:` 표시가 있는 Go `Test*` 함수를 찾는다. `--run`을 주면 시험 이름이 이 Go 정규식과 맞는 것만 고른다. 고른 시험이 없으면 exit 1이다.
+2. 고른 시험마다 표시한 환경 변수가 `1`인지 확인한다. 하나라도 아니면 시험을 실행하지 않고 빠진 환경 변수 목록과 함께 exit 1이다. Kind registry 주소 같은 추가 입력은 각 시험이 직접 확인한다.
+3. 원본 root에서 `go test -json -count=1 -timeout=3h -run '^(<시험 이름>)$' <package>`를 실행한다. Stdout은 `.artifacts/verification/acceptance-go-test.json`에 쓴다. 이 명령은 coverage 계측 사본을 쓰지 않고 coverage를 판정하지 않는다.
+4. 고른 시험이 모두 통과해야 `acceptance: PASS`와 exit 0이다. 건너뜀·실패·결과 없음이 하나라도 있으면 해당 시험 이름과 함께 `acceptance: FAIL`과 exit 1이다. 이 명령은 Kind cluster, registry, Docker image를 만들거나 지우지 않는다.
+
+```text
+go run ./tools/verify acceptance --run 'ReleaseCompatibility'
+go run ./tools/verify scenarios --go-test-json .artifacts/verification/go-test.json --go-test-json .artifacts/verification/acceptance-go-test.json
+```
+
+CI workflow는 Go gate 외에 S3 helper와 EKS worker observer의 Python 회귀를 별도 단계로 실행한다. Observer만 로컬에서 확인하려면 `python -B tests/test_eks_worker_recovery.py -v`를 실행한다. 이 시험은 AWS·Docker 없이 관찰 독립성·오류 보존·종료·Node identity 경쟁 경계를 확인한다. 실제 broker·Kubernetes API smoke와 남은 EKS gate는 [Drain spec §10](drain-and-rolling-update.md#eks-worker-observer-보완-기준)을 따른다. 이 로컬 통과는 production 장애 수용을 대신하지 않는다.
 
 개발자가 mutation을 실행하려면 `go run ./tools/verify mutation`을 사용한다. 이 명령은 `delivery`, `mqtt`, `nodedrain`, `security`, `session` 다섯 package를 대상으로 한다. Gremlins worker와 test CPU는 각각 1이다. Runner는 한 번에 `max(1, min(5, floor(GOMAXPROCS/2)))`개 package를 실행하고 나머지는 다음 batch로 넘긴다. 실패하면 같은 batch의 남은 명령을 취소한다.
 
-각 결과는 `.artifacts/verification/mutation-<package>.json`에 저장한다. 기본 Gremlins 설정은 `tests/verification/gremlins.yaml`에 있다. Source, file, mutant exclusion은 없다. CI의 `--base <merge-base>`는 coverage diff 계산에만 쓴다.
+각 결과는 `.artifacts/verification/mutation-<package>.json`에 저장한다. 기본 Gremlins 설정은 `tests/verification/gremlins.yaml`에 있다. 기본 mutator는 `ARITHMETIC_BASE`, `CONDITIONALS_NEGATION`, `CONDITIONALS_BOUNDARY`, `INCREMENT_DECREMENT`, `INVERT_NEGATIVES`의 5종이다. Source, file, mutant exclusion은 없다. CI의 `--base <merge-base>`는 coverage diff 계산에만 쓴다.
 `go run ./tools/verify mutation`은 package별 efficacy와 mutant coverage를 보고한다. 각 점수는 80% 이상이어야 한다. `TIMED OUT` mutant는 완료한 `KILLED`나 `LIVED`로 세지 않는다.
 
 ```text
@@ -686,18 +886,32 @@ Discovery 순서는 비결정적이다. 실패 corpus는 `testdata/fuzz/<Target>
 
 MQTT normative statement 연결표는 `tests/conformance/mqtt-compliance-v1.json`이다. `go run ./tools/verify traceability`는 모든 `cmd`, `internal`, `tests` 아래 Go test·fuzz doc comment의 `Traceability:` marker를 읽는다. MQTT statement와 compliance matrix를 양방향 비교하고, marker의 모든 요구사항 ID가 PRD에 있는지 확인한다. PRD의 모든 P0 요구사항은 하나 이상의 `Test*`·`Fuzz*` 함수에 연결하거나 `tests/conformance/p0-requirement-exceptions-v1.json`에 정렬된 예외로 등록해야 한다. 시험 연결과 예외가 함께 있거나 둘 다 없으면 gate가 실패한다. `-prd`와 `-p0-exceptions`는 입력 경로를 바꿀 때 사용한다.
 
-| 검증 계약 | 영구 시험 또는 실행 결과 |
-| --- | --- |
-| P0 연결·미연결·stale 예외·PRD ID·정렬·tracking 경계 | `tools/verify/requirements_test.go::TestVerifyP0RequirementMapping` — 8개 사례 PASS |
-| 예외 JSON strict decode·schema·중복·빈 값·경로 경계 | `TestLoadP0ExceptionsStrictlyValidatesJSON` — 9개 사례 PASS |
-| PRD prefix 파싱과 MQTT statement ID 규칙 | `TestParseTraceabilityAcceptsPRDPrefixesAndKeepsStatementRule` PASS |
-| 미연결·stale P0의 CLI 거절 | 임시 예외 파일에서 `UI-01` 제거와 `API-01` stale 등록을 실행; 두 명령 모두 exit 1 및 지정 오류 출력 |
-| 저장소 traceability gate (2026-10-10) | `go run ./tools/verify traceability` PASS. P0 요구사항 81개 중 68개가 시험에 연결됐고 예외 13개가 남았다. SEC-10은 16개 시험에 연결됐으며 예외에 없다. |
-| 전체 local gate (2026-10-10) | `go run ./tools/verify local` PASS, 205.10초. Branch instrumentation, traceability, 5개 fuzz target, architecture, 전체 package·integration(125.359초), race, vet과 coverage가 통과했다. |
-| CI 병렬도 실험 (2026-10-10, mutation 수동 분리 전) | `go run ./tools/verify ci --base 23005e1a0d819a357507ce173b8d0f89cf40cf19` PASS, 1,388.95초. Coverage는 `-parallel=16`, integration은 156.691초였다. Mutation 단계는 18분 29초였다. 다섯 package 결과는 662 killed, 0 lived, 6 not covered였다. MQTT는 efficacy 100%, mutant coverage 98.80%였지만 console에 22 timed out도 기록됐다. 이 기록은 mutation을 CI에서 제외하기 전 실행 결과다. |
+#### 검증 gate 수용 테스트
 
-2026-10-11 현재 P0 예외는 11개다. 원격 main `verify` gate는 traceability를 포함해 PASS했다. 실패 probe PR의 `verify` check는 실패했고 PR 상태는 `blocked`였다. `enforce_admins=false`라 관리자 merge 거절은 시험하지 않았으므로 TEST-10은 미검증으로 유지한다. 설정과 run 증거는 §8.9에 있다.
+시나리오 결과와 테스트 연결은 [테스트 컨벤션](../conventions/test-conventions.md)의 시나리오 보고서로 확인한다. 과거 실행 기록은 [검증 기록](../verification/performance-and-verification.md#72-fuzz-게이트와-수동-mutation-기록)에 있다.
 
+| 시나리오 ID | 요구사항 ID | 조건과 입력 | 기대 결과 |
+| --- | --- | --- | --- |
+| PRF-SCN-065 | TEST-10 | Traceability 검증에 P0 연결, 미연결 P0, stale 예외, PRD에 없는 ID, 정렬되지 않은 예외와 tracking 경계의 8개 사례를 입력한다. | 연결됐거나 올바른 예외로 등록된 P0만 통과한다. 미연결 P0, stale 예외, PRD에 없는 ID, 정렬 위반과 tracking 경계 위반은 거절한다. 시험 연결과 예외가 함께 있거나 둘 다 없으면 실패한다. |
+| PRF-SCN-066 | TEST-10 | P0 예외 JSON에 schema 오류, 중복, 빈 값과 경로 경계 위반 9개 사례를 넣어 strict decode한다. | 각 사례를 거절한다. |
+| PRF-SCN-067 | TEST-10 | PRD의 요구사항 ID prefix와 MQTT statement ID를 traceability가 파싱한다. | PRD prefix를 받아들이고 MQTT statement ID 규칙은 그대로 유지한다. |
+| PRF-SCN-068 | TEST-10 | 임시 예외 파일에서 `UI-01` 등록을 제거한 경우와 `API-01` stale 예외를 등록한 경우에 `go run ./tools/verify traceability`를 실행한다. | 두 경우 모두 exit 1이며 지정한 오류를 출력한다. |
+| PRF-SCN-069 | TEST-10 | 저장소 root에서 `go run ./tools/verify traceability`를 실행한다. | exit 0이다. 모든 P0 요구사항이 `Test*`·`Fuzz*` 연결이나 정렬된 예외 중 하나에만 속한다. |
+| PRF-SCN-070 | TEST-06, TEST-07, TEST-08, TEST-13, TEST-14 | 저장소 root에서 `go run ./tools/verify local`을 실행한다. | `local: PASS`다. Branch instrumentation, traceability, scenarios, fuzz 5개 target, architecture, 전체 package·integration 시험, production race, vet과 coverage 판정이 모두 통과한다. Mutation은 실행하지 않는다. |
+| PRF-SCN-071 | TEST-06, TEST-07, TEST-08, TEST-13, TEST-14 | 저장소 root에서 `go run ./tools/verify ci --base <merge-base>`를 실행한다. | `ci: PASS`다. Coverage는 유효 `GOMAXPROCS`를 `-parallel`로 쓴다. `local`과 같은 단계를 실행하며 mutation은 실행하지 않는다. `--base`는 coverage diff 계산에만 쓴다. |
+| PRF-SCN-072 | - | 스펙 시나리오 표에 있으나 테스트 메타 정보가 없는 시나리오가 있는 상태에서 `go run ./tools/verify scenarios`를 실행한다. | 해당 시나리오를 `미연결`로 보고하고 exit 1이다. |
+| PRF-SCN-073 | - | `Scenarios:` 메타 정보가 없는 스펙 파일이나 없는 시나리오 ID를 가리키거나, 형식이 틀리거나, 테스트 함수 바로 위가 아닌 곳에 있다. | 해당 메타 정보를 `오류`로 보고하고 exit 1이다. |
+| PRF-SCN-074 | - | 한 시나리오에 연결된 테스트의 결과가 `통과`, `실패`, 결과 없음 또는 건너뜀으로 섞여 있다. `--go-test-json`이나 `--results`로 결과를 읽는다. | 시나리오 상태는 `실패`, `미실행`, `통과` 순으로 우선한다. 연결된 테스트가 하나라도 실패하면 `실패`이고 exit 1이다. 결과가 없거나 건너뛴 테스트가 있으면 `미실행`이다. |
+| PRF-SCN-075 | - | `go run ./tools/verify local` 또는 `go run ./tools/verify ci --base <merge-base>`를 실행하고 시나리오 연결에 `오류`나 `미연결`이 있다. | `scenarios`가 결과 파일 없이 preflight 단계로 실행되고 gate가 실패한다. 순서는 `go vet`, `traceability`, `scenarios`, `architecture`다. |
+| PRF-SCN-076 | - | 같은 스펙 파일 안에 같은 시나리오 ID가 두 번 이상 있다. | 중복 ID를 `오류`로 보고하고 exit 1이다. |
+| PRF-SCN-110 | - | `go run ./tools/verify scenarios --go-test-json <파일> --require-executed`를 실행한다. 실행 범위의 연결 시험이 건너뛰어졌거나 결과 이벤트가 없다. | `오류`·`미연결`·`실패`와 함께 통과 결과가 없는 연결 시험(`미실행 (건너뜀)`, `미실행 (결과 없음)`)도 실패로 처리하고 exit 1이다. |
+| PRF-SCN-111 | - | 연결된 시험이 실행 범위 밖에 있다. 결과 파일이 없는 Python·EKS 함수, 결과 JSON에 없는 Go package, 결과 기록이 없는 `Test*`가 아닌 Go 함수를 연결한다. | 해당 시나리오를 `미실행 (게이트 밖)`으로 보고하고 실행 검사를 실패시키지 않는다. |
+| PRF-SCN-112 | - | 결과 파일 없이 `go run ./tools/verify scenarios`를 실행한다. 연결된 시험이 실행되지 않았다. | `오류`·`미연결`·`실패`만 실패로 처리한다. `미실행`은 실패가 아니다. |
+| PRF-SCN-113 | - | `go run ./tools/verify local` 또는 `ci`를 실행한다. | 계측 사본의 coverage `go test ./...`가 `-json`으로 실행되어 stdout이 `.artifacts/verification/go-test.json`에 쓰인다. 실패하면 이 파일에서 실패한 시험 목록을 출력한다. 병렬 검사가 끝난 뒤 같은 파일로 실행 검사를 한다. 검증 명령은 모두 14개다. |
+| PRF-SCN-114 | - | Python 시나리오 함수가 `tests/scenario_results.py`로 결과를 기록한다. CI의 Python unittest는 `tests/run_scenario_unittest.py`로 실행한다. | 결과 파일에 `<file>#<def>` 키, 상태, commit, 환경, 명령과 종료 시각을 JSON Lines로 덧붙인다. 보고서에 commit과 환경이 나온다. CI unittest 결과는 `python-ci-results.jsonl`로 Go 결과와 함께 실행 검사에 입력한다. 라이브 EKS 하네스의 `python-results.jsonl`은 별도 수동 실행 결과이며 CI에서 실행한 것으로 세지 않는다. |
+| PRF-SCN-115 | - | 기본 gate의 실행 검사에서 `Acceptance: <환경 변수>`를 표시한 연결 시험이 건너뛰어졌거나 결과 이벤트가 없다. 별도로 표시가 없는 연결 시험을 건너뛴다. `Acceptance:`를 `_test.go`의 `Test*` 함수가 아닌 곳에 쓰거나 환경 변수 이름 없이 쓴다. | 표시한 시험의 시나리오는 `미실행 (게이트 밖)`이며 실행 검사를 실패시키지 않는다. 표시한 시험이 실제로 통과·실패하면 그 결과를 그대로 센다. 표시가 없는 시험의 건너뜀은 `미실행 (건너뜀)`으로 실패한다. 잘못 쓴 `Acceptance:`는 `오류`다. |
+| PRF-SCN-116 | - | `go run ./tools/verify acceptance [--run <regexp>]`를 실행한다. 고른 시험의 환경 변수가 빠졌거나, 고른 시험이 건너뛰어지거나 실패하거나 결과가 없다. | 환경 변수가 빠지면 시험을 실행하지 않고 빠진 이름을 출력하며 exit 1이다. 고른 시험이 모두 통과하면 `acceptance: PASS`와 exit 0이다. 하나라도 통과하지 않으면 해당 시험 이름과 `acceptance: FAIL`을 출력하며 exit 1이다. 결과는 `.artifacts/verification/acceptance-go-test.json`에 남는다. |
+| PRF-SCN-121 | - | Windows·Linux 파일명, GOARCH 파일명과 `//go:build` 제약이 있는 테스트를 연결하고 현재 Go 환경으로 실행 검사한다. 활성 파일의 결과 누락·건너뜀과 다른 플랫폼의 명시적 통과·실패 결과도 입력한다. | 제외된 파일도 연결되지만 결과가 없으면 게이트 밖이다. GOFLAGS의 tag를 포함한 Go 빌드 제약을 따른다. 활성 파일의 결과 누락·건너뜀은 실패한다. 명시적 통과·실패 결과는 현재 플랫폼과 무관하게 센다. |
 
 ### 7.3 Cluster failpoint 빌드
 
@@ -706,6 +920,8 @@ Membership crash-boundary와 durable-ACK acceptance 시험은 `narumq_failpoint`
 허용 crash point: `add-learner-before-persist`, `add-learner-after-persist`, `add-learner-after-apply`, `promote-voter-before-persist`, `promote-voter-after-persist`, `promote-voter-after-apply`, `remove-member-before-persist`, `remove-member-after-persist`, `remove-member-after-apply`, `snapshot-install-before-persist`, `snapshot-install-after-persist`, `begin-remove-after-apply`, `route-projection-rebuild-error`, `ownership-acquire-after-commit`, `offline-detach-before-commit`, `offline-detach-after-commit`, `delivery-wal-before-write`, `delivery-wal-before-sync`, `delivery-wal-after-sync`, `delivery-commit-before-apply`, `delivery-commit-after-apply`.
 
 Tagged runtime은 JSON control file을 동기식으로 읽는다. 예: `{"crash":"delivery-wal-before-sync","isolatePeers":[2],"holdCommands":["subscription"]}`. `isolatePeers`는 inbound/outbound traffic 모두에 적용한다. 파일을 비우거나 제거하면 해제한다. 잘못된 JSON/value는 log를 남기고 해당 read를 비활성화한다. Hold 종류는 `ownership`, `subscription`, `delivery`다. 일치한 command는 read barrier/profile 확인 뒤, encoding/proposal 전에 멈춘다. 해제될 때까지 poll하고 60초 뒤 경고 후 진행한다. Proposal은 `WithoutCancel`에서 만든 10초 context로 실행한다. 결과는 applied/conflict/error다. Test 전용 기능이다.
+
+`dropProposalPeers`는 해당 peer로 가는 forwarded proposal(`MsgProp`) frame만 Raft가 보낸 것으로 처리하고 버린다. Read proof와 다른 Raft message는 막지 않는다. 이미 전송한 proposal이 리더 장애와 함께 사라진 상태를 process 시험에서 결정적으로 만들기 위한 test 전용 기능이다. 파일을 비우거나 제거하면 해제한다.
 
 Raft adapter는 일반 non-empty WAL entry에서 `PersistenceBoundaryHook`과 별도 `WALBoundaryHook`을 호출한다. Callback은 node lock을 보유하며 빌린 byte는 callback 동안만 유효하다. Composition root가 entry를 decode하고 crash 대상은 durable `DeliveryActionPublish`/`DeliveryActionReceive`로 제한한다. `ownership-acquire-after-commit`은 quorum commit 뒤 CONNECT 활성화 전에 실행된다. Offline detach hook은 proposal 직전과 `Applied` 뒤에 있다.
 
@@ -741,11 +957,11 @@ go run ./tests/chaos/cluster-storage-v1 \
 - 개발자가 실행하는 `go run ./tools/verify mutation`은 `delivery`, `mqtt`, `nodedrain`, `security`, `session`의 mutation efficacy와 mutant coverage를 각각 ≥80%로 확인한다. 이 명령은 `local`·`ci`에 포함되지 않는다. 동시성 코드는 race detector 또는 동등한 검증을 CI에서 실행하고 해당 기준을 통과해야 한다.
 - Domain 규칙/state machine은 정상·오류·경계·전이 assertion coverage 100%를 기본으로 한다. Consensus·drain·infrastructure 검증은 integration/E2E/chaos에 연결한다.
 
-`verify local`과 `verify ci`는 gofmt, vet, traceability, architecture, package/integration coverage, production race, fuzz 5종과 coverage policy를 실행한다. 두 명령은 mutation을 실행하지 않는다. Local coverage는 `-parallel=8`, CI coverage는 Go의 유효 `GOMAXPROCS`만큼 `-parallel`을 허용한다. `-parallel`은 package 안에서 `t.Parallel()`로 실행하는 test의 상한이다. 다섯 package mutation은 개발자가 `go run ./tools/verify mutation`으로 별도 실행한다. CI의 `--base <merge-base>`는 coverage diff 계산에만 쓴다. Atomic profile은 `.artifacts/verification/coverage.out`, mutation 결과는 `.artifacts/verification/mutation-<package>.json`이다. Integration은 build tag별 일반·failpoint broker를 임시 경로에 한 번씩 build하고 child process 정리 뒤 제거한다. Race 범위는 `./cmd/... ./internal/...`이며 별도 build되는 integration child broker는 race-instrumented가 아니다.
+`verify local`과 `verify ci`는 gofmt, vet, traceability, scenarios, architecture, package/integration coverage, production race, fuzz 5종과 coverage policy를 실행한다. 두 명령은 mutation을 실행하지 않는다. Local coverage는 `-parallel=8`, CI coverage는 Go의 유효 `GOMAXPROCS`만큼 `-parallel`을 허용한다. `-parallel`은 package 안에서 `t.Parallel()`로 실행하는 test의 상한이다. 다섯 package mutation은 개발자가 `go run ./tools/verify mutation`으로 별도 실행한다. CI의 `--base <merge-base>`는 coverage diff 계산에만 쓴다. Atomic profile은 `.artifacts/verification/coverage.out`, mutation 결과는 `.artifacts/verification/mutation-<package>.json`이다. Integration은 build tag별 일반·failpoint broker를 임시 경로에 한 번씩 build하고 child process 정리 뒤 제거한다. Race 범위는 `./cmd/... ./internal/...`이며 별도 build되는 integration child broker는 race-instrumented가 아니다. `scenarios`는 시나리오 표와 테스트 메타 정보의 `오류`·`미연결`·`실패`를 gate 실패로 처리한다([§7.2](#72-fuzz-게이트와-수동-mutation-검증)).
 
 Coverage는 Go atomic coverprofile의 executable block을 집계한다. [ADR-0040](../decisions/ADR-0040-branch-coverage-arm-injection.md)에 따라 branch는 `if`의 then·else와 clause가 있는 switch·type switch·select의 각 case·default arm을 센다. Loop 조건, 단락 평가와 `func _` body는 제외한다. 빠진 else·switch default만 줄바꿈 없이 사본에 주입한다. Select default는 주입하지 않는다. 사본에서 전체 시험을 실행하고 manifest 좌표와 원본 SHA-256을 대조한다. Line coverage로 branch를 대체하지 않는다. 실행 가능한 변경 line이나 변경 결정점이 없으면 해당 diff coverage는 100%다.
 
-현재 gate는 local coverage의 package별 `-parallel=8`, CI는 유효 `GOMAXPROCS`를 `-parallel` 상한으로 쓴다. Mutation은 자동 gate가 아니며 별도 수동 command로 다섯 package를 검사한다. 점수 threshold는 package마다 그대로 적용한다. 위 9개 core domain을 쓴다. Final ratchet은 overall production과 core별 threshold를 `coverage-policy.json`에 둔다. Branch는 두 번 측정한 값 중 작은 값을 소수점 둘째 자리에서 내림한 baseline ratchet을 사용한다. 전체·core ratchet은 측정값이 ratchet에서 0.20%p를 뺀 값보다 낮을 때 실패하며, 비교에는 0.005%p 반올림 오차를 추가로 허용한다. 허용폭은 branch ratchet에만 적용하며 line·function gate, diff 90%와 PRD shortfall에는 적용하지 않는다. 허용폭은 [ADR-0041](../decisions/ADR-0041-branch-ratchet-noise-tolerance.md), 현재 diff 하한은 [ADR-0044](../decisions/ADR-0044-diff-coverage-floor-90.md)를 따른다. PRD 전체 80%·core 90% 미달은 report의 `branchCoverage.requirementShortfalls`로 보고한다. 이를 ratchet gate 실패 사유로 쓰지 않으며, 미달이 남는 동안 TEST-06·TEST-07은 미검증으로 유지한다. Ratchet 변경에는 반복 안정성 증거와 정책/요구사항 갱신이 필요하다. Coverage 숫자만으로는 충분하지 않으며 모든 P0 requirement와 지원 MQTT normative statement에 assertion이 연결되어야 한다.
+현재 gate는 local coverage의 package별 `-parallel=8`, CI는 유효 `GOMAXPROCS`를 `-parallel` 상한으로 쓴다. Mutation은 자동 gate가 아니며 별도 수동 command로 다섯 package를 검사한다. 점수 threshold는 package마다 그대로 적용한다. 위 9개 core domain을 쓴다. Final ratchet은 overall production과 core별 threshold를 `coverage-policy.json`에 둔다. Branch는 두 번 측정한 값 중 작은 값을 소수점 둘째 자리에서 내림한 baseline ratchet을 사용한다. 전체·core ratchet은 측정값이 ratchet에서 0.20%p를 뺀 값보다 낮을 때 실패하며, 비교에는 0.005%p 반올림 오차를 추가로 허용한다. 허용폭은 branch ratchet에만 적용하며 line·function gate, diff 하한과 PRD shortfall에는 적용하지 않는다. 허용폭은 [ADR-0041](../decisions/ADR-0041-branch-ratchet-noise-tolerance.md), 현재 diff 하한은 [ADR-0063](../decisions/ADR-0063-diff-coverage-floor-80.md)을 따른다. PRD 전체 80%·core 90% 미달은 report의 `branchCoverage.requirementShortfalls`로 보고한다. 이를 ratchet gate 실패 사유로 쓰지 않으며, 미달이 남는 동안 TEST-06·TEST-07은 미검증으로 유지한다. Ratchet 변경에는 반복 안정성 증거와 정책/요구사항 갱신이 필요하다. Coverage 숫자만으로는 충분하지 않으며 모든 P0 requirement와 지원 MQTT normative statement에 assertion이 연결되어야 한다.
 
 ### 8.1 Verification 실행 정책
 
@@ -754,423 +970,114 @@ Repository root에서 전체 local·CI gate와 수동 mutation 검증을 실행�
 ```text
 go run ./tools/verify local
 go run ./tools/verify ci --base <merge-base>
+go run ./tools/verify acceptance [--run <regexp>]
 go run ./tools/verify mutation
 ```
 
-`local`·`ci`는 저장소 검증 순서를 소유한다. `mutation`은 별도 실행 명령이며 coverage/race/fuzz gate를 다시 실행하지 않는다. 단일 package 분석에는 Gremlins 직접 명령을 사용할 수 있다.
+`local`·`ci`는 저장소 검증 순서를 소유한다. `acceptance`는 `Acceptance:` 표시가 있는 opt-in 수용 시험만 실행하는 별도 명령이다([§7.2](#72-fuzz-게이트와-수동-mutation-검증)). `mutation`은 별도 실행 명령이며 coverage/race/fuzz gate를 다시 실행하지 않는다. 단일 package 분석에는 Gremlins 직접 명령을 사용할 수 있다.
 
-### 8.2 Branch 측정 gate 수용 증거
+반복 branch baseline은 `go run ./tools/verify baseline [--results FILE]`로 측정할 수 있다. 이 명령은 §8.2의 세 번 실행과 baseline 계산을 수행하며 policy를 자동 변경하지 않는다. 검증 도구 패키지만 실제 실행하려면 `go run ./tools/verify package-tests [--results FILE]`를 사용한다. 두 명령의 수동 결과 파일은 [테스트 컨벤션 §4](../conventions/test-conventions.md#4-예외와-자동-생성-산출물)를 따른다.
 
-2026-10-08에 Windows/amd64, Go 1.26.5와 Git으로 확인했다. 변경 전 revision은 `3b1541f2d4fd916db314f56cd3e091132592a6f7`이다. Production source는 변경하지 않았다. 아래 수치는 이번 작업 트리에서 실행한 결과다. CI 플랫폼의 필수 status나 release acceptance 증거는 아니다.
+### 8.2 Branch 측정 gate 수용 테스트
 
-| 시나리오 | 요구사항 | 시험 위치·실행 | 관찰 결과 |
+시나리오 결과와 테스트 연결은 [테스트 컨벤션](../conventions/test-conventions.md)의 시나리오 보고서로 확인한다. 과거 실행 기록은 [검증 기록](../verification/performance-and-verification.md#82-branch-측정-gate-수용-증거)에 있다.
+
+| 시나리오 ID | 요구사항 ID | 조건과 입력 | 기대 결과 |
 | --- | --- | --- | --- |
-| 실제 Go coverage block과 arm 대응 | TEST-06·TEST-07·TEST-11 | `tools/verify/branch_test.go::TestBranchCoverageMatchesGoCoverBlocks`; `go test ./tools/verify -count=1` | PASS. 17개 outcome 중 6개 실행, 의도한 미실행 11개 정확히 일치. 원본·사본 line/function total 일치 |
-| 계측 경계와 strict manifest | TEST-11 | `TestInstrumentBranchesPreservesLinesAndAddsOnlyMissingArms`, `TestLoadBranchManifestRejectsInvalidSchemaAndJSON` | PASS. 줄 수 보존, 이미 있는 arm 중복 없음, select 의미 보존, 제외 결정점 미계측 |
-| 출력 교체의 삭제 경계 | TEST-11 | `TestBranchInstrumentRejectsUnsafeOutputBeforeDeletingFiles`, `TestBranchOutputRejectsSymlinkToRepositoryRoot`, `TestBranchOutputRejectsRepositoryLinkToExternalDirectory`; `go test ./tools/verify -count=1 -v` | PASS. Root·상위·source·검증 증거 상위 directory 삭제 거절. 기본 branch directory와 외부 출력 허용. Windows junction의 root alias와 저장소 내부→외부 출력 alias도 거절 |
-| Source·manifest·profile 불일치 거절 | TEST-06·TEST-07 | `TestEvaluateBranchCoverageRejectsStaleOrMismatchedManifest` | PASS. SHA 불일치, 파일 누락·초과와 대응 block 없음 거절 |
-| Ratchet·diff·shortfall 분리 | TEST-08·TEST-09 | `TestBranchRatchetDiffFloorAndRequirementShortfall` | PASS. Ratchet 하락과 diff branch 95% 미달 실패. PRD shortfall만 있으면 baseline gate 통과 |
-| 실제 사본 실행과 baseline 확정 | TEST-06·TEST-07·TEST-09 | Repository root에서 `go run ./tools/verify local` Run A·B·C | 세 실행 모두 `local: PASS`. Schema 2, branch `measured`, 전체 outcome 13,073개와 9개 core metric 확인 |
-| 변경 전 분모 보존 | TEST-11 | 같은 명령의 Run 0과 Run A summary 비교 | Line total 33,701, function total 1,673으로 정확히 일치 |
-| 실제 ratchet 거절 | TEST-09 | 저장소 밖 임시 policy의 routing branch ratchet만 100으로 올려 `coverage` 실행 | Exit 1. `narumq/internal/domain/routing branch ratchet 100.00% is above measured 93.15%` |
-| 실제 historical diff | TEST-08 | `go run ./tools/verify coverage --profile .artifacts/verification/coverage.out --report <tmp>/diff-summary.json --base 02ef51d` | Exit 1. Diff branch 280/405(69.14%), line 697/823(84.69%), function 62/63(98.41%). Branch·line 95% 미달을 각각 보고 |
+| PRF-SCN-077 | TEST-06, TEST-07, TEST-11 | 실제 Go coverage block이 있는 fixture를 branch 계측하고 coverage를 실행한다. | Branch outcome 17개 중 6개가 실행되고 의도한 미실행 11개와 정확히 일치한다. 원본과 사본의 line·function total이 같다. |
+| PRF-SCN-078 | TEST-11 | 빠진 else·switch default만 주입하는 계측을 실행한다. Manifest에 잘못된 schema와 JSON을 넣는다. | 줄 수가 보존된다. 이미 있는 arm은 중복되지 않고 select 의미가 보존되며 제외 결정점은 계측되지 않는다. 잘못된 schema와 JSON manifest는 거절한다. |
+| PRF-SCN-079 | TEST-11 | 계측 출력 directory로 repository root, 상위 directory, source, 검증 증거 상위 directory, root를 가리키는 symlink·Windows junction, 저장소 내부에서 외부 directory로 향하는 link를 지정한다. 기본 branch directory와 외부 directory도 지정한다. | 위험한 출력은 파일을 삭제하기 전에 거절한다. 기본 branch directory와 외부 출력은 허용한다. `branch-instrument --output .`와 `--output .artifacts/verification`은 exit 1이다. |
+| PRF-SCN-080 | TEST-06, TEST-07 | SHA가 다른 source, 누락·초과 파일, 대응 block이 없는 manifest로 branch coverage를 평가한다. | 불일치를 모두 거절한다. |
+| PRF-SCN-081 | TEST-08, TEST-09 | Ratchet 하락, diff branch 하한 미달, PRD shortfall만 있는 입력을 각각 평가한다. | Ratchet 하락과 diff branch 하한 미달은 실패한다. PRD shortfall만 있으면 baseline gate는 통과하고 `requirementShortfalls`로 보고한다. |
+| PRF-SCN-082 | TEST-06, TEST-07, TEST-09 | 저장소 root에서 `go run ./tools/verify local`을 세 번 실행해 branch baseline을 정한다. | 세 실행 모두 `local: PASS`다. Summary는 schema 2이고 branch가 `measured`이며 전체 outcome과 9개 core metric을 보고한다. Baseline은 두 측정값 중 작은 값을 소수점 둘째 자리에서 내림한 값이다. |
+| PRF-SCN-083 | TEST-11 | 계측 전 원본의 coverage summary와 계측 사본의 coverage summary를 비교한다. | Line total과 function total이 정확히 일치한다. |
+| PRF-SCN-084 | TEST-09 | 저장소 밖 임시 policy에서 routing branch ratchet만 측정값보다 높게 올려 `coverage`를 실행한다. | exit 1이며 `narumq/internal/domain/routing branch ratchet <ratchet>% is above measured <측정값>%`를 출력한다. |
+| PRF-SCN-085 | TEST-08 | 하한에 미달하는 과거 변경 범위를 `--base`로 지정해 `go run ./tools/verify coverage --profile .artifacts/verification/coverage.out --report <path> --base <base>`를 실행한다. | exit 1이며 diff branch와 line의 하한 미달을 각각 보고한다. |
+| PRF-SCN-086 | TEST-14 | `Node.Close`에서 보관한 append와 선행 storage 오류 경로(`consumed-prior-error`)를 실패 flag가 hold 중인 sync 뒤에서 주입한다. 선행 오류를 소비한 직후 보관한 append와 미처리 queue가 모두 남았는지 확인한다. | `Close`가 pending append 오류 분기를 거쳐 `ErrStorage`와 `os.ErrPermission`을 반환한다. race detector 아래 CPU 설정 1·2·4로 반복해도 모두 통과한다. |
 
-Run 0은 원본에서 coverage를 실행했다. Run A·B·C는 계측 사본에서 coverage를 실행하고 나머지 검사는 원본에서 실행했다.
+### 8.3 Branch ratchet 노이즈 허용폭 수용 테스트
 
-| 실행 | Line covered/total (%) | Function covered/total (%) | Branch covered/total (%) |
+시나리오 결과와 테스트 연결은 [테스트 컨벤션](../conventions/test-conventions.md)의 시나리오 보고서로 확인한다. 과거 실행 기록은 [검증 기록](../verification/performance-and-verification.md#83-branch-ratchet-노이즈-허용폭-수용-증거)에 있다.
+
+허용폭 규칙은 [§8 본문](#8-coverage와-test-quality-gate)을 따른다.
+
+| 시나리오 ID | 요구사항 ID | 조건과 입력 | 기대 결과 |
 | --- | --- | --- | --- |
-| Run 0 | 28,716/33,701 (85.21) | 1,631/1,673 (97.49) | 미측정 |
-| Run A | 28,710/33,701 (85.19) | 1,631/1,673 (97.49) | 10,434/13,073 (79.81) |
-| Run B | 28,729/33,701 (85.25) | 1,632/1,673 (97.55) | 10,441/13,073 (79.87) |
-| Run C | 28,714/33,701 (85.20) | 1,631/1,673 (97.49) | 10,439/13,073 (79.85) |
+| PRF-SCN-087 | TEST-09 | Overall branch ratchet이 측정값보다 높은 policy 사본으로 `coverage`를 실행한다. 차이는 +0.21%p와 +0.19%p다. 허용폭 경계 값으로 `tools/verify` 단위 시험도 실행한다. | +0.21%p는 exit 1이며 `overall branch ratchet <ratchet>% (tolerance 0.20%p) is above measured <측정값>%`를 출력한다. +0.19%p는 exit 0과 `coverage: PASS`다. 허용폭은 branch ratchet에만 적용하고 line·function gate, diff 하한과 PRD shortfall에는 적용하지 않는다. |
+| PRF-SCN-088 | TEST-06, TEST-07, TEST-14 | Cluster, Raft, TCP와 delivery queue의 branch outcome(`if`의 then·else, switch case)을 clock·sleep·스케줄 순서에 의존하지 않는 결정적 시험으로 실행한다. 해당 시험을 race detector 아래 반복한다. | 대상 outcome이 모두 covered이며 `uncoveredOutcomes`에 남지 않는다. 반복한 race 시험이 모두 통과한다. |
 
-Baseline은 `floor(min(A,B)*100)/100`으로 정했다. Line·function threshold는 변경하지 않았다.
+### 8.4 전체 branch floor 수용 테스트
 
-| 범위 | Run A branch (%) | Run B branch (%) | 확정 branch ratchet (%) | Run C branch (%) |
-| --- | --- | --- | --- | --- |
-| Overall | 79.81 | 79.87 | 79.81 | 79.85 |
-| `domain/connrebalance` | 96.15 | 96.15 | 96.15 | 96.15 |
-| `domain/delivery` | 100.00 | 100.00 | 100.00 | 100.00 |
-| `domain/mqtt` | 99.27 | 99.27 | 99.27 | 99.27 |
-| `domain/nodedrain` | 97.73 | 97.73 | 97.73 | 97.73 |
-| `domain/release` | 100.00 | 100.00 | 100.00 | 100.00 |
-| `domain/routing` | 93.15 | 93.15 | 93.15 | 93.15 |
-| `domain/security` | 90.91 | 90.91 | 90.91 | 90.91 |
-| `domain/session` | 98.73 | 98.73 | 98.73 | 98.73 |
-| `domain/tenancy` | 99.33 | 99.33 | 99.33 | 99.33 |
+시나리오 결과와 테스트 연결은 [테스트 컨벤션](../conventions/test-conventions.md)의 시나리오 보고서로 확인한다. 과거 실행 기록은 [검증 기록](../verification/performance-and-verification.md#84-전체-branch-floor-수용-증거)에 있다.
 
-원래 실패 시험 계획은 delivery ratchet 100%를 사용했다. 실제 delivery branch는 118/118(100%)이므로 그 명령은 exit 0과 `coverage: PASS`였다. 이를 실패로 기록하지 않았다. 같은 실패 경로를 routing ratchet 100%로 확인했다.
-
-성공한 Run A 이전의 첫 시도는 원본 race 단계의 `TestNodeCloseFlushesHeldAppendOrReportsFailure/consumed-prior-error`에서 실패했다. 수정 전 `node_shutdown_storage_test.go:80`은 `ErrStorage`와 `os.ErrPermission`을 기대했지만 `close WAL: permission denied`만 받았다. 취소 뒤 integration process가 남아 있었으며, 바로 이어진 시도는 Windows 파일 잠금으로 계측 directory 삭제에 실패했다. 해당 process가 끝난 뒤 Run A·B·C가 연속 통과했다. 두 실패 시도는 baseline에 포함하지 않았다. Branch baseline을 확정할 때는 Raft 코드와 해당 test를 수정하거나 제외하지 않았다.
-
-2026-10-08 후속 조사에서 `go test -race ./internal/adapters/raft -run "^TestNodeCloseFlushesHeldAppendOrReportsFailure$/^consumed-prior-error$" -count=300 -cpu=1,2,4 -failfast`가 같은 `close WAL: permission denied`로 FAIL했다. 원인은 시험 준비 코드(fixture)의 실패 주입 순서였다. Fixture는 실패 flag를 hold 중인 sync에 들어가기 전에 검사했으므로, release 뒤 index 4 sync는 성공할 수 있었다. `ProcessReady`가 성공 완료를 소비하면 보관한 append가 queue로 옮겨지고, worker의 다음 실패 batch에 함께 들어갈 수 있었다. 이때 미처리 queue와 보관한 append가 모두 없어져 `Close`는 pending append 오류 분기를 거치지 않았다.
-
-실패 flag 검사를 held sync 뒤로 옮겼다. 이제 `consumed-prior-error`는 hold 중인 index 4 sync부터 실패한다. 선행 오류를 소비한 직후 `heldAppend`와 미처리 queue가 모두 남았는지도 assertion으로 확인한다. Production `Node.Close`는 변경하지 않았다. 기존 실패 경로는 스펙의 “미처리 queue가 남는 경우”가 아니며, 저장 실패는 이미 `ProcessReady`가 `ErrStorage`로 보고했다. Production 호출자는 해당 Close 오류 분류에 의존하지 않는다. `cmd/narumq/cluster_runtime.go`는 `defer node.Close()`를 사용하고, `cmd/narumq/raft_peer_config.go`는 driver 오류를 우선 반환한다.
-
-수정 뒤 Windows/amd64, Go 1.26.5, `CGO_ENABLED=1`, `CC=gcc`에서 아래 명령을 저장소 루트에서 실행했다. Wall time은 명령 시작부터 종료까지 걸린 시간이다. CPU 설정별 반복 횟수는 각각 적용된다.
-
-| 실행 명령 | 실행 범위 | 결과 | Wall time |
+| 시나리오 ID | 요구사항 ID | 조건과 입력 | 기대 결과 |
 | --- | --- | --- | --- |
-| `go test -race ./internal/adapters/raft -run "^TestNodeCloseFlushesHeldAppendOrReportsFailure$/^consumed-prior-error$" -count=1000 -cpu=1,2,4 -failfast` | CPU 설정 1·2·4마다 1,000회, 총 3,000회 | PASS, exit 0 | 105.07s |
-| `go test -race ./internal/adapters/raft -run "^TestNodeCloseFlushesHeldAppendOrReportsFailure$" -count=300 -cpu=1,2,4 -failfast` | 세 subtest 각각 CPU 설정마다 300회, subtest당 총 900회 | PASS, exit 0 | 168.77s |
-| `go test -race ./internal/adapters/raft -count=1` | Raft package 전체 1회 | PASS, exit 0 | 10.74s |
+| PRF-SCN-089 | TEST-06 | 전체 production branch 기준 80%를 반영한 `tests/verification/coverage-policy.json`으로 `go run ./tools/verify local`을 실행한다. | `coverage: PASS`, `local: PASS`이며 `branchCoverage.requirementShortfalls`가 비어 있다. Core 9개 branch 기준과 ratchet, line·function 기준은 바뀌지 않는다. |
 
-전체 local gate는 환경 변수 `GOMAXPROCS=4`로 `go run ./tools/verify local`을 실행했다. 각 시도 사이에 코드, 시험 선택과 coverage 합격선을 변경하지 않았다. 아래 실패를 제외하거나 PASS로 계산하지 않았다. 최종 PASS는 전체 gate가 매번 통과한다는 증거가 아니다. Branch coverage 변동과 다른 시험의 실패 원인은 이번 fixture 수정 범위에서 해결하지 않았다.
+### 8.5 변경 코드 diff floor 수용 테스트
 
-| Local gate 시도 | 결과 | 관찰 결과 | Wall time |
+시나리오 결과와 테스트 연결은 [테스트 컨벤션](../conventions/test-conventions.md)의 시나리오 보고서로 확인한다. 과거 실행 기록은 [검증 기록](../verification/performance-and-verification.md#85-변경-코드-diff-floor-수용-증거)에 있다.
+
+변경 코드의 line·function·branch diff coverage 하한은 각각 80%다([ADR-0063](../decisions/ADR-0063-diff-coverage-floor-80.md)). 하한과 같은 값은 통과하고 미달은 거절한다. Ratchet 허용폭은 diff 하한에 적용하지 않는다.
+
+| 시나리오 ID | 요구사항 ID | 조건과 입력 | 기대 결과 |
 | --- | --- | --- | --- |
-| 1 | FAIL, exit 1 | 시험·race·fuzz 통과 뒤 branch 10,430/13,073(79.78%)로 ratchet 79.81% 미달 | 138.14s |
-| 2 | FAIL, exit 1 | `TestRaftPeerDriverTicksQueuesAndStops`의 5초 리더 선출 검사 실패 | 72.06s |
-| 3 | FAIL, exit 1 | 취소 뒤 남은 `integration.test.exe`의 Windows 파일 잠금으로 계측 directory 삭제 실패 | 2.15s |
-| 4 | FAIL, exit 1 | 파일 잠금 해소 뒤 `TestDynamicClusterMembershipTransitionCrashRecovery`에서 node 4 READY 대기 실패; `release_profile_unsynced` 관찰 | 164.32s |
-| 5 | FAIL, exit 1 | 시험·race·fuzz 통과 뒤 branch 10,430/13,073(79.78%)로 ratchet 미달 | 130.76s |
-| 6 | FAIL, exit 1 | 시험·race·fuzz 통과 뒤 branch 79.80%로 ratchet 미달 | 136.21s |
-| 7 | PASS, exit 0 | `coverage: PASS`, `local: PASS`; branch 10,441/13,073(79.87%) | 129.72s |
+| PRF-SCN-090 | TEST-08 | 최신 commit의 atomic profile과 branch manifest를 `tests/verification/coverage-policy.json`의 `diffFloor` 80%로 평가한다. `go run ./tools/verify coverage --base <부모 commit>`을 실행한다. | 세 diff 지표가 모두 하한을 넘어 `coverage: PASS`, exit 0이다. Report의 `passed=true`, `branchCoverage.status=measured`이고 `requirementShortfalls`는 비어 있다. |
+| PRF-SCN-091 | TEST-08 | Diff branch 측정값과 diff 하한이 같다. | 통과한다. |
+| PRF-SCN-092 | TEST-08 | Diff line과 function 측정값을 각각 79.99%, 80%, 80.01%로 바꿔 평가한다. 한 지표만 79.99%이고 다른 지표는 80%다. | 80%와 80.01%는 통과한다. 해당 지표가 79.99%이면 다른 지표가 80%여도 독립적으로 거절한다. |
+| PRF-SCN-093 | TEST-08, TEST-09 | Diff branch 하한이 측정값보다 0.01%p 높다. Ratchet 허용폭은 0.20%p다. | 허용폭을 적용하지 않고 diff 하한 미달로 거절한다. |
+| PRF-SCN-094 | TEST-08 | 하한에 미달하는 과거 변경 범위를 `--base`로 지정해 같은 coverage CLI를 실행한다. | exit 1이며 `diff branch coverage <측정값>% is below 80.00%`를 출력한다. |
+| PRF-SCN-095 | TEST-08, TEST-09, TEST-11 | 저장소 루트에서 `go test ./tools/verify -count=1`을 실행한다. | `tools/verify` package의 coverage·branch 시험이 모두 통과한다. |
+| PRF-SCN-096 | TEST-10 | 저장소 루트에서 `go run ./tools/verify traceability`를 실행한다. | exit 0으로 통과한다. P0 연결 수와 예외 수가 허용된 예외 목록과 일치한다. |
 
-각 gate 로그는 `.artifacts/verification/raft-close-fixture-local-{first,second,third,fourth,fifth,sixth,seventh}.log`에 보존한다. Coverage 판정까지 진행한 시도의 summary는 같은 directory의 `coverage-summary-raft-close-fixture-{first,fifth,sixth,seventh}.json`에 보존한다. 기존 branch baseline과 CI·release 미검증 상태는 유지한다.
+### 8.6 간헐 실패 원인 수정 수용 테스트
 
-이 섹션의 2026-10-08 Run C는 당시 PRD overall branch 85%보다 낮아 `requirementShortfalls`를 기록했다. 그 시점에는 TEST-06의 PRD floor와 TEST-06·TEST-07 CI 증거가 미검증이었다. 2026-10-09에 overall branch 기준을 80%로 낮춘 뒤의 Run C와 현재 상태는 §8.4에 있다.
+시나리오 결과와 테스트 연결은 [테스트 컨벤션](../conventions/test-conventions.md)의 시나리오 보고서로 확인한다. 과거 실행 기록은 [검증 기록](../verification/performance-and-verification.md#86-간헐-실패-원인-수정-수용-증거)에 있다.
 
-출력 경로 안전성 보완 뒤 실제 `branch-instrument --output .`와 `--output .artifacts/verification`은 각각 exit 1로 삭제 전에 거절했다. 저장소 branch subtree에 외부 임시 directory로 향하는 Windows junction을 만들고 그 하위를 출력으로 지정한 CLI도 exit 1로 거절했다. 외부 sentinel 파일은 그대로 남았고 임시 junction은 제거했다. 기본 `branch-instrument`는 PASS였다. 기존 Run C profile을 새 manifest로 다시 평가한 `coverage`도 PASS였으며 측정값은 같았다. 안전성 회귀 시험은 skip 없이 통과했다. 이 추가 증거는 `.artifacts/verification/branch-output-safety-evidence.json`과 `coverage-summary-after-safety-review.json`에 보존한다. 전체 local gate의 Run A·B·C는 이 보완 전 실행이며, 보완 뒤에는 도구 package 전체 시험과 위 CLI 경로를 검증했다.
+시험을 제외하거나 대기 시간을 늘리지 않고 대기 경로를 고친다. 아래 세 시나리오는 그 수정을 확인한다.
 
-### 8.3 Branch ratchet 노이즈 허용폭 수용 증거
-
-2026-10-08에 Windows/amd64, Go 1.26.5에서 확인했다. Production source는 변경하지 않았다. Run A·B·C는 `branchTolerance=0.20`을 사용했고 모두 `coverage: PASS`, `local: PASS`로 끝났다.
-
-| 실행 | Branch covered/total (%) | 결과 |
-| --- | --- | --- |
-| Run A | 10,469/13,073 (80.08) | PASS |
-| Run B | 10,462/13,073 (80.03) | PASS |
-| Run C | 10,469/13,073 (80.08) | PASS |
-
-세 실행의 overall spread는 0.05%p다. 허용폭 0.20%p보다 작고, 기존 9회 측정 spread 0.09%p보다도 작다. 계획한 35개 branch outcome ID는 `branch/manifest.json`에 모두 있으며, A·B·C의 `uncoveredOutcomes`에는 하나도 없다.
-
-Run A·B의 작은 branch 값을 소수점 둘째 자리에서 내림해 overall ratchet을 80.03%로 바꿨다. Core ratchet은 A·B 값이 같아 기존 값을 유지했다. Line·function 기준은 변경하지 않았다.
-
-| 범위 | 확정 branch ratchet (%) | Run C (%) |
-| --- | ---: | ---: |
-| Overall | 80.03 | 80.08 |
-| `domain/connrebalance` | 96.15 | 96.15 |
-| `domain/delivery` | 100.00 | 100.00 |
-| `domain/mqtt` | 99.27 | 99.27 |
-| `domain/nodedrain` | 97.73 | 97.73 |
-| `domain/release` | 100.00 | 100.00 |
-| `domain/routing` | 93.15 | 93.15 |
-| `domain/security` | 90.91 | 90.91 |
-| `domain/session` | 98.73 | 98.73 |
-| `domain/tenancy` | 99.33 | 99.33 |
-
-#### 결정적 시험과 branch outcome
-
-아래 outcome ID는 각 Run A·B·C에서 모두 covered였다. `if`의 `then`과 `else`는 서로 다른 outcome ID다.
-
-| 시험 | 확인한 branch outcome ID |
-| --- | --- |
-| `TestClusterMembershipRemovalOfLocalLeaderTransfersLeadership` | `cmd/narumq/cluster_drain.go:617:3 if then`, `cmd/narumq/cluster_drain.go:617:3 if else`, `cmd/narumq/cluster_drain.go:620:3 if then`, `cmd/narumq/cluster_drain.go:620:3 if else`, `cmd/narumq/cluster_drain.go:625:2 if then`, `cmd/narumq/cluster_drain.go:625:2 if else`, `cmd/narumq/cluster_drain.go:628:2 if else`, `cmd/narumq/cluster_runtime.go:1896:4 if then`, `cmd/narumq/cluster_runtime.go:2144:3 switch case@2147:3` |
-| `TestReclaimUnsentProposalsStopsWhenDeferredRoomIsZero` | `cmd/narumq/cluster_proposals.go:69:3 if then`, `internal/adapters/raft/node_deferred_proposals.go:22:2 if then` |
-| `TestClusterReadinessGate` | `cmd/narumq/cluster_readiness_diagnostics.go:65:2 switch case@82:2` |
-| `TestClusterProposeMembershipChangeIgnoresPendingChangeAndFollower` | `cmd/narumq/cluster_runtime.go:1979:2 if then`, `internal/adapters/raft/node.go:608:2 if then` |
-| `TestReconcileCommittedPeersSkipsRetiredLocalIdentityOutsideRaft` | `cmd/narumq/cluster_runtime.go:2151:9 if else`, `cmd/narumq/cluster_runtime.go:2157:9 if else`, `cmd/narumq/cluster_runtime.go:2160:2 if then` |
-| `TestClusterAdmitPeerRejectsWhenNotLeader` | `cmd/narumq/cluster_runtime.go:2177:2 if then` |
-| `TestClusterGetOperationReportsReadBarrierFailure` | `cmd/narumq/cluster_runtime.go:2871:2 if then` |
-| `TestClusterStateProviderRemoteSummaryUsesLeaderMatchIndex` | `cmd/narumq/cluster_runtime.go:3619:3 if then`, `cmd/narumq/cluster_runtime.go:3619:3 if else`, `internal/adapters/raft/node.go:895:2 if then` |
-| `TestNodeCloseFlushesHeldAppendOrReportsFailure` | `internal/adapters/raft/node.go:924:4 if then` |
-| `TestQueueBatchOperationsRejectMissingSessionAndShortQueue` | `internal/adapters/memory/deliveryqueue/queue.go:180:2 if then`, `internal/adapters/memory/deliveryqueue/queue.go:260:3 if then` |
-| `TestCSVWriterLoopQueuedControlCloseAndStoppedFailure` | `internal/adapters/tcp/server.go:1708:4 if then`, `internal/adapters/tcp/server.go:1702:5 if else` |
-| `TestCSVWriteDeliveriesQueuePeekOutcomes` | `internal/adapters/tcp/server.go:1809:4 if then` |
-| `TestServeBootstrapProbeDropsFailedHandshakeAndBadMagic` | `internal/adapters/tcp/peer_bootstrap_probe.go:153:4 if then`, `internal/adapters/tcp/peer_bootstrap_probe.go:157:4 if then` |
-| `TestProbeBootstrapPeerReportsResponseReadFailure` | `internal/adapters/tcp/peer_bootstrap_probe.go:209:2 if then` |
-| `TestDynamicDialDropsConnectionWhenIdentityChangesDuringHandshake` | `internal/adapters/tcp/peer_transport.go:2053:3 if then`, `internal/adapters/tcp/peer_transport.go:2058:4 if else` |
-| `TestDynamicDialSuppressesErrorWhenIdentityChangesBeforeHelloResponse` | `internal/adapters/tcp/peer_transport.go:2104:4 if else`, `internal/adapters/tcp/peer_transport.go:2228:2 if else` |
-
-`TestDynamicMembershipChangesApplyAndReplayAfterRestart`는 peer match index와 pending membership 변경 거절을 확인한다. `TestCSVSubscribeAckWriteFailureKeepsDeliveryBlocked`는 SUBACK write 실패 뒤 delivery 차단과 writer 종료를 확인한다. `TestRunClusterModeInProcess`는 joiner seed를 follower부터 시도하고, 제거 요청은 항상 follower를 대상으로 보낸다.
-
-반복 race 시험은 모두 PASS했다.
-
-```text
-go test -race ./cmd/narumq -run '^(TestClusterMembershipRemovalOfLocalLeaderTransfersLeadership|TestReclaimUnsentProposalsStopsWhenDeferredRoomIsZero|TestClusterReadinessGate|TestClusterProposeMembershipChangeIgnoresPendingChangeAndFollower|TestReconcileCommittedPeersSkipsRetiredLocalIdentityOutsideRaft|TestClusterAdmitPeerRejectsWhenNotLeader|TestClusterGetOperationReportsReadBarrierFailure|TestClusterStateProviderRemoteSummaryUsesLeaderMatchIndex)$' -count=20
-go test -race ./cmd/narumq -run '^TestRunClusterModeInProcess$' -count=3
-go test -race ./internal/adapters/raft -run '^(TestDynamicMembershipChangesApplyAndReplayAfterRestart|TestNodeCloseFlushesHeldAppendOrReportsFailure)$' -count=50
-go test -race ./internal/adapters/memory/deliveryqueue -run '^TestQueueBatchOperationsRejectMissingSessionAndShortQueue$' -count=20
-go test -race ./internal/adapters/tcp -run '^(TestCSVSubscribeAckWriteFailureKeepsDeliveryBlocked|TestCSVWriterLoopQueuedControlCloseAndStoppedFailure|TestCSVWriteDeliveriesQueuePeekOutcomes|TestServeBootstrapProbeDropsFailedHandshakeAndBadMagic|TestProbeBootstrapPeerReportsResponseReadFailure|TestDynamicDialDropsConnectionWhenIdentityChangesDuringHandshake|TestDynamicDialSuppressesErrorWhenIdentityChangesBeforeHelloResponse)$' -count=20
-```
-
-#### 재기준과 허용폭 경계
-
-재기준 뒤 Run C profile을 최종 policy로 평가한 결과는 `coverage: PASS`였다. `GOMAXPROCS=4 go run ./tools/verify local`도 한 번 더 실행해 `coverage: PASS`, `local: PASS`를 확인했다. 추가 Run의 overall branch는 10,470/13,073(80.09%)였다.
-
-저장소 밖 policy 사본과 `.artifacts/verification/coverage-tolerance-c.out`으로 CLI 경계를 확인했다.
-
-| Overall branch ratchet | Run C 대비 | 결과 |
-| ---: | ---: | --- |
-| 80.29% | +0.21%p | Exit 1. `overall branch ratchet 80.29% (tolerance 0.20%p) is above measured 80.08%` |
-| 80.27% | +0.19%p | Exit 0. `coverage: PASS` |
-
-초기 focused 시험 실행은 test import/API type 불일치로 compile에 실패했다. 첫 TCP race 실행에서는 TLS server name 불일치와 `writerDone` 종료를 기다리지 않는 assertion이 드러났다. 두 시험 문제를 수정한 뒤 위 반복 횟수로 모두 통과했다. Run A·B·C 및 재기준 뒤 local gate에는 실패가 없었다.
-
-이 섹션의 2026-10-08 Run C와 추가 실행은 당시 PRD overall branch 85%보다 낮아 `requirementShortfalls`를 기록했다. Core 9개는 모두 local branch 90% 이상이었다. 이 실행에는 CI 필수 status, TEST-10 P0 mapping, TEST-07 diff CI 증거, `TestRaftPeerDriverTicksQueuesAndStops`와 `TestDynamicClusterMembershipTransitionCrashRecovery`가 포함되지 않았다. 2026-10-09에 overall branch 기준을 80%로 낮춘 뒤의 local coverage 결과는 §8.4에 있다.
-
-### 8.4 전체 branch floor 수용 증거
-
-2026-10-09에 Windows/amd64, Go 1.26.5에서 확인했다. Production source는 변경하지 않았다. 기준선은 10,470/13,073(80.09%)였다. Run A·B는 당시 overall branch 85% 기준에서 각각 82.82%·82.89%로 미달했다. 이후 사용자가 전체 branch 기준을 80%로 낮춰 PRD와 policy를 갱신했고, Run C를 새 기준으로 실행했다.
-
-`cmd/`와 `internal/`의 production source 변경 여부를 확인했다. `git diff --name-only -- cmd internal` 결과는 추적 중인 파일 46개였고, `git ls-files --others --exclude-standard -- cmd internal` 결과는 새 파일 2개였다. 48개 경로는 모두 `_test.go`로 끝났다. `git diff --cached --name-only -- cmd internal` 결과는 비어 있었다.
-
-| 실행 | Branch covered/total (%) | Coverage gate | 전체 local gate |
+| 시나리오 ID | 요구사항 ID | 조건과 입력 | 기대 결과 |
 | --- | --- | --- | --- |
-| Run A | 10,827/13,073 (82.82) | PASS | PASS |
-| Run B | 10,836/13,073 (82.89) | PASS | PASS |
-| Run C (80% 기준) | 10,830/13,073 (82.84) | PASS | PASS |
+| PRF-SCN-097 | TEST-14, TEST-15 | 두 Raft peer driver를 먼저 시작하고 node 1의 bootstrap commit이 적용된 뒤 `Campaign()`을 호출한다. Peer 3은 응답하지 않는다. | 기존 5초 선출 제한 안에 node 1 또는 node 2가 리더로 선출된다. Campaign이 bootstrap 적용 전에 무시되어 election timeout에 의존하지 않는다. |
+| PRF-SCN-098 | TEST-14, TEST-15 | Release profile controller가 local `MemberProfileChange`를 제안하고, driver는 proposal을 인수한 뒤 결과를 보내지 않는다. | `Commit`에 전달한 context에 controller context보다 이른 5초 상한이 있다. 상한이 지나면 기존 오류 분기로 반환하고 gate는 닫힌 채 유지하며 incompatibility를 latch하지 않는다. Controller는 다음 reconcile 주기에 다시 확인한다. |
+| PRF-SCN-099 | TEST-14, TEST-15 | 실제 process cluster에서 joiner node 4를 추가하는 동안 node 2가 `promote-voter-before-persist` failpoint로 종료된다. | Join이 `SUCCEEDED`로 끝나고 node 4를 포함한 READY 검사를 통과한다. Node 4의 readiness에 `release_profile_unsynced`가 남지 않는다. |
 
-Run A·B는 기존 85% 기준 policy로 실행해 `branchCoverage.requirementShortfalls`에 각각 82.82%·82.89%의 shortfall을 기록했다. 새 80% 기준으로 실행한 Run C에서는 `requirementShortfalls`가 비었다. Run C line은 87.59%, function은 98.68%였다.
+### 8.7 Mutation gate 범위 확장 수용 테스트
 
-기준선보다 Run A에서 357개, Run B에서 366개의 branch outcome이 추가로 covered됐다. 아래 수치는 Run A와 기준선의 미실행 outcome 수 차이다.
+시나리오 결과와 테스트 연결은 [테스트 컨벤션](../conventions/test-conventions.md)의 시나리오 보고서로 확인한다. 과거 실행 기록은 [검증 기록](../verification/performance-and-verification.md#87-mutation-gate-범위-확장-수용-증거)에 있다.
 
-| 범위 | 추가 covered outcome | 대표 시험 |
-| --- | ---: | --- |
-| `cmd/narumq` | 170 | `TestClusterDrainBarrierBlocksWhenOtherVotersAreDisconnected`, `TestRecoverProposalsFlushesCountAndByteBoundedBatches`, `TestRecoverProposalsReturnsClosedNodeErrors` |
-| `internal/adapters/auditlog` | 18 | `TestVerifyDirectoryRejectsCorruptSequenceAndHashChain` |
-| `internal/adapters/http/management` | 6 | `TestClusterBackupHTTPReportsUnavailableAndInternalErrors` |
-| `internal/adapters/memory/deliveryqueue` | 5 | `TestQueueBatchEnqueueRejectionsPreserveQueuedState` |
-| `internal/adapters/raft` | 11 | `TestSnapshotPersistenceFailuresRecoverFromDurableState`, `TestCompleteRestoreWALPersistenceFailuresCanBeCleaned` |
-| `internal/adapters/raft/records` | 26 | `TestSnapshotRejectsStateIndexesBeyondLastIncluded`, `TestBackupArchiveRejectsInconsistentMembershipAndEntries` |
-| `internal/adapters/tcp` | 33 | `TestNewServerRejectsIncompleteClusterBoundary`, `TestDynamicSendRejectsStagedForwardingAndStoppedPeers` |
-| `internal/application/audit` | 28 | `TestValidateEventRequiredFields`, `TestValidateEventDetailsJSONStringTraversal` |
-| `internal/application/connect` | 26 | `TestConnectRejectsDuplicateAndRepositoryErrors`, `TestRecoverOwnedSessionRejectsOutOfRangeMetadataWithoutInstallingState` |
-| `internal/application/membership` | 29 | `TestProposalReceiptCapacityLimits`, `TestCMAApplyRejectsMalformedCommandsWithoutAdvancing` |
-| `internal/application/publish` | 5 | `TestPublishRemoteForwardErrorDependsOnHandling` |
+Mutation 대상 package와 점수 기준은 [§7.2](#72-fuzz-게이트와-수동-mutation-검증)를 따른다.
 
-Core 모듈 9개의 coverage와 ratchet은 바뀌지 않았다. 기존 값은 §8.3에 있다.
-
-#### 반복 race 검증
-
-새 cluster, TCP, auditlog, delivery queue 시험을 race detector 아래 20회 반복했다. 네 명령 모두 PASS했다.
-
-```text
-go test -race ./cmd/narumq -run '^(TestClusterReleaseProfileReconcileMapsProposalConflictsToReadiness|TestClusterStateProviderValidatesNodeQueriesAndPaginatesFilteredResults|TestClusterDrainBarrierBlocksWhenOtherVotersAreDisconnected|TestRefreshReadWaitersKeepsRequestWhenPeerCapacityIsExhausted|TestIssueReadProofReturnsClosedRaftNodeError|TestRecoverProposalsFlushesCountAndByteBoundedBatches|TestRecoverProposalsDropsStaleProofWhenCapacityIsExhausted|TestRecoverProposalsReturnsClosedNodeErrors)$' -count=20
-go test -race ./internal/adapters/tcp -run '^(TestPacketIDAllocatorSkipsZeroAfterIdentifierWrap|TestBeginOutboundAckRejectsZeroAndIgnoresUnknownPacketID|TestCommittedOwnershipFenceDoesNotRegressToStaleEpoch|TestStoppedConnectionCannotBindSession|TestCloseSessionForDrainDoesNotClaimUnknownSession|TestNewServerRejectsIncompleteClusterBoundary|TestDynamicSendRejectsStagedForwardingAndStoppedPeers)$' -count=20
-go test -race ./internal/adapters/auditlog -run '^(TestVerifyDirectoryRejectsCorruptSequenceAndHashChain|TestFileAuditPublisherRejectsUnencodableEventAndBecomesUnavailable|TestFileAuditPublisherClosedStateRejectsPublishAndReadiness|TestVerifyDirectoryEmptyAndEmptyActiveLog|TestScanAuditDataRejectsMalformedRecords|TestOpenFileAuditPublisherRejectsNonRegularActivePath)$' -count=20
-go test -race ./internal/adapters/memory/deliveryqueue -run '^(TestFinishDetachCommittedRemovesAndWakesWaiters|TestRemoveWakesDetachWaiters|TestQueueBatchEnqueueRejectionsPreserveQueuedState)$' -count=20
-```
-
-#### 미실행 outcome과 미달 원인
-
-Run A에는 2,246개의 미실행 outcome이 남았다. 아래 네 종류는 해당 ID를 직접 확인해 개수를 셌다.
-
-| 제외 사유 | Run A 미실행 outcome |
-| --- | ---: |
-| `sort.Slice` comparator 안의 nil guard | 22 |
-| 생성 protobuf marshal 오류 처리 | 15 |
-| 1 GiB archive 크기 제한 | 2 |
-| Windows stable-store sync 분기 | 5 |
-| 직접 확인한 제외 outcome 합계 | 44 |
-
-이 44개는 전체 미실행 수가 아니다. 남은 목록에는 실제 clock·sleep·스케줄 순서, 주입할 수 없는 OS 오류, 넓은 cluster network harness에 속한 분기도 있다. 같은 파일과 함수에 일반 동작 분기도 섞여 있어 이 세 사유는 파일 전체를 제외 수로 계산하지 않았다. 나머지 2,202개도 모두 제외 대상이거나 모두 테스트 가능한 outcome이라고 단정하지 않는다.
-
-Run A에서 미실행 outcome이 가장 많은 파일은 `cluster_runtime.go` 434개, `cluster_drain.go` 156개, `stable_store.go` 131개, `records/codec.go` 85개, `tcp/server.go` 75개였다. 이 수에는 계획에서 명시적으로 제외하지 않은 경로도 포함된다.
-
-Run A·B는 당시 85% 기준에 미달했지만, 사용자의 요청으로 PRD TEST-06과 policy의 overall branch 기준을 80%로 낮췄다. Core branch 90%, diff branch 95%, line·function 기준은 바꾸지 않았다. Run C는 82.84%로 새 전체 branch floor를 충족했고 `requirementShortfalls`는 비었다. Overall ratchet 80.03%와 core ratchet은 유지했다. 로컬 coverage 기준은 충족했지만 CI 필수 status, TEST-10 P0 mapping, TEST-07 diff CI 증거가 없어 TEST-06~TEST-10 항목은 미검증으로 남는다.
-
-Run B profile에서 scratch policy로 허용폭 경계를 확인했다. 83.10%(측정값보다 +0.21%p)는 tolerance를 적용해도 측정값보다 높아 exit 1을 반환했다. 83.08%(+0.19%p)는 `coverage: PASS`를 반환했다. 결과는 `.artifacts/verification/coverage-boundary-plus-021.json`과 `.artifacts/verification/coverage-boundary-plus-019.json`에 있다.
-
-결과 파일은 `.artifacts/verification/coverage-summary-floor-{a,b,c}.json`, `.artifacts/verification/floor-local-{a,b,c}.log`, `.artifacts/verification/coverage-boundary-plus-{021,019}.json`, `.artifacts/verification/traceability-branch-floor80.log`에 있다. CI 필수 status, TEST-10 P0 mapping, TEST-07 diff CI 증거는 이 작업에서 확인하지 않았다.
-
-### 8.5 변경 코드 diff floor 90% 수용 증거
-
-2026-10-09에 사용자가 변경 코드의 line·function·branch 기준을 모두 90%로 정했다. [ADR-0044](../decisions/ADR-0044-diff-coverage-floor-90.md)에 따라 PRD TEST-08과 `tests/verification/coverage-policy.json`의 `diffFloor`를 함께 갱신했다. 전체·core 기준, ratchet과 측정 방식은 변경하지 않았다. §8.2~§8.4의 95% diff 기준과 실행 결과는 당시 기록이다.
-
-최신 커밋은 `de19302d9887bfe2650dd6dcc5ad975281d4a192`이며 부모 커밋은 `74c3cdbb4abc9b01e07e8fa7b936653e25c446f7`이다. 앞선 전체 local gate에서 만든 atomic profile과 branch manifest를 재사용했다. Coverage CLI가 원본 source와 manifest를 대조한 뒤 새 policy로 평가했다. 이번 작업에서 production source는 변경하지 않았다.
-
-저장소 루트에서 다음 명령을 실행해 `coverage: PASS`, exit 0을 확인했다.
-
-```text
-go run ./tools/verify coverage --profile .artifacts/verification/coverage.out --policy tests/verification/coverage-policy.json --branch-manifest .artifacts/verification/branch/manifest.json --base 74c3cdbb4abc9b01e07e8fa7b936653e25c446f7 --report .artifacts/verification/coverage-summary-diff-floor90.json
-```
-
-| 최신 커밋 diff 지표 | Covered / total | 측정값 | 하한 | 결과 |
-| --- | --- | --- | --- | --- |
-| Line | 82 / 84 | 97.62% | 90% | PASS |
-| Function | 16 / 16 | 100% | 90% | PASS |
-| Branch | 32 / 34 | 94.12% | 90% | PASS |
-
-| 수용 시나리오 | 요구사항 | 실행·시험 위치 | 확인 결과 |
+| 시나리오 ID | 요구사항 ID | 조건과 입력 | 기대 결과 |
 | --- | --- | --- | --- |
-| 새 policy로 최신 커밋 평가 | TEST-08 | 위 coverage CLI | 세 diff 지표 통과. Report의 `passed=true`, `branchCoverage.status=measured`, `requirementShortfalls` 비어 있음 |
-| Diff 하한과 같은 branch 값 허용 | TEST-08 | `tools/verify/branch_test.go::TestBranchRatchetDiffFloorAndRequirementShortfall` | 측정값 90%, 하한 90%에서 통과 |
-| Line·function diff 하한 경계 | TEST-08 | `tools/verify/coverage_test.go::TestDiffCoverageLineAndFunctionFloorBoundaries` | 각 지표 90%·90.01%에서 통과. 다른 지표가 90%여도 해당 지표 89.99%는 독립적으로 거절 |
-| Diff에는 ratchet 허용폭 미적용 | TEST-08·TEST-09 | `tools/verify/branch_test.go::TestBranchRatchetDiffFloorAndRequirementShortfall` | 측정값 90%, 하한 90.01%, ratchet 허용폭 0.20%p에서도 diff 거절 |
-| 실제 하한 미달 거절 | TEST-08 | 위 CLI의 `--base`를 `02ef51d`, `--report`를 `.artifacts/verification/coverage-summary-diff-floor90-historical.json`으로 바꿔 실행 | Branch 366/445(82.25%)로 exit 1. `diff branch coverage 82.25% is below 90.00%` |
-| 도구 package 회귀 검증 | TEST-08·TEST-09·TEST-11 | `go test ./tools/verify -count=1` | Line·function 경계 시험 보강 뒤 PASS, package 6.191초 |
-| 요구사항 추적성 유지 | TEST-10 | `go run ./tools/verify traceability` | PASS, P0 60/81 연결, 예외 21개 |
+| PRF-SCN-100 | TEST-12 | Variable byte integer 폭과 전체 packet 크기의 경계값 8개를 `variableByteIntegerSize`에 입력한다. 같은 시험을 경계 판정을 `case value <= 128:`로 바꾼 mutant 사본에서도 실행한다. | 원본에서는 통과한다. `<= 128` mutant 사본에서는 `variableByteIntegerSize(128) = 1, want 2`로 실패한다. |
+| PRF-SCN-101 | TEST-12 | `go run ./tools/verify mutation`이 `delivery`, `mqtt`, `nodedrain`, `security`, `session` 각 package의 Gremlins 결과를 판정한다. | package마다 efficacy와 mutant coverage가 각각 80% 이상이어야 통과한다. `TIMED OUT` mutant는 `KILLED`로 세지 않는다. |
 
-이번 결과는 기존 profile을 새 기준으로 평가한 로컬 증거다. 전체 local·CI gate를 새로 실행한 결과가 아니며, 실제 필수 CI status와 merge 차단도 확인하지 않았다. P0 예외 21개와 CI 증거가 남아 TEST-10은 미검증으로 유지한다.
+### 8.8 수동 mutation 검증 수용 테스트
 
-### 8.6 간헐 실패 원인 수정 수용 증거
+시나리오 결과와 테스트 연결은 [테스트 컨벤션](../conventions/test-conventions.md)의 시나리오 보고서로 확인한다. 과거 실행 기록은 [검증 기록](../verification/performance-and-verification.md#88-수동-mutation-검증-수용-증거)에 있다.
 
-대상은 §8.2의 2026-10-08 local gate 시도 2·4다. 시험을 제외하거나 대기 시간을 늘리지 않고 두 대기 경로를 고쳤다.
-
-**원인 A — bootstrap 적용 전 campaign:** 시도 2의 `.artifacts/verification/raft-close-fixture-local-second.log:82-83`에서 `TestRaftPeerDriverTicksQueuesAndStops`가 5.04초 뒤 실패했다. 두 node 모두 `Role:1`, `Term:3`, `LeaderID:0`이었다. 시험은 driver 시작 전에 `node1.Campaign()`을 호출했다. 이때 bootstrap ConfChange entry 3개가 아직 적용되지 않았다.
-
-승인된 계획의 선행 조사에서는 임시 사본에 etcd raft debug log를 켜 다음 원문을 확인했다: `1 cannot campaign at term 1 since there are still pending configuration changes to apply`. Campaign이 무시되면 두 node는 100ms tick의 randomized election timeout(10~19 tick)에 의존한다. Peer 3은 응답하지 않는다. 두 node가 같은 tick에 선출을 시작하면 각각 자신에게 투표해 split vote가 생길 수 있다. 이때 재선출마다 1~2초가 더 걸린다.
-
-선행 조사에서 수정 전 무부하 race 시험 180회는 모두 통과했지만 시험 시간이 1.2~4.9초였다. 별도 계측 40회의 “선출+peer 3 거절” 구간은 1.01~4.41초였고 8회가 2초를 넘었다. 4.41초 사례는 term 1→2→3의 split vote 뒤 term 4에서 선출됐다. 병렬 부하로 tick 처리가 늦어지면 기존 5초 제한을 넘을 수 있다. 이는 production 결함이 아니라 시험 준비 순서의 오류다.
-
-수정한 `cmd/narumq/raft_peer_driver_test.go`는 두 driver를 먼저 시작한다. Node 1의 bootstrap commit이 적용된 뒤 campaign한다. 기존 5초 선출 제한과 node 1·2 중 어느 리더든 허용하는 검사는 유지한다. Production `runRaftPeerDriver`와 Raft adapter는 변경하지 않았다. 수정 뒤 CPU 설정 1·2·4의 총 300회 race 시험은 모두 통과했다. `-v`에 표시된 시험 전체 시간은 0.42~0.54초였다. 이 값은 선출 구간만의 시간이 아니다.
-
-**원인 B — profile proposal의 무기한 대기:** 시도 4의 `.artifacts/verification/raft-close-fixture-local-fourth.log:130-283`에서 node 4의 READY 대기가 실패했다. Join은 index 17에서 `SUCCEEDED`였다. 그 직전 node 2가 `promote-voter-before-persist` failpoint로 종료됐다. Node 4의 readiness에는 `release_profile_unsynced`가 남았다.
-
-Stage 요청은 `releaseVersion`만 보내지만 joiner build는 feature 3개를 광고한다. 따라서 controller는 local `MemberProfileChange`를 제안한다. `clusterReleaseProfileController.run`은 `reconcile`의 반환을 기다린다. 기존 propose 분기는 process 수명의 context를 `Commit`에 전달했다. `beginCommit`의 2초 상한은 read barrier에만 적용됐고 `waitProposal`은 원래 context로 결과를 기다렸다. 결과가 오지 않으면 controller가 ticker와 wake를 처리하지 못하고 gate는 닫힌 채 남았다.
-
-[추정] 기존 실패 로그는 proposal 유실 자체를 직접 보여 주지 않는다. Leader 손실 뒤 proposal 결과가 오지 않았다는 설명은 로그와 일치하는 무기한 대기 경로에 근거한다. 새 회귀 시험은 실제 leader 손실을 재현하는 대신 driver가 proposal을 인수한 뒤 결과를 보내지 않는 조건을 만들어 이 대기를 검증한다. 실제 process 회귀는 별도로 아래 3회 실행했다.
-
-수정한 `cmd/narumq/cluster_release_profile.go`는 다른 cluster commit 경로와 같은 5초 상한을 `Commit`에 적용한다. 상한이 지나면 기존 오류 분기로 반환한다. Gate는 닫힌 채 유지하고 incompatibility는 latch하지 않는다. Controller는 다음 reconcile 주기에 다시 확인한다. Ticker 간격은 500ms지만 대기 중 쌓인 tick이 있으면 반환 직후 다시 확인할 수 있다. 늦게 적용된 profile은 기존 적용 알림으로 gate를 무효화하고 controller를 깨운다. Commit의 read barrier도 이 5초 context를 사용한다. Drain·rebalance·tenant quota의 Commit 경로는 변경하지 않았다.
-
-2026-10-09에 Windows/amd64, Go 1.26.5, `CGO_ENABLED=1`, `CC=gcc`에서 아래 명령을 저장소 루트에서 실행했다. Wall time은 명령 시작부터 종료까지의 시간이다.
-
-| 실행 명령 | 결과와 관찰 | Wall time |
-| --- | --- | --- |
-| `go test ./cmd/narumq -run '^TestClusterReleaseProfileReconcileBoundsUnansweredProposal$' -count=1` (수정 전) | FAIL, exit 1. `profile proposal deadline = (..., true), want earlier than controller context ...`; 두 deadline이 같았다. | 4.38s |
-| 같은 명령 (수정 뒤) | PASS, exit 0; package 6.021s | 9.27s |
-| 같은 명령에 `-v` 추가 (수정 뒤) | PASS, exit 0; 회귀 시험 5.00s | 9.23s |
-| `go test -race ./cmd/narumq -run '^TestClusterReleaseProfile' -count=1` | PASS, exit 0; controller suite | 16.27s |
-| `go test -race ./cmd/narumq -run '^TestClusterReleaseProfile' -count=3` | PASS, exit 0; controller suite 3회 | 23.11s |
-| `go test -race ./cmd/narumq -run '^TestRaftPeerDriverTicksQueuesAndStops$' -count=100 -cpu=1,2,4 -v` | PASS, exit 0; 총 300회, 시험 전체 시간 최대 0.54s | 142.24s |
-| `go test -race ./cmd/narumq -count=1` | PASS, exit 0; package 전체 | 28.22s |
-| `go test ./tests/integration -run '^TestDynamicClusterMembershipTransitionCrashRecovery$' -count=3 -v -timeout 30m` | PASS, exit 0; 실제 process 3회(26.50s·22.60s·23.06s), node 4를 포함한 READY 검사 통과 | 74.91s |
-| `GOMAXPROCS=4 go run ./tools/verify local` | 첫 시도 PASS, exit 0; branch-instrument·traceability·architecture, fuzz 5개 각각 10,000회, package·integration 시험, production package race와 coverage 통과; `local: PASS` | 150.11s |
-| `go run ./tools/verify traceability` | PASS, exit 0; P0 66/81 연결, 예외 15개 유지 | 1.02s |
-
-새 실행의 원본 출력은 `.artifacts/verification/flaky-cluster-{profile-before,profile-after,profile-after-verbose,profile-race-once,profile-race,driver-race,package-race,membership-process,local-first,traceability}.log`에 보존한다. Exit code와 wall time은 같은 directory의 `flaky-cluster-results.json`에 보존한다. Local gate의 합격선과 시험 선택은 변경하지 않았다. Process 시험의 성공 출력은 개별 node 로그를 표시하지 않으므로 일시적인 `release_profile_unsynced`의 지속 시간은 측정하지 않았다.
-
-2026-10-09 실행 시점에는 필수 CI 증거가 없어 TEST-12~TEST-15를 `미검증`으로 기록했다. TEST-12의 현재 manual-only policy와 결과는 §8.8에 기록한다. 격리한 flaky test는 없어 owner·해소 기한 기록 대상은 없었다. 당시 파일 배치와 호출 경로는 바꾸지 않았다.
-
-### 8.7 Mutation gate 범위 확장 수용 증거
-
-이 절은 기존 CI mutation 정책의 역사적 증거를 보존한다. 2026-10-09, Windows/amd64, Go 1.26.5에서 저장소 루트의 명령을 실행했다. 변경 전 revision은 `471bf60`이다. 당시 사용자는 CI mutation 범위에 `mqtt`·`security`를 추가하고, `variableByteIntegerSize`의 경계 assertion을 보강하며, Gremlins 기본 mutator 5종을 유지하기로 정했다. Production `framing.go`와 `tests/verification/gremlins.yaml`은 변경하지 않았다. 현재 manual-only policy의 실행 결과는 §8.8을 따른다.
-
-다섯 mutation 명령을 §7.2의 순서대로 하나씩 실행했다. 아래 시간은 명령 시작부터 종료까지의 wall time이다. 모든 명령은 exit 0을 반환했다.
-
-| Package | Killed | Lived | Not covered | Efficacy | Mutant coverage | 시간 |
-| --- | --- | --- | --- | --- | --- | --- |
-| `internal/domain/delivery` | 27 | 0 | 0 | 100% | 100% | 209.599s |
-| `internal/domain/mqtt` | 516 | 0 | 6 | 100% | 98.85% | 958.839s |
-| `internal/domain/nodedrain` | 64 | 0 | 0 | 100% | 100% | 132.628s |
-| `internal/domain/security` | 34 | 0 | 0 | 100% | 100% | 91.381s |
-| `internal/domain/session` | 56 | 0 | 0 | 100% | 100% | 136.568s |
-
-Timed out·Not viable·Skipped는 각 package에서 모두 0개였다. Timed out은 KILLED에 합산하지 않는다. Gremlins 공식대로 efficacy 계산에서 제외한다. 기본 mutator는 `ARITHMETIC_BASE`, `CONDITIONALS_NEGATION`, `CONDITIONALS_BOUNDARY`, `INCREMENT_DECREMENT`, `INVERT_NEGATIVES`의 5종이다.
-
-MQTT의 Not covered 6개는 `framing.go:43:13`, `45:13`, `47:13`의 `CONDITIONALS_BOUNDARY`·`CONDITIONALS_NEGATION`이다. 계획 시점과 위치·수치가 같다. [추정] Go coverage block이 expression `switch`의 `case` 식을 별도 실행 구간으로 잡지 않아 Gremlins가 해당 mutant를 시험 대상에서 뺀다. 경계 assertion을 보강했지만 Gremlins의 이 수치는 바뀌지 않았다. 아래 수동 mutant는 실제 검출력의 차이를 확인한다.
-
-수동 mutant는 `git archive --format=tar -o "$TEMP/narumq-vbi.tar" HEAD`로 만든 임시 사본에서 확인했다. 작업 트리의 수정된 `packet_test.go`를 복사한 뒤 사본의 `framing.go`만 `case value <= 128:`로 바꿨다. `go test ./internal/domain/mqtt -run '^TestRemainingLengthFramingHelperEdges' -count=1`은 exit 1로 실패했다. 오류는 `variableByteIntegerSize(128) = 1, want 2`였다. 같은 mutant에서 `git show HEAD:internal/domain/mqtt/packet_test.go`의 원본 시험을 복원하면 같은 명령이 exit 0으로 통과했다. 기존 assertion은 이 경계 오류를 놓쳤고, 보강한 assertion은 잡았다. 원본 출력은 `.artifacts/verification/mutation-scope-manual-{strengthened,original}.log`에 있다.
-
-임시 사본과 tar 파일은 비교 결과를 기록한 뒤 삭제했다. 작업 트리의 production source는 수동 mutant 확인 중에도 변경하지 않았다.
-
-| 수용 시나리오 | 요구사항 | 실행·시험 위치 | 확인 결과 |
+| 시나리오 ID | 요구사항 ID | 조건과 입력 | 기대 결과 |
 | --- | --- | --- | --- |
-| Variable byte integer 폭과 전체 packet 크기의 8개 경계값 | TEST-12 | `internal/domain/mqtt/packet_test.go::TestRemainingLengthFramingHelperEdges_MQTT153_1_2_MQTT154_1_2` | 원본에서 PASS. 사본의 `<= 128` mutant는 보강 시험에서 FAIL, 기존 시험에서 PASS |
-| CI의 5개 mutation command와 Local의 mutation 제외 | TEST-12 | `tools/verify/runner_test.go::TestRunCIRequiresBaseAndPropagatesBaseToCoverage`, `TestRunLocalOmitsMutationChecksAndCoverageWithoutBase` | 두 시험 PASS. 실제 CI runner도 5개 package를 병렬 검사하고 PASS |
-| Package별 efficacy·mutant coverage 80% 하한 | TEST-12 | §7.2의 Gremlins 명령과 `tools/verify/runner.go::runVerification` | 순차 측정과 CI runner의 재측정 모두 각 package 통과. LIVED·timeout 0개 |
-| 기존 traceability 유지 | TEST-10 | `go run ./tools/verify traceability` | PASS, P0 66/81 연결, 예외 15개 |
+| PRF-SCN-102 | TEST-12 | 저장소 루트에서 `go run ./tools/verify mutation`을 실행한다. | `delivery`, `mqtt`, `nodedrain`, `security`, `session` 다섯 package를 선택하고 각각 Gremlins `workers=1`, `test-cpu=1`로 검사한다. 모든 package가 기준을 넘으면 exit 0과 `mutation: PASS`를 반환한다. |
+| PRF-SCN-103 | TEST-12 | `go run ./tools/verify local` 또는 `go run ./tools/verify ci --base <merge-base>`를 실행한다. | 두 명령은 mutation 단계를 실행하지 않는다. `ci`는 `--base`가 없으면 거절하고 base를 coverage diff 계산에만 전달한다. Mutation output은 없다. |
 
-모든 명령은 저장소 루트에서 실행했다. 수동 mutant 시험 두 개만 임시 사본에서 실행했다. CI runner는 로컬 Windows 환경에서 첫 시도에 통과했다. 시험을 건너뛰거나 timeout을 늘리지 않았다. 원격 CI 실행 또는 필수 status 확인 결과는 아니다.
+### 8.9 GitHub Actions 원격 CI와 required check 수용 테스트
 
-| 실행 명령 | 결과와 관찰 | Wall time |
-| --- | --- | --- |
-| `go build ./internal/domain/mqtt` | PASS, exit 0 | 0.447s |
-| `go test ./internal/domain/mqtt -run '^TestRemainingLengthFramingHelperEdges' -count=1` | PASS, exit 0 | 1.698s |
-| `go test ./internal/domain/mqtt -count=1` | PASS, exit 0 | 1.244s |
-| `go build ./tools/verify` | PASS, exit 0 | 2.466s |
-| `go test ./tools/verify -run '^TestRunCIRequiresBaseAndPropagatesBaseToCoverage$\|^TestRunLocalOmitsMutationChecksAndCoverageWithoutBase$' -count=1` | PASS, exit 0 | 1.735s |
-| `go test ./tools/verify -count=1` | PASS, exit 0 | 7.620s |
-| `go build ./internal/domain/mqtt ./tools/verify` | PASS, exit 0 | 2.065s |
-| `go test ./internal/domain/mqtt ./tools/verify -count=1` | PASS, exit 0 | 7.456s |
-| 위 경계 시험 명령, 임시 사본의 `<= 128` mutant와 보강 assertion | 기대한 FAIL, exit 1. `variableByteIntegerSize(128) = 1, want 2` | 1.956s |
-| 같은 mutant와 기존 assertion | PASS, exit 0. 기존 시험의 검출 부족 확인 | 1.765s |
-| §7.2 `delivery` mutation 명령 | PASS, exit 0 | 209.599s |
-| §7.2 `mqtt` mutation 명령 | PASS, exit 0 | 958.839s |
-| §7.2 `nodedrain` mutation 명령 | PASS, exit 0 | 132.628s |
-| §7.2 `security` mutation 명령 | PASS, exit 0 | 91.381s |
-| §7.2 `session` mutation 명령 | PASS, exit 0 | 136.568s |
-| `go run ./tools/verify ci --base HEAD` | PASS, exit 0. Branch instrumentation·vet·traceability·architecture·전체 package/integration 시험·production race·fuzz 5개 각각 10,000회·mutation 5개·coverage 통과. 최종 출력 `ci: PASS` | 1450.060s |
-| `go run ./tools/verify traceability` | PASS, exit 0. `P0 mapped 66/81, exceptions 15` | 1.017s |
+시나리오 결과와 테스트 연결은 [테스트 컨벤션](../conventions/test-conventions.md)의 시나리오 보고서로 확인한다. 과거 실행 기록은 [검증 기록](../verification/performance-and-verification.md#89-github-actions-원격-ci와-required-check-증거)에 있다.
 
-과거 순차 mutation JSON은 `.artifacts/verification/mutation-scope-{delivery,mqtt,nodedrain,security,session}.json`에 있다. 과거 CI runner도 `.artifacts/verification/mutation-{delivery,mqtt,nodedrain,security,session}.json`에 결과를 기록했지만, 현재 수동 command가 같은 경로를 재사용한다. 따라서 해당 경로의 JSON은 latest manual execution을 나타내며 과거 CI JSON의 보존본이 아니다. 당시 원본 출력은 `.artifacts/verification/mutation-scope-<name>.log`, 순차 command의 exit code와 wall time은 `.artifacts/verification/mutation-scope-results.json`에 기록했다. `name`은 `boundary-test`, `runner-tests`, `manual-strengthened`, `manual-original`, `mutation-<package>`, `ci`, `traceability`와 단계별 `stepN-build`·`stepN-package`·`step3-packages`, `manual-archive`다. `.artifacts/`는 Git 추적 대상이 아니다.
+`.github/workflows/verify.yml`은 pull request, `main` push와 `workflow_dispatch`에서 `go run ./tools/verify ci --base <base>`를 실행한다. PR은 `origin/$BASE_REF`를, main push는 push 이전 commit을 diff base로 쓴다. Coverage profile, summary와 branch manifest는 30일 보관한다. Mutation은 자동 gate에서 제외하고 `go run ./tools/verify mutation`으로 별도 실행한다. Workflow는 `ubuntu-24.04`와 `runs.using: node24`인 `actions/*@v7`을 쓴다.
 
-2026-10-09 실행 당시 JSON의 `elapsed_time`은 전체 command wall time과 달랐다. 당시 MQTT 순차 결과는 948.8832532초, CI 결과는 1414.9420929초였다. 전체 wall time은 각각 958.839초와 1450.060초다. 현재 manual command는 CI가 사용한 `mutation-<package>.json` 경로를 재사용하므로 해당 파일은 최신 수동 실행 결과를 담는다. 이 파일을 과거 CI JSON의 보존본으로 취급하지 않는다.
+보류된 DEP P0 예외가 `tests/conformance/p0-requirement-exceptions-v1.json`에 남아 있는 동안 TEST-10은 [ADR-0042](../decisions/ADR-0042-p0-requirement-traceability-gate.md) §1.6에 따라 미검증으로 관리한다. CI의 traceability 통과는 허용된 예외 목록과 test 연결이 일치한다는 뜻이며, 모든 P0가 test에 연결됐다는 뜻은 아니다.
 
-현재 HTML 시각 자료는 Chromium desktop·mobile 화면에서 확인했다. 수동 command, 다섯 대상 package와 흐름이 보였고 browser error는 없었다. 이번 변경은 verification runner entry flow만 분리했으며 domain production code는 바꾸지 않았다. 과거 실행 수치와 결과는 해당 시점의 증거로 유지한다.
-
-당시 정책에서는 원격 필수 CI 실행 증거가 없어 TEST-12를 `미검증`으로 기록했다. 이 기록은 기존 CI mutation 정책의 이력이다. 현재 manual-only 정책과 실행 결과는 §8.8에 기록한다. 이번 변경은 `runVerification`에서 mutation을 제거하고 별도 `runMutation` 진입점을 추가했으며 domain production code는 수정하지 않았다.
-
-### 8.8 수동 mutation 검증 수용 증거
-
-2026-10-11, Windows/amd64, Go 1.26.5에서 저장소 루트에서 `go run ./tools/verify mutation`을 실행했다. 명령은 exit 0과 `mutation: PASS`를 반환했다. Wall time은 1464.90초(24분 24.90초)였다. 수동 runner는 다섯 package를 각각 Gremlins `workers=1`, `test-cpu=1`로 검사했다.
-
-| Package | Killed | Lived | Not covered | Timed out | Efficacy | Mutant coverage |
-| --- | ---: | ---: | ---: | ---: | ---: | ---: |
-| `internal/domain/delivery` | 26 | 0 | 0 | 1 | 100% | 100% |
-| `internal/domain/mqtt` | 515 | 0 | 6 | 1 | 100% | 98.85% |
-| `internal/domain/nodedrain` | 63 | 0 | 0 | 1 | 100% | 100% |
-| `internal/domain/security` | 90 | 0 | 0 | 2 | 100% | 100% |
-| `internal/domain/session` | 56 | 0 | 0 | 1 | 100% | 100% |
-
-다섯 package 모두 80% 기준을 넘었다. 전체 결과는 750 Killed, 0 Lived, 6 Not covered, 6 Timed out이다. Timed out은 Killed로 세지 않는다. MQTT의 6 Not covered는 `framing.go`의 경계 mutant다. `Not viable`과 `Skipped`는 모두 0개였다. 각 package JSON은 `.artifacts/verification/mutation-<package>.json`에 기록했다. 이 경로는 다음 수동 실행 때 덮어쓴다.
-
-| 수용 시나리오 | 요구사항 | 확인 방법 | 결과 |
+| 시나리오 ID | 요구사항 ID | 조건과 입력 | 기대 결과 |
 | --- | --- | --- | --- |
-| 수동 command가 다섯 package를 worker 1개씩 선택 | TEST-12 | `tools/verify/runner_test.go::TestRunMutationExecutesAllPackagesWithOneGremlinsWorker`; `go run ./tools/verify mutation` | test PASS; 실제 command PASS |
-| local·CI 자동 gate에서 mutation 제외 | TEST-12 | `tools/verify/runner_test.go::TestRunLocalOmitsMutationChecksAndCoverageWithoutBase`, `TestRunCIRequiresBaseAndPropagatesBaseToCoverage`; `go run ./tools/verify ci --base HEAD` | 두 test PASS; 자동 CI runner PASS, mutation 단계 없음 |
-
-2026-10-11에 `go run ./tools/verify ci --base HEAD`를 로컬에서 실행했다. `git merge-base HEAD main`은 `HEAD`를 반환했다. Runner는 `coverage: PASS`, `ci: PASS`를 출력했고 wall time은 175.09초(2분 55.09초)였다. 이 명령은 로컬 CI runner 검증이며 원격 필수 status 실행은 아니다. Mutation output은 없었다.
-
-먼저 과거 실행에서 사용한 `--base 23005e1a0d819a357507ce173b8d0f89cf40cf19`로 실행했을 때는 diff line 88.74%, branch 82.41%로 90% 기준에 미달해 exit 1이었다. 이 base는 현재 `main`의 merge base가 아니며, 비교 범위에 과거 Go 변경 43개가 들어 있었다. 실제 merge base인 `HEAD`로 다시 실행한 결과가 위 PASS다.
-
-기존 mutation 포함 CI 실행은 §7.2 표에서 1388.95초(23분 08.95초)였다. 이번 local CI runner 실행은 175.09초(2분 55.09초)다. 관측 시간 차이는 1213.86초(약 87%)다. 두 실행의 `--base`가 달라 정식 동일 조건 성능 비교가 아니라 참고 수치다. 세부 mutation 점수와 timeout은 위 표에 있다.
-
-자동 실행의 예상 시간을 늘리는 mutation 단계는 `local`·`ci`에서 제외했다. 검출력 검토가 필요한 변경에서는 저장소 루트에서 `go run ./tools/verify mutation`을 수동 실행한다. 이전 CI 정책의 시간 비교는 §7.2, 기존 범위 확장 기록은 §8.7에 있다.
-
-HTML 시각 자료는 Chromium desktop·mobile 화면에서 확인했다. Console error는 없었다. 이번 변경은 verification runner와 문서만 수정했고 domain production code는 바꾸지 않았다.
-
-### 8.9 GitHub Actions 원격 CI와 required check 증거
-
-2026-10-11에 `.github/workflows/verify.yml`을 `main`에 push하고 원격 실행을 확인했다. Workflow는 pull request, `main` push와 `workflow_dispatch`에서 `go run ./tools/verify ci --base <base>`를 실행한다. PR은 `origin/$BASE_REF`를, main push는 push 이전 commit을 diff base로 쓴다. Coverage profile, summary와 branch manifest는 30일 보관한다. Mutation은 자동 gate에서 제외하고 `go run ./tools/verify mutation`으로 별도 실행한다.
-
-| 실행 | Commit·환경 | 확인 결과 |
-| --- | --- | --- |
-| Remote main | `03c84f40c345195f0a323c5af2e623e9ebbbc998`; GitHub Actions | [Run 38112386284](https://github.com/kayden-kim/narumq/actions/runs/38112386284)의 `verify` check가 5분 49초 뒤 `success`였다. `verification-38112386284-1` artifact는 9,979,845 bytes이며 2026-11-10까지 보관한다. |
-| Full Linux CI 사전 실행 | `03c84f40c345195f0a323c5af2e623e9ebbbc998`; Go 1.26.5 Docker container; `--base f847a491e7b4a68d7fc48a868ad801895894d32a` | `go run ./tools/verify ci --base f847a491e7b4a68d7fc48a868ad801895894d32a`가 `coverage: PASS`, `ci: PASS`로 종료했다. Wall time은 696.35초다. Diff coverage는 line 24/25(96%), function 5/5(100%), branch 11/12(91.67%)였다. 로그는 `.artifacts/verification/ci-linux-one-shot-admission-close.log`에 있다. |
-
-성공한 main run은 기존 `actions/checkout@v4`, `actions/setup-go@v5`, `actions/upload-artifact@v4`와 `ubuntu-latest`를 사용했다. GitHub는 Node 20 deprecation과 `ubuntu-latest`의 Ubuntu 26 전환 예정 경고를 표시했다. 현재 workflow는 `ubuntu-24.04`와 public action manifest에서 `runs.using: node24`로 확인한 `actions/*@v7`을 사용한다. 이 변경은 문서 PR [#2](https://github.com/kayden-kim/narumq/pull/2)의 [verify run 38113714789](https://github.com/kayden-kim/narumq/actions/runs/38113714789)에서 4분 59초 뒤 PASS했다. 해당 run에 Node 20·Ubuntu 26 경고는 없었다. Run artifact `verification-38113714789-1`도 30일 보관한다.
-
-초기 원격 실행에서 서로 다른 세 회귀가 발견됐다. 테스트를 끄거나 대기를 늘리지 않고 연결 종료와 inbound slot 반환 경계를 수정했다.
-
-| Run | 실패 관찰 | 수정 |
-| --- | --- | --- |
-| [38107031157](https://github.com/kayden-kim/narumq/actions/runs/38107031157) | BP-05 reconnect 시험에서 두 시도 중 하나만 성공했다. | `f847a49`에서 client가 peer close를 확인한 뒤 reconnect하도록 했다. `go test ./tests/benchmark/bp05 -count=25`가 통과했다. |
-| [38108358932](https://github.com/kayden-kim/narumq/actions/runs/38108358932) | Bootstrap probe의 후속 TLS handshake가 `EOF`로 실패했다. [추론] 직전 응답 뒤 client가 바로 반환하면서 server의 inbound slot 반환과 다음 연결이 경합했다. | `f7b24da`에서 client가 peer close를 기다리고, server는 slot을 반환한 뒤 connection을 닫도록 했다. 관련 시험을 race detector 아래 100회 반복해 통과했다. |
-| [38111263856](https://github.com/kayden-kim/narumq/actions/runs/38111263856) | `TestDynamicSeedAdmissionRequiresTLSBoundCommittedStage`의 순차 seed admission 요청이 연결되지 못했다. | `03c84f4`에서 `ProbeBootstrapPeer`와 `RequestSeedAdmission`이 공통 close helper로 peer 종료를 기다리게 했다. Server는 close 전에 inbound slot을 반환한다. 해당 시험은 Linux race detector 아래 50회, Windows 아래 10회 통과했다. |
-
-### Main branch protection
-
-`main` 보호 설정은 GitHub Branch Protection API로 적용한 뒤 다시 조회했다.
-
-| 설정 | 조회 결과 |
-| --- | --- |
-| 필수 status check | `verify` |
-| Strict status check | `true`; 최신 `main` 반영 필요 |
-| Required review | 없음 |
-| Admin enforcement | `false`; 관리자는 보호를 우회할 수 있음 |
-| Force push·branch deletion | 둘 다 금지 |
-| Push restriction | 없음 |
-
-### 실패 PR probe
-
-임시 PR [#1](https://github.com/kayden-kim/narumq/pull/1)은 `tools/verify/branch_protection_probe_test.go::TestBranchProtectionProbe`에서 의도적으로 실패했다. [Run 38112802413](https://github.com/kayden-kim/narumq/actions/runs/38112802413)에서 필수 `verify` check가 `failure`였고 PR API는 `mergeable_state=blocked`를 반환했다. 이 조회 뒤 PR을 닫고 probe branch를 삭제했다. 시험 파일은 `main`에 남지 않았다.
-
-Probe는 test 실패만 확인했다. Coverage 저하와 미매핑 P0 실패를 별도로 주입하지 않았다. 실제 merge API 요청도 보내지 않았다. `enforce_admins=false`이므로 현재 관리자 인증으로는 branch protection이 merge 거절을 보장하지 않는다. 실패 check와 차단 상태는 관찰했지만 비관리자 write 권한에서의 merge 거절은 확인하지 못했다. 따라서 PRD TEST-10은 미검증이다.
-
-Traceability gate는 `P0 mapped 70/81, exceptions 11`을 보고했다. 예외 11개가 남아 있다. CI의 traceability PASS는 허용된 예외 목록과 test 연결이 일치한다는 뜻이며, 81개 P0 모두가 test에 연결됐다는 뜻은 아니다. Full CI는 fuzz와 race 단계를 통과했고 위의 알려진 회귀 경로를 반복 검증했다. 이 결과는 TEST-06~TEST-09, TEST-13~TEST-15의 원격 CI 실행 증거다. Production workload와 release gate는 별도다.
+| PRF-SCN-104 | TEST-06, TEST-07, TEST-08, TEST-09, TEST-13, TEST-14, TEST-15 | pull request, `main` push 또는 `workflow_dispatch`로 `.github/workflows/verify.yml`을 실행한다. Runner는 `ubuntu-24.04`다. | `go run ./tools/verify ci --base <base>`가 `ci: PASS`로 끝나고 필수 `verify` check가 `success`다. Fuzz와 race 단계를 통과한다. Coverage profile, summary와 branch manifest artifact를 30일 보관한다. |
+| PRF-SCN-105 | TEST-10 | `main` 보호 설정을 GitHub Branch Protection API로 조회한다. | 필수 status check는 `verify`다. Strict status check는 `true`이며 최신 `main` 반영이 필요하다. Required review는 없다. Admin enforcement는 `true`이며 관리자에게도 동일하게 보호가 적용된다([ADR-0056](../decisions/ADR-0056-branch-protection-for-admins.md)). Force push와 branch deletion은 둘 다 금지한다. Push restriction은 없다. |
+| PRF-SCN-106 | TEST-10 | 별도 probe PR에 `tools/verify/branch_protection_probe_test.go`로 의도적 실패 test를 주입한다. | CI의 `verify` check가 `--- FAIL: TestBranchProtectionProbe`와 `TEST-10 probe: intentional test failure`를 출력하며 실패한다. PR `mergeable_state`는 `blocked`이고 관리자 계정의 merge API 호출은 HTTP 405(`Required status check "verify" is failing.`)로 거절된다. |
+| PRF-SCN-107 | TEST-10 | 별도 probe PR에 `internal/domain/mqtt/branch_protection_probe.go`로 test 없는 함수를 주입한다. | CI의 `verify` check가 `coverage gate failed:`와 함께 function ratchet 미달, diff line coverage 0.00% 미달, diff function coverage 0.00% 미달을 출력하며 실패한다. PR `mergeable_state`는 `blocked`이고 관리자 계정의 merge API 호출은 HTTP 405로 거절된다. |
+| PRF-SCN-108 | TEST-10 | 별도 probe PR에서 `docs/requirements/PRD.md`에 test도 예외도 없는 `API-99` P0 행을 추가한다. | CI의 `verify` check가 `traceability: P0 requirement API-99 has no Traceability test and no exception in tests/conformance/p0-requirement-exceptions-v1.json`을 출력하며 실패한다. PR `mergeable_state`는 `blocked`이고 관리자 계정의 merge API 호출은 HTTP 405로 거절된다. |
+| PRF-SCN-109 | TEST-10 | 별도 probe PR에서 `tests/conformance/mqtt-compliance-v1.json`에 test 배열이 빈 `MQTT-4.9.0-1` statement를 추가한다. | CI의 `verify` check가 `traceability: invalid compliance matrix tests/conformance/mqtt-compliance-v1.json: statement[61].tests must not be empty`를 출력하며 실패한다. PR `mergeable_state`는 `blocked`이고 관리자 계정의 merge API 호출은 HTTP 405로 거절된다. |
 
 ## 9. Architecture 검증
 
@@ -1199,6 +1106,5 @@ CI 아키텍처 검증은 ADR-0001의 클린 아키텍처 경계를 강제한다
 8. 100회 연속 롤링 업데이트에서 영속 세션 소실 0건, 지원 클라이언트의 비정상 Will 발행 0건이어야 한다.
 9. 테넌트 간 격리와 관리 API의 RBAC 침투 테스트를 통과해야 한다.
 10. 운영 유사 환경에서 백업·복구, 롤백, 메트릭·경보·대시보드 동작을 확인해야 한다.
-11. MQTT 3.1.0 프로토콜 식별 목록과 마이그레이션·격리 증거가 존재해야 한다.
 
-릴리스 필수 소스 artifact는 `.artifacts/verification/coverage.out`, `coverage-summary.json`, mutation 결과 JSON 5개, 보존된 fuzz 결함 코퍼스다. 누락된 artifact나 미검증 게이트가 있으면 완료로 간주하지 않는다. Smoke 결과의 `releaseGating=false`와 미확정된 `SPEC-TBD-08` 운영 기준치는 계속 열어 둔다.
+릴리스 필수 소스 artifact는 `.artifacts/verification/coverage.out`, `coverage-summary.json`, mutation 결과 JSON 5개, 보존된 fuzz 결함 코퍼스다. 누락된 artifact나 미검증 게이트가 있으면 완료로 간주하지 않는다. Smoke 결과의 `releaseGating=false`와 미채택 `SPEC-TBD-08` 기준·미계산 profile cutoff는 계속 열어 둔다.

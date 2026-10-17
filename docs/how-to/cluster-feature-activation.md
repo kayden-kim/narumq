@@ -5,10 +5,9 @@
 | 항목 | 값 |
 | --- | --- |
 | 대상 독자 | 배포 release 담당자와 ClusterAdmin 운영자 |
-| 검증 상태 | Verified |
+| 검증 상태 | 제한 범위 검증 (과거 local 실행) |
 | 검증 환경·버전 | Windows PowerShell 5.1.26100.9444, curl.exe 8.21.0, jq 1.8.2; Go 1.26.5 local 3-node mTLS fixture |
-| 검증 범위 | Windows local 절차 범위: API 명령·JSON 판정·증거 directory ACL. Membership operation 조회·외부 승인·production credential ACL은 실제 실행 범위 밖이다. Production 실행 승인이 아니다. |
-| 최종 검증일 | 2026-10-04 |
+| 검증 범위 | Windows local API·JSON 판정·증거 directory ACL의 과거 실행. Membership operation 조회·외부 승인·production credential ACL은 미실행이며 production 실행 승인이 아니다. |
 | 관련 기준 문서 | [Release contract §4.1](../contracts/cluster-release-compatibility-v1.md#41-운영-승인과-rollback-window-종료), [ADR-0032](../decisions/ADR-0032-feature-activation-approval-policy.md), [Cluster §11.30](../specs/cluster-session-and-delivery.md#1130-feature-activation-운영-승인-수용-매핑), [Management API v1](../contracts/management-api-v1.md), [Backup v3 §2·§4](../contracts/cluster-backup-v3.md#2-producer와-consumer-동작) |
 
 ## 1. 대상과 영향
@@ -183,14 +182,14 @@ Get-Command curl.exe, jq -ErrorAction Stop | Select-Object Name, Source
 
 ## 4. 검증
 
-실행 증거의 단일 기록은 [Cluster §11.30](../specs/cluster-session-and-delivery.md#1130-feature-activation-운영-승인-수용-매핑)이다. 실제 운영 cluster의 activation은 실행하지 않았다.
+과거 local 실행은 [Cluster 검증 기록 §11.30](../verification/cluster-session-and-delivery.md#1130-feature-activation-운영-승인-수용-매핑)을 따른다. 이는 현재 코드의 통과가 아니다. 현재 연결·실행 결과는 [시나리오 보고서](../../.artifacts/verification/scenarios/report.md)를 확인한다. 실제 운영 cluster activation과 production 승인·ACL 검토는 미실행이다.
 
-| 관찰 대상 | 성공 조건 | 확인 명령·방법 | 실제 결과 | 실행 증거 위치 |
-| --- | --- | --- | --- | --- |
-| Windows local API 명령 | Summary·features·각 local node와 readiness 200, 전체 광고 filter exit 0 | 단계 1–3, 실제 임시 3-node cluster | PASS. Membership operation 조회는 fixture에 operation이 없어 미실행이다. | Cluster §11.30 |
-| Activation·동일 token replay | 200과 active token, replay 뒤 정확히 token 하나 유지, GET와 세 readiness 200 | 단계 6–7의 curl·jq | PASS: local compatibility-probe. 운영 session-metadata는 활성화하지 않았다. | Cluster §11.30 |
-| 승인 분기 | 결과 불명은 rollback 금지, 배포 집합 변경은 재승인 | 외부 기록을 가정한 수동 정책 판정 | PASS: 문서 분기 대조. Runtime 강제 시험이 아니다. | Cluster §11.30 |
-| Production 운영 승인·ACL | 실제 credential·배포·backup과 승인 기록을 대조 | 운영 책임자의 별도 검토 | 미실행. Local smoke는 production ACL·외부 승인 강제를 검증하지 않는다. | 해당 배포의 비공개 기록 |
+| 관찰 대상 | 성공 조건 | 확인 명령·방법 |
+| --- | --- | --- |
+| API·member 확인 | Summary·features·각 local node·readiness가 200이고, 광고 filter exit 0. 진행 중 membership operation이 없음 | 단계 1–3과 해당 배포의 operation 조회 |
+| Activation·동일 token replay | 200과 active token, replay 뒤 token 하나 유지, GET·세 readiness 200 | 단계 6–7의 curl·jq |
+| 승인 분기 | 결과 불명은 rollback 금지, 배포 집합 변경은 재승인 | 외부 승인 기록과 응답 대조. 문서 판정은 runtime 강제 시험이 아님 |
+| Production 승인·ACL | 실제 credential·배포·backup이 승인 기록과 일치 | 운영 책임자의 별도 검토. Local smoke는 대신하지 못함 |
 
 ## 5. 중단 조건
 

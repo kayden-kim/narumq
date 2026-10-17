@@ -11,6 +11,7 @@ import (
 )
 
 // Traceability: DEP-06/DEP-07; docs/specs/drain-and-rolling-update.md §4, §10.
+// Scenarios: drain-and-rolling-update.md:DRN-SCN-008
 func TestCloseSessionForDrainSendsRedirectAndSuppressesWill(t *testing.T) {
 	config := defaultAdapterConfig()
 	config.ClusterMode = true
@@ -82,6 +83,7 @@ func TestCloseSessionForDrainSendsRedirectAndSuppressesWill(t *testing.T) {
 }
 
 // Traceability: DEP-07; docs/specs/drain-and-rolling-update.md §4, §10.
+// Scenarios: drain-and-rolling-update.md:DRN-SCN-008
 func TestCloseSessionForDrainClosesMQTT311WithoutPacket(t *testing.T) {
 	config := defaultAdapterConfig()
 	config.ClusterMode = true
@@ -122,6 +124,7 @@ func TestCloseSessionForDrainClosesMQTT311WithoutPacket(t *testing.T) {
 }
 
 // Traceability: DEP-07; docs/specs/drain-and-rolling-update.md §4, §10.
+// Scenarios: drain-and-rolling-update.md:DRN-SCN-008
 func TestCloseSessionForDrainDoesNotClaimUnknownSession(t *testing.T) {
 	server := &Server{bySession: make(map[routing.SessionID]*connection)}
 	if server.CloseSessionForDrain("missing-session", "next.example:1883") {
@@ -133,6 +136,7 @@ func TestCloseSessionForDrainDoesNotClaimUnknownSession(t *testing.T) {
 }
 
 // Traceability: DEP-03; docs/specs/drain-and-rolling-update.md §2.1, §10.
+// Scenarios: drain-and-rolling-update.md:DRN-SCN-008
 func TestTCPClusterAdmissionClosedRejectsConnectBeforeReadiness(t *testing.T) {
 	var readinessCalls int
 	config := defaultAdapterConfig()

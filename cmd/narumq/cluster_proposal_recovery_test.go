@@ -15,6 +15,7 @@ import (
 )
 
 // Traceability: CLU-12; Cluster §4.2; ADR-0036, ADR-0037.
+// Scenarios: cluster-session-and-delivery.md:CLU-SCN-237
 func TestClusterProposalRecoveryRequiresNewQuorumProofAndAppliesOnce(t *testing.T) {
 	runtimes := newProposalRecoveryTestCluster(t)
 	ingress := runtimes[1]
@@ -189,6 +190,7 @@ func newProposalRecoveryTestCluster(t *testing.T) [3]*clusterRuntime {
 }
 
 // Traceability: CLU-12; Cluster §4.2; ADR-0036 original caller deadline.
+// Scenarios: cluster-session-and-delivery.md:CLU-SCN-238
 func TestClusterProposalRecoveryNoQuorumNoSuccessAndNoLateAck(t *testing.T) {
 	runtimes := newProposalRecoveryTestCluster(t)
 	ingress := runtimes[1]

@@ -70,6 +70,7 @@ func TestParseSecurityConfig_Valid(t *testing.T) {
 }
 
 // Traceability: SEC-05, SEC-07; docs/specs/tenancy-and-security.md §2.4·§7.
+// Scenarios: tenancy-and-security.md:SEC-SCN-016, tenancy-and-security.md:SEC-SCN-039
 func TestParseSecurityConfig_PasswordIdentities(t *testing.T) {
 	bundle, err := parseSecurityConfig(strings.NewReader(passwordSecurityJSON(
 		passwordIdentityJSON("Device-A", "device-a", "device-a-key"),
@@ -90,6 +91,7 @@ func TestParseSecurityConfig_PasswordIdentities(t *testing.T) {
 }
 
 // Traceability: SEC-05; docs/specs/tenancy-and-security.md §2.3–§2.4.
+// Scenarios: tenancy-and-security.md:SEC-SCN-016
 func TestParseSecurityConfig_PasswordAndMTLSBindings(t *testing.T) {
 	input := strings.Replace(
 		passwordSecurityJSON(passwordIdentityJSON("device-a", "device-a", "device-a-key")),
@@ -107,6 +109,7 @@ func TestParseSecurityConfig_PasswordAndMTLSBindings(t *testing.T) {
 }
 
 // Traceability: SEC-05, SEC-07; docs/specs/tenancy-and-security.md §2.4·§7.
+// Scenarios: tenancy-and-security.md:SEC-SCN-016, tenancy-and-security.md:SEC-SCN-039
 func TestParseSecurityConfig_PasswordIdentityRejections(t *testing.T) {
 	validIdentity := passwordIdentityJSON("device-a", "device-a", "device-a-key")
 	duplicateUsername := passwordIdentityJSON("device-a", "device-b", "device-b-key")
@@ -179,6 +182,7 @@ func TestParseSecurityConfig_LoopbackHTTPAllowed(t *testing.T) {
 	}
 }
 
+// Scenarios: configuration-and-runtime-options.md:CFG-SCN-11, configuration-and-runtime-options.md:CFG-SCN-30
 func TestParseSecurityConfig_Rejections(t *testing.T) {
 	cases := []struct {
 		name        string
@@ -530,6 +534,7 @@ func tenantLimitsSecurityJSON(value string) string {
 }
 
 // Traceability: TEN-06, TEN-07; docs/specs/tenancy-and-security.md §5.2.
+// Scenarios: tenancy-and-security.md:SEC-SCN-028
 func TestParseSecurityConfig_TenantLimitsInheritance(t *testing.T) {
 	input := tenantLimitsSecurityJSON(`{"default":{"maxConnections":10,"maxSessions":20,"maxSubscriptions":30,"messagesPerSecond":40,"bytesPerSecond":50,"maxPayloadBytes":60},"tenants":[{"tenantId":"tenant-a","maxConnections":0,"messagesPerSecond":7}]}`)
 	bundle, err := parseSecurityConfig(strings.NewReader(input))
@@ -557,6 +562,7 @@ func TestParseSecurityConfig_TenantLimitsInheritance(t *testing.T) {
 }
 
 // Traceability: TEN-06, TEN-07; docs/specs/tenancy-and-security.md §5.2.
+// Scenarios: configuration-and-runtime-options.md:CFG-SCN-30, tenancy-and-security.md:SEC-SCN-028
 func TestParseSecurityConfig_TenantLimitsRejectInvalidProfiles(t *testing.T) {
 	tooMany := `{"tenants":[` + strings.TrimSuffix(strings.Repeat(`{"tenantId":"tenant-a"},`, 4097), ",") + `]}`
 	cases := []struct {
@@ -591,6 +597,7 @@ func TestParseSecurityConfig_TenantLimitsRejectInvalidProfiles(t *testing.T) {
 }
 
 // Traceability: TEN-07; docs/specs/configuration-and-runtime-options.md §6 CFG-SCN-30.
+// Scenarios: configuration-and-runtime-options.md:CFG-SCN-30, tenancy-and-security.md:SEC-SCN-028
 func TestParseSecurityConfig_TenantLimitsMaxWaitMillis(t *testing.T) {
 	for _, test := range []struct {
 		name  string

@@ -12,6 +12,7 @@ import (
 )
 
 // Traceability: SEC-10/SEC-11; docs/specs/tenancy-and-security.md §8.
+// Scenarios: management-api-and-observability.md:MGT-SCN-019, tenancy-and-security.md:SEC-SCN-033
 func TestFileAuditReaderPagesAcrossRotationsAndPreservesStoredEvent(t *testing.T) {
 	directory := t.TempDir()
 	publisher := openAuditTestPublisher(t, directory, 400)
@@ -78,6 +79,7 @@ func TestFileAuditReaderPagesAcrossRotationsAndPreservesStoredEvent(t *testing.T
 }
 
 // Traceability: SEC-10/SEC-11; docs/specs/tenancy-and-security.md §8.
+// Scenarios: management-api-and-observability.md:MGT-SCN-019, tenancy-and-security.md:SEC-SCN-033
 func TestFileAuditReaderHandlesRetentionCorruptionAndClose(t *testing.T) {
 	directory := t.TempDir()
 	publisher := openAuditTestPublisher(t, directory, 400)
@@ -132,6 +134,7 @@ func TestFileAuditReaderHandlesRetentionCorruptionAndClose(t *testing.T) {
 }
 
 // Traceability: SEC-10/SEC-11; docs/specs/tenancy-and-security.md §8.
+// Scenarios: management-api-and-observability.md:MGT-SCN-019, tenancy-and-security.md:SEC-SCN-033
 func TestFileAuditReaderRejectsInvalidStoredTimestamp(t *testing.T) {
 	directory := t.TempDir()
 	publisher := openAuditTestPublisher(t, directory, 1<<20)
@@ -157,6 +160,7 @@ func TestFileAuditReaderRejectsInvalidStoredTimestamp(t *testing.T) {
 }
 
 // Traceability: SEC-10/SEC-11; docs/specs/tenancy-and-security.md §8.
+// Scenarios: management-api-and-observability.md:MGT-SCN-019, tenancy-and-security.md:SEC-SCN-033
 func TestFileAuditReaderRejectsBrokenCrossFileChainLink(t *testing.T) {
 	directory := t.TempDir()
 	publisher := openAuditTestPublisher(t, directory, 1)

@@ -15,6 +15,7 @@ import (
 )
 
 // Traceability: CLU-02/CLU-07/DEP-06/DEP-07/DEP-08/DEP-10; docs/specs/drain-and-rolling-update.md §7.2, §10; ADR-0051 §7.
+// Scenarios: drain-and-rolling-update.md:DRN-SCN-017
 func TestDynamicClusterReplacementRollingUpdateProcessAcceptance(t *testing.T) {
 	t.Parallel()
 

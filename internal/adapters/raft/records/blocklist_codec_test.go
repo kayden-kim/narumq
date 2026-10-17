@@ -21,6 +21,7 @@ func blocklistCommand(action BlocklistAction, kind BlocklistKind, tenantID, valu
 }
 
 // Traceability: SEC-12; docs/specs/tenancy-and-security.md §7.1, §9; ADR-0050.
+// Scenarios: tenancy-and-security.md:SEC-SCN-040, tenancy-and-security.md:SEC-SCN-043
 func TestBlocklistCommandCodecRoundTripAndValidation(t *testing.T) {
 	entries := []struct {
 		kind     BlocklistKind
@@ -80,6 +81,7 @@ func blocklistSnapshot(entries ...*BlocklistState) *ReplicatedStateSnapshot {
 }
 
 // Traceability: SEC-12; docs/specs/tenancy-and-security.md §7.1, §9; ADR-0050.
+// Scenarios: tenancy-and-security.md:SEC-SCN-043
 func TestBlocklistSnapshotSortsCountsAndLimits(t *testing.T) {
 	state := blocklistSnapshot(
 		&BlocklistState{Entry: &BlocklistEntry{Kind: BlocklistKind_BLOCKLIST_KIND_IP_PREFIX, Value: "203.0.113.0/24"}, BlockedAtUnixMillis: 40},

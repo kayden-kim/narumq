@@ -7,6 +7,7 @@ import (
 )
 
 // Traceability: CLU-14; docs/specs/cluster-session-and-delivery.md §4.1, §10, §11.9.
+// Scenarios: cluster-session-and-delivery.md:CLU-SCN-041
 func TestOfflineDetachEnqueueClaimPreservesFIFOAndFencing(t *testing.T) {
 	machine := NewStateMachine()
 
@@ -158,6 +159,7 @@ func TestOfflineDetachEnqueueClaimPreservesFIFOAndFencing(t *testing.T) {
 }
 
 // Traceability: CLU-14; docs/specs/cluster-session-and-delivery.md §4.1, §10, §11.9.
+// Scenarios: cluster-session-and-delivery.md:CLU-SCN-041
 func TestOfflineCapacityConflictsPreserveState(t *testing.T) {
 	machine := NewStateMachine()
 
@@ -209,6 +211,7 @@ func TestOfflineCapacityConflictsPreserveState(t *testing.T) {
 }
 
 // Traceability: CLU-14; docs/specs/cluster-session-and-delivery.md §4.1, §10, §11.9.
+// Scenarios: cluster-session-and-delivery.md:CLU-SCN-041
 func TestOfflineExpiryUsesProposerTime(t *testing.T) {
 	machine := NewStateMachine()
 
@@ -435,6 +438,8 @@ func applyOfflineForTest(t *testing.T, machine *StateMachine, index uint64, chan
 	}
 	return res
 }
+
+// Scenarios: cluster-session-and-delivery.md:CLU-SCN-041
 func TestOfflineCommandValidationRejectsMalformedChanges(t *testing.T) {
 	base := func() OfflineChangeDTO {
 		return OfflineChangeDTO{

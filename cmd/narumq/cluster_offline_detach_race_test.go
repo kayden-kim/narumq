@@ -84,6 +84,7 @@ func (queue *detachRaceQueue) AwaitDetach(ctx context.Context, sessionID routing
 }
 
 // Traceability: CLU-14; docs/specs/cluster-session-and-delivery.md §4.1, §11.25.
+// Scenarios: cluster-session-and-delivery.md:CLU-SCN-182
 func TestClusterDetachCapturesConcurrentLocalQoS0Publish(t *testing.T) {
 	localQueue, err := memoryqueue.New(16)
 	if err != nil {
@@ -200,6 +201,7 @@ func (sink detachRaceForwardSink) DeliverForwarded(delivery deliveryqueue.Delive
 }
 
 // Traceability: CLU-14; docs/specs/cluster-session-and-delivery.md §4.1, §11.26.
+// Scenarios: cluster-session-and-delivery.md:CLU-SCN-184
 func TestClusterForwardDuringDetachIsDroppedWithoutBlockingLane(t *testing.T) {
 	localQueue, err := memoryqueue.New(16)
 	if err != nil {

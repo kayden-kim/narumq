@@ -150,13 +150,16 @@ func (pending PendingPublish) Wait() (ResultDTO, error) {
 func durableDeliveryResult(committed membership.ApplyResultDTO, err error) (membership.DeliveryResultDTO, error) {
 	if err != nil {
 		if errors.Is(err, deliveryqueue.ErrFull) {
-			return membership.DeliveryResultDTO{}, ErrDurableDeliveryCapacity
+			return membership.DeliveryResultDTO{}, NewRejectionError(ErrDurableDeliveryCapacity, RejectionClassServerBackpressure, RejectionCauseReceiveCapacity)
 		}
 		return membership.DeliveryResultDTO{}, err
 	}
 	if committed.Outcome != membership.ApplyOutcomeApplied || committed.Delivery == nil {
 		if committed.Conflict == membership.ConflictDeliveryCapacity {
-			return membership.DeliveryResultDTO{}, ErrDurableDeliveryCapacity
+			if committed.TenantQuota != nil {
+				return membership.DeliveryResultDTO{}, NewRejectionError(ErrDurableDeliveryCapacity, RejectionClassTenantLimit, RejectionCauseTenantQuota)
+			}
+			return membership.DeliveryResultDTO{}, NewRejectionError(ErrDurableDeliveryCapacity, RejectionClassServerBackpressure, RejectionCauseDeliveryCapacity)
 		}
 		return membership.DeliveryResultDTO{}, fmt.Errorf("%w: outcome=%d conflict=%s", ErrDurableDeliveryRejected, committed.Outcome, committed.Conflict)
 	}

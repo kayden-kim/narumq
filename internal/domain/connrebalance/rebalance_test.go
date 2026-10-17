@@ -2,6 +2,7 @@ package connrebalance
 
 import "testing"
 
+// Scenarios: cluster-session-and-delivery.md:CLU-SCN-223
 func TestEvaluate(t *testing.T) {
 	tests := []struct {
 		name           string
@@ -27,6 +28,7 @@ func TestEvaluate(t *testing.T) {
 	}
 }
 
+// Scenarios: cluster-session-and-delivery.md:CLU-SCN-223
 func TestStep(t *testing.T) {
 	eval := Evaluation{Fresh: true, FairShare: 40, Ceiling: 45}
 	tests := []struct {

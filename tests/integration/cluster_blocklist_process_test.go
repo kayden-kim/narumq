@@ -13,6 +13,7 @@ import (
 )
 
 // Traceability: SEC-12; docs/specs/tenancy-and-security.md §7.1, §9; ADR-0050.
+// Scenarios: tenancy-and-security.md:SEC-SCN-041, tenancy-and-security.md:SEC-SCN-042, tenancy-and-security.md:SEC-SCN-043, tenancy-and-security.md:SEC-SCN-044
 func TestDynamicClusterClientBlocklistProcessAcceptance(t *testing.T) {
 	fixture := newClusterMembershipProcessFixture(t, 3, "")
 	password := []byte("SEC12-process-acceptance-password")

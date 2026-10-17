@@ -6,6 +6,7 @@ import (
 )
 
 // Traceability: DEP-08; docs/specs/drain-and-rolling-update.md §6, §10.
+// Scenarios: drain-and-rolling-update.md:DRN-SCN-007
 func TestPendingWillCountCountsOnlyScheduledWillTimers(t *testing.T) {
 	useCase, _, _, _, _, _, _ := newUseCase(t, time.Now())
 	useCase.mu.Lock()

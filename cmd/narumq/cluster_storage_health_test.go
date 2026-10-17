@@ -138,6 +138,7 @@ func TestFailedStorageClosesReadinessAndCommit(t *testing.T) {
 	}
 }
 
+// Scenarios: management-api-and-observability.md:MGT-SCN-020
 func TestStorageHealthReadinessPreservesLifecycleState(t *testing.T) {
 	now := time.Date(2026, time.January, 1, 0, 0, 0, 0, time.UTC)
 	monitor := newClusterStorageMonitor(func() time.Time { return now }, nil)
@@ -159,6 +160,7 @@ func TestStorageHealthReadinessPreservesLifecycleState(t *testing.T) {
 }
 
 // Traceability: API-04; docs/specs/management-api-and-observability.md §3, §8.
+// Scenarios: management-api-and-observability.md:MGT-SCN-021
 func TestClusterStartupWaitsForTypedRecovery(t *testing.T) {
 	state := appmgmt.NewService(appmgmt.ServiceConfig{StartedAt: time.Unix(1, 0)}, nil, nil, nil, nil)
 	state.SetNodeState(managementports.NodeStateReady, nil)
@@ -176,6 +178,7 @@ func TestClusterStartupWaitsForTypedRecovery(t *testing.T) {
 	}
 }
 
+// Scenarios: management-api-and-observability.md:MGT-SCN-020
 func TestFailedStorageLivenessReturnsDown(t *testing.T) {
 	monitor := newClusterStorageMonitor(func() time.Time { return time.Unix(1, 0) }, nil)
 	monitor.fail(fmt.Errorf("%w: %w", raftadapter.ErrFailed, raftadapter.ErrStorage))
@@ -255,6 +258,8 @@ func TestClusterReadyRejectsStorageFaults(t *testing.T) {
 	}
 }
 
+// TestClusterStateProviderRemoteSummaryUsesLeaderMatchIndex verifies the remote summary reads the leader's peer match index.
+// Scenarios: performance-and-verification.md:PRF-SCN-088
 func TestClusterStateProviderRemoteSummaryUsesLeaderMatchIndex(t *testing.T) {
 	runtimes := newReadAdmissionTestCluster(t)
 	runtimes[0].machine = retainedTestMachine(t, runtimes[0].config, buildReleaseVersion)

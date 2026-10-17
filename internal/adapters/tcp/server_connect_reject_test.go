@@ -8,6 +8,7 @@ import (
 )
 
 // Traceability: UI-03/SEC-12; docs/specs/tenancy-and-security.md §7.1, §9; docs/specs/management-api-and-observability.md §7.1; ADR-0050.
+// Scenarios: management-api-and-observability.md:MGT-SCN-029, tenancy-and-security.md:SEC-SCN-041
 func TestConnectRejectReasonMapping(t *testing.T) {
 	for _, testCase := range []struct {
 		name         string

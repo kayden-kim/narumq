@@ -231,7 +231,7 @@ func collectTestMetadata(root string) ([]testMetadata, error) {
 			if marker < 0 {
 				continue
 			}
-			trace := text[marker+len("Traceability:"):]
+			trace := withoutScenarioLines(text[marker+len("Traceability:"):])
 			requirements, statementIDs, parseIssues := parseTraceability(trace)
 			for _, issue := range parseIssues {
 				issues = append(issues, traceabilityIssue{Message: fmt.Sprintf("%s:%d %s: %s", relativePath(root, file), fileSet.Position(function.Pos()).Line, function.Name.Name, issue)})
@@ -349,6 +349,20 @@ func parseTraceability(trace string) ([]string, []string, []string) {
 func splitTraceabilityID(value string) (string, string) {
 	index := strings.LastIndexByte(value, '-')
 	return value[:index], value[index+1:]
+}
+
+// withoutScenarioLines drops "Scenarios:" metadata lines so scenario IDs such as MQTT-10-SCN-05 are not
+// read as PRD requirement IDs.
+func withoutScenarioLines(text string) string {
+	lines := strings.Split(text, "\n")
+	kept := lines[:0]
+	for _, line := range lines {
+		if strings.HasPrefix(strings.TrimSpace(line), "Scenarios:") {
+			continue
+		}
+		kept = append(kept, line)
+	}
+	return strings.Join(kept, "\n")
 }
 
 func verifyTraceability(root, matrixPath string) error {

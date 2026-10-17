@@ -68,6 +68,7 @@ func blocklistHTTPRequest(method, path, body string) *http.Request {
 }
 
 // Traceability: SEC-12; docs/specs/tenancy-and-security.md §7.1, §9; ADR-0050.
+// Scenarios: tenancy-and-security.md:SEC-SCN-044
 func TestBlocklistHTTPListReturnsCanonicalTimestampedState(t *testing.T) {
 	entry := security.BlockEntry{Kind: security.BlockKindIPPrefix, Value: "203.0.113.0/24"}
 	service := &blocklistHTTPStub{state: membership.BlocklistDTO{
@@ -99,6 +100,7 @@ func TestBlocklistHTTPListReturnsCanonicalTimestampedState(t *testing.T) {
 }
 
 // Traceability: SEC-12; docs/specs/tenancy-and-security.md §7.1, §9; ADR-0050; docs/contracts/audit-event-v1.md.
+// Scenarios: tenancy-and-security.md:SEC-SCN-044
 func TestBlocklistRoutesParseEntriesAndAudit(t *testing.T) {
 	const blockedAt = uint64(1_700_000_000_321)
 	service := &blocklistHTTPStub{
@@ -171,6 +173,7 @@ func TestBlocklistRoutesParseEntriesAndAudit(t *testing.T) {
 }
 
 // Traceability: SEC-12; docs/specs/tenancy-and-security.md §7.1, §9; ADR-0050.
+// Scenarios: tenancy-and-security.md:SEC-SCN-044
 func TestBlocklistHTTPParsesEveryEntryKind(t *testing.T) {
 	for _, test := range []struct {
 		name  string
@@ -195,6 +198,7 @@ func TestBlocklistHTTPParsesEveryEntryKind(t *testing.T) {
 }
 
 // Traceability: SEC-12; docs/specs/tenancy-and-security.md §7.1, §9; ADR-0050.
+// Scenarios: tenancy-and-security.md:SEC-SCN-044
 func TestBlocklistRoutesParseEveryEntryKindForBlockAndUnblock(t *testing.T) {
 	for _, test := range []struct {
 		name  string
@@ -239,6 +243,7 @@ func TestBlocklistRoutesParseEveryEntryKindForBlockAndUnblock(t *testing.T) {
 }
 
 // Traceability: SEC-12; docs/specs/tenancy-and-security.md §7.1, §9; ADR-0050.
+// Scenarios: tenancy-and-security.md:SEC-SCN-044
 func TestBlocklistRoutesRejectInvalidInputAndRoles(t *testing.T) {
 	service := &blocklistHTTPStub{}
 	handler := newBlocklistHTTPTestHandler(service, RoleSecurityAdmin, nil)
@@ -304,6 +309,7 @@ func TestBlocklistRoutesRejectInvalidInputAndRoles(t *testing.T) {
 }
 
 // Traceability: SEC-12; docs/specs/tenancy-and-security.md §7.1, §9; ADR-0050.
+// Scenarios: tenancy-and-security.md:SEC-SCN-043, tenancy-and-security.md:SEC-SCN-044
 func TestBlocklistHTTPMapsCapacityAndAuditAdmissionFailures(t *testing.T) {
 	capacity := &membership.ServiceError{Code: membership.ServiceErrorBlocklistCapacity, Message: "blocklist capacity is exhausted"}
 	service := &blocklistHTTPStub{blockErr: capacity}

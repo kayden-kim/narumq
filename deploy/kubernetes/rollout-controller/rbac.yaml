@@ -1,0 +1,69 @@
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: narumq-rollout-controller
+  namespace: narumq
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: narumq-rollout-controller
+  namespace: narumq
+rules:
+  - apiGroups: ["narumq.io"]
+    resources: ["narumqrollouts"]
+    verbs: ["get", "list", "watch", "update", "patch"]
+  - apiGroups: ["narumq.io"]
+    resources: ["narumqrollouts/status"]
+    verbs: ["get", "update", "patch"]
+  - apiGroups: ["apps"]
+    resources: ["statefulsets"]
+    verbs: ["get"]
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list", "delete"]
+  - apiGroups: [""]
+    resources: ["services", "secrets"]
+    verbs: ["get"]
+  - apiGroups: [""]
+    resources: ["events"]
+    verbs: ["create", "patch"]
+  - apiGroups: ["coordination.k8s.io"]
+    resources: ["leases"]
+    verbs: ["get", "create", "update", "patch", "delete"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: narumq-rollout-controller
+  namespace: narumq
+subjects:
+  - kind: ServiceAccount
+    name: narumq-rollout-controller
+    namespace: narumq
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: narumq-rollout-controller
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: narumq-rollout-controller-nodes
+rules:
+  - apiGroups: [""]
+    resources: ["nodes"]
+    verbs: ["get"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: narumq-rollout-controller-nodes
+subjects:
+  - kind: ServiceAccount
+    name: narumq-rollout-controller
+    namespace: narumq
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: narumq-rollout-controller-nodes
