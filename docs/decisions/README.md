@@ -49,7 +49,7 @@
 | [ADR-0041](ADR-0041-branch-ratchet-noise-tolerance.md) | Accepted (diff 수치는 ADR-0044가 대체) | 전체·core branch ratchet에 명시된 0.20%p 노이즈 허용폭을 적용한다. Diff 수치 변경은 ADR-0044를 따른다. |
 | [ADR-0042](ADR-0042-p0-requirement-traceability-gate.md) | Accepted | PRD 기반 P0 요구사항 연결과 정렬된 예외 목록 ratchet을 적용한다. |
 | [ADR-0043](ADR-0043-management-api-rate-limit.md) | Accepted (principal subject 목록은 ADR-0048이 대체) | Management API에 인증 주체별·인증 실패 IP별 node-local token bucket rate limit을 적용한다. |
-| [ADR-0044](ADR-0044-diff-coverage-floor-90.md) | Accepted | 변경 코드의 line·function·branch diff coverage 하한을 각각 90%로 정한다. 전체·core 기준과 ratchet은 유지한다. |
+| [ADR-0044](ADR-0044-diff-coverage-floor-90.md) | Accepted (diff 하한 수치는 ADR-0063이 대체) | 변경 코드의 line·function·branch diff coverage 하한을 각각 90%로 정했다. 전체·core 기준과 ratchet 유지 결정은 그대로다. |
 | [ADR-0045](ADR-0045-operations-dashboard-grafana.md) | Accepted | Grafana와 Prometheus로 운영 Dashboard를 제공하고 조회 전용 API key를 사용한다. |
 | [ADR-0046](ADR-0046-mqtt-data-plane-denial-audit.md) | Accepted | Dynamic cluster에서 MQTT data-plane 거절을 기존 node-local hash chain에 fail-open·bounded async 방식으로 기록한다. |
 | [ADR-0047](ADR-0047-mqtt-password-authentication.md) | Accepted (SEC-05 적용 범위) | 고정 Argon2id PHC hash와 stdin hash 명령으로 MQTT password 인증을 제공한다. |
@@ -68,6 +68,7 @@
 | [ADR-0060](ADR-0060-shared-subscription-durable-owner-loss-reroute.md) | Accepted | 공유 구독의 durable 전달은 도달할 수 없는 owner의 member를 건너뛰어 고르고, 공유 출처 message는 member session이 reset·삭제될 때 같은 group의 다른 member로 다시 넣는다. |
 | [ADR-0061](ADR-0061-eks-ordinal-member-slot.md) | Accepted | EKS StatefulSet Pod는 ordinal slot 파일이 가리키는 member ID로 시작해, volume을 잃은 slot을 같은 Pod 자리의 새 member ID로 재시드한다. |
 | [ADR-0062](ADR-0062-raft-snapshot-stream.md) | Accepted | 1 MiB를 넘는 Raft snapshot은 `snapshot-stream` feature를 활성화한 cluster에서 별도 chunk stream으로 보낸다. 활성화 전에는 지금처럼 보내지 않고 실패로 알린다. |
+| [ADR-0063](ADR-0063-diff-coverage-floor-80.md) | Accepted | 변경 코드의 line·function·branch diff coverage 하한을 각각 80%로 낮춘다. 전체·core 기준과 ratchet은 유지한다. |
 
 `Proposed` ADR은 검토 중인 제안이다. `Accepted` ADR은 각 기록에 명시한 범위 안에서 채택된 결정이다. `design target only`는 production runtime이나 acceptance 검증을 뜻하지 않는다.
 

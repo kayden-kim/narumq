@@ -73,17 +73,21 @@ func TestCoverageRatchetRejectsMeasuredValueBelowBaseline(t *testing.T) {
 // Traceability: PRD TEST-08; docs/specs/performance-and-verification.md §8.5.
 // Scenarios: performance-and-verification.md:PRF-SCN-092
 func TestDiffCoverageLineAndFunctionFloorBoundaries(t *testing.T) {
-	floor := coverageFloor{Line: 90, Function: 90}
+	policy, err := loadCoveragePolicy(filepath.Join("..", "..", defaultCoveragePolicyPath))
+	if err != nil {
+		t.Fatal(err)
+	}
+	floor := policy.DiffFloor
 	for _, testCase := range []struct {
 		name       string
 		line       float64
 		function   float64
 		wantMetric string
 	}{
-		{name: "at-floor", line: 90, function: 90},
-		{name: "above-floor", line: 90.01, function: 90.01},
-		{name: "line-below-floor", line: 89.99, function: 90, wantMetric: "line"},
-		{name: "function-below-floor", line: 90, function: 89.99, wantMetric: "function"},
+		{name: "at-floor", line: floor.Line, function: floor.Function},
+		{name: "above-floor", line: floor.Line + 0.01, function: floor.Function + 0.01},
+		{name: "line-below-floor", line: floor.Line - 0.01, function: floor.Function, wantMetric: "line"},
+		{name: "function-below-floor", line: floor.Line, function: floor.Function - 0.01, wantMetric: "function"},
 	} {
 		t.Run(testCase.name, func(t *testing.T) {
 			issues := enforceCoverageFloor("diff", packageCoverage{

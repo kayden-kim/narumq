@@ -961,7 +961,7 @@ go run ./tests/chaos/cluster-storage-v1 \
 
 Coverage는 Go atomic coverprofile의 executable block을 집계한다. [ADR-0040](../decisions/ADR-0040-branch-coverage-arm-injection.md)에 따라 branch는 `if`의 then·else와 clause가 있는 switch·type switch·select의 각 case·default arm을 센다. Loop 조건, 단락 평가와 `func _` body는 제외한다. 빠진 else·switch default만 줄바꿈 없이 사본에 주입한다. Select default는 주입하지 않는다. 사본에서 전체 시험을 실행하고 manifest 좌표와 원본 SHA-256을 대조한다. Line coverage로 branch를 대체하지 않는다. 실행 가능한 변경 line이나 변경 결정점이 없으면 해당 diff coverage는 100%다.
 
-현재 gate는 local coverage의 package별 `-parallel=8`, CI는 유효 `GOMAXPROCS`를 `-parallel` 상한으로 쓴다. Mutation은 자동 gate가 아니며 별도 수동 command로 다섯 package를 검사한다. 점수 threshold는 package마다 그대로 적용한다. 위 9개 core domain을 쓴다. Final ratchet은 overall production과 core별 threshold를 `coverage-policy.json`에 둔다. Branch는 두 번 측정한 값 중 작은 값을 소수점 둘째 자리에서 내림한 baseline ratchet을 사용한다. 전체·core ratchet은 측정값이 ratchet에서 0.20%p를 뺀 값보다 낮을 때 실패하며, 비교에는 0.005%p 반올림 오차를 추가로 허용한다. 허용폭은 branch ratchet에만 적용하며 line·function gate, diff 90%와 PRD shortfall에는 적용하지 않는다. 허용폭은 [ADR-0041](../decisions/ADR-0041-branch-ratchet-noise-tolerance.md), 현재 diff 하한은 [ADR-0044](../decisions/ADR-0044-diff-coverage-floor-90.md)를 따른다. PRD 전체 80%·core 90% 미달은 report의 `branchCoverage.requirementShortfalls`로 보고한다. 이를 ratchet gate 실패 사유로 쓰지 않으며, 미달이 남는 동안 TEST-06·TEST-07은 미검증으로 유지한다. Ratchet 변경에는 반복 안정성 증거와 정책/요구사항 갱신이 필요하다. Coverage 숫자만으로는 충분하지 않으며 모든 P0 requirement와 지원 MQTT normative statement에 assertion이 연결되어야 한다.
+현재 gate는 local coverage의 package별 `-parallel=8`, CI는 유효 `GOMAXPROCS`를 `-parallel` 상한으로 쓴다. Mutation은 자동 gate가 아니며 별도 수동 command로 다섯 package를 검사한다. 점수 threshold는 package마다 그대로 적용한다. 위 9개 core domain을 쓴다. Final ratchet은 overall production과 core별 threshold를 `coverage-policy.json`에 둔다. Branch는 두 번 측정한 값 중 작은 값을 소수점 둘째 자리에서 내림한 baseline ratchet을 사용한다. 전체·core ratchet은 측정값이 ratchet에서 0.20%p를 뺀 값보다 낮을 때 실패하며, 비교에는 0.005%p 반올림 오차를 추가로 허용한다. 허용폭은 branch ratchet에만 적용하며 line·function gate, diff 하한과 PRD shortfall에는 적용하지 않는다. 허용폭은 [ADR-0041](../decisions/ADR-0041-branch-ratchet-noise-tolerance.md), 현재 diff 하한은 [ADR-0063](../decisions/ADR-0063-diff-coverage-floor-80.md)을 따른다. PRD 전체 80%·core 90% 미달은 report의 `branchCoverage.requirementShortfalls`로 보고한다. 이를 ratchet gate 실패 사유로 쓰지 않으며, 미달이 남는 동안 TEST-06·TEST-07은 미검증으로 유지한다. Ratchet 변경에는 반복 안정성 증거와 정책/요구사항 갱신이 필요하다. Coverage 숫자만으로는 충분하지 않으며 모든 P0 requirement와 지원 MQTT normative statement에 assertion이 연결되어야 한다.
 
 ### 8.1 Verification 실행 정책
 
@@ -1003,7 +1003,7 @@ go run ./tools/verify mutation
 
 | 시나리오 ID | 요구사항 ID | 조건과 입력 | 기대 결과 |
 | --- | --- | --- | --- |
-| PRF-SCN-087 | TEST-09 | Overall branch ratchet이 측정값보다 높은 policy 사본으로 `coverage`를 실행한다. 차이는 +0.21%p와 +0.19%p다. 허용폭 경계 값으로 `tools/verify` 단위 시험도 실행한다. | +0.21%p는 exit 1이며 `overall branch ratchet <ratchet>% (tolerance 0.20%p) is above measured <측정값>%`를 출력한다. +0.19%p는 exit 0과 `coverage: PASS`다. 허용폭은 branch ratchet에만 적용하고 line·function gate, diff 90%와 PRD shortfall에는 적용하지 않는다. |
+| PRF-SCN-087 | TEST-09 | Overall branch ratchet이 측정값보다 높은 policy 사본으로 `coverage`를 실행한다. 차이는 +0.21%p와 +0.19%p다. 허용폭 경계 값으로 `tools/verify` 단위 시험도 실행한다. | +0.21%p는 exit 1이며 `overall branch ratchet <ratchet>% (tolerance 0.20%p) is above measured <측정값>%`를 출력한다. +0.19%p는 exit 0과 `coverage: PASS`다. 허용폭은 branch ratchet에만 적용하고 line·function gate, diff 하한과 PRD shortfall에는 적용하지 않는다. |
 | PRF-SCN-088 | TEST-06, TEST-07, TEST-14 | Cluster, Raft, TCP와 delivery queue의 branch outcome(`if`의 then·else, switch case)을 clock·sleep·스케줄 순서에 의존하지 않는 결정적 시험으로 실행한다. 해당 시험을 race detector 아래 반복한다. | 대상 outcome이 모두 covered이며 `uncoveredOutcomes`에 남지 않는다. 반복한 race 시험이 모두 통과한다. |
 
 ### 8.4 전체 branch floor 수용 테스트
@@ -1014,19 +1014,19 @@ go run ./tools/verify mutation
 | --- | --- | --- | --- |
 | PRF-SCN-089 | TEST-06 | 전체 production branch 기준 80%를 반영한 `tests/verification/coverage-policy.json`으로 `go run ./tools/verify local`을 실행한다. | `coverage: PASS`, `local: PASS`이며 `branchCoverage.requirementShortfalls`가 비어 있다. Core 9개 branch 기준과 ratchet, line·function 기준은 바뀌지 않는다. |
 
-### 8.5 변경 코드 diff floor 90% 수용 테스트
+### 8.5 변경 코드 diff floor 수용 테스트
 
-시나리오 결과와 테스트 연결은 [테스트 컨벤션](../conventions/test-conventions.md)의 시나리오 보고서로 확인한다. 과거 실행 기록은 [검증 기록](../verification/performance-and-verification.md#85-변경-코드-diff-floor-90-수용-증거)에 있다.
+시나리오 결과와 테스트 연결은 [테스트 컨벤션](../conventions/test-conventions.md)의 시나리오 보고서로 확인한다. 과거 실행 기록은 [검증 기록](../verification/performance-and-verification.md#85-변경-코드-diff-floor-수용-증거)에 있다.
 
-변경 코드의 line·function·branch diff coverage 하한은 각각 90%다([ADR-0044](../decisions/ADR-0044-diff-coverage-floor-90.md)). 하한과 같은 값은 통과하고 미달은 거절한다. Ratchet 허용폭은 diff 하한에 적용하지 않는다.
+변경 코드의 line·function·branch diff coverage 하한은 각각 80%다([ADR-0063](../decisions/ADR-0063-diff-coverage-floor-80.md)). 하한과 같은 값은 통과하고 미달은 거절한다. Ratchet 허용폭은 diff 하한에 적용하지 않는다.
 
 | 시나리오 ID | 요구사항 ID | 조건과 입력 | 기대 결과 |
 | --- | --- | --- | --- |
-| PRF-SCN-090 | TEST-08 | 최신 commit의 atomic profile과 branch manifest를 `tests/verification/coverage-policy.json`의 `diffFloor` 90%로 평가한다. `go run ./tools/verify coverage --base <부모 commit>`을 실행한다. | 세 diff 지표가 모두 하한을 넘어 `coverage: PASS`, exit 0이다. Report의 `passed=true`, `branchCoverage.status=measured`이고 `requirementShortfalls`는 비어 있다. |
-| PRF-SCN-091 | TEST-08 | Diff branch 측정값이 90%이고 하한도 90%다. | 통과한다. |
-| PRF-SCN-092 | TEST-08 | Diff line과 function 측정값을 각각 89.99%, 90%, 90.01%로 바꿔 평가한다. 한 지표만 89.99%이고 다른 지표는 90%다. | 90%와 90.01%는 통과한다. 해당 지표가 89.99%이면 다른 지표가 90%여도 독립적으로 거절한다. |
-| PRF-SCN-093 | TEST-08, TEST-09 | Diff branch 측정값이 90%이고 하한이 90.01%다. Ratchet 허용폭은 0.20%p다. | 허용폭을 적용하지 않고 diff 하한 미달로 거절한다. |
-| PRF-SCN-094 | TEST-08 | 하한에 미달하는 과거 변경 범위를 `--base`로 지정해 같은 coverage CLI를 실행한다. | exit 1이며 `diff branch coverage <측정값>% is below 90.00%`를 출력한다. |
+| PRF-SCN-090 | TEST-08 | 최신 commit의 atomic profile과 branch manifest를 `tests/verification/coverage-policy.json`의 `diffFloor` 80%로 평가한다. `go run ./tools/verify coverage --base <부모 commit>`을 실행한다. | 세 diff 지표가 모두 하한을 넘어 `coverage: PASS`, exit 0이다. Report의 `passed=true`, `branchCoverage.status=measured`이고 `requirementShortfalls`는 비어 있다. |
+| PRF-SCN-091 | TEST-08 | Diff branch 측정값과 diff 하한이 같다. | 통과한다. |
+| PRF-SCN-092 | TEST-08 | Diff line과 function 측정값을 각각 79.99%, 80%, 80.01%로 바꿔 평가한다. 한 지표만 79.99%이고 다른 지표는 80%다. | 80%와 80.01%는 통과한다. 해당 지표가 79.99%이면 다른 지표가 80%여도 독립적으로 거절한다. |
+| PRF-SCN-093 | TEST-08, TEST-09 | Diff branch 하한이 측정값보다 0.01%p 높다. Ratchet 허용폭은 0.20%p다. | 허용폭을 적용하지 않고 diff 하한 미달로 거절한다. |
+| PRF-SCN-094 | TEST-08 | 하한에 미달하는 과거 변경 범위를 `--base`로 지정해 같은 coverage CLI를 실행한다. | exit 1이며 `diff branch coverage <측정값>% is below 80.00%`를 출력한다. |
 | PRF-SCN-095 | TEST-08, TEST-09, TEST-11 | 저장소 루트에서 `go test ./tools/verify -count=1`을 실행한다. | `tools/verify` package의 coverage·branch 시험이 모두 통과한다. |
 | PRF-SCN-096 | TEST-10 | 저장소 루트에서 `go run ./tools/verify traceability`를 실행한다. | exit 0으로 통과한다. P0 연결 수와 예외 수가 허용된 예외 목록과 일치한다. |
 

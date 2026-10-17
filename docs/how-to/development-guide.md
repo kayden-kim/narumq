@@ -441,7 +441,7 @@ go run ./cmd/narumq -tcp-listen 127.0.0.1:1883 -http-listen 127.0.0.1:8080 -allo
 
 완료 여부는 아래 성공 조건으로 판정하고, 실제 대상 버전·환경·명령·결과를 [검증 기록 규칙](../AGENTS.md#검증-기록)에 따라 남긴다. 과거 통과는 현재 코드의 통과가 아니다. 전체 local coverage는 실패 상태이며, 현재 시나리오 연결·실행 결과는 [시나리오 보고서](../../.artifacts/verification/scenarios/report.md)를 확인한다.
 
-Branch coverage는 schema 2 report의 `measured`로 기록한다. Overall·core branch ratchet에는 `branchTolerance=0.20`을 적용한다. Core branch는 90%, 변경 코드 line/function/branch diff coverage는 각각 90%다. Diff 기준은 [ADR-0044](../decisions/ADR-0044-diff-coverage-floor-90.md)를 따른다.
+Branch coverage는 schema 2 report의 `measured`로 기록한다. Overall·core branch ratchet에는 `branchTolerance=0.20`을 적용한다. Core branch는 90%, 변경 코드 line/function/branch diff coverage는 각각 80%다. Diff 기준은 [ADR-0063](../decisions/ADR-0063-diff-coverage-floor-80.md)을 따른다.
 
 | 관찰 대상 | 성공 조건 | 확인 명령·방법 | 관련 검증 기록 |
 | --- | --- | --- | --- |
@@ -450,7 +450,7 @@ Branch coverage는 schema 2 report의 `measured`로 기록한다. Overall·core 
 | 규격 추적성 | PRD의 모든 P0를 test 함수 또는 유효한 예외에 연결하고 stale 예외 0건. 예외가 있으면 제품 전체 수용 완료가 아니다. | `go run ./tools/verify traceability` | [P0 gate 결정](../decisions/ADR-0042-p0-requirement-traceability-gate.md) |
 | 시나리오 연결·실행 | 오류·미연결이 없고 실행 범위 안의 연결 테스트가 모두 통과함 | §3의 `scenarios --require-executed` 명령 | 시나리오 보고서 |
 | Markdown 링크 | 지정 범위의 로컬 링크 대상과 제목 앵커가 모두 유효함 | `go run ./tools/verify markdown-links` | 실행 콘솔 출력 |
-| 코드 커버리지 | Line/function 기준, overall branch 80%, core branch 90%, ratchet 허용폭, line/function/branch diff 90% 충족 | `go run ./tools/verify local`; `go run ./tools/verify ci --base <merge-base>` | [Coverage 정책 수용 기록](../verification/performance-and-verification.md#84-전체-branch-floor-수용-증거) |
+| 코드 커버리지 | Line/function 기준, overall branch 80%, core branch 90%, ratchet 허용폭, line/function/branch diff 80% 충족 | `go run ./tools/verify local`; `go run ./tools/verify ci --base <merge-base>` | [Coverage 정책 수용 기록](../verification/performance-and-verification.md#84-전체-branch-floor-수용-증거) |
 | 뮤테이션 테스트 | Delivery·MQTT·NodeDrain·Security·Session 각각 efficacy·mutant coverage 80% 이상 | `go run ./tools/verify mutation` | [수동 mutation 검증 기록](../verification/performance-and-verification.md#88-수동-mutation-검증-수용-증거) |
 | CI 자동 검증 | PR이 최신 `main`을 반영하고 필수 `verify` check가 성공해야 merge할 수 있음 | GitHub Actions `verify`; `go run ./tools/verify ci --base <merge-base>` | [원격 CI·required check 기록](../verification/performance-and-verification.md#89-github-actions-원격-ci와-required-check-증거) |
 | 종합 로컬 검증 | 로컬 검증 gate 전체 완료 및 종료 코드 0 | `go run ./tools/verify local` | 해당 실행의 콘솔 출력·coverage report |

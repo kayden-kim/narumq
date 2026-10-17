@@ -8,7 +8,7 @@
 | 관련 요구사항 | [PRD](../requirements/PRD.md)의 TEST-06~TEST-10, TEST-13~TEST-15 |
 | 관련 스펙·계약 | [Performance와 verification](../specs/performance-and-verification.md), [개발 안내](../how-to/development-guide.md) |
 | 관련 아키텍처 문서 | [Project structure](../architectures/project-structure.md) |
-| 관련 ADR | [ADR-0042](ADR-0042-p0-requirement-traceability-gate.md), [ADR-0044](ADR-0044-diff-coverage-floor-90.md) |
+| 관련 ADR | [ADR-0042](ADR-0042-p0-requirement-traceability-gate.md), [ADR-0044](ADR-0044-diff-coverage-floor-90.md), [ADR-0063](ADR-0063-diff-coverage-floor-80.md) |
 | 이 ADR이 대체하는 이전 ADR | 없음 |
 | 이 ADR을 대체한 새 ADR | [ADR-0056](ADR-0056-branch-protection-for-admins.md)가 §1의 관리자 보호 적용 행만 대체한다. 나머지 결정은 유지한다. |
 

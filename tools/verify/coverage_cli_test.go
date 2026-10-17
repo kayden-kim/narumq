@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -36,6 +37,7 @@ func Escalate(value int) int {
 // branch-instrument and coverage commands against it.
 type coverageCLIFixture struct {
 	root, policyPath string
+	policy           coveragePolicy
 }
 
 func newCoverageCLIFixture(t *testing.T, policy coveragePolicy) coverageCLIFixture {
@@ -54,7 +56,7 @@ func newCoverageCLIFixture(t *testing.T, policy coveragePolicy) coverageCLIFixtu
 	writeBranchTestFile(t, root, ".gitignore", []byte(".artifacts/\n"))
 	runBranchTestCommand(t, root, "git", "init", "-q")
 	t.Chdir(root)
-	return coverageCLIFixture{root: root, policyPath: policyPath}
+	return coverageCLIFixture{root: root, policyPath: policyPath, policy: policy}
 }
 
 func (fixture coverageCLIFixture) commit(t *testing.T, message string) string {
@@ -163,8 +165,8 @@ func TestRunCoverageRejectsHistoricalDiffBelowFloor(t *testing.T) {
 		t.Fatalf("exit code = %d, want 1; stdout=%q stderr=%q", code, stdout, stderr)
 	}
 	for _, want := range []string{
-		"diff branch coverage 0.00% is below 90.00%",
-		"diff line coverage 0.00% is below 90.00%",
+		fmt.Sprintf("diff branch coverage 0.00%% is below %.2f%%", fixture.policy.DiffFloor.Branch),
+		fmt.Sprintf("diff line coverage 0.00%% is below %.2f%%", fixture.policy.DiffFloor.Line),
 	} {
 		if !strings.Contains(stderr, want) {
 			t.Fatalf("stderr = %q, want substring %q", stderr, want)
@@ -182,9 +184,6 @@ func TestRunCoverageAcceptsDiffAtOrAboveFloorWithMeasuredBranches(t *testing.T) 
 	repoPolicy, err := loadCoveragePolicy(filepath.Join("..", "..", defaultCoveragePolicyPath))
 	if err != nil {
 		t.Fatal(err)
-	}
-	if want := (coverageFloor{Line: 90, Function: 90, Branch: 90}); repoPolicy.DiffFloor != want {
-		t.Fatalf("repository diffFloor = %+v, want %+v", repoPolicy.DiffFloor, want)
 	}
 	policy := coverageCLIPolicy(t)
 	policy.OverallFloor, policy.CoreFloor = repoPolicy.OverallFloor, repoPolicy.CoreFloor
@@ -216,8 +215,9 @@ func TestRunCoverageAcceptsDiffAtOrAboveFloorWithMeasuredBranches(t *testing.T) 
 		t.Fatal("report has no diff coverage")
 	}
 	for name, metric := range map[string]coverageMetric{"line": report.Diff.Line, "function": report.Diff.Function, "branch": report.Diff.Branch} {
-		if metric.Total == 0 || metric.Percent < 90 {
-			t.Fatalf("diff %s coverage = %+v, want measured changed code at or above 90%%", name, metric)
+		floor := map[string]float64{"line": policy.DiffFloor.Line, "function": policy.DiffFloor.Function, "branch": policy.DiffFloor.Branch}[name]
+		if metric.Total == 0 || metric.Percent < floor {
+			t.Fatalf("diff %s coverage = %+v, want measured changed code at or above the %.2f%% floor", name, metric, floor)
 		}
 	}
 }

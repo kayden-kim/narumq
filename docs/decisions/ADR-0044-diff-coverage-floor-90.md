@@ -9,7 +9,7 @@
 | 관련 스펙·계약 | [Performance와 verification §8](../specs/performance-and-verification.md#8-coverage와-test-quality-gate) |
 | 관련 아키텍처 문서 | [Project structure](../architectures/project-structure.md#repository-verification-모듈-흐름) |
 | 이 ADR이 대체하는 이전 ADR | [ADR-0040 §1.7](ADR-0040-branch-coverage-arm-injection.md#1-결정)의 diff branch 95% 기준과 [ADR-0041 §1.4](ADR-0041-branch-ratchet-noise-tolerance.md#1-결정)의 diff 95% 수치만 대체한다. 나머지 결정은 유지한다. |
-| 이 ADR을 대체한 새 ADR | 없음 |
+| 이 ADR을 대체한 새 ADR | [ADR-0063](ADR-0063-diff-coverage-floor-80.md)이 §1.1의 diff 하한 90% 수치만 대체한다. 나머지 결정은 유지한다. |
 
 ## 1. 결정
 
@@ -62,7 +62,7 @@
 
 | 가설·결정 요인 | 검증 방법 | 합격 기준 | 증거 |
 | --- | --- | --- | --- |
-| 세 diff 하한과 기존 보호를 적용한다. | Coverage evaluator 시험과 실제 coverage CLI | 각 지표가 90% 이상이면 통과하고 미달하면 거절한다. | 실행 결과는 [성능 검증 기록 §8.5](../verification/performance-and-verification.md#85-변경-코드-diff-floor-90-수용-증거)에 기록한다. |
+| 세 diff 하한과 기존 보호를 적용한다. | Coverage evaluator 시험과 실제 coverage CLI | 각 지표가 90% 이상이면 통과하고 미달하면 거절한다. | 실행 결과는 [성능 검증 기록 §8.5](../verification/performance-and-verification.md#85-변경-코드-diff-floor-수용-증거)에 기록한다. |
 | 최신 커밋에 새 정책을 적용한다. | 기존 atomic profile과 branch manifest로 부모 커밋 대비 평가 | Source·manifest 검증 뒤 diff 하한을 충족한다. | 같은 스펙 절에 기준 커밋, 명령과 결과를 기록한다. |
 
 ## 8. 재검토 조건

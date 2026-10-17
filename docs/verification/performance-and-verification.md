@@ -16,7 +16,7 @@
 | [Branch 측정 gate 기록](#82-branch-측정-gate-수용-증거) | §8.2 | PRF-SCN-077~PRF-SCN-086 |
 | [Branch ratchet 허용폭 기록](#83-branch-ratchet-노이즈-허용폭-수용-증거) | §8.3 | PRF-SCN-087, PRF-SCN-088 |
 | [전체 branch floor 기록](#84-전체-branch-floor-수용-증거) | §8.4 | PRF-SCN-089 |
-| [diff floor 90% 기록](#85-변경-코드-diff-floor-90-수용-증거) | §8.5 | PRF-SCN-090~PRF-SCN-096 |
+| [diff floor 기록](#85-변경-코드-diff-floor-수용-증거) | §8.5 | PRF-SCN-090~PRF-SCN-096 |
 | [간헐 실패 원인 수정 기록](#86-간헐-실패-원인-수정-수용-증거) | §8.6 | PRF-SCN-097~PRF-SCN-099 |
 | [Mutation gate 범위 확장 기록](#87-mutation-gate-범위-확장-수용-증거) | §8.7 | PRF-SCN-100, PRF-SCN-101, PRF-SCN-103 |
 | [수동 mutation 검증 기록](#88-수동-mutation-검증-수용-증거) | §8.8 | PRF-SCN-101, PRF-SCN-102, PRF-SCN-103 |
@@ -311,7 +311,7 @@ Cluster·TCP·auditlog·deliveryqueue focused 시험을 race detector 아래 각
 
 결과는 `.artifacts/verification/coverage-summary-floor-{a,b,c}.json`과 `floor-local-{a,b,c}.log`에 있다. Ratchet 경계 +0.21%p 거절·+0.19%p 통과는 `coverage-boundary-plus-{021,019}.json`에 있다. 이 작업에서는 원격 필수 CI status·merge 차단을 확인하지 않았다.
 
-## 8.5 변경 코드 diff floor 90% 수용 증거
+## 8.5 변경 코드 diff floor 수용 증거
 
 대상 시나리오: PRF-SCN-090~PRF-SCN-096
 
@@ -324,6 +324,20 @@ go run ./tools/verify coverage --profile .artifacts/verification/coverage.out --
 결과는 exit 0이며 diff line 82/84(97.62%), function 16/16(100%), branch 32/34(94.12%)였다. `passed=true`, branch `measured`, shortfall 없음이었다. `--base 02ef51d` 재평가는 branch 82.25%로 exit 1이었다(`coverage-summary-diff-floor90-historical.json`).
 
 `TestBranchRatchetDiffFloorAndRequirementShortfall`과 `TestDiffCoverageLineAndFunctionFloorBoundaries`는 하한과 같은 값 허용·각 지표의 독립적인 미달 거절·diff에 ratchet 허용폭 미적용을 확인했다. `go test ./tools/verify -count=1`도 통과했다. 기존 profile 재평가이며 전체 local·원격 CI를 새로 실행한 결과는 아니다.
+
+### 2026-10-17 diff 하한 80% 적용
+
+사용자 결정 [ADR-0063](../decisions/ADR-0063-diff-coverage-floor-80.md)에 따라 `diffFloor`를 세 지표 모두 80%로 바꿨다. 위 기록의 90%는 당시 기준이다. `TestDiffCoverageLineAndFunctionFloorBoundaries`, `TestRunCoverageRejectsHistoricalDiffBelowFloor`, `TestRunCoverageAcceptsDiffAtOrAboveFloorWithMeasuredBranches`는 이제 저장소 policy의 `diffFloor` 값을 읽어 경계를 만든다.
+
+원격 CI [run 39036288101](https://github.com/kayden-kim/narumq/actions/runs/39036288101)의 `coverage.out`과 branch manifest를 새 policy로 다시 평가했다. 산출물은 Linux runner가 만들었고 manifest는 LF 원본의 SHA-256을 쓴다. Windows 작업 트리는 CRLF라 그대로는 `branch manifest is stale`로 중단한다. 그래서 `core.autocrlf=false`로 만든 임시 clone에서 `GOOS=linux`로 실행했다. 평가 대상은 `c8d9b06d9d103596c3f322522dd516083a3a13a3`이고, 임시 clone의 `origin/main`은 `8a59c22fcb401f8ae67bed2608c8a005bfda8a29`로 맞췄다. 이 두 commit 사이에서 `internal/`·`cmd/`는 `eca98da`까지 바뀌지 않았다. `go build -o <임시 경로>/verify.exe ./tools/verify`로 만든 같은 소스의 실행 파일을 썼다.
+
+```text
+GOOS=linux verify.exe coverage --profile <artifact>/coverage.out --policy tests/verification/coverage-policy.json --branch-manifest <artifact>/branch/manifest.json --base origin/main --report .artifacts/verification/diff-floor80-smoke/coverage-summary.json
+coverage: coverage gate failed:
+diff branch coverage 70.11% is below 80.00%
+```
+
+결과는 exit 1이다. Diff line 3968/4955(80.08%)와 function 368/406(90.64%)은 새 하한을 넘었고, diff branch 1520/2168(70.11%)만 미달했다. 80%에 닿으려면 변경 결정점의 outcome 1735개가 covered여야 하므로 215개를 더 실행해야 한다. 미실행 648개 중 상위 파일은 `internal/adapters/rollout/kubernetes_runtime.go` 79/80, `internal/adapters/tcp/peer_observability_adapter.go` 49/56, `internal/adapters/tcp/peer_snapshot_stream.go` 48/156, `internal/adapters/rollout/oci_metadata.go` 42/68, `internal/adapters/tcp/peer_observability_transport.go` 42/105이다(미실행/전체 diff outcome). 상위 네 파일의 미실행 outcome 합이 218개다.
 
 ## 8.6 간헐 실패 원인 수정 수용 증거
 
@@ -434,7 +448,7 @@ Profile controller race 3회와 `cmd/narumq` package race 1회도 통과했다. 
 | PRF-SCN-069, PRF-SCN-096 | 같은 파일의 `TestRunTraceabilityPassesAtRepositoryRoot` | PASS. 실제 저장소 root에서 CLI exit 0과 P0 연결 수·예외 수의 합을 확인했다. |
 | PRF-SCN-083 | `tools/verify/branch_test.go`의 `TestBranchCoverageMatchesGoCoverBlocks` | PASS. 원본과 계측 사본에서 얻은 line·function total이 같았다. |
 | PRF-SCN-084 | `tools/verify/coverage_cli_test.go`의 `TestRunCoverageRejectsRoutingBranchRatchetAboveMeasured` | PASS. 저장소 밖 policy의 routing branch ratchet만 높였고 CLI가 exit 1로 거절했다. 현재 오류 문구에는 ratchet 허용폭도 포함된다. |
-| PRF-SCN-085, PRF-SCN-094 | 같은 파일의 `TestRunCoverageRejectsHistoricalDiffBelowFloor` | PASS. 임시 Git 저장소의 이전 commit을 `--base`로 지정했다. CLI가 diff branch·line 0%를 각각 90% 미달로 보고했다. |
+| PRF-SCN-085, PRF-SCN-094 | 같은 파일의 `TestRunCoverageRejectsHistoricalDiffBelowFloor` | PASS(당시 하한 90%). 임시 Git 저장소의 이전 commit을 `--base`로 지정했다. CLI가 diff branch·line 0%를 각각 policy의 diff 하한 미달로 보고했다. 현재 시험은 policy 값을 읽는다. |
 | PRF-SCN-090 | 같은 파일의 `TestRunCoverageAcceptsDiffAtOrAboveFloorWithMeasuredBranches` | PASS. 실제 policy의 diff floor를 사용하는 임시 Git 저장소에서 CLI exit 0, 세 diff 지표, `passed=true`, branch `measured`와 빈 shortfall을 확인했다. |
 | PRF-SCN-062 | `tests/benchmark/capacity/local.go`의 `localCommand` | 메타 정보만 연결했다. 이번 작업에서 Docker 하네스를 실행하지 않았다. |
 | PRF-SCN-063, PRF-SCN-064 | `tests/benchmark/capacity/eks/controller.py`의 `run_command` | 메타 정보만 연결했다. 이번 작업에서 EKS 하네스를 실행하지 않았다. 앞의 invalid 실행과 미채택 `B_*` 기록을 유지한다. |
