@@ -21,6 +21,7 @@ import (
 )
 
 // Traceability: PRD CLU-08/CLU-14/TEN-05; docs/specs/cluster-session-and-delivery.md §4·§10.
+// Scenarios: mqtt-protocol-and-session.md:MQTT-SCN-056
 func TestClusterRetainedCommitErrorMapsAppliedCapacityAndConflict(t *testing.T) {
 	passthrough := errors.New("commit transport failed")
 	for _, test := range []struct {
@@ -28,6 +29,7 @@ func TestClusterRetainedCommitErrorMapsAppliedCapacityAndConflict(t *testing.T) 
 		result membership.ApplyResultDTO
 		err    error
 		want   error
+		reason string
 	}{
 		{name: "applied", result: membership.ApplyResultDTO{Outcome: membership.ApplyOutcomeApplied}},
 		{
@@ -35,7 +37,17 @@ func TestClusterRetainedCommitErrorMapsAppliedCapacityAndConflict(t *testing.T) 
 			result: membership.ApplyResultDTO{
 				Outcome: membership.ApplyOutcomeConflict, Conflict: membership.ConflictRetainedCapacity,
 			},
-			want: applicationretained.ErrFull,
+			want:   applicationretained.ErrFull,
+			reason: "server_backpressure:retained_capacity",
+		},
+		{
+			name: "tenant quota capacity",
+			result: membership.ApplyResultDTO{
+				Outcome: membership.ApplyOutcomeConflict, Conflict: membership.ConflictRetainedCapacity,
+				TenantQuota: &membership.TenantQuotaRejectionDTO{},
+			},
+			want:   applicationretained.ErrFull,
+			reason: "tenant_limit:tenant_quota",
 		},
 		{
 			name: "other conflict",
@@ -50,6 +62,9 @@ func TestClusterRetainedCommitErrorMapsAppliedCapacityAndConflict(t *testing.T) 
 			err := clusterRetainedCommitError(test.result, test.err)
 			if test.want == nil && err != nil || test.want != nil && !errors.Is(err, test.want) {
 				t.Fatalf("clusterRetainedCommitError() = %v, want %v", err, test.want)
+			}
+			if got := publish.RejectionReason(err); got != test.reason {
+				t.Fatalf("RejectionReason() = %q, want %q", got, test.reason)
 			}
 		})
 	}

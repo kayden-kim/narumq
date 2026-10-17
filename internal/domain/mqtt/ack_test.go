@@ -3,6 +3,7 @@ package mqtt
 import (
 	"bytes"
 	"errors"
+	"strings"
 	"testing"
 )
 
@@ -167,19 +168,19 @@ func acknowledgementReason(packet Packet) byte {
 func TestAcknowledgementRejectsInvalidBodiesAndReasons(t *testing.T) {
 	invalidBodies := [][]byte{{}, {0, 0}, {0, 1, 0x01}, {0, 1, 0x00, 0x01}, {0, 1, 0x00, 0x01, 0x00}}
 	for _, body := range invalidBodies {
-		if _, _, err := decodeAcknowledgementBody(PacketTypePubAck, body, ProtocolV5); err == nil {
+		if _, _, _, err := decodeAcknowledgementBody(PacketTypePubAck, body, ProtocolV5); err == nil {
 			t.Fatalf("decodeAcknowledgementBody(% X) unexpectedly succeeded", body)
 		}
 	}
-	if _, _, err := decodeAcknowledgementBody(PacketTypePubAck, []byte{0, 1}, ProtocolUnknown); !errors.Is(err, ErrUnsupportedProtocolVersion) {
+	if _, _, _, err := decodeAcknowledgementBody(PacketTypePubAck, []byte{0, 1}, ProtocolUnknown); !errors.Is(err, ErrUnsupportedProtocolVersion) {
 		t.Fatalf("unknown acknowledgement version error = %v", err)
 	}
 	for _, packetType := range []PacketType{PacketTypePubAck, PacketTypePubRec, PacketTypePubRel, PacketTypePubComp, PacketTypeConnect} {
-		if _, err := encodeAcknowledgement(packetType, 1, ProtocolV5, 0xFF, 64); err == nil {
+		if _, err := encodeAcknowledgement(packetType, 1, ProtocolV5, 0xFF, "", 64); err == nil {
 			t.Fatalf("encodeAcknowledgement(%d) accepted invalid reason", packetType)
 		}
 	}
-	if _, err := encodeAcknowledgement(PacketTypePubAck, 1, ProtocolV5, 0x10, 2); !errors.Is(err, ErrPacketTooLarge) {
+	if _, err := encodeAcknowledgement(PacketTypePubAck, 1, ProtocolV5, 0x10, "", 2); !errors.Is(err, ErrPacketTooLarge) {
 		t.Fatalf("acknowledgement size error = %v, want ErrPacketTooLarge", err)
 	}
 	if _, err := decodeAcknowledgement(PacketTypeConnect, []byte{0, 1}, ProtocolV5); !errors.Is(err, ErrMalformedPacket) {
@@ -188,19 +189,19 @@ func TestAcknowledgementRejectsInvalidBodiesAndReasons(t *testing.T) {
 }
 
 func TestAcknowledgementAndConnectPropertyEdgeCases(t *testing.T) {
-	if _, _, err := decodeAcknowledgementBody(PacketTypePubAck, []byte{0, 1, 0}, ProtocolV311); err == nil {
+	if _, _, _, err := decodeAcknowledgementBody(PacketTypePubAck, []byte{0, 1, 0}, ProtocolV311); err == nil {
 		t.Fatal("MQTT 3.1.1 acknowledgement accepted a reason byte")
 	}
-	if _, _, err := decodeAcknowledgementBody(PacketTypePubAck, []byte{0, 1, 0xFF, 0}, ProtocolV5); err == nil {
+	if _, _, _, err := decodeAcknowledgementBody(PacketTypePubAck, []byte{0, 1, 0xFF, 0}, ProtocolV5); err == nil {
 		t.Fatal("acknowledgement accepted invalid reason code")
 	}
-	if _, _, err := decodeAcknowledgementBody(PacketTypePubAck, []byte{0, 1, 0, 0x80}, ProtocolV5); err == nil {
+	if _, _, _, err := decodeAcknowledgementBody(PacketTypePubAck, []byte{0, 1, 0, 0x80}, ProtocolV5); err == nil {
 		t.Fatal("acknowledgement accepted malformed property length")
 	}
-	if _, _, err := decodeAcknowledgementBody(PacketTypePubAck, []byte{0, 1, 0, 0, 1}, ProtocolV5); err == nil {
+	if _, _, _, err := decodeAcknowledgementBody(PacketTypePubAck, []byte{0, 1, 0, 0, 1}, ProtocolV5); err == nil {
 		t.Fatal("acknowledgement accepted trailing property bytes")
 	}
-	if _, err := encodeAcknowledgement(PacketTypePubAck, 1, ProtocolUnknown, 0, 64); !errors.Is(err, ErrUnsupportedProtocolVersion) {
+	if _, err := encodeAcknowledgement(PacketTypePubAck, 1, ProtocolUnknown, 0, "", 64); !errors.Is(err, ErrUnsupportedProtocolVersion) {
 		t.Fatalf("unsupported acknowledgement version = %v", err)
 	}
 	position := 0
@@ -210,5 +211,91 @@ func TestAcknowledgementAndConnectPropertyEdgeCases(t *testing.T) {
 	position = 0
 	if _, err := decodeConnectProperties([]byte{4, 0, 0}, &position); !errors.Is(err, ErrMalformedPacket) {
 		t.Fatalf("truncated CONNECT properties = %v", err)
+	}
+}
+
+// Scenarios: mqtt-protocol-and-session.md:MQTT-SCN-054
+func TestAcknowledgementReasonStringWireAndLimits_MQTT5(t *testing.T) {
+	encoder, err := NewEncoder(MaxRemainingLength)
+	if err != nil {
+		t.Fatal(err)
+	}
+	decoder, err := NewDecoder(MaxRemainingLength)
+	if err != nil {
+		t.Fatal(err)
+	}
+	const reason = "tenant_limit:message_rate"
+	puback := &PubAck{Version: ProtocolV5, PacketID: 0x0102, ReasonCode: 0x97, ReasonString: reason}
+	want := append([]byte{0x40, byte(2 + 1 + 1 + 1 + 2 + len(reason)), 0x01, 0x02, 0x97, byte(1 + 2 + len(reason)), 0x1F, 0, byte(len(reason))}, reason...)
+	if got := testEncode(t, encoder, puback); !bytes.Equal(got, want) {
+		t.Fatalf("PUBACK wire = % X, want % X", got, want)
+	}
+	for _, packet := range []Packet{
+		puback,
+		&PubRec{Version: ProtocolV5, PacketID: 7, ReasonCode: 0x97, ReasonString: "server_backpressure:commit_lag"},
+		&PubAck{Version: ProtocolV5, PacketID: 8, ReasonCode: 0x97},
+	} {
+		requireSemanticEqual(t, packet, testDecode(t, decoder, testEncode(t, encoder, packet), ProtocolV5))
+	}
+
+	small, err := NewEncoder(4)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := testEncode(t, small, puback), []byte{0x40, 0x04, 0x01, 0x02, 0x97, 0x00}; !bytes.Equal(got, want) {
+		t.Fatalf("PUBACK above the size limit = % X, want only the Reason String dropped: % X", got, want)
+	}
+
+	for _, packet := range []Packet{
+		&PubAck{Version: ProtocolV5, PacketID: 1, ReasonCode: 0x10, ReasonString: reason},
+		&PubAck{Version: ProtocolV5, PacketID: 1, ReasonCode: 0, ReasonString: reason},
+		&PubAck{Version: ProtocolV311, PacketID: 1, ReasonString: reason},
+		&PubRec{Version: ProtocolV5, PacketID: 1, ReasonCode: 0x97, ReasonString: "bad\xff"},
+		&PubRec{Version: ProtocolV5, PacketID: 1, ReasonCode: 0x97, ReasonString: string(make([]byte, 3))},
+		&PubAck{Version: ProtocolV5, PacketID: 1, ReasonCode: 0x97, ReasonString: strings.Repeat("a", 65536)},
+	} {
+		if _, err := encoder.Append(nil, packet); !errors.Is(err, ErrMalformedPacket) {
+			t.Fatalf("Append(%#v) error = %v, want malformed", packet, err)
+		}
+	}
+
+	reasonProperty := append([]byte{0x1F, 0, 3}, "abc"...)
+	for _, testCase := range []struct {
+		name   string
+		header byte
+		body   []byte
+		want   error
+	}{
+		{name: "duplicate-reason-string", header: 0x40, body: append([]byte{0, 1, 0x97, byte(2 * len(reasonProperty))}, append(reasonProperty, reasonProperty...)...), want: ErrMalformedPacket},
+		{name: "user-property", header: 0x40, body: []byte{0, 1, 0x97, 5, 0x26, 0, 1, 'a', 0}, want: ErrUnsupportedProperty},
+		{name: "invalid-utf8", header: 0x50, body: []byte{0, 1, 0x97, 4, 0x1F, 0, 1, 0xFF}, want: ErrMalformedPacket},
+		{name: "truncated-string", header: 0x50, body: []byte{0, 1, 0x97, 4, 0x1F, 0, 9, 'a'}, want: ErrMalformedPacket},
+		{name: "missing-string-length", header: 0x40, body: []byte{0, 1, 0x97, 2, 0x1F, 0}, want: ErrMalformedPacket},
+		{name: "pubrel-reason-string", header: 0x62, body: append([]byte{0, 1, 0x92, byte(len(reasonProperty))}, reasonProperty...), want: ErrUnsupportedProperty},
+		{name: "pubcomp-reason-string", header: 0x70, body: append([]byte{0, 1, 0x92, byte(len(reasonProperty))}, reasonProperty...), want: ErrUnsupportedProperty},
+		{name: "trailing-bytes", header: 0x40, body: append(append([]byte{0, 1, 0x97, byte(len(reasonProperty))}, reasonProperty...), 0), want: ErrMalformedPacket},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			_, consumed, err := decoder.Decode(testFrame(testCase.header, testCase.body), ProtocolV5)
+			if !errors.Is(err, testCase.want) || consumed != 0 {
+				t.Fatalf("Decode() = (consumed %d, error %v), want (0, %v)", consumed, err, testCase.want)
+			}
+		})
+	}
+}
+
+// Scenarios: mqtt-protocol-and-session.md:MQTT-SCN-054
+func TestConnectRequestProblemInformationRemainsUnsupported(t *testing.T) {
+	decoder, err := NewDecoder(MaxRemainingLength)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, value := range []byte{0, 1} {
+		// CONNECT is otherwise valid; 0x17 is outside the adopted property subset.
+		body := []byte{0, 4, 'M', 'Q', 'T', 'T', 5, 2, 0, 30, 2, 0x17, value, 0, 1, 'c'}
+		_, consumed, err := decoder.Decode(testFrame(0x10, body), ProtocolV5)
+		if !errors.Is(err, ErrUnsupportedProperty) || consumed != 0 {
+			t.Fatalf("Request Problem Information=%d: consumed=%d error=%v", value, consumed, err)
+		}
 	}
 }

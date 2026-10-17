@@ -26,6 +26,7 @@ Dynamic cluster는 별도 `-cluster-config` composition root다. QoS 0 retained 
 - `internal/domain/mqtt`는 CONNECT/CONNACK, QoS 0·1·2 PUBLISH, PUBACK/PUBREC/PUBREL/PUBCOMP,
   SUBSCRIBE 계열과 PINGREQ/PINGRESP/DISCONNECT를 decode·encode한다. PING packet은
   Remaining Length 0만 허용하고 MQTT 5 DISCONNECT는 property-free allowlist만 지원한다.
+  MQTT 5 PUBACK·PUBREC는 Reason String(`0x1F`) 하나만 property로 허용한다(§7.2).
 - MQTT 5 CONNECT는 Session Expiry Interval(0x11), Receive Maximum(0x21),
   Maximum Packet Size(0x27)를 받는다. 성공 CONNACK은 server Receive Maximum과
   Maximum Packet Size를 알린다.
@@ -292,6 +293,34 @@ Memory delivery queue는 만료되지 않은 persistent session의 queued·in-fl
 delivery를 reconnect까지 보존한다. Clean start/session expiry와 message expiry
 deadline에 도달한 state만 제거한다. Cluster recovery 범위는 §4와 cluster spec을 따른다.
 
+<a id="72-quota-계열-거절의-원인-표시"></a>
+### 7.2 Quota 계열 거절의 원인 표시
+
+MQTT 5 PUBACK·PUBREC의 reason code `0x97`(`Quota exceeded`)은 두 가지 원인에 쓰인다. 하나는 tenant가 자기 한도를 넘긴 경우(tenant 한도)다. 다른 하나는 broker가 자신을 보호하려고 새 publish를 거절하는 경우(서버 backpressure)다. Reason code만으로는 두 원인을 구분할 수 없다. 그래서 broker는 `0x97`을 담은 PUBACK·PUBREC에 Reason String(property `0x1F`)을 붙인다. Reason code는 바꾸지 않는다.
+
+Reason String은 `<class>:<cause>` 형식이다. 알려진 class와 cause는 다음과 같다. 이 값은 고정된 token이며 사람이 읽는 설명문이 아니다.
+
+| class | cause | 거절 원인 |
+| --- | --- | --- |
+| `tenant_limit` | `payload_size` | PUBLISH payload가 tenant `maxPayloadBytes`를 넘음 |
+| `tenant_limit` | `message_rate` | tenant `messagesPerSecond` 대기 한도를 넘음 |
+| `tenant_limit` | `byte_rate` | tenant `bytesPerSecond` 대기 한도를 넘음 |
+| `tenant_limit` | `tenant_quota` | tenant 저장 quota를 넘음. Durable delivery 사전 판정, apply 충돌과 cluster retained 저장이 포함된다. |
+| `server_backpressure` | `commit_lag` | Commit backlog 나이가 `maxCommitLagMillis` 이상임([Cluster §4.5](cluster-session-and-delivery.md#45-publish-backpressure-admission)) |
+| `server_backpressure` | `disk_free` | 로컬 여유 공간이 기준보다 작음 |
+| `server_backpressure` | `delivery_entries`, `delivery_bytes`, `delivery_capacity` | 전역 durable delivery 4,096 entry 또는 16 MiB 상한을 넘음. `delivery_capacity`는 같은 전역 상한이 apply 시점에 충돌한 경우다. |
+| `server_backpressure` | `receive_capacity` | RECEIVE 용량 또는 1 MiB command 제한을 넘음(`deliveryqueue.ErrFull`) |
+| `server_backpressure` | `retained_capacity` | Retained 저장소 전역 상한을 넘음 |
+
+- Broker는 MQTT 5 PUBACK·PUBREC의 reason code가 `0x80` 이상이고 원인을 아는 경우에만 Reason String을 붙인다. 원인을 알 수 없는 경로는 붙이지 않는다. 원인을 추측해서 붙이지 않는다.
+- 성공 ACK, PUBREL, PUBCOMP, MQTT 3.1.1 packet에는 붙이지 않는다. QoS 0 DISCONNECT는 바꾸지 않는다.
+- Client의 Maximum Packet Size 때문에 Reason String을 넣은 packet이 한도를 넘으면 Reason String만 뺀다. Reason code와 ACK는 그대로 보낸다.
+- PUBACK·PUBREC decoder는 Reason String 하나만 허용한다. 중복 Reason String은 malformed이고, 다른 property는 지원하지 않는 property다. PUBREL·PUBCOMP는 property를 허용하지 않는다.
+- CONNACK `0x97`은 tenant `connections`·`sessions` 한도에만 쓴다. SUBACK `0x97`은 tenant `subscriptions` 한도와 retained replay queue 포화에 쓰며 원인 표시가 없다. 두 packet에는 Reason String을 붙이지 않는다.
+- CONNECT의 Request Problem Information(`0x17`)은 현재 지원 subset 밖이다. 값 0·1 모두 기존처럼 지원하지 않는 property로 거절한다. 이 변경은 새 CONNECT property를 지원하지 않는다. 현재 수락한 연결은 기본값 1을 쓰므로 Reason String을 보낼 수 있다.
+
+MQTT 5.0은 client가 Reason String을 해석하지 않기를 권장한다. 이 형식은 NaruMQ의 용량 측정 runner([Performance §3.9](performance-and-verification.md#39-bp-02-eks-용량-측정-계약))만 읽는다. 일반 client는 값을 무시해도 된다. 형식이나 cause를 바꾸려면 이 절을 먼저 바꾼다.
+
 ## 8. 수용 시험
 
 테스트 연결과 결과는 [테스트 컨벤션](../conventions/test-conventions.md)의 시나리오 보고서로 확인한다. 과거 실행 기록은 [검증 기록](../verification/mqtt-protocol-and-session.md)에 있다.
@@ -383,3 +412,12 @@ deadline에 도달한 state만 제거한다. Cluster recovery 범위는 §4와 c
 | MQTT-10-SCN-08 | MQTT-05, MQTT-10 | WS client가 Will을 설정하고 KeepAlive timeout을 낸다. | Will을 발행하고 `MQTT connection handling failed` warning을 남기지 않는다. |
 | MQTT-10-SCN-09 | MQTT-10, MQTT-11 | WS·WSS listener에 admission 한도를 설정하고 live client가 있는 상태에서 종료한다. | Listener별 admission 한도와 connection metric에 `ws`·`wss` label을 적용한다. live client 종료가 제한 시간 안에 끝난다. |
 | MQTT-10-SCN-10 | MQTT-10, API-09 | Dynamic cluster의 한 node에 WS subscriber, 다른 node에 WS publisher를 연결하고 node config API를 조회한다. | 두 node가 메시지를 교환한다. Node config API는 적용된 `mqtt.webSocket` 값을 반환한다. |
+
+### 8.4 Quota 계열 거절 원인 표시 수용 매핑
+
+| 시나리오 ID | 요구사항 ID | 조건과 입력 | 기대 결과 |
+| --- | --- | --- | --- |
+| MQTT-SCN-054 | MQTT-11 | MQTT 5 PUBACK·PUBREC에 Reason String을 담아 encode·decode한다. 성공 reason code, MQTT 3.1.1, Maximum Packet Size 초과, 중복 Reason String, 다른 property, PUBREL·PUBCOMP property도 입력한다. CONNECT Request Problem Information `0x17`의 값 0·1도 입력한다. | 실패 reason code(`0x80` 이상)의 PUBACK·PUBREC만 Reason String을 encode하고 decode로 같은 값을 얻는다. Maximum Packet Size를 넘으면 Reason String만 뺀다. 성공 reason code와 MQTT 3.1.1은 Reason String을 쓰지 않는다. 중복 Reason String은 malformed, 다른 property는 지원하지 않는 property로 거절한다. PUBREL·PUBCOMP property와 CONNECT `0x17`은 기존처럼 지원하지 않는 property로 거절한다. |
+| MQTT-SCN-055 | MQTT-11, TEN-07 | Tenant `maxPayloadBytes`, `messagesPerSecond`, `bytesPerSecond`를 넘는 PUBLISH를 MQTT 5 QoS 1·2와 MQTT 3.1.1로 보낸다. | MQTT 5 QoS 1은 PUBACK, QoS 2는 PUBREC `0x97`과 Reason String `tenant_limit:payload_size`, `tenant_limit:message_rate` 또는 `tenant_limit:byte_rate`를 받는다. MQTT 3.1.1은 기존처럼 연결을 닫고 packet을 쓰지 않는다. |
+| MQTT-SCN-056 | MQTT-11, CLU-12 | Durable publish 거절 원인을 commit lag, disk 압박, 전역 delivery 상한, tenant 저장 quota, apply 시점의 tenant quota 충돌, RECEIVE 용량, retained 상한, 원인을 알 수 없는 backpressure로 바꿔 입력한다. | 원인마다 §7.2 표의 class·cause가 Reason String에 나온다. Cluster retained 저장이 tenant quota 때문에 충돌하면 `tenant_limit:tenant_quota`다. 원인을 알 수 없는 거절은 reason code `0x97`만 보내고 Reason String은 붙이지 않는다. 거절 응답 뒤 연결 유지·종료 동작은 기존과 같다. |
+| MQTT-SCN-057 | MQTT-11 | Client가 Maximum Packet Size를 알린 MQTT 5 연결에 Reason String이 붙은 PUBACK·PUBREC `0x97`을 쓴다. 한도는 제한 없음, 충분함, Reason String이 없는 ACK 크기, 그보다 1 byte 작음으로 바꾼다. | 앞의 두 경우는 실제 socket에 Reason String이 붙은 packet을 보낸다. 세 번째 경우는 Reason String만 뺀 같은 reason code의 packet을 보낸다. 마지막 경우는 packet을 보내지 않고 `ErrClientPacketTooLarge`를 반환한다. 쓰기 전 queue의 원본 packet은 바꾸지 않는다. |

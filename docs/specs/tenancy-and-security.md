@@ -210,6 +210,8 @@ Proposer node는 `narumq_tenant_quota_rejections_total{tenant,dimension}` counte
 | `message_rate` | Tenant의 초당 PUBLISH 수 (node별 token bucket) | 같은 위치. 최대 `maxWaitMillis`까지 대기한다. | QoS 1 PUBACK `0x97`, QoS 2 PUBREC `0x97`, QoS 0 DISCONNECT `0x96` 뒤 종료 / 종료 |
 | `byte_rate` | Tenant의 초당 payload byte (node별 token bucket) | 같은 위치 | `message_rate`와 같음 |
 
+Tenant 한도로 거절한 PUBACK·PUBREC `0x97`에는 Reason String `tenant_limit:<dimension>`을 붙인다. `payload_size`, `message_rate`, `byte_rate`가 해당한다. 서버 backpressure로 거절한 `0x97`과 구분하기 위해서다. 형식은 [MQTT §7.2](mqtt-protocol-and-session.md#72-quota-계열-거절의-원인-표시)를 따른다.
+
 연결, session, rate는 node별로 센다. Subscription은 각 node의 route table에 있는 tenant 전체 수로 판정한다. Standalone에서는 해당 node의 수이고, cluster에서는 committed projection 기준 cluster 전체 수다. 같은 node의 제한 대상 SUBSCRIBE·UNSUBSCRIBE는 판정부터 commit과 route 변경까지 직렬화한다. Replacement와 removal이 경쟁해도 local 한도를 넘기지 않는다. 다른 node에서 동시에 SUBSCRIBE하면 projection 반영 시점 때문에 잠시 한도를 넘을 수 있다. Replicated schema, feature gate, Raft command는 바꾸지 않는다.
 
 #### 검사 순서와 과금

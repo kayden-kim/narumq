@@ -251,9 +251,9 @@ Planned removal은 대상 외의 committed `VOTER`가 3 미만이면 non-retryab
 | QoS 2 첫 PUBLISH | PUBREC `0x97` | 연결 종료 |
 | payload가 있는 retained QoS 0 | DISCONNECT `0x97` 뒤 종료 | 연결 종료 |
 
-PUBACK에 `0x89`를 쓰지 않는다. PUBCOMP에 `0x97`이 없으므로 RELEASE를 막지 않는다.
+PUBACK에 `0x89`를 쓰지 않는다. PUBCOMP에 `0x97`이 없으므로 RELEASE를 막지 않는다. PUBACK·PUBREC `0x97`에는 거절 원인(`commit_lag`, `disk_free`, `delivery_entries`, `delivery_bytes`, `delivery_capacity`, `receive_capacity`, `retained_capacity`, `tenant_quota`)을 나타내는 Reason String을 붙인다. 형식은 [MQTT §7.2](mqtt-protocol-and-session.md#72-quota-계열-거절의-원인-표시)를 따른다.
 
-`publishBackpressure`의 JSON 구조, 기본값과 허용 범위는 [Process configuration v1 §1.3](../contracts/process-configuration-v1.md)에서 정한다. 설정은 해당 field를 아는 binary와 함께 배포해야 한다. 이전 binary는 알 수 없는 key를 거절한다([Process configuration v1 §3](../contracts/process-configuration-v1.md#3-호환성-규칙)). Wire·schema·apply 동작은 바뀌지 않으므로 feature gate는 추가하지 않는다.
+`publishBackpressure`의 JSON 구조, 기본값과 허용 범위는 [Process configuration v1 §1.3](../contracts/process-configuration-v1.md)에서 정한다. 설정은 해당 field를 아는 binary와 함께 배포해야 한다. 이전 binary는 알 수 없는 key를 거절한다([Process configuration v1 §3](../contracts/process-configuration-v1.md#3-호환성-규칙)). Raft·peer wire, replicated schema와 apply 동작은 바뀌지 않으므로 feature gate는 추가하지 않는다. Reason String은 client에 보내는 MQTT 5 packet에만 붙는다.
 
 | Metric | 값과 label |
 | --- | --- |

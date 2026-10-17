@@ -9,15 +9,7 @@ const (
 	verdictPass    = "pass"
 	verdictFail    = "fail"
 	verdictInvalid = "invalid"
-
-	// MQTT 5 reason codes that mean a tenant or server limit refused the operation.
-	reasonQuotaExceeded          = 0x97
-	reasonConnectionRateExceeded = 0x9F
 )
-
-func isLimitRejection(reason byte) bool {
-	return reason == reasonQuotaExceeded || reason == reasonConnectionRateExceeded
-}
 
 // qosLatency is one per-QoS latency window result.
 type qosLatency struct {
@@ -47,10 +39,14 @@ type verdictInput struct {
 	RecoveryLimit      time.Duration
 	CPUSaturationLimit float64
 	InvalidReasons     []string // controller/marker/readiness/resync/setup-quota/cleanup failures
-	TenantRejections   uint64
-	SetupFailure       string
-	Measure            [2]measureEvidence // measureN, measureN1
-	AckedGaps          [3]uint64
+	// Quota-class rejections by class (§3.9 "Quota 계열 거절 판정"): tenant limits make the step
+	// invalid; server backpressure and unclassified rejections are fail conditions.
+	TenantLimitRejections        uint64
+	ServerBackpressureRejections uint64
+	UnclassifiedRejections       uint64
+	SetupFailure                 string
+	Measure                      [2]measureEvidence // measureN, measureN1
+	AckedGaps                    [3]uint64
 	// CleanSessionLossOverLimit counts clean-session losses older than P99Limit (disconnect minus
 	// publish) and CleanSessionLossMaxMillis is the largest loss age; the former is a fail.
 	CleanSessionLossOverLimit uint64
@@ -76,8 +72,8 @@ var measureNames = [2]string{"measureN", "measureN1"}
 // conditions seen in the same step are kept as evidence in FailConditions.
 func computeVerdict(in verdictInput) verdictResult {
 	invalid := append([]string(nil), in.InvalidReasons...)
-	if in.TenantRejections > 0 {
-		invalid = append(invalid, fmt.Sprintf("tenant limit rejection observed %d times", in.TenantRejections))
+	if in.TenantLimitRejections > 0 {
+		invalid = append(invalid, fmt.Sprintf("tenant limit rejection observed %d times", in.TenantLimitRejections))
 	}
 	for w, evidence := range in.Measure {
 		if evidence.ScheduleOverloads > 0 {
@@ -91,6 +87,12 @@ func computeVerdict(in verdictInput) verdictResult {
 	var fail []string
 	if in.SetupFailure != "" {
 		fail = append(fail, "setup incomplete: "+in.SetupFailure)
+	}
+	if in.ServerBackpressureRejections > 0 {
+		fail = append(fail, fmt.Sprintf("server backpressure rejection observed %d times", in.ServerBackpressureRejections))
+	}
+	if in.UnclassifiedRejections > 0 {
+		fail = append(fail, fmt.Sprintf("unclassified quota rejection observed %d times (reason code 0x97 or 0x9F without a known class)", in.UnclassifiedRejections))
 	}
 	for w, evidence := range in.Measure {
 		for qos := range 3 {

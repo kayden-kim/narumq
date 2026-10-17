@@ -200,13 +200,17 @@ func (r *runner) executeStep(cfg stepConfig) (stepOutcome, error) {
 	if err != nil {
 		return stepOutcome{}, errors.Join(err, phases.Close())
 	}
-	messages, err := jsonl.Open(filepath.Join(dir, "messages-sample.jsonl"))
+	rejections, err := jsonl.Open(filepath.Join(dir, "quota-rejections.jsonl"))
 	if err != nil {
 		return stepOutcome{}, errors.Join(err, phases.Close(), connections.Close())
 	}
+	messages, err := jsonl.Open(filepath.Join(dir, "messages-sample.jsonl"))
+	if err != nil {
+		return stepOutcome{}, errors.Join(err, phases.Close(), connections.Close(), rejections.Close())
+	}
 	resource, err := jsonl.Open(filepath.Join(dir, "resource.jsonl"))
 	if err != nil {
-		return stepOutcome{}, errors.Join(err, phases.Close(), connections.Close(), messages.Close())
+		return stepOutcome{}, errors.Join(err, phases.Close(), connections.Close(), rejections.Close(), messages.Close())
 	}
 
 	p := r.profile
@@ -217,7 +221,7 @@ func (r *runner) executeStep(cfg stepConfig) (stepOutcome, error) {
 	token := r.nonce<<16 | uint32(cfg.Step)<<8 | uint32(cfg.Run)
 	col := newCollector(p, token, plans)
 	st := &stepRun{r: r, cfg: cfg, dir: dir, col: col, plans: plans, phases: phases, resource: resource, kill: newKillPhase(r.controlDir, cfg.Step, cfg.Run)}
-	st.env = &stepEnv{profile: p, col: col, endpoints: r.endpoints, creds: r.creds, events: connections}
+	st.env = &stepEnv{profile: p, col: col, endpoints: r.endpoints, creds: r.creds, events: connections, rejections: rejections}
 	ctx, cancel := context.WithTimeout(r.ctx, st.stepTimeout())
 	defer cancel()
 	st.ctx = ctx
@@ -238,7 +242,10 @@ func (r *runner) executeStep(cfg stepConfig) (stepOutcome, error) {
 	<-samplerDone
 	summary := st.summarize(started, delivery, drainRemaining)
 	_ = st.phases.Write(phaseEvent{Phase: "step", Event: "end", Timestamp: formatTime(time.Now()), Detail: summary.Verdict})
-	closeErr := errors.Join(phases.Close(), connections.Close(), messages.Close(), resource.Close())
+	closeErr := errors.Join(phases.Close(), connections.Close(), rejections.Close(), messages.Close(), resource.Close())
+	st.env.rejectionMu.Lock()
+	closeErr = errors.Join(closeErr, st.env.rejectionErr)
+	st.env.rejectionMu.Unlock()
 	if err := writeAtomicJSON(filepath.Join(dir, "step-summary.json"), summary); err != nil {
 		return stepOutcome{}, errors.Join(err, closeErr)
 	}

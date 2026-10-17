@@ -42,7 +42,6 @@ type deliverySummary struct {
 	UnexpectedDeliveries  uint64 `json:"unexpectedDeliveries"`
 	StaleTokenDeliveries  uint64 `json:"staleTokenDeliveries"`
 	RetainedReplays       uint64 `json:"retainedReplayDeliveriesIgnored"`
-	TenantLimitRejections uint64 `json:"tenantLimitRejections"`
 	SetupFailures         uint64 `json:"setupFailures"`
 	OutstandingAfterDrain int64  `json:"outstandingExpectedDeliveriesAfterDrain"`
 }
@@ -72,6 +71,7 @@ type stepSummary struct {
 	Latency                 map[string][3]qosLatency `json:"latencyByWindow"`
 	DeliveryRatesN1         [3]float64               `json:"measureN1FirstCopyDeliveriesPerSecondByQoS"`
 	Delivery                deliverySummary          `json:"delivery"`
+	QuotaRejections         quotaSummary             `json:"quotaRejections"`
 	Recovery                recoverySummary          `json:"recovery"`
 	Generator               generatorSummary         `json:"generator"`
 	Markers                 map[string]string        `json:"markerFiles"`

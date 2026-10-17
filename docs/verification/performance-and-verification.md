@@ -185,6 +185,28 @@ Native amd64 Linux의 실제 standalone broker로 수정 전·후를 확인했�
 
 사용자 결정에 따라 정리 가능한 중단만 지원한다. Controller 강제 종료나 workstation 장애를 복구하는 lease·watchdog은 추가하지 않았다. 이 경우에는 fixture의 수동 복구 또는 삭제가 필요하다. 따라서 앞선 “controller 중단 시 복구” 설명은 모든 process 종료를 보장하는 뜻이 아니다.
 
+### Quota 계열 거절 원인·구간 분류 보완 (2026-10-17)
+
+대상 시나리오는 MQTT-SCN-054~057과 PRF-SCN-117~119다. 기준은 [MQTT §7.2](../specs/mqtt-protocol-and-session.md#72-quota-계열-거절의-원인-표시)와 [성능 §3.9](../specs/performance-and-verification.md#quota-계열-거절-판정)다. Windows amd64·Go 1.26.5에서 broker와 runner를 함께 바꿨다. MQTT reason code는 유지했다. PUBACK·PUBREC의 Reason String으로 class·cause를 전달하고 runner는 거절마다 구간과 원인을 기록한다. Tenant 한도는 invalid, 서버 backpressure와 분류 불가는 fail이다. 실패 artifact 기록 오류도 실행 오류로 보존한다.
+
+과거 EKS 실행의 거절 3건은 packet별 Reason String이 없으므로 `unclassified`다. Metric의 `commit_lag=3`을 이 packet들의 원인으로 대입하지 않았다. 과거 artifact·invalid 판정·`B_*` 미채택 상태는 바꾸지 않았다. 새 binary의 EKS 측정은 미실행이다. AWS/EKS 자원은 만들거나 바꾸지 않았다. SUBACK `0x97`과 `0x9F`는 분류 불가로 남긴다.
+
+| 명령·확인 방법 | 결과 | 범위 |
+| --- | --- | --- |
+| 변경한 Go 파일에 `gofmt -w` 적용 | 통과 | 변경한 broker·runner·단위 시험 파일 |
+| `go vet ./...` | 통과 | 전체 Go package |
+| `go test ./internal/domain/mqtt ./internal/application/publish ./internal/adapters/tcp ./cmd/narumq ./tests/benchmark/capacity` | 통과 | Codec, 거절 원인 보존, TCP 응답, 분류·판정·구간별 JSONL·summary·기록 실패 보존 |
+| `go run ./tools/verify scenarios` | 통과 | 연결 검사. Spec 7개·시나리오 632개·미연결 0·오류 0. 실행 통과 건수는 이 명령으로 증명하지 않는다. |
+| `go run ./tools/verify markdown-links` | 통과 | 최종 문서 190개·로컬 링크 3,179개 |
+| `go test ./internal/domain/mqtt -run TestConnectRequestProblemInformationRemainsUnsupported -count=1 -v` | 통과 | CONNECT `0x17` 값 0·1은 기존처럼 거절한다. 새 CONNECT property 지원은 추가하지 않았다. |
+| `go test ./internal/adapters/tcp -run 'TestWritePacketDropsReasonStringAboveClientMaximumPacketSize\|TestTCPPublishBackpressureReasonCodes\|TestTCPPublishTenantLimitReasonCodes' -count=1 -v` | 통과 | 실제 socket의 PUBACK·PUBREC `0x97`, Reason String·Maximum Packet Size와 queue 원본 보존을 확인했다. 이 결과는 거절이 없는 Docker smoke와 별개다. |
+| `go run ./tests/benchmark/capacity local --profile tests/benchmark/capacity/testdata/local-smoke.json` | 실패 | 명령은 exit 0·283.70초였지만 PRF-SCN-062의 모든 단계 통과 조건은 충족하지 못했다. 01-r1·01-r2 통과, 02-r1은 setup CONNACK `0x88`로 실패했다. [Summary](../../.artifacts/verification/capacity-local-20261017T123309Z/capacity-summary.json). |
+| `go run ./tools/verify local` | 통과 | `NARUMQ_*` 환경 변수 없이 `local: PASS`. 시나리오 실행 통과 513·실패 0·범위 안 미실행 0, coverage PASS. 앞선 socket packet 시험과 이어 실행한 명령 전체는 626.42초다. Local 명령 단독 시간은 따로 계측하지 않았다. |
+
+02-r1은 setup에서 끝나 측정·장애 주입 단계에 들어가지 않았다. [연결 기록](../../.artifacts/verification/capacity-local-20261017T123309Z/steps/02-r1/connections.jsonl)에는 CONNACK `0x88` 2건과 handshake timeout 8건이 있다. 일반 ladder는 실패한 상위 단계 뒤 하위 단계를 확인할 수 있으므로 명령이 0으로 끝났다. 그러나 local-smoke의 PRF-SCN-062는 모든 단계 통과를 요구한다. 이 실행을 smoke 통과나 EKS 용량의 증거로 쓰지 않는다. Broker의 같은 구간에 `stale_epoch` cleanup 경고가 있지만 첫 CONNECT 실패 원인과 직접 연결한 증거는 없다. 원인을 확인하지 않은 채 재시도·timeout·cutoff를 바꾸거나 같은 실행을 통과할 때까지 반복하지 않았다.
+
+
+
 
 
 

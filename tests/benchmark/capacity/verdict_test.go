@@ -72,7 +72,7 @@ func TestVerdictInvalidTakesPrecedenceOverFail(t *testing.T) {
 // Scenarios: performance-and-verification.md:PRF-SCN-051
 func TestVerdictInvalidCauses(t *testing.T) {
 	cases := map[string]func(*verdictInput){
-		"tenant rejection": func(in *verdictInput) { in.TenantRejections = 1 },
+		"tenant rejection": func(in *verdictInput) { in.TenantLimitRejections = 1 },
 		"generator cpu":    func(in *verdictInput) { in.Measure[1].GeneratorCPUPercent = 80.1 },
 		"controller":       func(in *verdictInput) { in.InvalidReasons = []string{"controller reported failure"} },
 	}

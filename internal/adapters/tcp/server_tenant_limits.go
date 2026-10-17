@@ -3,6 +3,7 @@ package tcp
 import (
 	"time"
 
+	"narumq/internal/application/publish"
 	"narumq/internal/application/tenantlimit"
 	"narumq/internal/domain/mqtt"
 )
@@ -43,14 +44,15 @@ func (connection *connection) rejectTenantPublish(packet *mqtt.Publish, dimensio
 		return nil
 	}
 	reasonCode := byte(0x97)
+	reasonString := publish.FormatRejectionReason(publish.RejectionClassTenantLimit, string(dimension))
 	switch packet.QoS {
 	case mqtt.QoSAtLeastOnce:
 		return connection.enqueueControl(&mqtt.PubAck{
-			Version: connection.version, PacketID: packet.PacketID, ReasonCode: reasonCode,
+			Version: connection.version, PacketID: packet.PacketID, ReasonCode: reasonCode, ReasonString: reasonString,
 		})
 	case mqtt.QoSExactlyOnce:
 		return connection.enqueueControl(&mqtt.PubRec{
-			Version: connection.version, PacketID: packet.PacketID, ReasonCode: reasonCode,
+			Version: connection.version, PacketID: packet.PacketID, ReasonCode: reasonCode, ReasonString: reasonString,
 		})
 	default:
 		if dimension == tenantlimit.DimensionMessageRate || dimension == tenantlimit.DimensionByteRate {

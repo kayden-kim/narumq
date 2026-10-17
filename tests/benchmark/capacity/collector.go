@@ -83,8 +83,8 @@ type collector struct {
 	outstanding     atomic.Int64
 
 	sessionPresentFailures atomic.Uint64
-	tenantRejections       atomic.Uint64
 	setupFailures          atomic.Uint64
+	quota                  quotaCounters
 
 	t0            atomic.Int64 // killing marker observation, -1 until observed
 	injection     atomic.Int64 // earliest attributable disconnect or down marker, -1 until known

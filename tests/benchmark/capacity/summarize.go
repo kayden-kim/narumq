@@ -29,19 +29,21 @@ func (st *stepRun) summarize(started time.Time, gaps gapResult, outstanding int6
 	p := st.r.profile
 	col := st.col
 	input := verdictInput{
-		P99Limit:                  time.Duration(p.LatencyP99LimitMillis) * time.Millisecond,
-		RecoveryLimit:             time.Duration(p.RecoveryTimeoutMillis) * time.Millisecond,
-		CPUSaturationLimit:        p.GeneratorCPUSaturationPercent,
-		InvalidReasons:            append([]string(nil), st.invalid...),
-		TenantRejections:          col.tenantRejections.Load(),
-		SetupFailure:              st.setupErr,
-		Measure:                   [2]measureEvidence{st.evidence(0, winMeasureN), st.evidence(1, winMeasureN1)},
-		AckedGaps:                 gaps.Gaps,
-		CleanSessionLossOverLimit: lossOverLimit(gaps),
-		CleanSessionLossMaxMillis: lossMaxMillis(gaps),
-		QoS2Duplicates:            col.duplicates[2].Load(),
-		Unexpected:                col.unexpected.Load(),
-		RTO:                       st.recovery.rto, Recovered: st.recovery.recovered, RecoveryEvaluated: st.recovery.evaluated,
+		P99Limit:                     time.Duration(p.LatencyP99LimitMillis) * time.Millisecond,
+		RecoveryLimit:                time.Duration(p.RecoveryTimeoutMillis) * time.Millisecond,
+		CPUSaturationLimit:           p.GeneratorCPUSaturationPercent,
+		InvalidReasons:               append([]string(nil), st.invalid...),
+		TenantLimitRejections:        col.quota.total(quotaTenantLimit),
+		ServerBackpressureRejections: col.quota.total(quotaServerBackpressure),
+		UnclassifiedRejections:       col.quota.total(quotaUnclassified),
+		SetupFailure:                 st.setupErr,
+		Measure:                      [2]measureEvidence{st.evidence(0, winMeasureN), st.evidence(1, winMeasureN1)},
+		AckedGaps:                    gaps.Gaps,
+		CleanSessionLossOverLimit:    lossOverLimit(gaps),
+		CleanSessionLossMaxMillis:    lossMaxMillis(gaps),
+		QoS2Duplicates:               col.duplicates[2].Load(),
+		Unexpected:                   col.unexpected.Load(),
+		RTO:                          st.recovery.rto, Recovered: st.recovery.recovered, RecoveryEvaluated: st.recovery.evaluated,
 		SessionPresentFails: col.sessionPresentFailures.Load(),
 	}
 	result := computeVerdict(input)
@@ -82,10 +84,11 @@ func (st *stepRun) summarize(started time.Time, gaps gapResult, outstanding int6
 		UnexpectedDeliveries:  col.unexpected.Load(),
 		StaleTokenDeliveries:  col.stale.Load(),
 		RetainedReplays:       col.retainedReplays.Load(),
-		TenantLimitRejections: col.tenantRejections.Load(),
 		SetupFailures:         col.setupFailures.Load(),
 		OutstandingAfterDrain: outstanding,
 	}
+	summary.QuotaRejections = col.quota.summary()
+
 	recovery := recoverySummary{
 		LeaderNodeID: st.leader, KillMarkerStates: append([]string{}, st.markerStates...),
 		Recovered: st.recovery.recovered, RTOMillis: float64(st.recovery.rto) / float64(time.Millisecond),

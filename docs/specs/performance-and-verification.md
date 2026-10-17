@@ -618,7 +618,7 @@ Cell 하나는 §3.8의 stream 8개, 구독자 23명, retained 구독자 4명과
 - Broker는 [EKS 배포 구조](../architectures/eks-ec2-deployment.md#production-qualification-profile-selected)의 선택 profile을 쓴다(`m7g.large` 3대, broker container마다 1 CPU·4 GiB, 20 GiB `gp3`, 내부 NLB IP target). Broker image는 ARM64 immutable digest로 고정한다. 용량 overlay는 broker container 자원을 그대로 두고 Pod에 JWKS sidecar와 init container를 더한다(2026-10-15 사용자 결정). 그래서 Pod 합계는 선택 profile보다 크다. 결과에는 broker container와 sidecar·init container의 requests·limits를 따로 기록하고, 이 값이 시험 overlay 조건임을 밝힌다.
 - Broker cluster는 준비 단계에서 `session-metadata`, `proposal-recovery`, `shared-subscription-reroute` feature를 활성화하고 확인한다. `proposal-recovery`는 leader가 바뀔 때 전송 중이던 commit을 새 leader에 다시 제안해, 생존 node의 연결이 commit timeout으로 닫히지 않게 한다(2026-10-15 사용자 결정). `shared-subscription-reroute`는 member session이 끝날 때 shared group message를 다른 member로 옮긴다([ADR-0060](../decisions/ADR-0060-shared-subscription-durable-owner-loss-reroute.md)). 활성 feature 목록을 artifact에 기록한다.
 - MQTT TLS는 broker listener가 종료한다. 용량 시험 overlay는 broker에 TLS listener 8883과 시험용 server certificate를 설정하고 NLB에 TCP 8883 listener를 추가한다. 기본 `eks-ec2-ha` manifest는 바꾸지 않는다.
-- 인증은 §3.8과 같은 RS256 JWT다. Broker는 loopback이 아닌 `http` JWKS 주소를 거절한다. 그래서 각 broker Pod에 JWKS를 `127.0.0.1`로 제공하는 시험용 sidecar를 둔다. Tenant quota는 설정하지 않아 기본값(상한)을 쓰고, 적용된 값을 artifact에 기록한다. Tenant 한도에 걸린 거절이 나오면 해당 단계는 invalid다.
+- 인증은 §3.8과 같은 RS256 JWT다. Broker는 loopback이 아닌 `http` JWKS 주소를 거절한다. 그래서 각 broker Pod에 JWKS를 `127.0.0.1`로 제공하는 시험용 sidecar를 둔다. Tenant quota는 설정하지 않아 기본값(상한)을 쓰고, 적용된 값을 artifact에 기록한다. Tenant 한도에 걸린 거절이 나오면 해당 단계는 invalid다. 거절 분류는 [Quota 계열 거절 판정](#quota-계열-거절-판정)을 따른다.
 - Generator Job은 broker worker와 다른 전용 node group에서 실행한다. Generator Pod의 CPU 사용률이 80%를 넘거나 publish schedule lag가 publish 간격 이상이면 generator 포화다. 포화한 단계는 실패가 아니라 invalid이며, generator 자원을 늘려 다시 잰다.
 
 #### 단계 절차
@@ -659,6 +659,24 @@ Cell 하나는 §3.8의 stream 8개, 구독자 23명, retained 구독자 4명과
 
 이 결과는 선택 profile의 용량이다. EMQX 대비 상대 판정과 release gate는 별도이며 artifact는 `releaseGating=false`로 둔다. 실제 운영 traffic이 `B_*`를 넘으면 `B_*`를 다시 정한다.
 
+<a id="quota-계열-거절-판정"></a>
+#### Quota 계열 거절 판정
+
+Quota 계열 거절은 runner가 MQTT reason code `0x97` 또는 `0x9F`를 받은 경우다. `0x97`은 tenant 한도와 서버 backpressure에 함께 쓰인다. 그래서 reason code만으로 원인을 정하지 않는다. Broker는 PUBACK·PUBREC `0x97`에 거절 원인을 Reason String으로 알린다([MQTT §7.2](mqtt-protocol-and-session.md#72-quota-계열-거절의-원인-표시)). Runner는 거절 하나마다 아래 분류를 정하고 기록한다.
+
+| 분류 | 조건 | 판정 |
+| --- | --- | --- |
+| `tenant_limit` | PUBACK·PUBREC Reason String의 class·cause가 MQTT §7.2 표의 tenant 한도다. 또는 CONNACK `0x97`이다(cause `connections_or_sessions`). | 단계는 invalid다. |
+| `server_backpressure` | PUBACK·PUBREC Reason String의 class·cause가 MQTT §7.2 표의 서버 backpressure다. | 단계는 fail이다. |
+| `unclassified` | Reason String이 없거나 형식·class·cause를 알 수 없다. 또는 `0x9F`이거나 SUBACK `0x97`이다. | 단계는 fail이다. |
+
+- 판정은 거절이 일어난 구간(`setup`, `warmup`, `measureN`, `failure`, `measureN1`, `restore`, `cleanup`)과 관계없이 단계 전체에 적용한다. `warmup`을 판정하지 않는다는 규칙은 이 거절에 적용하지 않는다. 거절은 broker가 publish를 받지 않았다는 뜻이다. 어느 구간이든 용량 판정을 통과시키면 안 된다. 서버 backpressure와 분류 불가를 구간별로 면제하지 않는다.
+- `server_backpressure`는 broker가 부하를 감당하지 못한 증거이므로 fail이다. generator나 설정 문제를 뜻하는 invalid가 아니다. 분류 불가는 원인을 모르므로 통과시키지 않고 fail로 둔다. 원인을 추측해서 `tenant_limit`나 `server_backpressure`로 바꾸지 않는다.
+- Invalid가 fail보다 우선한다는 규칙은 그대로다. 한 단계에 `tenant_limit`과 `server_backpressure`가 함께 있으면 단계는 invalid이고, 다른 분류의 건수는 `failConditions`에 증거로 남는다.
+- 거절된 publish는 ACK를 받지 못한 publish다. gap에 넣지 않는다.
+- Broker metric의 합계나 시각이 비슷하다는 이유로 거절의 분류를 바꾸지 않는다. Reason String을 보내지 않는 binary가 보낸 `0x97`은 `unclassified`다.
+- `steps/<NN>-r<R>/quota-rejections.jsonl`에 거절마다 한 줄을 쓴다. 필드는 `at`, `phase`, `clientId`, `tenant`, `packet`(`connack`, `suback`, `puback`, `pubrec`), `reasonCode`, `reasonString`(있을 때), `classification`, `cause`(있을 때)다. `step-summary.json`의 `quotaRejections`는 분류별 건수와 구간별 건수를 담는다.
+
 #### Runner 구성
 
 - Generator는 target에 무관한 runner로 만든다. 입력은 MQTT endpoint, management endpoint, credential과 profile이다. 단계 경계에서 control marker(§3.6과 같은 방식)를 써서 외부 controller가 장애 주입과 복구를 수행한다.
@@ -698,6 +716,9 @@ Cell 하나는 §3.8의 stream 8개, 구독자 23명, retained 구독자 4명과
 | PRF-SCN-062 | NFR-02 | `go run ./tests/benchmark/capacity local --profile tests/benchmark/capacity/testdata/local-smoke.json`을 실행한다. | 장애 주입, 복구, 판정과 정리가 끝까지 실행되고 모든 단계가 통과한다. |
 | PRF-SCN-063 | NFR-01, NFR-02 | `tests/benchmark/capacity/eks/controller.py`로 `EKS_EC2_HA` profile에서 용량을 측정한다. | 모든 단계 판정을 통과하고 후보 단계를 5회 확인해 `B_*`를 기록한다. invalid 단계가 하나라도 있으면 `adopted`와 `bounds`는 `null`이다. |
 | PRF-SCN-064 | NFR-02 | EKS에서 원래 Pod UID·container·실행 UUID를 확인하고 broker thread를 정지한 뒤 Pod를 강제 삭제한다. | `killing`·`down`·`restoring`·`restored`를 runner가 모두 관찰한다. 새 Pod가 Ready가 되고 resync를 마치며 active drain에 묶이지 않는다. |
+| PRF-SCN-117 | NFR-02 | PUBACK·PUBREC `0x97`을 MQTT §7.2의 알려진 class·cause, 형식이 틀린 값, 모르는 class·cause, 빈 값으로 받는다. CONNACK `0x97`, `0x9F`와 SUBACK `0x97`도 받는다. | 알려진 class·cause는 그대로 분류·기록한다. CONNACK `0x97`은 `tenant_limit`, cause는 `connections_or_sessions`다. 형식이 틀린 값, 모르는 class·cause, 빈 값, `0x9F`와 SUBACK `0x97`은 `unclassified`다. 원인을 추측하지 않는다. |
+| PRF-SCN-118 | NFR-02 | 단계 판정에 `tenant_limit`, `server_backpressure`, `unclassified` 거절을 따로 또는 함께 입력한다. | `tenant_limit`은 invalid다. `server_backpressure`와 `unclassified`는 fail이다. 함께 있으면 invalid가 우선하고 나머지 건수는 `failConditions`에 남는다. 거절이 없으면 판정을 바꾸지 않는다. |
+| PRF-SCN-119 | NFR-02 | Runner가 구간(`setup`, `warmup`, `measureN`, `failure`, `measureN1`, `restore`, `cleanup`)마다 서로 다른 client·tenant로 quota 계열 거절을 관찰한다. Artifact 쓰기 오류도 입력한다. | `quota-rejections.jsonl`에 거절마다 시각, 구간, client, tenant, packet, reason code, Reason String, 분류와 cause가 한 줄씩 남는다. `step-summary.json`의 `quotaRejections`가 분류별·구간별 건수를 담는다. 어떤 구간의 거절도 판정에서 빠지지 않는다. 기록 실패는 실행 오류로 보존한다. |
 
 ## 4. 필수 benchmark profile
 

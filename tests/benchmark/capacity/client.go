@@ -42,11 +42,37 @@ type connectionRecord struct {
 
 // stepEnv is everything the clients of one step-run share.
 type stepEnv struct {
-	profile   Profile
-	col       *collector
-	endpoints *endpoints
-	creds     map[string]credential
-	events    *jsonl.Writer
+	profile      Profile
+	col          *collector
+	endpoints    *endpoints
+	creds        map[string]credential
+	events       *jsonl.Writer
+	rejections   *jsonl.Writer
+	rejectionMu  sync.Mutex
+	rejectionErr error
+}
+
+// rejectQuota classifies one quota-class rejection, counts it in the current window and writes
+// it to quota-rejections.jsonl. The verdict reads the counts; the record keeps the evidence.
+func (env *stepEnv) rejectQuota(spec clientSpec, packet quotaPacket, reason byte, reasonString string) {
+	class, cause := classifyQuotaRejection(packet, reason, reasonString)
+	window := env.col.window()
+	env.col.quota.add(window, class)
+	if env.rejections == nil {
+		return
+	}
+	err := env.rejections.Write(quotaRejectionRecord{
+		At: formatTime(time.Now()), Phase: window.String(), ClientID: spec.id, Tenant: spec.tenant,
+		Packet: string(packet), ReasonCode: int(reason), ReasonString: reasonString,
+		Classification: class.String(), Cause: cause,
+	})
+	if err != nil {
+		env.rejectionMu.Lock()
+		if env.rejectionErr == nil {
+			env.rejectionErr = err
+		}
+		env.rejectionMu.Unlock()
+	}
 }
 
 func (env *stepEnv) record(spec clientSpec, event string, latency time.Duration, present bool, reason string) {
@@ -171,8 +197,8 @@ func (s *sessClient) start(connectCtx, lifetime context.Context) error {
 }
 
 func (s *sessClient) noteRefusal(err error) {
-	if reason, ok := connackReason(err); ok && isLimitRejection(reason) {
-		s.env.col.tenantRejections.Add(1)
+	if reason, ok := connackReason(err); ok && isQuotaRejection(reason) {
+		s.env.rejectQuota(s.spec, quotaPacketConnAck, reason, "")
 	}
 }
 
@@ -197,8 +223,8 @@ func (s *sessClient) subscribe(client *mqttclient.Client) error {
 			if ack.PacketID != 1 || len(ack.ReasonCodes) != 1 {
 				return fmt.Errorf("unexpected SUBACK %#v", ack)
 			}
-			if reason := ack.ReasonCodes[0]; isLimitRejection(reason) {
-				s.env.col.tenantRejections.Add(1)
+			if reason := ack.ReasonCodes[0]; isQuotaRejection(reason) {
+				s.env.rejectQuota(s.spec, quotaPacketSubAck, reason, "")
 				return fmt.Errorf("SUBACK refused with reason 0x%02X", reason)
 			} else if reason != byte(qos) {
 				return fmt.Errorf("SUBACK granted 0x%02X, want %d", reason, qos)
@@ -400,7 +426,7 @@ func (s *sessClient) handlePubAck(packet *mqtt.PubAck) *packetFailure {
 	if !ok || s.spec.qos != 1 {
 		return protocolFailure("unexpected PUBACK %d on %s", packet.PacketID, s.spec.id)
 	}
-	s.finishAck(entry, packet.ReasonCode)
+	s.finishAck(entry, quotaPacketPubAck, packet.ReasonCode, packet.ReasonString)
 	return nil
 }
 
@@ -419,10 +445,10 @@ func (s *sessClient) handlePubRec(client *mqttclient.Client, packet *mqtt.PubRec
 		return protocolFailure("unexpected PUBREC %d on %s", packet.PacketID, s.spec.id)
 	}
 	if packet.ReasonCode >= 0x80 {
-		s.finishAck(entry, packet.ReasonCode)
+		s.finishAck(entry, quotaPacketPubRec, packet.ReasonCode, packet.ReasonString)
 		return nil
 	}
-	s.finishAck(entry, packet.ReasonCode)
+	s.finishAck(entry, quotaPacketPubRec, packet.ReasonCode, packet.ReasonString)
 	if err := client.Write(&mqtt.PubRel{Version: mqtt.ProtocolV5, PacketID: packet.PacketID}, writeTimeout); err != nil {
 		return &packetFailure{err: err}
 	}
@@ -444,13 +470,14 @@ func (s *sessClient) handlePubComp(packet *mqtt.PubComp) *packetFailure {
 	return nil
 }
 
-// finishAck records a PUBACK/PUBREC outcome. Reason codes >= 0x80 are errors; quota-class
-// refusals are tenant-limit rejections (invalid step), the rest are protocol errors.
-func (s *sessClient) finishAck(entry *pendingPublish, reason byte) {
+// finishAck records a PUBACK/PUBREC outcome. Reason codes >= 0x80 are errors. Quota-class
+// refusals are classified from the packet (§3.9); the other error codes are protocol errors.
+// A refused publish is not an ACK, so it is a failed publish and never a gap.
+func (s *sessClient) finishAck(entry *pendingPublish, packet quotaPacket, reason byte, reasonString string) {
 	col := s.env.col
 	switch {
-	case isLimitRejection(reason):
-		col.tenantRejections.Add(1)
+	case isQuotaRejection(reason):
+		s.env.rejectQuota(s.spec, packet, reason, reasonString)
 		col.publishFailed(s.spec.cell, s.spec.stream, entry.seq)
 	case reason >= 0x80:
 		col.counters().protocolErrors.Add(1)

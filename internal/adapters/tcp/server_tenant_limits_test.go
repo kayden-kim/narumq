@@ -73,7 +73,7 @@ func tcpTenantRuntime(t *testing.T, version mqtt.ProtocolVersion, service *tenan
 }
 
 // Traceability: TEN-06, TEN-07; docs/specs/tenancy-and-security.md §5.2.
-// Scenarios: tenancy-and-security.md:SEC-SCN-026, tenancy-and-security.md:SEC-SCN-027
+// Scenarios: tenancy-and-security.md:SEC-SCN-026, tenancy-and-security.md:SEC-SCN-027, mqtt-protocol-and-session.md:MQTT-SCN-055
 func TestTCPPublishTenantLimitReasonCodes(t *testing.T) {
 	for _, tc := range []struct {
 		name    string
@@ -123,6 +123,17 @@ func TestTCPPublishTenantLimitReasonCodes(t *testing.T) {
 				requireConnectionClosed(t, runtime.client)
 				return
 			}
+			wantReason := "tenant_limit:payload_size"
+			if tc.rate {
+				wantReason = "tenant_limit:byte_rate"
+			}
+			packet, _, err := runtime.server.limits.Load().decoder.Decode(frame, tc.version)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := tcpAckReasonString(packet); got != wantReason {
+				t.Fatalf("Reason String = %q, want %q", got, wantReason)
+			}
 			// A negative ACK returns Receive Maximum capacity, so another ID must be read.
 			writeTestPackets(t, runtime.client, &mqtt.Publish{Version: tc.version, QoS: tc.qos, PacketID: 5, Topic: "allowed/rejected", Payload: []byte("xx")})
 			frame = readTestFrame(t, runtime.client)
@@ -156,7 +167,7 @@ func tcpTenantAckReason(t *testing.T, runtime *adapterTestRuntime, frame []byte)
 }
 
 // Traceability: TEN-06, TEN-07; docs/specs/tenancy-and-security.md §5.2.
-// Scenarios: tenancy-and-security.md:SEC-SCN-027
+// Scenarios: tenancy-and-security.md:SEC-SCN-027, mqtt-protocol-and-session.md:MQTT-SCN-055
 func TestTCPTenantPublishRateWaitThenReject(t *testing.T) {
 	// Freeze policy time so all five reservations represent one tenant burst.
 	clock := &adapterTestClock{now: time.Unix(100, 0)}
@@ -175,6 +186,15 @@ func TestTCPTenantPublishRateWaitThenReject(t *testing.T) {
 		}
 		if frame[0] != 0x40 || frame[3] != byte(i) || tcpTenantAckReason(t, runtime, frame) != want {
 			t.Fatalf("publish %d ACK=%x want reason=%x", i, frame, want)
+		}
+		if i == 5 {
+			packet, _, err := runtime.server.limits.Load().decoder.Decode(frame, mqtt.ProtocolV5)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := tcpAckReasonString(packet); got != "tenant_limit:message_rate" {
+				t.Fatalf("Reason String = %q", got)
+			}
 		}
 		if i == 3 && time.Since(started) < 400*time.Millisecond {
 			t.Fatalf("third ACK after %s; want >=400ms", time.Since(started))
