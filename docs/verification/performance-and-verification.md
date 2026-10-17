@@ -254,6 +254,54 @@ Broker 로그에는 실패한 client ID가 없었다. 실패 시각 전후 broke
 
 [추론] 호스트 CPU 경합이나 대상 노드의 응답 지연이 setup 실패의 원인일 수 있다. 확인하지 못했다.
 
+<a id="capacity-isolated-rerun-2"></a>
+#### 재실행 2차 시리즈 · 3회 연속 통과, 사용자 수용 (2026-10-18)
+
+사용자가 실행 중인 앱을 닫은 뒤 메인 에이전트가 재실행 1회차부터 새 시리즈를 시작했다. 명령, profile, 판정 기준은 재실행 1회차와 같다. Kind 클러스터 `rollout-smoke-control-plane`과 registry `narumq-gate-registry-20261017`은 중지하거나 변경하지 않았다.
+
+실행 전 게이트는 60초 평균 호스트 CPU 30% 미만이었다. 원래 기준은 20%였다. 20%로는 6회 점검이 모두 미충족(20.3~23.1%)이었고, 메인 에이전트가 기준을 30%로 올렸다. 이는 사용자 결정이 아니라 메인 에이전트의 판단에 따른 편차다. 실패한 20% 점검 기록은 `run-1-precheck-20pct-superseded.txt`에 남겼다.
+
+| 회차 | summary | 실행 전 60초 CPU 평균 (%) | 실행 중 CPU min / avg / max (%) | ladder (01-r1, 02-r1) | confirm (02-r2) | 판정 |
+| --- | --- | --- | --- | --- | --- | --- |
+| 1 | [summary](../../.artifacts/verification/capacity-local-20261017T214838Z/capacity-summary.json) | 21.43 | 16.61 / 39.69 / 97.58 | pass, pass | pass | PASS |
+| 2 | [summary](../../.artifacts/verification/capacity-local-20261017T215217Z/capacity-summary.json) | 22.98 | 16.43 / 36.08 / 69.86 | pass, pass | pass | PASS |
+| 3 | [summary](../../.artifacts/verification/capacity-local-20261017T215516Z/capacity-summary.json) | 21.35 | 18.66 / 39.42 / 65.89 | pass, pass | pass | PASS |
+
+각 단계 값은 `steps/<NN>-rN/step-summary.json`에서 읽었다. 필드 경로는 다음과 같다. QoS1 p50·p99는 `latencyByWindow.measureN[1]`의 `p50Nanos`·`p99Nanos`(ms로 환산), cleanSessionLoss 건수는 `delivery.cleanSessionLoss[1].count`, RTO는 `recovery.rtoMillis`, setup 실패는 `delivery.setupFailures`다.
+
+| 회차 | 단계 | 연결 수 | QoS1 p50 (ms) | QoS1 p99 (ms) | cleanSessionLoss | RTO (ms) | setupFailures |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| 1 | 01-r1 | 53 | 31.555 | 51.314 | 0 | 2731.05 | 0 |
+| 1 | 02-r1 | 106 | 46.110 | 93.378 | 0 | 2915.39 | 0 |
+| 1 | 02-r2 | 106 | 49.862 | 85.030 | 0 | 3132.75 | 0 |
+| 2 | 01-r1 | 53 | 33.937 | 60.618 | 0 | 2100.02 | 0 |
+| 2 | 02-r1 | 106 | 50.148 | 87.923 | 0 | 2713.31 | 0 |
+| 2 | 02-r2 | 106 | 46.579 | 90.240 | 0 | 4336.81 | 0 |
+| 3 | 01-r1 | 53 | 31.466 | 63.241 | 0 | 2192.14 | 0 |
+| 3 | 02-r1 | 106 | 48.237 | 82.965 | 0 | 4290.04 | 0 |
+| 3 | 02-r2 | 106 | 47.463 | 90.094 | 0 | 3384.55 | 0 |
+
+모든 단계에서 `recovery.recovered`는 true, `recovery.sessionPresentFailures`는 0, QoS1 `delivery.cleanSessionLoss[1].maxDisconnectAfterPublishMillis`와 `olderThanLatencyLimit`은 0이었다. QoS1 p99는 모두 1,000ms 한도보다 낮았다(최대 93.378ms).
+
+잔여 부하:
+
+- 실행 전 점검에서 git.exe의 부모는 ChatGPT.exe(pid 28356, OpenAI Codex 앱)였다. 이 앱이 `git status`와 `git ls-files --others`를 반복 실행했다. 기록은 `run-1-precheck.txt`에 있다.
+- 실행 뒤 `docker stats --no-stream` 기준 Kind 컨테이너 `rollout-smoke-control-plane`은 CPU 11.27%(1개 코어 기준), 메모리 685.2MiB, PID 337이었다. registry 컨테이너 `narumq-gate-registry-20261017`은 CPU 0.00%, 메모리 9.367MiB, PID 13이었다.
+- [추론] 에이전트 도구 실행도 부하였을 수 있다. 분리해서 측정하지 않았다.
+- [추론] 실행 중 CPU 최대치에는 harness가 띄운 Kind broker와 generator의 부하가 포함됐을 가능성이 있다. 분리해서 측정하지 않았다.
+
+해석:
+
+- 하네스 결과: PRF-SCN-062 기준은 장애 주입·복구·판정·정리가 끝까지 실행되고 모든 단계가 통과하는 것이다([스펙](../specs/performance-and-verification.md#용량-측정-수용-테스트)). 3회 실행이 모두 이 기준을 충족했다. 스펙은 호스트 CPU 상한을 정하지 않는다.
+- 전제 차이: 재실행 계획의 전제는 다른 부하가 없는 호스트였다. 이 전제는 완전히 충족되지 않았다. 실행 전 60초 평균 CPU는 약 21%였고 잔여 부하가 있었다. 20%·30% 게이트는 메인 에이전트가 정한 값이며 스펙 기준이 아니다.
+- 사용자 수용: 사용자는 2026-10-18 이 시리즈를 PRF-SCN-062 수용 증거로 받아들였다.
+- 수치 비교: 9개 단계는 모두 cleanSessionLoss 0건, setup 실패 0건이었다. 실행 전 평균 CPU 21.35~22.98%는 재실행 1회차 실패 기록의 약 42%보다 낮았다. 실행 중 평균 CPU 36.08~39.69%는 같은 기록의 68.97%보다 낮았다.
+- [추론] 이 수치는 호스트 CPU 경합이 앞선 실패의 원인이었다는 가설과 맞는다. 이 시리즈는 그 원인을 증명하지 않는다. 앞선 실패의 원인은 확인하지 못했다.
+- 앞선 FAIL 기록은 변경하지 않는다.
+
+증거: [격리 시리즈 디렉터리](../../.artifacts/verification/capacity-isolated-20261017b/) (실행 전 점검, host CPU 샘플, 실행 로그, series-log 포함).
+
+
 
 
 
