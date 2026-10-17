@@ -230,9 +230,9 @@ Native amd64 Linux의 실제 standalone broker로 수정 전·후를 확인했�
 위 혼합 snapshot 실패를 보존한 뒤 `c8d9b06`으로 source·test metadata를 동결하고 기본 `go run ./tools/verify local`을 한 번 실행했다. 521.18초에 **local: PASS**였다. 실행 검사는 634개 중 통과 515·실패 0·실행 범위 안 미실행 0·게이트 밖 119였고 coverage도 통과했다. 별도 opt-in을 켜지 않았다. 이 결과는 분류·주소 대체 구현과 기본 local gate의 완료 증거이며 PRF-SCN-062 smoke 실패를 해제하지 않는다. 같은 동결 commit의 문서 링크 검사는 190개 파일·3,195개 local link에서 통과했다. Source·test metadata는 이 기록을 추가할 때도 변경하지 않았다.
 
 <a id="capacity-isolated-rerun-1"></a>
-#### 격리 재실행 1회차 (2026-10-17)
+#### 재실행 1회차 · 격리 조건 미충족 (2026-10-17)
 
-사용자가 승인한 계획은 최대 3회 실행이며, 실패 1건이면 FAIL로 판정하는 것이다. 부하는 주지 않았다. 명령은 바꾸지 않았다.
+사용자가 승인한 계획은 최대 3회 실행이며, 실패 1건이면 FAIL로 판정하는 것이다. 계획의 전제는 다른 부하가 없는 호스트였다. 명령은 바꾸지 않았다.
 
 `go run ./tests/benchmark/capacity local --profile tests/benchmark/capacity/testdata/local-smoke.json`
 
@@ -240,7 +240,7 @@ Native amd64 Linux의 실제 standalone broker로 수정 전·후를 확인했�
 
 01-r1, 02-r1, 01-r2는 통과했다. 02-r2는 **실패**했다. setup 단계에서 CONNACK 읽기가 `i/o timeout`으로 18번 실패했다. 실패 연결 17건은 `172.21.0.2`로, 1건은 `172.21.0.4`로 향했다. 노드와 주소의 대응은 확인하지 못했다. 응답 대기 제한은 5초 `handshakeTimeout`이다(`tests/benchmark/capacity/client.go:21`).
 
-Broker 로그에는 실패한 client ID가 없었다. 실패 시각 전후에 TLS 오류, readiness 변경, leader 변경도 없었다.
+Broker 로그에는 실패한 client ID가 없었다. 실패 시각 전후 broker 로그에 TLS 오류와 readiness 변경 기록이 없었다. Broker 로그는 leader 변경을 따로 기록하지 않으므로 leader 변경 여부는 이 로그로 판단하지 않았다.
 
 한 실행에서 cluster 하나를 재사용했다. 02-r2는 02-r1에서 node2 leader를 재시작한 뒤 9.7초에 시작했다. 02-r2에는 자체 장애 주입이 없었다.
 
