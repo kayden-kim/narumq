@@ -197,13 +197,14 @@ Native amd64 Linux의 실제 standalone broker로 수정 전·후를 확인했�
 | `go vet ./...` | 통과 | 전체 Go package |
 | `go test ./internal/domain/mqtt ./internal/application/publish ./internal/adapters/tcp ./cmd/narumq ./tests/benchmark/capacity` | 통과 | Codec, 거절 원인 보존, TCP 응답, 분류·판정·구간별 JSONL·summary·기록 실패 보존 |
 | `go run ./tools/verify scenarios` | 통과 | 연결 검사. Spec 7개·시나리오 632개·미연결 0·오류 0. 실행 통과 건수는 이 명령으로 증명하지 않는다. |
-| `go run ./tools/verify markdown-links` | 통과 | 최종 문서 190개·로컬 링크 3,179개 |
-| `go test ./internal/domain/mqtt -run TestConnectRequestProblemInformationRemainsUnsupported -count=1 -v` | 통과 | CONNECT `0x17` 값 0·1은 기존처럼 거절한다. 새 CONNECT property 지원은 추가하지 않았다. |
+| `go run ./tools/verify markdown-links` | 통과 | 후속 문서 갱신까지 문서 190개·로컬 링크 3,181개 |
 | `go test ./internal/adapters/tcp -run 'TestWritePacketDropsReasonStringAboveClientMaximumPacketSize\|TestTCPPublishBackpressureReasonCodes\|TestTCPPublishTenantLimitReasonCodes' -count=1 -v` | 통과 | 실제 socket의 PUBACK·PUBREC `0x97`, Reason String·Maximum Packet Size와 queue 원본 보존을 확인했다. 이 결과는 거절이 없는 Docker smoke와 별개다. |
 | `go run ./tests/benchmark/capacity local --profile tests/benchmark/capacity/testdata/local-smoke.json` | 실패 | 명령은 exit 0·283.70초였지만 PRF-SCN-062의 모든 단계 통과 조건은 충족하지 못했다. 01-r1·01-r2 통과, 02-r1은 setup CONNACK `0x88`로 실패했다. [Summary](../../.artifacts/verification/capacity-local-20261017T123309Z/capacity-summary.json). |
 | `go run ./tools/verify local` | 통과 | `NARUMQ_*` 환경 변수 없이 `local: PASS`. 시나리오 실행 통과 513·실패 0·범위 안 미실행 0, coverage PASS. 앞선 socket packet 시험과 이어 실행한 명령 전체는 626.42초다. Local 명령 단독 시간은 따로 계측하지 않았다. |
 
 02-r1은 setup에서 끝나 측정·장애 주입 단계에 들어가지 않았다. [연결 기록](../../.artifacts/verification/capacity-local-20261017T123309Z/steps/02-r1/connections.jsonl)에는 CONNACK `0x88` 2건과 handshake timeout 8건이 있다. 일반 ladder는 실패한 상위 단계 뒤 하위 단계를 확인할 수 있으므로 명령이 0으로 끝났다. 그러나 local-smoke의 PRF-SCN-062는 모든 단계 통과를 요구한다. 이 실행을 smoke 통과나 EKS 용량의 증거로 쓰지 않는다. Broker의 같은 구간에 `stale_epoch` cleanup 경고가 있지만 첫 CONNECT 실패 원인과 직접 연결한 증거는 없다. 원인을 확인하지 않은 채 재시도·timeout·cutoff를 바꾸거나 같은 실행을 통과할 때까지 반복하지 않았다.
+
+후속 검토에서 특정 미지원 CONNECT property를 고정하는 추가 회귀 시험과 그 시나리오 문구는 제거했다. 지원 CONNECT subset 자체는 바꾸지 않았다. 이 후속 변경에서는 전체 gate를 다시 실행하지 않고 Markdown 링크만 검사했다.
 
 
 

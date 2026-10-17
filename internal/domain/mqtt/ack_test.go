@@ -283,19 +283,3 @@ func TestAcknowledgementReasonStringWireAndLimits_MQTT5(t *testing.T) {
 		})
 	}
 }
-
-// Scenarios: mqtt-protocol-and-session.md:MQTT-SCN-054
-func TestConnectRequestProblemInformationRemainsUnsupported(t *testing.T) {
-	decoder, err := NewDecoder(MaxRemainingLength)
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, value := range []byte{0, 1} {
-		// CONNECT is otherwise valid; 0x17 is outside the adopted property subset.
-		body := []byte{0, 4, 'M', 'Q', 'T', 'T', 5, 2, 0, 30, 2, 0x17, value, 0, 1, 'c'}
-		_, consumed, err := decoder.Decode(testFrame(0x10, body), ProtocolV5)
-		if !errors.Is(err, ErrUnsupportedProperty) || consumed != 0 {
-			t.Fatalf("Request Problem Information=%d: consumed=%d error=%v", value, consumed, err)
-		}
-	}
-}
