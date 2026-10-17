@@ -650,3 +650,49 @@ go run ./tools/verify scenarios --go-test-json ROOT/remote-artifact/go-test.json
 
 테스트를 추가한 뒤 head `c9a1a7cca612eebde75975f911b9d2dc365f7642`에서 수행한 [PR #9 실행 39045919473](https://github.com/kayden-kim/narumq/actions/runs/39045919473)은 같은 `ci --base origin/main` gate를 통과했다.
 
+## 14. Process test port 경합 수정 (2026-10-18)
+
+대상 시나리오: DRN-SCN-017
+
+[PR #9 실행 39074551923](https://github.com/kayden-kim/narumq/actions/runs/39074551923)은 문서만 바꾼 head `ae5c1adfc4565b7516dd70d3f5a37466120a4c5b`에서 `TestDynamicClusterReplacementRollingUpdateProcessAcceptance`가 91.44초 만에 실패했다. 같은 코드의 앞선 실행 39045919473·39047179768·39047813458은 통과했다. 원문은 `.artifacts/verification/remote-ci-20261018-39074551923/full-job.log` 379–404행이다. 이 변경은 AWS·Docker를 쓰지 않았다.
+
+### 14.1 원인 근거
+
+| 사실 | 근거 |
+| --- | --- |
+| 실패한 단계는 joiner node 4의 첫 시작이다. 재시작이나 교체 중 재사용이 아니다. | 379행 `replacement round 1: 1 -> 4`. 이 시험은 node 4를 한 번만 시작한다. 403행의 node 4 출력은 오류 한 줄이다. |
+| 실패 직전까지 cluster는 정상이었다. | 388·395·401행: 세 voter가 22:24:34.047에 `committed cluster membership operation … phase STAGED`를 기록했다. |
+| node 4는 management listener bind에서 7ms 뒤 종료했다. | 403행 22:24:34.054 `listen for management HTTP on "127.0.0.1:39457": … bind: address already in use`. 코드 위치는 `cmd/narumq/cluster_runtime.go`의 `net.Listen("tcp", config.Management.ListenAddress)`이다. |
+| Port는 시험 시작 때 예약하고 바로 닫는다. | `clusterMembershipProcessAddresses`가 `127.0.0.1:0`으로 port를 받고 함수가 끝날 때 listener를 닫았다. 각 node의 port는 broker를 시작할 때까지 비어 있었다. 같은 binary 안의 lease map은 이 helper끼리의 중복만 막는다. |
+| Port 39457은 기본 Linux 동적 범위(32768–60999) 안이다. | Linux에서 `bind(0)`과 `connect()`를 호출하는 모든 process가 이 범위에서 port를 받는다. CI runner의 실제 설정값은 로그에 없으므로 기본값으로 판단했다. |
+
+39457을 가진 process는 CI 로그만으로 특정할 수 없다. 로그에는 socket 목록이 없다. 같은 gate의 병렬 단계에는 `go test -race ./cmd/... ./internal/...`와 다른 package test가 함께 돈다([성능 및 검증 §8](../specs/performance-and-verification.md#8-coverage와-test-quality-gate)). 이 test들은 `127.0.0.1:0` listener를 많이 연다. 그중 하나가 해제된 port를 받았다고 추정한다. 이 부분은 추정이다.
+
+### 14.2 의도적 재현
+
+환경은 WSL2 Ubuntu(Linux 6.6.87.2, `ip_local_port_range` 32768–60999)와 Go 1.26.5다. 일회용 시험은 helper로 3-node fixture 주소를 예약한 뒤, 다른 process를 흉내 내어 `net.Listen("tcp", "127.0.0.1:0")`를 호출하고 결과를 닫았다. node 3의 management port가 나오면 그 listener를 쥐고 node 1~3을 시작했다. 일회용 시험은 삭제했다. 원본 출력은 `.artifacts/verification/process-port-race-20261018/repro-linux-wsl.log`에 있다.
+
+| 단계 | 결과 |
+| --- | --- |
+| 수정 전 | 해제된 `127.0.0.1:41091`을 `bind(0)` 1237번째 호출(30.79ms)이 받았다. node 3이 CI와 같은 `listen for management HTTP on "127.0.0.1:41091": … bind: address already in use`로 첫 시작에 실패했다. |
+| 재할당 측정 | 300회 모두 해제한 port가 다시 나왔다. 호출 횟수는 최소 62, 중앙값 5359, 90퍼센타일 14751, 최대 40376이다(상한 200000). |
+| 수정 후 | `bind(0)`을 600000번(12.69초) 호출해도 `127.0.0.1:25218`은 나오지 않았다. 세 node가 모두 시작하고 bootstrap을 마쳤다. |
+
+### 14.3 수정
+
+`clusterMembershipProcessAddresses`가 port를 OS 동적 포트 범위 아래에서 무작위로 고른다. 후보는 `127.0.0.1`의 `[10000, 상한)`이다. 상한은 32768이고, Linux는 `/proc/sys/net/ipv4/ip_local_port_range`의 시작 port가 더 낮으면 그 값을 쓴다. 후보마다 실제로 bind해 비어 있는지 확인하고, 기존 lease map으로 같은 binary 안의 중복을 막는다. 후보 하나가 실패하면 다른 port를 다시 뽑고, 요청한 주소 수의 100배까지 시도한다. 동적 범위가 10000부터 1024개 미만의 여유만 남기면 기존처럼 OS가 port를 고른다. 이 helper를 쓰는 모든 process 시험이 같은 수정을 쓴다. Broker 코드, 시험의 단언, 대기 시간은 바꾸지 않았다. 규칙은 [성능 및 검증 §8](../specs/performance-and-verification.md#8-coverage와-test-quality-gate)에 적었다.
+
+### 14.4 실행 결과
+
+| 명령·범위 | 결과 |
+| --- | --- |
+| `gofmt -l tests/integration` | 출력 없음 |
+| `go vet ./...` (Windows) | PASS |
+| `go test ./tests/integration -run '^TestDynamicClusterReplacementRollingUpdateProcessAcceptance$' -count=3 -v` (Windows) | PASS 3회(39.31초·32.65초·32.92초), package 106.688초 |
+| `go test ./tests/integration -count=1` (Windows) | `ok`, 306.292초 |
+| 같은 명령 `-count=3` (WSL2 Linux) | PASS 3회(32.95초·33.28초·31.91초), package 98.154초 |
+| `go test ./tests/integration -count=1` (WSL2 Linux) | `ok`, 236.083초 |
+
+새 단위 시험 `TestClusterMembershipProcessPortPoolStaysBelowDynamicRange`와 `TestClusterMembershipProcessAddressesAreDistinctLoopbackPortsInsidePool`은 위 전체 실행에 포함된다.
+
+이 실행에 쓴 Windows host의 동적 포트 범위는 `netsh int ipv4 show dynamicport tcp` 기준 1024부터 64511개다. 새 후보 범위가 이 범위 안에 있으므로 이 host의 Windows 통과는 수정 효과의 증거가 아니라 회귀 확인이다. 수정 효과는 Linux 재현으로만 확인했다. 수정 뒤 원격 CI 실행은 아직 없다.

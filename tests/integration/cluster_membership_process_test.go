@@ -21,6 +21,7 @@ import (
 	"github.com/lestrrat-go/jwx/v3/jwt"
 	"io"
 	"math/big"
+	mathrand "math/rand/v2"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -43,6 +44,18 @@ const (
 	clusterMembershipProcessAdmin             = "process-acceptance-admin-token"
 	clusterMembershipProcessReadOnlyAPIKey    = "process-acceptance-readonly-api-key"
 	clusterMembershipProcessMaxManagementRate = 1_000_000
+)
+
+const (
+	// The ceiling is the lowest first dynamic port among the supported hosts: Linux starts
+	// at 32768, Windows and macOS at 49152.
+	clusterMembershipProcessPortFloor   = 10000
+	clusterMembershipProcessPortCeiling = 32768
+	// A smaller pool makes the lease collisions of concurrent fixtures too likely.
+	clusterMembershipProcessMinimumPortPool = 1024
+	// Draws allowed per requested address before the reservation fails.
+	clusterMembershipProcessReservationAttempts = 100
+	clusterMembershipProcessLinuxDynamicPorts   = "/proc/sys/net/ipv4/ip_local_port_range"
 )
 
 var clusterMembershipProcessAddressLeases = struct {
@@ -2002,8 +2015,38 @@ func clusterMembershipProcessRepoRoot(t *testing.T) string {
 	return root
 }
 
+// clusterMembershipProcessPortPool returns the half-open port range [low, high) that child
+// brokers may use. The OS gives every bind(0) and connect() caller a port from its dynamic
+// range. A port reserved inside that range can therefore reach another process between the
+// moment the test releases it and the moment the broker binds it, and the broker then fails
+// with "address already in use". The OS never hands out ports below its dynamic range.
+// dynamicRange is the content of the Linux ip_local_port_range file, or empty on hosts
+// without it. An empty pool means the host leaves no room below its dynamic range, so the
+// OS has to choose the port.
+func clusterMembershipProcessPortPool(dynamicRange string) (low, high int) {
+	high = clusterMembershipProcessPortCeiling
+	if fields := strings.Fields(dynamicRange); len(fields) == 2 {
+		if first, err := strconv.Atoi(fields[0]); err == nil && first < high {
+			high = first
+		}
+	}
+	if high-clusterMembershipProcessPortFloor < clusterMembershipProcessMinimumPortPool {
+		return 0, 0
+	}
+	return clusterMembershipProcessPortFloor, high
+}
+
+func clusterMembershipProcessCurrentPortPool() (low, high int) {
+	dynamicRange := ""
+	if data, err := os.ReadFile(clusterMembershipProcessLinuxDynamicPorts); err == nil {
+		dynamicRange = string(data)
+	}
+	return clusterMembershipProcessPortPool(dynamicRange)
+}
+
 func clusterMembershipProcessAddresses(t *testing.T, count int) []string {
 	t.Helper()
+	low, high := clusterMembershipProcessCurrentPortPool()
 	listeners := make([]net.Listener, 0, count)
 	addresses := make([]string, 0, count)
 	t.Cleanup(func() {
@@ -2018,9 +2061,20 @@ func clusterMembershipProcessAddresses(t *testing.T, count int) []string {
 			_ = listener.Close()
 		}
 	}()
-	for len(addresses) < count {
-		listener, err := net.Listen("tcp", "127.0.0.1:0")
+	for attempt := 0; len(addresses) < count; attempt++ {
+		if attempt == count*clusterMembershipProcessReservationAttempts {
+			t.Fatalf("reserve %d loopback ports: %d draws found %d free unleased ports", count, attempt, len(addresses))
+		}
+		candidate := "127.0.0.1:0"
+		if high > low {
+			candidate = net.JoinHostPort("127.0.0.1", strconv.Itoa(low+mathrand.IntN(high-low)))
+		}
+		listener, err := net.Listen("tcp", candidate)
 		if err != nil {
+			if high > low {
+				// Another socket or the host's excluded port ranges hold this port; draw again.
+				continue
+			}
 			t.Fatalf("reserve loopback port: %v", err)
 		}
 		address := listener.Addr().String()
