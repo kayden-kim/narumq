@@ -716,6 +716,8 @@ type clusterReadWaiter struct {
 	commit        *clusterPendingCommit
 	leadership    raftLeadership
 	proofSequence uint64
+	issuedAt      time.Time // Emission time of proofSequence; the zero value never expires.
+	answered      bool      // The ReadState arrived and waits for local apply and projection.
 }
 
 type clusterProposalWaiter struct {
@@ -1791,6 +1793,8 @@ func (runtime *clusterRuntime) completeReadStates(states []raftadapter.ReadState
 			continue
 		}
 		if state.Index > status.AppliedIndex || state.Index > runtime.projectionIndex.Load() {
+			waiter.answered = true
+			waiters[key] = waiter
 			remaining = append(remaining, state)
 			continue
 		}

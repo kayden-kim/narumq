@@ -35,6 +35,8 @@
 
 Async WAL 보완 뒤 compare `bp03-20261002T193345.142241000Z-38956`와 suite `bp03-suite-20261002T193711.351279300Z-4364`는 양쪽 valid·5/5였다. 매회 QoS별 Step 3 offered/sent/ACK/delivery 600, offline QoS별 64, SessionPresent 4/4, gap·duplicate 0, overload 없음이었다. Step 3 ACK p99 median/MAD는 QoS 1 54.895/1.657ms, QoS 2 56.611/3.149ms, mean entries/sync는 2.053607/0.003409였다. 고정 local smoke의 반복 증거일 뿐 production SLO·target 우열·ADR-0003 전체 수용은 아니다. `releaseGating=false`, `ackLatencyDirectlyComparable=false`다.
 
+2026-10-18에 `PRF-SCN-011`·`PRF-SCN-012`의 `TestClusterConcurrentOriginsReadBurstCompletesAfterEgressDrain`이 간헐 실패하는 원인을 고쳤다. 단독 실행 20회에서 일반 10회·`GOMAXPROCS=2` 4회·`-race` 1회 실패했다. Leader의 proof 응답이 가득 찬 peer FIFO에 거절되고 다시 발행되지 않는 production 결함이었다. 수정 뒤 일반 50/50, `-race` 20/20, `GOMAXPROCS=2` 20/20 통과했다. 시험 assertion·deadline·queue 상한은 그대로다. 원인·환경·명령은 [Cluster 검증 기록 §11.38](cluster-session-and-delivery.md#1138-fresh-read-proof-응답-유실-복구-수용-매핑)에 있다.
+
 
 ## 3.5 BP-07 Rolling Drain 기록
 

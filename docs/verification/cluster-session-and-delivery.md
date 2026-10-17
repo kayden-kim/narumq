@@ -653,6 +653,26 @@ NARUMQ_RELEASE_COMPAT=1 GOMAXPROCS=2 go test -p=2 ./tests/integration -run '^Tes
 
 첫 synthetic release 실패는 crash 직후 live `/api/v1/nodes`의 null version을 읽은 fixture 문제였다. Commit된 `/api/v1/cluster/features` member profile을 조회한 뒤 통과했다. Feature 미지원 거절·stream 실패로 분류하지 않으며 assertion·production 코드는 바꾸지 않았다.
 
+## 11.38 Fresh read proof 응답 유실 복구 수용 매핑
+
+스펙: [11.38](../specs/cluster-session-and-delivery.md#1138-fresh-read-proof-응답-유실-복구-수용-매핑). 대상: `CLU-SCN-265`. 성능 spec의 burst 증거는 [성능 검증 기록 §3.4](performance-and-verification.md#34-bp-03-durable-delivery-기록)에 있다.
+
+대상 변경은 HEAD `c608aa7`에 더한 미커밋 변경이다. 환경은 Windows 10.0.26200 amd64, Go 1.26.5다. Race 실행은 `CGO_ENABLED=1`과 gcc를 썼다. 2026-10-18 local 실행이며 EKS와 실제 process 수준 시험은 미실행이다.
+
+수정 전에는 `TestClusterConcurrentOriginsReadBurstCompletesAfterEgressDrain`이 `-count=20`에서 일반 10회·`GOMAXPROCS=2` 4회·`-race` 1회 실패했다. 실패 문구는 `fresh proofs completed=189/192 after egress drain`에서 `191/192`까지였고, `GOMAXPROCS=2`에는 `128/192`도 있었다. 원인은 임시 계측으로 확인했다. 늦게 연결한 node 3으로 가는 leader FIFO(`peerQueueMessages=32`)가 오래된 heartbeat와 `MsgApp`으로 가득 차 `MsgReadIndexResp`가 `ErrPeerBackpressure`로 거절됐다. `sendMessages`는 거절한 frame을 다시 보내지 않았고, `refreshReadWaiters`는 leader가 바뀔 때만 proof를 다시 발행했다. 그 read는 2초 deadline까지 남아 node 3의 발행 예산 5개 중 하나를 계속 차지했다. 실패 실행의 leader는 `MsgReadIndex` 64개를 받고 응답 61–63개만 보냈다.
+
+Egress가 비기를 기다리는 시험 변경은 `-race` 19/20, `GOMAXPROCS=2` 3/20 통과에 그쳐 채택하지 않았다. Production을 고쳐 ReadState가 `clusterReadProofRetryInterval`(500ms) 안에 오지 않은 proof를 새 nonce로 다시 발행한다. Burst 시험의 192개 proof 완료와 queue 상한 assertion, 2초 deadline은 바꾸지 않았다.
+
+```text
+go test ./cmd/narumq -run '^TestClusterConcurrentOriginsReadBurstCompletesAfterEgressDrain$' -count=50 -v
+CGO_ENABLED=1 go test -race ./cmd/narumq -run '^TestClusterConcurrentOriginsReadBurstCompletesAfterEgressDrain$' -count=20 -v
+GOMAXPROCS=2 go test ./cmd/narumq -run '^TestClusterConcurrentOriginsReadBurstCompletesAfterEgressDrain$' -count=20 -v
+```
+
+수정 뒤 결과는 일반 50/50, `-race` 20/20, `GOMAXPROCS=2` 20/20 통과다. 재발행이 필요한 실행은 약 0.6초, 나머지는 약 0.15초 걸렸다. 새 시험 세 개(`TestClusterLostProofResponseIsReissuedAfterRetryInterval` 외 둘)와 같은 파일의 다른 burst 시험 두 개는 `-count=30`에서 통과했고 새 시험은 `-race -count=5`도 통과했다. 재발행 판정을 항상 거짓으로 바꾼 임시 복사본에서는 새 시험 두 개와 burst 시험이 실패했다. 따라서 새 시험은 이 결함을 잡는다.
+
+`go vet ./cmd/narumq`, `go test ./cmd/narumq -count=1`(30.8초), `go run ./tools/verify scenarios`(635개, 미연결 0·오류 0), `go run ./tools/verify markdown-links`가 통과했다. 이 결과는 재발행이 유실한 응답을 복구한다는 근거다. Incoming frame의 무손실이나 BP-03 수용 보장은 아니다.
+
 ## 2026-10-17 시나리오 연결 보완
 
 이번 작업은 소스 메타 정보와 영구 회귀를 보완했으며 과거 EKS를 재실행하지 않았다. 시나리오별 연결의 현재 기준은 소스 `Scenarios:`와 생성 보고서다. 전체 623개 중 연결 586개·미연결 37개·오류 0개였으며 결과 입력 없는 검사는 미실행을 통과로 바꾸지 않는다.

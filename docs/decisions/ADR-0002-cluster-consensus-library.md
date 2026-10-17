@@ -46,6 +46,8 @@ Failover 검증은 follower 전용 `RawNode.ForgetLeader` seam을 `Campaign` 앞
 
 이는 RawNode의 synchronous Ready·WAL sync·Advance와 command별 fresh proof를 유지하는 내부 scheduling 선택이다. Queue 확대, timeout 연장, proof 공유·cache, outbound 자동 retry 또는 readiness 완화는 포함하지 않는다. `AsyncStorageWrites`는 storage 메시지와 영속화 후 응답 경로가 구현되지 않았으므로 별도 adapter 재설계·crash-ordering 검증 없이 켜지 않는다. 실제 시험과 BP-03의 유효 여부는 [성능 검증 §3.4](../specs/performance-and-verification.md#34-bp-03-durable-delivery-smoke-관찰-경계)를 기준으로 하며 이 scoped 채택은 ADR-0002 전체를 Accepted로 바꾸지 않는다.
 
+2026-10-17에는 동시 origin burst 시험이 단독 실행 20회 중 10회 실패했다. 늦게 연결되는 follower로 가는 leader FIFO가 오래된 heartbeat와 복제용 `MsgApp`으로 가득 차 leader의 `MsgReadIndexResp`가 거절됐다. 거절한 frame은 다시 보내지 않으므로 follower의 read는 deadline까지 대기하며 발행 예산도 계속 차지했다. 위 예산 분할은 늦게 연결된 peer로 향하는 이 traffic까지 막지 못한다. 이를 두고 frame 재전송은 추가하지 않는다. 대신 origin이 ReadState를 받지 못한 proof를 `clusterReadProofRetryInterval`(500ms) 뒤 새 nonce로 다시 발행한다. 이는 leader 변경 때의 재발행과 같은 read-only 경로이며 caller의 key·context·deadline, 발행 예산과 fresh proof 규칙을 유지한다. Queue 확대, timeout 연장, proof 공유·cache는 여전히 포함하지 않는다. 동작 기준은 [Cluster 스펙 §4.2](../specs/cluster-session-and-delivery.md#42-qos-12-durable-delivery)와 [§11.38](../specs/cluster-session-and-delivery.md#1138-fresh-read-proof-응답-유실-복구-수용-매핑)이다.
+
 ### 1.3 비동기 저장 경로 채택
 
 사용자 지시 `제안한 방식대로 개선해보자`로 [ADR-0020](ADR-0020-asynchronous-raft-wal-group-commit.md)의 공식 `AsyncStorageWrites` adapter와 bounded WAL group commit을 채택한다. §1.1·§1.2의 synchronous scheduling 설명은 이전 구현의 기록이며 현재 실행 경계는 새 ADR을 따른다. Version pin·fresh proof·quorum 영속화 뒤 ACK는 유지한다. ADR-0002 전체와 BP-03 수용 상태는 이 설계 채택만으로 바꾸지 않는다.

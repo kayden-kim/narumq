@@ -151,6 +151,8 @@ Client QoS 1/2 PUBLISH ingress admission은 local projection readiness만 먼저
 
 발행한 read가 완료되기 전에 leader·term·role이 바뀌면 driver는 미완료 proof를 다시 발행 대상으로 돌린다. 새 proof는 현재 Raft의 리더가 분명하고 기존 outbound 예산이 있을 때만 발행한다. Request context에는 origin node ID와 발행마다 바뀌는 nonce를 넣는다. Caller의 원래 key·context·deadline과 FIFO commit 순서는 유지한다. 이전 발행의 ReadState는 새 proof를 완료할 수 없다. Proof를 다른 caller와 공유하지 않는다. Application 재제안은 아래의 `proposal-recovery` 활성화 경로에서만 허용한다.
 
+발행한 proof의 ReadState가 `clusterReadProofRetryInterval`(`clusterReadTimeout`의 4분의 1, 500ms) 안에 오지 않으면 driver는 같은 방식으로 다시 발행한다. Peer FIFO가 가득 차면 leader의 proof 응답 frame이 거절될 수 있고, 송신 쪽은 이 frame을 다시 보내지 않기 때문이다. 이미 ReadState가 도착해 local apply와 projection을 기다리는 proof는 다시 발행하지 않는다. Context가 끝난 read도 다시 발행하지 않는다. 다시 발행할 outbound 여유가 없으면 이전 nonce를 유지한다. 새 proof는 위 규칙과 같이 원래 key·context·deadline과 FIFO commit 순서를 유지하며 이전 발행의 ReadState로 완료하지 않는다.
+
 리더 이전이나 리더 선출 중 정상 forwarded proposal이 `raft.ErrProposalDropped`로 거절될 수 있다. 이 오류는 Raft log에 append하지 않았다는 뜻이다. Dynamic adapter는 이 경우 요청을 bounded FIFO에 보관한다. [ADR-0035](../decisions/ADR-0035-failover-aware-commit-lag-and-unsent-proposal-reclaim.md)에 따라 socket write를 한 번도 시작하지 않은 raft-lane `MsgProp`도 같은 FIFO로 회수한다. 대상은 연결 없는 peer의 outbox ring에 남은 frame과 transport가 `ErrPeerBackpressure`로 받지 않은 frame이다. Write를 시작한 `outCurrent`는 회수하지 않고 기존처럼 재연결 뒤 다시 보낸다. 리더와 저장 공간을 다시 사용할 수 있으면 같은 요청을 Raft에 넘긴다. 새 forwarded proposal도 보관 중인 요청 뒤에 정렬한다. 서로 다른 peer에 동시에 남은 proposal의 상대 순서와 FIFO overflow 때 남은 frame의 순서는 보장하지 않는다. 일반 leader-only `Propose`와 membership change의 계약은 바꾸지 않는다.
 
 FIFO는 최대 64 message와 기존 `maxWALFramePayload-1024` byte 예산으로 제한한다. Ready 입력과 보관 요청의 합도 같은 byte 한도를 지킨다. 가득 차면 기존 `ErrBackpressure`로 거절한다. 인증된 inbound frame의 보관은 adapter가 이미 소유한 decoded 값으로 처리한다. Transport lease는 즉시 반환하며 Raft tick과 peer message 처리는 계속한다. Runtime membership reconciliation은 기존 stable checkpoint 조건을 유지하므로 보관분이 남아 있으면 기다린다. Raft의 선출·리더 이전 자체는 peer message와 tick으로 진행한다. 미처리 FIFO는 `StoragePending`에 포함해 checkpoint나 안전한 stop의 완료로 숨기지 않는다. 저장 장애와 Close는 기존 실패 계약을 따른다.
@@ -942,3 +944,11 @@ Container 시작에는 build 뒤 검사한 immutable image ID(내용으로 식�
 | CLU-SCN-262 | CLU-02 | 실제 process의 큰 snapshot catch-up | 3-voter cluster에서 feature를 활성화한다. Retained 700,000 byte 3개를 포함한 snapshot을 새 learner에 전송한다. 새 member가 voter가 되고 retained SHA-256이 모두 같아야 한다. 같은 volume 재시작 뒤 다시 Ready여야 한다. |
 | CLU-SCN-263 | CLU-02 | Release compatibility와 rollback | N-1/N 혼합 운영·snapshot 교환·N-2 거절·활성화 뒤 rollback 거절을 기존 기준대로 확인한다. Commit된 member version은 feature API의 member profile에서 읽는다. |
 | CLU-SCN-264 | CLU-02 | Historical-source release 회귀 | 지정 source `58a95f801e1467379db2eb6f3454ae44e954418a`와 현재 source의 혼합 운영·snapshot 교환·rollback을 확인한다. |
+
+### 11.38 Fresh read proof 응답 유실 복구 수용 매핑
+
+기준은 §4.2와 [ADR-0002 §1.2](../decisions/ADR-0002-cluster-consensus-library.md#12-dynamic-driver의-제한된-발행-제어-채택)다. Peer FIFO 용량은 예약이 아닌 snapshot이므로 leader의 proof 응답이 거절될 수 있다. 이 매핑은 응답이 유실된 뒤의 복구만 확인한다. 한꺼번에 요청한 read가 egress drain 뒤 모두 완료되는지는 [PRF-SCN-011](performance-and-verification.md)이 확인한다.
+
+| 시나리오 ID | 요구사항 ID | 조건과 입력 | 기대 결과 |
+| --- | --- | --- | --- |
+| CLU-SCN-265 | CLU-06, CLU-07, CLU-14 | Follower가 발행한 fresh read의 proof 응답이 유실된다 | 재발행 간격 전에는 proof를 다시 발행하지 않는다. 간격이 지나면 같은 key와 deadline으로 새 nonce의 proof를 발행하고 완료한다. 이전 발행의 ReadState는 새 proof를 완료하지 않는다. ReadState가 도착해 apply를 기다리는 proof, context가 끝난 read와 outbound 여유가 없는 proof는 이전 nonce를 유지한다. |
