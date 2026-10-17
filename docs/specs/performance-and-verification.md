@@ -834,6 +834,8 @@ Coverage의 전체 package 실행에는 `-timeout=3h`를 적용한다. 이는 op
 
 Local의 `-parallel`은 8이다. CI는 Go의 유효 `GOMAXPROCS` 값을 `-parallel`에 넘긴다. 이 값은 package 안에서 `t.Parallel()`로 실행하는 test의 상한이다. Preflight, coverage, race, fuzz는 한 병렬 단계에서 실행한다. `local`과 `ci`는 mutation을 실행하지 않는다.
 
+시나리오 실행 검사는 Go 도구가 현재 빌드에서 제외한 파일의 테스트를 결과가 없다는 이유로 실패시키지 않는다. 파일명의 GOOS·GOARCH 제약과 `//go:build`를 그대로 따른다. 소스 연결 검사에서는 제외된 파일도 유지한다. 다른 플랫폼에서 명시적으로 받은 통과·실패 결과는 버리지 않는다. 활성 파일의 일반 테스트가 건너뛰거나 결과가 없으면 여전히 실패다. 외부 실행 결과의 빌드 환경 재현 범위는 [테스트 컨벤션 §5](../conventions/test-conventions.md#5-검증-명령과-통과-기준)를 따른다.
+
 병렬 명령 하나가 실패하면 나머지 명령을 취소한다. 하위 process를 종료한 OS가 종료 코드만 반환하더라도 runner는 context의 취소 원인을 보존해야 한다. 이 취소를 별도의 시험 실패로 보고하지 않는다. 취소 없이 끝난 명령의 실제 non-zero 종료 코드는 그대로 실패로 보고한다.
 
 `local`과 `ci`의 preflight는 `go vet`, `go run ./tools/verify traceability`, `go run ./tools/verify scenarios`, `go run ./tools/verify architecture` 순서로 실행한다. `scenarios`는 이 문서의 `시나리오 ID` 표와 테스트 소스의 `Scenarios:` 메타 정보를 대조하는 연결 검사다. 결과 파일 없이 실행하므로 `오류`, `미연결`, `실패`가 하나라도 있으면 gate가 실패하고 `미실행`은 실패가 아니다. 계측 사본의 coverage `go test ./...`는 `-json`으로 실행해 stdout을 `.artifacts/verification/go-test.json`에 쓰며 실패하면 이 파일에서 실패한 시험 목록을 출력한다. 병렬 검사가 끝나면 gate는 `go run ./tools/verify scenarios --go-test-json .artifacts/verification/go-test.json --require-executed`로 실행 검사를 한다. 실행 검사는 `오류`·`미연결`·`실패`에 더해 실행 범위(결과 JSON에 나온 Go package의 `Test*`·`Fuzz*`, `--results` 파일에 결과가 있는 시험)에서 통과 결과가 없는 연결 시험(`미실행 (건너뜀)`, `미실행 (결과 없음)`)도 실패로 처리한다. 실행 범위 밖의 연결 시험(결과 파일이 없는 Python·EKS 함수, 결과 JSON에 없는 Go package, 결과 기록이 없는 `Test*`가 아닌 Go 함수, 통과·실패 결과가 없는 `Acceptance:` 표시 시험)은 `미실행 (게이트 밖)`으로 보고하며 실패로 처리하지 않는다. 그런 시험의 통과·실패 증거는 [검증 기록](../verification/performance-and-verification.md)이나 아래 `acceptance` 결과에 둔다.
@@ -908,6 +910,7 @@ MQTT normative statement 연결표는 `tests/conformance/mqtt-compliance-v1.json
 | PRF-SCN-116 | - | `go run ./tools/verify acceptance [--run <regexp>]`를 실행한다. 고른 시험의 환경 변수가 빠졌거나, 고른 시험이 건너뛰어지거나 실패하거나 결과가 없다. | 환경 변수가 빠지면 시험을 실행하지 않고 빠진 이름을 출력하며 exit 1이다. 고른 시험이 모두 통과하면 `acceptance: PASS`와 exit 0이다. 하나라도 통과하지 않으면 해당 시험 이름과 `acceptance: FAIL`을 출력하며 exit 1이다. 결과는 `.artifacts/verification/acceptance-go-test.json`에 남는다. |
 
 ### 7.3 Cluster failpoint 빌드
+| PRF-SCN-121 | - | Windows·Linux 파일명, GOARCH 파일명과 `//go:build` 제약이 있는 테스트를 연결하고 현재 Go 환경으로 실행 검사한다. 활성 파일의 결과 누락·건너뜀과 다른 플랫폼의 명시적 통과·실패 결과도 입력한다. | 제외된 파일도 연결되지만 결과가 없으면 게이트 밖이다. GOFLAGS의 tag를 포함한 Go 빌드 제약을 따른다. 활성 파일의 결과 누락·건너뜀은 실패한다. 명시적 통과·실패 결과는 현재 플랫폼과 무관하게 센다. |
 
 Membership crash-boundary와 durable-ACK acceptance 시험은 `narumq_failpoint` build tag를 사용한다. 이 build만 `NARUMQ_FAILPOINT`, `NARUMQ_FAILPOINT_CONTROL`을 읽는다. 기본 build는 두 값을 무시하며 이 설정으로 process를 종료하거나 peer를 격리하지 않는다. 일치하는 crash point는 `narumq failpoint reached: <point>`를 출력하고 exit 86으로 종료한다.
 

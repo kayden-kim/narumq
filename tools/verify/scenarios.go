@@ -10,6 +10,7 @@ import (
 	"go/token"
 	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"regexp"
 	"sort"
@@ -176,6 +177,7 @@ type scenarioResults struct {
 	outcomes map[string]testOutcome
 	packages map[string]struct{}
 	recorded map[string]struct{}
+	excluded map[string]struct{}
 }
 
 func newScenarioResults() *scenarioResults {
@@ -183,6 +185,7 @@ func newScenarioResults() *scenarioResults {
 		outcomes: make(map[string]testOutcome),
 		packages: make(map[string]struct{}),
 		recorded: make(map[string]struct{}),
+		excluded: make(map[string]struct{}),
 	}
 }
 
@@ -199,11 +202,76 @@ func (results *scenarioResults) inScope(test scenarioTest) bool {
 	if _, recorded := results.recorded[test.Key]; recorded {
 		return true
 	}
+	if outcome := results.outcomes[test.Key]; outcome.Status == testResultPass || outcome.Status == testResultFail {
+		return true
+	}
+	if _, excluded := results.excluded[test.File]; excluded {
+		return false
+	}
 	if test.Package == "" {
 		return false
 	}
 	_, executed := results.packages[test.Package]
 	return executed
+}
+
+// excludeBuildFiles asks Go which files are excluded in the reporting environment. Source scanning
+// remains platform-independent. go list owns filename constraints, build tags and GOFLAGS parsing.
+func (results *scenarioResults) excludeBuildFiles(root string, refs []scenarioRef) error {
+	modules := newGoModuleResolver(root)
+	directories := make(map[string]map[string]struct{})
+	for _, ref := range refs {
+		if _, executed := results.packages[ref.Test.Package]; !executed || ref.Test.Package == "" {
+			continue
+		}
+		directory := filepath.Dir(filepath.Join(root, filepath.FromSlash(ref.Test.File)))
+		module, err := modules.module(directory)
+		if err != nil {
+			return err
+		}
+		if directories[module.Dir] == nil {
+			directories[module.Dir] = make(map[string]struct{})
+		}
+		relative, err := filepath.Rel(module.Dir, directory)
+		if err != nil {
+			return err
+		}
+		directories[module.Dir]["./"+filepath.ToSlash(relative)] = struct{}{}
+	}
+	for module, packages := range directories {
+		paths := make([]string, 0, len(packages))
+		for path := range packages {
+			paths = append(paths, path)
+		}
+		sort.Strings(paths)
+		command := exec.Command("go", append([]string{"list", "-e", "-find", "-json"}, paths...)...)
+		command.Dir = module
+		var stderr bytes.Buffer
+		command.Stderr = &stderr
+		data, err := command.Output()
+		if err != nil {
+			return fmt.Errorf("list scenario build files: %w: %s", err, strings.TrimSpace(stderr.String()))
+		}
+		decoder := json.NewDecoder(bytes.NewReader(data))
+		for {
+			var pkg struct {
+				Dir            string
+				IgnoredGoFiles []string
+			}
+			if err := decoder.Decode(&pkg); err != nil {
+				if errors.Is(err, io.EOF) {
+					break
+				}
+				return fmt.Errorf("parse scenario build files: %w", err)
+			}
+			// Only an explicit ignored filename can remove a test from scope. Missing package
+			// data and package errors must not turn ordinary missing results into exemptions.
+			for _, file := range pkg.IgnoredGoFiles {
+				results.excluded[relativePath(root, filepath.Join(pkg.Dir, file))] = struct{}{}
+			}
+		}
+	}
+	return nil
 }
 
 // runScenarios builds the scenario linkage and execution report and writes report.md and report.json.
@@ -233,6 +301,9 @@ func runScenarios(root string, options scenarioOptions, now time.Time) (scenario
 		if err := loadScenarioResults(resolveScenarioPath(root, path), results); err != nil {
 			return scenarioReport{}, err
 		}
+	}
+	if err := results.excludeBuildFiles(root, refs); err != nil {
+		return scenarioReport{}, err
 	}
 
 	report := buildScenarioReport(specs, refs, problems, results, options.RequireExecuted, now)

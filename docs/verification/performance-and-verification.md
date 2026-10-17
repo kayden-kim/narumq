@@ -496,3 +496,35 @@ Go preflight 실패 뒤에도 Python JSONL만으로 새 보고서를 만드는 �
 `runMutation`은 Gremlins 결과 다섯 개를 `verifyMutationReports`로 직접 판정한다. `TIMED OUT`은 killed나 lived로 세지 않는다. 두 지표의 80% 하한은 기존 `gremlins.yaml`에서 읽는다. 병렬 runner는 OS가 종료 코드만 반환한 경우에도 context 취소 원인을 보존한다. 실제 하위 process의 deadline 취소와 exit 23을 분리한 회귀가 검증 도구 package 시험에 포함된다.
 
 PRF-SCN-060·061은 `tests/acceptance_eks_capacity.py`, PRF-SCN-104~109는 `tests/acceptance_github_ci.py`에 실제 opt-in 경로를 추가했으나 이번 작업에서 외부 수용은 미실행이다. GitHub probe는 명시적 환경 변수·origin 일치·관리자 권한·보호 설정 확인을 요구한다. 실패 probe의 merge가 실제 허용되면 `main`을 바꿀 수 있으므로 자동 실행하지 않는다. 기존 원격 CI 기록을 이번 미커밋 코드의 통과로 재사용하지 않는다.
+
+## 13. Go 플랫폼별 시나리오 실행 범위 (2026-10-17)
+
+대상은 `ecd57cef3a630e24a928071e2b0f01052935b5c1` 기반 작업 트리의 PRF-SCN-121 변경이다. 환경은 Windows/amd64·Go 1.26.5와 Docker의 `golang:1.26.5` Linux/amd64다. 이 변경은 AWS 자원을 만들지 않았다.
+
+[PR #9 실행 39034250585](https://github.com/kayden-kim/narumq/actions/runs/39034250585)의 Go 시험은 통과했지만 시나리오 실행 검사는 CLU-SCN-153·MGT-SCN-014·SEC-SCN-050을 결과 누락으로 실패시켰다. 원문은 `.artifacts/verification/remote-ci-20261017-39034250585/failed-job.log` 229–234행이다. `gh run download 39034250585 --name verification-39034250585-1 --dir .artifacts/verification/scenario-platform-scope/remote-artifact`로 별도 디렉터리에 원본 결과를 받았다.
+
+소스 연결은 모든 플랫폼을 계속 읽는다. 실행 범위만 module별 `go list -e -find -json`의 명시적 `IgnoredGoFiles`로 좁힌다. 누락된 package 정보나 package 오류를 전체 테스트 면제로 바꾸지 않는다. `-find`로 의존 package 탐색도 피한다. 새 메타 정보로 플랫폼을 중복 정의하지 않았다.
+
+첫 Linux replay는 일반 파일의 `TestClusterPathsOverlapAllowsDifferentWindowsVolumes`가 `runtime.GOOS`로 건너뛰는 문제도 그대로 실패시켰다. 이 시험은 `cluster_config_windows_test.go`로 옮기고 런타임 건너뜀을 제거했다. 결과 누락을 숨기는 예외는 추가하지 않았다. 첫 replay의 나머지 미실행은 이전 CI 결과에 없는 새 PRF-SCN-120 시험이었다. 해당 두 시험의 새 실제 실행 결과를 별도 입력했다.
+
+| 명령·범위 | 실제 결과 |
+| --- | --- |
+| `go test ./tools/verify -count=1` | PASS, 최종 실행 44.241초. Windows·Linux, arm64, GOFLAGS tag, 활성 파일의 누락·건너뜀, 제외 파일의 명시적 pass·fail, 제외된 잘못된 메타 정보, 의존성을 받을 수 없는 nested module의 연결 검사와 package 오류의 fail-closed 동작을 확인했다. |
+| `go vet ./tools/verify` | PASS. |
+| `go run ./tools/verify markdown-links` | PASS, 파일 190개·로컬 링크 3190개. |
+| `go run ./tools/verify scenarios --output .artifacts/verification/scenario-platform-scope/links` | PASS, 시나리오 634개·미연결 0·오류 0. 결과 입력 없는 연결 검사다. |
+| `go test -json -count=1 ./tools/verify ./cmd/narumq ./internal/adapters/raft ./internal/adapters/auditlog` | Windows PASS. `windows-go-test.json`에 보존했다. 원래 지적된 Windows 시험 4개 모두 실제 pass 이벤트가 있다. |
+| `go test ./cmd/narumq -run TestClusterPathsOverlapAllowsDifferentWindowsVolumes -count=1` | Windows 파일 이동 뒤 PASS, 1.999초. |
+| Docker Linux에서 `go test -json -count=1 ./tools/verify` | PASS, 9.393초. `linux-go-test.json`에 보존했다. |
+| Docker Linux에서 `go test -json -count=1 -run 'TestEndpointsOnlyFallThroughBeforeConnect\|TestConnectDialErrorPreservesCancellation' ./tests/benchmark/capacity ./tests/benchmark/internal/mqttclient` | PASS. `linux-new-quota-results.json`에 보존했다. 과거 CI에 없던 새 연결의 결과만 보충한다. |
+| 아래 Windows·Linux 실제 `scenarios` 명령 | 모두 PASS. Linux 통과 523·실패 0·범위 안 미실행 0·게이트 밖 111. Windows 통과 526·실패 0·범위 안 미실행 0·게이트 밖 108. 두 보고서 모두 시나리오 634·미연결 0·오류 0이다. |
+
+실행 명령은 저장소 루트에서 다음과 같다. Linux 명령은 `docker run --rm -v D:/Workspace/narumq:/workspace -w /workspace golang:1.26.5` 안에서 실행했다. 아래 `ROOT`는 `.artifacts/verification/scenario-platform-scope`다.
+
+```sh
+go run ./tools/verify scenarios --go-test-json ROOT/remote-artifact/go-test.json --go-test-json ROOT/linux-go-test.json --go-test-json ROOT/linux-new-quota-results.json --results ROOT/remote-artifact/scenarios/python-ci-results.jsonl --require-executed --output ROOT/linux-final-report
+go run ./tools/verify scenarios --go-test-json ROOT/remote-artifact/go-test.json --go-test-json ROOT/windows-go-test.json --go-test-json ROOT/linux-new-quota-results.json --results ROOT/remote-artifact/scenarios/python-ci-results.jsonl --require-executed --output ROOT/windows-final-report
+```
+
+원본과 새 결과, 첫 실패와 최종 보고서는 [증거 디렉터리](../../.artifacts/verification/scenario-platform-scope/)에 있다. 이는 원격 CI 결과에 새 집중 시험을 합친 기능 smoke다. 전체 원격 gate를 다시 통과했다는 주장은 아니다. 보고 도구는 현재 Go 환경으로 누락 결과의 실행 범위를 판정한다. 외부 JSON에는 원래 빌드 환경이 없으므로 원래 GOOS·GOARCH·CGO와 GOFLAGS를 재현해야 한다. 여러 플랫폼 결과를 합치면 명시적 pass·fail은 유지하지만 누락 결과를 플랫폼별로 추론하지 않는다. 일반 활성 파일의 건너뜀은 계속 실패다.
+

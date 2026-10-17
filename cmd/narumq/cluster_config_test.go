@@ -5,7 +5,6 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
-	"runtime"
 	"slices"
 	"strings"
 	"testing"
@@ -889,20 +888,6 @@ func TestParseClusterConfigAllowsSiblingAuditDirectory(t *testing.T) {
 	data := mustMarshalClusterConfig(t, config)
 	if _, err := parseClusterConfig(strings.NewReader(string(data))); err != nil {
 		t.Fatalf("parseClusterConfig rejected sibling audit directory: %v", err)
-	}
-}
-
-// Scenarios: management-api-and-observability.md:MGT-SCN-014
-func TestClusterPathsOverlapAllowsDifferentWindowsVolumes(t *testing.T) {
-	if runtime.GOOS != "windows" {
-		t.Skip("Windows volume paths are only distinct on Windows")
-	}
-	overlap, err := clusterPathsOverlap(`C:\narumq\data`, `D:\narumq\audit`)
-	if err != nil {
-		t.Fatalf("clusterPathsOverlap() error = %v, want different volumes accepted as disjoint", err)
-	}
-	if overlap {
-		t.Fatal("clusterPathsOverlap() reported different Windows volumes as overlapping")
 	}
 }
 

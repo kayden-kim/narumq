@@ -280,7 +280,7 @@ GitHub Actions의 `.github/workflows/verify.yml`은 PR base나 `main` push 이�
 | `tools/verify/main.go` `run` | 계측·coverage flag를 읽고 `local`·`ci`·`acceptance`·`mutation`·`baseline`·`package-tests` 명령을 각 실행 함수에 연결한다. | `runBranchInstrument`, `runCoverage`, `runVerification`, `runAcceptance`, `runMutation`, `runBranchBaseline`, `runVerifyPackageTests` |
 | `tools/verify/markdown_links.go` `verifyMarkdownLinks` | 정해진 문서 범위에서 인라인 로컬 링크, 파일·폴더 대상과 Markdown 제목 앵커를 검사한다. | `go run ./tools/verify markdown-links` |
 | `tools/verify/markdown_links_test.go` | 범위, front matter·코드 펜스 제외, 중복 제목 slug, 명시 앵커와 잘못된 대상 거절을 확인한다. | `go test ./tools/verify -count=1` |
-| `tools/verify/scenarios.go` `runScenarios` | 스펙 수용 표의 ID와 테스트의 `Scenarios:`·`Acceptance:` 주석, Go JSON·수동 JSONL 결과를 대조한다. 연결 검사와 실행 검사를 구분한다. | `.artifacts/verification/scenarios/report.md`, `report.json` |
+| `tools/verify/scenarios.go` `runScenarios`·`scenarioResults.excludeBuildFiles` | 스펙 수용 표의 ID와 모든 플랫폼의 `Scenarios:`·`Acceptance:` 주석, Go JSON·수동 JSONL 결과를 대조한다. 실행한 package의 파일 제외 여부는 module별 `go list -e -find -json`으로 읽는다. 의존 package는 탐색하지 않고 명시된 `IgnoredGoFiles`만 범위에서 뺀다. 제외 파일의 결과 누락은 게이트 밖이며 명시적 통과·실패는 보존한다. | `.artifacts/verification/scenarios/report.md`, `report.json` |
 | `tools/verify/acceptance.go` `runAcceptance`·`selectAcceptanceTests` | `Acceptance:` 표시 시험을 고르고 환경 변수를 먼저 확인한 뒤 원본 root에서 실행한다. 고른 시험이 모두 통과해야 성공한다. | `.artifacts/verification/acceptance-go-test.json` |
 | `tools/verify/gotestjson.go` `printGoTestFailures` | 실패한 Go JSON에서 실패 시험과 출력을 고른다. | 병렬 단계 실패 시 콘솔 진단 |
 | `tools/verify/baseline.go` `runBranchBaseline` | 전체 local 세 번의 새 summary와 PASS 출력을 확인한다. 첫 두 branch 측정값의 작은 값으로 baseline 후보를 계산하며 policy는 바꾸지 않는다. | `branch-baseline.json` |
