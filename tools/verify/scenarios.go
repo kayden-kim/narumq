@@ -38,6 +38,8 @@ var (
 	scenarioRefPattern    = regexp.MustCompile(`^([A-Za-z0-9][A-Za-z0-9._-]*\.md):([A-Za-z][A-Za-z0-9]*(?:-[A-Za-z0-9]+)*)$`)
 	pythonDefinitionLine  = regexp.MustCompile(`^(?:(?:async\s+)?def|class)\s+([A-Za-z_][A-Za-z0-9_]*)\b`)
 	pythonScenarioComment = regexp.MustCompile(`^#\s*Scenarios:(.*)$`)
+	// Acceptance names the opt-in environment variable that an acceptance test checks for "1".
+	acceptanceEnvironmentPattern = regexp.MustCompile(`^[A-Z][A-Z0-9_]*$`)
 	// Test and Fuzz functions are reported by name in go test -json. Benchmarks and examples are not
 	// run by default, so they only count when a results file reports them.
 	goReportedTestPattern  = regexp.MustCompile(`^(?:Test|Fuzz)(?:[^a-z].*)?$`)
@@ -71,6 +73,9 @@ type scenarioTest struct {
 	// Package is the Go import path whose `go test -json` events can report this test. It is empty
 	// for tests that go test does not report by name, such as Python functions and non-Test Go functions.
 	Package string
+	// Acceptance is the opt-in environment variable named by an "Acceptance:" doc-comment line. A
+	// marked test belongs to the executed scope only when it reports a pass or fail result.
+	Acceptance string
 }
 
 type scenarioRef struct {
@@ -116,6 +121,7 @@ type scenarioLinkedTest struct {
 	Line        int    `json:"line"`
 	Result      string `json:"result"`
 	InScope     bool   `json:"inScope"`
+	Acceptance  string `json:"acceptance,omitempty"`
 	Commit      string `json:"commit,omitempty"`
 	Environment string `json:"environment,omitempty"`
 	Command     string `json:"command,omitempty"`
@@ -409,7 +415,7 @@ func scanScenarioTests(root string) ([]scenarioRef, []scenarioProblem, error) {
 			if err != nil {
 				return fmt.Errorf("read %s: %w", relative, err)
 			}
-			if !bytes.Contains(data, []byte("Scenarios:")) {
+			if !bytes.Contains(data, []byte("Scenarios:")) && !bytes.Contains(data, []byte("Acceptance:")) {
 				return nil
 			}
 			found, foundProblems, err := scanGoScenarios(path, relative, data, modules)
@@ -449,6 +455,7 @@ func scanGoScenarios(path, relative string, source []byte, modules *goModuleReso
 		return nil, nil, err
 	}
 	attached := make(map[*ast.CommentGroup]scenarioTest)
+	runnableTests := make(map[*ast.CommentGroup]bool)
 	for _, declaration := range parsed.Decls {
 		function, ok := declaration.(*ast.FuncDecl)
 		if !ok || function.Doc == nil {
@@ -468,11 +475,15 @@ func scanGoScenarios(path, relative string, source []byte, modules *goModuleReso
 			Line:    fileSet.Position(function.Pos()).Line,
 			Package: goTestPackage,
 		}
+		runnableTests[function.Doc] = goTestPackage != "" && strings.HasPrefix(name, "Test")
 	}
 	var refs []scenarioRef
 	var problems []scenarioProblem
 	for _, group := range parsed.Comments {
 		test, isTestDoc := attached[group]
+		acceptanceProblems := attachAcceptance(&test, group, fileSet, relative, isTestDoc && runnableTests[group])
+		problems = append(problems, acceptanceProblems...)
+		hasScenarios := false
 		for _, comment := range group.List {
 			firstLine := fileSet.Position(comment.Pos()).Line
 			for offset, text := range commentLines(comment.Text) {
@@ -485,13 +496,45 @@ func scanGoScenarios(path, relative string, source []byte, modules *goModuleReso
 					problems = append(problems, scenarioProblem{Location: location, Message: "Scenarios: must be a line of the doc comment directly above a func declaration"})
 					continue
 				}
+				hasScenarios = true
 				found, parseProblems := parseScenarioRefs(arguments, location, test)
 				refs = append(refs, found...)
 				problems = append(problems, parseProblems...)
 			}
 		}
+		if test.Acceptance != "" && !hasScenarios {
+			problems = append(problems, scenarioProblem{Location: fmt.Sprintf("%s:%d", relative, test.Line), Message: "Acceptance: needs a Scenarios: line in the same doc comment"})
+		}
 	}
 	return refs, problems, nil
+}
+
+// attachAcceptance reads the "Acceptance: <ENV>" lines of one comment group into test. Only the doc
+// comment of a Test function in a _test.go file may carry exactly one marker with a valid name.
+func attachAcceptance(test *scenarioTest, group *ast.CommentGroup, fileSet *token.FileSet, relative string, runnable bool) []scenarioProblem {
+	var problems []scenarioProblem
+	for _, comment := range group.List {
+		firstLine := fileSet.Position(comment.Pos()).Line
+		for offset, text := range commentLines(comment.Text) {
+			value, ok := strings.CutPrefix(strings.TrimSpace(text), "Acceptance:")
+			if !ok {
+				continue
+			}
+			location := fmt.Sprintf("%s:%d", relative, firstLine+offset)
+			value = strings.TrimSpace(value)
+			switch {
+			case !runnable:
+				problems = append(problems, scenarioProblem{Location: location, Message: "Acceptance: must be a line of the doc comment of a Test function in a _test.go file"})
+			case !acceptanceEnvironmentPattern.MatchString(value):
+				problems = append(problems, scenarioProblem{Location: location, Message: fmt.Sprintf("malformed Acceptance: %q is not an environment variable name", value)})
+			case test.Acceptance != "":
+				problems = append(problems, scenarioProblem{Location: location, Message: "duplicate Acceptance: line"})
+			default:
+				test.Acceptance = value
+			}
+		}
+	}
+	return problems
 }
 
 // receiverTypeName returns the receiver type name without pointer or type parameters.
@@ -805,8 +848,12 @@ func buildScenarioReport(specs []scenarioSpec, refs []scenarioRef, problems []sc
 				if status == "" {
 					status = testResultNone
 				}
+				inScope := results.inScope(test)
+				if test.Acceptance != "" && status != testResultPass && status != testResultFail {
+					inScope = false
+				}
 				entry.Tests = append(entry.Tests, scenarioLinkedTest{
-					Test: test.Key, File: test.File, Line: test.Line, Result: status, InScope: results.inScope(test),
+					Test: test.Key, File: test.File, Line: test.Line, Result: status, InScope: inScope, Acceptance: test.Acceptance,
 					Commit: outcome.Commit, Environment: outcome.Environment, Command: outcome.Command, FinishedAt: outcome.FinishedAt,
 				})
 			}
@@ -854,7 +901,7 @@ const (
 
 // evaluateScenario applies the precedence 미연결, 실패, 미실행, 통과. A 미실행 scenario carries the
 // reason 결과 없음 or 건너뜀 when a linked test belongs to the executed scope without a pass result,
-// otherwise 게이트 밖.
+// otherwise 게이트 밖. A skipped Acceptance test is outside the scope.
 func evaluateScenario(tests []scenarioLinkedTest) (string, string) {
 	if len(tests) == 0 {
 		return scenarioStatusUnlinked, ""
@@ -867,7 +914,7 @@ func evaluateScenario(tests []scenarioLinkedTest) (string, string) {
 		case testResultPass:
 			continue
 		case testResultSkip:
-			skipped = true
+			skipped = skipped || test.InScope
 		default:
 			noResult = noResult || test.InScope
 		}
@@ -988,7 +1035,10 @@ func describeTestResult(test scenarioLinkedTest) string {
 	case testResultFail:
 		return "실패"
 	case testResultSkip:
-		return scenarioReasonSkipped
+		if test.InScope {
+			return scenarioReasonSkipped
+		}
+		return scenarioReasonOutsideGate
 	}
 	if test.InScope {
 		return scenarioReasonNoResult

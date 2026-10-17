@@ -716,7 +716,7 @@ Opt-in process 시험은 각각 별도로 실행하며 skip을 통과로 계산�
 | CLU-SCN-150 | CLU-14 | Snapshot 이후 WAL tail·append 재개 | Index 5 뒤에는 6–10, index 8 뒤에는 9–10과 commit 10만 보존; snapshot record 없음; snapshot 하나·temp 없음; entry 11 append 뒤 commands 1–11·applied 11 복구 |
 | CLU-SCN-151 | CLU-14 | Frame 크기 경계 | 60 KiB entry 40개에서 snapshot 1 뒤 entry 2–40을 여러 bounded frame으로 저장; 재시작 뒤 commands 40개 정확히 복구 |
 | CLU-SCN-152 | CLU-14 | Crash 상태 복구 | Stale WAL temp 제거, snapshot 확정 후 이전 WAL·교체 후 prune 전 상태에서 commands·applied·commit 10 보존; 다음 snapshot에서 하나만 남김 |
-| CLU-SCN-153 | CLU-14 | Compaction 오류 복구 | Temp sync·rename·교체 후 directory sync 실패가 error 반환; close 안전; 다시 열면 commands 1–10·applied 10·temp 없음 |
+| CLU-SCN-153 | CLU-14 | Compaction 오류 복구와 Windows 파일 공유 잠금 | Temp sync·rename·교체 후 directory sync 실패가 error 반환; close 안전; 다시 열면 commands 1–10·applied 10·temp 없음. Windows의 일시적 공유 잠금은 제한된 대기 안에 풀리면 atomic 교체·후속 append·복구가 성공한다. 지속되는 잠금은 error를 반환하며 이전 WAL의 영속 기록을 보존한다. |
 | CLU-SCN-154 | CLU-14 | Torn-tail 근거와 corruption 거절 | Zero-filled tail·zero-sector frame은 valid prefix까지 절단, record 1개와 정확한 파일 크기; 근거 없는 CRC·zero padding만 있는 CRC·zero header 뒤 nonzero·middle corruption은 거절 |
 | CLU-SCN-155 | CLU-14 | Consensus snapshot·handle 교체 | Snapshot index=AppliedIndex 하나, WAL identity 교체; gamma append 후 alpha/beta/gamma와 CommitIndex=AppliedIndex 복구 |
 | CLU-SCN-156 | CLU-14 | Worker와 handle 교체 race 회귀 | 기존 Raft package의 저장·snapshot·복구 경계 유지, race 오류 없음 |

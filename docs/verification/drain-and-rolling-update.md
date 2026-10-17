@@ -400,3 +400,25 @@ Fault 요청 뒤 관리 API 85개·MQTT 99개 표본이 모두 성공했다. 표
 
 2026-10-16 두 번째 실행(storage-2)은 8개 topic(1 MiB)을 썼다. D2 관찰 tunnel이 끊겨 retained 정리를 하지 못했다. 이 상태가 다음 CLU-14 재시드에서 1 MiB를 넘는 snapshot(1,055,832 byte)의 대부분을 차지한 것으로 본다 [INFERENCE].
 
+
+## 6. Gate 연결과 release profile 경로 보완 (2026-10-17)
+
+대상은 `b13d8254754bdb5333ae28d47e25c9d51cd85590` 기반 작업 트리다. 제품 drain 정책이나 수용 수치는 바꾸지 않고, 미연결 시나리오의 실제 실행 경로와 로컬 회귀를 추가했다.
+
+| 범위 | 실행 경로 | 이번 수용 상태 |
+| --- | --- | --- |
+| `DRN-SCN-019` | `tests/chaos/eks-rolling-capacity/main.py` | 미실행. 실제 측정한 `B_*`, 같은 profile hash의 절대 cutoff, 전용 EKS·generator image가 필요하다. 100회를 줄이거나 임의 cutoff를 만들지 않는다. |
+| `DRN-SCN-020` | `tests/chaos/eks-release-window/main.py` | 미실행. 게시 N-1/N image digest와 release record가 필요하다. 합성 `0.0.x`는 거절한다. |
+| `DRN-SCN-022` | `tests/chaos/eks-rollout-faults/main.py` | 미실행. 합성 `0.0.0` fixture, fault proxy와 controller가 필요하다. 진행 중 재시작 뒤 같은 operation·key·barrier audit를 판정한다. |
+| `DRN-SCN-030`·`031`·`033` | `tests/chaos/eks-prestop-faults/main.py`, `eks-nlb-drain/main.py`, `eks-pod-recreate/main.py` | 미실행. 격리 EKS가 필요하다. 실제 hook·admission, readiness·NLB 전파, 같은 PVC/EBS의 재생성을 각각 실행한다. |
+| `DRN-SCN-032` | `deploy/release/deployment-profiles-v1.json`, `tools/release-profile` | 로컬 통과. 실제 descriptor와 EKS manifest를 대조하고, 지원하지 않는 profile의 HA·RPO·rolling 근거를 제외했다. 게시 release 전체 수용은 아니다. |
+
+`go run ./tools/release-profile validate -descriptor deploy/release/deployment-profiles-v1.json`은 `EKS_EC2_HA=Supported`, `ECS_EC2=Experimental`, `EKS_FARGATE`·`COMPOSE_LOCAL=Unsupported`를 출력하고 exit 0으로 끝났다. `go test ./tools/release-profile -count=1`도 통과했다. [실행 증거](../../.artifacts/verification/gate-completion-20261017/release-profile-validate.json)를 따른다.
+
+`deploy/kubernetes/eks-ec2-ha-admission`은 별도 opt-in package다. 기본 StatefulSet에 자동 설치하지 않았다. `kubectl kustomize deploy/kubernetes/eks-ec2-ha-admission`은 정책과 binding을 정상 렌더링했다. 실제 EKS에서의 전체 hook·admission 수용은 미실행이다.
+
+CI와 같은 Python 3.9 Linux 환경의 첫 로컬 실행은 660개 중 timestamp 판정 하나가 실패했다. Python 3.9의 ISO parser가 `.5`처럼 한 자리 소수 초를 받지 못한 것이 원인이다. RFC 3339를 명시적으로 해석하고 nanosecond를 보존하도록 고쳤다. SAFE_TO_STOP보다 1ns 이른 승인은 거절한다. 수정 후 같은 660개가 건너뜀 없이 통과했다. [실패 기록](../../.artifacts/verification/gate-completion-20261017/python-linux-ci-unit.json)과 [후속 통과](../../.artifacts/verification/gate-completion-20261017/python-linux-ci-unit-fixed.json)를 함께 보존한다. 이는 하네스 판정의 검증이며 EKS 실행은 아니다.
+
+Admission 검토에서는 annotation으로 실제 preStop보다 작은 timeout을 선언할 수 있는 결함을 찾았다. 이 override가 실제 hook을 바꾸지는 않으므로 600,000ms 미만을 거절하도록 고쳤다. 전용 Kind v1.34.0 API server에서 수정 전 정책은 `timeout=1ms, grace=61s`를 받아들였고 수정 후 정책은 거절했다. 기본 659초 거절·660초 허용, 긴 timeout의 660초 거절·1860초 허용, 잘못된 annotation 거절도 확인했다. 생성한 policy·binding·namespace는 이 smoke 뒤 삭제했다([API 원문](../../.artifacts/verification/gate-completion-20261017/admission-api-smoke.json)). 이는 실제 Kubernetes admission 증거이지만 EKS 전체 수용은 아니다.
+
+소스 문자열·명령 복사만 확인하는 시험을 제거한 최종 Python 3.9 Linux suite는 659개 모두 통과했고 건너뜀은 0건이다([최종 실행](../../.artifacts/verification/gate-completion-20261017/python-linux-ci-final.json)).

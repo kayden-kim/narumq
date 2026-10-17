@@ -108,7 +108,6 @@ type clusterMembershipProcessFixture struct {
 	managementAPIKeys       []clusterMembershipProcessAPIKey
 	managementOIDC          *clusterMembershipProcessOIDC
 	omitPublishBackpressure bool
-	managementBindAll       bool
 }
 
 func newClusterMembershipProcessFixture(t *testing.T, nodeCount int, buildTags string) *clusterMembershipProcessFixture {
@@ -990,16 +989,8 @@ func (f *clusterMembershipProcessFixture) joinerConfig(memberID uint64, seedIDs 
 }
 
 func (f *clusterMembershipProcessFixture) managementConfig(index int, memberID uint64) clusterMembershipProcessManagement {
-	listenAddress := f.managementAddresses[index]
-	if f.managementBindAll {
-		_, port, err := net.SplitHostPort(listenAddress)
-		if err != nil {
-			f.harness.t.Fatalf("split management address %q: %v", listenAddress, err)
-		}
-		listenAddress = net.JoinHostPort("0.0.0.0", port)
-	}
 	config := clusterMembershipProcessManagement{
-		ListenAddress:         listenAddress,
+		ListenAddress:         f.managementAddresses[index],
 		ClusterAdminTokenFile: f.tokenPath,
 		APIKeys:               f.managementAPIKeys,
 		OIDC:                  f.managementOIDC,

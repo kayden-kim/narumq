@@ -4,6 +4,7 @@ package raft
 
 import (
 	"syscall"
+	"time"
 	"unsafe"
 )
 
@@ -20,18 +21,33 @@ func renameFile(oldPath, newPath string) error {
 	}
 	const moveFileReplaceExisting = 0x1
 	const moveFileWriteThrough = 0x8
-	result, _, callErr := moveFileExW.Call(
-		uintptr(unsafe.Pointer(oldPointer)),
-		uintptr(unsafe.Pointer(newPointer)),
-		moveFileReplaceExisting|moveFileWriteThrough,
-	)
-	if result != 0 {
-		return nil
+	var deadline time.Time
+	for {
+		result, _, callErr := moveFileExW.Call(
+			uintptr(unsafe.Pointer(oldPointer)),
+			uintptr(unsafe.Pointer(newPointer)),
+			moveFileReplaceExisting|moveFileWriteThrough,
+		)
+		if result != 0 {
+			return nil
+		}
+		// A reader without FILE_SHARE_DELETE can briefly prevent replacement.
+		// Keep the durable rename atomic; never delete the destination first.
+		if callErr != syscall.ERROR_ACCESS_DENIED && callErr != syscall.Errno(32) {
+			if callErr != syscall.Errno(0) {
+				return callErr
+			}
+			return syscall.EINVAL
+		}
+		if deadline.IsZero() {
+			deadline = time.Now().Add(250 * time.Millisecond)
+		}
+		remaining := time.Until(deadline)
+		if remaining <= 0 {
+			return callErr
+		}
+		time.Sleep(min(10*time.Millisecond, remaining))
 	}
-	if callErr != syscall.Errno(0) {
-		return callErr
-	}
-	return syscall.EINVAL
 }
 
 // MoveFileExW with MOVEFILE_WRITE_THROUGH persists the renamed directory entry

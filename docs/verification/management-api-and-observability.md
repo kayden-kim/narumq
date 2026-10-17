@@ -173,4 +173,12 @@ MGT-SCN-044는 schema 한도, 원격 snapshot·JSON/text 응답 크기, worker �
 
 이유: [EKS Dashboard 실행 절차](../how-to/operations-dashboard.md#eks-재배포-실행-기록-2026-10-14)는 `kubectl`, Prometheus, Grafana API와 browser의 수동 확인을 기록한다. `.artifacts/`의 Python·PowerShell·JavaScript·TypeScript·shell 파일과 dashboard·grafana 이름을 검색했지만, 승격할 EKS probe 소스는 찾지 못했다. 남아 있는 `dashboard_stack_test.go` 사본은 Docker suite이며 이 EKS 시나리오를 실행하지 않는다.
 
-영향: 기존 EKS 통과·실패 이력은 유지한다. 현재 시나리오 연결은 `미연결`이다. EKS 환경과 해당 환경을 확인하는 harness가 필요하다.
+영향: 기존 EKS 통과·실패 이력은 유지한다. 이 확인 당시에는 시나리오가 `미연결`이었다. 후속 실행 경로는 §17에 기록한다.
+
+## 17. Gate 연결용 조회·EKS Dashboard 경로 보완 (2026-10-17)
+
+`tests/chaos/eks-dashboard/main.py`를 `MGT-SCN-043`의 실제 EKS 실행 경로로 추가했다. 같은 disposable fixture 신원을 확인한 뒤 broker 세 개의 zone·node ID, Prometheus target과 connection series, Grafana datasource health·topology table·시계열 panel을 API로 조회한다. 읽기 전용이며 자신이 시작한 port-forward는 종료한다.
+
+이 경로는 이번 작업에서 EKS에 실행하지 않았다. `--help` 실행은 통과했지만 실제 대시보드나 browser 화면의 통과 증거가 아니다. `tests/test_eks_dashboard.py`의 로컬 판정 시험은 이 EKS 시나리오에 연결하지 않았다. 과거 EKS·Docker 대시보드 기록도 새 하네스의 통과로 재사용하지 않는다.
+
+`internal/application/observability/service_queries_test.go`는 bounded 조회·불완전 표본·metric 집계·filter 경계를 보완했다. `go test -race -p=2 ./internal/application/rollout ./internal/application/observability -count=1 -timeout=180s`는 통과했다. [실행 기록](../../.artifacts/verification/gate-completion-20261017/policy-boundaries.json)은 application 경계의 증거이며 EKS 전체 수용은 아니다.

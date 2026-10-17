@@ -10,6 +10,7 @@ import urllib.error
 
 import az_outage
 import power_loss
+import single_voter_stop_start
 from durable_stream import DurablePublisher, plan_settings, prepare_subscriber, verify_subscriber
 from fixture import Fixture, ready, save
 from observer import (IndependentMonitor, fence_node, fenced, leader_continuity, monitor_integrity,
@@ -336,7 +337,7 @@ def judge_az_outage(report: dict, plan: dict, monitor) -> bool:
 
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("mode", choices=("monitor", "fault", "az-outage", "power-loss"))
+    parser.add_argument("mode", choices=("monitor", "fault", "az-outage", "power-loss", "single-voter-stop-start"))
     parser.add_argument("--private", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--seconds", type=float, default=12, help="read-only monitor duration")
@@ -349,6 +350,8 @@ def main(argv=None) -> int:
         parser.error(f"{args.mode} requires --execute and --plan")
     if args.mode == "power-loss":
         return power_loss.run_cli(args)
+    if args.mode == "single-voter-stop-start":
+        return single_voter_stop_start.run_cli(args)
     if not 0 < args.seconds <= 3600:
         parser.error("--seconds must be within (0, 3600]")
     args.output.mkdir(parents=True, exist_ok=False)

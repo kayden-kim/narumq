@@ -47,10 +47,12 @@ type verificationOptions struct {
 	Stderr io.Writer
 }
 
+// Scenarios: performance-and-verification.md:PRF-SCN-070, performance-and-verification.md:PRF-SCN-089
 func runLocal(ctx context.Context, root string, runner commandRunner) error {
 	return runVerification(ctx, root, verificationOptions{}, runner)
 }
 
+// Scenarios: performance-and-verification.md:PRF-SCN-071
 func runCI(ctx context.Context, root, base string, runner commandRunner) error {
 	if strings.TrimSpace(base) == "" {
 		return fmt.Errorf("ci requires --base <git-ref>")
@@ -58,6 +60,7 @@ func runCI(ctx context.Context, root, base string, runner commandRunner) error {
 	return runVerification(ctx, root, verificationOptions{CI: true, Base: base}, runner)
 }
 
+// Scenarios: performance-and-verification.md:PRF-SCN-075, performance-and-verification.md:PRF-SCN-103
 func runVerification(ctx context.Context, root string, options verificationOptions, runner commandRunner) error {
 	if err := ensureRepositoryRoot(root); err != nil {
 		return err
@@ -88,7 +91,7 @@ func runVerification(ctx context.Context, root string, options verificationOptio
 	if options.CI {
 		testParallelLimit = runtime.GOMAXPROCS(0)
 	}
-	coverageArgs := []string{"test", "-json", "./...", fmt.Sprintf("-parallel=%d", testParallelLimit), "-count=1", "-covermode=atomic", "-coverpkg=./cmd/...,./internal/...", "-coverprofile=" + filepath.Join(root, ".artifacts", "verification", "coverage.out")}
+	coverageArgs := []string{"test", "-json", "./...", fmt.Sprintf("-parallel=%d", testParallelLimit), "-count=1", "-timeout=3h", "-covermode=atomic", "-coverpkg=./cmd/...,./internal/...", "-coverprofile=" + filepath.Join(root, ".artifacts", "verification", "coverage.out")}
 	parallelCommands := append([]commandSpec{}, preflightCommands...)
 	parallelCommands = append(parallelCommands,
 		commandSpec{Name: "go", Dir: defaultBranchOutputDir + "/module", Args: coverageArgs, StdoutFile: defaultGoTestJSONPath},
@@ -123,6 +126,7 @@ func runVerification(ctx context.Context, root string, options verificationOptio
 	return nil
 }
 
+// Scenarios: performance-and-verification.md:PRF-SCN-102
 func runMutation(ctx context.Context, root string, runner commandRunner) error {
 	if err := ensureRepositoryRoot(root); err != nil {
 		return err
@@ -140,6 +144,9 @@ func runMutation(ctx context.Context, root string, runner commandRunner) error {
 		if err := runConcurrent(ctx, root, commands[start:end], runner); err != nil {
 			return fmt.Errorf("mutation verification stopped during package checks: %w", err)
 		}
+	}
+	if err := verifyMutationReports(root, os.Stdout); err != nil {
+		return fmt.Errorf("mutation verification failed report judgment: %w", err)
 	}
 	return nil
 }
@@ -242,6 +249,9 @@ func executeCommand(ctx context.Context, root string, spec commandSpec) error {
 		code := 1
 		if exitErr, ok := err.(*exec.ExitError); ok {
 			code = exitErr.ExitCode()
+		}
+		if ctx.Err() != nil {
+			err = errors.Join(err, ctx.Err())
 		}
 		return commandFailure{Spec: spec, Code: code, Err: err}
 	}

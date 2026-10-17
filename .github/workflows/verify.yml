@@ -63,6 +63,18 @@ jobs:
             tests/test_backup_s3.py \
             tests/test_eks_worker_recovery.py \
             tests/test_eks_capacity_controller.py \
+            tests/test_eks_backup_dr.py \
+            tests/test_eks_emptydir_guard.py \
+            tests/test_eks_single_voter_stop_start.py \
+            tests/test_feature_activation_decision.py \
+            tests/test_eks_dashboard.py \
+            tests/test_eks_nlb_drain.py \
+            tests/test_eks_prestop_faults.py \
+            tests/test_eks_pod_recreate.py \
+            tests/chaos/eks-rollout-faults/test_replace_restart.py \
+            tests/test_eks_rollout_ops.py \
+            tests/test_eks_release_window.py \
+            tests/test_eks_rolling_capacity.py \
             tests/test_scenario_results.py \
             tests/test_run_scenario_unittest.py
       - name: Combine Go and Python scenario outcomes

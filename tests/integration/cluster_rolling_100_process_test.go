@@ -16,6 +16,7 @@ import (
 const clusterRolling100Rounds = 100
 
 // Traceability: DEP-06/DEP-07/DEP-10/DEP-12; docs/specs/drain-and-rolling-update.md §9, §10.
+// Acceptance: NARUMQ_ROLLING_100
 // Scenarios: drain-and-rolling-update.md:DRN-SCN-018
 func TestDynamicClusterContinuousRollingDrainProcessAcceptance(t *testing.T) {
 	if os.Getenv("NARUMQ_ROLLING_100") != "1" {
@@ -31,7 +32,7 @@ func TestDynamicClusterContinuousRollingDrainProcessAcceptance(t *testing.T) {
 		rounds = parsed
 	}
 	if rounds != clusterRolling100Rounds {
-		t.Logf("dry run: %d rounds; this is not 100-round acceptance evidence", rounds)
+		t.Logf("dry run: %d rounds; a passing dry run is reported as skipped, not as 100-round acceptance evidence", rounds)
 	}
 
 	fixture := newClusterMembershipProcessFixtureWithLifetime(t, 3, "", 3*time.Hour)
@@ -272,6 +273,9 @@ func TestDynamicClusterContinuousRollingDrainProcessAcceptance(t *testing.T) {
 		rounds, published,
 		receivers[0].qos1Duplicates+receivers[1].qos1Duplicates,
 		receivers[0].reorders+receivers[1].reorders, total)
+	if rounds != clusterRolling100Rounds {
+		t.Skipf("dry run of %d rounds passed; only %d rounds count as DRN-SCN-018 acceptance", rounds, clusterRolling100Rounds)
+	}
 }
 
 type clusterRollingReceiver struct {

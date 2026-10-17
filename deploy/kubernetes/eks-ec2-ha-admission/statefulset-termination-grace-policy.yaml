@@ -1,0 +1,49 @@
+# Rejects a broker StatefulSet whose Pod template cannot finish a planned preStop drain before SIGKILL
+# (docs/specs/drain-and-rolling-update.md section 7):
+#
+#   terminationGracePeriodSeconds >= ceil(timeoutMillis / 1000) + 30 + 30
+#
+# The deployed preStop waits up to 600000 ms (660 s grace). The optional
+# narumq.io/drain-timeout-millis annotation may only raise that bound, never reduce it.
+# A broker workload has Pod template label app=narumq. An omitted grace defaults to 30 s and is rejected.
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: narumq-statefulset-termination-grace
+spec:
+  failurePolicy: Fail
+  matchConstraints:
+    resourceRules:
+      - apiGroups: ["apps"]
+        apiVersions: ["v1"]
+        operations: ["CREATE", "UPDATE"]
+        resources: ["statefulsets"]
+  matchConditions:
+    - name: broker-pod-template
+      expression: >-
+        has(object.spec.template.metadata.labels) &&
+        'app' in object.spec.template.metadata.labels &&
+        object.spec.template.metadata.labels['app'] == 'narumq'
+  variables:
+    - name: drainTimeoutMillis
+      expression: >-
+        has(object.metadata.annotations) && 'narumq.io/drain-timeout-millis' in object.metadata.annotations
+        ? int(object.metadata.annotations['narumq.io/drain-timeout-millis'])
+        : 600000
+    - name: minimumGraceSeconds
+      expression: "(variables.drainTimeoutMillis + 999) / 1000 + 30 + 30"
+  validations:
+    - expression: "variables.drainTimeoutMillis >= 600000"
+      message: "annotation narumq.io/drain-timeout-millis must not shorten the deployed 600000 ms preStop timeout"
+      reason: Invalid
+    - expression: >-
+        has(object.spec.template.spec.terminationGracePeriodSeconds) &&
+        object.spec.template.spec.terminationGracePeriodSeconds >= variables.minimumGraceSeconds
+      messageExpression: >-
+        'terminationGracePeriodSeconds ' +
+        (has(object.spec.template.spec.terminationGracePeriodSeconds)
+          ? string(object.spec.template.spec.terminationGracePeriodSeconds) : 'unset') +
+        ' is shorter than ceil(timeoutMillis/1000)+30+30 = ' + string(variables.minimumGraceSeconds) +
+        ' for a drain timeout of ' + string(variables.drainTimeoutMillis) + ' ms'
+      message: "terminationGracePeriodSeconds is shorter than ceil(timeoutMillis/1000)+30+30"
+      reason: Invalid

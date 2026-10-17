@@ -803,16 +803,35 @@ Suite 분리와 fixture 수정 뒤의 실행 결과는 [Client contract §6.4](.
 ```text
 go run ./tools/verify local
 go run ./tools/verify ci --base <merge-base>
+go run ./tools/verify acceptance [--run <regexp>]
 go run ./tools/verify mutation
 ```
 
 `local`과 `ci`는 gofmt 사전 점검 뒤 `.artifacts/verification/branch/module`의 계측 사본에서 atomic coverage를 포함한 전체 `go test ./...`를 한 번 실행한다.
 
+Coverage의 전체 package 실행에는 `-timeout=3h`를 적용한다. 이는 opt-in 환경 변수를 켜고 gate를 실행할 때 100회 rolling process 시험이 쓰는 기존 fixture 수명과 같은 실행 예산이다. Broker 요청·장애 복구·시나리오별 제한 시간은 바꾸지 않는다. 테스트 doc comment에 `Acceptance: <환경 변수>`를 표시한 opt-in 수용 시험은 그 환경 변수가 없으면 건너뛰고 `미실행 (게이트 밖)`으로 보고한다. 이 표시가 없는 연결 시험을 건너뛰면 뒤의 실행 검사가 실패한다.
+
 Local의 `-parallel`은 8이다. CI는 Go의 유효 `GOMAXPROCS` 값을 `-parallel`에 넘긴다. 이 값은 package 안에서 `t.Parallel()`로 실행하는 test의 상한이다. Preflight, coverage, race, fuzz는 한 병렬 단계에서 실행한다. `local`과 `ci`는 mutation을 실행하지 않는다.
 
-`local`과 `ci`의 preflight는 `go vet`, `go run ./tools/verify traceability`, `go run ./tools/verify scenarios`, `go run ./tools/verify architecture` 순서로 실행한다. `scenarios`는 이 문서의 `시나리오 ID` 표와 테스트 소스의 `Scenarios:` 메타 정보를 대조하는 연결 검사다. 결과 파일 없이 실행하므로 `오류`, `미연결`, `실패`가 하나라도 있으면 gate가 실패하고 `미실행`은 실패가 아니다. 계측 사본의 coverage `go test ./...`는 `-json`으로 실행해 stdout을 `.artifacts/verification/go-test.json`에 쓰며 실패하면 이 파일에서 실패한 시험 목록을 출력한다. 병렬 검사가 끝나면 gate는 `go run ./tools/verify scenarios --go-test-json .artifacts/verification/go-test.json --require-executed`로 실행 검사를 한다. 실행 검사는 `오류`·`미연결`·`실패`에 더해 실행 범위(결과 JSON에 나온 Go package의 `Test*`·`Fuzz*`, `--results` 파일에 결과가 있는 시험)에서 통과 결과가 없는 연결 시험(`미실행 (건너뜀)`, `미실행 (결과 없음)`)도 실패로 처리한다. 실행 범위 밖의 연결 시험(결과 파일이 없는 Python·EKS 함수, 결과 JSON에 없는 Go package, 결과 기록이 없는 `Test*`가 아닌 Go 함수)은 `미실행 (게이트 밖)`으로 보고하며 실패로 처리하지 않는다. 그런 시험의 통과·실패 증거는 [검증 기록](../verification/performance-and-verification.md)에 둔다.
+병렬 명령 하나가 실패하면 나머지 명령을 취소한다. 하위 process를 종료한 OS가 종료 코드만 반환하더라도 runner는 context의 취소 원인을 보존해야 한다. 이 취소를 별도의 시험 실패로 보고하지 않는다. 취소 없이 끝난 명령의 실제 non-zero 종료 코드는 그대로 실패로 보고한다.
+
+`local`과 `ci`의 preflight는 `go vet`, `go run ./tools/verify traceability`, `go run ./tools/verify scenarios`, `go run ./tools/verify architecture` 순서로 실행한다. `scenarios`는 이 문서의 `시나리오 ID` 표와 테스트 소스의 `Scenarios:` 메타 정보를 대조하는 연결 검사다. 결과 파일 없이 실행하므로 `오류`, `미연결`, `실패`가 하나라도 있으면 gate가 실패하고 `미실행`은 실패가 아니다. 계측 사본의 coverage `go test ./...`는 `-json`으로 실행해 stdout을 `.artifacts/verification/go-test.json`에 쓰며 실패하면 이 파일에서 실패한 시험 목록을 출력한다. 병렬 검사가 끝나면 gate는 `go run ./tools/verify scenarios --go-test-json .artifacts/verification/go-test.json --require-executed`로 실행 검사를 한다. 실행 검사는 `오류`·`미연결`·`실패`에 더해 실행 범위(결과 JSON에 나온 Go package의 `Test*`·`Fuzz*`, `--results` 파일에 결과가 있는 시험)에서 통과 결과가 없는 연결 시험(`미실행 (건너뜀)`, `미실행 (결과 없음)`)도 실패로 처리한다. 실행 범위 밖의 연결 시험(결과 파일이 없는 Python·EKS 함수, 결과 JSON에 없는 Go package, 결과 기록이 없는 `Test*`가 아닌 Go 함수, 통과·실패 결과가 없는 `Acceptance:` 표시 시험)은 `미실행 (게이트 밖)`으로 보고하며 실패로 처리하지 않는다. 그런 시험의 통과·실패 증거는 [검증 기록](../verification/performance-and-verification.md)이나 아래 `acceptance` 결과에 둔다.
 
 Python 시나리오 함수는 `tests/scenario_results.py`로 `.artifacts/verification/scenarios/python-results.jsonl`에 결과(`<file>#<def>` 키, 상태, commit, 환경, 명령, 종료 시각)를 JSON Lines로 덧붙일 수 있다. 이 기록은 gate에 포함하지 않는다. 시나리오별 보고서는 `.artifacts/verification/scenarios/report.md`와 `report.json`에 쓰고 CI는 두 파일을 artifact로 올린다. 같은 보고서를 수동으로 만들려면 `go test -json ./... > .artifacts/verification/go-test.json` 뒤 `go run ./tools/verify scenarios --go-test-json .artifacts/verification/go-test.json`을 실행한다. 메타 정보 문법과 상태 정의는 [테스트 컨벤션](../conventions/test-conventions.md)을 따른다.
+
+Opt-in 수용 시험은 `go run ./tools/verify acceptance [--run <regexp>]`로 따로 실행한다. 이 시험들은 100회 rolling, Kind, Docker 같은 별도 환경과 긴 실행 시간이 필요하다. 2026-10-17 측정에서 이 시험 11개는 integration package 시간의 약 78%(약 2420초)였다. 기본 gate가 매번 이 시험을 요구하면 `local`이 약 52분 걸리고, opt-in 환경이 없는 CI는 통과할 수 없다. 그래서 기본 gate는 일반 시험의 실행을 증명하고, opt-in 수용은 이 명령의 결과로 증명한다. 두 결과를 함께 보고하려면 `scenarios`에 두 Go JSON 파일을 모두 넘긴다.
+
+`acceptance`는 다음 순서로 동작한다.
+
+1. 연결 검사와 같은 scanner로 `Acceptance:` 표시가 있는 Go `Test*` 함수를 찾는다. `--run`을 주면 시험 이름이 이 Go 정규식과 맞는 것만 고른다. 고른 시험이 없으면 exit 1이다.
+2. 고른 시험마다 표시한 환경 변수가 `1`인지 확인한다. 하나라도 아니면 시험을 실행하지 않고 빠진 환경 변수 목록과 함께 exit 1이다. Kind registry 주소 같은 추가 입력은 각 시험이 직접 확인한다.
+3. 원본 root에서 `go test -json -count=1 -timeout=3h -run '^(<시험 이름>)$' <package>`를 실행한다. Stdout은 `.artifacts/verification/acceptance-go-test.json`에 쓴다. 이 명령은 coverage 계측 사본을 쓰지 않고 coverage를 판정하지 않는다.
+4. 고른 시험이 모두 통과해야 `acceptance: PASS`와 exit 0이다. 건너뜀·실패·결과 없음이 하나라도 있으면 해당 시험 이름과 함께 `acceptance: FAIL`과 exit 1이다. 이 명령은 Kind cluster, registry, Docker image를 만들거나 지우지 않는다.
+
+```text
+go run ./tools/verify acceptance --run 'ReleaseCompatibility'
+go run ./tools/verify scenarios --go-test-json .artifacts/verification/go-test.json --go-test-json .artifacts/verification/acceptance-go-test.json
+```
 
 CI workflow는 Go gate 외에 S3 helper와 EKS worker observer의 Python 회귀를 별도 단계로 실행한다. Observer만 로컬에서 확인하려면 `python -B tests/test_eks_worker_recovery.py -v`를 실행한다. 이 시험은 AWS·Docker 없이 관찰 독립성·오류 보존·종료·Node identity 경쟁 경계를 확인한다. 실제 broker·Kubernetes API smoke와 남은 EKS gate는 [Drain spec §10](drain-and-rolling-update.md#eks-worker-observer-보완-기준)을 따른다. 이 로컬 통과는 production 장애 수용을 대신하지 않는다.
 
@@ -864,6 +883,8 @@ MQTT normative statement 연결표는 `tests/conformance/mqtt-compliance-v1.json
 | PRF-SCN-112 | - | 결과 파일 없이 `go run ./tools/verify scenarios`를 실행한다. 연결된 시험이 실행되지 않았다. | `오류`·`미연결`·`실패`만 실패로 처리한다. `미실행`은 실패가 아니다. |
 | PRF-SCN-113 | - | `go run ./tools/verify local` 또는 `ci`를 실행한다. | 계측 사본의 coverage `go test ./...`가 `-json`으로 실행되어 stdout이 `.artifacts/verification/go-test.json`에 쓰인다. 실패하면 이 파일에서 실패한 시험 목록을 출력한다. 병렬 검사가 끝난 뒤 같은 파일로 실행 검사를 한다. 검증 명령은 모두 14개다. |
 | PRF-SCN-114 | - | Python 시나리오 함수가 `tests/scenario_results.py`로 결과를 기록한다. CI의 Python unittest는 `tests/run_scenario_unittest.py`로 실행한다. | 결과 파일에 `<file>#<def>` 키, 상태, commit, 환경, 명령과 종료 시각을 JSON Lines로 덧붙인다. 보고서에 commit과 환경이 나온다. CI unittest 결과는 `python-ci-results.jsonl`로 Go 결과와 함께 실행 검사에 입력한다. 라이브 EKS 하네스의 `python-results.jsonl`은 별도 수동 실행 결과이며 CI에서 실행한 것으로 세지 않는다. |
+| PRF-SCN-115 | - | 기본 gate의 실행 검사에서 `Acceptance: <환경 변수>`를 표시한 연결 시험이 건너뛰어졌거나 결과 이벤트가 없다. 별도로 표시가 없는 연결 시험을 건너뛴다. `Acceptance:`를 `_test.go`의 `Test*` 함수가 아닌 곳에 쓰거나 환경 변수 이름 없이 쓴다. | 표시한 시험의 시나리오는 `미실행 (게이트 밖)`이며 실행 검사를 실패시키지 않는다. 표시한 시험이 실제로 통과·실패하면 그 결과를 그대로 센다. 표시가 없는 시험의 건너뜀은 `미실행 (건너뜀)`으로 실패한다. 잘못 쓴 `Acceptance:`는 `오류`다. |
+| PRF-SCN-116 | - | `go run ./tools/verify acceptance [--run <regexp>]`를 실행한다. 고른 시험의 환경 변수가 빠졌거나, 고른 시험이 건너뛰어지거나 실패하거나 결과가 없다. | 환경 변수가 빠지면 시험을 실행하지 않고 빠진 이름을 출력하며 exit 1이다. 고른 시험이 모두 통과하면 `acceptance: PASS`와 exit 0이다. 하나라도 통과하지 않으면 해당 시험 이름과 `acceptance: FAIL`을 출력하며 exit 1이다. 결과는 `.artifacts/verification/acceptance-go-test.json`에 남는다. |
 
 ### 7.3 Cluster failpoint 빌드
 
@@ -922,10 +943,13 @@ Repository root에서 전체 local·CI gate와 수동 mutation 검증을 실행�
 ```text
 go run ./tools/verify local
 go run ./tools/verify ci --base <merge-base>
+go run ./tools/verify acceptance [--run <regexp>]
 go run ./tools/verify mutation
 ```
 
-`local`·`ci`는 저장소 검증 순서를 소유한다. `mutation`은 별도 실행 명령이며 coverage/race/fuzz gate를 다시 실행하지 않는다. 단일 package 분석에는 Gremlins 직접 명령을 사용할 수 있다.
+`local`·`ci`는 저장소 검증 순서를 소유한다. `acceptance`는 `Acceptance:` 표시가 있는 opt-in 수용 시험만 실행하는 별도 명령이다([§7.2](#72-fuzz-게이트와-수동-mutation-검증)). `mutation`은 별도 실행 명령이며 coverage/race/fuzz gate를 다시 실행하지 않는다. 단일 package 분석에는 Gremlins 직접 명령을 사용할 수 있다.
+
+반복 branch baseline은 `go run ./tools/verify baseline [--results FILE]`로 측정할 수 있다. 이 명령은 §8.2의 세 번 실행과 baseline 계산을 수행하며 policy를 자동 변경하지 않는다. 검증 도구 패키지만 실제 실행하려면 `go run ./tools/verify package-tests [--results FILE]`를 사용한다. 두 명령의 수동 결과 파일은 [테스트 컨벤션 §4](../conventions/test-conventions.md#4-예외와-자동-생성-산출물)를 따른다.
 
 ### 8.2 Branch 측정 gate 수용 테스트
 

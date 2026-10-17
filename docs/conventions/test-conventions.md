@@ -49,8 +49,25 @@ def scenario_safe_retry(client):
 
 - 보고서는 `.artifacts/`에 생성되는 산출물이다. 저장소에 커밋하지 않는다.
 - Go는 `Test`·`Benchmark`·`Fuzz`·`Example`이 아닌 함수와 메서드에도 `Scenarios:`를 쓸 수 있다. Docker SDK 호환성 suite 같은 실행 진입점이 해당한다. 이 함수의 결과는 `go test -json`에 없으므로 `--results` 파일로 넘긴다.
+- 별도 환경과 긴 실행 시간이 필요한 Go opt-in 수용 시험은 같은 doc comment에 `Acceptance: <환경 변수>` 줄을 쓴다. `_test.go`의 `Test*` 함수에만 쓸 수 있으며, 환경 변수는 그 시험이 `1`인지 확인하는 이름이다. 같은 doc comment에 `Scenarios:` 줄이 있어야 한다. `acceptance` 명령은 시나리오 연결을 통해 시험을 찾기 때문이다. 다른 곳에 쓰거나, 이름을 빠뜨리거나, 한 함수에 두 번 쓰거나, `Scenarios:` 줄 없이 쓰면 연결 검사의 `오류`다. 이 시험은 기본 게이트에서 건너뛰어도 실패하지 않고 `go run ./tools/verify acceptance`로 실행한다. Docker 없음처럼 환경 변수와 무관한 이유로 건너뛰는 일반 시험에는 쓰지 않는다.
+
+  ```go
+  // Acceptance: NARUMQ_ROLLING_100
+  // Scenarios: drain-and-rolling-update.md:DRN-SCN-018
+  func TestDynamicClusterContinuousRollingDrainProcessAcceptance(t *testing.T) {
+  ```
+
 - Python은 `def`와 `class` 바로 위 주석에 쓴다. 데코레이터와 다른 주석 줄이 사이에 있어도 된다. 결과는 [`tests/scenario_results.py`](../../tests/scenario_results.py)로 `--results` 파일에 남길 수 있다.
 - EKS·kind 실측, 수동 운영 검증과 실패 기록은 보고서가 대신하지 못한다. 게이트 밖 시나리오는 [검증 기록](../verification/)에 실행 기록을 남긴다.
+
+수동 수용 시험은 기본 게이트에서 외부 자원을 만들지 않는다. `tests/acceptance_docker_capacity.py`, `tests/acceptance_eks_capacity.py`, `tests/acceptance_github_ci.py`는 각 파일의 명시적 opt-in 환경 변수가 있을 때만 실행한다. `Acceptance:`를 표시한 Go 시험은 `go run ./tools/verify acceptance [--run <regexp>]`로 실행한다. 이 명령은 고른 시험의 환경 변수가 모두 `1`이어야 시작하고, 고른 시험이 모두 통과해야 성공한다. 건너뜀과 결과 없음은 실패다. 결과는 `.artifacts/verification/acceptance-go-test.json`에 남으며 `scenarios --go-test-json`으로 보고서에 합칠 수 있다. EKS chaos 도구는 별도 합성 fixture의 신원을 확인한 뒤 실행한다. 연결 검사의 통과를 이 시험의 실행 통과로 표시하지 않는다.
+
+`go run ./tools/verify package-tests [--results FILE]`는 검증 도구 패키지를 실제 실행한다. `go run ./tools/verify baseline [--results FILE]`는 전체 `local` 게이트를 세 번 실행한다. Baseline은 첫 두 측정값 중 작은 branch 비율을 소수 둘째 자리까지 내림해 계산한다. 세 번째 실행도 통과해야 한다. 이 명령은 coverage policy를 바꾸지 않는다. 두 명령은 기존 수동 결과 형식으로 `.artifacts/verification/scenarios/go-acceptance-results.jsonl`에 결과를 추가한다. 새 실행을 따로 보고하려면 새 `--results` 경로를 지정한다.
+
+```sh
+go run ./tools/verify package-tests --results .artifacts/verification/scenarios/package-tests-results.jsonl
+go run ./tools/verify scenarios --results .artifacts/verification/scenarios/package-tests-results.jsonl --require-executed
+```
 
 ## 5. 검증 명령과 통과 기준
 
@@ -72,7 +89,7 @@ def scenario_safe_retry(client):
 - `--go-test-json` 파일에 나온 Go 패키지의 `Test`·`Fuzz` 함수. 게이트가 실행한 패키지다.
 - `--results` 파일에 키가 있는 테스트. Python 함수, `Benchmark`·`Example`, `Test`가 아닌 Go 함수와 메서드가 해당한다.
 
-실행 범위 안의 연결 테스트에 통과 결과가 없으면 실행 검사가 실패한다. 건너뛴 테스트는 `미실행 (건너뜀)`, 이벤트가 없는 테스트는 `미실행 (결과 없음)`이다. 범위 밖의 연결 테스트는 `미실행 (게이트 밖)`으로 보고서에 남고 검사를 실패시키지 않는다.
+실행 범위 안의 연결 테스트에 통과 결과가 없으면 실행 검사가 실패한다. 건너뛴 테스트는 `미실행 (건너뜀)`, 이벤트가 없는 테스트는 `미실행 (결과 없음)`이다. 범위 밖의 연결 테스트는 `미실행 (게이트 밖)`으로 보고서에 남고 검사를 실패시키지 않는다. `Acceptance:`를 표시한 테스트는 통과나 실패 결과가 있을 때만 실행 범위에 든다. 건너뛰었거나 이벤트가 없으면 `게이트 밖`이다.
 
 `local`·`ci` 게이트는 전체 package test를 `go test -json`으로 실행한다. 이 명령의 stdout은 콘솔이 아니라 `.artifacts/verification/go-test.json`에 저장된다. stderr는 콘솔에 그대로 나온다. 병렬 검사가 실패하면 게이트가 이 파일에서 실패한 테스트와 출력을 골라 콘솔에 보여 준다. 병렬 검사가 모두 성공하면 게이트가 이 파일로 실행 검사를 실행한다.
 
@@ -160,7 +177,7 @@ go run ./tools/verify scenarios --go-test-json .artifacts/verification/go-test.j
 | `실패` | 연결된 테스트 중 하나라도 실패했다 | 연결·실행 검사 |
 | `미실행 (결과 없음)` | 실행 범위 안의 연결 테스트에 이벤트가 없다 | 실행 검사 |
 | `미실행 (건너뜀)` | 실행 범위 안의 연결 테스트가 건너뛰어졌다 | 실행 검사 |
-| `미실행 (게이트 밖)` | 연결된 테스트가 실행 범위 밖이다. 결과 입력이 없는 경우도 같다 | 없음 |
+| `미실행 (게이트 밖)` | 연결된 테스트가 실행 범위 밖이다. 결과 입력이 없는 경우, `Acceptance:` 테스트를 건너뛰었거나 이벤트가 없는 경우도 같다 | 없음 |
 | `통과` | 연결된 테스트가 모두 통과했다 | 없음 |
 
 우선순위는 `실패`, `미실행`, `통과` 순이다. 사유가 여러 개면 `결과 없음`, `건너뜀`, `게이트 밖` 순으로 보인다. 보고서의 연결 테스트 칸에는 테스트마다 `통과`, `실패`, `건너뜀`, `결과 없음`, `게이트 밖` 중 하나가 나온다. 게이트 밖 `미실행`은 이유와 영향을 [검증 기록](../verification/)에 적는다.

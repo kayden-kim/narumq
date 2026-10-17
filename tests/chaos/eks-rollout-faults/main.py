@@ -1263,3 +1263,306 @@ def scenario_argo_finalizer_sync(session: Session, previous_rollout: str, rollou
     return fx.save_result("rollout-argo-sync-r3.json", checks.result(
         "argo_finalizer_sync", revision=revision, repoURL=repo_url, files=files, before=before, after=after,
         application=final_app.get("status"), timeline=timeline, window=[start, end]))
+
+
+# Scenario I: synthetic 0.0.0 -> 0.0.1 replacement with a controller restart during a real drain --------
+# DRN-SCN-022 (DEP-11, DEP-18, SEC-11). Pure judgments live in replace_restart_judge.py (unit tests: test_replace_restart.py).
+sys.path.append(str(Path(__file__).resolve().parent))
+import replace_restart_judge as rrj  # noqa: E402
+
+REPLACE_RESTART_LB_MILLIS = 240_000  # drain stays WAITING_FOR_LB long enough to outlast the controller restart
+REPLACE_RESTART_TIMEOUT_MILLIS = 600_000  # equals the controller's DefaultDrainTimeout
+
+
+def whoami(fixture: Fixture) -> str:
+    """The Kubernetes username the API server sees for this kubeconfig (the harness's own audit identity)."""
+    info = json.loads(fixture.kubectl("auth", "whoami", "-o", "json"))
+    username = (info.get("status", {}).get("userInfo") or {}).get("username")
+    if not username:
+        raise rrj.ReplaceRestartPrerequisiteError("kubectl auth whoami returned no username")
+    return username
+
+
+def pod_access_audit(fixture: Fixture, start: float, end: float, lookback: float = 7200.0) -> list[dict[str, Any]]:
+    """Kubernetes API audit records (CloudWatch) for exec, attach, port-forward and proxy requests in the fixture namespace.
+
+    The stages of one request are merged by ``auditID``. ``lookback`` also catches a long-lived stream that began
+    before ``start``; ``judge_no_manual_access`` keeps only requests that overlap the window."""
+    subresources = " || ".join(f'$.objectRef.subresource = "{name}"' for name in ("exec", "attach", "portforward", "proxy"))
+    pattern = '{ $.objectRef.namespace = "' + fixture.namespace + '" && (' + subresources + ") }"
+    merged: dict[str, dict[str, Any]] = {}
+    token = None
+    while True:
+        args = ["logs", "filter-log-events", "--log-group-name", f"/aws/eks/{fixture.cluster}/cluster",
+                "--log-stream-name-prefix", "kube-apiserver-audit", "--start-time", str(int((start - lookback) * 1000)),
+                "--end-time", str(int((end + 600) * 1000)), "--filter-pattern", pattern]
+        page = fixture.aws(*args, *(["--next-token", token] if token else []))
+        for event in page.get("events", []):
+            entry = json.loads(event["message"])
+            ref = entry.get("objectRef") or {}
+            record = merged.setdefault(entry["auditID"], {
+                "auditID": entry["auditID"], "user": entry["user"]["username"], "verb": entry.get("verb"), "resource": ref.get("resource"),
+                "subresource": ref.get("subresource"), "name": ref.get("name"), "received": entry.get("requestReceivedTimestamp"),
+                "completed": None, "code": None, "sourceIPs": entry.get("sourceIPs")})
+            if entry.get("stage") == "ResponseComplete":
+                record["completed"] = entry.get("stageTimestamp")
+                record["code"] = (entry.get("responseStatus") or {}).get("code")
+        token = page.get("nextToken")
+        if not token:
+            return sorted(merged.values(), key=lambda record: record["received"] or "")
+
+
+class ForwardCounter:
+    """Count the ``kubectl port-forward`` processes the harness holds on its Management endpoint during the scenario.
+
+    Each process is one ``pods/portforward`` API request, so this is the number of audit records the harness itself
+    explains. A forward that is already alive at construction time counts once."""
+
+    def __init__(self, forward: PortForward):
+        self.forward = forward
+        self.started = 0
+        self.preexisting = 1 if forward.process is not None and forward.process.poll() is None else 0
+        original = forward.ensure
+
+        def counted() -> None:
+            alive = forward.process is not None and forward.process.poll() is None
+            original()
+            if not alive:
+                self.started += 1
+        forward.ensure = counted  # type: ignore[method-assign]
+
+    @property
+    def allowed(self) -> int:
+        return self.preexisting + self.started
+
+    def restore(self) -> None:
+        self.forward.__dict__.pop("ensure", None)
+
+
+def controller_proxy_routing(fixture: Fixture) -> dict[str, Any]:
+    """Whether the controller Deployment pins the management Service names to the fault proxy."""
+    try:
+        proxy_ip = fixture.kjson("get", "service", PROXY)["spec"]["clusterIP"]
+    except RuntimeError as error:
+        return {"routed": False, "reason": f"fault proxy Service {PROXY} is not readable: {error}"}
+    aliases = fixture.kjson("get", "deployment", CONTROLLER)["spec"]["template"]["spec"].get("hostAliases")
+    return {"routed": rrj.routes_through_proxy(aliases, proxy_ip, fixture.namespace), "proxyClusterIP": proxy_ip, "hostAliases": aliases}
+
+
+# Scenarios: drain-and-rolling-update.md:DRN-SCN-022
+@scenario_result
+def scenario_rollout_replace_with_controller_restart(
+        session: Session, retry_token: str, lb_propagation_millis: int = REPLACE_RESTART_LB_MILLIS,
+        drain_timeout_millis: int = REPLACE_RESTART_TIMEOUT_MILLIS, rollout_timeout: float = 2700,
+        audit_settle_seconds: float = 60, allow_unproxied: bool = False) -> dict[str, Any]:
+    """Replace the three broker Pods 0.0.0 -> 0.0.1 with a NaruMQRollout and restart the controller during the first drain.
+
+    Prerequisites (each violation raises ``ReplaceRestartPrerequisiteError``; nothing is mutated before they hold):
+    three Ready brokers at release 0.0.0 on the real Management API, the StatefulSet template (updateStrategy OnDelete)
+    already carrying ``session.target`` (release 0.0.1 digest), no NaruMQRollout named ``session.rollout_name``, one
+    Ready controller leader with the ``narumq-rollout-audit`` PVC, and the controller routed through the fault proxy.
+    The proxy only adds ``loadBalancerPropagationDelayMillis``/``timeoutMillis`` to the controller's drain POST so
+    the real broker drain is still DRAINING when the controller is restarted; every GET and POST is relayed to the
+    real broker. ``allow_unproxied`` runs without that hold and without POST evidence (the restart precondition
+    then usually fails)."""
+    fx, checks, start = session.fixture, Checks(), time.time()
+    if fx.identity is None:
+        raise FixtureIdentityError("verify_identity() must pass before this scenario")
+    rrj.check_drain_params(lb_propagation_millis, drain_timeout_millis)
+    rrj.check_target(session.target)
+    harness_user = whoami(fx)
+    if fx.rollout(session.rollout_name) is not None:
+        raise rrj.ReplaceRestartPrerequisiteError(f"NaruMQRollout {session.rollout_name} already exists; this scenario needs a fresh one")
+    workload = fx.kjson("get", "statefulset", "narumq")
+    broker = next(c for c in workload["spec"]["template"]["spec"]["containers"] if c["name"] == "narumq")
+    initial = fx.broker_pods()
+    features_before = session.management.call("GET", "/api/v1/cluster/features")
+    rrj.check_fixture_before({"image": broker["image"], "replicas": workload["spec"].get("replicas"),
+                              "updateStrategy": (workload["spec"].get("updateStrategy") or {}).get("type")},
+                             initial, features_before, session.target)
+    leader_before = fx.leader()
+    if not any(p["ready"] and not p["deleting"] and (leader_before["holder"] or "").startswith(p["name"] + "_") for p in fx.controller_pods()):
+        raise rrj.ReplaceRestartPrerequisiteError(f"the controller leader {leader_before['holder']!r} is not a Ready controller Pod")
+    routing = controller_proxy_routing(fx)
+    if not routing["routed"] and not allow_unproxied:
+        raise rrj.ReplaceRestartPrerequisiteError(
+            f"the controller is not routed through the fault proxy ({routing.get('reason') or 'hostAliases missing'}); "
+            "run route_controller_through_proxy first or pass allow_unproxied")
+    routed = bool(routing["routed"])
+    if routed:
+        proxy_state = session.proxy.call("GET", "/control/state")
+        if proxy_state[0] != 200:
+            raise rrj.ReplaceRestartPrerequisiteError(f"fault proxy control endpoint answered {proxy_state[0]}")
+    forwards = ForwardCounter(session.management.forward)
+    samples: list[dict[str, Any]] = []
+    cleanup_errors: list[str] = []
+    helper_started = False
+
+    def snap() -> dict[str, Any]:
+        status = fx.status(session.rollout_name)
+        pods = fx.broker_pods()
+        samples.append({"at": time.time(), "phase": status.get("phase"), "ordinal": status.get("currentOrdinal", 0),
+                        "attemptKey": status.get("attemptKey"), "operation": status.get("drainOperationID"),
+                        "completed": status.get("completedOrdinals", []), "failureCode": status.get("failureCode"),
+                        "pods": {name: pod["uid"] for name, pod in pods.items()}})
+        return status
+
+    def active_drain() -> dict[str, Any] | None:
+        status = snap()
+        if status.get("phase") in rrj.TERMINAL_PHASES:
+            raise RuntimeError(f"rollout ended before an active drain was observed: {status.get('phase')} {status.get('failureCode')}")
+        ready = status.get("phase") == "Draining" and status.get("drainOperationID") and status.get("attemptKey")
+        return status if ready else None
+
+    try:
+        if routed:
+            session.proxy_set(getMode="relay", postParams={"loadBalancerPropagationDelayMillis": lb_propagation_millis,
+                                                           "timeoutMillis": drain_timeout_millis},
+                              getDelaySeconds=0, postResponseDelaySeconds=0, delayClients=None)
+        fx.apply(session.rollout_manifest(retry_token))
+        before = wait_for(active_drain, 900, 1, "active drain with a persisted operation")
+        node = before.get("currentOrdinal", 0) + 1
+        broker_before = session.drain(node)
+        for name, ok, observed in rrj.judge_restart_precondition(before, broker_before):
+            checks.check(name, ok, observed)
+        if not checks.passed:
+            # The scenario condition (restart during an in-progress drain) was not met: do not restart, fail.
+            evidence = {"conditionNotMet": True, "statusBeforeRestart": before, "brokerBefore": broker_before, "initial": initial,
+                        "routing": routing, "window": [start, time.time()]}
+            raise rrj.RestartConditionNotMetError("the controller could not be restarted while the drain was in progress")
+        restart = session.restart_controller()
+        broker_after = session.drain(node)
+        final_status = wait_for(lambda: (lambda s: s if s.get("phase") in rrj.TERMINAL_PHASES else None)(snap()),
+                                rollout_timeout, 2, "rollout terminal phase")
+        features_after: tuple[int, Any] = (0, None)
+        features_deadline = time.monotonic() + 300
+        while time.monotonic() < features_deadline:
+            try:
+                features_after = session.management.call("GET", "/api/v1/cluster/features")
+            except (urllib.error.URLError, ConnectionError, TimeoutError, RuntimeError):
+                features_after = (0, None)
+            if all(ok for _, ok, _ in rrj.judge_release_after(features_after, session.target)):
+                break
+            time.sleep(5)
+        final_pods = fx.broker_pods()
+        raw_pods = [item for item in fx.kjson("get", "pods", "-l", "app=narumq")["items"]]
+        events = fx.kjson("get", "events", "--field-selector", "involvedObject.kind=Pod")["items"]
+        proxy_log = session.proxy_requests(start) if routed else None
+        rollout_uid = fx.kjson("get", "narumqrollout", session.rollout_name)["metadata"]["uid"]
+        end = time.time()
+        fx.audit_ingested_through(f"audit-sentinel-{int(time.time())}")
+        time.sleep(audit_settle_seconds)
+        deletes = fx.pod_delete_audit(start - 5, end + 5)
+        access = pod_access_audit(fx, start, end)
+        start_helper(session)
+        helper_started = True
+        chain = read_audit_chain(session)
+
+        for name, ok, observed in rrj.judge_continuity(before, restart, samples, proxy_log, broker_after):
+            checks.check(name, ok, observed)
+        for name, ok, observed in rrj.judge_single_operation_per_ordinal(samples, proxy_log):
+            checks.check(name, ok, observed)
+        for name, ok, observed in rrj.judge_completion(final_status):
+            checks.check(name, ok, observed)
+        for name, ok, observed in rrj.judge_replacement(initial, final_pods, samples, deletes, session.target, CONTROLLER_USER):
+            checks.check(name, ok, observed)
+        for name, ok, observed in rrj.judge_release_after(features_after, session.target):
+            checks.check(name, ok, observed)
+        for name, ok, observed in rrj.judge_approvals(chain["events"], chain["verifyExitCode"], chain["verifyOutput"], rollout_uid,
+                                                      initial, samples, session.target, restart):
+            checks.check(name, ok, observed)
+        replacement = [item for item in raw_pods if item["metadata"]["uid"] != initial.get(item["metadata"]["name"], {}).get("uid")]
+        for name, ok, observed in rrj.judge_startup(replacement, events):
+            checks.check(name, ok, observed)
+        for name, ok, observed in rrj.judge_no_manual_access(access, harness_user, forwards.allowed, (start, end)):
+            checks.check(name, ok, observed)
+        session.mark_window("replace_with_controller_restart", start, end, allowed_pods=("narumq-0", "narumq-1", "narumq-2"))
+        evidence = dict(
+            initial=initial, final=final_pods, statusBeforeRestart=before, brokerBefore=broker_before,
+            restart=restart, brokerAfter=broker_after, finalStatus=final_status, featuresBefore=features_before, featuresAfter=features_after,
+            routing=routing, drainParams={"loadBalancerPropagationDelayMillis": lb_propagation_millis, "timeoutMillis": drain_timeout_millis},
+            proxyDrainRequests=[r for r in (proxy_log or []) if "/drain" in r["path"]], samples=samples, harnessUser=harness_user,
+            harnessPortForwards=forwards.allowed, accessAudit=access, podDeleteAudit=deletes, auditEvents=chain["events"],
+            auditVerify=chain["verifyOutput"], events=[e for e in events if (e.get("involvedObject") or {}).get("name", "").startswith("narumq-")],
+            window=[start, end])
+    except rrj.RestartConditionNotMetError:
+        pass  # recorded as failed checks below; the cluster is left for inspection
+    except Exception as error:
+        fx.save("rollout-replace-with-controller-restart-error.json", {
+            "error": f"{type(error).__name__}: {error}", "checks": checks.items, "samples": samples[-50:], "window": [start, time.time()]})
+        raise
+    finally:
+        forwards.restore()
+        if routed:
+            try:
+                session.proxy_set(postParams=None)
+            except Exception as error:  # noqa: BLE001 - cleanup must not mask the scenario outcome
+                cleanup_errors.append(f"proxy postParams reset failed: {error}")
+        if helper_started:
+            try:
+                stop_helper(session)
+            except Exception as error:  # noqa: BLE001
+                cleanup_errors.append(f"audit helper Pod cleanup failed: {error}")
+    checks.check("cleanup: fault proxy hold parameters removed and the audit helper Pod deleted", not cleanup_errors, cleanup_errors)
+    return fx.save_result("rollout-replace-with-controller-restart.json", checks.result(
+        "rollout_replace_with_controller_restart", cleanupErrors=cleanup_errors, **evidence))
+
+
+def _free_port() -> int:
+    import socket
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
+        probe.bind(("127.0.0.1", 0))
+        return probe.getsockname()[1]
+
+
+def replace_restart_main(argv: list[str] | None = None) -> int:
+    """CLI for DRN-SCN-022 only. Builds the strict Fixture and the Session this scenario needs, then runs it."""
+    import argparse
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+    import eks_fixture
+    parser = argparse.ArgumentParser(description="DRN-SCN-022: NaruMQRollout 0.0.0 -> 0.0.1 with a controller restart during a drain")
+    eks_fixture.add_fixture_arguments(parser)
+    parser.add_argument("--target-image", required=True, help="target broker platform-manifest digest reference repository@sha256:...")
+    parser.add_argument("--target-features", required=True, help="canonical sorted comma-separated feature list of the target image labels")
+    parser.add_argument("--target-version", default=rrj.NEW_RELEASE, help="must be 0.0.1 for this scenario")
+    parser.add_argument("--helper-image", required=True, help="image for the audit helper Pod (needs sh, apk and /narumq -audit-verify)")
+    parser.add_argument("--retry-token", required=True, help="spec.retryToken of the new NaruMQRollout")
+    parser.add_argument("--rollout-name", default="replace-restart")
+    parser.add_argument("--registry-secret", default="narumq-registry")
+    parser.add_argument("--management-secret", default="rollout-management")
+    parser.add_argument("--lb-propagation-millis", type=int, default=REPLACE_RESTART_LB_MILLIS)
+    parser.add_argument("--drain-timeout-millis", type=int, default=REPLACE_RESTART_TIMEOUT_MILLIS)
+    parser.add_argument("--rollout-timeout", type=float, default=2700)
+    parser.add_argument("--audit-settle-seconds", type=float, default=60)
+    parser.add_argument("--allow-unproxied", action="store_true")
+    args = parser.parse_args(argv)
+    fixture = eks_fixture.build_fixture(args)
+    token = base64.b64decode(fixture.kjson("get", "secret", args.management_secret)["data"]["token"]).decode("utf-8")
+    forwards = {
+        "proxy": PortForward(fixture, f"svc/{PROXY}", _free_port(), 8080),
+        "management": PortForward(fixture, "svc/narumq-management", _free_port(), 8080),
+        "webhook": PortForward(fixture, f"svc/{WEBHOOK}", _free_port(), 443),  # not used by this scenario; never started
+    }
+    session = Session(
+        fixture=fixture, proxy=Endpoint(forwards["proxy"]), management=Endpoint(forwards["management"], headers={"X-API-Key": token}),
+        webhook=Endpoint(forwards["webhook"], scheme="https", context=ssl.create_default_context()), rollout_name=args.rollout_name,
+        target={"image": args.target_image, "releaseVersion": args.target_version, "features": args.target_features.split(",")},
+        registry_secret=args.registry_secret, management_secret=args.management_secret, helper_image=args.helper_image, secrets=(token,))
+    try:
+        result = scenario_rollout_replace_with_controller_restart(
+            session, args.retry_token, lb_propagation_millis=args.lb_propagation_millis, drain_timeout_millis=args.drain_timeout_millis,
+            rollout_timeout=args.rollout_timeout, audit_settle_seconds=args.audit_settle_seconds, allow_unproxied=args.allow_unproxied)
+    finally:
+        for forward in forwards.values():
+            forward.close()
+    failed = [item["check"] for item in result["checks"] if not item["ok"]]
+    print(json.dumps({"scenario": result["scenario"], "result": result["result"], "failedChecks": failed,
+                      "evidence": str(fixture.evidence_dir / "rollout-replace-with-controller-restart.json")}, indent=2))
+    return 0 if result["result"] == "PASS" else 1
+
+
+if __name__ == "__main__":
+    # Run through the canonical module so Fixture/Session classes match eks_fixture.build_fixture.
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+    import eks_fixture
+    sys.exit(eks_fixture.rollout_faults().replace_restart_main(sys.argv[1:]))

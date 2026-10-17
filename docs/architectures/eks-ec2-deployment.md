@@ -133,6 +133,14 @@ NLB는 `IP` targets와 TCP listeners를 사용한다. TLS를 NLB에서 종료하
 
 이는 구조적 제어 경로다. 상태, timeout과 실패 동작의 규범적 기준은 [Drain과 rolling update 스펙](../specs/drain-and-rolling-update.md)이다.
 
+### Termination grace admission
+
+`deploy/kubernetes/eks-ec2-ha-admission`은 [Drain §7](../specs/drain-and-rolling-update.md#7-external-rollout-gate와-kuberneteseks)의 짧은 grace 거절을 구현하는 별도 package다. 기본 namespaced 배포에 cluster-scoped 정책을 섞지 않으려고 분리했다. Kubernetes 1.30 이상의 `ValidatingAdmissionPolicy`와 binding을 명시적으로 설치한다. Binding은 `narumq` namespace만, policy는 Pod template의 `app=narumq`인 StatefulSet만 대상으로 삼는다.
+
+현재 preStop의 600,000ms 대기에 따라 최소 grace는 660초다. 선택 annotation `narumq.io/drain-timeout-millis`는 admission에 더 긴 예산을 요구할 때만 쓴다. Broker timeout을 설정하는 field가 아니며 600,000ms 미만은 거절한다. 따라서 annotation으로 실제 hook보다 짧은 grace를 허용할 수 없다. Hook 대기를 늘리는 변경은 이 정책의 하한도 함께 갱신해야 한다.
+
+Release profile의 지원 상태는 `deploy/release/deployment-profiles-v1.json`에 둔다. `tools/release-profile validate`는 이 descriptor와 현재 EKS manifest를 대조한다. `filter`는 다른 profile의 시험을 `EKS_EC2_HA`의 HA·RPO·rolling 근거에서 제외한다. Descriptor의 `Supported`는 대상 profile 분류다. 미실행 production 수용을 통과로 바꾸는 표시는 아니다.
+
 ## Placement와 availability constraint
 
 - Required anti-affinity로 broker Pod 둘이 같은 EC2 worker에 배치되지 않게 한다.

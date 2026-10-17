@@ -4,7 +4,7 @@
 
 - 수용 기준·기대 결과는 스펙이 기준이다. 시나리오별 테스트 연결은 소스의 `Scenarios:` 메타 정보에서 관리한다.
 - 현재 연결·실행 결과는 [테스트 컨벤션](../conventions/test-conventions.md)에 따라 생성하는 [시나리오 보고서](../../.artifacts/verification/scenarios/report.md)를 따른다. 결과 입력 없는 연결 검사는 테스트 통과가 아니다.
-- 전체 local coverage gate의 실패는 해소되지 않았다. 최근 `CLU-SCN-241`의 Windows WAL 교체 실패와 `CLU-SCN-017`의 결합 실행 timeout·단독 실행 통과는 마지막 절에 구분한다.
+- 전체 local gate는 미통과다. `CLU-SCN-241`의 과거 Windows WAL 교체 실패와 `CLU-SCN-017`의 결합 실행 timeout은 보존한다. Windows 파일 공유 잠금 수정 뒤 집중 검증은 [후속 검증](#2026-10-17-windows-파일-공유-잠금-후속-검증)에 구분한다.
 - EKS P1·T1/T2·R1의 채택 근거는 §11.20에 있다. 이 결과로 이전 `FAILED/UNRESOLVED`를 덮어쓰지 않는다. 백업의 지속 RPO·실제 30일 경과 보존·production 데이터 크기와 업로드 실패 matrix는 [TODO](../TODO.md)의 `SPEC-TBD-09`가 남은 범위다.
 
 절 번호와 시나리오 ID 범위는 스펙과 같다. 같은 기능의 중간 재실행·과거 전체 local PASS·작업 중 수치 대신 의미 있는 결과, 실패 경계, 명령과 증거 위치를 남겼다. 명령은 별도 표시가 없으면 저장소 root 기준이다. `GOMAXPROCS=...` 등은 실행 환경값이며 Windows에서는 child process 환경으로 전달했다.
@@ -686,3 +686,41 @@ NARUMQ_RELEASE_COMPAT=1 GOMAXPROCS=2 go test -p=2 ./tests/integration -run '^Tes
 `CLU-SCN-241` 실패 회차는 `proposal-recovery` 활성 상태, publisher 기록 76개였다. Node 2에는 `persist typed membership snapshot: raft node has failed: raft storage operation failed: compact WAL: replace WAL: Access is denied.`·`storage_io_error`, node 1·2에는 `dispatch MQTT PUBACK: quorum unavailable`이 남았다. 시험 부하·판정은 완화하지 않았고 이 storage 실패를 재실행하거나 수정하지 않았다.
 
 `CLU-SCN-017`은 분리 실행에서 후속 통과했다. `GOMAXPROCS=2 go mod verify`는 47.18초에 `all modules verified`, `GOMAXPROCS=2 go mod download -json go.etcd.io/raft/v3@v3.7.0`은 지정 version·Sum·GoModSum을 반환했다. 이어 `GOMAXPROCS=2 go test -p=2 -count=1 ./tests/integration -run '^TestRaftModuleMatchesApprovedVersionAndChecksums$' -v`는 통과했다(test 5.75s·package 8.016s). 120초 기한·판정은 바꾸지 않았다. **결합 실행 timeout과 단독 실행 통과는 서로 다른 결과이며 `CLU-SCN-241`의 실패는 남아 있다.**
+
+## 2026-10-17 Windows 파일 공유 잠금 후속 검증
+
+대상은 `b13d8254754bdb5333ae28d47e25c9d51cd85590` 기반 작업 트리다. 이번 변경은 Raft adapter의 Windows atomic rename, 실제 파일 공유 잠금 회귀, `CLU-SCN-153` 기준과 관련 문서다. 환경은 Windows/amd64, Go 1.26.5, `GOMAXPROCS=2`다. Application proposal·MQTT deadline·CPU 부하·process 시험의 판정은 바꾸지 않았다.
+
+`os.Open`으로 기존 WAL을 읽는 handle을 유지하면 store가 자기 handle을 닫아도 교체가 거절됐다. 수정 전 `TestStableStoreCompactionWindowsSharingLock`의 transient case는 `compact WAL: replace WAL: Access is denied.`로 실패했다. 교체 시도까지 9.3559ms였고 reader는 100ms 뒤에 닫혔다. Persistent case는 오류 반환 뒤 기존 기록 복구를 확인했다. 이는 실제 Windows 파일 공유 잠금 재현이다. **과거 `CLU-SCN-241` 실패 당시 잠금을 잡은 프로세스는 확인하지 못했다.**
+
+수정은 [ADR-0023](../decisions/ADR-0023-raft-wal-compaction-and-snapshot-retention.md)의 제한된 atomic rename 재시도를 따른다. Linux 경로와 저장 형식은 그대로다. 실제 reader 잠금이 풀리면 교체 후 entry 11 append와 commands 1–11 복구가 성공했다. 잠금을 유지하면 약 258ms에 오류를 반환했고 commands 1–10이 복구됐다. 원본 temp의 reader가 막는 교체도 별도로 통과했다.
+
+명령은 저장소 root에서 실행했다. 각 명령의 실행 시간·exit code·원문 log는 [증거 디렉터리](../../.artifacts/verification/wal-sharing-20261017/)에 있다.
+
+| 명령 | 실제 결과 |
+| --- | --- |
+| `go test -p=2 ./internal/adapters/raft -count=1 -timeout=180s` | 통과. Package 7.888s. |
+| `go test -p=2 ./tests/integration -run '^TestN1PersistentClose$' -count=1 -v -timeout=240s` | 통과. Package 61.423s. 기본 CPU 경쟁 아래 3회 모두 subscriber 종료 0·PUBACK quorum 오류 0. Publisher 기록은 차례로 268·274·274개. |
+| `go test -race -p=2 ./internal/adapters/raft -run '^(TestStableStoreCompactionWindowsSharingLock\|TestRenameFileWindowsSourceSharingLock\|TestWALWorkerAndSnapshotHandleReplacementKeepRecoverableState\|TestStableStoreCompactionFailureKeepsRecoverableState)$' -count=3 -json -timeout=180s` | 통과. Package 5.311s. 실제 source·destination 공유 잠금, 지속 잠금의 복구, 기존 오류 주입과 worker/handle 교체를 확인했다. Race 오류 없음. |
+| `go run ./tools/verify local` | **실패**. Branch 계측 통과와 연결 검사의 미연결 37개·오류 0개를 확인했다. 같은 log에는 vet·traceability·architecture·coverage·race·fuzz 명령도 exit 1로 기록됐다. 당시 runner가 취소 원인을 보존하지 않아 이 log만으로 각 명령의 자체 실패와 취소를 구분할 수 없다. 전체 package·coverage·production race·fuzz 통과를 주장하지 않는다. |
+| `go run ./tools/verify scenarios --results .artifacts/verification/wal-sharing-20261017/scenario-results.jsonl --output .artifacts/verification/wal-sharing-20261017/scenarios` | **실패**. 이번 실제 결과만 입력한 [보고서](../../.artifacts/verification/wal-sharing-20261017/scenarios/report.md)에서 `CLU-SCN-153`·`CLU-SCN-156`·`CLU-SCN-241`은 통과했다. 전체는 통과 3·미실행 583·미연결 37·실패 0·오류 0이다. |
+| `go run ./tools/verify markdown-links` | 최종 문서 변경 뒤 통과. 파일 190개·로컬 링크 3151개. |
+| `go vet ./internal/adapters/raft` | 통과. 전체 local의 vet과 별도 실행이다. |
+
+시나리오 결과 입력은 race JSON의 최상위 `pass` event와 실제 process 통과 log에서 만들었다. 과거 실패는 앞 절에 보존하고 이번 보고서에는 이번 실행 결과만 넣었다. 기본 생성 보고서는 local preflight의 연결 검사이며 이번 실행 결과 보고서는 위 전용 경로에 보존했다. 기존 전체 coverage 미달, 미연결 37개, 원격 CI와 EKS 수용은 이 집중 검증으로 해제하지 않는다.
+
+## 2026-10-17 Gate 연결의 실행 경로 보완
+
+앞 절의 미연결 사유에 맞춰 실행 경로를 추가했다. 과거 EKS 실행 결과를 새 하네스의 통과 결과로 재사용하지 않았다.
+
+| 범위 | 새 실행 경로와 판정 경계 |
+| --- | --- |
+| `CLU-SCN-046`·`047` | `tests/chaos/eks-backup-dr/main.py backup-retention`. 실제 CronJob·backup PVC·NMQBKUP3 integrity·commit index 100·3-voter offline seed와 오래된 단일 probe의 삭제를 판정한다. 전체 cluster RTO는 주장하지 않는다. |
+| `CLU-SCN-050`·`159` | 같은 도구의 `s3-full-restore`·`production-storage-retention`. 새 PVC 세 개의 실제 복원과 MQTT 복구를 판정한다. Production 조합은 실제 30일 백업 이력, power-loss·EBS 재시드와 1시간 RTO를 모두 요구한다. 새 fixture만으로는 30일 조건을 채울 수 없다. |
+| `CLU-SCN-136` | `tests/chaos/eks-emptydir-guard/main.py`. Member 3이 member 1의 term 6·index 100을 보고 bootstrap을 거절하는 고정 입력을 요구한다. 빈 directory 무변경과 기존 broker 3/3 Ready도 판정한다. 다른 term·index로 바꾼 시험을 이 행의 통과로 세지 않는다. |
+| `CLU-SCN-137` | `tests/chaos/eks-worker-recovery/main.py single-voter-stop-start`. Marker PUBACK·snapshot 세 개 완료 뒤 단일 voter의 EC2 stop/start와 같은 EBS·WAL prefix·나머지 파일·marker 복구를 판정한다. `createSnapshots: true`가 만든 snapshot은 자동 삭제하지 않는다. |
+| `CLU-SCN-210`~`215`·`217` | `tests/chaos/feature-activation-runbook/decision.py`. Runbook 형식의 관찰·외부 승인 기록을 읽고 보류·재승인·결과 불명·rollback window 폐쇄·전진 복구를 판정한다. 이는 운영 정책 모델의 검증이다. 사람의 절차 준수나 broker의 승인 기록 강제를 입증하지 않는다. |
+
+EKS 도구는 `--execute`, 전용 private 입력과 같은 run의 kubeconfig·AWS 자원 신원을 요구한다. `--help`에 입력·변경 범위가 있다. 실제 EKS 수용은 이번 작업에서 미실행이다. 로컬의 fake fixture 단위 시험을 해당 EKS 시나리오에 연결하지 않았다.
+
+실제 Alpine container에서는 `single_voter_stop_start.py`의 inventory·prefix hash shell을 실행했다. 전체 파일과 앞 5 byte의 SHA-256이 독립 계산과 같았고 read-only로 mount한 원본은 그대로였다. [실행 증거](../../.artifacts/verification/gate-completion-20261017/wal-inventory-proof.json)는 shell 경로만 입증하며 EC2·EBS 복구를 대신하지 않는다.

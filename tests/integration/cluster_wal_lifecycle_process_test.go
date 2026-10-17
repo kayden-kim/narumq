@@ -11,6 +11,7 @@ import (
 )
 
 // Traceability: CLU-14; ADR-0023; docs/specs/cluster-session-and-delivery.md §11.22.
+// Acceptance: NARUMQ_WAL_LIFECYCLE
 // Scenarios: cluster-session-and-delivery.md:CLU-SCN-157
 func TestDynamicClusterWALCompactionProcessAcceptance(t *testing.T) {
 	if os.Getenv("NARUMQ_WAL_LIFECYCLE") != "1" {

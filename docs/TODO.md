@@ -39,7 +39,7 @@
 
 ### 1.4 Drain 정책·관측과 production 배포
 
-- [ ] **부분 검증 · K8s/EKS** — Kubernetes 종료 연동과 `EKS_EC2_HA` 전체 수용(`DEP-13~23`). 남은 범위는 preStop/drain hook 실패·timeout·grace expiry·부족한 grace 거절·강제 종료 경보, 정상 MQTT traffic의 NLB routing·기존 연결 drain·idle timeout·client IP·connection termination, 모델 밖의 AZ 장애(network·EBS 서비스·control plane)와 반복 실행, supported profile 자동 검증과 release 지원 상태다. [Drain §7·§10](specs/drain-and-rolling-update.md#7-external-rollout-gate와-kuberneteseks), [EKS architecture](architectures/eks-ec2-deployment.md)를 따른다. 게시 release와 운영 부하 수용은 §1.2에서 추적한다.
+- [ ] **부분 검증 · K8s/EKS** — Kubernetes 종료 연동과 `EKS_EC2_HA` 전체 수용(`DEP-13~23`). 남은 범위는 preStop/drain hook 실패·timeout·grace expiry·부족한 grace 거절·강제 종료 경보, 정상 MQTT traffic의 NLB routing·기존 연결 drain·idle timeout·client IP·connection termination, 모델 밖의 AZ 장애(network·EBS 서비스·control plane)와 반복 실행, 게시 release의 배포 profile 지원 상태다. 로컬 descriptor 자동 검증과 외부 수용 하네스 추가는 [후속 기록](verification/drain-and-rolling-update.md#6-gate-연결과-release-profile-경로-보완-2026-10-17)에 있다. [Drain §7·§10](specs/drain-and-rolling-update.md#7-external-rollout-gate와-kuberneteseks), [EKS architecture](architectures/eks-ec2-deployment.md)를 따른다. 게시 release와 운영 부하 수용은 §1.2에서 추적한다.
 
 ### 1.5 설계 미결정과 비지원 범위
 
@@ -61,9 +61,8 @@ MQTT 3.1.0은 지원 대상이 아니다. Client의 관찰·전환·격리는 �
 
 - [ ] **Pod 장애 보완 검증 · 거절 분류·B_* 미완료** — Production workload와 절대 cutoff(`NFR-01~06·PERF-01~12`, `SPEC-TBD-08`). 2026-10-16 사용자 결정에 따라 상용 EMQX Enterprise 라이선스를 요구하는 상대 비교 조건은 필수 제품 출시 게이트에서 제외하고 선택적 외부 벤치마크로 운영한다. 필수 릴리스 게이트는 NaruMQ 자체의 5% 회귀 차단 규칙과 `EKS_EC2_HA` qualification profile에서 측정한 N-1 자립형 수용 용량(`B_*`)으로 판정한다. 남은 범위는 quota 계열 거절 3건(runner가 0x97을 commit_lag 대신 tenant 한도로 집계)의 원인·구간 분류 보완 및 EKS 전용 generator Job을 통한 `B_*` 측정·SLO 확정이다. [성능 §3.9](specs/performance-and-verification.md#39-bp-02-eks-용량-측정-계약)를 따른다.
 - [ ] **미검증 · K8s/AWS 출시 비교** — Production benchmark profile(`PERF-01·05~07·10~12·NFR-06`). 상용 EMQX 라이선스 비교는 선택적 외부 벤치마크로 운영하며, 필수 릴리스는 NaruMQ 자체 N-1 ↔ N 회귀(5% 미만) 및 failure recovery(BP-06)·rolling drain(BP-07) 기준으로 검증한다. [성능 §§3~6](specs/performance-and-verification.md#3-benchmark-공통-계약)을 따른다.
-- [ ] **미해결 · 로컬/CI** — Coverage 미달과 간헐 실패를 해결한 뒤 전체 gate를 다시 통과시킨다. 최근 전체 local 검증은 line·branch 기준 미달이며, 집중 시험 통과로 해제하지 않는다. [전체 local 실패 기록](../.artifacts/verification/eks-resume-20261015T000337Z-21df3b/local-verification.json)과 [시나리오 보고서 검증 기록](verification/performance-and-verification.md#11-시나리오-보고서-통합-확인-2026-10-17)을 따른다.
+- [ ] **미검증 · 원격 CI** — 2026-10-17 local gate는 통과했다. 모든 local opt-in과 100회 rolling을 켠 `go run ./tools/verify baseline`이 세 번 모두 `local: PASS`였다(overall branch 81.88%, 시나리오 통과 536·실패 0·범위 안 미실행 0). Mutation 5개 package도 80% 하한을 통과했다. 같은 날 opt-in 수용 시험을 `go run ./tools/verify acceptance`로 분리했다. 그래서 opt-in 환경이 없는 `local`도 546초에 통과했다. Opt-in 환경이 없는 CI에서 이 시험의 건너뜀으로 실행 검사가 실패하던 문제는 범위 변경으로 해소될 것으로 보지만, 원격 실행으로는 아직 확인하지 않았다. 남은 범위는 이 변경을 commit한 뒤 GitHub Actions `ci --base`의 통과와 diff coverage를 확인하는 것이다. [Gate 보완 기록](verification/performance-and-verification.md#12-gate-실행-경로판정-보완-2026-10-17)을 따른다.
 - [ ] **미검증 · DEP P0 전체 수용 필요** — 남은 [P0 예외 8개](../tests/conformance/p0-requirement-exceptions-v1.json)는 개별 수용을 마칠 때만 제거한다(`TEST-10`). 관리자 포함 merge 차단 설정·probe 통과는 인프라 수용을 대신하지 않는다. [성능 검증 기록 §8.9](verification/performance-and-verification.md#89-github-actions-원격-ci와-required-check-증거)를 따른다.
-- [ ] **미완료 · 시나리오 메타 정보 전환** — 연결 검사에서 623개 시나리오 중 586개 연결, 37개 미연결, 오류 0건이다. 연결은 실행 통과를 뜻하지 않는다. 미연결은 Cluster 13개, Drain 7개, Management 1개, Performance 16개다. 미연결 0건·오류 0건·대상 시험 통과 기준은 유지한다. `CLU-SCN-241`은 실제 process 실행에서 WAL 교체 `Access is denied.`와 quorum 손실로 실패했다. 제품 결함을 별도로 해결해야 한다. [연결·실행 보고서 검증 기록](verification/performance-and-verification.md#11-시나리오-보고서-통합-확인-2026-10-17)과 각 [검증 기록](verification/README.md)의 미연결 사유를 따른다.
 
 <a id="110-실행-옵션설정-구조"></a>
 ### 1.10 실행 옵션·설정 구조

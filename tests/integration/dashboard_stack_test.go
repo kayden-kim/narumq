@@ -582,6 +582,7 @@ func TestDashboardProvisioningMatchesContracts(t *testing.T) {
 
 // TestDashboardStackProcessAcceptance checks the provisioned dashboard against three broker processes.
 // Traceability: UI-01, UI-02, UI-03, UI-04, UI-05, UI-10; docs/specs/management-api-and-observability.md §8.
+// Acceptance: NARUMQ_DASHBOARD_E2E
 // Scenarios: management-api-and-observability.md:MGT-SCN-041, management-api-and-observability.md:MGT-SCN-042
 func TestDashboardStackProcessAcceptance(t *testing.T) {
 	if os.Getenv("NARUMQ_DASHBOARD_E2E") != "1" {
@@ -594,7 +595,6 @@ func TestDashboardStackProcessAcceptance(t *testing.T) {
 	}
 
 	fixture := newClusterMembershipProcessFixture(t, 3, "")
-	fixture.managementBindAll = true
 	readOnlyKeyBytes := make([]byte, 32)
 	if _, err := rand.Read(readOnlyKeyBytes); err != nil {
 		t.Fatalf("generate dashboard ReadOnly API key: %v", err)

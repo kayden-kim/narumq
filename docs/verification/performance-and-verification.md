@@ -444,3 +444,32 @@ Go preflight 실패 뒤에도 Python JSONL만으로 새 보고서를 만드는 �
 
 통합 확인에서 `go vet ./...`, `go run ./tools/verify traceability`(P0 73/81 연결·예외 8), `go run ./tools/verify architecture`, `GOMAXPROCS=2 go test -p=2 -count=1 ./tools/verify/`는 통과했다. **전체 local·원격 CI·라이브 EKS는 미실행**이며 기존 전체 local coverage 실패도 남아 있다.
 
+
+## 12. Gate 실행 경로·판정 보완 (2026-10-17)
+
+대상은 `b13d8254754bdb5333ae28d47e25c9d51cd85590` 기반 미커밋 작업 트리다. 환경은 Windows/amd64·Go 1.26.5·`GOMAXPROCS=4`, Linux container를 실행하는 Docker다. 외부 하네스의 fake fixture 단위 시험을 실제 EKS 수용에 연결하지 않았다. Coverage floor·ratchet, fuzz 횟수, rolling 100회와 제품의 timeout·부하 판정은 그대로다.
+
+### 12.1 연결과 집중 실행 증거
+
+| 명령·범위 | 실제 결과 |
+| --- | --- |
+| `go run ./tools/verify scenarios --output .artifacts/verification/gate-completion-20261017/linkage` | PASS. 623개 연결·미연결 0·오류 0. 결과 입력 없는 연결 검사이므로 실행 통과는 0이다. |
+| `go run ./tools/verify package-tests --results .artifacts/verification/gate-completion-20261017/go-acceptance-results.jsonl` | PASS. 실제 `go test ./tools/verify -count=1` 실행과 수동 결과 기록을 확인했다. |
+| `NARUMQ_ACCEPT_DOCKER=1 python tests/run_scenario_unittest.py tests/acceptance_docker_capacity.py` | PASS. 3개 시험, 실제 broker STOP·CONT·TERM, 원본 process 복구, cgroup CPU throttling과 OOM exit 137. Kubernetes API만 대역이며 실제 EKS 삭제 지연의 증거는 아니다. |
+| Workflow와 같은 전체 Python 목록, Python 3.9 Linux container | 최종 659개 모두 PASS·건너뜀 0. 첫 실행의 timestamp 실패·수정과 실제 Kind admission은 [Drain §6](drain-and-rolling-update.md#6-gate-연결과-release-profile-경로-보완-2026-10-17)에 기록했다. |
+| 모든 process opt-in을 켠 `go test -p=2 ./tests/integration -count=1 -json -timeout=45m` | FAIL. 45분의 전체 명령 제한에 도달했다. 최상위 41개 통과 뒤 다음 시험을 시작하던 때였고 개별 assertion 실패는 없었다. 100회 rolling은 1793.94초에 통과했다. 전체 integration PASS로 표시하지 않는다. |
+| `go run ./tools/verify mutation` | PASS. `GOMAXPROCS=4`에서 5개 패키지 순차 배치 실행, 4303.942초 소요. delivery 100%/100%, mqtt 100%/98.81%, nodedrain 100%/100%, security 100%/100%, session 100%/100%로 모든 패키지가 80% 하한을 통과했다. `TIMED OUT` 변이체는 killed로 산정하지 않았다. [실행 증거](../../.artifacts/verification/gate-completion-20261017/mutation-final-summary.json)를 따른다. 첫 시도의 3000초 timeout 중단 기록은 [보존 기록](../../.artifacts/verification/gate-completion-20261017/mutation-initial-timeout.json)에 둔다. |
+| `go run ./tools/verify baseline`, 첫 실행 | FAIL. 첫 local 실행의 integration package가 3시간 제한에 걸렸다. 실패한 assertion은 없었다. `TestDynamicClusterHistoricalReleaseCompatibilityProcessAcceptance`가 `git archive` 종료를 174분 기다렸다. Coverage 명령은 branch 계측 사본(`.artifacts/verification/branch/module`)에서 실행된다. 하위 directory에서 실행한 `git archive`는 그 경로 prefix 아래만 archive한다. Historical revision에는 이 경로가 없어 빈 tar가 나왔다. Helper가 빈 tar를 읽고 남은 stdout을 비우지 않은 채 `Wait`한 점도 관찰했다. 다만 이것이 174분 대기의 직접 원인이라는 재현은 하지 않았다. 시험 helper가 `git rev-parse --show-toplevel`로 실제 저장소 root에서 archive하도록 고쳤다. 대상 directory를 먼저 만들고, 남은 stdout을 비운 뒤 pipe를 닫고 `Wait`하도록 했다. 수정 뒤 두 historical release 시험을 함께 실행해 통과했다. |
+| 라이브 opt-in을 켠 `go run ./tools/verify local` 단일 실행 | exit 0, 1118.51초. Line 86.15%, branch 81.89%였다. 시나리오 실행 검사는 통과 536·미실행 0(게이트 밖 87)이었다. 단, `NARUMQ_ROLLING_ROUNDS=2` dry run을 섞었으므로 `DRN-SCN-018` 통과와 전체 gate 수용 증거로 쓰지 않는다. |
+| `go run ./tools/verify baseline`, 수정 후 재실행 | PASS, 9285.672초. `NARUMQ_ROLLING_ROUNDS`를 subprocess 환경에서 제거하고 모든 local opt-in(Kind rollout, release compat, durable ACK fault, WAL lifecycle, 100회 rolling, dashboard)을 켰다. 세 local 실행 모두 `local: PASS`이고 overall branch는 13603·13603·13597/16612(81.88%·81.88%·81.85%)다. Baseline은 overall 81.88%이며 core 9개는 connrebalance 96.15, delivery 100, mqtt 99.27, nodedrain 97.72, release 100, routing 94.23, security 96.94, session 98.73, tenancy 99.33%다. Policy는 바꾸지 않았다. nodedrain 측정값 97.72%는 ratchet 97.73%보다 0.01%p 낮다. 이 차이는 [ADR-0041](../decisions/ADR-0041-branch-ratchet-noise-tolerance.md)의 0.20%p 허용폭 안이라 통과한다. 세 실행의 log는 모두 시나리오 실행 검사 통과 536·실패 0·범위 안 미실행 0·게이트 밖 87을 보인다. `go-test.json`은 실행마다 덮어쓰므로 시험별 원문은 마지막 실행 것만 남았다. 마지막 실행에서 2164개 최상위 시험이 모두 통과했다. `DRN-SCN-018`은 100 round(QoS 1·2 각 1200건, reorder 0, `unexpected_supported_client`·`unplanned_failure` 0)로 1707.05초에 통과했다. 1·2회차의 round 수는 같은 환경 설정으로만 추정하며 원문은 없다. [결과](../../.artifacts/verification/gate-completion-20261017/baseline-result.json), [baseline](../../.artifacts/verification/gate-completion-20261017/branch-baseline.json)과 `baseline-local-1~3.log`를 따른다. |
+| Opt-in 수용 분리 뒤 `go run ./tools/verify local`, `NARUMQ_*` 환경 변수 없음 | PASS, 546초(이전 opt-in 포함 1회 약 3095초). Line 86.17%, branch 13605/16612(81.90%)로 이전 baseline 81.88%보다 낮지 않다. Process 시험은 별도 binary를 실행하므로 coverage에 기여하지 않는다. 시나리오 실행 검사는 625개 중 통과 506·실패 0·범위 안 미실행 0·게이트 밖 119다. `Acceptance:` 표시 시험 11개에만 연결된 시나리오가 게이트 밖으로 옮겨졌다. 같은 날 `go run ./tools/verify acceptance`는 환경 변수 6개가 없을 때 시험을 시작하지 않고 exit 1이었다. `NARUMQ_WAL_LIFECYCLE=1 go run ./tools/verify acceptance --run WALCompaction`은 1개 시험 PASS였다. `NARUMQ_ROLLING_100=1 NARUMQ_ROLLING_ROUNDS=2 go run ./tools/verify acceptance --run ContinuousRolling`은 2 round 검사를 마친 뒤 시험이 `SKIP`(44.28초)으로 보고되어 `(건너뜀)`과 exit 1이었다. 나머지 opt-in 시험은 이번 분리 뒤 `acceptance`로 재실행하지 않았다. 이전 통과 증거는 위 baseline 행이다. |
+
+집중 실행의 exit code·명령·원문은 [증거 디렉터리](../../.artifacts/verification/gate-completion-20261017/)에 있다. `integration-result.json`과 `integration.jsonl`은 45분 제한 실패를 보존한다. 전체 gate의 coverage 명령은 기존 3시간 fixture를 수용하도록 `-timeout=3h`를 사용한다. 짧은 진단 실행의 제한을 제품이나 개별 시나리오의 deadline으로 해석하지 않는다.
+
+### 12.2 실행 경로와 미실행 경계
+
+`tools/verify baseline`은 실제 `local`을 세 번 실행하고 새 schema 2 summary를 요구한다. 첫 두 branch 측정값 중 작은 값을 소수 둘째 자리까지 내림한 baseline 후보만 기록한다. Policy는 자동 갱신하지 않는다. `tools/verify package-tests`도 실제 명령의 결과만 기존 JSONL 형식으로 기록한다.
+
+`runMutation`은 Gremlins 결과 다섯 개를 `verifyMutationReports`로 직접 판정한다. `TIMED OUT`은 killed나 lived로 세지 않는다. 두 지표의 80% 하한은 기존 `gremlins.yaml`에서 읽는다. 병렬 runner는 OS가 종료 코드만 반환한 경우에도 context 취소 원인을 보존한다. 실제 하위 process의 deadline 취소와 exit 23을 분리한 회귀가 검증 도구 package 시험에 포함된다.
+
+PRF-SCN-060·061은 `tests/acceptance_eks_capacity.py`, PRF-SCN-104~109는 `tests/acceptance_github_ci.py`에 실제 opt-in 경로를 추가했으나 이번 작업에서 외부 수용은 미실행이다. GitHub probe는 명시적 환경 변수·origin 일치·관리자 권한·보호 설정 확인을 요구한다. 실패 probe의 merge가 실제 허용되면 `main`을 바꿀 수 있으므로 자동 실행하지 않는다. 기존 원격 CI 기록을 이번 미커밋 코드의 통과로 재사용하지 않는다.

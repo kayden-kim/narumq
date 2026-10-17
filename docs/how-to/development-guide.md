@@ -344,6 +344,8 @@ go test ./internal/adapters/tcp -run=^$ -fuzz=^FuzzConnectionInput$ -fuzztime=10
 
 저장소의 로컬 검증 gate는 `go run ./tools/verify local`로 실행한다. CI는 PR diff coverage를 추가하지만 mutation은 실행하지 않는다. 전체 mutation 검증이 필요하면 `go run ./tools/verify mutation`을 별도로 실행한다.
 
+기본 gate는 `Acceptance:` 표시가 있는 opt-in 수용 시험을 요구하지 않는다. 이 시험은 환경 변수가 없으면 건너뛰고 보고서에 `미실행 (게이트 밖)`으로 남는다. 그 밖의 연결 Go 시험은 건너뛰면 통과하지 않는다. Opt-in 수용 시험은 [아래 절차](#opt-in-수용-시험-실행)로 따로 실행한다.
+
 ```sh
 go run ./tools/verify local
 ```
@@ -361,6 +363,37 @@ Local과 CI는 각각 총 14개 verifier command를 실행하며 mutation은 포
 Mutation을 실행하려면 `go run ./tools/verify mutation`을 사용한다. 이 명령은 다섯 critical package를 Gremlins worker 1개씩 실행하고, CPU 예산에 맞춰 package 작업을 batch로 나눈다. Coverage, race, fuzz gate는 다시 실행하지 않는다.
 
 기대 결과: 마지막에 `local: PASS` 메시지가 출력되고 종료 코드 0으로 완료된다.
+
+### Opt-in 수용 시험 실행
+
+100회 rolling, Kind, Docker dashboard, release 호환성, durable ACK 장애, WAL lifecycle 시험은 `go run ./tools/verify acceptance`로 실행한다. 이 시험들은 시험 함수의 doc comment에 `Acceptance: <환경 변수>`가 표시되어 있다. 외부 EKS chaos 시험과 게시 release 수용은 별도 수동 결과이며 이 로컬 환경으로 대신하지 않는다.
+
+실행하기 전에 고를 시험의 환경을 준비한다.
+
+| 환경 변수 | 필요한 로컬 환경 |
+| --- | --- |
+| `NARUMQ_RELEASE_COMPAT=1` | Git historical source를 빌드할 수 있는 checkout과 Go |
+| `NARUMQ_DURABLE_ACK_FAULTS=1`, `NARUMQ_WAL_LIFECYCLE=1`, `NARUMQ_ROLLING_100=1` | 격리된 실제 broker process 시험. Rolling은 100회를 그대로 실행한다. |
+| `NARUMQ_DASHBOARD_E2E=1` | Linux container를 실행할 Docker와 Grafana·Prometheus image 접근 |
+| `NARUMQ_ROLLOUT_KIND_SMOKE=1` | 전용 Kind cluster `rollout-smoke`. 기존 `narumq` namespace가 없는지 확인한다. |
+| `NARUMQ_ROLLOUT_REGISTRY`, `NARUMQ_ROLLOUT_HOST_REGISTRY` | Kind node에서 접근할 registry 주소와 host에서 접근할 HTTP URL |
+| `NARUMQ_ROLLOUT_CONTROLLER_IMAGE` | 현재 소스의 controller image. Kind에서 pull하거나 미리 load해야 한다. |
+| `NARUMQ_ROLLOUT_OLD_DIGEST`, `NARUMQ_ROLLOUT_TARGET_DIGEST` | Registry의 실제 broker platform manifest digest. 합성 version `0.0.0`·`0.0.1`과 binary의 전체 feature 목록을 OCI label에 넣는다. |
+
+Kind fixture의 정확한 입력·정리 경계는 `tests/integration/rollout_controller_kind_test.go`를 따른다. Registry를 node에 HTTP로 연결하면 해당 주소의 containerd registry 설정도 준비해야 한다. 시험을 끝내면 자신이 만든 Kind cluster와 registry container만 정리한다. 실제 실행에 사용한 값은 검증 기록에 보존한다.
+
+전체를 실행하려면 저장소 루트에서 다음 명령을 실행한다. 일부만 실행하려면 `--run`에 시험 이름의 Go 정규식을 준다.
+
+```sh
+go run ./tools/verify acceptance
+go run ./tools/verify acceptance --run 'ReleaseCompatibility|BackupRestore.*Release'
+```
+
+이 명령은 고른 시험의 환경 변수가 모두 `1`인지 먼저 확인한다. 빠진 환경 변수가 있으면 시험을 시작하지 않는다. 고른 시험이 모두 통과하면 `acceptance: PASS`를 출력한다. 건너뜀·실패·결과 없음이 하나라도 있으면 해당 시험과 `acceptance: FAIL`을 출력한다. 결과는 `.artifacts/verification/acceptance-go-test.json`에 남는다. 기본 gate 결과와 함께 보고서를 만들려면 다음 명령을 실행한다.
+
+```sh
+go run ./tools/verify scenarios --go-test-json .artifacts/verification/go-test.json --go-test-json .artifacts/verification/acceptance-go-test.json
+```
 
 ### 시나리오 커버리지와 결과 보고서 만들기
 
