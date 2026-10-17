@@ -1,13 +1,17 @@
 package rollout
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 )
 
 // runControllerBounded runs RunController in a goroutine. A regression that lets an invalid
-// configuration reach manager construction or Start fails the test instead of hanging it.
+// configuration pass validation reaches manager construction against the loopback kubeconfig set by
+// the test. The test then fails on the 10s bound, or on an error-text assertion such as the
+// "manager" check, instead of hanging or touching a real cluster.
 func runControllerBounded(t *testing.T, config ControllerConfig, audit *reconcilerStubAudit) error {
 	t.Helper()
 	result := make(chan error, 1)
@@ -27,7 +31,33 @@ func runControllerBounded(t *testing.T, config ControllerConfig, audit *reconcil
 	}
 }
 
+// unreachableKubeconfig points at a loopback port with no listener. It replaces the developer's
+// kubeconfig so a regression cannot reach a real cluster.
+const unreachableKubeconfig = `apiVersion: v1
+kind: Config
+clusters:
+- name: unreachable
+  cluster:
+    server: http://127.0.0.1:1
+contexts:
+- name: unreachable
+  context:
+    cluster: unreachable
+    user: unreachable
+current-context: unreachable
+users:
+- name: unreachable
+  user:
+    token: unused
+`
+
 func TestRunControllerRejectsIncompleteConfigurationBeforeTouchingTheCluster(t *testing.T) {
+	kubeconfig := filepath.Join(t.TempDir(), "kubeconfig")
+	if err := os.WriteFile(kubeconfig, []byte(unreachableKubeconfig), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	// t.Setenv restores the previous value after the test and forbids t.Parallel.
+	t.Setenv("KUBECONFIG", kubeconfig)
 	valid := ControllerConfig{Namespace: "ns", ProducerID: "producer", ProducerVersion: "1.0.0", Registries: []string{"https://registry.test"}}
 
 	cases := []struct {
