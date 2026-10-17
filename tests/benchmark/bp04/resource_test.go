@@ -12,6 +12,8 @@ import (
 	"narumq/tests/benchmark/internal/environment"
 )
 
+// TestMedianMemoryUsesLowerPlusHalfDifference verifies the memory median computation.
+// Scenarios: performance-and-verification.md:PRF-SCN-038
 func TestMedianMemoryUsesLowerPlusHalfDifference(t *testing.T) {
 	samples := []environment.StatsSample{{MemoryUsageBytes: 1}, {MemoryUsageBytes: 2}, {MemoryUsageBytes: 4}, {MemoryUsageBytes: 9}}
 	if got := medianMemoryBytes(samples); got != 3 {
@@ -19,6 +21,8 @@ func TestMedianMemoryUsesLowerPlusHalfDifference(t *testing.T) {
 	}
 }
 
+// TestBuildResourceSummaryAcceptsZeroNetworkDeltas verifies zero network deltas are accepted.
+// Scenarios: performance-and-verification.md:PRF-SCN-038
 func TestBuildResourceSummaryAcceptsZeroNetworkDeltas(t *testing.T) {
 	summary := buildTestResourceSummary(t, 2)
 	if !summary.Valid {
@@ -47,6 +51,8 @@ func TestBuildResourceSummaryAcceptsZeroNetworkDeltas(t *testing.T) {
 	}
 }
 
+// TestBuildResourceSummaryRejectsInsufficientSamples verifies insufficient samples are rejected.
+// Scenarios: performance-and-verification.md:PRF-SCN-038
 func TestBuildResourceSummaryRejectsInsufficientSamples(t *testing.T) {
 	summary := buildTestResourceSummary(t, 1)
 	if summary.Valid {

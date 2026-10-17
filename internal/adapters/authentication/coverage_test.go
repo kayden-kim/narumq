@@ -88,6 +88,7 @@ func cmmAuthenticate(ctx context.Context, provider *JWKSAuthenticationProvider, 
 	return err
 }
 
+// Scenarios: tenancy-and-security.md:SEC-SCN-010
 func TestCmmAuthenticateRejectsMalformedHeaderBeforeFetchingKeys(t *testing.T) {
 	now := time.Unix(5000, 0)
 	key := newTestKey(t, "key-1")
@@ -116,6 +117,7 @@ func TestCmmAuthenticateRejectsMalformedHeaderBeforeFetchingKeys(t *testing.T) {
 	}
 }
 
+// Scenarios: tenancy-and-security.md:SEC-SCN-010, tenancy-and-security.md:SEC-SCN-018
 func TestCmmAuthenticateRequiresExpirationAndStaticBinding(t *testing.T) {
 	now := time.Unix(6000, 0)
 	key := newTestKey(t, "key-1")
@@ -142,6 +144,7 @@ func TestCmmAuthenticateRequiresExpirationAndStaticBinding(t *testing.T) {
 	}
 }
 
+// Scenarios: tenancy-and-security.md:SEC-SCN-013
 func TestCmmJWKSFetchFailuresAreUnavailable(t *testing.T) {
 	now := time.Unix(7000, 0)
 	key := newTestKey(t, "key-1")
@@ -184,6 +187,7 @@ func TestCmmJWKSBodyAtSizeLimitIsAccepted(t *testing.T) {
 }
 
 // Traceability: SEC-08
+// Scenarios: tenancy-and-security.md:SEC-SCN-013
 func TestCmmBootstrapRefreshWaitersHonorCancellationAndShareFailure(t *testing.T) {
 	now := time.Unix(8000, 0)
 	key := newTestKey(t, "key-1")
@@ -220,6 +224,7 @@ func TestCmmBootstrapRefreshWaitersHonorCancellationAndShareFailure(t *testing.T
 }
 
 // Traceability: SEC-02, SEC-08
+// Scenarios: tenancy-and-security.md:SEC-SCN-011, tenancy-and-security.md:SEC-SCN-013
 func TestCmmUnknownKeyRefreshWaitersHonorCancellationAndShareFailure(t *testing.T) {
 	now := time.Unix(9000, 0)
 	clock := &testClock{now: now}

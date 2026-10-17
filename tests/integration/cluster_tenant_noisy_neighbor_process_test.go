@@ -17,6 +17,7 @@ import (
 )
 
 // Traceability: TEN-09; docs/specs/tenancy-and-security.md §5.3; docs/decisions/ADR-0054-tenant-noisy-neighbor-latency-acceptance.md.
+// Scenarios: tenancy-and-security.md:SEC-SCN-030
 func TestDynamicClusterTenantNoisyNeighborProcessAcceptance(t *testing.T) {
 	fixture := newClusterMembershipProcessFixture(t, 3, "")
 	issuer := newClusterProcessJWTIssuer(t, "ten09-key")

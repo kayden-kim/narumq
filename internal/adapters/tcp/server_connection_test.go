@@ -17,6 +17,7 @@ import (
 )
 
 // Traceability: PRD MQTT-11/MQTT-12/TEST-04/05; docs/specs/mqtt-protocol-and-session.md §7.1.
+// Scenarios: mqtt-protocol-and-session.md:MQTT-SCN-034
 func TestNewServerValidatesEveryDependencyAndBound(t *testing.T) {
 	runtime := newAdapterTestRuntime(t, 2, defaultAdapterConfig())
 	defer runtime.stop(t)
@@ -137,6 +138,7 @@ func TestCloseSessionForTakeoverRemovesBindingAndStopsSocket(t *testing.T) {
 	}
 }
 
+// Scenarios: cluster-session-and-delivery.md:CLU-SCN-094
 func TestPendingOwnershipFenceIsTenantScoped(t *testing.T) {
 	runtime := newAdapterTestRuntime(t, 2, defaultAdapterConfig())
 	defer runtime.stop(t)
@@ -220,6 +222,7 @@ func TestStoppedConnectionCannotBindSession(t *testing.T) {
 	}
 }
 
+// Scenarios: cluster-session-and-delivery.md:CLU-SCN-093, cluster-session-and-delivery.md:CLU-SCN-094
 func TestCommittedTakeoverFencesConnectBeforeSessionBinding(t *testing.T) {
 	const clientID = "in-flight-client"
 	clusterConfig := func(memberID uint64) Config {
@@ -329,6 +332,7 @@ func TestCommittedTakeoverFencesConnectBeforeSessionBinding(t *testing.T) {
 	}
 }
 
+// Scenarios: cluster-session-and-delivery.md:CLU-SCN-094
 func TestOldConnectionCleanupCannotDisconnectReplacementEpoch(t *testing.T) {
 	const clientID = "replacement-client"
 	config := defaultAdapterConfig()

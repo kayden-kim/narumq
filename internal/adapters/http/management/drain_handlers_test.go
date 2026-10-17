@@ -80,6 +80,7 @@ func drainHTTPState(phase nodedrain.Phase) membership.NodeDrainStateDTO {
 }
 
 // Traceability: DEP-01/DEP-02; docs/specs/drain-and-rolling-update.md §2.1, §2.2, §10.
+// Scenarios: drain-and-rolling-update.md:DRN-SCN-005
 func TestNodeDrainHTTPStartReplayAndReadAuthorization(t *testing.T) {
 	stub := &drainHTTPStub{startResult: membership.NodeDrainOperationDTO{State: drainHTTPState(nodedrain.PhaseExcludingTraffic)}}
 	handler := newDrainHTTPTestHandler(stub, RoleOperator)
@@ -130,6 +131,7 @@ func TestNodeDrainHTTPStartReplayAndReadAuthorization(t *testing.T) {
 }
 
 // Traceability: DEP-01/DEP-02; docs/specs/drain-and-rolling-update.md §2.1, §2.2, §2.3, §10.
+// Scenarios: drain-and-rolling-update.md:DRN-SCN-005
 func TestNodeDrainHTTPQueriesCancelAndRejectInvalidRequests(t *testing.T) {
 	stub := &drainHTTPStub{
 		getResult:    membership.NodeDrainOperationDTO{State: drainHTTPState(nodedrain.PhaseTransferringSessions)},
@@ -175,6 +177,7 @@ func TestNodeDrainHTTPQueriesCancelAndRejectInvalidRequests(t *testing.T) {
 }
 
 // Traceability: DEP-02/DEP-04/DEP-05; docs/specs/drain-and-rolling-update.md §2.1, §10.
+// Scenarios: drain-and-rolling-update.md:DRN-SCN-006
 func TestNodeDrainHTTPAppliesProductDefaultsToOmittedFields(t *testing.T) {
 	for _, test := range []struct {
 		name            string
@@ -234,6 +237,7 @@ func TestNodeDrainHTTPAppliesProductDefaultsToOmittedFields(t *testing.T) {
 }
 
 // Traceability: DEP-01; docs/specs/drain-and-rolling-update.md §1, §2.3, §10.
+// Scenarios: drain-and-rolling-update.md:DRN-SCN-005
 func TestNodeDrainHTTPConflictIncludesCurrentNodeState(t *testing.T) {
 	stub := &drainHTTPStub{startError: &membership.ServiceError{
 		Code:      membership.ServiceErrorInvalidNodeTransition,

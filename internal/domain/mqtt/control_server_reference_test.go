@@ -8,6 +8,7 @@ import (
 )
 
 // Traceability: DEP-06; docs/specs/drain-and-rolling-update.md §4, §10.
+// Scenarios: drain-and-rolling-update.md:DRN-SCN-008
 func TestDisconnectServerReferenceEncoding(t *testing.T) {
 	encoder, err := NewEncoder(MaxRemainingLength)
 	if err != nil {
@@ -32,6 +33,7 @@ func TestDisconnectServerReferenceEncoding(t *testing.T) {
 }
 
 // Traceability: DEP-06; docs/specs/drain-and-rolling-update.md §4, §10.
+// Scenarios: drain-and-rolling-update.md:DRN-SCN-008
 func TestDisconnectRejectsInvalidServerReference(t *testing.T) {
 	for _, test := range []struct {
 		name      string

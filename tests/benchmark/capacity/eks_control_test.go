@@ -8,6 +8,7 @@ import (
 )
 
 // Exercise the actual Python producer and Go consumer; their JSON types must agree.
+// Scenarios: performance-and-verification.md:PRF-SCN-053
 func TestEKSKillMarkersDecodeInRunner(t *testing.T) {
 	python, err := exec.LookPath("python")
 	if err != nil {

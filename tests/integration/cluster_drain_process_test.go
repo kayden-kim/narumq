@@ -18,6 +18,7 @@ import (
 )
 
 // Traceability: DEP-04/DEP-05/DEP-06/DEP-10/DEP-12; docs/specs/drain-and-rolling-update.md §2.1, §2.2, §2.3, §3, §4, §6, §10.
+// Scenarios: management-api-and-observability.md:MGT-SCN-031, drain-and-rolling-update.md:DRN-SCN-001
 func TestDynamicClusterNodeDrainProcessAcceptance(t *testing.T) {
 	t.Parallel()
 
@@ -256,6 +257,7 @@ func TestDynamicClusterNodeDrainProcessAcceptance(t *testing.T) {
 }
 
 // Traceability: DEP-10; docs/specs/drain-and-rolling-update.md §2.1, §2.3, §3, §6, §8, §10.
+// Scenarios: drain-and-rolling-update.md:DRN-SCN-002, drain-and-rolling-update.md:DRN-SCN-003
 func TestDynamicClusterNodeDrainCancelTimeoutAndResumeProcessAcceptance(t *testing.T) {
 	t.Parallel()
 

@@ -66,6 +66,7 @@ func newRawWebSocketTestPair(t *testing.T) (net.Conn, net.Conn) {
 }
 
 // Traceability: docs/specs/mqtt-protocol-and-session.md §1, §8.3 MQTT-10-SCN-02.
+// Scenarios: mqtt-protocol-and-session.md:MQTT-10-SCN-02
 func TestConnReadDeadlineReportsTimeout(t *testing.T) {
 	connection, _ := newWebSocketTestPair(t)
 	if err := connection.SetReadDeadline(time.Now().Add(40 * time.Millisecond)); err != nil {
@@ -79,6 +80,7 @@ func TestConnReadDeadlineReportsTimeout(t *testing.T) {
 }
 
 // Traceability: docs/specs/mqtt-protocol-and-session.md §1, §8.3 MQTT-10-SCN-02.
+// Scenarios: mqtt-protocol-and-session.md:MQTT-10-SCN-02
 func TestConnWriteDeadlineReportsTimeout(t *testing.T) {
 	connection, _ := newWebSocketTestPair(t)
 	deadline := time.Now().Add(100 * time.Millisecond)
@@ -103,6 +105,7 @@ func TestConnWriteDeadlineReportsTimeout(t *testing.T) {
 }
 
 // Traceability: docs/specs/mqtt-protocol-and-session.md §1, §8.3 MQTT-10-SCN-02.
+// Scenarios: mqtt-protocol-and-session.md:MQTT-10-SCN-02
 func TestConnCloseDoesNotWaitForUnresponsivePeer(t *testing.T) {
 	connection, peer := newRawWebSocketTestPair(t)
 	started := time.Now()

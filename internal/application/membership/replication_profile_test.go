@@ -6,6 +6,7 @@ import (
 )
 
 // Traceability: CLU-09; docs/specs/cluster-session-and-delivery.md §4.4, §11.27.
+// Scenarios: cluster-session-and-delivery.md:CLU-SCN-188
 func TestRemovalKeepsReplicationFactorBoundaries(t *testing.T) {
 	for _, test := range []struct {
 		name   string

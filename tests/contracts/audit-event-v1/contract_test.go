@@ -47,6 +47,7 @@ var _ audithttp.ConnectionRebalanceUseCase = contractRebalanceService{}
 
 // Traceability: SEC-11/API-08/NFR-17; docs/specs/tenancy-and-security.md §9.
 // Traceability: SEC-12; docs/specs/tenancy-and-security.md §7.1, §9; ADR-0050.
+// Scenarios: management-api-and-observability.md:MGT-SCN-014, management-api-and-observability.md:MGT-SCN-015, tenancy-and-security.md:SEC-SCN-044, tenancy-and-security.md:SEC-SCN-046, tenancy-and-security.md:SEC-SCN-050
 func TestAuditEventMatchesSchemaAndFileChain(t *testing.T) {
 	schema := compileAuditEventSchema(t)
 	directory := t.TempDir()
@@ -323,6 +324,7 @@ func TestAuditEventMatchesSchemaAndFileChain(t *testing.T) {
 }
 
 // Traceability: SEC-10; docs/specs/tenancy-and-security.md §6; docs/specs/management-api-and-observability.md §1; ADR-0048 §7.
+// Scenarios: management-api-and-observability.md:MGT-SCN-019, tenancy-and-security.md:SEC-SCN-033
 func TestAuditQueryReturnsStoredChainRecords(t *testing.T) {
 	directory := t.TempDir()
 	publisher, err := auditlog.OpenFileAuditPublisher(auditlog.FileAuditPublisherConfig{
@@ -444,6 +446,7 @@ func TestAuditQueryReturnsStoredChainRecords(t *testing.T) {
 }
 
 // Traceability: SEC-11/NFR-17; docs/contracts/audit-event-v1.md §4; docs/specs/tenancy-and-security.md §8.
+// Scenarios: tenancy-and-security.md:SEC-SCN-049
 func TestAuditConsumersPreserveUnknownActionAndReason(t *testing.T) {
 	schema := compileAuditEventSchema(t)
 	directory := t.TempDir()
@@ -684,6 +687,7 @@ func TestAuditConsumersPreserveUnknownActionAndReason(t *testing.T) {
 }
 
 // Traceability: SEC-11/NFR-17; docs/specs/tenancy-and-security.md §8.
+// Scenarios: tenancy-and-security.md:SEC-SCN-047
 func TestDataPlaneDenialEventsMatchSchema(t *testing.T) {
 	schema := compileAuditEventSchema(t)
 	directory := t.TempDir()

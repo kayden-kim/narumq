@@ -49,6 +49,8 @@ func TestMain(m *testing.M) {
 	os.Exit(code)
 }
 
+// TestRunClusterTargetKeepsPublishedOwnerPortAcrossBrokerRestart verifies the published owner port stays the same across a broker restart.
+// Scenarios: performance-and-verification.md:PRF-SCN-025
 func TestRunClusterTargetKeepsPublishedOwnerPortAcrossBrokerRestart(t *testing.T) {
 	fakeDocker := installFakeDocker(t)
 	options := validBP07ClusterOptions(t)
@@ -212,6 +214,8 @@ func TestBP04RunnerTargetValidation(t *testing.T) {
 	}
 }
 
+// TestKillAndStartClusterBrokerKeepContainer verifies kill and start keep the same container and volume.
+// Scenarios: performance-and-verification.md:PRF-SCN-027, performance-and-verification.md:PRF-SCN-025
 func TestKillAndStartClusterBrokerKeepContainer(t *testing.T) {
 	fakeDocker := installFakeDocker(t)
 	const container = "bp06-kill-broker"
@@ -266,6 +270,8 @@ func TestKillAndStartClusterBrokerKeepContainer(t *testing.T) {
 	}
 }
 
+// TestResolveClusterPublishedPortsRejectsEmptyMapping verifies an empty Docker port mapping is rejected.
+// Scenarios: performance-and-verification.md:PRF-SCN-025
 func TestResolveClusterPublishedPortsRejectsEmptyMapping(t *testing.T) {
 	installFakeDocker(t)
 	t.Setenv(fakeDockerEmptyPortEnv, "1")

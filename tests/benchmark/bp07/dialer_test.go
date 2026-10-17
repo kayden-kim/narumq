@@ -86,6 +86,8 @@ func newDialerTestTCPNode(t *testing.T, label string) *dialerTestTCPNode {
 	return node
 }
 
+// TestReadinessDialerTracksHTTPReadinessTransitions verifies the dialer follows node readiness transitions when connecting.
+// Scenarios: performance-and-verification.md:PRF-SCN-019
 func TestReadinessDialerTracksHTTPReadinessTransitions(t *testing.T) {
 	tcpNode1 := newDialerTestTCPNode(t, "node1")
 	tcpNode2 := newDialerTestTCPNode(t, "node2")
@@ -182,6 +184,8 @@ func TestReadinessDialerTracksHTTPReadinessTransitions(t *testing.T) {
 	}
 }
 
+// TestReadinessDialerDialsReadyNodesRoundRobin verifies ready nodes are dialed round-robin.
+// Scenarios: performance-and-verification.md:PRF-SCN-019
 func TestReadinessDialerDialsReadyNodesRoundRobin(t *testing.T) {
 	tcpNode1 := newDialerTestTCPNode(t, "node1")
 	tcpNode2 := newDialerTestTCPNode(t, "node2")
@@ -236,6 +240,8 @@ func TestReadinessDialerDialsReadyNodesRoundRobin(t *testing.T) {
 	}
 }
 
+// TestReadinessDialerReturnsHealthLogErrors verifies health log failures are returned to callers.
+// Scenarios: performance-and-verification.md:PRF-SCN-019
 func TestReadinessDialerReturnsHealthLogErrors(t *testing.T) {
 	health := newDialerTestHealth(t, http.StatusOK, "")
 	healthLog, err := jsonl.Open(filepath.Join(t.TempDir(), "health.jsonl"))

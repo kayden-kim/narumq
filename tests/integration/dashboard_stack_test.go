@@ -208,6 +208,7 @@ type dashboardStackVariable struct {
 
 // TestDashboardProvisioningMatchesContracts checks panel, query, datasource, and provisioning contracts.
 // Traceability: UI-01, UI-02, UI-03, UI-04, UI-05, UI-10; docs/specs/management-api-and-observability.md §8.
+// Scenarios: management-api-and-observability.md:MGT-SCN-040
 func TestDashboardProvisioningMatchesContracts(t *testing.T) {
 	root := clusterMembershipProcessRepoRoot(t)
 	read := func(relative string) []byte {
@@ -581,6 +582,7 @@ func TestDashboardProvisioningMatchesContracts(t *testing.T) {
 
 // TestDashboardStackProcessAcceptance checks the provisioned dashboard against three broker processes.
 // Traceability: UI-01, UI-02, UI-03, UI-04, UI-05, UI-10; docs/specs/management-api-and-observability.md §8.
+// Scenarios: management-api-and-observability.md:MGT-SCN-041, management-api-and-observability.md:MGT-SCN-042
 func TestDashboardStackProcessAcceptance(t *testing.T) {
 	if os.Getenv("NARUMQ_DASHBOARD_E2E") != "1" {
 		t.Skip("set NARUMQ_DASHBOARD_E2E=1 to run the Docker-backed Grafana and Prometheus acceptance")

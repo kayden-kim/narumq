@@ -23,6 +23,7 @@ func tenantQuotaProfileRecordForTest(version uint64) *TenantQuotaProfile {
 }
 
 // Traceability: TEN-08; docs/specs/cluster-session-and-delivery.md §11.16.
+// Scenarios: cluster-session-and-delivery.md:CLU-SCN-099
 func TestTenantQuotaCommandCodecRoundTripsAndRejectsInvalidProfiles(t *testing.T) {
 	command := &CommandEnvelope{
 		SchemaMajor: 1, OperationId: op1,
@@ -108,6 +109,7 @@ func TestTenantQuotaCommandCodecRoundTripsAndRejectsInvalidProfiles(t *testing.T
 }
 
 // Traceability: TEN-08; docs/specs/cluster-session-and-delivery.md §10 and §11.16.
+// Scenarios: cluster-session-and-delivery.md:CLU-SCN-099
 func TestTenantQuotaSnapshotCodecCountsProfileAndRejectsInvalidState(t *testing.T) {
 	state := &ReplicatedStateSnapshot{TenantQuotaProfile: tenantQuotaProfileRecordForTest(8)}
 	before := proto.Clone(state)

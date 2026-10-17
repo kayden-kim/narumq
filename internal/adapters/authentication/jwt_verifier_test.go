@@ -12,6 +12,7 @@ import (
 )
 
 // Traceability: SEC-10; docs/specs/tenancy-and-security.md §6.
+// Scenarios: management-api-and-observability.md:MGT-SCN-018, tenancy-and-security.md:SEC-SCN-032
 func TestJWTVerifierReturnsVerifiedClaimsWithoutBinding(t *testing.T) {
 	now := time.Unix(1_000, 0)
 	key := newTestKey(t, "key-1")

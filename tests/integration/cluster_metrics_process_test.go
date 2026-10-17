@@ -11,6 +11,7 @@ import (
 )
 
 // Traceability: API-03; docs/specs/management-api-and-observability.md §7.1.
+// Scenarios: management-api-and-observability.md:MGT-SCN-028
 func TestDynamicClusterSubscriptionGaugeProcessAcceptance(t *testing.T) {
 	t.Parallel()
 

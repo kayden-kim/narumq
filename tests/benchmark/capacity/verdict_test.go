@@ -21,6 +21,8 @@ func passingInput() verdictInput {
 
 func joined(r verdictResult) string { return strings.Join(r.Reasons, "; ") }
 
+// TestVerdictP99ExactlyAtLimitPassesAndAboveFails checks the p99 boundary.
+// Scenarios: performance-and-verification.md:PRF-SCN-051
 func TestVerdictP99ExactlyAtLimitPassesAndAboveFails(t *testing.T) {
 	in := passingInput()
 	in.Measure[1].Latency[1].P99 = 100 * time.Millisecond
@@ -51,6 +53,8 @@ func TestVerdictGapFailsButQoS1DuplicateAndQoS0LossOnlyRecord(t *testing.T) {
 	}
 }
 
+// TestVerdictInvalidTakesPrecedenceOverFail checks invalid outranks fail.
+// Scenarios: performance-and-verification.md:PRF-SCN-051
 func TestVerdictInvalidTakesPrecedenceOverFail(t *testing.T) {
 	in := passingInput()
 	in.AckedGaps[2] = 3
@@ -64,6 +68,8 @@ func TestVerdictInvalidTakesPrecedenceOverFail(t *testing.T) {
 	}
 }
 
+// TestVerdictInvalidCauses checks each invalid reason.
+// Scenarios: performance-and-verification.md:PRF-SCN-051
 func TestVerdictInvalidCauses(t *testing.T) {
 	cases := map[string]func(*verdictInput){
 		"tenant rejection": func(in *verdictInput) { in.TenantRejections = 1 },
@@ -90,6 +96,8 @@ func TestVerdictInvalidCauses(t *testing.T) {
 	}
 }
 
+// TestVerdictRecoveryRules checks the RTO limit and SessionPresent requirement.
+// Scenarios: performance-and-verification.md:PRF-SCN-051
 func TestVerdictRecoveryRules(t *testing.T) {
 	in := passingInput()
 	in.RTO = 30 * time.Second

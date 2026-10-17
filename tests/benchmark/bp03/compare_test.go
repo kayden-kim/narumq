@@ -27,6 +27,8 @@ func TestBP03TargetTimeoutIncludesOfflineMilliseconds(t *testing.T) {
 	}
 }
 
+// TestBuildBP03ComparisonEquivalenceAndNonEquivalentDimensions verifies equivalence evidence and nonEquivalent dimensions.
+// Scenarios: performance-and-verification.md:PRF-SCN-007
 func TestBuildBP03ComparisonEquivalenceAndNonEquivalentDimensions(t *testing.T) {
 	profile := loadSmokeProfileForCompare(t)
 	limits := bp03ResourceLimits{
@@ -90,6 +92,8 @@ func TestBuildBP03ComparisonEquivalenceAndNonEquivalentDimensions(t *testing.T) 
 	}
 }
 
+// TestSummarizeBP03RunDoesNotRequireEMQXWALApplicability verifies the run summary does not require EMQX WAL applicability.
+// Scenarios: performance-and-verification.md:PRF-SCN-007
 func TestSummarizeBP03RunDoesNotRequireEMQXWALApplicability(t *testing.T) {
 	validWorkload := &workloadSummary{Valid: true}
 	validResources := &resourceSummary{Valid: true}

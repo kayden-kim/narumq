@@ -61,6 +61,8 @@ func TestHasUnappliedProposalsChecksTimeout(t *testing.T) {
 	}
 }
 
+// TestReclaimUnsentProposalsStopsWhenDeferredRoomIsZero verifies unsent proposal reclaim stops when the deferred queue has no room.
+// Scenarios: performance-and-verification.md:PRF-SCN-088
 func TestReclaimUnsentProposalsStopsWhenDeferredRoomIsZero(t *testing.T) {
 	runtimes := newReadAdmissionTestCluster(t)
 	follower := runtimes[1]

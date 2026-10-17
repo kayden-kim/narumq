@@ -73,8 +73,8 @@ ADR-0034의 node-local token bucket은 설정한 tenant별 PUBLISH rate를 제�
 
 | 가설·결정 요인 | 검증 방법 | 합격 기준 | 증거 |
 | --- | --- | --- | --- |
-| 같은 실행의 baseline 대비 noisy p99를 판정한다. | `TestDynamicClusterTenantNoisyNeighborProcessAcceptance`를 5회 실행한다. | 매 실행 `2 × noisyP99 ≤ 3 × baselineP99` | [Tenant와 security §9.9](../specs/tenancy-and-security.md#99-ten-09-noisy-neighbor-실행-증거) |
-| Noisy tenant 부하가 설정된 token bucket을 우회하지 않는다. | Noisy subscriber의 수신 시각과 각 round 경계를 비교한다. | 각 round 수신 수는 50 이상이며 `50 + ceil(50 × roundSeconds)` 이하이고 noisy connection error는 없다. | 같은 실행 증거를 §9.9에 기록한다. |
+| 같은 실행의 baseline 대비 noisy p99를 판정한다. | `TestDynamicClusterTenantNoisyNeighborProcessAcceptance`를 5회 실행한다. | 매 실행 `2 × noisyP99 ≤ 3 × baselineP99` | [Tenant와 security 검증 기록 §9](../verification/tenancy-and-security.md#9-ten-09-noisy-neighbor-실행-기록) |
+| Noisy tenant 부하가 설정된 token bucket을 우회하지 않는다. | Noisy subscriber의 수신 시각과 각 round 경계를 비교한다. | 각 round 수신 수는 50 이상이며 `50 + ceil(50 × roundSeconds)` 이하이고 noisy connection error는 없다. | 같은 실행 기록을 검증 기록 §9에 둔다. |
 
 ## 8. 재검토 조건
 

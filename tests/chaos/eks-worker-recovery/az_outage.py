@@ -308,6 +308,7 @@ def _recovery_checks(fixture, plan: dict, original: list[dict]) -> dict:
             "survivorPodUIDsUnchanged": True, "podUIDs": {p["metadata"]["name"]: p["metadata"]["uid"] for p in pods}}
 
 
+# Scenarios: drain-and-rolling-update.md:DRN-SCN-037
 def execute(fixture, plan: dict, output: Path, original: list[dict], durable, check: Callable[[], None],
             result: dict) -> None:
     """Run the outage. `result` is filled as steps complete so a failure keeps what was observed.

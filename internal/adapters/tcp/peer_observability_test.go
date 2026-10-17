@@ -202,6 +202,7 @@ func TestPeerObservabilityRejectsSpoofedIdentityAndMalformedRequest(t *testing.T
 	})
 }
 
+// Scenarios: management-api-and-observability.md:MGT-SCN-044
 func TestPeerObservabilitySanitizesInvalidAndOversizedSnapshots(t *testing.T) {
 	server, client := cptNewNode(t, "server.example"), cptNewNode(t, "client.example")
 	cptTrustEachOther(server, client)

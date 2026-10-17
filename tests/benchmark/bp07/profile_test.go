@@ -26,6 +26,8 @@ func TestSmokeProfileIdentityAndDigest(t *testing.T) {
 	}
 }
 
+// TestDecodeProfileRejectsUnknownMissingNullAndTrailing verifies unknown, missing, null and trailing JSON input is rejected.
+// Scenarios: performance-and-verification.md:PRF-SCN-018
 func TestDecodeProfileRejectsUnknownMissingNullAndTrailing(t *testing.T) {
 	data, err := os.ReadFile("testdata/smoke.json")
 	if err != nil {
@@ -60,6 +62,8 @@ func TestDecodeProfileRejectsUnknownMissingNullAndTrailing(t *testing.T) {
 	}
 }
 
+// TestProfileRejectsUnsafeRollingCombinations verifies out-of-range and unsafe rolling combinations are rejected.
+// Scenarios: performance-and-verification.md:PRF-SCN-018
 func TestProfileRejectsUnsafeRollingCombinations(t *testing.T) {
 	cases := []struct {
 		name   string
@@ -86,6 +90,8 @@ func TestProfileRejectsUnsafeRollingCombinations(t *testing.T) {
 	}
 }
 
+// TestProfileAcceptsBoundaryClientCapacityAndZeroSettles verifies the profile bounds accept exact boundary values.
+// Scenarios: performance-and-verification.md:PRF-SCN-018
 func TestProfileAcceptsBoundaryClientCapacityAndZeroSettles(t *testing.T) {
 	p := loadSmoke(t)
 	p.IdleClients = 8

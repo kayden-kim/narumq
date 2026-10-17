@@ -1,13 +1,12 @@
 # Cluster backup을 만들고 복원하는 방법
 
-이 절차는 실행 중인 cluster에서 committed boundary의 NMQBKUP3 archive를 내려받고, retained state와 detached session의 QoS 0 offline queue를 포함한 같은 cluster의 현재 3-voter identity를 유지한 채 각 node를 오프라인 seed한다. Local multi-process acceptance에서 cross-node retained replay, offline queue delivery, v3 archive summary, restore/restart·joiner resync를 통과했다. Production power-loss는 지원·검증 범위 밖이다.
+이 절차는 실행 중인 cluster에서 committed boundary의 NMQBKUP3 archive를 내려받고, retained state와 detached session의 QoS 0 offline queue를 포함한 같은 cluster의 현재 3-voter identity를 유지한 채 각 node를 오프라인 seed한다. 이 절차의 제한된 복원 시험은 production power-loss 수용을 대신하지 않는다.
 
 | 항목 | 값 |
 | --- | --- |
 | 대상 독자 | Cluster 운영자와 복구 담당자 |
 | 검증 상태 | Draft |
-| 검증 환경·버전 | Local multi-process Go process acceptance; archive format `3.0`, cluster protocol `2.0`, state schema `1.0` |
-| 최종 검증일 | 2026-09-26 |
+| 검증 범위 | Local multi-process 및 격리 EKS 복원. Archive format `3.0`, cluster protocol `2.0`, state schema `1.0`. 실제 실행은 §4의 기록을 따른다. |
 | 관련 기준 문서 | [Cluster §10·§11.7·§11.8·§11.9](../specs/cluster-session-and-delivery.md#10-snapshot-backup과-restore), [Cluster backup v3](../contracts/cluster-backup-v3.md), [ADR-0013](../decisions/ADR-0013-offline-queue-replication-and-cluster-backup-v3.md), [ADR-0058](../decisions/ADR-0058-cluster-backup-s3-retention-and-restore.md), [Management API v1](../contracts/management-api-v1.md) |
 
 ## 1. 대상과 영향
@@ -102,14 +101,14 @@
 
 ## 4. 검증
 
-실제 운영 환경의 address, node ID, binary release와 관찰값을 incident/backup record에 기록한다. Token, private key, certificate private data와 archive payload는 증거에 넣지 않는다.
+실제 운영 환경의 address, node ID, binary release와 관찰값을 incident/backup record에 기록한다. Token, private key, certificate private data와 archive payload는 증거에 넣지 않는다. 과거 실행은 현재 코드 통과가 아니다. 로컬·EKS 실행 범위는 [Cluster 검증 기록](../verification/cluster-session-and-delivery.md), 현재 연결·결과는 [시나리오 보고서](../../.artifacts/verification/scenarios/report.md)를 확인한다.
 
-| 관찰 대상 | 성공 조건 | 확인 명령·방법 | 실제 결과 | 실행 증거 위치 |
-| --- | --- | --- | --- | --- |
-| Online v3 archive | HTTP 200, octet-stream, commit header가 manifest와 일치하고 archive checksum이 유효하다. Format major가 3이고 retained 및 offline summary가 포함된다. | 단계 2; restore CLI가 전체 archive 검증 | PASS: process acceptance가 format major 3, retained count 2, offline count 3, commit header와 SHA-256 trailer digest를 대조했다. | `tests/integration/cluster_backup_restore_process_test.go::TestClusterBackupRestoreProcessCrashAndResync`; Cluster §11.9 |
-| Retained and offline restore/restart/resync | 세 restore process가 종료 코드 0으로 seed하고, retained replay와 offline reconnect delivery가 cross-node·restore·restart·joiner catch-up 뒤 일치한다. | 단계 4–5; MQTT SUBSCRIBE replay, offline reconnect delivery와 management readiness/summary | PASS: local multi-process process acceptance. Production volume/power-loss는 미실행이다. | 같은 process test; Cluster §11.9 |
-| Identity mismatch 및 learner/v1/v2 archive | Restore가 거절되고 target이 시작되지 않는다. | restore CLI와 `go test ./cmd/narumq/... -run 'TestClusterRestore' -count=1` | PASS: restore tests에서 cluster/member identity mismatch와 learner/archive mismatch를 거절했다. v1 및 v2 magic은 records codec에서 명시적 unsupported-format 오류로 거절한다. | `cmd/narumq/cluster_backup_restore_test.go`; `internal/adapters/raft/records` |
-| S3 helper regression suite | Request-backed upload checksum, retry after ambiguous response, prior-success cleanup, prefix listing, exact-key download and checksum failure cleanup are tested. | `PYTHONDONTWRITEBYTECODE=1 python tests/test_backup_s3.py` | PASS (2026-10-14 local working tree): 17 deterministic tests. Isolated fixture smoke, elapsed 30-day retention, sustained RPO ≤ 24h and full-cluster RTO remain open. | `tests/test_backup_s3.py`; Cluster §11.9 |
+| 관찰 대상 | 성공 조건 | 확인 명령·방법 |
+| --- | --- | --- |
+| Online v3 archive | HTTP 200, octet-stream, commit header·manifest 일치, 유효한 checksum, format major 3과 retained·offline summary | 단계 2; restore CLI의 전체 archive 검증 |
+| Retained·offline restore/restart/resync | 세 restore process가 exit 0으로 seed하고, cross-node·restore·restart·joiner catch-up 뒤 replay·delivery가 일치함 | 단계 4–5; MQTT replay·delivery와 management readiness/summary |
+| Identity mismatch·learner·v1/v2 archive | Restore를 거절하고 target이 시작되지 않음 | Restore CLI; `go test ./cmd/narumq/... -run 'TestClusterRestore' -count=1` |
+| S3 helper 회귀 | 요청 기반 업로드 checksum, 결과 불명 재시도, 성공 후 정리, 목록·exact-key 다운로드·checksum 실패 정리 | `PYTHONDONTWRITEBYTECODE=1 python tests/test_backup_s3.py` |
 
 ## 5. 중단 조건
 
@@ -157,7 +156,7 @@
 
    S3 restore overlay는 `StatefulSet/narumq`의 `replicas`를 0으로 유지하고 S3 backup CronJob의 `suspend`를 `true`로 설정하며 StatefulSet의 volumeClaimTemplate과 같은 이름으로 빈 voter PVC 세 개를 만든다. 로컬 archive만 복원할 때는 `deploy/kubernetes/eks-ec2-ha-restore-mode`를 사용한다. 두 overlay 모두 기존 claim을 비우거나 변경하지 않는다. 적용 후 대상 claim이 새로 만들어져 비어 있는지 확인한다. Seed Job은 예상하지 못한 PVC 파일이 있거나 `data`·`audit` 하위 경로가 비어 있지 않으면 거절하며 기존 파일을 삭제하지 않는다.
 
-   기존 fixture와 같은 namespace에서 시험 복원을 할 때도 `data-narumq-*`를 재사용하지 않는다. 원본 broker 프로세스를 모두 정지하고 같은 identity가 동시에 실행되지 않음을 확인한다. 별도의 새 claim 이름을 seed Job과 복구 StatefulSet에 일관되게 지정한다. 2026-10-15 시험은 `restore-data-narumq-*`를 사용해 원래 PVC를 보존했다. `WaitForFirstConsumer` claim은 seed Job의 node 배치를 지정해 각 voter가 서로 다른 AZ의 EBS에 놓이도록 한다. 이 작업은 비어 있는 새 대상의 복원이며 기존 claim을 지우는 절차가 아니다.
+   기존 fixture와 같은 namespace에서 시험 복원을 할 때도 `data-narumq-*`를 재사용하지 않는다. 원본 broker 프로세스를 모두 정지하고 같은 identity가 동시에 실행되지 않음을 확인한다. 별도의 새 claim 이름을 seed Job과 복구 StatefulSet에 일관되게 지정한다. `WaitForFirstConsumer` claim은 seed Job의 node 배치를 지정해 각 voter가 서로 다른 AZ의 EBS에 놓이도록 한다. 이 작업은 비어 있는 새 대상의 복원이며 기존 claim을 지우는 절차가 아니다.
 
 4. **이 순차 복원에 사용할 object key 하나만 지정한다.** 아래 명령의 `S3_KEY`에 목록에서 복사한 key를 넣는다. 이 값은 데이터이며 AWS 자격 증명이 아니다.
 
@@ -203,7 +202,7 @@
 | --- | --- |
 | 새 요청 기록 기반 archive 업로드 | 일치하는 S3 checksum 응답을 확인한 뒤에만 로컬 staging 파일을 정리한다. 실패하면 archive와 요청 기록을 모두 남겨 재시도한다. |
 | 기존 로컬 archive | 자동 이관하거나 형식을 파싱하지 않는다. 기존 로컬 `mtime +30` 정리만 적용한다. |
-| 30일 보존 및 RPO/RTO | Lifecycle 설정은 구성 확인 증거다. 실제 30일 경과 보존과 지속적인 일일 백업 RPO ≤ 24h는 반복 실행이 필요하다. 2026-10-15 격리 합성 fixture에서 목록 조회·다운로드·새 PVC 3개 seed·Ready·quorum·기존 MQTT session/retained 읽기까지 전체 RTO 124.79초를 검증했다([Cluster §11.9](../specs/cluster-session-and-delivery.md#119-offline-queue-replication과-backup-v3-수용-매핑)). 이 한 번의 실행은 production 데이터 크기나 남은 시간 기반 수용을 대신하지 않는다. |
+| 30일 보존 및 RPO/RTO | Lifecycle 설정만으로 실제 30일 보존을 증명하지 않는다. 지속적인 일일 백업 RPO ≤ 24h와 production 데이터 크기의 RTO ≤ 1h는 별도 수용이 필요하다. 격리 fixture의 단일 복원 결과는 [Cluster 검증 기록](../verification/cluster-session-and-delivery.md)에 두며 이 시간 기반 수용을 대신하지 않는다. |
 
 ### 미게시 staging의 offline 복구·정리
 

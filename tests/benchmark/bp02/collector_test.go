@@ -8,6 +8,8 @@ import (
 	"narumq/tests/benchmark/internal/mqttclient"
 )
 
+// TestSharedGroupSecondMemberDeliveryCountsDuplicate verifies a second shared member delivery counts as a duplicate.
+// Scenarios: performance-and-verification.md:PRF-SCN-044
 func TestSharedGroupSecondMemberDeliveryCountsDuplicate(t *testing.T) {
 	p := bp02SmokeProfile(t)
 	c := newCollector(p, "narumq")
@@ -33,6 +35,8 @@ func TestSharedGroupSecondMemberDeliveryCountsDuplicate(t *testing.T) {
 	}
 }
 
+// TestQoSMismatchInvalidatesStep verifies a QoS mismatch invalidates the step.
+// Scenarios: performance-and-verification.md:PRF-SCN-044
 func TestQoSMismatchInvalidatesStep(t *testing.T) {
 	p := bp02SmokeProfile(t)
 	c := newCollector(p, "narumq")
@@ -52,6 +56,8 @@ func TestQoSMismatchInvalidatesStep(t *testing.T) {
 	}
 }
 
+// TestOfflineSessionNotPresentInvalidatesTarget verifies a missing offline session invalidates the target.
+// Scenarios: performance-and-verification.md:PRF-SCN-044
 func TestOfflineSessionNotPresentInvalidatesTarget(t *testing.T) {
 	p := bp02SmokeProfile(t)
 	c := newCollector(p, "narumq")
@@ -64,6 +70,8 @@ func TestOfflineSessionNotPresentInvalidatesTarget(t *testing.T) {
 	}
 }
 
+// TestRetainedReplayRejectsStaleRoundAndMissingRetainFlag verifies stale round and missing retain flag rejection.
+// Scenarios: performance-and-verification.md:PRF-SCN-044
 func TestRetainedReplayRejectsStaleRoundAndMissingRetainFlag(t *testing.T) {
 	p := bp02SmokeProfile(t)
 	c := newCollector(p, "narumq")
@@ -115,6 +123,8 @@ func TestCrossTenantDeliveryCountsUnexpected(t *testing.T) {
 	}
 }
 
+// TestOfflineCommandExpectationsFollowExactTopics verifies offline command expectations follow exact topics.
+// Scenarios: performance-and-verification.md:PRF-SCN-045
 func TestOfflineCommandExpectationsFollowExactTopics(t *testing.T) {
 	p := bp02SmokeProfile(t)
 	c := newCollector(p, "narumq")
@@ -161,6 +171,8 @@ func TestOfflineCommandExpectationsFollowExactTopics(t *testing.T) {
 	}
 }
 
+// TestOfflineCommandOracleUsesPerPhasePublishCounts verifies the per-phase publish count oracle.
+// Scenarios: performance-and-verification.md:PRF-SCN-045
 func TestOfflineCommandOracleUsesPerPhasePublishCounts(t *testing.T) {
 	cases := []struct {
 		name          string
@@ -211,6 +223,8 @@ func TestOfflineCommandOracleUsesPerPhasePublishCounts(t *testing.T) {
 	}
 }
 
+// TestRetainedOracleSupportsProfileTopicCounts verifies the retained oracle follows profile topic counts.
+// Scenarios: performance-and-verification.md:PRF-SCN-045
 func TestRetainedOracleSupportsProfileTopicCounts(t *testing.T) {
 	p := bp02SmokeProfile(t)
 	p.RetainedTopicsTenantA = 3
@@ -233,6 +247,8 @@ func TestRetainedOracleSupportsProfileTopicCounts(t *testing.T) {
 	}
 }
 
+// TestLateMeasureDeliveryPreservesDrainMissingSnapshot verifies the drain-time missing snapshot is preserved.
+// Scenarios: performance-and-verification.md:PRF-SCN-045
 func TestLateMeasureDeliveryPreservesDrainMissingSnapshot(t *testing.T) {
 	p := bp02SmokeProfile(t)
 	c := newCollector(p, "narumq")
@@ -255,6 +271,8 @@ func TestLateMeasureDeliveryPreservesDrainMissingSnapshot(t *testing.T) {
 	}
 }
 
+// TestInterruptedStepReportsObservedMissingDeliveries verifies an interrupted step reports observed missing deliveries.
+// Scenarios: performance-and-verification.md:PRF-SCN-045
 func TestInterruptedStepReportsObservedMissingDeliveries(t *testing.T) {
 	profile := bp02SmokeProfile(t)
 	col := newCollector(profile, "narumq")

@@ -24,6 +24,8 @@ func sendAcked(c *collector, stream int) uint64 {
 	return seq
 }
 
+// TestEvaluateCountsAckedGapButOnlyRecordsQoS1Duplicate counts an ACKed-but-undelivered message as a gap.
+// Scenarios: performance-and-verification.md:PRF-SCN-050
 func TestEvaluateCountsAckedGapButOnlyRecordsQoS1Duplicate(t *testing.T) {
 	c := newTestCollector(t)
 	full := sendAcked(c, streamAlert)
@@ -84,6 +86,8 @@ func sendAckedAt(c *collector, stream int, sent time.Duration) {
 	st.mu.Unlock()
 }
 
+// TestCleanSessionLossNeedsADisconnectAfterThePublishWhateverItsAge records cleanSessionLoss only after a later disconnect.
+// Scenarios: performance-and-verification.md:PRF-SCN-050
 func TestCleanSessionLossNeedsADisconnectAfterThePublishWhateverItsAge(t *testing.T) {
 	c := newTestCollector(t)
 	// The job group is shared among four clean-session subscribers. Nobody received either message.
@@ -102,6 +106,8 @@ func TestCleanSessionLossNeedsADisconnectAfterThePublishWhateverItsAge(t *testin
 	}
 }
 
+// TestPersistentSubscriberIsNeverExcused counts a persistent subscriber's miss as a gap despite a disconnect.
+// Scenarios: performance-and-verification.md:PRF-SCN-050
 func TestPersistentSubscriberIsNeverExcused(t *testing.T) {
 	c := newTestCollector(t)
 	// The persistent alert subscriber loses its connection right after the publish and misses the message.
@@ -114,6 +120,8 @@ func TestPersistentSubscriberIsNeverExcused(t *testing.T) {
 	}
 }
 
+// TestPublishWhileCleanSubscribersAreDisconnectedIsNotExpected excludes publishes made while clean subscribers are down.
+// Scenarios: performance-and-verification.md:PRF-SCN-050
 func TestPublishWhileCleanSubscribersAreDisconnectedIsNotExpected(t *testing.T) {
 	c := newTestCollector(t)
 	for member := range 4 {
@@ -144,6 +152,8 @@ func TestDeliveryLatencyIsAttributedToTheReceiptWindow(t *testing.T) {
 	}
 }
 
+// TestCleanSessionLossAtLatencyLimitIsExcludedAndOlderIsOverLimit judges cleanSessionLoss against the p99 limit.
+// Scenarios: performance-and-verification.md:PRF-SCN-050
 func TestCleanSessionLossAtLatencyLimitIsExcludedAndOlderIsOverLimit(t *testing.T) {
 	const limit = 100 * time.Millisecond
 	c := newTestCollector(t)
@@ -173,6 +183,8 @@ func TestCleanSessionLossAtLatencyLimitIsExcludedAndOlderIsOverLimit(t *testing.
 	}
 }
 
+// TestQoS2PubrecThenDisconnectMissingIsCleanPublisherInterruptedNotGap records cleanPublisherInterrupted instead of a gap.
+// Scenarios: performance-and-verification.md:PRF-SCN-050
 func TestQoS2PubrecThenDisconnectMissingIsCleanPublisherInterruptedNotGap(t *testing.T) {
 	c := newTestCollector(t)
 	// PUBREC received, publisher connection broke before PUBCOMP, delivery missing.

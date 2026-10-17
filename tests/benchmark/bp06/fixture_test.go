@@ -8,6 +8,8 @@ import (
 	"testing"
 )
 
+// TestFixtureLimitsClientsAndACLToFailureWorkload verifies fixture credentials, ACL and client allow list.
+// Scenarios: performance-and-verification.md:PRF-SCN-029
 func TestFixtureLimitsClientsAndACLToFailureWorkload(t *testing.T) {
 	profile := loadSmoke(t)
 	fixture, err := newBP06Fixture(profile, "fixture-test")

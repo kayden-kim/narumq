@@ -1,0 +1,121 @@
+{
+  "cases": [
+    {
+      "name": "missing-status",
+      "status": null,
+      "expectedHealth": "Progressing",
+      "expectedMessage": "rollout status has not been initialized"
+    },
+    {
+      "name": "missing-phase",
+      "status": {},
+      "expectedHealth": "Progressing",
+      "expectedMessage": "rollout status has not been initialized"
+    },
+    {
+      "name": "preflight",
+      "status": {
+        "phase": "Preflight"
+      },
+      "expectedHealth": "Progressing",
+      "expectedMessage": "Preflight"
+    },
+    {
+      "name": "draining",
+      "status": {
+        "phase": "Draining"
+      },
+      "expectedHealth": "Progressing",
+      "expectedMessage": "Draining"
+    },
+    {
+      "name": "drainsafe",
+      "status": {
+        "phase": "DrainSafe"
+      },
+      "expectedHealth": "Progressing",
+      "expectedMessage": "DrainSafe"
+    },
+    {
+      "name": "deleteapproved",
+      "status": {
+        "phase": "DeleteApproved"
+      },
+      "expectedHealth": "Progressing",
+      "expectedMessage": "DeleteApproved"
+    },
+    {
+      "name": "awaitingreplacement",
+      "status": {
+        "phase": "AwaitingReplacement"
+      },
+      "expectedHealth": "Progressing",
+      "expectedMessage": "AwaitingReplacement"
+    },
+    {
+      "name": "blocked",
+      "status": {
+        "phase": "Preflight",
+        "failureCode": "target_owned",
+        "failureReason": "synthetic target Lease owned"
+      },
+      "expectedHealth": "Progressing",
+      "expectedMessage": "synthetic target Lease owned"
+    },
+    {
+      "name": "completed",
+      "status": {
+        "phase": "Completed"
+      },
+      "expectedHealth": "Healthy",
+      "expectedMessage": "all broker ordinals reached the target release profile"
+    },
+    {
+      "name": "failed-after-completed",
+      "status": {
+        "phase": "Failed",
+        "failureReason": "synthetic drain timeout"
+      },
+      "expectedHealth": "Degraded",
+      "expectedMessage": "synthetic drain timeout"
+    },
+    {
+      "name": "aborted",
+      "status": {
+        "phase": "Aborted"
+      },
+      "expectedHealth": "Degraded",
+      "expectedMessage": "Aborted"
+    },
+    {
+      "name": "unknown-after-aborted",
+      "status": {
+        "phase": "FuturePhase"
+      },
+      "expectedHealth": "Progressing",
+      "expectedMessage": "FuturePhase"
+    },
+    {
+      "name": "empty-phase",
+      "status": {
+        "phase": ""
+      },
+      "expectedHealth": "Progressing",
+      "expectedMessage": ""
+    },
+    {
+      "name": "completed-again",
+      "status": {
+        "phase": "Completed"
+      },
+      "expectedHealth": "Healthy",
+      "expectedMessage": "all broker ordinals reached the target release profile"
+    },
+    {
+      "name": "missing-after-completed",
+      "status": null,
+      "expectedHealth": "Progressing",
+      "expectedMessage": "rollout status has not been initialized"
+    }
+  ]
+}

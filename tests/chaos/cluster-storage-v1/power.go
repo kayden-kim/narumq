@@ -155,6 +155,7 @@ func supervisorBrokerExitCodes(logs []byte) []int {
 	return codes
 }
 
+// Scenarios: cluster-session-and-delivery.md:CLU-SCN-029, cluster-session-and-delivery.md:CLU-SCN-084
 func (scenario *storageFaultScenario) runFollowerSyncError(ctx context.Context, leaderID, targetID, healthyID string) error {
 	scenario.evidence.TargetNodeIDs = []string{targetID}
 	faultModeReset := false
@@ -274,6 +275,7 @@ func (scenario *storageFaultScenario) runFollowerSyncError(ctx context.Context, 
 	return scenario.verifyDurableDelivery(ctx, leaderID, expectedTopics, nil)
 }
 
+// Scenarios: cluster-session-and-delivery.md:CLU-SCN-030, cluster-session-and-delivery.md:CLU-SCN-084
 func (scenario *storageFaultScenario) runFollowerTornPowerLoss(ctx context.Context, leaderID, targetID, healthyID string) error {
 	scenario.evidence.TargetNodeIDs = []string{targetID}
 	if err := scenario.setStorageMode(ctx, targetID, "hold-wal-fsync"); err != nil {
@@ -372,6 +374,7 @@ func (scenario *storageFaultScenario) reconnectDurableSubscriber(ctx context.Con
 	return nil
 }
 
+// Scenarios: cluster-session-and-delivery.md:CLU-SCN-031, cluster-session-and-delivery.md:CLU-SCN-084
 func (scenario *storageFaultScenario) runClusterPowerLoss(ctx context.Context, leaderID string, followers []string) error {
 	scenario.evidence.TargetNodeIDs = append([]string(nil), nodeIDs()...)
 	beforeQoS1 := durableTopic(scenario.options.ScenarioID, "leader", "before-qos1")

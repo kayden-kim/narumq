@@ -26,6 +26,7 @@ func (reporter *tenantLimitReporter) TenantLimitRejected(_ tenancy.TenantID, dim
 }
 
 // Traceability: TEN-06, TEN-07; docs/specs/tenancy-and-security.md §5.2.
+// Scenarios: tenancy-and-security.md:SEC-SCN-025
 func TestSubscribeTenantQuota(t *testing.T) {
 	for _, version := range []mqtt.ProtocolVersion{mqtt.ProtocolV5, mqtt.ProtocolV311} {
 		name := "v5"
@@ -202,6 +203,7 @@ func tenantQuotaSubscribeAsync(ctx context.Context, useCase *UseCase, id routing
 }
 
 // Traceability: TEN-06, TEN-07; docs/specs/tenancy-and-security.md §5.2.
+// Scenarios: tenancy-and-security.md:SEC-SCN-025
 func TestSubscribeTenantQuotaSerializesLocalAdmission(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -245,6 +247,7 @@ func TestSubscribeTenantQuotaSerializesLocalAdmission(t *testing.T) {
 }
 
 // Traceability: TEN-06, TEN-07; docs/specs/tenancy-and-security.md §5.2.
+// Scenarios: tenancy-and-security.md:SEC-SCN-025
 func TestSubscribeTenantQuotaSerializesReplacementAndRemoval(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()

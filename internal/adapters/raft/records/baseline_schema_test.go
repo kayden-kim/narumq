@@ -30,6 +30,7 @@ func loadBaselineSchema(t *testing.T) protoreflect.FileDescriptor {
 }
 
 // Traceability: CLU-11; docs/specs/cluster-session-and-delivery.md §8, §11.29.
+// Scenarios: cluster-session-and-delivery.md:CLU-SCN-208, cluster-session-and-delivery.md:CLU-SCN-224, cluster-session-and-delivery.md:CLU-SCN-236
 func TestReplicatedStateSchemaPreservesBaseline(t *testing.T) {
 	baseline := loadBaselineSchema(t)
 	current := File_docs_contracts_replicated_state_v1_proto
@@ -146,6 +147,7 @@ func TestReplicatedStateSchemaPreservesBaseline(t *testing.T) {
 }
 
 // Traceability: CLU-11; docs/specs/cluster-session-and-delivery.md §8, §11.29.
+// Scenarios: cluster-session-and-delivery.md:CLU-SCN-208
 func TestProducerVectorsDecodeWithBaselineSchema(t *testing.T) {
 	baseline := loadBaselineSchema(t)
 	names := []string{"stage_join", "ownership_acquire", "subscription_add", "subscription_remove", "delivery_publish", "empty_snapshot"}

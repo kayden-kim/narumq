@@ -307,6 +307,7 @@ func parseExpositionLabels(raw string) (map[string]string, error) {
 }
 
 // Traceability: API-03; docs/specs/management-api-and-observability.md §7.1.
+// Scenarios: management-api-and-observability.md:MGT-SCN-027
 func TestRegistryFamiliesMatchAggregationCatalog(t *testing.T) {
 	catalog := loadAggregationCatalog(t)
 	for _, format := range []struct {

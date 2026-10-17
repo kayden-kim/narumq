@@ -463,6 +463,7 @@ class S3TransferTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 restore.configuration()
 
+    # Scenarios: cluster-session-and-delivery.md:CLU-SCN-051
     def test_unpublished_complete_pair_recovers_and_uploads_with_original_identity(self) -> None:
         stage = self.temp / ".staging-Ab12Cd34"
         archive, request, filename, sha = self.make_staged_request(stage, b"validated backup bytes")
@@ -477,6 +478,7 @@ class S3TransferTests(unittest.TestCase):
         self.assertFalse((published / archive.name).exists())
         self.assertFalse((published / request.name).exists())
 
+    # Scenarios: cluster-session-and-delivery.md:CLU-SCN-051
     def test_unpublished_missing_or_invalid_request_and_bad_hash_preserve_files(self) -> None:
         for case in ("missing", "invalid", "hash"):
             with self.subTest(case=case):
@@ -495,6 +497,7 @@ class S3TransferTests(unittest.TestCase):
                 self.assertEqual({p.name: p.read_bytes() for p in stage.iterdir()}, before)
                 self.assertEqual(self.calls(), [])
 
+    # Scenarios: cluster-session-and-delivery.md:CLU-SCN-051
     def test_unpublished_recovery_never_overwrites_existing_publication(self) -> None:
         for occupied in ("empty", "nonempty"):
             with self.subTest(occupied=occupied):
@@ -511,6 +514,7 @@ class S3TransferTests(unittest.TestCase):
                 self.assertEqual({p.name: p.read_bytes() for p in stage.iterdir()}, before)
                 self.assertEqual(sorted(p.name for p in destination.iterdir()), ["keep"] if occupied == "nonempty" else [])
 
+    # Scenarios: cluster-session-and-delivery.md:CLU-SCN-051
     def test_discard_removes_only_explicit_incomplete_stage(self) -> None:
         stage = self.temp / ".staging-Ab12Cd34"
         archive, request, _, _ = self.make_staged_request(stage, b"orphan bytes")
@@ -526,6 +530,7 @@ class S3TransferTests(unittest.TestCase):
         self.assertEqual((sibling / "keep").read_bytes(), b"other transaction")
         self.assertEqual(self.calls(), [])
 
+    # Scenarios: cluster-session-and-delivery.md:CLU-SCN-051
     def test_unsafe_stage_names_and_unexpected_entries_never_delete_data(self) -> None:
         for name in ("../.staging-Ab12Cd34", "/.staging-Ab12Cd34", ".staging-*", "backup-valid.nrbak.staged"):
             with self.subTest(name=name):
@@ -547,6 +552,7 @@ class S3TransferTests(unittest.TestCase):
                 self.assertTrue(stage.exists())
                 self.assertEqual(next(stage.glob("*.nrbak")).read_bytes(), b"keep original")
 
+    # Scenarios: cluster-session-and-delivery.md:CLU-SCN-051
     @unittest.skipUnless(os.name == "posix", "symlink creation is privilege-dependent on Windows")
     def test_stage_symlinks_never_follow_or_delete_external_data(self) -> None:
         external = self.temp / "external"
@@ -564,6 +570,7 @@ class S3TransferTests(unittest.TestCase):
             uploader.maintain_stage(self.temp, linked_stage.name, discard=True)
         self.assertEqual(keep.read_bytes(), b"external data")
 
+    # Scenarios: cluster-session-and-delivery.md:CLU-SCN-051
     def test_maintenance_requires_offline_acknowledgement_before_mutation(self) -> None:
         stage = self.temp / ".staging-Ab12Cd34"
         self.make_staged_request(stage, b"must not change")

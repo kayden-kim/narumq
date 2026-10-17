@@ -626,6 +626,7 @@ class Run:
             tunnel.close()
         self.record("final", evidence)
 
+    # Scenarios: cluster-session-and-delivery.md:CLU-SCN-143, cluster-session-and-delivery.md:CLU-SCN-144
     def execute(self) -> None:
         for step in (self.step_ports, self.step_observer, self.step_preflight, self.step_baseline, self.step_cases,
                      self.step_final):

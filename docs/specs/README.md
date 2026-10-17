@@ -65,13 +65,13 @@ MQTT packet 이름, property와 reason code는 OASIS 명칭을 사용한다. 충
 | SPEC-TBD-05 | topic 내부 prefix encoding과 canonicalization 세부 규칙 | tenancy ADR/spec 개정 | 외부 topic과 tenant 격리를 보존해야 한다. |
 | SPEC-TBD-07 | Metric 이름 전체와 histogram bucket | metrics catalog | label cardinality 제한을 지켜야 한다. |
 | SPEC-TBD-08 | 성능 SLO와 release-gating EMQX version·edition | [Performance와 verification §6](performance-and-verification.md#6-regression-gate) | EMQX Enterprise 6.3.1 comparator는 선택했다. 95%/105% 비율은 별도 미채택 제안이다. 실제 `B_*`, comparator 측정값과 profile별 숫자 기준이 없어 gate는 열린 상태다. |
-| SPEC-TBD-09 | backup RPO/RTO와 보존 기간 | disaster recovery spec | snapshot 원자성과 checksum 검증을 포함해야 한다. |
+| SPEC-TBD-09 | backup 정책의 운영 수용 | [Cluster §10](cluster-session-and-delivery.md#10-snapshot-backup과-restore), [ADR-0058](../decisions/ADR-0058-cluster-backup-s3-retention-and-restore.md) | 일 1회·30일 보존·RPO 24시간·RTO 1시간은 채택됐다. 실제 30일 보존, 지속적인 일일 백업과 production 복구 수용은 열린 범위다. |
 
 ### Phase 1 확정 SDK 목록
 
 Phase 1 SDK inventory는 `github.com/eclipse/paho.mqtt.golang v1.5.1`, `github.com/eclipse/paho.golang v0.23.0`, `paho-mqtt 2.1.0`으로 확정했다. 이 inventory는 Phase 1 compatibility evidence에만 적용하며, 자동 artifact가 없는 후보와 전체 contract 승격 조건은 compatibility contract에서 별도로 관리한다.
 
-Broker-side drain, `SAFE_TO_STOP`, replicated recovery와 protocol redirect emission이 구현됐으며 process evidence는 [Drain spec §10](drain-and-rolling-update.md#10-broker-drain-수용-시험-매핑)에 있다. 이는 release-wide drain-safe support 완료를 뜻하지 않는다. Supported-SDK Server Reference 추종(DEP-06), MQTT 3.1.1/Will 호환성(DEP-07/12), external rollout gate(DEP-11/13~18), production profile과 storage 검증(DEP-19~23)은 blocker로 남는다. MQTT 3.1.0 client의 90일 관찰과 전환은 2026-10-17 사용자 결정으로 제품 blocker에서 제외했다([PRD §9.1](../requirements/PRD.md#mqtt-310-비지원과-이전-정책)).
+Broker-side drain, `SAFE_TO_STOP`, replicated recovery와 protocol redirect emission이 구현됐다. SDK callback adapter·표준 Will, local 100회 rolling, EKS preStop·외부 rollout controller·Argo CD 적용 교체에는 제한된 수용 기록이 있다. 이는 release-wide drain-safe support 완료가 아니다. 남은 범위는 supported SDK의 전체 redirect gate, 게시 release 간 호환성, 운영 최대 부하·BP-07·N-1↔N, DEP-20~21의 미검증 장애 모델과 storage 경계다. 개별 EKS leader 손실·AZ 전원 중단 모델·ENOSPC 결과를 전체 DEP-20~21 수용으로 확대하지 않는다. 기준은 [Drain spec §10](drain-and-rolling-update.md#10-broker-drain-수용-시험-매핑), 실행 범위는 [Drain 검증 기록](../verification/drain-and-rolling-update.md)을 따른다. MQTT 3.1.0 client의 90일 관찰과 전환은 제품 blocker에서 제외했다([PRD §9.1](../requirements/PRD.md#mqtt-310-비지원과-이전-정책)).
 
 Management API v1 query profile은 미결정 항목이 아니다. 현재 active contract와 OpenAPI는 [`docs/contracts/management-api-v1.md`](../contracts/management-api-v1.md), [`docs/contracts/management-api-v1.openapi.json`](../contracts/management-api-v1.openapi.json)과 [`tests/contracts/management-api-v1`](../../tests/contracts/management-api-v1)에서 관리한다. Broker drain은 active mutation이며 API rate limit은 active management-plane 동작이다. 다른 mutation·OIDC는 deferred scope다.
 
@@ -81,5 +81,5 @@ Management API v1 query profile은 미결정 항목이 아니다. 현재 active 
 
 - Go test·fuzz 함수의 doc comment는 `Traceability:` marker로 관련 PRD 요구사항 ID를 선언해야 한다.
 - MQTT compliance test는 PRD ID와 OASIS normative statement ID를 함께 가져야 한다.
-- 각 spec의 수용 시험은 자동화된 test case 이름 또는 compliance matrix 행으로 연결해야 한다.
+- 각 spec의 수용 테스트 시나리오는 테스트 코드의 `Scenarios:` 메타 정보로 연결해야 한다. 문법과 보고 명령(`go run ./tools/verify scenarios`)은 [테스트 컨벤션](../conventions/test-conventions.md)을 따른다. Spec에는 테스트 위치와 결과를 적지 않는다. 과거 실행 기록은 [검증 기록](../verification/README.md)에 있다.
 - spec의 동작을 바꾸는 결정은 관련 ADR과 PRD를 같은 변경에서 갱신해야 한다.

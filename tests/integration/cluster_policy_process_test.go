@@ -15,6 +15,7 @@ import (
 )
 
 // Traceability: API-09; CFG-SCN-28; docs/specs/configuration-and-runtime-options.md §6; ADR-0052 §1.1.1.
+// Scenarios: configuration-and-runtime-options.md:CFG-SCN-28
 func TestDynamicClusterPolicyProcessAcceptance(t *testing.T) {
 	fixture := newClusterMembershipProcessFixture(t, 3, "")
 	initialLimits := clusterPolicyProcessMQTTLimits{

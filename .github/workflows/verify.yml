@@ -53,18 +53,34 @@ jobs:
         env:
           DIFF_BASE: ${{ steps.base.outputs.base }}
         run: go run ./tools/verify ci --base "$DIFF_BASE"
-      - name: Run S3 transfer helper tests
+      - name: Run Python verification and record outcomes
+        if: always()
         env:
           PYTHONDONTWRITEBYTECODE: "1"
-        run: python tests/test_backup_s3.py
-      - name: Run worker recovery observer tests
-        env:
-          PYTHONDONTWRITEBYTECODE: "1"
-        run: python tests/test_eks_worker_recovery.py
-      - name: Run capacity controller tests
-        env:
-          PYTHONDONTWRITEBYTECODE: "1"
-        run: python tests/test_eks_capacity_controller.py
+          NARUMQ_SCENARIO_RESULTS: .artifacts/verification/scenarios/python-ci-results.jsonl
+        run: |
+          python tests/run_scenario_unittest.py \
+            tests/test_backup_s3.py \
+            tests/test_eks_worker_recovery.py \
+            tests/test_eks_capacity_controller.py \
+            tests/test_scenario_results.py \
+            tests/test_run_scenario_unittest.py
+      - name: Combine Go and Python scenario outcomes
+        if: always()
+        shell: bash
+        run: |
+          inputs=()
+          if [[ -f .artifacts/verification/go-test.json ]]; then
+            inputs+=(--go-test-json .artifacts/verification/go-test.json)
+          fi
+          if [[ -f .artifacts/verification/scenarios/python-ci-results.jsonl ]]; then
+            inputs+=(--results .artifacts/verification/scenarios/python-ci-results.jsonl)
+          fi
+          if (( ${#inputs[@]} == 0 )); then
+            echo "No Go or Python execution results were produced." >&2
+            exit 1
+          fi
+          go run ./tools/verify scenarios "${inputs[@]}" --require-executed
       - name: Upload verification evidence
         if: always()
         uses: actions/upload-artifact@v7
@@ -74,5 +90,9 @@ jobs:
             .artifacts/verification/coverage.out
             .artifacts/verification/coverage-summary.json
             .artifacts/verification/branch/manifest.json
+            .artifacts/verification/go-test.json
+            .artifacts/verification/scenarios/python-ci-results.jsonl
+            .artifacts/verification/scenarios/report.md
+            .artifacts/verification/scenarios/report.json
           if-no-files-found: warn
           retention-days: 30

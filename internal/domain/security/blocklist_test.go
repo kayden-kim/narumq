@@ -7,6 +7,7 @@ import (
 )
 
 // Traceability: SEC-12; docs/specs/tenancy-and-security.md §7.1, §9; ADR-0050.
+// Scenarios: tenancy-and-security.md:SEC-SCN-040
 func TestNewBlockEntryAcceptsOnlyCanonicalBoundedValues(t *testing.T) {
 	invalid := func(kind BlockKind, tenant, value string) {
 		t.Helper()
@@ -66,6 +67,7 @@ func TestNewBlockEntryAcceptsOnlyCanonicalBoundedValues(t *testing.T) {
 }
 
 // Traceability: SEC-12; docs/specs/tenancy-and-security.md §7.1, §9; ADR-0050.
+// Scenarios: tenancy-and-security.md:SEC-SCN-040
 func TestUnknownBlockKindHasNoWireName(t *testing.T) {
 	for _, kind := range []BlockKind{BlockKindUnspecified, BlockKind(255)} {
 		if got := kind.String(); got != "" {
@@ -75,6 +77,7 @@ func TestUnknownBlockKindHasNoWireName(t *testing.T) {
 }
 
 // Traceability: SEC-12; docs/specs/tenancy-and-security.md §7.1, §9; ADR-0050.
+// Scenarios: tenancy-and-security.md:SEC-SCN-040
 func TestCompareBlockEntriesOrdersKindTenantAndValue(t *testing.T) {
 	tests := []struct {
 		name  string
@@ -100,6 +103,7 @@ func TestCompareBlockEntriesOrdersKindTenantAndValue(t *testing.T) {
 }
 
 // Traceability: SEC-12; docs/specs/tenancy-and-security.md §7.1, §9; ADR-0050.
+// Scenarios: tenancy-and-security.md:SEC-SCN-040, tenancy-and-security.md:SEC-SCN-041
 func TestBlocklistMatchSemantics(t *testing.T) {
 	entry := func(kind BlockKind, tenant, value string) BlockEntry {
 		t.Helper()
@@ -170,6 +174,7 @@ func TestBlocklistMatchSemantics(t *testing.T) {
 }
 
 // Traceability: SEC-12; docs/specs/tenancy-and-security.md §7.1, §9; ADR-0050.
+// Scenarios: tenancy-and-security.md:SEC-SCN-040
 func TestBlocklistSetIgnoresMalformedAndUnknownEntries(t *testing.T) {
 	list := NewBlocklist()
 	list.Set(BlockEntry{Kind: BlockKindIPPrefix, Value: "not-a-prefix"}, true)

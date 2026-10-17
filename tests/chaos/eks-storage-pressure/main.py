@@ -188,6 +188,7 @@ class TunneledProbe:
         self.probe.close()
 
 
+# Scenarios: drain-and-rolling-update.md:DRN-SCN-038
 class StoragePressureRun:
     def __init__(self, fixture, plan: dict, output: Path, private: Path, runtime, scenarios: list[str],
                  sleep=time.sleep, clock=time.monotonic):

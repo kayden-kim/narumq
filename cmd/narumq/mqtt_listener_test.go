@@ -16,6 +16,7 @@ import (
 )
 
 // Traceability: PRD MQTT-09/MQTT-11; docs/specs/mqtt-protocol-and-session.md §7.1.
+// Scenarios: mqtt-protocol-and-session.md:MQTT-SCN-051
 func TestOpenMQTTListenerAppliesAdmissionInsideTLS(t *testing.T) {
 	_, certificates := writePeerOnlyCertificates(t, t.TempDir())
 	certificate := certificates[1]

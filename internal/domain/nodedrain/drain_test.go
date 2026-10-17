@@ -6,6 +6,7 @@ import (
 )
 
 // Traceability: DEP-01/DEP-02; docs/specs/drain-and-rolling-update.md §1, §10.
+// Scenarios: drain-and-rolling-update.md:DRN-SCN-005
 func TestPhaseTransitions(t *testing.T) {
 	if got := PhaseUnspecified.String(); got != "UNSPECIFIED" {
 		t.Fatalf("unspecified phase = %q", got)
@@ -76,6 +77,7 @@ func TestPhaseTransitions(t *testing.T) {
 }
 
 // Traceability: DEP-01/DEP-02; docs/specs/drain-and-rolling-update.md §2, §10.
+// Scenarios: drain-and-rolling-update.md:DRN-SCN-006
 func TestValidateParameters(t *testing.T) {
 	valid := func(rate uint32, lb, timeout uint64) error {
 		return ValidateParameters("mqtt.example:8883", rate, lb, timeout)
@@ -126,6 +128,7 @@ func TestValidateParameters(t *testing.T) {
 }
 
 // Traceability: DEP-04/DEP-05; docs/specs/drain-and-rolling-update.md §2.1, §10.
+// Scenarios: drain-and-rolling-update.md:DRN-SCN-006
 func TestDefaultParametersAreValid(t *testing.T) {
 	if err := ValidateParameters("", DefaultConnectionRatePerSecond, DefaultLoadBalancerPropagationDelayMillis, DefaultTimeoutMillis); err != nil {
 		t.Fatalf("ValidateParameters(defaults) error = %v", err)
@@ -133,6 +136,7 @@ func TestDefaultParametersAreValid(t *testing.T) {
 }
 
 // Traceability: DEP-01/DEP-02; docs/specs/drain-and-rolling-update.md §6, §10.
+// Scenarios: drain-and-rolling-update.md:DRN-SCN-007
 func TestEvaluateBarrierReportsFirstFailedCondition(t *testing.T) {
 	baseline := BarrierInput{
 		AdmissionClosed: true, ReadinessFailing: true, ActiveConnections: 0,
@@ -174,6 +178,7 @@ func TestEvaluateBarrierReportsFirstFailedCondition(t *testing.T) {
 }
 
 // Traceability: DEP-01/DEP-02; docs/specs/drain-and-rolling-update.md §6, §10.
+// Scenarios: drain-and-rolling-update.md:DRN-SCN-007
 func TestUnderReplicated(t *testing.T) {
 	for _, test := range []struct {
 		voters, connected int

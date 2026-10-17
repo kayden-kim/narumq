@@ -45,6 +45,7 @@ func newPasswordTestBinding(t *testing.T, username string, password []byte) Pass
 	}
 }
 
+// Scenarios: tenancy-and-security.md:SEC-SCN-014
 func TestPasswordAuthenticationProviderVerifiesExactBytesAndCopiesBindings(t *testing.T) {
 	password := []byte{0x00, ' ', 'p', 'a', 's', 's', 0xff, '\n'}
 	first := newPasswordTestBinding(t, "device-a", password)
@@ -92,6 +93,7 @@ func TestPasswordAuthenticationProviderVerifiesExactBytesAndCopiesBindings(t *te
 	}
 }
 
+// Scenarios: tenancy-and-security.md:SEC-SCN-015
 func TestParsePasswordHashAcceptsOnlyCanonicalProfile(t *testing.T) {
 	valid := "$argon2id$v=19$m=19456,t=2,p=1$AAAAAAAAAAAAAAAAAAAAAA$AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
 	if _, err := ParsePasswordHash(valid); err != nil {
@@ -124,6 +126,7 @@ func TestParsePasswordHashAcceptsOnlyCanonicalProfile(t *testing.T) {
 	}
 }
 
+// Scenarios: tenancy-and-security.md:SEC-SCN-015
 func TestHashPasswordAndAuthenticateRespectByteLengthBoundaries(t *testing.T) {
 	if _, err := HashPassword(nil); !errors.Is(err, ErrInvalidPasswordLength) {
 		t.Fatalf("HashPassword(empty) error = %v, want %v", err, ErrInvalidPasswordLength)
@@ -170,6 +173,7 @@ func (ctx *cancelAfterPasswordContext) Err() error {
 	return nil
 }
 
+// Scenarios: tenancy-and-security.md:SEC-SCN-015
 func TestPasswordAuthenticationRejectsCanceledContextAndSaturatedSlots(t *testing.T) {
 	password := []byte("slot-boundary-password")
 	binding := newPasswordTestBinding(t, "device", password)
@@ -200,6 +204,7 @@ func TestPasswordAuthenticationRejectsCanceledContextAndSaturatedSlots(t *testin
 	}
 }
 
+// Scenarios: tenancy-and-security.md:SEC-SCN-014
 func TestPasswordAuthenticationProviderRejectsIncompleteBindings(t *testing.T) {
 	password := []byte("constructor-boundary")
 	valid := newPasswordTestBinding(t, "device", password)
@@ -235,6 +240,7 @@ func TestPasswordAuthenticationProviderRejectsIncompleteBindings(t *testing.T) {
 	}
 }
 
+// Scenarios: tenancy-and-security.md:SEC-SCN-014
 func TestPasswordAuthenticationProviderConcurrentSuccessAndFailure(t *testing.T) {
 	password := []byte("concurrent-authentication-password")
 	provider, err := NewPasswordAuthenticationProvider([]PasswordIdentityBinding{newPasswordTestBinding(t, "device", password)})

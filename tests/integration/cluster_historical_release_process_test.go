@@ -16,6 +16,7 @@ import (
 const clusterHistoricalReleaseRevision = "58a95f801e1467379db2eb6f3454ae44e954418a"
 
 // Traceability: CLU-11/NFR-15; docs/specs/cluster-session-and-delivery.md §8, §11.21.
+// Scenarios: cluster-session-and-delivery.md:CLU-SCN-146, cluster-session-and-delivery.md:CLU-SCN-147, cluster-session-and-delivery.md:CLU-SCN-158, cluster-session-and-delivery.md:CLU-SCN-264, cluster-session-and-delivery.md:CLU-SCN-222, cluster-session-and-delivery.md:CLU-SCN-173
 func TestDynamicClusterHistoricalReleaseCompatibilityProcessAcceptance(t *testing.T) {
 	if os.Getenv("NARUMQ_RELEASE_COMPAT") != "1" {
 		t.Skip("set NARUMQ_RELEASE_COMPAT=1 to run historical-source release compatibility acceptance")
@@ -30,6 +31,7 @@ func TestDynamicClusterHistoricalReleaseCompatibilityProcessAcceptance(t *testin
 }
 
 // Traceability: CLU-11/CLU-14; docs/specs/cluster-session-and-delivery.md §10, §11.21.
+// Scenarios: cluster-session-and-delivery.md:CLU-SCN-146, cluster-session-and-delivery.md:CLU-SCN-148, cluster-session-and-delivery.md:CLU-SCN-149, cluster-session-and-delivery.md:CLU-SCN-222
 func TestClusterBackupRestoreHistoricalReleaseProcessAcceptance(t *testing.T) {
 	if os.Getenv("NARUMQ_RELEASE_COMPAT") != "1" {
 		t.Skip("set NARUMQ_RELEASE_COMPAT=1 to run historical-source backup archive acceptance")

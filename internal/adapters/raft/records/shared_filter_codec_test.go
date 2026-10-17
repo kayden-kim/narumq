@@ -18,6 +18,7 @@ func sharedFilterSnapshot(filter string, features ...string) *ReplicatedStateSna
 }
 
 // Traceability: CLU-11, CLU-14; docs/contracts/replicated-state-v1.md; docs/specs/cluster-session-and-delivery.md §11.35.
+// Scenarios: cluster-session-and-delivery.md:CLU-SCN-255
 func TestDeliverySharedFilterCommandRoundTripAndValidation(t *testing.T) {
 	publish := crrDelivery(DeliveryAction_DELIVERY_ACTION_PUBLISH)
 	publish.Targets = []*DeliveryTarget{{ClientId: "client", SharedFilter: sharedFilterTestValue}}
@@ -50,6 +51,7 @@ func TestDeliverySharedFilterCommandRoundTripAndValidation(t *testing.T) {
 }
 
 // Traceability: CLU-11, CLU-14; docs/contracts/replicated-state-v1.md; docs/specs/cluster-session-and-delivery.md §11.35.
+// Scenarios: cluster-session-and-delivery.md:CLU-SCN-255
 func TestDeliverySharedFilterSnapshotRequiresActiveFeature(t *testing.T) {
 	wire, err := MarshalSnapshot(sharedFilterSnapshot(sharedFilterTestValue, "shared-subscription-reroute"), 5)
 	if err != nil {

@@ -6,7 +6,7 @@
 | --- | --- |
 | 구조 시점 | Current |
 | 문서 상태 | Verified |
-| 구현 대조 | 2026-10-14 source, API-09 `mqttLimits` 3-node acceptance, observability handler·contract·process acceptance, Grafana process·visual acceptance와 constrained `go run ./tools/verify local` PASS |
+| 구현 대조 | API-09 설정 조회, 관측 handler·contract·process acceptance와 Grafana process·visual acceptance를 기준으로 대조했다. 실행 범위는 [Management 검증 기록](../verification/management-api-and-observability.md)에 둔다. 이 모듈의 대조 상태는 전체 local gate 통과를 뜻하지 않는다. |
 | 코드 위치 | `internal/adapters/http/management` |
 | 코드 지도 | [Project structure](project-structure.md) |
 | 관련 스펙 | [Management API](../specs/management-api-and-observability.md), [Tenant와 security](../specs/tenancy-and-security.md) §6·§7 |

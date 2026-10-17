@@ -196,6 +196,7 @@ func validateRecoveryTests(logs []byte) ([]string, error) {
 	return slices.Clone(requiredRecoveryTests), nil
 }
 
+// Scenarios: cluster-session-and-delivery.md:CLU-SCN-163
 func runExt4RecoveryBoundaries(ctx context.Context, options scenarioRunOptions) (result scenarioSummary) {
 	result = scenarioSummary{ID: options.ScenarioID, Status: "failed"}
 	directory := filepath.Join(options.OutputDir, "scenarios", options.ScenarioID)
@@ -271,6 +272,7 @@ func (scenario *scenarioDocker) signalBrokerCrash(ctx context.Context, nodeID st
 	return errors.Join(err, scenario.recorder.record("control", nodeID, map[string]string{"operation": "broker-process-crash", "output": strings.TrimSpace(string(output)), "error": errorString(err)}))
 }
 
+// Scenarios: cluster-session-and-delivery.md:CLU-SCN-162
 func (scenario *storageFaultScenario) runClusterProcessCrash(ctx context.Context, leaderID string) error {
 	expected := make([]string, 0, 2)
 	for _, qos := range []byte{1, 2} {

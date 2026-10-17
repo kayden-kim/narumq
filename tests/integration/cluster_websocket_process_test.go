@@ -16,6 +16,7 @@ import (
 )
 
 // Traceability: MQTT-10-SCN-10, CFG-SCN-45/46; docs/specs/mqtt-protocol-and-session.md §1; docs/specs/configuration-and-runtime-options.md §6.
+// Scenarios: configuration-and-runtime-options.md:CFG-SCN-45, configuration-and-runtime-options.md:CFG-SCN-46, mqtt-protocol-and-session.md:MQTT-10-SCN-10
 func TestDynamicClusterWebSocketProcessAcceptance(t *testing.T) {
 	t.Parallel()
 

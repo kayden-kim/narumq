@@ -18,6 +18,8 @@ import (
 	"narumq/internal/domain/mqtt"
 )
 
+// TestConnectOverTLSVerifiesServerCertificate verifies the TLS client verifies the server certificate.
+// Scenarios: performance-and-verification.md:PRF-SCN-042
 func TestConnectOverTLSVerifiesServerCertificate(t *testing.T) {
 	caKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {
@@ -328,6 +330,8 @@ func TestReadConnAckAcceptsBrokerProperties(t *testing.T) {
 	}
 }
 
+// TestReadKeepsBufferedBytesOfBackToBackFrames verifies back-to-back frames in one segment are each read intact.
+// Scenarios: performance-and-verification.md:PRF-SCN-024
 func TestReadKeepsBufferedBytesOfBackToBackFrames(t *testing.T) {
 	reader, writer := net.Pipe()
 	defer reader.Close()
@@ -463,6 +467,8 @@ func TestReadServerDisconnectWithReference(t *testing.T) {
 	}
 }
 
+// TestReadWireFrameMidFrameTimeoutIsFatal verifies a timeout in the middle of a frame is fatal rather than an idle timeout.
+// Scenarios: performance-and-verification.md:PRF-SCN-024
 func TestReadWireFrameMidFrameTimeoutIsFatal(t *testing.T) {
 	reader, writer := net.Pipe()
 	defer reader.Close()
@@ -474,6 +480,8 @@ func TestReadWireFrameMidFrameTimeoutIsFatal(t *testing.T) {
 	}
 }
 
+// TestReadWireFrameRejectsUnterminatedRemainingLength verifies an unterminated Remaining Length is a malformed packet.
+// Scenarios: performance-and-verification.md:PRF-SCN-024
 func TestReadWireFrameRejectsUnterminatedRemainingLength(t *testing.T) {
 	reader, writer := net.Pipe()
 	defer reader.Close()

@@ -649,6 +649,7 @@ class PowerLossRun:
                               "lastAppliedIndexAfter": reached,
                               "note": "no log line means no cut was logged; a broker without this log cannot say"})
 
+    # Scenarios: cluster-session-and-delivery.md:CLU-SCN-036, cluster-session-and-delivery.md:CLU-SCN-140, cluster-session-and-delivery.md:CLU-SCN-141, cluster-session-and-delivery.md:CLU-SCN-142
     def execute(self) -> None:
         check_ports([*PUBLISHER_PORTS, *SUBSCRIBER_PORTS])
         self.open_publisher_tunnel()

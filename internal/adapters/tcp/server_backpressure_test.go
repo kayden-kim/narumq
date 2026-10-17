@@ -19,6 +19,7 @@ func (rejectingTCPPublishAdmission) CheckDeliveryCapacity(membership.DeliveryCha
 }
 
 // Traceability: CLU-12; docs/specs/cluster-session-and-delivery.md §4.5, §11.28.
+// Scenarios: cluster-session-and-delivery.md:CLU-SCN-197
 func TestTCPPublishBackpressureReasonCodes(t *testing.T) {
 	for _, tc := range []struct {
 		name    string

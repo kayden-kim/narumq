@@ -10,6 +10,7 @@ import (
 	"time"
 )
 
+// Scenarios: cluster-session-and-delivery.md:CLU-SCN-052
 func TestForwardedDeliveryCodecGoldenBytes(t *testing.T) {
 	want := []byte{
 		0x01, 0x00, 0x01, 0xff, 0x00, 0x03, 't', '/', '1', 0x01,
@@ -40,6 +41,7 @@ func TestForwardedDeliveryCodecGoldenBytes(t *testing.T) {
 	}
 }
 
+// Scenarios: cluster-session-and-delivery.md:CLU-SCN-052
 func TestForwardedDeliveryCodecRejectsMalformed(t *testing.T) {
 	valid, err := EncodeForwardedDelivery(ForwardedDeliveryDTO{SessionID: "s", Topic: "t", Payload: []byte("p")})
 	if err != nil {
@@ -82,6 +84,7 @@ func TestForwardedDeliveryCodecRejectsMalformed(t *testing.T) {
 }
 
 // Traceability: CLU-14; docs/specs/cluster-session-and-delivery.md §4.5.
+// Scenarios: cluster-session-and-delivery.md:CLU-SCN-052
 func TestForwardedDeliveryRejectsTruncatedFieldsAndOversizedPayload(t *testing.T) {
 	oversized, err := EncodeForwardedDelivery(ForwardedDeliveryDTO{
 		SessionID: "s", Topic: "t", Payload: make([]byte, int(dynamicForwardFrameLimit)),
@@ -117,6 +120,7 @@ func TestForwardedDeliveryRejectsTruncatedFieldsAndOversizedPayload(t *testing.T
 	}
 }
 
+// Scenarios: cluster-session-and-delivery.md:CLU-SCN-052
 func TestReadDynamicIdleFrameIgnoresPriorDeadline(t *testing.T) {
 	reader, writer := net.Pipe()
 	defer reader.Close()
@@ -142,6 +146,7 @@ func TestReadDynamicIdleFrameIgnoresPriorDeadline(t *testing.T) {
 	}
 }
 
+// Scenarios: cluster-session-and-delivery.md:CLU-SCN-053
 func TestDynamicPeerTransportForwardLaneIsIndependent(t *testing.T) {
 	t.Run("authenticated streams dispatch to separate inbound queues", func(t *testing.T) {
 		transport1, transport2, local1, local2 := newForwardTestTransportPair(t)

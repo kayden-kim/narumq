@@ -14,6 +14,7 @@ import (
 //
 // A joiner needs a Raft snapshot larger than one peer frame (1 MiB). After feature activation
 // the snapshot travels over the snapshot stream and the joiner becomes a voter with retained state.
+// Scenarios: cluster-session-and-delivery.md:CLU-SCN-262
 func TestDynamicClusterSnapshotStreamProcessAcceptance(t *testing.T) {
 	t.Parallel()
 

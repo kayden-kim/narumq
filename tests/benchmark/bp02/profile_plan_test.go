@@ -15,6 +15,8 @@ func bp02SmokeProfile(t *testing.T) Profile {
 	return profile
 }
 
+// TestClientPlanAssignsTenantNodeAndTransport verifies tenant, node and transport assignment per client.
+// Scenarios: performance-and-verification.md:PRF-SCN-041
 func TestClientPlanAssignsTenantNodeAndTransport(t *testing.T) {
 	profile := bp02SmokeProfile(t)
 	plan := bp02ClientPlan(profile)
@@ -59,6 +61,8 @@ func TestClientPlanAssignsTenantNodeAndTransport(t *testing.T) {
 	}
 }
 
+// TestExpectedRecipientsRespectTenantAndShareGroup verifies the expected recipient oracle.
+// Scenarios: performance-and-verification.md:PRF-SCN-041
 func TestExpectedRecipientsRespectTenantAndShareGroup(t *testing.T) {
 	subscribers := bp02Subscribers(bp02SmokeProfile(t))
 	commandTopic := publishTopic(2, 3)
@@ -91,6 +95,8 @@ func recipientIDs(subscribers []clientSpec, indexes []int) []string {
 	return ids
 }
 
+// TestPayloadSizeCycleAndValidation verifies the payload size cycle.
+// Scenarios: performance-and-verification.md:PRF-SCN-041
 func TestPayloadSizeCycleAndValidation(t *testing.T) {
 	profile := bp02SmokeProfile(t)
 	for _, test := range []struct {

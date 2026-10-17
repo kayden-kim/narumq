@@ -232,6 +232,7 @@ func repositoryRoot() (string, error) {
 	}
 }
 
+// Scenarios: performance-and-verification.md:PRF-SCN-062
 func localCommand(ctx context.Context, args []string) error {
 	var profilePath, outputRoot string
 	var keepImages bool

@@ -73,6 +73,7 @@ func tcpTenantRuntime(t *testing.T, version mqtt.ProtocolVersion, service *tenan
 }
 
 // Traceability: TEN-06, TEN-07; docs/specs/tenancy-and-security.md §5.2.
+// Scenarios: tenancy-and-security.md:SEC-SCN-026, tenancy-and-security.md:SEC-SCN-027
 func TestTCPPublishTenantLimitReasonCodes(t *testing.T) {
 	for _, tc := range []struct {
 		name    string
@@ -155,6 +156,7 @@ func tcpTenantAckReason(t *testing.T, runtime *adapterTestRuntime, frame []byte)
 }
 
 // Traceability: TEN-06, TEN-07; docs/specs/tenancy-and-security.md §5.2.
+// Scenarios: tenancy-and-security.md:SEC-SCN-027
 func TestTCPTenantPublishRateWaitThenReject(t *testing.T) {
 	// Freeze policy time so all five reservations represent one tenant burst.
 	clock := &adapterTestClock{now: time.Unix(100, 0)}
@@ -181,6 +183,7 @@ func TestTCPTenantPublishRateWaitThenReject(t *testing.T) {
 }
 
 // Traceability: TEN-06, TEN-07; docs/specs/tenancy-and-security.md §5.2.
+// Scenarios: tenancy-and-security.md:SEC-SCN-027
 func TestTCPTenantPublishQoS2RetransmitIsNotCharged(t *testing.T) {
 	clock := &adapterTestClock{now: time.Unix(100, 0)}
 	service, err := tenantlimit.New(clock, tenantlimit.Profile{Default: tenantlimit.Limits{MessagesPerSecond: 1}}, nil)
@@ -215,6 +218,7 @@ func TestTCPTenantPublishQoS2RetransmitIsNotCharged(t *testing.T) {
 }
 
 // Traceability: TEN-06, TEN-07; docs/specs/tenancy-and-security.md §5.2.
+// Scenarios: tenancy-and-security.md:SEC-SCN-027
 func TestTCPTenantPublishWaitCancelledByConnectionStop(t *testing.T) {
 	service := tcpTenantLimitService(t, tenantlimit.Limits{MessagesPerSecond: 1}, 5*time.Second)
 	runtime := tcpTenantRuntime(t, mqtt.ProtocolV5, service, false)
@@ -241,6 +245,7 @@ func TestTCPTenantPublishWaitCancelledByConnectionStop(t *testing.T) {
 }
 
 // Traceability: TEN-06, TEN-07; docs/specs/tenancy-and-security.md §5.2.
+// Scenarios: tenancy-and-security.md:SEC-SCN-027
 func TestTCPTenantPublishWaitStopsBeforeTimerWhenConnectionIsAlreadyStopped(t *testing.T) {
 	service := tcpTenantLimitService(t, tenantlimit.Limits{MessagesPerSecond: 1}, 5*time.Second)
 	runtime := tcpTenantRuntime(t, mqtt.ProtocolV5, service, false)
@@ -261,6 +266,7 @@ func TestTCPTenantPublishWaitStopsBeforeTimerWhenConnectionIsAlreadyStopped(t *t
 }
 
 // Traceability: TEN-06, TEN-07; docs/specs/tenancy-and-security.md §5.2.
+// Scenarios: tenancy-and-security.md:SEC-SCN-027
 func TestTCPTenantLimitsSkipAnonymous(t *testing.T) {
 	config := defaultAdapterConfig()
 	config.TenantLimits = tcpTenantLimitService(t, tenantlimit.Limits{MaxPayloadBytes: 1}, 0)
@@ -279,6 +285,7 @@ func TestTCPTenantLimitsSkipAnonymous(t *testing.T) {
 }
 
 // Traceability: TEN-06, TEN-07; docs/specs/tenancy-and-security.md §5.2.
+// Scenarios: tenancy-and-security.md:SEC-SCN-026, tenancy-and-security.md:SEC-SCN-027
 func TestTCPTenantLimitsAdmissionOrder(t *testing.T) {
 	t.Run("ReceiveMaximumBeforePayload", func(t *testing.T) {
 		runtime := tcpTenantRuntime(t, mqtt.ProtocolV5, tcpTenantLimitService(t, tenantlimit.Limits{MaxPayloadBytes: 1}, 0), false)

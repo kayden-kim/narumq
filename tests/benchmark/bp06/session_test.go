@@ -60,6 +60,8 @@ func newSessionTestDialer(t *testing.T, nodes []string, health []*sessionTestHea
 	return dialer
 }
 
+// TestSessionReconnectUsesReadyNodeAndResumesPersistentSession verifies reconnect attribution to the failure round on a ready node.
+// Scenarios: performance-and-verification.md:PRF-SCN-030
 func TestSessionReconnectUsesReadyNodeAndResumesPersistentSession(t *testing.T) {
 	listenerA := listenSessionTestNode(t)
 	listenerB := listenSessionTestNode(t)
@@ -197,6 +199,8 @@ func TestSessionReconnectUsesReadyNodeAndResumesPersistentSession(t *testing.T) 
 	}
 }
 
+// TestSessionRejectsUnexpectedServerReference verifies that an unplanned redirected disconnect invalidates the workload.
+// Scenarios: performance-and-verification.md:PRF-SCN-030
 func TestSessionRejectsUnexpectedServerReference(t *testing.T) {
 	listenerA := listenSessionTestNode(t)
 	listenerB := listenSessionTestNode(t)
@@ -297,6 +301,8 @@ func TestSessionRejectsUnexpectedServerReference(t *testing.T) {
 	}
 }
 
+// TestWatchFailureAcknowledgesKillingAndIgnoresStaleRoundMarkers verifies control marker handling and stale round marker rejection.
+// Scenarios: performance-and-verification.md:PRF-SCN-030
 func TestWatchFailureAcknowledgesKillingAndIgnoresStaleRoundMarkers(t *testing.T) {
 	profile := sessionTestProfile()
 	profile.KillOrder = []int{3, 1, 2}
@@ -339,6 +345,8 @@ func TestWatchFailureAcknowledgesKillingAndIgnoresStaleRoundMarkers(t *testing.T
 	}
 }
 
+// TestFailureDisconnectAttributionRequiresSameNodeAndKillingOrDown verifies disconnect attribution to planned rounds and unplanned counting.
+// Scenarios: performance-and-verification.md:PRF-SCN-030
 func TestFailureDisconnectAttributionRequiresSameNodeAndKillingOrDown(t *testing.T) {
 	profile := sessionTestProfile()
 	collector := newCollector("emqx", profile)

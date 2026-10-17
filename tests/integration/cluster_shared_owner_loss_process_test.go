@@ -133,6 +133,7 @@ func sharedOwnerLossPublish(conn net.Conn, packetID uint16, payload string) bool
 // Persistent members receive their queue when they return (ADR-0060).
 //
 // Traceability: MQTT-07, CLU-05; docs/specs/cluster-session-and-delivery.md §11.35.
+// Scenarios: cluster-session-and-delivery.md:CLU-SCN-256
 func TestDynamicClusterSharedSubscriptionOwnerLossProcessAcceptance(t *testing.T) {
 	for _, persistent := range []bool{false, true} {
 		name := "clean-members"

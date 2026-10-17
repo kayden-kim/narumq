@@ -16,6 +16,7 @@ import (
 )
 
 // Traceability: CLU-06/CLU-07/CLU-09; docs/specs/cluster-session-and-delivery.md §11.13; docs/decisions/ADR-0003-durable-ack-barrier.md §9.
+// Scenarios: cluster-session-and-delivery.md:CLU-SCN-081
 func TestDynamicClusterDurableAckReplicaKillProcessAcceptance(t *testing.T) {
 	clusterDurableFaultRequireOptIn(t)
 	fixture, nodes := clusterDurableProcessStart(t)
@@ -108,6 +109,7 @@ func TestDynamicClusterDurableAckReplicaKillProcessAcceptance(t *testing.T) {
 }
 
 // Traceability: CLU-06/CLU-07/CLU-09; docs/specs/cluster-session-and-delivery.md §11.13; docs/decisions/ADR-0003-durable-ack-barrier.md §9.
+// Scenarios: cluster-session-and-delivery.md:CLU-SCN-082
 func TestDynamicClusterDurableAckCrashPointProcessAcceptance(t *testing.T) {
 	clusterDurableFaultRequireOptIn(t)
 	fixture := newClusterMembershipProcessFixture(t, 3, "narumq_failpoint")
@@ -210,6 +212,7 @@ func TestDynamicClusterDurableAckCrashPointProcessAcceptance(t *testing.T) {
 }
 
 // Traceability: CLU-06/CLU-07/CLU-09; docs/specs/cluster-session-and-delivery.md §11.13; docs/decisions/ADR-0003-durable-ack-barrier.md §9.
+// Scenarios: cluster-session-and-delivery.md:CLU-SCN-083, cluster-session-and-delivery.md:CLU-SCN-193
 func TestDynamicClusterDurableAckPartitionProcessAcceptance(t *testing.T) {
 	clusterDurableFaultRequireOptIn(t)
 	fixture := newClusterMembershipProcessFixture(t, 3, "narumq_failpoint")

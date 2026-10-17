@@ -40,6 +40,7 @@ func subscribeResourceClient(t *testing.T, fixture *ingressFixture, socket net.C
 }
 
 // Traceability: PRD MQTT-11/TEST-04/05; MQTT-3.3.4-9.
+// Scenarios: mqtt-protocol-and-session.md:MQTT-SCN-036
 func TestMQTTOutboundHonorsClientReceiveMaximum(t *testing.T) {
 	t.Parallel()
 	fixture := newIngressFixture(t)
@@ -79,6 +80,7 @@ func TestMQTTOutboundHonorsClientReceiveMaximum(t *testing.T) {
 }
 
 // Traceability: PRD MQTT-11/TEST-04/05; MQTT-3.1.2-24/25.
+// Scenarios: mqtt-protocol-and-session.md:MQTT-SCN-037
 func TestMQTTOutboundDiscardsPacketsAboveClientMaximumPacketSize(t *testing.T) {
 	t.Parallel()
 	fixture := newIngressFixture(t)
@@ -150,6 +152,7 @@ func requireResourceClosed(t *testing.T, socket net.Conn, timeout time.Duration)
 }
 
 // Traceability: PRD MQTT-11/MQTT-12/TEST-04/05; docs/specs/mqtt-protocol-and-session.md §7·§8.
+// Scenarios: mqtt-protocol-and-session.md:MQTT-SCN-040
 func TestMQTTResourceLimitsReleaseConnectionsGoroutinesAndMemory(t *testing.T) {
 	// Do not use t.Parallel: goroutine and heap measurements cover this process.
 	fixture := newIngressFixtureWithTCPConfig(t, 8, func(cfg *tcpadapter.Config) {
@@ -317,6 +320,7 @@ func TestMQTTResourceLimitsReleaseConnectionsGoroutinesAndMemory(t *testing.T) {
 }
 
 // Traceability: PRD MQTT-09/MQTT-11; docs/specs/mqtt-protocol-and-session.md §7.1.
+// Scenarios: mqtt-protocol-and-session.md:MQTT-SCN-049
 func TestMQTTListenerAdmissionClosesConnectionsAboveMaximum(t *testing.T) {
 	t.Parallel()
 	registry := metricsadapter.NewRegistry()
@@ -391,6 +395,7 @@ func TestMQTTListenerAdmissionClosesConnectionsAboveMaximum(t *testing.T) {
 }
 
 // Traceability: PRD MQTT-09/MQTT-11; docs/specs/mqtt-protocol-and-session.md §7.1.
+// Scenarios: mqtt-protocol-and-session.md:MQTT-SCN-050
 func TestMQTTListenerAdmissionClosesConnectionsAboveRate(t *testing.T) {
 	t.Parallel()
 	testClock := &ingressClock{now: time.Date(2026, time.January, 1, 0, 0, 0, 0, time.UTC)}

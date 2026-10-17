@@ -28,7 +28,7 @@ v2 연결 방향은 member ID가 낮은 node가 dial하고 높은 node가 accept
 
 이전 구현의 stream socket은 Go 기본 TCP keepalive(유휴 15초, 간격 15초)만 사용했다. 감지 시간을 제한하는 별도 설정은 없었다. Linux keepalive는 ACK 대기 data가 없을 때만 probe한다. Leader는 상대가 사라져도 heartbeat를 계속 보내므로 이 경우 keepalive가 동작하지 않고 kernel 재전송 한도까지 연결이 남는다고 본다 [INFERENCE]. 길이 prefix를 기다리는 읽기는 제한 시간이 없다. 관찰한 log는 응용 송신 대기열(32개)이 찬 뒤 `peer write failed`(5초 write deadline)와 `connected=false`가 이어진 순서다. Kernel 송신 buffer가 찼다는 설명과 `write failed` 뒤 5초 간격의 원인은 확인하지 않았다 [INFERENCE].
 
-2026-10-15 EKS 재시험에서 leader는 종료된 Pod의 이전 연결을 약 190초 유지했다. 그동안 대체 node 3은 leader의 메시지를 받지 못했다([재시험 기록](../specs/drain-and-rolling-update.md#기존-pod-해제의-eks-재시험-2026-10-15)). 로컬 Linux Docker에서 같은 DNS 이름의 node를 새 IP로 바꾸고 이전 IP를 응답 없이 버리자 같은 순서가 재현됐다. 결과는 [Cluster §11.34](../specs/cluster-session-and-delivery.md#1134-dynamic-peer-tcp-생존-확인-수용-매핑)에 둔다.
+2026-10-15 EKS 재시험에서 leader는 종료된 Pod의 이전 연결을 약 190초 유지했다. 그동안 대체 node 3은 leader의 메시지를 받지 못했다([재시험 기록](../verification/drain-and-rolling-update.md#기존-pod-해제의-eks-재시험-2026-10-15)). 로컬 Linux Docker에서 같은 DNS 이름의 node를 새 IP로 바꾸고 이전 IP를 응답 없이 버리자 같은 순서가 재현됐다. 결과는 [Cluster §11.34](../specs/cluster-session-and-delivery.md#1134-dynamic-peer-tcp-생존-확인-수용-매핑)에 둔다.
 
 ## 3. 결정 요인
 
@@ -57,7 +57,7 @@ Raft heartbeat는 100ms, election timeout은 1초다. Leader는 상대가 사라
 - Linux가 아닌 개발 환경에서는 송신 중인 연결의 감지가 kernel 재전송 한도에 남는다.
 - Network가 10초 넘게 멈추면 연결이 끊긴다. 이후 재연결과 Raft 재전송이 처리한다.
 - 재연결은 새 Pod 주소가 DNS에 게시되어야 성공한다. EKS manifest의 headless Service는 `publishNotReadyAddresses: true`로 준비 전 Pod 주소도 게시한다([service-headless.yaml](../../deploy/kubernetes/eks-ec2-ha/service-headless.yaml)). 이 결정은 DNS 게시 정책을 바꾸지 않는다.
-- 2026-10-16 EKS에서 follower EC2를 OS 종료 없이 두 번 잃었다. 두 번 모두 leader가 확인받지 못한 송신 데이터가 생긴 뒤 약 10.3초 안에 이전 IP 연결을 닫았다. 대체 node는 새 IP에서 시작한 직후 연결됐다([Cluster §11.34 EKS 재측정](../specs/cluster-session-and-delivery.md#eks-무응답-종료-재측정-2026-10-16)). 정확한 RTO와 다른 장애 유형은 측정하지 않았다.
+- 2026-10-16 EKS에서 follower EC2를 OS 종료 없이 두 번 잃었다. 두 번 모두 leader가 확인받지 못한 송신 데이터가 생긴 뒤 약 10.3초 안에 이전 IP 연결을 닫았다. 대체 node는 새 IP에서 시작한 직후 연결됐다([Cluster §11.34 EKS 재측정](../verification/cluster-session-and-delivery.md#eks-무응답-종료-재측정-2026-10-16)). 정확한 RTO와 다른 장애 유형은 측정하지 않았다.
 
 ## 7. 검증
 

@@ -99,6 +99,7 @@ func TestNodeConfigurationHandlerHidesServiceErrors(t *testing.T) {
 }
 
 // Traceability: CFG-SCN-46, PRD MQTT-10; docs/specs/configuration-and-runtime-options.md §6; docs/contracts/management-api-v1.md §1, §4.
+// Scenarios: configuration-and-runtime-options.md:CFG-SCN-46
 func TestNodeConfigurationResponseIncludesWebSocketSettings(t *testing.T) {
 	type webSocketResponse struct {
 		ListenAddress     string `json:"listenAddress"`

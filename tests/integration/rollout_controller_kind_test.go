@@ -19,6 +19,7 @@ import (
 // It requires a disposable Kind cluster named rollout-smoke, a registry endpoint
 // reachable from Kind and its host-published HTTP URL, and two broker manifest digests.
 // Traceability: SEC-11; docs/contracts/rollout-controller-v1.md §5-§8; docs/specs/drain-and-rolling-update.md §7, §9-§10.
+// Scenarios: drain-and-rolling-update.md:DRN-SCN-021
 func TestRolloutControllerKindLifecycle(t *testing.T) {
 	if os.Getenv("NARUMQ_ROLLOUT_KIND_SMOKE") != "1" {
 		t.Skip("set NARUMQ_ROLLOUT_KIND_SMOKE=1 for the real Kubernetes/broker rollout smoke")

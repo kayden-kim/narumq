@@ -1,12 +1,15 @@
 package observability
 
 import (
+	"fmt"
+	"strings"
 	"testing"
 
 	metricsports "narumq/internal/application/ports/metrics"
 	observationports "narumq/internal/application/ports/observability"
 )
 
+// Scenarios: management-api-and-observability.md:MGT-SCN-023
 func TestCombineMetricFamiliesAppliesClusterRules(t *testing.T) {
 	first := observationports.NodeMetricsDataDTO{
 		NodeID: "1", QueryStatus: observationports.QueryStatusOK,
@@ -97,6 +100,7 @@ func TestCombineMetricFamiliesAppliesClusterRules(t *testing.T) {
 	}
 }
 
+// Scenarios: management-api-and-observability.md:MGT-SCN-023
 func TestCombineMetricFamiliesRejectsIntegerOverflow(t *testing.T) {
 	descriptor := testMetricFamily("narumq_connections_active",
 		metricSample("narumq_connections_active", nil, "integer", "18446744073709551615"))
@@ -108,6 +112,80 @@ func TestCombineMetricFamiliesRejectsIntegerOverflow(t *testing.T) {
 	}, observationports.MetricsModeAllNodesAggregated)
 	if err == nil {
 		t.Fatal("integer gauge overflow was accepted")
+	}
+}
+
+// Traceability: PRD API-03; docs/specs/management-api-and-observability.md §7.2.
+// Scenarios: management-api-and-observability.md:MGT-SCN-044
+func TestMetricFamiliesFromSnapshotRejectsOverLimitInsteadOfTruncating(t *testing.T) {
+	descriptor := descriptorForTest("narumq_packets_received_total")
+	counter := func(labels ...metricsports.MetricLabelDTO) metricsports.MetricSampleDTO {
+		return metricsports.MetricSampleDTO{
+			Name: descriptor.Name, Labels: labels,
+			Value: metricsports.MetricValueDTO{Kind: metricsports.MetricValueInteger, Uint64: 1},
+		}
+	}
+	single := func(samples ...metricsports.MetricSampleDTO) metricsports.MetricsSnapshotDTO {
+		return metricsports.MetricsSnapshotDTO{Families: []metricsports.MetricFamilyDTO{{Descriptor: descriptor, Samples: samples}}}
+	}
+	packetSamples := func(count int) []metricsports.MetricSampleDTO {
+		samples := make([]metricsports.MetricSampleDTO, count)
+		for index := range samples {
+			samples[index] = counter(metricsports.MetricLabelDTO{Name: "packet_type", Value: fmt.Sprintf("type-%d", index)})
+		}
+		return samples
+	}
+
+	if families, err := metricFamiliesFromSnapshot(single(packetSamples(maxMetricSamples)...)); err != nil || len(families) != 1 || len(families[0].Samples) != maxMetricSamples {
+		t.Fatalf("snapshot with exactly %d samples: families=%d err=%v", maxMetricSamples, len(families), err)
+	}
+	if families, err := metricFamiliesFromSnapshot(single(counter(metricsports.MetricLabelDTO{
+		Name: "packet_type", Value: strings.Repeat("v", maxLabelValueSize),
+	}))); err != nil || len(families) != 1 || len(families[0].Samples) != 1 {
+		t.Fatalf("label value of exactly %d bytes: families=%d err=%v", maxLabelValueSize, len(families), err)
+	}
+
+	nineLabels := make([]metricsports.MetricLabelDTO, 0, maxMetricLabels+1)
+	for index := range maxMetricLabels + 1 {
+		nineLabels = append(nineLabels, metricsports.MetricLabelDTO{Name: fmt.Sprintf("label_%d", index), Value: "v"})
+	}
+	for _, test := range []struct {
+		name     string
+		snapshot metricsports.MetricsSnapshotDTO
+		wantErr  string
+	}{
+		{
+			name:     "65 families",
+			snapshot: metricsports.MetricsSnapshotDTO{Families: make([]metricsports.MetricFamilyDTO, maxMetricFamilies+1)},
+			wantErr:  "metric family limit exceeded",
+		},
+		{
+			name:     "16385 samples",
+			snapshot: single(packetSamples(maxMetricSamples + 1)...),
+			wantErr:  "metric sample limit exceeded",
+		},
+		{
+			name:     "9 labels on one sample",
+			snapshot: single(counter(nineLabels...)),
+			wantErr:  "metric label limit exceeded",
+		},
+		{
+			name: "1025 byte label value",
+			snapshot: single(counter(metricsports.MetricLabelDTO{
+				Name: "packet_type", Value: strings.Repeat("v", maxLabelValueSize+1),
+			})),
+			wantErr: "invalid metric label value",
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			families, err := metricFamiliesFromSnapshot(test.snapshot)
+			if err == nil || err.Error() != test.wantErr {
+				t.Fatalf("metricFamiliesFromSnapshot() error = %v, want %q", err, test.wantErr)
+			}
+			if families != nil {
+				t.Fatalf("over-limit snapshot returned %d truncated families", len(families))
+			}
+		})
 	}
 }
 

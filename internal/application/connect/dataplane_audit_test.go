@@ -26,6 +26,7 @@ func (recorder *connectDataPlaneAuditRecorder) RecordDataPlaneDenial(denial port
 }
 
 // Traceability: SEC-05/SEC-11/NFR-17; docs/specs/tenancy-and-security.md §2.3, §2.4, §8, §9.
+// Scenarios: configuration-and-runtime-options.md:CFG-SCN-29, tenancy-and-security.md:SEC-SCN-014, tenancy-and-security.md:SEC-SCN-047
 func TestConnectRecordsAuthenticationDenialsWithoutChangingConnAck(t *testing.T) {
 	now := time.Date(2026, time.January, 1, 0, 0, 0, 0, time.UTC)
 	for _, test := range []struct {
@@ -104,6 +105,7 @@ func TestConnectRecordsAuthenticationDenialsWithoutChangingConnAck(t *testing.T)
 }
 
 // Traceability: SEC-05/SEC-11/NFR-17; docs/specs/tenancy-and-security.md §2.3, §2.4, §8, §9.
+// Scenarios: tenancy-and-security.md:SEC-SCN-047
 func TestConnectRecordsAuthenticatedClientAndWillDenials(t *testing.T) {
 	now := time.Date(2026, time.January, 1, 0, 0, 0, 0, time.UTC)
 	tenantID, err := tenancy.NewTenantID("tenant-a")
@@ -156,6 +158,7 @@ func TestConnectRecordsAuthenticatedClientAndWillDenials(t *testing.T) {
 }
 
 // Traceability: SEC-11/NFR-17; docs/specs/tenancy-and-security.md §8.
+// Scenarios: tenancy-and-security.md:SEC-SCN-047
 func TestConnectSuccessDoesNotRecordDenial(t *testing.T) {
 	now := time.Date(2026, time.January, 1, 0, 0, 0, 0, time.UTC)
 	tenantID, err := tenancy.NewTenantID("tenant-a")
@@ -182,6 +185,7 @@ func TestConnectSuccessDoesNotRecordDenial(t *testing.T) {
 }
 
 // Traceability: SEC-11/NFR-17; docs/specs/tenancy-and-security.md §8.
+// Scenarios: tenancy-and-security.md:SEC-SCN-047
 func TestDelayedWillAuthorizationDenialRecordsWithoutSourceIP(t *testing.T) {
 	now := time.Date(2026, time.January, 1, 0, 0, 0, 0, time.UTC)
 	tenantID, err := tenancy.NewTenantID("tenant-a")
@@ -248,6 +252,7 @@ func (checker *connectRevocationCheckerStub) IsCredentialRevoked(_ context.Conte
 }
 
 // Traceability: SEC-07; docs/specs/tenancy-and-security.md §7.
+// Scenarios: tenancy-and-security.md:SEC-SCN-035, tenancy-and-security.md:SEC-SCN-037
 func TestCredentialRevocationSuppressesImmediateAndDelayedWills(t *testing.T) {
 	now := time.Date(2026, time.January, 1, 0, 0, 0, 0, time.UTC)
 	tenant, err := tenancy.NewTenantID("tenant-a")
@@ -330,6 +335,7 @@ func (coordinator *credentialRevocationOwnershipCoordinatorStub) AcquireSessionO
 }
 
 // Traceability: SEC-07; docs/specs/tenancy-and-security.md §7, §9.
+// Scenarios: tenancy-and-security.md:SEC-SCN-034
 func TestCredentialRevocationRejectsBeforeOwnershipSideEffects(t *testing.T) {
 	now := time.Date(2026, time.January, 1, 0, 0, 0, 0, time.UTC)
 	tenant, err := tenancy.NewTenantID("tenant-a")

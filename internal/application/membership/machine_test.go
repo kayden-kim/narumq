@@ -323,6 +323,7 @@ func TestStateMachineOwnershipFencingAndSubscriptionUpdateRemove(t *testing.T) {
 	}
 }
 
+// Scenarios: cluster-session-and-delivery.md:CLU-SCN-063
 func TestStateMachineOwnershipTransferRebindsSubscriptionsAndPreservesDelivery(t *testing.T) {
 	machine := NewStateMachine()
 	applyMustSucceed(t, machine, 1, CommandDTO{
@@ -379,6 +380,7 @@ func TestStateMachineOwnershipTransferRebindsSubscriptionsAndPreservesDelivery(t
 	}
 }
 
+// Scenarios: cluster-session-and-delivery.md:CLU-SCN-063
 func TestStateMachineDeliveryInboundReleaseAndSnapshotValidation(t *testing.T) {
 	machine := NewStateMachine()
 	applyMustSucceed(t, machine, 1, CommandDTO{
@@ -599,6 +601,7 @@ func mustApplyResult(t *testing.T, machine *StateMachine, index uint64, command 
 	return result
 }
 
+// Scenarios: cluster-session-and-delivery.md:CLU-SCN-023
 func TestAdvanceAppliedIndexPreservesCommittedStateAcrossEmptyRaftEntries(t *testing.T) {
 	machine := NewStateMachine()
 	if err := machine.InitializeBootstrap(3, testVoters()); err != nil {

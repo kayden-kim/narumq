@@ -144,6 +144,7 @@ func admissionAssertRejected(t *testing.T, connection net.Conn, recorder *admiss
 }
 
 // Traceability: PRD MQTT-09/MQTT-10/MQTT-11; docs/specs/mqtt-protocol-and-session.md §1, §7.1.
+// Scenarios: mqtt-protocol-and-session.md:MQTT-SCN-043
 func TestNewAdmissionListenerValidatesConfig(t *testing.T) {
 	clock := &admissionTestClock{now: time.Now()}
 	inner, err := net.Listen("tcp", "127.0.0.1:0")
@@ -193,6 +194,7 @@ func TestNewAdmissionListenerValidatesConfig(t *testing.T) {
 }
 
 // Traceability: PRD MQTT-09/MQTT-11; docs/specs/mqtt-protocol-and-session.md §7.1.
+// Scenarios: mqtt-protocol-and-session.md:MQTT-SCN-044
 func TestAdmissionListenerClosesSocketsAboveMaximumUntilRelease(t *testing.T) {
 	recorder := newAdmissionTestRecorder()
 	listener := newAdmissionTestListener(t, ListenerAdmissionConfig{
@@ -218,6 +220,7 @@ func TestAdmissionListenerClosesSocketsAboveMaximumUntilRelease(t *testing.T) {
 }
 
 // Traceability: PRD MQTT-09/MQTT-11; docs/specs/mqtt-protocol-and-session.md §7.1.
+// Scenarios: mqtt-protocol-and-session.md:MQTT-SCN-045
 func TestAdmissionListenerRefillsConnectionRateFromClock(t *testing.T) {
 	clock := &admissionTestClock{now: time.Now()}
 	recorder := newAdmissionTestRecorder()
@@ -255,6 +258,7 @@ func TestAdmissionListenerRefillsConnectionRateFromClock(t *testing.T) {
 }
 
 // Traceability: PRD MQTT-09/MQTT-11; docs/specs/mqtt-protocol-and-session.md §7.1.
+// Scenarios: mqtt-protocol-and-session.md:MQTT-SCN-046
 func TestAdmissionListenerChecksMaximumBeforeRate(t *testing.T) {
 	recorder := newAdmissionTestRecorder()
 	listener := newAdmissionTestListener(t, ListenerAdmissionConfig{
@@ -305,6 +309,7 @@ func TestAdmissionListenerClosesRejectedSocketWithoutRecorder(t *testing.T) {
 }
 
 // Traceability: PRD MQTT-09/MQTT-11; docs/specs/mqtt-protocol-and-session.md §7.1.
+// Scenarios: mqtt-protocol-and-session.md:MQTT-SCN-047
 func TestAdmissionListenerReturnsInnerAcceptError(t *testing.T) {
 	listener := newAdmissionTestListener(t, ListenerAdmissionConfig{
 		Transport: portsmetrics.TransportTCP, MaxConnections: 1,

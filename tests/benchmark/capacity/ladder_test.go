@@ -43,6 +43,8 @@ func sequence(order []recordedRun) []string {
 	return out
 }
 
+// TestDriveCapacityLadderBisectThenConfirmHighestPass bisects around the first failure and confirms the candidate.
+// Scenarios: performance-and-verification.md:PRF-SCN-051
 func TestDriveCapacityLadderBisectThenConfirmHighestPass(t *testing.T) {
 	var order []recordedRun
 	outcome, err := driveCapacity(ladderProfile(), scripted(func(c stepConfig) bool { return c.Cells <= 40 }, nil, &order))
@@ -65,6 +67,8 @@ func TestDriveCapacityLadderBisectThenConfirmHighestPass(t *testing.T) {
 	}
 }
 
+// TestDriveCapacityFallsBackWhenConfirmationFails confirms the next lower candidate after a failed confirmation.
+// Scenarios: performance-and-verification.md:PRF-SCN-051
 func TestDriveCapacityFallsBackWhenConfirmationFails(t *testing.T) {
 	var order []recordedRun
 	pass := func(c stepConfig) bool { return c.Cells <= 40 && !(c.Cells == 40 && c.Run == 3) }
@@ -85,6 +89,8 @@ func TestDriveCapacityFallsBackWhenConfirmationFails(t *testing.T) {
 	}
 }
 
+// TestDriveCapacityInvalidStopsTheSearch stops the search at an invalid step.
+// Scenarios: performance-and-verification.md:PRF-SCN-051
 func TestDriveCapacityInvalidStopsTheSearch(t *testing.T) {
 	var order []recordedRun
 	invalid := func(c stepConfig) bool { return c.Cells == 32 }
@@ -100,6 +106,8 @@ func TestDriveCapacityInvalidStopsTheSearch(t *testing.T) {
 	}
 }
 
+// TestDriveCapacityFirstStepFailureAdoptsNothing adopts nothing when the first step fails.
+// Scenarios: performance-and-verification.md:PRF-SCN-051
 func TestDriveCapacityFirstStepFailureAdoptsNothing(t *testing.T) {
 	var order []recordedRun
 	outcome, err := driveCapacity(ladderProfile(), scripted(func(stepConfig) bool { return false }, nil, &order))
@@ -111,6 +119,8 @@ func TestDriveCapacityFirstStepFailureAdoptsNothing(t *testing.T) {
 	}
 }
 
+// TestDriveCapacityExhaustedLadderConfirmsTopStep confirms the top step when no step fails.
+// Scenarios: performance-and-verification.md:PRF-SCN-051
 func TestDriveCapacityExhaustedLadderConfirmsTopStep(t *testing.T) {
 	var order []recordedRun
 	outcome, err := driveCapacity(ladderProfile(), scripted(func(stepConfig) bool { return true }, nil, &order))

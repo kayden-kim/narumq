@@ -448,6 +448,7 @@ func TestTCPClusterReadinessAndSubscriptionCommitFailuresRejectPackets(t *testin
 }
 
 // Traceability: CLU-03; docs/specs/cluster-session-and-delivery.md §3.1, §11.10.
+// Scenarios: cluster-session-and-delivery.md:CLU-SCN-056
 func TestTCPClusterQoS0UsesLocalProjectionWithoutQuorumBarrier(t *testing.T) {
 	quorumAvailable := atomic.Bool{}
 	quorumAvailable.Store(true)
@@ -513,6 +514,7 @@ func TestTCPClusterQoS0UsesLocalProjectionWithoutQuorumBarrier(t *testing.T) {
 }
 
 // Traceability: CLU-03; docs/specs/cluster-session-and-delivery.md §3.1, §11.10.
+// Scenarios: cluster-session-and-delivery.md:CLU-SCN-056
 func TestTCPClusterQoS0RejectsWhenLocalProjectionIsNotReady(t *testing.T) {
 	config := defaultAdapterConfig()
 	config.ClusterMode = true
@@ -629,6 +631,7 @@ func TestTCPKeepAliveTimeoutClosesConnection(t *testing.T) {
 }
 
 // Traceability: PRD MQTT-11/TEST-04/05; docs/specs/mqtt-protocol-and-session.md §7.
+// Scenarios: mqtt-protocol-and-session.md:MQTT-SCN-031
 func TestTCPControlQueueFullClosesConnection(t *testing.T) {
 	config := defaultAdapterConfig()
 	config.ControlQueueCapacity = 1
@@ -648,6 +651,7 @@ func TestTCPControlQueueFullClosesConnection(t *testing.T) {
 // Traceability: PRD MQTT-11/TEST-04/05; docs/specs/mqtt-protocol-and-session.md §7.
 // A blocked subscriber writer plus one queued item must turn the next enqueue
 // into a deterministic connection close rather than unbounded memory growth.
+// Scenarios: mqtt-protocol-and-session.md:MQTT-SCN-032
 func TestTCPDeliveryQueueSaturationClosesSubscriber(t *testing.T) {
 	config := defaultAdapterConfig()
 	config.WriteTimeout = 10 * time.Second
@@ -979,6 +983,7 @@ func (a *testServerAuthenticator) Authenticate(ctx context.Context, credential a
 }
 
 // Traceability: SEC-06, TEN-04
+// Scenarios: tenancy-and-security.md:SEC-SCN-023
 func TestTCPServer_UnauthorizedPublishAndSubscribe(t *testing.T) {
 	tenant, err := tenancy.NewTenantID("tenant-a")
 	if err != nil {

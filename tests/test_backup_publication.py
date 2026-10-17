@@ -11,6 +11,7 @@ ROOT = Path(__file__).resolve().parents[1]
 
 @unittest.skipUnless(os.environ.get("NARUMQ_BACKUP_PUBLICATION_SMOKE") == "1", "requires explicit Docker smoke opt-in")
 class BackupPublicationTests(unittest.TestCase):
+    # Scenarios: cluster-session-and-delivery.md:CLU-SCN-049, cluster-session-and-delivery.md:CLU-SCN-051
     def test_interrupted_publication_then_new_pod_upload(self):
         image = os.environ["NARUMQ_BACKUP_SMOKE_IMAGE"]
         script = r'''

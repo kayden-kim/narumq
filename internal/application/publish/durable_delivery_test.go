@@ -186,6 +186,7 @@ func untargetedDurablePublishFixture(t *testing.T, options ...Option) (*UseCase,
 }
 
 // Traceability: CLU-07; docs/specs/cluster-session-and-delivery.md §4.2, §11.11.
+// Scenarios: cluster-session-and-delivery.md:CLU-SCN-068
 func TestPublishDurableWithoutTargetsUsesQuorumBarrier(t *testing.T) {
 	t.Run("qos1 publish", func(t *testing.T) {
 		useCase, queue, committer, now := untargetedDurablePublishFixture(t)
@@ -633,6 +634,7 @@ func TestReceiveQoS2RejectsUnauthorizedPublisherBeforeCommit(t *testing.T) {
 }
 
 // Traceability: PRD MQTT-04/CLU-08; docs/specs/cluster-session-and-delivery.md §4.2, §11.32.
+// Scenarios: cluster-session-and-delivery.md:CLU-SCN-227
 func TestPublishDurableRetainedCommitFailureStopsDeliveryCommit(t *testing.T) {
 	errRetainedCommit := errors.New("retained quorum unavailable")
 	for _, tc := range []struct {
@@ -718,6 +720,7 @@ func TestPublishWillRejectsMismatchedTrustedSession(t *testing.T) {
 }
 
 // Traceability: MQTT-07, CLU-05; docs/specs/cluster-session-and-delivery.md §4.2, §11.35.
+// Scenarios: cluster-session-and-delivery.md:CLU-SCN-247
 func TestPublishDurableTargetsCarrySharedOriginUnlessNonSharedRouteAlsoMatches(t *testing.T) {
 	now := testNow()
 	routes := routing.NewTable()

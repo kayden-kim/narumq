@@ -12,6 +12,7 @@ import (
 )
 
 // Traceability: CFG-SCN-35~38; docs/specs/configuration-and-runtime-options.md §10; ADR-0052 §1.1.1.
+// Scenarios: configuration-and-runtime-options.md:CFG-SCN-35, configuration-and-runtime-options.md:CFG-SCN-36, configuration-and-runtime-options.md:CFG-SCN-37, configuration-and-runtime-options.md:CFG-SCN-38
 func TestDynamicClusterPolicyTenantQuotasProcessAcceptance(t *testing.T) {
 	t.Parallel()
 

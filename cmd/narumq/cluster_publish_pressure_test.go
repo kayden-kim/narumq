@@ -16,6 +16,7 @@ import (
 )
 
 // Traceability: CLU-12; docs/specs/cluster-session-and-delivery.md §4.5, §11.28.
+// Scenarios: cluster-session-and-delivery.md:CLU-SCN-198, cluster-session-and-delivery.md:CLU-SCN-199
 func TestClusterCommitBacklogOldestAge(t *testing.T) {
 	var b clusterCommitBacklog
 	now := time.Unix(100, 0)
@@ -77,6 +78,7 @@ func TestClusterCommitBacklogOldestAge(t *testing.T) {
 }
 
 // Traceability: CLU-12; docs/specs/cluster-session-and-delivery.md §11.28.
+// Scenarios: cluster-session-and-delivery.md:CLU-SCN-198
 func TestClusterPublishPressureDiskHysteresis(t *testing.T) {
 	var logs bytes.Buffer
 	r := &clusterRuntime{metrics: adaptersmetrics.NewRegistry(), logger: slog.New(slog.NewTextHandler(&logs, nil))}
@@ -128,6 +130,7 @@ func TestClusterPublishPressureDiskHysteresis(t *testing.T) {
 }
 
 // Traceability: CLU-12; docs/specs/cluster-session-and-delivery.md §11.28.
+// Scenarios: cluster-session-and-delivery.md:CLU-SCN-198, cluster-session-and-delivery.md:CLU-SCN-199
 func TestClusterPublishPressureCommitLag(t *testing.T) {
 	r := &clusterRuntime{metrics: adaptersmetrics.NewRegistry()}
 	c := &clusterPublishPressureController{runtime: r, maxCommitLag: time.Second, freeBytes: func(string) (uint64, error) { return 2 << 30, nil }}
@@ -166,6 +169,7 @@ func TestClusterPublishPressureCommitLag(t *testing.T) {
 }
 
 // Traceability: CLU-12, TEN-08; docs/specs/cluster-session-and-delivery.md §11.28.
+// Scenarios: cluster-session-and-delivery.md:CLU-SCN-198
 func TestClusterPublishPressureCapacityReportsTenantQuota(t *testing.T) {
 	machine := membership.NewStateMachine()
 	apply := func(index uint64, command membership.CommandDTO) {

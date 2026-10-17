@@ -184,6 +184,7 @@ func (f *snapshotStreamFixture) learnerProgress() tracker.Progress {
 }
 
 // Traceability: CLU-14; docs/specs/cluster-session-and-delivery.md §11.37, ADR-0062.
+// Scenarios: cluster-session-and-delivery.md:CLU-SCN-259
 func TestSnapshotStreamDeliversOversizedSnapshotWhenActive(t *testing.T) {
 	fixture := newSnapshotStreamFixture(t, true)
 	fixture.handle = fixture.deliverStream
@@ -233,6 +234,7 @@ func TestSnapshotStreamDeliversOversizedSnapshotWhenActive(t *testing.T) {
 	}
 }
 
+// Scenarios: cluster-session-and-delivery.md:CLU-SCN-259
 func TestSnapshotStreamInactiveKeepsOversizedSnapshotRejected(t *testing.T) {
 	fixture := newSnapshotStreamFixture(t, false)
 	fixture.handle = fixture.deliverStream
@@ -255,6 +257,7 @@ func TestSnapshotStreamInactiveKeepsOversizedSnapshotRejected(t *testing.T) {
 	}
 }
 
+// Scenarios: cluster-session-and-delivery.md:CLU-SCN-259
 func TestSnapshotStreamFailureLetsRaftRetry(t *testing.T) {
 	fixture := newSnapshotStreamFixture(t, true)
 	attempts := 0

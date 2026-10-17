@@ -31,6 +31,7 @@ func (b *lockedLogBuffer) String() string {
 }
 
 // Traceability: CLU-14; docs/specs/cluster-session-and-delivery.md §7, §11.36.
+// Scenarios: cluster-session-and-delivery.md:CLU-SCN-257
 func TestDynamicOversizedSnapshotIsNotSentAndNodeStaysHealthy(t *testing.T) {
 	logs := &lockedLogBuffer{}
 	logger := slog.New(slog.NewTextHandler(logs, &slog.HandlerOptions{Level: slog.LevelWarn}))
@@ -181,6 +182,7 @@ func TestDynamicOversizedSnapshotIsNotSentAndNodeStaysHealthy(t *testing.T) {
 	}
 }
 
+// Scenarios: cluster-session-and-delivery.md:CLU-SCN-258
 func TestPeerWarningLimiterAdmitsOncePerPeerInterval(t *testing.T) {
 	var limiter peerWarningLimiter
 	start := time.Unix(1000, 0)

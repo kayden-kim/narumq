@@ -15,7 +15,7 @@
 | 관련 Architecture | [Cluster architecture](../architectures/cluster-architecture.md), [EKS on EC2 deployment](../architectures/eks-ec2-deployment.md) |
 | 관련 requirement | CLU-11, NFR-15, DEP-18 |
 | 관련 결정 | [ADR-0002](../decisions/ADR-0002-cluster-consensus-library.md), [ADR-0006](../decisions/ADR-0006-external-rollout-controller.md), [ADR-0009](../decisions/ADR-0009-raft-production-state-profile.md), [ADR-0018](../decisions/ADR-0018-release-compatibility-window.md), [ADR-0031](../decisions/ADR-0031-replicated-state-schema-strict-evolution.md), [ADR-0032](../decisions/ADR-0032-feature-activation-approval-policy.md) |
-| 검증 | `tests/integration/cluster_release_compat_process_test.go`; [Cluster spec §11.17](../specs/cluster-session-and-delivery.md#1117-n-1n-rolling-upgraderollback-수용-매핑) process acceptance PASS (105.55s; package 105.695s); release-profile controller transitions PASS, including compatible snapshot invalidation and unsupported restored-feature latching; repository-wide instrumented `go test ./...` PASS (40 packages, 6 without tests; 288.23s); `GOMAXPROCS=4 go run ./tools/verify local` PASS (292.39s). |
+| 검증 | Process acceptance와 controller 전이의 실행 범위는 [Cluster 검증 기록 §11.17](../verification/cluster-session-and-delivery.md#1117-n-1n-rolling-upgraderollback-수용-매핑)을 따른다. Synthetic·지정 historical baseline 증거는 게시 release별 수용이나 현재 전체 local gate 통과를 뜻하지 않는다. |
 
 ## 1. 지원 범위
 
@@ -135,8 +135,7 @@ Major 변경은 in-place mixed upgrade로 처리하지 않는다. 별도 migrati
 
 ## 8. Blocker와 제외 범위
 
-- 해결: 운영 체크리스트·외부 승인 기록과 commit 기준의 rollback window 종료 정책을 [§4.1](#41-운영-승인과-rollback-window-종료)에서 확정했다. API가 승인 evidence를 강제하지 않는다. 수용 범위는 [Cluster §11.30](../specs/cluster-session-and-delivery.md#1130-feature-activation-운영-승인-수용-매핑)에서 관리한다.
-- 남음: [ADR-0006](../decisions/ADR-0006-external-rollout-controller.md)의 rollout controller preflight. 이 ADR-0018 범위는 Pod 교체 전 preflight 구현을 포함하지 않는다.
-- 해결 범위: [ADR-0021](../decisions/ADR-0021-backup-archive-release-window.md)의 backup archive N/N-1 restore 정책. Synthetic 증거는 [Cluster §11.19](../specs/cluster-session-and-delivery.md#1119-backup-archive-nn-1-restore-수용-매핑), historical baseline의 upgrade restore와 pre-ADR-0021 consumer 거절 제약은 [§11.21](../specs/cluster-session-and-delivery.md#1121-historical-source-n-1n-호환성-수용-매핑)에서 관리한다.
-- `58a95f8` baseline은 §11.21에서 검증했다. 이후 실제 게시 release 사이의 wire/state matrix는 release마다 추가한다.
-- 해결: same-source synthetic 및 지정 historical baseline의 rolling·양방향 installed snapshot·N-2 거절 수용이 PASS했다. 실제 게시 release별 검증은 별도다.
+- 운영 승인과 rollback window 종료는 [§4.1](#41-운영-승인과-rollback-window-종료)을 따른다. API가 외부 승인 evidence를 강제하지는 않는다.
+- Rollout preflight는 [Rollout controller contract](rollout-controller-v1.md)를 따른다. 구현·제한된 EKS 수용과 게시 release별 수용을 구분한다.
+- Backup restore의 지원 범위는 [ADR-0021](../decisions/ADR-0021-backup-archive-release-window.md)을 따른다. Synthetic·지정 historical baseline의 증거는 [Cluster 검증 기록](../verification/cluster-session-and-delivery.md)에 둔다.
+- 실제 게시 release의 wire/state·upgrade·rollback·archive restore matrix는 release마다 검증한다. 지정 baseline `58a95f8` 통과로 대신하지 않는다.

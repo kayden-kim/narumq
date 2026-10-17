@@ -383,6 +383,7 @@ class Run:
                 continue
         return "\n".join(texts) if texts else None
 
+    # Scenarios: cluster-session-and-delivery.md:CLU-SCN-145
     def verify_large(self, evidence: dict) -> None:
         """R1 judgement on the new member: retained payloads identical, and the leader log shows the stream."""
         plan, settings = self.plan, self.plan["largeSnapshot"]
@@ -884,6 +885,7 @@ class Run:
             report["monitor"]["scope"] = ("whole run, informational; the guard criterion uses the "
                                           "fault-to-guard window only (reseed-guard.json)")
 
+    # Scenarios: cluster-session-and-delivery.md:CLU-SCN-135, cluster-session-and-delivery.md:CLU-SCN-139
     def execute(self) -> None:
         steps = [self.step_ports, self.step_observer, self.step_preflight, self.step_feature, self.step_baseline,
                  self.step_large_load, self.step_loss, self.step_guard, self.step_reseed, self.step_verify]

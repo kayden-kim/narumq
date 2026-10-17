@@ -7,6 +7,7 @@ import (
 	"time"
 )
 
+// Scenarios: cluster-session-and-delivery.md:CLU-SCN-114
 func TestNodeHeldWALSyncDoesNotBlockTick(t *testing.T) {
 	node, err := Open(Config{NodeID: 1, PeerIDs: []NodeID{1, 2, 3}, Directory: t.TempDir()})
 	if err != nil {

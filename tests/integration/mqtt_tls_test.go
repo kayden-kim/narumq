@@ -596,6 +596,7 @@ func (f *tlsFixture) dialTLS(t *testing.T, clientCert *testCert, configModifier 
 
 // TestMQTTTLS_ConnectionAndDelivery verifies full MQTT CONNECT -> SUBSCRIBE -> PUBLISH
 // roundtrip over a TLS 1.2 and TLS 1.3 encrypted socket.
+// Scenarios: mqtt-protocol-and-session.md:MQTT-SCN-019, tenancy-and-security.md:SEC-SCN-003
 func TestMQTTTLS_ConnectionAndDelivery(t *testing.T) {
 	fixture := newTLSFixture(t, tlsFixtureOptions{})
 	defer fixture.close(t)
@@ -677,6 +678,7 @@ func TestMQTTTLS_ConnectionAndDelivery(t *testing.T) {
 }
 
 // Traceability: SEC-05; docs/specs/tenancy-and-security.md §2.3, §2.4, §9.
+// Scenarios: mqtt-protocol-and-session.md:MQTT-SCN-021, tenancy-and-security.md:SEC-SCN-014
 func TestMQTTTLS_PasswordAuthentication(t *testing.T) {
 	password := []byte("SEC05-tls-password")
 	encodedHash, err := authentication.HashPassword(password)
@@ -751,6 +753,7 @@ func TestMQTTTLS_PasswordAuthentication(t *testing.T) {
 // TestMQTTTLS_RejectInsecureTLSVersion verifies that client connections attempting
 // TLS 1.0 or TLS 1.1 are immediately rejected during the TLS handshake ([SEC-01]).
 // Traceability: SEC-01; docs/specs/tenancy-and-security.md §9.
+// Scenarios: tenancy-and-security.md:SEC-SCN-001
 func TestMQTTTLS_RejectInsecureTLSVersion(t *testing.T) {
 	fixture := newTLSFixture(t, tlsFixtureOptions{MinVersion: "1.2"})
 	defer fixture.close(t)
@@ -786,6 +789,7 @@ func TestMQTTTLS_RejectInsecureTLSVersion(t *testing.T) {
 // signed by the trusted CA is mapped to its configured mTLS identity and authenticates
 // successfully ([SEC-03]).
 // Traceability: SEC-03; docs/specs/tenancy-and-security.md §9.
+// Scenarios: mqtt-protocol-and-session.md:MQTT-SCN-019, tenancy-and-security.md:SEC-SCN-004
 func TestMQTTTLS_mTLS_Success(t *testing.T) {
 	fixture := newTLSFixture(t, tlsFixtureOptions{
 		ClientAuth:   tlsadapter.ClientAuthRequire,
@@ -811,6 +815,7 @@ func TestMQTTTLS_mTLS_Success(t *testing.T) {
 }
 
 // Traceability: SEC-12; docs/specs/tenancy-and-security.md §7.1, §9; ADR-0050.
+// Scenarios: tenancy-and-security.md:SEC-SCN-045
 func TestMQTTTLSBlockedCertificateFingerprintRejected(t *testing.T) {
 	const identity = "sensor-client-01"
 	ca := generateIntegrationCA(t, "NaruMQ Test Root CA")
@@ -859,6 +864,7 @@ func TestMQTTTLSBlockedCertificateFingerprintRejected(t *testing.T) {
 // TestMQTTTLS_mTLS_UntrustedCA_Rejected verifies that a client presenting a certificate
 // signed by an untrusted CA is rejected during the TLS handshake ([SEC-03]).
 // Traceability: SEC-03; docs/specs/tenancy-and-security.md §9.
+// Scenarios: mqtt-protocol-and-session.md:MQTT-SCN-019, tenancy-and-security.md:SEC-SCN-005
 func TestMQTTTLS_mTLS_UntrustedCA_Rejected(t *testing.T) {
 	fixture := newTLSFixture(t, tlsFixtureOptions{
 		ClientAuth: tlsadapter.ClientAuthRequire,
@@ -898,6 +904,7 @@ func TestMQTTTLS_mTLS_UntrustedCA_Rejected(t *testing.T) {
 // TestMQTTTLS_mTLS_ExpiredCert_Rejected verifies that a client presenting an expired
 // certificate is rejected during the TLS handshake ([SEC-03]).
 // Traceability: SEC-03; docs/specs/tenancy-and-security.md §9.
+// Scenarios: mqtt-protocol-and-session.md:MQTT-SCN-019, tenancy-and-security.md:SEC-SCN-005
 func TestMQTTTLS_mTLS_ExpiredCert_Rejected(t *testing.T) {
 	fixture := newTLSFixture(t, tlsFixtureOptions{
 		ClientAuth: tlsadapter.ClientAuthRequire,
@@ -936,6 +943,7 @@ func TestMQTTTLS_mTLS_ExpiredCert_Rejected(t *testing.T) {
 // TestMQTTTLS_mTLS_ClientIDBinding_Rejected verifies that a trusted certificate
 // is authenticated only for its configured Client ID ([SEC-04]).
 // Traceability: SEC-04; docs/specs/tenancy-and-security.md §9.
+// Scenarios: mqtt-protocol-and-session.md:MQTT-SCN-019, tenancy-and-security.md:SEC-SCN-008
 func TestMQTTTLS_mTLS_ClientIDBinding_Rejected(t *testing.T) {
 	certCN := "legit-device-007"
 	fixture := newTLSFixture(t, tlsFixtureOptions{
@@ -1018,6 +1026,7 @@ func TestMQTTTLS_mTLS_ClientIDBinding_Rejected(t *testing.T) {
 
 // TestMQTTTLS_DualListener_TCPAndTLS verifies that a broker serving both plain TCP
 // and TLS listeners delivers publications cross-transport seamlessly.
+// Scenarios: tenancy-and-security.md:SEC-SCN-003
 func TestMQTTTLS_DualListener_TCPAndTLS(t *testing.T) {
 	fixture := newTLSFixture(t, tlsFixtureOptions{DualTCP: true})
 	defer fixture.close(t)

@@ -26,6 +26,7 @@ import (
 )
 
 // Traceability: PRD MQTT-10; docs/specs/mqtt-protocol-and-session.md §1.
+// Scenarios: mqtt-protocol-and-session.md:MQTT-10-SCN-05
 func TestMQTTWebSocketProtocolAndQoS(t *testing.T) {
 	fixture := newTLSFixture(t, tlsFixtureOptions{WS: true})
 	defer fixture.close(t)
@@ -72,6 +73,7 @@ func TestMQTTWebSocketProtocolAndQoS(t *testing.T) {
 }
 
 // Traceability: PRD MQTT-10; docs/specs/mqtt-protocol-and-session.md §1.
+// Scenarios: mqtt-protocol-and-session.md:MQTT-10-SCN-06
 func TestMQTTWebSocketCrossTransportDelivery(t *testing.T) {
 	fixture := newTLSFixture(t, tlsFixtureOptions{WS: true, WSS: true, DualTCP: true})
 	defer fixture.close(t)
@@ -101,6 +103,7 @@ func TestMQTTWebSocketCrossTransportDelivery(t *testing.T) {
 }
 
 // Traceability: PRD MQTT-10; SEC-05; docs/specs/mqtt-protocol-and-session.md §1.
+// Scenarios: mqtt-protocol-and-session.md:MQTT-10-SCN-07
 func TestMQTTWebSocketPasswordAuthentication(t *testing.T) {
 	password := []byte("ws-password")
 	encodedHash, err := authentication.HashPassword(password)
@@ -123,6 +126,7 @@ func TestMQTTWebSocketPasswordAuthentication(t *testing.T) {
 }
 
 // Traceability: PRD MQTT-10; SEC-03; docs/specs/mqtt-protocol-and-session.md §1.
+// Scenarios: mqtt-protocol-and-session.md:MQTT-10-SCN-04, mqtt-protocol-and-session.md:MQTT-10-SCN-07
 func TestMQTTWebSocketWSSMTLSIdentityAndClientCertificateRejection(t *testing.T) {
 	tenantID, err := tenancy.NewTenantID("tenant-a")
 	if err != nil {
@@ -158,6 +162,7 @@ func TestMQTTWebSocketWSSMTLSIdentityAndClientCertificateRejection(t *testing.T)
 }
 
 // Traceability: PRD MQTT-10; docs/specs/mqtt-protocol-and-session.md §1.
+// Scenarios: mqtt-protocol-and-session.md:MQTT-10-SCN-08
 func TestMQTTWebSocketKeepAliveTimeoutPublishesWillWithoutWarning(t *testing.T) {
 	var logs synchronizedBuffer
 	fixture := newTLSFixture(t, tlsFixtureOptions{WS: true, LogOutput: &logs})
@@ -182,6 +187,7 @@ func TestMQTTWebSocketKeepAliveTimeoutPublishesWillWithoutWarning(t *testing.T) 
 }
 
 // Traceability: PRD MQTT-10; SEC-12; docs/specs/mqtt-protocol-and-session.md §1.
+// Scenarios: mqtt-protocol-and-session.md:MQTT-10-SCN-03
 func TestMQTTWebSocketBlocklistedSourceIPRejected(t *testing.T) {
 	fixture := newTLSFixture(t, tlsFixtureOptions{WS: true, Blocklist: []security.BlockEntry{{Kind: security.BlockKindIPPrefix, Value: "127.0.0.1/32"}}})
 	defer fixture.close(t)
@@ -202,6 +208,7 @@ func TestMQTTWebSocketBlocklistedSourceIPRejected(t *testing.T) {
 }
 
 // Traceability: PRD MQTT-10; docs/specs/mqtt-protocol-and-session.md §1.
+// Scenarios: mqtt-protocol-and-session.md:MQTT-10-SCN-01
 func TestMQTTWebSocketFrameBoundaries(t *testing.T) {
 	fixture := newTLSFixture(t, tlsFixtureOptions{WS: true})
 	defer fixture.close(t)
@@ -241,6 +248,7 @@ func TestMQTTWebSocketFrameBoundaries(t *testing.T) {
 }
 
 // Traceability: PRD MQTT-10; docs/specs/mqtt-protocol-and-session.md §1.
+// Scenarios: mqtt-protocol-and-session.md:MQTT-10-SCN-09
 func TestMQTTWebSocketCloseWithLiveClients(t *testing.T) {
 	fixture := newTLSFixture(t, tlsFixtureOptions{WS: true})
 	clients := make([]net.Conn, 3)
@@ -259,6 +267,7 @@ func TestMQTTWebSocketCloseWithLiveClients(t *testing.T) {
 }
 
 // Traceability: PRD MQTT-10; PRD MQTT-09; docs/specs/mqtt-protocol-and-session.md §1.
+// Scenarios: mqtt-protocol-and-session.md:MQTT-10-SCN-09
 func TestMQTTWebSocketMetricsAndAdmission(t *testing.T) {
 	registry := metricsadapter.NewRegistry()
 	fixture := newTLSFixture(t, tlsFixtureOptions{WS: true, WSS: true, WSMaxConnections: 1, Metrics: registry})

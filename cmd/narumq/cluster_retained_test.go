@@ -102,6 +102,7 @@ func TestClusterRetainedCommitRejectsNonClusterPublisherAndOversizePayload(t *te
 }
 
 // Traceability: PRD CLU-08/CLU-14/TEN-05; docs/specs/cluster-session-and-delivery.md §4·§10.
+// Scenarios: cluster-session-and-delivery.md:CLU-SCN-038
 func TestClusterRetainedProjectionRebuildsIncrementallyAndDeletes(t *testing.T) {
 	runtime := newClusterRetainedProjectionTestRuntime(t, membership.MaxRetainedMessages)
 	first := clusterRetainedChangeForTest("tenant-a", "events/a", "publisher", "alpha", membership.RetainedActionReplace)
@@ -130,6 +131,7 @@ func TestClusterRetainedProjectionRebuildsIncrementallyAndDeletes(t *testing.T) 
 }
 
 // Traceability: PRD CLU-08/CLU-14/TEN-05; docs/specs/cluster-session-and-delivery.md §4·§10.
+// Scenarios: cluster-session-and-delivery.md:CLU-SCN-038
 func TestClusterRetainedProjectionRebuildsAfterIncrementalCapacityFailure(t *testing.T) {
 	runtime := newClusterRetainedProjectionTestRuntime(t, 1)
 	staleTenant := mustTenantForClusterTest(t, "stale-tenant")
@@ -148,6 +150,7 @@ func TestClusterRetainedProjectionRebuildsAfterIncrementalCapacityFailure(t *tes
 }
 
 // Traceability: PRD CLU-08/CLU-14/TEN-05; docs/specs/cluster-session-and-delivery.md §4·§10.
+// Scenarios: cluster-session-and-delivery.md:CLU-SCN-038
 func TestClusterRetainedProjectionFailurePreservesCacheAndLogsOnce(t *testing.T) {
 	runtime := newClusterRetainedProjectionTestRuntime(t, 1)
 	staleTenant := mustTenantForClusterTest(t, "stale-tenant")

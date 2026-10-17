@@ -63,6 +63,7 @@ func dataPlaneSubscribeFixture(t *testing.T) (*UseCase, *routing.Table, security
 }
 
 // Traceability: SEC-11/NFR-17; docs/specs/tenancy-and-security.md §8.
+// Scenarios: tenancy-and-security.md:SEC-SCN-047
 func TestSubscribeResultReportsOnlyACLDeniedFilters(t *testing.T) {
 	for _, version := range []mqtt.ProtocolVersion{mqtt.ProtocolV311, mqtt.ProtocolV5} {
 		name := "mqtt311"
@@ -95,6 +96,7 @@ func TestSubscribeResultReportsOnlyACLDeniedFilters(t *testing.T) {
 }
 
 // Traceability: SEC-11/NFR-17; docs/specs/tenancy-and-security.md §8.
+// Scenarios: tenancy-and-security.md:SEC-SCN-047
 func TestUnsubscribeResultReportsOnlyACLDeniedFilters(t *testing.T) {
 	for _, version := range []mqtt.ProtocolVersion{mqtt.ProtocolV311, mqtt.ProtocolV5} {
 		name := "mqtt311"

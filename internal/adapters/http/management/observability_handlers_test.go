@@ -79,6 +79,7 @@ func successHTTPObservabilityStub() *httpObservabilityStub {
 	}
 }
 
+// Scenarios: management-api-and-observability.md:MGT-SCN-023
 func TestObservabilityMetricsAPIEndpoints(t *testing.T) {
 	queryError := observationports.QueryErrorNodeUnreachable
 	stub := successHTTPObservabilityStub()
@@ -155,6 +156,7 @@ func TestObservabilityMetricsAPIEndpoints(t *testing.T) {
 	}
 }
 
+// Scenarios: management-api-and-observability.md:MGT-SCN-023
 func TestPrometheusMetricsModesAndAuthorization(t *testing.T) {
 	stub := successHTTPObservabilityStub()
 	stub.metrics = observationports.MetricsCollectionDataDTO{
@@ -219,6 +221,47 @@ func TestPrometheusMetricsModesAndAuthorization(t *testing.T) {
 		!strings.Contains(response.Body.String(), `"code":"metrics_collection_incomplete"`) ||
 		!strings.Contains(response.Body.String(), `"retryable":true`) {
 		t.Fatalf("incomplete cluster scrape response=%d %s", response.Code, response.Body.String())
+	}
+}
+
+// Traceability: PRD API-03; docs/specs/management-api-and-observability.md §7.2.
+// Scenarios: management-api-and-observability.md:MGT-SCN-044
+func TestMetricsResponseOverSixtyFourMiBReturnsErrorWithoutTruncating(t *testing.T) {
+	hugeValue := strings.Repeat("x", 1<<20)
+	samples := make([]observationports.MetricSampleDTO, 65)
+	for index := range samples {
+		samples[index] = observationports.MetricSampleDTO{
+			Name:      "narumq_oversized",
+			Labels:    []observationports.MetricLabelDTO{{Name: "payload", Value: hugeValue}, {Name: "index", Value: strings.Repeat("i", index+1)}},
+			ValueKind: "integer",
+			Value:     "1",
+		}
+	}
+	stub := successHTTPObservabilityStub()
+	stub.metrics = observationports.MetricsCollectionDataDTO{
+		Mode:     observationports.MetricsModeAllNodesUnaggregated,
+		Complete: true,
+		Nodes:    []observationports.MetricsNodeStatusDTO{},
+		Families: []observationports.MetricFamilyDTO{{Name: "narumq_oversized", Help: "oversized", Type: "counter", Samples: samples}},
+	}
+	handler := NewRouter(ServerConfig{
+		APIKeys:       []APIKeyCredential{{ID: "read", Key: "read-key", Roles: []Role{RoleReadOnly}}},
+		Observability: stub,
+	}, &mockStateProvider{}, &mockHealthChecker{liveStatus: managementports.HealthStatusUp}, nil)
+
+	for _, path := range []string{"/metrics?mode=all_nodes_unaggregated", "/api/v1/metrics?mode=all_nodes_unaggregated"} {
+		request := httptest.NewRequest(http.MethodGet, path, nil)
+		request.Header.Set("X-API-Key", "read-key")
+		response := httptest.NewRecorder()
+		handler.ServeHTTP(response, request)
+		if response.Code != http.StatusServiceUnavailable ||
+			!strings.Contains(response.Body.String(), `"code":"metrics_snapshot_too_large"`) ||
+			!strings.Contains(response.Body.String(), `"retryable":true`) {
+			t.Fatalf("%s oversized response status=%d body length=%d", path, response.Code, response.Body.Len())
+		}
+		if response.Body.Len() > 4096 {
+			t.Fatalf("%s returned %d bytes for an over-limit snapshot, want only the error body", path, response.Body.Len())
+		}
 	}
 }
 

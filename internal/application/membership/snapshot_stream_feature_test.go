@@ -7,6 +7,7 @@ import (
 )
 
 // Traceability: CLU-14; ADR-0062; docs/contracts/cluster-release-compatibility-v1.md.
+// Scenarios: cluster-session-and-delivery.md:CLU-SCN-259
 func TestSnapshotStreamFeatureIsAdvertisedAndActivatedLikeOtherFeatures(t *testing.T) {
 	if SnapshotStreamFeature != "snapshot-stream" {
 		t.Fatalf("SnapshotStreamFeature = %q, want snapshot-stream", SnapshotStreamFeature)

@@ -12,6 +12,8 @@ import (
 	"narumq/tests/benchmark/internal/environment"
 )
 
+// TestBuildResourceSummaryUsesRunningSamplesAndResetAwareWrites verifies running-sample median CPU, max memory and reset-aware deltas.
+// Scenarios: performance-and-verification.md:PRF-SCN-022
 func TestBuildResourceSummaryUsesRunningSamplesAndResetAwareWrites(t *testing.T) {
 	phasePath, nodes := bp07ResourceFixture(t, []resourceStat{
 		{at: "2026-10-05T00:00:00Z", cpu: 10, memory: 100, blockRead: 10, blockWrite: 100},
@@ -51,6 +53,8 @@ func TestBuildResourceSummaryUsesRunningSamplesAndResetAwareWrites(t *testing.T)
 
 }
 
+// TestBuildResourceSummaryMarksZeroOwnerNetworkUnavailable verifies all-zero owner network deltas mark network stats unavailable without invalidating.
+// Scenarios: performance-and-verification.md:PRF-SCN-022
 func TestBuildResourceSummaryMarksZeroOwnerNetworkUnavailable(t *testing.T) {
 	phasePath, nodes := bp07ResourceFixture(t, []resourceStat{
 		{at: "2026-10-05T00:00:00Z", cpu: 10, memory: 100},
@@ -72,6 +76,8 @@ func TestBuildResourceSummaryMarksZeroOwnerNetworkUnavailable(t *testing.T) {
 	}
 }
 
+// TestBuildResourceSummaryRequiresTwoRunningBrokerSamples verifies at least two running broker samples are required.
+// Scenarios: performance-and-verification.md:PRF-SCN-022
 func TestBuildResourceSummaryRequiresTwoRunningBrokerSamples(t *testing.T) {
 	phasePath, nodes := bp07ResourceFixture(t, []resourceStat{
 		{at: "2026-10-05T00:00:00Z", cpu: 10, memory: 100},

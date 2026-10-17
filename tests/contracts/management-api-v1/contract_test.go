@@ -908,11 +908,13 @@ func documentOperationSet(doc *openapi3.T) []string {
 }
 
 // Traceability: API-02; docs/specs/management-api-and-observability.md §9.
+// Scenarios: management-api-and-observability.md:MGT-SCN-001, cluster-session-and-delivery.md:CLU-SCN-194
 func TestOpenAPIContractIsValid(t *testing.T) {
 	loadManagementContract(t)
 }
 
 // Traceability: API-02/DEP-02; docs/specs/drain-and-rolling-update.md §2.1.
+// Scenarios: drain-and-rolling-update.md:DRN-SCN-006
 func TestNodeDrainRequestDefaultsMatchDomain(t *testing.T) {
 	doc, _ := loadManagementContract(t)
 	drainRef, ok := doc.Components.Schemas["NodeDrainRequest"]
@@ -952,6 +954,7 @@ func TestNodeDrainRequestDefaultsMatchDomain(t *testing.T) {
 }
 
 // Traceability: API-02; docs/specs/management-api-and-observability.md §9.
+// Scenarios: management-api-and-observability.md:MGT-SCN-001, cluster-session-and-delivery.md:CLU-SCN-194
 func TestManagementHandlerResponsesMatchOpenAPI(t *testing.T) {
 	_, router := loadManagementContract(t)
 	handler := contractHandler(managementhttp.ServerConfig{
@@ -1004,6 +1007,7 @@ func TestManagementHandlerResponsesMatchOpenAPI(t *testing.T) {
 }
 
 // Traceability: SEC-10/API-08; docs/specs/management-api-and-observability.md §1, §9; docs/specs/tenancy-and-security.md §6.
+// Scenarios: management-api-and-observability.md:MGT-SCN-019, tenancy-and-security.md:SEC-SCN-033
 func TestAuditQueryHandlerResponsesMatchOpenAPI(t *testing.T) {
 	_, router := loadManagementContract(t)
 	queryService, err := audit.NewQueryService(contractAuditRecordReader{})
@@ -1136,6 +1140,7 @@ func TestDrainHandlerResponsesMatchOpenAPI(t *testing.T) {
 	}
 }
 
+// Scenarios: cluster-session-and-delivery.md:CLU-SCN-225
 func TestRebalanceHandlerResponsesMatchOpenAPI(t *testing.T) {
 	_, router := loadManagementContract(t)
 	fixtures := connectionRebalanceOperationFixtures()
@@ -1207,6 +1212,7 @@ func TestClusterBackupHandlerResponseMatchesOpenAPI(t *testing.T) {
 	}
 }
 
+// Scenarios: management-api-and-observability.md:MGT-SCN-004, cluster-session-and-delivery.md:CLU-SCN-219
 func TestClusterFeatureHandlerResponsesMatchOpenAPI(t *testing.T) {
 	_, router := loadManagementContract(t)
 	handler := clusterManagementContractHandler()
@@ -1232,6 +1238,7 @@ func TestClusterFeatureHandlerResponsesMatchOpenAPI(t *testing.T) {
 }
 
 // Traceability: SEC-07; docs/specs/tenancy-and-security.md §7; docs/contracts/management-api-v1.md.
+// Scenarios: tenancy-and-security.md:SEC-SCN-037
 func TestCredentialRevocationHandlerResponsesMatchOpenAPI(t *testing.T) {
 	_, router := loadManagementContract(t)
 	handler := clusterManagementContractHandler()
@@ -1256,6 +1263,7 @@ func TestCredentialRevocationHandlerResponsesMatchOpenAPI(t *testing.T) {
 }
 
 // Traceability: SEC-12; docs/specs/tenancy-and-security.md §7.1, §9; ADR-0050; docs/contracts/management-api-v1.md.
+// Scenarios: tenancy-and-security.md:SEC-SCN-044
 func TestBlocklistHandlerResponsesMatchOpenAPI(t *testing.T) {
 	_, router := loadManagementContract(t)
 	handler := clusterManagementContractHandler()
@@ -1280,6 +1288,7 @@ func TestBlocklistHandlerResponsesMatchOpenAPI(t *testing.T) {
 }
 
 // Traceability: API-02/SEC-10; docs/specs/management-api-and-observability.md §9; docs/specs/tenancy-and-security.md §6.
+// Scenarios: management-api-and-observability.md:MGT-SCN-001, cluster-session-and-delivery.md:CLU-SCN-225
 func TestManagementOperationSetMatchesOpenAPI(t *testing.T) {
 	doc, _ := loadManagementContract(t)
 	got := documentOperationSet(doc)
@@ -1290,6 +1299,7 @@ func TestManagementOperationSetMatchesOpenAPI(t *testing.T) {
 }
 
 // Traceability: PRD API-05; docs/specs/management-api-and-observability.md §9.
+// Scenarios: management-api-and-observability.md:MGT-SCN-002
 func TestManagementQueryValidationMatchesOpenAPI(t *testing.T) {
 	_, router := loadManagementContract(t)
 	handler := contractHandler(managementhttp.ServerConfig{AllowAnonymousMetrics: true})
@@ -1384,6 +1394,7 @@ func (clock *contractRateLimitClock) Now() time.Time {
 
 // TestManagementRateLimitMatchesOpenAPI verifies principal and failed-authentication 429 responses.
 // Traceability: PRD API-05; docs/specs/management-api-and-observability.md §1.5.
+// Scenarios: management-api-and-observability.md:MGT-SCN-010
 func TestManagementRateLimitMatchesOpenAPI(t *testing.T) {
 	_, router := loadManagementContract(t)
 	clock := &contractRateLimitClock{now: time.Unix(1_800_000_000, 0)}
@@ -1421,6 +1432,7 @@ func TestManagementRateLimitMatchesOpenAPI(t *testing.T) {
 }
 
 // Traceability: API-05/SEC-10; docs/specs/management-api-and-observability.md §1.5; docs/specs/tenancy-and-security.md §6.
+// Scenarios: management-api-and-observability.md:MGT-SCN-003, tenancy-and-security.md:SEC-SCN-031
 func TestManagementAuthorizationMatchesOpenAPI(t *testing.T) {
 	_, router := loadManagementContract(t)
 	handler := clusterManagementContractHandlerWithConfig(managementhttp.ServerConfig{

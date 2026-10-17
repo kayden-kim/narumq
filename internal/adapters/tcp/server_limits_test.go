@@ -14,6 +14,7 @@ import (
 )
 
 // Traceability: PRD MQTT-11/MQTT-12/TEST-04/05.
+// Scenarios: mqtt-protocol-and-session.md:MQTT-SCN-029
 func TestTCPPartialPacketAfterConnectTimesOut(t *testing.T) {
 	for _, version := range []mqtt.ProtocolVersion{mqtt.ProtocolV311, mqtt.ProtocolV5} {
 		t.Run(fmt.Sprint(version), func(t *testing.T) {
@@ -38,6 +39,7 @@ func TestTCPPartialPacketAfterConnectTimesOut(t *testing.T) {
 }
 
 // Traceability: PRD MQTT-11/TEST-04/05.
+// Scenarios: mqtt-protocol-and-session.md:MQTT-SCN-026
 func TestTCPConnAckAdvertisesServerLimits(t *testing.T) {
 	for _, version := range []mqtt.ProtocolVersion{mqtt.ProtocolV311, mqtt.ProtocolV5} {
 		t.Run(fmt.Sprint(version), func(t *testing.T) {
@@ -63,6 +65,7 @@ func TestTCPConnAckAdvertisesServerLimits(t *testing.T) {
 }
 
 // Traceability: PRD MQTT-11/MQTT-12/TEST-04/05; MQTT-4.13.1-1.
+// Scenarios: mqtt-protocol-and-session.md:MQTT-SCN-027
 func TestTCPProtocolErrorsAfterConnectDisconnectWithReason(t *testing.T) {
 	for _, version := range []mqtt.ProtocolVersion{mqtt.ProtocolV311, mqtt.ProtocolV5} {
 		for _, scenario := range []struct {
@@ -117,6 +120,7 @@ func TestTCPProtocolErrorsAfterConnectDisconnectWithReason(t *testing.T) {
 }
 
 // Traceability: PRD MQTT-11/TEST-04/05.
+// Scenarios: mqtt-protocol-and-session.md:MQTT-SCN-028
 func TestTCPReceiveMaximumQuotaReturnsAfterAcknowledgement(t *testing.T) {
 	for _, version := range []mqtt.ProtocolVersion{mqtt.ProtocolV311, mqtt.ProtocolV5} {
 		t.Run(fmt.Sprint(version), func(t *testing.T) {
@@ -193,6 +197,7 @@ func writeLimitsDeliveryBatch(t *testing.T, conn *connection, client net.Conn, c
 }
 
 // Traceability: PRD MQTT-11/TEST-04/05; MQTT-3.3.4-9.
+// Scenarios: mqtt-protocol-and-session.md:MQTT-SCN-036
 func TestWriteDeliveriesHonorsClientReceiveMaximum(t *testing.T) {
 	conn, client := newLimitsDeliveryConnection(t)
 	conn.clientReceiveMaximum = 2
@@ -216,6 +221,7 @@ func TestWriteDeliveriesHonorsClientReceiveMaximum(t *testing.T) {
 }
 
 // Traceability: PRD MQTT-11/TEST-04/05; MQTT-3.3.4-9/10.
+// Scenarios: mqtt-protocol-and-session.md:MQTT-SCN-036
 func TestWriteRecoveredDeliveriesHonorsClientReceiveMaximum(t *testing.T) {
 	conn, client := newLimitsDeliveryConnection(t)
 	conn.clientReceiveMaximum = 1
@@ -279,6 +285,7 @@ func (queue *limitsRecordingQueue) CompleteOutbound(sessionID routing.SessionID,
 }
 
 // Traceability: PRD MQTT-11/TEST-04/05; MQTT-3.1.2-24/25.
+// Scenarios: mqtt-protocol-and-session.md:MQTT-SCN-037
 func TestWriteDeliveriesDiscardsPublishAboveClientMaximumPacketSize(t *testing.T) {
 	conn, client := newLimitsDeliveryConnection(t)
 	conn.clientMaximumPacketSize = 64
@@ -308,6 +315,7 @@ func TestWriteDeliveriesDiscardsPublishAboveClientMaximumPacketSize(t *testing.T
 }
 
 // Traceability: PRD MQTT-11/TEST-04/05; docs/specs/mqtt-protocol-and-session.md §7.1.
+// Scenarios: mqtt-protocol-and-session.md:MQTT-SCN-038
 func TestTCPConnAckAboveClientMaximumPacketSizeClosesWithoutSending(t *testing.T) {
 	for _, unavailable := range []bool{false, true} {
 		t.Run(fmt.Sprint("cluster-unavailable=", unavailable), func(t *testing.T) {

@@ -13,6 +13,7 @@ import (
 // reach startup without any readiness request: the kubelet runs readiness only
 // after startup succeeds. The test replays that sequence and the plain crash
 // restart of the 2026-10-15 power-loss run with real broker processes.
+// Scenarios: drain-and-rolling-update.md:DRN-SCN-004
 func TestDynamicClusterRestartStartupOnlyAfterProbeKillAndCrashProcessAcceptance(t *testing.T) {
 	t.Parallel()
 

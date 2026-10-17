@@ -6,6 +6,8 @@ import (
 	"testing"
 )
 
+// TestShippedProfilesDecodeAndValidate loads the shipped capacity profiles and checks their decisions.
+// Scenarios: performance-and-verification.md:PRF-SCN-049
 func TestShippedProfilesDecodeAndValidate(t *testing.T) {
 	for _, name := range []string{"testdata/local-smoke.json", "testdata/eks-capacity-v1.json"} {
 		p, data, sha, err := LoadProfile(name)
@@ -25,6 +27,8 @@ func TestShippedProfilesDecodeAndValidate(t *testing.T) {
 	}
 }
 
+// TestDecodeProfileRejectsUnknownMissingTrailingAndOutOfBounds rejects malformed and out-of-range profiles.
+// Scenarios: performance-and-verification.md:PRF-SCN-049
 func TestDecodeProfileRejectsUnknownMissingTrailingAndOutOfBounds(t *testing.T) {
 	source, err := os.ReadFile("testdata/local-smoke.json")
 	if err != nil {

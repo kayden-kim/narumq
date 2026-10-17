@@ -1070,6 +1070,7 @@ class RunController:
                 sampler.stop()
 
 
+# Scenarios: performance-and-verification.md:PRF-SCN-063, performance-and-verification.md:PRF-SCN-064
 def run_command(args, kube: Kubectl) -> int:
     profile = json.loads(Path(args.profile).read_text(encoding="utf-8"))
     if not args.run_id:

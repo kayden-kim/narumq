@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
+	"time"
 )
 
 func main() {
@@ -66,6 +68,30 @@ func run(args []string) int {
 			return printCommandError("markdown-links", err)
 		}
 		fmt.Printf("markdown-links: PASS (files %d, local links %d)\n", summary.MarkdownFiles, summary.LocalLinks)
+		return 0
+	case "scenarios":
+		flags := flag.NewFlagSet("scenarios", flag.ContinueOnError)
+		var goTestJSON, results stringListFlag
+		flags.Var(&goTestJSON, "go-test-json", "go test -json event stream file (repeatable)")
+		flags.Var(&results, "results", "JSON Lines result file for non-Go tests (repeatable)")
+		outputDir := flags.String("output", defaultScenarioOutputDir, "scenario report output directory")
+		requireExecuted := flags.Bool("require-executed", false, "also fail on linked tests in the executed scope that have no pass result")
+		if err := flags.Parse(args[1:]); err != nil {
+			return 2
+		}
+		if flags.NArg() != 0 {
+			fmt.Fprintln(os.Stderr, "scenarios: does not accept positional arguments")
+			return 2
+		}
+		report, err := runScenarios(root, scenarioOptions{GoTestJSON: goTestJSON, Results: results, OutputDir: filepath.Clean(*outputDir), RequireExecuted: *requireExecuted}, time.Now())
+		if err != nil {
+			return printCommandError("scenarios", err)
+		}
+		printScenarioFindings(os.Stderr, report)
+		fmt.Println(formatScenarioSummary(report.Summary))
+		if report.Summary.hasProblems() {
+			return 1
+		}
 		return 0
 
 	case "branch-instrument":
@@ -150,6 +176,21 @@ func printCommandError(name string, err error) int {
 	return 1
 }
 func printUsage() {
-	fmt.Fprintln(os.Stderr, "usage: go run ./tools/verify <traceability|architecture|markdown-links|branch-instrument|coverage|local|ci|mutation>")
+	fmt.Fprintln(os.Stderr, "usage: go run ./tools/verify <traceability|architecture|markdown-links|scenarios|branch-instrument|coverage|local|ci|mutation>")
 	fmt.Fprintln(os.Stderr, "  ci requires --base <git-ref>; coverage requires --profile <path>; mutation runs all five packages")
+	fmt.Fprintln(os.Stderr, "  scenarios [--go-test-json FILE]... [--results FILE]... [--require-executed] [--output DIR] writes report.md and report.json")
+}
+
+type stringListFlag []string
+
+func (values *stringListFlag) String() string {
+	return strings.Join(*values, ",")
+}
+
+func (values *stringListFlag) Set(value string) error {
+	if value == "" {
+		return errors.New("value must not be empty")
+	}
+	*values = append(*values, filepath.Clean(value))
+	return nil
 }

@@ -31,6 +31,8 @@ from pathlib import Path
 from typing import Any, Callable
 
 sys.dont_write_bytecode = True
+sys.path.append(str(Path(__file__).resolve().parents[2]))  # tests/ holds scenario_results.py
+from scenario_results import scenario_result  # noqa: E402
 
 RUN_LABEL = "narumq.io/acceptance-run"
 NAMESPACE = "narumq"
@@ -432,6 +434,8 @@ def route_controller_through_proxy(fixture: Fixture) -> dict[str, Any]:
 
 
 # Scenario A: real broker drain FAILED -----------------------------------------------------------
+# Scenarios: drain-and-rolling-update.md:DRN-SCN-026
+@scenario_result
 def scenario_drain_failed(session: Session, retry_token: str) -> dict[str, Any]:
     fx, checks, start = session.fixture, Checks(), time.time()
     baseline = fx.broker_pods()
@@ -467,6 +471,8 @@ def scenario_drain_failed(session: Session, retry_token: str) -> dict[str, Any]:
 
 
 # Scenario B: GET faults on a long real drain, then controller deadline ----------------------------
+# Scenarios: drain-and-rolling-update.md:DRN-SCN-023
+@scenario_result
 def scenario_get_faults_and_deadline(session: Session, retry_token: str, hold: float = 75) -> dict[str, Any]:
     fx, checks, start = session.fixture, Checks(), time.time()
     baseline = fx.broker_pods()
@@ -544,6 +550,8 @@ def read_audit_chain(session: Session) -> dict[str, Any]:
             "events": [json.loads(line)["event"] for line in text.splitlines() if line.strip()]}
 
 
+# Scenarios: drain-and-rolling-update.md:DRN-SCN-026
+@scenario_result
 def scenario_audit_sink_failure(session: Session, retry_token: str, hold: float = 75) -> dict[str, Any]:
     fx, checks, start = session.fixture, Checks(), time.time()
     baseline = fx.broker_pods()
@@ -577,6 +585,8 @@ def scenario_audit_sink_failure(session: Session, retry_token: str, hold: float 
 
 
 # Scenario H: retry after a failure at SAFE_TO_STOP re-approves the same drain ----------------------
+# Scenarios: drain-and-rolling-update.md:DRN-SCN-027
+@scenario_result
 def scenario_safe_retry(session: Session, tokens: tuple[str, str, str], approval_timeout: float = 900) -> dict[str, Any]:
     """Contract §2.9 SAFE_TO_STOP retry on a real broker drain.
 
@@ -696,6 +706,8 @@ def webhook_requests(session: Session, since: float = 0.0) -> list[dict[str, Any
     return [r for r in session.webhook.call("GET", "/requests")[1]["requests"] if r["receivedAt"] >= since]
 
 
+# Scenarios: drain-and-rolling-update.md:DRN-SCN-026
+@scenario_result
 def scenario_delete_unknown(session: Session, ca_bundle: bytes, restart_first: bool = True) -> dict[str, Any]:
     """DELETE result unknown on ordinal 0. ``restart_first`` restarts the controller after an audit-sink failure;
     a fresh rollout skips it and reaches approval through its own drain."""
@@ -831,6 +843,8 @@ def stop_standby(session: Session, standby: dict[str, Any], checks: Checks, labe
 
 
 # Scenario E: drain POST unknown, restart at the request boundary, non-leader process ----------------
+# Scenarios: drain-and-rolling-update.md:DRN-SCN-024
+@scenario_result
 def scenario_post_unknown_non_leader(session: Session) -> dict[str, Any]:
     fx, checks, start = session.fixture, Checks(), time.time()
     leader_before = fx.leader()
@@ -877,6 +891,8 @@ def scenario_post_unknown_non_leader(session: Session) -> dict[str, Any]:
 
 
 # Scenario F: status CAS conflict at every write, including the approval write ---------------------
+# Scenarios: drain-and-rolling-update.md:DRN-SCN-026
+@scenario_result
 def scenario_cas_conflict(session: Session, standby: dict[str, Any], after_safe: int = 3) -> dict[str, Any]:
     fx, checks, start = session.fixture, Checks(), time.time()
     held = wait_for(lambda: (lambda s: s if s.get("currentOrdinal") == 2 and s.get("failureCode") == "drain_observation_unknown" else None)(
@@ -926,6 +942,8 @@ def scenario_cas_conflict(session: Session, standby: dict[str, Any], after_safe:
 
 
 # Scenario G: the three controller audit actions in the real durable file ---------------------------
+# Scenarios: drain-and-rolling-update.md:DRN-SCN-026
+@scenario_result
 def scenario_audit_events(session: Session, controller_version: str) -> dict[str, Any]:
     fx, checks = session.fixture, Checks()
     start_helper(session)
@@ -969,6 +987,8 @@ def scenario_audit_events(session: Session, controller_version: str) -> dict[str
     return fx.save_result("rollout-audit-events.json", checks.result("audit_events", verify=chain["verifyOutput"], events=events))
 
 
+# Scenarios: drain-and-rolling-update.md:DRN-SCN-026, drain-and-rolling-update.md:DRN-SCN-027
+@scenario_result
 def verify_windows(session: Session) -> dict[str, Any]:
     """Cross-check all scenario windows against Kubernetes API audit DELETE records."""
     fx, checks = session.fixture, Checks()
@@ -1086,6 +1106,8 @@ def argo_application_objects(repo_url: str, revision: str) -> list[dict[str, Any
     return [project, app]
 
 
+# Scenarios: drain-and-rolling-update.md:DRN-SCN-026
+@scenario_result
 def scenario_argo_upgrade(session: Session, rollout_name: str, target: dict[str, Any], repo_url: str, revision: str,
                           statefulset_in_git: dict[str, Any], timeout: float = 2700) -> dict[str, Any]:
     """Argo CD syncs the target StatefulSet template and NaruMQRollout from Git; the controller replaces the brokers."""
@@ -1181,6 +1203,8 @@ def verify_argo_deletes(session: Session, start: float, end: float) -> dict[str,
     return fx.save_result("rollout-argo-kubernetes-audit.json", checks.result("argo_kubernetes_audit", records=records, window=[start, end]))
 
 
+# Scenarios: drain-and-rolling-update.md:DRN-SCN-026
+@scenario_result
 def scenario_argo_finalizer_sync(session: Session, previous_rollout: str, rollout_name: str, repo_url: str,
                                  files: dict[str, str], nginx_image: str, timeout: float = 900) -> dict[str, Any]:
     """Controller finalizer writes keep a Git-applied NaruMQRollout Synced (explicit spec.abort=false survives).

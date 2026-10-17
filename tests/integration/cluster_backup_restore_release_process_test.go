@@ -16,6 +16,7 @@ import (
 )
 
 // Traceability: CLU-11/CLU-14; docs/specs/cluster-session-and-delivery.md §10, §11.19.
+// Scenarios: cluster-session-and-delivery.md:CLU-SCN-119, cluster-session-and-delivery.md:CLU-SCN-120, cluster-session-and-delivery.md:CLU-SCN-121, cluster-session-and-delivery.md:CLU-SCN-122, cluster-session-and-delivery.md:CLU-SCN-222
 func TestClusterBackupRestoreReleaseWindowProcessAcceptance(t *testing.T) {
 	if os.Getenv("NARUMQ_RELEASE_COMPAT") != "1" {
 		t.Skip("set NARUMQ_RELEASE_COMPAT=1 to run backup archive release-window acceptance")

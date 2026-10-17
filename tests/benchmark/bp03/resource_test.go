@@ -55,6 +55,8 @@ func TestBuildResourceSummaryDeltasAndRatios(t *testing.T) {
 	}
 }
 
+// TestBuildResourceSummaryInsufficientSamplesInvalidates verifies insufficient samples invalidate the resource summary.
+// Scenarios: performance-and-verification.md:PRF-SCN-006
 func TestBuildResourceSummaryInsufficientSamplesInvalidates(t *testing.T) {
 	phasePath, nodes := resourceFixture(t, true, true)
 	writeResourceStats(t, nodes[1].NetworkStatsPath, []resourceStat{{at: "2026-01-01T00:00:01Z", networkRx: 10}})
@@ -67,6 +69,8 @@ func TestBuildResourceSummaryInsufficientSamplesInvalidates(t *testing.T) {
 	}
 }
 
+// TestBuildResourceSummaryZeroBlockWritesValid verifies zero block writes keep the summary valid.
+// Scenarios: performance-and-verification.md:PRF-SCN-006
 func TestBuildResourceSummaryZeroBlockWritesValid(t *testing.T) {
 	phasePath, nodes := resourceFixture(t, true, true)
 	for _, node := range nodes {
@@ -89,6 +93,8 @@ func TestBuildResourceSummaryZeroBlockWritesValid(t *testing.T) {
 	}
 }
 
+// TestBuildResourceSummaryNetworkUnavailableDoesNotInvalidate verifies missing network samples do not invalidate the workload.
+// Scenarios: performance-and-verification.md:PRF-SCN-006
 func TestBuildResourceSummaryNetworkUnavailableDoesNotInvalidate(t *testing.T) {
 	phasePath, nodes := resourceFixture(t, false, true)
 	workload := workloadSummary{Steps: []stepSummary{{Step: 1, QoS: map[string]qosStats{"1": {Acked: 5}}}}}

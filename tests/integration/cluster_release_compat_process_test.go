@@ -17,6 +17,7 @@ import (
 )
 
 // Traceability: CLU-11/NFR-15; docs/specs/cluster-session-and-delivery.md §8, §11.17.
+// Scenarios: cluster-session-and-delivery.md:CLU-SCN-103, cluster-session-and-delivery.md:CLU-SCN-104, cluster-session-and-delivery.md:CLU-SCN-105, cluster-session-and-delivery.md:CLU-SCN-106, cluster-session-and-delivery.md:CLU-SCN-107, cluster-session-and-delivery.md:CLU-SCN-108, cluster-session-and-delivery.md:CLU-SCN-109, cluster-session-and-delivery.md:CLU-SCN-110, cluster-session-and-delivery.md:CLU-SCN-158, cluster-session-and-delivery.md:CLU-SCN-263, cluster-session-and-delivery.md:CLU-SCN-222, cluster-session-and-delivery.md:CLU-SCN-173, cluster-session-and-delivery.md:CLU-SCN-216
 func TestDynamicClusterReleaseCompatibilityProcessAcceptance(t *testing.T) {
 	if os.Getenv("NARUMQ_RELEASE_COMPAT") != "1" {
 		t.Skip("set NARUMQ_RELEASE_COMPAT=1 to run release N-1/N compatibility acceptance")

@@ -18,6 +18,7 @@ type eksConfigMap struct {
 	Data map[string]string `yaml:"data"`
 }
 
+// Scenarios: cluster-session-and-delivery.md:CLU-SCN-048, drain-and-rolling-update.md:DRN-SCN-028, drain-and-rolling-update.md:DRN-SCN-029
 func TestEKSDeployment(t *testing.T) {
 	root := filepath.Join("..", "..", "deploy", "kubernetes", "eks-ec2-ha")
 	read := func(name string) []byte {
@@ -584,6 +585,7 @@ func TestEKSDeployment(t *testing.T) {
 	}
 }
 
+// Scenarios: cluster-session-and-delivery.md:CLU-SCN-048
 func TestEKSDeploymentS3OptInBoundary(t *testing.T) {
 	root := filepath.Join("..", "..", "deploy", "kubernetes")
 	readDocs := func(name string) []map[string]any {

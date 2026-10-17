@@ -52,6 +52,7 @@ func tenantLimitConnect(t *testing.T, useCase *UseCase, version mqtt.ProtocolVer
 }
 
 // Traceability: TEN-06, TEN-07; docs/specs/tenancy-and-security.md §5.2.
+// Scenarios: tenancy-and-security.md:SEC-SCN-024
 func TestConnectTenantConnectionQuota(t *testing.T) {
 	for _, version := range []mqtt.ProtocolVersion{mqtt.ProtocolV5, mqtt.ProtocolV311} {
 		name := "v5"
@@ -102,6 +103,7 @@ func TestConnectTenantConnectionQuota(t *testing.T) {
 }
 
 // Traceability: TEN-06, TEN-07; docs/specs/tenancy-and-security.md §5.2.
+// Scenarios: tenancy-and-security.md:SEC-SCN-024
 func TestConnectTenantSessionQuotaAndResume(t *testing.T) {
 	useCase, repository, _, _, reporter, tenant := tenantLimitConnectFixture(t, tenantlimit.Limits{MaxSessions: 1})
 	first := tenantLimitConnect(t, useCase, mqtt.ProtocolV5, "one", true)
@@ -135,6 +137,7 @@ func TestConnectTenantSessionQuotaAndResume(t *testing.T) {
 }
 
 // Traceability: TEN-06, TEN-07; docs/specs/tenancy-and-security.md §5.2.
+// Scenarios: tenancy-and-security.md:SEC-SCN-024
 func TestConnectTenantQuotaPreservesDetachedTimers(t *testing.T) {
 	useCase, repository, _, _, _, tenant := tenantLimitConnectFixture(t, tenantlimit.Limits{MaxConnections: 1})
 	first := tenantLimitConnect(t, useCase, mqtt.ProtocolV5, "one", true)
@@ -166,6 +169,7 @@ func TestConnectTenantQuotaPreservesDetachedTimers(t *testing.T) {
 }
 
 // Traceability: TEN-06, TEN-07; docs/specs/tenancy-and-security.md §5.2.
+// Scenarios: tenancy-and-security.md:SEC-SCN-024
 func TestConnectTenantLimitsRequireCounterAndSkipAnonymous(t *testing.T) {
 	clock := &fakeClock{now: time.Unix(100, 0)}
 	service, err := tenantlimit.New(clock, tenantlimit.Profile{Default: tenantlimit.Limits{MaxConnections: 1, MaxSessions: 1}}, nil)

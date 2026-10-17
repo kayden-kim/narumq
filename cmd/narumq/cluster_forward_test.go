@@ -67,6 +67,7 @@ func newClusterForwardTestRuntime(t *testing.T, ownerNodeID uint64) (*clusterRun
 }
 
 // Traceability: CLU-03; docs/specs/cluster-session-and-delivery.md §3.1, §11.10.
+// Scenarios: cluster-session-and-delivery.md:CLU-SCN-057
 func TestClusterForwardRemoteUsesCommittedOwnerAndQoS0(t *testing.T) {
 	runtime, sessionID := newClusterForwardTestRuntime(t, 2)
 	peer := &clusterForwardTestPeer{}
@@ -94,6 +95,7 @@ func TestClusterForwardRemoteUsesCommittedOwnerAndQoS0(t *testing.T) {
 }
 
 // Traceability: CLU-03; docs/specs/cluster-session-and-delivery.md §3.1, §11.10.
+// Scenarios: cluster-session-and-delivery.md:CLU-SCN-057
 func TestClusterForwardRemoteKeepsLocalAndNonQoS0Paths(t *testing.T) {
 	localRuntime, sessionID := newClusterForwardTestRuntime(t, 1)
 	localPeer := &clusterForwardTestPeer{}
@@ -117,6 +119,7 @@ func TestClusterForwardRemoteKeepsLocalAndNonQoS0Paths(t *testing.T) {
 }
 
 // Traceability: CLU-03; docs/specs/cluster-session-and-delivery.md §3.1, §11.10.
+// Scenarios: cluster-session-and-delivery.md:CLU-SCN-057
 func TestClusterForwardRemoteMapsPeerErrors(t *testing.T) {
 	for _, testCase := range []struct {
 		name    string
@@ -140,6 +143,7 @@ func TestClusterForwardRemoteMapsPeerErrors(t *testing.T) {
 }
 
 // Traceability: CLU-03; docs/specs/cluster-session-and-delivery.md §3.1, §11.10.
+// Scenarios: cluster-session-and-delivery.md:CLU-SCN-057
 func TestClusterForwardReceiverRequiresCommittedLocalOwner(t *testing.T) {
 	localRuntime, sessionID := newClusterForwardTestRuntime(t, 1)
 	localSink := &clusterForwardTestSink{}
@@ -184,6 +188,7 @@ func TestClusterForwardReceiverRequiresCommittedLocalOwner(t *testing.T) {
 }
 
 // Traceability: CLU-03; docs/specs/cluster-session-and-delivery.md §3.1, §11.10.
+// Scenarios: cluster-session-and-delivery.md:CLU-SCN-057
 func TestClusterForwardRemoteRejectsUnavailableAndInvalidInput(t *testing.T) {
 	var nilRuntime *clusterRuntime
 	handled, err := nilRuntime.ForwardRemote(context.Background(), applicationdeliveryqueue.DeliveryDTO{QoS: mqtt.QoSAtMostOnce})
@@ -232,6 +237,7 @@ func TestClusterForwardRemoteRejectsUnavailableAndInvalidInput(t *testing.T) {
 }
 
 // Traceability: CLU-03; docs/specs/cluster-session-and-delivery.md §3.1, §11.10.
+// Scenarios: cluster-session-and-delivery.md:CLU-SCN-057
 func TestClusterForwardReceiverLogsDeliveryFailures(t *testing.T) {
 	runtime, sessionID := newClusterForwardTestRuntime(t, 1)
 	payload, err := tcpadapter.EncodeForwardedDelivery(tcpadapter.ForwardedDeliveryDTO{
@@ -266,6 +272,7 @@ func TestClusterForwardReceiverLogsDeliveryFailures(t *testing.T) {
 }
 
 // Traceability: CLU-03; docs/specs/cluster-session-and-delivery.md §3.1, §11.10.
+// Scenarios: cluster-session-and-delivery.md:CLU-SCN-057
 func TestClusterForwardReceiverRejectsInvalidSessionAndMissingSink(t *testing.T) {
 	runtime, sessionID := newClusterForwardTestRuntime(t, 1)
 	var logOutput strings.Builder
@@ -300,6 +307,7 @@ func TestClusterForwardReceiverRejectsInvalidSessionAndMissingSink(t *testing.T)
 }
 
 // Traceability: CLU-03; docs/specs/cluster-session-and-delivery.md §3.1, §11.10.
+// Scenarios: cluster-session-and-delivery.md:CLU-SCN-057
 func TestClusterForwardRemoteRejectsInvalidTopicEncoding(t *testing.T) {
 	runtime, sessionID := newClusterForwardTestRuntime(t, 2)
 	peer := &clusterForwardTestPeer{}

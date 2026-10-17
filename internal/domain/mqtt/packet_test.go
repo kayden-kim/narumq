@@ -182,6 +182,7 @@ func TestConnectProtocolVersionAndPacketContracts_MQTT01_MQTT13_MQTT312_MQTT313(
 	}
 }
 
+// Scenarios: performance-and-verification.md:PRF-SCN-100
 func TestRemainingLengthFramingHelperEdges_MQTT153_1_2_MQTT154_1_2(t *testing.T) {
 	cases := []struct {
 		value int

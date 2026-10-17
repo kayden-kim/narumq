@@ -15,6 +15,7 @@ import (
 // That is the state of a request that was sent to the old leader and never committed. Without
 // `proposal-recovery` the ingress node must time out and close the MQTT connection. With it the same
 // command is re-proposed to the new leader inside the original 5 s caller deadline and the connection stays.
+// Scenarios: cluster-session-and-delivery.md:CLU-SCN-239, cluster-session-and-delivery.md:CLU-SCN-240
 func TestDynamicClusterProposalRecoveryLeaderKillInFlightCommit(t *testing.T) {
 	for _, testCase := range []struct {
 		name     string

@@ -75,6 +75,7 @@ func independentAuditHash(sequence uint64, previous string, event []byte) string
 	return hex.EncodeToString(digest[:])
 }
 
+// Scenarios: management-api-and-observability.md:MGT-SCN-014, tenancy-and-security.md:SEC-SCN-050
 func TestFileAuditPublisherPersistsAndRecoversHashChain(t *testing.T) {
 	directory := t.TempDir()
 	publisher := openAuditTestPublisher(t, directory, 1<<20)
@@ -122,6 +123,7 @@ func TestFileAuditPublisherPersistsAndRecoversHashChain(t *testing.T) {
 	}
 }
 
+// Scenarios: management-api-and-observability.md:MGT-SCN-014
 func TestFileAuditPublisherTruncatesTornActiveTail(t *testing.T) {
 	directory := t.TempDir()
 	publisher := openAuditTestPublisher(t, directory, 1<<20)
@@ -154,6 +156,7 @@ func TestFileAuditPublisherTruncatesTornActiveTail(t *testing.T) {
 	}
 }
 
+// Scenarios: management-api-and-observability.md:MGT-SCN-014
 func TestFileAuditPublisherRejectsCorruptRecordAndStaysUnavailable(t *testing.T) {
 	directory := t.TempDir()
 	publisher := openAuditTestPublisher(t, directory, 1<<20)
@@ -189,6 +192,7 @@ func TestFileAuditPublisherRejectsCorruptRecordAndStaysUnavailable(t *testing.T)
 	_ = publisher.Close()
 }
 
+// Scenarios: management-api-and-observability.md:MGT-SCN-014, tenancy-and-security.md:SEC-SCN-050
 func TestFileAuditPublisherRotatesWithContinuousSequence(t *testing.T) {
 	directory := t.TempDir()
 	publisher := openAuditTestPublisher(t, directory, 1)
@@ -242,6 +246,7 @@ func TestOpenFileAuditPublisherRejectsInvalidConfiguration(t *testing.T) {
 	}
 }
 
+// Scenarios: management-api-and-observability.md:MGT-SCN-014, tenancy-and-security.md:SEC-SCN-050
 func TestVerifyDirectoryDetectsMissingRecordAndReportsTornActiveTail(t *testing.T) {
 	directory := t.TempDir()
 	publisher := openAuditTestPublisher(t, directory, 1<<20)
@@ -299,6 +304,7 @@ func TestVerifyDirectoryDetectsMissingRecordAndReportsTornActiveTail(t *testing.
 	}
 }
 
+// Scenarios: management-api-and-observability.md:MGT-SCN-014, tenancy-and-security.md:SEC-SCN-050
 func TestVerifyDirectoryAllowsDeletedOldestRotation(t *testing.T) {
 	directory := t.TempDir()
 	publisher := openAuditTestPublisher(t, directory, 1)
@@ -319,6 +325,7 @@ func TestVerifyDirectoryAllowsDeletedOldestRotation(t *testing.T) {
 	}
 }
 
+// Scenarios: management-api-and-observability.md:MGT-SCN-014
 func TestVerifyDirectoryRejectsTornRotationFile(t *testing.T) {
 	directory := t.TempDir()
 	publisher := openAuditTestPublisher(t, directory, 1)
@@ -342,6 +349,7 @@ func TestVerifyDirectoryRejectsTornRotationFile(t *testing.T) {
 	}
 }
 
+// Scenarios: management-api-and-observability.md:MGT-SCN-014, tenancy-and-security.md:SEC-SCN-050
 func TestFileAuditPublisherRotationCollisionMakesPublisherUnavailable(t *testing.T) {
 	directory := t.TempDir()
 	publisher := openAuditTestPublisher(t, directory, 1)
@@ -365,6 +373,8 @@ func TestAuditHashFormattingIsLowercaseHex(t *testing.T) {
 		t.Fatal("hash validation did not enforce 64 lowercase hexadecimal characters")
 	}
 }
+
+// Scenarios: management-api-and-observability.md:MGT-SCN-014, tenancy-and-security.md:SEC-SCN-050
 func TestVerifyDirectoryRejectsCorruptSequenceAndHashChain(t *testing.T) {
 	tests := []struct {
 		name    string
@@ -508,6 +518,7 @@ func TestVerifyDirectoryEmptyAndEmptyActiveLog(t *testing.T) {
 	}
 }
 
+// Scenarios: management-api-and-observability.md:MGT-SCN-014
 func TestScanAuditDataRejectsMalformedRecords(t *testing.T) {
 	event := []byte(`{"action":"test"}`)
 	valid := func() []byte {

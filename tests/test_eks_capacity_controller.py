@@ -31,6 +31,7 @@ def job_values(**changes):
 
 
 class MarkerListingTests(unittest.TestCase):
+    # Scenarios: performance-and-verification.md:PRF-SCN-053
     def test_only_final_marker_names_are_recognised(self):
         listing = "\n".join(["step-01-r1-ready.json", "step-01-r1-kill-ack.json", ".step-01-r1-kill.json.tmp",
                              "step-12-r10-n1-done.json", "step-01-r1-other.json", "run-complete.json",
@@ -45,6 +46,7 @@ class MarkerListingTests(unittest.TestCase):
             with self.assertRaises(controller.ControllerError):
                 controller.broker_pod_name(bad)
 
+    # Scenarios: performance-and-verification.md:PRF-SCN-053
     def test_kill_marker_states_are_the_contract_states(self):
         marker = controller.kill_marker("down", 2, "narumq-1", "worker-b", "t", cordonedAt="c")
         self.assertEqual(marker, {"state": "down", "target": {"nodeId": "2", "pod": "narumq-1", "worker": "worker-b"},
@@ -56,6 +58,7 @@ class MarkerListingTests(unittest.TestCase):
 
 
 class FaultIdentityTests(unittest.TestCase):
+    # Scenarios: performance-and-verification.md:PRF-SCN-055
     def test_signals_require_the_original_live_broker_identity(self):
         target = {"uid": "old-pod", "worker": "worker-a", "containerID": "containerd://old"}
         pod = {"metadata": {"uid": "old-pod"}, "spec": {"nodeName": "worker-a"},
@@ -86,6 +89,7 @@ class FaultIdentityTests(unittest.TestCase):
 
 
 class StepMachineTests(unittest.TestCase):
+    # Scenarios: performance-and-verification.md:PRF-SCN-053
     def test_full_sequence_requests_kills_restores_and_completes_once(self):
         machine = controller.StepMachine("step-01-r1", ack_timeout=5)
         self.assertIsNone(machine.next_action(set(), 0))
@@ -99,6 +103,7 @@ class StepMachineTests(unittest.TestCase):
         self.assertEqual(machine.next_action({"complete"}, 7), "complete")
         self.assertIsNone(machine.next_action({"complete"}, 8))
 
+    # Scenarios: performance-and-verification.md:PRF-SCN-053
     def test_ack_timeout_boundary_and_no_kill_after_failure(self):
         machine = controller.StepMachine("step-01-r1", ack_timeout=5)
         machine.next_action({"ready"}, 10)
@@ -242,6 +247,7 @@ class CommandTests(unittest.TestCase):
         self.assertEqual(controller.cordon_args("w", True), ["cordon", "w"])
         self.assertEqual(controller.cordon_args("w", False), ["uncordon", "w"])
 
+    # Scenarios: performance-and-verification.md:PRF-SCN-053
     def test_atomic_marker_write_uses_a_hidden_temp_file_and_rename(self):
         command = controller.atomic_write_command("step-01-r1-kill.json")
         self.assertEqual(command[:2], ["sh", "-c"])
@@ -257,6 +263,7 @@ class CommandTests(unittest.TestCase):
         self.assertEqual(controller.kubectl_global_args("kubectl", "capacity", "kc"),
                          ["kubectl", "--kubeconfig", "kc", "--context", "capacity"])
 
+    # Scenarios: performance-and-verification.md:PRF-SCN-053
     def test_marker_payload_goes_through_stdin_not_argv(self):
         calls = []
 
@@ -312,6 +319,7 @@ class PodResourceTests(unittest.TestCase):
         self.assertEqual([controller.parse_memory_bytes(v) for v in ("64Mi", "4Gi", "256Ki", "1G", "1000", "1.5Gi")],
                          [64 * 1024 ** 2, 4 * 1024 ** 3, 256 * 1024, 10 ** 9, 1000, 3 * 1024 ** 3 // 2])
 
+    # Scenarios: performance-and-verification.md:PRF-SCN-053
     def test_broker_pod_totals_separate_all_containers_from_steady_state(self):
         pod = {"metadata": {"name": "narumq-0"}, "spec": {
             "initContainers": [self.container("select-peer-identity", "50m", "64Mi"),
@@ -326,6 +334,7 @@ class PodResourceTests(unittest.TestCase):
         self.assertEqual(summary["sumAllContainers"]["limits"],
                          {"cpuMillicores": 1200, "memoryBytes": 4 * 1024 ** 3 + (64 + 64 + 256) * 1024 ** 2})
 
+    # Scenarios: performance-and-verification.md:PRF-SCN-053
     def test_native_sidecar_counts_in_steady_state_and_missing_values_stay_unknown(self):
         pod = {"metadata": {"name": "gen"}, "spec": {
             "initContainers": [self.container("toolbox", "50m", "32Mi", restart="Always")],
@@ -378,6 +387,7 @@ class RuntimeDiagnosticsTests(unittest.TestCase):
         def write(self, row):
             self.rows.append(row)
 
+    # Scenarios: performance-and-verification.md:PRF-SCN-058
     def test_cpu_versions_missing_and_invalid_counters(self):
         self.assertEqual(controller.parse_cpu_stat("v1\nnr_periods 10\nnr_throttled 2\nthrottled_time 1200900"),
                          {"cgroupVersion": "v1", "nr_periods": 10, "nr_throttled": 2, "throttled_usec": 1200})
@@ -385,6 +395,7 @@ class RuntimeDiagnosticsTests(unittest.TestCase):
             with self.subTest(bad=bad), self.assertRaises((ValueError, KeyError)):
                 controller.parse_cpu_stat(bad)
 
+    # Scenarios: performance-and-verification.md:PRF-SCN-058
     def test_deltas_reset_at_restart_replacement_counter_reset_and_failed_read(self):
         kube, journal = self.Kube(self.pod()), self.Journal()
         sampler = controller.RuntimeDiagnostics(kube, journal, "generator")
@@ -414,6 +425,7 @@ class RuntimeDiagnosticsTests(unittest.TestCase):
         kube.fail = False
         self.assertIsNone(sample()["delta"])
 
+    # Scenarios: performance-and-verification.md:PRF-SCN-058
     def test_replacement_during_exec_discards_cpu_but_keeps_oom_evidence(self):
         oom = {"terminated": {"reason": "OOMKilled", "exitCode": 137, "signal": 9,
                                "startedAt": "before", "finishedAt": "after"}}
@@ -429,6 +441,7 @@ class RuntimeDiagnosticsTests(unittest.TestCase):
         self.assertFalse(row["cpu"][0]["available"])
         self.assertNotIn("counters", row["cpu"][0])
 
+    # Scenarios: performance-and-verification.md:PRF-SCN-058
     def test_generator_and_nonrunning_broker_status_are_preserved_without_exec(self):
         pod = self.pod()
         pod["status"]["containerStatuses"][0]["state"] = {"terminated": {"reason": "OOMKilled", "exitCode": 137}}

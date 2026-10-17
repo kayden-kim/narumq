@@ -15,6 +15,7 @@ import (
 // TestEKSCapacityOverlay checks the capacity fixture's resource and routing boundaries.
 // TLS, generated security, loopback JWKS and test-only process control may differ from
 // EKS_EC2_HA; the production node configuration and resource limits stay unchanged.
+// Scenarios: performance-and-verification.md:PRF-SCN-054
 func TestEKSCapacityOverlay(t *testing.T) {
 	root := filepath.Join("..", "..", "deploy", "kubernetes")
 	read := func(name string) []byte {

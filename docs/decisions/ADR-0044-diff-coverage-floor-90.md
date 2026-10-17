@@ -62,7 +62,7 @@
 
 | 가설·결정 요인 | 검증 방법 | 합격 기준 | 증거 |
 | --- | --- | --- | --- |
-| 세 diff 하한과 기존 보호를 적용한다. | Coverage evaluator 시험과 실제 coverage CLI | 각 지표가 90% 이상이면 통과하고 미달하면 거절한다. | 실행 결과는 [성능 스펙 §8.5](../specs/performance-and-verification.md#85-변경-코드-diff-floor-90-수용-증거)에 기록한다. |
+| 세 diff 하한과 기존 보호를 적용한다. | Coverage evaluator 시험과 실제 coverage CLI | 각 지표가 90% 이상이면 통과하고 미달하면 거절한다. | 실행 결과는 [성능 검증 기록 §8.5](../verification/performance-and-verification.md#85-변경-코드-diff-floor-90-수용-증거)에 기록한다. |
 | 최신 커밋에 새 정책을 적용한다. | 기존 atomic profile과 branch manifest로 부모 커밋 대비 평가 | Source·manifest 검증 뒤 diff 하한을 충족한다. | 같은 스펙 절에 기준 커밋, 명령과 결과를 기록한다. |
 
 ## 8. 재검토 조건

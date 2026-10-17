@@ -57,6 +57,7 @@ func applyDrainTestStart(t *testing.T, machine *StateMachine, index uint64, memb
 }
 
 // Traceability: DEP-01/DEP-02/DEP-06; docs/specs/drain-and-rolling-update.md §1, §2, §3, §10.
+// Scenarios: drain-and-rolling-update.md:DRN-SCN-005
 func TestStateMachineNodeDrainLifecycleAndProgress(t *testing.T) {
 	machine := newDrainTestMachine(t)
 	started := applyDrainTestStart(t, machine, 2, 1, drainTestOperation1)
@@ -113,6 +114,7 @@ func TestStateMachineNodeDrainLifecycleAndProgress(t *testing.T) {
 }
 
 // Traceability: DEP-01/DEP-02; docs/specs/drain-and-rolling-update.md §1, §2, §3, §10.
+// Scenarios: drain-and-rolling-update.md:DRN-SCN-005
 func TestStateMachineNodeDrainStartConflicts(t *testing.T) {
 	tests := []struct {
 		name         string
@@ -165,6 +167,7 @@ func TestStateMachineNodeDrainStartConflicts(t *testing.T) {
 }
 
 // Traceability: DEP-01/DEP-02; docs/specs/drain-and-rolling-update.md §1, §2.3, §10.
+// Scenarios: drain-and-rolling-update.md:DRN-SCN-005
 func TestStateMachineNodeDrainCancelRestartAndCompletedCannotCancel(t *testing.T) {
 	machine := newDrainTestMachine(t)
 	applyDrainTestStart(t, machine, 2, 2, drainTestOperation1)
@@ -201,6 +204,7 @@ func TestStateMachineNodeDrainCancelRestartAndCompletedCannotCancel(t *testing.T
 }
 
 // Traceability: DEP-10, CLU-14; docs/specs/drain-and-rolling-update.md §2.3.
+// Scenarios: drain-and-rolling-update.md:DRN-SCN-003
 func TestStateMachineFailedDrainCancellationClearsFailure(t *testing.T) {
 	machine := newDrainTestMachine(t)
 	applyDrainTestStart(t, machine, 2, 2, drainTestOperation1)
@@ -221,6 +225,7 @@ func TestStateMachineFailedDrainCancellationClearsFailure(t *testing.T) {
 }
 
 // Traceability: DEP-01/DEP-02; docs/specs/drain-and-rolling-update.md §1, §3, §10.
+// Scenarios: drain-and-rolling-update.md:DRN-SCN-009
 func TestStateMachineNodeRemovalDeletesDrainRecord(t *testing.T) {
 	machine := newDrainTestMachine(t)
 	applyDrainTestStart(t, machine, 2, 3, drainTestOperation1)
@@ -239,6 +244,7 @@ func TestStateMachineNodeRemovalDeletesDrainRecord(t *testing.T) {
 }
 
 // Traceability: DEP-01/DEP-02; docs/specs/drain-and-rolling-update.md §1, §3, §10.
+// Scenarios: drain-and-rolling-update.md:DRN-SCN-009
 func TestStateMachineNodeDrainSnapshotRoundTripAndValidation(t *testing.T) {
 	machine := newDrainTestMachine(t)
 	applyDrainTestStart(t, machine, 2, 1, drainTestOperation1)
@@ -276,6 +282,7 @@ func TestStateMachineNodeDrainSnapshotRoundTripAndValidation(t *testing.T) {
 }
 
 // Traceability: DEP-01/DEP-02; docs/specs/drain-and-rolling-update.md §2, §10.
+// Scenarios: drain-and-rolling-update.md:DRN-SCN-005
 func TestValidateNodeDrainCommandRejectsActionSpecificFieldsAndOverflow(t *testing.T) {
 	valid := drainTestCommand(NodeDrainActionStart, 1, drainTestOperation1, 1_000)
 	invalid := []struct {

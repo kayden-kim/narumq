@@ -396,6 +396,7 @@ func TestLifecycle_ExpireClaimsPendingWill(t *testing.T) {
 }
 
 // Traceability: TEN-02
+// Scenarios: tenancy-and-security.md:SEC-SCN-019
 func TestLifecycle_SessionKeyIsolation(t *testing.T) {
 	now := time.Date(2026, time.January, 1, 0, 0, 0, 0, time.UTC)
 	tenantA, err := tenancy.NewTenantID("tenant-a")
@@ -440,6 +441,7 @@ func TestLifecycle_SessionKeyIsolation(t *testing.T) {
 }
 
 // Traceability: CLU-08; docs/specs/cluster-session-and-delivery.md §4.3, §11.24.
+// Scenarios: cluster-session-and-delivery.md:CLU-SCN-164
 func TestRestoreValidatesCommittedLifecycle(t *testing.T) {
 	tenant, _ := tenancy.NewTenantID("restore")
 	key, _ := tenancy.NewSessionKey(tenant, "client")
@@ -520,6 +522,7 @@ func TestRestoreValidatesCommittedLifecycle(t *testing.T) {
 }
 
 // Traceability: PRD MQTT-01/TEST-04; DEP-07/DEP-12; MQTT-3.1.2-8; docs/specs/drain-and-rolling-update.md §5.
+// Scenarios: drain-and-rolling-update.md:DRN-SCN-011
 func TestLifecycle_TakeoverAndPlannedHandoffWillRules(t *testing.T) {
 	for _, test := range []struct {
 		name                       string
@@ -560,6 +563,7 @@ func TestLifecycle_TakeoverAndPlannedHandoffWillRules(t *testing.T) {
 }
 
 // Traceability: SEC-07, SEC-12; docs/specs/tenancy-and-security.md §7, §7.1, §9; ADR-0049, ADR-0050.
+// Scenarios: tenancy-and-security.md:SEC-SCN-035, tenancy-and-security.md:SEC-SCN-042
 func TestLifecycleDisconnectAccessRevokedDiscardsWill(t *testing.T) {
 	now := time.Unix(1, 0)
 	state, _, err := Open(nil, mqtt.Connect{

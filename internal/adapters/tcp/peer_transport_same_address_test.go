@@ -64,6 +64,7 @@ func newSameAddressDialFixture(t *testing.T) sameAddressDialFixture {
 // without sending its stream hello.
 //
 // Traceability: CLU-02/SEC-09; docs/contracts/raft-membership-v2.md §1.1 and §1.5; ADR-0061.
+// Scenarios: tenancy-and-security.md:SEC-SCN-009, cluster-session-and-delivery.md:CLU-SCN-021, cluster-session-and-delivery.md:CLU-SCN-138
 func TestDynamicDialVerifiesPeerCertificateBeforeSendingHello(t *testing.T) {
 	fixture := newSameAddressDialFixture(t)
 	// Stand in for member 4: it completes the mTLS handshake with certificate Y at member 3's address.
@@ -143,6 +144,7 @@ func TestDynamicDialVerifiesPeerCertificateBeforeSendingHello(t *testing.T) {
 // holds to member 4.
 //
 // Traceability: CLU-14; ADR-0061; docs/contracts/raft-membership-v2.md §1.5.
+// Scenarios: cluster-session-and-delivery.md:CLU-SCN-021, cluster-session-and-delivery.md:CLU-SCN-138
 func TestDynamicSameAddressStaleDialerDoesNotEvictLiveConnection(t *testing.T) {
 	fixture := newSameAddressDialFixture(t)
 	transport1, err := NewDynamicTCPPeerTransport(DynamicPeerTransportConfig{

@@ -77,6 +77,7 @@ func newTestSnapshotStreams(sender clusterSnapshotStreamSender, isolated func(ui
 }
 
 // Traceability: CLU-14; docs/contracts/raft-snapshot-stream-v1.md §7, §9.
+// Scenarios: cluster-session-and-delivery.md:CLU-SCN-261
 func TestClusterSnapshotStreamsReportDeliveryAndLogOutcome(t *testing.T) {
 	request := raftadapter.SnapshotStreamDTO{To: 4, Index: 42, Term: 3, Data: make([]byte, 3<<20)}
 	sender := &fakeSnapshotStreamSender{send: func(context.Context, tcpadapter.SnapshotStreamDTO) error { return nil }}
@@ -121,6 +122,7 @@ func TestClusterSnapshotStreamsReportDeliveryAndLogOutcome(t *testing.T) {
 	}
 }
 
+// Scenarios: cluster-session-and-delivery.md:CLU-SCN-261
 func TestClusterSnapshotStreamsAllowOneTransferPerPeer(t *testing.T) {
 	release := make(chan struct{})
 	sender := &fakeSnapshotStreamSender{
@@ -166,6 +168,7 @@ func TestClusterSnapshotStreamsAllowOneTransferPerPeer(t *testing.T) {
 	}
 }
 
+// Scenarios: cluster-session-and-delivery.md:CLU-SCN-261
 func TestClusterSnapshotStreamsCancelWithContextAndReportFailure(t *testing.T) {
 	sender := &fakeSnapshotStreamSender{send: func(ctx context.Context, _ tcpadapter.SnapshotStreamDTO) error {
 		<-ctx.Done()
@@ -184,6 +187,7 @@ func TestClusterSnapshotStreamsCancelWithContextAndReportFailure(t *testing.T) {
 	}
 }
 
+// Scenarios: cluster-session-and-delivery.md:CLU-SCN-261
 func TestClusterSnapshotStreamsSkipIsolatedPeerWithFailureReport(t *testing.T) {
 	sender := &fakeSnapshotStreamSender{send: func(context.Context, tcpadapter.SnapshotStreamDTO) error {
 		t.Error("a fault-isolated peer received a snapshot stream")

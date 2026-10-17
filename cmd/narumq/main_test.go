@@ -46,6 +46,7 @@ func TestValidateLoopbackListenAddress(t *testing.T) {
 	}
 }
 
+// Scenarios: configuration-and-runtime-options.md:CFG-SCN-07
 func TestRunRejectsRuntimeMetricsFlagCombinations(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	output := filepath.Join(t.TempDir(), "runtime-metrics.jsonl")
@@ -185,6 +186,7 @@ func TestRunWithContextDefaultsAndFlagErrors(t *testing.T) {
 	}
 }
 
+// Scenarios: configuration-and-runtime-options.md:CFG-SCN-02, configuration-and-runtime-options.md:CFG-SCN-18
 func TestClusterConfigFlagIsExclusive(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	cases := []struct {
@@ -210,6 +212,7 @@ func TestClusterConfigFlagIsExclusive(t *testing.T) {
 	}
 }
 
+// Scenarios: configuration-and-runtime-options.md:CFG-SCN-01
 func TestHashPasswordFlagIsExclusive(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	cases := []struct {
@@ -232,6 +235,7 @@ func TestHashPasswordFlagIsExclusive(t *testing.T) {
 	}
 }
 
+// Scenarios: configuration-and-runtime-options.md:CFG-SCN-05
 func TestRun_Defaults(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	if err := run(nil, logger); err != nil {
@@ -239,6 +243,7 @@ func TestRun_Defaults(t *testing.T) {
 	}
 }
 
+// Scenarios: configuration-and-runtime-options.md:CFG-SCN-08, mqtt-protocol-and-session.md:MQTT-SCN-052
 func TestRunWithContextRejectsConstructionBounds(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	cases := []struct {
@@ -283,6 +288,8 @@ func TestRunWithContextCanceledListenerStopsCleanly(t *testing.T) {
 		t.Fatalf("canceled listener run error = %v", err)
 	}
 }
+
+// Scenarios: configuration-and-runtime-options.md:CFG-SCN-06, configuration-and-runtime-options.md:CFG-SCN-41, tenancy-and-security.md:SEC-SCN-012
 func TestRunWithContextMQTTSecurityMode(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	tests := []struct {
@@ -328,6 +335,7 @@ func TestRunWithContextMQTTSecurityMode(t *testing.T) {
 	}
 }
 
+// Scenarios: configuration-and-runtime-options.md:CFG-SCN-05
 func TestMainNoListenerPath(t *testing.T) {
 	originalArgs := os.Args
 	defer func() { os.Args = originalArgs }()
@@ -423,6 +431,7 @@ func TestRunWithContextTLSFlags(t *testing.T) {
 }
 
 // Traceability: SEC-02, SEC-04, TEN-01
+// Scenarios: tenancy-and-security.md:SEC-SCN-012
 func TestRunWithContextSecurityConfig(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	tempDir := t.TempDir()
@@ -466,6 +475,7 @@ func TestRunWithContextSecurityConfig(t *testing.T) {
 
 // TestRunWithContextServesManagementHTTP verifies standalone management routes and fixed identifiers.
 // Traceability: PRD API-02; docs/specs/configuration-and-runtime-options.md CFG-SCN-39; ADR-0052 §1.6.
+// Scenarios: configuration-and-runtime-options.md:CFG-SCN-39
 func TestRunWithContextServesManagementHTTP(t *testing.T) {
 	reserveAddress := func() string {
 		t.Helper()
@@ -573,6 +583,7 @@ func TestRunWithContextServesManagementHTTP(t *testing.T) {
 
 // TestRunWithContextManagementAuthTokenFile verifies that the standalone management token comes only from a file.
 // Traceability: PRD SEC-10; docs/specs/configuration-and-runtime-options.md CFG-SCN-19.
+// Scenarios: configuration-and-runtime-options.md:CFG-SCN-19
 func TestRunWithContextManagementAuthTokenFile(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 
@@ -705,6 +716,7 @@ func TestRunWithContextManagementAuthTokenFile(t *testing.T) {
 	})
 }
 
+// Scenarios: management-api-and-observability.md:MGT-SCN-014, tenancy-and-security.md:SEC-SCN-050
 func TestAuditVerifyCommandVerifiesAndLeavesFilesReadOnly(t *testing.T) {
 	directory := t.TempDir()
 	publisher, err := auditlog.OpenFileAuditPublisher(auditlog.FileAuditPublisherConfig{
@@ -804,6 +816,7 @@ func TestAuditVerifyCommandVerifiesAndLeavesFilesReadOnly(t *testing.T) {
 	}
 }
 
+// Scenarios: configuration-and-runtime-options.md:CFG-SCN-04
 func TestAuditVerifyFlagRequiresExclusiveDirectory(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	directory := t.TempDir()
@@ -827,6 +840,7 @@ func TestAuditVerifyFlagRequiresExclusiveDirectory(t *testing.T) {
 }
 
 // Traceability: PRD MQTT-10; docs/specs/configuration-and-runtime-options.md §6; docs/contracts/process-configuration-v1.md §1.
+// Scenarios: configuration-and-runtime-options.md:CFG-SCN-40, configuration-and-runtime-options.md:CFG-SCN-41, configuration-and-runtime-options.md:CFG-SCN-42, configuration-and-runtime-options.md:CFG-SCN-43
 func TestRunWithContextWebSocketFlags(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	securityFile := filepath.Join(t.TempDir(), "security.json")
@@ -861,6 +875,7 @@ func TestRunWithContextWebSocketFlags(t *testing.T) {
 }
 
 // Traceability: PRD MQTT-10; CFG-SCN-47; docs/specs/configuration-and-runtime-options.md §6; docs/contracts/process-configuration-v1.md §1.
+// Scenarios: configuration-and-runtime-options.md:CFG-SCN-47
 func TestRunWithContextStartsAndStopsWebSocketListeners(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	directory := t.TempDir()

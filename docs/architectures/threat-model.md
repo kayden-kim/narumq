@@ -6,7 +6,7 @@
 | --- | --- |
 | 구조 시점 | Current |
 | 문서 상태 | Accepted (2026-10-13 사용자 승인; 독립 침투 시험 `R-07`은 운영/K8s 게이트로 유지) |
-| 구현 대조 | NFR-19 자동 사전 시험은 2026-10-09에, SEC-10 실제 3-node Management RBAC 수용 시험은 2026-10-10에, TEN-09 noisy-neighbor process 수용 시험은 2026-10-11에 통과했다. 각 실행 결과는 [NFR-19 증거](../specs/tenancy-and-security.md#93-nfr-19-자동-penetration-test-실행-증거), [SEC-10 증거](../specs/tenancy-and-security.md#96-sec-10-실행-증거), [TEN-09 증거](../specs/tenancy-and-security.md#99-ten-09-noisy-neighbor-실행-증거)에 기록한다. |
+| 구현 대조 | NFR-19 자동 사전 시험은 2026-10-09에, SEC-10 실제 3-node Management RBAC 수용 시험은 2026-10-10에, TEN-09 noisy-neighbor process 수용 시험은 2026-10-11에 통과했다. 각 실행 결과는 [NFR-19 기록](../verification/tenancy-and-security.md#3-nfr-19-자동-penetration-test-실행-기록), [SEC-10 기록](../verification/tenancy-and-security.md#6-sec-10-실행-기록), [TEN-09 기록](../verification/tenancy-and-security.md#9-ten-09-noisy-neighbor-실행-기록)에 기록한다. |
 | 범위 | MQTT data plane, Management API. Cluster peer transport는 기존 시험만 참조한다. |
 | 코드 지도 | [Project structure](project-structure.md#verification-and-integration-test-entrypoints) |
 | 관련 PRD | [PRD](../requirements/PRD.md) NFR-19, TEN-01~TEN-05, TEN-09, SEC-02/04/06/10/11 |
@@ -79,7 +79,7 @@ STRIDE는 신원 위장(S), 변조(T), 행위 부인(R), 정보 노출(I), 서�
 go test ./tests/integration -run '^TestDynamicClusterTenantIsolationPenetrationProcessAcceptance$' -count=1 -v -timeout 20m
 ```
 
-단일 실행, 3회 반복, 민감도 확인과 원복 후 실행 결과는 [Tenant와 security §9.3](../specs/tenancy-and-security.md#93-nfr-19-자동-penetration-test-실행-증거)에 둔다. 이 시험은 독립 penetration test를 대신하지 않는다.
+단일 실행, 3회 반복, 민감도 확인과 원복 후 실행 결과는 [Tenant와 security 검증 기록 §3](../verification/tenancy-and-security.md#3-nfr-19-자동-penetration-test-실행-기록)에 둔다. 이 시험은 독립 penetration test를 대신하지 않는다.
 
 ## 4. 경계와 제약
 

@@ -66,8 +66,8 @@ Grafana는 API snapshot과 Prometheus series를 한 화면에서 조회한다. P
 
 | 가설·결정 요인 | 검증 방법 | 합격 기준 | 증거 |
 | --- | --- | --- | --- |
-| Dashboard query가 API와 Metric contract를 따른다. | `tests/integration/dashboard_stack_test.go::TestDashboardProvisioningMatchesContracts` | 모든 panel source, API GET path와 Metric family가 기준 문서에 연결된다. | 실행 뒤 Management API 스펙 §9에 기록한다. |
-| Provisioned stack이 세 node의 API와 metric을 읽는다. | `tests/integration/dashboard_stack_test.go::TestDashboardStackProcessAcceptance` | Opt-in Docker E2E에서 대상이 up이고 dashboard query가 기대한 상태를 반환한다. | 실행 환경과 로그 경로를 Management API 스펙 §9에 기록한다. |
+| Dashboard query가 API와 Metric contract를 따른다. | `tests/integration/dashboard_stack_test.go::TestDashboardProvisioningMatchesContracts` | 모든 panel source, API GET path와 Metric family가 기준 문서에 연결된다. | 실행 뒤 [Management API 검증 기록](../verification/management-api-and-observability.md)에 기록한다. |
+| Provisioned stack이 세 node의 API와 metric을 읽는다. | `tests/integration/dashboard_stack_test.go::TestDashboardStackProcessAcceptance` | Opt-in Docker E2E에서 대상이 up이고 dashboard query가 기대한 상태를 반환한다. | 실행 환경과 로그 경로를 [Management API 검증 기록](../verification/management-api-and-observability.md)에 기록한다. |
 
 ## 8. 재검토 조건
 

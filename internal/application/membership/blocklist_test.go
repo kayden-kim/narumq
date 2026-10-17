@@ -34,6 +34,7 @@ func activateBlocklistForTest(t *testing.T, machine *StateMachine, index uint64)
 }
 
 // Traceability: SEC-12; docs/specs/tenancy-and-security.md §7.1, §9; ADR-0050.
+// Scenarios: tenancy-and-security.md:SEC-SCN-043
 func TestBlocklistApplyFeatureGateTransitionsAndVersion(t *testing.T) {
 	machine := NewStateMachine()
 	entry := blocklistTestEntry(t, security.BlockKindClientID, "tenant", "client")
@@ -87,6 +88,7 @@ func TestBlocklistApplyFeatureGateTransitionsAndVersion(t *testing.T) {
 }
 
 // Traceability: SEC-12; docs/specs/tenancy-and-security.md §7.1, §9; ADR-0050.
+// Scenarios: tenancy-and-security.md:SEC-SCN-043
 func TestBlocklistSnapshotRoundTripAndRejectsInvalidState(t *testing.T) {
 	machine := NewStateMachine()
 	activateBlocklistForTest(t, machine, 1)

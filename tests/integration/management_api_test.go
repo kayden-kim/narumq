@@ -379,6 +379,7 @@ func TestManagementAPIObservesLiveMQTTState(t *testing.T) {
 }
 
 // Traceability: UI-03; docs/specs/management-api-and-observability.md §7.1.
+// Scenarios: mqtt-protocol-and-session.md:MQTT-SCN-002, management-api-and-observability.md:MGT-SCN-029, management-api-and-observability.md:MGT-SCN-030
 func TestMQTTRejectionsAndOversizeDropsAreObservable(t *testing.T) {
 	mqttListener, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {

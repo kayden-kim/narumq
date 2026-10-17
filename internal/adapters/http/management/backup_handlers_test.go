@@ -98,6 +98,7 @@ func TestClusterBackupHTTPRequiresClusterAdmin(t *testing.T) {
 }
 
 // Traceability: UI-01; docs/specs/management-api-and-observability.md §8.
+// Scenarios: management-api-and-observability.md:MGT-SCN-042
 func TestReadOnlyAPIKeyCanReadButCannotCreateBackup(t *testing.T) {
 	provider := &clusterBackupProviderStub{backup: ports.ClusterBackupDTO{CommitIndex: 42}}
 	handler := NewRouterWithMembership(ServerConfig{

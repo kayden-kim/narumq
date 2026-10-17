@@ -87,6 +87,7 @@ func (f *sharedFixture) payloads(clientID string) []string {
 }
 
 // Traceability: MQTT-07, CLU-05; docs/specs/cluster-session-and-delivery.md §4.2, §11.35.
+// Scenarios: cluster-session-and-delivery.md:CLU-SCN-249
 func TestSharedRerouteOnCleanResetMovesQueuedAndUnackedQoS1Only(t *testing.T) {
 	f := newSharedFixture(t, true)
 	f.member("m0", 1, sharedTestFilter, 2)
@@ -128,6 +129,7 @@ func TestSharedRerouteOnCleanResetMovesQueuedAndUnackedQoS1Only(t *testing.T) {
 }
 
 // Traceability: MQTT-07, CLU-05; docs/specs/cluster-session-and-delivery.md §4.2, §11.35.
+// Scenarios: cluster-session-and-delivery.md:CLU-SCN-250
 func TestSharedRerouteCapsQoSAndRetainAtDestination(t *testing.T) {
 	f := newSharedFixture(t, true)
 	f.member("m0", 1, sharedTestFilter, 2)
@@ -144,6 +146,7 @@ func TestSharedRerouteCapsQoSAndRetainAtDestination(t *testing.T) {
 }
 
 // Traceability: MQTT-07, CLU-05; docs/specs/cluster-session-and-delivery.md §4.2, §11.35.
+// Scenarios: cluster-session-and-delivery.md:CLU-SCN-251
 func TestSharedRerouteTriesMembersOwnedByProposerFirst(t *testing.T) {
 	f := newSharedFixture(t, true)
 	f.member("m0", 1, sharedTestFilter, 1)
@@ -165,6 +168,7 @@ func TestSharedRerouteTriesMembersOwnedByProposerFirst(t *testing.T) {
 }
 
 // Traceability: MQTT-07, CLU-05; docs/specs/cluster-session-and-delivery.md §4.2, §11.35.
+// Scenarios: cluster-session-and-delivery.md:CLU-SCN-252
 func TestSharedRerouteOnDiscardRelease(t *testing.T) {
 	f := newSharedFixture(t, true)
 	f.member("m0", 1, sharedTestFilter, 1)
@@ -183,6 +187,7 @@ func TestSharedRerouteOnDiscardRelease(t *testing.T) {
 }
 
 // Traceability: MQTT-07, CLU-05; docs/specs/cluster-session-and-delivery.md §4.2, §11.35.
+// Scenarios: cluster-session-and-delivery.md:CLU-SCN-253
 func TestSharedRerouteOnSessionExpiryPurgeIsOrderedAndSkipsExpiredMembers(t *testing.T) {
 	f := newSharedFixture(t, true)
 	for client, owner := range map[string]uint64{"m0": 1, "m1": 2, "m2": 3} {
@@ -207,6 +212,7 @@ func TestSharedRerouteOnSessionExpiryPurgeIsOrderedAndSkipsExpiredMembers(t *tes
 }
 
 // Traceability: MQTT-07, CLU-05; docs/specs/cluster-session-and-delivery.md §4.2, §11.35.
+// Scenarios: cluster-session-and-delivery.md:CLU-SCN-254
 func TestSharedRerouteSkipsFullMemberAndDropsWhenNobodyCanTake(t *testing.T) {
 	f := newSharedFixture(t, true)
 	f.member("m0", 1, sharedTestFilter, 1)
@@ -249,6 +255,7 @@ func TestSharedRerouteSkipsFullMemberAndDropsWhenNobodyCanTake(t *testing.T) {
 }
 
 // Traceability: MQTT-07, CLU-05; docs/specs/cluster-session-and-delivery.md §4.2, §11.35.
+// Scenarios: cluster-session-and-delivery.md:CLU-SCN-254
 func TestSharedRerouteDropsWhenGroupHasNoOtherMemberAndLeavesNonSharedAndExpiredMessages(t *testing.T) {
 	f := newSharedFixture(t, true)
 	f.member("m0", 1, sharedTestFilter, 1)
@@ -269,6 +276,7 @@ func TestSharedRerouteDropsWhenGroupHasNoOtherMemberAndLeavesNonSharedAndExpired
 }
 
 // Traceability: MQTT-07; docs/specs/cluster-session-and-delivery.md §4.2, §11.35.
+// Scenarios: cluster-session-and-delivery.md:CLU-SCN-248
 func TestSharedOriginIsRecordedOnlyForExactSharedSubscription(t *testing.T) {
 	f := newSharedFixture(t, true)
 	f.member("m0", 1, "plain/#", 1)
@@ -282,6 +290,7 @@ func TestSharedOriginIsRecordedOnlyForExactSharedSubscription(t *testing.T) {
 }
 
 // Traceability: CLU-11, CLU-14; docs/specs/cluster-session-and-delivery.md §11.35; docs/contracts/replicated-state-v1.md.
+// Scenarios: cluster-session-and-delivery.md:CLU-SCN-248
 func TestSharedOriginFeatureGateSnapshotAndByteAccounting(t *testing.T) {
 	inactive := newSharedFixture(t, false)
 	inactive.member("m0", 1, sharedTestFilter, 1)

@@ -9,6 +9,7 @@ import (
 )
 
 // Traceability: CLU-08; docs/specs/cluster-session-and-delivery.md §4.3, §11.24.
+// Scenarios: cluster-session-and-delivery.md:CLU-SCN-165
 func TestSessionMetadataRequiresActiveFeature(t *testing.T) {
 	machine := NewStateMachine()
 	acquire := sessionOwnershipCommand(1, "alpha", "client", 1, 1, sessionConnect())
@@ -36,6 +37,7 @@ func TestSessionMetadataRequiresActiveFeature(t *testing.T) {
 }
 
 // Traceability: CLU-08; docs/specs/cluster-session-and-delivery.md §4.3, §11.24.
+// Scenarios: cluster-session-and-delivery.md:CLU-SCN-165
 func TestSessionMetadataConnectReplacesPendingWill(t *testing.T) {
 	machine := activeSessionMetadataMachine(t)
 	applyMustSucceed(t, machine, 3, sessionOwnershipCommand(3, "alpha", "client", 1, 1, sessionConnect()))
@@ -74,6 +76,7 @@ func TestSessionMetadataConnectReplacesPendingWill(t *testing.T) {
 }
 
 // Traceability: CLU-08; docs/specs/cluster-session-and-delivery.md §4.3, §11.24.
+// Scenarios: cluster-session-and-delivery.md:CLU-SCN-165
 func TestSessionMetadataDetachDispositions(t *testing.T) {
 	t.Run("claim", func(t *testing.T) {
 		machine := seededSessionMetadataMachine(t, "claim")
@@ -154,6 +157,7 @@ func TestSessionMetadataDetachDispositions(t *testing.T) {
 }
 
 // Traceability: CLU-08; docs/specs/cluster-session-and-delivery.md §4.3, §11.24.
+// Scenarios: cluster-session-and-delivery.md:CLU-SCN-165
 func TestSessionMetadataDiscardAndReleaseFreeCapacity(t *testing.T) {
 	machine := activeSessionMetadataMachine(t)
 	large := sessionConnect()
@@ -218,6 +222,7 @@ func TestSessionMetadataDiscardAndReleaseFreeCapacity(t *testing.T) {
 }
 
 // Traceability: CLU-08; docs/specs/cluster-session-and-delivery.md §4.3, §11.24.
+// Scenarios: cluster-session-and-delivery.md:CLU-SCN-166
 func TestSessionMetadataSnapshotRoundTripAndValidation(t *testing.T) {
 	machine := activeSessionMetadataMachine(t)
 	zetaConnect := sessionConnect()
@@ -581,6 +586,7 @@ func cloneSessionConnectForTest(input SessionConnectDTO) SessionConnectDTO {
 }
 
 // Traceability: DEP-07/DEP-12; docs/specs/cluster-session-and-delivery.md §4.3.
+// Scenarios: drain-and-rolling-update.md:DRN-SCN-011
 func TestApplyOwnershipReportsSupersededWill(t *testing.T) {
 	for _, kind := range []string{"planned", "scheduled", "live", "no will", "claimed"} {
 		t.Run(kind, func(t *testing.T) {

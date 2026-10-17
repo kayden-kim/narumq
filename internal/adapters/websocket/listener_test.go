@@ -51,6 +51,7 @@ func newTestListener(t *testing.T) net.Listener {
 }
 
 // Traceability: docs/specs/mqtt-protocol-and-session.md §1, §8.3 MQTT-10-SCN-01.
+// Scenarios: mqtt-protocol-and-session.md:MQTT-10-SCN-01
 func TestNewListenerValidatesConfig(t *testing.T) {
 	if listener, err := NewListener(nil, Config{}); !errors.Is(err, ErrNilListener) || listener != nil {
 		t.Fatalf("NewListener(nil, Config{}) = (%v, %v), want (nil, ErrNilListener)", listener, err)
@@ -112,6 +113,7 @@ func dialTestWebSocket(t *testing.T, address, path string, subprotocols []string
 }
 
 // Traceability: docs/specs/mqtt-protocol-and-session.md §1, §8.3 MQTT-10-SCN-01.
+// Scenarios: mqtt-protocol-and-session.md:MQTT-10-SCN-01
 func TestListenerStreamsBinaryMessagesAsByteStream(t *testing.T) {
 	listener := newTestListener(t)
 	accepted := startListenerAccept(listener)
@@ -154,6 +156,7 @@ func TestListenerStreamsBinaryMessagesAsByteStream(t *testing.T) {
 }
 
 // Traceability: docs/specs/mqtt-protocol-and-session.md §1, §8.3 MQTT-10-SCN-01.
+// Scenarios: mqtt-protocol-and-session.md:MQTT-10-SCN-01
 func TestListenerRejectsWrongPathAndMissingSubprotocol(t *testing.T) {
 	listener := newTestListener(t)
 	accepted := startListenerAccept(listener)
@@ -195,6 +198,7 @@ func TestListenerRejectsWrongPathAndMissingSubprotocol(t *testing.T) {
 }
 
 // Traceability: docs/specs/mqtt-protocol-and-session.md §1, §8.3 MQTT-10-SCN-01.
+// Scenarios: mqtt-protocol-and-session.md:MQTT-10-SCN-01
 func TestListenerRejectsTextFrame(t *testing.T) {
 	listener := newTestListener(t)
 	accepted := startListenerAccept(listener)
@@ -215,6 +219,7 @@ func TestListenerRejectsTextFrame(t *testing.T) {
 }
 
 // Traceability: docs/specs/mqtt-protocol-and-session.md §1, §8.3 MQTT-10-SCN-03.
+// Scenarios: mqtt-protocol-and-session.md:MQTT-10-SCN-03
 func TestListenerExposesRemoteIPAndTransport(t *testing.T) {
 	listener := newTestListener(t)
 	accepted := startListenerAccept(listener)
@@ -245,6 +250,7 @@ func TestListenerExposesRemoteIPAndTransport(t *testing.T) {
 }
 
 // Traceability: docs/specs/mqtt-protocol-and-session.md §1, §8.3 MQTT-10-SCN-04.
+// Scenarios: mqtt-protocol-and-session.md:MQTT-10-SCN-04
 func TestListenerWSSExposesVerifiedClientCertificate(t *testing.T) {
 	_, root, rootKey := makeWebSocketTestCertificate(t, "test root", nil, nil, true, nil, false)
 	serverPair, _, _ := makeWebSocketTestCertificate(t, "websocket server", root, rootKey, false, []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth}, true)
@@ -346,6 +352,7 @@ func TestListenerWSSExposesVerifiedClientCertificate(t *testing.T) {
 }
 
 // Traceability: docs/specs/mqtt-protocol-and-session.md §1, §8.3 MQTT-10-SCN-02.
+// Scenarios: mqtt-protocol-and-session.md:MQTT-10-SCN-02
 func TestListenerHandshakeTimeout(t *testing.T) {
 	for _, secure := range []bool{false, true} {
 		name := "HTTP upgrade"
@@ -433,6 +440,7 @@ func (listener *blockingTestListener) Close() error {
 func (*blockingTestListener) Addr() net.Addr { return closeTestAddr{} }
 
 // Traceability: docs/specs/mqtt-protocol-and-session.md §1, §8.3 MQTT-10-SCN-02.
+// Scenarios: mqtt-protocol-and-session.md:MQTT-10-SCN-02
 func TestListenerCloseUnblocksAcceptAndClosesInnerListener(t *testing.T) {
 	inner := newBlockingTestListener()
 	listener, err := NewListener(inner, testConfig())

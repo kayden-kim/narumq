@@ -11,6 +11,7 @@ import (
 )
 
 // Traceability: PRD MQTT-06/TEST-03/04; MQTT-4.7.1-1/2 and MQTT-4.7.2-1/2.
+// Scenarios: mqtt-protocol-and-session.md:MQTT-SCN-017
 func TestValidateTopicFiltersAndNames(t *testing.T) {
 	filterCases := []struct {
 		name    string
@@ -63,6 +64,7 @@ func TestValidateTopicFiltersAndNames(t *testing.T) {
 }
 
 // Traceability: PRD MQTT-06/TEST-03/04; MQTT-4.7.1-1/2 and MQTT-4.7.2-1/2.
+// Scenarios: mqtt-protocol-and-session.md:MQTT-SCN-017
 func TestWildcardMatchBoundariesAndSystemTopics(t *testing.T) {
 	table := NewTable()
 	for sessionID, filter := range map[SessionID]string{
@@ -163,6 +165,7 @@ func TestSubscriptionReplacementUnsubscribeAndOverlapQoS(t *testing.T) {
 }
 
 // Traceability: API-03; docs/specs/management-api-and-observability.md §7.1.
+// Scenarios: management-api-and-observability.md:MGT-SCN-028
 func TestTableSubscriptionCountMatchesSnapshot(t *testing.T) {
 	var nilTable *Table
 	if got, snapshotCount := nilTable.SubscriptionCount(), len(nilTable.Snapshot()); got != 0 || snapshotCount != 0 {
@@ -343,6 +346,7 @@ func TestRoutingRejectsInvalidOperationsAtBoundaries(t *testing.T) {
 	}
 }
 
+// Scenarios: mqtt-protocol-and-session.md:MQTT-SCN-017
 func TestRoutingSystemTopicWildcardBoundary(t *testing.T) {
 	table := NewTable()
 	if _, err := table.Subscribe("system", mqtt.Subscription{Filter: "#", QoS: mqtt.QoSExactlyOnce}); err != nil {
@@ -374,6 +378,7 @@ func TestRoutingInitializesNilSubscriptionMapAndHandlesNilTable(t *testing.T) {
 	}
 }
 
+// Scenarios: mqtt-protocol-and-session.md:MQTT-SCN-017
 func TestRoutingRejectsInvalidUTF8AndMatchesDollarTopics(t *testing.T) {
 	if !errors.Is(ValidateTopicFilter(string([]byte{0xff})), ErrInvalidTopicFilter) {
 		t.Fatal("invalid UTF-8 filter was accepted")
@@ -711,6 +716,7 @@ func TestSharedSubscriptionUnsubscribeAndSessionRemoval(t *testing.T) {
 }
 
 // Traceability: TEN-03, TEN-05
+// Scenarios: tenancy-and-security.md:SEC-SCN-020, tenancy-and-security.md:SEC-SCN-022
 func TestRoutingTable_TenantIsolation(t *testing.T) {
 	table := NewTable()
 	tenantA, err := tenancy.NewTenantID("tenant-a")
@@ -802,6 +808,7 @@ func TestRoutingTable_TenantIsolation(t *testing.T) {
 	}
 }
 
+// Scenarios: tenancy-and-security.md:SEC-SCN-020
 func TestMatchForTenantAfterPublisherSessionRemovalKeepsTenantIsolation(t *testing.T) {
 	table := NewTable()
 	tenantA, err := tenancy.NewTenantID("tenant-a")
@@ -950,6 +957,7 @@ func TestReplaceProjectionWithSessionsAndTenantBinding(t *testing.T) {
 	}
 }
 
+// Scenarios: cluster-session-and-delivery.md:CLU-SCN-097
 func TestReplaceProjectionPreservesTenantSharedRoundRobinCursor(t *testing.T) {
 	tenantID, err := tenancy.NewTenantID("tenant-a")
 	if err != nil {
@@ -1010,6 +1018,7 @@ func ownerReachabilityTable(t *testing.T, owners map[SessionID]uint64) (*Table, 
 }
 
 // Traceability: PRD MQTT-07, CLU-05; docs/specs/cluster-session-and-delivery.md §3 item 6, §11.35.
+// Scenarios: cluster-session-and-delivery.md:CLU-SCN-245
 func TestSharedSubscriptionSkipsMembersWhoseOwnerIsUnreachable(t *testing.T) {
 	table, tenantID := ownerReachabilityTable(t, map[SessionID]uint64{"m0": 1, "m1": 1, "m2": 2, "m3": 3})
 	table.SetOwnerReachability(func(owner uint64) bool { return owner != 1 })
@@ -1041,6 +1050,7 @@ func TestSharedSubscriptionSkipsMembersWhoseOwnerIsUnreachable(t *testing.T) {
 }
 
 // Traceability: PRD MQTT-07, CLU-05; docs/specs/cluster-session-and-delivery.md §3 item 6, §11.35.
+// Scenarios: cluster-session-and-delivery.md:CLU-SCN-246
 func TestSharedSubscriptionKeepsRoundRobinWhenEveryOwnerIsUnreachableOrUnknown(t *testing.T) {
 	table, tenantID := ownerReachabilityTable(t, map[SessionID]uint64{"m0": 1, "m1": 2, "m2": 3, "m3": 0})
 	table.SetOwnerReachability(func(owner uint64) bool { return false })

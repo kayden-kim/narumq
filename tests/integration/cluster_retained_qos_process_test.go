@@ -22,6 +22,7 @@ type clusterRetainedQoSValue struct {
 }
 
 // Traceability: PRD MQTT-04/CLU-08; docs/specs/mqtt-protocol-and-session.md §5; docs/specs/cluster-session-and-delivery.md §4.2, §11.32.
+// Scenarios: cluster-session-and-delivery.md:CLU-SCN-228, cluster-session-and-delivery.md:CLU-SCN-229, cluster-session-and-delivery.md:CLU-SCN-230, cluster-session-and-delivery.md:CLU-SCN-231, cluster-session-and-delivery.md:CLU-SCN-232
 func TestDynamicClusterRetainedQoS12ProcessAcceptance(t *testing.T) {
 	t.Parallel()
 

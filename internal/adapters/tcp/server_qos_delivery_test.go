@@ -1314,6 +1314,7 @@ func (queue *retryablePromotionDeliveryQueue) PromoteBatch(
 }
 
 // Traceability: PRD MQTT-02/TEST-03/04/05; docs/specs/mqtt-protocol-and-session.md §3.2.
+// Scenarios: cluster-session-and-delivery.md:CLU-SCN-071
 func TestDeliveryWriterRetainsStateOnQueueAndWireErrors(t *testing.T) {
 	newRuntime := func(t *testing.T) *adapterTestRuntime {
 		t.Helper()

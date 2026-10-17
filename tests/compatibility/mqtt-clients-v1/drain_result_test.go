@@ -52,6 +52,7 @@ func TestValidateDrainResultRejectsContractViolations(t *testing.T) {
 	})
 }
 
+// Scenarios: drain-and-rolling-update.md:DRN-SCN-016
 func TestDrainSuiteVerdictsSeparateSDKDiagnostics(t *testing.T) {
 	for _, test := range []struct {
 		name         string

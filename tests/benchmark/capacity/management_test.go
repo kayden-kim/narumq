@@ -41,6 +41,8 @@ func TestSettledRequiresOneLeaderHealthyFollowersAndAppliedWatermark(t *testing.
 	}
 }
 
+// TestEnsureFeaturesActivatesAndVerifiesEveryRequiredFeature activates and verifies the required cluster features.
+// Scenarios: performance-and-verification.md:PRF-SCN-052
 func TestEnsureFeaturesActivatesAndVerifiesEveryRequiredFeature(t *testing.T) {
 	var mu sync.Mutex
 	var posted []string

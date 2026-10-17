@@ -76,7 +76,7 @@ state를 유지한다.
 6. Development profile의 평문 `-tcp-listen`은 `127.0.0.0/8` 또는 `::1` literal loopback만 허용한다. 이 listener는 `-allow-insecure-anonymous-mqtt`를 명시한 경우에만 anonymous MQTT를 허용한다. TLS listener는 `-tls-listen`으로 활성화하고 TLS 1.2 이상, 허용된 AEAD cipher suite와 설정된 server certificate를 적용한다. `request` 또는 `require` client authentication에는 strict security config의 mTLS identity binding이 필요하다. TLS adapter는 verified chain의 leaf certificate에서 application `ClientCertificateDTO`를 만들고, authentication adapter는 exact Common Name, DNS SAN 또는 email SAN을 match한다. WSS는 같은 TLS 설정을 사용한다.
 7. `-tcp-listen`, `-tls-listen`, `-ws-listen`과 `-wss-listen`은 하나의 `tcp.Server`에 함께 등록할 수 있고 listener별 transport 보안 정책을 유지하면서 같은 session·route registry를 공유한다.
 8. CONNECT 뒤에는 negotiated version으로 packet을 decode하고, 모든 socket write는 한 writer goroutine의 bounded control queue 또는 delivery wake를 통과한다.
-9. Binary smoke와 실제 loopback wire 검증은 `tests/integration/mqtt_ingress_test.go`를 기준으로 한다. TLS/mTLS socket과 password 인증은 `tests/integration/mqtt_tls_test.go`의 `TestMQTTTLS_PasswordAuthentication`, `tests/integration/cluster_password_process_test.go`의 `TestDynamicClusterPasswordAuthenticationProcessAcceptance`, `cmd/narumq/security_config_test.go`로 검증한다.
+9. Binary smoke, 실제 loopback wire와 TLS/mTLS socket, password 인증은 [§8 수용 시험](#8-수용-시험)의 시나리오로 확인한다.
 10. Dynamic cluster의 평문 `mqtt.tcpListenAddress`는 loopback 제한 없이 유효한 host:port를 허용한다. Wildcard와 DNS 이름도 포함한다. 이 listener는 secure mode에서만 열린다. Security config에 `jwt` 또는 `passwordIdentities`가 있으면 username·password 없는 CONNECT를 `missing_credentials`로 거절한다. `mtlsIdentities`만 있으면 평문 TCP에는 client certificate가 없으므로 CONNECT를 `missing_certificate`로 거절한다. CONNACK reason은 MQTT 3.1.1에서 `0x05`, MQTT 5에서 `0x87`이다. 평문 TCP는 CONNECT credential을 암호화하지 않는다. 결정 근거는 [ADR-0052 §1.5](../decisions/ADR-0052-configuration-tiers-and-cluster-policy.md#15-형식과-cluster-mqtt-tls)(G3)다.
 11. Standalone 평문 `-ws-listen`은 literal loopback IP(`127.0.0.0/8` 또는 `::1`)만 허용하고 `-security-config`를 요구한다. `-allow-insecure-anonymous-mqtt`는 TCP에만 적용하며 WS/WSS와 함께 사용할 수 없다. Dynamic cluster의 평문 `mqtt.webSocket.listenAddress`는 유효한 host:port를 허용하지만 `mqtt.securityConfigFile`을 요구한다. WSS는 `mqtt.tls` 또는 기존 standalone `-tls-*` 설정을 사용한다.
 
@@ -294,139 +294,92 @@ deadline에 도달한 state만 제거한다. Cluster recovery 범위는 §4와 c
 
 ## 8. 수용 시험
 
+테스트 연결과 결과는 [테스트 컨벤션](../conventions/test-conventions.md)의 시나리오 보고서로 확인한다. 과거 실행 기록은 [검증 기록](../verification/mqtt-protocol-and-session.md)에 있다.
+
 - MQTT 3.1.1/5.0 compliance matrix가 지원한다고 선언한 모든 normative statement를 자동 test와 연결한다.
 - 현재 Phase 1 matrix는 [`tests/conformance/mqtt-compliance-v1.json`](../../tests/conformance/mqtt-compliance-v1.json)이며, 61개 statement와 MQTT/TEST requirement 및 test function을 함께 기록한다.
 - `go run ./tools/verify traceability`가 matrix → source와 source → matrix를 모두 검사한다. matrix에만 있거나 source에만 있는 statement, 또는 requirement union이 다른 연결은 합격으로 처리하지 않는다.
-- QoS별 정상, DUP, reconnect, owner crash와 Message Expiry 시나리오를 검증한다.
-- `MQIsdp` level 3은 응답 없이 닫고, `MQTT` level 3은 MQTT 3.1.1 CONNACK `0x01` 뒤 닫으며, 두 경우 모두 session을 만들지 않아야 한다.
-  이 동작과 Metric 집계는 `tests/integration/management_api_test.go::TestMQTT310RejectionIsObservable`에서 두 wire variant를 함께 검증한다.
-- wildcard 경계, shared subscription failover와 MQTT 5 subscription option 조합을 검증한다.
-- parser fuzzing, slowloris, packet·queue 상한 시험에서 memory와 goroutine leak이 없어야 한다.
-- Cluster mode에서 설정된 TCP/TLS/WS/WSS listener를 열고, TLS 설정 실패 시 이미 연 TCP listener를 닫는다. `cmd/narumq/cluster_runtime_test.go::TestClusterMQTTListenersBindConfiguredEndpointsAndClosePartialOpen`이 binding과 cleanup을 확인한다.
-- 두 protocol version client가 같은 외부 topic에서 ACL 범위 안의 메시지를 상호 전달해야 한다.
-- 이 slice의 acceptance mapping은 `tests/integration/mqtt_ingress_test.go`의 MQTT 3.1.1/5.0
-  CONNECT, QoS 0 fan-out, retained replace/delete, retained Message Expiry,
-  SUBACK-before-replay, Retain Handling, No Local, Retain As Published, PINGRESP,
-  normal DISCONNECT, persistent Session Present, persistent offline delivery,
-  outbound QoS 1/2 recovery, unsupported/malformed CONNECT와 QoS negative ACK/close
-  시나리오다. `TestMQTTIngressRetainedMessageAndSubscriptionOptions`는 retained replay의 SUBACK-before-PUBLISH 순서를 socket으로 검증한다.
-  순서 회귀는 `GOMAXPROCS=4 go test ./tests/integration -run '^TestMQTTIngressRetainedMessageAndSubscriptionOptions$' -count=20`에서 20회 연속 PASS (10.230s).
-  `TestMQTTIngressPersistentOfflineDelivery`는 CONNACK-before-recovery,
-  FIFO, clean reset과 queued Message Expiry를 검증하고,
-  `TestMQTTIngressPersistentOutboundQoSRecovery`는 PUBLISH/PUBREL 단계 recovery와
-  Packet Identifier·DUP 규칙을 검증한다.
-- `internal/adapters/tcp/server_durable_test.go::TestDispatchPublishReusesCompletedPacketIdentifier` directly verifies durable QoS 1/2 reuse after PUBACK/PUBCOMP commits a new exchange, while pre-PUBCOMP QoS 2 PUBLISH preserves its in-flight RECEIVE. `tests/integration/mqtt_ingress_test.go::TestMQTTIngressQoS1Handshake` and `TestMQTTIngressQoS2Handshake` verify the corresponding second ACK and routed delivery over real sockets after legal `DUP=0` Packet Identifier reuse.
-- Durable phase 완료 경계는 `internal/adapters/tcp/server_phases_test.go`의 `TestTCPDurablePublishSubmitsBeforePriorCommitCompletes`, `TestTCPDurablePublishFailureDrainsPendingWithoutSuccessAck`, `TestTCPDurablePhasesCompleteIndependentExchangeDuringReceiveCommit`, `TestTCPDurablePhasesPreserveDuplicateReleaseBeforeIdentifierReuse`, `TestTCPDurableOutboundAckKeepsIdentifierUntilOrderedCommit`, `TestWriteDeliveriesReservesPacketIDWhilePromotionWaits`에 연결한다. 준비된 다음 변경이 앞선 commit 대기 중에도 진행하되 성공 ACK/PUBREL·ID 재사용은 commit 뒤에만 가능한지, 실패 시 pending 작업을 회수하며 성공 ACK가 없는지 확인한다. Driver의 proof·projection gap·취소와 FIFO proposal은 `cmd/narumq/cluster_runtime_test.go::TestClusterCommitReadProofPreservesSubmissionOrderAndCancellation`이 실제 3-node Raft로 확인한다. 고정 workload의 실제 TCP·Docker 실행은 [BP-03 수용 증거](performance-and-verification.md#34-bp-03-durable-delivery-smoke-관찰-경계)를 따른다.
-- Batch SEND 실패와 재시도는 `cmd/narumq/cluster_durable_test.go::TestClusterDurableBatchRetriesCommittedSuffixWithSameIdentifiers`와 `internal/adapters/tcp/server_phases_test.go::TestTCPPartialPromotionPreservesEverySuffixIdentifier`로 검증한다. 앞선 SEND가 commit되었지만 호출자에게 quorum 오류가 돌아오고 뒤의 SEND도 commit된 경우, 동일 ID로 재시도해 수렴하고 ADVANCE·COMPLETE 뒤 replicated message가 제거되는지 확인한다. TCP 시험은 일부 prefix만 wire에 보낸 뒤 durable/local queue 모두에서 모든 suffix ID를 보존하고, 재시도 wire topic·PacketID 대응이 유지되는지 확인한다.
-- `TestMQTTIngressSharedSubscriptionHandoff`는 delivery queue가 가득 찬 persistent offline
-  member에서 같은 group의 다른 member로 handoff하고 reconnect queued delivery를 보존하는
-  실제 socket-level MQTT-07 failover 증거다.
-- `tests/integration/mqtt_tls_test.go`는 TLS 1.2/1.3, trusted/untrusted/expired client
-  certificate, mTLS identity의 exact Client ID binding과 MQTT 5 wire CONNACK 결과를
-  실제 socket에서 검증한다. `cmd/narumq` TLS flag test는 client-auth mode와 mTLS
-  identity binding의 strict configuration 조합을 검증한다.
-- `MQTT-3.3.1-5`~`MQTT-3.3.1-13`, `MQTT-3.8.3-3`,
-  `MQTT-3.8.4-3/4`는 tests/conformance/mqtt-compliance-v1.json에서 양 protocol
-  version test와 source traceability comment를 함께 가져야 한다. `MQTT-3.3.2-5/6`는
-  MQTT 5.0 Message Expiry property와 만료 흐름을 검증하는 test 및 source traceability
-  comment를 가져야 하며 MQTT 3.1.1에는 이 property를 적용하지 않는다.
-- 이 matrix와 gate는 전체 MQTT 표준 적합성 선언이 아니다. ACL·tenant와 durable
-  cluster replication은 후속 범위로 남아 있다.
+- `MQTT-3.3.1-5`~`MQTT-3.3.1-13`, `MQTT-3.8.3-3`, `MQTT-3.8.4-3/4`는 tests/conformance/mqtt-compliance-v1.json에서 양 protocol version test와 source traceability comment를 함께 가져야 한다. `MQTT-3.3.2-5/6`는 MQTT 5.0 Message Expiry property와 만료 흐름을 검증하는 test 및 source traceability comment를 가져야 하며 MQTT 3.1.1에는 이 property를 적용하지 않는다.
+- 이 matrix와 gate는 전체 MQTT 표준 적합성 선언이 아니다. ACL·tenant와 durable cluster replication은 후속 범위로 남아 있다.
+- QoS별 정상, DUP, reconnect, owner crash와 Message Expiry 시나리오를 검증한다. Owner crash 시나리오는 [cluster spec](cluster-session-and-delivery.md)이 기준이다.
+
+| 시나리오 ID | 요구사항 ID | 조건과 입력 | 기대 결과 |
+| --- | --- | --- | --- |
+| MQTT-SCN-001 | - | Compliance matrix에는 있으나 source에 대응 test가 없는 statement, 또는 matrix에 없는 statement를 가리키는 source traceability comment를 만든다. | `go run ./tools/verify traceability`는 matrix → source와 source → matrix를 모두 검사하고 이를 합격으로 처리하지 않는다. |
+| MQTT-SCN-002 | MQTT-13 | Protocol Name `MQIsdp` level 3 CONNECT와 Protocol Name `MQTT` level 3 CONNECT를 각각 보낸다. | `MQIsdp`는 응답 없이 연결을 닫고, `MQTT` level 3은 MQTT 3.1.1 CONNACK `0x01` 뒤 연결을 닫는다. 두 경우 모두 session을 만들지 않는다. `narumq_mqtt_connect_rejected_total{protocol="3.1.0",reason="unsupported_protocol_version"}`가 두 wire variant를 함께 집계한다. |
+| MQTT-SCN-003 | MQTT-02 | MQTT 3.1.1과 5.0 publisher가 QoS 1 PUBLISH를 보낸다. subscriber가 ACK한 뒤 같은 Packet Identifier로 `DUP=1` 재전송과 `DUP=0` 새 PUBLISH를 차례로 보낸다. | 첫 PUBLISH는 라우팅 뒤 PUBACK을 받는다. `DUP=1` 재전송은 같은 PUBACK을 받고 subscriber에게 중복 전달하지 않는다. `DUP=0` 새 PUBLISH는 새 교환이며 두 번째 PUBACK과 새 전달이 따른다. |
+| MQTT-SCN-004 | MQTT-02 | MQTT 3.1.1과 5.0 publisher가 QoS 2 PUBLISH를 보내고 PUBREC, PUBREL, PUBCOMP 순서로 완료한다. 중복 PUBLISH·PUBREL과 완료 뒤 같은 Packet Identifier 재사용도 보낸다. | PUBREC은 수신 시 반환하고 PUBREL을 받은 뒤에만 fan-out과 PUBCOMP를 수행한다. 중복 PUBLISH·PUBREL은 같은 PUBREC·PUBCOMP로 수렴하고 중복 전달이 없다. 완료 뒤 `DUP=0` 새 PUBLISH는 새 교환으로 처리한다. |
+| MQTT-SCN-005 | MQTT-02 | Dynamic cluster의 durable TCP 연결에서 QoS 1/2 PUBLISH가 PUBACK·PUBCOMP로 완료된 뒤 같은 Packet Identifier로 `DUP=0` PUBLISH를 보낸다. PUBCOMP 전 QoS 2 PUBLISH도 보낸다. | 완료된 교환의 Identifier는 새 교환으로 commit한다. PUBCOMP 전 QoS 2 PUBLISH는 진행 중인 RECEIVE 상태를 덮어쓰지 않고 보존한다. |
+| MQTT-SCN-006 | MQTT-02, MQTT-03 | MQTT 5 QoS 1 subscriber와 MQTT 3.1.1 QoS 2 subscriber가 각자 topic을 구독하고, MQTT 5 publisher가 같은 QoS로 발행한다. subscriber는 PUBACK 또는 PUBREC·PUBCOMP로 응답한다. | QoS 1은 PUBLISH와 PUBACK으로, QoS 2는 PUBLISH·PUBREC·PUBREL·PUBCOMP로 handshake를 완료한다. 완료 뒤 남는 packet이 없다. |
+| MQTT-SCN-007 | MQTT-03, MQTT-08 | Persistent session의 subscriber가 연결을 끊은 동안 메시지를 받고, 이후 다시 연결한다. Clean reset과 queued Message Expiry도 시험한다. | `CONNACK`을 먼저 보낸 뒤 queued entry를 FIFO 순서로 전달한다. Clean reset은 queue를 비운다. 만료된 queued entry는 전달하지 않는다. |
+| MQTT-SCN-008 | MQTT-02 | Persistent session이 QoS 1/2 송신 중 연결을 잃은 뒤 같은 session으로 다시 연결한다. PUBLISH 단계와 PUBREL 단계, expiry가 지난 상태를 포함한다. | 미완료 PUBLISH는 저장된 Packet Identifier와 `DUP=1`로 재전송한다. PUBREC까지 끝난 상태는 같은 Identifier의 PUBREL로 재개한다. PUBLISH 단계에서 expiry가 지난 상태는 전달하지 않는다. |
+| MQTT-SCN-009 | MQTT-04, MQTT-08 | MQTT 5 retained PUBLISH에 Message Expiry Interval 10초를 설정한다. 3초 뒤와 10초 뒤에 새 subscription으로 replay를 요청한다. | 3초 뒤 replay는 남은 interval 7을 담아 전달한다. 10초 뒤(`now >= deadline`)에는 replay하지 않는다. |
+| MQTT-SCN-010 | MQTT-01, MQTT-02, MQTT-06 | MQTT 3.1.1 subscriber와 MQTT 5.0 publisher가 같은 topic을 교환한다. subscriber가 PINGREQ를 보내고 두 client가 정상 DISCONNECT한다. | 두 version client가 같은 외부 topic에서 메시지를 주고받는다. SUBACK과 PINGRESP를 받는다. 정상 DISCONNECT 뒤 연결이 닫힌다. |
+| MQTT-SCN-011 | MQTT-01, MQTT-03 | MQTT 5 persistent session(`SessionExpiryInterval=60`)으로 연결하고 정상 DISCONNECT한 뒤 같은 Client ID로 다시 연결한다. | 첫 CONNACK은 `Session Present=0`, 재연결 CONNACK은 `Session Present=1`이다. |
+| MQTT-SCN-012 | MQTT-01, MQTT-13 | 지원하지 않는 CONNECT와 malformed CONNECT를 보낸다. | 연결을 닫고 해당 Client ID의 session을 만들지 않는다. |
+| MQTT-SCN-013 | MQTT-04 | retained PUBLISH로 값을 만들고 같은 topic에 다른 값과 zero-byte payload를 보낸 뒤, 새 subscription으로 retained replay를 받는다. | 같은 tenant/topic의 마지막 값만 replace하고 zero-byte payload는 삭제한다. SUBSCRIBE가 발생시킨 retained replay PUBLISH보다 그 SUBSCRIBE의 SUBACK을 먼저 wire에 기록한다. |
+| MQTT-SCN-014 | MQTT-08 | MQTT 5 subscription option `Retain Handling` 0/1/2, `No Local`, `Retain As Published`를 조합해 SUBSCRIBE하고 retained replay와 live delivery를 받는다. MQTT 3.1.1에는 runtime option을 보내 본다. | `Retain Handling=0`은 항상 replay하고 `1`은 새 exact filter에만 replay하며 `2`는 replay하지 않는다. `No Local`은 같은 publisher session의 delivery를 제외한다. replay의 RETAIN은 항상 설정하고 live delivery는 `Retain As Published`에 따른다. MQTT 3.1.1은 runtime option을 거절한다. |
+| MQTT-SCN-015 | MQTT-04, MQTT-11 | retained 저장 용량이 가득 찬 상태에서 MQTT 5와 MQTT 3.1.1 client가 새 retained PUBLISH를 보낸다. | MQTT 5는 DISCONNECT `0x97` 뒤 연결을 닫고 MQTT 3.1.1은 연결을 닫는다. |
+| MQTT-SCN-016 | MQTT-07 | 같은 `$share` group의 member 하나가 persistent offline이며 delivery queue가 가득 찬 상태에서 메시지를 publish한다. 이후 그 member가 다시 연결한다. | 같은 group의 다른 eligible member가 메시지를 이어받는다. 다시 연결한 member는 보존한 queued delivery를 받는다. |
+| MQTT-SCN-017 | MQTT-06 | `+`·`#` wildcard 위치가 올바르거나 잘못된 filter와 `$` system topic, 잘못된 UTF-8 filter를 등록한다. | 표준 규칙대로 filter를 검증한다. wildcard filter는 `$` system topic과 match하지 않는다. 잘못된 filter는 거절한다. |
+| MQTT-SCN-018 | MQTT-09, MQTT-10 | Cluster mode에서 TCP/TLS/WS/WSS listener를 설정하고, TLS 설정 실패를 포함해 listener를 연다. | 설정된 endpoint마다 listener를 연다. TLS 설정이 실패하면 이미 연 TCP listener를 닫는다. |
+| MQTT-SCN-019 | MQTT-09, SEC-03, SEC-04 | TLS 1.2와 1.3 socket, 신뢰하는·신뢰하지 않는·만료된 client certificate, Client ID와 certificate identity가 다른 CONNECT를 시험한다. | TLS 1.2/1.3에서 CONNECT와 delivery가 성공한다. 신뢰하지 않는 CA와 만료된 certificate는 거절한다. mTLS identity와 Client ID가 정확히 같아야 하며 아니면 MQTT 5 wire CONNACK으로 거절한다. |
+| MQTT-SCN-020 | MQTT-09, SEC-02 | `-tls-client-auth`를 `require` 또는 `request`로 지정하고 mTLS identity binding 또는 JWT·password 설정을 빼거나 넣는다. | `require`는 mTLS identity binding이 하나 이상 있어야 한다. `request`는 JWT 또는 password 인증 설정이 있어야 한다. 조건을 어기면 시작을 거절한다. |
+| MQTT-SCN-021 | MQTT-09, SEC-05 | Password identity를 설정하고 올바른 Username·Password, 잘못된 Password, 알 수 없는 Username, credential 없는 CONNECT를 MQTT 3.1.1과 5.0으로 보낸다. TLS listener와 dynamic cluster listener에서 시험한다. | 올바른 credential은 CONNACK 성공이다. 잘못된 Password와 알 수 없는 Username은 같은 reason으로 거절한다. credential이 없으면 거절한다. 거절 reason은 MQTT 3.1.1에서 `0x05`, MQTT 5에서 `0x87`이다. |
+| MQTT-SCN-022 | MQTT-02, CLU-14 | Dynamic cluster durable 연결에서 앞선 PUBLISH의 commit이 끝나기 전에 다음 PUBLISH, 중복 PUBREL, 송신 ACK, 송신 promotion을 보낸다. | 준비된 다음 변경은 앞선 commit 대기 중에도 진행한다. 성공 ACK·PUBREL·Packet Identifier 재사용은 해당 commit 뒤에만 일어난다. 중복 PUBREL은 Identifier 재사용 전에 보존한다. |
+| MQTT-SCN-023 | CLU-14 | durable PUBLISH 하나의 commit이 실패한다. QoS 1과 QoS 2에서 시험한다. | 이미 제출한 pending 작업을 모두 회수하고 성공 PUBACK·PUBREC을 보내지 않는다. |
+| MQTT-SCN-024 | CLU-14 | 3-node Raft에서 여러 durable 변경을 제출하고 일부를 취소하거나 proof를 늦춘다. | 제출 순서대로 proposal을 만들고 앞선 proof가 늦으면 뒤의 변경도 추월하지 않는다. 취소된 변경은 제출하지 않는다. |
+| MQTT-SCN-025 | CLU-14 | batch SEND에서 앞선 SEND가 commit됐지만 호출자에게 quorum 오류가 돌아오고 뒤의 SEND도 commit된다. 일부 prefix만 wire에 보낸 경우도 시험한다. | 같은 Identifier로 재시도해 수렴하고 ADVANCE·COMPLETE 뒤 replicated message가 제거된다. durable·local queue 모두 모든 suffix Identifier를 보존하고 재시도 wire topic과 PacketID 대응이 유지된다. |
 
 ### 8.1 Resource limit·비정상 입력 수용 매핑
 
-2026-10-05 Windows local 실행 결과다. TCP focused 시험은 2.318s, integration
-focused 시험은 2.139s에 통과했다. TCP 전체 시험과 race 시험도 통과했다.
-
-| Scenario | 관찰할 결과 | 시험 위치 | 실행 증거 |
+| 시나리오 ID | 요구사항 ID | 조건과 입력 | 기대 결과 |
 | --- | --- | --- | --- |
-| Server 한도 광고 | MQTT 5 CONNACK에 두 상한. MQTT 3.1.1 body는 2 byte | `internal/adapters/tcp/server_limits_test.go::TestTCPConnAckAdvertisesServerLimits` | PASS, TCP focused 2.318s |
-| Reader protocol 오류 | MQTT 5는 0x95·0x81·0x82·0x93 후 종료. MQTT 3.1.1은 응답 없이 종료 | `internal/adapters/tcp/server_limits_test.go::TestTCPProtocolErrorsAfterConnectDisconnectWithReason` | PASS, 양 version·네 오류 |
-| Inbound quota 반환과 DUP | ACK 후 새 PUBLISH 수용. 미완료 ID 재전송은 quota를 추가하지 않음 | `internal/adapters/tcp/server_limits_test.go::TestTCPReceiveMaximumQuotaReturnsAfterAcknowledgement` | PASS, TCP race 포함 |
-| Packet 완성 시간 | 부분 packet은 timeout. KeepAlive=0 유휴 연결은 유지 | `internal/adapters/tcp/server_limits_test.go::TestTCPPartialPacketAfterConnectTimesOut` | PASS, 양 version·200ms timeout·600ms 유휴 |
-| 수신 buffer 상한 | 작은 초기 buffer, 단계별 증가, 소비 후 반환 | `internal/adapters/tcp/frame_reader_test.go::TestFrameReaderStartsSmallGrowsByDoublingAndReleases` | PASS |
-| Control queue 상한 | 용량 1에서 PINGREQ가 쌓이면 연결 종료 | `internal/adapters/tcp/server_test.go::TestTCPControlQueueFullClosesConnection` | PASS, TCP queue focused 0.742s |
-| Delivery queue 상한 | 읽지 않는 subscriber의 queue가 차면 해당 session 종료. Publisher는 PINGRESP 수신 | `internal/adapters/tcp/server_test.go::TestTCPDeliveryQueueSaturationClosesSubscriber` | PASS, TCP queue focused 0.742s |
-| Queued·in-flight 용량과 FIFO | Queue가 차면 enqueue·promote는 `ErrFull`. 실패한 promote는 head를 보존. 앞선 delivery는 FIFO로 유지 | `internal/adapters/memory/deliveryqueue/queue_test.go::TestQueueFIFOAndPayloadOwnership`, `TestQueueOutboundCapacityLeavesHeadOnFailure` | PASS, memory queue focused 0.447s |
-| Packet 설정 상한 | MQTT 최대값+1과 `int` 최대값은 `NewServer`에서 `ErrInvalidConfig` | `internal/adapters/tcp/server_connection_test.go::TestNewServerValidatesEveryDependencyAndBound` | 두 case 모두 수정 전 FAIL, 수정 후 PASS |
-| 유효한 최대 packet 설정 | Remaining Length 268435455에서 실제 MQTT 5 연결과 PING 성공 | 실제 binary boundary smoke | PASS. CONNACK Receive Maximum=2, Maximum Packet Size=268435460, PINGRESP 수신 |
-| Client Receive Maximum | ACK 후 다음 PUBLISH 전달. 복구 PUBREL은 지연하지 않음 | `internal/adapters/tcp/server_limits_test.go::TestWriteDeliveriesHonorsClientReceiveMaximum`, `TestWriteRecoveredDeliveriesHonorsClientReceiveMaximum`; `tests/integration/mqtt_resource_limits_test.go::TestMQTTOutboundHonorsClientReceiveMaximum` | PASS, 실제 socket과 복구 상태 |
-| Client Maximum Packet Size | 큰 PUBLISH는 전송 완료로 제거. 작은 PUBLISH는 순서대로 전달 | `internal/adapters/tcp/server_limits_test.go::TestWriteDeliveriesDiscardsPublishAboveClientMaximumPacketSize`; `tests/integration/mqtt_resource_limits_test.go::TestMQTTOutboundDiscardsPacketsAboveClientMaximumPacketSize` | PASS, promote→complete와 persistent reconnect |
-| 비 PUBLISH packet 한도 | 성공·거절 CONNACK도 client 한도를 넘으면 전송하지 않고 종료 | `internal/adapters/tcp/server_limits_test.go::TestTCPConnAckAboveClientMaximumPacketSizeClosesWithoutSending` | PASS, client Maximum Packet Size=1 |
-| Stream fuzz | 비정상 입력 후 연결 goroutine 종료 | `internal/adapters/tcp/server_fuzz_test.go::FuzzConnectionInput` | PASS, 10000x·single worker, 12.434s |
-| Slowloris·느린 reader·반복 오류 | CONNECT 전 64개 소켓에서 heap 증가 16 MiB 미만. 종료 후 connection·goroutine·heap 회수 | `tests/integration/mqtt_resource_limits_test.go::TestMQTTResourceLimitsReleaseConnectionsGoroutinesAndMemory` | PASS 0.91s. Heap 증가 484216 byte. Goroutine 7→7. Heap 628072→787320 byte |
-| Traceability·binary | 실제 flag·wire 동작과 추적 매핑 확인 | `go run ./tools/verify traceability`; binary smoke | PASS. CONNACK 2/1048580, DISCONNECT 0x93, 부분 packet 2.0083697s 후 종료. `-receive-maximum 0`은 지정 오류로 종료 |
-| 실제 SDK 회귀 | Paho Go/Python의 CONNACK·기존 handshake 호환 | `go run ./tests/compatibility/mqtt-clients-v1 --run-id phase1-resource-limits --output .artifacts/compatibility/mqtt-clients-v1/phase1-resource-limits` | PASS 26/26, 180.65s. `.artifacts/compatibility/mqtt-clients-v1/phase1-resource-limits`에 결과 보존 |
-| 전체 local gate | 전체 package·race·다섯 fuzz·coverage 통과 | `GOMAXPROCS=4 go run ./tools/verify local` | 설정 상한 수정 후 PASS, 147.22s. Traceability·architecture·coverage 포함. TCP stream fuzz 10000x, 20.068s |
-
-변경 전 임시 socket 실험은 CONNECT 전 부분 입력 64개에서 heap 증가
-66884496 byte로 16 MiB 기준을 넘었다. 변경 후 같은 실험은 515944 byte로
-통과했다. 임시 시험과 binary smoke client는 확인 뒤 제거했다. Listener 최대
-연결 수·connection rate와 tenant message rate의 완료 증거는 아니다.
-
-전체 회귀에서 발견한 기존 MQTT 5 cluster CONNACK helper의 property-free
-가정은 `tests/integration/cluster_drain_process_test.go`에서 domain decoder로
-바꿨다. Property가 있는 성공 CONNACK도 검증한 뒤 session 결과를 읽는다.
-
-완료 검증 중 `TestRunFlushesRuntimeMetricsOnCancellation`이 초기 기록 하나만
-관찰한 실행이 있었다. Sampler는 같은 timestamp의 기록을 생략하므로 시험은
-완성된 초기 JSONL과 다음 clock tick을 확인한 뒤 취소하도록 고쳤다. 제품의
-sampler 동작은 바꾸지 않았다. 이 시험은 별도 30회 반복에서 PASS했다.
+| MQTT-SCN-026 | MQTT-11 | MQTT 3.1.1과 5.0으로 연결한다. | MQTT 5 CONNACK에 Receive Maximum과 Maximum Packet Size 두 상한이 있다. MQTT 3.1.1 body는 2 byte다. |
+| MQTT-SCN-027 | MQTT-11, MQTT-12 | CONNECT 뒤 packet 크기 초과, malformed packet, protocol error, Receive Maximum 초과를 보낸다. | MQTT 5는 DISCONNECT `0x95`·`0x81`·`0x82`·`0x93` 뒤 종료한다. MQTT 3.1.1은 응답 없이 종료한다. |
+| MQTT-SCN-028 | MQTT-11 | Inbound Receive Maximum에 도달한 뒤 ACK를 보내고 새 PUBLISH와 미완료 Identifier의 재전송을 보낸다. | ACK 뒤 새 PUBLISH를 수용한다. 미완료 Identifier 재전송은 quota를 추가하지 않는다. |
+| MQTT-SCN-029 | MQTT-11, MQTT-12 | CONNECT 뒤 packet의 첫 byte만 보내고 완성하지 않는다. KeepAlive=0인 유휴 연결도 둔다. | 부분 packet은 `-packet-read-timeout` 뒤 응답 없이 종료한다. KeepAlive=0이고 미완성 byte가 없는 유휴 연결은 유지한다. |
+| MQTT-SCN-030 | MQTT-12 | 수신 buffer에 byte를 채우고 비운다. | 작은 초기 buffer에서 시작해 단계별로 두 배씩 늘고, 소비해 비면 초기 크기로 반환한다. |
+| MQTT-SCN-031 | MQTT-11 | control queue 용량을 1로 두고 PINGREQ를 쌓는다. | 연결을 종료한다. |
+| MQTT-SCN-032 | MQTT-11 | 읽지 않는 subscriber의 delivery queue를 가득 채운다. | 해당 session을 종료한다. publisher는 PINGRESP를 받는다. |
+| MQTT-SCN-033 | MQTT-11 | Queued·in-flight 용량을 넘겨 enqueue와 promote를 시도한다. | `ErrFull`을 반환한다. 실패한 promote는 head를 보존한다. 앞선 delivery는 FIFO를 유지한다. |
+| MQTT-SCN-034 | MQTT-11, MQTT-12 | `NewServer`에 MQTT 최대값+1과 `int` 최대값 packet 설정을 넣는다. | `ErrInvalidConfig`로 거절한다. |
+| MQTT-SCN-035 | MQTT-11 | 실제 binary를 Remaining Length 268435455로 시작하고 MQTT 5로 연결해 PING한다. | 연결과 PING이 성공한다. CONNACK이 Receive Maximum과 Maximum Packet Size를 알린다. |
+| MQTT-SCN-036 | MQTT-11 | Client가 CONNECT property `0x21`로 Receive Maximum을 알린다. 미확인 QoS 1/2 PUBLISH가 그 값에 도달한다. | 새 PUBLISH를 보류하고 ACK 뒤 다음 PUBLISH를 전달한다. 복구 PUBREL 등 다른 packet은 지연하지 않는다. |
+| MQTT-SCN-037 | MQTT-11 | Client가 CONNECT property `0x27`로 Maximum Packet Size를 알린다. 그보다 큰 PUBLISH와 작은 PUBLISH를 전달한다. | 큰 PUBLISH는 보내지 않고 전송 완료로 제거한다. 작은 PUBLISH는 순서대로 전달한다. |
+| MQTT-SCN-038 | MQTT-11 | Client Maximum Packet Size보다 큰 CONNACK을 보내야 한다(성공과 거절 CONNACK, cluster 사용 불가 포함). | CONNACK을 보내지 않고 종료한다. |
+| MQTT-SCN-039 | MQTT-12 | 비정상 byte stream을 connection에 반복 입력한다. | 연결 goroutine이 종료하고 panic이 없다. |
+| MQTT-SCN-040 | MQTT-11, MQTT-12 | CONNECT 전 부분 입력 소켓 64개와 느린 reader, 반복 오류 연결을 만든 뒤 모두 닫는다. | Heap 증가가 16 MiB 미만이다. 종료 뒤 connection·goroutine·heap이 회수된다. |
+| MQTT-SCN-041 | MQTT-11, MQTT-12 | 실제 binary의 flag와 wire 동작을 확인한다(Receive Maximum 초과, 부분 packet, `-receive-maximum 0`). | 광고 한도가 CONNACK에 나타난다. Receive Maximum 초과는 DISCONNECT `0x93` 뒤 종료한다. 부분 packet은 timeout 뒤 종료한다. `-receive-maximum 0`은 지정 오류로 종료한다. |
+| MQTT-SCN-042 | MQTT-11 | 실제 Paho Go와 Python SDK를 listener 한도 기본값 0 설정에서 기존 handshake로 연결한다. | SDK 호환 시나리오 전체가 통과하고 CONNACK과 기존 handshake가 호환된다. |
 
 ### 8.2 Listener 연결 수·connection rate 수용 매핑
 
-2026-10-05 Windows/amd64 local 실행이다. TCP admission race 시험은 1.936s,
-TLS·Metric 전체 시험은 각각 1.212s·0.834s에 통과했다. Command 전체 시험은
-14.556s, listener admission·TLS integration focused 시험은 0.461s에 통과했다.
-
-1단계의 문서 변경 뒤 `go build ./...`와 기존 TLS·Metric·TCP·command·integration
-전체 package 시험이 통과했다(wall 88.37s, integration 71.669s).
-2단계 Metric 변경 뒤 누적 build와 TLS·Metric 전체 시험이 통과했다(wall 8.92s).
-3단계 TLS API 전환 뒤 누적 build, TLS·Metric 전체 시험, command listener 시험과
-TLS integration 시험이 통과했다(wall 14.74s). 이후 단계의 실행 증거는 아래 표를 따른다.
-
-계획의 smoke CONNECT는 빈 Client ID로 기존 CONNACK `0x02` 거절을 받았다.
-Admission 시험에서는 Client ID `a`를 넣은
-`10 0D 00 04 4D 51 54 54 04 02 00 3C 00 01 61`을 사용했다.
-제품의 Client ID 처리 규칙은 바꾸지 않았다.
-
-| Scenario | 관찰할 결과 | 시험 위치 | 실행 증거 |
+| 시나리오 ID | 요구사항 ID | 조건과 입력 | 기대 결과 |
 | --- | --- | --- | --- |
-| 설정 검증 | nil 의존성, 잘못된 transport와 범위·무제한 wrapper 거절 | `internal/adapters/tcp/listener_admission_test.go::TestNewAdmissionListenerValidatesConfig` | PASS, TCP race 1.936s |
-| 동시 연결 수와 반환 | CONNECT 전 socket 포함, 초과 종료, 중복 Close는 한 번만 반환 | `internal/adapters/tcp/listener_admission_test.go::TestAdmissionListenerClosesSocketsAboveMaximumUntilRelease` | PASS, TCP race 포함 |
-| Rate 보충과 burst | 초기 rate개 허용, 시간만큼 보충, burst 상한과 역행 clock 유지 | `internal/adapters/tcp/listener_admission_test.go::TestAdmissionListenerRefillsConnectionRateFromClock` | PASS, rate=2·500ms 보충·10s burst 상한·역행 clock |
-| 검사 순서 | 최대 연결 수 우선, 거절 socket은 token을 쓰지 않음 | `internal/adapters/tcp/listener_admission_test.go::TestAdmissionListenerChecksMaximumBeforeRate` | PASS, 3개 최대 연결 수 거절 뒤 같은 clock에서 다음 연결 허용 |
-| Accept 오류 | inner listener 오류를 그대로 반환 | `internal/adapters/tcp/listener_admission_test.go::TestAdmissionListenerReturnsInnerAcceptError` | PASS, `net.ErrClosed` 유지 |
-| 거절 Metric | 8개 고정 series, 알 수 없는 label 무시 | `internal/adapters/metrics/registry_test.go::TestRegistryRendersListenerAdmissionRejections` | 기존 4개에서 WS/WSS를 더한 8개 transport·reason 조합 확인 |
-| MQTT 연결 수·독립성 | 양 protocol 초과 종료, slot 회수, 다른 listener는 계속 허용 | `tests/integration/mqtt_resource_limits_test.go::TestMQTTListenerAdmissionClosesConnectionsAboveMaximum` | PASS, integration focused 0.461s |
-| MQTT rate | 초과 종료, 1초 보충 뒤 CONNACK 성공 | `tests/integration/mqtt_resource_limits_test.go::TestMQTTListenerAdmissionClosesConnectionsAboveRate` | PASS, 실제 socket과 Metric count=1 |
-| TLS 적용 순서 | Server는 `*tls.Conn`, raw TCP 초과 socket은 handshake 전 종료 | `cmd/narumq/mqtt_listener_test.go::TestOpenMQTTListenerAppliesAdmissionInsideTLS`; `tests/integration/mqtt_tls_test.go` | PASS, 실제 TLS handshake·raw TCP 종료·TLS Metric count=1 |
-| Standalone·cluster 설정 | 범위, disabled listener, 소수 JSON 거절과 listener binding | `cmd/narumq/main_test.go::TestRunWithContextRejectsConstructionBounds`; `cmd_config_coverage_test.go`; `cluster_runtime_test.go` | PASS, command 전체 14.556s |
-| Traceability | 요구사항과 시험 연결 | `go run ./tools/verify traceability` | PASS, wall 1.77s |
-| 실제 binary | 연결 수·rate 초과 종료, 회수, 범위 오류 | binary admission smoke | PASS, 0.993s. 양 한도 거절 read=0 byte·non-timeout error, 각 Metric=1, 회수 후 CONNACK `20 02 00 00`, 1000001 범위 오류. Throwaway 파일·binary 삭제 |
-| 실제 SDK 회귀 | 기본값 0에서 기존 MQTT handshake 유지 | `go run ./tests/compatibility/mqtt-clients-v1 --run-id phase1-listener-admission-isolated --output .artifacts/compatibility/mqtt-clients-v1/phase1-listener-admission-isolated` | 별도 전체 실행 PASS 26/26, 138.59s. 첫 실행(`phase1-listener-admission`)은 FAIL 25/26, 238.35s이며 `go-mqtt311-persistent-resume`이 `identifier rejected`로 거절됐다. 두 실행 artifact 모두 보존 |
-| 전체 local gate | build·전체 시험·race·fuzz·coverage 통과 | `GOMAXPROCS=4 go run ./tools/verify local`; 단계별 `go build ./...` | PASS, 230.91s. Gofmt·vet·traceability·architecture·전체 package·production race·5개 fuzz 각 10000회. Line coverage 85.82%, function coverage 97.29%. `.artifacts/verification/coverage-summary.json`·`coverage.out`에 보존 |
-| Mutation gate | delivery·nodedrain·session efficacy와 mutant coverage 각각 80% 이상 | `tools/verify/runner.go`의 CI mutation command 3개를 별도 실행 | 모두 PASS. Killed 27/64/56, Lived·Not covered·Timed out 모두 0. 세 package efficacy·mutator coverage 모두 100%. Wall 296.54s/375.54s/386.70s. `.artifacts/verification/mutation-delivery.json`·`mutation-nodedrain.json`·`mutation-session.json`에 보존 |
-
-Local gate는 mutation을 실행하지 않는다. 계획의 mutation 확인은 기존 CI 명령을
-별도로 실행하며, 그 결과는 위 Mutation gate 행에 기록한다.
-
-첫 SDK 실행은 local·mutation 검증과 동시에 수행했다. 두 번째는 이 검증들이
-끝난 뒤 같은 코드와 같은 26개 시나리오로 수행했다. 첫 실패의 원인은 확정하지
-않았다. 기본값 0에서는 admission wrapper를 만들지 않는다. SDK나 제품의
-session 처리에 재시도·대기·오류 무시를 추가하지 않았다.
+| MQTT-SCN-043 | MQTT-09, MQTT-11 | Admission listener에 nil 의존성, 잘못된 transport, 범위를 벗어난 값, 두 한도가 모두 `0`인 설정을 넣는다. | 잘못된 설정을 거절하고, 무제한 wrapper는 만들지 않는다. |
+| MQTT-SCN-044 | MQTT-09, MQTT-11 | 최대 연결 수 1에서 CONNECT 전 socket을 포함해 두 번째 socket을 열고, 첫 socket을 두 번 `Close`한다. | 초과 socket은 종료한다. 중복 `Close`는 연결 수를 한 번만 줄이고 slot을 반환한다. |
+| MQTT-SCN-045 | MQTT-09, MQTT-11 | Rate 2로 시작해 시간을 흘리고 burst 상한을 넘기며 clock을 뒤로 돌린다. | 초기 rate개를 허용하고 시간만큼 보충한다. burst 상한을 넘기지 않고 역행 clock에서는 보충하지 않는다. |
+| MQTT-SCN-046 | MQTT-09, MQTT-11 | 최대 연결 수와 rate를 함께 설정하고 최대 연결 수를 넘는 socket을 연다. | 최대 연결 수를 먼저 검사한다. 거절한 socket은 token을 쓰지 않아 같은 clock에서 다음 연결을 허용한다. |
+| MQTT-SCN-047 | MQTT-09 | Inner listener의 Accept가 오류를 반환한다. | 오류를 그대로 반환한다(`net.ErrClosed` 유지). |
+| MQTT-SCN-048 | MQTT-09, MQTT-10, MQTT-11 | Metric registry에 거절을 transport·reason별로, 알 수 없는 label과 함께 기록한다. | `narumq_mqtt_listener_admission_rejected_total`은 TCP·TLS·WS·WSS 8개 고정 series만 출력하고 알 수 없는 label은 무시한다. |
+| MQTT-SCN-049 | MQTT-09, MQTT-11 | 최대 연결 수를 넘겨 MQTT 3.1.1과 5.0 client를 연결한다. 다른 listener도 연결한다. | 초과 연결은 CONNACK 없이 종료한다. slot을 회수하면 다시 연결할 수 있다. 다른 listener는 계속 허용한다. |
+| MQTT-SCN-050 | MQTT-09, MQTT-11 | connection rate를 넘겨 연결한 뒤 1초를 기다려 다시 연결한다. | 초과 연결은 종료하고 Metric이 1 증가한다. 1초 보충 뒤 CONNACK이 성공한다. |
+| MQTT-SCN-051 | MQTT-09, MQTT-11 | TLS listener에 admission 한도를 설정하고 한도를 넘는 raw TCP socket을 연다. | Server는 `*tls.Conn`을 받는다. 초과 raw TCP socket은 TLS handshake 전에 종료한다. TLS Metric이 증가한다. |
+| MQTT-SCN-052 | MQTT-09, MQTT-11 | Standalone과 cluster 설정에 범위를 벗어난 값, listener 없는 한도, 소수 JSON 값을 넣는다. | 범위를 벗어난 값과 listener 없는 한도, 소수 JSON을 거절한다. 설정한 listener는 지정한 endpoint에 binding한다. |
+| MQTT-SCN-053 | MQTT-09, MQTT-11 | 실제 binary에 연결 수와 rate 한도를 넘겨 연결하고, 범위 밖 값(1000001)을 지정한다. | 한도를 넘은 연결을 읽기 0 byte로 종료하고 Metric이 각각 1이다. 회수 뒤 CONNACK이 성공한다. 범위 오류로 시작을 거절한다. |
 
 ### 8.3 WebSocket/WSS 수용 매핑
 
-| 시나리오 ID | 관찰할 결과 | 시험 위치 | 실행 증거 |
+| 시나리오 ID | 요구사항 ID | 조건과 입력 | 기대 결과 |
 | --- | --- | --- | --- |
-| `MQTT-10-SCN-01` | `/mqtt`와 `mqtt` subprotocol만 협상하고 binary message를 byte stream으로 처리한다. Text frame과 잘못된 path·subprotocol은 거절한다. | `internal/adapters/websocket.TestNewListenerValidatesConfig`, `TestListenerStreamsBinaryMessagesAsByteStream`, `TestListenerRejectsWrongPathAndMissingSubprotocol`, `TestListenerRejectsTextFrame`; `tests/integration.TestMQTTWebSocketFrameBoundaries` | 통과 — [실행 기록](configuration-and-runtime-options.md#websocket-execution) |
-| `MQTT-10-SCN-02` | Read/write deadline은 timeout으로 분류된다. Upgrade timeout, listener close와 unresponsive peer 종료는 제한 시간 안에 끝난다. | `internal/adapters/websocket.TestConnReadDeadlineReportsTimeout`, `TestConnWriteDeadlineReportsTimeout`, `TestListenerHandshakeTimeout`, `TestListenerCloseUnblocksAcceptAndClosesInnerListener`, `TestConnCloseDoesNotWaitForUnresponsivePeer` | 통과 — [실행 기록](configuration-and-runtime-options.md#websocket-execution) |
-| `MQTT-10-SCN-03` | WS는 TCP peer IP와 `ws` label을 노출한다. Blocklist는 전달된 peer IP를 사용한다. | `internal/adapters/websocket.TestListenerExposesRemoteIPAndTransport`; `tests/integration.TestMQTTWebSocketBlocklistedSourceIPRejected` | 통과 — [실행 기록](configuration-and-runtime-options.md#websocket-execution) |
-| `MQTT-10-SCN-04` | WSS는 verified client certificate와 `wss` label을 노출한다. `require`에서 client certificate가 없는 handshake를 거절한다. | `internal/adapters/websocket.TestListenerWSSExposesVerifiedClientCertificate`; `tests/integration.TestMQTTWebSocketWSSMTLSIdentityAndClientCertificateRejection` | 통과 — [실행 기록](configuration-and-runtime-options.md#websocket-execution) |
-| `MQTT-10-SCN-05` | MQTT 3.1.1과 MQTT 5에서 CONNECT, SUBSCRIBE, QoS 0/1/2 PUBLISH round trip이 TCP와 같은 결과를 낸다. | `tests/integration.TestMQTTWebSocketProtocolAndQoS` | 통과 — [실행 기록](configuration-and-runtime-options.md#websocket-execution) |
-| `MQTT-10-SCN-06` | TCP publisher는 WS subscriber에게, WSS publisher는 TLS subscriber에게 메시지를 전달한다. | `tests/integration.TestMQTTWebSocketCrossTransportDelivery` | 통과 — [실행 기록](configuration-and-runtime-options.md#websocket-execution) |
-| `MQTT-10-SCN-07` | Password authentication과 mTLS identity binding은 WSS에서 기존 TLS와 같은 결과를 낸다. | `tests/integration.TestMQTTWebSocketPasswordAuthentication`, `TestMQTTWebSocketWSSMTLSIdentityAndClientCertificateRejection` | 통과 — [실행 기록](configuration-and-runtime-options.md#websocket-execution) |
-| `MQTT-10-SCN-08` | WS KeepAlive timeout은 Will을 발행하고 `MQTT connection handling failed` warning을 남기지 않는다. | `tests/integration.TestMQTTWebSocketKeepAliveTimeoutPublishesWillWithoutWarning` | 통과 — [실행 기록](configuration-and-runtime-options.md#websocket-execution) |
-| `MQTT-10-SCN-09` | Listener별 admission 한도와 connection metric에 `ws`·`wss` label을 적용하고 live client 종료가 제한 시간 안에 끝난다. | `tests/integration.TestMQTTWebSocketMetricsAndAdmission`, `TestMQTTWebSocketCloseWithLiveClients` | 통과 — [실행 기록](configuration-and-runtime-options.md#websocket-execution) |
-| `MQTT-10-SCN-10` | Dynamic cluster의 WS subscriber와 다른 node의 WS publisher가 메시지를 교환한다. Node config API는 적용된 `mqtt.webSocket` 값을 반환한다. | `tests/integration.TestDynamicClusterWebSocketProcessAcceptance` | 통과 — [실행 기록](configuration-and-runtime-options.md#websocket-execution) |
+| MQTT-10-SCN-01 | MQTT-10 | WebSocket client가 `/mqtt`와 `mqtt` subprotocol로 handshake한다. binary·text frame과 잘못된 path·subprotocol도 보낸다. | `/mqtt`와 `mqtt` subprotocol만 협상하고 binary message를 byte stream으로 처리한다. Text frame과 잘못된 path·subprotocol은 거절한다. |
+| MQTT-10-SCN-02 | MQTT-10 | Read/write deadline을 두고 upgrade timeout, listener close, 응답 없는 peer 종료를 만든다. | Read/write deadline은 timeout으로 분류된다. Upgrade timeout, listener close와 unresponsive peer 종료는 제한 시간 안에 끝난다. |
+| MQTT-10-SCN-03 | MQTT-10, SEC-12 | WS client가 연결하고 blocklist에 올린 source IP로도 연결한다. | WS는 TCP peer IP와 `ws` label을 노출한다. Blocklist는 전달된 peer IP를 사용한다. |
+| MQTT-10-SCN-04 | MQTT-10, SEC-03 | WSS client가 verified client certificate로 연결하고, `require`에서 certificate 없이 handshake한다. | WSS는 verified client certificate와 `wss` label을 노출한다. `require`에서 client certificate가 없는 handshake를 거절한다. |
+| MQTT-10-SCN-05 | MQTT-10 | MQTT 3.1.1과 MQTT 5 client가 WebSocket으로 CONNECT, SUBSCRIBE, QoS 0/1/2 PUBLISH를 한다. | TCP와 같은 결과를 낸다. |
+| MQTT-10-SCN-06 | MQTT-10 | TCP publisher가 WS subscriber에게, WSS publisher가 TLS subscriber에게 발행한다. | 메시지를 전달한다. |
+| MQTT-10-SCN-07 | MQTT-10, SEC-02, SEC-05 | WSS로 password 인증과 mTLS identity binding을 사용해 연결한다. | 기존 TLS와 같은 결과를 낸다. |
+| MQTT-10-SCN-08 | MQTT-05, MQTT-10 | WS client가 Will을 설정하고 KeepAlive timeout을 낸다. | Will을 발행하고 `MQTT connection handling failed` warning을 남기지 않는다. |
+| MQTT-10-SCN-09 | MQTT-10, MQTT-11 | WS·WSS listener에 admission 한도를 설정하고 live client가 있는 상태에서 종료한다. | Listener별 admission 한도와 connection metric에 `ws`·`wss` label을 적용한다. live client 종료가 제한 시간 안에 끝난다. |
+| MQTT-10-SCN-10 | MQTT-10, API-09 | Dynamic cluster의 한 node에 WS subscriber, 다른 node에 WS publisher를 연결하고 node config API를 조회한다. | 두 node가 메시지를 교환한다. Node config API는 적용된 `mqtt.webSocket` 값을 반환한다. |

@@ -33,6 +33,7 @@ func newMTLSTestBinding(t *testing.T, kind ClientCertificateIdentityKind, value,
 	}
 }
 
+// Scenarios: tenancy-and-security.md:SEC-SCN-006
 func TestMTLSAuthenticationProviderMatchesConfiguredSelectorKinds(t *testing.T) {
 	now := time.Date(2026, time.January, 1, 0, 0, 0, 0, time.UTC)
 	clock := &testClock{now: now}
@@ -127,6 +128,7 @@ func TestMTLSAuthenticationProviderCopiesBindingsAndResults(t *testing.T) {
 	}
 }
 
+// Scenarios: tenancy-and-security.md:SEC-SCN-006
 func TestMTLSAuthenticationProviderFailsClosedForAmbiguityAndCaseMismatch(t *testing.T) {
 	now := time.Unix(2000, 0)
 	clock := &testClock{now: now}
@@ -156,6 +158,7 @@ func TestMTLSAuthenticationProviderFailsClosedForAmbiguityAndCaseMismatch(t *tes
 	}
 }
 
+// Scenarios: tenancy-and-security.md:SEC-SCN-005
 func TestMTLSAuthenticationProviderRejectsInvalidAndExpiredCertificates(t *testing.T) {
 	now := time.Unix(3000, 0)
 	clock := &testClock{now: now}
@@ -187,6 +190,7 @@ func TestMTLSAuthenticationProviderRejectsInvalidAndExpiredCertificates(t *testi
 	}
 }
 
+// Scenarios: tenancy-and-security.md:SEC-SCN-006
 func TestNewMTLSAuthenticationProviderRejectsInvalidBindings(t *testing.T) {
 	clock := &testClock{now: time.Unix(4000, 0)}
 	valid := newMTLSTestBinding(t, ClientCertificateIdentityKindCommonName, "device", "credential")

@@ -10,6 +10,8 @@ import (
 	"narumq/tests/benchmark/internal/environment"
 )
 
+// TestBuildResourceSummaryUsesSteadyAndFailureWindows verifies steady and round windows with counter-reset-aware values.
+// Scenarios: performance-and-verification.md:PRF-SCN-033
 func TestBuildResourceSummaryUsesSteadyAndFailureWindows(t *testing.T) {
 	root, nodes := resourceFixture(t, true)
 	summary, err := buildResourceSummary("narumq", nodes, filepath.Join(root, "failure.jsonl"))
@@ -34,6 +36,8 @@ func TestBuildResourceSummaryUsesSteadyAndFailureWindows(t *testing.T) {
 	}
 }
 
+// TestBuildResourceSummaryRejectsMissingRestartedNodeSample verifies a missing restarted-node sample invalidates resources.
+// Scenarios: performance-and-verification.md:PRF-SCN-033
 func TestBuildResourceSummaryRejectsMissingRestartedNodeSample(t *testing.T) {
 	root, nodes := resourceFixture(t, false)
 	summary, err := buildResourceSummary("emqx", nodes, filepath.Join(root, "failure.jsonl"))
@@ -48,6 +52,8 @@ func TestBuildResourceSummaryRejectsMissingRestartedNodeSample(t *testing.T) {
 	}
 }
 
+// TestBuildResourceSummaryRequiresTwoSamplesPerSurvivor verifies the sample count threshold per surviving node.
+// Scenarios: performance-and-verification.md:PRF-SCN-033
 func TestBuildResourceSummaryRequiresTwoSamplesPerSurvivor(t *testing.T) {
 	root, nodes := resourceFixture(t, true)
 	for i := range nodes {
@@ -73,6 +79,8 @@ func TestBuildResourceSummaryRequiresTwoSamplesPerSurvivor(t *testing.T) {
 	}
 }
 
+// TestReadFailureWindowsRejectsEmptyAndIncompleteRound verifies required windows are present and complete.
+// Scenarios: performance-and-verification.md:PRF-SCN-033
 func TestReadFailureWindowsRejectsEmptyAndIncompleteRound(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "failure.jsonl")
 	if err := os.WriteFile(path, nil, 0o644); err != nil {

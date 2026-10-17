@@ -9,6 +9,7 @@ import (
 )
 
 // Traceability: CLU-14; docs/specs/performance-and-verification.md §3.4.
+// Scenarios: performance-and-verification.md:PRF-SCN-015
 func TestDynamicClusterConcurrentFreshReadProcessAcceptance(t *testing.T) {
 	t.Parallel()
 

@@ -9,6 +9,7 @@ import (
 )
 
 // Traceability: PRD MQTT-12/TEST-13.
+// Scenarios: mqtt-protocol-and-session.md:MQTT-SCN-039
 func FuzzConnectionInput(f *testing.F) {
 	encoder, err := mqtt.NewEncoder(256)
 	if err != nil {

@@ -9,6 +9,7 @@ import (
 )
 
 // Traceability: SEC-10/SEC-11; docs/specs/tenancy-and-security.md §8.
+// Scenarios: tenancy-and-security.md:SEC-SCN-033
 func TestFileAuditReaderConcurrentPublishSnapshots(t *testing.T) {
 	publisher := openAuditTestPublisher(t, t.TempDir(), 400)
 	var writers sync.WaitGroup

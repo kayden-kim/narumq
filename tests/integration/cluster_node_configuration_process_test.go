@@ -11,6 +11,7 @@ import (
 )
 
 // Traceability: CFG-SCN-31/32; docs/specs/configuration-and-runtime-options.md §10.
+// Scenarios: configuration-and-runtime-options.md:CFG-SCN-31, configuration-and-runtime-options.md:CFG-SCN-32
 func TestDynamicClusterNodeConfigurationProcessAcceptance(t *testing.T) {
 	t.Parallel()
 

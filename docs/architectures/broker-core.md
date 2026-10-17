@@ -6,7 +6,7 @@ Broker core는 MQTT, session, routing, delivery, tenancy와 cluster lifecycle �
 | --- | --- |
 | 관점 상태 | Active Phase 1 security and tenant isolation architecture |
 | 문서 상태 | Active |
-| 구현 증거 | Phase 0 단일 노드 ingress, TLS/mTLS transport와 합의 스파이크 증거가 기존 패키지에 보존되어 있다. Phase 1 tenancy·security·authentication 패키지와 JWT·password·mTLS 데이터 플레인 인증·인가 파이프라인은 unit/integration test, 실제 TLS socket test와 command composition test를 통해 현재 source 증거가 확보되었다. |
+| 구현 증거 | MQTT ingress·TLS/mTLS와 tenancy·security 인증·인가 파이프라인의 unit/integration·실제 socket·composition 시험을 [MQTT 검증 기록](../verification/mqtt-protocol-and-session.md), [Tenant와 security 검증 기록](../verification/tenancy-and-security.md)에 연결한다. |
 | 범위 | 단일 broker process의 component, loopback TCP runtime과 source dependency |
 | 관련 요구사항 | [PRD](../requirements/PRD.md) NFR-11~NFR-15, TEST-01~TEST-16 |
 | 관련 결정 | [ADR-0001](../decisions/ADR-0001-core-implementation-language.md) Accepted |

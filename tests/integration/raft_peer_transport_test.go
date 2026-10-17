@@ -27,6 +27,7 @@ import (
 	tcpadapter "narumq/internal/adapters/tcp"
 )
 
+// Scenarios: cluster-session-and-delivery.md:CLU-SCN-015
 func TestRaftPeerTransportThreeNodeReplicationAndCatchup(t *testing.T) {
 	cluster := newLiveRaftPeerCluster(t)
 	cluster.start(1)
@@ -116,6 +117,7 @@ func TestRaftPeerTransportThreeNodeReplicationAndCatchup(t *testing.T) {
 }
 
 // Traceability: SEC-09; docs/contracts/raft-peer-transport-v1.md §1.
+// Scenarios: tenancy-and-security.md:SEC-SCN-009, cluster-session-and-delivery.md:CLU-SCN-013
 func TestRaftPeerTransportRejectsUnauthenticatedAndMalformedPeers(t *testing.T) {
 	pki := newPeerTransportPKI(t)
 	listener, err := net.Listen("tcp", "127.0.0.1:0")

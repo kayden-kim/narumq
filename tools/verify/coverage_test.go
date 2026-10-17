@@ -71,6 +71,7 @@ func TestCoverageRatchetRejectsMeasuredValueBelowBaseline(t *testing.T) {
 }
 
 // Traceability: PRD TEST-08; docs/specs/performance-and-verification.md §8.5.
+// Scenarios: performance-and-verification.md:PRF-SCN-092
 func TestDiffCoverageLineAndFunctionFloorBoundaries(t *testing.T) {
 	floor := coverageFloor{Line: 90, Function: 90}
 	for _, testCase := range []struct {

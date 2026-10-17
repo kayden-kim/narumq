@@ -15,6 +15,8 @@ func testProfile(t *testing.T) Profile {
 	return p
 }
 
+// TestBuildCellHasFiftyThreeClientsWithExactIDsAndTLSOrdinals plans 53 clients per cell with exact IDs.
+// Scenarios: performance-and-verification.md:PRF-SCN-049
 func TestBuildCellHasFiftyThreeClientsWithExactIDsAndTLSOrdinals(t *testing.T) {
 	p := testProfile(t)
 	plan := buildCell(p, 7)
@@ -51,6 +53,8 @@ func TestBuildCellHasFiftyThreeClientsWithExactIDsAndTLSOrdinals(t *testing.T) {
 	}
 }
 
+// TestTenantClientIDsAreExactPerTenant lists the exact client IDs of each tenant.
+// Scenarios: performance-and-verification.md:PRF-SCN-049
 func TestTenantClientIDsAreExactPerTenant(t *testing.T) {
 	p := testProfile(t)
 	a, b := tenantClientIDs(p, 'a', 3), tenantClientIDs(p, 'b', 3)
@@ -69,6 +73,8 @@ func TestTenantClientIDsAreExactPerTenant(t *testing.T) {
 	}
 }
 
+// TestCellFiltersAndOracleStayInsideTheCell keeps filters and expected recipients inside the cell.
+// Scenarios: performance-and-verification.md:PRF-SCN-049
 func TestCellFiltersAndOracleStayInsideTheCell(t *testing.T) {
 	p := testProfile(t)
 	plan := buildCell(p, 7)

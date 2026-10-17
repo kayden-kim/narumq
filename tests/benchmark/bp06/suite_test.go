@@ -7,6 +7,8 @@ import (
 	"narumq/tests/benchmark/internal/suiteartifact"
 )
 
+// TestBP06MetricsEmitExactKeysAndUnits verifies suite metric keys and units.
+// Scenarios: performance-and-verification.md:PRF-SCN-034
 func TestBP06MetricsEmitExactKeysAndUnits(t *testing.T) {
 	profile := loadBP06SuiteTestProfile(t)
 	wantUnits := make(map[string]string, profile.rounds()*6+3)
@@ -57,6 +59,8 @@ func TestBP06MetricsEmitExactKeysAndUnits(t *testing.T) {
 	}
 }
 
+// TestBP06MetricsRejectDuplicateOrMissingRounds verifies suite metrics reject duplicate or missing rounds.
+// Scenarios: performance-and-verification.md:PRF-SCN-034
 func TestBP06MetricsRejectDuplicateOrMissingRounds(t *testing.T) {
 	profile := loadBP06SuiteTestProfile(t)
 	t.Run("duplicate failure round", func(t *testing.T) {
@@ -87,6 +91,8 @@ func TestBP06MetricsRejectDuplicateOrMissingRounds(t *testing.T) {
 	})
 }
 
+// TestBuildBP06SuiteSummaryKeepsMetricsWithoutNetworkStats verifies suite metrics when network stats are unavailable.
+// Scenarios: performance-and-verification.md:PRF-SCN-034
 func TestBuildBP06SuiteSummaryKeepsMetricsWithoutNetworkStats(t *testing.T) {
 	profile := loadBP06SuiteTestProfile(t)
 	manifest, runs := suiteTestRuns(profile)
@@ -111,6 +117,8 @@ func TestBuildBP06SuiteSummaryKeepsMetricsWithoutNetworkStats(t *testing.T) {
 	}
 }
 
+// TestBuildBP06SuiteSummaryInvalidatesAllMetricsOnOneFailedRun verifies one invalid child run empties the parent metrics.
+// Scenarios: performance-and-verification.md:PRF-SCN-034
 func TestBuildBP06SuiteSummaryInvalidatesAllMetricsOnOneFailedRun(t *testing.T) {
 	profile := loadBP06SuiteTestProfile(t)
 	manifest, runs := suiteTestRuns(profile)
@@ -127,6 +135,8 @@ func TestBuildBP06SuiteSummaryInvalidatesAllMetricsOnOneFailedRun(t *testing.T) 
 	}
 }
 
+// TestBuildBP06SuiteSummaryUsesEveryRepetitionForMedianAndMAD verifies the median and MAD over repetitions.
+// Scenarios: performance-and-verification.md:PRF-SCN-034
 func TestBuildBP06SuiteSummaryUsesEveryRepetitionForMedianAndMAD(t *testing.T) {
 	profile := loadBP06SuiteTestProfile(t)
 	manifest, runs := suiteTestRuns(profile)

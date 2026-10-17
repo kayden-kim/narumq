@@ -45,6 +45,7 @@ func (c *fakeOfflineCoordinator) ClaimOffline(_ context.Context, tenantID, clien
 }
 
 // Traceability: CLU-14; docs/specs/cluster-session-and-delivery.md §4.1, §10, §11.9, §11.25.
+// Scenarios: cluster-session-and-delivery.md:CLU-SCN-179, cluster-session-and-delivery.md:CLU-SCN-042
 func TestClusterDisconnectDetachesPendingQueueAndRemovesLocalCopy(t *testing.T) {
 	now := time.Date(2026, time.January, 1, 10, 0, 0, 0, time.UTC)
 	clock := &fakeClock{now: now}
@@ -140,6 +141,7 @@ func TestClusterDisconnectDetachesPendingQueueAndRemovesLocalCopy(t *testing.T) 
 }
 
 // Traceability: CLU-14; docs/specs/cluster-session-and-delivery.md §4.1, §10, §11.9, §11.25.
+// Scenarios: cluster-session-and-delivery.md:CLU-SCN-180, cluster-session-and-delivery.md:CLU-SCN-042
 func TestClusterDetachFailureKeepsLocalQueue(t *testing.T) {
 	now := time.Date(2026, time.January, 1, 10, 0, 0, 0, time.UTC)
 	clock := &fakeClock{now: now}
@@ -191,6 +193,7 @@ func TestClusterDetachFailureKeepsLocalQueue(t *testing.T) {
 }
 
 // Traceability: CLU-14; docs/specs/cluster-session-and-delivery.md §4.1, §11.25.
+// Scenarios: cluster-session-and-delivery.md:CLU-SCN-181
 func TestClusterDisconnectSkipsDetachWhenBeginDetachFails(t *testing.T) {
 	queue := newFakeDeliveryQueue()
 	offline := &fakeOfflineCoordinator{}
@@ -253,6 +256,7 @@ func TestCleanDisconnectDoesNotDetach(t *testing.T) {
 }
 
 // Traceability: CLU-14; docs/specs/cluster-session-and-delivery.md §4.1, §10, §11.9.
+// Scenarios: cluster-session-and-delivery.md:CLU-SCN-042
 func TestClusterConnectClaimRestoresOfflineDeliveriesAndSessionPresent(t *testing.T) {
 	now := time.Date(2026, time.January, 1, 10, 0, 0, 0, time.UTC)
 	clock := &fakeClock{now: now}
@@ -337,6 +341,7 @@ func TestClusterConnectClaimRestoresOfflineDeliveriesAndSessionPresent(t *testin
 }
 
 // Traceability: CLU-14; docs/specs/cluster-session-and-delivery.md §4.1, §10, §11.9.
+// Scenarios: cluster-session-and-delivery.md:CLU-SCN-042
 func TestClusterConnectClaimFailureRejectsAndRollsBack(t *testing.T) {
 	now := time.Date(2026, time.January, 1, 10, 0, 0, 0, time.UTC)
 	clock := &fakeClock{now: now}
@@ -401,6 +406,7 @@ func TestClusterConnectClaimFailureRejectsAndRollsBack(t *testing.T) {
 }
 
 // Traceability: CLU-14; docs/specs/cluster-session-and-delivery.md §4.1, §10, §11.9.
+// Scenarios: cluster-session-and-delivery.md:CLU-SCN-042
 func TestClusterConnectClaimFailurePreservesExistingSessionTimer(t *testing.T) {
 	now := time.Date(2026, time.January, 1, 10, 0, 0, 0, time.UTC)
 	clock := &fakeClock{now: now}

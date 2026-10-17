@@ -23,6 +23,7 @@ func (publisher *recoveryWillPublisher) PublishWill(_ routing.SessionID, _ tenan
 }
 
 // Traceability: CLU-08; docs/specs/cluster-session-and-delivery.md §4.3, §11.24.
+// Scenarios: cluster-session-and-delivery.md:CLU-SCN-169
 func TestClusterSessionRecoveryReclaimsLocalOwnerOnly(t *testing.T) {
 	runtime, _, stop := newClusterDurableTestRuntime(t)
 	defer stop()

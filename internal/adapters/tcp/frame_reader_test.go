@@ -9,6 +9,7 @@ import (
 )
 
 // Traceability: PRD MQTT-12/TEST-04/05.
+// Scenarios: mqtt-protocol-and-session.md:MQTT-SCN-030
 func TestFrameReaderStartsSmallGrowsByDoublingAndReleases(t *testing.T) {
 	for _, maximum := range []int{64, 10000} {
 		reader := newFrameReader(maximum)

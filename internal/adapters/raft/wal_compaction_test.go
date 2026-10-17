@@ -101,6 +101,7 @@ func assertCompactionRecovery(t *testing.T, directory string, commands [][]byte)
 	}
 }
 
+// Scenarios: cluster-session-and-delivery.md:CLU-SCN-150
 func TestStableStoreSnapshotCompactsWALToSnapshotTail(t *testing.T) {
 	directory := t.TempDir()
 	entries, commands := compactionTestState(10, 0)
@@ -129,6 +130,7 @@ func TestStableStoreSnapshotCompactsWALToSnapshotTail(t *testing.T) {
 	assertCompactionRecovery(t, directory, nextCommands)
 }
 
+// Scenarios: cluster-session-and-delivery.md:CLU-SCN-151
 func TestStableStoreCompactionSplitsLargeTailIntoFrames(t *testing.T) {
 	directory := t.TempDir()
 	entries, commands := compactionTestState(40, 60*1024)
@@ -157,6 +159,7 @@ func TestStableStoreCompactionSplitsLargeTailIntoFrames(t *testing.T) {
 	assertCompactionRecovery(t, directory, commands)
 }
 
+// Scenarios: cluster-session-and-delivery.md:CLU-SCN-152
 func TestStableStoreRecoversEveryCompactionCrashState(t *testing.T) {
 	for _, name := range []string{"stale temp", "snapshot before WAL replace", "replaced WAL before prune"} {
 		t.Run(name, func(t *testing.T) {
@@ -206,6 +209,7 @@ func TestStableStoreRecoversEveryCompactionCrashState(t *testing.T) {
 	}
 }
 
+// Scenarios: cluster-session-and-delivery.md:CLU-SCN-153
 func TestStableStoreCompactionFailureKeepsRecoverableState(t *testing.T) {
 	for _, name := range []string{"temp sync", "rename", "directory sync"} {
 		t.Run(name, func(t *testing.T) {

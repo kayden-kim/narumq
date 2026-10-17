@@ -242,6 +242,7 @@ def preflight(fixture: Fixture, plan: dict) -> list[dict]:
     return pods
 
 
+# Scenarios: drain-and-rolling-update.md:DRN-SCN-035, drain-and-rolling-update.md:DRN-SCN-036
 def observe_fault(fixture: Fixture, plan: dict, output: Path, original: list[dict]) -> dict:
     start = time.monotonic()
     response = fixture.aws("ec2", "terminate-instances", "--instance-ids", plan["oldInstanceId"], "--skip-os-shutdown")
@@ -306,6 +307,7 @@ def observe_fault(fixture: Fixture, plan: dict, output: Path, original: list[dic
             "scope": "physical recovery and sampled continuity; the durable stream oracle is judged separately in report['durable']"}
 
 
+# Scenarios: cluster-session-and-delivery.md:CLU-SCN-244
 def judge_fault(report: dict, plan: dict, monitor, durable) -> bool:
     """Overall verdict of fault mode: continuity rule of the target role, explained mutations, durable stream."""
     summary = report["monitor"]

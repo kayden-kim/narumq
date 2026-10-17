@@ -13,6 +13,7 @@ import (
 )
 
 // Traceability: CLU-02/CLU-03/CLU-06/DEP-16; docs/specs/cluster-session-and-delivery.md §2.2, §7, §11.14.
+// Scenarios: cluster-session-and-delivery.md:CLU-SCN-086, cluster-session-and-delivery.md:CLU-SCN-087, cluster-session-and-delivery.md:CLU-SCN-088, cluster-session-and-delivery.md:CLU-SCN-089, drain-and-rolling-update.md:DRN-SCN-010
 func TestDynamicClusterPersistentSubscriptionReplayProcessAcceptance(t *testing.T) {
 	t.Parallel()
 

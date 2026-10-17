@@ -9,6 +9,7 @@ import (
 )
 
 // Traceability: CLU-14; docs/specs/cluster-session-and-delivery.md §4, §10, §11.8.
+// Scenarios: cluster-session-and-delivery.md:CLU-SCN-037
 func TestRetainedMutationIsTenantScopedAndOwnsPayload(t *testing.T) {
 	machine := NewStateMachine()
 	firstPayload := []byte("first")
@@ -38,6 +39,7 @@ func TestRetainedMutationIsTenantScopedAndOwnsPayload(t *testing.T) {
 }
 
 // Traceability: CLU-14; docs/specs/cluster-session-and-delivery.md §4, §10, §11.8.
+// Scenarios: cluster-session-and-delivery.md:CLU-SCN-037
 func TestRetainedExpiryUsesCommittedProposerTime(t *testing.T) {
 	machine := NewStateMachine()
 	applyRetainedForTest(t, machine, 1, retainedReplaceForTest("tenant", "expired", "publisher", []byte("value"), 0, 2000, 1000))
@@ -51,6 +53,7 @@ func TestRetainedExpiryUsesCommittedProposerTime(t *testing.T) {
 }
 
 // Traceability: CLU-14; docs/specs/cluster-session-and-delivery.md §4, §10, §11.8.
+// Scenarios: cluster-session-and-delivery.md:CLU-SCN-037
 func TestRetainedSnapshotIsCanonicalAndDeepOwned(t *testing.T) {
 	machine := NewStateMachine()
 	for index, change := range []RetainedChangeDTO{
@@ -96,6 +99,7 @@ func TestRetainedSnapshotIsCanonicalAndDeepOwned(t *testing.T) {
 }
 
 // Traceability: CLU-14; docs/specs/cluster-session-and-delivery.md §4, §10, §11.8.
+// Scenarios: cluster-session-and-delivery.md:CLU-SCN-037
 func TestRetainedCapacityConflictsPreserveExistingState(t *testing.T) {
 	for _, test := range []struct {
 		name    string
@@ -134,6 +138,7 @@ func TestRetainedCapacityConflictsPreserveExistingState(t *testing.T) {
 }
 
 // Traceability: CLU-14; docs/specs/cluster-session-and-delivery.md §4, §10, §11.8.
+// Scenarios: cluster-session-and-delivery.md:CLU-SCN-037
 func TestRetainedCommandAndSnapshotValidation(t *testing.T) {
 	validReplace := retainedReplaceForTest("tenant", "status", "publisher", []byte("value"), 1, 0, 1000)
 	cases := []struct {

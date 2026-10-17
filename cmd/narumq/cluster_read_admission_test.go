@@ -146,11 +146,13 @@ func readAdmissionTestMachine(t *testing.T, runtimes [3]*clusterRuntime) *member
 }
 
 // Traceability: CLU-14; docs/specs/performance-and-verification.md §3.4.
+// Scenarios: performance-and-verification.md:PRF-SCN-011
 func TestClusterFollowerReadBurstCompletesAfterEgressDrain(t *testing.T) {
 	testClusterReadBurst(t, []int{1}, 3)
 }
 
 // Traceability: CLU-14; docs/specs/performance-and-verification.md §3.4.
+// Scenarios: performance-and-verification.md:PRF-SCN-012
 func TestClusterLeaderReadBurstPreservesHealthyQuorumWithBlockedMinority(t *testing.T) {
 	testClusterReadBurst(t, []int{0}, 2)
 }
@@ -249,6 +251,7 @@ func testClusterReadBurst(t *testing.T, issuers []int, connected int) {
 }
 
 // Traceability: CLU-14; docs/specs/performance-and-verification.md §3.4.
+// Scenarios: performance-and-verification.md:PRF-SCN-013
 func TestClusterUnissuedReadReturnsCancellationAndDriverFailure(t *testing.T) {
 	for _, reason := range []string{"count", "bytes", "driver exit"} {
 		t.Run(reason, func(t *testing.T) {
@@ -303,6 +306,7 @@ func TestClusterUnissuedReadReturnsCancellationAndDriverFailure(t *testing.T) {
 }
 
 // Traceability: CLU-14; docs/specs/performance-and-verification.md §3.5.
+// Scenarios: cluster-session-and-delivery.md:CLU-SCN-059, performance-and-verification.md:PRF-SCN-026
 func TestClusterLeaderlessReadCompletesWhenLeaderReturns(t *testing.T) {
 	runtimes := newReadAdmissionTestCluster(t)
 	issuer := runtimes[1]
@@ -360,6 +364,7 @@ func TestClusterLeaderlessReadCompletesWhenLeaderReturns(t *testing.T) {
 }
 
 // Traceability: CLU-14; docs/specs/performance-and-verification.md §3.5.
+// Scenarios: cluster-session-and-delivery.md:CLU-SCN-059, performance-and-verification.md:PRF-SCN-026
 func TestClusterIssuedReadRecoversAcrossLeadershipTransfer(t *testing.T) {
 	runtimes := newReadAdmissionTestCluster(t)
 	issuer := runtimes[0]
@@ -425,6 +430,7 @@ func TestClusterIssuedReadRecoversAcrossLeadershipTransfer(t *testing.T) {
 }
 
 // Traceability: CLU-14; docs/specs/performance-and-verification.md §3.5.
+// Scenarios: performance-and-verification.md:PRF-SCN-026
 func TestClusterFreshReadsFromConcurrentOriginsDoNotCollide(t *testing.T) {
 	runtimes := newReadAdmissionTestCluster(t)
 	ctx, cancel := context.WithTimeout(context.Background(), clusterReadTimeout)
@@ -483,6 +489,7 @@ func TestClusterFreshReadsFromConcurrentOriginsDoNotCollide(t *testing.T) {
 }
 
 // Traceability: CLU-14; docs/specs/performance-and-verification.md §3.5.
+// Scenarios: cluster-session-and-delivery.md:CLU-SCN-059, performance-and-verification.md:PRF-SCN-026
 func TestClusterReissuedReadRejectsPreviousQuorumProof(t *testing.T) {
 	runtimes := newReadAdmissionTestCluster(t)
 	issuer := runtimes[0]
@@ -565,6 +572,7 @@ func TestClusterReissuedReadRejectsPreviousQuorumProof(t *testing.T) {
 }
 
 // Traceability: CLU-07; docs/specs/cluster-session-and-delivery.md §4.2, §11.11.
+// Scenarios: cluster-session-and-delivery.md:CLU-SCN-073
 func TestClusterDurableCommitCallerTimeoutLateReplayAppliesOnceWithoutSuccess(t *testing.T) {
 	runtimes := newReadAdmissionTestCluster(t)
 	ingress := runtimes[1]
@@ -774,6 +782,7 @@ func TestClusterDurableCommitCallerTimeoutLateReplayAppliesOnceWithoutSuccess(t 
 }
 
 // Traceability: CLU-12; docs/specs/cluster-session-and-delivery.md §4.5, §11.28.
+// Scenarios: cluster-session-and-delivery.md:CLU-SCN-200
 func TestClusterAppliedDeliveryStopsBackpressureBeforeCallerWait(t *testing.T) {
 	runtimes := newReadAdmissionTestCluster(t)
 	ingress := runtimes[0]

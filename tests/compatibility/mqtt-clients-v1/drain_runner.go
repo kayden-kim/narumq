@@ -21,11 +21,13 @@ const (
 )
 
 // RunDrain executes the required normal broker drain compatibility cases.
+// Scenarios: drain-and-rolling-update.md:DRN-SCN-014
 func RunDrain(ctx context.Context, options runOptions) (Summary, error) {
 	return runDrainSuite(ctx, options, "cluster_drain")
 }
 
 // runSDKDiagnostics reports optional malformed-response failures separately.
+// Scenarios: drain-and-rolling-update.md:DRN-SCN-015
 func runSDKDiagnostics(ctx context.Context, options runOptions) (Summary, error) {
 	return runDrainSuite(ctx, options, "malformed_disconnect")
 }

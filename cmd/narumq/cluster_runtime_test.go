@@ -84,6 +84,7 @@ func TestUnconfiguredRemotePeerDistinguishesPendingAndInvalidTargets(t *testing.
 	}
 }
 
+// Scenarios: cluster-session-and-delivery.md:CLU-SCN-024, cluster-session-and-delivery.md:CLU-SCN-100, performance-and-verification.md:PRF-SCN-016, performance-and-verification.md:PRF-SCN-088
 func TestClusterReadinessGate(t *testing.T) {
 	base := clusterReadinessSnapshot{
 		initialized: true, projectionFailed: false,
@@ -231,6 +232,7 @@ func TestClusterReadinessGate(t *testing.T) {
 }
 
 // Traceability: CLU-03; docs/specs/cluster-session-and-delivery.md §1, §3.1.
+// Scenarios: cluster-session-and-delivery.md:CLU-SCN-056, cluster-session-and-delivery.md:CLU-SCN-072, cluster-session-and-delivery.md:CLU-SCN-097
 func TestClusterProjectionReadyRequiresInitializedCurrentProjection(t *testing.T) {
 	config := validBootstrapClusterConfig()
 	directory := t.TempDir()
@@ -743,6 +745,7 @@ func TestProposalResultWaitsForProjectionCompletion(t *testing.T) {
 
 }
 
+// Scenarios: cluster-session-and-delivery.md:CLU-SCN-072, cluster-session-and-delivery.md:CLU-SCN-097
 func TestFailPendingProposalsOnDriverExit(t *testing.T) {
 	driverErr := errors.New("raft driver failed")
 	stagedResult := make(chan clusterApplyResponse, 1)
@@ -804,6 +807,8 @@ func TestFailPendingProposalsOnDriverExit(t *testing.T) {
 		t.Fatalf("queued requests remain = %d, want 0", len(runtime.requests))
 	}
 }
+
+// Scenarios: cluster-session-and-delivery.md:CLU-SCN-072, cluster-session-and-delivery.md:CLU-SCN-097
 func TestDriverRequestsRejectAfterExit(t *testing.T) {
 	stopped := make(chan struct{})
 	close(stopped)
@@ -911,6 +916,7 @@ func TestRebuildAndRefreshRouteProjection(t *testing.T) {
 }
 
 // Traceability: CLU-14; docs/specs/cluster-session-and-delivery.md §4.2, §11.11.
+// Scenarios: cluster-session-and-delivery.md:CLU-SCN-074
 func TestReplayClusterAppliedRestoresDurableDeliveryWithoutDuplicateTail(t *testing.T) {
 	config := validBootstrapClusterConfig()
 	machine := retainedTestMachine(t, config, config.ReleaseVersion)
@@ -1020,6 +1026,7 @@ func TestReplayClusterAppliedRestoresDurableDeliveryWithoutDuplicateTail(t *test
 }
 
 // Traceability: CLU-05/CLU-06; docs/specs/cluster-session-and-delivery.md §2.1, §2.2, §11.14.
+// Scenarios: cluster-session-and-delivery.md:CLU-SCN-085, cluster-session-and-delivery.md:CLU-SCN-089
 func TestClusterSnapshotAndWALTailReplayRestoresSessionAggregateAndRouteProjection(t *testing.T) {
 	config := validBootstrapClusterConfig()
 	machine := retainedTestMachine(t, config, config.ReleaseVersion)
@@ -1190,6 +1197,7 @@ func TestClusterSnapshotAndWALTailReplayRestoresSessionAggregateAndRouteProjecti
 }
 
 // Traceability: MQTT-01, PRD MQTT-10; docs/specs/mqtt-protocol-and-session.md §1.
+// Scenarios: configuration-and-runtime-options.md:CFG-SCN-16, configuration-and-runtime-options.md:CFG-SCN-44, mqtt-protocol-and-session.md:MQTT-SCN-018, mqtt-protocol-and-session.md:MQTT-SCN-052
 func TestClusterMQTTListenersBindConfiguredEndpointsAndClosePartialOpen(t *testing.T) {
 	listeners, err := clusterMQTTListeners(clusterConfigFile{}, nil, slog.Default())
 	if err != nil || len(listeners) != 0 {
@@ -1298,6 +1306,7 @@ func TestClusterMQTTListenersBindConfiguredEndpointsAndClosePartialOpen(t *testi
 }
 
 // Traceability: SEC-03, PRD MQTT-10; docs/specs/configuration-and-runtime-options.md §6; ADR-0052.
+// Scenarios: configuration-and-runtime-options.md:CFG-SCN-21
 func TestClusterMQTTSecurityValidatesTLSClientAuthBindings(t *testing.T) {
 	securityPath := filepath.Join(t.TempDir(), "security.json")
 	if err := os.WriteFile(securityPath, []byte(validMTLSSecurityJSON), 0o600); err != nil {
@@ -1341,6 +1350,7 @@ func TestClusterMQTTSecurityValidatesTLSClientAuthBindings(t *testing.T) {
 }
 
 // Traceability: CLU-14; docs/specs/mqtt-protocol-and-session.md §3.1.
+// Scenarios: mqtt-protocol-and-session.md:MQTT-SCN-024, cluster-session-and-delivery.md:CLU-SCN-072, cluster-session-and-delivery.md:CLU-SCN-097, performance-and-verification.md:PRF-SCN-010
 func TestClusterCommitReadProofPreservesSubmissionOrderAndCancellation(t *testing.T) {
 	var nodes [3]*raftadapter.Node
 	for index := range nodes {
@@ -1441,6 +1451,7 @@ func TestClusterCommitReadProofPreservesSubmissionOrderAndCancellation(t *testin
 }
 
 // Traceability: CLU-09; docs/specs/cluster-session-and-delivery.md §4.4, §11.27.
+// Scenarios: cluster-session-and-delivery.md:CLU-SCN-192
 func TestClusterMembershipRemovalWaitsForReplicationFactor(t *testing.T) {
 	for _, ownsSession := range []bool{false, true} {
 		name := "without-session"
@@ -1535,6 +1546,9 @@ func TestClusterMembershipRemovalWaitsForReplicationFactor(t *testing.T) {
 		})
 	}
 }
+
+// TestClusterMembershipRemovalOfLocalLeaderTransfersLeadership verifies removing the local leader transfers leadership first.
+// Scenarios: performance-and-verification.md:PRF-SCN-088
 func TestClusterMembershipRemovalOfLocalLeaderTransfersLeadership(t *testing.T) {
 	runtimes := newReadAdmissionTestCluster(t)
 	leader := runtimes[0]
@@ -1631,6 +1645,8 @@ func TestClusterMembershipRemovalOfLocalLeaderTransfersLeadership(t *testing.T) 
 	}
 }
 
+// TestClusterProposeMembershipChangeIgnoresPendingChangeAndFollower verifies a pending change and a follower do not propose membership changes.
+// Scenarios: performance-and-verification.md:PRF-SCN-088
 func TestClusterProposeMembershipChangeIgnoresPendingChangeAndFollower(t *testing.T) {
 	runtimes := newReadAdmissionTestCluster(t)
 	change := raftadapter.MembershipChangeDTO{
@@ -1655,6 +1671,8 @@ func TestClusterProposeMembershipChangeIgnoresPendingChangeAndFollower(t *testin
 	}
 }
 
+// TestReconcileCommittedPeersSkipsRetiredLocalIdentityOutsideRaft verifies reconcile skips a retired local identity outside Raft.
+// Scenarios: performance-and-verification.md:PRF-SCN-088
 func TestReconcileCommittedPeersSkipsRetiredLocalIdentityOutsideRaft(t *testing.T) {
 	runtimes := newReadAdmissionTestCluster(t)
 	machine := readAdmissionTestMachine(t, runtimes)
@@ -1709,6 +1727,8 @@ func TestReconcileCommittedPeersSkipsRetiredLocalIdentityOutsideRaft(t *testing.
 	}
 }
 
+// TestClusterAdmitPeerRejectsWhenNotLeader verifies peer admission is rejected on a non-leader.
+// Scenarios: performance-and-verification.md:PRF-SCN-088
 func TestClusterAdmitPeerRejectsWhenNotLeader(t *testing.T) {
 	runtimes := newReadAdmissionTestCluster(t)
 	follower := runtimes[1]
@@ -1739,6 +1759,8 @@ func TestClusterAdmitPeerRejectsWhenNotLeader(t *testing.T) {
 	}
 }
 
+// TestClusterGetOperationReportsReadBarrierFailure verifies GetOperation reports a read barrier failure.
+// Scenarios: performance-and-verification.md:PRF-SCN-088
 func TestClusterGetOperationReportsReadBarrierFailure(t *testing.T) {
 	runtime := clusterReleaseProfileTestRuntime(t, validBootstrapClusterConfig())
 	runtime.driverFailed.Store(true)

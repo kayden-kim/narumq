@@ -5,6 +5,7 @@ import (
 	"testing"
 )
 
+// Scenarios: configuration-and-runtime-options.md:CFG-SCN-15, cluster-session-and-delivery.md:CLU-SCN-168
 func TestResolveBuildIdentity(t *testing.T) {
 	originalRelease, originalFeatures := buildReleaseVersion, buildFeatures
 	t.Cleanup(func() {

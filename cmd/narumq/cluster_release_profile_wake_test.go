@@ -7,6 +7,7 @@ import (
 )
 
 // Traceability: CLU-11; docs/contracts/cluster-release-compatibility-v1.md §5.
+// Scenarios: cluster-session-and-delivery.md:CLU-SCN-112
 func TestClusterReleaseProfileSnapshotWakeReconfirmsAfterStaleRead(t *testing.T) {
 	runtime := clusterReleaseProfileTestRuntime(t, validBootstrapClusterConfig())
 	controller := runtime.releaseProfile

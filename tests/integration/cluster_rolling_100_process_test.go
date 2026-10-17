@@ -16,6 +16,7 @@ import (
 const clusterRolling100Rounds = 100
 
 // Traceability: DEP-06/DEP-07/DEP-10/DEP-12; docs/specs/drain-and-rolling-update.md §9, §10.
+// Scenarios: drain-and-rolling-update.md:DRN-SCN-018
 func TestDynamicClusterContinuousRollingDrainProcessAcceptance(t *testing.T) {
 	if os.Getenv("NARUMQ_ROLLING_100") != "1" {
 		t.Skip("set NARUMQ_ROLLING_100=1 to run the 100-round continuous rolling drain acceptance")

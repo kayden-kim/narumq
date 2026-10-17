@@ -8,6 +8,7 @@ import (
 )
 
 // Traceability: CLU-14; docs/specs/performance-and-verification.md §3.4.
+// Scenarios: performance-and-verification.md:PRF-SCN-014
 func TestDynamicOutboundCapacityRemainsChargedUntilWireCompletion(t *testing.T) {
 	transport, peer := cptMinimalDynamic(
 		dynamicTestIdentity(1, "n:1", "n1", PeerPhaseVoter, "", 0x11),

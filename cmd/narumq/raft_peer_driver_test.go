@@ -21,6 +21,7 @@ import (
 	tcpadapter "narumq/internal/adapters/tcp"
 )
 
+// Scenarios: cluster-session-and-delivery.md:CLU-SCN-014
 func TestProcessRaftMessagesContinuesOtherPeersAndSkipsRejectedFIFO(t *testing.T) {
 	node, err := raftadapter.Open(raftadapter.Config{
 		NodeID:    1,
@@ -67,6 +68,7 @@ func TestProcessRaftMessagesContinuesOtherPeersAndSkipsRejectedFIFO(t *testing.T
 	}
 }
 
+// Scenarios: cluster-session-and-delivery.md:CLU-SCN-013, cluster-session-and-delivery.md:CLU-SCN-014, performance-and-verification.md:PRF-SCN-097
 func TestRaftPeerDriverTicksQueuesAndStops(t *testing.T) {
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {

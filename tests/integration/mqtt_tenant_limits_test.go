@@ -36,6 +36,7 @@ import (
 )
 
 // Traceability: TEN-06, TEN-07; docs/specs/tenancy-and-security.md §5.2.
+// Scenarios: tenancy-and-security.md:SEC-SCN-024, tenancy-and-security.md:SEC-SCN-025, tenancy-and-security.md:SEC-SCN-026, tenancy-and-security.md:SEC-SCN-027
 func TestMQTTTenantLimits(t *testing.T) {
 	t.Run("ConnectionQuota", func(t *testing.T) {
 		f := newTenantLimitsFixture(t, tenantlimit.Limits{MaxConnections: 2})

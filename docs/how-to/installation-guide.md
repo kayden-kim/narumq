@@ -5,9 +5,8 @@
 | 항목 | 값 |
 | --- | --- |
 | 대상 독자 | NaruMQ를 소스에서 빌드하고 로컬 또는 시험 환경에서 실행하려는 개발자 및 엔지니어 |
-| 검증 상태 | Draft; Windows/amd64, Go 1.26.5 환경에서 소스 컴파일, 익명 개발 모드 로컬 기동, 헬스 프로브 및 메트릭 엔드포인트 응답 대조 완료 (TLS 보안 모드 및 클러스터 모드는 수동 절차 미실행) |
-| 검증 환경·버전 | Windows/amd64, Go 1.26.5 |
-| 최종 검증일 | 2026-09-26 |
+| 검증 상태 | Draft; TLS 보안 모드 및 클러스터 모드의 수동 절차는 미실행 |
+| 절차 환경·버전 | Windows/amd64, Go 1.26.5 |
 | 관련 기준 문서 | [Process configuration v1 contract](../contracts/process-configuration-v1.md), [Configuration and runtime options spec](../specs/configuration-and-runtime-options.md), [Project structure](../architectures/project-structure.md), [Broker core architecture](../architectures/broker-core.md), [Management API v1 Contract](../contracts/management-api-v1.md), [Cluster session and durable delivery 스펙](../specs/cluster-session-and-delivery.md) |
 
 ## 1. 대상과 영향
@@ -24,7 +23,7 @@
 - CLI와 설정 파일의 field, 기본값과 입력 검증은 [Process configuration v1 contract](../contracts/process-configuration-v1.md)을 따른다. 시작 흐름과 변경 반영 정책은 [Configuration and runtime options spec](../specs/configuration-and-runtime-options.md)을 따른다.
 - **구현 경계 및 동작 범위:**
   - 현재 standalone 리스너(`cmd/narumq/main.go`)는 인메모리 세션, 딜리버리 큐 및 retained 저장소를 사용하며 기동 로그에 `"qos0_only": true, "retained_supported": true`를 출력합니다.
-  - standalone 단일 프로세스는 영속적 세션 복구나 분산 QoS 1/2 내구성(Durable ACK)을 제공하지 않으며, 이는 개발 및 단일 노드 보안 검증을 위한 경계입니다. 분산 고가용성(HA) 및 영속 상태 복제는 클러스터 런타임 스파이크의 개발 범위에 해당합니다.
+  - Standalone 단일 프로세스는 영속적 세션 복구나 분산 QoS 1/2 내구성(Durable ACK)을 제공하지 않는다. 분산 HA와 영속 상태 복제의 기준은 [Cluster 스펙](../specs/cluster-session-and-delivery.md)을 따른다.
 - 사용자 영향: 로컬 포트를 점유하므로 기존에 해당 포트를 사용하는 프로세스가 있다면 충돌이 발생할 수 있습니다.
 
 ## 2. 전제 조건
@@ -265,16 +264,16 @@ Management API rate limit은 각 node에서 독립 적용한다. Standalone flag
 
 ## 4. 검증
 
-실행 결과가 다음 성공 조건을 충족하는지 대조한다. 본 절차의 실제 실행 검증은 Windows/amd64 환경에서 개발용 익명 모드 스모크 테스트로 확인하였으며, TLS 모드 및 클러스터 모드의 수동 기동 절차는 미실행 상태다.
+각 실행에서 아래 조건을 대조하고 대상 버전·환경·명령·결과를 기록한다. 과거 Windows 익명 모드 smoke는 현재 코드의 통과나 TLS·클러스터 수용을 뜻하지 않는다. 이 가이드의 TLS·수동 3-node 절차는 미실행이다.
 
-| 관찰 대상 | 성공 조건 | 확인 방법 | 실제 결과 | 실행 증거 위치 |
-| --- | --- | --- | --- | --- |
-| 바이너리 컴파일 | 종료 코드 0으로 `bin/narumq` 바이너리 생성 | `go build -o bin/narumq ./cmd/narumq` | 통과 (Windows/amd64) | 로컬 파일 시스템 `bin/` |
-| 개발 브로커 기동 (방식 A) | TCP 1883 및 HTTP 8080 리스너 로그 출력 | 터미널 stdout 로그 확인 | 통과 (Windows/amd64); `MQTT TCP listener started`, `management HTTP listener started` 출력 | 프로세스 표준 출력 |
-| Readiness 프로브 | HTTP 200 및 `{"status":"UP"}` JSON 응답 | `curl -s http://127.0.0.1:8080/health/ready` | 통과 (Windows/amd64); `{"data":{"status":"UP",...}}` | HTTP 응답 본문 |
-| 메트릭 수집 | OpenMetrics/Prometheus 형식 텍스트 출력 | `curl -s http://127.0.0.1:8080/metrics` | 통과 (Windows/amd64); `narumq_connections_active` 등 메트릭 출력 | HTTP 응답 본문 |
-| 보안 단일 노드 모드 (방식 B) | TLS 리스너 바인딩 및 인증서 기반 접속 | TLS 및 보안 설정으로 기동 | 미실행; 본 가이드의 수동 실행 절차 미실행 (`cmd/narumq/main_test.go` 테스트 스위트에서만 확인) | `cmd/narumq/main_test.go` |
-| 분산 클러스터 모드 (방식 C) | 3개 노드 Raft 합의 및 리더 선출 | 클러스터 설정으로 기동 | 미실행; 본 가이드의 수동 3노드 절차 미실행 ([fixed-voter-raft-peer-only.md](fixed-voter-raft-peer-only.md) 참조) | 관련 how-to 가이드 |
+| 관찰 대상 | 성공 조건 | 확인 방법 |
+| --- | --- | --- |
+| 바이너리 컴파일 | 종료 코드 0으로 `bin/narumq` 바이너리 생성 | `go build -o bin/narumq ./cmd/narumq` |
+| 개발 브로커 기동 (방식 A) | TCP 1883 및 HTTP 8080 리스너 시작 | 프로세스 stdout 로그 |
+| Readiness 프로브 | HTTP 200 및 `data.status=UP` | `curl -s http://127.0.0.1:8080/health/ready` |
+| 메트릭 수집 | `narumq_connections_active` 등 Prometheus 형식 텍스트 출력 | `curl -s http://127.0.0.1:8080/metrics` |
+| 보안 단일 노드 모드 (방식 B) | TLS 리스너 바인딩 및 인증서 기반 접속 | TLS·보안 설정으로 기동; 자동 시험은 `cmd/narumq/main_test.go` |
+| 분산 클러스터 모드 (방식 C) | 3개 node의 Raft 합의 및 leader 선출 | [Peer-only 절차](fixed-voter-raft-peer-only.md)의 검증 경계를 따른다. |
 
 ## 5. 중단 조건
 

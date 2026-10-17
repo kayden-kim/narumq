@@ -102,6 +102,7 @@ func TestNewServiceRejectsInvalidConfigurationAndDependencies(t *testing.T) {
 	}
 }
 
+// Scenarios: management-api-and-observability.md:MGT-SCN-015, tenancy-and-security.md:SEC-SCN-046
 func TestRecordBuildsAndPublishesSchemaEvent(t *testing.T) {
 	clock := &auditTestClock{now: time.Date(2026, 10, 8, 12, 30, 0, 0, time.FixedZone("test", 2*60*60))}
 	publisher := &auditTestPublisher{}
@@ -128,6 +129,7 @@ func TestRecordBuildsAndPublishesSchemaEvent(t *testing.T) {
 	}
 }
 
+// Scenarios: management-api-and-observability.md:MGT-SCN-015
 func TestRecordRejectsInvalidEventWithoutPublishing(t *testing.T) {
 	publisher := &auditTestPublisher{}
 	service, metrics := newAuditTestService(t, publisher, &auditTestClock{now: time.Now()}, 20)
@@ -157,6 +159,7 @@ func TestNewServiceRejectsNilInterfaceDependency(t *testing.T) {
 	}
 }
 
+// Scenarios: management-api-and-observability.md:MGT-SCN-013
 func TestRecordPublishFailureMarksPublisherUnavailable(t *testing.T) {
 	publishErr := errors.New("disk sync failed")
 	publisher := &auditTestPublisher{publishErr: publishErr}
@@ -170,6 +173,7 @@ func TestRecordPublishFailureMarksPublisherUnavailable(t *testing.T) {
 	}
 }
 
+// Scenarios: management-api-and-observability.md:MGT-SCN-013, tenancy-and-security.md:SEC-SCN-046
 func TestAdmitMutationRejectsUnavailablePublisher(t *testing.T) {
 	readyErr := errors.New("publisher open failed")
 	publisher := &auditTestPublisher{readyErr: readyErr}
@@ -183,6 +187,7 @@ func TestAdmitMutationRejectsUnavailablePublisher(t *testing.T) {
 	}
 }
 
+// Scenarios: tenancy-and-security.md:SEC-SCN-046
 func TestRecordLimitsDenialsPerSecondOnly(t *testing.T) {
 	clock := &auditTestClock{now: time.Unix(100, 0).UTC()}
 	publisher := &auditTestPublisher{}
@@ -227,6 +232,7 @@ type auditValidationEmbeddedWrapper struct {
 	auditValidationEmbeddedDetails
 }
 
+// Scenarios: management-api-and-observability.md:MGT-SCN-015
 func TestValidateEventSchemaBoundaries(t *testing.T) {
 	tests := []struct {
 		name   string
@@ -277,6 +283,8 @@ func TestValidateEventSchemaBoundaries(t *testing.T) {
 		})
 	}
 }
+
+// Scenarios: management-api-and-observability.md:MGT-SCN-015
 func TestRecordValidatesCommandFieldsAndBoundaries(t *testing.T) {
 	tests := []struct {
 		name   string
@@ -336,6 +344,7 @@ func TestRecordValidatesCommandFieldsAndBoundaries(t *testing.T) {
 	}
 }
 
+// Scenarios: management-api-and-observability.md:MGT-SCN-015
 func TestValidateEventRequiredFields(t *testing.T) {
 	validEvent := func() portsaudit.AuditEventDTO {
 		return portsaudit.AuditEventDTO{
@@ -408,6 +417,7 @@ type auditValidationEmbeddedNonStructDetails struct {
 	auditValidationEmbeddedCount
 }
 
+// Scenarios: management-api-and-observability.md:MGT-SCN-015, tenancy-and-security.md:SEC-SCN-050
 func TestValidateEventDetailsJSONStringTraversal(t *testing.T) {
 	tests := []struct {
 		name    string

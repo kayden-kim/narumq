@@ -136,6 +136,7 @@ class Attempt:
             logs = run(['docker', 'logs', name], check=False)
             (self.output / f'node{node}.log').write_text(logs.stdout + logs.stderr, encoding='utf-8')
 
+    # Scenarios: cluster-session-and-delivery.md:CLU-SCN-243
     def execute(self, start_order: tuple[int, int, int], replacement_delay: float, ready_timeout: float) -> dict:
         docker('network', 'create', '--driver', 'bridge', '--subnet', SUBNET, self.prefix)
         nodes = {}

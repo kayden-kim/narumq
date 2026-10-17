@@ -104,6 +104,7 @@ func controllerDrainTestMachine(t *testing.T, phase nodedrain.Phase) *membership
 }
 
 // Traceability: DEP-01/DEP-02; docs/specs/drain-and-rolling-update.md §1, §10.
+// Scenarios: drain-and-rolling-update.md:DRN-SCN-005
 func TestClusterDrainSyncProjectsLifecycleAndAdmission(t *testing.T) {
 	tests := []struct {
 		name                  string
@@ -178,6 +179,7 @@ func (ctx *drainWaitTestContext) Value(any) any {
 }
 
 // Traceability: DEP-01/DEP-02; docs/specs/drain-and-rolling-update.md §3.
+// Scenarios: drain-and-rolling-update.md:DRN-SCN-007
 func TestClusterDrainNilGuardsAndCancelledRunCleanup(t *testing.T) {
 	var missing *clusterDrainController
 	missing.start(nil)
@@ -210,6 +212,7 @@ func TestClusterDrainNilGuardsAndCancelledRunCleanup(t *testing.T) {
 }
 
 // Traceability: DEP-01/DEP-02; docs/specs/drain-and-rolling-update.md §6.
+// Scenarios: drain-and-rolling-update.md:DRN-SCN-007
 func TestDrainWaitHandlesImmediateAndSynchronizedCancellation(t *testing.T) {
 	if waitDrain(nil, time.Second) {
 		t.Fatal("waitDrain(nil) = true, want false")
@@ -238,6 +241,7 @@ func TestDrainWaitHandlesImmediateAndSynchronizedCancellation(t *testing.T) {
 }
 
 // Traceability: DEP-01/DEP-02; docs/specs/drain-and-rolling-update.md §2.2.
+// Scenarios: drain-and-rolling-update.md:DRN-SCN-005
 func TestMergeDrainProgressPreservesLargestTransferCounts(t *testing.T) {
 	tests := []struct {
 		name      string
@@ -285,6 +289,7 @@ func TestMergeDrainProgressPreservesLargestTransferCounts(t *testing.T) {
 }
 
 // Traceability: DEP-01/DEP-02; docs/specs/drain-and-rolling-update.md §2.2, §3.
+// Scenarios: drain-and-rolling-update.md:DRN-SCN-007
 func TestClusterDrainCountsOnlyLocallyOwnedSessions(t *testing.T) {
 	config := validBootstrapClusterConfig()
 	runtime, stop := newTestClusterOfflineRuntime(t, config)
@@ -311,6 +316,7 @@ func TestClusterDrainCountsOnlyLocallyOwnedSessions(t *testing.T) {
 }
 
 // Traceability: DEP-01/DEP-02; docs/specs/drain-and-rolling-update.md §1, §10.
+// Scenarios: drain-and-rolling-update.md:DRN-SCN-007
 func TestClusterDrainStartIgnoresNilContextAndMissingRuntime(t *testing.T) {
 	controller := &clusterDrainController{}
 	controller.start(nil)
@@ -329,6 +335,7 @@ func TestClusterDrainStartIgnoresNilContextAndMissingRuntime(t *testing.T) {
 }
 
 // Traceability: DEP-01/DEP-02; docs/specs/drain-and-rolling-update.md §2.2.
+// Scenarios: drain-and-rolling-update.md:DRN-SCN-007
 func TestClusterDrainBarrierBlocksWhenOtherVotersAreDisconnected(t *testing.T) {
 	runtimes := newReadAdmissionTestCluster(t)
 	runtime := runtimes[0]

@@ -1035,6 +1035,7 @@ func (f *clusterMembershipProcessFixture) stageRequestBody(memberID uint64) []by
 }
 
 // Traceability: API-04; docs/specs/management-api-and-observability.md §3.
+// Scenarios: management-api-and-observability.md:MGT-SCN-021
 func TestDynamicClusterStartupWithoutReadinessProbeProcessAcceptance(t *testing.T) {
 	t.Parallel()
 	fixture := newClusterMembershipProcessFixture(t, 3, "")
@@ -1061,6 +1062,7 @@ func TestDynamicClusterStartupWithoutReadinessProbeProcessAcceptance(t *testing.
 }
 
 // Traceability: CLU-03; docs/specs/cluster-session-and-delivery.md §3.1, §11.10.
+// Scenarios: cluster-session-and-delivery.md:CLU-SCN-056, cluster-session-and-delivery.md:CLU-SCN-058
 func TestDynamicClusterLiveQoS0CrossNodeForwardingProcessAcceptance(t *testing.T) {
 	t.Parallel()
 
@@ -1129,6 +1131,7 @@ func TestDynamicClusterLiveQoS0CrossNodeForwardingProcessAcceptance(t *testing.T
 	clusterMembershipProcessRequireLivePublish(t, subscriber3, topic, movedPayload)
 }
 
+// Scenarios: cluster-session-and-delivery.md:CLU-SCN-018, cluster-session-and-delivery.md:CLU-SCN-019, cluster-session-and-delivery.md:CLU-SCN-020
 func TestDynamicClusterMembershipProcessAcceptance(t *testing.T) {
 	t.Parallel()
 

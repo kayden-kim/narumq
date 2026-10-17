@@ -8,12 +8,16 @@ import (
 	"time"
 )
 
+// TestMarkerPathNamesFollowTheContract checks the control marker file names.
+// Scenarios: performance-and-verification.md:PRF-SCN-053
 func TestMarkerPathNamesFollowTheContract(t *testing.T) {
 	if got := markerPath("control", 3, 2, "kill-ack"); got != filepath.Join("control", "step-03-r2-kill-ack.json") {
 		t.Fatalf("marker path = %q", got)
 	}
 }
 
+// TestKillPhaseReportsEachStateOnceAndKeepsLastMarker checks marker state order.
+// Scenarios: performance-and-verification.md:PRF-SCN-053
 func TestKillPhaseReportsEachStateOnceAndKeepsLastMarker(t *testing.T) {
 	dir := t.TempDir()
 	phase := newKillPhase(dir, 1, 1)
@@ -43,6 +47,8 @@ func TestKillPhaseReportsEachStateOnceAndKeepsLastMarker(t *testing.T) {
 	}
 }
 
+// TestKillPhaseAckWritesKillingAcknowledgement writes the runner's killing acknowledgement.
+// Scenarios: performance-and-verification.md:PRF-SCN-053
 func TestKillPhaseAckWritesKillingAcknowledgement(t *testing.T) {
 	dir := t.TempDir()
 	phase := newKillPhase(dir, 2, 3)
@@ -70,6 +76,8 @@ func TestWriteAtomicJSONLeavesNoTemporaryFile(t *testing.T) {
 	}
 }
 
+// TestWaitForMarkerObservesLateFileAndTimesOut checks marker wait and timeout.
+// Scenarios: performance-and-verification.md:PRF-SCN-053
 func TestWaitForMarkerObservesLateFileAndTimesOut(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "late.json")

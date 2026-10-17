@@ -172,6 +172,7 @@ func (pair *snapshotStreamPair) expectNoReceipt() {
 }
 
 // Traceability: CLU-14; docs/contracts/raft-snapshot-stream-v1.md; docs/specs/cluster-session-and-delivery.md §11.37.
+// Scenarios: cluster-session-and-delivery.md:CLU-SCN-260
 func TestSnapshotStreamDeliversSnapshotOverRealTransports(t *testing.T) {
 	pair := newSnapshotStreamPair(t, true, nil)
 	data := randomSnapshot(t, 3<<20+12345)
@@ -195,6 +196,7 @@ func TestSnapshotStreamDeliversSnapshotOverRealTransports(t *testing.T) {
 	}
 }
 
+// Scenarios: cluster-session-and-delivery.md:CLU-SCN-260
 func TestSnapshotStreamSenderUsesBoundedFramesAndChunks(t *testing.T) {
 	pair := newSnapshotStreamPair(t, false, nil)
 	data := randomSnapshot(t, 2*snapshotStreamChunkSize+777)
@@ -220,6 +222,7 @@ func TestSnapshotStreamSenderUsesBoundedFramesAndChunks(t *testing.T) {
 	}
 }
 
+// Scenarios: cluster-session-and-delivery.md:CLU-SCN-260
 func TestSnapshotStreamSenderResumesAfterConnectionLoss(t *testing.T) {
 	pair := newSnapshotStreamPair(t, false, nil)
 	data := randomSnapshot(t, 4*snapshotStreamChunkSize+10)
@@ -245,6 +248,7 @@ func TestSnapshotStreamSenderResumesAfterConnectionLoss(t *testing.T) {
 	}
 }
 
+// Scenarios: cluster-session-and-delivery.md:CLU-SCN-260
 func TestSnapshotStreamSenderResumesAfterLosingLastAcknowledgement(t *testing.T) {
 	pair := newSnapshotStreamPair(t, false, nil)
 	data := randomSnapshot(t, 2*snapshotStreamChunkSize)
@@ -267,6 +271,7 @@ func TestSnapshotStreamSenderResumesAfterLosingLastAcknowledgement(t *testing.T)
 	}
 }
 
+// Scenarios: cluster-session-and-delivery.md:CLU-SCN-260
 func TestSnapshotStreamSenderMapsReceiverErrorsWithoutRetry(t *testing.T) {
 	for _, test := range []struct {
 		code   byte
@@ -296,6 +301,7 @@ func TestSnapshotStreamSenderMapsReceiverErrorsWithoutRetry(t *testing.T) {
 	}
 }
 
+// Scenarios: cluster-session-and-delivery.md:CLU-SCN-260
 func TestSnapshotStreamSenderRejectsUnexpectedAcknowledgement(t *testing.T) {
 	pair := newSnapshotStreamPair(t, false, nil)
 	server := newFakeSnapshotReceiver(t, pair)
@@ -311,6 +317,7 @@ func TestSnapshotStreamSenderRejectsUnexpectedAcknowledgement(t *testing.T) {
 	}
 }
 
+// Scenarios: cluster-session-and-delivery.md:CLU-SCN-260
 func TestSnapshotStreamSenderGivesUpAfterRepeatedConnectionLoss(t *testing.T) {
 	pair := newSnapshotStreamPair(t, false, nil)
 	server := newFakeSnapshotReceiver(t, pair)
@@ -451,6 +458,7 @@ func TestSnapshotStreamSenderCancelsWhenPeerStops(t *testing.T) {
 	}
 }
 
+// Scenarios: cluster-session-and-delivery.md:CLU-SCN-260
 func TestSnapshotStreamReceiverRejectsBadTransfers(t *testing.T) {
 	data := randomSnapshot(t, 2*snapshotStreamChunkSize)
 	good := func(pair *snapshotStreamPair) snapshotManifest { return pair.manifest(data) }
@@ -528,6 +536,7 @@ func TestSnapshotStreamReceiverRejectsBadTransfers(t *testing.T) {
 	}
 }
 
+// Scenarios: cluster-session-and-delivery.md:CLU-SCN-260
 func TestSnapshotStreamReceiverRefusesOversizedFrames(t *testing.T) {
 	pair := newSnapshotStreamPair(t, true, nil)
 	connection := pair.dialAsSender()
@@ -590,6 +599,7 @@ func TestSnapshotStreamReceiverReportsRejectedAndUnsupported(t *testing.T) {
 	})
 }
 
+// Scenarios: cluster-session-and-delivery.md:CLU-SCN-260
 func TestSnapshotStreamReceiverResumesSameTransferOnly(t *testing.T) {
 	data := randomSnapshot(t, 3*snapshotStreamChunkSize)
 	pair := newSnapshotStreamPair(t, true, nil)
@@ -640,6 +650,7 @@ func TestSnapshotStreamReceiverResumesSameTransferOnly(t *testing.T) {
 	}
 }
 
+// Scenarios: cluster-session-and-delivery.md:CLU-SCN-260
 func TestSnapshotStreamReceiverResumeContinuesRetainedBytes(t *testing.T) {
 	data := randomSnapshot(t, 3*snapshotStreamChunkSize)
 	pair := newSnapshotStreamPair(t, true, nil)
@@ -671,6 +682,7 @@ func TestSnapshotStreamReceiverResumeContinuesRetainedBytes(t *testing.T) {
 	}
 }
 
+// Scenarios: cluster-session-and-delivery.md:CLU-SCN-260
 func TestSnapshotStreamReceiverRefusesUnknownSender(t *testing.T) {
 	pair := newSnapshotStreamPair(t, true, nil)
 	stranger := cptNewNode(t, "node9.example")
@@ -693,6 +705,7 @@ func TestSnapshotStreamReceiverRefusesUnknownSender(t *testing.T) {
 	pair.expectNoReceipt()
 }
 
+// Scenarios: cluster-session-and-delivery.md:CLU-SCN-260
 func TestSnapshotStreamReceiverRefusesSenderWithMismatchedCertificate(t *testing.T) {
 	pair := newSnapshotStreamPair(t, true, nil)
 	impostor := cptNewNode(t, "node1.example") // member 1's DNS name with another key
@@ -715,6 +728,7 @@ func TestSnapshotStreamReceiverRefusesSenderWithMismatchedCertificate(t *testing
 	pair.expectNoReceipt()
 }
 
+// Scenarios: cluster-session-and-delivery.md:CLU-SCN-260
 func TestSnapshotStreamWireCodecsRejectMalformedFrames(t *testing.T) {
 	manifest := snapshotManifest{index: 1, term: 2, total: 3, digest: sha256.Sum256([]byte("x"))}
 	encoded := encodeSnapshotManifest(manifest)

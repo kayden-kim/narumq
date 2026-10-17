@@ -87,359 +87,57 @@ Standalone mode에서는 security config를 MQTT listener보다 먼저 적재한
 
 ## 6. 수용 시험
 
-| 시나리오 ID | 요구사항 ID | 조건과 입력 | 기대 결과 | 시험 위치 | 결과 | 실행 기록 |
-| --- | --- | --- | --- | --- | --- | --- |
-| `CFG-SCN-01` | SEC-05 | `-hash-password`와 다른 flag 또는 위치 인수를 함께 지정한다. | 시스템은 조합을 거절한다. | `cmd/narumq.TestHashPasswordFlagIsExclusive` | 통과 | 2026-10-10 [실행 기록](#configuration-test-execution) |
-| `CFG-SCN-02` | CLU-09 | `-cluster-config`와 허용되지 않는 flag 또는 위치 인수를 함께 지정한다. | 시스템은 조합을 거절한다. | `cmd/narumq.TestClusterConfigFlagIsExclusive` | 통과 | 2026-10-10 [실행 기록](#configuration-test-execution) |
-| `CFG-SCN-03` | CLU-09 | `-raft-peer-config`와 다른 flag를 함께 지정한다. | 시스템은 조합을 거절한다. | `cmd/narumq.TestRaftPeerOnlyRejectsOtherFlags` | 통과 | 2026-10-10 [실행 기록](#configuration-test-execution) |
-| `CFG-SCN-04` | API-05 | `-audit-verify`의 경로를 비우거나 다른 flag·위치 인수를 함께 지정한다. | 시스템은 실행을 거절한다. | `cmd/narumq.TestAuditVerifyFlagRequiresExclusiveDirectory` | 통과 | 2026-10-10 [실행 기록](#configuration-test-execution) |
-| `CFG-SCN-05` | MQTT-09, API-05 | listener가 없는 기본 실행을 시작한다. | 시스템은 지정된 비활성 log를 남기고 종료 코드 0으로 끝난다. | `cmd/narumq.TestMainNoListenerPath`, `cmd/narumq.TestRun_Defaults` | 통과 | 2026-10-10 [실행 기록](#configuration-test-execution) |
-| `CFG-SCN-06` | SEC-02, SEC-05, MQTT-09 | TLS listener의 client-auth mode와 security binding 조합을 바꾼다. | 시스템은 허용된 인증 조합만 시작한다. | `cmd/narumq.TestRunWithContextMQTTSecurityMode` | 통과 | 2026-10-10 [실행 기록](#configuration-test-execution) |
-| `CFG-SCN-07` | MQTT-09 | runtime metrics output과 interval을 하나만 지정하거나 잘못된 interval을 지정한다. | 시스템은 flag 조합을 거절한다. | `cmd/narumq.TestRunRejectsRuntimeMetricsFlagCombinations` | 통과 | 2026-10-10 [실행 기록](#configuration-test-execution) |
-| `CFG-SCN-08` | MQTT-09, MQTT-11 | 생성 용량에 0, TCP max에 음수, TLS rate에 상한 초과값 또는 TCP listener 없이 TCP limit을 지정한다. | 시스템은 잘못된 생성 용량·범위·flag 조합을 거절한다. | `cmd/narumq.TestRunWithContextRejectsConstructionBounds` | 통과 | 2026-10-10 [실행 기록](#configuration-test-execution) |
-| `CFG-SCN-09` | CLU-09, CLU-12, TEN-08 | Cluster config에 중복·알 수 없는·누락 key, 뒤따르는 JSON value 또는 잘못된 값을 넣는다. | Parser는 설정을 거절한다. | `cmd/narumq.TestParseClusterConfigRejectsDuplicateUnknownMissingAndTrailingJSON` | 통과 | 2026-10-10 [실행 기록](#configuration-test-execution) |
-| `CFG-SCN-10` | CLU-09 | 존재하지 않는 cluster config 파일을 지정한다. | 시스템은 시작을 거절한다. | `cmd/narumq.TestRunWithContextClusterConfigLoading` | 통과 | 2026-10-10 [실행 기록](#configuration-test-execution) |
-| `CFG-SCN-11` | SEC-02, SEC-05 | Security config에 지원하지 않는 field, 중복 key, 잘못된 형식 또는 인증·ACL 오류를 넣는다. | Parser는 설정을 거절한다. | `cmd/narumq.TestParseSecurityConfig_Rejections` | 통과 | 2026-10-10 [실행 기록](#configuration-test-execution) |
-| `CFG-SCN-12` | CLU-09 | Peer-only config에 알 수 없는 field, 중복 key, 뒤따르는 value 또는 중복 peer ID를 넣는다. | Parser는 알 수 없는 field, 중복 key, 뒤따르는 value와 중복 peer ID를 거절한다. | `cmd/narumq.TestParseRaftPeerConfigStrict` | 통과 | 2026-10-10 [실행 기록](#configuration-test-execution) |
-| `CFG-SCN-13` | TEN-08 | `tenantQuotas`를 생략하거나 strict profile을 지정한다. | 생략 시 built-in version 0을 사용하고, 명시 profile은 strict하게 검증한다. | `cmd/narumq.TestConfiguredTenantQuotaProfileUsesBuiltinOrStrictConfig` | 통과 | 2026-10-10 [실행 기록](#configuration-test-execution) |
-| `CFG-SCN-14` | TEN-08 | Local `tenantQuotas`가 commit된 profile과 맞지 않는다. | 시스템은 committed profile을 유지하고 mismatch를 한 번 log에 남긴다. | `cmd/narumq.TestClusterTenantQuotaControllerLogsCommittedMismatchOnce` | 통과 | 2026-10-10 [실행 기록](#configuration-test-execution) |
-| `CFG-SCN-15` | CLU-11 | Build identity에 release version과 feature 목록을 지정한다. | 시스템은 feature를 정렬·중복 제거하고 유효성을 검사한다. | `cmd/narumq.TestResolveBuildIdentity` | 통과 | 2026-10-10 [실행 기록](#configuration-test-execution) |
-| `CFG-SCN-16` | MQTT-01 | Cluster MQTT listener를 여러 개 열 때 뒤쪽 listener 생성이 실패한다. | 시스템은 앞서 연 listener를 닫는다. | `cmd/narumq.TestClusterMQTTListenersBindConfiguredEndpointsAndClosePartialOpen` | 통과 | 2026-10-10 [실행 기록](#configuration-test-execution) |
-| `CFG-SCN-17` | CLU-09 | Peer-only 시작이 각 실패 지점에서 중단된다. | 시스템은 시작 중 만든 자원을 반환한다. | `cmd/narumq.TestRunRaftPeerOnlyStartupFailuresReleaseResources` | 통과 | 2026-10-10 [실행 기록](#configuration-test-execution) |
-| `CFG-SCN-18` | CLU-14 | `-cluster-restore`만 지정한다. | 시스템은 `-cluster-config`가 필요하다고 거절한다. | `cmd/narumq.TestClusterConfigFlagIsExclusive` | 통과 | 2026-10-10 [실행 기록](#configuration-test-execution) |
-| `CFG-SCN-19` | SEC-10 | `-http-auth-token-file`에 없는 파일이나 공백만 있는 파일을 지정한다. 또는 삭제된 `-http-auth-token`을 지정한다. 또는 유효한 token 파일을 지정한다. | 앞의 세 입력은 시작을 거절한다. 유효한 파일을 쓰면 앞뒤 공백을 제거한 token으로 `/api/v1` Bearer 인증을 요구한다. | `cmd/narumq.TestRunWithContextManagementAuthTokenFile` | 통과 | 2026-10-10 [실행 기록](#configuration-test-execution) |
-| `CFG-SCN-20` | CLU-09 | Cluster config에서 `mqtt.tls`를 생략하거나 각 필드에 잘못된 값·형식을 넣는다. | Parser는 TLS listener와 `mqtt.tls` 불일치, 누락 필드, 잘못된 `clientAuth`, CA 경로와 `minVersion`을 거절한다. | `cmd/narumq.TestParseClusterConfigMQTTTLS` | 통과 | [Cluster MQTT TLS 실행 기록](#cluster-mqtt-tls-g2-g10-execution) |
-| `CFG-SCN-21` | SEC-02 | `mqtt.tls.clientAuth`와 `mtlsIdentities` 조합을 바꾼다. | 시스템은 standalone과 같은 인증 조합만 허용한다. | `cmd/narumq.TestClusterMQTTSecurityValidatesTLSClientAuthBindings` | 통과 | [Cluster MQTT TLS 실행 기록](#cluster-mqtt-tls-g2-g10-execution) |
-| `CFG-SCN-22` | SEC-02 | 3-node cluster에 유효한, 없는, 미등록 client certificate를 제시한다. MQTT 3.1.1과 MQTT 5, TLS 1.2와 1.3, 허용·미등록 Client ID도 확인한다. | 유효한 인증서와 binding은 연결된다. `require`에서 인증서가 없거나 TLS 버전이 낮으면 handshake를 거절한다. 미등록 identity와 Client ID는 MQTT 3.1.1에서 CONNACK `0x05`, MQTT 5에서 CONNACK `0x87`로 거절한다. | `tests/integration.TestDynamicClusterMQTTTLSClientCertificateProcessAcceptance` | 통과 | [Cluster MQTT TLS 실행 기록](#cluster-mqtt-tls-g2-g10-execution) |
-| `CFG-SCN-23` | PERF-08 | Cluster config에서 `runtimeMetrics`를 생략·지정하거나 누락 key, 범위 밖 interval, 빈 경로, `directory`·`auditDirectory`와 겹치는 경로, 알 수 없는 key를 넣는다. | 생략하면 비활성이다. 유효하면 값을 적재한다. 나머지는 거절한다. | `cmd/narumq.TestParseClusterConfigRuntimeMetrics` | 통과 | [실행 기록](#cluster-runtime-metrics-g6-execution) |
-| `CFG-SCN-24` | PERF-08 | 3-node in-process cluster에서 node 1에만 `runtimeMetrics`(`intervalMillis` 50)를 지정한다. | node 1의 출력 파일에 `schemaVersion` 1인 JSON 행이 2개 이상 기록된다. | `cmd/narumq.TestRunClusterModeInProcess` | 통과 | [실행 기록](#cluster-runtime-metrics-g6-execution) |
-| `CFG-SCN-25` | API-09 | `clusterPolicy`를 생략하거나 version, 다섯 한도 값, 필수 key와 unknown key를 바꾼다. | 생략은 허용한다. 유효한 값은 읽고, 0·상한 초과·누락·알 수 없는 key는 거절한다. | `cmd/narumq.TestParseClusterConfigClusterPolicy` | 통과 | [API-09 mqttLimits 실행 기록](#api-09-mqttlimits-execution) |
-| `CFG-SCN-26` | API-09 | 기본값·local config·committed policy precedence와 higher/lower/same-version reconciliation을 확인한다. | Committed version이 우선한다. Higher local version만 제안하고 불일치 설정은 mismatch로 남긴다. | `cmd/narumq.TestEffectiveClusterMQTTLimitsPrecedence`, `cmd/narumq.TestClusterPolicyControllerReconcilesAndLogsMismatchOnce` | 통과 | [API-09 mqttLimits 실행 기록](#api-09-mqttlimits-execution) |
-| `CFG-SCN-27` | API-09 | Feature가 활성화된 ClusterPolicy를 snapshot과 backup archive로 저장·복원한다. | Restored state에서 같은 version과 MQTT 한도를 읽는다. | `cmd/narumq.TestClusterBackupArchivePreservesClusterPolicyTenantQuotas` | 통과 | [G7 config·quota 실행 기록](#g7-config-view-and-tenant-quotas-execution) |
-| `CFG-SCN-28` | API-09 | 3-node cluster에서 policy PUT, 재시도·충돌, 신규·기존 연결, node restart와 drift를 확인한다. | 모든 node가 committed version을 적용한다. 기존 연결은 이전 한도를 유지하고 재시작 node는 committed 값과 mismatch를 보고한다. | `tests/integration.TestDynamicClusterPolicyProcessAcceptance` | 통과 | [API-09 mqttLimits 실행 기록](#api-09-mqttlimits-execution) |
-| `CFG-SCN-29` | SEC-01 | Cluster config의 `mqtt.tcpListenAddress`에 `0.0.0.0:1884`, `[::]:1884`, `10.0.0.5:1884`, `mqtt.example:1884`를 넣는다. `mqtt.securityConfigFile`을 비운다. 인증 방식별로 credential·certificate 없는 CONNECT를 보낸다. 3-node cluster 평문 TCP에서 password 인증을 확인한다. | 네 주소를 그대로 적재한다. 빈 security config 경로는 거절한다. JWT 설정에서 credential 없는 MQTT 5 CONNECT는 `0x87`로 거절한다. mTLS 전용 설정에서 certificate 없는 CONNECT는 MQTT 3.1.1 `0x05`, MQTT 5 `0x87`로 거절한다. Cluster TCP는 유효한 password만 연결한다. | `cmd/narumq.TestParseClusterConfigAcceptsNonLoopbackMQTTTCPListener`, `cmd/narumq.TestValidateClusterConfigReportsFirstInvalidField`, `internal/application/connect.TestConnectRecordsAuthenticationDenialsWithoutChangingConnAck`, `internal/application/connect.TestCmmConnectRejectsCredentialModeMismatchesWithoutMutation`, `tests/integration.TestDynamicClusterPasswordAuthenticationProcessAcceptance` | 통과 | [Cluster 평문 TCP(G3) 실행 기록](#cluster-plaintext-tcp-g3-execution) |
-| `CFG-SCN-30` | SEC-02, TEN-07, API-02 | Command-line flag, security config, cluster OIDC config와 Management API에 duration 값을 넣는다. Security config의 새 JWT·`tenantLimits` key에는 integer millisecond를 넣고 legacy key, string, 음수와 상한 초과도 시험한다. API request·response에서 새 field 이름을 확인하고 legacy 이름을 보낸다. | Flag는 Go duration 문자열을 유지한다. JSON duration은 `Millis` 접미사와 integer millisecond를 사용한다. Legacy config key와 API field는 거절한다. | `cmd/narumq.TestPositiveMillisDuration`, `cmd/narumq.TestParseSecurityConfig_Rejections`, `cmd/narumq.TestParseSecurityConfig_TenantLimitsMaxWaitMillis`, `cmd/narumq.TestParseSecurityConfig_TenantLimitsRejectInvalidProfiles`, `cmd/narumq.TestClusterManagementAccessConfiguration`, `tests/contracts/management-api-v1` | 통과 | [G5 duration 표기 실행 기록](#g5-duration-millis-execution) |
-| `CFG-SCN-31` | API-09, TEN-08 | Dynamic cluster node에서 `GET /api/v1/nodes/{nodeId}/config`를 호출한다. Secret이 설정된 경우도 확인한다. | Response는 해당 node의 적용 설정, policy source·version, listener 상태와 non-secret security metadata를 반환한다. `security.identityCounts`는 JWT·password·mTLS identity 수를, `security.acl`은 적용 ACL 규칙을 반환한다. Credential identity 목록, secret 원문·경로·hash는 포함하지 않는다. | `tests/integration.TestDynamicClusterNodeConfigurationProcessAcceptance`, `internal/domain/security.TestPolicyRulesReturnsIndependentSlice` | 통과 | [G7 config·quota 실행 기록](#g7-config-view-and-tenant-quotas-execution) |
-| `CFG-SCN-32` | API-09 | Config 또는 audit node-local route에서 다른 node ID, 0이 붙은 ID와 잘못된 ID를 지정한다. | 다른 node ID는 `409 node_not_local`, canonical decimal이 아닌 ID와 잘못된 ID는 `404 resource_not_found`다. 원격 proxy를 하지 않는다. | `internal/adapters/http/management.TestNodeLocalRouteScope`, `tests/integration.TestDynamicClusterNodeConfigurationProcessAcceptance` | 통과 | [G7 config·quota 실행 기록](#g7-config-view-and-tenant-quotas-execution) |
-| `CFG-SCN-33` | TEN-08 | `clusterPolicy.tenantQuotas`에 필수·알 수 없는 key, 잘못된 범위, tenant 순서·ID와 profile version을 넣는다. | 유효한 quota는 strict하게 읽는다. 누락·unknown·version field·범위 밖 값·중복 또는 내림차순 tenant는 거절한다. | `cmd/narumq.TestParseClusterConfigClusterPolicyTenantQuotas` | 통과 | [G7 config·quota 실행 기록](#g7-config-view-and-tenant-quotas-execution) |
-| `CFG-SCN-34` | TEN-08 | Policy quota가 비활성 feature에서 commit·snapshot decode에 들어가거나, 활성 상태에서 snapshot count가 틀린다. | Inactive feature의 policy quota와 objectCount 불일치 snapshot은 거절한다. Valid snapshot은 복구한다. | `internal/application/membership.TestClusterPolicyTenantQuotaFeatureGateAndEffectiveProfile`, `internal/adapters/raft/records.TestClusterPolicyTenantQuotasFeatureGateAndSnapshotCount` | 통과 | [G7 config·quota 실행 기록](#g7-config-view-and-tenant-quotas-execution) |
-| `CFG-SCN-35` | TEN-08 | 3-node cluster에서 legacy quota와 policy quota가 다를 때 feature를 활성화하고 policy quota를 commit한다. | 모든 node는 policy quota와 ClusterPolicy version을 적용한다. Quota rejection의 profile version은 policy version이다. | `tests/integration.TestDynamicClusterPolicyTenantQuotasProcessAcceptance` | 통과 | [G7 config·quota 실행 기록](#g7-config-view-and-tenant-quotas-execution) |
-| `CFG-SCN-36` | TEN-08 | Committed policy에서 `tenantQuotas`를 제거한 다음, legacy quota profile을 유지한다. | Policy update 후 모든 node가 committed legacy `TenantQuota` profile로 돌아간다. | `tests/integration.TestDynamicClusterPolicyTenantQuotasProcessAcceptance`, `internal/application/membership.TestClusterPolicyTenantQuotaFeatureGateAndEffectiveProfile` | 통과 | [G7 config·quota 실행 기록](#g7-config-view-and-tenant-quotas-execution) |
-| `CFG-SCN-37` | TEN-08 | Build member가 `cluster-policy-tenant-quotas`를 광고하지 않을 때 활성화 요청을 보낸다. 이후 모든 member가 광고할 때 activation을 commit한다. | 미지원 member가 있으면 activation을 거절한다. 모두 지원하면 feature가 committed 되고 quota policy 사용이 가능하다. | `internal/application/membership.TestClusterPolicyTenantQuotaActivationRejectsUnsupportedStagedMember`, `tests/integration.TestDynamicClusterPolicyTenantQuotasProcessAcceptance` | 통과 | [G7 config·quota 실행 기록](#g7-config-view-and-tenant-quotas-execution) |
-| `CFG-SCN-38` | API-09, TEN-08 | Policy quota를 여러 node에 적용한 뒤 node를 재시작하고 snapshot/backup을 복원한다. | 모든 node와 복원된 cluster가 같은 quota value·source·ClusterPolicy version을 반환한다. | `tests/integration.TestDynamicClusterPolicyTenantQuotasProcessAcceptance`, `cmd/narumq.TestClusterBackupArchivePreservesClusterPolicyTenantQuotas` | 통과 | [G7 config·quota 실행 기록](#g7-config-view-and-tenant-quotas-execution) |
-| `CFG-SCN-39` | API-02 | Standalone을 `-tcp-listen`, `-allow-insecure-anonymous-mqtt`, `-http-listen`으로 시작하고 `GET /api/v1/cluster`, `GET /api/v1/nodes/narumq-node-1`, `GET /api/v1/nodes/1`을 호출한다. | `clusterId`는 `narumq-cluster-1`, `leaderNodeId`와 node `nodeId`는 `narumq-node-1`이다. Decimal ID `1`은 `404`다. | `cmd/narumq.TestRunWithContextServesManagementHTTP` | 통과 | [G8 실행 기록](#g8-standalone-identifiers-execution) |
-| `CFG-SCN-40` | MQTT-10 | Standalone `-ws-listen 0.0.0.0:1`을 지정한다. | 시스템은 literal loopback이 아닌 주소를 거절한다. | `cmd/narumq.TestRunWithContextWebSocketFlags` | 통과 | [WebSocket 실행 기록](#websocket-execution) |
-| `CFG-SCN-41` | MQTT-10, SEC-02 | `-wss-listen`에 certificate/key를 빼거나 TLS client-auth binding을 바꾼다. | TLS 설정 누락과 standalone TLS와 다른 mTLS binding을 거절한다. | `cmd/narumq.TestRunWithContextWebSocketFlags`, `cmd/narumq.TestRunWithContextMQTTSecurityMode` | 통과 | [WebSocket 실행 기록](#websocket-execution) |
-| `CFG-SCN-42` | MQTT-10, SEC-02 | `-allow-insecure-anonymous-mqtt`와 `-ws-listen` 또는 `-wss-listen`을 함께 지정한다. | 시스템은 조합을 거절한다. | `cmd/narumq.TestRunWithContextWebSocketFlags` | 통과 | [WebSocket 실행 기록](#websocket-execution) |
-| `CFG-SCN-43` | MQTT-10, MQTT-11 | `-ws-*` 또는 `-wss-*` admission 제한에 대응 listener를 지정하지 않는다. | 시스템은 각 제한을 거절한다. | `cmd/narumq.TestRunWithContextWebSocketFlags` | 통과 | [WebSocket 실행 기록](#websocket-execution) |
-| `CFG-SCN-44` | MQTT-10 | Cluster config에서 `mqtt.webSocket` object를 생략한다. | 기존 설정을 계속 읽고 WS/WSS listener를 비활성화한다. | `cmd/narumq.TestParseClusterConfigWebSocket`, `cmd/narumq.TestClusterMQTTListenersBindConfiguredEndpointsAndClosePartialOpen` | 통과 | [WebSocket 실행 기록](#websocket-execution) |
-| `CFG-SCN-45` | MQTT-10, SEC-02 | `mqtt.webSocket.tlsListenAddress`를 설정하고 `mqtt.tls`를 생략한다. | Parser는 TLS profile 누락을 거절한다. | `cmd/narumq.TestParseClusterConfigWebSocket`, `tests/integration.TestDynamicClusterWebSocketProcessAcceptance` | 통과 | [WebSocket 실행 기록](#websocket-execution) |
-| `CFG-SCN-46` | MQTT-10, API-09 | Dynamic cluster node의 적용 설정을 조회한다. | Response의 `mqtt.webSocket`은 configured address와 limits를 반환하고, 미설정이면 `null`이다. | `cmd/narumq.TestNodeConfigurationMQTTWebSocketNil`, `internal/adapters/http/management.TestNodeConfigurationResponseIncludesWebSocketSettings`, `tests/integration.TestDynamicClusterWebSocketProcessAcceptance` | 통과 | [WebSocket 실행 기록](#websocket-execution) |
-| `CFG-SCN-47` | MQTT-10, SEC-02 | Standalone 프로세스에서 security config, `-ws-listen`, `-wss-listen`, TLS certificate/key를 지정한다. | 두 loopback listener가 연결을 수락하고 context cancellation 뒤 정상 종료한다. | `cmd/narumq.TestRunWithContextStartsAndStopsWebSocketListeners` | 통과 | [WebSocket 실행 기록](#websocket-execution) |
+테스트 연결과 결과는 [테스트 컨벤션](../conventions/test-conventions.md)의 시나리오 보고서로 확인한다. 과거 실행 기록은 [검증 기록](../verification/configuration-and-runtime-options.md)에 있다.
 
-<a id="configuration-test-execution"></a>
-### 설정 시험 실행 기록
-
-실행 환경은 Windows/amd64, Go 1.26.5다. 다음 명령은 `cmd/narumq`의 설정·시작 경계 시험을 실행했다.
-
-```sh
-go test ./cmd/narumq -count=1 -run '^(TestHashPasswordFlagIsExclusive|TestClusterConfigFlagIsExclusive|TestRaftPeerOnlyRejectsOtherFlags|TestAuditVerifyFlagRequiresExclusiveDirectory|TestMainNoListenerPath|TestRun_Defaults|TestRunWithContextMQTTSecurityMode|TestRunRejectsRuntimeMetricsFlagCombinations|TestRunWithContextRejectsConstructionBounds|TestParseClusterConfig.*|TestValidateClusterConfig.*|TestClusterManagementAccessConfiguration|TestRunWithContextClusterConfigLoading|TestParseSecurityConfig.*|TestParseRaftPeerConfig.*|TestRejectDuplicateJSONKeys|TestConfiguredTenantQuotaProfileUsesBuiltinOrStrictConfig|TestClusterTenantQuotaControllerLogsCommittedMismatchOnce|TestResolveBuildIdentity|TestClusterMQTTListenersBindConfiguredEndpointsAndClosePartialOpen|TestRunRaftPeerOnlyStartupFailuresReleaseResources|TestRunRejectsManagementRateFlagsOutOfRange|TestValidateTLSAuthenticationBindings.*|TestRunWithContextManagementAuthTokenFile|TestRunWithContextReportsManagementListenFailure)$' -v
-```
-
-결과는 `PASS`다. 설정·시작 경계 시험과 G9 token-file 시험이 통과했다.
-
-CLI 기본 경로도 smoke 실행했다. `go run ./cmd/narumq`는 `MQTT TCP and management HTTP listeners disabled`를 기록하고 정상 종료했다.
-
-중복 key 시작 거절 smoke도 실행했다. Security: `go run ./cmd/narumq -tcp-listen 127.0.0.1:0 -security-config .artifacts/verification/g4-duplicate-key/dup-security.json`은 종료 코드 1과 `load security config: check security config JSON keys: duplicate JSON key`를 반환했다. Peer-only: `go run ./cmd/narumq -raft-peer-config .artifacts/verification/g4-duplicate-key/dup-peer.json`은 종료 코드 1과 `load raft peer config: check raft peer config JSON keys: duplicate JSON key`를 반환했다. 코드에서 security 설정 적재는 `openMQTTListener`보다 먼저, peer config 적재는 `net.Listen`보다 먼저 실행됨을 확인했다.
-
-G9 CLI smoke는 Windows/amd64, Go 1.26.5에서 실행했다. `go run ./cmd/narumq -http-listen 127.0.0.1:18080 -http-auth-token x`는 종료 코드 1과 `flag provided but not defined: -http-auth-token`을 반환했다. `.artifacts/verification/g9-token-file/management.token`의 token으로 시작한 server는 인증 없는 `/api/v1/cluster` 요청에 `401`, 파일 token을 담은 `Authorization: Bearer` 요청에 `200`을 반환했다. Server를 종료했으며 process log에는 token 값이 없었다. Windows shell에서 `curl -o /dev/null`은 `401` 출력 뒤 종료 코드 23을 반환했다. 두 요청은 response body를 출력하는 `curl -s -w` 호출로 다시 확인했다.
-
-<a id="cluster-mqtt-tls-g2-g10-execution"></a>
-### Cluster MQTT TLS(G2·G10) 실행 기록
-
-실행 환경은 Windows/amd64, Go 1.26.5다. Parser·runtime 시험과 build는 다음 명령으로 확인했다.
-
-```sh
-go test ./cmd/narumq -count=1 -run '^(TestParseClusterConfig.*|TestValidateClusterConfig.*|TestClusterMQTTListeners.*|TestClusterMQTTSecurityValidatesTLSClientAuthBindings|TestValidateTLSAuthenticationBindings.*|TestRunWithContextMQTTSecurityMode)$' && go build ./...
-```
-
-결과는 `PASS`다. BP-02 fixture와 전체 build도 확인했다.
-
-```sh
-go test ./tests/benchmark/bp02 -count=1 -run '^TestBP02Fixture' && go build ./...
-```
-
-결과는 `PASS`다. BP02 fixture 시험은 node별 MQTT server certificate/key가 peer mTLS 인증서와 다른지, serverAuth 용도와 CA·DNS 검증이 맞는지 확인했다. `go build ./...`도 통과했다. Compare와 suite는 인증서 분리 변경 뒤 다시 실행하지 않았다.
-
-3-node process acceptance는 다음 명령으로 실행했다.
-
-```sh
-go test ./tests/integration -count=1 -timeout 15m -v -run '^TestDynamicClusterMQTTTLSClientCertificateProcessAcceptance$'
-```
-
-결과는 `PASS`다. 세 node 모두 MQTT 3.1.1과 MQTT 5에서 TLS 1.3 mTLS 연결을 받아 `CONNACK=0x00`을 반환했다. MQTT server certificate는 peer certificate와 달랐다. Client certificate가 없거나 TLS 1.2를 사용하면 handshake가 실패했다. 미등록 certificate와 허용되지 않은 Client ID는 MQTT 3.1.1에서 각각 `CONNACK=0x05`, MQTT 5에서 각각 `CONNACK=0x87`을 반환했다.
-
-CLI startup rejection smoke도 실행했다.
-
-```sh
-go run ./cmd/narumq -cluster-config .artifacts/verification/g2-g10-mqtt-tls/missing-tls.json
-go run ./cmd/narumq -cluster-config .artifacts/verification/g2-g10-mqtt-tls/invalid-client-auth.json
-```
-
-두 명령 모두 종료 코드 `1`을 반환했다. 첫 번째는 `load cluster config: mqtt tls is required when tlsListenAddress is set`, 두 번째는 `load cluster config: mqtt tls clientAuth must be none, request, or require`를 기록했다.
-
-저장소 검증은 다음 결과를 반환했다.
-
-| Gate | 실행 명령 | 결과 |
-| --- | --- | --- |
-| Traceability | `go run ./tools/verify traceability` | `PASS`; P0 `69/81` mapped, exceptions `12` |
-| Markdown links | `go run ./tools/verify markdown-links` | `PASS`; 152 files, 2,153 local links |
-| Local | `GOMAXPROCS=4 go run ./tools/verify local` | `local: PASS`, `coverage: PASS`; branch-instrument, architecture, fuzz, package tests와 traceability 통과 |
-
-<a id="cluster-runtime-metrics-g6-execution"></a>
-### Cluster runtime metrics(G6) 실행 기록
-
-실행 환경은 Windows/amd64, Go 1.26.5다. 구현 전 test-first 실행은 `RuntimeMetrics` field와 `runtimeMetricsInterval` method가 없어 build 단계에서 실패했다.
-
-```sh
-go test ./cmd/narumq -run TestParseClusterConfigRuntimeMetrics -count=1
-```
-
-구현 뒤 parser와 3-node in-process runtime 시험이 통과했다.
-
-```sh
-go test ./cmd/narumq -run 'TestParseClusterConfigRuntimeMetrics|TestRunClusterModeInProcess' -count=1 -v
-go test ./cmd/narumq -run 'TestParseClusterConfig|TestClusterConfigFlagIsExclusive|TestRunRejectsRuntimeMetricsFlagCombinations|TestRunWithContextClusterConfigLoading' -count=1
-go build ./...
-go vet ./cmd/narumq
-go run ./tools/verify traceability
-go run ./tools/verify markdown-links
-go run ./tools/verify local
-```
-
-| 확인 | 결과 |
-| --- | --- |
-| `TestParseClusterConfigRuntimeMetrics`와 `TestRunClusterModeInProcess` | 통과. Parser 사례가 모두 통과했고, node 1의 JSONL 파일에서 `schemaVersion` 1 표본 2개 이상을 읽었다. |
-| 설정 parser와 cluster flag 회귀 | 통과 |
-| Build와 vet | 통과 |
-| Traceability | `PASS`; P0 mapped `69/81`, exceptions `12` |
-| Markdown links | `PASS`; `go run ./tools/verify markdown-links`에서 문서 152개와 로컬 링크 2,159개를 확인했다. |
-| Local gate | `go run ./tools/verify local`에서 `local: PASS`, `coverage: PASS`. Branch-instrument, architecture, fuzz, package tests와 traceability가 통과했다. |
-
-
-<a id="api-09-mqttlimits-execution"></a>
-### API-09 mqttLimits 실행 기록
-
-실행 환경은 Windows/amd64, Go 1.26.5다. 아래 명령은 현재 작업 트리에서 실행했다.
-
-```sh
-go test ./cmd/narumq -run '^(TestParseClusterConfigClusterPolicy|TestClusterTenantQuotaControllerLogsCommittedMismatchOnce)$' -count=1 -v
-go test ./cmd/narumq ./internal/adapters/metrics ./internal/adapters/http/management ./tests/contracts/management-api-v1 -count=1
-go build ./...
-go test ./tests/integration -run '^TestDynamicClusterPolicyProcessAcceptance$' -count=1 -timeout=20m
-go test ./tests/integration -run '^(TestDynamicClusterClientBlocklistProcessAcceptance|TestDynamicClusterMQTTTLSClientCertificateProcessAcceptance)$' -count=1 -v -timeout 20m
-go test ./internal/adapters/tcp -count=1 -run '^(TestServerSetConnectionLimitsAppliesToNewConnectionsOnly|TestTCPConnAckAboveClientMaximumPacketSizeClosesWithoutSending)$'
-go test ./tests/contracts/management-api-v1 ./tests/contracts/audit-event-v1 -count=1
-go run ./tools/verify traceability
-go run ./tools/verify markdown-links
-go run ./tools/verify local
-```
-
-| 확인 | 결과 |
-| --- | --- |
-| Parser, reconciliation, snapshot/backup, Management API, audit와 OpenAPI contract package 시험 | `PASS`; `cmd/narumq`, `metrics`, `management`, `management-api-v1` 모두 통과 |
-| Build | `PASS`; `go build ./...` |
-| CFG-SCN-28 3-node process acceptance | `PASS` (8.58s); policy PUT/retry/conflict, old/new connection limits, all-node state, restart와 drift |
-| Existing TCP limit regression | `PASS` (0.551s); connection limit changes affect new connections only, oversized CONNACK rejection |
-| Existing cluster security regressions | `PASS`; `TestDynamicClusterClientBlocklistProcessAcceptance` (10.06s) and `TestDynamicClusterMQTTTLSClientCertificateProcessAcceptance` (1.54s) |
-| Audit event contract regression | `PASS`; router constructor callsite includes the new optional policy service |
-| Traceability | `PASS`; P0 mapped `70/81`, exceptions `11` |
-| Markdown links | `PASS`; 152 documents, 2,177 local links |
-| Local gate | `go run ./tools/verify local`: `local: PASS` (193.88s), `coverage: PASS`; branch instrumentation, traceability, architecture, fuzz, package and race checks passed. |
-
-<a id="cluster-plaintext-tcp-g3-execution"></a>
-### Cluster 평문 TCP(G3) 실행 기록
-
-실행 환경은 Windows/amd64, Go 1.26.5다. 현재 작업 트리에서 production 코드는 바꾸지 않고 parser 시험만 추가했다. 첫 local gate는 `cmd/narumq/cluster_config_test.go`의 gofmt 검사에서 중단됐다. `gofmt -w cmd/narumq/cluster_config_test.go`를 실행한 뒤 parser 시험과 local gate를 재실행했다. 현재 checkout에는 remote-tracking branch가 없어서 `git merge-base HEAD HEAD`의 결과 `84d3a41b8b6feede6ae2856508c111c5f61674fd`를 CI `--base`로 사용했다.
-
-```sh
-go test ./cmd/narumq -count=1 -v -run '^(TestParseClusterConfigAcceptsNonLoopbackMQTTTCPListener|TestValidateClusterConfigReportsFirstInvalidField)$'
-go test ./cmd/narumq -count=1 -run '^(TestParseClusterConfig.*|TestValidateClusterConfig.*)$'
-go test ./internal/application/connect -count=1 -run '^(TestConnectRecordsAuthenticationDenialsWithoutChangingConnAck|TestCmmConnectRejectsCredentialModeMismatchesWithoutMutation)$'
-go test ./tests/integration -count=1 -timeout 15m -v -run '^TestDynamicClusterPasswordAuthenticationProcessAcceptance$'
-go build ./...
-go run ./tools/verify markdown-links
-go run ./tools/verify traceability
-go run ./tools/verify local
-go run ./tools/verify ci --base 84d3a41b8b6feede6ae2856508c111c5f61674fd
-```
-
-| 확인 | 결과 |
-| --- | --- |
-| Non-loopback parser와 security config 필수 경계 | 통과. Wildcard IPv4·IPv6, IPv4 주소와 DNS 주소 4개 subtest 및 `missing security file`이 통과했다. |
-| Cluster config parser 회귀 | 통과 |
-| CONNECT 인증 거절 회귀 | 통과 |
-| 3-node 평문 TCP password acceptance | 통과 (9.41s) |
-| Build | 통과 |
-| Markdown links | 첫 실행은 G3 anchor 부재로 2개 링크 오류를 반환했다. Anchor 추가 후 재실행은 `PASS` (152 files, 2,182 local links). |
-| Traceability | `PASS`; P0 mapped `70/81`, exceptions `11` |
-| Local gate | 첫 실행은 `cmd/narumq/cluster_config_test.go`의 gofmt 사전 검사에서 중단됐다. Gofmt 적용 뒤 `local: PASS` (194.34s), `coverage: PASS`; branch-instrument, traceability, fuzz, architecture와 전체 package·integration 시험이 통과했다. |
-| CI gate | `go run ./tools/verify ci --base 84d3a41b8b6feede6ae2856508c111c5f61674fd`: `ci: PASS` (1541.36s). |
-
-
-<a id="g5-duration-millis-execution"></a>
-### G5 duration Millis 실행 기록
-
-실행 환경은 Windows/amd64, Go 1.26.5다. JSON duration key 변경, API field rename, 현재·이전 release 경계를 확인했다.
-
-```sh
-go test ./cmd/narumq -count=1 -v -run '^(TestParseSecurityConfig_Rejections|TestParseSecurityConfig_TenantLimitsMaxWaitMillis|TestParseSecurityConfig_TenantLimitsRejectInvalidProfiles|TestClusterManagementAccessConfiguration|TestPositiveMillisDuration)$'
-go test ./cmd/narumq -count=1
-go test ./internal/adapters/http/management ./internal/application/management ./tests/contracts/... -count=1 -v -run 'Drain|Rebalance|Contract|Node'
-go test ./tests/benchmark/bp02 ./tests/benchmark/bp03 ./tests/benchmark/bp04 ./tests/benchmark/bp06 ./tests/benchmark/bp07 ./tests/chaos/cluster-storage-v1 ./tests/compatibility/mqtt-clients-v1 -count=1
-go build ./... && go vet ./...
-go test ./tests/integration -count=1 -timeout 30m -v -run '^(TestDynamicClusterManagementRBACProcessAcceptance|TestDynamicClusterCredentialExpiryProcessAcceptance|TestDynamicClusterNodeDrainProcessAcceptance|TestDynamicClusterConnectionRebalanceProcessAcceptance|TestDynamicClusterManagementAuditProcessAcceptance)$'
-NARUMQ_RELEASE_COMPAT=1 GOMAXPROCS=4 go test ./tests/integration -count=1 -timeout 30m -v -run '^TestDynamicClusterReleaseCompatibilityProcessAcceptance$'
-NARUMQ_RELEASE_COMPAT=1 GOMAXPROCS=4 go test ./tests/integration -count=1 -timeout 30m -v -run '^(TestDynamicClusterReleaseCompatibilityProcessAcceptance|TestDynamicClusterHistoricalReleaseCompatibilityProcessAcceptance|TestClusterBackupRestoreHistoricalReleaseProcessAcceptance)$'
-NARUMQ_RELEASE_COMPAT=1 GOMAXPROCS=4 go test ./tests/integration -run '^(TestDynamicClusterHistoricalReleaseCompatibilityProcessAcceptance|TestClusterBackupRestoreHistoricalReleaseProcessAcceptance)$' -count=1 -v -timeout 30m
-NARUMQ_RELEASE_COMPAT=1 GOMAXPROCS=4 go test ./tests/integration -run '^(TestDynamicClusterReleaseCompatibilityProcessAcceptance|TestClusterBackupRestoreReleaseWindowProcessAcceptance)$' -count=1 -v -timeout 30m
-go test ./tests/integration -count=1 -run '^TestDashboardProvisioningMatchesContracts$'
-go run ./cmd/narumq -tcp-listen 127.0.0.1:18831 -security-config .artifacts/verification/g5-duration-millis/legacy-security.json
-go run ./cmd/narumq -tcp-listen 127.0.0.1:18832 -security-config .artifacts/verification/g5-duration-millis/current-security.json
-```
-기준 비교는 detached checkout commit `23005e1a0d819a357507ce173b8d0f89cf40cf19`에서 수행했다. 이전 실행에서 historical acceptance 두 시험은 현재 checkout과 기준 checkout에서 모두 `load cluster config: cluster config has invalid JSON or field types`로 실패했다. 원인은 `de19302`가 fixture에 추가한 `requestRate`·`authFailureRate`를 `clusterProcessConfigForBinary`가 legacy binary용 설정에서 제거하지 않아 historical source `58a95f801e1467379db2eb6f3454ae44e954418a`가 설정을 거절한 것이었다. Legacy 변환에서 두 key를 제거한 뒤 현재 작업 트리의 historical acceptance가 통과했다. Dashboard contract 시험은 panel 6의 datasource/query 형식을 기준 checkout에 맞추고 duration selector만 바꾼 뒤 현재와 기준 checkout에서 통과했다. 기준 checkout은 비교 뒤 제거했다.
-
-| 확인 | 결과 |
-| --- | --- |
-| Millis parser와 security config 경계 | 통과. 0·최대값, 새 key, legacy key, 문자열·음수·상한 초과를 확인했다. |
-| `cmd/narumq` 전체 시험 | 통과 |
-| Management API와 contract regression | 통과 |
-| Migrated benchmark·chaos·compatibility fixture 시험 | 통과 |
-| Build와 vet | 기존 build·vet 통과. 이번 변경의 `go vet ./tests/integration`도 통과했다. |
-| Management RBAC, credential expiry, drain, rebalance, audit process acceptance | 통과 |
-| N-1/N release compatibility process acceptance | 통과 (`TestDynamicClusterReleaseCompatibilityProcessAcceptance`: 61.37s, `TestClusterBackupRestoreReleaseWindowProcessAcceptance`: 33.65s). |
-| Historical release acceptance | 통과 (`TestDynamicClusterHistoricalReleaseCompatibilityProcessAcceptance`: 89.78s, `TestClusterBackupRestoreHistoricalReleaseProcessAcceptance`: 19.72s). Historical source `58a95f801e1467379db2eb6f3454ae44e954418a`를 사용했고, archive 시험에서 `HEAD -> historical N-1: non-zero exit and target directory absent`를 확인했다. |
-| Dashboard provisioning contract | 통과. Panel 6의 datasource/query 형식은 기준 checkout과 같고 `uptimeMs` selector만 `uptimeMillis`로 바꿨다. |
-| Legacy JSON CLI smoke | 예상대로 종료 코드 1과 `unknown field "cacheTtl"`을 반환했다. |
-| Current JSON CLI smoke | Listener 시작 log를 확인했다. Managed process로 종료했다. |
-| Markdown links | 통과 (152 files, 2,187 local links) |
-| Traceability | 통과 (P0 mapped `70/81`, exceptions `11`) |
-| Local gate | 통과 (219.86s). Branch instrumentation, traceability, fuzz, architecture, package·race 시험과 coverage가 모두 통과했다. |
-| CI gate | 통과 (1484.27s). Coverage PASS, mutation efficacy `100%`, mutant coverage `98.85%`(6 not covered). |
-
-<a id="g7-config-view-and-tenant-quotas-execution"></a>
-### G7 config view·ClusterPolicy tenant quota 실행 기록
-
-실행 환경은 Windows/amd64, Go 1.26.5다. 이 기록은 적용 설정 조회, node-local route 경계, ClusterPolicy quota feature gate와 precedence를 확인한다.
-검증 대상은 G7에서 수정한 작업 트리다. 이 작업에서 commit은 만들지 않았다.
-
-첫 local gate는 `internal/domain/security` 함수 coverage가 97.06%로 100% ratchet에 미달해 실패했다. ACL policy accessor의 직접 시험이 없어 coverage를 채우지 못했다. `Policy.Rules()`의 copy 동작과 process 응답의 ACL 규칙을 확인하는 시험을 추가한 뒤 local gate가 통과했다.
-
-
-```sh
-go test ./internal/domain/security ./internal/application/membership ./internal/adapters/raft/records ./internal/adapters/http/management ./cmd/narumq -count=1
-go test ./tests/contracts/... -count=1
-go test ./tests/integration -run '^(TestDynamicClusterNodeConfigurationProcessAcceptance|TestDynamicClusterPolicyProcessAcceptance|TestDynamicClusterPolicyTenantQuotasProcessAcceptance|TestDynamicClusterTenantStorageQuotaProcessAcceptance|TestDynamicClusterManagementRBACProcessAcceptance)$' -count=1 -timeout=30m
-go run ./tools/verify markdown-links
-go run ./tools/verify local
-```
-
-| 확인 | 결과 |
-| --- | --- |
-| Domain·membership·Raft records·Management API·configuration parser 시험 | 통과 (`go test ./internal/domain/security ./internal/application/membership ./internal/adapters/raft/records ./internal/adapters/http/management ./cmd/narumq -count=1`) |
-| Contract suite | 통과 (`go test ./tests/contracts/... -count=1`) |
-| G7 node configuration·policy·tenant quota process acceptance | 통과 (선택한 5개 process acceptance; package 15.197s) |
-| Markdown links | 통과 (152 files, 2,201 local links) |
-| Traceability | 통과 (P0 mapped 70/81, exceptions 11) |
-| Local gate | 통과 (198.09s; branch instrumentation, traceability, fuzz, architecture, package·race 시험과 coverage 통과) |
-| CI gate | 미실행. G7 local gate를 실행했다. 전체 CI merge gate는 `docs/TODO.md` §1.9에서 별도로 추적한다. |
-
-#### ACL 응답 계약 보정 실행 기록
-
-초기 config response는 ACL 규칙 수만 반환했다. 승인된 A1/A2 계약은 `security.identityCounts`와 설정 순서의 `security.acl[]` 항목을 요구한다. MQTT JWT identity 수는 `identityCounts.jwt`에 두고, JWT configuration에서는 count를 제외한다. Management OIDC 응답은 바꾸지 않았다.
-
-다음 검증은 이 계약 보정 뒤 현재 작업 트리에서 실행했다.
-
-```sh
-go test ./internal/domain/security ./internal/application/membership ./internal/adapters/raft/records ./internal/adapters/http/management ./cmd/narumq -count=1
-go test ./tests/contracts/... -count=1
-go test ./tests/integration -run '^TestDynamicClusterNodeConfigurationProcessAcceptance$' -count=1 -timeout=30m
-go run ./tools/verify markdown-links
-go run ./tools/verify local
-```
-
-| 확인 | 결과 |
-| --- | --- |
-| Focused package suites | 통과. `Policy.Rules()`의 복사·순서, runtime ACL 매핑과 Management adapter를 포함한다. |
-| Management contract suite | 통과. OpenAPI에서 새 `identityCounts`와 ACL rule array 응답을 확인했다. |
-| Node configuration process acceptance | 통과. 58개 ACL rule의 첫 항목·마지막 항목, identity count와 private key redaction을 확인했다. |
-| Markdown links | 통과 (152 files, 2,201 local links) |
-| Local gate | 통과 (`branch-instrument`, traceability 70/81(P0), architecture, fuzz, package·race 시험과 coverage). |
-| CI gate | 미실행. 전체 CI merge gate는 `docs/TODO.md` §1.9에서 별도로 추적한다. |
-
-<a id="g8-standalone-identifiers-execution"></a>
-### G8 standalone 식별자 실행 기록
-
-실행 환경: Windows/amd64, Go 1.26.5. 아래 검증은 현재 작업 트리에서 실행했다.
-
-민감도 확인에서는 `cmd/narumq/main.go`의 `NodeID`를 임시로 `narumq-node-2`로 바꿔 시험이 실패하는지 확인했다. 이후 `narumq-node-1`로 복구하고 시험을 다시 실행했다.
-
-CLI smoke service는 아래 명령으로 시작했다. 응답을 확인한 뒤 service를 종료했다.
-
-```sh
-go test ./cmd/narumq -run '^TestRunWithContextServesManagementHTTP$' -count=1 -v
-# 민감도 확인: main.go의 NodeID를 임시로 narumq-node-2로 바꾸고 시험을 실행한다.
-go test ./cmd/narumq -run '^TestRunWithContextServesManagementHTTP$' -count=1 -v
-# NodeID를 narumq-node-1로 복구한 뒤 시험을 다시 실행한다.
-go test ./cmd/narumq -run '^TestRunWithContextServesManagementHTTP$' -count=1 -v
-# 다음 명령은 background service로 시작하고 HTTP 확인 뒤 종료한다.
-go run ./cmd/narumq -tcp-listen 127.0.0.1:18883 -allow-insecure-anonymous-mqtt -http-listen 127.0.0.1:18081
-curl.exe -sS http://127.0.0.1:18081/api/v1/cluster
-curl.exe -sS -o NUL -w "%{http_code}\n" http://127.0.0.1:18081/api/v1/nodes/1
-go run ./tools/verify markdown-links
-go run ./tools/verify local
-```
-
-| 확인 | 결과 |
-| --- | --- |
-| 집중 시험 | 통과. Cluster ID와 leader node ID, `narumq-node-1`의 node 응답과 decimal ID `1`의 `404`를 확인했다. |
-| 민감도 확인 | 통과. `NodeID`를 `narumq-node-2`로 바꾼 상태에서 시험이 leader node ID 불일치로 실패했다. 값을 복구한 뒤 시험이 통과했다. |
-| Standalone CLI smoke | 통과. `/api/v1/cluster`는 `narumq-cluster-1`과 `narumq-node-1`을 반환했고 `/api/v1/nodes/1`은 `404`를 반환했다. 확인 뒤 process를 종료했다. |
-| Markdown links | 통과 (152 files, 2,206 local links). |
-| Local gate | 통과 (`local: PASS`, `coverage: PASS`; 217.45s; `branch-instrument`, `architecture`, `fuzz`, package·race 시험). |
-| Traceability | 통과 (`P0 mapped 70/81, exceptions 11`). |
-| CI gate | 미실행. 전체 CI merge gate는 `docs/TODO.md` §1.9에서 별도로 추적한다. |
-
-<a id="websocket-execution"></a>
-### MQTT-10 WebSocket/WSS 실행 기록
-
-실행 환경은 Windows/amd64, Go 1.26.5다. 검증은 현재 작업 트리에서 실행했다. CI는 실행하지 않았다.
-
-첫 local 검증은 adapter 시험 표식에 `MQTT-10`이 두 번 나와 traceability gate에서 실패했다. 시나리오 ID는 유지하고 중복된 요구사항 표기를 제거했다. 다음 실행에서는 TLS 통합 fixture가 nil registry pointer를 `MetricsRecorder` interface에 전달해 panic했다. Fixture는 nil pointer일 때 nil interface를 전달하도록 고쳤다. 수정 뒤 local gate가 통과했다.
-
-```sh
-go test ./cmd/narumq -run '^TestRunWithContextStartsAndStopsWebSocketListeners$' -count=1 -v
-go test ./internal/adapters/websocket ./internal/adapters/tcp ./internal/adapters/metrics ./internal/adapters/http/management ./cmd/narumq -count=1 -race
-go test ./tests/integration -run 'WebSocket' -count=1 -v
-go test ./tests/integration -run '^TestDynamicClusterWebSocketProcessAcceptance$' -count=1 -v -timeout 10m
-go build ./... && go vet ./...
-go run ./tools/verify traceability
-go run ./tools/verify markdown-links
-GOMAXPROCS=4 go run ./tools/verify local
-```
-
-| 확인 | 결과 |
-| --- | --- |
-| Standalone listener startup | 통과. WS와 WSS loopback socket이 연결을 받았고 context 취소 뒤 `runWithContext`가 nil을 반환했다. |
-| Adapter·composition race suite | 통과. WebSocket, TCP, metrics, management adapter와 `cmd/narumq` 시험이 race detector를 통과했다. |
-| WebSocket wire integration | 통과. MQTT 3.1.1/5, cross-transport, password, mTLS, keepalive, blocklist, frame boundary, live close, admission·metrics 시나리오를 확인했다. mTLS에서 인증서가 없는 client의 TLS handshake warning은 예상한 거절 로그다. |
-| Dynamic cluster process acceptance | 통과. 세 node 사이 WS publish/subscribe와 applied-config 응답을 확인했다. |
-| Real binary smoke | 통과. `go build -o .artifacts/mqtt10-ws-smoke/narumq.exe ./cmd/narumq`로 binary를 만들었다. `.artifacts/mqtt10-ws-smoke/narumq.exe -ws-listen 127.0.0.1:18083 -security-config .artifacts/mqtt10-ws-smoke/security.json`을 background service로 시작했다. `go run .artifacts/mqtt10-ws-smoke/client.go`는 `CONNACK return code=0`을 받았다. `.artifacts/mqtt10-ws-smoke/narumq.exe -ws-listen 0.0.0.0:18083 -security-config .artifacts/mqtt10-ws-smoke/security.json`은 종료 코드 1과 `-ws-listen must use literal loopback IP 127.0.0.0/8 or ::1`을 반환했다. 임시 binary, security config, client source는 smoke 뒤 제거했으므로 명령을 그대로 다시 실행할 수는 없다. |
-| Build·vet | 통과 (`go build ./... && go vet ./...`). |
-| Traceability | 통과 (`P0 mapped 71/81, exceptions 10`). |
-| Markdown links | 통과 (`go run ./tools/verify markdown-links`; 157 files, 2,318 local links). |
-| Local gate | 통과 (`local: PASS`, `coverage: PASS`; branch-instrument, architecture, fuzz, package·race 시험과 전체 coverage 검증). |
-| CI gate | 미실행. 저장소 전체 CI merge gate는 `docs/TODO.md` §1.9에서 별도로 추적한다. |
+| 시나리오 ID | 요구사항 ID | 조건과 입력 | 기대 결과 |
+| --- | --- | --- | --- |
+| CFG-SCN-01 | SEC-05 | `-hash-password`와 다른 flag 또는 위치 인수를 함께 지정한다. | 시스템은 조합을 거절한다. |
+| CFG-SCN-02 | CLU-09 | `-cluster-config`와 허용되지 않는 flag 또는 위치 인수를 함께 지정한다. | 시스템은 조합을 거절한다. |
+| CFG-SCN-03 | CLU-09 | `-raft-peer-config`와 다른 flag를 함께 지정한다. | 시스템은 조합을 거절한다. |
+| CFG-SCN-04 | API-05 | `-audit-verify`의 경로를 비우거나 다른 flag·위치 인수를 함께 지정한다. | 시스템은 실행을 거절한다. |
+| CFG-SCN-05 | MQTT-09, API-05 | listener가 없는 기본 실행을 시작한다. | 시스템은 지정된 비활성 log를 남기고 종료 코드 0으로 끝난다. |
+| CFG-SCN-06 | SEC-02, SEC-05, MQTT-09 | TLS listener의 client-auth mode와 security binding 조합을 바꾼다. | 시스템은 허용된 인증 조합만 시작한다. |
+| CFG-SCN-07 | MQTT-09 | runtime metrics output과 interval을 하나만 지정하거나 잘못된 interval을 지정한다. | 시스템은 flag 조합을 거절한다. |
+| CFG-SCN-08 | MQTT-09, MQTT-11 | 생성 용량에 0, TCP max에 음수, TLS rate에 상한 초과값 또는 TCP listener 없이 TCP limit을 지정한다. | 시스템은 잘못된 생성 용량·범위·flag 조합을 거절한다. |
+| CFG-SCN-09 | CLU-09, CLU-12, TEN-08 | Cluster config에 중복·알 수 없는·누락 key, 뒤따르는 JSON value 또는 잘못된 값을 넣는다. | Parser는 설정을 거절한다. |
+| CFG-SCN-10 | CLU-09 | 존재하지 않는 cluster config 파일을 지정한다. | 시스템은 시작을 거절한다. |
+| CFG-SCN-11 | SEC-02, SEC-05 | Security config에 지원하지 않는 field, 중복 key, 잘못된 형식 또는 인증·ACL 오류를 넣는다. | Parser는 설정을 거절한다. |
+| CFG-SCN-12 | CLU-09 | Peer-only config에 알 수 없는 field, 중복 key, 뒤따르는 value 또는 중복 peer ID를 넣는다. | Parser는 알 수 없는 field, 중복 key, 뒤따르는 value와 중복 peer ID를 거절한다. |
+| CFG-SCN-13 | TEN-08 | `tenantQuotas`를 생략하거나 strict profile을 지정한다. | 생략 시 built-in version 0을 사용하고, 명시 profile은 strict하게 검증한다. |
+| CFG-SCN-14 | TEN-08 | Local `tenantQuotas`가 commit된 profile과 맞지 않는다. | 시스템은 committed profile을 유지하고 mismatch를 한 번 log에 남긴다. |
+| CFG-SCN-15 | CLU-11 | Build identity에 release version과 feature 목록을 지정한다. | 시스템은 feature를 정렬·중복 제거하고 유효성을 검사한다. |
+| CFG-SCN-16 | MQTT-01 | Cluster MQTT listener를 여러 개 열 때 뒤쪽 listener 생성이 실패한다. | 시스템은 앞서 연 listener를 닫는다. |
+| CFG-SCN-17 | CLU-09 | Peer-only 시작이 각 실패 지점에서 중단된다. | 시스템은 시작 중 만든 자원을 반환한다. |
+| CFG-SCN-18 | CLU-14 | `-cluster-restore`만 지정한다. | 시스템은 `-cluster-config`가 필요하다고 거절한다. |
+| CFG-SCN-19 | SEC-10 | `-http-auth-token-file`에 없는 파일이나 공백만 있는 파일을 지정한다. 또는 삭제된 `-http-auth-token`을 지정한다. 또는 유효한 token 파일을 지정한다. | 앞의 세 입력은 시작을 거절한다. 유효한 파일을 쓰면 앞뒤 공백을 제거한 token으로 `/api/v1` Bearer 인증을 요구한다. |
+| CFG-SCN-20 | CLU-09 | Cluster config에서 `mqtt.tls`를 생략하거나 각 필드에 잘못된 값·형식을 넣는다. | Parser는 TLS listener와 `mqtt.tls` 불일치, 누락 필드, 잘못된 `clientAuth`, CA 경로와 `minVersion`을 거절한다. |
+| CFG-SCN-21 | SEC-02 | `mqtt.tls.clientAuth`와 `mtlsIdentities` 조합을 바꾼다. | 시스템은 standalone과 같은 인증 조합만 허용한다. |
+| CFG-SCN-22 | SEC-02 | 3-node cluster에 유효한, 없는, 미등록 client certificate를 제시한다. MQTT 3.1.1과 MQTT 5, TLS 1.2와 1.3, 허용·미등록 Client ID도 확인한다. | 유효한 인증서와 binding은 연결된다. `require`에서 인증서가 없거나 TLS 버전이 낮으면 handshake를 거절한다. 미등록 identity와 Client ID는 MQTT 3.1.1에서 CONNACK `0x05`, MQTT 5에서 CONNACK `0x87`로 거절한다. |
+| CFG-SCN-23 | PERF-08 | Cluster config에서 `runtimeMetrics`를 생략·지정하거나 누락 key, 범위 밖 interval, 빈 경로, `directory`·`auditDirectory`와 겹치는 경로, 알 수 없는 key를 넣는다. | 생략하면 비활성이다. 유효하면 값을 적재한다. 나머지는 거절한다. |
+| CFG-SCN-24 | PERF-08 | 3-node in-process cluster에서 node 1에만 `runtimeMetrics`(`intervalMillis` 50)를 지정한다. | node 1의 출력 파일에 `schemaVersion` 1인 JSON 행이 2개 이상 기록된다. |
+| CFG-SCN-25 | API-09 | `clusterPolicy`를 생략하거나 version, 다섯 한도 값, 필수 key와 unknown key를 바꾼다. | 생략은 허용한다. 유효한 값은 읽고, 0·상한 초과·누락·알 수 없는 key는 거절한다. |
+| CFG-SCN-26 | API-09 | 기본값·local config·committed policy precedence와 higher/lower/same-version reconciliation을 확인한다. | Committed version이 우선한다. Higher local version만 제안하고 불일치 설정은 mismatch로 남긴다. |
+| CFG-SCN-27 | API-09 | Feature가 활성화된 ClusterPolicy를 snapshot과 backup archive로 저장·복원한다. | Restored state에서 같은 version과 MQTT 한도를 읽는다. |
+| CFG-SCN-28 | API-09 | 3-node cluster에서 policy PUT, 재시도·충돌, 신규·기존 연결, node restart와 drift를 확인한다. | 모든 node가 committed version을 적용한다. 기존 연결은 이전 한도를 유지하고 재시작 node는 committed 값과 mismatch를 보고한다. |
+| CFG-SCN-29 | SEC-01 | Cluster config의 `mqtt.tcpListenAddress`에 `0.0.0.0:1884`, `[::]:1884`, `10.0.0.5:1884`, `mqtt.example:1884`를 넣는다. `mqtt.securityConfigFile`을 비운다. 인증 방식별로 credential·certificate 없는 CONNECT를 보낸다. 3-node cluster 평문 TCP에서 password 인증을 확인한다. | 네 주소를 그대로 적재한다. 빈 security config 경로는 거절한다. JWT 설정에서 credential 없는 MQTT 5 CONNECT는 `0x87`로 거절한다. mTLS 전용 설정에서 certificate 없는 CONNECT는 MQTT 3.1.1 `0x05`, MQTT 5 `0x87`로 거절한다. Cluster TCP는 유효한 password만 연결한다. |
+| CFG-SCN-30 | SEC-02, TEN-07, API-02 | Command-line flag, security config, cluster OIDC config와 Management API에 duration 값을 넣는다. Security config의 새 JWT·`tenantLimits` key에는 integer millisecond를 넣고 legacy key, string, 음수와 상한 초과도 시험한다. API request·response에서 새 field 이름을 확인하고 legacy 이름을 보낸다. | Flag는 Go duration 문자열을 유지한다. JSON duration은 `Millis` 접미사와 integer millisecond를 사용한다. Legacy config key와 API field는 거절한다. |
+| CFG-SCN-31 | API-09, TEN-08 | Dynamic cluster node에서 `GET /api/v1/nodes/{nodeId}/config`를 호출한다. Secret이 설정된 경우도 확인한다. | Response는 해당 node의 적용 설정, policy source·version, listener 상태와 non-secret security metadata를 반환한다. `security.identityCounts`는 JWT·password·mTLS identity 수를, `security.acl`은 적용 ACL 규칙을 반환한다. Credential identity 목록, secret 원문·경로·hash는 포함하지 않는다. |
+| CFG-SCN-32 | API-09 | Config 또는 audit node-local route에서 다른 node ID, 0이 붙은 ID와 잘못된 ID를 지정한다. | 다른 node ID는 `409 node_not_local`, canonical decimal이 아닌 ID와 잘못된 ID는 `404 resource_not_found`다. 원격 proxy를 하지 않는다. |
+| CFG-SCN-33 | TEN-08 | `clusterPolicy.tenantQuotas`에 필수·알 수 없는 key, 잘못된 범위, tenant 순서·ID와 profile version을 넣는다. | 유효한 quota는 strict하게 읽는다. 누락·unknown·version field·범위 밖 값·중복 또는 내림차순 tenant는 거절한다. |
+| CFG-SCN-34 | TEN-08 | Policy quota가 비활성 feature에서 commit·snapshot decode에 들어가거나, 활성 상태에서 snapshot count가 틀린다. | Inactive feature의 policy quota와 objectCount 불일치 snapshot은 거절한다. Valid snapshot은 복구한다. |
+| CFG-SCN-35 | TEN-08 | 3-node cluster에서 legacy quota와 policy quota가 다를 때 feature를 활성화하고 policy quota를 commit한다. | 모든 node는 policy quota와 ClusterPolicy version을 적용한다. Quota rejection의 profile version은 policy version이다. |
+| CFG-SCN-36 | TEN-08 | Committed policy에서 `tenantQuotas`를 제거한 다음, legacy quota profile을 유지한다. | Policy update 후 모든 node가 committed legacy `TenantQuota` profile로 돌아간다. |
+| CFG-SCN-37 | TEN-08 | Build member가 `cluster-policy-tenant-quotas`를 광고하지 않을 때 활성화 요청을 보낸다. 이후 모든 member가 광고할 때 activation을 commit한다. | 미지원 member가 있으면 activation을 거절한다. 모두 지원하면 feature가 committed 되고 quota policy 사용이 가능하다. |
+| CFG-SCN-38 | API-09, TEN-08 | Policy quota를 여러 node에 적용한 뒤 node를 재시작하고 snapshot/backup을 복원한다. | 모든 node와 복원된 cluster가 같은 quota value·source·ClusterPolicy version을 반환한다. |
+| CFG-SCN-39 | API-02 | Standalone을 `-tcp-listen`, `-allow-insecure-anonymous-mqtt`, `-http-listen`으로 시작하고 `GET /api/v1/cluster`, `GET /api/v1/nodes/narumq-node-1`, `GET /api/v1/nodes/1`을 호출한다. | `clusterId`는 `narumq-cluster-1`, `leaderNodeId`와 node `nodeId`는 `narumq-node-1`이다. Decimal ID `1`은 `404`다. |
+| CFG-SCN-40 | MQTT-10 | Standalone `-ws-listen 0.0.0.0:1`을 지정한다. | 시스템은 literal loopback이 아닌 주소를 거절한다. |
+| CFG-SCN-41 | MQTT-10, SEC-02 | `-wss-listen`에 certificate/key를 빼거나 TLS client-auth binding을 바꾼다. | TLS 설정 누락과 standalone TLS와 다른 mTLS binding을 거절한다. |
+| CFG-SCN-42 | MQTT-10, SEC-02 | `-allow-insecure-anonymous-mqtt`와 `-ws-listen` 또는 `-wss-listen`을 함께 지정한다. | 시스템은 조합을 거절한다. |
+| CFG-SCN-43 | MQTT-10, MQTT-11 | `-ws-*` 또는 `-wss-*` admission 제한에 대응 listener를 지정하지 않는다. | 시스템은 각 제한을 거절한다. |
+| CFG-SCN-44 | MQTT-10 | Cluster config에서 `mqtt.webSocket` object를 생략한다. | 기존 설정을 계속 읽고 WS/WSS listener를 비활성화한다. |
+| CFG-SCN-45 | MQTT-10, SEC-02 | `mqtt.webSocket.tlsListenAddress`를 설정하고 `mqtt.tls`를 생략한다. | Parser는 TLS profile 누락을 거절한다. |
+| CFG-SCN-46 | MQTT-10, API-09 | Dynamic cluster node의 적용 설정을 조회한다. | Response의 `mqtt.webSocket`은 configured address와 limits를 반환하고, 미설정이면 `null`이다. |
+| CFG-SCN-47 | MQTT-10, SEC-02 | Standalone 프로세스에서 security config, `-ws-listen`, `-wss-listen`, TLS certificate/key를 지정한다. | 두 loopback listener가 연결을 수락하고 context cancellation 뒤 정상 종료한다. |
 
 ## 7. 미결정 사항
 

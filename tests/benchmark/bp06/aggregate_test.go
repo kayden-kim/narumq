@@ -11,6 +11,8 @@ func collectorTestProfile() Profile {
 	return Profile{Seed: 7, PayloadBytes: 32, MaxMessages: 4096, RecoveryTimeoutMillis: 30000, KillOrder: []int{3, 1, 2}, Cycles: 1}
 }
 
+// TestRecoveryRTOUsesEarliestInjectionAndLatestRequiredSuccess verifies RTO computation from the earliest injection to the latest required success.
+// Scenarios: performance-and-verification.md:PRF-SCN-031
 func TestRecoveryRTOUsesEarliestInjectionAndLatestRequiredSuccess(t *testing.T) {
 	base := time.Date(2026, 10, 6, 12, 0, 0, 0, time.UTC)
 	profile := collectorTestProfile()
@@ -40,6 +42,8 @@ func TestRecoveryRTOUsesEarliestInjectionAndLatestRequiredSuccess(t *testing.T) 
 	}
 }
 
+// TestRecoveryRTOUsesDownMarkerFallbackAndRequiresPostInjectionSuccess verifies the down-marker injection fallback and that recovery needs a post-injection success.
+// Scenarios: performance-and-verification.md:PRF-SCN-031
 func TestRecoveryRTOUsesDownMarkerFallbackAndRequiresPostInjectionSuccess(t *testing.T) {
 	base := time.Date(2026, 10, 6, 12, 0, 0, 0, time.UTC)
 	profile := collectorTestProfile()
@@ -50,6 +54,9 @@ func TestRecoveryRTOUsesDownMarkerFallbackAndRequiresPostInjectionSuccess(t *tes
 		t.Fatalf("fallback/missing stream recovery = %#v reasons=%v", got, reasons)
 	}
 }
+
+// TestRecoveryRTOIgnoresAcknowledgementForMessageSentBeforeInjection verifies that a pre-injection message does not count as recovery.
+// Scenarios: performance-and-verification.md:PRF-SCN-031
 func TestRecoveryRTOIgnoresAcknowledgementForMessageSentBeforeInjection(t *testing.T) {
 	base := time.Date(2026, 10, 6, 12, 0, 0, 0, time.UTC)
 	got, reasons := computeRecovery(
@@ -64,6 +71,8 @@ func TestRecoveryRTOIgnoresAcknowledgementForMessageSentBeforeInjection(t *testi
 	}
 }
 
+// TestRecoveryRTOTimeoutInvalidatesRound verifies that a recovery beyond the deadline invalidates the round.
+// Scenarios: performance-and-verification.md:PRF-SCN-031
 func TestRecoveryRTOTimeoutInvalidatesRound(t *testing.T) {
 	base := time.Date(2026, 10, 6, 12, 0, 0, 0, time.UTC)
 	profile := collectorTestProfile()
@@ -145,6 +154,8 @@ func TestCollectorRecordsQoS1DuplicatesAndRejectsQoS2Duplicates(t *testing.T) {
 	}
 }
 
+// TestCollectorExemptsOnlyEMQXCrashWindowGaps verifies the crash-window gap exemption applies only to EMQX.
+// Scenarios: performance-and-verification.md:PRF-SCN-032
 func TestCollectorExemptsOnlyEMQXCrashWindowGaps(t *testing.T) {
 	base := time.Date(2026, 10, 6, 12, 0, 0, 0, time.UTC)
 	makeCollector := func(target string) *collector {
@@ -212,6 +223,8 @@ func TestCollectorExemptsOnlyEMQXCrashWindowGaps(t *testing.T) {
 	}
 }
 
+// TestCollectorExemptsOnlyEMQXCheckpointRedelivery verifies the checkpoint redelivery exemption applies only to EMQX.
+// Scenarios: performance-and-verification.md:PRF-SCN-032
 func TestCollectorExemptsOnlyEMQXCheckpointRedelivery(t *testing.T) {
 	base := time.Date(2026, 10, 6, 12, 0, 0, 0, time.UTC)
 	tests := []struct {
@@ -293,6 +306,8 @@ func findStreamSummary(t *testing.T, summary workloadSummary, name string) strea
 	return streamSummary{}
 }
 
+// TestRecoveryMissingReconnectAndInjectionInvalidateWorkload verifies that a missing reconnect or injection invalidates the workload.
+// Scenarios: performance-and-verification.md:PRF-SCN-030, performance-and-verification.md:PRF-SCN-031
 func TestRecoveryMissingReconnectAndInjectionInvalidateWorkload(t *testing.T) {
 	profile := collectorTestProfile()
 	col := newCollector("narumq", profile)

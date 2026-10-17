@@ -26,6 +26,8 @@ func TestSmokeProfileIdentityAndDigest(t *testing.T) {
 	}
 }
 
+// TestDecodeProfileRejectsUnknownMissingNullAndTrailing verifies strict profile decoding.
+// Scenarios: performance-and-verification.md:PRF-SCN-028
 func TestDecodeProfileRejectsUnknownMissingNullAndTrailing(t *testing.T) {
 	data, err := os.ReadFile("testdata/smoke.json")
 	if err != nil {
@@ -60,6 +62,8 @@ func TestDecodeProfileRejectsUnknownMissingNullAndTrailing(t *testing.T) {
 	}
 }
 
+// TestProfileRejectsUnsafeRecoveryCombinations verifies rejection of unsafe timeout, expiry and capacity combinations.
+// Scenarios: performance-and-verification.md:PRF-SCN-028
 func TestProfileRejectsUnsafeRecoveryCombinations(t *testing.T) {
 	cases := []struct {
 		name   string
@@ -84,6 +88,8 @@ func TestProfileRejectsUnsafeRecoveryCombinations(t *testing.T) {
 	}
 }
 
+// TestProfileAcceptsBoundaryClientCapacity verifies the capacity boundary is accepted.
+// Scenarios: performance-and-verification.md:PRF-SCN-028
 func TestProfileAcceptsBoundaryClientCapacity(t *testing.T) {
 	p := loadSmoke(t)
 	p.IdleClients = 11

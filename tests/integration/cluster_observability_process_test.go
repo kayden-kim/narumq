@@ -9,6 +9,7 @@ import (
 )
 
 // Traceability: UI-01; docs/specs/management-api-and-observability.md §7.2.
+// Scenarios: management-api-and-observability.md:MGT-SCN-022, management-api-and-observability.md:MGT-SCN-023, management-api-and-observability.md:MGT-SCN-024
 func TestDynamicClusterObservabilityProcessAcceptance(t *testing.T) {
 	t.Parallel()
 

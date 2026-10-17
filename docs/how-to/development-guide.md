@@ -5,9 +5,8 @@
 | 항목 | 값 |
 | --- | --- |
 | 대상 독자 | NaruMQ 브로커 코어와 어댑터를 개발하고 수정·기여하려는 백엔드 소프트웨어 엔지니어 |
-| 검증 상태 | Draft; Windows/amd64, Go 1.26.5에서 `GOMAXPROCS=4 go run ./tools/verify local` 통과. 수동 로컬 broker smoke는 미실행 |
-| 검증 환경·버전 | Windows/amd64, Go 1.26.5 |
-| 최종 검증일 | 2026-09-27 |
+| 검증 상태 | Draft; 전체 local coverage는 실패 상태이며 수동 로컬 broker smoke는 미실행. 과거 실행 결과는 §4의 검증 기록을 따른다. |
+| 절차 환경·버전 | Windows/amd64, Go 1.26.5 |
 | 관련 기준 문서 | [Go 코딩 컨벤션](../conventions/go-coding-conventions.md), [Project structure의 코드 지도](../architectures/project-structure.md), [Broker core architecture](../architectures/broker-core.md), [Performance와 verification 스펙](../specs/performance-and-verification.md) |
 
 ## 1. 대상과 영향
@@ -19,8 +18,7 @@
   - **어댑터 계층 (`internal/adapters/`)**: TCP/TLS 소켓, 관리 HTTP, Raft 합의, 인메모리/디스크 스토리지 등의 구체 I/O 구현체.
   - **조립 루트 (`cmd/narumq/`)**: CLI 옵션 파싱, 어댑터 생성 및 유스케이스 의존성 주입(Composition Root).
   - **검증 도구 (`tools/verify/`)**: 아키텍처, 커버리지, 규격 추적성, 뮤테이션 등을 검증하는 독립 실행 도구.
-- **현재 구현 상태 및 검증 경계:**
-  - 현재 소스 트리는 **Phase 1 단일 노드 보안 및 테넌트 격리 슬라이스**가 구현·검증되어 있으며, 분산 클러스터 및 세션 복제는 **Phase 2 진행 중(In-progress)** 상태다.
+- **실행 모드의 검증 경계:**
   - 개발용 standalone 리스너(`cmd/narumq/main.go`)는 인메모리 세션/큐/retained 저장소를 사용하며 `qos0_only`로 동작한다. 영속적 세션 복구나 분산 HA 보장은 standalone 단일 프로세스의 범위가 아니다.
 - 개발 환경의 안전성: 개발 및 검증 작업은 로컬 워크스페이스에서 격리되어 수행되므로 운영 시스템에 직접적인 영향을 주지 않는다.
 
@@ -100,9 +98,7 @@ docker buildx build --platform linux/arm64 --provenance=false \
 
 #### 격리된 EKS 롤아웃 컨트롤러 인수 테스트 번들 (준비 전용)
 
-이는 합성 fixture 전용 검증이며 정식 릴리스가 아닙니다. 격리 fixture 담당자가 명시적으로 인계하고 CLU-14 증거를 제공하기 전에는 어느 이미지도 push하거나 배포하지 마세요. `narumq-eks`를 쓰기 대상으로 절대 사용하지 마세요. 기존 `narumq` ECR 저장소에서 UTC 타임스탬프와 임의 접미사가 포함된 run ID로 서로 다른 작업 전용 태그를 사용하세요:
-
-2026-10-15 재개 실행에서는 사용자가 격리 EKS 시험을 다시 승인했다. 새 전용 state·VPC의 fixture에서 아래 절차의 ARM64 digest·identity 경계를 적용했다. Startup 준비 조건의 순환 대기와 실패 drain 취소 후 재시작 결함을 찾아 수정했고 실제 EKS에서 검증했다. 이 실행의 수용 범위는 [Drain §10](../specs/drain-and-rolling-update.md#10-broker-drain-수용-시험-매핑)과 [Cluster §11.9·§11.20](../specs/cluster-session-and-delivery.md#119-offline-queue-replication과-backup-v3-수용-매핑)을 따른다. 합성 fixture는 증거 보존 뒤 삭제했으며 이 기록이 다음 인프라 실행의 무제한 승인을 뜻하지 않는다.
+이는 합성 fixture 전용 절차이며 정식 릴리스가 아니다. 별도 실행 승인과 fixture 담당자의 인계 없이 image를 push하거나 배포하지 않는다. 기존 시험환경은 폐기했으므로 재시험에는 새 격리 fixture가 필요하다. 과거 실행은 다음 인프라 실행의 승인이 아니며, 수용 범위는 [Drain 검증 기록](../verification/drain-and-rolling-update.md)을 따른다. 기존 공유 image는 보존하고, `narumq` ECR 저장소에 UTC 타임스탬프와 임의 접미사가 포함된 작업 전용 run ID 태그를 사용한다.
 
 컨트롤러: `rollout-controller-dep11-sec11-${RUN_ID}`.
 브로커 대상: `rollout-target-0.0.1-${RUN_ID}`.
@@ -220,9 +216,9 @@ kubectl --kubeconfig $FixtureKubeconfig --context $FixtureContext -n argocd set 
 kubectl --kubeconfig $FixtureKubeconfig --context $FixtureContext -n argocd rollout status statefulset/argocd-application-controller --timeout=180s
 ```
 
-실제 Git sync가 `Synced`이고 비교 오류가 없는 상태에서 리소스와 Application의 health를 함께 확인한다. 초기 비교가 repo-server 준비 전 실패했다면 준비 완료 뒤 해당 Application에 `argocd.argoproj.io/refresh=hard` annotation을 설정한다. `Healthy` 하나만 보고 통과로 판정하지 않는다. 비교에 실패해 대상 리소스가 없는 초기 Application도 `Healthy`로 관찰됐기 때문이다. 상태·전이별 기대값과 실행 증거는 [Drain §10의 Argo CD 수용 기록](../specs/drain-and-rolling-update.md#argo-cd-health-소비자-수용-2026-10-15)을 따른다.
+실제 Git sync가 `Synced`이고 비교 오류가 없는 상태에서 리소스와 Application의 health를 함께 확인한다. Repo-server 준비 전 비교가 실패했다면 준비 완료 뒤 해당 Application에 `argocd.argoproj.io/refresh=hard` annotation을 설정한다. 비교 실패로 대상 리소스가 없어도 `Healthy`로 보일 수 있으므로 health만으로 통과를 판정하지 않는다. 상태·전이별 기대값과 실행 증거는 [Argo CD 수용 기록](../verification/drain-and-rolling-update.md#argo-cd-health-소비자-수용-2026-10-15)을 따른다.
 
-Health 시험은 broker 교체 수용과 별개다. 시험 후 전용 CR·Application·Argo CD namespace와 새 AWS fixture 자원을 정리한다. 제품 코드의 구조와 호출 경로는 바꾸지 않았으므로 코드 지도와 모듈 설계는 갱신하지 않았다.
+Health 시험은 broker 교체 수용과 별개다. 시험 후 전용 CR·Application·Argo CD namespace와 새 AWS fixture 자원을 정리한다.
 
 #### 주요 코딩 컨벤션 요약
 - **식별자 명명:** 역할에 맞는 접두사와 접미사를 붙인다.
@@ -270,7 +266,7 @@ Remove-Item Env:NARUMQ_BACKUP_SMOKE_IMAGE
 
 이 도구는 준비된 격리 합성 fixture를 관찰한다. EKS나 인증 입력을 만들지 않는다. `monitor`는 인프라를 변경하지 않지만 합성 MQTT QoS 1 메시지는 발행한다. `fault`는 실제 EC2를 비정상 종료하므로 운영 환경에서 실행하지 않는다.
 
-일반 회귀는 Python 3만 있으면 된다. 저장소 루트에서 `python -B tests/test_eks_worker_recovery.py -v`로 실행한다. AWS·Docker·Paho는 필요 없다. CI는 이 명령을 별도 단계로 실행한다. Go `local`/`ci` 명령 자체에는 Python 시험이 포함되지 않는다.
+일반 회귀는 Python 3만 있으면 된다. 저장소 루트에서 `python -B tests/test_eks_worker_recovery.py -v`로 실행한다. AWS·Docker·Paho는 필요 없다. CI는 `tests/run_scenario_unittest.py`로 이 파일을 다른 Python 회귀 파일과 함께 실행하고 method별 JSONL 결과를 기록한다. Go `local`/`ci` 명령 자체에는 Python 시험이 포함되지 않는다.
 
 실제 broker를 관찰하려면 전용 임시 venv에 `paho-mqtt==2.1.0`을 설치한다. `<private-directory>`에는 `admin.token`과 `mqtt.password`를 둔다. 고정 합성 identity는 username `acceptance-device`, client ID `ebs-worker-publisher`다. ACL은 `acceptance/<run-id>/continuity` publish를 허용해야 한다. 다른 시험이 같은 client ID를 사용하고 있으면 먼저 끝낸다. 비밀 원문을 명령줄이나 검증 아티팩트에 넣지 않는다.
 
@@ -312,7 +308,7 @@ Oracle은 고정 client ID `ebs-worker-subscriber`·`ebs-worker-publisher`·`ebs
 <venv-python> -B tests/chaos/eks-worker-recovery/payload_oracle.py verify --private <private-directory> --run-id <run-id> --output <result-directory> --target-port <복구된-대상-tunnel-port>
 ```
 
-`verify`는 다시 발행하지 않는다. `sessionPresent=true`, 오프라인 payload hash 3개와 retained hash가 같을 때만 통과한다. 실행 후 합성 StatefulSet·PVC·snapshot·추가 node group과 전용 fixture를 정리한다. PVC를 먼저 삭제해 EBS 삭제를 확인한 뒤 Terraform을 실행한다. 임시 입력은 암호화 보존 후 제거한다. 실제 실행 결과와 남은 gate는 [Drain spec의 EKS 재시험 기록](../specs/drain-and-rolling-update.md#생존-pod-고정-observer의-eks-재시험-2026-10-15)을 따른다.
+`verify`는 다시 발행하지 않는다. `sessionPresent=true`, 오프라인 payload hash 3개와 retained hash가 같을 때만 통과한다. 실행 후 합성 StatefulSet·PVC·snapshot·추가 node group과 전용 fixture를 정리한다. PVC를 먼저 삭제해 EBS 삭제를 확인한 뒤 Terraform을 실행한다. 임시 입력은 암호화 보존 후 제거한다. 실제 실행 결과와 남은 gate는 [Drain spec의 EKS 재시험 기록](../verification/drain-and-rolling-update.md#생존-pod-고정-observer의-eks-재시험-2026-10-15)을 따른다.
 
 `observer-endpoint.json`과 최종 summary의 `observerEndpoint`는 실제로 확인한 생존 Pod UID·worker·instance와 두 port를 기록한다. Tunnel은 service나 LB를 선택하지 않는다. 끊어진 tunnel을 다시 열거나 다른 Pod로 전환하지 않는다. 관찰·MQTT가 끝난 뒤 tunnel process와 출력 worker도 종료한다. `monitor`의 외부 tunnel 관찰과 `fault`의 도구 소유 tunnel을 혼용하지 않는다.
 
@@ -352,19 +348,39 @@ go test ./internal/adapters/tcp -run=^$ -fuzz=^FuzzConnectionInput$ -fuzztime=10
 go run ./tools/verify local
 ```
 
-이 명령은 먼저 `gofmt`를 검사하고 `branch-instrument`를 실행한다. 그 뒤 아래 10개 command를 병렬 실행한다. 모두 통과하면 coverage policy를 평가한다.
+이 명령은 먼저 `gofmt`를 검사하고 `branch-instrument`를 실행한다. 그 뒤 아래 11개 command를 병렬 실행한다. 모두 통과하면 시나리오 실행 검사를 하고, 이어서 coverage policy를 평가한다.
 
-1. **Preflight (3개 command):** `go vet ./...`, `go run ./tools/verify traceability`, `go run ./tools/verify architecture`.
-2. **전체 package test와 atomic coverage profile:** 전체 테스트를 실행해 `.artifacts/verification/coverage.out`을 만든다.
+1. **Preflight (4개 command):** `go vet ./...`, `go run ./tools/verify traceability`, `go run ./tools/verify scenarios`, `go run ./tools/verify architecture`.
+2. **전체 package test와 atomic coverage profile:** 전체 테스트를 `go test -json`으로 실행해 `.artifacts/verification/coverage.out`을 만든다. 테스트 이벤트(stdout)는 `.artifacts/verification/go-test.json`에 저장되고 stderr는 콘솔에 나온다. 병렬 검사가 실패하면 이 파일에서 실패한 테스트와 출력을 골라 콘솔에 보여 준다.
 3. **Race suite:** `go test -race ./cmd/... ./internal/... -count=1`.
 4. **Fuzz campaign (5개 command):** MQTT decoder·codec round-trip, topic matching, session lifecycle, TCP connection input을 고정 횟수로 검사한다.
 5. **Coverage policy:** 병렬 검사가 성공한 뒤 line 85%, function 90% floor/ratchet를 검사한다.
 
-Local과 CI는 각각 총 12개 verifier command를 실행하며 mutation은 포함하지 않는다. Local coverage는 `-parallel=8`, CI coverage는 유효 `GOMAXPROCS`를 쓴다.
+Local과 CI는 각각 총 14개 verifier command를 실행하며 mutation은 포함하지 않는다. 14개는 `branch-instrument`, 병렬 11개, 실행 검사 `go run ./tools/verify scenarios --go-test-json .artifacts/verification/go-test.json --require-executed`, coverage policy다. Local coverage는 `-parallel=8`, CI coverage는 유효 `GOMAXPROCS`를 쓴다.
 
 Mutation을 실행하려면 `go run ./tools/verify mutation`을 사용한다. 이 명령은 다섯 critical package를 Gremlins worker 1개씩 실행하고, CPU 예산에 맞춰 package 작업을 batch로 나눈다. Coverage, race, fuzz gate는 다시 실행하지 않는다.
 
 기대 결과: 마지막에 `local: PASS` 메시지가 출력되고 종료 코드 0으로 완료된다.
+
+### 시나리오 커버리지와 결과 보고서 만들기
+
+스펙 시나리오와 테스트의 연결은 [테스트 컨벤션](../conventions/test-conventions.md)의 메타 정보로 확인한다. `local`·`ci` 게이트는 두 검사를 한다. preflight의 연결 검사(`scenarios`)는 스펙 표와 테스트 메타 정보만 대조하며 `오류`, `미연결`이 있으면 종료 코드 1로 끝난다. 병렬 검사 뒤의 실행 검사(`scenarios --go-test-json ... --require-executed`)는 `go-test.json`에 나온 패키지의 연결 테스트가 모두 통과했는지 확인하며, 건너뛰었거나 결과가 없으면 종료 코드 1로 끝난다. Python·EKS처럼 게이트 밖인 시나리오는 `미실행 (게이트 밖)`으로 보고서에 남고 게이트를 멈추지 않는다. 게이트와 같은 검사를 직접 하려면 아래 명령을 저장소 루트에서 실행한다.
+
+```sh
+go test -json -count=1 ./... > .artifacts/verification/go-test.json
+go run ./tools/verify scenarios --go-test-json .artifacts/verification/go-test.json --require-executed
+```
+
+기대 결과: `.artifacts/verification/scenarios/report.md`와 `report.json`이 만들어지고 `scenarios: PASS (...)`가 출력된다. 보고서의 상태 정의와 결과 파일 형식, CI 아티팩트 위치는 테스트 컨벤션을 따른다. Windows PowerShell 5의 `>`는 UTF-16 파일을 만든다. bash, PowerShell 7 또는 `cmd /c`를 쓴다.
+
+CI는 Go 게이트 뒤에 Python unittest 결과도 합친다. Go JSON이 없으면 Python JSONL만으로 보고서를 갱신하고, 둘 다 없으면 보고 단계가 실패한다. Python runner는 시작할 때 출력 JSONL을 초기화하므로 실행마다 별도 파일명을 쓰면 이전 증거를 보존할 수 있다. 로컬에서 같은 결과 기록 방식을 확인하려면 저장소 루트의 bash에서 다음 명령을 실행한다.
+
+```sh
+PYTHONDONTWRITEBYTECODE=1 NARUMQ_SCENARIO_RESULTS=.artifacts/verification/scenarios/python-ci-results.jsonl python tests/run_scenario_unittest.py tests/test_backup_s3.py tests/test_eks_worker_recovery.py tests/test_eks_capacity_controller.py tests/test_scenario_results.py tests/test_run_scenario_unittest.py
+go run ./tools/verify scenarios --go-test-json .artifacts/verification/go-test.json --results .artifacts/verification/scenarios/python-ci-results.jsonl --require-executed
+```
+
+첫 명령의 성공은 Python unittest 성공이다. 두 번째 명령은 미연결과 실행 범위 안의 건너뜀도 거절한다. 라이브 EKS 시나리오의 통과로 해석하지 않는다.
 
 ### Markdown 링크를 수정할 때
 
@@ -390,18 +406,21 @@ go run ./cmd/narumq -tcp-listen 127.0.0.1:1883 -http-listen 127.0.0.1:8080 -allo
 
 ## 4. 검증
 
-개발자가 수행한 작업의 완료 여부는 다음 기준표로 판정한다. 2026-10-09, Windows/amd64, Go 1.26.5에서 새 80% overall branch 기준으로 Run C를 실행해 `local: PASS`를 확인했다. Branch coverage는 schema 2 report의 `measured`로 기록한다. Overall·core branch ratchet에는 `branchTolerance=0.20`을 적용한다. Core branch는 90%, 변경 코드 line/function/branch diff coverage는 각각 90%다. Diff 기준 변경은 [ADR-0044](../decisions/ADR-0044-diff-coverage-floor-90.md)를 따른다. Run C의 `requirementShortfalls`는 비었다. Run C 당시 P0 gate는 58/81 요구사항 연결과 예외 23개를 보고했으며, 예외가 남아 TEST-10은 미검증이다. CI 필수 status와 TEST-07 diff CI 증거도 남아 있다. 측정값과 경계 시험은 [성능 스펙 §8.4](../specs/performance-and-verification.md#84-전체-branch-floor-수용-증거)에 있다. Run C에서는 mutation과 수동 로컬 broker smoke를 실행하지 않았다. 이후 실행한 mutation 및 로컬 CI runner 결과는 당시 mutation이 자동 gate에 포함된 정책의 historical evidence다([성능 스펙 §8.7](../specs/performance-and-verification.md#87-mutation-gate-범위-확장-수용-증거)). 현재 mutation은 `go run ./tools/verify mutation`으로 별도 실행하며 결과는 [§8.8](../specs/performance-and-verification.md#88-수동-mutation-검증-수용-증거)에 기록한다. 원격 필수 CI status를 확인한 결과는 아니다.
+완료 여부는 아래 성공 조건으로 판정하고, 실제 대상 버전·환경·명령·결과를 [검증 기록 규칙](../AGENTS.md#검증-기록)에 따라 남긴다. 과거 통과는 현재 코드의 통과가 아니다. 전체 local coverage는 실패 상태이며, 현재 시나리오 연결·실행 결과는 [시나리오 보고서](../../.artifacts/verification/scenarios/report.md)를 확인한다.
 
-| 관찰 대상 | 성공 조건 | 확인 방법 | 실제 결과 | 실행 증거 위치 |
-| --- | --- | --- | --- | --- |
-| 단위 테스트 및 레이스 | 전체 테스트 PASS 및 Data Race 0건 | `go run ./tools/verify local` | Run A·B·C 통과; 전체 package test와 `go test -race ./cmd/... ./internal/... -count=1` 단계 완료. 앞선 실패 시도는 성능 스펙에 기록 | 콘솔 출력과 성능 스펙 §8.2 |
-| 아키텍처 규칙 | 계층 간 허용되지 않은 import 0건 | `go run ./tools/verify architecture` | 통과; `architecture: PASS` | 콘솔 출력 |
-| 규격 추적성 | PRD의 모든 P0를 test 함수 또는 유효한 예외에 연결하고 stale 예외 0건 | `go run ./tools/verify traceability`; GitHub Actions `verify` | 2026-10-11 원격 main gate PASS, P0 70/81 연결, 예외 11개. 현재 작업 트리에서 `go run ./tools/verify traceability`도 PASS했으며 P0 71/81 연결, 예외 10개다. TEST-10은 merge API 거절을 확인했으나 보류된 DEP P0 예외 10개가 남아 미검증이다. Accepted ADR-0042의 결정 기록 59/81·22개는 당시 기록으로 유지한다. | [성능 스펙 §8.9](../specs/performance-and-verification.md#89-github-actions-원격-ci와-required-check-증거), [ADR-0042](../decisions/ADR-0042-p0-requirement-traceability-gate.md) |
-| Markdown 링크 | 지정 범위의 로컬 링크 대상과 제목 앵커가 모두 유효함 | `go run ./tools/verify markdown-links` | 2026-10-11, 현재 작업 트리, Windows/amd64, Go 1.26.5: `markdown-links: PASS (files 154, local links 2234)`; 오류 0건 | 이 행의 실행 기록 |
-| 코드 커버리지 | Line/function 기준, overall branch 80%, core branch 90%, ratchet 허용폭, line/function/branch diff 90% 충족 | `go run ./tools/verify local`; `ci --base <merge-base>`는 별도 CI 실행 | Run C 82.84%, `requirementShortfalls` 비었음; 당시 overall ratchet 80.03%와 core/diff 기준 유지. +0.21%p 경계 거절과 +0.19%p 경계 통과도 확인. 현재 diff 기준 변경과 실행 결과는 성능 스펙 §8.5 참조 | `.artifacts/verification/coverage-summary-floor-c.json`, `coverage-boundary-plus-*.json`, 성능 스펙 §8.4·§8.5 |
-| 뮤테이션 테스트 | Delivery·MQTT·NodeDrain·Security·Session 각각 efficacy·mutant coverage 80% 이상 | `go run ./tools/verify mutation` | 2026-10-11 수동 실행 PASS, 1464.90초. 다섯 package 모두 기준 이상. Timed out 6개와 Not covered 6개는 kill로 세지 않음. 세부 점수는 [성능 스펙 §8.8](../specs/performance-and-verification.md#88-수동-mutation-검증-수용-증거) | `.artifacts/verification/mutation-*.json` |
-| CI 자동 검증 | PR은 최신 `main`을 반영하고 필수 `verify` check가 성공해야 merge할 수 있음 | `go run ./tools/verify ci --base <merge-base>`; GitHub Actions `verify` | 2026-10-11 local Linux gate PASS, 696.35초. main commit `03c84f40c345195f0a323c5af2e623e9ebbbc998`의 [원격 run 38112386284](https://github.com/kayden-kim/narumq/actions/runs/38112386284)는 `verify: success`, 5분 49초였다. Ubuntu 24.04와 Node 24 action v7로 바꾼 문서 PR [#2](https://github.com/kayden-kim/narumq/pull/2)도 [run 38113714789](https://github.com/kayden-kim/narumq/actions/runs/38113714789)에서 PASS했다. Artifact는 30일 보관한다. [ADR-0056](../decisions/ADR-0056-branch-protection-for-admins.md)에 따라 관리자 보호(`enforce_admins=true`)를 적용했고, 네 probe PR에서 관리자 merge API 거절(HTTP 405)을 확인했다([성능 §8.9](../specs/performance-and-verification.md#89-github-actions-원격-ci와-required-check-증거)). 보류된 DEP P0 예외 10개가 남아 TEST-10은 미검증이다. |
-| 종합 로컬 검증 | 로컬 검증 gate 전체 완료 및 종료 코드 0 | `go run ./tools/verify local` | 새 80% policy의 Run C에서 `coverage: PASS`, `local: PASS`. 추가 실행(2026-10-10, 현재 작업 트리, Windows/amd64, Go 1.26.5): `GOMAXPROCS=4 go run ./tools/verify local`가 184.56초 뒤 `coverage: PASS`, `local: PASS`를 출력했다. Traceability는 P0 69/81 연결, 예외 12개를 보고했다. CI 필수 status 통과를 뜻하지 않음 | 성능 스펙 §8.4 (Run C 기록); 이 행(2026-10-10 추가 실행) |
+Branch coverage는 schema 2 report의 `measured`로 기록한다. Overall·core branch ratchet에는 `branchTolerance=0.20`을 적용한다. Core branch는 90%, 변경 코드 line/function/branch diff coverage는 각각 90%다. Diff 기준은 [ADR-0044](../decisions/ADR-0044-diff-coverage-floor-90.md)를 따른다.
+
+| 관찰 대상 | 성공 조건 | 확인 명령·방법 | 관련 검증 기록 |
+| --- | --- | --- | --- |
+| 단위 테스트 및 레이스 | 전체 테스트 통과 및 Data Race 0건 | `go run ./tools/verify local` | [성능 검증 기록](../verification/performance-and-verification.md) |
+| 아키텍처 규칙 | 계층 간 허용되지 않은 import 0건 | `go run ./tools/verify architecture` | 실행 콘솔 출력 |
+| 규격 추적성 | PRD의 모든 P0를 test 함수 또는 유효한 예외에 연결하고 stale 예외 0건. 예외가 있으면 제품 전체 수용 완료가 아니다. | `go run ./tools/verify traceability` | [P0 gate 결정](../decisions/ADR-0042-p0-requirement-traceability-gate.md) |
+| 시나리오 연결·실행 | 오류·미연결이 없고 실행 범위 안의 연결 테스트가 모두 통과함 | §3의 `scenarios --require-executed` 명령 | 시나리오 보고서 |
+| Markdown 링크 | 지정 범위의 로컬 링크 대상과 제목 앵커가 모두 유효함 | `go run ./tools/verify markdown-links` | 실행 콘솔 출력 |
+| 코드 커버리지 | Line/function 기준, overall branch 80%, core branch 90%, ratchet 허용폭, line/function/branch diff 90% 충족 | `go run ./tools/verify local`; `go run ./tools/verify ci --base <merge-base>` | [Coverage 정책 수용 기록](../verification/performance-and-verification.md#84-전체-branch-floor-수용-증거) |
+| 뮤테이션 테스트 | Delivery·MQTT·NodeDrain·Security·Session 각각 efficacy·mutant coverage 80% 이상 | `go run ./tools/verify mutation` | [수동 mutation 검증 기록](../verification/performance-and-verification.md#88-수동-mutation-검증-수용-증거) |
+| CI 자동 검증 | PR이 최신 `main`을 반영하고 필수 `verify` check가 성공해야 merge할 수 있음 | GitHub Actions `verify`; `go run ./tools/verify ci --base <merge-base>` | [원격 CI·required check 기록](../verification/performance-and-verification.md#89-github-actions-원격-ci와-required-check-증거) |
+| 종합 로컬 검증 | 로컬 검증 gate 전체 완료 및 종료 코드 0 | `go run ./tools/verify local` | 해당 실행의 콘솔 출력·coverage report |
 
 ## 5. 중단 조건 및 빈발 문제 해결
 

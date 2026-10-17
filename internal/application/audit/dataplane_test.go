@@ -97,6 +97,7 @@ func validDataPlaneDenial(action portsaudit.DataPlaneAction) portsaudit.DataPlan
 }
 
 // Traceability: SEC-11/NFR-17; docs/specs/tenancy-and-security.md §8.
+// Scenarios: tenancy-and-security.md:SEC-SCN-048
 func TestDataPlaneRecorderLimitsEventsPerSecond(t *testing.T) {
 	clock := &auditTestClock{now: time.Unix(100, 0).UTC()}
 	publisher := &dataPlaneTestPublisher{}
@@ -121,6 +122,7 @@ func TestDataPlaneRecorderLimitsEventsPerSecond(t *testing.T) {
 }
 
 // Traceability: SEC-11/NFR-17; docs/specs/tenancy-and-security.md §8.
+// Scenarios: tenancy-and-security.md:SEC-SCN-048
 func TestDataPlaneRecorderDropsWhenQueueIsFullAndDrainsOnClose(t *testing.T) {
 	clock := &auditTestClock{now: time.Unix(100, 0).UTC()}
 	publisher := &dataPlaneTestPublisher{entered: make(chan struct{}, 1), release: make(chan struct{})}
@@ -167,6 +169,7 @@ func TestDataPlaneRecorderDropsWhenQueueIsFullAndDrainsOnClose(t *testing.T) {
 }
 
 // Traceability: SEC-11/NFR-17; docs/specs/tenancy-and-security.md §8.
+// Scenarios: tenancy-and-security.md:SEC-SCN-048
 func TestDataPlaneRecorderDropsQueuedEventsWhenClosedBeforeStart(t *testing.T) {
 	clock := &auditTestClock{now: time.Unix(100, 0).UTC()}
 	publisher := &dataPlaneTestPublisher{}
@@ -188,6 +191,7 @@ func TestDataPlaneRecorderDropsQueuedEventsWhenClosedBeforeStart(t *testing.T) {
 }
 
 // Traceability: SEC-11/NFR-17; docs/specs/tenancy-and-security.md §8.
+// Scenarios: tenancy-and-security.md:SEC-SCN-048
 func TestDataPlaneRecorderPublishFailureMarksPublisherUnavailable(t *testing.T) {
 	clock := &auditTestClock{now: time.Unix(100, 0).UTC()}
 	publisher := &dataPlaneTestPublisher{publishErr: errors.New("disk sync failed")}
@@ -202,6 +206,7 @@ func TestDataPlaneRecorderPublishFailureMarksPublisherUnavailable(t *testing.T) 
 }
 
 // Traceability: SEC-11/NFR-17; docs/specs/tenancy-and-security.md §8.
+// Scenarios: tenancy-and-security.md:SEC-SCN-047
 func TestDataPlaneRecorderMapsAndTruncatesDenialFields(t *testing.T) {
 	clock := &auditTestClock{now: time.Unix(100, 0).UTC()}
 	publisher := &dataPlaneTestPublisher{}
@@ -263,6 +268,7 @@ func TestDataPlaneRecorderMapsAndTruncatesDenialFields(t *testing.T) {
 }
 
 // Traceability: SEC-11/NFR-17; docs/specs/tenancy-and-security.md §8.
+// Scenarios: tenancy-and-security.md:SEC-SCN-048
 func TestDataPlaneRecorderRejectsInvalidReason(t *testing.T) {
 	clock := &auditTestClock{now: time.Unix(100, 0).UTC()}
 	publisher := &dataPlaneTestPublisher{}

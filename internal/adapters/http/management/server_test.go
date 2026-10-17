@@ -108,6 +108,7 @@ func (m *mockHealthChecker) CheckDrain(ctx context.Context) (ports.HealthStatus,
 	return m.drainStatus, m.drainReason
 }
 
+// Scenarios: management-api-and-observability.md:MGT-SCN-020
 func TestHealthEndpoints(t *testing.T) {
 	reason := "initializing consensus"
 	checker := &mockHealthChecker{
@@ -183,6 +184,7 @@ func TestHealthEndpoints(t *testing.T) {
 }
 
 // Traceability: API-01; docs/specs/management-api-and-observability.md §9.
+// Scenarios: management-api-and-observability.md:MGT-SCN-025
 func TestMetricsEndpoint(t *testing.T) {
 	reg := adaptersmetrics.NewRegistry()
 	reg.ConnectionOpened(portsmetrics.ProtocolMQTT50, "tcp")
@@ -318,6 +320,7 @@ func TestManagementV1Endpoints(t *testing.T) {
 	}
 }
 
+// Scenarios: management-api-and-observability.md:MGT-SCN-003
 func TestAuthAndRBAC(t *testing.T) {
 	provider := &mockStateProvider{}
 	checker := &mockHealthChecker{liveStatus: ports.HealthStatusUp}
@@ -373,6 +376,7 @@ func TestAuthAndRBAC(t *testing.T) {
 	}
 }
 
+// Scenarios: management-api-and-observability.md:MGT-SCN-003
 func TestRBACReturnsForbiddenForInsufficientRole(t *testing.T) {
 	handler := NewRouter(ServerConfig{
 		APIKeys: []APIKeyCredential{{ID: "test", Key: "read-only-token", Roles: []Role{RoleReadOnly}}},
@@ -387,6 +391,7 @@ func TestRBACReturnsForbiddenForInsufficientRole(t *testing.T) {
 	}
 }
 
+// Scenarios: management-api-and-observability.md:MGT-SCN-002
 func TestManagementCollectionEndpoints(t *testing.T) {
 	leader := "node-1"
 	provider := &mockStateProvider{
