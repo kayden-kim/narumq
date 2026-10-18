@@ -696,3 +696,60 @@ go run ./tools/verify scenarios --go-test-json ROOT/remote-artifact/go-test.json
 새 단위 시험 `TestClusterMembershipProcessPortPoolStaysBelowDynamicRange`와 `TestClusterMembershipProcessAddressesAreDistinctLoopbackPortsInsidePool`은 위 전체 실행에 포함된다.
 
 이 실행에 쓴 Windows host의 동적 포트 범위는 `netsh int ipv4 show dynamicport tcp` 기준 1024부터 64511개다. 새 후보 범위가 이 범위 안에 있으므로 이 host의 Windows 통과는 수정 효과의 증거가 아니라 회귀 확인이다. 수정 효과는 Linux 재현으로만 확인했다. 수정 뒤 원격 CI 실행은 아직 없다.
+
+## 15. CI gate 논리 검증 한정 (2026-10-18)
+
+대상 시나리오: SEC-SCN-030, PRF-SCN-115, PRF-SCN-116
+
+결정은 [ADR-0064](../decisions/ADR-0064-ci-gate-logic-only.md)다. 이 절은 점검, 변경, 실행 결과를 기록한다. 이 변경은 AWS·Docker를 쓰지 않았다.
+
+### 15.1 계기
+
+[PR #9 실행 39077367789](https://github.com/kayden-kim/narumq/actions/runs/39077367789)에서 `TestDynamicClusterTenantNoisyNeighborProcessAcceptance`가 `TEN-09 victim p99 under noisy load = 16.932534ms, baseline p99 = 6.244284ms, ratio 2.712 > 1.5`로 실패했다. 원문은 `.artifacts/verification/remote-ci-20261018-39077367789/full-job.log` 379행이다. 이 실행은 §14의 port 수정을 담은 head `670046f3e7d4b093af8dd45f2e4a2a7d71f94825`에서 돌았다. 실패는 port 오류가 아니다. 같은 실행의 다른 시험은 통과했고 시나리오 보고서는 통과 523, 게이트 밖 111, 실패 1이었다. TEN-09는 serial 구간에서 혼자 36.37초 동안 돌았다.
+
+같은 시험의 앞선 원격 실행 비율은 0.903~1.485였고 2026-10-15 로컬 gate에서는 1.517로 실패했다. noisy tenant가 아무것도 보내지 않는 대조군도 WSL2에서 비율이 최대 1.455까지 올랐다. 이 측정과 모의 결과는 ADR-0064 §2·§5에 있다. 원본은 `.artifacts/verification/ten09-flake-20261018/exp/analysis.txt`에 있다. 비율은 baseline과 noisy 구간 각각 500개 표본(5 round × 100개)의 p99 두 개로 정해진다. 500개 표본의 p99는 6번째로 큰 값이므로 runner의 지연 변동 몇 건에 민감하다. 같은 실행에서 noisy 수신 수와 token bucket 상한 판정은 통과했다. Broker 결함의 증거는 없다.
+
+### 15.2 시험 점검
+
+저장소의 Go 시험과 CI Python unittest 대상 약 438개 파일을 네 구역으로 나눠 읽었다. 구역은 `tests/integration`, `cmd`·`tools`·`tests/benchmark`, `internal/adapters`, `internal/application`·`internal/domain`·CI Python 시험이다. 단언이 지연·처리량·percentile·비율 한도에 달린 시험을 찾았다.
+
+| 분류 | 시험 | 처리 |
+| --- | --- | --- |
+| 부하·품질 | `TestDynamicClusterTenantNoisyNeighborProcessAcceptance`(SEC-SCN-030) | `Acceptance: NARUMQ_LOAD_QUALITY`로 gate 밖에 둔다. 단언은 victim p99가 baseline p99의 1.5배 이하인지다. 지연 percentile이나 비율을 단언하는 시험은 이것 하나다. |
+| 이미 opt-in | `NARUMQ_ROLLING_100`, `NARUMQ_WAL_LIFECYCLE`, `NARUMQ_DASHBOARD_E2E`, `NARUMQ_RELEASE_COMPAT`(4개), `NARUMQ_DURABLE_ACK_FAULTS`(3개), `NARUMQ_ROLLOUT_KIND_SMOKE` | 바꾸지 않았다. |
+| 경계 | `TestN1PersistentClose`, `TestMQTTResourceLimitsReleaseConnectionsGoroutinesAndMemory`, 최소·상한 시간 시험, 하네스 smoke 시험 | 논리 결과로 판정하므로 gate에 남겼다. 사유는 ADR-0064 §4다. 앞의 두 시험은 사용자 확인 대상이다. |
+
+이 점검은 `grep`과 단언 읽기로 했으므로 증명이 아니다. 새 시험이 이 기준을 어기면 [시험 규약](../conventions/test-conventions.md)의 `Acceptance: NARUMQ_LOAD_QUALITY` 규칙으로 잡는다.
+
+### 15.3 변경
+
+`tests/integration/cluster_tenant_noisy_neighbor_process_test.go`의 시험 doc comment에 `// Acceptance: NARUMQ_LOAD_QUALITY`를 더했다. 함수는 첫 문장에서 이 변수가 `1`인지 확인하고 아니면 건너뛴다. `Scenarios:` 줄은 유지했다. 합격 기준(p99, 1.5배, 5 round, 구간당 500개 표본), 단언과 broker 코드는 바꾸지 않았다. `tools/verify`는 바꾸지 않았다. 이미 있는 `Acceptance:` 표시와 `acceptance` 명령을 그대로 쓴다([성능 및 검증 §7.2](../specs/performance-and-verification.md#72-fuzz-게이트와-수동-mutation-검증), PRF-SCN-115·116).
+
+### 15.4 실행 결과
+
+환경은 Windows x64, 논리 CPU 16개, Go 1.26.5다.
+
+| 명령·범위 | 결과 |
+| --- | --- |
+| `gofmt -l tests/integration` | 출력 없음 |
+| `go vet ./tests/integration/` | PASS |
+| `go run ./tools/verify acceptance --run TenantNoisyNeighbor` (변수 없음) | 시험을 시작하지 않고 `acceptance: set NARUMQ_LOAD_QUALITY=1 before running the selected acceptance tests`를 출력했다. exit 1 |
+| `NARUMQ_LOAD_QUALITY=1 go run ./tools/verify acceptance --run TenantNoisyNeighbor` | `acceptance: 1 tests passed`, `acceptance: PASS`. 시험 45초(명령 59.69초). baseline p99 37.1534ms, noisy p99 31.1943ms, 비율 0.840. noisy 수신은 round마다 263/264, 263/264, 263/264, 263/264, 264/265이고 offered는 1316이다. |
+| `go run ./tools/verify ci --base origin/main` | `ci: PASS`, 564.80초 |
+| gate의 `go-test.json` | 시험 `TestDynamicClusterTenantNoisyNeighborProcessAcceptance`는 `skip`(0.00초). 사유는 `set NARUMQ_LOAD_QUALITY=1 to run the TEN-09 victim p99 latency acceptance`다. |
+| gate의 시나리오 연결 검사 | specs 7, scenarios 635, 미연결 0, 오류 0 |
+| gate의 시나리오 실행 검사 | 통과 515, 실패 0, 미실행 120 [실행 범위 안 0, 게이트 밖 120], 미연결 0, 오류 0. `SEC-SCN-030`은 `미실행 (게이트 밖)`이다. |
+| 전체 coverage | line 88.06%(38226/43408), function 97.78%(2161/2210), branch 84.23%(14022/16647) |
+| diff coverage(`origin/main` 기준) | line 92.00%(4579/4977), function 96.35%(396/411), branch 87.66%(1911/2180). 세 지표 모두 하한 80% 이상이다([ADR-0063](../decisions/ADR-0063-diff-coverage-floor-80.md)). |
+| gate의 `traceability` | P0 mapped 73/81, exceptions 8 |
+| `go run ./tools/verify scenarios` | PASS. specs 7, scenarios 635, 미연결 0, 오류 0 |
+| `go run ./tools/verify markdown-links` | PASS. files 192, local links 3269 |
+| `go run ./tools/verify traceability` | PASS. P0 mapped 73/81, exceptions 8 |
+
+TEN-09는 child broker process를 띄우는 integration 시험이다. 이동 전후의 coverage를 따로 측정하지 않았다. 이동 뒤 실행이 세 diff 지표의 하한 80%를 넘었다는 사실만 기록한다. 직전 원격 Linux 실행(통과 523, 게이트 밖 111, 실패 1)과 이 Windows 실행의 시나리오 개수는 실행 범위가 달라 직접 빼지 않는다([§13](#13-go-플랫폼별-시나리오-실행-범위-2026-10-17)).
+
+### 15.5 한계
+
+- 이 변경 뒤의 원격 CI 실행은 아직 없다. Linux에서 `SEC-SCN-030`이 `미실행 (게이트 밖)`으로 나오는지는 원격 실행으로 확인한다.
+- PR CI는 tenant rate limit 경로의 지연 회귀를 잡지 못한다. 관련 코드를 바꾸면 acceptance를 실행하고 [Tenant와 security 검증 기록 §9](tenancy-and-security.md#9-ten-09-noisy-neighbor-실행-기록)에 남긴다.
+- 통과 증거는 Windows 한 번의 실행이다. 합격 기준의 재현성은 높이지 않았다. 비율이 runner에 따라 흔들리는 것은 [§15.1](#151-계기)의 측정 그대로다.

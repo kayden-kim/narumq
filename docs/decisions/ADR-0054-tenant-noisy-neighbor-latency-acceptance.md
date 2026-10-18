@@ -8,7 +8,7 @@
 | 관련 요구사항 | [PRD TEN-09·TEN-07](../requirements/PRD.md) |
 | 관련 스펙·계약 | [Tenant와 security §5.3](../specs/tenancy-and-security.md#53-noisy-neighbor-완화ten-09) |
 | 관련 아키텍처 문서 | [Project structure](../architectures/project-structure.md#verification-and-integration-test-entrypoints), [Threat model](../architectures/threat-model.md) |
-| 관련 ADR | [ADR-0034](ADR-0034-node-local-tenant-connection-and-traffic-limits.md), [ADR-0042](ADR-0042-p0-requirement-traceability-gate.md) |
+| 관련 ADR | [ADR-0034](ADR-0034-node-local-tenant-connection-and-traffic-limits.md), [ADR-0042](ADR-0042-p0-requirement-traceability-gate.md), [ADR-0064](ADR-0064-ci-gate-logic-only.md)(이 시험을 기본 gate 밖의 opt-in 수용 시험으로 옮긴다. 합격 기준은 유지한다) |
 | 이 ADR이 대체하는 이전 ADR | 없음 |
 | 이 ADR을 대체한 새 ADR | 없음 |
 

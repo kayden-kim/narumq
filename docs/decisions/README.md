@@ -69,6 +69,7 @@
 | [ADR-0061](ADR-0061-eks-ordinal-member-slot.md) | Accepted | EKS StatefulSet Pod는 ordinal slot 파일이 가리키는 member ID로 시작해, volume을 잃은 slot을 같은 Pod 자리의 새 member ID로 재시드한다. |
 | [ADR-0062](ADR-0062-raft-snapshot-stream.md) | Accepted | 1 MiB를 넘는 Raft snapshot은 `snapshot-stream` feature를 활성화한 cluster에서 별도 chunk stream으로 보낸다. 활성화 전에는 지금처럼 보내지 않고 실패로 알린다. |
 | [ADR-0063](ADR-0063-diff-coverage-floor-80.md) | Accepted | 변경 코드의 line·function·branch diff coverage 하한을 각각 80%로 낮춘다. 전체·core 기준과 ratchet은 유지한다. |
+| [ADR-0064](ADR-0064-ci-gate-logic-only.md) | Accepted | CI gate는 논리 검증만 실행한다. 지연·처리량·percentile 한도 같은 부하·품질 시험은 기존 `Acceptance:` opt-in 수용 시험으로 gate 밖에서 실행하고 실행 기록을 남긴다. TEN-09가 첫 대상이다. |
 
 `Proposed` ADR은 검토 중인 제안이다. `Accepted` ADR은 각 기록에 명시한 범위 안에서 채택된 결정이다. `design target only`는 production runtime이나 acceptance 검증을 뜻하지 않는다.
 

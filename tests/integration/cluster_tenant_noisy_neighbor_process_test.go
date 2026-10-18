@@ -8,6 +8,7 @@ import (
 	"math"
 	"net"
 	"net/http"
+	"os"
 	"path/filepath"
 	"slices"
 	"sync"
@@ -16,9 +17,13 @@ import (
 	"time"
 )
 
-// Traceability: TEN-09; docs/specs/tenancy-and-security.md §5.3; docs/decisions/ADR-0054-tenant-noisy-neighbor-latency-acceptance.md.
+// Traceability: TEN-09; docs/specs/tenancy-and-security.md §5.3; docs/decisions/ADR-0054-tenant-noisy-neighbor-latency-acceptance.md; docs/decisions/ADR-0064-ci-gate-logic-only.md.
+// Acceptance: NARUMQ_LOAD_QUALITY
 // Scenarios: tenancy-and-security.md:SEC-SCN-030
 func TestDynamicClusterTenantNoisyNeighborProcessAcceptance(t *testing.T) {
+	if os.Getenv("NARUMQ_LOAD_QUALITY") != "1" {
+		t.Skip("set NARUMQ_LOAD_QUALITY=1 to run the TEN-09 victim p99 latency acceptance")
+	}
 	fixture := newClusterMembershipProcessFixture(t, 3, "")
 	issuer := newClusterProcessJWTIssuer(t, "ten09-key")
 	now := time.Now()

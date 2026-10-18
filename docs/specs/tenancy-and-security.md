@@ -250,6 +250,7 @@ Tenant 한도로 거절한 PUBACK·PUBREC `0x97`에는 Reason String `tenant_lim
 
 각 noisy round에서 subscriber가 받은 메시지 수는 50 이상이어야 하고, bucket 용량과 보충률로 계산한 상한 `50 + ceil(50 × roundSeconds)` 이하여야 한다. Rate 한도를 설정하지 않은 tenant에는 noisy-neighbor p99를 보장하지 않는다. 이 기준은 local 수용 profile이며 production tenant 수·부하 편차와 절대 latency SLO는 정하지 않는다. Production 기준은 §1.9의 `SPEC-TBD-08`에서 계속 추적한다. 결정은 [ADR-0054](../decisions/ADR-0054-tenant-noisy-neighbor-latency-acceptance.md)를 따른다.
 
+이 시험은 지연 한도로 판정하는 부하·품질 시험이다. 기본 gate(`local`·`ci`)는 실행하지 않는다. 시험은 `Acceptance: NARUMQ_LOAD_QUALITY`를 표시한 opt-in 수용 시험이며 `NARUMQ_LOAD_QUALITY=1 go run ./tools/verify acceptance --run TenantNoisyNeighbor`로 실행한다. 통과 증거는 이 명령의 결과이고 [검증 기록 §9](../verification/tenancy-and-security.md#9-ten-09-noisy-neighbor-실행-기록)에 남긴다. 합격 기준은 위와 같다. 근거는 [ADR-0064](../decisions/ADR-0064-ci-gate-logic-only.md)다.
 
 ## 6. 관리 plane RBAC
 

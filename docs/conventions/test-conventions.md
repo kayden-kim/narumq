@@ -57,6 +57,7 @@ def scenario_safe_retry(client):
   func TestDynamicClusterContinuousRollingDrainProcessAcceptance(t *testing.T) {
   ```
 
+- 부하·품질 시험은 `Acceptance: NARUMQ_LOAD_QUALITY`를 표시한다. 합격 여부가 측정한 지연·처리량·percentile·지연 비율 한도나 부하 강도에 달린 시험이 해당한다. 이 시험은 기본 게이트에서 건너뛰고 `NARUMQ_LOAD_QUALITY=1 go run ./tools/verify acceptance --run <regexp>`로 실행한다. 멈춤을 잡는 제한 시간, 최소 대기 시간, fake clock으로 계산하는 rate 한도처럼 논리 결과를 판정하는 시험에는 쓰지 않는다. 판단이 갈리는 시험은 [ADR-0064](../decisions/ADR-0064-ci-gate-logic-only.md) §4의 경계 사례를 따른다.
 - Python은 `def`와 `class` 바로 위 주석에 쓴다. 데코레이터와 다른 주석 줄이 사이에 있어도 된다. 결과는 [`tests/scenario_results.py`](../../tests/scenario_results.py)로 `--results` 파일에 남길 수 있다.
 - EKS·kind 실측, 수동 운영 검증과 실패 기록은 보고서가 대신하지 못한다. 게이트 밖 시나리오는 [검증 기록](../verification/)에 실행 기록을 남긴다.
 

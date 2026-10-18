@@ -358,6 +358,8 @@ go run ./tools/verify local
 4. **Fuzz campaign (5개 command):** MQTT decoder·codec round-trip, topic matching, session lifecycle, TCP connection input을 고정 횟수로 검사한다.
 5. **Coverage policy:** 병렬 검사가 성공한 뒤 line 85%, function 90% floor/ratchet를 검사한다.
 
+기본 gate는 논리 시험만 실행한다([ADR-0064](../decisions/ADR-0064-ci-gate-logic-only.md)). 지연·처리량·percentile·지연 비율 한도로 판정하는 부하·품질 시험은 `Acceptance: NARUMQ_LOAD_QUALITY`를 표시해 gate 밖에 둔다. 현재 대상은 TEN-09(`TestDynamicClusterTenantNoisyNeighborProcessAcceptance`) 하나다. 이 시험의 통과 증거는 아래 `acceptance` 명령의 결과다.
+
 Local과 CI는 각각 총 14개 verifier command를 실행하며 mutation은 포함하지 않는다. 14개는 `branch-instrument`, 병렬 11개, 실행 검사 `go run ./tools/verify scenarios --go-test-json .artifacts/verification/go-test.json --require-executed`, coverage policy다. Local coverage는 `-parallel=8`, CI coverage는 유효 `GOMAXPROCS`를 쓴다.
 
 Mutation을 실행하려면 `go run ./tools/verify mutation`을 사용한다. 이 명령은 다섯 critical package를 Gremlins worker 1개씩 실행하고, CPU 예산에 맞춰 package 작업을 batch로 나눈다. Coverage, race, fuzz gate는 다시 실행하지 않는다.
@@ -380,12 +382,15 @@ Mutation을 실행하려면 `go run ./tools/verify mutation`을 사용한다. �
 | `NARUMQ_ROLLOUT_CONTROLLER_IMAGE` | 현재 소스의 controller image. Kind에서 pull하거나 미리 load해야 한다. |
 | `NARUMQ_ROLLOUT_OLD_DIGEST`, `NARUMQ_ROLLOUT_TARGET_DIGEST` | Registry의 실제 broker platform manifest digest. 합성 version `0.0.0`·`0.0.1`과 binary의 전체 feature 목록을 OCI label에 넣는다. |
 
+부하·품질 시험도 같은 명령으로 실행한다. TEN-09만 실행하려면 `NARUMQ_LOAD_QUALITY=1 go run ./tools/verify acceptance --run TenantNoisyNeighbor`를 쓴다. 실행하는 동안 다른 부하가 없는 host에서 실행하고 결과를 [Tenant와 security 검증 기록 §9](../verification/tenancy-and-security.md#9-ten-09-noisy-neighbor-실행-기록)에 남긴다.
+
 Kind fixture의 정확한 입력·정리 경계는 `tests/integration/rollout_controller_kind_test.go`를 따른다. Registry를 node에 HTTP로 연결하면 해당 주소의 containerd registry 설정도 준비해야 한다. 시험을 끝내면 자신이 만든 Kind cluster와 registry container만 정리한다. 실제 실행에 사용한 값은 검증 기록에 보존한다.
 
 전체를 실행하려면 저장소 루트에서 다음 명령을 실행한다. 일부만 실행하려면 `--run`에 시험 이름의 Go 정규식을 준다.
 
 ```sh
 go run ./tools/verify acceptance
+| `NARUMQ_LOAD_QUALITY=1` | 격리된 실제 broker process 시험. 지연 한도로 판정하므로 다른 CPU·디스크 부하가 없는 host에서 실행한다. |
 go run ./tools/verify acceptance --run 'ReleaseCompatibility|BackupRestore.*Release'
 ```
 

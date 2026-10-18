@@ -849,6 +849,8 @@ Python 시나리오 함수는 `tests/scenario_results.py`로 `.artifacts/verific
 
 Opt-in 수용 시험은 `go run ./tools/verify acceptance [--run <regexp>]`로 따로 실행한다. 이 시험들은 100회 rolling, Kind, Docker 같은 별도 환경과 긴 실행 시간이 필요하다. 2026-10-17 측정에서 이 시험 11개는 integration package 시간의 약 78%(약 2420초)였다. 기본 gate가 매번 이 시험을 요구하면 `local`이 약 52분 걸리고, opt-in 환경이 없는 CI는 통과할 수 없다. 그래서 기본 gate는 일반 시험의 실행을 증명하고, opt-in 수용은 이 명령의 결과로 증명한다. 두 결과를 함께 보고하려면 `scenarios`에 두 Go JSON 파일을 모두 넘긴다.
 
+기본 gate는 논리 시험만 실행한다([ADR-0064](../decisions/ADR-0064-ci-gate-logic-only.md)). 합격 여부가 측정한 지연·처리량·percentile·지연 비율 한도나 부하 강도에 달린 부하·품질 시험은 `Acceptance: NARUMQ_LOAD_QUALITY`를 표시해 gate 밖에 둔다. 기본 gate는 이 시험을 건너뛰고 해당 시나리오를 `미실행 (게이트 밖)`으로 보고한다. 이 시험은 `NARUMQ_LOAD_QUALITY=1 go run ./tools/verify acceptance --run <regexp>`로 실행하며, 통과 증거는 이 명령의 결과와 검증 기록이다. 현재 대상은 TEN-09(`SEC-SCN-030`) 한 개다. 멈춤을 잡는 제한 시간, 설정한 대기의 최소 시간, fake clock으로 계산하는 rate 한도처럼 논리 결과를 판정하는 시험의 시간 값은 gate에 남긴다.
+
 `acceptance`는 다음 순서로 동작한다.
 
 1. 연결 검사와 같은 scanner로 `Acceptance:` 표시가 있는 Go `Test*` 함수를 찾는다. `--run`을 주면 시험 이름이 이 Go 정규식과 맞는 것만 고른다. 고른 시험이 없으면 exit 1이다.
@@ -958,6 +960,7 @@ go run ./tests/chaos/cluster-storage-v1 \
 - 핵심 domain 9개(`mqtt`, `session`, `routing`, `delivery`, `tenancy`, `security`, `nodedrain`, `release`, `connrebalance`)는 line/function ≥95%, branch ≥90%다. `application/membership`은 핵심 domain이 아니며 전체 기준을 따른다. 정책은 `tests/verification/coverage-policy.json`이 source of truth다.
 - 개발자가 실행하는 `go run ./tools/verify mutation`은 `delivery`, `mqtt`, `nodedrain`, `security`, `session`의 mutation efficacy와 mutant coverage를 각각 ≥80%로 확인한다. 이 명령은 `local`·`ci`에 포함되지 않는다. 동시성 코드는 race detector 또는 동등한 검증을 CI에서 실행하고 해당 기준을 통과해야 한다.
 - Domain 규칙/state machine은 정상·오류·경계·전이 assertion coverage 100%를 기본으로 한다. Consensus·drain·infrastructure 검증은 integration/E2E/chaos에 연결한다.
+- 기본 gate(`local`·`ci`)는 논리 시험만 실행한다. 지연·처리량·percentile·지연 비율 한도나 부하 강도로 판정하는 부하·품질 시험은 `Acceptance: NARUMQ_LOAD_QUALITY` opt-in 수용 시험으로 gate 밖에서 실행하고 결과를 검증 기록에 남긴다([ADR-0064](../decisions/ADR-0064-ci-gate-logic-only.md), [§7.2](#72-fuzz-게이트와-수동-mutation-검증)).
 
 `verify local`과 `verify ci`는 gofmt, vet, traceability, scenarios, architecture, package/integration coverage, production race, fuzz 5종과 coverage policy를 실행한다. 두 명령은 mutation을 실행하지 않는다. Local coverage는 `-parallel=8`, CI coverage는 Go의 유효 `GOMAXPROCS`만큼 `-parallel`을 허용한다. `-parallel`은 package 안에서 `t.Parallel()`로 실행하는 test의 상한이다. 다섯 package mutation은 개발자가 `go run ./tools/verify mutation`으로 별도 실행한다. CI의 `--base <merge-base>`는 coverage diff 계산에만 쓴다. Atomic profile은 `.artifacts/verification/coverage.out`, mutation 결과는 `.artifacts/verification/mutation-<package>.json`이다. Integration은 build tag별 일반·failpoint broker를 임시 경로에 한 번씩 build하고 child process 정리 뒤 제거한다. Race 범위는 `./cmd/... ./internal/...`이며 별도 build되는 integration child broker는 race-instrumented가 아니다. `scenarios`는 시나리오 표와 테스트 메타 정보의 `오류`·`미연결`·`실패`를 gate 실패로 처리한다([§7.2](#72-fuzz-게이트와-수동-mutation-검증)).
 
