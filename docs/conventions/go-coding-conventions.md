@@ -362,10 +362,12 @@ Local과 CI의 다른 실행 조건은 [성능 및 검증 §8](../specs/performa
 공통:
 → go vet ./...
 → traceability
+→ scenarios 연결 검사
 → architecture
-→ atomic coverage test (local `-parallel=8`; CI `-parallel=GOMAXPROCS`; `-count=1`)
+→ atomic coverage test와 go-test JSON 저장 (local `-parallel=8`; CI `-parallel=GOMAXPROCS`; `-count=1`)
 → go test -race ./cmd/... ./internal/... -count=1
 → 5 bounded fuzz campaigns (각 -parallel=1)
+→ scenarios 실행 검사 (`--go-test-json`·`--require-executed`)
 → coverage policy
 
 CI 전용:
@@ -427,6 +429,114 @@ Fuzz가 생성한 입력의 발견 순서는 deterministic하지 않다. 고정�
 9. Error가 wrapping되고 secret 없이 한 경계에서 기록되는가?
 10. Unit test가 정상·오류·경계 조건을 검증하는가?
 11. `gofmt`, test, race와 architecture gate를 통과하는가?
+
+## 15. 이름 짓기
+
+상위 [컨벤션 작성 규칙](AGENTS.md)의 이름 짓기 기본 규칙을 Go에 적용한다. §2~§4가 이름의 형태를 정한다. 이 절은 package qualification과 현재 코드의 suffix 목록을 기록한다. 조사 기준은 `internal/domain`, `internal/application`, `internal/adapters`, `cmd/narumq`, `tools`의 test와 생성 코드(`*.pb.go`)를 제외한 type 선언 813개다.
+
+### 15.1 규칙 우선순위와 적용
+
+규칙은 컴파일러·Go 명세, `gofmt`, 공식 Go 코딩 관례(Effective Go, Code Review Comments, package names), 이 컨벤션, 개별 package 규칙 순서로 적용한다. 따라서 상위 규칙의 도메인 prefix는 Go 관례에 맞춰 다음처럼 읽는다.
+
+- Go에서는 package qualifier가 이름의 맥락을 제공한다. `session.Owner`를 `session.SessionOwner`처럼 쓰지 않는다. 이는 공식 Go 관례의 stutter 방지 규칙이며, 업무 용어의 prefix를 정하는 규칙과 구분한다.
+- 한 package가 여러 도메인 대상을 다루는 `application/ports/*`, `adapters/*`에서는 §2대로 `AuditPublisher`처럼 대상을 type 이름에 둔다.
+- 용어집(`GLOSSARY.md`)이 아직 없다. 아래 표는 현재 package 위치와 책임을 찾는 코드 목록이다. 용어집이나 업무 prefix 목록을 대신하지 않는다. 새 업무 용어의 코드 영어 이름을 확정할 때는 [용어집 유지보수](../AGENTS.md#용어집-유지보수)에 따라 용어집에 먼저 기록한다.
+
+| 도메인 package | 현재 책임 |
+| --- | --- |
+| `internal/domain/connrebalance` | 연결 재균형과 로컬 shedding 규칙 |
+| `internal/domain/delivery` | MQTT QoS 1·2 inflight 정책과 상태 전이 |
+| `internal/domain/mqtt` | 네트워크와 독립된 MQTT packet codec |
+| `internal/domain/nodedrain` | 노드 drain 생애주기와 safe-to-stop 판정 |
+| `internal/domain/release` | broker release 버전과 feature token |
+| `internal/domain/rollout` | StatefulSet 순차 rollout 정책 |
+| `internal/domain/routing` | topic·filter 검증과 구독 매칭 |
+| `internal/domain/security` | 인증된 principal과 tenant ACL policy |
+| `internal/domain/session` | MQTT Session Expiry 생애주기 |
+| `internal/domain/tenancy` | tenant 범위 identity·topic·filter 값 |
+
+Application package(`audit`, `connect`, `management`, `membership`, `observability`, `publish`, `rollout`, `subscribe`, `takeover`, `tenantlimit`)에도 같은 package qualification 규칙을 적용한다.
+
+### 15.2 Suffix 목록
+
+Type 유형은 아래 suffix 중 하나로 나타낸다. 구현 성격 Prefix(`WAL`, `Default` 등)는 §3.2를 따른다. 층별 수는 조사 기준 type 선언 수이며 unexported type을 포함한다. 예는 `package 경로.type` 형식이고 모두 소스에서 확인했다.
+
+역할 suffix:
+
+| Suffix | 층별 사용 | 역할 | 예 | 추가 이유 |
+| --- | --- | --- | --- | --- |
+| `DTO` | application 101, ports 70, adapters 30 | 경계를 넘는 단순 자료 | `application/audit.QueryCommandDTO`, `application/ports/audit.AuditEventDTO` | §3.4에서 정의됨 |
+| `Service` | application 12, ports 1 | 응집된 application 흐름 | `application/membership.BlocklistService` | §3.3에서 정의됨 |
+| `UseCase` | application 3, ports 1, adapters 8 | 명시적 application 명령·조회. adapter가 필요한 use case만 골라 선언한 interface에도 쓴다 | `application/connect.UseCase`, `application/ports/management.NodeConfigurationUseCase`, `adapters/http/management.BlocklistUseCase` | §3.3에서 정의됨 |
+| `Repository` | application 1, ports 1, adapters 2 | 복구 가능한 상태의 저장 경계 | `application/ports/retained.Repository`, `adapters/memory/sessionstore.MemorySessionRepository` | §3.3에서 정의됨 |
+| `Controller` | cmd 7 | 외부 이벤트를 application 입력으로 변환하는 composition root 구성요소 | `cmd/narumq.clusterDrainController` | §3.3에서 정의됨 |
+| `Handler` | adapters 17 | HTTP 요청 등 adapter의 처리 진입점 | `adapters/http/management.HealthHandler` | 기존 코드 관례. Go 표준 `http.Handler`가 공식 관례(우선순위 3)이고, `Controller`는 cmd에서 쓰므로 adapter 진입점은 `Handler`로 구분 |
+| `Config` | application 4, adapters 14, cmd 16 | 구성 요소를 만드는 설정 값 묶음 | `application/audit.ServiceConfig` | 기존 코드 관례. 값을 제공하는 `Provider`로 표현할 수 없음 |
+| `Provider` | ports 4, adapters 3, cmd 1 | 값이나 조회 결과를 제공 | `application/ports/authentication.AuthenticationProvider`, `application/ports/management.StateProvider` | §3.3에서 정의됨 |
+| `Publisher` | application 2, ports 1, adapters 1 | event를 외부 sink로 발행 | `application/ports/audit.AuditPublisher`, `adapters/auditlog.FileAuditPublisher` | §3.3에서 정의됨 |
+| `Reader` | application 1, ports 2, adapters 5 | 읽기 전용 capability | `application/ports/audit.AuditRecordReader` | 기존 코드 관례. §5의 capability 이름 |
+| `Recorder` | application 1, ports 5 | 결과·event를 기록 | `application/ports/audit.DataPlaneDenialRecorder` | 기존 코드 관례. 외부 sink로 발행하는 `Publisher`와 달리 프로세스 내 기록 |
+| `Reporter` | application 1, cmd 3 | 거절·상태를 로그나 metric으로 보고 | `application/tenantlimit.Reporter` | 기존 코드 관례. 값을 돌려주지 않는 알림이라 `Provider`·`Publisher`와 다름 |
+| `Checker` | application 1, ports 1, cmd 1 | 단일 조건을 판정해 `bool`과 `error`를 반환 | `application/connect.CredentialRevocationChecker` | 기존 코드 관례. 입력 검증인 `Validator`와 달리 외부 상태를 조회 |
+| `Counter` | application 1, ports 1, adapters 1 | 개수 조회 | `application/connect.TenantSessionCounter` | 기존 코드 관례 |
+| `Scheduler` | application 1, adapters 2 | 지연 callback 실행 | `application/connect.Scheduler` | 기존 코드 관례 |
+| `Source` | ports 4, cmd 1 | snapshot이나 committed 값의 조회 원천 | `application/ports/management.ClusterSessionSource` | 기존 코드 관례 |
+| `Snapshotter` | ports 3 | 현재 상태의 snapshot 제공 | `application/ports/management.SessionSnapshotter` | 기존 코드 관례 |
+| `Committer` | application 3, ports 2 | commit된 결과(`ApplyResultDTO`)를 반환 | `application/ports/deliverystate.PublishCommitter` | 기존 코드 관례. `Repository`는 상태 저장 경계이고 이 interface는 commit 결과 계약을 가짐 |
+| `Coordinator` | application 4 | 여러 단계의 ownership·offline 처리를 조정 | `application/connect.OwnershipCoordinator` | 기존 코드 관례 |
+| `Visitor` | ports 1, adapters 2 | 순회하며 metric family·sample을 수신 | `application/ports/metrics.MetricVisitor` | 기존 코드 관례. Visitor 패턴의 공식 이름 |
+| `Limiter` | application 1, adapters 2 | 속도·횟수 제한 | `adapters/http/management.requestRateLimiter` | 기존 코드 관례 |
+| `Error` | domain 1, application 1, ports 1, adapters 2, tools 1 | 구체 error type | `domain/mqtt.UnsupportedProtocolVersionError` | §10에서 정의됨 |
+
+값 유형 suffix(주로 domain·application 값 type):
+
+| Suffix | 층별 사용 | 역할 | 예 | 추가 이유 |
+| --- | --- | --- | --- | --- |
+| `Key` | domain 2, application 3, adapters 9, cmd 4 | 값 식별자 | `domain/tenancy.SessionKey` | 기존 코드 관례. `ID`는 단일 scalar 식별자에 사용 |
+| `Action` | domain 2, application 12, ports 1, adapters 1, cmd 1 | 수행할 동작의 종류 | `application/membership.CredentialRevocationAction` | 기존 코드 관례 |
+| `State` | domain 1, application 2, ports 2, adapters 7, cmd 1 | 시점의 상태 값 | `domain/connrebalance.ShedState` | 기존 코드 관례 |
+| `Phase` | domain 4, application 3, ports 1 | 생애주기의 단계 | `domain/nodedrain.Phase`, `application/membership.MemberPhase` | 기존 코드 관례 |
+| `Stage` | domain 1, adapters 3, cmd 1 | 한 처리의 로컬 실행 진행 | `domain/connrebalance.ShedStage` | 기존 코드 관례. 생애주기 단계인 `Phase`와 구분 |
+| `Kind` | domain 1, ports 1, adapters 2, cmd 2 | 하위 종류 구분 | `domain/security.BlockKind` | 기존 코드 관례 |
+| `Status` | ports 2, adapters 2, tools 1 | 관측·조회에 노출하는 상태 | `application/ports/management.HealthStatus` | 기존 코드 관례 |
+| `Outcome` | application 3, adapters 1, tools 1 | 적용·처리 결과 분류 | `application/membership.ApplyOutcome` | 기존 코드 관례 |
+| `Result` | domain 1, ports 2, adapters 1, cmd 1, tools 1 | 한 연산의 반환 묶음 | `domain/session.DisconnectResult` | 기존 코드 관례 |
+| `Filter` | domain 1, ports 6 | 조회 조건·topic filter | `domain/tenancy.TopicFilter`, `application/ports/management.ClientFilter` | 기존 코드 관례 |
+| `Entry` | domain 1, adapters 3, cmd 1 | 목록의 한 항목 | `domain/security.BlockEntry` | 기존 코드 관례 |
+| `Record` | domain 1, adapters 3 | 저장·열거되는 한 건의 기록 | `domain/routing.SubscriptionRecord` | 기존 코드 관례 |
+
+Domain entity와 값 type(`session.Lifecycle`, `session.Ownership`, `mqtt.Will` 등)은 suffix를 붙이지 않고 package 이름과 명사로 의미를 나타낸다. MQTT packet 이름(`PubAck`, `ConnAck`)은 표준 용어를 따른다.
+
+목록에 없는 단발 이름은 2번 이하로 쓰인다. `Client`(`adapters/rollout.ManagementClient`), `Store`(`application/rollout.StatusStore`), `Encoder`와 `Decoder`(`domain/mqtt.Encoder`, `domain/mqtt.Decoder`)는 §3.3에 정의되어 있다. `Verifier`(`adapters/authentication.JWTVerifier`), `Transport`(`adapters/tcp.TCPPeerTransport`), `Machine`(`application/membership.StateMachine`)은 아직 2번뿐이라 목록에 올리지 않았다. 셋째 사용처가 생길 때 이유와 함께 추가한다. `Option`(`application/connect.Option`)은 package마다 하나인 functional option type 이름이다.
+
+새 suffix는 위 suffix와 §3.3으로 표현할 수 없을 때만 추가하고, 표에 층·역할·추가 이유를 함께 적는다.
+
+### 15.3 이름 길이와 file 이름
+
+이름은 5단어 이상으로 짓지 않기를 권장한다. 단어는 대문자 경계로 세고 `DTO`, `MQTT`, `QoS` 같은 약어와 `WebSocket`은 한 단어로 센다.
+
+```text
+좋음: membership.BlocklistService (Blocklist + Service, qualifier 제외 2단어)
+나쁨: ports/management.TenantQuotaProfileConfigurationDTO (Tenant + Quota + Profile + Configuration + DTO, 5단어)
+개선: ports/management.QuotaProfileDTO (Quota + Profile + DTO, 3단어)
+```
+
+File 이름은 §8의 Go 규칙을 따른다. 소문자 snake case를 쓰고 test는 `_test.go`로 끝낸다. 대문자와 `-`는 쓰지 않으며 생성 file은 생성기 이름을 유지한다. 현재 5단어 이상인 file 이름은 없다.
+
+### 15.4 현재 목록에서 벗어난 이름
+
+코드는 이름을 바꾸지 않고 기록만 한다. 조사 기준은 15.2와 같다.
+
+| 구분 | 수 | 예 | 벗어난 규칙 |
+| --- | --- | --- | --- |
+| 5단어 이름 | 17 (6단어 이상 없음) | `application/membership.UpdateClusterPolicyRequestDTO`, `application/ports/management.TenantQuotaLimitsConfigurationDTO`, `cmd/narumq.clusterTenantQuotaProfileConfig` | 5단어 권고(§15.3) |
+| 도메인 prefix 반복 | 6 | `application/membership.MembershipAction`, `application/membership.MembershipRecordDTO`, `application/membership.MembershipOperationPhase`, `application/membership.MembershipOperationDTO`, `application/rollout.RolloutDTO`, `application/connect.ConnectRequestDTO` | 공식 관례의 stutter 금지(§2, §15.1). `application/ports/*` package의 대상 반복은 §2가 허용 |
+| 목록 밖 `Port` suffix | 6 | `application/membership.BlocklistPort`, `application/membership.NodeDrainPort` | 목록에 없음. `application/ports` package와 의미가 겹치고, §5는 interface를 소비 package가 소유하며 capability 또는 `UseCase`·`Repository` 같은 역할로 이름 짓도록 함 |
+| 목록 밖 `Wire` suffix | 4 | `adapters/auditlog.auditEventWire`, `adapters/auditlog.producerWire` | 목록에 없음. 직접 작성한 전송 자료는 §3.4에 따라 `DTO` |
+| HTTP JSON 자료의 `Request`·`Response` | 53 | `adapters/http/management.clusterPolicyRequest`, `adapters/http/management.auditRecordResponse`, `adapters/http/management.ErrorResponse` | 직접 작성한 전송 자료에는 `DTO` suffix가 필요(§3.4). 현재는 `DTO` 앞의 중간 단어로만 허용 |
+| 모호한 `Data` | 1 | `tools/verify.coverageData` | 목록에 없음. §7이 피하라는 문맥 없는 넓은 이름 |
+
+새로 작성하거나 변경하는 type은 위 이름을 따라 하지 않는다. 기존 이름은 해당 type을 바꾸는 변경에서 함께 정리한다.
 
 ## 참고 자료
 

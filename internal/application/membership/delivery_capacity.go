@@ -22,7 +22,7 @@ func (machine *StateMachine) DeliveryPublishCapacity(change DeliveryChangeDTO) D
 	}
 	n, b := len(change.Targets), 0
 	for _, target := range change.Targets {
-		b += deliveryEntryBytes(sessionKey{tenantID: change.TenantID, clientID: target.ClientID}, change.Topic, change.Payload)
+		b += deliveryEntryBytes(sessionKey{tenantID: change.TenantID, clientID: target.ClientID}, change.Topic, change.Payload) + len(target.SharedFilter)
 	}
 	if machine.deliveryEntries+n <= MaxDeliveryEntries && machine.deliveryBytes+b <= MaxDeliveryBytes && machine.tenantQuotaExceededLocked(change.TenantID, 0, n, b, b) == nil {
 		return DeliveryCapacityDTO{Fits: true}
@@ -37,7 +37,7 @@ func (machine *StateMachine) DeliveryPublishCapacity(change DeliveryChangeDTO) D
 			continue
 		}
 		n++
-		b += deliveryEntryBytes(key, change.Topic, change.Payload)
+		b += deliveryEntryBytes(key, change.Topic, change.Payload) + len(target.SharedFilter)
 	}
 	if machine.deliveryEntries+n > MaxDeliveryEntries {
 		return DeliveryCapacityDTO{Reason: DeliveryCapacityEntries}

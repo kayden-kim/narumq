@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"go/format"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -18,6 +19,9 @@ type commandSpec struct {
 	Name string
 	Args []string
 	Dir  string
+	// StdoutFile, when set, receives the command's stdout instead of the console. It is relative to the
+	// repository root unless absolute. Stderr still streams to the console.
+	StdoutFile string
 }
 
 type commandRunner func(context.Context, string, commandSpec) error
@@ -39,12 +43,16 @@ func (failure commandFailure) Unwrap() error {
 type verificationOptions struct {
 	CI   bool
 	Base string
+	// Stderr receives the failed-test summary. It defaults to os.Stderr.
+	Stderr io.Writer
 }
 
+// Scenarios: performance-and-verification.md:PRF-SCN-070, performance-and-verification.md:PRF-SCN-089
 func runLocal(ctx context.Context, root string, runner commandRunner) error {
 	return runVerification(ctx, root, verificationOptions{}, runner)
 }
 
+// Scenarios: performance-and-verification.md:PRF-SCN-071
 func runCI(ctx context.Context, root, base string, runner commandRunner) error {
 	if strings.TrimSpace(base) == "" {
 		return fmt.Errorf("ci requires --base <git-ref>")
@@ -52,6 +60,7 @@ func runCI(ctx context.Context, root, base string, runner commandRunner) error {
 	return runVerification(ctx, root, verificationOptions{CI: true, Base: base}, runner)
 }
 
+// Scenarios: performance-and-verification.md:PRF-SCN-075, performance-and-verification.md:PRF-SCN-103
 func runVerification(ctx context.Context, root string, options verificationOptions, runner commandRunner) error {
 	if err := ensureRepositoryRoot(root); err != nil {
 		return err
@@ -75,21 +84,34 @@ func runVerification(ctx context.Context, root string, options verificationOptio
 	preflightCommands := []commandSpec{
 		{Name: "go", Args: []string{"vet", "./..."}},
 		{Name: "go", Args: []string{"run", "./tools/verify", "traceability"}},
+		{Name: "go", Args: []string{"run", "./tools/verify", "scenarios"}},
 		{Name: "go", Args: []string{"run", "./tools/verify", "architecture"}},
 	}
 	testParallelLimit := 8
 	if options.CI {
 		testParallelLimit = runtime.GOMAXPROCS(0)
 	}
-	coverageArgs := []string{"test", "./...", fmt.Sprintf("-parallel=%d", testParallelLimit), "-count=1", "-covermode=atomic", "-coverpkg=./cmd/...,./internal/...", "-coverprofile=" + filepath.Join(root, ".artifacts", "verification", "coverage.out")}
+	coverageArgs := []string{"test", "-json", "./...", fmt.Sprintf("-parallel=%d", testParallelLimit), "-count=1", "-timeout=3h", "-covermode=atomic", "-coverpkg=./cmd/...,./internal/...", "-coverprofile=" + filepath.Join(root, ".artifacts", "verification", "coverage.out")}
 	parallelCommands := append([]commandSpec{}, preflightCommands...)
 	parallelCommands = append(parallelCommands,
-		commandSpec{Name: "go", Dir: defaultBranchOutputDir + "/module", Args: coverageArgs},
+		commandSpec{Name: "go", Dir: defaultBranchOutputDir + "/module", Args: coverageArgs, StdoutFile: defaultGoTestJSONPath},
 		commandSpec{Name: "go", Args: []string{"test", "-race", "./cmd/...", "./internal/...", "-count=1"}},
 	)
 	parallelCommands = append(parallelCommands, fuzzCommands...)
 	if err := runConcurrent(ctx, root, parallelCommands, runner); err != nil {
+		stderr := options.Stderr
+		if stderr == nil {
+			stderr = os.Stderr
+		}
+		printGoTestFailures(stderr, filepath.Join(root, filepath.FromSlash(defaultGoTestJSONPath)))
 		return fmt.Errorf("verification stopped during parallel checks: %w", err)
+	}
+	executionCommand := commandSpec{
+		Name: "go",
+		Args: []string{"run", "./tools/verify", "scenarios", "--go-test-json", defaultGoTestJSONPath, "--require-executed"},
+	}
+	if err := runner(ctx, root, executionCommand); err != nil {
+		return fmt.Errorf("verification stopped after %s: %w", formatCommand(executionCommand), err)
 	}
 	coverageCommand := commandSpec{
 		Name: "go",
@@ -104,6 +126,7 @@ func runVerification(ctx context.Context, root string, options verificationOptio
 	return nil
 }
 
+// Scenarios: performance-and-verification.md:PRF-SCN-102
 func runMutation(ctx context.Context, root string, runner commandRunner) error {
 	if err := ensureRepositoryRoot(root); err != nil {
 		return err
@@ -121,6 +144,9 @@ func runMutation(ctx context.Context, root string, runner commandRunner) error {
 		if err := runConcurrent(ctx, root, commands[start:end], runner); err != nil {
 			return fmt.Errorf("mutation verification stopped during package checks: %w", err)
 		}
+	}
+	if err := verifyMutationReports(root, os.Stdout); err != nil {
+		return fmt.Errorf("mutation verification failed report judgment: %w", err)
 	}
 	return nil
 }
@@ -204,10 +230,28 @@ func executeCommand(ctx context.Context, root string, spec commandSpec) error {
 	command.Dir = filepath.Join(root, filepath.FromSlash(spec.Dir))
 	command.Stdout = os.Stdout
 	command.Stderr = os.Stderr
+	if spec.StdoutFile != "" {
+		path := spec.StdoutFile
+		if !filepath.IsAbs(path) {
+			path = filepath.Join(root, filepath.FromSlash(path))
+		}
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			return fmt.Errorf("create stdout file directory for %s: %w", formatCommand(spec), err)
+		}
+		file, err := os.Create(path)
+		if err != nil {
+			return fmt.Errorf("create stdout file for %s: %w", formatCommand(spec), err)
+		}
+		defer file.Close()
+		command.Stdout = file
+	}
 	if err := command.Run(); err != nil {
 		code := 1
 		if exitErr, ok := err.(*exec.ExitError); ok {
 			code = exitErr.ExitCode()
+		}
+		if ctx.Err() != nil {
+			err = errors.Join(err, ctx.Err())
 		}
 		return commandFailure{Spec: spec, Code: code, Err: err}
 	}

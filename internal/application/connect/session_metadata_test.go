@@ -66,6 +66,7 @@ func connectMetadataSession(t *testing.T, useCase *UseCase, clientID string, exp
 	return result.SessionID
 }
 
+// Scenarios: cluster-session-and-delivery.md:CLU-SCN-169
 func TestSessionMetadataDisconnectUsesCommittedWillAndSuppressesOnCommitFailure(t *testing.T) {
 	// Traceability: CLU-08; docs/specs/cluster-session-and-delivery.md §4.3, §11.24.
 	now := time.Date(2026, 10, 3, 12, 0, 0, 0, time.UTC)
@@ -125,6 +126,7 @@ func TestSessionMetadataDisconnectUsesCommittedWillAndSuppressesOnCommitFailure(
 	})
 }
 
+// Scenarios: cluster-session-and-delivery.md:CLU-SCN-169
 func TestSessionMetadataWillTimerCommitsClaimBeforePublish(t *testing.T) {
 	// Traceability: CLU-08; docs/specs/cluster-session-and-delivery.md §4.3, §11.24.
 	now := time.Date(2026, 10, 3, 12, 0, 0, 0, time.UTC)
@@ -154,6 +156,7 @@ func TestSessionMetadataWillTimerCommitsClaimBeforePublish(t *testing.T) {
 	}
 }
 
+// Scenarios: cluster-session-and-delivery.md:CLU-SCN-169
 func TestSessionMetadataExpiryStaleDeletesLocalStateWithoutRetry(t *testing.T) {
 	// Traceability: CLU-08; docs/specs/cluster-session-and-delivery.md §4.3, §11.24.
 	now := time.Date(2026, 10, 3, 12, 0, 0, 0, time.UTC)
@@ -198,6 +201,7 @@ func recoveredMetadata(clientID string, epoch uint64, connected bool, now time.T
 	}}
 }
 
+// Scenarios: cluster-session-and-delivery.md:CLU-SCN-169
 func TestRecoverOwnedConnectedSessionDisconnectsAndCommitsWill(t *testing.T) {
 	// Traceability: CLU-08; docs/specs/cluster-session-and-delivery.md §4.3, §11.24.
 	now := time.Date(2026, 10, 3, 12, 0, 0, 0, time.UTC)
@@ -235,6 +239,7 @@ func TestRecoverOwnedConnectedSessionDisconnectsAndCommitsWill(t *testing.T) {
 	}
 }
 
+// Scenarios: drain-and-rolling-update.md:DRN-SCN-011, cluster-session-and-delivery.md:CLU-SCN-169
 func TestRecoverOwnedPreviousEpochAppliesPlannedHandoffWillRules(t *testing.T) {
 	// Traceability: DEP-07/DEP-12; docs/specs/drain-and-rolling-update.md §5.
 	for _, test := range []struct {
@@ -291,6 +296,7 @@ func TestRecoverOwnedPreviousEpochAppliesPlannedHandoffWillRules(t *testing.T) {
 	}
 }
 
+// Scenarios: cluster-session-and-delivery.md:CLU-SCN-169
 func TestRecoverOwnedDetachedSessionUsesAbsoluteTimerDeadlines(t *testing.T) {
 	// Traceability: CLU-08; docs/specs/cluster-session-and-delivery.md §4.3, §11.24.
 	now := time.Date(2026, 10, 3, 12, 0, 0, 0, time.UTC)
@@ -331,6 +337,7 @@ func TestRecoverOwnedDetachedSessionUsesAbsoluteTimerDeadlines(t *testing.T) {
 	}
 }
 
+// Scenarios: cluster-session-and-delivery.md:CLU-SCN-169
 func TestRecoverOwnedSessionSkipsConnectedAndAlreadyProcessedEpoch(t *testing.T) {
 	// Traceability: CLU-08; docs/specs/cluster-session-and-delivery.md §4.3, §11.24.
 	now := time.Date(2026, 10, 3, 12, 0, 0, 0, time.UTC)

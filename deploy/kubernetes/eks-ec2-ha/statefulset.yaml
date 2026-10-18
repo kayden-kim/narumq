@@ -1,0 +1,251 @@
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: narumq
+  namespace: narumq
+spec:
+  serviceName: narumq-headless
+  replicas: 3
+  podManagementPolicy: Parallel
+  updateStrategy:
+    type: OnDelete
+  selector:
+    matchLabels:
+      app: narumq
+  template:
+    metadata:
+      labels:
+        app: narumq
+    spec:
+      terminationGracePeriodSeconds: 660
+      securityContext:
+        runAsUser: 10001
+        runAsGroup: 10001
+        fsGroup: 10001
+        fsGroupChangePolicy: OnRootMismatch
+      affinity:
+        podAntiAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            - labelSelector:
+                matchLabels:
+                  app: narumq
+              topologyKey: kubernetes.io/hostname
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: topology.kubernetes.io/zone
+          whenUnsatisfiable: DoNotSchedule
+          labelSelector:
+            matchLabels:
+              app: narumq
+      initContainers:
+        - name: select-peer-identity
+          image: 809446814769.dkr.ecr.ap-northeast-2.amazonaws.com/narumq@sha256:09f77ae1e4d2277fb96192abaafbf3e2d1717683746ff8e6acc17efc9ccfa916
+          imagePullPolicy: IfNotPresent
+          command:
+            - /bin/sh
+            - -c
+            - |
+              mkdir -p /volume/data /volume/audit
+              chown 10001:10001 /volume/data /volume/audit
+              chmod 0770 /volume/data /volume/audit
+              NODE_INDEX="$(hostname | awk -F'-' '{print $NF}')"
+              cp "/tls-source/node-${NODE_INDEX}.crt" /peer-tls/node.crt
+              cp "/tls-source/node-${NODE_INDEX}.key" /peer-tls/node.key
+              cp /tls-source/ca.crt /peer-tls/ca.crt
+              chmod 0440 /peer-tls/node.crt /peer-tls/node.key /peer-tls/ca.crt
+          securityContext:
+            runAsUser: 0
+            runAsGroup: 0
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              cpu: 50m
+              memory: 64Mi
+          volumeMounts:
+            - name: cluster-secrets-source
+              mountPath: /tls-source
+              readOnly: true
+            - name: peer-tls
+              mountPath: /peer-tls
+            - name: data
+              mountPath: /volume
+      containers:
+        - name: narumq
+          image: 809446814769.dkr.ecr.ap-northeast-2.amazonaws.com/narumq@sha256:09f77ae1e4d2277fb96192abaafbf3e2d1717683746ff8e6acc17efc9ccfa916
+          imagePullPolicy: IfNotPresent
+          command:
+            - /bin/sh
+            - -c
+            - |
+              NODE_INDEX="$(hostname | awk -F'-' '{print $NF}')"
+              NODE_ID="$(cat "/configs/slot-${NODE_INDEX}" 2>/dev/null || true)"
+              case "${NODE_ID}" in
+                ''|0*|*[!0-9]*)
+                  printf 'Invalid or missing member slot /configs/slot-%s\n' "${NODE_INDEX}" >&2
+                  exit 1
+                  ;;
+              esac
+              exec /narumq -cluster-config "/configs/node-${NODE_ID}.json"
+          ports:
+            - name: raft-peer
+              containerPort: 7000
+              protocol: TCP
+            - name: mqtt-tcp
+              containerPort: 1883
+              protocol: TCP
+            - name: http-mgmt
+              containerPort: 8080
+              protocol: TCP
+            - name: mqtt-ws
+              containerPort: 8083
+              protocol: TCP
+          lifecycle:
+            preStop:
+              exec:
+                command:
+                  - /bin/sh
+                  - -c
+                  - |
+                    set -eu
+                    NODE_INDEX="${HOSTNAME##*-}"
+                    NODE_ID="$(cat "/configs/slot-${NODE_INDEX}" 2>/dev/null || true)"
+                    case "${NODE_ID}" in
+                      ''|0*|*[!0-9]*)
+                        printf 'Invalid or missing member slot /configs/slot-%s\n' "${NODE_INDEX}" >&2
+                        exit 1
+                        ;;
+                    esac
+                    DRAIN_URL="http://127.0.0.1:8080/api/v1/nodes/${NODE_ID}/drain"
+                    IDEMPOTENCY_KEY="prestop-${NODE_ID}-$(cat /proc/sys/kernel/random/uuid)"
+                    DEADLINE="$(( $(date +%s) + 600 ))"
+                    request() {
+                      {
+                        printf 'header = "Authorization: Bearer %s"\n' "$(cat /secrets/admin.token)"
+                        printf 'header = "Idempotency-Key: %s"\n' "${IDEMPOTENCY_KEY}"
+                        printf 'header = "Content-Type: application/json"\n'
+                      } | curl --silent --show-error --max-time 10 --config - \
+                        --request "$1" "${DRAIN_URL}" --write-out 'HTTP:%{http_code}' ${2:+"--data"} ${2:+"$2"}
+                    }
+                    RESULT="$(request GET)"
+                    STATUS="${RESULT##*HTTP:}"
+                    if [ "${STATUS}" = "404" ]; then
+                      RESULT="$(request POST '{}')"
+                      STATUS="${RESULT##*HTTP:}"
+                      case "${STATUS}" in
+                        200|202) ;;
+                        *) printf 'Drain start failed: HTTP %s\n' "${STATUS}" >&2; exit 1 ;;
+                      esac
+                    elif [ "${STATUS}" != "200" ]; then
+                      printf 'Drain query failed: HTTP %s\n' "${STATUS}" >&2
+                      exit 1
+                    fi
+                    while [ "$(date +%s)" -lt "${DEADLINE}" ]; do
+                      case "${RESULT}" in
+                        *'"phase":"COMPLETED"'*'"safeToStop":true'*) exit 0 ;;
+                        *'"phase":"FAILED"'*|*'"phase":"CANCELLED"'*) printf 'Drain did not complete\n' >&2; exit 1 ;;
+                      esac
+                      sleep 5
+                      RESULT="$(request GET)"
+                      STATUS="${RESULT##*HTTP:}"
+                      [ "${STATUS}" = "200" ] || { printf 'Drain query failed: HTTP %s\n' "${STATUS}" >&2; exit 1; }
+                    done
+                    printf 'Drain completion timed out\n' >&2
+                    exit 1
+          startupProbe:
+            httpGet:
+              path: /health/startup
+              port: http-mgmt
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 60
+          livenessProbe:
+            httpGet:
+              path: /health/live
+              port: http-mgmt
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 3
+          readinessProbe:
+            httpGet:
+              path: /health/ready
+              port: http-mgmt
+            periodSeconds: 5
+            timeoutSeconds: 3
+            failureThreshold: 2
+          resources:
+            requests:
+              cpu: "1"
+              memory: 4Gi
+            limits:
+              cpu: "1"
+              memory: 4Gi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+          volumeMounts:
+            - name: configs
+              mountPath: /configs
+              readOnly: true
+            - name: cluster-secrets
+              mountPath: /secrets
+              readOnly: true
+            - name: peer-tls
+              mountPath: /peer-tls
+              readOnly: true
+            - name: data
+              mountPath: /data
+              subPath: data
+            - name: data
+              mountPath: /audit
+              subPath: audit
+      volumes:
+        - name: configs
+          configMap:
+            name: narumq-cluster-configs
+            defaultMode: 0444
+        - name: cluster-secrets-source
+          secret:
+            secretName: narumq-cluster-secrets
+            defaultMode: 0400
+            items:
+              - key: ca.crt
+                path: ca.crt
+              - key: node-0.crt
+                path: node-0.crt
+              - key: node-0.key
+                path: node-0.key
+              - key: node-1.crt
+                path: node-1.crt
+              - key: node-1.key
+                path: node-1.key
+              - key: node-2.crt
+                path: node-2.crt
+              - key: node-2.key
+                path: node-2.key
+        - name: cluster-secrets
+          secret:
+            secretName: narumq-cluster-secrets
+            defaultMode: 0440
+            items:
+              - key: admin.token
+                path: admin.token
+              - key: dashboard.key
+                path: dashboard.key
+              - key: security.json
+                path: security.json
+        - name: peer-tls
+          emptyDir: {}
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes:
+          - ReadWriteOnce
+        storageClassName: gp3
+        resources:
+          requests:
+            storage: 20Gi

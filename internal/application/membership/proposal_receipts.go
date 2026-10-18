@@ -303,7 +303,7 @@ func proposalMemberBytes(member MemberIdentityDTO) int {
 func proposalDeliverySessionBytes(state DeliverySessionStateDTO) int {
 	size := 64 + len(state.TenantID) + len(state.ClientID)
 	for _, message := range state.Messages {
-		size += 64 + len(message.Topic) + len(message.Payload)
+		size += 64 + len(message.Topic) + len(message.Payload) + len(message.SharedFilter)
 	}
 	for _, inbound := range state.Inbound {
 		size += 64 + len(inbound.Topic) + len(inbound.Payload)
@@ -460,7 +460,7 @@ func ValidProposalResult(result ApplyResultDTO) bool {
 				return false
 			}
 			for i, message := range state.Messages {
-				if message.Sequence == 0 || message.Sequence >= state.NextSequence || (i > 0 && state.Messages[i-1].Sequence >= message.Sequence) || !validTopic(message.Topic) || len(message.Payload) > MaxDeliveryPayloadBytes || message.QoS < 1 || message.QoS > 2 || message.PacketID > 65535 {
+				if message.Sequence == 0 || message.Sequence >= state.NextSequence || (i > 0 && state.Messages[i-1].Sequence >= message.Sequence) || !validTopic(message.Topic) || len(message.Payload) > MaxDeliveryPayloadBytes || message.QoS < 1 || message.QoS > 2 || message.PacketID > 65535 || (message.SharedFilter != "" && !validSharedFilter(message.SharedFilter)) {
 					return false
 				}
 				if message.PacketID == 0 {

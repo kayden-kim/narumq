@@ -29,6 +29,7 @@ func (c *recordingOfflineCommitter) CommitOffline(_ context.Context, delivery de
 }
 
 // Traceability: CLU-14; docs/specs/cluster-session-and-delivery.md §4.1, §10, §11.9.
+// Scenarios: cluster-session-and-delivery.md:CLU-SCN-042
 func TestPublishOfflineCommitHandledDelivered(t *testing.T) {
 	now := testNow()
 	clock := &fakeClock{now: now}
@@ -207,6 +208,7 @@ func TestPublishOfflineCommitErrorDependsOnHandling(t *testing.T) {
 }
 
 // Traceability: CLU-14; docs/specs/cluster-session-and-delivery.md §4.1, §11.25.
+// Scenarios: cluster-session-and-delivery.md:CLU-SCN-177
 func TestPublishLocalDetachTransition(t *testing.T) {
 	for _, tc := range []struct {
 		name        string

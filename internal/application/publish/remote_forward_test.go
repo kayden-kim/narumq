@@ -46,6 +46,7 @@ func addRemoteForwardTestRoute(t *testing.T, routes *routing.Table, sessionID ro
 }
 
 // Traceability: CLU-03; docs/specs/cluster-session-and-delivery.md §3.1, §11.10.
+// Scenarios: cluster-session-and-delivery.md:CLU-SCN-054
 func TestPublishRemoteForwardHandledDoesNotUseLocalQueue(t *testing.T) {
 	routes := routing.NewTable()
 	addRemoteForwardTestRoute(t, routes, "remote-session", "events/#")
@@ -75,6 +76,7 @@ func TestPublishRemoteForwardHandledDoesNotUseLocalQueue(t *testing.T) {
 }
 
 // Traceability: CLU-03; docs/specs/cluster-session-and-delivery.md §3.1, §4.1, §11.10.
+// Scenarios: cluster-session-and-delivery.md:CLU-SCN-054
 func TestPublishOfflineHandledDoesNotCallRemoteForwarder(t *testing.T) {
 	routes := routing.NewTable()
 	addRemoteForwardTestRoute(t, routes, "detached-session", "events/#")
@@ -102,6 +104,7 @@ func TestPublishOfflineHandledDoesNotCallRemoteForwarder(t *testing.T) {
 }
 
 // Traceability: CLU-03; docs/specs/cluster-session-and-delivery.md §3.1, §11.10.
+// Scenarios: cluster-session-and-delivery.md:CLU-SCN-054
 func TestPublishRemoteForwardUnhandledUsesLocalQueue(t *testing.T) {
 	routes := routing.NewTable()
 	addRemoteForwardTestRoute(t, routes, "local-fallback", "events/#")
@@ -124,6 +127,7 @@ func TestPublishRemoteForwardUnhandledUsesLocalQueue(t *testing.T) {
 }
 
 // Traceability: CLU-03; docs/specs/cluster-session-and-delivery.md §3.1, §11.10.
+// Scenarios: cluster-session-and-delivery.md:CLU-SCN-054
 func TestPublishRemoteForwardFullFallsBackShared(t *testing.T) {
 	routes := routing.NewTable()
 	addRemoteForwardTestRoute(t, routes, "member-a", "$share/group/events")
@@ -160,6 +164,8 @@ func TestPublishRemoteForwardFullFallsBackShared(t *testing.T) {
 		t.Fatalf("local fallback attempts = %+v, want selected fallback", queue.attempts)
 	}
 }
+
+// Scenarios: cluster-session-and-delivery.md:CLU-SCN-054
 func TestPublishRemoteForwardErrorDependsOnHandling(t *testing.T) {
 	forwardErr := errors.New("remote forward unavailable")
 	for _, tc := range []struct {
@@ -207,6 +213,7 @@ func TestPublishRemoteForwardErrorDependsOnHandling(t *testing.T) {
 }
 
 // Traceability: CLU-03; docs/specs/cluster-session-and-delivery.md §3.1, §11.10.
+// Scenarios: cluster-session-and-delivery.md:CLU-SCN-054
 func TestAcceptForwardedValidatesExpiryAndQoS(t *testing.T) {
 	now := testNow()
 	routes := routing.NewTable()
@@ -268,6 +275,7 @@ func TestAcceptForwardedValidatesExpiryAndQoS(t *testing.T) {
 }
 
 // Traceability: CLU-14; docs/specs/cluster-session-and-delivery.md §4.1, §11.25.
+// Scenarios: cluster-session-and-delivery.md:CLU-SCN-178
 func TestAcceptForwardedDetachingIsUnavailable(t *testing.T) {
 	queue := &recordingQueue{errors: map[routing.SessionID]error{"sub": deliveryqueue.ErrDetaching}}
 	useCase := newRemoteForwardTestUseCase(t, routing.NewTable(), queue)

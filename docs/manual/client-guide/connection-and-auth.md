@@ -23,6 +23,11 @@ flowchart TD
 ```
 
 ---
+## WebSocket 및 WSS 연결
+
+MQTT over WebSocket은 브로커의 `/mqtt` endpoint와 `mqtt` subprotocol을 사용합니다. 평문 WebSocket 리스너는 `-ws-listen`으로, TLS 보호 WSS 리스너는 `-wss-listen`으로 설정하며 허용 Origin은 `-ws-allowed-origins`로 지정합니다. WebSocket 연결에서도 MQTT 인증 방식과 보안 정책은 동일하게 적용됩니다.
+
+클러스터 설정에서는 각각 `mqtt.wsListenAddress`, `mqtt.wssListenAddress`, `mqtt.wsAllowedOrigins`를 사용합니다. 리스너 운영 규칙은 [프로세스 및 CLI 설정 가이드](../operator-guide/configuration.md)를 참조하십시오.
 
 ## 2. 인증 방식별 연결 방법
 

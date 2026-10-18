@@ -117,7 +117,12 @@ func (fixture *runnerIngressFixture) close(t *testing.T) {
 	}
 }
 
+// Acceptance: NARUMQ_LOAD_QUALITY
+// Scenarios: performance-and-verification.md:PRF-SCN-122
 func TestRunAgainstInProcessNaruMQ(t *testing.T) {
+	if os.Getenv("NARUMQ_LOAD_QUALITY") != "1" {
+		t.Skip("set NARUMQ_LOAD_QUALITY=1 to run the BP-01 in-process load run")
+	}
 	fixture := newRunnerIngressFixture(t)
 	defer fixture.close(t)
 

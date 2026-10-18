@@ -28,6 +28,7 @@ func credentialRevocationSnapshot(entries ...*CredentialRevocationState) *Replic
 }
 
 // Traceability: SEC-07; docs/specs/tenancy-and-security.md §7, §9; docs/contracts/replicated-state-v1.md §2, §4.
+// Scenarios: tenancy-and-security.md:SEC-SCN-036
 func TestCredentialRevocationCommandCodecRoundTripAndValidation(t *testing.T) {
 	for _, action := range []CredentialRevocationAction{
 		CredentialRevocationAction_CREDENTIAL_REVOCATION_ACTION_REVOKE,
@@ -67,6 +68,7 @@ func TestCredentialRevocationCommandCodecRoundTripAndValidation(t *testing.T) {
 }
 
 // Traceability: SEC-07; docs/specs/tenancy-and-security.md §7, §9; docs/contracts/replicated-state-v1.md §4.
+// Scenarios: tenancy-and-security.md:SEC-SCN-036
 func TestCredentialRevocationSnapshotRoundTripSortsAndCountsEntries(t *testing.T) {
 	maxID := strings.Repeat("é", 256)
 	state := credentialRevocationSnapshot(
@@ -96,6 +98,7 @@ func TestCredentialRevocationSnapshotRoundTripSortsAndCountsEntries(t *testing.T
 }
 
 // Traceability: SEC-07; docs/specs/tenancy-and-security.md §7, §9; docs/contracts/replicated-state-v1.md §4.
+// Scenarios: tenancy-and-security.md:SEC-SCN-036
 func TestCredentialRevocationSnapshotRejectsInvalidState(t *testing.T) {
 	cases := []struct {
 		name  string
@@ -131,6 +134,7 @@ func TestCredentialRevocationSnapshotRejectsInvalidState(t *testing.T) {
 }
 
 // Traceability: SEC-07; docs/specs/tenancy-and-security.md §7, §9; docs/contracts/replicated-state-v1.md §4.
+// Scenarios: tenancy-and-security.md:SEC-SCN-036
 func TestCredentialRevocationSnapshotCapacityBoundary(t *testing.T) {
 	entries := make([]*CredentialRevocationState, maxCredentialRevocations)
 	for index := range entries {
@@ -157,6 +161,7 @@ func TestCredentialRevocationSnapshotCapacityBoundary(t *testing.T) {
 }
 
 // Traceability: SEC-07; docs/specs/tenancy-and-security.md §7, §9; docs/contracts/replicated-state-v1.md §2.
+// Scenarios: tenancy-and-security.md:SEC-SCN-036
 func TestCredentialRevocationCommandReferenceVector(t *testing.T) {
 	command := credentialRevocationCommand(CredentialRevocationAction_CREDENTIAL_REVOCATION_ACTION_REVOKE, "k", 100)
 	wire, err := MarshalCommand(command)

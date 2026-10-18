@@ -6,6 +6,7 @@ import (
 )
 
 // Traceability: CLU-12; docs/specs/cluster-session-and-delivery.md §4.5, §11.28.
+// Scenarios: cluster-session-and-delivery.md:CLU-SCN-203
 func TestFreeBytes(t *testing.T) {
 	path := t.TempDir()
 	available, err := FreeBytes(path)

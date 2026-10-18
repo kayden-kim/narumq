@@ -73,6 +73,7 @@ func TestOfflineCommandCodecRoundTrip(t *testing.T) {
 }
 
 // Traceability: CLU-14; docs/specs/cluster-session-and-delivery.md §4.1, §10, §11.9.
+// Scenarios: cluster-session-and-delivery.md:CLU-SCN-041
 func TestOfflineCommandCodecRejectsInvalidMutations(t *testing.T) {
 	validDetach := &OfflineChange{
 		TenantId: "tenant", ClientId: "client", OwnerNodeId: 1, Epoch: 1,
@@ -300,6 +301,7 @@ func TestOfflineSnapshotCodecRejectsInvalidState(t *testing.T) {
 }
 
 // Traceability: CLU-14; docs/specs/cluster-session-and-delivery.md §4.1, §10, §11.9.
+// Scenarios: cluster-session-and-delivery.md:CLU-SCN-041
 func TestOfflineSnapshotCodecRejectsAggregateByteLimit(t *testing.T) {
 	messages := make([]*OfflineMessage, 17)
 	for i := range messages {

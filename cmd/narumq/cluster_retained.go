@@ -65,6 +65,9 @@ func clusterRetainedCommitError(result membership.ApplyResultDTO, err error) err
 		return nil
 	}
 	if result.Outcome == membership.ApplyOutcomeConflict && result.Conflict == membership.ConflictRetainedCapacity {
+		if result.TenantQuota != nil {
+			return publish.NewRejectionError(applicationretained.ErrFull, publish.RejectionClassTenantLimit, publish.RejectionCauseTenantQuota)
+		}
 		return applicationretained.ErrFull
 	}
 	return membership.ErrQuorumUnavailable

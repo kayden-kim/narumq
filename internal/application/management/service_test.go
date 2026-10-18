@@ -36,6 +36,7 @@ func setupTestService(t *testing.T) (*Service, *sessionstore.MemorySessionReposi
 	return svc, sstore, rtable, rrepo, mreg
 }
 
+// Scenarios: management-api-and-observability.md:MGT-SCN-020
 func TestService_HealthChecks(t *testing.T) {
 	ctx := context.Background()
 	svc, _, _, _, _ := setupTestService(t)
@@ -93,6 +94,7 @@ func TestService_HealthChecks(t *testing.T) {
 	}
 }
 
+// Scenarios: management-api-and-observability.md:MGT-SCN-022
 func TestService_ClusterAndNodeSummary(t *testing.T) {
 	ctx := context.Background()
 	svc, _, _, _, mreg := setupTestService(t)
@@ -307,6 +309,7 @@ func (source testClusterSessionSource) ClusterSessions() ([]ports.ClientSessionD
 	return source.sessions, source.available
 }
 
+// Scenarios: cluster-session-and-delivery.md:CLU-SCN-170
 func TestService_ClusterSessionSourceQueries(t *testing.T) {
 	// Traceability: CLU-08; docs/specs/cluster-session-and-delivery.md §4.3, §11.24.
 	ctx := context.Background()
@@ -365,6 +368,7 @@ func TestService_ClusterSessionSourceQueries(t *testing.T) {
 	}
 }
 
+// Scenarios: cluster-session-and-delivery.md:CLU-SCN-170
 func TestService_ClusterSessionSourceGetClient(t *testing.T) {
 	// Traceability: CLU-08; docs/specs/cluster-session-and-delivery.md §4.3, §11.24.
 	ctx := context.Background()

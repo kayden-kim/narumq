@@ -11,6 +11,8 @@ import (
 	"narumq/internal/domain/mqtt"
 )
 
+// TestSubscriberQoS2RetransmitBeforePubRelCountsOnce verifies a QoS 2 retransmit before PUBREL is counted once.
+// Scenarios: performance-and-verification.md:PRF-SCN-046
 func TestSubscriberQoS2RetransmitBeforePubRelCountsOnce(t *testing.T) {
 	profile := bp02SmokeProfile(t)
 	col := newCollector(profile, "narumq")

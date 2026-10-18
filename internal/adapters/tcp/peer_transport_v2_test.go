@@ -411,6 +411,7 @@ func TestDynamicSeedAdmissionRequiresTLSBoundCommittedStage(t *testing.T) {
 }
 
 // Traceability: CLU-02/CLU-07/CLU-14; ADR-0024; cluster spec §11.20.
+// Scenarios: cluster-session-and-delivery.md:CLU-SCN-131
 func TestDynamicSeedAdmissionRejectsFreshVoterIdentity(t *testing.T) {
 	seedServerTLS, seedClientTLS := testPeerTLSConfigs(t, "seed.example")
 	candidateServerTLS, candidateClientTLS := testPeerTLSConfigs(t, "node4.example")
@@ -624,6 +625,7 @@ func TestDynamicJoinerAcceptCapacityExpandsAfterAdmission(t *testing.T) {
 	}
 }
 
+// Scenarios: cluster-session-and-delivery.md:CLU-SCN-020
 func TestDynamicPeerRejectsTLSCertificateIdentityMismatchBeforeRaftDelivery(t *testing.T) {
 	serverTLS1, clientTLS1 := testPeerTLSConfigs(t, "node1.example")
 	serverTLS2, clientTLS2 := testPeerTLSConfigs(t, "node2.example")
@@ -718,6 +720,7 @@ func TestDynamicPeerRejectsTLSCertificateIdentityMismatchBeforeRaftDelivery(t *t
 }
 
 // Traceability: PRD CLU-02/SEC-09; docs/specs/cluster-session-and-delivery.md §11.5 (Compatibility and identity rejection).
+// Scenarios: tenancy-and-security.md:SEC-SCN-009, cluster-session-and-delivery.md:CLU-SCN-020
 func TestDynamicPeerRejectsForeignCAAndSANAndClusterMismatchBeforeRaftDelivery(t *testing.T) {
 	t.Run("foreign CA rejected at TLS handshake before delivery", func(t *testing.T) {
 		serverTLS2, clientTLS2 := testPeerTLSConfigs(t, "node2.example")
@@ -1005,6 +1008,7 @@ func TestDynamicPeerRejectsForeignCAAndSANAndClusterMismatchBeforeRaftDelivery(t
 	})
 }
 
+// Scenarios: cluster-session-and-delivery.md:CLU-SCN-022
 func TestDynamicPeerTransportPreservesQueuedFramesAcrossPhaseChange(t *testing.T) {
 	serverTLS1, clientTLS1 := testPeerTLSConfigs(t, "node1.example")
 	serverTLS2, clientTLS2 := testPeerTLSConfigs(t, "node2.example")
@@ -1103,6 +1107,7 @@ func TestDynamicPeerTransportPreservesQueuedFramesAcrossPhaseChange(t *testing.T
 	}
 }
 
+// Scenarios: cluster-session-and-delivery.md:CLU-SCN-022
 func TestDynamicPeerPhaseRefreshPreservesInProgressOutboundFrame(t *testing.T) {
 	local := dynamicTestIdentity(1, "n:1", "n1", PeerPhaseVoter, "", 0x11)
 	remote := dynamicTestIdentity(2, "n:2", "n2", PeerPhaseLearner, testOperationID, 0x22)
@@ -1194,6 +1199,7 @@ func TestDynamicSendRejectsStagedForwardingAndStoppedPeers(t *testing.T) {
 }
 
 // Traceability: CLU-12; docs/specs/cluster-session-and-delivery.md §4.2, §11.28.
+// Scenarios: cluster-session-and-delivery.md:CLU-SCN-201
 func TestDynamicPeerReclaimUnsentReturnsOnlyUnwrittenProposals(t *testing.T) {
 	local := dynamicTestIdentity(1, "n:1", "n1", PeerPhaseVoter, "", 0x11)
 	remote := dynamicTestIdentity(2, "n:2", "n2", PeerPhaseVoter, "", 0x22)
@@ -1458,6 +1464,7 @@ func TestDynamicPeerInboundQueueBoundsAndRetirement(t *testing.T) {
 	}
 }
 
+// Scenarios: cluster-session-and-delivery.md:CLU-SCN-022
 func TestDynamicPeerPhaseRefreshDiscardsInboundAndRejectsStaleFrames(t *testing.T) {
 	local := dynamicTestIdentity(1, "n:1", "n1", PeerPhaseVoter, "", 0x11)
 	remote := dynamicTestIdentity(2, "n:2", "n2", PeerPhaseLearner, testOperationID, 0x22)
@@ -1508,6 +1515,7 @@ func TestDynamicPeerPhaseRefreshDiscardsInboundAndRejectsStaleFrames(t *testing.
 	}
 }
 
+// Scenarios: cluster-session-and-delivery.md:CLU-SCN-022
 func TestDynamicPeerPhaseRefreshWaitsForInboundDeliveryCompletion(t *testing.T) {
 	local := dynamicTestIdentity(1, "n:1", "n1", PeerPhaseVoter, "", 0x11)
 	remote := dynamicTestIdentity(2, "n:2", "n2", PeerPhaseLearner, testOperationID, 0x22)
@@ -1707,6 +1715,8 @@ func assertDynamicFramedPayload(t *testing.T, payload []byte, maximum uint32) {
 	}
 }
 
+// TestDynamicDialDropsConnectionWhenIdentityChangesDuringHandshake verifies a dial drops the connection when the peer identity changes during the handshake.
+// Scenarios: performance-and-verification.md:PRF-SCN-088
 func TestDynamicDialDropsConnectionWhenIdentityChangesDuringHandshake(t *testing.T) {
 	n1 := cptNewNode(t, "node1.example")
 	n2 := cptNewNode(t, "node2.example")
@@ -1763,6 +1773,8 @@ func TestDynamicDialDropsConnectionWhenIdentityChangesDuringHandshake(t *testing
 	_ = retry.Close()
 }
 
+// TestDynamicDialSuppressesErrorWhenIdentityChangesBeforeHelloResponse verifies a dial suppresses its error when the peer identity changes before the hello response.
+// Scenarios: performance-and-verification.md:PRF-SCN-088
 func TestDynamicDialSuppressesErrorWhenIdentityChangesBeforeHelloResponse(t *testing.T) {
 	n1 := cptNewNode(t, "node1.example")
 	n2 := cptNewNode(t, "node2.example")

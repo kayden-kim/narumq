@@ -3,8 +3,8 @@
   "jsonSchemaDialect": "https://json-schema.org/draft/2020-12/schema",
   "info": {
     "title": "NaruMQ Management API",
-    "version": "1.15.0",
-    "description": "Query, observability, authenticated cluster membership and feature activation, cluster policy updates, node configuration, broker node drain and connection rebalance, credential revocation and client blocklist, cluster-backup operations, and node-local management audit events. Per-principal and failed-authentication rate limiting applies to /api/v1. Dashboard APIs are deferred."
+    "version": "1.18.0",
+    "description": "Query, node-local and cluster observability, authenticated cluster membership and feature activation, cluster policy updates, node configuration, broker node drain and connection rebalance, credential revocation and client blocklist, cluster-backup operations, and node-local management audit events. Per-principal and failed-authentication rate limiting applies to /api/v1. User-approved v1 observability redefinition uses nullable node measurements and typed snapshots without compatibility aliases."
   },
   "servers": [
     {
@@ -98,13 +98,64 @@
       "get": {
         "tags": ["Metrics"],
         "operationId": "getMetrics",
-        "summary": "Scrape broker metrics",
-        "description": "Returns Prometheus text by default and OpenMetrics text when requested. Anonymous access is controlled by listener policy.",
+        "summary": "Scrape node or cluster metrics",
+        "description": "Defaults to mode=node and keeps the existing local Prometheus/OpenMetrics fast path. mode=all_nodes_unaggregated and mode=all_nodes_aggregated require PermissionRead and cannot use anonymous metrics policy. Node mode anonymous access is controlled by listener policy. Cluster modes return 503 rather than partial text when any non-retired member cannot be queried.",
+        "parameters": [
+          {
+            "name": "mode",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "enum": ["node", "all_nodes_unaggregated", "all_nodes_aggregated"],
+              "default": "node"
+            }
+          }
+        ],
         "responses": {
           "200": { "$ref": "#/components/responses/MetricsResponse" },
+          "400": { "$ref": "#/components/responses/BadRequest" },
           "401": { "$ref": "#/components/responses/Unauthorized" },
           "403": { "$ref": "#/components/responses/Forbidden" },
-          "405": { "$ref": "#/components/responses/MethodNotAllowed" }
+          "405": { "$ref": "#/components/responses/MethodNotAllowed" },
+          "503": {
+            "description": "Cluster collection is incomplete, too large, or cannot be aggregated. The response is an error envelope and contains no partial text.",
+            "headers": { "X-Request-Id": { "$ref": "#/components/headers/XRequestId" } },
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorResponse" } } }
+          }
+        }
+      }
+    },
+    "/api/v1/metrics": {
+      "get": {
+        "tags": ["Metrics"],
+        "operationId": "getMetricCollection",
+        "summary": "Collect node metrics",
+        "description": "Requires PermissionRead. Defaults to all_nodes_unaggregated. Partial unaggregated JSON returns 200 with complete=false. Aggregated mode requires every non-retired member and returns a retryable 503 on any query failure. Unknown, duplicate, or empty mode values, request bodies, and unsupported methods are rejected.",
+        "parameters": [
+          {
+            "name": "mode",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "enum": ["node", "all_nodes_unaggregated", "all_nodes_aggregated"],
+              "default": "all_nodes_unaggregated"
+            }
+          }
+        ],
+        "responses": {
+          "200": { "$ref": "#/components/responses/MetricCollectionResponse" },
+          "400": { "$ref": "#/components/responses/BadRequest" },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "403": { "$ref": "#/components/responses/Forbidden" },
+          "405": { "$ref": "#/components/responses/MethodNotAllowed" },
+          "429": { "$ref": "#/components/responses/TooManyRequests" },
+          "503": {
+            "description": "Collection is incomplete in aggregated mode, exceeds the size limit, or fails snapshot validation or aggregation.",
+            "headers": { "X-Request-Id": { "$ref": "#/components/headers/XRequestId" } },
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorResponse" } } }
+          }
         }
       }
     },
@@ -411,6 +462,7 @@
         "tags": ["Nodes"],
         "operationId": "listNodes",
         "summary": "List cluster nodes",
+        "description": "Returns all committed membership rows ordered by numeric node ID. State filtering includes only successful direct observations whose measured state matches. Unqueried, retired, and staged rows are visible when no state filter is supplied; unavailable registered nodes keep a row with null measurements.",
         "parameters": [
           { "$ref": "#/components/parameters/Cursor" },
           { "$ref": "#/components/parameters/Limit" },
@@ -438,6 +490,7 @@
         "tags": ["Nodes"],
         "operationId": "getNode",
         "summary": "Read one node",
+        "description": "Returns direct measurements from the target node. A registered node that cannot be queried still returns 200 with queryStatus and null measurement fields.",
         "responses": {
           "200": { "$ref": "#/components/responses/NodeResponse" },
           "400": { "$ref": "#/components/responses/BadRequest" },
@@ -446,6 +499,29 @@
           "403": { "$ref": "#/components/responses/Forbidden" },
           "404": { "$ref": "#/components/responses/NotFound" },
           "405": { "$ref": "#/components/responses/MethodNotAllowed" }
+        }
+      }
+    },
+    "/api/v1/nodes/{nodeId}/metrics": {
+      "parameters": [{ "$ref": "#/components/parameters/NodeId" }],
+      "get": {
+        "tags": ["Metrics"],
+        "operationId": "getNodeMetrics",
+        "summary": "Read one node's metric snapshot",
+        "description": "Requires PermissionRead. Query parameters and request bodies are rejected. A registered target that is unreachable, unsupported, or retired returns 200 with status metadata and null families. This endpoint has an 8 MiB node snapshot limit.",
+        "responses": {
+          "200": { "$ref": "#/components/responses/NodeMetricsResponse" },
+          "400": { "$ref": "#/components/responses/BadRequest" },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "403": { "$ref": "#/components/responses/Forbidden" },
+          "404": { "$ref": "#/components/responses/NotFound" },
+          "405": { "$ref": "#/components/responses/MethodNotAllowed" },
+          "429": { "$ref": "#/components/responses/TooManyRequests" },
+          "503": {
+            "description": "The local snapshot query service is unavailable (`metrics_unavailable`).",
+            "headers": { "X-Request-Id": { "$ref": "#/components/headers/XRequestId" } },
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorResponse" } } }
+          }
         }
       }
     },
@@ -1141,8 +1217,9 @@
         "name": "nodeId",
         "in": "path",
         "required": true,
-        "example": "node-1",
-        "schema": { "$ref": "#/components/schemas/OpaqueId" }
+        "description": "Canonical positive decimal uint64 in Dynamic cluster, or the fixed standalone ID narumq-node-1.",
+        "example": "1",
+        "schema": { "$ref": "#/components/schemas/NodeIdentifier" }
       },
       "LocalNodeId": {
         "name": "nodeId",
@@ -1219,8 +1296,10 @@
                     "replicationFactor": 1,
                     "writeQuorum": 1,
                     "quorumAvailable": true,
-                    "leaderNodeId": "node-1",
-                    "nodesByState": { "joining": 0, "ready": 1, "draining": 0, "safeToStop": 0 },
+                    "leaderNodeId": "1",
+                    "nodesByState": { "joining": 0, "ready": 1, "draining": 0, "safeToStop": 0, "unknown": 0 },
+                    "nodeQueryComplete": true,
+                    "observedAt": "2026-10-15T12:00:00Z",
                     "underReplicated": 0,
                     "connectionCount": 0,
                     "sessionCount": 0,
@@ -1229,6 +1308,50 @@
                 }
               }
             }
+          }
+        }
+      },
+      "NodeMetricsResponse": {
+        "description": "One target node's typed metric snapshot or query status.",
+        "headers": { "X-Request-Id": { "$ref": "#/components/headers/XRequestId" } },
+        "content": {
+          "application/json": {
+            "schema": { "$ref": "#/components/schemas/NodeMetricsEnvelope" },
+            "examples": {
+              "success": {
+                "value": {
+                  "data": {
+                    "nodeId": "1",
+                    "queryStatus": "OK",
+                    "queryErrorCode": null,
+                    "observedAt": "2026-10-15T12:00:00.123456789Z",
+                    "startedAt": "2026-10-15T11:00:00Z",
+                    "families": [
+                      {
+                        "name": "narumq_connections_active",
+                        "help": "Current number of active client connections.",
+                        "type": "gauge",
+                        "scope": "node",
+                        "aggregation": "sum",
+                        "labelNames": [],
+                        "samples": [
+                          { "name": "narumq_connections_active", "labels": [], "valueKind": "integer", "value": "3" }
+                        ]
+                      }
+                    ]
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "MetricCollectionResponse": {
+        "description": "A metric collection with per-node query metadata.",
+        "headers": { "X-Request-Id": { "$ref": "#/components/headers/XRequestId" } },
+        "content": {
+          "application/json": {
+            "schema": { "$ref": "#/components/schemas/MetricCollectionEnvelope" }
           }
         }
       },
@@ -1258,7 +1381,7 @@
         }
       },
       "NodeListResponse": {
-        "description": "Node list.",
+        "description": "Node list ordered by numeric nodeId. Query failures retain their member row with null measurements.",
         "headers": { "X-Request-Id": { "$ref": "#/components/headers/XRequestId" } },
         "content": {
           "application/json": {
@@ -1268,36 +1391,42 @@
                 "value": {
                   "data": [
                     {
-                      "nodeId": "node-1",
+                      "nodeId": "1",
+                      "membershipPhase": "VOTER",
+                      "queryStatus": "OK",
+                      "queryErrorCode": null,
+                      "observedAt": "2026-10-15T12:00:00.123456789Z",
                       "version": "1.0.0",
-                      "uptimeMillis": 0,
+                      "uptimeMillis": 3600000,
                       "state": "READY",
                       "ready": true,
                       "readinessReason": null,
                       "role": "LEADER",
-                      "lastAppliedIndex": 0,
-                      "connectionCount": 0,
+                      "lastAppliedIndex": 5,
+                      "connectionCount": 1,
+                      "sessionCount": 1,
                       "storagePressure": false,
-                      "replicationHealth": "HEALTHY"
+                      "replicationHealth": "HEALTHY",
+                      "lastErrorCode": null
                     },
                     {
-                      "nodeId": "node-2",
-                      "version": "1.0.0",
-                      "uptimeMillis": 0,
-                      "state": "JOINING",
-                      "ready": false,
-                      "readinessReason": "remote readiness is not available from this node",
-                      "role": "FOLLOWER",
-                      "lastAppliedIndex": 0,
-                      "connectionCount": 0,
-                      "storagePressure": false,
-                      "replicationHealth": "UNREACHABLE",
-                      "lastErrorCode": "peer_disconnected",
-                      "replicationQueue": {
-                        "outboundMessages": 0,
-                        "outboundBytes": 0,
-                        "rejectedMessages": 0
-                      }
+                      "nodeId": "2",
+                      "membershipPhase": "VOTER",
+                      "queryStatus": "UNREACHABLE",
+                      "queryErrorCode": "node_unreachable",
+                      "observedAt": null,
+                      "version": null,
+                      "uptimeMillis": null,
+                      "state": null,
+                      "ready": null,
+                      "readinessReason": null,
+                      "role": null,
+                      "lastAppliedIndex": null,
+                      "connectionCount": null,
+                      "sessionCount": null,
+                      "storagePressure": null,
+                      "replicationHealth": null,
+                      "lastErrorCode": null
                     }
                   ],
                   "page": { "nextCursor": null, "hasMore": false }
@@ -1308,24 +1437,29 @@
         }
       },
       "NodeResponse": {
-        "description": "Node detail.",
+        "description": "Direct node measurement and query metadata. Readiness false is a successful observation when queryStatus is OK.",
         "headers": { "X-Request-Id": { "$ref": "#/components/headers/XRequestId" } },
         "content": {
           "application/json": {
             "schema": { "$ref": "#/components/schemas/NodeEnvelope" },
             "examples": {
-              "success": {
+              "notReady": {
                 "value": {
                   "data": {
-                    "nodeId": "node-1",
+                    "nodeId": "1",
+                    "membershipPhase": "VOTER",
+                    "queryStatus": "OK",
+                    "queryErrorCode": null,
+                    "observedAt": "2026-10-15T12:00:00.123456789Z",
                     "version": "1.0.0",
-                    "uptimeMillis": 0,
-                    "state": "READY",
+                    "uptimeMillis": 3600000,
+                    "state": "JOINING",
                     "ready": false,
                     "readinessReason": "raft storage I/O is slow",
                     "role": "LEADER",
-                    "lastAppliedIndex": 0,
-                    "connectionCount": 0,
+                    "lastAppliedIndex": 5,
+                    "connectionCount": 1,
+                    "sessionCount": 1,
                     "storagePressure": true,
                     "replicationHealth": "DEGRADED",
                     "lastErrorCode": "storage_slow"
@@ -1673,20 +1807,20 @@
       "NodeDrainRequest": {
         "type": "object",
         "additionalProperties": false,
-        "required": ["connectionRatePerSecond", "loadBalancerPropagationDelayMillis", "timeoutMillis"],
         "properties": {
           "serverReference": {
             "type": "string",
             "maxLength": 256,
             "description": "Optional MQTT 5 Server Reference; at most 256 UTF-8 bytes and no control characters."
           },
-          "connectionRatePerSecond": { "type": "integer", "minimum": 1, "maximum": 10000 },
-          "loadBalancerPropagationDelayMillis": { "type": "integer", "minimum": 0, "maximum": 3600000 },
+          "connectionRatePerSecond": { "type": "integer", "minimum": 1, "maximum": 10000, "default": 100 },
+          "loadBalancerPropagationDelayMillis": { "type": "integer", "minimum": 0, "maximum": 3600000, "default": 30000 },
           "timeoutMillis": {
             "type": "integer",
             "minimum": 1000,
             "maximum": 86400000,
-            "description": "Must be greater than loadBalancerPropagationDelayMillis."
+            "default": 600000,
+            "description": "Must be greater than loadBalancerPropagationDelayMillis after defaults are applied."
           }
         }
       },
@@ -1832,6 +1966,13 @@
       "Timestamp": {
         "type": "string",
         "format": "date-time"
+      },
+      "NodeIdentifier": {
+        "oneOf": [
+          { "type": "string", "minLength": 1, "maxLength": 20, "pattern": "^[1-9][0-9]*$" },
+          { "const": "narumq-node-1" }
+        ],
+        "description": "Canonical positive decimal uint64 in Dynamic cluster, or the fixed standalone node ID."
       },
       "NodeState": {
         "type": "string",
@@ -2144,7 +2285,7 @@
       "ClusterData": {
         "type": "object",
         "additionalProperties": false,
-        "required": ["clusterId", "releaseVersion", "memberCount", "quorumSize", "quorumAvailable", "leaderNodeId", "nodesByState", "underReplicated", "connectionCount", "sessionCount", "subscriptionCount"],
+        "required": ["clusterId", "releaseVersion", "memberCount", "quorumSize", "quorumAvailable", "leaderNodeId", "nodesByState", "nodeQueryComplete", "observedAt", "underReplicated", "connectionCount", "sessionCount", "subscriptionCount"],
         "properties": {
           "clusterId": { "$ref": "#/components/schemas/OpaqueId" },
           "releaseVersion": { "type": "string", "minLength": 1, "maxLength": 64 },
@@ -2157,17 +2298,20 @@
           "nodesByState": {
             "type": "object",
             "additionalProperties": false,
-            "required": ["joining", "ready", "draining", "safeToStop"],
+            "required": ["joining", "ready", "draining", "safeToStop", "unknown"],
             "properties": {
               "joining": { "type": "integer", "minimum": 0 },
               "ready": { "type": "integer", "minimum": 0 },
               "draining": { "type": "integer", "minimum": 0 },
-              "safeToStop": { "type": "integer", "minimum": 0 }
+              "safeToStop": { "type": "integer", "minimum": 0 },
+              "unknown": { "type": "integer", "minimum": 0 }
             }
           },
+          "nodeQueryComplete": { "type": "boolean" },
+          "observedAt": { "$ref": "#/components/schemas/Timestamp" },
           "underReplicated": { "type": "integer", "minimum": 0 },
-          "connectionCount": { "type": "integer", "minimum": 0 },
-          "sessionCount": { "type": "integer", "minimum": 0 },
+          "connectionCount": { "type": ["integer", "null"], "minimum": 0 },
+          "sessionCount": { "type": ["integer", "null"], "minimum": 0 },
           "subscriptionCount": { "type": "integer", "minimum": 0 }
         }
       },
@@ -2180,38 +2324,28 @@
       "NodeData": {
         "type": "object",
         "additionalProperties": false,
-        "required": ["nodeId", "version", "uptimeMillis", "state", "ready", "readinessReason", "role", "lastAppliedIndex", "connectionCount", "storagePressure"],
+        "required": ["nodeId", "membershipPhase", "queryStatus", "queryErrorCode", "observedAt", "version", "uptimeMillis", "state", "ready", "readinessReason", "role", "lastAppliedIndex", "connectionCount", "sessionCount", "storagePressure", "replicationHealth", "lastErrorCode"],
         "properties": {
-          "nodeId": { "$ref": "#/components/schemas/OpaqueId" },
-          "version": { "type": "string", "minLength": 1, "maxLength": 64 },
-          "uptimeMillis": { "type": "integer", "minimum": 0 },
-          "state": { "$ref": "#/components/schemas/NodeState" },
-          "ready": { "type": "boolean" },
+          "nodeId": { "$ref": "#/components/schemas/NodeIdentifier" },
+          "membershipPhase": { "type": "string", "enum": ["STANDALONE", "STAGED", "LEARNER", "CATCHING_UP", "VOTER", "LEAVING", "RETIRED"] },
+          "queryStatus": { "type": "string", "enum": ["OK", "UNREACHABLE", "UNSUPPORTED", "RETIRED", "ERROR"] },
+          "queryErrorCode": {
+            "type": ["string", "null"],
+            "enum": ["node_unreachable", "node_query_timeout", "node_query_unsupported", "node_query_busy", "node_query_invalid_response", "node_snapshot_too_large", "node_query_failed", "node_not_running", null]
+          },
+          "observedAt": { "anyOf": [{ "$ref": "#/components/schemas/Timestamp" }, { "type": "null" }] },
+          "version": { "type": ["string", "null"], "minLength": 1, "maxLength": 64 },
+          "uptimeMillis": { "type": ["integer", "null"], "minimum": 0 },
+          "state": { "type": ["string", "null"], "enum": ["JOINING", "READY", "DRAINING", "SAFE_TO_STOP", null] },
+          "ready": { "type": ["boolean", "null"] },
           "readinessReason": { "type": ["string", "null"], "maxLength": 256 },
-          "role": { "type": "string", "enum": ["LEADER", "FOLLOWER", "LEARNER"] },
-          "lastAppliedIndex": { "type": "integer", "minimum": 0 },
-          "connectionCount": { "type": "integer", "minimum": 0 },
-          "storagePressure": { "type": "boolean" },
-          "replicationHealth": {
-            "type": "string",
-            "enum": ["HEALTHY", "DEGRADED", "FAILED", "UNREACHABLE"],
-            "description": "Local Raft storage health or the remote peer link health observed by this node; remote values do not report remote storage state."
-          },
-          "lastErrorCode": {
-            "type": "string",
-            "enum": ["storage_no_space", "storage_io_error", "storage_slow", "raft_node_failed", "peer_disconnected", "peer_queue_full", "peer_invalid_message", "peer_transport_error"]
-          },
-          "replicationQueue": {
-            "type": "object",
-            "additionalProperties": false,
-            "required": ["outboundMessages", "outboundBytes", "rejectedMessages"],
-            "description": "Outbound queue from this node to the remote peer represented by this node row.",
-            "properties": {
-              "outboundMessages": { "type": "integer", "minimum": 0, "maximum": 32 },
-              "outboundBytes": { "type": "integer", "minimum": 0, "maximum": 4194304 },
-              "rejectedMessages": { "type": "integer", "minimum": 0 }
-            }
-          }
+          "role": { "type": ["string", "null"], "enum": ["LEADER", "FOLLOWER", "LEARNER", null] },
+          "lastAppliedIndex": { "type": ["integer", "null"], "minimum": 0 },
+          "connectionCount": { "type": ["integer", "null"], "minimum": 0 },
+          "sessionCount": { "type": ["integer", "null"], "minimum": 0 },
+          "storagePressure": { "type": ["boolean", "null"] },
+          "replicationHealth": { "type": ["string", "null"], "enum": ["HEALTHY", "DEGRADED", "FAILED", null] },
+          "lastErrorCode": { "type": ["string", "null"], "maxLength": 128 }
         }
       },
       "NodeEnvelope": {
@@ -2228,6 +2362,89 @@
           "data": { "type": "array", "items": { "$ref": "#/components/schemas/NodeData" } },
           "page": { "$ref": "#/components/schemas/Page" }
         }
+      },
+      "MetricLabel": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["name", "value"],
+        "properties": {
+          "name": { "type": "string", "minLength": 1, "maxLength": 128 },
+          "value": { "type": "string", "maxLength": 1024 }
+        }
+      },
+      "MetricSample": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["name", "labels", "valueKind", "value"],
+        "properties": {
+          "name": { "type": "string", "minLength": 1, "maxLength": 256 },
+          "labels": { "type": "array", "maxItems": 8, "items": { "$ref": "#/components/schemas/MetricLabel" } },
+          "valueKind": { "type": "string", "enum": ["integer", "float"] },
+          "value": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^-?(0|[1-9][0-9]*)(\\.[0-9]+)?([eE][+-]?[0-9]+)?$" }
+        }
+      },
+      "MetricFamily": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["name", "help", "type", "scope", "aggregation", "labelNames", "samples"],
+        "properties": {
+          "name": { "type": "string", "minLength": 1, "maxLength": 256 },
+          "help": { "type": "string", "maxLength": 1024 },
+          "type": { "type": "string", "enum": ["counter", "gauge", "histogram"] },
+          "scope": { "type": "string", "enum": ["node", "replicated", "leader"] },
+          "aggregation": { "type": "string", "enum": ["increase_sum", "sum", "max", "per_node", "bucket_sum"] },
+          "labelNames": { "type": "array", "maxItems": 8, "items": { "type": "string", "minLength": 1, "maxLength": 128 } },
+          "samples": { "type": "array", "maxItems": 16384, "items": { "$ref": "#/components/schemas/MetricSample" } }
+        }
+      },
+      "NodeMetricsData": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["nodeId", "queryStatus", "queryErrorCode", "observedAt", "startedAt", "families"],
+        "properties": {
+          "nodeId": { "$ref": "#/components/schemas/NodeIdentifier" },
+          "queryStatus": { "type": "string", "enum": ["OK", "UNREACHABLE", "UNSUPPORTED", "RETIRED", "ERROR"] },
+          "queryErrorCode": { "$ref": "#/components/schemas/NodeData/properties/queryErrorCode" },
+          "observedAt": { "anyOf": [{ "$ref": "#/components/schemas/Timestamp" }, { "type": "null" }] },
+          "startedAt": { "anyOf": [{ "$ref": "#/components/schemas/Timestamp" }, { "type": "null" }] },
+          "families": { "type": ["array", "null"], "maxItems": 64, "items": { "$ref": "#/components/schemas/MetricFamily" } }
+        }
+      },
+      "MetricNodeStatus": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["nodeId", "queryStatus", "queryErrorCode", "observedAt", "startedAt"],
+        "properties": {
+          "nodeId": { "$ref": "#/components/schemas/NodeIdentifier" },
+          "queryStatus": { "type": "string", "enum": ["OK", "UNREACHABLE", "UNSUPPORTED", "RETIRED", "ERROR"] },
+          "queryErrorCode": { "$ref": "#/components/schemas/NodeData/properties/queryErrorCode" },
+          "observedAt": { "anyOf": [{ "$ref": "#/components/schemas/Timestamp" }, { "type": "null" }] },
+          "startedAt": { "anyOf": [{ "$ref": "#/components/schemas/Timestamp" }, { "type": "null" }] }
+        }
+      },
+      "MetricCollectionData": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["mode", "observedAt", "complete", "nodes", "families"],
+        "properties": {
+          "mode": { "type": "string", "enum": ["node", "all_nodes_unaggregated", "all_nodes_aggregated"] },
+          "observedAt": { "$ref": "#/components/schemas/Timestamp" },
+          "complete": { "type": "boolean" },
+          "nodes": { "type": "array", "items": { "$ref": "#/components/schemas/MetricNodeStatus" } },
+          "families": { "type": "array", "maxItems": 64, "items": { "$ref": "#/components/schemas/MetricFamily" } }
+        }
+      },
+      "NodeMetricsEnvelope": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["data"],
+        "properties": { "data": { "$ref": "#/components/schemas/NodeMetricsData" } }
+      },
+      "MetricCollectionEnvelope": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["data"],
+        "properties": { "data": { "$ref": "#/components/schemas/MetricCollectionData" } }
       },
       "NodeConfigurationData": {
         "type": "object",
@@ -2350,10 +2567,23 @@
           "caConfigured": { "type": "boolean" }
         }
       },
+      "MQTTWebSocketConfiguration": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["listenAddress", "tlsListenAddress", "maxConnections", "connectionRate", "tlsMaxConnections", "tlsConnectionRate"],
+        "properties": {
+          "listenAddress": { "type": "string", "maxLength": 512 },
+          "tlsListenAddress": { "type": "string", "maxLength": 512 },
+          "maxConnections": { "type": "integer", "minimum": 0, "maximum": 1000000 },
+          "connectionRate": { "type": "integer", "minimum": 0, "maximum": 1000000 },
+          "tlsMaxConnections": { "type": "integer", "minimum": 0, "maximum": 1000000 },
+          "tlsConnectionRate": { "type": "integer", "minimum": 0, "maximum": 1000000 }
+        }
+      },
       "MQTTListenerConfiguration": {
         "type": "object",
         "additionalProperties": false,
-        "required": ["tcpListenAddress", "tlsListenAddress", "securityConfigConfigured", "tcpMaxConnections", "tcpConnectionRate", "tlsMaxConnections", "tlsConnectionRate", "tls"],
+        "required": ["tcpListenAddress", "tlsListenAddress", "securityConfigConfigured", "tcpMaxConnections", "tcpConnectionRate", "tlsMaxConnections", "tlsConnectionRate", "tls", "webSocket"],
         "properties": {
           "tcpListenAddress": { "type": "string", "maxLength": 512 },
           "tlsListenAddress": { "type": "string", "maxLength": 512 },
@@ -2362,7 +2592,8 @@
           "tcpConnectionRate": { "type": "integer", "minimum": 0, "maximum": 1000000 },
           "tlsMaxConnections": { "type": "integer", "minimum": 0, "maximum": 1000000 },
           "tlsConnectionRate": { "type": "integer", "minimum": 0, "maximum": 1000000 },
-          "tls": { "anyOf": [{ "$ref": "#/components/schemas/MQTTTLSConfiguration" }, { "type": "null" }] }
+          "tls": { "anyOf": [{ "$ref": "#/components/schemas/MQTTTLSConfiguration" }, { "type": "null" }] },
+          "webSocket": { "anyOf": [{ "$ref": "#/components/schemas/MQTTWebSocketConfiguration" }, { "type": "null" }] }
         }
       },
       "ReplicationConfiguration": {

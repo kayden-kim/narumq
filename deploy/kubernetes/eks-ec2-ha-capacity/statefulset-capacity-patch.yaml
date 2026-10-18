@@ -1,0 +1,119 @@
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: narumq
+  namespace: narumq
+spec:
+  template:
+    spec:
+      initContainers:
+        # security.json for 512 cells (1,024 tenants, exact allowedClientIds) is larger than the
+        # 1 MiB Secret limit, so each Pod generates it from the profile before the broker starts.
+        - name: capacity-security-config
+          image: capacity-runner
+          imagePullPolicy: IfNotPresent
+          command:
+            - /capacity
+            - security-config
+            - --profile=/profile/profile.json
+            - --jwks-url=http://127.0.0.1:18080/jwks.json
+            - --out=/capacity-security/security.json
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+            limits:
+              cpu: 100m
+              memory: 256Mi
+          volumeMounts:
+            - name: capacity-profile
+              mountPath: /profile
+              readOnly: true
+            - name: capacity-security
+              mountPath: /capacity-security
+      containers:
+        - name: narumq
+          command:
+            - /bin/sh
+            - -c
+            - |
+              NODE_INDEX="${HOSTNAME##*-}"
+              NODE_ID="$(cat "/configs/slot-${NODE_INDEX}" 2>/dev/null || true)"
+              case "${NODE_ID}" in
+                ''|0*|*[!0-9]*)
+                  printf 'Invalid or missing member slot /configs/slot-%s\n' "${NODE_INDEX}" >&2
+                  exit 1
+                  ;;
+              esac
+              exec /bin/sh /capacity-process/broker-process.sh run /narumq -cluster-config "/configs/node-${NODE_ID}.json"
+          env:
+            - name: CAPACITY_POD_UID
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.uid
+          ports:
+            - name: mqtt-tls
+              containerPort: 8883
+              protocol: TCP
+          volumeMounts:
+            - name: capacity-process
+              mountPath: /capacity-process
+              readOnly: true
+            - name: capacity-runtime
+              mountPath: /capacity-runtime
+            - name: capacity-security
+              mountPath: /capacity-security
+              readOnly: true
+            - name: capacity-mqtt-tls
+              mountPath: /mqtt-tls
+              readOnly: true
+        # The broker accepts only HTTPS or loopback-HTTP jwksUrl values, so the JWKS is served
+        # from the Pod loopback. The sidecar holds the public key only.
+        - name: capacity-jwks
+          image: capacity-runner
+          imagePullPolicy: IfNotPresent
+          command:
+            - /capacity
+            - serve-jwks
+            - --file=/jwks/jwks.json
+            - --listen=127.0.0.1:18080
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              cpu: 50m
+              memory: 64Mi
+          volumeMounts:
+            - name: capacity-jwks
+              mountPath: /jwks
+              readOnly: true
+      volumes:
+        - name: capacity-process
+          configMap:
+            name: narumq-capacity-process
+            defaultMode: 0444
+        - name: capacity-runtime
+          emptyDir:
+            medium: Memory
+            sizeLimit: 64Ki
+        - name: capacity-profile
+          configMap:
+            name: narumq-capacity-profile
+            defaultMode: 0444
+        - name: capacity-security
+          emptyDir: {}
+        - name: capacity-mqtt-tls
+          secret:
+            secretName: narumq-capacity-mqtt-tls
+            defaultMode: 0440
+        - name: capacity-jwks
+          secret:
+            secretName: narumq-capacity-jwks
+            defaultMode: 0444

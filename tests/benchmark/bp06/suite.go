@@ -244,6 +244,7 @@ func newBP06SuiteManifest(options bp06SuiteOptions, startedAt time.Time) bp06Sui
 	}
 }
 
+// Scenarios: cluster-session-and-delivery.md:CLU-SCN-242
 func executeBP06Suite(ctx context.Context, options bp06SuiteOptions) (bp06SuiteManifest, bp06SuiteSummary, error) {
 	manifest := newBP06SuiteManifest(options, time.Now().UTC())
 	summary := emptyBP06SuiteSummary(manifest, "")

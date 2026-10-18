@@ -19,6 +19,9 @@ NaruMQ는 용도에 따라 서로 다른 프로토콜 리스너를 개방할 수
 | `-ws-listen` | string | `""` | 평문 MQTT over WebSocket 리스너 주소입니다. 루프백 주소만 허용됩니다. |
 | `-wss-listen` | string | `""` | 암호화된 MQTT over WebSocket (WSS) 리스너 주소입니다. |
 | `-http-listen` | string | `""` | 관리 REST API, 헬스 프로브 및 메트릭 포트입니다. (예: `127.0.0.1:8080`) |
+| `-ws-allowed-origins` | string | `""` | WSS 요청에 허용할 Origin 목록입니다. |
+
+WebSocket MQTT 접속은 `/mqtt` 경로에서 subprotocol `mqtt`를 사용합니다. 클러스터 구성에서는 `mqtt.wsListenAddress`, `mqtt.wssListenAddress`, `mqtt.wsAllowedOrigins` 필드로 같은 리스너 설정을 지정합니다.
 
 ---
 

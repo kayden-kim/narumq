@@ -61,6 +61,7 @@ func readPhaseControl(t *testing.T, conn *connection) mqtt.Packet {
 }
 
 // Traceability: CLU-14; docs/specs/mqtt-protocol-and-session.md §3.1.
+// Scenarios: mqtt-protocol-and-session.md:MQTT-SCN-022, cluster-session-and-delivery.md:CLU-SCN-072
 func TestTCPDurablePhasesCompleteIndependentExchangeDuringReceiveCommit(t *testing.T) {
 	committer := &heldPhaseCommitter{
 		action: membership.DeliveryActionReceive, packetID: 2,
@@ -121,6 +122,7 @@ func TestTCPDurablePhasesCompleteIndependentExchangeDuringReceiveCommit(t *testi
 }
 
 // Traceability: CLU-14; docs/specs/mqtt-protocol-and-session.md §3.1.
+// Scenarios: mqtt-protocol-and-session.md:MQTT-SCN-022, cluster-session-and-delivery.md:CLU-SCN-072
 func TestTCPDurablePhasesPreserveDuplicateReleaseBeforeIdentifierReuse(t *testing.T) {
 	committer := &heldPhaseCommitter{
 		action: membership.DeliveryActionRelease, packetID: 7,
@@ -200,6 +202,7 @@ func (queue *heldPromotionQueue) PromoteBatch(outbounds []deliveryqueue.Outbound
 }
 
 // Traceability: MQTT-02/CLU-14; docs/specs/mqtt-protocol-and-session.md §3.2.
+// Scenarios: mqtt-protocol-and-session.md:MQTT-SCN-022, cluster-session-and-delivery.md:CLU-SCN-072
 func TestWriteDeliveriesReservesPacketIDWhilePromotionWaits(t *testing.T) {
 	runtime := newAdapterTestRuntime(t, 8, defaultAdapterConfig())
 	defer runtime.stop(t)
@@ -330,6 +333,7 @@ func (*submittedPhaseCommitter) BeginQuorumBarrier(context.Context) (deliverysta
 }
 
 // Traceability: CLU-14; docs/specs/mqtt-protocol-and-session.md §3.1.
+// Scenarios: mqtt-protocol-and-session.md:MQTT-SCN-022, cluster-session-and-delivery.md:CLU-SCN-072
 func TestTCPDurablePublishSubmitsBeforePriorCommitCompletes(t *testing.T) {
 	for _, qos := range []mqtt.QoS{mqtt.QoSAtLeastOnce, mqtt.QoSExactlyOnce} {
 		t.Run(fmt.Sprintf("qos-%d", qos), func(t *testing.T) {
@@ -392,6 +396,7 @@ func TestTCPDurablePublishSubmitsBeforePriorCommitCompletes(t *testing.T) {
 }
 
 // Traceability: CLU-14; docs/specs/mqtt-protocol-and-session.md §3.1.
+// Scenarios: mqtt-protocol-and-session.md:MQTT-SCN-023, cluster-session-and-delivery.md:CLU-SCN-072, cluster-session-and-delivery.md:CLU-SCN-073
 func TestTCPDurablePublishFailureDrainsPendingWithoutSuccessAck(t *testing.T) {
 	for _, qos := range []mqtt.QoS{mqtt.QoSAtLeastOnce, mqtt.QoSExactlyOnce} {
 		t.Run(fmt.Sprintf("qos-%d", qos), func(t *testing.T) {
@@ -478,6 +483,7 @@ func (queue *heldOutboundQueue) BeginReplaceOutbound(outbound deliveryqueue.Outb
 }
 
 // Traceability: CLU-14; docs/specs/mqtt-protocol-and-session.md §3.1.
+// Scenarios: mqtt-protocol-and-session.md:MQTT-SCN-022
 func TestTCPDurableOutboundAckKeepsIdentifierUntilOrderedCommit(t *testing.T) {
 	for _, qos := range []mqtt.QoS{mqtt.QoSAtLeastOnce, mqtt.QoSExactlyOnce} {
 		t.Run(fmt.Sprintf("qos-%d", qos), func(t *testing.T) {
@@ -595,6 +601,7 @@ func (queue *partialPromotionQueue) PromoteBatch(outbounds []deliveryqueue.Outbo
 }
 
 // Traceability: CLU-14; docs/specs/mqtt-protocol-and-session.md §3.2.
+// Scenarios: mqtt-protocol-and-session.md:MQTT-SCN-025, cluster-session-and-delivery.md:CLU-SCN-062
 func TestTCPPartialPromotionPreservesEverySuffixIdentifier(t *testing.T) {
 	for _, mode := range []string{"durable", "local"} {
 		t.Run(mode, func(t *testing.T) {

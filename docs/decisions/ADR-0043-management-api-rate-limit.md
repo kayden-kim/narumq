@@ -80,9 +80,9 @@ Principal key는 동일 인증 주체의 요청만 함께 제한한다. 인증 �
 
 | 가설·결정 요인 | 검증 방법 | 합격 기준 | 증거 |
 | --- | --- | --- | --- |
-| Principal·IP bucket과 refill 동작이 결정 규칙을 따른다. | `internal/adapters/http/management/rate_limit_test.go` | 분리된 key, burst, refill, clock 역행과 key 상한을 결정적 clock으로 검증한다. | 구현 검증 뒤 Management API 스펙 §9에 기록한다. |
-| HTTP response와 모든 API operation의 429가 contract와 일치한다. | `tests/contracts/management-api-v1/contract_test.go::TestManagementRateLimitMatchesOpenAPI` | Principal 및 인증 실패 한도가 `429 rate_limited`와 `Retry-After: 1`을 반환하고 OpenAPI schema를 통과한다. | 구현 검증 뒤 Management API 스펙 §9에 기록한다. |
-| Standalone·cluster 설정 경계와 감사 경로가 동작한다. | `cmd/narumq` 설정 시험 및 `tests/integration/cluster_audit_process_test.go::TestDynamicClusterManagementAuditProcessAcceptance` | 범위 밖 값은 거절되고 한도 초과 요청은 감사되며 mutation을 실행하지 않는다. | 구현 검증 뒤 Management API 스펙 §9에 기록한다. |
+| Principal·IP bucket과 refill 동작이 결정 규칙을 따른다. | `internal/adapters/http/management/rate_limit_test.go` | 분리된 key, burst, refill, clock 역행과 key 상한을 결정적 clock으로 검증한다. | 구현 검증 뒤 [Management API 검증 기록](../verification/management-api-and-observability.md)에 기록한다. |
+| HTTP response와 모든 API operation의 429가 contract와 일치한다. | `tests/contracts/management-api-v1/contract_test.go::TestManagementRateLimitMatchesOpenAPI` | Principal 및 인증 실패 한도가 `429 rate_limited`와 `Retry-After: 1`을 반환하고 OpenAPI schema를 통과한다. | 구현 검증 뒤 [Management API 검증 기록](../verification/management-api-and-observability.md)에 기록한다. |
+| Standalone·cluster 설정 경계와 감사 경로가 동작한다. | `cmd/narumq` 설정 시험 및 `tests/integration/cluster_audit_process_test.go::TestDynamicClusterManagementAuditProcessAcceptance` | 범위 밖 값은 거절되고 한도 초과 요청은 감사되며 mutation을 실행하지 않는다. | 구현 검증 뒤 [Management API 검증 기록](../verification/management-api-and-observability.md)에 기록한다. |
 
 ## 8. 재검토 조건
 

@@ -889,6 +889,21 @@ func (connection *connection) metrics() portsmetrics.MetricsRecorder {
 	return nil
 }
 
+type transportMetricLabeler interface {
+	MetricsTransport() string
+}
+
+func (connection *connection) metricsTransport() string {
+	switch socket := connection.socket.(type) {
+	case transportMetricLabeler:
+		return socket.MetricsTransport()
+	case *tls.Conn:
+		return portsmetrics.TransportTLS
+	default:
+		return portsmetrics.TransportTCP
+	}
+}
+
 func (connection *connection) run() {
 	if connection.phases != nil {
 		connection.phases.start(connection)
@@ -1046,10 +1061,7 @@ func (connection *connection) cleanup() {
 			if connection.version == mqtt.ProtocolV311 {
 				proto = portsmetrics.ProtocolMQTT311
 			}
-			transport := portsmetrics.TransportTCP
-			if _, isTLS := connection.socket.(*tls.Conn); isTLS {
-				transport = portsmetrics.TransportTLS
-			}
+			transport := connection.metricsTransport()
 			if metrics := connection.metrics(); metrics != nil {
 				metrics.ConnectionClosed(proto, transport)
 			}
@@ -1424,10 +1436,7 @@ func (connection *connection) activate(packet mqtt.Connect) error {
 	if packet.Version == mqtt.ProtocolV311 {
 		proto = portsmetrics.ProtocolMQTT311
 	}
-	transport := portsmetrics.TransportTCP
-	if _, isTLS := connection.socket.(*tls.Conn); isTLS {
-		transport = portsmetrics.TransportTLS
-	}
+	transport := connection.metricsTransport()
 	if metrics := connection.metrics(); metrics != nil {
 		metrics.ConnectionOpened(proto, transport)
 	}
@@ -1718,9 +1727,10 @@ func (connection *connection) dispatchPublishAt(packet mqtt.Publish, receivedAt 
 			if errors.Is(err, applicationretained.ErrFull) || errors.Is(err, publish.ErrDurableDeliveryCapacity) || errors.Is(err, publish.ErrPublishBackpressure) {
 				if connection.version == mqtt.ProtocolV5 {
 					return connection.enqueueControl(&mqtt.PubAck{
-						Version:    connection.version,
-						PacketID:   packet.PacketID,
-						ReasonCode: 0x97,
+						Version:      connection.version,
+						PacketID:     packet.PacketID,
+						ReasonCode:   0x97,
+						ReasonString: publish.RejectionReason(err),
 					})
 				}
 				connection.requestClose()
@@ -1789,6 +1799,7 @@ func (connection *connection) dispatchPublishAt(packet mqtt.Publish, receivedAt 
 					if connection.version == mqtt.ProtocolV5 {
 						return connection.enqueueControl(&mqtt.PubRec{
 							Version: connection.version, PacketID: packet.PacketID, ReasonCode: 0x97,
+							ReasonString: publish.RejectionReason(err),
 						})
 					}
 					connection.requestClose()
@@ -2642,7 +2653,18 @@ func (connection *connection) writePacket(packet mqtt.Packet) error {
 		return err
 	}
 	if connection.exceedsClientPacketSize(len(encoded)) {
-		return ErrClientPacketTooLarge
+		// A Reason String must never make the client's Maximum Packet Size fail the
+		// acknowledgement itself, so only the Reason String is dropped.
+		bare, hasReasonString := withoutReasonString(packet)
+		if !hasReasonString {
+			return ErrClientPacketTooLarge
+		}
+		if encoded, err = connection.server.encoder.Append(nil, bare); err != nil {
+			return err
+		}
+		if connection.exceedsClientPacketSize(len(encoded)) {
+			return ErrClientPacketTooLarge
+		}
 	}
 	if err := connection.socket.SetWriteDeadline(time.Now().Add(connection.limits.WriteTimeout)); err != nil {
 		return err

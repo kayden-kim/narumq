@@ -71,9 +71,9 @@ Password identity는 신뢰된 static configuration의 username binding으로 te
 
 | 가설·결정 요인 | 검증 방법 | 합격 기준 | 증거 |
 | --- | --- | --- | --- |
-| Hash 원문이 남지 않고 실제 broker 인증이 동작한다 | `-hash-password` stdin→stdout과 TLS·3-node MQTT process 시험 | 성공·거절 경계 및 config·저장 파일·log·Metric의 원문 부재 | [§9.5](../specs/tenancy-and-security.md#95-sec-05-password-authentication-실행-증거) |
-| Unknown·wrong password 응답이 구분되지 않는다 | MQTT 3.1.1·5 socket 시험, Metric·audit 관찰 | 동일한 CONNACK, `invalid_credentials`와 `password` method | [§9.5](../specs/tenancy-and-security.md#95-sec-05-password-authentication-실행-증거) |
-| Hash parser와 자원 경계가 고정된다 | adapter unit·race 시험 | 유효 profile 통과, malformed profile 거절, 최대 4개 계산과 slot 반환 | [§9.5](../specs/tenancy-and-security.md#95-sec-05-password-authentication-실행-증거) |
+| Hash 원문이 남지 않고 실제 broker 인증이 동작한다 | `-hash-password` stdin→stdout과 TLS·3-node MQTT process 시험 | 성공·거절 경계 및 config·저장 파일·log·Metric의 원문 부재 | [검증 기록 §5](../verification/tenancy-and-security.md#5-sec-05-password-authentication-실행-기록) |
+| Unknown·wrong password 응답이 구분되지 않는다 | MQTT 3.1.1·5 socket 시험, Metric·audit 관찰 | 동일한 CONNACK, `invalid_credentials`와 `password` method | [검증 기록 §5](../verification/tenancy-and-security.md#5-sec-05-password-authentication-실행-기록) |
+| Hash parser와 자원 경계가 고정된다 | adapter unit·race 시험 | 유효 profile 통과, malformed profile 거절, 최대 4개 계산과 slot 반환 | [검증 기록 §5](../verification/tenancy-and-security.md#5-sec-05-password-authentication-실행-기록) |
 
 ## 8. 재검토 조건
 

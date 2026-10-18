@@ -377,6 +377,7 @@ func TestSnapshotLoaderRejectsCorruptFiles(t *testing.T) {
 	})
 }
 
+// Scenarios: cluster-session-and-delivery.md:CLU-SCN-154
 func TestWALReaderHandlesTornAndCorruptFrames(t *testing.T) {
 	validPayload, err := encodeWALRecord(walRecord{entries: []*pb.Entry{{Index: uint64Ptr(1), Type: pb.EntryNormal.Enum(), Data: []byte("x")}}})
 	if err != nil {

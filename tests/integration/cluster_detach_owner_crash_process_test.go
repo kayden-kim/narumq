@@ -9,6 +9,7 @@ import (
 )
 
 // Traceability: CLU-14; docs/specs/cluster-session-and-delivery.md §4.1, §11.26.
+// Scenarios: cluster-session-and-delivery.md:CLU-SCN-185, cluster-session-and-delivery.md:CLU-SCN-186
 func TestDynamicClusterDetachOwnerCrashProcessAcceptance(t *testing.T) {
 	t.Parallel()
 	for _, boundary := range []struct {

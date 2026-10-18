@@ -20,6 +20,7 @@ import (
 )
 
 // Traceability: CLU-14; docs/specs/cluster-session-and-delivery.md §4.1, §10, §11.7, §11.9.
+// Scenarios: cluster-session-and-delivery.md:CLU-SCN-032, cluster-session-and-delivery.md:CLU-SCN-034, cluster-session-and-delivery.md:CLU-SCN-039, cluster-session-and-delivery.md:CLU-SCN-040, cluster-session-and-delivery.md:CLU-SCN-044, cluster-session-and-delivery.md:CLU-SCN-045
 func TestClusterBackupRestoreProcessCrashAndResync(t *testing.T) {
 	t.Parallel()
 

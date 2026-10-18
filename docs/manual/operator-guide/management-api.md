@@ -51,6 +51,10 @@ curl -s -H "Authorization: Bearer secret-token" http://127.0.0.1:8080/api/v1/clu
 
 #### `GET /api/v1/nodes/{nodeId}`
 특정 노드의 상세 상태(가동 시간, CPU/메모리, 연결된 클라이언트 수)를 조회합니다.
+### 노드 drain
+
+#### `POST /api/v1/nodes/{nodeId}/drain`
+지정 노드의 신규 연결 수락을 제한하고 기존 연결을 drain하여 종료를 준비합니다. 요청에서 운영 필드를 생략하면 `connectionRatePerSecond=100`, `loadBalancerPropagationDelayMillis=30000`, `timeoutMillis=600000`을 적용합니다.
 
 ---
 

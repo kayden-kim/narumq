@@ -22,6 +22,7 @@ import (
 	"time"
 )
 
+// Scenarios: configuration-and-runtime-options.md:CFG-SCN-12
 func TestParseRaftPeerConfigStrict(t *testing.T) {
 	valid := raftPeerConfigFile{
 		ClusterID:     "cluster-a",
@@ -72,6 +73,7 @@ func TestParseRaftPeerConfigStrict(t *testing.T) {
 	}
 }
 
+// Scenarios: configuration-and-runtime-options.md:CFG-SCN-03
 func TestRaftPeerOnlyRejectsOtherFlags(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(&bytes.Buffer{}, nil))
 	cases := []struct {
@@ -95,6 +97,7 @@ func TestRaftPeerOnlyRejectsOtherFlags(t *testing.T) {
 	}
 }
 
+// Scenarios: cluster-session-and-delivery.md:CLU-SCN-016
 func TestRaftPeerOnlyStartsThreePeersAndStops(t *testing.T) {
 	addresses := make(map[uint64]string, 3)
 	listeners := make([]net.Listener, 0, 3)

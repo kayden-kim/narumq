@@ -1,0 +1,131 @@
+# Rendered by tests/benchmark/capacity/eks/controller.py (string.Template, every placeholder below is required).
+# It is deliberately NOT listed in kustomization.yaml: the Job must start only after the
+# fixture objects exist and the broker Pods are Ready.
+#   RUN_ID                lowercase DNS label, unique per run
+#   CAPACITY_RUNNER_IMAGE capacity-runner image pinned by digest (ARM64)
+#   TOOLBOX_IMAGE         broker image by digest (alpine: sh, cat, mv, tar for kubectl exec/cp)
+#   MQTT_ENDPOINT         <internal NLB host>:1883
+#   MQTT_TLS_ENDPOINT     <internal NLB host>:8883
+#   TLS_SERVER_NAME       SAN of the synthetic server certificate
+#   GENERATOR_CPU         integer CPU count, requests == limits
+#   GENERATOR_MEMORY      memory quantity, requests == limits
+#   ACTIVE_DEADLINE_SECONDS  hard stop for the whole Job
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: narumq-capacity-${RUN_ID}
+  namespace: narumq
+  labels:
+    app: narumq-capacity-runner
+    narumq.io/capacity-run: ${RUN_ID}
+spec:
+  backoffLimit: 0
+  activeDeadlineSeconds: ${ACTIVE_DEADLINE_SECONDS}
+  template:
+    metadata:
+      labels:
+        app: narumq-capacity-runner
+        narumq.io/capacity-run: ${RUN_ID}
+    spec:
+      restartPolicy: Never
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        fsGroup: 10001
+      nodeSelector:
+        narumq.io/generator: "true"
+      tolerations:
+        - key: narumq.io/generator
+          operator: Equal
+          value: "true"
+          effect: NoSchedule
+      initContainers:
+        # Native sidecar: stays up after the runner exits so the controller can copy /output.
+        - name: toolbox
+          image: ${TOOLBOX_IMAGE}
+          imagePullPolicy: IfNotPresent
+          restartPolicy: Always
+          command:
+            - /bin/sh
+            - -c
+            - |
+              trap 'exit 0' TERM
+              while :; do sleep 1; done
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+          resources:
+            requests:
+              cpu: 50m
+              memory: 32Mi
+            limits:
+              cpu: 50m
+              memory: 32Mi
+          volumeMounts:
+            - name: control
+              mountPath: /control
+            - name: output
+              mountPath: /output
+      containers:
+        - name: capacity-runner
+          image: ${CAPACITY_RUNNER_IMAGE}
+          imagePullPolicy: IfNotPresent
+          command:
+            - /capacity
+            - run
+            - --profile=/profile/profile.json
+            - --mqtt=${MQTT_ENDPOINT}
+            - --mqtt-tls=${MQTT_TLS_ENDPOINT}
+            - --tls-ca=/fixture/ca.pem
+            - --tls-server-name=${TLS_SERVER_NAME}
+            - --management=http://narumq-management.narumq.svc.cluster.local:8080
+            - --management-token-file=/secrets/admin.token
+            - --credentials=/fixture/credentials.json
+            - --control=/control
+            - --output=/output
+            - --await-collected
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+          resources:
+            requests:
+              cpu: "${GENERATOR_CPU}"
+              memory: ${GENERATOR_MEMORY}
+            limits:
+              cpu: "${GENERATOR_CPU}"
+              memory: ${GENERATOR_MEMORY}
+          volumeMounts:
+            - name: profile
+              mountPath: /profile
+              readOnly: true
+            - name: fixture
+              mountPath: /fixture
+              readOnly: true
+            - name: management-token
+              mountPath: /secrets
+              readOnly: true
+            - name: control
+              mountPath: /control
+            - name: output
+              mountPath: /output
+      volumes:
+        - name: profile
+          configMap:
+            name: narumq-capacity-profile
+            defaultMode: 0444
+        - name: fixture
+          secret:
+            secretName: narumq-capacity-fixture
+            defaultMode: 0440
+        - name: management-token
+          secret:
+            secretName: narumq-cluster-secrets
+            defaultMode: 0440
+            items:
+              - key: admin.token
+                path: admin.token
+        - name: control
+          emptyDir: {}
+        - name: output
+          emptyDir: {}

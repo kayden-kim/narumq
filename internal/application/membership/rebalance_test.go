@@ -7,6 +7,7 @@ import (
 )
 
 // Traceability: CLU-13; docs/specs/cluster-session-and-delivery.md §9 and §11.31.
+// Scenarios: cluster-session-and-delivery.md:CLU-SCN-224
 func TestConnectionRebalanceApplyConflicts(t *testing.T) {
 	t.Run("feature inactive", func(t *testing.T) {
 		machine := NewStateMachine()
@@ -50,6 +51,7 @@ func TestConnectionRebalanceApplyConflicts(t *testing.T) {
 	})
 }
 
+// Scenarios: cluster-session-and-delivery.md:CLU-SCN-224
 func TestConnectionRebalanceReportsConvergeAndValidateOrdering(t *testing.T) {
 	machine := activeConnectionRebalanceMachine(t)
 	applyMustSucceed(t, machine, 3, connectionRebalanceCommand(3, startRebalanceTestChange("rb-report", 100)))
@@ -78,6 +80,7 @@ func TestConnectionRebalanceReportsConvergeAndValidateOrdering(t *testing.T) {
 	}
 }
 
+// Scenarios: cluster-session-and-delivery.md:CLU-SCN-224
 func TestConnectionRebalanceFailureCancellationAndDrainExclusion(t *testing.T) {
 	t.Run("fail", func(t *testing.T) {
 		machine := activeConnectionRebalanceMachine(t)
@@ -130,6 +133,7 @@ func TestConnectionRebalanceFailureCancellationAndDrainExclusion(t *testing.T) {
 	})
 }
 
+// Scenarios: cluster-session-and-delivery.md:CLU-SCN-224
 func TestConnectionRebalanceSnapshotRoundTripAndFeatureRequirement(t *testing.T) {
 	machine := activeConnectionRebalanceMachine(t)
 	applyMustSucceed(t, machine, 3, connectionRebalanceCommand(3, startRebalanceTestChange("rb-snapshot", 100)))

@@ -16,6 +16,7 @@ import (
 const clusterManagementRBACOperatorAPIKey = "process-acceptance-operator-api-key"
 
 // Traceability: SEC-10; docs/specs/tenancy-and-security.md §6; ADR-0048 §7.
+// Scenarios: management-api-and-observability.md:MGT-SCN-017, management-api-and-observability.md:MGT-SCN-019, tenancy-and-security.md:SEC-SCN-031, tenancy-and-security.md:SEC-SCN-032, tenancy-and-security.md:SEC-SCN-033
 func TestDynamicClusterManagementRBACProcessAcceptance(t *testing.T) {
 	t.Parallel()
 

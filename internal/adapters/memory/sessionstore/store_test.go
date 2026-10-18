@@ -59,6 +59,7 @@ func TestNilAndInvalidSessionRepositoryOperations(t *testing.T) {
 }
 
 // Traceability: TEN-02
+// Scenarios: tenancy-and-security.md:SEC-SCN-019
 func TestMemorySessionRepository_SessionKeyMultiTenant(t *testing.T) {
 	repository := New()
 	tenantA, err := tenancy.NewTenantID("tenant-a")
@@ -119,6 +120,7 @@ func TestMemorySessionRepository_SessionKeyMultiTenant(t *testing.T) {
 }
 
 // Traceability: TEN-06, TEN-07; docs/specs/tenancy-and-security.md §5.2.
+// Scenarios: tenancy-and-security.md:SEC-SCN-024
 func TestTenantSessionCountsTrackLifecycleChanges(t *testing.T) {
 	repository := New()
 	tenantA, err := tenancy.NewTenantID("tenant-a")
@@ -225,6 +227,7 @@ func TestTenantSessionCountsTrackLifecycleChanges(t *testing.T) {
 }
 
 // Traceability: TEN-06, TEN-07; docs/specs/tenancy-and-security.md §5.2.
+// Scenarios: tenancy-and-security.md:SEC-SCN-024
 func TestTenantSessionCountsNilAndUnkeyedRepository(t *testing.T) {
 	var nilRepository *MemorySessionRepository
 	if sessions, connected := nilRepository.TenantSessionCounts(tenancy.TenantID{}); sessions != 0 || connected != 0 {

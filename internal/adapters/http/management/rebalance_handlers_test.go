@@ -64,6 +64,7 @@ func rebalanceHTTPOperation() membership.ConnectionRebalanceOperationDTO {
 	}}
 }
 
+// Scenarios: cluster-session-and-delivery.md:CLU-SCN-225
 func TestConnectionRebalanceHTTPRejectsInvalidJSONAndRequiredFields(t *testing.T) {
 	stub := &rebalanceHTTPStub{}
 	handler := newRebalanceHTTPTestHandler(stub, RoleOperator)
@@ -94,6 +95,7 @@ func TestConnectionRebalanceHTTPRejectsInvalidJSONAndRequiredFields(t *testing.T
 	}
 }
 
+// Scenarios: cluster-session-and-delivery.md:CLU-SCN-225
 func TestConnectionRebalanceHTTPConflictMapping(t *testing.T) {
 	for _, code := range []membership.ServiceErrorCode{
 		membership.ServiceErrorConnectionRebalanceInProgress,
@@ -115,6 +117,7 @@ func TestConnectionRebalanceHTTPConflictMapping(t *testing.T) {
 	}
 }
 
+// Scenarios: cluster-session-and-delivery.md:CLU-SCN-225
 func TestConnectionRebalanceHTTPUnavailableMappingIsRetryable(t *testing.T) {
 	stub := &rebalanceHTTPStub{err: &membership.ServiceError{
 		Code: membership.ServiceErrorQuorumUnavailable, Message: "quorum is unavailable", Retryable: true,
@@ -130,6 +133,7 @@ func TestConnectionRebalanceHTTPUnavailableMappingIsRetryable(t *testing.T) {
 	}
 }
 
+// Scenarios: cluster-session-and-delivery.md:CLU-SCN-225
 func TestConnectionRebalanceHTTPRoleAuthorizationAndDeleteKey(t *testing.T) {
 	stub := &rebalanceHTTPStub{operation: rebalanceHTTPOperation()}
 	readOnly := newRebalanceHTTPTestHandler(stub, RoleReadOnly)
@@ -163,6 +167,7 @@ func TestConnectionRebalanceHTTPRoleAuthorizationAndDeleteKey(t *testing.T) {
 	}
 }
 
+// Scenarios: cluster-session-and-delivery.md:CLU-SCN-225
 func TestConnectionRebalanceHTTPStartReplayAndResponse(t *testing.T) {
 	stub := &rebalanceHTTPStub{operation: rebalanceHTTPOperation()}
 	handler := newRebalanceHTTPTestHandler(stub, RoleOperator)

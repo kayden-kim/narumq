@@ -27,6 +27,7 @@ func validDrainState(memberID uint64, phase NodeDrainPhase) *NodeDrainState {
 }
 
 // Traceability: DEP-01/DEP-02; docs/specs/drain-and-rolling-update.md §1, §3, §10.
+// Scenarios: drain-and-rolling-update.md:DRN-SCN-009
 func TestNodeDrainCommandCodecValidation(t *testing.T) {
 	valid := &CommandEnvelope{
 		SchemaMajor: 1, OperationId: op1,
@@ -81,6 +82,7 @@ func TestNodeDrainCommandCodecValidation(t *testing.T) {
 }
 
 // Traceability: DEP-01/DEP-02; docs/specs/drain-and-rolling-update.md §3, §10.
+// Scenarios: drain-and-rolling-update.md:DRN-SCN-009
 func TestNodeDrainSnapshotRoundTripSortAndObjectCount(t *testing.T) {
 	state := &ReplicatedStateSnapshot{
 		Members: []*MemberIdentity{crrVoter(2), crrVoter(1)},
@@ -123,6 +125,7 @@ func TestNodeDrainSnapshotRoundTripSortAndObjectCount(t *testing.T) {
 }
 
 // Traceability: DEP-01/DEP-02; docs/specs/drain-and-rolling-update.md §3, §10.
+// Scenarios: drain-and-rolling-update.md:DRN-SCN-009
 func TestNodeDrainSnapshotRejectsOrderingDuplicatesAndInvalidState(t *testing.T) {
 	base := &ReplicatedStateSnapshot{
 		Members: []*MemberIdentity{crrVoter(1), crrVoter(2)},

@@ -120,6 +120,7 @@ func durableConnectState() *membership.DeliverySessionStateDTO {
 }
 
 // Traceability: CLU-05/CLU-06; docs/specs/cluster-session-and-delivery.md §4.2.
+// Scenarios: cluster-session-and-delivery.md:CLU-SCN-069
 func TestConnectAttachResetsQueueBeforeActivationAndCombinesSessionPresent(t *testing.T) {
 	now := time.Date(2026, 1, 1, 10, 0, 0, 0, time.UTC)
 	for _, tc := range []struct {
@@ -172,6 +173,7 @@ func TestConnectAttachResetsQueueBeforeActivationAndCombinesSessionPresent(t *te
 }
 
 // Traceability: CLU-05/CLU-06; docs/specs/cluster-session-and-delivery.md §4.2.
+// Scenarios: cluster-session-and-delivery.md:CLU-SCN-069
 func TestConnectDurableResetThenOfflineClaimKeepsDurableFirst(t *testing.T) {
 	now := time.Date(2026, 1, 1, 10, 0, 0, 0, time.UTC)
 	committer := &recordingDurableConnectCommitter{attachResult: membership.DeliveryResultDTO{Found: true, Session: durableConnectState()}}
@@ -199,6 +201,7 @@ func TestConnectDurableResetThenOfflineClaimKeepsDurableFirst(t *testing.T) {
 }
 
 // Traceability: CLU-06; docs/specs/cluster-session-and-delivery.md §4.2.
+// Scenarios: cluster-session-and-delivery.md:CLU-SCN-069
 func TestDisconnectDurableDetachAndDiscard(t *testing.T) {
 	now := time.Date(2026, 1, 1, 10, 0, 0, 0, time.UTC)
 	for _, tc := range []struct {
@@ -239,6 +242,7 @@ func TestDisconnectDurableDetachAndDiscard(t *testing.T) {
 }
 
 // Traceability: CLU-05/CLU-06; docs/specs/cluster-session-and-delivery.md §4.2.
+// Scenarios: cluster-session-and-delivery.md:CLU-SCN-069
 func TestConnectDurableRollbackDeactivatesAfterOfflineClaimFailure(t *testing.T) {
 	now := time.Date(2026, 1, 1, 10, 0, 0, 0, time.UTC)
 	committer := &recordingDurableConnectCommitter{attachResult: membership.DeliveryResultDTO{Found: true, Session: durableConnectState()}}
@@ -384,6 +388,7 @@ func TestResetDurableQueueSurfacesProjectionFailures(t *testing.T) {
 }
 
 // Traceability: CLU-14; docs/specs/cluster-session-and-delivery.md §4.2, §11.11.
+// Scenarios: cluster-session-and-delivery.md:CLU-SCN-069
 func TestConnectRejectsDurableAttachConflictAndRollsBackSession(t *testing.T) {
 	now := time.Date(2026, time.January, 1, 10, 0, 0, 0, time.UTC)
 	committer := &recordingDurableConnectCommitter{

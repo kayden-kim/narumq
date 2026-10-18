@@ -3,7 +3,9 @@ package raft
 import (
 	"bytes"
 	"fmt"
+	"log/slog"
 	"slices"
+	"time"
 
 	etcdraft "go.etcd.io/raft/v3"
 	pb "go.etcd.io/raft/v3/raftpb"
@@ -153,7 +155,7 @@ completions:
 					}
 					appendRequest.messages = append(appendRequest.messages, encoded)
 					appendRequest.bytes += len(encoded.Data) + 8
-				} else if err := appendPeerMessage(&batch, message); err != nil {
+				} else if err := n.appendPeerMessage(&batch, message); err != nil {
 					return BatchDTO{}, n.fail(err)
 				}
 			}
@@ -177,12 +179,56 @@ completions:
 	return batch, nil
 }
 
-func appendPeerMessage(batch *BatchDTO, message *pb.Message) error {
+// appendPeerMessage queues one outbound peer message. A MsgSnap above the peer
+// frame limit is never queued; Raft learns that this snapshot send failed and
+// the node stays healthy. Any other oversized message remains a terminal error.
+func (n *Node) appendPeerMessage(batch *BatchDTO, message *pb.Message) error {
+	if message.GetType() == pb.MsgSnap {
+		if size := proto.Size(message); size > maxMessageSize {
+			return n.routeOversizedSnapshot(batch, message, size)
+		}
+	}
 	encoded, err := encodePeerMessage(message)
 	if err == nil {
 		batch.Messages = append(batch.Messages, encoded)
 	}
 	return err
+}
+
+// routeOversizedSnapshot hands a MsgSnap above the frame limit to the snapshot stream when the
+// feature is active (ADR-0062). Otherwise it is rejected as before.
+func (n *Node) routeOversizedSnapshot(batch *BatchDTO, message *pb.Message, size int) error {
+	if n.snapshotStreamActive == nil || !n.snapshotStreamActive() {
+		n.rejectOversizedSnapshot(message, size)
+		return nil
+	}
+	if etcdraft.IsLocalMsgTarget(message.GetFrom()) || etcdraft.IsLocalMsgTarget(message.GetTo()) {
+		return fmt.Errorf("local storage message cannot enter snapshot stream")
+	}
+	data, err := proto.Marshal(message)
+	if err != nil {
+		return fmt.Errorf("encode snapshot stream message: %w", err)
+	}
+	metadata := message.GetSnapshot().GetMetadata()
+	batch.SnapshotStreams = append(batch.SnapshotStreams, SnapshotStreamDTO{
+		To: NodeID(message.GetTo()), Index: metadata.GetIndex(), Term: metadata.GetTerm(), Data: data,
+	})
+	return nil
+}
+
+func (n *Node) rejectOversizedSnapshot(message *pb.Message, size int) {
+	peer := NodeID(message.GetTo())
+	n.raw.ReportSnapshot(uint64(peer), etcdraft.SnapshotFailure)
+	if !n.snapshotWarnings.allow(peer, time.Now(), oversizedSnapshotWarningInterval) {
+		return
+	}
+	logger := n.logger
+	if logger == nil {
+		logger = slog.Default()
+	}
+	logger.Warn("raft snapshot exceeds peer frame limit; not sent",
+		"peer_id", uint64(peer), "snapshot_index", message.GetSnapshot().GetMetadata().GetIndex(),
+		"encoded_bytes", size, "limit_bytes", maxMessageSize)
 }
 
 func encodePeerMessage(message *pb.Message) (MessageDTO, error) {
@@ -202,13 +248,34 @@ func encodePeerMessage(message *pb.Message) (MessageDTO, error) {
 	}, nil
 }
 
+// oversizedSnapshotWarningInterval bounds repeated warnings for one peer; Raft
+// retries a rejected snapshot on every heartbeat response.
+const oversizedSnapshotWarningInterval = 30 * time.Second
+
+// peerWarningLimiter admits one warning per peer per interval. Node's mutex
+// serializes it.
+type peerWarningLimiter struct {
+	last map[NodeID]time.Time
+}
+
+func (l *peerWarningLimiter) allow(peer NodeID, now time.Time, interval time.Duration) bool {
+	if last, ok := l.last[peer]; ok && now.Sub(last) < interval {
+		return false
+	}
+	if l.last == nil {
+		l.last = make(map[NodeID]time.Time)
+	}
+	l.last[peer] = now
+	return true
+}
+
 func (n *Node) deliverStorageResponses(responses []*pb.Message, batch *BatchDTO) error {
 	for _, response := range responses {
 		if response.GetTo() == uint64(n.id) {
 			if err := n.raw.Step(response); err != nil {
 				return fmt.Errorf("step storage completion: %w", err)
 			}
-		} else if err := appendPeerMessage(batch, response); err != nil {
+		} else if err := n.appendPeerMessage(batch, response); err != nil {
 			return err
 		}
 	}

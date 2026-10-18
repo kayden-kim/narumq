@@ -5,6 +5,8 @@ import (
 	"time"
 )
 
+// TestSharedDeliveryCountsDuplicatesAcrossDifferentMembers verifies shared group delivery accounting.
+// Scenarios: performance-and-verification.md:PRF-SCN-036
 func TestSharedDeliveryCountsDuplicatesAcrossDifferentMembers(t *testing.T) {
 	profile := smokeProfile(t)
 	col := newCollector(profile, "narumq")
@@ -37,6 +39,8 @@ func TestSharedDeliveryCountsDuplicatesAcrossDifferentMembers(t *testing.T) {
 	}
 }
 
+// TestOverlapExtraCopiesStopAtAllowedThree verifies overlapping subscription copy accounting.
+// Scenarios: performance-and-verification.md:PRF-SCN-036
 func TestOverlapExtraCopiesStopAtAllowedThree(t *testing.T) {
 	profile := smokeProfile(t)
 	col := newCollector(profile, "narumq")

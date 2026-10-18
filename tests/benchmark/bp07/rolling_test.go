@@ -16,6 +16,8 @@ import (
 	"narumq/tests/benchmark/internal/environment"
 )
 
+// TestDrainCompletionRequiresSafeBarrierAndReportsFailure verifies drain completion requires the safe barrier and reports failure details.
+// Scenarios: performance-and-verification.md:PRF-SCN-021
 func TestDrainCompletionRequiresSafeBarrierAndReportsFailure(t *testing.T) {
 	for _, tc := range []struct {
 		name, body   string
@@ -39,6 +41,8 @@ func TestDrainCompletionRequiresSafeBarrierAndReportsFailure(t *testing.T) {
 	}
 }
 
+// TestEMQXCompletionRejectsDisabledAndUnknownStates verifies EMQX evacuation completion rejects disabled and unknown states.
+// Scenarios: performance-and-verification.md:PRF-SCN-021
 func TestEMQXCompletionRejectsDisabledAndUnknownStates(t *testing.T) {
 	for _, tc := range []struct {
 		state        string
@@ -55,6 +59,8 @@ func TestEMQXCompletionRejectsDisabledAndUnknownStates(t *testing.T) {
 	}
 }
 
+// TestWillOutcomesRequireAllReasonsAndMonotonicCounters verifies Will outcome counters require every reason and stay monotonic.
+// Scenarios: performance-and-verification.md:PRF-SCN-020
 func TestWillOutcomesRequireAllReasonsAndMonotonicCounters(t *testing.T) {
 	before, err := parseWillOutcomes([]byte(rollingMetricFixture(4)))
 	if err != nil {
@@ -82,6 +88,8 @@ func TestWillOutcomesRequireAllReasonsAndMonotonicCounters(t *testing.T) {
 	}
 }
 
+// TestRollingFailurePublishesCompletionAndAtomicMarker verifies a failed round publishes completion and an atomic marker.
+// Scenarios: performance-and-verification.md:PRF-SCN-021
 func TestRollingFailurePublishesCompletionAndAtomicMarker(t *testing.T) {
 	profile, _, _, err := LoadProfile("testdata/smoke.json")
 	if err != nil {
@@ -170,6 +178,8 @@ func TestRollingFailurePublishesCompletionAndAtomicMarker(t *testing.T) {
 	}
 }
 
+// TestRollingScrapeSumsThreeNodesAndPreservesRawMetrics verifies Will counters are summed across three nodes with raw metrics preserved.
+// Scenarios: performance-and-verification.md:PRF-SCN-020
 func TestRollingScrapeSumsThreeNodesAndPreservesRawMetrics(t *testing.T) {
 	profile, _, _, err := LoadProfile("testdata/smoke.json")
 	if err != nil {
@@ -217,6 +227,8 @@ func TestRollingScrapeSumsThreeNodesAndPreservesRawMetrics(t *testing.T) {
 	}
 }
 
+// TestEMQXCLIRecognizesPinnedCallbackExitStatus verifies the EMQX CLI result handling for the pinned callback exit status.
+// Scenarios: performance-and-verification.md:PRF-SCN-021
 func TestEMQXCLIRecognizesPinnedCallbackExitStatus(t *testing.T) {
 	for _, tc := range []struct {
 		name, output string

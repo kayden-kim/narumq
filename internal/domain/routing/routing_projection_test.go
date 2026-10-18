@@ -163,6 +163,7 @@ func TestReplaceProjectionWithSessionsBindsUnsubscribedOwners(t *testing.T) {
 }
 
 // Traceability: TEN-06, TEN-07; docs/specs/tenancy-and-security.md §5.2.
+// Scenarios: tenancy-and-security.md:SEC-SCN-025
 func TestTenantSubscriptionCountIncludesSharedAndProjectedSubscriptions(t *testing.T) {
 	var nilTable *Table
 	if got := nilTable.TenantSubscriptionCount(tenancy.TenantID{}); got != 0 {

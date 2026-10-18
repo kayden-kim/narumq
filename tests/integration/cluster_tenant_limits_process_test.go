@@ -14,6 +14,7 @@ import (
 )
 
 // Traceability: TEN-06, TEN-07; docs/specs/tenancy-and-security.md §5.2.
+// Scenarios: tenancy-and-security.md:SEC-SCN-024, tenancy-and-security.md:SEC-SCN-025
 func TestDynamicClusterTenantLimitsProcessAcceptance(t *testing.T) {
 	t.Parallel()
 

@@ -14,6 +14,7 @@ import (
 	"time"
 )
 
+// Scenarios: cluster-session-and-delivery.md:CLU-SCN-125
 func TestBootstrapProbeGoldenBytes(t *testing.T) {
 	request := encodeBootstrapProbeRequest("c", 2)
 	if got := hex.EncodeToString(request); got != "4e4d51424f4f5432000200000001630000000000000002" {
@@ -33,6 +34,7 @@ func TestBootstrapProbeGoldenBytes(t *testing.T) {
 	}
 }
 
+// Scenarios: cluster-session-and-delivery.md:CLU-SCN-125
 func TestBootstrapProbeRejectsInvalidWire(t *testing.T) {
 	request := encodeBootstrapProbeRequest("c", 2)
 	for _, payload := range [][]byte{request[:len(request)-1], append(bytes.Clone(request), 0), encodeBootstrapProbeRequest("", 2), encodeBootstrapProbeRequest("c", 0), encodeBootstrapProbeRequest(string(bytes.Repeat([]byte{'c'}, 201)), 2), encodeBootstrapProbeRequest("\xff", 2)} {
@@ -55,6 +57,7 @@ func TestBootstrapProbeRejectsInvalidWire(t *testing.T) {
 	}
 }
 
+// Scenarios: cluster-session-and-delivery.md:CLU-SCN-125
 func TestServeBootstrapProbeAnswersConfiguredPeerOnly(t *testing.T) {
 	server1, client1 := testPeerTLSConfigs(t, "node1.example")
 	server2, client2 := testPeerTLSConfigs(t, "node2.example")
@@ -121,6 +124,8 @@ func TestServeBootstrapProbeAnswersConfiguredPeerOnly(t *testing.T) {
 	}
 }
 
+// TestServeBootstrapProbeDropsFailedHandshakeAndBadMagic verifies the bootstrap probe server drops a failed handshake and bad magic.
+// Scenarios: performance-and-verification.md:PRF-SCN-088
 func TestServeBootstrapProbeDropsFailedHandshakeAndBadMagic(t *testing.T) {
 	serverTLS, clientTLS := testPeerTLSConfigs(t, "node1.example")
 	peerServerTLS, peerClientTLS := testPeerTLSConfigs(t, "node2.example")
@@ -192,6 +197,8 @@ func TestServeBootstrapProbeDropsFailedHandshakeAndBadMagic(t *testing.T) {
 	}
 }
 
+// TestProbeBootstrapPeerReportsResponseReadFailure verifies the bootstrap probe reports a response read failure.
+// Scenarios: performance-and-verification.md:PRF-SCN-088
 func TestProbeBootstrapPeerReportsResponseReadFailure(t *testing.T) {
 	local := cptNewNode(t, "node1.example")
 	remote := cptNewNode(t, "node2.example")
@@ -316,6 +323,7 @@ func (reader *bootstrapProbeNoProgressReader) Read([]byte) (int, error) {
 	return 0, nil
 }
 
+// Scenarios: cluster-session-and-delivery.md:CLU-SCN-126
 func TestDynamicTransportBootstrapProbeAllowanceClearsOnRaftFrame(t *testing.T) {
 	server1, client1 := testPeerTLSConfigs(t, "node1.example")
 	server2, client2 := testPeerTLSConfigs(t, "node2.example")

@@ -1,0 +1,201 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: narumq-cluster-configs
+  namespace: narumq
+data:
+  slot-0: "1"
+  slot-1: "2"
+  slot-2: "3"
+  node-1.json: |
+    {
+      "mode": "cluster",
+      "clusterId": "narumq-cluster-1",
+      "nodeId": 1,
+      "directory": "/data",
+      "listenAddress": "0.0.0.0:7000",
+      "advertisedAddress": "narumq-0.narumq-headless.narumq.svc.cluster.local:7000",
+      "localDnsName": "narumq-0.narumq-headless.narumq.svc.cluster.local",
+      "clusterProtocolMajor": 2,
+      "clusterProtocolMinor": 0,
+      "stateSchemaMajor": 1,
+      "stateSchemaMinor": 0,
+      "role": "bootstrap",
+      "bootstrapMembers": [
+        {
+          "memberId": 1,
+          "address": "narumq-0.narumq-headless.narumq.svc.cluster.local:7000",
+          "dnsSan": "narumq-0.narumq-headless.narumq.svc.cluster.local",
+          "certificateSha256": "c1d85dbd38f7eb25be58dcd1c1dd249622d4f5293e456f18bafbd65d7453147a"
+        },
+        {
+          "memberId": 2,
+          "address": "narumq-1.narumq-headless.narumq.svc.cluster.local:7000",
+          "dnsSan": "narumq-1.narumq-headless.narumq.svc.cluster.local",
+          "certificateSha256": "9345fb9f80e021fd8595f452c680cb7a0925f8b2d5640b3095b06d1cbab00dca"
+        },
+        {
+          "memberId": 3,
+          "address": "narumq-2.narumq-headless.narumq.svc.cluster.local:7000",
+          "dnsSan": "narumq-2.narumq-headless.narumq.svc.cluster.local",
+          "certificateSha256": "7da3bac670b1fae98ba1180ca49e666f411f087f63d72b488aef7a977aa622ef"
+        }
+      ],
+      "seedAddresses": [],
+      "peerTLS": {
+        "certFile": "/peer-tls/node.crt",
+        "keyFile": "/peer-tls/node.key",
+        "caFile": "/peer-tls/ca.crt"
+      },
+      "management": {
+        "listenAddress": "0.0.0.0:8080",
+        "clusterAdminTokenFile": "/secrets/admin.token",
+        "apiKeys": [
+          {
+            "id": "dashboard",
+            "keyFile": "/secrets/dashboard.key",
+            "roles": [
+              "ReadOnly"
+            ]
+          }
+        ],
+        "auditDirectory": "/audit"
+      },
+      "mqtt": {
+        "tcpListenAddress": "0.0.0.0:1883",
+        "tlsListenAddress": "",
+        "securityConfigFile": "/secrets/security.json",
+        "webSocket": {
+          "listenAddress": "0.0.0.0:8083",
+          "tlsListenAddress": ""
+        }
+      }
+    }
+  node-2.json: |
+    {
+      "mode": "cluster",
+      "clusterId": "narumq-cluster-1",
+      "nodeId": 2,
+      "directory": "/data",
+      "listenAddress": "0.0.0.0:7000",
+      "advertisedAddress": "narumq-1.narumq-headless.narumq.svc.cluster.local:7000",
+      "localDnsName": "narumq-1.narumq-headless.narumq.svc.cluster.local",
+      "clusterProtocolMajor": 2,
+      "clusterProtocolMinor": 0,
+      "stateSchemaMajor": 1,
+      "stateSchemaMinor": 0,
+      "role": "bootstrap",
+      "bootstrapMembers": [
+        {
+          "memberId": 1,
+          "address": "narumq-0.narumq-headless.narumq.svc.cluster.local:7000",
+          "dnsSan": "narumq-0.narumq-headless.narumq.svc.cluster.local",
+          "certificateSha256": "c1d85dbd38f7eb25be58dcd1c1dd249622d4f5293e456f18bafbd65d7453147a"
+        },
+        {
+          "memberId": 2,
+          "address": "narumq-1.narumq-headless.narumq.svc.cluster.local:7000",
+          "dnsSan": "narumq-1.narumq-headless.narumq.svc.cluster.local",
+          "certificateSha256": "9345fb9f80e021fd8595f452c680cb7a0925f8b2d5640b3095b06d1cbab00dca"
+        },
+        {
+          "memberId": 3,
+          "address": "narumq-2.narumq-headless.narumq.svc.cluster.local:7000",
+          "dnsSan": "narumq-2.narumq-headless.narumq.svc.cluster.local",
+          "certificateSha256": "7da3bac670b1fae98ba1180ca49e666f411f087f63d72b488aef7a977aa622ef"
+        }
+      ],
+      "seedAddresses": [],
+      "peerTLS": {
+        "certFile": "/peer-tls/node.crt",
+        "keyFile": "/peer-tls/node.key",
+        "caFile": "/peer-tls/ca.crt"
+      },
+      "management": {
+        "listenAddress": "0.0.0.0:8080",
+        "clusterAdminTokenFile": "/secrets/admin.token",
+        "apiKeys": [
+          {
+            "id": "dashboard",
+            "keyFile": "/secrets/dashboard.key",
+            "roles": [
+              "ReadOnly"
+            ]
+          }
+        ],
+        "auditDirectory": "/audit"
+      },
+      "mqtt": {
+        "tcpListenAddress": "0.0.0.0:1883",
+        "tlsListenAddress": "",
+        "securityConfigFile": "/secrets/security.json",
+        "webSocket": {
+          "listenAddress": "0.0.0.0:8083",
+          "tlsListenAddress": ""
+        }
+      }
+    }
+  node-3.json: |
+    {
+      "mode": "cluster",
+      "clusterId": "narumq-cluster-1",
+      "nodeId": 3,
+      "directory": "/data",
+      "listenAddress": "0.0.0.0:7000",
+      "advertisedAddress": "narumq-2.narumq-headless.narumq.svc.cluster.local:7000",
+      "localDnsName": "narumq-2.narumq-headless.narumq.svc.cluster.local",
+      "clusterProtocolMajor": 2,
+      "clusterProtocolMinor": 0,
+      "stateSchemaMajor": 1,
+      "stateSchemaMinor": 0,
+      "role": "bootstrap",
+      "bootstrapMembers": [
+        {
+          "memberId": 1,
+          "address": "narumq-0.narumq-headless.narumq.svc.cluster.local:7000",
+          "dnsSan": "narumq-0.narumq-headless.narumq.svc.cluster.local",
+          "certificateSha256": "c1d85dbd38f7eb25be58dcd1c1dd249622d4f5293e456f18bafbd65d7453147a"
+        },
+        {
+          "memberId": 2,
+          "address": "narumq-1.narumq-headless.narumq.svc.cluster.local:7000",
+          "dnsSan": "narumq-1.narumq-headless.narumq.svc.cluster.local",
+          "certificateSha256": "9345fb9f80e021fd8595f452c680cb7a0925f8b2d5640b3095b06d1cbab00dca"
+        },
+        {
+          "memberId": 3,
+          "address": "narumq-2.narumq-headless.narumq.svc.cluster.local:7000",
+          "dnsSan": "narumq-2.narumq-headless.narumq.svc.cluster.local",
+          "certificateSha256": "7da3bac670b1fae98ba1180ca49e666f411f087f63d72b488aef7a977aa622ef"
+        }
+      ],
+      "seedAddresses": [],
+      "peerTLS": {
+        "certFile": "/peer-tls/node.crt",
+        "keyFile": "/peer-tls/node.key",
+        "caFile": "/peer-tls/ca.crt"
+      },
+      "management": {
+        "listenAddress": "0.0.0.0:8080",
+        "clusterAdminTokenFile": "/secrets/admin.token",
+        "apiKeys": [
+          {
+            "id": "dashboard",
+            "keyFile": "/secrets/dashboard.key",
+            "roles": [
+              "ReadOnly"
+            ]
+          }
+        ],
+        "auditDirectory": "/audit"
+      },
+      "mqtt": {
+        "tcpListenAddress": "0.0.0.0:1883",
+        "tlsListenAddress": "",
+        "securityConfigFile": "/secrets/security.json",
+        "webSocket": {
+          "listenAddress": "0.0.0.0:8083",
+          "tlsListenAddress": ""
+        }
+      }
+    }

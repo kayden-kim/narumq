@@ -119,6 +119,7 @@ func TestClusterReleaseProfileReconcileCanceledContextPreservesSyncedState(t *te
 	}
 }
 
+// Scenarios: cluster-session-and-delivery.md:CLU-SCN-111
 func TestClusterReleaseProfileReconcilePreservesSyncedStateDuringRead(t *testing.T) {
 	runtime := clusterReleaseProfileTestRuntime(t, validBootstrapClusterConfig())
 	controller := runtime.releaseProfile
@@ -158,6 +159,7 @@ func TestClusterReleaseProfileReconcilePreservesSyncedStateDuringRead(t *testing
 	}
 }
 
+// Scenarios: cluster-session-and-delivery.md:CLU-SCN-111
 func TestClusterReleaseProfileReconcileClearsSyncedOnReadErrors(t *testing.T) {
 	for _, test := range []struct {
 		name            string
@@ -208,6 +210,7 @@ func TestClusterReleaseProfileReconcileClearsSyncedOnReadErrors(t *testing.T) {
 	}
 }
 
+// Scenarios: cluster-session-and-delivery.md:CLU-SCN-111
 func TestClusterReleaseProfileReconcileWaitClearsSyncedState(t *testing.T) {
 	runtime := clusterReleaseProfileTestRuntime(t, validBootstrapClusterConfig())
 	runtime.config.NodeID = 99
@@ -240,6 +243,7 @@ func TestClusterReleaseProfileReconcileWaitClearsSyncedState(t *testing.T) {
 	}
 }
 
+// Scenarios: cluster-session-and-delivery.md:CLU-SCN-111
 func TestClusterReleaseProfileReconcileProposalClearsSyncedState(t *testing.T) {
 	config := validBootstrapClusterConfig()
 	runtime := clusterReleaseProfileTestRuntime(t, config)
@@ -360,6 +364,7 @@ func TestClusterReleaseProfileReconcileMapsProposalConflictsToReadiness(t *testi
 }
 
 // Traceability: CLU-11; docs/specs/cluster-session-and-delivery.md §11.17.
+// Scenarios: cluster-session-and-delivery.md:CLU-SCN-113, performance-and-verification.md:PRF-SCN-098
 func TestClusterReleaseProfileReconcileBoundsUnansweredProposal(t *testing.T) {
 	runtime := clusterReleaseProfileTestRuntime(t, validBootstrapClusterConfig())
 	runtime.storage = newClusterStorageMonitor(time.Now, nil)
@@ -430,6 +435,7 @@ func clusterReleaseProfileTestJoinReconcile(t *testing.T, reconcileDone <-chan s
 	})
 }
 
+// Scenarios: cluster-session-and-delivery.md:CLU-SCN-111
 func TestClusterReleaseProfileAppliedLocalMemberChangeInvalidatesStaleRead(t *testing.T) {
 	config := validBootstrapClusterConfig()
 	config.ReleaseVersion = "1.2.0"
@@ -477,6 +483,7 @@ func TestClusterReleaseProfileAppliedLocalMemberChangeInvalidatesStaleRead(t *te
 	}
 }
 
+// Scenarios: cluster-session-and-delivery.md:CLU-SCN-111
 func TestClusterReleaseProfileAppliedUnsupportedFeatureBlocksReadiness(t *testing.T) {
 	config := validBootstrapClusterConfig()
 	config.ReleaseVersion = "1.2.0"
@@ -507,6 +514,7 @@ func TestClusterReleaseProfileAppliedUnsupportedFeatureBlocksReadiness(t *testin
 	}
 }
 
+// Scenarios: cluster-session-and-delivery.md:CLU-SCN-111
 func TestClusterReleaseProfileCompatibleSnapshotRestoreInvalidatesReadiness(t *testing.T) {
 	runtime := clusterReleaseProfileTestRuntime(t, validBootstrapClusterConfig())
 	controller := runtime.releaseProfile
@@ -522,6 +530,7 @@ func TestClusterReleaseProfileCompatibleSnapshotRestoreInvalidatesReadiness(t *t
 	}
 }
 
+// Scenarios: cluster-session-and-delivery.md:CLU-SCN-111
 func TestClusterReleaseProfileSnapshotRestoreLatchesUnsupportedFeature(t *testing.T) {
 	runtime := clusterReleaseProfileRuntimeWithUnsupportedActiveFeature(t)
 	controller := runtime.releaseProfile

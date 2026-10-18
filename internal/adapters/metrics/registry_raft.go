@@ -1,8 +1,6 @@
 package metrics
 
 import (
-	"bytes"
-	"fmt"
 	"time"
 )
 
@@ -39,20 +37,4 @@ func (r *Registry) ObserveRaftStage(stage RaftStage, duration time.Duration) {
 		return
 	}
 	r.raftStages[stage].Observe(duration.Seconds())
-}
-
-func (r *Registry) renderRaftStages(buf *bytes.Buffer) {
-	const family = "narumq_raft_stage_duration_seconds"
-	fmt.Fprintf(buf, "# HELP %s Duration of completed Raft driver stages, including failures.\n", family)
-	fmt.Fprintf(buf, "# TYPE %s histogram\n", family)
-	for index, histogram := range r.raftStages {
-		stage := raftStageNames[index]
-		buckets, counts, count, sum := histogram.Snapshot()
-		for index, bucket := range buckets {
-			fmt.Fprintf(buf, "%s_bucket{stage=\"%s\",le=\"%g\"} %d\n", family, stage, bucket, counts[index])
-		}
-		fmt.Fprintf(buf, "%s_bucket{stage=\"%s\",le=\"+Inf\"} %d\n", family, stage, count)
-		fmt.Fprintf(buf, "%s_sum{stage=\"%s\"} %.6f\n", family, stage, sum)
-		fmt.Fprintf(buf, "%s_count{stage=\"%s\"} %d\n", family, stage, count)
-	}
 }

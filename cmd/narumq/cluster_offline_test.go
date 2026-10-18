@@ -214,6 +214,7 @@ func TestClusterOfflineClaimDTOConversion(t *testing.T) {
 }
 
 // Traceability: CLU-14; docs/specs/cluster-session-and-delivery.md §4.1, §10, §11.9.
+// Scenarios: cluster-session-and-delivery.md:CLU-SCN-041, cluster-session-and-delivery.md:CLU-SCN-042
 func TestClusterOfflineCommitOfflineTable(t *testing.T) {
 	config := validBootstrapClusterConfig()
 	runtime, stop := newTestClusterOfflineRuntime(t, config)
@@ -289,6 +290,7 @@ func TestClusterOfflineCommitOfflineTable(t *testing.T) {
 }
 
 // Traceability: CLU-14; docs/specs/cluster-session-and-delivery.md §4.1, §10, §11.9.
+// Scenarios: cluster-session-and-delivery.md:CLU-SCN-041
 func TestClusterOfflineCommitCapacityAndClaimConflictPreserveState(t *testing.T) {
 	config := validBootstrapClusterConfig()
 	runtime, stop := newTestClusterOfflineRuntime(t, config)

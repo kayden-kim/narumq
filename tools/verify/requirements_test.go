@@ -9,6 +9,7 @@ import (
 	"testing"
 )
 
+// Scenarios: performance-and-verification.md:PRF-SCN-065
 func TestVerifyP0RequirementMapping(t *testing.T) {
 	basePRD := "# Fixture PRD\n\n" +
 		"| ID | 우선순위 | 요구사항 |\n" +
@@ -113,6 +114,7 @@ func TestVerifyP0RequirementMapping(t *testing.T) {
 	}
 }
 
+// Scenarios: performance-and-verification.md:PRF-SCN-066
 func TestLoadP0ExceptionsStrictlyValidatesJSON(t *testing.T) {
 	root := t.TempDir()
 	writeFixtureFile(t, filepath.Join(root, "docs", "TODO.md"), []byte("# Fixture tracking\n"))
@@ -189,6 +191,7 @@ func writeFixtureFile(t *testing.T, path string, data []byte) {
 	}
 }
 
+// Scenarios: performance-and-verification.md:PRF-SCN-067
 func TestParseTraceabilityAcceptsPRDPrefixesAndKeepsStatementRule(t *testing.T) {
 	requirements, statements, issues := parseTraceability("DEP-06/DEP-12; MQTT-11; MQTT-1.2.7-1")
 	if !reflect.DeepEqual(requirements, []string{"DEP-06", "DEP-12", "MQTT-11"}) {

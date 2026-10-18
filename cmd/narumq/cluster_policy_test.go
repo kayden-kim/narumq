@@ -12,6 +12,7 @@ import (
 )
 
 // Traceability: API-09; CFG-SCN-26; ADR-0052 §1.1.1.
+// Scenarios: configuration-and-runtime-options.md:CFG-SCN-26
 func TestClusterPolicyReconciliationDecision(t *testing.T) {
 	configured := validClusterPolicyConfig()
 	policy := configured.membershipPolicy()
@@ -71,6 +72,7 @@ func TestClusterPolicyReconciliationDecision(t *testing.T) {
 }
 
 // Traceability: API-09; CFG-SCN-26; ADR-0052 §1.1.1.
+// Scenarios: configuration-and-runtime-options.md:CFG-SCN-26
 func TestEffectiveClusterMQTTLimitsPrecedence(t *testing.T) {
 	defaults := defaultClusterMQTTLimits()
 	config := clusterConfigFile{}
@@ -133,6 +135,7 @@ func clusterPolicyReconciliationTestMachine(t *testing.T, policy membership.Clus
 }
 
 // Traceability: API-09; CFG-SCN-26; docs/specs/management-api-and-observability.md §7.
+// Scenarios: configuration-and-runtime-options.md:CFG-SCN-26, management-api-and-observability.md:MGT-SCN-039
 func TestClusterPolicyControllerReconcilesAndLogsMismatchOnce(t *testing.T) {
 	var logs bytes.Buffer
 	metrics := adaptersmetrics.NewRegistry()

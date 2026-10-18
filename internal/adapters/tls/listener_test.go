@@ -35,6 +35,7 @@ func TestNewListenerValidatesDependencies(t *testing.T) {
 	}
 }
 
+// Scenarios: tenancy-and-security.md:SEC-SCN-003
 func TestNewListenerSuccessAndHandshake(t *testing.T) {
 	tempDir := t.TempDir()
 	ca := generateCA(t, "Root CA")
@@ -117,6 +118,7 @@ func TestNewListenerSuccessAndHandshake(t *testing.T) {
 }
 
 // Traceability: SEC-12; docs/specs/tenancy-and-security.md §7.1, §9; ADR-0050.
+// Scenarios: tenancy-and-security.md:SEC-SCN-005, tenancy-and-security.md:SEC-SCN-045
 func TestExtractVerifiedClientCertificateDTO(t *testing.T) {
 	t.Run("non-tls socket", func(t *testing.T) {
 		s1, s2 := net.Pipe()

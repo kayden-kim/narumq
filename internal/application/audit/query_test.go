@@ -20,6 +20,7 @@ func (reader *queryReaderStub) ReadAuditRecords(_ context.Context, query portsau
 	return reader.page, reader.err
 }
 
+// Scenarios: management-api-and-observability.md:MGT-SCN-019
 func TestAuditQueryValidationAndCursorPages(t *testing.T) {
 	reader := &queryReaderStub{page: portsaudit.AuditRecordPageDTO{Records: []portsaudit.AuditRecordDTO{{Seq: 8}}, HasMore: true}}
 	service, err := NewQueryService(reader)
@@ -68,6 +69,7 @@ func TestAuditQueryValidationAndCursorPages(t *testing.T) {
 	}
 }
 
+// Scenarios: management-api-and-observability.md:MGT-SCN-019
 func TestAuditQueryRequiresReader(t *testing.T) {
 	if _, err := NewQueryService(nil); err == nil || err.Error() != "audit record reader is required" {
 		t.Fatalf("NewQueryService(nil) error=%v", err)

@@ -18,6 +18,7 @@ import (
 	"time"
 )
 
+// Scenarios: cluster-session-and-delivery.md:CLU-SCN-012
 func TestPeerTransportHelloGoldenVector(t *testing.T) {
 	var encoded bytes.Buffer
 	if err := writePeerHello(&encoded, "x", 1); err != nil {
@@ -36,6 +37,7 @@ func TestPeerTransportHelloGoldenVector(t *testing.T) {
 	}
 }
 
+// Scenarios: cluster-session-and-delivery.md:CLU-SCN-012
 func TestPeerTransportHelloRejectsInvalidFields(t *testing.T) {
 	valid := make([]byte, peerHelloFixedSize+1+8)
 	copy(valid[:8], "NMQRAFT1")
@@ -82,6 +84,7 @@ func TestPeerTransportHelloRejectsInvalidFields(t *testing.T) {
 	}
 }
 
+// Scenarios: cluster-session-and-delivery.md:CLU-SCN-012
 func TestPeerTransportFrameGoldenVectorAndLengthBounds(t *testing.T) {
 	left, right := net.Pipe()
 	writerDone := make(chan error, 1)
@@ -176,6 +179,7 @@ func readPeerFrameBytes(t *testing.T, length uint32, payload []byte) ([]byte, er
 	return got, err
 }
 
+// Scenarios: cluster-session-and-delivery.md:CLU-SCN-014
 func TestPeerTransportSendQueueBoundsCountAndTracksWriter(t *testing.T) {
 	transport, peer := newQueueTestTransport()
 	for _, message := range []PeerMessageDTO{
@@ -241,6 +245,7 @@ func TestPeerTransportSendQueueBoundsCountAndTracksWriter(t *testing.T) {
 	}
 }
 
+// Scenarios: cluster-session-and-delivery.md:CLU-SCN-014
 func TestPeerTransportSendQueueBoundsFramedBytes(t *testing.T) {
 	transport, peer := newQueueTestTransport()
 	payload := make([]byte, peerMaxFrameSize)
@@ -263,6 +268,7 @@ func TestPeerTransportSendQueueBoundsFramedBytes(t *testing.T) {
 	peer.stop()
 }
 
+// Scenarios: cluster-session-and-delivery.md:CLU-SCN-014
 func TestPeerTransportInboundQueueBoundsFramedBytes(t *testing.T) {
 	_, peer := newQueueTestTransport()
 	payload := make([]byte, peerMaxFrameSize)
@@ -303,6 +309,7 @@ func TestPeerTransportInboundQueueBoundsFramedBytes(t *testing.T) {
 	}
 }
 
+// Scenarios: cluster-session-and-delivery.md:CLU-SCN-014
 func TestPeerTransportInboundCancellationDrainsStagedFrames(t *testing.T) {
 	_, peer := newQueueTestTransport()
 	for range 2 {
@@ -336,6 +343,7 @@ func TestPeerTransportInboundCancellationDrainsStagedFrames(t *testing.T) {
 	}
 }
 
+// Scenarios: cluster-session-and-delivery.md:CLU-SCN-014
 func TestPeerTransportConnectionBoundsAndCancellation(t *testing.T) {
 	t.Run("inbound queue full closes connection", func(t *testing.T) {
 		_, peer := newQueueTestTransport()
@@ -399,6 +407,7 @@ func TestPeerTransportConnectionBoundsAndCancellation(t *testing.T) {
 }
 
 // Traceability: SEC-09; docs/contracts/raft-peer-transport-v1.md §1.
+// Scenarios: tenancy-and-security.md:SEC-SCN-009, cluster-session-and-delivery.md:CLU-SCN-013
 func TestPeerTransportRejectsInboundCertificateForWrongVoter(t *testing.T) {
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
@@ -465,6 +474,7 @@ func TestPeerTransportRejectsInboundCertificateForWrongVoter(t *testing.T) {
 	}
 }
 
+// Scenarios: cluster-session-and-delivery.md:CLU-SCN-014
 func TestPeerTransportLimitsConcurrentInboundConnections(t *testing.T) {
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {

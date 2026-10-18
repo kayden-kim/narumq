@@ -212,6 +212,7 @@ func TestNodeBootstrapSyncFailureIsTerminal(t *testing.T) {
 	}
 }
 
+// Scenarios: cluster-session-and-delivery.md:CLU-SCN-005
 func TestNodeWALWriteFailureStopsOutbound(t *testing.T) {
 	root := t.TempDir()
 	directories := map[NodeID]string{

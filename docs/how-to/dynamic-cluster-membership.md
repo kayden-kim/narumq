@@ -1,20 +1,19 @@
 # 동적 Raft 클러스터를 시작하고 멤버를 추가하는 방법
 
-이 절차는 초기 Raft cluster의 voter 세 개(voter는 합의 투표에 참여하는 node)를 시작하고 새 node를 quorum(현재 voter 과반수의 동의)으로 commit하는 `STAGED` identity로 등록하는 방법을 정의한다. 새 node는 먼저 learner(로그를 복제하지만 투표하지 않는 member)로 기록을 따라잡은 뒤 voter로 승격된다. Membership crash/restart, retained QoS 0 replay, v3 backup/restore·snapshot-finalize와 제한된 QoS 1/2 durable delivery process acceptance는 통과했다. Production power-loss, N/N-1과 전체 lifecycle 동등성은 미검증이므로 이 초안은 production 실행을 승인하지 않는다.
+이 절차는 초기 Raft cluster의 voter 세 개(voter는 합의 투표에 참여하는 node)를 시작하고 새 node를 quorum(현재 voter 과반수의 동의)으로 commit하는 `STAGED` identity로 등록한다. 새 node는 learner(로그를 복제하지만 투표하지 않는 member)로 기록을 따라잡은 뒤 voter로 승격된다. 이 초안은 production 실행을 승인하지 않는다.
 
 | 항목 | 값 |
 | --- | --- |
 | 대상 독자 | cluster를 구성하고 변경하는 운영자 |
 | 검증 상태 | Draft |
-| 검증 환경·버전 | 로컬 다중 프로세스 Go acceptance: membership·retained/offline·durable QoS 1/2 process tests 및 focused package suite |
-| 최종 검증일 | 2026-09-27 |
+| 검증 범위 | 로컬 다중 프로세스 acceptance와 제한된 EKS slot 재시드. 구체적 실행 범위는 §4의 기록을 따른다. |
 | 관련 기준 문서 | [동적 멤버십 계약](../contracts/raft-membership-v2.md), [Cluster backup v3](../contracts/cluster-backup-v3.md), [Cluster backup/restore 절차](cluster-backup-restore.md), [cluster session 명세](../specs/cluster-session-and-delivery.md), [ADR-0010](../decisions/ADR-0010-dynamic-cluster-membership.md), [ADR-0012](../decisions/ADR-0012-retained-replication-and-cluster-backup-v2.md), [ADR-0013](../decisions/ADR-0013-offline-queue-replication-and-cluster-backup-v3.md), [ADR-0015](../decisions/ADR-0015-cluster-durable-qos-delivery.md), [cluster architecture](../architectures/cluster-architecture.md) |
 
 ## 1. 대상과 영향
 
 - 대상: 동일한 `clusterId`와 bootstrap voter set을 사용하는 세 node 및 새 joiner
 - 예상 사용자 영향: bootstrap과 멤버십 변경 중 quorum, 인증서, 네트워크 설정이 맞지 않으면 신규 MQTT 연결이 거절될 수 있다.
-- 운영 경계: 제한된 process acceptance에서 durable QoS 1/2 detached delivery, ACK commit boundary, takeover와 backup/restore를 확인했다. Production power-loss, N/N-1, TEN-08 tenant quota, QoS 0 general live forwarding 및 전체 drain 동작까지 승인한 것은 아니다. Procedure는 계속 Draft이므로 production cluster에는 적용하지 않는다.
+- 운영 경계: N/N-1·운영 부하·전체 lifecycle 동등성은 별도 수용이 필요하다. 이 절차는 TEN-08 tenant quota, QoS 0 general live forwarding과 전체 drain의 수용 절차도 아니다. 제한된 process·EKS 시험을 production 전체 수용으로 보지 않는다.
 
 ## 2. 전제 조건
 
@@ -83,35 +82,148 @@
 
 초기 배포에서 `cluster bootstrap refused`가 나오고 **아직 사용자 데이터가 없다면**, 세 node를 모두 중지하고 세 directory를 비운 뒤 동시에 다시 시작한다. 사용자 데이터가 있는 cluster에서는 directory를 지우지 말고 원래 volume을 복구하거나 위 새 ID 교체 절차를 따른다.
 
+### EKS slot의 volume 손실 교체
+
+이 절차는 `deploy/kubernetes/eks-ec2-ha`에서 EBS volume을 잃은 broker 자리(slot) 하나를 새 member ID로 다시 채운다. 근거와 결정은 [ADR-0061](../decisions/ADR-0061-eks-ordinal-member-slot.md), 합격 기준은 [Cluster §11.20 EKS slot 재시드 기준](../specs/cluster-session-and-delivery.md#eks-slot-재시드-기준-2026-10-16)이다. 절차는 Draft다. Peer hello 전 인증서 검증 수정을 포함한 image를 사용한다. 이전 image는 이전 ID 제거를 지연시키거나 quorum을 흔들 수 있다. 수정 전 실패와 로컬 재시험·격리 EKS 1회 결과는 [실행 기록](../verification/cluster-session-and-delivery.md#2026-10-16-eks-slot-재시드-실행-결과)을 따른다.
+
+실행 위치는 대상 cluster의 `kubectl` context를 가진 운영자 작업 환경이며 예시는 Bash 기준이다. 관리 API는 `kubectl port-forward`로 생존 Pod의 8080에 연결해 호출한다. 아래 자리표시자는 실제 값으로 바꾼다.
+
+| 자리표시자 | 뜻 |
+| --- | --- |
+| `<SLOT>` | 손실된 Pod의 ordinal. 예: `2` |
+| `<LOST_ID>` | 손실된 slot이 쓰던 member ID. 예: `3` |
+| `<NEW_ID>` | 아직 쓴 적 없는 새 member ID. 예: `4` |
+| `<SURVIVOR>` | 정상인 Pod의 ordinal |
+| `<SLOT_DNS>` | `narumq-<SLOT>.narumq-headless.narumq.svc.cluster.local` |
+| `<ADMIN_TOKEN_FILE>` | `ClusterAdmin` token을 담은 파일 경로. token 값은 명령줄·로그·문서에 남기지 않는다. |
+
+시작 전 확인:
+
+- [ ] 남은 두 voter가 모두 READY이고 quorum이 있다. 한 번에 slot 하나만 교체한다.
+- [ ] `snapshot-stream`을 장애 전에 활성화했다(`POST /api/v1/cluster/features/snapshot-stream`, [Feature activation](cluster-feature-activation.md), [Raft snapshot stream v1](../contracts/raft-snapshot-stream-v1.md)). 이 feature가 비활성이면 1 MiB 초과 snapshot을 새 ID에 보낼 수 없다([Cluster §7](../specs/cluster-session-and-delivery.md#7-failure-recovery) 7항). Stage 뒤 leader 로그에 `raft snapshot exceeds peer frame limit; not sent`가 나오면 이 상태다. 이때는 이전 ID를 제거하지 않는다. 남은 두 voter의 quorum과 서비스는 유지된다. 따라잡지 못하는 새 ID가 member로 남아 있으면 활성화가 `409 feature_not_supported_by_all_members`로 거절될 수 있다. 이 상태의 자동 복구 절차는 검증하지 않았다. 증거를 보존해 담당자에게 전달한다. 활성화는 되돌릴 수 없다. 활성화한 뒤에는 이 feature를 모르는 build로 rollback하지 않는다.
+- [ ] 손실한 volume이 되돌릴 수 없게 사라졌다고 확인했다. 확인하지 못했으면 4단계 이후로 진행하지 않는다.
+- [ ] `<NEW_ID>`는 `GET /api/v1/nodes`에 없고 이전에 쓴 적이 없다.
+- [ ] Peer CA로 인증서를 발급할 수 있다. CA 비밀키는 이 절차의 산출물에 넣지 않는다.
+
+1. **남은 voter와 quorum을 확인한다.** 생존 Pod에 연결해 두 voter가 모두 READY이고 leader가 있는지 본다.
+
+   ```bash
+   kubectl -n narumq port-forward pod/narumq-<SURVIVOR> 8080:8080
+   ```
+
+   다른 터미널에서 호출한다. Token은 stdin 설정으로 넘겨 process 목록에 남기지 않는다.
+
+   ```bash
+   mgmt() { # 사용: mgmt <METHOD> <PATH> [<Idempotency-Key> [<본문 파일>]]
+     printf 'header = "Authorization: Bearer %s"\n' "$(cat "<ADMIN_TOKEN_FILE>")" |
+       curl --silent --show-error --max-time 10 --config - --request "$1" "http://127.0.0.1:8080$2" \
+         ${3:+--header "Idempotency-Key: $3"} ${4:+--header "Content-Type: application/json" --data "@$4"} \
+         --write-out '\nHTTP:%{http_code}\n'
+   }
+   mgmt GET /api/v1/nodes
+   ```
+
+   검사 기준: `VOTER`가 정확히 둘이다. 손실 node는 `UNREACHABLE` 같은 비정상 상태일 수 있다. Quorum을 확인하지 못하면 이후 단계를 진행하지 않는다.
+
+2. **빈 volume의 같은 ID 시작이 거절되는지 본다.** StatefulSet이 새 빈 PVC로 만든 Pod는 이전 ID로 시작해 `cluster bootstrap refused` 로그와 함께 exit 1로 끝나야 한다([ADR-0022](../decisions/ADR-0022-bootstrap-volume-loss-guard.md)). Pod를 지우거나 data directory를 만들지 않는다.
+
+   ```bash
+   kubectl -n narumq logs pod/narumq-<SLOT> --previous
+   ```
+
+3. **새 ID용 key와 인증서를 만든다.** DNS SAN은 `<SLOT_DNS>`이고 기존 peer CA(`ca.crt`)가 서명해야 한다. 새 key를 쓴다. 이전 ID의 인증서와 key를 재사용하지 않는다. 인증서의 SHA-256은 DER 형식 leaf 인증서 전체에 대한 값이다.
+
+   ```bash
+   openssl x509 -in <new-cert.pem> -outform DER | openssl dgst -sha256
+   ```
+
+   검사 기준: SAN에 `<SLOT_DNS>`가 있고, SHA-256이 이전 ID의 값과 다르다.
+
+4. **새 ID를 stage한다.** 본문 파일에는 `memberId`=`<NEW_ID>`, `address`=`<SLOT_DNS>:7000`, `dnsSan`=`<SLOT_DNS>`, 3단계의 `certificateSha256`, 실행 중인 cluster와 같은 `releaseVersion`·`clusterProtocolMajor`·`clusterProtocolMinor`·`stateSchemaMajor`·`stateSchemaMinor`를 넣는다. `releaseVersion`은 `GET /api/v1/cluster` 응답에서 읽는다.
+
+   ```bash
+   mgmt POST /api/v1/cluster/members "eks-slot-stage-<NEW_ID>" <stage-body.json>
+   ```
+
+   `202 Accepted`와 `STAGED` phase를 확인하고 `operationId`를 보존한다. 응답을 잃으면 **같은 key와 같은 본문**으로만 다시 호출한다. 주소가 이전 ID와 같아도 membership은 member ID 중복만 거절한다. 주소 중복은 거절하지 않는다.
+
+5. **ConfigMap과 Secret을 새 ID로 바꾼다.** 한 번에 같은 변경으로 적용한다.
+
+   - ConfigMap `narumq-cluster-configs`에 `node-<NEW_ID>.json`을 더한다. 내용은 bootstrap 설정과 같은 필드를 쓰되 `nodeId`는 `<NEW_ID>`, `role`은 `joiner`, `bootstrapMembers`는 `[]`, `seedAddresses`는 **다른 두 slot**의 `<dns>:7000`이다. `advertisedAddress`와 `localDnsName`은 이 slot의 값 그대로다.
+   - 같은 ConfigMap의 `slot-<SLOT>` 값을 `<NEW_ID>`로 바꾼다.
+   - Secret `narumq-cluster-secrets`의 `node-<SLOT>.crt`와 `node-<SLOT>.key`를 3단계의 새 인증서와 key로 바꾼다. Key 이름은 그대로다.
+
+   적용은 배포에 쓰는 같은 방법(GitOps 또는 `kubectl apply`)으로 한다. 적용 뒤 값을 읽어 확인한다.
+
+   ```bash
+   kubectl -n narumq get configmap narumq-cluster-configs -o jsonpath='{.data.slot-<SLOT>}'
+   ```
+
+   검사 기준: 출력이 `<NEW_ID>`이다. Secret 본문은 출력하지 않는다. 이 변경 뒤 손실 volume이 아닌 이전 data가 남은 Pod를 다시 시작하지 않는다([ADR-0061 §5](../decisions/ADR-0061-eks-ordinal-member-slot.md#5-결과와-제약)).
+
+6. **손실된 PVC와 Pod를 삭제한다.** 손실 volume을 확인한 뒤에만 한다. StatefulSet이 빈 PVC로 Pod를 다시 만들고, 새 Pod는 `slot-<SLOT>`의 `<NEW_ID>`로 joiner를 시작한다.
+
+   ```bash
+   kubectl -n narumq delete pvc data-narumq-<SLOT> --wait=false
+   kubectl -n narumq delete pod narumq-<SLOT>
+   ```
+
+7. **새 ID가 voter가 되는지 본다.** `operationId`가 `SUCCEEDED`가 되고 `GET /api/v1/nodes`에서 `<NEW_ID>`가 `VOTER`이며 Pod가 READY인지 확인한다.
+
+   ```bash
+   mgmt GET /api/v1/cluster/membership-operations/<operationId>
+   mgmt GET /api/v1/nodes
+   ```
+
+8. **이전 ID를 제거한다.** 7단계가 끝난 뒤에만 호출한다. 이 planned removal은 이전 ID가 소유한 session을 남은 voter로 옮긴다.
+
+   ```bash
+   mgmt DELETE /api/v1/cluster/members/<LOST_ID> "eks-slot-remove-<LOST_ID>"
+   ```
+
+   `SUCCEEDED`를 기다린 뒤 `GET /api/v1/nodes`에서 `<LOST_ID>`가 `RETIRED`인지 확인한다.
+
+9. **이전 ID의 설정을 지운다.** ConfigMap에서 `node-<LOST_ID>.json`을 삭제한다. 이 파일은 8단계 전에 지우지 않는다.
+
+10. **결과를 확인한다.** Broker Pod 3개가 READY이고 voter가 남은 두 ID와 `<NEW_ID>`이며 `<LOST_ID>`가 `RETIRED`인지 확인한다. 손실 전에 기록한 retained marker와 persistent session·offline message가 새 member에서 복구되는지 확인한다. `<LOST_ID>`로 다시 stage하면 `409 member_id_reserved`여야 한다.
+
+중단 조건(위 §5에 더한다):
+
+- 시작 전 확인 항목 중 하나라도 충족하지 못했다.
+- 2단계에서 `cluster bootstrap refused`가 아닌 다른 이유로 Pod가 실패하거나, 이전 ID가 시작에 성공했다.
+- 4단계 응답이 `202 STAGED`가 아니거나 `member_id_reserved`·identity conflict가 나왔다.
+- 5단계 뒤 `slot-<SLOT>`이 `<NEW_ID>`가 아니다.
+- 7단계에서 operation이 `SUCCEEDED`가 되지 않거나 `<NEW_ID>`가 `VOTER`가 되지 않는다. 8단계를 호출하지 않는다.
+
+중단하면 새 stage key를 만들거나 다른 ID를 stage하지 않는다. 4단계 이후에는 같은 operation과 같은 key로만 상태를 조회·재시도하고, 증거를 보존해 §7 담당자에게 전달한다.
+
+`deploy/kubernetes/eks-ec2-ha-s3`의 restore Job은 ID 1~3의 설정을 고정해 쓴다. Voter ID가 바뀐 cluster에는 이 절차를 적용해도 restore Job을 쓰지 않는다. 이 조합의 S3 복원은 검증하지 않았다.
+
 ## 4. 검증
 
-다중 프로세스 TLS membership과 retained/v2 backup process acceptance에서 관찰한 범위만 기록한다. 전체 cluster의 다른 수용 기준과 production 사용 여부는 Draft로 유지한다. Membership evidence는 [Cluster §11.5](../specs/cluster-session-and-delivery.md#115-dynamic-membershiprestart-convergencemqtt-readiness-mapping), retained evidence는 [§11.8](../specs/cluster-session-and-delivery.md#118-retained-replication과-backup-v2-수용-매핑)에 연결한다.
+실행 시 아래 조건을 확인하고 대상 버전·환경·명령·결과를 기록한다. 과거 실행은 현재 코드 통과가 아니며, 현재 연결·실행 결과는 [시나리오 보고서](../../.artifacts/verification/scenarios/report.md)를 따른다. 로컬 membership·retained·backup·재시드의 실행 이력은 [Cluster 검증 기록](../verification/cluster-session-and-delivery.md)에 둔다. 과거 v2 archive 시험은 현재 v3 restore 수용을 대신하지 않는다.
 
-빈 volume bootstrap 거절, 새 ID 교체 뒤 retained·offline·persistent session 복구, 늦은 초기 peer 허용은 [Cluster §11.20](../specs/cluster-session-and-delivery.md#1120-voter-volume-손실-보호와-재시드-수용-매핑)의 실제 process 실행 증거를 따른다. Production Linux/EBS volume 손실과 joiner voter의 빈 volume 재시작은 process 미검증으로 유지한다.
+| 관찰 대상 | 성공 조건 | 확인 명령·방법 |
+| --- | --- | --- |
+| Bootstrap readiness | 세 node 모두 fresh quorum barrier 이후 READY이고 quorum과 공통 leader가 확인된다. | 각 endpoint의 `GET /health/ready`와 cluster summary |
+| Join·idempotency | Stage 직후·promotion 뒤 같은 key가 같은 operation ID를 반환하고, joiner가 voter/READY에 도달한다. | Stage API와 `GET /api/v1/cluster/membership-operations/{operationId}` |
+| Restart convergence | 같은 identity·volume 재시작 뒤 committed membership과 operation phase가 수렴한다. | `go test -race ./tests/integration -run '^TestDynamicClusterMembershipTransitionCrashRecovery$' -count=2` |
+| 교체·retired ID | Planned removal 뒤 voter set이 기대값으로 수렴하고 retired ID 재사용은 거절된다. 단일 voter 손실에서도 quorum을 유지한다. | Management API와 process acceptance |
+| Compatibility·identity | Foreign CA, SAN/fingerprint/cluster ID 불일치, malformed frame, unsupported profile/schema, reserved ID가 commit·Step에 도달하지 않는다. | Transport unit tests와 membership process acceptance |
+| Quorum loss | Readiness·MQTT admission이 내려가고 removal이 commit되지 않는다. | Readiness와 removal API |
+| MQTT admission | 준비 전 CONNECT와 commit 전 subscription success ACK가 거절되고, 회복 뒤 수락된다. | `TestClusterReadinessGate`와 failpoint process acceptance |
+| Peer refresh | Identity를 유지한 refresh가 outbound frame을 보존하고, 이전 inbound frame은 Step 완료까지 reconciliation 경계를 따른다. | `go test -race ./internal/adapters/tcp` |
+| Session·archive 복구 | Persistent session과 retained·offline state가 재접속·restore·restart·learner catch-up 뒤 일치한다. | [Backup/restore 절차](cluster-backup-restore.md) |
 
-| 관찰 대상 | 성공 조건 | 확인 명령·방법 | 실제 결과 | 실행 증거 위치 |
-| --- | --- | --- | --- | --- |
-| Bootstrap readiness | 세 node 모두 fresh quorum barrier 이후 READY | 각 관리 endpoint의 `GET /health/ready` | 확인: 세 process 모두 READY이고 cluster summary에서 quorum과 공통 leader를 확인했다. | `tests/integration/cluster_membership_process_test.go::TestDynamicClusterMembershipProcessAcceptance` |
-| Join operation and idempotency | 동일 idempotency key 재시도가 같은 operation ID로 수렴하고 (stage 직후 및 promotion 완료 후), joiner가 learner catch-up 후 voter가 된다. | Stage API 및 `GET /api/v1/cluster/membership-operations/{operationId}` | 확인: stage 직후(STAGED) 및 promotion 완료 후(SUCCEEDED) 동일 key 재요청이 같은 operation ID를 반환했고 중복 config change/promotion 없이 joiner가 voter/READY 및 4-member summary에 도달했다. | `tests/integration/cluster_membership_process_test.go::TestDynamicClusterMembershipProcessAcceptance` |
-| Restart convergence | 같은 volume 재시작 후 committed membership과 operation phase가 수렴한다. | `go test -race ./tests/integration -run '^TestDynamicClusterMembershipTransitionCrashRecovery$' -count=2`; current `go run ./tools/verify local` | PASS: 전용 race 반복 2회는 retained cutover 전 증거다. Current local gate도 전체 integration package를 race mode로 실행해 통과했다. 이전 cycle 3 `CATCHING_UP` timeout 이후 빈 Raft entry를 typed snapshot index에 반영했다. | `tests/integration/cluster_membership_failpoint_process_test.go::TestDynamicClusterMembershipTransitionCrashRecovery`; current local gate |
-| Three-voter replacement and retired ID | Member 3 planned removal 후 active voter set이 `{1,2,4}`(LEADER/FOLLOWER)로 수렴하고, member 3은 RETIRED가 되며, retired ID 3 재사용이 거절되고, 1 voter loss 후 quorum을 유지한다. | Management API 및 process acceptance | 확인: member 3 planned removal 후 active node가 정확히 `{1,2,4}`(voter role: LEADER/FOLLOWER)이고 member 3이 RETIRED로 수렴함을 확인했다. retired ID 3 재사용은 409 `member_id_reserved`로 거절됐고, 1 voter crash 후 2 survivor가 quorum, 200 readiness 및 MQTT CONNECT 수락을 유지했다. | `tests/integration/cluster_membership_process_test.go::TestDynamicClusterMembershipProcessAcceptance` |
-| Compatibility and identity rejection | Foreign CA, SAN/fingerprint/cluster ID 불일치, malformed hello, unsupported profile/schema 및 reserved ID는 log commit 및 Step에 도달하지 않는다. | Transport unit tests 및 Management API process acceptance | 확인: wire 레벨에서 foreign CA, SAN 불일치, cluster ID 불일치, malformed frame이 TLS/transport에서 거절되어 Step에 도달하지 않음을 확인했다. Management API에서 unsupported release/protocol/schema는 422 `compatibility_unsupported`로, reserved ID는 409로 거절되어 membership log에 commit되지 않았다. | `internal/adapters/tcp/peer_transport_v2_test.go`, `tests/integration/cluster_membership_process_test.go` |
-| Quorum loss rejection | Quorum loss 중 readiness가 내려가고 removal은 commit되지 않는다. | Management readiness 및 removal API | 확인: 2 voter crash로 quorum loss 시 `/health/ready`가 503으로 떨어지고, removal 요청이 503 `quorum_unavailable`로 거절되어 commit되지 않으며, MQTT admission이 거절됨을 확인했다. | `tests/integration/cluster_membership_process_test.go::TestDynamicClusterMembershipProcessAcceptance` |
-| MQTT admission and readiness barrier | 준비 전 CONNECT와 commit 전 subscription success ACK가 거절되고, readiness 회복 뒤 정책에 맞게 처리된다. | `TestClusterReadinessGate` 및 failpoint process acceptance | PASS: readiness unit case가 applied-index gap과 projection failure를 확인하고 process test가 route projection rebuild 실패 시 503/CONNECT 거절, 회복 뒤 READY/CONNECT 수락을 확인했다. | `cmd/narumq/cluster_runtime_test.go::TestClusterReadinessGate`; `tests/integration/cluster_membership_failpoint_process_test.go` |
-| Peer identity refresh and learner TCP dial | Phase refresh keeps queued/in-progress outbound frames; old staged inbound frames cannot be leased; reconciliation waits for the current delivery to complete after `Step`. | `go test -race ./internal/adapters/tcp`; process diagnostic | PASS: adapter tests cover outbound preservation and inbound lease/reconciliation barrier. Earlier process diagnostics observed leader node 1 queue Raft messages for learner 4 while disconnected (queue reached 18); the TCP peer session later established and snapshot catch-up advanced. The code now preserves outbound frames across identity-preserving refresh and leases inbound delivery through `Step`. The observed symptom was a delayed dial, not evidence of a malformed address. | `internal/adapters/tcp/peer_transport_v2_test.go`; `tests/integration/cluster_membership_process_test.go` |
-| MQTT session-resume CONNECT | Persistent session resumes with accepted CONNACK and delivery state. | `go test ./tests/integration -count=1` | PASS: integration package 전체가 통과했다. 이전 header EOF는 `connection.cleanup()`의 `unbindSession` 복구 뒤 재현되지 않았다. | `internal/adapters/tcp/server.go`; `tests/integration` |
-| Retained replay and v2 archive recovery | QoS 0 retained replace/delete가 다른 node, restored voter, restarted voter와 learner catch-up 뒤 동일하게 replay되고 archive retained summary가 보존된다. | `TestClusterBackupRestoreProcessCrashAndResync`; §11.7의 process regression command | PASS: cross-node/restore/restart/joiner replay `{retained/a:alpha, retained/c:gamma}`, format major 2와 retained count 2를 확인했다. | `tests/integration/cluster_backup_restore_process_test.go::TestClusterBackupRestoreProcessCrashAndResync`; Cluster §11.8 |
-| Local repository verification | Current retained/backup v2 changes pass the full local gate. | `go run ./tools/verify local` | PASS: 표준·race package suite, 제한 fuzz, traceability, architecture와 coverage gate가 통과했다. Mutation: delivery 25/25 kill, session/ownership 45/46 kill·1 timeout, lived/uncovered 0. Verifier returned `local: PASS`. | Cluster §11.8 |
+관련 process 회귀를 실행하려면 저장소 root에서 다음 명령을 사용한다. 명령 목록 자체는 통과 증거가 아니다.
 
-실행 증거:
-
-```text
+```sh
 go build ./...
 go test ./internal/application/membership/... ./internal/adapters/raft/records/... ./internal/adapters/memory/retained/... ./internal/application/publish/... ./internal/application/subscribe/... ./internal/application/management/... ./internal/adapters/http/management/... ./cmd/narumq/... ./tests/contracts/... -count=1
 go test ./tests/integration -run '^(TestClusterBackupRestoreProcessCrashAndResync|TestDynamicClusterMembershipProcessAcceptance|TestDynamicClusterMembershipTransitionCrashRecovery|TestDynamicClusterMembershipRemovalHandoffWaitsForQuorum|TestSnapshotFinalizationCrashRecoveryAcrossProcessRestart)$' -count=1 -v
 ```
 
-`go build ./...`, membership·retained process acceptance, focused package suite와 full `go run ./tools/verify local` gate가 PASS했다. Local gate에는 표준·race package suite, 제한 fuzz, traceability, architecture, coverage와 mutation gate가 포함되며, 별도 production power-loss나 offline/durable-delivery 보장은 포함하지 않는다. 전체 acceptance와 남은 production 경계는 [Cluster §11.8](../specs/cluster-session-and-delivery.md#118-retained-replication과-backup-v2-수용-매핑)에 연결한다.
+전체 repository 검증은 [개발 가이드](development-guide.md#4-검증)를 따른다. 이 절차의 제한된 수용은 production power-loss·모든 volume 손실 모델·운영 부하 수용이 아니다.
 
 ## 5. 중단 조건
 
@@ -129,6 +241,7 @@ go test ./tests/integration -run '^(TestClusterBackupRestoreProcessCrashAndResyn
 1. `STAGED` 이후 operation이 진행되지 않으면 동일 key와 동일 request만 재시도하고 원인을 확인한다. 새로운 stage key, 수동 tombstone 삭제, ID 재사용, 데이터 디렉터리 초기화는 복구 방법이 아니다.
 2. Joiner가 learner가 된 뒤 응답을 잃었으면 같은 persistent directory로 재시작하고 동일 operation을 조회한다. Heartbeat timeout이나 process 종료만으로 learner/voter를 자동 삭제하지 않는다.
 3. Planned removal은 successor ownership transfer가 commit된 뒤에만 허용된다. Durable delivery aggregate는 별도 checkpoint command 없이 새 owner가 다음 CONNECT에서 ATTACH로 재개한다. Quorum이나 successor transfer가 확인되지 않으면 `DELETE /api/v1/cluster/members/{memberId}`를 호출하지 말고 기존 voter를 유지한다. Active session handoff와 quorum loss 복구 acceptance는 `TestDynamicClusterMembershipRemovalHandoffWaitsForQuorum`로 검증했다.
+3a. 전원 손실이나 `SIGKILL` 뒤 같은 volume으로 재시작한 voter가 오래 `Ready`가 되지 않으면 Pod의 `restartCount`와 직전 container 종료 사유를 먼저 확인한다. Kubelet은 startup probe 예산을 다 쓴 container를 종료하기 전에 `preStop`을 실행하므로 node에 drain 기록이 생길 수 있다. `GET /api/v1/nodes/{nodeId}/drain`의 phase가 `COMPLETED`이면 재시작 뒤 자동으로 `CLEAR`된다. `FAILED`일 때만 원인을 해결한 뒤 `DELETE /api/v1/nodes/{nodeId}/drain`으로 취소한다. `/health/ready`를 직접 호출해 startup을 통과시키지 않는다. 그 호출은 startup 결함을 가린다. 규칙과 근거는 [Drain §8.1](../specs/drain-and-rolling-update.md#81-startup-probe-종료와-drain-기록-재시작-순환)을 따른다.
 4. Restore 절차인 [Cluster backup/restore](cluster-backup-restore.md)는 v3 archive에 retained, offline 및 durable delivery state를 포함한다. Release window·active feature·동일 identity 복원은 최신 [Backup v3 §2·§4](../contracts/cluster-backup-v3.md#4-호환성-규칙)를 따른다. [Feature activation 승인](cluster-feature-activation.md) 뒤에는 해당 feature를 지원하지 않는 build로 rollback하지 않는다. Activation 전 backup 복원은 이후 commit 손실이 가능한 별도 disaster recovery다. Production volume power-loss는 이 절차에서 검증하지 않으며, 이전 v1/v2 archive 또는 binary로의 직접 downgrade 경로는 지원하지 않는다.
 
 ## 7. 해결되지 않을 때 전달할 대상

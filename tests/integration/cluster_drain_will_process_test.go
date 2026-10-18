@@ -20,6 +20,7 @@ var clusterDrainWillReasons = [...]string{
 }
 
 // Traceability: DEP-07/DEP-12; docs/specs/drain-and-rolling-update.md §5, §10.
+// Scenarios: drain-and-rolling-update.md:DRN-SCN-012
 func TestDynamicClusterDrainWillReasonProcessAcceptance(t *testing.T) {
 	t.Parallel()
 	fixture, nodes := clusterDurableProcessStart(t)

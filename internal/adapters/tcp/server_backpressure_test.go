@@ -13,12 +13,15 @@ import (
 
 type rejectingTCPPublishAdmission struct{}
 
-func (rejectingTCPPublishAdmission) CheckPressure() error { return publish.ErrPublishBackpressure }
+func (rejectingTCPPublishAdmission) CheckPressure() error {
+	return publish.NewRejectionError(publish.ErrPublishBackpressure, publish.RejectionClassServerBackpressure, publish.RejectionCauseCommitLag)
+}
 func (rejectingTCPPublishAdmission) CheckDeliveryCapacity(membership.DeliveryChangeDTO) error {
 	return nil
 }
 
 // Traceability: CLU-12; docs/specs/cluster-session-and-delivery.md §4.5, §11.28.
+// Scenarios: cluster-session-and-delivery.md:CLU-SCN-197, mqtt-protocol-and-session.md:MQTT-SCN-056
 func TestTCPPublishBackpressureReasonCodes(t *testing.T) {
 	for _, tc := range []struct {
 		name    string
@@ -83,6 +86,13 @@ func TestTCPPublishBackpressureReasonCodes(t *testing.T) {
 			if tc.qos == 0 {
 				requireConnectionClosed(t, runtime.client)
 				return
+			}
+			packet, _, err := runtime.server.limits.Load().decoder.Decode(frame, tc.version)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := tcpAckReasonString(packet); got != "server_backpressure:commit_lag" {
+				t.Fatalf("Reason String = %q", got)
 			}
 			writeTestPackets(t, runtime.client, &mqtt.PingReq{Version: tc.version})
 			frame = readTestFrame(t, runtime.client)

@@ -14,7 +14,8 @@
 | `code-map.template.md`, `module-design.template.md`, `architecture-view.template.md` | [architectures](../architectures/AGENTS.md) |
 | `ADR-0000-template.md` | [decisions](../decisions/AGENTS.md) |
 | `explainer.template.md` | [explainers](../explainers/AGENTS.md) |
-| `convention.template.md`, `DESIGN.template.md`, `frontend.template.md` | [conventions](../conventions/AGENTS.md) |
+| `DESIGN.template.md` | [design](../design/AGENTS.md) |
+| `convention.template.md`, `frontend.template.md` | [conventions](../conventions/AGENTS.md) |
 | `how-to.template.md` | [how-to](../how-to/AGENTS.md) |
 | `incident.template.md` | [incidents](../incidents/AGENTS.md) |
 

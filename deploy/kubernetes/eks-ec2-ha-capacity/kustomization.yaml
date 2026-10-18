@@ -1,0 +1,24 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+# BP-02 EKS capacity measurement overlay (docs/specs/performance-and-verification.md §3.9).
+# It adds MQTT TLS, loopback JWKS, generated security.json and a test-only process
+# controller for abrupt Pod faults. The default EKS_EC2_HA package stays unchanged.
+#
+# Required objects that the workstation controller creates before `kubectl apply -k`
+# (tests/benchmark/capacity/eks/controller.py prepare), all in namespace narumq:
+#   ConfigMap narumq-capacity-profile  profile.json
+#   Secret    narumq-capacity-jwks     jwks.json (public key only)
+#   Secret    narumq-capacity-mqtt-tls tls.crt, tls.key (synthetic server certificate)
+# Image `capacity-runner` has no registry or digest here. The controller renders a
+# temporary kustomization that pins it to an immutable ARM64 digest.
+resources:
+  - ../eks-ec2-ha
+patches:
+  - path: configmap-cluster-tls-patch.yaml
+  - path: statefulset-capacity-patch.yaml
+  - path: service-nlb-tls-patch.yaml
+configMapGenerator:
+  - name: narumq-capacity-process
+    namespace: narumq
+    files:
+      - broker-process.sh

@@ -227,6 +227,7 @@ func TestMembershipHTTPMapsNotLeaderSeparatelyFromQuorum(t *testing.T) {
 }
 
 // Traceability: CLU-09; docs/specs/cluster-session-and-delivery.md §4.4, §11.27.
+// Scenarios: cluster-session-and-delivery.md:CLU-SCN-190
 func TestMembershipHTTPMapsReplicationFactorUnsatisfiedToConflict(t *testing.T) {
 	stub := &membershipServiceStub{removeError: &membership.ServiceError{
 		Code:    membership.ServiceErrorReplicationFactorUnsatisfied,

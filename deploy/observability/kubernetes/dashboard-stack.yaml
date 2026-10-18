@@ -1,0 +1,157 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: prometheus
+  namespace: narumq-observability
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: prometheus
+  template:
+    metadata:
+      labels:
+        app: prometheus
+    spec:
+      containers:
+        - name: prometheus
+          image: prom/prometheus:v3.5.0
+          args:
+            - --config.file=/etc/prometheus/prometheus.yml
+            - --storage.tsdb.path=/prometheus
+            - --storage.tsdb.retention.time=15d
+          ports:
+            - name: http
+              containerPort: 9090
+          readinessProbe:
+            httpGet:
+              path: /-/ready
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /-/healthy
+              port: http
+            initialDelaySeconds: 15
+            periodSeconds: 20
+          volumeMounts:
+            - name: config
+              mountPath: /etc/prometheus/prometheus.yml
+              subPath: prometheus.yml
+              readOnly: true
+            - name: targets
+              mountPath: /etc/prometheus/targets
+              readOnly: true
+            - name: secrets
+              mountPath: /etc/prometheus/secrets
+              readOnly: true
+            - name: data
+              mountPath: /prometheus
+      volumes:
+        - name: config
+          configMap:
+            name: narumq-prometheus-config
+        - name: targets
+          configMap:
+            name: narumq-prometheus-targets
+        - name: secrets
+          secret:
+            secretName: narumq-readonly-secret
+        - name: data
+          emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: prometheus
+  namespace: narumq-observability
+spec:
+  type: ClusterIP
+  selector:
+    app: prometheus
+  ports:
+    - name: http
+      port: 9090
+      targetPort: http
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: grafana
+  namespace: narumq-observability
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: grafana
+  template:
+    metadata:
+      labels:
+        app: grafana
+    spec:
+      containers:
+        - name: grafana
+          image: grafana/grafana-oss:13.0.2
+          env:
+            - name: GF_PLUGINS_PREINSTALL_SYNC
+              value: yesoreyeram-infinity-datasource@4.1.1
+            - name: NARUMQ_MANAGEMENT_URL
+              value: http://narumq-management.narumq.svc.cluster.local:8080
+            - name: NARUMQ_READONLY_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: narumq-readonly-secret
+                  key: narumq-readonly.key
+          ports:
+            - name: http
+              containerPort: 3000
+          readinessProbe:
+            httpGet:
+              path: /api/health
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /api/health
+              port: http
+            initialDelaySeconds: 30
+            periodSeconds: 20
+          volumeMounts:
+            - name: provisioning-datasource
+              mountPath: /etc/grafana/provisioning/datasources/narumq.yml
+              subPath: narumq.yml
+              readOnly: true
+            - name: provisioning-dashboard
+              mountPath: /etc/grafana/provisioning/dashboards/narumq.yml
+              subPath: narumq.yml
+              readOnly: true
+            - name: dashboards
+              mountPath: /var/lib/grafana/dashboards/narumq/narumq-operations.json
+              subPath: narumq-operations.json
+              readOnly: true
+      volumes:
+        - name: provisioning-datasource
+          configMap:
+            name: narumq-grafana-datasource
+        - name: provisioning-dashboard
+          configMap:
+            name: narumq-grafana-dashboard-provider
+        - name: dashboards
+          configMap:
+            name: narumq-grafana-dashboard
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: grafana
+  namespace: narumq-observability
+spec:
+  type: ClusterIP
+  selector:
+    app: grafana
+  ports:
+    - name: http
+      port: 3000
+      targetPort: http

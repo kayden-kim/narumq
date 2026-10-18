@@ -37,6 +37,7 @@ func deliveryTestSubscribe(t *testing.T, machine *StateMachine, index uint64, cl
 		Subscription: &SubscriptionChangeDTO{TenantID: "t", ClientID: clientID, OwnerNodeID: 1, Epoch: 1, Filter: filter, QoS: qos, Action: SubscriptionActionAdd}})
 }
 
+// Scenarios: cluster-session-and-delivery.md:CLU-SCN-063
 func TestDeliveryActionTransitionsAndAttachmentSemantics(t *testing.T) {
 	machine := NewStateMachine()
 	deliveryTestAcquire(t, machine, 1, "subscriber")
@@ -68,6 +69,7 @@ func TestDeliveryActionTransitionsAndAttachmentSemantics(t *testing.T) {
 	}
 }
 
+// Scenarios: cluster-session-and-delivery.md:CLU-SCN-063
 func TestDeliveryReceiveDuplicateCapacityAndTombstoneReplacement(t *testing.T) {
 	machine := NewStateMachine()
 	deliveryTestAcquire(t, machine, 1, "publisher")
@@ -117,6 +119,7 @@ func TestDeliveryReceiveDuplicateCapacityAndTombstoneReplacement(t *testing.T) {
 	}
 }
 
+// Scenarios: cluster-session-and-delivery.md:CLU-SCN-063
 func TestDeliverySendAdvanceCompleteAndExpiryPurge(t *testing.T) {
 	machine := NewStateMachine()
 	deliveryTestAcquire(t, machine, 1, "subscriber")
@@ -159,6 +162,7 @@ func TestDeliverySendAdvanceCompleteAndExpiryPurge(t *testing.T) {
 	}
 }
 
+// Scenarios: cluster-session-and-delivery.md:CLU-SCN-063
 func TestDeliveryTargetRevalidationOrderAndEffectiveQoS(t *testing.T) {
 	machine := NewStateMachine()
 	deliveryTestAcquire(t, machine, 1, "a")
@@ -177,6 +181,7 @@ func TestDeliveryTargetRevalidationOrderAndEffectiveQoS(t *testing.T) {
 	}
 }
 
+// Scenarios: cluster-session-and-delivery.md:CLU-SCN-063
 func TestDeliverySessionQuotaSaturatesOnlyFullTarget(t *testing.T) {
 	machine := NewStateMachine()
 	deliveryTestAcquire(t, machine, 1, "full")
@@ -197,6 +202,7 @@ func TestDeliverySessionQuotaSaturatesOnlyFullTarget(t *testing.T) {
 	}
 }
 
+// Scenarios: cluster-session-and-delivery.md:CLU-SCN-063
 func TestDeliveryReceiveEvictsOldestTombstoneAndDiscardCleansSubscriptions(t *testing.T) {
 	machine := NewStateMachine()
 	deliveryTestAcquire(t, machine, 1, "publisher")
@@ -224,6 +230,7 @@ func TestDeliveryReceiveEvictsOldestTombstoneAndDiscardCleansSubscriptions(t *te
 	}
 }
 
+// Scenarios: cluster-session-and-delivery.md:CLU-SCN-063
 func TestDeliveryInvalidStaleFencesAndMissingRelease(t *testing.T) {
 	machine := NewStateMachine()
 	deliveryTestAcquire(t, machine, 1, "publisher")
@@ -246,6 +253,7 @@ func TestDeliveryInvalidStaleFencesAndMissingRelease(t *testing.T) {
 	}
 }
 
+// Scenarios: cluster-session-and-delivery.md:CLU-SCN-063
 func TestDeliveryGlobalEntryQuotaSaturatesWhenAllTargetsWouldExceedLimit(t *testing.T) {
 	machine := NewStateMachine()
 	const fullSessions = MaxDeliveryEntries / MaxDeliveryMessagesPerSession

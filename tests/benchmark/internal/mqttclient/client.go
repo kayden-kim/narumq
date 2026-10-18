@@ -1,6 +1,7 @@
 package mqttclient
 
 import (
+	"bufio"
 	"context"
 	"crypto/tls"
 	"encoding/binary"
@@ -47,7 +48,11 @@ type ConnectTiming struct {
 
 // Client owns one MQTT TCP or TLS connection and its packet codecs.
 type Client struct {
-	connection       net.Conn
+	connection net.Conn
+	// reader buffers the read side so a frame costs about one syscall. It is only touched by
+	// readPacket under readMu, or by Connect before the client is shared. Zero-value clients
+	// built by tests read the connection directly.
+	reader           *bufio.Reader
 	encoder          *mqtt.Encoder
 	decoder          *mqtt.Decoder
 	protocolVersion  mqtt.ProtocolVersion
@@ -57,6 +62,16 @@ type Client struct {
 	closeOnce        sync.Once
 	closeErr         error
 }
+
+// DialError reports a TCP dial or TLS handshake failure before any MQTT CONNECT
+// bytes can be written. Later failures are not DialError, including partial writes.
+type DialError struct {
+	Err error
+}
+
+func (err *DialError) Error() string { return err.Err.Error() }
+
+func (err *DialError) Unwrap() error { return err.Err }
 
 // Connect performs an MQTT CONNECT with caller-selected protocol, session, credentials, and Will.
 func Connect(ctx context.Context, options ConnectOptions) (*Client, ConnectTiming, error) {
@@ -98,10 +113,11 @@ func Connect(ctx context.Context, options ConnectOptions) (*Client, ConnectTimin
 		connection, err = dialer.DialContext(ctx, "tcp", options.Address)
 	}
 	if err != nil {
-		return nil, ConnectTiming{}, err
+		return nil, ConnectTiming{}, &DialError{Err: err}
 	}
 	client := &Client{
 		connection:       connection,
+		reader:           bufio.NewReader(connection),
 		encoder:          encoder,
 		decoder:          decoder,
 		protocolVersion:  protocolVersion,
@@ -232,7 +248,7 @@ type wireFrame struct {
 }
 
 func (client *Client) readPacket(timeout time.Duration) (mqtt.Packet, error) {
-	frame, err := readWireFrame(client.connection, timeout, client.handshakeTimeout)
+	frame, err := readWireFrameFrom(client.connection, client.frameSource(), timeout, client.handshakeTimeout)
 	if err != nil {
 		return nil, err
 	}
@@ -250,7 +266,7 @@ func (client *Client) readPacket(timeout time.Duration) (mqtt.Packet, error) {
 }
 
 func (client *Client) readConnAck(timeout time.Duration) (*mqtt.ConnAck, error) {
-	frame, err := readWireFrame(client.connection, timeout, client.handshakeTimeout)
+	frame, err := readWireFrameFrom(client.connection, client.frameSource(), timeout, client.handshakeTimeout)
 	if err != nil {
 		return nil, err
 	}
@@ -395,12 +411,27 @@ func validServerDisconnectUTF8(value []byte) bool {
 	return true
 }
 
+// frameSource returns the buffered reader, or the raw connection for clients built without one.
+func (client *Client) frameSource() io.Reader {
+	if client.reader != nil {
+		return client.reader
+	}
+	return client.connection
+}
+
 func readWireFrame(connection net.Conn, firstByteTimeout, frameTimeout time.Duration) (wireFrame, error) {
+	return readWireFrameFrom(connection, connection, firstByteTimeout, frameTimeout)
+}
+
+// readWireFrameFrom reads one frame from source, which must read from connection (directly or
+// through a buffer). Deadlines are applied to connection, so a first-byte timeout still fires
+// only when nothing is buffered and the socket stays silent.
+func readWireFrameFrom(connection net.Conn, source io.Reader, firstByteTimeout, frameTimeout time.Duration) (wireFrame, error) {
 	if err := connection.SetReadDeadline(time.Now().Add(firstByteTimeout)); err != nil {
 		return wireFrame{}, err
 	}
 	var header [1]byte
-	if _, err := io.ReadFull(connection, header[:]); err != nil {
+	if _, err := io.ReadFull(source, header[:]); err != nil {
 		return wireFrame{}, err
 	}
 	if err := connection.SetReadDeadline(time.Now().Add(frameTimeout)); err != nil {
@@ -412,7 +443,7 @@ func readWireFrame(connection net.Conn, firstByteTimeout, frameTimeout time.Dura
 	terminated := false
 	for index := 0; index < 4; index++ {
 		var encoded [1]byte
-		if _, err := io.ReadFull(connection, encoded[:]); err != nil {
+		if _, err := io.ReadFull(source, encoded[:]); err != nil {
 			if IsTimeout(err) {
 				return wireFrame{}, fmt.Errorf("MQTT frame read timed out after header: %v", err)
 			}
@@ -443,7 +474,7 @@ func readWireFrame(connection net.Conn, firstByteTimeout, frameTimeout time.Dura
 		return wireFrame{}, mqtt.ErrPacketTooLarge
 	}
 	body := make([]byte, remainingLength)
-	if _, err := io.ReadFull(connection, body); err != nil {
+	if _, err := io.ReadFull(source, body); err != nil {
 		if IsTimeout(err) {
 			return wireFrame{}, fmt.Errorf("MQTT frame read timed out after header: %v", err)
 		}

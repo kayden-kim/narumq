@@ -58,6 +58,7 @@ func credentialRevocationHTTPRequest(method, path string, body io.Reader) *http.
 }
 
 // Traceability: SEC-07; docs/specs/tenancy-and-security.md §7; docs/contracts/management-api-v1.md.
+// Scenarios: tenancy-and-security.md:SEC-SCN-037
 func TestCredentialRevocationHTTPListReturnsTimestampedState(t *testing.T) {
 	service := &credentialRevocationHTTPStub{states: []membership.CredentialRevocationStateDTO{
 		{CredentialID: "credential-a", RevokedAtUnixMillis: 1_700_000_000_000},
@@ -87,6 +88,7 @@ func TestCredentialRevocationHTTPListReturnsTimestampedState(t *testing.T) {
 }
 
 // Traceability: SEC-07; docs/specs/tenancy-and-security.md §7; docs/contracts/management-api-v1.md; docs/contracts/audit-event-v1.md.
+// Scenarios: tenancy-and-security.md:SEC-SCN-037
 func TestCredentialRevocationHTTPMutationsReturnStatusAndAuditCommittedIdentity(t *testing.T) {
 	const revokedAt = uint64(1_700_000_000_123)
 	service := &credentialRevocationHTTPStub{
@@ -138,6 +140,7 @@ func TestCredentialRevocationHTTPMutationsReturnStatusAndAuditCommittedIdentity(
 }
 
 // Traceability: SEC-07; docs/specs/tenancy-and-security.md §7; docs/contracts/management-api-v1.md.
+// Scenarios: tenancy-and-security.md:SEC-SCN-037
 func TestCredentialRevocationHTTPEnforcesPermissionAndAuditAdmission(t *testing.T) {
 	service := &credentialRevocationHTTPStub{
 		revokeStatus: membership.CredentialRevocationStatusDTO{CredentialID: "credential-a", Revoked: true, RevokedAtUnixMillis: 1},
@@ -162,6 +165,7 @@ func TestCredentialRevocationHTTPEnforcesPermissionAndAuditAdmission(t *testing.
 }
 
 // Traceability: SEC-07; docs/specs/tenancy-and-security.md §7; docs/contracts/management-api-v1.md; docs/contracts/audit-event-v1.md.
+// Scenarios: tenancy-and-security.md:SEC-SCN-037
 func TestCredentialRevocationHTTPMapsFailuresAndRejectsInvalidRequests(t *testing.T) {
 	service := &credentialRevocationHTTPStub{
 		revokeErr: &membership.ServiceError{Code: membership.ServiceErrorCredentialRevocationCapacity, Message: "credential revocation capacity is exhausted"},
@@ -202,6 +206,7 @@ func TestCredentialRevocationHTTPMapsFailuresAndRejectsInvalidRequests(t *testin
 }
 
 // Traceability: SEC-07; docs/specs/tenancy-and-security.md §7.
+// Scenarios: tenancy-and-security.md:SEC-SCN-037
 func TestCredentialRevocationRoutesAreAbsentWithoutClusterService(t *testing.T) {
 	handler := NewRouterWithMembership(ServerConfig{}, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
 	response := httptest.NewRecorder()

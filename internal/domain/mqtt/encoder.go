@@ -62,42 +62,42 @@ func (e *Encoder) Append(dst []byte, packet Packet) ([]byte, error) {
 		body, err = encodePublish(*value, e.maxPacketSize)
 	case PubAck:
 		packetType = PacketTypePubAck
-		body, err = encodeAcknowledgement(packetType, value.PacketID, value.Version, value.ReasonCode, e.maxPacketSize)
+		body, err = encodeAcknowledgement(packetType, value.PacketID, value.Version, value.ReasonCode, value.ReasonString, e.maxPacketSize)
 	case *PubAck:
 		if value == nil {
 			return dst, ErrMalformedPacket
 		}
 		packetType = PacketTypePubAck
-		body, err = encodeAcknowledgement(packetType, value.PacketID, value.Version, value.ReasonCode, e.maxPacketSize)
+		body, err = encodeAcknowledgement(packetType, value.PacketID, value.Version, value.ReasonCode, value.ReasonString, e.maxPacketSize)
 	case PubRec:
 		packetType = PacketTypePubRec
-		body, err = encodeAcknowledgement(packetType, value.PacketID, value.Version, value.ReasonCode, e.maxPacketSize)
+		body, err = encodeAcknowledgement(packetType, value.PacketID, value.Version, value.ReasonCode, value.ReasonString, e.maxPacketSize)
 	case *PubRec:
 		if value == nil {
 			return dst, ErrMalformedPacket
 		}
 		packetType = PacketTypePubRec
-		body, err = encodeAcknowledgement(packetType, value.PacketID, value.Version, value.ReasonCode, e.maxPacketSize)
+		body, err = encodeAcknowledgement(packetType, value.PacketID, value.Version, value.ReasonCode, value.ReasonString, e.maxPacketSize)
 	case PubRel:
 		packetType = PacketTypePubRel
 		flags = 0x02
-		body, err = encodeAcknowledgement(packetType, value.PacketID, value.Version, value.ReasonCode, e.maxPacketSize)
+		body, err = encodeAcknowledgement(packetType, value.PacketID, value.Version, value.ReasonCode, "", e.maxPacketSize)
 	case *PubRel:
 		if value == nil {
 			return dst, ErrMalformedPacket
 		}
 		packetType = PacketTypePubRel
 		flags = 0x02
-		body, err = encodeAcknowledgement(packetType, value.PacketID, value.Version, value.ReasonCode, e.maxPacketSize)
+		body, err = encodeAcknowledgement(packetType, value.PacketID, value.Version, value.ReasonCode, "", e.maxPacketSize)
 	case PubComp:
 		packetType = PacketTypePubComp
-		body, err = encodeAcknowledgement(packetType, value.PacketID, value.Version, value.ReasonCode, e.maxPacketSize)
+		body, err = encodeAcknowledgement(packetType, value.PacketID, value.Version, value.ReasonCode, "", e.maxPacketSize)
 	case *PubComp:
 		if value == nil {
 			return dst, ErrMalformedPacket
 		}
 		packetType = PacketTypePubComp
-		body, err = encodeAcknowledgement(packetType, value.PacketID, value.Version, value.ReasonCode, e.maxPacketSize)
+		body, err = encodeAcknowledgement(packetType, value.PacketID, value.Version, value.ReasonCode, "", e.maxPacketSize)
 	case Subscribe:
 		packetType = PacketTypeSubscribe
 		flags = 0x02

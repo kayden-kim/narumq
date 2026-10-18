@@ -23,6 +23,8 @@ func profileSourceForTest(t *testing.T) (Profile, []byte) {
 	return profile, data
 }
 
+// TestLoadProfilePreservesSourceHash verifies the profile SHA-256 source hash is preserved.
+// Scenarios: performance-and-verification.md:PRF-SCN-040
 func TestLoadProfilePreservesSourceHash(t *testing.T) {
 	path := filepath.Join("testdata", "smoke.json")
 	profile, source, hash, err := LoadProfile(path)
@@ -45,6 +47,8 @@ func TestLoadProfilePreservesSourceHash(t *testing.T) {
 	}
 }
 
+// TestDecodeProfileRejectsUnknownFieldAndInvalidBounds verifies rejection of unknown fields and out-of-range values.
+// Scenarios: performance-and-verification.md:PRF-SCN-040
 func TestDecodeProfileRejectsUnknownFieldAndInvalidBounds(t *testing.T) {
 	_, source := profileSourceForTest(t)
 	var profile map[string]json.RawMessage
@@ -132,6 +136,8 @@ func TestDecodeProfileAcceptsBoundsAndCalculatesSmokeCount(t *testing.T) {
 	}
 }
 
+// TestDecodeProfileRejectsNullAndMalformedInput verifies rejection of null and missing fields.
+// Scenarios: performance-and-verification.md:PRF-SCN-040
 func TestDecodeProfileRejectsNullAndMalformedInput(t *testing.T) {
 	_, source := profileSourceForTest(t)
 	for name, data := range map[string][]byte{

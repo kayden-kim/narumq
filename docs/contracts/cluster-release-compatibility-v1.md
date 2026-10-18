@@ -15,7 +15,7 @@
 | 관련 Architecture | [Cluster architecture](../architectures/cluster-architecture.md), [EKS on EC2 deployment](../architectures/eks-ec2-deployment.md) |
 | 관련 requirement | CLU-11, NFR-15, DEP-18 |
 | 관련 결정 | [ADR-0002](../decisions/ADR-0002-cluster-consensus-library.md), [ADR-0006](../decisions/ADR-0006-external-rollout-controller.md), [ADR-0009](../decisions/ADR-0009-raft-production-state-profile.md), [ADR-0018](../decisions/ADR-0018-release-compatibility-window.md), [ADR-0031](../decisions/ADR-0031-replicated-state-schema-strict-evolution.md), [ADR-0032](../decisions/ADR-0032-feature-activation-approval-policy.md) |
-| 검증 | `tests/integration/cluster_release_compat_process_test.go`; [Cluster spec §11.17](../specs/cluster-session-and-delivery.md#1117-n-1n-rolling-upgraderollback-수용-매핑) process acceptance PASS (105.55s; package 105.695s); release-profile controller transitions PASS, including compatible snapshot invalidation and unsupported restored-feature latching; repository-wide instrumented `go test ./...` PASS (40 packages, 6 without tests; 288.23s); `GOMAXPROCS=4 go run ./tools/verify local` PASS (292.39s). |
+| 검증 | Process acceptance와 controller 전이의 실행 범위는 [Cluster 검증 기록 §11.17](../verification/cluster-session-and-delivery.md#1117-n-1n-rolling-upgraderollback-수용-매핑)을 따른다. Synthetic·지정 historical baseline 증거는 게시 release별 수용이나 현재 전체 local gate 통과를 뜻하지 않는다. |
 
 ## 1. 지원 범위
 
@@ -70,7 +70,9 @@ Release version과 feature set은 mutable committed member profile이다. Restar
 - `credential-revocation`은 build capability이며 기본 비활성 feature다. 활성화 전 command field 25와 snapshot field 16은 기록하지 않는다. 모든 non-retired member가 지원할 때 기존 `FeatureActivation`으로 활성화한다. 활성화 뒤 폐기 entry를 모르는 build로 rollback하지 않는다. Strict codec과 backup restore의 active-feature 검사는 유지한다. [ADR-0049](../decisions/ADR-0049-mqtt-credential-revocation.md) 참조.
 - `client-blocklist`은 build capability이며 기본 build feature다. 활성화 전 command field 26, snapshot field 17 및 `blocklist_version` field 18은 기록하지 않는다. 모든 non-retired member가 지원할 때 기존 `FeatureActivation`으로 활성화한다. 활성화 뒤 blocklist field를 모르는 build로 rollback하지 않는다. Strict codec과 backup restore의 active-feature 검사는 유지한다. [ADR-0050](../decisions/ADR-0050-mqtt-client-blocklist.md) 참조.
 - `cluster-policy`는 기본 build feature다. 활성화 전 command field 27과 snapshot field 19를 기록하지 않는다. 모든 non-retired member가 지원할 때 `FeatureActivation`으로 활성화한다. 활성화 뒤에는 이 field를 모르는 build로 rollback하지 않는다. [ADR-0052](../decisions/ADR-0052-configuration-tiers-and-cluster-policy.md) 참조.
+- `shared-subscription-reroute`는 기본 build feature다. 활성화 전 `DeliveryTarget` field 3과 `DeliveryMessage` field 9를 제안하거나 기록하지 않으며, 활성화 전 동작과 wire bytes는 기존과 같다. 모든 non-retired member가 지원할 때 `FeatureActivation`으로 활성화한다. 활성화 뒤에는 공유 구독 출처와 그 재배분을 모르는 build로 rollback하지 않는다. Strict codec과 backup restore의 active-feature 검사는 유지한다. 도달 불가 owner의 member를 건너뛰는 routing 선호는 node-local이라 feature와 무관하다. [ADR-0060](../decisions/ADR-0060-shared-subscription-durable-owner-loss-reroute.md) 참조.
 - `cluster-policy-tenant-quotas`는 기본 build feature다. `ClusterPolicy.tenant_quotas`와 snapshot field 19의 nested quota field는 해당 feature가 활성화된 뒤에만 기록한다. 모든 non-retired member가 지원할 때 `FeatureActivation`으로 활성화한다. 활성화 뒤에는 tenant quota field를 모르는 build로 rollback하지 않는다. [ADR-0052](../decisions/ADR-0052-configuration-tiers-and-cluster-policy.md) 참조.
+- `snapshot-stream`은 기본 build feature이며 기본 비활성이다. 활성화 전에는 1 MiB 초과 `MsgSnap`을 보내지 않고 실패로 알린다. 활성화 뒤에는 [Raft snapshot stream v1](raft-snapshot-stream-v1.md)으로 보낸다. 활성화 뒤에는 이 stream을 모르는 build로 rollback하지 않는다. [ADR-0062](../decisions/ADR-0062-raft-snapshot-stream.md) 참조.
 
 ### 4.1 운영 승인과 rollback window 종료
 
@@ -133,8 +135,7 @@ Major 변경은 in-place mixed upgrade로 처리하지 않는다. 별도 migrati
 
 ## 8. Blocker와 제외 범위
 
-- 해결: 운영 체크리스트·외부 승인 기록과 commit 기준의 rollback window 종료 정책을 [§4.1](#41-운영-승인과-rollback-window-종료)에서 확정했다. API가 승인 evidence를 강제하지 않는다. 수용 범위는 [Cluster §11.30](../specs/cluster-session-and-delivery.md#1130-feature-activation-운영-승인-수용-매핑)에서 관리한다.
-- 남음: [ADR-0006](../decisions/ADR-0006-external-rollout-controller.md)의 rollout controller preflight. 이 ADR-0018 범위는 Pod 교체 전 preflight 구현을 포함하지 않는다.
-- 해결 범위: [ADR-0021](../decisions/ADR-0021-backup-archive-release-window.md)의 backup archive N/N-1 restore 정책. Synthetic 증거는 [Cluster §11.19](../specs/cluster-session-and-delivery.md#1119-backup-archive-nn-1-restore-수용-매핑), historical baseline의 upgrade restore와 pre-ADR-0021 consumer 거절 제약은 [§11.21](../specs/cluster-session-and-delivery.md#1121-historical-source-n-1n-호환성-수용-매핑)에서 관리한다.
-- `58a95f8` baseline은 §11.21에서 검증했다. 이후 실제 게시 release 사이의 wire/state matrix는 release마다 추가한다.
-- 해결: same-source synthetic 및 지정 historical baseline의 rolling·양방향 installed snapshot·N-2 거절 수용이 PASS했다. 실제 게시 release별 검증은 별도다.
+- 운영 승인과 rollback window 종료는 [§4.1](#41-운영-승인과-rollback-window-종료)을 따른다. API가 외부 승인 evidence를 강제하지는 않는다.
+- Rollout preflight는 [Rollout controller contract](rollout-controller-v1.md)를 따른다. 구현·제한된 EKS 수용과 게시 release별 수용을 구분한다.
+- Backup restore의 지원 범위는 [ADR-0021](../decisions/ADR-0021-backup-archive-release-window.md)을 따른다. Synthetic·지정 historical baseline의 증거는 [Cluster 검증 기록](../verification/cluster-session-and-delivery.md)에 둔다.
+- 실제 게시 release의 wire/state·upgrade·rollback·archive restore matrix는 release마다 검증한다. 지정 baseline `58a95f8` 통과로 대신하지 않는다.

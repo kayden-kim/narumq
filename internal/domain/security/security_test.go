@@ -35,6 +35,7 @@ func newSecurityRule(t *testing.T, tenant tenancy.TenantID, role Role, effect Ef
 }
 
 // Traceability: TEN-04, SEC-06
+// Scenarios: tenancy-and-security.md:SEC-SCN-023
 func TestPolicyExplicitDenyWinsAcrossAllPrincipalRoles(t *testing.T) {
 	tenant, principal := newSecurityFixture(t)
 	policy, err := NewPolicy([]Rule{
@@ -70,6 +71,7 @@ func TestPolicyExplicitDenyWinsAcrossAllPrincipalRoles(t *testing.T) {
 }
 
 // Traceability: TEN-04, SEC-06
+// Scenarios: tenancy-and-security.md:SEC-SCN-021, tenancy-and-security.md:SEC-SCN-023
 func TestPolicyUsesFilterContainmentAndDefaultDeny(t *testing.T) {
 	tenant, principal := newSecurityFixture(t)
 	policy, err := NewPolicy([]Rule{
@@ -103,6 +105,7 @@ func TestPolicyUsesFilterContainmentAndDefaultDeny(t *testing.T) {
 }
 
 // Traceability: TEN-04, SEC-06
+// Scenarios: tenancy-and-security.md:SEC-SCN-023
 func TestPolicyAllowsFilterOutsideDenyRule(t *testing.T) {
 	tenant, principal := newSecurityFixture(t)
 	policy, err := NewPolicy([]Rule{
@@ -122,6 +125,7 @@ func TestPolicyAllowsFilterOutsideDenyRule(t *testing.T) {
 }
 
 // Traceability: TEN-02, TEN-04
+// Scenarios: tenancy-and-security.md:SEC-SCN-023
 func TestPrincipalMustMatchSessionTenantAndClient(t *testing.T) {
 	tenant, principal := newSecurityFixture(t)
 	matchingKey, err := tenancy.NewSessionKey(tenant, "device-1")
@@ -218,6 +222,7 @@ func TestRuleAndPrincipalAccessors(t *testing.T) {
 }
 
 // Traceability: CFG-SCN-31; docs/specs/configuration-and-runtime-options.md §6.
+// Scenarios: configuration-and-runtime-options.md:CFG-SCN-31
 func TestPolicyRulesReturnsIndependentSlice(t *testing.T) {
 	tenant, _ := newSecurityFixture(t)
 	policy, err := NewPolicy([]Rule{

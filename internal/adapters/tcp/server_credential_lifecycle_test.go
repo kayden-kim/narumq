@@ -226,6 +226,7 @@ func tcpCredentialAssertClosed(t *testing.T, client net.Conn) {
 }
 
 // Traceability: SEC-07; docs/specs/tenancy-and-security.md §7.
+// Scenarios: tenancy-and-security.md:SEC-SCN-034
 func TestTCPConnectRejectsRevokedCredentialAfterOwnershipCommit(t *testing.T) {
 	for _, test := range []struct {
 		name       string
@@ -277,6 +278,7 @@ func TestTCPConnectRejectsRevokedCredentialAfterOwnershipCommit(t *testing.T) {
 }
 
 // Traceability: SEC-07; docs/specs/tenancy-and-security.md §7.
+// Scenarios: tenancy-and-security.md:SEC-SCN-035
 func TestTCPCommittedRevocationClosesSessionsAndBlocksLocalReconnection(t *testing.T) {
 	for _, test := range []struct {
 		name       string
@@ -331,6 +333,7 @@ func TestTCPCommittedRevocationClosesSessionsAndBlocksLocalReconnection(t *testi
 }
 
 // Traceability: SEC-07; docs/specs/tenancy-and-security.md §7.
+// Scenarios: tenancy-and-security.md:SEC-SCN-038
 func TestTCPCredentialExpiryDisconnectsAndProcessesWill(t *testing.T) {
 	for _, test := range []struct {
 		name    string

@@ -12,7 +12,8 @@
 | 방향 | process 시작 때 한 번 읽는 입력 |
 | 스키마 기준 파일 | 이 문서의 표. JSON Schema는 없다. |
 | 기준 스펙 | [실행 옵션과 설정 스펙](../specs/configuration-and-runtime-options.md) |
-| 관련 요구사항 | API-05, API-09, SEC-02, SEC-05, MQTT-09, MQTT-11, CLU-09, CLU-12, TEN-06~TEN-08 |
+| 관련 요구사항 | API-05, API-09, SEC-02, SEC-05, MQTT-09, MQTT-10, MQTT-11, CLU-09, CLU-12, TEN-06~TEN-08 |
+| 관련 결정 | [ADR-0057](../decisions/ADR-0057-mqtt-websocket-listener.md) |
 | 호환성 범위 | 같은 release의 binary와 설정 파일 |
 | 관련 시험 | §5 |
 
@@ -33,15 +34,21 @@
 | `-raft-peer-config` | string | `""` | 파일 경로가 필요하다. 다른 flag와 위치 인수를 거절한다. | fixed-voter peer-only |
 | `-tcp-listen` | string | `""` | 주소가 있으면 literal `127.0.0.0/8` 또는 `::1` loopback이어야 한다. | standalone MQTT TCP |
 | `-tls-listen` | string | `""` | 주소가 있으면 TLS listener를 연다. | standalone MQTT TLS |
-| `-tls-cert` | string | `""` | TLS listener를 열면 `BuildTLSConfig`가 필수로 검사한다. | standalone MQTT TLS |
-| `-tls-key` | string | `""` | TLS listener를 열면 `BuildTLSConfig`가 필수로 검사한다. | standalone MQTT TLS |
-| `-tls-ca` | string | `""` | client auth가 `request` 또는 `require`이면 `BuildTLSConfig`가 필요 여부와 PEM을 검사한다. | standalone MQTT TLS |
-| `-tls-client-auth` | string | `none` | `none\|request\|require`. `none`이면 `mtlsIdentities`가 없어야 한다. `request`이면 mTLS binding과 JWT 또는 password authentication이 필요하다. `require`이면 mTLS binding이 하나 이상 필요하다. | standalone MQTT TLS |
-| `-tls-min-version` | string | `1.2` | `1.2\|1.3`만 허용한다. | standalone MQTT TLS |
+| `-tls-cert` | string | `""` | TLS 또는 WSS listener를 열면 `BuildTLSConfig`가 필수로 검사한다. | standalone MQTT TLS/WSS |
+| `-tls-key` | string | `""` | TLS 또는 WSS listener를 열면 `BuildTLSConfig`가 필수로 검사한다. | standalone MQTT TLS/WSS |
+| `-tls-ca` | string | `""` | client auth가 `request` 또는 `require`이면 `BuildTLSConfig`가 필요 여부와 PEM을 검사한다. | standalone MQTT TLS/WSS |
+| `-tls-client-auth` | string | `none` | `none\|request\|require`. `none`이면 `mtlsIdentities`가 없어야 한다. `request`이면 mTLS binding과 JWT 또는 password authentication이 필요하다. `require`이면 mTLS binding이 하나 이상 필요하다. | standalone MQTT TLS/WSS |
+| `-tls-min-version` | string | `1.2` | `1.2\|1.3`만 허용한다. | standalone MQTT TLS/WSS |
+| `-ws-listen` | string | `""` | 주소가 있으면 literal `127.0.0.0/8` 또는 `::1` loopback이어야 한다. `-security-config`가 필요하다. | standalone MQTT WebSocket |
+| `-wss-listen` | string | `""` | 주소가 있으면 WSS listener를 연다. 기존 `-tls-*` 설정을 사용한다. | standalone MQTT WSS |
 | `-tcp-max-connections` | int | `0` | 범위는 `0..1,000,000`. 0은 제한을 끈다. 0이 아닌 값은 `-tcp-listen`이 필요하다. | standalone TCP listener admission |
 | `-tcp-connection-rate` | int | `0` | 범위는 `0..1,000,000`. 0은 제한을 끈다. 0이 아닌 값은 `-tcp-listen`이 필요하다. | standalone TCP listener admission |
 | `-tls-max-connections` | int | `0` | 범위는 `0..1,000,000`. 0은 제한을 끈다. 0이 아닌 값은 `-tls-listen`이 필요하다. | standalone TLS listener admission |
 | `-tls-connection-rate` | int | `0` | 범위는 `0..1,000,000`. 0은 제한을 끈다. 0이 아닌 값은 `-tls-listen`이 필요하다. | standalone TLS listener admission |
+| `-ws-max-connections` | int | `0` | 범위는 `0..1,000,000`. 0은 제한을 끈다. 0이 아닌 값은 `-ws-listen`이 필요하다. | standalone WebSocket listener admission |
+| `-ws-connection-rate` | int | `0` | 범위는 `0..1,000,000`. 0은 제한을 끈다. 0이 아닌 값은 `-ws-listen`이 필요하다. | standalone WebSocket listener admission |
+| `-wss-max-connections` | int | `0` | 범위는 `0..1,000,000`. 0은 제한을 끈다. 0이 아닌 값은 `-wss-listen`이 필요하다. | standalone WSS listener admission |
+| `-wss-connection-rate` | int | `0` | 범위는 `0..1,000,000`. 0은 제한을 끈다. 0이 아닌 값은 `-wss-listen`이 필요하다. | standalone WSS listener admission |
 | `-max-packet-size` | int | `1048576` | 범위는 `1..268435455`다. | standalone MQTT |
 | `-receive-maximum` | int | `64` | 범위는 `1..65535`다. | standalone MQTT |
 | `-packet-read-timeout` | Go duration | `30s` | 0보다 커야 한다. `tcp.NewServer`가 0 이하 값을 거절한다. | standalone MQTT |
@@ -58,9 +65,9 @@
 | `-runtime-metrics-output` | string | `""` | `-runtime-metrics-interval`과 함께 지정해야 한다. | standalone runtime metrics |
 | `-runtime-metrics-interval` | Go duration | `0` | `-runtime-metrics-output`과 함께 지정해야 한다. 0보다 커야 하고 listener가 하나 이상 있어야 한다. | standalone runtime metrics |
 | `-security-config` | string | `""` | MQTT listener를 열 때 필요하다. `-allow-insecure-anonymous-mqtt`와 함께 쓸 수 없다. | standalone MQTT |
-| `-allow-insecure-anonymous-mqtt` | bool | `false` | `-tcp-listen`이 필요하다. `-tcp-listen`은 literal loopback이어야 하며 `-tls-listen`과 함께 쓸 수 없다. `-security-config`와도 함께 쓸 수 없다. | standalone 개발·benchmark 전용 |
+| `-allow-insecure-anonymous-mqtt` | bool | `false` | `-tcp-listen`이 필요하다. `-tcp-listen`은 literal loopback이어야 한다. `-tls-listen`, `-ws-listen`, `-wss-listen`과 함께 쓸 수 없다. `-security-config`와도 함께 쓸 수 없다. | standalone 개발·benchmark 전용 |
 
-Listener admission flag 검증은 `validateListenerAdmissionFlags`가 수행한다. `BuildTLSConfig`는 TLS server certificate와 key를 요구한다. `request`와 `require`는 client CA를 요구한다.
+Listener admission flag 검증은 `validateListenerAdmissionFlags`가 수행한다. TCP/TLS/WS/WSS 각 admission 제한은 대응 listener를 요구한다. `BuildTLSConfig`는 TLS/WSS server certificate와 key를 요구한다. `request`와 `require`는 client CA를 요구한다.
 
 Cluster mode에서는 `-runtime-metrics-*` flag 대신 cluster config의 `runtimeMetrics` object로 runtime metrics를 설정한다. `-cluster-config` 단독 규칙은 유지한다.
 
@@ -99,7 +106,7 @@ Cluster mode에서는 `-runtime-metrics-*` flag 대신 cluster config의 `runtim
 | `seedAddresses` | 문자열 배열 | bootstrap에서는 빈 배열; joiner에서는 정규 DNS `host:port` 주소 1~16개. TLS SNI를 DNS 이름에 바인딩하므로 IP 리터럴은 거절 |
 | `peerTLS` | 객체 | `certFile`, `keyFile`, `caFile` 필수; 인증서와 키가 일치하고 CA가 모든 피어를 검증해야 함 |
 | `management` | 객체 | `listenAddress`, `clusterAdminTokenFile`, `auditDirectory` 필수. Token은 break-glass `ClusterAdmin` opaque secret이다. `auditDirectory`는 비어 있지 않은 경로여야 하며 `directory`와 같거나 서로 포함해서는 안 되고, 각 노드에서 달라야 한다. 선택 정수 필드 `requestRate`, `authFailureRate`는 각각 `1..1,000,000`; 생략하면 `50`, `5`를 사용한다. 선택 `apiKeys`는 `{id,keyFile,roles}` 객체 배열이며 `id`는 `^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$`와 일치하고 고유해야 하며, `keyFile`은 유효한 경로여야 하고 `roles`는 비어 있지 않은 고유한 `ReadOnly`, `Operator`, `SecurityAdmin`, `ClusterAdmin` 값만 포함해야 한다. Key 파일 내용은 앞뒤 공백 제거 후 비어 있지 않아야 하며 cluster admin token 및 다른 API key와 달라야 한다. 선택 `oidc`는 JWT verifier field(`issuer`, `audience`, `algorithms`, `jwksUrl`, `cacheTtlMillis`, `refreshCooldownMillis`, `clockSkewMillis`, `httpTimeoutMillis`)와 비어 있지 않은 `identities` 배열로 구성한다. 네 duration field는 `uint32` millisecond 정수이며 각각 `1..4294967295`다. 각 identity는 비어 있지 않고 최대 250 rune인 고유 `subject`와 비어 있지 않은 고유 역할 배열을 가져야 한다. JWT 필드는 MQTT `jwt` 설정과 같은 검증 규칙을 적용하며 `jwksUrl`은 HTTPS 또는 loopback HTTP여야 한다. OIDC 권한은 JWT claim이 아니라 정적 subject-to-roles binding에서 결정한다. |
-| `mqtt` | 객체 | `tcpListenAddress`, `tlsListenAddress`, `securityConfigFile`가 필요하다. 주소가 비어 있으면 해당 listener를 사용하지 않는다. `tcpListenAddress`는 loopback 제한 없이 wildcard(`0.0.0.0`, `[::]`)와 DNS 이름을 포함한 유효한 host:port를 허용한다. Standalone `-tcp-listen`의 literal loopback 제한은 적용하지 않는다. 선택 정수 필드 `tcpMaxConnections`, `tcpConnectionRate`, `tlsMaxConnections`, `tlsConnectionRate`는 0~1000000이며 생략하면 0(제한 없음)이다. 해당 listener 주소가 비어 있으면 그 listener의 두 값은 0이어야 한다. 선택 object `tls`는 `certFile`, `keyFile`, `caFile`, `clientAuth`, `minVersion`을 모두 요구한다. `tlsListenAddress`가 비어 있으면 `tls`를 지정할 수 없고, 주소가 있으면 `tls`가 필요하다. `certFile`과 `keyFile`은 공백이 없는 비어 있지 않은 경로여야 한다. `clientAuth`는 `none`, `request`, `require` 중 하나다. `none`이면 `caFile`은 빈 문자열이어야 한다. `request` 또는 `require`이면 `caFile`은 공백이 없는 비어 있지 않은 경로여야 한다. `minVersion`은 `1.2` 또는 `1.3`이어야 한다. 인증서·키 쌍과 client CA 파일은 listener 시작 때 읽고 검증한다. |
+| `mqtt` | 객체 | `tcpListenAddress`, `tlsListenAddress`, `securityConfigFile`가 필요하다. 주소가 비어 있으면 해당 listener를 사용하지 않는다. `tcpListenAddress`는 loopback 제한 없이 wildcard(`0.0.0.0`, `[::]`)와 DNS 이름을 포함한 유효한 host:port를 허용한다. Standalone `-tcp-listen`의 literal loopback 제한은 적용하지 않는다. 선택 정수 field `tcpMaxConnections`, `tcpConnectionRate`, `tlsMaxConnections`, `tlsConnectionRate`는 0~1000000이며 생략하면 0(제한 없음)이다. 해당 listener 주소가 비어 있으면 그 listener의 두 값은 0이어야 한다. 선택 object `webSocket`에는 필수 string `listenAddress`, `tlsListenAddress`와 선택 정수 `maxConnections`, `connectionRate`, `tlsMaxConnections`, `tlsConnectionRate`가 있다. 주소는 비어 있거나 유효한 host:port여야 한다. 각 제한은 0~1000000이며 생략하면 0이고, 0이 아닌 제한에는 대응 listen address가 필요하다. `webSocket` object를 생략하면 WS/WSS listener는 비활성이다. `tlsListenAddress` 또는 `webSocket.tlsListenAddress`가 있으면 `tls`가 필요하고, 둘 다 비어 있으면 `tls`를 지정할 수 없다. 선택 object `tls`는 `certFile`, `keyFile`, `caFile`, `clientAuth`, `minVersion`을 모두 요구한다. `certFile`과 `keyFile`은 공백이 없는 비어 있지 않은 경로여야 한다. `clientAuth`는 `none`, `request`, `require` 중 하나다. `none`이면 `caFile`은 빈 문자열이어야 한다. `request` 또는 `require`이면 `caFile`은 공백이 없는 비어 있지 않은 경로여야 한다. `minVersion`은 `1.2` 또는 `1.3`이어야 한다. 인증서·키 쌍과 client CA 파일은 listener 시작 때 읽고 검증한다. |
 | `replication` | 객체(선택) | 생략하면 복제 계수 3과 쓰기 쿼럼 2를 사용한다. 지정하면 정확히 `{factor:int, writeQuorum:int}`여야 하며 3/2만 허용한다. |
 | `publishBackpressure` | 선택 object | `minFreeBytes`, `maxCommitLagMillis`는 `uint64`다. Object가 있으면 두 key가 모두 필요하다. `publishBackpressure` object를 생략하면 기본값은 각각 `1073741824`, `1000`이다. `minFreeBytes` 범위는 `0..1<<50`이며 0은 disk admission을 끈다. `maxCommitLagMillis` 범위는 `100..10000`이다. |
 | `runtimeMetrics` | 선택 object | `outputFile`(string)과 `intervalMillis`(`uint64`)가 필요하다. Object가 있으면 두 key가 모두 필요하다. 생략하면 기록하지 않는다. `outputFile`은 비어 있지 않고 앞뒤 공백이 없는 경로여야 하며 `directory` 또는 `management.auditDirectory`와 겹치면 안 된다. 시작할 때 파일을 만들거나 비운다. 부모 디렉터리는 자동으로 만들지 않는다. `intervalMillis` 범위는 `1..3600000`이다. JSONL 형식은 standalone `-runtime-metrics-output`과 같다(`schemaVersion` 1). |
@@ -340,7 +347,7 @@ Build identity는 다음 `ldflags` 형식으로 지정한다.
 go build -ldflags "-X main.buildReleaseVersion=<semver> -X main.buildFeatures=<comma list>"
 ```
 
-기본값은 release version `0.0.0`과 빈 feature 목록이다. 항상 포함하는 feature는 `client-blocklist`, `cluster-policy-tenant-quotas`, `connection-rebalance`, `credential-revocation`, `proposal-recovery`, `session-metadata`다. `resolveBuildIdentity`는 feature를 정렬하고 중복을 제거한 뒤 `release.ValidFeatureSet`으로 검증한다. 출처는 `cmd/narumq/build_identity.go`와 `tests/integration/cluster_release_compat_process_test.go` 26–28행이다.
+기본값은 release version `0.0.0`이다. 항상 포함하는 feature는 `client-blocklist`, `cluster-observability-v1`, `cluster-policy`, `cluster-policy-tenant-quotas`, `connection-rebalance`, `credential-revocation`, `proposal-recovery`, `session-metadata`, `shared-subscription-reroute`, `snapshot-stream`이다. `resolveBuildIdentity`는 추가 feature를 합치고 정렬·중복 제거한 뒤 `release.ValidFeatureSet`으로 검증한다. 출처는 `cmd/narumq/build_identity.go`와 `internal/application/membership/build_features.go`다.
 
 ### 1.9 표기 규칙
 
@@ -357,8 +364,20 @@ G5 규칙은 채택했다. ADR-0052의 다른 제안은 `Proposed`로 남는다.
 
 | 대표 오류 문구 | 조건 |
 | --- | --- |
+| `-allow-insecure-anonymous-mqtt requires a loopback-only -tcp-listen and cannot be used with -tls-listen, -ws-listen, or -wss-listen` | 개발 익명 모드의 listener 조합이 허용 범위 밖이다. |
+| `-ws-listen must use literal loopback IP 127.0.0.0/8 or ::1` | Standalone 평문 WebSocket 주소가 literal loopback이 아니다. |
+| `-ws-max-connections must be between 0 and 1000000`, `-ws-connection-rate must be between 0 and 1000000` | WebSocket admission 값이 허용 범위를 벗어났다. |
+| `-ws-max-connections and -ws-connection-rate require -ws-listen` | WebSocket admission 제한에 listener 주소가 없다. |
+| `-wss-max-connections must be between 0 and 1000000`, `-wss-connection-rate must be between 0 and 1000000` | WSS admission 값이 허용 범위를 벗어났다. |
+| `-wss-max-connections and -wss-connection-rate require -wss-listen` | WSS admission 제한에 listener 주소가 없다. |
+| `mqtt webSocket listener addresses must be empty or valid host:port values` | Cluster WebSocket listener 주소가 유효하지 않다. |
+| `missing required field "listenAddress"` | `mqtt.webSocket` object에 필수 `listenAddress`가 없다. |
+| `mqtt webSocket connection limits must be between 0 and 1000000` | Cluster WebSocket admission 값이 허용 범위를 벗어났다. |
+| `mqtt webSocket connection limits require listenAddress` | Cluster WS admission 제한에 listener 주소가 없다. |
+| `mqtt webSocket tls connection limits require tlsListenAddress` | Cluster WSS admission 제한에 listener 주소가 없다. |
+| `mqtt tls requires tlsListenAddress or webSocket.tlsListenAddress` | TLS profile은 설정했지만 TLS listener 주소가 없다. |
+| `mqtt tls is required when tlsListenAddress or webSocket.tlsListenAddress is set` | TLS listener 주소가 있지만 TLS profile이 없다. |
 | `-security-config is required when an MQTT listener is enabled` | MQTT listener를 열 때 security config가 없고 개발 익명 예외도 사용하지 않는다. |
-| `-allow-insecure-anonymous-mqtt requires a loopback-only -tcp-listen and cannot be used with -tls-listen` | 개발 익명 모드의 listener 조합이 허용 범위 밖이다. |
 | `-cluster-restore requires -cluster-config` | restore만 지정했다. |
 | `-cluster-config cannot be combined with %s` | `-cluster-config`와 허용되지 않는 다른 flag를 함께 지정했다. |
 | `-runtime-metrics-output and -runtime-metrics-interval must be provided together` | runtime metrics flag 하나만 지정했다. |
@@ -395,25 +414,26 @@ Cluster config와 security config 예제는 [§1.3](#13-cluster-config-json)과 
 
 | 주체·시험 위치 | 확인할 계약 규칙 | 결과 | 실행 기록 |
 | --- | --- | --- | --- |
-| `cmd/narumq`: `TestParseClusterConfigValidRoles`, `TestParseClusterConfigRejectsInvalidInputs`, `TestParseClusterConfigRejectsDuplicateUnknownMissingAndTrailingJSON`, `TestParseClusterConfigRejectsUnreadableAndStructurallyInvalidJSON`, `TestValidateClusterConfigReportsFirstInvalidField` | Cluster config의 role, 필수·허용 필드, 형식, 중복·뒤따르는 값과 첫 오류 | 통과 | 2026-10-10 [실행 기록](../specs/configuration-and-runtime-options.md#configuration-test-execution) |
-| `cmd/narumq`: `TestValidateClusterConfigAcceptsManagementRateBoundaries`, `TestClusterManagementAccessConfiguration` | Management rate 경계, API key와 OIDC 구성 | 통과 | 2026-10-10 [실행 기록](../specs/configuration-and-runtime-options.md#configuration-test-execution) |
-| `cmd/narumq`: `TestParseClusterConfigReplicationProfile`, `TestParseClusterConfigPublishBackpressure`, `TestParseClusterConfigTenantQuotaProfile`, `TestParseClusterConfigRejectsMalformedTenantQuotaJSON` | 선택 cluster config object와 strict 정적 검증 | 통과 | 2026-10-10 [실행 기록](../specs/configuration-and-runtime-options.md#configuration-test-execution) |
-| `cmd/narumq`: `TestParseSecurityConfig_Valid`, `TestParseSecurityConfig_Rejections`, `TestParseSecurityConfig_NilOrUnreadableReader`, `TestParseSecurityConfig_PasswordIdentityRejections`, `TestParseSecurityConfig_MTLSValidation`, `TestParseSecurityConfig_TenantLimitsInheritance`, `TestParseSecurityConfig_TenantLimitsRejectInvalidProfiles`, `TestParseSecurityConfigRejectsIncompleteAuthenticationAndACL` | Security config authentication, ACL, password, mTLS, tenant limits, 중복 key와 거절 경계 | 통과 | 2026-10-10 [실행 기록](../specs/configuration-and-runtime-options.md#configuration-test-execution) |
-| `cmd/narumq`: `TestParseRaftPeerConfigStrict`, `TestParseRaftPeerConfigRejectsMissingFields` | Peer-only config strict parsing, 중복 key와 필수 값 | 통과 | 2026-10-10 [실행 기록](../specs/configuration-and-runtime-options.md#configuration-test-execution) |
-| `cmd/narumq`: `TestRejectDuplicateJSONKeys` | 공통 중복 key 검사의 중첩·배열·형제 object·대소문자 경계 | 통과 | 2026-10-10 [실행 기록](../specs/configuration-and-runtime-options.md#configuration-test-execution) |
-| `cmd/narumq`: `TestResolveBuildIdentity` | Build identity 정렬, 중복 제거와 feature 검증 | 통과 | 2026-10-10 [실행 기록](../specs/configuration-and-runtime-options.md#configuration-test-execution) |
-| `cmd/narumq`: `TestRunRejectsManagementRateFlagsOutOfRange`, `TestRunWithContextRejectsConstructionBounds`, `TestValidateTLSAuthenticationBindingsRequireMode`, `TestValidateTLSAuthenticationBindingsRequestMode` | Management rate 경계, queue 생성 한도, TCP max·TLS rate 범위와 TCP listener 필수 조건, TLS 인증 binding | 통과 | 2026-10-10 [실행 기록](../specs/configuration-and-runtime-options.md#configuration-test-execution) |
-| `cmd/narumq`: `TestHashPasswordFlagIsExclusive`, `TestClusterConfigFlagIsExclusive`, `TestRaftPeerOnlyRejectsOtherFlags`, `TestAuditVerifyFlagRequiresExclusiveDirectory` | 실행 모드 flag의 배타성·필수 인수 | 통과 | 2026-10-10 [실행 기록](../specs/configuration-and-runtime-options.md#configuration-test-execution) |
-| `cmd/narumq`: `TestMainNoListenerPath`, `TestRun_Defaults`, `TestRunWithContextMQTTSecurityMode`, `TestRunRejectsRuntimeMetricsFlagCombinations` | 비활성·기본 실행, MQTT 보안 mode와 runtime metrics flag 조합 | 통과 | 2026-10-10 [실행 기록](../specs/configuration-and-runtime-options.md#configuration-test-execution) |
-| `cmd/narumq`: `TestRunWithContextManagementAuthTokenFile` | Standalone Management token 파일의 존재·내용·Bearer 인증과 삭제된 flag | 통과 | 2026-10-10 [실행 기록](../specs/configuration-and-runtime-options.md#configuration-test-execution) |
-| `cmd/narumq`: `TestConfiguredTenantQuotaProfileUsesBuiltinOrStrictConfig`, `TestClusterTenantQuotaControllerLogsCommittedMismatchOnce`, `TestClusterMQTTListenersBindConfiguredEndpointsAndClosePartialOpen`, `TestRunRaftPeerOnlyStartupFailuresReleaseResources` | Quota profile, committed mismatch, partial listener 정리와 peer-only 시작 실패 | 통과 | 2026-10-10 [실행 기록](../specs/configuration-and-runtime-options.md#configuration-test-execution) |
-| `cmd/narumq`: `TestParseClusterConfigMQTTTLS`, `TestClusterMQTTListenersBindConfiguredEndpointsAndClosePartialOpen`, `TestClusterMQTTSecurityValidatesTLSClientAuthBindings`, `tests/integration`: `TestDynamicClusterMQTTTLSClientCertificateProcessAcceptance` | `mqtt.tls` 필수 key·strict validation, listener 자원 정리, client-auth binding과 3-node TLS·mTLS 동작 | 통과 | [Cluster MQTT TLS 실행 기록](../specs/configuration-and-runtime-options.md#cluster-mqtt-tls-g2-g10-execution) |
-| `cmd/narumq`: `TestPositiveMillisDuration`, `TestParseSecurityConfig_Rejections`, `TestParseSecurityConfig_TenantLimitsMaxWaitMillis`, `TestParseSecurityConfig_TenantLimitsRejectInvalidProfiles`, `TestClusterManagementAccessConfiguration` | Millis 정수 경계, security config의 새 key·legacy key·문자열 거절, tenant max wait 범위, cluster OIDC 설정 | 통과 | [G5 duration 표기 실행 기록](../specs/configuration-and-runtime-options.md#g5-duration-millis-execution) |
-| `cmd/narumq`: `TestParseClusterConfigClusterPolicyTenantQuotas` | `clusterPolicy.tenantQuotas`의 required·unknown·version field, 범위와 tenant ID·정렬 경계 | 통과 | [G7 config·quota 실행 기록](../specs/configuration-and-runtime-options.md#g7-config-view-and-tenant-quotas-execution) |
+| `cmd/narumq`: `TestParseClusterConfigValidRoles`, `TestParseClusterConfigRejectsInvalidInputs`, `TestParseClusterConfigRejectsDuplicateUnknownMissingAndTrailingJSON`, `TestParseClusterConfigRejectsUnreadableAndStructurallyInvalidJSON`, `TestValidateClusterConfigReportsFirstInvalidField` | Cluster config의 role, 필수·허용 필드, 형식, 중복·뒤따르는 값과 첫 오류 | 통과 | 2026-10-10 [실행 기록](../verification/configuration-and-runtime-options.md#configuration-test-execution) |
+| `cmd/narumq`: `TestValidateClusterConfigAcceptsManagementRateBoundaries`, `TestClusterManagementAccessConfiguration` | Management rate 경계, API key와 OIDC 구성 | 통과 | 2026-10-10 [실행 기록](../verification/configuration-and-runtime-options.md#configuration-test-execution) |
+| `cmd/narumq`: `TestParseClusterConfigReplicationProfile`, `TestParseClusterConfigPublishBackpressure`, `TestParseClusterConfigTenantQuotaProfile`, `TestParseClusterConfigRejectsMalformedTenantQuotaJSON` | 선택 cluster config object와 strict 정적 검증 | 통과 | 2026-10-10 [실행 기록](../verification/configuration-and-runtime-options.md#configuration-test-execution) |
+| `cmd/narumq`: `TestParseSecurityConfig_Valid`, `TestParseSecurityConfig_Rejections`, `TestParseSecurityConfig_NilOrUnreadableReader`, `TestParseSecurityConfig_PasswordIdentityRejections`, `TestParseSecurityConfig_MTLSValidation`, `TestParseSecurityConfig_TenantLimitsInheritance`, `TestParseSecurityConfig_TenantLimitsRejectInvalidProfiles`, `TestParseSecurityConfigRejectsIncompleteAuthenticationAndACL` | Security config authentication, ACL, password, mTLS, tenant limits, 중복 key와 거절 경계 | 통과 | 2026-10-10 [실행 기록](../verification/configuration-and-runtime-options.md#configuration-test-execution) |
+| `cmd/narumq`: `TestParseRaftPeerConfigStrict`, `TestParseRaftPeerConfigRejectsMissingFields` | Peer-only config strict parsing, 중복 key와 필수 값 | 통과 | 2026-10-10 [실행 기록](../verification/configuration-and-runtime-options.md#configuration-test-execution) |
+| `cmd/narumq`: `TestRejectDuplicateJSONKeys` | 공통 중복 key 검사의 중첩·배열·형제 object·대소문자 경계 | 통과 | 2026-10-10 [실행 기록](../verification/configuration-and-runtime-options.md#configuration-test-execution) |
+| `cmd/narumq`: `TestResolveBuildIdentity` | Build identity 정렬, 중복 제거와 feature 검증 | 통과 | 2026-10-10 [실행 기록](../verification/configuration-and-runtime-options.md#configuration-test-execution) |
+| `cmd/narumq`: `TestRunRejectsManagementRateFlagsOutOfRange`, `TestRunWithContextRejectsConstructionBounds`, `TestValidateTLSAuthenticationBindingsRequireMode`, `TestValidateTLSAuthenticationBindingsRequestMode` | Management rate 경계, queue 생성 한도, TCP max·TLS rate 범위와 TCP listener 필수 조건, TLS 인증 binding | 통과 | 2026-10-10 [실행 기록](../verification/configuration-and-runtime-options.md#configuration-test-execution) |
+| `cmd/narumq`: `TestHashPasswordFlagIsExclusive`, `TestClusterConfigFlagIsExclusive`, `TestRaftPeerOnlyRejectsOtherFlags`, `TestAuditVerifyFlagRequiresExclusiveDirectory` | 실행 모드 flag의 배타성·필수 인수 | 통과 | 2026-10-10 [실행 기록](../verification/configuration-and-runtime-options.md#configuration-test-execution) |
+| `cmd/narumq`: `TestMainNoListenerPath`, `TestRun_Defaults`, `TestRunWithContextMQTTSecurityMode`, `TestRunRejectsRuntimeMetricsFlagCombinations` | 비활성·기본 실행, MQTT 보안 mode와 runtime metrics flag 조합 | 통과 | 2026-10-10 [실행 기록](../verification/configuration-and-runtime-options.md#configuration-test-execution) |
+| `cmd/narumq`: `TestRunWithContextManagementAuthTokenFile` | Standalone Management token 파일의 존재·내용·Bearer 인증과 삭제된 flag | 통과 | 2026-10-10 [실행 기록](../verification/configuration-and-runtime-options.md#configuration-test-execution) |
+| `cmd/narumq`: `TestConfiguredTenantQuotaProfileUsesBuiltinOrStrictConfig`, `TestClusterTenantQuotaControllerLogsCommittedMismatchOnce`, `TestClusterMQTTListenersBindConfiguredEndpointsAndClosePartialOpen`, `TestRunRaftPeerOnlyStartupFailuresReleaseResources` | Quota profile, committed mismatch, partial listener 정리와 peer-only 시작 실패 | 통과 | 2026-10-10 [실행 기록](../verification/configuration-and-runtime-options.md#configuration-test-execution) |
+| `cmd/narumq`: `TestParseClusterConfigMQTTTLS`, `TestClusterMQTTListenersBindConfiguredEndpointsAndClosePartialOpen`, `TestClusterMQTTSecurityValidatesTLSClientAuthBindings`, `tests/integration`: `TestDynamicClusterMQTTTLSClientCertificateProcessAcceptance` | `mqtt.tls` 필수 key·strict validation, listener 자원 정리, client-auth binding과 3-node TLS·mTLS 동작 | 통과 | [Cluster MQTT TLS 실행 기록](../verification/configuration-and-runtime-options.md#cluster-mqtt-tls-g2-g10-execution) |
+| `cmd/narumq`: `TestPositiveMillisDuration`, `TestParseSecurityConfig_Rejections`, `TestParseSecurityConfig_TenantLimitsMaxWaitMillis`, `TestParseSecurityConfig_TenantLimitsRejectInvalidProfiles`, `TestClusterManagementAccessConfiguration` | Millis 정수 경계, security config의 새 key·legacy key·문자열 거절, tenant max wait 범위, cluster OIDC 설정 | 통과 | [G5 duration 표기 실행 기록](../verification/configuration-and-runtime-options.md#g5-duration-millis-execution) |
+| `cmd/narumq`: `TestParseClusterConfigClusterPolicyTenantQuotas` | `clusterPolicy.tenantQuotas`의 required·unknown·version field, 범위와 tenant ID·정렬 경계 | 통과 | [G7 config·quota 실행 기록](../verification/configuration-and-runtime-options.md#g7-config-view-and-tenant-quotas-execution) |
+| `cmd/narumq`: `TestRunWithContextWebSocketFlags`, `TestParseClusterConfigWebSocket` | WS/WSS listener flag, admission 범위·binding, 선택 `mqtt.webSocket` object와 TLS profile binding | 미실행 | [설정 시험 실행 기록](../verification/configuration-and-runtime-options.md#configuration-test-execution) |
 
 별도 `tests/contracts` 전용 시험은 실행하지 않았다. Process configuration v1은 `Draft`를 유지한다.
 
 ## 6. 초안을 확정하기 전에 해결할 사항
 
 - 별도 contract 시험이 §1 표와 실제 parser를 대조해야 `Active`로 전환할 수 있다.
-- [docs/TODO.md §1.10](../TODO.md#110-실행-옵션설정-구조)의 G1~G10에서 설정 구조의 결정·미구현 차이를 추적한다.
+- 채택한 G1~G10의 완료 범위와 나머지 Proposed 범위는 [docs/TODO.md §1.10](../TODO.md#110-실행-옵션설정-구조)과 연결된 설정 스펙의 수용 매핑을 따른다.

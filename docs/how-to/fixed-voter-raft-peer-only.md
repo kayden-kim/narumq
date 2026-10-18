@@ -5,9 +5,8 @@
 | 항목 | 값 |
 | --- | --- |
 | 대상 독자 | Raft peer transport 개발자와 제한된 peer-only smoke를 수행하는 검증 담당자 |
-| 검증 상태 | Draft; 제한된 CLI acceptance test는 통과했고 수동 3-process 절차는 미실행 |
-| 검증 환경·버전 | Windows/amd64, Go 1.26.5; `cmd/narumq` targeted acceptance test |
-| 최종 검증일 | 2026-09-26 (targeted test; 수동 절차 미실행) |
+| 검증 상태 | Draft; 수동 3-process 절차는 미실행 |
+| 검증 범위 | Windows/amd64, Go 1.26.5의 targeted acceptance 이력. 수동 절차는 미실행 |
 | 관련 기준 문서 | [Raft peer transport v1 Contract](../contracts/raft-peer-transport-v1.md), [Cluster §11.3 acceptance mapping](../specs/cluster-session-and-delivery.md), [Cluster architecture](../architectures/cluster-architecture.md) |
 
 ## 1. 대상과 영향
@@ -108,15 +107,17 @@ Certificate 발급·배포와 방화벽 변경은 이 절차의 범위가 아니
 
 ## 4. 검증
 
-| 관찰 대상 | 성공 조건 | 확인 방법 | 실제 결과 | 실행 증거 위치 |
-| --- | --- | --- | --- | --- |
-| Process 시작·종료 | 세 process가 각기 다른 node ID와 peer address로 시작하고 취소 시 종료한다. | 세 terminal의 structured log를 관찰하고 각 process에 `Ctrl+C`를 보낸다. | 수동 절차 미실행. | 이 문서의 절차 |
-| Raft election | Leader 역할을 나타내는 structured log record가 관찰된다. | 로그에서 `"role":"leader"`를 확인한다. | 수동 절차 미실행. | `TestRaftPeerOnlyStartsThreePeersAndStops`의 제한된 acceptance mapping은 [Cluster §11.3](../specs/cluster-session-and-delivery.md)에 있다. |
-| Peer-only 경계 | MQTT `READY`, MQTT listener 또는 application proposal API를 기대하지 않는다. | 실행 mode와 log를 확인한다. 이 항목은 broker readiness 검증이 아니다. | 수동 절차 미실행. | [Cluster architecture](../architectures/cluster-architecture.md) |
-| Local WAL | 각 node의 설정한 data directory에 `wal.bin`이 생성된다. | 세 `directory`를 확인한다. | 수동 절차 미실행. | `TestRaftPeerOnlyStartsThreePeersAndStops` |
-| CLI peer-only acceptance | Leader 관찰, local WAL, `READY` 미출력과 cancellation cleanup을 확인한다. | 아래의 targeted `go test` 명령 | PASS: `go test` 종료 코드 0. Test fixture를 사용하며 manual JSON config나 terminal 세 개의 실행은 검증하지 않는다. | [raft_peer_config_test.go](../../cmd/narumq/raft_peer_config_test.go) |
+수동 JSON config와 terminal 세 개의 실행은 미실행이다. 과거 targeted acceptance를 현재 코드나 production storage의 통과로 보지 않는다. 과거 실행 범위는 [Cluster 검증 기록 §11.3](../verification/cluster-session-and-delivery.md#113-phase-0-gate-4-production-peer-transport-mapping), 현재 연결·결과는 [시나리오 보고서](../../.artifacts/verification/scenarios/report.md)를 확인한다.
 
-제한된 실행 acceptance를 별도로 재현하려면 다음 시험을 실행한다. 이 시험은 manual config file, 실제 terminal 세 개 또는 production storage를 대신 검증하지 않는다.
+| 관찰 대상 | 성공 조건 | 확인 방법 |
+| --- | --- | --- |
+| Process 시작·종료 | 세 process가 다른 node ID·peer address로 시작하고 취소 시 종료함 | 각 terminal의 structured log와 `Ctrl+C` |
+| Raft election | Leader 역할의 structured log가 관찰됨 | `"role":"leader"` 확인 |
+| Peer-only 경계 | MQTT `READY`, MQTT listener, application proposal API를 제공하지 않음 | Mode와 log 확인. Broker readiness 검증이 아님 |
+| Local WAL | 각 data directory에 `wal.bin` 생성 | 세 `directory` 확인 |
+| CLI acceptance | Leader·local WAL·`READY` 미출력·cancellation cleanup | 아래 targeted test. Manual config·terminal·production storage 수용은 아님 |
+
+제한된 CLI acceptance를 재현하려면 다음 시험을 실행한다.
 
 ```sh
 go test ./cmd/narumq -run '^(TestRaftPeerOnlyRejectsOtherFlags|TestRaftPeerOnlyStartsThreePeersAndStops)$' -count=1

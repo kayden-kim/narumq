@@ -8,6 +8,7 @@ import (
 	"google.golang.org/protobuf/proto"
 )
 
+// Scenarios: cluster-session-and-delivery.md:CLU-SCN-115
 func TestNodeLeaderReplicationWaitsForLocalWAL(t *testing.T) {
 	node := storageBoundaryNode(t)
 	if err := node.Campaign(); err != nil {

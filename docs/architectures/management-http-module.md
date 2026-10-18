@@ -1,12 +1,12 @@
 # Management HTTP adapter 모듈 설계
 
-이 모듈은 management HTTP route, named credential 인증, 명시적 permission matrix, node-local rate limit과 응답 생성을 담당한다. Rate limiter는 process memory를 사용하며, application 계층에는 rate-limit 정책이나 limiter 상태를 노출하지 않는다.
+이 모듈은 management HTTP route, named credential 인증, 명시적 permission matrix, node-local rate limit, node·cluster 관측 query와 응답 생성을 담당한다. Rate limiter는 process memory를 사용하며, application 계층에는 rate-limit 정책이나 limiter 상태를 노출하지 않는다.
 
 | 항목 | 값 |
 | --- | --- |
 | 구조 시점 | Current |
 | 문서 상태 | Verified |
-| 구현 대조 | 2026-10-10 source, API-09 `mqttLimits` 3-node acceptance, adapter·contract 시험과 `go run ./tools/verify local` PASS |
+| 구현 대조 | API-09 설정 조회, 관측 handler·contract·process acceptance와 Grafana process·visual acceptance를 기준으로 대조했다. 실행 범위는 [Management 검증 기록](../verification/management-api-and-observability.md)에 둔다. 이 모듈의 대조 상태는 전체 local gate 통과를 뜻하지 않는다. |
 | 코드 위치 | `internal/adapters/http/management` |
 | 코드 지도 | [Project structure](project-structure.md) |
 | 관련 스펙 | [Management API](../specs/management-api-and-observability.md), [Tenant와 security](../specs/tenancy-and-security.md) §6·§7 |
@@ -16,12 +16,14 @@
 
 ## 1. 책임과 경계
 
-- 맡는 책임: HTTP route를 application management port에 연결하고, named API key·OIDC JWT·break-glass bearer의 인증, permission matrix, rate limit과 공통 오류 응답을 적용한다.
+- 맡는 책임: HTTP route를 application port에 연결하고, named API key·OIDC JWT·break-glass bearer의 인증, permission matrix, rate limit과 공통 오류 응답을 적용한다.
 - 맡는 책임: rate limit을 적용한 요청의 거절 결과를 주입된 `AuditUseCase`에 전달한다.
 - 맡지 않는 책임: flag와 cluster JSON 검증, credential file I/O, cluster 전체 rate 합산, audit 파일 저장과 회전이다. 설정·key file 검증은 `cmd/narumq`가, audit 저장은 `internal/adapters/auditlog`가 담당한다.
-- 다른 모듈에 공개하는 기능: `NewServer`, `NewServerWithMembership`, `NewRouter`, `NewRouterWithMembership`, `NodeConfigurationUseCase`, `ClusterPolicyUseCase`와 `ServerConfig`다.
+- 다른 모듈에 공개하는 기능: `NewServer`, `NewServerWithMembership`, `NewRouter`, `NewRouterWithMembership`, `NodeConfigurationUseCase`, `ClusterPolicyUseCase`, `ServerConfig`와 `ServerConfig.Observability`다.
 
 `NewServer`는 standalone mode의 audit service를 연결하지 않는다. Dynamic cluster composition은 audit service/query, `NodeConfigurationUseCase`, credential revocation·blocklist application service와 `ClusterPolicyUseCase`를 management server에 주입한다. `/api/v1/security/credential-revocations`의 GET·POST·DELETE와 `/api/v1/security/blocklist`의 GET, blocklist entry의 POST·DELETE는 `PermissionCredentialAdmin`으로 보호한다. Mutation은 해당 `security.credential.*` 또는 `security.blocklist.*` event를 admission한 뒤 service에 전달한다. `GET /api/v1/cluster/policy`는 ReadOnly, policy PUT과 `GET /api/v1/nodes/{nodeId}/config`는 ClusterAdmin 권한을 요구한다. 성공한 policy update는 `cluster.policy.update` event에 이전·새 version을 기록한다. `config`와 `/api/v1/nodes/{nodeId}/audit/events`는 인증·권한 검사 뒤 `requireLocalNode`를 적용한다. Node ID가 다르면 원격 proxy 없이 `409 node_not_local`을 반환한다. Standalone router에는 cluster-only service가 없으므로 해당 route를 등록하지 않는다. Audit 조회 결과를 다시 감사 기록하지 않는다.
+
+`ServerConfig.Observability`는 `observationports.QueryService`에 연결하며 구현체는 `internal/application/observability.Service`다. `/api/v1/cluster`, `/api/v1/nodes`, `/api/v1/nodes/{nodeId}`와 metrics JSON route는 ReadOnly 권한을 적용한다. `/metrics?mode=node`는 local Registry 경로를 사용한다. Cluster text mode는 ReadOnly 권한을 적용하고 모든 대상 query가 완료된 경우에만 출력한다. Dynamic cluster peer query는 TCP adapter가 mTLS 연결로 전달한다. Standalone source는 local node 하나를 대상으로 한다.
 
 ## 2. 내부 구조
 
@@ -29,7 +31,7 @@
 
 ```mermaid
 flowchart TD
-    Config["cmd/narumq<br/>verified credentials·rate·clock"] -->|ServerConfig 전달| Router["server.go<br/>newRouter"]
+    Config["cmd/narumq<br/>credentials·rate·clock·observability source"] -->|ServerConfig 전달| Router["server.go<br/>newRouter"]
     Router -->|생성| Auth["auth.go<br/>NewAuthenticator"]
     Route["등록된 /api/v1 route"] -->|middleware 호출| Require["audit.go<br/>Authenticator.require"]
     Require --> Authenticate{"authenticate 결과"}
@@ -54,11 +56,24 @@ flowchart TD
     Reject -->|audit use case가 있으면 기록| Audit["recordOutcome"]
     Reject -->|응답| TooMany["429 + Retry-After: 1"]
     Probe["health / metrics route"] -->|rateLimited=false 또는 익명 허용| ProbeHandler["probe / metrics handler"]
+    ObservabilityConfig["composition root<br/>Observability QueryService"] -->|주입| Router
+    V1Route["/api/v1/cluster·nodes·metrics"] -->|ReadOnly 권한| V1Handler["v1_handlers.go·observability_http.go"]
+    V1Handler -->|query| Observability["application/observability.Service"]
+    MetricsRoute["GET /metrics"] -->|mode=node·local fast path| LocalMetrics["metrics.go<br/>Registry.Render"]
+    MetricsRoute -->|cluster mode·ReadOnly| MetricsHandler["metrics.go<br/>MetricsHandler.ServeHTTP"]
+    MetricsHandler -->|query| Observability
+    Observability -->|local snapshot| Source["cmd/narumq/observability_source.go"]
+    Observability -->|remote snapshot| PeerReader["PeerObservabilityReader"]
+    PeerReader -->|one-shot mTLS connection| PeerTransport["DynamicTCPPeerTransport"]
+    PeerTransport -->|node-local request| PeerHandler["TCP peer observability handler"]
 ```
 
 | 요소 | 역할 | 만들어지는 시점과 소유자 | 의존 대상 |
 | --- | --- | --- | --- |
-| `server.go` `newRouter` | route를 등록하고 `Authenticator`를 route middleware에 연결한다. | Router를 만들 때 생성하며 HTTP server가 소유한다. | Management ports, `NodeConfigurationUseCase`, metrics port, `ClusterPolicyUseCase`, `AuthConfig`, local node ID |
+| `server.go` `newRouter` | route를 등록하고 `Authenticator`를 route middleware에 연결한다. | Router를 만들 때 생성하며 HTTP server가 소유한다. | Management ports, `NodeConfigurationUseCase`, metrics renderer, `observationports.QueryService`, `ClusterPolicyUseCase`, `AuthConfig`, local node ID |
+| `v1_handlers.go`와 `observability_http.go` | `/api/v1/cluster`, `/nodes`, `/nodes/{nodeId}`와 JSON metrics route를 `QueryService`에 연결하고 query 오류를 HTTP 오류로 바꾼다. | Router 초기화 때 생성된다. | `ServerConfig.Observability`, ReadOnly permission |
+| `metrics.go` `MetricsHandler` | `mode=node`는 local Registry를 직접 렌더한다. Cluster text mode는 `QueryService`를 호출하고 `complete=false`면 응답을 렌더하지 않는다. | Router 초기화 때 생성된다. | Metrics renderer, `QueryService`, ReadOnly permission |
+| `ServerConfig.Observability` | `observationports.QueryService` | HTTP server 설정 | JSON·cluster text handler가 같은 query service를 사용한다. Standalone·dynamic source 선택은 composition root가 담당한다. |
 | `auth.go` `NewAuthenticator` | credential 검증, `subject`·role 생성, 두 limiter 초기화와 기본값 적용을 한다. | Router 초기화 때 생성되며 해당 router가 소유한다. | `TokenVerifier`, `ports/clock.Clock`, `requestRateLimiter` |
 | `audit.go` `Authenticator.require` | 인증 실패 IP limit, 인증 성공 principal limit, permission 검사와 mutation admission 순서를 실행한다. | 요청마다 middleware가 호출한다. | `Authenticator`, optional `AuditUseCase` |
 | `audit.go` `rejectRateLimited` | denial audit 결과를 전달하고 `429` 응답과 `Retry-After`를 만든다. | 한도를 넘긴 요청마다 호출한다. | `recordOutcome`, `WriteError` |
@@ -83,6 +98,7 @@ flowchart TD
 | `rateBucket` | `tokens float64`, `refilled time.Time` | limiter map | token은 rate를 넘지 않는다. 새 bucket은 가득 찬 상태로 시작한다. |
 | `requestRateLimiter.buckets` | key와 bucket의 map | process memory | limiter마다 최대 4096개다. Cluster node 사이에 공유하지 않는다. |
 | `ServerConfig.LocalNodeID` | serving node의 canonical decimal member ID | composition root가 cluster router에 전달 | Node-local config·audit route에서 path ID와 비교한다. Standalone router에는 0을 전달해 route를 등록하지 않는다. |
+| `ServerConfig.Observability` | `observationports.QueryService` | HTTP server 설정 | `/api/v1` JSON handler와 cluster text handler가 같은 query service를 사용한다. Standalone·dynamic source 선택은 composition root가 담당한다. |
 
 ## 4. 처리 순서
 
@@ -94,6 +110,8 @@ flowchart TD
 | 4 | `audit.go` `rejectRateLimited` | 인증 성공 bucket 또는 실패 IP bucket이 token을 주지 않으면 호출한다. | AuditUseCase가 있으면 `management.request` denial 결과를 전달한다. | HTTP `429`, `rate_limited`, `Retry-After: 1`을 반환한다. |
 | 5 | `audit.go` `require` | token을 받은 뒤 명시적 permission matrix를 검사한다. Mutation이면 `AdmitMutation`을 호출한다. | `403` 요청도 token을 이미 소비했다. | role 부족은 `403`; audit admission 실패는 `503`; 통과하면 handler를 실행한다. |
 | 6 | `server.go` health·metrics route 또는 `/` fallback | probe와 scrape는 `rateLimited=false`로 실행한다. 등록되지 않은 path는 fallback handler를 사용한다. | API bucket은 바뀌지 않는다. | probe·metrics는 rate limit에서 제외되고 unknown path는 `404`다. |
+| 7 | `v1_handlers.go`, `metrics.go`, `application/observability.Service` | JSON route는 ReadOnly query를 실행한다. Text mode `node`는 Registry를 직접 읽고 cluster mode는 service를 호출한다. | Snapshot은 요청 중에 수집하며 cache를 저장하지 않는다. | Node API는 원격 상태를 직접 읽고, metrics JSON은 partial status를 반환할 수 있다. |
+| 8 | `metrics.go`, `observability_http.go` | Cluster text 또는 aggregated collection에서 대상 query가 실패한다. | 부분 Prometheus body를 만들지 않는다. | Retryable `503 metrics_collection_incomplete`를 반환한다. |
 
 Rate-limit event는 audit use case가 주입된 cluster 경로에서 기존 node별 denial 상한을 공유한다. 상한을 넘긴 audit event는 audit service가 억제할 수 있지만 HTTP `429` 응답은 유지된다. [Audit event v1 contract §5](../contracts/audit-event-v1.md)에 따라 standalone mode는 producer 범위에 포함되지 않는다.
 
@@ -115,6 +133,8 @@ Rate-limit event는 audit use case가 주입된 cluster 경로에서 기존 node
 | 시간 역행 | refill하지 않는다. | 기존 `refilled` 시각을 유지한다. | `TestRateLimitPrincipalBucketRejectsThenRefills` |
 | Mutation audit admission 실패 | handler를 실행하지 않고 retryable `503 audit_unavailable`을 반환한다. | rate token은 이미 소비됐다. | `internal/adapters/http/management/audit_test.go` |
 | Denial event가 audit 초당 상한 초과 | audit service가 event를 억제하고 metric을 증가시킨다. | HTTP 응답은 원래 `429`다. | Audit event v1 §5와 application audit 시험 |
+| Cluster node query 실패 | `queryStatus`와 nullable measurement를 반환한다. | Membership row는 유지되고 측정값은 미확인으로 남는다. | `TestNodeListPreservesUnknownAndRetiredStates`, `TestDynamicClusterObservabilityProcessAcceptance` |
+| Cluster text metrics 조회 중 대상 실패 | 부분 metric text를 렌더하지 않고 retryable `503 metrics_collection_incomplete`를 반환한다. | 응답 body에 부분 scrape가 없다. | `TestPrometheusMetricsModesAndAuthorization`, `TestDynamicClusterObservabilityProcessAcceptance` |
 
 ## 7. 설계 선택
 

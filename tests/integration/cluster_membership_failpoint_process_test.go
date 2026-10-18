@@ -350,6 +350,7 @@ func (s *clusterMembershipFailpointSupervisor) procs(ids []uint64) []*clusterMem
 	return result
 }
 
+// Scenarios: cluster-session-and-delivery.md:CLU-SCN-023, cluster-session-and-delivery.md:CLU-SCN-024, performance-and-verification.md:PRF-SCN-099
 func TestDynamicClusterMembershipTransitionCrashRecovery(t *testing.T) {
 	t.Parallel()
 
@@ -534,6 +535,7 @@ func TestDynamicClusterMembershipTransitionCrashRecovery(t *testing.T) {
 	clusterMembershipProcessAssertMQTTAccepted(t, fixture.mqttAddresses[finalLeaderID-1], fixture.accessToken)
 }
 
+// Scenarios: cluster-session-and-delivery.md:CLU-SCN-024, cluster-session-and-delivery.md:CLU-SCN-025, drain-and-rolling-update.md:DRN-SCN-010
 func TestDynamicClusterMembershipRemovalHandoffWaitsForQuorum(t *testing.T) {
 	t.Parallel()
 
@@ -717,6 +719,7 @@ func clusterMembershipFindLeaderByMap(t *testing.T, ctx context.Context, nodes m
 	return 0, ""
 }
 
+// Scenarios: cluster-session-and-delivery.md:CLU-SCN-035
 func TestSnapshotFinalizationCrashRecoveryAcrossProcessRestart(t *testing.T) {
 	t.Parallel()
 
@@ -767,6 +770,7 @@ func TestSnapshotFinalizationCrashRecoveryAcrossProcessRestart(t *testing.T) {
 }
 
 // Traceability: CLU-04, CLU-05, DEP-09; docs/specs/cluster-session-and-delivery.md §2, §2.1, §11.12; docs/specs/drain-and-rolling-update.md §10.
+// Scenarios: cluster-session-and-delivery.md:CLU-SCN-078, cluster-session-and-delivery.md:CLU-SCN-079, drain-and-rolling-update.md:DRN-SCN-010
 func TestDynamicClusterMQTTConnectOwnershipTakeoverProcessAcceptance(t *testing.T) {
 	t.Parallel()
 

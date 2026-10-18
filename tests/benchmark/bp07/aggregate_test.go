@@ -13,6 +13,8 @@ func collectorTestProfile() Profile {
 	}
 }
 
+// TestCollectorAttributesDisconnectOnlyToMatchingDrainNode verifies only a disconnect from the draining node is attributed to the round.
+// Scenarios: performance-and-verification.md:PRF-SCN-020
 func TestCollectorAttributesDisconnectOnlyToMatchingDrainNode(t *testing.T) {
 	collector := newCollector("narumq", collectorTestProfile())
 	at := time.Now()
@@ -37,6 +39,8 @@ func TestCollectorAttributesDisconnectOnlyToMatchingDrainNode(t *testing.T) {
 	}
 }
 
+// TestCollectorExcludesInterruptedPublisherExchangeFromGaps verifies an interrupted publisher exchange is not counted as a gap.
+// Scenarios: performance-and-verification.md:PRF-SCN-020
 func TestCollectorExcludesInterruptedPublisherExchangeFromGaps(t *testing.T) {
 	collector := newCollector("emqx", collectorTestProfile())
 	now := time.Now()
@@ -61,6 +65,8 @@ func TestCollectorExcludesInterruptedPublisherExchangeFromGaps(t *testing.T) {
 	}
 }
 
+// TestCollectorInvalidatesQoS2DuplicatesButRecordsQoS1Duplicates verifies QoS 2 duplicates invalidate and QoS 1 duplicates are recorded.
+// Scenarios: performance-and-verification.md:PRF-SCN-020
 func TestCollectorInvalidatesQoS2DuplicatesButRecordsQoS1Duplicates(t *testing.T) {
 	collector := newCollector("emqx", collectorTestProfile())
 	now := time.Now()
@@ -104,6 +110,8 @@ func TestCollectorInvalidatesQoS2DuplicatesButRecordsQoS1Duplicates(t *testing.T
 	}
 }
 
+// TestCollectorValidatesNaruMQWillAndRecordsEMQXWillOnly verifies NaruMQ Will validation and EMQX Will recorded-only handling.
+// Scenarios: performance-and-verification.md:PRF-SCN-020
 func TestCollectorValidatesNaruMQWillAndRecordsEMQXWillOnly(t *testing.T) {
 	marker := roundMarker{Round: 1, Node: "node3", State: "restarting"}
 	at := time.Now()

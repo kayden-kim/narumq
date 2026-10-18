@@ -12,6 +12,7 @@ import (
 )
 
 // Traceability: CLU-08; docs/specs/cluster-session-and-delivery.md §4.3, §11.24.
+// Scenarios: cluster-session-and-delivery.md:CLU-SCN-171, cluster-session-and-delivery.md:CLU-SCN-172
 func TestDynamicClusterSessionMetadataProcessAcceptance(t *testing.T) {
 	t.Parallel()
 

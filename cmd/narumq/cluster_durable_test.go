@@ -396,6 +396,7 @@ func TestClusterDurableCommitDeliveryValidatesAndMapsCapacity(t *testing.T) {
 }
 
 // Traceability: CLU-14; docs/specs/cluster-session-and-delivery.md §4.2, §11.11.
+// Scenarios: cluster-session-and-delivery.md:CLU-SCN-074
 func TestClusterRuntimeCommitsOwnershipAndEpochFencedSubscriptions(t *testing.T) {
 	runtime, _, stop := newClusterDurableTestRuntime(t)
 	defer stop()
@@ -545,6 +546,7 @@ func TestClusterDurableQueueLifecycleRemovesMessages(t *testing.T) {
 }
 
 // Traceability: CLU-14; docs/specs/mqtt-protocol-and-session.md §3.2.
+// Scenarios: mqtt-protocol-and-session.md:MQTT-SCN-025, cluster-session-and-delivery.md:CLU-SCN-062
 func TestClusterDurableBatchRetriesCommittedSuffixWithSameIdentifiers(t *testing.T) {
 	seed, sessionID, stop := newClusterDurableTestRuntime(t)
 	defer stop()
@@ -642,6 +644,7 @@ func TestClusterDurableBatchRetriesCommittedSuffixWithSameIdentifiers(t *testing
 }
 
 // Traceability: CLU-07; docs/specs/cluster-session-and-delivery.md §4.2, §11.11.
+// Scenarios: cluster-session-and-delivery.md:CLU-SCN-074
 func TestClusterQuorumBarrierUsesReadIndexWithoutProposal(t *testing.T) {
 	runtime := &clusterRuntime{
 		requests:      make(chan clusterDriverRequest, 1),

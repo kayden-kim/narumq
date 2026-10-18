@@ -2,15 +2,15 @@
 
 | 항목 | 내용 |
 | --- | --- |
-| 상태 | Proposed |
+| 상태 | Accepted |
 | 제안일 | 2026-08-16 |
-| 결정일 | 미정 |
-| 결정자 | 미정 |
+| 결정일 | 2026-10-13 |
+| 결정자 | 사용자 |
 | 관련 요구사항 | DEP-01~DEP-24, CLIENT-03~CLIENT-09, CLU-11 |
 | 관련 스펙 | [Drain과 rolling update](../specs/drain-and-rolling-update.md) |
 | 관련 Architecture | [EKS on EC2 deployment](../architectures/eks-ec2-deployment.md), [System overview](../architectures/system-overview.md) |
 | 관련 결정 | [ADR-0007](ADR-0007-aws-production-deployment-platform.md) |
-| 관련 Contract | [Management API v1](../contracts/management-api-v1.md), [MQTT client compatibility v1](../contracts/mqtt-client-compatibility-v1.md) |
+| 관련 Contract | [Management API v1](../contracts/management-api-v1.md), [MQTT client compatibility v1](../contracts/mqtt-client-compatibility-v1.md), [Rollout controller v1](../contracts/rollout-controller-v1.md) |
 | 관련 해설 | [안전한 노드 drain과 Will](../explainers/safe-node-drain-and-will.md) |
 
 ## 1. 결정
@@ -49,7 +49,7 @@ Kubernetes finalizer는 deletion timestamp가 설정된 resource의 실제 제�
 - Failure reason, retry 여부와 operator action을 상태에 남긴다.
 - Controller restart 뒤 같은 operation을 idempotent하게 재개한다.
 
-정확한 custom resource schema와 reconciliation contract는 후속 contract로 작성한다.
+CRD schema, reconciliation, image provenance, audit and Kubernetes lifecycle rules are adopted in the active [Rollout controller v1 contract](../contracts/rollout-controller-v1.md). Implementation and local controller acceptance evidence are recorded in [Drain spec §10](../specs/drain-and-rolling-update.md#10-broker-drain-수용-시험-매핑); production N-1↔N, EKS HA and continuous 100-rollout requirements remain separate acceptance gates.
 
 ## 5. 대안
 

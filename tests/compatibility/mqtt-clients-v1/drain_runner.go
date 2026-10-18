@@ -20,12 +20,35 @@ const (
 	malformedCaseTimeout    = 90 * time.Second
 )
 
-// RunDrain executes the fixed cluster-drain and malformed DISCONNECT suite.
+// RunDrain executes the required normal broker drain compatibility cases.
+// Scenarios: drain-and-rolling-update.md:DRN-SCN-014
 func RunDrain(ctx context.Context, options runOptions) (Summary, error) {
+	return runDrainSuite(ctx, options, "cluster_drain")
+}
+
+// runSDKDiagnostics reports optional malformed-response failures separately.
+// Scenarios: drain-and-rolling-update.md:DRN-SCN-015
+func runSDKDiagnostics(ctx context.Context, options runOptions) (Summary, error) {
+	return runDrainSuite(ctx, options, "malformed_disconnect")
+}
+
+func selectDrainProfile(p DrainProfile, kind string) DrainProfile {
+	selected := make([]DrainExpectedCase, 0, len(p.ExpectedCases))
+	for _, c := range p.ExpectedCases {
+		if c.Kind == kind {
+			selected = append(selected, c)
+		}
+	}
+	p.ExpectedCases = selected
+	return p
+}
+
+func runDrainSuite(ctx context.Context, options runOptions, kind string) (Summary, error) {
 	p, _, err := LoadDrainProfile(options.ProfilePath)
 	if err != nil {
 		return Summary{}, err
 	}
+	p = selectDrainProfile(p, kind)
 	ids := make([]string, 0, len(p.ExpectedCases))
 	cases := make(map[string]DrainExpectedCase, len(p.ExpectedCases))
 	for _, c := range p.ExpectedCases {
@@ -246,7 +269,7 @@ func (run *compatibilityRun) runDrainClusterCase(parent context.Context, p Drain
 		if _, err := run.command(ctx, "docker", ownerArgs...); err != nil {
 			return err
 		}
-		brokerArgs := []string{"run", "--detach", "--name", broker, "--network", "container:" + owner, "--cpus", "1", "--memory", "512m", "--read-only", "--tmpfs", "/tmp:size=64m", "--tmpfs", "/var/lib/narumq:size=256m", "--mount", mount, run.images["broker"], "-cluster-config", "/config/node.json"}
+		brokerArgs := []string{"run", "--detach", "--name", broker, "--network", "container:" + owner, "--cpus", "1", "--memory", "512m", "--read-only", "--tmpfs", "/tmp:size=64m", "--tmpfs", "/var/lib/narumq:size=2g", "--mount", mount, run.images["broker"], "-cluster-config", "/config/node.json"}
 		if _, err := run.command(ctx, "docker", brokerArgs...); err != nil {
 			return err
 		}

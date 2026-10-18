@@ -57,6 +57,7 @@ func tcpDataPlaneConnection(t *testing.T, recorder *tcpDataPlaneAuditRecorder) (
 }
 
 // Traceability: SEC-11/NFR-17; docs/specs/tenancy-and-security.md §8.
+// Scenarios: tenancy-and-security.md:SEC-SCN-047
 func TestTCPPublishAuthorizationDenialRecordsOnlyAuthenticatedPrincipal(t *testing.T) {
 	for _, authenticated := range []bool{true, false} {
 		name := "authenticated"
@@ -93,6 +94,7 @@ func TestTCPPublishAuthorizationDenialRecordsOnlyAuthenticatedPrincipal(t *testi
 }
 
 // Traceability: SEC-11/NFR-17; docs/specs/tenancy-and-security.md §8.
+// Scenarios: tenancy-and-security.md:SEC-SCN-047
 func TestTCPSubscribeAndUnsubscribeDispatchRecordEveryDeniedFilter(t *testing.T) {
 	for _, test := range []struct {
 		name    string
@@ -155,6 +157,7 @@ type fixedTCPRemoteConn struct {
 func (connection fixedTCPRemoteConn) RemoteAddr() net.Addr { return connection.remote }
 
 // Traceability: SEC-11/NFR-17; docs/specs/tenancy-and-security.md §8.
+// Scenarios: tenancy-and-security.md:SEC-SCN-047
 func TestTCPRemoteHostRemovesPortAndPreservesUnparsedAddress(t *testing.T) {
 	for _, test := range []struct {
 		name string

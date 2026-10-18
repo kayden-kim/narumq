@@ -18,6 +18,7 @@ import (
 )
 
 // Traceability: SEC-11/API-08/NFR-17; docs/specs/tenancy-and-security.md §9.
+// Scenarios: management-api-and-observability.md:MGT-SCN-012, management-api-and-observability.md:MGT-SCN-013, tenancy-and-security.md:SEC-SCN-046, tenancy-and-security.md:SEC-SCN-050
 func TestDynamicClusterManagementAuditProcessAcceptance(t *testing.T) {
 	t.Parallel()
 
@@ -169,6 +170,7 @@ func TestDynamicClusterManagementAuditProcessAcceptance(t *testing.T) {
 }
 
 // Traceability: SEC-11/NFR-17; docs/specs/tenancy-and-security.md §8.
+// Scenarios: tenancy-and-security.md:SEC-SCN-047, tenancy-and-security.md:SEC-SCN-048
 func TestDynamicClusterMQTTDenialAuditProcessAcceptance(t *testing.T) {
 	t.Parallel()
 

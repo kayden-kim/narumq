@@ -56,6 +56,7 @@ func setupProposalTestMachine(t *testing.T) (*StateMachine, []MemberIdentityDTO)
 	return machine, members
 }
 
+// Scenarios: cluster-session-and-delivery.md:CLU-SCN-233
 func TestProposalReceiptLifecycleAndReplay(t *testing.T) {
 	machine, _ := setupProposalTestMachine(t)
 	reqID := "00000000-0000-4000-8000-000000000101"
@@ -105,6 +106,7 @@ func TestProposalReceiptLifecycleAndReplay(t *testing.T) {
 	}
 }
 
+// Scenarios: cluster-session-and-delivery.md:CLU-SCN-233
 func TestProposalDigestMismatchRejected(t *testing.T) {
 	machine, _ := setupProposalTestMachine(t)
 	reqID := "00000000-0000-4000-8000-000000000102"
@@ -142,6 +144,7 @@ func TestProposalDigestMismatchRejected(t *testing.T) {
 	}
 }
 
+// Scenarios: cluster-session-and-delivery.md:CLU-SCN-233
 func TestProposalRetirementFloorFencing(t *testing.T) {
 	machine, _ := setupProposalTestMachine(t)
 	reqID1 := "00000000-0000-4000-8000-000000000103"
@@ -178,6 +181,7 @@ func TestProposalRetirementFloorFencing(t *testing.T) {
 	}
 }
 
+// Scenarios: cluster-session-and-delivery.md:CLU-SCN-236
 func TestProposalOriginsSnapshotRoundTrip(t *testing.T) {
 	machine, _ := setupProposalTestMachine(t)
 	reqID := "00000000-0000-4000-8000-000000000106"
@@ -227,6 +231,7 @@ func TestProposalOriginsSnapshotRoundTrip(t *testing.T) {
 	}
 }
 
+// Scenarios: cluster-session-and-delivery.md:CLU-SCN-235
 func TestProposalReceiptCapacityLimits(t *testing.T) {
 	machine, _ := setupProposalTestMachine(t)
 	payload := &DeliveryChangeDTO{
@@ -279,6 +284,7 @@ func TestProposalReceiptCapacityLimits(t *testing.T) {
 	}
 }
 
+// Scenarios: cluster-session-and-delivery.md:CLU-SCN-234
 func TestProposalConflictDoesNotBecomeSuccessAfterOwnershipAppears(t *testing.T) {
 	machine, _ := setupProposalTestMachine(t)
 	requestID := "00000000-0000-4000-8000-000000007001"
@@ -302,6 +308,7 @@ func TestProposalConflictDoesNotBecomeSuccessAfterOwnershipAppears(t *testing.T)
 	}
 }
 
+// Scenarios: cluster-session-and-delivery.md:CLU-SCN-234
 func TestProposalRequestIdentitySeparatesMembershipTransitions(t *testing.T) {
 	machine, _ := setupProposalTestMachine(t)
 	operationID := "00000000-0000-4000-8000-000000008001"
@@ -331,6 +338,7 @@ func TestProposalRequestIdentitySeparatesMembershipTransitions(t *testing.T) {
 	}
 }
 
+// Scenarios: cluster-session-and-delivery.md:CLU-SCN-235
 func TestProposalWillResultBudgetRejectsBeforeMutationAndRemembersConflict(t *testing.T) {
 	machine, _ := setupProposalTestMachine(t)
 	index := uint64(5)

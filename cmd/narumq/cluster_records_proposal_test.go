@@ -11,6 +11,7 @@ import (
 	"narumq/internal/application/membership"
 )
 
+// Scenarios: cluster-session-and-delivery.md:CLU-SCN-236
 func TestEncodeMembershipCommandProposalDigestVerification(t *testing.T) {
 	cmd := membership.CommandDTO{
 		SchemaMajor: membership.SchemaMajor,
@@ -54,6 +55,7 @@ func TestEncodeMembershipCommandProposalDigestVerification(t *testing.T) {
 	}
 }
 
+// Scenarios: cluster-session-and-delivery.md:CLU-SCN-236
 func TestProposalOriginsSnapshotBridgeRoundTrip(t *testing.T) {
 	receiptResult := membership.ApplyResultDTO{
 		Index:   5,
@@ -111,6 +113,7 @@ func TestProposalOriginsSnapshotBridgeRoundTrip(t *testing.T) {
 	}
 }
 
+// Scenarios: cluster-session-and-delivery.md:CLU-SCN-236
 func TestProposalOriginsDiverseResultsBridgeRoundTrip(t *testing.T) {
 	testResults := []membership.ApplyResultDTO{
 		{
@@ -313,6 +316,7 @@ func TestProposalOriginsDiverseResultsBridgeRoundTrip(t *testing.T) {
 }
 
 // Traceability: CLU-11/CLU-14; docs/specs/cluster-session-and-delivery.md §10, §11.19.
+// Scenarios: cluster-session-and-delivery.md:CLU-SCN-236
 func TestMembershipSnapshotEncodeRejectsInvalidProposalReceipt(t *testing.T) {
 	snapshot := bridgeSnapshotFixture()
 	snapshot.ProposalOrigins = []membership.ProposalOriginStateDTO{{
@@ -328,6 +332,7 @@ func TestMembershipSnapshotEncodeRejectsInvalidProposalReceipt(t *testing.T) {
 	}
 }
 
+// Scenarios: cluster-session-and-delivery.md:CLU-SCN-236
 func TestProposalResultFromRecordRejectsMalformedRecords(t *testing.T) {
 	tests := []struct {
 		name string

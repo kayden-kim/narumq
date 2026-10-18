@@ -77,6 +77,7 @@ func TestConnectionRebalanceCommandCodecValidation(t *testing.T) {
 }
 
 // Traceability: CLU-13; docs/specs/cluster-session-and-delivery.md §9, §11.31.
+// Scenarios: cluster-session-and-delivery.md:CLU-SCN-224
 func TestConnectionRebalanceSnapshotFeatureGateAndObjectCount(t *testing.T) {
 	state := &ReplicatedStateSnapshot{
 		ConnectionRebalance: validConnectionRebalanceState(),

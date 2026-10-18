@@ -11,6 +11,8 @@ import (
 	"narumq/internal/domain/mqtt"
 )
 
+// TestSubscriberReaderResumesQoS2Release verifies the subscriber reader resumes the QoS 2 release flow.
+// Scenarios: performance-and-verification.md:PRF-SCN-003
 func TestSubscriberReaderResumesQoS2Release(t *testing.T) {
 	for _, completed := range []bool{false, true} {
 		name := "awaiting-PUBREL"

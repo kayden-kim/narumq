@@ -13,6 +13,7 @@ import (
 	"narumq/internal/domain/tenancy"
 )
 
+// Scenarios: tenancy-and-security.md:SEC-SCN-015
 func TestHashPasswordCommandTrimsOnlyOneLineEndingAndWritesVerifiableHash(t *testing.T) {
 	cases := []struct {
 		name     string
@@ -64,6 +65,7 @@ func TestHashPasswordCommandTrimsOnlyOneLineEndingAndWritesVerifiableHash(t *tes
 	}
 }
 
+// Scenarios: tenancy-and-security.md:SEC-SCN-015
 func TestHashPasswordCommandRejectsInvalidInputWithoutWriting(t *testing.T) {
 	cases := []struct {
 		name  string
@@ -88,6 +90,7 @@ func TestHashPasswordCommandRejectsInvalidInputWithoutWriting(t *testing.T) {
 	}
 }
 
+// Scenarios: tenancy-and-security.md:SEC-SCN-015
 func TestHashPasswordCommandReturnsReaderAndWriterErrors(t *testing.T) {
 	readerErr := errors.New("reader failed")
 	var output bytes.Buffer

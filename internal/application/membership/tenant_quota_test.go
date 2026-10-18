@@ -45,6 +45,7 @@ func applyQuotaOwnershipForTest(t *testing.T, machine *StateMachine, index uint6
 }
 
 // Traceability: TEN-08; docs/specs/cluster-session-and-delivery.md §11.16.
+// Scenarios: cluster-session-and-delivery.md:CLU-SCN-098
 func TestTenantQuotaProfileValidationVersioningAndOwnership(t *testing.T) {
 	profile := DefaultTenantQuotaProfile()
 	if err := ValidateTenantQuotaProfile(profile); err != nil {
@@ -122,6 +123,7 @@ func TestTenantQuotaProfileValidationVersioningAndOwnership(t *testing.T) {
 }
 
 // Traceability: TEN-08; docs/specs/cluster-session-and-delivery.md §4 and §11.16.
+// Scenarios: cluster-session-and-delivery.md:CLU-SCN-098
 func TestTenantRetainedQuotaReductionPreservesExistingValues(t *testing.T) {
 	machine := NewStateMachine()
 	oldChange := retainedReplaceForTest("t", "status", "publisher", []byte("large"), 1, 0, 1000)
@@ -162,6 +164,7 @@ func TestTenantRetainedQuotaReductionPreservesExistingValues(t *testing.T) {
 }
 
 // Traceability: TEN-08; docs/specs/cluster-session-and-delivery.md §4 and §11.16.
+// Scenarios: cluster-session-and-delivery.md:CLU-SCN-098
 func TestTenantOfflineQueueQuotaDimensionsAndClaimRelease(t *testing.T) {
 	machine := NewStateMachine()
 	message := OfflineMessageDTO{Topic: "a/b", Payload: []byte("xy")}
@@ -217,6 +220,7 @@ func TestTenantOfflineQueueQuotaDimensionsAndClaimRelease(t *testing.T) {
 }
 
 // Traceability: TEN-08; docs/specs/cluster-session-and-delivery.md §4 and §11.16.
+// Scenarios: cluster-session-and-delivery.md:CLU-SCN-098
 func TestTenantDeliveryQuotaSaturatesTargetAndCompletionReleasesUsage(t *testing.T) {
 	machine := NewStateMachine()
 	limits := DefaultTenantQuotaProfile().Default
@@ -246,6 +250,7 @@ func TestTenantDeliveryQuotaSaturatesTargetAndCompletionReleasesUsage(t *testing
 }
 
 // Traceability: TEN-08; docs/specs/cluster-session-and-delivery.md §10 and §11.16.
+// Scenarios: cluster-session-and-delivery.md:CLU-SCN-098
 func TestTenantStorageUsageAggregatesQueuesAndInboundAcrossSnapshot(t *testing.T) {
 	machine := NewStateMachine()
 	key := sessionKey{tenantID: "t", clientID: "subscriber"}

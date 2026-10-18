@@ -30,6 +30,7 @@ func TestBackupArchiveRoundTripAndChecksums(t *testing.T) {
 	}
 }
 
+// Scenarios: cluster-session-and-delivery.md:CLU-SCN-033, cluster-session-and-delivery.md:CLU-SCN-043
 func TestBackupArchiveRejectsCorruptAndNoncanonicalFrames(t *testing.T) {
 	archive := backupTestArchive(t)
 	encoded, _, err := EncodeBackupArchive(archive)
@@ -79,6 +80,7 @@ func TestBackupArchiveRejectsCorruptAndNoncanonicalFrames(t *testing.T) {
 	}
 }
 
+// Scenarios: cluster-session-and-delivery.md:CLU-SCN-033, cluster-session-and-delivery.md:CLU-SCN-043
 func TestBackupArchiveRejectsInvalidManifestAndEntryRanges(t *testing.T) {
 	for _, testCase := range []struct {
 		name   string
@@ -117,6 +119,7 @@ func TestBackupArchiveRejectsInvalidManifestAndEntryRanges(t *testing.T) {
 	}
 }
 
+// Scenarios: cluster-session-and-delivery.md:CLU-SCN-043
 func TestSummarizeSnapshotCountsTenantsAndInflightDeterministically(t *testing.T) {
 	first := &ReplicatedStateSnapshot{
 		Ownerships: []*OwnershipState{
@@ -200,6 +203,7 @@ func TestSummarizeSnapshotCountsTenantsAndInflightDeterministically(t *testing.T
 }
 
 // Traceability: CLU-14; docs/specs/cluster-session-and-delivery.md §4.2, §11.11.
+// Scenarios: cluster-session-and-delivery.md:CLU-SCN-065, cluster-session-and-delivery.md:CLU-SCN-033
 func TestBackupArchiveRejectsInconsistentMembershipAndEntries(t *testing.T) {
 	for _, testCase := range []struct {
 		name   string
@@ -336,6 +340,8 @@ func TestBackupArchiveRoundTripsConfigurationEntry(t *testing.T) {
 		t.Fatalf("decoded configuration entry = %+v", decoded.Entries[1])
 	}
 }
+
+// Scenarios: cluster-session-and-delivery.md:CLU-SCN-033
 func TestBackupArchiveDecoderRejectsFrameBoundsManifestAndEntryRange(t *testing.T) {
 	archive := backupTestArchive(t)
 	encoded, _, err := EncodeBackupArchive(archive)

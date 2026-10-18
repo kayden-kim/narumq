@@ -6,6 +6,7 @@ import (
 )
 
 // Traceability: CFG-SCN-37; docs/specs/configuration-and-runtime-options.md §10; ADR-0052 §1.1.1.
+// Scenarios: configuration-and-runtime-options.md:CFG-SCN-37
 func TestClusterPolicyTenantQuotaActivationRejectsUnsupportedStagedMember(t *testing.T) {
 	machine := releaseProfileMachine(t, "1.2.0", []string{ClusterPolicyFeature, ClusterPolicyTenantQuotasFeature})
 	if result := activateFeatureForTest(t, machine, 2, ClusterPolicyFeature); result.Outcome != ApplyOutcomeApplied {
@@ -24,6 +25,7 @@ func TestClusterPolicyTenantQuotaActivationRejectsUnsupportedStagedMember(t *tes
 }
 
 // Traceability: CFG-SCN-34~36; docs/contracts/replicated-state-v1.md §3; ADR-0052 §1.1.1.
+// Scenarios: configuration-and-runtime-options.md:CFG-SCN-34, configuration-and-runtime-options.md:CFG-SCN-36
 func TestClusterPolicyTenantQuotaFeatureGateAndEffectiveProfile(t *testing.T) {
 	inactive := clusterPolicyTestMachine(t)
 	policy := clusterPolicyTestValue(64)

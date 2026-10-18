@@ -305,6 +305,7 @@ func TestLoadClusterConfigFile(t *testing.T) {
 
 }
 
+// Scenarios: mqtt-protocol-and-session.md:MQTT-SCN-052
 func TestParseClusterConfigRejectsUnreadableAndStructurallyInvalidJSON(t *testing.T) {
 	if _, err := parseClusterConfig(nil); err == nil || !strings.Contains(err.Error(), "reader is nil") {
 		t.Fatalf("nil reader error = %v", err)
@@ -347,6 +348,7 @@ func TestParseClusterConfigRejectsUnreadableAndStructurallyInvalidJSON(t *testin
 	}
 }
 
+// Scenarios: configuration-and-runtime-options.md:CFG-SCN-29, mqtt-protocol-and-session.md:MQTT-SCN-052
 func TestValidateClusterConfigReportsFirstInvalidField(t *testing.T) {
 	cases := []struct {
 		name string
@@ -407,6 +409,7 @@ func TestValidateClusterConfigReportsFirstInvalidField(t *testing.T) {
 
 // TestValidateClusterConfigAcceptsManagementRateBoundaries verifies the inclusive rate limits.
 // Traceability: PRD API-05; docs/specs/management-api-and-observability.md §1.5.
+// Scenarios: management-api-and-observability.md:MGT-SCN-011
 func TestValidateClusterConfigAcceptsManagementRateBoundaries(t *testing.T) {
 	config := validBootstrapClusterConfig()
 	config.Management.RequestRate = new(1)
@@ -566,6 +569,7 @@ func ccfAssertAddressReleased(t *testing.T, address string) {
 	_ = listener.Close()
 }
 
+// Scenarios: configuration-and-runtime-options.md:CFG-SCN-17
 func TestRunRaftPeerOnlyStartupFailuresReleaseResources(t *testing.T) {
 	t.Run("missing config file", func(t *testing.T) {
 		err := runWithContext(context.Background(), []string{"-raft-peer-config", filepath.Join(t.TempDir(), "missing.json")}, ccfDiscardLogger())
@@ -929,6 +933,7 @@ func TestSecurityValidatorsTrackCredentialsWithoutSharedSet(t *testing.T) {
 	}
 }
 
+// Scenarios: configuration-and-runtime-options.md:CFG-SCN-30
 func TestPositiveMillisDuration(t *testing.T) {
 	if _, err := positiveMillisDuration("timeout", 0); err == nil || err.Error() != "timeout must be between 1 and 4294967295" {
 		t.Fatalf("positiveMillisDuration(timeout, 0) error = %v", err)
@@ -941,6 +946,7 @@ func TestPositiveMillisDuration(t *testing.T) {
 	}
 }
 
+// Scenarios: configuration-and-runtime-options.md:CFG-SCN-10
 func TestRunWithContextClusterConfigLoading(t *testing.T) {
 	directory := t.TempDir()
 	err := runWithContext(context.Background(), []string{"-cluster-config", filepath.Join(directory, "missing.json")}, ccfDiscardLogger())
@@ -1013,6 +1019,7 @@ func TestRunWithContextReportsManagementListenFailure(t *testing.T) {
 
 // TestRunRejectsManagementRateFlagsOutOfRange verifies standalone rate flag bounds.
 // Traceability: PRD API-05; docs/specs/management-api-and-observability.md §1.5.
+// Scenarios: management-api-and-observability.md:MGT-SCN-011
 func TestRunRejectsManagementRateFlagsOutOfRange(t *testing.T) {
 	tokenFile := ccfWriteManagementTokenFile(t, "token\n")
 	want := "-http-request-rate and -http-auth-failure-rate must be between 1 and 1000000"
@@ -1036,6 +1043,7 @@ func TestRunRejectsManagementRateFlagsOutOfRange(t *testing.T) {
 	}
 }
 
+// Scenarios: mqtt-protocol-and-session.md:MQTT-SCN-020
 func TestValidateTLSAuthenticationBindingsRequireMode(t *testing.T) {
 	err := validateTLSAuthenticationBindings("-tls-client-auth", tlsadapter.ClientAuthRequire, nil)
 	ccfWantError(t, err, "-tls-client-auth require requires at least one mTLS identity binding")
@@ -1046,6 +1054,7 @@ func TestValidateTLSAuthenticationBindingsRequireMode(t *testing.T) {
 }
 
 // Traceability: SEC-05; docs/specs/tenancy-and-security.md §2.3.
+// Scenarios: mqtt-protocol-and-session.md:MQTT-SCN-020, tenancy-and-security.md:SEC-SCN-016
 func TestValidateTLSAuthenticationBindingsRequestMode(t *testing.T) {
 	mTLSBinding := make([]authenticationadapter.ClientCertificateIdentityBinding, 1)
 	err := validateTLSAuthenticationBindings("-tls-client-auth", tlsadapter.ClientAuthRequest, &SecurityBundle{MTLSBindings: mTLSBinding})

@@ -8,6 +8,8 @@ import (
 	"narumq/tests/benchmark/internal/suiteartifact"
 )
 
+// TestBuildBP02ComparisonRequiresMatchingEvidence verifies comparison requires matching evidence.
+// Scenarios: performance-and-verification.md:PRF-SCN-048
 func TestBuildBP02ComparisonRequiresMatchingEvidence(t *testing.T) {
 	profile := bp02SmokeProfile(t)
 	limits := bp02ResourceLimits{BrokerCPUs: profile.BrokerCPUs, BrokerMemory: profile.BrokerMemoryBytes, GeneratorCPUs: profile.GeneratorCPUs, GeneratorMemory: profile.GeneratorMemoryBytes, NetworkMode: "bridge"}
@@ -79,6 +81,8 @@ func bp02MetricEntry(profile Profile) bp02TargetManifest {
 	return bp02TargetManifest{Success: true, Valid: true, ResolvedProfile: profile, WorkloadSummary: &workloadSummary{Valid: true, Steps: steps, Setup: setup, Offline: offlineSummary{ReconnectConnAckLatency: latencySummary{P99Nanoseconds: 13}, DrainDurationMaxNanoseconds: 14}, Retained: retainedSummary{ReplayDurationMaxNanoseconds: 15}}, ResourceSummary: &resourceSummary{Valid: true, NetworkStatsAvailable: true, Windows: windows, Memory: memorySummary{MemoryBytesPerSetupClient: -20}}}
 }
 
+// TestBP02MetricsSelectStreamsAndPhases verifies metric selection by stream and phase.
+// Scenarios: performance-and-verification.md:PRF-SCN-048
 func TestBP02MetricsSelectStreamsAndPhases(t *testing.T) {
 	profile := bp02SmokeProfile(t)
 	profile.TLSEveryNthClient = 1
@@ -106,6 +110,8 @@ func TestBP02MetricsSelectStreamsAndPhases(t *testing.T) {
 	}
 }
 
+// TestBP02SuiteFailureLeavesParentMetricsEmpty verifies a failed suite leaves parent metrics empty.
+// Scenarios: performance-and-verification.md:PRF-SCN-048
 func TestBP02SuiteFailureLeavesParentMetricsEmpty(t *testing.T) {
 	profile := bp02SmokeProfile(t)
 	options := bp02SuiteOptions{Profile: profile, Repetitions: suiteartifact.MinimumRepetitions}

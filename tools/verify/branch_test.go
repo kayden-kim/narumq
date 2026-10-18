@@ -19,6 +19,7 @@ import (
 	"testing"
 )
 
+// Scenarios: performance-and-verification.md:PRF-SCN-078
 func TestInstrumentBranchesPreservesLinesAndAddsOnlyMissingArms(t *testing.T) {
 	source := []byte(`package sample
 func sample(value bool, input chan int) {
@@ -111,6 +112,7 @@ func _() {
 	}
 }
 
+// Scenarios: performance-and-verification.md:PRF-SCN-078
 func TestLoadBranchManifestRejectsInvalidSchemaAndJSON(t *testing.T) {
 	for _, value := range []struct {
 		name, content, want string
@@ -152,6 +154,7 @@ func runBranchTestCommand(t *testing.T, root, name string, args ...string) {
 	}
 }
 
+// Scenarios: performance-and-verification.md:PRF-SCN-077, performance-and-verification.md:PRF-SCN-083
 func TestBranchCoverageMatchesGoCoverBlocks(t *testing.T) {
 	source := []byte(`package sample
 var Literal = func(value bool) {
@@ -274,6 +277,7 @@ func TestSample(t *testing.T) {
 	}
 }
 
+// Scenarios: performance-and-verification.md:PRF-SCN-080
 func TestEvaluateBranchCoverageRejectsStaleOrMismatchedManifest(t *testing.T) {
 	root := t.TempDir()
 	path := "internal/sample.go"
@@ -304,6 +308,7 @@ func TestEvaluateBranchCoverageRejectsStaleOrMismatchedManifest(t *testing.T) {
 	}
 }
 
+// Scenarios: performance-and-verification.md:PRF-SCN-081, performance-and-verification.md:PRF-SCN-087, performance-and-verification.md:PRF-SCN-091, performance-and-verification.md:PRF-SCN-093
 func TestBranchRatchetDiffFloorAndRequirementShortfall(t *testing.T) {
 	actual := coverageMetric{Covered: 80, Total: 100, Percent: 80}
 	if issues := enforceBranchRatchet("overall", actual, 75, 0); len(issues) != 0 {
@@ -407,6 +412,7 @@ func TestBranchRatchetDiffFloorAndRequirementShortfall(t *testing.T) {
 	}
 }
 
+// Scenarios: performance-and-verification.md:PRF-SCN-079
 func TestBranchInstrumentRejectsUnsafeOutputBeforeDeletingFiles(t *testing.T) {
 	root := t.TempDir()
 	writeBranchTestFile(t, root, "internal/sample.go", []byte("package sample\nfunc Sample() {}\n"))
@@ -441,6 +447,7 @@ func TestBranchInstrumentRejectsUnsafeOutputBeforeDeletingFiles(t *testing.T) {
 	}
 }
 
+// Scenarios: performance-and-verification.md:PRF-SCN-079
 func TestBranchOutputRejectsSymlinkToRepositoryRoot(t *testing.T) {
 	root := t.TempDir()
 	alias := filepath.Join(t.TempDir(), "repository-alias")
@@ -465,6 +472,7 @@ func TestBranchOutputRejectsSymlinkToRepositoryRoot(t *testing.T) {
 	}
 }
 
+// Scenarios: performance-and-verification.md:PRF-SCN-079
 func TestBranchOutputRejectsRepositoryLinkToExternalDirectory(t *testing.T) {
 	root, external := t.TempDir(), t.TempDir()
 	alias := filepath.Join(root, filepath.FromSlash(defaultBranchOutputDir))

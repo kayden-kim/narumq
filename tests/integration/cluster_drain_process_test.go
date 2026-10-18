@@ -18,6 +18,7 @@ import (
 )
 
 // Traceability: DEP-04/DEP-05/DEP-06/DEP-10/DEP-12; docs/specs/drain-and-rolling-update.md §2.1, §2.2, §2.3, §3, §4, §6, §10.
+// Scenarios: management-api-and-observability.md:MGT-SCN-031, drain-and-rolling-update.md:DRN-SCN-001
 func TestDynamicClusterNodeDrainProcessAcceptance(t *testing.T) {
 	t.Parallel()
 
@@ -256,6 +257,7 @@ func TestDynamicClusterNodeDrainProcessAcceptance(t *testing.T) {
 }
 
 // Traceability: DEP-10; docs/specs/drain-and-rolling-update.md §2.1, §2.3, §3, §6, §8, §10.
+// Scenarios: drain-and-rolling-update.md:DRN-SCN-002, drain-and-rolling-update.md:DRN-SCN-003
 func TestDynamicClusterNodeDrainCancelTimeoutAndResumeProcessAcceptance(t *testing.T) {
 	t.Parallel()
 
@@ -363,6 +365,20 @@ func TestDynamicClusterNodeDrainCancelTimeoutAndResumeProcessAcceptance(t *testi
 	}
 	processes[0] = node1
 	clusterMembershipProcessWaitForBootstrap(t, ctx, processes)
+	if err := processes[2].crash(5 * time.Second); err != nil {
+		t.Fatalf("crash node 3 after failed-drain cancellation: %v", err)
+	}
+	restarted, err = fixture.harness.start("cancelled failed drain restart", fixture.bootstrapConfig(3), fixture.managementAddresses[2])
+	if err != nil {
+		t.Fatalf("restart node 3 after failed-drain cancellation: %v", err)
+	}
+	processes[2] = restarted
+	clusterMembershipProcessWaitForStatus(t, ctx, restarted, "/health/startup", http.StatusOK)
+	clusterMembershipProcessWaitForStatus(t, ctx, restarted, "/health/ready", http.StatusOK)
+	recoveredCancel := clusterDrainProcessWaitForPhase(t, ctx, restarted, 3, "CANCELLED")
+	if recoveredCancel.OperationID != failed.OperationID || recoveredCancel.Failure != nil {
+		t.Fatalf("recovered cancellation = %+v, want same operation without failure", recoveredCancel)
+	}
 }
 
 type clusterDrainProcessRequest struct {

@@ -1,0 +1,9 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+# Cluster-scoped admission control for the EKS_EC2_HA broker StatefulSet (DEP-14, DRN-SCN-030). It is a separate
+# package on purpose: the default eks-ec2-ha package stays unchanged and namespaced. Apply it once per cluster
+# (`kubectl apply -k deploy/kubernetes/eks-ec2-ha-admission`); it needs the ValidatingAdmissionPolicy API
+# (admissionregistration.k8s.io/v1, Kubernetes 1.30 or later) and only affects the narumq namespace.
+resources:
+  - statefulset-termination-grace-policy.yaml
+  - statefulset-termination-grace-binding.yaml

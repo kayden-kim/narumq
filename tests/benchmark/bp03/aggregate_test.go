@@ -64,6 +64,8 @@ func TestMissingOfflineSessionIsCounted(t *testing.T) {
 	}
 }
 
+// TestAckedUnreceivedMessageIsGapAndInvalid verifies an ACKed but never received message is a gap and invalidates the summary.
+// Scenarios: performance-and-verification.md:PRF-SCN-004
 func TestAckedUnreceivedMessageIsGapAndInvalid(t *testing.T) {
 	collector := newCollector(4)
 	addTestRecord(t, collector, 1, 1, 1, time.Second)
@@ -92,6 +94,8 @@ func TestMeasureDeliveryAfterDrainDoesNotCount(t *testing.T) {
 	}
 }
 
+// TestQoS2DuplicateInvalid verifies a QoS 2 duplicate invalidates the summary.
+// Scenarios: performance-and-verification.md:PRF-SCN-004
 func TestQoS2DuplicateInvalid(t *testing.T) {
 	collector := newCollector(4)
 	addTestRecord(t, collector, 2, 1, 1, time.Second)
@@ -110,6 +114,8 @@ func TestQoS2DuplicateInvalid(t *testing.T) {
 	}
 }
 
+// TestQoS1DuplicateReportedButAllowed verifies a QoS 1 duplicate is reported but allowed.
+// Scenarios: performance-and-verification.md:PRF-SCN-004
 func TestQoS1DuplicateReportedButAllowed(t *testing.T) {
 	collector := newCollector(4)
 	addTestRecord(t, collector, 1, 1, 1, time.Second)
@@ -131,6 +137,8 @@ func TestQoS1DuplicateReportedButAllowed(t *testing.T) {
 	}
 }
 
+// TestScheduleLagEqualToIntervalIsOverload verifies schedule lag equal to the interval counts as overload.
+// Scenarios: performance-and-verification.md:PRF-SCN-004
 func TestScheduleLagEqualToIntervalIsOverload(t *testing.T) {
 	collector := newCollector(4)
 	scheduled := time.Now()
@@ -217,6 +225,8 @@ func TestStepStatsExcludeWarmupAndNonMeasurePhases(t *testing.T) {
 	}
 }
 
+// TestQoS2PUBCOMPTimeoutCountsIncompleteExchange verifies a PUBCOMP timeout counts as an incomplete exchange.
+// Scenarios: performance-and-verification.md:PRF-SCN-004
 func TestQoS2PUBCOMPTimeoutCountsIncompleteExchange(t *testing.T) {
 	collector := newCollector(4)
 	addTestRecord(t, collector, 2, 1, 1, time.Second)
@@ -237,6 +247,8 @@ func TestQoS2PUBCOMPTimeoutCountsIncompleteExchange(t *testing.T) {
 	}
 }
 
+// TestOfflineCompletionWaitsForQoS2PUBCOMP verifies offline completion waits for QoS 2 PUBCOMP.
+// Scenarios: performance-and-verification.md:PRF-SCN-004
 func TestOfflineCompletionWaitsForQoS2PUBCOMP(t *testing.T) {
 	collector := newCollector(4)
 	streams := []streamSpec{{name: "q1", qos: 1}, {name: "q2", qos: 2}}
@@ -263,6 +275,8 @@ func TestOfflineCompletionWaitsForQoS2PUBCOMP(t *testing.T) {
 	}
 }
 
+// TestOfflineCompletionRequiresEveryExpectedReceipt verifies offline completion requires every expected receipt.
+// Scenarios: performance-and-verification.md:PRF-SCN-004
 func TestOfflineCompletionRequiresEveryExpectedReceipt(t *testing.T) {
 	collector := newCollector(2)
 	streams := []streamSpec{{name: "q1", qos: 1}}
@@ -287,6 +301,8 @@ func TestOfflineCompletionRequiresEveryExpectedReceipt(t *testing.T) {
 	}
 }
 
+// TestOfflineCompletionFailsWhenReceiptMissesDeadline verifies a missed receipt deadline fails offline completion.
+// Scenarios: performance-and-verification.md:PRF-SCN-004
 func TestOfflineCompletionFailsWhenReceiptMissesDeadline(t *testing.T) {
 	collector := newCollector(1)
 	streams := []streamSpec{{name: "q1", qos: 1}}
@@ -306,6 +322,8 @@ func TestOfflineCompletionFailsWhenReceiptMissesDeadline(t *testing.T) {
 	}
 }
 
+// TestMessageSnapshotDoesNotObserveLaterAcknowledgements verifies a message snapshot is isolated from later acknowledgements.
+// Scenarios: performance-and-verification.md:PRF-SCN-004
 func TestMessageSnapshotDoesNotObserveLaterAcknowledgements(t *testing.T) {
 	collector := newCollector(1)
 	now := time.Now()

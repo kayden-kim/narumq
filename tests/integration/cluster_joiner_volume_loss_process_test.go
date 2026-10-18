@@ -19,6 +19,7 @@ import (
 )
 
 // Traceability: CLU-02/CLU-07/CLU-14; ADR-0024; cluster spec §1, §7, §11.20.
+// Scenarios: cluster-session-and-delivery.md:CLU-SCN-132, cluster-session-and-delivery.md:CLU-SCN-133, cluster-session-and-delivery.md:CLU-SCN-134
 func TestDynamicClusterJoinerVoterVolumeLossProcessAcceptance(t *testing.T) {
 	t.Parallel()
 

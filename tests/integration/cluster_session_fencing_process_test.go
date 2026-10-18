@@ -19,6 +19,7 @@ import (
 var errClusterFencingClosedWithoutConnAck = errors.New("connection closed before CONNACK")
 
 // Traceability: CLU-04/CLU-05; docs/specs/cluster-session-and-delivery.md §2, §2.1, §11.15.
+// Scenarios: cluster-session-and-delivery.md:CLU-SCN-093
 func TestDynamicClusterConcurrentConnectProcessAcceptance(t *testing.T) {
 	t.Parallel()
 
@@ -127,6 +128,7 @@ func TestDynamicClusterConcurrentConnectProcessAcceptance(t *testing.T) {
 }
 
 // Traceability: CLU-05/CLU-06; docs/specs/cluster-session-and-delivery.md §2.1, §2.3, §11.15.
+// Scenarios: cluster-session-and-delivery.md:CLU-SCN-095, cluster-session-and-delivery.md:CLU-SCN-096
 func TestDynamicClusterStaleEpochFencingProcessAcceptance(t *testing.T) {
 	t.Parallel()
 
@@ -421,6 +423,7 @@ func TestClusterFencingAliveDeadlineFailureStopsProbe(t *testing.T) {
 }
 
 // Traceability: CLU-04/CLU-05; docs/specs/cluster-session-and-delivery.md §11.15.
+// Scenarios: cluster-session-and-delivery.md:CLU-SCN-093
 func TestClusterFencingNaturalRaceWinner(t *testing.T) {
 	closed := fmt.Errorf("read CONNACK: %w: %w", errClusterFencingClosedWithoutConnAck, io.EOF)
 	alive := clusterFencingProbeResult{alive: true}
@@ -503,6 +506,7 @@ func TestClusterFencingNaturalRaceWinner(t *testing.T) {
 }
 
 // Traceability: CLU-04/CLU-05; docs/specs/cluster-session-and-delivery.md §11.15.
+// Scenarios: cluster-session-and-delivery.md:CLU-SCN-093
 func TestClusterFencingConnectOnceConnAckBoundary(t *testing.T) {
 	for _, test := range []struct {
 		name     string

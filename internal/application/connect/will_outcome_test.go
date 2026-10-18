@@ -19,6 +19,7 @@ func (recorder *fakeWillOutcomes) WillOutcome(reason string) {
 	recorder.reasons = append(recorder.reasons, reason)
 }
 
+// Scenarios: drain-and-rolling-update.md:DRN-SCN-011
 func TestWillOutcomeClassifiers(t *testing.T) {
 	for _, test := range []struct {
 		origin    willOrigin
@@ -56,6 +57,7 @@ func TestWillOutcomeClassifiers(t *testing.T) {
 }
 
 // Traceability: DEP-07/DEP-12; docs/specs/drain-and-rolling-update.md §5.
+// Scenarios: drain-and-rolling-update.md:DRN-SCN-011
 func TestDisconnectRecordsWillOutcome(t *testing.T) {
 	for _, test := range []struct {
 		name             string
@@ -116,6 +118,7 @@ func (coordinator *fakeSupersededCoordinator) AcquireSessionOwnership(context.Co
 }
 
 // Traceability: DEP-07/DEP-12; docs/specs/cluster-session-and-delivery.md §4.3.
+// Scenarios: drain-and-rolling-update.md:DRN-SCN-011
 func TestConnectSupersededWillOutcome(t *testing.T) {
 	for _, test := range []struct {
 		name           string
@@ -165,6 +168,7 @@ func TestConnectSupersededWillOutcome(t *testing.T) {
 }
 
 // Traceability: DEP-07/DEP-12, SEC-06, MQTT-01/TEST-04; MQTT-3.1.2-8; docs/specs/drain-and-rolling-update.md §5.
+// Scenarios: drain-and-rolling-update.md:DRN-SCN-013
 func TestConnectSupersededWillAuthorization(t *testing.T) {
 	for _, test := range []struct {
 		name             string

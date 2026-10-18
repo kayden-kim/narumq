@@ -92,6 +92,7 @@ func awaitStorageApply(t *testing.T, node *Node) BatchDTO {
 	}
 }
 
+// Scenarios: cluster-session-and-delivery.md:CLU-SCN-114
 func TestNodeHeldAppendWithholdsReplicationAndApply(t *testing.T) {
 	node := storageBoundaryNode(t)
 	entered, release := holdWALSync(t, node)
@@ -150,6 +151,7 @@ func TestNodeHeldAppendWithholdsReplicationAndApply(t *testing.T) {
 	}
 }
 
+// Scenarios: cluster-session-and-delivery.md:CLU-SCN-116
 func TestNodeCommitOnlyHardStateWaitsForSync(t *testing.T) {
 	node := storageBoundaryNode(t)
 	stepStorageAppend(t, node, 1, 2, 4, 1, 3, []byte("committed-later"))
@@ -193,6 +195,7 @@ func TestNodeCommitOnlyHardStateWaitsForSync(t *testing.T) {
 	}
 }
 
+// Scenarios: cluster-session-and-delivery.md:CLU-SCN-116
 func TestNodeOldTermCompletionCannotStabilizeReplacement(t *testing.T) {
 	node := storageBoundaryNode(t)
 	original := filePersistenceOps
@@ -245,6 +248,7 @@ func TestNodeOldTermCompletionCannotStabilizeReplacement(t *testing.T) {
 	}
 }
 
+// Scenarios: cluster-session-and-delivery.md:CLU-SCN-116
 func TestNodeStorageSaturationPreservesAcceptedFIFO(t *testing.T) {
 	for _, scenario := range []struct {
 		name string

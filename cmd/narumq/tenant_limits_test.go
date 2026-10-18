@@ -13,6 +13,7 @@ import (
 )
 
 // Traceability: TEN-06, TEN-07; docs/specs/tenancy-and-security.md §5.2.
+// Scenarios: tenancy-and-security.md:SEC-SCN-028
 func TestTenantLimitRejectionReporterCountsEveryRejectionAndRateLimitsWarnings(t *testing.T) {
 	registry := adaptersmetrics.NewRegistry()
 	var logs bytes.Buffer
@@ -57,6 +58,7 @@ func TestTenantLimitRejectionReporterCountsEveryRejectionAndRateLimitsWarnings(t
 }
 
 // Traceability: TEN-06, TEN-07; docs/specs/tenancy-and-security.md §5.2.
+// Scenarios: tenancy-and-security.md:SEC-SCN-028
 func TestNewTenantLimitServiceOptionalConfiguration(t *testing.T) {
 	if service, err := newTenantLimitService(nil, adaptersmetrics.NewRegistry(), nil); err != nil || service != nil {
 		t.Fatalf("nil bundle service = (%v, %v), want (nil, nil)", service, err)

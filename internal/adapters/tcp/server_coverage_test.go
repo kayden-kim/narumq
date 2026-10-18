@@ -1366,6 +1366,8 @@ func TestCSVUnauthorizedPublishIsRejectedPerProtocolVersion(t *testing.T) {
 	}
 }
 
+// TestCSVWriteDeliveriesQueuePeekOutcomes verifies the delivery write path handles each queue peek outcome.
+// Scenarios: performance-and-verification.md:PRF-SCN-088
 func TestCSVWriteDeliveriesQueuePeekOutcomes(t *testing.T) {
 	deps := csvNewServer(t, newPipeListener(), csvServerOptions{})
 	serverSide, client := net.Pipe()
@@ -1401,6 +1403,8 @@ func TestCSVWriteDeliveriesQueuePeekOutcomes(t *testing.T) {
 	}
 }
 
+// TestCSVSubscribeAckWriteFailureKeepsDeliveryBlocked verifies a SUBACK write failure keeps delivery blocked and stops the writer.
+// Scenarios: performance-and-verification.md:PRF-SCN-088
 func TestCSVSubscribeAckWriteFailureKeepsDeliveryBlocked(t *testing.T) {
 	deps := csvNewServer(t, newPipeListener(), csvServerOptions{})
 	serverSide, client := net.Pipe()
@@ -1445,6 +1449,8 @@ func TestCSVSubscribeAckWriteFailureKeepsDeliveryBlocked(t *testing.T) {
 	}
 }
 
+// TestCSVWriterLoopQueuedControlCloseAndStoppedFailure verifies the writer loop closes after a queued control packet and reports a stopped failure.
+// Scenarios: performance-and-verification.md:PRF-SCN-088
 func TestCSVWriterLoopQueuedControlCloseAndStoppedFailure(t *testing.T) {
 	t.Run("close after queued control", func(t *testing.T) {
 		deps := csvNewServer(t, newPipeListener(), csvServerOptions{})
@@ -1610,6 +1616,7 @@ func TestCSVPublishWillRoutingOutcomes(t *testing.T) {
 }
 
 // Traceability: CLU-03; docs/specs/cluster-session-and-delivery.md §3.1, §11.10.
+// Scenarios: cluster-session-and-delivery.md:CLU-SCN-055
 func TestCSVDeliverForwardedRoutingOutcomes(t *testing.T) {
 	var detached *Server
 	if err := detached.DeliverForwarded(applicationdeliveryqueue.DeliveryDTO{

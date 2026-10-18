@@ -51,6 +51,7 @@ func requireReservation(t *testing.T, service *Service, id tenancy.TenantID, byt
 }
 
 // Traceability: TEN-06, TEN-07; docs/specs/tenancy-and-security.md §5.2.
+// Scenarios: tenancy-and-security.md:SEC-SCN-028
 func TestValidateProfile(t *testing.T) {
 	max := Limits{MaxConnections: MaxCount, MaxSessions: MaxCount, MaxSubscriptions: MaxCount,
 		MessagesPerSecond: MaxMessagesPerSecond, BytesPerSecond: MaxBytesPerSecond, MaxPayloadBytes: MaxPayloadBytes}
@@ -95,6 +96,7 @@ func TestValidateProfile(t *testing.T) {
 }
 
 // Traceability: TEN-06, TEN-07; docs/specs/tenancy-and-security.md §5.2.
+// Scenarios: tenancy-and-security.md:SEC-SCN-028
 func TestLimitsFor(t *testing.T) {
 	a, b := tenant(t, "a"), tenant(t, "b")
 	profile := Profile{Default: Limits{MaxConnections: 3}, Tenants: map[tenancy.TenantID]Limits{a: {MaxSessions: 2}}}
@@ -121,6 +123,7 @@ func TestLimitsFor(t *testing.T) {
 }
 
 // Traceability: TEN-06, TEN-07; docs/specs/tenancy-and-security.md §5.2.
+// Scenarios: tenancy-and-security.md:SEC-SCN-026, tenancy-and-security.md:SEC-SCN-027
 func TestReservePublish(t *testing.T) {
 	a, b := tenant(t, "a"), tenant(t, "b")
 	t.Run("PayloadBeforeRate", func(t *testing.T) {

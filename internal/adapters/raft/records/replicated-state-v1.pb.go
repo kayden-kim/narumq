@@ -3685,9 +3685,11 @@ func (x *SubscriptionChange) GetAction() SubscriptionAction {
 }
 
 type DeliveryTarget struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	ClientId      string                 `protobuf:"bytes,1,opt,name=client_id,json=clientId,proto3" json:"client_id,omitempty"`
-	Retain        bool                   `protobuf:"varint,2,opt,name=retain,proto3" json:"retain,omitempty"`
+	state    protoimpl.MessageState `protogen:"open.v1"`
+	ClientId string                 `protobuf:"bytes,1,opt,name=client_id,json=clientId,proto3" json:"client_id,omitempty"`
+	Retain   bool                   `protobuf:"varint,2,opt,name=retain,proto3" json:"retain,omitempty"`
+	// `$share/<group>/<filter>` that selected this target; empty for non-shared targets.
+	SharedFilter  string `protobuf:"bytes,3,opt,name=shared_filter,json=sharedFilter,proto3" json:"shared_filter,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -3734,6 +3736,13 @@ func (x *DeliveryTarget) GetRetain() bool {
 		return x.Retain
 	}
 	return false
+}
+
+func (x *DeliveryTarget) GetSharedFilter() string {
+	if x != nil {
+		return x.SharedFilter
+	}
+	return ""
 }
 
 type DeliveryChange struct {
@@ -3910,8 +3919,10 @@ type DeliveryMessage struct {
 	ExpiresAtUnixMillis uint64                 `protobuf:"varint,6,opt,name=expires_at_unix_millis,json=expiresAtUnixMillis,proto3" json:"expires_at_unix_millis,omitempty"`
 	PacketId            uint32                 `protobuf:"varint,7,opt,name=packet_id,json=packetId,proto3" json:"packet_id,omitempty"`
 	Phase               DeliveryPhase          `protobuf:"varint,8,opt,name=phase,proto3,enum=narumq.cluster.v1.DeliveryPhase" json:"phase,omitempty"`
-	unknownFields       protoimpl.UnknownFields
-	sizeCache           protoimpl.SizeCache
+	// Shared-subscription origin of the queued message; empty when the message has none.
+	SharedFilter  string `protobuf:"bytes,9,opt,name=shared_filter,json=sharedFilter,proto3" json:"shared_filter,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *DeliveryMessage) Reset() {
@@ -3998,6 +4009,13 @@ func (x *DeliveryMessage) GetPhase() DeliveryPhase {
 		return x.Phase
 	}
 	return DeliveryPhase_DELIVERY_PHASE_UNSPECIFIED
+}
+
+func (x *DeliveryMessage) GetSharedFilter() string {
+	if x != nil {
+		return x.SharedFilter
+	}
+	return ""
 }
 
 type InboundMessage struct {
@@ -6283,10 +6301,11 @@ const file_docs_contracts_replicated_state_v1_proto_rawDesc = "" +
 	"\x13retain_as_published\x18\b \x01(\bR\x11retainAsPublished\x12'\n" +
 	"\x0fretain_handling\x18\t \x01(\rR\x0eretainHandling\x12=\n" +
 	"\x06action\x18\n" +
-	" \x01(\x0e2%.narumq.cluster.v1.SubscriptionActionR\x06action\"E\n" +
+	" \x01(\x0e2%.narumq.cluster.v1.SubscriptionActionR\x06action\"j\n" +
 	"\x0eDeliveryTarget\x12\x1b\n" +
 	"\tclient_id\x18\x01 \x01(\tR\bclientId\x12\x16\n" +
-	"\x06retain\x18\x02 \x01(\bR\x06retain\"\xe4\x04\n" +
+	"\x06retain\x18\x02 \x01(\bR\x06retain\x12#\n" +
+	"\rshared_filter\x18\x03 \x01(\tR\fsharedFilter\"\xe4\x04\n" +
 	"\x0eDeliveryChange\x12\x1b\n" +
 	"\ttenant_id\x18\x01 \x01(\tR\btenantId\x12\x1b\n" +
 	"\tclient_id\x18\x02 \x01(\tR\bclientId\x12\"\n" +
@@ -6305,7 +6324,7 @@ const file_docs_contracts_replicated_state_v1_proto_rawDesc = "" +
 	"\x05reset\x18\x0e \x01(\bR\x05reset\x12B\n" +
 	"\x1esession_expires_at_unix_millis\x18\x0f \x01(\x04R\x1asessionExpiresAtUnixMillis\x12\x1f\n" +
 	"\vpublish_qos\x18\x10 \x01(\rR\n" +
-	"publishQos\"\x91\x02\n" +
+	"publishQos\"\xb6\x02\n" +
 	"\x0fDeliveryMessage\x12\x1a\n" +
 	"\bsequence\x18\x01 \x01(\x04R\bsequence\x12\x14\n" +
 	"\x05topic\x18\x02 \x01(\tR\x05topic\x12\x18\n" +
@@ -6314,7 +6333,8 @@ const file_docs_contracts_replicated_state_v1_proto_rawDesc = "" +
 	"\x06retain\x18\x05 \x01(\bR\x06retain\x123\n" +
 	"\x16expires_at_unix_millis\x18\x06 \x01(\x04R\x13expiresAtUnixMillis\x12\x1b\n" +
 	"\tpacket_id\x18\a \x01(\rR\bpacketId\x126\n" +
-	"\x05phase\x18\b \x01(\x0e2 .narumq.cluster.v1.DeliveryPhaseR\x05phase\"\xed\x01\n" +
+	"\x05phase\x18\b \x01(\x0e2 .narumq.cluster.v1.DeliveryPhaseR\x05phase\x12#\n" +
+	"\rshared_filter\x18\t \x01(\tR\fsharedFilter\"\xed\x01\n" +
 	"\x0eInboundMessage\x12\x1b\n" +
 	"\tpacket_id\x18\x01 \x01(\rR\bpacketId\x12\x14\n" +
 	"\x05topic\x18\x02 \x01(\tR\x05topic\x12\x18\n" +

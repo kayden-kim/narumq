@@ -11,6 +11,8 @@ import (
 	"narumq/tests/benchmark/internal/suiteartifact"
 )
 
+// TestBP03MetricsEmitRequiredKeysAndUnits verifies the suite emits the required metric keys and units.
+// Scenarios: performance-and-verification.md:PRF-SCN-007
 func TestBP03MetricsEmitRequiredKeysAndUnits(t *testing.T) {
 	profile := loadSmokeProfileForCompare(t)
 	for _, target := range []string{"narumq", "emqx"} {
@@ -55,6 +57,8 @@ func TestBP03MetricsEmitRequiredKeysAndUnits(t *testing.T) {
 	}
 }
 
+// TestBuildBP03SuiteSummaryOmitsNetworkMetricsWhenAnyRunLacksNetworkStats verifies network metrics are omitted when any run lacks network stats.
+// Scenarios: performance-and-verification.md:PRF-SCN-007
 func TestBuildBP03SuiteSummaryOmitsNetworkMetricsWhenAnyRunLacksNetworkStats(t *testing.T) {
 	profile := loadSmokeProfileForCompare(t)
 	manifest, runs := suiteTestRuns(profile, true)
@@ -92,6 +96,8 @@ func TestBuildBP03SuiteSummaryOmitsNetworkMetricsWhenAnyRunLacksNetworkStats(t *
 	}
 }
 
+// TestBuildBP03SuiteSummaryInvalidatesAllMetricsOnOneFailedRun verifies one failed child run clears all parent metrics.
+// Scenarios: performance-and-verification.md:PRF-SCN-007
 func TestBuildBP03SuiteSummaryInvalidatesAllMetricsOnOneFailedRun(t *testing.T) {
 	profile := loadSmokeProfileForCompare(t)
 	manifest, runs := suiteTestRuns(profile, true)

@@ -1,0 +1,99 @@
+{
+  "schemaVersion": "narumq.release.deployment-profiles/v1",
+  "referenceProfile": "EKS_EC2_HA",
+  "profiles": [
+    {
+      "id": "EKS_EC2_HA",
+      "status": "Supported",
+      "usage": "Production",
+      "scope": "Initial production profile. Reference for the P0 HA, durable ACK, 3-AZ and rolling update release gates (PRD DEP-19, ADR-0007).",
+      "evidenceEligibleFor": {
+        "ha": true,
+        "rpo": true,
+        "rollingUpdate": true
+      },
+      "qualification": {
+        "kubernetes": {
+          "distribution": "EKS",
+          "minor": "1.37"
+        },
+        "nodeGroup": {
+          "computeType": "EC2",
+          "amiFamily": "AL2023",
+          "architecture": "arm64",
+          "amiType": "AL2023_ARM_64_STANDARD",
+          "instanceType": "m7g.large",
+          "nodeCount": 3
+        },
+        "topology": {
+          "availabilityZoneCount": 3,
+          "brokerPodsPerAvailabilityZone": 1,
+          "antiAffinityTopologyKey": "kubernetes.io/hostname",
+          "spreadTopologyKey": "topology.kubernetes.io/zone",
+          "spreadMaxSkew": 1
+        },
+        "storage": {
+          "provisioner": "ebs.csi.aws.com",
+          "storageClass": "gp3",
+          "volumeType": "gp3",
+          "sizeGiB": 20,
+          "encrypted": true,
+          "accessMode": "ReadWriteOnce",
+          "perPodVolume": true
+        },
+        "loadBalancer": {
+          "type": "NLB",
+          "scheme": "internal",
+          "targetType": "ip",
+          "listenerProtocol": "TCP",
+          "tlsTermination": "broker",
+          "controllerMinVersion": "2.7.2"
+        },
+        "broker": {
+          "replicas": 3,
+          "cpuRequestsAndLimits": "1",
+          "memoryRequestsAndLimits": "4Gi"
+        },
+        "rollout": {
+          "updateStrategy": "OnDelete",
+          "podDisruptionBudgetMaxUnavailable": 1,
+          "drainTimeoutSeconds": 600,
+          "terminationGracePeriodSeconds": 660
+        }
+      }
+    },
+    {
+      "id": "ECS_EC2",
+      "status": "Experimental",
+      "usage": "Follow-up compatibility verification",
+      "scope": "No production guarantee until a separate lifecycle adapter and the full acceptance suite pass (PRD DEP-24, spec drain-and-rolling-update.md section 7.1).",
+      "evidenceEligibleFor": {
+        "ha": false,
+        "rpo": false,
+        "rollingUpdate": false
+      }
+    },
+    {
+      "id": "EKS_FARGATE",
+      "status": "Unsupported",
+      "usage": "Follow-up storage and drain review",
+      "scope": "No evidence that EBS-backed WAL and the termination-time conditions are met.",
+      "evidenceEligibleFor": {
+        "ha": false,
+        "rpo": false,
+        "rollingUpdate": false
+      }
+    },
+    {
+      "id": "COMPOSE_LOCAL",
+      "status": "Unsupported",
+      "usage": "Development and CI artifacts only; unsupported for production",
+      "scope": "Not used as HA or RPO evidence against single-host failure. Single-host multi-container results are likewise excluded.",
+      "evidenceEligibleFor": {
+        "ha": false,
+        "rpo": false,
+        "rollingUpdate": false
+      }
+    }
+  ]
+}

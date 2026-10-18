@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/binary"
 	"encoding/json"
+	"errors"
 	"io"
 	"log/slog"
 	"net"
@@ -22,6 +23,8 @@ import (
 	tcpadapter "narumq/internal/adapters/tcp"
 	"narumq/internal/application/connect"
 	appmanagement "narumq/internal/application/management"
+	appobservability "narumq/internal/application/observability"
+	observationports "narumq/internal/application/ports/observability"
 	"narumq/internal/application/publish"
 	"narumq/internal/application/subscribe"
 	"narumq/internal/domain/mqtt"
@@ -129,10 +132,20 @@ func TestManagementAPIObservesLiveMQTTState(t *testing.T) {
 		metricsRegistry,
 	)
 	managementState.SetNodeState("READY", nil)
+	observabilitySource := &managementAPIObservabilitySource{
+		state: managementState, metrics: metricsRegistry, clock: systemClock, localNodeID: "integration-node",
+	}
+	observabilityService, err := appobservability.NewService(
+		observabilitySource, observabilitySource, nil, systemClock,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
 	managementServer := managementhttp.NewServer(
 		managementhttp.ServerConfig{
 			AllowAnonymousProbes:  true,
 			AllowAnonymousMetrics: true,
+			Observability:         observabilityService,
 		},
 		managementState,
 		managementState,
@@ -366,6 +379,7 @@ func TestManagementAPIObservesLiveMQTTState(t *testing.T) {
 }
 
 // Traceability: UI-03; docs/specs/management-api-and-observability.md §7.1.
+// Scenarios: mqtt-protocol-and-session.md:MQTT-SCN-002, management-api-and-observability.md:MGT-SCN-029, management-api-and-observability.md:MGT-SCN-030
 func TestMQTTRejectionsAndOversizeDropsAreObservable(t *testing.T) {
 	mqttListener, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
@@ -628,4 +642,70 @@ func TestMQTTRejectionsAndOversizeDropsAreObservable(t *testing.T) {
 	if len(sessionsEnvelope.Data) != 0 {
 		t.Fatalf("unsupported MQTT 3.1.0 CONNECT created sessions: %d", len(sessionsEnvelope.Data))
 	}
+}
+
+type managementAPIObservabilitySource struct {
+	state       *appmanagement.Service
+	metrics     *adaptersmetrics.Registry
+	clock       clock.SystemClock
+	localNodeID string
+}
+
+func (source *managementAPIObservabilitySource) ClusterSnapshot(ctx context.Context) (observationports.ClusterSnapshotDTO, error) {
+	if err := ctx.Err(); err != nil {
+		return observationports.ClusterSnapshotDTO{}, err
+	}
+	summary := source.state.GetClusterSummary(ctx)
+	return observationports.ClusterSnapshotDTO{
+		ClusterID: summary.ClusterID, ReleaseVersion: summary.ReleaseVersion, LocalNodeID: source.localNodeID,
+		Members: []observationports.MemberDTO{{
+			NodeID: source.localNodeID, Phase: observationports.MembershipPhaseStandalone,
+		}},
+		QuorumSize: summary.QuorumSize, ReplicationFactor: summary.ReplicationFactor,
+		WriteQuorum: summary.WriteQuorum, LeaderNodeID: summary.LeaderNodeID,
+		UnderReplicated: summary.UnderReplicated, SubscriptionCount: uint64(max(summary.SubscriptionCount, 0)),
+	}, nil
+}
+
+func (source *managementAPIObservabilitySource) FreshQuorumAvailable(ctx context.Context) (bool, error) {
+	if err := ctx.Err(); err != nil {
+		return false, err
+	}
+	return source.state.GetClusterSummary(ctx).QuorumAvailable, nil
+}
+
+func (source *managementAPIObservabilitySource) CaptureNodeSnapshot(ctx context.Context) (observationports.NodeSnapshotDTO, error) {
+	if err := ctx.Err(); err != nil {
+		return observationports.NodeSnapshotDTO{}, err
+	}
+	node, err := source.state.GetNodeSummary(ctx, source.localNodeID)
+	if err != nil {
+		return observationports.NodeSnapshotDTO{}, err
+	}
+	if node == nil {
+		return observationports.NodeSnapshotDTO{}, errors.New("local node snapshot is unavailable")
+	}
+	state, ready := observationports.NodeState(node.State), node.Ready
+	uptimeMillis := node.UptimeMillis
+	connectionCount := uint64(max(node.ConnectionCount, 0))
+	sessionCount := uint64(max(source.state.GetClusterSummary(ctx).SessionCount, 0))
+	return observationports.NodeSnapshotDTO{
+		ObservedAt: source.clock.Now().UTC(), Version: &node.Version,
+		UptimeMillis: &uptimeMillis, State: &state, Ready: &ready,
+		ReadinessReason: node.ReadinessReason,
+		ConnectionCount: &connectionCount, SessionCount: &sessionCount,
+	}, nil
+}
+
+func (source *managementAPIObservabilitySource) CaptureMetricsSnapshot(ctx context.Context) (observationports.MetricsSnapshotDTO, error) {
+	if err := ctx.Err(); err != nil {
+		return observationports.MetricsSnapshotDTO{}, err
+	}
+	snapshot, err := source.metrics.CaptureMetrics()
+	if err != nil {
+		return observationports.MetricsSnapshotDTO{}, err
+	}
+	return observationports.MetricsSnapshotDTO{
+		ObservedAt: source.clock.Now().UTC(), StartedAt: source.metrics.StartedAt(), Snapshot: snapshot,
+	}, nil
 }

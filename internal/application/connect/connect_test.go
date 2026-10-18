@@ -315,6 +315,7 @@ func TestNewRejectsNilDependencies(t *testing.T) {
 }
 
 // Traceability: SEC-05; docs/specs/tenancy-and-security.md §2.3.
+// Scenarios: tenancy-and-security.md:SEC-SCN-014
 func TestNewRejectsInvalidAuthenticationMethod(t *testing.T) {
 	now := time.Date(2026, time.January, 1, 0, 0, 0, 0, time.UTC)
 	useCase, _, repository, queue, routes, scheduler, willPublisher := newUseCase(t, now)
@@ -328,6 +329,7 @@ func TestNewRejectsInvalidAuthenticationMethod(t *testing.T) {
 }
 
 // Traceability: SEC-05; docs/specs/tenancy-and-security.md §2.3, §2.4, §9.
+// Scenarios: tenancy-and-security.md:SEC-SCN-014
 func TestConnectPasswordAuthenticationFailureDoesNotMutateState(t *testing.T) {
 	for _, testCase := range []struct {
 		name       string
@@ -1244,6 +1246,8 @@ func TestConnectCommitsOwnershipBeforeLocalActivation(t *testing.T) {
 		})
 	}
 }
+
+// Scenarios: cluster-session-and-delivery.md:CLU-SCN-094
 func TestDisconnectIfOwnershipEpochLeavesReplacementSessionUntouched(t *testing.T) {
 	now := time.Date(2026, time.January, 1, 0, 0, 0, 0, time.UTC)
 	useCase, _, repository, queue, _, _, willPublisher := newUseCase(t, now)
@@ -1412,6 +1416,7 @@ func TestClusterAnonymousSessionDisconnectUsesTenantScopedKey(t *testing.T) {
 }
 
 // Traceability: SEC-04, TEN-01, TEN-02
+// Scenarios: tenancy-and-security.md:SEC-SCN-008, tenancy-and-security.md:SEC-SCN-018, tenancy-and-security.md:SEC-SCN-019, tenancy-and-security.md:SEC-SCN-023
 func TestConnectAuthenticatedPipeline(t *testing.T) {
 	now := time.Date(2026, time.January, 1, 0, 0, 0, 0, time.UTC)
 	tenant, err := tenancy.NewTenantID("tenant-a")
@@ -1594,6 +1599,7 @@ func newSecurityTestUseCase(
 
 // Traceability: SEC-03/SEC-04/SEC-05; verified mTLS identity remains selected
 // when a password credential provider is configured.
+// Scenarios: tenancy-and-security.md:SEC-SCN-004
 func TestConnectMTLSAuthenticatesWithoutJWTAndRecordsTLSMetric(t *testing.T) {
 	now := time.Date(2026, time.January, 1, 0, 0, 0, 0, time.UTC)
 	tenant := newMTLSTestTenantForConnect(t, "tenant-a")
@@ -1640,6 +1646,7 @@ func TestConnectMTLSAuthenticatesWithoutJWTAndRecordsTLSMetric(t *testing.T) {
 
 // Traceability: SEC-04/SEC-05; certificate Client ID binding and all credential failures
 // must complete before session repository or delivery queue mutation.
+// Scenarios: tenancy-and-security.md:SEC-SCN-007, tenancy-and-security.md:SEC-SCN-008
 func TestConnectMTLSRejectsUnauthorizedAndDualCredentialsWithoutMutation(t *testing.T) {
 	now := time.Date(2026, time.January, 1, 0, 0, 0, 0, time.UTC)
 	tenant := newMTLSTestTenantForConnect(t, "tenant-a")

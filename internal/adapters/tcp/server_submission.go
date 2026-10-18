@@ -90,10 +90,11 @@ func (connection *connection) completeInboundPublish(submitted submittedPhaseWor
 			connection.requestClose()
 			return nil
 		}
+		reasonString := publish.RejectionReason(err)
 		if packet.QoS == mqtt.QoSAtLeastOnce {
-			return connection.enqueueControl(&mqtt.PubAck{Version: connection.version, PacketID: packet.PacketID, ReasonCode: 0x97})
+			return connection.enqueueControl(&mqtt.PubAck{Version: connection.version, PacketID: packet.PacketID, ReasonCode: 0x97, ReasonString: reasonString})
 		}
-		return connection.enqueueControl(&mqtt.PubRec{Version: connection.version, PacketID: packet.PacketID, ReasonCode: 0x97})
+		return connection.enqueueControl(&mqtt.PubRec{Version: connection.version, PacketID: packet.PacketID, ReasonCode: 0x97, ReasonString: reasonString})
 	}
 	if err != nil {
 		return err

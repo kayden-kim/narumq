@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"crypto/tls"
 	"errors"
 	"flag"
 	"fmt"
@@ -20,6 +21,7 @@ import (
 	tlsadapter "narumq/internal/adapters/tls"
 	"narumq/internal/application/connect"
 	appmgmt "narumq/internal/application/management"
+	appobservability "narumq/internal/application/observability"
 	authenticationports "narumq/internal/application/ports/authentication"
 	portsmgmt "narumq/internal/application/ports/management"
 	portsmetrics "narumq/internal/application/ports/metrics"
@@ -62,6 +64,8 @@ func runWithContext(ctx context.Context, args []string, logger *slog.Logger) err
 	flagSet.SetOutput(io.Discard)
 	tcpListen := flagSet.String("tcp-listen", "", "development-only loopback TCP listen address")
 	tlsListen := flagSet.String("tls-listen", "", "TLS listen address")
+	wsListen := flagSet.String("ws-listen", "", "development-only loopback WebSocket listen address")
+	wssListen := flagSet.String("wss-listen", "", "WSS listen address, uses the -tls-* settings")
 	httpListen := flagSet.String("http-listen", "", "management HTTP listen address")
 	httpAuthTokenFile := flagSet.String("http-auth-token-file", "", "file containing the management API Bearer token")
 	httpRequestRate := flagSet.Int("http-request-rate", adaptershttp.DefaultRequestRate, "management API requests per second per authenticated principal")
@@ -75,6 +79,10 @@ func runWithContext(ctx context.Context, args []string, logger *slog.Logger) err
 	tcpConnectionRate := flagSet.Int("tcp-connection-rate", 0, "maximum new connections per second on the TCP listener (0 disables)")
 	tlsMaxConnections := flagSet.Int("tls-max-connections", 0, "maximum concurrent connections on the TLS listener (0 disables)")
 	tlsConnectionRate := flagSet.Int("tls-connection-rate", 0, "maximum new connections per second on the TLS listener (0 disables)")
+	wsMaxConnections := flagSet.Int("ws-max-connections", 0, "maximum concurrent connections on the WebSocket listener (0 disables)")
+	wsConnectionRate := flagSet.Int("ws-connection-rate", 0, "maximum new connections per second on the WebSocket listener (0 disables)")
+	wssMaxConnections := flagSet.Int("wss-max-connections", 0, "maximum concurrent connections on the WSS listener (0 disables)")
+	wssConnectionRate := flagSet.Int("wss-connection-rate", 0, "maximum new connections per second on the WSS listener (0 disables)")
 	maxPacketSize := flagSet.Int("max-packet-size", 1048576, "maximum MQTT Remaining Length")
 	receiveMaximum := flagSet.Int("receive-maximum", 64, "MQTT Receive Maximum advertised to clients and enforced per connection")
 	packetReadTimeout := flagSet.Duration("packet-read-timeout", 30*time.Second, "maximum time to receive one started MQTT packet after CONNECT")
@@ -224,22 +232,27 @@ func runWithContext(ctx context.Context, args []string, logger *slog.Logger) err
 		*httpAuthFailureRate < 1 || *httpAuthFailureRate > adaptershttp.MaxRequestRate {
 		return errors.New("-http-request-rate and -http-auth-failure-rate must be between 1 and 1000000")
 	}
-	mqttRequested := *tcpListen != "" || *tlsListen != ""
+	mqttRequested := *tcpListen != "" || *tlsListen != "" || *wsListen != "" || *wssListen != ""
 	if *securityConfigFile != "" && *allowInsecureAnonymousMQTT {
 		return errors.New("-security-config and -allow-insecure-anonymous-mqtt cannot be used together")
 	}
-	if *allowInsecureAnonymousMQTT && (!mqttRequested || *tlsListen != "" || *tcpListen == "") {
-		return errors.New("-allow-insecure-anonymous-mqtt requires a loopback-only -tcp-listen and cannot be used with -tls-listen")
+	if *allowInsecureAnonymousMQTT && (!mqttRequested || *tlsListen != "" || *wsListen != "" || *wssListen != "" || *tcpListen == "") {
+		return errors.New("-allow-insecure-anonymous-mqtt requires a loopback-only -tcp-listen and cannot be used with -tls-listen, -ws-listen, or -wss-listen")
 	}
 	if mqttRequested && *securityConfigFile == "" && !*allowInsecureAnonymousMQTT {
 		return errors.New("-security-config is required when an MQTT listener is enabled")
 	}
-	if err := validateListenerAdmissionFlags(*tcpListen, *tlsListen, *tcpMaxConnections, *tcpConnectionRate, *tlsMaxConnections, *tlsConnectionRate); err != nil {
+	if err := validateListenerAdmissionFlags(
+		listenerAdmissionFlag{Name: "tcp", Address: *tcpListen, MaxConnections: *tcpMaxConnections, ConnectionRate: *tcpConnectionRate},
+		listenerAdmissionFlag{Name: "tls", Address: *tlsListen, MaxConnections: *tlsMaxConnections, ConnectionRate: *tlsConnectionRate},
+		listenerAdmissionFlag{Name: "ws", Address: *wsListen, MaxConnections: *wsMaxConnections, ConnectionRate: *wsConnectionRate},
+		listenerAdmissionFlag{Name: "wss", Address: *wssListen, MaxConnections: *wssMaxConnections, ConnectionRate: *wssConnectionRate},
+	); err != nil {
 		return err
 	}
-	if *tcpListen == "" && *tlsListen == "" && *httpListen == "" {
+	if *tcpListen == "" && *tlsListen == "" && *wsListen == "" && *wssListen == "" && *httpListen == "" {
 		if metricsRequested {
-			return errors.New("-tcp-listen, -tls-listen, or -http-listen is required when runtime metrics collection is enabled")
+			return errors.New("-tcp-listen, -tls-listen, -ws-listen, -wss-listen, or -http-listen is required when runtime metrics collection is enabled")
 		}
 		logger.Info("MQTT TCP and management HTTP listeners disabled", "development_only", true)
 		return nil
@@ -288,9 +301,21 @@ func runWithContext(ctx context.Context, args []string, logger *slog.Logger) err
 			mtlsProvider = provider
 		}
 	}
-	if *tlsListen != "" {
+	tlsConfigured := *tlsListen != "" || *wssListen != ""
+	if tlsConfigured {
 		if err := validateTLSAuthenticationBindings("-tls-client-auth", tlsadapter.ClientAuthMode(*tlsClientAuth), securityBundle); err != nil {
 			return err
+		}
+	}
+	var tlsConfig *tls.Config
+	if tlsConfigured {
+		var err error
+		tlsConfig, err = tlsadapter.BuildTLSConfig(tlsadapter.Config{
+			CertFile: *tlsCert, KeyFile: *tlsKey, CAFile: *tlsCA,
+			ClientAuth: tlsadapter.ClientAuthMode(*tlsClientAuth), MinVersion: *tlsMinVersion,
+		})
+		if err != nil {
+			return fmt.Errorf("configure TLS: %w", err)
 		}
 	}
 	metricsRegistry := adaptersmetrics.NewRegistry()
@@ -298,6 +323,8 @@ func runWithContext(ctx context.Context, args []string, logger *slog.Logger) err
 		listeners          []net.Listener
 		tcpListener        net.Listener
 		tlsListener        net.Listener
+		wsListener         net.Listener
+		wssListener        net.Listener
 		managementListener net.Listener
 	)
 	defer func() {
@@ -311,30 +338,38 @@ func runWithContext(ctx context.Context, args []string, logger *slog.Logger) err
 			return err
 		}
 		var err error
-		tcpListener, err = openMQTTListener(*tcpListen, nil, *tcpMaxConnections, *tcpConnectionRate, metricsRegistry)
+		tcpListener, err = openMQTTListener(portsmetrics.TransportTCP, *tcpListen, nil, *tcpMaxConnections, *tcpConnectionRate, metricsRegistry)
 		if err != nil {
 			return fmt.Errorf("listen on %q: %w", *tcpListen, err)
 		}
 		listeners = append(listeners, tcpListener)
 	}
-
 	if *tlsListen != "" {
-		tlsConfig, err := tlsadapter.BuildTLSConfig(tlsadapter.Config{
-			CertFile:   *tlsCert,
-			KeyFile:    *tlsKey,
-			CAFile:     *tlsCA,
-			ClientAuth: tlsadapter.ClientAuthMode(*tlsClientAuth),
-			MinVersion: *tlsMinVersion,
-		})
-		if err != nil {
-			return fmt.Errorf("configure TLS: %w", err)
-		}
 		var errListen error
-		tlsListener, errListen = openMQTTListener(*tlsListen, tlsConfig, *tlsMaxConnections, *tlsConnectionRate, metricsRegistry)
+		tlsListener, errListen = openMQTTListener(portsmetrics.TransportTLS, *tlsListen, tlsConfig, *tlsMaxConnections, *tlsConnectionRate, metricsRegistry)
 		if errListen != nil {
 			return fmt.Errorf("listen TLS on %q: %w", *tlsListen, errListen)
 		}
 		listeners = append(listeners, tlsListener)
+	}
+	if *wsListen != "" {
+		if err := validateLiteralLoopbackAddress("-ws-listen", *wsListen); err != nil {
+			return err
+		}
+		var errListen error
+		wsListener, errListen = openWebSocketListener(*wsListen, nil, *wsMaxConnections, *wsConnectionRate, metricsRegistry, logger)
+		if errListen != nil {
+			return fmt.Errorf("listen WebSocket on %q: %w", *wsListen, errListen)
+		}
+		listeners = append(listeners, wsListener)
+	}
+	if *wssListen != "" {
+		var errListen error
+		wssListener, errListen = openWebSocketListener(*wssListen, tlsConfig, *wssMaxConnections, *wssConnectionRate, metricsRegistry, logger)
+		if errListen != nil {
+			return fmt.Errorf("listen WSS on %q: %w", *wssListen, errListen)
+		}
+		listeners = append(listeners, wssListener)
 	}
 
 	if *httpListen != "" {
@@ -454,6 +489,15 @@ func runWithContext(ctx context.Context, args []string, logger *slog.Logger) err
 		retainedRepository,
 		metricsRegistry,
 	)
+	observabilitySource := &observabilitySource{
+		state: managementState, metrics: metricsRegistry, clock: systemClock,
+		clusterID: "narumq-cluster-1", localNodeID: "narumq-node-1",
+		releaseVersion: buildReleaseVersion,
+	}
+	observabilityQuery, err := appobservability.NewService(observabilitySource, observabilitySource, nil, systemClock)
+	if err != nil {
+		return fmt.Errorf("create observability query service: %w", err)
+	}
 	var managementServer *http.Server
 	if managementListener != nil {
 		managementServer = adaptershttp.NewServer(
@@ -465,6 +509,7 @@ func runWithContext(ctx context.Context, args []string, logger *slog.Logger) err
 				Clock:                 systemClock,
 				AllowAnonymousProbes:  true,
 				AllowAnonymousMetrics: managementAuthToken == "",
+				Observability:         observabilityQuery,
 			},
 			managementState,
 			managementState,
@@ -476,6 +521,12 @@ func runWithContext(ctx context.Context, args []string, logger *slog.Logger) err
 	}
 	if tlsListener != nil {
 		logger.Info("MQTT TLS listener started", "address", tlsListener.Addr().String(), "qos0_only", true, "retained_supported", true)
+	}
+	if wsListener != nil {
+		logger.Info("MQTT WebSocket listener started", "address", wsListener.Addr().String())
+	}
+	if wssListener != nil {
+		logger.Info("MQTT WSS listener started", "address", wssListener.Addr().String())
 	}
 	if managementListener != nil {
 		logger.Info("management HTTP listener started", "address", managementListener.Addr().String())
@@ -497,6 +548,12 @@ func runWithContext(ctx context.Context, args []string, logger *slog.Logger) err
 	}
 	if tlsListener != nil {
 		logger.Info("MQTT TLS listener stopped", "address", tlsListener.Addr().String())
+	}
+	if wsListener != nil {
+		logger.Info("MQTT WebSocket listener stopped", "address", wsListener.Addr().String())
+	}
+	if wssListener != nil {
+		logger.Info("MQTT WSS listener stopped", "address", wssListener.Addr().String())
 	}
 	if managementListener != nil {
 		logger.Info("management HTTP listener stopped", "address", managementListener.Addr().String())

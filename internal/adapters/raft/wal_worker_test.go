@@ -12,6 +12,7 @@ import (
 	pb "go.etcd.io/raft/v3/raftpb"
 )
 
+// Scenarios: management-api-and-observability.md:MGT-SCN-032, cluster-session-and-delivery.md:CLU-SCN-117
 func TestWALWorkerGroupsQueuedFramesAndFailsClosed(t *testing.T) {
 	for _, failure := range []string{"none", "write", "sync"} {
 		t.Run(failure, func(t *testing.T) {

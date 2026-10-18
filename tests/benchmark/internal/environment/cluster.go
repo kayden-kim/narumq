@@ -34,11 +34,15 @@ type ClusterTargetOptions struct {
 	NetworkOwnerConfigDirectory                                string
 	RunnerConfigDirectory                                      string
 	Nodes                                                      []ClusterNodeSpec
-	BrokerCPUs, GeneratorCPUs                                  float64
-	BrokerMemoryBytes, GeneratorMemoryBytes                    int64
-	RunnerArgs                                                 []string
-	Timeout, StartupTimeout                                    time.Duration
-	EMQXReadyCondition, EMQXSnapshotExpression                 string
+
+	// ExtraNetworkAliases are network aliases shared by every node's network owner,
+	// giving clients one load-balanced DNS name over all nodes.
+	ExtraNetworkAliases                        []string
+	BrokerCPUs, GeneratorCPUs                  float64
+	BrokerMemoryBytes, GeneratorMemoryBytes    int64
+	RunnerArgs                                 []string
+	Timeout, StartupTimeout                    time.Duration
+	EMQXReadyCondition, EMQXSnapshotExpression string
 
 	// Controller runs beside the runner and reports lifecycle failures.
 	Controller func(context.Context, []ClusterNodeResult) error
@@ -457,7 +461,7 @@ func validateClusterTargetOptions(o ClusterTargetOptions) error {
 	if o.Target != "narumq" && o.Target != "emqx" {
 		return fmt.Errorf("unsupported benchmark target %q", o.Target)
 	}
-	if o.RunnerTarget != "bp02-runner" && o.RunnerTarget != "bp03-runner" && o.RunnerTarget != "bp04-runner" && o.RunnerTarget != "bp06-runner" && o.RunnerTarget != "bp07-runner" {
+	if o.RunnerTarget != "bp02-runner" && o.RunnerTarget != "bp03-runner" && o.RunnerTarget != "bp04-runner" && o.RunnerTarget != "bp06-runner" && o.RunnerTarget != "bp07-runner" && o.RunnerTarget != "capacity-runner" {
 		return fmt.Errorf("unsupported runner target %q", o.RunnerTarget)
 	}
 	if len(o.Nodes) != 3 {
@@ -506,6 +510,9 @@ func buildClusterNetworkOwnerArgs(options ClusterTargetOptions, node ClusterNode
 		"--network", prefix, "--network-alias", node.DNSName, "--hostname", node.DNSName,
 		"--cpus", "0.25", "--memory", "67108864b", "--read-only", "--tmpfs", "/tmp:size=16m",
 		"--mount", "type=bind,source=" + options.NetworkOwnerConfigDirectory + ",destination=/config,readonly",
+	}
+	for _, alias := range options.ExtraNetworkAliases {
+		args = append(args, "--network-alias", alias)
 	}
 	for _, port := range node.PublishedPorts {
 		args = append(args, "--publish", "127.0.0.1::"+port)

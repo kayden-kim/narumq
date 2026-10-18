@@ -18,6 +18,8 @@ Local snapshot마다 **snapshot 파일 확정 → WAL 교체 → 이전 snapshot
 
 WAL은 memory storage에 fsync 완료 뒤 반영된 snapshot 이후의 모든 entry와 최신 HardState로 재작성한다. Commit 이전이라도 이미 영속된 tail은 보존한다. Payload 크기 한도 안에서 entry를 여러 frame으로 나누며 snapshot record는 넣지 않는다. `wal.bin.tmp`에 magic·frame을 쓰고 sync·close한 뒤 기존 WAL handle을 sync·close한다. 이어 atomic replace·directory sync를 완료하고 새 WAL handle을 append 위치로 다시 연다. Ready append 전용 hook과 sync observer는 호출하지 않는다.
 
+Windows의 atomic rename은 다른 reader가 삭제 공유(`FILE_SHARE_DELETE`) 없이 파일을 열면 실패할 수 있다. Raft adapter의 기존 `renameFile` 경계에서 `ERROR_ACCESS_DENIED`·`ERROR_SHARING_VIOLATION`만 10ms 간격으로 최대 250ms 동안 다시 시도한다. 대기 예산은 첫 해당 오류부터 센다. 정상 경로에는 대기를 추가하지 않는다. 같은 `MoveFileExW`의 replace·write-through flag를 유지하며 파일을 먼저 삭제하지 않는다. 잠금이 계속되거나 다른 오류가 나면 기존 terminal storage 오류 경로를 따른다. 이 처리는 WAL·snapshot·cluster metadata의 공통 파일 확정에만 적용하며 application proposal이나 MQTT 요청을 재시도하지 않는다.
+
 최신 finalized snapshot 하나만 보존한다. 최신 index보다 작은 finalized snapshot 및 snapshot temp를 삭제하고 directory를 sync한다. 더 큰 index의 temp는 유지한다. Compaction·prune 오류는 node를 terminal 상태로 만드는 기존 storage 오류 경로를 따른다. 재시작 때 남은 `wal.bin.tmp`는 삭제하고 directory를 sync한다.
 
 Frame byte format은 변경하지 않는다. 이전 build가 교체된 WAL을 읽는 호환성은 `58a95f8` N-1 binary rollback 시험으로 검증한다. Config key, metric, size threshold는 추가하지 않는다. Dynamic runtime의 기존 1000 applied entries snapshot 주기를 따른다.

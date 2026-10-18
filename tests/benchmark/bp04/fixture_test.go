@@ -11,6 +11,8 @@ import (
 	"testing"
 )
 
+// TestBP04FixtureRestrictsClientIdentityAndCleansUp verifies the fixture JWT, ACL and certificates and their cleanup.
+// Scenarios: performance-and-verification.md:PRF-SCN-037
 func TestBP04FixtureRestrictsClientIdentityAndCleansUp(t *testing.T) {
 	profile := smokeProfile(t)
 	fixture, err := newBP04Fixture(profile, "fixture-test")

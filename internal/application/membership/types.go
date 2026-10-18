@@ -42,17 +42,23 @@ const (
 	ProposalRecoveryFeature          = "proposal-recovery"
 	ClusterPolicyFeature             = "cluster-policy"
 	ClusterPolicyTenantQuotasFeature = "cluster-policy-tenant-quotas"
-	MaxProposalReceiptsPerOrigin     = 1024
-	MaxProposalReceipts              = 4096
-	MaxProposalResultBytes           = 32 << 20
-	MaxSessionWillBytes              = 8 << 20
-	MaxCredentialRevocations         = 4096
-	MaxBlocklistEntries              = 4096
-	MaxCredentialIDBytes             = 512
-	MaxSessionWillPayloadBytes       = 65535
-	MaxSessionPrincipalFieldBytes    = 1024
-	MaxSessionPrincipalRoles         = 64
-	MaxSessionPrincipalRoleBytes     = 256
+	// SharedSubscriptionRerouteFeature records the shared-subscription origin of durable messages
+	// and re-routes them to another group member when the member's delivery record is removed.
+	SharedSubscriptionRerouteFeature = "shared-subscription-reroute"
+	// SnapshotStreamFeature lets a leader send a Raft snapshot larger than one peer frame over the
+	// chunked snapshot stream (ADR-0062). Before activation such a snapshot is not sent.
+	SnapshotStreamFeature         = "snapshot-stream"
+	MaxProposalReceiptsPerOrigin  = 1024
+	MaxProposalReceipts           = 4096
+	MaxProposalResultBytes        = 32 << 20
+	MaxSessionWillBytes           = 8 << 20
+	MaxCredentialRevocations      = 4096
+	MaxBlocklistEntries           = 4096
+	MaxCredentialIDBytes          = 512
+	MaxSessionWillPayloadBytes    = 65535
+	MaxSessionPrincipalFieldBytes = 1024
+	MaxSessionPrincipalRoles      = 64
+	MaxSessionPrincipalRoleBytes  = 256
 )
 
 // SessionRetention matches the replicated-state protocol enum.
@@ -675,6 +681,9 @@ type RetainedStateDTO struct {
 type DeliveryTargetDTO struct {
 	ClientID string
 	Retain   bool
+	// SharedFilter is the full `$share/<group>/<filter>` that selected this target. It is empty
+	// for non-shared targets and until SharedSubscriptionRerouteFeature is active.
+	SharedFilter string
 }
 
 // DeliveryChangeDTO carries one durable delivery action.
@@ -707,6 +716,8 @@ type DeliveryMessageDTO struct {
 	ExpiresAtUnixMillis uint64
 	PacketID            uint32
 	Phase               DeliveryPhase
+	// SharedFilter is the shared-subscription origin used to re-route the message.
+	SharedFilter string
 }
 
 // DeliveryInboundDTO stores a publisher-side QoS 2 exchange or RELEASE tombstone.
@@ -731,6 +742,14 @@ type DeliverySessionStateDTO struct {
 }
 
 type DeliveryEnqueuedDTO struct {
+	ClientID string
+	Sequence uint64
+}
+
+// DeliveryRerouteDTO names a message that apply moved to another shared-subscription member.
+// It is a node-local notification and is not replicated state.
+type DeliveryRerouteDTO struct {
+	TenantID string
 	ClientID string
 	Sequence uint64
 }

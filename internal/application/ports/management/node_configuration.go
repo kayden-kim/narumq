@@ -103,6 +103,17 @@ type MQTTListenerConfigurationDTO struct {
 	TLSMaxConnections        int
 	TLSConnectionRate        int
 	TLS                      *MQTTTLSConfigurationDTO
+	WebSocket                *MQTTWebSocketConfigurationDTO
+}
+
+// MQTTWebSocketConfigurationDTO contains WebSocket listener addresses and admission limits.
+type MQTTWebSocketConfigurationDTO struct {
+	ListenAddress     string
+	TLSListenAddress  string
+	MaxConnections    int
+	ConnectionRate    int
+	TLSMaxConnections int
+	TLSConnectionRate int
 }
 
 // MQTTTLSConfigurationDTO reports TLS policy and certificate-file presence.

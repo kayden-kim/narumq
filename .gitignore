@@ -75,3 +75,22 @@ $RECYCLE.BIN/
 node_modules/
 **/.vitepress/dist/
 **/.vitepress/cache/
+
+### Terraform
+**/.terraform/
+**/*.tfstate
+**/*.tfstate.*
+**/*.tfvars
+!**/*.tfvars.example
+**/*.tfplan
+deploy/terraform-acceptance/$planPath
+
+### Secrets & Temporary Material
+.tmp-eks/
+**/*secret.yaml
+!**/*secret.yaml.example
+
+!**/*secret.template.yaml
+
+### Rollout-controller local release inputs
+deploy/kubernetes/rollout-controller/overlays/eks-fixture/controller-image.env

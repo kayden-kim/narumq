@@ -16,6 +16,7 @@ import (
 	tcpadapter "narumq/internal/adapters/tcp"
 )
 
+// Scenarios: cluster-session-and-delivery.md:CLU-SCN-127
 func TestClusterDirectoryEmpty(t *testing.T) {
 	directory := t.TempDir()
 	file := filepath.Join(directory, "file")
@@ -40,6 +41,7 @@ func TestClusterDirectoryEmpty(t *testing.T) {
 	}
 }
 
+// Scenarios: cluster-session-and-delivery.md:CLU-SCN-127
 func TestClusterBootstrapProbeWaitsForEveryPeer(t *testing.T) {
 	var mu sync.Mutex
 	calls := map[uint64]int{}
@@ -61,6 +63,7 @@ func TestClusterBootstrapProbeWaitsForEveryPeer(t *testing.T) {
 	}
 }
 
+// Scenarios: cluster-session-and-delivery.md:CLU-SCN-127
 func TestClusterBootstrapProbeRejectsProgressedPeer(t *testing.T) {
 	for _, ids := range [][]uint64{{2, 3}, {3, 2}} {
 		peers := make([]tcpadapter.PeerIdentityDTO, len(ids))
@@ -85,6 +88,7 @@ func TestClusterBootstrapProbeRejectsProgressedPeer(t *testing.T) {
 	}
 }
 
+// Scenarios: cluster-session-and-delivery.md:CLU-SCN-127
 func TestClusterBootstrapProbeStopsOnContextCancel(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()

@@ -13,6 +13,7 @@ import (
 const op1 = "00000000-0000-4000-8000-000000000001"
 const op4 = "00000000-0000-4000-8000-000000000004"
 
+// Scenarios: cluster-session-and-delivery.md:CLU-SCN-167
 func TestCommandReferenceVectors(t *testing.T) {
 	publish := &DeliveryChange{
 		TenantId: "t", ClientId: "c", Action: DeliveryAction_DELIVERY_ACTION_PUBLISH,
@@ -55,6 +56,7 @@ func TestCommandReferenceVectors(t *testing.T) {
 	}
 }
 
+// Scenarios: cluster-session-and-delivery.md:CLU-SCN-167
 func TestEmptySnapshotReferenceVector(t *testing.T) {
 	want, _ := hex.DecodeString("080118012a20e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b8553200")
 	got, err := MarshalSnapshot(&ReplicatedStateSnapshot{}, 1)
@@ -103,6 +105,7 @@ func TestCommandRejectsNoncanonicalAndInvalid(t *testing.T) {
 	}
 }
 
+// Scenarios: cluster-session-and-delivery.md:CLU-SCN-236
 func TestSnapshotRejectsChecksumCountSchemaAndUnknown(t *testing.T) {
 	wire, err := MarshalSnapshot(&ReplicatedStateSnapshot{}, 1)
 	if err != nil {
@@ -294,6 +297,7 @@ func TestSnapshotRejectsStateIndexesBeyondLastIncluded(t *testing.T) {
 	}
 }
 
+// Scenarios: cluster-session-and-delivery.md:CLU-SCN-236
 func TestCommandRejectsInvalidProposalIdentityAndDigest(t *testing.T) {
 	base := &CommandEnvelope{
 		SchemaMajor: 1, OperationId: op1,
@@ -347,6 +351,7 @@ func TestCommandRejectsInvalidProposalIdentityAndDigest(t *testing.T) {
 	}
 }
 
+// Scenarios: cluster-session-and-delivery.md:CLU-SCN-236
 func TestSnapshotRejectsInvalidProposalOriginAndReceipt(t *testing.T) {
 	cases := []struct {
 		name    string

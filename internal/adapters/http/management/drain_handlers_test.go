@@ -80,6 +80,7 @@ func drainHTTPState(phase nodedrain.Phase) membership.NodeDrainStateDTO {
 }
 
 // Traceability: DEP-01/DEP-02; docs/specs/drain-and-rolling-update.md §2.1, §2.2, §10.
+// Scenarios: drain-and-rolling-update.md:DRN-SCN-005
 func TestNodeDrainHTTPStartReplayAndReadAuthorization(t *testing.T) {
 	stub := &drainHTTPStub{startResult: membership.NodeDrainOperationDTO{State: drainHTTPState(nodedrain.PhaseExcludingTraffic)}}
 	handler := newDrainHTTPTestHandler(stub, RoleOperator)
@@ -130,6 +131,7 @@ func TestNodeDrainHTTPStartReplayAndReadAuthorization(t *testing.T) {
 }
 
 // Traceability: DEP-01/DEP-02; docs/specs/drain-and-rolling-update.md §2.1, §2.2, §2.3, §10.
+// Scenarios: drain-and-rolling-update.md:DRN-SCN-005
 func TestNodeDrainHTTPQueriesCancelAndRejectInvalidRequests(t *testing.T) {
 	stub := &drainHTTPStub{
 		getResult:    membership.NodeDrainOperationDTO{State: drainHTTPState(nodedrain.PhaseTransferringSessions)},
@@ -151,7 +153,6 @@ func TestNodeDrainHTTPQueriesCancelAndRejectInvalidRequests(t *testing.T) {
 		name    string
 		request *http.Request
 	}{
-		{"required numeric fields", drainHTTPRequest(http.MethodPost, "/api/v1/nodes/2/drain", `{"connectionRatePerSecond":2,"timeoutMillis":60000}`, "drain-key")},
 		{"legacy duration names", drainHTTPRequest(http.MethodPost, "/api/v1/nodes/2/drain", `{"connectionRatePerSecond":2,"loadBalancerPropagationDelayMs":1500,"timeoutMs":60000}`, "drain-key")},
 		{"unknown query", drainHTTPRequest(http.MethodGet, "/api/v1/nodes/2/drain?unexpected=1", "", "")},
 		{"noncanonical node ID", drainHTTPRequest(http.MethodGet, "/api/v1/nodes/02/drain", "", "")},
@@ -175,7 +176,68 @@ func TestNodeDrainHTTPQueriesCancelAndRejectInvalidRequests(t *testing.T) {
 	}
 }
 
+// Traceability: DEP-02/DEP-04/DEP-05; docs/specs/drain-and-rolling-update.md §2.1, §10.
+// Scenarios: drain-and-rolling-update.md:DRN-SCN-006
+func TestNodeDrainHTTPAppliesProductDefaultsToOmittedFields(t *testing.T) {
+	for _, test := range []struct {
+		name            string
+		body            string
+		rate            uint32
+		lbDelayMillis   uint64
+		timeoutMillis   uint64
+		serverReference string
+	}{
+		{
+			name:          "all omitted",
+			body:          `{}`,
+			rate:          nodedrain.DefaultConnectionRatePerSecond,
+			lbDelayMillis: nodedrain.DefaultLoadBalancerPropagationDelayMillis,
+			timeoutMillis: nodedrain.DefaultTimeoutMillis,
+		},
+		{
+			name:          "timeout only",
+			body:          `{"timeoutMillis":120000}`,
+			rate:          nodedrain.DefaultConnectionRatePerSecond,
+			lbDelayMillis: nodedrain.DefaultLoadBalancerPropagationDelayMillis,
+			timeoutMillis: 120000,
+		},
+		{
+			name:          "explicit zero",
+			body:          `{"connectionRatePerSecond":5,"loadBalancerPropagationDelayMillis":0}`,
+			rate:          5,
+			lbDelayMillis: 0,
+			timeoutMillis: nodedrain.DefaultTimeoutMillis,
+		},
+		{
+			name:            "all explicit",
+			body:            validDrainRequestBody(),
+			rate:            2,
+			lbDelayMillis:   1500,
+			timeoutMillis:   60000,
+			serverReference: "mqtt.example:8883",
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			stub := &drainHTTPStub{}
+			handler := newDrainHTTPTestHandler(stub, RoleOperator)
+			response := httptest.NewRecorder()
+			handler.ServeHTTP(response, drainHTTPRequest(http.MethodPost, "/api/v1/nodes/2/drain", test.body, "drain-defaults"))
+
+			if response.Code != http.StatusAccepted {
+				t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+			}
+			got := stub.startRequest
+			if stub.startCalls != 1 || got.ConnectionRatePerSecond != test.rate ||
+				got.LoadBalancerPropagationDelayMillis != test.lbDelayMillis || got.TimeoutMillis != test.timeoutMillis ||
+				got.ServerReference != test.serverReference {
+				t.Fatalf("start request=%+v calls=%d", got, stub.startCalls)
+			}
+		})
+	}
+}
+
 // Traceability: DEP-01; docs/specs/drain-and-rolling-update.md §1, §2.3, §10.
+// Scenarios: drain-and-rolling-update.md:DRN-SCN-005
 func TestNodeDrainHTTPConflictIncludesCurrentNodeState(t *testing.T) {
 	stub := &drainHTTPStub{startError: &membership.ServiceError{
 		Code:      membership.ServiceErrorInvalidNodeTransition,

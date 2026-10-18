@@ -283,6 +283,7 @@ func TestNodeCommandResultsAreDeepCopies(t *testing.T) {
 	}
 }
 
+// Scenarios: cluster-session-and-delivery.md:CLU-SCN-082
 func TestWALBoundaryHookReportsNormalEntryStages(t *testing.T) {
 	root := t.TempDir()
 	directories := map[NodeID]string{
@@ -393,6 +394,7 @@ func TestWALBoundaryHookReportsNormalEntryStages(t *testing.T) {
 	}
 }
 
+// Scenarios: management-api-and-observability.md:MGT-SCN-032
 func TestWALSyncObserverReportsSuccessfulReadyFsyncs(t *testing.T) {
 	root := t.TempDir()
 	directories := map[NodeID]string{

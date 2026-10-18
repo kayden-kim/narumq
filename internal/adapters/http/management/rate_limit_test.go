@@ -44,12 +44,14 @@ func serveRateLimitRequest(handler http.Handler, path, bearer, apiKey, remoteAdd
 
 // TestRateLimitPrincipalBucketRejectsThenRefills verifies principal burst, refill and clock reversal.
 // Traceability: PRD API-05; docs/specs/management-api-and-observability.md §1.5.
+// Scenarios: management-api-and-observability.md:MGT-SCN-005
 func TestRateLimitPrincipalBucketRejectsThenRefills(t *testing.T) {
 	clock := &rateLimitTestClock{now: time.Unix(1_800_000_000, 0)}
 	handler := NewRouter(ServerConfig{
-		AuthToken:   "bearer-secret",
-		RequestRate: 2,
-		Clock:       clock,
+		AuthToken:     "bearer-secret",
+		RequestRate:   2,
+		Clock:         clock,
+		Observability: successHTTPObservabilityStub(),
 	}, &mockStateProvider{}, &mockHealthChecker{liveStatus: ports.HealthStatusUp}, nil)
 
 	for index, wantStatus := range []int{http.StatusOK, http.StatusOK, http.StatusTooManyRequests} {
@@ -78,6 +80,7 @@ func TestRateLimitPrincipalBucketRejectsThenRefills(t *testing.T) {
 
 // TestRateLimitSeparatesPrincipalsAndAuthFailures verifies per-subject and per-IP buckets.
 // Traceability: PRD API-05; docs/specs/management-api-and-observability.md §1.5.
+// Scenarios: management-api-and-observability.md:MGT-SCN-005
 func TestRateLimitSeparatesPrincipalsAndAuthFailures(t *testing.T) {
 	clock := &rateLimitTestClock{now: time.Unix(1_800_000_000, 0)}
 	handler := NewRouter(ServerConfig{
@@ -86,6 +89,7 @@ func TestRateLimitSeparatesPrincipalsAndAuthFailures(t *testing.T) {
 		RequestRate:     1,
 		AuthFailureRate: 1,
 		Clock:           clock,
+		Observability:   successHTTPObservabilityStub(),
 	}, &mockStateProvider{}, &mockHealthChecker{liveStatus: ports.HealthStatusUp}, nil)
 
 	if response := serveRateLimitRequest(handler, "/api/v1/cluster", "bearer-secret", "", "192.0.2.10:1234"); response.Code != http.StatusOK {
@@ -122,6 +126,7 @@ func TestRateLimitSeparatesPrincipalsAndAuthFailures(t *testing.T) {
 
 // TestRateLimitExcludesProbesAndMetrics verifies probes, scrapes and unknown paths do not consume API tokens.
 // Traceability: PRD API-05; docs/specs/management-api-and-observability.md §1.5.
+// Scenarios: management-api-and-observability.md:MGT-SCN-006
 func TestRateLimitExcludesProbesAndMetrics(t *testing.T) {
 	clock := &rateLimitTestClock{now: time.Unix(1_800_000_000, 0)}
 	registry := adaptersmetrics.NewRegistry()
@@ -130,6 +135,7 @@ func TestRateLimitExcludesProbesAndMetrics(t *testing.T) {
 		RequestRate:     1,
 		AuthFailureRate: 1,
 		Clock:           clock,
+		Observability:   successHTTPObservabilityStub(),
 	}, &mockStateProvider{}, &mockHealthChecker{liveStatus: ports.HealthStatusUp}, registry)
 
 	for _, path := range []string{"/health/live", "/metrics", "/not-registered"} {
@@ -147,6 +153,7 @@ func TestRateLimitExcludesProbesAndMetrics(t *testing.T) {
 
 // TestRateLimitForbiddenConsumesPrincipalToken verifies role-denied requests consume a principal token.
 // Traceability: PRD API-05; docs/specs/management-api-and-observability.md §1.5.
+// Scenarios: management-api-and-observability.md:MGT-SCN-007
 func TestRateLimitForbiddenConsumesPrincipalToken(t *testing.T) {
 	clock := &rateLimitTestClock{now: time.Unix(1_800_000_000, 0)}
 	handler := NewRouter(ServerConfig{
@@ -165,6 +172,7 @@ func TestRateLimitForbiddenConsumesPrincipalToken(t *testing.T) {
 
 // TestRateLimitedMutationIsAuditedAndNotExecuted verifies rate rejection precedes mutation admission.
 // Traceability: PRD API-05; docs/specs/management-api-and-observability.md §1.5.
+// Scenarios: management-api-and-observability.md:MGT-SCN-008
 func TestRateLimitedMutationIsAuditedAndNotExecuted(t *testing.T) {
 	clock := &rateLimitTestClock{now: time.Unix(1_800_000_000, 0)}
 	spy := &spyAuditUseCase{}
@@ -228,6 +236,7 @@ func TestRateLimitedMutationIsAuditedAndNotExecuted(t *testing.T) {
 
 // TestRateLimiterBoundsKeysAndEvictsFullBuckets verifies the key cap and full-bucket eviction rule.
 // Traceability: PRD API-05; docs/specs/management-api-and-observability.md §1.5.
+// Scenarios: management-api-and-observability.md:MGT-SCN-009
 func TestRateLimiterBoundsKeysAndEvictsFullBuckets(t *testing.T) {
 	clock := &rateLimitTestClock{now: time.Unix(1_800_000_000, 0)}
 	limiter := newRequestRateLimiter(1, clock)
@@ -251,6 +260,7 @@ func TestRateLimiterBoundsKeysAndEvictsFullBuckets(t *testing.T) {
 
 // TestRemoteAddressKey verifies host extraction and malformed address handling.
 // Traceability: PRD API-05; docs/specs/management-api-and-observability.md §1.5.
+// Scenarios: management-api-and-observability.md:MGT-SCN-005
 func TestRemoteAddressKey(t *testing.T) {
 	for _, testCase := range []struct {
 		remoteAddr string

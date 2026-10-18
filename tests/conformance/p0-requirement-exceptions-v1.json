@@ -2,59 +2,44 @@
   "schemaVersion": 1,
   "exceptions": [
     {
-      "requirementId": "DEP-11",
-      "reason": "외부 rollout controller가 보류된 범위이며 ADR-0006은 Proposed입니다.",
-      "tracking": "docs/TODO.md#12-release와-rollout-gate"
-    },
-    {
       "requirementId": "DEP-13",
-      "reason": "Kubernetes와 EKS_EC2_HA 배포 산출물이 보류된 범위입니다.",
+      "reason": "Kubernetes preStop 산출물과 정상·재진입 경로는 검증했다. 실제 hook 실패·timeout과 종료 경계의 전체 수용이 남았다.",
       "tracking": "docs/TODO.md#14-drain-정책관측과-production-배포"
     },
     {
       "requirementId": "DEP-14",
-      "reason": "Kubernetes와 EKS_EC2_HA 배포 산출물이 보류된 범위입니다.",
+      "reason": "Termination grace 설정과 계약 시험은 있다. 부족한 grace 거부, grace 만료와 강제 종료 경보의 실제 배포 수용이 남았다.",
       "tracking": "docs/TODO.md#14-drain-정책관측과-production-배포"
     },
     {
       "requirementId": "DEP-15",
-      "reason": "Kubernetes와 EKS_EC2_HA 배포 산출물이 보류된 범위입니다.",
+      "reason": "PDB·anti-affinity·topology spread·동시성 제한 산출물과 제한된 EKS 배치는 확인했다. 계획 배포·장애 중 전체 3-AZ 수용이 남았다.",
       "tracking": "docs/TODO.md#14-drain-정책관측과-production-배포"
     },
     {
-      "requirementId": "DEP-18",
-      "reason": "외부 rollout controller가 보류된 범위이며 ADR-0006은 Proposed입니다.",
-      "tracking": "docs/TODO.md#12-release와-rollout-gate"
-    },
-    {
       "requirementId": "DEP-19",
-      "reason": "Kubernetes와 EKS_EC2_HA 배포 산출물이 보류된 범위입니다.",
+      "reason": "EKS_EC2_HA qualification profile과 배포 산출물은 있다. Release별 지원 profile 식별·자동 검증과 전체 인프라 수용이 남았다.",
       "tracking": "docs/TODO.md#14-drain-정책관측과-production-배포"
     },
     {
       "requirementId": "DEP-20",
-      "reason": "Kubernetes와 EKS_EC2_HA 배포 산출물이 보류된 범위입니다.",
+      "reason": "격리 EKS에서 3-AZ 배치, 단일 follower EC2 비정상 종료, 단일 leader EC2 비정상 종료와 단일 AZ 전원 중단 모델의 데이터 플레인 복구를 각각 1회 실행으로 확인했다(2026-10-16). 남은 범위: AZ 장애는 worker 정지 모델이며 network·EBS 서비스·control plane 장애는 시험하지 않았다. 표본 사이 연속 가용성과 반복 실행은 입증하지 않았다. 실행은 Python EKS 도구로 했으며 Go traceability 시험에 연결되지 않는다.",
       "tracking": "docs/TODO.md#14-drain-정책관측과-production-배포"
     },
     {
       "requirementId": "DEP-21",
-      "reason": "Kubernetes와 EKS_EC2_HA 배포 산출물이 보류된 범위입니다.",
+      "reason": "격리 EKS에서 독립·암호화·AZ-bound EBS, 합성 snapshot/restore, 동일 volume 복구와 disk pressure D1–D3(admission 0x97, follower ENOSPC, 두 follower ENOSPC 뒤 durable ACK 누락 0)를 확인했다(2026-10-16, 1회). 남은 범위: 반복 실행과 production 부하 크기다. 실행은 Python EKS 도구로 했으며 Go traceability 시험에 연결되지 않는다.",
       "tracking": "docs/TODO.md#14-drain-정책관측과-production-배포"
     },
     {
       "requirementId": "DEP-22",
-      "reason": "Kubernetes와 EKS_EC2_HA 배포 산출물이 보류된 범위입니다.",
+      "reason": "NLB deregistration·readiness 전파는 일부 관찰했다. 정상 MQTT traffic routing, 기존 연결 drain, idle timeout·client IP·connection termination의 자동 수용이 남았다.",
       "tracking": "docs/TODO.md#14-drain-정책관측과-production-배포"
     },
     {
       "requirementId": "DEP-23",
-      "reason": "Kubernetes와 EKS_EC2_HA 배포 산출물이 보류된 범위입니다.",
+      "reason": "배포 profile 문서는 있다. Release artifact의 Supported·Experimental·Unsupported 표시와 각 보장 범위의 전체 수용이 남았다.",
       "tracking": "docs/TODO.md#14-drain-정책관측과-production-배포"
-    },
-    {
-      "requirementId": "TEN-09",
-      "reason": "noisy-neighbor p99 한도가 확정되지 않았습니다(PRD §18 질문 8).",
-      "tracking": "docs/TODO.md#17-tenantsecurity와-감사"
     }
   ]
 }

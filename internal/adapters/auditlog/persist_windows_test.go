@@ -8,6 +8,7 @@ import (
 	"testing"
 )
 
+// Scenarios: management-api-and-observability.md:MGT-SCN-014, tenancy-and-security.md:SEC-SCN-050
 func TestRenameFileDoesNotReplaceExistingTarget(t *testing.T) {
 	directory := t.TempDir()
 	sourcePath := filepath.Join(directory, "source.jsonl")

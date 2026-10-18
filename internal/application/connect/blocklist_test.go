@@ -27,6 +27,7 @@ func (matcher *connectBlocklistMatcher) MatchBlocklist(subject security.BlockSub
 }
 
 // Traceability: SEC-12; docs/specs/tenancy-and-security.md §7.1, §9; ADR-0050.
+// Scenarios: tenancy-and-security.md:SEC-SCN-041
 func TestConnectBlocklistMatcherIsCheckedPreAuthentication(t *testing.T) {
 	now := time.Date(2026, time.January, 1, 0, 0, 0, 0, time.UTC)
 	for _, version := range []mqtt.ProtocolVersion{mqtt.ProtocolV311, mqtt.ProtocolV5} {
@@ -86,6 +87,7 @@ func TestConnectBlocklistMatcherIsCheckedPreAuthentication(t *testing.T) {
 }
 
 // Traceability: SEC-12; docs/specs/tenancy-and-security.md §7.1, §9; ADR-0050.
+// Scenarios: tenancy-and-security.md:SEC-SCN-041
 func TestConnectBlocklistRejectsBeforeAuthenticationAndOwnership(t *testing.T) {
 	now := time.Date(2026, time.January, 1, 0, 0, 0, 0, time.UTC)
 	const fingerprint = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
@@ -171,6 +173,7 @@ func TestConnectBlocklistRejectsBeforeAuthenticationAndOwnership(t *testing.T) {
 }
 
 // Traceability: SEC-12; docs/specs/tenancy-and-security.md §7.1, §9; ADR-0050.
+// Scenarios: tenancy-and-security.md:SEC-SCN-041
 func TestConnectBlocklistClientIDIsTenantScoped(t *testing.T) {
 	now := time.Date(2026, time.January, 1, 0, 0, 0, 0, time.UTC)
 	tenant, err := tenancy.NewTenantID("tenant-a")
@@ -222,6 +225,7 @@ func TestConnectBlocklistClientIDIsTenantScoped(t *testing.T) {
 }
 
 // Traceability: SEC-12; docs/specs/tenancy-and-security.md §7.1, §9; ADR-0050.
+// Scenarios: tenancy-and-security.md:SEC-SCN-041
 func TestConnectBlocklistAllowsSameClientIDInAnotherTenant(t *testing.T) {
 	now := time.Date(2026, time.January, 1, 0, 0, 0, 0, time.UTC)
 	tenant, err := tenancy.NewTenantID("tenant-b")
@@ -259,6 +263,7 @@ func TestConnectBlocklistAllowsSameClientIDInAnotherTenant(t *testing.T) {
 }
 
 // Traceability: SEC-12; docs/specs/tenancy-and-security.md §7.1, §9; ADR-0050.
+// Scenarios: tenancy-and-security.md:SEC-SCN-041
 func TestBlocklistConnectUsesDefaultTenantOnlyWithClusterOwnership(t *testing.T) {
 	now := time.Date(2026, time.January, 1, 0, 0, 0, 0, time.UTC)
 	matchDefault := func(subject security.BlockSubject) bool {
