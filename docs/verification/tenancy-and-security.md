@@ -230,11 +230,12 @@ Process acceptance는 Dynamic 3-node cluster에서 password credential을 revoke
 
 이 local 수용 시험은 상대 p99 기준과 tenant rate limit 적용을 확인한다. Production tenant 부하, production 환경, 절대 지연 SLO와 독립 penetration test는 확인하지 않는다.
 
-2026-10-18 [PR #9 실행 39077367789](https://github.com/kayden-kim/narumq/actions/runs/39077367789)에서 이 시험이 `ratio 2.712 > 1.5`로 실패했다. [ADR-0064](../decisions/ADR-0064-ci-gate-logic-only.md)에 따라 시험은 기본 gate 밖의 opt-in 수용 시험(`Acceptance: NARUMQ_LOAD_QUALITY`)이 됐다. 합격 기준(p99, 1.5배, 5 round, 구간당 500개 표본)은 바꾸지 않았다. 실패 원인과 이동 근거는 [성능 및 검증 기록 §15](performance-and-verification.md#15-ci-gate-논리-검증-한정-2026-10-18)에 있다. 이후 이 시험의 통과 증거는 아래 명령의 결과다. 한 번 실행하며 위 5회 수용 기록을 바꾸지 않는다.
+2026-10-18 [PR #9 실행 39077367789](https://github.com/kayden-kim/narumq/actions/runs/39077367789)에서 이 시험이 `ratio 2.712 > 1.5`로 실패했다. [ADR-0064](../decisions/ADR-0064-ci-gate-logic-only.md)에 따라 시험은 기본 gate 밖의 opt-in 수용 시험(`Acceptance: NARUMQ_LOAD_QUALITY`)이 됐다. 합격 기준(p99, 1.5배, 5 round, 구간당 500개 표본)은 바꾸지 않았다. 실패 원인과 이동 근거는 [성능 및 검증 기록 §15](performance-and-verification.md#15-ci-gate-논리-검증-한정-2026-10-18)에 있다. 이후 이 시험의 통과 증거는 아래 명령의 결과다. 아래 실행은 위 5회 수용 기록을 바꾸지 않는다.
 
 | 명령 | 결과 |
 | --- | --- |
 | `NARUMQ_LOAD_QUALITY=1 go run ./tools/verify acceptance --run TenantNoisyNeighbor` (Windows x64, Go 1.26.5) | `acceptance: PASS`. 시험 45초. baseline p50/p99/max 13.4453/37.1534/68.5345ms, noisy 12.9238/31.1943/59.0191ms, p99 비율 0.840. noisy 수신/상한은 round마다 263/264, 263/264, 263/264, 263/264, 264/265이고 offered는 1316이다. |
+| `NARUMQ_LOAD_QUALITY=1 go run ./tools/verify acceptance --run 'TenantNoisyNeighbor\|TestN1PersistentClose\|TestRunAgainstInProcessNaruMQ'` (같은 host, 네 시험을 한 번에 실행) | `acceptance: 4 tests passed`, `acceptance: PASS`. TEN-09는 37.31초. baseline p50/p99/max 10.2928/25.8698/49.8811ms, noisy 10.2014/23.8598/32.9465ms, p99 비율 0.922. noisy 수신/상한은 round마다 263/264, 263/264, 264/265, 262/263, 263/264이고 offered는 1315다. |
 
 ## 10. 완료 판정과 범위 기록
 

@@ -77,6 +77,14 @@ BP-01은 MQTT 5.0, QoS 0, 비영속 session(`Clean Start=true`, expiry 0), exact
 
 이 smoke는 하네스와 실행 경로만 입증한다. Phase 0 workload, SLO, release gate를 정하지 않는다. 필수 raw sample과 phase, runtime metric은 §5에 정의한다.
 
+#### 수용 테스트
+
+시나리오 결과와 테스트 연결은 [테스트 컨벤션](../conventions/test-conventions.md)의 시나리오 보고서로 확인한다. 아래 시나리오의 시험은 `Valid`에 송신 schedule lag 한도가 들어가는 in-process 부하 실행이다. 기본 gate는 이 시험을 실행하지 않고 `Acceptance: NARUMQ_LOAD_QUALITY`로 표시했다. BP-05의 in-process 실행(`PRF-SCN-123`)도 같다. 두 시험은 `NARUMQ_LOAD_QUALITY=1 go run ./tools/verify acceptance --run TestRunAgainstInProcessNaruMQ`로 함께 실행한다([ADR-0064](../decisions/ADR-0064-ci-gate-logic-only.md), [§7.2](#72-fuzz-게이트와-수동-mutation-검증)).
+
+| 시나리오 ID | 요구사항 ID | 조건과 입력 | 기대 결과 |
+| --- | --- | --- | --- |
+| PRF-SCN-122 | - | BP-01 runner를 in-process NaruMQ에 smoke profile(초당 20건, warm-up 25ms, measure 250ms, drain 250ms)로 실행한다. | `Run`이 성공하고 summary가 valid다. 송신 수가 0보다 크고 수신 수와 같으며 protocol error가 0이다. `samples.jsonl`이 비어 있지 않다. `phases.jsonl`은 warm-up, measure, drain의 start·end를 이 순서로 담는다. |
+
 ### 3.2 BP-05 제한된 Connection Scale smoke 관찰 경계
 
 고정 profile은 `tests/benchmark/bp05/testdata/smoke.json`이다.
@@ -100,6 +108,14 @@ memoryBytesPerIdleConnection = incrementalMemoryBytes / idleSurvivors
 ```
 
 차이는 signed 값이며 음수로 clamp하지 않는다. 각 구간 sample이 2개 미만이면 resource invalid다. `summary.json`은 workload·resource가 모두 valid이고 양쪽 target의 마지막 ping도 성공해야 valid다. Smoke는 전체 BP-05, `B_conn`, production memory SLO, release 비율 또는 Gate 8을 확정하지 않는다.
+
+#### 수용 테스트
+
+이 절의 in-process 실행도 [§3.1](#31-bp-01-protocol-baseline-관찰-경계)과 같이 gate 밖의 `Acceptance: NARUMQ_LOAD_QUALITY` 시험이다. 시나리오 결과와 테스트 연결은 [테스트 컨벤션](../conventions/test-conventions.md)의 시나리오 보고서로 확인한다.
+
+| 시나리오 ID | 요구사항 ID | 조건과 입력 | 기대 결과 |
+| --- | --- | --- | --- |
+| PRF-SCN-123 | - | BP-05 runner를 in-process NaruMQ에 연결 8개, 초당 ramp 8개, baseline 2000ms, idle 2000ms, reconnect 2개, keep-alive 2초, ping 간격 400ms로 실행한다. | `Run`이 성공하고 summary가 valid다. 초기 연결 8개가 성공하고 idle 생존이 8개이며 reconnect 2개가 성공한다. Ping·protocol·transport·마지막 ping 오류와 generator overload가 0이다. `connections.jsonl`, `phases.jsonl`, `workload-summary.json`이 비어 있지 않고 phase는 ramp, idle, reconnect, final_check, cleanup의 start·end 순서다. |
 
 ### 3.3 PERF-07 반복 suite 측정 계약
 
@@ -849,7 +865,7 @@ Python 시나리오 함수는 `tests/scenario_results.py`로 `.artifacts/verific
 
 Opt-in 수용 시험은 `go run ./tools/verify acceptance [--run <regexp>]`로 따로 실행한다. 이 시험들은 100회 rolling, Kind, Docker 같은 별도 환경과 긴 실행 시간이 필요하다. 2026-10-17 측정에서 이 시험 11개는 integration package 시간의 약 78%(약 2420초)였다. 기본 gate가 매번 이 시험을 요구하면 `local`이 약 52분 걸리고, opt-in 환경이 없는 CI는 통과할 수 없다. 그래서 기본 gate는 일반 시험의 실행을 증명하고, opt-in 수용은 이 명령의 결과로 증명한다. 두 결과를 함께 보고하려면 `scenarios`에 두 Go JSON 파일을 모두 넘긴다.
 
-기본 gate는 논리 시험만 실행한다([ADR-0064](../decisions/ADR-0064-ci-gate-logic-only.md)). 합격 여부가 측정한 지연·처리량·percentile·지연 비율 한도나 부하 강도에 달린 부하·품질 시험은 `Acceptance: NARUMQ_LOAD_QUALITY`를 표시해 gate 밖에 둔다. 기본 gate는 이 시험을 건너뛰고 해당 시나리오를 `미실행 (게이트 밖)`으로 보고한다. 이 시험은 `NARUMQ_LOAD_QUALITY=1 go run ./tools/verify acceptance --run <regexp>`로 실행하며, 통과 증거는 이 명령의 결과와 검증 기록이다. 현재 대상은 TEN-09(`SEC-SCN-030`) 한 개다. 멈춤을 잡는 제한 시간, 설정한 대기의 최소 시간, fake clock으로 계산하는 rate 한도처럼 논리 결과를 판정하는 시험의 시간 값은 gate에 남긴다.
+기본 gate는 논리 시험만 실행한다([ADR-0064](../decisions/ADR-0064-ci-gate-logic-only.md)). 합격 여부가 측정한 지연·처리량·percentile·지연 비율 한도나 부하 강도에 달린 부하·품질 시험은 `Acceptance: NARUMQ_LOAD_QUALITY`를 표시해 gate 밖에 둔다. 기본 gate는 이 시험을 건너뛰고 해당 시나리오를 `미실행 (게이트 밖)`으로 보고한다. 이 시험은 `NARUMQ_LOAD_QUALITY=1 go run ./tools/verify acceptance --run <regexp>`로 실행하며, 통과 증거는 이 명령의 결과와 검증 기록이다. 현재 대상은 네 개다. TEN-09(`SEC-SCN-030`), CPU 경쟁 아래 persistent subscriber 시험 `TestN1PersistentClose`(`CLU-SCN-241`), in-process BP-01·BP-05 runner 부하 실행(`PRF-SCN-122`·`PRF-SCN-123`)이 해당한다. 멈춤을 잡는 제한 시간, 설정한 대기의 최소 시간, fake clock으로 계산하는 rate 한도처럼 논리 결과를 판정하는 시험의 시간 값은 gate에 남긴다.
 
 `acceptance`는 다음 순서로 동작한다.
 

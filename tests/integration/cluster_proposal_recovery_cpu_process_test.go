@@ -126,8 +126,12 @@ func n1Publish(conn net.Conn, topic string, id uint16, payload string) n1Ack {
 }
 
 // Traceability: CLU-07; docs/specs/cluster-session-and-delivery.md §11.33.
+// Acceptance: NARUMQ_LOAD_QUALITY
 // Scenarios: cluster-session-and-delivery.md:CLU-SCN-241
 func TestN1PersistentClose(t *testing.T) {
+	if os.Getenv("NARUMQ_LOAD_QUALITY") != "1" {
+		t.Skip("set NARUMQ_LOAD_QUALITY=1 to run the N1 CPU-contention persistent-subscriber acceptance")
+	}
 	// N1_BURN=24 N1_ROUNDS=8 reproduces the recorded CPU-contention matrix. Defaults also
 	// create CPU contention; N1_FEATURE may explicitly be empty to run the failing control.
 	burn, rounds := 2, 3

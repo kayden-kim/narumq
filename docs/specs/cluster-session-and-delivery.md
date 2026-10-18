@@ -895,6 +895,8 @@ Container 시작에는 build 뒤 검사한 immutable image ID(내용으로 식�
 | CLU-SCN-241 | CLU-07 | CPU 경쟁 아래 3-node process 반복(진단) | Persistent QoS 1 subscriber 6명과 약 25 msg/s publish 중 리더를 kill한다. 활성은 계획 밖 subscriber 종료와 `dispatch MQTT PUBACK: quorum unavailable`이 0이어야 한다. |
 | CLU-SCN-242 | CLU-07 | 실제 MQTT SIGKILL·재접속·resync | 원래 5초 broker commit deadline, 성공 ACK durability와 NaruMQ 무예외 판정을 유지한다. |
 
+`CLU-SCN-241`의 시험(`TestN1PersistentClose`)은 CPU 부하를 만들어 판정하는 부하·품질 시험이다. 기본 gate는 이 시험을 실행하지 않고 `미실행 (게이트 밖)`으로 보고한다. `NARUMQ_LOAD_QUALITY=1 go run ./tools/verify acceptance --run TestN1PersistentClose`로 실행한다([ADR-0064](../decisions/ADR-0064-ci-gate-logic-only.md)).
+
 ### 11.34 Dynamic peer TCP 생존 확인 수용 매핑
 
 기준은 [ADR-0059](../decisions/ADR-0059-dynamic-peer-tcp-liveness.md)와 [Raft membership v2](../contracts/raft-membership-v2.md#raft-메시지-프레임과-크기-한도)다. 연결 방향 규칙상 member ID가 낮은 node만 dial한다. 따라서 높은 ID의 node가 새 IP로 다시 시작하면, 낮은 ID 쪽이 이전 연결을 끝내야 새 node가 Raft 메시지를 받는다. 이 매핑은 응답 없이 사라진 이전 IP의 연결이 응용 송신 대기열 포화나 write deadline 실패를 기다리지 않고 끊기는지 확인한다.
